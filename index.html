@@ -598,16 +598,15 @@ const NAV_ITEMS = [
   {id:'recipe',      label:'レシピ',      icon:'ti-chef-hat',         roles:['ceo','gm','office','am','sl']},
   {id:'costsheet',   label:'原価計算',    icon:'ti-calculator',       roles:['ceo','gm','office','am','sl']},
   {id:'invoice',     label:'Invoice',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl']},
-  {id:'inventory',   label:'Inventory',   icon:'ti-box',              roles:['ceo','gm','am','sl','crew']},
+  {id:'inventory',   label:'Inventory',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
   {id:'order',       label:'Order',       icon:'ti-clipboard-list',   roles:['ceo','gm','am','sl']},
-  {id:'dailyops',    label:'Daily Ops',   icon:'ti-checklist',        roles:['ceo','gm','am','sl','crew']},
-  {id:'tasks',       label:'タスク',      icon:'ti-list-check',       roles:['ceo','gm','am','sl','crew']},
+  {id:'tasks',       label:'タスク',      icon:'ti-list-check',       roles:['ceo','gm','am','sl']},
   {id:'required',    label:'Required',    icon:'ti-alert-circle',     roles:['ceo','gm','am','sl']},
-  {id:'goals',       label:'Goal',        icon:'ti-target',           roles:['ceo','gm','am','sl','crew']},
+  {id:'goals',       label:'Goal',        icon:'ti-target',           roles:['ceo','gm','am','sl']},
   {id:'labor',       label:'Labor',       icon:'ti-clock',            roles:['ceo','gm','office','am']},
   {id:'shift_admin', label:'Shift Builder',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
   {id:'shift_staff', label:'My Shift',     icon:'ti-calendar-event',   roles:['sl','crew']},
-  {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','crew','am']},
+  {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am']},
   {id:'hiring',      label:'採用',        icon:'ti-user-plus',        roles:['ceo','gm','am']},
   {id:'onboarding',  label:'OB',          icon:'ti-school',           roles:['ceo','gm','am','sl']},
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
@@ -617,7 +616,7 @@ const NAV_ITEMS = [
   {id:'evaluation',  label:'評価',        icon:'ti-star',             roles:['ceo','gm','am','sl']},
   {id:'tiprate',     label:'Tip Rate',    icon:'ti-coin',             roles:['ceo','gm','am','sl','crew']},
   {id:'meeting',     label:'Meeting',     icon:'ti-users-group',      roles:['ceo','gm','office','am','sl']},
-  {id:'growthhub',   label:'Growth Hub',  icon:'ti-message-circle',   roles:['ceo','gm','office','am','sl','crew']},
+  {id:'growthhub',   label:'Growth Hub',  icon:'ti-message-circle',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'Growth管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
   {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','am']},
   {id:'mypage',      label:'My Page',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew']},
@@ -917,7 +916,7 @@ function initApp() {
   buildNav();
   // Default page
   var firstNav = NAV_ITEMS.find(n => n.roles.includes(curRole));
-  curPage = firstNav ? firstNav.id : 'mypage';
+  curPage = (curRole==='crew') ? 'mypage' : (firstNav ? firstNav.id : 'mypage');
   renderPage(curPage);
 }
 
@@ -1108,61 +1107,108 @@ function renderStoreCmd() {
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var ops = getDailyOps(storeId);
   var opsDone = ops.filter(t=>t.done).length;
-  var reqIncomplete = ops.filter(t=>t.required && !t.done);
+  var reqItems = ops.filter(t=>t.required);
+  var reqIncomplete = reqItems.filter(t=>!t.done);
   var goals = ls('goals_v2', []).filter(g=>g.scope==='store' && (g.storeId===storeId || g.storeId==='ALL'));
   var tasks = getTasks().filter(t=>(t.store===storeId||t.store==='ALL') && t.status!=='完了');
-  var invItems = getInvItems(storeId);
-  var invCounted = invItems.filter(i=>i.count!=='').length;
+  var canEdit = ROLE_CONFIG[curRole].canCreate;
+  var dailyComplete = ops.length>0 && opsDone===ops.length;
 
   var html = `<div class="section-header">
     <div><div class="section-title"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${store.color};margin-right:8px;"></span>${store.name}</div>
-    <div class="section-sub">Store Command Center</div></div>
+    <div class="section-sub">Store Command Center · ${new Date().toLocaleDateString('ja')}</div></div>
+    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="go('required')"><i class="ti ti-settings"></i> Ops設定</button>`:''}
   </div>`;
 
-  // 必須未完了アラート
+  // Required未完了アラート
   if (reqIncomplete.length) {
     html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
-      <p style="font-size:12px;font-weight:600">必須タスク未完了 ${reqIncomplete.length}件</p>
-      <div style="font-size:11px;margin-top:2px">${reqIncomplete.map(t=>t.text).join(' / ')}</div></div></div>`;
+      <p style="font-size:12px;font-weight:600">Required未完了 ${reqIncomplete.length}件 — Daily完了できません</p>
+      <div style="font-size:11px;margin-top:2px">${reqIncomplete.map(t=>t.phase+': '+t.text).join(' / ')}</div></div></div>`;
+  } else if (dailyComplete) {
+    html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>本日のDaily Operationsは全て完了しています 🎉</div>`;
   }
 
-  // クイックステータス
-  html += `<div class="kpi-grid" style="margin-bottom:12px">
-    <div class="kpi" style="cursor:pointer" onclick="go('dailyops')"><div class="kpi-label">Daily Ops</div><div class="kpi-value" style="color:${opsDone===ops.length?'var(--green)':'var(--accent2)'}">${opsDone}/${ops.length}</div><div class="kpi-sub">本日の進捗</div></div>
-    <div class="kpi" style="cursor:pointer" onclick="go('inventory')"><div class="kpi-label">棚卸</div><div class="kpi-value">${invCounted}/${invItems.length}</div><div class="kpi-sub">カウント済</div></div>
-    <div class="kpi" style="cursor:pointer" onclick="go('tasks')"><div class="kpi-label">タスク</div><div class="kpi-value" style="color:${tasks.length?'var(--yellow)':'var(--green)'}">${tasks.length}</div><div class="kpi-sub">進行中</div></div>
-    <div class="kpi" style="cursor:pointer" onclick="go('goals')"><div class="kpi-label">Goal</div><div class="kpi-value">${goals.length}</div><div class="kpi-sub">店舗目標</div></div>
-  </div>`;
-
-  // Goal（Command Centerに反映）
+  // 本日/今週のGoal
+  html += `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>本日・今週のGoal
+    ${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('goals')">管理</button>`:''}</div>`;
   if (goals.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>店舗Goal
-      <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('goals')">管理</button></div>`;
-    goals.slice(0,3).forEach(g => {
+    goals.slice(0,4).forEach(g => {
       var prog = Math.min(Math.round((g.current||0)/g.target*100), 100);
       var color = prog>=100?'var(--green)':prog>=70?'var(--yellow)':'var(--accent2)';
       html += `<div class="goal-item">
         <div class="goal-header"><div class="goal-title">${g.title}</div><span class="tag tag-blue">${g.period}</span></div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <div class="progress-bar" style="flex:1"><div class="progress-fill" style="background:${color};width:${prog}%"></div></div>
-          <div class="goal-progress">${prog}%</div>
-        </div>
+        <div style="display:flex;align-items:center;gap:8px;"><div class="progress-bar" style="flex:1"><div class="progress-fill" style="background:${color};width:${prog}%"></div></div><div class="goal-progress">${prog}%</div></div>
         <div class="store-meta">${g.current||0} / ${g.target} ${g.unit||''}</div>
       </div>`;
     });
-    html += '</div>';
-  }
+  } else { html += `<p style="color:var(--muted);font-size:13px">本日のGoalは未設定です</p>`; }
+  html += '</div>';
 
-  // クイックアクション
-  html += `<div class="card"><div class="card-title"><i class="ti ti-bolt"></i>クイックアクション</div>
+  // ===== Daily Operations（フェーズ順の司令塔） =====
+  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist"></i>Daily Operations
+    <span style="margin-left:auto;font-size:12px;color:var(--muted)">${opsDone}/${ops.length} 完了</span></div>
+    <div class="progress-bar" style="margin-bottom:12px"><div class="progress-fill" style="background:${dailyComplete?'var(--green)':'var(--accent2)'};width:${ops.length?Math.round(opsDone/ops.length*100):0}%"></div></div>`;
+
+  // フェーズごとに順番表示（次にやるべきフェーズを強調）
+  var nextPhaseFound = false;
+  DAILY_PHASES.forEach((phase, pi) => {
+    var pItems = ops.filter(t=>t.phase===phase);
+    if (!pItems.length) return;
+    var pDone = pItems.filter(t=>t.done).length;
+    var allDone = pDone===pItems.length;
+    var isNext = !allDone && !nextPhaseFound;
+    if (isNext) nextPhaseFound = true;
+    var icon = allDone?'ti-circle-check':isNext?'ti-player-play':'ti-circle';
+    var iconColor = allDone?'var(--green)':isNext?'var(--accent)':'var(--muted)';
+    html += `<div style="margin-bottom:10px;${isNext?'background:#1a1f10;border:1px solid #3a3510;border-radius:8px;padding:8px':''}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <i class="ti ${icon}" style="color:${iconColor};font-size:16px"></i>
+        <span style="font-weight:600;font-size:13px">${pi+1}. ${phase}</span>
+        ${isNext?'<span class="tag tag-yellow" style="font-size:9px">次にやる</span>':''}
+        <span style="margin-left:auto;font-size:11px;color:var(--muted)">${pDone}/${pItems.length}</span>
+      </div>`;
+    pItems.forEach(t => {
+      html += `<div class="task-item" style="padding:5px 0 5px 24px">
+        <div class="task-check${t.done?' done':''}" onclick="toggleDailyOp('${storeId}','${t.id}')">${t.done?'<i class="ti ti-check" style="font-size:11px;color:#fff"></i>':''}</div>
+        <div style="flex:1"><div class="task-text${t.done?' done':''}" style="font-size:13px">${t.text} ${t.required?'<span class="tag tag-red" style="font-size:9px;padding:1px 5px">必須</span>':''}${t.photo?'<i class="ti ti-camera" style="font-size:11px;color:var(--muted)"></i>':''}</div>
+        ${t.done&&t.by?`<div class="task-phase">完了: ${t.by}</div>`:''}</div>
+      </div>`;
+    });
+    if (canEdit) html += `<button class="btn btn-secondary btn-sm" style="margin-left:24px;margin-top:4px" onclick="openDailyOpsAdd('${storeId}','${phase}')"><i class="ti ti-plus"></i> 追加</button>`;
+    html += '</div>';
+  });
+
+  // Daily完了ボタン
+  html += `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:12px">`;
+  if (dailyComplete) {
+    html += `<button class="btn btn-success" style="width:100%" onclick="completeDailyOps('${storeId}')"><i class="ti ti-flag-check"></i> Daily完了を記録</button>`;
+  } else {
+    html += `<button class="btn btn-secondary" style="width:100%;opacity:.6" disabled>Daily完了（${ops.length-opsDone}件 残っています）</button>`;
+  }
+  html += '</div></div>';
+
+  // クイックアクション（店舗運用）
+  html += `<div class="card"><div class="card-title"><i class="ti ti-bolt"></i>店舗運用</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <button class="btn btn-secondary btn-sm" onclick="go('dailyops')"><i class="ti ti-checklist"></i> Daily Ops</button>
       <button class="btn btn-secondary btn-sm" onclick="go('inventory')"><i class="ti ti-box"></i> 棚卸</button>
       <button class="btn btn-secondary btn-sm" onclick="go('order')"><i class="ti ti-clipboard-list"></i> 発注</button>
-      <button class="btn btn-secondary btn-sm" onclick="go('tasks')"><i class="ti ti-list-check"></i> タスク</button>
+      ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="go('tasks')"><i class="ti ti-list-check"></i> タスク (${tasks.length})</button>`:''}
+      ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="go('required')"><i class="ti ti-alert-circle"></i> Required</button>`:''}
     </div>
   </div>`;
   return html;
+}
+
+function completeDailyOps(storeId) {
+  var ops = getDailyOps(storeId);
+  var reqIncomplete = ops.filter(t=>t.required && !t.done);
+  if (reqIncomplete.length) { alert('Required未完了があります'); return; }
+  var hist = ls('dailyops_complete_'+storeId, []);
+  hist.push({date:new Date().toLocaleString('ja'), by:ROLE_CONFIG[curRole].name, count:ops.length});
+  lsSet('dailyops_complete_'+storeId, hist);
+  showToast('Daily Operations完了を記録しました 🎉', 'success');
+  renderPage('store_cmd');
 }
 
 function filterPhase(phase) {
@@ -1472,42 +1518,201 @@ function saveActual(storeId) {
 /* ============================================================
    FOOD COST (レシピ原価と連動)
 ============================================================ */
+/* ============================================================
+   Food Cost 精度向上 (日次=発注ベース / 月次=棚卸ベース) + 買い出し
+============================================================ */
+var fcTab = 'daily';
+function getPurchases(storeId) { return ls('purchases_'+storeId, []); }   // 買い出し
+function monthOrderTotal(storeId) {
+  // 今月の発注確定〜送信済の合計（仕入れ）
+  var orders = ls('orders_'+storeId, []);
+  return orders.filter(o=>['発注確定','送信済','電話確認済','納品完了'].includes(o.status))
+    .reduce((a,o)=>a+(o.amount||0),0);
+}
+function monthPurchaseTotal(storeId) {
+  return getPurchases(storeId).reduce((a,p)=>a+(parseFloat(p.amount)||0),0);
+}
+function dailyOrderTotal(storeId, dateStr) {
+  var orders = ls('orders_'+storeId, []);
+  var d = dateStr || new Date().toLocaleDateString('ja');
+  return orders.filter(o=>o.date===d).reduce((a,o)=>a+(o.amount||0),0);
+}
+
 function renderFoodcost() {
   if (!ROLE_CONFIG[curRole].financial && curRole !== 'sl') return financialBlocked();
-  var stores = getVisibleStores().map(s => storeData(s.id));
+  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var store = STORES.find(s=>s.id===storeId)||STORES[0];
+
+  var html = `<div class="section-header"><div><div class="section-title">${store.name} · Food Cost</div><div class="section-sub">目標 29〜31%</div></div></div>
+  <div class="phase-tabs">
+    <div class="phase-tab${fcTab==='daily'?' active':''}" onclick="setFcTab('daily')">日次（簡易）</div>
+    <div class="phase-tab${fcTab==='monthly'?' active':''}" onclick="setFcTab('monthly')">月次（実績）</div>
+    <div class="phase-tab${fcTab==='shopping'?' active':''}" onclick="setFcTab('shopping')">買い出し</div>
+    <div class="phase-tab${fcTab==='menu'?' active':''}" onclick="setFcTab('menu')">メニュー別</div>
+  </div>`;
+
+  if (fcTab==='daily') html += renderFcDaily(storeId, store);
+  else if (fcTab==='monthly') html += renderFcMonthly(storeId, store);
+  else if (fcTab==='shopping') html += renderFcShopping(storeId, store);
+  else html += renderFcMenu();
+  return html;
+}
+function setFcTab(t) { fcTab = t; renderPage('foodcost'); }
+
+/* 日次: 実績原価率 = 発注金額合計 ÷ 売上 */
+function renderFcDaily(storeId, store) {
+  var data = storeData(storeId);
+  var dailySales = Math.round(data.a/30); // 仮: 月商÷30
+  var todayOrder = dailyOrderTotal(storeId);
+  var todayShopping = getPurchases(storeId).filter(p=>p.date===new Date().toLocaleDateString('ja')).reduce((a,p)=>a+(parseFloat(p.amount)||0),0);
+  var totalCost = todayOrder + todayShopping;
+  var rate = dailySales ? Math.round(totalCost/dailySales*1000)/10 : 0;
+  var color = rate<=31?'var(--green)':rate<=33?'var(--yellow)':'var(--red)';
+
+  var html = `<div class="alert alert-success" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">日次は<strong>発注金額合計 ÷ 売上</strong>の簡易原価率です（速報値）</div></div>
+  <div class="card"><div class="card-title"><i class="ti ti-calendar-stats"></i>本日の簡易原価率</div>
+    <div class="kpi-grid">
+      ${kpi('発注金額', '$'+todayOrder.toLocaleString(), '本日発注', 'var(--tm)')}
+      ${kpi('買い出し', '$'+todayShopping.toLocaleString(), '本日購入', 'var(--tm)')}
+      ${kpi('売上(仮)', '$'+dailySales.toLocaleString(), 'Toast連携前', 'var(--muted)')}
+      ${kpi('簡易原価率', rate+'%', '目標≤31%', color)}
+    </div>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px">※ 売上はToast連携後に実数反映。現在は月商÷30の仮値</p>
+  </div>`;
+  return html;
+}
+
+/* 月次: 使用原価 = 期首棚卸 + 仕入(発注+買い出し) - 期末棚卸 / 原価率 = 使用原価 ÷ 売上 */
+function renderFcMonthly(storeId, store) {
+  var data = storeData(storeId);
+  var fc = ls('fc_monthly_'+storeId, {beginInv:0, endInv:0, sales:data.a});
+  var orderTotal = monthOrderTotal(storeId);
+  var purchaseTotal = monthPurchaseTotal(storeId);
+  var purchases = orderTotal + purchaseTotal;
+  var usedCost = (parseFloat(fc.beginInv)||0) + purchases - (parseFloat(fc.endInv)||0);
+  var sales = parseFloat(fc.sales)||data.a;
+  var rate = sales ? Math.round(usedCost/sales*1000)/10 : 0;
+  var target = 30;
+  var color = rate<=31?'var(--green)':rate<=33?'var(--yellow)':'var(--red)';
+
+  var html = `<div class="alert alert-warning" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">月次は<strong>期首棚卸 + 仕入 − 期末棚卸 = 使用原価</strong>で精度の高い実績原価率を算出</div></div>
+  <div class="card"><div class="card-title"><i class="ti ti-calculator"></i>月次実績原価率
+    <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openFcMonthlyModal('${storeId}')"><i class="ti ti-edit"></i> 棚卸額入力</button></div>
+    <table class="inv-table"><tbody>
+      <tr><td>期首棚卸額</td><td style="text-align:right">$${(parseFloat(fc.beginInv)||0).toLocaleString()}</td></tr>
+      <tr><td>月間仕入れ（発注確定分）</td><td style="text-align:right">$${orderTotal.toLocaleString()}</td></tr>
+      <tr><td>買い出し合計</td><td style="text-align:right">$${purchaseTotal.toLocaleString()}</td></tr>
+      <tr><td>期末棚卸額</td><td style="text-align:right">− $${(parseFloat(fc.endInv)||0).toLocaleString()}</td></tr>
+      <tr style="font-weight:700"><td>使用原価</td><td style="text-align:right;color:var(--accent)">$${usedCost.toLocaleString()}</td></tr>
+      <tr><td>売上</td><td style="text-align:right">$${sales.toLocaleString()}</td></tr>
+    </tbody></table>
+    <div class="kpi-grid" style="margin-top:10px">
+      ${kpi('実績原価率', rate+'%', '使用原価÷売上', color)}
+      ${kpi('目標原価率', target+'%', '基準', 'var(--muted)')}
+      ${kpi('差異', (rate-target>0?'+':'')+(Math.round((rate-target)*10)/10)+'%', rate<=target?'良好':'超過', rate<=target?'var(--green)':'var(--red)')}
+    </div>
+  </div>`;
+  return html;
+}
+function openFcMonthlyModal(storeId) {
+  var data = storeData(storeId);
+  var fc = ls('fc_monthly_'+storeId, {beginInv:0, endInv:0, sales:data.a});
+  openModal(`<div class="modal-title">月次原価 入力 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">期首棚卸額 ($)</label><input class="form-input" id="fc-begin" type="number" value="${fc.beginInv||0}"></div>
+    <div class="form-group"><label class="form-label">期末棚卸額 ($)</label><input class="form-input" id="fc-end" type="number" value="${fc.endInv||0}"></div>
+    <div class="form-group"><label class="form-label">売上 ($)（Toast連携前は手入力）</label><input class="form-input" id="fc-sales" type="number" value="${fc.sales||data.a}"></div>
+    <p style="font-size:11px;color:var(--muted)">仕入れ・買い出しは発注/買い出しデータから自動集計されます</p>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveFcMonthly('${storeId}')">保存</button></div>`);
+}
+function saveFcMonthly(storeId) {
+  lsSet('fc_monthly_'+storeId, {
+    beginInv: parseFloat(document.getElementById('fc-begin').value)||0,
+    endInv: parseFloat(document.getElementById('fc-end').value)||0,
+    sales: parseFloat(document.getElementById('fc-sales').value)||0,
+  });
+  closeModalDirect();
+  showToast('月次原価データを保存しました', 'success');
+  renderPage('foodcost');
+}
+
+/* 買い出し登録 */
+function renderFcShopping(storeId, store) {
+  var purchases = getPurchases(storeId);
+  var total = purchases.reduce((a,p)=>a+(parseFloat(p.amount)||0),0);
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-shopping-cart"></i>買い出し登録
+    <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openPurchaseModal('${storeId}')"><i class="ti ti-plus"></i> 登録</button></div>
+    <div class="kpi-grid" style="margin-bottom:10px">${kpi('今月買い出し', '$'+total.toLocaleString(), purchases.length+'件', 'var(--tm)')}</div>`;
+  if (purchases.length) {
+    purchases.slice().reverse().forEach(p => {
+      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${p.item} · $${parseFloat(p.amount).toFixed(2)}</div>
+        <div class="approval-meta">${p.date} · ${p.vendor} · ${p.category} · ${p.by}</div></div>
+        <span class="tag ${p.kind==='Food'?'tag-green':p.kind==='Beverage'?'tag-blue':'tag-gray'}">${p.kind}</span></div>
+        ${p.memo?`<div style="font-size:11px;color:var(--muted);margin-top:4px">${p.memo}${p.receipt?' 📷':''}</div>`:''}</div>`;
+    });
+  } else { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">買い出し記録なし</p>`; }
+  html += '</div>';
+  return html;
+}
+function openPurchaseModal(storeId) {
+  openModal(`<div class="modal-title">買い出し登録 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">購入日</label><input class="form-input" id="pc-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="form-group"><label class="form-label">購入先</label><input class="form-input" id="pc-vendor" placeholder="例: Costco"></div>
+    </div>
+    <div class="form-group"><label class="form-label">商品名</label><input class="form-input" id="pc-item" placeholder="商品"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">金額 ($)</label><input class="form-input" id="pc-amount" type="number" step="0.01" placeholder="0.00"></div>
+      <div class="form-group"><label class="form-label">区分</label><select class="form-select" id="pc-kind"><option>Food</option><option>Beverage</option><option>Supplies</option></select></div>
+    </div>
+    <div class="form-group"><label class="form-label">カテゴリー</label><input class="form-input" id="pc-category" placeholder="例: 野菜 / 調味料"></div>
+    <div class="form-group"><label class="form-label">レシート画像（任意・デモ）</label>
+      <button class="btn btn-secondary btn-sm" onclick="fakePurchaseOCR()"><i class="ti ti-camera"></i> レシート読取（デモ）</button>
+      <span id="pc-receipt-status" style="font-size:11px;color:var(--muted);margin-left:8px"></span>
+    </div>
+    <div class="form-group"><label class="form-label">メモ</label><input class="form-input" id="pc-memo" placeholder="任意"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="savePurchase('${storeId}')">登録</button></div>`);
+}
+function fakePurchaseOCR() {
+  // デモOCR: ダミー値を自動入力
+  document.getElementById('pc-vendor').value = 'Costco';
+  document.getElementById('pc-item').value = '鶏もも肉 10lb';
+  document.getElementById('pc-amount').value = '42.80';
+  document.getElementById('pc-category').value = '精肉';
+  document.getElementById('pc-receipt-status').textContent = '読取完了（デモ）: 内容を確認してください';
+}
+function savePurchase(storeId) {
+  var item = document.getElementById('pc-item').value.trim();
+  var amount = parseFloat(document.getElementById('pc-amount').value);
+  if (!item || isNaN(amount)) { alert('商品名と金額を入力してください'); return; }
+  var purchases = getPurchases(storeId);
+  purchases.push({id:'pc'+Date.now(), date:document.getElementById('pc-date').value||new Date().toLocaleDateString('ja'),
+    vendor:document.getElementById('pc-vendor').value.trim(), item, amount,
+    kind:document.getElementById('pc-kind').value, category:document.getElementById('pc-category').value.trim(),
+    memo:document.getElementById('pc-memo').value.trim(), receipt:document.getElementById('pc-receipt-status').textContent?true:false,
+    by:ROLE_CONFIG[curRole].name});
+  lsSet('purchases_'+storeId, purchases);
+  closeModalDirect();
+  showToast('買い出しを登録しました（Food Costに反映）', 'success');
+  renderPage('foodcost');
+}
+
+/* メニュー別理論原価率 */
+function renderFcMenu() {
   var recipes = getRecipes();
   var avgRate = recipes.length ? recipes.reduce((a,r)=>a+recipeCostRate(r),0)/recipes.length : 0;
-
-  var html = `<div class="section-header"><div class="section-title">Food Cost</div><div class="section-sub">目標 29〜31%</div></div>`;
-
-  // 店舗別実績原価率
-  html += `<div class="card"><div class="card-title"><i class="ti ti-building-store"></i>店舗別 実績原価率</div>`;
-  stores.forEach(s => {
-    var color = s.fc<=31?'var(--green)':s.fc<=33?'var(--yellow)':'var(--red)';
-    html += `<div class="store-row">
-      <div class="store-dot" style="background:${s.color}"></div>
-      <div style="flex:1">
-        <div style="display:flex;justify-content:space-between"><span class="store-name">${s.name}</span><span class="tag ${s.fc<=31?'tag-green':s.fc<=33?'tag-yellow':'tag-red'}">${s.fc}%</span></div>
-        <div class="store-meta">原価額 ${fmtK(Math.round(s.a*s.fc/100))} / 売上 ${fmtK(s.a)}</div>
-      </div>
-    </div>`;
-  });
-  html += '</div>';
-
-  // メニュー別理論原価率（レシピ連動）
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chef-hat"></i>メニュー別 理論原価率
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-chef-hat"></i>メニュー別 理論原価率
     <span style="margin-left:auto;font-size:12px;color:var(--muted)">平均 ${avgRate.toFixed(1)}%</span></div>`;
   recipes.forEach(r => {
     var cost = calcRecipeCost(r);
     var rate = recipeCostRate(r);
-    var color = rate<=31?'var(--green)':rate<=35?'var(--yellow)':'var(--red)';
     html += `<div class="store-row" style="cursor:pointer" onclick="go('recipe')">
-      <div style="flex:1">
-        <div style="display:flex;justify-content:space-between"><span class="store-name">${r.name}</span><span class="tag ${rate<=31?'tag-green':rate<=35?'tag-yellow':'tag-red'}">${rate.toFixed(1)}%</span></div>
-        <div class="store-meta">原価 $${cost.toFixed(2)} / 売価 $${r.price.toFixed(2)}</div>
-      </div>
+      <div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="store-name">${r.name}</span><span class="tag ${rate<=31?'tag-green':rate<=35?'tag-yellow':'tag-red'}">${rate.toFixed(1)}%</span></div>
+      <div class="store-meta">原価 $${cost.toFixed(2)} / 売価 $${r.price.toFixed(2)}</div></div>
     </div>`;
   });
+  if (!recipes.length) html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">レシピ未登録</p>`;
   html += '</div>';
   return html;
 }
@@ -2646,10 +2851,10 @@ function hireCandidate(c) {
       emp:'アルバイト', step:0, hireDate:new Date().toISOString().slice(0,10), status:'研修中', perms:'crew'});
     lsSet('m_employees', emps);
   }
-  // Onboarding生成（30日チェックインタスク含む）
+  // Onboarding生成（テンプレート適用）
   var obs = ls('onboardings', []);
   obs.push({id:'ob'+Date.now(), name:c.name, store:c.store, startDate:new Date().toLocaleDateString('ja'), progress:0,
-    tasks:['書類提出','ユニフォーム支給','OJT Day1','OJT Day2','OJT Day3','筆記テスト','30日チェックイン','シフト解禁(Crew化)'], done:[]});
+    template:JSON.parse(JSON.stringify(getOBTemplate())), done:[]});
   lsSet('onboardings', obs);
   showToast(`${c.name}を従業員化しOnboardingを生成しました`, 'success');
 }
@@ -2657,57 +2862,176 @@ function hireCandidate(c) {
 /* ============================================================
    ONBOARDING
 ============================================================ */
+/* ============================================================
+   ⑪ Onboarding (GM編集テンプレート・本人/管理者チェック・詳細進捗)
+============================================================ */
+const DEFAULT_OB_TEMPLATE = [
+  {id:'t1', label:'会社説明・理念の確認', type:'説明', who:'本人', required:true},
+  {id:'t2', label:'就業規則の確認', type:'説明', who:'本人', required:true},
+  {id:'t3', label:'必要書類の提出（W-4, I-9等）', type:'書類', who:'本人', required:true},
+  {id:'t4', label:'書類の受領確認', type:'書類', who:'管理者', required:true},
+  {id:'t5', label:'ユニフォーム支給', type:'準備', who:'管理者', required:false},
+  {id:'t6', label:'OJT Day1（フロア案内・基本）', type:'教育', who:'管理者', required:true},
+  {id:'t7', label:'OJT Day2（ポジション実習）', type:'教育', who:'管理者', required:true},
+  {id:'t8', label:'OJT Day3（独力チェック）', type:'教育', who:'管理者', required:true},
+  {id:'t9', label:'安全衛生マニュアル視聴', type:'動画', who:'本人', required:true, link:'#'},
+  {id:'t10', label:'確認テスト（合格80%）', type:'テスト', who:'本人', required:true},
+  {id:'t11', label:'30日チェックイン', type:'面談', who:'管理者', required:false},
+  {id:'t12', label:'シフト解禁(Crew化)', type:'完了条件', who:'管理者', required:true},
+];
+function getOBTemplate() { return ls('ob_template', DEFAULT_OB_TEMPLATE); }
+function setOBTemplate(t) { lsSet('ob_template', t); }
+
 function renderOnboarding() {
-  var obs = ls('onboardings', [
-    {id:'ob1', name:'Kai Makoa', store:'Kaimuki', startDate:'2026-06-01', progress:40, tasks:['書類提出','ユニフォーム支給','OJT Day1'], done:['書類提出']},
-  ]);
+  var obs = ls('onboardings', []);
+  var canEditTemplate = (curRole==='gm' || curRole==='ceo');
   var html = `<div class="section-header">
-    <div class="section-title">Onboarding</div>
-    <button class="btn btn-primary btn-sm" onclick="openOBModal()"><i class="ti ti-plus"></i> 追加</button>
+    <div><div class="section-title">Onboarding</div><div class="section-sub">採用→従業員化→研修→Crew化</div></div>
+    <div style="display:flex;gap:6px">
+      ${canEditTemplate?`<button class="btn btn-secondary btn-sm" onclick="openOBTemplateModal()"><i class="ti ti-template"></i> テンプレート</button>`:''}
+      <button class="btn btn-primary btn-sm" onclick="openOBModal()"><i class="ti ti-plus"></i> 追加</button>
+    </div>
   </div>`;
+
+  if (!obs.length) {
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-school" style="font-size:32px;display:block;margin-bottom:8px"></i>進行中のOnboardingなし<div style="font-size:12px;margin-top:6px">採用決定→従業員化で自動生成されます</div></div>`;
+    return html;
+  }
+
   obs.forEach(ob => {
+    var tmpl = ob.template || getOBTemplate();
+    var done = ob.done || [];
+    var total = tmpl.length;
+    var doneCount = tmpl.filter(t=>done.includes(t.id)).length;
+    var progress = total ? Math.round(doneCount/total*100) : 0;
+    // 詳細集計
+    var selfPending = tmpl.filter(t=>t.who==='本人' && !done.includes(t.id));
+    var mgrPending = tmpl.filter(t=>t.who==='管理者' && !done.includes(t.id));
+    var docPending = tmpl.filter(t=>t.type==='書類' && !done.includes(t.id));
+    var eduPending = tmpl.filter(t=>t.type==='教育' && !done.includes(t.id));
+    var nextItem = tmpl.find(t=>!done.includes(t.id));
+    var complete = doneCount===total;
+
     html += `<div class="card">
       <div class="approval-header">
         <div class="staff-item" style="padding:0;background:none;border:none;margin:0">
           <div class="staff-avatar" style="background:var(--surface2)">${ob.name[0]}</div>
-          <div><div class="staff-name">${ob.name}</div><div class="staff-role">${ob.store} · 開始: ${ob.startDate}</div></div>
+          <div><div class="staff-name">${ob.name}</div><div class="staff-role">${ob.store} · 開始 ${ob.startDate}</div></div>
         </div>
-        <div style="font-size:18px;font-weight:700;color:${ob.progress>=100?'var(--green)':'var(--accent2)'}">${ob.progress}%</div>
+        <div style="font-size:20px;font-weight:700;color:${complete?'var(--green)':'var(--accent2)'}">${progress}%</div>
       </div>
-      <div class="progress-bar" style="margin:10px 0"><div class="progress-fill" style="background:var(--accent2);width:${ob.progress}%"></div></div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-        ${ob.tasks.map(t=>`<span class="tag ${ob.done.includes(t)?'tag-green':'tag-gray'}" style="cursor:pointer" onclick="toggleOBTask('${ob.id}','${t}')">${t}</span>`).join('')}
-      </div>
+      <div class="progress-bar" style="margin:10px 0"><div class="progress-fill" style="background:${complete?'var(--green)':'var(--accent2)'};width:${progress}%"></div></div>`;
+
+    // 詳細進捗サマリー
+    html += `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;font-size:11px">
+      <span class="tag ${selfPending.length?'tag-yellow':'tag-green'}">本人確認待ち ${selfPending.length}</span>
+      <span class="tag ${mgrPending.length?'tag-yellow':'tag-green'}">管理者確認待ち ${mgrPending.length}</span>
+      <span class="tag ${docPending.length?'tag-red':'tag-green'}">書類 ${docPending.length}未</span>
+      <span class="tag ${eduPending.length?'tag-red':'tag-green'}">教育 ${eduPending.length}未</span>
     </div>`;
+    if (nextItem) html += `<div class="alert alert-warning" style="padding:7px 10px;margin-bottom:10px"><i class="ti ti-arrow-right"></i>次にやる: <strong>${nextItem.label}</strong> <span style="font-size:10px">(${nextItem.who})</span></div>`;
+
+    // 項目リスト（本人/管理者で分離表示）
+    ['本人','管理者'].forEach(who => {
+      var items = tmpl.filter(t=>t.who===who);
+      if (!items.length) return;
+      html += `<div style="font-size:11px;font-weight:700;color:var(--muted);margin:6px 0 2px">${who}チェック項目</div>`;
+      items.forEach(t => {
+        var isDone = done.includes(t.id);
+        // 本人項目はCrew本人または管理者が、管理者項目は管理者のみがチェック可
+        var canCheck = who==='管理者' ? ROLE_CONFIG[curRole].canApprove : true;
+        html += `<div class="task-item" style="padding:5px 0">
+          <div class="task-check${isDone?' done':''}" ${canCheck?`onclick="toggleOBTask('${ob.id}','${t.id}')"`:'style="opacity:.4"'}>${isDone?'<i class="ti ti-check" style="font-size:11px;color:#fff"></i>':''}</div>
+          <div style="flex:1"><div class="task-text${isDone?' done':''}" style="font-size:13px">${t.label}
+            <span class="tag tag-gray" style="font-size:8px">${t.type}</span>${t.required?'<span class="tag tag-red" style="font-size:8px">必須</span>':''}
+            ${t.link?`<a href="${t.link}" target="_blank" style="font-size:10px;color:var(--accent2)"><i class="ti ti-external-link"></i></a>`:''}</div></div>
+        </div>`;
+      });
+    });
+
+    // 完了→シフト誘導
+    if (complete) {
+      html += `<div class="alert alert-success" style="margin-top:10px"><i class="ti ti-circle-check"></i><div>
+        <p style="font-size:12px;font-weight:600">Onboarding完了！Crewアカウント有効化済み</p>
+        <p style="font-size:11px">${ob.name}さんはシフト申請が可能になりました</p></div></div>`;
+    }
+    html += '</div>';
   });
   return html;
 }
 
-function toggleOBTask(obId, task) {
+function toggleOBTask(obId, taskId) {
   var obs = ls('onboardings', []);
   var ob = obs.find(o=>o.id===obId);
   if (!ob) return;
-  if (ob.done.includes(task)) ob.done = ob.done.filter(t=>t!==task);
-  else ob.done.push(task);
-  ob.progress = Math.round(ob.done.length/ob.tasks.length*100);
+  if (!ob.done) ob.done = [];
+  var tmpl = ob.template || getOBTemplate();
+  if (ob.done.includes(taskId)) ob.done = ob.done.filter(t=>t!==taskId);
+  else ob.done.push(taskId);
+  ob.progress = Math.round(ob.done.length/tmpl.length*100);
   lsSet('onboardings', obs);
 
-  // シフト解禁(Crew化)完了 → 従業員マスターを在籍/Crewへ昇格
-  if (task.includes('Crew化') && ob.done.includes(task)) {
+  // シフト解禁(Crew化)/完了条件タスク完了 → 従業員マスターを在籍/Crewへ昇格
+  var task = tmpl.find(t=>t.id===taskId);
+  if (task && (task.type==='完了条件' || task.label.includes('Crew化')) && ob.done.includes(taskId)) {
     var emps = getEmployees();
     var e = emps.find(x=>x.name===ob.name);
-    if (e) { e.status='在籍'; e.step=Math.max(e.step,1); lsSet('m_employees', emps); showToast(`${ob.name}がCrew化しました（在籍・STEP1）`, 'success'); }
+    if (e) { e.status='在籍'; e.step=Math.max(e.step,1); lsSet('m_employees', emps); showToast(`${ob.name}がCrew化しました（在籍・STEP1）。シフト申請が可能です`, 'success'); }
   }
   renderPage('onboarding');
 }
 
+function openOBTemplateModal() {
+  var tmpl = getOBTemplate();
+  var html = `<div class="modal-title">Onboardingテンプレート編集 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <p style="font-size:11px;color:var(--muted);margin-bottom:8px">GM以上が編集できます。新規Onboardingに適用されます。</p>
+    <div style="max-height:50vh;overflow-y:auto">`;
+  tmpl.forEach(t => {
+    html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${t.label}</div>
+      <div class="approval-meta"><span class="tag tag-gray" style="font-size:9px">${t.type}</span> ${t.who} ${t.required?'· 必須':''}</div></div>
+      <button class="btn btn-danger btn-sm" onclick="deleteOBTemplateItem('${t.id}')"><i class="ti ti-x"></i></button></div></div>`;
+  });
+  html += `</div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="openOBTemplateAddItem()"><i class="ti ti-plus"></i> 項目追加</button>
+    <button class="btn btn-primary" onclick="closeModalDirect()">完了</button></div>`;
+  openModal(html);
+}
+function openOBTemplateAddItem() {
+  var types = ['説明','書類','準備','教育','動画','テスト','面談','完了条件'];
+  openModal(`<div class="modal-title">テンプレート項目追加 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">項目名</label><input class="form-input" id="obt-label" placeholder="例: アレルギー研修"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">種別</label><select class="form-select" id="obt-type">${types.map(t=>`<option>${t}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">担当</label><select class="form-select" id="obt-who"><option>本人</option><option>管理者</option></select></div>
+    </div>
+    <div class="form-group"><label class="form-label">リンク（動画/マニュアル、任意）</label><input class="form-input" id="obt-link" placeholder="https://..."></div>
+    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="obt-req" checked> 必須項目</label></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="openOBTemplateModal()">戻る</button>
+    <button class="btn btn-primary" onclick="saveOBTemplateItem()">追加</button></div>`);
+}
+function saveOBTemplateItem() {
+  var label = document.getElementById('obt-label').value.trim();
+  if (!label) { alert('項目名を入力してください'); return; }
+  var tmpl = getOBTemplate();
+  tmpl.push({id:'t'+Date.now(), label, type:document.getElementById('obt-type').value, who:document.getElementById('obt-who').value,
+    required:document.getElementById('obt-req').checked, link:document.getElementById('obt-link').value.trim()});
+  setOBTemplate(tmpl);
+  showToast('項目を追加しました', 'success');
+  openOBTemplateModal();
+}
+function deleteOBTemplateItem(id) {
+  setOBTemplate(getOBTemplate().filter(t=>t.id!==id));
+  openOBTemplateModal();
+}
+
 function openOBModal() {
-  openModal(`<div class="modal-title">OB追加 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  openModal(`<div class="modal-title">Onboarding追加 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="form-group"><label class="form-label">スタッフ名</label><input class="form-input" id="ob-name" placeholder="氏名"></div>
     <div class="form-group"><label class="form-label">店舗</label>
-      <select class="form-select" id="ob-store">${STORES.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select>
+      <select class="form-select" id="ob-store">${activeStores().map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select>
     </div>
     <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="ob-date" type="date"></div>
+    <p style="font-size:11px;color:var(--muted)">現在のテンプレート（${getOBTemplate().length}項目）が適用されます</p>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
       <button class="btn btn-primary" onclick="saveOB()">追加</button>
@@ -2722,9 +3046,10 @@ function saveOB() {
   var store = (STORES.find(s=>s.id===storeId)||{name:storeId}).name;
   var obs = ls('onboardings', []);
   obs.push({id:'ob'+Date.now(), name, store, startDate:date||new Date().toLocaleDateString('ja'), progress:0,
-    tasks:['書類提出','ユニフォーム支給','OJT Day1','OJT Day2','OJT Day3','筆記テスト','シフト解禁'], done:[]});
+    template:JSON.parse(JSON.stringify(getOBTemplate())), done:[]});
   lsSet('onboardings', obs);
   closeModalDirect();
+  showToast('Onboardingを追加しました', 'success');
   renderPage('onboarding');
 }
 
@@ -3503,9 +3828,11 @@ function renderPGD(empName, isManagerView) {
   html += `<div class="card"><div class="card-title"><i class="ti ti-school"></i>教育進捗</div>`;
   if (obs.length) {
     obs.forEach(ob => {
-      html += `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between"><span style="font-size:13px;font-weight:600">${ob.store} 研修</span><span class="tag ${ob.progress>=100?'tag-green':'tag-blue'}">${ob.progress}%</span></div>
-        <div class="progress-bar" style="margin:4px 0"><div class="progress-fill" style="background:var(--accent2);width:${ob.progress}%"></div></div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${ob.tasks.map(t=>`<span class="tag ${ob.done.includes(t)?'tag-green':'tag-gray'}" style="font-size:9px">${t}</span>`).join('')}</div>
+      var obTmpl = ob.template || [];
+      var obDone = ob.done || [];
+      html += `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between"><span style="font-size:13px;font-weight:600">${ob.store} 研修</span><span class="tag ${(ob.progress||0)>=100?'tag-green':'tag-blue'}">${ob.progress||0}%</span></div>
+        <div class="progress-bar" style="margin:4px 0"><div class="progress-fill" style="background:var(--accent2);width:${ob.progress||0}%"></div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${obTmpl.slice(0,6).map(t=>`<span class="tag ${obDone.includes(t.id)?'tag-green':'tag-gray'}" style="font-size:9px">${t.label.slice(0,10)}</span>`).join('')}</div>
       </div>`;
     });
   } else {
@@ -3566,98 +3893,151 @@ function renderPGD(empName, isManagerView) {
 
 function renderMypage() {
   var rc = ROLE_CONFIG[curRole];
+  var isCrewView = (curRole==='crew' || curRole==='sl');
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
-  var myReqs = ls('my_shift_requests', []);
-  var myVac  = ls('my_vacations', []);
+  var me = rc.name;
 
   var html = `<div class="mypage-header">
-    <div class="mypage-avatar">${rc.name[0]}</div>
-    <div><div style="font-size:16px;font-weight:700">${rc.name}</div>
+    <div class="mypage-avatar">${me[0]}</div>
+    <div><div style="font-size:16px;font-weight:700">${isCrewView?'おはようございます、'+me+'さん':me}</div>
     <div style="font-size:12px;color:var(--muted);margin-top:2px">${rc.label} · ${curStore==='ALL'?'全店舗':store.name}</div>
-    <span class="tag tag-blue" style="margin-top:6px;">${new Date().toLocaleDateString('ja')}</span>
+    <span class="tag tag-blue" style="margin-top:6px;">${new Date().toLocaleDateString('ja')} · My Dashboard</span>
     </div>
   </div>`;
 
-  // Personal Growth Dashboard（本人）
-  html += `<div class="section-header" style="margin-bottom:8px"><div class="section-title" style="font-size:15px"><i class="ti ti-rocket" style="color:var(--accent)"></i> Personal Growth Dashboard</div></div>`;
-  html += renderPGD(rc.name, false);
-
-  html += `<div class="section-header" style="margin:16px 0 8px"><div class="section-title" style="font-size:15px">その他</div></div>`;
-
-
-  // Crew/SL: show store + personal goals (goals_v2 連動)
-  var allGoals = ls('goals_v2', []);
-  var goals = allGoals.filter(g=>g.scope==='store' && (g.storeId===storeId||g.storeId==='ALL'));
-  var personalGoals = allGoals.filter(g=>g.scope==='personal' && g.owner===ROLE_CONFIG[curRole].name);
-  if (goals.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>店舗Goal</div>`;
-    goals.forEach(g => {
-      var prog = Math.min(Math.round((g.current||0)/g.target*100),100);
-      html += `<div class="goal-item">
-        <div class="goal-header"><div class="goal-title">${g.title}</div><span class="tag tag-blue">${g.period}</span></div>
-        <div class="progress-bar"><div class="progress-fill" style="background:var(--accent2);width:${prog}%"></div></div>
-        <div class="store-meta">${prog}% · ${g.current||0} / ${g.target} ${g.unit||''}</div>
-      </div>`;
-    });
-    html += '</div>';
+  if (!isCrewView) {
+    // 管理者は従来のPGD中心
+    html += `<div class="section-header" style="margin-bottom:8px"><div class="section-title" style="font-size:15px"><i class="ti ti-rocket" style="color:var(--accent)"></i> Personal Growth Dashboard</div></div>`;
+    html += renderPGD(me, false);
+    return html;
   }
+
+  /* ===== Crew My Dashboard（優先順位順） ===== */
+  var emp = getEmployees().find(e=>e.name===me);
+  var week = getWeekStr();
+  var allGoals = ls('goals_v2', []);
+  var storeGoals = allGoals.filter(g=>g.scope==='store' && (g.storeId===storeId||g.storeId==='ALL'));
+  var personalGoals = allGoals.filter(g=>g.scope==='personal' && g.owner===me);
+
+  // 1. 店舗Goal / 週間Goal
+  html += `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>今週のGoal</div>`;
+  if (storeGoals.length) {
+    storeGoals.forEach(g => {
+      var prog = Math.min(Math.round((g.current||0)/g.target*100),100);
+      html += `<div class="goal-item"><div class="goal-header"><div class="goal-title">${g.title}</div><span class="tag tag-blue">${g.period}</span></div>
+        <div class="progress-bar"><div class="progress-fill" style="background:var(--accent2);width:${prog}%"></div></div>
+        <div class="store-meta">${prog}% · ${g.current||0}/${g.target} ${g.unit||''}</div></div>`;
+    });
+  } else { html += `<p style="color:var(--muted);font-size:13px">店舗Goalは未設定です</p>`; }
   if (personalGoals.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-user-star" style="color:var(--accent)"></i>個人Goal</div>`;
     personalGoals.forEach(g => {
       var prog = Math.min(Math.round((g.current||0)/g.target*100),100);
-      html += `<div class="goal-item">
-        <div class="goal-header"><div class="goal-title">${g.title}</div><span class="tag tag-blue">${g.period}</span></div>
+      html += `<div class="goal-item"><div class="goal-header"><div class="goal-title"><i class="ti ti-user-star" style="font-size:12px;color:var(--green)"></i> ${g.title}</div><span class="tag tag-blue">${g.period}</span></div>
         <div class="progress-bar"><div class="progress-fill" style="background:var(--green);width:${prog}%"></div></div>
-        <div class="store-meta">${prog}% · ${g.current||0} / ${g.target} ${g.unit||''}</div>
-      </div>`;
+        <div class="store-meta">${prog}% · 個人Goal</div></div>`;
     });
-    html += '</div>';
   }
+  html += '</div>';
 
-  // 自分の担当タスク
-  var myTasks = getTasks().filter(t=>t.assignee===ROLE_CONFIG[curRole].name && t.status!=='完了');
+  // 2. 今日・今週の自分のシフト
+  var plan = getShiftPlan(storeId, week);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check"></i>今週のシフト
+    <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('shift_staff')">詳細</button></div>`;
+  var myShifts = [];
+  if (plan && plan.status==='公開済') {
+    myShifts = Object.keys(plan.cells).filter(k=>plan.cells[k]===me);
+  }
+  if (myShifts.length) {
+    myShifts.forEach(k=>{ var p=k.split('_'); html += `<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)"><span>${p[0]}曜 ${p[1]}</span><span style="color:var(--muted)">${p[2]}</span></div>`; });
+  } else { html += `<p style="color:var(--muted);font-size:13px">公開シフトはまだありません。Availabilityを提出しましょう</p>`; }
+  html += '</div>';
+
+  // 3. 個人タスク
+  var myTasks = getTasks().filter(t=>t.assignee===me && t.status!=='完了');
+  html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>今日のタスク</div>`;
   if (myTasks.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>担当タスク</div>`;
     myTasks.forEach(t => {
       html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${t.title}</div><span class="tag ${t.priority==='高'?'tag-red':'tag-yellow'}">${t.priority||'低'}</span></div>
         <div class="approval-meta">${t.due?'期限 '+t.due:''} · 進捗 ${t.progress||0}%</div></div>`;
     });
-    html += '</div>';
-  }
+  } else { html += `<p style="color:var(--muted);font-size:13px">担当タスクはありません</p>`; }
+  html += '</div>';
 
-  // Shift history
-  if (myReqs.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-calendar"></i>シフト申請</div>`;
-    myReqs.slice(-3).reverse().forEach(r => {
-      html += `<div class="approval-item">
-        <div class="approval-header"><div class="approval-title">${r.week}週</div><span class="tag tag-yellow">申請中</span></div>
-        <div class="approval-meta">希望: ${r.days.slice(0,4).join(', ')}${r.days.length>4?'...':''}</div>
-      </div>`;
-    });
-    html += '</div>';
+  // 4-5. スキルレベル現在地 + 次に強化すべきスキル
+  var positions = getStorePositions(storeId);
+  var psk = getEmpSkills(me);
+  var apPos = positions.filter(p=>psk[p]&&psk[p].status==='承認'&&psk[p].level>=1);
+  var missing = positions.filter(p=>!apPos.includes(p));
+  html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>スキルレベル現在地
+    <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('skill')">スキル申請</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">できるポジション (${apPos.length}/${positions.length})</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${apPos.length?apPos.map(p=>`<span class="tag tag-green">${p} Lv${psk[p].level}</span>`).join(''):'<span style="color:var(--muted);font-size:12px">承認済みなし</span>'}</div>`;
+  if (missing.length) {
+    html += `<div class="alert alert-warning" style="padding:8px 10px"><i class="ti ti-arrow-up-right"></i>次に強化すべき: <strong>${missing[0]}</strong> <span style="font-size:11px">（推奨教育: ${SKILL_TRAINING[missing[0]]||missing[0]}）</span></div>`;
+  } else {
+    html += `<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-trophy"></i>全ポジション習得済み！</div>`;
   }
+  html += '</div>';
 
-  // Vacation history
-  if (myVac.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-beach"></i>休暇申請</div>`;
-    myVac.slice(-3).reverse().forEach(v => {
-      var statusClass = v.status==='承認'?'tag-green':v.status==='却下'?'tag-red':'tag-yellow';
-      html += `<div class="approval-item">
-        <div class="approval-header"><div class="approval-title">${v.startDate} 〜 ${v.endDate}</div><span class="tag ${statusClass}">${v.status}</span></div>
-        <div class="approval-meta">${v.type}</div>
-      </div>`;
-    });
-    html += '</div>';
-  }
-
-  html += `<div class="card"><div class="card-title"><i class="ti ti-link"></i>クイックリンク</div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px">
-      <button class="btn btn-secondary btn-sm" onclick="go('shift_staff')"><i class="ti ti-calendar-event"></i> シフト申請</button>
-      <button class="btn btn-secondary btn-sm" onclick="go('vacation')"><i class="ti ti-beach"></i> 休暇申請</button>
-      <button class="btn btn-secondary btn-sm" onclick="go('store_cmd')"><i class="ti ti-building-store"></i> Store CMD</button>
+  // 6. Tip Rate申請状況
+  var tipReqs = ls('tip_requests', []).filter(r=>r.name===me);
+  var curTip = tipReqs.filter(r=>r.status==='承認').slice(-1)[0];
+  var pendingTip = tipReqs.filter(r=>r.status==='申請中').slice(-1)[0];
+  html += `<div class="card"><div class="card-title"><i class="ti ti-coin"></i>Tip Rate
+    <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('tiprate')">申請</button></div>
+    <div style="display:flex;gap:8px">
+      ${kpi('現在', curTip?curTip.rate+'%':'未設定', curTip?'承認済':'—', curTip?'var(--green)':'var(--muted)')}
+      ${kpi('申請中', pendingTip?pendingTip.rate+'%':'なし', pendingTip?'承認待ち':'—', pendingTip?'var(--yellow)':'var(--muted)')}
     </div>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px">※ Tip RateはSkill Level自己評価から申請できます</p>
   </div>`;
+
+  // 7. 給与予定（Estimated Pay）
+  var wage = WAGE[curRole]||16;
+  var weekHours = 0;
+  if (plan && plan.status==='公開済') {
+    myShifts.forEach(k=>{ var period=k.split('_')[1]; weekHours += (SHIFT_HOURS[period]||4); });
+  }
+  var regularH = Math.min(weekHours, 40);
+  var otH = Math.max(weekHours-40, 0);
+  var estPay = regularH*wage + otH*wage*1.5;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>給与予定 (Estimated Pay)</div>
+    <div class="kpi-grid">
+      ${kpi('今週勤務', weekHours+'h', '公開シフト', 'var(--tm)')}
+      ${kpi('Regular', regularH+'h', '通常', 'var(--tm)')}
+      ${kpi('Overtime', otH+'h', '残業', otH?'var(--yellow)':'var(--muted)')}
+      ${kpi('見込給与', '$'+Math.round(estPay), '今週', 'var(--green)')}
+    </div>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px">※ 見込み（確定給与ではありません）。Toast勤怠連携後に実績反映。次回支払予定: 隔週金曜</p>
+  </div>`;
+
+  // 8. 休暇申請
+  var myVac = ls('my_vacations', []);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-beach"></i>休暇申請
+    <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('vacation')">申請</button></div>`;
+  if (myVac.length) {
+    myVac.slice(-2).reverse().forEach(v => {
+      var sc = v.status==='承認'?'tag-green':v.status==='却下'?'tag-red':'tag-yellow';
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${v.startDate}〜${v.endDate}</div><span class="tag ${sc}">${v.status}</span></div><div class="approval-meta">${v.type}</div></div>`;
+    });
+  } else { html += `<p style="color:var(--muted);font-size:13px">申請履歴なし</p>`; }
+  html += '</div>';
+
+  // 9. Growth Hub（My Page内に埋め込み）
+  var posts = ls('growthhub', []);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-message-circle"></i>Growth Hub
+    <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openGHModal()"><i class="ti ti-plus"></i> 相談・質問</button></div>
+    <p style="font-size:11px;color:var(--muted);margin-bottom:8px">相談・質問・改善提案を投稿できます</p>`;
+  var myPosts = posts.filter(p=>p.author===me).slice(-3).reverse();
+  if (myPosts.length) {
+    myPosts.forEach(p => {
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${p.title}</div><span class="tag tag-blue">${p.type}</span></div>
+        ${(p.replies||[]).length?`<div style="font-size:11px;color:var(--green);margin-top:4px"><i class="ti ti-message"></i> 管理者から${p.replies.length}件の返信</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:4px">返信待ち</div>'}</div>`;
+    });
+  } else { html += `<p style="color:var(--muted);font-size:13px">投稿はまだありません</p>`; }
+  html += '</div>';
+
   return html;
 }
 
@@ -3767,8 +4147,11 @@ function renderRecipeModalBody(rId, name, price, category) {
         ${itemsHtml || '<div style="color:var(--muted);font-size:12px;text-align:center;padding:8px">食材を追加してください</div>'}
         <div style="display:flex;justify-content:space-between;padding-top:8px;font-weight:600;font-size:13px"><span>合計原価</span><span style="color:var(--accent)">$${totalCost.toFixed(2)}</span></div>
       </div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input class="form-input" id="r-search" placeholder="食材検索（名前・コード・カテゴリ・業者）" oninput="filterRecipeIngs('${rId||''}')" style="flex:1">
+      </div>
       <div style="display:flex;gap:6px">
-        <select class="form-select" id="r-add-ing" style="flex:1">${CLASSES.map(cl=>{var cc=ings.filter(i=>catClass(i.cat)===cl.id);return cc.length?`<optgroup label="${cl.name}">${cc.map(i=>`<option value="${i.code}">${i.name} ($${i.price}/${i.unit})</option>`).join('')}</optgroup>`:'';}).join('')}</select>
+        <select class="form-select" id="r-add-ing" style="flex:1">${recipeIngOptions(ings, '')}</select>
         <button class="btn btn-secondary btn-sm" onclick="addRecipeItem('${rId||''}')">追加</button>
       </div>
     </div>
@@ -3777,6 +4160,27 @@ function renderRecipeModalBody(rId, name, price, category) {
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
       <button class="btn btn-primary" onclick="saveRecipe('${rId||''}')">${isNew?'作成':'保存'}</button>
     </div>`);
+}
+
+function recipeIngOptions(ings, q) {
+  q = (q||'').toLowerCase();
+  var filtered = !q ? ings : ings.filter(i =>
+    (i.name||'').toLowerCase().includes(q) ||
+    String(i.code).includes(q) ||
+    (catName(i.cat)||'').toLowerCase().includes(q) ||
+    (i.vendor||'').toLowerCase().includes(q) ||
+    (i.location||'').toLowerCase().includes(q)
+  );
+  if (!filtered.length) return '<option value="">該当なし</option>';
+  return CLASSES.map(cl=>{
+    var cc=filtered.filter(i=>catClass(i.cat)===cl.id);
+    return cc.length?`<optgroup label="${cl.name}">${cc.map(i=>`<option value="${i.code}">${i.name} (${i.code}) $${i.price}/${i.unit}</option>`).join('')}</optgroup>`:'';
+  }).join('');
+}
+function filterRecipeIngs(rId) {
+  var q = document.getElementById('r-search').value;
+  var sel = document.getElementById('r-add-ing');
+  sel.innerHTML = recipeIngOptions(getIngredients(), q);
 }
 
 function addRecipeItem(rId) {
@@ -3937,14 +4341,23 @@ function renderInvoice() {
 }
 
 var invoiceTmpLines = [];
+var invoiceDocType = 'Invoice';
 function openInvoiceModal() {
   invoiceTmpLines = [];
   var vendors = getVendors();
-  openModal(`<div class="modal-title">Invoice登録 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">業者</label>
-      <select class="form-select" id="inv-vendor">${vendors.map(v=>`<option>${v.name}</option>`).join('')}</select>
+  openModal(`<div class="modal-title">Invoice / Receipt登録 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">種別</label>
+      <div style="display:flex;gap:8px">
+        <button class="btn ${invoiceDocType==='Invoice'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Invoice')">業者Invoice</button>
+        <button class="btn ${invoiceDocType==='Receipt'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Receipt')">買い出しReceipt</button>
+      </div>
     </div>
-    <div class="form-group"><label class="form-label">Invoice画像（仮OCR）</label>
+    <div class="form-group"><label class="form-label">業者 / 購入先</label>
+      <input class="form-input" id="inv-vendor" list="inv-vendor-list" placeholder="業者名を入力or選択" oninput="checkVendorRegistered()">
+      <datalist id="inv-vendor-list">${vendors.map(v=>`<option value="${v.name}">`).join('')}</datalist>
+      <div id="inv-vendor-warn"></div>
+    </div>
+    <div class="form-group"><label class="form-label">${invoiceDocType}画像（仮OCR）</label>
       <div style="border:2px dashed var(--border);border-radius:8px;padding:20px;text-align:center;cursor:pointer" onclick="simulateOCR()">
         <i class="ti ti-camera" style="font-size:28px;color:var(--muted)"></i>
         <div style="font-size:12px;color:var(--muted);margin-top:6px">タップでOCR読取をシミュレート</div>
@@ -3955,6 +4368,22 @@ function openInvoiceModal() {
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
       <button class="btn btn-primary" onclick="saveInvoice()">保存・価格更新</button>
     </div>`);
+}
+function setInvDocType(t) { invoiceDocType = t; openInvoiceModal(); }
+
+function checkVendorRegistered() {
+  var name = document.getElementById('inv-vendor').value.trim();
+  var warn = document.getElementById('inv-vendor-warn');
+  if (!name) { warn.innerHTML=''; return; }
+  var exists = getVendors().find(v=>v.name===name);
+  if (!exists) {
+    warn.innerHTML = `<div class="alert alert-warning" style="margin-top:6px;padding:7px 10px"><i class="ti ti-alert-triangle"></i><div style="font-size:11px">未登録の業者です。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="gotoVendorRegister('${name.replace(/'/g,'')}')">業者登録へ</button></div></div>`;
+  } else { warn.innerHTML = `<div style="font-size:11px;color:var(--green);margin-top:4px">✓ 登録済み業者</div>`; }
+}
+function gotoVendorRegister(prefillName) {
+  closeModalDirect();
+  go('vendor_master');
+  setTimeout(()=>{ openVendorModal(); var n=document.getElementById('v-name'); if(n) n.value=prefillName; }, 100);
 }
 
 function simulateOCR() {
@@ -3985,7 +4414,8 @@ function renderOCRResult() {
 
 function saveInvoice() {
   if (!invoiceTmpLines.length) { alert('先にOCR読取を実行してください'); return; }
-  var vendor = document.getElementById('inv-vendor').value;
+  var vendor = document.getElementById('inv-vendor').value.trim();
+  if (!vendor) { alert('業者・購入先を入力してください'); return; }
   var total = invoiceTmpLines.reduce((a,l)=>a+l.newPrice*l.qty,0);
   // 食材マスターの価格を更新
   var ings = getIngredients();
@@ -4001,11 +4431,19 @@ function saveInvoice() {
   lsSet('m_ingredients', ings);
   // Invoice保存
   var invoices = ls('invoices', []);
-  invoices.push({id:'inv'+Date.now(), vendor, date:new Date().toLocaleDateString('ja'),
+  invoices.push({id:'inv'+Date.now(), vendor, docType:invoiceDocType, date:new Date().toLocaleDateString('ja'),
     lines:invoiceTmpLines, total, applied:true});
   lsSet('invoices', invoices);
+  // Receiptの場合は買い出しにも反映
+  if (invoiceDocType==='Receipt') {
+    var storeId = curStore==='ALL'?STORES[0].id:curStore;
+    var purchases = getPurchases(storeId);
+    purchases.push({id:'pc'+Date.now(), date:new Date().toLocaleDateString('ja'), vendor, item:invoiceTmpLines.map(l=>l.name).join(', '),
+      amount:total, kind:'Food', category:'買い出し', memo:'Receiptから登録', receipt:true, by:ROLE_CONFIG[curRole].name});
+    lsSet('purchases_'+storeId, purchases);
+  }
   closeModalDirect();
-  showToast('Invoiceを保存し、食材価格を更新しました', 'success');
+  showToast(invoiceDocType==='Receipt'?'Receiptを保存し、買い出し＋価格を更新しました':'Invoiceを保存し、食材価格を更新しました', 'success');
   renderPage('invoice');
 }
 
@@ -4083,16 +4521,20 @@ function renderDailyOps() {
   return html;
 }
 
-function setDailyPhase(p) { dailyPhase = p; renderPage('dailyops'); }
+function setDailyPhase(p) { dailyPhase = p; renderPage('store_cmd'); }
 function toggleDailyOp(storeId, tId) {
   var items = getDailyOps(storeId);
   var t = items.find(x=>x.id===tId);
-  if (t) { t.done = !t.done; t.by = t.done ? ROLE_CONFIG[curRole].name : ''; setDailyOps(storeId, items); renderPage('dailyops'); }
+  if (t) { t.done = !t.done; t.by = t.done ? ROLE_CONFIG[curRole].name : ''; setDailyOps(storeId, items); renderPage('store_cmd'); }
 }
-function openDailyOpsAdd(storeId) {
-  openModal(`<div class="modal-title">タスク追加 (${dailyPhase}) <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+function openDailyOpsAdd(storeId, phase) {
+  var ph = phase || dailyPhase;
+  openModal(`<div class="modal-title">タスク追加 (${ph}) <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="form-group"><label class="form-label">タスク内容</label><input class="form-input" id="do-text" placeholder="タスク"></div>
-    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="do-req"> 必須タスクにする</label></div>
+    <div class="form-group"><label class="form-label">フェーズ</label>
+      <select class="form-select" id="do-phase">${DAILY_PHASES.map(p=>`<option${p===ph?' selected':''}>${p}</option>`).join('')}</select></div>
+    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="do-req"> 必須タスクにする（未完了だとDaily完了不可）</label></div>
+    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="do-photo"> 写真必須</label></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveDailyOp('${storeId}')">追加</button></div>`);
 }
@@ -4100,11 +4542,13 @@ function saveDailyOp(storeId) {
   var text = document.getElementById('do-text').value.trim();
   if (!text) return;
   var req = document.getElementById('do-req').checked;
+  var photo = document.getElementById('do-photo').checked;
+  var phase = document.getElementById('do-phase').value;
   var items = getDailyOps(storeId);
-  items.push({id:'do'+Date.now(), phase:dailyPhase, text, required:req, done:false, by:''});
+  items.push({id:'do'+Date.now(), phase, text, required:req, photo, done:false, by:''});
   setDailyOps(storeId, items);
   closeModalDirect();
-  renderPage('dailyops');
+  renderPage('store_cmd');
 }
 
 /* ============================================================
