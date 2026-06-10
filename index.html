@@ -934,7 +934,17 @@ function getIngredients() {
   return ings;
 }
 function getVendors() { return ls('m_vendors', DEFAULT_VENDORS); }
-function getEmployees() { return ls('m_employees', DEFAULT_EMPLOYEES); }
+function getEmployees() {
+  var emps = ls('m_employees', DEFAULT_EMPLOYEES);
+  emps.forEach(e=>{ if(e.wage===undefined) e.wage = (typeof WAGE!=='undefined' ? (WAGE[e.role]||16) : 16); });
+  return emps;
+}
+/* 従業員の時給。給与閲覧はGM/CEOのみ（非GMには非開示） */
+function empWage(name) {
+  var e = getEmployees().find(x=>x.name===name);
+  return e ? (e.wage||0) : 0;
+}
+function canViewWages() { return curRole==='gm' || curRole==='ceo'; }
 
 /* ============================================================
    Phase2: レシピ / 予算 デフォルト
@@ -2831,10 +2841,23 @@ function saveOrder(storeId) {
 /* ============================================================
    ⑩ Labor (コスト + Availability→シフト作成→公開→承認)
 ============================================================ */
-var laborTab = 'cost';
+var laborTab = 'overview';
 function renderLabor() {
   if (!ROLE_CONFIG[curRole].financial) return financialBlocked();
-  var html = `<div class="section-header"><div class="section-title">Labor管理</div><div class="section-sub">店舗別Laborコスト</div></div>`;
+  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var store = STORES.find(s=>s.id===storeId)||STORES[0];
+  var html = `<div class="section-header"><div><div class="section-title">Labor管理</div><div class="section-sub">${store.name} · 勤怠×時給</div></div></div>
+  <div class="phase-tabs">
+    <div class="phase-tab${laborTab==='overview'?' active':''}" onclick="setLaborTab('overview')">サマリー</div>
+    <div class="phase-tab${laborTab==='detail'?' active':''}" onclick="setLaborTab('detail')">勤怠明細</div>
+  </div>`;
+  if (laborTab==='detail') return html + renderLaborDetail(storeId, store);
+  return html + renderLaborOverview();
+}
+function setLaborTab(t) { laborTab = t; renderPage('labor'); }
+
+function renderLaborOverview() {
+  var html = '';
   var stores = getVisibleStores().map(s => storeData(s.id));
   stores.forEach(s => {
     var color = s.labor<=29?'var(--green)':s.labor<=32?'var(--yellow)':'var(--red)';
@@ -2847,13 +2870,112 @@ function renderLabor() {
     </div>`;
   });
   html += `<div class="card"><div class="card-title"><i class="ti ti-calendar"></i>週次シフトのLabor Cost</div>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:10px">シフト作成とLabor Costシミュレーションは Shift Builder で行えます</p>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:10px">「勤怠明細」タブで従業員ごとの実働時間×時給（OT1.5倍）を計算できます</p>
     <button class="btn btn-secondary btn-sm" onclick="go('shift_admin')"><i class="ti ti-external-link"></i> Shift Builderを開く</button>
   </div>`;
   return html;
 }
 
-function setLaborTab(t) { laborTab = t; renderPage('labor'); }
+/* 勤怠明細: 従業員ごとの週実働時間×時給。OTは週40h超を1.5倍 */
+function getLaborHours(storeId, week) { return ls('labor_hours_'+storeId+'_'+week, {}); } // {empName: hours}
+function setLaborHours(storeId, week, data) { lsSet('labor_hours_'+storeId+'_'+week, data); }
+
+function laborForEmployee(name, hours) {
+  var wage = empWage(name);
+  var reg = Math.min(hours, 40);
+  var ot = Math.max(hours-40, 0);
+  var regPay = reg*wage;
+  var otPay = ot*wage*1.5;
+  return { wage, reg, ot, regPay, otPay, total: regPay+otPay };
+}
+
+function renderLaborDetail(storeId, store) {
+  var week = getWeekStr();
+  var hoursData = getLaborHours(storeId, week);
+  var staff = staffForStore(storeId);
+  var canWage = canViewWages();
+  var hasGuid = !!store.toastGuid;
+
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-8"></i>${week}週 勤怠明細
+    <span style="margin-left:auto;font-size:11px;color:var(--muted)">${canWage?'時給表示中(GM)':'時給は非開示'}</span></div>`;
+
+  // Toast勤怠取得（GUIDあれば）
+  if (hasGuid) {
+    html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <button class="btn btn-primary btn-sm" onclick="doToastLaborFetch('${storeId}','${store.toastGuid}')"><i class="ti ti-cloud-download"></i> Toast勤怠を取得（試験）</button>
+    </div>
+    <div id="labor-status" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>`;
+  }
+
+  var totalCost = 0, totalHours = 0;
+  html += `<table class="inv-table" style="width:100%;font-size:12px"><thead><tr>
+    <th>従業員</th><th>実働h</th>${canWage?'<th>通常</th><th>OT</th><th>人件費</th>':''}<th></th></tr></thead><tbody>`;
+  staff.forEach(e => {
+    var h = hoursData[e.name]||0;
+    var calc = laborForEmployee(e.name, h);
+    totalCost += calc.total; totalHours += h;
+    html += `<tr>
+      <td>${e.name}<div style="font-size:9px;color:var(--muted)">${ROLE_CONFIG[e.role].label}</div></td>
+      <td>${h>0?h+'h':'—'}${calc.ot>0?`<span class="tag tag-yellow" style="font-size:8px">OT${calc.ot}h</span>`:''}</td>
+      ${canWage?`<td style="color:var(--muted)">$${Math.round(calc.regPay)}</td><td style="color:${calc.ot>0?'var(--yellow)':'var(--muted)'}">$${Math.round(calc.otPay)}</td><td style="font-weight:600">$${Math.round(calc.total)}</td>`:''}
+      <td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openLaborHourModal('${storeId}','${e.name.replace(/'/g,'')}')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+
+  // サマリー
+  var data = storeData(storeId);
+  var laborRate = data.a ? Math.round(totalCost/(data.a/4.3)*1000)/10 : 0; // 週売上概算比
+  html += `<div class="kpi-grid" style="margin-top:12px">
+    ${kpi('週実働', totalHours+'h', staff.length+'名', 'var(--tm)')}
+    ${canWage?kpi('週人件費', '$'+Math.round(totalCost).toLocaleString(), 'OT込み', 'var(--tm)'):''}
+    ${canWage?kpi('Labor率', laborRate+'%', '対週売上', laborRate<=29?'var(--green)':'var(--red)'):''}
+  </div>`;
+  html += `<p style="font-size:11px;color:var(--muted);margin-top:8px">※ OTは週40時間超を1.5倍で計算。時給は従業員マスター（GM限定）で設定。</p>`;
+  html += '</div>';
+  return html;
+}
+
+function openLaborHourModal(storeId, name) {
+  var week = getWeekStr();
+  var hoursData = getLaborHours(storeId, week);
+  var cur = hoursData[name]||0;
+  openModal(`<div class="modal-title">勤怠入力 — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">${week}週 実働時間 (h)</label>
+      <input class="form-input" id="lh-hours" type="number" step="0.25" value="${cur}" placeholder="例: 38">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">40時間を超えた分は自動でOT(1.5倍)計算されます</div>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveLaborHour('${storeId}','${name}')">保存</button></div>`);
+}
+function saveLaborHour(storeId, name) {
+  var week = getWeekStr();
+  var hoursData = getLaborHours(storeId, week);
+  hoursData[name] = parseFloat(document.getElementById('lh-hours').value)||0;
+  setLaborHours(storeId, week, hoursData);
+  closeModalDirect();
+  showToast('勤怠を保存しました', 'success');
+  renderPage('labor');
+}
+
+/* Toast勤怠取得（試験）: Edge Functionにlaborモードを足す必要あり。まずは試行してレスポンス確認 */
+async function doToastLaborFetch(storeId, guid) {
+  var el = document.getElementById('labor-status');
+  if (el) el.textContent = 'Toast勤怠を取得中...';
+  try {
+    var res = await fetch(TOAST_SYNC_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
+      body: JSON.stringify({ restaurantGuid: guid, mode: 'labor', businessDate: new Date(Date.now()-86400000).toISOString().slice(0,10).replace(/-/g,'') }),
+    });
+    var j = await res.json();
+    if (j && j.timeEntries) {
+      if (el) el.textContent = `勤怠 ${j.timeEntries.length}件を取得しました`;
+    } else {
+      if (el) el.innerHTML = `<span style="color:var(--yellow)">勤怠APIは未対応か権限不足です。手入力で運用してください。（${(JSON.stringify(j)||'').slice(0,80)}）</span>`;
+    }
+  } catch(e) { if (el) el.textContent = 'エラー: ' + String(e); }
+}
 
 var shiftAssignTmp = [];
 var shiftStoreId = null;
@@ -3753,6 +3875,7 @@ function renderStaffMaster() {
         <div style="text-align:right">
           <span class="tag ${statusTag}">${e.status}</span>
           <div style="font-size:10px;color:${stepColor};margin-top:3px">STEP ${e.step}</div>
+          ${canViewWages()?`<div style="font-size:10px;color:var(--green);margin-top:2px">$${e.wage||0}/h</div>`:''}
         </div>
       </div>`;
     });
@@ -3802,6 +3925,10 @@ function openEmpModal(empId) {
     <div class="form-group"><label class="form-label">権限レベル</label>
       <select class="form-select" id="e-perms">${PERM_LEVELS.map(p=>`<option value="${p.id}"${e.perms===p.id?' selected':''}>${p.label}</option>`).join('')}</select>
     </div>
+    ${canViewWages()?`<div class="form-group"><label class="form-label">時給 ($/h) <span class="tag tag-red" style="font-size:8px">GM限定</span></label>
+      <input class="form-input" id="e-wage" type="number" step="0.25" value="${e.wage!=null?e.wage:''}" placeholder="例: 16">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">この情報はGM/CEOのみ閲覧・編集できます。オーバータイム(週40h超)は自動で1.5倍計算されます。</div>
+    </div>`:''}
     <div class="btn-row">
       ${!isNew?`<button class="btn btn-danger" style="margin-right:auto" onclick="deleteEmp('${e.id}')">退職処理</button>`:''}
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
@@ -3824,6 +3951,8 @@ function saveEmp(empId) {
     status: document.getElementById('e-status').value,
     perms: document.getElementById('e-perms').value,
   };
+  var wageEl = document.getElementById('e-wage');
+  if (wageEl && canViewWages()) { data.wage = parseFloat(wageEl.value)||0; }
   var emps = getEmployees();
   if (empId) {
     var e = emps.find(x=>x.id===empId);
