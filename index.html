@@ -2920,12 +2920,17 @@ function renderLaborDetail(storeId, store) {
     html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <button class="btn btn-primary btn-sm" onclick="doToastLaborFetch('${storeId}','${store.toastGuid}','${week}')"><i class="ti ti-cloud-download"></i> Toast勤怠を自動取得</button>
     </div>
-    <div id="labor-status" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>`;
+    <div id="labor-status" style="font-size:12px;margin-bottom:8px">${laborLastFetch?`<span style="color:var(--green)">✓ ${laborLastFetch}</span>`:''}</div>`;
   }
+
+  // 表示対象 = マスター在籍スタッフ ＋ Toastで取れたがマスターに無い従業員
+  var staffNames = staff.map(s=>s.name);
+  var toastOnly = Object.keys(hoursData).filter(n=>!staffNames.includes(n) && hoursData[n] && hoursData[n].source==='toast');
 
   var totalCost = 0, totalReg = 0, totalOt = 0;
   html += `<table class="inv-table" style="width:100%;font-size:12px"><thead><tr>
     <th>従業員</th><th>通常h</th><th>OT h</th>${canWage?'<th>人件費</th>':''}<th></th></tr></thead><tbody>`;
+  // マスター在籍スタッフ
   staff.forEach(e => {
     var entry = hoursData[e.name] || null;
     var calc = laborForEmployee(e.name, entry);
@@ -2939,14 +2944,30 @@ function renderLaborDetail(storeId, store) {
       <td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openLaborHourModal('${storeId}','${e.name.replace(/'/g,'')}')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>
     </tr>`;
   });
+  // Toastのみ（マスター未登録）→ 時間は表示、人件費は時給未設定で$0
+  toastOnly.forEach(name => {
+    var entry = hoursData[name];
+    var reg = entry.regular||0, ot = entry.ot||0;
+    totalReg += reg; totalOt += ot;
+    html += `<tr style="opacity:0.85">
+      <td>${name} <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)"></i><div style="font-size:9px;color:var(--yellow)">マスター未登録</div></td>
+      <td>${reg>0?reg+'h':'—'}</td>
+      <td>${ot>0?`<span class="tag tag-yellow" style="font-size:9px">${ot}h</span>`:'—'}</td>
+      ${canWage?`<td style="color:var(--muted)">$0<div style="font-size:8px;color:var(--muted)">時給未設定</div></td>`:''}
+      <td></td>
+    </tr>`;
+  });
   html += '</tbody></table>';
+  if (toastOnly.length) {
+    html += `<div class="alert alert-warning" style="padding:8px 10px;margin-top:8px;font-size:11px"><i class="ti ti-info-circle"></i><div>Toastで${toastOnly.length}名の勤怠を取得しましたが、従業員マスターに未登録のため人件費が$0です。設定系→従業員マスターで登録し、所属をこの店舗・時給を設定すると人件費まで自動計算されます。</div></div>`;
+  }
 
   // サマリー
   var data = storeData(storeId);
   var laborRate = data.a ? Math.round(totalCost/(data.a/4.3)*1000)/10 : 0;
   html += `<div class="kpi-grid" style="margin-top:12px">
-    ${kpi('通常時間', totalReg+'h', staff.length+'名', 'var(--tm)')}
-    ${kpi('OT時間', totalOt+'h', '週40h超', totalOt>0?'var(--yellow)':'var(--muted)')}
+    ${kpi('通常時間', Math.round(totalReg*10)/10+'h', (staff.length+toastOnly.length)+'名', 'var(--tm)')}
+    ${kpi('OT時間', Math.round(totalOt*10)/10+'h', '週40h超', totalOt>0?'var(--yellow)':'var(--muted)')}
     ${canWage?kpi('週人件費', '$'+Math.round(totalCost).toLocaleString(), 'OT1.5倍込み', 'var(--tm)'):''}
     ${canWage?kpi('Labor率', laborRate+'%', '対週売上', laborRate<=29?'var(--green)':'var(--red)'):''}
   </div>`;
@@ -2979,6 +3000,7 @@ function saveLaborHour(storeId, name) {
 }
 
 /* Toast勤怠取得: Edge Functionのlaborモードで regularHours/overtimeHours を取得 */
+var laborLastFetch = null;
 async function doToastLaborFetch(storeId, guid, week) {
   var el = document.getElementById('labor-status');
   if (el) el.textContent = 'Toast勤怠を取得中...';
@@ -2991,23 +3013,25 @@ async function doToastLaborFetch(storeId, guid, week) {
     });
     var j = await res.json();
     if (j && Array.isArray(j.employees)) {
-      // {name, regularHours, overtimeHours} を集計してlabor_hoursに反映
       var hoursData = getLaborHours(storeId, week);
       var matched = 0;
       j.employees.forEach(emp => {
-        // 名前マッチ（完全一致 or 部分一致）
-        var staff = staffForStore(storeId).find(s => s.name===emp.name || s.name.includes(emp.name) || emp.name.includes(s.name));
+        // 時間が0でない従業員のみ反映（打刻なしを除外）
+        if ((emp.regularHours||0)===0 && (emp.overtimeHours||0)===0) return;
+        var staff = staffForStore(storeId).find(s => s.name===emp.name || (emp.name && s.name.includes(emp.name)) || (emp.name && emp.name.includes(s.name)));
         var key = staff ? staff.name : emp.name;
-        hoursData[key] = { regular: emp.regularHours||0, ot: emp.overtimeHours||0, source:'toast' };
+        hoursData[key] = { regular: emp.regularHours||0, ot: emp.overtimeHours||0, source:'toast', toastName: emp.name };
         if (staff) matched++;
       });
       setLaborHours(storeId, week, hoursData);
-      if (el) el.innerHTML = `<span style="color:var(--green)">勤怠取得成功: ${j.employees.length}名（マッチ${matched}名）</span>`;
+      var withHours = j.employees.filter(e=>(e.regularHours||0)>0||(e.overtimeHours||0)>0).length;
+      laborLastFetch = `勤怠取得成功: ${withHours}名分（マスター一致${matched}名）`;
       renderPage('labor');
     } else {
-      if (el) el.innerHTML = `<span style="color:var(--yellow)">勤怠データを取得できませんでした。Edge Functionのlaborモード追加または権限(4.3 Labor Reporting)が必要です。手入力で運用できます。</span>`;
+      laborLastFetch = null;
+      if (el) el.innerHTML = `<span style="color:var(--yellow)">勤怠データを取得できませんでした。詳細: ${(JSON.stringify(j)||'').slice(0,120)}</span>`;
     }
-  } catch(e) { if (el) el.textContent = 'エラー: ' + String(e); }
+  } catch(e) { laborLastFetch=null; if (el) el.textContent = 'エラー: ' + String(e); }
 }
 
 var shiftAssignTmp = [];
