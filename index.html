@@ -627,6 +627,43 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
   return { updated, fetched: rows.length };
 }
 
+/* 期間一括: dateFrom〜dateTo の各日をEdge Function経由でToastから取得→DB保存。
+   進捗をonProgress(コールバック)で通知。月をまたいで daily_actuals_ にも反映。 */
+async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress) {
+  if (!guid) return { error: 'GUID未設定' };
+  var start = new Date(dateFromISO+'T00:00:00');
+  var end = new Date(dateToISO+'T00:00:00');
+  var ok=0, fail=0, total=0, sumSales=0;
+  // 日付リスト生成
+  var dates = [];
+  for (var d=new Date(start); d<=end; d.setDate(d.getDate()+1)) dates.push(new Date(d));
+  total = dates.length;
+  for (var i=0; i<dates.length; i++) {
+    var dt = dates[i];
+    var ymd = dt.toISOString().slice(0,10).replace(/-/g,'');
+    var iso = dt.toISOString().slice(0,10);
+    try {
+      var r = await syncToastDay(guid, ymd);
+      if (r && r.ok) {
+        ok++; sumSales += Number(r.net_sales)||0;
+        // daily_actuals に即反映（月キーは年月で分かれるが getDailyActuals は店舗単位なのでそのまま）
+        var actuals = getDailyActuals(storeId);
+        var prev = actuals[iso] || {};
+        actuals[iso] = Object.assign({}, prev, { actual: Number(r.net_sales)||0, guests: r.guests!=null?Number(r.guests):prev.guests, toast:true });
+        setDailyActuals(storeId, actuals);
+      } else { fail++; }
+    } catch(e) { fail++; }
+    if (onProgress) onProgress(i+1, total, ok, fail);
+    // レート制限対策: 少し待つ
+    await new Promise(res=>setTimeout(res, 250));
+  }
+  // 月次実績も更新
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId);
+  if (b) { b.actual = Object.values(getDailyActuals(storeId)).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
+  return { ok, fail, total, sumSales };
+}
+
 /* ============================================================
    CONSTANTS
 ============================================================ */
@@ -636,7 +673,7 @@ const DEFAULT_STORES = [
   {id:'F03',   name:'Waikiki',  color:'#5DB554', am:'Eri McCoy', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
   {id:'F04-K', name:'Kaimuki',  color:'#3A8FD6', am:'Nakai',     brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
   {id:'F04-P', name:'Piikoi',   color:'#0E78C4', am:'Yuki',      brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
-  {id:'F04-A', name:'Aiea',     color:'#1B9AD6', am:'Yuki',      brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
+  {id:'F04-A', name:'Aiea',     color:'#1B9AD6', am:'Yuki',      brand:'Totoya',   toastGuid:'99c94a86-9c5a-4f06-8a57-c543bb7f4a50', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F05',   name:'Marujuu',  color:'#8B5E3C', am:'Yuki',      brand:'Marujuu',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
 ];
 /* STORES = 全店舗（lookup用）。表示はactiveStores()で絞る */
@@ -1549,9 +1586,12 @@ function renderBudgetSummary() {
    管轄店舗に応じて単店→複数→全店集計を切替
 ============================================================ */
 var dailyStoreScope = 'current'; // 'current'=当該店, or storeId, or 'ALL'
+var dailyMonthOffset = 0; // 0=今月, -1=先月...
 function monthDays() {
   var now = new Date();
-  var y = now.getFullYear(), m = now.getMonth();
+  var y = now.getFullYear(), m = now.getMonth() + dailyMonthOffset;
+  var ref = new Date(y, m, 1);
+  y = ref.getFullYear(); m = ref.getMonth();
   var days = new Date(y, m+1, 0).getDate();
   var arr = [];
   for (var d=1; d<=days; d++) {
@@ -1560,6 +1600,12 @@ function monthDays() {
   }
   return arr;
 }
+function dailyMonthLabel() {
+  var now = new Date();
+  var ref = new Date(now.getFullYear(), now.getMonth()+dailyMonthOffset, 1);
+  return `${ref.getFullYear()}年${ref.getMonth()+1}月`;
+}
+function shiftDailyMonth(delta) { dailyMonthOffset += delta; renderPage('budget'); }
 /* 基礎根拠から曜日別の日次予算を取得 */
 function dayBudgetFromBases(b, dow) {
   var base = (b.bases||[]).find(x=>x.type==='base');
@@ -1639,6 +1685,7 @@ function renderBudgetDaily() {
            <div style="display:flex;gap:8px;flex-wrap:wrap">
              <button class="btn btn-primary btn-sm" onclick="doToastSync('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-refresh"></i> DBから実績反映</button>
              <button class="btn btn-secondary btn-sm" onclick="doToastFetchToday('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-cloud-download"></i> 昨日分をToastから取得</button>
+             <button class="btn btn-secondary btn-sm" onclick="openRangeModal('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-calendar-plus"></i> 期間一括取り込み</button>
            </div>
            <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:8px"></div>`
         : `<div class="alert alert-warning" style="padding:8px 10px"><i class="ti ti-alert-circle"></i><div style="font-size:12px">${sStore.name} のToast Restaurant GUIDが未設定です。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div></div>`
@@ -1648,7 +1695,12 @@ function renderBudgetDaily() {
 
   // 日次テーブル
   var canEdit = ROLE_CONFIG[curRole].canCreate;
-  html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>日次一覧</div>
+  html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>日次一覧
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>
+      <span style="font-size:13px;font-weight:600">${dailyMonthLabel()}</span>
+      <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
+    </div></div>
     <table class="inv-table" style="min-width:${isAgg?'560':'640'}px;font-size:12px"><thead><tr>
       <th>日</th><th>予算</th><th>実績</th><th>達成</th><th>累計達成</th>${isAgg?'':'<th>天気</th><th>イベント</th>'}${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
@@ -1714,6 +1766,38 @@ async function doToastFetchToday(storeId, guid) {
     }
   } catch (e) { if (el) el.textContent = 'エラー: ' + String(e); }
 }
+function openRangeModal(storeId, guid) {
+  var s = STORES.find(x=>x.id===storeId) || {};
+  var today = new Date().toISOString().slice(0,10);
+  var jan1 = new Date().getFullYear() + '-01-01';
+  openModal(`<div class="modal-title">期間一括取り込み — ${s.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">指定期間の各日をToastから取得します。日数が多いと数分かかります（1日あたり約0.3秒）。</p>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="rg-from" type="date" value="${jan1}"></div>
+      <div class="form-group"><label class="form-label">終了日</label><input class="form-input" id="rg-to" type="date" value="${today}"></div>
+    </div>
+    <div class="alert alert-warning" style="padding:8px 10px;font-size:11px"><i class="ti ti-info-circle"></i> 取り込み中はこの画面を閉じないでください。進捗が表示されます。</div>
+    <div id="rg-progress" style="font-size:12px;margin:8px 0"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
+    <button class="btn btn-primary" id="rg-start" onclick="doRangeImport('${storeId}','${guid}')"><i class="ti ti-download"></i> 取り込み開始</button></div>`);
+}
+async function doRangeImport(storeId, guid) {
+  var from = document.getElementById('rg-from').value;
+  var to = document.getElementById('rg-to').value;
+  if (!from || !to) { alert('期間を指定してください'); return; }
+  var btn = document.getElementById('rg-start');
+  if (btn) { btn.disabled = true; btn.innerHTML = '取り込み中...'; }
+  var prog = document.getElementById('rg-progress');
+  var res = await fetchToastRange(storeId, guid, from, to, function(done, total, ok, fail){
+    if (prog) prog.innerHTML = `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/total*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）`;
+  });
+  if (res.error) { if(prog) prog.textContent='エラー: '+res.error; if(btn){btn.disabled=false;btn.innerHTML='取り込み開始';} return; }
+  if (prog) prog.innerHTML = `<div style="color:var(--green)"><i class="ti ti-check"></i> 完了: ${res.ok}日取得（失敗${res.fail}）。合計売上 $${Math.round(res.sumSales).toLocaleString()}</div>`;
+  showToast(`期間取り込み完了: ${res.ok}日分`, 'success');
+  if (btn) { btn.disabled=false; btn.innerHTML='取り込み開始'; }
+  setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1500);
+}
+
 function openGuidModal(storeId) {
   var s = STORES.find(x=>x.id===storeId) || {};
   openModal(`<div class="modal-title">Toast GUID設定 — ${s.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
