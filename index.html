@@ -171,6 +171,32 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .nav-btn:hover { color: var(--tm); }
 .nav-btn.active { color: var(--tm); border-bottom-color: var(--accent); }
 .nav-btn i { font-size: 14px; }
+.subnav-bar {
+  background: var(--bg);
+  padding: 8px;
+  display: flex;
+  overflow-x: auto;
+  gap: 6px;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--border);
+}
+.subnav-bar:empty { display: none; }
+.subnav-bar::-webkit-scrollbar { display: none; }
+.subnav-chip {
+  white-space: nowrap;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: flex; align-items: center; gap: 5px;
+}
+.subnav-chip.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+.subnav-chip i { font-size: 13px; }
+
 
 /* ====== MAIN ====== */
 .main { padding: 16px; max-width: 900px; margin: 0 auto; }
@@ -542,6 +568,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
     </div>
   </div>
   <div class="nav-bar" id="nav-bar"></div>
+  <div class="subnav-bar" id="subnav-bar"></div>
   <div class="main" id="main-content"></div>
 </div>
 
@@ -623,6 +650,42 @@ const NAV_ITEMS = [
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm']},
 ];
+
+/* ===== 7メインタブ構成（親→サブメニュー） ===== */
+const MENU_GROUPS = [
+  {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
+    children:['dashboard']},
+  {id:'g_budget', label:'予実管理', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
+    children:['budget']},
+  {id:'g_cost', label:'原価系', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
+    children:['foodcost','recipe','costsheet','invoice','inventory','order']},
+  {id:'g_labor', label:'レイバー', icon:'ti-clock', roles:['ceo','gm','office','am','sl'],
+    children:['labor','shift_admin','vacation']},
+  {id:'g_hiring', label:'採用系', icon:'ti-user-plus', roles:['ceo','gm','am','sl'],
+    children:['hiring','onboarding']},
+  {id:'g_settings', label:'設定系', icon:'ti-settings', roles:['ceo','gm','am','sl'],
+    children:['tasks','required','goals','approval','skill','evaluation','tiprate','growth_mgr','meeting','growthhub','staff_master','vendor_master','ingredient_master','store_master','settings']},
+  {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
+    children:['mypage']},
+];
+/* Crew専用のシンプルメニュー（マイページ中心） */
+const CREW_GROUPS = [
+  {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage']},
+  {id:'g_myshift', label:'シフト', icon:'ti-calendar-event', children:['shift_staff']},
+  {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['skill']},
+  {id:'g_tip', label:'Tip', icon:'ti-coin', children:['tiprate']},
+  {id:'g_store', label:'Store CMD', icon:'ti-building-store', children:['store_cmd']},
+];
+function navItemById(id) { return NAV_ITEMS.find(n=>n.id===id) || {id, label:id, icon:'ti-circle'}; }
+function groupsForRole() {
+  if (curRole==='crew') return CREW_GROUPS;
+  return MENU_GROUPS.filter(g=>g.roles.includes(curRole));
+}
+function groupOfPage(pageId) {
+  var groups = groupsForRole();
+  return groups.find(g=>g.children.includes(pageId)) || groups[0];
+}
+var curGroup = null;
 
 const TASK_TEMPLATES = [
   {id:'t1', phase:'Opening',   text:'レジ開け・釣り銭確認'},
@@ -915,21 +978,48 @@ function initApp() {
   // Nav
   buildNav();
   // Default page
-  var firstNav = NAV_ITEMS.find(n => n.roles.includes(curRole));
-  curPage = (curRole==='crew') ? 'mypage' : (firstNav ? firstNav.id : 'mypage');
+  var groups = groupsForRole();
+  curPage = (curRole==='crew') ? 'mypage' : (groups[0] ? groups[0].children[0] : 'mypage');
+  curGroup = groupOfPage(curPage).id;
   renderPage(curPage);
 }
 
 function buildNav() {
+  var groups = groupsForRole();
+  if (!curGroup || !groups.find(g=>g.id===curGroup)) curGroup = groupOfPage(curPage).id;
   var nav = document.getElementById('nav-bar');
-  nav.innerHTML = NAV_ITEMS
-    .filter(n => n.roles.includes(curRole))
-    .map(n => `<button class="nav-btn ${n.id===curPage?'active':''}" onclick="go('${n.id}')"><i class="ti ${n.icon}"></i>${n.label}</button>`)
-    .join('');
+  nav.innerHTML = groups.map(g =>
+    `<button class="nav-btn ${g.id===curGroup?'active':''}" onclick="goGroup('${g.id}')"><i class="ti ${g.icon}"></i>${g.label}</button>`
+  ).join('');
+  // サブメニュー
+  var sub = document.getElementById('subnav-bar');
+  var group = groups.find(g=>g.id===curGroup);
+  if (group && group.children.length > 1) {
+    sub.innerHTML = group.children.map(pid => {
+      var item = navItemById(pid);
+      return `<button class="subnav-chip ${pid===curPage?'active':''}" onclick="go('${pid}')"><i class="ti ${item.icon}"></i>${item.label}</button>`;
+    }).join('');
+  } else { sub.innerHTML = ''; }
+}
+
+function openStoreCmd() {
+  curPage = 'store_cmd';
+  document.getElementById('main-content').innerHTML = renderStoreCmd();
+  window.scrollTo(0,0);
+}
+
+function goGroup(groupId) {
+  var groups = groupsForRole();
+  var g = groups.find(x=>x.id===groupId);
+  if (!g) return;
+  curGroup = groupId;
+  // グループの最初の子ページへ
+  go(g.children[0]);
 }
 
 function go(page) {
   curPage = page;
+  curGroup = groupOfPage(page).id;
   buildNav();
   renderPage(page);
   window.scrollTo(0,0);
@@ -1058,19 +1148,42 @@ function renderDashboard() {
   }
 
   html += `<div class="kpi-grid" style="margin-bottom:12px;">
-    ${kpi('売上合計', fmtK(tA), `予算比 ${tp}% / ${fmtK(tB)}`, tp>=100?'var(--green)':tp>=90?'var(--yellow)':'var(--red)')}
-    ${kpi('予算達成率', tp+'%', getPeriod(), tp>=100?'var(--green)':tp>=90?'var(--yellow)':'var(--red)')}
-    ${kpi('平均原価率', avgFC+'%', '目標 29〜31%', avgFC>0&&avgFC<=31?'var(--green)':'var(--red)')}
-    ${kpi('平均Labor', avgL+'%', '目標 ≤29%', avgL<=29?'var(--green)':'var(--red)')}
+    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">売上合計 <i class="ti ti-chevron-right" style="font-size:10px"></i></div><div class="kpi-value" style="color:${tp>=100?'var(--green)':tp>=90?'var(--yellow)':'var(--red)'}">${fmtK(tA)}</div><div class="kpi-sub">予算比 ${tp}% / ${fmtK(tB)}</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">予算達成率 <i class="ti ti-chevron-right" style="font-size:10px"></i></div><div class="kpi-value" style="color:${tp>=100?'var(--green)':tp>=90?'var(--yellow)':'var(--red)'}">${tp}%</div><div class="kpi-sub">${getPeriod()}</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('foodcost')"><div class="kpi-label">平均原価率 <i class="ti ti-chevron-right" style="font-size:10px"></i></div><div class="kpi-value" style="color:${avgFC>0&&avgFC<=31?'var(--green)':'var(--red)'}">${avgFC}%</div><div class="kpi-sub">目標 29〜31%</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('labor')"><div class="kpi-label">平均Labor <i class="ti ti-chevron-right" style="font-size:10px"></i></div><div class="kpi-value" style="color:${avgL<=29?'var(--green)':'var(--red)'}">${avgL}%</div><div class="kpi-sub">目標 ≤29%</div></div>
   </div>`;
+
+  // 今日のタスク（ログインユーザー関連）
+  var me = rc.name;
+  var allTasks = getTasks();
+  var today = new Date().toISOString().slice(0,10);
+  var myTasks = allTasks.filter(t=>t.status!=='完了' && (t.assignee===me || t.assignee===''));
+  var overdue = myTasks.filter(t=>t.due && t.due < today);
+  var todayTasks = myTasks.filter(t=>t.due===today);
+  var approvalsAll = ls('approvals', []).filter(a=>a.status==='pending');
+  // Required未完了（全可視店舗）
+  var reqAlerts = [];
+  getVisibleStores().forEach(s=>{ var ops=getDailyOps(s.id); var inc=ops.filter(t=>t.required&&!t.done); if(inc.length) reqAlerts.push({store:s.name, count:inc.length, id:s.id}); });
+
+  if (myTasks.length || approvalsAll.length || reqAlerts.length) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-sun" style="color:var(--accent)"></i>今日やること</div>`;
+    if (overdue.length) html += `<div style="font-size:12px;color:var(--red);margin-bottom:4px"><i class="ti ti-alert-circle"></i> 期限切れ ${overdue.length}件: ${overdue.slice(0,3).map(t=>t.title).join(', ')}</div>`;
+    if (todayTasks.length) html += `<div style="font-size:12px;color:var(--yellow);margin-bottom:4px"><i class="ti ti-clock"></i> 本日期限 ${todayTasks.length}件: ${todayTasks.slice(0,3).map(t=>t.title).join(', ')}</div>`;
+    if (approvalsAll.length) html += `<div style="font-size:12px;margin-bottom:4px;cursor:pointer" onclick="go('approval')"><i class="ti ti-checkbox" style="color:var(--accent2)"></i> 承認待ち ${approvalsAll.length}件 <i class="ti ti-chevron-right" style="font-size:10px"></i></div>`;
+    reqAlerts.forEach(r=>{ html += `<div style="font-size:12px;color:var(--red);margin-bottom:4px;cursor:pointer" onclick="switchStore('${r.id}');openStoreCmd()"><i class="ti ti-alert-triangle"></i> ${r.store}: Required未完了 ${r.count}件</div>`; });
+    var otherTasks = myTasks.filter(t=>!overdue.includes(t)&&!todayTasks.includes(t));
+    if (otherTasks.length) html += `<div style="font-size:12px;color:var(--muted);margin-top:4px;cursor:pointer" onclick="go('tasks')">その他のタスク ${otherTasks.length}件 <i class="ti ti-chevron-right" style="font-size:10px"></i></div>`;
+    html += '</div>';
+  }
 
   html += `<div class="card"><div class="card-title"><i class="ti ti-building-store"></i>店舗別状況</div>`;
   stores.forEach(s => {
     var color = s.status==='good'?'var(--green)':s.status==='warn'?'var(--yellow)':'var(--red)';
     var tagClass = s.status==='good'?'tag-green':s.status==='warn'?'tag-yellow':'tag-red';
-    html += `<div class="store-row" onclick="switchStore('${s.id}');go('budget')">
+    html += `<div class="store-row">
       <div class="store-dot" style="background:${s.color}"></div>
-      <div style="flex:1">
+      <div style="flex:1" onclick="switchStore('${s.id}');go('budget')">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="store-name">${s.name}</div>
           <span class="tag ${tagClass}">${s.sp}%</span>
@@ -1078,6 +1191,7 @@ function renderDashboard() {
         <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
         <div class="store-meta">${fmtK(s.a)} / ${fmtK(s.b)} | FC ${s.fc}% | Labor ${s.labor}%</div>
       </div>
+      <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
     </div>`;
   });
   html += '</div>';
@@ -1599,7 +1713,7 @@ function renderFcMonthly(storeId, store) {
   <div class="card"><div class="card-title"><i class="ti ti-calculator"></i>月次実績原価率
     <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openFcMonthlyModal('${storeId}')"><i class="ti ti-edit"></i> 棚卸額入力</button></div>
     <table class="inv-table"><tbody>
-      <tr><td>期首棚卸額</td><td style="text-align:right">$${(parseFloat(fc.beginInv)||0).toLocaleString()}</td></tr>
+      <tr><td>期首棚卸額 ${fc.beginAuto?'<span class="tag tag-blue" style="font-size:8px">前月末から自動</span>':''}</td><td style="text-align:right">$${(parseFloat(fc.beginInv)||0).toLocaleString()}</td></tr>
       <tr><td>月間仕入れ（発注確定分）</td><td style="text-align:right">$${orderTotal.toLocaleString()}</td></tr>
       <tr><td>買い出し合計</td><td style="text-align:right">$${purchaseTotal.toLocaleString()}</td></tr>
       <tr><td>期末棚卸額</td><td style="text-align:right">− $${(parseFloat(fc.endInv)||0).toLocaleString()}</td></tr>
@@ -1618,18 +1732,25 @@ function openFcMonthlyModal(storeId) {
   var data = storeData(storeId);
   var fc = ls('fc_monthly_'+storeId, {beginInv:0, endInv:0, sales:data.a});
   openModal(`<div class="modal-title">月次原価 入力 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">期首棚卸額 ($)</label><input class="form-input" id="fc-begin" type="number" value="${fc.beginInv||0}"></div>
-    <div class="form-group"><label class="form-label">期末棚卸額 ($)</label><input class="form-input" id="fc-end" type="number" value="${fc.endInv||0}"></div>
+    <div class="form-group"><label class="form-label">期首棚卸額 ($) ${fc.beginAuto?'※前月末から自動反映済。修正すると履歴に残ります':''}</label><input class="form-input" id="fc-begin" type="number" value="${fc.beginInv||0}"></div>
+    <div class="form-group"><label class="form-label">期末棚卸額 ($)（月次棚卸確定で自動更新）</label><input class="form-input" id="fc-end" type="number" value="${fc.endInv||0}"></div>
     <div class="form-group"><label class="form-label">売上 ($)（Toast連携前は手入力）</label><input class="form-input" id="fc-sales" type="number" value="${fc.sales||data.a}"></div>
-    <p style="font-size:11px;color:var(--muted)">仕入れ・買い出しは発注/買い出しデータから自動集計されます</p>
+    <p style="font-size:11px;color:var(--muted)">仕入れ・買い出しは発注/買い出しデータから自動集計されます。期首棚卸額は前月末の期末棚卸を自動反映します。</p>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveFcMonthly('${storeId}')">保存</button></div>`);
 }
 function saveFcMonthly(storeId) {
+  var prev = ls('fc_monthly_'+storeId, {});
+  var newBegin = parseFloat(document.getElementById('fc-begin').value)||0;
+  var history = prev.history || [];
+  if (prev.beginInv!==undefined && prev.beginInv!==newBegin) {
+    history = history.concat([{date:new Date().toLocaleDateString('ja'), edit:'期首修正', from:prev.beginInv, to:newBegin, by:ROLE_CONFIG[curRole].name}]);
+  }
   lsSet('fc_monthly_'+storeId, {
-    beginInv: parseFloat(document.getElementById('fc-begin').value)||0,
+    beginInv: newBegin,
     endInv: parseFloat(document.getElementById('fc-end').value)||0,
     sales: parseFloat(document.getElementById('fc-sales').value)||0,
+    beginAuto: false, history,
   });
   closeModalDirect();
   showToast('月次原価データを保存しました', 'success');
@@ -1873,6 +1994,16 @@ function saveInventory(storeId) {
   lsSet(histKey, hist);
   // Monthly のみ繰越（Dailyは数量チェックなので繰越しない）
   if (invMode==='monthly') {
+    // 棚卸総額を算出（実棚×単価）して期末在庫額として記録
+    var ings = getIngredients();
+    var invValue = counted.reduce((a,i)=>{ var ing=ings.find(x=>x.code===i.code); return a + (ing?ing.price:0)*(parseFloat(i.count)||0); }, 0);
+    invValue = Math.round(invValue);
+    // 当月のFood Cost: 今回をendInv、前回のendInvをbeginInvに自動反映
+    var fc = ls('fc_monthly_'+storeId, {beginInv:0, endInv:0, sales:0});
+    var prevEnd = fc.endInv || 0;
+    var newFc = {beginInv:prevEnd, endInv:invValue, sales:fc.sales||storeData(storeId).a,
+      beginAuto:true, history:(fc.history||[]).concat([{date:new Date().toLocaleDateString('ja'), endInv:invValue, by:ROLE_CONFIG[curRole].name}])};
+    lsSet('fc_monthly_'+storeId, newFc);
     allItems.forEach(i=>{ if(i.count!==''){ i.last = parseFloat(i.count); i.received=0; i.consumed=0; i.count=''; } });
   } else {
     scope.forEach(i=>{ var it=allItems.find(x=>x.code===i.code); if(it) it.count=''; });
