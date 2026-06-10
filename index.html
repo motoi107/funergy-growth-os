@@ -1675,21 +1675,25 @@ function renderBudgetDaily() {
     </div>
   </div>`;
 
-  // Toast連携（単店ビューのみ）
+  // Toast連携 + 天気/祝日（単店ビューのみ）
   if (!isAgg && scopeStores[0]) {
     var sStore = scopeStores[0];
     var hasGuid = !!sStore.toastGuid;
-    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>Toast実績連携</div>
-      ${hasGuid
-        ? `<p style="font-size:12px;color:var(--muted);margin-bottom:8px">${sStore.name} のToast売上を取得して実績に反映します</p>
-           <div style="display:flex;gap:8px;flex-wrap:wrap">
-             <button class="btn btn-primary btn-sm" onclick="doToastSync('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-refresh"></i> DBから実績反映</button>
-             <button class="btn btn-secondary btn-sm" onclick="doToastFetchToday('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-cloud-download"></i> 昨日分をToastから取得</button>
-             <button class="btn btn-secondary btn-sm" onclick="openRangeModal('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-calendar-plus"></i> 期間一括取り込み</button>
-           </div>
-           <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:8px"></div>`
-        : `<div class="alert alert-warning" style="padding:8px 10px"><i class="ti ti-alert-circle"></i><div style="font-size:12px">${sStore.name} のToast Restaurant GUIDが未設定です。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div></div>`
-      }
+    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>データ連携</div>`;
+    if (hasGuid) {
+      html += `<p style="font-size:12px;color:var(--muted);margin-bottom:8px">${sStore.name} のToast売上を取得して実績に反映します</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" onclick="doToastSync('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-refresh"></i> DBから実績反映</button>
+          <button class="btn btn-secondary btn-sm" onclick="doToastFetchToday('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-cloud-download"></i> 昨日分をToastから取得</button>
+          <button class="btn btn-secondary btn-sm" onclick="openRangeModal('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-calendar-plus"></i> 期間一括取り込み</button>
+        </div>`;
+    } else {
+      html += `<div class="alert alert-warning" style="padding:8px 10px;margin-bottom:8px"><i class="ti ti-alert-circle"></i><div style="font-size:12px">${sStore.name} のToast GUID未設定。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div></div>`;
+    }
+    html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
+        <button class="btn btn-secondary btn-sm" onclick="doWeatherSync('${sStore.id}')"><i class="ti ti-cloud"></i> 天気・祝日を自動取得</button>
+      </div>
+      <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:8px"></div>
     </div>`;
   }
 
@@ -1821,6 +1825,130 @@ function saveGuid(storeId) {
 function weatherIcon(w) {
   var map = {'晴':'☀️','曇':'☁️','雨':'🌧️','嵐':'⛈️','雪':'❄️'};
   return map[w] || (w?w:'-');
+}
+
+/* WMO天気コード → 内部天気区分 */
+function wmoToWeather(code) {
+  if (code===0) return '晴';
+  if (code>=1 && code<=3) return '曇';
+  if (code>=45 && code<=48) return '曇';
+  if (code>=51 && code<=67) return '雨';
+  if (code>=71 && code<=77) return '雪';
+  if (code>=80 && code<=82) return '雨';
+  if (code>=95) return '嵐';
+  return '曇';
+}
+
+/* 店舗座標（緯度経度）。未設定はHonolulu既定 */
+function storeLatLng(storeId) {
+  var coords = {
+    'F02': [21.3069, -157.8583], // Tenkichi (Honolulu付近)
+    'F04-A': [21.3870, -157.9320], // Aiea
+    'F04-K': [21.2840, -157.8010], // Kaimuki
+    'F04-P': [21.2970, -157.8420], // Piikoi
+    'F03': [21.2790, -157.8290], // Waikiki
+    'F01': [21.3300, -157.8900], // ToriTon
+    'F05': [21.3400, -157.9300], // Marujuu
+  };
+  return coords[storeId] || [21.3069, -157.8583];
+}
+
+/* Open-Meteoで期間の日別天気を取得（過去/未来両対応） */
+async function fetchWeatherRange(storeId, dateFrom, dateTo) {
+  var ll = storeLatLng(storeId);
+  var today = new Date().toISOString().slice(0,10);
+  // 過去はarchive、未来予報はforecast。簡易に: 終了日が今日以前ならarchive、それ以外はforecast(past_days込)
+  var base = dateTo < today ? 'https://archive-api.open-meteo.com/v1/archive' : 'https://api.open-meteo.com/v1/forecast';
+  var url;
+  if (base.includes('archive')) {
+    url = `${base}?latitude=${ll[0]}&longitude=${ll[1]}&start_date=${dateFrom}&end_date=${dateTo}&daily=weather_code&timezone=Pacific%2FHonolulu`;
+  } else {
+    url = `${base}?latitude=${ll[0]}&longitude=${ll[1]}&daily=weather_code&past_days=92&forecast_days=14&timezone=Pacific%2FHonolulu`;
+  }
+  try {
+    var res = await fetch(url);
+    if (!res.ok) return {};
+    var j = await res.json();
+    var out = {};
+    if (j.daily && j.daily.time) {
+      j.daily.time.forEach((t,i)=>{ out[t] = wmoToWeather(j.daily.weather_code[i]); });
+    }
+    return out;
+  } catch(e) { console.error('weather', e); return {}; }
+}
+
+/* 米国/ハワイの祝日（当年） */
+function usHolidays(year) {
+  function nthWeekday(month, weekday, n) { // month 0-based, weekday 0=Sun
+    var d = new Date(year, month, 1);
+    var add = (weekday - d.getDay() + 7) % 7 + (n-1)*7;
+    return new Date(year, month, 1+add);
+  }
+  function lastWeekday(month, weekday) {
+    var d = new Date(year, month+1, 0);
+    var sub = (d.getDay() - weekday + 7) % 7;
+    return new Date(year, month+1, 0-sub);
+  }
+  function iso(d){ return d.toISOString().slice(0,10); }
+  var h = {};
+  h[`${year}-01-01`] = '元日(New Year)';
+  h[iso(nthWeekday(0,1,3))] = 'MLK Day';
+  h[iso(nthWeekday(1,1,3))] = "Presidents' Day";
+  h[iso(lastWeekday(4,1))] = 'Memorial Day';
+  h[`${year}-06-19`] = 'Juneteenth';
+  h[`${year}-07-04`] = '独立記念日(July 4)';
+  h[iso(nthWeekday(8,1,1))] = 'Labor Day';
+  h[`${year}-08-16`] = ''; // placeholder
+  h[iso(nthWeekday(9,1,2))] = 'Columbus Day';
+  h[`${year}-11-11`] = 'Veterans Day';
+  h[iso(nthWeekday(10,4,4))] = 'Thanksgiving';
+  h[`${year}-12-25`] = 'Christmas';
+  // ハワイ州独自
+  h[`${year}-03-26`] = 'Prince Kuhio Day(HI)';
+  h[`${year}-08-15`] = 'Statehood Day(HI)'; // 第3金曜が正式だが簡易
+  delete h[`${year}-08-16`];
+  return h;
+}
+function holidayFor(dateISO) {
+  var y = parseInt(dateISO.slice(0,4));
+  var h = usHolidays(y);
+  return h[dateISO] || '';
+}
+
+async function fetchWeatherForView(storeId, days) {
+  var from = days[0].date, to = days[days.length-1].date;
+  var wmap = await fetchWeatherRange(storeId, from, to);
+  if (!Object.keys(wmap).length) return { error: '天気取得に失敗しました' };
+  var actuals = getDailyActuals(storeId);
+  var updated = 0;
+  days.forEach(d => {
+    if (wmap[d.date]) {
+      var prev = actuals[d.date] || {};
+      // 手入力天気がなければ自動反映
+      if (!prev.weather || prev.weatherAuto) {
+        actuals[d.date] = Object.assign({}, prev, { weather: wmap[d.date], weatherAuto: true });
+        updated++;
+      }
+    }
+    // 祝日をイベント欄へ（手入力イベントがなければ）
+    var hol = holidayFor(d.date);
+    if (hol) {
+      var p = actuals[d.date] || {};
+      if (!p.event || p.eventAuto) {
+        actuals[d.date] = Object.assign({}, p, { event: hol, eventAuto: true });
+      }
+    }
+  });
+  setDailyActuals(storeId, actuals);
+  return { updated };
+}
+async function doWeatherSync(storeId) {
+  var el = document.getElementById('toast-sync-status');
+  if (el) el.textContent = '天気・祝日を取得中...';
+  var res = await fetchWeatherForView(storeId, monthDays());
+  if (res.error) { if(el) el.textContent = res.error; return; }
+  showToast(`天気・祝日を反映しました`, 'success');
+  renderPage('budget');
 }
 
 function openDailyActualModal(storeId, date, dow) {
