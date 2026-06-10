@@ -1857,27 +1857,35 @@ function storeLatLng(storeId) {
 async function fetchWeatherRange(storeId, dateFrom, dateTo) {
   var ll = storeLatLng(storeId);
   var today = new Date().toISOString().slice(0,10);
-  // 過去はarchive、未来予報はforecast。簡易に: 終了日が今日以前ならarchive、それ以外はforecast(past_days込)
-  var base = dateTo < today ? 'https://archive-api.open-meteo.com/v1/archive' : 'https://api.open-meteo.com/v1/forecast';
-  var url;
-  if (base.includes('archive')) {
-    url = `${base}?latitude=${ll[0]}&longitude=${ll[1]}&start_date=${dateFrom}&end_date=${dateTo}&daily=weather_code&timezone=Pacific%2FHonolulu`;
-  } else {
-    url = `${base}?latitude=${ll[0]}&longitude=${ll[1]}&daily=weather_code&past_days=92&forecast_days=14&timezone=Pacific%2FHonolulu`;
+  var out = {};
+  // 過去分（〜昨日）は archive、当日以降は forecast。両方取って統合。
+  async function pull(url) {
+    try {
+      var res = await fetch(url);
+      if (!res.ok) return;
+      var j = await res.json();
+      if (j.daily && j.daily.time && j.daily.weathercode) {
+        j.daily.time.forEach((t,i)=>{ out[t] = wmoToWeather(j.daily.weathercode[i]); });
+      } else if (j.daily && j.daily.time && j.daily.weather_code) {
+        j.daily.time.forEach((t,i)=>{ out[t] = wmoToWeather(j.daily.weather_code[i]); });
+      }
+    } catch(e) { console.error('weather pull', e); }
   }
-  try {
-    var res = await fetch(url);
-    if (!res.ok) return {};
-    var j = await res.json();
-    var out = {};
-    if (j.daily && j.daily.time) {
-      j.daily.time.forEach((t,i)=>{ out[t] = wmoToWeather(j.daily.weather_code[i]); });
-    }
-    return out;
-  } catch(e) { console.error('weather', e); return {}; }
+  // archive: dateFrom 〜 min(dateTo, 昨日)
+  var yest = new Date(); yest.setDate(yest.getDate()-1);
+  var yestISO = yest.toISOString().slice(0,10);
+  if (dateFrom <= yestISO) {
+    var archEnd = dateTo < yestISO ? dateTo : yestISO;
+    await pull(`https://archive-api.open-meteo.com/v1/archive?latitude=${ll[0]}&longitude=${ll[1]}&start_date=${dateFrom}&end_date=${archEnd}&daily=weathercode&timezone=Pacific%2FHonolulu`);
+  }
+  // forecast: 今日以降（dateToが今日以降の場合）
+  if (dateTo >= today) {
+    await pull(`https://api.open-meteo.com/v1/forecast?latitude=${ll[0]}&longitude=${ll[1]}&daily=weathercode&forecast_days=16&timezone=Pacific%2FHonolulu`);
+  }
+  return out;
 }
 
-/* 米国/ハワイの祝日（当年） */
+/* ハワイ州の祝日（連邦＋州独自）。年で計算 */
 function usHolidays(year) {
   function nthWeekday(month, weekday, n) { // month 0-based, weekday 0=Sun
     var d = new Date(year, month, 1);
@@ -1889,24 +1897,34 @@ function usHolidays(year) {
     var sub = (d.getDay() - weekday + 7) % 7;
     return new Date(year, month+1, 0-sub);
   }
-  function iso(d){ return d.toISOString().slice(0,10); }
+  function iso(d){
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
   var h = {};
-  h[`${year}-01-01`] = '元日(New Year)';
+  // 連邦祝日
+  h[`${year}-01-01`] = '🎍元日';
   h[iso(nthWeekday(0,1,3))] = 'MLK Day';
   h[iso(nthWeekday(1,1,3))] = "Presidents' Day";
   h[iso(lastWeekday(4,1))] = 'Memorial Day';
   h[`${year}-06-19`] = 'Juneteenth';
-  h[`${year}-07-04`] = '独立記念日(July 4)';
+  h[`${year}-07-04`] = '🎆Independence Day';
   h[iso(nthWeekday(8,1,1))] = 'Labor Day';
-  h[`${year}-08-16`] = ''; // placeholder
-  h[iso(nthWeekday(9,1,2))] = 'Columbus Day';
   h[`${year}-11-11`] = 'Veterans Day';
-  h[iso(nthWeekday(10,4,4))] = 'Thanksgiving';
-  h[`${year}-12-25`] = 'Christmas';
-  // ハワイ州独自
-  h[`${year}-03-26`] = 'Prince Kuhio Day(HI)';
-  h[`${year}-08-15`] = 'Statehood Day(HI)'; // 第3金曜が正式だが簡易
-  delete h[`${year}-08-16`];
+  h[iso(nthWeekday(10,4,4))] = '🦃Thanksgiving';
+  h[`${year}-12-25`] = '🎄Christmas';
+  // ハワイ州独自の祝日
+  h[`${year}-03-26`] = 'Prince Kūhiō Day(HI)';                 // 3/26固定
+  h[iso(nthWeekday(2,5,1))] = h[iso(nthWeekday(2,5,1))] || ''; // placeholder防止
+  h[`${year}-06-11`] = 'King Kamehameha Day(HI)';              // 6/11固定
+  h[iso(nthWeekday(7,5,3))] = 'Statehood Day(HI)';             // 8月第3金曜
+  // 選挙日(偶数年・11月第1月曜の翌火曜)
+  if (year % 2 === 0) {
+    var firstMon = nthWeekday(10,1,1);
+    var electionDay = new Date(year,10,firstMon.getDate()+1);
+    h[iso(electionDay)] = 'Election Day(HI)';
+  }
+  // 空文字は除去
+  Object.keys(h).forEach(k=>{ if(!h[k]) delete h[k]; });
   return h;
 }
 function holidayFor(dateISO) {
@@ -1918,7 +1936,7 @@ function holidayFor(dateISO) {
 async function fetchWeatherForView(storeId, days) {
   var from = days[0].date, to = days[days.length-1].date;
   var wmap = await fetchWeatherRange(storeId, from, to);
-  if (!Object.keys(wmap).length) return { error: '天気取得に失敗しました' };
+  if (!Object.keys(wmap).length) return { error: '天気取得に失敗しました（本番URLで再試行してください）' };
   var actuals = getDailyActuals(storeId);
   var updated = 0;
   days.forEach(d => {
