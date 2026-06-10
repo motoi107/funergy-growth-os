@@ -1823,18 +1823,23 @@ function saveGuid(storeId) {
 }
 
 function weatherIcon(w) {
-  var map = {'晴':'☀️','曇':'☁️','雨':'🌧️','嵐':'⛈️','雪':'❄️'};
+  var map = {'快晴':'☀️','晴':'🌤️','曇':'☁️','小雨':'🌦️','雨':'🌧️','嵐':'⛈️','雪':'❄️','霧':'🌫️'};
   return map[w] || (w?w:'-');
 }
 
-/* WMO天気コード → 内部天気区分 */
+/* WMO天気コード → 内部天気区分（細分化）
+   0=快晴, 1-2=晴, 3=曇, 45/48=霧, 51-55=小雨(霧雨), 56-67=雨,
+   71-77=雪, 80-82=雨(にわか), 85-86=雪, 95-99=嵐 */
 function wmoToWeather(code) {
-  if (code===0) return '晴';
-  if (code>=1 && code<=3) return '曇';
-  if (code>=45 && code<=48) return '曇';
-  if (code>=51 && code<=67) return '雨';
+  if (code===0) return '快晴';
+  if (code>=1 && code<=2) return '晴';
+  if (code===3) return '曇';
+  if (code>=45 && code<=48) return '霧';
+  if (code>=51 && code<=57) return '小雨';   // 霧雨レベル
+  if (code>=61 && code<=67) return '雨';     // 本降り
   if (code>=71 && code<=77) return '雪';
-  if (code>=80 && code<=82) return '雨';
+  if (code>=80 && code<=82) return '雨';     // にわか雨
+  if (code>=85 && code<=86) return '雪';
   if (code>=95) return '嵐';
   return '曇';
 }
@@ -1980,7 +1985,7 @@ function openDailyActualModal(storeId, date, dow) {
     <div class="form-row">
       <div class="form-group"><label class="form-label">客数</label><input class="form-input" id="da-guests" type="number" value="${ov.guests!=null?ov.guests:''}" placeholder="任意"></div>
       <div class="form-group"><label class="form-label">天気</label>
-        <select class="form-select" id="da-weather">${['','晴','曇','雨','嵐','雪'].map(w=>`<option value="${w}"${ov.weather===w?' selected':''}>${w?weatherIcon(w)+' '+w:'—'}</option>`).join('')}</select>
+        <select class="form-select" id="da-weather">${['','快晴','晴','曇','霧','小雨','雨','嵐','雪'].map(w=>`<option value="${w}"${ov.weather===w?' selected':''}>${w?weatherIcon(w)+' '+w:'—'}</option>`).join('')}</select>
       </div>
     </div>
     <div class="form-group"><label class="form-label">イベント・メモ</label><input class="form-input" id="da-event" value="${ov.event||''}" placeholder="例: 近隣で祭り / 雨で客足減"></div>
