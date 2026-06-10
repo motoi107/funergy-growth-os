@@ -579,6 +579,55 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 
 <script>
 /* ============================================================
+   SUPABASE / TOAST 連携設定
+============================================================ */
+const SUPABASE_URL = 'https://tgbhgxzehzeouopklhje.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRnYmhneHplaHplb3VvcGtsaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMTIzODAsImV4cCI6MjA5NjY4ODM4MH0.A0cdXLDONy_HPvQhaHbfP-flsNYImg0ZFJd5AIQihdM';
+const TOAST_SYNC_FN = SUPABASE_URL + '/functions/v1/hyper-worker';
+
+async function fetchToastSales(guid, dateFrom, dateTo) {
+  try {
+    var url = SUPABASE_URL + '/rest/v1/toast_sales?restaurant_guid=eq.' + encodeURIComponent(guid)
+      + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo + '&order=business_date.asc';
+    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (e) { console.error('fetchToastSales', e); return []; }
+}
+async function syncToastDay(guid, businessDateYmd) {
+  var res = await fetch(TOAST_SYNC_FN, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
+    body: JSON.stringify({ restaurantGuid: guid, businessDate: businessDateYmd }),
+  });
+  return await res.json();
+}
+async function syncStoreActualsFromToast(storeId, guid, days) {
+  if (!guid) return { error: 'GUID未設定' };
+  var rows = await fetchToastSales(guid, days[0].date, days[days.length-1].date);
+  var byDate = {}; rows.forEach(r=>{ byDate[r.business_date] = r; });
+  var actuals = getDailyActuals(storeId);
+  var updated = 0;
+  days.forEach(d => {
+    var r = byDate[d.date];
+    if (r) {
+      var prev = actuals[d.date] || {};
+      actuals[d.date] = Object.assign({}, prev, {
+        actual: Number(r.net_sales)||0,
+        guests: r.guest_count!=null ? Number(r.guest_count) : prev.guests,
+        toast: true,
+      });
+      updated++;
+    }
+  });
+  setDailyActuals(storeId, actuals);
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId);
+  if (b) { b.actual = Object.values(actuals).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
+  return { updated, fetched: rows.length };
+}
+
+/* ============================================================
    CONSTANTS
 ============================================================ */
 const DEFAULT_STORES = [
@@ -1430,8 +1479,21 @@ function basisAmount(basis) {
 }
 function budgetTotal(b) { return (b.bases||[]).reduce((a,bs)=>a+basisAmount(bs),0); }
 
+var budgetTab = 'summary';
 function renderBudget() {
-  // SL含む全マネジメントが利用可（SLは自店のみ getVisibleStores で絞られる）
+  var html = `<div class="section-header">
+    <div><div class="section-title">予実管理</div><div class="section-sub">${getPeriod()}</div></div>
+  </div>
+  <div class="phase-tabs">
+    <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">サマリー</div>
+    <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">日次進捗</div>
+  </div>`;
+  if (budgetTab==='daily') return html + renderBudgetDaily();
+  return html + renderBudgetSummary();
+}
+function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
+
+function renderBudgetSummary() {
   var budgets = getBudgets();
   var stores = getVisibleStores();
   var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
@@ -1441,10 +1503,7 @@ function renderBudget() {
   var tp = pct(tA, tB);
   var canEdit = ROLE_CONFIG[curRole].canCreate;
 
-  var html = `<div class="section-header">
-    <div><div class="section-title">予実管理</div><div class="section-sub">${getPeriod()} · 曜日別×施策の積み上げ</div></div>
-  </div>
-  <div class="kpi-grid" style="margin-bottom:12px;">
+  var html = `<div class="kpi-grid" style="margin-bottom:12px;">
     ${kpi('予算合計', fmtK(Math.round(tB)), '対象 '+visible.length+'店', 'var(--muted)')}
     ${kpi('実績合計', fmtK(tA), '今月', tp>=100?'var(--green)':'var(--red)')}
     ${kpi('達成率', tp+'%', tp>=100?'達成':'未達', tp>=100?'var(--green)':tp>=90?'var(--yellow)':'var(--red)')}
@@ -1477,12 +1536,247 @@ function renderBudget() {
       }).join('')}</div>
       ${canEdit?`<div class="approval-actions">
         <button class="btn btn-secondary btn-sm" onclick="openBudgetEditor('${b.storeId}')"><i class="ti ti-edit"></i> 予算編集</button>
-        <button class="btn btn-secondary btn-sm" onclick="openActualModal('${b.storeId}')"><i class="ti ti-coin"></i> 実績入力</button>
+        <button class="btn btn-secondary btn-sm" onclick="openActualModal('${b.storeId}')"><i class="ti ti-coin"></i> 月次実績</button>
         ${b.status==='承認待ち'&&ROLE_CONFIG[curRole].canApprove?`<button class="btn btn-success btn-sm" onclick="approveBudget('${b.storeId}')"><i class="ti ti-check"></i> 承認</button>`:''}
       </div>`:''}
     </div>`;
   });
   return html;
+}
+
+/* ============================================================
+   日次進捗ビュー (予算自動展開 + 実績/天気/イベント入力 + 累計達成率)
+   管轄店舗に応じて単店→複数→全店集計を切替
+============================================================ */
+var dailyStoreScope = 'current'; // 'current'=当該店, or storeId, or 'ALL'
+function monthDays() {
+  var now = new Date();
+  var y = now.getFullYear(), m = now.getMonth();
+  var days = new Date(y, m+1, 0).getDate();
+  var arr = [];
+  for (var d=1; d<=days; d++) {
+    var dt = new Date(y, m, d);
+    arr.push({day:d, date:`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`, dow:DOW[(dt.getDay()+6)%7]});
+  }
+  return arr;
+}
+/* 基礎根拠から曜日別の日次予算を取得 */
+function dayBudgetFromBases(b, dow) {
+  var base = (b.bases||[]).find(x=>x.type==='base');
+  if (!base || !base.days) return 0;
+  var idx = DOW.indexOf(dow);
+  if (idx<0) return 0;
+  var d = base.days[idx]||{guests:0,spend:0};
+  var lunchD = base.days[idx];
+  // base.days は1日分の客数×単価。L/D合算済の想定で日商を返す
+  return (parseFloat(d.guests)||0)*(parseFloat(d.spend)||0);
+}
+function getDailyActuals(storeId) { return ls('daily_actuals_'+storeId, {}); }
+function setDailyActuals(storeId, data) { lsSet('daily_actuals_'+storeId, data); }
+
+function dailyScopeStores() {
+  // 管轄店舗（getVisibleStores）に応じて対象店舗を返す
+  var vis = getVisibleStores();
+  if (dailyStoreScope==='ALL') return vis;
+  if (dailyStoreScope==='current') return [vis[0]];
+  var s = vis.find(x=>x.id===dailyStoreScope);
+  return s ? [s] : [vis[0]];
+}
+
+function renderBudgetDaily() {
+  var vis = getVisibleStores();
+  var multiStore = vis.length > 1;
+  var scopeStores = dailyScopeStores();
+  var days = monthDays();
+  var budgets = getBudgets();
+
+  var html = '';
+  // 店舗スコープ切替（管轄が複数店ある場合）
+  if (multiStore) {
+    html += `<div class="phase-tabs" style="margin-bottom:8px">
+      <div class="phase-tab${dailyStoreScope==='ALL'?' active':''}" onclick="setDailyScope('ALL')">全${vis.length}店集計</div>
+      ${vis.map(s=>`<div class="phase-tab${dailyStoreScope===s.id?' active':''}" onclick="setDailyScope('${s.id}')">${s.name}</div>`).join('')}
+    </div>`;
+  } else {
+    dailyStoreScope = 'current';
+  }
+
+  var isAgg = dailyStoreScope==='ALL' && multiStore;
+  var title = isAgg ? `全${vis.length}店集計` : (scopeStores[0]||{name:'—'}).name;
+
+  // 月間累計サマリー
+  var todayStr = new Date().toISOString().slice(0,10);
+  var sumBudget=0, sumActual=0, sumBudgetToToday=0;
+  days.forEach(d => {
+    scopeStores.forEach(s => {
+      var b = budgets.find(x=>x.storeId===s.id);
+      var override = (getDailyActuals(s.id)[d.date]||{});
+      var dayBud = override.budget!=null ? override.budget : (b?dayBudgetFromBases(b,d.dow):0);
+      sumBudget += dayBud;
+      if (d.date<=todayStr) sumBudgetToToday += dayBud;
+      sumActual += (override.actual!=null?override.actual:0);
+    });
+  });
+  var paceRate = sumBudgetToToday ? Math.round(sumActual/sumBudgetToToday*1000)/10 : 0;
+  var monthRate = sumBudget ? Math.round(sumActual/sumBudget*1000)/10 : 0;
+
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-line"></i>${title} 月間進捗</div>
+    <div class="kpi-grid">
+      ${kpi('月間予算', fmtK(Math.round(sumBudget)), getPeriod(), 'var(--muted)')}
+      ${kpi('実績累計', fmtK(Math.round(sumActual)), '本日まで', 'var(--tm)')}
+      ${kpi('対予算ペース', paceRate+'%', '本日時点', paceRate>=100?'var(--green)':paceRate>=90?'var(--yellow)':'var(--red)')}
+      ${kpi('月間達成率', monthRate+'%', '対月予算', monthRate>=100?'var(--green)':'var(--muted)')}
+    </div>
+  </div>`;
+
+  // Toast連携（単店ビューのみ）
+  if (!isAgg && scopeStores[0]) {
+    var sStore = scopeStores[0];
+    var hasGuid = !!sStore.toastGuid;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>Toast実績連携</div>
+      ${hasGuid
+        ? `<p style="font-size:12px;color:var(--muted);margin-bottom:8px">${sStore.name} のToast売上を取得して実績に反映します</p>
+           <div style="display:flex;gap:8px;flex-wrap:wrap">
+             <button class="btn btn-primary btn-sm" onclick="doToastSync('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-refresh"></i> DBから実績反映</button>
+             <button class="btn btn-secondary btn-sm" onclick="doToastFetchToday('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-cloud-download"></i> 昨日分をToastから取得</button>
+           </div>
+           <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:8px"></div>`
+        : `<div class="alert alert-warning" style="padding:8px 10px"><i class="ti ti-alert-circle"></i><div style="font-size:12px">${sStore.name} のToast Restaurant GUIDが未設定です。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div></div>`
+      }
+    </div>`;
+  }
+
+  // 日次テーブル
+  var canEdit = ROLE_CONFIG[curRole].canCreate;
+  html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>日次一覧</div>
+    <table class="inv-table" style="min-width:${isAgg?'560':'640'}px;font-size:12px"><thead><tr>
+      <th>日</th><th>予算</th><th>実績</th><th>達成</th><th>累計達成</th>${isAgg?'':'<th>天気</th><th>イベント</th>'}${(!isAgg&&canEdit)?'<th></th>':''}
+    </tr></thead><tbody>`;
+
+  var cumB=0, cumA=0;
+  days.forEach(d => {
+    var dayBud=0, dayAct=0, hasAct=false, weather='', event='', isToast=false;
+    scopeStores.forEach(s => {
+      var b = budgets.find(x=>x.storeId===s.id);
+      var ov = (getDailyActuals(s.id)[d.date]||{});
+      var bd = ov.budget!=null ? ov.budget : (b?dayBudgetFromBases(b,d.dow):0);
+      dayBud += bd;
+      if (ov.actual!=null) { dayAct += ov.actual; hasAct=true; }
+      if (!isAgg) { weather=ov.weather||''; event=ov.event||''; }
+      if (ov.toast) isToast = true;
+    });
+    cumB += dayBud; cumA += (hasAct?dayAct:0);
+    var rate = dayBud&&hasAct ? Math.round(dayAct/dayBud*100) : null;
+    var cumRate = cumB ? Math.round(cumA/cumB*100) : 0;
+    var isToday = d.date===todayStr;
+    var isWeekend = d.dow==='土'||d.dow==='日';
+    var rowBg = isToday?'background:#1a1f10':isWeekend?'background:rgba(255,255,255,0.02)':'';
+    html += `<tr style="${rowBg}">
+      <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
+      <td style="color:var(--muted)">$${Math.round(dayBud).toLocaleString()}</td>
+      <td style="font-weight:600">${hasAct?'$'+Math.round(dayAct).toLocaleString():'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}</td>
+      <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
+      <td><span style="color:${cumRate>=100?'var(--green)':cumRate>=90?'var(--yellow)':'var(--red)'};font-size:11px">${cumRate}%</span></td>
+      ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted)">${event||'-'}</td>`}
+      ${(!isAgg&&canEdit)?`<td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openDailyActualModal('${scopeStores[0].id}','${d.date}','${d.dow}')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>`:''}
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  if (isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">集計ビューでは天気・イベントは各店ビューで確認・入力できます</p>`;
+  html += '</div>';
+  return html;
+}
+function setDailyScope(s) { dailyStoreScope = s; renderPage('budget'); }
+
+async function doToastSync(storeId, guid) {
+  var el = document.getElementById('toast-sync-status');
+  if (el) el.textContent = '取得中...';
+  var res = await syncStoreActualsFromToast(storeId, guid, monthDays());
+  if (res.error) { if(el) el.textContent = 'エラー: ' + res.error; return; }
+  showToast(`Toast実績を反映しました（${res.updated}日分）`, 'success');
+  renderPage('budget');
+}
+async function doToastFetchToday(storeId, guid) {
+  var el = document.getElementById('toast-sync-status');
+  if (el) el.textContent = 'Toastから取得中...（数秒かかります）';
+  // 昨日の日付（YYYYMMDD）
+  var d = new Date(); d.setDate(d.getDate()-1);
+  var ymd = d.toISOString().slice(0,10).replace(/-/g,'');
+  try {
+    var r = await syncToastDay(guid, ymd);
+    if (r && r.ok) {
+      if (el) el.textContent = `取得成功: ${r.date} 売上$${Math.round(r.net_sales).toLocaleString()} / ${r.guests}名。DB反映ボタンで表示更新`;
+      // すぐ反映
+      await syncStoreActualsFromToast(storeId, guid, monthDays());
+      renderPage('budget');
+    } else {
+      if (el) el.textContent = 'エラー: ' + JSON.stringify(r).slice(0,120);
+    }
+  } catch (e) { if (el) el.textContent = 'エラー: ' + String(e); }
+}
+function openGuidModal(storeId) {
+  var s = STORES.find(x=>x.id===storeId) || {};
+  openModal(`<div class="modal-title">Toast GUID設定 — ${s.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">Restaurant GUID</label>
+      <input class="form-input" id="guid-input" value="${s.toastGuid||''}" placeholder="99c94a86-...">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">Toast WebのManage credentials > Connected Restaurantsで確認できます</div>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveGuid('${storeId}')">保存</button></div>`);
+}
+function saveGuid(storeId) {
+  var guid = document.getElementById('guid-input').value.trim();
+  var stores = getStoresAll();
+  var s = stores.find(x=>x.id===storeId);
+  if (s) { s.toastGuid = guid; lsSet('m_stores', stores); STORES = getStoresAll(); }
+  closeModalDirect();
+  showToast('GUIDを保存しました', 'success');
+  renderPage('budget');
+}
+
+function weatherIcon(w) {
+  var map = {'晴':'☀️','曇':'☁️','雨':'🌧️','嵐':'⛈️','雪':'❄️'};
+  return map[w] || (w?w:'-');
+}
+
+function openDailyActualModal(storeId, date, dow) {
+  var b = getBudgets().find(x=>x.storeId===storeId);
+  var actuals = getDailyActuals(storeId);
+  var ov = actuals[date] || {};
+  var defBud = b ? Math.round(dayBudgetFromBases(b, dow)) : 0;
+  openModal(`<div class="modal-title">${date} (${dow}) 実績入力 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">予算（自動: $${defBud.toLocaleString()}、修正可）</label><input class="form-input" id="da-budget" type="number" value="${ov.budget!=null?ov.budget:defBud}"></div>
+    <div class="form-group"><label class="form-label">実績売上 ($)</label><input class="form-input" id="da-actual" type="number" value="${ov.actual!=null?ov.actual:''}" placeholder="当日売上"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">客数</label><input class="form-input" id="da-guests" type="number" value="${ov.guests!=null?ov.guests:''}" placeholder="任意"></div>
+      <div class="form-group"><label class="form-label">天気</label>
+        <select class="form-select" id="da-weather">${['','晴','曇','雨','嵐','雪'].map(w=>`<option value="${w}"${ov.weather===w?' selected':''}>${w?weatherIcon(w)+' '+w:'—'}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">イベント・メモ</label><input class="form-input" id="da-event" value="${ov.event||''}" placeholder="例: 近隣で祭り / 雨で客足減"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveDailyActual('${storeId}','${date}')">保存</button></div>`);
+}
+function saveDailyActual(storeId, date) {
+  var actuals = getDailyActuals(storeId);
+  var budget = parseFloat(document.getElementById('da-budget').value);
+  var actual = document.getElementById('da-actual').value;
+  var guests = document.getElementById('da-guests').value;
+  actuals[date] = {
+    budget: isNaN(budget)?null:budget,
+    actual: actual===''?null:parseFloat(actual),
+    guests: guests===''?null:parseFloat(guests),
+    weather: document.getElementById('da-weather').value,
+    event: document.getElementById('da-event').value.trim(),
+  };
+  setDailyActuals(storeId, actuals);
+  // 月次実績にも累計反映
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId);
+  if (b) { b.actual = Object.values(actuals).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
+  closeModalDirect();
+  showToast('日次実績を保存しました', 'success');
+  renderPage('budget');
 }
 
 /* ---- 予算エディタ（根拠リスト） ---- */
