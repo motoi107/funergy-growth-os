@@ -814,20 +814,18 @@ const NAV_ITEMS = [
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm']},
 ];
 
-/* ===== 7メインタブ構成（親→サブメニュー） ===== */
+/* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
 const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
-    children:['dashboard']},
-  {id:'g_budget', label:'予実管理', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
-    children:['budget']},
-  {id:'g_cost', label:'原価・レシピ', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
-    children:['foodcost','recipe','costsheet','invoice','inventory','order']},
-  {id:'g_labor', label:'人件費・チップ', icon:'ti-clock', roles:['ceo','gm','office','am','sl'],
-    children:['labor','tip','shift_admin','vacation']},
-  {id:'g_hiring', label:'採用・育成', icon:'ti-user-plus', roles:['ceo','gm','am','sl'],
-    children:['hiring','onboarding']},
-  {id:'g_settings', label:'マスタ・設定', icon:'ti-settings', roles:['ceo','gm','am','sl'],
-    children:['tasks','required','goals','approval','skill','evaluation','tiprate','growth_mgr','meeting','growthhub','staff_master','vendor_master','ingredient_master','store_master','settings']},
+    children:['dashboard','store_cmd']},
+  {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
+    children:['budget','labor','foodcost']},
+  {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
+    children:['recipe','costsheet','invoice','inventory','order','ingredient_master','vendor_master']},
+  {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
+    children:['shift_admin','vacation','hiring','onboarding','skill','evaluation','tiprate','tip','staff_master','meeting','growthhub','growth_mgr']},
+  {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','am','sl'],
+    children:['tasks','required','goals','approval','store_master','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
     children:['mypage']},
 ];
@@ -1672,9 +1670,11 @@ function buildNav() {
   var group = groups.find(g=>g.id===curGroup);
   if (group && group.children.length > 1) {
     var children = group.children.filter(pid => pid!=='staff_master' || canAccessStaffMaster());
+    var pendingApprovals = ls('approvals', []).filter(a=>a.status==='pending').length;
     sub.innerHTML = children.map(pid => {
       var item = navItemById(pid);
-      return `<button class="subnav-chip ${pid===curPage?'active':''}" onclick="go('${pid}')"><i class="ti ${item.icon}"></i>${item.label}</button>`;
+      var badge = (pid==='approval' && pendingApprovals) ? `<span style="background:var(--red);color:#fff;border-radius:9px;font-size:9px;padding:0 5px;margin-left:4px">${pendingApprovals}</span>` : '';
+      return `<button class="subnav-chip ${pid===curPage?'active':''}" onclick="go('${pid}')"><i class="ti ${item.icon}"></i>${item.label}${badge}</button>`;
     }).join('');
   } else { sub.innerHTML = ''; }
 }
@@ -1789,6 +1789,35 @@ function getPeriod() { var d = new Date(); return d.getFullYear() + '.' + (d.get
 function kpi(label, value, sub, color) {
   return `<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value" style="color:${color||'var(--tm)'}">${value}</div><div class="kpi-sub">${sub}</div></div>`;
 }
+/* ===== 色のルール統一: 🟢正常 🟡注意 🔴対応必須 ⚪未着手 🔵進行中 ===== */
+const STATUS = {
+  good:   {col:'var(--green)',  tag:'tag-green',  dot:'🟢', label:'正常'},
+  warn:   {col:'var(--yellow)', tag:'tag-yellow', dot:'🟡', label:'注意'},
+  danger: {col:'var(--red)',    tag:'tag-red',    dot:'🔴', label:'対応必須'},
+  idle:   {col:'var(--muted)',  tag:'tag-gray',   dot:'⚪', label:'未着手'},
+  active: {col:'var(--accent2)',tag:'tag-blue',   dot:'🔵', label:'進行中'},
+};
+function statusColor(s){ return (STATUS[s]||STATUS.idle).col; }
+function statusTag(s){ return (STATUS[s]||STATUS.idle).tag; }
+/* 数値→ステータス（高い方が良い指標: 達成率など） */
+function statusFromPct(p, goodAt, warnAt){ goodAt=goodAt||100; warnAt=warnAt||90; return p>=goodAt?'good':p>=warnAt?'warn':'danger'; }
+/* 数値→ステータス（低い方が良い指標: 原価率・Labor%） */
+function statusFromCeil(v, goodMax, warnMax){ return v<=goodMax?'good':v<=warnMax?'warn':'danger'; }
+/* 店舗ヘルススコア(100点満点) */
+function storeHealthScore(d){
+  // 売上達成(40) + 原価率(30) + Labor(30)
+  var salesPct = pct(d.a, d.b);
+  var salesScore = Math.max(0, Math.min(40, Math.round(salesPct/100*40)));
+  var fcScore = d.fc<=29?30:d.fc<=31?22:d.fc<=34?12:4;
+  var laborScore = d.labor<=27?30:d.labor<=29?22:d.labor<=32?12:4;
+  return Math.min(100, salesScore+fcScore+laborScore);
+}
+function healthLabel(score){
+  if (score>=85) return {label:'Excellent', status:'good'};
+  if (score>=70) return {label:'Good', status:'good'};
+  if (score>=60) return {label:'Need Attention', status:'warn'};
+  return {label:'Action Required', status:'danger'};
+}
 function getVisibleStores() {
   if (curStore === 'ALL') return activeStores();
   if (curRole === 'am') return activeStores().filter(s => AM_STORES.includes(s.id));
@@ -1814,25 +1843,8 @@ function renderDashboard() {
   var tp = pct(tA,tB);
   var avgFC = stores.length ? Math.round(stores.reduce((a,s)=>a+s.fc,0)/stores.length*10)/10 : 0;
   var avgL = stores.length ? Math.round(stores.reduce((a,s)=>a+s.labor,0)/stores.length*10)/10 : 0;
-  var danger = stores.filter(s=>s.status==='danger');
 
-  var html = '';
-  if (danger.length) {
-    html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
-      <p style="font-size:12px;font-weight:600;margin-bottom:4px;">要対応 ${danger.length}店舗</p>
-      <div style="display:flex;flex-wrap:wrap;gap:5px;">
-        ${danger.map(s=>`<span class="tag tag-red" style="cursor:pointer" onclick="switchStore('${s.id}');go('budget')">${s.name} ${s.sp}%</span>`).join('')}
-      </div></div></div>`;
-  }
-
-  html += `<div class="kpi-grid" style="margin-bottom:12px;">
-    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">売上合計 <i class="ti ti-chevron-right" style="font-size:10px"></i></div><div class="kpi-value" style="color:${tp>=100?'var(--green)':tp>=90?'var(--yellow)':'var(--red)'}">${fmtK(tA)}</div><div class="kpi-sub">予算比 ${tp}% / ${fmtK(tB)}</div></div>
-    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">予算達成率 <i class="ti ti-chevron-right" style="font-size:10px"></i></div><div class="kpi-value" style="color:${tp>=100?'var(--green)':tp>=90?'var(--yellow)':'var(--red)'}">${tp}%</div><div class="kpi-sub">${getPeriod()}</div></div>
-    <div class="kpi" style="cursor:pointer" onclick="go('foodcost')"><div class="kpi-label">平均原価率 <i class="ti ti-chevron-right" style="font-size:10px"></i></div><div class="kpi-value" style="color:${avgFC>0&&avgFC<=31?'var(--green)':'var(--red)'}">${avgFC}%</div><div class="kpi-sub">目標 29〜31%</div></div>
-    <div class="kpi" style="cursor:pointer" onclick="go('labor')"><div class="kpi-label">平均Labor <i class="ti ti-chevron-right" style="font-size:10px"></i></div><div class="kpi-value" style="color:${avgL<=29?'var(--green)':'var(--red)'}">${avgL}%</div><div class="kpi-sub">目標 ≤29%</div></div>
-  </div>`;
-
-  // 今日のタスク（ログインユーザー関連）
+  // ---- データ収集（アラート用） ----
   var me = rc.name;
   var allTasks = getTasks();
   var today = new Date().toISOString().slice(0,10);
@@ -1840,51 +1852,115 @@ function renderDashboard() {
   var overdue = myTasks.filter(t=>t.due && t.due < today);
   var todayTasks = myTasks.filter(t=>t.due===today);
   var approvalsAll = ls('approvals', []).filter(a=>a.status==='pending');
-  // Required未完了（全可視店舗）
   var reqAlerts = [];
   getVisibleStores().forEach(s=>{ var ops=getDailyOps(s.id); var inc=ops.filter(t=>t.required&&!t.done); if(inc.length) reqAlerts.push({store:s.name, count:inc.length, id:s.id}); });
+  var danger = stores.filter(s=>s.status==='danger');
+  var laborOver = stores.filter(s=>s.labor>32);
+  var fcOver = stores.filter(s=>s.fc>34);
 
-  if (myTasks.length || approvalsAll.length || reqAlerts.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-sun" style="color:var(--accent)"></i>今日やること</div>`;
-    if (overdue.length) html += `<div style="font-size:12px;color:var(--red);margin-bottom:4px"><i class="ti ti-alert-circle"></i> 期限切れ ${overdue.length}件: ${overdue.slice(0,3).map(t=>t.title).join(', ')}</div>`;
-    if (todayTasks.length) html += `<div style="font-size:12px;color:var(--yellow);margin-bottom:4px"><i class="ti ti-clock"></i> 本日期限 ${todayTasks.length}件: ${todayTasks.slice(0,3).map(t=>t.title).join(', ')}</div>`;
-    if (approvalsAll.length) html += `<div style="font-size:12px;margin-bottom:4px;cursor:pointer" onclick="go('approval')"><i class="ti ti-checkbox" style="color:var(--accent2)"></i> 承認待ち ${approvalsAll.length}件 <i class="ti ti-chevron-right" style="font-size:10px"></i></div>`;
-    reqAlerts.forEach(r=>{ html += `<div style="font-size:12px;color:var(--red);margin-bottom:4px;cursor:pointer" onclick="switchStore('${r.id}');openStoreCmd()"><i class="ti ti-alert-triangle"></i> ${r.store}: Required未完了 ${r.count}件</div>`; });
-    var otherTasks = myTasks.filter(t=>!overdue.includes(t)&&!todayTasks.includes(t));
-    if (otherTasks.length) html += `<div style="font-size:12px;color:var(--muted);margin-top:4px;cursor:pointer" onclick="go('tasks')">その他のタスク ${otherTasks.length}件 <i class="ti ti-chevron-right" style="font-size:10px"></i></div>`;
-    html += '</div>';
+  var html = '';
+
+  // ====== ① 優先アラート（最重要を最上部） ======
+  var alerts = [];
+  danger.forEach(s=>alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} 売上未達 ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`}));
+  laborOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} Labor超過 ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`}));
+  fcOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} Food Cost超過 ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`}));
+  reqAlerts.forEach(r=>alerts.push({lv:'danger', icon:'ti-checklist', text:`${r.store} 必須チェック未完 ${r.count}件`, act:`switchStore('${r.id}');openStoreCmd()`}));
+  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`期限切れタスク ${overdue.length}件`, act:`go('tasks')`});
+  if (approvalsAll.length) alerts.push({lv:'warn', icon:'ti-checkbox', text:`承認待ち ${approvalsAll.length}件`, act:`go('approval')`});
+  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
+
+  html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}">
+    <div class="card-title"><i class="ti ti-bell" style="color:var(--accent)"></i>優先アラート</div>`;
+  if (!alerts.length) {
+    html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;color:var(--green)"><span style="font-size:18px">🟢</span><span style="font-size:14px;font-weight:600">全項目正常</span></div>`;
+  } else {
+    alerts.slice(0,6).forEach(a=>{
+      var dot = a.lv==='danger'?'🔴':a.lv==='warn'?'🟡':'🔵';
+      html += `<div onclick="${a.act}" style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">
+        <span style="font-size:14px">${dot}</span>
+        <i class="ti ${a.icon}" style="color:${statusColor(a.lv)};font-size:16px"></i>
+        <span style="flex:1;font-size:13px">${a.text}</span>
+        <i class="ti ti-chevron-right" style="font-size:13px;color:var(--muted)"></i></div>`;
+    });
+  }
+  html += `</div>`;
+
+  // ====== ② 店舗ヘルススコア ======
+  if (stores.length === 1) {
+    var s = stores[0];
+    var score = storeHealthScore(s); var hl = healthLabel(score);
+    html += `<div class="card" style="text-align:center">
+      <div class="card-title" style="justify-content:center"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>店舗ヘルススコア</div>
+      <div style="font-size:48px;font-weight:800;color:${statusColor(hl.status)};line-height:1.1">${score}<span style="font-size:18px;color:var(--muted)">/100</span></div>
+      <div style="font-size:15px;font-weight:600;color:${statusColor(hl.status)}">${hl.label}</div>
+      <div class="progress-bar" style="margin-top:10px"><div class="progress-fill" style="background:${statusColor(hl.status)};width:${score}%"></div></div>
+    </div>`;
+  } else if (stores.length > 1) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>店舗ヘルススコア</div>
+      <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">`;
+    stores.forEach(s=>{
+      var score=storeHealthScore(s); var hl=healthLabel(score);
+      html += `<div onclick="switchStore('${s.id}');go('dashboard')" style="min-width:90px;flex:1;text-align:center;background:var(--surface2);border-radius:10px;padding:10px;cursor:pointer;border-top:3px solid ${s.color}">
+        <div style="font-size:11px;color:var(--muted);white-space:nowrap">${s.name}</div>
+        <div style="font-size:26px;font-weight:800;color:${statusColor(hl.status)}">${score}</div>
+        <div style="font-size:9px;color:${statusColor(hl.status)}">${hl.label}</div></div>`;
+    });
+    html += `</div></div>`;
   }
 
-  html += `<div class="card"><div class="card-title"><i class="ti ti-building-store"></i>店舗別状況</div>`;
-  stores.forEach(s => {
-    var color = s.status==='good'?'var(--green)':s.status==='warn'?'var(--yellow)':'var(--red)';
-    var tagClass = s.status==='good'?'tag-green':s.status==='warn'?'tag-yellow':'tag-red';
-    html += `<div class="store-row">
-      <div class="store-dot" style="background:${s.color}"></div>
-      <div style="flex:1" onclick="switchStore('${s.id}');go('budget')">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <div class="store-name">${s.name}</div>
-          <span class="tag ${tagClass}">${s.sp}%</span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
-        <div class="store-meta">${fmtK(s.a)} / ${fmtK(s.b)} | FC ${s.fc}% | Labor ${s.labor}%</div>
-      </div>
-      <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
-    </div>`;
-  });
-  html += '</div>';
+  // ====== ③ 今日の状況（KPI） ======
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>今日の状況 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${getPeriod()}</span></div>
+    <div class="kpi-grid">
+    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">売上</div><div class="kpi-value" style="color:${statusColor(statusFromPct(tp))}">${fmtK(tA)}</div><div class="kpi-sub">予算比 ${tp}%</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">達成率</div><div class="kpi-value" style="color:${statusColor(statusFromPct(tp))}">${tp}%</div><div class="kpi-sub">/ ${fmtK(tB)}</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('foodcost')"><div class="kpi-label">原価率</div><div class="kpi-value" style="color:${statusColor(statusFromCeil(avgFC,31,34))}">${avgFC}%</div><div class="kpi-sub">目標 ≤31%</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('labor')"><div class="kpi-label">Labor</div><div class="kpi-value" style="color:${statusColor(statusFromCeil(avgL,29,32))}">${avgL}%</div><div class="kpi-sub">目標 ≤29%</div></div>
+    </div></div>`;
 
-  // Approvals pending
-  var approvals = ls('approvals', []);
-  var pending = approvals.filter(a => a.status === 'pending');
-  if (pending.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>承認待ち <span class="tag tag-yellow">${pending.length}</span></div>
-      ${pending.slice(0,3).map(a=>`<div class="approval-item">
-        <div class="approval-header"><div class="approval-title">${a.title}</div><span class="tag tag-gray">${a.type}</span></div>
-        <div class="approval-meta">${a.from} · ${a.store} · ${a.date}</div>
-      </div>`).join('')}
-      ${pending.length>3?`<p style="font-size:12px;color:var(--muted);margin-top:8px;cursor:pointer" onclick="go('approval')">+ ${pending.length-3}件を見る</p>`:''}
-    </div>`;
+  // ====== ④ 本日のタスク（隠さない） ======
+  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>本日のタスク`;
+  var openCount = myTasks.length + approvalsAll.length + reqAlerts.reduce((a,r)=>a+r.count,0);
+  html += ` <span class="tag ${openCount?'tag-yellow':'tag-green'}" style="margin-left:auto">${openCount}件</span></div>`;
+  var taskRows = [];
+  overdue.slice(0,5).forEach(t=>taskRows.push({s:'danger', t:t.title, sub:'期限切れ', act:`go('tasks')`}));
+  todayTasks.slice(0,5).forEach(t=>taskRows.push({s:'warn', t:t.title, sub:'本日期限', act:`go('tasks')`}));
+  if (approvalsAll.length) taskRows.push({s:'active', t:`承認待ち ${approvalsAll.length}件`, sub:'承認センター', act:`go('approval')`});
+  reqAlerts.forEach(r=>taskRows.push({s:'danger', t:`${r.store} 必須チェック`, sub:`${r.count}件未完`, act:`switchStore('${r.id}');openStoreCmd()`}));
+  var otherTasks = myTasks.filter(t=>!overdue.includes(t)&&!todayTasks.includes(t));
+  otherTasks.slice(0,4).forEach(t=>taskRows.push({s:'idle', t:t.title, sub:t.due||'期限なし', act:`go('tasks')`}));
+  if (!taskRows.length) {
+    html += `<div style="text-align:center;color:var(--green);padding:14px"><span style="font-size:20px">🎉</span><div style="font-size:13px;margin-top:4px">本日のタスクは完了です</div></div>`;
+  } else {
+    taskRows.forEach(r=>{
+      var dot = r.s==='danger'?'🔴':r.s==='warn'?'🟡':r.s==='active'?'🔵':'⚪';
+      html += `<div onclick="${r.act}" style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">
+        <span style="font-size:13px">${dot}</span>
+        <div style="flex:1"><div style="font-size:13px">${r.t}</div><div style="font-size:10px;color:var(--muted)">${r.sub}</div></div>
+        <i class="ti ti-chevron-right" style="font-size:13px;color:var(--muted)"></i></div>`;
+    });
+  }
+  html += `</div>`;
+
+  // ====== ⑤ 店舗別状況 ======
+  if (stores.length > 1) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-building-store"></i>店舗別状況</div>`;
+    stores.forEach(s => {
+      var color = statusColor(s.status);
+      html += `<div class="store-row">
+        <div class="store-dot" style="background:${s.color}"></div>
+        <div style="flex:1" onclick="switchStore('${s.id}');go('budget')">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div class="store-name">${s.name}</div>
+            <span class="tag ${statusTag(s.status)}">${s.sp}%</span>
+          </div>
+          <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
+          <div class="store-meta">${fmtK(s.a)} / ${fmtK(s.b)} | FC ${s.fc}% | Labor ${s.labor}%</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
+      </div>`;
+    });
+    html += '</div>';
   }
 
   return html;
@@ -5008,6 +5084,31 @@ function renderHiring() {
     ${kpi('採用', apps.filter(c=>c.status==='採用').length, '今月', 'var(--green)')}
   </div>`;
 
+  // ===== 採用〜成長パイプライン（視覚化） =====
+  var obsP = ls('onboardings', []);
+  var empsP = getEmployees().filter(e=>e.status!=='退職');
+  var pipe = [
+    {label:'応募', icon:'ti-inbox', n: apps.filter(a=>['新規応募','要確認'].includes(a.status)).length, col:'var(--muted)'},
+    {label:'面接', icon:'ti-calendar', n: apps.filter(a=>['面接調整中','面接予定','面接完了'].includes(a.status)).length, col:'var(--accent2)'},
+    {label:'採用', icon:'ti-user-check', n: apps.filter(a=>a.status==='採用').length, col:'var(--accent)'},
+    {label:'OB', icon:'ti-school', n: obsP.filter(o=>o.obStatus!=='登録完了'&&o.obStatus!=='キャンセル').length, col:'var(--accent)'},
+    {label:'Training', icon:'ti-run', n: empsP.filter(e=>(e.step||1)<=0).length, col:'var(--yellow)'},
+    {label:'80%', icon:'ti-coin', n: empsP.filter(e=>effectiveTipRate(e.name)===80).length, col:'var(--green)'},
+    {label:'90%', icon:'ti-coin', n: empsP.filter(e=>effectiveTipRate(e.name)===90).length, col:'var(--green)'},
+    {label:'100%', icon:'ti-coin', n: empsP.filter(e=>(e.role==='crew'||e.role==='sl')&&effectiveTipRate(e.name)===100).length, col:'var(--green)'},
+    {label:'Leader候補', icon:'ti-crown', n: empsP.filter(e=>leaderSkillApproved(e.name)).length, col:'var(--purple)'},
+  ];
+  html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-guide" style="color:var(--accent)"></i>採用〜成長パイプライン</div>
+    <div style="display:flex;gap:3px;overflow-x:auto;padding-bottom:4px">`;
+  pipe.forEach((p,i)=>{
+    html += `<div style="min-width:58px;flex:1;text-align:center;background:var(--surface2);border-radius:8px;padding:8px 3px">
+      <i class="ti ${p.icon}" style="font-size:15px;color:${p.col}"></i>
+      <div style="font-size:17px;font-weight:700;color:${p.col};line-height:1.2">${p.n}</div>
+      <div style="font-size:9px;color:var(--muted);white-space:nowrap">${p.label}</div></div>`;
+    if (i<pipe.length-1) html += `<div style="display:flex;align-items:center;color:var(--border)"><i class="ti ti-chevron-right" style="font-size:11px"></i></div>`;
+  });
+  html += `</div></div>`;
+
   // 要確認（不足情報）
   var needCheck = apps.filter(a=>a.status==='要確認' || a.store==='未分類');
   if (needCheck.length) {
@@ -6198,33 +6299,56 @@ function renderApproval() {
   var approvals = ls('approvals', []);
   var pending = approvals.filter(a=>a.status==='pending');
   var done = approvals.filter(a=>a.status!=='pending');
+
+  // タイプ別アイコン
+  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star'};
+  // タイプ別件数
+  var byType = {};
+  pending.forEach(a=>byType[a.type]=(byType[a.type]||0)+1);
+
   var html = `<div class="section-header">
-    <div class="section-title">承認</div>
-    <span class="tag tag-yellow">${pending.length}件待ち</span>
+    <div><div class="section-title">承認センター</div><div class="section-sub">全ての承認を一箇所で</div></div>
+    <span class="tag ${pending.length?'tag-yellow':'tag-green'}">${pending.length}件待ち</span>
   </div>`;
+
+  // タイプ別サマリー（バッジ）
+  if (pending.length) {
+    html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">`;
+    Object.keys(byType).forEach(t=>{
+      html += `<span class="tag tag-yellow" style="font-size:11px"><i class="ti ${typeIcon[t]||'ti-circle'}"></i> ${t} ${byType[t]}</span>`;
+    });
+    html += `</div>`;
+  }
+
   if (!pending.length) {
-    html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>承認待ちはありません</div>`;
+    html += `<div class="card" style="text-align:center;padding:20px"><span style="font-size:24px">🟢</span><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:4px">承認待ちはありません</div></div>`;
   } else {
-    pending.forEach(a => {
-      html += `<div class="approval-item">
-        <div class="approval-header">
-          <div><div class="approval-title">${a.title}</div>
-          <div class="approval-meta">${a.from} · ${a.store} · ${a.date}</div></div>
-          <span class="tag tag-yellow">${a.type}</span>
-        </div>
-        <div class="approval-actions">
-          <button class="btn btn-success btn-sm" onclick="approveItem('${a.id}','approved')"><i class="ti ti-check"></i> 承認</button>
-          <button class="btn btn-danger btn-sm" onclick="approveItem('${a.id}','rejected')"><i class="ti ti-x"></i> 却下</button>
-        </div>
-      </div>`;
+    // タイプごとにグループ表示
+    Object.keys(byType).forEach(type=>{
+      var items = pending.filter(a=>a.type===type);
+      html += `<div class="card"><div class="card-title"><i class="ti ${typeIcon[type]||'ti-circle'}" style="color:var(--accent)"></i>${type} <span class="tag tag-yellow" style="margin-left:auto">${items.length}</span></div>`;
+      items.forEach(a => {
+        html += `<div class="approval-item">
+          <div class="approval-header">
+            <div><div class="approval-title">${a.title}</div>
+            <div class="approval-meta">${a.from} · ${a.store} · ${a.date}</div></div>
+          </div>
+          <div class="approval-actions">
+            <button class="btn btn-success btn-sm" onclick="approveItem('${a.id}','approved')"><i class="ti ti-check"></i> 承認</button>
+            <button class="btn btn-danger btn-sm" onclick="approveItem('${a.id}','rejected')"><i class="ti ti-x"></i> 却下</button>
+          </div>
+        </div>`;
+      });
+      html += `</div>`;
     });
   }
+
   if (done.length) {
-    html += `<div class="card"><div class="card-title">処理済み</div>`;
-    done.slice(-5).reverse().forEach(a => {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>処理済み</div>`;
+    done.slice(-6).reverse().forEach(a => {
       html += `<div class="approval-item">
         <div class="approval-header">
-          <div><div class="approval-title">${a.title}</div><div class="approval-meta">${a.from}</div></div>
+          <div><div class="approval-title">${a.title}</div><div class="approval-meta">${a.from} · ${a.type}</div></div>
           <span class="tag ${a.status==='approved'?'tag-green':'tag-red'}">${a.status==='approved'?'承認':'却下'}</span>
         </div>
       </div>`;
@@ -6394,6 +6518,46 @@ function renderPGD(empName, isManagerView) {
   return html;
 }
 
+/* ゲーミフィケーション: 実績バッジ */
+function earnedBadges(name, emp) {
+  emp = emp || getEmployees().find(e=>e.name===name) || {};
+  var sk = getEmpSkills(name);
+  var lv3 = Object.values(sk).filter(x=>x.status==='承認'&&x.level>=3).length;
+  var approvedPos = approvedPositions(name).length;
+  var rate = (typeof effectiveTipRate==='function') ? effectiveTipRate(name) : 0;
+  var goalsHit = ls('goals_v2', []).filter(g=>g.owner===name && (g.current||0)>=g.target).length;
+  var badges = [];
+  // Training修了（在籍かつstep>=1）
+  if ((emp.step||0) >= 1 && emp.status==='在籍') badges.push({icon:'🏆', label:'Training修了', got:true});
+  else badges.push({icon:'🏆', label:'Training修了', got:false});
+  // Lv3取得
+  badges.push({icon:'⭐', label:'Lv3取得', got:lv3>=1, sub:lv3?lv3+'個':''});
+  // マルチポジション（3つ以上承認）
+  badges.push({icon:'🎯', label:'マルチ習得', got:approvedPos>=3, sub:approvedPos?approvedPos+'ポジ':''});
+  // Tip 100%
+  badges.push({icon:'🚀', label:'Tip 100%', got:rate>=100});
+  // Goal達成
+  badges.push({icon:'🔥', label:'Goal達成', got:goalsHit>=1, sub:goalsHit?goalsHit+'回':''});
+  // Leader候補
+  badges.push({icon:'👑', label:'Leader候補', got:leaderSkillApproved(name)});
+  return badges;
+}
+function renderBadges(name, emp) {
+  var badges = earnedBadges(name, emp);
+  var gotCount = badges.filter(b=>b.got).length;
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-award" style="color:var(--accent)"></i>実績バッジ <span class="tag ${gotCount?'tag-green':'tag-gray'}" style="margin-left:auto">${gotCount}/${badges.length}</span></div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">`;
+  badges.forEach(b=>{
+    html += `<div style="text-align:center;padding:10px 4px;border-radius:10px;background:${b.got?'var(--surface2)':'transparent'};border:1px solid ${b.got?'var(--accent)':'var(--border)'};opacity:${b.got?1:0.45}">
+      <div style="font-size:24px;filter:${b.got?'none':'grayscale(1)'}">${b.icon}</div>
+      <div style="font-size:10px;font-weight:600;margin-top:2px">${b.label}</div>
+      ${b.got&&b.sub?`<div style="font-size:9px;color:var(--green)">${b.sub}</div>`:b.got?'<div style="font-size:9px;color:var(--green)">獲得！</div>':'<div style="font-size:9px;color:var(--muted)">未獲得</div>'}
+    </div>`;
+  });
+  html += `</div></div>`;
+  return html;
+}
+
 function renderMypage() {
   var rc = ROLE_CONFIG[curRole];
   var isCrewView = (curRole==='crew' || curRole==='sl');
@@ -6419,6 +6583,10 @@ function renderMypage() {
   /* ===== Crew My Dashboard（優先順位順） ===== */
   var emp = getEmployees().find(e=>e.name===me);
   var week = getWeekStr();
+
+  // ===== ゲーミフィケーション（実績バッジ） =====
+  html += renderBadges(me, emp);
+
   var allGoals = ls('goals_v2', []);
   var storeGoals = allGoals.filter(g=>g.scope==='store' && (g.storeId===storeId||g.storeId==='ALL'));
   var personalGoals = allGoals.filter(g=>g.scope==='personal' && g.owner===me);
