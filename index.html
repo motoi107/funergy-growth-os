@@ -2575,10 +2575,25 @@ function getVisibleStores() {
 }
 function storeData(id) {
   var d = DEMO_BUDGET[id] || {b:200000,a:190000,fc:30,labor:28};
-  var sp = pct(d.a, d.b);
-  var status = sp >= 100 ? 'good' : sp >= 90 ? 'warn' : 'danger';
-  return Object.assign({}, d, {id, name:(STORES.find(s=>s.id===id)||{name:id}).name,
-    color:(STORES.find(s=>s.id===id)||{color:'#888'}).color, sp, status});
+  var result = Object.assign({}, d, {id, name:(STORES.find(s=>s.id===id)||{name:id}).name,
+    color:(STORES.find(s=>s.id===id)||{color:'#888'}).color});
+  // 日次実績が入力されていれば、その日時点の累計を使う（現在地ベース）
+  try {
+    var c = cumulativeToToday(id);
+    if (c && c.daysWithActual > 0) {
+      result.b = Math.round(c.budToToday);   // 累計予算（本日まで）
+      result.a = Math.round(c.actToToday);   // 累計実績（本日まで）
+      result.sp = c.paceRate;
+      if (c.costRate>0) result.fc = c.costRate;
+      if (c.laborRate>0) result.labor = c.laborRate;
+      result.status = result.sp>=100?'good':result.sp>=90?'warn':'danger';
+      result.cumulative = true;
+      return result;
+    }
+  } catch(e){}
+  result.sp = pct(d.a, d.b);
+  result.status = result.sp >= 100 ? 'good' : result.sp >= 90 ? 'warn' : 'danger';
+  return result;
 }
 
 /* ============================================================
@@ -2660,12 +2675,13 @@ function renderDashboard() {
   }
 
   // ====== ③ 今日の状況（KPI） ======
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>今日の状況 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${getPeriod()}</span></div>
+  var isCum = stores.some(s=>s.cumulative);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>${isCum?'現在地（累計）':'今日の状況'} <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${getPeriod()}</span></div>
     <div class="kpi-grid">
-    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">売上</div><div class="kpi-value" style="color:${statusColor(statusFromPct(tp))}">${fmtK(tA)}</div><div class="kpi-sub">予算比 ${tp}%</div></div>
-    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">達成率</div><div class="kpi-value" style="color:${statusColor(statusFromPct(tp))}">${tp}%</div><div class="kpi-sub">/ ${fmtK(tB)}</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">${isCum?'累計売上':'売上'}</div><div class="kpi-value" style="color:${statusColor(statusFromPct(tp))}">${fmtK(tA)}</div><div class="kpi-sub">${isCum?'対予算':'予算比'} ${tp}%</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('budget')"><div class="kpi-label">対予算</div><div class="kpi-value" style="color:${statusColor(statusFromPct(tp))}">${tp}%</div><div class="kpi-sub">/ ${fmtK(tB)}${isCum?' 累計予算':''}</div></div>
     <div class="kpi" style="cursor:pointer" onclick="go('foodcost')"><div class="kpi-label">原価率</div><div class="kpi-value" style="color:${statusColor(statusFromCeil(avgFC,31,34))}">${avgFC}%</div><div class="kpi-sub">目標 ≤31%</div></div>
-    <div class="kpi" style="cursor:pointer" onclick="go('labor')"><div class="kpi-label">Labor</div><div class="kpi-value" style="color:${statusColor(statusFromCeil(avgL,29,32))}">${avgL}%</div><div class="kpi-sub">目標 ≤29%</div></div>
+    <div class="kpi" style="cursor:pointer" onclick="go('labor')"><div class="kpi-label">人件費率</div><div class="kpi-value" style="color:${statusColor(statusFromCeil(avgL,29,32))}">${avgL}%</div><div class="kpi-sub">目標 ≤29%</div></div>
     </div></div>`;
 
   // ====== ④ 本日のタスク（隠さない） ======
@@ -3025,6 +3041,44 @@ function getBudgets() {
 }
 function saveBudgets(b) { lsSet('budgets_v2', b); }
 
+/* その日時点での累計（予算・実績・原価・人件費）を算出
+   今日までの日次予算と日次実績を積み上げ、現在地を返す */
+function cumulativeToToday(storeId) {
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId);
+  var days = monthDays();
+  var actuals = getDailyActuals(storeId);
+  var todayStr = new Date().toISOString().slice(0,10);
+  var budToToday=0, actToToday=0, budMonth=0, actMonth=0;
+  var costToToday=0, laborToToday=0, daysPassed=0, daysWithActual=0;
+  days.forEach(d => {
+    var ov = actuals[d.date] || {};
+    var dayBud = ov.budget!=null ? ov.budget : (b?dayBudgetFromBases(b,d.dow):0);
+    budMonth += dayBud;
+    var dayAct = ov.actual!=null ? ov.actual : 0;
+    actMonth += dayAct;
+    if (d.date <= todayStr) {
+      budToToday += dayBud;
+      actToToday += dayAct;
+      daysPassed++;
+      if (ov.actual!=null && ov.actual>0) {
+        daysWithActual++;
+        // 原価・人件費（日次入力があれば反映）
+        if (ov.foodCost!=null) costToToday += ov.foodCost;
+        if (ov.labor!=null) laborToToday += ov.labor;
+      }
+    }
+  });
+  return {
+    budToToday, actToToday, budMonth, actMonth, daysPassed, daysWithActual,
+    costToToday, laborToToday,
+    paceRate: budToToday ? Math.round(actToToday/budToToday*1000)/10 : 0,
+    monthRate: budMonth ? Math.round(actMonth/budMonth*1000)/10 : 0,
+    costRate: actToToday ? Math.round(costToToday/actToToday*1000)/10 : 0,
+    laborRate: actToToday ? Math.round(laborToToday/actToToday*1000)/10 : 0,
+  };
+}
+
 function basisAmount(basis) {
   if (basis.type === 'base') {
     var week = (basis.days||[]).reduce((a,d)=>a + (parseFloat(d.guests)||0)*(parseFloat(d.spend)||0), 0);
@@ -3053,47 +3107,72 @@ function renderBudgetSummary() {
   var budgets = getBudgets();
   var stores = getVisibleStores();
   var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
-
-  var tB = visible.reduce((a,b)=>a+budgetTotal(b),0);
-  var tA = visible.reduce((a,b)=>a+b.actual,0);
-  var tp = pct(tA, tB);
   var canEdit = ROLE_CONFIG[curRole].canCreate;
+  var today = new Date();
 
-  var html = `<div class="kpi-grid" style="margin-bottom:12px;">
-    ${kpi('予算合計', fmtK(Math.round(tB)), '対象 '+visible.length+'店', 'var(--muted)')}
-    ${kpi('実績合計', fmtK(tA), '今月', tp>=100?'var(--green)':'var(--red)')}
-    ${kpi('達成率', tp+'%', tp>=100?'達成':'未達', tp>=100?'var(--green)':tp>=90?'var(--yellow)':'var(--red)')}
-    ${kpi('差異', fmtK(Math.abs(tA-Math.round(tB))), tA>=tB?'▲超過':'▼不足', tA>=tB?'var(--green)':'var(--red)')}
+  // 全店舗の累計を集計
+  var agg = {budToToday:0, actToToday:0, budMonth:0, actMonth:0, costToToday:0, laborToToday:0};
+  var cumByStore = {};
+  visible.forEach(b => {
+    var c = cumulativeToToday(b.storeId);
+    cumByStore[b.storeId] = c;
+    agg.budToToday += c.budToToday; agg.actToToday += c.actToToday;
+    agg.budMonth += c.budMonth; agg.actMonth += c.actMonth;
+    agg.costToToday += c.costToToday; agg.laborToToday += c.laborToToday;
+  });
+  var pace = agg.budToToday ? Math.round(agg.actToToday/agg.budToToday*1000)/10 : 0;
+  var monthRate = agg.budMonth ? Math.round(agg.actMonth/agg.budMonth*1000)/10 : 0;
+  var diff = agg.actToToday - agg.budToToday;
+
+  // ===== 現在地（本日時点の累計）=====
+  var html = `<div class="card" style="border-left:4px solid ${statusColor(statusFromPct(pace))}">
+    <div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>現在地（${today.getMonth()+1}/${today.getDate()}時点の累計）</div>
+    <div class="kpi-grid">
+      ${kpi('累計予算', fmtK(Math.round(agg.budToToday)), '本日まで', 'var(--muted)')}
+      ${kpi('累計実績', fmtK(Math.round(agg.actToToday)), '本日まで', statusColor(statusFromPct(pace)))}
+      ${kpi('対予算', pace+'%', diff>=0?'▲'+fmtK(Math.abs(Math.round(diff))):'▼'+fmtK(Math.abs(Math.round(diff))), statusColor(statusFromPct(pace)))}
+      ${kpi('着地見込', fmtK(Math.round(agg.actToToday/(agg.budToToday||1)*agg.budMonth)), '対月予算', 'var(--muted)')}
+    </div>
+    <div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:${statusColor(statusFromPct(pace))};width:${Math.min(pace,100)}%"></div></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">月予算 ${fmtK(Math.round(agg.budMonth))} / 月間達成率 ${monthRate}%（実績入力済の累計ベース）</div>
   </div>`;
 
+  // 原価・人件費の累計（入力がある場合のみ）
+  if (agg.costToToday>0 || agg.laborToToday>0) {
+    var costR = agg.actToToday ? Math.round(agg.costToToday/agg.actToToday*1000)/10 : 0;
+    var laborR = agg.actToToday ? Math.round(agg.laborToToday/agg.actToToday*1000)/10 : 0;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-receipt-2" style="color:var(--accent)"></i>累計コスト（本日まで）</div>
+      <div class="kpi-grid">
+        ${kpi('累計原価', fmtK(Math.round(agg.costToToday)), '本日まで', 'var(--muted)')}
+        ${kpi('原価率', costR+'%', '目標 ≤31%', statusColor(statusFromCeil(costR,31,34)))}
+        ${kpi('累計人件費', fmtK(Math.round(agg.laborToToday)), '本日まで', 'var(--muted)')}
+        ${kpi('人件費率', laborR+'%', '目標 ≤29%', statusColor(statusFromCeil(laborR,29,32)))}
+      </div></div>`;
+  }
+
+  // ===== 店舗別の現在地 =====
   visible.forEach(b => {
     var s = STORES.find(x=>x.id===b.storeId) || {name:b.storeId, color:'#888'};
-    var total = budgetTotal(b);
-    var sp = pct(b.actual, total);
-    var color = sp>=100?'var(--green)':sp>=90?'var(--yellow)':'var(--red)';
-    var statusTag = b.status==='承認済'?'tag-green':b.status==='承認待ち'?'tag-yellow':'tag-gray';
+    var c = cumByStore[b.storeId];
+    var st = statusFromPct(c.paceRate);
+    var color = statusColor(st);
+    var sdiff = c.actToToday - c.budToToday;
     html += `<div class="card">
       <div class="approval-header">
         <div class="card-title" style="color:${s.color};margin:0"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
-        <span class="tag ${statusTag}">${b.status}</span>
+        <span class="tag ${statusTag(st)}">対予算 ${c.paceRate}%</span>
       </div>
       <div class="kpi-grid" style="margin:8px 0;">
-        ${kpi('予算', fmtK(Math.round(total)), b.bases.length+'根拠', 'var(--muted)')}
-        ${kpi('実績', fmtK(b.actual), '今月', color)}
-        ${kpi('達成率', sp+'%', sp>=100?'達成':'未達', color)}
-        ${kpi('差異', fmtK(Math.abs(b.actual-Math.round(total))), b.actual>=total?'▲':'▼', b.actual>=total?'var(--green)':'var(--red)')}
+        ${kpi('累計予算', fmtK(Math.round(c.budToToday)), '本日まで', 'var(--muted)')}
+        ${kpi('累計実績', fmtK(Math.round(c.actToToday)), c.daysWithActual+'日入力', color)}
+        ${kpi('対予算', c.paceRate+'%', sdiff>=0?'▲':'▼', color)}
+        ${kpi('月予算', fmtK(Math.round(c.budMonth)), '着地'+(c.budToToday?Math.round(c.actToToday/c.budToToday*100):0)+'%見込', 'var(--muted)')}
       </div>
-      <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(sp,100)}%"></div></div>
-      <div style="margin-top:8px">${b.bases.map(bs=>{
-        var t=BASIS_TYPES.find(x=>x.id===bs.type)||{label:bs.type};
-        return `<div style="font-size:11px;color:var(--muted);display:flex;justify-content:space-between;padding:2px 0">
-          <span><span class="tag ${bs.type==='base'?'tag-blue':bs.type==='plan'?'tag-green':'tag-yellow'}" style="font-size:9px;padding:1px 5px">${t.label}</span> ${bs.name}</span>
-          <span>${fmtK(Math.round(basisAmount(bs)))}</span></div>`;
-      }).join('')}</div>
+      <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(c.paceRate,100)}%"></div></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">${c.daysPassed}日経過 · 差異 ${sdiff>=0?'+':''}${fmtK(Math.round(sdiff))}</div>
       ${canEdit?`<div class="approval-actions">
         <button class="btn btn-secondary btn-sm" onclick="openBudgetEditor('${b.storeId}')"><i class="ti ti-edit"></i> 予算編集</button>
-        <button class="btn btn-secondary btn-sm" onclick="openActualModal('${b.storeId}')"><i class="ti ti-coin"></i> 月次実績</button>
-        ${b.status==='承認待ち'&&ROLE_CONFIG[curRole].canApprove?`<button class="btn btn-success btn-sm" onclick="approveBudget('${b.storeId}')"><i class="ti ti-check"></i> 承認</button>`:''}
+        <button class="btn btn-secondary btn-sm" onclick="setBudgetTab('daily')"><i class="ti ti-calendar"></i> 日次入力</button>
       </div>`:''}
     </div>`;
   });
@@ -3540,23 +3619,32 @@ function openDailyActualModal(storeId, date, dow) {
       </div>
     </div>
     <div class="form-group"><label class="form-label">イベント・メモ</label><input class="form-input" id="da-event" value="${ov.event||''}" placeholder="例: 近隣で祭り / 雨で客足減"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">当日原価 ($)</label><input class="form-input" id="da-food" type="number" value="${ov.foodCost!=null?ov.foodCost:''}" placeholder="任意"></div>
+      <div class="form-group"><label class="form-label">当日人件費 ($)</label><input class="form-input" id="da-labor" type="number" value="${ov.labor!=null?ov.labor:''}" placeholder="任意"></div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">原価・人件費を入れると累計の原価率・人件費率が現在地に反映されます</div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveDailyActual('${storeId}','${date}')">保存</button></div>`);
 }
 function saveDailyActual(storeId, date) {
   var actuals = getDailyActuals(storeId);
+  var prev = actuals[date] || {};
   var budget = parseFloat(document.getElementById('da-budget').value);
   var actual = document.getElementById('da-actual').value;
   var guests = document.getElementById('da-guests').value;
-  actuals[date] = {
+  var food = document.getElementById('da-food').value;
+  var labor = document.getElementById('da-labor').value;
+  actuals[date] = Object.assign({}, prev, {
     budget: isNaN(budget)?null:budget,
     actual: actual===''?null:parseFloat(actual),
     guests: guests===''?null:parseFloat(guests),
     weather: document.getElementById('da-weather').value,
     event: document.getElementById('da-event').value.trim(),
-  };
+    foodCost: food===''?(prev.foodCost!=null?prev.foodCost:null):parseFloat(food),
+    labor: labor===''?(prev.labor!=null?prev.labor:null):parseFloat(labor),
+  });
   setDailyActuals(storeId, actuals);
-  // 月次実績にも累計反映
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId);
   if (b) { b.actual = Object.values(actuals).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
