@@ -5300,8 +5300,9 @@ function renderAttendance() {
 
   // データ反映ボタン（実勤怠のみ。シフト連携なし）
   html += `<div class="card" style="padding:10px;margin-bottom:10px">
-    <button class="btn btn-primary" style="width:100%" onclick="attLoadData('${storeId}','${store.toastGuid||''}')"><i class="ti ti-refresh"></i> 勤怠データを反映</button>
-    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'Toastの打刻データ（出退勤）を取得します。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
+    <button class="btn btn-primary" style="width:100%" onclick="attLoadData('${storeId}','${store.toastGuid||''}')"><i class="ti ti-refresh"></i> 勤怠データを反映（同期DB）</button>
+    <button class="btn btn-secondary" id="att-backfill-btn" style="width:100%;margin-top:6px" onclick="attBackfillMonth('${storeId}','${store.toastGuid||''}')"><i class="ti ti-cloud-download"></i> Toastから月を直接取込</button>
+    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'「同期DB」で取れない日は「直接取込」でToastから補完できます。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
 
   return html + renderAttMonthData(storeId, store);
 }
@@ -5309,13 +5310,39 @@ function renderAttendance() {
 async function attLoadData(storeId, guid) {
   var el=document.getElementById('att-status');
   if (!guid) { if(el)el.textContent='Toast GUID未設定のため取得できません。'; return; }
-  if (el) el.textContent='Toastから勤怠データを取得中…';
+  if (el) el.textContent='同期済みDBから勤怠を取得中…';
   var lab = await syncTipLaborFromDB(storeId, guid, attMonthDays());
   if (el && lab.diag) {
     var sample = (lab.rawDates||[]).slice(0,5).join(', ');
     el.innerHTML = `<span style="color:var(--muted)">${lab.diag}</span>` + (sample?`<br><span style="color:var(--muted);font-size:10px">返却日付例: ${sample}${lab.rawDates.length>5?' …':''}</span>`:'');
   }
   showToast(`勤怠データ ${lab.updated}日分を反映しました`,'success');
+  renderPage('attendance');
+}
+
+/* Toastから直接その月の各日を取り込む（cron/DBに無い日を補完） */
+async function attBackfillMonth(storeId, guid) {
+  if (!guid) { showToast('Toast GUID未設定','danger'); return; }
+  var el=document.getElementById('att-status');
+  var btn=document.getElementById('att-backfill-btn');
+  if (btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader"></i> 取込中…'; }
+  var days = attMonthDays();
+  // 未来日は除外
+  var todayStr = new Date().toISOString().slice(0,10);
+  var target = days.filter(d=>d.date<=todayStr);
+  var ok=0, withData=0, fail=0;
+  for (var i=0;i<target.length;i++){
+    var d=target[i];
+    if (el) el.textContent=`Toastから取得中… ${i+1}/${target.length}日 (${d.date.slice(5)})`;
+    try {
+      var r = await fetchTipLabor(storeId, guid, d.date);
+      if (r && r.error) { fail++; }
+      else { ok++; if (r && r.count>0) withData++; }
+    } catch(e){ fail++; }
+  }
+  if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> Toastから月を直接取込'; }
+  if (el) el.innerHTML=`<span style="color:var(--green)">取込完了: ${ok}日成功（うち勤怠あり${withData}日）${fail?' / 失敗'+fail+'日':''}</span>`;
+  showToast(`Toastから ${withData}日分の勤怠を取り込みました`, 'success');
   renderPage('attendance');
 }
 
