@@ -667,13 +667,14 @@ async function fetchTipLaborFromDB(guid, dateFrom, dateTo) {
   } catch (e) { return []; }
 }
 async function syncTipLaborFromDB(storeId, guid, days) {
-  if (!guid) return { updated: 0 };
+  if (!guid) return { updated: 0, diag:'GUID未設定' };
   var rows = await fetchTipLaborFromDB(guid, days[0].date, days[days.length-1].date);
   var staff = getEmployees();
-  var updated = 0;
+  var updated = 0, emptyData = 0, savedDates = [];
+  var rawDates = rows.map(r=>r.business_date);
   rows.forEach(row=>{
     var list = row.data || [];
-    if (!Array.isArray(list) || !list.length) return;
+    if (!Array.isArray(list) || !list.length) { emptyData++; return; }
     var labor = {};
     list.forEach(emp=>{
       var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
@@ -682,10 +683,28 @@ async function syncTipLaborFromDB(storeId, guid, days) {
       var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
       labor[key] = { lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name };
     });
-    setTipLabor(storeId, row.business_date, labor);
+    // business_date を YYYY-MM-DD に正規化（タイムスタンプ/YYYYMMDD等に対応）
+    var bd = normalizeBusinessDate(row.business_date);
+    setTipLabor(storeId, bd, labor);
+    savedDates.push(bd);
     updated++;
   });
-  return { updated };
+  return { updated, rowCount: rows.length, emptyData, rawDates, savedDates,
+    diag: `DB返却${rows.length}行 / 保存${updated}日 / data空${emptyData}行` };
+}
+/* business_date を YYYY-MM-DD に正規化 */
+function normalizeBusinessDate(bd) {
+  if (bd==null) return '';
+  var s = String(bd);
+  // 既に YYYY-MM-DD
+  var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[1]+'-'+m[2]+'-'+m[3];
+  // YYYYMMDD
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return m[1]+'-'+m[2]+'-'+m[3];
+  // フォールバック: Dateとして解釈しローカル日付化
+  try { var d=new Date(s); if(!isNaN(d)) return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); } catch(e){}
+  return s;
 }
 
 /* 期間一括: dateFrom〜dateTo の各日をEdge Function経由でToastから取得→DB保存。
@@ -5292,6 +5311,10 @@ async function attLoadData(storeId, guid) {
   if (!guid) { if(el)el.textContent='Toast GUID未設定のため取得できません。'; return; }
   if (el) el.textContent='Toastから勤怠データを取得中…';
   var lab = await syncTipLaborFromDB(storeId, guid, attMonthDays());
+  if (el && lab.diag) {
+    var sample = (lab.rawDates||[]).slice(0,5).join(', ');
+    el.innerHTML = `<span style="color:var(--muted)">${lab.diag}</span>` + (sample?`<br><span style="color:var(--muted);font-size:10px">返却日付例: ${sample}${lab.rawDates.length>5?' …':''}</span>`:'');
+  }
   showToast(`勤怠データ ${lab.updated}日分を反映しました`,'success');
   renderPage('attendance');
 }
