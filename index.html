@@ -232,6 +232,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .tag-yellow { background: #fdf3e0; color: var(--yellow); }
 .tag-blue { background: #eaf1fb; color: var(--accent2); }
 .tag-gray { background: var(--surface2); color: var(--muted); }
+.tag-orange { background: #fdeee4; color: var(--accent); }
 
 /* store rows */
 .store-row {
@@ -1142,6 +1143,11 @@ function getEmployees() {
 }
 /* 従業員の評価係数（Tip Rate: 0.8/0.9/1.0） */
 function empCoef(name) {
+  // Tip Rate Policy（No Tip / 80 / 90 / 100% + 3ヶ月自動100%）を係数に反映
+  if (typeof effectiveTipRate === 'function') {
+    var rate = effectiveTipRate(name);
+    if (rate != null) return rate / 100; // 0(NoTip)/0.8/0.9/1.0
+  }
   var e = getEmployees().find(x=>x.name===name);
   return e ? (e.coef!=null?e.coef:1.0) : 1.0;
 }
@@ -3999,11 +4005,15 @@ function renderShiftAdmin() {
   <div class="phase-tabs">
     <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')">提出状況</div>
     <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')">シフト作成</div>
+    <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')">カバー候補</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')">Labor Cost</div>
+    ${['ceo','gm','am'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='rules'?' active':''}" onclick="setShiftAdminTab('rules')">特別ルール</div>`:''}
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
   else if (shiftAdminTab==='build') html += renderShiftBuild(storeId, week);
+  else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
+  else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
   else html += renderShiftLabor(storeId, week);
   return html;
 }
@@ -4062,7 +4072,7 @@ function remindAll(storeId, week) {
 
 /* シフト作成（Grid + Auto-Generate + 警告） */
 function renderShiftBuild(storeId, week) {
-  var positions = getStorePositions(storeId);
+  var positions = assignablePositions(storeId);
   var plan = getShiftPlan(storeId, week) || {status:'下書き', cells:{}};
   var warnings = checkShiftWarnings(storeId, week, plan);
 
@@ -4250,72 +4260,391 @@ function approveOTOnly(storeId, week, name) {
 }
 
 /* Auto-Generate: Availability+Skill+Min/Maxを考慮 */
+/* ============ 特別ルール（人間関係設定） ============
+   { storeId: { pairs:[{a,b,type:'forbid'|'recommend'}], trainerRequired:[names], lv3Pair:[names] } }
+   Crewには非表示・Store Manager以上のみ編集 */
+function getSpecialRules(storeId) {
+  var all = ls('special_rules', {});
+  return all[storeId] || { pairs:[], trainerRequired:[], lv3Pair:[] };
+}
+function setSpecialRules(storeId, rules) {
+  var all = ls('special_rules', {});
+  all[storeId] = rules; lsSet('special_rules', all);
+}
+/* 勤務条件（スタッフ個別）: { name: {opening:'any'|'only'|'no', closing:'any'|'only'|'no', days:'any'|'weekday'|'weekend', minH, maxH} } */
+function getWorkConditions(storeId) { var all=ls('work_conditions', {}); return all[storeId] || {}; }
+function setWorkCondition(storeId, name, cond) {
+  var all = ls('work_conditions', {}); if(!all[storeId]) all[storeId]={};
+  all[storeId][name] = cond; lsSet('work_conditions', all);
+}
+function getWorkCondition(storeId, name) { return getWorkConditions(storeId)[name] || {opening:'any',closing:'any',days:'any',minH:0,maxH:40}; }
+/* この枠(day/period)にこの人を配置できるか（勤務条件チェック）。Lunch=Opening寄り, Dinner=Closing寄りとみなす */
+function workCondOk(storeId, name, day, period) {
+  var c = getWorkCondition(storeId, name);
+  var isWeekend = (day==='土'||day==='日');
+  if (c.days==='weekday' && isWeekend) return false;
+  if (c.days==='weekend' && !isWeekend) return false;
+  // Opening≒Lunch, Closing≒Dinner として近似
+  if (c.opening==='only' && period!=='Lunch') return false;   // Openingのみ→Lunch枠のみ
+  if (c.opening==='no' && period==='Lunch') return false;     // Opening不可→Lunch不可
+  if (c.closing==='only' && period!=='Dinner') return false;  // Closingのみ→Dinner枠のみ
+  if (c.closing==='no' && period==='Dinner') return false;    // Closing不可→Dinner不可
+  return true;
+}
+/* 2人が同時間帯に入れるか（禁止ペアでない） */
+function pairAllowed(storeId, name1, name2) {
+  var r = getSpecialRules(storeId);
+  return !r.pairs.some(p=>p.type==='forbid' && ((p.a===name1&&p.b===name2)||(p.a===name2&&p.b===name1)));
+}
+/* その人がTrainer必須/Lv3とセット必須か */
+function needsTrainer(storeId, name) { return getSpecialRules(storeId).trainerRequired.includes(name); }
+function needsLv3Pair(storeId, name) { return getSpecialRules(storeId).lv3Pair.includes(name); }
+function isLv3Anywhere(name) { var sk=getEmpSkills(name); return Object.values(sk).some(x=>x.status==='承認'&&x.level>=3); }
+
+/* シフト生成優先度（仕様書 Priority 3-10） */
+function shiftPriority(emp) {
+  if (emp.role==='am') return 10;            // Store Manager相当
+  if (emp.isSL) return 9;                     // Store Leader
+  if (emp.role==='sl') return 9;
+  var title = (emp.title||'').toLowerCase();
+  if (emp.emp==='正社員' || title.includes('f-crew') || title.includes('full')) return 8; // F-Crew
+  // 主力Part Time = スキル承認3つ以上 / 通常 / Training(step<=0)
+  if ((emp.step||1) <= 0) return 3;          // Training Crew
+  var ap = approvedPositions(emp.name).length;
+  if (ap >= 3) return 7;                       // 主力Part Time
+  return 5;                                    // 通常Part Time
+}
+/* そのスタッフが Lv1以上で対応できるポジションか（Energy/Leadershipは評価軸なので除外） */
+function canDoPosition(name, pos) {
+  if (pos==='Energy' || pos==='Leadership') return true; // 評価軸（必須枠ではない）
+  var sk = getEmpSkills(name);
+  var s = sk[pos];
+  return !!(s && s.status==='承認' && s.level>=1);
+}
+/* 実際にアサインが必要なポジション（Energy/Leadershipは評価軸なので枠から除外） */
+function assignablePositions(storeId) {
+  return getStorePositions(storeId).filter(p=>p!=='Energy' && p!=='Leadership');
+}
+/* Training中スタッフ（初回勤務基準。step<=0 を訓練中とみなす） */
+function isTraining(emp) { return (emp.step||1) <= 0; }
+
 function autoGenShift(storeId, week) {
-  if (!confirm('Availabilityとスキルを元にシフトを自動生成しますか？（既存の配置は上書きされます）')) return;
-  var positions = getStorePositions(storeId);
+  if (!confirm('Availability・スキル・優先度を元にシフトを自動生成しますか？（既存の配置は上書きされます）')) return;
+  var positions = assignablePositions(storeId);
   var avail = getAvailability(storeId, week);
   var staff = staffForStore(storeId);
   var plan = {status:'下書き', cells:{}};
-  var shiftCount = {}; staff.forEach(e=>shiftCount[e.name]=0);
-  var MAX = 8;
+  var hours = {}; staff.forEach(e=>hours[e.name]=0);   // 週の合計時間
+  var assignedSlot = {};                                // day_period -> [names] 同時間帯の重複防止
+  var otApprovals = getOTApprovals(storeId, week);
 
+  // Step5: 優先度順にアサイン。各枠で「対応可能なスキル保持者」を優先度→時間少ない順で選ぶ
   DOW_SHIFT.forEach(day => {
     SHIFT_PERIODS.forEach(period => {
+      var slotKey = day+'_'+period;
+      assignedSlot[slotKey] = assignedSlot[slotKey] || [];
+      var addH = SHIFT_HOURS[period] || 4;
+
+      // この時間帯に出せる人（Step1: Availability）
+      function availOk(e){ var av=avail.find(a=>a.name===e.name); return av ? av.slots.some(s=>s.day===day&&s.period===period) : false; }
+
       positions.forEach(pos => {
-        // この枠に出せる候補（Availability提出 + ポジション可 + Max未満）
+        // 既に同時間帯に入っている人は除外（1人1枠/時間帯）
+        var used = assignedSlot[slotKey];
         var cands = staff.filter(e => {
-          var av = avail.find(a=>a.name===e.name);
-          if (!av || !av.slots.some(s=>s.day===day && s.period===period)) return false;
-          if (shiftCount[e.name] >= MAX) return false;
-          if (pos==='Leader') return leaderSkillApproved(e.name);
-          var ap = approvedPositions(e.name);
-          if (['Opening','Closing','Training'].includes(pos)) return ap.includes(pos);
-          return true; // 基礎ポジションは誰でも可
+          if (used.includes(e.name)) return false;
+          if (!availOk(e)) return false;
+          if (!canDoPosition(e.name, pos)) return false;
+          if (!workCondOk(storeId, e.name, day, period)) return false;  // 勤務条件
+          var maxH = getWorkCondition(storeId, e.name).maxH || 40;
+          var cap = Math.min(maxH, otApprovals[e.name]?999:40);
+          if (hours[e.name] + addH > cap) return false;                 // 最大勤務時間/40h
+          if (used.some(n=>!pairAllowed(storeId, e.name, n))) return false;
+          return true;
         });
-        // スキル高い順・シフト少ない順
-        cands.sort((a,b)=> (approvedPositions(b.name).length - approvedPositions(a.name).length) || (shiftCount[a.name]-shiftCount[b.name]));
-        if (cands.length) {
-          var pick = cands[0];
+        if (!cands.length) return;
+        // Step5: 優先度高→時間少ない→スキルレベル高い順
+        cands.sort((a,b)=>{
+          var pa=shiftPriority(a), pb=shiftPriority(b);
+          if (pb!==pa) return pb-pa;
+          if (hours[a.name]!==hours[b.name]) return hours[a.name]-hours[b.name];
+          var la=(getEmpSkills(a.name)[pos]||{}).level||0, lb=(getEmpSkills(b.name)[pos]||{}).level||0;
+          return lb-la;
+        });
+        // Step6: Trainingルール + Lv3とセット必須 + Trainer必須 → 同枠にLv3が必要
+        var hasLv3InSlot = used.some(n=>isLv3Anywhere(n));
+        var pick = cands.find(e=>{
+          var requireLv3 = isTraining(e) || needsLv3Pair(storeId, e.name) || needsTrainer(storeId, e.name);
+          return requireLv3 ? hasLv3InSlot : true;
+        }) || cands.find(e=>!isTraining(e) && !needsLv3Pair(storeId,e.name) && !needsTrainer(storeId,e.name));
+        if (pick) {
           plan.cells[day+'_'+period+'_'+pos] = pick.name;
-          shiftCount[pick.name]++;
+          hours[pick.name] += addH;
+          assignedSlot[slotKey].push(pick.name);
         }
       });
     });
   });
   setShiftPlan(storeId, week, plan);
-  showToast('シフトを自動生成しました（要確認）', 'success');
+  var totalAssigned = Object.keys(plan.cells).length;
+  showToast(`シフトを自動生成しました（${totalAssigned}枠・要確認）`, 'success');
   renderPage('shift_admin');
 }
 
-/* 自動チェック・警告 */
+/* 自動チェック・警告（Lv不足/人員不足/Training違反/Leader不在） */
 function checkShiftWarnings(storeId, week, plan) {
   var warnings = [];
-  var positions = getStorePositions(storeId);
+  var positions = assignablePositions(storeId);
   var avail = getAvailability(storeId, week);
   DOW_SHIFT.forEach(day => {
     SHIFT_PERIODS.forEach(period => {
-      var dayAssigned = Object.keys(plan.cells).filter(k=>k.startsWith(day+'_'+period+'_') && plan.cells[k]);
-      if (!dayAssigned.length) return;
-      // Leader不在チェック
-      var hasLeader = dayAssigned.some(k=>{var n=plan.cells[k];return leaderSkillApproved(n)||k.includes('_Leader');});
-      if (!hasLeader && positions.includes('Leader')) warnings.push(`${day} ${period}: Leaderがいません`);
-      // 新人のみチェック
-      var names = dayAssigned.map(k=>plan.cells[k]);
-      var allNew = names.every(n=>{var e=getEmployees().find(x=>x.name===n);return e&&e.step<=0;});
-      if (allNew && names.length) warnings.push(`${day} ${period}: 新人のみの配置です`);
-      // Availability外チェック
-      dayAssigned.forEach(k=>{
+      var slotKeys = Object.keys(plan.cells).filter(k=>k.startsWith(day+'_'+period+'_') && plan.cells[k]);
+      if (!slotKeys.length) return;
+      var names = slotKeys.map(k=>plan.cells[k]);
+      // Leader（Lv2以上のLeadership保持者）不在
+      var hasLeader = names.some(n=>leaderSkillApproved(n));
+      if (!hasLeader) warnings.push(`${day} ${period}: リーダー不在（Lv2以上のLeadershipなし）`);
+      // Training違反: 訓練中が単独 or Lv3不在
+      var trainees = names.filter(n=>{var e=getEmployees().find(x=>x.name===n);return e&&isTraining(e);});
+      if (trainees.length) {
+        var hasLv3 = names.some(n=>{var sk=getEmpSkills(n);return Object.values(sk).some(x=>x.status==='承認'&&x.level>=3);});
+        if (!hasLv3) warnings.push(`${day} ${period}: 訓練中(${trainees.join(',')})がいるがLv3不在`);
+        if (names.length===trainees.length) warnings.push(`${day} ${period}: 訓練中のみの配置`);
+      }
+      // Availability外
+      slotKeys.forEach(k=>{
         var n=plan.cells[k]; var av=avail.find(a=>a.name===n);
         if (av && !av.slots.some(s=>s.day===day && s.period===period)) warnings.push(`${day} ${period}: ${n}はAvailability外`);
       });
+      // Lv不足: そのポジションを承認Lv1以上で持たない人が入っている
+      slotKeys.forEach(k=>{
+        var pos=k.split('_')[2]; var n=plan.cells[k];
+        if (!canDoPosition(n,pos)) warnings.push(`${day} ${period}: ${n}は${pos}未承認`);
+      });
+      // 特別ルール: 禁止ペアが同時間帯
+      var sr = getSpecialRules(storeId);
+      sr.pairs.filter(p=>p.type==='forbid').forEach(p=>{
+        if (names.includes(p.a) && names.includes(p.b)) warnings.push(`${day} ${period}: 禁止ペア（${p.a}×${p.b}）が同時勤務`);
+      });
+      // Lv3とセット/Trainer必須なのにLv3不在
+      names.forEach(n=>{
+        if ((needsLv3Pair(storeId,n)||needsTrainer(storeId,n)) && !names.some(m=>m!==n&&isLv3Anywhere(m)))
+          warnings.push(`${day} ${period}: ${n}はLv3との同時勤務が必要`);
+      });
     });
-    // Opening/Closing担当チェック
-    if (positions.includes('Opening')) { var hasOpen=Object.keys(plan.cells).some(k=>k.startsWith(day+'_')&&k.includes('_Opening')&&plan.cells[k]); if(!hasOpen && Object.keys(plan.cells).some(k=>k.startsWith(day+'_')&&plan.cells[k])) warnings.push(`${day}: Opening担当未設定`); }
   });
-  // Overtime（週8枠超）
-  var cnt={}; Object.values(plan.cells).forEach(n=>{if(n)cnt[n]=(cnt[n]||0)+1;});
-  Object.keys(cnt).forEach(n=>{ if(cnt[n]>10) warnings.push(`${n}: Overtimeの可能性（${cnt[n]}枠）`); });
-  return warnings.slice(0,8);
+  // Overtime（週40h超）
+  var hrs={}; Object.keys(plan.cells).forEach(k=>{var n=plan.cells[k];if(!n)return;var p=k.split('_')[1];hrs[n]=(hrs[n]||0)+(SHIFT_HOURS[p]||4);});
+  var otApprovals = getOTApprovals(storeId, week);
+  Object.keys(hrs).forEach(n=>{ if(hrs[n]>40 && !otApprovals[n]) warnings.push(`${n}: 週${hrs[n]}h（40h超・未承認）`); });
+  return warnings.slice(0,10);
+}
+
+/* ============ 特別ルール画面（Store Manager以上のみ） ============ */
+function renderSpecialRules(storeId) {
+  var r = getSpecialRules(storeId);
+  var staff = staffForStore(storeId);
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--accent)"></i>人間関係・特別ルール</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">同時勤務の禁止/推奨、新人のLv3同伴などを設定。自動シフト生成と警告に反映されます。（Crewには非表示）</div>`;
+
+  // 同時勤務ペア
+  html += `<div style="font-weight:600;font-size:13px;margin-bottom:6px">同時勤務ルール</div>`;
+  if (r.pairs.length) {
+    r.pairs.forEach((p,i)=>{
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+        <span><span class="tag ${p.type==='forbid'?'tag-red':'tag-green'}" style="font-size:9px">${p.type==='forbid'?'禁止':'推奨'}</span> ${p.a} × ${p.b}</span>
+        <button class="btn btn-danger btn-sm" style="padding:0 8px;font-size:10px" onclick="removeShiftPair('${storeId}',${i})">削除</button></div>`;
+    });
+  } else { html += `<div style="font-size:12px;color:var(--muted);padding:4px 0">設定なし</div>`; }
+  html += `<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openPairModal('${storeId}')"><i class="ti ti-plus"></i> ペア追加</button>`;
+
+  // Lv3同伴必須
+  html += `<div style="font-weight:600;font-size:13px;margin:16px 0 6px">Lv3スタッフとのセット必須（新人保護）</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">`;
+  staff.filter(e=>e.role==='crew').forEach(e=>{
+    var on = r.lv3Pair.includes(e.name);
+    html += `<span class="tag ${on?'tag-blue':'tag-gray'}" style="cursor:pointer;font-size:11px" onclick="toggleLv3Pair('${storeId}','${e.name.replace(/'/g,'')}')">${on?'✓ ':''}${e.name}</span>`;
+  });
+  html += `</div>`;
+  html += '</div>';
+
+  // 勤務条件（個別）
+  html += `<div class="card"><div class="card-title"><i class="ti ti-clock-cog" style="color:var(--accent)"></i>勤務条件（個別）</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Opening/Closing制限・曜日制限・最大勤務時間。自動シフトに反映されます。</div>
+    <div style="overflow-x:auto"><table class="inv-table" style="min-width:420px;font-size:11px"><thead><tr><th>スタッフ</th><th>条件</th><th></th></tr></thead><tbody>`;
+  staff.filter(e=>e.role==='crew'||e.role==='sl').forEach(e=>{
+    var c = getWorkCondition(storeId, e.name);
+    var tags = [];
+    if (c.opening==='only') tags.push('Open限定'); if (c.opening==='no') tags.push('Open不可');
+    if (c.closing==='only') tags.push('Close限定'); if (c.closing==='no') tags.push('Close不可');
+    if (c.days==='weekday') tags.push('平日のみ'); if (c.days==='weekend') tags.push('週末のみ');
+    if (c.maxH && c.maxH<40) tags.push('最大'+c.maxH+'h');
+    html += `<tr><td>${e.name}</td>
+      <td>${tags.length?tags.map(t=>`<span class="tag tag-gray" style="font-size:9px">${t}</span>`).join(' '):'<span style="color:var(--muted)">制限なし</span>'}</td>
+      <td><button class="btn btn-secondary btn-sm" style="padding:0 8px;font-size:10px" onclick="openWorkCondModal('${storeId}','${e.name.replace(/'/g,'')}')">設定</button></td></tr>`;
+  });
+  html += `</tbody></table></div></div>`;
+  return html;
+}
+function openWorkCondModal(storeId, name) {
+  var c = getWorkCondition(storeId, name);
+  openModal(`<div class="modal-title">${name} 勤務条件 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">Opening（Lunch枠）</label>
+      <select class="form-select" id="wc-open">
+        <option value="any"${c.opening==='any'?' selected':''}>制限なし</option>
+        <option value="only"${c.opening==='only'?' selected':''}>Openingのみ</option>
+        <option value="no"${c.opening==='no'?' selected':''}>Opening不可</option></select></div>
+    <div class="form-group"><label class="form-label">Closing（Dinner枠）</label>
+      <select class="form-select" id="wc-close">
+        <option value="any"${c.closing==='any'?' selected':''}>制限なし</option>
+        <option value="only"${c.closing==='only'?' selected':''}>Closingのみ</option>
+        <option value="no"${c.closing==='no'?' selected':''}>Closing不可</option></select></div>
+    <div class="form-group"><label class="form-label">曜日</label>
+      <select class="form-select" id="wc-days">
+        <option value="any"${c.days==='any'?' selected':''}>制限なし</option>
+        <option value="weekday"${c.days==='weekday'?' selected':''}>平日のみ</option>
+        <option value="weekend"${c.days==='weekend'?' selected':''}>週末のみ</option></select></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">最低勤務(h/週)</label><input class="form-input" id="wc-min" type="number" value="${c.minH||0}"></div>
+      <div class="form-group"><label class="form-label">最大勤務(h/週)</label><input class="form-input" id="wc-max" type="number" value="${c.maxH||40}"></div>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveWorkCond('${storeId}','${name.replace(/'/g,'')}')">保存</button></div>`);
+}
+function saveWorkCond(storeId, name) {
+  setWorkCondition(storeId, name, {
+    opening: document.getElementById('wc-open').value,
+    closing: document.getElementById('wc-close').value,
+    days: document.getElementById('wc-days').value,
+    minH: parseInt(document.getElementById('wc-min').value)||0,
+    maxH: parseInt(document.getElementById('wc-max').value)||40,
+  });
+  closeModalDirect();
+  showToast(name+'の勤務条件を保存しました','success');
+  renderPage('shift_admin');
+}
+function openPairModal(storeId) {
+  var staff = staffForStore(storeId);
+  var opts = staff.map(e=>`<option value="${e.name}">${e.name}</option>`).join('');
+  openModal(`<div class="modal-title">同時勤務ルール追加 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">スタッフA</label><select class="form-select" id="pair-a">${opts}</select></div>
+      <div class="form-group"><label class="form-label">スタッフB</label><select class="form-select" id="pair-b">${opts}</select></div>
+    </div>
+    <div class="form-group"><label class="form-label">種別</label>
+      <select class="form-select" id="pair-type"><option value="forbid">同時勤務 禁止</option><option value="recommend">同時勤務 推奨</option></select></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="addShiftPair('${storeId}')">追加</button></div>`);
+}
+function addShiftPair(storeId) {
+  var a=document.getElementById('pair-a').value, b=document.getElementById('pair-b').value, type=document.getElementById('pair-type').value;
+  if (a===b) { alert('別々のスタッフを選んでください'); return; }
+  var r=getSpecialRules(storeId); r.pairs.push({a,b,type}); setSpecialRules(storeId,r);
+  closeModalDirect(); showToast('ルールを追加しました','success'); renderPage('shift_admin');
+}
+function removeShiftPair(storeId, i) {
+  var r=getSpecialRules(storeId); r.pairs.splice(i,1); setSpecialRules(storeId,r);
+  renderPage('shift_admin');
+}
+function toggleLv3Pair(storeId, name) {
+  var r=getSpecialRules(storeId);
+  if (r.lv3Pair.includes(name)) r.lv3Pair=r.lv3Pair.filter(n=>n!==name); else r.lv3Pair.push(name);
+  setSpecialRules(storeId,r); renderPage('shift_admin');
+}
+
+/* ============ カバー候補（管理者専用） ============ */
+function coverCandidates(storeId, week, day, period, pos) {
+  var avail = getAvailability(storeId, week);
+  var plan = getShiftPlan(storeId, week) || {cells:{}};
+  var staff = staffForStore(storeId);
+  var slotKey = day+'_'+period;
+  var alreadyIn = Object.keys(plan.cells).filter(k=>k.startsWith(slotKey+'_')).map(k=>plan.cells[k]);
+  var hours = {};
+  Object.keys(plan.cells).forEach(k=>{var n=plan.cells[k];if(!n)return;var p=k.split('_')[1];hours[n]=(hours[n]||0)+(SHIFT_HOURS[p]||4);});
+  var otApprovals = getOTApprovals(storeId, week);
+  var addH = SHIFT_HOURS[period]||4;
+
+  var cands = staff.filter(e=>{
+    if (alreadyIn.includes(e.name)) return false;
+    var av = avail.find(a=>a.name===e.name);
+    if (!av || !av.slots.some(s=>s.day===day&&s.period===period)) return false; // Availability内
+    if (pos && !canDoPosition(e.name, pos)) return false;                        // 必要ポジション対応可能
+    if ((hours[e.name]||0)+addH>40 && !otApprovals[e.name]) return false;         // 勤務時間超過なし
+    if (alreadyIn.some(n=>!pairAllowed(storeId, e.name, n))) return false;        // 特別ルール違反なし
+    return true;
+  });
+  // 優先順位: Priority1=Store Leader/F-Crew/Lv3, Priority2=Lv2, Priority3=Lv1/Training
+  function coverPri(e){
+    var lv = pos ? ((getEmpSkills(e.name)[pos]||{}).level||0) : 0;
+    if (e.isSL || shiftPriority(e)>=8 || isLv3Anywhere(e.name)) return 1;
+    if (lv>=2) return 2;
+    return 3;
+  }
+  cands.sort((a,b)=> coverPri(a)-coverPri(b) || (hours[a.name]||0)-(hours[b.name]||0));
+  return cands.map(e=>({name:e.name, pri:coverPri(e), hours:hours[e.name]||0, lv: pos?((getEmpSkills(e.name)[pos]||{}).level||0):null}));
+}
+
+function renderShiftCover(storeId, week) {
+  var plan = getShiftPlan(storeId, week);
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-user-search" style="color:var(--accent)"></i>当欠・カバー候補</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">欠員が出た枠を選ぶと、カバー候補を優先順位順で表示します（管理者専用）。</div>`;
+  if (!plan || !Object.keys(plan.cells).length) {
+    html += `<div style="text-align:center;color:var(--muted);padding:16px">シフトがまだありません。先にシフトを作成してください。</div></div>`;
+    return html;
+  }
+  // 配置済みの枠から欠員対象を選ぶ
+  html += `<div class="form-group"><label class="form-label">欠員が出た枠を選択</label>
+    <select class="form-select" id="cover-slot" onchange="renderCoverResult('${storeId}','${week}')">
+      <option value="">選択してください</option>`;
+  Object.keys(plan.cells).filter(k=>plan.cells[k]).sort().forEach(k=>{
+    var parts=k.split('_');
+    html += `<option value="${k}">${parts[0]} ${parts[1]} ${parts[2]} — ${plan.cells[k]}</option>`;
+  });
+  html += `</select></div><div id="cover-result"></div></div>`;
+  return html;
+}
+function renderCoverResult(storeId, week) {
+  var key = document.getElementById('cover-slot').value;
+  var el = document.getElementById('cover-result');
+  if (!key) { el.innerHTML=''; return; }
+  var parts = key.split('_');
+  var day=parts[0], period=parts[1], pos=parts[2];
+  var plan = getShiftPlan(storeId, week);
+  var absent = plan.cells[key];
+  var cands = coverCandidates(storeId, week, day, period, pos);
+  var html = `<div class="alert alert-warning" style="padding:8px 10px"><i class="ti ti-user-x"></i><div style="font-size:12px">欠員: <b>${absent}</b>（${day} ${period} ${pos}）</div></div>`;
+  if (!cands.length) {
+    html += `<div style="text-align:center;color:var(--muted);padding:12px">条件を満たすカバー候補がいません。</div>`;
+  } else {
+    html += `<div style="font-size:12px;font-weight:600;margin-bottom:6px">カバー候補（優先順）</div>`;
+    cands.forEach(c=>{
+      var pcol = c.pri===1?'tag-green':c.pri===2?'tag-yellow':'tag-gray';
+      html += `<div class="staff-item">
+        <div class="staff-avatar">${c.name[0]}</div>
+        <div style="flex:1"><div class="staff-name">${c.name} <span class="tag ${pcol}" style="font-size:8px">P${c.pri}</span></div>
+          <div class="staff-role">週${c.hours}h${c.lv!=null?' · '+pos+' Lv'+c.lv:''}</div></div>
+        <button class="btn btn-success btn-sm" onclick="assignCover('${storeId}','${week}','${key}','${c.name.replace(/'/g,'')}')">配置</button>
+      </div>`;
+    });
+  }
+  el.innerHTML = html;
+}
+function assignCover(storeId, week, key, name) {
+  var plan = getShiftPlan(storeId, week);
+  // OTチェック
+  var period = key.split('_')[1];
+  var addH = SHIFT_HOURS[period]||4;
+  var curH = shiftHoursForPerson(plan, name);
+  if (curH+addH>40 && !getOTApprovals(storeId,week)[name]) {
+    if (!canApproveOT()) { alert(name+'は40時間を超えるため、管理者承認が必要です'); return; }
+    if (!confirm(name+'は週'+(curH+addH)+'h（40h超）になります。承認して配置しますか？')) return;
+    setOTApproval(storeId, week, name, ROLE_CONFIG[curRole].name||curRole);
+  }
+  plan.cells[key] = name;
+  plan.status = '下書き';
+  setShiftPlan(storeId, week, plan);
+  showToast(`${name}をカバー配置しました`, 'success');
+  renderPage('shift_admin');
 }
 
 function publishShiftPlan(storeId, week) {
@@ -4381,6 +4710,58 @@ function renderShiftLabor(storeId, week) {
     </tbody></table>
     <p style="font-size:11px;color:var(--muted);margin-top:6px">※ 時給・保険率は仮値。シフト配置を変えるとLabor Costが変動します</p>
   </div>`;
+  html += renderRiskAnalysis(storeId, week, plan, hoursByName);
+  return html;
+}
+
+/* Step10: リスク分析 */
+function renderRiskAnalysis(storeId, week, plan, hoursByName) {
+  var cells = plan.cells || {};
+  var assigned = Object.keys(cells).filter(k=>cells[k]);
+  if (!assigned.length) return '';
+  var emps = getEmployees();
+  var names = [...new Set(assigned.map(k=>cells[k]))];
+
+  // 1. Lv3不足リスク（Lv3保持者の人数）
+  var lv3Count = names.filter(n=>isLv3Anywhere(n)).length;
+  // 2. 新人比率
+  var trainees = names.filter(n=>{var e=emps.find(x=>x.name===n);return e&&isTraining(e);});
+  var newRatio = names.length ? Math.round(trainees.length/names.length*100) : 0;
+  // 3. Closingリスク（各日のDinner枠にLeaderがいるか）
+  var closingRisk = 0;
+  DOW_SHIFT.forEach(day=>{
+    var dinnerKeys = assigned.filter(k=>k.startsWith(day+'_Dinner_'));
+    if (dinnerKeys.length) {
+      var hasLeader = dinnerKeys.some(k=>leaderSkillApproved(cells[k]));
+      if (!hasLeader) closingRisk++;
+    }
+  });
+  // 4. 当欠リスク（1人に依存している枠数。同枠に代替候補がいない）
+  var singlePointDays = 0;
+  DOW_SHIFT.forEach(day=>{
+    SHIFT_PERIODS.forEach(period=>{
+      var slotNames = assigned.filter(k=>k.startsWith(day+'_'+period+'_')).map(k=>cells[k]);
+      if (slotNames.length===1) singlePointDays++;
+    });
+  });
+  // 5. 過重労働リスク（40h超）
+  var overWork = Object.keys(hoursByName).filter(n=>hoursByName[n]>40).length;
+
+  function riskRow(label, value, level, detail) {
+    var col = level==='high'?'var(--red)':level==='mid'?'var(--yellow)':'var(--green)';
+    var icon = level==='high'?'ti-alert-octagon':level==='mid'?'ti-alert-triangle':'ti-circle-check';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <i class="ti ${icon}" style="color:${col};font-size:18px"></i>
+      <div style="flex:1"><div style="font-size:13px;font-weight:600">${label}</div><div style="font-size:11px;color:var(--muted)">${detail}</div></div>
+      <div style="font-weight:700;color:${col}">${value}</div></div>`;
+  }
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-shield-half" style="color:var(--accent)"></i>リスク分析</div>`;
+  html += riskRow('Lv3スタッフ', lv3Count+'名', lv3Count>=3?'low':lv3Count>=1?'mid':'high', lv3Count>=3?'十分':lv3Count>=1?'やや不足':'Lv3不在は高リスク');
+  html += riskRow('新人比率', newRatio+'%', newRatio<=20?'low':newRatio<=40?'mid':'high', `訓練中 ${trainees.length}/${names.length}名`);
+  html += riskRow('Closingリスク', closingRisk+'日', closingRisk===0?'low':closingRisk<=2?'mid':'high', closingRisk?'Dinner枠にリーダー不在の日あり':'全日リーダー配置済み');
+  html += riskRow('当欠リスク', singlePointDays+'枠', singlePointDays<=3?'low':singlePointDays<=6?'mid':'high', '1人のみ配置で代替が薄い枠数');
+  html += riskRow('過重労働', overWork+'名', overWork===0?'low':'high', overWork?'40h超のスタッフあり':'40h超なし');
+  html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">※ リスクが高い項目は、カバー候補の事前確保や配置見直しを推奨します。</div></div>`;
   return html;
 }
 
@@ -4580,110 +4961,175 @@ function submitVacation() {
 /* ============================================================
    HIRING
 ============================================================ */
-function renderHiring() {
-  var candidates = ls('candidates', [
-    {id:'h1', name:'Keiko Tanaka', pos:'Server', status:'面接予定', date:'2026-06-10', store:'Waikiki'},
-    {id:'h2', name:'Ryan Matsuda', pos:'Kitchen', status:'書類審査', date:'2026-06-08', store:'Kaimuki'},
+/* ============================================================
+   採用パイプライン: 応募者 → 面接候補 → 採用決定 → オンボーディング
+   applicant: {id,name,store,pos,phone,email,date,resume,status,memo,
+               interviewDate,interviewer,evalMemo,decision}
+   応募ステータス: 新規応募/要確認/面接調整中/面接予定/面接完了/採用/不採用/辞退
+============================================================ */
+const APPLICANT_STORES = ['ToriTon','Tenkichi','Totoya','Marujuu','Waikiki','未分類'];
+function getApplicants() {
+  return ls('applicants', [
+    {id:'a1', name:'Keiko Tanaka', store:'Waikiki', pos:'FSP Cashier', phone:'808-555-0101', email:'keiko@example.com', date:'2026-06-08', status:'新規応募', memo:''},
+    {id:'a2', name:'Ryan Matsuda', store:'Totoya', pos:'Main Plater', phone:'808-555-0102', email:'ryan@example.com', date:'2026-06-07', status:'面接予定', interviewDate:'2026-06-12', interviewer:'Yuki', memo:''},
   ]);
+}
+function setApplicants(a) { lsSet('applicants', a); }
+/* 応募者の閲覧範囲（権限） */
+function visibleApplicants() {
+  var all = getApplicants();
+  if (['gm','ceo','office'].includes(curRole)) return all;
+  if (curRole==='am') {
+    var amStoreNames = STORES.filter(s=>AM_STORES.includes(s.id)).map(s=>s.brand);
+    return all.filter(a=>amStoreNames.includes(a.store) || a.store==='未分類');
+  }
+  if (curRole==='sl') {
+    var myStore = STORES.find(s=>s.id===curStore);
+    return all.filter(a=>myStore && (a.store===myStore.brand || a.store===myStore.name));
+  }
+  return [];
+}
+
+function renderHiring() {
+  if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">採用管理の閲覧権限がありません</div>';
+  var apps = visibleApplicants();
+  var byStore = {};
+  APPLICANT_STORES.forEach(s=>byStore[s]=[]);
+  apps.forEach(a=>{ (byStore[a.store]=byStore[a.store]||[]).push(a); });
+
   var html = `<div class="section-header">
-    <div class="section-title">採用管理</div>
-    <button class="btn btn-primary btn-sm" onclick="openHiringModal()"><i class="ti ti-user-plus"></i> 候補者追加</button>
+    <div><div class="section-title">採用管理</div><div class="section-sub">応募者 → 面接 → 採用決定</div></div>
+    <button class="btn btn-primary btn-sm" onclick="openApplicantModal()"><i class="ti ti-user-plus"></i> 応募者追加</button>
   </div>
   <div class="kpi-grid" style="margin-bottom:12px;">
-    ${kpi('候補者数', candidates.length, '全ステータス', 'var(--tm)')}
-    ${kpi('面接予定', candidates.filter(c=>c.status==='面接予定').length, '今週', 'var(--accent2)')}
-    ${kpi('書類審査', candidates.filter(c=>c.status==='書類審査').length, '確認待ち', 'var(--yellow)')}
-    ${kpi('採用決定', candidates.filter(c=>c.status==='採用決定').length, '今月', 'var(--green)')}
+    ${kpi('応募者', apps.length, '全ステータス', 'var(--tm)')}
+    ${kpi('新規', apps.filter(c=>c.status==='新規応募').length, '未対応', 'var(--accent2)')}
+    ${kpi('面接', apps.filter(c=>['面接調整中','面接予定','面接完了'].includes(c.status)).length, '進行中', 'var(--yellow)')}
+    ${kpi('採用', apps.filter(c=>c.status==='採用').length, '今月', 'var(--green)')}
   </div>`;
-  candidates.forEach(c => {
-    var statusClass = c.status==='採用決定'?'tag-green':c.status==='面接予定'?'tag-blue':'tag-yellow';
-    html += `<div class="card">
-      <div class="approval-header">
-        <div class="staff-item" style="padding:0;background:none;border:none;margin:0">
-          <div class="staff-avatar" style="background:var(--surface2)">${c.name[0]}</div>
-          <div><div class="staff-name">${c.name}</div><div class="staff-role">${c.pos} · ${c.store}</div></div>
+
+  // 要確認（不足情報）
+  var needCheck = apps.filter(a=>a.status==='要確認' || a.store==='未分類');
+  if (needCheck.length) {
+    html += `<div class="alert alert-warning"><i class="ti ti-alert-triangle"></i><div style="font-size:12px"><b>要確認 ${needCheck.length}件</b>：店舗不明や情報不足の応募者があります。編集して補完してください。</div></div>`;
+  }
+
+  // 店舗別タブ表示
+  APPLICANT_STORES.forEach(store => {
+    var list = byStore[store] || [];
+    if (!list.length) return;
+    var color = (STORES.find(s=>s.brand===store||s.name===store)||{}).color || 'var(--muted)';
+    html += `<div class="card"><div class="card-title" style="color:${color}"><span class="store-dot" style="background:${color}"></span>${store} 応募者一覧 (${list.length})</div>`;
+    list.forEach(c => {
+      var sc = c.status==='採用'?'tag-green':c.status==='不採用'||c.status==='辞退'?'tag-red':c.status.includes('面接')?'tag-blue':c.status==='要確認'?'tag-yellow':'tag-gray';
+      html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div><div style="font-weight:600;font-size:13px">${c.name} <span class="tag ${sc}" style="font-size:9px">${c.status}</span></div>
+            <div style="font-size:11px;color:var(--muted)">${c.pos||'ポジション未定'} · ${c.phone||'TEL無'} · ${c.email||'Email無'}</div>
+            <div style="font-size:11px;color:var(--muted)">応募 ${c.date}${c.interviewDate?' · 面接 '+c.interviewDate+(c.interviewer?'('+c.interviewer+')':''):''}</div>
+            ${c.memo?`<div style="font-size:11px;color:var(--accent2)">メモ: ${c.memo}</div>`:''}
+          </div>
         </div>
-        <div style="text-align:right">
-          <span class="tag ${statusClass}">${c.status}</span>
-          <div class="approval-meta" style="margin-top:4px">${c.date}</div>
+        <div class="approval-actions" style="margin-top:6px">
+          <button class="btn btn-secondary btn-sm" onclick="openApplicantModal('${c.id}')"><i class="ti ti-edit"></i> 編集</button>
+          ${c.status==='新規応募'||c.status==='要確認'?`<button class="btn btn-primary btn-sm" onclick="moveToInterview('${c.id}')"><i class="ti ti-arrow-right"></i> 面接候補へ</button>`:''}
+          ${['面接調整中','面接予定','面接完了'].includes(c.status)?`<button class="btn btn-secondary btn-sm" onclick="openInterviewModal('${c.id}')"><i class="ti ti-calendar"></i> 面接管理</button>`:''}
+          ${['面接完了','面接予定'].includes(c.status)?`<button class="btn btn-success btn-sm" onclick="hireDecision('${c.id}')"><i class="ti ti-user-check"></i> 採用決定</button>`:''}
+          ${c.status!=='不採用'&&c.status!=='採用'?`<button class="btn btn-danger btn-sm" onclick="updateApplicant('${c.id}','不採用')">不採用</button>`:''}
         </div>
-      </div>
-      <div class="approval-actions">
-        <button class="btn btn-secondary btn-sm" onclick="updateCandidate('${c.id}','面接予定')">面接予定</button>
-        <button class="btn btn-success btn-sm" onclick="updateCandidate('${c.id}','採用決定')">採用決定</button>
-        <button class="btn btn-danger btn-sm" onclick="updateCandidate('${c.id}','不採用')">不採用</button>
-      </div>
-    </div>`;
+      </div>`;
+    });
+    html += '</div>';
   });
+  if (!apps.length) html += `<div class="card" style="text-align:center;color:var(--muted);padding:30px">応募者がいません。「応募者追加」から登録してください。</div>`;
   return html;
 }
 
-function openHiringModal() {
-  openModal(`<div class="modal-title">候補者追加 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">氏名</label><input class="form-input" id="h-name" placeholder="氏名"></div>
+function openApplicantModal(id) {
+  var apps = getApplicants();
+  var a = id ? apps.find(x=>x.id===id) : {name:'',store:'未分類',pos:'',phone:'',email:'',date:new Date().toISOString().slice(0,10),memo:''};
+  openModal(`<div class="modal-title">${id?'応募者編集':'応募者追加'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">応募者名</label><input class="form-input" id="ap-name" value="${a.name||''}"></div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">ポジション</label>
-        <select class="form-select" id="h-pos"><option>Server</option><option>Kitchen</option><option>Host</option><option>Manager</option></select>
-      </div>
-      <div class="form-group"><label class="form-label">希望店舗</label>
-        <select class="form-select" id="h-store">${STORES.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select>
-      </div>
+      <div class="form-group"><label class="form-label">応募店舗</label>
+        <select class="form-select" id="ap-store">${APPLICANT_STORES.map(s=>`<option ${a.store===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">希望ポジション</label><input class="form-input" id="ap-pos" value="${a.pos||''}" placeholder="例: Server"></div>
     </div>
-    <div class="form-group"><label class="form-label">面接日</label><input class="form-input" id="h-date" type="date"></div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-      <button class="btn btn-primary" onclick="saveCandidate()">追加</button>
-    </div>`);
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">電話</label><input class="form-input" id="ap-phone" value="${a.phone||''}"></div>
+      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="ap-email" value="${a.email||''}"></div>
+    </div>
+    <div class="form-group"><label class="form-label">応募日</label><input class="form-input" id="ap-date" type="date" value="${a.date||''}"></div>
+    <div class="form-group"><label class="form-label">メモ</label><textarea class="form-textarea" id="ap-memo">${a.memo||''}</textarea></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveApplicant('${id||''}')">保存</button></div>`);
 }
-
-function saveCandidate() {
-  var name  = document.getElementById('h-name').value.trim();
-  var pos   = document.getElementById('h-pos').value;
-  var storeId = document.getElementById('h-store').value;
-  var date  = document.getElementById('h-date').value;
-  if (!name) { alert('氏名を入力してください'); return; }
-  var store = (STORES.find(s=>s.id===storeId)||{name:storeId}).name;
-  var candidates = ls('candidates', []);
-  candidates.push({id:'h'+Date.now(), name, pos, store, status:'書類審査', date: date || new Date().toLocaleDateString('ja')});
-  lsSet('candidates', candidates);
-  closeModalDirect();
-  showToast('候補者を追加しました', 'success');
-  renderPage('hiring');
-}
-
-function updateCandidate(id, status) {
-  var candidates = ls('candidates', []);
-  var c = candidates.find(c=>c.id===id);
-  if (!c) return;
-  c.status = status;
-  lsSet('candidates', candidates);
-
-  // 採用決定 → 従業員化 + OB自動生成
-  if (status === '採用決定') {
-    if (confirm(`${c.name} さんを従業員化しますか？\n（従業員マスター登録＋Onboarding自動生成）`)) {
-      hireCandidate(c);
-    }
+function saveApplicant(id) {
+  var name=document.getElementById('ap-name').value.trim();
+  if (!name) { alert('応募者名を入力してください'); return; }
+  var data = {
+    name, store:document.getElementById('ap-store').value, pos:document.getElementById('ap-pos').value.trim(),
+    phone:document.getElementById('ap-phone').value.trim(), email:document.getElementById('ap-email').value.trim(),
+    date:document.getElementById('ap-date').value, memo:document.getElementById('ap-memo').value.trim(),
+  };
+  var apps = getApplicants();
+  if (id) { var a=apps.find(x=>x.id===id); Object.assign(a,data); if(a.status==='要確認'&&a.store!=='未分類'&&a.phone&&a.email)a.status='新規応募'; }
+  else {
+    // 不足チェック
+    var status = (!data.store||data.store==='未分類'||!data.phone||!data.email||!data.pos)?'要確認':'新規応募';
+    apps.push(Object.assign({id:'a'+Date.now(), status}, data));
   }
-  renderPage('hiring');
+  setApplicants(apps);
+  closeModalDirect(); showToast('応募者を保存しました','success'); renderPage('hiring');
 }
-
-function hireCandidate(c) {
-  // 店舗ID解決
-  var store = STORES.find(s=>s.name===c.store);
-  var storeId = store ? store.id : STORES[0].id;
-  // 従業員マスターに登録
-  var emps = getEmployees();
-  if (!emps.find(e=>e.name===c.name)) {
-    emps.push({id:'e'+Date.now(), name:c.name, role:'crew', store:storeId, support:[],
-      emp:'アルバイト', step:0, hireDate:new Date().toISOString().slice(0,10), status:'研修中', perms:'crew'});
-    lsSet('m_employees', emps);
-  }
-  // Onboarding生成（テンプレート適用）
+function updateApplicant(id, status) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  a.status=status; setApplicants(apps); renderPage('hiring');
+}
+function moveToInterview(id) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  a.status='面接調整中'; setApplicants(apps);
+  showToast(`${a.name}を面接候補に追加しました`,'success'); renderPage('hiring');
+}
+function openInterviewModal(id) {
+  var a = getApplicants().find(x=>x.id===id); if(!a)return;
+  openModal(`<div class="modal-title">面接管理 — ${a.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">面接予定日</label><input class="form-input" id="iv-date" type="date" value="${a.interviewDate||''}"></div>
+      <div class="form-group"><label class="form-label">面接担当者</label><input class="form-input" id="iv-er" value="${a.interviewer||''}"></div>
+    </div>
+    <div class="form-group"><label class="form-label">面接ステータス</label>
+      <select class="form-select" id="iv-status">
+        ${['面接調整中','面接予定','面接完了','辞退'].map(s=>`<option ${a.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+    <div class="form-group"><label class="form-label">評価メモ</label><textarea class="form-textarea" id="iv-eval">${a.evalMemo||''}</textarea></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveInterview('${id}')">保存</button></div>`);
+}
+function saveInterview(id) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  a.interviewDate=document.getElementById('iv-date').value;
+  a.interviewer=document.getElementById('iv-er').value.trim();
+  a.status=document.getElementById('iv-status').value;
+  a.evalMemo=document.getElementById('iv-eval').value.trim();
+  setApplicants(apps); closeModalDirect(); showToast('面接情報を保存しました','success'); renderPage('hiring');
+}
+/* 採用決定 → オンボーディング自動開始（本人入力待ち） */
+function hireDecision(id) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  if (!confirm(`${a.name}さんを採用決定し、オンボーディングを開始しますか？`)) return;
+  a.status='採用'; setApplicants(apps);
+  // オンボーディング作成（本人入力待ち）
+  var storeObj = STORES.find(s=>s.brand===a.store||s.name===a.store) || STORES[0];
   var obs = ls('onboardings', []);
-  obs.push({id:'ob'+Date.now(), name:c.name, store:c.store, startDate:new Date().toLocaleDateString('ja'), progress:0,
-    template:JSON.parse(JSON.stringify(getOBTemplate())), done:[]});
+  obs.push({
+    id:'ob'+Date.now(), applicantId:a.id, name:a.name, store:storeObj.id, storeName:storeObj.name,
+    pos:a.pos, email:a.email, phone:a.phone, startDate:new Date().toLocaleDateString('ja'),
+    obStatus:'本人入力待ち', personal:null, docs:[], shift:null, payrollDone:false,
+    template:JSON.parse(JSON.stringify(getOBTemplate())), done:[], rejectReason:''
+  });
   lsSet('onboardings', obs);
-  showToast(`${c.name}を従業員化しOnboardingを生成しました`, 'success');
+  showToast(`${a.name}を採用決定。オンボーディングを開始しました`,'success');
+  go('onboarding');
 }
 
 /* ============================================================
@@ -4709,82 +5155,272 @@ const DEFAULT_OB_TEMPLATE = [
 function getOBTemplate() { return ls('ob_template', DEFAULT_OB_TEMPLATE); }
 function setOBTemplate(t) { lsSet('ob_template', t); }
 
+/* オンボーディングステータス: 本人入力待ち/提出完了/経理確認中/Payroll登録中/登録完了/差し戻し/キャンセル */
+const VISA_OPTIONS = ['U.S. Citizen','Green Card','E-2','J-1','OPT','その他'];
 function renderOnboarding() {
   var obs = ls('onboardings', []);
   var canEditTemplate = (curRole==='gm' || curRole==='ceo');
+  var isOffice = (curRole==='office' || curRole==='gm' || curRole==='ceo');
   var html = `<div class="section-header">
-    <div><div class="section-title">Onboarding</div><div class="section-sub">採用→従業員化→研修→Crew化</div></div>
+    <div><div class="section-title">オンボーディング</div><div class="section-sub">採用→本人入力→書類→経理→Payroll→従業員登録</div></div>
     <div style="display:flex;gap:6px">
-      ${canEditTemplate?`<button class="btn btn-secondary btn-sm" onclick="openOBTemplateModal()"><i class="ti ti-template"></i> テンプレート</button>`:''}
-      <button class="btn btn-primary btn-sm" onclick="openOBModal()"><i class="ti ti-plus"></i> 追加</button>
+      ${canEditTemplate?`<button class="btn btn-secondary btn-sm" onclick="openOBTemplateModal()"><i class="ti ti-template"></i> 研修項目</button>`:''}
     </div>
   </div>`;
 
   if (!obs.length) {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-school" style="font-size:32px;display:block;margin-bottom:8px"></i>進行中のOnboardingなし<div style="font-size:12px;margin-top:6px">採用決定→従業員化で自動生成されます</div></div>`;
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-school" style="font-size:32px;display:block;margin-bottom:8px"></i>進行中のオンボーディングなし<div style="font-size:12px;margin-top:6px">採用管理で「採用決定」すると自動で開始されます</div></div>`;
     return html;
   }
 
-  obs.forEach(ob => {
-    var tmpl = ob.template || getOBTemplate();
-    var done = ob.done || [];
-    var total = tmpl.length;
-    var doneCount = tmpl.filter(t=>done.includes(t.id)).length;
-    var progress = total ? Math.round(doneCount/total*100) : 0;
-    // 詳細集計
-    var selfPending = tmpl.filter(t=>t.who==='本人' && !done.includes(t.id));
-    var mgrPending = tmpl.filter(t=>t.who==='管理者' && !done.includes(t.id));
-    var docPending = tmpl.filter(t=>t.type==='書類' && !done.includes(t.id));
-    var eduPending = tmpl.filter(t=>t.type==='教育' && !done.includes(t.id));
-    var nextItem = tmpl.find(t=>!done.includes(t.id));
-    var complete = doneCount===total;
+  // ステータスサマリー
+  var statusCounts = {};
+  obs.forEach(o=>statusCounts[o.obStatus]=(statusCounts[o.obStatus]||0)+1);
+  html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">`;
+  ['本人入力待ち','提出完了','経理確認中','Payroll登録中','登録完了','差し戻し'].forEach(st=>{
+    if (statusCounts[st]) html += `<span class="tag ${st==='登録完了'?'tag-green':st==='差し戻し'?'tag-red':'tag-yellow'}">${st} ${statusCounts[st]}</span>`;
+  });
+  html += `</div>`;
 
+  obs.forEach(ob => {
+    var st = ob.obStatus || '本人入力待ち';
+    var stCol = st==='登録完了'?'var(--green)':st==='差し戻し'?'var(--red)':'var(--accent)';
+    var storeName = ob.storeName || (STORES.find(s=>s.id===ob.store)||{}).name || ob.store;
     html += `<div class="card">
       <div class="approval-header">
         <div class="staff-item" style="padding:0;background:none;border:none;margin:0">
           <div class="staff-avatar" style="background:var(--surface2)">${ob.name[0]}</div>
-          <div><div class="staff-name">${ob.name}</div><div class="staff-role">${ob.store} · 開始 ${ob.startDate}</div></div>
+          <div><div class="staff-name">${ob.name}</div><div class="staff-role">${storeName} · ${ob.pos||''} · 開始 ${ob.startDate}</div></div>
         </div>
-        <div style="font-size:20px;font-weight:700;color:${complete?'var(--green)':'var(--accent2)'}">${progress}%</div>
-      </div>
-      <div class="progress-bar" style="margin:10px 0"><div class="progress-fill" style="background:${complete?'var(--green)':'var(--accent2)'};width:${progress}%"></div></div>`;
+        <span class="tag" style="background:${stCol};color:#fff">${st}</span>
+      </div>`;
 
-    // 詳細進捗サマリー
-    html += `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;font-size:11px">
-      <span class="tag ${selfPending.length?'tag-yellow':'tag-green'}">本人確認待ち ${selfPending.length}</span>
-      <span class="tag ${mgrPending.length?'tag-yellow':'tag-green'}">管理者確認待ち ${mgrPending.length}</span>
-      <span class="tag ${docPending.length?'tag-red':'tag-green'}">書類 ${docPending.length}未</span>
-      <span class="tag ${eduPending.length?'tag-red':'tag-green'}">教育 ${eduPending.length}未</span>
-    </div>`;
-    if (nextItem) html += `<div class="alert alert-warning" style="padding:7px 10px;margin-bottom:10px"><i class="ti ti-arrow-right"></i>次にやる: <strong>${nextItem.label}</strong> <span style="font-size:10px">(${nextItem.who})</span></div>`;
+    // ステップ進捗バー
+    var steps = ['本人入力待ち','提出完了','経理確認中','Payroll登録中','登録完了'];
+    var curIdx = steps.indexOf(st); if (st==='差し戻し') curIdx=0;
+    html += `<div style="display:flex;gap:3px;margin:10px 0">`;
+    steps.forEach((s,i)=>{ html += `<div style="flex:1;height:5px;border-radius:3px;background:${i<=curIdx?stCol:'var(--border)'}"></div>`; });
+    html += `</div>`;
 
-    // 項目リスト（本人/管理者で分離表示）
-    ['本人','管理者'].forEach(who => {
-      var items = tmpl.filter(t=>t.who===who);
-      if (!items.length) return;
-      html += `<div style="font-size:11px;font-weight:700;color:var(--muted);margin:6px 0 2px">${who}チェック項目</div>`;
-      items.forEach(t => {
-        var isDone = done.includes(t.id);
-        // 本人項目はCrew本人または管理者が、管理者項目は管理者のみがチェック可
-        var canCheck = who==='管理者' ? ROLE_CONFIG[curRole].canApprove : true;
-        html += `<div class="task-item" style="padding:5px 0">
-          <div class="task-check${isDone?' done':''}" ${canCheck?`onclick="toggleOBTask('${ob.id}','${t.id}')"`:'style="opacity:.4"'}>${isDone?'<i class="ti ti-check" style="font-size:11px;color:#fff"></i>':''}</div>
-          <div style="flex:1"><div class="task-text${isDone?' done':''}" style="font-size:13px">${t.label}
-            <span class="tag tag-gray" style="font-size:8px">${t.type}</span>${t.required?'<span class="tag tag-red" style="font-size:8px">必須</span>':''}
-            ${t.link?`<a href="${t.link}" target="_blank" style="font-size:10px;color:var(--accent2)"><i class="ti ti-external-link"></i></a>`:''}</div></div>
-        </div>`;
-      });
-    });
+    if (ob.rejectReason && st==='差し戻し') html += `<div class="alert alert-danger" style="padding:7px 10px;margin-bottom:8px"><i class="ti ti-arrow-back"></i><div style="font-size:12px">差し戻し理由: ${ob.rejectReason}</div></div>`;
 
-    // 完了→シフト誘導
-    if (complete) {
-      html += `<div class="alert alert-success" style="margin-top:10px"><i class="ti ti-circle-check"></i><div>
-        <p style="font-size:12px;font-weight:600">Onboarding完了！Crewアカウント有効化済み</p>
-        <p style="font-size:11px">${ob.name}さんはシフト申請が可能になりました</p></div></div>`;
+    // 本人入力情報（権限により表示制御）
+    if (ob.personal) {
+      var p = ob.personal;
+      var canSeePII = isOffice; // SSN/書類はOffice/GM/CEOのみ
+      html += `<div style="font-size:12px;background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:8px">
+        <div style="font-weight:600;margin-bottom:4px">本人入力情報</div>
+        住所: ${p.address||'—'}<br>
+        VISA/就労: ${p.visa||'—'}${p.visaDetail?'（'+p.visaDetail+'）':''}<br>
+        勤務開始予定: ${p.startDate||'—'} · 時給: ${canViewWages()?'$'+(p.wage||'—'):'***'}<br>
+        SSN: ${canSeePII?(p.ssn||'—'):'<span style="color:var(--muted)">（経理のみ閲覧可）</span>'}<br>
+        書類: ${ob.docs&&ob.docs.length?(canSeePII?ob.docs.map(d=>d.name).join(', '):ob.docs.length+'件（経理のみ）'):'未提出'}
+      </div>`;
+    }
+
+    // アクションボタン（ステータス×権限）
+    html += `<div class="approval-actions">`;
+    // 本人入力（デモ: 誰でも代理入力可。実運用は本人リンク）
+    if (st==='本人入力待ち' || st==='差し戻し') {
+      html += `<button class="btn btn-primary btn-sm" onclick="openPersonalForm('${ob.id}')"><i class="ti ti-forms"></i> 本人情報を入力</button>`;
+    }
+    // 経理確認
+    if (st==='提出完了' && isOffice) {
+      html += `<button class="btn btn-success btn-sm" onclick="officeReview('${ob.id}','approve')"><i class="ti ti-check"></i> 経理確認OK</button>
+        <button class="btn btn-danger btn-sm" onclick="officeReview('${ob.id}','reject')"><i class="ti ti-arrow-back"></i> 差し戻し</button>`;
+    }
+    // Payroll登録
+    if (st==='経理確認中' && isOffice) {
+      html += `<button class="btn btn-primary btn-sm" onclick="openPayrollRegister('${ob.id}')"><i class="ti ti-user-dollar"></i> Payroll登録＆シフト設定</button>`;
+    }
+    // 研修チェック（登録完了後はOJT進捗）
+    if (st==='登録完了') {
+      html += `<button class="btn btn-secondary btn-sm" onclick="openOBTrainingModal('${ob.id}')"><i class="ti ti-checklist"></i> 研修チェック</button>`;
+    }
+    if (st!=='登録完了' && st!=='キャンセル') {
+      html += `<button class="btn btn-secondary btn-sm" onclick="cancelOB('${ob.id}')"><i class="ti ti-x"></i> 中止</button>`;
+    }
+    html += `</div>`;
+
+    if (st==='登録完了') {
+      html += `<div class="alert alert-success" style="margin-top:8px"><i class="ti ti-circle-check"></i><div style="font-size:12px"><b>従業員マスター登録完了</b> · ${ob.name}さんはシフト稼働可能です</div></div>`;
     }
     html += '</div>';
   });
   return html;
+}
+
+/* 本人情報入力フォーム */
+function openPersonalForm(obId) {
+  var ob = ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
+  var p = ob.personal || {};
+  openModal(`<div class="modal-title">本人情報入力 — ${ob.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="max-height:60vh;overflow-y:auto">
+    <div class="form-group"><label class="form-label">住所</label><input class="form-input" id="pf-address" value="${p.address||''}"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">電話</label><input class="form-input" id="pf-phone" value="${p.phone||ob.phone||''}"></div>
+      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="pf-email" value="${p.email||ob.email||''}"></div>
+    </div>
+    <div class="form-group"><label class="form-label">SSN <span class="tag tag-red" style="font-size:8px">機密</span></label><input class="form-input" id="pf-ssn" value="${p.ssn||''}" placeholder="XXX-XX-XXXX"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">勤務開始予定日</label><input class="form-input" id="pf-start" type="date" value="${p.startDate||''}"></div>
+      <div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="pf-wage" type="number" step="0.25" value="${p.wage||''}"></div>
+    </div>
+    <div class="form-group"><label class="form-label">VISA / 就労ステータス</label>
+      <select class="form-select" id="pf-visa" onchange="document.getElementById('pf-visadetail').style.display=this.value==='その他'?'block':'none'">
+        ${VISA_OPTIONS.map(v=>`<option ${p.visa===v?'selected':''}>${v}</option>`).join('')}</select></div>
+    <div class="form-group" id="pf-visadetail" style="display:${p.visa==='その他'?'block':'none'}"><label class="form-label">VISA詳細</label><input class="form-input" id="pf-visadetail-input" value="${p.visaDetail||''}"></div>
+    <div class="form-group"><label class="form-label">本人確認書類</label>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">パスポートがあればパスポートのみ。無ければ Driver License/State ID と SSN Card の両方が必須。</div>
+      <div id="pf-docs">${(ob.docs||[]).map((d,i)=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0"><span><i class="ti ti-file"></i> ${d.name}</span><button class="btn btn-danger btn-sm" style="padding:0 6px;font-size:10px" onclick="removeOBDoc('${obId}',${i})">削除</button></div>`).join('')||'<span style="color:var(--muted);font-size:12px">未追加</span>'}</div>
+      <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','Passport')">+ パスポート</button>
+        <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','Driver License')">+ Driver License/ID</button>
+        <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','SSN Card')">+ SSN Card</button>
+      </div>
+    </div>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="submitPersonal('${obId}')"><i class="ti ti-send"></i> 提出</button></div>`);
+}
+function addOBDoc(obId, name) {
+  var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  if(!ob.docs)ob.docs=[];
+  ob.docs.push({name, uploadedAt:new Date().toISOString()});
+  lsSet('onboardings',obs); openPersonalForm(obId);
+}
+function removeOBDoc(obId,i) {
+  var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  ob.docs.splice(i,1); lsSet('onboardings',obs); openPersonalForm(obId);
+}
+function submitPersonal(obId) {
+  var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  var visa=document.getElementById('pf-visa').value;
+  var ssn=document.getElementById('pf-ssn').value.trim();
+  var address=document.getElementById('pf-address').value.trim();
+  // 必須チェック
+  if (!address) { alert('住所を入力してください'); return; }
+  if (!ssn) { alert('SSNを入力してください'); return; }
+  // 書類チェック: パスポート or (Driver License + SSN Card)
+  var docNames=(ob.docs||[]).map(d=>d.name);
+  var hasPassport=docNames.includes('Passport');
+  var hasDLandSSN=docNames.includes('Driver License')&&docNames.includes('SSN Card');
+  if (!hasPassport && !hasDLandSSN) { alert('本人確認書類が不足しています。\nパスポート、または Driver License/ID＋SSN Card の両方が必要です。'); return; }
+  ob.personal = {
+    address, phone:document.getElementById('pf-phone').value.trim(), email:document.getElementById('pf-email').value.trim(),
+    ssn, startDate:document.getElementById('pf-start').value, wage:parseFloat(document.getElementById('pf-wage').value)||0,
+    visa, visaDetail: visa==='その他'?(document.getElementById('pf-visadetail-input').value.trim()):'',
+    submittedAt:new Date().toISOString(),
+  };
+  ob.obStatus='提出完了'; ob.rejectReason='';
+  lsSet('onboardings',obs);
+  // 経理へ通知（承認待ちに追加）
+  addApproval({title:`${ob.name} オンボーディング提出（経理確認）`, type:'採用', from:ob.name, store:ob.storeName||''});
+  closeModalDirect();
+  showToast('提出完了。経理確認に進みます','success');
+  renderPage('onboarding');
+}
+/* 経理確認 */
+function officeReview(obId, action) {
+  var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  if (action==='approve') {
+    ob.obStatus='経理確認中'; lsSet('onboardings',obs);
+    showToast('経理確認OK。Payroll登録に進めます','success');
+  } else {
+    var reason=prompt('差し戻し理由を入力（例: SSN入力不備 / 書類画像が不鮮明 / 必要書類不足）');
+    if (reason==null) return;
+    ob.obStatus='差し戻し'; ob.rejectReason=reason; lsSet('onboardings',obs);
+    showToast('本人へ差し戻しました','info');
+  }
+  renderPage('onboarding');
+}
+/* Payroll登録＋シフト詳細設定 → 従業員マスター登録 */
+function openPayrollRegister(obId) {
+  var ob = ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
+  var p = ob.personal||{};
+  var positions = getStorePositions(ob.store).filter(x=>x!=='Energy'&&x!=='Leadership');
+  openModal(`<div class="modal-title">Payroll登録＆シフト設定 — ${ob.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="max-height:60vh;overflow-y:auto">
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">確認して登録すると従業員マスターに追加され、シフト稼働可能になります。</p>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">役職</label>
+        <select class="form-select" id="pr-role"><option value="crew">Crew</option><option value="sl">Leader</option></select></div>
+      <div class="form-group"><label class="form-label">雇用区分</label>
+        <select class="form-select" id="pr-emp"><option>パート</option><option>正社員</option></select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="pr-wage" type="number" step="0.25" value="${p.wage||16}"></div>
+      <div class="form-group"><label class="form-label">初回勤務日</label><input class="form-input" id="pr-firstwork" type="date" value="${p.startDate||''}"></div>
+    </div>
+    <div class="form-group"><label class="form-label">対応開始ポジション（任意・複数可）</label>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${positions.map(pos=>`<label style="font-size:12px;display:flex;align-items:center;gap:3px"><input type="checkbox" class="pr-pos" value="${pos}"> ${pos}</label>`).join('')}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">チェックしたポジションはLv1承認済みとして登録されます</div>
+    </div>
+    <div class="form-group"><label class="form-label">勤務条件</label>
+      <div class="form-row">
+        <select class="form-select" id="pr-days"><option value="any">曜日制限なし</option><option value="weekday">平日のみ</option><option value="weekend">週末のみ</option></select>
+        <input class="form-input" id="pr-maxh" type="number" placeholder="最大時間/週" value="40">
+      </div>
+    </div>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-success" onclick="finalizePayroll('${obId}')"><i class="ti ti-user-check"></i> 従業員登録</button></div>`);
+}
+function finalizePayroll(obId) {
+  var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  var p = ob.personal||{};
+  var role=document.getElementById('pr-role').value;
+  var emp=document.getElementById('pr-emp').value;
+  var wage=parseFloat(document.getElementById('pr-wage').value)||16;
+  var firstWork=document.getElementById('pr-firstwork').value;
+  var posList=[...document.querySelectorAll('.pr-pos:checked')].map(c=>c.value);
+  var days=document.getElementById('pr-days').value;
+  var maxH=parseInt(document.getElementById('pr-maxh').value)||40;
+
+  // 従業員マスターに登録
+  var emps=getEmployees();
+  if (!emps.find(e=>e.name===ob.name)) {
+    emps.push({id:'e'+Date.now(), name:ob.name, role, store:ob.store, support:[], emp,
+      step:1, status:'在籍', perms:role==='sl'?'leader':'crew', wage, coef:1.0,
+      title:ob.pos||'', isSL:false, email:p.email||ob.email||'', hireDate:new Date().toISOString().slice(0,10),
+      firstWork: firstWork||new Date().toISOString().slice(0,10)});
+    lsSet('m_employees', emps);
+  }
+  // スキル登録（選択ポジションをLv1承認済みに）
+  if (posList.length) {
+    var sk=getSkills(); if(!sk[ob.name])sk[ob.name]={};
+    posList.forEach(pos=>{ sk[ob.name][pos]={level:1,status:'承認',date:new Date().toLocaleDateString('ja')}; });
+    setSkills(sk);
+  }
+  // 勤務条件登録
+  if (days!=='any' || maxH<40) {
+    setWorkCondition(ob.store, ob.name, {opening:'any',closing:'any',days,minH:0,maxH});
+  }
+  ob.obStatus='登録完了'; ob.payrollDone=true;
+  lsSet('onboardings',obs);
+  closeModalDirect();
+  showToast(`${ob.name}を従業員マスターに登録しました。シフト稼働可能です`,'success');
+  renderPage('onboarding');
+}
+function cancelOB(obId) {
+  if(!confirm('このオンボーディングを中止しますか？'))return;
+  var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  ob.obStatus='キャンセル'; lsSet('onboardings',obs);
+  renderPage('onboarding');
+}
+/* 研修チェック（登録完了後のOJT進捗） */
+function openOBTrainingModal(obId) {
+  var ob=ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
+  var tmpl=ob.template||getOBTemplate(); var done=ob.done||[];
+  var html=`<div class="modal-title">研修チェック — ${ob.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div><div style="max-height:60vh;overflow-y:auto">`;
+  tmpl.forEach(t=>{
+    var isDone=done.includes(t.id);
+    html+=`<div class="task-item" style="padding:6px 0"><div class="task-check${isDone?' done':''}" onclick="toggleOBTask('${ob.id}','${t.id}')">${isDone?'<i class="ti ti-check" style="font-size:11px;color:#fff"></i>':''}</div>
+      <div style="flex:1"><div class="task-text${isDone?' done':''}" style="font-size:13px">${t.label} <span class="tag tag-gray" style="font-size:8px">${t.who}</span></div></div></div>`;
+  });
+  html+=`</div><div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`;
+  openModal(html);
 }
 
 function toggleOBTask(obId, taskId) {
@@ -4803,9 +5439,11 @@ function toggleOBTask(obId, taskId) {
   if (task && (task.type==='完了条件' || task.label.includes('Crew化')) && ob.done.includes(taskId)) {
     var emps = getEmployees();
     var e = emps.find(x=>x.name===ob.name);
-    if (e) { e.status='在籍'; e.step=Math.max(e.step,1); lsSet('m_employees', emps); showToast(`${ob.name}がCrew化しました（在籍・STEP1）。シフト申請が可能です`, 'success'); }
+    if (e) { e.status='在籍'; e.step=Math.max(e.step,1); lsSet('m_employees', emps); showToast(`${ob.name}がCrew化しました（在籍・STEP1）`, 'success'); }
   }
-  renderPage('onboarding');
+  // モーダルが開いていれば研修チェックを再描画、なければページ更新
+  if (document.getElementById('modal-overlay').classList.contains('open')) openOBTrainingModal(obId);
+  else renderPage('onboarding');
 }
 
 function openOBTemplateModal() {
@@ -4971,6 +5609,7 @@ function openEmpModal(empId) {
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">入社日</label><input class="form-input" id="e-hire" type="date" value="${e.hireDate}"></div>
+      <div class="form-group"><label class="form-label">初回勤務日（Tip Rate 3ヶ月起算）</label><input class="form-input" id="e-firstwork" type="date" value="${e.firstWork||''}"></div>
       <div class="form-group"><label class="form-label">ステータス</label>
         <select class="form-select" id="e-status">${EMP_STATUS.map(s=>`<option${e.status===s?' selected':''}>${s}</option>`).join('')}</select>
       </div>
@@ -5007,6 +5646,7 @@ function saveEmp(empId) {
     emp: document.getElementById('e-emp').value,
     step: parseInt(document.getElementById('e-step').value),
     hireDate: document.getElementById('e-hire').value,
+    firstWork: (document.getElementById('e-firstwork')||{}).value || '',
     status: document.getElementById('e-status').value,
     perms: document.getElementById('e-perms').value,
   };
@@ -5387,16 +6027,29 @@ function deleteVendor(vId) {
 /* ============================================================
    ポジション & スキルレベル モデル（店舗別ポジション + 承認フロー）
 ============================================================ */
-const ALL_POSITIONS = ['Server','Kitchen','Cashier','Host','Prep','Leader','Opening','Closing','Training'];
+const ALL_POSITIONS = ['Host','Server','Bar','Drink','Yakitori','Kitchen','Tempura','Sushi','Cold','Main Plater','Miso','Supporter','Prep','Front','Back','Food Runner','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership'];
 const DEFAULT_STORE_POSITIONS = {
-  'F01':['Server','Kitchen','Cashier','Host','Prep','Leader','Opening','Closing','Training'],
-  'F02':['Server','Kitchen','Cashier','Host','Prep','Leader','Opening','Closing','Training'],
-  'F03':['Server','Kitchen','Cashier','Host','Prep','Leader','Opening','Closing','Training'],
-  'F04-K':['Server','Kitchen','Cashier','Prep','Leader','Opening','Closing','Training'],
-  'F04-P':['Server','Kitchen','Cashier','Prep','Leader','Opening','Closing','Training'],
-  'F04-A':['Server','Kitchen','Cashier','Prep','Leader','Opening','Closing','Training'],
-  'F05':['Server','Kitchen','Cashier','Host','Prep','Leader','Opening','Closing','Training'],
+  'F01':['Host','Server','Bar','Drink','Yakitori','Kitchen','Energy','Leadership'],
+  'F02':['Host','Server','Tempura','Sushi','Cold','Drink','Energy','Leadership'],
+  'F03':['Prep','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership'],
+  'F04-K':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership'],
+  'F04-P':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership'],
+  'F04-A':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership'],
+  'F05':['Host','Server','Front','Back','Food Runner','Supporter','Energy','Leadership'],
 };
+/* スキルレベル基準（Lv0-3の達成基準）。Totoyaは実基準、他は汎用 */
+const SKILL_CRITERIA = {
+  'Main Plater':['未経験','米を丼に盛りtobikoを正しくかけられる','全ての丼を正しく作り1シフト50皿以上＋setup/closing対応','オープンラッシュ中に17皿を25分で同品質で作れる'],
+  'Miso':['未経験','全種類のスープの作り方とシフトの準備を理解している','1シフト50皿を一人で正確に＋指示通り準備できたか確認できる','70皿を一人で捌き、余裕があれば他ポジ補助や皿洗いも遅延なく'],
+  'Host':['対応不可','注文・会計のサポート＋シフトの準備ができる','1シフト50皿を一人で待ち時間を出さず対応＋closing','70皿を一人で捌き、外の客も適切なタイミングで対応しつつ店内も'],
+  'Supporter':['未経験','50皿超でも皿を溜めずに洗える','皿洗いをしつつ他ポジを補助できる','皿洗い・補助をしつつ必要ならprep作業（negitoro等）もできる'],
+  'Prep':['未経験','10以上','18以上','25以上'],
+  'Energy':['まだフレーズを覚えておらず声が小さい','言われなくても正しいフレーズを適切なタイミングで使える','元気でStore Leaderと同レベルの声量','チームのやまびこ（echo）を自信を持ってリードできる'],
+  'Leadership':['未経験','常に時間を守り、手すきの時に自ら仕事を見つけられる','良いチーム環境を作りつつ、メンバーに優先事項を的確に指示・伝達できる','off-manualな想定外の状況も自分で考えて対応できる'],
+};
+function skillCriteria(pos) {
+  return SKILL_CRITERIA[pos] || ['未経験','サポートがあればできる','一人でできる','教えられる・リーダーとして行動できる'];
+}
 function getStorePositions(storeId) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); return all[storeId]||ALL_POSITIONS; }
 function setStorePositions(storeId, positions) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); all[storeId]=positions; lsSet('store_positions', all); }
 
@@ -5405,7 +6058,7 @@ function getSkills() { return ls('skills', {}); }
 function setSkills(s) { lsSet('skills', s); }
 function getEmpSkills(name) { return getSkills()[name] || {}; }
 function approvedPositions(name) { var sk=getEmpSkills(name); return Object.keys(sk).filter(p=>sk[p].status==='承認'&&sk[p].level>=1); }
-function leaderSkillApproved(name) { var sk=getEmpSkills(name); return !!(sk['Leader']&&sk['Leader'].status==='承認'&&sk['Leader'].level>=1); }
+function leaderSkillApproved(name) { var sk=getEmpSkills(name); return !!((sk['Leadership']&&sk['Leadership'].status==='承認'&&sk['Leadership'].level>=2) || (sk['Leader']&&sk['Leader'].status==='承認'&&sk['Leader'].level>=1)); }
 const SKILL_TRAINING = {
   'Server':'接客トレーニング','Host':'接客トレーニング','Cashier':'レジ・会計トレーニング',
   'Kitchen':'キッチン基礎トレーニング','Prep':'仕込みトレーニング','Leader':'Leader Training',
@@ -6681,8 +7334,54 @@ function updateGoalProgress(gId) {
    ⑱ Tip Rate (自己申請 80/90/100 → 上長承認 → 履歴)
 ============================================================ */
 const TIP_OPTIONS = [80, 90, 100];
-const DEFAULT_TIP_POLICY = '【Tip Rate Policy】\n・Tip Rateは自己評価に基づき 80% / 90% / 100% から選択し申請します。\n・100%：全業務を独力で遂行でき、後輩指導も可能なレベル。\n・90%：主要業務を独力で遂行できるレベル。\n・80%：基本業務は遂行できるが一部サポートが必要なレベル。\n・申請内容は上長（SL/AM/GM）が承認します。\n・承認後のTip Rateは次回評価まで適用されます。';
+const DEFAULT_TIP_POLICY = '【Tip Rate Policy】\n・初回勤務後、店舗ごとのNo Tip期間（ToriTon/Tenkichi=3シフト、Totoya/Marujuu/Waikiki=2シフト）。\n・No Tip期間終了後は80%スタート。\n・90%/100%は条件を満たし承認されると昇格。\n・【初回勤務日から3ヶ月経過すると、承認を待たず自動的に100%になります】\n・90%：Responsibility/Skill/Quality/Teamwork/Passion の条件＋Store Manager承認。\n・100%：主要Lv3＋教育力等＋Store Manager＋Area Manager承認。';
 function getTipPolicy() { return ls('tip_policy', DEFAULT_TIP_POLICY); }
+
+/* 店舗別No Tip期間（初回勤務からのシフト数） */
+function noTipShifts(storeId) {
+  // ToriTon(F01)/Tenkichi(F02)=3, Totoya(F03,F04*)/Marujuu(F05)=2
+  return (storeId==='F01'||storeId==='F02') ? 3 : 2;
+}
+/* 初回勤務日（firstWork優先, なければhireDate） */
+function firstWorkDate(emp) {
+  if (!emp) return null;
+  var d = emp.firstWork || emp.hireDate;
+  return d ? new Date(d+'T00:00:00') : null;
+}
+/* 初回勤務から3ヶ月以上経過したか */
+function isThreeMonths(emp) {
+  var d = firstWorkDate(emp);
+  if (!d) return false;
+  var threeMo = new Date(d); threeMo.setMonth(threeMo.getMonth()+3);
+  return new Date() >= threeMo;
+}
+/* そのスタッフの確定Tip Rate（%）を算出
+   - 3ヶ月経過 → 自動100%
+   - 承認済みの最新Tip Rate申請 → その%
+   - No Tip期間中 → 0（No Tip）
+   - それ以降 → 80% */
+function effectiveTipRate(name) {
+  var emp = getEmployees().find(e=>e.name===name);
+  if (!emp) return 100;
+  if (emp.role!=='crew' && emp.role!=='sl') return 100;
+  // 3ヶ月自動100%
+  if (isThreeMonths(emp)) return 100;
+  // 承認済み最新
+  var approved = ls('tip_requests',[]).filter(r=>r.name===name && r.status==='承認').slice(-1)[0];
+  if (approved) return approved.rate;
+  // 初回勤務日が未設定なら、既存の評価係数（coef）を尊重（インポートデータ保護）
+  var fw = firstWorkDate(emp);
+  if (!fw) return (emp.coef!=null ? Math.round(emp.coef*100) : 100);
+  // No Tip期間判定（日数近似）
+  var daysSince = Math.floor((new Date() - fw) / 86400000);
+  if (daysSince < noTipShifts(emp.store)) return 0;
+  return 80;
+}
+/* 表示用ラベル */
+function tipRateLabel(name) {
+  var r = effectiveTipRate(name);
+  return r===0 ? 'No Tip' : r+'%';
+}
 
 function renderTipRate() {
   var requests = ls('tip_requests', []);
@@ -6703,6 +7402,24 @@ function renderTipRate() {
   html += `<div class="card"><div class="card-title"><i class="ti ti-coin"></i>Tip Rate 区分</div>
     <div style="display:flex;gap:8px">${TIP_OPTIONS.map(o=>`<div class="kpi" style="flex:1;text-align:center"><div class="kpi-value" style="color:var(--accent)">${o}%</div></div>`).join('')}</div>
   </div>`;
+
+  // 現在のTip Rate一覧（管理者向け: スタッフ全員のeffective rate）
+  if (canApprove || canEditPolicy) {
+    var storeId2 = curStore==='ALL'?null:curStore;
+    var staffList = getEmployees().filter(e=>(e.role==='crew'||e.role==='sl') && e.status!=='退職' && (!storeId2 || e.store===storeId2 || (e.support||[]).includes(storeId2)));
+    html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>スタッフ別 現在のTip Rate</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">初回勤務から3ヶ月経過で自動100%。それ以前は承認・No Tip期間で決定。</div>
+      <div style="overflow-x:auto"><table class="inv-table" style="min-width:400px;font-size:12px"><thead><tr><th>スタッフ</th><th>店舗</th><th>初回勤務</th><th>Tip Rate</th></tr></thead><tbody>`;
+    staffList.slice(0,60).forEach(e=>{
+      var rate = effectiveTipRate(e.name);
+      var auto = isThreeMonths(e);
+      var col = rate===100?'var(--green)':rate===0?'var(--red)':'var(--accent)';
+      html += `<tr><td>${e.name}</td><td style="color:var(--muted)">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name}</td>
+        <td style="color:var(--muted);font-size:11px">${firstWorkDate(e)?firstWorkDate(e).toLocaleDateString('ja'):'—'}</td>
+        <td style="font-weight:700;color:${col}">${rate===0?'No Tip':rate+'%'}${auto?' <span class="tag tag-green" style="font-size:8px">自動</span>':''}</td></tr>`;
+    });
+    html += `</tbody></table></div></div>`;
+  }
 
   // Crew/SL: 自己申請
   if (curRole === 'crew' || curRole === 'sl') {
@@ -7048,18 +7765,23 @@ function renderSkillSelf() {
   html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>現在のSkill Level</div>`;
   positions.forEach(p => {
     var s = sk[p] || {level:0, status:'未取得'};
-    var lvLabel = s.level>=2?'Lv2 (指導可)':s.level===1?'Lv1 (独力)':'未習得';
+    var crit = skillCriteria(p);
+    var lvLabel = 'Lv'+(s.level||0);
     var col = s.status==='承認'?'tag-green':s.status==='申請中'||s.status==='確認中'?'tag-yellow':s.status==='差戻し'?'tag-red':'tag-gray';
-    html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
-      <div><span style="font-size:13px;font-weight:600">${p}</span>
-        ${s.status==='承認'?`<span style="font-size:11px;color:var(--green)"> · ${lvLabel}</span>`:''}
-        ${s.mgrComment&&s.status!=='承認'?`<div style="font-size:11px;color:var(--muted)">管理者: ${s.mgrComment}</div>`:''}
-        ${s.nextTask?`<div style="font-size:11px;color:var(--accent2)">次の課題: ${s.nextTask}</div>`:''}
+    html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div><span style="font-size:13px;font-weight:600">${p}</span>
+          ${s.status==='承認'?`<span style="font-size:11px;color:var(--green)"> · ${lvLabel}</span>`:''}
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="tag ${col}">${s.status}</span>
+          <button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px" onclick="showCriteria('${p.replace(/'/g,'')}')">基準</button>
+          ${(s.status==='未取得'||s.status==='差戻し'||s.status==='承認')?`<button class="btn btn-secondary btn-sm" onclick="openSkillRequestModal('${p.replace(/'/g,'')}')">申請</button>`:''}
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:6px">
-        <span class="tag ${col}">${s.status}</span>
-        ${(s.status==='未取得'||s.status==='差戻し'||s.status==='承認')?`<button class="btn btn-secondary btn-sm" onclick="openSkillRequestModal('${p}')">申請</button>`:''}
-      </div>
+      ${s.status==='承認'&&s.level>=0?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${crit[s.level]||''}</div>`:''}
+      ${s.mgrComment&&s.status!=='承認'?`<div style="font-size:11px;color:var(--muted);margin-top:3px">管理者: ${s.mgrComment}</div>`:''}
+      ${s.nextTask?`<div style="font-size:11px;color:var(--accent2);margin-top:2px">次の課題: ${s.nextTask}</div>`:''}
     </div>`;
   });
   html += '</div>';
@@ -7085,11 +7807,30 @@ function renderSkillSelf() {
   return html;
 }
 
+function showCriteria(position) {
+  var crit = skillCriteria(position);
+  var html = `<div class="modal-title">${position} スキル基準 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:13px">`;
+  [0,1,2,3].forEach(lv=>{
+    var col = lv===0?'var(--muted)':lv===3?'var(--accent)':'var(--tm)';
+    html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <span class="tag ${lv===3?'tag-orange':'tag-gray'}" style="font-size:10px">Lv${lv}</span>
+      <span style="color:${col};margin-left:6px">${crit[lv]||'—'}</span></div>`;
+  });
+  html += `</div><div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`;
+  openModal(html);
+}
 function openSkillRequestModal(position) {
+  var crit = skillCriteria(position);
   openModal(`<div class="modal-title">${position} スキル申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">「できるようになったこと」を申請してください。管理者が実務確認して承認します。</p>
     <div class="form-group"><label class="form-label">希望レベル</label>
-      <select class="form-select" id="sk-level"><option value="1">Lv1（独力でできる）</option><option value="2">Lv2（新人に教えられる）</option></select>
+      <select class="form-select" id="sk-level" onchange="document.getElementById('sk-crit').textContent=this.options[this.selectedIndex].dataset.crit">
+        <option value="1" data-crit="${(crit[1]||'').replace(/"/g,'')}">Lv1 — サポートがあればできる</option>
+        <option value="2" data-crit="${(crit[2]||'').replace(/"/g,'')}">Lv2 — 一人でできる</option>
+        <option value="3" data-crit="${(crit[3]||'').replace(/"/g,'')}">Lv3 — 教えられる・リーダー</option>
+      </select>
+      <div id="sk-crit" style="font-size:11px;color:var(--accent2);margin-top:6px">${(crit[1]||'').replace(/"/g,'')}</div>
     </div>
     <div class="form-group"><label class="form-label">自己評価コメント</label><textarea class="form-textarea" id="sk-comment" placeholder="例: Closing作業を一人で完了できるようになりました"></textarea></div>
     <div class="form-group"><label class="form-label">メモ・証拠（任意）</label><input class="form-input" id="sk-evidence" placeholder="例: 5/20 Closing単独実施"></div>
@@ -7131,9 +7872,11 @@ function renderSkillManager() {
   if (pending.length) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>承認待ち (${pending.length})</div>`;
     pending.forEach(r => {
+      var crit = skillCriteria(r.position);
       html += `<div class="approval-item">
         <div class="approval-header"><div><div class="approval-title">${r.name} · ${r.position} Lv${r.level}</div>
         <div class="approval-meta">${r.date} · ${(STORES.find(s=>s.id===r.store)||{name:''}).name}</div></div><span class="tag tag-yellow">${r.status}</span></div>
+        <div style="font-size:11px;color:var(--accent2);margin-top:4px">Lv${r.level}基準: ${crit[r.level]||''}</div>
         <div style="font-size:12px;margin-top:6px">自己評価: ${r.selfComment}</div>
         ${r.evidence?`<div style="font-size:11px;color:var(--muted)">証拠: ${r.evidence}</div>`:''}
         <div class="approval-actions">
@@ -7146,18 +7889,20 @@ function renderSkillManager() {
     html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>承認待ちのスキル申請はありません</div>`;
   }
 
-  // スタッフ別スキルマトリクス
-  html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>Staff Skills</div>
-    <div style="overflow-x:auto"><table class="inv-table" style="min-width:500px"><thead><tr><th>スタッフ</th>${ALL_POSITIONS.map(p=>`<th style="font-size:10px">${p.slice(0,4)}</th>`).join('')}</tr></thead><tbody>`;
+  // スタッフ別スキルマトリクス（店舗ポジション基準）
+  var mgrStoreId = curStore==='ALL'?null:curStore;
+  var matrixPos = mgrStoreId ? getStorePositions(mgrStoreId) : ALL_POSITIONS;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>スキルマトリクス</div>
+    <div style="overflow-x:auto"><table class="inv-table" style="min-width:500px"><thead><tr><th>スタッフ</th>${matrixPos.map(p=>`<th style="font-size:10px">${p.slice(0,5)}</th>`).join('')}</tr></thead><tbody>`;
   visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role)).forEach(e => {
     var sk = getEmpSkills(e.name);
-    html += `<tr><td style="font-weight:600;font-size:12px">${e.name}</td>${ALL_POSITIONS.map(p=>{
+    html += `<tr><td style="font-weight:600;font-size:12px">${e.name}</td>${matrixPos.map(p=>{
       var s=sk[p]; var v=s&&s.status==='承認'?s.level:0;
-      var bg=v>=2?'var(--green)':v===1?'var(--yellow)':'transparent';
+      var bg=v>=3?'var(--accent)':v===2?'var(--green)':v===1?'var(--yellow)':'transparent';
       return `<td style="text-align:center;color:${v?'#fff':'var(--muted)'};background:${bg};border-radius:4px">${v||'-'}</td>`;
     }).join('')}</tr>`;
   });
-  html += '</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:6px">数値=承認済Lv（1:独力 2:指導可）</div></div>';
+  html += '</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:6px">Lv1:サポート有 / Lv2:独力 / Lv3:指導可（オレンジ）</div></div>';
 
   if (done.length) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>評価履歴</div>`;
@@ -7177,7 +7922,7 @@ function openSkillReviewModal(reqId, action) {
   openModal(`<div class="modal-title">${r.name} · ${r.position} を${action} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">自己評価: ${r.selfComment}</div>
     ${action==='承認'?`<div class="form-group"><label class="form-label">承認レベル</label>
-      <select class="form-select" id="rv-level"><option value="1"${r.level===1?' selected':''}>Lv1（独力）</option><option value="2"${r.level===2?' selected':''}>Lv2（指導可）</option></select></div>`:''}
+      <select class="form-select" id="rv-level"><option value="1"${r.level===1?' selected':''}>Lv1（サポート有）</option><option value="2"${r.level===2?' selected':''}>Lv2（独力）</option><option value="3"${r.level===3?' selected':''}>Lv3（指導可・リーダー）</option></select></div>`:''}
     <div class="form-group"><label class="form-label">フィードバック（成長を促すコメント）</label>
       <textarea class="form-textarea" id="rv-comment" placeholder="${action==='承認'?'例: 接客が安定。次はUpsellを意識しましょう':'例: もう少し練習が必要です。再申請してください'}"></textarea></div>
     <div class="form-group"><label class="form-label">次の課題</label><input class="form-input" id="rv-task" placeholder="例: Closingを安定してできるように"></div>
