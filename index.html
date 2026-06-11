@@ -794,7 +794,7 @@ const NAV_ITEMS = [
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am']},
   {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl']},
-  {id:'attendance',  label:'勤怠チェック', icon:'ti-clock-check',      roles:['ceo','gm','office','am','sl']},
+  {id:'attendance',  label:'勤怠データ', icon:'ti-clock-check',      roles:['ceo','gm','office','am','sl']},
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
   {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am']},
@@ -5006,25 +5006,14 @@ function renderTipPeriodSummary(storeId, store, info) {
 
   // 確定フロー
   html += `<div class="card"><div class="card-title"><i class="ti ti-lock-check"></i>Tip確定</div>`;
-  // 勤怠チェック状態
-  var attStatus = attendancePeriodStatus(storeId, info);
-  var attClear = attendanceClearForTip(storeId, info);
-  html += `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:8px;padding:6px 8px;background:var(--surface2);border-radius:6px">
-    <i class="ti ti-clock-check" style="color:${attClear?'var(--green)':'var(--red)'}"></i>
-    勤怠チェック: <b style="color:${attClear?'var(--green)':'var(--red)'}">${attStatus}</b>
-    <button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="go('attendance')">確認</button>
-  </div>`;
   if (confirm && confirm.status==='確定済み') {
     html += `<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i><div style="font-size:12px"><b>確定済み</b><br>${confirm.by} · ${confirm.at}<br>総額 $${(confirm.totalFinal||0).toFixed(2)} · ${confirm.staffCount}名</div></div>
       ${['gm','ceo','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="unconfirmTip('${storeId}')"><i class="ti ti-lock-open"></i> 確定解除</button>`:''}`;
   } else {
-    var canConfirm = !agg.anyError && agg.daysWithData>0 && attClear;
+    var canConfirm = !agg.anyError && agg.daysWithData>0;
     html += `<p style="font-size:12px;color:var(--muted);margin-bottom:8px">期間内のデータを確認し、問題なければTipを確定します。確定後はPayroll/経理出力で利用されます。</p>`;
-    if (agg.anyError || !attClear) {
-      var reasons = [];
-      if (agg.anyError) reasons.push('Tipデータにエラー');
-      if (!attClear) reasons.push('勤怠チェック未承認のエラー');
-      html += `<div class="alert alert-warning" style="padding:7px 10px;font-size:12px"><i class="ti ti-alert-circle"></i> ${reasons.join('・')}のため確定できません。`;
+    if (agg.anyError) {
+      html += `<div class="alert alert-warning" style="padding:7px 10px;font-size:12px"><i class="ti ti-alert-circle"></i> Tipデータにエラーがあるため確定できません。`;
       if (['gm','office','ceo'].includes(curRole)) html += ` <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="forceConfirmTip('${storeId}')">例外承認で確定</button>`;
       html += `</div>`;
     } else {
@@ -5127,11 +5116,6 @@ function renderTipPeriodStaff(storeId, store, info) {
 /* 確定処理 */
 function confirmTip(storeId, force) {
   var info = tipPeriodInfo();
-  // 勤怠チェック連動: エラーが残っていると確定不可（force時は例外）
-  if (!force && !attendanceClearForTip(storeId, info)) {
-    alert('勤怠チェックにエラーが残っています。\n勤怠チェック画面でエラーを承認してから確定してください。\n（GM/Officeは例外承認で確定できます）');
-    return;
-  }
   var settle = calcHalfMonthSettlement(storeId, info.anyDate);
   var rows = settle.rows.map(r=>({name:r.name, hours:r.hours, rate:effectiveTipRate(r.name), final:r.final, isSL:r.isSL}));
   var data = {
@@ -5264,52 +5248,57 @@ function attendanceClearForTip(storeId, info) {
   return st==='未確認' || st==='確認中' || st==='承認済み';
 }
 
+/* 勤怠データ閲覧（独立した月ナビ・シフト照合なし） */
+var attMonthOffset = 0; // 0=今月, -1=先月（勤怠チェック専用、他と非共有）
+function attMonthRef() { var n=new Date(); return new Date(n.getFullYear(), n.getMonth()+attMonthOffset, 1); }
+function attMonthLabel() { var r=attMonthRef(); return `${r.getFullYear()}年${r.getMonth()+1}月`; }
+function attMonthDays() {
+  var r = attMonthRef(); var y=r.getFullYear(), m=r.getMonth();
+  var n = new Date(y, m+1, 0).getDate();
+  var arr=[];
+  for (var d=1; d<=n; d++){ var dt=new Date(y,m,d);
+    arr.push({day:d, date:`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`, dow:DOW[(dt.getDay()+6)%7]}); }
+  return arr;
+}
+function shiftAttMonth(delta){ attMonthOffset += delta; renderPage('attendance'); }
+
 function renderAttendance() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl') return financialBlocked();
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
-  var info = tipPeriodInfo(); // Tip管理と同じ期間セレクタを共用
-
-  var status = attendancePeriodStatus(storeId, info);
-  var statusTag = status==='承認済み'?'tag-green':status==='エラーあり'?'tag-red':status==='修正待ち'?'tag-yellow':status==='確認中'?'tag-blue':'tag-gray';
-
-  var html = `<div class="section-header"><div><div class="section-title">勤怠チェック</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
-    <span class="tag ${statusTag}">${status}</span></div>`;
-
-  // 期間セレクタ（Tip管理と共通）
-  html += `<div class="card" style="padding:10px;margin-bottom:10px">
-    <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px">
-      <button class="btn btn-secondary btn-sm" onclick="setTipMonth(-1)"><i class="ti ti-chevron-left"></i></button>
-      <span style="font-size:15px;font-weight:700">${info.y}年${info.m+1}月</span>
-      <button class="btn btn-secondary btn-sm" onclick="setTipMonth(1)"><i class="ti ti-chevron-right"></i></button>
-    </div>
-    <div style="display:flex;gap:6px">
-      <button class="phase-tab${info.half==='first'?' active':''}" style="flex:1" onclick="setTipHalf('first')">前期 (1〜15日)</button>
-      <button class="phase-tab${info.half==='second'?' active':''}" style="flex:1" onclick="setTipHalf('second')">後期 (16〜末)</button>
-    </div>
-  </div>`;
-
-  // データ反映ボタン
   var hasGuid = !!store.toastGuid;
-  html += `<div class="card" style="padding:10px;margin-bottom:10px">
-    <button class="btn btn-primary" style="width:100%" onclick="attSyncData('${storeId}','${store.toastGuid||''}')"><i class="ti ti-refresh"></i> データ反映（予定シフト＋実勤怠）</button>
-    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">予定シフトと実勤怠を取得・照合します${hasGuid?'':'（Toast GUID未設定: 手動勤怠のみ）'}</div></div>`;
 
-  // 表示切替
-  html += `<div class="phase-tabs">
-    <div class="phase-tab${attView==='month'?' active':''}" onclick="setAttView('month')">勤怠データ(月)</div>
-    <div class="phase-tab${attView==='daily'?' active':''}" onclick="setAttView('daily')">照合(日別)</div>
-    <div class="phase-tab${attView==='staff'?' active':''}" onclick="setAttView('staff')">スタッフ別</div>
+  var html = `<div class="section-header"><div><div class="section-title">勤怠データ</div><div class="section-sub">${store.name} · Toast打刻の日毎一覧</div></div></div>`;
+
+  // 月ナビ（独立）
+  html += `<div class="card" style="padding:10px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:center;gap:10px">
+      <button class="btn btn-secondary btn-sm" onclick="shiftAttMonth(-1)"><i class="ti ti-chevron-left"></i></button>
+      <span style="font-size:15px;font-weight:700">${attMonthLabel()}</span>
+      <button class="btn btn-secondary btn-sm" onclick="shiftAttMonth(1)"><i class="ti ti-chevron-right"></i></button>
+    </div>
   </div>`;
 
-  if (attView==='month') return html + renderAttMonthData(storeId, store);
-  if (attView==='staff') return html + renderAttStaff(storeId, info);
-  return html + renderAttDaily(storeId, info);
+  // データ反映ボタン（実勤怠のみ。シフト連携なし）
+  html += `<div class="card" style="padding:10px;margin-bottom:10px">
+    <button class="btn btn-primary" style="width:100%" onclick="attLoadData('${storeId}','${store.toastGuid||''}')"><i class="ti ti-refresh"></i> 勤怠データを反映</button>
+    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'Toastの打刻データ（出退勤）を取得します。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
+
+  return html + renderAttMonthData(storeId, store);
 }
 
-/* 月単位の実勤怠データ一覧（Toast取得結果の確認用） */
+async function attLoadData(storeId, guid) {
+  var el=document.getElementById('att-status');
+  if (!guid) { if(el)el.textContent='Toast GUID未設定のため取得できません。'; return; }
+  if (el) el.textContent='Toastから勤怠データを取得中…';
+  var lab = await syncTipLaborFromDB(storeId, guid, attMonthDays());
+  showToast(`勤怠データ ${lab.updated}日分を反映しました`,'success');
+  renderPage('attendance');
+}
+
+/* 月単位の実勤怠データ一覧（Toast取得結果の確認用・シフト照合なし） */
 function renderAttMonthData(storeId, store) {
-  var days = monthDays(); // dailyMonthOffsetで月切替（Tip期間とは別の月ナビ）
+  var days = attMonthDays();
   var rows = [];
   var totalHours=0, totalDays=0, staffSet={};
   days.forEach(d=>{
@@ -5324,16 +5313,7 @@ function renderAttMonthData(storeId, store) {
     rows.push({date:d.date, dow:d.dow, names, labor, dayHours, count:names.length});
   });
 
-  var html = `<div class="card" style="padding:10px;margin-bottom:10px">
-    <div style="display:flex;align-items:center;justify-content:center;gap:10px">
-      <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1);renderPage('attendance')"><i class="ti ti-chevron-left"></i></button>
-      <span style="font-size:14px;font-weight:700">${dailyMonthLabel()}</span>
-      <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1);renderPage('attendance')"><i class="ti ti-chevron-right"></i></button>
-    </div>
-  </div>`;
-
-  // サマリー
-  html += `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-4" style="color:var(--accent)"></i>${dailyMonthLabel()} 勤怠サマリー</div>
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-4" style="color:var(--accent)"></i>${attMonthLabel()} 勤怠サマリー</div>
     <div class="kpi-grid">
       ${kpi('勤怠データ', totalDays+'日', '取得済み', 'var(--tm)')}
       ${kpi('延べ人数', rows.reduce((a,r)=>a+r.count,0)+'人日', '', 'var(--muted)')}
@@ -5343,12 +5323,11 @@ function renderAttMonthData(storeId, store) {
 
   if (!rows.length) {
     html += `<div class="card" style="text-align:center;padding:30px;color:var(--muted)"><i class="ti ti-database-off" style="font-size:32px"></i>
-      <div style="margin-top:8px">${dailyMonthLabel()}の勤怠データがありません。</div>
-      <div style="font-size:12px;margin-top:4px">上の「データ反映」ボタンでToastから取得してください。${store.toastGuid?'':'<br>※この店舗はToast GUID未設定です'}</div></div>`;
+      <div style="margin-top:8px">${attMonthLabel()}の勤怠データがありません。</div>
+      <div style="font-size:12px;margin-top:4px">上の「勤怠データを反映」ボタンでToastから取得してください。${store.toastGuid?'':'<br>※この店舗はToast GUID未設定です'}</div></div>`;
     return html;
   }
 
-  // 日別カード
   rows.forEach(r=>{
     html += `<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-calendar-event"></i>${r.date.slice(5)} (${r.dow})
       <span style="margin-left:auto;font-size:12px;color:var(--muted);font-weight:400">${r.count}名 · ${r.dayHours.toFixed(1)}h</span></div>
@@ -5357,7 +5336,6 @@ function renderAttMonthData(storeId, store) {
     r.names.forEach(n=>{
       var e = r.labor[n];
       var total = (e.lunch||0)+(e.dinner||0);
-      // shifts から最初のin・最後のout
       var clockIn='—', clockOut='—', missingOut=false;
       if (e.shifts && e.shifts.length) {
         var ins = e.shifts.map(s=>s.inDate).filter(Boolean).sort();
@@ -5390,7 +5368,7 @@ function fmtClockHST(iso) {
   } catch(e) { return '—'; }
 }
 
-async function attSyncData(storeId, guid) {
+async function attSyncData_unused(storeId, guid) {
   var el=document.getElementById('att-status');
   if (!guid) { if(el)el.textContent='Toast GUID未設定のため実勤怠の自動取得はできません。手動勤怠で照合します。'; renderPage('attendance'); return; }
   if (el) el.textContent='予定シフト・実勤怠を取得中…';
