@@ -794,6 +794,7 @@ const NAV_ITEMS = [
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am']},
   {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl']},
+  {id:'attendance',  label:'勤怠チェック', icon:'ti-clock-check',      roles:['ceo','gm','office','am','sl']},
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
   {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am']},
@@ -824,7 +825,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['recipe','costsheet','invoice','inventory','order','ingredient_master','vendor_master']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['shift_admin','vacation','hiring','onboarding','skill','evaluation','tiprate','tip','staff_master','meeting','growthhub','growth_mgr']},
+    children:['shift_admin','vacation','hiring','onboarding','skill','evaluation','tiprate','tip','attendance','staff_master','meeting','growthhub','growth_mgr']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['tasks','required','goals','approval','acct_export','store_master','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
@@ -2500,6 +2501,7 @@ function renderPage(page) {
     case 'goals':        el.innerHTML = renderGoals(); break;
     case 'labor':        el.innerHTML = renderLabor(); break;
     case 'tip':          el.innerHTML = renderTipMgmt(); break;
+    case 'attendance':   el.innerHTML = renderAttendance(); break;
     case 'shift_admin':  el.innerHTML = renderShiftAdmin(); break;
     case 'shift_staff':  el.innerHTML = renderShiftStaff(); break;
     case 'vacation':     el.innerHTML = renderVacation(); break;
@@ -4858,21 +4860,558 @@ function saveOrder(storeId) {
 var laborTab = 'overview';
 var tipMgmtDate = null;
 var tipMgmtView = 'daily';
+/* ===== Tip管理: 前期(1-15)/後期(16-末) 期間ベース ===== */
+var tipPeriodMonth = 0;   // 0=今月, -1=先月
+var tipPeriodHalf = null; // 'first'|'second' (nullなら今日から自動)
+var tipPeriodView = 'summary'; // summary|daily|staff
+function tipPeriodRef() {
+  var now = new Date();
+  return new Date(now.getFullYear(), now.getMonth()+tipPeriodMonth, 1);
+}
+function currentHalf() {
+  if (tipPeriodHalf) return tipPeriodHalf;
+  return new Date().getDate()<=15 ? 'first' : 'second';
+}
+/* 選択中期間の代表日と日付配列 */
+function tipPeriodInfo() {
+  var ref = tipPeriodRef();
+  var y=ref.getFullYear(), m=ref.getMonth();
+  var half=currentHalf();
+  var from, to;
+  if (half==='first') { from=new Date(y,m,1); to=new Date(y,m,15); }
+  else { from=new Date(y,m,16); to=new Date(y,m+1,0); }
+  var iso=x=>x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');
+  var dates=[]; var d=new Date(from); for(;d<=to;d.setDate(d.getDate()+1)) dates.push(iso(new Date(d)));
+  return {y, m, half, from:iso(from), to:iso(to), dates,
+    label:`${y}年${m+1}月${half==='first'?'前期':'後期'}`,
+    rangeLabel:`${iso(from)} 〜 ${iso(to)}`, anyDate:dates[Math.min(4,dates.length-1)]};
+}
+function setTipMonth(d){ tipPeriodMonth+=d; renderPage('tip'); }
+function setTipHalf(h){ tipPeriodHalf=h; renderPage('tip'); }
+function setTipPeriodView(v){ tipPeriodView=v; renderPage('tip'); }
+
+/* Tip確定ステータス: 未取得/確認中/エラーあり/修正待ち/確定済み */
+function tipConfirmKey(storeId, info){ return 'tip_confirm_'+storeId+'_'+info.from; }
+function getTipConfirm(storeId, info){ return ls(tipConfirmKey(storeId,info), null); }
+function setTipConfirm(storeId, info, data){ lsSet(tipConfirmKey(storeId,info), data); }
+
 function renderTipMgmt() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl') return financialBlocked();
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
-  var date = tipMgmtDate || new Date(Date.now()-86400000).toISOString().slice(0,10);
-  var html = `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name}</div></div>
-    <input type="date" value="${date}" onchange="setTipMgmtDate(this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:13px"></div>
-  <div class="phase-tabs">
-    <div class="phase-tab${tipMgmtView==='daily'?' active':''}" onclick="setTipView('daily')">日次配分</div>
-    <div class="phase-tab${tipMgmtView==='half'?' active':''}" onclick="setTipView('half')">半月精算（SL再分配）</div>
+  var info = tipPeriodInfo();
+
+  var html = `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div></div>`;
+
+  // 期間セレクタ
+  html += `<div class="card" style="padding:10px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px">
+      <button class="btn btn-secondary btn-sm" onclick="setTipMonth(-1)"><i class="ti ti-chevron-left"></i></button>
+      <span style="font-size:15px;font-weight:700">${info.y}年${info.m+1}月</span>
+      <button class="btn btn-secondary btn-sm" onclick="setTipMonth(1)"><i class="ti ti-chevron-right"></i></button>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="phase-tab${info.half==='first'?' active':''}" style="flex:1" onclick="setTipHalf('first')">前期 (1〜15日)</button>
+      <button class="phase-tab${info.half==='second'?' active':''}" style="flex:1" onclick="setTipHalf('second')">後期 (16〜末)</button>
+    </div>
   </div>`;
-  if (tipMgmtView==='half') return html + renderTipHalfMonth(storeId, store, date);
-  return html + renderTipDaily(storeId, store, date);
+
+  // 表示切替
+  html += `<div class="phase-tabs">
+    <div class="phase-tab${tipPeriodView==='summary'?' active':''}" onclick="setTipPeriodView('summary')">期間サマリー</div>
+    <div class="phase-tab${tipPeriodView==='daily'?' active':''}" onclick="setTipPeriodView('daily')">日別</div>
+    <div class="phase-tab${tipPeriodView==='staff'?' active':''}" onclick="setTipPeriodView('staff')">スタッフ別</div>
+  </div>`;
+
+  if (tipPeriodView==='daily') return html + renderTipPeriodDaily(storeId, store, info);
+  if (tipPeriodView==='staff') return html + renderTipPeriodStaff(storeId, store, info);
+  return html + renderTipPeriodSummary(storeId, store, info);
 }
-function setTipView(v){ tipMgmtView=v; renderPage('tip'); }
+
+/* 期間内の集計 */
+function tipPeriodAggregate(storeId, info) {
+  var totalTip=0, totalHours=0, tipHours=0, daysWithData=0, anyError=false;
+  var staffSet={};
+  var daily=[];
+  info.dates.forEach(date=>{
+    var dist = calcTipDistribution(storeId, date);
+    var tip = dist.tip;
+    var dayHours=0, dayTipHours=0, dayPpl=0;
+    dist.list.forEach(r=>{
+      var h=(r.lunchHours||0)+(r.dinnerHours||0);
+      dayHours+=h; dayTipHours+=h; dayPpl++;
+      staffSet[r.name]=true;
+    });
+    var hasData = dist.hasLabor || tip.total>0;
+    if (hasData) daysWithData++;
+    var distDiff = Math.abs(dist.distSum - tip.total);
+    var dayErr = (tip.total>0 && !dist.hasLabor) || cashTipMissing(storeId,date) || (dist.hasLabor && distDiff>=0.5);
+    if (dayErr) anyError=true;
+    totalTip+=tip.total; totalHours+=dayHours; tipHours+=dayTipHours;
+    daily.push({date, sales:(getDailyActuals(storeId)[date]||{}).actual||0, tip:tip.total,
+      ppl:dayPpl, hours:dayHours, tipHours:dayTipHours, error:dayErr,
+      cashMissing:cashTipMissing(storeId,date), noLabor:(tip.total>0&&!dist.hasLabor)});
+  });
+  return {totalTip, totalHours, tipHours, daysWithData, anyError, staffCount:Object.keys(staffSet).length, daily};
+}
+
+/* ① 期間サマリー */
+function renderTipPeriodSummary(storeId, store, info) {
+  var agg = tipPeriodAggregate(storeId, info);
+  var settle = calcHalfMonthSettlement(storeId, info.anyDate);
+  var confirm = getTipConfirm(storeId, info);
+  // Tip Rate内訳
+  var staff = getEmployees().filter(e=>(e.store===storeId||(e.support||[]).includes(storeId))&&(e.role==='crew'||e.role==='sl')&&e.status!=='退職');
+  var workedNames={}; settle.rows.forEach(r=>workedNames[r.name]=true);
+  var rateBuckets={noTip:0, r80:0, r90:0, r100:0};
+  Object.keys(workedNames).forEach(name=>{
+    var rate = effectiveTipRate(name);
+    if (rate===0) rateBuckets.noTip++;
+    else if (rate>=100) rateBuckets.r100++;
+    else if (rate>=90) rateBuckets.r90++;
+    else rateBuckets.r80++;
+  });
+
+  var status = confirm ? confirm.status : (agg.anyError?'エラーあり':agg.daysWithData?'確認中':'未取得');
+  var statusTag = status==='確定済み'?'tag-green':status==='エラーあり'?'tag-red':status==='修正待ち'?'tag-yellow':status==='確認中'?'tag-blue':'tag-gray';
+
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-clipboard-data" style="color:var(--green)"></i>期間サマリー
+    <span class="tag ${statusTag}" style="margin-left:auto">${status}</span></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${info.label} · ${info.rangeLabel}</div>
+    <div class="kpi-grid">
+      ${kpi('総Tip額', '$'+agg.totalTip.toFixed(0), info.label, 'var(--green)')}
+      ${kpi('対象スタッフ', agg.staffCount+'名', 'データ '+agg.daysWithData+'日', 'var(--tm)')}
+      ${kpi('総勤務時間', agg.totalHours.toFixed(1)+'h', '', 'var(--muted)')}
+      ${kpi('Tip対象時間', agg.tipHours.toFixed(1)+'h', '', 'var(--accent2)')}
+    </div></div>`;
+
+  // Tip Rate内訳
+  html += `<div class="card"><div class="card-title"><i class="ti ti-percentage"></i>Tip Rate内訳</div>
+    <div class="kpi-grid">
+      ${kpi('No Tip', rateBuckets.noTip+'名', 'Training中', rateBuckets.noTip?'var(--red)':'var(--muted)')}
+      ${kpi('80%', rateBuckets.r80+'名', '', 'var(--yellow)')}
+      ${kpi('90%', rateBuckets.r90+'名', '', 'var(--accent2)')}
+      ${kpi('100%', rateBuckets.r100+'名', '', 'var(--green)')}
+    </div></div>`;
+
+  // エラー
+  if (agg.anyError) {
+    var errDays = agg.daily.filter(d=>d.error);
+    html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
+      <p style="font-size:12px;font-weight:600">エラーのある日: ${errDays.length}日</p>
+      <div style="font-size:11px;margin-top:2px">${errDays.map(d=>d.date.slice(5)+(d.cashMissing?'(現金未入力)':d.noLabor?'(勤怠なし)':'(差額)')).join(', ')}</div>
+      <div style="font-size:11px;margin-top:4px">日別タブで各日を修正してください。エラーがあるとTip確定できません。</div>
+    </div></div>`;
+  }
+
+  // 確定フロー
+  html += `<div class="card"><div class="card-title"><i class="ti ti-lock-check"></i>Tip確定</div>`;
+  // 勤怠チェック状態
+  var attStatus = attendancePeriodStatus(storeId, info);
+  var attClear = attendanceClearForTip(storeId, info);
+  html += `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:8px;padding:6px 8px;background:var(--surface2);border-radius:6px">
+    <i class="ti ti-clock-check" style="color:${attClear?'var(--green)':'var(--red)'}"></i>
+    勤怠チェック: <b style="color:${attClear?'var(--green)':'var(--red)'}">${attStatus}</b>
+    <button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="go('attendance')">確認</button>
+  </div>`;
+  if (confirm && confirm.status==='確定済み') {
+    html += `<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i><div style="font-size:12px"><b>確定済み</b><br>${confirm.by} · ${confirm.at}<br>総額 $${(confirm.totalFinal||0).toFixed(2)} · ${confirm.staffCount}名</div></div>
+      ${['gm','ceo','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="unconfirmTip('${storeId}')"><i class="ti ti-lock-open"></i> 確定解除</button>`:''}`;
+  } else {
+    var canConfirm = !agg.anyError && agg.daysWithData>0 && attClear;
+    html += `<p style="font-size:12px;color:var(--muted);margin-bottom:8px">期間内のデータを確認し、問題なければTipを確定します。確定後はPayroll/経理出力で利用されます。</p>`;
+    if (agg.anyError || !attClear) {
+      var reasons = [];
+      if (agg.anyError) reasons.push('Tipデータにエラー');
+      if (!attClear) reasons.push('勤怠チェック未承認のエラー');
+      html += `<div class="alert alert-warning" style="padding:7px 10px;font-size:12px"><i class="ti ti-alert-circle"></i> ${reasons.join('・')}のため確定できません。`;
+      if (['gm','office','ceo'].includes(curRole)) html += ` <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="forceConfirmTip('${storeId}')">例外承認で確定</button>`;
+      html += `</div>`;
+    } else {
+      html += `<button class="btn btn-primary" style="width:100%" ${canConfirm?'':'disabled'} onclick="confirmTip('${storeId}')"><i class="ti ti-check"></i> この期間のTipを確定</button>`;
+    }
+  }
+  html += `</div>`;
+  return html;
+}
+
+/* ② 日別表示 */
+function renderTipPeriodDaily(storeId, store, info) {
+  var agg = tipPeriodAggregate(storeId, info);
+  var hasGuid = !!store.toastGuid;
+  var html = '';
+  if (hasGuid) {
+    html += `<div class="card" style="padding:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-primary btn-sm" onclick="doTipLaborDB('${storeId}','${store.toastGuid}')"><i class="ti ti-cloud-check"></i> データ反映</button>
+      <button class="btn btn-secondary btn-sm" onclick="openTipTimeModal('${storeId}')"><i class="ti ti-clock-cog"></i> 時間設定</button>
+      </div><div id="tip-status" style="font-size:11px;color:var(--muted);margin-top:6px">同期済みの勤怠を期間に反映します。</div></div>`;
+  }
+  html += `<div class="card"><div class="card-title"><i class="ti ti-calendar"></i>日別データ</div>
+    <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
+      <th>日付</th><th>売上</th><th>Tip</th><th>人数</th><th>時間</th><th>状態</th></tr></thead><tbody>`;
+  agg.daily.forEach(d=>{
+    var st = d.error ? '<span class="tag tag-red" style="font-size:8px">🔴</span>' : (d.tip>0?'<span class="tag tag-green" style="font-size:8px">OK</span>':'<span class="tag tag-gray" style="font-size:8px">—</span>');
+    html += `<tr style="cursor:pointer" onclick="openTipDayDetail('${storeId}','${d.date}')">
+      <td>${d.date.slice(5)}</td>
+      <td style="text-align:right;color:var(--muted)">${d.sales?'$'+Math.round(d.sales):'—'}</td>
+      <td style="text-align:right;font-weight:600">${d.tip?'$'+d.tip.toFixed(0):'—'}</td>
+      <td style="text-align:center">${d.ppl||'—'}</td>
+      <td style="text-align:right;color:var(--muted)">${d.hours?d.hours.toFixed(1)+'h':'—'}</td>
+      <td style="text-align:center">${st}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">行をタップすると日別配分の詳細・修正ができます。</div></div>`;
+  return html;
+}
+/* 日別詳細（既存の日次配分をモーダルで） */
+function openTipDayDetail(storeId, date) {
+  var store = STORES.find(s=>s.id===storeId)||{};
+  var dist = calcTipDistribution(storeId, date);
+  var tip = dist.tip;
+  var html = `<div class="modal-title">${date} 日別配分 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="max-height:64vh;overflow-y:auto">`;
+  if (cashTipMissing(storeId,date)) {
+    html += `<div class="alert alert-danger" style="padding:7px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div style="font-size:12px">キャッシュチップ未入力
+      <button class="btn btn-danger btn-sm" style="margin-top:4px" onclick="closeModalDirect();openCashTipModal('${storeId}','${date}')">入力する</button></div></div>`;
+  }
+  html += `<div style="font-size:12px;margin-bottom:8px">Tip総額: <b style="color:var(--green)">$${tip.total.toFixed(2)}</b>（L$${tip.lunchTotal.toFixed(2)}/D$${tip.dinnerTotal.toFixed(2)}）</div>`;
+  if (!dist.hasLabor) {
+    html += `<div style="text-align:center;padding:16px;color:var(--muted)">勤怠データがありません</div>`;
+  } else {
+    html += `<table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th>従業員</th><th>係数</th><th>時間</th><th>配分</th></tr></thead><tbody>`;
+    dist.list.forEach(r=>{
+      html += `<tr><td>${r.name}</td><td style="text-align:center">${r.coef}</td>
+        <td style="text-align:right;color:var(--muted)">${((r.lunchHours||0)+(r.dinnerHours||0)).toFixed(1)}h</td>
+        <td style="text-align:right;font-weight:600;color:var(--green)">$${r.total.toFixed(2)}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  html += `</div><div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`;
+  openModal(html);
+}
+
+/* ③ スタッフ別表示 */
+function renderTipPeriodStaff(storeId, store, info) {
+  var settle = calcHalfMonthSettlement(storeId, info.anyDate);
+  if (!settle.anyLabor) {
+    return `<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-users" style="font-size:28px"></i><div style="margin-top:8px">この期間の勤怠データがありません。<br>日別タブで各日の勤怠を取得してください。</div></div>`;
+  }
+  // スタッフ別の勤務日数を集計
+  var workdays={};
+  info.dates.forEach(date=>{
+    var dist=calcTipDistribution(storeId,date);
+    dist.list.forEach(r=>{ if(((r.lunchHours||0)+(r.dinnerHours||0))>0) workdays[r.name]=(workdays[r.name]||0)+1; });
+  });
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-users"></i>スタッフ別 ${info.label}</div>
+    <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
+      <th>スタッフ</th><th>日数</th><th>時間</th><th>Rate</th><th>最終Tip</th></tr></thead><tbody>`;
+  settle.rows.forEach(r=>{
+    var rate = effectiveTipRate(r.name);
+    var rateTag = rate===0?'<span class="tag tag-red" style="font-size:8px">NoTip</span>':rate>=100?'<span class="tag tag-green" style="font-size:8px">100%</span>':rate>=90?'<span class="tag tag-blue" style="font-size:8px">90%</span>':'<span class="tag tag-yellow" style="font-size:8px">80%</span>';
+    html += `<tr>
+      <td>${r.name}${r.isSL?' <span class="tag tag-blue" style="font-size:8px">SL</span>':''}</td>
+      <td style="text-align:center">${workdays[r.name]||0}</td>
+      <td style="text-align:right;color:var(--muted)">${r.hours.toFixed(1)}h</td>
+      <td style="text-align:center">${rateTag}</td>
+      <td style="text-align:right;font-weight:700;color:var(--green)">$${r.final.toFixed(2)}</td>
+    </tr>`;
+  });
+  var finalSum = settle.rows.reduce((a,r)=>a+r.final,0);
+  html += `</tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
+    <td colspan="4">合計</td><td style="text-align:right;color:var(--green)">$${finalSum.toFixed(2)}</td></tr></tfoot></table>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">最終Tip = 日次配分 + SL再分配（前期/後期で精算）。Tip Rateは各自のCurrent Rateを反映。</div></div>`;
+  return html;
+}
+
+/* 確定処理 */
+function confirmTip(storeId, force) {
+  var info = tipPeriodInfo();
+  // 勤怠チェック連動: エラーが残っていると確定不可（force時は例外）
+  if (!force && !attendanceClearForTip(storeId, info)) {
+    alert('勤怠チェックにエラーが残っています。\n勤怠チェック画面でエラーを承認してから確定してください。\n（GM/Officeは例外承認で確定できます）');
+    return;
+  }
+  var settle = calcHalfMonthSettlement(storeId, info.anyDate);
+  var rows = settle.rows.map(r=>({name:r.name, hours:r.hours, rate:effectiveTipRate(r.name), final:r.final, isSL:r.isSL}));
+  var data = {
+    status:'確定済み', period:info.label, range:info.rangeLabel, from:info.from, to:info.to,
+    by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:new Date().toLocaleString('ja'),
+    rows, staffCount:rows.length, totalFinal:rows.reduce((a,r)=>a+r.final,0),
+    forced:!!force, forceReason: force||'',
+  };
+  setTipConfirm(storeId, info, data);
+  showToast(force?'例外承認でTipを確定しました':'Tipを確定しました','success');
+  renderPage('tip');
+}
+function forceConfirmTip(storeId) {
+  var reason = prompt('例外承認の理由を入力してください（必須）\n例: 勤怠エラーは確認済み、手修正で対応');
+  if (!reason) { alert('理由が必要です'); return; }
+  confirmTip(storeId, reason);
+}
+function unconfirmTip(storeId) {
+  if (!confirm('Tip確定を解除しますか？')) return;
+  var info = tipPeriodInfo();
+  setTipConfirm(storeId, info, null);
+  showToast('確定を解除しました','info');
+  renderPage('tip');
+}
+
+/* ============================================================
+   勤怠チェック: 予定シフト vs 実勤怠の照合（30分以上差異でエラー）
+============================================================ */
+var attView = 'daily'; // daily|staff
+function setAttView(v){ attView=v; renderPage('attendance'); }
+const ATT_THRESHOLD = 0.5; // 30分=0.5h
+
+/* 日付→その週のMonday "M/D" を返す（getWeekStrと同形式） */
+function weekStrForDate(dateISO) {
+  var d = new Date(dateISO+'T00:00:00'); var day=d.getDay();
+  var diff = d.getDate() - day + (day===0?-6:1);
+  var mon = new Date(d.getFullYear(), d.getMonth(), diff);
+  return (mon.getMonth()+1)+'/'+(mon.getDate());
+}
+/* 日付→曜日ラベル（DOW_SHIFT形式 月..日） */
+function dowLabelForDate(dateISO) {
+  var d = new Date(dateISO+'T00:00:00');
+  return DOW_SHIFT[(d.getDay()+6)%7];
+}
+/* 予定シフト時間（その店・その日・人別）h */
+function plannedHoursForDate(storeId, dateISO) {
+  var week = weekStrForDate(dateISO);
+  var plan = getShiftPlan(storeId, week);
+  var dow = dowLabelForDate(dateISO);
+  var byName = {};
+  if (plan && plan.cells) {
+    Object.keys(plan.cells).forEach(k=>{
+      var name = plan.cells[k]; if(!name) return;
+      var parts = k.split('_'); // day_period_pos
+      if (parts[0]!==dow) return;
+      var period = parts[1];
+      if(!byName[name]) byName[name]={hours:0, periods:[], positions:[]};
+      byName[name].hours += SHIFT_HOURS[period]||4;
+      byName[name].periods.push(period);
+      byName[name].positions.push(parts.slice(2).join('_'));
+    });
+  }
+  return byName; // {name:{hours,periods,positions}}
+}
+/* 実勤怠時間（その店・その日・人別）h */
+function actualHoursForDate(storeId, dateISO) {
+  var labor = getTipLabor(storeId, dateISO);
+  var byName = {};
+  if (labor) {
+    Object.keys(labor).forEach(name=>{
+      var e = labor[name];
+      var h = (e.lunch||0)+(e.dinner||0);
+      var rawH = (e.rawLunch||0)+(e.rawDinner||0);
+      byName[name] = {hours:h, rawHours:rawH||h, shifts:e.shifts||[], hasOut:true};
+      // Clock Out漏れ判定: shiftにoutDateが無いものがあれば
+      (e.shifts||[]).forEach(s=>{ if(s.inDate && !s.outDate) byName[name].hasOut=false; });
+    });
+  }
+  return byName;
+}
+/* 1日分の照合 → 行配列 */
+function attendanceForDate(storeId, dateISO) {
+  var planned = plannedHoursForDate(storeId, dateISO);
+  var actual = actualHoursForDate(storeId, dateISO);
+  var names = Array.from(new Set(Object.keys(planned).concat(Object.keys(actual))));
+  var rows = [];
+  names.forEach(name=>{
+    var p = planned[name], a = actual[name];
+    var pH = p?p.hours:0, aH = a?a.hours:0;
+    var errors = [];
+    if (p && !a) errors.push('Clock In漏れ');
+    else if (!p && a) errors.push('予定外勤務');
+    else if (p && a) {
+      if (a.hasOut===false) errors.push('Clock Out漏れ');
+      if (Math.abs(pH-aH) >= ATT_THRESHOLD) errors.push('30分以上差異');
+    }
+    rows.push({name, plannedH:pH, actualH:aH, diff:aH-pH, errors,
+      hasError:errors.length>0, hasPlan:!!p, hasActual:!!a});
+  });
+  return rows;
+}
+/* 勤怠承認データ {storeId_date_name: {status, by, at, memo}} */
+function getAttApprovals(storeId, info) { return ls('att_approve_'+storeId+'_'+info.from, {}); }
+function setAttApprovals(storeId, info, d) { lsSet('att_approve_'+storeId+'_'+info.from, d); }
+function attRowKey(date, name){ return date+'__'+name; }
+
+/* 期間の勤怠ステータス: 未確認/確認中/エラーあり/修正待ち/承認済み */
+function attendancePeriodStatus(storeId, info) {
+  var approvals = getAttApprovals(storeId, info);
+  var anyData=false, anyError=false, allApproved=true, errorUnapproved=false;
+  info.dates.forEach(date=>{
+    var rows = attendanceForDate(storeId, date);
+    rows.forEach(r=>{
+      anyData=true;
+      var ap = approvals[attRowKey(date,r.name)];
+      if (r.hasError) {
+        anyError=true;
+        if (!ap || ap.status!=='承認済み') { errorUnapproved=true; allApproved=false; }
+      }
+    });
+  });
+  if (!anyData) return '未確認';
+  if (errorUnapproved) return 'エラーあり';
+  if (anyError) return '承認済み';
+  return '確認中';
+}
+/* Tip確定の前提: 勤怠エラーが解消（承認済み）か */
+function attendanceClearForTip(storeId, info) {
+  var st = attendancePeriodStatus(storeId, info);
+  return st==='未確認' || st==='確認中' || st==='承認済み';
+}
+
+function renderAttendance() {
+  if (!ROLE_CONFIG[curRole].financial && curRole!=='sl') return financialBlocked();
+  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var store = STORES.find(s=>s.id===storeId)||STORES[0];
+  var info = tipPeriodInfo(); // Tip管理と同じ期間セレクタを共用
+
+  var status = attendancePeriodStatus(storeId, info);
+  var statusTag = status==='承認済み'?'tag-green':status==='エラーあり'?'tag-red':status==='修正待ち'?'tag-yellow':status==='確認中'?'tag-blue':'tag-gray';
+
+  var html = `<div class="section-header"><div><div class="section-title">勤怠チェック</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
+    <span class="tag ${statusTag}">${status}</span></div>`;
+
+  // 期間セレクタ（Tip管理と共通）
+  html += `<div class="card" style="padding:10px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px">
+      <button class="btn btn-secondary btn-sm" onclick="setTipMonth(-1)"><i class="ti ti-chevron-left"></i></button>
+      <span style="font-size:15px;font-weight:700">${info.y}年${info.m+1}月</span>
+      <button class="btn btn-secondary btn-sm" onclick="setTipMonth(1)"><i class="ti ti-chevron-right"></i></button>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="phase-tab${info.half==='first'?' active':''}" style="flex:1" onclick="setTipHalf('first')">前期 (1〜15日)</button>
+      <button class="phase-tab${info.half==='second'?' active':''}" style="flex:1" onclick="setTipHalf('second')">後期 (16〜末)</button>
+    </div>
+  </div>`;
+
+  // データ反映ボタン
+  var hasGuid = !!store.toastGuid;
+  html += `<div class="card" style="padding:10px;margin-bottom:10px">
+    <button class="btn btn-primary" style="width:100%" onclick="attSyncData('${storeId}','${store.toastGuid||''}')"><i class="ti ti-refresh"></i> データ反映（予定シフト＋実勤怠）</button>
+    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">予定シフトと実勤怠を取得・照合します${hasGuid?'':'（Toast GUID未設定: 手動勤怠のみ）'}</div></div>`;
+
+  // 表示切替
+  html += `<div class="phase-tabs">
+    <div class="phase-tab${attView==='daily'?' active':''}" onclick="setAttView('daily')">日別</div>
+    <div class="phase-tab${attView==='staff'?' active':''}" onclick="setAttView('staff')">スタッフ別</div>
+  </div>`;
+
+  if (attView==='staff') return html + renderAttStaff(storeId, info);
+  return html + renderAttDaily(storeId, info);
+}
+
+async function attSyncData(storeId, guid) {
+  var el=document.getElementById('att-status');
+  if (!guid) { if(el)el.textContent='Toast GUID未設定のため実勤怠の自動取得はできません。手動勤怠で照合します。'; renderPage('attendance'); return; }
+  if (el) el.textContent='予定シフト・実勤怠を取得中…';
+  var lab = await syncTipLaborFromDB(storeId, guid, monthDays());
+  showToast(`実勤怠 ${lab.updated}日分を反映し照合しました`,'success');
+  renderPage('attendance');
+}
+
+/* 日別表示 */
+function renderAttDaily(storeId, info) {
+  var approvals = getAttApprovals(storeId, info);
+  var totalErr=0, totalRows=0;
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-calendar"></i>日別 勤怠照合</div>`;
+  var anyShown=false;
+  info.dates.forEach(date=>{
+    var rows = attendanceForDate(storeId, date);
+    if (!rows.length) return;
+    anyShown=true;
+    var dayErr = rows.filter(r=>r.hasError).length;
+    totalErr+=dayErr; totalRows+=rows.length;
+    html += `<div style="margin:8px 0"><div style="font-size:12px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border);padding-bottom:3px">${date.slice(5)} (${dowLabelForDate(date)}) ${dayErr?`<span class="tag tag-red" style="font-size:8px">🔴 ${dayErr}件</span>`:'<span class="tag tag-green" style="font-size:8px">OK</span>'}</div>`;
+    rows.forEach(r=>{
+      var key = attRowKey(date, r.name);
+      var ap = approvals[key];
+      var col = r.hasError ? (ap&&ap.status==='承認済み'?'var(--green)':'var(--red)') : 'var(--muted)';
+      html += `<div style="padding:5px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:12px"><b>${r.name}</b>
+            <span style="color:var(--muted)"> 予定${r.plannedH}h / 実${r.actualH.toFixed(1)}h</span>
+            <span style="color:${r.diff===0?'var(--muted)':Math.abs(r.diff)>=0.5?'var(--red)':'var(--muted)'}"> (${r.diff>=0?'+':''}${r.diff.toFixed(1)}h)</span>
+          </div>
+          ${ap&&ap.status==='承認済み'?'<span class="tag tag-green" style="font-size:8px">承認</span>':r.hasError?'<span class="tag tag-red" style="font-size:8px">要対応</span>':''}
+        </div>
+        ${r.hasError?`<div style="font-size:11px;color:${col};margin-top:2px">🔴 ${r.errors.join(' / ')}</div>`:''}
+        ${ap&&ap.memo?`<div style="font-size:10px;color:var(--muted)">メモ: ${ap.memo}</div>`:''}
+        ${r.hasError && (!ap||ap.status!=='承認済み') && attCanApprove()?`<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">
+          <button class="btn btn-success btn-sm" style="padding:1px 8px;font-size:10px" onclick="attApprove('${storeId}','${date}','${r.name.replace(/'/g,"")}','承認済み')">承認</button>
+          <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="attApprove('${storeId}','${date}','${r.name.replace(/'/g,"")}','修正待ち')">修正依頼</button>
+          <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="attMemo('${storeId}','${date}','${r.name.replace(/'/g,"")}')">メモ</button>
+        </div>`:''}
+      </div>`;
+    });
+    html += `</div>`;
+  });
+  if (!anyShown) html += `<div style="text-align:center;color:var(--muted);padding:20px">照合データがありません。「データ反映」で予定シフトと実勤怠を取得してください。</div>`;
+  else html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">差異30分(0.5h)以上、Clock In/Out漏れ、予定外勤務をエラー検出。エラーは承認しないとTip確定できません。</div>`;
+  html += `</div>`;
+  return html;
+}
+
+/* スタッフ別表示 */
+function renderAttStaff(storeId, info) {
+  var approvals = getAttApprovals(storeId, info);
+  var byName = {};
+  info.dates.forEach(date=>{
+    attendanceForDate(storeId, date).forEach(r=>{
+      if(!byName[r.name]) byName[r.name]={name:r.name, plannedH:0, actualH:0, errors:0, approved:0};
+      byName[r.name].plannedH += r.plannedH;
+      byName[r.name].actualH += r.actualH;
+      if (r.hasError) {
+        byName[r.name].errors++;
+        var ap=approvals[attRowKey(date,r.name)];
+        if (ap&&ap.status==='承認済み') byName[r.name].approved++;
+      }
+    });
+  });
+  var list = Object.values(byName);
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-users"></i>スタッフ別 勤怠サマリー</div>`;
+  if (!list.length) { html += `<div style="text-align:center;color:var(--muted);padding:20px">データなし</div></div>`; return html; }
+  html += `<table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
+    <th>スタッフ</th><th>予定計</th><th>実計</th><th>差異</th><th>エラー</th></tr></thead><tbody>`;
+  list.forEach(s=>{
+    var diff = s.actualH - s.plannedH;
+    var errCol = s.errors===0?'var(--green)':s.errors===s.approved?'var(--yellow)':'var(--red)';
+    html += `<tr>
+      <td>${s.name}</td>
+      <td style="text-align:right;color:var(--muted)">${s.plannedH}h</td>
+      <td style="text-align:right">${s.actualH.toFixed(1)}h</td>
+      <td style="text-align:right;color:${Math.abs(diff)>=0.5?'var(--red)':'var(--muted)'}">${diff>=0?'+':''}${diff.toFixed(1)}h</td>
+      <td style="text-align:center;color:${errCol}">${s.errors?s.errors+(s.approved?`(${s.approved}承認)`:''):'—'}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>`;
+  return html;
+}
+
+function attCanApprove() { return ['gm','ceo','am','office'].includes(curRole) || curRole==='sl' || curStoreLogin; }
+function attApprove(storeId, date, name, status) {
+  var info = tipPeriodInfo();
+  var ap = getAttApprovals(storeId, info);
+  ap[attRowKey(date,name)] = {status, by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:new Date().toLocaleString('ja'), memo:(ap[attRowKey(date,name)]||{}).memo||''};
+  setAttApprovals(storeId, info, ap);
+  showToast(status==='承認済み'?'承認しました':'修正依頼にしました', status==='承認済み'?'success':'info');
+  renderPage('attendance');
+}
+function attMemo(storeId, date, name) {
+  var info = tipPeriodInfo();
+  var ap = getAttApprovals(storeId, info);
+  var cur = (ap[attRowKey(date,name)]||{}).memo||'';
+  var memo = prompt('メモを入力', cur);
+  if (memo==null) return;
+  var k = attRowKey(date,name);
+  ap[k] = Object.assign({status:'確認中', by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:new Date().toLocaleString('ja')}, ap[k]||{}, {memo});
+  setAttApprovals(storeId, info, ap);
+  renderPage('attendance');
+}
 
 function renderTipDaily(storeId, store, date) {
   var dist = calcTipDistribution(storeId, date);
