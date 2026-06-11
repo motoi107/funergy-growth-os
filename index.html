@@ -811,6 +811,7 @@ const NAV_ITEMS = [
   {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','am']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm']},
+  {id:'acct_export', label:'経理出力',     icon:'ti-file-export',      roles:['ceo','gm','office']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm']},
 ];
 
@@ -824,8 +825,8 @@ const MENU_GROUPS = [
     children:['recipe','costsheet','invoice','inventory','order','ingredient_master','vendor_master']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['shift_admin','vacation','hiring','onboarding','skill','evaluation','tiprate','tip','staff_master','meeting','growthhub','growth_mgr']},
-  {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','am','sl'],
-    children:['tasks','required','goals','approval','store_master','settings']},
+  {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
+    children:['tasks','required','goals','approval','acct_export','store_master','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
     children:['mypage']},
 ];
@@ -2516,6 +2517,7 @@ function renderPage(page) {
     case 'approval':     el.innerHTML = renderApproval(); break;
     case 'mypage':       el.innerHTML = renderMypage(); break;
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
+    case 'acct_export':  el.innerHTML = renderAcctExport(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
@@ -3044,6 +3046,117 @@ function getBudgets() {
 }
 function saveBudgets(b) { lsSet('budgets_v2', b); }
 
+/* ===== 予算3区分モデル（ランチ/ディナー/テイクアウト） =====
+   segments: {
+     lunch:   {days, guests, spend, laborPct, fcPct, memo},
+     dinner:  {days, guests, spend, laborPct, fcPct, memo},
+     takeout: {days, orders, spend, menu, memo}
+   } */
+const BUDGET_STATUSES = ['下書き','GM承認待ち','承認済み','差し戻し','再提出済み'];
+function emptySegments() {
+  return {
+    lunch:  {days:0, guests:0, spend:0, laborPct:0, fcPct:0, memo:''},
+    dinner: {days:0, guests:0, spend:0, laborPct:0, fcPct:0, memo:''},
+    takeout:{days:0, orders:0, spend:0, menu:'', memo:''},
+  };
+}
+function getSegments(b) {
+  if (b && b.segments) return b.segments;
+  return emptySegments();
+}
+function segSales(seg, type) {
+  if (!seg) return 0;
+  if (type==='takeout') return (parseFloat(seg.orders)||0)*(parseFloat(seg.spend)||0);
+  // lunch/dinner: 予測売上が直接入力されていればそれ、なければ客数×客単価
+  var calc = (parseFloat(seg.guests)||0)*(parseFloat(seg.spend)||0);
+  return (parseFloat(seg.sales)||0) || calc;
+}
+/* セグメント合計（売上） */
+function segmentsTotal(segs) {
+  if (!segs) return 0;
+  return segSales(segs.lunch,'lunch') + segSales(segs.dinner,'dinner') + segSales(segs.takeout,'takeout');
+}
+/* Labor予算・FC予算（ランチ/ディナーの率を売上加重） */
+function segmentsLaborBudget(segs) {
+  if (!segs) return 0;
+  var l = segSales(segs.lunch,'lunch')*(parseFloat(segs.lunch.laborPct)||0)/100;
+  var d = segSales(segs.dinner,'dinner')*(parseFloat(segs.dinner.laborPct)||0)/100;
+  return l + d;
+}
+function segmentsFcBudget(segs) {
+  if (!segs) return 0;
+  var l = segSales(segs.lunch,'lunch')*(parseFloat(segs.lunch.fcPct)||0)/100;
+  var d = segSales(segs.dinner,'dinner')*(parseFloat(segs.dinner.fcPct)||0)/100;
+  var t = segSales(segs.takeout,'takeout')*(parseFloat(segs.dinner.fcPct)||0)/100; // テイクアウトはディナー原価率を流用
+  return l + d + t;
+}
+/* この予算がセグメント方式で設定されているか */
+function hasSegments(b) {
+  if (!b || !b.segments) return false;
+  return segmentsTotal(b.segments) > 0;
+}
+/* 予算提出（Store Leader以上 → GM承認待ち） */
+function submitBudget(storeId) {
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  if (!hasSegments(b)) { alert('ランチ/ディナー/テイクアウトのいずれかに予算を入力してください'); return; }
+  b.status = 'GM承認待ち';
+  b.submittedBy = (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
+  b.submittedAt = new Date().toLocaleString('ja');
+  saveBudgets(budgets);
+  var sName = (STORES.find(s=>s.id===storeId)||{}).name || storeId;
+  addApproval({title:`予算承認依頼 — ${sName}（${b.period||getPeriod()}）`, type:'予算', from:b.submittedBy, store:sName, ref:storeId});
+  showToast('GMへ承認申請を送信しました','success');
+  renderPage('budget');
+}
+/* GM承認 */
+function approveBudgetSeg(storeId) {
+  if (!['gm','ceo'].includes(curRole)) { alert('承認はGM/CEOのみ可能です'); return; }
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  b.status='承認済み';
+  b.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole;
+  b.approvedAt=new Date().toLocaleString('ja');
+  saveBudgets(budgets);
+  // 承認待ちタスクを消化
+  resolveApprovalByRef('予算', storeId, 'approved');
+  showToast('予算を承認しました。予実・ダッシュボードに反映されます','success');
+  renderPage('budget');
+}
+/* GM差し戻し */
+function rejectBudgetSeg(storeId) {
+  if (!['gm','ceo'].includes(curRole)) { alert('差し戻しはGM/CEOのみ可能です'); return; }
+  var reason = prompt('差し戻し理由を入力（必須）\n例: 売上予算の根拠が弱い / 客数予測が高すぎる / Labor目標の見直しが必要');
+  if (!reason) { alert('差し戻しには理由が必要です'); return; }
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  b.status='差し戻し'; b.rejectReason=reason; b.rejectedAt=new Date().toLocaleString('ja');
+  saveBudgets(budgets);
+  resolveApprovalByRef('予算', storeId, 'rejected');
+  showToast('予算を差し戻しました','info');
+  renderPage('budget');
+}
+/* 承認済み予算の再オープン（GM以上） */
+function reopenBudget(storeId) {
+  if (!['gm','ceo'].includes(curRole)) return;
+  if (!confirm('承認済み予算を再オープンして編集可能にしますか？')) return;
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  b.status='下書き'; saveBudgets(budgets);
+  showToast('予算を再オープンしました','info'); renderPage('budget');
+}
+/* 承認ステータスからの編集可否 */
+function canEditBudget(b) {
+  if (!b) return false;
+  var role = curRole;
+  if (role==='crew') return false;
+  var st = b.status||'下書き';
+  if (st==='GM承認待ち') return false; // 提出後は提出者編集不可
+  if (st==='承認済み') return ['gm','ceo'].includes(role); // 承認済みはGM以上のみ
+  // 下書き・差し戻し・再提出済み: SL以上編集可
+  return ['sl','am','gm','ceo','office'].includes(role) || curStoreLogin;
+}
+
 /* その日時点での累計（予算・実績・原価・人件費）を算出
    今日までの日次予算と日次実績を積み上げ、現在地を返す */
 function cumulativeToToday(storeId) {
@@ -3082,6 +3195,33 @@ function cumulativeToToday(storeId) {
   };
 }
 
+/* 指定月の実績集計（offset: 0=今月, -1=先月）
+   daily_actuals から該当月の日次を合算し、売上/客数/客単価/Labor/FC を返す */
+function monthStats(storeId, offset) {
+  var now = new Date();
+  var ref = new Date(now.getFullYear(), now.getMonth()+(offset||0), 1);
+  var prefix = ref.getFullYear() + '-' + String(ref.getMonth()+1).padStart(2,'0'); // 'YYYY-MM'
+  var actuals = getDailyActuals(storeId);
+  var sales=0, guests=0, labor=0, food=0, daysWithData=0;
+  Object.keys(actuals).forEach(date => {
+    if (date.slice(0,7) !== prefix) return;
+    var v = actuals[date] || {};
+    if (v.actual!=null) { sales += v.actual; daysWithData++; }
+    if (v.guests!=null) guests += v.guests;
+    if (v.labor!=null) labor += v.labor;
+    if (v.foodCost!=null) food += v.foodCost;
+  });
+  return {
+    label: `${ref.getFullYear()}/${ref.getMonth()+1}`,
+    sales, guests, labor, food, daysWithData,
+    avgSpend: guests ? Math.round(sales/guests) : 0,
+    laborRate: sales ? Math.round(labor/sales*1000)/10 : 0,
+    fcRate: sales ? Math.round(food/sales*1000)/10 : 0,
+    hasData: daysWithData>0,
+  };
+}
+function prevMonthStats(storeId) { return monthStats(storeId, -1); }
+
 function basisAmount(basis) {
   if (basis.type === 'base') {
     var week = (basis.days||[]).reduce((a,d)=>a + (parseFloat(d.guests)||0)*(parseFloat(d.spend)||0), 0);
@@ -3099,12 +3239,196 @@ function renderBudget() {
   </div>
   <div class="phase-tabs">
     <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">サマリー</div>
+    <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">予算設定</div>
     <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">日次進捗</div>
   </div>`;
   if (budgetTab==='daily') return html + renderBudgetDaily();
+  if (budgetTab==='setup') return html + renderBudgetSetup();
   return html + renderBudgetSummary();
 }
 function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
+
+/* ===== 予算設定タブ（ランチ/ディナー/テイクアウト 3区分） ===== */
+function renderBudgetSetup() {
+  if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">予算の閲覧権限がありません</div>';
+  var budgets = getBudgets();
+  var stores = getVisibleStores();
+  var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
+
+  var html = '';
+  var statusCol = {'下書き':'tag-gray','GM承認待ち':'tag-yellow','承認済み':'tag-green','差し戻し':'tag-red','再提出済み':'tag-blue'};
+
+  visible.forEach(b => {
+    var s = STORES.find(x=>x.id===b.storeId) || {name:b.storeId, color:'#888'};
+    var segs = getSegments(b);
+    var total = segmentsTotal(segs);
+    var laborB = segmentsLaborBudget(segs);
+    var fcB = segmentsFcBudget(segs);
+    var profit = total - laborB - fcB;
+    var st = b.status || '下書き';
+    var editable = canEditBudget(b);
+
+    html += `<div class="card">
+      <div class="approval-header">
+        <div class="card-title" style="color:${s.color};margin:0"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
+        <span class="tag ${statusCol[st]||'tag-gray'}">${st}</span>
+      </div>`;
+
+    if (st==='差し戻し' && b.rejectReason) {
+      html += `<div class="alert alert-danger" style="padding:8px 10px;margin:8px 0"><i class="ti ti-arrow-back"></i><div style="font-size:12px"><b>差し戻し理由:</b> ${b.rejectReason}</div></div>`;
+    }
+    if (st==='GM承認待ち') {
+      html += `<div class="alert alert-warning" style="padding:8px 10px;margin:8px 0"><i class="ti ti-clock"></i><div style="font-size:12px">${b.submittedBy||''} が提出 · GM承認待ち</div></div>`;
+    }
+    if (st==='承認済み') {
+      html += `<div style="font-size:11px;color:var(--green);margin:6px 0"><i class="ti ti-circle-check"></i> ${b.approvedBy||'GM'} が承認 (${b.approvedAt||''})</div>`;
+    }
+
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:8px 0">
+      ${segCard('ランチ', segSales(segs.lunch,'lunch'), 'var(--yellow)')}
+      ${segCard('ディナー', segSales(segs.dinner,'dinner'), 'var(--accent)')}
+      ${segCard('テイクアウト', segSales(segs.takeout,'takeout'), 'var(--accent2)')}
+    </div>
+    <div class="kpi-grid" style="margin:8px 0">
+      ${kpi('月間売上予算', fmtK(Math.round(total)), '3区分合計', 'var(--tm)')}
+      ${kpi('Labor予算', fmtK(Math.round(laborB)), total?Math.round(laborB/total*100)+'%':'—', 'var(--muted)')}
+      ${kpi('Food Cost予算', fmtK(Math.round(fcB)), total?Math.round(fcB/total*100)+'%':'—', 'var(--muted)')}
+      ${kpi('利益予測', fmtK(Math.round(profit)), total?Math.round(profit/total*100)+'%':'—', profit>0?'var(--green)':'var(--red)')}
+    </div>`;
+
+    // 前月比較（予算根拠の参考）
+    html += renderPrevMonthCompare(b.storeId, total, laborB, fcB);
+
+    html += `<div class="approval-actions">`;
+    if (editable) {
+      html += `<button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','lunch')"><i class="ti ti-sun"></i> ランチ編集</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','dinner')"><i class="ti ti-moon"></i> ディナー編集</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','takeout')"><i class="ti ti-shopping-bag"></i> テイクアウト編集</button>`;
+    }
+    if ((st==='下書き'||st==='差し戻し'||st==='再提出済み') && editable && ['sl','am','gm','ceo'].includes(curRole)) {
+      html += `<button class="btn btn-primary btn-sm" onclick="submitBudget('${b.storeId}')"><i class="ti ti-send"></i> GMへ提出</button>`;
+    }
+    if (st==='GM承認待ち' && ['gm','ceo'].includes(curRole)) {
+      html += `<button class="btn btn-success btn-sm" onclick="approveBudgetSeg('${b.storeId}')"><i class="ti ti-check"></i> 承認</button>
+        <button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg('${b.storeId}')"><i class="ti ti-arrow-back"></i> 差し戻し</button>`;
+    }
+    if (st==='承認済み' && ['gm','ceo'].includes(curRole)) {
+      html += `<button class="btn btn-secondary btn-sm" onclick="reopenBudget('${b.storeId}')"><i class="ti ti-lock-open"></i> 再オープン</button>`;
+    }
+    html += `</div></div>`;
+  });
+  if (!visible.length) html += `<div class="card" style="text-align:center;color:var(--muted);padding:24px">対象店舗がありません</div>`;
+  return html;
+}
+function segCard(label, amount, color) {
+  return `<div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center;border-top:2px solid ${color}">
+    <div style="font-size:10px;color:var(--muted)">${label}</div>
+    <div style="font-size:14px;font-weight:700;color:${color}">${fmtK(Math.round(amount))}</div></div>`;
+}
+/* 前月比較カード（予算根拠の参考。前月実績 vs 今月予算） */
+function renderPrevMonthCompare(storeId, budTotal, laborB, fcB) {
+  var pm = prevMonthStats(storeId);
+  if (!pm.hasData) {
+    return `<details style="margin:6px 0"><summary style="font-size:12px;color:var(--muted);cursor:pointer"><i class="ti ti-history"></i> 前月比較（${pm.label}）</summary>
+      <div style="font-size:11px;color:var(--muted);padding:8px">前月（${pm.label}）の実績データがありません。日次進捗で実績を入力するか、データ連携で取り込むと比較が表示されます。</div></details>`;
+  }
+  var laborBudPct = budTotal ? Math.round(laborB/budTotal*1000)/10 : 0;
+  var fcBudPct = budTotal ? Math.round(fcB/budTotal*1000)/10 : 0;
+  var salesDiff = budTotal - pm.sales;
+  var diffPct = pm.sales ? Math.round(salesDiff/pm.sales*1000)/10 : 0;
+  function row(label, prev, cur, isPct, goodLowerForRate) {
+    var diff = (parseFloat(cur)||0) - (parseFloat(prev)||0);
+    var col = 'var(--muted)';
+    if (cur!=='—' && prev!=='—') {
+      if (goodLowerForRate) col = diff<=0 ? 'var(--green)' : 'var(--red)';
+      else col = diff>=0 ? 'var(--green)' : 'var(--red)';
+    }
+    var sign = diff>0?'+':'';
+    return `<tr style="font-size:12px">
+      <td style="color:var(--muted);padding:3px 0">${label}</td>
+      <td style="text-align:right">${prev}</td>
+      <td style="text-align:right;font-weight:600">${cur}</td>
+      <td style="text-align:right;color:${col}">${cur!=='—'&&prev!=='—'?sign+(isPct?diff.toFixed(1)+'pt':fmtK(Math.round(diff))):'—'}</td>
+    </tr>`;
+  }
+  return `<details style="margin:6px 0" open><summary style="font-size:12px;color:var(--accent);cursor:pointer;font-weight:600"><i class="ti ti-history"></i> 前月比較（${pm.label} 実績 → 今月予算）</summary>
+    <div style="background:var(--surface2);border-radius:8px;padding:8px;margin-top:6px">
+    <table style="width:100%;border-collapse:collapse">
+      <tr style="font-size:10px;color:var(--muted)"><td></td><td style="text-align:right">前月実績</td><td style="text-align:right">今月予算</td><td style="text-align:right">差</td></tr>
+      ${row('売上', fmtK(Math.round(pm.sales)), fmtK(Math.round(budTotal)), false, false)}
+      ${row('客数', pm.guests?pm.guests.toLocaleString():'—', '—', false, false)}
+      ${row('客単価', pm.avgSpend?'$'+pm.avgSpend:'—', '—', false, false)}
+      ${row('Labor率', pm.laborRate?pm.laborRate+'%':'—', laborBudPct?laborBudPct+'%':'—', true, true)}
+      ${row('Food Cost率', pm.fcRate?pm.fcRate+'%':'—', fcBudPct?fcBudPct+'%':'—', true, true)}
+    </table>
+    <div style="font-size:11px;color:${diffPct>=0?'var(--green)':'var(--red)'};margin-top:6px">
+      予算は前月実績比 ${diffPct>=0?'+':''}${diffPct}%（${salesDiff>=0?'増':'減'} ${fmtK(Math.abs(Math.round(salesDiff)))}）
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-top:2px">前月${pm.daysWithData}日分の実績データから集計</div>
+    </div></details>`;
+}
+function openSegEditor(storeId, seg) {
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  if (!canEditBudget(b)) { alert('この予算は現在編集できません（ステータス: '+(b.status||'下書き')+'）'); return; }
+  if (!b.segments) b.segments = emptySegments();
+  var sg = b.segments[seg] || {};
+  var sName = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
+  var labels = {lunch:'ランチ', dinner:'ディナー', takeout:'テイクアウト'};
+  var body;
+  if (seg==='takeout') {
+    body = `<div class="form-row">
+        <div class="form-group"><label class="form-label">実施日数</label><input class="form-input" id="sg-days" type="number" value="${sg.days||''}"></div>
+        <div class="form-group"><label class="form-label">予測注文数/日</label><input class="form-input" id="sg-orders" type="number" value="${sg.orders||''}" oninput="updateSegPreview('takeout')"></div>
+      </div>
+      <div class="form-group"><label class="form-label">予測客単価 ($)</label><input class="form-input" id="sg-spend" type="number" step="0.01" value="${sg.spend||''}" oninput="updateSegPreview('takeout')"></div>
+      <div class="form-group"><label class="form-label">対象メニュー</label><input class="form-input" id="sg-menu" value="${sg.menu||''}" placeholder="例: 弁当・丼もの"></div>
+      <div class="form-group"><label class="form-label">施策メモ</label><textarea class="form-textarea" id="sg-memo">${sg.memo||''}</textarea></div>`;
+  } else {
+    body = `<div class="form-row">
+        <div class="form-group"><label class="form-label">営業日数</label><input class="form-input" id="sg-days" type="number" value="${sg.days||''}"></div>
+        <div class="form-group"><label class="form-label">予測客数/日</label><input class="form-input" id="sg-guests" type="number" value="${sg.guests||''}" oninput="updateSegPreview('${seg}')"></div>
+      </div>
+      <div class="form-group"><label class="form-label">予測客単価 ($)</label><input class="form-input" id="sg-spend" type="number" step="0.01" value="${sg.spend||''}" oninput="updateSegPreview('${seg}')"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Labor目標 (%)</label><input class="form-input" id="sg-labor" type="number" step="0.1" value="${sg.laborPct||''}"></div>
+        <div class="form-group"><label class="form-label">Food Cost目標 (%)</label><input class="form-input" id="sg-fc" type="number" step="0.1" value="${sg.fcPct||''}"></div>
+      </div>
+      <div class="form-group"><label class="form-label">施策メモ</label><textarea class="form-textarea" id="sg-memo">${sg.memo||''}</textarea></div>`;
+  }
+  openModal(`<div class="modal-title">${sName} — ${labels[seg]}予算 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="max-height:62vh;overflow-y:auto">${body}
+    <div style="background:var(--surface2);border-radius:8px;padding:10px;margin-top:8px;text-align:center">
+      <div style="font-size:11px;color:var(--muted)">予測売上（${labels[seg]}）</div>
+      <div id="sg-preview" style="font-size:22px;font-weight:800;color:var(--accent)">${fmtK(Math.round(segSales(sg,seg)))}</div>
+    </div></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveSeg('${storeId}','${seg}')">保存</button></div>`);
+}
+function updateSegPreview(seg) {
+  var g = parseFloat((document.getElementById('sg-guests')||{}).value)||0;
+  var o = parseFloat((document.getElementById('sg-orders')||{}).value)||0;
+  var sp = parseFloat((document.getElementById('sg-spend')||{}).value)||0;
+  var sales = seg==='takeout' ? o*sp : g*sp;
+  var el = document.getElementById('sg-preview'); if(el) el.textContent = fmtK(Math.round(sales));
+}
+function saveSeg(storeId, seg) {
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  if (!b.segments) b.segments = emptySegments();
+  var g=function(id){var e=document.getElementById(id);return e?e.value:'';};
+  if (seg==='takeout') {
+    b.segments.takeout = {days:parseFloat(g('sg-days'))||0, orders:parseFloat(g('sg-orders'))||0, spend:parseFloat(g('sg-spend'))||0, menu:g('sg-menu'), memo:g('sg-memo')};
+  } else {
+    b.segments[seg] = {days:parseFloat(g('sg-days'))||0, guests:parseFloat(g('sg-guests'))||0, spend:parseFloat(g('sg-spend'))||0, laborPct:parseFloat(g('sg-labor'))||0, fcPct:parseFloat(g('sg-fc'))||0, memo:g('sg-memo')};
+  }
+  if (b.status==='差し戻し') b.status='再提出済み';
+  if (!b.status) b.status='下書き';
+  saveBudgets(budgets);
+  closeModalDirect();
+  showToast('予算を保存しました','success');
+  renderPage('budget');
+}
 
 function renderBudgetSummary() {
   var budgets = getBudgets();
@@ -3209,13 +3533,17 @@ function dailyMonthLabel() {
 function shiftDailyMonth(delta) { dailyMonthOffset += delta; renderPage('budget'); }
 /* 基礎根拠から曜日別の日次予算を取得 */
 function dayBudgetFromBases(b, dow) {
+  // セグメント方式（ランチ/ディナー/テイクアウト）が設定されていればそれを日割り
+  if (b && hasSegments(b)) {
+    var monthly = segmentsTotal(b.segments);
+    var days = (typeof monthDays==='function') ? monthDays().length : 30;
+    return days ? monthly/days : 0;
+  }
   var base = (b.bases||[]).find(x=>x.type==='base');
   if (!base || !base.days) return 0;
   var idx = DOW.indexOf(dow);
   if (idx<0) return 0;
   var d = base.days[idx]||{guests:0,spend:0};
-  var lunchD = base.days[idx];
-  // base.days は1日分の客数×単価。L/D合算済の想定で日商を返す
   return (parseFloat(d.guests)||0)*(parseFloat(d.spend)||0);
 }
 function getDailyActuals(storeId) { return ls('daily_actuals_'+storeId, {}); }
@@ -3276,25 +3604,33 @@ function renderBudgetDaily() {
     </div>
   </div>`;
 
-  // Toast連携 + 天気/祝日（単店ビューのみ）
+  // データ連携（単店ビューのみ）— 1ボタンに集約
   if (!isAgg && scopeStores[0]) {
     var sStore = scopeStores[0];
     var hasGuid = !!sStore.toastGuid;
-    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>データ連携</div>`;
-    if (hasGuid) {
-      html += `<p style="font-size:12px;color:var(--muted);margin-bottom:8px">${sStore.name} のToast売上を取得して実績に反映します</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-primary btn-sm" onclick="doToastSync('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-refresh"></i> DBから実績反映</button>
-          <button class="btn btn-secondary btn-sm" onclick="doToastFetchToday('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-cloud-download"></i> 昨日分をToastから取得</button>
-          <button class="btn btn-secondary btn-sm" onclick="openRangeModal('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-calendar-plus"></i> 期間一括取り込み</button>
-        </div>`;
-    } else {
-      html += `<div class="alert alert-warning" style="padding:8px 10px;margin-bottom:8px"><i class="ti ti-alert-circle"></i><div style="font-size:12px">${sStore.name} のToast GUID未設定。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div></div>`;
+    var ss = getSyncState(sStore.id);
+    var statusDot = ss.status==='success'?'🟢':ss.status==='failed'?'🔴':'⚪';
+    var statusText = ss.last ? `${statusDot} 最終更新: ${ss.last}` : '⚪ 未連携';
+    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>データ連携</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:8px">${sStore.name} の売上・客数・Tip・Labor・天気をまとめて取得し、実績へ反映します。</p>
+      <button class="btn btn-primary" id="sync-all-btn" onclick="syncAllData('${sStore.id}','${sStore.toastGuid||''}')" style="width:100%"><i class="ti ti-refresh"></i> データ連携（Sync Data）</button>
+      <div id="sync-all-status" style="font-size:12px;margin-top:8px">
+        ${statusText}${ss.detail?` <span style="color:var(--muted)">· ${ss.detail}</span>`:''}
+        ${ss.status==='failed'&&ss.error?`<div style="color:var(--red);margin-top:4px"><i class="ti ti-alert-triangle"></i> ${ss.error} <button class="btn btn-danger btn-sm" style="margin-left:6px" onclick="syncAllData('${sStore.id}','${sStore.toastGuid||''}')">再実行</button></div>`:''}
+      </div>`;
+    if (!hasGuid) {
+      html += `<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:11px"><i class="ti ti-alert-circle"></i> Toast GUID未設定のため売上連携はスキップされます。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div>`;
     }
-    html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
-        <button class="btn btn-secondary btn-sm" onclick="doWeatherSync('${sStore.id}')"><i class="ti ti-cloud"></i> 天気・祝日を自動取得</button>
+    // 詳細（管理者向け・折りたたみ）
+    html += `<details style="margin-top:10px"><summary style="font-size:12px;color:var(--muted);cursor:pointer">詳細オプション</summary>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        ${hasGuid?`<button class="btn btn-secondary btn-sm" onclick="doToastFetchToday('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-cloud-download"></i> 昨日分を取得</button>
+        <button class="btn btn-secondary btn-sm" onclick="openRangeModal('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-calendar-plus"></i> 期間一括取り込み</button>`:''}
+        <button class="btn btn-secondary btn-sm" onclick="doWeatherSync('${sStore.id}')"><i class="ti ti-cloud"></i> 天気・祝日のみ</button>
+        <button class="btn btn-secondary btn-sm" onclick="openGuidModal('${sStore.id}')"><i class="ti ti-settings"></i> GUID設定</button>
       </div>
       <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:8px"></div>
+    </details>
     </div>`;
   }
 
@@ -3363,6 +3699,49 @@ async function doToastSync(storeId, guid) {
   if (res.error) { if(el) el.textContent = 'エラー: ' + res.error; return; }
   var lab = await syncTipLaborFromDB(storeId, guid, monthDays());
   showToast(`Toast実績を反映しました（売上${res.updated}日 / 勤怠${lab.updated}日）`, 'success');
+  renderPage('budget');
+}
+
+/* ===== 統合データ連携（売上・客数・Tip・Labor・天気をまとめて実行） ===== */
+function getSyncState(storeId) { return ls('sync_state_'+storeId, {last:null, status:null, error:null, detail:''}); }
+function setSyncState(storeId, st) { lsSet('sync_state_'+storeId, st); }
+async function syncAllData(storeId, guid) {
+  var btn = document.getElementById('sync-all-btn');
+  var stEl = document.getElementById('sync-all-status');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> 連携中...'; }
+  if (stEl) stEl.innerHTML = '<span style="color:var(--accent2)">データ取得中…（売上・客数・Tip・Labor・天気）</span>';
+  var detail = [];
+  var hadError = null;
+  try {
+    if (guid) {
+      // 売上・客数
+      var res = await syncStoreActualsFromToast(storeId, guid, monthDays());
+      if (res.error) hadError = res.error;
+      else detail.push(`売上/客数 ${res.updated}日`);
+      // Tip・Labor
+      var lab = await syncTipLaborFromDB(storeId, guid, monthDays());
+      if (lab && lab.error) hadError = hadError || lab.error;
+      else if (lab) detail.push(`Tip/Labor ${lab.updated}日`);
+    } else {
+      detail.push('Toast GUID未設定（売上スキップ）');
+    }
+    // 天気・祝日
+    try { if (typeof doWeatherSyncSilent==='function') { await doWeatherSyncSilent(storeId); detail.push('天気/祝日'); } } catch(e){}
+  } catch(e) { hadError = String(e); }
+
+  var now = new Date();
+  var state = {
+    last: now.toLocaleString('ja'),
+    status: hadError ? 'failed' : 'success',
+    error: hadError || null,
+    detail: detail.join(' · '),
+  };
+  setSyncState(storeId, state);
+  if (hadError) {
+    showToast('データ連携でエラーが発生しました', 'danger');
+  } else {
+    showToast('データ連携が完了しました（' + state.detail + '）', 'success');
+  }
   renderPage('budget');
 }
 async function doToastFetchToday(storeId, guid) {
@@ -3605,6 +3984,9 @@ async function doWeatherSync(storeId) {
   if (res.error) { if(el) el.textContent = res.error; return; }
   showToast(`天気・祝日を反映しました`, 'success');
   renderPage('budget');
+}
+async function doWeatherSyncSilent(storeId) {
+  return await fetchWeatherForView(storeId, monthDays());
 }
 
 function openDailyActualModal(storeId, date, dow) {
@@ -6955,6 +7337,170 @@ function renderIngredientMaster() {
   return html;
 }
 
+/* ===== 経理出力ページ ===== */
+var acctExportMonth = 0; // 0=今月, -1=先月
+function acctMonthRef() {
+  var now = new Date();
+  return new Date(now.getFullYear(), now.getMonth()+acctExportMonth, 1);
+}
+function acctMonthLabel() {
+  var r = acctMonthRef();
+  return `${r.getFullYear()}年${r.getMonth()+1}月`;
+}
+function setAcctMonth(delta) { acctExportMonth += delta; renderPage('acct_export'); }
+function renderAcctExport() {
+  if (!['ceo','gm','office'].includes(curRole)) {
+    return `<div class="card" style="text-align:center;padding:32px"><i class="ti ti-lock" style="font-size:36px;color:var(--muted)"></i><div style="margin-top:12px;font-weight:600">経理出力の権限がありません</div></div>`;
+  }
+  var stores = getVisibleStores();
+  var ref = acctMonthRef();
+  var y = ref.getFullYear(), m = ref.getMonth();
+  var d1 = `${y}-${String(m+1).padStart(2,'0')}-05`;   // 1-15期
+  var d2 = `${y}-${String(m+1).padStart(2,'0')}-20`;   // 16-末期
+
+  var html = `<div class="section-header">
+    <div><div class="section-title">経理出力</div><div class="section-sub">Tip一覧・月次棚卸をCSV出力（Excelで開けます）</div></div>
+  </div>
+  <div class="card" style="padding:10px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:center;gap:12px">
+      <button class="btn btn-secondary btn-sm" onclick="setAcctMonth(-1)"><i class="ti ti-chevron-left"></i></button>
+      <span style="font-size:15px;font-weight:700">${acctMonthLabel()}</span>
+      <button class="btn btn-secondary btn-sm" onclick="setAcctMonth(1)"><i class="ti ti-chevron-right"></i></button>
+    </div>
+  </div>`;
+
+  html += `<div class="card"><div class="card-title"><i class="ti ti-coin" style="color:var(--green)"></i>Tip一覧（半月別）</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">各店のスタッフ別チップ配分を、1日〜15日 / 16日〜月末 の2期間で出力します。</p>`;
+  stores.forEach(s => {
+    html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
+        <div style="font-weight:600"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" onclick="exportTipCSV('${s.id}','${d1}')">1〜15日</button>
+          <button class="btn btn-secondary btn-sm" onclick="exportTipCSV('${s.id}','${d2}')">16〜末</button>
+        </div>
+      </div></div>`;
+  });
+  html += `<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="exportAllTipCSV('${d1}','${d2}')"><i class="ti ti-download"></i> 全店まとめて出力（両期間）</button>`;
+  html += `</div>`;
+
+  html += `<div class="card"><div class="card-title"><i class="ti ti-clipboard-list" style="color:var(--accent)"></i>月次棚卸一覧</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">各店のMonthly棚卸（理論・実棚・差異・金額）を出力します。${acctMonthLabel()}に確定された棚卸が対象です。</p>`;
+  stores.forEach(s => {
+    var mHist = ls('inv_hist_'+s.id, []);
+    var inMonth = mHist.filter(h=>invHistInMonth(h, y, m));
+    html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
+        <div><span class="store-dot" style="background:${s.color}"></span><span style="font-weight:600">${s.name}</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:4px">${inMonth.length?inMonth.length+'回確定':'記録なし'}</span></div>
+        <button class="btn btn-secondary btn-sm" ${inMonth.length?'':'disabled'} onclick="exportInventoryCSV('${s.id}',${y},${m})">出力</button>
+      </div></div>`;
+  });
+  html += `<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="exportAllInventoryCSV(${y},${m})"><i class="ti ti-download"></i> 全店まとめて出力</button>`;
+  html += `</div>`;
+
+  return html;
+}
+function invHistInMonth(h, y, m) {
+  var dt = parseJaDate(h.date);
+  return dt && dt.getFullYear()===y && dt.getMonth()===m;
+}
+function parseJaDate(s) {
+  if (!s) return null;
+  var mt = String(s).match(/(\d{4})[\/年-](\d{1,2})[\/月-](\d{1,2})/);
+  if (!mt) return null;
+  return new Date(parseInt(mt[1]), parseInt(mt[2])-1, parseInt(mt[3]));
+}
+function downloadCSV(rows, filename) {
+  var csv = rows.map(r=>r.map(c=>`"${String(c==null?'':c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  var blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8;'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+function tipCSVRows(storeId, anyDate) {
+  var s = STORES.find(x=>x.id===storeId)||{name:storeId};
+  var settle = calcHalfMonthSettlement(storeId, anyDate);
+  var range = settle.range;
+  var rows = [];
+  rows.push([`${s.name} チップ配分一覧`, `期間: ${range.from} 〜 ${range.to}`]);
+  rows.push(['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)']);
+  settle.rows.forEach(r=>{
+    rows.push([r.name, r.isSL?'Store Leader':'スタッフ',
+      r.hours.toFixed(2), r.base.toFixed(2), r.contribution.toFixed(2), r.redistrib.toFixed(2), r.final.toFixed(2)]);
+  });
+  var totalFinal = settle.rows.reduce((a,r)=>a+r.final,0);
+  rows.push(['合計','','','','','', totalFinal.toFixed(2)]);
+  return rows;
+}
+function exportTipCSV(storeId, anyDate) {
+  var s = STORES.find(x=>x.id===storeId)||{name:storeId};
+  var settle = calcHalfMonthSettlement(storeId, anyDate);
+  if (!settle.anyLabor) { showToast('この期間の勤怠データがありません','danger'); return; }
+  var r = settle.range;
+  downloadCSV(tipCSVRows(storeId, anyDate), `Tip_${s.name}_${r.from}_${r.to}.csv`);
+  showToast(`${s.name} のTip一覧を出力しました`,'success');
+}
+function exportAllTipCSV(d1, d2) {
+  var stores = getVisibleStores();
+  var rows = [];
+  stores.forEach(s=>{
+    [d1,d2].forEach(d=>{
+      var settle = calcHalfMonthSettlement(s.id, d);
+      if (!settle.anyLabor) return;
+      rows = rows.concat(tipCSVRows(s.id, d));
+      rows.push([]);
+    });
+  });
+  if (!rows.length) { showToast('対象期間の勤怠データがありません','danger'); return; }
+  downloadCSV(rows, `Tip一覧_全店_${acctMonthLabel()}.csv`);
+  showToast('全店のTip一覧を出力しました','success');
+}
+function inventoryCSVRows(storeId, y, m) {
+  var s = STORES.find(x=>x.id===storeId)||{name:storeId};
+  var ings = getIngredients();
+  var mHist = ls('inv_hist_'+storeId, []).filter(h=>invHistInMonth(h, y, m));
+  var rows = [];
+  rows.push([`${s.name} 月次棚卸一覧`, `${y}年${m+1}月`]);
+  mHist.forEach(h=>{
+    rows.push([]);
+    rows.push([`確定日: ${h.date}`, `担当: ${h.by||''}`, `品目数: ${h.lines.length}`]);
+    rows.push(['区分','アイテム','理論在庫','実棚','差異','単価($)','棚卸金額($)']);
+    var totalVal=0;
+    h.lines.forEach(l=>{
+      var ing = ings.find(x=>x.name===l.name);
+      var uc = ing ? ing.price : 0;
+      var val = uc*(l.actual||0);
+      totalVal += val;
+      rows.push([className(l.cls)||l.cls||'', l.name, (l.theory||0).toFixed(1), (l.actual||0).toFixed(1),
+        (l.diff||0).toFixed(1), uc.toFixed(2), val.toFixed(2)]);
+    });
+    rows.push(['','','','','','棚卸総額', totalVal.toFixed(2)]);
+  });
+  return rows;
+}
+function exportInventoryCSV(storeId, y, m) {
+  var s = STORES.find(x=>x.id===storeId)||{name:storeId};
+  var mHist = ls('inv_hist_'+storeId, []).filter(h=>invHistInMonth(h, y, m));
+  if (!mHist.length) { showToast('この月の棚卸記録がありません','danger'); return; }
+  downloadCSV(inventoryCSVRows(storeId, y, m), `棚卸_${s.name}_${y}-${String(m+1).padStart(2,'0')}.csv`);
+  showToast(`${s.name} の月次棚卸を出力しました`,'success');
+}
+function exportAllInventoryCSV(y, m) {
+  var stores = getVisibleStores();
+  var rows = [];
+  stores.forEach(s=>{
+    var mHist = ls('inv_hist_'+s.id, []).filter(h=>invHistInMonth(h, y, m));
+    if (!mHist.length) return;
+    rows = rows.concat(inventoryCSVRows(s.id, y, m));
+    rows.push([]); rows.push([]);
+  });
+  if (!rows.length) { showToast('対象月の棚卸記録がありません','danger'); return; }
+  downloadCSV(rows, `月次棚卸_全店_${y}-${String(m+1).padStart(2,'0')}.csv`);
+  showToast('全店の月次棚卸を出力しました','success');
+}
+
 function exportByClass() {
   var ings = getIngredients();
   var rows = [['区分','カテゴリコード','カテゴリ','食材コード','食材名','単位','仕入先','単価','歩留']];
@@ -7408,6 +7954,12 @@ function addApproval(obj) {
   approvals.push(Object.assign({id:'ap'+Date.now(), status:'pending', date:new Date().toLocaleDateString('ja')}, obj));
   lsSet('approvals', approvals);
 }
+/* type+refで承認待ちを解決（予算承認フロー連携用） */
+function resolveApprovalByRef(type, ref, status) {
+  var approvals = ls('approvals', []);
+  approvals.filter(a=>a.type===type && a.ref===ref && a.status==='pending').forEach(a=>a.status=status);
+  lsSet('approvals', approvals);
+}
 
 function renderApproval() {
   var approvals = ls('approvals', []);
@@ -7415,7 +7967,7 @@ function renderApproval() {
   var done = approvals.filter(a=>a.status!=='pending');
 
   // タイプ別アイコン
-  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star'};
+  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar'};
   // タイプ別件数
   var byType = {};
   pending.forEach(a=>byType[a.type]=(byType[a.type]||0)+1);
@@ -7442,14 +7994,19 @@ function renderApproval() {
       var items = pending.filter(a=>a.type===type);
       html += `<div class="card"><div class="card-title"><i class="ti ${typeIcon[type]||'ti-circle'}" style="color:var(--accent)"></i>${type} <span class="tag tag-yellow" style="margin-left:auto">${items.length}</span></div>`;
       items.forEach(a => {
+        var isBudget = a.type==='予算' && a.ref;
         html += `<div class="approval-item">
           <div class="approval-header">
             <div><div class="approval-title">${a.title}</div>
             <div class="approval-meta">${a.from} · ${a.store} · ${a.date}</div></div>
           </div>
           <div class="approval-actions">
-            <button class="btn btn-success btn-sm" onclick="approveItem('${a.id}','approved')"><i class="ti ti-check"></i> 承認</button>
-            <button class="btn btn-danger btn-sm" onclick="approveItem('${a.id}','rejected')"><i class="ti ti-x"></i> 却下</button>
+            ${isBudget
+              ? `<button class="btn btn-secondary btn-sm" onclick="switchStore('${a.ref}');go('budget')"><i class="ti ti-eye"></i> 予算を確認</button>
+                 <button class="btn btn-success btn-sm" onclick="approveBudgetSeg('${a.ref}')"><i class="ti ti-check"></i> 承認</button>
+                 <button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg('${a.ref}')"><i class="ti ti-arrow-back"></i> 差し戻し</button>`
+              : `<button class="btn btn-success btn-sm" onclick="approveItem('${a.id}','approved')"><i class="ti ti-check"></i> 承認</button>
+                 <button class="btn btn-danger btn-sm" onclick="approveItem('${a.id}','rejected')"><i class="ti ti-x"></i> 却下</button>`}
           </div>
         </div>`;
       });
@@ -8963,58 +9520,455 @@ function visibleStaffForManager() {
 }
 
 var growthMgrSel = null;
+var growthMgrTab = 'crew';
+function setGrowthTab(t){ growthMgrTab=t; growthMgrSel=null; renderPage('growth_mgr'); }
 function renderGrowthManager() {
   if (growthMgrSel) {
     var emp = getEmployees().find(e=>e.name===growthMgrSel);
+    var isLeaderTrack = emp && (emp.emp==='正社員' || (emp.title||'').includes('F-Crew') || leaderCandidate(emp));
     var html = `<div class="section-header">
-      <div><div class="section-title">${growthMgrSel}</div><div class="section-sub">Growth Dashboard（管理者ビュー）</div></div>
+      <div><div class="section-title">${growthMgrSel}</div><div class="section-sub">${isLeaderTrack?'Leader候補/社員 成長管理':'Crew 成長管理'}</div></div>
       <button class="btn btn-secondary btn-sm" onclick="growthMgrBack()"><i class="ti ti-arrow-left"></i> 一覧</button>
     </div>`;
-    html += renderPGD(growthMgrSel, true);
+    if (isLeaderTrack) html += renderLeaderGrowthDetail(growthMgrSel, emp);
+    else html += renderCrewGrowthDetail(growthMgrSel, emp);
     return html;
   }
 
-  var staff = visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role));
-  var evals = ls('evaluations', evalSeed());
   var html = `<div class="section-header">
-    <div><div class="section-title">Manager Growth Dashboard</div><div class="section-sub">スタッフ ${staff.length}名 · 成長管理</div></div>
+    <div><div class="section-title">成長管理</div><div class="section-sub">Crew と Leader候補/社員を分けて育成</div></div>
+  </div>
+  <div class="phase-tabs">
+    <div class="phase-tab${growthMgrTab==='crew'?' active':''}" onclick="setGrowthTab('crew')">Crew成長管理</div>
+    <div class="phase-tab${growthMgrTab==='leader'?' active':''}" onclick="setGrowthTab('leader')">Leader候補/社員</div>
   </div>`;
+  if (growthMgrTab==='leader') return html + renderLeaderGrowthList();
+  return html + renderCrewGrowthList();
+}
 
-  // 要フォロー / 昇格候補サマリー
-  var followUp = [], promoReady = [];
+/* Leader候補判定: 正社員 / F-Crew / Leadタイトル保持 / Leadership Lv2+ */
+function leaderCandidate(e) {
+  if (!e) return false;
+  if (e.emp==='正社員') return true;
+  var t = (e.title||'').toLowerCase();
+  if (t.includes('f-crew') || t.includes('leader')) return true;
+  if (typeof leaderSkillApproved==='function' && leaderSkillApproved(e.name)) return true;
+  return false;
+}
+
+/* ===== ① Crew成長管理（スキルレベル中心） ===== */
+function renderCrewGrowthList() {
+  var staff = visibleStaffForManager().filter(e=>e.role==='crew' && !leaderCandidate(e));
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>Crew一覧 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>`;
+  if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象Crewなし</p></div>`; return html; }
   staff.forEach(e => {
-    var ev = evals.find(x=>x.id===e.name);
-    var skillRate = 0;
-    if (ev) { var sk=EVAL_CRITERIA.filter(c=>c.group==='スキル'); skillRate=Math.round(sk.reduce((a,c)=>a+(ev.scores[c.key]||0),0)/(sk.length*2)*100); }
-    var warns = 0; STORES.forEach(s=>ls('warnings_'+s.id,[]).forEach(w=>{if((w.reason||'').includes(e.name))warns++;}));
-    if (warns>0 || skillRate<50) followUp.push({name:e.name, reason:warns?warns+'件の注意':'スキル不足'});
-    if (skillRate>=90 && e.step<3) promoReady.push(e.name);
-  });
-
-  if (promoReady.length) html += `<div class="alert alert-success"><i class="ti ti-trophy"></i><div><p style="font-size:12px;font-weight:600">昇格候補 ${promoReady.length}名</p><div style="font-size:11px">${promoReady.join(', ')}</div></div></div>`;
-  if (followUp.length) html += `<div class="alert alert-warning"><i class="ti ti-alert-triangle"></i><div><p style="font-size:12px;font-weight:600">要フォロー ${followUp.length}名</p><div style="font-size:11px">${followUp.map(f=>f.name+'('+f.reason+')').join(', ')}</div></div></div>`;
-
-  html += `<div class="card"><div class="card-title"><i class="ti ti-users"></i>スタッフ一覧</div>`;
-  staff.forEach(e => {
-    var ev = evals.find(x=>x.id===e.name);
-    var skillRate = 0;
-    if (ev) { var sk=EVAL_CRITERIA.filter(c=>c.group==='スキル'); skillRate=Math.round(sk.reduce((a,c)=>a+(ev.scores[c.key]||0),0)/(sk.length*2)*100); }
-    var stepColor = e.step>=3?'var(--green)':e.step>=2?'var(--yellow)':'var(--muted)';
+    var ap = approvedPositions(e.name);
+    var sk = getEmpSkills(e.name);
+    var totalPos = getStorePositions(e.store).filter(p=>p!=='Energy'&&p!=='Leadership').length;
+    var lv3 = Object.values(sk).filter(x=>x.status==='承認'&&x.level>=3).length;
+    var rate = typeof effectiveTipRate==='function'?effectiveTipRate(e.name):0;
+    var coverage = totalPos?Math.round(ap.length/totalPos*100):0;
     html += `<div class="staff-item" style="cursor:pointer" onclick="growthMgrOpen('${e.name}')">
-      <div class="staff-avatar" style="border-color:${stepColor}">${e.name[0]}</div>
+      <div class="staff-avatar">${e.name[0]}</div>
       <div style="flex:1"><div class="staff-name">${e.name}</div>
-        <div class="staff-role">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name} · STEP ${e.step}</div>
-        <div class="progress-bar" style="margin-top:4px"><div class="progress-fill" style="background:var(--accent2);width:${skillRate}%"></div></div>
+        <div class="staff-role">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name} · 対応 ${ap.length}/${totalPos}ポジ${lv3?' · Lv3×'+lv3:''} · Tip ${rate}%</div>
+        <div class="progress-bar" style="margin-top:4px"><div class="progress-fill" style="background:var(--accent2);width:${coverage}%"></div></div>
       </div>
       <i class="ti ti-chevron-right" style="color:var(--muted)"></i>
     </div>`;
   });
-  if (!staff.length) html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象スタッフなし</p>`;
   html += '</div>';
   return html;
 }
+function renderCrewGrowthDetail(name, emp) {
+  emp = emp || getEmployees().find(e=>e.name===name) || {};
+  var storeId = emp.store==='ALL'?STORES[0].id:emp.store;
+  var positions = getStorePositions(storeId).filter(p=>p!=='Energy'&&p!=='Leadership');
+  var sk = getEmpSkills(name);
+  var ap = approvedPositions(name);
+  var rate = typeof effectiveTipRate==='function'?effectiveTipRate(name):0;
+  var trainingDone = (emp.step||0)>=1;
+
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-id"></i>基本情報</div>
+    <div style="font-size:13px;line-height:1.8">
+      所属店舗: <b>${(STORES.find(s=>s.id===storeId)||{name:storeId}).name}</b><br>
+      Training状況: ${trainingDone?'<span style="color:var(--green)">修了</span>':'<span style="color:var(--yellow)">研修中</span>'}<br>
+      Tip Rate: <b>${rate}%</b>
+    </div></div>`;
+
+  // スキルレベル（ポジション別）
+  html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>スキルレベル</div>`;
+  positions.forEach(p => {
+    var s = sk[p] || {level:0, status:'未取得'};
+    var lv = s.status==='承認'?s.level:0;
+    var col = lv>=3?'var(--accent)':lv>=2?'var(--green)':lv>=1?'var(--yellow)':'var(--border)';
+    html += `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+        <span style="font-size:13px">${p}</span>
+        <span style="font-size:12px;font-weight:600;color:${col}">${s.status==='承認'?'Lv'+lv:s.status}</span>
+      </div>
+      <div style="display:flex;gap:3px">${[1,2,3].map(n=>`<div style="flex:1;height:5px;border-radius:3px;background:${lv>=n?col:'var(--border)'}"></div>`).join('')}</div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // 次の目標
+  var next = positions.filter(p=>!ap.includes(p));
+  html += `<div class="card"><div class="card-title"><i class="ti ti-target"></i>次の目標</div>
+    <div style="font-size:13px">${next.length?'未習得ポジション: '+next.slice(0,4).join(', ')+'<br>':'全ポジション習得済み 🎉<br>'}
+    ${rate<100?'Tip Rate '+rate+'% → 次のステップへ':''}</div></div>`;
+
+  // 評価履歴
+  var evals = ls('evaluations', []).filter(x=>x.id===name);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>評価履歴</div>
+    ${evals.length?evals.slice(-3).map(ev=>`<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">${ev.date||ev.period||'—'} · STEP${ev.step||emp.step||0}</div>`).join(''):'<div style="font-size:12px;color:var(--muted)">評価履歴なし</div>'}</div>`;
+
+  // 教育追加（任意）
+  html += `<div class="card"><div class="card-title"><i class="ti ti-book"></i>教育プログラム（任意追加）</div>
+    <p style="font-size:11px;color:var(--muted);margin-bottom:6px">通常はスキルレベル管理が中心。必要なCrewのみ教育を追加できます。</p>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${['Funergy理念','サービス基礎','衛生管理','クレーム対応','店舗オペレーション基礎'].map(c=>{
+        var done=(getCrewEducation(name)||[]).includes(c);
+        return `<button class="btn btn-secondary btn-sm" style="${done?'border-color:var(--green);color:var(--green)':''}" onclick="toggleCrewEducation('${name}','${c}')">${done?'✓ ':''}${c}</button>`;
+      }).join('')}
+    </div></div>`;
+  return html;
+}
+function getCrewEducation(name){ var all=ls('crew_education',{}); return all[name]||[]; }
+function toggleCrewEducation(name, course){
+  var all=ls('crew_education',{}); var list=all[name]||[];
+  if(list.includes(course)) list=list.filter(c=>c!==course); else list.push(course);
+  all[name]=list; lsSet('crew_education',all);
+  renderPage('growth_mgr');
+}
+/* ===== ② Leader候補/社員成長管理（90日育成） ===== */
+function getDevStart(emp) {
+  // 育成開始日: 専用設定 > 初回勤務日 > 入社日
+  var dev = ls('dev_start', {});
+  if (dev[emp.name]) return dev[emp.name];
+  return emp.firstWork || emp.hireDate || '';
+}
+function setDevStart(name, date){ var d=ls('dev_start',{}); d[name]=date; lsSet('dev_start',d); }
+function dev90Progress(emp) {
+  var start = getDevStart(emp);
+  if (!start) return {days:0, pct:0, endDate:'', start:''};
+  var s = new Date(start+'T00:00:00');
+  var end = new Date(s); end.setDate(end.getDate()+90);
+  var now = new Date();
+  var elapsed = Math.floor((now - s)/86400000);
+  var pct = Math.max(0, Math.min(100, Math.round(elapsed/90*100)));
+  return {days:elapsed, pct, endDate:end.toISOString().slice(0,10), start};
+}
+function renderLeaderGrowthList() {
+  var staff = visibleStaffForManager().filter(e=>e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office'&&e.role!=='am'&&leaderCandidate(e));
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-crown"></i>Leader候補/社員 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>
+    <p style="font-size:11px;color:var(--muted);margin-bottom:6px">入社・登用から90日を目安に現場オペレーションを習得する期間として管理します。</p>`;
+  if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象者なし</p></div>`; return html; }
+  staff.forEach(e => {
+    var prog = dev90Progress(e);
+    var career = getCareerTrack(e.name);
+    var col = prog.pct>=100?'var(--green)':'var(--accent)';
+    html += `<div class="staff-item" style="cursor:pointer" onclick="growthMgrOpen('${e.name}')">
+      <div class="staff-avatar" style="border-color:${col}">${e.name[0]}</div>
+      <div style="flex:1"><div class="staff-name">${e.name} ${career?`<span class="tag tag-blue" style="font-size:9px">${career}</span>`:''}</div>
+        <div class="staff-role">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name} · 90日育成 ${prog.days>=0?prog.days+'日経過':'未開始'}</div>
+        <div class="progress-bar" style="margin-top:4px"><div class="progress-fill" style="background:${col};width:${prog.pct}%"></div></div>
+      </div>
+      <i class="ti ti-chevron-right" style="color:var(--muted)"></i>
+    </div>`;
+  });
+  html += '</div>';
+  return html;
+}
+/* キャリアトラック（Server Leader / Kitchen Leader / Store Leader） */
+/* ===== D: キャリア育成・OJT・テスト・再教育 ===== */
+/* ⑧ キャリア別スキル基準 / ⑨ OJT開始条件 */
+const CAREER_CONFIG = {
+  'Server Leader': {
+    skills: ['Host','Server','Drink','Table Management','Customer Service','Opening / Closing','Training Support'],
+    minTotal: 18,
+    required: [{skill:'Server', lv:3},{skill:'Host', lv:2},{skill:'Drink', lv:2}],
+    curriculum: ['接客基準','テーブル管理','新人Server教育','クレーム一次対応','Tip Rate向上','フロアコントロール'],
+  },
+  'Kitchen Leader': {
+    skills: ['Prep','Main Kitchen Position','Quality Control','Food Safety','Order Management','Inventory Support','Closing Kitchen'],
+    minTotal: 18,
+    required: [{skill:'Main Kitchen Position', lv:3},{skill:'Prep', lv:2},{skill:'Quality Control', lv:2}],
+    curriculum: ['品質管理','仕込み管理','衛生管理','オーダーコントロール','在庫管理','新人Kitchen教育'],
+  },
+  'Store Leader': {
+    skills: ['Floor Control','Kitchen Understanding','Shift Control','Task Management','Customer Recovery','Opening / Closing Management','Team Direction','Daily Report'],
+    minTotal: 24,
+    required: [{skill:'Server', lv:3},{skill:'Kitchen Understanding', lv:2},{skill:'Closing', lv:3},{skill:'Team Direction', lv:2}],
+    curriculum: ['店舗全体の指示出し','Daily Meeting','Opening / Closing管理','Task管理','売上・Labor・Food Costの基礎','チームビルディング','トラブル対応'],
+  },
+};
+const OJT_STATUSES = ['Not Ready','Skill Level In Progress','OJT Ready','OJT Started','OJT Completed'];
+/* キャリア育成データ: {career, skillLevels:{skill:lv}, ojtStatus, curriculum:{item:done}, tests:[{course,date,score,pass,understanding,retrain,comment}], retrain:[{item,reason,done}]} */
+function getDevData(name){ var all=ls('dev_data',{}); return all[name]||{skillLevels:{},curriculum:{},tests:[],retrain:[]}; }
+function setDevData(name, d){ var all=ls('dev_data',{}); all[name]=d; lsSet('dev_data',all); }
+/* キャリアスキルのレベル取得（育成用に手動設定 or 既存スキルから流用） */
+function careerSkillLv(name, skill) {
+  var d = getDevData(name);
+  if (d.skillLevels && d.skillLevels[skill]!=null) return d.skillLevels[skill];
+  // 既存のポジションスキルから流用（同名）
+  var sk = getEmpSkills(name);
+  if (sk[skill] && sk[skill].status==='承認') return sk[skill].level||0;
+  return 0;
+}
+function setCareerSkillLv(name, skill, lv) {
+  var d = getDevData(name); if(!d.skillLevels)d.skillLevels={};
+  d.skillLevels[skill]=lv; setDevData(name,d);
+}
+/* スキル合計点 */
+function careerSkillTotal(name, career) {
+  var cfg = CAREER_CONFIG[career]; if(!cfg) return 0;
+  return cfg.skills.reduce((a,s)=>a+careerSkillLv(name,s),0);
+}
+/* OJT開始判定 */
+function ojtReadiness(name, career) {
+  var cfg = CAREER_CONFIG[career];
+  if (!cfg) return {ready:false, total:0, minTotal:0, reqMet:[], reqMiss:[]};
+  var total = careerSkillTotal(name, career);
+  var reqMet=[], reqMiss=[];
+  cfg.required.forEach(r=>{
+    var lv = careerSkillLv(name, r.skill);
+    if (lv>=r.lv) reqMet.push(r); else reqMiss.push(Object.assign({cur:lv},r));
+  });
+  var ready = total>=cfg.minTotal && reqMiss.length===0;
+  return {ready, total, minTotal:cfg.minTotal, reqMet, reqMiss};
+}
+function getOjtStatus(name, career) {
+  var d = getDevData(name);
+  if (d.ojtStatus) return d.ojtStatus;
+  var r = ojtReadiness(name, career);
+  if (r.ready) return 'OJT Ready';
+  if (r.total>0) return 'Skill Level In Progress';
+  return 'Not Ready';
+}
+function startOjt(name) {
+  var d=getDevData(name); d.ojtStatus='OJT Started'; setDevData(name,d);
+  showToast('OJTプログラムを開始しました','success'); renderPage('growth_mgr');
+}
+function completeOjt(name) {
+  var d=getDevData(name); d.ojtStatus='OJT Completed'; setDevData(name,d);
+  showToast('OJT完了！','success'); renderPage('growth_mgr');
+}
+/* ⑩ カリキュラム進捗 */
+function toggleCurriculum(name, item) {
+  var d=getDevData(name); if(!d.curriculum)d.curriculum={};
+  d.curriculum[item]=!d.curriculum[item]; setDevData(name,d);
+  renderPage('growth_mgr');
+}
+function curriculumProgress(name, career) {
+  var cfg=CAREER_CONFIG[career]; if(!cfg)return {done:0,total:0,pct:0};
+  var d=getDevData(name); var done=cfg.curriculum.filter(c=>d.curriculum&&d.curriculum[c]).length;
+  return {done, total:cfg.curriculum.length, pct:cfg.curriculum.length?Math.round(done/cfg.curriculum.length*100):0};
+}
+/* ⑪ テスト */
+function openTestModal(name, course) {
+  openModal(`<div class="modal-title">テスト記録 — ${course} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">受験者</label><input class="form-input" value="${name}" disabled></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">受験日</label><input class="form-input" id="ts-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="form-group"><label class="form-label">点数 (%)</label><input class="form-input" id="ts-score" type="number" min="0" max="100" placeholder="80"></div>
+    </div>
+    <div class="form-group"><label class="form-label">理解度</label>
+      <select class="form-select" id="ts-understanding"><option>高い</option><option>普通</option><option>低い</option></select></div>
+    <div class="form-group"><label class="form-label">担当者コメント</label><textarea class="form-textarea" id="ts-comment"></textarea></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">合格基準80%。不合格または理解度が低い場合は再教育タスクが自動作成されます。</div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveTest('${name}','${course}')">記録</button></div>`);
+}
+function saveTest(name, course) {
+  var score=parseInt(document.getElementById('ts-score').value)||0;
+  var understanding=document.getElementById('ts-understanding').value;
+  var pass=score>=80;
+  var retrain=!pass || understanding==='低い';
+  var rec={course, date:document.getElementById('ts-date').value, score, pass, understanding,
+    retrain, comment:document.getElementById('ts-comment').value.trim()};
+  var d=getDevData(name); if(!d.tests)d.tests=[]; d.tests.push(rec);
+  // ⑫ 再教育タスク自動作成
+  if (retrain) {
+    if(!d.retrain)d.retrain=[];
+    d.retrain.push({item:course, reason:!pass?`テスト不合格(${score}%)`:'理解度が低い', done:false, date:rec.date});
+  }
+  setDevData(name,d);
+  closeModalDirect();
+  showToast(pass?(retrain?'合格だが理解度不足→再教育作成':'合格しました'):'不合格→再教育タスク作成','info');
+  renderPage('growth_mgr');
+}
+/* ⑫ 再教育 */
+function completeRetrain(name, idx) {
+  var d=getDevData(name); if(d.retrain&&d.retrain[idx]){d.retrain[idx].done=true; setDevData(name,d);}
+  showToast('再教育を完了にしました。再テストを実施してください','success');
+  renderPage('growth_mgr');
+}
+
+function getCareerTrack(name){ return (ls('career_track',{})[name])||''; }
+function setCareerTrack(name, track){ var d=ls('career_track',{}); d[name]=track; lsSet('career_track',d); renderPage('growth_mgr'); }
+const CAREER_TRACKS = ['Server Leader','Kitchen Leader','Store Leader'];
+function renderLeaderGrowthDetail(name, emp) {
+  emp = emp || getEmployees().find(e=>e.name===name) || {};
+  var prog = dev90Progress(emp);
+  var career = getCareerTrack(name);
+
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-calendar-stats"></i>90日育成期間</div>`;
+  if (!prog.start) {
+    html += `<p style="font-size:12px;color:var(--muted);margin-bottom:8px">育成開始日が未設定です。初回勤務日または登用日を設定してください。</p>
+      <button class="btn btn-primary btn-sm" onclick="promptDevStart('${name}')"><i class="ti ti-calendar-plus"></i> 育成開始日を設定</button>`;
+  } else {
+    var col = prog.pct>=100?'var(--green)':'var(--accent)';
+    html += `<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px">
+      <span>開始 ${prog.start}</span><span>終了予定 ${prog.endDate}</span></div>
+      <div class="progress-bar"><div class="progress-fill" style="background:${col};width:${prog.pct}%"></div></div>
+      <div style="text-align:center;font-size:20px;font-weight:800;color:${col};margin-top:6px">${prog.pct}%<span style="font-size:12px;color:var(--muted)"> · ${prog.days}日経過</span></div>
+      <button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="promptDevStart('${name}')"><i class="ti ti-edit"></i> 開始日変更</button>`;
+  }
+  html += `</div>`;
+
+  // キャリアトラック選択
+  html += `<div class="card"><div class="card-title"><i class="ti ti-route"></i>キャリアトラック</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${CAREER_TRACKS.map(t=>`<button class="btn ${career===t?'btn-primary':'btn-secondary'} btn-sm" onclick="setCareerTrack('${name}','${t}')">${t}</button>`).join('')}
+    </div>
+    ${career?`<div style="font-size:11px;color:var(--muted);margin-top:6px">必要スキル基準・OJT判定・カリキュラム・テストが下に表示されます。</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:6px">トラックを選択してください。</div>'}
+  </div>`;
+
+  // 現状スキルサマリー
+  var ap = approvedPositions(name);
+  var sk = getEmpSkills(name);
+  var skillPoints = Object.values(sk).filter(x=>x.status==='承認').reduce((a,x)=>a+(x.level||0),0);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>現場スキル状況</div>
+    <div class="kpi-grid">
+      ${kpi('対応ポジション', ap.length, '承認済み', 'var(--accent2)')}
+      ${kpi('スキル合計点', skillPoints, 'Lv合計', 'var(--tm)')}
+      ${kpi('Tip Rate', (typeof effectiveTipRate==='function'?effectiveTipRate(name):0)+'%', '', 'var(--green)')}
+    </div>
+  </div>`;
+
+  if (!career) {
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:20px"><i class="ti ti-route" style="font-size:28px"></i><div style="margin-top:6px;font-size:13px">キャリアトラックを選択すると、必要スキル基準・OJT判定・カリキュラム・テストが表示されます。</div></div>`;
+    return html;
+  }
+
+  var cfg = CAREER_CONFIG[career];
+  var read = ojtReadiness(name, career);
+  var ojtStatus = getOjtStatus(name, career);
+  var statusColors = {'Not Ready':'tag-gray','Skill Level In Progress':'tag-yellow','OJT Ready':'tag-blue','OJT Started':'tag-orange','OJT Completed':'tag-green'};
+
+  // ⑧⑨ 必要スキル基準 + OJT判定
+  html += `<div class="card"><div class="card-title"><i class="ti ti-target"></i>必要スキル基準（${career}）
+    <span class="tag ${statusColors[ojtStatus]||'tag-gray'}" style="margin-left:auto">${ojtStatus}</span></div>
+    <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px">
+      <span>スキル合計</span><span style="font-weight:700;color:${read.total>=read.minTotal?'var(--green)':'var(--yellow)'}">${read.total} / ${read.minTotal}点</span>
+    </div>
+    <div class="progress-bar" style="margin-bottom:10px"><div class="progress-fill" style="background:${read.total>=read.minTotal?'var(--green)':'var(--yellow)'};width:${Math.min(read.total/read.minTotal*100,100)}%"></div></div>`;
+
+  // 必須項目
+  html += `<div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:4px">必須項目</div>`;
+  cfg.required.forEach(r=>{
+    var lv=careerSkillLv(name, r.skill); var ok=lv>=r.lv;
+    html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0">
+      <span>${ok?'✅':'⬜'} ${r.skill} Lv${r.lv}以上</span><span style="color:${ok?'var(--green)':'var(--muted)'}">現在 Lv${lv}</span></div>`;
+  });
+
+  // 各スキルのレベル設定
+  html += `<div style="font-size:11px;font-weight:600;color:var(--muted);margin:8px 0 4px">スキルレベル設定</div>`;
+  cfg.skills.forEach(s=>{
+    var lv=careerSkillLv(name,s);
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0">
+      <span style="font-size:12px">${s}</span>
+      <div style="display:flex;gap:3px">${[0,1,2,3].map(n=>`<button onclick="setCareerSkillLv('${name}','${s.replace(/'/g,"")}',${n});renderPage('growth_mgr')" style="width:24px;height:24px;border-radius:5px;border:1px solid var(--border);font-size:10px;cursor:pointer;background:${lv===n?'var(--accent)':'var(--surface)'};color:${lv===n?'#fff':'var(--muted)'}">${n}</button>`).join('')}</div>
+    </div>`;
+  });
+
+  // OJT開始ボタン
+  if (ojtStatus==='OJT Ready') {
+    html += `<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="startOjt('${name}')"><i class="ti ti-player-play"></i> OJTプログラム開始</button>`;
+  } else if (ojtStatus==='Skill Level In Progress' || ojtStatus==='Not Ready') {
+    html += `<div class="alert alert-warning" style="margin-top:10px;padding:8px 10px;font-size:12px"><i class="ti ti-lock"></i> スキル基準未達のためOJT開始不可（${read.reqMiss.length?'必須未達: '+read.reqMiss.map(r=>r.skill).join(', '):'合計点不足'}）</div>`;
+  }
+  html += `</div>`;
+
+  // ⑩ カリキュラム（OJT開始後）
+  if (ojtStatus==='OJT Started' || ojtStatus==='OJT Completed') {
+    var cp = curriculumProgress(name, career);
+    html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>${career} カリキュラム <span class="tag ${cp.pct>=100?'tag-green':'tag-yellow'}" style="margin-left:auto">${cp.done}/${cp.total}</span></div>`;
+    var d=getDevData(name);
+    cfg.curriculum.forEach(item=>{
+      var done=d.curriculum&&d.curriculum[item];
+      var test=(d.tests||[]).filter(t=>t.course===item).slice(-1)[0];
+      html += `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div onclick="toggleCurriculum('${name}','${item.replace(/'/g,"")}')" style="width:20px;height:20px;border-radius:5px;border:2px solid ${done?'var(--green)':'var(--border)'};background:${done?'var(--green)':'transparent'};cursor:pointer;display:flex;align-items:center;justify-content:center">${done?'<i class="ti ti-check" style="color:#fff;font-size:12px"></i>':''}</div>
+          <span style="flex:1;font-size:13px;${done?'text-decoration:line-through;color:var(--muted)':''}">${item}</span>
+          ${test?`<span class="tag ${test.pass?'tag-green':'tag-red'}" style="font-size:9px">${test.score}%</span>`:''}
+          <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="openTestModal('${name}','${item.replace(/'/g,"")}')">テスト</button>
+        </div>
+      </div>`;
+    });
+    if (ojtStatus==='OJT Started' && cp.pct>=100) {
+      html += `<button class="btn btn-success" style="width:100%;margin-top:10px" onclick="completeOjt('${name}')"><i class="ti ti-circle-check"></i> OJT完了にする</button>`;
+    }
+    html += `</div>`;
+  }
+
+  // ⑪ テスト履歴
+  var d2=getDevData(name);
+  if (d2.tests && d2.tests.length) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-clipboard-check"></i>テスト結果</div>`;
+    d2.tests.slice().reverse().forEach(t=>{
+      html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+        <span>${t.date} · ${t.course}</span>
+        <span><span class="tag ${t.pass?'tag-green':'tag-red'}" style="font-size:9px">${t.pass?'合格':'不合格'} ${t.score}%</span> 理解度:${t.understanding}</span></div>`;
+    });
+    html += `</div>`;
+  }
+
+  // ⑫ 再教育タスク
+  if (d2.retrain && d2.retrain.filter(r=>!r.done).length) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-refresh-alert" style="color:var(--red)"></i>再教育タスク</div>`;
+    d2.retrain.forEach((r,i)=>{
+      if (r.done) return;
+      html += `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div><div style="font-size:13px;font-weight:600">${r.item}</div><div style="font-size:11px;color:var(--red)">${r.reason}</div></div>
+          <button class="btn btn-success btn-sm" onclick="completeRetrain('${name}',${i})">再教育完了</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">現場で再教育 → 再評価 → 再テストで合格すれば次へ</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // ⑬ 次にやるべきこと
+  var nextAction = '';
+  if (ojtStatus==='Not Ready'||ojtStatus==='Skill Level In Progress') nextAction = 'スキルレベルを上げてOJT基準を満たす';
+  else if (ojtStatus==='OJT Ready') nextAction = 'OJTプログラムを開始する';
+  else if (ojtStatus==='OJT Started') {
+    var rt=(d2.retrain||[]).filter(r=>!r.done);
+    if (rt.length) nextAction = '再教育: '+rt.map(r=>r.item).join(', ');
+    else { var cp2=curriculumProgress(name,career); nextAction = cp2.pct>=100?'OJT完了にする':'カリキュラムを進める（残'+(cp2.total-cp2.done)+'項目）'; }
+  } else if (ojtStatus==='OJT Completed') nextAction = 'Leader登用を検討（GM承認）';
+  html += `<div class="card" style="border-left:3px solid var(--accent)"><div style="font-size:11px;color:var(--muted)">次にやるべきこと</div><div style="font-size:14px;font-weight:600;margin-top:2px">${nextAction}</div></div>`;
+
+  return html;
+}
+function promptDevStart(name) {
+  var cur = getCareerTrack(name);
+  var emp = getEmployees().find(e=>e.name===name)||{};
+  var def = getDevStart(emp) || new Date().toISOString().slice(0,10);
+  var d = prompt('育成開始日（YYYY-MM-DD）を入力', def);
+  if (!d) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { alert('YYYY-MM-DD形式で入力してください'); return; }
+  setDevStart(name, d);
+  showToast('育成開始日を設定しました','success');
+  renderPage('growth_mgr');
+}
 function growthMgrOpen(name) { growthMgrSel = name; renderPage('growth_mgr'); }
 function growthMgrBack() { growthMgrSel = null; renderPage('growth_mgr'); }
+
 
 /* ============================================================
    Skill Level (Crew自己申請 → 管理者承認/差戻し → フィードバック)
