@@ -5913,7 +5913,10 @@ function renderHiring() {
 
   var html = `<div class="section-header">
     <div><div class="section-title">採用管理</div><div class="section-sub">応募者 → 面接 → 採用決定</div></div>
-    <button class="btn btn-primary btn-sm" onclick="openApplicantModal()"><i class="ti ti-user-plus"></i> 応募者追加</button>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn btn-secondary btn-sm" onclick="openApplicantModal()"><i class="ti ti-user-plus"></i> 採用候補</button>
+      <button class="btn btn-primary btn-sm" onclick="openDirectOnboardModal()"><i class="ti ti-send"></i> 直接OB開始</button>
+    </div>
   </div>
   <div class="kpi-grid" style="margin-bottom:12px;">
     ${kpi('応募者', apps.length, '全ステータス', 'var(--tm)')}
@@ -5984,21 +5987,26 @@ function renderHiring() {
   return html;
 }
 
+const APPLICANT_SOURCES = ['Indeed','紹介','再雇用','飛び込み','その他'];
 function openApplicantModal(id) {
   var apps = getApplicants();
-  var a = id ? apps.find(x=>x.id===id) : {name:'',store:'未分類',pos:'',phone:'',email:'',date:new Date().toISOString().slice(0,10),memo:''};
-  openModal(`<div class="modal-title">${id?'応募者編集':'応募者追加'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">応募者名</label><input class="form-input" id="ap-name" value="${a.name||''}"></div>
+  var a = id ? apps.find(x=>x.id===id) : {name:'',store:'未分類',pos:'',phone:'',email:'',date:new Date().toISOString().slice(0,10),memo:'',source:'Indeed'};
+  openModal(`<div class="modal-title">${id?'応募者編集':'採用候補を登録'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">氏名</label><input class="form-input" id="ap-name" value="${a.name||''}"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">応募店舗</label>
         <select class="form-select" id="ap-store">${APPLICANT_STORES.map(s=>`<option ${a.store===s?'selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="form-label">希望ポジション</label><input class="form-input" id="ap-pos" value="${a.pos||''}" placeholder="例: Server"></div>
+      <div class="form-group"><label class="form-label">応募ポジション</label><input class="form-input" id="ap-pos" value="${a.pos||''}" placeholder="例: Server"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">電話</label><input class="form-input" id="ap-phone" value="${a.phone||''}"></div>
-      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="ap-email" value="${a.email||''}"></div>
+      <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="ap-phone" value="${a.phone||''}"></div>
+      <div class="form-group"><label class="form-label">メールアドレス</label><input class="form-input" id="ap-email" value="${a.email||''}"></div>
     </div>
-    <div class="form-group"><label class="form-label">応募日</label><input class="form-input" id="ap-date" type="date" value="${a.date||''}"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">応募経路</label>
+        <select class="form-select" id="ap-source">${APPLICANT_SOURCES.map(s=>`<option ${a.source===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">応募日</label><input class="form-input" id="ap-date" type="date" value="${a.date||''}"></div>
+    </div>
     <div class="form-group"><label class="form-label">メモ</label><textarea class="form-textarea" id="ap-memo">${a.memo||''}</textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveApplicant('${id||''}')">保存</button></div>`);
@@ -6009,17 +6017,83 @@ function saveApplicant(id) {
   var data = {
     name, store:document.getElementById('ap-store').value, pos:document.getElementById('ap-pos').value.trim(),
     phone:document.getElementById('ap-phone').value.trim(), email:document.getElementById('ap-email').value.trim(),
+    source:document.getElementById('ap-source').value,
     date:document.getElementById('ap-date').value, memo:document.getElementById('ap-memo').value.trim(),
   };
   var apps = getApplicants();
   if (id) { var a=apps.find(x=>x.id===id); Object.assign(a,data); if(a.status==='要確認'&&a.store!=='未分類'&&a.phone&&a.email)a.status='新規応募'; }
   else {
-    // 不足チェック
     var status = (!data.store||data.store==='未分類'||!data.phone||!data.email||!data.pos)?'要確認':'新規応募';
     apps.push(Object.assign({id:'a'+Date.now(), status}, data));
   }
   setApplicants(apps);
-  closeModalDirect(); showToast('応募者を保存しました','success'); renderPage('hiring');
+  closeModalDirect(); showToast('採用候補を保存しました','success'); renderPage('hiring');
+}
+
+/* 直接オンボーディング開始（採用確定者・面接フロー省略） */
+function openDirectOnboardModal() {
+  var storeOpts = STORES;
+  openModal(`<div class="modal-title">直接オンボーディング開始 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">採用確定者へ直接オンボーディングを送ります（再雇用・紹介・飛び込み等）。</p>
+    <div class="form-group"><label class="form-label">氏名</label><input class="form-input" id="do-name"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="do-phone"></div>
+      <div class="form-group"><label class="form-label">メールアドレス</label><input class="form-input" id="do-email"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">配属店舗</label>
+        <select class="form-select" id="do-store">${storeOpts.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">ポジション</label><input class="form-input" id="do-pos" placeholder="例: Server"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="do-wage" type="number" step="0.25" value="16"></div>
+      <div class="form-group"><label class="form-label">雇用区分</label>
+        <select class="form-select" id="do-emp">${EMP_DIVISIONS.map(d=>`<option>${d}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-group"><label class="form-label">勤務開始予定日</label><input class="form-input" id="do-start" type="date"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="startDirectOnboard()"><i class="ti ti-send"></i> オンボーディング送信</button></div>`);
+}
+function startDirectOnboard() {
+  var name=document.getElementById('do-name').value.trim();
+  if(!name){alert('氏名を入力してください');return;}
+  var storeId=document.getElementById('do-store').value;
+  var storeObj=STORES.find(s=>s.id===storeId)||STORES[0];
+  createOnboarding({
+    name, email:document.getElementById('do-email').value.trim(), phone:document.getElementById('do-phone').value.trim(),
+    store:storeId, storeName:storeObj.name, pos:document.getElementById('do-pos').value.trim(),
+    wage:parseFloat(document.getElementById('do-wage').value)||16,
+    division:document.getElementById('do-emp').value,
+    plannedStart:document.getElementById('do-start').value,
+  });
+  closeModalDirect();
+  showToast(`${name}へオンボーディングを送信しました`,'success');
+  go('onboarding');
+}
+
+/* 雇用区分（仕様準拠） */
+const EMP_DIVISIONS = ['Part Time Crew','F-Crew','Store Leader','Store Manager'];
+/* Candidate ID生成 EMP-CAND-000123 */
+function genCandidateId() {
+  var n = (ls('cand_seq', 0) || 0) + 1;
+  lsSet('cand_seq', n);
+  return 'EMP-CAND-' + String(n).padStart(6,'0');
+}
+/* オンボーディング作成（共通） */
+function createOnboarding(opts) {
+  var obs = ls('onboardings', []);
+  var candId = genCandidateId();
+  var expiry = new Date(); expiry.setDate(expiry.getDate()+7);
+  obs.push(Object.assign({
+    id:'ob'+Date.now(), candId, name:'', store:'', storeName:'', pos:'', email:'', phone:'',
+    wage:16, division:'Part Time Crew', plannedStart:'',
+    startDate:new Date().toLocaleDateString('ja'),
+    linkExpiry: expiry.toISOString().slice(0,10),
+    obStatus:'本人入力待ち', personal:null, docs:[], signatures:{}, i9:{}, payrollDone:false,
+    template:JSON.parse(JSON.stringify(getOBTemplate())), done:[], rejectReason:''
+  }, opts));
+  lsSet('onboardings', obs);
+  return candId;
 }
 function updateApplicant(id, status) {
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
@@ -6052,22 +6126,17 @@ function saveInterview(id) {
   a.evalMemo=document.getElementById('iv-eval').value.trim();
   setApplicants(apps); closeModalDirect(); showToast('面接情報を保存しました','success'); renderPage('hiring');
 }
-/* 採用決定 → オンボーディング自動開始（本人入力待ち） */
+/* 採用決定 → オンボーディング自動開始 */
 function hireDecision(id) {
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   if (!confirm(`${a.name}さんを採用決定し、オンボーディングを開始しますか？`)) return;
   a.status='採用'; setApplicants(apps);
-  // オンボーディング作成（本人入力待ち）
   var storeObj = STORES.find(s=>s.brand===a.store||s.name===a.store) || STORES[0];
-  var obs = ls('onboardings', []);
-  obs.push({
-    id:'ob'+Date.now(), applicantId:a.id, name:a.name, store:storeObj.id, storeName:storeObj.name,
-    pos:a.pos, email:a.email, phone:a.phone, startDate:new Date().toLocaleDateString('ja'),
-    obStatus:'本人入力待ち', personal:null, docs:[], shift:null, payrollDone:false,
-    template:JSON.parse(JSON.stringify(getOBTemplate())), done:[], rejectReason:''
+  var candId = createOnboarding({
+    applicantId:a.id, name:a.name, store:storeObj.id, storeName:storeObj.name,
+    pos:a.pos, email:a.email, phone:a.phone,
   });
-  lsSet('onboardings', obs);
-  showToast(`${a.name}を採用決定。オンボーディングを開始しました`,'success');
+  showToast(`${a.name}を採用決定。${candId} を発行しオンボーディング開始`,'success');
   go('onboarding');
 }
 
@@ -6116,7 +6185,7 @@ function renderOnboarding() {
   var statusCounts = {};
   obs.forEach(o=>statusCounts[o.obStatus]=(statusCounts[o.obStatus]||0)+1);
   html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">`;
-  ['本人入力待ち','提出完了','経理確認中','Payroll登録中','登録完了','差し戻し'].forEach(st=>{
+  ['本人入力待ち','提出完了','I-9確認待ち','経理確認中','Payroll登録中','登録完了','差し戻し'].forEach(st=>{
     if (statusCounts[st]) html += `<span class="tag ${st==='登録完了'?'tag-green':st==='差し戻し'?'tag-red':'tag-yellow'}">${st} ${statusCounts[st]}</span>`;
   });
   html += `</div>`;
@@ -6135,7 +6204,7 @@ function renderOnboarding() {
       </div>`;
 
     // ステップ進捗バー
-    var steps = ['本人入力待ち','提出完了','経理確認中','Payroll登録中','登録完了'];
+    var steps = ['本人入力待ち','提出完了','I-9確認待ち','経理確認中','登録完了'];
     var curIdx = steps.indexOf(st); if (st==='差し戻し') curIdx=0;
     html += `<div style="display:flex;gap:3px;margin:10px 0">`;
     steps.forEach((s,i)=>{ html += `<div style="flex:1;height:5px;border-radius:3px;background:${i<=curIdx?stCol:'var(--border)'}"></div>`; });
@@ -6147,12 +6216,15 @@ function renderOnboarding() {
     if (ob.personal) {
       var p = ob.personal;
       var canSeePII = isOffice; // SSN/書類はOffice/GM/CEOのみ
+      var sigCount = Object.values(ob.signatures||{}).filter(Boolean).length;
+      var i9Count = Object.values(ob.i9||{}).filter(Boolean).length;
       html += `<div style="font-size:12px;background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:8px">
-        <div style="font-weight:600;margin-bottom:4px">本人入力情報</div>
+        <div style="font-weight:600;margin-bottom:4px">本人入力情報 <span style="font-size:10px;color:var(--muted);font-weight:400">${ob.candId||''}</span></div>
         住所: ${p.address||'—'}<br>
-        VISA/就労: ${p.visa||'—'}${p.visaDetail?'（'+p.visaDetail+'）':''}<br>
-        勤務開始予定: ${p.startDate||'—'} · 時給: ${canViewWages()?'$'+(p.wage||'—'):'***'}<br>
-        SSN: ${canSeePII?(p.ssn||'—'):'<span style="color:var(--muted)">（経理のみ閲覧可）</span>'}<br>
+        生年月日: ${p.dob||'—'} · 就労: ${p.visa||'—'}${p.visaDetail?'（'+p.visaDetail+'）':''}<br>
+        時給: ${canViewWages()?'$'+(ob.wage||p.wage||'—'):'***'} · 開始予定: ${ob.plannedStart||p.startDate||'—'}<br>
+        SSN: ${canSeePII?(p.ssn||'—'):'<span style="color:var(--muted)">（経理/GM/CEOのみ）</span>'}<br>
+        電子署名: ${sigCount}/4 ${sigCount>=4?'<span style="color:var(--green)">✓</span>':''} · I-9: ${i9Count}/5 ${i9Count>=5?'<span style="color:var(--green)">✓</span>':''}<br>
         書類: ${ob.docs&&ob.docs.length?(canSeePII?ob.docs.map(d=>d.name).join(', '):ob.docs.length+'件（経理のみ）'):'未提出'}
       </div>`;
     }
@@ -6167,6 +6239,10 @@ function renderOnboarding() {
     if (st==='提出完了' && isOffice) {
       html += `<button class="btn btn-success btn-sm" onclick="officeReview('${ob.id}','approve')"><i class="ti ti-check"></i> 経理確認OK</button>
         <button class="btn btn-danger btn-sm" onclick="officeReview('${ob.id}','reject')"><i class="ti ti-arrow-back"></i> 差し戻し</button>`;
+    }
+    // I-9確認（Store Manager/GM/CEO）
+    if (st==='I-9確認待ち' && (curRole==='sl'||curRole==='gm'||curRole==='ceo'||curStoreLogin)) {
+      html += `<button class="btn btn-primary btn-sm" onclick="openI9Modal('${ob.id}')"><i class="ti ti-id-badge-2"></i> I-9確認</button>`;
     }
     // Payroll登録
     if (st==='経理確認中' && isOffice) {
@@ -6190,87 +6266,176 @@ function renderOnboarding() {
 }
 
 /* 本人情報入力フォーム */
+const OB_SIGNATURES = [
+  {id:'employee_agreement', label:'Employee Agreement（雇用契約）'},
+  {id:'handbook', label:'Handbook Acknowledgement（就業規則）'},
+  {id:'tip_policy', label:'Tip Policy Agreement（チップ方針）'},
+  {id:'attendance', label:'Attendance Policy（勤怠方針）'},
+];
 function openPersonalForm(obId) {
   var ob = ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
   var p = ob.personal || {};
+  var sigs = ob.signatures || {};
   openModal(`<div class="modal-title">本人情報入力 — ${ob.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="max-height:60vh;overflow-y:auto">
+    <div style="max-height:64vh;overflow-y:auto">
+    <div class="alert" style="background:var(--surface2);padding:8px 10px;margin-bottom:10px;font-size:11px;color:var(--muted)"><i class="ti ti-id"></i> Candidate ID: <b>${ob.candId||'—'}</b>${ob.linkExpiry?' · リンク有効期限 '+ob.linkExpiry:''}</div>
+
+    <div style="font-weight:600;font-size:13px;margin-bottom:6px">基本情報</div>
     <div class="form-group"><label class="form-label">住所</label><input class="form-input" id="pf-address" value="${p.address||''}"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">電話</label><input class="form-input" id="pf-phone" value="${p.phone||ob.phone||''}"></div>
       <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="pf-email" value="${p.email||ob.email||''}"></div>
     </div>
-    <div class="form-group"><label class="form-label">SSN <span class="tag tag-red" style="font-size:8px">機密</span></label><input class="form-input" id="pf-ssn" value="${p.ssn||''}" placeholder="XXX-XX-XXXX"></div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">勤務開始予定日</label><input class="form-input" id="pf-start" type="date" value="${p.startDate||''}"></div>
-      <div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="pf-wage" type="number" step="0.25" value="${p.wage||''}"></div>
+      <div class="form-group"><label class="form-label">生年月日</label><input class="form-input" id="pf-dob" type="date" value="${p.dob||''}"></div>
+      <div class="form-group"><label class="form-label">SSN <span class="tag tag-red" style="font-size:8px">機密</span></label><input class="form-input" id="pf-ssn" value="${p.ssn||''}" placeholder="XXX-XX-XXXX"></div>
     </div>
-    <div class="form-group"><label class="form-label">VISA / 就労ステータス</label>
+    <div class="form-group"><label class="form-label">就労ステータス</label>
       <select class="form-select" id="pf-visa" onchange="document.getElementById('pf-visadetail').style.display=this.value==='その他'?'block':'none'">
         ${VISA_OPTIONS.map(v=>`<option ${p.visa===v?'selected':''}>${v}</option>`).join('')}</select></div>
-    <div class="form-group" id="pf-visadetail" style="display:${p.visa==='その他'?'block':'none'}"><label class="form-label">VISA詳細</label><input class="form-input" id="pf-visadetail-input" value="${p.visaDetail||''}"></div>
-    <div class="form-group"><label class="form-label">本人確認書類</label>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">パスポートがあればパスポートのみ。無ければ Driver License/State ID と SSN Card の両方が必須。</div>
-      <div id="pf-docs">${(ob.docs||[]).map((d,i)=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0"><span><i class="ti ti-file"></i> ${d.name}</span><button class="btn btn-danger btn-sm" style="padding:0 6px;font-size:10px" onclick="removeOBDoc('${obId}',${i})">削除</button></div>`).join('')||'<span style="color:var(--muted);font-size:12px">未追加</span>'}</div>
-      <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-        <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','Passport')">+ パスポート</button>
-        <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','Driver License')">+ Driver License/ID</button>
-        <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','SSN Card')">+ SSN Card</button>
-      </div>
+    <div class="form-group" id="pf-visadetail" style="display:${p.visa==='その他'?'block':'none'}"><label class="form-label">就労ステータス詳細</label><input class="form-input" id="pf-visadetail-input" value="${p.visaDetail||''}"></div>
+
+    <div style="font-weight:600;font-size:13px;margin:12px 0 6px">採用条件確認</div>
+    <div style="background:var(--surface2);border-radius:8px;padding:10px;font-size:12px;margin-bottom:6px">
+      配属店舗: <b>${ob.storeName||'—'}</b><br>
+      ポジション: <b>${ob.pos||'—'}</b><br>
+      時給: <b>${canViewWages()?'$'+(ob.wage||'—'):'***'}</b><br>
+      雇用区分: <b>${ob.division||'—'}</b><br>
+      勤務開始予定日: <b>${ob.plannedStart||'未定'}</b>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="pf-agree-terms" ${p.agreedTerms?'checked':''}> 上記の採用条件を確認し、同意します</label>
+
+    <div style="font-weight:600;font-size:13px;margin:6px 0 6px">電子署名</div>
+    ${OB_SIGNATURES.map(s=>`<label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 0;cursor:pointer">
+      <input type="checkbox" class="pf-sig" value="${s.id}" ${sigs[s.id]?'checked':''}> ${s.label}</label>`).join('')}
+
+    <div style="font-weight:600;font-size:13px;margin:12px 0 6px">本人確認書類</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">パスポートがあればパスポートのみ。無ければ Driver License/State ID と SSN Card の両方が必須。</div>
+    <div id="pf-docs">${(ob.docs||[]).map((d,i)=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0"><span><i class="ti ti-file"></i> ${d.name}</span><button class="btn btn-danger btn-sm" style="padding:0 6px;font-size:10px" onclick="removeOBDoc('${obId}',${i})">削除</button></div>`).join('')||'<span style="color:var(--muted);font-size:12px">未追加</span>'}</div>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+      <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','Passport')">+ パスポート</button>
+      <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','Driver License')">+ Driver License/ID</button>
+      <button class="btn btn-secondary btn-sm" onclick="addOBDoc('${obId}','SSN Card')">+ SSN Card</button>
     </div>
     </div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="submitPersonal('${obId}')"><i class="ti ti-send"></i> 提出</button></div>`);
+    <button class="btn btn-primary" onclick="submitPersonal('${obId}')"><i class="ti ti-send"></i> 提出（Submit）</button></div>`);
 }
 function addOBDoc(obId, name) {
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
   if(!ob.docs)ob.docs=[];
+  // 署名・条件同意の途中入力を保持
+  persistPersonalDraft(ob);
   ob.docs.push({name, uploadedAt:new Date().toISOString()});
   lsSet('onboardings',obs); openPersonalForm(obId);
 }
 function removeOBDoc(obId,i) {
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  persistPersonalDraft(ob);
   ob.docs.splice(i,1); lsSet('onboardings',obs); openPersonalForm(obId);
+}
+/* モーダル上の入力途中値を一時保存（書類追加で再描画されるため） */
+function persistPersonalDraft(ob) {
+  var g=function(id){var e=document.getElementById(id);return e?e.value:undefined;};
+  if (document.getElementById('pf-address')==null) return;
+  ob.personal = Object.assign({}, ob.personal, {
+    address:g('pf-address'), phone:g('pf-phone'), email:g('pf-email'), dob:g('pf-dob'),
+    ssn:g('pf-ssn'), visa:g('pf-visa'),
+    visaDetail:(g('pf-visa')==='その他'?g('pf-visadetail-input'):''),
+    agreedTerms: (document.getElementById('pf-agree-terms')||{}).checked,
+  });
+  var sigs={}; document.querySelectorAll('.pf-sig').forEach(c=>{sigs[c.value]=c.checked;});
+  ob.signatures = sigs;
 }
 function submitPersonal(obId) {
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
   var visa=document.getElementById('pf-visa').value;
   var ssn=document.getElementById('pf-ssn').value.trim();
   var address=document.getElementById('pf-address').value.trim();
-  // 必須チェック
+  var dob=document.getElementById('pf-dob').value;
   if (!address) { alert('住所を入力してください'); return; }
+  if (!dob) { alert('生年月日を入力してください'); return; }
   if (!ssn) { alert('SSNを入力してください'); return; }
-  // 書類チェック: パスポート or (Driver License + SSN Card)
+  // 採用条件同意
+  if (!document.getElementById('pf-agree-terms').checked) { alert('採用条件への同意が必要です'); return; }
+  // 電子署名4種すべて必須
+  var sigs={}; document.querySelectorAll('.pf-sig').forEach(c=>{sigs[c.value]=c.checked;});
+  if (!OB_SIGNATURES.every(s=>sigs[s.id])) { alert('全ての電子署名（4項目）にチェックが必要です'); return; }
+  // 書類チェック
   var docNames=(ob.docs||[]).map(d=>d.name);
   var hasPassport=docNames.includes('Passport');
   var hasDLandSSN=docNames.includes('Driver License')&&docNames.includes('SSN Card');
   if (!hasPassport && !hasDLandSSN) { alert('本人確認書類が不足しています。\nパスポート、または Driver License/ID＋SSN Card の両方が必要です。'); return; }
   ob.personal = {
     address, phone:document.getElementById('pf-phone').value.trim(), email:document.getElementById('pf-email').value.trim(),
-    ssn, startDate:document.getElementById('pf-start').value, wage:parseFloat(document.getElementById('pf-wage').value)||0,
+    dob, ssn, agreedTerms:true,
+    startDate:ob.plannedStart||'', wage:ob.wage||0,
     visa, visaDetail: visa==='その他'?(document.getElementById('pf-visadetail-input').value.trim()):'',
     submittedAt:new Date().toISOString(),
   };
+  ob.signatures = sigs;
   ob.obStatus='提出完了'; ob.rejectReason='';
   lsSet('onboardings',obs);
   // 経理へ通知（承認待ちに追加）
-  addApproval({title:`${ob.name} オンボーディング提出（経理確認）`, type:'採用', from:ob.name, store:ob.storeName||''});
+  addApproval({title:`${ob.name} 採用者情報提出完了（Payroll登録待ち）`, type:'採用', from:ob.name, store:ob.storeName||''});
   closeModalDirect();
   showToast('提出完了。経理確認に進みます','success');
   renderPage('onboarding');
 }
-/* 経理確認 */
+/* 経理確認 → I-9確認待ち */
 function officeReview(obId, action) {
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
   if (action==='approve') {
-    ob.obStatus='経理確認中'; lsSet('onboardings',obs);
-    showToast('経理確認OK。Payroll登録に進めます','success');
+    ob.obStatus='I-9確認待ち'; lsSet('onboardings',obs);
+    showToast('経理確認OK。店舗でI-9確認に進みます','success');
   } else {
     var reason=prompt('差し戻し理由を入力（例: SSN入力不備 / 書類画像が不鮮明 / 必要書類不足）');
     if (reason==null) return;
     ob.obStatus='差し戻し'; ob.rejectReason=reason; lsSet('onboardings',obs);
     showToast('本人へ差し戻しました','info');
   }
+  renderPage('onboarding');
+}
+/* I-9 Verification（List A=パスポート / List B+C=DL/ID + SSN Card） */
+const I9_CHECKS = [
+  {id:'identity', label:'本人確認完了'},
+  {id:'work_auth', label:'就労資格確認完了'},
+  {id:'name_match', label:'氏名一致確認完了'},
+  {id:'doc_valid', label:'書類有効期限確認完了'},
+  {id:'i9_done', label:'I-9確認完了'},
+];
+function openI9Modal(obId) {
+  var ob = ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
+  var i9 = ob.i9 || {};
+  var docNames=(ob.docs||[]).map(d=>d.name);
+  var listA = docNames.includes('Passport');
+  var listBC = docNames.includes('Driver License') && docNames.includes('SSN Card');
+  openModal(`<div class="modal-title">I-9 Verification — ${ob.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="max-height:62vh;overflow-y:auto">
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">勤務開始日に本人が実物を持参。Store Managerが現物確認します。</p>
+    <div style="background:var(--surface2);border-radius:8px;padding:10px;font-size:12px;margin-bottom:10px">
+      <div style="font-weight:600;margin-bottom:4px">提出書類</div>
+      <div>List A（パスポート）: ${listA?'<span style="color:var(--green)">✓ あり</span>':'<span style="color:var(--muted)">なし</span>'}</div>
+      <div>List B+C（DL/ID＋SSN Card）: ${listBC?'<span style="color:var(--green)">✓ あり</span>':'<span style="color:var(--muted)">不足</span>'}</div>
+      ${(!listA&&!listBC)?'<div style="color:var(--red);margin-top:4px">⚠ 有効な書類の組み合わせがありません</div>':''}
+    </div>
+    <div style="font-weight:600;font-size:13px;margin-bottom:6px">確認項目</div>
+    ${I9_CHECKS.map(c=>`<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:5px 0;cursor:pointer">
+      <input type="checkbox" class="i9-check" value="${c.id}" ${i9[c.id]?'checked':''}> ${c.label}</label>`).join('')}
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-success" onclick="confirmI9('${obId}')"><i class="ti ti-user-check"></i> 本人確認完了</button></div>`);
+}
+function confirmI9(obId) {
+  var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  var i9={}; document.querySelectorAll('.i9-check').forEach(c=>{i9[c.value]=c.checked;});
+  if (!I9_CHECKS.every(c=>i9[c.id])) { alert('全ての確認項目（5項目）にチェックが必要です'); return; }
+  ob.i9 = i9; ob.obStatus='経理確認中'; // Verified → Payroll登録へ
+  lsSet('onboardings',obs);
+  addApproval({title:`${ob.name} I-9確認完了（Payroll登録可）`, type:'採用', from:curUserName||'Store Manager', store:ob.storeName||''});
+  closeModalDirect();
+  showToast('I-9確認完了。Payroll登録に進めます','success');
   renderPage('onboarding');
 }
 /* Payroll登録＋シフト詳細設定 → 従業員マスター登録 */
@@ -6461,6 +6626,8 @@ function saveOB() {
    ⑫ 従業員マスター
 ============================================================ */
 var empFilter = 'active';
+var empStoreFilter = 'all';
+var empSearchQ = '';
 function renderStaffMaster() {
   if (!canAccessStaffMaster()) {
     return `<div class="section-header"><div class="section-title">従業員マスター</div></div>
@@ -6471,13 +6638,40 @@ function renderStaffMaster() {
       </div>`;
   }
   var emps = getEmployees();
+  // 管轄スコープ（AMは担当店舗のみ）
+  if (curRole==='am') {
+    emps = emps.filter(e=>e.store==='ALL'||AM_STORES.includes(e.store)||(e.support||[]).some(s=>AM_STORES.includes(s)));
+  }
   var active = emps.filter(e=>e.status!=='退職');
   var resigned = emps.filter(e=>e.status==='退職');
   var list = empFilter==='active' ? active : empFilter==='resigned' ? resigned : emps;
 
+  // 店舗フィルタ
+  if (empStoreFilter!=='all') {
+    list = list.filter(e=>e.store===empStoreFilter || (e.support||[]).includes(empStoreFilter));
+  }
+  // 検索（名前・コード・email・電話）
+  if (empSearchQ) {
+    var q = empSearchQ.toLowerCase();
+    list = list.filter(e=>(e.name||'').toLowerCase().includes(q)
+      || (e.empCode||'').toLowerCase().includes(q)
+      || (e.email||'').toLowerCase().includes(q)
+      || (e.phone||'').toLowerCase().includes(q));
+  }
+
   var html = `<div class="section-header">
-    <div><div class="section-title">従業員マスター</div><div class="section-sub">在籍 ${active.length}名 / 退職 ${resigned.length}名</div></div>
+    <div><div class="section-title">従業員マスター</div><div class="section-sub">在籍 ${active.length}名 / 退職 ${resigned.length}名${empStoreFilter!=='all'||empSearchQ?' · 該当 '+list.length+'名':''}</div></div>
     <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
+  </div>
+  <div class="card" style="padding:10px;margin-bottom:10px">
+    <div style="position:relative">
+      <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted)"></i>
+      <input class="form-input" style="padding-left:32px" id="emp-search" placeholder="名前・従業員コード・Email・電話で検索" value="${empSearchQ}" oninput="empSearch(this.value)">
+    </div>
+    <div style="display:flex;gap:6px;overflow-x:auto;margin-top:8px;padding-bottom:2px">
+      <button class="phase-tab${empStoreFilter==='all'?' active':''}" style="white-space:nowrap" onclick="setEmpStore('all')">全店</button>
+      ${STORES.map(s=>`<button class="phase-tab${empStoreFilter===s.id?' active':''}" style="white-space:nowrap" onclick="setEmpStore('${s.id}')"><span class="store-dot" style="background:${s.color}"></span>${s.name}</button>`).join('')}
+    </div>
   </div>
   <div class="phase-tabs">
     <div class="phase-tab${empFilter==='active'?' active':''}" onclick="setEmpFilter('active')">在籍</div>
@@ -6486,26 +6680,31 @@ function renderStaffMaster() {
   </div>
   <div class="card">`;
 
+  if (!list.length) {
+    html += `<div style="text-align:center;color:var(--muted);padding:24px">該当する従業員がいません</div></div>`;
+    return html;
+  }
+
   var roleOrder = ['ceo','gm','office','am','sl','crew'];
   roleOrder.forEach(role => {
     var group = list.filter(e=>e.role===role);
     if (!group.length) return;
-    html += `<div style="margin-bottom:14px"><div class="role-section-label">${ROLE_CONFIG[role].label}</div>`;
+    html += `<div style="margin-bottom:14px"><div class="role-section-label">${ROLE_CONFIG[role].label} (${group.length})</div>`;
     group.forEach(e => {
       var stepColor = e.step>=3?'var(--green)':e.step>=2?'var(--yellow)':'var(--muted)';
       var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
       var supportNames = (e.support||[]).map(id=>(STORES.find(s=>s.id===id)||{name:id}).name).join(',');
       var statusTag = e.status==='在籍'?'tag-green':e.status==='退職'?'tag-red':e.status==='研修中'?'tag-yellow':'tag-gray';
+      var ins = []; if(e.insurance)ins.push('医療'); if(e.dental)ins.push('歯科');
       html += `<div class="staff-item" style="cursor:pointer" onclick="openEmpModal('${e.id}')">
         <div class="staff-avatar" style="background:var(--surface);border-color:${stepColor}">${e.name[0]}</div>
-        <div style="flex:1">
-          <div class="staff-name">${e.name}</div>
-          <div class="staff-role">${storeName}${supportNames?' +応援:'+supportNames:''} · ${e.emp}</div>
+        <div style="flex:1;min-width:0">
+          <div class="staff-name">${e.name} ${e.empCode?`<span style="font-size:10px;color:var(--muted);font-weight:400">#${e.empCode}</span>`:''}</div>
+          <div class="staff-role">${storeName}${supportNames?' +応援:'+supportNames:''} · ${e.emp}${ins.length?' · '+ins.join('/'):''}</div>
         </div>
         <div style="text-align:right">
           <span class="tag ${statusTag}">${e.status}</span>
-          <div style="font-size:10px;color:${stepColor};margin-top:3px">STEP ${e.step}</div>
-          ${canViewWages()?`<div style="font-size:10px;color:var(--green);margin-top:2px">$${e.wage||0}/h</div>`:''}
+          ${canViewWages()&&e.wage?`<div style="font-size:10px;color:var(--green);margin-top:2px">$${e.wage}/h</div>`:''}
         </div>
       </div>`;
     });
@@ -6516,19 +6715,38 @@ function renderStaffMaster() {
 }
 
 function setEmpFilter(f) { empFilter = f; renderPage('staff_master'); }
+function setEmpStore(s) { empStoreFilter = s; renderPage('staff_master'); }
+function empSearch(v) {
+  empSearchQ = v;
+  // 入力欄のフォーカスを保持するため、リストだけ更新
+  var el = document.getElementById('main-content');
+  if (el) {
+    var focusEl = document.getElementById('emp-search');
+    var pos = focusEl ? focusEl.selectionStart : null;
+    renderPage('staff_master');
+    var ns = document.getElementById('emp-search');
+    if (ns) { ns.focus(); if(pos!=null) ns.setSelectionRange(pos,pos); }
+  }
+}
 
 function openEmpModal(empId) {
   var emps = getEmployees();
-  var e = empId ? emps.find(x=>x.id===empId) : {id:'', name:'', role:'crew', store:STORES[0].id, support:[], emp:'パート', step:0, hireDate:'', status:'在籍', perms:'crew'};
+  var e = empId ? emps.find(x=>x.id===empId) : {id:'', name:'', empCode:'', role:'crew', store:STORES[0].id, support:[], emp:'パート', step:0, hireDate:'', resignDate:'', status:'在籍', perms:'crew', email:'', phone:'', insurance:false, dental:false};
   var isNew = !empId;
   var storeOpts = [{id:'ALL',name:'全店'},...STORES];
+  // 現在のシフト条件
+  var wc = (typeof getWorkCondition==='function' && e.store && e.store!=='ALL') ? getWorkCondition(e.store, e.name) : null;
   openModal(`<div class="modal-title">${isNew?'従業員登録':'従業員編集'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">氏名</label><input class="form-input" id="e-name" value="${e.name}" placeholder="氏名"></div>
+    <div style="max-height:64vh;overflow-y:auto;padding-right:4px">
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">氏名</label><input class="form-input" id="e-name" value="${e.name}" placeholder="氏名"></div>
+      <div class="form-group"><label class="form-label">従業員コード（Toast連携）</label><input class="form-input" id="e-code" value="${e.empCode||''}" placeholder="例: TT-0042"></div>
+    </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">役職</label>
         <select class="form-select" id="e-role">${['ceo','gm','office','am','sl','crew'].map(r=>`<option value="${r}"${e.role===r?' selected':''}>${ROLE_CONFIG[r].label}</option>`).join('')}</select>
       </div>
-      <div class="form-group"><label class="form-label">所属店舗</label>
+      <div class="form-group"><label class="form-label">配属店舗</label>
         <select class="form-select" id="e-store">${storeOpts.map(s=>`<option value="${s.id}"${e.store===s.id?' selected':''}>${s.name}</option>`).join('')}</select>
       </div>
     </div>
@@ -6539,6 +6757,10 @@ function openEmpModal(empId) {
       </div>
     </div>
     <div class="form-row">
+      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="e-email" value="${e.email||''}" placeholder="name@example.com"></div>
+      <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="e-phone" value="${e.phone||''}" placeholder="808-xxx-xxxx"></div>
+    </div>
+    <div class="form-row">
       <div class="form-group"><label class="form-label">雇用形態</label>
         <select class="form-select" id="e-emp">${EMP_TYPES.map(t=>`<option${e.emp===t?' selected':''}>${t}</option>`).join('')}</select>
       </div>
@@ -6547,10 +6769,19 @@ function openEmpModal(empId) {
       </div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">入社日</label><input class="form-input" id="e-hire" type="date" value="${e.hireDate}"></div>
+      <div class="form-group"><label class="form-label">入社日</label><input class="form-input" id="e-hire" type="date" value="${e.hireDate||''}"></div>
+      <div class="form-group"><label class="form-label">退社日</label><input class="form-input" id="e-resign" type="date" value="${e.resignDate||''}"></div>
+    </div>
+    <div class="form-row">
       <div class="form-group"><label class="form-label">初回勤務日（Tip Rate 3ヶ月起算）</label><input class="form-input" id="e-firstwork" type="date" value="${e.firstWork||''}"></div>
       <div class="form-group"><label class="form-label">ステータス</label>
         <select class="form-select" id="e-status">${EMP_STATUS.map(s=>`<option${e.status===s?' selected':''}>${s}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">保険</label>
+      <div style="display:flex;gap:12px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-insurance"${e.insurance?' checked':''}> 医療保険あり</label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-dental"${e.dental?' checked':''}> 歯科保険あり</label>
       </div>
     </div>
     <div class="form-group"><label class="form-label">権限レベル</label>
@@ -6558,13 +6789,25 @@ function openEmpModal(empId) {
     </div>
     ${canViewWages()?`<div class="form-group"><label class="form-label">時給 ($/h) <span class="tag tag-red" style="font-size:8px">GM限定</span></label>
       <input class="form-input" id="e-wage" type="number" step="0.25" value="${e.wage!=null?e.wage:''}" placeholder="例: 16">
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">この情報はGM/CEOのみ閲覧・編集できます。オーバータイム(週40h超)は自動で1.5倍計算されます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">この情報はGM/CEOのみ閲覧・編集できます。OT(週40h超)は自動1.5倍計算。</div>
     </div>`:''}
     <div class="form-group"><label class="form-label">評価係数（Tip Rate）</label>
       <select class="form-select" id="e-coef">
         ${[['1','100%'],['0.9','90%'],['0.8','80%']].map(o=>`<option value="${o[0]}"${(e.coef!=null?e.coef:1)==parseFloat(o[0])?' selected':''}>${o[1]}（係数${o[0]}）</option>`).join('')}
       </select>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">チップ配分はこの係数で重み付けされます（評価に連動）。</div>
+    </div>
+    <div class="form-group"><label class="form-label">シフト条件</label>
+      <div class="form-row">
+        <select class="form-select" id="e-wc-days"><option value="any"${wc&&wc.days==='any'?' selected':''}>曜日制限なし</option><option value="weekday"${wc&&wc.days==='weekday'?' selected':''}>平日のみ</option><option value="weekend"${wc&&wc.days==='weekend'?' selected':''}>週末のみ</option></select>
+        <input class="form-input" id="e-wc-maxh" type="number" placeholder="最大時間/週" value="${wc&&wc.maxH?wc.maxH:40}">
+      </div>
+      <div class="form-row" style="margin-top:6px">
+        <select class="form-select" id="e-wc-opening"><option value="any"${!wc||wc.opening==='any'?' selected':''}>オープン: 指定なし</option><option value="only"${wc&&wc.opening==='only'?' selected':''}>オープン優先</option><option value="no"${wc&&wc.opening==='no'?' selected':''}>オープン不可</option></select>
+        <select class="form-select" id="e-wc-closing"><option value="any"${!wc||wc.closing==='any'?' selected':''}>クローズ: 指定なし</option><option value="only"${wc&&wc.closing==='only'?' selected':''}>クローズ優先</option><option value="no"${wc&&wc.closing==='no'?' selected':''}>クローズ不可</option></select>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">配属店舗のシフト作成・自動シフトに反映されます。</div>
+    </div>
     </div>
     <div class="btn-row">
       ${!isNew?`<button class="btn btn-danger" style="margin-right:auto" onclick="deleteEmp('${e.id}')">退職処理</button>`:''}
@@ -6579,15 +6822,21 @@ function saveEmp(empId) {
   var support = Array.from(document.querySelectorAll('.e-support:checked')).map(c=>c.value);
   var data = {
     name,
+    empCode: document.getElementById('e-code').value.trim(),
     role: document.getElementById('e-role').value,
     store: document.getElementById('e-store').value,
     support,
     emp: document.getElementById('e-emp').value,
     step: parseInt(document.getElementById('e-step').value),
     hireDate: document.getElementById('e-hire').value,
+    resignDate: document.getElementById('e-resign').value,
     firstWork: (document.getElementById('e-firstwork')||{}).value || '',
     status: document.getElementById('e-status').value,
     perms: document.getElementById('e-perms').value,
+    email: document.getElementById('e-email').value.trim(),
+    phone: document.getElementById('e-phone').value.trim(),
+    insurance: document.getElementById('e-insurance').checked,
+    dental: document.getElementById('e-dental').checked,
   };
   var wageEl = document.getElementById('e-wage');
   if (wageEl && canViewWages()) { data.wage = parseFloat(wageEl.value)||0; }
@@ -6602,6 +6851,15 @@ function saveEmp(empId) {
     emps.push(data);
   }
   lsSet('m_employees', emps);
+  // シフト条件を保存（配属店舗がある場合）
+  var store = data.store;
+  if (store && store!=='ALL' && typeof setWorkCondition==='function') {
+    var days = document.getElementById('e-wc-days').value;
+    var maxH = parseInt(document.getElementById('e-wc-maxh').value)||40;
+    var opening = document.getElementById('e-wc-opening').value;
+    var closing = document.getElementById('e-wc-closing').value;
+    setWorkCondition(store, name, {opening, closing, days, minH:0, maxH});
+  }
   closeModalDirect();
   showToast(empId?'従業員情報を更新しました':'従業員を登録しました', 'success');
   renderPage('staff_master');
@@ -6611,7 +6869,7 @@ function deleteEmp(empId) {
   if (!confirm('この従業員を退職処理しますか？')) return;
   var emps = getEmployees();
   var e = emps.find(x=>x.id===empId);
-  if (e) { e.status = '退職'; lsSet('m_employees', emps); }
+  if (e) { e.status = '退職'; if(!e.resignDate) e.resignDate = new Date().toISOString().slice(0,10); lsSet('m_employees', emps); }
   closeModalDirect();
   showToast('退職処理しました', 'danger');
   renderPage('staff_master');
