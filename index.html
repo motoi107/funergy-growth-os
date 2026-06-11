@@ -1009,6 +1009,13 @@ function ingClass(ing) { return catClass(ing.cat); }
 ============================================================ */
 var curRole = null, curStore = null, curPage = 'dashboard';
 var curSLName = 'Store Leader';
+var curUserName = null;
+/* 従業員マスターを閲覧・編集できる個人（役職ではなく個人名・名で判定） */
+var MASTER_ADMINS = ['Moto Kubota','Tac Tsutsumi','Marcia Kodama'];
+function canAccessStaffMaster() {
+  if (!curUserName) return false;
+  return MASTER_ADMINS.some(n => n===curUserName || n.split(' ')[0]===curUserName.split(' ')[0]);
+}
 
 function ls(key, def) {
   try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
@@ -1019,11 +1026,12 @@ function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val));
 /* ============================================================
    LOGIN
 ============================================================ */
-var pendingRole = null, pendingStore = null;
+var pendingRole = null, pendingStore = null, pendingName = null;
 
 function selectRole(role) {
   pendingRole = role;
   pendingStore = null;
+  pendingName = null;
   document.querySelectorAll('.role-btn').forEach(b => b.style.borderColor = '');
   event.currentTarget.style.borderColor = '#f07820';
 
@@ -1032,10 +1040,25 @@ function selectRole(role) {
   var grid = document.getElementById('store-grid');
   var stores = role === 'am' ? activeStores().filter(s => AM_STORES.includes(s.id)) : activeStores();
 
+  // ceo/gm/office は「誰としてログインか」名前選択（同役職に複数人いる場合の個人特定）
+  var people = getEmployees().filter(e=>e.role===role && e.status!=='退職');
+  if (['ceo','gm','office'].includes(role) && people.length) {
+    grid.innerHTML = people.map(p =>
+      `<div class="store-btn" onclick="selectName('${p.name.replace(/'/g,'')}',this)">${p.name}</div>`
+    ).join('');
+    document.querySelector('#store-picker .store-picker-label') && (document.querySelector('#store-picker .store-picker-label').textContent = '名前を選択');
+    picker.classList.add('active');
+    document.getElementById('login-btn').disabled = true;
+    pendingStore = 'ALL';
+    document.getElementById('login-err').style.display = 'none';
+    return;
+  }
+
   if (needsStore) {
     grid.innerHTML = stores.map(s =>
       `<div class="store-btn" style="border-left-color:${s.color}" onclick="selectStore('${s.id}',this)">${s.name}</div>`
     ).join('');
+    document.querySelector('#store-picker .store-picker-label') && (document.querySelector('#store-picker .store-picker-label').textContent = '店舗を選択');
     picker.classList.add('active');
     document.getElementById('login-btn').disabled = true;
   } else {
@@ -1044,6 +1067,13 @@ function selectRole(role) {
     document.getElementById('login-btn').disabled = false;
   }
   document.getElementById('login-err').style.display = 'none';
+}
+
+function selectName(name, el) {
+  pendingName = name;
+  document.querySelectorAll('.store-btn').forEach(b => b.classList.remove('sel'));
+  el.classList.add('sel');
+  document.getElementById('login-btn').disabled = false;
 }
 
 function selectStore(storeId, el) {
@@ -1059,12 +1089,21 @@ function doLogin() {
     document.getElementById('login-err').style.display = 'block';
     return;
   }
+  if (['ceo','gm','office'].includes(pendingRole)) {
+    var people = getEmployees().filter(e=>e.role===pendingRole && e.status!=='退職');
+    if (people.length && !pendingName) {
+      document.getElementById('login-err').style.display = 'block';
+      return;
+    }
+  }
   curRole = pendingRole;
   curStore = pendingStore || 'ALL';
+  curUserName = pendingName || ROLE_CONFIG[curRole].name || null;
 
   if (curRole === 'sl') {
     var found = STORES.find(s => s.id === curStore);
     curSLName = found ? found.am : 'Store Leader';
+    curUserName = curSLName;
   }
 
   document.getElementById('login-screen').style.display = 'none';
@@ -1112,7 +1151,8 @@ function buildNav() {
   var sub = document.getElementById('subnav-bar');
   var group = groups.find(g=>g.id===curGroup);
   if (group && group.children.length > 1) {
-    sub.innerHTML = group.children.map(pid => {
+    var children = group.children.filter(pid => pid!=='staff_master' || canAccessStaffMaster());
+    sub.innerHTML = children.map(pid => {
       var item = navItemById(pid);
       return `<button class="subnav-chip ${pid===curPage?'active':''}" onclick="go('${pid}')"><i class="ti ${item.icon}"></i>${item.label}</button>`;
     }).join('');
@@ -3942,6 +3982,14 @@ function saveOB() {
 ============================================================ */
 var empFilter = 'active';
 function renderStaffMaster() {
+  if (!canAccessStaffMaster()) {
+    return `<div class="section-header"><div class="section-title">従業員マスター</div></div>
+      <div class="card" style="text-align:center;padding:32px">
+        <i class="ti ti-lock" style="font-size:36px;color:var(--muted)"></i>
+        <div style="margin-top:12px;font-weight:600">アクセス権限がありません</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:6px">従業員マスターは限られた管理者のみ閲覧・編集できます。</div>
+      </div>`;
+  }
   var emps = getEmployees();
   var active = emps.filter(e=>e.status!=='退職');
   var resigned = emps.filter(e=>e.status==='退職');
