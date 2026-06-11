@@ -5160,7 +5160,7 @@ function unconfirmTip(storeId) {
 /* ============================================================
    勤怠チェック: 予定シフト vs 実勤怠の照合（30分以上差異でエラー）
 ============================================================ */
-var attView = 'daily'; // daily|staff
+var attView = 'month'; // month|daily|staff
 function setAttView(v){ attView=v; renderPage('attendance'); }
 const ATT_THRESHOLD = 0.5; // 30分=0.5h
 
@@ -5297,12 +5297,97 @@ function renderAttendance() {
 
   // 表示切替
   html += `<div class="phase-tabs">
-    <div class="phase-tab${attView==='daily'?' active':''}" onclick="setAttView('daily')">日別</div>
+    <div class="phase-tab${attView==='month'?' active':''}" onclick="setAttView('month')">勤怠データ(月)</div>
+    <div class="phase-tab${attView==='daily'?' active':''}" onclick="setAttView('daily')">照合(日別)</div>
     <div class="phase-tab${attView==='staff'?' active':''}" onclick="setAttView('staff')">スタッフ別</div>
   </div>`;
 
+  if (attView==='month') return html + renderAttMonthData(storeId, store);
   if (attView==='staff') return html + renderAttStaff(storeId, info);
   return html + renderAttDaily(storeId, info);
+}
+
+/* 月単位の実勤怠データ一覧（Toast取得結果の確認用） */
+function renderAttMonthData(storeId, store) {
+  var days = monthDays(); // dailyMonthOffsetで月切替（Tip期間とは別の月ナビ）
+  var rows = [];
+  var totalHours=0, totalDays=0, staffSet={};
+  days.forEach(d=>{
+    var labor = getTipLabor(storeId, d.date);
+    if (!labor) return;
+    var names = Object.keys(labor);
+    if (!names.length) return;
+    totalDays++;
+    var dayHours = 0;
+    names.forEach(n=>{ var e=labor[n]; dayHours += (e.lunch||0)+(e.dinner||0); staffSet[n]=true; });
+    totalHours += dayHours;
+    rows.push({date:d.date, dow:d.dow, names, labor, dayHours, count:names.length});
+  });
+
+  var html = `<div class="card" style="padding:10px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:center;gap:10px">
+      <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1);renderPage('attendance')"><i class="ti ti-chevron-left"></i></button>
+      <span style="font-size:14px;font-weight:700">${dailyMonthLabel()}</span>
+      <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1);renderPage('attendance')"><i class="ti ti-chevron-right"></i></button>
+    </div>
+  </div>`;
+
+  // サマリー
+  html += `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-4" style="color:var(--accent)"></i>${dailyMonthLabel()} 勤怠サマリー</div>
+    <div class="kpi-grid">
+      ${kpi('勤怠データ', totalDays+'日', '取得済み', 'var(--tm)')}
+      ${kpi('延べ人数', rows.reduce((a,r)=>a+r.count,0)+'人日', '', 'var(--muted)')}
+      ${kpi('対象スタッフ', Object.keys(staffSet).length+'名', '', 'var(--accent2)')}
+      ${kpi('総勤務時間', totalHours.toFixed(1)+'h', '', 'var(--green)')}
+    </div></div>`;
+
+  if (!rows.length) {
+    html += `<div class="card" style="text-align:center;padding:30px;color:var(--muted)"><i class="ti ti-database-off" style="font-size:32px"></i>
+      <div style="margin-top:8px">${dailyMonthLabel()}の勤怠データがありません。</div>
+      <div style="font-size:12px;margin-top:4px">上の「データ反映」ボタンでToastから取得してください。${store.toastGuid?'':'<br>※この店舗はToast GUID未設定です'}</div></div>`;
+    return html;
+  }
+
+  // 日別カード
+  rows.forEach(r=>{
+    html += `<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-calendar-event"></i>${r.date.slice(5)} (${r.dow})
+      <span style="margin-left:auto;font-size:12px;color:var(--muted);font-weight:400">${r.count}名 · ${r.dayHours.toFixed(1)}h</span></div>
+      <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
+        <th>スタッフ</th><th>Clock In</th><th>Clock Out</th><th>L</th><th>D</th><th>計</th></tr></thead><tbody>`;
+    r.names.forEach(n=>{
+      var e = r.labor[n];
+      var total = (e.lunch||0)+(e.dinner||0);
+      // shifts から最初のin・最後のout
+      var clockIn='—', clockOut='—', missingOut=false;
+      if (e.shifts && e.shifts.length) {
+        var ins = e.shifts.map(s=>s.inDate).filter(Boolean).sort();
+        var outs = e.shifts.map(s=>s.outDate).filter(Boolean).sort();
+        if (ins.length) clockIn = fmtClockHST(ins[0]);
+        if (outs.length) clockOut = fmtClockHST(outs[outs.length-1]);
+        if (e.shifts.some(s=>s.inDate&&!s.outDate)) missingOut=true;
+      }
+      var matched = getEmployees().find(x=>x.name===n);
+      html += `<tr>
+        <td>${n}${matched?'':' <span class="tag tag-yellow" style="font-size:7px">未登録</span>'}${e.toastName&&e.toastName!==n?`<div style="font-size:9px;color:var(--muted)">Toast: ${e.toastName}</div>`:''}</td>
+        <td style="text-align:center;color:var(--muted)">${clockIn}</td>
+        <td style="text-align:center;color:${missingOut?'var(--red)':'var(--muted)'}">${missingOut?'漏れ':clockOut}</td>
+        <td style="text-align:right">${e.lunch?e.lunch.toFixed(1):'—'}</td>
+        <td style="text-align:right">${e.dinner?e.dinner.toFixed(1):'—'}</td>
+        <td style="text-align:right;font-weight:600">${total.toFixed(1)}h</td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+  });
+  return html;
+}
+/* ISO日時 → HST時刻 HH:MM */
+function fmtClockHST(iso) {
+  if (!iso) return '—';
+  try {
+    var t = new Date(iso).getTime() - 10*3600*1000; // HST = UTC-10
+    var d = new Date(t);
+    return String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0');
+  } catch(e) { return '—'; }
 }
 
 async function attSyncData(storeId, guid) {
