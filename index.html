@@ -639,6 +639,38 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
   return { updated, fetched: rows.length };
 }
 
+/* DBから勤怠(tip_labor)を読み、店舗の時間設定で計算してローカル保存（毎朝の自動同期分を取り込む） */
+async function fetchTipLaborFromDB(guid, dateFrom, dateTo) {
+  try {
+    var url = SUPABASE_URL + '/rest/v1/tip_labor?restaurant_guid=eq.' + encodeURIComponent(guid)
+      + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo + '&order=business_date.asc';
+    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (e) { return []; }
+}
+async function syncTipLaborFromDB(storeId, guid, days) {
+  if (!guid) return { updated: 0 };
+  var rows = await fetchTipLaborFromDB(guid, days[0].date, days[days.length-1].date);
+  var staff = getEmployees();
+  var updated = 0;
+  rows.forEach(row=>{
+    var list = row.data || [];
+    if (!Array.isArray(list) || !list.length) return;
+    var labor = {};
+    list.forEach(emp=>{
+      var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
+      var key = m ? m.name : emp.name;
+      var shifts = emp.shifts||[];
+      var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
+      labor[key] = { lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name };
+    });
+    setTipLabor(storeId, row.business_date, labor);
+    updated++;
+  });
+  return { updated };
+}
+
 /* 期間一括: dateFrom〜dateTo の各日をEdge Function経由でToastから取得→DB保存。
    進捗をonProgress(コールバック)で通知。月をまたいで daily_actuals_ にも反映。 */
 async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress) {
@@ -1127,9 +1159,16 @@ function halfMonthDates(dateISO) {
 var TIP_CC_FEE = 0.035;
 function getCashTips(storeId) { return ls('cash_tips_'+storeId, {}); }
 function setCashTips(storeId, data) { lsSet('cash_tips_'+storeId, data); }
-function getCashTip(storeId, date) { return getCashTips(storeId)[date] || {lunch:0, dinner:0}; }
+function getCashTip(storeId, date) { return getCashTips(storeId)[date] || {lunch:0, dinner:0, entered:false}; }
 function saveCashTip(storeId, date, lunch, dinner) {
-  var d = getCashTips(storeId); d[date] = {lunch:lunch||0, dinner:dinner||0}; setCashTips(storeId, d);
+  var d = getCashTips(storeId); d[date] = {lunch:lunch||0, dinner:dinner||0, entered:true}; setCashTips(storeId, d);
+}
+/* キャッシュチップが未入力か（クレジットはあるのにキャッシュ未確定＝要入力） */
+function cashTipMissing(storeId, date) {
+  var av = getDailyActuals(storeId)[date] || {};
+  var hasCredit = (av.lunchCreditTip!=null) || (av.dinnerCreditTip!=null) || (av.actual>0);
+  var cash = getCashTips(storeId)[date];
+  return hasCredit && !(cash && cash.entered);
 }
 function tipForDay(storeId, date) {
   var av = getDailyActuals(storeId)[date] || {};
@@ -1286,7 +1325,10 @@ async function fetchTipLabor(storeId, guid, date) {
     if ((emp.lunchHours||0)===0 && (emp.dinnerHours||0)===0) return;
     var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
     var key = m ? m.name : emp.name;
-    labor[key] = { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0, toastName: emp.name };
+    var shifts = emp.shifts||[];
+    // 店舗のbasis/時間窓に応じて対象時間を計算（shiftsがあれば窓計算、無ければToastの素の値）
+    var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
+    labor[key] = { lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name };
   });
   setTipLabor(storeId, date, labor);
   return { count: Object.keys(labor).length };
@@ -1300,6 +1342,71 @@ function setTipHoursBasis(storeId, basis) {
   var cfg = ls('tip_hours_basis', {});
   cfg[storeId] = basis;
   lsSet('tip_hours_basis', cfg);
+}
+
+/* 店舗別チップ対象時間帯（HST時刻、0-24h）
+   basis='all' なら全勤務時間、basis='window' なら下記の時間帯に重なった分のみ */
+var DEFAULT_TIP_WINDOW = { lunchStart:10.5, lunchEnd:16, dinnerStart:16, dinnerEnd:23 };
+function getTipWindow(storeId) {
+  var cfg = ls('tip_window', {});
+  return Object.assign({}, DEFAULT_TIP_WINDOW, cfg[storeId]||{});
+}
+function setTipWindow(storeId, win) {
+  var cfg = ls('tip_window', {});
+  cfg[storeId] = win;
+  lsSet('tip_window', cfg);
+}
+/* 打刻(in/out ISO)と時間窓[startH,endH]の重なり時間(h)をHST基準で計算 */
+function overlapHours(inIso, outIso, startH, endH) {
+  if (!inIso || !outIso) return 0;
+  var inMs = new Date(inIso).getTime(), outMs = new Date(outIso).getTime();
+  if (outMs<=inMs) return 0;
+  // HSTローカルのその日の0:00を求める
+  var inLocal = new Date(inMs - 10*3600*1000);
+  var y=inLocal.getUTCFullYear(), mo=inLocal.getUTCMonth(), d=inLocal.getUTCDate();
+  var midnightUTC = Date.UTC(y,mo,d,10,0,0); // HST 0:00 = UTC 10:00
+  var winStart = midnightUTC + startH*3600*1000;
+  var winEnd = midnightUTC + endH*3600*1000;
+  var lo = Math.max(inMs, winStart), hi = Math.min(outMs, winEnd);
+  return hi>lo ? (hi-lo)/3600000 : 0;
+}
+/* 店舗のbasisに応じてシフトからLunch/Dinner対象時間を計算 */
+function tipHoursFromShifts(storeId, shifts) {
+  var basis = getTipHoursBasis(storeId);
+  var win = getTipWindow(storeId);
+  var lunch=0, dinner=0;
+  (shifts||[]).forEach(s=>{
+    if (basis==='window') {
+      lunch += overlapHours(s.inDate, s.outDate, win.lunchStart, win.lunchEnd);
+      dinner += overlapHours(s.inDate, s.outDate, win.dinnerStart, win.dinnerEnd);
+    } else {
+      lunch += overlapHours(s.inDate, s.outDate, 0, 16);
+      dinner += overlapHours(s.inDate, s.outDate, 16, 24);
+    }
+  });
+  return { lunch, dinner };
+}
+/* 設定変更時、保存済みの全日のtip_laborをshiftsから再計算 */
+function recomputeTipLabor(storeId) {
+  var prefix = 'tip_labor_'+storeId+'_';
+  var changed = 0;
+  for (var i=0;i<localStorage.length;i++) {
+    var k = localStorage.key(i);
+    if (!k || k.indexOf(prefix)!==0) continue;
+    var labor = null;
+    try { labor = JSON.parse(localStorage.getItem(k)); } catch(e){}
+    if (!labor) continue;
+    Object.keys(labor).forEach(name=>{
+      var e = labor[name];
+      if (e && e.shifts && e.shifts.length) {
+        var hrs = tipHoursFromShifts(storeId, e.shifts);
+        e.lunch = hrs.lunch; e.dinner = hrs.dinner;
+      }
+    });
+    localStorage.setItem(k, JSON.stringify(labor));
+    changed++;
+  }
+  return changed;
 }
 
 function empWage(name) {
@@ -1837,6 +1944,14 @@ function renderStoreCmdTip(storeId, store, canEdit) {
   var html = `<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--green)"></i>チップ管理・日報
     <input type="date" value="${sel}" onchange="setCmdTipDate(this.value)" style="margin-left:auto;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 6px;font-size:12px"></div>`;
 
+  // キャッシュチップ未入力アラート
+  if (cashTipMissing(storeId, sel)) {
+    html += `<div class="alert alert-danger" style="margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div>
+      <p style="font-size:12px;font-weight:600">キャッシュチップ未入力</p>
+      <div style="font-size:11px;margin-top:2px">現金チップが無い日も「0」を入力して確定してください。</div>
+    </div></div>`;
+  }
+
   // クレジットチップ（Toast自動）
   html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">クレジットチップ ${hasCredit?'<i class="ti ti-plug-connected" style="color:var(--accent2)"></i> Toast自動':'（未取得：予実画面でToast取得）'}</div>
     <table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Lunch</td><td style="text-align:right">Dinner</td><td style="text-align:right">計</td></tr>
@@ -2266,7 +2381,8 @@ async function doToastSync(storeId, guid) {
   if (el) el.textContent = '取得中...';
   var res = await syncStoreActualsFromToast(storeId, guid, monthDays());
   if (res.error) { if(el) el.textContent = 'エラー: ' + res.error; return; }
-  showToast(`Toast実績を反映しました（${res.updated}日分）`, 'success');
+  var lab = await syncTipLaborFromDB(storeId, guid, monthDays());
+  showToast(`Toast実績を反映しました（売上${res.updated}日 / 勤怠${lab.updated}日）`, 'success');
   renderPage('budget');
 }
 async function doToastFetchToday(storeId, guid) {
@@ -3393,6 +3509,15 @@ function renderTipDaily(storeId, store, date) {
   var hasGuid = !!store.toastGuid;
   var html = '';
 
+  // キャッシュチップ未入力エラー
+  if (cashTipMissing(storeId, date)) {
+    html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
+      <p style="font-size:12px;font-weight:600">キャッシュチップが未入力です</p>
+      <div style="font-size:11px;margin-top:2px">この日のチップ総額・配分が正しく計算できません。現金チップが無い場合も「0」を入力して確定してください。</div>
+      <button class="btn btn-danger btn-sm" style="margin-top:6px" onclick="openCashTipModal('${storeId}','${date}')"><i class="ti ti-edit"></i> キャッシュチップを入力</button>
+    </div></div>`;
+  }
+
   // チップ総額サマリー
   html += `<div class="card"><div class="card-title"><i class="ti ti-coin" style="color:var(--green)"></i>${date} チップ総額</div>
     <table style="width:100%;font-size:12px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Lunch</td><td style="text-align:right">Dinner</td><td style="text-align:right">計</td></tr>
@@ -3403,14 +3528,18 @@ function renderTipDaily(storeId, store, date) {
 
   // データ連携
   if (hasGuid) {
+    var basis = getTipHoursBasis(storeId);
     html += `<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-primary btn-sm" onclick="doTipLaborFetch('${storeId}','${store.toastGuid}','${date}')"><i class="ti ti-cloud-download"></i> 勤怠を取得して配分計算</button>
-    </div><div id="tip-status" style="font-size:11px;color:var(--muted);margin-top:6px"></div></div>`;
+      <button class="btn btn-primary btn-sm" onclick="doTipLaborDB('${storeId}','${store.toastGuid}')"><i class="ti ti-cloud-check"></i> 同期データを反映</button>
+      <button class="btn btn-secondary btn-sm" onclick="doTipLaborFetch('${storeId}','${store.toastGuid}','${date}')"><i class="ti ti-cloud-download"></i> この日を取得</button>
+      <button class="btn btn-secondary btn-sm" onclick="openTipTimeModal('${storeId}')"><i class="ti ti-clock-cog"></i> 時間設定</button>
+      <span class="tag ${basis==='window'?'tag-blue':'tag-gray'}" style="font-size:10px">${basis==='window'?'営業時間帯のみ':'全勤務時間'}</span>
+    </div><div id="tip-status" style="font-size:11px;color:var(--muted);margin-top:6px">毎朝5時に自動同期されたデータを「同期データを反映」で取り込めます。</div></div>`;
   }
 
   // 配分一覧
   if (!dist.hasLabor) {
-    html += `<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-clock-question" style="font-size:32px"></i><div style="margin-top:8px">この日の勤怠データがありません。<br>「勤怠を取得して配分計算」を押してください。</div></div>`;
+    html += `<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-clock-question" style="font-size:32px"></i><div style="margin-top:8px">この日の勤怠データがありません。<br>「同期データを反映」または「この日を取得」を押してください。</div></div>`;
   } else {
     html += `<div class="card"><div class="card-title"><i class="ti ti-users"></i>スタッフ別チップ配分</div>
       <table class="inv-table" style="width:100%;font-size:12px"><thead><tr>
@@ -3445,6 +3574,54 @@ async function doTipLaborFetch(storeId, guid, date) {
   var r = await fetchTipLabor(storeId, guid, date);
   if(r.error){ if(el) el.innerHTML='<span style="color:var(--yellow)">取得失敗: '+r.error+'</span>'; return; }
   showToast(`勤怠 ${r.count}名分を取得し配分計算しました`,'success');
+  renderPage('tip');
+}
+async function doTipLaborDB(storeId, guid) {
+  var el=document.getElementById('tip-status');
+  if(el) el.textContent='同期データを取得中...';
+  var lab = await syncTipLaborFromDB(storeId, guid, monthDays());
+  showToast(`同期データから勤怠 ${lab.updated}日分を反映しました`,'success');
+  renderPage('tip');
+}
+
+function openTipTimeModal(storeId) {
+  var store = STORES.find(s=>s.id===storeId)||{};
+  var basis = getTipHoursBasis(storeId);
+  var w = getTipWindow(storeId);
+  var hh = h => { var H=Math.floor(h), M=Math.round((h-H)*60); return String(H).padStart(2,'0')+':'+String(M).padStart(2,'0'); };
+  openModal(`<div class="modal-title">チップ対象時間設定 — ${store.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">対象とする勤務時間</label>
+      <select class="form-select" id="tt-basis" onchange="document.getElementById('tt-window').style.display=this.value==='window'?'block':'none'">
+        <option value="all"${basis==='all'?' selected':''}>全勤務時間（出勤〜退勤すべて）</option>
+        <option value="window"${basis==='window'?' selected':''}>営業時間帯のみ（指定した時間に重なった分だけ）</option>
+      </select>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">「営業時間帯のみ」にすると、プレップ等の時間外勤務はチップ配分の対象から除外されます。</div>
+    </div>
+    <div id="tt-window" style="display:${basis==='window'?'block':'none'}">
+      <div style="font-weight:600;font-size:12px;margin:8px 0 4px">Lunch 時間帯</div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">開始</label><input class="form-input" id="tt-ls" type="time" value="${hh(w.lunchStart)}"></div>
+        <div class="form-group"><label class="form-label">終了</label><input class="form-input" id="tt-le" type="time" value="${hh(w.lunchEnd)}"></div>
+      </div>
+      <div style="font-weight:600;font-size:12px;margin:8px 0 4px">Dinner 時間帯</div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">開始</label><input class="form-input" id="tt-ds" type="time" value="${hh(w.dinnerStart)}"></div>
+        <div class="form-group"><label class="form-label">終了</label><input class="form-input" id="tt-de" type="time" value="${hh(w.dinnerEnd)}"></div>
+      </div>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveTipTime('${storeId}')">保存して再計算</button></div>`);
+}
+function saveTipTime(storeId) {
+  var basis = document.getElementById('tt-basis').value;
+  setTipHoursBasis(storeId, basis);
+  if (basis==='window') {
+    var p = id => { var v=(document.getElementById(id).value||'0:0').split(':'); return parseInt(v[0])+parseInt(v[1])/60; };
+    setTipWindow(storeId, { lunchStart:p('tt-ls'), lunchEnd:p('tt-le'), dinnerStart:p('tt-ds'), dinnerEnd:p('tt-de') });
+  }
+  var n = recomputeTipLabor(storeId);
+  closeModalDirect();
+  showToast(`設定を保存し、${n}日分を再計算しました`,'success');
   renderPage('tip');
 }
 
