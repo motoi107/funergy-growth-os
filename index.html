@@ -862,6 +862,7 @@ const NAV_ITEMS = [
   {id:'vendor_master',label:'業者マスター', icon:'ti-truck',          roles:['ceo','gm','office','am']},
   {id:'skill',       label:'スキルレベル', icon:'ti-stairs-up',        roles:['ceo','gm','am','sl','crew']},
   {id:'evaluation',  label:'評価',        icon:'ti-star',             roles:['ceo','gm','am','sl']},
+  {id:'leadership',  label:'Leadership Skill', icon:'ti-crown',       roles:['ceo','gm','am','sl']},
   {id:'tiprate',     label:'チップ率',    icon:'ti-coin',             roles:['ceo','gm','am','sl','crew']},
   {id:'meeting',     label:'ミーティング',     icon:'ti-users-group',      roles:['ceo','gm','office','am','sl']},
   {id:'growthhub',   label:'成長ハブ',  icon:'ti-message-circle',   roles:['ceo','gm','office','am','sl']},
@@ -883,7 +884,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['recipe','costsheet','invoice','inventory','order','ingredient_master','vendor_master']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['shift_admin','vacation','hiring','onboarding','skill','evaluation','tiprate','tip','attendance','staff_master','meeting','growthhub','growth_mgr']},
+    children:['shift_admin','vacation','hiring','onboarding','skill','evaluation','leadership','tiprate','tip','attendance','staff_master','meeting','growthhub','growth_mgr']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['tasks','required','goals','approval','acct_export','company_msg_edit','store_master','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
@@ -1970,7 +1971,6 @@ function vendorsWithOrderList(storeId) {
 function getEmployees() {
   var emps = ls('m_employees', DEFAULT_EMPLOYEES);
   emps.forEach(e=>{
-    if(e.wage===undefined) e.wage = (typeof WAGE!=='undefined' ? (WAGE[e.role]||16) : 16);
     if(e.coef===undefined) e.coef = 1.0;
   });
   return emps;
@@ -2267,7 +2267,7 @@ function recomputeTipLabor(storeId) {
 
 function empWage(name) {
   var e = getEmployees().find(x=>x.name===name);
-  return e ? (e.wage||0) : 0;
+  return e ? empWageOf(e) : 0;
 }
 function canViewWages() { return curRole==='gm' || curRole==='ceo'; }
 
@@ -2887,6 +2887,7 @@ function renderPage(page) {
     case 'ingredient_master': el.innerHTML = renderIngredientMaster(); break;
     case 'vendor_master': el.innerHTML = renderVendorMaster(); break;
     case 'evaluation':   el.innerHTML = renderEvaluation(); break;
+    case 'leadership':   el.innerHTML = renderLeadership(); break;
     case 'skill':        el.innerHTML = renderSkill(); break;
     case 'tiprate':      el.innerHTML = renderTipRate(); break;
     case 'meeting':      el.innerHTML = renderMeeting(); break;
@@ -7531,7 +7532,50 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 const DOW_SHIFT = ['月','火','水','木','金','土','日'];
-const WAGE = { gm:0, ceo:0, office:0, am:28, sl:24, crew:16 }; // 仮時給
+const WAGE = { gm:0, ceo:0, office:0, am:28, sl:24, crew:16 }; // 仮時給（後方互換）
+/* ===== 役職（肩書き）マスター =====
+   権限ロール(role)とは別。payType: 'monthly'(月給) | 'hourly'(時給)
+   permRole: 既定の権限ロール（手動変更可） */
+const JOB_TITLES = [
+  {key:'Crew',           label:'Crew',           payType:'hourly',  permRole:'crew', defWage:16},
+  {key:'Crew Leader',    label:'Crew Leader',    payType:'hourly',  permRole:'crew', defWage:18},
+  {key:'F-Crew',         label:'F-Crew',         payType:'hourly',  permRole:'crew', defWage:17},
+  {key:'Server Leader',  label:'Server Leader',  payType:'hourly',  permRole:'sl',   defWage:22},
+  {key:'Kitchen Leader', label:'Kitchen Leader', payType:'hourly',  permRole:'sl',   defWage:22},
+  {key:'Store Leader',   label:'Store Leader',   payType:'hourly',  permRole:'sl',   defWage:25},
+  {key:'Store Manager',  label:'Store Manager',  payType:'monthly', permRole:'sl',   defMonthly:4500},
+  {key:'Area Manager',   label:'Area Manager',   payType:'monthly', permRole:'am',   defMonthly:6000},
+  {key:'General Manager',label:'General Manager',payType:'monthly', permRole:'gm',   defMonthly:8000},
+  {key:'Accountant',     label:'Accountant',     payType:'hourly',  permRole:'office',defWage:26},
+  {key:'CEO',            label:'CEO',            payType:'monthly', permRole:'ceo',  defMonthly:10000},
+];
+function jobTitle(key){ return JOB_TITLES.find(t=>t.key===key); }
+function isMonthlyTitle(key){ var t=jobTitle(key); return !!(t && t.payType==='monthly'); }
+/* 役職デフォルト給与表（編集可能・上書きはm_titlewageに保存） */
+function getTitleWageTable() {
+  var saved = ls('m_titlewage', null);
+  var base = {};
+  JOB_TITLES.forEach(t=>{ base[t.key] = (t.payType==='monthly') ? {monthly:t.defMonthly} : {wage:t.defWage}; });
+  if (saved) Object.keys(saved).forEach(k=>{ base[k] = Object.assign(base[k]||{}, saved[k]); });
+  return base;
+}
+function setTitleWageTable(tbl) { lsSet('m_titlewage', tbl); }
+/* 従業員の実効給与（個別上書き > 役職デフォルト） */
+function empPayType(e){ return isMonthlyTitle(e.title) ? 'monthly' : 'hourly'; }
+function empWageOf(e) {
+  if (empPayType(e)==='monthly') return 0; // 月給者は時給0
+  if (e.wage!=null && e.wage!=='') return parseFloat(e.wage);   // 個別上書き
+  var tbl = getTitleWageTable();
+  if (e.title && tbl[e.title] && tbl[e.title].wage!=null) return tbl[e.title].wage;
+  return WAGE[e.role]||16;
+}
+function empMonthlyOf(e) {
+  if (empPayType(e)!=='monthly') return 0;
+  if (e.monthlySalary!=null && e.monthlySalary!=='') return parseFloat(e.monthlySalary); // 個別上書き
+  var tbl = getTitleWageTable();
+  if (e.title && tbl[e.title] && tbl[e.title].monthly!=null) return tbl[e.title].monthly;
+  return 0;
+}
 const SHIFT_HOURS = { Lunch:4, Dinner:5 };
 
 function getAvailability(storeId, week) { return ls('avail_'+storeId+'_'+week, []); }
@@ -8418,7 +8462,7 @@ function renderShiftLabor(storeId, week) {
   var crewCost=0, leaderCost=0, crewHours=0, leaderHours=0, crewShifts=0;
   Object.keys(hoursByName).forEach(name => {
     var e = emps.find(x=>x.name===name); if(!e) return;
-    var wage = WAGE[e.role]||16;
+    var wage = empWageOf(e);
     var cost = hoursByName[name]*wage;
     if (e.role==='sl'||e.role==='am') { leaderCost+=cost; leaderHours+=hoursByName[name]; }
     else { crewCost+=cost; crewHours+=hoursByName[name]; crewShifts += Object.keys(plan.cells).filter(k=>plan.cells[k]===name).length; }
@@ -9713,7 +9757,10 @@ function renderStaffMaster() {
 
   var html = `<div class="section-header">
     <div><div class="section-title">従業員マスター</div><div class="section-sub">在籍 ${active.length}名 / 退職 ${resigned.length}名${empStoreFilter!=='all'||empSearchQ?' · 該当 '+list.length+'名':''}</div></div>
-    <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
+    <div style="display:flex;gap:6px">
+      ${canViewWages()?`<button class="btn btn-secondary btn-sm" onclick="openTitleWageModal()"><i class="ti ti-table-options"></i> 役職給与表</button>`:''}
+      <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
+    </div>
   </div>
   <div class="card" style="padding:10px;margin-bottom:10px">
     <div style="position:relative">
@@ -9752,11 +9799,11 @@ function renderStaffMaster() {
         <div class="staff-avatar" style="background:var(--surface);border-color:${stepColor}">${e.name[0]}</div>
         <div style="flex:1;min-width:0">
           <div class="staff-name">${e.name} ${e.empCode?`<span style="font-size:10px;color:var(--muted);font-weight:400">#${e.empCode}</span>`:''}</div>
-          <div class="staff-role">${storeName}${supportNames?' +応援:'+supportNames:''} · ${e.emp}${ins.length?' · '+ins.join('/'):''}</div>
+          <div class="staff-role">${e.title?'<b>'+e.title+'</b> · ':''}${storeName}${supportNames?' +応援:'+supportNames:''} · ${e.emp}${ins.length?' · '+ins.join('/'):''}</div>
         </div>
         <div style="text-align:right">
           <span class="tag ${statusTag}">${e.status}</span>
-          ${canViewWages()&&e.wage?`<div style="font-size:10px;color:var(--green);margin-top:2px">$${e.wage}/h</div>`:''}
+          ${canViewWages()?`<div style="font-size:10px;color:var(--green);margin-top:2px">${isMonthlyTitle(e.title)?'$'+empMonthlyOf(e).toLocaleString()+'/月':'$'+empWageOf(e)+'/h'}</div>`:''}
         </div>
       </div>`;
     });
@@ -9781,6 +9828,62 @@ function empSearch(v) {
   }
 }
 
+/* 給与入力欄（役職の給与形態に応じて 月給/時給 を出し分け） */
+function payFieldsHtml(e) {
+  var tbl = getTitleWageTable();
+  var monthly = isMonthlyTitle(e.title);
+  if (monthly) {
+    var def = (e.title&&tbl[e.title]&&tbl[e.title].monthly!=null)?tbl[e.title].monthly:'';
+    return `<input class="form-input" id="e-monthly" type="number" step="50" value="${e.monthlySalary!=null?e.monthlySalary:''}" placeholder="月給 $（デフォルト ${def||'未設定'}）">
+      <input type="hidden" id="e-wage" value="">`;
+  } else {
+    var defw = (e.title&&tbl[e.title]&&tbl[e.title].wage!=null)?tbl[e.title].wage:(WAGE[e.role]||16);
+    return `<input class="form-input" id="e-wage" type="number" step="0.25" value="${e.wage!=null?e.wage:''}" placeholder="時給 $/h（デフォルト ${defw}）">
+      <input type="hidden" id="e-monthly" value="">`;
+  }
+}
+/* 役職変更時に給与欄を月給/時給で切り替え */
+function empTitleChanged() {
+  var title = document.getElementById('e-title').value;
+  var wrap = document.getElementById('e-pay-fields');
+  if (!wrap) return;
+  // 役職に応じた権限ロールの自動セット（任意・利便性）
+  var jt = jobTitle(title);
+  if (jt) { var rsel=document.getElementById('e-role'); if(rsel && rsel.value!==jt.permRole) rsel.value=jt.permRole; }
+  wrap.innerHTML = payFieldsHtml({title:title});
+}
+
+/* 役職ごとのデフォルト給与表の編集 */
+function openTitleWageModal() {
+  var tbl = getTitleWageTable();
+  var rows = JOB_TITLES.map(t=>{
+    var cell = (t.payType==='monthly')
+      ? `<input class="form-input" id="tw-${t.key.replace(/[^A-Za-z]/g,'')}" type="number" step="50" value="${tbl[t.key]&&tbl[t.key].monthly!=null?tbl[t.key].monthly:''}" style="width:110px;padding:5px" placeholder="月給$">`
+      : `<input class="form-input" id="tw-${t.key.replace(/[^A-Za-z]/g,'')}" type="number" step="0.25" value="${tbl[t.key]&&tbl[t.key].wage!=null?tbl[t.key].wage:''}" style="width:110px;padding:5px" placeholder="時給$/h">`;
+    return `<tr><td style="font-size:12px">${t.label}</td>
+      <td style="text-align:center"><span class="tag ${t.payType==='monthly'?'tag-blue':'tag-gray'}" style="font-size:9px">${t.payType==='monthly'?'月給':'時給'}</span></td>
+      <td style="text-align:right">${cell}</td></tr>`;
+  }).join('');
+  openModal(`<div class="modal-title">役職別 給与表 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">役職ごとのデフォルト給与を設定します。従業員ごとの個別上書きは従業員編集で行います。</div>
+    <table class="inv-table" style="width:100%"><thead><tr><th>役職</th><th style="text-align:center">形態</th><th style="text-align:right">デフォルト</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveTitleWageTable()"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
+}
+function saveTitleWageTable() {
+  var tbl = {};
+  JOB_TITLES.forEach(t=>{
+    var el = document.getElementById('tw-'+t.key.replace(/[^A-Za-z]/g,''));
+    if (!el) return;
+    var v = el.value!=='' ? parseFloat(el.value) : null;
+    if (v!=null) tbl[t.key] = (t.payType==='monthly') ? {monthly:v} : {wage:v};
+  });
+  setTitleWageTable(tbl);
+  closeModalDirect();
+  showToast('役職給与表を保存しました','success');
+  renderPage('staff');
+}
+
 function openEmpModal(empId) {
   var emps = getEmployees();
   var e = empId ? emps.find(x=>x.id===empId) : {id:'', name:'', empCode:'', role:'crew', store:STORES[0].id, support:[], emp:'パート', step:0, hireDate:'', resignDate:'', status:'在籍', perms:'crew', email:'', phone:'', insurance:false, dental:false};
@@ -9795,12 +9898,19 @@ function openEmpModal(empId) {
       <div class="form-group"><label class="form-label">従業員コード（Toast連携）</label><input class="form-input" id="e-code" value="${e.empCode||''}" placeholder="例: TT-0042"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">役職</label>
+      <div class="form-group"><label class="form-label">権限ロール</label>
         <select class="form-select" id="e-role">${['ceo','gm','office','am','sl','crew'].map(r=>`<option value="${r}"${e.role===r?' selected':''}>${ROLE_CONFIG[r].label}</option>`).join('')}</select>
       </div>
       <div class="form-group"><label class="form-label">配属店舗</label>
         <select class="form-select" id="e-store">${storeOpts.map(s=>`<option value="${s.id}"${e.store===s.id?' selected':''}>${s.name}</option>`).join('')}</select>
       </div>
+    </div>
+    <div class="form-group"><label class="form-label">役職（肩書き）</label>
+      <select class="form-select" id="e-title" onchange="empTitleChanged()">
+        <option value="">（未設定）</option>
+        ${JOB_TITLES.map(t=>`<option value="${t.key}"${e.title===t.key?' selected':''}>${t.label}${t.payType==='monthly'?'（月給）':'（時給）'}</option>`).join('')}
+      </select>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">役職で給与形態（月給/時給）が決まります。権限ロールとは別管理です。</div>
     </div>
     <div class="form-group"><label class="form-label">応援店舗（複数選択可）</label>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -9839,9 +9949,9 @@ function openEmpModal(empId) {
     <div class="form-group"><label class="form-label">権限レベル</label>
       <select class="form-select" id="e-perms">${PERM_LEVELS.map(p=>`<option value="${p.id}"${e.perms===p.id?' selected':''}>${p.label}</option>`).join('')}</select>
     </div>
-    ${canViewWages()?`<div class="form-group"><label class="form-label">時給 ($/h) <span class="tag tag-red" style="font-size:8px">GM限定</span></label>
-      <input class="form-input" id="e-wage" type="number" step="0.25" value="${e.wage!=null?e.wage:''}" placeholder="例: 16">
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">この情報はGM/CEOのみ閲覧・編集できます。OT(週40h超)は自動1.5倍計算。</div>
+    ${canViewWages()?`<div class="form-group" id="e-pay-wrap"><label class="form-label">給与 <span class="tag tag-red" style="font-size:8px">GM限定</span></label>
+      <div id="e-pay-fields">${payFieldsHtml(e)}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">空欄なら役職デフォルトを使用。入力すると個別上書き。OT(週40h超)は時給者のみ1.5倍。</div>
     </div>`:''}
     <div class="form-group"><label class="form-label">評価係数（Tip Rate）</label>
       <select class="form-select" id="e-coef">
@@ -9889,9 +9999,20 @@ function saveEmp(empId) {
     phone: document.getElementById('e-phone').value.trim(),
     insurance: document.getElementById('e-insurance').checked,
     dental: document.getElementById('e-dental').checked,
+    title: (document.getElementById('e-title')||{}).value || '',
   };
-  var wageEl = document.getElementById('e-wage');
-  if (wageEl && canViewWages()) { data.wage = parseFloat(wageEl.value)||0; }
+  if (canViewWages()) {
+    var wageEl = document.getElementById('e-wage');
+    var monthlyEl = document.getElementById('e-monthly');
+    // 空欄は「役職デフォルト使用」= null。入力時のみ個別上書き。
+    if (isMonthlyTitle(data.title)) {
+      data.monthlySalary = (monthlyEl && monthlyEl.value!=='') ? parseFloat(monthlyEl.value) : null;
+      data.wage = null;
+    } else {
+      data.wage = (wageEl && wageEl.value!=='') ? parseFloat(wageEl.value) : null;
+      data.monthlySalary = null;
+    }
+  }
   var coefEl = document.getElementById('e-coef');
   if (coefEl) { data.coef = parseFloat(coefEl.value)||1; }
   var emps = getEmployees();
@@ -10569,6 +10690,108 @@ function skillScoreStore(name, storeId) {
 }
 function leaderSkillApproved(name) { var sk=getEmpSkills(name); return !!((sk['Leadership']&&sk['Leadership'].status==='承認'&&sk['Leadership'].level>=2) || (sk['Leader']&&sk['Leader'].status==='承認'&&sk['Leader'].level>=1)); }
 
+/* ============================================================
+   Leadership Skill Score（リーダー以上の総合スキルシート）
+   7カテゴリ A〜G・各0〜3点。lss_scores[name] = {evaluator,date,scores:{itemId:0-3},comment,status}
+============================================================ */
+const LSS_CATEGORIES = [
+  {key:'A', name:'基本業務スキル', short:'Basics', en:'Store Operation', icon:'ti-building-store', items:[
+    '店舗オペレーションの基本理解','Opening業務の理解と実行','Closing業務の理解と実行','Required Check / Checklistの運用',
+    '勤怠ルールの理解','シフトルールの理解','Tip Policyの理解','No Tip / Tip Rateルールの理解',
+    '衛生管理 / DOH基準の理解','温度管理・手洗い・保管ルールの理解','POS / Toastの基本操作','売上・客数・客単価など基本KPIの理解',
+    '報告・連絡・相談の正確さ','期限を守る力','指示を正しく理解し実行する力','店舗ルールをスタッフに説明できる力',
+    'トラブル時の初期対応','店舗全体を見て優先順位を判断する力']},
+  {key:'B', name:'サービススキル', short:'Service', en:'Service', icon:'ti-mood-smile', items:[
+    '基本接客スキル','笑顔・挨拶・声出し','お客様への気遣い','おもてなし力','テーブル状況を把握する力','ファーストドリンク提供の意識',
+    'オーダー提案力','ドリンク提案力','追加注文を自然に促す力','客単価アップにつながる提案力','ファン・リピーターを作る力',
+    'お客様の名前や好みを覚える力','クレームを未然に防ぐ力','クレーム発生時の対応力','店舗の雰囲気を作る力',
+    'スタッフにサービス基準を教える力','口コミにつながる体験を作る力','Funergyらしい楽しい体験を提供する力']},
+  {key:'C', name:'キッチン/プレップ', short:'Kitchen', en:'Kitchen / Prep', icon:'ti-tools-kitchen-2', items:[
+    '商品知識','メニュー構成の理解','仕込み工程の理解','プレップ管理','食材管理','在庫管理','棚卸の理解と実行','発注の理解と実行',
+    '歩留まりの理解','原価意識','Food Costの基本理解','商品ごとの原価感覚','ロスを減らす意識','品質基準の理解','盛り付け・提供品質の確認',
+    'キッチンオペレーションの流れの理解','ピークタイム中のキッチン状況把握','商品改善や新商品提案力','売れ筋/死に筋商品の把握',
+    '衛生管理と温度管理','キッチンスタッフへの指示・教育力']},
+  {key:'D', name:'マーケティング', short:'Marketing', en:'Marketing', icon:'ti-speakerphone', items:[
+    '店舗の強みを理解している','店舗コンセプトを理解している','ターゲット客層を理解している','売上課題に施策を考えられる',
+    '客数アップ施策を提案できる','客単価アップ施策を提案できる','ドリンク比率アップ施策を提案できる','テイクアウト販売施策を考えられる',
+    'Google Business / SNS投稿の重要性を理解','写真映え・投稿されやすさを意識できる','口コミ・レビュー改善に取り組める',
+    'リピーター獲得施策を考えられる','店舗イベントやキャンペーンを提案できる','インフルエンサー施策の効果を理解',
+    '数字を見て施策の効果検証ができる','店舗のブランド価値を高める行動ができる','Funergyらしい楽しい企画を提案できる']},
+  {key:'E', name:'マネジメント', short:'Management', en:'Management', icon:'ti-users-group', items:[
+    '実行力','改善力','リーダーシップ','指示出しの明確さ','優先順位を決める力','問題発見力','課題を放置しない力','スタッフを巻き込む力',
+    'スタッフへのフィードバック力','新人教育力','スキルマトリクスを使った育成力','シフト全体を考える力','Laborを意識した人員配置',
+    'ピークタイムのポジション配置力','チームの雰囲気を作る力','店舗MTGを運用する力','数字を見て行動に変える力',
+    '売上/原価/Laborのバランスを見る力','トラブル発生時の判断力','上長への報告力','部下への伝達力','決めたことを継続する力',
+    '店舗改善を仕組み化する力','他店舗へ横展開できる力']},
+  {key:'F', name:'数字管理', short:'Numbers', en:'Numbers', icon:'ti-chart-bar', items:[
+    '売上予算の理解','日次売上の確認','予実管理の理解','客数/客単価/来店動機の理解','Food Costの理解','Labor %の理解','Tip Rateの理解',
+    '前年/前月/前週比較ができる','数字の異常値に気づける','数字から改善アクションを出せる','施策の効果測定ができる','店舗の損益感覚がある']},
+  {key:'G', name:'人材育成', short:'Development', en:'Development', icon:'ti-seeding', items:[
+    '新人への教え方','相手のレベルに合わせた指導','褒める力','注意・改善指導の仕方','スタッフの強みを見つける力','スタッフの弱みを具体化する力',
+    '成長目標を設定する力','スキルレベルを正しく判断する力','Tip Rate申請の判断力','スタッフのモチベーション管理','離職リスクに気づく力','次のリーダー候補を育てる力']},
+];
+/* itemId = カテゴリkey + index 例: "A0","A1","E12" */
+function lssItemId(catKey, idx){ return catKey+idx; }
+function lssAllItems() {
+  var out=[]; LSS_CATEGORIES.forEach(c=>c.items.forEach((label,i)=>out.push({id:lssItemId(c.key,i), cat:c.key, label:label}))); return out;
+}
+function getLssScores(name) { var all=ls('lss_scores', {}); return all[name]||null; }
+function setLssScores(name, data) { var all=ls('lss_scores', {}); all[name]=data; lsSet('lss_scores', all); }
+/* カテゴリ別集計 → [{key,name,score,max,pct}] + 総合 */
+function lssSummary(name) {
+  var rec = getLssScores(name);
+  var scores = rec ? (rec.scores||{}) : {};
+  var cats = LSS_CATEGORIES.map(c=>{
+    var max = c.items.length*3, score=0;
+    c.items.forEach((label,i)=>{ score += (parseInt(scores[lssItemId(c.key,i)])||0); });
+    return {key:c.key, name:c.name, en:c.en, score:score, max:max, pct: max?Math.round(score/max*100):0};
+  });
+  var totalScore = cats.reduce((a,c)=>a+c.score,0);
+  var totalMax = cats.reduce((a,c)=>a+c.max,0);
+  var totalPct = totalMax?Math.round(totalScore/totalMax*100):0;
+  return {cats:cats, totalScore:totalScore, totalMax:totalMax, totalPct:totalPct, hasData:!!rec, rec:rec};
+}
+function lssLevel(pct) {
+  if (pct>=90) return {label:'Excellent Leader', color:'var(--green)'};
+  if (pct>=80) return {label:'Strong Leader', color:'var(--green)'};
+  if (pct>=70) return {label:'Good Leader', color:'var(--accent)'};
+  if (pct>=60) return {label:'Developing Leader', color:'var(--yellow)'};
+  return {label:'Training Required', color:'var(--red)'};
+}
+/* リーダー以上判定（肩書きベース） */
+const LSS_TITLES = ['Crew Leader','Server Leader','Kitchen Leader','Store Leader','Store Manager','Area Manager','General Manager'];
+function isLeaderPlus(e) {
+  if (!e) return false;
+  if (e.title && LSS_TITLES.includes(e.title)) return true;
+  return e.role==='sl' || e.role==='am' || e.role==='gm';
+}
+/* ===== Leadership Skill 申請条件（総合%ベース） =====
+   申請種別: 'tip'(Tip Rate) / 'promo'(昇格・役職変更)
+   既定しきい値（設定で変更可: lss_rules） */
+const LSS_DEFAULT_RULES = {
+  tip:   { minPct:75, label:'Tip Rate 申請', target:'次のTip Rate' },
+  promo: { minPct:80, label:'昇格・役職変更 申請', target:'次のリーダーレベル' },
+};
+function getLssRules() {
+  var saved = ls('lss_rules', null);
+  return { tip: Object.assign({}, LSS_DEFAULT_RULES.tip, saved&&saved.tip), promo: Object.assign({}, LSS_DEFAULT_RULES.promo, saved&&saved.promo) };
+}
+function setLssRules(r) { lsSet('lss_rules', r); }
+/* 申請可否の判定 */
+function lssEligibility(name) {
+  var sum = lssSummary(name);
+  var rules = getLssRules();
+  return {
+    pct: sum.totalPct, hasData: sum.hasData,
+    tip:   { ok: sum.hasData && sum.totalPct>=rules.tip.minPct,   min:rules.tip.minPct,   remain: Math.max(0, rules.tip.minPct-sum.totalPct) },
+    promo: { ok: sum.hasData && sum.totalPct>=rules.promo.minPct, min:rules.promo.minPct, remain: Math.max(0, rules.promo.minPct-sum.totalPct) },
+  };
+}
+/* LSS申請データ lss_requests = [{id,name,kind:'tip'|'promo',pct,reason,status,date,approver,approvedDate}] */
+function getLssRequests() { return ls('lss_requests', []); }
+function addLssRequest(req) { var l=getLssRequests(); l.push(req); lsSet('lss_requests', l); }
+function lssPendingFor(name, kind) { return getLssRequests().filter(r=>r.name===name && r.kind===kind && r.status==='申請中').slice(-1)[0]; }
+
 /* ===== 店舗別レベルアップ／Tip条件（フェーズ2） =====
    skill_rules[storeId] = {
      toRate90:  { minTotal, minLv3, mustLv3:[positions], needMgr, noLateOk },
@@ -10744,6 +10967,292 @@ function approveEval(staffId) {
   lsSet('eval_history', hist);
   showToast('評価を承認し査定履歴に記録しました', 'success');
   renderPage('evaluation');
+}
+
+/* ============================================================
+   Leadership Skill Score 画面
+============================================================ */
+function renderLeadership() {
+  // 対象＝リーダー以上
+  var leaders = visibleStaffForManager().filter(e=>isLeaderPlus(e) && e.status!=='退職');
+  // 自分がリーダー以上なら自分も含める
+  var meName = (ROLE_CONFIG[curRole]||{}).name||curUserName;
+  var canScore = ['ceo','gm','am','sl'].includes(curRole);
+
+  var html = `<div class="section-header">
+    <div><div class="section-title"><i class="ti ti-crown" style="color:var(--accent)"></i> Leadership Skill Score</div>
+    <div class="section-sub">リーダー以上の総合スキル可視化 · 0〜3点 × ${lssAllItems().length}項目</div></div>
+    ${['ceo','gm','am'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openLssRulesModal()"><i class="ti ti-adjustments"></i> 申請条件</button>`:''}
+  </div>`;
+
+  // 承認待ち（昇格・Tip申請）
+  var pendingReqs = getLssRequests().filter(r=>r.status==='申請中');
+  if (pendingReqs.length && ROLE_CONFIG[curRole].canApprove) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>承認待ち (${pendingReqs.length})</div>`;
+    pendingReqs.forEach(r=>{
+      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${r.name} <span class="tag ${r.kind==='promo'?'tag-blue':'tag-green'}" style="font-size:8px">${r.kind==='promo'?'昇格':'Tip'}</span></div>
+        <div class="approval-meta">Leadership ${r.pct}%${r.wantTitle?' · 希望: '+r.wantTitle:''}${r.reason?' · '+r.reason:''}</div></div></div>
+        <div class="approval-actions">
+          <button class="btn btn-success btn-sm" onclick="approveLssRequest('${r.id}','承認')"><i class="ti ti-check"></i> 承認</button>
+          <button class="btn btn-danger btn-sm" onclick="approveLssRequest('${r.id}','却下')"><i class="ti ti-x"></i> 却下</button>
+        </div></div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (!leaders.length) {
+    return html + `<div class="card" style="text-align:center;padding:24px;color:var(--muted)">対象となるリーダー以上のスタッフがいません<div style="font-size:11px;margin-top:6px">従業員マスターで役職（Server Leader / Store Manager など）を設定してください</div></div>`;
+  }
+
+  // リーダー一覧（スコアカード）
+  leaders.forEach(e=>{
+    var sum = lssSummary(e.name);
+    var lv = lssLevel(sum.totalPct);
+    var storeName = (STORES.find(s=>s.id===e.store)||{}).name||'';
+    html += `<div class="card">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="position:relative;flex-shrink:0">${healthRing(sum.totalPct, lv.color.replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d'), 60)}
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:${lv.color}">${sum.hasData?sum.totalPct+'%':'—'}</div></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:15px;font-weight:700">${e.name}</div>
+          <div style="font-size:11px;color:var(--muted)">${e.title||ROLE_CONFIG[e.role].label}${storeName?' · '+storeName:''}</div>
+          ${sum.hasData?`<div style="margin-top:3px"><span class="tag" style="background:${lv.color};color:#fff;font-size:9px">${lv.label}</span> <span style="font-size:11px;color:var(--muted)">${sum.totalScore}/${sum.totalMax}点</span></div>`:'<div style="font-size:11px;color:var(--muted);margin-top:3px">未評価</div>'}
+        </div>
+        <button class="btn btn-${sum.hasData?'secondary':'primary'} btn-sm" onclick="openLssDetail('${e.name.replace(/'/g,"\\'")}')">${sum.hasData?'詳細':'評価する'}</button>
+      </div>`;
+    // カテゴリ別ミニバー
+    if (sum.hasData) {
+      html += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;margin-top:10px">`;
+      sum.cats.forEach(c=>{
+        var cc = c.pct>=80?'var(--green)':c.pct>=60?'var(--yellow)':'var(--red)';
+        var catDef = LSS_CATEGORIES.find(x=>x.key===c.key)||{};
+        html += `<div style="font-size:10px"><div style="display:flex;justify-content:space-between"><span><i class="ti ${catDef.icon}" style="font-size:11px"></i></span><span style="color:${cc}">${c.pct}%</span></div>
+          <div class="progress-bar" style="height:4px;margin-top:2px"><div class="progress-fill" style="background:${cc};width:${c.pct}%"></div></div></div>`;
+      });
+      html += `</div>`;
+    }
+    html += `</div>`;
+  });
+
+  // 履歴（スコア＋申請承認）
+  var lssHist = ls('lss_history', []);
+  var reqHist = getLssRequests().filter(r=>r.status!=='申請中');
+  if (lssHist.length || reqHist.length) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>履歴</div>`;
+    reqHist.slice().reverse().slice(0,6).forEach(r=>{
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.name} · ${r.kind==='promo'?'昇格':'Tip'}申請 ${r.pct}%</div>
+        <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${r.status}</span></div>
+        <div class="approval-meta">${r.approvedDate||r.date}${r.approver?' · 承認: '+r.approver:''}${r.wantTitle?' · '+r.wantTitle:''}</div></div>`;
+    });
+    lssHist.slice().reverse().slice(0,6).forEach(h=>{
+      var diff = h.prevPct!=null ? (h.pct-h.prevPct) : null;
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${h.name} · 評価 ${h.pct}%</div>
+        ${diff!=null?`<span class="tag ${diff>=0?'tag-green':'tag-red'}" style="font-size:9px">${diff>=0?'+':''}${diff}pt</span>`:''}</div>
+        <div class="approval-meta">${h.date} · 評価者 ${h.by||''}</div></div>`;
+    });
+    html += `</div>`;
+  }
+  return html;
+}
+/* 申請条件（しきい値）設定 */
+function openLssRulesModal() {
+  var r = getLssRules();
+  openModal(`<div class="modal-title">Leadership 申請条件 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">総合スコア（%）が以下を満たすと、申請が可能になります。</div>
+    <div class="form-group"><label class="form-label"><i class="ti ti-crown"></i> 昇格・役職変更 申請の最低スコア (%)</label>
+      <input class="form-input" id="lssr-promo" type="number" min="0" max="100" value="${r.promo.minPct}"></div>
+    <div class="form-group"><label class="form-label"><i class="ti ti-coin"></i> Tip Rate 申請の最低スコア (%)</label>
+      <input class="form-input" id="lssr-tip" type="number" min="0" max="100" value="${r.tip.minPct}"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveLssRules()"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
+}
+function saveLssRules() {
+  var r = getLssRules();
+  r.promo.minPct = parseInt(document.getElementById('lssr-promo').value)||80;
+  r.tip.minPct = parseInt(document.getElementById('lssr-tip').value)||75;
+  setLssRules(r);
+  closeModalDirect();
+  showToast('申請条件を保存しました','success');
+  renderPage('leadership');
+}
+function openLssDetail(name) {
+  window._lssName = name;
+  window._lssCat = window._lssCat || 'A';
+  var rec = getLssScores(name) || {};
+  window._lssDraft = Object.assign({}, rec.scores||{});
+  var canScore = ['ceo','gm','am','sl'].includes(curRole);
+  var html = `<div class="modal-title">Leadership Skill — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div id="lss-summary"></div>
+    <div id="lss-cattabs" style="margin:8px 0"></div>
+    <div id="lss-items" style="max-height:40vh;overflow-y:auto;padding-right:4px"></div>
+    <div class="form-group" style="margin-top:8px"><label class="form-label">評価コメント</label><textarea class="form-textarea" id="lss-comment" ${canScore?'':'disabled'}>${rec.comment||''}</textarea></div>`;
+  if (canScore) {
+    html += `<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
+      <button class="btn btn-primary" onclick="saveLssScores('${name.replace(/'/g,"\\'")}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`;
+  } else {
+    html += `<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`;
+  }
+  openModal(html);
+  renderLssSummary();
+  renderLssCatTabs();
+  renderLssItems();
+}
+/* 総合サマリー（ドラフト反映でリアルタイム） */
+function lssSummaryFromDraft() {
+  var draft = window._lssDraft||{};
+  var cats = LSS_CATEGORIES.map(c=>{
+    var max=c.items.length*3, score=0;
+    c.items.forEach((label,i)=>{ score += (parseInt(draft[lssItemId(c.key,i)])||0); });
+    return {key:c.key, name:c.name, score:score, max:max, pct:max?Math.round(score/max*100):0};
+  });
+  var ts=cats.reduce((a,c)=>a+c.score,0), tm=cats.reduce((a,c)=>a+c.max,0);
+  return {cats:cats, totalScore:ts, totalMax:tm, totalPct:tm?Math.round(ts/tm*100):0};
+}
+function renderLssSummary() {
+  var el=document.getElementById('lss-summary'); if(!el) return;
+  var name=window._lssName;
+  var e=getEmployees().find(x=>x.name===name)||{name:name};
+  var rec=getLssScores(name)||{};
+  var sum=lssSummaryFromDraft();
+  var lv=lssLevel(sum.totalPct);
+  var ringColor=lv.color.replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d');
+  var sorted=sum.cats.slice().sort((a,b)=>b.pct-a.pct);
+  var strengths=sorted.slice(0,3), improvements=sorted.slice(-3).reverse();
+  var hasAny = sum.totalScore>0;
+  el.innerHTML = `<div class="card" style="background:linear-gradient(135deg,var(--accent-soft,#fceee4),var(--surface));margin-bottom:6px">
+    <div style="display:flex;align-items:center;gap:14px">
+      <div style="position:relative;flex-shrink:0">${healthRing(sum.totalPct, ringColor, 56)}<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:${lv.color}">${hasAny?sum.totalPct+'%':'—'}</div></div>
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">${e.title||(ROLE_CONFIG[e.role]||{}).label||''}</div>
+        <div style="margin-top:3px"><span class="tag" style="background:${lv.color};color:#fff;font-size:10px">${lv.label}</span> <span style="font-size:11px;color:var(--muted)">${sum.totalScore}/${sum.totalMax}点</span></div></div>
+    </div>
+    ${hasAny?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+      <div><div style="font-size:10px;font-weight:700;color:var(--green)">Strengths</div>${strengths.map(c=>`<div style="font-size:10px">• ${c.name} ${c.pct}%</div>`).join('')}</div>
+      <div><div style="font-size:10px;font-weight:700;color:var(--accent2)">Needs Improvement</div>${improvements.map(c=>`<div style="font-size:10px">• ${c.name} ${c.pct}%</div>`).join('')}</div>
+    </div>`:''}
+  </div>${lssNextTargetHtml(name)}`;
+}
+/* 次の目標・申請（保存済みスコアに基づく） */
+function lssNextTargetHtml(name) {
+  var saved = getLssScores(name);
+  if (!saved) return '';
+  var elig = lssEligibility(name);
+  var rules = getLssRules();
+  var canApply = ['ceo','gm','am','sl'].includes(curRole);
+  var blocks = '';
+  [['promo','昇格・役職変更','ti-crown'],['tip','Tip Rate','ti-coin']].forEach(function(t){
+    var kind=t[0], label=t[1], icon=t[2];
+    var e=elig[kind]; var pend=lssPendingFor(name, kind);
+    var col = e.ok?'var(--green)':'var(--accent2)';
+    blocks += `<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700"><i class="ti ${icon}" style="color:var(--accent)"></i>${label} <span style="font-size:10px;color:var(--muted);font-weight:400">（${rules[kind].minPct}%以上で申請可）</span></div>`;
+    if (pend) {
+      blocks += `<div class="alert alert-warning" style="margin:6px 0 0;padding:6px 10px"><i class="ti ti-clock"></i>申請中（承認待ち）</div>`;
+    } else if (e.ok) {
+      blocks += `<div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+        <span style="flex:1;font-size:11px;color:var(--green)"><i class="ti ti-circle-check"></i> 条件達成（${e.pct}% ≥ ${e.min}%）</span>
+        ${canApply?`<button class="btn btn-primary btn-sm" onclick="openLssApply('${name.replace(/'/g,"\\'")}','${kind}')"><i class="ti ti-send"></i> 申請</button>`:''}</div>`;
+    } else {
+      blocks += `<div style="font-size:11px;color:var(--accent2);margin-top:6px"><i class="ti ti-info-circle"></i> あと ${e.remain}% で申請可（現在 ${e.pct}%）</div>`;
+    }
+    blocks += `</div>`;
+  });
+  return `<div class="card" style="margin-bottom:6px"><div style="font-size:11px;font-weight:700;color:var(--muted)">Next Target</div>${blocks}</div>`;
+}
+function renderLssCatTabs() {
+  var el=document.getElementById('lss-cattabs'); if(!el) return;
+  var sum=lssSummaryFromDraft();
+  el.innerHTML = `<div class="phase-tabs" style="flex-wrap:wrap">${LSS_CATEGORIES.map(c=>{
+    var cs=sum.cats.find(x=>x.key===c.key);
+    var cc=cs.pct>=80?'var(--green)':cs.pct>=60?'var(--yellow)':cs.score>0?'var(--red)':'var(--muted)';
+    return `<div class="phase-tab${window._lssCat===c.key?' active':''}" onclick="setLssCat('${c.key}')" title="${c.name}"><i class="ti ${c.icon}" style="font-size:14px"></i> <span style="font-size:9px;color:${window._lssCat===c.key?'#fff':cc}">${cs.pct}%</span></div>`;
+  }).join('')}</div>
+  <div style="font-size:12px;font-weight:700;margin-top:6px;color:var(--accent)"><i class="ti ${LSS_CATEGORIES.find(c=>c.key===window._lssCat).icon}"></i> ${LSS_CATEGORIES.find(c=>c.key===window._lssCat).name}</div>`;
+}
+function setLssCat(key){ window._lssCat=key; renderLssCatTabs(); renderLssItems(); }
+function renderLssItems() {
+  var el=document.getElementById('lss-items'); if(!el) return;
+  var c=LSS_CATEGORIES.find(x=>x.key===window._lssCat);
+  var draft=window._lssDraft||{};
+  var canScore=['ceo','gm','am','sl'].includes(curRole);
+  el.innerHTML = c.items.map((label,i)=>{
+    var id=lssItemId(c.key,i); var val=parseInt(draft[id])||0;
+    return `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
+      <div style="flex:1;font-size:12px">${label}</div>
+      <div style="display:flex;gap:2px" id="lss-${id}">${[0,1,2,3].map(n=>`<button onclick="lssSetScore('${id}',${n})" data-v="${n}" class="lss-dot" style="width:26px;height:26px;border-radius:6px;border:1px solid var(--border);font-size:11px;cursor:${canScore?'pointer':'default'};background:${val===n?(n===0?'var(--muted)':n===3?'var(--accent)':n===2?'var(--green)':'var(--yellow)'):'transparent'};color:${val===n?'#fff':'var(--muted)'}">${n}</button>`).join('')}</div>
+    </div>`;
+  }).join('');
+}
+function lssSetScore(id, val) {
+  if (!['ceo','gm','am','sl'].includes(curRole)) return;
+  if (!window._lssDraft) window._lssDraft = {};
+  window._lssDraft[id] = val;
+  // ボタンの見た目を更新
+  var wrap = document.getElementById('lss-'+id);
+  if (wrap) Array.from(wrap.querySelectorAll('.lss-dot')).forEach(btn=>{
+    var n = parseInt(btn.getAttribute('data-v'));
+    var on = n===val;
+    btn.style.background = on?(n===0?'var(--muted)':n===3?'var(--accent)':n===2?'var(--green)':'var(--yellow)'):'transparent';
+    btn.style.color = on?'#fff':'var(--muted)';
+  });
+  // 総合・カテゴリの%をリアルタイム更新
+  renderLssSummary();
+  renderLssCatTabs();
+}
+function saveLssScores(name) {
+  var by = (ROLE_CONFIG[curRole]||{}).name||curUserName;
+  var prev = getLssScores(name);
+  var prevPct = prev ? lssSummary(name).totalPct : null;
+  var data = {evaluator:by, date:new Date().toLocaleDateString('ja'), scores:Object.assign({}, window._lssDraft||{}), comment:(document.getElementById('lss-comment')||{}).value||'', status:'確定'};
+  setLssScores(name, data);
+  // 履歴
+  var newPct = lssSummary(name).totalPct;
+  var h = ls('lss_history', []);
+  h.push({name:name, pct:newPct, prevPct:prevPct, by:by, date:data.date, comment:data.comment});
+  lsSet('lss_history', h);
+  closeModalDirect();
+  showToast(`${name} のLeadership Skillを保存しました`,'success');
+  renderPage('leadership');
+}
+/* 昇格・Tip 申請（Leadership Skillスコア達成から） */
+function openLssApply(name, kind) {
+  var e = getEmployees().find(x=>x.name===name)||{name:name};
+  var sum = lssSummary(name);
+  var label = kind==='promo'?'昇格・役職変更':'Tip Rate';
+  openModal(`<div class="modal-title">${label} 申請 — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">現在</div>
+      <div style="font-size:13px;font-weight:600">${e.title||(ROLE_CONFIG[e.role]||{}).label||''} · ${lssLevel(sum.totalPct).label}</div>
+      <div style="font-size:12px;color:var(--green);margin-top:4px">Leadership Skill ${sum.totalPct}%（条件達成）</div></div>
+    ${kind==='promo'?`<div class="form-group"><label class="form-label">希望役職（任意）</label>
+      <select class="form-select" id="lss-ap-title"><option value="">（指定なし）</option>${LSS_TITLES.map(t=>`<option ${e.title===t?'':''}>${t}</option>`).join('')}</select></div>`:''}
+    <div class="form-group"><label class="form-label">コメント（任意）</label><textarea class="form-textarea" id="lss-ap-reason" placeholder="${kind==='promo'?'昇格を希望する理由・実績など':'Tip Rate変更の根拠など'}"></textarea></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="submitLssApply('${name.replace(/'/g,"\\'")}','${kind}')"><i class="ti ti-send"></i> 申請する</button></div>`);
+}
+function submitLssApply(name, kind) {
+  var sum = lssSummary(name);
+  var reason = (document.getElementById('lss-ap-reason')||{}).value||'';
+  var wantTitle = (document.getElementById('lss-ap-title')||{}).value||'';
+  addLssRequest({id:'lss'+Date.now(), name:name, kind:kind, pct:sum.totalPct, wantTitle:wantTitle, reason:reason, status:'申請中', date:new Date().toLocaleDateString('ja'), by:(ROLE_CONFIG[curRole]||{}).name||curUserName});
+  addApproval({title:`${name} ${kind==='promo'?'昇格':'Tip Rate'}申請（Leadership ${sum.totalPct}%）`, type:'Leadership', from:name});
+  closeModalDirect();
+  showToast('申請しました（承認待ち）','success');
+  renderPage('leadership');
+}
+/* LSS申請の承認/却下 */
+function approveLssRequest(id, status) {
+  var reqs = getLssRequests();
+  var r = reqs.find(x=>x.id===id); if(!r) return;
+  r.status = status;
+  r.approver = (ROLE_CONFIG[curRole]||{}).name||curUserName;
+  r.approvedDate = new Date().toLocaleDateString('ja');
+  lsSet('lss_requests', reqs);
+  // 昇格承認時は役職を反映（任意指定があれば）
+  if (status==='承認' && r.kind==='promo' && r.wantTitle) {
+    var emps = getEmployees(); var e = emps.find(x=>x.name===r.name);
+    if (e) { e.title = r.wantTitle; var jt=jobTitle(r.wantTitle); if(jt) e.role=jt.permRole; lsSet('m_employees', emps); }
+  }
+  showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
+  renderPage(curPage);
 }
 
 /* ============================================================
@@ -11188,8 +11697,50 @@ function renderMypage() {
   }
   html += '</div>';
 
-  // 7. 給与予定（Estimated Pay）
-  var wage = WAGE[curRole]||16;
+  // 6b. Your Leadership Skill（リーダー以上のみ）
+  var meEmpL = getEmployees().find(x=>x.name===me) || {role:curRole};
+  if (isLeaderPlus(meEmpL)) {
+    var lsum = lssSummary(me);
+    if (lsum.hasData) {
+      var llv = lssLevel(lsum.totalPct);
+      var lcolor = llv.color.replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d');
+      var lhist = ls('lss_history', []).filter(h=>h.name===me);
+      var lastDiff = null;
+      if (lhist.length>=1 && lhist[lhist.length-1].prevPct!=null) lastDiff = lhist[lhist.length-1].pct - lhist[lhist.length-1].prevPct;
+      // 改善カテゴリ TOP3（今月のフォーカス）
+      var focusCats = lsum.cats.slice().sort((a,b)=>a.pct-b.pct).slice(0,3);
+      var lelig = lssEligibility(me);
+      html += `<div class="card" style="background:linear-gradient(135deg,#fbf0e6,var(--surface))">
+        <div class="card-title"><i class="ti ti-crown" style="color:var(--accent)"></i>${t('Your Leadership Skill','Your Leadership Skill')}
+          <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openLssDetail('${me.replace(/'/g,"\\'")}')">${t('詳細','Detail')}</button></div>
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
+          <div style="position:relative;flex-shrink:0">${healthRing(lsum.totalPct, lcolor, 60)}
+            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:${llv.color}">${lsum.totalPct}%</div></div>
+          <div style="flex:1;min-width:0">
+            <div><span class="tag" style="background:${llv.color};color:#fff;font-size:10px">${llv.label}</span></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:3px">${lsum.totalScore}/${lsum.totalMax}${t('点','pt')}${lastDiff!=null?` · <span style="color:${lastDiff>=0?'var(--green)':'var(--red)'}">${lastDiff>=0?'+':''}${lastDiff}pt</span> ${t('前回比','vs last')}`:''}</div>
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:8px">
+          <div style="font-size:11px;font-weight:700;margin-bottom:4px">${t('今月のフォーカス','Focus This Month')}</div>
+          ${focusCats.map(c=>{var cd=LSS_CATEGORIES.find(x=>x.key===c.key)||{};return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0"><i class="ti ${cd.icon}" style="color:var(--accent2)"></i><span style="flex:1">${c.name}</span><span style="font-size:11px;color:var(--accent2)">${c.pct}%</span></div>`;}).join('')}
+        </div>`;
+      // 次の目標（申請可否）
+      if (lelig.promo.ok || lelig.tip.ok) {
+        html += `<div class="alert alert-success" style="margin:8px 0 0;padding:8px 10px"><i class="ti ti-circle-check"></i>${lelig.promo.ok?t('昇格申請の条件達成','Promotion ready'):''}${lelig.promo.ok&&lelig.tip.ok?' / ':''}${lelig.tip.ok?t('Tip Rate申請の条件達成','Tip Rate ready'):''}</div>`;
+      } else {
+        var nearest = lelig.tip.remain<=lelig.promo.remain ? lelig.tip : lelig.promo;
+        var nearestLabel = lelig.tip.remain<=lelig.promo.remain ? 'Tip Rate' : t('昇格','Promotion');
+        html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-target"></i> ${t('次の目標','Next')}: ${nearestLabel} ${t('まであと','to go')} ${nearest.remain}%</div>`;
+      }
+      html += `</div>`;
+    } else {
+      html += `<div class="card"><div class="card-title"><i class="ti ti-crown" style="color:var(--accent)"></i>${t('Your Leadership Skill','Your Leadership Skill')}</div>
+        <div style="font-size:12px;color:var(--muted)">${t('まだ評価がありません。Store Manager / GMによる評価をお待ちください。','Not yet evaluated.')}</div></div>`;
+    }
+  }
+  var meEmpRec = getEmployees().find(x=>x.name===me) || {role:curRole};
+  var wage = empWageOf(meEmpRec);
   var weekHours = 0;
   if (plan && plan.status==='公開済') {
     myShifts.forEach(k=>{ var period=k.split('_')[1]; weekHours += (SHIFT_HOURS[period]||4); });
