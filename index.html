@@ -1949,6 +1949,24 @@ function ingCostByCode(code) {
   return i ? ingUnitCost(i) : 0;
 }
 function getVendors() { return ls('m_vendors', DEFAULT_VENDORS); }
+/* ===== 業者ごとの発注リスト（発注の大元・店舗×業者） =====
+   order_lists[storeId][vendorName] = [codes...]  食材マスターから選んだ発注品目 */
+function getOrderList(storeId, vendorName) {
+  var all = ls('order_lists', {});
+  return (all[storeId] && all[storeId][vendorName]) ? all[storeId][vendorName] : [];
+}
+function setOrderList(storeId, vendorName, codes) {
+  var all = ls('order_lists', {});
+  if (!all[storeId]) all[storeId] = {};
+  all[storeId][vendorName] = codes;
+  lsSet('order_lists', all);
+}
+/* 店舗で発注リストが登録済みの業者一覧 */
+function vendorsWithOrderList(storeId) {
+  var all = ls('order_lists', {});
+  var m = all[storeId] || {};
+  return Object.keys(m).filter(v=>m[v] && m[v].length);
+}
 function getEmployees() {
   var emps = ls('m_employees', DEFAULT_EMPLOYEES);
   emps.forEach(e=>{
@@ -5337,14 +5355,49 @@ function invItemVendor(code) {
   return (ing && ing.vendor) ? ing.vendor : '未設定';
 }
 
-var invMode = 'daily';   // 'daily' | 'monthly'
+/* ===== 棚卸テンプレート（店舗ごと複数。Daily/Monthlyも既定テンプレとして統合） =====
+   inv_templates[storeId] = [{id, name, kind:'daily'|'monthly'|'custom', codes:[...]|null}]
+   kind=monthly かつ codes=null は「全品」を意味する（マスター追従） */
+function getInvTemplates(storeId) {
+  var all = ls('inv_templates', {});
+  if (!all[storeId]) {
+    // 初期化: 既存のdailyフラグからDailyテンプレを作る + Monthly（全品）
+    var items = getInvItems(storeId);
+    var dailyCodes = items.filter(i=>i.daily).map(i=>i.code);
+    all[storeId] = [
+      {id:'tpl_daily', name:'Daily（主要食材）', kind:'daily', codes:dailyCodes},
+      {id:'tpl_monthly', name:'Monthly（全品）', kind:'monthly', codes:null},
+    ];
+    lsSet('inv_templates', all);
+  }
+  return all[storeId];
+}
+function setInvTemplates(storeId, tpls) { var all=ls('inv_templates', {}); all[storeId]=tpls; lsSet('inv_templates', all); }
+function getInvTemplate(storeId, tplId) { return getInvTemplates(storeId).find(t=>t.id===tplId) || getInvTemplates(storeId)[0]; }
+/* テンプレに含まれる棚卸アイテムを返す */
+function itemsForTemplate(storeId, tplId) {
+  var tpl = getInvTemplate(storeId, tplId);
+  var all = getInvItems(storeId);
+  if (!tpl || tpl.codes==null) return all;        // monthly全品
+  return all.filter(i=> tpl.codes.includes(i.code));
+}
+
+var invMode = 'daily';   // 後方互換（monthly判定に使用）
+var invTemplate = 'tpl_daily';  // 選択中の棚卸テンプレID
 var invClassFilter = 'all';
+var invSearch = '';       // 検索キーワード
+var invView = 'all';      // 'all' | 'todo'(未入力) | 'done'(入力済み) | 'recent'(前回使用)
+var invAutosaveAt = '';   // 自動保存ステータス表示用
 function renderInventory() {
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var allItems = getInvItems(storeId);
-  // モードで対象を絞る
-  var items = invMode==='daily' ? allItems.filter(i=>i.daily) : allItems;
+  // 選択中テンプレで対象を絞る
+  var templates = getInvTemplates(storeId);
+  if (!templates.find(t=>t.id===invTemplate)) invTemplate = templates[0].id;
+  var curTpl = getInvTemplate(storeId, invTemplate);
+  invMode = (curTpl.kind==='monthly') ? 'monthly' : 'daily';  // 後方互換（繰越判定など）
+  var items = itemsForTemplate(storeId, invTemplate);
   var filtered = invClassFilter==='all' ? items : items.filter(i=>i.cls===invClassFilter);
   var classCounts = {}; CLASSES.forEach(c=>classCounts[c.id]=items.filter(i=>i.cls===c.id).length);
   var canConfig = ROLE_CONFIG[curRole].canCreate;
@@ -5352,30 +5405,64 @@ function renderInventory() {
   var html = `<div class="section-header">
     <div><div class="section-title">${store.name} · 棚卸</div><div class="section-sub">${new Date().toLocaleDateString('ja')}</div></div>
     <div style="display:flex;gap:6px">
-      ${invMode==='daily'&&canConfig?`<button class="btn btn-secondary btn-sm" onclick="openDailySetModal('${storeId}')"><i class="ti ti-settings"></i> Daily項目</button>`:''}
       <button class="btn btn-secondary btn-sm" onclick="showInvHistory('${storeId}')"><i class="ti ti-history"></i> 履歴</button>
       <button class="btn btn-success btn-sm" onclick="saveInventory('${storeId}')"><i class="ti ti-device-floppy"></i> 確定</button>
     </div>
   </div>`;
 
-  // モード切替（Daily / Monthly）
-  html += `<div class="phase-tabs">
-    <div class="phase-tab${invMode==='daily'?' active':''}" onclick="setInvMode('daily')"><i class="ti ti-sun" style="font-size:12px"></i> Daily日次</div>
-    <div class="phase-tab${invMode==='monthly'?' active':''}" onclick="setInvMode('monthly')"><i class="ti ti-calendar-month" style="font-size:12px"></i> Monthly月間</div>
+  // テンプレート選択タブ（Daily/Monthlyも既定テンプレ）
+  html += `<div class="phase-tabs" style="flex-wrap:wrap">
+    ${templates.map(tpl=>{
+      var n = (tpl.codes==null) ? allItems.length : tpl.codes.length;
+      var icon = tpl.kind==='daily'?'ti-sun':tpl.kind==='monthly'?'ti-calendar-month':'ti-clipboard-list';
+      return `<div class="phase-tab${invTemplate===tpl.id?' active':''}" onclick="setInvTemplate('${tpl.id}')"><i class="ti ${icon}" style="font-size:12px"></i> ${tpl.name} (${n})</div>`;
+    }).join('')}
   </div>`;
 
-  html += `<div class="alert ${invMode==='daily'?'alert-success':'alert-warning'}" style="padding:8px 12px">
-    <i class="ti ti-info-circle"></i><div style="font-size:12px">${invMode==='daily'
-      ? 'Daily：主要食材のみ。日次の数量チェック用。' 
-      : 'Monthly：全品目フル棚卸。理論在庫との差異・ロスを算出します。'}</div></div>`;
-
-  // 区分フィルタ（Monthlyのみ細かく）
-  if (invMode==='monthly') {
-    html += `<div class="phase-tabs">
-      <div class="phase-tab${invClassFilter==='all'?' active':''}" onclick="setInvFilter('all')">全区分 (${items.length})</div>
-      ${CLASSES.map(c=>`<div class="phase-tab${invClassFilter===c.id?' active':''}" style="${invClassFilter===c.id?`background:${c.color};border-color:${c.color}`:''}" onclick="setInvFilter('${c.id}')">${c.name} (${classCounts[c.id]})</div>`).join('')}
+  // テンプレ操作（編集権限者）
+  if (canConfig) {
+    html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+      <button class="btn btn-secondary btn-sm" onclick="openInvTemplateEdit('${storeId}','${invTemplate}')"><i class="ti ti-edit"></i> このテンプレを編集</button>
+      <button class="btn btn-secondary btn-sm" onclick="openInvTemplateFromOrder('${storeId}')"><i class="ti ti-link"></i> 発注リストから棚卸表</button>
+      <button class="btn btn-secondary btn-sm" onclick="openNewInvTemplate('${storeId}')"><i class="ti ti-plus"></i> 新規テンプレ</button>
     </div>`;
   }
+
+  html += `<div class="alert ${invMode==='daily'?'alert-success':'alert-warning'}" style="padding:8px 12px">
+    <i class="ti ti-info-circle"></i><div style="font-size:12px">${curTpl.kind==='monthly'
+      ? 'Monthly（全品）：理論在庫との差異・ロスを算出します。'
+      : curTpl.kind==='daily' ? 'Daily（主要食材）：日次の数量チェック用。'
+      : 'テンプレ「'+curTpl.name+'」の品目を棚卸します。'}</div></div>`;
+
+  // 区分フィルタ
+  html += `<div class="phase-tabs">
+    <div class="phase-tab${invClassFilter==='all'?' active':''}" onclick="setInvFilter('all')">全区分 (${items.length})</div>
+    ${CLASSES.map(c=>`<div class="phase-tab${invClassFilter===c.id?' active':''}" style="${invClassFilter===c.id?`background:${c.color};border-color:${c.color}`:''}" onclick="setInvFilter('${c.id}')">${c.name} (${classCounts[c.id]})</div>`).join('')}
+  </div>`;
+
+  // 検索バー
+  html += `<input class="form-input" id="inv-search" placeholder="食材名・コード・業者で検索" value="${invSearch}" oninput="invSearchInput(this.value)" autocomplete="off" style="margin-bottom:8px">`;
+
+  // ビュー切替（全部 / 未入力 / 入力済み / 前回使用）
+  var doneN = items.filter(i=>i.count!=='').length;
+  var todoN = items.length - doneN;
+  var prevUsed = ls('inv_recent_codes_'+storeId, []);
+  html += `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
+    <button class="btn btn-sm ${invView==='all'?'btn-primary':'btn-secondary'}" style="padding:4px 10px;font-size:12px" onclick="setInvView('all')">全部 (${items.length})</button>
+    <button class="btn btn-sm ${invView==='todo'?'btn-primary':'btn-secondary'}" style="padding:4px 10px;font-size:12px" onclick="setInvView('todo')">未入力 (${todoN})</button>
+    <button class="btn btn-sm ${invView==='done'?'btn-primary':'btn-secondary'}" style="padding:4px 10px;font-size:12px" onclick="setInvView('done')">入力済み (${doneN})</button>
+    ${prevUsed.length?`<button class="btn btn-sm ${invView==='recent'?'btn-primary':'btn-secondary'}" style="padding:4px 10px;font-size:12px" onclick="setInvView('recent')">前回使用 (${prevUsed.length})</button>`:''}
+  </div>`;
+
+  // 検索 + ビューで絞り込み
+  var q = invSearch.toLowerCase().trim();
+  if (q) filtered = filtered.filter(i=> (i.name||'').toLowerCase().includes(q) || String(i.code).includes(q) || (invItemVendor(i.code)||'').toLowerCase().includes(q));
+  if (invView==='todo') filtered = filtered.filter(i=>i.count==='');
+  else if (invView==='done') filtered = filtered.filter(i=>i.count!=='');
+  else if (invView==='recent') filtered = filtered.filter(i=>prevUsed.includes(i.code));
+
+  // 自動保存ステータス
+  html += `<div id="inv-autosave" style="font-size:11px;color:var(--muted);margin-bottom:6px;text-align:right">${invAutosaveAt?'<i class="ti ti-cloud-check" style="color:var(--green)"></i> 自動保存済み '+invAutosaveAt:'<i class="ti ti-cloud"></i> 入力すると自動保存されます'}</div>`;
 
   // ===== 業者ごとにグループ表示 =====
   // 業者名→アイテム配列
@@ -5447,7 +5534,109 @@ function renderInventory() {
   return html;
 }
 
-function setInvMode(m) { invMode = m; invClassFilter='all'; renderPage('inventory'); }
+function setInvMode(m) { invMode = m; invClassFilter='all'; invSearch=''; invView='all'; renderPage('inventory'); }
+function setInvTemplate(tplId) { invTemplate = tplId; invClassFilter='all'; invSearch=''; invView='all'; renderPage('inventory'); }
+/* テンプレ編集（品目の追加/削除） */
+function openInvTemplateEdit(storeId, tplId) {
+  var tpl = getInvTemplate(storeId, tplId);
+  if (tpl.codes==null) { // monthly全品は編集不可
+    alert('「'+tpl.name+'」は全品目テンプレのため個別編集はできません。新規テンプレを作成してください。'); return;
+  }
+  var allItems = getInvItems(storeId);
+  var inTpl = allItems.filter(i=>tpl.codes.includes(i.code));
+  var html = `<div class="modal-title">テンプレ編集: ${tpl.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">テンプレ名</label><input class="form-input" id="tpl-name" value="${tpl.name}"></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">含まれる品目 ${inTpl.length}件</div>
+    <div style="max-height:36vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
+      ${inTpl.map(i=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-bottom:1px solid var(--border)">
+        <span style="font-size:12px">${i.name} <span style="font-size:10px;color:var(--muted)">${invItemVendor(i.code)}</span></span>
+        <button class="btn btn-danger btn-sm" style="padding:0 8px" onclick="invTplRemove('${storeId}','${tplId}',${i.code})"><i class="ti ti-x"></i></button></div>`).join('')||'<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">品目なし</div>'}
+    </div>
+    <button class="btn btn-secondary" style="width:100%;margin-bottom:8px" onclick="invTplAddItem('${storeId}','${tplId}')"><i class="ti ti-search"></i> 品目を検索して追加</button>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
+    <button class="btn btn-primary" onclick="invTplSaveName('${storeId}','${tplId}')">名前を保存</button></div>`;
+  openModal(html);
+}
+function invTplRemove(storeId, tplId, code) {
+  var tpls = getInvTemplates(storeId); var tpl = tpls.find(t=>t.id===tplId);
+  tpl.codes = tpl.codes.filter(c=>c!==code); setInvTemplates(storeId, tpls);
+  openInvTemplateEdit(storeId, tplId);
+}
+function invTplAddItem(storeId, tplId) {
+  openIngredientPicker(function(code){
+    var tpls = getInvTemplates(storeId); var tpl = tpls.find(t=>t.id===tplId);
+    if (!tpl.codes.includes(code)) tpl.codes.push(code);
+    setInvTemplates(storeId, tpls);
+    ensureInvItem(storeId, code);
+    openInvTemplateEdit(storeId, tplId);
+  });
+}
+function invTplSaveName(storeId, tplId) {
+  var name = (document.getElementById('tpl-name').value||'').trim();
+  if (!name) return;
+  var tpls = getInvTemplates(storeId); tpls.find(t=>t.id===tplId).name = name;
+  setInvTemplates(storeId, tpls);
+  closeModalDirect(); showToast('保存しました','success'); renderPage('inventory');
+}
+/* 棚卸アイテムマスターに無ければ追加（テンプレ品目が棚卸対象になるように） */
+function ensureInvItem(storeId, code) {
+  var items = getInvItems(storeId);
+  if (items.find(i=>i.code===code)) return;
+  var ing = getIngredients().find(x=>x.code===code); if(!ing) return;
+  items.push({code:ing.code, name:ing.name, unit:ing.unit, cls:catClass(ing.cat), par:20, last:0, received:0, consumed:0, count:'', daily:false});
+  setInvItems(storeId, items);
+}
+function openNewInvTemplate(storeId) {
+  var name = prompt('新しい棚卸テンプレ名（例: 平日棚卸 / 冷蔵庫のみ など）','');
+  if (!name) return;
+  var tpls = getInvTemplates(storeId);
+  tpls.push({id:'tpl'+Date.now(), name:name.trim(), kind:'custom', codes:[]});
+  setInvTemplates(storeId, tpls);
+  invTemplate = tpls[tpls.length-1].id;
+  showToast('テンプレを作成しました。品目を追加してください','success');
+  renderPage('inventory');
+  setTimeout(()=>openInvTemplateEdit(storeId, invTemplate), 200);
+}
+/* 発注リスト（業者ごと）から棚卸表をコピー生成 */
+function openInvTemplateFromOrder(storeId) {
+  var vendorsWL = vendorsWithOrderList(storeId);
+  if (!vendorsWL.length) {
+    openModal(`<div class="modal-title">発注リストから棚卸表を作成 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+      <div class="alert alert-warning" style="margin:0"><i class="ti ti-info-circle"></i><div style="font-size:12px">まだ業者ごとの発注リストがありません。先に<b>発注画面で「発注リスト」</b>を作成してください（食材マスターから業者ごとに品目を登録）。</div></div>
+      <div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
+      <button class="btn btn-primary" onclick="closeModalDirect();go('order')">発注画面へ</button></div>`);
+    return;
+  }
+  var html = `<div class="modal-title">発注リストから棚卸表を作成 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">業者の発注リストを選ぶと、その品目をコピーして棚卸表を作ります。作成後は独立（発注リストを変えても棚卸表は変わりません）。</div>
+    <div class="form-group"><label class="form-label">棚卸表の名前</label><input class="form-input" id="ivt-name" placeholder="例: ${store_nameSafe(storeId)} 通常棚卸"></div>
+    <div style="font-size:11px;font-weight:600;margin-bottom:4px">取り込む業者の発注リスト</div>
+    <div style="max-height:34vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
+      ${vendorsWL.map(v=>{var n=getOrderList(storeId,v).length; return `<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px"><input type="checkbox" class="ivt-vendor" value="${v}" checked> <span style="flex:1">${v}</span> <span style="color:var(--muted);font-size:11px">${n}品目</span></label>`;}).join('')}
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="createInvTemplateFromOrder('${storeId}')">棚卸表を作成</button></div>`;
+  openModal(html);
+}
+function store_nameSafe(storeId){ return (STORES.find(s=>s.id===storeId)||{}).name||storeId; }
+function createInvTemplateFromOrder(storeId) {
+  var name = (document.getElementById('ivt-name').value||'').trim();
+  if (!name) { alert('棚卸表の名前を入力してください'); return; }
+  var codes = {};
+  document.querySelectorAll('.ivt-vendor:checked').forEach(cb=>{
+    getOrderList(storeId, cb.value).forEach(code=>codes[code]=1);
+  });
+  var codeList = Object.keys(codes).map(c=>parseInt(c));
+  if (!codeList.length) { alert('業者を選択してください'); return; }
+  codeList.forEach(c=>ensureInvItem(storeId, c));
+  var tpls = getInvTemplates(storeId);
+  tpls.push({id:'tpl'+Date.now(), name:name, kind:'custom', codes:codeList});
+  setInvTemplates(storeId, tpls);
+  invTemplate = tpls[tpls.length-1].id;
+  closeModalDirect();
+  showToast(`棚卸表「${name}」を作成（${codeList.length}品目）`,'success');
+  renderPage('inventory');
+}
 function setInvFilter(f) { invClassFilter = f; renderPage('inventory'); }
 
 function openDailySetModal(storeId) {
@@ -5479,12 +5668,34 @@ function saveDailySet(storeId) {
 function updateInv(storeId, code, val) {
   var items = getInvItems(storeId);
   var it = items.find(i=>i.code===parseInt(code));
-  if (it) { it.count = val; setInvItems(storeId, items); renderPage('inventory'); }
+  if (it) {
+    it.count = val;
+    setInvItems(storeId, items);
+    // 前回使用（入力された食材）を記録
+    if (val!=='' && val!=null) {
+      var rec = ls('inv_recent_codes_'+storeId, []).filter(c=>c!==parseInt(code));
+      rec.unshift(parseInt(code));
+      lsSet('inv_recent_codes_'+storeId, rec.slice(0,40));
+    }
+    // 自動保存ステータスを更新
+    invAutosaveAt = new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
+    var el = document.getElementById('inv-autosave');
+    if (el) el.innerHTML = '<i class="ti ti-cloud-check" style="color:var(--green)"></i> 自動保存済み '+invAutosaveAt;
+    // 差異・状態の表示を更新（onchangeはblur時なのでフォーカス問題なし）
+    renderPage('inventory');
+  }
 }
+function invSearchInput(v) {
+  invSearch = v;
+  // 検索は再描画（リストを絞る）。入力欄のフォーカスは維持したいのでデバウンス
+  clearTimeout(window._invSearchTimer);
+  window._invSearchTimer = setTimeout(function(){ renderPage('inventory'); var s=document.getElementById('inv-search'); if(s){s.focus(); s.setSelectionRange(s.value.length,s.value.length);} }, 350);
+}
+function setInvView(v) { invView = v; renderPage('inventory'); }
 
 function saveInventory(storeId) {
   var allItems = getInvItems(storeId);
-  var scope = invMode==='daily' ? allItems.filter(i=>i.daily) : allItems;
+  var scope = itemsForTemplate(storeId, invTemplate);
   var counted = scope.filter(i=>i.count!=='');
   if (!counted.length) { alert('棚卸数を入力してください'); return; }
   var histKey = invMode==='daily' ? 'inv_hist_daily_'+storeId : 'inv_hist_'+storeId;
@@ -5581,14 +5792,90 @@ function showInvHistory(storeId) {
 /* ============================================================
    ⑨ 発注管理 (作成→承認→送信→履歴・業者連動)
 ============================================================ */
+var orderTab = 'order'; // 'order' | 'lists'
+function setOrderTab(t){ orderTab = t; renderPage('order'); }
+/* 発注リスト管理（業者ごとに食材マスターから品目登録） */
+function renderOrderLists(storeId) {
+  var vendors = getVendors();
+  var html = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">業者ごとに、発注する品目を食材マスターから登録します。これが発注と棚卸表の大元になります。</div>`;
+  vendors.forEach(v => {
+    var codes = getOrderList(storeId, v.name);
+    var ings = getIngredients();
+    html += `<div class="card" style="padding:0;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border-bottom:1px solid var(--border)">
+        <span style="width:26px;height:26px;border-radius:8px;background:var(--accent-soft,#fceee4);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-truck" style="font-size:15px"></i></span>
+        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">${v.name}</div>
+          <div style="font-size:10px;color:var(--muted)">${codes.length}品目登録 · ${vendorMethod(v,storeId)}</div></div>
+        <button class="btn btn-secondary btn-sm" onclick="openOrderListEdit('${storeId}','${v.name.replace(/'/g,"\\'")}')"><i class="ti ti-edit"></i> 編集</button>
+      </div>`;
+    if (codes.length) {
+      html += `<div style="padding:8px 12px;font-size:12px;color:var(--tm)">${codes.map(c=>{var i=ings.find(x=>x.code===c);return i?i.name:'';}).filter(Boolean).join(' · ')}</div>`;
+    } else {
+      html += `<div style="padding:10px 12px;font-size:11px;color:var(--muted)">未登録 — 「編集」から品目を追加</div>`;
+    }
+    html += `</div>`;
+  });
+  return html;
+}
+function openOrderListEdit(storeId, vendorName) {
+  var codes = getOrderList(storeId, vendorName);
+  var ings = getIngredients();
+  var inList = codes.map(c=>ings.find(i=>i.code===c)).filter(Boolean);
+  var html = `<div class="modal-title">発注リスト: ${vendorName} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">この業者に発注する品目を登録します（${inList.length}品目）</div>
+    <div style="max-height:40vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
+      ${inList.map(i=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-bottom:1px solid var(--border)">
+        <span style="font-size:12px">${i.name}<div style="font-size:10px;color:var(--muted)">#${i.code} · ${catName(i.cat)} · $${ingUnitCost(i).toFixed(3)}/${i.unit}</div></span>
+        <button class="btn btn-danger btn-sm" style="padding:0 8px" onclick="orderListRemove('${storeId}','${vendorName.replace(/'/g,"\\'")}',${i.code})"><i class="ti ti-x"></i></button></div>`).join('')||'<div style="padding:14px;text-align:center;color:var(--muted);font-size:12px">品目なし</div>'}
+    </div>
+    <button class="btn btn-secondary" style="width:100%" onclick="orderListAdd('${storeId}','${vendorName.replace(/'/g,"\\'")}')"><i class="ti ti-search"></i> 食材マスターから品目を追加</button>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="closeModalDirect();renderPage('order')">完了</button></div>`;
+  openModal(html);
+}
+function orderListAdd(storeId, vendorName) {
+  // その業者の取扱食材（仕入先がvendorName）に絞る
+  var vendorIngs = getIngredients().filter(i=>i.vendor===vendorName);
+  var onPick = function(code){
+    var codes = getOrderList(storeId, vendorName);
+    if (!codes.includes(code)) codes.push(code);
+    setOrderList(storeId, vendorName, codes);
+    openOrderListEdit(storeId, vendorName);
+  };
+  if (vendorIngs.length) {
+    openIngredientPicker(onPick, vendorName);   // 第2引数で業者フィルタ
+  } else {
+    // この業者の食材がマスターに無い場合は全食材から（仕入先未設定対策）。選んだら仕入先をこの業者に設定するか確認
+    openIngredientPicker(function(code){
+      onPick(code);
+    });
+  }
+}
+function orderListRemove(storeId, vendorName, code) {
+  var codes = getOrderList(storeId, vendorName).filter(c=>c!==code);
+  setOrderList(storeId, vendorName, codes);
+  openOrderListEdit(storeId, vendorName);
+}
 function renderOrder() {
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var orders = ls('orders_'+storeId, []);
+  var canConfig = ROLE_CONFIG[curRole].canCreate;
   var html = `<div class="section-header">
-    <div><div class="section-title">${store.name} · 発注管理</div><div class="section-sub">自動算出・業者別発注方法</div></div>
-    <button class="btn btn-primary btn-sm" onclick="openOrderModal('${storeId}')"><i class="ti ti-plus"></i> 手動発注</button>
+    <div><div class="section-title">${store.name} · 発注管理</div><div class="section-sub">業者ごとの発注リストから発注</div></div>
+    ${orderTab==='order'?`<button class="btn btn-primary btn-sm" onclick="openOrderModal('${storeId}')"><i class="ti ti-plus"></i> 発注作成</button>`:''}
   </div>`;
+
+  html += `<div class="phase-tabs">
+    <div class="phase-tab${orderTab==='order'?' active':''}" onclick="setOrderTab('order')"><i class="ti ti-clipboard-list" style="font-size:12px"></i> 発注</div>
+    <div class="phase-tab${orderTab==='lists'?' active':''}" onclick="setOrderTab('lists')"><i class="ti ti-list-details" style="font-size:12px"></i> 発注リスト</div>
+  </div>`;
+
+  if (orderTab==='lists') return html + renderOrderLists(storeId);
+
+  // 発注リスト未作成の案内
+  if (!vendorsWithOrderList(storeId).length) {
+    html += `<div class="alert alert-warning"><i class="ti ti-info-circle"></i><div style="font-size:12px"><b>まず「発注リスト」タブで、業者ごとの発注品目を登録</b>してください。食材マスターから選んで業者ごとに登録すると、発注がぐっと速くなります。</div></div>`;
+  }
 
   // 自動作成ドラフト
   var autoDrafts = orders.filter(o=>o.status==='自動作成');
@@ -5625,6 +5912,8 @@ function renderOrder() {
         <span class="tag tag-yellow">${o.status}</span></div>
         <div class="approval-actions">
           <button class="btn btn-primary btn-sm" onclick="openSendModal('${storeId}','${o.id}')"><i class="ti ti-send"></i> ${method}で発注</button>
+          <button class="btn btn-secondary btn-sm" onclick="exportOrderCSV('${storeId}','${o.id}')"><i class="ti ti-file-spreadsheet"></i> CSV</button>
+          <button class="btn btn-secondary btn-sm" onclick="exportOrderPrint('${storeId}','${o.id}')"><i class="ti ti-printer"></i> PDF/印刷</button>
         </div></div>`;
     });
     html += '</div>';
@@ -5744,16 +6033,25 @@ function openOrderModal(storeId) {
   var vendors = getVendors();
   renderOrderModalBody(storeId, vendors[0].name);
 }
+/* 発注テンプレート: order_templates[storeId] = [{id,name,vendor,lines:[{code,name,unit,price,qty}]}] */
+function getOrderTemplates(storeId) { var all=ls('order_templates', {}); return all[storeId]||[]; }
+function setOrderTemplates(storeId, tpls) { var all=ls('order_templates', {}); all[storeId]=tpls; lsSet('order_templates', all); }
+/* 前回の同業者発注を取得 */
+function lastOrderForVendor(storeId, vendorName) {
+  var orders = ls('orders_'+storeId, []).filter(o=>o.vendor===vendorName);
+  return orders.length ? orders[orders.length-1] : null;
+}
 
 function renderOrderModalBody(storeId, vendorName) {
   var vendors = getVendors();
   var vendor = vendors.find(v=>v.name===vendorName) || vendors[0];
-  var ings = getIngredients().filter(i=>i.vendor===vendor.name);
   var total = orderTmpLines.reduce((a,l)=>a+l.price*l.qty,0);
+  var templates = getOrderTemplates(storeId).filter(t=>t.vendor===vendor.name);
+  var lastOrder = lastOrderForVendor(storeId, vendor.name);
   var linesHtml = orderTmpLines.map((l,idx)=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
-    <div style="flex:1;font-size:13px">${l.name}</div>
-    <input class="inv-input" type="number" value="${l.qty}" onchange="updateOrderQty(${idx},this.value)" style="width:55px">
-    <span style="font-size:11px;color:var(--muted)">$${(l.price*l.qty).toFixed(2)}</span>
+    <div style="flex:1;font-size:13px">${l.name}<div style="font-size:10px;color:var(--muted)">$${l.price.toFixed(3)}/${l.unit}</div></div>
+    <input class="inv-input" type="number" value="${l.qty}" onchange="updateOrderQty(${idx},this.value)" style="width:55px"> <span style="font-size:11px;color:var(--muted)">${l.unit}</span>
+    <span style="font-size:11px;color:var(--muted);min-width:54px;text-align:right">$${(l.price*l.qty).toFixed(2)}</span>
     <button class="btn btn-danger btn-sm" onclick="removeOrderLine('${storeId}','${vendorName}',${idx})"><i class="ti ti-x"></i></button>
   </div>`).join('');
   var minWarn = total < vendor.minOrder ? `<div class="alert alert-warning" style="margin-top:8px"><i class="ti ti-alert-triangle"></i>最低発注額 $${vendor.minOrder} 未満です（現在 $${total.toFixed(2)}）</div>` : '';
@@ -5763,20 +6061,104 @@ function renderOrderModalBody(storeId, vendorName) {
       <select class="form-select" id="o-vendor" onchange="changeOrderVendor('${storeId}',this.value)">${vendors.map(v=>`<option${v.name===vendorName?' selected':''}>${v.name}</option>`).join('')}</select>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">発注方法 ${vendorMethod(vendor,storeId)} · 最低 $${vendor.minOrder} · ${vendor.delivery}</div>
     </div>
-    <div class="form-group"><label class="form-label">発注品目（この業者の食材）</label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+      ${lastOrder?`<button class="btn btn-secondary btn-sm" onclick="orderCopyLast('${storeId}','${vendorName}')"><i class="ti ti-copy"></i> 前回をコピー</button>`:''}
+      ${templates.length?templates.map(t=>`<button class="btn btn-secondary btn-sm" onclick="orderLoadTemplate('${storeId}','${vendorName}','${t.id}')"><i class="ti ti-template"></i> ${t.name}</button>`).join(''):''}
+    </div>
+    <div class="form-group"><label class="form-label">発注品目（${vendor.name}の取扱）</label>
       <div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:8px">
         ${linesHtml || '<div style="color:var(--muted);font-size:12px;text-align:center;padding:6px">品目を追加してください</div>'}
         <div style="display:flex;justify-content:space-between;padding-top:8px;font-weight:600;font-size:13px"><span>合計</span><span style="color:var(--accent)">$${total.toFixed(2)}</span></div>
       </div>
-      <div style="display:flex;gap:6px">
-        <select class="form-select" id="o-add-ing" style="flex:1">${ings.length?ings.map(i=>`<option value="${i.code}">${i.name} ($${ingUnitCost(i).toFixed(4)}/${i.unit})</option>`).join(''):'<option value="">この業者の食材なし</option>'}</select>
-        <button class="btn btn-secondary btn-sm" onclick="addOrderLine('${storeId}','${vendorName}')">追加</button>
-      </div>
+      <button class="btn btn-secondary" style="width:100%" onclick="openOrderIngPicker('${storeId}','${vendorName}')"><i class="ti ti-search"></i> 品目を検索して追加</button>
       ${minWarn}
     </div>
-    <div class="btn-row">
+    <div style="display:flex;gap:6px">
+      ${orderTmpLines.length?`<button class="btn btn-secondary btn-sm" onclick="openSaveTemplateModal('${storeId}','${vendorName}')"><i class="ti ti-bookmark"></i> テンプレ保存</button>`:''}
+    </div>
+    <div class="btn-row" style="margin-top:10px">
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-      <button class="btn btn-primary" onclick="saveOrder('${storeId}')">発注確定へ</button>
+      <button class="btn btn-primary" onclick="openOrderConfirm('${storeId}','${vendorName}')" ${orderTmpLines.length?'':'disabled'}>確認画面へ</button>
+    </div>`);
+}
+/* 業者の発注リスト（あれば）に絞った検索ピッカー。なければ業者の取扱商品 */
+function openOrderIngPicker(storeId, vendorName) {
+  var listCodes = getOrderList(storeId, vendorName);
+  if (listCodes.length) {
+    // 発注リストの品目だけを選ばせる
+    var ings = getIngredients().filter(i=>listCodes.includes(i.code));
+    openIngredientPickerFromList(ings, function(code){
+      var ing = getIngredients().find(i=>i.code===code);
+      if (ing && !orderTmpLines.find(l=>l.code===code)) orderTmpLines.push({code, name:ing.name, unit:ing.unit, price:ing.price, qty:1});
+      renderOrderModalBody(storeId, vendorName);
+    }, vendorName+' の発注リスト');
+  } else {
+    openIngredientPicker(function(code){
+      var ing = getIngredients().find(i=>i.code===code);
+      if (ing && !orderTmpLines.find(l=>l.code===code)) orderTmpLines.push({code, name:ing.name, unit:ing.unit, price:ing.price, qty:1});
+      renderOrderModalBody(storeId, vendorName);
+    }, vendorName);
+  }
+}
+/* 指定リストから選ぶ簡易ピッカー */
+function openIngredientPickerFromList(ings, onPick, title) {
+  window._listPick = { ings:ings, onPick:onPick, q:'' };
+  openModal(`<div class="modal-title">${title||'品目を選ぶ'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <input class="form-input" id="lp-q" placeholder="検索" oninput="listPickInput(this.value)" autocomplete="off" style="margin-bottom:8px">
+    <div id="lp-list" style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"></div>`);
+  setTimeout(()=>{var i=document.getElementById('lp-q');if(i)i.focus();},60);
+  renderListPick();
+}
+function listPickInput(v){ window._listPick.q=v; renderListPick(); }
+function renderListPick() {
+  var st = window._listPick; var el=document.getElementById('lp-list'); if(!el) return;
+  var q = (st.q||'').toLowerCase().trim();
+  var list = st.ings.filter(i=> !q || (i.name||'').toLowerCase().includes(q) || String(i.code).includes(q));
+  el.innerHTML = list.length ? list.map(i=>{
+    var cl = CLASSES.find(c=>c.id===catClass(i.cat))||{color:'#888'};
+    return `<div onclick="listPickChoose(${i.code})" style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-bottom:1px solid var(--border);cursor:pointer">
+      <span style="width:8px;height:8px;border-radius:50%;background:${cl.color};flex-shrink:0"></span>
+      <div style="flex:1;min-width:0"><div style="font-size:13px">${i.name}</div><div style="font-size:10px;color:var(--muted)">#${i.code} · ${catName(i.cat)}</div></div>
+      <div style="font-size:12px;font-weight:600;color:var(--accent)">$${ingUnitCost(i).toFixed(3)}/${i.unit}</div></div>`;
+  }).join('') : '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">該当なし</div>';
+}
+function listPickChoose(code){ var cb=window._listPick.onPick; closeModalDirect(); if(cb)cb(code); }
+function orderCopyLast(storeId, vendorName) {
+  var last = lastOrderForVendor(storeId, vendorName);
+  if (last) { orderTmpLines = JSON.parse(JSON.stringify(last.lines)); showToast('前回の発注をコピーしました','info'); }
+  renderOrderModalBody(storeId, vendorName);
+}
+function orderLoadTemplate(storeId, vendorName, tplId) {
+  var tpl = getOrderTemplates(storeId).find(t=>t.id===tplId);
+  if (tpl) { orderTmpLines = JSON.parse(JSON.stringify(tpl.lines)); showToast('テンプレート「'+tpl.name+'」を読み込みました','info'); }
+  renderOrderModalBody(storeId, vendorName);
+}
+function openSaveTemplateModal(storeId, vendorName) {
+  var name = prompt('テンプレート名（例: '+ (STORES.find(s=>s.id===storeId)||{}).name +' 平日通常発注）','');
+  if (!name) return;
+  var tpls = getOrderTemplates(storeId);
+  tpls.push({id:'tpl'+Date.now(), name:name.trim(), vendor:vendorName, lines:JSON.parse(JSON.stringify(orderTmpLines))});
+  setOrderTemplates(storeId, tpls);
+  showToast('テンプレート保存: '+name,'success');
+  renderOrderModalBody(storeId, vendorName);
+}
+/* 確認画面 */
+function openOrderConfirm(storeId, vendorName) {
+  window._orderVendor = vendorName;
+  var vendor = getVendors().find(v=>v.name===vendorName)||{};
+  var total = orderTmpLines.reduce((a,l)=>a+l.price*l.qty,0);
+  var rows = orderTmpLines.map(l=>`<tr><td style="font-size:12px">${l.name}</td><td style="text-align:right">${l.qty} ${l.unit}</td><td style="text-align:right;color:var(--muted)">$${l.price.toFixed(3)}</td><td style="text-align:right;font-weight:600">$${(l.price*l.qty).toFixed(2)}</td></tr>`).join('');
+  openModal(`<div class="modal-title">発注内容の確認 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="card" style="margin-bottom:10px"><div style="font-size:13px;font-weight:700">${vendorName}</div>
+      <div style="font-size:11px;color:var(--muted)">発注方法 ${vendorMethod(vendor,storeId)} · 納品 ${vendor.delivery||'—'}</div></div>
+    <table class="inv-table" style="width:100%"><thead><tr><th>品目</th><th style="text-align:right">数量</th><th style="text-align:right">単価</th><th style="text-align:right">金額</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="3" style="text-align:right;font-weight:700">合計</td><td style="text-align:right;font-weight:700;color:var(--accent)">$${total.toFixed(2)}</td></tr></tfoot>
+    </table>
+    ${total<vendor.minOrder?`<div class="alert alert-warning" style="margin-top:8px"><i class="ti ti-alert-triangle"></i>最低発注額 $${vendor.minOrder} 未満</div>`:''}
+    <div class="btn-row" style="margin-top:10px">
+      <button class="btn btn-secondary" onclick="renderOrderModalBody('${storeId}','${vendorName}')">戻る</button>
+      <button class="btn btn-primary" onclick="saveOrder('${storeId}')"><i class="ti ti-check"></i> 発注を確定</button>
     </div>`);
 }
 
@@ -5793,7 +6175,9 @@ function removeOrderLine(storeId, vendorName, idx) { orderTmpLines.splice(idx,1)
 
 function saveOrder(storeId) {
   if (!orderTmpLines.length) { alert('品目を追加してください'); return; }
-  var vendor = document.getElementById('o-vendor').value;
+  var vendor = document.getElementById('o-vendor') ? document.getElementById('o-vendor').value : (orderTmpLines._vendor||'');
+  // 確認画面経由ではo-vendorが無い場合があるため、保持していた業者を使う
+  if (!vendor) vendor = window._orderVendor || '';
   var amount = orderTmpLines.reduce((a,l)=>a+l.price*l.qty,0);
   var orders = ls('orders_'+storeId, []);
   orders.push({id:'o'+Date.now(), vendor, lines:JSON.parse(JSON.stringify(orderTmpLines)), amount, status:'発注確定', date:new Date().toLocaleDateString('ja'), deliveryDate:''});
@@ -5801,6 +6185,39 @@ function saveOrder(storeId) {
   closeModalDirect();
   showToast('発注を確定しました', 'success');
   renderPage('order');
+}
+/* CSV出力 */
+function exportOrderCSV(storeId, orderId) {
+  var o = ls('orders_'+storeId, []).find(x=>x.id===orderId); if(!o) return;
+  var store = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
+  var rows = [['発注書',''],['店舗',store],['業者',o.vendor],['発注日',o.date],['',''],['品目','数量','単位','単価','金額']];
+  o.lines.forEach(l=> rows.push([l.name, l.qty, l.unit, l.price.toFixed(3), (l.price*l.qty).toFixed(2)]));
+  rows.push(['','','','合計', o.amount.toFixed(2)]);
+  var csv = rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  var blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href=url; a.download=`発注_${o.vendor}_${o.date.replace(/\//g,'')}.csv`; a.click();
+  URL.revokeObjectURL(url);
+  showToast('CSVを出力しました','success');
+}
+/* PDF（印刷ダイアログ経由）*/
+function exportOrderPrint(storeId, orderId) {
+  var o = ls('orders_'+storeId, []).find(x=>x.id===orderId); if(!o) return;
+  var vendor = getVendors().find(v=>v.name===o.vendor)||{};
+  var store = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
+  var rows = o.lines.map(l=>`<tr><td>${l.name}</td><td style="text-align:right">${l.qty} ${l.unit}</td><td style="text-align:right">$${l.price.toFixed(3)}</td><td style="text-align:right">$${(l.price*l.qty).toFixed(2)}</td></tr>`).join('');
+  var w = window.open('', '_blank');
+  if (!w) { showToast('ポップアップを許可してください','warning'); return; }
+  w.document.write(`<html><head><meta charset="utf-8"><title>発注書 ${o.vendor}</title>
+    <style>body{font-family:sans-serif;padding:30px;color:#222}h1{font-size:20px;border-bottom:2px solid #f0661f;padding-bottom:8px}
+    table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border:1px solid #ccc;padding:8px;font-size:13px}th{background:#1e2a3a;color:#fff}
+    .meta{font-size:13px;color:#555;line-height:1.8;margin-top:8px}.total{text-align:right;font-size:16px;font-weight:bold;margin-top:12px}</style></head>
+    <body><h1>発注書 / Purchase Order</h1>
+    <div class="meta"><b>店舗:</b> ${store}<br><b>業者:</b> ${o.vendor}<br><b>発注日:</b> ${o.date}<br><b>納品:</b> ${vendor.delivery||'—'}</div>
+    <table><thead><tr><th>品目</th><th style="text-align:right">数量</th><th style="text-align:right">単価</th><th style="text-align:right">金額</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="total">合計: $${o.amount.toFixed(2)}</div>
+    <script>window.onload=function(){window.print();}<\/script></body></html>`);
+  w.document.close();
 }
 
 /* ============================================================
@@ -7535,11 +7952,18 @@ function shiftPriority(emp) {
   return 5;                                    // 通常Part Time
 }
 /* そのスタッフが Lv1以上で対応できるポジションか（Energy/Leadershipは評価軸なので除外） */
-function canDoPosition(name, pos) {
+function canDoPosition(name, pos, storeId) {
   if (pos==='Energy' || pos==='Leadership') return true; // 評価軸（必須枠ではない）
-  var sk = getEmpSkills(name);
+  // 店舗指定時はその店舗のスキルで判定（複数店舗勤務者を正しく扱う）
+  var sk = storeId ? getEmpSkillsStore(name, storeId) : getEmpSkills(name);
   var s = sk[pos];
   return !!(s && s.status==='承認' && s.level>=1);
+}
+/* 店舗別スキルでのポジションレベル（0=不可） */
+function positionLevelStore(name, pos, storeId) {
+  var sk = getEmpSkillsStore(name, storeId);
+  var s = sk[pos];
+  return (s && s.status==='承認') ? (s.level||0) : 0;
 }
 /* 実際にアサインが必要なポジション（Energy/Leadershipは評価軸なので枠から除外） */
 function assignablePositions(storeId) {
@@ -7575,7 +7999,7 @@ function autoGenShift(storeId, week) {
           if (used.includes(e.name)) return false;
           if (isOnLeaveDow(e.name, week, day)) return false;            // 承認済み休暇は配置しない
           if (!availOk(e)) return false;
-          if (!canDoPosition(e.name, pos)) return false;
+          if (!canDoPosition(e.name, pos, storeId)) return false;        // ★この店舗のスキルで判定
           if (!workCondOk(storeId, e.name, day, period)) return false;  // 勤務条件
           var maxH = getWorkCondition(storeId, e.name).maxH || 40;
           var cap = Math.min(maxH, otApprovals[e.name]?999:40);
@@ -7584,12 +8008,12 @@ function autoGenShift(storeId, week) {
           return true;
         });
         if (!cands.length) return;
-        // Step5: 優先度高→時間少ない→スキルレベル高い順
+        // Step5: 優先度高→時間少ない→（この店舗の）スキルレベル高い順
         cands.sort((a,b)=>{
           var pa=shiftPriority(a), pb=shiftPriority(b);
           if (pb!==pa) return pb-pa;
           if (hours[a.name]!==hours[b.name]) return hours[a.name]-hours[b.name];
-          var la=(getEmpSkills(a.name)[pos]||{}).level||0, lb=(getEmpSkills(b.name)[pos]||{}).level||0;
+          var la=positionLevelStore(a.name,pos,storeId), lb=positionLevelStore(b.name,pos,storeId);
           return lb-la;
         });
         // Step6: Trainingルール + Lv3とセット必須 + Trainer必須 → 同枠にLv3が必要
@@ -7644,7 +8068,7 @@ function checkShiftWarnings(storeId, week, plan) {
       // Lv不足: そのポジションを承認Lv1以上で持たない人が入っている
       slotKeys.forEach(k=>{
         var pos=k.split('_')[2]; var n=plan.cells[k];
-        if (!canDoPosition(n,pos)) warnings.push(`${day} ${period}: ${n}は${pos}未承認`);
+        if (!canDoPosition(n,pos,storeId)) warnings.push(`${day} ${period}: ${n}は${pos}未承認`);
       });
       // 特別ルール: 禁止ペアが同時間帯
       var sr = getSpecialRules(storeId);
@@ -8406,11 +8830,25 @@ function submitVacation() {
 const APPLICANT_STORES = ['ToriTon','Tenkichi','Totoya','Marujuu','Waikiki','未分類'];
 function getApplicants() {
   return ls('applicants', [
-    {id:'a1', name:'Keiko Tanaka', store:'Waikiki', pos:'FSP Cashier', phone:'808-555-0101', email:'keiko@example.com', date:'2026-06-08', status:'新規応募', memo:''},
-    {id:'a2', name:'Ryan Matsuda', store:'Totoya', pos:'Main Plater', phone:'808-555-0102', email:'ryan@example.com', date:'2026-06-07', status:'面接予定', interviewDate:'2026-06-12', interviewer:'Yuki', memo:''},
+    {id:'a1', name:'Keiko Tanaka', store:'Waikiki', pos:'FSP Cashier', phone:'808-555-0101', email:'keiko@example.com', date:'2026-06-08', status:'応募中', source:'Indeed', skills:'接客2年', memo:''},
+    {id:'a2', name:'Ryan Matsuda', store:'Totoya', pos:'Main Plater', phone:'808-555-0102', email:'ryan@example.com', date:'2026-06-07', status:'応募中', source:'Indeed', memo:''},
   ]);
 }
 function setApplicants(a) { lsSet('applicants', a); }
+/* ===== 不採用ログ（再応募チェック用） =====
+   reject_log = [{name, phone, email, store, applyDate, rejectDate, reason, memo, by, resumeName}] */
+function getRejectLog() { return ls('reject_log', []); }
+function addRejectLog(entry) { var l=getRejectLog(); l.push(entry); lsSet('reject_log', l); }
+/* 応募者と過去不採用ログの照合（氏名/電話/メールのいずれか一致） */
+function findPriorRejects(applicant) {
+  var name=(applicant.name||'').trim().toLowerCase();
+  var phone=(applicant.phone||'').replace(/[^0-9]/g,'');
+  var email=(applicant.email||'').trim().toLowerCase();
+  return getRejectLog().filter(r=>{
+    var rn=(r.name||'').trim().toLowerCase(), rp=(r.phone||'').replace(/[^0-9]/g,''), re=(r.email||'').trim().toLowerCase();
+    return (name&&rn===name) || (phone&&phone.length>=7&&rp===phone) || (email&&re===email);
+  });
+}
 /* 応募者の閲覧範囲（権限） */
 function visibleApplicants() {
   var all = getApplicants();
@@ -8434,25 +8872,24 @@ function renderHiring() {
   apps.forEach(a=>{ (byStore[a.store]=byStore[a.store]||[]).push(a); });
 
   var html = `<div class="section-header">
-    <div><div class="section-title">採用管理</div><div class="section-sub">応募者 → 面接 → 採用決定</div></div>
+    <div><div class="section-title">採用管理</div><div class="section-sub">応募者 → 採用 / 不採用</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
-      <button class="btn btn-secondary btn-sm" onclick="openApplicantModal()"><i class="ti ti-user-plus"></i> 採用候補</button>
-      <button class="btn btn-primary btn-sm" onclick="openDirectOnboardModal()"><i class="ti ti-send"></i> 直接OB開始</button>
+      <button class="btn btn-primary btn-sm" onclick="openApplicantModal()"><i class="ti ti-user-plus"></i> 応募者を追加</button>
+      <button class="btn btn-secondary btn-sm" onclick="openDirectOnboardModal()"><i class="ti ti-send"></i> 直接OB開始</button>
     </div>
   </div>
   <div class="kpi-grid" style="margin-bottom:12px;">
-    ${kpi('応募者', apps.length, '全ステータス', 'var(--tm)')}
-    ${kpi('新規', apps.filter(c=>c.status==='新規応募').length, '未対応', 'var(--accent2)')}
-    ${kpi('面接', apps.filter(c=>['面接調整中','面接予定','面接完了'].includes(c.status)).length, '進行中', 'var(--yellow)')}
-    ${kpi('採用', apps.filter(c=>c.status==='採用').length, '今月', 'var(--green)')}
+    ${kpi('応募者', apps.length, '全体', 'var(--tm)')}
+    ${kpi('応募中', apps.filter(c=>['応募中','新規応募','要確認'].includes(c.status)).length, '判定待ち', 'var(--accent2)')}
+    ${kpi('採用', apps.filter(c=>c.status==='採用').length, '今期', 'var(--green)')}
+    ${kpi('不採用', apps.filter(c=>c.status==='不採用').length, 'ログ保存', 'var(--muted)')}
   </div>`;
 
   // ===== 採用〜成長パイプライン（視覚化） =====
   var obsP = ls('onboardings', []);
   var empsP = getEmployees().filter(e=>e.status!=='退職');
   var pipe = [
-    {label:'応募', icon:'ti-inbox', n: apps.filter(a=>['新規応募','要確認'].includes(a.status)).length, col:'var(--muted)'},
-    {label:'面接', icon:'ti-calendar', n: apps.filter(a=>['面接調整中','面接予定','面接完了'].includes(a.status)).length, col:'var(--accent2)'},
+    {label:'応募', icon:'ti-inbox', n: apps.filter(a=>['応募中','新規応募','要確認'].includes(a.status)).length, col:'var(--accent2)'},
     {label:'採用', icon:'ti-user-check', n: apps.filter(a=>a.status==='採用').length, col:'var(--accent)'},
     {label:'OB', icon:'ti-school', n: obsP.filter(o=>o.obStatus!=='登録完了'&&o.obStatus!=='キャンセル').length, col:'var(--accent)'},
     {label:'Training', icon:'ti-run', n: empsP.filter(e=>(e.step||1)<=0).length, col:'var(--yellow)'},
@@ -8485,21 +8922,29 @@ function renderHiring() {
     var color = (STORES.find(s=>s.brand===store||s.name===store)||{}).color || 'var(--muted)';
     html += `<div class="card"><div class="card-title" style="color:${color}"><span class="store-dot" style="background:${color}"></span>${store} 応募者一覧 (${list.length})</div>`;
     list.forEach(c => {
-      var sc = c.status==='採用'?'tag-green':c.status==='不採用'||c.status==='辞退'?'tag-red':c.status.includes('面接')?'tag-blue':c.status==='要確認'?'tag-yellow':'tag-gray';
+      var sc = c.status==='採用'?'tag-green':c.status==='不採用'?'tag-red':'tag-gray';
+      var priorRejects = findPriorRejects(c).filter(r=>r.rejectDate!==c._justRejected);
+      var rehireWarn = (c.status==='応募中'||c.status==='新規応募'||c.status==='要確認') && priorRejects.length;
       html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+        ${rehireWarn?`<div style="background:var(--red-bg,#fbeae8);border-radius:8px;padding:6px 8px;margin-bottom:6px;font-size:11px;color:var(--red)">
+          <b><i class="ti ti-alert-triangle"></i> 過去応募履歴あり</b>${priorRejects.slice(-1).map(r=>`<br>${r.rejectDate} 不採用 · 理由: ${r.reason}${r.memo?'<br>メモ: '+r.memo:''}`).join('')}</div>`:''}
         <div style="display:flex;justify-content:space-between;align-items:flex-start">
-          <div><div style="font-weight:600;font-size:13px">${c.name} <span class="tag ${sc}" style="font-size:9px">${c.status}</span></div>
+          <div><div style="font-weight:600;font-size:13px">${c.name} <span class="tag ${sc}" style="font-size:9px">${c.status==='新規応募'||c.status==='要確認'?'応募中':c.status}</span></div>
             <div style="font-size:11px;color:var(--muted)">${c.pos||'ポジション未定'} · ${c.phone||'TEL無'} · ${c.email||'Email無'}</div>
-            <div style="font-size:11px;color:var(--muted)">応募 ${c.date}${c.interviewDate?' · 面接 '+c.interviewDate+(c.interviewer?'('+c.interviewer+')':''):''}</div>
+            <div style="font-size:11px;color:var(--muted)">応募 ${c.date}${c.source?' · '+c.source:''}</div>
+            ${c.skills?`<div style="font-size:11px;color:var(--muted)">スキル: ${c.skills}</div>`:''}
+            ${c.resumeName?`<div style="font-size:11px;color:var(--blue,#2e6fd6)"><i class="ti ti-file-text"></i> ${c.resumeName}</div>`:''}
             ${c.memo?`<div style="font-size:11px;color:var(--accent2)">メモ: ${c.memo}</div>`:''}
+            ${c.status==='不採用'&&c.rejectReason?`<div style="font-size:11px;color:var(--red)">不採用理由: ${c.rejectReason}</div>`:''}
           </div>
         </div>
         <div class="approval-actions" style="margin-top:6px">
           <button class="btn btn-secondary btn-sm" onclick="openApplicantModal('${c.id}')"><i class="ti ti-edit"></i> 編集</button>
-          ${c.status==='新規応募'||c.status==='要確認'?`<button class="btn btn-primary btn-sm" onclick="moveToInterview('${c.id}')"><i class="ti ti-arrow-right"></i> 面接候補へ</button>`:''}
-          ${['面接調整中','面接予定','面接完了'].includes(c.status)?`<button class="btn btn-secondary btn-sm" onclick="openInterviewModal('${c.id}')"><i class="ti ti-calendar"></i> 面接管理</button>`:''}
-          ${['面接完了','面接予定'].includes(c.status)?`<button class="btn btn-success btn-sm" onclick="hireDecision('${c.id}')"><i class="ti ti-user-check"></i> 採用決定</button>`:''}
-          ${c.status!=='不採用'&&c.status!=='採用'?`<button class="btn btn-danger btn-sm" onclick="updateApplicant('${c.id}','不採用')">不採用</button>`:''}
+          ${c.status!=='採用'&&c.status!=='不採用'?`
+            <button class="btn btn-success btn-sm" onclick="openHireModal('${c.id}')"><i class="ti ti-user-check"></i> 採用</button>
+            <button class="btn btn-danger btn-sm" onclick="openRejectModal('${c.id}')"><i class="ti ti-user-x"></i> 不採用</button>`:''}
+          ${c.status==='採用'&&!c.onboardId?`<button class="btn btn-primary btn-sm" onclick="startOnboardingFromApplicant('${c.id}')"><i class="ti ti-school"></i> Onboarding開始</button>`:''}
+          ${c.status==='採用'&&c.onboardId?`<span class="tag tag-green" style="font-size:9px">Onboarding中</span>`:''}
         </div>
       </div>`;
     });
@@ -8512,26 +8957,57 @@ function renderHiring() {
 const APPLICANT_SOURCES = ['Indeed','紹介','再雇用','飛び込み','その他'];
 function openApplicantModal(id) {
   var apps = getApplicants();
-  var a = id ? apps.find(x=>x.id===id) : {name:'',store:'未分類',pos:'',phone:'',email:'',date:new Date().toISOString().slice(0,10),memo:'',source:'Indeed'};
-  openModal(`<div class="modal-title">${id?'応募者編集':'採用候補を登録'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">氏名</label><input class="form-input" id="ap-name" value="${a.name||''}"></div>
+  var a = id ? apps.find(x=>x.id===id) : {name:'',store:'未分類',pos:'',phone:'',email:'',date:new Date().toISOString().slice(0,10),memo:'',source:'Indeed',history:'',skills:'',resumeName:''};
+  openModal(`<div class="modal-title">${id?'応募者編集':'応募者を登録'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div id="ap-rehire-warn"></div>
+    <div class="form-group"><label class="form-label">氏名 *</label><input class="form-input" id="ap-name" value="${a.name||''}" oninput="apCheckRehire()"></div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">応募店舗</label>
+      <div class="form-group"><label class="form-label">応募店舗 *</label>
         <select class="form-select" id="ap-store">${APPLICANT_STORES.map(s=>`<option ${a.store===s?'selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="form-label">応募ポジション</label><input class="form-input" id="ap-pos" value="${a.pos||''}" placeholder="例: Server"></div>
+      <div class="form-group"><label class="form-label">希望ポジション</label><input class="form-input" id="ap-pos" value="${a.pos||''}" placeholder="例: Server"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="ap-phone" value="${a.phone||''}"></div>
-      <div class="form-group"><label class="form-label">メールアドレス</label><input class="form-input" id="ap-email" value="${a.email||''}"></div>
+      <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="ap-phone" value="${a.phone||''}" oninput="apCheckRehire()"></div>
+      <div class="form-group"><label class="form-label">メールアドレス</label><input class="form-input" id="ap-email" value="${a.email||''}" oninput="apCheckRehire()"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">応募経路</label>
         <select class="form-select" id="ap-source">${APPLICANT_SOURCES.map(s=>`<option ${a.source===s?'selected':''}>${s}</option>`).join('')}</select></div>
       <div class="form-group"><label class="form-label">応募日</label><input class="form-input" id="ap-date" type="date" value="${a.date||''}"></div>
     </div>
-    <div class="form-group"><label class="form-label">メモ</label><textarea class="form-textarea" id="ap-memo">${a.memo||''}</textarea></div>
+    <div class="form-group"><label class="form-label">職歴</label><textarea class="form-textarea" id="ap-history" rows="2" placeholder="過去の勤務先・経験">${a.history||''}</textarea></div>
+    <div class="form-group"><label class="form-label">スキル</label><input class="form-input" id="ap-skills" value="${a.skills||''}" placeholder="例: 接客3年, 日英バイリンガル"></div>
+    <div class="form-group"><label class="form-label">レジュメPDF</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="file" id="ap-resume" accept="application/pdf" style="font-size:12px" onchange="apResumePicked(this)">
+        <span id="ap-resume-name" style="font-size:11px;color:var(--muted)">${a.resumeName||'未添付'}</span>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">※ Indeedのレジュメを添付。氏名・連絡先は上のフォームに手入力してください（自動読取は将来対応）。</div>
+    </div>
+    <div class="form-group"><label class="form-label">メモ</label><textarea class="form-textarea" id="ap-memo" rows="2">${a.memo||''}</textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveApplicant('${id||''}')">保存</button></div>`);
+  setTimeout(apCheckRehire, 100);
+}
+var _apResumeData = null;
+function apResumePicked(input) {
+  var f = input.files && input.files[0]; if(!f) return;
+  if (f.type!=='application/pdf') { alert('PDFを選んでください'); input.value=''; return; }
+  if (f.size > 4*1024*1024) { alert('ファイルが大きすぎます（4MBまで）。'); input.value=''; return; }
+  _apResumeData = {name:f.name};
+  document.getElementById('ap-resume-name').textContent = f.name;
+}
+/* 入力中に過去不採用ログを照合して警告表示 */
+function apCheckRehire() {
+  var el = document.getElementById('ap-rehire-warn'); if(!el) return;
+  var probe = {name:(document.getElementById('ap-name')||{}).value, phone:(document.getElementById('ap-phone')||{}).value, email:(document.getElementById('ap-email')||{}).value};
+  if (!probe.name && !probe.phone && !probe.email) { el.innerHTML=''; return; }
+  var priors = findPriorRejects(probe);
+  if (priors.length) {
+    var last = priors[priors.length-1];
+    el.innerHTML = `<div style="background:var(--red-bg,#fbeae8);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--red)">
+      <b><i class="ti ti-alert-triangle"></i> 過去に不採用の応募者と一致</b><br>${last.rejectDate} 不採用 · ${last.store||''}<br>理由: ${last.reason}${last.memo?'<br>メモ: '+last.memo:''}</div>`;
+  } else el.innerHTML='';
 }
 function saveApplicant(id) {
   var name=document.getElementById('ap-name').value.trim();
@@ -8541,15 +9017,20 @@ function saveApplicant(id) {
     phone:document.getElementById('ap-phone').value.trim(), email:document.getElementById('ap-email').value.trim(),
     source:document.getElementById('ap-source').value,
     date:document.getElementById('ap-date').value, memo:document.getElementById('ap-memo').value.trim(),
+    history:document.getElementById('ap-history').value.trim(),
+    skills:document.getElementById('ap-skills').value.trim(),
   };
+  if (_apResumeData) data.resumeName = _apResumeData.name;
   var apps = getApplicants();
-  if (id) { var a=apps.find(x=>x.id===id); Object.assign(a,data); if(a.status==='要確認'&&a.store!=='未分類'&&a.phone&&a.email)a.status='新規応募'; }
-  else {
-    var status = (!data.store||data.store==='未分類'||!data.phone||!data.email||!data.pos)?'要確認':'新規応募';
-    apps.push(Object.assign({id:'a'+Date.now(), status}, data));
+  if (id) {
+    var a=apps.find(x=>x.id===id); Object.assign(a,data);
+    if (a.status==='要確認'||a.status==='新規応募') a.status='応募中';
+  } else {
+    apps.push(Object.assign({id:'a'+Date.now(), status:'応募中'}, data));
   }
   setApplicants(apps);
-  closeModalDirect(); showToast('採用候補を保存しました','success'); renderPage('hiring');
+  _apResumeData = null;
+  closeModalDirect(); showToast('応募者を保存しました','success'); renderPage('hiring');
 }
 
 /* 直接オンボーディング開始（採用確定者・面接フロー省略） */
@@ -8617,49 +9098,98 @@ function createOnboarding(opts) {
   lsSet('onboardings', obs);
   return candId;
 }
-function updateApplicant(id, status) {
-  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
-  a.status=status; setApplicants(apps); renderPage('hiring');
-}
-function moveToInterview(id) {
-  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
-  a.status='面接調整中'; setApplicants(apps);
-  showToast(`${a.name}を面接候補に追加しました`,'success'); renderPage('hiring');
-}
-function openInterviewModal(id) {
+/* ===== 採用: 配属情報を設定 → Onboarding開始 ===== */
+const REJECT_REASONS = ['勤務条件が合わない','希望シフトが合わない','経験・スキル不足','面接態度に懸念あり','連絡が取れない','過去に採用不可判断あり','その他'];
+function openHireModal(id) {
   var a = getApplicants().find(x=>x.id===id); if(!a)return;
-  openModal(`<div class="modal-title">面接管理 — ${a.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-row">
-      <div class="form-group"><label class="form-label">面接予定日</label><input class="form-input" id="iv-date" type="date" value="${a.interviewDate||''}"></div>
-      <div class="form-group"><label class="form-label">面接担当者</label><input class="form-input" id="iv-er" value="${a.interviewer||''}"></div>
-    </div>
-    <div class="form-group"><label class="form-label">面接ステータス</label>
-      <select class="form-select" id="iv-status">
-        ${['面接調整中','面接予定','面接完了','辞退'].map(s=>`<option ${a.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
-    <div class="form-group"><label class="form-label">評価メモ</label><textarea class="form-textarea" id="iv-eval">${a.evalMemo||''}</textarea></div>
-    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveInterview('${id}')">保存</button></div>`);
-}
-function saveInterview(id) {
-  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
-  a.interviewDate=document.getElementById('iv-date').value;
-  a.interviewer=document.getElementById('iv-er').value.trim();
-  a.status=document.getElementById('iv-status').value;
-  a.evalMemo=document.getElementById('iv-eval').value.trim();
-  setApplicants(apps); closeModalDirect(); showToast('面接情報を保存しました','success'); renderPage('hiring');
-}
-/* 採用決定 → オンボーディング自動開始 */
-function hireDecision(id) {
-  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
-  if (!confirm(`${a.name}さんを採用決定し、オンボーディングを開始しますか？`)) return;
-  a.status='採用'; setApplicants(apps);
   var storeObj = STORES.find(s=>s.brand===a.store||s.name===a.store) || STORES[0];
+  openModal(`<div class="modal-title">採用 — ${a.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">採用情報を設定すると、そのままOnboardingが開始されます。</div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">配属店舗</label>
+        <select class="form-select" id="hire-store">${STORES.map(s=>`<option value="${s.id}" ${s.id===storeObj.id?'selected':''}>${s.name}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">ポジション</label><input class="form-input" id="hire-pos" value="${a.pos||''}" placeholder="例: Server"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="hire-wage" type="number" step="0.25" value="16"></div>
+      <div class="form-group"><label class="form-label">勤務開始予定日</label><input class="form-input" id="hire-start" type="date"></div>
+    </div>
+    <div class="form-group"><label class="form-label">在留ステータス</label>
+      <select class="form-select" id="hire-visa"><option>市民/永住権</option><option>就労ビザ</option><option>学生ビザ(就労許可)</option><option>その他/要確認</option></select></div>
+    <div class="form-group"><label class="form-label">雇用区分</label>
+      <select class="form-select" id="hire-emp">${EMP_DIVISIONS.map(d=>`<option>${d}</option>`).join('')}</select></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-success" onclick="confirmHire('${id}')"><i class="ti ti-user-check"></i> 採用してOnboarding開始</button></div>`);
+}
+function confirmHire(id) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  var storeId=document.getElementById('hire-store').value;
+  var storeObj=STORES.find(s=>s.id===storeId)||STORES[0];
+  a.status='採用';
+  a.hirePos=document.getElementById('hire-pos').value.trim();
+  a.hireWage=parseFloat(document.getElementById('hire-wage').value)||16;
+  a.hireStart=document.getElementById('hire-start').value;
+  a.hireVisa=document.getElementById('hire-visa').value;
+  a.hireStore=storeId;
+  a.hireEmp=document.getElementById('hire-emp').value;
+  setApplicants(apps);
+  closeModalDirect();
+  startOnboardingFromApplicant(id);
+}
+/* 応募者情報をOnboardingへ引き継ぐ */
+function startOnboardingFromApplicant(id) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  if (a.onboardId) { showToast('既にOnboarding開始済みです','info'); go('onboarding'); return; }
+  var storeId = a.hireStore || (STORES.find(s=>s.brand===a.store||s.name===a.store)||STORES[0]).id;
+  var storeObj = STORES.find(s=>s.id===storeId)||STORES[0];
   var candId = createOnboarding({
     applicantId:a.id, name:a.name, store:storeObj.id, storeName:storeObj.name,
-    pos:a.pos, email:a.email, phone:a.phone,
+    pos:a.hirePos||a.pos||'', email:a.email, phone:a.phone,
+    wage:a.hireWage||16, division:a.hireEmp||'Part Time Crew',
+    plannedStart:a.hireStart||'', visaStatus:a.hireVisa||'',
   });
-  showToast(`${a.name}を採用決定。${candId} を発行しオンボーディング開始`,'success');
+  a.onboardId = candId; a.status='採用';
+  setApplicants(apps);
+  showToast(`${a.name}を採用。${candId} でOnboarding開始`,'success');
   go('onboarding');
+}
+/* ===== 不採用: 理由入力 → ログ保存 ===== */
+function openRejectModal(id) {
+  var a = getApplicants().find(x=>x.id===id); if(!a)return;
+  openModal(`<div class="modal-title">不採用 — ${a.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">不採用理由はログに保存され、同じ人が再応募した際に警告表示されます。</div>
+    <div class="form-group"><label class="form-label">不採用理由 *</label>
+      <select class="form-select" id="rej-reason" onchange="rejToggleOther()">${REJECT_REASONS.map(r=>`<option>${r}</option>`).join('')}</select></div>
+    <div class="form-group" id="rej-other-wrap" style="display:none"><label class="form-label">理由（自由入力）</label><input class="form-input" id="rej-other"></div>
+    <div class="form-group"><label class="form-label">面接メモ</label><textarea class="form-textarea" id="rej-memo" rows="2"></textarea></div>
+    <div class="form-group"><label class="form-label">対応者</label><input class="form-input" id="rej-by" value="${(ROLE_CONFIG[curRole]||{}).name||curUserName||''}"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-danger" onclick="confirmReject('${id}')"><i class="ti ti-user-x"></i> 不採用にする</button></div>`);
+}
+function rejToggleOther() {
+  var v=document.getElementById('rej-reason').value;
+  document.getElementById('rej-other-wrap').style.display = (v==='その他')?'':'none';
+}
+function confirmReject(id) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  var reason=document.getElementById('rej-reason').value;
+  if (reason==='その他') { var o=document.getElementById('rej-other').value.trim(); reason = o?('その他: '+o):'その他'; }
+  var memo=document.getElementById('rej-memo').value.trim();
+  var by=document.getElementById('rej-by').value.trim();
+  var today=new Date().toISOString().slice(0,10);
+  a.status='不採用'; a.rejectReason=reason; a.rejectDate=today;
+  setApplicants(apps);
+  addRejectLog({name:a.name, phone:a.phone, email:a.email, store:a.store, applyDate:a.date,
+    rejectDate:today, reason:reason, memo:memo, by:by, resumeName:a.resumeName||''});
+  closeModalDirect();
+  showToast(`${a.name}を不採用にしました（ログ保存）`,'info');
+  renderPage('hiring');
+}
+/* 旧フロー関数（後方互換・無害化） */
+function updateApplicant(id, status) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  if (status==='不採用') { openRejectModal(id); return; }
+  a.status=status; setApplicants(apps); renderPage('hiring');
 }
 
 /* ============================================================
@@ -9951,12 +10481,145 @@ function skillCriteria(pos) {
 function getStorePositions(storeId) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); return all[storeId]||ALL_POSITIONS; }
 function setStorePositions(storeId, positions) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); all[storeId]=positions; lsSet('store_positions', all); }
 
-/* スキル: { empName: { position: {level:0/1/2, status, selfComment, mgrComment, nextTask, date} } } */
-function getSkills() { return ls('skills', {}); }
-function setSkills(s) { lsSet('skills', s); }
+/* スキル(旧): { empName: { position: {level, status, ...} } }  店舗区別なし
+   スキル(新 v2): { empName: { storeId: { position: {level, status, ...} } } }
+   旧データは所属店舗のスキルとして自動移行（過去評価を保持） */
+function migrateSkillsV2() {
+  var v2 = ls('skills_v2', null);
+  if (v2) return v2;
+  // 旧skillsから移行
+  var old = ls('skills', {});
+  var migrated = {};
+  Object.keys(old).forEach(name=>{
+    var emp = (ls('m_employees', []).find(e=>e.name===name)) || {};
+    var homeStore = emp.store || (STORES[0]&&STORES[0].id) || 'F01';
+    migrated[name] = {};
+    migrated[name][homeStore] = old[name];
+  });
+  lsSet('skills_v2', migrated);
+  return migrated;
+}
+function getSkillsV2() { return migrateSkillsV2(); }
+function setSkillsV2(s) { lsSet('skills_v2', s); }
+/* 店舗別スキル取得 { position: {...} } */
+function getEmpSkillsStore(name, storeId) {
+  var v2 = getSkillsV2();
+  return (v2[name] && v2[name][storeId]) ? v2[name][storeId] : {};
+}
+/* 店舗別スキルを書き込む */
+function setEmpSkillStore(name, storeId, position, data) {
+  var v2 = getSkillsV2();
+  if (!v2[name]) v2[name] = {};
+  if (!v2[name][storeId]) v2[name][storeId] = {};
+  v2[name][storeId][position] = data;
+  setSkillsV2(v2);
+}
+/* この人がスキルを持つ店舗ID一覧 */
+function skillStoresForEmp(name) {
+  var v2 = getSkillsV2();
+  return v2[name] ? Object.keys(v2[name]) : [];
+}
+/* 後方互換: 全店舗を統合（同名ポジションは最高レベルを採用）して旧形式で返す
+   既存の呼び出し（isLv3Anywhere, approvedPositions, シフト等）はこれで動き続ける */
+function getSkills() {
+  var v2 = getSkillsV2();
+  var merged = {};
+  Object.keys(v2).forEach(name=>{
+    merged[name] = {};
+    Object.keys(v2[name]).forEach(storeId=>{
+      var posMap = v2[name][storeId];
+      Object.keys(posMap).forEach(pos=>{
+        var cur = merged[name][pos];
+        var cand = posMap[pos];
+        // 承認済み・高レベルを優先
+        if (!cur || (cand.level||0) > (cur.level||0) || (cand.status==='承認' && cur.status!=='承認')) merged[name][pos] = cand;
+      });
+    });
+  });
+  return merged;
+}
+function setSkills(s) {
+  // 旧形式での書き込みは「所属店舗」に振り分けて v2 に保存（後方互換）
+  var v2 = getSkillsV2();
+  Object.keys(s).forEach(name=>{
+    var emp = (ls('m_employees', []).find(e=>e.name===name)) || {};
+    var homeStore = emp.store || (STORES[0]&&STORES[0].id) || 'F01';
+    if (!v2[name]) v2[name] = {};
+    if (!v2[name][homeStore]) v2[name][homeStore] = {};
+    Object.keys(s[name]).forEach(pos=>{ v2[name][homeStore][pos] = s[name][pos]; });
+  });
+  setSkillsV2(v2);
+}
 function getEmpSkills(name) { return getSkills()[name] || {}; }
 function approvedPositions(name) { var sk=getEmpSkills(name); return Object.keys(sk).filter(p=>sk[p].status==='承認'&&sk[p].level>=1); }
+/* 店舗別の承認済みポジション（シフト配置で使用） */
+function approvedPositionsStore(name, storeId) {
+  var sk=getEmpSkillsStore(name, storeId);
+  return Object.keys(sk).filter(p=>sk[p].status==='承認'&&sk[p].level>=1);
+}
+/* 店舗別スキルの集計（合計点・Lv3数） */
+function skillScoreStore(name, storeId) {
+  var sk = getEmpSkillsStore(name, storeId);
+  var total=0, lv3=0, approved=0;
+  Object.keys(sk).forEach(p=>{
+    var s=sk[p];
+    if (s.status==='承認') { total += (s.level||0); if((s.level||0)>=3) lv3++; approved++; }
+  });
+  return {total:total, lv3:lv3, approved:approved};
+}
 function leaderSkillApproved(name) { var sk=getEmpSkills(name); return !!((sk['Leadership']&&sk['Leadership'].status==='承認'&&sk['Leadership'].level>=2) || (sk['Leader']&&sk['Leader'].status==='承認'&&sk['Leader'].level>=1)); }
+
+/* ===== 店舗別レベルアップ／Tip条件（フェーズ2） =====
+   skill_rules[storeId] = {
+     toRate90:  { minTotal, minLv3, mustLv3:[positions], needMgr, noLateOk },
+     toRate100: { ... }
+   }
+   条件は「全店共通の既定」をベースに、店舗ごとに上書き可能 */
+const DEFAULT_TIP_TARGETS = [
+  {key:'toRate80',  rate:80,  label:'80%', from:0},
+  {key:'toRate90',  rate:90,  label:'90%', from:80},
+  {key:'toRate100', rate:100, label:'100%', from:90},
+];
+const DEFAULT_SKILL_RULES = {
+  toRate80:  { minTotal:0,  minLv3:0, mustLv3:[], needMgr:false },
+  toRate90:  { minTotal:12, minLv3:3, mustLv3:[], needMgr:true },
+  toRate100: { minTotal:20, minLv3:5, mustLv3:[], needMgr:true },
+};
+function getSkillRules(storeId) {
+  var all = ls('skill_rules', {});
+  var r = all[storeId] || {};
+  // 既定に店舗設定をマージ
+  var out = {};
+  DEFAULT_TIP_TARGETS.forEach(t=>{ out[t.key] = Object.assign({}, DEFAULT_SKILL_RULES[t.key], r[t.key]||{}); });
+  return out;
+}
+function setSkillRules(storeId, rules) { var all=ls('skill_rules', {}); all[storeId]=rules; lsSet('skill_rules', all); }
+/* 次の目標レート（現在レートから） */
+function nextTipTarget(currentRate) {
+  return DEFAULT_TIP_TARGETS.find(t=>t.from===currentRate) || null;
+}
+/* 条件達成チェック（店舗別）。返り値: {target, checks:[{label,ok,detail}], allOk, mgrPending} */
+function checkLevelUpEligibility(name, storeId) {
+  var emp = getEmployees().find(e=>e.name===name);
+  if (!emp) return null;
+  var curRate = effectiveTipRate(name);
+  var target = nextTipTarget(curRate);
+  if (!target) return {target:null, checks:[], allOk:false, maxed:true, curRate:curRate};
+  var rule = getSkillRules(storeId)[target.key] || {};
+  var sc = skillScoreStore(name, storeId);
+  var sk = getEmpSkillsStore(name, storeId);
+  var checks = [];
+  if (rule.minTotal>0) checks.push({label:`合計${rule.minTotal}点以上`, ok: sc.total>=rule.minTotal, detail:`${sc.total}/${rule.minTotal}点`});
+  if (rule.minLv3>0)   checks.push({label:`Lv3を${rule.minLv3}項目以上`, ok: sc.lv3>=rule.minLv3, detail:`${sc.lv3}/${rule.minLv3}項目`});
+  (rule.mustLv3||[]).forEach(pos=>{
+    var ok = sk[pos] && sk[pos].status==='承認' && sk[pos].level>=3;
+    checks.push({label:`${pos} がLv3`, ok:!!ok, detail: ok?'達成':'未'});
+  });
+  // SM承認は申請後のマネージャー承認で満たすため、ここでは「申請可否」には含めず注記
+  var mgrPending = !!rule.needMgr;
+  var allOk = checks.length>0 ? checks.every(c=>c.ok) : (curRate<target.rate);
+  return {target:target, checks:checks, allOk:allOk, mgrPending:mgrPending, curRate:curRate, score:sc, maxed:false};
+}
 const SKILL_TRAINING = {
   'Server':'接客トレーニング','Host':'接客トレーニング','Cashier':'レジ・会計トレーニング',
   'Kitchen':'キッチン基礎トレーニング','Prep':'仕込みトレーニング','Leader':'Leader Training',
@@ -10473,34 +11136,57 @@ function renderMypage() {
   } else { html += `<p style="color:var(--muted);font-size:13px">${t('担当タスクはありません','No assigned tasks')}</p>`; }
   html += '</div>';
 
-  // 4-5. スキルレベル現在地 + 次に強化すべきスキル
+  // 4-5-6. Your Skill Progress（店舗別スキル現在地 + 次の目標 + Tip連動）
   var positions = getStorePositions(storeId);
-  var psk = getEmpSkills(me);
+  var psk = getEmpSkillsStore(me, storeId);
   var apPos = positions.filter(p=>psk[p]&&psk[p].status==='承認'&&psk[p].level>=1);
   var missing = positions.filter(p=>!apPos.includes(p));
-  html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>${t('スキルレベル現在地','Skill Level')}
-    <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('skill')">${t('スキル申請','Apply')}</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">${t('できるポジション','Positions')} (${apPos.length}/${positions.length})</div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${apPos.length?apPos.map(p=>`<span class="tag tag-green">${p} Lv${psk[p].level}</span>`).join(''):'<span style="color:var(--muted);font-size:12px">'+t('承認済みなし','None approved')+'</span>'}</div>`;
-  if (missing.length) {
-    html += `<div class="alert alert-warning" style="padding:8px 10px"><i class="ti ti-arrow-up-right"></i>${t('次に強化すべき','Next to develop')}: <strong>${missing[0]}</strong> <span style="font-size:11px">（${t('推奨教育','Training')}: ${SKILL_TRAINING[missing[0]]||missing[0]}）</span></div>`;
-  } else {
-    html += `<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-trophy"></i>${t('全ポジション習得済み！','All positions mastered!')}</div>`;
+  var sc = skillScoreStore(me, storeId);
+  var elig = checkLevelUpEligibility(me, storeId);
+  var curRate = effectiveTipRate(me);
+  var tipReqs = ls('tip_requests', []).filter(r=>r.name===me);
+  var pendingTip = tipReqs.filter(r=>r.status==='申請中').slice(-1)[0];
+
+  html += `<div class="card" style="background:linear-gradient(135deg,var(--accent-soft,#fceee4),var(--surface))">
+    <div class="card-title"><i class="ti ti-stairs-up" style="color:var(--accent)"></i>${t('Your Skill Progress','Your Skill Progress')}
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('skill')">${t('詳細','Detail')}</button></div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
+      <div style="text-align:center"><div style="font-size:26px;font-weight:800;color:${curRate===100?'var(--green)':curRate===0?'var(--red)':'var(--accent)'};line-height:1">${curRate===0?'No':curRate+'%'}</div><div style="font-size:10px;color:var(--muted)">Tip Rate</div></div>
+      <div style="flex:1"><div style="font-size:13px;font-weight:700">${store.name}</div>
+        <div style="font-size:11px;color:var(--muted)">${t('スキル合計','Total')} ${sc.total}${t('点','pt')} · Lv3×${sc.lv3} · ${t('できる','Can do')} ${apPos.length}/${positions.length}</div></div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px">${apPos.length?apPos.map(p=>`<span class="tag tag-green" style="font-size:9px">${p} Lv${psk[p].level}</span>`).join(''):'<span style="color:var(--muted);font-size:12px">'+t('承認済みなし','None approved')+'</span>'}</div>`;
+
+  if (elig && elig.maxed) {
+    html += `<div class="alert alert-success" style="margin:0;padding:8px 10px"><i class="ti ti-crown"></i>${t('最高Tip Rateに到達','Max Tip Rate reached')}</div>`;
+  } else if (elig && elig.target) {
+    var tgt = elig.target;
+    html += `<div style="border-top:1px solid var(--border);padding-top:8px">
+      <div style="font-size:12px;font-weight:700;margin-bottom:4px">${t('次の目標','Next')}：Tip Rate ${tgt.label}</div>`;
+    // 達成済み/未達のチェックを簡潔に
+    elig.checks.forEach(c=>{
+      html += `<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0">
+        <i class="ti ${c.ok?'ti-circle-check':'ti-circle'}" style="color:${c.ok?'var(--green)':'var(--muted)'}"></i>
+        <span style="flex:1">${c.label}</span><span style="font-size:10px;color:${c.ok?'var(--green)':'var(--accent2)'}">${c.detail}</span></div>`;
+    });
+    // 「あと何をLv3にすればよいか」
+    var devTargets = positions.filter(p=>p!=='Energy'&&p!=='Leadership').filter(p=>!(psk[p]&&psk[p].status==='承認'&&psk[p].level>=3)).slice(0,2);
+    if (!elig.allOk && elig.checks.some(c=>c.label.includes('Lv3')&&!c.ok) && devTargets.length) {
+      html += `<div style="font-size:11px;color:var(--accent2);margin-top:4px">${t('あと必要','To do')}: ${devTargets.map(p=>p+t('をLv3に',' to Lv3')).join(' / ')}</div>`;
+    }
+    if (pendingTip) {
+      html += `<div class="alert alert-warning" style="margin:8px 0 0;padding:6px 10px"><i class="ti ti-clock"></i>${pendingTip.rate}% ${t('申請中','pending')}</div>`;
+    } else if (elig.allOk) {
+      html += `<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="openTipApplyFromSkill('${storeId}',${tgt.rate})"><i class="ti ti-send"></i> Tip Rate ${tgt.label} ${t('を申請','Apply')}</button>`;
+    } else {
+      var remain = elig.checks.filter(c=>!c.ok).length;
+      html += `<div style="font-size:12px;color:var(--accent2);margin-top:6px"><i class="ti ti-info-circle"></i> ${t('申請条件まであと','To apply: ')}${remain}${t('項目',' items left')}</div>`;
+    }
+    html += `</div>`;
+  } else if (missing.length) {
+    html += `<div class="alert alert-warning" style="padding:8px 10px;margin:0"><i class="ti ti-arrow-up-right"></i>${t('次に強化','Next')}: <strong>${missing[0]}</strong></div>`;
   }
   html += '</div>';
-
-  // 6. Tip Rate申請状況
-  var tipReqs = ls('tip_requests', []).filter(r=>r.name===me);
-  var curTip = tipReqs.filter(r=>r.status==='承認').slice(-1)[0];
-  var pendingTip = tipReqs.filter(r=>r.status==='申請中').slice(-1)[0];
-  html += `<div class="card"><div class="card-title"><i class="ti ti-coin"></i>Tip Rate
-    <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('tiprate')">${t('申請','Apply')}</button></div>
-    <div style="display:flex;gap:8px">
-      ${kpi(t('現在','Current'), curTip?curTip.rate+'%':t('未設定','Not set'), curTip?t('承認済','Approved'):'—', curTip?'var(--green)':'var(--muted)')}
-      ${kpi(t('申請中','Pending'), pendingTip?pendingTip.rate+'%':t('なし','None'), pendingTip?t('承認待ち','Awaiting'):'—', pendingTip?'var(--yellow)':'var(--muted)')}
-    </div>
-    <p style="font-size:11px;color:var(--muted);margin-top:8px">${t('※ Tip RateはSkill Level自己評価から申請できます','* Tip Rate can be requested from your skill self-assessment')}</p>
-  </div>`;
 
   // 7. 給与予定（Estimated Pay）
   var wage = WAGE[curRole]||16;
@@ -10680,10 +11366,10 @@ function openRecipeModal(rId) {
    検索できる食材ピッカー（共通コンポーネント）
    openIngredientPicker(onPick) — onPick(code) を呼ぶ
 ============================================================ */
-var _ingPickState = { q:'', cls:'all', onPick:null, recent:[] };
-function openIngredientPicker(onPick) {
-  _ingPickState = { q:'', cls:'all', onPick:onPick, recent: ls('ing_recent', []) };
-  openModal(`<div class="modal-title">食材を選ぶ <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+var _ingPickState = { q:'', cls:'all', onPick:null, recent:[], vendor:null };
+function openIngredientPicker(onPick, vendorFilter) {
+  _ingPickState = { q:'', cls:'all', onPick:onPick, recent: ls('ing_recent', []), vendor: vendorFilter||null };
+  openModal(`<div class="modal-title">食材を選ぶ${vendorFilter?'（'+vendorFilter+'）':''} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <input class="form-input" id="ingpick-q" placeholder="検索（名前・コード・カテゴリ・業者）" oninput="ingPickInput(this.value)" autocomplete="off" style="margin-bottom:8px">
     <div id="ingpick-chips" style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px"></div>
     <div id="ingpick-list" style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"></div>`);
@@ -10694,10 +11380,15 @@ function openIngredientPicker(onPick) {
 function renderIngPickChips() {
   var el = document.getElementById('ingpick-chips'); if(!el) return;
   var chips = [{id:'all', name:'すべて'}].concat(CLASSES.map(c=>({id:c.id, name:c.name})));
-  el.innerHTML = chips.map(c=>
+  var html = chips.map(c=>
     `<button class="btn btn-sm ${_ingPickState.cls===c.id?'btn-primary':'btn-secondary'}" style="padding:4px 12px;font-size:12px" onclick="ingPickCls('${c.id}')">${c.name}</button>`
   ).join('');
+  if (_ingPickState.vendor) {
+    html += `<button class="btn btn-sm btn-secondary" style="padding:4px 12px;font-size:12px;border-style:dashed" onclick="ingPickClearVendor()"><i class="ti ti-arrows-maximize"></i> 全食材から</button>`;
+  }
+  el.innerHTML = html;
 }
+function ingPickClearVendor() { _ingPickState.vendor = null; renderIngPickChips(); renderIngPickList(); }
 function ingPickCls(cls) { _ingPickState.cls = cls; renderIngPickChips(); renderIngPickList(); }
 function ingPickInput(v) { _ingPickState.q = v; renderIngPickList(); }
 function renderIngPickList() {
@@ -10706,6 +11397,7 @@ function renderIngPickList() {
   var cls = _ingPickState.cls;
   var ings = getIngredients();
   var filtered = ings.filter(i=>{
+    if (_ingPickState.vendor && i.vendor!==_ingPickState.vendor) return false;
     if (cls!=='all' && catClass(i.cat)!==cls) return false;
     if (!q) return true;
     return (i.name||'').toLowerCase().includes(q)
@@ -10714,9 +11406,9 @@ function renderIngPickList() {
       || (i.vendor||'').toLowerCase().includes(q)
       || (i.location||'').toLowerCase().includes(q);
   });
-  // 最近使った食材を先頭に（検索未入力＆全カテゴリのときのみ）
+  // 最近使った食材を先頭に（検索未入力＆全カテゴリのときのみ。業者フィルタ時は除外）
   var html = '';
-  if (!q && cls==='all' && _ingPickState.recent.length) {
+  if (!q && cls==='all' && !_ingPickState.vendor && _ingPickState.recent.length) {
     var recentIngs = _ingPickState.recent.map(code=>ings.find(i=>i.code===code)).filter(Boolean).slice(0,6);
     if (recentIngs.length) {
       html += `<div style="padding:6px 10px;font-size:10px;color:var(--muted);background:var(--surface2);font-weight:600"><i class="ti ti-history"></i> 最近使った食材</div>`;
@@ -11568,22 +12260,58 @@ function renderTipRate() {
     html += `</tbody></table></div></div>`;
   }
 
-  // Crew/SL: 自己申請
+  // Crew/SL: スキル連動の統合ステータス（現在地→次条件→申請）
   if (curRole === 'crew' || curRole === 'sl') {
-    var myReq = requests.filter(r=>r.name===ROLE_CONFIG[curRole].name).slice(-1)[0];
-    html += `<div class="card"><div class="card-title"><i class="ti ti-user"></i>自己申請</div>
-      ${myReq?`<p style="font-size:13px;margin-bottom:8px">現在の申請: <span class="tag ${myReq.status==='承認'?'tag-green':myReq.status==='却下'?'tag-red':'tag-yellow'}">${myReq.rate}% · ${myReq.status}</span></p>`:''}
-      <button class="btn btn-primary btn-sm" onclick="openTipRequestModal()"><i class="ti ti-send"></i> Tip Rate申請</button>
-    </div>`;
+    var me = ROLE_CONFIG[curRole].name;
+    var emp = getEmployees().find(e=>e.name===me);
+    var myStore = emp ? emp.store : (curStore==='ALL'?STORES[0].id:curStore);
+    if (myStore==='ALL') myStore = STORES[0].id;
+    var storeName = (STORES.find(s=>s.id===myStore)||{}).name||myStore;
+    var curRate = effectiveTipRate(me);
+    var elig = checkLevelUpEligibility(me, myStore);
+    var sc = skillScoreStore(me, myStore);
+
+    html += `<div class="card" style="background:linear-gradient(135deg,var(--accent-soft,#fceee4),var(--surface))">
+      <div class="card-title"><i class="ti ti-coin" style="color:var(--accent)"></i>あなたのTip Rate</div>
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
+        <div style="text-align:center"><div style="font-size:32px;font-weight:800;color:${curRate===100?'var(--green)':curRate===0?'var(--red)':'var(--accent)'};line-height:1">${curRate===0?'No Tip':curRate+'%'}</div>
+          <div style="font-size:10px;color:var(--muted)">現在 · ${storeName}</div></div>
+        <div style="flex:1;font-size:12px;color:var(--muted)">スキル合計 <b style="color:var(--tm)">${sc.total}点</b> · Lv3 <b style="color:var(--tm)">${sc.lv3}項目</b></div>
+      </div>`;
+    if (elig && elig.maxed) {
+      html += `<div class="alert alert-success" style="margin:0"><i class="ti ti-crown"></i>最高Tip Rateに到達しています</div>`;
+    } else if (elig && elig.target) {
+      var t = elig.target;
+      html += `<div style="border-top:1px solid var(--border);padding-top:10px">
+        <div style="font-size:12px;font-weight:700;margin-bottom:6px">次の目標：Tip Rate ${t.label}</div>`;
+      elig.checks.forEach(c=>{
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px">
+          <i class="ti ${c.ok?'ti-circle-check':'ti-circle'}" style="color:${c.ok?'var(--green)':'var(--muted)'}"></i>
+          <span style="flex:1">${c.label}</span><span style="font-size:11px;color:${c.ok?'var(--green)':'var(--accent2)'}">${c.detail}</span></div>`;
+      });
+      if (elig.mgrPending) html += `<div style="font-size:11px;color:var(--muted);padding:3px 0"><i class="ti ti-user-check"></i> ＋ Store Manager 承認</div>`;
+      var myReqPend = requests.filter(r=>r.name===me && r.status==='申請中').slice(-1)[0];
+      if (myReqPend) {
+        html += `<div class="alert alert-warning" style="margin:8px 0 0"><i class="ti ti-clock"></i>${myReqPend.rate}% を申請中（承認待ち）</div>`;
+      } else if (elig.allOk) {
+        html += `<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="openTipApplyFromSkill('${myStore}',${t.rate})"><i class="ti ti-send"></i> Tip Rate ${t.label} を申請する</button>`;
+      } else {
+        var remaining = elig.checks.filter(c=>!c.ok).length;
+        html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-info-circle"></i> 申請条件まであと${remaining}項目</div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
   }
 
   // 承認待ち
   var pending = requests.filter(r=>r.status==='申請中');
   if (pending.length && canApprove) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>承認待ち</div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>承認待ち (${pending.length})</div>`;
     pending.forEach(r => {
-      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${r.name}</div>
-        <div class="approval-meta">申請 ${r.rate}%${r.reason?' · '+r.reason:''}</div></div><span class="tag tag-yellow">${r.rate}%</span></div>
+      var storeName = r.store ? ((STORES.find(s=>s.id===r.store)||{}).name||r.store) : '';
+      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${r.name} ${r.basis==='skill'?'<span class="tag tag-green" style="font-size:8px">条件達成</span>':''}</div>
+        <div class="approval-meta">申請 ${r.rate}%${storeName?' · '+storeName:''}${r.reason?' · '+r.reason:''}</div></div><span class="tag tag-yellow">${r.rate}%</span></div>
         <div class="approval-actions">
           <button class="btn btn-success btn-sm" onclick="approveTip('${r.id}','承認')"><i class="ti ti-check"></i> 承認</button>
           <button class="btn btn-danger btn-sm" onclick="approveTip('${r.id}','却下')"><i class="ti ti-x"></i> 却下</button>
@@ -11595,11 +12323,12 @@ function renderTipRate() {
   // 履歴
   var history = requests.filter(r=>r.status!=='申請中');
   if (history.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>履歴</div>`;
-    history.slice().reverse().slice(0,8).forEach(r => {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>Tip Rate 変更履歴</div>`;
+    history.slice().reverse().slice(0,10).forEach(r => {
+      var storeName = r.store ? ((STORES.find(s=>s.id===r.store)||{}).name||'') : '';
       html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.name} · ${r.rate}%</div>
         <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${r.status}</span></div>
-        <div class="approval-meta">${r.date}</div></div>`;
+        <div class="approval-meta">${r.approvedDate||r.date}${storeName?' · '+storeName:''}${r.approver?' · 承認: '+r.approver:''}${r.basis==='skill'?' · スキル条件達成':''}</div></div>`;
     });
     html += '</div>';
   }
@@ -11636,6 +12365,46 @@ function submitTipRequest() {
   renderPage('tiprate');
 }
 function approveTip(id, status) {
+  var requests = ls('tip_requests', []);
+  var r = requests.find(x=>x.id===id);
+  if (r) {
+    r.status = status;
+    r.approver = (ROLE_CONFIG[curRole]||{}).name||curUserName;
+    r.approvedDate = new Date().toLocaleDateString('ja');
+    lsSet('tip_requests', requests);
+    // Tip変更履歴
+    var h = ls('tip_history', []);
+    h.push({name:r.name, rate:r.rate, store:r.store||'', status:status, by:r.approver, date:r.approvedDate, basis:r.basis||'manual'});
+    lsSet('tip_history', h);
+    showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
+    renderPage(curPage);
+  }
+}
+/* スキル条件達成からTip申請（店舗・根拠つき） */
+function openTipApplyFromSkill(storeId, rate) {
+  var me = ROLE_CONFIG[curRole].name;
+  var elig = checkLevelUpEligibility(me, storeId);
+  var storeName = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
+  var basis = elig && elig.checks.length ? elig.checks.map(c=>c.label+'('+c.detail+')').join(' / ') : '';
+  openModal(`<div class="modal-title">Tip Rate ${rate}% 申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">店舗</div><div style="font-size:14px;font-weight:600">${storeName}</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px">達成条件</div><div style="font-size:12px;color:var(--green)">${basis||'—'}</div></div>
+    <div class="form-group"><label class="form-label">補足コメント（任意）</label><textarea class="form-textarea" id="tip-sk-reason" placeholder="例: Server/Tempura をLv3で安定して担当できています"></textarea></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="submitTipFromSkill('${storeId}',${rate})"><i class="ti ti-send"></i> 申請する</button></div>`);
+}
+function submitTipFromSkill(storeId, rate) {
+  var me = ROLE_CONFIG[curRole].name;
+  var reason = document.getElementById('tip-sk-reason').value.trim();
+  var requests = ls('tip_requests', []);
+  requests.push({id:'tip'+Date.now(), name:me, rate:rate, store:storeId, reason:reason, basis:'skill', status:'申請中', date:new Date().toLocaleDateString('ja')});
+  lsSet('tip_requests', requests);
+  addApproval({title:`${me} Tip Rate申請 ${rate}%`, type:'TipRate', from:me, store:storeId});
+  closeModalDirect();
+  showToast('Tip Rateを申請しました（条件達成）','success');
+  renderPage('skill');
+}
+function _approveTip_unused(id, status) {
   var requests = ls('tip_requests', []);
   var r = requests.find(x=>x.id===id);
   if (r) { r.status = status; lsSet('tip_requests', requests); showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger'); renderPage('tiprate'); }
@@ -12300,7 +13069,7 @@ function renderSkillSelf() {
   var storeId = emp ? emp.store : (curStore==='ALL'?STORES[0].id:curStore);
   if (storeId==='ALL') storeId = STORES[0].id;
   var positions = getStorePositions(storeId);
-  var sk = getEmpSkills(me);
+  var sk = getEmpSkillsStore(me, storeId);
   var reqs = getSkillRequests().filter(r=>r.name===me);
 
   var html = `<div class="section-header"><div><div class="section-title">Skill Level</div><div class="section-sub">自己評価申請 → 管理者承認</div></div></div>`;
@@ -12330,8 +13099,34 @@ function renderSkillSelf() {
   });
   html += '</div>';
 
+  // ===== 次のTip Rate / レベルアップ条件（フェーズ2）=====
+  var elig = checkLevelUpEligibility(me, storeId);
+  if (elig && !elig.maxed && elig.target) {
+    var t = elig.target;
+    html += `<div class="card" style="border-left:3px solid ${elig.allOk?'var(--green)':'var(--accent2)'}">
+      <div class="card-title"><i class="ti ti-target-arrow" style="color:${elig.allOk?'var(--green)':'var(--accent)'}"></i>次の目標 — Tip Rate ${t.label}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">現在 ${elig.curRate}% → 次 ${t.rate}%</div>`;
+    if (elig.checks.length) {
+      elig.checks.forEach(c=>{
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px">
+          <i class="ti ${c.ok?'ti-circle-check':'ti-circle'}" style="color:${c.ok?'var(--green)':'var(--muted)'}"></i>
+          <span style="flex:1">${c.label}</span>
+          <span style="font-size:11px;color:${c.ok?'var(--green)':'var(--accent2)'}">${c.detail}</span></div>`;
+      });
+    }
+    if (elig.mgrPending) html += `<div style="font-size:11px;color:var(--muted);padding:4px 0"><i class="ti ti-user-check"></i> ＋ Store Manager の承認</div>`;
+    var remaining = elig.checks.filter(c=>!c.ok).length;
+    if (elig.allOk) {
+      html += `<div class="alert alert-success" style="margin:8px 0 0"><i class="ti ti-circle-check"></i>条件達成！Tip Rate ${t.label} を申請できます</div>
+        <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="openTipApplyFromSkill('${storeId}',${t.rate})"><i class="ti ti-send"></i> Tip Rate ${t.label} を申請する</button>`;
+    } else {
+      html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-info-circle"></i> 申請条件まであと${remaining}項目</div>`;
+    }
+    html += `</div>`;
+  }
+
   // 対応可能ポジション
-  var ap = approvedPositions(me);
+  var ap = approvedPositionsStore(me, storeId);
   html += `<div class="card"><div class="card-title"><i class="ti ti-checkbox"></i>対応可能ポジション (${ap.length})</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px">${ap.length?ap.map(p=>`<span class="tag tag-green">${p}</span>`).join(''):'<span style="color:var(--muted);font-size:13px">承認済みポジションなし</span>'}</div>
     ${ap.length<positions.length?`<div style="font-size:11px;color:var(--accent2);margin-top:8px">次に覚えるべき: ${positions.filter(p=>!ap.includes(p)).slice(0,3).join(', ')}</div>`:''}
@@ -12410,7 +13205,18 @@ function renderSkillManager() {
   var done = reqs.filter(r=>['承認','差戻し','完了'].includes(r.status) && scope.includes(r.name));
 
   var html = `<div class="section-header"><div><div class="section-title">Skill Level 承認</div><div class="section-sub">スタッフのスキル申請を評価</div></div>
-    ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openPositionConfigModal()"><i class="ti ti-settings"></i> ポジション設定</button>`:''}
+    <div style="display:flex;gap:6px">
+      ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openLevelRuleModal()"><i class="ti ti-adjustments"></i> 昇格条件</button>`:''}
+      ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openPositionConfigModal()"><i class="ti ti-settings"></i> ポジション設定</button>`:''}
+    </div>
+  </div>`;
+
+  // 3つのビュー切替
+  if (!window._skillView) window._skillView='store';
+  html += `<div class="phase-tabs">
+    <div class="phase-tab${window._skillView==='store'?' active':''}" onclick="setSkillView('store')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗別</div>
+    <div class="phase-tab${window._skillView==='staff'?' active':''}" onclick="setSkillView('staff')"><i class="ti ti-user" style="font-size:12px"></i> 従業員別</div>
+    <div class="phase-tab${window._skillView==='position'?' active':''}" onclick="setSkillView('position')"><i class="ti ti-layout-grid" style="font-size:12px"></i> ポジション別</div>
   </div>`;
 
   if (pending.length) {
@@ -12433,20 +13239,50 @@ function renderSkillManager() {
     html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>承認待ちのスキル申請はありません</div>`;
   }
 
-  // スタッフ別スキルマトリクス（店舗ポジション基準）
-  var mgrStoreId = curStore==='ALL'?null:curStore;
-  var matrixPos = mgrStoreId ? getStorePositions(mgrStoreId) : ALL_POSITIONS;
-  html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>スキルマトリクス</div>
-    <div style="overflow-x:auto"><table class="inv-table" style="min-width:500px"><thead><tr><th>スタッフ</th>${matrixPos.map(p=>`<th style="font-size:10px">${p.slice(0,5)}</th>`).join('')}</tr></thead><tbody>`;
-  visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role)).forEach(e => {
-    var sk = getEmpSkills(e.name);
-    html += `<tr><td style="font-weight:600;font-size:12px">${e.name}</td>${matrixPos.map(p=>{
+  // ===== ビュー別の本体 =====
+  var visStores = getVisibleStores();
+  if (!window._skillMatrixStore || !visStores.find(s=>s.id===window._skillMatrixStore)) {
+    window._skillMatrixStore = (curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));
+  }
+  var mgrStoreId = window._skillMatrixStore;
+  var storeObj = STORES.find(s=>s.id===mgrStoreId)||{};
+
+  if (window._skillView==='staff') { html += renderSkillStaffView(); return html; }
+  if (window._skillView==='position') { html += renderSkillPositionView(mgrStoreId, visStores); return html; }
+
+  // ===== 店舗別ビュー（マトリクス） =====
+  var matrixPos = getStorePositions(mgrStoreId);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>スキルマトリクス（店舗別）</div>`;
+  // 店舗切替タブ
+  if (visStores.length>1) {
+    html += `<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:8px">
+      ${visStores.map(s=>`<div class="phase-tab${mgrStoreId===s.id?' active':''}" style="${mgrStoreId===s.id?`background:${s.color};border-color:${s.color}`:''}" onclick="setSkillMatrixStore('${s.id}')">${s.name}</div>`).join('')}
+    </div>`;
+  }
+  // この店舗で働くスタッフ（所属 or 勤務可能店舗）
+  var staffHere = visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role) && (e.store===mgrStoreId || (e.support||[]).includes(mgrStoreId)));
+  // 不足ポジション（Lv3が誰もいない）
+  var shortPos = matrixPos.filter(p=>p!=='Energy'&&p!=='Leadership').filter(p=>!staffHere.some(e=>positionLevelStore(e.name,p,mgrStoreId)>=3));
+  if (shortPos.length) {
+    html += `<div class="alert alert-warning" style="padding:6px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div style="font-size:12px">Lv3不在のポジション: <b>${shortPos.join(', ')}</b>（シフトのリスク）</div></div>`;
+  }
+  html += `<div style="overflow-x:auto"><table class="inv-table" style="min-width:500px"><thead><tr><th>スタッフ</th>${matrixPos.map(p=>`<th style="font-size:10px">${p.slice(0,5)}</th>`).join('')}<th style="font-size:10px">点/Lv3</th></tr></thead><tbody>`;
+  if (!staffHere.length) {
+    html += `<tr><td colspan="${matrixPos.length+2}" style="text-align:center;color:var(--muted);padding:14px">${storeObj.name}で勤務するスタッフがいません</td></tr>`;
+  }
+  staffHere.forEach(e => {
+    var sk = getEmpSkillsStore(e.name, mgrStoreId);
+    var sc = skillScoreStore(e.name, mgrStoreId);
+    var elig = checkLevelUpEligibility(e.name, mgrStoreId);
+    var eligible = elig && !elig.maxed && elig.allOk;
+    html += `<tr><td style="font-weight:600;font-size:12px;cursor:pointer" onclick="openStaffSkillEdit('${e.name.replace(/'/g,"\\'")}','${mgrStoreId}')">${e.name}${eligible?' <span class="tag tag-green" style="font-size:8px">'+elig.target.label+'可</span>':''}</td>${matrixPos.map(p=>{
       var s=sk[p]; var v=s&&s.status==='承認'?s.level:0;
+      var pend = s&&['申請中','確認中','再評価待ち'].includes(s.status);
       var bg=v>=3?'var(--accent)':v===2?'var(--green)':v===1?'var(--yellow)':'transparent';
-      return `<td style="text-align:center;color:${v?'#fff':'var(--muted)'};background:${bg};border-radius:4px">${v||'-'}</td>`;
-    }).join('')}</tr>`;
+      return `<td onclick="openStaffSkillEdit('${e.name.replace(/'/g,"\\'")}','${mgrStoreId}','${p.replace(/'/g,"")}')" style="text-align:center;cursor:pointer;color:${v?'#fff':'var(--muted)'};background:${bg};border-radius:4px">${v||(pend?'<span style=color:var(--yellow)>•</span>':'-')}</td>`;
+    }).join('')}<td style="text-align:center;font-size:11px;color:var(--muted)">${sc.total}/${sc.lv3}</td></tr>`;
   });
-  html += '</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:6px">Lv1:サポート有 / Lv2:独力 / Lv3:指導可（オレンジ）</div></div>';
+  html += '</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:6px">行/セルをタップで編集 · Lv1:黄 / Lv2:緑 / Lv3:オレンジ · 「点/Lv3」=合計点とLv3数</div></div>';
 
   if (done.length) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>評価履歴</div>`;
@@ -12458,6 +13294,123 @@ function renderSkillManager() {
     html += '</div>';
   }
   return html;
+}
+
+function setSkillMatrixStore(storeId) { window._skillMatrixStore = storeId; renderPage('skill'); }
+function setSkillView(v) { window._skillView = v; renderPage('skill'); }
+/* 従業員別ビュー */
+function renderSkillStaffView() {
+  var staff = visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role));
+  var html = `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">スタッフごとに、勤務する各店舗のスキル状況・現在のTip Rate・次の条件を表示します。</div>`;
+  if (!staff.length) return html + '<div class="card" style="text-align:center;color:var(--muted);padding:20px">対象スタッフなし</div>';
+  staff.slice(0,40).forEach(e=>{
+    var stores = [e.store].concat(e.support||[]).filter((v,i,a)=>v&&a.indexOf(v)===i);
+    var rate = effectiveTipRate(e.name);
+    html += `<div class="card"><div class="card-title"><i class="ti ti-user"></i>${e.name}
+      <span class="tag ${rate===100?'tag-green':'tag-gray'}" style="margin-left:auto">Tip ${rate===0?'No':rate+'%'}</span></div>`;
+    stores.forEach(sid=>{
+      var sObj = STORES.find(s=>s.id===sid)||{name:sid,color:'#888'};
+      var sc = skillScoreStore(e.name, sid);
+      var ap = approvedPositionsStore(e.name, sid);
+      var elig = checkLevelUpEligibility(e.name, sid);
+      html += `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px">
+          <span style="width:8px;height:8px;border-radius:50%;background:${sObj.color}"></span>
+          <b>${sObj.name}</b>
+          <span style="color:var(--muted)">${sc.total}点 · Lv3×${sc.lv3}</span>
+          ${elig&&!elig.maxed&&elig.allOk?`<span class="tag tag-green" style="font-size:8px;margin-left:auto">${elig.target.label}可</span>`:''}
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${ap.length?ap.map(p=>`<span class="tag tag-green" style="font-size:8px">${p}</span>`).join(' '):'承認済みなし'}</div>
+      </div>`;
+    });
+    html += `<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openStaffSkillEdit('${e.name.replace(/'/g,"\\'")}','${e.store}')"><i class="ti ti-edit"></i> スキル編集</button></div>`;
+  });
+  return html;
+}
+/* ポジション別ビュー */
+function renderSkillPositionView(storeId, visStores) {
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-layout-grid"></i>ポジション別 対応状況</div>`;
+  if (visStores.length>1) {
+    html += `<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:8px">
+      ${visStores.map(s=>`<div class="phase-tab${storeId===s.id?' active':''}" style="${storeId===s.id?`background:${s.color};border-color:${s.color}`:''}" onclick="setSkillMatrixStore('${s.id}')">${s.name}</div>`).join('')}
+    </div>`;
+  }
+  var positions = getStorePositions(storeId).filter(p=>p!=='Energy'&&p!=='Leadership');
+  var staffHere = visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role) && (e.store===storeId || (e.support||[]).includes(storeId)));
+  positions.forEach(pos=>{
+    var lv3=[], lv2=[], lv1=[];
+    staffHere.forEach(e=>{ var lv=positionLevelStore(e.name,pos,storeId); if(lv>=3)lv3.push(e.name); else if(lv===2)lv2.push(e.name); else if(lv===1)lv1.push(e.name); });
+    var riskColor = lv3.length===0 ? 'var(--red)' : lv3.length===1 ? 'var(--yellow)' : 'var(--green)';
+    html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+        <span style="font-size:13px;font-weight:700">${pos}</span>
+        <span style="width:8px;height:8px;border-radius:50%;background:${riskColor}"></span>
+        <span style="font-size:10px;color:var(--muted)">Lv3 ${lv3.length}人</span>
+        ${lv3.length===0?'<span class="tag tag-red" style="font-size:8px;margin-left:auto">育成必要</span>':''}
+      </div>
+      ${lv3.length?`<div style="font-size:11px"><span style="color:var(--accent)">Lv3:</span> ${lv3.join('、')}</div>`:''}
+      ${lv2.length?`<div style="font-size:11px"><span style="color:var(--green)">Lv2:</span> ${lv2.join('、')} <span style="color:var(--muted)">(次の育成候補)</span></div>`:''}
+      ${lv1.length?`<div style="font-size:11px;color:var(--muted)">育成中: ${lv1.join('、')}</div>`:''}
+      ${!lv3.length&&!lv2.length&&!lv1.length?'<div style="font-size:11px;color:var(--muted)">対応可能者なし</div>':''}
+    </div>`;
+  });
+  html += '</div>';
+  return html;
+}
+/* 管理者が直接スタッフの店舗別スキルを編集 */
+function openStaffSkillEdit(name, storeId, focusPos) {
+  var positions = getStorePositions(storeId);
+  var sk = getEmpSkillsStore(name, storeId);
+  var storeObj = STORES.find(s=>s.id===storeId)||{};
+  var rows = positions.map(p=>{
+    var s = sk[p] || {level:0, status:'未取得'};
+    var lvl = (s.status==='承認')?s.level:0;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)${focusPos===p?';background:var(--surface2)':''}">
+      <div style="flex:1;font-size:13px">${p}${s.status&&s.status!=='未取得'&&s.status!=='承認'?` <span class="tag tag-yellow" style="font-size:9px">${s.status}</span>`:''}</div>
+      <select class="form-select" id="ssk-${p.replace(/[^A-Za-z0-9]/g,'')}" style="width:130px;padding:5px;font-size:12px">
+        <option value="0"${lvl===0?' selected':''}>未取得</option>
+        <option value="1"${lvl===1?' selected':''}>Lv1</option>
+        <option value="2"${lvl===2?' selected':''}>Lv2</option>
+        <option value="3"${lvl===3?' selected':''}>Lv3</option>
+      </select>
+    </div>`;
+  }).join('');
+  openModal(`<div class="modal-title">${name} のスキル <span style="font-size:12px;color:var(--muted)">@${storeObj.name}</span> <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">この店舗でのスキルレベルを直接設定します（上長確定）。レベルを選んで保存すると承認済みになります。</div>
+    <div style="max-height:46vh;overflow-y:auto">${rows}</div>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveStaffSkillEdit('${name.replace(/'/g,"\\'")}','${storeId}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
+}
+function saveStaffSkillEdit(name, storeId) {
+  var positions = getStorePositions(storeId);
+  var v2 = getSkillsV2();
+  if (!v2[name]) v2[name] = {};
+  if (!v2[name][storeId]) v2[name][storeId] = {};
+  var by = (ROLE_CONFIG[curRole]||{}).name||curUserName||curRole;
+  var today = new Date().toLocaleDateString('ja');
+  positions.forEach(p=>{
+    var el = document.getElementById('ssk-'+p.replace(/[^A-Za-z0-9]/g,''));
+    if (!el) return;
+    var lv = parseInt(el.value)||0;
+    var prev = v2[name][storeId][p] || {};
+    if (lv===0) {
+      if (prev.status==='承認') { v2[name][storeId][p] = {level:0, status:'未取得', date:today, evaluator:by}; addSkillHistory(name, storeId, p, prev.level||0, 0, by); }
+    } else {
+      var prevLv = (prev.status==='承認')?(prev.level||0):0;
+      v2[name][storeId][p] = {level:lv, status:'承認', date:today, evaluator:by, mgrComment:prev.mgrComment||''};
+      if (prevLv!==lv) addSkillHistory(name, storeId, p, prevLv, lv, by);
+    }
+  });
+  setSkillsV2(v2);
+  closeModalDirect();
+  showToast(name+' のスキルを更新しました','success');
+  renderPage('skill');
+}
+/* スキル変更履歴 */
+function addSkillHistory(name, storeId, position, fromLv, toLv, by) {
+  var h = ls('skill_history', []);
+  h.push({name, store:storeId, position, fromLv, toLv, by, date:new Date().toLocaleString('ja')});
+  lsSet('skill_history', h);
 }
 
 function openSkillReviewModal(reqId, action) {
@@ -12481,17 +13434,66 @@ function submitSkillReview(reqId, action) {
   var task = document.getElementById('rv-task').value.trim();
   r.status = action; r.mgrComment = comment; r.nextTask = task; r.reviewer = ROLE_CONFIG[curRole].name;
   setSkillRequests(reqs);
-  // スキル状態反映
-  var all = getSkills(); if(!all[r.name]) all[r.name]={};
+  // スキル状態を「申請された店舗」に反映（店舗別）
+  var storeId = r.store || ((getEmployees().find(e=>e.name===r.name)||{}).store) || STORES[0].id;
+  var by = (ROLE_CONFIG[curRole]||{}).name||curUserName;
+  var prev = getEmpSkillsStore(r.name, storeId)[r.position] || {level:0};
   if (action==='承認') {
     var lv = parseInt(document.getElementById('rv-level').value);
-    all[r.name][r.position] = {level:lv, status:'承認', selfComment:r.selfComment, mgrComment:comment, nextTask:task, date:r.date};
+    setEmpSkillStore(r.name, storeId, r.position, {level:lv, status:'承認', selfComment:r.selfComment, mgrComment:comment, nextTask:task, date:r.date, evaluator:by});
+    addSkillHistory(r.name, storeId, r.position, (prev.status==='承認'?prev.level:0), lv, by);
   } else {
-    all[r.name][r.position] = Object.assign(all[r.name][r.position]||{level:0}, {status:'差戻し', mgrComment:comment, nextTask:task});
+    setEmpSkillStore(r.name, storeId, r.position, Object.assign({}, prev, {status:'差戻し', mgrComment:comment, nextTask:task}));
   }
-  setSkills(all);
   closeModalDirect();
   showToast(`${r.position}を${action}しました`, action==='承認'?'success':'danger');
+  renderPage('skill');
+}
+
+/* レベルアップ／Tip条件の設定（店舗別） */
+function openLevelRuleModal() {
+  var visStores = getVisibleStores();
+  var sid = window._ruleStore && visStores.find(s=>s.id===window._ruleStore) ? window._ruleStore : (curStore!=='ALL'?curStore:visStores[0].id);
+  window._ruleStore = sid;
+  var rules = getSkillRules(sid);
+  var positions = getStorePositions(sid);
+  var s = STORES.find(x=>x.id===sid)||{name:sid};
+  var targets = DEFAULT_TIP_TARGETS.filter(t=>t.rate>0);
+  var body = targets.map(t=>{
+    var r = rules[t.key]||{};
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px">Tip Rate ${t.label} の条件</div>
+      <div class="form-row">
+        <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">合計点 最低</label><input class="form-input" id="lr-${t.key}-total" type="number" min="0" value="${r.minTotal||0}" style="padding:6px"></div>
+        <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Lv3 最低項目数</label><input class="form-input" id="lr-${t.key}-lv3" type="number" min="0" value="${r.minLv3||0}" style="padding:6px"></div>
+      </div>
+      <div class="form-group" style="margin:8px 0 0"><label class="form-label" style="font-size:11px">必須Lv3ポジション（複数可）</label>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">${positions.map(p=>`<label style="font-size:11px;display:flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:6px;padding:2px 6px"><input type="checkbox" class="lr-${t.key}-must" value="${p}" ${(r.mustLv3||[]).includes(p)?'checked':''}>${p}</label>`).join('')}</div></div>
+      <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="lr-${t.key}-mgr" ${r.needMgr?'checked':''}> Store Manager 承認を必須にする</label>
+    </div>`;
+  }).join('');
+  openModal(`<div class="modal-title">${s.name} 昇格・Tip条件 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    ${visStores.length>1?`<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:8px">${visStores.map(v=>`<div class="phase-tab${sid===v.id?' active':''}" onclick="switchRuleStore('${v.id}')">${v.name}</div>`).join('')}</div>`:''}
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">この店舗で、各Tip Rateを申請できる条件を設定します。条件を満たすとスタッフ画面に「申請可能」と表示されます。</div>
+    ${body}
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveLevelRules('${sid}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
+}
+function switchRuleStore(sid){ window._ruleStore = sid; openLevelRuleModal(); }
+function saveLevelRules(sid) {
+  var rules = getSkillRules(sid);
+  DEFAULT_TIP_TARGETS.filter(t=>t.rate>0).forEach(t=>{
+    var must = Array.from(document.querySelectorAll('.lr-'+t.key+'-must:checked')).map(c=>c.value);
+    rules[t.key] = {
+      minTotal: parseInt((document.getElementById('lr-'+t.key+'-total')||{}).value)||0,
+      minLv3: parseInt((document.getElementById('lr-'+t.key+'-lv3')||{}).value)||0,
+      mustLv3: must,
+      needMgr: !!(document.getElementById('lr-'+t.key+'-mgr')||{}).checked,
+    };
+  });
+  setSkillRules(sid, rules);
+  closeModalDirect();
+  showToast('昇格条件を保存しました','success');
   renderPage('skill');
 }
 
