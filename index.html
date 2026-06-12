@@ -4,6 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Funergy Growth OS</title>
+<!-- PWA / アプリアイコン（FG+） -->
+<link rel="manifest" href="appicons/manifest.json">
+<meta name="theme-color" content="#f0661f">
+<link rel="icon" type="image/png" sizes="32x32" href="appicons/icon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="appicons/icon-16.png">
+<link rel="shortcut icon" href="appicons/favicon.ico">
+<!-- iOS（iPhone / iPad）用 -->
+<link rel="apple-touch-icon" href="appicons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Funergy">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
 <style>
 :root {
@@ -859,6 +870,7 @@ const NAV_ITEMS = [
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm']},
   {id:'acct_export', label:'経理出力',     icon:'ti-file-export',      roles:['ceo','gm','office']},
+  {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm']},
 ];
 
@@ -873,7 +885,7 @@ const MENU_GROUPS = [
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['shift_admin','vacation','hiring','onboarding','skill','evaluation','tiprate','tip','attendance','staff_master','meeting','growthhub','growth_mgr']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['tasks','required','goals','approval','acct_export','store_master','settings']},
+    children:['tasks','required','goals','approval','acct_export','company_msg_edit','store_master','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
     children:['mypage']},
 ];
@@ -2467,6 +2479,116 @@ function doLogout() {
   bootLogin();
 }
 
+/* ============ 今月の会社メッセージ ============ */
+function curMonthKey() { var n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); }
+function getCompanyMessage() { return ls('company_message', null); }
+function setCompanyMessage(data) { lsSet('company_message', data); }
+/* このユーザーが今月のメッセージを既読か（ポップアップ抑制用） */
+function companyMsgSeenKey() { var m=getCompanyMessage(); return 'company_msg_seen_'+(curUserName||'anon')+'_'+(m?m.month:''); }
+function companyMsgSeen() { var m=getCompanyMessage(); if(!m) return true; return ls(companyMsgSeenKey(), false)===true; }
+function markCompanyMsgSeen() { var m=getCompanyMessage(); if(!m) return; lsSet(companyMsgSeenKey(), true); }
+function canEditCompanyMsg() { return ['gm','ceo'].includes(curRole); }
+/* ログイン後、今月分が未読ならポップアップ */
+function maybeShowCompanyMessage() {
+  var m = getCompanyMessage();
+  if (!m || !m.body) return;
+  if (m.month !== curMonthKey()) return; // 今月のメッセージのみ
+  if (companyMsgSeen()) return;
+  showCompanyMsgPopup(m);
+}
+function showCompanyMsgPopup(m) {
+  var monthLabel = fmtMonthLabel(m.month);
+  var html = `<div style="max-width:480px">
+    <div style="background:linear-gradient(135deg,var(--accent),#f0902b);margin:-20px -20px 0;padding:22px 22px 18px;border-radius:14px 14px 0 0;color:#fff;position:relative;overflow:hidden">
+      <div style="position:absolute;right:-30px;top:-40px;width:130px;height:130px;border-radius:50%;background:rgba(255,255,255,.12)"></div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.9;position:relative">${t('会社からのメッセージ','Company Message')}</div>
+      <div style="font-size:20px;font-weight:800;margin-top:4px;position:relative">${escapeHtml(m.title||monthLabel)}</div>
+      <div style="font-size:12px;opacity:.9;margin-top:2px;position:relative">${monthLabel}${m.author?' · '+escapeHtml(m.author):''}</div>
+    </div>
+    <div style="padding:18px 2px 6px;font-size:14px;line-height:1.8;white-space:pre-wrap;color:var(--tm);max-height:48vh;overflow-y:auto">${escapeHtml(m.body)}</div>
+    <button class="btn btn-primary" style="width:100%;margin-top:12px" onclick="ackCompanyMsg()"><i class="ti ti-check"></i> ${t('確認しました','Got it')}</button>
+  </div>`;
+  openModal(html);
+}
+function ackCompanyMsg() { markCompanyMsgSeen(); closeModalDirect(); }
+function fmtMonthLabel(monthKey) {
+  if (!monthKey) return '';
+  var p = monthKey.split('-'); var y=p[0], mo=parseInt(p[1],10);
+  if (curLang==='en') { var names=['January','February','March','April','May','June','July','August','September','October','November','December']; return names[mo-1]+' '+y; }
+  return y+'年'+mo+'月';
+}
+function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+/* ダッシュボード/マイページ上部に出すカード */
+function renderCompanyMessageCard() {
+  var m = getCompanyMessage();
+  if (!m || !m.body || m.month !== curMonthKey()) return '';
+  var monthLabel = fmtMonthLabel(m.month);
+  return `<div class="card" style="border-left:4px solid var(--accent);background:linear-gradient(180deg,var(--surface),var(--surface))">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="width:30px;height:30px;border-radius:9px;background:var(--accent-soft, #fbeee4);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-speakerphone" style="font-size:17px"></i></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">${t('会社からのメッセージ','Company Message')} · ${monthLabel}</div>
+        <div style="font-size:15px;font-weight:700;color:var(--tm)">${escapeHtml(m.title||monthLabel)}</div>
+      </div>
+      ${canEditCompanyMsg()?`<button class="btn btn-secondary btn-sm" onclick="go('company_msg_edit')"><i class="ti ti-pencil"></i></button>`:''}
+    </div>
+    <div style="font-size:13.5px;line-height:1.7;white-space:pre-wrap;color:var(--tm);margin-top:4px">${escapeHtml(m.body)}</div>
+    ${m.author?`<div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:right">— ${escapeHtml(m.author)}</div>`:''}
+  </div>`;
+}
+/* GM/CEO用 編集ページ */
+function renderCompanyMsgEdit() {
+  if (!canEditCompanyMsg()) return `<div class="card">権限がありません。</div>`;
+  var m = getCompanyMessage() || {};
+  var thisMonth = curMonthKey();
+  var isThisMonth = m.month === thisMonth;
+  var html = `<div class="section-header"><div class="section-title"><i class="ti ti-speakerphone" style="color:var(--accent)"></i> 今月の会社メッセージ</div></div>`;
+  html += `<div class="card">
+    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">全スタッフがログイン後に見るメッセージです。${fmtMonthLabel(thisMonth)}分として保存され、その月の初回ログイン時にポップアップ表示、以降はダッシュボード/マイページ上部にカード表示されます。</p>
+    <label style="font-size:12px;font-weight:600;color:var(--tm)">タイトル（任意）</label>
+    <input id="cm-title" type="text" maxlength="60" placeholder="例：今月のテーマ・感謝・目標など" value="${isThisMonth?escapeHtml(m.title||''):''}" style="width:100%;padding:10px;margin:4px 0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px">
+    <label style="font-size:12px;font-weight:600;color:var(--tm)">本文</label>
+    <textarea id="cm-body" rows="8" placeholder="全社員へのメッセージを入力..." style="width:100%;padding:10px;margin:4px 0 6px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px;line-height:1.7;resize:vertical;font-family:inherit">${isThisMonth?escapeHtml(m.body||''):''}</textarea>
+    <label style="font-size:12px;font-weight:600;color:var(--tm)">差出人（任意）</label>
+    <input id="cm-author" type="text" maxlength="40" placeholder="例：Moto / 経営チーム" value="${isThisMonth?escapeHtml(m.author||''):(ROLE_CONFIG[curRole]||{}).name||curUserName||''}" style="width:100%;padding:10px;margin:4px 0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px">
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary" onclick="saveCompanyMsg()"><i class="ti ti-device-floppy"></i> 保存して全員に表示</button>
+      ${(m.body&&isThisMonth)?`<button class="btn btn-secondary" onclick="clearCompanyMsg()"><i class="ti ti-trash"></i> 今月分を削除</button>`:''}
+    </div>
+  </div>`;
+  // プレビュー
+  if (isThisMonth && m.body) {
+    html += `<div class="section-header" style="margin-top:8px"><div class="section-title" style="font-size:14px"><i class="ti ti-eye"></i> 現在の表示プレビュー</div></div>`;
+    html += renderCompanyMessageCard();
+  }
+  // 過去メッセージがある場合の注記
+  if (m.body && !isThisMonth) {
+    html += `<div class="alert alert-warning" style="padding:8px 10px;font-size:12px"><i class="ti ti-info-circle"></i> 保存済みのメッセージは${fmtMonthLabel(m.month)}分です。新しく保存すると${fmtMonthLabel(thisMonth)}分として全員に表示されます。</div>`;
+  }
+  return html;
+}
+function saveCompanyMsg() {
+  var body = (document.getElementById('cm-body').value||'').trim();
+  if (!body) { showToast('本文を入力してください','warning'); return; }
+  var data = {
+    title: (document.getElementById('cm-title').value||'').trim(),
+    body: body,
+    author: (document.getElementById('cm-author').value||'').trim(),
+    month: curMonthKey(),
+    updatedAt: new Date().toLocaleString('ja'),
+  };
+  setCompanyMessage(data);
+  // 自分は既読扱い（保存直後に自分にポップアップが出ないように）
+  markCompanyMsgSeen();
+  showToast('会社メッセージを保存しました','success');
+  renderPage('company_msg_edit');
+}
+function clearCompanyMsg() {
+  if (!confirm('今月の会社メッセージを削除しますか？')) return;
+  setCompanyMessage(null);
+  showToast('削除しました','info');
+  renderPage('company_msg_edit');
+}
 /* ============ 店舗PIN管理（店舗マスターで使用） ============ */
 var DEFAULT_STORE_PINS = { 'F01':'1111','F02':'2222','F03':'3333','F04-K':'4111','F04-P':'4222','F04-A':'4333','F05':'5555' };
 function getStorePins() { return ls('store_pins', DEFAULT_STORE_PINS); }
@@ -2490,6 +2612,8 @@ function initApp() {
   curPage = (curRole==='crew') ? 'mypage' : (groups[0] ? groups[0].children[0] : 'mypage');
   curGroup = groupOfPage(curPage).id;
   renderPage(curPage);
+  // 今月の会社メッセージ（初回ログイン時のみポップアップ）
+  setTimeout(maybeShowCompanyMessage, 400);
 }
 
 function buildNav() {
@@ -2503,7 +2627,9 @@ function buildNav() {
   var sub = document.getElementById('subnav-bar');
   var group = groups.find(g=>g.id===curGroup);
   if (group && group.children.length > 1) {
-    var children = group.children.filter(pid => pid!=='staff_master' || canAccessStaffMaster());
+    var children = group.children.filter(pid => (pid!=='staff_master' || canAccessStaffMaster()));
+    // 役職制限のある項目を除外（NAV_ITEMSにroles指定があるもの）
+    children = children.filter(pid => { var it=NAV_ITEMS.find(n=>n.id===pid); return !it || !it.roles || it.roles.includes(curRole); });
     var pendingApprovals = ls('approvals', []).filter(a=>a.status==='pending').length;
     sub.innerHTML = children.map(pid => {
       var item = navItemById(pid);
@@ -2599,6 +2725,7 @@ function renderPage(page) {
     case 'mypage':       el.innerHTML = renderMypage(); break;
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
+    case 'company_msg_edit': el.innerHTML = renderCompanyMsgEdit(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
@@ -2828,6 +2955,9 @@ function renderDashboard() {
   var fcOver = stores.filter(s=>s.fc>34);
 
   var html = '';
+
+  // ====== 今月の会社メッセージ（最上部） ======
+  html += renderCompanyMessageCard();
 
   // ====== ① 優先アラート（最重要を最上部） ======
   var alerts = [];
@@ -9413,6 +9543,7 @@ function renderMypage() {
 
   if (!isCrewView) {
     // 管理者は従来のPGD中心
+    html += renderCompanyMessageCard();
     html += `<div class="section-header" style="margin-bottom:8px"><div class="section-title" style="font-size:15px"><i class="ti ti-rocket" style="color:var(--accent)"></i> Personal Growth Dashboard</div></div>`;
     html += renderPGD(me, false);
     return html;
@@ -9427,6 +9558,9 @@ function renderMypage() {
     <button class="btn btn-sm ${curLang==='ja'?'btn-primary':'btn-secondary'}" onclick="setLang('ja');renderPage('mypage')">日本語</button>
     <button class="btn btn-sm ${curLang==='en'?'btn-primary':'btn-secondary'}" onclick="setLang('en');renderPage('mypage')">English</button>
   </div>`;
+
+  // ===== 今月の会社メッセージ =====
+  html += renderCompanyMessageCard();
 
   // ===== ゲーミフィケーション（実績バッジ） =====
   html += renderBadges(me, emp);
