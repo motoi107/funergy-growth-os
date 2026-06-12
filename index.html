@@ -897,8 +897,16 @@ const CREW_GROUPS = [
   {id:'g_tip', label:'チップ', icon:'ti-coin', children:['tiprate']},
   {id:'g_store', label:'店舗オペレーション', icon:'ti-building-store', children:['store_cmd']},
 ];
+/* 店舗共有アカウント（タブレット等）: 店舗オペレーション中心の絞ったメニュー */
+const STORE_GROUPS = [
+  {id:'g_store', label:'店舗オペレーション', icon:'ti-building-store', children:['store_cmd']},
+  {id:'g_shift', label:'シフト', icon:'ti-calendar-event', children:['shift_admin']},
+  {id:'g_inv', label:'棚卸し', icon:'ti-clipboard-list', children:['inventory']},
+  {id:'g_vac', label:'休暇承認', icon:'ti-beach', children:['vacation']},
+];
 function navItemById(id) { return NAV_ITEMS.find(n=>n.id===id) || {id, label:id, icon:'ti-circle'}; }
 function groupsForRole() {
+  if (curStoreLogin) return STORE_GROUPS;
   if (curRole==='crew') return CREW_GROUPS;
   return MENU_GROUPS.filter(g=>g.roles.includes(curRole));
 }
@@ -2276,6 +2284,111 @@ function recipeCostRate(recipe) {
   var cost = calcRecipeCost(recipe);
   return recipe.price > 0 ? (cost/recipe.price*100) : 0;
 }
+
+/* ============================================================
+   理論原価・原価差異（答え合わせ）
+   menu_mix_<storeId>_<period> = { items:{recipeId:qty}, sales, savedAt }
+   理論使用量(食材) = Σ(メニュー出数 × そのメニューの食材使用量)
+   実質使用量(食材) = 前回棚卸 + 入荷 − 今回実棚（棚卸ベース）
+   差異 = 実質 − 理論
+============================================================ */
+function theoMixKey(storeId, period) { return 'menu_mix_'+storeId+'_'+(period||getPeriod()); }
+function getMenuMix(storeId, period) { return ls(theoMixKey(storeId, period), {items:{}, sales:0}); }
+function setMenuMix(storeId, period, data) { lsSet(theoMixKey(storeId, period), data); }
+
+/* 出数×レシピ → 食材ごとの理論使用量 {code:{qty, name, unit}} */
+function theoreticalUsageByIngredient(storeId, period) {
+  var mix = getMenuMix(storeId, period);
+  var recipes = getRecipes();
+  var ings = getIngredients();
+  var usage = {};
+  Object.keys(mix.items||{}).forEach(rId => {
+    var qtySold = parseFloat(mix.items[rId])||0;
+    if (!qtySold) return;
+    var r = recipes.find(x=>x.id===rId);
+    if (!r) return;
+    (r.items||[]).forEach(it => {
+      var ing = ings.find(x=>x.code===it.code);
+      if (!ing) return;
+      if (!usage[it.code]) usage[it.code] = {code:it.code, name:ing.name, unit:ing.unit, qty:0};
+      usage[it.code].qty += (parseFloat(it.qty)||0) * qtySold;  // レシピ使用量 × 出数
+    });
+  });
+  return usage;
+}
+/* 棚卸ベースの実質使用量 {code:{qty,name,unit, hasData}} = 前回 + 入荷 − 今回実棚 */
+function actualUsageByIngredient(storeId) {
+  var items = getInvItems(storeId);
+  var usage = {};
+  items.forEach(i => {
+    var last = parseFloat(i.last)||0;
+    var recv = parseFloat(i.received)||0;
+    var cnt = i.count===''||i.count==null ? null : parseFloat(i.count);
+    // 今回実棚が入っている食材のみ実質使用量を算出
+    if (cnt==null) { usage[i.code] = {code:i.code, name:i.name, unit:i.unit, qty:0, hasData:false}; return; }
+    usage[i.code] = {code:i.code, name:i.name, unit:i.unit, qty:(last+recv-cnt), hasData:true};
+  });
+  return usage;
+}
+/* 食材ごとの答え合わせ行を生成（理論 vs 実質、差異量・差異金額） */
+function buildVarianceRows(storeId, period) {
+  var theo = theoreticalUsageByIngredient(storeId, period);
+  var act = actualUsageByIngredient(storeId);
+  var ings = getIngredients();
+  var codes = {};
+  Object.keys(theo).forEach(c=>codes[c]=1);
+  Object.keys(act).forEach(c=>{ if(act[c].hasData) codes[c]=1; });
+  var rows = [];
+  Object.keys(codes).forEach(code => {
+    var ing = ings.find(x=>x.code===parseInt(code)) || {};
+    var tQty = theo[code] ? theo[code].qty : 0;
+    var aEntry = act[code];
+    var hasActual = aEntry && aEntry.hasData;
+    var aQty = hasActual ? aEntry.qty : null;
+    var unitCost = ingUnitCost(ing) || 0;
+    var diffQty = hasActual ? (aQty - tQty) : null;
+    rows.push({
+      code: parseInt(code),
+      name: (theo[code]&&theo[code].name) || (aEntry&&aEntry.name) || ing.name || ('#'+code),
+      unit: (theo[code]&&theo[code].unit) || (aEntry&&aEntry.unit) || ing.unit || '',
+      cls: catClass(ing.cat),
+      theoQty: tQty,
+      actQty: aQty,
+      hasActual: hasActual,
+      diffQty: diffQty,
+      unitCost: unitCost,
+      theoCost: tQty * unitCost,
+      actCost: hasActual ? aQty * unitCost : null,
+      diffCost: hasActual ? (diffQty * unitCost) : null,
+    });
+  });
+  // 差異金額の絶対値が大きい順
+  rows.sort((a,b)=> Math.abs(b.diffCost||0) - Math.abs(a.diffCost||0));
+  return rows;
+}
+/* 金額サマリー（理論原価額・実質原価額・差異） */
+function varianceSummary(storeId, period) {
+  var rows = buildVarianceRows(storeId, period);
+  var theoCost = rows.reduce((a,r)=>a+(r.theoCost||0), 0);
+  var actCost = rows.reduce((a,r)=> a + (r.hasActual ? (r.actCost||0) : 0), 0);
+  // 実質原価は「実棚データのある食材」だけの合計。理論側も同じ食材に揃えて比較（公平）
+  var theoCostMatched = rows.reduce((a,r)=> a + (r.hasActual ? (r.theoCost||0) : 0), 0);
+  var mix = getMenuMix(storeId, period);
+  var sales = parseFloat(mix.sales)||0;
+  var variance = actCost - theoCostMatched;
+  return {
+    theoCost: theoCost,             // 全理論原価（出数×レシピ）
+    theoCostMatched: theoCostMatched, // 実棚のある食材に限った理論原価
+    actCost: actCost,               // 実質原価（棚卸ベース）
+    variance: variance,             // 差異（実質−理論、同一食材ベース）
+    sales: sales,
+    theoRate: sales? theoCost/sales*100 : 0,
+    actRate: sales? actCost/sales*100 : 0,
+    varianceRate: sales? variance/sales*100 : 0,
+    rowCount: rows.length,
+    matchedCount: rows.filter(r=>r.hasActual).length,
+  };
+}
 function catName(code) { var c = getCategories().find(c=>c.code===code); return c?c.name:'未分類'; }
 function catClass(code) { var c = getCategories().find(c=>c.code===code); return c?c.cls:'food'; }
 function className(clsId) { var c = CLASSES.find(c=>c.id===clsId); return c?c.name:'その他'; }
@@ -2320,6 +2433,7 @@ function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val));
 var pendingRole = null, pendingStore = null, pendingName = null;
 var loginLocation = null; // 'OFFICE' | storeId
 var loginPerson = null;   // 選択された従業員オブジェクト
+var loginStoreMode = false; // 店舗共有アカウントでログイン中か
 
 /* PIN管理（個人別、初期0000） */
 var DEFAULT_STAFF_PIN = '0000';
@@ -2393,12 +2507,18 @@ function loginPickLocation(loc, el) {
   var locLabel = loc==='OFFICE' ? t('オフィス','Office') : (STORES.find(s=>s.id===loc)||{name:loc}).name;
   document.getElementById('login-name-loclabel').textContent = locLabel + t(' のスタッフを選択',' — select staff');
   var ng = document.getElementById('login-name-grid');
+  var storeLoginBtn = '';
+  if (loc!=='OFFICE') {
+    storeLoginBtn = `<div class="store-btn" style="grid-column:1/-1;text-align:left;border:1px dashed var(--accent);background:var(--accent-soft,#fceee4)" onclick="loginPickStoreAccount('${loc}')">
+      <div style="font-size:13px;font-weight:700;color:var(--accent)"><i class="ti ti-building-store"></i> ${t('この店舗としてログイン','Log in as this store')}</div>
+      <div style="font-size:10px;color:var(--muted)">${t('共有端末用・店舗オペレーション中心','Shared device · store operations')}</div></div>`;
+  }
   if (!people.length) {
-    ng.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:16px;font-size:13px">${t('この所属に登録スタッフがいません','No staff registered for this location')}</div>`;
+    ng.innerHTML = storeLoginBtn + `<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:16px;font-size:13px">${t('この所属に登録スタッフがいません','No staff registered for this location')}</div>`;
   } else {
     var order={ceo:0,gm:1,office:2,am:3,sl:4,crew:5};
     people.sort((a,b)=>(order[a.role]-order[b.role])||a.name.localeCompare(b.name));
-    ng.innerHTML = people.map(p=>{
+    ng.innerHTML = storeLoginBtn + people.map(p=>{
       var roleLabel = roleLabelI18n(p.role);
       return `<div class="store-btn" style="text-align:left" onclick="loginPickPerson('${p.id}',this)">
         <div style="font-size:13px;font-weight:600">${p.name}</div>
@@ -2422,12 +2542,27 @@ function loginPickPerson(empId, el) {
   var emp = getEmployees().find(e=>e.id===empId);
   if (!emp) return;
   loginPerson = emp;
+  loginStoreMode = false;
   document.getElementById('login-pin-name').textContent = emp.name;
   var roleLabel = roleLabelI18n(emp.role);
   var locLabel = loginLocation==='OFFICE'?t('オフィス','Office'):(STORES.find(s=>s.id===loginLocation)||{name:loginLocation}).name;
   document.getElementById('login-pin-role').textContent = roleLabel + ' · ' + locLabel;
   document.getElementById('login-step-name').style.display='none';
   document.getElementById('login-step-pin').style.display='block';
+  refreshLoginLabels();
+  var inp=document.getElementById('login-pin-input'); inp.value=''; setTimeout(()=>inp.focus(),50);
+  document.getElementById('login-pin-err').style.display='none';
+}
+/* STEP2': 店舗共有アカウントを選択 → 店舗PIN入力へ */
+function loginPickStoreAccount(storeId) {
+  loginStoreMode = true;
+  loginPerson = null;
+  var s = STORES.find(x=>x.id===storeId) || {name:storeId};
+  document.getElementById('login-pin-name').textContent = s.name;
+  document.getElementById('login-pin-role').textContent = t('店舗アカウント（共有）','Store account (shared)');
+  document.getElementById('login-step-name').style.display='none';
+  document.getElementById('login-step-pin').style.display='block';
+  var hint=document.getElementById('login-pin-hint'); if(hint) hint.innerHTML=t('店舗PINを入力（初期値は店舗マスター参照）','Enter store PIN');
   refreshLoginLabels();
   var inp=document.getElementById('login-pin-input'); inp.value=''; setTimeout(()=>inp.focus(),50);
   document.getElementById('login-pin-err').style.display='none';
@@ -2447,9 +2582,26 @@ function loginBackToName() {
 
 /* STEP3: PIN検証 → ログイン */
 function doStaffLogin() {
+  // 店舗共有アカウント
+  if (loginStoreMode) {
+    var pin = (document.getElementById('login-pin-input').value||'').trim();
+    if (pin !== getStorePin(loginLocation)) {
+      document.getElementById('login-pin-err').style.display='block';
+      return;
+    }
+    var s = STORES.find(x=>x.id===loginLocation) || {name:loginLocation};
+    curRole = 'sl';                 // SL相当の権限（店舗運営）
+    curStoreLogin = true;           // 店舗共有ログインフラグ
+    curUserName = s.name;           // 表示名は店舗名
+    curStore = loginLocation;
+    document.getElementById('login-screen').style.display='none';
+    document.getElementById('app-shell').style.display='block';
+    initApp();
+    return;
+  }
   if (!loginPerson) return;
-  var pin = (document.getElementById('login-pin-input').value||'').trim();
-  if (pin !== getStaffPin(loginPerson.name)) {
+  var pin2 = (document.getElementById('login-pin-input').value||'').trim();
+  if (pin2 !== getStaffPin(loginPerson.name)) {
     document.getElementById('login-pin-err').style.display='block';
     return;
   }
@@ -2609,7 +2761,8 @@ function initApp() {
   buildNav();
   // Default page
   var groups = groupsForRole();
-  curPage = (curRole==='crew') ? 'mypage' : (groups[0] ? groups[0].children[0] : 'mypage');
+  if (curStoreLogin) curPage = 'store_cmd';            // 店舗共有ログインは店舗オペレーション中心
+  else curPage = (curRole==='crew') ? 'mypage' : (groups[0] ? groups[0].children[0] : 'mypage');
   curGroup = groupOfPage(curPage).id;
   renderPage(curPage);
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
@@ -3139,24 +3292,58 @@ function renderStoreCmd() {
   var canEdit = ROLE_CONFIG[curRole].canCreate;
   var dailyComplete = ops.length>0 && opsDone===ops.length;
 
-  var html = `<div class="section-header">
-    <div><div class="section-title"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${store.color};margin-right:8px;"></span>${store.name}</div>
-    <div class="section-sub">Store Command Center · ${new Date().toLocaleDateString('ja')}</div></div>
-    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="go('required')"><i class="ti ti-settings"></i> Ops設定</button>`:''}
+  var html = '';
+
+  // 会社メッセージ（あれば最上部）
+  html += renderCompanyMessageCard();
+
+  // ===== ヒーロー: 店舗名 + 本日の進捗リング =====
+  var pct = ops.length?Math.round(opsDone/ops.length*100):0;
+  var ringColor = dailyComplete?'#15a66a':pct>=50?'#f0661f':'#d98908';
+  var greeting = (function(){ var h=new Date().getHours(); if(h<11) return t('おはようございます','Good morning'); if(h<17) return t('お疲れさまです','Good afternoon'); return t('お疲れさまです','Good evening'); })();
+  var dstr = new Date().toLocaleDateString(curLang==='en'?'en-US':'ja', {month:'short',day:'numeric',weekday:'short'});
+  html += `<div class="card" style="background:linear-gradient(135deg,${store.color}1a,var(--surface));border-left:4px solid ${store.color}">
+    <div style="display:flex;align-items:center;gap:14px">
+      <div style="position:relative;flex-shrink:0">${healthRing(pct, ringColor, 64)}
+        <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+          <div style="font-size:16px;font-weight:800;color:${ringColor};line-height:1">${pct}%</div></div></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;color:var(--muted)">${greeting} · ${dstr}</div>
+        <div style="font-size:19px;font-weight:800;color:var(--tm);display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:50%;background:${store.color}"></span>${store.name}</div>
+        <div style="font-size:12px;color:var(--muted)">${dailyComplete?t('本日のオペレーション完了','All operations done today'):t('Daily Operations','Daily Operations')+' '+opsDone+'/'+ops.length}</div>
+      </div>
+    </div>
   </div>`;
+
+  // ===== クイックアクション（大きめタイル）=====
+  var openTasks = tasks.length;
+  var tiles = [
+    {label:t('棚卸','Inventory'), icon:'ti-box', color:'#15a66a', page:'inventory'},
+    {label:t('発注','Order'), icon:'ti-truck-delivery', color:'#2e6fd6', page:'order'},
+    {label:t('シフト','Shift'), icon:'ti-calendar-event', color:'#f0661f', page:'shift_admin'},
+    {label:t('日報','Daily Report'), icon:'ti-clipboard-text', color:'#8b5cf6', action:`scrollToReport()`},
+  ];
+  html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">`;
+  tiles.forEach(ti=>{
+    var on = ti.action ? ti.action : `go('${ti.page}')`;
+    html += `<div onclick="${on}" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 6px;text-align:center;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.04)">
+      <div style="width:40px;height:40px;border-radius:11px;background:${ti.color}1a;color:${ti.color};display:flex;align-items:center;justify-content:center;margin:0 auto 6px"><i class="ti ${ti.icon}" style="font-size:21px"></i></div>
+      <div style="font-size:11px;font-weight:600;color:var(--tm)">${ti.label}</div></div>`;
+  });
+  html += `</div>`;
 
   // Required未完了アラート
   if (reqIncomplete.length) {
     html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
-      <p style="font-size:12px;font-weight:600">Required未完了 ${reqIncomplete.length}件 — Daily完了できません</p>
+      <p style="font-size:12px;font-weight:600">${t('必須未完了','Required incomplete')} ${reqIncomplete.length}${t('件','')} — ${t('Daily完了できません','cannot complete Daily')}</p>
       <div style="font-size:11px;margin-top:2px">${reqIncomplete.map(t=>t.phase+': '+t.text).join(' / ')}</div></div></div>`;
   } else if (dailyComplete) {
-    html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>本日のDaily Operationsは全て完了しています</div>`;
+    html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>${t('本日のDaily Operationsは全て完了しています','All Daily Operations completed')}</div>`;
   }
 
   // 本日/今週のGoal
-  html += `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>本日・今週のGoal
-    ${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('goals')">管理</button>`:''}</div>`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>${t('本日・今週のGoal','Today / This Week Goals')}
+    ${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('goals')">${t('管理','Manage')}</button>`:''}</div>`;
   if (goals.length) {
     goals.slice(0,4).forEach(g => {
       var prog = Math.min(Math.round((g.current||0)/g.target*100), 100);
@@ -3167,7 +3354,7 @@ function renderStoreCmd() {
         <div class="store-meta">${g.current||0} / ${g.target} ${g.unit||''}</div>
       </div>`;
     });
-  } else { html += `<p style="color:var(--muted);font-size:13px">本日のGoalは未設定です</p>`; }
+  } else { html += `<p style="color:var(--muted);font-size:13px">${t('本日のGoalは未設定です','No goals set for today')}</p>`; }
   html += '</div>';
 
   // ===== Daily Operations（フェーズ順の司令塔） =====
@@ -3214,18 +3401,21 @@ function renderStoreCmd() {
   html += '</div></div>';
 
   // ===== チップ管理（クレジット=Toast自動 / キャッシュ=手入力）+ 日報 =====
+  html += `<div id="store-report-anchor"></div>`;
   html += renderStoreCmdTip(storeId, store, canEdit);
 
-  // クイックアクション（店舗運用）
-  html += `<div class="card"><div class="card-title"><i class="ti ti-bolt"></i>店舗運用</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <button class="btn btn-secondary btn-sm" onclick="go('inventory')"><i class="ti ti-box"></i> 棚卸</button>
-      <button class="btn btn-secondary btn-sm" onclick="go('order')"><i class="ti ti-clipboard-list"></i> 発注</button>
-      ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="go('tasks')"><i class="ti ti-list-check"></i> タスク (${tasks.length})</button>`:''}
-      ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="go('required')"><i class="ti ti-alert-circle"></i> Required</button>`:''}
-    </div>
-  </div>`;
+  // 管理リンク（編集権限者のみ・控えめに）
+  if (canEdit) {
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px">
+      <button class="btn btn-secondary btn-sm" onclick="go('tasks')"><i class="ti ti-list-check"></i> ${t('タスク','Tasks')} (${tasks.length})</button>
+      <button class="btn btn-secondary btn-sm" onclick="go('required')"><i class="ti ti-settings"></i> ${t('必須チェック設定','Required setup')}</button>
+    </div>`;
+  }
   return html;
+}
+function scrollToReport() {
+  var el = document.getElementById('store-report-anchor');
+  if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 function completeDailyOps(storeId) {
@@ -3431,6 +3621,79 @@ function getBudgets() {
   return ls('budgets_v2', def);
 }
 function saveBudgets(b) { lsSet('budgets_v2', b); }
+
+/* ===== 曜日別予算（店舗×曜日×区分） =====
+   b.dow = {
+     lunch:   [ {guests, spend} × 7 ],   // 月→日
+     dinner:  [ {guests, spend} × 7 ],
+     takeout: [ {orders, spend} × 7 ],
+   }
+   その月の各曜日の出現回数を掛けて月間予算を算出する。 */
+function emptyDow() {
+  var mk = ()=> DOW.map(()=>({guests:0, spend:0, orders:0}));
+  return { lunch:mk(), dinner:mk(), takeout:mk() };
+}
+function getDow(b) {
+  if (b && b.dow) {
+    // 7日分そろっているか防御
+    ['lunch','dinner','takeout'].forEach(seg=>{
+      if (!Array.isArray(b.dow[seg]) || b.dow[seg].length!==7) b.dow[seg] = DOW.map(()=>({guests:0,spend:0,orders:0}));
+    });
+    return b.dow;
+  }
+  return emptyDow();
+}
+/* 予算対象月（getPeriod の "YYYY.M" を年月に） */
+function budgetYM() {
+  var p = getPeriod().split('.');
+  return { y: parseInt(p[0],10), m: parseInt(p[1],10) };
+}
+/* その月に各曜日（月→日）が何回あるか。返り値は長さ7の配列 */
+function weekdayCountsForMonth(y, m) {
+  var counts = [0,0,0,0,0,0,0]; // index0=月 ... index6=日（DOWの並び）
+  var days = new Date(y, m, 0).getDate(); // m月の日数
+  for (var d=1; d<=days; d++) {
+    var jsDow = new Date(y, m-1, d).getDay(); // 0=日,1=月,...6=土
+    var idx = (jsDow===0) ? 6 : jsDow-1;      // DOW並び（月始まり）へ変換
+    counts[idx]++;
+  }
+  return counts;
+}
+/* 曜日別予算 → 区分別の月間売上 */
+function dowSegMonthly(dow, seg, counts) {
+  if (!dow || !dow[seg]) return 0;
+  var total = 0;
+  for (var i=0;i<7;i++) {
+    var cell = dow[seg][i] || {};
+    var perDay = (seg==='takeout')
+      ? (parseFloat(cell.orders)||0)*(parseFloat(cell.spend)||0)
+      : (parseFloat(cell.guests)||0)*(parseFloat(cell.spend)||0);
+    total += perDay * (counts[i]||0);
+  }
+  return total;
+}
+/* 曜日別予算 → 月間合計売上（3区分） */
+function dowMonthlyTotal(dow, ym) {
+  ym = ym || budgetYM();
+  var counts = weekdayCountsForMonth(ym.y, ym.m);
+  return dowSegMonthly(dow,'lunch',counts) + dowSegMonthly(dow,'dinner',counts) + dowSegMonthly(dow,'takeout',counts);
+}
+/* 区分別の月間内訳（カード表示用） */
+function dowSegBreakdown(dow, ym) {
+  ym = ym || budgetYM();
+  var counts = weekdayCountsForMonth(ym.y, ym.m);
+  return {
+    lunch:   dowSegMonthly(dow,'lunch',counts),
+    dinner:  dowSegMonthly(dow,'dinner',counts),
+    takeout: dowSegMonthly(dow,'takeout',counts),
+    counts: counts,
+  };
+}
+/* この予算が曜日別モードを使っているか（dowに1つでも入力あり） */
+function usesDowMode(b) {
+  if (!b || !b.dow) return false;
+  return ['lunch','dinner','takeout'].some(seg=> (b.dow[seg]||[]).some(c=> (parseFloat(c.guests)||0)>0 || (parseFloat(c.orders)||0)>0 || (parseFloat(c.spend)||0)>0 ));
+}
 
 /* ===== 予算3区分モデル（ランチ/ディナー/テイクアウト） =====
    segments: {
@@ -3647,7 +3910,10 @@ function renderBudgetSetup() {
   visible.forEach(b => {
     var s = STORES.find(x=>x.id===b.storeId) || {name:b.storeId, color:'#888'};
     var segs = getSegments(b);
-    var total = segmentsTotal(segs);
+    var dowMode = usesDowMode(b);
+    var dow = getDow(b);
+    var dowBd = dowMode ? dowSegBreakdown(dow) : null;
+    var total = dowMode ? (dowBd.lunch+dowBd.dinner+dowBd.takeout) : segmentsTotal(segs);
     var laborB = segmentsLaborBudget(segs);
     var fcB = segmentsFcBudget(segs);
     var profit = total - laborB - fcB;
@@ -3671,10 +3937,11 @@ function renderBudgetSetup() {
     }
 
     html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:8px 0">
-      ${segCard('ランチ', segSales(segs.lunch,'lunch'), 'var(--yellow)')}
-      ${segCard('ディナー', segSales(segs.dinner,'dinner'), 'var(--accent)')}
-      ${segCard('テイクアウト', segSales(segs.takeout,'takeout'), 'var(--accent2)')}
+      ${segCard('ランチ', dowMode?dowBd.lunch:segSales(segs.lunch,'lunch'), 'var(--yellow)')}
+      ${segCard('ディナー', dowMode?dowBd.dinner:segSales(segs.dinner,'dinner'), 'var(--accent)')}
+      ${segCard('テイクアウト', dowMode?dowBd.takeout:segSales(segs.takeout,'takeout'), 'var(--accent2)')}
     </div>
+    ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> 曜日別で作成（${getPeriod()}月の曜日数で自動計算）</div>`:''}
     <div class="kpi-grid" style="margin:8px 0">
       ${kpi('月間売上予算', fmtK(Math.round(total)), '3区分合計', 'var(--tm)')}
       ${kpi('Labor予算', fmtK(Math.round(laborB)), total?Math.round(laborB/total*100)+'%':'—', 'var(--muted)')}
@@ -3687,9 +3954,10 @@ function renderBudgetSetup() {
 
     html += `<div class="approval-actions">`;
     if (editable) {
-      html += `<button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','lunch')"><i class="ti ti-sun"></i> ランチ編集</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','dinner')"><i class="ti ti-moon"></i> ディナー編集</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','takeout')"><i class="ti ti-shopping-bag"></i> テイクアウト編集</button>`;
+      html += `<button class="btn btn-primary btn-sm" onclick="openDowEditor('${b.storeId}')"><i class="ti ti-calendar-stats"></i> 曜日別で作成</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','lunch')"><i class="ti ti-sun"></i> ランチ</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','dinner')"><i class="ti ti-moon"></i> ディナー</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','takeout')"><i class="ti ti-shopping-bag"></i> テイクアウト</button>`;
     }
     if ((st==='下書き'||st==='差し戻し'||st==='再提出済み') && editable && ['sl','am','gm','ceo'].includes(curRole)) {
       html += `<button class="btn btn-primary btn-sm" onclick="submitBudget('${b.storeId}')"><i class="ti ti-send"></i> GMへ提出</button>`;
@@ -3753,6 +4021,139 @@ function renderPrevMonthCompare(storeId, budTotal, laborB, fcB) {
     <div style="font-size:10px;color:var(--muted);margin-top:2px">前月${pm.daysWithData}日分の実績データから集計</div>
     </div></details>`;
 }
+/* ===== 曜日別予算エディタ ===== */
+var dowEditState = null; // {storeId, dow, seg}
+function openDowEditor(storeId, seg) {
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  if (!canEditBudget(b)) { alert('この予算は現在編集できません（ステータス: '+(b.status||'下書き')+'）'); return; }
+  // 既存dowをディープコピーして編集用に保持
+  var src = getDow(b);
+  dowEditState = { storeId: storeId, seg: seg||'lunch',
+    dow: JSON.parse(JSON.stringify(src)) };
+  renderDowModal();
+}
+function renderDowModal() {
+  var st = dowEditState; if(!st) return;
+  var sName = (STORES.find(s=>s.id===st.storeId)||{}).name||st.storeId;
+  var ym = budgetYM();
+  var counts = weekdayCountsForMonth(ym.y, ym.m);
+  var seg = st.seg;
+  var segLabels = {lunch:'ランチ', dinner:'ディナー', takeout:'テイクアウト'};
+  var isTakeout = seg==='takeout';
+  var qtyLabel = isTakeout ? '注文数' : '客数';
+
+  // タブ
+  var tabs = ['lunch','dinner','takeout'].map(sg=>
+    `<button class="btn btn-sm ${sg===seg?'btn-primary':'btn-secondary'}" style="flex:1" onclick="dowSwitchSeg('${sg}')">${segLabels[sg]}</button>`
+  ).join('');
+
+  // 行（曜日）
+  var rows = '';
+  for (var i=0;i<7;i++) {
+    var cell = st.dow[seg][i] || {};
+    var qty = isTakeout ? (cell.orders||'') : (cell.guests||'');
+    var spend = cell.spend||'';
+    var perDay = (parseFloat(isTakeout?cell.orders:cell.guests)||0)*(parseFloat(cell.spend)||0);
+    var monthly = perDay * counts[i];
+    var isWeekend = (i===5||i===6);
+    rows += `<tr style="background:${isWeekend?'var(--surface2)':'transparent'}">
+      <td style="padding:4px 6px;font-weight:600;color:${i===6?'var(--red)':i===5?'var(--accent2)':'var(--tm)'}">${DOW[i]}<div style="font-size:9px;color:var(--muted);font-weight:400">×${counts[i]}日</div></td>
+      <td style="padding:2px"><input class="form-input" style="padding:6px;text-align:right;font-size:13px" type="number" inputmode="numeric" value="${qty}" placeholder="0" oninput="dowCellInput(${i},'qty',this.value)"></td>
+      <td style="padding:2px"><input class="form-input" style="padding:6px;text-align:right;font-size:13px" type="number" inputmode="decimal" step="0.01" value="${spend}" placeholder="0" oninput="dowCellInput(${i},'spend',this.value)"></td>
+      <td style="padding:4px 6px;text-align:right;font-size:12px;font-weight:600;color:var(--accent)" id="dow-row-${i}">${monthly?fmtK(Math.round(monthly)):'—'}</td>
+    </tr>`;
+  }
+
+  var segMonthly = dowSegMonthly(st.dow, seg, counts);
+  var grandTotal = dowMonthlyTotal(st.dow, ym);
+
+  openModal(`<div class="modal-title">${sName} — 曜日別予算 <button class="modal-close" onclick="closeDowEditor()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 曜日ごとに目標${qtyLabel}×客単価を入力。${ym.y}年${ym.m}月の曜日数で月間予算を自動計算します。</div>
+    <div style="display:flex;gap:4px;margin-bottom:10px">${tabs}</div>
+    <div style="max-height:46vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="font-size:10px;color:var(--muted);position:sticky;top:0;background:var(--surface)">
+          <th style="padding:6px 6px;text-align:left">曜日</th>
+          <th style="padding:6px 2px;text-align:right">${qtyLabel}/日</th>
+          <th style="padding:6px 2px;text-align:right">客単価$</th>
+          <th style="padding:6px 6px;text-align:right">月間</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:8px">
+      <button class="btn btn-secondary btn-sm" style="flex:1" onclick="dowCopyWeekday()"><i class="ti ti-copy"></i> 平日を一括</button>
+      <button class="btn btn-secondary btn-sm" style="flex:1" onclick="dowCopyAll()"><i class="ti ti-arrows-down"></i> 全曜日を一括</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+      <div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center">
+        <div style="font-size:10px;color:var(--muted)">${segLabels[seg]}月間</div>
+        <div id="dow-seg-total" style="font-size:18px;font-weight:800;color:var(--accent)">${fmtK(Math.round(segMonthly))}</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center">
+        <div style="font-size:10px;color:var(--muted)">3区分 月間合計</div>
+        <div id="dow-grand-total" style="font-size:18px;font-weight:800;color:var(--green)">${fmtK(Math.round(grandTotal))}</div>
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeDowEditor()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveDow()"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
+}
+function dowSwitchSeg(sg) { if(!dowEditState) return; dowEditState.seg = sg; renderDowModal(); }
+function dowCellInput(i, field, val) {
+  if (!dowEditState) return;
+  var seg = dowEditState.seg;
+  var cell = dowEditState.dow[seg][i] || (dowEditState.dow[seg][i]={});
+  var v = parseFloat(val)||0;
+  if (field==='qty') { if(seg==='takeout') cell.orders=v; else cell.guests=v; }
+  else cell.spend = v;
+  dowRecalc();
+}
+function dowRecalc() {
+  var st = dowEditState; if(!st) return;
+  var ym = budgetYM(); var counts = weekdayCountsForMonth(ym.y, ym.m);
+  var seg = st.seg, isTakeout = seg==='takeout';
+  for (var i=0;i<7;i++) {
+    var cell = st.dow[seg][i]||{};
+    var perDay = (parseFloat(isTakeout?cell.orders:cell.guests)||0)*(parseFloat(cell.spend)||0);
+    var monthly = perDay * counts[i];
+    var el = document.getElementById('dow-row-'+i);
+    if (el) el.textContent = monthly?fmtK(Math.round(monthly)):'—';
+  }
+  var segEl = document.getElementById('dow-seg-total');
+  if (segEl) segEl.textContent = fmtK(Math.round(dowSegMonthly(st.dow, seg, counts)));
+  var grandEl = document.getElementById('dow-grand-total');
+  if (grandEl) grandEl.textContent = fmtK(Math.round(dowMonthlyTotal(st.dow, ym)));
+}
+/* 月曜の値を平日（火〜金）にコピー */
+function dowCopyWeekday() {
+  var st = dowEditState; if(!st) return;
+  var seg = st.seg; var src = st.dow[seg][0]; // 月
+  for (var i=1;i<5;i++) st.dow[seg][i] = JSON.parse(JSON.stringify(src));
+  renderDowModal();
+}
+/* 月曜の値を全曜日にコピー */
+function dowCopyAll() {
+  var st = dowEditState; if(!st) return;
+  var seg = st.seg; var src = st.dow[seg][0];
+  for (var i=1;i<7;i++) st.dow[seg][i] = JSON.parse(JSON.stringify(src));
+  renderDowModal();
+}
+function closeDowEditor() { dowEditState=null; closeModalDirect(); }
+function saveDow() {
+  var st = dowEditState; if(!st) return;
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===st.storeId); if(!b) { closeDowEditor(); return; }
+  b.dow = st.dow;
+  if (b.status==='差し戻し') b.status='再提出済み';
+  if (!b.status) b.status='下書き';
+  saveBudgets(budgets);
+  dowEditState=null;
+  closeModalDirect();
+  showToast('曜日別予算を保存しました','success');
+  renderPage('budget');
+}
+
 function openSegEditor(storeId, seg) {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
@@ -3924,6 +4325,16 @@ function dailyMonthLabel() {
 function shiftDailyMonth(delta) { dailyMonthOffset += delta; renderPage('budget'); }
 /* 基礎根拠から曜日別の日次予算を取得 */
 function dayBudgetFromBases(b, dow) {
+  // 曜日別モードが設定されていれば、その曜日の客数×客単価（3区分）を直接使う
+  if (usesDowMode(b)) {
+    var idx = DOW.indexOf(dow);
+    if (idx<0) return 0;
+    var d = getDow(b);
+    var lunch = (parseFloat((d.lunch[idx]||{}).guests)||0)*(parseFloat((d.lunch[idx]||{}).spend)||0);
+    var dinner = (parseFloat((d.dinner[idx]||{}).guests)||0)*(parseFloat((d.dinner[idx]||{}).spend)||0);
+    var takeout = (parseFloat((d.takeout[idx]||{}).orders)||0)*(parseFloat((d.takeout[idx]||{}).spend)||0);
+    return lunch+dinner+takeout;
+  }
   // セグメント方式（ランチ/ディナー/テイクアウト）が設定されていればそれを日割り
   if (b && hasSegments(b)) {
     var monthly = segmentsTotal(b.segments);
@@ -3932,10 +4343,10 @@ function dayBudgetFromBases(b, dow) {
   }
   var base = (b.bases||[]).find(x=>x.type==='base');
   if (!base || !base.days) return 0;
-  var idx = DOW.indexOf(dow);
-  if (idx<0) return 0;
-  var d = base.days[idx]||{guests:0,spend:0};
-  return (parseFloat(d.guests)||0)*(parseFloat(d.spend)||0);
+  var idx2 = DOW.indexOf(dow);
+  if (idx2<0) return 0;
+  var dd = base.days[idx2]||{guests:0,spend:0};
+  return (parseFloat(dd.guests)||0)*(parseFloat(dd.spend)||0);
 }
 function getDailyActuals(storeId) { return ls('daily_actuals_'+storeId, {}); }
 function setDailyActuals(storeId, data) { lsSet('daily_actuals_'+storeId, data); }
@@ -4606,12 +5017,14 @@ function renderFoodcost() {
   <div class="phase-tabs">
     <div class="phase-tab${fcTab==='daily'?' active':''}" onclick="setFcTab('daily')">日次（簡易）</div>
     <div class="phase-tab${fcTab==='monthly'?' active':''}" onclick="setFcTab('monthly')">月次（実績）</div>
+    <div class="phase-tab${fcTab==='variance'?' active':''}" onclick="setFcTab('variance')">理論原価</div>
     <div class="phase-tab${fcTab==='shopping'?' active':''}" onclick="setFcTab('shopping')">買い出し</div>
     <div class="phase-tab${fcTab==='menu'?' active':''}" onclick="setFcTab('menu')">メニュー別</div>
   </div>`;
 
   if (fcTab==='daily') html += renderFcDaily(storeId, store);
   else if (fcTab==='monthly') html += renderFcMonthly(storeId, store);
+  else if (fcTab==='variance') html += renderFcVariance(storeId, store);
   else if (fcTab==='shopping') html += renderFcShopping(storeId, store);
   else html += renderFcMenu();
   return html;
@@ -4783,6 +5196,126 @@ function renderFcMenu() {
   return html;
 }
 
+/* ===== 理論原価タブ: 食材量レベルの答え合わせ ===== */
+function renderFcVariance(storeId, store) {
+  var period = getPeriod();
+  var mix = getMenuMix(storeId, period);
+  var enteredCount = Object.values(mix.items||{}).filter(v=>parseFloat(v)>0).length;
+  var rows = buildVarianceRows(storeId, period);
+  var sum = varianceSummary(storeId, period);
+  var matchedRows = rows.filter(r=>r.hasActual);
+
+  var html = `<div class="alert alert-success" style="padding:8px 12px"><i class="ti ti-scale"></i><div style="font-size:12px">理論（出数×レシピで<b>使うべきだった量</b>）と実質（棚卸で<b>実際に減った量</b>）を食材ごとに突き合わせます</div></div>`;
+
+  // 出数入力カード
+  html += `<div class="card"><div class="card-title"><i class="ti ti-clipboard-data" style="color:var(--accent)"></i>① 今月の出数（販売個数）
+    <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openMenuMixModal('${storeId}')"><i class="ti ti-edit"></i> 出数を入力</button></div>
+    <div style="font-size:12px;color:var(--muted)">${enteredCount?`${enteredCount}メニューの出数を入力済み · 売上 $${(parseFloat(mix.sales)||0).toLocaleString()}`:'まだ出数が未入力です。「出数を入力」から各メニューの販売個数を入れてください。'}</div>`;
+  if (!enteredCount) { html += `</div>`; return html; }
+  html += `</div>`;
+
+  // 実棚チェック
+  if (!sum.matchedCount) {
+    html += `<div class="alert alert-warning" style="padding:8px 12px"><i class="ti ti-alert-circle"></i><div style="font-size:12px">棚卸の実棚数量が未入力です。<b>棚卸（Monthly）で実棚を入力</b>すると、答え合わせができます。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="go('inventory')">棚卸へ</button></div></div>`;
+  }
+
+  // ② 金額サマリー
+  var vCol = Math.abs(sum.varianceRate)<=1.5?'var(--green)':Math.abs(sum.varianceRate)<=2.5?'var(--yellow)':'var(--red)';
+  html += `<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--accent)"></i>② 金額サマリー（答え合わせ）</div>
+    <div class="kpi-grid">
+      ${kpi('理論原価', '$'+Math.round(sum.theoCostMatched).toLocaleString(), '使うべきだった額', 'var(--tm)')}
+      ${kpi('実質原価', '$'+Math.round(sum.actCost).toLocaleString(), '棚卸で減った額', 'var(--tm)')}
+      ${kpi('差異', (sum.variance>=0?'+$':'-$')+Math.abs(Math.round(sum.variance)).toLocaleString(), sum.variance>0?'想定より多い':'想定より少ない', vCol)}
+      ${kpi('差異率', (sum.varianceRate>=0?'+':'')+sum.varianceRate.toFixed(1)+'%', '対売上', vCol)}
+    </div>`;
+  if (sum.matchedCount) {
+    var msg = sum.variance>0
+      ? `理論より <b style="color:var(--red)">$${Math.abs(Math.round(sum.variance)).toLocaleString()}</b> 多く消費（売上の${Math.abs(sum.varianceRate).toFixed(1)}%）。ロス・過剰仕込み・ポーション過多などの可能性。`
+      : sum.variance<0
+      ? `理論より $${Math.abs(Math.round(sum.variance)).toLocaleString()} 少ない消費。棚卸・出数の記録ズレの可能性。`
+      : `理論と実質が一致しています。`;
+    html += `<div style="font-size:12px;color:var(--muted);margin-top:8px;padding:8px;background:var(--surface2);border-radius:8px">${msg}</div>`;
+  }
+  html += `<div style="font-size:10px;color:var(--muted);margin-top:6px">※ 実棚が入っている${sum.matchedCount}食材で比較（棚卸で量が取れない食材は対象外）</div></div>`;
+
+  // ③ 食材別の答え合わせ明細
+  if (matchedRows.length) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-list-details" style="color:var(--accent)"></i>③ 食材別の答え合わせ（差異の大きい順）</div>
+      <div style="overflow-x:auto"><table class="inv-table" style="min-width:540px"><thead><tr>
+        <th>食材</th><th style="text-align:right">理論</th><th style="text-align:right">実質</th><th style="text-align:right">差異</th><th style="text-align:right">差異額</th>
+      </tr></thead><tbody>`;
+    matchedRows.forEach(r => {
+      var dPctOfTheo = r.theoQty>0 ? (r.diffQty/r.theoQty*100) : (r.diffQty?100:0);
+      var rowCol = Math.abs(dPctOfTheo)<=5?'var(--green)':Math.abs(dPctOfTheo)<=15?'var(--yellow)':'var(--red)';
+      var sign = r.diffQty>=0?'+':'';
+      html += `<tr>
+        <td style="font-size:12px">${r.name}<div style="font-size:9px;color:var(--muted)">${r.unit} · $${r.unitCost.toFixed(3)}/${r.unit}</div></td>
+        <td style="text-align:right;font-size:12px">${fmtQty(r.theoQty)}</td>
+        <td style="text-align:right;font-size:12px">${fmtQty(r.actQty)}</td>
+        <td style="text-align:right;font-size:12px;color:${rowCol};font-weight:600">${sign}${fmtQty(r.diffQty)}</td>
+        <td style="text-align:right;font-size:12px;color:${r.diffCost>=0?'var(--red)':'var(--green)'}">${r.diffCost>=0?'+':'-'}$${Math.abs(r.diffCost).toFixed(2)}</td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px">差異＝実質−理論。プラス（赤）＝レシピ以上に消費＝ロスの疑い。色は理論比のズレ幅（緑≤5% / 黄≤15% / 赤>15%）</div></div>`;
+  }
+  return html;
+}
+/* 数量の表示整形 */
+function fmtQty(q) {
+  if (q==null) return '—';
+  var a = Math.abs(q);
+  if (a>=100) return Math.round(q).toLocaleString();
+  if (a>=10) return (Math.round(q*10)/10).toString();
+  return (Math.round(q*100)/100).toString();
+}
+/* 出数入力モーダル */
+function openMenuMixModal(storeId) {
+  var period = getPeriod();
+  var mix = getMenuMix(storeId, period);
+  var recipes = getRecipes();
+  var rowsHtml = recipes.map(r=>{
+    var v = (mix.items&&mix.items[r.id]!=null) ? mix.items[r.id] : '';
+    var cost = calcRecipeCost(r);
+    return `<tr>
+      <td style="font-size:12px">${r.name}<div style="font-size:9px;color:var(--muted)">原価 $${cost.toFixed(2)}</div></td>
+      <td style="text-align:right"><input class="inv-input" id="mix-${r.id}" type="number" inputmode="numeric" value="${v}" placeholder="0" style="width:80px;text-align:right" oninput="mixPreview('${storeId}')"></td>
+    </tr>`;
+  }).join('');
+  openModal(`<div class="modal-title">今月の出数入力 (${period}) <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">各メニューの販売個数を入力してください。Toast連携前は手入力です。</div>
+    <div class="form-group"><label class="form-label">今月の売上 ($)</label><input class="form-input" id="mix-sales" type="number" value="${parseFloat(mix.sales)||''}" placeholder="差異率の計算に使用"></div>
+    <div style="max-height:42vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+      <table class="inv-table" style="width:100%"><thead><tr><th>メニュー</th><th style="text-align:right">出数</th></tr></thead><tbody>${rowsHtml||'<tr><td colspan=2 style="text-align:center;color:var(--muted);padding:16px">レシピ未登録</td></tr>'}</tbody></table>
+    </div>
+    <div id="mix-preview" style="text-align:center;font-size:12px;color:var(--muted);margin-top:8px"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveMenuMix('${storeId}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
+  mixPreview(storeId);
+}
+function mixPreview(storeId) {
+  var recipes = getRecipes();
+  var theoCost = 0, totalQty = 0;
+  recipes.forEach(r=>{
+    var el = document.getElementById('mix-'+r.id);
+    var q = el ? (parseFloat(el.value)||0) : 0;
+    theoCost += calcRecipeCost(r)*q; totalQty += q;
+  });
+  var el = document.getElementById('mix-preview');
+  if (el) el.innerHTML = `合計出数 <b>${totalQty.toLocaleString()}</b> 個 · 理論原価 <b style="color:var(--accent)">$${Math.round(theoCost).toLocaleString()}</b>`;
+}
+function saveMenuMix(storeId) {
+  var period = getPeriod();
+  var recipes = getRecipes();
+  var items = {};
+  recipes.forEach(r=>{ var el=document.getElementById('mix-'+r.id); var q=el?(parseFloat(el.value)||0):0; if(q>0) items[r.id]=q; });
+  var sales = parseFloat(document.getElementById('mix-sales').value)||0;
+  setMenuMix(storeId, period, {items:items, sales:sales, savedAt:new Date().toLocaleString('ja')});
+  closeModalDirect();
+  showToast('出数を保存しました','success');
+  renderPage('foodcost');
+}
+
 /* ============================================================
    ⑧ Inventory (Daily日次 / Monthly月間 で作業分離)
    - Daily : 主要食材のみ・数量チェック中心（簡易）
@@ -4798,6 +5331,11 @@ function getInvItems(storeId) {
   return ls('inv_'+storeId, def);
 }
 function setInvItems(storeId, items) { lsSet('inv_'+storeId, items); }
+/* 棚卸アイテムの業者名（食材マスターから引く） */
+function invItemVendor(code) {
+  var ing = getIngredients().find(x=>x.code===code);
+  return (ing && ing.vendor) ? ing.vendor : '未設定';
+}
 
 var invMode = 'daily';   // 'daily' | 'monthly'
 var invClassFilter = 'all';
@@ -4839,38 +5377,59 @@ function renderInventory() {
     </div>`;
   }
 
-  html += `<div class="card"><table class="inv-table">`;
-  if (invMode==='daily') {
-    html += `<thead><tr><th>アイテム</th><th>PAR</th><th>現在庫</th><th>状態</th></tr></thead><tbody>`;
-    filtered.forEach(it => {
+  // ===== 業者ごとにグループ表示 =====
+  // 業者名→アイテム配列
+  var byVendor = {};
+  filtered.forEach(it => { var v = invItemVendor(it.code); (byVendor[v]=byVendor[v]||[]).push(it); });
+  var vendorNames = Object.keys(byVendor).sort((a,b)=>{
+    if (a==='未設定') return 1; if (b==='未設定') return -1; return a.localeCompare(b,'ja');
+  });
+
+  function invRowHtml(it) {
+    if (invMode==='daily') {
       var cnt = it.count===''?null:parseFloat(it.count);
       var statusHtml;
       if (cnt===null) statusHtml='<span class="tag tag-gray">未</span>';
       else { var ratio=it.par>0?cnt/it.par:1; statusHtml= ratio>=0.7?'<span class="tag tag-green">OK</span>':ratio>=0.3?'<span class="tag tag-yellow">要注意</span>':'<span class="tag tag-red">要発注</span>'; }
-      html += `<tr>
+      return `<tr>
         <td style="font-weight:600">${it.name}<div style="font-size:11px;color:var(--muted);font-weight:400">${className(it.cls)} · ${it.unit}</div></td>
         <td style="color:var(--muted)">${it.par}</td>
         <td><input class="inv-input" type="number" step="0.1" min="0" value="${it.count}" onchange="updateInv('${storeId}','${it.code}',this.value)" placeholder="0"></td>
         <td>${statusHtml}</td>
       </tr>`;
-    });
-  } else {
-    html += `<thead><tr><th>アイテム</th><th>理論</th><th>実棚</th><th>差異</th></tr></thead><tbody>`;
-    filtered.forEach(it => {
+    } else {
       var theory = (parseFloat(it.last)||0)+(parseFloat(it.received)||0)-(parseFloat(it.consumed)||0);
       var actual = it.count===''?null:parseFloat(it.count);
       var diff = actual===null?null:actual-theory;
       var diffHtml = diff===null?'<span class="tag tag-gray">未入力</span>':Math.abs(diff)<0.01?'<span class="tag tag-green">±0</span>':`<span class="tag ${diff<0?'tag-red':'tag-yellow'}">${diff>0?'+':''}${diff.toFixed(1)}</span>`;
-      html += `<tr>
+      return `<tr>
         <td style="font-weight:600">${it.name}<div style="font-size:11px;color:var(--muted);font-weight:400">${className(it.cls)} · ${it.unit}</div></td>
         <td style="color:var(--muted)">${theory.toFixed(1)}</td>
         <td><input class="inv-input" type="number" step="0.1" min="0" value="${it.count}" onchange="updateInv('${storeId}','${it.code}',this.value)" placeholder="0"></td>
         <td>${diffHtml}</td>
       </tr>`;
+    }
+  }
+
+  var headCols = invMode==='daily' ? '<th>アイテム</th><th>PAR</th><th>現在庫</th><th>状態</th>' : '<th>アイテム</th><th>理論</th><th>実棚</th><th>差異</th>';
+
+  if (!filtered.length) {
+    html += `<div class="card"><div style="text-align:center;color:var(--muted);padding:20px">${invMode==='daily'?'Daily項目が未設定です（右上「Daily項目」で選択）':'項目なし'}</div></div>`;
+  } else {
+    vendorNames.forEach(vn => {
+      var vItems = byVendor[vn];
+      var doneCount = vItems.filter(i=>i.count!=='').length;
+      html += `<div class="card" style="padding:0;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border-bottom:1px solid var(--border)">
+          <span style="width:26px;height:26px;border-radius:8px;background:var(--accent-soft,#fceee4);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-truck" style="font-size:15px"></i></span>
+          <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700;color:var(--tm)">${vn}</div>
+            <div style="font-size:10px;color:var(--muted)">${vItems.length}品目 · ${doneCount}件入力済み</div></div>
+        </div>
+        <table class="inv-table" style="margin:0"><thead><tr>${headCols}</tr></thead><tbody>
+        ${vItems.map(invRowHtml).join('')}
+        </tbody></table></div>`;
     });
   }
-  if (!filtered.length) html += `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">${invMode==='daily'?'Daily項目が未設定です（右上「Daily項目」で選択）':'項目なし'}</td></tr>`;
-  html += `</tbody></table></div>`;
 
   // Monthly差異サマリー
   if (invMode==='monthly') {
@@ -6665,6 +7224,44 @@ function renderShiftBuild(storeId, week) {
     html += `<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i>警告なし</div>`;
   }
 
+  // ===== 今週の休み一覧（承認済み休暇）=====
+  var weekDates = DOW_SHIFT.map(weekDateForDow);
+  var leaveByDay = {};
+  staffForStore(storeId).forEach(e=>{
+    DOW_SHIFT.forEach((day,di)=>{
+      if (isOnLeave(e.name, weekDates[di])) { (leaveByDay[day]=leaveByDay[day]||[]).push(e.name); }
+    });
+  });
+  var leaveDays = Object.keys(leaveByDay);
+  if (leaveDays.length) {
+    html += `<div class="card" style="border-left:3px solid var(--accent2);padding:10px 12px">
+      <div style="font-size:12px;font-weight:600;margin-bottom:4px"><i class="ti ti-beach" style="color:var(--accent2)"></i> 今週の休み（承認済み）</div>
+      <div style="font-size:11px;color:var(--tm)">${DOW_SHIFT.filter(d=>leaveByDay[d]).map(d=>`<b>${d}</b>: ${leaveByDay[d].map(n=>n.split(' ')[0]).join('、')}`).join(' ／ ')}</div>
+    </div>`;
+  }
+
+  // ===== 各時間帯のルール充足バッジ =====
+  var sr = getShiftRules(storeId);
+  var hasRules = sr.minLv3>0||sr.minFullTime>0||sr.minSL>0||sr.minTotal>0||(sr.custom||[]).length;
+  if (hasRules) {
+    html += `<div class="card" style="overflow-x:auto"><div style="font-size:12px;font-weight:600;margin-bottom:6px"><i class="ti ti-shield-check" style="color:var(--accent)"></i> ルール充足チェック</div>
+      <table class="inv-table" style="min-width:560px"><thead><tr><th style="font-size:10px">枠</th>${DOW_SHIFT.map(d=>`<th style="text-align:center;font-size:10px">${d}</th>`).join('')}</tr></thead><tbody>`;
+    SHIFT_PERIODS.forEach(period=>{
+      html += `<tr><td style="font-size:10px;white-space:nowrap">${period}</td>`;
+      DOW_SHIFT.forEach(day=>{
+        var names = Object.keys(plan.cells).filter(k=>k.startsWith(day+'_'+period+'_')&&plan.cells[k]).map(k=>plan.cells[k]);
+        var checks = shiftSlotStrength(storeId, names);
+        var badges = checks.map(c=>{
+          var ok = c.have>=c.need;
+          return `<span style="display:inline-block;font-size:9px;padding:1px 4px;border-radius:6px;margin:1px;background:${ok?'var(--green-bg,#e9f5ef)':'var(--red-bg,#fbeae8)'};color:${ok?'var(--green)':'var(--red)'}">${ok?'✓':'⚠'}${c.label} ${c.have}/${c.need}</span>`;
+        }).join('');
+        html += `<td style="text-align:center;padding:2px;vertical-align:top">${badges||'<span style="font-size:9px;color:var(--muted)">—</span>'}</td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
   // オーバーワーク状況（週40h超）
   var otApprovals = getOTApprovals(storeId, week);
   var hoursMap = {};
@@ -6728,15 +7325,16 @@ function openCellAssign(storeId, week, key, day, period, pos) {
   candidates.forEach(e => {
     var av = avail.find(a=>a.name===e.name);
     var available = av && av.slots.some(s=>s.day===day && s.period===period);
+    var onLeave = isOnLeaveDow(e.name, week, day);
     var tip = ls('tip_requests',[]).filter(r=>r.name===e.name&&r.status==='承認').slice(-1)[0];
     var ap = approvedPositions(e.name);
     var posOk = ap.includes(pos);
     var isLeader = leaderSkillApproved(e.name);
-    html += `<div class="staff-item" style="cursor:pointer" onclick="assignCell('${storeId}','${week}','${key}','${e.name}')">
+    html += `<div class="staff-item" style="cursor:pointer;${onLeave?'opacity:.5':''}" onclick="assignCell('${storeId}','${week}','${key}','${e.name}')">
       <div class="staff-avatar">${e.name[0]}</div>
-      <div style="flex:1"><div class="staff-name">${e.name} ${isLeader?'<span class="tag tag-blue" style="font-size:8px">Leader</span>':''}</div>
+      <div style="flex:1"><div class="staff-name">${e.name} ${onLeave?'<span class="tag tag-red" style="font-size:8px">休</span>':''} ${isLeader?'<span class="tag tag-blue" style="font-size:8px">Leader</span>':''}</div>
         <div class="staff-role">STEP ${e.step} · Tip ${tip?tip.rate+'%':'未'} ${posOk?'<span style="color:var(--green)">'+pos+'可</span>':'<span style="color:var(--muted)">'+pos+'未承認</span>'}</div>
-        <div style="font-size:10px;color:${available?'var(--green)':'var(--red)'}">${available?'Availability OK':av?'この枠は希望外':'未提出'}</div>
+        <div style="font-size:10px;color:${onLeave?'var(--red)':available?'var(--green)':'var(--red)'}">${onLeave?'承認済み休暇日':available?'Availability OK':av?'この枠は希望外':'未提出'}</div>
       </div>
     </div>`;
   });
@@ -6847,6 +7445,52 @@ function setSpecialRules(storeId, rules) {
   var all = ls('special_rules', {});
   all[storeId] = rules; lsSet('special_rules', all);
 }
+
+/* ============ シフト全体ルール（最低ライン）============
+   各時間帯（枠）が満たすべき最低人数。満たさなくても公開はブロックせず、警告のみ。
+   shift_rules[storeId] = { minLv3, minFullTime, minSL, minTotal, custom:[{id,label,type:'position'|'skilllv',pos,minLv,count}] } */
+function getShiftRules(storeId) {
+  var all = ls('shift_rules', {});
+  return all[storeId] || { minLv3:0, minFullTime:0, minSL:0, minTotal:0, custom:[] };
+}
+function setShiftRules(storeId, rules) {
+  var all = ls('shift_rules', {});
+  all[storeId] = rules; lsSet('shift_rules', all);
+}
+/* 社員（正社員/F-Crew）判定 */
+function isFullTimeEmp(name) {
+  var e = getEmployees().find(x=>x.name===name); if(!e) return false;
+  var title=(e.title||'').toLowerCase();
+  return e.emp==='正社員' || title.includes('f-crew') || title.includes('full');
+}
+/* SL判定 */
+function isSLEmp(name) {
+  var e = getEmployees().find(x=>x.name===name); if(!e) return false;
+  return e.role==='sl' || e.isSL;
+}
+/* カスタムルール: その枠の名前リストが条件を何人満たすか */
+function countForCustomRule(names, rule) {
+  if (rule.type==='position') {
+    // 指定ポジションを承認Lv(minLv)以上で持つ人数
+    return names.filter(n=>{ var s=getEmpSkills(n)[rule.pos]; return s&&s.status==='承認'&&s.level>=(rule.minLv||1); }).length;
+  }
+  if (rule.type==='skilllv') {
+    // 任意ポジションでLv(minLv)以上を持つ人数
+    return names.filter(n=>{ var sk=getEmpSkills(n); return Object.values(sk).some(x=>x.status==='承認'&&x.level>=(rule.minLv||3)); }).length;
+  }
+  return 0;
+}
+/* その枠の充足状況を返す（表示・警告共通） */
+function shiftSlotStrength(storeId, names) {
+  var r = getShiftRules(storeId);
+  var out = [];
+  if (r.minLv3>0)      out.push({label:'Lv3', need:r.minLv3, have:names.filter(isLv3Anywhere).length});
+  if (r.minFullTime>0) out.push({label:'社員', need:r.minFullTime, have:names.filter(isFullTimeEmp).length});
+  if (r.minSL>0)       out.push({label:'SL', need:r.minSL, have:names.filter(isSLEmp).length});
+  if (r.minTotal>0)    out.push({label:'人数', need:r.minTotal, have:names.length});
+  (r.custom||[]).forEach(rule=>{ out.push({label:rule.label, need:rule.count||1, have:countForCustomRule(names, rule)}); });
+  return out;
+}
 /* 勤務条件（スタッフ個別）: { name: {opening:'any'|'only'|'no', closing:'any'|'only'|'no', days:'any'|'weekday'|'weekend', minH, maxH} } */
 function getWorkConditions(storeId) { var all=ls('work_conditions', {}); return all[storeId] || {}; }
 function setWorkCondition(storeId, name, cond) {
@@ -6929,6 +7573,7 @@ function autoGenShift(storeId, week) {
         var used = assignedSlot[slotKey];
         var cands = staff.filter(e => {
           if (used.includes(e.name)) return false;
+          if (isOnLeaveDow(e.name, week, day)) return false;            // 承認済み休暇は配置しない
           if (!availOk(e)) return false;
           if (!canDoPosition(e.name, pos)) return false;
           if (!workCondOk(storeId, e.name, day, period)) return false;  // 勤務条件
@@ -6987,6 +7632,10 @@ function checkShiftWarnings(storeId, week, plan) {
         if (!hasLv3) warnings.push(`${day} ${period}: 訓練中(${trainees.join(',')})がいるがLv3不在`);
         if (names.length===trainees.length) warnings.push(`${day} ${period}: 訓練中のみの配置`);
       }
+      // 承認済み休暇の人が配置されている
+      names.forEach(n=>{
+        if (isOnLeaveDow(n, week, day)) warnings.push(`${day} ${period}: ${n}は承認済みの休暇日です`);
+      });
       // Availability外
       slotKeys.forEach(k=>{
         var n=plan.cells[k]; var av=avail.find(a=>a.name===n);
@@ -7007,20 +7656,52 @@ function checkShiftWarnings(storeId, week, plan) {
         if ((needsLv3Pair(storeId,n)||needsTrainer(storeId,n)) && !names.some(m=>m!==n&&isLv3Anywhere(m)))
           warnings.push(`${day} ${period}: ${n}はLv3との同時勤務が必要`);
       });
+      // シフト全体ルール（最低ライン）: 満たさない枠は「弱い」警告
+      shiftSlotStrength(storeId, names).forEach(c=>{
+        if (c.have < c.need) warnings.push(`${day} ${period}: ${c.label}が不足（${c.have}/${c.need}）`);
+      });
     });
   });
   // Overtime（週40h超）
   var hrs={}; Object.keys(plan.cells).forEach(k=>{var n=plan.cells[k];if(!n)return;var p=k.split('_')[1];hrs[n]=(hrs[n]||0)+(SHIFT_HOURS[p]||4);});
   var otApprovals = getOTApprovals(storeId, week);
   Object.keys(hrs).forEach(n=>{ if(hrs[n]>40 && !otApprovals[n]) warnings.push(`${n}: 週${hrs[n]}h（40h超・未承認）`); });
-  return warnings.slice(0,10);
+  return warnings.slice(0,16);
 }
 
 /* ============ 特別ルール画面（Store Manager以上のみ） ============ */
 function renderSpecialRules(storeId) {
   var r = getSpecialRules(storeId);
   var staff = staffForStore(storeId);
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--accent)"></i>人間関係・特別ルール</div>
+  var sr = getShiftRules(storeId);
+  var html = '';
+
+  // ===== シフト全体ルール（最低ライン）=====
+  html += `<div class="card"><div class="card-title"><i class="ti ti-shield-check" style="color:var(--accent)"></i>シフト全体ルール（最低ライン）</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">各時間帯（ランチ/ディナー）が満たすべき最低人数。<b>公開はブロックしません</b>。満たさない枠は「弱い」と警告で表示されます。</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Lv3以上 最低人数</label><input class="form-input" id="sr-lv3" type="number" min="0" value="${sr.minLv3||0}"></div>
+      <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">社員(F-Crew) 最低人数</label><input class="form-input" id="sr-ft" type="number" min="0" value="${sr.minFullTime||0}"></div>
+      <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">SL(店長) 最低人数</label><input class="form-input" id="sr-sl" type="number" min="0" value="${sr.minSL||0}"></div>
+      <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">合計 最低人数</label><input class="form-input" id="sr-total" type="number" min="0" value="${sr.minTotal||0}"></div>
+    </div>`;
+  // カスタムルール一覧
+  if ((sr.custom||[]).length) {
+    html += `<div style="font-size:11px;color:var(--muted);margin:10px 0 4px">カスタムルール</div>`;
+    sr.custom.forEach((rule,i)=>{
+      var desc = rule.type==='position' ? `${rule.pos} Lv${rule.minLv||1}以上を${rule.count||1}人` : `Lv${rule.minLv||3}以上を${rule.count||1}人`;
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
+        <span><span class="tag tag-blue" style="font-size:9px">${rule.label||'ルール'}</span> ${desc}</span>
+        <button class="btn btn-danger btn-sm" style="padding:0 8px;font-size:10px" onclick="removeShiftCustomRule('${storeId}',${i})">削除</button></div>`;
+    });
+  }
+  html += `<div style="display:flex;gap:6px;margin-top:10px">
+      <button class="btn btn-secondary btn-sm" onclick="openShiftCustomRuleModal('${storeId}')"><i class="ti ti-plus"></i> カスタム追加</button>
+      <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="saveShiftRules('${storeId}')"><i class="ti ti-device-floppy"></i> ルールを保存</button>
+    </div></div>`;
+
+  // ===== 人間関係・特別ルール =====
+  html += `<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--accent)"></i>人間関係・特別ルール</div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:10px">同時勤務の禁止/推奨、新人のLv3同伴などを設定。自動シフト生成と警告に反映されます。（Crewには非表示）</div>`;
 
   // 同時勤務ペア
@@ -7062,6 +7743,63 @@ function renderSpecialRules(storeId) {
   html += `</tbody></table></div></div>`;
   return html;
 }
+/* ===== シフト全体ルールの保存・カスタム ===== */
+function saveShiftRules(storeId) {
+  var g=function(id){var e=document.getElementById(id);return e?parseInt(e.value)||0:0;};
+  var cur = getShiftRules(storeId);
+  setShiftRules(storeId, {
+    minLv3: g('sr-lv3'), minFullTime: g('sr-ft'), minSL: g('sr-sl'), minTotal: g('sr-total'),
+    custom: cur.custom || [],
+  });
+  showToast('シフト全体ルールを保存しました','success');
+  renderPage('shift_admin');
+}
+function openShiftCustomRuleModal(storeId) {
+  var positions = assignablePositions(storeId);
+  openModal(`<div class="modal-title">カスタムルール追加 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">ルール名（表示用）</label><input class="form-input" id="cr-label" placeholder="例: 寿司場 経験者"></div>
+    <div class="form-group"><label class="form-label">種類</label>
+      <select class="form-select" id="cr-type" onchange="crToggleType()">
+        <option value="position">特定ポジションの経験者</option>
+        <option value="skilllv">Lv（任意ポジション）</option>
+      </select></div>
+    <div class="form-group" id="cr-pos-wrap"><label class="form-label">ポジション</label>
+      <select class="form-select" id="cr-pos">${positions.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">最低Lv</label><input class="form-input" id="cr-minlv" type="number" min="1" max="5" value="1"></div>
+      <div class="form-group"><label class="form-label">最低人数</label><input class="form-input" id="cr-count" type="number" min="1" value="1"></div>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="addShiftCustomRule('${storeId}')">追加</button></div>`);
+}
+function crToggleType() {
+  var t = document.getElementById('cr-type').value;
+  var w = document.getElementById('cr-pos-wrap');
+  if (w) w.style.display = (t==='position') ? '' : 'none';
+}
+function addShiftCustomRule(storeId) {
+  var label = (document.getElementById('cr-label').value||'').trim();
+  var type = document.getElementById('cr-type').value;
+  var pos = document.getElementById('cr-pos').value;
+  var minLv = parseInt(document.getElementById('cr-minlv').value)||1;
+  var count = parseInt(document.getElementById('cr-count').value)||1;
+  if (!label) { alert('ルール名を入力してください'); return; }
+  var r = getShiftRules(storeId);
+  r.custom = r.custom || [];
+  r.custom.push({id:'cr'+Date.now(), label, type, pos:(type==='position'?pos:''), minLv, count});
+  setShiftRules(storeId, r);
+  closeModalDirect();
+  showToast('カスタムルールを追加しました','success');
+  renderPage('shift_admin');
+}
+function removeShiftCustomRule(storeId, i) {
+  var r = getShiftRules(storeId);
+  r.custom.splice(i,1);
+  setShiftRules(storeId, r);
+  showToast('削除しました','info');
+  renderPage('shift_admin');
+}
+
 function openWorkCondModal(storeId, name) {
   var c = getWorkCondition(storeId, name);
   openModal(`<div class="modal-title">${name} 勤務条件 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
@@ -7472,32 +8210,151 @@ function getWeekStr() {
   var mon = new Date(d.setDate(diff));
   return (mon.getMonth()+1)+'/'+(mon.getDate());
 }
+/* 今週の月曜のフル日付(YYYY-MM-DD) */
+function getWeekMondayISO() {
+  var d = new Date(); var day = d.getDay();
+  var diff = d.getDate() - day + (day===0?-6:1);
+  var mon = new Date(d.getFullYear(), d.getMonth(), diff);
+  return mon.getFullYear()+'-'+String(mon.getMonth()+1).padStart(2,'0')+'-'+String(mon.getDate()).padStart(2,'0');
+}
+/* 今週の曜日(月→日)のフル日付 */
+function weekDateForDow(dow) {
+  var idx = DOW_SHIFT.indexOf(dow); if(idx<0) return null;
+  var mon = new Date(getWeekMondayISO()+'T00:00:00');
+  var d = new Date(mon); d.setDate(mon.getDate()+idx);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
 
 /* ============================================================
    VACATION
 ============================================================ */
+/* ============ 休暇リクエスト（承認→シフト反映） ============
+   my_vacations: [{id, employee, storeId, type, startDate, endDate, reason, status:'申請中'|'承認'|'却下', date, approvedBy, approvedAt}]
+   承認できるのは: 所属店舗のSL以上 / AM / GM */
+function getVacations() { return ls('my_vacations', []); }
+function saveVacations(v) { lsSet('my_vacations', v); }
+/* 承認権限: GM/CEO/AM、または対象店舗のSL（店舗ログイン含む） */
+function canApproveVacation(vac) {
+  if (['gm','ceo','am'].includes(curRole)) return true;
+  // 所属店舗のSL以上（SLは自店のみ）
+  if (curRole==='sl' || curStoreLogin) {
+    var myStore = curStore!=='ALL' ? curStore : (getEmployees().find(e=>e.name===curUserName)||{}).store;
+    return vac.storeId === myStore;
+  }
+  return false;
+}
+/* 承認済みの休暇か（その日付がその人の承認済み休暇に含まれるか） */
+function isOnLeave(name, date) {
+  // date: 'YYYY-MM-DD'。週グリッドでは曜日しか無いので日付ベースで判定する箇所で使う
+  return getVacations().some(v=> v.status==='承認' && v.employee===name && date>=v.startDate && date<=v.endDate);
+}
+/* その週の特定曜日が、その人の承認済み休暇に当たるか
+   week は YYYY-MM-DD（月曜）でも "M/D" でも可。不正なら今週の月曜を使う */
+function isOnLeaveDow(name, week, dow) {
+  var idx = DOW_SHIFT.indexOf(dow); if(idx<0) return false;
+  var base = (week && /^\d{4}-\d{2}-\d{2}$/.test(week)) ? new Date(week+'T00:00:00') : new Date(getWeekMondayISO()+'T00:00:00');
+  if (isNaN(base)) return false;
+  var d = new Date(base); d.setDate(base.getDate()+idx);
+  var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  return isOnLeave(name, ds);
+}
+/* 対象店舗・期間内の承認済み休暇一覧 */
+function approvedLeavesForStore(storeId, fromDate, toDate) {
+  return getVacations().filter(v=> v.status==='承認' && v.storeId===storeId
+    && !(v.endDate < fromDate || v.startDate > toDate));
+}
+function approveVacation(id) {
+  var vacs = getVacations(); var v = vacs.find(x=>x.id===id); if(!v) return;
+  if (!canApproveVacation(v)) { alert('承認権限がありません'); return; }
+  v.status='承認'; v.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; v.approvedAt=new Date().toLocaleString('ja');
+  saveVacations(vacs);
+  showToast(v.employee+' の休暇を承認しました（シフトに反映）','success');
+  renderPage(curPage);
+}
+function rejectVacation(id) {
+  var vacs = getVacations(); var v = vacs.find(x=>x.id===id); if(!v) return;
+  if (!canApproveVacation(v)) { alert('承認権限がありません'); return; }
+  var reason = prompt('却下理由（任意）','');
+  v.status='却下'; v.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; v.approvedAt=new Date().toLocaleString('ja'); v.rejectReason=reason||'';
+  saveVacations(vacs);
+  showToast(v.employee+' の休暇を却下しました','info');
+  renderPage(curPage);
+}
+
 function renderVacation() {
-  var myVac = ls('my_vacations', []);
+  var all = getVacations();
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var isManager = ['gm','ceo','am','sl'].includes(curRole) || curStoreLogin;
   var html = `<div class="section-header">
     <div class="section-title">休暇申請</div>
     <button class="btn btn-primary btn-sm" onclick="openVacationModal()"><i class="ti ti-plus"></i> 申請</button>
   </div>`;
-  if (!myVac.length) {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px">
-      <i class="ti ti-beach" style="font-size:32px;margin-bottom:8px;display:block"></i>申請履歴なし</div>`;
+
+  // 管理者: 承認待ちキュー（自分が承認できるもの）
+  if (isManager) {
+    var pending = all.filter(v=> v.status==='申請中' && canApproveVacation(v));
+    html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag ${pending.length?'tag-yellow':'tag-gray'}" style="margin-left:auto">${pending.length}</span></div>`;
+    if (!pending.length) {
+      html += `<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちの休暇はありません</div>`;
+    } else {
+      pending.forEach(v=>{
+        var sName = (STORES.find(s=>s.id===v.storeId)||{name:v.storeId}).name;
+        html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:start">
+            <div><div style="font-size:13px;font-weight:600">${v.employee} <span style="font-size:10px;color:var(--muted)">· ${sName}</span></div>
+              <div style="font-size:12px;color:var(--muted)">${v.startDate} 〜 ${v.endDate} · ${v.type}</div>
+              ${v.reason?`<div style="font-size:11px;color:var(--muted)">理由: ${v.reason}</div>`:''}</div>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <button class="btn btn-success btn-sm" style="padding:2px 12px" onclick="approveVacation('${v.id}')"><i class="ti ti-check"></i> 承認</button>
+            <button class="btn btn-danger btn-sm" style="padding:2px 12px" onclick="rejectVacation('${v.id}')"><i class="ti ti-x"></i> 却下</button>
+          </div></div>`;
+      });
+    }
+    html += `</div>`;
+
+    // 承認済み（今後の休み一覧）
+    var today = new Date().toISOString().slice(0,10);
+    var upcoming = all.filter(v=> v.status==='承認' && canApproveVacation(v) && v.endDate>=today).sort((a,b)=>a.startDate.localeCompare(b.startDate));
+    if (upcoming.length) {
+      html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check" style="color:var(--green)"></i>承認済み（今後の休み）</div>`;
+      upcoming.forEach(v=>{
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
+          <span><b>${v.employee}</b> · ${v.startDate}〜${v.endDate} <span style="color:var(--muted)">(${v.type})</span></span>
+          <button class="btn btn-secondary btn-sm" style="padding:0 8px;font-size:10px" onclick="cancelApprovedVacation('${v.id}')">取消</button></div>`;
+      });
+      html += `</div>`;
+    }
+  }
+
+  // 自分の申請履歴
+  var mine = all.filter(v=> v.employee===me);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-beach"></i>自分の申請</div>`;
+  if (!mine.length) {
+    html += `<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">申請履歴なし</div>`;
   } else {
-    myVac.slice().reverse().forEach(v => {
+    mine.slice().reverse().forEach(v => {
       var statusClass = v.status==='承認'?'tag-green':v.status==='却下'?'tag-red':'tag-yellow';
-      html += `<div class="card">
+      html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
         <div class="approval-header">
           <div><div class="approval-title">${v.startDate} 〜 ${v.endDate}</div>
-          <div class="approval-meta">${v.type} · ${v.reason}</div></div>
+          <div class="approval-meta">${v.type}${v.reason?' · '+v.reason:''}</div>
+          ${v.status==='却下'&&v.rejectReason?`<div style="font-size:11px;color:var(--red)">却下理由: ${v.rejectReason}</div>`:''}</div>
           <span class="tag ${statusClass}">${v.status}</span>
-        </div>
-      </div>`;
+        </div></div>`;
     });
   }
+  html += `</div>`;
   return html;
+}
+function cancelApprovedVacation(id) {
+  if (!confirm('この承認済み休暇を取り消しますか？（シフトの休み反映が解除されます）')) return;
+  var vacs = getVacations(); var v=vacs.find(x=>x.id===id); if(!v) return;
+  if (!canApproveVacation(v)) { alert('権限がありません'); return; }
+  v.status='申請中'; delete v.approvedBy; delete v.approvedAt;
+  saveVacations(vacs);
+  showToast('承認を取り消しました','info');
+  renderPage(curPage);
 }
 
 function openVacationModal() {
@@ -7524,13 +8381,16 @@ function submitVacation() {
   var end   = document.getElementById('v-end').value;
   var reason = document.getElementById('v-reason').value.trim();
   if (!start || !end) { alert('日程を入力してください'); return; }
-  var vac = {id:'v'+Date.now(), type, startDate:start, endDate:end, reason:reason||'理由なし', status:'申請中', date:new Date().toLocaleDateString('ja')};
-  var my = ls('my_vacations', []);
+  if (end < start) { alert('終了日は開始日以降にしてください'); return; }
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var meEmp = getEmployees().find(e=>e.name===me);
+  var storeId = (meEmp && meEmp.store) || (curStore!=='ALL'?curStore:STORES[0].id);
+  var vac = {id:'v'+Date.now(), employee:me, storeId:storeId, type, startDate:start, endDate:end, reason:reason||'', status:'申請中', date:new Date().toLocaleDateString('ja')};
+  var my = getVacations();
   my.push(vac);
-  lsSet('my_vacations', my);
-  addApproval({title:`休暇申請 ${start}〜${end}`, type:'休暇', from:ROLE_CONFIG[curRole].name, store:'---'});
+  saveVacations(my);
   closeModalDirect();
-  showToast('休暇申請しました', 'success');
+  showToast('休暇を申請しました（承認待ち）', 'success');
   renderPage('vacation');
 }
 
@@ -9816,6 +10676,97 @@ function openRecipeModal(rId) {
   renderRecipeModalBody(rId, r.name, r.price, r.category);
 }
 
+/* ============================================================
+   検索できる食材ピッカー（共通コンポーネント）
+   openIngredientPicker(onPick) — onPick(code) を呼ぶ
+============================================================ */
+var _ingPickState = { q:'', cls:'all', onPick:null, recent:[] };
+function openIngredientPicker(onPick) {
+  _ingPickState = { q:'', cls:'all', onPick:onPick, recent: ls('ing_recent', []) };
+  openModal(`<div class="modal-title">食材を選ぶ <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <input class="form-input" id="ingpick-q" placeholder="検索（名前・コード・カテゴリ・業者）" oninput="ingPickInput(this.value)" autocomplete="off" style="margin-bottom:8px">
+    <div id="ingpick-chips" style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px"></div>
+    <div id="ingpick-list" style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"></div>`);
+  setTimeout(()=>{ var i=document.getElementById('ingpick-q'); if(i) i.focus(); }, 60);
+  renderIngPickChips();
+  renderIngPickList();
+}
+function renderIngPickChips() {
+  var el = document.getElementById('ingpick-chips'); if(!el) return;
+  var chips = [{id:'all', name:'すべて'}].concat(CLASSES.map(c=>({id:c.id, name:c.name})));
+  el.innerHTML = chips.map(c=>
+    `<button class="btn btn-sm ${_ingPickState.cls===c.id?'btn-primary':'btn-secondary'}" style="padding:4px 12px;font-size:12px" onclick="ingPickCls('${c.id}')">${c.name}</button>`
+  ).join('');
+}
+function ingPickCls(cls) { _ingPickState.cls = cls; renderIngPickChips(); renderIngPickList(); }
+function ingPickInput(v) { _ingPickState.q = v; renderIngPickList(); }
+function renderIngPickList() {
+  var el = document.getElementById('ingpick-list'); if(!el) return;
+  var q = (_ingPickState.q||'').toLowerCase().trim();
+  var cls = _ingPickState.cls;
+  var ings = getIngredients();
+  var filtered = ings.filter(i=>{
+    if (cls!=='all' && catClass(i.cat)!==cls) return false;
+    if (!q) return true;
+    return (i.name||'').toLowerCase().includes(q)
+      || String(i.code).includes(q)
+      || (catName(i.cat)||'').toLowerCase().includes(q)
+      || (i.vendor||'').toLowerCase().includes(q)
+      || (i.location||'').toLowerCase().includes(q);
+  });
+  // 最近使った食材を先頭に（検索未入力＆全カテゴリのときのみ）
+  var html = '';
+  if (!q && cls==='all' && _ingPickState.recent.length) {
+    var recentIngs = _ingPickState.recent.map(code=>ings.find(i=>i.code===code)).filter(Boolean).slice(0,6);
+    if (recentIngs.length) {
+      html += `<div style="padding:6px 10px;font-size:10px;color:var(--muted);background:var(--surface2);font-weight:600"><i class="ti ti-history"></i> 最近使った食材</div>`;
+      html += recentIngs.map(ingPickRow).join('');
+      html += `<div style="padding:6px 10px;font-size:10px;color:var(--muted);background:var(--surface2);font-weight:600">すべての食材</div>`;
+    }
+  }
+  if (!filtered.length) {
+    html += `<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">「${_ingPickState.q}」に一致する食材がありません</div>`;
+  } else {
+    // カテゴリ（cat）ごとに見出しを付けて整理
+    if (q) {
+      html += `<div style="padding:5px 10px;font-size:10px;color:var(--muted);background:var(--surface2)">${filtered.length}件</div>`;
+      html += filtered.slice(0,120).map(ingPickRow).join('');
+    } else {
+      // カテゴリ別グルーピング
+      var byCat = {};
+      filtered.forEach(i=>{ var cn=catName(i.cat); (byCat[cn]=byCat[cn]||[]).push(i); });
+      Object.keys(byCat).forEach(cn=>{
+        html += `<div style="padding:5px 10px;font-size:10px;color:var(--muted);background:var(--surface2);position:sticky;top:0">${cn} (${byCat[cn].length})</div>`;
+        html += byCat[cn].map(ingPickRow).join('');
+      });
+    }
+  }
+  el.innerHTML = html;
+}
+function ingPickRow(i) {
+  var cl = CLASSES.find(c=>c.id===catClass(i.cat)) || {color:'#888'};
+  return `<div onclick="ingPickChoose(${i.code})" style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-bottom:1px solid var(--border);cursor:pointer" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+    <span style="width:8px;height:8px;border-radius:50%;background:${cl.color};flex-shrink:0"></span>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${i.name}</div>
+      <div style="font-size:10px;color:var(--muted)">#${i.code} · ${catName(i.cat)}${i.vendor?' · '+i.vendor:''}</div>
+    </div>
+    <div style="text-align:right;flex-shrink:0">
+      <div style="font-size:12px;font-weight:600;color:var(--accent)">$${ingUnitCost(i).toFixed(4)}</div>
+      <div style="font-size:9px;color:var(--muted)">/${i.unit}</div>
+    </div>
+  </div>`;
+}
+function ingPickChoose(code) {
+  // 最近使った食材を更新
+  var recent = ls('ing_recent', []).filter(c=>c!==code);
+  recent.unshift(code);
+  lsSet('ing_recent', recent.slice(0,12));
+  var cb = _ingPickState.onPick;
+  closeModalDirect();
+  if (cb) cb(code);
+}
+
 function renderRecipeModalBody(rId, name, price, category) {
   var ings = getIngredients();
   var isNew = !rId;
@@ -9841,12 +10792,8 @@ function renderRecipeModalBody(rId, name, price, category) {
         ${itemsHtml || '<div style="color:var(--muted);font-size:12px;text-align:center;padding:8px">食材を追加してください</div>'}
         <div style="display:flex;justify-content:space-between;padding-top:8px;font-weight:600;font-size:13px"><span>合計原価</span><span style="color:var(--accent)">$${totalCost.toFixed(2)}</span></div>
       </div>
-      <div style="display:flex;gap:6px;margin-bottom:6px">
-        <input class="form-input" id="r-search" placeholder="食材検索（名前・コード・カテゴリ・業者）" oninput="filterRecipeIngs('${rId||''}')" style="flex:1">
-      </div>
       <div style="display:flex;gap:6px">
-        <select class="form-select" id="r-add-ing" style="flex:1">${recipeIngOptions(ings, '')}</select>
-        <button class="btn btn-secondary btn-sm" onclick="addRecipeItem('${rId||''}')">追加</button>
+        <button class="btn btn-secondary" style="flex:1" onclick="openRecipeIngPicker('${rId||''}')"><i class="ti ti-search"></i> 食材を検索して追加</button>
       </div>
     </div>
     <div class="btn-row">
@@ -9877,6 +10824,18 @@ function filterRecipeIngs(rId) {
   sel.innerHTML = recipeIngOptions(getIngredients(), q);
 }
 
+function openRecipeIngPicker(rId) {
+  // 現在のフォーム入力を退避（ピッカーでモーダルが差し替わるため）
+  var name = (document.getElementById('r-name')||{}).value||'';
+  var price = (document.getElementById('r-price')||{}).value||'';
+  var cat = (document.getElementById('r-cat')||{}).value||'';
+  window._recipeFormCache = {rId, name, price, cat};
+  openIngredientPicker(function(code){
+    if (!recipeTmpItems.find(it=>it.code===code)) recipeTmpItems.push({code, qty:0.1});
+    var c = window._recipeFormCache || {};
+    renderRecipeModalBody(c.rId||rId, c.name, c.price, c.cat);
+  });
+}
 function addRecipeItem(rId) {
   var code = parseInt(document.getElementById('r-add-ing').value);
   var name = document.getElementById('r-name').value;
@@ -9958,8 +10917,7 @@ function renderCostSheet() {
     <div class="card-title"><i class="ti ti-flask"></i>試算</div>
     <div class="form-group"><label class="form-label">想定売価 ($)</label><input class="form-input" id="cs-price" type="number" step="0.01" value="${price}" onchange="setCSPrice(this.value)"></div>
     <div style="display:flex;gap:6px;margin-bottom:10px">
-      <select class="form-select" id="cs-add-ing" style="flex:1">${CLASSES.map(cl=>{var cc=ings.filter(i=>catClass(i.cat)===cl.id);return cc.length?`<optgroup label="${cl.name}">${cc.map(i=>`<option value="${i.code}">${i.name} ($${ingUnitCost(i).toFixed(4)}/${i.unit})</option>`).join('')}</optgroup>`:'';}).join('')}</select>
-      <button class="btn btn-secondary btn-sm" onclick="addCSItem()">追加</button>
+      <button class="btn btn-secondary" style="flex:1" onclick="openCSIngPicker()"><i class="ti ti-search"></i> 食材を検索して追加</button>
     </div>`;
   if (costSheetItems.length) {
     html += `<table class="inv-table"><thead><tr><th>食材</th><th>使用量</th><th>原価</th><th></th></tr></thead><tbody>`;
@@ -9993,6 +10951,12 @@ function renderCostSheet() {
 }
 
 function setCSPrice(v) { window._csPrice = parseFloat(v)||0; renderPage('costsheet'); }
+function openCSIngPicker() {
+  openIngredientPicker(function(code){
+    if (!costSheetItems.find(it=>it.code===code)) costSheetItems.push({code, qty:0.1});
+    renderPage('costsheet');
+  });
+}
 function addCSItem() {
   var code = parseInt(document.getElementById('cs-add-ing').value);
   if (!costSheetItems.find(it=>it.code===code)) costSheetItems.push({code, qty:0.1});
