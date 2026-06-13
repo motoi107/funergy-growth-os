@@ -2985,6 +2985,7 @@ function renderPage(page) {
   switch(page) {
     case 'dashboard':    el.innerHTML = renderDashboard(); break;
     case 'store_cmd':    el.innerHTML = renderStoreCmd(); break;
+    case 'store_ops_settings': el.innerHTML = renderStoreOpsSettings(); break;
     case 'budget':       el.innerHTML = renderBudget(); break;
     case 'foodcost':     el.innerHTML = renderFoodcost(); break;
     case 'menu':         el.innerHTML = renderMenu(); break;
@@ -3431,13 +3432,14 @@ function renderStoreCmd() {
   var tasks = getTasks().filter(t=>(t.store===storeId||t.store==='ALL') && t.status!=='完了');
   var canEdit = ROLE_CONFIG[curRole].canCreate;
   var dailyComplete = ops.length>0 && opsDone===ops.length;
+  var cfg = getStoreOpsConfig();
 
   var html = '';
 
   // 会社メッセージ（あれば最上部）
   html += renderCompanyMessageCard();
 
-  // ===== ヒーロー: 店舗名 + 本日の進捗リング =====
+  // ===== ヒーロー: 店舗名 + 本日の進捗リング（常に表示・上部固定相当）=====
   var pct = ops.length?Math.round(opsDone/ops.length*100):0;
   var ringColor = dailyComplete?'#15a66a':pct>=50?'#f0661f':'#d98908';
   var greeting = (function(){ var h=new Date().getHours(); if(h<11) return t('おはようございます','Good morning'); if(h<17) return t('お疲れさまです','Good afternoon'); return t('お疲れさまです','Good evening'); })();
@@ -3452,25 +3454,27 @@ function renderStoreCmd() {
         <div style="font-size:19px;font-weight:800;color:var(--tm);display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:50%;background:${store.color}"></span>${store.name}</div>
         <div style="font-size:12px;color:var(--muted)">${dailyComplete?t('本日のオペレーション完了','All operations done today'):t('Daily Operations','Daily Operations')+' '+opsDone+'/'+ops.length}</div>
       </div>
+      ${canEdit?`<button class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="go('store_ops_settings')" title="${t('表示設定','Display settings')}"><i class="ti ti-adjustments"></i></button>`:''}
     </div>
   </div>`;
 
-  // ===== クイックアクション（大きめタイル）=====
-  var openTasks = tasks.length;
-  var tiles = [
-    {label:t('棚卸','Inventory'), icon:'ti-box', color:'#15a66a', page:'inventory'},
-    {label:t('発注','Order'), icon:'ti-truck-delivery', color:'#2e6fd6', page:'order'},
-    {label:t('シフト','Shift'), icon:'ti-calendar-event', color:'#f0661f', page:'shift_admin'},
-    {label:t('日報','Daily Report'), icon:'ti-clipboard-text', color:'#8b5cf6', action:`scrollToReport()`},
-  ];
-  html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">`;
-  tiles.forEach(ti=>{
-    var on = ti.action ? ti.action : `go('${ti.page}')`;
-    html += `<div onclick="${on}" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 6px;text-align:center;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.04)">
-      <div style="width:40px;height:40px;border-radius:11px;background:${ti.color}1a;color:${ti.color};display:flex;align-items:center;justify-content:center;margin:0 auto 6px"><i class="ti ${ti.icon}" style="font-size:21px"></i></div>
-      <div style="font-size:11px;font-weight:600;color:var(--tm)">${ti.label}</div></div>`;
-  });
-  html += `</div>`;
+  // ===== クイックアクション（やる事アイコン）=====
+  if (cfg.tiles) {
+    var tiles = [
+      {label:t('棚卸','Inventory'), icon:'ti-box', color:'#15a66a', page:'inventory'},
+      {label:t('発注','Order'), icon:'ti-truck-delivery', color:'#2e6fd6', page:'order'},
+      {label:t('シフト','Shift'), icon:'ti-calendar-event', color:'#f0661f', page:'shift_admin'},
+      {label:t('日報','Daily Report'), icon:'ti-clipboard-text', color:'#8b5cf6', action:`scrollToReport()`},
+    ];
+    html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">`;
+    tiles.forEach(ti=>{
+      var on = ti.action ? ti.action : `go('${ti.page}')`;
+      html += `<div onclick="${on}" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 6px;text-align:center;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.04)">
+        <div style="width:40px;height:40px;border-radius:11px;background:${ti.color}1a;color:${ti.color};display:flex;align-items:center;justify-content:center;margin:0 auto 6px"><i class="ti ${ti.icon}" style="font-size:21px"></i></div>
+        <div style="font-size:11px;font-weight:600;color:var(--tm)">${ti.label}</div></div>`;
+    });
+    html += `</div>`;
+  }
 
   // Required未完了アラート
   if (reqIncomplete.length) {
@@ -3482,69 +3486,74 @@ function renderStoreCmd() {
   }
 
   // 本日/今週のGoal
-  html += `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>${t('本日・今週のGoal','Today / This Week Goals')}
-    ${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('goals')">${t('管理','Manage')}</button>`:''}</div>`;
-  if (goals.length) {
-    goals.slice(0,4).forEach(g => {
-      var prog = Math.min(Math.round((g.current||0)/g.target*100), 100);
-      var color = prog>=100?'var(--green)':prog>=70?'var(--yellow)':'var(--accent2)';
-      html += `<div class="goal-item">
-        <div class="goal-header"><div class="goal-title">${g.title}</div><span class="tag tag-blue">${g.period}</span></div>
-        <div style="display:flex;align-items:center;gap:8px;"><div class="progress-bar" style="flex:1"><div class="progress-fill" style="background:${color};width:${prog}%"></div></div><div class="goal-progress">${prog}%</div></div>
-        <div class="store-meta">${g.current||0} / ${g.target} ${g.unit||''}</div>
-      </div>`;
-    });
-  } else { html += `<p style="color:var(--muted);font-size:13px">${t('本日のGoalは未設定です','No goals set for today')}</p>`; }
-  html += '</div>';
-
-  // ===== Daily Operations（フェーズ順の司令塔） =====
-  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist"></i>Daily Operations
-    <span style="margin-left:auto;font-size:12px;color:var(--muted)">${opsDone}/${ops.length} 完了</span></div>
-    <div class="progress-bar" style="margin-bottom:12px"><div class="progress-fill" style="background:${dailyComplete?'var(--green)':'var(--accent2)'};width:${ops.length?Math.round(opsDone/ops.length*100):0}%"></div></div>`;
-
-  // フェーズごとに順番表示（次にやるべきフェーズを強調）
-  var nextPhaseFound = false;
-  DAILY_PHASES.forEach((phase, pi) => {
-    var pItems = ops.filter(t=>t.phase===phase);
-    if (!pItems.length) return;
-    var pDone = pItems.filter(t=>t.done).length;
-    var allDone = pDone===pItems.length;
-    var isNext = !allDone && !nextPhaseFound;
-    if (isNext) nextPhaseFound = true;
-    var icon = allDone?'ti-circle-check':isNext?'ti-player-play':'ti-circle';
-    var iconColor = allDone?'var(--green)':isNext?'var(--accent)':'var(--muted)';
-    html += `<div style="margin-bottom:10px;${isNext?'background:#fdeee4;border:1px solid #f5d9b8;border-radius:8px;padding:8px':''}">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-        <i class="ti ${icon}" style="color:${iconColor};font-size:16px"></i>
-        <span style="font-weight:600;font-size:13px">${pi+1}. ${phase}</span>
-        ${isNext?'<span class="tag tag-yellow" style="font-size:9px">次にやる</span>':''}
-        <span style="margin-left:auto;font-size:11px;color:var(--muted)">${pDone}/${pItems.length}</span>
-      </div>`;
-    pItems.forEach(t => {
-      html += `<div class="task-item" style="padding:5px 0 5px 24px">
-        <div class="task-check${t.done?' done':''}" onclick="toggleDailyOp('${storeId}','${t.id}')">${t.done?'<i class="ti ti-check" style="font-size:11px;color:#fff"></i>':''}</div>
-        <div style="flex:1"><div class="task-text${t.done?' done':''}" style="font-size:13px">${t.text} ${t.required?'<span class="tag tag-red" style="font-size:9px;padding:1px 5px">必須</span>':''}${t.photo?'<i class="ti ti-camera" style="font-size:11px;color:var(--muted)"></i>':''}</div>
-        ${t.done&&t.by?`<div class="task-phase">完了: ${t.by}</div>`:''}</div>
-      </div>`;
-    });
-    if (canEdit) html += `<button class="btn btn-secondary btn-sm" style="margin-left:24px;margin-top:4px" onclick="openDailyOpsAdd('${storeId}','${phase}')"><i class="ti ti-plus"></i> 追加</button>`;
+  if (cfg.goals) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>${t('本日・今週のGoal','Today / This Week Goals')}
+      ${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('goals')">${t('管理','Manage')}</button>`:''}</div>`;
+    if (goals.length) {
+      goals.slice(0,4).forEach(g => {
+        var prog = Math.min(Math.round((g.current||0)/g.target*100), 100);
+        var color = prog>=100?'var(--green)':prog>=70?'var(--yellow)':'var(--accent2)';
+        html += `<div class="goal-item">
+          <div class="goal-header"><div class="goal-title">${g.title}</div><span class="tag tag-blue">${g.period}</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><div class="progress-bar" style="flex:1"><div class="progress-fill" style="background:${color};width:${prog}%"></div></div><div class="goal-progress">${prog}%</div></div>
+          <div class="store-meta">${g.current||0} / ${g.target} ${g.unit||''}</div>
+        </div>`;
+      });
+    } else { html += `<p style="color:var(--muted);font-size:13px">${t('本日のGoalは未設定です','No goals set for today')}</p>`; }
     html += '</div>';
-  });
-
-  // Daily完了ボタン
-  html += `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:12px">`;
-  if (dailyComplete) {
-    html += `<button class="btn btn-success" style="width:100%" onclick="completeDailyOps('${storeId}')"><i class="ti ti-flag-check"></i> Daily完了を記録</button>`;
-  } else {
-    html += `<button class="btn btn-secondary" style="width:100%;opacity:.6" disabled>Daily完了（${ops.length-opsDone}件 残っています）</button>`;
   }
-  html += '</div></div>';
 
-  // ===== チップ管理（クレジット=Toast自動 / キャッシュ=手入力）+ 日報 =====
-  html += `<div id="store-report-anchor"></div>`;
-  html += renderStoreCmdTip(storeId, store, canEdit);
+  // ===== Daily Operations（横スクロール・大アイコン）=====
+  if (cfg.daily) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-checklist"></i>Daily Operations
+      <span style="margin-left:auto;font-size:12px;color:var(--muted)">${opsDone}/${ops.length} ${t('完了','done')}</span></div>
+      <div class="progress-bar" style="margin-bottom:12px"><div class="progress-fill" style="background:${dailyComplete?'var(--green)':'var(--accent2)'};width:${ops.length?Math.round(opsDone/ops.length*100):0}%"></div></div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-arrow-right"></i> ${t('右にスクロール → 各工程をタップして開く','Scroll right → tap each phase')}</div>`;
 
-  // 管理リンク（編集権限者のみ・控えめに）
+    // 横スクロールの大アイコン（フェーズ順）
+    html += `<div style="display:flex;gap:12px;overflow-x:auto;padding:4px 2px 12px;-webkit-overflow-scrolling:touch">`;
+    var nextFound = false;
+    DAILY_PHASES.forEach((phase, pi) => {
+      var pItems = ops.filter(t=>t.phase===phase);
+      if (!pItems.length) return;
+      var pDone = pItems.filter(t=>t.done).length;
+      var allDone = pDone===pItems.length;
+      var isNext = !allDone && !nextFound;
+      if (isNext) nextFound = true;
+      var meta = phaseMeta(phase);
+      var ring = allDone?'var(--green)':meta.color;
+      var ppct = Math.round(pDone/pItems.length*100);
+      var reqLeft = pItems.filter(t=>t.required&&!t.done).length;
+      html += `<div onclick="openPhaseModal('${storeId}','${phase}')" style="flex:0 0 auto;width:130px;background:var(--surface);border:2px solid ${isNext?meta.color:'var(--border)'};border-radius:16px;padding:14px 10px;text-align:center;cursor:pointer;position:relative;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+        ${isNext?`<span class="tag" style="position:absolute;top:-9px;left:50%;transform:translateX(-50%);background:${meta.color};color:#fff;font-size:9px;white-space:nowrap">${t('次にやる','Next')}</span>`:''}
+        <div style="width:58px;height:58px;border-radius:50%;background:${meta.color}1a;color:${meta.color};display:flex;align-items:center;justify-content:center;margin:4px auto 8px;position:relative">
+          <i class="ti ${allDone?'ti-circle-check':meta.icon}" style="font-size:30px;color:${ring}"></i>
+        </div>
+        <div style="font-weight:700;font-size:13px;color:var(--tm)">${pi+1}. ${phase}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${pDone}/${pItems.length} ${t('完了','')}</div>
+        <div class="progress-bar" style="height:5px;margin-top:8px"><div class="progress-fill" style="background:${ring};width:${ppct}%"></div></div>
+        ${reqLeft?`<div style="font-size:10px;color:var(--red);margin-top:5px"><i class="ti ti-alert-circle" style="font-size:11px"></i> ${t('必須','Req')} ${reqLeft}</div>`:allDone?`<div style="font-size:10px;color:var(--green);margin-top:5px"><i class="ti ti-check"></i> ${t('完了','Done')}</div>`:'<div style="height:16px;margin-top:5px"></div>'}
+      </div>`;
+    });
+    html += `</div>`;
+
+    // Daily完了ボタン
+    html += `<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:12px">`;
+    if (dailyComplete) {
+      html += `<button class="btn btn-success" style="width:100%" onclick="completeDailyOps('${storeId}')"><i class="ti ti-flag-check"></i> ${t('Daily完了を記録','Record completion')}</button>`;
+    } else {
+      html += `<button class="btn btn-secondary" style="width:100%;opacity:.6" disabled>${t('Daily完了','Daily')}（${ops.length-opsDone}${t('件 残っています','left')}）</button>`;
+    }
+    html += '</div></div>';
+  }
+
+  // ===== チップ管理 + 日報 =====
+  if (cfg.tip) {
+    html += `<div id="store-report-anchor"></div>`;
+    html += renderStoreCmdTip(storeId, store, canEdit);
+  }
+
+  // 管理リンク（編集権限者のみ）
   if (canEdit) {
     html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px">
       <button class="btn btn-secondary btn-sm" onclick="go('tasks')"><i class="ti ti-list-check"></i> ${t('タスク','Tasks')} (${tasks.length})</button>
@@ -3552,6 +3561,70 @@ function renderStoreCmd() {
     </div>`;
   }
   return html;
+}
+/* フェーズの中身をモーダルで開く（タッチしやすい大きめUI）*/
+function openPhaseModal(storeId, phase) {
+  var ops = getDailyOps(storeId);
+  var pItems = ops.filter(t=>t.phase===phase);
+  var meta = phaseMeta(phase);
+  var canEdit = ROLE_CONFIG[curRole].canCreate;
+  var pDone = pItems.filter(t=>t.done).length;
+  var html = `<div class="modal-title" style="display:flex;align-items:center;gap:10px">
+    <span style="width:38px;height:38px;border-radius:50%;background:${meta.color}1a;color:${meta.color};display:inline-flex;align-items:center;justify-content:center"><i class="ti ${meta.icon}" style="font-size:20px"></i></span>
+    <span>${phase}</span>
+    <span style="font-size:12px;color:var(--muted);font-weight:400">${pDone}/${pItems.length}</span>
+    <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="max-height:56vh;overflow-y:auto">`;
+  pItems.forEach(t => {
+    html += `<div onclick="togglePhaseItem('${storeId}','${t.id}','${phase}')" style="display:flex;align-items:center;gap:12px;padding:14px 10px;border-bottom:1px solid var(--border);cursor:pointer">
+      <div style="width:30px;height:30px;border-radius:9px;flex-shrink:0;border:2px solid ${t.done?'var(--green)':'var(--border)'};background:${t.done?'var(--green)':'transparent'};display:flex;align-items:center;justify-content:center">${t.done?'<i class="ti ti-check" style="font-size:18px;color:#fff"></i>':''}</div>
+      <div style="flex:1">
+        <div style="font-size:15px;font-weight:${t.done?'400':'600'};color:${t.done?'var(--muted)':'var(--tm)'};text-decoration:${t.done?'line-through':'none'}">${t.text}</div>
+        <div style="display:flex;gap:6px;margin-top:3px">
+          ${t.required?'<span class="tag tag-red" style="font-size:9px">必須</span>':''}
+          ${t.photo?'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)"><i class="ti ti-camera" style="font-size:10px"></i> 写真</span>':''}
+          ${t.done&&t.by?`<span style="font-size:10px;color:var(--muted)">完了: ${t.by}</span>`:''}
+        </div>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+  if (canEdit) html += `<button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="openDailyOpsAdd('${storeId}','${phase}')"><i class="ti ti-plus"></i> 項目を追加</button>`;
+  html += `<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" style="width:100%" onclick="closeModalDirect()">${t('閉じる','Close')}</button></div>`;
+  openModal(html);
+}
+/* モーダル内のチェック（モーダルを開いたまま更新）*/
+function togglePhaseItem(storeId, tId, phase) {
+  toggleDailyOp(storeId, tId);
+  openPhaseModal(storeId, phase); // 中身を再描画
+}
+/* 店舗オペレーション 表示設定ページ */
+function renderStoreOpsSettings() {
+  var cfg = getStoreOpsConfig();
+  var html = `<div class="section-header">
+    <div><div class="section-title"><i class="ti ti-adjustments" style="color:var(--accent)"></i> ${t('店舗オペレーション 表示設定','Store Ops Display')}</div>
+    <div class="section-sub">${t('メイン画面に表示する項目を選べます','Choose what shows on the main screen')}</div></div>
+    <button class="btn btn-secondary btn-sm" onclick="go('store_cmd')"><i class="ti ti-arrow-left"></i> ${t('戻る','Back')}</button>
+  </div>`;
+  html += `<div class="card"><div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('表示するセクションのオン/オフ','Toggle sections')}</div>`;
+  STORE_OPS_SECTIONS.forEach(s=>{
+    var on = s.always ? true : cfg[s.key]!==false;
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:12px 4px;border-bottom:1px solid var(--border)">
+      <div style="flex:1;font-size:14px;font-weight:500">${s.label}${s.always?' <span style="font-size:10px;color:var(--muted)">（常に表示）</span>':''}</div>
+      ${s.always?`<i class="ti ti-lock" style="color:var(--muted)"></i>`
+        :`<div onclick="toggleStoreOpsSection('${s.key}')" style="width:46px;height:26px;border-radius:13px;background:${on?'var(--green)':'var(--border)'};position:relative;cursor:pointer;transition:.2s">
+          <div style="width:20px;height:20px;border-radius:50%;background:#fff;position:absolute;top:3px;left:${on?'23px':'3px'};transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)"></div></div>`}
+    </div>`;
+  });
+  html += `</div>`;
+  html += `<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">${t('変更はこの端末に保存されます','Saved on this device')}</div>`;
+  return html;
+}
+function toggleStoreOpsSection(key) {
+  var cfg = getStoreOpsConfig();
+  cfg[key] = cfg[key]===false ? true : false;
+  setStoreOpsConfig(cfg);
+  renderPage('store_ops_settings');
 }
 function scrollToReport() {
   var el = document.getElementById('store-report-anchor');
@@ -12770,6 +12843,31 @@ function saveInvoice() {
    ⑮ Daily Operations (Opening/Prep/Inventory/Ordering/Cleanliness/Closing)
 ============================================================ */
 const DAILY_PHASES = ['Opening','Prep','Inventory','Ordering','Cleanliness','Closing'];
+/* フェーズの見た目（アイコン・色） */
+const PHASE_META = {
+  'Opening':     {icon:'ti-sunrise',          color:'#f0661f', en:'Opening'},
+  'Prep':        {icon:'ti-tools-kitchen-2',  color:'#15a66a', en:'Prep'},
+  'Inventory':   {icon:'ti-box',              color:'#2e6fd6', en:'Inventory'},
+  'Ordering':    {icon:'ti-truck-delivery',   color:'#8b5cf6', en:'Ordering'},
+  'Cleanliness': {icon:'ti-spray',            color:'#0ea5b7', en:'Cleanliness'},
+  'Closing':     {icon:'ti-moon',             color:'#d4458a', en:'Closing'},
+};
+function phaseMeta(phase) { return PHASE_META[phase] || {icon:'ti-circle', color:'#888', en:phase}; }
+/* 店舗オペレーション 表示カスタム設定（セクションの表示/非表示・並び）
+   既定: 全部表示 */
+const STORE_OPS_SECTIONS = [
+  {key:'hero',    label:'達成率リング',        always:true},
+  {key:'tiles',   label:'クイックアクション（やる事アイコン）'},
+  {key:'goals',   label:'本日・今週のGoal'},
+  {key:'daily',   label:'Daily Operations（大アイコン）'},
+  {key:'tip',     label:'チップ・日報'},
+];
+function getStoreOpsConfig() {
+  var def = {}; STORE_OPS_SECTIONS.forEach(s=>{ def[s.key]=true; });
+  var saved = ls('store_ops_config', null);
+  return saved ? Object.assign(def, saved) : def;
+}
+function setStoreOpsConfig(c) { lsSet('store_ops_config', c); }
 const DEFAULT_DAILYOPS = [
   {id:'d1', phase:'Opening',     text:'レジ開け・釣銭確認', required:true},
   {id:'d2', phase:'Opening',     text:'照明・BGM・空調セット', required:false},
