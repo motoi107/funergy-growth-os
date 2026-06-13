@@ -657,6 +657,93 @@ async function syncToastDay(guid, businessDateYmd) {
   });
   return await res.json();
 }
+/* ===== Toast メニュー同期（売上・勤怠と同じEdge Function経由） =====
+   Edge Functionに action:'menu' を渡してToastメニューを取得→DB保存。
+   アプリは toast_menu_items / toast_item_sales をREST読みする。 */
+async function syncToastMenuFetch(guid, period) {
+  // Edge Functionにメニュー取得を依頼（サーバ側でToast Menus API/出数を取得しDB保存）
+  try {
+    var res = await fetch(TOAST_SYNC_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
+      body: JSON.stringify({ restaurantGuid: guid, action: 'menu', period: period }),
+    });
+    return await res.json();
+  } catch (e) { console.error('syncToastMenuFetch', e); return { error: String(e) }; }
+}
+/* DBからメニュー商品を読む（カテゴリ・商品名・売価・GUID） */
+async function fetchToastMenuItems(guid) {
+  try {
+    var url = SUPABASE_URL + '/rest/v1/toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(guid) + '&order=category.asc';
+    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (e) { console.error('fetchToastMenuItems', e); return []; }
+}
+/* DBから商品別出数を読む（月別） period 例 '2026.6' → business_month '2026-06' */
+async function fetchToastItemSales(guid, period) {
+  try {
+    var parts = String(period).split('.');
+    var ym = parts[0] + '-' + String(parts[1]).padStart(2,'0');
+    var url = SUPABASE_URL + '/rest/v1/toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_month=eq.' + ym;
+    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (e) { console.error('fetchToastItemSales', e); return []; }
+}
+/* メニュー同期の本体: Toast取得 → メニュー商品をレシピへ反映（GUIDで照合）→ 出数をmenu_mixへ */
+async function syncMenuFromToast(storeId, guid, period) {
+  if (!guid) return { error: 'この店舗のToast GUIDが未設定です（店舗マスターで設定）' };
+  // 1) サーバにメニュー取得を依頼
+  await syncToastMenuFetch(guid, period);
+  // 2) メニュー商品を読む
+  var items = await fetchToastMenuItems(guid);
+  var recipes = getRecipes();
+  var added=0, updated=0;
+  items.forEach(it => {
+    var g = it.guid || it.item_guid;
+    if (!g) return;
+    var r = recipes.find(x=>x.toastGuid===g);
+    if (r) {
+      // Toastを正: カテゴリ・商品名・売価を更新（レシピ食材は保持）
+      var pc = (r.category!==it.category)||(r.name!==(it.name||r.name))||(Number(r.price)!==Number(it.price));
+      r.category = it.category || r.category;
+      r.name = it.name || r.name;
+      r.price = it.price!=null ? Number(it.price) : r.price;
+      r.toastActive = it.active!==false;
+      if (pc) updated++;
+    } else {
+      // 新規商品（レシピ未設定で取り込む）
+      recipes.push({ id:'r'+Date.now()+Math.floor(Math.random()*1000), toastGuid:g,
+        name: it.name||'(無名)', category: it.category||'未分類', price: it.price!=null?Number(it.price):0,
+        items:[], source:'toast', toastActive: it.active!==false });
+      added++;
+      addMenuLog({action:'追加', name:it.name||'(無名)', detail:'Toast同期で取込', by:'Toast同期'});
+    }
+  });
+  // Toastに無くなった商品（GUID付きなのに今回の取得に無い）→ アーカイブ候補（自動では消さない）
+  var liveGuids = {}; items.forEach(it=>{ var g=it.guid||it.item_guid; if(g) liveGuids[g]=1; });
+  var goneCount = 0;
+  recipes.forEach(r=>{ if (r.toastGuid && !liveGuids[r.toastGuid] && !r.archived) { r.toastActive=false; goneCount++; } });
+  setRecipes(recipes);
+  // 3) 出数を menu_mix に反映（GUID→recipeId）
+  var sales = await fetchToastItemSales(guid, period);
+  var mixUpdated = 0;
+  if (sales && sales.length) {
+    var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
+    var byGuid = {}; getRecipes().forEach(r=>{ if(r.toastGuid) byGuid[r.toastGuid]=r.id; });
+    var totalSales = 0;
+    sales.forEach(s => {
+      var g = s.item_guid || s.guid;
+      var rid = byGuid[g];
+      if (rid && s.qty!=null) { mix.items[rid] = Number(s.qty); mixUpdated++; }
+    });
+    getRecipes().forEach(r=>{ var q=parseFloat(mix.items[r.id])||0; totalSales += q*(r.price||0); });
+    mix.sales = totalSales; mix.savedAt = new Date().toLocaleString('ja'); mix.toastSrc = true;
+    setMenuMix(storeId, period, mix);
+  }
+  return { added, updated, gone:goneCount, items:items.length, mixUpdated };
+}
 async function syncStoreActualsFromToast(storeId, guid, days) {
   if (!guid) return { error: 'GUID未設定' };
   var rows = await fetchToastSales(guid, days[0].date, days[days.length-1].date);
@@ -11970,7 +12057,8 @@ function renderMenu() {
     ${visStores.length>1?`<select class="form-select" style="width:auto;padding:6px" onchange="window._menuStore=this.value;renderPage('menu')">${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>`:`<b style="font-size:13px">${storeObj.name}</b>`}
     <select class="form-select" style="width:auto;padding:6px" onchange="window._menuPeriod=this.value;renderPage('menu')">${periodOptions(period)}</select>
     ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> 出数を入力</button>`:''}
-    <button class="btn btn-secondary btn-sm" onclick="alert('Toast API連携後、出数とメニューが自動同期されます（Toastが正）')"><i class="ti ti-refresh"></i> Toast同期</button>
+    <button class="btn btn-primary btn-sm" onclick="doMenuSync('${storeId}','${period}')"><i class="ti ti-refresh"></i> Toast同期</button>
+    ${mix.toastSrc?`<span class="tag tag-green" style="font-size:9px">Toast同期済</span>`:''}
   </div></div>`;
 
   // 月サマリー
@@ -12061,6 +12149,27 @@ function saveMenuMix(storeId, period) {
   closeModalDirect();
   showToast('出数を保存しました','success');
   renderPage('menu');
+}
+/* Toast同期ボタンの処理（売上同期と同じEdgeFunction経由） */
+async function doMenuSync(storeId, period) {
+  var s = STORES.find(x=>x.id===storeId)||{};
+  if (!s.toastGuid) {
+    showToast(s.name+' のToast GUIDが未設定です。店舗マスターで設定してください。','warning');
+    return;
+  }
+  showToast('Toastと同期中…','info');
+  try {
+    var r = await syncMenuFromToast(storeId, s.toastGuid, period);
+    if (r.error) { showToast('同期エラー: '+r.error,'danger'); return; }
+    var msg = `同期完了：商品${r.items}件（新規${r.added}・更新${r.updated}）`;
+    if (r.mixUpdated) msg += ` / 出数${r.mixUpdated}件`;
+    if (r.gone) msg += ` / Toast非掲載${r.gone}件`;
+    showToast(msg,'success');
+    renderPage('menu');
+  } catch (e) {
+    showToast('同期に失敗しました（ネットワーク/権限を確認）','danger');
+    console.error(e);
+  }
 }
 
 function renderRecipe() {
