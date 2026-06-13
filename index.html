@@ -861,8 +861,7 @@ const NAV_ITEMS = [
   {id:'ingredient_master',label:'食材マスター', icon:'ti-carrot',     roles:['ceo','gm','office','am','sl']},
   {id:'vendor_master',label:'業者マスター', icon:'ti-truck',          roles:['ceo','gm','office','am']},
   {id:'skill',       label:'スキルレベル', icon:'ti-stairs-up',        roles:['ceo','gm','am','sl','crew']},
-  {id:'evaluation',  label:'評価',        icon:'ti-star',             roles:['ceo','gm','am','sl']},
-  {id:'leadership',  label:'Leadership Skill', icon:'ti-crown',       roles:['ceo','gm','am','sl']},
+  {id:'leadership',  label:'Career Score', icon:'ti-trending-up',       roles:['ceo','gm','am','sl']},
   {id:'tiprate',     label:'チップ率',    icon:'ti-coin',             roles:['ceo','gm','am','sl','crew']},
   {id:'meeting',     label:'ミーティング',     icon:'ti-users-group',      roles:['ceo','gm','office','am','sl']},
   {id:'growthhub',   label:'成長ハブ',  icon:'ti-message-circle',   roles:['ceo','gm','office','am','sl']},
@@ -884,7 +883,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['recipe','costsheet','invoice','inventory','order','ingredient_master','vendor_master']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['shift_admin','vacation','hiring','onboarding','skill','evaluation','leadership','tiprate','tip','attendance','staff_master','meeting','growthhub','growth_mgr']},
+    children:['shift_admin','vacation','hiring','onboarding','skill','leadership','tiprate','tip','attendance','staff_master','meeting','growthhub','growth_mgr']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['tasks','required','goals','approval','acct_export','company_msg_edit','store_master','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
@@ -2886,7 +2885,6 @@ function renderPage(page) {
     case 'staff_master': el.innerHTML = renderStaffMaster(); break;
     case 'ingredient_master': el.innerHTML = renderIngredientMaster(); break;
     case 'vendor_master': el.innerHTML = renderVendorMaster(); break;
-    case 'evaluation':   el.innerHTML = renderEvaluation(); break;
     case 'leadership':   el.innerHTML = renderLeadership(); break;
     case 'skill':        el.innerHTML = renderSkill(); break;
     case 'tiprate':      el.innerHTML = renderTipRate(); break;
@@ -10970,7 +10968,7 @@ function approveEval(staffId) {
 }
 
 /* ============================================================
-   Leadership Skill Score 画面
+   Funergy Career Score 画面
 ============================================================ */
 function renderLeadership() {
   // 対象＝リーダー以上
@@ -10980,8 +10978,8 @@ function renderLeadership() {
   var canScore = ['ceo','gm','am','sl'].includes(curRole);
 
   var html = `<div class="section-header">
-    <div><div class="section-title"><i class="ti ti-crown" style="color:var(--accent)"></i> Leadership Skill Score</div>
-    <div class="section-sub">リーダー以上の総合スキル可視化 · 0〜3点 × ${lssAllItems().length}項目</div></div>
+    <div><div class="section-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i> Funergy Career Score</div>
+    <div class="section-sub">リーダー以上のキャリア・スキルの見える化 · 0〜3点 × ${lssAllItems().length}項目</div></div>
     ${['ceo','gm','am'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openLssRulesModal()"><i class="ti ti-adjustments"></i> 申請条件</button>`:''}
   </div>`;
 
@@ -11081,7 +11079,7 @@ function openLssDetail(name) {
   var rec = getLssScores(name) || {};
   window._lssDraft = Object.assign({}, rec.scores||{});
   var canScore = ['ceo','gm','am','sl'].includes(curRole);
-  var html = `<div class="modal-title">Leadership Skill — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  var html = `<div class="modal-title">Career Score — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div id="lss-summary"></div>
     <div id="lss-cattabs" style="margin:8px 0"></div>
     <div id="lss-items" style="max-height:40vh;overflow-y:auto;padding-right:4px"></div>
@@ -11210,7 +11208,7 @@ function saveLssScores(name) {
   h.push({name:name, pct:newPct, prevPct:prevPct, by:by, date:data.date, comment:data.comment});
   lsSet('lss_history', h);
   closeModalDirect();
-  showToast(`${name} のLeadership Skillを保存しました`,'success');
+  showToast(`${name} のCareer Scoreを保存しました`,'success');
   renderPage('leadership');
 }
 /* 昇格・Tip 申請（Leadership Skillスコア達成から） */
@@ -11221,7 +11219,7 @@ function openLssApply(name, kind) {
   openModal(`<div class="modal-title">${label} 申請 — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">現在</div>
       <div style="font-size:13px;font-weight:600">${e.title||(ROLE_CONFIG[e.role]||{}).label||''} · ${lssLevel(sum.totalPct).label}</div>
-      <div style="font-size:12px;color:var(--green);margin-top:4px">Leadership Skill ${sum.totalPct}%（条件達成）</div></div>
+      <div style="font-size:12px;color:var(--green);margin-top:4px">Career Score ${sum.totalPct}%（条件達成）</div></div>
     ${kind==='promo'?`<div class="form-group"><label class="form-label">希望役職（任意）</label>
       <select class="form-select" id="lss-ap-title"><option value="">（指定なし）</option>${LSS_TITLES.map(t=>`<option ${e.title===t?'':''}>${t}</option>`).join('')}</select></div>`:''}
     <div class="form-group"><label class="form-label">コメント（任意）</label><textarea class="form-textarea" id="lss-ap-reason" placeholder="${kind==='promo'?'昇格を希望する理由・実績など':'Tip Rate変更の根拠など'}"></textarea></div>
@@ -11486,9 +11484,9 @@ function renderPGD(empName, isManagerView) {
 
   // 本人操作
   if (!isManagerView && (curRole==='crew'||curRole==='sl')) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-pencil"></i>自己評価・申請</div>
+    html += `<div class="card"><div class="card-title"><i class="ti ti-pencil"></i>申請・確認</div>
       <div style="display:flex;flex-wrap:wrap;gap:8px">
-        <button class="btn btn-secondary btn-sm" onclick="go('evaluation')"><i class="ti ti-star"></i> 自己評価入力</button>
+        <button class="btn btn-secondary btn-sm" onclick="go('skill')"><i class="ti ti-stairs-up"></i> スキル申請</button>
         <button class="btn btn-secondary btn-sm" onclick="go('tiprate')"><i class="ti ti-coin"></i> Tip Rate申請</button>
         <button class="btn btn-secondary btn-sm" onclick="go('onboarding')"><i class="ti ti-school"></i> 教育受講</button>
         <button class="btn btn-secondary btn-sm" onclick="go('goals')"><i class="ti ti-target"></i> Goal確認</button>
@@ -11711,7 +11709,7 @@ function renderMypage() {
       var focusCats = lsum.cats.slice().sort((a,b)=>a.pct-b.pct).slice(0,3);
       var lelig = lssEligibility(me);
       html += `<div class="card" style="background:linear-gradient(135deg,#fbf0e6,var(--surface))">
-        <div class="card-title"><i class="ti ti-crown" style="color:var(--accent)"></i>${t('Your Leadership Skill','Your Leadership Skill')}
+        <div class="card-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i>${t('Your Career Score','Your Career Score')}
           <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openLssDetail('${me.replace(/'/g,"\\'")}')">${t('詳細','Detail')}</button></div>
         <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
           <div style="position:relative;flex-shrink:0">${healthRing(lsum.totalPct, lcolor, 60)}
@@ -11735,8 +11733,54 @@ function renderMypage() {
       }
       html += `</div>`;
     } else {
-      html += `<div class="card"><div class="card-title"><i class="ti ti-crown" style="color:var(--accent)"></i>${t('Your Leadership Skill','Your Leadership Skill')}</div>
+      html += `<div class="card"><div class="card-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i>${t('Your Career Score','Your Career Score')}</div>
         <div style="font-size:12px;color:var(--muted)">${t('まだ評価がありません。Store Manager / GMによる評価をお待ちください。','Not yet evaluated.')}</div></div>`;
+    }
+  }
+
+  // 6c. My Career Journey（Leader志望者のみ・まだリーダーでない人）
+  if (!isLeaderPlus(meEmpL)) {
+    var jd = getDevData(me);
+    if (jd.aspiration) {
+      var jstage = getStage(me);
+      var jr = stageReadiness(me);
+      var jtarget = jd.targetCareer || '';
+      // ロードマップ
+      var road = CAREER_STAGES.map(function(st, i){
+        var state = st.n<jstage?'done':st.n===jstage?'current':'todo';
+        var bg = state==='done'?'var(--green)':state==='current'?'var(--accent)':'var(--surface2)';
+        var col = state==='todo'?'var(--muted)':'#fff';
+        var conn = i<CAREER_STAGES.length-1 ? '<div style="flex:1;height:2px;background:var(--border);margin-top:14px"></div>' : '';
+        return `<div style="display:flex;align-items:flex-start;${i<CAREER_STAGES.length-1?'flex:1;':''}">
+          <div style="text-align:center;flex-shrink:0;width:42px"><div style="width:30px;height:30px;border-radius:50%;background:${bg};color:${col};display:flex;align-items:center;justify-content:center;margin:0 auto"><i class="ti ${st.icon}" style="font-size:14px"></i></div>
+            <div style="font-size:8px;margin-top:3px;color:${state==='current'?'var(--accent)':'var(--muted)'};font-weight:${state==='current'?'700':'400'}">${st.label}</div></div>
+          ${conn}</div>`;
+      }).join('');
+      html += `<div class="card" style="background:linear-gradient(135deg,#e9f0fb,var(--surface))">
+        <div class="card-title"><i class="ti ti-route" style="color:var(--accent)"></i>${t('My Career Journey','My Career Journey')}</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${t('目標','Goal')}: <b>${jtarget||t('未設定','Not set')}</b></div>
+        <div style="display:flex;align-items:flex-start;margin-bottom:10px">${road}</div>
+        <div style="border-top:1px solid var(--border);padding-top:8px">
+          <div style="font-size:12px;font-weight:700;margin-bottom:4px">${t('現在','Now')}: ${CAREER_STAGES.find(s=>s.n===jstage).label}</div>`;
+      if (jstage===2) {
+        html += `<div style="font-size:12px;padding:2px 0"><i class="ti ${jr.dayOk?'ti-circle-check':'ti-circle'}" style="color:${jr.dayOk?'var(--green)':'var(--muted)'}"></i> ${t('現場','Field')} ${jr.day==null?'—':jr.day}/90${t('日','days')}</div>
+          <div style="font-size:12px;padding:2px 0"><i class="ti ${jr.skillReady?'ti-circle-check':'ti-circle'}" style="color:${jr.skillReady?'var(--green)':'var(--muted)'}"></i> ${t('スキル','Skill')} ${jr.total}/${jr.minTotal}${t('点','pt')}</div>`;
+        if (jr.reqMiss && jr.reqMiss.length) html += `<div style="font-size:11px;color:var(--accent2);margin-top:2px">${t('あと必要','To do')}: ${jr.reqMiss.map(m=>m.skill+(m.lv?'(Lv'+m.lv+')':'')).join(', ')}</div>`;
+        if (jr.ready) html += `<div class="alert alert-success" style="margin:8px 0 0;padding:6px 10px"><i class="ti ti-clock-play"></i> ${t('OJT待機リスト入り（GM/AM承認待ち）','On OJT waiting list')}</div>`;
+      } else if (jstage===3) {
+        html += `<div style="font-size:12px">${t('カリキュラム','Curriculum')} ${jr.curriculum.done}/${jr.curriculum.total} · OJT ${jr.ojtDone?t('完了','Done'):t('進行中','In progress')}</div>`;
+        if (jr.ready) html += `<div class="alert alert-success" style="margin:8px 0 0;padding:6px 10px"><i class="ti ti-circle-check"></i> ${t('テストへ進めます','Ready for test')}</div>`;
+      } else if (jstage===4) {
+        html += `<div style="font-size:12px">${jr.passed?t('テスト合格','Test passed')+' ✓':(jr.hasRetrain?t('再教育中','Re-training'):t('テスト待ち','Awaiting test'))}</div>`;
+      } else if (jstage===5) {
+        html += `<div style="font-size:12px;color:var(--accent)">${t('Leader昇格の承認待ち','Awaiting promotion approval')}</div>`;
+      }
+      html += `</div></div>`;
+    } else if (meEmpL.emp==='正社員' || (meEmpL.title||'').includes('F-Crew')) {
+      // Leader志望をまだ登録していない正社員/F-Crew向けの案内
+      html += `<div class="card"><div class="card-title"><i class="ti ti-route" style="color:var(--accent)"></i>${t('My Career Journey','My Career Journey')}</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('Leader職を目指しますか？登録すると育成プランが始まります。','Aspire to become a Leader? Register to start your plan.')}</div>
+        <button class="btn btn-primary btn-sm" onclick="openSelfAspiration()"><i class="ti ti-flag"></i> ${t('Leaderを目指す','Aspire to Leader')}</button></div>`;
     }
   }
   var meEmpRec = getEmployees().find(x=>x.name===me) || {role:curRole};
@@ -13167,11 +13211,211 @@ function renderGrowthManager() {
     <div><div class="section-title">成長管理</div><div class="section-sub">Crew と Leader候補/社員を分けて育成</div></div>
   </div>
   <div class="phase-tabs">
+    <div class="phase-tab${growthMgrTab==='journey'?' active':''}" onclick="setGrowthTab('journey')"><i class="ti ti-route" style="font-size:12px"></i> キャリア</div>
     <div class="phase-tab${growthMgrTab==='crew'?' active':''}" onclick="setGrowthTab('crew')">Crew成長管理</div>
     <div class="phase-tab${growthMgrTab==='leader'?' active':''}" onclick="setGrowthTab('leader')">Leader候補/社員</div>
   </div>`;
+  if (growthMgrTab==='journey') return html + renderCareerPipeline();
   if (growthMgrTab==='leader') return html + renderLeaderGrowthList();
   return html + renderCrewGrowthList();
+}
+/* キャリアパイプライン（ステージ別＋OJT待機リスト） */
+function renderCareerPipeline() {
+  var canApprove = ['ceo','gm','am'].includes(curRole);
+  var aspirants = getEmployees().filter(e=>e.status!=='退職' && getDevData(e.name).aspiration);
+  var html = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Leader志望者のキャリア進行を管理します。各ステージは上長承認で進みます。</div>`;
+
+  // OJT待機リスト（条件達成＆承認待ち）= キモ
+  var waiting = ojtWaitingList();
+  html += `<div class="card" style="border-left:3px solid var(--accent)"><div class="card-title"><i class="ti ti-clock-play" style="color:var(--accent)"></i>OJT待機リスト (${waiting.length})</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">90日経過＋スキル条件を満たし、GM/AMの判定待ちのスタッフです。</div>`;
+  if (!waiting.length) {
+    html += `<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">該当者なし</div>`;
+  } else {
+    waiting.forEach(e=>{
+      var d=getDevData(e.name); var r=stageReadiness(e.name);
+      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${e.name} <span class="tag tag-blue" style="font-size:8px">${d.targetCareer||'目標未設定'}</span></div>
+        <div class="approval-meta">${r.day}日経過 · スキル ${r.total}/${r.minTotal}点 達成</div></div></div>
+        <div class="approval-actions">
+          ${canApprove?`<button class="btn btn-success btn-sm" onclick="approveAdvance('${e.name.replace(/'/g,"\\'")}')"><i class="ti ti-check"></i> OJT開始を承認</button>`:'<span style="font-size:11px;color:var(--muted)">GM/AM承認待ち</span>'}
+          <button class="btn btn-secondary btn-sm" onclick="openCareerDetail('${e.name.replace(/'/g,"\\'")}')">詳細</button>
+        </div></div>`;
+    });
+  }
+  html += `</div>`;
+
+  // 停滞アラート: 90日超でもスキル基準未達のstage2志望者
+  var stalled = aspirants.filter(e=>{
+    if (getStage(e.name)!==2) return false;
+    var r = stageReadiness(e.name);
+    return r.day!=null && r.day>90 && !r.skillReady;
+  });
+  if (stalled.length) {
+    html += `<div class="card" style="border-left:3px solid var(--red)"><div class="card-title"><i class="ti ti-alert-triangle" style="color:var(--red)"></i>停滞アラート (${stalled.length})</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">90日を超えてもスキル基準に達していません。延長・再教育・面談を検討してください。</div>`;
+    stalled.forEach(e=>{
+      var d=getDevData(e.name); var r=stageReadiness(e.name);
+      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${e.name} <span class="tag tag-red" style="font-size:8px">${r.day}日</span></div>
+        <div class="approval-meta">${d.targetCareer||'目標未設定'} · スキル ${r.total}/${r.minTotal}点（あと${Math.max(0,r.minTotal-r.total)}点）${r.reqMiss&&r.reqMiss.length?' · 必須未達: '+r.reqMiss.map(m=>m.skill).join('/'):''}</div></div></div>
+        <div class="approval-actions">
+          <button class="btn btn-secondary btn-sm" onclick="growthMgrOpen('${e.name.replace(/'/g,"\\'")}')"><i class="ti ti-school"></i> 育成へ</button>
+          <button class="btn btn-secondary btn-sm" onclick="openCareerDetail('${e.name.replace(/'/g,"\\'")}')">詳細</button>
+        </div></div>`;
+    });
+    html += `</div>`;
+  }
+
+  // ステージ別パイプライン
+  if (!aspirants.length) {
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:20px">Leader志望者がまだいません<div style="font-size:11px;margin-top:6px">下の「志望者を追加」から登録できます</div></div>`;
+  } else {
+    CAREER_STAGES.forEach(st=>{
+      var inStage = aspirants.filter(e=>getStage(e.name)===st.n);
+      if (!inStage.length) return;
+      html += `<div class="card"><div class="card-title"><i class="ti ${st.icon}" style="color:var(--accent)"></i>${st.label} <span style="font-size:10px;color:var(--muted);font-weight:400">${st.sub}</span> <span style="margin-left:auto;font-size:11px;color:var(--muted)">${inStage.length}名</span></div>`;
+      inStage.forEach(e=>{
+        var d=getDevData(e.name); var r=stageReadiness(e.name);
+        var prog = '';
+        if (st.n===2 && r.day!=null) prog = `${r.day}/90日 · ${r.total}/${r.minTotal}点`;
+        else if (st.n===3 && r.curriculum) prog = `カリキュラム ${r.curriculum.done}/${r.curriculum.total}`;
+        else if (st.n===4) prog = r.passed?'合格':(r.hasRetrain?'再教育中':'テスト待ち');
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;cursor:pointer" onclick="openCareerDetail('${e.name.replace(/'/g,"\\'")}')">${e.name}</div>
+            <div style="font-size:10px;color:var(--muted)">${d.targetCareer||'目標未設定'}${prog?' · '+prog:''}</div></div>
+          ${r.ready&&st.n<6?`<span class="tag tag-green" style="font-size:8px">次へ可</span>`:''}
+        </div>`;
+      });
+      html += `</div>`;
+    });
+  }
+
+  // キャリア履歴（昇格・ステージ進行）
+  var chist = ls('career_history', []);
+  if (chist.length) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>キャリア履歴</div>`;
+    chist.slice().reverse().slice(0,8).forEach(h=>{
+      if (h.event==='Leader昇格') {
+        html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${h.name} · <span style="color:var(--green)">Leader昇格</span></div><span class="tag tag-green" style="font-size:9px">${h.title}</span></div>
+          <div class="approval-meta">${h.date} · ${h.by||''}</div></div>`;
+      } else {
+        var fromSt=CAREER_STAGES.find(s=>s.n===h.from), toSt=CAREER_STAGES.find(s=>s.n===h.to);
+        html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${h.name}</div>
+          <span style="font-size:11px;color:var(--muted)">${fromSt?fromSt.label:h.from} → ${toSt?toSt.label:h.to}</span></div>
+          <div class="approval-meta">${h.date} · ${h.by||''}</div></div>`;
+      }
+    });
+    html += `</div>`;
+  }
+
+  // 志望者を追加
+  html += `<button class="btn btn-secondary" style="width:100%" onclick="openAspirationModal()"><i class="ti ti-user-plus"></i> Leader志望者を追加</button>`;
+  return html;
+}
+
+/* ステージ進行を承認 */
+function approveAdvance(name) {
+  if (!['ceo','gm','am','sl'].includes(curRole)) return;
+  var stage = getStage(name);
+  var r = stageReadiness(name);
+  // OJT待機(stage2)とstage4昇格判定はGM/AM必須
+  if ((stage===2 || stage===4 || stage===5) && !['ceo','gm','am'].includes(curRole)) { showToast('この承認はGM/AM以上が必要です','warning'); return; }
+  var st = CAREER_STAGES.find(s=>s.n===stage);
+  var d = getDevData(name);
+  var msg = (stage===5)
+    ? `${name} をLeaderに昇格させますか？\n役職「${d.targetCareer||'Leader'}」が付与され、以降はCareer Scoreで評価されます。`
+    : `${name} を「${st.label}」から次のステージへ進めますか？`;
+  if (!confirm(msg)) return;
+  advanceStage(name, (ROLE_CONFIG[curRole]||{}).name);
+  // 履歴
+  var h = ls('career_history', []);
+  h.push({name:name, from:stage, to:getStage(name), by:(ROLE_CONFIG[curRole]||{}).name, date:new Date().toLocaleString('ja')});
+  lsSet('career_history', h);
+  showToast(stage===5?`${name} をLeaderに昇格しました（${d.targetCareer||''}）`:`${name} を次のステージへ進めました`,'success');
+  renderPage('growth_mgr');
+}
+/* Leader志望者の追加（本人志望 or 上長指名） */
+function openAspirationModal() {
+  var cands = getEmployees().filter(e=>e.status!=='退職' && !isLeaderPlus(e) && !getDevData(e.name).aspiration);
+  openModal(`<div class="modal-title">Leader志望者を追加 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">本人の志望、または上長の指名で登録します。</div>
+    <div class="form-group"><label class="form-label">スタッフ</label>
+      <select class="form-select" id="asp-name">${cands.map(e=>`<option>${e.name}</option>`).join('')||'<option value="">対象者なし</option>'}</select></div>
+    <div class="form-group"><label class="form-label">目標Leader種別</label>
+      <select class="form-select" id="asp-career">${Object.keys(CAREER_CONFIG).map(c=>`<option>${c}</option>`).join('')}</select></div>
+    <div class="form-group"><label class="form-label">きっかけ</label>
+      <select class="form-select" id="asp-by"><option value="本人志望">本人志望</option><option value="上長指名">上長指名</option></select></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="submitAspiration()">登録</button></div>`);
+}
+function submitAspiration() {
+  var name=document.getElementById('asp-name').value;
+  if (!name) { closeModalDirect(); return; }
+  var career=document.getElementById('asp-career').value;
+  var by=document.getElementById('asp-by').value;
+  setAspiration(name, career, by);
+  closeModalDirect();
+  showToast(`${name} をLeader志望に登録しました（${career}）`,'success');
+  renderPage('growth_mgr');
+}
+/* 本人が自分でLeader志望を登録（マイページから） */
+function openSelfAspiration() {
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  openModal(`<div class="modal-title">Leaderを目指す <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">目標とするLeader職を選んでください。登録すると育成プラン（キャリアジャーニー）が始まります。</div>
+    <div class="form-group"><label class="form-label">目標Leader種別</label>
+      <select class="form-select" id="self-asp-career">${Object.keys(CAREER_CONFIG).map(c=>`<option>${c}</option>`).join('')}</select></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="submitSelfAspiration()"><i class="ti ti-flag"></i> 目指す</button></div>`);
+}
+function submitSelfAspiration() {
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var career = document.getElementById('self-asp-career').value;
+  setAspiration(me, career, '本人志望');
+  closeModalDirect();
+  showToast(`${career}を目指して育成プランを開始しました`,'success');
+  renderPage('mypage');
+}
+/* キャリア詳細（ステージ＋次にやること） */
+function openCareerDetail(name) {
+  var e=getEmployees().find(x=>x.name===name)||{name:name};
+  var d=getDevData(name); var stage=getStage(name); var r=stageReadiness(name);
+  var canApprove=['ceo','gm','am','sl'].includes(curRole);
+  // ステージ・ロードマップ
+  var road = CAREER_STAGES.map(st=>{
+    var state = st.n<stage?'done':st.n===stage?'current':'todo';
+    var bg = state==='done'?'var(--green)':state==='current'?'var(--accent)':'var(--surface2)';
+    var col = state==='todo'?'var(--muted)':'#fff';
+    return `<div style="flex:1;text-align:center"><div style="width:30px;height:30px;border-radius:50%;background:${bg};color:${col};display:flex;align-items:center;justify-content:center;margin:0 auto"><i class="ti ${st.icon}" style="font-size:15px"></i></div>
+      <div style="font-size:9px;margin-top:3px;color:${state==='current'?'var(--accent)':'var(--muted)'};font-weight:${state==='current'?'700':'400'}">${st.label}</div></div>`;
+  }).join('<div style="flex:0 0 8px;height:1px;background:var(--border);margin-top:15px"></div>');
+  var html=`<div class="modal-title">Career Journey — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="card" style="margin-bottom:10px"><div style="font-size:11px;color:var(--muted)">${e.title||(ROLE_CONFIG[e.role]||{}).label||''} · 目標 ${d.targetCareer||'未設定'}</div>
+      <div style="display:flex;align-items:flex-start;margin-top:10px">${road}</div></div>`;
+  // 現ステージの「次にやること」
+  html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>現在: ${CAREER_STAGES.find(s=>s.n===stage).label}</div>`;
+  if (stage===2) {
+    html += `<div style="font-size:12px;margin-bottom:4px">90日経過: <b>${r.day==null?'—':r.day}/90日</b> ${r.dayOk?'✓':''}</div>
+      <div style="font-size:12px;margin-bottom:4px">スキル合計: <b>${r.total}/${r.minTotal}点</b> ${r.skillReady?'✓':''}</div>`;
+    if (r.reqMiss && r.reqMiss.length) html += `<div style="font-size:11px;color:var(--accent2)">必須未達: ${r.reqMiss.map(m=>m.skill+(m.lv?`(Lv${m.lv})`:'')).join(', ')}</div>`;
+  } else if (stage===3) {
+    html += `<div style="font-size:12px">カリキュラム: <b>${r.curriculum.done}/${r.curriculum.total}</b> · OJT: ${r.ojtDone?'完了':'進行中'}</div>`;
+  } else if (stage===4) {
+    html += `<div style="font-size:12px">${r.passed?'テスト合格 ✓':(r.hasRetrain?'再教育中':'テスト待ち')}</div>`;
+  } else if (stage===5) {
+    html += `<div style="font-size:12px">Leader昇格の承認待ち（役職を付与します）</div>`;
+  } else {
+    html += `<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> Leader職に到達しました。ここからはCareer Scoreで継続評価します。</div>
+      <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="closeModalDirect();go('leadership')"><i class="ti ti-trending-up"></i> Career Scoreを見る</button>`;
+  }
+  if (r.ready && stage<6 && canApprove) {
+    html += `<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="closeModalDirect();approveAdvance('${name.replace(/'/g,"\\'")}')"><i class="ti ti-arrow-right"></i> 次のステージへ進める（承認）</button>`;
+  } else if (!r.ready && stage<6) {
+    html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">次へ進むには上記条件の達成が必要です</div>`;
+  }
+  html += `</div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
+    <button class="btn btn-secondary" onclick="closeModalDirect();growthMgrOpen('${name.replace(/'/g,"\\'")}')">育成詳細へ</button></div>`;
+  openModal(html);
 }
 
 /* Leader候補判定: 正社員 / F-Crew / Leadタイトル保持 / Leadership Lv2+ */
@@ -13335,6 +13579,111 @@ const OJT_STATUSES = ['Not Ready','Skill Level In Progress','OJT Ready','OJT Sta
 /* キャリア育成データ: {career, skillLevels:{skill:lv}, ojtStatus, curriculum:{item:done}, tests:[{course,date,score,pass,understanding,retrain,comment}], retrain:[{item,reason,done}]} */
 function getDevData(name){ var all=ls('dev_data',{}); return all[name]||{skillLevels:{},curriculum:{},tests:[],retrain:[]}; }
 function setDevData(name, d){ var all=ls('dev_data',{}); all[name]=d; lsSet('dev_data',all); }
+/* ===== キャリアジャーニー（6ステージ） =====
+   dev_data に追加: aspiration(Leader志望フラグ), targetCareer, stage(1-6), stageHistory[]
+   1:入社 2:現場90日 3:OJT 4:テスト 5:Leader昇格 6:CareerScore */
+const CAREER_STAGES = [
+  {n:1, key:'onboard', label:'入社', sub:'Onboarding', icon:'ti-user-plus'},
+  {n:2, key:'field90', label:'現場90日', sub:'Skill Building', icon:'ti-stairs-up'},
+  {n:3, key:'ojt',     label:'OJT',      sub:'Leader Training', icon:'ti-school'},
+  {n:4, key:'test',    label:'テスト',   sub:'理解度チェック', icon:'ti-clipboard-check'},
+  {n:5, key:'promote', label:'Leader昇格', sub:'役職付与', icon:'ti-arrow-up-circle'},
+  {n:6, key:'career',  label:'Career Score', sub:'継続評価', icon:'ti-trending-up'},
+];
+/* Leader志望に登録（本人 or 上長指名） */
+function setAspiration(name, targetCareer, by) {
+  var d = getDevData(name);
+  d.aspiration = true; d.targetCareer = targetCareer || d.targetCareer || '';
+  if (!d.stage) d.stage = inferStage(name);
+  if (!d.stageHistory) d.stageHistory = [];
+  d.aspirationBy = by; d.aspirationDate = new Date().toLocaleDateString('ja');
+  setDevData(name, d);
+}
+function clearAspiration(name){ var d=getDevData(name); d.aspiration=false; setDevData(name,d); }
+/* 勤務開始日（90日カウント起点） */
+function careerFirstDay(name) {
+  var d = getDevData(name);
+  if (d.firstWorkDate) return d.firstWorkDate;
+  var e = getEmployees().find(x=>x.name===name);
+  return (e && e.startDate) ? e.startDate : null;
+}
+function daysSinceStart(name) {
+  var fd = careerFirstDay(name); if(!fd) return null;
+  var d0 = new Date(fd); if(isNaN(d0)) return null;
+  return Math.floor((Date.now()-d0.getTime())/86400000);
+}
+/* 現在ステージの推定（保存値が無いとき） */
+function inferStage(name) {
+  var e = getEmployees().find(x=>x.name===name) || {};
+  if (isLeaderPlus(e)) return 6;                 // 既にリーダー → 継続評価
+  var d = getDevData(name);
+  if (d.ojtStatus==='OJT Completed') return 4;
+  if (d.ojtStatus==='OJT Started') return 3;
+  return 2;                                       // 現場
+}
+function getStage(name) { var d=getDevData(name); return d.stage || inferStage(name); }
+/* ステージ完了判定 → {ready, reason, detail} */
+function stageReadiness(name) {
+  var stage = getStage(name);
+  var d = getDevData(name);
+  var career = d.targetCareer;
+  if (stage===2) {
+    // 現場90日: 90日経過 かつ スキル(合計+必須)到達
+    var days = daysSinceStart(name);
+    var r = career ? ojtReadiness(name, career) : {ready:false, total:0, minTotal:0, reqMiss:[{skill:'目標Leader未設定'}]};
+    var dayOk = days==null ? false : days>=90;
+    return {ready: dayOk && r.ready, day:days, dayOk:dayOk, skillReady:r.ready, total:r.total, minTotal:r.minTotal, reqMiss:r.reqMiss||[], next:'OJT', needApprove:'gm/am'};
+  }
+  if (stage===3) {
+    var cp = career ? curriculumProgress(name, career) : {done:0,total:0,pct:0};
+    var ojtDone = d.ojtStatus==='OJT Completed';
+    return {ready: ojtDone && cp.pct>=100, curriculum:cp, ojtDone:ojtDone, next:'テスト', needApprove:'gm/am/sl'};
+  }
+  if (stage===4) {
+    var tests = d.tests||[]; var retrain=(d.retrain||[]).some(r=>!r.done);
+    var passed = tests.some(t=>t.pass) && !retrain;
+    return {ready: passed, passed:passed, hasRetrain:retrain, next:'Leader昇格', needApprove:'gm/am'};
+  }
+  if (stage===5) {
+    return {ready:true, next:'役職付与', needApprove:'gm/am'};
+  }
+  return {ready:false, maxed:stage>=6};
+}
+/* OJT待機リスト: stage2で条件達成＆GM/AM承認待ち */
+function ojtWaitingList() {
+  return getEmployees().filter(e=>e.status!=='退職').filter(e=>{
+    var d = getDevData(e.name);
+    if (!d.aspiration) return false;
+    if (getStage(e.name)!==2) return false;
+    return stageReadiness(e.name).ready;
+  });
+}
+/* ステージを進める（上長承認） */
+function advanceStage(name, by) {
+  var d = getDevData(name);
+  var cur = getStage(name);
+  if (cur>=6) return;
+  d.stage = cur+1;
+  if (!d.stageHistory) d.stageHistory=[];
+  d.stageHistory.push({stage:d.stage, enteredAt:new Date().toLocaleDateString('ja'), by:by||((ROLE_CONFIG[curRole]||{}).name)});
+  // ステージ3突入時はOJT開始状態に
+  if (d.stage===3 && !d.ojtStatus) d.ojtStatus='OJT Started';
+  // ステージ6到達（Leader昇格 → Career Scoreへ）: 目標Leader職の役職を自動付与
+  if (d.stage===6 && d.targetCareer) {
+    var emps = getEmployees(); var e = emps.find(x=>x.name===name);
+    if (e && jobTitle(d.targetCareer)) {
+      e.title = d.targetCareer;
+      var jt = jobTitle(d.targetCareer);
+      if (jt && jt.permRole) e.role = jt.permRole;  // 権限ロールも連動（sl等）
+      lsSet('m_employees', emps);
+      // 昇格を会社履歴に記録
+      var ch = ls('career_history', []);
+      ch.push({name:name, event:'Leader昇格', title:d.targetCareer, by:by||((ROLE_CONFIG[curRole]||{}).name), date:new Date().toLocaleString('ja')});
+      lsSet('career_history', ch);
+    }
+  }
+  setDevData(name, d);
+}
 /* キャリアスキルのレベル取得（育成用に手動設定 or 既存スキルから流用） */
 function careerSkillLv(name, skill) {
   var d = getDevData(name);
