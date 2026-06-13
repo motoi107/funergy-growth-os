@@ -703,7 +703,8 @@ async function syncMenuFromToast(storeId, guid, period) {
   items.forEach(it => {
     var g = it.guid || it.item_guid;
     if (!g) return;
-    var r = recipes.find(x=>x.toastGuid===g);
+    // 店舗ごとに別レシピ: toastGuid と storeId の両方で照合
+    var r = recipes.find(x=>x.toastGuid===g && x.storeId===storeId);
     if (r) {
       // Toastを正: カテゴリ・商品名・売価を更新（レシピ食材は保持）
       var pc = (r.category!==it.category)||(r.name!==(it.name||r.name))||(Number(r.price)!==Number(it.price));
@@ -713,32 +714,33 @@ async function syncMenuFromToast(storeId, guid, period) {
       r.toastActive = it.active!==false;
       if (pc) updated++;
     } else {
-      // 新規商品（レシピ未設定で取り込む）
-      recipes.push({ id:'r'+Date.now()+Math.floor(Math.random()*1000), toastGuid:g,
+      // 新規商品（その店舗のレシピ未設定として取り込む）
+      recipes.push({ id:'r'+Date.now()+Math.floor(Math.random()*10000), toastGuid:g, storeId:storeId,
         name: it.name||'(無名)', category: it.category||'未分類', price: it.price!=null?Number(it.price):0,
         items:[], source:'toast', toastActive: it.active!==false });
       added++;
-      addMenuLog({action:'追加', name:it.name||'(無名)', detail:'Toast同期で取込', by:'Toast同期'});
+      addMenuLog({action:'追加', name:it.name||'(無名)', detail:'Toast同期で取込（'+storeId+'）', by:'Toast同期'});
     }
   });
-  // Toastに無くなった商品（GUID付きなのに今回の取得に無い）→ アーカイブ候補（自動では消さない）
+  // この店舗のToast商品で、今回の取得に無いもの → Toast非掲載フラグ（自動削除はしない）
   var liveGuids = {}; items.forEach(it=>{ var g=it.guid||it.item_guid; if(g) liveGuids[g]=1; });
   var goneCount = 0;
-  recipes.forEach(r=>{ if (r.toastGuid && !liveGuids[r.toastGuid] && !r.archived) { r.toastActive=false; goneCount++; } });
+  recipes.forEach(r=>{ if (r.toastGuid && r.storeId===storeId && !liveGuids[r.toastGuid] && !r.archived) { r.toastActive=false; goneCount++; } });
   setRecipes(recipes);
-  // 3) 出数を menu_mix に反映（GUID→recipeId）
+  // 3) 出数を menu_mix に反映（この店舗の GUID→recipeId のみ）
   var sales = await fetchToastItemSales(guid, period);
   var mixUpdated = 0;
   if (sales && sales.length) {
     var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
-    var byGuid = {}; getRecipes().forEach(r=>{ if(r.toastGuid) byGuid[r.toastGuid]=r.id; });
+    var byGuid = {}; getRecipes().forEach(r=>{ if(r.toastGuid && r.storeId===storeId) byGuid[r.toastGuid]=r.id; });
     var totalSales = 0;
     sales.forEach(s => {
       var g = s.item_guid || s.guid;
       var rid = byGuid[g];
       if (rid && s.qty!=null) { mix.items[rid] = Number(s.qty); mixUpdated++; }
     });
-    getRecipes().forEach(r=>{ var q=parseFloat(mix.items[r.id])||0; totalSales += q*(r.price||0); });
+    var storeRecipes = getRecipes().filter(r=>r.storeId===storeId);
+    storeRecipes.forEach(r=>{ var q=parseFloat(mix.items[r.id])||0; totalSales += q*(r.price||0); });
     mix.sales = totalSales; mix.savedAt = new Date().toLocaleString('ja'); mix.toastSrc = true;
     setMenuMix(storeId, period, mix);
   }
@@ -2371,6 +2373,15 @@ const DEFAULT_RECIPES = [
 ];
 
 function getRecipes() { return ls('m_recipes', DEFAULT_RECIPES); }
+/* 一度だけ: 店舗別メニュー導入前にToast同期した、storeId無しのToast商品を整理
+   （手動レシピは保持。再同期で店舗ごとに正しく入り直す） */
+function migrateMenuStore() {
+  if (ls('_menuStoreMigrated', false)) return;
+  var rs = getRecipes();
+  var cleaned = rs.filter(r=> !(r.source==='toast' && r.storeId==null));
+  lsSet('m_recipes', cleaned);
+  lsSet('_menuStoreMigrated', true);
+}
 function setRecipes(rs) { lsSet('m_recipes', rs); }
 /* アクティブ/アーカイブ（やめたメニューもレシピは会社資産として保管） */
 function activeRecipes() { return getRecipes().filter(r=>!r.archived); }
@@ -2883,6 +2894,7 @@ function setStorePin(storeId, pin) { var p=getStorePins(); p[storeId]=pin; lsSet
 ============================================================ */
 function initApp() {
   var rc = ROLE_CONFIG[curRole];
+  try { migrateMenuStore(); } catch(e){}
   // Topbar
   var storeName = curStore === 'ALL' ? '全店舗' : (STORES.find(s=>s.id===curStore)||{name:curStore}).name;
   document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
@@ -12041,7 +12053,8 @@ function renderMenu() {
   if (!window._menuPeriod) window._menuPeriod = getPeriod();
   var storeId = window._menuStore, period = window._menuPeriod;
   var storeObj = STORES.find(s=>s.id===storeId)||{};
-  var recipes = activeRecipes();
+  // 店舗ごとのメニュー: その店のレシピ + 店舗未指定（旧データ/手動）を表示
+  var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null );
   var mix = getMenuMix(storeId, period);
 
   // カテゴリ別にまとめる
@@ -12117,7 +12130,7 @@ function periodOptions(selected) {
 }
 /* 出数入力モーダル（月別・商品ごと） */
 function openMenuMixModal(storeId, period) {
-  var recipes = activeRecipes();
+  var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null );
   var mix = getMenuMix(storeId, period);
   var storeObj = STORES.find(s=>s.id===storeId)||{};
   var rows = recipes.map(r=>{
@@ -12134,7 +12147,7 @@ function openMenuMixModal(storeId, period) {
     <button class="btn btn-primary" onclick="saveMenuMix('${storeId}','${period}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
 }
 function saveMenuMix(storeId, period) {
-  var recipes = activeRecipes();
+  var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null );
   var mix = getMenuMix(storeId, period);
   if (!mix.items) mix.items = {};
   var sales = 0;
