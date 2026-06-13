@@ -3618,6 +3618,49 @@ function renderStoreOpsSettings() {
   });
   html += `</div>`;
   html += `<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">${t('変更はこの端末に保存されます','Saved on this device')}</div>`;
+
+  // ===== Daily Operations テンプレート編集（工程ごとに項目追加/編集/削除）=====
+  var visStores = getVisibleStores();
+  var storeId = window._opsTemplateStore && visStores.find(s=>s.id===window._opsTemplateStore)
+    ? window._opsTemplateStore
+    : (curStore === 'ALL' ? (visStores[0]?visStores[0].id:STORES[0].id) : curStore);
+  var store = STORES.find(s=>s.id===storeId) || STORES[0];
+  var tmpl = getDailyOpsTemplate(storeId);
+  html += `<div class="section-header" style="margin-top:18px">
+    <div><div class="section-title" style="font-size:16px"><i class="ti ti-checklist" style="color:var(--accent)"></i> Daily Operations テンプレート</div>
+    <div class="section-sub">${t('工程ごとに毎日使う項目を設定（翌日も残ります）','Set recurring items per phase')}</div></div>
+  </div>`;
+  // 店舗セレクタ（複数店舗の場合）
+  if (visStores.length>1) {
+    html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:12px;color:var(--muted)">${t('店舗','Store')}:</span>
+      <select class="form-select" style="width:auto;padding:6px" onchange="window._opsTemplateStore=this.value;renderPage('store_ops_settings')">
+        ${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>
+    </div></div>`;
+  }
+  // 工程ごとに項目表示
+  DAILY_PHASES.forEach(phase=>{
+    var meta = phaseMeta(phase);
+    var pItems = tmpl.filter(x=>x.phase===phase);
+    html += `<div class="card" style="border-left:3px solid ${meta.color}">
+      <div class="card-title" style="margin-bottom:8px"><span style="width:30px;height:30px;border-radius:8px;background:${meta.color}1a;color:${meta.color};display:inline-flex;align-items:center;justify-content:center;margin-right:6px"><i class="ti ${meta.icon}" style="font-size:16px"></i></span>${phase}
+        <span style="margin-left:auto;font-size:11px;color:var(--muted)">${pItems.length}項目</span></div>`;
+    if (pItems.length) {
+      pItems.forEach(it=>{
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--border)">
+          <div style="flex:1;font-size:13px">${it.text}
+            ${it.required?'<span class="tag tag-red" style="font-size:8px">必須</span>':''}
+            ${it.photo?'<span class="tag" style="font-size:8px;background:var(--surface2);color:var(--muted)"><i class="ti ti-camera" style="font-size:9px"></i></span>':''}</div>
+          <button class="btn btn-secondary btn-sm" style="padding:4px 8px" onclick="openDailyOpsAdd('${storeId}','${phase}','${it.id}')"><i class="ti ti-edit"></i></button>
+          <button class="btn btn-secondary btn-sm" style="padding:4px 8px" onclick="deleteDailyOpTemplate('${storeId}','${it.id}')"><i class="ti ti-trash"></i></button>
+        </div>`;
+      });
+    } else {
+      html += `<div style="font-size:12px;color:var(--muted);padding:6px 4px">${t('項目がありません','No items')}</div>`;
+    }
+    html += `<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openDailyOpsAdd('${storeId}','${phase}')"><i class="ti ti-plus"></i> ${phase}${t('に追加','add')}</button>`;
+    html += `</div>`;
+  });
   return html;
 }
 function toggleStoreOpsSection(key) {
@@ -12882,10 +12925,33 @@ const DEFAULT_DAILYOPS = [
   {id:'d11',phase:'Closing',     text:'レジ締め・売上報告', required:true},
   {id:'d12',phase:'Closing',     text:'火元・施錠・警備セット', required:true},
 ];
+/* 店舗ごとの「毎日使うテンプレート」（恒久保存・翌日も残る）
+   未設定の店舗は DEFAULT_DAILYOPS を初期テンプレートとして使う */
+function getDailyOpsTemplate(storeId) {
+  return ls('dailyops_template_'+storeId, DEFAULT_DAILYOPS.map(t=>Object.assign({},t)));
+}
+function setDailyOpsTemplate(storeId, items) {
+  lsSet('dailyops_template_'+storeId, items);
+}
 function getDailyOps(storeId) {
   var today = new Date().toLocaleDateString('ja');
   var key = 'dailyops_'+storeId+'_'+today;
-  return ls(key, DEFAULT_DAILYOPS.map(t=>Object.assign({},t,{done:false, by:''})));
+  var existing = ls(key, null);
+  var template = getDailyOpsTemplate(storeId);
+  if (!existing) {
+    // 今日の分をテンプレートから生成
+    return template.map(t=>Object.assign({}, t, {done:false, by:''}));
+  }
+  // 既存（今日のチェック状態）にテンプレートの変更を反映：
+  // - テンプレートに在る項目は内容を最新化（done状態は保持）
+  // - テンプレートから消えた項目は除外
+  // - テンプレートに追加された項目は未完で足す
+  var byId = {}; existing.forEach(e=>{ byId[e.id]=e; });
+  var merged = template.map(t=>{
+    var e = byId[t.id];
+    return Object.assign({}, t, { done: e?e.done:false, by: e?e.by:'' });
+  });
+  return merged;
 }
 function setDailyOps(storeId, items) {
   var today = new Date().toLocaleDateString('ja');
@@ -12944,28 +13010,46 @@ function toggleDailyOp(storeId, tId) {
   var t = items.find(x=>x.id===tId);
   if (t) { t.done = !t.done; t.by = t.done ? ROLE_CONFIG[curRole].name : ''; setDailyOps(storeId, items); renderPage('store_cmd'); }
 }
-function openDailyOpsAdd(storeId, phase) {
+function openDailyOpsAdd(storeId, phase, editId) {
   var ph = phase || dailyPhase;
-  openModal(`<div class="modal-title">タスク追加 (${ph}) <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">タスク内容</label><input class="form-input" id="do-text" placeholder="タスク"></div>
-    <div class="form-group"><label class="form-label">フェーズ</label>
-      <select class="form-select" id="do-phase">${DAILY_PHASES.map(p=>`<option${p===ph?' selected':''}>${p}</option>`).join('')}</select></div>
-    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="do-req"> 必須タスクにする（未完了だとDaily完了不可）</label></div>
-    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="do-photo"> 写真必須</label></div>
+  var tmpl = getDailyOpsTemplate(storeId);
+  var ex = editId ? tmpl.find(x=>x.id===editId) : null;
+  openModal(`<div class="modal-title">${ex?'項目を編集':'項目を追加'} (${ph}) <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> これは毎日使うテンプレートです。設定すると翌日以降も残ります。</div>
+    <div class="form-group"><label class="form-label">項目内容</label><input class="form-input" id="do-text" placeholder="例：スープ仕込み確認" value="${ex?ex.text.replace(/"/g,'&quot;'):''}"></div>
+    <div class="form-group"><label class="form-label">工程</label>
+      <select class="form-select" id="do-phase">${DAILY_PHASES.map(p=>`<option${p===(ex?ex.phase:ph)?' selected':''}>${p}</option>`).join('')}</select></div>
+    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="do-req" ${ex&&ex.required?'checked':''}> 必須タスクにする（未完了だとDaily完了不可）</label></div>
+    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="do-photo" ${ex&&ex.photo?'checked':''}> 写真必須</label></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveDailyOp('${storeId}')">追加</button></div>`);
+    <button class="btn btn-primary" onclick="saveDailyOp('${storeId}'${editId?",'"+editId+"'":''})">${ex?'保存':'追加'}</button></div>`);
 }
-function saveDailyOp(storeId) {
+function saveDailyOp(storeId, editId) {
   var text = document.getElementById('do-text').value.trim();
   if (!text) return;
   var req = document.getElementById('do-req').checked;
   var photo = document.getElementById('do-photo').checked;
   var phase = document.getElementById('do-phase').value;
-  var items = getDailyOps(storeId);
-  items.push({id:'do'+Date.now(), phase, text, required:req, photo, done:false, by:''});
-  setDailyOps(storeId, items);
+  var tmpl = getDailyOpsTemplate(storeId);
+  if (editId) {
+    var t = tmpl.find(x=>x.id===editId);
+    if (t) { t.text=text; t.phase=phase; t.required=req; t.photo=photo; }
+  } else {
+    tmpl.push({id:'do'+Date.now(), phase, text, required:req, photo});
+  }
+  setDailyOpsTemplate(storeId, tmpl);
   closeModalDirect();
-  renderPage('store_cmd');
+  showToast(editId?'テンプレートを更新しました':'テンプレートに追加しました','success');
+  // 設定画面なら再描画、そうでなければ店舗画面
+  renderPage(curPage==='store_ops_settings'?'store_ops_settings':'store_cmd');
+}
+/* テンプレートから項目を削除 */
+function deleteDailyOpTemplate(storeId, id) {
+  if (!confirm('この項目をテンプレートから削除しますか？')) return;
+  var tmpl = getDailyOpsTemplate(storeId).filter(x=>x.id!==id);
+  setDailyOpsTemplate(storeId, tmpl);
+  showToast('削除しました','info');
+  renderPage(curPage==='store_ops_settings'?'store_ops_settings':'store_cmd');
 }
 
 /* ============================================================
