@@ -2363,24 +2363,20 @@ function canViewWages() { return curRole==='gm' || curRole==='ceo'; }
 /* ============================================================
    Phase2: レシピ / 予算 デフォルト
 ============================================================ */
-const DEFAULT_RECIPES = [
-  {id:'r1', name:'豚骨ラーメン', price:14.00, category:'ラーメン',
-   items:[{code:1001, qty:0.35}, {code:8001, qty:0.18}, {code:3002, qty:0.08}, {code:10001, qty:0.02}, {code:10002, qty:0.05}]},
-  {id:'r2', name:'チャーシュー丼', price:9.50, category:'丼',
-   items:[{code:8002, qty:0.25}, {code:3002, qty:0.12}, {code:1002, qty:0.03}]},
-  {id:'r3', name:'まぐろ刺身', price:16.00, category:'刺身',
-   items:[{code:6001, qty:0.12}]},
-];
+const DEFAULT_RECIPES = [];
 
 function getRecipes() { return ls('m_recipes', DEFAULT_RECIPES); }
 /* 一度だけ: 店舗別メニュー導入前にToast同期した、storeId無しのToast商品を整理
    （手動レシピは保持。再同期で店舗ごとに正しく入り直す） */
 function migrateMenuStore() {
-  if (ls('_menuStoreMigrated', false)) return;
+  if (ls('_menuStoreMigrated2', false)) return;
   var rs = getRecipes();
-  var cleaned = rs.filter(r=> !(r.source==='toast' && r.storeId==null));
+  // (1) 初期サンプル（豚骨ラーメン/チャーシュー丼/まぐろ刺身）を削除
+  var cleaned = rs.filter(r=> !(['r1','r2','r3'].includes(r.id) && r.source!=='toast' && (r.storeId==null)) );
+  // (2) 店舗別導入前にToast同期した、storeId無しのToast商品を整理（再同期で入り直す）
+  cleaned = cleaned.filter(r=> !(r.source==='toast' && r.storeId==null));
   lsSet('m_recipes', cleaned);
-  lsSet('_menuStoreMigrated', true);
+  lsSet('_menuStoreMigrated2', true);
 }
 function setRecipes(rs) { lsSet('m_recipes', rs); }
 /* アクティブ/アーカイブ（やめたメニューもレシピは会社資産として保管） */
@@ -12090,33 +12086,80 @@ function renderMenu() {
     return html;
   }
 
-  // カテゴリ別 商品リスト
-  Object.keys(cats).forEach(cat=>{
-    html += `<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2"></i>${cat} <span style="margin-left:auto;font-size:11px;color:var(--muted)">${cats[cat].length}品</span></div>
-      <div style="overflow-x:auto"><table class="inv-table" style="min-width:520px"><thead><tr>
-        <th>商品</th><th style="text-align:right">売価</th><th style="text-align:right">出数</th><th style="text-align:right">理論原価</th><th style="text-align:right">原価率</th><th style="text-align:center">レシピ</th>
+  // ABC分析: 店舗全体で出数の多い順に累計→上位70%=A / 90%=B / 残り=C
+  var qtyOf = function(r){ return parseFloat((mix.items||{})[r.id])||0; };
+  var ranked = recipes.slice().sort((a,b)=> qtyOf(b)-qtyOf(a));
+  var grandQty = ranked.reduce((s,r)=>s+qtyOf(r),0);
+  var abc = {}; // recipeId -> 'A'/'B'/'C'/'-'
+  var cum = 0;
+  ranked.forEach(r=>{
+    var q = qtyOf(r);
+    if (grandQty<=0 || q<=0) { abc[r.id]='-'; return; }
+    cum += q;
+    var pct = cum/grandQty*100;
+    abc[r.id] = pct<=70 ? 'A' : pct<=90 ? 'B' : 'C';
+  });
+  var abcColor = function(g){ return g==='A'?'var(--green)':g==='B'?'var(--yellow)':g==='C'?'var(--muted)':'var(--border)'; };
+  // ABCサマリー
+  var cntA=0,cntB=0,cntC=0; Object.values(abc).forEach(g=>{ if(g==='A')cntA++; else if(g==='B')cntB++; else if(g==='C')cntC++; });
+  html += `<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+    <span class="tag" style="background:var(--green);color:#fff">A 主力 ${cntA}</span>
+    <span class="tag" style="background:var(--yellow);color:#fff">B ${cntB}</span>
+    <span class="tag" style="background:var(--muted);color:#fff">C ${cntC}</span>
+    <span style="font-size:10px;color:var(--muted);align-self:center">ABCは出数の累計（A≤70% / B≤90% / C残り）</span>
+  </div>`;
+
+  // 折りたたみ状態（初期はすべて閉じる）
+  if (!window._menuOpenCats) window._menuOpenCats = {};
+
+  // カテゴリを「出数合計の多い順」に並べる
+  var catList = Object.keys(cats).map(cat=>{
+    var totQ = cats[cat].reduce((s,r)=>s+qtyOf(r),0);
+    return { cat:cat, items:cats[cat], totQ:totQ };
+  }).sort((a,b)=> b.totQ-a.totQ);
+
+  // カテゴリ別 折りたたみリスト
+  catList.forEach(function(c){
+    var cat = c.cat;
+    var open = !!window._menuOpenCats[cat];
+    var catKey = cat.replace(/'/g,"\\'");
+    // カテゴリ内は出数の多い順
+    var itemsSorted = c.items.slice().sort((a,b)=> qtyOf(b)-qtyOf(a));
+    html += `<div class="card" style="padding:0;overflow:hidden">
+      <div onclick="toggleMenuCat('${catKey}')" style="display:flex;align-items:center;gap:8px;padding:12px 14px;cursor:pointer;background:var(--surface2)">
+        <i class="ti ti-chevron-${open?'down':'right'}" style="font-size:16px;color:var(--accent)"></i>
+        <span style="font-weight:700;font-size:13px">${cat}</span>
+        <span style="font-size:11px;color:var(--muted)">${c.items.length}品</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--muted)">出数 ${c.totQ.toLocaleString()}</span>
+      </div>`;
+    if (open) {
+      html += `<div style="overflow-x:auto"><table class="inv-table" style="min-width:540px"><thead><tr>
+        <th style="text-align:center">ABC</th><th>商品</th><th style="text-align:right">売価</th><th style="text-align:right">出数</th><th style="text-align:right">原価率</th><th style="text-align:center">レシピ</th>
       </tr></thead><tbody>`;
-    cats[cat].forEach(r=>{
-      var qty = parseFloat((mix.items||{})[r.id])||0;
-      var cost = calcRecipeCost(r);
-      var rate = recipeCostRate(r);
-      var hasRecipe = (r.items||[]).length>0;
-      var rc = rate<=31?'var(--green)':rate<=35?'var(--yellow)':'var(--red)';
-      html += `<tr>
-        <td style="font-weight:600;font-size:12px">${r.name}${r.toastGuid?' <span class="tag tag-blue" style="font-size:7px">T</span>':''}</td>
-        <td style="text-align:right;font-size:12px">$${(r.price||0).toFixed(2)}</td>
-        <td style="text-align:right;font-size:12px;font-weight:600">${qty||'—'}</td>
-        <td style="text-align:right;font-size:12px">${hasRecipe?'$'+cost.toFixed(2):'—'}</td>
-        <td style="text-align:right;font-size:12px;color:${hasRecipe?rc:'var(--muted)'}">${hasRecipe?rate.toFixed(1)+'%':'未設定'}</td>
-        <td style="text-align:center">${canEdit?`<button class="btn btn-${hasRecipe?'secondary':'primary'} btn-sm" style="padding:3px 8px;font-size:11px" onclick="openRecipeModal('${r.id}')">${hasRecipe?'編集':'登録'}</button>`:(hasRecipe?'✓':'—')}</td>
-      </tr>`;
-    });
-    html += `</tbody></table></div></div>`;
+      itemsSorted.forEach(r=>{
+        var qty = qtyOf(r);
+        var rate = recipeCostRate(r);
+        var hasRecipe = (r.items||[]).length>0;
+        var rc = rate<=31?'var(--green)':rate<=35?'var(--yellow)':'var(--red)';
+        var g = abc[r.id]||'-';
+        html += `<tr>
+          <td style="text-align:center"><span class="tag" style="background:${abcColor(g)};color:#fff;font-size:9px;min-width:16px">${g}</span></td>
+          <td style="font-weight:600;font-size:12px">${r.name}${r.toastGuid?' <span class="tag tag-blue" style="font-size:7px">T</span>':''}</td>
+          <td style="text-align:right;font-size:12px">$${(r.price||0).toFixed(2)}</td>
+          <td style="text-align:right;font-size:12px;font-weight:600">${qty||'—'}</td>
+          <td style="text-align:right;font-size:12px;color:${hasRecipe?rc:'var(--muted)'}">${hasRecipe?rate.toFixed(1)+'%':'未設定'}</td>
+          <td style="text-align:center">${canEdit?`<button class="btn btn-${hasRecipe?'secondary':'primary'} btn-sm" style="padding:3px 8px;font-size:11px" onclick="openRecipeModal('${r.id}')">${hasRecipe?'編集':'登録'}</button>`:(hasRecipe?'✓':'—')}</td>
+        </tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+    html += `</div>`;
   });
 
   html += `<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:4px"><i class="ti ti-link"></i> 出数×レシピ＝理論原価。詳しい差異分析は予実の「理論原価（答え合わせ）」へ</div>`;
   return html;
 }
+function toggleMenuCat(cat){ if(!window._menuOpenCats) window._menuOpenCats={}; window._menuOpenCats[cat]=!window._menuOpenCats[cat]; renderPage('menu'); }
 /* 月オプション（直近12ヶ月） */
 function periodOptions(selected) {
   var opts=''; var d=new Date();
