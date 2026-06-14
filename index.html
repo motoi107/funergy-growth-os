@@ -1160,8 +1160,7 @@ const NAV_ITEMS = [
   {id:'skill',       label:'スキルレベル', icon:'ti-stairs-up',        roles:['ceo','gm','am','sl','crew']},
   {id:'leadership',  label:'Career Score', icon:'ti-trending-up',       roles:['ceo','gm','am','sl']},
   {id:'tiprate',     label:'チップ率',    icon:'ti-coin',             roles:['ceo','gm','am','sl','crew']},
-  {id:'meeting',     label:'ミーティング',     icon:'ti-users-group',      roles:['ceo','gm','office','am','sl']},
-  {id:'growthhub',   label:'成長ハブ',  icon:'ti-message-circle',   roles:['ceo','gm','office','am','sl']},
+  {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
   {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','am']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew']},
@@ -1181,7 +1180,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','invoice']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','attendance','hiring','onboarding','skill','leadership','tiprate','tip','growthhub','growth_mgr','meeting','vacation']},
+    children:['staff_master','shift_admin','attendance','hiring','onboarding','skill','leadership','tiprate','tip','growthhub','growth_mgr','vacation']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','goals','required','company_msg_edit','approval','tasks','acct_export','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
@@ -3255,7 +3254,6 @@ function renderPage(page) {
     case 'leadership':   el.innerHTML = renderLeadership(); break;
     case 'skill':        el.innerHTML = renderSkill(); break;
     case 'tiprate':      el.innerHTML = renderTipRate(); break;
-    case 'meeting':      el.innerHTML = renderMeeting(); break;
     case 'growthhub':    el.innerHTML = renderGrowthHub(); break;
     case 'growth_mgr':   el.innerHTML = renderGrowthManager(); break;
     case 'approval':     el.innerHTML = renderApproval(); break;
@@ -12561,16 +12559,17 @@ function renderMypage() {
 
   // 9. Growth Hub（My Page内に埋め込み）
   var posts = ls('growthhub', []);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-message-circle"></i>Growth Hub
-    <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openGHModal()"><i class="ti ti-plus"></i> ${t('相談・質問','Ask')}</button></div>
-    <p style="font-size:11px;color:var(--muted);margin-bottom:8px">${t('相談・質問・改善提案を投稿できます','Post questions, ideas, or improvement suggestions')}</p>`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-mood-heart" style="color:var(--accent)"></i>${t('お悩み相談室','Support Room')}
+    <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openGHModal()"><i class="ti ti-plus"></i> ${t('相談する','Ask')}</button></div>
+    <p style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-lock"></i> ${t('困っていることを気軽に相談できます。管理者だけが見ます','Talk to managers privately about anything')}</p>`;
   var myPosts = posts.filter(p=>p.author===me).slice(-3).reverse();
   if (myPosts.length) {
     myPosts.forEach(p => {
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${p.title}</div><span class="tag tag-blue">${p.type}</span></div>
-        ${(p.replies||[]).length?`<div style="font-size:11px;color:var(--green);margin-top:4px"><i class="ti ti-message"></i> ${t('管理者から'+p.replies.length+'件の返信',p.replies.length+' repl'+(p.replies.length>1?'ies':'y')+' from manager')}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('返信待ち','Awaiting reply')+'</div>'}</div>`;
+      var st=p.status||'未対応'; var stc=st==='解決'?'tag-green':st==='対応中'?'tag-yellow':'tag-red';
+      html += `<div class="approval-item" onclick="go('growthhub')" style="cursor:pointer"><div class="approval-header"><div class="approval-title">${p.title}</div><span class="tag ${stc}">${st}</span></div>
+        ${(p.replies||[]).some(r=>r.byMgr)?`<div style="font-size:11px;color:var(--green);margin-top:4px"><i class="ti ti-message"></i> ${t('管理者から返信あり','Manager replied')}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('確認待ち','Awaiting reply')+'</div>'}</div>`;
     });
-  } else { html += `<p style="color:var(--muted);font-size:13px">${t('投稿はまだありません','No posts yet')}</p>`; }
+  } else { html += `<p style="color:var(--muted);font-size:13px">${t('相談はまだありません。困ったことがあれば気軽に','No posts yet')}</p>`; }
   html += '</div>';
 
   return html;
@@ -14123,70 +14122,156 @@ function saveMeetingTask() {
 }
 
 /* ============================================================
-   ⑳ Growth Hub (質問/相談/提案/回答)
+   お悩み相談室 (スタッフが気軽に困りごとを投稿 → 管理職が1対1で対応)
+   - スタッフ: 自分の投稿のみ見える（プライベート）
+   - 管理職(GM/CEO/AM/SM): スコープ内スタッフの投稿が見える、返信・ステータス管理
 ============================================================ */
 var ghFilter = 'all';
+/* 相談を見られる管理職か */
+function ghIsManager(){ return ['ceo','gm','office','am'].includes(curRole) || isStoreManager(); }
+/* 管理職が見られる投稿スコープ（店舗ID配列 or null=全店） */
+function ghScopeStores(){
+  if (curRole==='ceo'||curRole==='gm'||curRole==='office') return null;
+  if (curRole==='am') return AM_STORES.slice();
+  if (isStoreManager()) { var s=curStore&&curStore!=='ALL'?curStore:myStoreId(); return s?[s]:[]; }
+  return [];
+}
 function renderGrowthHub() {
   var posts = ls('growthhub', []);
-  var types = [{id:'all',label:'全て'},{id:'質問',label:'質問'},{id:'相談',label:'相談'},{id:'提案',label:'提案'}];
-  var list = ghFilter==='all' ? posts : posts.filter(p=>p.type===ghFilter);
+  var mgr = ghIsManager();
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var html = `<div class="section-header">
-    <div><div class="section-title">Growth Hub</div><div class="section-sub">質問・相談・提案</div></div>
-    <button class="btn btn-primary btn-sm" onclick="openGHModal()"><i class="ti ti-plus"></i> 投稿</button>
-  </div>
-  <div class="phase-tabs">${types.map(t=>`<div class="phase-tab${ghFilter===t.id?' active':''}" onclick="setGHFilter('${t.id}')">${t.label}</div>`).join('')}</div>`;
-  if (!list.length) {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-message-circle" style="font-size:32px;margin-bottom:8px;display:block"></i>投稿なし</div>`;
-  } else {
-    list.slice().reverse().forEach(p => {
-      var typeColor = p.type==='質問'?'tag-blue':p.type==='相談'?'tag-yellow':'tag-green';
-      html += `<div class="card">
-        <div class="approval-header"><div><div class="approval-title">${p.title}</div>
-        <div class="approval-meta">${p.author} · ${p.date}</div></div>
-        <span class="tag ${typeColor}">${p.type}</span></div>
-        <div style="font-size:13px;margin-top:8px">${p.body}</div>
-        ${(p.replies||[]).map(r=>`<div style="background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px"><strong>${r.author}:</strong> ${r.text}</div>`).join('')}
-        <button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openGHReply('${p.id}')"><i class="ti ti-message"></i> 回答</button>
-      </div>`;
+    <div><div class="section-title"><i class="ti ti-mood-heart" style="color:var(--accent)"></i> お悩み相談室</div>
+    <div class="section-sub">${mgr?'スタッフからの相談に1対1で対応':'困っていること、気軽に相談できます（管理者だけが見ます）'}</div></div>
+    ${!mgr?`<button class="btn btn-primary btn-sm" onclick="openGHModal()"><i class="ti ti-plus"></i> 相談する</button>`:''}
+  </div>`;
+
+  if (mgr) {
+    // 管理職ビュー: スコープ内の投稿、ステータスフィルタ
+    var scope = ghScopeStores();
+    var visible = posts.filter(p=> scope===null ? true : scope.includes(p.store));
+    var statuses=[{id:'all',label:'全て'},{id:'未対応',label:'未対応'},{id:'対応中',label:'対応中'},{id:'解決',label:'解決'}];
+    var list = ghFilter==='all'?visible:visible.filter(p=>(p.status||'未対応')===ghFilter);
+    // 未対応を上に
+    list = list.slice().sort((a,b)=>{
+      var rank={'未対応':0,'対応中':1,'解決':2};
+      var ra=rank[a.status||'未対応'], rb=rank[b.status||'未対応'];
+      if(ra!==rb) return ra-rb; return (b.id>a.id?1:-1);
     });
+    var openCount = visible.filter(p=>(p.status||'未対応')!=='解決').length;
+    html += `<div class="phase-tabs">${statuses.map(s=>`<div class="phase-tab${ghFilter===s.id?' active':''}" onclick="setGHFilter('${s.id}')">${s.label}${s.id==='未対応'&&openCount?` <span style="background:var(--red);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${visible.filter(p=>(p.status||'未対応')==='未対応').length}</span>`:''}</div>`).join('')}</div>`;
+    if (!list.length) {
+      html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-mood-smile" style="font-size:32px;margin-bottom:8px;display:block"></i>該当する相談はありません</div>`;
+    } else {
+      list.forEach(p=> html += ghPostCard(p, true));
+    }
+    return html;
   }
+
+  // スタッフビュー: 自分の投稿のみ
+  var mine = posts.filter(p=> p.author===me);
+  if (!mine.length) {
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:36px">
+      <i class="ti ti-mood-heart" style="font-size:34px;margin-bottom:10px;display:block;color:var(--accent)"></i>
+      <div style="font-size:14px;color:var(--tm);font-weight:600;margin-bottom:4px">困っていること、ありませんか？</div>
+      <div style="font-size:12px">仕事のこと・シフト・人間関係など、何でも気軽に相談してください。<br>あなたの相談は<b>管理者だけ</b>が見ます。同僚には見えません。</div>
+      <button class="btn btn-primary" style="margin-top:14px" onclick="openGHModal()"><i class="ti ti-plus"></i> 相談する</button>
+    </div>`;
+  } else {
+    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">あなたの相談（管理者だけが見ています）</div>`;
+    mine.slice().reverse().forEach(p=> html += ghPostCard(p, false));
+  }
+  return html;
+}
+/* 投稿カード。mgr=trueなら管理職操作（返信・ステータス）を表示 */
+function ghPostCard(p, mgr){
+  var st = p.status||'未対応';
+  var stCol = st==='解決'?'tag-green':st==='対応中'?'tag-yellow':'tag-red';
+  var store = getStoresAll().find(s=>s.id===p.store);
+  var html = `<div class="card">
+    <div class="approval-header"><div>
+      <div class="approval-title">${p.title}</div>
+      <div class="approval-meta">${mgr?p.author+' · ':''}${store?store.name+' · ':''}${p.date}</div></div>
+      <span class="tag ${stCol}">${st}</span></div>
+    <div style="font-size:13px;margin-top:8px;white-space:pre-wrap">${p.body}</div>`;
+  // スレッド（往復）
+  (p.replies||[]).forEach(r=>{
+    var fromMgr = r.byMgr;
+    html += `<div style="display:flex;${fromMgr?'justify-content:flex-start':'justify-content:flex-end'};margin-top:8px">
+      <div style="max-width:85%;background:${fromMgr?'var(--accent)14':'var(--surface2)'};border-radius:10px;padding:8px 11px;font-size:12px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">${fromMgr?'<i class="ti ti-headset"></i> '+r.author:r.author} · ${r.date}</div>
+        <div style="white-space:pre-wrap">${r.text}</div></div></div>`;
+  });
+  // 操作
+  if (mgr) {
+    html += `<div class="approval-actions" style="margin-top:10px">
+      <button class="btn btn-primary btn-sm" onclick="openGHReply('${p.id}')"><i class="ti ti-message"></i> 返信</button>
+      ${st!=='対応中'?`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','対応中')">対応中にする</button>`:''}
+      ${st!=='解決'?`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','解決')"><i class="ti ti-check"></i> 解決</button>`:`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','対応中')">解決を取消</button>`}
+    </div>`;
+  } else {
+    // 本人は返信（追記）できる
+    html += `<div class="approval-actions" style="margin-top:10px">
+      <button class="btn btn-secondary btn-sm" onclick="openGHReply('${p.id}')"><i class="ti ti-message"></i> 追記・返信</button>
+    </div>`;
+  }
+  html += `</div>`;
   return html;
 }
 function setGHFilter(f) { ghFilter = f; renderPage('growthhub'); }
 function openGHModal() {
-  openModal(`<div class="modal-title">投稿 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">種別</label><select class="form-select" id="gh-type"><option>質問</option><option>相談</option><option>提案</option></select></div>
-    <div class="form-group"><label class="form-label">タイトル</label><input class="form-input" id="gh-title" placeholder="件名"></div>
-    <div class="form-group"><label class="form-label">内容</label><textarea class="form-textarea" id="gh-body" placeholder="内容"></textarea></div>
+  openModal(`<div class="modal-title">相談する <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-lock"></i> この相談は管理者だけが見ます。同僚には表示されません。</div>
+    <div class="form-group"><label class="form-label">タイトル</label><input class="form-input" id="gh-title" placeholder="例: シフトの相談、仕事の悩みなど"></div>
+    <div class="form-group"><label class="form-label">内容</label><textarea class="form-textarea" id="gh-body" style="min-height:120px" placeholder="困っていること、気になっていることを自由に書いてください"></textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveGHPost()">投稿</button></div>`);
+    <button class="btn btn-primary" onclick="saveGHPost()">送信</button></div>`);
 }
 function saveGHPost() {
   var title = document.getElementById('gh-title').value.trim();
   var body = document.getElementById('gh-body').value.trim();
   if (!title || !body) { alert('タイトルと内容を入力してください'); return; }
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var emp = getEmployees().find(e=>e.name===me);
   var posts = ls('growthhub', []);
-  posts.push({id:'gh'+Date.now(), type:document.getElementById('gh-type').value, title, body,
-    author:ROLE_CONFIG[curRole].name, date:new Date().toLocaleDateString('ja'), replies:[]});
+  posts.push({id:'gh'+Date.now(), title, body, author:me,
+    store: emp?emp.store:(curStore!=='ALL'?curStore:''),
+    date:new Date().toLocaleDateString('ja'), status:'未対応', replies:[]});
   lsSet('growthhub', posts);
   closeModalDirect();
-  showToast('投稿しました', 'success');
+  showToast('相談を送信しました。管理者が確認します', 'success');
   renderPage('growthhub');
 }
 function openGHReply(pId) {
-  openModal(`<div class="modal-title">回答 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">回答内容</label><textarea class="form-textarea" id="gh-reply" placeholder="回答"></textarea></div>
+  var mgr = ghIsManager();
+  openModal(`<div class="modal-title">${mgr?'返信':'追記・返信'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">メッセージ</label><textarea class="form-textarea" id="gh-reply" style="min-height:100px" placeholder="${mgr?'スタッフへの返信':'追記や返信'}"></textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveGHReply('${pId}')">回答する</button></div>`);
+    <button class="btn btn-primary" onclick="saveGHReply('${pId}')">送信</button></div>`);
 }
 function saveGHReply(pId) {
   var text = document.getElementById('gh-reply').value.trim();
   if (!text) return;
+  var mgr = ghIsManager();
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var posts = ls('growthhub', []);
   var p = posts.find(x=>x.id===pId);
-  if (p) { p.replies = p.replies||[]; p.replies.push({author:ROLE_CONFIG[curRole].name, text, date:new Date().toLocaleDateString('ja')}); lsSet('growthhub', posts); }
+  if (p) {
+    p.replies = p.replies||[];
+    p.replies.push({author: mgr?(ROLE_CONFIG[curRole]||{}).name||'管理者':me, byMgr:mgr, text, date:new Date().toLocaleDateString('ja')});
+    // 管理職が返信したら未対応→対応中に
+    if (mgr && (p.status||'未対応')==='未対応') p.status='対応中';
+    lsSet('growthhub', posts);
+  }
   closeModalDirect();
-  showToast('回答しました', 'success');
+  showToast('送信しました', 'success');
+  renderPage('growthhub');
+}
+function ghSetStatus(pId, status){
+  var posts = ls('growthhub', []);
+  var p = posts.find(x=>x.id===pId);
+  if (p){ p.status=status; lsSet('growthhub', posts); }
+  showToast(status+'にしました', status==='解決'?'success':'info');
   renderPage('growthhub');
 }
 
@@ -15442,40 +15527,17 @@ function savePositionConfig(storeId) {
    KPI管理（業態デフォルト + 店舗別上書き）
 ============================================================ */
 function renderKpiMaster() {
-  if (!window._kpiTab) window._kpiTab = 'format';
+  if (!window._kpiTab || window._kpiTab==='format') window._kpiTab = 'store';
   var html = `<div class="section-header">
     <div><div class="section-title"><i class="ti ti-target" style="color:var(--accent)"></i> KPI管理</div>
-    <div class="section-sub">業態でデフォルト設定 → 店舗ごとに上書き可</div></div>
+    <div class="section-sub">店舗ごとにKPI目標を設定</div></div>
   </div>
   <div class="phase-tabs">
-    <div class="phase-tab${window._kpiTab==='format'?' active':''}" onclick="window._kpiTab='format';renderPage('kpi_master')"><i class="ti ti-category" style="font-size:12px"></i> 業態デフォルト</div>
-    <div class="phase-tab${window._kpiTab==='store'?' active':''}" onclick="window._kpiTab='store';renderPage('kpi_master')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗別</div>
+    <div class="phase-tab${window._kpiTab==='store'?' active':''}" onclick="window._kpiTab='store';renderPage('kpi_master')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗別KPI</div>
     <div class="phase-tab${window._kpiTab==='manual'?' active':''}" onclick="window._kpiTab='manual';renderPage('kpi_master')"><i class="ti ti-edit" style="font-size:12px"></i> 実績入力/対象指定</div>
   </div>`;
 
   if (window._kpiTab==='manual') return html + renderKpiManualTab();
-
-  if (window._kpiTab==='format') {
-    var canEdit = canEditWages();
-    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">業態ごとの目標値です。ここを変えると、その業態の全店に反映されます（店舗で個別上書きした項目を除く）。${canEdit?'':'<span style="color:var(--accent)">（閲覧のみ・編集はGM以上）</span>'}</div>`;
-    STORE_FORMATS.forEach(f=>{
-      var vals = getFormatKpi(f.key);
-      var kpis = kpisForFormat(f.key);
-      html += `<div class="card" style="border-left:3px solid ${f.color}">
-        <div class="card-title"><span style="width:30px;height:30px;border-radius:8px;background:${f.color}1a;color:${f.color};display:inline-flex;align-items:center;justify-content:center;margin-right:6px"><i class="ti ${f.icon}" style="font-size:16px"></i></span>${f.name} <span style="font-size:11px;color:var(--muted);font-weight:400">${f.desc}</span></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">`;
-      kpis.forEach(k=>{
-        html += `<div style="display:flex;align-items:center;gap:6px">
-          <label style="flex:1;font-size:12px">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:10px;color:var(--yellow)"></i>':''}<span style="font-size:10px;color:var(--muted)"> (${k.unit})</span></label>
-          <input class="form-input" style="width:80px;padding:6px;text-align:right${canEdit?'':';background:var(--surface2);color:var(--muted)'}" type="number" step="any" id="fk-${f.key}-${k.key}" value="${vals[k.key]!=null?vals[k.key]:''}" ${canEdit?'':'readonly'}>
-        </div>`;
-      });
-      html += `</div>
-        ${canEdit?`<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveFormatKpiFromForm('${f.key}')"><i class="ti ti-device-floppy"></i> ${f.name}のKPIを保存</button>`:''}
-      </div>`;
-    });
-    return html;
-  }
 
   // 店舗別タブ
   var stores = activeStores();
@@ -15539,46 +15601,37 @@ function renderKpiMaster() {
   var base = getFormatKpi(store.format||'dining');
   var ov = getStoreKpiOverride(sid);
   var kpis = kpisForFormat(store.format||'dining');
-  html += `<div class="card"><div style="display:grid;grid-template-columns:1fr auto auto;gap:8px 12px;align-items:center">
+  html += `<div class="card"><div style="display:grid;grid-template-columns:1fr auto;gap:8px 12px;align-items:center">
     <div style="font-size:11px;color:var(--muted);font-weight:700">KPI</div>
-    <div style="font-size:11px;color:var(--muted);font-weight:700;text-align:center">業態既定</div>
-    <div style="font-size:11px;color:var(--muted);font-weight:700;text-align:center">店舗上書き</div>`;
+    <div style="font-size:11px;color:var(--muted);font-weight:700;text-align:center">${store.name}の目標</div>`;
   kpis.forEach(k=>{
-    var isOv = ov[k.key]!=null;
+    // 集客数は予実連動（表示のみ）
     if (k.key==='lunchGuests' || k.key==='dinnerGuests') {
       var seg = k.key==='lunchGuests'?'lunch':'dinner';
       var bg = budgetGuestsMonthly(sid, seg, 0);
       html += `<div style="font-size:12px">${k.label}<span style="font-size:10px;color:var(--muted)"> ${k.unit}</span></div>
-        <div style="text-align:center;font-size:12px;color:var(--muted)">—</div>
         <div style="text-align:right;font-size:12px"><span class="tag" style="font-size:8px;background:var(--surface2);color:var(--accent2)">予実連動</span> <b>${bg!=null?bg.toLocaleString():'未設定'}</b></div>`;
       return;
     }
+    // 店舗の値（未設定なら業態デフォルトを初期値として表示）
+    var cur = ov[k.key]!=null ? ov[k.key] : base[k.key];
     html += `<div style="font-size:12px">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:10px;color:var(--yellow)"></i>':''}<span style="font-size:10px;color:var(--muted)"> ${k.unit}</span></div>
-      <div style="text-align:center;font-size:12px;color:var(--muted)">${base[k.key]!=null?base[k.key]:'—'}</div>
-      <input class="form-input" style="width:80px;padding:6px;text-align:right;${isOv?'border-color:var(--accent)':''}${canEditT?'':';background:var(--surface2);color:var(--muted)'}" type="number" step="any" id="sk-${k.key}" value="${isOv?ov[k.key]:''}" placeholder="${base[k.key]!=null?base[k.key]:''}" ${canEditT?'':'readonly'}>`;
+      <input class="form-input" style="width:90px;padding:6px;text-align:right${canEditT?'':';background:var(--surface2);color:var(--muted)'}" type="number" step="any" id="sk-${k.key}" value="${cur!=null?cur:''}" ${canEditT?'':'readonly'}>`;
   });
   html += `</div>
+    <div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-link"></i> 集客数の目標は予実（曜日別の客数予算×月の曜日回数）と連動。予実で設定してください。</div>
     ${canEditT?`<div class="btn-row" style="margin-top:12px">
-      <button class="btn btn-secondary" onclick="clearStoreKpi('${sid}')">上書きをクリア</button>
-      <button class="btn btn-primary" onclick="saveStoreKpiFromForm('${sid}')"><i class="ti ti-device-floppy"></i> 保存</button>
+      <button class="btn btn-primary" onclick="saveStoreKpiFromForm('${sid}')"><i class="ti ti-device-floppy"></i> ${store.name}のKPIを保存</button>
     </div>`:''}</div>`;
   return html;
-}
-function saveFormatKpiFromForm(fmt){
-  if (!canEditWages()) { showToast('目標値の編集はGM以上のみです','warning'); return; }
-  var kpis = kpisForFormat(fmt); var vals={};
-  kpis.forEach(k=>{ var el=document.getElementById('fk-'+fmt+'-'+k.key); if(el&&el.value!=='') vals[k.key]=parseFloat(el.value); });
-  setFormatKpi(fmt, vals);
-  showToast(formatMeta(fmt).name+'のKPIを保存しました','success');
-  renderPage('kpi_master');
 }
 function saveStoreKpiFromForm(sid){
   if (!canEditWages()) { showToast('目標値の編集はGM以上のみです','warning'); return; }
   var store = getStoresAll().find(s=>s.id===sid);
   var kpis = kpisForFormat(store.format||'dining'); var ov={};
-  kpis.forEach(k=>{ var el=document.getElementById('sk-'+k.key); if(el&&el.value!=='') ov[k.key]=parseFloat(el.value); });
+  kpis.forEach(k=>{ if(k.key==='lunchGuests'||k.key==='dinnerGuests') return; var el=document.getElementById('sk-'+k.key); if(el&&el.value!=='') ov[k.key]=parseFloat(el.value); });
   setStoreKpiOverride(sid, ov);
-  showToast(store.name+'のKPI上書きを保存しました','success');
+  showToast(store.name+'のKPIを保存しました','success');
   renderPage('kpi_master');
 }
 function clearStoreKpi(sid){
@@ -15748,6 +15801,19 @@ function toggleStoreActive(storeId) {
   }
 }
 
+function selectStoreFormat(key){
+  // ラジオを選択
+  var radios = document.querySelectorAll('input[name="st-format"]');
+  radios.forEach(r=>{ r.checked = (r.value===key); });
+  // 全ラベルの見た目を更新
+  STORE_FORMATS.forEach(f=>{
+    var el = document.getElementById('st-fmt-'+f.key);
+    if(!el) return;
+    var on = (f.key===key);
+    el.style.border = '2px solid '+(on?f.color:'var(--border)');
+    el.style.background = on ? f.color+'14' : 'transparent';
+  });
+}
 function openStoreModal(storeId) {
   var stores = getStoresAll();
   var s = storeId ? stores.find(x=>x.id===storeId) : {id:'', name:'', brand:'', color:'#888', toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false, format:'dining', lunchHours:'11:00-14:30', dinnerHours:'17:00-22:00', takeout:true};
@@ -15759,8 +15825,8 @@ function openStoreModal(storeId) {
     </div>
     ${isNew?`<div class="form-group"><label class="form-label">店舗ID</label><input class="form-input" id="st-id" placeholder="例: F06"></div>`:''}
     <div class="form-group"><label class="form-label">業態</label>
-      <div style="display:flex;gap:8px">${STORE_FORMATS.map(f=>`
-        <label style="flex:1;display:flex;align-items:center;gap:6px;padding:10px;border:2px solid ${(s.format||'dining')===f.key?f.color:'var(--border)'};border-radius:10px;cursor:pointer;background:${(s.format||'dining')===f.key?f.color+'14':'transparent'}">
+      <div style="display:flex;gap:8px" id="st-format-group">${STORE_FORMATS.map(f=>`
+        <label id="st-fmt-${f.key}" onclick="selectStoreFormat('${f.key}')" style="flex:1;display:flex;align-items:center;gap:6px;padding:10px;border:2px solid ${(s.format||'dining')===f.key?f.color:'var(--border)'};border-radius:10px;cursor:pointer;background:${(s.format||'dining')===f.key?f.color+'14':'transparent'}">
           <input type="radio" name="st-format" value="${f.key}" ${(s.format||'dining')===f.key?'checked':''} style="display:none">
           <i class="ti ${f.icon}" style="font-size:18px;color:${f.color}"></i>
           <span><span style="font-size:13px;font-weight:600;display:block">${f.name}</span><span style="font-size:10px;color:var(--muted)">${f.desc}</span></span>
