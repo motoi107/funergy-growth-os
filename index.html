@@ -1049,6 +1049,27 @@ function computeKpiActuals(storeId, offset){
   ['repeatRate','reviewScore','reviewYelp','reviewReply'].forEach(k=>{ if(man[k]!=null && man[k]!=='') out[k]=Number(man[k]); });
   return {period:period, actuals:out};
 }
+/* 達成率％（全KPIの平均達成度）。実績がある項目だけで平均。
+   各KPIの達成度 = up:実績/目標、down:目標/実績（100%上限）。 */
+function kpiAchievement(storeId, offset){
+  var store = getStoresAll().find(s=>s.id===storeId)||{};
+  var targets = getStoreKpiTargets(storeId);
+  var act = computeKpiActuals(storeId, offset).actuals;
+  var kpis = kpisForFormat(store.format||'dining');
+  var sum=0, n=0, met=0, total=0;
+  kpis.forEach(function(k){
+    var tv=targets[k.key], av=act[k.key];
+    if (tv==null || av==null || isNaN(av) || tv==0) return;
+    total++;
+    var ratio = (k.dir==='down') ? (tv/av) : (av/tv);
+    if (ratio>1) ratio=1;
+    if (ratio<0) ratio=0;
+    sum += ratio; n++;
+    var ok = (k.dir==='down') ? (av<=tv) : (av>=tv);
+    if (ok) met++;
+  });
+  return { pct: n? Math.round(sum/n*100):null, met:met, total:total, measured:n };
+}
 /* 指定月の集計（ローカルのdailyActualsから）。集客L/D・客単価・テイクアウト比率・人件費 */
 function safeMonthStats(storeId, offset){
   try {
@@ -1139,13 +1160,13 @@ const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
     children:['dashboard','store_cmd']},
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
-    children:['budget','labor','foodcost']},
+    children:['budget','labor','foodcost','kpi_master']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
-    children:['menu','recipe','costsheet','invoice','inventory','order','ingredient_master','vendor_master']},
+    children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','invoice']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['shift_admin','vacation','hiring','onboarding','skill','leadership','tiprate','tip','attendance','staff_master','meeting','growthhub','growth_mgr']},
+    children:['staff_master','shift_admin','attendance','hiring','onboarding','skill','leadership','tiprate','tip','growthhub','growth_mgr','meeting','vacation']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['tasks','required','goals','approval','acct_export','company_msg_edit','store_master','kpi_master','settings']},
+    children:['store_master','goals','required','company_msg_edit','approval','tasks','acct_export','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
     children:['mypage']},
 ];
@@ -3353,14 +3374,35 @@ function renderScoreCard(rate, salesRate, laborRate, laborTarget, fcRate, fcTarg
 }
 /* 数値→ステータス（低い方が良い指標: 原価率・Labor%） */
 function statusFromCeil(v, goodMax, warnMax){ return v<=goodMax?'good':v<=warnMax?'warn':'danger'; }
-/* 店舗ヘルススコア(100点満点) */
-function storeHealthScore(d){
-  // 売上達成(40) + 原価率(30) + Labor(30)
-  var salesPct = pct(d.a, d.b);
-  var salesScore = Math.max(0, Math.min(40, Math.round(salesPct/100*40)));
-  var fcScore = d.fc<=29?30:d.fc<=31?22:d.fc<=34?12:4;
-  var laborScore = d.labor<=27?30:d.labor<=29?22:d.labor<=32?12:4;
-  return Math.min(100, salesScore+fcScore+laborScore);
+/* 総合スコア(100点満点) = 自動KPIの達成度をバランス重み付け
+   実績が取れた項目だけで重み付け平均（取れない項目は除外して正規化） */
+const HEALTH_WEIGHTS = {
+  lunchGuests:10, dinnerGuests:10,   // 集客 20
+  ppa:15,                            // 客単価 15
+  foodCost:20,                       // 原価率 20
+  laborPct:20,                       // 人件費 20
+  drinkRate:15, upsellRate:15, takeoutRate:8, // 業態固有（あるものだけ）
+  reviewScore:5, reviewYelp:5,       // 口コミ 10
+};
+function storeHealthScore(arg){
+  var storeId = (typeof arg==='string') ? arg : (arg && arg.id);
+  if (!storeId) return 0;
+  var offset = window._kpiDashOffset||0;
+  var store = getStoresAll().find(s=>s.id===storeId)||{};
+  var targets = getStoreKpiTargets(storeId);
+  var act = computeKpiActuals(storeId, offset).actuals;
+  var kpis = kpisForFormat(store.format||'dining');
+  var wSum=0, wScore=0;
+  kpis.forEach(function(k){
+    var w = HEALTH_WEIGHTS[k.key]; if(!w) return;
+    var tv=targets[k.key], av=act[k.key];
+    if (tv==null || av==null || isNaN(av) || tv==0) return; // 実績なしは除外
+    var ratio = (k.dir==='down') ? (tv/av) : (av/tv);
+    if (ratio>1) ratio=1; if (ratio<0) ratio=0;
+    wSum += w; wScore += w*ratio;
+  });
+  if (wSum===0) return 0; // 実績ゼロ
+  return Math.round(wScore/wSum*100);
 }
 function healthLabel(score){
   if (score>=85) return {label:'Excellent', status:'good'};
@@ -3449,54 +3491,44 @@ function renderKpiDashCard(stores){
   var period = periodForOffset(offset);
   var label = offset===0 ? t('今月（進行中）','This Month') : t('先月（確定）','Last Month');
   var html = `<div class="card">
-    <div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>KPI ${t('実績','Actuals')}
+    <div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>KPI ${t('達成状況','Status')}
       <div style="margin-left:auto;display:flex;gap:4px">
         <button class="btn btn-${offset===0?'primary':'secondary'} btn-sm" onclick="window._kpiDashOffset=0;renderPage('dashboard')">${t('今月','This')}</button>
         <button class="btn btn-${offset===-1?'primary':'secondary'} btn-sm" onclick="window._kpiDashOffset=-1;renderPage('dashboard')">${t('先月','Last')}</button>
       </div></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${label} · ${period}</div>`;
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${label} · ${period} · ${t('店舗をタップで詳細','Tap a store for details')}</div>`;
 
   stores.forEach(function(sd){
     var store = getStoresAll().find(x=>x.id===sd.id)||{};
     var fm = formatMeta(store.format||'dining');
-    var targets = getStoreKpiTargets(sd.id);
-    var res = computeKpiActuals(sd.id, offset);
-    var act = res.actuals;
-    var kpis = kpisForFormat(store.format||'dining');
-    html += `<div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
-        <span style="width:9px;height:9px;border-radius:50%;background:${store.color}"></span>
-        <span style="font-weight:700;font-size:13px">${store.name}</span>
-        <span class="tag" style="font-size:8px;background:${fm.color}1a;color:${fm.color}">${fm.name}</span>
-        <span style="margin-left:auto;display:flex;gap:4px">
-          ${store.googleUrl?`<a href="${store.googleUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;text-decoration:none"><i class="ti ti-brand-google"></i> Google</a>`:''}
-          ${store.yelpUrl?`<a href="${store.yelpUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;text-decoration:none"><i class="ti ti-brand-yelp"></i> Yelp</a>`:''}
-        </span>
+    var ach = kpiAchievement(sd.id, offset);
+    var pct = ach.pct;
+    var col = pct==null?'var(--muted)':pct>=100?'var(--green)':pct>=85?'var(--yellow)':'var(--red)';
+    // 1行サマリー（タップで店舗別KPIへ）
+    html += `<div onclick="openStoreKpi('${sd.id}')" style="display:flex;align-items:center;gap:10px;padding:12px 10px;border-bottom:1px solid var(--border);cursor:pointer">
+      <span style="width:10px;height:10px;border-radius:50%;background:${store.color};flex-shrink:0"></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:14px;color:var(--tm)">${store.name} <span class="tag" style="font-size:8px;background:${fm.color}1a;color:${fm.color}">${fm.name}</span></div>
+        <div style="font-size:11px;color:var(--muted)">${ach.total>0?'達成 '+ach.met+'/'+ach.total+' KPI':'実績データ待ち'}</div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px">`;
-    kpis.forEach(function(k){
-      var tv = targets[k.key];
-      var av = act[k.key];
-      var hasAct = av!=null && !isNaN(av);
-      var ok=null;
-      if (hasAct && tv!=null){ ok = (k.dir==='down') ? (av<=tv) : (av>=tv); }
-      var col = ok===null?'var(--muted)':ok?'var(--green)':'var(--red)';
-      var avTxt = hasAct ? (k.unit==='$'?'$'+av:av+ (k.unit==='%'?'%':k.unit==='★'?'★':'')) : '—';
-      var tvTxt = tv!=null ? (k.unit==='$'?'$'+tv:tv+(k.unit==='%'?'%':k.unit==='★'?'★':'')) : '—';
-      html += `<div style="background:var(--surface2);border-radius:8px;padding:7px 9px">
-        <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:3px">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:8px;color:var(--yellow)"></i>':''}</div>
-        <div style="display:flex;align-items:baseline;gap:5px;margin-top:2px">
-          <span style="font-size:15px;font-weight:800;color:${col}">${avTxt}</span>
-          <span style="font-size:10px;color:var(--muted)">/ ${tvTxt}</span>
-          ${ok!==null?`<i class="ti ti-${ok?'arrow-up-circle':'arrow-down-circle'}" style="font-size:12px;color:${col};margin-left:auto"></i>`:''}
-        </div>
-      </div>`;
-    });
-    html += `</div></div>`;
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:22px;font-weight:800;color:${col};line-height:1">${pct!=null?pct+'%':'—'}</div>
+        <div style="font-size:9px;color:var(--muted)">${t('達成率','Achieved')}</div>
+      </div>
+      <div style="width:54px;flex-shrink:0">${healthRing(pct||0, col, 44)}</div>
+      <i class="ti ti-chevron-right" style="color:var(--muted);flex-shrink:0"></i>
+    </div>`;
   });
-  html += `<div style="font-size:10px;color:var(--muted);margin-top:2px"><i class="ti ti-info-circle"></i> ${t('手入力(リピート率/口コミ)はKPI管理で設定。「—」は未入力/対象未指定','Manual KPIs set in KPI mgmt')}</div>`;
+  html += `<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> ${t('達成率=全KPIの平均達成度。詳細は店舗をタップ','Tap store for full KPI breakdown')}</div>`;
   html += `</div>`;
   return html;
+}
+/* ダッシュボードから店舗別KPI詳細へジャンプ */
+function openStoreKpi(storeId){
+  window._kpiStore = storeId;
+  window._kpiTab = 'store';
+  window._kpiStoreView = 'actual'; // 実績表示モード
+  go('kpi_master');
 }
 
 /* ============================================================
@@ -3567,48 +3599,42 @@ function renderDashboard() {
 
   // ====== KPI実績（業態別・目標vs実績）======
   if (!window._kpiDashOffset) window._kpiDashOffset = 0;
-  html += renderKpiDashCard(stores);
 
-  if (stores.length === 1) {
-    var s = stores[0];
-    var score = storeHealthScore(s); var hl = healthLabel(score); var col=statusColor(hl.status);
-    var delta = healthDelta(s.id, score);
-    html += `<div class="card">
-      <div class="card-title"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>${t('店舗ヘルススコア','Store Health Score')}</div>
-      <div style="display:flex;align-items:center;gap:18px">
-        <div style="position:relative;width:96px;height:96px;flex-shrink:0">
-          ${healthRing(score, col, 96)}
-          <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
-            <div style="font-size:30px;font-weight:800;color:${col};line-height:1">${score}</div>
-            <div style="font-size:10px;color:var(--muted)">/ 100</div>
-          </div>
-        </div>
-        <div style="flex:1">
-          <div style="font-size:17px;font-weight:700;color:${col}">${hl.label}</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:2px">${healthNext(score)}</div>
-          <div style="font-size:12px;margin-top:6px">${t('先週比','vs last week')}: <span style="font-weight:700;color:${delta>=0?'var(--green)':'var(--red)'}">${delta>=0?'+':''}${delta}</span></div>
-          <div style="font-size:11px;color:var(--muted);margin-top:6px">${t('売上・原価・Laborから算出','Based on sales, food cost & labor')}</div>
-        </div>
+  // ====== 総合スコア（自動KPI達成度）統合カード ======
+  var offset = window._kpiDashOffset||0;
+  var period = periodForOffset(offset);
+  html += `<div class="card">
+    <div class="card-title"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>${t('総合スコア','Total Score')}
+      <div style="margin-left:auto;display:flex;gap:4px">
+        <button class="btn btn-${offset===0?'primary':'secondary'} btn-sm" onclick="window._kpiDashOffset=0;renderPage('dashboard')">${t('今月','This')}</button>
+        <button class="btn btn-${offset===-1?'primary':'secondary'} btn-sm" onclick="window._kpiDashOffset=-1;renderPage('dashboard')">${t('先月','Last')}</button>
+      </div></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${period} · ${t('自動KPIの総合達成度。店舗タップで詳細','Auto-KPI total. Tap a store')}</div>`;
+  stores.forEach(function(sd){
+    var store = getStoresAll().find(x=>x.id===sd.id)||{};
+    var fm = formatMeta(store.format||'dining');
+    var score = storeHealthScore(sd.id);
+    var hl = healthLabel(score); var col = statusColor(hl.status);
+    var ach = kpiAchievement(sd.id, offset);
+    var delta = healthDelta(sd.id, score);
+    html += `<div onclick="openStoreKpi('${sd.id}')" style="display:flex;align-items:center;gap:12px;padding:12px 10px;border-bottom:1px solid var(--border);cursor:pointer">
+      <div style="width:54px;flex-shrink:0;position:relative">${healthRing(score, col, 50)}
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:${col}">${score}</div></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:14px;color:var(--tm)">${store.name} <span class="tag" style="font-size:8px;background:${fm.color}1a;color:${fm.color}">${fm.name}</span></div>
+        <div style="font-size:11px;color:${col};font-weight:600">${hl.label}<span style="color:var(--muted);font-weight:400"> · ${ach.total>0?'達成 '+ach.met+'/'+ach.total:'実績待ち'}</span></div>
       </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:11px;color:${delta>=0?'var(--green)':'var(--red)'};font-weight:700">${delta>=0?'+':''}${delta}</div>
+        <div style="font-size:9px;color:var(--muted)">${t('先週比','vs wk')}</div>
+      </div>
+      <i class="ti ti-chevron-right" style="color:var(--muted);flex-shrink:0"></i>
     </div>`;
-  } else if (stores.length > 1) {
-    // ヘルススコア横並び（リング）
-    html += `<div class="card"><div class="card-title"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>${t('店舗ヘルススコア','Store Health Score')}</div>
-      <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px">`;
-    stores.forEach(s=>{
-      var score=storeHealthScore(s); var hl=healthLabel(score); var col=statusColor(hl.status);
-      html += `<div onclick="switchStore('${s.id}');go('dashboard')" style="min-width:104px;flex:1;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 8px;cursor:pointer;border-top:3px solid ${s.color}">
-        <div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px">${s.name}</div>
-        <div style="position:relative;width:62px;height:62px;margin:0 auto">
-          ${healthRing(score, col, 62)}
-          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:800;color:${col}">${score}</div>
-        </div>
-        <div style="font-size:10px;color:${col};font-weight:600;margin-top:6px">${hl.label}</div>
-        <div style="font-size:9px;color:var(--muted);margin-top:1px">${healthNext(score)}</div></div>`;
-    });
-    html += `</div></div>`;
+  });
+  html += `<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> ${t('総合スコア=集客/客単価/原価/人件費/ドリンク等の自動KPIを重み付け','Weighted auto-KPIs')}</div></div>`;
 
-    // ====== ②-b 店舗ランキング（達成率順） ======
+  if (stores.length > 1) {
+    // ====== 店舗ランキング（達成率順） ======
     var ranked = stores.map(s=>({s:s, pace:pct(s.a,s.b), score:storeHealthScore(s)}))
       .sort((a,b)=>b.pace-a.pace);
     html += `<div class="card"><div class="card-title"><i class="ti ti-trophy" style="color:var(--accent)"></i>${t('店舗ランキング','Store Ranking')} <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${getPeriod()}</span></div>`;
@@ -15442,7 +15468,51 @@ function renderKpiMaster() {
       ${stores.map(s=>`<option value="${s.id}" ${sid===s.id?'selected':''}>${s.name}</option>`).join('')}</select>
     <span class="tag" style="background:${fm.color}1a;color:${fm.color};font-size:10px"><i class="ti ${fm.icon}" style="font-size:11px"></i> ${fm.name}</span>
   </div></div>`;
-  html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">業態デフォルト値が薄字で入っています。店舗で変えたい項目だけ数値を入れると<b>上書き</b>されます。空欄なら業態デフォルトを使用。</div>`;
+
+  // ===== 実績 vs 目標（詳細）=====
+  if (!window._kpiStoreOffset) window._kpiStoreOffset = 0;
+  var soff = window._kpiStoreOffset;
+  var speriod = periodForOffset(soff);
+  var ach = kpiAchievement(sid, soff);
+  var achCol = ach.pct==null?'var(--muted)':ach.pct>=100?'var(--green)':ach.pct>=85?'var(--yellow)':'var(--red)';
+  var sTargets = getStoreKpiTargets(sid);
+  var sAct = computeKpiActuals(sid, soff).actuals;
+  var sKpis = kpisForFormat(store.format||'dining');
+  html += `<div class="card">
+    <div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>実績 vs 目標
+      <div style="margin-left:auto;display:flex;gap:4px">
+        <button class="btn btn-${soff===0?'primary':'secondary'} btn-sm" onclick="window._kpiStoreOffset=0;renderPage('kpi_master')">今月</button>
+        <button class="btn btn-${soff===-1?'primary':'secondary'} btn-sm" onclick="window._kpiStoreOffset=-1;renderPage('kpi_master')">先月</button>
+      </div></div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
+      <div style="width:64px;flex-shrink:0">${healthRing(ach.pct||0, achCol, 60)}</div>
+      <div><div style="font-size:26px;font-weight:800;color:${achCol};line-height:1">${ach.pct!=null?ach.pct+'%':'—'}</div>
+        <div style="font-size:11px;color:var(--muted)">${speriod} 達成率 · ${ach.total>0?ach.met+'/'+ach.total+' KPI達成':'実績待ち'}</div></div>
+      <div style="margin-left:auto;display:flex;gap:4px">
+        ${store.googleUrl?`<a href="${store.googleUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="text-decoration:none"><i class="ti ti-brand-google"></i></a>`:''}
+        ${store.yelpUrl?`<a href="${store.yelpUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="text-decoration:none"><i class="ti ti-brand-yelp"></i></a>`:''}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px">`;
+  sKpis.forEach(function(k){
+    var tv=sTargets[k.key], av=sAct[k.key];
+    var hasAct = av!=null && !isNaN(av);
+    var ok=null; if(hasAct&&tv!=null){ ok=(k.dir==='down')?(av<=tv):(av>=tv); }
+    var col = ok===null?'var(--muted)':ok?'var(--green)':'var(--red)';
+    var u=function(v){ return k.unit==='$'?'$'+v:v+(k.unit==='%'?'%':k.unit==='★'?'★':''); };
+    html += `<div style="background:var(--surface2);border-radius:8px;padding:8px 10px">
+      <div style="font-size:10px;color:var(--muted)">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:8px;color:var(--yellow)"></i>':''}</div>
+      <div style="display:flex;align-items:baseline;gap:5px;margin-top:2px">
+        <span style="font-size:16px;font-weight:800;color:${col}">${hasAct?u(av):'—'}</span>
+        <span style="font-size:10px;color:var(--muted)">/ ${tv!=null?u(tv):'—'}</span>
+        ${ok!==null?`<i class="ti ti-${ok?'circle-check':'circle-x'}" style="font-size:13px;color:${col};margin-left:auto"></i>`:''}
+      </div></div>`;
+  });
+  html += `</div>
+    <div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 「—」は未入力/対象未指定。手入力・対象指定は「実績入力/対象指定」タブで。</div>
+  </div>`;
+
+  html += `<div style="font-size:13px;font-weight:700;margin:14px 0 6px;color:var(--tm)"><i class="ti ti-adjustments"></i> 目標値の設定</div>`;
   var base = getFormatKpi(store.format||'dining');
   var ov = getStoreKpiOverride(sid);
   var kpis = kpisForFormat(store.format||'dining');
