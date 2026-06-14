@@ -691,6 +691,38 @@ async function fetchToastItemSales(guid, period) {
     return await res.json();
   } catch (e) { console.error('fetchToastItemSales', e); return []; }
 }
+/* ===== 本日のリアルタイム全店集計（ダッシュボード用）=====
+   各店のToast GUIDで本日分を同期→DB読み→集計。客単価まで算出。 */
+async function fetchTodayRealtime(storeList) {
+  var now = new Date();
+  var y=now.getFullYear(), m=now.getMonth()+1, d=now.getDate();
+  var ymd = `${y}${String(m).padStart(2,'0')}${String(d).padStart(2,'0')}`;
+  var iso = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  var results = [];
+  for (var i=0;i<storeList.length;i++){
+    var s = storeList[i];
+    if (!s.toastGuid) { results.push({id:s.id, name:s.name, color:s.color, noGuid:true}); continue; }
+    try {
+      await syncToastDay(s.toastGuid, ymd);
+      var rows = await fetchToastSales(s.toastGuid, iso, iso);
+      var r = (rows && rows.length) ? rows[0] : null;
+      if (!r) { results.push({id:s.id, name:s.name, color:s.color, hasData:false}); continue; }
+      var net = Number(r.net_sales)||0;
+      var guests = Number(r.guest_count)||0;
+      var lSales = Number(r.lunch_sales)||0, dSales = Number(r.dinner_sales)||0;
+      var lG = Number(r.lunch_guests)||0, dG = Number(r.dinner_guests)||0;
+      var toCount = Number(r.takeout_count)||0;
+      results.push({ id:s.id, name:s.name, color:s.color, hasData:true,
+        net:net, guests:guests, ppa: guests>0?net/guests:0,
+        lunch:{ sales:lSales, guests:lG, ppa: lG>0?lSales/lG:0 },
+        dinner:{ sales:dSales, guests:dG, ppa: dG>0?dSales/dG:0 },
+        takeout:{ count:toCount } });
+    } catch(e) {
+      results.push({id:s.id, name:s.name, color:s.color, error:true});
+    }
+  }
+  return results;
+}
 /* メニュー同期の本体: Toast取得 → メニュー商品をレシピへ反映（GUIDで照合）→ 出数をmenu_mixへ */
 async function syncMenuFromToast(storeId, guid, period) {
   if (!guid) return { error: 'この店舗のToast GUIDが未設定です（店舗マスターで設定）' };
@@ -3279,7 +3311,13 @@ function renderDashboard() {
   }
   html += `</div>`;
 
-  // ====== ② 店舗ヘルススコア（リング表示） ======
+  // ====== Funergy Now（全店/管轄店・本日リアルタイム）======
+  var scopeLabel = curRole==='am' ? t('管轄店舗','My stores') : t('全店','All stores');
+  html += `<div class="card" id="rt-sales-card">
+    <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${scopeLabel} · ${t('本日','Today')}</span>
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="loadRealtimeSales()"><i class="ti ti-refresh"></i> ${t('更新','Refresh')}</button></div>
+    <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
+  </div>`;
   if (stores.length === 1) {
     var s = stores[0];
     var score = storeHealthScore(s); var hl = healthLabel(score); var col=statusColor(hl.status);
@@ -3414,7 +3452,59 @@ function renderDashboard() {
     html += '</div>';
   }
 
+  // 本日リアルタイム売上を非同期ロード
+  setTimeout(function(){ if(document.getElementById('rt-sales-body')) loadRealtimeSales(); }, 100);
   return html;
+}
+/* ダッシュボードの本日リアルタイム売上を読み込んで描画 */
+async function loadRealtimeSales() {
+  var body = document.getElementById('rt-sales-body');
+  if (!body) return;
+  body.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading…')}</div>`;
+  var stores = getVisibleStores();
+  var data = await fetchTodayRealtime(stores);
+  var nowStr = new Date().toLocaleTimeString(curLang==='en'?'en-US':'ja',{hour:'2-digit',minute:'2-digit'});
+  var html = '';
+  var withData = 0;
+  data.forEach(r=>{
+    // 店舗ヘッダー
+    html += `<div style="border:1px solid var(--border);border-radius:12px;padding:0;margin-bottom:10px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:${r.color}14;border-left:4px solid ${r.color}">
+        <span style="width:10px;height:10px;border-radius:50%;background:${r.color}"></span>
+        <span style="font-weight:700;font-size:14px;color:var(--tm)">${r.name}</span>`;
+    if (r.hasData) {
+      html += `<span style="margin-left:auto;text-align:right"><span style="font-size:16px;font-weight:800;color:var(--green)">$${Math.round(r.net).toLocaleString()}</span>
+        <span style="font-size:11px;color:var(--muted)"> / ${r.guests}${t('名','')} / $${r.ppa.toFixed(2)}</span></span>`;
+    }
+    html += `</div>`;
+    if (r.noGuid) {
+      html += `<div style="padding:12px;text-align:center;font-size:12px;color:var(--muted)">Toast GUID未設定</div></div>`; return;
+    }
+    if (r.error) {
+      html += `<div style="padding:12px;text-align:center;font-size:12px;color:var(--red)">取得エラー</div></div>`; return;
+    }
+    if (!r.hasData) {
+      html += `<div style="padding:12px;text-align:center;font-size:12px;color:var(--muted)">${t('本日のデータはまだありません','No data yet today')}</div></div>`; return;
+    }
+    withData++;
+    // ランチ / ディナー / テイクアウト の3列
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border)">
+      <div style="background:var(--surface);padding:10px 8px;text-align:center">
+        <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ti-sun" style="color:#d98908"></i>${t('ランチ','Lunch')}</div>
+        <div style="font-size:14px;font-weight:700;margin-top:3px">$${Math.round(r.lunch.sales).toLocaleString()}</div>
+        <div style="font-size:10px;color:var(--muted)">${r.lunch.guests}${t('名','')} · $${r.lunch.ppa.toFixed(2)}</div></div>
+      <div style="background:var(--surface);padding:10px 8px;text-align:center">
+        <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ti-moon" style="color:#8b5cf6"></i>${t('ディナー','Dinner')}</div>
+        <div style="font-size:14px;font-weight:700;margin-top:3px">$${Math.round(r.dinner.sales).toLocaleString()}</div>
+        <div style="font-size:10px;color:var(--muted)">${r.dinner.guests}${t('名','')} · $${r.dinner.ppa.toFixed(2)}</div></div>
+      <div style="background:var(--surface);padding:10px 8px;text-align:center">
+        <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ti-shopping-bag" style="color:#2e6fd6"></i>${t('テイクアウト','Takeout')}</div>
+        <div style="font-size:14px;font-weight:700;margin-top:3px">${r.takeout.count}${t('件','')}</div>
+        <div style="font-size:10px;color:var(--muted)">${t('注文数','Orders')}</div></div>
+    </div></div>`;
+  });
+  html += `<div style="font-size:10px;color:var(--muted);text-align:right;margin-top:2px">${t('更新','Updated')} ${nowStr} · ${withData}/${data.length}${t('店','')}</div>`;
+  body.innerHTML = html;
 }
 
 /* ============================================================
