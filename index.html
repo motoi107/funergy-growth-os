@@ -15852,9 +15852,16 @@ function openStoreModal(storeId) {
     </div>
     <div class="form-group"><label class="form-label">営業日</label><input class="form-input" id="st-days" value="${s.days||''}" placeholder="毎日 / 火-日"></div>
     <div class="form-group"><label class="form-label">エリアマネージャー (AM)</label>
-      <input class="form-input" id="st-am" value="${s.am||''}" placeholder="担当AMの名前（例: Yuki）" list="am-list">
-      <datalist id="am-list">${[...new Set(getEmployees().filter(e=>e.role==='am').map(e=>e.name))].map(n=>`<option value="${n}">`).join('')}</datalist>
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">この名前のAMがログインすると、この店舗が管轄に入ります</div>
+      ${(function(){
+        var ams = getEmployees().filter(e=>e.role==='am' && e.status!=='退職');
+        if (!ams.length) return `<div style="font-size:12px;color:var(--muted);padding:8px;background:var(--surface2);border-radius:8px"><i class="ti ti-info-circle"></i> AM権限の従業員がいません。従業員マスターで「権限ロール＝AM」を設定してください。</div><input type="hidden" id="st-am" value="${s.am||''}">`;
+        return `<select class="form-select" id="st-am">
+          <option value="">（未割当）</option>
+          ${ams.map(e=>`<option value="${e.name}"${s.am===e.name?' selected':''}>${e.name}</option>`).join('')}
+          ${s.am && !ams.find(e=>e.name===s.am) ? `<option value="${s.am}" selected>${s.am}（AM権限なし）</option>` : ''}
+        </select>`;
+      })()}
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">従業員マスターでAM権限を持つ人が選べます。割り当てると、そのAMの管轄店舗になります</div>
     </div>
     <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="st-takeout" ${s.takeout?'checked':''}> テイクアウトあり</label></div>
     <div class="form-group"><label class="form-label">Google Review ページURL</label><input class="form-input" id="st-gurl" value="${s.googleUrl||''}" placeholder="https://g.page/... または Google Mapsの店舗URL"></div>
