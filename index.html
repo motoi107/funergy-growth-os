@@ -1106,7 +1106,20 @@ function safeMonthStats(storeId, offset){
 }
 var STORES = getStoresAll();
 function refreshStores() { STORES = getStoresAll(); }
-const AM_STORES = ['F03','F04-K','F04-P','F04-A','F05']; // Yuki
+const AM_STORES = ['F03','F04-K','F04-P','F04-A','F05']; // 後方互換（旧Yuki管轄）。新ロジックはmyAmStores()
+/* ログイン中のAMが管轄する店舗ID配列（店舗マスターのam欄＝AMの名前で照合）。
+   20店舗・複数AM対応：各店のam欄に担当AM名を入れれば自動で管轄が決まる。 */
+function myAmStores(){
+  var meName = curUserName || (ROLE_CONFIG['am']||{}).name;
+  var byName = getStoresAll().filter(s=>s.am && meName && s.am===meName).map(s=>s.id);
+  if (byName.length) return byName;
+  // 名前一致が無い場合は従来のAM_STORESにフォールバック（移行期の互換）
+  return AM_STORES.slice();
+}
+/* 任意のAM名の管轄店舗（管理画面などで使用） */
+function amStoresOf(amName){
+  return getStoresAll().filter(s=>s.am===amName).map(s=>s.id);
+}
 const SL_STORES = {
   'Uruma':    ['F01'],
   'Masamitsu':['F02'],
@@ -2575,7 +2588,7 @@ function canEditWages() { return curRole==='gm' || curRole==='ceo'; }
 /* 給与閲覧の対象店舗（AM=管轄, SM=自店, 全権=null=全店） */
 function wageScopeStores() {
   if (curRole==='ceo' || curRole==='gm' || curRole==='office') return null; // 全店
-  if (curRole==='am') return AM_STORES.slice();
+  if (curRole==='am') return myAmStores();
   if (isStoreManager()) {
     var s = curStore && curStore!=='ALL' ? curStore : null;
     if (!s) { var me=getEmployees().find(x=>x.name===(curUserName||'')); s = me?me.store:null; }
@@ -3191,7 +3204,7 @@ function go(page) {
 function openStoreSwitcher() {
   var rc = ROLE_CONFIG[curRole];
   if (!rc.allStores && curRole !== 'am') return;
-  var stores = curRole === 'am' ? activeStores().filter(s => AM_STORES.includes(s.id)) : activeStores();
+  var stores = curRole === 'am' ? activeStores().filter(s => myAmStores().includes(s.id)) : activeStores();
   openModal(`<div class="modal-title">店舗切替 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="store-grid">
       ${(rc.allStores ? [{id:'ALL',name:'全店舗',color:'#6b7591'},...stores] : stores).map(s=>
@@ -3448,7 +3461,7 @@ function healthRing(score, color, size){
 function getVisibleStores() {
   // AMは常に管轄店舗のみ（curStore=ALLでも管轄外は見せない）
   if (curRole === 'am') {
-    var amStores = activeStores().filter(s => AM_STORES.includes(s.id));
+    var amStores = activeStores().filter(s => myAmStores().includes(s.id));
     if (curStore && curStore !== 'ALL') return amStores.filter(s => s.id === curStore);
     return amStores;
   }
@@ -9510,7 +9523,7 @@ function visibleApplicants() {
   var all = getApplicants();
   if (['gm','ceo','office'].includes(curRole)) return all;
   if (curRole==='am') {
-    var amStoreNames = STORES.filter(s=>AM_STORES.includes(s.id)).map(s=>s.brand);
+    var amStoreNames = STORES.filter(s=>myAmStores().includes(s.id)).map(s=>s.brand);
     return all.filter(a=>amStoreNames.includes(a.store) || a.store==='未分類');
   }
   if (curRole==='sl') {
@@ -10348,7 +10361,7 @@ function renderStaffMaster() {
   var emps = getEmployees();
   // 管轄スコープ（AMは担当店舗のみ）
   if (curRole==='am') {
-    emps = emps.filter(e=>e.store==='ALL'||AM_STORES.includes(e.store)||(e.support||[]).some(s=>AM_STORES.includes(s)));
+    emps = emps.filter(e=>e.store==='ALL'||myAmStores().includes(e.store)||(e.support||[]).some(s=>myAmStores().includes(s)));
   }
   var active = emps.filter(e=>e.status!=='退職');
   var resigned = emps.filter(e=>e.status==='退職');
@@ -14121,7 +14134,7 @@ function ghIsManager(){ return ['ceo','gm','office','am'].includes(curRole) || i
 /* 管理職が見られる投稿スコープ（店舗ID配列 or null=全店） */
 function ghScopeStores(){
   if (curRole==='ceo'||curRole==='gm'||curRole==='office') return null;
-  if (curRole==='am') return AM_STORES.slice();
+  if (curRole==='am') return myAmStores();
   if (isStoreManager()) { var s=curStore&&curStore!=='ALL'?curStore:myStoreId(); return s?[s]:[]; }
   return [];
 }
@@ -14272,8 +14285,8 @@ function visibleStaffForManager() {
   var emps = getEmployees().filter(e=>e.status!=='退職');
   if (curRole==='gm'||curRole==='ceo'||curRole==='office') return emps;
   if (curRole==='am') {
-    var scope = AM_STORES.concat(['ALL']);
-    return emps.filter(e=>scope.includes(e.store) || (e.support||[]).some(s=>AM_STORES.includes(s)));
+    var scope = myAmStores().concat(['ALL']);
+    return emps.filter(e=>scope.includes(e.store) || (e.support||[]).some(s=>myAmStores().includes(s)));
   }
   if (curRole==='sl') {
     var sid = curStore==='ALL'?null:curStore;
@@ -15750,6 +15763,7 @@ function renderStoreMaster() {
         <span><i class="ti ti-sun" style="font-size:12px;color:#d98908"></i> ${s.lunchHours||'—'}</span>
         <span><i class="ti ti-moon" style="font-size:12px;color:#8b5cf6"></i> ${s.dinnerHours||'—'}</span>
         <span><i class="ti ti-shopping-bag" style="font-size:12px;color:${s.takeout?'#2e6fd6':'var(--muted)'}"></i> ${s.takeout?'テイクアウト有':'店内のみ'}</span>
+        ${s.am?`<span><i class="ti ti-user-star" style="font-size:12px;color:var(--accent)"></i> AM: ${s.am}</span>`:''}
         <span>${s.days}</span>
         <span>${s.toastGuid?'Toast: '+s.toastGuid.slice(0,8)+'...':'Toast未設定'}</span>
       </div>
@@ -15790,6 +15804,15 @@ function toggleStoreActive(storeId) {
   }
 }
 
+/* 次の店舗ID候補（F01,F02...の最大+1。F04-K等の枝番は無視して連番） */
+function nextStoreId(){
+  var max=0;
+  getStoresAll().forEach(s=>{
+    var m = String(s.id).match(/^F(\d+)/);
+    if(m){ var n=parseInt(m[1]); if(n>max) max=n; }
+  });
+  return 'F'+String(max+1).padStart(2,'0');
+}
 function selectStoreFormat(key){
   // ラジオを選択
   var radios = document.querySelectorAll('input[name="st-format"]');
@@ -15812,7 +15835,7 @@ function openStoreModal(storeId) {
       <div class="form-group"><label class="form-label">店舗名</label><input class="form-input" id="st-name" value="${s.name}" placeholder="店舗名"></div>
       <div class="form-group"><label class="form-label">ブランド</label><input class="form-input" id="st-brand" value="${s.brand||''}" placeholder="Totoya等"></div>
     </div>
-    ${isNew?`<div class="form-group"><label class="form-label">店舗ID</label><input class="form-input" id="st-id" placeholder="例: F06"></div>`:''}
+    ${isNew?`<div class="form-group"><label class="form-label">店舗ID</label><input class="form-input" id="st-id" placeholder="${nextStoreId()}（空欄で自動採番）"><div style="font-size:11px;color:var(--muted);margin-top:4px">空欄なら自動で ${nextStoreId()} になります</div></div>`:''}
     <div class="form-group"><label class="form-label">業態</label>
       <div style="display:flex;gap:8px" id="st-format-group">${STORE_FORMATS.map(f=>`
         <label id="st-fmt-${f.key}" onclick="selectStoreFormat('${f.key}')" style="flex:1;display:flex;align-items:center;gap:6px;padding:10px;border:2px solid ${(s.format||'dining')===f.key?f.color:'var(--border)'};border-radius:10px;cursor:pointer;background:${(s.format||'dining')===f.key?f.color+'14':'transparent'}">
@@ -15828,6 +15851,11 @@ function openStoreModal(storeId) {
       <div class="form-group"><label class="form-label">ディナー営業時間</label><input class="form-input" id="st-dinner" value="${s.dinnerHours||''}" placeholder="17:00-22:00"></div>
     </div>
     <div class="form-group"><label class="form-label">営業日</label><input class="form-input" id="st-days" value="${s.days||''}" placeholder="毎日 / 火-日"></div>
+    <div class="form-group"><label class="form-label">エリアマネージャー (AM)</label>
+      <input class="form-input" id="st-am" value="${s.am||''}" placeholder="担当AMの名前（例: Yuki）" list="am-list">
+      <datalist id="am-list">${[...new Set(getEmployees().filter(e=>e.role==='am').map(e=>e.name))].map(n=>`<option value="${n}">`).join('')}</datalist>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">この名前のAMがログインすると、この店舗が管轄に入ります</div>
+    </div>
     <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="st-takeout" ${s.takeout?'checked':''}> テイクアウトあり</label></div>
     <div class="form-group"><label class="form-label">Google Review ページURL</label><input class="form-input" id="st-gurl" value="${s.googleUrl||''}" placeholder="https://g.page/... または Google Mapsの店舗URL"></div>
     <div class="form-group"><label class="form-label">Yelp ページURL</label><input class="form-input" id="st-yurl" value="${s.yelpUrl||''}" placeholder="https://www.yelp.com/biz/..."></div>
@@ -15856,6 +15884,7 @@ function saveStore(storeId) {
     googleUrl: (document.getElementById('st-gurl')||{}).value ? document.getElementById('st-gurl').value.trim() : '',
     yelpUrl: (document.getElementById('st-yurl')||{}).value ? document.getElementById('st-yurl').value.trim() : '',
     days: document.getElementById('st-days').value.trim(),
+    am: (document.getElementById('st-am')||{}).value ? document.getElementById('st-am').value.trim() : '',
     color: document.getElementById('st-color').value,
     active: document.getElementById('st-active').checked,
   };
@@ -15864,9 +15893,9 @@ function saveStore(storeId) {
     var s = stores.find(x=>x.id===storeId);
     if (s) Object.assign(s, data);
   } else {
-    var id = document.getElementById('st-id').value.trim() || ('F'+Date.now().toString().slice(-4));
+    var id = document.getElementById('st-id').value.trim() || nextStoreId();
     if (stores.find(x=>x.id===id)) { alert('そのIDは既に存在します'); return; }
-    data.id = id; data.am = '';
+    data.id = id;
     stores.push(data);
     setStorePositions(id, ALL_POSITIONS);
   }
