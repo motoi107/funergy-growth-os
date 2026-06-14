@@ -933,11 +933,148 @@ const DEFAULT_STORES = [
 /* STORES = 全店舗（lookup用）。表示はactiveStores()で絞る */
 function getStoresAll() {
   var s = ls('m_stores', DEFAULT_STORES);
-  s.forEach(x=>{ if(x.active===undefined) x.active=true; if(!x.brand) x.brand=x.name; });
+  s.forEach(x=>{
+    if(x.active===undefined) x.active=true; if(!x.brand) x.brand=x.name;
+    // 新フィールドの既定値（後方互換）
+    if(x.format===undefined) x.format = (x.brand==='Tenkichi'||x.brand==='Marujuu') ? 'izakaya' : 'dining';
+    if(x.lunchHours===undefined) x.lunchHours = '11:00-14:30';
+    if(x.dinnerHours===undefined) x.dinnerHours = '17:00-22:00';
+    if(x.takeout===undefined) x.takeout = true;
+  });
   return s;
 }
 function setStoresAll(s) { lsSet('m_stores', s); refreshStores(); }
 function activeStores() { return getStoresAll().filter(s=>s.active); }
+
+/* ===== 業態（Format）とKPI =====
+   業態でデフォルトKPI → 店舗ごとに上書き可（ハイブリッド） */
+const STORE_FORMATS = [
+  {key:'dining',  name:'食事業態',   en:'Dining',  icon:'ti-bowl',          color:'#15a66a', desc:'ランチ中心・回転重視'},
+  {key:'izakaya', name:'居酒屋業態', en:'Izakaya', icon:'ti-glass-cocktail', color:'#8b5cf6', desc:'ディナー中心・滞在型'},
+];
+function formatMeta(key){ return STORE_FORMATS.find(f=>f.key===key) || STORE_FORMATS[0]; }
+
+/* KPI定義: 全業態共通 + 業態固有。targetは業態デフォルト値。
+   dir: 'up'=高いほど良い / 'down'=低いほど良い。unit/fmt は表示用。 */
+const KPI_DEFS = [
+  // 共通
+  {key:'lunchGuests',  label:'集客数(ランチ)', unit:'名/日', dir:'up',   scope:'both'},
+  {key:'dinnerGuests', label:'集客数(ディナー)',unit:'名/日', dir:'up',   scope:'both'},
+  {key:'repeatRate',   label:'リピート率',     unit:'%',     dir:'up',   scope:'both', star:true},
+  {key:'ppa',          label:'客単価',         unit:'$',     dir:'up',   scope:'both'},
+  {key:'laborPct',     label:'人件費率',       unit:'%',     dir:'down', scope:'both'},
+  {key:'foodCost',     label:'原価率',         unit:'%',     dir:'down', scope:'both'},
+  {key:'reviewScore',  label:'Google Review',  unit:'★',     dir:'up',   scope:'both'},
+  {key:'reviewYelp',   label:'Yelp Review',    unit:'★',     dir:'up',   scope:'both'},
+  {key:'reviewReply',  label:'口コミ返信率',   unit:'%',     dir:'up',   scope:'both'},
+  // 食事業態 固有
+  {key:'upsellRate',   label:'トッピング/アップグレード比率', unit:'%', dir:'up', scope:'dining'},
+  {key:'takeoutRate',  label:'テイクアウト比率', unit:'%',   dir:'up',   scope:'dining'},
+  // 居酒屋業態 固有
+  {key:'drinkRate',    label:'ドリンク比率',   unit:'%',     dir:'up',   scope:'izakaya'},
+];
+/* 業態デフォルトのKPI目標値 */
+const FORMAT_KPI_DEFAULTS = {
+  dining: { lunchGuests:80, dinnerGuests:50, repeatRate:35, ppa:18, laborPct:28, foodCost:30, reviewScore:4.5, reviewYelp:4.0, reviewReply:90, upsellRate:20, takeoutRate:25 },
+  izakaya:{ lunchGuests:30, dinnerGuests:90, repeatRate:40, ppa:35, laborPct:28, foodCost:30, reviewScore:4.5, reviewYelp:4.0, reviewReply:90, drinkRate:35 },
+};
+/* この業態で使うKPI一覧 */
+function kpisForFormat(fmt){ return KPI_DEFS.filter(k=>k.scope==='both'||k.scope===fmt); }
+/* 業態デフォルトKPI（編集後はm_format_kpiに保存） */
+function getFormatKpi(fmt){
+  var saved = ls('m_format_kpi', {});
+  return Object.assign({}, FORMAT_KPI_DEFAULTS[fmt]||{}, saved[fmt]||{});
+}
+function setFormatKpi(fmt, vals){
+  var saved = ls('m_format_kpi', {}); saved[fmt]=vals; lsSet('m_format_kpi', saved);
+}
+/* 店舗の実効KPI目標 = 業態デフォルト ← 店舗上書き(kpiOverride) */
+function getStoreKpiTargets(storeId){
+  var s = getStoresAll().find(x=>x.id===storeId); if(!s) return {};
+  var base = getFormatKpi(s.format||'dining');
+  var ov = (ls('m_store_kpi', {})[storeId])||{};
+  return Object.assign({}, base, ov);
+}
+function getStoreKpiOverride(storeId){ return (ls('m_store_kpi', {})[storeId])||{}; }
+function setStoreKpiOverride(storeId, ov){
+  var all = ls('m_store_kpi', {}); all[storeId]=ov; lsSet('m_store_kpi', all);
+}
+
+/* ===== KPI実績 =====
+   手入力KPI（リピート率・Google Review・口コミ返信率）: 店舗×月 で保存（GM以上のみ編集） */
+function kpiManualKey(period){ return 'kpi_manual_'+period; } // {storeId:{repeatRate,reviewScore,reviewReply}}
+function getKpiManual(storeId, period){ var all=ls(kpiManualKey(period),{}); return all[storeId]||{}; }
+function setKpiManual(storeId, period, vals){ var all=ls(kpiManualKey(period),{}); all[storeId]=vals; lsSet(kpiManualKey(period), all); }
+/* ドリンクカテゴリ / アップセル対象商品の指定（GMが設定）。店舗共通でもよいが店舗別に持てる */
+function getKpiConfig(){ return ls('kpi_config', {drinkCats:[], upsellGuids:[]}); }
+function setKpiConfig(c){ lsSet('kpi_config', c); }
+
+/* 指定月の period文字列（offset=0今月, -1先月） */
+function periodForOffset(offset){
+  var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
+  return d.getFullYear()+'.'+(d.getMonth()+1);
+}
+/* KPI実績を算出（自動＋手入力）。offset=0今月/-1先月 */
+function computeKpiActuals(storeId, offset){
+  var period = periodForOffset(offset);
+  var store = getStoresAll().find(s=>s.id===storeId)||{};
+  var out = {};
+  // --- メニューmix（出数）ベース: 原価率・ドリンク比率・アップセル比率 ---
+  var mix = getMenuMix(storeId, period);
+  var recipes = (typeof activeRecipes==='function'?activeRecipes():getRecipes()).filter(r=>r.storeId===storeId||r.storeId==null);
+  var totalQty=0, totalSales=0, totalCost=0, drinkQty=0, upsellQty=0;
+  var cfg = getKpiConfig();
+  var drinkCats = (cfg.drinkCats||[]).map(c=>String(c).toLowerCase());
+  var upsellGuids = cfg.upsellGuids||[];
+  recipes.forEach(r=>{
+    var q = parseFloat((mix.items||{})[r.id])||0; if(!q) return;
+    totalQty += q; totalSales += q*(r.price||0); totalCost += q*calcRecipeCost(r);
+    if (drinkCats.length && r.category && drinkCats.includes(String(r.category).toLowerCase())) drinkQty += q;
+    if (upsellGuids.length && r.toastGuid && upsellGuids.includes(r.toastGuid)) upsellQty += q;
+  });
+  if (totalSales>0) out.foodCost = Math.round(totalCost/totalSales*1000)/10;
+  if (totalQty>0 && drinkCats.length) out.drinkRate = Math.round(drinkQty/totalQty*1000)/10;
+
+  // --- Toast月次集計（売上・客数・客単価・人件費・テイクアウト）: 既存の月次仕組みがあれば利用 ---
+  var ms = (typeof monthStats==='function') ? safeMonthStats(storeId, offset) : null;
+  if (ms){
+    if (ms.lunchGuests!=null) out.lunchGuests = Math.round(ms.lunchGuests/(ms.days||1));
+    if (ms.dinnerGuests!=null) out.dinnerGuests = Math.round(ms.dinnerGuests/(ms.days||1));
+    if (ms.ppa!=null) out.ppa = Math.round(ms.ppa*100)/100;
+    if (ms.laborPct!=null) out.laborPct = Math.round(ms.laborPct*10)/10;
+    if (totalQty>0 && upsellGuids.length && ms.guests>0) out.upsellRate = Math.round(upsellQty/ms.guests*1000)/10;
+  }
+  // --- 手入力（リピート率・Google Review・口コミ返信率）---
+  var man = getKpiManual(storeId, period);
+  ['repeatRate','reviewScore','reviewYelp','reviewReply'].forEach(k=>{ if(man[k]!=null && man[k]!=='') out[k]=Number(man[k]); });
+  return {period:period, actuals:out};
+}
+/* 指定月の集計（ローカルのdailyActualsから）。集客L/D・客単価・テイクアウト比率・人件費 */
+function safeMonthStats(storeId, offset){
+  try {
+    var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
+    var ym = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); // YYYY-MM
+    var actuals = (typeof getDailyActuals==='function') ? getDailyActuals(storeId) : {};
+    var sales=0, guests=0, lunchG=0, dinnerG=0, takeout=0, orders=0, days=0;
+    Object.keys(actuals).forEach(date=>{
+      if (String(date).slice(0,7)!==ym) return;
+      var r=actuals[date]; if(!r) return;
+      days++;
+      sales += Number(r.actual)||0;
+      guests += Number(r.guests)||0;
+      if(r.lunchGuests!=null) lunchG += Number(r.lunchGuests)||0;
+      if(r.dinnerGuests!=null) dinnerG += Number(r.dinnerGuests)||0;
+      if(r.takeout!=null) takeout += Number(r.takeout)||0;
+    });
+    if (!days) return null;
+    var res = { days:days, guests:guests, lunchGuests:lunchG, dinnerGuests:dinnerG,
+      ppa: guests>0 ? sales/guests : null };
+    // テイクアウト比率（注文数の代理が無いので、件数/客数で近似は誤解を招くため保留）
+    // 人件費率は既存storeData（今月のみ）から
+    if ((offset||0)===0){ var sd=storeData(storeId); if(sd&&sd.labor!=null) res.laborPct=sd.labor; }
+    return res;
+  } catch(e){ return null; }
+}
 var STORES = getStoresAll();
 function refreshStores() { STORES = getStoresAll(); }
 const AM_STORES = ['F03','F04-K','F04-P','F04-A','F05']; // Yuki
@@ -991,6 +1128,7 @@ const NAV_ITEMS = [
   {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','am']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm']},
+  {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm']},
   {id:'acct_export', label:'経理出力',     icon:'ti-file-export',      roles:['ceo','gm','office']},
   {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm']},
@@ -1007,7 +1145,7 @@ const MENU_GROUPS = [
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['shift_admin','vacation','hiring','onboarding','skill','leadership','tiprate','tip','attendance','staff_master','meeting','growthhub','growth_mgr']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['tasks','required','goals','approval','acct_export','company_msg_edit','store_master','settings']},
+    children:['tasks','required','goals','approval','acct_export','company_msg_edit','store_master','kpi_master','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
     children:['mypage']},
 ];
@@ -2390,7 +2528,42 @@ function empWage(name) {
   var e = getEmployees().find(x=>x.name===name);
   return e ? empWageOf(e) : 0;
 }
-function canViewWages() { return curRole==='gm' || curRole==='ceo'; }
+/* ===== 給与閲覧権限（役職スコープ）=====
+   CEO/経理/GM: 全スタッフ / AM: 管轄店舗 / SM(Store Manager): 自店のみ / それ以下: 不可 */
+function isStoreManager() {
+  // role=sl かつ 肩書きが Store Manager の人を「SM」とみなす
+  if (curRole==='sl') {
+    var me = getEmployees().find(x=>x.name===(curUserName||(ROLE_CONFIG.sl||{}).name));
+    if (me && me.title==='Store Manager') return true;
+  }
+  return false;
+}
+/* 給与を「何らかのスタッフに」見られる役職か（給与表・列の表示可否） */
+function canViewWages() {
+  return curRole==='ceo' || curRole==='gm' || curRole==='office' || curRole==='am' || isStoreManager();
+}
+/* 給与を編集できるのは GM/CEO のみ（従来どおり） */
+function canEditWages() { return curRole==='gm' || curRole==='ceo'; }
+/* 給与閲覧の対象店舗（AM=管轄, SM=自店, 全権=null=全店） */
+function wageScopeStores() {
+  if (curRole==='ceo' || curRole==='gm' || curRole==='office') return null; // 全店
+  if (curRole==='am') return AM_STORES.slice();
+  if (isStoreManager()) {
+    var s = curStore && curStore!=='ALL' ? curStore : null;
+    if (!s) { var me=getEmployees().find(x=>x.name===(curUserName||'')); s = me?me.store:null; }
+    return s ? [s] : [];
+  }
+  return []; // それ以下は見られない
+}
+/* 特定スタッフの給与を見られるか */
+function canViewWageOf(emp) {
+  if (!emp) return false;
+  if (!canViewWages()) return false;
+  var scope = wageScopeStores();
+  if (scope===null) return true;           // 全店OK
+  if (!scope.length) return false;
+  return scope.includes(emp.store);        // スコープ店舗のスタッフのみ
+}
 
 /* ============================================================
    Phase2: レシピ / 予算 デフォルト
@@ -3050,6 +3223,7 @@ function renderPage(page) {
     case 'approval':     el.innerHTML = renderApproval(); break;
     case 'mypage':       el.innerHTML = renderMypage(); break;
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
+    case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
     case 'company_msg_edit': el.innerHTML = renderCompanyMsgEdit(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
@@ -3226,9 +3400,25 @@ function healthRing(score, color, size){
   </svg>`;
 }
 function getVisibleStores() {
+  // AMは常に管轄店舗のみ（curStore=ALLでも管轄外は見せない）
+  if (curRole === 'am') {
+    var amStores = activeStores().filter(s => AM_STORES.includes(s.id));
+    if (curStore && curStore !== 'ALL') return amStores.filter(s => s.id === curStore);
+    return amStores;
+  }
+  // SL/crew は配属店舗のみ
+  if (curRole === 'sl' || curRole === 'crew') {
+    var mine = curStore && curStore !== 'ALL' ? curStore : myStoreId();
+    return activeStores().filter(s => s.id === mine);
+  }
+  // 全権（CEO/GM/経理）
   if (curStore === 'ALL') return activeStores();
-  if (curRole === 'am') return activeStores().filter(s => AM_STORES.includes(s.id));
   return activeStores().filter(s => s.id === curStore);
+}
+/* ログイン中ユーザーの配属店舗ID */
+function myStoreId() {
+  var me = getEmployees().find(x=>x.name===(curUserName||(ROLE_CONFIG[curRole]||{}).name));
+  return me ? me.store : (curStore && curStore!=='ALL' ? curStore : (STORES[0]||{}).id);
 }
 function storeData(id) {
   var d = DEMO_BUDGET[id] || {b:200000,a:190000,fc:30,labor:28};
@@ -3251,6 +3441,62 @@ function storeData(id) {
   result.sp = pct(d.a, d.b);
   result.status = result.sp >= 100 ? 'good' : result.sp >= 90 ? 'warn' : 'danger';
   return result;
+}
+
+/* ダッシュボードのKPI実績カード（目標vs実績・今月/先月） */
+function renderKpiDashCard(stores){
+  var offset = window._kpiDashOffset||0;
+  var period = periodForOffset(offset);
+  var label = offset===0 ? t('今月（進行中）','This Month') : t('先月（確定）','Last Month');
+  var html = `<div class="card">
+    <div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>KPI ${t('実績','Actuals')}
+      <div style="margin-left:auto;display:flex;gap:4px">
+        <button class="btn btn-${offset===0?'primary':'secondary'} btn-sm" onclick="window._kpiDashOffset=0;renderPage('dashboard')">${t('今月','This')}</button>
+        <button class="btn btn-${offset===-1?'primary':'secondary'} btn-sm" onclick="window._kpiDashOffset=-1;renderPage('dashboard')">${t('先月','Last')}</button>
+      </div></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${label} · ${period}</div>`;
+
+  stores.forEach(function(sd){
+    var store = getStoresAll().find(x=>x.id===sd.id)||{};
+    var fm = formatMeta(store.format||'dining');
+    var targets = getStoreKpiTargets(sd.id);
+    var res = computeKpiActuals(sd.id, offset);
+    var act = res.actuals;
+    var kpis = kpisForFormat(store.format||'dining');
+    html += `<div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+        <span style="width:9px;height:9px;border-radius:50%;background:${store.color}"></span>
+        <span style="font-weight:700;font-size:13px">${store.name}</span>
+        <span class="tag" style="font-size:8px;background:${fm.color}1a;color:${fm.color}">${fm.name}</span>
+        <span style="margin-left:auto;display:flex;gap:4px">
+          ${store.googleUrl?`<a href="${store.googleUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;text-decoration:none"><i class="ti ti-brand-google"></i> Google</a>`:''}
+          ${store.yelpUrl?`<a href="${store.yelpUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;text-decoration:none"><i class="ti ti-brand-yelp"></i> Yelp</a>`:''}
+        </span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px">`;
+    kpis.forEach(function(k){
+      var tv = targets[k.key];
+      var av = act[k.key];
+      var hasAct = av!=null && !isNaN(av);
+      var ok=null;
+      if (hasAct && tv!=null){ ok = (k.dir==='down') ? (av<=tv) : (av>=tv); }
+      var col = ok===null?'var(--muted)':ok?'var(--green)':'var(--red)';
+      var avTxt = hasAct ? (k.unit==='$'?'$'+av:av+ (k.unit==='%'?'%':k.unit==='★'?'★':'')) : '—';
+      var tvTxt = tv!=null ? (k.unit==='$'?'$'+tv:tv+(k.unit==='%'?'%':k.unit==='★'?'★':'')) : '—';
+      html += `<div style="background:var(--surface2);border-radius:8px;padding:7px 9px">
+        <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:3px">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:8px;color:var(--yellow)"></i>':''}</div>
+        <div style="display:flex;align-items:baseline;gap:5px;margin-top:2px">
+          <span style="font-size:15px;font-weight:800;color:${col}">${avTxt}</span>
+          <span style="font-size:10px;color:var(--muted)">/ ${tvTxt}</span>
+          ${ok!==null?`<i class="ti ti-${ok?'arrow-up-circle':'arrow-down-circle'}" style="font-size:12px;color:${col};margin-left:auto"></i>`:''}
+        </div>
+      </div>`;
+    });
+    html += `</div></div>`;
+  });
+  html += `<div style="font-size:10px;color:var(--muted);margin-top:2px"><i class="ti ti-info-circle"></i> ${t('手入力(リピート率/口コミ)はKPI管理で設定。「—」は未入力/対象未指定','Manual KPIs set in KPI mgmt')}</div>`;
+  html += `</div>`;
+  return html;
 }
 
 /* ============================================================
@@ -3318,6 +3564,11 @@ function renderDashboard() {
       <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="loadRealtimeSales()"><i class="ti ti-refresh"></i> ${t('更新','Refresh')}</button></div>
     <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
   </div>`;
+
+  // ====== KPI実績（業態別・目標vs実績）======
+  if (!window._kpiDashOffset) window._kpiDashOffset = 0;
+  html += renderKpiDashCard(stores);
+
   if (stores.length === 1) {
     var s = stores[0];
     var score = storeHealthScore(s); var hl = healthLabel(score); var col=statusColor(hl.status);
@@ -9645,7 +9896,7 @@ function renderOnboarding() {
         <div style="font-weight:600;margin-bottom:4px">本人入力情報 <span style="font-size:10px;color:var(--muted);font-weight:400">${ob.candId||''}</span></div>
         住所: ${p.address||'—'}<br>
         生年月日: ${p.dob||'—'} · 就労: ${p.visa||'—'}${p.visaDetail?'（'+p.visaDetail+'）':''}<br>
-        時給: ${canViewWages()?'$'+(ob.wage||p.wage||'—'):'***'} · 開始予定: ${ob.plannedStart||p.startDate||'—'}<br>
+        時給: ${canEditWages()?'$'+(ob.wage||p.wage||'—'):'***'} · 開始予定: ${ob.plannedStart||p.startDate||'—'}<br>
         SSN: ${canSeePII?(p.ssn||'—'):'<span style="color:var(--muted)">（経理/GM/CEOのみ）</span>'}<br>
         電子署名: ${sigCount}/4 ${sigCount>=4?'<span style="color:var(--green)">✓</span>':''} · I-9: ${i9Count}/5 ${i9Count>=5?'<span style="color:var(--green)">✓</span>':''}<br>
         書類: ${ob.docs&&ob.docs.length?(canSeePII?ob.docs.map(d=>d.name).join(', '):ob.docs.length+'件（経理のみ）'):'未提出'}
@@ -9722,7 +9973,7 @@ function openPersonalForm(obId) {
     <div style="background:var(--surface2);border-radius:8px;padding:10px;font-size:12px;margin-bottom:6px">
       配属店舗: <b>${ob.storeName||'—'}</b><br>
       ポジション: <b>${ob.pos||'—'}</b><br>
-      時給: <b>${canViewWages()?'$'+(ob.wage||'—'):'***'}</b><br>
+      時給: <b>${canEditWages()?'$'+(ob.wage||'—'):'***'}</b><br>
       雇用区分: <b>${ob.division||'—'}</b><br>
       勤務開始予定日: <b>${ob.plannedStart||'未定'}</b>
     </div>
@@ -10085,7 +10336,7 @@ function renderStaffMaster() {
   var html = `<div class="section-header">
     <div><div class="section-title">従業員マスター</div><div class="section-sub">在籍 ${active.length}名 / 退職 ${resigned.length}名${empStoreFilter!=='all'||empSearchQ?' · 該当 '+list.length+'名':''}</div></div>
     <div style="display:flex;gap:6px">
-      ${canViewWages()?`<button class="btn btn-secondary btn-sm" onclick="openTitleWageModal()"><i class="ti ti-table-options"></i> 役職給与表</button>`:''}
+      ${wageScopeStores()===null?`<button class="btn btn-secondary btn-sm" onclick="openTitleWageModal()"><i class="ti ti-table-options"></i> 役職給与表</button>`:''}
       <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
     </div>
   </div>
@@ -10130,7 +10381,7 @@ function renderStaffMaster() {
         </div>
         <div style="text-align:right">
           <span class="tag ${statusTag}">${e.status}</span>
-          ${canViewWages()?`<div style="font-size:10px;color:var(--green);margin-top:2px">${isMonthlyTitle(e.title)?'$'+empMonthlyOf(e).toLocaleString()+'/月':'$'+empWageOf(e)+'/h'}</div>`:''}
+          ${canViewWageOf(e)?`<div style="font-size:10px;color:var(--green);margin-top:2px">${isMonthlyTitle(e.title)?'$'+empMonthlyOf(e).toLocaleString()+'/月':'$'+empWageOf(e)+'/h'}</div>`:''}
         </div>
       </div>`;
     });
@@ -10276,10 +10527,13 @@ function openEmpModal(empId) {
     <div class="form-group"><label class="form-label">権限レベル</label>
       <select class="form-select" id="e-perms">${PERM_LEVELS.map(p=>`<option value="${p.id}"${e.perms===p.id?' selected':''}>${p.label}</option>`).join('')}</select>
     </div>
-    ${canViewWages()?`<div class="form-group" id="e-pay-wrap"><label class="form-label">給与 <span class="tag tag-red" style="font-size:8px">GM限定</span></label>
-      <div id="e-pay-fields">${payFieldsHtml(e)}</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">空欄なら役職デフォルトを使用。入力すると個別上書き。OT(週40h超)は時給者のみ1.5倍。</div>
-    </div>`:''}
+    ${canViewWageOf(e)?(canEditWages()
+      ? `<div class="form-group" id="e-pay-wrap"><label class="form-label">給与 <span class="tag tag-red" style="font-size:8px">GM/CEO限定</span></label>
+          <div id="e-pay-fields">${payFieldsHtml(e)}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">空欄なら役職デフォルトを使用。入力すると個別上書き。OT(週40h超)は時給者のみ1.5倍。</div></div>`
+      : `<div class="form-group"><label class="form-label">給与 <span class="tag" style="font-size:8px;background:var(--surface2);color:var(--muted)">閲覧のみ</span></label>
+          <div style="font-size:14px;font-weight:600;color:var(--green)">${isMonthlyTitle(e.title)?'$'+empMonthlyOf(e).toLocaleString()+' /月':'$'+empWageOf(e)+' /時'}</div></div>`
+    ):''}
     <div class="form-group"><label class="form-label">評価係数（Tip Rate）</label>
       <select class="form-select" id="e-coef">
         ${[['1','100%'],['0.9','90%'],['0.8','80%']].map(o=>`<option value="${o[0]}"${(e.coef!=null?e.coef:1)==parseFloat(o[0])?' selected':''}>${o[1]}（係数${o[0]}）</option>`).join('')}
@@ -10328,7 +10582,7 @@ function saveEmp(empId) {
     dental: document.getElementById('e-dental').checked,
     title: (document.getElementById('e-title')||{}).value || '',
   };
-  if (canViewWages()) {
+  if (canEditWages()) {
     var wageEl = document.getElementById('e-wage');
     var monthlyEl = document.getElementById('e-monthly');
     // 空欄は「役職デフォルト使用」= null。入力時のみ個別上書き。
@@ -11056,7 +11310,36 @@ const LSS_CATEGORIES = [
   {key:'G', name:'人材育成', short:'Development', en:'Development', icon:'ti-seeding', items:[
     '新人への教え方','相手のレベルに合わせた指導','褒める力','注意・改善指導の仕方','スタッフの強みを見つける力','スタッフの弱みを具体化する力',
     '成長目標を設定する力','スキルレベルを正しく判断する力','Tip Rate申請の判断力','スタッフのモチベーション管理','離職リスクに気づく力','次のリーダー候補を育てる力']},
+  {key:'H', name:'Funergy Philosophy', short:'Philosophy', en:'Philosophy & Values', icon:'ti-heart-handshake', items:[
+    '素直さ・学ぶ姿勢：フィードバックを素直に受け止め改善する','素直さ・学ぶ姿勢：知らないことを認め、学ぼうとする','素直さ・学ぶ姿勢：自分の非を認められる',
+    '正直・誠実：嘘やごまかしをせず正直に行動する','正直・誠実：ミスを隠さず報告する','正直・誠実：見ていない所でも手を抜かない',
+    '思いやり・リスペクト：仲間を思いやり助け合う','思いやり・リスペクト：お客様に心から向き合う','思いやり・リスペクト：相手の立場で考えられる',
+    '前向き・課題解決：愚痴や不満でなく解決策を考える','前向き・課題解決：困難でも前向きに取り組む','前向き・課題解決：周りを前向きにする影響力がある',
+    '主体性・責任感：指示待ちでなく自ら動く','主体性・責任感：自分の仕事に責任を持つ','主体性・責任感：Funergyの一員としての自覚がある']},
 ];
+/* 表示順: Funergy Philosophy(H)を先頭に、その後A〜G */
+function lssCatsOrdered() {
+  var h = LSS_CATEGORIES.filter(c=>c.key==='H');
+  var rest = LSS_CATEGORIES.filter(c=>c.key!=='H');
+  return h.concat(rest);
+}
+/* カテゴリ内のサブグループ定義（項目のインデックス範囲 [from,to] 両端含む）
+   ※ 既存の採点データIDは項目順そのまま。グループは見た目とグループ別%のためだけ。 */
+const LSS_GROUPS = {
+  'A': [['店舗運営',0,3],['ルール理解',4,9],['KPI・基本操作',10,11],['報連相・実行力',12,14],['指導・判断',15,17]],
+  'B': [['基本接客',0,5],['提案・客単価',6,9],['ファン作り',10,14],['指導・体験設計',15,17]],
+  'C': [['商品・仕込み',0,4],['在庫・発注',5,7],['原価・ロス',8,12],['品質・オペレーション',13,16],['改善・指導',17,20]],
+  'D': [['店舗理解',0,2],['売上施策',3,7],['SNS・口コミ',8,10],['企画・ブランド',11,16]],
+  'E': [['実行・リーダーシップ',0,4],['問題解決',5,8],['育成・配置',9,13],['MTG・数字運用',14,17],['報告・継続・展開',18,23]],
+  'F': [['売上・予実',0,3],['コスト管理',4,6],['分析・改善',7,11]],
+  'G': [['教え方',0,3],['見極め',4,8],['育成・定着',9,11]],
+  'H': [['素直さ・学ぶ姿勢',0,2],['正直・誠実',3,5],['思いやり・リスペクト',6,8],['前向き・課題解決',9,11],['主体性・責任感',12,14]],
+};
+function lssGroupsOf(catKey) {
+  if (LSS_GROUPS[catKey]) return LSS_GROUPS[catKey];
+  var c = LSS_CATEGORIES.find(x=>x.key===catKey);
+  return c ? [['',0,c.items.length-1]] : [];
+}
 /* itemId = カテゴリkey + index 例: "A0","A1","E12" */
 function lssItemId(catKey, idx){ return catKey+idx; }
 function lssAllItems() {
@@ -11068,7 +11351,7 @@ function setLssScores(name, data) { var all=ls('lss_scores', {}); all[name]=data
 function lssSummary(name) {
   var rec = getLssScores(name);
   var scores = rec ? (rec.scores||{}) : {};
-  var cats = LSS_CATEGORIES.map(c=>{
+  var cats = lssCatsOrdered().map(c=>{
     var max = c.items.length*3, score=0;
     c.items.forEach((label,i)=>{ score += (parseInt(scores[lssItemId(c.key,i)])||0); });
     return {key:c.key, name:c.name, en:c.en, score:score, max:max, pct: max?Math.round(score/max*100):0};
@@ -11404,7 +11687,7 @@ function saveLssRules() {
 }
 function openLssDetail(name) {
   window._lssName = name;
-  window._lssCat = window._lssCat || 'A';
+  window._lssCat = window._lssCat || 'H';
   var rec = getLssScores(name) || {};
   window._lssDraft = Object.assign({}, rec.scores||{});
   var canScore = ['ceo','gm','am','sl'].includes(curRole);
@@ -11427,7 +11710,7 @@ function openLssDetail(name) {
 /* 総合サマリー（ドラフト反映でリアルタイム） */
 function lssSummaryFromDraft() {
   var draft = window._lssDraft||{};
-  var cats = LSS_CATEGORIES.map(c=>{
+  var cats = lssCatsOrdered().map(c=>{
     var max=c.items.length*3, score=0;
     c.items.forEach((label,i)=>{ score += (parseInt(draft[lssItemId(c.key,i)])||0); });
     return {key:c.key, name:c.name, score:score, max:max, pct:max?Math.round(score/max*100):0};
@@ -11488,7 +11771,7 @@ function lssNextTargetHtml(name) {
 function renderLssCatTabs() {
   var el=document.getElementById('lss-cattabs'); if(!el) return;
   var sum=lssSummaryFromDraft();
-  el.innerHTML = `<div class="phase-tabs" style="flex-wrap:wrap">${LSS_CATEGORIES.map(c=>{
+  el.innerHTML = `<div class="phase-tabs" style="flex-wrap:wrap">${lssCatsOrdered().map(c=>{
     var cs=sum.cats.find(x=>x.key===c.key);
     var cc=cs.pct>=80?'var(--green)':cs.pct>=60?'var(--yellow)':cs.score>0?'var(--red)':'var(--muted)';
     return `<div class="phase-tab${window._lssCat===c.key?' active':''}" onclick="setLssCat('${c.key}')" title="${c.name}"><i class="ti ${c.icon}" style="font-size:14px"></i> <span style="font-size:9px;color:${window._lssCat===c.key?'#fff':cc}">${cs.pct}%</span></div>`;
@@ -11501,13 +11784,53 @@ function renderLssItems() {
   var c=LSS_CATEGORIES.find(x=>x.key===window._lssCat);
   var draft=window._lssDraft||{};
   var canScore=['ceo','gm','am','sl'].includes(curRole);
-  el.innerHTML = c.items.map((label,i)=>{
-    var id=lssItemId(c.key,i); var val=parseInt(draft[id])||0;
-    return `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
-      <div style="flex:1;font-size:12px">${label}</div>
-      <div style="display:flex;gap:2px" id="lss-${id}">${[0,1,2,3].map(n=>`<button onclick="lssSetScore('${id}',${n})" data-v="${n}" class="lss-dot" style="width:26px;height:26px;border-radius:6px;border:1px solid var(--border);font-size:11px;cursor:${canScore?'pointer':'default'};background:${val===n?(n===0?'var(--muted)':n===3?'var(--accent)':n===2?'var(--green)':'var(--yellow)'):'transparent'};color:${val===n?'#fff':'var(--muted)'}">${n}</button>`).join('')}</div>
-    </div>`;
-  }).join('');
+  var groups=lssGroupsOf(c.key);
+  var dot=function(id,val){
+    return `<div style="display:flex;gap:2px" id="lss-${id}">${[0,1,2,3].map(n=>`<button onclick="lssSetScore('${id}',${n})" data-v="${n}" class="lss-dot" style="width:26px;height:26px;border-radius:6px;border:1px solid var(--border);font-size:11px;cursor:${canScore?'pointer':'default'};background:${val===n?(n===0?'var(--muted)':n===3?'var(--accent)':n===2?'var(--green)':'var(--yellow)'):'transparent'};color:${val===n?'#fff':'var(--muted)'}">${n}</button>`).join('')}</div>`;
+  };
+  var out='';
+  groups.forEach(function(g, gi){
+    var gname=g[0], from=g[1], to=g[2];
+    // グループ別 集計
+    var gScore=0, gMax=0;
+    for (var i=from;i<=to;i++){ gScore += parseInt(draft[lssItemId(c.key,i)])||0; gMax+=3; }
+    var gpct = gMax?Math.round(gScore/gMax*100):0;
+    var gcol = gpct>=80?'var(--green)':gpct>=60?'var(--yellow)':gScore>0?'var(--red)':'var(--muted)';
+    if (gname) {
+      out += `<div id="lssg-${c.key}-${gi}" data-from="${from}" data-to="${to}" style="display:flex;align-items:center;gap:8px;margin:12px 0 4px;padding-top:6px">
+        <span style="font-size:12px;font-weight:700;color:var(--tm)">${gname}</span>
+        <div class="progress-bar" style="flex:1;height:5px"><div class="progress-fill lssg-bar" style="background:${gcol};width:${gpct}%"></div></div>
+        <span class="lssg-pct" style="font-size:11px;font-weight:700;color:${gcol};min-width:34px;text-align:right">${gpct}%</span>
+      </div>`;
+    }
+    for (var i=from;i<=to;i++){
+      var label=c.items[i];
+      // Hカテゴリは項目テキストの「グループ名：」を除去（見出しと重複するため）
+      if (c.key==='H' && label.indexOf('：')>=0) label=label.split('：').slice(1).join('：');
+      var id=lssItemId(c.key,i); var val=parseInt(draft[id])||0;
+      out += `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
+        <div style="flex:1;font-size:12px">${label}</div>
+        ${dot(id,val)}
+      </div>`;
+    }
+  });
+  el.innerHTML = out;
+}
+/* グループ別%のライブ更新（採点時） */
+function lssUpdateGroupPcts() {
+  var c=LSS_CATEGORIES.find(x=>x.key===window._lssCat); if(!c) return;
+  var draft=window._lssDraft||{};
+  var groups=lssGroupsOf(c.key);
+  groups.forEach(function(g, gi){
+    var el=document.getElementById('lssg-'+c.key+'-'+gi); if(!el) return;
+    var from=g[1], to=g[2], gScore=0, gMax=0;
+    for (var i=from;i<=to;i++){ gScore += parseInt(draft[lssItemId(c.key,i)])||0; gMax+=3; }
+    var gpct = gMax?Math.round(gScore/gMax*100):0;
+    var gcol = gpct>=80?'var(--green)':gpct>=60?'var(--yellow)':gScore>0?'var(--red)':'var(--muted)';
+    var bar=el.querySelector('.lssg-bar'), pc=el.querySelector('.lssg-pct');
+    if(bar){ bar.style.width=gpct+'%'; bar.style.background=gcol; }
+    if(pc){ pc.textContent=gpct+'%'; pc.style.color=gcol; }
+  });
 }
 function lssSetScore(id, val) {
   if (!['ceo','gm','am','sl'].includes(curRole)) return;
@@ -11524,6 +11847,7 @@ function lssSetScore(id, val) {
   // 総合・カテゴリの%をリアルタイム更新
   renderLssSummary();
   renderLssCatTabs();
+  lssUpdateGroupPcts();
 }
 function saveLssScores(name) {
   var by = (ROLE_CONFIG[curRole]||{}).name||curUserName;
@@ -15067,6 +15391,195 @@ function savePositionConfig(storeId) {
 /* ============================================================
    店舗マスター (active切替・新店追加・Toast GUID等)
 ============================================================ */
+/* ============================================================
+   KPI管理（業態デフォルト + 店舗別上書き）
+============================================================ */
+function renderKpiMaster() {
+  if (!window._kpiTab) window._kpiTab = 'format';
+  var html = `<div class="section-header">
+    <div><div class="section-title"><i class="ti ti-target" style="color:var(--accent)"></i> KPI管理</div>
+    <div class="section-sub">業態でデフォルト設定 → 店舗ごとに上書き可</div></div>
+  </div>
+  <div class="phase-tabs">
+    <div class="phase-tab${window._kpiTab==='format'?' active':''}" onclick="window._kpiTab='format';renderPage('kpi_master')"><i class="ti ti-category" style="font-size:12px"></i> 業態デフォルト</div>
+    <div class="phase-tab${window._kpiTab==='store'?' active':''}" onclick="window._kpiTab='store';renderPage('kpi_master')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗別</div>
+    <div class="phase-tab${window._kpiTab==='manual'?' active':''}" onclick="window._kpiTab='manual';renderPage('kpi_master')"><i class="ti ti-edit" style="font-size:12px"></i> 実績入力/対象指定</div>
+  </div>`;
+
+  if (window._kpiTab==='manual') return html + renderKpiManualTab();
+
+  if (window._kpiTab==='format') {
+    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">業態ごとの目標値です。ここを変えると、その業態の全店に反映されます（店舗で個別上書きした項目を除く）。</div>`;
+    STORE_FORMATS.forEach(f=>{
+      var vals = getFormatKpi(f.key);
+      var kpis = kpisForFormat(f.key);
+      html += `<div class="card" style="border-left:3px solid ${f.color}">
+        <div class="card-title"><span style="width:30px;height:30px;border-radius:8px;background:${f.color}1a;color:${f.color};display:inline-flex;align-items:center;justify-content:center;margin-right:6px"><i class="ti ${f.icon}" style="font-size:16px"></i></span>${f.name} <span style="font-size:11px;color:var(--muted);font-weight:400">${f.desc}</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">`;
+      kpis.forEach(k=>{
+        html += `<div style="display:flex;align-items:center;gap:6px">
+          <label style="flex:1;font-size:12px">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:10px;color:var(--yellow)"></i>':''}<span style="font-size:10px;color:var(--muted)"> (${k.unit})</span></label>
+          <input class="form-input" style="width:80px;padding:6px;text-align:right" type="number" step="any" id="fk-${f.key}-${k.key}" value="${vals[k.key]!=null?vals[k.key]:''}">
+        </div>`;
+      });
+      html += `</div>
+        <button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveFormatKpiFromForm('${f.key}')"><i class="ti ti-device-floppy"></i> ${f.name}のKPIを保存</button>
+      </div>`;
+    });
+    return html;
+  }
+
+  // 店舗別タブ
+  var stores = activeStores();
+  if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = stores[0] ? stores[0].id : null;
+  var sid = window._kpiStore;
+  var store = getStoresAll().find(s=>s.id===sid);
+  if (!store) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:20px">稼働中の店舗がありません</div>`;
+  var fm = formatMeta(store.format||'dining');
+  html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--muted)">店舗:</span>
+    <select class="form-select" style="width:auto;padding:6px" onchange="window._kpiStore=this.value;renderPage('kpi_master')">
+      ${stores.map(s=>`<option value="${s.id}" ${sid===s.id?'selected':''}>${s.name}</option>`).join('')}</select>
+    <span class="tag" style="background:${fm.color}1a;color:${fm.color};font-size:10px"><i class="ti ${fm.icon}" style="font-size:11px"></i> ${fm.name}</span>
+  </div></div>`;
+  html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">業態デフォルト値が薄字で入っています。店舗で変えたい項目だけ数値を入れると<b>上書き</b>されます。空欄なら業態デフォルトを使用。</div>`;
+  var base = getFormatKpi(store.format||'dining');
+  var ov = getStoreKpiOverride(sid);
+  var kpis = kpisForFormat(store.format||'dining');
+  html += `<div class="card"><div style="display:grid;grid-template-columns:1fr auto auto;gap:8px 12px;align-items:center">
+    <div style="font-size:11px;color:var(--muted);font-weight:700">KPI</div>
+    <div style="font-size:11px;color:var(--muted);font-weight:700;text-align:center">業態既定</div>
+    <div style="font-size:11px;color:var(--muted);font-weight:700;text-align:center">店舗上書き</div>`;
+  kpis.forEach(k=>{
+    var isOv = ov[k.key]!=null;
+    html += `<div style="font-size:12px">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:10px;color:var(--yellow)"></i>':''}<span style="font-size:10px;color:var(--muted)"> ${k.unit}</span></div>
+      <div style="text-align:center;font-size:12px;color:var(--muted)">${base[k.key]!=null?base[k.key]:'—'}</div>
+      <input class="form-input" style="width:80px;padding:6px;text-align:right;${isOv?'border-color:var(--accent)':''}" type="number" step="any" id="sk-${k.key}" value="${isOv?ov[k.key]:''}" placeholder="${base[k.key]!=null?base[k.key]:''}">`;
+  });
+  html += `</div>
+    <div class="btn-row" style="margin-top:12px">
+      <button class="btn btn-secondary" onclick="clearStoreKpi('${sid}')">上書きをクリア</button>
+      <button class="btn btn-primary" onclick="saveStoreKpiFromForm('${sid}')"><i class="ti ti-device-floppy"></i> 保存</button>
+    </div></div>`;
+  return html;
+}
+function saveFormatKpiFromForm(fmt){
+  var kpis = kpisForFormat(fmt); var vals={};
+  kpis.forEach(k=>{ var el=document.getElementById('fk-'+fmt+'-'+k.key); if(el&&el.value!=='') vals[k.key]=parseFloat(el.value); });
+  setFormatKpi(fmt, vals);
+  showToast(formatMeta(fmt).name+'のKPIを保存しました','success');
+  renderPage('kpi_master');
+}
+function saveStoreKpiFromForm(sid){
+  var store = getStoresAll().find(s=>s.id===sid);
+  var kpis = kpisForFormat(store.format||'dining'); var ov={};
+  kpis.forEach(k=>{ var el=document.getElementById('sk-'+k.key); if(el&&el.value!=='') ov[k.key]=parseFloat(el.value); });
+  setStoreKpiOverride(sid, ov);
+  showToast(store.name+'のKPI上書きを保存しました','success');
+  renderPage('kpi_master');
+}
+function clearStoreKpi(sid){
+  if(!confirm('この店舗の上書きをすべて消して、業態デフォルトに戻しますか？')) return;
+  setStoreKpiOverride(sid, {});
+  showToast('業態デフォルトに戻しました','info');
+  renderPage('kpi_master');
+}
+/* 実績入力タブ：手入力KPI（月別）＋ ドリンク/アップセル対象指定 */
+function renderKpiManualTab(){
+  var stores = activeStores();
+  if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = stores[0]?stores[0].id:null;
+  if (!window._kpiManualOffset) window._kpiManualOffset = 0;
+  var sid = window._kpiStore;
+  var store = getStoresAll().find(s=>s.id===sid)||{};
+  var offset = window._kpiManualOffset;
+  var period = periodForOffset(offset);
+  var man = getKpiManual(sid, period);
+  var html = `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <select class="form-select" style="width:auto;padding:6px" onchange="window._kpiStore=this.value;renderPage('kpi_master')">
+      ${stores.map(s=>`<option value="${s.id}" ${sid===s.id?'selected':''}>${s.name}</option>`).join('')}</select>
+    <div style="display:flex;gap:4px">
+      <button class="btn btn-${offset===0?'primary':'secondary'} btn-sm" onclick="window._kpiManualOffset=0;renderPage('kpi_master')">今月</button>
+      <button class="btn btn-${offset===-1?'primary':'secondary'} btn-sm" onclick="window._kpiManualOffset=-1;renderPage('kpi_master')">先月</button>
+    </div>
+    <span style="font-size:11px;color:var(--muted)">${period}</span>
+  </div></div>`;
+
+  // 手入力KPI
+  html += `<div class="card"><div class="card-title"><i class="ti ti-edit"></i>手入力KPI <span style="font-size:11px;color:var(--muted);font-weight:400">${store.name} / ${period}</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Toastで取れないKPIです。月ごとに実績を入力してください（GM以上）。</div>`;
+  var manKpis=[['repeatRate','リピート率','%'],['reviewScore','Google Review点数','★'],['reviewYelp','Yelp点数','★'],['reviewReply','口コミ返信率','%']];
+  // 口コミページへのリンク（登録済みなら）
+  if (store.googleUrl || store.yelpUrl) {
+    html += `<div style="display:flex;gap:6px;margin-bottom:8px">
+      ${store.googleUrl?`<a href="${store.googleUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="text-decoration:none"><i class="ti ti-brand-google"></i> Googleで確認</a>`:''}
+      ${store.yelpUrl?`<a href="${store.yelpUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="text-decoration:none"><i class="ti ti-brand-yelp"></i> Yelpで確認</a>`:''}
+    </div>`;
+  } else {
+    html += `<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 店舗マスターでGoogle/YelpのURLを登録すると、ここから確認リンクが出ます。</div>`;
+  }
+  manKpis.forEach(m=>{
+    html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
+      <label style="flex:1;font-size:13px">${m[1]} <span style="font-size:10px;color:var(--muted)">(${m[2]})</span></label>
+      <input class="form-input" style="width:100px;padding:6px;text-align:right" type="number" step="any" id="km-${m[0]}" value="${man[m[0]]!=null?man[m[0]]:''}">
+    </div>`;
+  });
+  html += `<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveKpiManual('${sid}','${period}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`;
+
+  // ドリンク/アップセル対象指定（全店共通）
+  var cfg = getKpiConfig();
+  // 全店のメニューからカテゴリ一覧を集める
+  var allCats = {}; (typeof getRecipes==='function'?getRecipes():[]).forEach(r=>{ if(r.category) allCats[r.category]=1; });
+  var catList = Object.keys(allCats).sort();
+  html += `<div class="card"><div class="card-title"><i class="ti ti-glass-cocktail"></i>ドリンク比率の対象カテゴリ</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">「ドリンク」とみなすメニューカテゴリを選択（複数可）。選ぶと自動で比率を計算します。</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">`;
+  if (catList.length){
+    catList.forEach(c=>{
+      var on=(cfg.drinkCats||[]).includes(c);
+      html += `<label style="display:flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid ${on?'var(--accent)':'var(--border)'};border-radius:8px;cursor:pointer;font-size:12px;background:${on?'var(--accent)14':'transparent'}">
+        <input type="checkbox" class="kpi-drinkcat" value="${c.replace(/"/g,'&quot;')}" ${on?'checked':''}> ${c}</label>`;
+    });
+  } else { html += `<span style="font-size:12px;color:var(--muted)">メニューが未取込です。Toast同期後に選べます。</span>`; }
+  html += `</div><button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveDrinkCats()"><i class="ti ti-device-floppy"></i> ドリンクカテゴリを保存</button></div>`;
+
+  html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-up-circle"></i>アップセル対象商品</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">トッピング/アップグレード等「アップセル」とみなす商品を指定（出数÷客数で比率計算）。${store.name}のメニューから選択。</div>`;
+  var storeRecipes = (typeof getRecipes==='function'?getRecipes():[]).filter(r=>(r.storeId===sid||r.storeId==null)&&r.toastGuid);
+  if (storeRecipes.length){
+    html += `<div style="max-height:30vh;overflow-y:auto">`;
+    storeRecipes.forEach(r=>{
+      var on=(cfg.upsellGuids||[]).includes(r.toastGuid);
+      html += `<label style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px">
+        <input type="checkbox" class="kpi-upsell" value="${r.toastGuid}" ${on?'checked':''}>
+        <span style="flex:1">${r.name}</span><span style="font-size:10px;color:var(--muted)">${r.category||''}</span></label>`;
+    });
+    html += `</div>`;
+  } else { html += `<span style="font-size:12px;color:var(--muted)">この店舗のメニューが未取込です。</span>`; }
+  html += `<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveUpsellGuids()"><i class="ti ti-device-floppy"></i> アップセル対象を保存</button></div>`;
+  return html;
+}
+function saveKpiManual(sid, period){
+  var vals=getKpiManual(sid, period);
+  ['repeatRate','reviewScore','reviewYelp','reviewReply'].forEach(k=>{ var el=document.getElementById('km-'+k); if(el) vals[k]= el.value!==''?parseFloat(el.value):undefined; });
+  setKpiManual(sid, period, vals);
+  showToast('手入力KPIを保存しました','success');
+  renderPage('kpi_master');
+}
+function saveDrinkCats(){
+  var cfg=getKpiConfig();
+  cfg.drinkCats = Array.from(document.querySelectorAll('.kpi-drinkcat:checked')).map(c=>c.value);
+  setKpiConfig(cfg);
+  showToast('ドリンクカテゴリを保存しました','success');
+  renderPage('kpi_master');
+}
+function saveUpsellGuids(){
+  var cfg=getKpiConfig();
+  cfg.upsellGuids = Array.from(document.querySelectorAll('.kpi-upsell:checked')).map(c=>c.value);
+  setKpiConfig(cfg);
+  showToast('アップセル対象を保存しました','success');
+  renderPage('kpi_master');
+}
+
 function renderStoreMaster() {
   var stores = getStoresAll();
   var activeCount = stores.filter(s=>s.active).length;
@@ -15078,16 +15591,22 @@ function renderStoreMaster() {
     <i class="ti ti-info-circle"></i><div style="font-size:12px">プロトタイプは稼働中店舗のみ操作対象になります。activeを切り替えて段階展開できます。</div></div>`;
 
   stores.forEach(s => {
+    var fm = formatMeta(s.format||'dining');
     html += `<div class="card">
       <div class="approval-header">
         <div class="card-title" style="color:${s.color};margin:0"><span class="store-dot" style="background:${s.color}"></span>${s.name}
-          <span class="tag tag-gray" style="font-size:9px">${s.brand}</span></div>
+          <span class="tag tag-gray" style="font-size:9px">${s.brand}</span>
+          <span class="tag" style="font-size:9px;background:${fm.color}1a;color:${fm.color}"><i class="ti ${fm.icon}" style="font-size:10px"></i> ${fm.name}</span></div>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
           <input type="checkbox" ${s.active?'checked':''} onchange="toggleStoreActive('${s.id}')"> ${s.active?'<span style="color:var(--green)">稼働中</span>':'<span style="color:var(--muted)">準備中</span>'}
         </label>
       </div>
-      <div style="font-size:12px;color:var(--muted);margin-top:6px">
-        ${s.hours} · ${s.days} ${s.toastGuid?'· Toast: '+s.toastGuid.slice(0,8)+'...':'· Toast未設定'}
+      <div style="font-size:12px;color:var(--muted);margin-top:6px;display:flex;flex-wrap:wrap;gap:10px">
+        <span><i class="ti ti-sun" style="font-size:12px;color:#d98908"></i> ${s.lunchHours||'—'}</span>
+        <span><i class="ti ti-moon" style="font-size:12px;color:#8b5cf6"></i> ${s.dinnerHours||'—'}</span>
+        <span><i class="ti ti-shopping-bag" style="font-size:12px;color:${s.takeout?'#2e6fd6':'var(--muted)'}"></i> ${s.takeout?'テイクアウト有':'店内のみ'}</span>
+        <span>${s.days}</span>
+        <span>${s.toastGuid?'Toast: '+s.toastGuid.slice(0,8)+'...':'Toast未設定'}</span>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:6px">
         <i class="ti ti-lock" style="font-size:13px"></i>店舗ログインPIN: <span style="font-family:monospace;letter-spacing:2px;color:var(--tm)">${getStorePin(s.id)}</span>
@@ -15095,6 +15614,7 @@ function renderStoreMaster() {
       </div>
       <div class="approval-actions">
         <button class="btn btn-secondary btn-sm" onclick="openStoreModal('${s.id}')"><i class="ti ti-edit"></i> 編集</button>
+        <button class="btn btn-secondary btn-sm" onclick="go('kpi_master');setTimeout(()=>{window._kpiStore='${s.id}';renderPage('kpi_master');},10)"><i class="ti ti-target"></i> KPI</button>
       </div>
     </div>`;
   });
@@ -15127,7 +15647,7 @@ function toggleStoreActive(storeId) {
 
 function openStoreModal(storeId) {
   var stores = getStoresAll();
-  var s = storeId ? stores.find(x=>x.id===storeId) : {id:'', name:'', brand:'', color:'#888', toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false};
+  var s = storeId ? stores.find(x=>x.id===storeId) : {id:'', name:'', brand:'', color:'#888', toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false, format:'dining', lunchHours:'11:00-14:30', dinnerHours:'17:00-22:00', takeout:true};
   var isNew = !storeId;
   openModal(`<div class="modal-title">${isNew?'店舗追加':'店舗編集'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="form-row">
@@ -15135,11 +15655,24 @@ function openStoreModal(storeId) {
       <div class="form-group"><label class="form-label">ブランド</label><input class="form-input" id="st-brand" value="${s.brand||''}" placeholder="Totoya等"></div>
     </div>
     ${isNew?`<div class="form-group"><label class="form-label">店舗ID</label><input class="form-input" id="st-id" placeholder="例: F06"></div>`:''}
+    <div class="form-group"><label class="form-label">業態</label>
+      <div style="display:flex;gap:8px">${STORE_FORMATS.map(f=>`
+        <label style="flex:1;display:flex;align-items:center;gap:6px;padding:10px;border:2px solid ${(s.format||'dining')===f.key?f.color:'var(--border)'};border-radius:10px;cursor:pointer;background:${(s.format||'dining')===f.key?f.color+'14':'transparent'}">
+          <input type="radio" name="st-format" value="${f.key}" ${(s.format||'dining')===f.key?'checked':''} style="display:none">
+          <i class="ti ${f.icon}" style="font-size:18px;color:${f.color}"></i>
+          <span><span style="font-size:13px;font-weight:600;display:block">${f.name}</span><span style="font-size:10px;color:var(--muted)">${f.desc}</span></span>
+        </label>`).join('')}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">業態によって適用されるKPIが変わります（KPI管理タブで設定）</div>
+    </div>
     <div class="form-group"><label class="form-label">Toast Restaurant GUID</label><input class="form-input" id="st-toast" value="${s.toastGuid||''}" placeholder="Toast連携用ID（任意）"></div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">営業時間</label><input class="form-input" id="st-hours" value="${s.hours||''}" placeholder="11:00-22:00"></div>
-      <div class="form-group"><label class="form-label">営業日</label><input class="form-input" id="st-days" value="${s.days||''}" placeholder="毎日 / 火-日"></div>
+      <div class="form-group"><label class="form-label">ランチ営業時間</label><input class="form-input" id="st-lunch" value="${s.lunchHours||''}" placeholder="11:00-14:30"></div>
+      <div class="form-group"><label class="form-label">ディナー営業時間</label><input class="form-input" id="st-dinner" value="${s.dinnerHours||''}" placeholder="17:00-22:00"></div>
     </div>
+    <div class="form-group"><label class="form-label">営業日</label><input class="form-input" id="st-days" value="${s.days||''}" placeholder="毎日 / 火-日"></div>
+    <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="st-takeout" ${s.takeout?'checked':''}> テイクアウトあり</label></div>
+    <div class="form-group"><label class="form-label">Google Review ページURL</label><input class="form-input" id="st-gurl" value="${s.googleUrl||''}" placeholder="https://g.page/... または Google Mapsの店舗URL"></div>
+    <div class="form-group"><label class="form-label">Yelp ページURL</label><input class="form-input" id="st-yurl" value="${s.yelpUrl||''}" placeholder="https://www.yelp.com/biz/..."></div>
     <div class="form-group"><label class="form-label">カラー</label><input class="form-input" id="st-color" type="color" value="${s.color}" style="height:40px"></div>
     <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="st-active" ${s.active?'checked':''}> 稼働中（プロトタイプ対象にする）</label></div>
     ${!isNew?`<div style="font-size:11px;color:var(--muted);margin-bottom:8px">※ 追加後の設定（スタッフ紐付け・業者・Daily Ops・Required・ポジション・Skill）は各マスター画面で行えます</div>`:''}
@@ -15152,10 +15685,18 @@ function openStoreModal(storeId) {
 function saveStore(storeId) {
   var name = document.getElementById('st-name').value.trim();
   if (!name) { alert('店舗名を入力してください'); return; }
+  var fmtEl = document.querySelector('input[name="st-format"]:checked');
+  var lunch = document.getElementById('st-lunch').value.trim();
+  var dinner = document.getElementById('st-dinner').value.trim();
   var data = {
     name, brand: document.getElementById('st-brand').value.trim()||name,
     toastGuid: document.getElementById('st-toast').value.trim(),
-    hours: document.getElementById('st-hours').value.trim(),
+    format: fmtEl ? fmtEl.value : 'dining',
+    lunchHours: lunch, dinnerHours: dinner,
+    hours: (lunch&&dinner) ? (lunch.split('-')[0]+'-'+dinner.split('-').slice(-1)[0]) : (lunch||dinner||''),
+    takeout: document.getElementById('st-takeout').checked,
+    googleUrl: (document.getElementById('st-gurl')||{}).value ? document.getElementById('st-gurl').value.trim() : '',
+    yelpUrl: (document.getElementById('st-yurl')||{}).value ? document.getElementById('st-yurl').value.trim() : '',
     days: document.getElementById('st-days').value.trim(),
     color: document.getElementById('st-color').value,
     active: document.getElementById('st-active').checked,
@@ -15169,7 +15710,6 @@ function saveStore(storeId) {
     if (stores.find(x=>x.id===id)) { alert('そのIDは既に存在します'); return; }
     data.id = id; data.am = '';
     stores.push(data);
-    // 新店舗のポジション初期化
     setStorePositions(id, ALL_POSITIONS);
   }
   setStoresAll(stores);
