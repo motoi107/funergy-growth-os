@@ -958,8 +958,8 @@ function formatMeta(key){ return STORE_FORMATS.find(f=>f.key===key) || STORE_FOR
    dir: 'up'=高いほど良い / 'down'=低いほど良い。unit/fmt は表示用。 */
 const KPI_DEFS = [
   // ① 集客数(L/D)
-  {key:'lunchGuests',  label:'集客数(ランチ)',  unit:'名/日', dir:'up',   scope:'both'},
-  {key:'dinnerGuests', label:'集客数(ディナー)', unit:'名/日', dir:'up',   scope:'both'},
+  {key:'lunchGuests',  label:'集客数(ランチ)',  unit:'名/月', dir:'up',   scope:'both'},
+  {key:'dinnerGuests', label:'集客数(ディナー)', unit:'名/月', dir:'up',   scope:'both'},
   // ② 客単価(L/D)
   {key:'ppaLunch',     label:'客単価(ランチ)',  unit:'$',     dir:'up',   scope:'both'},
   {key:'ppaDinner',    label:'客単価(ディナー)', unit:'$',     dir:'up',   scope:'both'},
@@ -995,11 +995,17 @@ function setFormatKpi(fmt, vals){
   var saved = ls('m_format_kpi', {}); saved[fmt]=vals; lsSet('m_format_kpi', saved);
 }
 /* 店舗の実効KPI目標 = 業態デフォルト ← 店舗上書き(kpiOverride) */
-function getStoreKpiTargets(storeId){
+function getStoreKpiTargets(storeId, offset){
   var s = getStoresAll().find(x=>x.id===storeId); if(!s) return {};
   var base = getFormatKpi(s.format||'dining');
   var ov = (ls('m_store_kpi', {})[storeId])||{};
-  return Object.assign({}, base, ov);
+  var merged = Object.assign({}, base, ov);
+  // 集客数(L/D)は予実の客数予算（月合計）と連動。予実に入力があれば上書き。
+  var bl = budgetGuestsMonthly(storeId, 'lunch', offset||0);
+  var bd = budgetGuestsMonthly(storeId, 'dinner', offset||0);
+  if (bl!=null) merged.lunchGuests = bl;
+  if (bd!=null) merged.dinnerGuests = bd;
+  return merged;
 }
 function getStoreKpiOverride(storeId){ return (ls('m_store_kpi', {})[storeId])||{}; }
 function setStoreKpiOverride(storeId, ov){
@@ -1044,8 +1050,8 @@ function computeKpiActuals(storeId, offset){
   // --- Toast月次集計（売上・客数・客単価・人件費・テイクアウト）: 既存の月次仕組みがあれば利用 ---
   var ms = (typeof monthStats==='function') ? safeMonthStats(storeId, offset) : null;
   if (ms){
-    if (ms.lunchGuests!=null) out.lunchGuests = Math.round(ms.lunchGuests/(ms.days||1));
-    if (ms.dinnerGuests!=null) out.dinnerGuests = Math.round(ms.dinnerGuests/(ms.days||1));
+    if (ms.lunchGuests!=null) out.lunchGuests = Math.round(ms.lunchGuests);
+    if (ms.dinnerGuests!=null) out.dinnerGuests = Math.round(ms.dinnerGuests);
     if (ms.ppaLunch!=null) out.ppaLunch = Math.round(ms.ppaLunch*100)/100;
     if (ms.ppaDinner!=null) out.ppaDinner = Math.round(ms.ppaDinner*100)/100;
     if (ms.laborPct!=null) out.laborPct = Math.round(ms.laborPct*10)/10;
@@ -1060,7 +1066,7 @@ function computeKpiActuals(storeId, offset){
    各KPIの達成度 = up:実績/目標、down:目標/実績（100%上限）。 */
 function kpiAchievement(storeId, offset){
   var store = getStoresAll().find(s=>s.id===storeId)||{};
-  var targets = getStoreKpiTargets(storeId);
+  var targets = getStoreKpiTargets(storeId, offset);
   var act = computeKpiActuals(storeId, offset).actuals;
   var kpis = kpisForFormat(store.format||'dining');
   var sum=0, n=0, met=0, total=0;
@@ -3400,7 +3406,7 @@ function storeHealthScore(arg){
   if (!storeId) return 0;
   var offset = window._kpiDashOffset||0;
   var store = getStoresAll().find(s=>s.id===storeId)||{};
-  var targets = getStoreKpiTargets(storeId);
+  var targets = getStoreKpiTargets(storeId, offset);
   var act = computeKpiActuals(storeId, offset).actuals;
   var kpis = kpisForFormat(store.format||'dining');
   var wSum=0, wScore=0;
@@ -4308,6 +4314,24 @@ function dowSegBreakdown(dow, ym) {
     takeout: dowSegMonthly(dow,'takeout',counts),
     counts: counts,
   };
+}
+/* 予実の客数予算（月合計）。区分別に客数×曜日回数を合算。
+   集客数KPIの目標として使う（予実連動）。offset=0今月/-1先月 */
+function budgetGuestsMonthly(storeId, seg, offset){
+  var b = getBudgets().find(x=>x.storeId===storeId);
+  if (!b) return null;
+  var dow = getDow(b);
+  if (!dow || !dow[seg]) return null;
+  var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
+  var counts = weekdayCountsForMonth(d.getFullYear(), d.getMonth()+1);
+  var total=0, hasData=false;
+  for (var i=0;i<7;i++){
+    var cell = dow[seg][i]||{};
+    var g = parseFloat(cell.guests)||0;
+    if (g>0) hasData=true;
+    total += g*(counts[i]||0);
+  }
+  return hasData ? Math.round(total) : null;
 }
 /* この予算が曜日別モードを使っているか（dowに1つでも入力あり） */
 function usesDowMode(b) {
@@ -15473,7 +15497,7 @@ function renderKpiMaster() {
   var speriod = periodForOffset(soff);
   var ach = kpiAchievement(sid, soff);
   var achCol = ach.pct==null?'var(--muted)':ach.pct>=100?'var(--green)':ach.pct>=85?'var(--yellow)':'var(--red)';
-  var sTargets = getStoreKpiTargets(sid);
+  var sTargets = getStoreKpiTargets(sid, soff);
   var sAct = computeKpiActuals(sid, soff).actuals;
   var sKpis = kpisForFormat(store.format||'dining');
   html += `<div class="card">
@@ -15521,6 +15545,14 @@ function renderKpiMaster() {
     <div style="font-size:11px;color:var(--muted);font-weight:700;text-align:center">店舗上書き</div>`;
   kpis.forEach(k=>{
     var isOv = ov[k.key]!=null;
+    if (k.key==='lunchGuests' || k.key==='dinnerGuests') {
+      var seg = k.key==='lunchGuests'?'lunch':'dinner';
+      var bg = budgetGuestsMonthly(sid, seg, 0);
+      html += `<div style="font-size:12px">${k.label}<span style="font-size:10px;color:var(--muted)"> ${k.unit}</span></div>
+        <div style="text-align:center;font-size:12px;color:var(--muted)">—</div>
+        <div style="text-align:right;font-size:12px"><span class="tag" style="font-size:8px;background:var(--surface2);color:var(--accent2)">予実連動</span> <b>${bg!=null?bg.toLocaleString():'未設定'}</b></div>`;
+      return;
+    }
     html += `<div style="font-size:12px">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:10px;color:var(--yellow)"></i>':''}<span style="font-size:10px;color:var(--muted)"> ${k.unit}</span></div>
       <div style="text-align:center;font-size:12px;color:var(--muted)">${base[k.key]!=null?base[k.key]:'—'}</div>
       <input class="form-input" style="width:80px;padding:6px;text-align:right;${isOv?'border-color:var(--accent)':''}${canEditT?'':';background:var(--surface2);color:var(--muted)'}" type="number" step="any" id="sk-${k.key}" value="${isOv?ov[k.key]:''}" placeholder="${base[k.key]!=null?base[k.key]:''}" ${canEditT?'':'readonly'}>`;
