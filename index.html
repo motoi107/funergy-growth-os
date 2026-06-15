@@ -2215,6 +2215,9 @@ const PERM_LEVELS = [
   {id:'leader',  label:'リーダー'},
   {id:'crew',    label:'クルー'},
 ];
+/* 権限ロール → 権限レベル（自動対応）。役職と権限を統合管理。 */
+const ROLE_TO_PERM = { ceo:'full', gm:'full', office:'finance', am:'manager', sl:'leader', crew:'crew' };
+function permFromRole(role){ return ROLE_TO_PERM[role] || 'crew'; }
 
 /* マスター取得ヘルパー */
 function getCategories() { return ls('m_categories', DEFAULT_CATEGORIES); }
@@ -3459,16 +3462,18 @@ function healthRing(score, color, size){
   </svg>`;
 }
 function getVisibleStores() {
-  // AMは常に管轄店舗のみ（curStore=ALLでも管轄外は見せない）
+  // AMは常に管轄店舗のみ（+応援店舗）。curStore=ALLでも管轄外は見せない
   if (curRole === 'am') {
-    var amStores = activeStores().filter(s => myAmStores().includes(s.id));
+    var amIds = myAmStores().concat(mySupportStores());
+    var amStores = activeStores().filter(s => amIds.includes(s.id));
     if (curStore && curStore !== 'ALL') return amStores.filter(s => s.id === curStore);
     return amStores;
   }
-  // SL/crew は配属店舗のみ
+  // SL/crew は配属店舗 + 応援店舗
   if (curRole === 'sl' || curRole === 'crew') {
-    var mine = curStore && curStore !== 'ALL' ? curStore : myStoreId();
-    return activeStores().filter(s => s.id === mine);
+    var ids = [myStoreId()].concat(mySupportStores());
+    if (curStore && curStore !== 'ALL' && !ids.includes(curStore)) ids = [curStore];
+    return activeStores().filter(s => ids.includes(s.id));
   }
   // 全権（CEO/GM/経理）
   if (curStore === 'ALL') return activeStores();
@@ -3478,6 +3483,11 @@ function getVisibleStores() {
 function myStoreId() {
   var me = getEmployees().find(x=>x.name===(curUserName||(ROLE_CONFIG[curRole]||{}).name));
   return me ? me.store : (curStore && curStore!=='ALL' ? curStore : (STORES[0]||{}).id);
+}
+/* ログイン中ユーザーの応援店舗ID配列（配属店舗と同じアクセス扱い） */
+function mySupportStores() {
+  var me = getEmployees().find(x=>x.name===(curUserName||(ROLE_CONFIG[curRole]||{}).name));
+  return (me && Array.isArray(me.support)) ? me.support.slice() : [];
 }
 function storeData(id) {
   var d = DEMO_BUDGET[id] || {b:200000,a:190000,fc:30,labor:28};
@@ -8171,7 +8181,7 @@ const JOB_TITLES = [
   {key:'Store Manager',  label:'Store Manager',  payType:'monthly', permRole:'sl',   defMonthly:4500},
   {key:'Area Manager',   label:'Area Manager',   payType:'monthly', permRole:'am',   defMonthly:6000},
   {key:'General Manager',label:'General Manager',payType:'monthly', permRole:'gm',   defMonthly:8000},
-  {key:'Accountant',     label:'Accountant',     payType:'hourly',  permRole:'office',defWage:26},
+  {key:'Accountant',     label:'Accountant',     payType:'monthly',  permRole:'office',defWage:26},
   {key:'CEO',            label:'CEO',            payType:'monthly', permRole:'ceo',  defMonthly:10000},
 ];
 function jobTitle(key){ return JOB_TITLES.find(t=>t.key===key); }
@@ -10468,6 +10478,11 @@ function payFieldsHtml(e) {
   }
 }
 /* 役職変更時に給与欄を月給/時給で切り替え */
+function empRoleChanged(){
+  var role = (document.getElementById('e-role')||{}).value;
+  var ph = document.getElementById('e-perms');
+  if (role && ph) ph.value = permFromRole(role);
+}
 function empTitleChanged() {
   var title = document.getElementById('e-title').value;
   var wrap = document.getElementById('e-pay-fields');
@@ -10523,8 +10538,10 @@ function openEmpModal(empId) {
       <div class="form-group"><label class="form-label">従業員コード（Toast連携）</label><input class="form-input" id="e-code" value="${e.empCode||''}" placeholder="例: TT-0042"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">権限ロール</label>
-        <select class="form-select" id="e-role">${['ceo','gm','office','am','sl','crew'].map(r=>`<option value="${r}"${e.role===r?' selected':''}>${ROLE_CONFIG[r].label}</option>`).join('')}</select>
+      <div class="form-group"><label class="form-label">権限ロール ${canEditWages()?'':'<span class="tag" style="font-size:8px;background:var(--surface2);color:var(--muted)">GM以上のみ変更可</span>'}</label>
+        <select class="form-select" id="e-role" onchange="empRoleChanged()" ${canEditWages()?'':'disabled'}>${['ceo','gm','office','am','sl','crew'].map(r=>`<option value="${r}"${e.role===r?' selected':''}>${ROLE_CONFIG[r].label}（${PERM_LEVELS.find(p=>p.id===permFromRole(r)).label}）</option>`).join('')}</select>
+        <input type="hidden" id="e-perms" value="${e.perms||permFromRole(e.role)}">
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">権限ロールで権限レベル（アクセス範囲）が自動で決まります。</div>
       </div>
       <div class="form-group"><label class="form-label">配属店舗</label>
         <select class="form-select" id="e-store">${storeOpts.map(s=>`<option value="${s.id}"${e.store===s.id?' selected':''}>${s.name}</option>`).join('')}</select>
@@ -10533,7 +10550,7 @@ function openEmpModal(empId) {
     <div class="form-group"><label class="form-label">役職（肩書き）</label>
       <select class="form-select" id="e-title" onchange="empTitleChanged()">
         <option value="">（未設定）</option>
-        ${JOB_TITLES.map(t=>`<option value="${t.key}"${e.title===t.key?' selected':''}>${t.label}${t.payType==='monthly'?'（月給）':'（時給）'}</option>`).join('')}
+        ${JOB_TITLES.map(t=>`<option value="${t.key}"${e.title===t.key?' selected':''}>${t.label}</option>`).join('')}
       </select>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">役職で給与形態（月給/時給）が決まります。権限ロールとは別管理です。</div>
     </div>
@@ -10570,9 +10587,6 @@ function openEmpModal(empId) {
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-insurance"${e.insurance?' checked':''}> 医療保険あり</label>
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-dental"${e.dental?' checked':''}> 歯科保険あり</label>
       </div>
-    </div>
-    <div class="form-group"><label class="form-label">権限レベル</label>
-      <select class="form-select" id="e-perms">${PERM_LEVELS.map(p=>`<option value="${p.id}"${e.perms===p.id?' selected':''}>${p.label}</option>`).join('')}</select>
     </div>
     ${canViewWageOf(e)?(canEditWages()
       ? `<div class="form-group" id="e-pay-wrap"><label class="form-label">給与 <span class="tag tag-red" style="font-size:8px">GM/CEO限定</span></label>
@@ -10622,7 +10636,7 @@ function saveEmp(empId) {
     resignDate: document.getElementById('e-resign').value,
     firstWork: (document.getElementById('e-firstwork')||{}).value || '',
     status: document.getElementById('e-status').value,
-    perms: document.getElementById('e-perms').value,
+    perms: permFromRole(document.getElementById('e-role').value),
     email: document.getElementById('e-email').value.trim(),
     phone: document.getElementById('e-phone').value.trim(),
     insurance: document.getElementById('e-insurance').checked,
