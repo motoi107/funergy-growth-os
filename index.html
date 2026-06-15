@@ -937,6 +937,8 @@ function getStoresAll() {
   var s = ls('m_stores', DEFAULT_STORES);
   s.forEach(x=>{
     if(x.active===undefined) x.active=true; if(!x.brand) x.brand=x.name;
+    // Toast GUIDは小文字に正規化（大文字混入によるToast不一致を防ぐ）
+    if(x.toastGuid) x.toastGuid = String(x.toastGuid).trim().toLowerCase();
     // 新フィールドの既定値（後方互換）
     if(x.format===undefined) x.format = (x.brand==='Tenkichi'||x.brand==='Marujuu') ? 'izakaya' : 'dining';
     if(x.lunchHours===undefined) x.lunchHours = '11:00-14:30';
@@ -13365,16 +13367,16 @@ async function runToastDiag() {
       <span style="color:var(--muted)">※ Toast連携の認証（TOAST_CLIENT_ID/SECRET）に問題がある可能性があります。</span></div>`;
     return;
   }
-  // アクセスできるGUID集合
+  // アクセスできるGUID集合（小文字キーで照合）
   var accGuids = {};
-  list.forEach(function(r){ if (r && r.restaurantGuid) accGuids[r.restaurantGuid] = r; });
+  list.forEach(function(r){ if (r && r.restaurantGuid) accGuids[String(r.restaurantGuid).toLowerCase()] = r; });
   // 店舗マスターとの照合
   var stores = getStoresAll();
   var rows = stores.map(function(s){
     var g = (s.toastGuid||'').trim();
     var status, color;
     if (!g) { status = 'GUID未設定'; color = 'var(--muted)'; }
-    else if (accGuids[g]) { status = '✓ 連携OK'; color = 'var(--green)'; }
+    else if (accGuids[g.toLowerCase()]) { status = '✓ 連携OK'; color = 'var(--green)'; }
     else { status = '✗ Toast未接続/GUID違い'; color = 'var(--red)'; }
     return `<tr>
       <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${escapeHtml(s.name)}</td>
@@ -13383,8 +13385,8 @@ async function runToastDiag() {
     </tr>`;
   }).join('');
   // 連携にあるが店舗マスターに紐づいていないレストラン
-  var mappedGuids = {}; stores.forEach(function(s){ if(s.toastGuid) mappedGuids[s.toastGuid.trim()]=1; });
-  var unmapped = list.filter(function(r){ return r.restaurantGuid && !mappedGuids[r.restaurantGuid]; });
+  var mappedGuids = {}; stores.forEach(function(s){ if(s.toastGuid) mappedGuids[s.toastGuid.trim().toLowerCase()]=1; });
+  var unmapped = list.filter(function(r){ return r.restaurantGuid && !mappedGuids[String(r.restaurantGuid).toLowerCase()]; });
   var unmappedHtml = unmapped.length ? unmapped.map(function(r){
     var nm = r.restaurantName || r.locationName || '(名称なし)';
     return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
@@ -16716,7 +16718,7 @@ function saveStore(storeId) {
   var dinner = document.getElementById('st-dinner').value.trim();
   var data = {
     name, brand: document.getElementById('st-brand').value.trim()||name,
-    toastGuid: document.getElementById('st-toast').value.trim(),
+    toastGuid: document.getElementById('st-toast').value.trim().toLowerCase(),
     format: fmtEl ? fmtEl.value : 'dining',
     lunchHours: lunch, dinnerHours: dinner,
     hours: (lunch&&dinner) ? (lunch.split('-')[0]+'-'+dinner.split('-').slice(-1)[0]) : (lunch||dinner||''),
