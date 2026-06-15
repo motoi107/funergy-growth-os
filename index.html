@@ -2966,6 +2966,59 @@ async function supaPushAllMasters(){
   return results;
 }
 
+/* PostgRESTからテーブルの全行を取得 */
+async function supaFetchAll(table, select){
+  try {
+    var res = await fetch(SUPABASE_URL+'/rest/v1/'+table+'?select='+encodeURIComponent(select||'*'), { headers: supaHeaders() });
+    if(!res.ok){ console.warn('supaFetchAll '+table+' failed', res.status); return null; }
+    return await res.json();
+  } catch(e){ console.warn('supaFetchAll error', table, e); return null; }
+}
+/* クラウド→この端末: 全マスターをSupabaseから取り込みlocalStorageへ反映（クラウドにデータがある分のみ上書き） */
+async function supaPullAllMasters(){
+  var results = [];
+  for (var key in SUPA_MASTER_MAP){
+    var def = SUPA_MASTER_MAP[key];
+    var rows = await supaFetchAll(def.table, 'data');
+    if (Array.isArray(rows) && rows.length){
+      var arr = rows.map(function(r){ return r.data; }).filter(function(x){ return x!=null; });
+      if (arr.length){
+        try { localStorage.setItem(key, JSON.stringify(arr)); } catch(e){}
+        results.push(def.table+': '+arr.length+'件 取込');
+      } else { results.push(def.table+': データなし(スキップ)'); }
+    } else {
+      results.push(def.table+': クラウドに無し(スキップ)');
+    }
+  }
+  // app_settings（key/value）→ 各設定キーへ復元
+  var settings = await supaFetchAll('app_settings', 'key,value');
+  if (Array.isArray(settings) && settings.length){
+    var cnt=0;
+    settings.forEach(function(row){
+      if (row && row.key){ try { localStorage.setItem(row.key, JSON.stringify(row.value)); cnt++; } catch(e){} }
+    });
+    results.push('app_settings: '+cnt+'件 取込');
+  } else {
+    results.push('app_settings: クラウドに無し(スキップ)');
+  }
+  return results;
+}
+async function runSupaPullAll(){
+  if (!confirm('Supabaseの最新マスターをこの端末に取り込みます。\nこの端末のローカルのマスターはクラウドの内容で上書きされます。よろしいですか？')) return;
+  var el=document.getElementById('supa-pull-result');
+  if(el) el.innerHTML='<i class="ti ti-loader"></i> クラウドから取り込み中…';
+  showToast('クラウドから取り込み中…','info');
+  try {
+    var results = await supaPullAllMasters();
+    if(el) el.innerHTML = '<b>取込結果:</b><br>'+results.join('<br>')+'<br><span style="color:var(--accent2)">画面を再読み込みします…</span>';
+    showToast('取り込み完了。再読み込みします','success');
+    setTimeout(function(){ location.reload(); }, 1800);
+  } catch(e){
+    if(el) el.innerHTML = '<span style="color:var(--red)">エラー: '+(e&&e.message?e.message:String(e))+'</span>';
+    showToast('取り込みに失敗しました','warning');
+  }
+}
+
 /* ============================================================
    LOGIN
 ============================================================ */
@@ -13332,6 +13385,11 @@ function renderSettings() {
         <button class="btn btn-primary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> 今のマスターを一括アップロード</button>
         <div style="font-size:11px;color:var(--muted);margin-top:6px">現在この端末に入っているマスターを、まとめてSupabaseへ投入します。</div>
       </div>
+      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> クラウドから取り込む（マスター読込）</button>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">Supabaseの最新マスターをこの端末に取り込みます。他の端末で追加した店舗などを反映できます。<b style="color:var(--accent2)">この端末のローカルはクラウドの内容で上書き</b>されます。</div>
+      </div>
+      <div id="supa-pull-result" style="font-size:11px;color:var(--muted);margin-top:10px"></div>
       <div id="supa-push-result" style="font-size:11px;color:var(--muted);margin-top:10px"></div>
     </div>`;
 
