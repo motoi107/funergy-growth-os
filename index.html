@@ -9903,21 +9903,17 @@ function genInviteToken(){
 function openInviteModal(){
   var stores = getVisibleStores();
   if(!stores.length) stores = STORES;
+  var firstStore = stores[0];
   openModal(`<div class="modal-title"><i class="ti ti-user-plus"></i> 採用者を招待 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">採用者の基本情報を入力すると、本人入力ページへの招待リンクが発行されます。</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">採用条件を設定して招待します。<b>氏名・Email・電話は本人が入力</b>します（入力ミス防止のため）。</div>
     <div style="max-height:60vh;overflow-y:auto;padding-right:4px">
-    <div class="form-group"><label class="form-label">氏名 / Name</label><input class="form-input" id="inv-name" placeholder="例: 田中 太郎 / Taro Tanaka"></div>
+    <div class="form-group"><label class="form-label">配属店舗 / Store</label>
+      <select class="form-select" id="inv-store" onchange="inviteStoreChanged()">${stores.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select></div>
+    <div class="form-group"><label class="form-label">ポジション / Position</label>
+      <select class="form-select" id="inv-pos">${getStorePositions(firstStore.id).map(p=>`<option value="${p}">${p}</option>`).join('')}</select>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">配属店舗のスキルレベルに登録されたポジションから選択</div></div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">配属店舗 / Store</label>
-        <select class="form-select" id="inv-store">${stores.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="form-label">ポジション / Position</label><input class="form-input" id="inv-pos" placeholder="例: Server"></div>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="inv-email" placeholder="name@example.com"></div>
-      <div class="form-group"><label class="form-label">電話 / Phone</label><input class="form-input" id="inv-phone" placeholder="808-xxx-xxxx"></div>
-    </div>
-    <div class="form-row">
-      ${canEditWages()?`<div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="inv-wage" type="number" step="0.25" value="16"></div>`:`<input type="hidden" id="inv-wage" value="16">`}
+      <div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="inv-wage" type="number" step="0.25" value="16"></div>
       <div class="form-group"><label class="form-label">勤務開始予定日 / Start</label><input class="form-input" id="inv-start" type="date"></div>
     </div>
     <div class="form-group"><label class="form-label">雇用区分 / Division</label>
@@ -9928,47 +9924,60 @@ function openInviteModal(){
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="createInvite()"><i class="ti ti-send"></i> 招待リンクを発行</button></div>`);
 }
+/* 配属店舗が変わったらポジション候補を入れ替え */
+function inviteStoreChanged(){
+  var sid=document.getElementById('inv-store').value;
+  var posSel=document.getElementById('inv-pos');
+  if(posSel) posSel.innerHTML = getStorePositions(sid).map(p=>`<option value="${p}">${p}</option>`).join('');
+}
 function createInvite(){
-  var name=document.getElementById('inv-name').value.trim();
-  if(!name){ alert('氏名を入力してください'); return; }
   var storeId=document.getElementById('inv-store').value;
   var storeObj=STORES.find(s=>s.id===storeId)||STORES[0];
   var days=parseInt(document.getElementById('inv-expiry').value)||7;
   var token=genInviteToken();
   var expiry=new Date(); expiry.setDate(expiry.getDate()+days);
   var candId=createOnboarding({
-    name, store:storeObj.id, storeName:storeObj.name,
-    pos:document.getElementById('inv-pos').value.trim(),
-    email:document.getElementById('inv-email').value.trim(),
-    phone:document.getElementById('inv-phone').value.trim(),
+    name:'', store:storeObj.id, storeName:storeObj.name,
+    pos:document.getElementById('inv-pos').value,
+    email:'', phone:'',
     wage:parseFloat(document.getElementById('inv-wage').value)||16,
     division:document.getElementById('inv-emp').value,
     plannedStart:document.getElementById('inv-start').value,
     inviteToken:token, linkExpiry:expiry.toISOString().slice(0,10), invitedBy:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''),
   });
   closeModalDirect();
-  showInviteLink(name, storeObj.name, token, expiry.toISOString().slice(0,10));
+  showInviteLink(storeObj.name, document.getElementById('inv-pos').value, token, expiry.toISOString().slice(0,10));
   renderPage('onboarding');
 }
-/* 発行された招待リンクを表示・共有 */
-function showInviteLink(name, storeName, token, expiry){
+/* 発行された招待リンクを表示・共有（Email / SMS / QR） */
+function showInviteLink(storeName, pos, token, expiry){
   var base = location.origin + location.pathname;
   var link = base + '?onboard=' + token;
-  var msgJa = `${name}さん、Funergy Groupへようこそ！入社手続きはこちらから入力してください（${expiry}まで有効）: ${link}`;
-  var msgEn = `Hi ${name}, welcome to Funergy Group! Please complete your onboarding here (valid until ${expiry}): ${link}`;
-  openModal(`<div class="modal-title"><i class="ti ti-link"></i> 招待リンクを発行しました <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="alert alert-success" style="padding:8px 10px;margin-bottom:10px;font-size:12px"><i class="ti ti-circle-check"></i> ${name}さん（${storeName}）の本人入力ページを作成しました。</div>
+  var msgJa = `Funergy Groupへようこそ！入社手続きはこちらから入力してください（${expiry}まで有効）: ${link}`;
+  var msgEn = `Welcome to Funergy Group! Please complete your onboarding here (valid until ${expiry}): ${link}`;
+  var combined = msgJa + '\n\n' + msgEn;
+  var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(link);
+  var mailto = 'mailto:?subject=' + encodeURIComponent('Funergy Group Onboarding') + '&body=' + encodeURIComponent(combined);
+  var sms = 'sms:?&body=' + encodeURIComponent(msgEn + ' ' + link);
+  openModal(`<div class="modal-title"><i class="ti ti-send"></i> 招待を送信 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="alert alert-success" style="padding:8px 10px;margin-bottom:12px;font-size:12px"><i class="ti ti-circle-check"></i> ${storeName} / ${pos} の招待を作成しました。下記の方法で採用者に送ってください。氏名・連絡先は本人が入力します。</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+      <a href="${mailto}" class="btn btn-primary" style="text-decoration:none"><i class="ti ti-mail"></i> Emailで送る</a>
+      <a href="${sms}" class="btn btn-primary" style="text-decoration:none"><i class="ti ti-message"></i> SMSで送る</a>
+    </div>
+    <div style="text-align:center;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">QRコード（採用者に読み取ってもらう）</div>
+      <img src="${qrUrl}" alt="QR" style="width:160px;height:160px;border:1px solid var(--border);border-radius:8px;background:#fff;padding:6px" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+      <div style="display:none;font-size:11px;color:var(--muted)">QR表示にはネット接続が必要です</div>
+    </div>
     <div class="form-group"><label class="form-label">招待リンク（${expiry}まで有効）</label>
       <div style="display:flex;gap:6px"><input class="form-input" id="inv-link" value="${link}" readonly style="font-size:11px">
         <button class="btn btn-secondary btn-sm" onclick="copyInvite('inv-link')"><i class="ti ti-copy"></i></button></div></div>
-    <div class="form-group"><label class="form-label">メッセージ例（日本語）</label>
-      <textarea class="form-textarea" id="inv-msg-ja" readonly style="min-height:64px;font-size:11px">${msgJa}</textarea>
-      <button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="copyInvite('inv-msg-ja')"><i class="ti ti-copy"></i> コピー</button></div>
-    <div class="form-group"><label class="form-label">Message (English)</label>
-      <textarea class="form-textarea" id="inv-msg-en" readonly style="min-height:64px;font-size:11px">${msgEn}</textarea>
-      <button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="copyInvite('inv-msg-en')"><i class="ti ti-copy"></i> Copy</button></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> このリンクをSMS/Email/QRで採用者に送ってください。提出後は自動で無効化されます。</div>
-    <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">完了</button></div>`);
+    <details style="margin-top:6px"><summary style="font-size:12px;color:var(--muted);cursor:pointer">メッセージ文例（日英）をコピー</summary>
+      <textarea class="form-textarea" id="inv-msg" readonly style="min-height:90px;font-size:11px;margin-top:6px">${combined}</textarea>
+      <button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="copyInvite('inv-msg')"><i class="ti ti-copy"></i> コピー</button></details>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 提出後はリンクが自動で無効化されます。</div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">完了</button></div>`);
 }
 function copyInvite(id){
   var el=document.getElementById(id); if(!el)return;
@@ -10130,8 +10139,8 @@ function renderOnboarding() {
     html += `<div class="card">
       <div class="approval-header">
         <div class="staff-item" style="padding:0;background:none;border:none;margin:0">
-          <div class="staff-avatar" style="background:var(--surface2)">${ob.name[0]}</div>
-          <div><div class="staff-name">${ob.name}</div><div class="staff-role">${storeName} · ${ob.pos||''} · 開始 ${ob.startDate}</div></div>
+          <div class="staff-avatar" style="background:var(--surface2)">${ob.name?ob.name[0]:'?'}</div>
+          <div><div class="staff-name">${ob.name||'<span style="color:var(--muted);font-style:italic">氏名未入力（本人待ち）</span>'}</div><div class="staff-role">${storeName} · ${ob.pos||''} · 開始 ${ob.startDate}</div></div>
         </div>
         <span class="tag" style="background:${stCol};color:#fff">${st}</span>
       </div>`;
@@ -10167,7 +10176,7 @@ function renderOnboarding() {
     // 本人入力（デモ: 誰でも代理入力可。実運用は本人リンク）
     if (st==='本人入力待ち' || st==='差し戻し') {
       if (ob.inviteToken) {
-        html += `<button class="btn btn-secondary btn-sm" onclick="showInviteLink('${(ob.name||'').replace(/'/g,"\\'")}','${(ob.storeName||'').replace(/'/g,"\\'")}','${ob.inviteToken}','${ob.linkExpiry||''}')"><i class="ti ti-link"></i> 招待リンク</button>`;
+        html += `<button class="btn btn-secondary btn-sm" onclick="showInviteLink('${(ob.storeName||'').replace(/'/g,"\\'")}','${(ob.pos||'').replace(/'/g,"\\'")}','${ob.inviteToken}','${ob.linkExpiry||''}')"><i class="ti ti-send"></i> 招待を再送</button>`;
       }
       html += `<button class="btn btn-primary btn-sm" onclick="openPersonalForm('${ob.id}')"><i class="ti ti-forms"></i> 本人情報を入力</button>`;
     }
@@ -10212,14 +10221,15 @@ function openPersonalForm(obId) {
   var ob = ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
   var p = ob.personal || {};
   var sigs = ob.signatures || {};
-  openModal(`<div class="modal-title">本人情報入力 — ${ob.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  openModal(`<div class="modal-title">本人情報入力 / Your Information <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="max-height:64vh;overflow-y:auto">
     <div class="alert" style="background:var(--surface2);padding:8px 10px;margin-bottom:10px;font-size:11px;color:var(--muted)"><i class="ti ti-id"></i> Candidate ID: <b>${ob.candId||'—'}</b>${ob.linkExpiry?' · リンク有効期限 '+ob.linkExpiry:''}</div>
 
-    <div style="font-weight:600;font-size:13px;margin-bottom:6px">基本情報</div>
-    <div class="form-group"><label class="form-label">住所</label><input class="form-input" id="pf-address" value="${p.address||''}"></div>
+    <div style="font-weight:600;font-size:13px;margin-bottom:6px">基本情報 / Basic Info</div>
+    <div class="form-group"><label class="form-label">氏名 / Full Name <span style="color:var(--red)">*</span></label><input class="form-input" id="pf-name" value="${ob.name||''}" placeholder="例: 田中 太郎 / Taro Tanaka"></div>
+    <div class="form-group"><label class="form-label">住所 / Address</label><input class="form-input" id="pf-address" value="${p.address||''}"></div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">電話</label><input class="form-input" id="pf-phone" value="${p.phone||ob.phone||''}"></div>
+      <div class="form-group"><label class="form-label">電話 / Phone</label><input class="form-input" id="pf-phone" value="${p.phone||ob.phone||''}"></div>
       <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="pf-email" value="${p.email||ob.email||''}"></div>
     </div>
     <div class="form-row">
@@ -10275,6 +10285,7 @@ function removeOBDoc(obId,i) {
 function persistPersonalDraft(ob) {
   var g=function(id){var e=document.getElementById(id);return e?e.value:undefined;};
   if (document.getElementById('pf-address')==null) return;
+  if (g('pf-name')!=null && g('pf-name').trim()) ob.name = g('pf-name').trim();
   ob.personal = Object.assign({}, ob.personal, {
     address:g('pf-address'), phone:g('pf-phone'), email:g('pf-email'), dob:g('pf-dob'),
     ssn:g('pf-ssn'), visa:g('pf-visa'),
@@ -10286,10 +10297,13 @@ function persistPersonalDraft(ob) {
 }
 function submitPersonal(obId) {
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
+  var name=(document.getElementById('pf-name')||{}).value;
+  name=name?name.trim():'';
   var visa=document.getElementById('pf-visa').value;
   var ssn=document.getElementById('pf-ssn').value.trim();
   var address=document.getElementById('pf-address').value.trim();
   var dob=document.getElementById('pf-dob').value;
+  if (!name) { alert('氏名を入力してください / Please enter your name'); return; }
   if (!address) { alert('住所を入力してください'); return; }
   if (!dob) { alert('生年月日を入力してください'); return; }
   if (!ssn) { alert('SSNを入力してください'); return; }
@@ -10303,6 +10317,7 @@ function submitPersonal(obId) {
   var hasPassport=docNames.includes('Passport');
   var hasDLandSSN=docNames.includes('Driver License')&&docNames.includes('SSN Card');
   if (!hasPassport && !hasDLandSSN) { alert('本人確認書類が不足しています。\nパスポート、または Driver License/ID＋SSN Card の両方が必要です。'); return; }
+  ob.name = name;
   ob.personal = {
     address, phone:document.getElementById('pf-phone').value.trim(), email:document.getElementById('pf-email').value.trim(),
     dob, ssn, agreedTerms:true,
