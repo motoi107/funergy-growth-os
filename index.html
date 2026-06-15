@@ -8411,6 +8411,7 @@ function renderShiftAdmin() {
     <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')">提出状況</div>
     <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')">シフト作成</div>
     <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')">カバー候補</div>
+    <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')">Labor Cost</div>
     ${['ceo','gm','am'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='rules'?' active':''}" onclick="setShiftAdminTab('rules')">特別ルール</div>`:''}
   </div>`;
@@ -8418,12 +8419,127 @@ function renderShiftAdmin() {
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
   else if (shiftAdminTab==='build') html += renderShiftBuild(storeId, week);
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
+  else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
   else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
   else html += renderShiftLabor(storeId, week);
   return html;
 }
 function setShiftAdminTab(t) { shiftAdminTab = t; renderPage('shift_admin'); }
 function setShiftView(v) { shiftView = v; renderPage('shift_admin'); }
+
+/* ===== ヘルプ募集（穴の空いた枠を本人が手を挙げて埋める） =====
+   help_requests_<storeId>: [{id, week, day, period, count, note, status, volunteers:[name], createdBy, date}] */
+function getHelpRequests(storeId) { return ls('help_requests_'+storeId, []); }
+function setHelpRequests(storeId, list) { lsSet('help_requests_'+storeId, list); }
+/* 自分が応援可能な店舗の募集（配属＋応援店舗の募集を集約）。マイページ用 */
+function myHelpRequests() {
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var emp = getEmployees().find(e=>e.name===me);
+  if (!emp) return [];
+  var stores = [emp.store].concat(emp.support||[]);
+  var out = [];
+  stores.forEach(sid=>{
+    getHelpRequests(sid).filter(h=>h.status==='募集中').forEach(h=>{
+      out.push(Object.assign({storeId:sid, storeName:(STORES.find(s=>s.id===sid)||{}).name||sid}, h));
+    });
+  });
+  return out;
+}
+function openHelpReqModal(storeId, week) {
+  openModal(`<div class="modal-title"><i class="ti ti-urgent"></i> ヘルプ募集 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">埋まらない枠をスタッフ全員に募集します。勤務条件に関わらず、本人がOKなら手を挙げられます。</div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">曜日</label>
+        <select class="form-select" id="hr-day">${WC_DAYS.map(d=>`<option value="${d}">${d}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">区分</label>
+        <select class="form-select" id="hr-period"><option value="Prep">Prep</option><option value="Lunch">Lunch</option><option value="Dinner">Dinner</option></select></div>
+    </div>
+    <div class="form-group"><label class="form-label">募集人数</label><input class="form-input" id="hr-count" type="number" value="1" min="1"></div>
+    <div class="form-group"><label class="form-label">ひとこと（任意）</label><input class="form-input" id="hr-note" placeholder="例: 忙しくなりそうなので応援募集！"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="createHelpReq('${storeId}','${week}')"><i class="ti ti-bell"></i> 募集する</button></div>`);
+}
+function createHelpReq(storeId, week){
+  var list = getHelpRequests(storeId);
+  list.push({
+    id:'hr'+Date.now(), week:week,
+    day:document.getElementById('hr-day').value,
+    period:document.getElementById('hr-period').value,
+    count:parseInt(document.getElementById('hr-count').value)||1,
+    note:document.getElementById('hr-note').value.trim(),
+    status:'募集中', volunteers:[],
+    createdBy:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''),
+    date:new Date().toLocaleDateString('ja'),
+  });
+  setHelpRequests(storeId, list);
+  closeModalDirect();
+  showToast('ヘルプ募集を出しました','success');
+  renderPage('shift_admin');
+}
+/* 本人が手を挙げる/取り下げる */
+function toggleHelpVolunteer(storeId, hrId){
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var list = getHelpRequests(storeId);
+  var h = list.find(x=>x.id===hrId); if(!h) return;
+  h.volunteers = h.volunteers||[];
+  var i = h.volunteers.indexOf(me);
+  if (i>=0) h.volunteers.splice(i,1); else h.volunteers.push(me);
+  setHelpRequests(storeId, list);
+  showToast(i>=0?'取り下げました':'手を挙げました！','success');
+  renderPage(curPage);
+}
+/* SL: 応募者を確定（シフトに反映）/募集を締める */
+function fillHelpReq(storeId, hrId, name){
+  var list = getHelpRequests(storeId);
+  var h = list.find(x=>x.id===hrId); if(!h) return;
+  h.filledBy = h.filledBy||[];
+  h.filledBy.push(name);
+  if (h.filledBy.length >= (h.count||1)) h.status='確定';
+  setHelpRequests(storeId, list);
+  showToast(name+'さんを確定しました','success');
+  renderPage('shift_admin');
+}
+function closeHelpReq(storeId, hrId){
+  var list = getHelpRequests(storeId);
+  var h = list.find(x=>x.id===hrId); if(!h) return;
+  h.status='終了';
+  setHelpRequests(storeId, list);
+  renderPage('shift_admin');
+}
+/* ヘルプ募集タブ（SL/AM/GM） */
+function renderShiftHelp(storeId, week) {
+  var list = getHelpRequests(storeId).filter(h=>h.status==='募集中'||h.status==='確定');
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-urgent" style="color:var(--accent)"></i>ヘルプ募集
+    <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openHelpReqModal('${storeId}','${week}')"><i class="ti ti-plus"></i> 募集を出す</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">埋まらない枠を募集 → スタッフのマイページに表示 → 本人が手を挙げる → ここで確定。</div>`;
+  if (!list.length) {
+    html += `<div style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-checks" style="font-size:28px;display:block;margin-bottom:6px"></i>募集中のヘルプはありません</div>`;
+  } else {
+    list.forEach(h=>{
+      var vols = h.volunteers||[];
+      var filled = h.filledBy||[];
+      html += `<div class="card" style="border-left:3px solid ${h.status==='確定'?'var(--green)':'var(--accent)'};margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:start">
+          <div><div style="font-weight:700;font-size:14px">${h.day}曜 ${h.period} <span class="tag ${h.status==='確定'?'tag-green':'tag-yellow'}" style="font-size:9px">${h.status}</span></div>
+            <div style="font-size:11px;color:var(--muted)">募集 ${h.count}名 · ${h.date}${h.note?' · '+h.note:''}</div></div>
+          <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="closeHelpReq('${storeId}','${h.id}')">終了</button>
+        </div>`;
+      if (filled.length) html += `<div style="font-size:12px;margin-top:6px;color:var(--green)"><i class="ti ti-check"></i> 確定: ${filled.join(', ')}</div>`;
+      if (vols.length) {
+        html += `<div style="margin-top:8px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">手を挙げた人（${vols.length}）：タップで確定</div><div style="display:flex;flex-wrap:wrap;gap:6px">`;
+        vols.filter(v=>!filled.includes(v)).forEach(v=>{
+          html += `<button class="btn btn-success btn-sm" style="padding:3px 10px;font-size:11px" onclick="fillHelpReq('${storeId}','${h.id}','${v.replace(/'/g,"\\'")}')"><i class="ti ti-user-check"></i> ${v} を確定</button>`;
+        });
+        html += `</div></div>`;
+      } else {
+        html += `<div style="font-size:12px;color:var(--muted);margin-top:6px">まだ応募がありません</div>`;
+      }
+      html += `</div>`;
+    });
+  }
+  html += `</div>`;
+  return html;
+}
 
 /* 提出状況 */
 function renderShiftStatus(storeId, week) {
@@ -8761,25 +8877,51 @@ function shiftSlotStrength(storeId, names) {
   (r.custom||[]).forEach(rule=>{ out.push({label:rule.label, need:rule.count||1, have:countForCustomRule(names, rule)}); });
   return out;
 }
-/* 勤務条件（スタッフ個別）: { name: {opening:'any'|'only'|'no', closing:'any'|'only'|'no', days:'any'|'weekday'|'weekend', minH, maxH} } */
+/* 勤務条件（スタッフ個別）。新モデル: 曜日×区分(Prep/Lunch/Dinner)で可否を持つ。
+   slots: { '月':{prep:bool,lunch:bool,dinner:bool}, ... '日':{...} } + minH/maxH
+   旧モデル(opening/closing/days)も後方互換で解釈。 */
+var WC_DAYS = ['月','火','水','木','金','土','日'];
+var WC_PERIODS = [{key:'prep',label:'Prep'},{key:'lunch',label:'Lunch'},{key:'dinner',label:'Dinner'}];
 function getWorkConditions(storeId) { var all=ls('work_conditions', {}); return all[storeId] || {}; }
 function setWorkCondition(storeId, name, cond) {
   var all = ls('work_conditions', {}); if(!all[storeId]) all[storeId]={};
   all[storeId][name] = cond; lsSet('work_conditions', all);
 }
-function getWorkCondition(storeId, name) { return getWorkConditions(storeId)[name] || {opening:'any',closing:'any',days:'any',minH:0,maxH:40}; }
-/* この枠(day/period)にこの人を配置できるか（勤務条件チェック）。Lunch=Opening寄り, Dinner=Closing寄りとみなす */
+/* デフォルト=全曜日・全区分OK */
+function defaultWcSlots(val){ var s={}; WC_DAYS.forEach(d=>{ s[d]={prep:val!==false,lunch:val!==false,dinner:val!==false}; }); return s; }
+/* 旧モデル→新モデル変換（後方互換） */
+function migrateWorkCond(c){
+  if (c && c.slots) return c; // 既に新モデル
+  var slots = defaultWcSlots(true);
+  if (c) {
+    WC_DAYS.forEach(d=>{
+      var isWeekend=(d==='土'||d==='日');
+      if (c.days==='weekday' && isWeekend) slots[d]={prep:false,lunch:false,dinner:false};
+      if (c.days==='weekend' && !isWeekend) slots[d]={prep:false,lunch:false,dinner:false};
+      if (c.opening==='only') { slots[d].dinner=false; }
+      if (c.opening==='no') { slots[d].lunch=false; slots[d].prep=false; }
+      if (c.closing==='only') { slots[d].prep=false; slots[d].lunch=false; }
+      if (c.closing==='no') { slots[d].dinner=false; }
+    });
+  }
+  return { slots:slots, minH:(c&&c.minH)||0, maxH:(c&&c.maxH)||40 };
+}
+function getWorkCondition(storeId, name) {
+  var raw = getWorkConditions(storeId)[name];
+  return migrateWorkCond(raw);
+}
+/* この枠(day/period)にこの人を配置できるか（勤務条件チェック）。
+   period は 'Lunch'|'Dinner'|'Prep' を想定（生成側はLunch/Dinner中心）。 */
 function workCondOk(storeId, name, day, period) {
   var c = getWorkCondition(storeId, name);
-  var isWeekend = (day==='土'||day==='日');
-  if (c.days==='weekday' && isWeekend) return false;
-  if (c.days==='weekend' && !isWeekend) return false;
-  // Opening≒Lunch, Closing≒Dinner として近似
-  if (c.opening==='only' && period!=='Lunch') return false;   // Openingのみ→Lunch枠のみ
-  if (c.opening==='no' && period==='Lunch') return false;     // Opening不可→Lunch不可
-  if (c.closing==='only' && period!=='Dinner') return false;  // Closingのみ→Dinner枠のみ
-  if (c.closing==='no' && period==='Dinner') return false;    // Closing不可→Dinner不可
-  return true;
+  var slot = c.slots[day];
+  if (!slot) return true;
+  var p = String(period||'').toLowerCase();
+  if (p.indexOf('prep')>=0) return slot.prep!==false;
+  if (p.indexOf('lunch')>=0) return slot.lunch!==false;
+  if (p.indexOf('dinner')>=0) return slot.dinner!==false;
+  // 不明な区分はLunch/Dinnerどちらか可ならOK
+  return slot.lunch!==false || slot.dinner!==false;
 }
 /* 2人が同時間帯に入れるか（禁止ペアでない） */
 function pairAllowed(storeId, name1, name2) {
@@ -9004,17 +9146,22 @@ function renderSpecialRules(storeId) {
 
   // 勤務条件（個別）
   html += `<div class="card"><div class="card-title"><i class="ti ti-clock-cog" style="color:var(--accent)"></i>勤務条件（個別）</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Opening/Closing制限・曜日制限・最大勤務時間。自動シフトに反映されます。</div>
-    <div style="overflow-x:auto"><table class="inv-table" style="min-width:420px;font-size:11px"><thead><tr><th>スタッフ</th><th>条件</th><th></th></tr></thead><tbody>`;
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">曜日×区分(Prep/Lunch/Dinner)で勤務可能枠を設定。自動シフトに反映されます。</div>
+    <div style="overflow-x:auto"><table class="inv-table" style="min-width:420px;font-size:11px"><thead><tr><th>スタッフ</th><th>勤務可能枠</th><th></th></tr></thead><tbody>`;
   staff.filter(e=>e.role==='crew'||e.role==='sl').forEach(e=>{
     var c = getWorkCondition(storeId, e.name);
-    var tags = [];
-    if (c.opening==='only') tags.push('Open限定'); if (c.opening==='no') tags.push('Open不可');
-    if (c.closing==='only') tags.push('Close限定'); if (c.closing==='no') tags.push('Close不可');
-    if (c.days==='weekday') tags.push('平日のみ'); if (c.days==='weekend') tags.push('週末のみ');
-    if (c.maxH && c.maxH<40) tags.push('最大'+c.maxH+'h');
+    // 区分ごとに「可能な曜日」を集計して要約
+    var summary = WC_PERIODS.map(p=>{
+      var days = WC_DAYS.filter(d=>c.slots[d] && c.slots[d][p.key]!==false);
+      if (days.length===7) return p.label+':毎日';
+      if (days.length===0) return null;
+      if (days.length===5 && !days.includes('土') && !days.includes('日')) return p.label+':平日';
+      if (days.length===2 && days.includes('土') && days.includes('日')) return p.label+':週末';
+      return p.label+':'+days.join('');
+    }).filter(Boolean);
+    var allFull = summary.length===3 && summary.every(s=>s.endsWith(':毎日'));
     html += `<tr><td>${e.name}</td>
-      <td>${tags.length?tags.map(t=>`<span class="tag tag-gray" style="font-size:9px">${t}</span>`).join(' '):'<span style="color:var(--muted)">制限なし</span>'}</td>
+      <td>${allFull?'<span style="color:var(--green)">全枠OK</span>':(summary.length?summary.map(t=>`<span class="tag tag-gray" style="font-size:9px">${t}</span>`).join(' '):'<span class="tag tag-red" style="font-size:9px">勤務不可</span>')}${c.maxH&&c.maxH<40?` <span class="tag tag-gray" style="font-size:9px">最大${c.maxH}h</span>`:''}</td>
       <td><button class="btn btn-secondary btn-sm" style="padding:0 8px;font-size:10px" onclick="openWorkCondModal('${storeId}','${e.name.replace(/'/g,'')}')">設定</button></td></tr>`;
   });
   html += `</tbody></table></div></div>`;
@@ -9079,22 +9226,32 @@ function removeShiftCustomRule(storeId, i) {
 
 function openWorkCondModal(storeId, name) {
   var c = getWorkCondition(storeId, name);
+  var rows = WC_DAYS.map(d=>{
+    var slot = c.slots[d]||{prep:true,lunch:true,dinner:true};
+    var isWeekend=(d==='土'||d==='日');
+    var cells = WC_PERIODS.map(p=>{
+      var on = slot[p.key]!==false;
+      return `<td style="text-align:center;padding:3px">
+        <button type="button" id="wc-${d}-${p.key}" data-on="${on?1:0}" onclick="wcToggle('${d}','${p.key}')"
+          style="width:100%;border:1.5px solid ${on?'var(--green)':'var(--border)'};background:${on?'var(--green)1a':'transparent'};color:${on?'var(--green)':'var(--muted)'};border-radius:7px;padding:6px 2px;font-size:11px;font-weight:700;cursor:pointer">${on?'OK':'—'}</button></td>`;
+    }).join('');
+    return `<tr><td style="padding:3px 6px;font-weight:700;color:${isWeekend?'var(--accent)':'var(--tm)'}">${d}</td>${cells}</tr>`;
+  }).join('');
   openModal(`<div class="modal-title">${name} 勤務条件 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">Opening（Lunch枠）</label>
-      <select class="form-select" id="wc-open">
-        <option value="any"${c.opening==='any'?' selected':''}>制限なし</option>
-        <option value="only"${c.opening==='only'?' selected':''}>Openingのみ</option>
-        <option value="no"${c.opening==='no'?' selected':''}>Opening不可</option></select></div>
-    <div class="form-group"><label class="form-label">Closing（Dinner枠）</label>
-      <select class="form-select" id="wc-close">
-        <option value="any"${c.closing==='any'?' selected':''}>制限なし</option>
-        <option value="only"${c.closing==='only'?' selected':''}>Closingのみ</option>
-        <option value="no"${c.closing==='no'?' selected':''}>Closing不可</option></select></div>
-    <div class="form-group"><label class="form-label">曜日</label>
-      <select class="form-select" id="wc-days">
-        <option value="any"${c.days==='any'?' selected':''}>制限なし</option>
-        <option value="weekday"${c.days==='weekday'?' selected':''}>平日のみ</option>
-        <option value="weekend"${c.days==='weekend'?' selected':''}>週末のみ</option></select></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">曜日 × 区分（Prep / Lunch / Dinner）で勤務可能な枠を設定します。タップでOK/不可を切替。</div>
+    <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+      <button class="btn btn-secondary btn-sm" onclick="wcPreset('all')">全部OK</button>
+      <button class="btn btn-secondary btn-sm" onclick="wcPreset('none')">全部不可</button>
+      <button class="btn btn-secondary btn-sm" onclick="wcPreset('weekday')">平日のみ</button>
+      <button class="btn btn-secondary btn-sm" onclick="wcPreset('weekend')">週末のみ</button>
+      <button class="btn btn-secondary btn-sm" onclick="wcPreset('lunch')">Lunchのみ</button>
+      <button class="btn btn-secondary btn-sm" onclick="wcPreset('dinner')">Dinnerのみ</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+      <thead><tr style="background:var(--surface2)"><th style="padding:4px 6px;text-align:left;font-size:11px">曜日</th>
+        ${WC_PERIODS.map(p=>`<th style="padding:4px;font-size:11px">${p.label}</th>`).join('')}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
     <div class="form-row">
       <div class="form-group"><label class="form-label">最低勤務(h/週)</label><input class="form-input" id="wc-min" type="number" value="${c.minH||0}"></div>
       <div class="form-group"><label class="form-label">最大勤務(h/週)</label><input class="form-input" id="wc-max" type="number" value="${c.maxH||40}"></div>
@@ -9102,11 +9259,47 @@ function openWorkCondModal(storeId, name) {
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveWorkCond('${storeId}','${name.replace(/'/g,'')}')">保存</button></div>`);
 }
+/* 1セルのOK/不可トグル */
+function wcToggle(day, pkey){
+  var btn=document.getElementById('wc-'+day+'-'+pkey); if(!btn)return;
+  var on = btn.getAttribute('data-on')==='1';
+  on=!on; btn.setAttribute('data-on', on?'1':'0');
+  btn.textContent = on?'OK':'—';
+  btn.style.border = '1.5px solid '+(on?'var(--green)':'var(--border)');
+  btn.style.background = on?'var(--green)1a':'transparent';
+  btn.style.color = on?'var(--green)':'var(--muted)';
+}
+/* プリセットで一括設定 */
+function wcPreset(kind){
+  WC_DAYS.forEach(d=>{
+    var isWeekend=(d==='土'||d==='日');
+    WC_PERIODS.forEach(p=>{
+      var on=true;
+      if(kind==='none') on=false;
+      else if(kind==='weekday') on=!isWeekend;
+      else if(kind==='weekend') on=isWeekend;
+      else if(kind==='lunch') on=(p.key==='lunch'||p.key==='prep');
+      else if(kind==='dinner') on=(p.key==='dinner');
+      var btn=document.getElementById('wc-'+d+'-'+p.key); if(!btn)return;
+      btn.setAttribute('data-on', on?'1':'0');
+      btn.textContent=on?'OK':'—';
+      btn.style.border='1.5px solid '+(on?'var(--green)':'var(--border)');
+      btn.style.background=on?'var(--green)1a':'transparent';
+      btn.style.color=on?'var(--green)':'var(--muted)';
+    });
+  });
+}
 function saveWorkCond(storeId, name) {
+  var slots={};
+  WC_DAYS.forEach(d=>{
+    slots[d]={};
+    WC_PERIODS.forEach(p=>{
+      var btn=document.getElementById('wc-'+d+'-'+p.key);
+      slots[d][p.key] = btn ? btn.getAttribute('data-on')==='1' : true;
+    });
+  });
   setWorkCondition(storeId, name, {
-    opening: document.getElementById('wc-open').value,
-    closing: document.getElementById('wc-close').value,
-    days: document.getElementById('wc-days').value,
+    slots: slots,
     minH: parseInt(document.getElementById('wc-min').value)||0,
     maxH: parseInt(document.getElementById('wc-max').value)||40,
   });
@@ -10897,14 +11090,9 @@ function openEmpModal(empId) {
     </div>
     <div class="form-group"><label class="form-label">シフト条件</label>
       <div class="form-row">
-        <select class="form-select" id="e-wc-days"><option value="any"${wc&&wc.days==='any'?' selected':''}>曜日制限なし</option><option value="weekday"${wc&&wc.days==='weekday'?' selected':''}>平日のみ</option><option value="weekend"${wc&&wc.days==='weekend'?' selected':''}>週末のみ</option></select>
         <input class="form-input" id="e-wc-maxh" type="number" placeholder="最大時間/週" value="${wc&&wc.maxH?wc.maxH:40}">
       </div>
-      <div class="form-row" style="margin-top:6px">
-        <select class="form-select" id="e-wc-opening"><option value="any"${!wc||wc.opening==='any'?' selected':''}>オープン: 指定なし</option><option value="only"${wc&&wc.opening==='only'?' selected':''}>オープン優先</option><option value="no"${wc&&wc.opening==='no'?' selected':''}>オープン不可</option></select>
-        <select class="form-select" id="e-wc-closing"><option value="any"${!wc||wc.closing==='any'?' selected':''}>クローズ: 指定なし</option><option value="only"${wc&&wc.closing==='only'?' selected':''}>クローズ優先</option><option value="no"${wc&&wc.closing==='no'?' selected':''}>クローズ不可</option></select>
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">配属店舗のシフト作成・自動シフトに反映されます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">曜日×区分(Prep/Lunch/Dinner)の詳細な勤務可能枠は、シフト作成画面の「勤務条件（個別）」で設定できます。</div>
     </div>
     </div>
     <div class="btn-row">
@@ -10960,14 +11148,12 @@ function saveEmp(empId) {
     emps.push(data);
   }
   lsSet('m_employees', emps);
-  // シフト条件を保存（配属店舗がある場合）
+  // シフト条件を保存（配属店舗がある場合）。最大時間のみ更新、曜日×区分の詳細はシフト画面で。
   var store = data.store;
   if (store && store!=='ALL' && typeof setWorkCondition==='function') {
-    var days = document.getElementById('e-wc-days').value;
     var maxH = parseInt(document.getElementById('e-wc-maxh').value)||40;
-    var opening = document.getElementById('e-wc-opening').value;
-    var closing = document.getElementById('e-wc-closing').value;
-    setWorkCondition(store, name, {opening, closing, days, minH:0, maxH});
+    var existing = getWorkCondition(store, name);
+    setWorkCondition(store, name, {slots: existing.slots, minH: existing.minH||0, maxH: maxH});
   }
   closeModalDirect();
   showToast(empId?'従業員情報を更新しました':'従業員を登録しました', 'success');
@@ -12605,6 +12791,24 @@ function renderMypage() {
       <div class="fy-levelbar"><i style="width:${heroPct}%"></i></div>`:''}
     </div>
   </div>`;
+
+  // ===== ヘルプ募集（自店・応援店の募集に手を挙げる）=====
+  var helps = (typeof myHelpRequests==='function') ? myHelpRequests() : [];
+  if (helps.length) {
+    var meName = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+    html += `<div class="card" style="border-left:3px solid var(--accent)">
+      <div class="card-title"><i class="ti ti-urgent" style="color:var(--accent)"></i>${t('ヘルプ募集','Help wanted')} <span class="tag tag-yellow" style="font-size:9px">${helps.length}</span></div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${t('シフトに空きがあります。入れる日は手を挙げてください（条件に関わらずOKなら歓迎）','Open shifts — raise your hand if you can help')}</div>`;
+    helps.forEach(h=>{
+      var raised = (h.volunteers||[]).includes(meName);
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div><div style="font-weight:600;font-size:13px">${h.storeName} · ${h.day}${t('曜','')} ${h.period}</div>
+          <div style="font-size:11px;color:var(--muted)">${t('募集','Need')} ${h.count}${t('名','')}${h.note?' · '+h.note:''}</div></div>
+        <button class="btn ${raised?'btn-secondary':'btn-primary'} btn-sm" onclick="toggleHelpVolunteer('${h.storeId}','${h.id}')">${raised?t('取り下げ','Cancel'):t('手を挙げる','Raise hand')}</button>
+      </div>`;
+    });
+    html += `</div>`;
+  }
 
   // ===== 個人設定（PIN）— 全ユーザー共通 =====
   html += `<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px">
