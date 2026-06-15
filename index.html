@@ -926,11 +926,11 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
 const DEFAULT_STORES = [
   {id:'F01',   name:'ToriTon',  color:'#F07820', am:'Uruma',     brand:'ToriTon',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
   {id:'F02',   name:'Tenkichi', color:'#D4A800', am:'Masamitsu', brand:'Tenkichi', toastGuid:'acf37290-509b-4b07-a970-5f22b8683516', hours:'11:00-22:00', days:'毎日', active:true},
-  {id:'F03',   name:'Waikiki Five Star Poke', color:'#5DB554', am:'Eri McCoy', brand:'Five Star Poke', toastGuid:'ba49958c-7eb9-44b6-9482-fe19e4d0a0b3', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
-  {id:'F03-G', name:'Waikiki Garlic Shack',   color:'#D98E3B', am:'Eri McCoy', brand:'Garlic Shack',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
-  {id:'F04-K', name:'Kaimuki',  color:'#3A8FD6', am:'Nakai',     brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
-  {id:'F04-P', name:'Piikoi',   color:'#0E78C4', am:'Yuki',      brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
-  {id:'F04-A', name:'Aiea',     color:'#1B9AD6', am:'Yuki',      brand:'Totoya',   toastGuid:'99c94a86-9c5a-4f06-8a57-c543bb7f4a50', hours:'11:00-22:00', days:'毎日', active:true},
+  {id:'F03',   name:'Waikiki Five Star Poke', color:'#5DB554', am:'Yuki Nagatani', brand:'Five Star Poke', toastGuid:'ba49958c-7eb9-44b6-9482-fe19e4d0a0b3', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
+  {id:'F03-G', name:'Waikiki Garlic Shack',   color:'#D98E3B', am:'Yuki Nagatani', brand:'Garlic Shack',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
+  {id:'F04-K', name:'Kaimuki',  color:'#3A8FD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
+  {id:'F04-P', name:'Piikoi',   color:'#0E78C4', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
+  {id:'F04-A', name:'Aiea',     color:'#1B9AD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'99c94a86-9c5a-4f06-8a57-c543bb7f4a50', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F05',   name:'Marujuu',  color:'#8B5E3C', am:'Yuki',      brand:'Marujuu',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
 ];
 /* STORES = 全店舗（lookup用）。表示はactiveStores()で絞る */
@@ -979,6 +979,20 @@ function migrateWaikikiSplit() {
     lsSet('_waikikiSplit', true);
     if (typeof refreshStores==='function') refreshStores();
   } catch(e) { console.warn('migrateWaikikiSplit', e); }
+}
+/* 一度だけ: Yuki Nagataniの管轄(AM) = Totoya3店舗(Kaimuki/Piikoi/Aiea) + Waikiki2店舗(Five Star Poke/Garlic Shack) */
+function migrateYukiAm() {
+  try {
+    if (ls('_yukiAm', false)) return;
+    var stores = ls('m_stores', null);
+    if (!Array.isArray(stores)) { lsSet('_yukiAm', true); return; }
+    var ids = ['F03','F03-G','F04-K','F04-P','F04-A'];
+    var changed = false;
+    stores.forEach(function(s){ if (ids.indexOf(s.id)>=0 && s.am!=='Yuki Nagatani'){ s.am='Yuki Nagatani'; changed=true; } });
+    if (changed) lsSet('m_stores', stores);
+    lsSet('_yukiAm', true);
+    if (typeof refreshStores==='function') refreshStores();
+  } catch(e){ console.warn('migrateYukiAm', e); }
 }
 function activeStores() { return getStoresAll().filter(s=>s.active); }
 
@@ -16926,6 +16940,7 @@ function checkOnboardToken(){
   } catch(e){ console.error('onboard token', e); return false; }
 }
 try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
+try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { if (!checkOnboardToken()) bootLogin(); } catch(e) { console.error('bootLogin', e); }
 </script>
 </body>
