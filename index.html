@@ -2998,7 +2998,11 @@ function resetStaffPin(name){
   openPinListModal();
 }
 function getStaffPin(name) { var p=getStaffPins(); return p[name] || DEFAULT_STAFF_PIN; }
-function setStaffPin(name, pin) { var p=getStaffPins(); p[name]=pin; lsSet('staff_pins', p); }
+function setStaffPin(name, pin) {
+  var p=getStaffPins(); p[name]=pin; lsSet('staff_pins', p);
+  // PINはクラウドを正にするため、全体同期がOFFでも必ずSupabaseへ反映
+  try { if (!SUPA_SYNC_ENABLED) supaUpsert('app_settings', [{key:'staff_pins', value:p, category:'pin'}]); } catch(e){}
+}
 /* 本人がマイページから自分のPINを設定・変更 */
 function openMyPinModal(){
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
@@ -3161,6 +3165,23 @@ function loginBackToName() {
 }
 
 /* STEP3: PIN検証 → ログイン */
+/* PINだけ先にクラウド読み取り対応（フェーズ2の先行）。
+   最新のstaff_pinsをSupabaseのapp_settingsから取得してローカルに反映。
+   オフライン/失敗時はローカルのまま（ログイン不能を防ぐ）。 */
+async function refreshStaffPinsFromCloud(){
+  try {
+    var url = SUPABASE_URL+'/rest/v1/app_settings?key=eq.staff_pins&select=value';
+    var res = await fetch(url, { headers: { apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON } });
+    if (!res.ok) return false;
+    var rows = await res.json();
+    if (rows && rows.length && rows[0].value && typeof rows[0].value==='object') {
+      // クラウドを正として、ローカルのstaff_pinsを更新（同期OFFでも書き込みループしないようdirect set）
+      try { localStorage.setItem('staff_pins', JSON.stringify(rows[0].value)); } catch(e){}
+      return true;
+    }
+    return false;
+  } catch(e){ console.warn('refreshStaffPinsFromCloud', e); return false; }
+}
 function doStaffLogin() {
   // 店舗共有アカウント
   if (loginStoreMode) {
@@ -3181,10 +3202,19 @@ function doStaffLogin() {
   }
   if (!loginPerson) return;
   var pin2 = (document.getElementById('login-pin-input').value||'').trim();
-  if (pin2 !== getStaffPin(loginPerson.name)) {
-    document.getElementById('login-pin-err').style.display='block';
-    return;
-  }
+  // PINだけ先にクラウドの最新を取得してから照合（別端末での変更を反映）
+  var btn = document.getElementById('login-pin-btn');
+  if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.textContent = '確認中…'; }
+  refreshStaffPinsFromCloud().then(function(){
+    if (btn) { btn.disabled = false; if (btn.dataset._t) btn.textContent = btn.dataset._t; }
+    if (pin2 !== getStaffPin(loginPerson.name)) {
+      document.getElementById('login-pin-err').style.display='block';
+      return;
+    }
+    finishStaffLogin();
+  });
+}
+function finishStaffLogin() {
   var emp = loginPerson;
   curRole = emp.role;
   curUserName = emp.name;
