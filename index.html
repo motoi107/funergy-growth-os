@@ -6942,10 +6942,12 @@ function renderTipMgmt() {
     <div class="phase-tab${tipPeriodView==='summary'?' active':''}" onclick="setTipPeriodView('summary')">期間サマリー</div>
     <div class="phase-tab${tipPeriodView==='daily'?' active':''}" onclick="setTipPeriodView('daily')">日別</div>
     <div class="phase-tab${tipPeriodView==='staff'?' active':''}" onclick="setTipPeriodView('staff')">スタッフ別</div>
+    <div class="phase-tab${tipPeriodView==='settle'?' active':''}" onclick="setTipPeriodView('settle')">SL精算</div>
   </div>`;
 
   if (tipPeriodView==='daily') return html + renderTipPeriodDaily(storeId, store, info);
   if (tipPeriodView==='staff') return html + renderTipPeriodStaff(storeId, store, info);
+  if (tipPeriodView==='settle') return html + renderTipHalfMonth(storeId, store, info.anyDate);
   return html + renderTipPeriodSummary(storeId, store, info);
 }
 
@@ -7211,23 +7213,29 @@ function renderTipPeriodStaff(storeId, store, info) {
     dist.list.forEach(r=>{ if(((r.lunchHours||0)+(r.dinnerHours||0))>0) workdays[r.name]=(workdays[r.name]||0)+1; });
   });
   var html = `<div class="card"><div class="card-title"><i class="ti ti-users"></i>スタッフ別 ${info.label}</div>
-    <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
-      <th>スタッフ</th><th>日数</th><th>時間</th><th>Rate</th><th>最終Tip</th></tr></thead><tbody>`;
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 「精算前」は日次配分の合計、「SL再分配」はStore Leaderの50%プールからの受取/拠出、「最終Tip」が支給額です。</div>
+    <div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:11px;min-width:440px"><thead><tr>
+      <th>スタッフ</th><th style="text-align:center">日数</th><th style="text-align:right">精算前</th><th style="text-align:right">SL再分配</th><th style="text-align:center">Rate</th><th style="text-align:right">最終Tip</th></tr></thead><tbody>`;
   settle.rows.forEach(r=>{
     var rate = effectiveTipRate(r.name);
     var rateTag = rate===0?'<span class="tag tag-red" style="font-size:8px">NoTip</span>':rate>=100?'<span class="tag tag-green" style="font-size:8px">100%</span>':rate>=90?'<span class="tag tag-blue" style="font-size:8px">90%</span>':'<span class="tag tag-yellow" style="font-size:8px">80%</span>';
+    var adj = r.isSL
+      ? `<span style="color:var(--red)">−$${r.contribution.toFixed(2)}</span>`
+      : (r.redistrib>0 ? `<span style="color:var(--green)">+$${r.redistrib.toFixed(2)}</span>` : '<span style="color:var(--muted)">—</span>');
     html += `<tr>
       <td>${r.name}${r.isSL?' <span class="tag tag-blue" style="font-size:8px">SL</span>':''}</td>
       <td style="text-align:center">${workdays[r.name]||0}</td>
-      <td style="text-align:right;color:var(--muted)">${r.hours.toFixed(1)}h</td>
+      <td style="text-align:right;color:var(--muted)">$${r.base.toFixed(2)}</td>
+      <td style="text-align:right">${adj}</td>
       <td style="text-align:center">${rateTag}</td>
       <td style="text-align:right;font-weight:700;color:var(--green)">$${r.final.toFixed(2)}</td>
     </tr>`;
   });
   var finalSum = settle.rows.reduce((a,r)=>a+r.final,0);
+  var baseSum = settle.rows.reduce((a,r)=>a+r.base,0);
   html += `</tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
-    <td colspan="4">合計</td><td style="text-align:right;color:var(--green)">$${finalSum.toFixed(2)}</td></tr></tfoot></table>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px">最終Tip = 日次配分 + SL再分配（前期/後期で精算）。Tip Rateは各自のCurrent Rateを反映。</div></div>`;
+    <td colspan="2">合計</td><td style="text-align:right;color:var(--muted)">$${baseSum.toFixed(2)}</td><td></td><td></td><td style="text-align:right;color:var(--green)">$${finalSum.toFixed(2)}</td></tr></tfoot></table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">最終Tip = 精算前 + SL再分配。詳しい精算内訳は「SL精算」タブで確認できます。</div></div>`;
   return html;
 }
 
@@ -7839,15 +7847,20 @@ function renderTipHalfMonth(storeId, store, date) {
     html += `<div style="text-align:center;padding:20px;color:var(--muted)">この期間の日次配分データがありません。<br>日次配分タブで各日の勤怠を取得してください。</div></div>`;
     return html;
   }
+  html += `<div style="font-size:11px;color:var(--muted);margin-bottom:10px;background:var(--surface2);border-radius:8px;padding:8px 10px">
+    <i class="ti ti-info-circle"></i> Store Leader（SL）が日次で受け取ったチップの<b>50%をプール</b>し、SL以外のスタッフの労働時間に応じて再分配します。
+  </div>`;
   html += `<div class="kpi-grid" style="margin-bottom:12px">
-    ${kpi('SL拠出プール', '$'+s.slPool.toFixed(2), 'Store Leader 50%', 'var(--accent2)')}
-    ${kpi('SL以外総時間', s.nonSLHours.toFixed(1)+'h', '再分配対象', 'var(--tm)')}
-    ${kpi('時間あたり', '$'+s.perHour.toFixed(4), '再分配単価', 'var(--green)')}
+    ${kpi('SL拠出プール', '$'+s.slPool.toFixed(2), 'SLの取り分の50%', 'var(--accent2)')}
+    ${kpi('SL以外総時間', s.nonSLHours.toFixed(1)+'h', '再分配の対象', 'var(--tm)')}
+    ${kpi('時間あたり', '$'+s.perHour.toFixed(2), 'プール÷総時間', 'var(--green)')}
   </div>`;
   html += `<table class="inv-table" style="width:100%;font-size:12px"><thead><tr>
-    <th>従業員</th><th>日次合計</th><th>拠出/受取</th><th>最終</th></tr></thead><tbody>`;
+    <th>従業員</th><th style="text-align:right">精算前</th><th style="text-align:right">拠出/受取</th><th style="text-align:right">最終</th></tr></thead><tbody>`;
   s.rows.forEach(r=>{
-    var adj = r.isSL ? `<span style="color:var(--red)">−$${r.contribution.toFixed(2)}</span>` : `<span style="color:var(--green)">+$${r.redistrib.toFixed(2)}</span>`;
+    var adj = r.isSL
+      ? `<span style="color:var(--red)">−$${r.contribution.toFixed(2)}</span><div style="font-size:9px;color:var(--muted)">拠出(50%)</div>`
+      : (r.redistrib>0 ? `<span style="color:var(--green)">+$${r.redistrib.toFixed(2)}</span><div style="font-size:9px;color:var(--muted)">受取</div>` : '<span style="color:var(--muted)">—</span>');
     html += `<tr>
       <td>${r.name}${r.isSL?' <span class="tag tag-blue" style="font-size:8px">SL</span>':''}<div style="font-size:9px;color:var(--muted)">${r.hours.toFixed(1)}h</div></td>
       <td style="text-align:right;color:var(--muted)">$${r.base.toFixed(2)}</td>
