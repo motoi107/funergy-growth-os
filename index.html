@@ -12063,6 +12063,24 @@ function lssAllItems() {
 }
 function getLssScores(name) { var all=ls('lss_scores', {}); return all[name]||null; }
 function setLssScores(name, data) { var all=ls('lss_scores', {}); all[name]=data; lsSet('lss_scores', all); }
+/* 変更理由の閲覧可否：評価できるAM以上（ceo/gm/am）のみ。SL・評価対象本人には非表示 */
+function canViewLssChangeReason() { return ['ceo','gm','am'].includes(curRole); }
+/* LSSロールの上下関係（評価対象の階層比較用） */
+function lssRoleRank(role){ return {ceo:4, gm:3, am:2, sl:1}[role] || 0; }
+/* LSSスコアの採点・変更の可否：
+   - 評価者はAM以上（ceo/gm/am）
+   - 本人による自己編集は不可
+   - 自分より上位は評価不可（評価者ランク ≧ 対象ランク）
+   - CEOは評価対象外 */
+function canEditLss(name) {
+  if (!['ceo','gm','am'].includes(curRole)) return false;
+  var meName = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
+  if (!name || name === meName) return false;
+  var target = getEmployees().find(x=>x.name===name) || {};
+  if (target.role === 'ceo') return false;
+  if (lssRoleRank(target.role) > lssRoleRank(curRole)) return false;
+  return true;
+}
 /* カテゴリ別集計 → [{key,name,score,max,pct}] + 総合 */
 function lssSummary(name) {
   var rec = getLssScores(name);
@@ -12300,10 +12318,10 @@ function approveEval(staffId) {
 ============================================================ */
 function renderLeadership() {
   // 対象＝リーダー以上
-  var leaders = visibleStaffForManager().filter(e=>isLeaderPlus(e) && e.status!=='退職');
+  var leaders = visibleStaffForManager().filter(e=>isLeaderPlus(e) && e.status!=='退職' && e.role!=='ceo');
   // 自分がリーダー以上なら自分も含める
   var meName = (ROLE_CONFIG[curRole]||{}).name||curUserName;
-  var canScore = ['ceo','gm','am','sl'].includes(curRole);
+  var canScore = ['ceo','gm','am'].includes(curRole);
 
   var html = `<div class="section-header">
     <div><div class="section-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i> Funergy Career Score</div>
@@ -12344,7 +12362,7 @@ function renderLeadership() {
           <div style="font-size:11px;color:var(--muted)">${e.title||ROLE_CONFIG[e.role].label}${storeName?' · '+storeName:''}</div>
           ${sum.hasData?`<div style="margin-top:3px"><span class="tag" style="background:${lv.color};color:#fff;font-size:9px">${lv.label}</span> <span style="font-size:11px;color:var(--muted)">${sum.totalScore}/${sum.totalMax}点</span></div>`:'<div style="font-size:11px;color:var(--muted);margin-top:3px">未評価</div>'}
         </div>
-        <button class="btn btn-${sum.hasData?'secondary':'primary'} btn-sm" onclick="openLssDetail('${e.name.replace(/'/g,"\\'")}')">${sum.hasData?'詳細':'評価する'}</button>
+        <button class="btn btn-${sum.hasData?'secondary':'primary'} btn-sm" onclick="openLssDetail('${e.name.replace(/'/g,"\\'")}')">${(sum.hasData||!canEditLss(e.name))?'詳細':'評価する'}</button>
       </div>`;
     // カテゴリ別ミニバー
     if (sum.hasData) {
@@ -12374,7 +12392,8 @@ function renderLeadership() {
       var diff = h.prevPct!=null ? (h.pct-h.prevPct) : null;
       html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${h.name} · 評価 ${h.pct}%</div>
         ${diff!=null?`<span class="tag ${diff>=0?'tag-green':'tag-red'}" style="font-size:9px">${diff>=0?'+':''}${diff}pt</span>`:''}</div>
-        <div class="approval-meta">${h.date} · 評価者 ${h.by||''}</div></div>`;
+        <div class="approval-meta">${h.date} · 評価者 ${h.by||''}</div>
+        ${(h.changeReason && canViewLssChangeReason())?`<div style="font-size:11px;color:var(--tm);margin-top:4px;padding:5px 8px;background:var(--bg);border-radius:6px;border-left:2px solid var(--accent)"><i class="ti ti-message-2" style="font-size:11px;color:var(--accent)"></i> ${escapeHtml(h.changeReason)}</div>`:''}</div>`;
     });
     html += `</div>`;
   }
@@ -12406,13 +12425,15 @@ function openLssDetail(name) {
   window._lssCat = window._lssCat || 'H';
   var rec = getLssScores(name) || {};
   window._lssDraft = Object.assign({}, rec.scores||{});
-  var canScore = ['ceo','gm','am','sl'].includes(curRole);
+  var canScore = canEditLss(name);
   var html = `<div class="modal-title">Career Score — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div id="lss-summary"></div>
     <div id="lss-cattabs" style="margin:8px 0"></div>
     <div id="lss-items" style="max-height:40vh;overflow-y:auto;padding-right:4px"></div>
     <div class="form-group" style="margin-top:8px"><label class="form-label">評価コメント</label><textarea class="form-textarea" id="lss-comment" ${canScore?'':'disabled'}>${rec.comment||''}</textarea></div>`;
   if (canScore) {
+    html += `<div class="form-group" style="margin-top:4px"><label class="form-label" style="display:flex;align-items:center;gap:6px"><i class="ti ti-message-2" style="color:var(--accent)"></i>変更理由 <span style="font-size:10px;color:var(--muted);font-weight:400">（任意・スコアを上下させた背景を残せます）</span></label>
+      <textarea class="form-textarea" id="lss-changereason" placeholder="例：接客クレーム対応が大きく改善／在庫管理で連続ミスがあり一時的に下方修正 など" style="min-height:50px"></textarea></div>`;
     html += `<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
       <button class="btn btn-primary" onclick="saveLssScores('${name.replace(/'/g,"\\'")}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`;
   } else {
@@ -12499,7 +12520,7 @@ function renderLssItems() {
   var el=document.getElementById('lss-items'); if(!el) return;
   var c=LSS_CATEGORIES.find(x=>x.key===window._lssCat);
   var draft=window._lssDraft||{};
-  var canScore=['ceo','gm','am','sl'].includes(curRole);
+  var canScore=canEditLss(window._lssName);
   var groups=lssGroupsOf(c.key);
   var dot=function(id,val){
     return `<div style="display:flex;gap:2px" id="lss-${id}">${[0,1,2,3].map(n=>`<button onclick="lssSetScore('${id}',${n})" data-v="${n}" class="lss-dot" style="width:26px;height:26px;border-radius:6px;border:1px solid var(--border);font-size:11px;cursor:${canScore?'pointer':'default'};background:${val===n?(n===0?'var(--muted)':n===3?'var(--accent)':n===2?'var(--green)':'var(--yellow)'):'transparent'};color:${val===n?'#fff':'var(--muted)'}">${n}</button>`).join('')}</div>`;
@@ -12549,7 +12570,7 @@ function lssUpdateGroupPcts() {
   });
 }
 function lssSetScore(id, val) {
-  if (!['ceo','gm','am','sl'].includes(curRole)) return;
+  if (!canEditLss(window._lssName)) return;
   if (!window._lssDraft) window._lssDraft = {};
   window._lssDraft[id] = val;
   // ボタンの見た目を更新
@@ -12566,15 +12587,19 @@ function lssSetScore(id, val) {
   lssUpdateGroupPcts();
 }
 function saveLssScores(name) {
+  if (!canEditLss(name)) { showToast('権限がありません（AM以上・本人以外のみ変更可）','warning'); return; }
   var by = (ROLE_CONFIG[curRole]||{}).name||curUserName;
   var prev = getLssScores(name);
   var prevPct = prev ? lssSummary(name).totalPct : null;
+  var changeReason = ((document.getElementById('lss-changereason')||{}).value||'').trim();
   var data = {evaluator:by, date:new Date().toLocaleDateString('ja'), scores:Object.assign({}, window._lssDraft||{}), comment:(document.getElementById('lss-comment')||{}).value||'', status:'確定'};
   setLssScores(name, data);
-  // 履歴
+  // 履歴（変更理由・タイムスタンプも記録。将来 growth_snapshots.change_reasons に連携）
   var newPct = lssSummary(name).totalPct;
   var h = ls('lss_history', []);
-  h.push({name:name, pct:newPct, prevPct:prevPct, by:by, date:data.date, comment:data.comment});
+  var entry = {name:name, pct:newPct, prevPct:prevPct, by:by, date:data.date, ts:Date.now(), comment:data.comment};
+  if (changeReason) entry.changeReason = changeReason;
+  h.push(entry);
   lsSet('lss_history', h);
   closeModalDirect();
   showToast(`${name} のCareer Scoreを保存しました`,'success');
@@ -13102,6 +13127,7 @@ function renderMypage() {
       var lhist = ls('lss_history', []).filter(h=>h.name===me);
       var lastDiff = null;
       if (lhist.length>=1 && lhist[lhist.length-1].prevPct!=null) lastDiff = lhist[lhist.length-1].pct - lhist[lhist.length-1].prevPct;
+      var lastReason = (canViewLssChangeReason() && lhist.length>=1 && lhist[lhist.length-1].changeReason) ? lhist[lhist.length-1].changeReason : null;
       // 改善カテゴリ TOP3（今月のフォーカス）
       var focusCats = lsum.cats.slice().sort((a,b)=>a.pct-b.pct).slice(0,3);
       var lelig = lssEligibility(me);
@@ -13116,6 +13142,7 @@ function renderMypage() {
             <div style="font-size:11px;color:var(--muted);margin-top:3px">${lsum.totalScore}/${lsum.totalMax}${t('点','pt')}${lastDiff!=null?` · <span style="color:${lastDiff>=0?'var(--green)':'var(--red)'}">${lastDiff>=0?'+':''}${lastDiff}pt</span> ${t('前回比','vs last')}`:''}</div>
           </div>
         </div>
+        ${lastReason?`<div style="font-size:11px;color:var(--tm);margin:0 0 8px;padding:6px 9px;background:var(--bg);border-radius:7px;border-left:2px solid var(--accent)"><span style="font-weight:700;color:var(--accent)"><i class="ti ti-message-2" style="font-size:11px"></i> ${t('前回の変更理由','Last change note')}</span><br>${escapeHtml(lastReason)}</div>`:''}
         <div style="border-top:1px solid var(--border);padding-top:8px">
           <div style="font-size:11px;font-weight:700;margin-bottom:4px">${t('今月のフォーカス','Focus This Month')}</div>
           ${focusCats.map(c=>{var cd=LSS_CATEGORIES.find(x=>x.key===c.key)||{};return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0"><i class="ti ${cd.icon}" style="color:var(--accent2)"></i><span style="flex:1">${c.name}</span><span style="font-size:11px;color:var(--accent2)">${c.pct}%</span></div>`;}).join('')}
