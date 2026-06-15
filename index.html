@@ -1022,32 +1022,23 @@ function formatMeta(key){ return STORE_FORMATS.find(f=>f.key===key) || STORE_FOR
 /* KPI定義: 全業態共通 + 業態固有。targetは業態デフォルト値。
    dir: 'up'=高いほど良い / 'down'=低いほど良い。unit/fmt は表示用。 */
 const KPI_DEFS = [
-  // ① 集客数(L/D)
-  {key:'lunchGuests',  label:'集客数(ランチ)',  unit:'名/月', dir:'up',   scope:'both'},
-  {key:'dinnerGuests', label:'集客数(ディナー)', unit:'名/月', dir:'up',   scope:'both'},
-  // ② 客単価(L/D)
-  {key:'ppaLunch',     label:'客単価(ランチ)',  unit:'$',     dir:'up',   scope:'both'},
-  {key:'ppaDinner',    label:'客単価(ディナー)', unit:'$',     dir:'up',   scope:'both'},
-  // ③ 原価率
+  // ① 原価率
   {key:'foodCost',     label:'原価率',         unit:'%',     dir:'down', scope:'both'},
-  // ④ 人件費率
+  // ② 人件費率
   {key:'laborPct',     label:'人件費率',       unit:'%',     dir:'down', scope:'both'},
-  // ⑤ リピート率
+  // ③ リピート率
   {key:'repeatRate',   label:'リピート率',     unit:'%',     dir:'up',   scope:'both', star:true},
-  // ⑥ ドリンク比率（居酒屋固有）
+  // ④ ドリンク比率（居酒屋業態）
   {key:'drinkRate',    label:'ドリンク比率',   unit:'%',     dir:'up',   scope:'izakaya'},
-  // ⑦ トッピング/アップセル（食事固有）
+  // ⑤ トッピング/アップセル（食事業態）
   {key:'upsellRate',   label:'トッピング/アップセル比率', unit:'%', dir:'up', scope:'dining'},
-  {key:'takeoutRate',  label:'テイクアウト比率', unit:'%',   dir:'up',   scope:'dining'},
-  // ⑧ レビュー系
-  {key:'reviewScore',  label:'Google Review',  unit:'★',     dir:'up',   scope:'both'},
-  {key:'reviewYelp',   label:'Yelp Review',    unit:'★',     dir:'up',   scope:'both'},
-  {key:'reviewReply',  label:'口コミ返信率',   unit:'%',     dir:'up',   scope:'both'},
 ];
+// ※ 集客数・客単価はKPI目標から削除（客数/客単価は各月の予算設定から反映）。
+//   テイクアウト比率・Google/Yelpレビュー・口コミ返信率はKPIスコア対象外（レビューはタスク管理で対応）。
 /* 業態デフォルトのKPI目標値 */
 const FORMAT_KPI_DEFAULTS = {
-  dining: { lunchGuests:80, dinnerGuests:50, ppaLunch:15, ppaDinner:22, foodCost:30, laborPct:28, repeatRate:35, upsellRate:20, takeoutRate:25, reviewScore:4.5, reviewYelp:4.0, reviewReply:90 },
-  izakaya:{ lunchGuests:30, dinnerGuests:90, ppaLunch:20, ppaDinner:38, foodCost:30, laborPct:28, repeatRate:40, drinkRate:35, reviewScore:4.5, reviewYelp:4.0, reviewReply:90 },
+  dining: { foodCost:30, laborPct:28, repeatRate:35, upsellRate:20 },
+  izakaya:{ foodCost:30, laborPct:28, repeatRate:40, drinkRate:35 },
 };
 /* この業態で使うKPI一覧 */
 function kpisForFormat(fmt){ return KPI_DEFS.filter(k=>k.scope==='both'||k.scope===fmt); }
@@ -1064,13 +1055,7 @@ function getStoreKpiTargets(storeId, offset){
   var s = getStoresAll().find(x=>x.id===storeId); if(!s) return {};
   var base = getFormatKpi(s.format||'dining');
   var ov = (ls('m_store_kpi', {})[storeId])||{};
-  var merged = Object.assign({}, base, ov);
-  // 集客数(L/D)は予実の客数予算（月合計）と連動。予実に入力があれば上書き。
-  var bl = budgetGuestsMonthly(storeId, 'lunch', offset||0);
-  var bd = budgetGuestsMonthly(storeId, 'dinner', offset||0);
-  if (bl!=null) merged.lunchGuests = bl;
-  if (bd!=null) merged.dinnerGuests = bd;
-  return merged;
+  return Object.assign({}, base, ov);
 }
 function getStoreKpiOverride(storeId){ return (ls('m_store_kpi', {})[storeId])||{}; }
 function setStoreKpiOverride(storeId, ov){
@@ -3754,12 +3739,11 @@ function statusFromCeil(v, goodMax, warnMax){ return v<=goodMax?'good':v<=warnMa
 /* 総合スコア(100点満点) = 自動KPIの達成度をバランス重み付け
    実績が取れた項目だけで重み付け平均（取れない項目は除外して正規化） */
 const HEALTH_WEIGHTS = {
-  lunchGuests:10, dinnerGuests:10,   // 集客 20
-  ppaLunch:7, ppaDinner:8,           // 客単価 15
-  foodCost:20,                       // 原価率 20
-  laborPct:20,                       // 人件費 20
-  drinkRate:15, upsellRate:15, takeoutRate:8, // 業態固有（あるものだけ）
-  reviewScore:5, reviewYelp:5,       // 口コミ 10
+  foodCost:25,     // 原価率
+  laborPct:25,     // 人件費率
+  repeatRate:20,   // リピート率
+  drinkRate:30,    // ドリンク比率（居酒屋）
+  upsellRate:30,   // トッピング/アップセル（食事）
 };
 function storeHealthScore(arg){
   var storeId = (typeof arg==='string') ? arg : (arg && arg.id);
@@ -3857,8 +3841,8 @@ function storeData(id) {
   try {
     var c = cumulativeToToday(id);
     if (c && (c.budToToday > 0 || c.budMonth > 0)) {
-      result.b = Math.round(c.budToToday > 0 ? c.budToToday : c.budMonth); // 本日までの累計予算（予算設定タブ由来）
-      result.a = Math.round(c.actToToday);                                 // 本日までの累計実績（無ければ0）
+      result.b = Math.round(c.budToToday > 0 ? c.budToToday : c.budMonth); // 前日までの累計予算
+      result.a = Math.round(c.actToToday);                                 // 前日までの累計実績（無ければ0）
       if (c.daysWithActual > 0) {
         if (c.costRate>0) result.fc = c.costRate;
         if (c.laborRate>0) result.labor = c.laborRate;
@@ -4033,7 +4017,7 @@ function renderDashboard() {
       <i class="ti ti-chevron-right" style="color:var(--muted);flex-shrink:0"></i>
     </div>`;
   });
-  html += `<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> ${t('総合スコア=集客/客単価/原価/人件費/ドリンク等の自動KPIを重み付け。スコア順に表示','Weighted auto-KPIs, ranked')}</div></div></div>`;
+  html += `<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> ${t('総合スコア=原価率/人件費率/リピート率/ドリンク比率(居酒屋)/トッピング・アップセル(食事)の達成度を重み付け。スコア順に表示','Weighted auto-KPIs, ranked')}</div></div></div>`;
 
   // ====== ③ 今日の状況（KPI: 数字＋状態＋比較＋次の行動） ======
   var isCum = stores.some(s=>s.cumulative);
@@ -4049,7 +4033,7 @@ function renderDashboard() {
   var fcAction = avgFC<=31 ? t('目標内','Within target') : t('棚卸差異・ロスを確認','Check waste & variance');
   var laborAction = avgL<=29 ? t('目標内','Within target') : t('シフト配置を見直し','Review scheduling');
 
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>${isCum?t('現在地（累計）','Current Pace'):t('今日の状況',"Today's Status")} <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${getPeriod()}</span></div>
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>${isCum?t('現在地（前日まで）','Pace (through yesterday)'):t('今日の状況',"Today's Status")} <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${getPeriod()}</span></div>
     <div class="kpi-grid">
     ${kpiRich({label:isCum?t('累計売上','Sales (MTD)'):t('売上','Sales'), icon:'ti-trending-up', value:fmtK(tA),
       status:statusFromPct(tp), statusLabel:salesScore.label,
@@ -4863,7 +4847,9 @@ function cumulativeToToday(storeId) {
     budMonth += dayBud;
     var dayAct = ov.actual!=null ? ov.actual : 0;
     actMonth += dayAct;
-    if (d.date <= todayStr) {
+    // 「前日まで」で集計（当日は予算だけ入って実績が未確定だと％が崩れるため除外）。
+    // 過去月は全日が前日以前→満額、当月は前日まで、になる。
+    if (d.date < todayStr) {
       budToToday += dayBud;
       actToToday += dayAct;
       daysPassed++;
@@ -5280,11 +5266,12 @@ function renderBudgetSummary() {
   var diff = agg.actToToday - agg.budToToday;
 
   // ===== 現在地（本日時点の累計）=====
+  var _yest = new Date(today.getTime()-86400000);
   var html = `<div class="card" style="border-left:4px solid ${statusColor(statusFromPct(pace))}">
-    <div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>現在地（${today.getMonth()+1}/${today.getDate()}時点の累計）</div>
+    <div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>現在地（${_yest.getMonth()+1}/${_yest.getDate()} 前日まで累計）</div>
     <div class="kpi-grid">
-      ${kpi('累計予算', fmtK(Math.round(agg.budToToday)), '本日まで', 'var(--muted)')}
-      ${kpi('累計実績', fmtK(Math.round(agg.actToToday)), '本日まで', statusColor(statusFromPct(pace)))}
+      ${kpi('累計予算', fmtK(Math.round(agg.budToToday)), '前日まで', 'var(--muted)')}
+      ${kpi('累計実績', fmtK(Math.round(agg.actToToday)), '前日まで', statusColor(statusFromPct(pace)))}
       ${kpi('対予算', pace+'%', diff>=0?'▲'+fmtK(Math.abs(Math.round(diff))):'▼'+fmtK(Math.abs(Math.round(diff))), statusColor(statusFromPct(pace)))}
       ${kpi('着地見込', fmtK(Math.round(agg.actToToday/(agg.budToToday||1)*agg.budMonth)), '対月予算', 'var(--muted)')}
     </div>
@@ -5323,7 +5310,7 @@ function renderBudgetSummary() {
         <span class="tag ${statusTag(st)}">対予算 ${c.paceRate}%</span>
       </div>
       <div class="kpi-grid" style="margin:8px 0;">
-        ${kpi('累計予算', fmtK(Math.round(c.budToToday)), '本日まで', 'var(--muted)')}
+        ${kpi('累計予算', fmtK(Math.round(c.budToToday)), '前日まで', 'var(--muted)')}
         ${kpi('累計実績', fmtK(Math.round(c.actToToday)), c.daysWithActual+'日入力', color)}
         ${kpi('対予算', c.paceRate+'%', sdiff>=0?'▲':'▼', color)}
         ${kpi('月予算', fmtK(Math.round(c.budMonth)), '着地'+(c.budToToday?Math.round(c.actToToday/c.budToToday*100):0)+'%見込', 'var(--muted)')}
