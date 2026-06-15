@@ -926,7 +926,8 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
 const DEFAULT_STORES = [
   {id:'F01',   name:'ToriTon',  color:'#F07820', am:'Uruma',     brand:'ToriTon',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
   {id:'F02',   name:'Tenkichi', color:'#D4A800', am:'Masamitsu', brand:'Tenkichi', toastGuid:'acf37290-509b-4b07-a970-5f22b8683516', hours:'11:00-22:00', days:'毎日', active:true},
-  {id:'F03',   name:'Waikiki',  color:'#5DB554', am:'Eri McCoy', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
+  {id:'F03',   name:'Waikiki Five Star Poke', color:'#5DB554', am:'Eri McCoy', brand:'Five Star Poke', toastGuid:'ba49958c-7eb9-44b6-9482-fe19e4d0a0b3', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
+  {id:'F03-G', name:'Waikiki Garlic Shack',   color:'#D98E3B', am:'Eri McCoy', brand:'Garlic Shack',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
   {id:'F04-K', name:'Kaimuki',  color:'#3A8FD6', am:'Nakai',     brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
   {id:'F04-P', name:'Piikoi',   color:'#0E78C4', am:'Yuki',      brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
   {id:'F04-A', name:'Aiea',     color:'#1B9AD6', am:'Yuki',      brand:'Totoya',   toastGuid:'99c94a86-9c5a-4f06-8a57-c543bb7f4a50', hours:'11:00-22:00', days:'毎日', active:true},
@@ -948,6 +949,37 @@ function getStoresAll() {
   return s;
 }
 function setStoresAll(s) { lsSet('m_stores', s); refreshStores(); }
+/* 一度だけ: 既存「Waikiki」を「Waikiki Five Star Poke」(現アカウント) と「Waikiki Garlic Shack」(新規) に分割 */
+function migrateWaikikiSplit() {
+  try {
+    if (ls('_waikikiSplit', false)) return;
+    var stores = ls('m_stores', null);
+    if (!Array.isArray(stores)) { lsSet('_waikikiSplit', true); return; } // 新規端末は新シードに含まれるためスキップ
+    var changed = false;
+    // 既存Waikiki（id=F03、または名前がちょうど「Waikiki」）→ Five Star Poke に
+    var fsp = stores.find(function(s){ return s.id==='F03'; }) || stores.find(function(s){ return (s.name||'')==='Waikiki'; });
+    if (fsp && (fsp.name||'')!=='Waikiki Five Star Poke') {
+      fsp.name = 'Waikiki Five Star Poke';
+      fsp.brand = 'Five Star Poke';
+      fsp.toastGuid = 'ba49958c-7eb9-44b6-9482-fe19e4d0a0b3';
+      fsp.format = fsp.format || 'dining';
+      fsp.active = true;
+      changed = true;
+    }
+    // Garlic Shack が未登録なら追加（住所・担当はWaikikiと同じ）
+    var hasGarlic = stores.some(function(s){ return s.id==='F03-G' || (s.name||'').indexOf('Garlic Shack')>=0; });
+    if (!hasGarlic) {
+      var am = fsp ? (fsp.am||'Eri McCoy') : 'Eri McCoy';
+      stores.push({ id:'F03-G', name:'Waikiki Garlic Shack', brand:'Garlic Shack', color:'#D98E3B', am:am,
+        toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true, format:'dining',
+        lunchHours:'11:00-14:30', dinnerHours:'17:00-22:00', takeout:true });
+      changed = true;
+    }
+    if (changed) lsSet('m_stores', stores);
+    lsSet('_waikikiSplit', true);
+    if (typeof refreshStores==='function') refreshStores();
+  } catch(e) { console.warn('migrateWaikikiSplit', e); }
+}
 function activeStores() { return getStoresAll().filter(s=>s.active); }
 
 /* ===== 業態（Format）とKPI =====
@@ -16893,6 +16925,7 @@ function checkOnboardToken(){
     return true;
   } catch(e){ console.error('onboard token', e); return false; }
 }
+try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
 try { if (!checkOnboardToken()) bootLogin(); } catch(e) { console.error('bootLogin', e); }
 </script>
 </body>
