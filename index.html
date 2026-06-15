@@ -2920,12 +2920,23 @@ async function supaUpsert(table, rows){
 /* 手動: 現在のlocalStorageマスターを一括Supabaseへ投入（設定画面から実行） */
 async function supaPushAllMasters(){
   var results = [];
+  // 正式なgetter経由で読む（初期データ/デフォルト値も確実に拾う）
+  var sources = {
+    m_stores:     (typeof getStoresAll==='function') ? getStoresAll() : ls('m_stores',[]),
+    m_employees:  (typeof getEmployees==='function') ? getEmployees() : ls('m_employees',[]),
+    m_ingredients:(typeof getIngredients==='function') ? getIngredients() : ls('m_ingredients',[]),
+    m_recipes:    (typeof getRecipes==='function') ? getRecipes() : ls('m_recipes',[]),
+    m_vendors:    (typeof getVendors==='function') ? getVendors() : ls('m_vendors',[]),
+    m_categories: (typeof getCategories==='function') ? getCategories() : ls('m_categories',[]),
+  };
   for (var key in SUPA_MASTER_MAP) {
     var def = SUPA_MASTER_MAP[key];
-    var val = ls(key, []);
+    var val = sources[key] || [];
     if (Array.isArray(val) && val.length) {
       var ok = await supaUpsert(def.table, val.map(def.map));
       results.push(def.table+': '+(ok?val.length+'件':'失敗'));
+    } else {
+      results.push(def.table+': データなし');
     }
   }
   for (var i=0;i<SUPA_SETTING_KEYS.length;i++){
