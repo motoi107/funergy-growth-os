@@ -1133,6 +1133,7 @@ const ROLE_CONFIG = {
   office: { label:'経理', name:'Marcia', financial:true, allStores:true, canApprove:false, canCreate:false },
   am:     { label:'AM',  name:'Yuki', financial:true, allStores:false, canApprove:true, canCreate:true },
   sl:     { label:'SL',  name:'Store Leader', financial:false, allStores:false, canApprove:false, canCreate:true },
+  office_crew: { label:'事務Crew', name:'事務スタッフ', financial:false, allStores:true, canApprove:false, canCreate:false, noWage:true },
   crew:   { label:'Crew',name:'スタッフ', financial:false, allStores:false, canApprove:false, canCreate:false },
 };
 
@@ -1151,7 +1152,7 @@ const NAV_ITEMS = [
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','am','sl']},
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am']},
-  {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl']},
+  {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'attendance',  label:'勤怠データ', icon:'ti-clock-check',      roles:['ceo','gm','office','am','sl']},
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
@@ -1166,7 +1167,7 @@ const NAV_ITEMS = [
   {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
   {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','am']},
-  {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew']},
+  {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm']},
   {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm']},
   {id:'acct_export', label:'経理出力',     icon:'ti-file-export',      roles:['ceo','gm','office']},
@@ -2212,10 +2213,11 @@ const PERM_LEVELS = [
   {id:'finance', label:'財務（経理）'},
   {id:'manager', label:'マネージャー'},
   {id:'leader',  label:'リーダー'},
+  {id:'office_crew', label:'事務（給与非公開）'},
   {id:'crew',    label:'クルー'},
 ];
 /* 権限ロール → 権限レベル（自動対応）。役職と権限を統合管理。 */
-const ROLE_TO_PERM = { ceo:'full', gm:'full', office:'finance', am:'manager', sl:'leader', crew:'crew' };
+const ROLE_TO_PERM = { ceo:'full', gm:'full', office:'finance', am:'manager', sl:'leader', office_crew:'office_crew', crew:'crew' };
 function permFromRole(role){ return ROLE_TO_PERM[role] || 'crew'; }
 
 /* マスター取得ヘルパー */
@@ -2602,6 +2604,7 @@ function isStoreManager() {
 }
 /* 給与を「何らかのスタッフに」見られる役職か（給与表・列の表示可否） */
 function canViewWages() {
+  if ((ROLE_CONFIG[curRole]||{}).noWage) return false; // 事務Crew等は給与一切不可
   return curRole==='ceo' || curRole==='gm' || curRole==='office' || curRole==='am' || isStoreManager();
 }
 /* 給与を編集できるのは GM/CEO のみ（従来どおり） */
@@ -2959,7 +2962,7 @@ function loginPickLocation(loc, el) {
   loginLocation = loc;
   var people;
   if (loc==='OFFICE') {
-    people = getEmployees().filter(e=>['ceo','gm','am','office'].includes(e.role) && e.status!=='退職');
+    people = getEmployees().filter(e=>['ceo','gm','am','office','office_crew'].includes(e.role) && e.status!=='退職');
   } else {
     people = getEmployees().filter(e=>e.status!=='退職' && (e.role==='sl'||e.role==='crew') && (e.store===loc || (e.support||[]).includes(loc)));
   }
@@ -2975,7 +2978,7 @@ function loginPickLocation(loc, el) {
   if (!people.length) {
     ng.innerHTML = storeLoginBtn + `<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:16px;font-size:13px">${t('この所属に登録スタッフがいません','No staff registered for this location')}</div>`;
   } else {
-    var order={ceo:0,gm:1,office:2,am:3,sl:4,crew:5};
+    var order={ceo:0,gm:1,office:2,office_crew:3,am:4,sl:5,crew:6};
     people.sort((a,b)=>(order[a.role]-order[b.role])||a.name.localeCompare(b.name));
     ng.innerHTML = storeLoginBtn + people.map(p=>{
       var roleLabel = roleLabelI18n(p.role);
@@ -2991,7 +2994,7 @@ function loginPickLocation(loc, el) {
 }
 /* 役職ラベルの英日 */
 function roleLabelI18n(role) {
-  var map = {ceo:['CEO','CEO'], gm:['GM','GM'], office:['経理','Office'], am:['エリアMG','Area Manager'], sl:['Store Leader','Store Leader'], crew:['スタッフ','Crew']};
+  var map = {ceo:['CEO','CEO'], gm:['GM','GM'], office:['経理','Office'], am:['エリアMG','Area Manager'], sl:['Store Leader','Store Leader'], office_crew:['事務Crew','Office Crew'], crew:['スタッフ','Crew']};
   var m = map[role]; if(!m) return (ROLE_CONFIG[role]||{}).label||role;
   return curLang==='en'?m[1]:m[0];
 }
@@ -6972,7 +6975,7 @@ function getTipConfirm(storeId, info){ return ls(tipConfirmKey(storeId,info), nu
 function setTipConfirm(storeId, info, data){ lsSet(tipConfirmKey(storeId,info), data); }
 
 function renderTipMgmt() {
-  if (!ROLE_CONFIG[curRole].financial && curRole!=='sl') return financialBlocked();
+  if (!ROLE_CONFIG[curRole].financial && curRole!=='sl' && curRole!=='office_crew') return financialBlocked();
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var info = tipPeriodInfo();
@@ -8351,6 +8354,7 @@ const JOB_TITLES = [
   {key:'Store Manager',  label:'Store Manager',  payType:'monthly', permRole:'sl',   defMonthly:4500},
   {key:'Area Manager',   label:'Area Manager',   payType:'monthly', permRole:'am',   defMonthly:6000},
   {key:'General Manager',label:'General Manager',payType:'monthly', permRole:'gm',   defMonthly:8000},
+  {key:'Office Crew',    label:'事務Crew',       payType:'hourly',  permRole:'office_crew', defWage:18},
   {key:'Accountant',     label:'Accountant',     payType:'monthly',  permRole:'office',defWage:26},
   {key:'CEO',            label:'CEO',            payType:'monthly', permRole:'ceo',  defMonthly:10000},
 ];
@@ -10708,7 +10712,7 @@ function renderStaffMaster() {
     return html;
   }
 
-  var roleOrder = ['ceo','gm','office','am','sl','crew'];
+  var roleOrder = ['ceo','gm','office','office_crew','am','sl','crew'];
   roleOrder.forEach(role => {
     var group = list.filter(e=>e.role===role);
     if (!group.length) return;
@@ -10829,7 +10833,7 @@ function openEmpModal(empId) {
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">権限ロール ${canEditWages()?'':'<span class="tag" style="font-size:8px;background:var(--surface2);color:var(--muted)">GM以上のみ変更可</span>'}</label>
-        <select class="form-select" id="e-role" onchange="empRoleChanged()" ${canEditWages()?'':'disabled'}>${['ceo','gm','office','am','sl','crew'].map(r=>`<option value="${r}"${e.role===r?' selected':''}>${ROLE_CONFIG[r].label}（${PERM_LEVELS.find(p=>p.id===permFromRole(r)).label}）</option>`).join('')}</select>
+        <select class="form-select" id="e-role" onchange="empRoleChanged()" ${canEditWages()?'':'disabled'}>${['ceo','gm','office','am','sl','office_crew','crew'].map(r=>`<option value="${r}"${e.role===r?' selected':''}>${ROLE_CONFIG[r].label}（${PERM_LEVELS.find(p=>p.id===permFromRole(r)).label}）</option>`).join('')}</select>
         <input type="hidden" id="e-perms" value="${e.perms||permFromRole(e.role)}">
         <div style="font-size:11px;color:var(--muted);margin-top:4px">権限ロールで権限レベル（アクセス範囲）が自動で決まります。</div>
       </div>
