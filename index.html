@@ -609,6 +609,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
       <i class="ti ti-chevron-down" style="font-size:12px;"></i>
     </div>
     <div class="topbar-right">
+      <button id="topbar-sync" onclick="openSyncCenter()" title="同期センター" style="display:none;background:none;border:none;color:var(--tm);font-size:18px;cursor:pointer;padding:4px 8px"><i class="ti ti-refresh"></i></button>
       <div class="topbar-role-badge" id="topbar-role"></div>
       <button class="logout-btn" onclick="doLogout()">ログアウト</button>
     </div>
@@ -3488,6 +3489,7 @@ function initApp() {
   var storeName = curStore === 'ALL' ? '全店舗' : (STORES.find(s=>s.id===curStore)||{name:curStore}).name;
   document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
   document.getElementById('topbar-role').textContent = rc.label + ' / ' + (curUserName || rc.name);
+  var _sb = document.getElementById('topbar-sync'); if (_sb) _sb.style.display = rc.financial ? '' : 'none';
 
   // Nav
   buildNav();
@@ -3839,21 +3841,20 @@ function storeData(id) {
   var d = DEMO_BUDGET[id] || {b:200000,a:190000,fc:30,labor:28};
   var result = Object.assign({}, d, {id, name:(STORES.find(s=>s.id===id)||{name:id}).name,
     color:(STORES.find(s=>s.id===id)||{color:'#888'}).color});
-  // 日次実績が入力されていれば、その日時点の累計を使う（現在地ベース）
+  // 予算は常に「予算設定タブ(budgets_v2)」を正とする。実績は日次実績/Toast同期の累計。
   try {
     var c = cumulativeToToday(id);
-    if (c && c.daysWithActual > 0) {
-      result.b = Math.round(c.budToToday);   // 累計予算（本日まで）
-      result.a = Math.round(c.actToToday);   // 累計実績（本日まで）
-      result.sp = c.paceRate;
-      if (c.costRate>0) result.fc = c.costRate;
-      if (c.laborRate>0) result.labor = c.laborRate;
-      result.status = result.sp>=100?'good':result.sp>=90?'warn':'danger';
-      result.cumulative = true;
-      return result;
+    if (c && (c.budToToday > 0 || c.budMonth > 0)) {
+      result.b = Math.round(c.budToToday > 0 ? c.budToToday : c.budMonth); // 本日までの累計予算（予算設定タブ由来）
+      result.a = Math.round(c.actToToday);                                 // 本日までの累計実績（無ければ0）
+      if (c.daysWithActual > 0) {
+        if (c.costRate>0) result.fc = c.costRate;
+        if (c.laborRate>0) result.labor = c.laborRate;
+        result.cumulative = true;
+      }
     }
   } catch(e){}
-  result.sp = pct(d.a, d.b);
+  result.sp = pct(result.a, result.b);
   result.status = result.sp >= 100 ? 'good' : result.sp >= 90 ? 'warn' : 'danger';
   return result;
 }
@@ -3907,6 +3908,17 @@ function openStoreKpi(storeId){
 /* ============================================================
    DASHBOARD
 ============================================================ */
+/* ダッシュボードの折りたたみ開閉（セッション内で状態保持） */
+window._dashOpen = window._dashOpen || {};
+function dashToggle(id, el){
+  var b = document.getElementById(id); if(!b) return;
+  var open = b.style.display==='none';
+  b.style.display = open ? '' : 'none';
+  window._dashOpen[id] = open;
+  var chev = el && el.querySelector ? el.querySelector('.dash-chev') : null;
+  if (chev) chev.style.transform = open ? 'rotate(180deg)' : '';
+}
+function dashCollapsed(id){ return window._dashOpen[id] !== true; } // 既定は閉じる
 function renderDashboard() {
   var rc = ROLE_CONFIG[curRole];
   if (!rc.financial) return renderMypage();
@@ -3977,11 +3989,13 @@ function renderDashboard() {
   var offset = window._kpiDashOffset||0;
   var period = periodForOffset(offset);
   html += `<div class="card">
-    <div class="card-title"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>${t('総合スコア','Total Score')}
-      <div style="margin-left:auto;display:flex;gap:4px">
-        <button class="btn btn-${offset===0?'primary':'secondary'} btn-sm" onclick="window._kpiDashOffset=0;renderPage('dashboard')">${t('今月','This')}</button>
-        <button class="btn btn-${offset===-1?'primary':'secondary'} btn-sm" onclick="window._kpiDashOffset=-1;renderPage('dashboard')">${t('先月','Last')}</button>
-      </div></div>
+    <div class="card-title" style="cursor:pointer" onclick="dashToggle('dash-score',this)"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>${t('総合スコア','Total Score')} <span style="font-size:11px;color:var(--muted);font-weight:400">· ${t('店舗ランキング','ranking')}</span>
+      <i class="ti ti-chevron-down dash-chev" style="margin-left:auto;transition:transform .15s;${dashCollapsed('dash-score')?'':'transform:rotate(180deg)'}"></i></div>
+    <div id="dash-score" style="display:${dashCollapsed('dash-score')?'none':''}">
+      <div style="display:flex;gap:4px;justify-content:flex-end;margin-bottom:6px">
+        <button class="btn btn-${offset===0?'primary':'secondary'} btn-sm" onclick="event.stopPropagation();window._kpiDashOffset=0;renderPage('dashboard')">${t('今月','This')}</button>
+        <button class="btn btn-${offset===-1?'primary':'secondary'} btn-sm" onclick="event.stopPropagation();window._kpiDashOffset=-1;renderPage('dashboard')">${t('先月','Last')}</button>
+      </div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${period} · ${t('自動KPIの総合達成度。スコア順・店舗タップで詳細','Ranked by score · tap a store')}</div>`;
   // 総合スコアで降順ソート（＝ランキング統合）
   var ranked = stores.map(function(sd){
@@ -4009,7 +4023,7 @@ function renderDashboard() {
       <i class="ti ti-chevron-right" style="color:var(--muted);flex-shrink:0"></i>
     </div>`;
   });
-  html += `<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> ${t('総合スコア=集客/客単価/原価/人件費/ドリンク等の自動KPIを重み付け。スコア順に表示','Weighted auto-KPIs, ranked')}</div></div>`;
+  html += `<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> ${t('総合スコア=集客/客単価/原価/人件費/ドリンク等の自動KPIを重み付け。スコア順に表示','Weighted auto-KPIs, ranked')}</div></div></div>`;
 
   // ====== ③ 今日の状況（KPI: 数字＋状態＋比較＋次の行動） ======
   var isCum = stores.some(s=>s.cumulative);
@@ -4069,7 +4083,8 @@ function renderDashboard() {
 
   // ====== ⑤ 店舗別状況 ======
   if (stores.length > 1) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-building-store"></i>店舗別状況</div>`;
+    html += `<div class="card"><div class="card-title" style="cursor:pointer" onclick="dashToggle('dash-stores',this)"><i class="ti ti-building-store"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400">· ${stores.length}${t('店','stores')}</span><i class="ti ti-chevron-down dash-chev" style="margin-left:auto;transition:transform .15s;${dashCollapsed('dash-stores')?'':'transform:rotate(180deg)'}"></i></div>
+      <div id="dash-stores" style="display:${dashCollapsed('dash-stores')?'none':''}">`;
     stores.forEach(s => {
       var color = statusColor(s.status);
       html += `<div class="store-row">
@@ -4085,7 +4100,7 @@ function renderDashboard() {
         <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
       </div>`;
     });
-    html += '</div>';
+    html += '</div></div>';
   }
 
   // 本日リアルタイム売上を非同期ロード
@@ -5508,6 +5523,103 @@ async function doToastSync(storeId, guid) {
 /* ===== 統合データ連携（売上・客数・Tip・Labor・天気をまとめて実行） ===== */
 function getSyncState(storeId) { return ls('sync_state_'+storeId, {last:null, status:null, error:null, detail:''}); }
 function setSyncState(storeId, st) { lsSet('sync_state_'+storeId, st); }
+
+/* ============================================================
+   同期センター（各ページに散っていた同期を1か所に集約）
+============================================================ */
+/* 1店舗のToastデータ同期（売上・客数・Tip・Labor・天気）。ページUIに依存しない */
+async function syncCenterRunStore(storeId) {
+  var s = getStoresAll().find(x=>x.id===storeId) || {};
+  var guid = s.toastGuid || '';
+  var detail = [], err = null;
+  try {
+    if (guid) {
+      var r1 = await syncStoreActualsFromToast(storeId, guid, monthDays());
+      if (r1 && r1.error) err = r1.error; else if (r1) detail.push('売上/客数 '+(r1.updated!=null?r1.updated+'日':'OK'));
+      var r2 = await syncTipLaborFromDB(storeId, guid, monthDays());
+      if (r2 && r2.error) err = err||r2.error; else if (r2) detail.push('Tip/Labor '+(r2.updated!=null?r2.updated+'日':'OK'));
+    } else { detail.push('GUID未設定（Toastスキップ）'); }
+    try { if (typeof doWeatherSyncSilent==='function'){ await doWeatherSyncSilent(storeId); detail.push('天気'); } } catch(e){}
+  } catch(e){ err = String(e); }
+  setSyncState(storeId, { last:new Date().toLocaleString('ja'), status:err?'failed':'success', error:err||null, detail:detail.join(' · ') });
+  return { storeId:storeId, err:err, detail:detail.join(' · ') };
+}
+/* スコープ内の全店をまとめて同期 */
+async function syncCenterRunAll() {
+  var box = document.getElementById('sync-center-result');
+  var stores = getVisibleStores();
+  var lines = [];
+  for (var i=0;i<stores.length;i++){
+    var s = stores[i];
+    if (box) box.innerHTML = '<i class="ti ti-loader"></i> 同期中… ('+(i+1)+'/'+stores.length+') '+escapeHtml(s.name);
+    var r = await syncCenterRunStore(s.id);
+    lines.push((r.err?'⚠ ':'✓ ')+s.name+'：'+(r.err?r.err:(r.detail||'完了')));
+  }
+  showToast('同期が完了しました','success');
+  openSyncCenter();
+  var box2 = document.getElementById('sync-center-result');
+  if (box2) box2.innerHTML = '<b>結果:</b><br>'+lines.map(escapeHtml).join('<br>');
+}
+/* 単一店舗を同期してモーダルを更新 */
+async function syncCenterOne(storeId) {
+  var nm = (getStoresAll().find(x=>x.id===storeId)||{}).name||'';
+  var box = document.getElementById('sync-center-result');
+  if (box) box.innerHTML = '<i class="ti ti-loader"></i> 同期中… '+escapeHtml(nm);
+  var r = await syncCenterRunStore(storeId);
+  showToast((r.err?'同期エラー: ':'同期完了: ')+nm, r.err?'warning':'success');
+  openSyncCenter();
+  var box2 = document.getElementById('sync-center-result');
+  if (box2) box2.innerHTML = (r.err?'⚠ ':'✓ ')+escapeHtml(nm)+'：'+escapeHtml(r.err||r.detail||'完了');
+}
+/* メニュー・出数をスコープ内の全店で同期 */
+async function syncCenterMenuAll() {
+  var box = document.getElementById('sync-center-result');
+  var stores = getVisibleStores().filter(function(s){ return s.toastGuid; });
+  if (!stores.length){ if(box) box.innerHTML='<span style="color:var(--muted)">GUID設定済みの店舗がありません</span>'; return; }
+  var period = getPeriod(); var lines = [];
+  for (var i=0;i<stores.length;i++){ var s=stores[i];
+    if (box) box.innerHTML = '<i class="ti ti-loader"></i> メニュー同期中… ('+(i+1)+'/'+stores.length+') '+escapeHtml(s.name);
+    try { var r = await syncMenuFromToast(s.id, s.toastGuid, period);
+      lines.push((r&&r.error?'⚠ ':'✓ ')+s.name+'：'+(r&&r.error?r.error:(r&&r.itemsCount!=null?r.itemsCount+'品':'完了')));
+    } catch(e){ lines.push('⚠ '+s.name+'：'+String(e)); }
+  }
+  showToast('メニュー同期が完了しました','success');
+  if (box) box.innerHTML = '<b>メニュー同期:</b><br>'+lines.map(escapeHtml).join('<br>');
+}
+/* 同期センター モーダル */
+function openSyncCenter() {
+  var stores = getVisibleStores();
+  var scopeLabel = curStore==='ALL' ? ('全店（'+stores.length+'店舗）') : ((getStoresAll().find(x=>x.id===curStore)||{}).name||'—');
+  var isGM = curRole==='gm' || curRole==='ceo';
+  var rows = stores.map(function(s){
+    var st = getSyncState(s.id);
+    var dot = st.status==='success'?'var(--green)':st.status==='failed'?'var(--red)':'var(--muted)';
+    var last = st.last ? st.last : '未同期';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span style="width:9px;height:9px;border-radius:50%;background:${s.color};flex-shrink:0"></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${escapeHtml(s.name)}${s.toastGuid?'':' <span style="font-size:10px;color:var(--muted)">(GUID未設定)</span>'}</div>
+        <div style="font-size:10px;color:var(--muted)">最終同期: ${escapeHtml(last)}${st.detail?' · '+escapeHtml(st.detail):''}</div>
+      </div>
+      <span style="width:8px;height:8px;border-radius:50%;background:${dot};flex-shrink:0" title="${st.status||'未同期'}"></span>
+      <button class="btn btn-secondary btn-sm" onclick="syncCenterOne('${s.id}')"><i class="ti ti-refresh"></i></button>
+    </div>`;
+  }).join('');
+  openModal(`<div class="modal-title"><i class="ti ti-refresh"></i> 同期センター <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">対象: <b>${escapeHtml(scopeLabel)}</b> <span style="font-size:11px">（上部の店舗切替で変更）</span></div>
+    <button class="btn btn-primary" style="width:100%" onclick="syncCenterRunAll()"><i class="ti ti-bolt"></i> すべて同期（売上・客数・Tip・Labor・天気）</button>
+    <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="syncCenterMenuAll()"><i class="ti ti-tools-kitchen-2"></i> メニュー・出数を同期</button>
+    <div id="sync-center-result" style="font-size:12px;margin-top:10px"></div>
+    <div style="font-weight:700;font-size:13px;margin:14px 0 4px">Toast 店舗別</div>
+    ${rows||'<div style="font-size:12px;color:var(--muted)">対象店舗がありません</div>'}
+    ${isGM?`<div style="font-weight:700;font-size:13px;margin:16px 0 6px;border-top:1px solid var(--border);padding-top:12px">クラウド（マスター）</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-secondary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> アップロード</button>
+        <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> 取り込む</button>
+        <button class="btn ${SUPA_SYNC_ENABLED?'btn-success':'btn-secondary'} btn-sm" onclick="toggleSupaSync();openSyncCenter()">${SUPA_SYNC_ENABLED?'<i class=\"ti ti-check\"></i> 自動同期 ON':'自動同期 OFF'}</button>
+      </div>`:''}
+    <div style="font-size:11px;color:var(--muted);margin-top:12px"><i class="ti ti-info-circle"></i> 各ページの同期ボタンも今まで通り使えます。ここから一括／個別どちらも実行できます。</div>`);
+}
 async function syncAllData(storeId, guid) {
   var btn = document.getElementById('sync-all-btn');
   var stEl = document.getElementById('sync-all-status');
@@ -7395,7 +7507,7 @@ function renderTipPeriodDaily(storeId, store, info) {
   var html = '';
   if (hasGuid) {
     html += `<div class="card" style="padding:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-primary btn-sm" onclick="doTipLaborDB('${storeId}','${store.toastGuid}')"><i class="ti ti-cloud-check"></i> データ反映</button>
+      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
       <button class="btn btn-secondary btn-sm" onclick="openTipTimeModal('${storeId}')"><i class="ti ti-clock-cog"></i> 時間設定</button>
       </div><div id="tip-status" style="font-size:11px;color:var(--muted);margin-top:6px">同期済みの勤怠を期間に反映します。</div></div>`;
   }
@@ -7742,7 +7854,7 @@ function renderAttendance() {
 
   // データ反映ボタン（実勤怠のみ。シフト連携なし）
   html += `<div class="card" style="padding:10px;margin-bottom:10px">
-    <button class="btn btn-primary" style="width:100%" onclick="attLoadData('${storeId}','${store.toastGuid||''}')"><i class="ti ti-refresh"></i> 勤怠データを反映（同期DB）</button>
+    <button class="btn btn-secondary" style="width:100%" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センターで同期</button>
     <button class="btn btn-secondary" id="att-backfill-btn" style="width:100%;margin-top:6px" onclick="attBackfillMonth('${storeId}','${store.toastGuid||''}')"><i class="ti ti-cloud-download"></i> Toastから月を直接取込</button>
     <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'「同期DB」で取れない日は「直接取込」でToastから補完できます。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
 
@@ -8072,7 +8184,7 @@ function renderTipDaily(storeId, store, date) {
   if (hasGuid) {
     var basis = getTipHoursBasis(storeId);
     html += `<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-primary btn-sm" onclick="doTipLaborDB('${storeId}','${store.toastGuid}')"><i class="ti ti-cloud-check"></i> 同期データを反映</button>
+      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
       <button class="btn btn-secondary btn-sm" onclick="doTipLaborFetch('${storeId}','${store.toastGuid}','${date}')"><i class="ti ti-cloud-download"></i> この日を取得</button>
       <button class="btn btn-secondary btn-sm" onclick="openTipTimeModal('${storeId}')"><i class="ti ti-clock-cog"></i> 時間設定</button>
       <span class="tag ${basis==='window'?'tag-blue':'tag-gray'}" style="font-size:10px">${basis==='window'?'営業時間帯のみ':'全勤務時間'}</span>
@@ -13592,7 +13704,7 @@ function renderMenu() {
     ${visStores.length>1?`<select class="form-select" style="width:auto;padding:6px" onchange="window._menuStore=this.value;renderPage('menu')">${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>`:`<b style="font-size:13px">${storeObj.name}</b>`}
     <select class="form-select" style="width:auto;padding:6px" onchange="window._menuPeriod=this.value;renderPage('menu')">${periodOptions(period)}</select>
     ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> 出数を入力</button>`:''}
-    <button class="btn btn-primary btn-sm" onclick="doMenuSync('${storeId}','${period}')"><i class="ti ti-refresh"></i> Toast同期</button>
+    <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
     ${mix.toastSrc?`<span class="tag tag-green" style="font-size:9px">Toast同期済</span>`:''}
   </div></div>`;
 
