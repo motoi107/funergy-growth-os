@@ -2833,7 +2833,114 @@ function ls(key, def) {
   try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
   catch(e) { return def; }
 }
-function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){} }
+function lsSet(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){}
+  // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
+  try { if (SUPA_SYNC_ENABLED) syncMasterToSupabase(key, val); } catch(e){ console.warn('supa sync skip', e); }
+}
+
+/* ============================================================
+   データ層（フェーズ1）: マスターをSupabaseへ同期（localStorageは維持）
+   - SUPA_SYNC_ENABLED で全体ON/OFF（設定で切替可）
+   - 個別マスター(stores/employees/...)は各テーブルへupsert
+   - その他のマスター設定は app_settings へ key=value で保存
+============================================================ */
+var SUPA_SYNC_ENABLED = (function(){ try{ return localStorage.getItem('supa_sync')==='1'; }catch(e){ return false; } })();
+function setSupaSync(on){ SUPA_SYNC_ENABLED=on; try{ localStorage.setItem('supa_sync', on?'1':'0'); }catch(e){} }
+
+/* localStorageキー → Supabaseテーブル定義。
+   type:'rows' = 配列を行としてupsert（mapで各行の主要カラムを抽出、全体はdataへ）
+   type:'setting' = 単一/任意オブジェクトを app_settings に保存 */
+var SUPA_MASTER_MAP = {
+  m_stores:      { type:'rows', table:'stores', pk:'id',
+    map:function(o){ return { id:o.id, name:o.name, brand:o.brand||null, format:o.format||null, color:o.color||null, am:o.am||null, toast_guid:o.toastGuid||null, hours:o.hours||null, days:o.days||null, active:o.active!==false, data:o }; } },
+  m_employees:   { type:'rows', table:'employees', pk:'id',
+    map:function(o){ return { id:o.id, name:o.name, emp_code:o.empCode||null, role:o.role||null, perms:o.perms||null, title:o.title||null, store:o.store||null, support:o.support||[], status:o.status||null, emp_type:o.emp||null, email:o.email||null, phone:o.phone||null, data:o }; } },
+  m_ingredients: { type:'rows', table:'ingredients', pk:'code',
+    map:function(o){ return { code:o.code, name:o.name, cat:o.cat||null, unit:o.unit||null, vendor:o.vendor||null, price:o.price||null, qty:o.qty||null, yield:o.yield||null, uc:o.uc||null, data:o }; } },
+  m_recipes:     { type:'rows', table:'recipes', pk:'id',
+    map:function(o){ return { id:o.id||String(o.code||o.name), name:o.name, category:o.category||o.cat||null, store:o.store||null, toast_guid:o.toastGuid||null, sell_price:o.sellPrice!=null?o.sellPrice:null, data:o }; } },
+  m_vendors:     { type:'rows', table:'vendors', pk:'id',
+    map:function(o){ return { id:o.id, name:o.name, contact:o.contact||null, phone:o.phone||null, email:o.email||null, method:o.method||null, data:o }; } },
+  m_categories:  { type:'rows', table:'categories', pk:'code',
+    map:function(o){ return { code:o.code, name:o.name, cls:o.cls||null, data:o }; } },
+};
+/* app_settings に入れるマスター設定キー（プレフィックス一致も可） */
+var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
+  'staff_pins','store_pins','tip_policy','tip_leader_split','tip_hours_basis','tip_window',
+  'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
+  'store_ops_config','ob_template','budgets_v2','company_message'];
+var SUPA_SETTING_PREFIX = ['dailyops_template_'];
+
+function supaHeaders(extra){
+  return Object.assign({ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':'application/json' }, extra||{});
+}
+/* マスターをSupabaseへ同期（非同期・失敗してもlocalStorageは無事） */
+async function syncMasterToSupabase(key, val){
+  var def = SUPA_MASTER_MAP[key];
+  if (def && def.type==='rows') {
+    if (!Array.isArray(val)) return;
+    var rows = val.map(def.map);
+    if (!rows.length) return;
+    await supaUpsert(def.table, rows);
+    return;
+  }
+  // app_settings 行き
+  var isSetting = SUPA_SETTING_KEYS.includes(key) || SUPA_SETTING_PREFIX.some(p=>key.indexOf(p)===0);
+  if (isSetting) {
+    await supaUpsert('app_settings', [{ key:key, value:val, category:supaSettingCategory(key) }]);
+  }
+}
+function supaSettingCategory(key){
+  if (key.indexOf('kpi')>=0) return 'kpi';
+  if (key.indexOf('tip')>=0) return 'tip';
+  if (key.indexOf('rule')>=0||key==='special_rules') return 'rules';
+  if (key.indexOf('wage')>=0) return 'wage';
+  if (key.indexOf('position')>=0) return 'positions';
+  if (key.indexOf('work_cond')>=0) return 'workcond';
+  if (key.indexOf('budget')>=0) return 'budget';
+  if (key.indexOf('dailyops')>=0||key==='store_ops_config') return 'dailyops';
+  if (key.indexOf('goal')>=0) return 'goals';
+  if (key==='company_message') return 'message';
+  if (key.indexOf('pin')>=0) return 'pin';
+  return 'other';
+}
+/* PostgREST upsert（merge-duplicates） */
+async function supaUpsert(table, rows){
+  try {
+    var res = await fetch(SUPABASE_URL+'/rest/v1/'+table, {
+      method:'POST',
+      headers: supaHeaders({ Prefer:'resolution=merge-duplicates,return=minimal' }),
+      body: JSON.stringify(rows),
+    });
+    if (!res.ok) { var txt=await res.text(); console.warn('supaUpsert '+table+' failed', res.status, txt); return false; }
+    return true;
+  } catch(e){ console.warn('supaUpsert error', table, e); return false; }
+}
+/* 手動: 現在のlocalStorageマスターを一括Supabaseへ投入（設定画面から実行） */
+async function supaPushAllMasters(){
+  var results = [];
+  for (var key in SUPA_MASTER_MAP) {
+    var def = SUPA_MASTER_MAP[key];
+    var val = ls(key, []);
+    if (Array.isArray(val) && val.length) {
+      var ok = await supaUpsert(def.table, val.map(def.map));
+      results.push(def.table+': '+(ok?val.length+'件':'失敗'));
+    }
+  }
+  for (var i=0;i<SUPA_SETTING_KEYS.length;i++){
+    var k=SUPA_SETTING_KEYS[i]; var v=ls(k,null);
+    if (v!=null){ var ok2=await supaUpsert('app_settings',[{key:k,value:v,category:supaSettingCategory(k)}]); results.push(k+': '+(ok2?'OK':'失敗')); }
+  }
+  // dailyops_template_* も拾う
+  try {
+    for (var s=0;s<localStorage.length;s++){
+      var lk=localStorage.key(s);
+      if (lk && lk.indexOf('dailyops_template_')===0){ var lv=ls(lk,null); if(lv!=null){ await supaUpsert('app_settings',[{key:lk,value:lv,category:'dailyops'}]); results.push(lk+': OK'); } }
+    }
+  } catch(e){}
+  return results;
+}
 
 /* ============================================================
    LOGIN
@@ -13134,15 +13241,51 @@ function renderSettings() {
   <div class="card"><div class="card-title"><i class="ti ti-database"></i>データ管理</div>
     <p style="font-size:13px;color:var(--muted);margin-bottom:12px">すべてのデモデータはlocalStorageに保存されています。</p>
     <button class="btn btn-danger btn-sm" onclick="clearAllData()"><i class="ti ti-trash"></i> 全データリセット</button>
-  </div>
-  <div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>システム情報</div>
+  </div>`;
+
+  // Supabase同期（GM/CEOのみ）— 本番移行フェーズ1
+  if (curRole==='gm' || curRole==='ceo') {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-cloud-up" style="color:var(--accent)"></i>本番移行（Supabase同期）</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">マスターデータをクラウド（Supabase）にも保存します。ONにすると、以降のマスター変更が自動でSupabaseに同期されます。localStorageも維持されるので安全です。</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div><div style="font-weight:600;font-size:13px">マスター自動同期</div>
+          <div style="font-size:11px;color:var(--muted)">店舗・従業員・食材・レシピ・取引先・各種設定</div></div>
+        <button class="btn ${SUPA_SYNC_ENABLED?'btn-success':'btn-secondary'} btn-sm" onclick="toggleSupaSync()">${SUPA_SYNC_ENABLED?'<i class=\"ti ti-check\"></i> ON':'OFF'}</button>
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn btn-primary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> 今のマスターを一括アップロード</button>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">現在この端末に入っているマスターを、まとめてSupabaseへ投入します。</div>
+      </div>
+      <div id="supa-push-result" style="font-size:11px;color:var(--muted);margin-top:10px"></div>
+    </div>`;
+  }
+
+  html += `<div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>システム情報</div>
     <div style="font-size:13px;color:var(--muted)">
       <p>Version: 1.0.0-demo</p>
-      <p style="margin-top:4px">Backend: localStorage (デモモード)</p>
+      <p style="margin-top:4px">Backend: localStorage${SUPA_SYNC_ENABLED?' + Supabase同期ON':' (デモモード)'}</p>
       <p style="margin-top:4px">Stores: ${STORES.length}店舗</p>
     </div>
   </div>`;
   return html;
+}
+function toggleSupaSync(){
+  setSupaSync(!SUPA_SYNC_ENABLED);
+  showToast('マスター同期を'+(SUPA_SYNC_ENABLED?'ONにしました':'OFFにしました'), SUPA_SYNC_ENABLED?'success':'info');
+  renderPage('settings');
+}
+async function runSupaPushAll(){
+  var el=document.getElementById('supa-push-result');
+  if(el) el.innerHTML='<i class="ti ti-loader"></i> アップロード中…';
+  showToast('Supabaseへアップロード中…','info');
+  try {
+    var results = await supaPushAllMasters();
+    if(el) el.innerHTML = '<b>結果:</b><br>'+results.join('<br>');
+    showToast('アップロード完了','success');
+  } catch(e){
+    if(el) el.innerHTML = '<span style="color:var(--red)">エラー: '+e.message+'</span>';
+    showToast('アップロードに失敗しました','error');
+  }
 }
 
 function clearAllData() {
