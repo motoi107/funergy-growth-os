@@ -2843,8 +2843,64 @@ var loginStoreMode = false; // 店舗共有アカウントでログイン中か
 /* PIN管理（個人別、初期0000） */
 var DEFAULT_STAFF_PIN = '0000';
 function getStaffPins() { return ls('staff_pins', {}); }
+/* PIN一覧を見られるのはGM/CEOのみ（PIN忘れ対応） */
+function canViewPins() { return curRole==='gm' || curRole==='ceo'; }
+/* GM/CEO: 全スタッフのPIN一覧（忘れ対応）＋リセット */
+function openPinListModal(){
+  if (!canViewPins()) return;
+  var emps = getEmployees().filter(e=>e.status!=='退職').sort((a,b)=>(a.store||'').localeCompare(b.store||'')||a.name.localeCompare(b.name));
+  var rows = emps.map(e=>{
+    var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
+    return `<tr>
+      <td style="padding:6px 8px">${e.name}<div style="font-size:10px;color:var(--muted)">${storeName}${e.title?' · '+e.title:''}</div></td>
+      <td style="text-align:center;padding:6px 8px"><span style="font-family:monospace;letter-spacing:2px;font-size:15px;font-weight:700;color:var(--tm)">${getStaffPin(e.name)}</span></td>
+      <td style="text-align:right;padding:6px 8px"><button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="resetStaffPin('${e.name.replace(/'/g,"\\'")}')">リセット</button></td>
+    </tr>`;
+  }).join('');
+  openModal(`<div class="modal-title"><i class="ti ti-lock"></i> ログインPIN一覧 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-eye"></i> GM/CEOのみ閲覧可。スタッフがPINを忘れた時の確認用です。</div>
+    <div style="max-height:60vh;overflow-y:auto">
+      <table style="width:100%;font-size:13px;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)"><th style="text-align:left;padding:6px 8px">スタッフ</th><th style="text-align:center;padding:6px 8px">PIN</th><th style="padding:6px 8px"></th></tr></thead>
+        <tbody>${rows}</tbody></table>
+    </div>
+    <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`);
+}
+function resetStaffPin(name){
+  if (!canViewPins()) return;
+  var np = prompt(name+' さんの新しいPIN（4桁）を入力:', getStaffPin(name));
+  if (np===null) return;
+  np = String(np).trim();
+  if (!/^\d{4}$/.test(np)) { alert('PINは4桁の数字で入力してください'); return; }
+  setStaffPin(name, np);
+  showToast(name+' のPINを更新しました','success');
+  openPinListModal();
+}
 function getStaffPin(name) { var p=getStaffPins(); return p[name] || DEFAULT_STAFF_PIN; }
 function setStaffPin(name, pin) { var p=getStaffPins(); p[name]=pin; lsSet('staff_pins', p); }
+/* 本人がマイページから自分のPINを設定・変更 */
+function openMyPinModal(){
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var cur = getStaffPin(me);
+  openModal(`<div class="modal-title"><i class="ti ti-lock"></i> ${t('ログインPIN設定','Login PIN')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${t('個人ログイン時に使う4桁のPINです。忘れた場合はGM/管理者が確認できます。','Your 4-digit login PIN. GM can look it up if forgotten.')}</div>
+    <div class="form-group"><label class="form-label">${t('新しいPIN（4桁）','New PIN (4 digits)')}</label>
+      <input class="form-input" id="my-pin" type="tel" inputmode="numeric" maxlength="4" value="${cur||''}" placeholder="0000" style="font-family:monospace;letter-spacing:6px;font-size:18px;text-align:center"></div>
+    <div class="form-group"><label class="form-label">${t('確認のためもう一度','Confirm PIN')}</label>
+      <input class="form-input" id="my-pin2" type="tel" inputmode="numeric" maxlength="4" placeholder="0000" style="font-family:monospace;letter-spacing:6px;font-size:18px;text-align:center"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">${t('キャンセル','Cancel')}</button>
+    <button class="btn btn-primary" onclick="saveMyPin()"><i class="ti ti-device-floppy"></i> ${t('保存','Save')}</button></div>`);
+}
+function saveMyPin(){
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var p1=(document.getElementById('my-pin')||{}).value||'';
+  var p2=(document.getElementById('my-pin2')||{}).value||'';
+  if (!/^\d{4}$/.test(p1)) { alert(t('PINは4桁の数字で入力してください','PIN must be 4 digits')); return; }
+  if (p1!==p2) { alert(t('確認用PINが一致しません','PINs do not match')); return; }
+  setStaffPin(me, p1);
+  closeModalDirect();
+  showToast(t('PINを更新しました','PIN updated'),'success');
+}
 
 /* ログイン画面初期化（所属選択の店舗グリッドを描画） */
 function bootLogin() {
@@ -10625,6 +10681,7 @@ function renderStaffMaster() {
   var html = `<div class="section-header">
     <div><div class="section-title">従業員マスター</div><div class="section-sub">在籍 ${active.length}名 / 退職 ${resigned.length}名${empStoreFilter!=='all'||empSearchQ?' · 該当 '+list.length+'名':''}</div></div>
     <div style="display:flex;gap:6px">
+      ${canViewPins()?`<button class="btn btn-secondary btn-sm" onclick="openPinListModal()"><i class="ti ti-lock"></i> PIN一覧</button>`:''}
       ${wageScopeStores()===null?`<button class="btn btn-secondary btn-sm" onclick="openTitleWageModal()"><i class="ti ti-table-options"></i> 役職給与表</button>`:''}
       <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
     </div>
@@ -10667,6 +10724,7 @@ function renderStaffMaster() {
         <div style="flex:1;min-width:0">
           <div class="staff-name">${e.name} ${e.empCode?`<span style="font-size:10px;color:var(--muted);font-weight:400">#${e.empCode}</span>`:''}</div>
           <div class="staff-role">${e.title?'<b>'+e.title+'</b> · ':''}${storeName}${supportNames?' +応援:'+supportNames:''} · ${e.emp}${ins.length?' · '+ins.join('/'):''}</div>
+          ${canViewPins()?`<div style="font-size:10px;color:var(--muted);margin-top:1px"><i class="ti ti-lock" style="font-size:10px"></i> PIN: <span style="font-family:monospace;letter-spacing:1px;color:var(--tm);font-weight:600">${getStaffPin(e.name)}</span></div>`:''}
         </div>
         <div style="text-align:right">
           <span class="tag ${statusTag}">${e.status}</span>
@@ -12542,6 +12600,16 @@ function renderMypage() {
       ${isCrewView?`<div style="display:flex;align-items:baseline;gap:8px;margin-top:9px"><span style="font-size:13px;font-weight:700;color:#fff">${heroLevel}</span><span style="font-size:11px;color:rgba(255,255,255,.85)">${heroNext}</span></div>
       <div class="fy-levelbar"><i style="width:${heroPct}%"></i></div>`:''}
     </div>
+  </div>`;
+
+  // ===== 個人設定（PIN）— 全ユーザー共通 =====
+  html += `<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px">
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent)1a;color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-lock" style="font-size:18px"></i></div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:13px">${t('ログインPIN','Login PIN')}</div>
+      <div style="font-size:11px;color:var(--muted)">${t('自分のログイン用PINを設定・変更できます','Set or change your login PIN')}</div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="openMyPinModal()"><i class="ti ti-key"></i> ${t('PIN設定','Set PIN')}</button>
   </div>`;
 
   if (!isCrewView) {
