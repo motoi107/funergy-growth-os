@@ -648,6 +648,17 @@ async function syncToastDay(guid, businessDateYmd) {
   });
   return await res.json();
 }
+/* Toast連携が「アクセスできる」レストラン一覧を取得（restaurantGuidなしで呼ぶと /partners/v1/restaurants を返す） */
+async function fetchToastRestaurants() {
+  try {
+    var res = await fetch(TOAST_SYNC_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
+      body: JSON.stringify({}),
+    });
+    return await res.json();
+  } catch (e) { console.error('fetchToastRestaurants', e); return { error: String(e) }; }
+}
 /* ===== Toast メニュー同期（売上・勤怠と同じEdge Function経由） =====
    Edge Functionに action:'menu' を渡してToastメニューを取得→DB保存。
    アプリは toast_menu_items / toast_item_sales をREST読みする。 */
@@ -13321,6 +13332,13 @@ function renderSettings() {
       </div>
       <div id="supa-push-result" style="font-size:11px;color:var(--muted);margin-top:10px"></div>
     </div>`;
+
+    // Toast接続診断（GM/CEOのみ）
+    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent)"></i>Toast接続診断</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Toast連携が「アクセスできる」レストラン一覧を取得し、店舗マスターのGUIDと照合します。新店舗のデータが来ない時の原因（未接続／GUID違い）を確認できます。</p>
+      <button class="btn btn-primary btn-sm" onclick="runToastDiag()"><i class="ti ti-stethoscope"></i> 診断する</button>
+      <div id="toast-diag-result" style="margin-top:12px"></div>
+    </div>`;
   }
 
   html += `<div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>システム情報</div>
@@ -13331,6 +13349,66 @@ function renderSettings() {
     </div>
   </div>`;
   return html;
+}
+
+/* Toast接続診断：連携がアクセスできるレストラン一覧を取得し、店舗マスターのGUIDと照合 */
+async function runToastDiag() {
+  var box = document.getElementById('toast-diag-result');
+  if (!box) return;
+  box.innerHTML = `<div style="font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> Toastに問い合わせ中…</div>`;
+  var data = await fetchToastRestaurants();
+  var list = data && Array.isArray(data.restaurants) ? data.restaurants : null;
+  if (!list) {
+    var msg = (data && (data.error || data.message)) ? (data.error || data.message) : JSON.stringify(data);
+    box.innerHTML = `<div style="font-size:12px;color:var(--red);padding:10px;background:var(--surface2);border-radius:8px">
+      <b>一覧を取得できませんでした。</b><br>応答: ${escapeHtml(String(msg)).slice(0,400)}<br>
+      <span style="color:var(--muted)">※ Toast連携の認証（TOAST_CLIENT_ID/SECRET）に問題がある可能性があります。</span></div>`;
+    return;
+  }
+  // アクセスできるGUID集合
+  var accGuids = {};
+  list.forEach(function(r){ if (r && r.restaurantGuid) accGuids[r.restaurantGuid] = r; });
+  // 店舗マスターとの照合
+  var stores = getStoresAll();
+  var rows = stores.map(function(s){
+    var g = (s.toastGuid||'').trim();
+    var status, color;
+    if (!g) { status = 'GUID未設定'; color = 'var(--muted)'; }
+    else if (accGuids[g]) { status = '✓ 連携OK'; color = 'var(--green)'; }
+    else { status = '✗ Toast未接続/GUID違い'; color = 'var(--red)'; }
+    return `<tr>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${escapeHtml(s.name)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-family:monospace;font-size:10px;color:var(--muted)">${g?escapeHtml(g):'—'}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);color:${color};font-weight:600;white-space:nowrap">${status}</td>
+    </tr>`;
+  }).join('');
+  // 連携にあるが店舗マスターに紐づいていないレストラン
+  var mappedGuids = {}; stores.forEach(function(s){ if(s.toastGuid) mappedGuids[s.toastGuid.trim()]=1; });
+  var unmapped = list.filter(function(r){ return r.restaurantGuid && !mappedGuids[r.restaurantGuid]; });
+  var unmappedHtml = unmapped.length ? unmapped.map(function(r){
+    var nm = r.restaurantName || r.locationName || '(名称なし)';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="flex:1;font-size:12px"><b>${escapeHtml(nm)}</b>${r.locationName&&r.restaurantName&&r.locationName!==r.restaurantName?` <span style="color:var(--muted)">/ ${escapeHtml(r.locationName)}</span>`:''}<br>
+        <span style="font-family:monospace;font-size:10px;color:var(--muted)">${escapeHtml(r.restaurantGuid)}</span></div>
+      <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard&&navigator.clipboard.writeText('${r.restaurantGuid}');showToast('GUIDをコピーしました','success')"><i class="ti ti-copy"></i></button>
+    </div>`;
+  }).join('') : `<div style="font-size:12px;color:var(--muted)">（連携中の全レストランが店舗マスターに登録済みです）</div>`;
+
+  box.innerHTML = `
+    <div style="font-size:12px;color:var(--green);font-weight:600;margin-bottom:6px"><i class="ti ti-circle-check"></i> Toast連携がアクセスできるレストラン：${list.length}件</div>
+    <div style="font-weight:700;font-size:12px;margin:10px 0 4px">店舗マスターとの照合</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <tr><th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--border)">店舗</th>
+      <th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--border)">GUID</th>
+      <th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--border)">判定</th></tr>
+      ${rows}
+    </table>
+    <div style="font-weight:700;font-size:12px;margin:14px 0 4px">連携にあるが未登録のレストラン（正しいGUIDをコピーできます）</div>
+    ${unmappedHtml}
+    <div style="font-size:11px;color:var(--muted);margin-top:12px;line-height:1.6">
+      <b>✗ Toast未接続/GUID違い</b> の店舗は、Toast側でその店舗をこの連携（インテグレーション）に接続するか、上の正しいGUIDに直してください。<br>
+      ※ 毎晩の自動同期はサーバの <b>store_config</b> テーブルを参照します（手動同期はこの一覧で接続済みなら動きます）。
+    </div>`;
 }
 function toggleSupaSync(){
   setSupaSync(!SUPA_SYNC_ENABLED);
