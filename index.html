@@ -12406,15 +12406,12 @@ function openLssRulesModal() {
     <div style="font-size:11px;color:var(--muted);margin-bottom:10px">総合スコア（%）が以下を満たすと、申請が可能になります。</div>
     <div class="form-group"><label class="form-label"><i class="ti ti-crown"></i> 昇格・役職変更 申請の最低スコア (%)</label>
       <input class="form-input" id="lssr-promo" type="number" min="0" max="100" value="${r.promo.minPct}"></div>
-    <div class="form-group"><label class="form-label"><i class="ti ti-coin"></i> Tip Rate 申請の最低スコア (%)</label>
-      <input class="form-input" id="lssr-tip" type="number" min="0" max="100" value="${r.tip.minPct}"></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveLssRules()"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
 }
 function saveLssRules() {
   var r = getLssRules();
   r.promo.minPct = parseInt(document.getElementById('lssr-promo').value)||80;
-  r.tip.minPct = parseInt(document.getElementById('lssr-tip').value)||75;
   setLssRules(r);
   closeModalDirect();
   showToast('申請条件を保存しました','success');
@@ -12486,7 +12483,7 @@ function lssNextTargetHtml(name) {
   var rules = getLssRules();
   var canApply = ['ceo','gm','am','sl'].includes(curRole);
   var blocks = '';
-  [['promo','昇格・役職変更','ti-crown'],['tip','Tip Rate','ti-coin']].forEach(function(t){
+  [['promo','昇格・役職変更','ti-crown']].forEach(function(t){
     var kind=t[0], label=t[1], icon=t[2];
     var e=elig[kind]; var pend=lssPendingFor(name, kind);
     var col = e.ok?'var(--green)':'var(--accent2)';
@@ -13147,13 +13144,11 @@ function renderMypage() {
           <div style="font-size:11px;font-weight:700;margin-bottom:4px">${t('今月のフォーカス','Focus This Month')}</div>
           ${focusCats.map(c=>{var cd=LSS_CATEGORIES.find(x=>x.key===c.key)||{};return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0"><i class="ti ${cd.icon}" style="color:var(--accent2)"></i><span style="flex:1">${c.name}</span><span style="font-size:11px;color:var(--accent2)">${c.pct}%</span></div>`;}).join('')}
         </div>`;
-      // 次の目標（申請可否）
-      if (lelig.promo.ok || lelig.tip.ok) {
-        html += `<div class="alert alert-success" style="margin:8px 0 0;padding:8px 10px"><i class="ti ti-circle-check"></i>${lelig.promo.ok?t('昇格申請の条件達成','Promotion ready'):''}${lelig.promo.ok&&lelig.tip.ok?' / ':''}${lelig.tip.ok?t('Tip Rate申請の条件達成','Tip Rate ready'):''}</div>`;
+      // 次の目標（昇格申請の可否）
+      if (lelig.promo.ok) {
+        html += `<div class="alert alert-success" style="margin:8px 0 0;padding:8px 10px"><i class="ti ti-circle-check"></i>${t('昇格申請の条件達成','Promotion ready')}</div>`;
       } else {
-        var nearest = lelig.tip.remain<=lelig.promo.remain ? lelig.tip : lelig.promo;
-        var nearestLabel = lelig.tip.remain<=lelig.promo.remain ? 'Tip Rate' : t('昇格','Promotion');
-        html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-target"></i> ${t('次の目標','Next')}: ${nearestLabel} ${t('まであと','to go')} ${nearest.remain}%</div>`;
+        html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-target"></i> ${t('次の目標','Next')}: ${t('昇格','Promotion')} ${t('まであと','to go')} ${lelig.promo.remain}%</div>`;
       }
       html += `</div>`;
     } else {
