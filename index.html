@@ -1156,8 +1156,7 @@ const NAV_ITEMS = [
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
   {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am']},
-  {id:'hiring',      label:'採用',        icon:'ti-user-plus',        roles:['ceo','gm','am']},
-  {id:'onboarding',  label:'オンボーディング',          icon:'ti-school',           roles:['ceo','gm','am','sl']},
+  {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','am','sl']},
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
   {id:'ingredient_master',label:'食材マスター', icon:'ti-carrot',     roles:['ceo','gm','office','am','sl']},
   {id:'vendor_master',label:'業者マスター', icon:'ti-truck',          roles:['ceo','gm','office','am']},
@@ -1184,7 +1183,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','invoice']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','attendance','hiring','onboarding','skill','leadership','tiprate','tip','growthhub','growth_mgr','vacation']},
+    children:['staff_master','shift_admin','attendance','hiring','skill','leadership','tiprate','tip','growthhub','growth_mgr','vacation']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','goals','required','company_msg_edit','approval','tasks','acct_export','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
@@ -3271,7 +3270,7 @@ function renderPage(page) {
     case 'shift_staff':  el.innerHTML = renderShiftStaff(); break;
     case 'vacation':     el.innerHTML = renderVacation(); break;
     case 'hiring':       el.innerHTML = renderHiring(); break;
-    case 'onboarding':   el.innerHTML = renderOnboarding(); break;
+    case 'onboarding':   hiringTab='onboard'; el.innerHTML = renderHiring(); break;
     case 'staff_master': el.innerHTML = renderStaffMaster(); break;
     case 'ingredient_master': el.innerHTML = renderIngredientMaster(); break;
     case 'vendor_master': el.innerHTML = renderVendorMaster(); break;
@@ -9658,19 +9657,59 @@ function visibleApplicants() {
   return [];
 }
 
+var hiringTab = 'recruit';
+function setHiringTab(t){ hiringTab=t; renderPage('hiring'); }
+function goOnboarding(){ hiringTab='onboard'; go('hiring'); }
 function renderHiring() {
   if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">採用管理の閲覧権限がありません</div>';
   var apps = visibleApplicants();
+  var obsP = ls('onboardings', []);
+
+  var html = `<div class="section-header">
+    <div><div class="section-title">採用・オンボーディング</div><div class="section-sub">応募 → 採用 → 本人入力 → 経理 → Payroll → 登録完了</div></div>
+  </div>`;
+
+  // ===== 採用→オンボーディング パイプライン（全体の見える化） =====
+  var pipe = [
+    {label:'応募', icon:'ti-inbox', n: apps.filter(a=>['応募中','新規応募','要確認'].includes(a.status)).length, col:'var(--accent2)'},
+    {label:'採用', icon:'ti-user-check', n: apps.filter(a=>a.status==='採用').length, col:'var(--accent)'},
+    {label:'本人入力待ち', icon:'ti-forms', n: obsP.filter(o=>o.obStatus==='本人入力待ち'||o.obStatus==='差し戻し').length, col:'var(--yellow)'},
+    {label:'提出完了', icon:'ti-send', n: obsP.filter(o=>o.obStatus==='提出完了').length, col:'var(--blue)'},
+    {label:'I-9/経理', icon:'ti-clipboard-check', n: obsP.filter(o=>o.obStatus==='I-9確認待ち'||o.obStatus==='経理確認中').length, col:'var(--blue)'},
+    {label:'Payroll', icon:'ti-user-dollar', n: obsP.filter(o=>o.obStatus==='Payroll登録中').length, col:'var(--accent)'},
+    {label:'登録完了', icon:'ti-circle-check', n: obsP.filter(o=>o.obStatus==='登録完了').length, col:'var(--green)'},
+  ];
+  html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-guide" style="color:var(--accent)"></i>採用→オンボーディング パイプライン</div>
+    <div style="display:flex;gap:3px;overflow-x:auto;padding-bottom:4px">`;
+  pipe.forEach((p,i)=>{
+    html += `<div style="min-width:62px;flex:1;text-align:center;background:var(--surface2);border-radius:8px;padding:8px 3px">
+      <i class="ti ${p.icon}" style="font-size:15px;color:${p.col}"></i>
+      <div style="font-size:17px;font-weight:700;color:${p.col};line-height:1.2">${p.n}</div>
+      <div style="font-size:9px;color:var(--muted);white-space:nowrap">${p.label}</div></div>`;
+    if (i<pipe.length-1) html += `<div style="display:flex;align-items:center;color:var(--border)"><i class="ti ti-chevron-right" style="font-size:11px"></i></div>`;
+  });
+  html += `</div></div>`;
+
+  // ===== サブタブ =====
+  var recruitN = apps.filter(c=>['応募中','新規応募','要確認'].includes(c.status)).length;
+  var obActiveN = obsP.filter(o=>o.obStatus!=='登録完了'&&o.obStatus!=='キャンセル').length;
+  html += `<div class="phase-tabs">
+    <div class="phase-tab${hiringTab==='recruit'?' active':''}" onclick="setHiringTab('recruit')"><i class="ti ti-users" style="font-size:12px"></i> 採用${recruitN?` <span style="background:var(--accent2);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${recruitN}</span>`:''}</div>
+    <div class="phase-tab${hiringTab==='onboard'?' active':''}" onclick="setHiringTab('onboard')"><i class="ti ti-school" style="font-size:12px"></i> オンボーディング${obActiveN?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${obActiveN}</span>`:''}</div>
+  </div>`;
+
+  if (hiringTab==='onboard') return html + renderOnboardingInner();
+  return html + renderHiringInner(apps);
+}
+/* 採用（応募者）タブ */
+function renderHiringInner(apps) {
   var byStore = {};
   APPLICANT_STORES.forEach(s=>byStore[s]=[]);
   apps.forEach(a=>{ (byStore[a.store]=byStore[a.store]||[]).push(a); });
 
-  var html = `<div class="section-header">
-    <div><div class="section-title">採用管理</div><div class="section-sub">応募者 → 採用 / 不採用</div></div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap">
+  var html = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
       <button class="btn btn-primary btn-sm" onclick="openApplicantModal()"><i class="ti ti-user-plus"></i> 応募者を追加</button>
       <button class="btn btn-secondary btn-sm" onclick="openDirectOnboardModal()"><i class="ti ti-send"></i> 直接OB開始</button>
-    </div>
   </div>
   <div class="kpi-grid" style="margin-bottom:12px;">
     ${kpi('応募者', apps.length, '全体', 'var(--tm)')}
@@ -9678,30 +9717,6 @@ function renderHiring() {
     ${kpi('採用', apps.filter(c=>c.status==='採用').length, '今期', 'var(--green)')}
     ${kpi('不採用', apps.filter(c=>c.status==='不採用').length, 'ログ保存', 'var(--muted)')}
   </div>`;
-
-  // ===== 採用〜成長パイプライン（視覚化） =====
-  var obsP = ls('onboardings', []);
-  var empsP = getEmployees().filter(e=>e.status!=='退職');
-  var pipe = [
-    {label:'応募', icon:'ti-inbox', n: apps.filter(a=>['応募中','新規応募','要確認'].includes(a.status)).length, col:'var(--accent2)'},
-    {label:'採用', icon:'ti-user-check', n: apps.filter(a=>a.status==='採用').length, col:'var(--accent)'},
-    {label:'OB', icon:'ti-school', n: obsP.filter(o=>o.obStatus!=='登録完了'&&o.obStatus!=='キャンセル').length, col:'var(--accent)'},
-    {label:'Training', icon:'ti-run', n: empsP.filter(e=>(e.step||1)<=0).length, col:'var(--yellow)'},
-    {label:'80%', icon:'ti-coin', n: empsP.filter(e=>effectiveTipRate(e.name)===80).length, col:'var(--green)'},
-    {label:'90%', icon:'ti-coin', n: empsP.filter(e=>effectiveTipRate(e.name)===90).length, col:'var(--green)'},
-    {label:'100%', icon:'ti-coin', n: empsP.filter(e=>(e.role==='crew'||e.role==='sl')&&effectiveTipRate(e.name)===100).length, col:'var(--green)'},
-    {label:'Leader候補', icon:'ti-crown', n: empsP.filter(e=>leaderSkillApproved(e.name)).length, col:'var(--purple)'},
-  ];
-  html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-guide" style="color:var(--accent)"></i>採用〜成長パイプライン</div>
-    <div style="display:flex;gap:3px;overflow-x:auto;padding-bottom:4px">`;
-  pipe.forEach((p,i)=>{
-    html += `<div style="min-width:58px;flex:1;text-align:center;background:var(--surface2);border-radius:8px;padding:8px 3px">
-      <i class="ti ${p.icon}" style="font-size:15px;color:${p.col}"></i>
-      <div style="font-size:17px;font-weight:700;color:${p.col};line-height:1.2">${p.n}</div>
-      <div style="font-size:9px;color:var(--muted);white-space:nowrap">${p.label}</div></div>`;
-    if (i<pipe.length-1) html += `<div style="display:flex;align-items:center;color:var(--border)"><i class="ti ti-chevron-right" style="font-size:11px"></i></div>`;
-  });
-  html += `</div></div>`;
 
   // 要確認（不足情報）
   var needCheck = apps.filter(a=>a.status==='要確認' || a.store==='未分類');
@@ -9865,7 +9880,7 @@ function startDirectOnboard() {
   });
   closeModalDirect();
   showToast(`${name}へオンボーディングを送信しました`,'success');
-  go('onboarding');
+  goOnboarding();
 }
 
 /* 雇用区分（仕様準拠） */
@@ -10026,7 +10041,7 @@ function confirmHire(id) {
 /* 応募者情報をOnboardingへ引き継ぐ */
 function startOnboardingFromApplicant(id) {
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
-  if (a.onboardId) { showToast('既にOnboarding開始済みです','info'); go('onboarding'); return; }
+  if (a.onboardId) { showToast('既にOnboarding開始済みです','info'); goOnboarding(); return; }
   var storeId = a.hireStore || (STORES.find(s=>s.brand===a.store||s.name===a.store)||STORES[0]).id;
   var storeObj = STORES.find(s=>s.id===storeId)||STORES[0];
   var candId = createOnboarding({
@@ -10038,7 +10053,7 @@ function startOnboardingFromApplicant(id) {
   a.onboardId = candId; a.status='採用';
   setApplicants(apps);
   showToast(`${a.name}を採用。${candId} でOnboarding開始`,'success');
-  go('onboarding');
+  goOnboarding();
 }
 /* ===== 不採用: 理由入力 → ログ保存 ===== */
 function openRejectModal(id) {
@@ -10104,21 +10119,18 @@ function setOBTemplate(t) { lsSet('ob_template', t); }
 
 /* オンボーディングステータス: 本人入力待ち/提出完了/経理確認中/Payroll登録中/登録完了/差し戻し/キャンセル */
 const VISA_OPTIONS = ['U.S. Citizen','Green Card','E-2','J-1','OPT','その他'];
-function renderOnboarding() {
+function renderOnboardingInner() {
   var obs = ls('onboardings', []);
   var canEditTemplate = (curRole==='gm' || curRole==='ceo');
   var isOffice = (curRole==='office' || curRole==='gm' || curRole==='ceo');
   var canInvite = (curRole==='gm' || curRole==='ceo' || curRole==='am' || curRole==='sl');
-  var html = `<div class="section-header">
-    <div><div class="section-title">オンボーディング</div><div class="section-sub">採用者を招待→本人入力→書類→経理→Payroll→従業員登録</div></div>
-    <div style="display:flex;gap:6px">
+  var html = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
       ${canInvite?`<button class="btn btn-primary btn-sm" onclick="openInviteModal()"><i class="ti ti-user-plus"></i> 採用者を招待</button>`:''}
       ${canEditTemplate?`<button class="btn btn-secondary btn-sm" onclick="openOBTemplateModal()"><i class="ti ti-template"></i> 研修項目</button>`:''}
-    </div>
   </div>`;
 
   if (!obs.length) {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-school" style="font-size:32px;display:block;margin-bottom:8px"></i>進行中のオンボーディングなし<div style="font-size:12px;margin-top:6px">「採用者を招待」または採用管理の「採用決定」で開始されます</div>
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-school" style="font-size:32px;display:block;margin-bottom:8px"></i>進行中のオンボーディングなし<div style="font-size:12px;margin-top:6px">「採用者を招待」または採用タブの「採用」で開始されます</div>
       ${canInvite?`<button class="btn btn-primary" style="margin-top:12px" onclick="openInviteModal()"><i class="ti ti-user-plus"></i> 採用者を招待する</button>`:''}</div>`;
     return html;
   }
@@ -12449,7 +12461,7 @@ function renderPGD(empName, isManagerView) {
       <div style="display:flex;flex-wrap:wrap;gap:8px">
         <button class="btn btn-secondary btn-sm" onclick="go('skill')"><i class="ti ti-stairs-up"></i> スキル申請</button>
         <button class="btn btn-secondary btn-sm" onclick="go('tiprate')"><i class="ti ti-coin"></i> Tip Rate申請</button>
-        <button class="btn btn-secondary btn-sm" onclick="go('onboarding')"><i class="ti ti-school"></i> 教育受講</button>
+        <button class="btn btn-secondary btn-sm" onclick="goOnboarding()"><i class="ti ti-school"></i> 教育受講</button>
         <button class="btn btn-secondary btn-sm" onclick="go('goals')"><i class="ti ti-target"></i> Goal確認</button>
       </div>
     </div>`;
