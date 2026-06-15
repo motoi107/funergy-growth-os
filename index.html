@@ -7051,48 +7051,122 @@ function renderTipPeriodDaily(storeId, store, info) {
       <button class="btn btn-secondary btn-sm" onclick="openTipTimeModal('${storeId}')"><i class="ti ti-clock-cog"></i> 時間設定</button>
       </div><div id="tip-status" style="font-size:11px;color:var(--muted);margin-top:6px">同期済みの勤怠を期間に反映します。</div></div>`;
   }
-  html += `<div class="card"><div class="card-title"><i class="ti ti-calendar"></i>日別データ</div>
-    <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
-      <th>日付</th><th>売上</th><th>Tip</th><th>人数</th><th>時間</th><th>状態</th></tr></thead><tbody>`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-calendar"></i>日別データ <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">行タップで振り分け詳細</span></div>
+    <div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:11px;min-width:420px"><thead><tr>
+      <th>日付</th><th style="text-align:right"><i class="ti ti-sun" style="color:#d98908"></i>L</th><th style="text-align:right"><i class="ti ti-moon" style="color:#8b5cf6"></i>D</th><th style="text-align:right">合計</th><th style="text-align:center">人数</th><th style="text-align:center">差額</th></tr></thead><tbody>`;
   agg.daily.forEach(d=>{
-    var st = d.error ? '<span class="tag tag-red" style="font-size:8px">🔴</span>' : (d.tip>0?'<span class="tag tag-green" style="font-size:8px">OK</span>':'<span class="tag tag-gray" style="font-size:8px">—</span>');
-    html += `<tr style="cursor:pointer" onclick="openTipDayDetail('${storeId}','${d.date}')">
-      <td>${d.date.slice(5)}</td>
-      <td style="text-align:right;color:var(--muted)">${d.sales?'$'+Math.round(d.sales):'—'}</td>
-      <td style="text-align:right;font-weight:600">${d.tip?'$'+d.tip.toFixed(0):'—'}</td>
-      <td style="text-align:center">${d.ppl||'—'}</td>
-      <td style="text-align:right;color:var(--muted)">${d.hours?d.hours.toFixed(1)+'h':'—'}</td>
-      <td style="text-align:center">${st}</td>
+    var dist = calcTipDistribution(storeId, d.date);
+    var lD=0,dD=0; dist.list.forEach(r=>{lD+=r.lunch||0; dD+=r.dinner||0;});
+    var lDiff=dist.tip.lunchTotal-lD, dDiff=dist.tip.dinnerTotal-dD;
+    var diffOK=Math.abs(lDiff)<0.5 && Math.abs(dDiff)<0.5;
+    var hasData = d.tip>0 || dist.hasLabor;
+    var diffCell = !hasData ? '<span style="color:var(--muted)">—</span>'
+      : diffOK ? '<span style="color:var(--green)"><i class="ti ti-check"></i></span>'
+      : '<span class="tag tag-red" style="font-size:8px">差額</span>';
+    html += `<tr style="cursor:pointer${d.error||(hasData&&!diffOK)?';background:rgba(229,72,77,0.05)':''}" onclick="openTipDayDetail('${storeId}','${d.date}')">
+      <td style="font-weight:600">${d.date.slice(5)}</td>
+      <td style="text-align:right">${dist.tip.lunchTotal>0?'$'+dist.tip.lunchTotal.toFixed(0):'—'}</td>
+      <td style="text-align:right">${dist.tip.dinnerTotal>0?'$'+dist.tip.dinnerTotal.toFixed(0):'—'}</td>
+      <td style="text-align:right;font-weight:700">${d.tip?'$'+d.tip.toFixed(0):'—'}</td>
+      <td style="text-align:center;color:var(--muted)">${d.ppl||'—'}</td>
+      <td style="text-align:center">${diffCell}</td>
     </tr>`;
   });
-  html += `</tbody></table>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px">行をタップすると日別配分の詳細・修正ができます。</div></div>`;
+  html += `</tbody></table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 「差額」に赤が出たら、その日のTip入力漏れか勤怠取得漏れの可能性。行をタップで詳細確認・修正。</div></div>`;
   return html;
 }
-/* 日別詳細（既存の日次配分をモーダルで） */
+/* 日別詳細：Excel 5/16 と同じ「ランチ|ディナー」の振り分け内訳（差額チェック付き） */
 function openTipDayDetail(storeId, date) {
   var store = STORES.find(s=>s.id===storeId)||{};
   var dist = calcTipDistribution(storeId, date);
   var tip = dist.tip;
-  var html = `<div class="modal-title">${date} 日別配分 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="max-height:64vh;overflow-y:auto">`;
+  var fee = TIP_CC_FEE;
+  // ランチ/ディナー別の集計
+  var lFeeAmt = tip.lunchCredit*fee, dFeeAmt = tip.dinnerCredit*fee;
+  // 配分側のランチ/ディナー合計（差額チェック用）
+  var lDist=0, dDist=0, lPpl=0, dPpl=0, lHrs=0, dHrs=0;
+  dist.list.forEach(r=>{ lDist+=r.lunch||0; dDist+=r.dinner||0;
+    if((r.lunchHours||0)>0){lPpl++; lHrs+=r.lunchHours;} if((r.dinnerHours||0)>0){dPpl++; dHrs+=r.dinnerHours;} });
+  var lDiff = tip.lunchTotal - lDist, dDiff = tip.dinnerTotal - dDist;
+  var diffOK = Math.abs(lDiff)<0.5 && Math.abs(dDiff)<0.5;
+
+  var html = `<div class="modal-title">${date} チップ振り分け <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="max-height:70vh;overflow-y:auto">`;
   if (cashTipMissing(storeId,date)) {
     html += `<div class="alert alert-danger" style="padding:7px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div style="font-size:12px">キャッシュチップ未入力
       <button class="btn btn-danger btn-sm" style="margin-top:4px" onclick="closeModalDirect();openCashTipModal('${storeId}','${date}')">入力する</button></div></div>`;
   }
-  html += `<div style="font-size:12px;margin-bottom:8px">Tip総額: <b style="color:var(--green)">$${tip.total.toFixed(2)}</b>（L$${tip.lunchTotal.toFixed(2)}/D$${tip.dinnerTotal.toFixed(2)}）</div>`;
+  // ===== ランチ | ディナー サマリー（Excelと同じ並び）=====
+  function money(v){ return (v<0?'-$':'$')+Math.abs(v).toFixed(2); }
+  function sumRow(label, lv, dv, opt){
+    opt=opt||{};
+    var c = opt.color||'inherit';
+    var bold = opt.bold?'font-weight:700;':'';
+    return `<tr style="${opt.top?'border-top:2px solid var(--border);':''}">
+      <td style="font-size:11px;color:var(--muted);padding:4px 8px">${label}</td>
+      <td style="text-align:right;padding:4px 8px;${bold}color:${c}">${money(lv)}</td>
+      <td style="text-align:right;padding:4px 8px;${bold}color:${c}">${money(dv)}</td>
+      <td style="text-align:right;padding:4px 8px;${bold}color:${c}">${money(lv+dv)}</td>
+    </tr>`;
+  }
+  html += `<table style="width:100%;border-collapse:collapse;margin-bottom:10px;font-size:12px">
+    <thead><tr style="background:var(--surface2)">
+      <th style="text-align:left;padding:5px 8px;font-size:11px">項目</th>
+      <th style="text-align:right;padding:5px 8px"><i class="ti ti-sun" style="color:#d98908"></i> ランチ</th>
+      <th style="text-align:right;padding:5px 8px"><i class="ti ti-moon" style="color:#8b5cf6"></i> ディナー</th>
+      <th style="text-align:right;padding:5px 8px">合計</th>
+    </tr></thead><tbody>
+    ${sumRow('クレジットTip', tip.lunchCredit, tip.dinnerCredit)}
+    ${sumRow('手数料 (3.5%)', -lFeeAmt, -dFeeAmt, {color:'var(--muted)'})}
+    ${sumRow('キャッシュTip', tip.lunchCash, tip.dinnerCash)}
+    ${sumRow('実Tip額', tip.lunchTotal, tip.dinnerTotal, {bold:true, color:'var(--green)', top:true})}
+    ${sumRow('配分合計', lDist, dDist, {color:'var(--muted)'})}
+    <tr style="border-top:2px solid var(--border)">
+      <td style="font-size:11px;padding:5px 8px;font-weight:700">差額（0が正常）</td>
+      <td style="text-align:right;padding:5px 8px;font-weight:700;color:${Math.abs(lDiff)<0.5?'var(--green)':'var(--red)'}">${money(lDiff)}</td>
+      <td style="text-align:right;padding:5px 8px;font-weight:700;color:${Math.abs(dDiff)<0.5?'var(--green)':'var(--red)'}">${money(dDiff)}</td>
+      <td style="text-align:right;padding:5px 8px;font-weight:700;color:${diffOK?'var(--green)':'var(--red)'}">${diffOK?'<i class="ti ti-circle-check"></i> OK':money(lDiff+dDiff)}</td>
+    </tr>
+    <tr><td style="font-size:10px;color:var(--muted);padding:3px 8px">人数 / 時間</td>
+      <td style="text-align:right;font-size:10px;color:var(--muted);padding:3px 8px">${lPpl}名 / ${lHrs.toFixed(1)}h</td>
+      <td style="text-align:right;font-size:10px;color:var(--muted);padding:3px 8px">${dPpl}名 / ${dHrs.toFixed(1)}h</td>
+      <td></td></tr>
+    </tbody></table>`;
+
+  if (!diffOK) {
+    html += `<div class="alert alert-danger" style="padding:7px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i> <span style="font-size:12px">実Tip額と配分合計に差があります。クレジット/キャッシュTipの入力漏れ、または勤怠の取得漏れの可能性があります。</span></div>`;
+  }
+
+  // ===== スタッフ別 ランチ/ディナー配分 =====
   if (!dist.hasLabor) {
-    html += `<div style="text-align:center;padding:16px;color:var(--muted)">勤怠データがありません</div>`;
+    html += `<div style="text-align:center;padding:16px;color:var(--muted)">勤怠データがありません。「データ反映」で取得してください。</div>`;
   } else {
-    html += `<table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th>従業員</th><th>係数</th><th>時間</th><th>配分</th></tr></thead><tbody>`;
+    html += `<div style="font-size:12px;font-weight:700;margin:4px 0 6px">スタッフ別配分</div>
+      <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
+        <th>従業員</th><th style="text-align:right">L時間</th><th style="text-align:right">L配分</th><th style="text-align:right">D時間</th><th style="text-align:right">D配分</th><th style="text-align:right">合計</th>
+      </tr></thead><tbody>`;
     dist.list.forEach(r=>{
-      html += `<tr><td>${r.name}</td><td style="text-align:center">${r.coef}</td>
-        <td style="text-align:right;color:var(--muted)">${((r.lunchHours||0)+(r.dinnerHours||0)).toFixed(1)}h</td>
-        <td style="text-align:right;font-weight:600;color:var(--green)">$${r.total.toFixed(2)}</td></tr>`;
+      html += `<tr>
+        <td>${r.name}${r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:''}</td>
+        <td style="text-align:right;color:var(--muted)">${(r.lunchHours||0)>0?r.lunchHours.toFixed(1):'—'}</td>
+        <td style="text-align:right">${(r.lunch||0)>0?'$'+r.lunch.toFixed(2):'—'}</td>
+        <td style="text-align:right;color:var(--muted)">${(r.dinnerHours||0)>0?r.dinnerHours.toFixed(1):'—'}</td>
+        <td style="text-align:right">${(r.dinner||0)>0?'$'+r.dinner.toFixed(2):'—'}</td>
+        <td style="text-align:right;font-weight:700;color:var(--green)">$${r.total.toFixed(2)}</td>
+      </tr>`;
     });
+    html += `<tr style="border-top:2px solid var(--border);font-weight:700">
+      <td>合計</td><td style="text-align:right;color:var(--muted)">${lHrs.toFixed(1)}</td>
+      <td style="text-align:right">$${lDist.toFixed(2)}</td>
+      <td style="text-align:right;color:var(--muted)">${dHrs.toFixed(1)}</td>
+      <td style="text-align:right">$${dDist.toFixed(2)}</td>
+      <td style="text-align:right;color:var(--green)">$${(lDist+dDist).toFixed(2)}</td></tr>`;
     html += `</tbody></table>`;
   }
-  html += `</div><div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`;
+  html += `</div><div class="btn-row">
+    <button class="btn btn-secondary" onclick="closeModalDirect();openCashTipModal('${storeId}','${date}')"><i class="ti ti-cash"></i> Tip入力</button>
+    <button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`;
   openModal(html);
 }
 
@@ -10855,6 +10929,33 @@ function tipCSVRows(storeId, anyDate) {
   var range = settle.range;
   var rows = [];
   rows.push([`${s.name} チップ配分一覧`, `期間: ${range.from} 〜 ${range.to}`]);
+
+  // ===== 日別 ランチ/ディナー 内訳（差額チェック）=====
+  rows.push([]);
+  rows.push(['【日別 ランチ/ディナー内訳】']);
+  rows.push(['日付','区分','クレジットTip($)','手数料3.5%($)','キャッシュTip($)','実Tip額($)','配分合計($)','差額($)','人数','時間']);
+  var dates = halfMonthDates(anyDate);
+  var sumActualL=0,sumActualD=0,sumDistL=0,sumDistD=0;
+  dates.forEach(date=>{
+    var dist = calcTipDistribution(storeId, date);
+    var tip = dist.tip;
+    if (tip.total<=0 && !dist.hasLabor) return; // データ無い日はスキップ
+    var lD=0,dD=0,lPpl=0,dPpl=0,lHrs=0,dHrs=0;
+    dist.list.forEach(r=>{ lD+=r.lunch||0; dD+=r.dinner||0;
+      if((r.lunchHours||0)>0){lPpl++;lHrs+=r.lunchHours;} if((r.dinnerHours||0)>0){dPpl++;dHrs+=r.dinnerHours;} });
+    var md = date.slice(5);
+    rows.push([md,'ランチ', tip.lunchCredit.toFixed(2), (tip.lunchCredit*TIP_CC_FEE).toFixed(2), tip.lunchCash.toFixed(2),
+      tip.lunchTotal.toFixed(2), lD.toFixed(2), (tip.lunchTotal-lD).toFixed(2), lPpl, lHrs.toFixed(1)]);
+    rows.push([md,'ディナー', tip.dinnerCredit.toFixed(2), (tip.dinnerCredit*TIP_CC_FEE).toFixed(2), tip.dinnerCash.toFixed(2),
+      tip.dinnerTotal.toFixed(2), dD.toFixed(2), (tip.dinnerTotal-dD).toFixed(2), dPpl, dHrs.toFixed(1)]);
+    sumActualL+=tip.lunchTotal; sumActualD+=tip.dinnerTotal; sumDistL+=lD; sumDistD+=dD;
+  });
+  rows.push(['期間計','ランチ','','','', sumActualL.toFixed(2), sumDistL.toFixed(2), (sumActualL-sumDistL).toFixed(2),'','']);
+  rows.push(['期間計','ディナー','','','', sumActualD.toFixed(2), sumDistD.toFixed(2), (sumActualD-sumDistD).toFixed(2),'','']);
+
+  // ===== スタッフ別 最終受取（半月精算）=====
+  rows.push([]);
+  rows.push(['【スタッフ別 最終受取（半月精算）】']);
   rows.push(['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)']);
   settle.rows.forEach(r=>{
     rows.push([r.name, r.isSL?'Store Leader':'スタッフ',
