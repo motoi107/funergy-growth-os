@@ -2346,6 +2346,22 @@ function tipForDay(storeId, date) {
 function getTipLabor(storeId, date) { return ls('tip_labor_'+storeId+'_'+date, null); }
 function setTipLabor(storeId, date, data) { lsSet('tip_labor_'+storeId+'_'+date, data); }
 
+/* チップ配分の対象外（日別・人別・帯別）。{empName:{lunch:bool, dinner:bool}}
+   勤怠時間はそのまま残し、チップ配分からだけ外す。外した分はその帯の残りで再按分。 */
+function getTipExclude(storeId, date) { return ls('tip_exclude_'+storeId+'_'+date, {}); }
+function setTipExclude(storeId, date, data) { lsSet('tip_exclude_'+storeId+'_'+date, data); }
+function isTipExcluded(storeId, date, name, slot) {
+  var ex = getTipExclude(storeId, date);
+  return !!(ex[name] && ex[name][slot]);
+}
+function toggleTipExclude(storeId, date, name, slot) {
+  var ex = getTipExclude(storeId, date);
+  if (!ex[name]) ex[name] = {lunch:false, dinner:false};
+  ex[name][slot] = !ex[name][slot];
+  if (!ex[name].lunch && !ex[name].dinner) delete ex[name];
+  setTipExclude(storeId, date, ex);
+}
+
 /* Store Leader 50%別枠配分のON/OFF（将来OFFにできる） */
 function getTipLeaderSplit() { return ls('tip_leader_split', true); }
 function setTipLeaderSplit(v) { lsSet('tip_leader_split', !!v); }
@@ -2367,19 +2383,22 @@ function calcTipDistribution(storeId, date) {
   function distSlot(slot, tipTotal) { // slot='lunch'|'dinner'
     var rows = staff.map(e=>{
       var h = labor && labor[e.name] ? (labor[e.name][slot]||0) : 0;
-      return { name:e.name, role:e.role, coef:(e.coef!=null?e.coef:1), hours:h, pt:h*(e.coef!=null?e.coef:1), total:0 };
+      var excluded = isTipExcluded(storeId, date, e.name, slot);
+      return { name:e.name, role:e.role, coef:(e.coef!=null?e.coef:1), hours:h,
+        pt:h*(e.coef!=null?e.coef:1), total:0, excluded:excluded };
     }).filter(r=>r.hours>0);
     if (!rows.length || tipTotal<=0) return rows;
-    // Tip Sheetロジック: チップ総額を pt(=hours×係数) で全員按分（SL含む）
-    var ptSum = rows.reduce((a,r)=>a+r.pt,0);
-    if (ptSum>0) rows.forEach(r=>{ r.total = tipTotal * (r.pt/ptSum); });
+    // 対象外の人を除いて按分（外した分は残りに自動再配分）。除外者はtotal=0で行は残す（表示用）
+    var active = rows.filter(r=>!r.excluded);
+    var ptSum = active.reduce((a,r)=>a+r.pt,0);
+    if (ptSum>0) active.forEach(r=>{ r.total = tipTotal * (r.pt/ptSum); });
     return rows;
   }
   var lunchRows = distSlot('lunch', tip.lunchTotal);
   var dinnerRows = distSlot('dinner', tip.dinnerTotal);
   // 統合（名前単位でlunch+dinner合算）
   var byName = {};
-  function merge(rows, slot){ rows.forEach(r=>{ if(!byName[r.name]) byName[r.name]={name:r.name,role:r.role,coef:r.coef,lunch:0,dinner:0,lunchHours:0,dinnerHours:0,total:0}; byName[r.name][slot]=r.total; byName[r.name][slot+'Hours']=r.hours; byName[r.name].total+=r.total; }); }
+  function merge(rows, slot){ rows.forEach(r=>{ if(!byName[r.name]) byName[r.name]={name:r.name,role:r.role,coef:r.coef,lunch:0,dinner:0,lunchHours:0,dinnerHours:0,lunchExcl:false,dinnerExcl:false,total:0}; byName[r.name][slot]=r.total; byName[r.name][slot+'Hours']=r.hours; byName[r.name][slot+'Excl']=r.excluded; byName[r.name].total+=r.total; }); }
   merge(lunchRows,'lunch'); merge(dinnerRows,'dinner');
   var list = Object.values(byName).sort((a,b)=>b.total-a.total);
   var distSum = list.reduce((a,r)=>a+r.total,0);
@@ -7142,17 +7161,26 @@ function openTipDayDetail(storeId, date) {
   if (!dist.hasLabor) {
     html += `<div style="text-align:center;padding:16px;color:var(--muted)">勤怠データがありません。「データ反映」で取得してください。</div>`;
   } else {
-    html += `<div style="font-size:12px;font-weight:700;margin:4px 0 6px">スタッフ別配分</div>
+    html += `<div style="font-size:12px;font-weight:700;margin:4px 0 6px">スタッフ別配分 <span style="font-size:10px;color:var(--muted);font-weight:400">— 事務作業等で外す場合は L/D のボタンをタップ</span></div>
       <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
-        <th>従業員</th><th style="text-align:right">L時間</th><th style="text-align:right">L配分</th><th style="text-align:right">D時間</th><th style="text-align:right">D配分</th><th style="text-align:right">合計</th>
+        <th>従業員</th><th style="text-align:center">L</th><th style="text-align:right">L配分</th><th style="text-align:center">D</th><th style="text-align:right">D配分</th><th style="text-align:right">合計</th>
       </tr></thead><tbody>`;
     dist.list.forEach(r=>{
-      html += `<tr>
-        <td>${r.name}${r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:''}</td>
-        <td style="text-align:right;color:var(--muted)">${(r.lunchHours||0)>0?r.lunchHours.toFixed(1):'—'}</td>
-        <td style="text-align:right">${(r.lunch||0)>0?'$'+r.lunch.toFixed(2):'—'}</td>
-        <td style="text-align:right;color:var(--muted)">${(r.dinnerHours||0)>0?r.dinnerHours.toFixed(1):'—'}</td>
-        <td style="text-align:right">${(r.dinner||0)>0?'$'+r.dinner.toFixed(2):'—'}</td>
+      function slotCell(slot){
+        var hrs = r[slot+'Hours']||0;
+        var excl = r[slot+'Excl'];
+        if (hrs<=0) return '<td style="text-align:center;color:var(--muted)">—</td>';
+        var col = excl ? 'var(--red)' : 'var(--muted)';
+        var icon = excl ? 'ti-circle-x' : 'ti-circle-check';
+        return `<td style="text-align:center"><button onclick="toggleTipExclude('${storeId}','${date}','${r.name.replace(/'/g,"\\'")}','${slot}');closeModalDirect();openTipDayDetail('${storeId}','${date}')" style="border:none;background:none;cursor:pointer;color:${col};font-size:16px;padding:0" title="${excl?'除外中（タップで戻す）':hrs.toFixed(1)+'h（タップで除外）'}"><i class="ti ${icon}"></i></button></td>`;
+      }
+      var anyExcl = r.lunchExcl || r.dinnerExcl;
+      html += `<tr${anyExcl?' style="background:rgba(229,72,77,0.06)"':''}>
+        <td>${r.name}${r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:''}${anyExcl?' <span class="tag tag-red" style="font-size:8px">一部除外</span>':''}</td>
+        ${slotCell('lunch')}
+        <td style="text-align:right">${r.lunchExcl?'<span style="color:var(--red);font-size:10px">除外</span>':((r.lunch||0)>0?'$'+r.lunch.toFixed(2):'—')}</td>
+        ${slotCell('dinner')}
+        <td style="text-align:right">${r.dinnerExcl?'<span style="color:var(--red);font-size:10px">除外</span>':((r.dinner||0)>0?'$'+r.dinner.toFixed(2):'—')}</td>
         <td style="text-align:right;font-weight:700;color:var(--green)">$${r.total.toFixed(2)}</td>
       </tr>`;
     });
