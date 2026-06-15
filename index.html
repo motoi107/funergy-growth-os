@@ -223,6 +223,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
   box-shadow: var(--shadow);
 }
 .card-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.acc-head { display:flex; align-items:center; gap:8px; cursor:pointer; -webkit-user-select:none; user-select:none; font-size:14px; font-weight:600; padding:6px 8px; margin:-4px -8px 0; border-radius:8px; }
+.acc-head:hover, .acc-head:active { background:var(--surface2); }
+.acc-head .acc-chev { margin-left:auto; transition:transform .2s; font-size:18px; color:var(--muted); }
+.acc-head.open .acc-chev { transform:rotate(180deg); }
+.acc-head.open { margin-bottom:8px; }
 .kpi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 @media(min-width:600px) { .kpi-grid { grid-template-columns: repeat(4, 1fr); } }
 .kpi {
@@ -3910,13 +3915,12 @@ function openStoreKpi(storeId){
 ============================================================ */
 /* ダッシュボードの折りたたみ開閉（セッション内で状態保持） */
 window._dashOpen = window._dashOpen || {};
-function dashToggle(id, el){
+function dashToggle(id){
   var b = document.getElementById(id); if(!b) return;
-  var open = b.style.display==='none';
-  b.style.display = open ? '' : 'none';
-  window._dashOpen[id] = open;
-  var chev = el && el.querySelector ? el.querySelector('.dash-chev') : null;
-  if (chev) chev.style.transform = open ? 'rotate(180deg)' : '';
+  var head = document.getElementById(id+'-head');
+  var isHidden = (b.style.display==='none') || (b.offsetParent===null && getComputedStyle(b).display==='none');
+  if (isHidden) { b.style.display=''; window._dashOpen[id]=true; if(head) head.classList.add('open'); }
+  else { b.style.display='none'; window._dashOpen[id]=false; if(head) head.classList.remove('open'); }
 }
 function dashCollapsed(id){ return window._dashOpen[id] !== true; } // 既定は閉じる
 function renderDashboard() {
@@ -3989,8 +3993,7 @@ function renderDashboard() {
   var offset = window._kpiDashOffset||0;
   var period = periodForOffset(offset);
   html += `<div class="card">
-    <div class="card-title" style="cursor:pointer" onclick="dashToggle('dash-score',this)"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>${t('総合スコア','Total Score')} <span style="font-size:11px;color:var(--muted);font-weight:400">· ${t('店舗ランキング','ranking')}</span>
-      <i class="ti ti-chevron-down dash-chev" style="margin-left:auto;transition:transform .15s;${dashCollapsed('dash-score')?'':'transform:rotate(180deg)'}"></i></div>
+    <div class="acc-head${dashCollapsed('dash-score')?'':' open'}" id="dash-score-head" onclick="dashToggle('dash-score')"><i class="ti ti-heart-rate-monitor" style="color:var(--accent)"></i>${t('総合スコア','Total Score')} <span style="font-size:11px;color:var(--muted);font-weight:400">· ${t('店舗ランキング','ranking')}</span><i class="ti ti-chevron-down acc-chev"></i></div>
     <div id="dash-score" style="display:${dashCollapsed('dash-score')?'none':''}">
       <div style="display:flex;gap:4px;justify-content:flex-end;margin-bottom:6px">
         <button class="btn btn-${offset===0?'primary':'secondary'} btn-sm" onclick="event.stopPropagation();window._kpiDashOffset=0;renderPage('dashboard')">${t('今月','This')}</button>
@@ -4083,7 +4086,7 @@ function renderDashboard() {
 
   // ====== ⑤ 店舗別状況 ======
   if (stores.length > 1) {
-    html += `<div class="card"><div class="card-title" style="cursor:pointer" onclick="dashToggle('dash-stores',this)"><i class="ti ti-building-store"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400">· ${stores.length}${t('店','stores')}</span><i class="ti ti-chevron-down dash-chev" style="margin-left:auto;transition:transform .15s;${dashCollapsed('dash-stores')?'':'transform:rotate(180deg)'}"></i></div>
+    html += `<div class="card"><div class="acc-head${dashCollapsed('dash-stores')?'':' open'}" id="dash-stores-head" onclick="dashToggle('dash-stores')"><i class="ti ti-building-store"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400">· ${stores.length}${t('店','stores')}</span><i class="ti ti-chevron-down acc-chev"></i></div>
       <div id="dash-stores" style="display:${dashCollapsed('dash-stores')?'none':''}">`;
     stores.forEach(s => {
       var color = statusColor(s.status);
