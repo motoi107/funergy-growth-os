@@ -9892,6 +9892,90 @@ function createOnboarding(opts) {
   lsSet('onboardings', obs);
   return candId;
 }
+/* ===== 採用者を招待（直接オンボーディング開始＋本人リンク発行） ===== */
+function genInviteToken(){
+  // 推測困難なトークン（デモ用。本番はサーバ側で安全に生成）
+  var s='';
+  var chars='abcdefghijklmnopqrstuvwxyz0123456789';
+  for(var i=0;i<32;i++) s+=chars[Math.floor(Math.random()*chars.length)];
+  return s;
+}
+function openInviteModal(){
+  var stores = getVisibleStores();
+  if(!stores.length) stores = STORES;
+  openModal(`<div class="modal-title"><i class="ti ti-user-plus"></i> 採用者を招待 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">採用者の基本情報を入力すると、本人入力ページへの招待リンクが発行されます。</div>
+    <div style="max-height:60vh;overflow-y:auto;padding-right:4px">
+    <div class="form-group"><label class="form-label">氏名 / Name</label><input class="form-input" id="inv-name" placeholder="例: 田中 太郎 / Taro Tanaka"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">配属店舗 / Store</label>
+        <select class="form-select" id="inv-store">${stores.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">ポジション / Position</label><input class="form-input" id="inv-pos" placeholder="例: Server"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="inv-email" placeholder="name@example.com"></div>
+      <div class="form-group"><label class="form-label">電話 / Phone</label><input class="form-input" id="inv-phone" placeholder="808-xxx-xxxx"></div>
+    </div>
+    <div class="form-row">
+      ${canEditWages()?`<div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="inv-wage" type="number" step="0.25" value="16"></div>`:`<input type="hidden" id="inv-wage" value="16">`}
+      <div class="form-group"><label class="form-label">勤務開始予定日 / Start</label><input class="form-input" id="inv-start" type="date"></div>
+    </div>
+    <div class="form-group"><label class="form-label">雇用区分 / Division</label>
+      <select class="form-select" id="inv-emp">${EMP_DIVISIONS.map(d=>`<option>${d}</option>`).join('')}</select></div>
+    <div class="form-group"><label class="form-label">リンク有効期限 / Link expiry</label>
+      <select class="form-select" id="inv-expiry"><option value="7">7日間</option><option value="14">14日間</option><option value="3">3日間</option><option value="30">30日間</option></select></div>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="createInvite()"><i class="ti ti-send"></i> 招待リンクを発行</button></div>`);
+}
+function createInvite(){
+  var name=document.getElementById('inv-name').value.trim();
+  if(!name){ alert('氏名を入力してください'); return; }
+  var storeId=document.getElementById('inv-store').value;
+  var storeObj=STORES.find(s=>s.id===storeId)||STORES[0];
+  var days=parseInt(document.getElementById('inv-expiry').value)||7;
+  var token=genInviteToken();
+  var expiry=new Date(); expiry.setDate(expiry.getDate()+days);
+  var candId=createOnboarding({
+    name, store:storeObj.id, storeName:storeObj.name,
+    pos:document.getElementById('inv-pos').value.trim(),
+    email:document.getElementById('inv-email').value.trim(),
+    phone:document.getElementById('inv-phone').value.trim(),
+    wage:parseFloat(document.getElementById('inv-wage').value)||16,
+    division:document.getElementById('inv-emp').value,
+    plannedStart:document.getElementById('inv-start').value,
+    inviteToken:token, linkExpiry:expiry.toISOString().slice(0,10), invitedBy:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''),
+  });
+  closeModalDirect();
+  showInviteLink(name, storeObj.name, token, expiry.toISOString().slice(0,10));
+  renderPage('onboarding');
+}
+/* 発行された招待リンクを表示・共有 */
+function showInviteLink(name, storeName, token, expiry){
+  var base = location.origin + location.pathname;
+  var link = base + '?onboard=' + token;
+  var msgJa = `${name}さん、Funergy Groupへようこそ！入社手続きはこちらから入力してください（${expiry}まで有効）: ${link}`;
+  var msgEn = `Hi ${name}, welcome to Funergy Group! Please complete your onboarding here (valid until ${expiry}): ${link}`;
+  openModal(`<div class="modal-title"><i class="ti ti-link"></i> 招待リンクを発行しました <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="alert alert-success" style="padding:8px 10px;margin-bottom:10px;font-size:12px"><i class="ti ti-circle-check"></i> ${name}さん（${storeName}）の本人入力ページを作成しました。</div>
+    <div class="form-group"><label class="form-label">招待リンク（${expiry}まで有効）</label>
+      <div style="display:flex;gap:6px"><input class="form-input" id="inv-link" value="${link}" readonly style="font-size:11px">
+        <button class="btn btn-secondary btn-sm" onclick="copyInvite('inv-link')"><i class="ti ti-copy"></i></button></div></div>
+    <div class="form-group"><label class="form-label">メッセージ例（日本語）</label>
+      <textarea class="form-textarea" id="inv-msg-ja" readonly style="min-height:64px;font-size:11px">${msgJa}</textarea>
+      <button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="copyInvite('inv-msg-ja')"><i class="ti ti-copy"></i> コピー</button></div>
+    <div class="form-group"><label class="form-label">Message (English)</label>
+      <textarea class="form-textarea" id="inv-msg-en" readonly style="min-height:64px;font-size:11px">${msgEn}</textarea>
+      <button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="copyInvite('inv-msg-en')"><i class="ti ti-copy"></i> Copy</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> このリンクをSMS/Email/QRで採用者に送ってください。提出後は自動で無効化されます。</div>
+    <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">完了</button></div>`);
+}
+function copyInvite(id){
+  var el=document.getElementById(id); if(!el)return;
+  el.select(); el.setSelectionRange(0,99999);
+  try{ document.execCommand('copy'); showToast('コピーしました','success'); }
+  catch(e){ if(navigator.clipboard){ navigator.clipboard.writeText(el.value); showToast('コピーしました','success'); } }
+}
 /* ===== 採用: 配属情報を設定 → Onboarding開始 ===== */
 const REJECT_REASONS = ['勤務条件が合わない','希望シフトが合わない','経験・スキル不足','面接態度に懸念あり','連絡が取れない','過去に採用不可判断あり','その他'];
 function openHireModal(id) {
@@ -10015,15 +10099,18 @@ function renderOnboarding() {
   var obs = ls('onboardings', []);
   var canEditTemplate = (curRole==='gm' || curRole==='ceo');
   var isOffice = (curRole==='office' || curRole==='gm' || curRole==='ceo');
+  var canInvite = (curRole==='gm' || curRole==='ceo' || curRole==='am' || curRole==='sl');
   var html = `<div class="section-header">
-    <div><div class="section-title">オンボーディング</div><div class="section-sub">採用→本人入力→書類→経理→Payroll→従業員登録</div></div>
+    <div><div class="section-title">オンボーディング</div><div class="section-sub">採用者を招待→本人入力→書類→経理→Payroll→従業員登録</div></div>
     <div style="display:flex;gap:6px">
+      ${canInvite?`<button class="btn btn-primary btn-sm" onclick="openInviteModal()"><i class="ti ti-user-plus"></i> 採用者を招待</button>`:''}
       ${canEditTemplate?`<button class="btn btn-secondary btn-sm" onclick="openOBTemplateModal()"><i class="ti ti-template"></i> 研修項目</button>`:''}
     </div>
   </div>`;
 
   if (!obs.length) {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-school" style="font-size:32px;display:block;margin-bottom:8px"></i>進行中のオンボーディングなし<div style="font-size:12px;margin-top:6px">採用管理で「採用決定」すると自動で開始されます</div></div>`;
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-school" style="font-size:32px;display:block;margin-bottom:8px"></i>進行中のオンボーディングなし<div style="font-size:12px;margin-top:6px">「採用者を招待」または採用管理の「採用決定」で開始されます</div>
+      ${canInvite?`<button class="btn btn-primary" style="margin-top:12px" onclick="openInviteModal()"><i class="ti ti-user-plus"></i> 採用者を招待する</button>`:''}</div>`;
     return html;
   }
 
@@ -10079,6 +10166,9 @@ function renderOnboarding() {
     html += `<div class="approval-actions">`;
     // 本人入力（デモ: 誰でも代理入力可。実運用は本人リンク）
     if (st==='本人入力待ち' || st==='差し戻し') {
+      if (ob.inviteToken) {
+        html += `<button class="btn btn-secondary btn-sm" onclick="showInviteLink('${(ob.name||'').replace(/'/g,"\\'")}','${(ob.storeName||'').replace(/'/g,"\\'")}','${ob.inviteToken}','${ob.linkExpiry||''}')"><i class="ti ti-link"></i> 招待リンク</button>`;
+      }
       html += `<button class="btn btn-primary btn-sm" onclick="openPersonalForm('${ob.id}')"><i class="ti ti-forms"></i> 本人情報を入力</button>`;
     }
     // 経理確認
@@ -16110,7 +16200,53 @@ function showToast(msg, type) {
 }
 
 /* ログイン画面を初期化 */
-try { bootLogin(); } catch(e) { console.error('bootLogin', e); }
+/* 招待リンク（?onboard=token）で開かれたか検知。
+   本番では専用ページを表示。現状はデモのため、該当オンボーディングを案内表示。 */
+function checkOnboardToken(){
+  try {
+    var params = new URLSearchParams(location.search);
+    var token = params.get('onboard');
+    if (!token) return false;
+    var ob = ls('onboardings', []).find(o=>o.inviteToken===token);
+    var screen = document.getElementById('login-screen');
+    if (!screen) return false;
+    if (!ob) {
+      screen.innerHTML = `<div style="max-width:420px;margin:60px auto;text-align:center;padding:24px">
+        <div style="font-size:40px;color:var(--muted)"><i class="ti ti-link-off"></i></div>
+        <h2 style="margin:12px 0">リンクが無効です / Invalid link</h2>
+        <p style="color:var(--muted);font-size:13px">このリンクは期限切れか、既に使用済みです。<br>This link has expired or was already used.</p></div>`;
+      return true;
+    }
+    // 期限チェック
+    var expired = ob.linkExpiry && (new Date(ob.linkExpiry) < new Date(new Date().toISOString().slice(0,10)));
+    if (expired || ob.obStatus!=='本人入力待ち' && ob.obStatus!=='差し戻し') {
+      screen.innerHTML = `<div style="max-width:420px;margin:60px auto;text-align:center;padding:24px">
+        <div style="font-size:40px;color:var(--green)"><i class="ti ti-circle-check"></i></div>
+        <h2 style="margin:12px 0">手続きは完了しています / Already submitted</h2>
+        <p style="color:var(--muted);font-size:13px">この招待は既に提出済み、または期限切れです。<br>This invitation was already submitted or has expired.</p></div>`;
+      return true;
+    }
+    // デモ: 専用ページの代わりに本人入力フォームを直接開く（本番では隔離した専用画面）
+    screen.innerHTML = `<div style="max-width:460px;margin:40px auto;padding:20px">
+      <div style="text-align:center;margin-bottom:16px">
+        <div style="font-size:22px;font-weight:800;color:var(--accent)">Funergy<span>+</span></div>
+        <div style="font-size:13px;color:var(--muted)">入社手続き / Onboarding</div></div>
+      <div class="card">
+        <div style="font-weight:700;font-size:16px;margin-bottom:4px">ようこそ、${ob.name}さん</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Welcome to Funergy Group</div>
+        <div style="background:var(--surface2);border-radius:8px;padding:10px;font-size:13px;margin-bottom:12px">
+          配属 / Store: <b>${ob.storeName||'—'}</b><br>
+          ポジション / Position: <b>${ob.pos||'—'}</b><br>
+          開始予定 / Start: <b>${ob.plannedStart||'未定'}</b><br>
+          有効期限 / Expires: <b>${ob.linkExpiry||'—'}</b></div>
+        <button class="btn btn-primary" style="width:100%" onclick="openPersonalForm('${ob.id}')"><i class="ti ti-forms"></i> 手続きを始める / Start</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:10px"><i class="ti ti-info-circle"></i> デモ表示です。本番ではこの専用ページから他の画面には移動できません。</div>
+    </div>`;
+    return true;
+  } catch(e){ console.error('onboard token', e); return false; }
+}
+try { if (!checkOnboardToken()) bootLogin(); } catch(e) { console.error('bootLogin', e); }
 </script>
 </body>
 </html>
