@@ -3388,14 +3388,32 @@ function showSyncSplash(msg){
 function hideSyncSplash(){ var ov=document.getElementById('sync-splash'); if(ov) ov.style.display='none'; }
 function setSyncSplash(msg){ var m=document.getElementById('sync-splash-msg'); if(m) m.textContent=msg; }
 
-/* クラウド(Supabase)から最新マスター/設定を取り込む。タイムアウト付き・失敗してもキャッシュで続行。 */
+/* 運用データ（勤怠/Labor）をクラウド(tip_labor)から取得：可視店舗の当月分。
+   Toast勤怠は夜間cronでSupabaseに保存済み。各端末はこれで取得してLaborを表示する。 */
+async function loginSyncOps(){
+  try {
+    var stores = (typeof getVisibleStores==='function' ? getVisibleStores() : []).filter(function(s){ return s.toastGuid; });
+    var days = (typeof monthDays==='function') ? monthDays() : null;
+    if (!days || !days.length || !stores.length) return;
+    for (var i=0;i<stores.length;i++){
+      setSyncSplash('勤怠データを同期中… ('+(i+1)+'/'+stores.length+') '+stores[i].name);
+      try { await syncTipLaborFromDB(stores[i].id, stores[i].toastGuid, days); } catch(e){ console.warn('loginSyncOps store', stores[i].id, e); }
+    }
+  } catch(e){ console.warn('loginSyncOps', e); }
+}
+
+/* クラウド(Supabase)から最新マスター/設定＋当月の勤怠を取り込む。タイムアウト付き・失敗してもキャッシュで続行。 */
 async function loginSync(){
   if (ls('login_autosync', true)===false) return; // 設定でOFFならスキップ
   try {
     setSyncSplash('最新データに同期中…');
-    var timeout = new Promise(function(res){ setTimeout(function(){ res('__timeout__'); }, 12000); });
-    var r = await Promise.race([ supaPullAllMasters(), timeout ]);
-    try { refreshStores(); } catch(e){}
+    var work = (async function(){
+      await supaPullAllMasters();          // マスター/設定
+      try { refreshStores(); } catch(e){}
+      await loginSyncOps();                // 当月の勤怠/Labor
+    })();
+    var timeout = new Promise(function(res){ setTimeout(function(){ res('__timeout__'); }, 15000); });
+    var r = await Promise.race([ work, timeout ]);
     setSyncSplash(r==='__timeout__' ? '同期に時間がかかっています。続行します…' : '最新データに同期しました');
     await new Promise(function(res){ setTimeout(res, 350); }); // 完了表示を一瞬見せる
   } catch(e){
