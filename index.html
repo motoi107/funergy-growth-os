@@ -4855,6 +4855,18 @@ function canEditBudget(b) {
 
 /* その日時点での累計（予算・実績・原価・人件費）を算出
    今日までの日次予算と日次実績を積み上げ、現在地を返す */
+/* 指定日のToast実績人件費($) = Σ(従業員の(lunch+dinner)時間 × 時給)。Order Onlyは除外済み(getTipLabor)。 */
+function toastLaborCostForDate(storeId, dateISO){
+  var labor = getTipLabor(storeId, dateISO);
+  if(!labor) return 0;
+  var cost = 0;
+  Object.keys(labor).forEach(function(n){
+    var e = labor[n];
+    var h = (e.lunch||0)+(e.dinner||0);
+    if (h>0) cost += h*(empWage(n)||0);
+  });
+  return cost;
+}
 function cumulativeToToday(storeId) {
   var days = monthDays();
   var ym = days.length ? days[0].date.slice(0,7) : new Date().toISOString().slice(0,7);
@@ -4879,7 +4891,10 @@ function cumulativeToToday(storeId) {
         daysWithActual++;
         // 原価・人件費（日次入力があれば反映）
         if (ov.foodCost!=null) costToToday += ov.foodCost;
-        if (ov.labor!=null) laborToToday += ov.labor;
+        // 人件費: Toast打刻×時給(実績勤怠)を優先。無い日は手入力の当日人件費。
+        var toastLab = toastLaborCostForDate(storeId, d.date);
+        if (toastLab>0) laborToToday += toastLab;
+        else if (ov.labor!=null) laborToToday += ov.labor;
       }
     }
   });
@@ -8537,7 +8552,10 @@ function renderLaborOverview() {
   var html = '';
   var stores = sortByLoginOrder(getVisibleStores()).map(s => storeData(s.id));
   stores.forEach(s => {
-    var color = s.labor<=29?'var(--green)':s.labor<=32?'var(--yellow)':'var(--red)';
+    var tgt = getStoreKpiTargets(s.id);
+    var laborTarget = (tgt && tgt.laborPct!=null && tgt.laborPct>0) ? tgt.laborPct : 29;
+    var warnTarget = laborTarget + 3;
+    var color = s.labor<=laborTarget?'var(--green)':s.labor<=warnTarget?'var(--yellow)':'var(--red)';
     var bk = laborBreakdownForPeriod(s.id, attMonthDays());
     var hasActual = bk.rows.length>0 && bk.totalAmount>0;
     var laborAmt = hasActual ? bk.totalAmount : Math.round(s.a*s.labor/100);
@@ -8549,7 +8567,7 @@ function renderLaborOverview() {
     html += `<div class="card">
       <div class="card-title"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
       <div class="kpi-grid">
-        ${kpi('Labor率', s.labor+'%', '目標 ≤29%', color)}
+        ${kpi('Labor率', s.labor+'%', '目標 ≤'+laborTarget+'%', color)}
         ${laborTile}
       </div>
     </div>`;
