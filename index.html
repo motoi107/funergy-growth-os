@@ -8436,7 +8436,7 @@ function renderLaborHours(storeId, store) {
     <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
       <th>日付</th><th>売上</th><th>予定h</th><th>実績h</th><th>差異</th>${canWage?'<th>Labor%</th>':''}<th>$/h</th></tr></thead><tbody>`;
   rows.forEach(r=>{
-    html += `<tr>
+    html += `<tr style="cursor:pointer" onclick="openLaborBreakdown('${storeId}','${r.date}')" title="タップで従業員別の内訳">
       <td>${r.date.slice(5)}(${r.dow})</td>
       <td style="text-align:right;color:var(--muted)">${r.sales?fmtK(r.sales):'—'}</td>
       <td style="text-align:right;color:var(--muted)">${r.plannedH?r.plannedH+'h':'—'}</td>
@@ -8454,16 +8454,95 @@ function renderLaborHours(storeId, store) {
   return html;
 }
 
+/* 期間内の従業員別レイバー内訳（実勤怠Toast: 名前×時給×勤務時間×Labor額）。
+   days省略時は当月(attMonthDays)。Order OnlyはgetTipLabor側で除外済み。 */
+function laborBreakdownForPeriod(storeId, days){
+  var agg = {};
+  (days||[]).forEach(function(d){
+    var labor = getTipLabor(storeId, d.date);
+    if(!labor) return;
+    Object.keys(labor).forEach(function(n){
+      var e = labor[n];
+      var h = (e.lunch||0)+(e.dinner||0);
+      if(h<=0) return;
+      if(!agg[n]) agg[n] = {name:n, hours:0, wage: empWage(n)||0, toastName:(e.toastName||n)};
+      agg[n].hours += h;
+    });
+  });
+  var rows = Object.keys(agg).map(function(n){
+    var a=agg[n];
+    a.hours = Math.round(a.hours*100)/100;
+    a.amount = Math.round(a.hours*a.wage*100)/100;
+    return a;
+  }).filter(function(a){return a.hours>0;}).sort(function(x,y){return (y.amount-x.amount)||(y.hours-x.hours);});
+  return {
+    rows: rows,
+    totalHours: Math.round(rows.reduce(function(s,r){return s+r.hours;},0)*100)/100,
+    totalAmount: Math.round(rows.reduce(function(s,r){return s+r.amount;},0)*100)/100
+  };
+}
+/* Labor額タップ → 従業員別「名前・時給・勤務時間・Labor額」一覧モーダル。
+   dateISO指定で単日、省略で当月。時給/Labor額はcanViewWages()のみ表示。 */
+function openLaborBreakdown(storeId, dateISO){
+  var store = getStoresAll().find(function(s){return s.id===storeId;})||{};
+  var days = dateISO ? [{date:dateISO}] : attMonthDays();
+  var periodLabel = dateISO ? dateISO.slice(5).replace('-','/') : attMonthLabel();
+  var bk = laborBreakdownForPeriod(storeId, days);
+  var canWage = canViewWages();
+  var money = function(v){ return '$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
+  var html = '<div class="modal-title"><i class="ti ti-clock-dollar"></i> '+escapeHtml(store.name||'')+' Labor内訳 '
+    + '<span style="font-size:12px;color:var(--muted);font-weight:400">'+periodLabel+'</span>'
+    + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  if(!bk.rows.length){
+    html += '<div style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-clock-off" style="font-size:28px"></i>'
+      + '<div style="margin-top:8px">この期間の勤怠データがありません。<br>勤怠データ画面でToast勤怠を反映してください。</div></div>';
+    openModal(html); return;
+  }
+  html += '<table class="inv-table" style="width:100%;font-size:12px"><thead><tr>'
+    + '<th>名前</th>'
+    + (canWage?'<th style="text-align:right">時給</th>':'')
+    + '<th style="text-align:right">勤務時間</th>'
+    + (canWage?'<th style="text-align:right">Labor額</th>':'')
+    + '</tr></thead><tbody>';
+  bk.rows.forEach(function(r){
+    var nameCell = escapeHtml(r.name) + (canWage&&r.wage<=0?'<div style="font-size:9px;color:var(--yellow)">時給未設定</div>':'');
+    html += '<tr>'
+      + '<td>'+nameCell+'</td>'
+      + (canWage?'<td style="text-align:right;color:var(--muted)">'+(r.wage>0?'$'+r.wage.toFixed(2):'—')+'</td>':'')
+      + '<td style="text-align:right;font-weight:600">'+r.hours.toFixed(2)+'h</td>'
+      + (canWage?'<td style="text-align:right;font-weight:600;color:var(--accent)">'+(r.wage>0?money(r.amount):'—')+'</td>':'')
+      + '</tr>';
+  });
+  html += '</tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">'
+    + '<td>合計 '+bk.rows.length+'名</td>'
+    + (canWage?'<td></td>':'')
+    + '<td style="text-align:right">'+bk.totalHours.toFixed(2)+'h</td>'
+    + (canWage?'<td style="text-align:right;color:var(--accent)">'+money(bk.totalAmount)+'</td>':'')
+    + '</tr></tfoot></table>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> '
+    + '実績=Toast打刻（Lunch+Dinner）×従業員マスターの時給。Order Only（注文専用）は除外。'
+    + (canWage?'':'時給・Labor額はGM/AM等のみ表示。')+'</div>';
+  openModal(html);
+}
+
 function renderLaborOverview() {
   var html = '';
   var stores = sortByLoginOrder(getVisibleStores()).map(s => storeData(s.id));
   stores.forEach(s => {
     var color = s.labor<=29?'var(--green)':s.labor<=32?'var(--yellow)':'var(--red)';
+    var bk = laborBreakdownForPeriod(s.id, attMonthDays());
+    var hasActual = bk.rows.length>0 && bk.totalAmount>0;
+    var laborAmt = hasActual ? bk.totalAmount : Math.round(s.a*s.labor/100);
+    var amtSub = hasActual ? '実績(勤怠×時給) ›' : '今月推計 ›';
+    var laborTile = `<div class="kpi" style="cursor:pointer" onclick="openLaborBreakdown('${s.id}')" title="タップで従業員別の内訳">
+        <div class="kpi-label">Labor額 <i class="ti ti-chevron-right" style="font-size:10px;vertical-align:-1px"></i></div>
+        <div class="kpi-value" style="color:${color}">${fmtK(Math.round(laborAmt))}</div>
+        <div class="kpi-sub">${amtSub}</div></div>`;
     html += `<div class="card">
       <div class="card-title"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
       <div class="kpi-grid">
         ${kpi('Labor率', s.labor+'%', '目標 ≤29%', color)}
-        ${kpi('Labor額', fmtK(Math.round(s.a*s.labor/100)), '今月推計', color)}
+        ${laborTile}
       </div>
     </div>`;
   });
