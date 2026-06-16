@@ -1211,7 +1211,7 @@ const NAV_ITEMS = [
   {id:'tasks',       label:'タスク',      icon:'ti-list-check',       roles:['ceo','gm','am','sl']},
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','am','sl']},
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','am','sl']},
-  {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am']},
+  {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am','sl']},
   {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'attendance',  label:'勤怠データ', icon:'ti-clock-check',      roles:['ceo','gm','office','am','sl']},
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
@@ -1244,7 +1244,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','invoice']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','attendance','hiring','skill','leadership','tiprate','tip','growthhub','growth_mgr','vacation']},
+    children:['staff_master','shift_admin','hiring','skill','leadership','tiprate','tip','growthhub','growth_mgr','vacation']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','goals','required','company_msg_edit','approval','tasks','acct_export','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
@@ -3611,7 +3611,7 @@ function renderPage(page) {
     case 'goals':        el.innerHTML = renderGoals(); break;
     case 'labor':        el.innerHTML = renderLabor(); break;
     case 'tip':          el.innerHTML = renderTipMgmt(); break;
-    case 'attendance':   el.innerHTML = renderAttendance(); break;
+    case 'attendance':   laborTab='attendance'; el.innerHTML = renderLabor(); break;
     case 'shift_admin':  el.innerHTML = renderShiftAdmin(); break;
     case 'shift_staff':  el.innerHTML = renderShiftStaff(); break;
     case 'vacation':     el.innerHTML = renderVacation(); break;
@@ -7510,7 +7510,7 @@ function renderTipPeriodSummary(storeId, store, info) {
     html += `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:8px;padding:6px 8px;background:var(--surface2);border-radius:6px">
       <i class="ti ti-clock-check" style="color:${apprOK?'var(--green)':'var(--red)'}"></i>
       日次勤怠承認: <b style="color:${apprOK?'var(--green)':'var(--red)'}">${apprOK?'全日承認済み':'未承認の日あり'}</b>
-      <button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="go('attendance')">勤怠へ</button>
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="laborTab='attendance';go('labor')">勤怠へ</button>
     </div>`;
   }
   if (confirm && confirm.status==='確定済み') {
@@ -7874,10 +7874,13 @@ function renderAttendance() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl') return financialBlocked();
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
-  var hasGuid = !!store.toastGuid;
-
   var html = `<div class="section-header"><div><div class="section-title">勤怠データ</div><div class="section-sub">${store.name} · Toast打刻の日毎一覧</div></div></div>`;
-
+  return html + renderAttendanceBody(storeId, store);
+}
+/* 勤怠データの本体（人件費・勤怠ページのタブとして埋め込み可能・section-header無し） */
+function renderAttendanceBody(storeId, store) {
+  var hasGuid = !!store.toastGuid;
+  var html = '';
   // 月ナビ（独立）
   html += `<div class="card" style="padding:10px;margin-bottom:10px">
     <div style="display:flex;align-items:center;justify-content:center;gap:10px">
@@ -8355,15 +8358,20 @@ function renderTipHalfMonth(storeId, store, date) {
 }
 
 function renderLabor() {
-  if (!ROLE_CONFIG[curRole].financial) return financialBlocked();
+  var financial = !!(ROLE_CONFIG[curRole]||{}).financial;
+  if (!financial && curRole!=='sl') return financialBlocked();
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
-  var html = `<div class="section-header"><div><div class="section-title">Labor管理</div><div class="section-sub">${store.name} · 勤怠×時給</div></div></div>
-  <div class="phase-tabs">
-    <div class="phase-tab${laborTab==='overview'?' active':''}" onclick="setLaborTab('overview')">サマリー</div>
-    <div class="phase-tab${laborTab==='hours'?' active':''}" onclick="setLaborTab('hours')">労働時間</div>
-    <div class="phase-tab${laborTab==='detail'?' active':''}" onclick="setLaborTab('detail')">勤怠明細</div>
-  </div>`;
+  // SL（非財務）は「勤怠データ」タブのみ
+  if (!financial) laborTab = 'attendance';
+  if (['overview','hours','detail','attendance'].indexOf(laborTab)<0) laborTab = financial?'overview':'attendance';
+  var tabDefs = financial
+    ? [['overview','サマリー'],['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']]
+    : [['attendance','勤怠データ']];
+  var tabsHtml = tabDefs.map(function(td){ return `<div class="phase-tab${laborTab===td[0]?' active':''}" onclick="setLaborTab('${td[0]}')">${td[1]}</div>`; }).join('');
+  var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${store.name} · 勤怠×時給／同期は同期センターに集約</div></div></div>
+  <div class="phase-tabs">${tabsHtml}</div>`;
+  if (laborTab==='attendance') return html + renderAttendanceBody(storeId, store);
   if (laborTab==='detail') return html + renderLaborDetail(storeId, store);
   if (laborTab==='hours') return html + renderLaborHours(storeId, store);
   return html + renderLaborOverview();
@@ -8421,7 +8429,7 @@ function renderLaborHours(storeId, store) {
       <i class="ti ti-clock-check" style="color:${monthApp.allApproved?'var(--green)':'var(--yellow)'}"></i>
       日次勤怠承認: <b style="color:${monthApp.allApproved?'var(--green)':'var(--yellow)'}">${monthApp.allApproved?'全日承認済み':'未承認の日あり'}</b>
       <span style="color:var(--muted)">${monthApp.allApproved?'· 月次Labor確定可':'· 承認後に月次Labor確定'}</span>
-      <button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="go('attendance')">勤怠へ</button>
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="laborTab='attendance';go('labor')">勤怠へ</button>
     </div>`;
   }
   html += `</div>`;
