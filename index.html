@@ -844,6 +844,7 @@ async function syncTipLaborFromDB(storeId, guid, days) {
     if (!Array.isArray(list) || !list.length) { emptyData++; return; }
     var labor = {};
     list.forEach(emp=>{
+      if (isOrderOnlyAccount(emp.name)) return; // Order Only（注文専用アカウント）はレイバー/チップから除外
       var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
       var key = m ? m.name : emp.name;
       var shifts = emp.shifts||[];
@@ -2402,8 +2403,29 @@ function tipForDay(storeId, date) {
   };
 }
 
+/* Order Only（各店の注文専用アカウント）判定。レイバー/人件費/チップ計算から除外する。
+   表記ゆれに対応: "Order Only" / "OrderOnly" / "order-only" / "Order" 等（大小・空白・記号無視）。 */
+function isOrderOnlyAccount(name){
+  if(!name) return false;
+  var n = String(name).toLowerCase().replace(/[\s_\-\.]/g,'');
+  return n.indexOf('orderonly')>=0 || n==='order';
+}
+
 /* 日別チップ用勤怠（Lunch/Dinner別hours）の保存 */
-function getTipLabor(storeId, date) { return ls('tip_labor_'+storeId+'_'+date, null); }
+function getTipLabor(storeId, date) {
+  var d = ls('tip_labor_'+storeId+'_'+date, null);
+  if (d && typeof d==='object') {
+    // Order Only（注文専用アカウント）はレイバー/チップ計算から除外
+    var out={}, removed=false;
+    Object.keys(d).forEach(function(k){
+      var e = d[k];
+      if (isOrderOnlyAccount(k) || (e && isOrderOnlyAccount(e.toastName))) { removed=true; return; }
+      out[k] = e;
+    });
+    return removed ? out : d;
+  }
+  return d;
+}
 function setTipLabor(storeId, date, data) { lsSet('tip_labor_'+storeId+'_'+date, data); }
 
 /* チップ配分の対象外（日別・人別・帯別）。{empName:{lunch:bool, dinner:bool}}
