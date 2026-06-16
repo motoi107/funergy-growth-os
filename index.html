@@ -7394,6 +7394,7 @@ function exportOrderPrint(storeId, orderId) {
    ⑩ Labor (コスト + Availability→シフト作成→公開→承認)
 ============================================================ */
 var laborTab = 'overview';
+var laborDetailWeek = ''; // ''=月全体, それ以外=その週の日曜ISO(日〜土)
 var tipMgmtDate = null;
 var tipMgmtView = 'daily';
 /* ===== Tip管理: 前期(1-15)/後期(16-末) 期間ベース ===== */
@@ -8712,6 +8713,59 @@ function laborWeekRange(weekSunISO) {
 function getLaborHours(storeId, week) { return ls('labor_hours_'+storeId+'_'+week, {}); } // {empName:{regular,ot,wage,source}}
 function setLaborHours(storeId, week, data) { lsSet('labor_hours_'+storeId+'_'+week, data); }
 
+/* ローカル日付ISO（タイムゾーンずれ回避） */
+function isoLocalDate(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+/* 日曜起算の週(日〜土)の7日分の日付ISO */
+function laborWeekDays(sunISO){
+  var sun = new Date(sunISO+'T00:00:00'); var arr=[];
+  for(var i=0;i<7;i++){ var d=new Date(sun); d.setDate(sun.getDate()+i); arr.push(isoLocalDate(d)); }
+  return arr;
+}
+/* 'YYYY-MM' の月に1日でも含む 日〜土の週リスト（月跨ぎの週も含む） */
+function laborMonthWeeks(ym){
+  var y=+String(ym).split('-')[0], m=+String(ym).split('-')[1];
+  var first=new Date(y, m-1, 1), last=new Date(y, m, 0);
+  var s=new Date(first); s.setDate(s.getDate()-s.getDay()); // 直前(以前)の日曜
+  var weeks=[];
+  for(var cur=new Date(s); cur<=last; cur.setDate(cur.getDate()+7)){
+    var sunISO = isoLocalDate(cur);
+    weeks.push({ sun:sunISO, range:laborWeekRange(sunISO) });
+  }
+  return weeks;
+}
+/* 指定の週リストから従業員別の通常/OTを集計。OTは「週(日〜土)ごとに40h超」をHawaii基準で算出。
+   データ源はtip_labor(日次・Order Only除外済み)。reg/otは週単位で計算し期間で合算。 */
+function laborDetailAgg(storeId, weeks){
+  var byName = {};
+  (weeks||[]).forEach(function(w){
+    var days = laborWeekDays(w.sun);
+    var weekHours = {}; // name -> その週の合計時間
+    days.forEach(function(dt){
+      var labor = getTipLabor(storeId, dt);
+      if(!labor) return;
+      Object.keys(labor).forEach(function(n){
+        var e=labor[n]; var h=(e.lunch||0)+(e.dinner||0);
+        if(h<=0) return;
+        weekHours[n]=(weekHours[n]||0)+h;
+      });
+    });
+    Object.keys(weekHours).forEach(function(n){
+      var wh = weekHours[n];
+      var ot = Math.max(0, wh-40), reg = wh-ot;
+      if(!byName[n]) byName[n]={reg:0, ot:0, hours:0};
+      byName[n].reg+=reg; byName[n].ot+=ot; byName[n].hours+=wh;
+    });
+  });
+  // 丸め
+  Object.keys(byName).forEach(function(n){
+    byName[n].reg=Math.round(byName[n].reg*100)/100;
+    byName[n].ot=Math.round(byName[n].ot*100)/100;
+    byName[n].hours=Math.round(byName[n].hours*100)/100;
+  });
+  return byName;
+}
+function setLaborDetailWeek(v){ laborDetailWeek = v||''; renderPage('labor'); }
+
 function laborForEmployee(name, entry) {
   // entry: {regular, ot} があればそれを使う（Toast/手入力）。無ければ0
   var wage = empWage(name);
@@ -8723,74 +8777,82 @@ function laborForEmployee(name, entry) {
 }
 
 function renderLaborDetail(storeId, store) {
-  var week = laborWeekStr();
-  var range = laborWeekRange(week);
-  var hoursData = getLaborHours(storeId, week);
-  var staff = staffForStore(storeId);
   var canWage = canViewWages();
-  var hasGuid = !!store.toastGuid;
+  var ym = attMonthRef().toISOString().slice(0,7);
+  var weeks = laborMonthWeeks(ym);
+  // 週選択（無効値は月全体に）
+  var selWeek = laborDetailWeek && weeks.some(function(w){return w.sun===laborDetailWeek;}) ? laborDetailWeek : '';
+  var periodWeeks = selWeek ? weeks.filter(function(w){return w.sun===selWeek;}) : weeks;
+  var periodLabel = selWeek ? (weeks.find(function(w){return w.sun===selWeek;}).range.label) : (attMonthLabel()+' 全体');
+  var agg = laborDetailAgg(storeId, periodWeeks);
+  var staff = staffForStore(storeId);
+  var staffNames = staff.map(function(s){return s.name;});
 
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-8"></i>勤怠明細（日〜土）
-    <span style="margin-left:auto;font-size:11px;color:var(--muted)">${canWage?'時給表示中(GM)':'時給は非開示'}</span></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">対象週: ${range.label}（OTは日曜起算・週40h超をToastが自動計算）</div>`;
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-8"></i>勤怠明細（通常 / OT）
+    <span style="margin-left:auto;font-size:11px;color:var(--muted)">${canWage?'時給表示中':'時給は非開示'}</span></div>`;
 
-  // Toast勤怠取得（GUIDあれば）
-  if (hasGuid) {
-    html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-      <button class="btn btn-primary btn-sm" onclick="doToastLaborFetch('${storeId}','${store.toastGuid}','${week}')"><i class="ti ti-cloud-download"></i> Toast勤怠を自動取得</button>
+  // 月ナビ ＋ 週セレクタ
+  html += `<div class="card" style="padding:10px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px">
+      <button class="btn btn-secondary btn-sm" onclick="shiftAttMonth(-1)"><i class="ti ti-chevron-left"></i></button>
+      <span style="font-size:14px;font-weight:700">${attMonthLabel()}</span>
+      <button class="btn btn-secondary btn-sm" onclick="shiftAttMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div>
-    <div id="labor-status" style="font-size:12px;margin-bottom:8px">${laborLastFetch?`<span style="color:var(--green)">✓ ${laborLastFetch}</span>`:''}</div>`;
-  }
+    <select class="form-select" onchange="setLaborDetailWeek(this.value)">
+      <option value=""${selWeek===''?' selected':''}>${attMonthLabel()} 全体（月）</option>
+      ${weeks.map(function(w){
+        var cross = w.range.from.slice(0,7)!==w.range.to.slice(0,7) ? ' ※月跨ぎ' : '';
+        return `<option value="${w.sun}"${selWeek===w.sun?' selected':''}>週: ${w.range.label}${cross}</option>`;
+      }).join('')}
+    </select>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 表示: ${periodLabel}。OTは日曜起算の週ごとに40h超で自動算出（Hawaii基準）。同期は同期センターで。</div>
+    <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センターで同期</button>
+  </div>`;
 
-  // 表示対象 = マスター在籍スタッフ ＋ Toastで取れたがマスターに無い従業員
-  var staffNames = staff.map(s=>s.name);
-  var toastOnly = Object.keys(hoursData).filter(n=>!staffNames.includes(n) && hoursData[n] && hoursData[n].source==='toast');
-
-  var totalCost = 0, totalReg = 0, totalOt = 0;
+  var totalCost=0, totalReg=0, totalOt=0, shownCount=0;
   html += `<table class="inv-table" style="width:100%;font-size:12px"><thead><tr>
-    <th>従業員</th><th>通常h</th><th>OT h</th>${canWage?'<th>人件費</th>':''}<th></th></tr></thead><tbody>`;
+    <th>従業員</th><th>通常h</th><th>OT h</th>${canWage?'<th>賃金</th>':''}</tr></thead><tbody>`;
   // マスター在籍スタッフ
-  staff.forEach(e => {
-    var entry = hoursData[e.name] || null;
-    var calc = laborForEmployee(e.name, entry);
-    totalCost += calc.total; totalReg += calc.reg; totalOt += calc.ot;
-    var src = entry && entry.source==='toast' ? ' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast勤怠"></i>' : '';
+  staff.forEach(function(e){
+    var a = agg[e.name];
+    if(!a || (a.reg<=0 && a.ot<=0)) return; // この期間に勤務が無い人は省略
+    var calc = laborForEmployee(e.name, {regular:a.reg, ot:a.ot});
+    totalCost+=calc.total; totalReg+=calc.reg; totalOt+=calc.ot; shownCount++;
     html += `<tr>
-      <td>${e.name}${src}<div style="font-size:9px;color:var(--muted)">${ROLE_CONFIG[e.role].label}</div></td>
+      <td>${escapeHtml(e.name)}<div style="font-size:9px;color:var(--muted)">${(ROLE_CONFIG[e.role]||{}).label||''}</div></td>
       <td>${calc.reg>0?calc.reg+'h':'—'}</td>
       <td>${calc.ot>0?`<span class="tag tag-yellow" style="font-size:9px">${calc.ot}h</span>`:'—'}</td>
-      ${canWage?`<td style="font-weight:600">$${Math.round(calc.total)}<div style="font-size:8px;color:var(--muted)">通$${Math.round(calc.regPay)}+OT$${Math.round(calc.otPay)}</div></td>`:''}
-      <td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openLaborHourModal('${storeId}','${e.name.replace(/'/g,'')}')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>
+      ${canWage?`<td style="font-weight:600">$${Math.round(calc.total).toLocaleString()}<div style="font-size:8px;color:var(--muted)">通$${Math.round(calc.regPay)}+OT$${Math.round(calc.otPay)}</div></td>`:''}
     </tr>`;
   });
-  // Toastのみ（マスター未登録）→ 時間は表示、人件費は時給未設定で$0
-  toastOnly.forEach(name => {
-    var entry = hoursData[name];
-    var reg = entry.regular||0, ot = entry.ot||0;
-    totalReg += reg; totalOt += ot;
+  // マスター未登録（tip_laborにはあるがマスターに無い名前）
+  var unmatched = Object.keys(agg).filter(function(n){return staffNames.indexOf(n)<0 && (agg[n].reg>0||agg[n].ot>0);});
+  unmatched.forEach(function(name){
+    var a = agg[name];
+    var calc = laborForEmployee(name, {regular:a.reg, ot:a.ot});
+    totalCost+=calc.total; totalReg+=calc.reg; totalOt+=calc.ot; shownCount++;
     html += `<tr style="opacity:0.85">
-      <td>${name} <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)"></i><div style="font-size:9px;color:var(--yellow)">マスター未登録</div></td>
-      <td>${reg>0?reg+'h':'—'}</td>
-      <td>${ot>0?`<span class="tag tag-yellow" style="font-size:9px">${ot}h</span>`:'—'}</td>
-      ${canWage?`<td style="color:var(--muted)">$0<div style="font-size:8px;color:var(--muted)">時給未設定</div></td>`:''}
-      <td></td>
+      <td>${escapeHtml(name)}<div style="font-size:9px;color:var(--yellow)">マスター未登録</div></td>
+      <td>${a.reg>0?a.reg+'h':'—'}</td>
+      <td>${a.ot>0?`<span class="tag tag-yellow" style="font-size:9px">${a.ot}h</span>`:'—'}</td>
+      ${canWage?`<td style="color:${calc.wage>0?'inherit':'var(--muted)'}">${calc.wage>0?'$'+Math.round(calc.total).toLocaleString():'$0<div style=\"font-size:8px\">時給未設定</div>'}</td>`:''}
     </tr>`;
   });
+  if(!shownCount){
+    html += `<tr><td colspan="${canWage?4:3}" style="text-align:center;color:var(--muted);padding:18px">この期間の勤怠データがありません。<br>同期センターでToast勤怠を同期してください。</td></tr>`;
+  }
   html += '</tbody></table>';
-  if (toastOnly.length) {
-    html += `<div class="alert alert-warning" style="padding:8px 10px;margin-top:8px;font-size:11px"><i class="ti ti-info-circle"></i><div>Toastで${toastOnly.length}名の勤怠を取得しましたが、従業員マスターに未登録のため人件費が$0です。設定系→従業員マスターで登録し、所属をこの店舗・時給を設定すると人件費まで自動計算されます。</div></div>`;
+  if (unmatched.length) {
+    html += `<div class="alert alert-warning" style="padding:8px 10px;margin-top:8px;font-size:11px"><i class="ti ti-info-circle"></i><div>${unmatched.length}名がマスター未登録のため賃金が$0です。従業員マスターで登録・時給設定すると自動計算されます。</div></div>`;
   }
 
   // サマリー
-  var data = storeData(storeId);
-  var laborRate = data.a ? Math.round(totalCost/(data.a/4.3)*1000)/10 : 0;
   html += `<div class="kpi-grid" style="margin-top:12px">
-    ${kpi('通常時間', Math.round(totalReg*10)/10+'h', (staff.length+toastOnly.length)+'名', 'var(--tm)')}
+    ${kpi('通常時間', Math.round(totalReg*10)/10+'h', shownCount+'名', 'var(--tm)')}
     ${kpi('OT時間', Math.round(totalOt*10)/10+'h', '週40h超', totalOt>0?'var(--yellow)':'var(--muted)')}
-    ${canWage?kpi('週人件費', '$'+Math.round(totalCost).toLocaleString(), 'OT1.5倍込み', 'var(--tm)'):''}
-    ${canWage?kpi('Labor率', laborRate+'%', '対週売上', laborRate<=29?'var(--green)':'var(--red)'):''}
+    ${canWage?kpi('賃金合計', '$'+Math.round(totalCost).toLocaleString(), 'OT1.5倍込み', 'var(--tm)'):''}
   </div>`;
-  html += `<p style="font-size:11px;color:var(--muted);margin-top:8px">※ Toast勤怠は通常時間・OT時間が別出力（日曜起算でToast計算済み）。時給は従業員マスター（GM限定）。</p>`;
+  html += `<p style="font-size:11px;color:var(--muted);margin-top:8px">※ 勤怠はToast打刻（同期センター）。OTは週(日〜土)40h超で算出。Order Only除外。給与税17%・保険はサマリーのLabor額/Labor率に反映。時給はGM/AM等のみ表示。</p>`;
   html += '</div>';
   return html;
 }
