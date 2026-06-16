@@ -3961,43 +3961,67 @@ function renderDashboard() {
   var fcOver = stores.filter(s=>s.fc>34);
 
   var html = '';
-
-  // ====== 今月の会社メッセージ（最上部） ======
-  html += renderCompanyMessageCard();
-
-  // ====== ① 優先アラート（最重要を最上部） ======
-  var alerts = [];
-  danger.forEach(s=>alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} 売上未達 ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`}));
-  laborOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} Labor超過 ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`}));
-  fcOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} Food Cost超過 ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`}));
-  reqAlerts.forEach(r=>alerts.push({lv:'danger', icon:'ti-checklist', text:`${r.store} 必須チェック未完 ${r.count}件`, act:`switchStore('${r.id}');openStoreCmd()`}));
-  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`期限切れタスク ${overdue.length}件`, act:`go('tasks')`});
-  if (approvalsAll.length) alerts.push({lv:'warn', icon:'ti-checkbox', text:`承認待ち ${approvalsAll.length}件`, act:`go('approval')`});
-  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
-
-  html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}">
-    <div class="card-title"><i class="ti ti-bell" style="color:var(--accent)"></i>${t('優先アクション','Priority Actions')}</div>`;
-  if (!alerts.length) {
-    html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;color:var(--green)">${statusDot('good',10)}<span style="font-size:14px;font-weight:600">${t('全項目正常','All clear')}</span></div>`;
-  } else {
-    alerts.slice(0,6).forEach(a=>{
-      var st = a.lv==='danger'?'danger':a.lv==='warn'?'warn':'active';
-      html += `<div onclick="${a.act}" style="display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">
-        ${statusDot(st,9)}
-        <i class="ti ${a.icon}" style="color:${statusColor(a.lv)};font-size:16px"></i>
-        <span style="flex:1;font-size:13px">${a.text}</span>
-        <i class="ti ti-chevron-right" style="font-size:13px;color:var(--muted)"></i></div>`;
-    });
-  }
-  html += `</div>`;
-
-  // ====== Funergy Now（全店/管轄店・本日リアルタイム）======
+  if (window._dashOpen['dash-stores']===undefined) window._dashOpen['dash-stores']=true; // 店舗別リストは既定で開く
   var scopeLabel = curRole==='am' ? t('管轄店舗','My stores') : t('全店','All stores');
   html += `<div class="card" id="rt-sales-card">
     <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${scopeLabel} · ${t('本日','Today')}</span>
       <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="loadRealtimeSales()"><i class="ti ti-refresh"></i> ${t('更新','Refresh')}</button></div>
     <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
   </div>`;
+
+  // ====== ⑤ 店舗別状況（全店合算＋店舗別） ======
+  if (stores.length >= 1) {
+    var sumSales = tA;
+    var wFC = sumSales>0 ? Math.round(stores.reduce((a,s)=>a+s.a*s.fc,0)/sumSales*10)/10 : avgFC;
+    var wL  = sumSales>0 ? Math.round(stores.reduce((a,s)=>a+s.a*s.labor,0)/sumSales*10)/10 : avgL;
+    var fcColAgg = statusColor(statusFromCeil(wFC,31,34));
+    var lColAgg  = statusColor(statusFromCeil(wL,29,32));
+    html += `<div class="card">
+      <div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${t('前日まで','through yesterday')}</span></div>
+      <div style="background:var(--surface2);border-radius:12px;padding:12px;margin-bottom:10px">
+        <div style="font-size:12px;color:var(--muted);font-weight:700;margin-bottom:6px">${t('全店合算','All stores')}${curRole==='am'?'（'+t('管轄','my stores')+'）':''}</div>
+        <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:10px">
+          <span style="font-size:24px;font-weight:800;color:var(--tm)">${fmtK(tA)}</span>
+          <span style="font-size:14px;color:var(--muted)">/ ${fmtK(tB)}</span>
+          <span class="tag ${statusTag(statusFromPct(tp))}" style="margin-left:auto;font-size:13px">${tp}%</span>
+        </div>
+        <div style="display:flex;gap:24px">
+          <div><div style="font-size:11px;color:var(--muted)">FC</div><div style="font-size:20px;font-weight:800;color:${fcColAgg}">${wFC}%</div></div>
+          <div><div style="font-size:11px;color:var(--muted)">Labor</div><div style="font-size:20px;font-weight:800;color:${lColAgg}">${wL}%</div></div>
+          <div style="margin-left:auto;text-align:right"><div style="font-size:11px;color:var(--muted)">売上</div><div style="font-size:14px;font-weight:700;color:var(--tm)">${fmtK(tA)}</div></div>
+        </div>
+      </div>`;
+    if (stores.length > 1) {
+      html += `<div class="acc-head${dashCollapsed('dash-stores')?'':' open'}" id="dash-stores-head" onclick="dashToggle('dash-stores')"><i class="ti ti-list"></i>店舗別 <span style="font-size:11px;color:var(--muted);font-weight:400">· ${stores.length}${t('店','stores')}</span><i class="ti ti-chevron-down acc-chev"></i></div>
+        <div id="dash-stores" style="display:${dashCollapsed('dash-stores')?'none':''}">`;
+      stores.forEach(s => {
+        var color = statusColor(s.status);
+        var sFc = statusColor(statusFromCeil(s.fc,31,34));
+        var sL  = statusColor(statusFromCeil(s.labor,29,32));
+        html += `<div class="store-row">
+          <div class="store-dot" style="background:${s.color}"></div>
+          <div style="flex:1" onclick="switchStore('${s.id}');go('budget')">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div class="store-name">${s.name}</div>
+              <span class="tag ${statusTag(s.status)}">${s.sp}%</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
+            <div style="display:flex;gap:16px;margin-top:7px;font-size:14px;flex-wrap:wrap">
+              <span><span style="font-size:10px;color:var(--muted)">売上 </span><b>${fmtK(s.a)}</b><span style="font-size:11px;color:var(--muted)">/${fmtK(s.b)}</span></span>
+              <span><span style="font-size:10px;color:var(--muted)">FC </span><b style="color:${sFc}">${s.fc}%</b></span>
+              <span><span style="font-size:10px;color:var(--muted)">Labor </span><b style="color:${sL}">${s.labor}%</b></span>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
+        </div>`;
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  // ====== 今月の会社メッセージ（最上部） ======
+  html += renderCompanyMessageCard();
 
   // ====== KPI実績（業態別・目標vs実績）======
   if (!window._kpiDashOffset) window._kpiDashOffset = 0;
@@ -4041,37 +4065,31 @@ function renderDashboard() {
   });
   html += `<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> ${t('総合スコア=原価率/人件費率/リピート率/ドリンク比率(居酒屋)/トッピング・アップセル(食事)の達成度を重み付け。スコア順に表示','Weighted auto-KPIs, ranked')}</div></div></div>`;
 
-  // ====== ③ 今日の状況（KPI: 数字＋状態＋比較＋次の行動） ======
-  var isCum = stores.some(s=>s.cumulative);
-  // 前月同比（全店合算）
-  var prevAgg = {a:0, b:0};
-  getVisibleStores().forEach(s=>{ var pm=prevMonthStats(s.id); if(pm){ prevAgg.a+=pm.actMonth||0; prevAgg.b+=pm.budMonth||0; } });
-  var salesScore = budgetScore(tp);
-  var salesDelta = prevAgg.a ? Math.round((tA-prevAgg.a)/prevAgg.a*1000)/10 : null;
-  var fcStatus = statusFromCeil(avgFC,31,34);
-  var laborStatus = statusFromCeil(avgL,29,32);
-  // 次の行動メッセージ
-  var salesAction = tp>=100 ? t('好調を維持','Keep the pace') : tp>=90 ? t('客単価・追加施策を確認','Check avg check & promos') : t('要対応：対策を確認','Action needed');
-  var fcAction = avgFC<=31 ? t('目標内','Within target') : t('棚卸差異・ロスを確認','Check waste & variance');
-  var laborAction = avgL<=29 ? t('目標内','Within target') : t('シフト配置を見直し','Review scheduling');
+  // ====== ① 優先アラート（最重要を最上部） ======
+  var alerts = [];
+  danger.forEach(s=>alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} 売上未達 ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`}));
+  laborOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} Labor超過 ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`}));
+  fcOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} Food Cost超過 ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`}));
+  reqAlerts.forEach(r=>alerts.push({lv:'danger', icon:'ti-checklist', text:`${r.store} 必須チェック未完 ${r.count}件`, act:`switchStore('${r.id}');openStoreCmd()`}));
+  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`期限切れタスク ${overdue.length}件`, act:`go('tasks')`});
+  if (approvalsAll.length) alerts.push({lv:'warn', icon:'ti-checkbox', text:`承認待ち ${approvalsAll.length}件`, act:`go('approval')`});
+  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
 
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>${isCum?t('現在地（前日まで）','Pace (through yesterday)'):t('今日の状況',"Today's Status")} <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${getPeriod()}</span></div>
-    <div class="kpi-grid">
-    ${kpiRich({label:isCum?t('累計売上','Sales (MTD)'):t('売上','Sales'), icon:'ti-trending-up', value:fmtK(tA),
-      status:statusFromPct(tp), statusLabel:salesScore.label,
-      compare:`${t('対予算','vs budget')} ${tp}%${salesDelta!=null?` · ${t('前月比','vs last month')} <span style="color:${salesDelta>=0?'var(--green)':'var(--red)'};font-weight:600">${salesDelta>=0?'+':''}${salesDelta}%</span>`:''}`,
-      action:salesAction, onclick:"go('budget')", barPct:tp, barColor:statusColor(statusFromPct(tp))})}
-    ${kpiRich({label:t('対予算','Sales Pace'), icon:'ti-target', value:tp+'%',
-      status:statusFromPct(tp), statusLabel:salesScore.label,
-      compare:`${t('累計予算','Budget')} ${fmtK(tB)}`,
-      action:tp<100?t('あと'+(100-tp>0?(100-tp):0)+'ptで達成','to 100%'):t('達成','On target'), onclick:"go('budget')", barPct:tp})}
-    ${kpiRich({label:t('原価率','Food Cost'), icon:'ti-leaf', value:avgFC+'%',
-      status:fcStatus, statusLabel:fcStatus==='good'?t('良好','Healthy'):fcStatus==='warn'?t('注意','Watch'):t('要対応','High'),
-      compare:t('目標 ≤31%','Target ≤31%'), action:fcAction, onclick:"go('foodcost')", barPct:Math.min(avgFC/40*100,100)})}
-    ${kpiRich({label:t('人件費率','Labor'), icon:'ti-clock-hour-4', value:avgL+'%',
-      status:laborStatus, statusLabel:laborStatus==='good'?t('良好','Healthy'):laborStatus==='warn'?t('注意','Watch'):t('要対応','High'),
-      compare:t('目標 ≤29%','Target ≤29%'), action:laborAction, onclick:"go('labor')", barPct:Math.min(avgL/40*100,100)})}
-    </div></div>`;
+  html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}">
+    <div class="card-title"><i class="ti ti-bell" style="color:var(--accent)"></i>${t('優先アクション','Priority Actions')}</div>`;
+  if (!alerts.length) {
+    html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;color:var(--green)">${statusDot('good',10)}<span style="font-size:14px;font-weight:600">${t('全項目正常','All clear')}</span></div>`;
+  } else {
+    alerts.slice(0,6).forEach(a=>{
+      var st = a.lv==='danger'?'danger':a.lv==='warn'?'warn':'active';
+      html += `<div onclick="${a.act}" style="display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">
+        ${statusDot(st,9)}
+        <i class="ti ${a.icon}" style="color:${statusColor(a.lv)};font-size:16px"></i>
+        <span style="flex:1;font-size:13px">${a.text}</span>
+        <i class="ti ti-chevron-right" style="font-size:13px;color:var(--muted)"></i></div>`;
+    });
+  }
+  html += `</div>`;
 
   // ====== ④ 本日のタスク（隠さない） ======
   html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>本日のタスク`;
@@ -4096,28 +4114,6 @@ function renderDashboard() {
     });
   }
   html += `</div>`;
-
-  // ====== ⑤ 店舗別状況 ======
-  if (stores.length > 1) {
-    html += `<div class="card"><div class="acc-head${dashCollapsed('dash-stores')?'':' open'}" id="dash-stores-head" onclick="dashToggle('dash-stores')"><i class="ti ti-building-store"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400">· ${stores.length}${t('店','stores')}</span><i class="ti ti-chevron-down acc-chev"></i></div>
-      <div id="dash-stores" style="display:${dashCollapsed('dash-stores')?'none':''}">`;
-    stores.forEach(s => {
-      var color = statusColor(s.status);
-      html += `<div class="store-row">
-        <div class="store-dot" style="background:${s.color}"></div>
-        <div style="flex:1" onclick="switchStore('${s.id}');go('budget')">
-          <div style="display:flex;align-items:center;justify-content:space-between;">
-            <div class="store-name">${s.name}</div>
-            <span class="tag ${statusTag(s.status)}">${s.sp}%</span>
-          </div>
-          <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
-          <div class="store-meta">${fmtK(s.a)} / ${fmtK(s.b)} | FC ${s.fc}% | Labor ${s.labor}%</div>
-        </div>
-        <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
-      </div>`;
-    });
-    html += '</div></div>';
-  }
 
   // 本日リアルタイム売上を非同期ロード
   setTimeout(function(){ if(document.getElementById('rt-sales-body')) loadRealtimeSales(); }, 100);
