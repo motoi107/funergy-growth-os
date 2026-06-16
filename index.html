@@ -4867,12 +4867,38 @@ function toastLaborCostForDate(storeId, dateISO){
   });
   return cost;
 }
+/* 給与税率（自動計算）。Labor額 = 賃金 × (1+税率) + 保険日割り。 */
+var PAYROLL_TAX_RATE = 0.17;
+/* 従業員の会社負担 月額保険料 */
+function empInsuranceAmt(e){ return (e && e.insuranceAmt!=null) ? (Number(e.insuranceAmt)||0) : 0; }
+/* 'YYYY-MM' の日数 */
+function daysInMonthOf(ym){
+  var p = String(ym||'').split('-'); var y=+p[0], m=+p[1];
+  if(!y||!m){ var n=new Date(); y=n.getFullYear(); m=n.getMonth()+1; }
+  return new Date(y, m, 0).getDate();
+}
+/* その店舗に在籍し保険加入(金額>0)している人の月額保険料 合計 */
+function storeInsuranceMonthly(storeId){
+  var sum = 0;
+  getEmployees().forEach(function(e){
+    if (!e || e.store!==storeId) return;
+    if (e.status==='退職') return;
+    sum += empInsuranceAmt(e);
+  });
+  return sum;
+}
+/* 店舗の保険料 日割り（月額合計 ÷ その月の日数） */
+function storeInsuranceDaily(storeId, ym){
+  var d = daysInMonthOf(ym);
+  return d>0 ? storeInsuranceMonthly(storeId)/d : 0;
+}
 function cumulativeToToday(storeId) {
   var days = monthDays();
   var ym = days.length ? days[0].date.slice(0,7) : new Date().toISOString().slice(0,7);
   var b = getBudgetForMonth(storeId, ym); // 1〜6月はファイル取込、7月以降は予算設定タブ
   var actuals = getDailyActuals(storeId);
   var todayStr = new Date().toISOString().slice(0,10);
+  var dailyIns = storeInsuranceDaily(storeId, ym); // 保険の日割り（その店舗）
   var budToToday=0, actToToday=0, budMonth=0, actMonth=0;
   var costToToday=0, laborToToday=0, daysPassed=0, daysWithActual=0;
   days.forEach(d => {
@@ -4891,9 +4917,9 @@ function cumulativeToToday(storeId) {
         daysWithActual++;
         // 原価・人件費（日次入力があれば反映）
         if (ov.foodCost!=null) costToToday += ov.foodCost;
-        // 人件費: Toast打刻×時給(実績勤怠)を優先。無い日は手入力の当日人件費。
+        // 人件費: Toast打刻×時給(実績勤怠)を優先＋給与税17%＋保険日割り。無い日は手入力の当日人件費(額そのまま)。
         var toastLab = toastLaborCostForDate(storeId, d.date);
-        if (toastLab>0) laborToToday += toastLab;
+        if (toastLab>0) laborToToday += toastLab*(1+PAYROLL_TAX_RATE) + dailyIns;
         else if (ov.labor!=null) laborToToday += ov.labor;
       }
     }
@@ -8481,16 +8507,20 @@ function renderLaborHours(storeId, store) {
    days省略時は当月(attMonthDays)。Order OnlyはgetTipLabor側で除外済み。 */
 function laborBreakdownForPeriod(storeId, days){
   var agg = {};
+  var daysWithData = 0;
   (days||[]).forEach(function(d){
     var labor = getTipLabor(storeId, d.date);
     if(!labor) return;
+    var hadAny = false;
     Object.keys(labor).forEach(function(n){
       var e = labor[n];
       var h = (e.lunch||0)+(e.dinner||0);
       if(h<=0) return;
+      hadAny = true;
       if(!agg[n]) agg[n] = {name:n, hours:0, wage: empWage(n)||0, toastName:(e.toastName||n)};
       agg[n].hours += h;
     });
+    if(hadAny) daysWithData++;
   });
   var rows = Object.keys(agg).map(function(n){
     var a=agg[n];
@@ -8498,10 +8528,19 @@ function laborBreakdownForPeriod(storeId, days){
     a.amount = Math.round(a.hours*a.wage*100)/100;
     return a;
   }).filter(function(a){return a.hours>0;}).sort(function(x,y){return (y.amount-x.amount)||(y.hours-x.hours);});
+  var base = Math.round(rows.reduce(function(s,r){return s+r.amount;},0)*100)/100;
+  var ym = (days&&days.length) ? days[0].date.slice(0,7) : new Date().toISOString().slice(0,7);
+  var tax = Math.round(base*PAYROLL_TAX_RATE*100)/100;
+  var dailyIns = storeInsuranceDaily(storeId, ym);
+  var insurance = Math.round(dailyIns*daysWithData*100)/100;
+  var totalWithBurden = Math.round((base+tax+insurance)*100)/100;
   return {
     rows: rows,
     totalHours: Math.round(rows.reduce(function(s,r){return s+r.hours;},0)*100)/100,
-    totalAmount: Math.round(rows.reduce(function(s,r){return s+r.amount;},0)*100)/100
+    totalAmount: base,
+    tax: tax, taxRate: PAYROLL_TAX_RATE,
+    insurance: insurance, daysWithData: daysWithData, insuranceMonthly: storeInsuranceMonthly(storeId),
+    totalWithBurden: totalWithBurden
   };
 }
 /* Labor額タップ → 従業員別「名前・時給・勤務時間・Labor額」一覧モーダル。
@@ -8536,14 +8575,22 @@ function openLaborBreakdown(storeId, dateISO){
       + (canWage?'<td style="text-align:right;font-weight:600;color:var(--accent)">'+(r.wage>0?money(r.amount):'—')+'</td>':'')
       + '</tr>';
   });
-  html += '</tbody><tfoot><tr style="border-top:2px solid var(--border);font-weight:700">'
-    + '<td>合計 '+bk.rows.length+'名</td>'
+  html += '</tbody><tfoot>'
+    + '<tr style="border-top:2px solid var(--border);font-weight:700">'
+    + '<td>賃金 小計 '+bk.rows.length+'名</td>'
     + (canWage?'<td></td>':'')
     + '<td style="text-align:right">'+bk.totalHours.toFixed(2)+'h</td>'
-    + (canWage?'<td style="text-align:right;color:var(--accent)">'+money(bk.totalAmount)+'</td>':'')
-    + '</tr></tfoot></table>';
+    + (canWage?'<td style="text-align:right">'+money(bk.totalAmount)+'</td>':'')
+    + '</tr>';
+  if (canWage) {
+    var insYm = dateISO ? dateISO.slice(0,7) : attMonthRef().toISOString().slice(0,7);
+    html += '<tr style="color:var(--muted)"><td colspan="3">給与税（'+Math.round(bk.taxRate*100)+'%・自動）</td><td style="text-align:right">'+money(bk.tax)+'</td></tr>';
+    html += '<tr style="color:var(--muted)"><td colspan="3">保険 日割り（月額'+money(bk.insuranceMonthly)+'÷'+daysInMonthOf(insYm)+'日 ×'+bk.daysWithData+'日）</td><td style="text-align:right">'+money(bk.insurance)+'</td></tr>';
+    html += '<tr style="font-weight:700;border-top:1px solid var(--border)"><td colspan="3">Labor額 合計</td><td style="text-align:right;color:var(--accent)">'+money(bk.totalWithBurden)+'</td></tr>';
+  }
+  html += '</tfoot></table>';
   html += '<div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> '
-    + '実績=Toast打刻（Lunch+Dinner）×従業員マスターの時給。Order Only（注文専用）は除外。'
+    + '実績=Toast打刻（Lunch+Dinner）×従業員マスターの時給。Order Only（注文専用）は除外。Labor額=賃金＋給与税'+Math.round(bk.taxRate*100)+'%＋保険日割り。'
     + (canWage?'':'時給・Labor額はGM/AM等のみ表示。')+'</div>';
   openModal(html);
 }
@@ -8557,9 +8604,9 @@ function renderLaborOverview() {
     var warnTarget = laborTarget + 3;
     var color = s.labor<=laborTarget?'var(--green)':s.labor<=warnTarget?'var(--yellow)':'var(--red)';
     var bk = laborBreakdownForPeriod(s.id, attMonthDays());
-    var hasActual = bk.rows.length>0 && bk.totalAmount>0;
-    var laborAmt = hasActual ? bk.totalAmount : Math.round(s.a*s.labor/100);
-    var amtSub = hasActual ? '実績(勤怠×時給) ›' : '今月推計 ›';
+    var hasActual = bk.rows.length>0 && bk.totalWithBurden>0;
+    var laborAmt = hasActual ? bk.totalWithBurden : Math.round(s.a*s.labor/100);
+    var amtSub = hasActual ? '実績(賃金+税+保険) ›' : '今月推計 ›';
     var laborTile = `<div class="kpi" style="cursor:pointer" onclick="openLaborBreakdown('${s.id}')" title="タップで従業員別の内訳">
         <div class="kpi-label">Labor額 <i class="ti ti-chevron-right" style="font-size:10px;vertical-align:-1px"></i></div>
         <div class="kpi-value" style="color:${color}">${fmtK(Math.round(laborAmt))}</div>
@@ -11595,6 +11642,10 @@ function openEmpModal(empId) {
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-insurance"${e.insurance?' checked':''}> 医療保険あり</label>
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-dental"${e.dental?' checked':''}> 歯科保険あり</label>
       </div>
+      ${canEditWages()?`<div class="form-group" style="margin:8px 0 0">
+        <label class="form-label" style="font-size:12px">会社負担 保険料（月額 $）</label>
+        <input class="form-input" id="e-insurance-amt" type="number" step="10" value="${e.insuranceAmt!=null?e.insuranceAmt:''}" placeholder="例: 450（未加入は空欄）">
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">この金額をその店舗の在籍者で合計し、月の日数で日割りしてLabor額に加算します（給与税17%は別途自動）。</div></div>`:''}
     </div>
     ${canViewWageOf(e)?(canEditWages()
       ? `<div class="form-group" id="e-pay-wrap"><label class="form-label">給与 <span class="tag tag-red" style="font-size:8px">GM/CEO限定</span></label>
@@ -11647,6 +11698,8 @@ function saveEmp(empId) {
     title: (document.getElementById('e-title')||{}).value || '',
   };
   if (canEditWages()) {
+    var insAmtEl = document.getElementById('e-insurance-amt');
+    if (insAmtEl) data.insuranceAmt = (insAmtEl.value!=='') ? parseFloat(insAmtEl.value) : null;
     var wageEl = document.getElementById('e-wage');
     var monthlyEl = document.getElementById('e-monthly');
     // 空欄は「役職デフォルト使用」= null。入力時のみ個別上書き。
