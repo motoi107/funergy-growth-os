@@ -3859,17 +3859,19 @@ function storeData(id) {
   var d = DEMO_BUDGET[id] || {b:200000,a:190000,fc:30,labor:28};
   var result = Object.assign({}, d, {id, name:(STORES.find(s=>s.id===id)||{name:id}).name,
     color:(STORES.find(s=>s.id===id)||{color:'#888'}).color});
+  // FC/Labor率は実データ（日次原価・Toast勤怠）のみ反映。データが無ければ0（デモ値は使わない）。
+  result.fc = 0; result.labor = 0;
   // 予算は常に「予算設定タブ(budgets_v2)」を正とする。実績は日次実績/Toast同期の累計。
   try {
     var c = cumulativeToToday(id);
     if (c && (c.budToToday > 0 || c.budMonth > 0)) {
       result.b = Math.round(c.budToToday > 0 ? c.budToToday : c.budMonth); // 前日までの累計予算
       result.a = Math.round(c.actToToday);                                 // 前日までの累計実績（無ければ0）
-      if (c.daysWithActual > 0) {
-        if (c.costRate>0) result.fc = c.costRate;
-        if (c.laborRate>0) result.labor = c.laborRate;
-        result.cumulative = true;
-      }
+      if (c.daysWithActual > 0) result.cumulative = true;
+    }
+    if (c) {
+      result.fc = c.costRate > 0 ? c.costRate : 0;       // 実原価率（無ければ0）
+      result.labor = c.laborRate > 0 ? c.laborRate : 0;  // 実人件費率（無ければ0）
     }
   } catch(e){}
   result.sp = pct(result.a, result.b);
@@ -3974,8 +3976,10 @@ function renderDashboard() {
     var sumSales = tA;
     var wFC = sumSales>0 ? Math.round(stores.reduce((a,s)=>a+s.a*s.fc,0)/sumSales*10)/10 : avgFC;
     var wL  = sumSales>0 ? Math.round(stores.reduce((a,s)=>a+s.a*s.labor,0)/sumSales*10)/10 : avgL;
-    var fcColAgg = statusColor(statusFromCeil(wFC,31,34));
-    var lColAgg  = statusColor(statusFromCeil(wL,29,32));
+    var fcColAgg = wFC>0 ? statusColor(statusFromCeil(wFC,31,34)) : 'var(--muted)';
+    var lColAgg  = wL>0 ? statusColor(statusFromCeil(wL,29,32)) : 'var(--muted)';
+    var fcAggDisp = wFC>0 ? wFC+'%' : '—';
+    var lAggDisp  = wL>0 ? wL+'%' : '—';
     html += `<div class="card">
       <div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${t('前日まで','through yesterday')}</span></div>
       <div style="background:var(--surface2);border-radius:12px;padding:12px;margin-bottom:10px">
@@ -3986,8 +3990,8 @@ function renderDashboard() {
           <span class="tag ${statusTag(statusFromPct(tp))}" style="margin-left:auto;font-size:13px">${tp}%</span>
         </div>
         <div style="display:flex;gap:24px">
-          <div><div style="font-size:11px;color:var(--muted)">FC</div><div style="font-size:20px;font-weight:800;color:${fcColAgg}">${wFC}%</div></div>
-          <div><div style="font-size:11px;color:var(--muted)">Labor</div><div style="font-size:20px;font-weight:800;color:${lColAgg}">${wL}%</div></div>
+          <div><div style="font-size:11px;color:var(--muted)">FC</div><div style="font-size:20px;font-weight:800;color:${fcColAgg}">${fcAggDisp}</div></div>
+          <div><div style="font-size:11px;color:var(--muted)">Labor</div><div style="font-size:20px;font-weight:800;color:${lColAgg}">${lAggDisp}</div></div>
           <div style="margin-left:auto;text-align:right"><div style="font-size:11px;color:var(--muted)">売上</div><div style="font-size:14px;font-weight:700;color:var(--tm)">${fmtK(tA)}</div></div>
         </div>
       </div>`;
@@ -3996,8 +4000,8 @@ function renderDashboard() {
         <div id="dash-stores" style="display:${dashCollapsed('dash-stores')?'none':''}">`;
       stores.forEach(s => {
         var color = statusColor(s.status);
-        var sFc = statusColor(statusFromCeil(s.fc,31,34));
-        var sL  = statusColor(statusFromCeil(s.labor,29,32));
+        var sFc = s.fc>0 ? statusColor(statusFromCeil(s.fc,31,34)) : 'var(--muted)';
+        var sL  = s.labor>0 ? statusColor(statusFromCeil(s.labor,29,32)) : 'var(--muted)';
         html += `<div class="store-row">
           <div class="store-dot" style="background:${s.color}"></div>
           <div style="flex:1" onclick="switchStore('${s.id}');go('budget')">
@@ -4008,8 +4012,8 @@ function renderDashboard() {
             <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
             <div style="display:flex;gap:16px;margin-top:7px;font-size:14px;flex-wrap:wrap">
               <span><span style="font-size:10px;color:var(--muted)">売上 </span><b>${fmtK(s.a)}</b><span style="font-size:11px;color:var(--muted)">/${fmtK(s.b)}</span></span>
-              <span><span style="font-size:10px;color:var(--muted)">FC </span><b style="color:${sFc}">${s.fc}%</b></span>
-              <span><span style="font-size:10px;color:var(--muted)">Labor </span><b style="color:${sL}">${s.labor}%</b></span>
+              <span><span style="font-size:10px;color:var(--muted)">FC </span><b style="color:${sFc}">${s.fc>0?s.fc+'%':'—'}</b></span>
+              <span><span style="font-size:10px;color:var(--muted)">Labor </span><b style="color:${sL}">${s.labor>0?s.labor+'%':'—'}</b></span>
             </div>
           </div>
           <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
