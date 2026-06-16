@@ -931,14 +931,14 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
    CONSTANTS
 ============================================================ */
 const DEFAULT_STORES = [
-  {id:'F01',   name:'ToriTon',  color:'#F07820', am:'Uruma',     brand:'ToriTon',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
+  {id:'F01',   name:'ToriTon',  color:'#F07820', am:'Uruma',     brand:'ToriTon',  toastGuid:'a78a03f0-14a6-4296-893d-605a48344a7a', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F02',   name:'Tenkichi', color:'#D4A800', am:'Masamitsu', brand:'Tenkichi', toastGuid:'acf37290-509b-4b07-a970-5f22b8683516', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F03',   name:'Waikiki Five Star Poke', color:'#5DB554', am:'Yuki Nagatani', brand:'Five Star Poke', toastGuid:'ba49958c-7eb9-44b6-9482-fe19e4d0a0b3', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
   {id:'F03-G', name:'Waikiki Garlic Shack',   color:'#D98E3B', am:'Yuki Nagatani', brand:'Garlic Shack',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
-  {id:'F04-K', name:'Kaimuki',  color:'#3A8FD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
-  {id:'F04-P', name:'Piikoi',   color:'#0E78C4', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
+  {id:'F04-K', name:'Kaimuki',  color:'#3A8FD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'d4885715-b472-4ea6-b648-900952651de4', hours:'11:00-22:00', days:'毎日', active:true},
+  {id:'F04-P', name:'Piikoi',   color:'#0E78C4', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'e93c992f-f18f-4e8f-87f7-5991ece3cb9a', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F04-A', name:'Aiea',     color:'#1B9AD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'99c94a86-9c5a-4f06-8a57-c543bb7f4a50', hours:'11:00-22:00', days:'毎日', active:true},
-  {id:'F05',   name:'Marujuu',  color:'#8B5E3C', am:'Yuki',      brand:'Marujuu',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
+  {id:'F05',   name:'Marujuu',  color:'#8B5E3C', am:'Yuki',      brand:'Marujuu',  toastGuid:'43c185a2-4415-4f48-8c67-c3c730573559', hours:'11:00-22:00', days:'毎日', active:true},
 ];
 /* STORES = 全店舗（lookup用）。表示はactiveStores()で絞る */
 function getStoresAll() {
@@ -1031,6 +1031,39 @@ function migrateActivateStores() {
     }
     lsSet('_activateStores_v1', true);
   } catch(e){ console.warn('migrateActivateStores', e); }
+}
+
+/* 一度だけ: 各店のToast GUIDを正規（小文字）で設定。GUIDは大文字だとtip_labor検索に一致せずLaborが0になる。
+   クラウドにも反映してログイン時同期で消えないようにする。Garlic Shack(F03-G)はGUID未提供のため未設定。 */
+var STORE_GUID_MAP = {
+  'F01':'a78a03f0-14a6-4296-893d-605a48344a7a',
+  'F02':'acf37290-509b-4b07-a970-5f22b8683516',
+  'F03':'ba49958c-7eb9-44b6-9482-fe19e4d0a0b3',
+  'F04-A':'99c94a86-9c5a-4f06-8a57-c543bb7f4a50',
+  'F04-K':'d4885715-b472-4ea6-b648-900952651de4',
+  'F04-P':'e93c992f-f18f-4e8f-87f7-5991ece3cb9a',
+  'F05':'43c185a2-4415-4f48-8c67-c3c730573559'
+};
+function migrateStoreGuids() {
+  try {
+    if (ls('_storeGuids_v1', false)) return;
+    var stores = ls('m_stores', null);
+    if (Array.isArray(stores)) {
+      var changed = false;
+      stores.forEach(function(s){
+        var g = STORE_GUID_MAP[s.id];
+        if (g && s.toastGuid !== g) { s.toastGuid = g; changed = true; }
+        // 念のため小文字化（大文字GUIDはtip_labor検索に一致しない）
+        if (s.toastGuid && s.toastGuid !== String(s.toastGuid).toLowerCase()) { s.toastGuid = String(s.toastGuid).toLowerCase(); changed = true; }
+      });
+      if (changed) {
+        lsSet('m_stores', stores);
+        if (typeof refreshStores==='function') refreshStores();
+        try { if (typeof syncMasterToSupabase==='function') syncMasterToSupabase('m_stores', stores); } catch(e){}
+      }
+    }
+    lsSet('_storeGuids_v1', true);
+  } catch(e){ console.warn('migrateStoreGuids', e); }
 }
 
 /* ===== 業態（Format）とKPI =====
@@ -8491,6 +8524,31 @@ function renderTipHalfMonth(storeId, store, date) {
   return html;
 }
 
+/* クラウド(tip_labor)から可視店舗の当月レイバーを取得して再描画。
+   GUID未設定の店はデータ源が無いためスキップ（その旨を通知）。どの端末でも最新(前日まで)を表示できる。 */
+async function refreshLaborFromCloud(){
+  var btn = document.getElementById('labor-refresh-btn');
+  var stores = (typeof getVisibleStores==='function' ? getVisibleStores() : []);
+  var withGuid = stores.filter(function(s){ return s.toastGuid; });
+  var noGuid = stores.filter(function(s){ return !s.toastGuid; });
+  if (!withGuid.length) {
+    showToast('Toast GUID設定済みの店舗がありません。店舗マスターでGUIDを設定してください。', 'warning');
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.dataset._t = btn.innerHTML; btn.innerHTML = '<i class="ti ti-loader"></i> 取得中…'; }
+  var days = monthDays();
+  var ok = 0;
+  for (var i=0;i<withGuid.length;i++){
+    if (btn) btn.innerHTML = '<i class="ti ti-loader"></i> 取得中… ('+(i+1)+'/'+withGuid.length+')';
+    try { var r = await syncTipLaborFromDB(withGuid[i].id, withGuid[i].toastGuid, days); if (r && !r.error) ok++; }
+    catch(e){ console.warn('refreshLaborFromCloud', withGuid[i].id, e); }
+  }
+  var msg = '最新のレイバーを取得しました（'+ok+'/'+withGuid.length+'店・前日まで）';
+  if (noGuid.length) msg += ' ／ GUID未設定でスキップ: '+noGuid.map(function(s){return s.name;}).join('、');
+  showToast(msg, 'success');
+  renderPage('labor');
+}
+
 function renderLabor() {
   var financial = !!(ROLE_CONFIG[curRole]||{}).financial;
   if (!financial && curRole!=='sl') return financialBlocked();
@@ -8503,7 +8561,7 @@ function renderLabor() {
     ? [['overview','サマリー'],['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']]
     : [['attendance','勤怠データ']];
   var tabsHtml = tabDefs.map(function(td){ return `<div class="phase-tab${laborTab===td[0]?' active':''}" onclick="setLaborTab('${td[0]}')">${td[1]}</div>`; }).join('');
-  var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${store.name} · 勤怠×時給／同期は同期センターに集約</div></div></div>
+  var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${store.name} · 勤怠×時給／同期は同期センターに集約</div></div>${financial?`<button id="labor-refresh-btn" class="btn btn-primary btn-sm" onclick="refreshLaborFromCloud()"><i class="ti ti-cloud-download"></i> 最新を取得</button>`:''}</div>
   <div class="phase-tabs">${tabsHtml}</div>`;
   if (laborTab==='attendance') return html + renderAttendanceBody(storeId, store);
   if (laborTab==='detail') return html + renderLaborDetail(storeId, store);
@@ -17410,6 +17468,7 @@ function checkOnboardToken(){
 try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
 try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
+try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 try { if (!checkOnboardToken()) bootLogin(); } catch(e) { console.error('bootLogin', e); }
 </script>
 </body>
