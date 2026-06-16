@@ -3333,9 +3333,7 @@ function doStaffLogin() {
     curStoreLogin = true;           // 店舗共有ログインフラグ
     curUserName = s.name;           // 表示名は店舗名
     curStore = loginLocation;
-    document.getElementById('login-screen').style.display='none';
-    document.getElementById('app-shell').style.display='block';
-    initApp();
+    enterAppWithSync();
     return;
   }
   if (!loginPerson) return;
@@ -3365,9 +3363,62 @@ function finishStaffLogin() {
   }
   // ceo/gm/office/am は全店表示
   if (['ceo','gm','office'].includes(curRole)) curStore = 'ALL';
-  document.getElementById('login-screen').style.display='none';
-  document.getElementById('app-shell').style.display='block';
+  enterAppWithSync();
+}
+
+/* ===== ログイン時に最新データへ同期してから入る ===== */
+function showSyncSplash(msg){
+  if(!document.getElementById('sync-splash-style')){
+    var st=document.createElement('style'); st.id='sync-splash-style';
+    st.textContent='@keyframes splSpin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(st);
+  }
+  var ov = document.getElementById('sync-splash');
+  if(!ov){
+    ov = document.createElement('div'); ov.id='sync-splash';
+    ov.style.cssText='position:fixed;inset:0;z-index:99999;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center;padding:24px';
+    ov.innerHTML='<i class="ti ti-cloud-download" style="font-size:40px;color:var(--accent)"></i>'
+      +'<div id="sync-splash-msg" style="font-size:14px;color:var(--tm);font-weight:600"></div>'
+      +'<div style="width:30px;height:30px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:splSpin 0.8s linear infinite"></div>';
+    document.body.appendChild(ov);
+  }
+  ov.style.display='flex';
+  var m=document.getElementById('sync-splash-msg'); if(m) m.textContent=msg||'同期中…';
+}
+function hideSyncSplash(){ var ov=document.getElementById('sync-splash'); if(ov) ov.style.display='none'; }
+function setSyncSplash(msg){ var m=document.getElementById('sync-splash-msg'); if(m) m.textContent=msg; }
+
+/* クラウド(Supabase)から最新マスター/設定を取り込む。タイムアウト付き・失敗してもキャッシュで続行。 */
+async function loginSync(){
+  if (ls('login_autosync', true)===false) return; // 設定でOFFならスキップ
+  try {
+    setSyncSplash('最新データに同期中…');
+    var timeout = new Promise(function(res){ setTimeout(function(){ res('__timeout__'); }, 12000); });
+    var r = await Promise.race([ supaPullAllMasters(), timeout ]);
+    try { refreshStores(); } catch(e){}
+    setSyncSplash(r==='__timeout__' ? '同期に時間がかかっています。続行します…' : '最新データに同期しました');
+    await new Promise(function(res){ setTimeout(res, 350); }); // 完了表示を一瞬見せる
+  } catch(e){
+    console.warn('loginSync failed', e);
+    setSyncSplash('同期できませんでした。キャッシュで続行します');
+    await new Promise(function(res){ setTimeout(res, 600); });
+  }
+}
+
+/* ログイン確定 → 同期 → アプリ表示 */
+async function enterAppWithSync(){
+  var doSync = ls('login_autosync', true)!==false;
+  if (doSync) showSyncSplash('最新データに同期中…');
+  try { await loginSync(); } catch(e){}
+  hideSyncSplash();
+  var lsEl=document.getElementById('login-screen'); if(lsEl) lsEl.style.display='none';
+  var ap=document.getElementById('app-shell'); if(ap) ap.style.display='block';
   initApp();
+}
+function toggleLoginAutosync(){
+  var cur = ls('login_autosync', true)!==false;
+  lsSet('login_autosync', !cur);
+  showToast(!cur?'ログイン時の自動同期をONにしました':'ログイン時の自動同期をOFFにしました','success');
 }
 
 function doLogout() {
@@ -5693,7 +5744,9 @@ function openSyncCenter() {
         <button class="btn btn-secondary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> アップロード</button>
         <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> 取り込む</button>
         <button class="btn ${SUPA_SYNC_ENABLED?'btn-success':'btn-secondary'} btn-sm" onclick="toggleSupaSync();openSyncCenter()">${SUPA_SYNC_ENABLED?'<i class=\"ti ti-check\"></i> 自動同期 ON':'自動同期 OFF'}</button>
-      </div>`:''}
+        <button class="btn ${ls('login_autosync',true)!==false?'btn-success':'btn-secondary'} btn-sm" onclick="toggleLoginAutosync();openSyncCenter()">${ls('login_autosync',true)!==false?'<i class=\"ti ti-check\"></i> ログイン時同期 ON':'ログイン時同期 OFF'}</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">「ログイン時同期」ON: ログインのたびにクラウドの最新マスター（店舗・従業員・予算・KPI・会社メッセージ等）を取り込みます。端末でマスターを編集したら「アップロード」でクラウドへ反映してください。</div>`:''}
     <div style="font-size:11px;color:var(--muted);margin-top:12px"><i class="ti ti-info-circle"></i> 各ページの同期ボタンも今まで通り使えます。ここから一括／個別どちらも実行できます。</div>`);
 }
 async function syncAllData(storeId, guid) {
