@@ -931,14 +931,14 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
    CONSTANTS
 ============================================================ */
 const DEFAULT_STORES = [
-  {id:'F01',   name:'ToriTon',  color:'#F07820', am:'Uruma',     brand:'ToriTon',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
+  {id:'F01',   name:'ToriTon',  color:'#F07820', am:'Uruma',     brand:'ToriTon',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F02',   name:'Tenkichi', color:'#D4A800', am:'Masamitsu', brand:'Tenkichi', toastGuid:'acf37290-509b-4b07-a970-5f22b8683516', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F03',   name:'Waikiki Five Star Poke', color:'#5DB554', am:'Yuki Nagatani', brand:'Five Star Poke', toastGuid:'ba49958c-7eb9-44b6-9482-fe19e4d0a0b3', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
   {id:'F03-G', name:'Waikiki Garlic Shack',   color:'#D98E3B', am:'Yuki Nagatani', brand:'Garlic Shack',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true, format:'dining'},
-  {id:'F04-K', name:'Kaimuki',  color:'#3A8FD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
-  {id:'F04-P', name:'Piikoi',   color:'#0E78C4', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
+  {id:'F04-K', name:'Kaimuki',  color:'#3A8FD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
+  {id:'F04-P', name:'Piikoi',   color:'#0E78C4', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F04-A', name:'Aiea',     color:'#1B9AD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'99c94a86-9c5a-4f06-8a57-c543bb7f4a50', hours:'11:00-22:00', days:'毎日', active:true},
-  {id:'F05',   name:'Marujuu',  color:'#8B5E3C', am:'Yuki',      brand:'Marujuu',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:false},
+  {id:'F05',   name:'Marujuu',  color:'#8B5E3C', am:'Yuki',      brand:'Marujuu',  toastGuid:'', hours:'11:00-22:00', days:'毎日', active:true},
 ];
 /* STORES = 全店舗（lookup用）。表示はactiveStores()で絞る */
 function getStoresAll() {
@@ -1011,6 +1011,27 @@ function migrateYukiAm() {
   } catch(e){ console.warn('migrateYukiAm', e); }
 }
 function activeStores() { return getStoresAll().filter(s=>s.active); }
+
+/* 一度だけ: 全店舗を稼働(active=true)にする。初期データのactive:false（ToriTon/Kaimuki/Piikoi/Marujuu）が
+   残っていると、その店のスタッフがログインできず、ダッシュボードにも出ないため。クラウドにも反映して
+   ログイン時同期で再度OFFに戻らないようにする。 */
+function migrateActivateStores() {
+  try {
+    if (ls('_activateStores_v1', false)) return;
+    var stores = ls('m_stores', null);
+    if (Array.isArray(stores)) {
+      var changed = false;
+      stores.forEach(function(s){ if (s.active!==true){ s.active=true; changed=true; } });
+      if (changed) {
+        lsSet('m_stores', stores);
+        if (typeof refreshStores==='function') refreshStores();
+        // クラウド(Supabase)にも反映（自動同期OFFでも実行・失敗は無視）
+        try { if (typeof syncMasterToSupabase==='function') syncMasterToSupabase('m_stores', stores); } catch(e){}
+      }
+    }
+    lsSet('_activateStores_v1', true);
+  } catch(e){ console.warn('migrateActivateStores', e); }
+}
 
 /* ===== 業態（Format）とKPI =====
    業態でデフォルトKPI → 店舗ごとに上書き可（ハイブリッド） */
@@ -3171,8 +3192,8 @@ function bootLogin() {
   var officeCard = `<div class="store-btn" style="border-left:3px solid var(--accent)" onclick="loginPickLocation('OFFICE',this)"><i class="ti ti-building-skyscraper" style="font-size:13px;margin-right:3px"></i>${t('オフィス','Office')}</div>`;
   // ②に空欄（レイアウト用の非表示セル）
   var blankCard = `<div class="store-btn" style="visibility:hidden;pointer-events:none"></div>`;
-  // ログイン画面の並び順（共通の sortByLoginOrder を使用）
-  var ordered = sortByLoginOrder(activeStores());
+  // ログイン画面の並び順（共通の sortByLoginOrder を使用）。ログインは誰もロックアウトしないよう全店表示。
+  var ordered = sortByLoginOrder(getStoresAll());
   grid.innerHTML = officeCard + blankCard + ordered.map(s =>
     `<div class="store-btn" style="border-left:3px solid ${s.color}" onclick="loginPickLocation('${s.id}',this)">${s.name}</div>`
   ).join('');
@@ -17388,6 +17409,7 @@ function checkOnboardToken(){
 }
 try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
 try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
+try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { if (!checkOnboardToken()) bootLogin(); } catch(e) { console.error('bootLogin', e); }
 </script>
 </body>
