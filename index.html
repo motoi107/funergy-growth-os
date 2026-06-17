@@ -5216,6 +5216,53 @@ function msDelta(cur, prev, key, inverse){
   return '<span style="color:'+col+';font-size:11px;white-space:nowrap">'+arrow+Math.abs(diff)+'</span>';
 }
 
+function msKpiRows(storeId){
+  var store=getStoresAll().find(function(s){return s.id===storeId;})||{};
+  var targets=getStoreKpiTargets(storeId, msOffset);
+  var act=(computeKpiActuals(storeId, msOffset)||{}).actuals||{};
+  var kpis=kpisForFormat(store.format||'dining');
+  return kpis.map(function(k){
+    var tv=targets[k.key], av=act[k.key];
+    var hasA=av!=null && !isNaN(av);
+    var ok=(hasA && tv!=null)?(k.dir==='down'?av<=tv:av>=tv):null;
+    var col=ok==null?'var(--muted)':(ok?'var(--green)':'var(--red)');
+    var state=ok==null?'<span style="color:var(--muted)">—</span>':(ok?'<span style="color:var(--green)">達成</span>':'<span style="color:var(--red)">未達</span>');
+    return '<tr style="border-top:1px solid var(--border)">'
+      +'<td style="text-align:left;padding:6px">'+k.label+(k.star?' <span style="color:var(--yellow)">★</span>':'')+'</td>'
+      +'<td style="text-align:right;padding:6px;color:var(--muted)">'+(tv!=null?tv+k.unit:'—')+'</td>'
+      +'<td style="text-align:right;padding:6px;font-weight:700;color:'+col+'">'+(hasA?av+k.unit:'—')+'</td>'
+      +'<td style="text-align:right;padding:6px">'+state+'</td></tr>';
+  }).join('');
+}
+
+function msKpiCard(mi, scopeName){
+  var html='<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>KPI実績 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">'+mi.label+'</span></div>';
+  if(msScope!=='ALL'){
+    var ach=kpiAchievement(msScope, msOffset);
+    html+='<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+scopeName+(ach&&ach.pct!=null?'　KPI達成度 <b style="color:var(--tm)">'+ach.pct+'%</b>（'+ach.met+'/'+ach.total+'達成）':'　実績データ待ち')+'</div>'
+      +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+      +'<thead><tr style="color:var(--muted);font-size:11px"><th style="text-align:left;padding:6px">KPI</th><th style="text-align:right;padding:6px">目標</th><th style="text-align:right;padding:6px">実績</th><th style="text-align:right;padding:6px">状態</th></tr></thead><tbody>'
+      +msKpiRows(msScope)+'</tbody></table></div>';
+  } else {
+    html+='<div style="font-size:12px;color:var(--muted);margin-bottom:8px">店舗を選ぶと各KPIの目標vs実績の明細を表示します</div>'
+      +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+      +'<thead><tr style="color:var(--muted);font-size:11px"><th style="text-align:left;padding:6px">店舗</th><th style="text-align:right;padding:6px">原価率</th><th style="text-align:right;padding:6px">人件費率</th><th style="text-align:right;padding:6px">リピート</th><th style="text-align:right;padding:6px">達成</th></tr></thead><tbody>';
+    msScopeStores().forEach(function(s){
+      var act=(computeKpiActuals(s.id, msOffset)||{}).actuals||{};
+      var tg=getStoreKpiTargets(s.id, msOffset);
+      var ach=kpiAchievement(s.id, msOffset);
+      var cell=function(key,inv){var av=act[key],tv=tg[key];var c='var(--muted)';if(av!=null&&tv!=null)c=((inv?av<=tv:av>=tv)?'var(--green)':'var(--red)');return '<td style="text-align:right;padding:6px;color:'+c+'">'+(av!=null?av+'%':'—')+'</td>';};
+      html+='<tr style="border-top:1px solid var(--border)">'
+        +'<td style="text-align:left;padding:6px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(s.color||'#888')+';margin-right:6px"></span>'+s.name+'</td>'
+        +cell('foodCost',true)+cell('laborPct',true)+cell('repeatRate',false)
+        +'<td style="text-align:right;padding:6px;font-weight:700">'+(ach&&ach.pct!=null?ach.pct+'%':'—')+'</td></tr>';
+    });
+    html+='</tbody></table></div>';
+  }
+  html+='<div style="font-size:11px;color:var(--muted);margin-top:8px">原価率・ドリンク比率・アップセルはメニュー出数、人件費率はToast勤怠、リピート率等は手入力（KPI管理）から算出。実績が無い項目は「—」。</div></div>';
+  return html;
+}
+
 function renderMonthlySummary(){
   if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
   var mi=msMonthInfo(msOffset);
@@ -5231,6 +5278,8 @@ function renderMonthlySummary(){
     +'<button class="btn btn-secondary btn-sm" onclick="msShift(-1)"><i class="ti ti-chevron-left"></i></button>'
     +'<div style="font-size:16px;font-weight:800;min-width:104px;text-align:center">'+mi.label+'</div>'
     +'<button class="btn btn-secondary btn-sm" onclick="msShift(1)" '+(canNext?'':'disabled style="opacity:.35"')+'><i class="ti ti-chevron-right"></i></button>'
+    +'<button class="btn btn-secondary btn-sm" id="ms-refresh-btn" onclick="msRefreshMonth()" title="この月の最新をクラウドから取得"><i class="ti ti-cloud-download"></i></button>'
+    +'<span id="ms-load-ind" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--muted)"><i class="ti ti-loader"></i><span class="ms-load-txt">取得中…</span></span>'
     +'<select onchange="msSetScope(this.value)" style="margin-left:auto;padding:8px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--tm);font-size:13px">'
     +'<option value="ALL"'+(msScope==='ALL'?' selected':'')+'>全店合算</option>'
     +stores.map(function(s){return '<option value="'+s.id+'"'+(msScope===s.id?' selected':'')+'>'+s.name+'</option>';}).join('')
@@ -5253,6 +5302,8 @@ function renderMonthlySummary(){
     +tile('粗利', fmtK(agg.grossProfit), '売上-原価-人件費　'+(agg.gpRate||0)+'%')
     +tile('客数 / 客単価', (agg.guests||0).toLocaleString()+' / $'+(agg.avgSpend||0), mi.label)
     +'</div>';
+
+  html+=msKpiCard(mi, scopeName);
 
   html+='<div class="card"><div class="card-title"><i class="ti ti-chart-line" style="color:var(--accent)"></i>売上トレンド（日次）</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><span style="color:var(--accent)">■</span> 実績　<span style="color:var(--muted)">– –</span> 予算</div>'
@@ -5280,10 +5331,35 @@ function renderMonthlySummary(){
 
   html+='<div class="card" style="background:var(--surface2)"><div style="font-size:12px;color:var(--muted)">このページはv1プレビューです。売上・原価率・レイバー・達成率・トレンド・店舗別・前月比は実データ（前日まで／過去月は全日）。売上構成は本実装でToast連携予定。デザインのご確認用にすぐ使えます。</div></div>';
 
+  setTimeout(function(){ try{ msLoadMonth(false); }catch(e){} }, 60);
   return html;
 }
 function msShift(d){ var n=msOffset+d; if(n>0) n=0; msOffset=n; renderPage('monthly'); }
 function msSetScope(v){ msScope=v; renderPage('monthly'); }
+
+/* 選択中の月・スコープの勤怠(tip_labor)と売上(toast_sales)をクラウドから取得して再描画。
+   月/スコープごとに1回だけ自動取得（再取得はリフレッシュボタン）。 */
+var _msLoaded = {};
+async function msLoadMonth(force){
+  var mi = msMonthInfo(msOffset);
+  var stores = msScopeStores().filter(function(s){ return s.toastGuid; });
+  var todayStr = new Date().toISOString().slice(0,10);
+  var days = mi.days.filter(function(d){ return d.date<=todayStr; });
+  var loadKey = mi.ym+'|'+msScope;
+  if(!stores.length || !days.length) return;
+  if(!force && _msLoaded[loadKey]) return;
+  var ind=document.getElementById('ms-load-ind');
+  var txt=ind?ind.querySelector('.ms-load-txt'):null;
+  if(ind) ind.style.display='inline-flex';
+  for(var i=0;i<stores.length;i++){
+    if(txt) txt.textContent=mi.label+' 取得中… '+(i+1)+'/'+stores.length;
+    try{ await syncTipLaborFromDB(stores[i].id, stores[i].toastGuid, days); }catch(e){}
+    try{ await syncStoreActualsFromToast(stores[i].id, stores[i].toastGuid, days); }catch(e){}
+  }
+  _msLoaded[loadKey]=true;
+  if(curPage==='monthly') renderPage('monthly'); // 取得後に最新値で再描画（_msLoadedで再取得はしない）
+}
+function msRefreshMonth(){ var mi=msMonthInfo(msOffset); _msLoaded[mi.ym+'|'+msScope]=false; msLoadMonth(true); }
 
 function basisAmount(basis) {
   if (basis.type === 'base') {
