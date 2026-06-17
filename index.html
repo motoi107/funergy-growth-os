@@ -9456,7 +9456,40 @@ const SHIFT_HOURS = { Lunch:4, Dinner:5 };
 
 function getAvailability(storeId, week) { return ls('avail_'+storeId+'_'+week, []); }
 function getShiftPlan(storeId, week) { return ls('shiftplan_'+storeId+'_'+week, null); }
-function setShiftPlan(storeId, week, plan) { lsSet('shiftplan_'+storeId+'_'+week, plan); }
+function setShiftPlan(storeId, week, plan) { lsSet('shiftplan_'+storeId+'_'+week, plan); pushShiftPlan(storeId, week, plan); }
+
+/* === F2-a: シフトのクラウド同期（shift_plans） === */
+async function pushShiftPlan(storeId, week, plan){
+  if(_supaBooting) return;
+  try{
+    await fetch(SUPABASE_URL+'/rest/v1/shift_plans', {
+      method:'POST',
+      headers: supaHeaders({ Prefer:'resolution=merge-duplicates,return=minimal' }),
+      body: JSON.stringify([{ store_id:storeId, week:week, status:(plan&&plan.status)||'下書き', cells:(plan&&plan.cells)||{}, updated_at:new Date().toISOString() }])
+    });
+  }catch(e){ console.warn('pushShiftPlan', e); }
+}
+async function pullShiftPlan(storeId, week){
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/shift_plans?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=status,cells', { headers: supaHeaders() });
+    if(!res.ok) return false;
+    var rows=await res.json();
+    if(rows && rows.length){
+      var p={ status:rows[0].status||'下書き', cells:rows[0].cells||{} };
+      try{ localStorage.setItem('shiftplan_'+storeId+'_'+week, JSON.stringify(p)); }catch(e){} // 直接setItem=押し上げ抑止
+      return true;
+    }
+  }catch(e){ console.warn('pullShiftPlan', e); }
+  return false;
+}
+var _shiftPulled={};
+function maybePullShift(storeId, week, force){
+  var k=storeId+'_'+week;
+  if(!force && _shiftPulled[k]) return;
+  _shiftPulled[k]=true;
+  pullShiftPlan(storeId, week).then(function(ok){ if(ok && curPage==='shift_admin') renderPage('shift_admin'); });
+}
+function refreshShiftFromCloud(storeId, week){ _shiftPulled[storeId+'_'+week]=false; showToast('最新のシフトを取得中…','info'); maybePullShift(storeId, week, true); }
 
 /* 週間シフトを画像化（LINE等で共有しやすいPNG）。スタッフ×曜日のマトリクス。 */
 function shiftWeekMatrix(storeId, week){
@@ -9585,6 +9618,7 @@ function renderShiftAdmin() {
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
   else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
   else html += renderShiftLabor(storeId, week);
+  setTimeout(function(){ try{ maybePullShift(storeId, week); }catch(e){} }, 60); // F2-a: クラウドから当週シフトを取込
   return html;
 }
 function setShiftAdminTab(t) { shiftAdminTab = t; renderPage('shift_admin'); }
@@ -9765,6 +9799,7 @@ function renderShiftBuild(storeId, week) {
     <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-layout-grid"></i> ${shiftView==='grid'?'List':'Grid'}</button>
     ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center">公開済</span>`}
     <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像で保存/共有</button>
+    <button class="btn btn-secondary btn-sm" onclick="refreshShiftFromCloud('${storeId}','${week}')"><i class="ti ti-cloud-download"></i> 最新を取得</button>
   </div>`;
 
   if (warnings.length) {
