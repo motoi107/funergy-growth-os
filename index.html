@@ -2981,8 +2981,16 @@ function lsSet(key, val) {
    - 個別マスター(stores/employees/...)は各テーブルへupsert
    - その他のマスター設定は app_settings へ key=value で保存
 ============================================================ */
-var SUPA_SYNC_ENABLED = (function(){ try{ return localStorage.getItem('supa_sync')==='1'; }catch(e){ return false; } })();
+var SUPA_SYNC_ENABLED = (function(){ try{ return localStorage.getItem('supa_sync')!=='0'; }catch(e){ return true; } })();
+var _supaBooting = true; // 起動・シード・プル中はマスター押し上げを抑止（クラウドの正データを誤上書きしない）
 function setSupaSync(on){ SUPA_SYNC_ENABLED=on; try{ localStorage.setItem('supa_sync', on?'1':'0'); }catch(e){} }
+function migrateEnableMasterAutosync(){ // F1: 全端末でマスター自動同期を一度ONに移行
+  try{
+    if(localStorage.getItem('_f1_autosync')==='1') return;
+    localStorage.setItem('supa_sync','1'); SUPA_SYNC_ENABLED=true;
+    localStorage.setItem('_f1_autosync','1');
+  }catch(e){}
+}
 
 /* localStorageキー → Supabaseテーブル定義。
    type:'rows' = 配列を行としてupsert（mapで各行の主要カラムを抽出、全体はdataへ）
@@ -3013,6 +3021,7 @@ function supaHeaders(extra){
 }
 /* マスターをSupabaseへ同期（非同期・失敗してもlocalStorageは無事） */
 async function syncMasterToSupabase(key, val){
+  if (_supaBooting) return; // 起動/シード/プル中は押し上げない（プル後のユーザー編集のみクラウド反映）
   var def = SUPA_MASTER_MAP[key];
   if (def && def.type==='rows') {
     if (!Array.isArray(val)) return;
@@ -3641,6 +3650,7 @@ function initApp() {
   renderPage(curPage);
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
   setTimeout(maybeShowCompanyMessage, 400);
+  _supaBooting = false; // ここから先（ユーザー操作）の保存はクラウドへ即時反映（F1）
 }
 
 function buildNav() {
@@ -17841,6 +17851,7 @@ function checkOnboardToken(){
 }
 try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
 try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
+try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 try { if (!checkOnboardToken()) bootLogin(); } catch(e) { console.error('bootLogin', e); }
