@@ -9448,6 +9448,102 @@ function getAvailability(storeId, week) { return ls('avail_'+storeId+'_'+week, [
 function getShiftPlan(storeId, week) { return ls('shiftplan_'+storeId+'_'+week, null); }
 function setShiftPlan(storeId, week, plan) { lsSet('shiftplan_'+storeId+'_'+week, plan); }
 
+/* 週間シフトを画像化（LINE等で共有しやすいPNG）。スタッフ×曜日のマトリクス。 */
+function shiftWeekMatrix(storeId, week){
+  var plan = getShiftPlan(storeId, week) || {cells:{}};
+  var cells = plan.cells || {};
+  var rows = [];
+  staffForStore(storeId).forEach(function(e){
+    var perDay = DOW_SHIFT.map(function(day){
+      var h = {};
+      SHIFT_PERIODS.forEach(function(p){
+        var on = Object.keys(cells).some(function(k){ return k.indexOf(day+'_'+p+'_')===0 && cells[k]===e.name; });
+        if(on) h[p]=true;
+      });
+      return h;
+    });
+    var total = perDay.reduce(function(a,h){ return a+Object.keys(h).length; },0);
+    if(total>0) rows.push({name:e.name, perDay:perDay});
+  });
+  return rows;
+}
+
+function exportShiftImage(storeId, week){
+  var store = STORES.find(function(s){return s.id===storeId;}) || {name:storeId};
+  var rows = shiftWeekMatrix(storeId, week);
+  if(!rows.length){ showToast('割り当てがありません。シフトを作成してからお試しください。', 'warning'); return; }
+  var plan = getShiftPlan(storeId, week) || {};
+  var dates = DOW_SHIFT.map(weekDateForDow);
+  var md = function(iso){ if(!iso)return ''; var p=iso.split('-'); return Number(p[1])+'/'+Number(p[2]); };
+  var scale = 2;
+  var nameW=150, dayW=92, rowH=44, headH=56, titleH=66, padB=42;
+  var W = nameW + dayW*7, H = titleH + headH + rowH*rows.length + padB;
+  var cv = document.createElement('canvas'); cv.width=W*scale; cv.height=H*scale;
+  var ctx = cv.getContext('2d'); ctx.scale(scale,scale); ctx.textBaseline='middle';
+  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+  // タイトル
+  ctx.fillStyle='#2b2b2b'; ctx.font='bold 22px sans-serif'; ctx.textAlign='left';
+  ctx.fillText(store.name+' 週間シフト', 16, 28);
+  ctx.fillStyle='#8a857c'; ctx.font='13px sans-serif';
+  ctx.fillText(md(dates[0])+'〜'+md(dates[6])+'（月〜日）'+(plan.status==='公開済'?'　[公開済]':'　[下書き]'), 16, 50);
+  // ヘッダー
+  var y0=titleH;
+  ctx.fillStyle='#f3efe8'; ctx.fillRect(0,y0,W,headH);
+  ctx.fillStyle='#2b2b2b'; ctx.font='bold 13px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('スタッフ', 12, y0+headH/2);
+  DOW_SHIFT.forEach(function(d,i){
+    var x=nameW+dayW*i;
+    ctx.fillStyle=(d==='日')?'#d65a4a':(d==='土'?'#4a7fd6':'#2b2b2b');
+    ctx.textAlign='center'; ctx.font='bold 15px sans-serif';
+    ctx.fillText(d, x+dayW/2, y0+headH/2-9);
+    ctx.fillStyle='#8a857c'; ctx.font='11px sans-serif';
+    ctx.fillText(md(dates[i]), x+dayW/2, y0+headH/2+11);
+  });
+  // 行
+  rows.forEach(function(r,ri){
+    var y=titleH+headH+rowH*ri;
+    if(ri%2){ ctx.fillStyle='#faf8f4'; ctx.fillRect(0,y,W,rowH); }
+    ctx.fillStyle='#2b2b2b'; ctx.textAlign='left'; ctx.font='13px sans-serif';
+    ctx.fillText((r.name.split(' ')[0]||r.name).slice(0,9), 12, y+rowH/2);
+    r.perDay.forEach(function(h,di){
+      var x=nameW+dayW*di, lunch=h['Lunch'], dinner=h['Dinner'];
+      var label=(lunch&&dinner)?'昼 夜':(lunch?'昼':(dinner?'夜':''));
+      if(!label) return;
+      ctx.font='bold 12px sans-serif';
+      var pw=Math.min(dayW-12, ctx.measureText(label).width+22), ph=24, rr=12;
+      var px=x+(dayW-pw)/2, py=y+rowH/2-ph/2;
+      ctx.fillStyle=(lunch&&dinner)?'#e8794a':(lunch?'#e0a23a':'#5b6ee8');
+      ctx.beginPath(); ctx.moveTo(px+rr,py); ctx.arcTo(px+pw,py,px+pw,py+ph,rr); ctx.arcTo(px+pw,py+ph,px,py+ph,rr); ctx.arcTo(px,py+ph,px,py,rr); ctx.arcTo(px,py,px+pw,py,rr); ctx.fill();
+      ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.fillText(label, x+dayW/2, y+rowH/2+1);
+    });
+  });
+  // 罫線
+  ctx.strokeStyle='#e7e2d9'; ctx.lineWidth=1;
+  var gridBottom=titleH+headH+rowH*rows.length;
+  for(var c=0;c<=7;c++){ var gx=nameW+dayW*c; ctx.beginPath(); ctx.moveTo(gx,titleH); ctx.lineTo(gx,gridBottom); ctx.stroke(); }
+  for(var k=0;k<=rows.length;k++){ var gy=titleH+headH+rowH*k; ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(W,gy); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(0,titleH); ctx.lineTo(W,titleH); ctx.stroke();
+  // フッター
+  ctx.fillStyle='#b3ada3'; ctx.font='10px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('Funergy+ ／ 昼=Lunch・夜=Dinner', 12, H-padB/2);
+  // 出力（モバイルは共有シート→LINE、PC等はダウンロード）
+  var fname = store.name+'_週間シフト_'+md(dates[0]).replace('/','-')+'.png';
+  cv.toBlob(function(blob){
+    if(!blob){ showToast('画像生成に失敗しました', 'error'); return; }
+    try{
+      var file=new File([blob], fname, {type:'image/png'});
+      if(navigator.canShare && navigator.canShare({files:[file]})){
+        navigator.share({files:[file], title:store.name+' 週間シフト'}).then(function(){showToast('共有しました','success');}).catch(function(){});
+        return;
+      }
+    }catch(e){}
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a'); a.href=url; a.download=fname; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
+    showToast('週間シフトを画像で保存しました', 'success');
+  }, 'image/png');
+}
+
 /* 配置可能スタッフ（所属 or 応援店舗） */
 function staffForStore(storeId) {
   return getEmployees().filter(e=>e.status!=='退職' && (e.store===storeId || (e.support||[]).includes(storeId)) && e.role!=='office' && e.role!=='ceo');
@@ -9470,7 +9566,7 @@ function renderShiftAdmin() {
     <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')">カバー候補</div>
     <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')">Labor Cost</div>
-    ${['ceo','gm','am'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='rules'?' active':''}" onclick="setShiftAdminTab('rules')">特別ルール</div>`:''}
+    ${['ceo','gm','am','sl'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='rules'?' active':''}" onclick="setShiftAdminTab('rules')">特別ルール</div>`:''}
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
@@ -9658,6 +9754,7 @@ function renderShiftBuild(storeId, week) {
     <button class="btn btn-primary btn-sm" onclick="autoGenShift('${storeId}','${week}')"><i class="ti ti-wand"></i> Auto-Generate</button>
     <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-layout-grid"></i> ${shiftView==='grid'?'List':'Grid'}</button>
     ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center">公開済</span>`}
+    <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像で保存/共有</button>
   </div>`;
 
   if (warnings.length) {
