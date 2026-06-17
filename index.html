@@ -9459,7 +9459,7 @@ function getAvailability(storeId, week) { return ls('avail_'+storeId+'_'+week, [
 function getShiftPlan(storeId, week) { return ls('shiftplan_'+storeId+'_'+week, null); }
 function setShiftPlan(storeId, week, plan) { lsSet('shiftplan_'+storeId+'_'+week, plan); pushShiftPlan(storeId, week, plan); }
 
-/* === F2-a: シフトのクラウド同期（shift_plans） === */
+/* === F2-a: シフト＆提出のクラウド同期（shift_plans / shift_availability） === */
 async function pushShiftPlan(storeId, week, plan){
   if(_supaBooting) return;
   try{
@@ -9483,42 +9483,68 @@ async function pullShiftPlan(storeId, week){
   }catch(e){ console.warn('pullShiftPlan', e); }
   return false;
 }
+async function pushAvailability(storeId, week, avail){
+  if(_supaBooting) return;
+  var arr=(avail||[]).filter(function(e){ return e && e.name; });
+  if(!arr.length) return;
+  try{
+    await fetch(SUPABASE_URL+'/rest/v1/shift_availability', {
+      method:'POST',
+      headers: supaHeaders({ Prefer:'resolution=merge-duplicates,return=minimal' }),
+      body: JSON.stringify(arr.map(function(e){ return { store_id:storeId, week:week, name:e.name, slots:e.slots||[], notes:e.notes||'', submitted_date:e.date||'', updated_at:new Date().toISOString() }; }))
+    });
+  }catch(e){ console.warn('pushAvailability', e); }
+}
+async function pushAvailEntry(storeId, week, entry){ return pushAvailability(storeId, week, [entry]); }
+async function pullAvailability(storeId, week){
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/shift_availability?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=name,slots,notes,submitted_date', { headers: supaHeaders() });
+    if(!res.ok) return false;
+    var rows=await res.json();
+    if(Array.isArray(rows) && rows.length){
+      var arr=rows.map(function(r){ return { name:r.name, slots:r.slots||[], notes:r.notes||'', date:r.submitted_date||'' }; });
+      try{ localStorage.setItem('avail_'+storeId+'_'+week, JSON.stringify(arr)); }catch(e){}
+      return true;
+    }
+  }catch(e){ console.warn('pullAvailability', e); }
+  return false;
+}
 var _shiftPulled={};
 function maybePullShift(storeId, week, force){
   var k=storeId+'_'+week;
   if(!force && _shiftPulled[k]) return;
   _shiftPulled[k]=true;
-  pullShiftPlan(storeId, week).then(function(ok){
-    if(ok){ if(curPage==='shift_admin') renderPage('shift_admin'); return; }
-    // クラウドに無く、ローカルにシフトがある → 既存分をアップロード（移行）
-    var local=getShiftPlan(storeId, week);
-    if(local && local.cells && Object.keys(local.cells).length){ pushShiftPlan(storeId, week, local); }
-  });
+  Promise.all([
+    pullShiftPlan(storeId, week).then(function(ok){ if(!ok){ var l=getShiftPlan(storeId,week); if(l&&l.cells&&Object.keys(l.cells).length) pushShiftPlan(storeId,week,l); } }),
+    pullAvailability(storeId, week).then(function(ok){ if(!ok){ var a=getAvailability(storeId,week); if(a&&a.length) pushAvailability(storeId,week,a); } })
+  ]).then(function(){ if(curPage==='shift_admin') renderPage('shift_admin'); });
 }
-function refreshShiftFromCloud(storeId, week){ _shiftPulled[storeId+'_'+week]=false; showToast('最新のシフトを取得中…','info'); maybePullShift(storeId, week, true); }
-async function shiftCloudHas(storeId, week){
+function refreshShiftFromCloud(storeId, week){ _shiftPulled[storeId+'_'+week]=false; showToast('最新を取得中…','info'); maybePullShift(storeId, week, true); }
+async function shiftCloudHas(table, storeId, week){
   try{
-    var res=await fetch(SUPABASE_URL+'/rest/v1/shift_plans?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=store_id', { headers: supaHeaders() });
+    var res=await fetch(SUPABASE_URL+'/rest/v1/'+table+'?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=store_id', { headers: supaHeaders() });
     if(!res.ok) return true; // 不明なら安全側（上書きしない）
     var rows=await res.json(); return Array.isArray(rows) && rows.length>0;
   }catch(e){ return true; }
 }
-/* 既存のローカルシフトを一度だけクラウドへ移行（クラウドに無い週のみ） */
+/* 既存のローカルのシフト・提出を一度だけクラウドへ移行（クラウドに無い週のみ） */
 async function uploadAllLocalShifts(){
   if(_supaBooting) return;
   try{
-    if(localStorage.getItem('_f2a_shiftup')==='1') return;
-    var keys=[];
-    for(var i=0;i<localStorage.length;i++){ var key=localStorage.key(i); if(key && key.indexOf('shiftplan_')===0) keys.push(key); }
-    for(var j=0;j<keys.length;j++){
-      var m=keys[j].slice('shiftplan_'.length); var us=m.lastIndexOf('_'); if(us<1) continue;
-      var sid=m.slice(0,us), wk=m.slice(us+1);
-      var plan=ls(keys[j], null);
-      if(!(plan && plan.cells && Object.keys(plan.cells).length)) continue;
-      var has=await shiftCloudHas(sid, wk);
-      if(!has) await pushShiftPlan(sid, wk, plan);
+    if(localStorage.getItem('_f2a_shiftup2')==='1') return;
+    var planKeys=[], availKeys=[];
+    for(var i=0;i<localStorage.length;i++){ var key=localStorage.key(i); if(!key) continue; if(key.indexOf('shiftplan_')===0) planKeys.push(key); else if(key.indexOf('avail_')===0) availKeys.push(key); }
+    for(var j=0;j<planKeys.length;j++){
+      var m=planKeys[j].slice('shiftplan_'.length); var us=m.lastIndexOf('_'); if(us<1) continue;
+      var sid=m.slice(0,us), wk=m.slice(us+1); var plan=ls(planKeys[j],null);
+      if(plan && plan.cells && Object.keys(plan.cells).length){ if(!(await shiftCloudHas('shift_plans',sid,wk))) await pushShiftPlan(sid,wk,plan); }
     }
-    localStorage.setItem('_f2a_shiftup','1');
+    for(var n=0;n<availKeys.length;n++){
+      var m2=availKeys[n].slice('avail_'.length); var us2=m2.lastIndexOf('_'); if(us2<1) continue;
+      var sid2=m2.slice(0,us2), wk2=m2.slice(us2+1); var av=ls(availKeys[n],null);
+      if(Array.isArray(av) && av.length){ if(!(await shiftCloudHas('shift_availability',sid2,wk2))) await pushAvailability(sid2,wk2,av); }
+    }
+    localStorage.setItem('_f2a_shiftup2','1');
   }catch(e){ console.warn('uploadAllLocalShifts', e); }
 }
 
@@ -10877,8 +10903,10 @@ function submitAvail(storeId, week) {
   var me = ROLE_CONFIG[curRole].name;
   var notes = document.getElementById('avail-notes').value.trim();
   var avail = getAvailability(storeId, week).filter(a=>a.name!==me);
-  avail.push({name:me, slots, notes, date:new Date().toLocaleDateString('ja')});
+  var myEntry={name:me, slots, notes, date:new Date().toLocaleDateString('ja')};
+  avail.push(myEntry);
   lsSet('avail_'+storeId+'_'+week, avail);
+  pushAvailEntry(storeId, week, myEntry);
   closeModalDirect();
   showToast('Availabilityを提出しました', 'success');
   renderPage('shift_staff');
