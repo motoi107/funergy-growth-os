@@ -3651,6 +3651,7 @@ function initApp() {
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
   setTimeout(maybeShowCompanyMessage, 400);
   _supaBooting = false; // ここから先（ユーザー操作）の保存はクラウドへ即時反映（F1）
+  setTimeout(function(){ try{ uploadAllLocalShifts(); }catch(e){} }, 1500); // F2-a: 既存ローカルシフトを一度だけクラウドへ移行
 }
 
 function buildNav() {
@@ -9487,9 +9488,39 @@ function maybePullShift(storeId, week, force){
   var k=storeId+'_'+week;
   if(!force && _shiftPulled[k]) return;
   _shiftPulled[k]=true;
-  pullShiftPlan(storeId, week).then(function(ok){ if(ok && curPage==='shift_admin') renderPage('shift_admin'); });
+  pullShiftPlan(storeId, week).then(function(ok){
+    if(ok){ if(curPage==='shift_admin') renderPage('shift_admin'); return; }
+    // クラウドに無く、ローカルにシフトがある → 既存分をアップロード（移行）
+    var local=getShiftPlan(storeId, week);
+    if(local && local.cells && Object.keys(local.cells).length){ pushShiftPlan(storeId, week, local); }
+  });
 }
 function refreshShiftFromCloud(storeId, week){ _shiftPulled[storeId+'_'+week]=false; showToast('最新のシフトを取得中…','info'); maybePullShift(storeId, week, true); }
+async function shiftCloudHas(storeId, week){
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/shift_plans?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=store_id', { headers: supaHeaders() });
+    if(!res.ok) return true; // 不明なら安全側（上書きしない）
+    var rows=await res.json(); return Array.isArray(rows) && rows.length>0;
+  }catch(e){ return true; }
+}
+/* 既存のローカルシフトを一度だけクラウドへ移行（クラウドに無い週のみ） */
+async function uploadAllLocalShifts(){
+  if(_supaBooting) return;
+  try{
+    if(localStorage.getItem('_f2a_shiftup')==='1') return;
+    var keys=[];
+    for(var i=0;i<localStorage.length;i++){ var key=localStorage.key(i); if(key && key.indexOf('shiftplan_')===0) keys.push(key); }
+    for(var j=0;j<keys.length;j++){
+      var m=keys[j].slice('shiftplan_'.length); var us=m.lastIndexOf('_'); if(us<1) continue;
+      var sid=m.slice(0,us), wk=m.slice(us+1);
+      var plan=ls(keys[j], null);
+      if(!(plan && plan.cells && Object.keys(plan.cells).length)) continue;
+      var has=await shiftCloudHas(sid, wk);
+      if(!has) await pushShiftPlan(sid, wk, plan);
+    }
+    localStorage.setItem('_f2a_shiftup','1');
+  }catch(e){ console.warn('uploadAllLocalShifts', e); }
+}
 
 /* 週間シフトを画像化（LINE等で共有しやすいPNG）。スタッフ×曜日のマトリクス。 */
 function shiftWeekMatrix(storeId, week){
