@@ -3016,6 +3016,23 @@ var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config'
   'store_ops_config','ob_template','budgets_v2','company_message'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
+/* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
+var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
+  'invoices','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
+  'skills','skills_v2','skill_requests','skill_history','lss_requests','lss_history','lss_scores',
+  'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates'];
+var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
+  'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
+function isOpSyncKey(key){
+  if (!key) return false;
+  // 設定キーは除外（app_settings 側で扱う。例: dailyops_template_*）
+  if (SUPA_SETTING_KEYS.indexOf(key)>=0) return false;
+  for (var s=0;s<SUPA_SETTING_PREFIX.length;s++){ if (key.indexOf(SUPA_SETTING_PREFIX[s])===0) return false; }
+  if (OP_SYNC_KEYS.indexOf(key)>=0) return true;
+  for (var i=0;i<OP_SYNC_PREFIX.length;i++){ if (key.indexOf(OP_SYNC_PREFIX[i])===0) return true; }
+  return false;
+}
+
 function supaHeaders(extra){
   return Object.assign({ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':'application/json' }, extra||{});
 }
@@ -3034,6 +3051,11 @@ async function syncMasterToSupabase(key, val){
   var isSetting = SUPA_SETTING_KEYS.includes(key) || SUPA_SETTING_PREFIX.some(p=>key.indexOf(p)===0);
   if (isSetting) {
     await supaUpsert('app_settings', [{ key:key, value:val, category:supaSettingCategory(key) }]);
+    return;
+  }
+  // app_state 行き（運用データ）
+  if (isOpSyncKey(key)) {
+    await supaUpsert('app_state', [{ key:key, value:val, updated_at:new Date().toISOString() }]);
   }
 }
 function supaSettingCategory(key){
@@ -3133,7 +3155,44 @@ async function supaPullAllMasters(){
   } else {
     results.push('app_settings: クラウドに無し(スキップ)');
   }
+  // app_state（運用データ key/value）→ 各キーへ復元
+  var opst = await supaFetchAll('app_state', 'key,value');
+  if (Array.isArray(opst) && opst.length){
+    var c2=0;
+    opst.forEach(function(row){
+      if (row && row.key){ try { localStorage.setItem(row.key, JSON.stringify(row.value)); c2++; } catch(e){} }
+    });
+    results.push('app_state: '+c2+'件 取込');
+  } else {
+    results.push('app_state: クラウドに無し(スキップ)');
+  }
   return results;
+}
+/* 既存のローカル運用データを一度だけクラウドへ移行（クラウドに無いキーのみ） */
+async function migrateUploadLocalOps(){
+  if (_supaBooting) return;
+  try{
+    if (localStorage.getItem('_f2b_opsync')==='1') return;
+    var cloud = await supaFetchAll('app_state', 'key');
+    var have = {}; (cloud||[]).forEach(function(r){ if(r&&r.key) have[r.key]=1; });
+    var batch=[];
+    for (var i=0;i<localStorage.length;i++){
+      var key=localStorage.key(i); if(!key||have[key]) continue;
+      if (isOpSyncKey(key)){ var v=ls(key,null); if(v!=null) batch.push({ key:key, value:v, updated_at:new Date().toISOString() }); }
+    }
+    for (var c=0;c<batch.length;c+=50){ await supaUpsert('app_state', batch.slice(c,c+50)); }
+    localStorage.setItem('_f2b_opsync','1');
+  }catch(e){ console.warn('migrateUploadLocalOps', e); }
+}
+/* 単一の運用キーをクラウドから取得（その場更新用） */
+async function pullOpKey(key){
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
+    if(!res.ok) return false;
+    var rows=await res.json();
+    if(rows && rows.length){ try{ localStorage.setItem(key, JSON.stringify(rows[0].value)); }catch(e){} return true; }
+  }catch(e){}
+  return false;
 }
 async function runSupaPullAll(){
   if (!confirm('Supabaseの最新マスターをこの端末に取り込みます。\nこの端末のローカルのマスターはクラウドの内容で上書きされます。よろしいですか？')) return;
@@ -3652,6 +3711,7 @@ function initApp() {
   setTimeout(maybeShowCompanyMessage, 400);
   _supaBooting = false; // ここから先（ユーザー操作）の保存はクラウドへ即時反映（F1）
   setTimeout(function(){ try{ uploadAllLocalShifts(); }catch(e){} }, 1500); // F2-a: 既存ローカルシフトを一度だけクラウドへ移行
+  setTimeout(function(){ try{ migrateUploadLocalOps(); }catch(e){} }, 2500); // F2-b: 既存ローカル運用データを一度だけクラウドへ移行
 }
 
 function buildNav() {
@@ -9520,6 +9580,12 @@ function maybePullShift(storeId, week, force){
   ]).then(function(){ if(curPage==='shift_admin') renderPage('shift_admin'); });
 }
 function refreshShiftFromCloud(storeId, week){ _shiftPulled[storeId+'_'+week]=false; showToast('最新を取得中…','info'); maybePullShift(storeId, week, true); }
+var _staffShiftPulled={};
+function maybePullStaffShift(storeId, week){
+  var k=storeId+'_'+week; if(_staffShiftPulled[k]) return; _staffShiftPulled[k]=true;
+  Promise.all([ pullAvailability(storeId, week), pullShiftPlan(storeId, week), pullOpKey('reminded_'+storeId+'_'+week) ])
+    .then(function(){ if(curPage==='shift_staff') renderPage('shift_staff'); });
+}
 async function shiftCloudHas(table, storeId, week){
   try{
     var res=await fetch(SUPABASE_URL+'/rest/v1/'+table+'?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=store_id', { headers: supaHeaders() });
@@ -10816,8 +10882,18 @@ function renderShiftStaff() {
   var week = getWeekStr();
   var myAvail = getAvailability(storeId, week).find(a=>a.name===me);
   var plan = getShiftPlan(storeId, week);
+  var reminded = ls('reminded_'+storeId+'_'+week, []);
+  var isReminded = !myAvail && Array.isArray(reminded) && reminded.indexOf(me)>=0;
 
   var html = `<div class="section-header"><div><div class="section-title">My Shift</div><div class="section-sub">${week}週</div></div></div>`;
+
+  if (isReminded) {
+    html += `<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-bell" style="font-size:18px"></i><div>
+      <p style="font-size:13px;font-weight:700">シフト希望の提出をお願いします</p>
+      <p style="font-size:12px;margin-top:2px">${week}週の提出がまだです。下の「Submit Availability」から提出してください。</p></div></div>`;
+  }
+
+  setTimeout(function(){ try{ maybePullStaffShift(storeId, week); }catch(e){} }, 60); // クラウドから最新の提出/Remind/公開を取込
 
   // 勤務条件ルール表示
   html += `<div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>勤務条件</div>
