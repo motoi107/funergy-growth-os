@@ -17078,12 +17078,19 @@ function getSkillRequests() { return ls('skill_requests', []); }
 function setSkillRequests(r) { lsSet('skill_requests', r); }
 
 function renderSkill() {
-  if (curRole==='crew' || (curRole==='sl' && curStore!=='ALL')) {
-    // 本人ビュー（SLも自分のスキルを申請できる）
-    return renderSkillSelf();
+  if (curRole==='crew') return renderSkillSelf();
+  if (curRole==='sl') {
+    // SLは「マイスキル(申請)」と「管理・設定」の両方にアクセス可
+    var v = window._slSkillView==='mgr' ? 'mgr' : 'self';
+    var tabs = `<div class="phase-tabs">
+      <div class="phase-tab${v==='self'?' active':''}" onclick="setSlSkillView('self')"><i class="ti ti-user" style="font-size:12px"></i> マイスキル</div>
+      <div class="phase-tab${v==='mgr'?' active':''}" onclick="setSlSkillView('mgr')"><i class="ti ti-settings" style="font-size:12px"></i> 管理・設定</div>
+    </div>`;
+    return tabs + (v==='mgr' ? renderSkillManager() : renderSkillSelf());
   }
   return renderSkillManager();
 }
+function setSlSkillView(v){ window._slSkillView = (v==='mgr'?'mgr':'self'); renderPage('skill'); }
 
 /* ---- Crew本人ビュー ---- */
 function renderSkillSelf() {
@@ -17230,7 +17237,7 @@ function renderSkillManager() {
   var html = `<div class="section-header"><div><div class="section-title">Skill Level 承認</div><div class="section-sub">スタッフのスキル申請を評価</div></div>
     <div style="display:flex;gap:6px">
       ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openLevelRuleModal()"><i class="ti ti-adjustments"></i> 昇格条件</button>`:''}
-      ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openPositionConfigModal()"><i class="ti ti-settings"></i> ポジション設定</button>`:''}
+      ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openPositionConfigModal()"><i class="ti ti-settings"></i> ポジション設定</button>`:''}
     </div>
   </div>`;
 
