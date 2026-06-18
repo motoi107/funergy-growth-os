@@ -18569,6 +18569,7 @@ function openSkillCriteriaOverlay(position, opts){
   var canPick=!!opts.targetSelectId;
   var minLv=opts.minLv!=null?opts.minLv:0;
   var cur=opts.current!=null?opts.current:null;
+  window._skillCritCtx = {position:position, targetSelectId:opts.targetSelectId, chipId:opts.chipId};
   var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
   closeSkillCritOverlay();
   var ov=document.createElement('div'); ov.id='skill-crit-ov';
@@ -18590,22 +18591,44 @@ function openSkillCriteriaOverlay(position, opts){
   document.body.appendChild(ov);
 }
 function closeSkillCritOverlay(){ var o=document.getElementById('skill-crit-ov'); if(o){ try{document.body.removeChild(o);}catch(e){} } }
+/* スキルLv採点チップ（Career Score方式：タップで基準ポップアップ→選択） */
+function skillLevelChipInner(position, lv){
+  var crit=skillCriteria(position);
+  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+  var col=cols[lv]||'var(--accent)';
+  return '<span style="min-width:30px;height:24px;border-radius:6px;background:'+col+';color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0">Lv'+lv+'</span>'
+    +'<span style="flex:1;font-size:12px;color:var(--tm);line-height:1.4;text-align:left">'+escapeHtml(crit[lv]||'—')+'</span>'
+    +'<i class="ti ti-chevron-right" style="color:var(--muted);flex-shrink:0"></i>';
+}
+function skillLevelChipHtml(position, lv, selectId, chipId, minLv){
+  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+  var col=cols[lv]||'var(--accent)';
+  var p=String(position||'').replace(/'/g,"\\'");
+  return '<input type="hidden" id="'+selectId+'" value="'+lv+'">'
+    +'<button type="button" id="'+chipId+'" onclick="openSkillCriteriaOverlay(\''+p+'\',{targetSelectId:\''+selectId+'\',chipId:\''+chipId+'\',minLv:'+(minLv!=null?minLv:1)+',current:parseInt((document.getElementById(\''+selectId+'\')||{}).value)})" '
+    +'style="display:flex;align-items:center;gap:8px;width:100%;border:1px solid '+col+';border-radius:8px;padding:8px 10px;background:var(--surface);cursor:pointer">'
+    + skillLevelChipInner(position, lv) +'</button>';
+}
 function skillCritPick(selectId, lv){
   var sel=document.getElementById(selectId);
   if(sel){ sel.value=String(lv); if(typeof sel.onchange==='function'){ try{ sel.onchange(); }catch(e){} } }
+  var ctx=window._skillCritCtx||{};
+  if(ctx.chipId){
+    var chip=document.getElementById(ctx.chipId);
+    if(chip && ctx.position){
+      var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+      chip.style.borderColor = cols[lv]||'var(--accent)';
+      chip.innerHTML = skillLevelChipInner(ctx.position, lv);
+    }
+  }
   closeSkillCritOverlay();
 }
 function openSkillRequestModal(position) {
   var crit = skillCriteria(position);
   openModal(`<div class="modal-title">${position} スキル申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">「できるようになったこと」を申請してください。管理者が実務確認して承認します。</p>
-    <div class="form-group"><label class="form-label" style="display:flex;align-items:center;gap:8px">希望レベル <button type="button" class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px;margin-left:auto" onclick="openSkillCriteriaOverlay('${position.replace(/'/g,"\\'")}',{targetSelectId:'sk-level',minLv:1,current:parseInt((document.getElementById('sk-level')||{}).value)})"><i class="ti ti-list-check"></i> 基準を見て選ぶ</button></label>
-      <select class="form-select" id="sk-level" onchange="document.getElementById('sk-crit').textContent=this.options[this.selectedIndex].dataset.crit">
-        <option value="1" data-crit="${(crit[1]||'').replace(/"/g,'')}">Lv1 — サポートがあればできる</option>
-        <option value="2" data-crit="${(crit[2]||'').replace(/"/g,'')}">Lv2 — 一人でできる</option>
-        <option value="3" data-crit="${(crit[3]||'').replace(/"/g,'')}">Lv3 — 教えられる・リーダー</option>
-      </select>
-      <div id="sk-crit" style="font-size:11px;color:var(--accent2);margin-top:6px">${(crit[1]||'').replace(/"/g,'')}</div>
+    <div class="form-group"><label class="form-label">希望レベル <span style="font-size:10px;color:var(--muted);font-weight:400">（タップで基準を見て選択）</span></label>
+      ${skillLevelChipHtml(position, 1, 'sk-level','sk-level-chip',1)}
     </div>
     <div class="form-group"><label class="form-label">自己評価コメント</label><textarea class="form-textarea" id="sk-comment" placeholder="例: Closing作業を一人で完了できるようになりました"></textarea></div>
     <div class="form-group"><label class="form-label">メモ・証拠（任意）</label><input class="form-input" id="sk-evidence" placeholder="例: 5/20 Closing単独実施"></div>
@@ -18855,8 +18878,8 @@ function openSkillReviewModal(reqId, action) {
   if (!r) return;
   openModal(`<div class="modal-title">${r.name} · ${r.position} を${action} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">自己評価: ${r.selfComment}</div>
-    ${action==='承認'?`<div class="form-group"><label class="form-label" style="display:flex;align-items:center;gap:8px">承認レベル <button type="button" class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px;margin-left:auto" onclick="openSkillCriteriaOverlay('${(r.position||'').replace(/'/g,"\\'")}',{targetSelectId:'rv-level',minLv:1,current:parseInt((document.getElementById('rv-level')||{}).value)})"><i class="ti ti-list-check"></i> 基準を見て選ぶ</button></label>
-      <select class="form-select" id="rv-level"><option value="1"${r.level===1?' selected':''}>Lv1（サポート有）</option><option value="2"${r.level===2?' selected':''}>Lv2（独力）</option><option value="3"${r.level===3?' selected':''}>Lv3（指導可・リーダー）</option></select></div>`:''}
+    ${action==='承認'?`<div class="form-group"><label class="form-label">承認レベル <span style="font-size:10px;color:var(--muted);font-weight:400">（タップで基準を見て選択）</span></label>
+      ${skillLevelChipHtml(r.position||'', (r.level||2), 'rv-level','rv-level-chip',1)}</div>`:''}
     <div class="form-group"><label class="form-label">フィードバック（成長を促すコメント）</label>
       <textarea class="form-textarea" id="rv-comment" placeholder="${action==='承認'?'例: 接客が安定。次はUpsellを意識しましょう':'例: もう少し練習が必要です。再申請してください'}"></textarea></div>
     <div class="form-group"><label class="form-label">次の課題</label><input class="form-input" id="rv-task" placeholder="例: Closingを安定してできるように"></div>
