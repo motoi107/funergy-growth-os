@@ -3038,7 +3038,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','lss_requests','lss_history','lss_scores',
-  'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients'];
+  'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master'];
 var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
 function isOpSyncKey(key){
@@ -3206,6 +3206,16 @@ async function migrateUploadLocalOps(){
 async function pullOpKey(key){
   try{
     var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
+    if(!res.ok) return false;
+    var rows=await res.json();
+    if(rows && rows.length){ try{ localStorage.setItem(key, JSON.stringify(rows[0].value)); }catch(e){} return true; }
+  }catch(e){}
+  return false;
+}
+/* 単一の設定キーをクラウド（app_settings）から取得（受信者端末などで教材・Tip等を引く用） */
+async function pullSettingKey(key){
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_settings?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
     if(!res.ok) return false;
     var rows=await res.json();
     if(rows && rows.length){ try{ localStorage.setItem(key, JSON.stringify(rows[0].value)); }catch(e){} return true; }
@@ -11824,15 +11834,179 @@ const DEFAULT_OB_TEMPLATE = [
 function getOBTemplate() { return ls('ob_template', DEFAULT_OB_TEMPLATE); }
 function setOBTemplate(t) { lsSet('ob_template', t); }
 
+/* ============================================================
+   教材マスター（オンボーディング・ウィザード用）
+   - 全店共通: 理念(mission/vision/values) / ベネフィット / 業務ルール①②③④⑥ / 規律(警告と解雇)
+   - 店舗別 byStore[storeId]: 店舗コンセプト / 賄いの条件
+   - Tipポリシーは既存 tip_policy を流用（ここでは持たない）
+   - OP_SYNC（app_state）同期 → 受信者端末も pullOpKey('train_master') で取得可能
+   - 未入力は空文字。表示側で「—（未設定）」を出す（デモ値は持たない）
+============================================================ */
+const TRAIN_RULE_ITEMS = [
+  {id:'r1', label:'全員が接客する'},
+  {id:'r2', label:'声出し・やまびこ'},
+  {id:'r3', label:'ポジションの助け合い'},
+  {id:'r4', label:'手が空いたら次の仕事'},
+  {id:'r6', label:'クロックイン / クロックアウト'},
+];
+function defaultTrainMaster(){
+  var rules = {}; TRAIN_RULE_ITEMS.forEach(function(it){ rules[it.id] = ''; });
+  return { philosophy:{ creed:'', mission:'', vision:'', values:'' }, benefits:'', rules:rules, discipline:'', byStore:{} };
+}
+/* 形の補完（バージョン差異・部分データ対策）。常に完全な形を返す */
+function getTrainMaster(){
+  var def = defaultTrainMaster();
+  var m = ls('train_master', null);
+  if (!m || typeof m !== 'object') return def;
+  if (!m.philosophy || typeof m.philosophy !== 'object') m.philosophy = def.philosophy;
+  else { ['creed','mission','vision','values'].forEach(function(k){ if (typeof m.philosophy[k] !== 'string') m.philosophy[k] = ''; }); }
+  if (typeof m.benefits !== 'string') m.benefits = '';
+  if (typeof m.discipline !== 'string') m.discipline = '';
+  if (!m.rules || typeof m.rules !== 'object') m.rules = {};
+  TRAIN_RULE_ITEMS.forEach(function(it){ if (typeof m.rules[it.id] !== 'string') m.rules[it.id] = ''; });
+  if (!m.byStore || typeof m.byStore !== 'object') m.byStore = {};
+  return m;
+}
+function setTrainMaster(m){ lsSet('train_master', m); }
+/* 店舗別（店舗コンセプト・賄い）の取得。未登録でも {concept:'',meal:''} を返す */
+function getTrainStore(storeId){
+  var m = getTrainMaster();
+  var s = m.byStore[storeId];
+  if (!s || typeof s !== 'object') return { concept:'', meal:'' };
+  return { concept:(typeof s.concept==='string'?s.concept:''), meal:(typeof s.meal==='string'?s.meal:'') };
+}
+function setTrainStore(storeId, obj){
+  var m = getTrainMaster();
+  if (!m.byStore) m.byStore = {};
+  m.byStore[storeId] = Object.assign(getTrainStore(storeId), obj || {});
+  setTrainMaster(m);
+}
+/* 受信者端末・本人入力前に教材＋Tipを最新化（失敗は無視＝オフラインでもローカルで継続） */
+async function pullTrainMaterials(){
+  try { await pullOpKey('train_master'); } catch(e){}
+  try { await pullSettingKey('tip_policy'); } catch(e){}
+}
+
+/* === 教材マスター：初期コンテンツ（2026ハンドブック＋入社オリエンチェックリスト由来の実データ） === */
+function buildSeedTrainMaster(){
+  var m = defaultTrainMaster();
+  m.philosophy.creed = '「楽しむ」を大切に、（自身を含む）全従業員と地域を元気にすること。\n\nFunergy Group Inc.（旧Sunrice Inc）は、ハワイという多様性に富んだ環境の中で、日本の"おもてなし"と食文化、そして思いやり（利他）の心を大切にしています。従業員もお客様も笑顔になれる店舗づくりを軸に、変化を恐れない勇気と普遍的な価値観を循環させ、100年後も地域に必要とされる企業を目指します。';
+  m.philosophy.mission = '「日本の誇りをハワイから全米へ」\n\n食文化・おもてなし・思いやりの心を、店舗・サービス・人財を通じてハワイを中心に全米へ広げていきます。拡大の意義は、人材の挑戦における成長を第一目的とします。';
+  m.philosophy.vision = '・地域に根ざし、地域から愛される存在となる\n・社員一人ひとりが主役として挑戦と成長ができる舞台をつくる\n・ハワイから全米へ、日本の魅力を伝える架け橋となる';
+  m.philosophy.values = '1. 挨拶を大切にしよう（関わる人すべてに元気よく）\n2. 自ら楽しんで仕事に取り組み、ポジティブ思考を忘れない\n3. 不機嫌は禁止（伝えたいことはちゃんと伝えよう）\n4. 仲間同士、協調性を大切に\n5. お客さんに喜ばれ、感謝される店をつくろう\n6. 自ら、そして仲間の成長を楽しもう\n7. コミュニケーションを常に取ろう\n8. 仲間同士、承認・称賛し、喜びの場をつくろう\n9. 仕事を通じて苦手意識を克服し、営業中はプロになりきろう\n10. 嘘やごまかしは禁止しよう';
+  m.benefits = '【社員割引】\n・正社員以上：30%／クルー（パート・アルバイト）：20%\n・割引は本人が同席している場合に限る（代理会計は不可）\n・本人不在でも2親等以内の家族のみ対象（正社員の家族：20%／クルーの家族：15%）\n・友人のみの利用、家族＋その友人の利用は対象外\n・1グループ最大8名まで（会計を分けての回避は不可）\n\n【その他の福利厚生】\n・社内イベント：年2回（通常8月・1月）の全体交流\n・リーダーズイベント：年1回（通常10月、原則リーダー職正社員以上）\n・宿泊費援助：正社員候補のハワイ移住時、到着後10日間まで会社負担\n\n※対象範囲は雇用区分・勤続・役職により異なります。';
+  m.rules.r1 = '全員接客とは、どのポジションかは関係なく、常に全員がお客様の満足のために行動するということです。例えばキッチンの人が料理説明や提供を行うなど、必要であれば自分の担当外でも動きます。';
+  m.rules.r2 = '「いらっしゃいませ」「ありがとうございます」を日本語で言うことで、お客様に日本にいるかのような体験をしてもらいます。やまびこ（声の返し）でお店に活気をつくることが非常に大切です。';
+  m.rules.r3 = '自分が他のスタッフを助けられるときは、積極的に助けましょう。特にピークの時間帯は、何をすべきか常に周りに気を配りましょう。';
+  m.rules.r4 = '手が空いたら、常に他に仕事がないか確認しましょう（冷蔵庫・冷凍庫の清掃や整理、在庫チェック等）。';
+  m.rules.r6 = 'クロックインは、シフト開始前に店に到着し、ユニフォームに着替えて準備ができた状態で行ってください。休憩時や、着替え・賄いの前には必ずクロックアウトします。渋滞などは原則として遅刻の免除になりません。時間に余裕をもって行動しましょう。';
+  m.discipline = '【イエローカード（警告）】業務内容に改善が見られない、またはマネージャーの指示に従わず改善が見られない場合に警告を行います。\n【レッドカード（解雇）】警告を受けても改善が見られない、またはマネージャーの指示に従わない場合は即時解雇となります。\n\n【即時解雇、または改善勧告の後に解雇となり得る行為】\n・無断欠勤の繰り返し（2回で出勤意思なしとみなす）\n・盗難・横領（売上金・食材・備品を含む）\n・ハラスメント・差別的発言・暴力\n・アルコール／薬物使用による勤務不良\n・度重なるルール違反、職場秩序の乱れ\n\n【改善プロセス】口頭注意 → 書面による警告 → 最終通告 → 解雇\n※ただし重大な違反は即時解雇となる場合があります。';
+  // 店舗コンセプト（brandで対応付け。とと家＝F04-A/K/P共通）。賄いは店舗別のため空欄（SLが入力）
+  var byBrand = {
+    'ToriTon':'地域で一番愛される店（※先にお客さんを愛すること）',
+    'Tenkichi':'活気を大切に、小さな「楽しい」を皆で作る店',
+    'Five Star Poke':'常に新鮮で美味しいが売りの店',
+    'Garlic Shack':'ハワイで一番美味しいガーリックシュリンプの店',
+    'Totoya':'また来たいと思える、本物の日本の空間と味を作る店',
+    'Marujuu':'世代を超えて楽しめる、ワクワクできる店'
+  };
+  try {
+    getStoresAll().forEach(function(s){ m.byStore[s.id] = { concept:(byBrand[s.brand]||''), meal:'' }; });
+  } catch(e){}
+  return m;
+}
+/* 一度だけ：教材マスターが空なら実データで初期化。クラウドに既存があればそれを採用（上書きしない）。 */
+async function migrateSeedTrainMaster(){
+  try {
+    if (localStorage.getItem('_train_seeded') === '1') return;
+    try { await pullOpKey('train_master'); } catch(e){}
+    var m = getTrainMaster();
+    var hasContent = !!(m.philosophy.creed || m.philosophy.mission ||
+      Object.keys(m.byStore||{}).some(function(k){ return m.byStore[k] && (m.byStore[k].concept || m.byStore[k].meal); }));
+    if (hasContent) { localStorage.setItem('_train_seeded','1'); return; }
+    setTrainMaster(buildSeedTrainMaster()); // ローカル保存（_supaBooting中はクラウド押し上げ抑止）
+    localStorage.setItem('_train_seeded','1');
+    // クラウドにも一度だけ公開（受信者・他端末用）。失敗は無視。
+    try { if (SUPA_SYNC_ENABLED) await supaUpsert('app_state', [{ key:'train_master', value:getTrainMaster(), updated_at:new Date().toISOString() }]); } catch(e){}
+  } catch(e){ console.warn('migrateSeedTrainMaster', e); }
+}
+
+/* === 教材マスター 編集UI === */
+var _tmStore = null;
+function tmCanAdmin(){ return curRole==='gm' || curRole==='ceo'; }
+function tmEditableStores(){
+  var stores = getStoresAll();
+  if (tmCanAdmin()) return stores;
+  if (curRole==='am'){ var mine = (typeof myAmStores==='function') ? myAmStores() : []; return stores.filter(function(s){ return mine.indexOf(s.id)>=0; }); }
+  var own = (curStore && curStore!=='ALL') ? curStore : ((stores[0]||{}).id); // SL: 自店
+  return stores.filter(function(s){ return s.id===own; });
+}
+function tmVal(id){ var e=document.getElementById(id); return e?e.value:''; }
+function openTrainMasterModal(storeId){
+  var m = getTrainMaster();
+  var admin = tmCanAdmin();
+  var stores = tmEditableStores();
+  if (!stores.length){ alert('編集できる店舗がありません'); return; }
+  if (!storeId || !stores.find(function(s){ return s.id===storeId; })) storeId = stores[0].id;
+  _tmStore = storeId;
+  var st = getTrainStore(storeId);
+  var ta = function(id,label,val,ph,h){ return '<div class="form-group"><label class="form-label">'+label+'</label><textarea class="form-textarea" id="'+id+'" style="min-height:'+(h||80)+'px;line-height:1.6" placeholder="'+(ph||'')+'">'+escapeHtml(val||'')+'</textarea></div>'; };
+  var html = '<div class="modal-title"><i class="ti ti-book"></i> 教材マスター <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  html += '<p style="font-size:11px;color:var(--muted);margin-bottom:8px">'+(admin?'GM/CEOは全社共通＋全店舗を編集できます。':'自店の「店舗コンセプト・賄い」を編集できます。')+' 入社ウィザードに反映されます。未入力は「—」表示になります。</p>';
+  html += '<div style="max-height:62vh;overflow-y:auto;padding-right:4px">';
+  if (admin){
+    html += '<div class="card-title" style="margin-top:4px"><i class="ti ti-flag" style="color:var(--accent)"></i> 全社共通：理念・MV</div>';
+    html += ta('tm-creed','企業理念', m.philosophy.creed, '', 100);
+    html += ta('tm-mission','ミッション', m.philosophy.mission);
+    html += ta('tm-vision','ビジョン', m.philosophy.vision);
+    html += ta('tm-values','行動指針（全社員）', m.philosophy.values, '', 130);
+    html += '<div class="card-title"><i class="ti ti-discount" style="color:var(--accent)"></i> ディスカウント・ベネフィット</div>';
+    html += ta('tm-benefits','ベネフィット', m.benefits, '', 130);
+    html += '<div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i> 店舗業務のルール（全店共通）</div>';
+    TRAIN_RULE_ITEMS.forEach(function(it){ html += ta('tm-rule-'+it.id, it.label, m.rules[it.id]); });
+    html += '<div class="card-title"><i class="ti ti-alert-triangle" style="color:var(--accent)"></i> 規律：警告と解雇</div>';
+    html += ta('tm-discipline','イエローカード／レッドカード・解雇対象', m.discipline, '', 150);
+  }
+  html += '<div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i> 店舗別</div>';
+  html += '<div class="form-group"><label class="form-label">店舗</label><select class="form-select" id="tm-store" onchange="onTrainStoreChange()">'+
+    stores.map(function(s){ return '<option value="'+s.id+'"'+(s.id===storeId?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('')+'</select></div>';
+  html += ta('tm-concept','店舗コンセプト', st.concept);
+  html += ta('tm-meal','賄いの条件', st.meal, '例：勤務日1日につき1食提供／提供なし 等');
+  html += '</div>';
+  html += '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button><button class="btn btn-primary" onclick="saveTrainMaster()"><i class="ti ti-device-floppy"></i> 保存</button></div>';
+  openModal(html);
+}
+function saveTrainMaster(opts){
+  opts = opts || {};
+  var m = getTrainMaster();
+  if (document.getElementById('tm-creed')){ // 管理者：全社共通フィールドあり
+    m.philosophy.creed = tmVal('tm-creed'); m.philosophy.mission = tmVal('tm-mission');
+    m.philosophy.vision = tmVal('tm-vision'); m.philosophy.values = tmVal('tm-values');
+    m.benefits = tmVal('tm-benefits'); m.discipline = tmVal('tm-discipline');
+    TRAIN_RULE_ITEMS.forEach(function(it){ var e=document.getElementById('tm-rule-'+it.id); if(e) m.rules[it.id] = e.value; });
+  }
+  if (_tmStore){
+    if (!m.byStore[_tmStore]) m.byStore[_tmStore] = { concept:'', meal:'' };
+    var c=document.getElementById('tm-concept'), ml=document.getElementById('tm-meal');
+    if (c) m.byStore[_tmStore].concept = c.value;
+    if (ml) m.byStore[_tmStore].meal = ml.value;
+  }
+  setTrainMaster(m);
+  if (!opts.silent) showToast('教材マスターを保存しました', 'success');
+}
+function onTrainStoreChange(){ saveTrainMaster({silent:true}); var s=document.getElementById('tm-store'); openTrainMasterModal(s?s.value:null); }
+
 /* オンボーディングステータス: 本人入力待ち/提出完了/経理確認中/Payroll登録中/登録完了/差し戻し/キャンセル */
 const VISA_OPTIONS = ['U.S. Citizen','Green Card','E-2','J-1','OPT','その他'];
 function renderOnboardingInner() {
   var obs = ls('onboardings', []);
   var canEditTemplate = (curRole==='gm' || curRole==='ceo');
+  var canEditTrain = (curRole==='gm' || curRole==='ceo' || curRole==='am' || curRole==='sl');
   var isOffice = (curRole==='office' || curRole==='gm' || curRole==='ceo');
   var canInvite = (curRole==='gm' || curRole==='ceo' || curRole==='am' || curRole==='sl');
   var html = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
       ${canInvite?`<button class="btn btn-primary btn-sm" onclick="openInviteModal()"><i class="ti ti-user-plus"></i> 採用者を招待</button>`:''}
+      ${canEditTrain?`<button class="btn btn-secondary btn-sm" onclick="openTrainMasterModal()"><i class="ti ti-book"></i> 教材マスター</button>`:''}
       ${canEditTemplate?`<button class="btn btn-secondary btn-sm" onclick="openOBTemplateModal()"><i class="ti ti-template"></i> 研修項目</button>`:''}
   </div>`;
 
@@ -11938,69 +12112,284 @@ const OB_SIGNATURES = [
   {id:'tip_policy', label:'Tip Policy Agreement（チップ方針）', text:'チップ配分の方針（対象者・計算方法・受取時期）に同意します。Store Manager以上・オフィスは配分対象外です。\n\nI agree to the Tip distribution policy. Store Manager and above, and office staff, are excluded from tip distribution.'},
   {id:'attendance', label:'Attendance Policy（勤怠方針）', text:'出退勤の打刻、遅刻・欠勤時の連絡方法、シフト遵守に関する方針に同意します。\n\nI agree to the Attendance policy (clock-in/out, notice for lateness/absence, shift adherence).'},
 ];
+/* ============================================================
+   本人入力 7ステップ・ウィザード（教材マスター連動・読み飛ばし防止・店舗別出し分け）
+   STEP1 ようこそ＆採用条件 / STEP2 会社とお店を知る / STEP3 店舗業務のルール
+   STEP4 規律 / STEP5 同意と署名 / STEP6 あなたの情報・本人確認書類 / STEP7 確認して提出
+============================================================ */
+var _obWiz = null;
+var OB_WIZ_STEPS = ['ようこそ', '会社とお店を知る', '店舗業務のルール', '規律：警告と解雇', '同意と電子署名', 'あなたの情報・本人確認', '確認して提出'];
+
 function openPersonalForm(obId) {
-  var ob = ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
-  var p = ob.personal || {};
-  var sigs = ob.signatures || {};
-  openModal(`<div class="modal-title">本人情報入力 / Your Information <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="max-height:64vh;overflow-y:auto">
-    <div class="alert" style="background:var(--surface2);padding:8px 10px;margin-bottom:10px;font-size:11px;color:var(--muted)"><i class="ti ti-id"></i> Candidate ID: <b>${ob.candId||'—'}</b>${ob.linkExpiry?' · リンク有効期限 '+ob.linkExpiry:''}</div>
+  var ob = ls('onboardings', []).find(function(o){ return o.id===obId; });
+  if (!ob) return;
+  _obWiz = { obId: obId, step: 1 };
+  renderObWizard();
+}
 
-    <div style="font-weight:600;font-size:13px;margin-bottom:6px">基本情報 / Basic Info</div>
-    <div class="form-group"><label class="form-label">氏名 / Full Name <span style="color:var(--red)">*</span></label><input class="form-input" id="pf-name" value="${ob.name||''}" placeholder="例: 田中 太郎 / Taro Tanaka"></div>
-    <div class="form-group"><label class="form-label">住所 / Address</label><input class="form-input" id="pf-address" value="${p.address||''}"></div>
-    <div class="form-row">
-      <div class="form-group"><label class="form-label">電話 / Phone</label><input class="form-input" id="pf-phone" value="${p.phone||ob.phone||''}"></div>
-      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="pf-email" value="${p.email||ob.email||''}"></div>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label class="form-label">生年月日</label><input class="form-input" id="pf-dob" type="date" value="${p.dob||''}"></div>
-      <div class="form-group"><label class="form-label">SSN <span class="tag tag-red" style="font-size:8px">機密</span></label><input class="form-input" id="pf-ssn" value="${p.ssn||''}" placeholder="XXX-XX-XXXX"></div>
-    </div>
-    <div class="form-group"><label class="form-label">就労ステータス</label>
-      <select class="form-select" id="pf-visa" onchange="document.getElementById('pf-visadetail').style.display=this.value==='その他'?'block':'none'">
-        ${VISA_OPTIONS.map(v=>`<option ${p.visa===v?'selected':''}>${v}</option>`).join('')}</select></div>
-    <div class="form-group" id="pf-visadetail" style="display:${p.visa==='その他'?'block':'none'}"><label class="form-label">就労ステータス詳細</label><input class="form-input" id="pf-visadetail-input" value="${p.visaDetail||''}"></div>
+function obJoin(arr){ return arr.filter(Boolean).join('\n\n'); }
+function obStoreName(ob){ return ob.storeName || (getStoresAll().find(function(s){return s.id===ob.store;})||{}).name || ob.store || '—'; }
 
-    <div style="font-weight:600;font-size:13px;margin:12px 0 6px">採用条件確認</div>
-    <div style="background:var(--surface2);border-radius:8px;padding:10px;font-size:12px;margin-bottom:6px">
-      配属店舗: <b>${ob.storeName||'—'}</b><br>
-      ポジション: <b>${ob.pos||'—'}</b><br>
-      時給: <b>${canEditWages()?'$'+(ob.wage||'—'):'***'}</b><br>
-      雇用区分: <b>${ob.division||'—'}</b><br>
-      勤務開始予定日: <b>${ob.plannedStart||'未定'}</b>
-    </div>
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:10px;cursor:pointer">
-      <input type="checkbox" id="pf-agree-terms" ${p.agreedTerms?'checked':''}> 上記の採用条件を確認し、同意します</label>
+/* ステップ別カード定義（教材マスター＋店舗別＋Tipポリシーから組み立て） */
+function obWizCards(ob, tm, stStore, tip){
+  var cards2 = [
+    { id:'creed', icon:'ti-flag', title:'理念・ミッション・ビジョン', body: obJoin([
+        tm.philosophy.creed && '【企業理念】\n'+tm.philosophy.creed,
+        tm.philosophy.mission && '【ミッション】\n'+tm.philosophy.mission,
+        tm.philosophy.vision && '【ビジョン】\n'+tm.philosophy.vision,
+        tm.philosophy.values && '【行動指針（全社員）】\n'+tm.philosophy.values ]) },
+    { id:'concept', icon:'ti-building-store', title:'店舗コンセプト（'+obStoreName(ob)+'）', body: stStore.concept },
+    { id:'tip', icon:'ti-coin', title:'チップ（Tip）ポリシー', body: tip },
+    { id:'benefit', icon:'ti-discount', title:'ディスカウント・ベネフィット', body: tm.benefits }
+  ];
+  var cards3 = [];
+  var rmap = { r1:'ti-users', r2:'ti-volume', r3:'ti-hand-stop', r4:'ti-arrow-bar-to-right', r6:'ti-clock' };
+  TRAIN_RULE_ITEMS.forEach(function(it){
+    cards3.push({ id:it.id, icon:(rmap[it.id]||'ti-point'), title:it.label, body: tm.rules[it.id] });
+    if (it.id==='r4') cards3.push({ id:'meal', icon:'ti-bowl', title:'賄いの条件（店舗別）', body: stStore.meal });
+  });
+  var cards4 = [ { id:'discipline', icon:'ti-alert-triangle', title:'規律：警告と解雇（イエロー／レッドカード）', body: tm.discipline } ];
+  return { 2: cards2, 3: cards3, 4: cards4 };
+}
 
-    <div style="font-weight:600;font-size:13px;margin:6px 0 6px">書類の確認と電子署名 / Review & Sign</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">各項目の見出しを開いて内容を確認し、同意にチェックしてください。</div>
-    ${OB_SIGNATURES.map(s=>`
-      <details style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-bottom:4px">
-        <summary style="font-size:12px;font-weight:600;cursor:pointer">${s.label}</summary>
-        <div style="font-size:11px;color:var(--muted);white-space:pre-line;margin:6px 0 2px">${escapeHtml(s.text||'')}</div>
-      </details>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0 8px;cursor:pointer">
-        <input type="checkbox" class="pf-sig" value="${s.id}" ${sigs[s.id]?'checked':''}> 内容を確認し同意します / I have read and agree</label>`).join('')}
+function renderObWizard(){
+  if (!_obWiz) return;
+  var ob = ls('onboardings', []).find(function(o){ return o.id===_obWiz.obId; });
+  if (!ob) { closeModalDirect(); return; }
+  var tm = getTrainMaster();
+  var stStore = getTrainStore(ob.store);
+  var tip = (typeof getTipPolicy==='function') ? getTipPolicy() : '';
+  var step = _obWiz.step, total = 7;
+  var ack = ob.wizAck || {};
 
-    <div style="font-weight:600;font-size:13px;margin:8px 0 4px">ご署名 / Signature</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">下の枠内に、指またはマウスで署名してください。/ Sign below with finger or mouse.</div>
-    <canvas id="pf-sig-canvas" width="600" height="180" style="width:100%;height:150px;border:1px dashed var(--border);border-radius:8px;background:#fff;touch-action:none;cursor:crosshair"
-      onpointerdown="obSigStart(event)" onpointermove="obSigMove(event)" onpointerup="obSigEnd()" onpointerleave="obSigEnd()"></canvas>
-    <div style="text-align:right;margin-top:4px"><button class="btn btn-secondary btn-sm" style="padding:1px 10px;font-size:11px" onclick="clearOBSig()"><i class="ti ti-eraser"></i> 署名をクリア / Clear</button></div>
+  var bar = '<div style="display:flex;gap:3px;margin:2px 0 10px">';
+  for (var i=1;i<=total;i++){ bar += '<div style="flex:1;height:5px;border-radius:3px;background:'+(i<=step?'var(--accent)':'var(--border)')+'"></div>'; }
+  bar += '</div>';
+  var head = '<div class="modal-title" style="font-size:15px;line-height:1.35"><span style="font-size:11px;color:var(--muted);font-weight:500">STEP '+step+' / '+total+'</span><br>'+escapeHtml(OB_WIZ_STEPS[step-1])+' <button class="modal-close" onclick="obWizClose()">×</button></div>'+bar;
 
-    <div style="font-weight:600;font-size:13px;margin:12px 0 6px">本人確認書類 / ID Documents</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">パスポートがあればパスポートのみ。無ければ Driver License/State ID と SSN Card の両方（画像必須）。</div>
-    <div id="pf-docs">${renderOBDocsList(ob, obId)}</div>
-    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
-      <label class="btn btn-secondary btn-sm" style="cursor:pointer"><i class="ti ti-camera"></i> パスポート<input type="file" accept="image/*" style="display:none" onchange="handleOBDocFile('${obId}','Passport',this)"></label>
-      <label class="btn btn-secondary btn-sm" style="cursor:pointer"><i class="ti ti-camera"></i> Driver License/ID<input type="file" accept="image/*" style="display:none" onchange="handleOBDocFile('${obId}','Driver License',this)"></label>
-      <label class="btn btn-secondary btn-sm" style="cursor:pointer"><i class="ti ti-camera"></i> SSN Card<input type="file" accept="image/*" style="display:none" onchange="handleOBDocFile('${obId}','SSN Card',this)"></label>
-    </div>
-    </div>
-    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="submitPersonal('${obId}')"><i class="ti ti-send"></i> 提出（Submit）</button></div>`);
-  setTimeout(function(){ initOBSigCanvas(ob.signatureImage); }, 40);
+  var body = '';
+  if (step===1){
+    body = '<div style="text-align:center;margin:4px 0 14px"><div style="font-size:18px;font-weight:800;color:var(--accent)">ようこそ、'+escapeHtml(ob.name||'')+'さん</div><div style="font-size:12px;color:var(--muted)">Welcome to Funergy Group</div></div>'
+      + '<div style="background:var(--surface2);border-radius:10px;padding:12px;font-size:13px;line-height:1.9;margin-bottom:12px">'
+        + '配属店舗 / Store: <b>'+escapeHtml(obStoreName(ob))+'</b><br>'
+        + 'ポジション / Position: <b>'+escapeHtml(ob.pos||'—')+'</b><br>'
+        + '時給 / Wage: <b>'+(canEditWages()?'$'+(ob.wage||'—'):'***')+'</b><br>'
+        + '雇用区分 / Type: <b>'+escapeHtml(ob.division||'—')+'</b><br>'
+        + '勤務開始予定 / Start: <b>'+escapeHtml(ob.plannedStart||'未定')+'</b><br>'
+        + 'Candidate ID: <b>'+escapeHtml(ob.candId||'—')+'</b>'
+      + '</div>'
+      + '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;padding:10px;border:1px solid var(--border);border-radius:8px"><input type="checkbox" id="wiz-agree-terms" '+((ob.personal&&ob.personal.agreedTerms)?'checked':'')+' style="margin-top:2px"> <span>上記の採用条件を確認し、同意します / I have reviewed and agree to the offer above.</span></label>';
+  } else if (step===2 || step===3 || step===4){
+    var cards = obWizCards(ob, tm, stStore, tip)[step] || [];
+    body = '<p style="font-size:11px;color:var(--muted);margin:2px 0 10px"><i class="ti ti-info-circle"></i> 各カードを開いて内容を確認し、「理解しました」を押してください。すべて完了すると次へ進めます。</p>'
+      + cards.map(function(c){
+          var done = !!ack[c.id];
+          return '<div onclick="obWizOpenCard(\''+c.id+'\')" style="display:flex;align-items:center;gap:10px;border:1px solid '+(done?'var(--green)':'var(--border)')+';border-radius:10px;padding:11px 12px;margin-bottom:8px;cursor:pointer;background:'+(done?'rgba(34,197,94,.08)':'var(--surface)')+'">'
+            + '<i class="ti '+c.icon+'" style="font-size:18px;color:'+(done?'var(--green)':'var(--accent)')+'"></i>'
+            + '<div style="flex:1;font-size:13px;font-weight:600">'+escapeHtml(c.title)+'</div>'
+            + (done ? '<i class="ti ti-circle-check" style="color:var(--green);font-size:20px"></i>' : '<span style="font-size:11px;color:var(--muted);white-space:nowrap">開く <i class="ti ti-chevron-right"></i></span>')
+          + '</div>';
+        }).join('');
+  } else if (step===5){
+    var sigs = ob.signatures || {};
+    body = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">各項目の見出しを開いて内容を確認し、同意にチェックしてください。/ Open each item, review, and check to agree.</div>'
+      + OB_SIGNATURES.map(function(s){
+          return '<details style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-bottom:4px">'
+            + '<summary style="font-size:12px;font-weight:600;cursor:pointer">'+escapeHtml(s.label)+'</summary>'
+            + '<div style="font-size:11px;color:var(--muted);white-space:pre-line;margin:6px 0 2px">'+escapeHtml(s.text||'')+'</div></details>'
+            + '<label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0 8px;cursor:pointer"><input type="checkbox" class="pf-sig" value="'+s.id+'" '+(sigs[s.id]?'checked':'')+'> 内容を確認し同意します / I have read and agree</label>';
+        }).join('')
+      + '<div style="font-weight:600;font-size:13px;margin:8px 0 4px">ご署名 / Signature</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">下の枠内に、指またはマウスで署名してください。/ Sign below with finger or mouse.</div>'
+      + '<canvas id="pf-sig-canvas" width="600" height="180" style="width:100%;height:150px;border:1px dashed var(--border);border-radius:8px;background:#fff;touch-action:none;cursor:crosshair" onpointerdown="obSigStart(event)" onpointermove="obSigMove(event)" onpointerup="obSigEnd()" onpointerleave="obSigEnd()"></canvas>'
+      + '<div style="text-align:right;margin-top:4px"><button class="btn btn-secondary btn-sm" style="padding:1px 10px;font-size:11px" onclick="clearOBSig()"><i class="ti ti-eraser"></i> 署名をクリア / Clear</button></div>';
+  } else if (step===6){
+    var p = ob.personal || {};
+    body = '<div style="font-weight:600;font-size:13px;margin-bottom:6px">基本情報 / Basic Info</div>'
+      + '<div class="form-group"><label class="form-label">氏名 / Full Name <span style="color:var(--red)">*</span></label><input class="form-input" id="pf-name" value="'+escapeHtml(ob.name||'')+'" placeholder="例: 田中 太郎 / Taro Tanaka"></div>'
+      + '<div class="form-group"><label class="form-label">住所 / Address <span style="color:var(--red)">*</span></label><input class="form-input" id="pf-address" value="'+escapeHtml(p.address||'')+'"></div>'
+      + '<div class="form-row"><div class="form-group"><label class="form-label">電話 / Phone</label><input class="form-input" id="pf-phone" value="'+escapeHtml(p.phone||ob.phone||'')+'"></div>'
+      + '<div class="form-group"><label class="form-label">Email</label><input class="form-input" id="pf-email" value="'+escapeHtml(p.email||ob.email||'')+'"></div></div>'
+      + '<div class="form-row"><div class="form-group"><label class="form-label">生年月日 <span style="color:var(--red)">*</span></label><input class="form-input" id="pf-dob" type="date" value="'+escapeHtml(p.dob||'')+'"></div>'
+      + '<div class="form-group"><label class="form-label">SSN <span class="tag tag-red" style="font-size:8px">機密</span></label><input class="form-input" id="pf-ssn" value="'+escapeHtml(p.ssn||'')+'" placeholder="XXX-XX-XXXX"></div></div>'
+      + '<div class="form-group"><label class="form-label">就労ステータス</label><select class="form-select" id="pf-visa" onchange="document.getElementById(\'pf-visadetail\').style.display=this.value===\'その他\'?\'block\':\'none\'">'
+        + VISA_OPTIONS.map(function(v){ return '<option '+(p.visa===v?'selected':'')+'>'+v+'</option>'; }).join('')+'</select></div>'
+      + '<div class="form-group" id="pf-visadetail" style="display:'+(p.visa==='その他'?'block':'none')+'"><label class="form-label">就労ステータス詳細</label><input class="form-input" id="pf-visadetail-input" value="'+escapeHtml(p.visaDetail||'')+'"></div>'
+      + '<div style="font-weight:600;font-size:13px;margin:12px 0 4px">本人確認書類 / ID Documents <span style="color:var(--red)">*</span></div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">パスポートがあればパスポートのみ。無ければ Driver License/State ID と SSN Card の両方（画像必須）。</div>'
+      + '<div id="pf-docs">'+renderOBDocsList(ob, _obWiz.obId)+'</div>'
+      + '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+        + '<label class="btn btn-secondary btn-sm" style="cursor:pointer"><i class="ti ti-camera"></i> パスポート<input type="file" accept="image/*" style="display:none" onchange="handleOBDocFile(\''+_obWiz.obId+'\',\'Passport\',this)"></label>'
+        + '<label class="btn btn-secondary btn-sm" style="cursor:pointer"><i class="ti ti-camera"></i> Driver License/ID<input type="file" accept="image/*" style="display:none" onchange="handleOBDocFile(\''+_obWiz.obId+'\',\'Driver License\',this)"></label>'
+        + '<label class="btn btn-secondary btn-sm" style="cursor:pointer"><i class="ti ti-camera"></i> SSN Card<input type="file" accept="image/*" style="display:none" onchange="handleOBDocFile(\''+_obWiz.obId+'\',\'SSN Card\',this)"></label>'
+      + '</div>';
+  } else if (step===7){
+    var pp = ob.personal || {};
+    var ack7 = ob.wizAck || {};
+    var allCards = (function(){ var cs=obWizCards(ob,tm,stStore,tip); return (cs[2]||[]).concat(cs[3]||[]).concat(cs[4]||[]); })();
+    var ackCount = allCards.filter(function(c){ return ack7[c.id]; }).length;
+    var sigCount = OB_SIGNATURES.filter(function(s){ return (ob.signatures||{})[s.id]; }).length;
+    var docCount = ((ob.docs||[]).filter(function(d){ return d.image; })).length;
+    var row = function(label, val, ok){ return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><i class="ti '+(ok?'ti-circle-check':'ti-circle')+'" style="color:'+(ok?'var(--green)':'var(--muted)')+';font-size:16px"></i><div style="flex:1;color:var(--muted)">'+label+'</div><div style="font-weight:600;text-align:right">'+val+'</div></div>'; };
+    body = '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">内容を確認して提出してください。提出後は経理確認に進みます。</p>'
+      + '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:10px">'
+        + row('採用条件への同意', (pp.agreedTerms?'同意済み':'未'), !!pp.agreedTerms)
+        + row('会社・店舗・ルール・規律の確認', ackCount+' / '+allCards.length, ackCount===allCards.length)
+        + row('規約の同意・電子署名', sigCount+'/4'+(ob.signatureImage?' ・署名済み':' ・署名なし'), sigCount===4 && !!ob.signatureImage)
+        + row('氏名', escapeHtml(ob.name||'—'), !!ob.name)
+        + row('住所 / 生年月日 / SSN', ((pp.address?'○':'×')+' / '+(pp.dob?'○':'×')+' / '+(pp.ssn?'○':'×')), !!(pp.address&&pp.dob&&pp.ssn))
+        + row('本人確認書類', docCount+'件', docCount>0)
+      + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);text-align:center">提出する内容はご自身の入力に基づきます。誤りがあれば「戻る」で修正してください。</div>';
+  }
+
+  var nav = obWizNav(step);
+  openModal(head + '<div style="max-height:62vh;overflow-y:auto;padding:2px 2px">'+body+'</div>' + nav);
+  if (step===5){ setTimeout(function(){ initOBSigCanvas(ob.signatureImage); }, 40); }
+}
+
+function obWizNav(step){
+  var back = (step>1) ? '<button class="btn btn-secondary" onclick="obWizGo(-1)"><i class="ti ti-chevron-left"></i> 戻る</button>' : '<button class="btn btn-secondary" onclick="obWizClose()">キャンセル</button>';
+  var fwd;
+  if (step<7) fwd = '<button class="btn btn-primary" onclick="obWizGo(1)">次へ <i class="ti ti-chevron-right"></i></button>';
+  else fwd = '<button class="btn btn-primary" onclick="obWizSubmit()"><i class="ti ti-send"></i> 提出（Submit）</button>';
+  return '<div class="btn-row">'+back+fwd+'</div>';
+}
+
+function obWizClose(){ _obWiz = null; closeModalDirect(); }
+
+/* カード詳細ポップアップ（開いて「理解しました」で✓＝読み飛ばし防止） */
+function obWizOpenCard(cardId){
+  if (!_obWiz) return;
+  var ob = ls('onboardings', []).find(function(o){ return o.id===_obWiz.obId; });
+  if (!ob) return;
+  var tm = getTrainMaster(), stStore = getTrainStore(ob.store);
+  var tip = (typeof getTipPolicy==='function') ? getTipPolicy() : '';
+  var cs = obWizCards(ob, tm, stStore, tip);
+  var all = (cs[2]||[]).concat(cs[3]||[]).concat(cs[4]||[]);
+  var c = all.find(function(x){ return x.id===cardId; });
+  if (!c) return;
+  var ackLabel = (cardId==='discipline') ? '理解し、遵守します' : '内容を理解しました';
+  var content = (c.body && c.body.trim()) ? escapeHtml(c.body) : '（内容は未設定です。担当リーダーにご確認ください）';
+  obWizCloseCard();
+  var ov = document.createElement('div');
+  ov.id = 'obwiz-card-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;display:flex;align-items:flex-end;justify-content:center';
+  ov.onclick = function(e){ if (e.target===ov) obWizCloseCard(); };
+  ov.innerHTML = '<div style="background:var(--surface);width:100%;max-width:560px;max-height:88vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px"><i class="ti '+c.icon+'" style="color:var(--accent);font-size:18px"></i><div style="font-weight:700;font-size:14px;flex:1">'+escapeHtml(c.title)+'</div><button class="modal-close" onclick="obWizCloseCard()">×</button></div>'
+    + '<div style="padding:14px 16px;overflow-y:auto;white-space:pre-line;font-size:13px;line-height:1.75;color:var(--tm)">'+content+'</div>'
+    + '<div style="padding:12px 16px;border-top:1px solid var(--border)"><button class="btn btn-primary" style="width:100%" onclick="obWizAckCard(\''+cardId+'\')"><i class="ti ti-check"></i> '+ackLabel+'</button></div>'
+  + '</div>';
+  document.body.appendChild(ov);
+}
+function obWizCloseCard(){ var o=document.getElementById('obwiz-card-ov'); if(o){ try{ document.body.removeChild(o); }catch(e){} } }
+function obWizAckCard(cardId){
+  if (!_obWiz) return;
+  var obs = ls('onboardings', []); var ob = obs.find(function(o){ return o.id===_obWiz.obId; });
+  if (!ob) return;
+  if (!ob.wizAck) ob.wizAck = {};
+  ob.wizAck[cardId] = true;
+  lsSet('onboardings', obs);
+  obWizCloseCard();
+  renderObWizard();
+}
+
+/* 入力の永続化 */
+function obWizPersist(step){
+  var obs = ls('onboardings', []); var ob = obs.find(function(o){ return o.id===_obWiz.obId; });
+  if (!ob) return null;
+  if (step===1){ var a=document.getElementById('wiz-agree-terms'); if(a){ ob.personal=Object.assign({}, ob.personal, {agreedTerms:a.checked}); } }
+  if (step===5){
+    var sigEls=document.querySelectorAll('.pf-sig');
+    if (sigEls.length){ var sigs=Object.assign({}, ob.signatures); sigEls.forEach(function(c){ sigs[c.value]=c.checked; }); ob.signatures=sigs; }
+    var sd=obSigDataURL(); if (sd) ob.signatureImage=sd;
+  }
+  if (step===6){
+    var g=function(id){ var e=document.getElementById(id); return e?e.value:undefined; };
+    if (g('pf-name')!=null && g('pf-name').trim()) ob.name=g('pf-name').trim();
+    var visa=g('pf-visa');
+    ob.personal=Object.assign({}, ob.personal, {
+      address:g('pf-address'), phone:g('pf-phone'), email:g('pf-email'), dob:g('pf-dob'), ssn:g('pf-ssn'),
+      visa:visa, visaDetail:(visa==='その他'?g('pf-visadetail-input'):'') });
+  }
+  lsSet('onboardings', obs);
+  return ob;
+}
+function obWizValidate(step, ob){
+  var ack = ob.wizAck || {};
+  if (step===1){ if (!(ob.personal&&ob.personal.agreedTerms)){ alert('採用条件への同意が必要です'); return false; } }
+  if (step===2 || step===3 || step===4){
+    var tm=getTrainMaster(), stStore=getTrainStore(ob.store);
+    var tip=(typeof getTipPolicy==='function')?getTipPolicy():'';
+    var cards=obWizCards(ob,tm,stStore,tip)[step]||[];
+    var miss=cards.filter(function(c){ return !ack[c.id]; });
+    if (miss.length){ alert('すべてのカードを開いて確認してください（残り'+miss.length+'件）'); return false; }
+  }
+  if (step===5){
+    var sigs=ob.signatures||{};
+    if (!OB_SIGNATURES.every(function(s){ return sigs[s.id]; })){ alert('4件すべての内容確認と同意のチェックが必要です'); return false; }
+    if (!(obSigDataURL()||ob.signatureImage)){ alert('ご署名がありません。署名欄に署名してください'); return false; }
+  }
+  if (step===6){
+    if (!ob.name){ alert('氏名を入力してください'); return false; }
+    var pn=ob.personal||{};
+    if (!pn.address || !pn.address.trim()){ alert('住所を入力してください'); return false; }
+    if (!pn.dob){ alert('生年月日を入力してください'); return false; }
+    if (!pn.ssn || !pn.ssn.trim()){ alert('SSNを入力してください'); return false; }
+    var dn=((ob.docs||[]).filter(function(d){ return d.image; })).map(function(d){ return d.name; });
+    if (!(dn.indexOf('Passport')>=0 || (dn.indexOf('Driver License')>=0 && dn.indexOf('SSN Card')>=0))){
+      alert('本人確認書類の画像が不足しています。\nパスポート、または Driver License/ID＋SSN Card（両方・画像）が必要です。'); return false;
+    }
+  }
+  return true;
+}
+function obWizGo(delta){
+  if (!_obWiz) return;
+  var step=_obWiz.step;
+  var ob=obWizPersist(step);
+  if (!ob) return;
+  if (delta>0 && !obWizValidate(step, ob)) return;
+  _obWiz.step = Math.min(7, Math.max(1, step+delta));
+  renderObWizard();
+}
+
+/* 提出（全ステップの状態をstateから検証） */
+function obWizValidateAll(ob){
+  if (!(ob.personal&&ob.personal.agreedTerms)) return '採用条件への同意が必要です（STEP1）';
+  var tm=getTrainMaster(), stStore=getTrainStore(ob.store);
+  var tip=(typeof getTipPolicy==='function')?getTipPolicy():'';
+  var cs=obWizCards(ob,tm,stStore,tip);
+  var need=(cs[2]||[]).concat(cs[3]||[]).concat(cs[4]||[]);
+  var ack=ob.wizAck||{};
+  var miss=need.filter(function(c){ return !ack[c.id]; });
+  if (miss.length) return '未確認のカードがあります（残り'+miss.length+'件・STEP2〜4）';
+  var sigs=ob.signatures||{};
+  if (!OB_SIGNATURES.every(function(s){ return sigs[s.id]; })) return '規約の同意（4件）が未完了です（STEP5）';
+  if (!ob.signatureImage) return 'ご署名がありません（STEP5）';
+  var pn=ob.personal||{};
+  if (!ob.name) return '氏名が未入力です（STEP6）';
+  if (!pn.address) return '住所が未入力です（STEP6）';
+  if (!pn.dob) return '生年月日が未入力です（STEP6）';
+  if (!pn.ssn) return 'SSNが未入力です（STEP6）';
+  var dn=((ob.docs||[]).filter(function(d){ return d.image; })).map(function(d){ return d.name; });
+  if (!(dn.indexOf('Passport')>=0 || (dn.indexOf('Driver License')>=0 && dn.indexOf('SSN Card')>=0))) return '本人確認書類の画像が不足しています（STEP6）';
+  return null;
+}
+function obWizSubmit(){
+  if (!_obWiz) return;
+  var obs=ls('onboardings', []); var ob=obs.find(function(o){ return o.id===_obWiz.obId; });
+  if (!ob) return;
+  var err=obWizValidateAll(ob);
+  if (err){ alert(err); return; }
+  ob.personal=Object.assign({}, ob.personal, { startDate:ob.plannedStart||'', wage:ob.wage||0, submittedAt:new Date().toISOString() });
+  ob.obStatus='提出完了'; ob.rejectReason='';
+  lsSet('onboardings', obs);
+  addApproval({ title: ob.name+' 採用書類 提出完了（経理確認待ち）', type:'採用', from:ob.name, store:ob.storeName||'' });
+  _obWiz=null;
+  closeModalDirect();
+  showToast('提出完了。経理確認に進みます', 'success');
+  if (typeof renderPage==='function'){ try{ renderPage('onboarding'); }catch(e){} }
 }
 function addOBDoc(obId, name) {
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
@@ -12093,14 +12482,16 @@ function persistPersonalDraft(ob) {
   var g=function(id){var e=document.getElementById(id);return e?e.value:undefined;};
   if (document.getElementById('pf-address')==null) return;
   if (g('pf-name')!=null && g('pf-name').trim()) ob.name = g('pf-name').trim();
-  ob.personal = Object.assign({}, ob.personal, {
+  var patch = {
     address:g('pf-address'), phone:g('pf-phone'), email:g('pf-email'), dob:g('pf-dob'),
     ssn:g('pf-ssn'), visa:g('pf-visa'),
-    visaDetail:(g('pf-visa')==='その他'?g('pf-visadetail-input'):''),
-    agreedTerms: (document.getElementById('pf-agree-terms')||{}).checked,
-  });
-  var sigs={}; document.querySelectorAll('.pf-sig').forEach(c=>{sigs[c.value]=c.checked;});
-  ob.signatures = sigs;
+    visaDetail:(g('pf-visa')==='その他'?g('pf-visadetail-input'):'')
+  };
+  var agreeEl=document.getElementById('pf-agree-terms');
+  if (agreeEl) patch.agreedTerms = agreeEl.checked; // 旧フォームのみ存在。ウィザードでは触れない
+  ob.personal = Object.assign({}, ob.personal, patch);
+  var sigEls = document.querySelectorAll('.pf-sig');
+  if (sigEls.length){ var sigs=Object.assign({}, ob.signatures); sigEls.forEach(function(c){ sigs[c.value]=c.checked; }); ob.signatures = sigs; }
   var sd = obSigDataURL(); if (sd) ob.signatureImage = sd;
 }
 function submitPersonal(obId) {
@@ -18478,6 +18869,8 @@ async function checkOnboardToken(){
     }
     // 招待リンクで開いた端末（受信者）でも、提出内容をクラウドへ反映させる
     SUPA_SYNC_ENABLED = true; _supaBooting = false;
+    // 教材マスター＋Tipポリシーを最新化（受信者端末にはローカルが無いため）
+    try { await pullTrainMaterials(); } catch(e){}
     // デモ: 専用ページの代わりに本人入力フォームを直接開く（本番では隔離した専用画面）
     screen.innerHTML = `<div style="max-width:460px;margin:40px auto;padding:20px">
       <div style="text-align:center;margin-bottom:16px">
@@ -18503,7 +18896,7 @@ try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
-(async function(){ try { if (!(await checkOnboardToken())) bootLogin(); } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
+(async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) bootLogin(); } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 </script>
 </body>
 </html>
