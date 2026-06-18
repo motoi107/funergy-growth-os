@@ -11334,7 +11334,7 @@ function renderHiring() {
     <div><div class="section-title">採用・オンボーディング</div><div class="section-sub">応募 → 採用 → 本人入力 → 経理 → Payroll → 登録完了</div></div>
     <button class="btn btn-secondary btn-sm" onclick="refreshOnboardings()"><i class="ti ti-cloud-download"></i> 最新を取得</button>
   </div>`;
-  if (obPending) html += `<div class="alert alert-warning" style="padding:9px 12px;margin-bottom:10px;display:flex;align-items:center;gap:8px"><i class="ti ti-file-text"></i><div style="font-size:12px;flex:1"><b>採用書類の確認待ち ${obPending}件</b> · 提出された書類・署名を確認してください</div><button class="btn btn-primary btn-sm" onclick="setHiringTab('onboard')">確認する</button></div>`;
+  if (obPending) html += `<div class="alert alert-warning" style="padding:9px 12px;margin-bottom:10px;display:flex;align-items:center;gap:8px"><i class="ti ti-file-text"></i><div style="font-size:12px;flex:1"><b>採用書類の確認待ち ${obPending}件</b> · 提出された書類・署名を確認してください</div><button class="btn btn-primary btn-sm" onclick="document.getElementById('ob-section')&&document.getElementById('ob-section').scrollIntoView({behavior:'smooth'})">確認する</button></div>`;
 
   // ===== 採用→オンボーディング パイプライン（全体の見える化） =====
   var pipe = [
@@ -11357,16 +11357,13 @@ function renderHiring() {
   });
   html += `</div></div>`;
 
-  // ===== サブタブ =====
-  var recruitN = apps.filter(c=>['応募中','新規応募','要確認'].includes(c.status)).length;
-  var obActiveN = obsP.filter(o=>o.obStatus!=='登録完了'&&o.obStatus!=='キャンセル').length;
-  html += `<div class="phase-tabs">
-    <div class="phase-tab${hiringTab==='recruit'?' active':''}" onclick="setHiringTab('recruit')"><i class="ti ti-users" style="font-size:12px"></i> 採用${recruitN?` <span style="background:var(--accent2);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${recruitN}</span>`:''}</div>
-    <div class="phase-tab${hiringTab==='onboard'?' active':''}" onclick="setHiringTab('onboard')"><i class="ti ti-school" style="font-size:12px"></i> オンボーディング${obActiveN?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${obActiveN}</span>`:''}</div>
-  </div>`;
-
-  if (hiringTab==='onboard') return html + renderOnboardingInner();
-  return html + renderHiringInner(apps);
+  // ===== 採用 → オンボーディング を1画面に統合（タブ廃止） =====
+  html += renderHiringInner(apps);
+  html += `<div id="ob-section" class="section-header" style="margin-top:20px;border-top:1px solid var(--border);padding-top:14px">
+    <div><div class="section-title" style="font-size:16px"><i class="ti ti-school" style="color:var(--accent)"></i> オンボーディング</div>
+    <div class="section-sub">採用後の入社手続き（本人入力 → 経理 → I-9 → Payroll → 登録完了）</div></div></div>`;
+  html += renderOnboardingInner();
+  return html;
 }
 /* 採用（応募者）タブ */
 function renderHiringInner(apps) {
@@ -11854,7 +11851,7 @@ function renderOnboardingInner() {
   });
   html += `</div>`;
 
-  obs.forEach(ob => {
+  obs.filter(o=>(o.obStatus||'本人入力待ち')!=='キャンセル').forEach(ob => {
     var st = ob.obStatus || '本人入力待ち';
     var stCol = st==='登録完了'?'var(--green)':st==='差し戻し'?'var(--red)':'var(--accent)';
     var storeName = ob.storeName || (STORES.find(s=>s.id===ob.store)||{}).name || ob.store;
