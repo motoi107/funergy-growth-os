@@ -14760,8 +14760,11 @@ function renderLssItems() {
   var draft=window._lssDraft||{};
   var canScore=canEditLss(window._lssName);
   var groups=lssGroupsOf(c.key);
-  var dot=function(id,val){
-    return `<div style="display:flex;gap:2px" id="lss-${id}">${[0,1,2,3].map(n=>`<button onclick="lssSetScore('${id}',${n})" data-v="${n}" class="lss-dot" style="width:26px;height:26px;border-radius:6px;border:1px solid var(--border);font-size:11px;cursor:${canScore?'pointer':'default'};background:${val===n?(n===0?'var(--muted)':n===3?'var(--accent)':n===2?'var(--green)':'var(--yellow)'):'transparent'};color:${val===n?'#fff':'var(--muted)'}">${n}</button>`).join('')}</div>`;
+  var L_LABELS=['未','時々','継続','模範'];
+  var L_COLS=['var(--muted)','var(--yellow)','var(--green)','var(--accent)'];
+  var chip=function(idx,val,has){
+    var col = has?L_COLS[val]:'var(--border)';
+    return `<button onclick="openLssScorePopup('${c.key}',${idx})" style="display:flex;align-items:center;gap:5px;border:1px solid ${col};border-radius:8px;padding:5px 10px;background:${has?col:'transparent'};color:${has?'#fff':'var(--muted)'};font-size:12px;cursor:${canScore?'pointer':'default'};white-space:nowrap">${has?('<b>'+val+'</b> '+L_LABELS[val]):'採点'} <i class="ti ti-chevron-right" style="font-size:12px"></i></button>`;
   };
   var out='';
   groups.forEach(function(g, gi){
@@ -14782,14 +14785,47 @@ function renderLssItems() {
       var label=c.items[i];
       // Hカテゴリは項目テキストの「グループ名：」を除去（見出しと重複するため）
       if (c.key==='H' && label.indexOf('：')>=0) label=label.split('：').slice(1).join('：');
-      var id=lssItemId(c.key,i); var val=parseInt(draft[id])||0;
+      var id=lssItemId(c.key,i); var has=(draft[id]!=null && draft[id]!==''); var val=parseInt(draft[id])||0;
       out += `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
         <div style="flex:1;font-size:12px">${label}</div>
-        ${dot(id,val)}
+        ${chip(i,val,has)}
       </div>`;
     }
   });
   el.innerHTML = out;
+}
+/* 採点ポップアップ：基準（0〜3）を見ながら点数を選ぶ（編集時ポップアップ） */
+function openLssScorePopup(catKey, idx){
+  var c=LSS_CATEGORIES.find(x=>x.key===catKey); if(!c)return;
+  var label=c.items[idx]; if(catKey==='H' && (''+label).indexOf('：')>=0) label=label.split('：').slice(1).join('：');
+  var id=lssItemId(catKey, idx);
+  var cur=(window._lssDraft||{})[id]; cur=(cur!=null&&cur!=='')?parseInt(cur):null;
+  var canScore=canEditLss(window._lssName);
+  var rub=getEvalRubric();
+  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+  closeLssScorePopup();
+  var ov=document.createElement('div'); ov.id='lss-score-ov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;display:flex;align-items:flex-end;justify-content:center';
+  ov.onclick=function(e){ if(e.target===ov) closeLssScorePopup(); };
+  var cards=rub.map(function(x){
+    var sel=(cur===x.level);
+    return '<div '+(canScore?'onclick="lssPickScore(\''+catKey+'\','+idx+','+x.level+')"':'')+' style="display:flex;gap:10px;align-items:flex-start;border:1.5px solid '+(sel?cols[x.level]:'var(--border)')+';border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:'+(canScore?'pointer':'default')+'">'
+      +'<span style="flex-shrink:0;width:26px;height:26px;border-radius:7px;background:'+cols[x.level]+';color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center">'+x.level+'</span>'
+      +'<div style="flex:1"><div style="font-size:13px;font-weight:600">'+escapeHtml(x.label)+'</div><div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:2px">'+escapeHtml(x.desc)+'</div></div>'
+      +(sel?'<i class="ti ti-circle-check" style="color:'+cols[x.level]+';font-size:20px"></i>':'')
+    +'</div>';
+  }).join('');
+  ov.innerHTML='<div style="background:var(--surface);width:100%;max-width:560px;max-height:86vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;overflow:hidden">'
+    +'<div style="padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px"><div style="font-weight:700;font-size:14px;flex:1">'+escapeHtml(label)+'</div><button class="modal-close" onclick="closeLssScorePopup()">×</button></div>'
+    +'<div style="padding:14px 16px;overflow-y:auto">'+(canScore?'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">基準を見て点数をタップしてください</div>':'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">評価基準（閲覧のみ）</div>')+cards+'</div>'
+  +'</div>';
+  document.body.appendChild(ov);
+}
+function closeLssScorePopup(){ var o=document.getElementById('lss-score-ov'); if(o){ try{document.body.removeChild(o);}catch(e){} } }
+function lssPickScore(catKey, idx, n){
+  lssSetScore(lssItemId(catKey,idx), n);
+  closeLssScorePopup();
+  renderLssItems();
 }
 /* グループ別%のライブ更新（採点時） */
 function lssUpdateGroupPcts() {
@@ -18525,11 +18561,45 @@ function showCriteria(position) {
   html += `</div>` + evalRubricLegendHtml({open:false}) + `<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`;
   openModal(html);
 }
+/* スキル基準オーバーレイ（モーダルの上に重ねる・編集時ポップアップ）。
+   opts.targetSelectId を渡すとLvタップで そのselect を更新して採点できる。 */
+function openSkillCriteriaOverlay(position, opts){
+  opts=opts||{};
+  var crit=skillCriteria(position);
+  var canPick=!!opts.targetSelectId;
+  var minLv=opts.minLv!=null?opts.minLv:0;
+  var cur=opts.current!=null?opts.current:null;
+  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+  closeSkillCritOverlay();
+  var ov=document.createElement('div'); ov.id='skill-crit-ov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100001;display:flex;align-items:flex-end;justify-content:center';
+  ov.onclick=function(e){ if(e.target===ov) closeSkillCritOverlay(); };
+  var cards=[0,1,2,3].map(function(lv){
+    var pickable = canPick && lv>=minLv;
+    var sel=(cur===lv);
+    return '<div '+(pickable?'onclick="skillCritPick(\''+opts.targetSelectId+'\','+lv+')"':'')+' style="display:flex;gap:10px;align-items:flex-start;border:1.5px solid '+(sel?cols[lv]:'var(--border)')+';border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:'+(pickable?'pointer':'default')+';opacity:'+(canPick&&!pickable?'.5':'1')+'">'
+      +'<span style="flex-shrink:0;min-width:30px;height:26px;border-radius:7px;background:'+cols[lv]+';color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:11px">Lv'+lv+'</span>'
+      +'<div style="flex:1;font-size:12px;line-height:1.5">'+escapeHtml(crit[lv]||'—')+'</div>'
+      +(sel?'<i class="ti ti-circle-check" style="color:'+cols[lv]+';font-size:20px"></i>':'')
+    +'</div>';
+  }).join('');
+  ov.innerHTML='<div style="background:var(--surface);width:100%;max-width:560px;max-height:86vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;overflow:hidden">'
+    +'<div style="padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px"><div style="font-weight:700;font-size:14px;flex:1">'+escapeHtml(position)+' スキル基準</div><button class="modal-close" onclick="closeSkillCritOverlay()">×</button></div>'
+    +'<div style="padding:14px 16px;overflow-y:auto">'+(canPick?'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">基準を見てLvをタップすると選択されます</div>':'')+cards+'</div>'
+  +'</div>';
+  document.body.appendChild(ov);
+}
+function closeSkillCritOverlay(){ var o=document.getElementById('skill-crit-ov'); if(o){ try{document.body.removeChild(o);}catch(e){} } }
+function skillCritPick(selectId, lv){
+  var sel=document.getElementById(selectId);
+  if(sel){ sel.value=String(lv); if(typeof sel.onchange==='function'){ try{ sel.onchange(); }catch(e){} } }
+  closeSkillCritOverlay();
+}
 function openSkillRequestModal(position) {
   var crit = skillCriteria(position);
   openModal(`<div class="modal-title">${position} スキル申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">「できるようになったこと」を申請してください。管理者が実務確認して承認します。</p>
-    <div class="form-group"><label class="form-label">希望レベル</label>
+    <div class="form-group"><label class="form-label" style="display:flex;align-items:center;gap:8px">希望レベル <button type="button" class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px;margin-left:auto" onclick="openSkillCriteriaOverlay('${position.replace(/'/g,"\\'")}',{targetSelectId:'sk-level',minLv:1,current:parseInt((document.getElementById('sk-level')||{}).value)})"><i class="ti ti-list-check"></i> 基準を見て選ぶ</button></label>
       <select class="form-select" id="sk-level" onchange="document.getElementById('sk-crit').textContent=this.options[this.selectedIndex].dataset.crit">
         <option value="1" data-crit="${(crit[1]||'').replace(/"/g,'')}">Lv1 — サポートがあればできる</option>
         <option value="2" data-crit="${(crit[2]||'').replace(/"/g,'')}">Lv2 — 一人でできる</option>
@@ -18785,7 +18855,7 @@ function openSkillReviewModal(reqId, action) {
   if (!r) return;
   openModal(`<div class="modal-title">${r.name} · ${r.position} を${action} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">自己評価: ${r.selfComment}</div>
-    ${action==='承認'?`<div class="form-group"><label class="form-label">承認レベル</label>
+    ${action==='承認'?`<div class="form-group"><label class="form-label" style="display:flex;align-items:center;gap:8px">承認レベル <button type="button" class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px;margin-left:auto" onclick="openSkillCriteriaOverlay('${(r.position||'').replace(/'/g,"\\'")}',{targetSelectId:'rv-level',minLv:1,current:parseInt((document.getElementById('rv-level')||{}).value)})"><i class="ti ti-list-check"></i> 基準を見て選ぶ</button></label>
       <select class="form-select" id="rv-level"><option value="1"${r.level===1?' selected':''}>Lv1（サポート有）</option><option value="2"${r.level===2?' selected':''}>Lv2（独力）</option><option value="3"${r.level===3?' selected':''}>Lv3（指導可・リーダー）</option></select></div>`:''}
     <div class="form-group"><label class="form-label">フィードバック（成長を促すコメント）</label>
       <textarea class="form-textarea" id="rv-comment" placeholder="${action==='承認'?'例: 接客が安定。次はUpsellを意識しましょう':'例: もう少し練習が必要です。再申請してください'}"></textarea></div>
