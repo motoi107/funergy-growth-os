@@ -11622,11 +11622,26 @@ function showInviteLink(storeName, pos, token, expiry){
   var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(link);
   var mailto = 'mailto:?subject=' + encodeURIComponent('Funergy Group Onboarding') + '&body=' + encodeURIComponent(combined);
   var sms = 'sms:?&body=' + encodeURIComponent(msgEn + ' ' + link);
+  window._inviteMsg = { link:link, combined:combined, msgEn:msgEn, subject:'Funergy Group Onboarding' };
   openModal(`<div class="modal-title"><i class="ti ti-send"></i> 招待を送信 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="alert alert-success" style="padding:8px 10px;margin-bottom:12px;font-size:12px"><i class="ti ti-circle-check"></i> ${storeName} / ${pos} の招待を作成しました。下記の方法で採用者に送ってください。氏名・連絡先は本人が入力します。</div>
+    <div style="font-size:12px;font-weight:700;margin-bottom:6px"><i class="ti ti-bolt" style="color:var(--accent)"></i> サーバーから自動送信</div>
+    <div class="form-group"><label class="form-label">採用者のメール</label>
+      <div style="display:flex;gap:6px">
+        <input class="form-input" id="inv-send-email" type="email" placeholder="hire@example.com" style="flex:1">
+        <button class="btn btn-primary btn-sm" onclick="sendInviteServer('email')"><i class="ti ti-mail"></i> 送信</button>
+      </div></div>
+    <div class="form-group"><label class="form-label">採用者のSMS番号</label>
+      <div style="display:flex;gap:6px">
+        <input class="form-input" id="inv-send-sms" type="tel" placeholder="+18085551234" style="flex:1">
+        <button class="btn btn-primary btn-sm" onclick="sendInviteServer('sms')"><i class="ti ti-message"></i> 送信</button>
+      </div></div>
+    <div id="inv-send-result" style="font-size:11px;color:var(--muted);margin-bottom:10px;min-height:14px"></div>
+    <div style="border-top:1px solid var(--border);margin:4px 0 10px"></div>
+    <div style="font-size:12px;font-weight:700;margin-bottom:6px"><i class="ti ti-hand-finger" style="color:var(--muted)"></i> 手動で送る（端末のアプリが開きます）</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-      <a href="${mailto}" class="btn btn-primary" style="text-decoration:none"><i class="ti ti-mail"></i> Emailで送る</a>
-      <a href="${sms}" class="btn btn-primary" style="text-decoration:none"><i class="ti ti-message"></i> SMSで送る</a>
+      <a href="${mailto}" class="btn btn-secondary" style="text-decoration:none"><i class="ti ti-mail"></i> Email</a>
+      <a href="${sms}" class="btn btn-secondary" style="text-decoration:none"><i class="ti ti-message"></i> SMS</a>
     </div>
     <div style="text-align:center;margin-bottom:12px">
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px">QRコード（採用者に読み取ってもらう）</div>
@@ -11647,6 +11662,28 @@ function copyInvite(id){
   el.select(); el.setSelectionRange(0,99999);
   try{ document.execCommand('copy'); showToast('コピーしました','success'); }
   catch(e){ if(navigator.clipboard){ navigator.clipboard.writeText(el.value); showToast('コピーしました','success'); } }
+}
+/* サーバー(Edge Function)から招待を自動送信（メール=Resend / SMS=Twilio） */
+async function sendInviteServer(channel){
+  var m = window._inviteMsg || {};
+  var res = document.getElementById('inv-send-result');
+  var to, subject, text;
+  if (channel==='email'){
+    to=(document.getElementById('inv-send-email').value||'').trim();
+    subject=m.subject||'Funergy Group Onboarding';
+    text=m.combined||m.link||'';
+  } else {
+    to=(document.getElementById('inv-send-sms').value||'').trim();
+    text=((m.msgEn||'')+' '+(m.link||'')).trim();
+  }
+  if(!to){ if(res) res.innerHTML='<span style="color:var(--red)">送信先を入力してください</span>'; return; }
+  if(res) res.innerHTML='<i class="ti ti-loader"></i> 送信中…';
+  try{
+    var r=await fetch(SUPABASE_URL+'/functions/v1/send-message', { method:'POST', headers:supaHeaders(), body:JSON.stringify({channel:channel, to:to, subject:subject, text:text}) });
+    var d={}; try{ d=await r.json(); }catch(e){}
+    if(r.ok && !d.error){ if(res) res.innerHTML='<span style="color:var(--green)"><i class="ti ti-check"></i> 送信しました</span>'; showToast('招待を送信しました','success'); }
+    else { if(res) res.innerHTML='<span style="color:var(--red)">送信失敗: '+escapeHtml(d.error||('HTTP '+r.status))+'</span>'; }
+  }catch(e){ if(res) res.innerHTML='<span style="color:var(--red)">送信失敗（Edge Function未設定の可能性）</span>'; }
 }
 /* ===== 採用: 配属情報を設定 → Onboarding開始 ===== */
 const REJECT_REASONS = ['勤務条件が合わない','希望シフトが合わない','経験・スキル不足','面接態度に懸念あり','連絡が取れない','過去に採用不可判断あり','その他'];
