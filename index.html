@@ -18334,14 +18334,22 @@ function showToast(msg, type) {
 /* ログイン画面を初期化 */
 /* 招待リンク（?onboard=token）で開かれたか検知。
    本番では専用ページを表示。現状はデモのため、該当オンボーディングを案内表示。 */
-function checkOnboardToken(){
+async function checkOnboardToken(){
   try {
     var params = new URLSearchParams(location.search);
     var token = params.get('onboard');
     if (!token) return false;
-    var ob = ls('onboardings', []).find(o=>o.inviteToken===token);
     var screen = document.getElementById('login-screen');
     if (!screen) return false;
+    screen.innerHTML = `<div style="max-width:420px;margin:80px auto;text-align:center;padding:24px">
+      <div style="font-size:34px;color:var(--accent)"><i class="ti ti-loader"></i></div>
+      <p style="color:var(--muted);font-size:13px;margin-top:12px">読み込み中… / Loading…</p></div>`;
+    var ob = ls('onboardings', []).find(o=>o.inviteToken===token);
+    if (!ob) {
+      // 受信者・別端末にはローカルデータが無いため、クラウドから取得して再照合
+      try { await pullOpKey('onboardings'); } catch(e){}
+      ob = ls('onboardings', []).find(o=>o.inviteToken===token);
+    }
     if (!ob) {
       screen.innerHTML = `<div style="max-width:420px;margin:60px auto;text-align:center;padding:24px">
         <div style="font-size:40px;color:var(--muted)"><i class="ti ti-link-off"></i></div>
@@ -18383,7 +18391,7 @@ try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
-try { if (!checkOnboardToken()) bootLogin(); } catch(e) { console.error('bootLogin', e); }
+(async function(){ try { if (!(await checkOnboardToken())) bootLogin(); } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 </script>
 </body>
 </html>
