@@ -1330,6 +1330,16 @@ function groupOfPage(pageId) {
   var groups = groupsForRole();
   return groups.find(g=>g.children.includes(pageId)) || groups[0];
 }
+/* グループ内で、現在の役職が閲覧できる最初の子ページ（権限のない先頭ページに着地しないように） */
+function firstAllowedChild(group) {
+  if (!group || !group.children || !group.children.length) return 'mypage';
+  var allowed = group.children.filter(function(pid){
+    if (pid==='staff_master' && typeof canAccessStaffMaster==='function' && !canAccessStaffMaster()) return false;
+    var it = (typeof NAV_ITEMS!=='undefined') ? NAV_ITEMS.find(function(n){return n.id===pid;}) : null;
+    return !it || !it.roles || it.roles.includes(curRole);
+  });
+  return allowed[0] || group.children[0];
+}
 var curGroup = null;
 
 const TASK_TEMPLATES = [
@@ -3734,7 +3744,7 @@ function initApp() {
   // Default page
   var groups = groupsForRole();
   if (curStoreLogin) curPage = 'store_cmd';            // 店舗共有ログインは店舗オペレーション中心
-  else curPage = (curRole==='crew') ? 'mypage' : (groups[0] ? groups[0].children[0] : 'mypage');
+  else curPage = (curRole==='crew') ? 'mypage' : (groups[0] ? firstAllowedChild(groups[0]) : 'mypage');
   curGroup = groupOfPage(curPage).id;
   renderPage(curPage);
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
@@ -3780,8 +3790,8 @@ function goGroup(groupId) {
   var g = groups.find(x=>x.id===groupId);
   if (!g) return;
   curGroup = groupId;
-  // グループの最初の子ページへ
-  go(g.children[0]);
+  // グループの最初の「権限のある」子ページへ（権限なしページに着地しない）
+  go(firstAllowedChild(g));
 }
 
 function go(page) {
@@ -9991,8 +10001,8 @@ function renderShiftStatus(storeId, week) {
   html += `<div class="card"><div class="card-title"><i class="ti ti-check"></i>提出済み (${submitted.length})</div>`;
   if (submitted.length) {
     avail.forEach(a => {
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${a.name}</div><span class="tag tag-green">${a.slots.length}枠</span></div>
-        <div class="approval-meta">${a.slots.map(s=>s.day+s.period).join(', ')}${a.notes?' · '+a.notes:''}</div></div>`;
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title"><i class="ti ti-user-check" style="color:var(--green);font-size:13px"></i> ${a.name||'（不明）'}</div><span class="tag tag-green">${a.slots.length}枠</span></div>
+        <div class="approval-meta">${a.date?'<i class="ti ti-calendar-check"></i> '+a.date+' 提出 · ':''}${a.slots.map(s=>s.day+s.period).join(', ')}${a.notes?' · '+a.notes:''}</div></div>`;
     });
   } else { html += `<p style="color:var(--muted);font-size:13px">提出なし</p>`; }
   html += '</div>';
@@ -10986,8 +10996,10 @@ function renderRiskAnalysis(storeId, week, plan, hoursByName) {
    My Shift (Crew側: Availability提出 + シフト確認 + 変更申請)
 ============================================================ */
 var availTmp = {};
+/* ログイン中の本人名（実名優先・なければ役職名）。Availability提出者の特定に使用 */
+function myName(){ return curUserName || (ROLE_CONFIG[curRole]||{}).name; }
 function renderShiftStaff() {
-  var me = ROLE_CONFIG[curRole].name;
+  var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
   var storeId = emp ? (emp.store==='ALL'?STORES[0].id:emp.store) : (curStore==='ALL'?STORES[0].id:curStore);
   var week = getWeekStr();
@@ -11061,7 +11073,7 @@ function renderShiftStaff() {
 }
 
 function openAvailModal(storeId, week) {
-  var me = ROLE_CONFIG[curRole].name;
+  var me = myName();
   var existing = getAvailability(storeId, week).find(a=>a.name===me);
   availTmp = {};
   if (existing) existing.slots.forEach(s=>{ availTmp[s.day+'_'+s.period]=true; });
@@ -11078,7 +11090,7 @@ function renderAvailBody(storeId, week) {
     }).join('')}</tr>`;
   });
   html += `</tbody></table>
-    <div class="form-group" style="margin-top:10px"><label class="form-label">Special Requests / Notes</label><textarea class="form-textarea" id="avail-notes" placeholder="希望休・特記事項">${(getAvailability(storeId,week).find(a=>a.name===ROLE_CONFIG[curRole].name)||{}).notes||''}</textarea></div>
+    <div class="form-group" style="margin-top:10px"><label class="form-label">Special Requests / Notes</label><textarea class="form-textarea" id="avail-notes" placeholder="希望休・特記事項">${(getAvailability(storeId,week).find(a=>a.name===myName())||{}).notes||''}</textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="submitAvail('${storeId}','${week}')">Submit</button></div>`;
   openModal(html);
@@ -11087,7 +11099,7 @@ function toggleAvail(storeId, week, key) { availTmp[key]=!availTmp[key]; renderA
 function submitAvail(storeId, week) {
   var slots = Object.keys(availTmp).filter(k=>availTmp[k]).map(k=>{var p=k.split('_');return {day:p[0],period:p[1]};});
   if (!slots.length) { alert('勤務可能枠を選択してください'); return; }
-  var me = ROLE_CONFIG[curRole].name;
+  var me = myName();
   var notes = document.getElementById('avail-notes').value.trim();
   var avail = getAvailability(storeId, week).filter(a=>a.name!==me);
   var myEntry={name:me, slots, notes, date:new Date().toLocaleDateString('ja')};
