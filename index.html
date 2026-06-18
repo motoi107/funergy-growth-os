@@ -1402,13 +1402,9 @@ const DEFAULT_CATEGORIES = [
   {code:31000,name:'茶・コーヒー', cls:'beverage'},
   // 消耗品
   {code:40000,name:'消耗品',       cls:'supply'},
-  {code:6100, name:'鮮魚（マグロ/サーモン）', cls:'food'},
-  {code:6200, name:'貝・甲殻類', cls:'food'},
-  {code:6300, name:'魚卵・うに', cls:'food'},
   {code:11000, name:'加工品', cls:'food'},
   {code:12000, name:'仕込品', cls:'food'},
-  {code:13000, name:'油', cls:'food'},
-  {code:14000, name:'乾物・パントリー', cls:'food'}
+  {code:13000, name:'油', cls:'food'}
 ];
 
 /* 初期 食材マスター */
@@ -2336,11 +2332,22 @@ const ROLE_TO_PERM = { ceo:'full', gm:'full', office:'finance', am:'manager', sl
 function permFromRole(role){ return ROLE_TO_PERM[role] || 'crew'; }
 
 /* マスター取得ヘルパー */
-function getCategories() { return ls('m_categories', DEFAULT_CATEGORIES); }
+/* カテゴリ統合: 鮮魚(6100)/貝甲殻類(6200)/魚卵(6300)→海産物(6000)、乾物(14000)→加工品(11000)
+   旧データは保存値を変えず、読み取り時に統合先へ正規化（クラウドが古くても常に統合表示） */
+var CAT_MERGE = {6100:6000, 6200:6000, 6300:6000, 14000:11000};
+function normCat(code){ code=parseInt(code); return CAT_MERGE[code]||code; }
+function getCategories() {
+  var cats = ls('m_categories', DEFAULT_CATEGORIES);
+  cats = cats.filter(function(c){ return !CAT_MERGE[c.code]; });          // 統合元は選択肢・表示から除外
+  if (!cats.find(function(c){return c.code===6000;}))  cats.push({code:6000, name:'海産物', cls:'food'});
+  if (!cats.find(function(c){return c.code===11000;})) cats.push({code:11000,name:'加工品', cls:'food'});
+  return cats;
+}
 function getIngredients() {
   var ings = ls('m_ingredients', DEFAULT_INGREDIENTS);
   // 発注関連フィールドの既定値を補完（基準在庫=PAR, 発注ロット等）
   ings.forEach(i => {
+    if (CAT_MERGE[i.cat]) i.cat = CAT_MERGE[i.cat];   // カテゴリ統合の正規化
     if (i.par===undefined) i.par = 20;
     if (i.minStock===undefined) i.minStock = Math.round(i.par*0.3);
     if (i.maxStock===undefined) i.maxStock = Math.round(i.par*1.5);
@@ -7005,11 +7012,27 @@ function saveMenuMix(storeId) {
 ============================================================ */
 function getInvItems(storeId) {
   var ings = getIngredients();
-  // daily: 主要食材フラグ(既定で食材区分の上位/お酒)。dailyフラグは設定で変更可
-  var def = ings.map((i,idx) => ({code:i.code, name:i.name, unit:i.unit, cls:catClass(i.cat),
-    par: 20, last: 0, received: 0, consumed: 0, count:'',
-    daily: (catClass(i.cat)==='food' || catClass(i.cat)==='liquor') ? (idx%2===0) : false }));
-  return ls('inv_'+storeId, def);
+  // 店舗食材マスター(store_ingredients)に登録があれば、その食材だけで棚卸を構成（マスターに追従）。
+  // 登録がまだ無い店舗は従来どおり全食材（後方互換／空棚卸を防ぐ）。
+  var storeCodes = getStoreIngredients(storeId);
+  var useStore = storeCodes.length > 0;
+  var masterIngs = useStore ? ings.filter(i=>storeCodes.indexOf(i.code)>=0) : ings;
+  // 保存済み(inv_<storeId>)のカウント・PAR・棚卸値は引き継ぐ
+  var saved = ls('inv_'+storeId, null);
+  var savedByCode = {};
+  if (Array.isArray(saved)) saved.forEach(function(it){ savedByCode[it.code]=it; });
+  return masterIngs.map(function(i, idx){
+    var s = savedByCode[i.code];
+    return {
+      code:i.code, name:i.name, unit:i.unit, cls:catClass(i.cat),
+      par: s&&s.par!=null ? s.par : 20,
+      last: s&&s.last!=null ? s.last : 0,
+      received: s&&s.received!=null ? s.received : 0,
+      consumed: s&&s.consumed!=null ? s.consumed : 0,
+      count: s&&s.count!=null ? s.count : '',
+      daily: s ? !!s.daily : ((catClass(i.cat)==='food' || catClass(i.cat)==='liquor') ? (idx%2===0) : false)
+    };
+  });
 }
 function setInvItems(storeId, items) { lsSet('inv_'+storeId, items); }
 /* 棚卸アイテムの業者名（食材マスターから引く） */
@@ -12553,6 +12576,7 @@ function deleteEmp(empId) {
 ============================================================ */
 var ingClassFilter = 'all';
 var ingCatFilter = 'all';
+var ingMasterSearch = '';
 function renderIngredientMaster() {
   var cats = getCategories();
   var ings = getIngredients();
@@ -12565,6 +12589,8 @@ function renderIngredientMaster() {
   if (ingScope==='store' && ingStore) list = list.filter(i => isInStoreMaster(ingStore, i.code));
   if (ingClassFilter !== 'all') list = list.filter(i => catClass(i.cat) === ingClassFilter);
   if (ingCatFilter !== 'all') list = list.filter(i => i.cat === parseInt(ingCatFilter));
+  var ingQ = (ingMasterSearch||'').toLowerCase().trim();
+  if (ingQ) list = list.filter(i => (i.name||'').toLowerCase().includes(ingQ) || String(i.code).includes(ingQ) || (i.vendor||'').toLowerCase().includes(ingQ) || (i.subVendor||'').toLowerCase().includes(ingQ));
 
   // 区分別カウント
   var classCounts = {};
@@ -12605,6 +12631,8 @@ function renderIngredientMaster() {
       ${clsCats.map(c=>`<div class="phase-tab${ingCatFilter==String(c.code)?' active':''}" onclick="setIngCatFilter('${c.code}')">${c.code} ${c.name}</div>`).join('')}
     </div>`;
   }
+
+  html += `<input class="form-input" id="ing-master-search" placeholder="食材名・コード・業者で検索" value="${ingMasterSearch}" oninput="ingMasterSearchInput(this.value)" autocomplete="off" style="margin-bottom:8px">`;
 
   html += `<div class="card">
     <table class="inv-table">
@@ -12950,6 +12978,11 @@ function exportByClass() {
 
 function setIngClassFilter(f) { ingClassFilter = f; ingCatFilter = 'all'; renderPage('ingredient_master'); }
 function setIngCatFilter(f) { ingCatFilter = f; renderPage('ingredient_master'); }
+function ingMasterSearchInput(v) {
+  ingMasterSearch = v;
+  clearTimeout(window._ingSearchTimer);
+  window._ingSearchTimer = setTimeout(function(){ renderPage('ingredient_master'); var s=document.getElementById('ing-master-search'); if(s){ s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }, 350);
+}
 function setIngScope(v){ window._ingScope = (v==='store'?'store':'all'); renderPage('ingredient_master'); }
 function toggleStoreIngredient(code){
   var sid=(curStore&&curStore!=='ALL')?curStore:null;
