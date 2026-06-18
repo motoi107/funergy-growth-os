@@ -15385,7 +15385,10 @@ function renderInvoice() {
       html += `<div class="card">
         <div class="approval-header">
           <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}品目 · $${inv.total.toFixed(2)}</div></div>
-          <span class="tag ${inv.applied?'tag-green':'tag-yellow'}">${inv.applied?'価格更新済':'未反映'}</span>
+          <div style="display:flex;align-items:center;gap:6px">
+            ${inv.imagePath?`<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="viewInvoiceImage('${inv.imagePath.replace(/'/g,"\\'")}')"><i class="ti ti-photo"></i></button>`:''}
+            <span class="tag ${inv.applied?'tag-green':'tag-yellow'}">${inv.applied?'価格更新済':'未反映'}</span>
+          </div>
         </div>
       </div>`;
     });
@@ -15403,6 +15406,7 @@ function invoiceStoreCandidates() {
 }
 function openInvoiceModal() {
   invoiceTmpLines = [];
+  window._invoicePhotoFile = null;
   var vendors = getVendors();
   var candidates = invoiceStoreCandidates();
   if (!window._invoiceStore || !candidates.some(s=>s.id===window._invoiceStore)) {
@@ -15450,6 +15454,34 @@ function openInvoiceModal() {
   setTimeout(renderOCRResult, 30);
 }
 function setInvDocType(t) { invoiceDocType = t; openInvoiceModal(); }
+/* ===== 請求書画像：Supabase Storage（バケット invoices / 店舗名 × 年月） ===== */
+function saniStore(name){ return String(name||'store').replace(/[\/\\]/g,' ').trim().replace(/\s+/g,'_').replace(/[^\w\-]/g,'').replace(/_+/g,'_') || 'store'; }
+async function uploadInvoiceImage(file, storeName){
+  if(!file) return null;
+  try{
+    var d=new Date(); var ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    var ext=(file.type&&file.type.indexOf('png')>=0)?'png':'jpg';
+    var path=saniStore(storeName)+'/'+ym+'/inv_'+Date.now()+'.'+ext;
+    var r=await fetch(SUPABASE_URL+'/storage/v1/object/invoices/'+encodeURI(path), {
+      method:'POST',
+      headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':file.type||'image/jpeg', 'x-upsert':'true' },
+      body:file
+    });
+    if(!r.ok){ console.warn('invoice image upload failed', r.status, await r.text()); showToast('画像の保存に失敗しました（Storage未設定の可能性）','warning'); return null; }
+    return path;
+  }catch(e){ console.warn('invoice image upload error', e); return null; }
+}
+async function viewInvoiceImage(path){
+  if(!path) return;
+  try{
+    var r=await fetch(SUPABASE_URL+'/storage/v1/object/sign/invoices/'+encodeURI(path), {
+      method:'POST', headers: supaHeaders(), body: JSON.stringify({expiresIn:3600})
+    });
+    var d=await r.json();
+    if(d && d.signedURL){ window.open(SUPABASE_URL+'/storage/v1'+d.signedURL, '_blank'); }
+    else { showToast('画像を開けませんでした','danger'); }
+  }catch(e){ showToast('画像を開けませんでした','danger'); }
+}
 
 function checkVendorRegistered() {
   var name = document.getElementById('inv-vendor').value.trim();
@@ -15477,6 +15509,7 @@ function matchLineToIngredient(name){
 async function realInvoiceOCR(input){
   var file=input&&input.files&&input.files[0];
   if(!file) return;
+  window._invoicePhotoFile = file;
   var el=document.getElementById('ocr-result');
   if(el) el.innerHTML='<div class="alert alert-info" style="margin-bottom:8px"><i class="ti ti-loader"></i> AIで読み取り中…（10〜30秒）</div>';
   try{
@@ -15530,7 +15563,7 @@ function renderOCRResult() {
     <div style="text-align:right;font-weight:600;margin-top:8px">合計: $<span id="inv-total">${total.toFixed(2)}</span></div>`;
 }
 
-function saveInvoice() {
+async function saveInvoice() {
   if (!invoiceTmpLines.length) { alert('品目がありません。写真読取か「手入力で品目追加」で追加してください'); return; }
   var vendor = document.getElementById('inv-vendor').value.trim();
   if (!vendor) { alert('業者・購入先を入力してください'); return; }
@@ -15549,10 +15582,18 @@ function saveInvoice() {
     }
   });
   lsSet('m_ingredients', ings);
+  // 画像をSupabase Storageへ（店舗 × 年月で振り分け）
+  var storeObj = STORES.find(x=>x.id===invStoreId);
+  var imagePath = null;
+  if (window._invoicePhotoFile) {
+    var saveBtn = event && event.target ? event.target : null;
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '画像を保存中…'; }
+    imagePath = await uploadInvoiceImage(window._invoicePhotoFile, storeObj?storeObj.name:invStoreId);
+  }
   // Invoice保存
   var invoices = ls('invoices', []);
   invoices.push({id:'inv'+Date.now(), vendor, storeId:invStoreId, docType:invoiceDocType, date:new Date().toLocaleDateString('ja'),
-    lines:invoiceTmpLines, total, applied:true, by:ROLE_CONFIG[curRole].name});
+    lines:invoiceTmpLines, total, applied:true, by:ROLE_CONFIG[curRole].name, imagePath:imagePath||null});
   lsSet('invoices', invoices);
   // Receiptの場合は買い出しにも反映
   if (invoiceDocType==='Receipt') {
