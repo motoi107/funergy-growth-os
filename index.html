@@ -2509,6 +2509,11 @@ function toggleTipExclude(storeId, date, name, slot) {
 function getTipLeaderSplit() { return ls('tip_leader_split', true); }
 function setTipLeaderSplit(v) { lsSet('tip_leader_split', !!v); }
 
+/* Store Manager以上（管理職）＋オフィスはTip対象外。役職(title)ベースで判定
+   ※権限ロールでは Store Manager=sl のため、roleだけでは除外できない */
+var TIP_EXCLUDED_TITLES = ['Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
+function isTipExcludedTitle(title){ return !!title && TIP_EXCLUDED_TITLES.indexOf(title) >= 0; }
+
 /* チップ配分計算（Tip Sheetロジック）
    - Store Manager以上(ceo/gm/office/am)は対象外
    - Store Leader(sl)は50%別枠を時間按分で受取＋一般配分にも参加
@@ -2521,7 +2526,7 @@ function calcTipDistribution(storeId, date) {
   var emps = getEmployees();
   // 対象スタッフ: その店のsl/crew（manager以上除外）
   function inStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
-  var staff = emps.filter(e=>inStore(e) && (e.role==='sl'||e.role==='crew') && e.status!=='退職');
+  var staff = emps.filter(e=>inStore(e) && (e.role==='sl'||e.role==='crew') && e.status!=='退職' && !isTipExcludedTitle(e.title));
 
   function distSlot(slot, tipTotal) { // slot='lunch'|'dinner'
     var rows = staff.map(e=>{
@@ -8775,7 +8780,7 @@ function renderTipDaily(storeId, store, date) {
       </tfoot></table>`;
     if (Math.abs(dist.distSum-tip.total)<0.5) html += `<div class="alert alert-success" style="padding:7px 10px;margin-top:8px;font-size:12px"><i class="ti ti-circle-check"></i>配分合計とチップ総額が一致しています（ミスなし）</div>`;
     else html += `<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:12px"><i class="ti ti-alert-triangle"></i>差額があります。勤怠やキャッシュチップを確認してください。</div>`;
-    html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">※ チップ総額を pt（時間×評価係数）で全員按分。Store Manager以上は対象外。Lunch/Dinner別に計算。</div>`;
+    html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">※ チップ総額を pt（時間×評価係数）で全員按分。Store Manager以上・オフィスは対象外。Lunch/Dinner別に計算。</div>`;
     html += '</div>';
   }
   return html;
@@ -14279,7 +14284,7 @@ function renderMypage() {
     <div style="flex:1">
       <div class="fy-label">Funergy You</div>
       <div class="fy-name">${isCrewView?t('おはようございます、'+me,'Good morning, '+me):me}</div>
-      <div class="fy-sub">${roleLabelI18n(curRole)} · ${curStore==='ALL'?t('全店舗','All Stores'):store.name} · ${new Date().toLocaleDateString(langDateLocale())}</div>
+      <div class="fy-sub">${(meEmp&&meEmp.title)?escapeHtml(meEmp.title):roleLabelI18n(curRole)} · ${curStore==='ALL'?t('全店舗','All Stores'):store.name} · ${new Date().toLocaleDateString(langDateLocale())}</div>
       ${isCrewView?`<div style="display:flex;align-items:baseline;gap:8px;margin-top:9px"><span style="font-size:13px;font-weight:700;color:#fff">${heroLevel}</span><span style="font-size:11px;color:rgba(255,255,255,.85)">${heroNext}</span></div>
       <div class="fy-levelbar"><i style="width:${heroPct}%"></i></div>`:''}
     </div>
@@ -14576,14 +14581,14 @@ function renderMypage() {
   if (attRows.length) {
     html += `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">${attMonthLabel()} · ${t(attRows.length+'日勤務',attRows.length+' days')} · ${t('計','total')}${attTotalH.toFixed(1)}h</div>
       <table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th>${t('日付','Date')}</th><th>In</th><th>Out</th><th>${t('計','Total')}</th></tr></thead><tbody>`;
-    attRows.slice(-8).reverse().forEach(r=>{
+    attRows.slice().reverse().forEach(r=>{
       html += `<tr><td>${r.date.slice(5)} (${r.dow})</td>
         <td style="text-align:center;color:var(--muted)">${r.clockIn}</td>
         <td style="text-align:center;color:${r.missingOut?'var(--red)':'var(--muted)'}">${r.missingOut?t('漏れ','Missing'):r.clockOut}</td>
         <td style="text-align:right;font-weight:600">${r.total.toFixed(1)}h</td></tr>`;
     });
     html += `</tbody></table>
-      <p style="font-size:11px;color:var(--muted);margin-top:6px">${t('直近8日分を表示。Toast打刻データに基づきます。','Showing last 8 days. Based on Toast clock data.')}</p>`;
+      <p style="font-size:11px;color:var(--muted);margin-top:6px">${t('今月の全勤務日を表示。Toast打刻データに基づきます。','Showing all worked days this month. Based on Toast clock data.')}</p>`;
   } else {
     html += `<p style="color:var(--muted);font-size:13px">${t(attMonthLabel()+'の勤怠記録がまだありません。',"No attendance records yet for "+attMonthLabel()+".")}<br>${t('店舗で勤怠データが反映されると表示されます。','Records appear once your store syncs attendance.')}</p>`;
   }
