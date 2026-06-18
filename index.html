@@ -11165,12 +11165,27 @@ function saveVacations(v) { lsSet('my_vacations', v); }
    - Area Manager: 自分の管轄店のみ
    - Store Leader / Store Manager(role=sl): 自店のみ
    - CEO: 休暇承認フロー対象外（通知不要） */
+/* 休暇の管理（他人の申請の閲覧/承認）権限：Store Leader以上（G4+）。
+   role 'sl' には Server/Kitchen Leader(G3) も含まれるため、肩書きのGradeで判定する。 */
+function vacManagerGrade(){
+  var e = (typeof getEmployees==='function') ? getEmployees().find(function(x){return x.name===curUserName;}) : null;
+  var g = e ? gradeNum(empGrade(e)) : 0;
+  if(!g){
+    if(curRole==='gm') g=7; else if(curRole==='am') g=6; else if(curRole==='sl') g=4; else if(curRole==='ceo') g=8;
+  }
+  return g;
+}
+function canManageVacations(){
+  if (curRole==='ceo') return false;   // CEOは休暇承認フロー対象外（既存仕様）
+  if (curStoreLogin) return true;      // 店舗共有端末は管理ビュー
+  return vacManagerGrade() >= 4;       // Store Leader以上
+}
 function canApproveVacation(vac) {
   if (curRole==='gm') return true;                          // GM: 全店（最終承認）
   if (curRole==='ceo') return false;                        // CEO: 対象外（通知なし）
   if (curRole==='am') return myAmStores().includes(vac.storeId); // AM: 管轄店のみ
-  // 所属店舗のSL以上（SLは自店のみ）
-  if (curRole==='sl' || curStoreLogin) {
+  // Store Leader以上（G4+）のみ・自店のみ。Server/Kitchen Leader(G3)以下は不可
+  if ((curRole==='sl' && vacManagerGrade()>=4) || curStoreLogin) {
     var myStore = curStore!=='ALL' ? curStore : (getEmployees().find(e=>e.name===curUserName)||{}).store;
     return vac.storeId === myStore;
   }
@@ -11226,7 +11241,7 @@ function renderVacation() {
   maybePullVacations();
   var all = getVacations();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
-  var isManager = ['gm','ceo','am','sl'].includes(curRole) || curStoreLogin;
+  var isManager = canManageVacations();
   var html = `<div class="section-header">
     <div class="section-title">休暇申請</div>
     <div style="display:flex;gap:6px">
