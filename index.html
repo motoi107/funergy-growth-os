@@ -3740,9 +3740,11 @@ function buildNav() {
     // 役職制限のある項目を除外（NAV_ITEMSにroles指定があるもの）
     children = children.filter(pid => { var it=NAV_ITEMS.find(n=>n.id===pid); return !it || !it.roles || it.roles.includes(curRole); });
     var pendingApprovals = ls('approvals', []).filter(a=>a.status==='pending').length;
+    var pendingVacNav = getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
     sub.innerHTML = children.map(pid => {
       var item = navItemById(pid);
-      var badge = (pid==='approval' && pendingApprovals) ? `<span style="background:var(--red);color:#fff;border-radius:9px;font-size:9px;padding:0 5px;margin-left:4px">${pendingApprovals}</span>` : '';
+      var badgeN = (pid==='approval') ? pendingApprovals : (pid==='vacation' ? pendingVacNav : 0);
+      var badge = badgeN ? `<span style="background:var(--red);color:#fff;border-radius:9px;font-size:9px;padding:0 5px;margin-left:4px">${badgeN}</span>` : '';
       return `<button class="subnav-chip ${pid===curPage?'active':''}" onclick="go('${pid}')"><i class="ti ${item.icon}"></i>${item.label}${badge}</button>`;
     }).join('');
   } else { sub.innerHTML = ''; }
@@ -4164,7 +4166,10 @@ function renderDashboard() {
   var todayTasks = myTasks.filter(t=>t.due===today);
   var approvalsAll = ls('approvals', []).filter(a=>a.status==='pending');
   var reqAlerts = [];
-  getVisibleStores().forEach(s=>{ var ops=getDailyOps(s.id); var inc=ops.filter(t=>t.required&&!t.done); if(inc.length) reqAlerts.push({store:s.name, count:inc.length, id:s.id}); });
+  // GM/CEOは全社視点。店舗の必須チェック（店舗タスク）は優先アクション・本日のタスクから除外
+  if (!['gm','ceo'].includes(curRole)) {
+    getVisibleStores().forEach(s=>{ var ops=getDailyOps(s.id); var inc=ops.filter(t=>t.required&&!t.done); if(inc.length) reqAlerts.push({store:s.name, count:inc.length, id:s.id}); });
+  }
   var danger = stores.filter(s=>s.status==='danger');
   var laborOver = stores.filter(s=>s.labor>32);
   var fcOver = stores.filter(s=>s.fc>34);
@@ -4278,12 +4283,14 @@ function renderDashboard() {
 
   // ====== ① 優先アラート（最重要を最上部） ======
   var alerts = [];
+  var pendingVac = getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
   danger.forEach(s=>alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} 売上未達 ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`}));
   laborOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} Labor超過 ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`}));
   fcOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} Food Cost超過 ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`}));
   reqAlerts.forEach(r=>alerts.push({lv:'danger', icon:'ti-checklist', text:`${r.store} 必須チェック未完 ${r.count}件`, act:`switchStore('${r.id}');openStoreCmd()`}));
   if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`期限切れタスク ${overdue.length}件`, act:`go('tasks')`});
   if (approvalsAll.length) alerts.push({lv:'warn', icon:'ti-checkbox', text:`承認待ち ${approvalsAll.length}件`, act:`go('approval')`});
+  if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`休暇承認待ち ${pendingVac}件`, act:`go('vacation')`});
   if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
 
   html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}">
@@ -4304,12 +4311,13 @@ function renderDashboard() {
 
   // ====== ④ 本日のタスク（隠さない） ======
   html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>本日のタスク`;
-  var openCount = myTasks.length + approvalsAll.length + reqAlerts.reduce((a,r)=>a+r.count,0);
+  var openCount = myTasks.length + approvalsAll.length + pendingVac + reqAlerts.reduce((a,r)=>a+r.count,0);
   html += ` <span class="tag ${openCount?'tag-yellow':'tag-green'}" style="margin-left:auto">${openCount}件</span></div>`;
   var taskRows = [];
   overdue.slice(0,5).forEach(t=>taskRows.push({s:'danger', t:t.title, sub:'期限切れ', act:`go('tasks')`}));
   todayTasks.slice(0,5).forEach(t=>taskRows.push({s:'warn', t:t.title, sub:'本日期限', act:`go('tasks')`}));
   if (approvalsAll.length) taskRows.push({s:'active', t:`承認待ち ${approvalsAll.length}件`, sub:'承認センター', act:`go('approval')`});
+  if (pendingVac) taskRows.push({s:'active', t:`休暇承認待ち ${pendingVac}件`, sub:'休暇申請', act:`go('vacation')`});
   reqAlerts.forEach(r=>taskRows.push({s:'danger', t:`${r.store} 必須チェック`, sub:`${r.count}件未完`, act:`switchStore('${r.id}');openStoreCmd()`}));
   var otherTasks = myTasks.filter(t=>!overdue.includes(t)&&!todayTasks.includes(t));
   otherTasks.slice(0,4).forEach(tk=>taskRows.push({s:'idle', t:tk.title, sub:tk.due||t('期限なし','No due date'), act:`go('tasks')`}));
@@ -11049,9 +11057,15 @@ function weekDateForDow(dow) {
    承認できるのは: 所属店舗のSL以上 / AM / GM */
 function getVacations() { return ls('my_vacations', []); }
 function saveVacations(v) { lsSet('my_vacations', v); }
-/* 承認権限: GM/CEO/AM、または対象店舗のSL（店舗ログイン含む） */
+/* 承認権限・通知範囲:
+   - GM: 全店（最終承認）
+   - Area Manager: 自分の管轄店のみ
+   - Store Leader / Store Manager(role=sl): 自店のみ
+   - CEO: 休暇承認フロー対象外（通知不要） */
 function canApproveVacation(vac) {
-  if (['gm','ceo','am'].includes(curRole)) return true;
+  if (curRole==='gm') return true;                          // GM: 全店（最終承認）
+  if (curRole==='ceo') return false;                        // CEO: 対象外（通知なし）
+  if (curRole==='am') return myAmStores().includes(vac.storeId); // AM: 管轄店のみ
   // 所属店舗のSL以上（SLは自店のみ）
   if (curRole==='sl' || curStoreLogin) {
     var myStore = curStore!=='ALL' ? curStore : (getEmployees().find(e=>e.name===curUserName)||{}).store;
@@ -11097,13 +11111,25 @@ function rejectVacation(id) {
   renderPage(curPage);
 }
 
+var _vacPulled=false;
+async function maybePullVacations(force){
+  if(_vacPulled && !force) return; _vacPulled=true;
+  var ok=await pullOpKey('my_vacations');
+  if(ok && curPage==='vacation') renderPage('vacation');
+}
+function refreshVacations(){ _vacPulled=false; showToast('最新を取得中…','info'); maybePullVacations(true); }
+
 function renderVacation() {
+  maybePullVacations();
   var all = getVacations();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var isManager = ['gm','ceo','am','sl'].includes(curRole) || curStoreLogin;
   var html = `<div class="section-header">
     <div class="section-title">休暇申請</div>
-    <button class="btn btn-primary btn-sm" onclick="openVacationModal()"><i class="ti ti-plus"></i> 申請</button>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-secondary btn-sm" onclick="refreshVacations()"><i class="ti ti-cloud-download"></i> 最新を取得</button>
+      <button class="btn btn-primary btn-sm" onclick="openVacationModal()"><i class="ti ti-plus"></i> 申請</button>
+    </div>
   </div>`;
 
   // 管理者: 承認待ちキュー（自分が承認できるもの）
