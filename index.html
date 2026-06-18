@@ -2356,6 +2356,8 @@ function getIngredients() {
     if (i.subVendor===undefined) i.subVendor = '';
     if (i.qty===undefined) i.qty = 0;
     if (i.uc===undefined) i.uc = ingUnitCost(i);
+    if (i.storePrices===undefined) i.storePrices = {};   // 店舗別 最新仕入価格（{storeId:{price,date,vendor}}）
+    if (i.aliases===undefined) i.aliases = [];           // 照合用の別名（請求書名のゆれを学習）
   });
   return ings;
 }
@@ -13537,6 +13539,19 @@ function toggleStoreIngredient(code){
   renderPage('ingredient_master');
 }
 
+function ingStorePriceHtml(i){
+  var sp = i && i.storePrices; if(!sp) return '';
+  var keys = Object.keys(sp); if(!keys.length) return '';
+  var rows = keys.map(function(sid){
+    var s=sp[sid]||{}; var nm=(getStoresAll().find(function(x){return x.id===sid;})||{}).name||sid;
+    return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:3px 0;border-bottom:1px dashed var(--border)"><span style="font-weight:600">'+escapeHtml(nm)+'</span><span>$'+((s.price!=null)?Number(s.price).toFixed(2):'—')+' <span style="color:var(--muted)">'+escapeHtml(s.vendor||'')+(s.date?' '+s.date:'')+'</span></span></div>';
+  }).join('');
+  return '<div class="form-group"><label class="form-label">店舗別 仕入価格（参考・請求書から自動記録）</label><div style="background:var(--surface2);border-radius:8px;padding:6px 10px">'+rows+'</div></div>';
+}
+function ingAliasHtml(i){
+  var a=(i&&i.aliases)||[]; if(!a.length) return '';
+  return '<div class="form-group"><label class="form-label">照合の別名（請求書名から学習）</label><div style="display:flex;gap:4px;flex-wrap:wrap">'+a.map(function(x){ return '<span class="tag tag-gray" style="font-size:10px">'+escapeHtml(x)+'</span>'; }).join('')+'</div></div>';
+}
 function openIngModal(code) {
   var ings = getIngredients();
   var cats = getCategories();
@@ -13556,6 +13571,8 @@ function openIngModal(code) {
       <div class="form-group"><label class="form-label">単位</label><input class="form-input" id="i-unit" value="${i.unit}" placeholder="kg, L, 本"></div>
     </div>
     ${!isNew?`<div class="form-group"><label class="form-label">コード / 区分</label><input class="form-input" value="${i.code}  (${className(catClass(i.cat))} · ${catName(i.cat)})" disabled></div>`:''}
+    ${!isNew?ingStorePriceHtml(i):''}
+    ${!isNew?ingAliasHtml(i):''}
     <div class="form-group"><label class="form-label">仕入先</label>
       <select class="form-select" id="i-vendor"><option value="自家製">自家製</option>${vendors.map(v=>`<option value="${v.name}"${i.vendor===v.name?' selected':''}>${v.name}</option>`).join('')}</select>
     </div>
@@ -16107,13 +16124,53 @@ function gotoVendorRegister(prefillName) {
 }
 
 function fileToBase64(file){ return new Promise(function(res,rej){ var r=new FileReader(); r.onload=function(){ res(String(r.result).split(',')[1]); }; r.onerror=rej; r.readAsDataURL(file); }); }
-function matchLineToIngredient(name){
-  if(!name) return null;
-  var ings=getIngredients(); var n=(''+name).toLowerCase();
-  var hit = ings.find(function(i){ var inm=(''+i.name).toLowerCase(); return inm===n; })
-        || ings.find(function(i){ var inm=(''+i.name).toLowerCase(); return inm.indexOf(n)>=0 || n.indexOf(inm)>=0; });
-  return hit||null;
+/* ===== 請求書品名 ⇔ 食材マスター 照合エンジン（正規化＋別名＋類似度） ===== */
+function normName(s){
+  s = String(s==null?'':s).toLowerCase();
+  // 全角英数 → 半角
+  s = s.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function(c){ return String.fromCharCode(c.charCodeAt(0)-0xFEE0); });
+  // カタカナ → ひらがな（表記ゆれ吸収）
+  s = s.replace(/[\u30a1-\u30f6]/g, function(c){ return String.fromCharCode(c.charCodeAt(0)-0x60); });
+  // 空白・記号・長音などを除去
+  s = s.replace(/[\s\u3000\u30fc\uff70]/g, '');
+  s = s.replace(/[()\[\]{}（）「」『』【】・,，.。/／\\\-_*※:：;；'"`~!！?？#＃&＆@＠%％+＋=＝]/g, '');
+  return s;
 }
+function _bigrams(s){ var g=[]; if(s.length<2) return s?[s]:[]; for(var i=0;i<s.length-1;i++) g.push(s.substr(i,2)); return g; }
+function _dice(a,b){
+  if(!a||!b) return 0; if(a===b) return 1;
+  var ga=_bigrams(a), gb=_bigrams(b); if(!ga.length||!gb.length) return 0;
+  var m={}; ga.forEach(function(g){ m[g]=(m[g]||0)+1; });
+  var inter=0; gb.forEach(function(g){ if(m[g]>0){ inter++; m[g]--; } });
+  return (2*inter)/(ga.length+gb.length);
+}
+function ingMatchKeys(i){
+  var keys=[normName(i.name)];
+  (i.aliases||[]).forEach(function(a){ var k=normName(a); if(k && keys.indexOf(k)<0) keys.push(k); });
+  return keys.filter(Boolean);
+}
+/* 最良マッチ＋スコア（0〜1）を返す。スコアで自動/要確認/新規を切り分ける */
+function matchLineBest(name){
+  var q=normName(name); if(!q) return { ing:null, score:0 };
+  var ings=getIngredients(); var best=null, bestScore=0;
+  ings.forEach(function(i){
+    var sc=0;
+    ingMatchKeys(i).forEach(function(k){
+      var s;
+      if(k===q) s=1;
+      else if(k.length>=2 && q.length>=2 && (k.indexOf(q)>=0 || q.indexOf(k)>=0)){
+        var lr=Math.min(k.length,q.length)/Math.max(k.length,q.length);
+        s=Math.max(0.6+0.4*lr, _dice(k,q));
+      } else s=_dice(k,q);
+      if(s>sc) sc=s;
+    });
+    if(sc>bestScore){ bestScore=sc; best=i; }
+  });
+  return { ing: bestScore>0?best:null, score: bestScore };
+}
+var INV_MATCH_AUTO = 0.60;     // これ以上：自動マッチ
+var INV_MATCH_SUGGEST = 0.45;  // これ以上〜AUTO未満：要確認で候補提示／未満：新規
+function matchLineToIngredient(name){ var r=matchLineBest(name); return r.score>=INV_MATCH_AUTO ? r.ing : null; }
 async function realInvoiceOCR(input){
   var file=input&&input.files&&input.files[0];
   if(!file) return;
@@ -16132,8 +16189,12 @@ async function realInvoiceOCR(input){
     if(data && data.vendor){ var vEl=document.getElementById('inv-vendor'); if(vEl && !vEl.value){ vEl.value=data.vendor; if(typeof checkVendorRegistered==='function') checkVendorRegistered(); } }
     var lines=(data&&data.lines)||[];
     invoiceTmpLines = lines.map(function(l){
-      var ing=matchLineToIngredient(l.name);
-      return { code: ing?ing.code:null, name: ing?ing.name:(l.name||'(不明)'), oldPrice: ing?ing.price:null, newPrice: (parseFloat(l.unitPrice)||0), qty: (parseFloat(l.qty)||1) };
+      var r=matchLineBest(l.name);
+      var ing = (r.score>=INV_MATCH_SUGGEST) ? r.ing : null;
+      return { code: ing?ing.code:null, name: ing?ing.name:(l.name||'(不明)'),
+        rawName: (l.name||''), oldPrice: ing?ing.price:null,
+        newPrice: (parseFloat(l.unitPrice)||0), qty: (parseFloat(l.qty)||1),
+        score: r.score, low: ing ? (r.score<INV_MATCH_AUTO) : false };
     });
     renderOCRResult();
     if(!lines.length) showToast('品目を読み取れませんでした。手入力で追加してください','warning');
@@ -16156,12 +16217,27 @@ function renderOCRResult() {
   if (!el) return;
   if (!invoiceTmpLines.length){ el.innerHTML=''; return; }
   var total = invoiceTmpLines.reduce((a,l)=>a+(l.newPrice||0)*(l.qty||0),0);
-  el.innerHTML = `<div style="font-size:12px;color:var(--muted);margin:6px 0">${invoiceTmpLines.length}品目（数量・単価は修正できます）</div>
+  var newCount = invoiceTmpLines.filter(l=>l.code==null).length;
+  var lowCount = invoiceTmpLines.filter(l=>l.code!=null && l.low).length;
+  var summary = invoiceTmpLines.length+'品目';
+  if (newCount) summary += ' ・ <span style="color:var(--accent2)">新規 '+newCount+'</span>';
+  if (lowCount) summary += ' ・ <span style="color:#d97706">要確認 '+lowCount+'</span>';
+  el.innerHTML = `<div style="font-size:12px;color:var(--muted);margin:6px 0">${summary}（数量・単価は修正できます）</div>
     <table class="inv-table"><thead><tr><th>品目</th><th style="width:54px">数量</th><th style="width:74px">単価</th><th style="width:28px"></th></tr></thead><tbody>
     ${invoiceTmpLines.map((l,idx)=>{
-      var status = l.code==null?'<span style="font-size:9px;color:var(--accent2)">新規</span>':(l.oldPrice!=null&&l.newPrice!==l.oldPrice?`<span style="font-size:9px;color:${l.newPrice>l.oldPrice?'var(--red)':'var(--green)'}">旧$${l.oldPrice.toFixed(2)}</span>`:'');
+      var status, actions='';
+      if (l.code==null){
+        status = '<span style="font-size:9px;color:var(--accent2);font-weight:700">新規</span>'+(l.rawName?' <span style="font-size:9px;color:var(--muted)">'+escapeHtml(l.rawName)+'</span>':'');
+        actions = `<div style="display:flex;gap:4px;margin-top:3px"><button class="btn btn-primary btn-sm" style="padding:1px 7px;font-size:10px" onclick="openInvNewIngOverlay(${idx})"><i class="ti ti-plus"></i> 新規登録</button><button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px" onclick="openInvLinkOverlay(${idx})">既存に紐付け</button></div>`;
+      } else if (l.low){
+        var pct = Math.round((l.score||0)*100);
+        status = '<span style="font-size:9px;color:#d97706;font-weight:700">要確認 '+pct+'%</span>'+(l.oldPrice!=null?' <span style="font-size:9px;color:var(--muted)">旧$'+l.oldPrice.toFixed(2)+'</span>':'');
+        actions = `<div style="margin-top:3px"><button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px" onclick="openInvLinkOverlay(${idx})"><i class="ti ti-switch"></i> 別の食材に紐付け</button></div>`;
+      } else {
+        status = (l.oldPrice!=null && l.newPrice!==l.oldPrice) ? `<span style="font-size:9px;color:${l.newPrice>l.oldPrice?'var(--red)':'var(--green)'}">旧$${l.oldPrice.toFixed(2)}</span>` : '';
+      }
       return `<tr>
-        <td style="font-size:12px">${l.name}<div>${status}</div></td>
+        <td style="font-size:12px">${escapeHtml(l.name)}<div>${status}</div>${actions}</td>
         <td><input class="form-input" style="padding:3px 5px;font-size:12px" type="number" step="any" value="${l.qty}" onchange="updateInvLine(${idx},'qty',this.value)"></td>
         <td><input class="form-input" style="padding:3px 5px;font-size:12px" type="number" step="any" value="${l.newPrice}" onchange="updateInvLine(${idx},'newPrice',this.value)"></td>
         <td><button class="btn btn-secondary btn-sm" style="padding:1px 6px" onclick="removeInvLine(${idx})">×</button></td>
@@ -16171,6 +16247,113 @@ function renderOCRResult() {
     <div style="text-align:right;font-weight:600;margin-top:8px">合計: $<span id="inv-total">${total.toFixed(2)}</span></div>`;
 }
 
+/* 請求書行 → 既存食材へ紐付け（別名を学習） */
+function linkInvLineToIng(idx, code){
+  var l = invoiceTmpLines[idx]; if(!l) return;
+  var ings = getIngredients(); var ing = ings.find(x=>x.code===parseInt(code)); if(!ing) return;
+  var raw = (l.rawName||'').trim();
+  if (raw && normName(raw)!==normName(ing.name)){
+    if(!ing.aliases) ing.aliases=[];
+    if(ing.aliases.indexOf(raw)<0){ ing.aliases.push(raw); lsSet('m_ingredients', ings); }
+  }
+  l.code=ing.code; l.name=ing.name; l.oldPrice=ing.price; l.low=false; l.score=1;
+  renderOCRResult();
+}
+
+/* 既存食材に紐付け：オーバーレイ検索（請求書モーダルを壊さない） */
+function openInvLinkOverlay(idx){
+  var l = invoiceTmpLines[idx]; if(!l) return;
+  _invLinkIdx = idx; _invLinkQ = (l.rawName||l.name||'');
+  obWizCloseCard && obWizCloseCard();
+  var ov=document.createElement('div'); ov.id='inv-link-ov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;display:flex;align-items:flex-end;justify-content:center';
+  ov.onclick=function(e){ if(e.target===ov) closeInvOverlay('inv-link-ov'); };
+  ov.innerHTML='<div style="background:var(--surface);width:100%;max-width:560px;max-height:85vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;overflow:hidden">'
+    +'<div style="padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px"><div style="font-weight:700;font-size:14px;flex:1">既存食材に紐付け</div><button class="modal-close" onclick="closeInvOverlay(\'inv-link-ov\')">×</button></div>'
+    +'<div style="padding:10px 16px"><input class="form-input" id="inv-link-q" value="'+escapeHtml(_invLinkQ)+'" placeholder="検索（名前・コード・業者）" oninput="renderInvLinkList(this.value)"></div>'
+    +'<div id="inv-link-list" style="flex:1;overflow-y:auto;padding:0 16px 14px"></div>'
+  +'</div>';
+  document.body.appendChild(ov);
+  renderInvLinkList(_invLinkQ);
+  setTimeout(function(){ var i=document.getElementById('inv-link-q'); if(i){ i.focus(); i.select(); } },60);
+}
+function renderInvLinkList(q){
+  var el=document.getElementById('inv-link-list'); if(!el) return;
+  var nq=normName(q); var ings=getIngredients();
+  var scored = ings.map(function(i){
+    var sc=0; ingMatchKeys(i).forEach(function(k){ var s = (k===nq)?1 : ((k.indexOf(nq)>=0||nq.indexOf(k)>=0)&&nq?0.8:_dice(k,nq)); if(s>sc)sc=s; });
+    if(!nq) sc=0;
+    return {i:i, sc:sc};
+  });
+  if(nq) scored = scored.filter(function(x){ return x.sc>0.05 || (''+x.i.code).indexOf(q)>=0 || (x.i.vendor||'').toLowerCase().indexOf(q.toLowerCase())>=0; });
+  scored.sort(function(a,b){ return b.sc-a.sc; });
+  scored = scored.slice(0,40);
+  if(!scored.length){ el.innerHTML='<div style="color:var(--muted);font-size:12px;padding:10px 0">該当なし</div>'; return; }
+  el.innerHTML = scored.map(function(x){
+    var i=x.i;
+    return '<div onclick="linkInvLineToIng('+_invLinkIdx+','+i.code+');closeInvOverlay(\'inv-link-ov\')" style="display:flex;align-items:center;gap:8px;padding:9px 4px;border-bottom:1px solid var(--border);cursor:pointer">'
+      +'<div style="flex:1;font-size:13px">'+escapeHtml(i.name)+'<div style="font-size:10px;color:var(--muted)">#'+i.code+' · '+escapeHtml(i.vendor||'—')+' · 現$'+(i.price||0)+'</div></div>'
+      +(x.sc>=0.45?'<span style="font-size:9px;color:var(--green)">候補</span>':'')
+    +'</div>';
+  }).join('');
+}
+
+/* 新規食材を全店マスターに登録（オーバーレイ） */
+function openInvNewIngOverlay(idx){
+  var l = invoiceTmpLines[idx]; if(!l) return;
+  _invNewIdx = idx;
+  var cats = getCategories(); var vendors = getVendors();
+  var vEl=document.getElementById('inv-vendor'); var vguess = vEl?vEl.value.trim():'';
+  var catOpts = CLASSES.map(function(cl){
+    var clsCats = cats.filter(function(c){ return c.cls===cl.id; });
+    if(!clsCats.length) return '';
+    return '<optgroup label="'+cl.name+'">'+clsCats.map(function(c){ return '<option value="'+c.code+'">'+c.code+' '+escapeHtml(c.name)+'</option>'; }).join('')+'</optgroup>';
+  }).join('');
+  var vendOpts = '<option value="自家製">自家製</option>'+vendors.map(function(v){ return '<option value="'+escapeHtml(v.name)+'"'+(v.name===vguess?' selected':'')+'>'+escapeHtml(v.name)+'</option>'; }).join('');
+  var ov=document.createElement('div'); ov.id='inv-new-ov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;display:flex;align-items:flex-end;justify-content:center';
+  ov.onclick=function(e){ if(e.target===ov) closeInvOverlay('inv-new-ov'); };
+  ov.innerHTML='<div style="background:var(--surface);width:100%;max-width:560px;max-height:88vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;overflow:hidden">'
+    +'<div style="padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px"><div style="font-weight:700;font-size:14px;flex:1">新規食材を全店マスターに登録</div><button class="modal-close" onclick="closeInvOverlay(\'inv-new-ov\')">×</button></div>'
+    +'<div style="padding:14px 16px;overflow-y:auto">'
+      +'<div class="form-group"><label class="form-label">食材名</label><input class="form-input" id="ni-name" value="'+escapeHtml(l.rawName||l.name||'')+'"></div>'
+      +'<div class="form-row"><div class="form-group"><label class="form-label">カテゴリ（コード自動採番）</label><select class="form-select" id="ni-cat">'+catOpts+'</select></div>'
+        +'<div class="form-group"><label class="form-label">単位</label><input class="form-input" id="ni-unit" value="-" placeholder="kg, L, 本"></div></div>'
+      +'<div class="form-group"><label class="form-label">仕入先</label><select class="form-select" id="ni-vendor">'+vendOpts+'</select></div>'
+      +'<div class="form-row"><div class="form-group"><label class="form-label">仕入価格 ($)</label><input class="form-input" id="ni-price" type="number" step="0.01" value="'+(l.newPrice||0)+'"></div>'
+        +'<div class="form-group"><label class="form-label">内容量</label><input class="form-input" id="ni-qty" type="number" step="0.01" value="0" placeholder="例: 2000"></div></div>'
+      +'<div style="font-size:11px;color:var(--muted)">登録後、この明細に自動で紐付き、保存時に価格が反映されます。</div>'
+    +'</div>'
+    +'<div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px"><button class="btn btn-secondary" style="flex:1" onclick="closeInvOverlay(\'inv-new-ov\')">キャンセル</button><button class="btn btn-primary" style="flex:1" onclick="saveInvNewIng()"><i class="ti ti-check"></i> 登録</button></div>'
+  +'</div>';
+  document.body.appendChild(ov);
+  setTimeout(function(){ var i=document.getElementById('ni-name'); if(i) i.focus(); },60);
+}
+function saveInvNewIng(){
+  var g=function(id){ var e=document.getElementById(id); return e?e.value:''; };
+  var name=g('ni-name').trim(); if(!name){ alert('食材名を入力してください'); return; }
+  var cat=parseInt(g('ni-cat')); if(!cat){ alert('カテゴリを選択してください'); return; }
+  var price=parseFloat(g('ni-price'))||0, qty=parseFloat(g('ni-qty'))||0;
+  var unit=g('ni-unit').trim()||'-', vendor=g('ni-vendor');
+  var ings=getIngredients();
+  var inCat=ings.filter(function(x){ return x.code>=cat && x.code<cat+1000; });
+  var newCode=(inCat.length?Math.max.apply(null,inCat.map(function(x){return x.code;})):cat)+1;
+  var uc = qty>0 ? price/(qty*1) : price;
+  var l = invoiceTmpLines[_invNewIdx];
+  var rec={ code:newCode, name:name, cat:cat, unit:unit, vendor:vendor, price:price, qty:qty, yield:100, uc:Math.round(uc*100000)/100000, aliases:[], storePrices:{} };
+  if (l && l.rawName && normName(l.rawName)!==normName(name)) rec.aliases.push(l.rawName.trim());
+  ings.push(rec); lsSet('m_ingredients', ings);
+  // 自店マスターにも登録
+  var sid = (document.getElementById('invoice-store')||{}).value || (window._invoiceStore) || (curStore!=='ALL'?curStore:null);
+  if (sid && sid!=='ALL') addStoreIngredient(sid, newCode);
+  if (l){ l.code=newCode; l.name=name; l.oldPrice=null; l.low=false; l.score=1; }
+  closeInvOverlay('inv-new-ov');
+  renderOCRResult();
+  showToast('新規食材を登録しました（#'+newCode+'）', 'success');
+}
+function closeInvOverlay(id){ var o=document.getElementById(id); if(o){ try{ document.body.removeChild(o); }catch(e){} } }
+var _invLinkIdx=null, _invLinkQ='', _invNewIdx=null;
+
 async function saveInvoice() {
   if (!invoiceTmpLines.length) { alert('品目がありません。写真読取か「手入力で品目追加」で追加してください'); return; }
   var vendor = document.getElementById('inv-vendor').value.trim();
@@ -16178,15 +16361,19 @@ async function saveInvoice() {
   var total = invoiceTmpLines.reduce((a,l)=>a+(l.newPrice||0)*(l.qty||0),0);
   var selEl = document.getElementById('invoice-store');
   var invStoreId = selEl ? selEl.value : (window._invoiceStore || (curStore==='ALL'?STORES[0].id:curStore));
-  // 食材マスターの価格を更新
+  // 食材マスターの価格を更新（全店共通の最新価格＝price）＋店舗別の最新仕入価格を記録
   var ings = getIngredients();
+  var _today = new Date().toLocaleDateString('ja');
   invoiceTmpLines.forEach(l => {
     var ing = ings.find(x=>x.code===l.code);
     if (ing) {
       var hist = ing.priceHistory || [];
-      hist.push({date:new Date().toLocaleDateString('ja'), price:ing.price});
+      hist.push({date:_today, price:ing.price});
       ing.priceHistory = hist;
       ing.price = l.newPrice;
+      // 店舗別 最新仕入価格（メモ）: 店舗ごとに上書き保存（店舗差が見える）
+      if (!ing.storePrices) ing.storePrices = {};
+      ing.storePrices[invStoreId] = { price:l.newPrice, date:_today, vendor:vendor };
     }
   });
   lsSet('m_ingredients', ings);
