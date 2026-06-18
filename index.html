@@ -12676,6 +12676,28 @@ function renderAcctExport() {
   html += `<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="exportAllInventoryCSV(${y},${m})"><i class="ti ti-download"></i> 全店まとめて出力</button>`;
   html += `</div>`;
 
+  // ===== 請求書（仕入）集計：月 × 店舗 × 区分 =====
+  var acct = invoiceAcctData(y, m);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-file-invoice" style="color:#e0a23a"></i>請求書（仕入）集計</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${acctMonthLabel()}に保存された請求書を、店舗 × 区分（食材／お酒／飲料／消耗品）で集計します（${acct.inMonth.length}件）。</p>`;
+  if (!acct.inMonth.length) {
+    html += `<p style="color:var(--muted);font-size:13px">この月に保存された請求書はありません。</p>`;
+  } else {
+    html += `<div style="overflow-x:auto"><table class="inv-table" style="font-size:12px;min-width:420px"><thead><tr><th>店舗</th>${CLASSES.map(c=>`<th style="text-align:right">${c.name}</th>`).join('')}<th style="text-align:right">合計</th></tr></thead><tbody>`;
+    Object.keys(acct.matrix).forEach(sid=>{
+      var s = STORES.find(x=>x.id===sid);
+      html += `<tr><td>${s?s.name:sid}</td>${CLASSES.map(c=>`<td style="text-align:right">$${acct.matrix[sid][c.id].toFixed(2)}</td>`).join('')}<td style="text-align:right;font-weight:700">$${acct.storeTotals[sid].toFixed(2)}</td></tr>`;
+    });
+    html += `<tr style="font-weight:700;border-top:2px solid var(--border)"><td>合計</td>${CLASSES.map(c=>`<td style="text-align:right">$${acct.clsTotals[c.id].toFixed(2)}</td>`).join('')}<td style="text-align:right">$${acct.grand.toFixed(2)}</td></tr>`;
+    html += `</tbody></table></div>`;
+    html += `<div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-secondary" style="flex:1" onclick="exportInvoiceAcctCSV(${y},${m})"><i class="ti ti-file-text"></i> CSV出力</button>
+      <button class="btn btn-primary" style="flex:1" onclick="exportInvoiceAcctExcel(${y},${m})"><i class="ti ti-table"></i> Excel出力</button>
+    </div>
+    <p style="font-size:11px;color:var(--muted);margin-top:6px">※ 集計表＋明細（日付・店舗・業者・品名・区分・数量・単価・金額）を出力します。</p>`;
+  }
+  html += `</div>`;
+
   return html;
 }
 function invHistInMonth(h, y, m) {
@@ -12691,6 +12713,78 @@ function parseJaDate(s) {
 function downloadCSV(rows, filename) {
   var csv = rows.map(r=>r.map(c=>`"${String(c==null?'':c).replace(/"/g,'""')}"`).join(',')).join('\n');
   var blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8;'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+/* ===== 請求書（仕入）集計：月 × 店舗 × 区分（食材/お酒/飲料/消耗品） ===== */
+function invoiceAcctData(y, m) {
+  var invoices = ls('invoices', []);
+  var ings = getIngredients();
+  var ingByCode = {}; ings.forEach(function(i){ ingByCode[i.code] = i; });
+  var inMonth = invoices.filter(function(inv){ var d = parseJaDate(inv.date); return d && d.getFullYear()===y && d.getMonth()===m; });
+  var matrix = {}, storeTotals = {}, clsTotals = {food:0,liquor:0,beverage:0,supply:0}, grand = 0, details = [];
+  inMonth.forEach(function(inv){
+    var sid = inv.storeId || '未設定';
+    (inv.lines||[]).forEach(function(l){
+      var ing = (l.code!=null) ? ingByCode[l.code] : null;
+      var cls = ing ? ingClass(ing) : 'food';
+      if (!clsTotals.hasOwnProperty(cls)) cls = 'food';
+      var amt = (l.newPrice||0) * (l.qty||0);
+      matrix[sid] = matrix[sid] || {food:0,liquor:0,beverage:0,supply:0};
+      matrix[sid][cls] += amt;
+      storeTotals[sid] = (storeTotals[sid]||0) + amt;
+      clsTotals[cls] += amt; grand += amt;
+      details.push({date:inv.date, storeId:sid, vendor:inv.vendor, name:l.name, cls:cls, qty:(l.qty||0), price:(l.newPrice||0), amount:amt});
+    });
+  });
+  return {inMonth:inMonth, matrix:matrix, storeTotals:storeTotals, clsTotals:clsTotals, grand:grand, details:details};
+}
+function invoiceAcctRows(y, m) {
+  var acct = invoiceAcctData(y, m);
+  var rows = [];
+  rows.push(['請求書（仕入）集計  '+y+'年'+(m+1)+'月']);
+  rows.push([]);
+  rows.push(['店舗'].concat(CLASSES.map(function(c){return c.name;})).concat(['合計']));
+  Object.keys(acct.matrix).forEach(function(sid){
+    var s = STORES.find(function(x){return x.id===sid;});
+    rows.push([s?s.name:sid].concat(CLASSES.map(function(c){return acct.matrix[sid][c.id].toFixed(2);})).concat([acct.storeTotals[sid].toFixed(2)]));
+  });
+  rows.push(['合計'].concat(CLASSES.map(function(c){return acct.clsTotals[c.id].toFixed(2);})).concat([acct.grand.toFixed(2)]));
+  rows.push([]);
+  rows.push(['【明細】']);
+  rows.push(['日付','店舗','業者','品名','区分','数量','単価($)','金額($)']);
+  acct.details.forEach(function(d){
+    var s = STORES.find(function(x){return x.id===d.storeId;});
+    rows.push([d.date, s?s.name:d.storeId, d.vendor, d.name, className(d.cls), d.qty, d.price.toFixed(2), d.amount.toFixed(2)]);
+  });
+  return rows;
+}
+function exportInvoiceAcctCSV(y, m) {
+  var acct = invoiceAcctData(y, m);
+  if (!acct.inMonth.length) { showToast('この月に保存された請求書はありません','danger'); return; }
+  downloadCSV(invoiceAcctRows(y, m), '仕入集計_'+y+'-'+String(m+1).padStart(2,'0')+'.csv');
+  showToast('仕入集計CSVを出力しました','success');
+}
+function exportInvoiceAcctExcel(y, m) {
+  var acct = invoiceAcctData(y, m);
+  if (!acct.inMonth.length) { showToast('この月に保存された請求書はありません','danger'); return; }
+  downloadExcel(invoiceAcctRows(y, m), '仕入集計_'+y+'-'+String(m+1).padStart(2,'0')+'.xls', '仕入集計 '+y+'年'+(m+1)+'月');
+  showToast('仕入集計Excelを出力しました','success');
+}
+/* HTMLテーブル形式の .xls（ライブラリ不要・Excelで開ける） */
+function downloadExcel(rows, filename, sheetName) {
+  var esc = function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
+  var body = rows.map(function(r){
+    if (!r.length) return '<tr><td>&nbsp;</td></tr>';
+    return '<tr>'+r.map(function(c){ return '<td>'+esc(c)+'</td>'; }).join('')+'</tr>';
+  }).join('');
+  var xml = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">'
+    + '<head><meta charset="utf-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>'+esc(sheetName||'Sheet1')+'</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->'
+    + '<style>table{border-collapse:collapse;}td{border:1px solid #cccccc;padding:3px 6px;font-family:sans-serif;font-size:11pt;}</style></head>'
+    + '<body><table>'+body+'</table></body></html>';
+  var blob = new Blob(['\ufeff'+xml], {type:'application/vnd.ms-excel;charset=utf-8;'});
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
@@ -15275,16 +15369,22 @@ function saveCostSheetAsRecipe() {
    ⑦ Invoice管理 (仮OCR → 食材照合 → 価格更新)
 ============================================================ */
 function renderInvoice() {
-  var invoices = ls('invoices', []);
+  var allInv = ls('invoices', []);
+  var canAll = ['ceo','gm','office'].includes(curRole);
+  var candIds = invoiceStoreCandidates().map(s=>s.id);
+  var invoices = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
   var html = `<div class="section-header"><div><div class="section-title">Invoice管理</div><div class="section-sub">アップロード→照合→価格更新</div></div>
     <button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> Invoice登録</button></div>`;
   if (!invoices.length) {
     html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-file-invoice" style="font-size:32px;margin-bottom:8px;display:block"></i>Invoice履歴なし</div>`;
   } else {
     invoices.slice().reverse().forEach(inv => {
+      var s = inv.storeId ? STORES.find(x=>x.id===inv.storeId) : null;
+      var storeBadge = s ? `<span class="store-dot" style="background:${s.color}"></span>${s.name} · ` : '';
+      var typeLabel = inv.docType==='Receipt' ? 'Receipt' : 'Invoice';
       html += `<div class="card">
         <div class="approval-header">
-          <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${inv.date} · ${inv.lines.length}品目 · $${inv.total.toFixed(2)}</div></div>
+          <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}品目 · $${inv.total.toFixed(2)}</div></div>
           <span class="tag ${inv.applied?'tag-green':'tag-yellow'}">${inv.applied?'価格更新済':'未反映'}</span>
         </div>
       </div>`;
@@ -15295,10 +15395,32 @@ function renderInvoice() {
 
 var invoiceTmpLines = [];
 var invoiceDocType = 'Invoice';
+/* この人がInvoice/Receiptを登録できる対象店舗（curStoreで絞らず全候補） */
+function invoiceStoreCandidates() {
+  if (curRole === 'am') { var ids = myAmStores().concat(mySupportStores()); return activeStores().filter(s=>ids.includes(s.id)); }
+  if (curRole === 'sl' || curRole === 'crew') { var ids = [myStoreId()].concat(mySupportStores()); return activeStores().filter(s=>ids.includes(s.id)); }
+  return activeStores(); // ceo/gm/office
+}
 function openInvoiceModal() {
   invoiceTmpLines = [];
   var vendors = getVendors();
+  var candidates = invoiceStoreCandidates();
+  if (!window._invoiceStore || !candidates.some(s=>s.id===window._invoiceStore)) {
+    window._invoiceStore = (curStore!=='ALL' && candidates.some(s=>s.id===curStore)) ? curStore : (candidates[0]?candidates[0].id:'');
+  }
+  var storeSelHtml = '';
+  if (candidates.length > 1) {
+    storeSelHtml = `<div class="form-group"><label class="form-label">対象店舗 <span style="color:var(--accent2)">*</span></label>
+      <select class="form-input" id="invoice-store" onchange="window._invoiceStore=this.value">
+        ${candidates.map(s=>`<option value="${s.id}" ${s.id===window._invoiceStore?'selected':''}>${s.name}</option>`).join('')}
+      </select>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px">この請求書／レシートがどの店舗のものか選んでください</div></div>`;
+  } else if (candidates.length === 1) {
+    storeSelHtml = `<div class="form-group"><label class="form-label">対象店舗</label>
+      <div style="font-weight:600;padding:4px 0"><span class="store-dot" style="background:${candidates[0].color}"></span>${candidates[0].name}</div></div>`;
+  }
   openModal(`<div class="modal-title">Invoice / Receipt登録 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    ${storeSelHtml}
     <div class="form-group"><label class="form-label">種別</label>
       <div style="display:flex;gap:8px">
         <button class="btn ${invoiceDocType==='Invoice'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Invoice')">業者Invoice</button>
@@ -15413,7 +15535,8 @@ function saveInvoice() {
   var vendor = document.getElementById('inv-vendor').value.trim();
   if (!vendor) { alert('業者・購入先を入力してください'); return; }
   var total = invoiceTmpLines.reduce((a,l)=>a+(l.newPrice||0)*(l.qty||0),0);
-  var invStoreId = curStore==='ALL'?STORES[0].id:curStore;
+  var selEl = document.getElementById('invoice-store');
+  var invStoreId = selEl ? selEl.value : (window._invoiceStore || (curStore==='ALL'?STORES[0].id:curStore));
   // 食材マスターの価格を更新
   var ings = getIngredients();
   invoiceTmpLines.forEach(l => {
@@ -15433,7 +15556,7 @@ function saveInvoice() {
   lsSet('invoices', invoices);
   // Receiptの場合は買い出しにも反映
   if (invoiceDocType==='Receipt') {
-    var storeId = curStore==='ALL'?STORES[0].id:curStore;
+    var storeId = invStoreId;
     var purchases = getPurchases(storeId);
     purchases.push({id:'pc'+Date.now(), date:new Date().toLocaleDateString('ja'), vendor, item:invoiceTmpLines.map(l=>l.name).join(', '),
       amount:total, kind:'Food', category:'買い出し', memo:'Receiptから登録', receipt:true, by:ROLE_CONFIG[curRole].name});
