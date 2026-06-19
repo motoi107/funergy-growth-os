@@ -13,6 +13,7 @@
 <!-- iOS（iPhone / iPad）用 -->
 <link rel="apple-touch-icon" href="appicons/icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Funergy+">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
@@ -14319,6 +14320,9 @@ function canEditLss(name) {
   if (lssRoleRank(target.role) > lssRoleRank(curRole)) return false;
   return true;
 }
+/* 他人のCareer Score閲覧可否：Area Manager以上（ceo/gm/am）のみ。
+   Store Manager以下（sl・crew等）は本人のCareer Scoreのみ閲覧可。 */
+function canViewOthersLss(){ return ['ceo','gm','am'].includes(curRole); }
 /* カテゴリ別集計 → [{key,name,score,max,pct}] + 総合 */
 function lssSummary(name) {
   var rec = getLssScores(name);
@@ -14560,6 +14564,13 @@ function renderLeadership() {
   // 自分がリーダー以上なら自分も含める
   var meName = (ROLE_CONFIG[curRole]||{}).name||curUserName;
   var canScore = ['ceo','gm','am'].includes(curRole);
+  // Store Manager以下は本人のCareer Scoreのみ閲覧可
+  var viewOthers = canViewOthersLss();
+  if (!viewOthers) {
+    var realMe = curUserName || meName;
+    var meEmp = getEmployees().find(e=>e.name===realMe);
+    leaders = meEmp ? [meEmp] : leaders.filter(e=>e.name===realMe);
+  }
 
   var html = `<div class="section-header">
     <div><div class="section-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i> Funergy Career Score</div>
@@ -14584,7 +14595,7 @@ function renderLeadership() {
   }
 
   if (!leaders.length) {
-    return html + `<div class="card" style="text-align:center;padding:24px;color:var(--muted)">対象となるリーダー以上のスタッフがいません<div style="font-size:11px;margin-top:6px">従業員マスターで役職（Server Leader / Store Manager など）を設定してください</div></div>`;
+    return html + `<div class="card" style="text-align:center;padding:24px;color:var(--muted)">${viewOthers?`対象となるリーダー以上のスタッフがいません<div style="font-size:11px;margin-top:6px">従業員マスターで役職（Server Leader / Store Manager など）を設定してください</div>`:`あなたのCareer Scoreはまだ登録されていません<div style="font-size:11px;margin-top:6px">上長が評価すると、ここに表示されます</div>`}</div>`;
   }
 
   // リーダー一覧（スコアカード）
@@ -14620,7 +14631,7 @@ function renderLeadership() {
   // 履歴（スコア＋申請承認）
   var lssHist = ls('lss_history', []);
   var reqHist = getLssRequests().filter(r=>r.status!=='申請中');
-  if (lssHist.length || reqHist.length) {
+  if (viewOthers && (lssHist.length || reqHist.length)) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>履歴</div>`;
     reqHist.slice().reverse().slice(0,6).forEach(r=>{
       html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.name} · ${r.kind==='promo'?'昇格':'Tip'}申請 ${r.pct}%</div>
@@ -14657,6 +14668,8 @@ function saveLssRules() {
   renderPage('leadership');
 }
 function openLssDetail(name) {
+  var realMe = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  if (name !== realMe && !canViewOthersLss()) { showToast('他のスタッフのCareer Scoreは閲覧できません','warning'); return; }
   window._lssName = name;
   window._lssCat = window._lssCat || 'H';
   var rec = getLssScores(name) || {};
@@ -14823,6 +14836,7 @@ function openLssScorePopup(catKey, idx){
 }
 function closeLssScorePopup(){ var o=document.getElementById('lss-score-ov'); if(o){ try{document.body.removeChild(o);}catch(e){} } }
 function lssPickScore(catKey, idx, n){
+  haptic('tap');
   lssSetScore(lssItemId(catKey,idx), n);
   closeLssScorePopup();
   renderLssItems();
@@ -15580,6 +15594,17 @@ function renderMypage() {
 ============================================================ */
 function renderSettings() {
   var html = `<div class="section-header"><div class="section-title">設定</div></div>
+  <div class="card"><div class="card-title"><i class="ti ti-device-mobile-vibration" style="color:var(--accent)"></i>触感・アプリ</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div><div style="font-weight:600;font-size:13px">バイブレーション（触感フィードバック）</div>
+        <div style="font-size:11px;color:var(--muted)">タップ・保存・承認・採点・エラー時に振動します</div></div>
+      <button class="btn ${hapticsEnabled()?'btn-success':'btn-secondary'} btn-sm" onclick="toggleHaptics()">${hapticsEnabled()?'<i class="ti ti-check"></i> ON':'OFF'}</button>
+    </div>
+    <div style="padding:10px 0 2px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:5px">ホーム画面に追加（アプリ化）</div>
+      ${pwaInstallHintHtml()}
+    </div>
+  </div>
   <div class="card"><div class="card-title"><i class="ti ti-database"></i>データ管理</div>
     <p style="font-size:13px;color:var(--muted);margin-bottom:12px">すべてのデモデータはlocalStorageに保存されています。</p>
     <button class="btn btn-danger btn-sm" onclick="clearAllData()"><i class="ti ti-trash"></i> 全データリセット</button>
@@ -18610,6 +18635,7 @@ function skillLevelChipHtml(position, lv, selectId, chipId, minLv){
     + skillLevelChipInner(position, lv) +'</button>';
 }
 function skillCritPick(selectId, lv){
+  haptic('tap');
   var sel=document.getElementById(selectId);
   if(sel){ sel.value=String(lv); if(typeof sel.onchange==='function'){ try{ sel.onchange(); }catch(e){} } }
   var ctx=window._skillCritCtx||{};
@@ -19381,8 +19407,87 @@ function closeModalDirect() {
 /* ============================================================
    TOAST
 ============================================================ */
+/* ============================================================
+   触感フィードバック（ハプティック）＋ PWA
+   - Android等: Vibration API（種類でパターン）
+   - iPhone: iOS18+ の <input type="checkbox" switch> をトグルしてネイティブのタップ触感
+============================================================ */
+var HAPTIC_KEY = 'haptics_on';
+function hapticsEnabled(){ try{ var v=localStorage.getItem(HAPTIC_KEY); return v===null?true:v==='1'; }catch(e){ return true; } }
+function setHapticsEnabled(on){ try{ localStorage.setItem(HAPTIC_KEY, on?'1':'0'); }catch(e){} }
+function _isIOS(){
+  var ua=navigator.userAgent||'';
+  return /iP(hone|ad|od)/.test(ua) || /iPhone|iPad|iPod/.test(navigator.platform||'') || (/(Mac)/.test(ua) && 'ontouchend' in document);
+}
+var _iosHapticEl=null;
+function _iosHapticTap(){
+  try{
+    if(!_iosHapticEl){
+      var l=document.createElement('label');
+      l.setAttribute('aria-hidden','true');
+      l.style.cssText='position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;overflow:hidden';
+      var i=document.createElement('input'); i.type='checkbox'; i.setAttribute('switch','');
+      l.appendChild(i); (document.body||document.documentElement).appendChild(l);
+      _iosHapticEl=i;
+    }
+    _iosHapticEl.checked=!_iosHapticEl.checked; // トグルで触感が発生
+  }catch(e){}
+}
+function haptic(type){
+  if(!hapticsEnabled()) return;
+  type=type||'tap';
+  try{
+    if(navigator.vibrate && !_isIOS()){
+      var pat = type==='success'?[10,40,14] : type==='warning'?[22,60,22] : type==='error'?[32,50,32,50,32] : type==='heavy'?[24] : 10;
+      navigator.vibrate(pat); return;
+    }
+    // iOS: 一律のタップ触感（成功/エラーは2回で強調）
+    _iosHapticTap();
+    if(type==='error'||type==='success'){ setTimeout(_iosHapticTap, 70); }
+  }catch(e){}
+}
+
+/* PWA: インストール状態・ホーム追加 */
+function isStandalonePWA(){
+  try{ return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone===true; }catch(e){ return false; }
+}
+function triggerPWAInstall(){
+  var p=window._deferredPWA;
+  if(!p){ showToast('ブラウザのメニューから「ホーム画面に追加」を選んでください','info'); return; }
+  try{ p.prompt(); p.userChoice.finally(function(){ window._deferredPWA=null; if(typeof curPage!=='undefined') try{renderPage('settings');}catch(e){} }); }catch(e){}
+}
+function pwaInstallHintHtml(){
+  if(isStandalonePWA()) return '<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> アプリとして起動中です';
+  if(_isIOS()) return '<div style="font-size:12px;color:var(--muted)">Safariの<b>共有</b>ボタン → <b>「ホーム画面に追加」</b>で、全画面のアプリのように使えます（将来のプッシュ通知の前提にもなります）。</div>';
+  if(window._deferredPWA) return '<button class="btn btn-primary btn-sm" onclick="triggerPWAInstall()"><i class="ti ti-download"></i> ホーム画面に追加</button>';
+  return '<div style="font-size:12px;color:var(--muted)">ブラウザのメニュー →「アプリをインストール」または「ホーム画面に追加」で全画面で使えます。</div>';
+}
+function toggleHaptics(){
+  var on=!hapticsEnabled(); setHapticsEnabled(on);
+  if(on) haptic('success');
+  showToast('バイブを'+(on?'ON':'OFF')+'にしました', on?'success':'info');
+  if(typeof curPage!=='undefined') try{ renderPage('settings'); }catch(e){}
+}
+
+/* 一度だけ：全タップに軽い触感 ＋ Service Worker登録 ＋ インストールプロンプト捕捉 */
+(function setupHapticsAndPWA(){
+  try{
+    document.addEventListener('click', function(ev){
+      var el=ev.target; if(!el||!el.closest) return;
+      if(el.closest('button, .nav-item, .tab, .seg-btn, [data-haptic]')) haptic('tap');
+    }, true);
+  }catch(e){}
+  try{ window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); window._deferredPWA=e; }); }catch(e){}
+  try{
+    if('serviceWorker' in navigator){
+      window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); });
+    }
+  }catch(e){}
+})();
+
 function showToast(msg, type) {
   type = type || 'info';
+  try{ if(type==='success') haptic('success'); else if(type==='danger') haptic('error'); else if(type==='warning') haptic('warning'); }catch(e){}
   // 絵文字を自動除去（落ち着いたトーンに）
   var clean = String(msg).replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2190}-\u{21FF}\u{2300}-\u{23FF}]/gu,'').replace(/\s+$/,'').trim();
   var conf = {
