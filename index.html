@@ -15598,9 +15598,14 @@ function renderSettings() {
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
       <div><div style="font-weight:600;font-size:13px">バイブレーション（触感フィードバック）</div>
         <div style="font-size:11px;color:var(--muted)">タップ・保存・承認・採点・エラー時に振動します</div></div>
-      <button class="btn ${hapticsEnabled()?'btn-success':'btn-secondary'} btn-sm" onclick="toggleHaptics()">${hapticsEnabled()?'<i class="ti ti-check"></i> ON':'OFF'}</button>
+      ${hapticToggleControl()}
     </div>
-    <div style="padding:10px 0 2px">
+    <div style="padding:8px 0 2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-secondary btn-sm" onclick="testHaptic()"><i class="ti ti-wave-square"></i> バイブをテスト</button>
+      ${hapticDiagHtml()}
+    </div>
+    ${_isIOS()?`<div style="font-size:11px;color:var(--muted);background:var(--bg);border-radius:8px;padding:8px 10px;margin-top:6px;line-height:1.6"><i class="ti ti-info-circle" style="color:var(--accent2)"></i> iPhoneのSafariは仕様上、自動の振動に対応していません。上の<b>スイッチを直接タップ</b>した時のみ振動します（iOS 18以上）。Androidでは全操作で自動振動します。</div>`:''}
+    <div style="padding:10px 0 2px;border-top:1px solid var(--border);margin-top:8px">
       <div style="font-weight:600;font-size:13px;margin-bottom:5px">ホーム画面に追加（アプリ化）</div>
       ${pwaInstallHintHtml()}
     </div>
@@ -19421,16 +19426,15 @@ function _isIOS(){
 }
 var _iosHapticEl=null;
 function _iosHapticTap(){
+  // iOS: ラベル経由のクリックでスイッチをトグル（iOS18〜26.4で触感。26.5以降は直接タップのみ有効）
   try{
-    if(!_iosHapticEl){
-      var l=document.createElement('label');
-      l.setAttribute('aria-hidden','true');
-      l.style.cssText='position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;overflow:hidden';
-      var i=document.createElement('input'); i.type='checkbox'; i.setAttribute('switch','');
-      l.appendChild(i); (document.body||document.documentElement).appendChild(l);
-      _iosHapticEl=i;
-    }
-    _iosHapticEl.checked=!_iosHapticEl.checked; // トグルで触感が発生
+    var l=document.createElement('label');
+    l.setAttribute('aria-hidden','true');
+    l.style.cssText='position:absolute;left:-9999px;top:0;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none';
+    var i=document.createElement('input'); i.type='checkbox'; i.setAttribute('switch','');
+    l.appendChild(i); (document.body||document.documentElement).appendChild(l);
+    l.click();
+    setTimeout(function(){ try{ l.parentNode&&l.parentNode.removeChild(l); }catch(e){} }, 150);
   }catch(e){}
 }
 function haptic(type){
@@ -19467,6 +19471,39 @@ function toggleHaptics(){
   if(on) haptic('success');
   showToast('バイブを'+(on?'ON':'OFF')+'にしました', on?'success':'info');
   if(typeof curPage!=='undefined') try{ renderPage('settings'); }catch(e){}
+}
+/* iOSでは「ネイティブswitchを直接タップ」した時だけ触感が出る（26.5以降の仕様）。
+   そのため設定のON/OFF自体をネイティブswitchにして、タップで必ず触感が出るようにする。 */
+function hapticToggleControl(){
+  if(_isIOS()){
+    return '<label style="display:inline-flex;align-items:center;cursor:pointer;margin:0">'
+      +'<input type="checkbox" switch id="haptic-switch" '+(hapticsEnabled()?'checked':'')+' onchange="onHapticSwitch(this)" style="width:50px;height:30px">'
+      +'</label>';
+  }
+  return '<button class="btn '+(hapticsEnabled()?'btn-success':'btn-secondary')+' btn-sm" onclick="toggleHaptics()">'+(hapticsEnabled()?'<i class="ti ti-check"></i> ON':'OFF')+'</button>';
+}
+function onHapticSwitch(el){
+  setHapticsEnabled(el.checked);
+  showToast('バイブを'+(el.checked?'ON':'OFF')+'にしました', el.checked?'success':'info');
+}
+function testHaptic(){
+  if(navigator.vibrate && !_isIOS()){
+    var ok=navigator.vibrate([130,70,130,70,220]);
+    showToast(ok?'テスト振動を送信しました':'この端末は振動に対応していません', ok?'info':'warning');
+    return;
+  }
+  if(_isIOS()){
+    showToast('iPhoneは下の「バイブ」スイッチを直接タップすると振動します（Safariの仕様）','info');
+    return;
+  }
+  showToast('この端末・ブラウザは振動に対応していません','warning');
+}
+function hapticDiagHtml(){
+  var ua=navigator.userAgent||'';
+  var os = _isIOS()?'iPhone / iPad（iOS）' : (/Android/.test(ua)?'Android' : 'PC・その他');
+  var api = (navigator.vibrate && !_isIOS()) ? '<span style="color:var(--green)">自動振動 対応</span>'
+    : (_isIOS() ? '<span style="color:var(--amber)">自動振動 非対応（iOS仕様・スイッチ直接タップのみ）</span>' : '<span style="color:var(--muted)">非対応</span>');
+  return '<div style="font-size:11px;color:var(--muted);margin-top:6px">端末: '+os+' ／ '+api+'</div>';
 }
 
 /* 一度だけ：全タップに軽い触感 ＋ Service Worker登録 ＋ インストールプロンプト捕捉 */
