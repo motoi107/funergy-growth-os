@@ -13904,15 +13904,15 @@ function deleteVendor(vId) {
 /* ============================================================
    ポジション & スキルレベル モデル（店舗別ポジション + 承認フロー）
 ============================================================ */
-const ALL_POSITIONS = ['Host','Server','Bar','Drink','Yakitori','Kitchen','Tempura','Sushi','Cold','Main Plater','Miso','Supporter','Prep','Front','Back','Food Runner','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership'];
+const ALL_POSITIONS = ['Host','Server','Bar','Drink','Yakitori','Kitchen','Tempura','Sushi','Cold','Main Plater','Miso','Supporter','Prep','Front','Back','Food Runner','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'];
 const DEFAULT_STORE_POSITIONS = {
-  'F01':['Host','Server','Bar','Drink','Yakitori','Kitchen','Energy','Leadership'],
-  'F02':['Host','Server','Tempura','Sushi','Cold','Drink','Energy','Leadership'],
-  'F03':['Prep','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership'],
-  'F04-K':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership'],
-  'F04-P':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership'],
-  'F04-A':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership'],
-  'F05':['Host','Server','Front','Back','Food Runner','Supporter','Energy','Leadership'],
+  'F01':['Host','Server','Bar','Drink','Yakitori','Kitchen','Energy','Leadership','サービスクオリティ','理念'],
+  'F02':['Host','Server','Tempura','Sushi','Cold','Drink','Energy','Leadership','サービスクオリティ','理念'],
+  'F03':['Prep','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'],
+  'F04-K':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
+  'F04-P':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
+  'F04-A':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
+  'F05':['Host','Server','Front','Back','Food Runner','Supporter','Energy','Leadership','サービスクオリティ','理念'],
 };
 /* スキルレベル基準（Lv0-3の達成基準）。Totoyaは実基準、他は汎用 */
 const SKILL_CRITERIA = {
@@ -13923,6 +13923,8 @@ const SKILL_CRITERIA = {
   'Prep':['未経験','10以上','18以上','25以上'],
   'Energy':['まだフレーズを覚えておらず声が小さい','言われなくても正しいフレーズを適切なタイミングで使える','元気でStore Leaderと同レベルの声量','チームのやまびこ（echo）を自信を持ってリードできる'],
   'Leadership':['未経験','常に時間を守り、手すきの時に自ら仕事を見つけられる','良いチーム環境を作りつつ、メンバーに優先事項を的確に指示・伝達できる','off-manualな想定外の状況も自分で考えて対応できる'],
+  'サービスクオリティ':['接客の基本（挨拶・笑顔・清潔感・気配り）がまだ身についていない','言われれば基本マナーで対応できる。要望に応えられる時とできない時がある','常に明るく丁寧で、お客様の様子に気づいて自ら動ける。クレームも落ち着いて一次対応できる','期待を超えるおもてなしでファンを増やし、他メンバーの接客も指導・底上げできる。難しいクレームも責任を持って解決できる'],
+  '理念':['Funergyの理念（クレド・ミッション・バリュー）をまだ理解しておらず、行動に表れていない','理念を理解しており、意識した行動が時々見られる','理念を日々の判断・行動の基準にして安定して体現できている','理念を体現する模範であり、チームに浸透させ、メンバーを導いている'],
 };
 function skillCriteria(pos) {
   return SKILL_CRITERIA[pos] || ['未経験','サポートがあればできる','一人でできる','教えられる・リーダーとして行動できる'];
@@ -14137,6 +14139,22 @@ function lssTrendHtml(name){
 }
 function getStorePositions(storeId) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); return all[storeId]||ALL_POSITIONS; }
 function setStorePositions(storeId, positions) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); all[storeId]=positions; lsSet('store_positions', all); }
+/* 全店共通スキル項目（サービスクオリティ・理念）を、既存の保存済み店舗ポジションにも追加 */
+function migrateUniversalSkillItems(){
+  var UNIV=['サービスクオリティ','理念'];
+  var stored = ls('store_positions', null);
+  if(stored===null) return; // 未カスタマイズ＝DEFAULT_STORE_POSITIONS（既に追加済み）を使うため不要
+  var all = stored;
+  var changed=false;
+  var ids = Object.keys(all);
+  try{ (getStoresAll()||[]).forEach(function(s){ if(ids.indexOf(s.id)<0) ids.push(s.id); }); }catch(e){}
+  ids.forEach(function(id){
+    var arr = all[id] || (DEFAULT_STORE_POSITIONS[id]? DEFAULT_STORE_POSITIONS[id].slice() : ALL_POSITIONS.slice());
+    UNIV.forEach(function(p){ if(arr.indexOf(p)<0){ arr.push(p); changed=true; } });
+    all[id]=arr;
+  });
+  if(changed) lsSet('store_positions', all);
+}
 
 /* スキル(旧): { empName: { position: {level, status, ...} } }  店舗区別なし
    スキル(新 v2): { empName: { storeId: { position: {level, status, ...} } } }
@@ -19611,6 +19629,7 @@ try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
+try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
 (async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) bootLogin(); } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 </script>
 </body>
