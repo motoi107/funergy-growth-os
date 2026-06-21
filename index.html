@@ -3694,10 +3694,46 @@ async function enterAppWithSync(){
   var doSync = ls('login_autosync', true)!==false;
   if (doSync) showSyncSplash('最新データに同期中…');
   try { await loginSync(); } catch(e){}
+  // クラウド同期後、ログイン者の役職・所属を最新マスターで再解決（シードの古い役職に固定されるのを防ぐ）
+  try { if (!curStoreLogin) resolveLoginIdentity(); } catch(e){}
   hideSyncSplash();
   var lsEl=document.getElementById('login-screen'); if(lsEl) lsEl.style.display='none';
   var ap=document.getElementById('app-shell'); if(ap) ap.style.display='block';
   initApp();
+}
+/* ログイン者の役職・所属を、同期後の最新マスターから再解決する。
+   ログイン画面の名簿はローカル（同期前のシード）から作られるため、シードの古い役職で
+   セッションが固定されるのを防ぐ。idで照合（無ければ名前で照合）。 */
+function resolveLoginIdentity(){
+  if (!loginPerson) return;
+  var all = (typeof getEmployees==='function') ? getEmployees() : [];
+  var emp = (loginPerson.id && all.find(function(e){return e.id===loginPerson.id;}))
+         || all.find(function(e){return e.name===loginPerson.name;});
+  if (!emp) return;
+  curRole = emp.role || curRole;
+  curUserName = emp.name;
+  if (loginLocation==='OFFICE') curStore = 'ALL';
+  else curStore = (emp.store && emp.store!=='ALL') ? emp.store : loginLocation;
+  if (['ceo','gm','office'].includes(curRole)) curStore = 'ALL';
+}
+/* ログイン画面表示前に、クラウドから従業員・店舗・PINだけ先読みする（軽量）。
+   共有リンクを初めて開いた端末（localStorageが空）でも、最新の名簿・役職でログインできる。 */
+async function loginBootstrapPull(){
+  if (ls('login_autosync', true)===false) return;
+  try {
+    showSyncSplash('スタッフ情報を読み込み中…');
+    var work = (async function(){
+      var emps = await supaFetchAll('employees','data');
+      if (Array.isArray(emps) && emps.length){ var a=emps.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(a.length) localStorage.setItem('m_employees', JSON.stringify(a)); }
+      var sts = await supaFetchAll('stores','data');
+      if (Array.isArray(sts) && sts.length){ var b=sts.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(b.length) localStorage.setItem('m_stores', JSON.stringify(b)); }
+      try { await refreshStaffPinsFromCloud(); } catch(e){}
+      try { refreshStores(); } catch(e){}
+    })();
+    var to = new Promise(function(res){ setTimeout(function(){ res('t'); }, 12000); });
+    await Promise.race([work, to]);
+  } catch(e){ console.warn('loginBootstrapPull', e); }
+  finally { hideSyncSplash(); }
 }
 function toggleLoginAutosync(){
   var cur = ls('login_autosync', true)!==false;
@@ -20596,7 +20632,7 @@ try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
 try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePositionsSplitC', e); }
 try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
-(async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) bootLogin(); } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
+(async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) { try { await loginBootstrapPull(); } catch(_){} bootLogin(); } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 </script>
 </body>
 </html>
