@@ -720,11 +720,18 @@ async function fetchTodayRealtime(storeList) {
       var guests = Number(r.guest_count)||0;
       var lSales = Number(r.lunch_sales)||0, dSales = Number(r.dinner_sales)||0;
       var lG = Number(r.lunch_guests)||0, dG = Number(r.dinner_guests)||0;
+      var lB = Number(r.lunch_bowls)||0, dB = Number(r.dinner_bowls)||0;  // Bowlsカテゴリ（テイクアウト除く）
       var toCount = Number(r.takeout_count)||0;
-      results.push({ id:s.id, name:s.name, color:s.color, hasData:true,
-        net:net, guests:guests, ppa: guests>0?net/guests:0,
-        lunch:{ sales:lSales, guests:lG, ppa: lG>0?lSales/lG:0 },
-        dinner:{ sales:dSales, guests:dG, ppa: dG>0?dSales/dG:0 },
+      // 客数の数え方: Totoya=丼数(bowls) / Waikiki=皿 / それ以外=客数
+      var metric = (typeof guestCountType==='function') ? guestCountType(s.id) : 'guest';
+      var unit = metric==='bowls' ? '丼' : (metric==='plate' ? '皿' : t('名',''));
+      var lCnt = metric==='bowls' ? lB : lG;
+      var dCnt = metric==='bowls' ? dB : dG;
+      var totCnt = metric==='bowls' ? (lB+dB) : guests;
+      results.push({ id:s.id, name:s.name, color:s.color, hasData:true, metric:metric, unit:unit,
+        net:net, guests:guests, count:totCnt, ppa: totCnt>0?net/totCnt:0,
+        lunch:{ sales:lSales, count:lCnt, ppa: lCnt>0?lSales/lCnt:0 },
+        dinner:{ sales:dSales, count:dCnt, ppa: dCnt>0?dSales/dCnt:0 },
         takeout:{ count:toCount } });
     } catch(e) {
       results.push({id:s.id, name:s.name, color:s.color, error:true});
@@ -2871,15 +2878,20 @@ function archivedRecipes() { return getRecipes().filter(r=>r.archived); }
 ============================================================ */
 var TOTOYA_STORE_IDS = ['F04-K','F04-P','F04-A'];
 function isTotoyaStore(storeId){ return TOTOYA_STORE_IDS.indexOf(storeId)>=0; }
-/* ダッシュボード(Funergy Now)の閲覧可否: 財務ロール、またはTotoya店舗のSL(店長)。 */
+/* ダッシュボード(Funergy Now)の閲覧可否: 財務ロール、またはG3以上。 */
 function canSeeDashboard(){
   if ((ROLE_CONFIG[curRole]||{}).financial) return true;
-  if (curRole==='sl' && typeof myStoreId==='function' && isTotoyaStore(myStoreId())) return true;
+  if (typeof myGradeNum==='function' && myGradeNum()>=3) return true;
   return false;
 }
-/* Funergy Nowに表示する店舗: Totoya店長は3店舗、それ以外は通常の可視店舗。 */
+/* Funergy Nowに表示する店舗:
+   - Totoya店舗のG3以上 → 3店舗（既存どおり）
+   - その他のG3以上 → 配属店舗のみ
+   - 財務ロール → 通常の可視店舗（全店/選択店） */
 function funergyNowStores(){
-  if (curRole==='sl' && typeof myStoreId==='function' && isTotoyaStore(myStoreId())) {
+  var financial = !!(ROLE_CONFIG[curRole]||{}).financial;
+  var g3 = (typeof myGradeNum==='function') ? myGradeNum()>=3 : false;
+  if (!financial && g3 && typeof myStoreId==='function' && isTotoyaStore(myStoreId())) {
     return sortByLoginOrder(activeStores().filter(function(s){ return isTotoyaStore(s.id); }));
   }
   return sortByLoginOrder(getVisibleStores());
@@ -4513,11 +4525,64 @@ function renderDashboard() {
 function renderSlFunergyNow(){
   var totoya = isTotoyaStore(myStoreId());
   var label = totoya ? 'Totoya 3店舗' : ((STORES.find(function(s){return s.id===myStoreId();})||{}).name||'自店');
-  var html = `<div class="section-header"><div><div class="section-title">ダッシュボード</div><div class="section-sub">${label} · 本日のリアルタイム売上</div></div></div>`;
+  var myStores = funergyNowStores();                       // Totoya店長=3店、それ以外=配属店
+  var html = `<div class="section-header"><div><div class="section-title">ダッシュボード</div><div class="section-sub">${label} · 本日</div></div></div>`;
+  // Funergy Now
   html += `<div class="card" id="rt-sales-card">
     <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${label} · ${t('本日','Today')}</span></div>
     <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
   </div>`;
+
+  // 店舗別状況（全店合算なし。Totoyaは3店を店舗別で表示）
+  var sdata = myStores.map(function(s){ return storeData(s.id); });
+  html += `<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${t('前日まで','through yesterday')}</span></div>`;
+  sdata.forEach(function(s){
+    var color = statusColor(s.status);
+    var sFc = s.fc>0 ? statusColor(statusFromCeil(s.fc,31,34)) : 'var(--muted)';
+    var sL  = s.labor>0 ? statusColor(statusFromCeil(s.labor,29,32)) : 'var(--muted)';
+    html += `<div class="store-row">
+      <div class="store-dot" style="background:${s.color}"></div>
+      <div style="flex:1" onclick="switchStore('${s.id}');go('budget')">
+        <div style="display:flex;align-items:center;justify-content:space-between"><div class="store-name">${s.name}</div><span class="tag ${statusTag(s.status)}">${s.sp}%</span></div>
+        <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
+        <div style="display:flex;gap:16px;margin-top:7px;font-size:14px;flex-wrap:wrap">
+          <span><span style="font-size:10px;color:var(--muted)">売上 </span><b>${fmtK(s.a)}</b><span style="font-size:11px;color:var(--muted)">/${fmtK(s.b)}</span></span>
+          <span><span style="font-size:10px;color:var(--muted)">FC </span><b style="color:${sFc}">${s.fc>0?s.fc+'%':'—'}</b></span>
+          <span><span style="font-size:10px;color:var(--muted)">Labor </span><b style="color:${sL}">${s.labor>0?s.labor+'%':'—'}</b></span>
+        </div>
+      </div>
+      <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // 優先アクション（配属店舗のみ）
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var todayStr = new Date().toISOString().slice(0,10);
+  var alerts = [];
+  sdata.forEach(function(s){
+    if (s.status==='danger') alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} 売上未達 ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`});
+    if (s.labor>32) alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} Labor超過 ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`});
+    if (s.fc>34) alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} Food Cost超過 ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`});
+  });
+  myStores.forEach(function(s){ var inc=getDailyOps(s.id).filter(function(t){return t.required&&!t.done;}); if(inc.length) alerts.push({lv:'danger', icon:'ti-checklist', text:`${s.name} 必須チェック未完 ${inc.length}件`, act:`switchStore('${s.id}');openStoreCmd()`}); });
+  var myTasks = getTasks().filter(function(t){ return t.status!=='完了' && t.assignee===me; });
+  var overdue = myTasks.filter(function(t){ return t.due && t.due<todayStr; });
+  var todayTasks = myTasks.filter(function(t){ return t.due===todayStr; });
+  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`期限切れタスク ${overdue.length}件`, act:`go('tasks')`});
+  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
+  var pendingVac = getVacations().filter(function(v){ return v.status==='申請中' && canApproveVacation(v); }).length;
+  if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`休暇承認待ち ${pendingVac}件`, act:`go('vacation')`});
+  html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}"><div class="card-title"><i class="ti ti-bell" style="color:var(--accent)"></i>${t('優先アクション','Priority Actions')}</div>`;
+  if (!alerts.length) {
+    html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;color:var(--green)">${statusDot('good',10)}<span style="font-size:14px;font-weight:600">${t('全項目正常','All clear')}</span></div>`;
+  } else {
+    alerts.slice(0,8).forEach(function(a){ var st=a.lv==='danger'?'danger':a.lv==='warn'?'warn':'active';
+      html += `<div onclick="${a.act}" style="display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">${statusDot(st,9)}<i class="ti ${a.icon}" style="color:${statusColor(a.lv)};font-size:16px"></i><span style="flex:1;font-size:13px">${a.text}</span><i class="ti ti-chevron-right" style="font-size:13px;color:var(--muted)"></i></div>`;
+    });
+  }
+  html += `</div>`;
+
   setTimeout(function(){ if(document.getElementById('rt-sales-body')) loadRealtimeSales(); }, 100);
   return html;
 }
@@ -4539,7 +4604,7 @@ async function loadRealtimeSales() {
         <span style="font-weight:700;font-size:14px;color:var(--tm)">${r.name}</span>`;
     if (r.hasData) {
       html += `<span style="margin-left:auto;text-align:right"><span style="font-size:16px;font-weight:800;color:var(--green)">$${Math.round(r.net).toLocaleString()}</span>
-        <span style="font-size:11px;color:var(--muted)"> / ${r.guests}${t('名','')} / $${r.ppa.toFixed(2)}</span></span>`;
+        <span style="font-size:11px;color:var(--muted)"> / ${r.count}${r.unit} / $${r.ppa.toFixed(2)}</span></span>`;
     }
     html += `</div>`;
     if (r.noGuid) {
@@ -4557,11 +4622,11 @@ async function loadRealtimeSales() {
       <div style="background:var(--surface);padding:10px 8px;text-align:center">
         <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ti-sun" style="color:#d98908"></i>${t('ランチ','Lunch')}</div>
         <div style="font-size:14px;font-weight:700;margin-top:3px">$${Math.round(r.lunch.sales).toLocaleString()}</div>
-        <div style="font-size:10px;color:var(--muted)">${r.lunch.guests}${t('名','')} · $${r.lunch.ppa.toFixed(2)}</div></div>
+        <div style="font-size:10px;color:var(--muted)">${r.lunch.count}${r.unit} · $${r.lunch.ppa.toFixed(2)}</div></div>
       <div style="background:var(--surface);padding:10px 8px;text-align:center">
         <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ti-moon" style="color:#8b5cf6"></i>${t('ディナー','Dinner')}</div>
         <div style="font-size:14px;font-weight:700;margin-top:3px">$${Math.round(r.dinner.sales).toLocaleString()}</div>
-        <div style="font-size:10px;color:var(--muted)">${r.dinner.guests}${t('名','')} · $${r.dinner.ppa.toFixed(2)}</div></div>
+        <div style="font-size:10px;color:var(--muted)">${r.dinner.count}${r.unit} · $${r.dinner.ppa.toFixed(2)}</div></div>
       <div style="background:var(--surface);padding:10px 8px;text-align:center">
         <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ti-shopping-bag" style="color:#2e6fd6"></i>${t('テイクアウト','Takeout')}</div>
         <div style="font-size:14px;font-weight:700;margin-top:3px">${r.takeout.count}${t('件','')}</div>
