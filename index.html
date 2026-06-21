@@ -615,7 +615,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
       <i class="ti ti-chevron-down" style="font-size:12px;"></i>
     </div>
     <div class="topbar-right">
-      <button id="topbar-sync" onclick="openSyncCenter()" title="同期センター" style="display:none;background:none;border:none;color:var(--tm);font-size:18px;cursor:pointer;padding:4px 8px"><i class="ti ti-refresh"></i></button>
+      <button id="topbar-sync" onclick="refreshNow()" title="最新に更新" style="background:none;border:none;color:var(--tm);font-size:18px;cursor:pointer;padding:4px 8px"><i class="ti ti-refresh"></i></button>
       <div class="topbar-role-badge" id="topbar-role"></div>
       <button class="logout-btn" onclick="doLogout()">ログアウト</button>
     </div>
@@ -3562,17 +3562,26 @@ function showSyncSplash(msg){
 function hideSyncSplash(){ var ov=document.getElementById('sync-splash'); if(ov) ov.style.display='none'; }
 function setSyncSplash(msg){ var m=document.getElementById('sync-splash-msg'); if(m) m.textContent=msg; }
 
-/* 運用データ（勤怠/Labor）をクラウド(tip_labor)から取得：可視店舗の当月分。
-   Toast勤怠は夜間cronでSupabaseに保存済み。各端末はこれで取得してLaborを表示する。 */
+/* 運用データ（売上・客数・勤怠/Labor）をクラウドから取得：可視店舗の当月分。
+   - 売上・客数 = toast_sales（夜間cronが「前日まで」を保存済み）→ daily_actuals_<店舗> に反映
+   - 勤怠・Labor = tip_labor（同cronが保存済み）→ ローカルtip_laborに反映
+   この1関数で両方そろえる事で Labor率(=Labor÷売上) まで成立させる。新端末でもログイン1回で復元される。 */
 async function loginSyncOps(){
   try {
     var stores = (typeof getVisibleStores==='function' ? getVisibleStores() : []).filter(function(s){ return s.toastGuid; });
     var days = (typeof monthDays==='function') ? monthDays() : null;
     if (!days || !days.length || !stores.length) return;
-    for (var i=0;i<stores.length;i++){
-      setSyncSplash('勤怠データを同期中… ('+(i+1)+'/'+stores.length+') '+stores[i].name);
-      try { await syncTipLaborFromDB(stores[i].id, stores[i].toastGuid, days); } catch(e){ console.warn('loginSyncOps store', stores[i].id, e); }
-    }
+    var ym = curYm();
+    var done = 0, total = stores.length;
+    setSyncSplash('売上・客数・勤怠・出数を同期中… (0/'+total+')');
+    // 店舗ごとに並列。売上・勤怠・出数をまとめて取得（どれが欠けても各種計算が成立しないため）
+    await Promise.all(stores.map(async function(s){
+      try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); }
+      try { await syncTipLaborFromDB(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps labor', s.id, e); }
+      try { await backfillRecentLabor(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps laborTail', s.id, e); } // 直近Laborをライブ補完（cron遅延対策）
+      try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('loginSyncOps mix', s.id, e); }
+      done++; setSyncSplash('売上・客数・勤怠・出数を同期中… ('+done+'/'+total+')');
+    }));
   } catch(e){ console.warn('loginSyncOps', e); }
 }
 
@@ -3748,7 +3757,7 @@ function initApp() {
   var storeName = curStore === 'ALL' ? '全店舗' : (STORES.find(s=>s.id===curStore)||{name:curStore}).name;
   document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
   document.getElementById('topbar-role').textContent = rc.label + ' / ' + (curUserName || rc.name);
-  var _sb = document.getElementById('topbar-sync'); if (_sb) _sb.style.display = rc.financial ? '' : 'none';
+  var _sb = document.getElementById('topbar-sync'); if (_sb) _sb.style.display = ''; // 全ロールに「最新に更新」を常設
 
   // Nav
   buildNav();
@@ -4218,8 +4227,7 @@ function renderDashboard() {
   if (window._dashOpen['dash-stores']===undefined) window._dashOpen['dash-stores']=true; // 店舗別リストは既定で開く
   var scopeLabel = curRole==='am' ? t('管轄店舗','My stores') : t('全店','All stores');
   html += `<div class="card" id="rt-sales-card">
-    <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${scopeLabel} · ${t('本日','Today')}</span>
-      <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="loadRealtimeSales()"><i class="ti ti-refresh"></i> ${t('更新','Refresh')}</button></div>
+    <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${scopeLabel} · ${t('本日','Today')}</span></div>
     <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
   </div>`;
 
@@ -5439,7 +5447,6 @@ function renderMonthlySummary(){
     +'<button class="btn btn-secondary btn-sm" onclick="msShift(-1)"><i class="ti ti-chevron-left"></i></button>'
     +'<div style="font-size:16px;font-weight:800;min-width:104px;text-align:center">'+mi.label+'</div>'
     +'<button class="btn btn-secondary btn-sm" onclick="msShift(1)" '+(canNext?'':'disabled style="opacity:.35"')+'><i class="ti ti-chevron-right"></i></button>'
-    +'<button class="btn btn-secondary btn-sm" id="ms-refresh-btn" onclick="msRefreshMonth()" title="この月の最新をクラウドから取得"><i class="ti ti-cloud-download"></i></button>'
     +'<span id="ms-load-ind" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--muted)"><i class="ti ti-loader"></i><span class="ms-load-txt">取得中…</span></span>'
     +'<select onchange="msSetScope(this.value)" style="margin-left:auto;padding:8px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--tm);font-size:13px">'
     +'<option value="ALL"'+(msScope==='ALL'?' selected':'')+'>全店合算</option>'
@@ -5974,7 +5981,119 @@ function dailyMonthLabel() {
   var ref = new Date(now.getFullYear(), now.getMonth()+dailyMonthOffset, 1);
   return `${ref.getFullYear()}年${ref.getMonth()+1}月`;
 }
-function shiftDailyMonth(delta) { dailyMonthOffset += delta; renderPage('budget'); }
+function shiftDailyMonth(delta) {
+  dailyMonthOffset += delta;
+  renderPage('budget');                         // まずキャッシュ/空で即描画
+  loadMonthAndRerender(ymFromOffset(dailyMonthOffset), 'budget');
+}
+
+/* ============================================================
+   過去月データの遅延ロード＋凍結キャッシュ
+   - 今月より前の売上/客数・勤怠/Labor・出数は変化しないので、
+     クラウドDB(toast_sales / tip_labor / toast_item_sales)から一度だけ取得して
+     ローカルへ保存し、以後は取り直さない（＝固定）。
+   - どの端末でも、その月を開けばDBから1回読んで復元される（同期したらいつでも閲覧可）。
+   - 今月は凍結しない（従来どおり毎ログイン/操作で最新化）。
+============================================================ */
+function ymFromOffset(offset){
+  var n=new Date(); var r=new Date(n.getFullYear(), n.getMonth()+offset, 1);
+  return r.getFullYear()+'-'+String(r.getMonth()+1).padStart(2,'0');
+}
+function curYm(){ var n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); }
+function isFrozenMonth(ym){ return ym < curYm(); } // 今月より前＝固定対象
+function monthFrozenKey(storeId, ym){ return 'monthloaded_'+storeId+'_'+ym; } // ローカル専用キャッシュフラグ
+function daysOfYm(ym){
+  var p=ym.split('-'), y=parseInt(p[0],10), m=parseInt(p[1],10)-1;
+  var nd=new Date(y,m+1,0).getDate(), arr=[];
+  for(var d=1; d<=nd; d++){ arr.push({date:y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0')}); }
+  return arr;
+}
+/* クラウドの toast_item_sales から出数を読み menu_mix(ローカル)へ反映（ライブToast取得はしない＝読み取り専用） */
+async function loadMenuMixFromDB(storeId, guid, ym){
+  if (!guid) return;
+  var p=ym.split('-'); var period=p[0]+'.'+String(parseInt(p[1],10));
+  var sales = await fetchToastItemSales(guid, period);
+  if (!sales || !sales.length) return;
+  var byGuid={}; getRecipes().forEach(function(r){ if(r.toastGuid && r.storeId===storeId) byGuid[r.toastGuid]=r.id; });
+  var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
+  sales.forEach(function(s){ var g=s.item_guid||s.guid; var rid=byGuid[g]; if(rid && s.qty!=null) mix.items[rid]=Number(s.qty); });
+  var total=0; getRecipes().filter(function(r){return r.storeId===storeId;}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
+  mix.sales=total; mix.savedAt=new Date().toLocaleString('ja'); mix.toastSrc=true;
+  setMenuMix(storeId, period, mix);
+}
+/* Labor(tip_labor)の夜間cron保存は売上(toast_sales)より遅れることがある。
+   直近3日（今日・昨日・一昨日）がローカルに無ければToastからライブ取得して補完し、
+   売上と同じく「昨日まで」を一発で表示できるようにする。
+   _laborTailTried で本セッション内の重複取得を防止（「最新に更新」でクリア）。 */
+var _laborTailTried = {};
+function _ymdLocal(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+async function backfillRecentLabor(storeId, guid, days){
+  if (!guid || !days || !days.length) return 0;
+  var now=new Date(), todayISO=_ymdLocal(now);
+  var rangeStart=days[0].date, rangeEnd=days[days.length-1].date, got=0;
+  for (var i=0;i<3;i++){
+    var dt=_ymdLocal(new Date(now.getTime()-i*86400000));
+    if (dt<rangeStart || dt>rangeEnd || dt>todayISO) continue;   // 表示範囲外/未来日はスキップ
+    var ex=getTipLabor(storeId, dt);
+    if (ex && Object.keys(ex).length) continue;                  // 既にデータあり→不要
+    var gkey=storeId+'_'+dt;
+    if (_laborTailTried[gkey]) continue;                         // 本セッションで試行済み
+    _laborTailTried[gkey]=true;
+    try { var r=await fetchTipLabor(storeId, guid, dt); if (r && !r.error && r.count>0) got++; } catch(e){}
+  }
+  return got;
+}
+/* 指定月(ym)の売上・客数・勤怠・出数を全可視店舗ぶんDBから取り込む。
+   過去月は店舗ごとに一度ロードしたら凍結フラグでスキップ。今月は常に取得。 */
+var _ensureMonthInflight = {};
+async function ensureMonthDataLoaded(ym){
+  var stores = (typeof getVisibleStores==='function' ? getVisibleStores() : []).filter(function(s){ return s.toastGuid; });
+  if (!stores.length) return;
+  if (_ensureMonthInflight[ym]) return _ensureMonthInflight[ym];
+  var froze = isFrozenMonth(ym);
+  var days = daysOfYm(ym);
+  var p = (async function(){
+    await Promise.all(stores.map(async function(s){
+      if (froze && ls(monthFrozenKey(s.id, ym), false)) return; // 凍結済み→スキップ（固定・再取得しない）
+      try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('ensureMonth actuals', s.id, ym, e); }
+      try { await syncTipLaborFromDB(s.id, s.toastGuid, days); } catch(e){ console.warn('ensureMonth labor', s.id, ym, e); }
+      if (!froze) { try { await backfillRecentLabor(s.id, s.toastGuid, days); } catch(e){ console.warn('ensureMonth laborTail', s.id, e); } } // 当月のみ直近Laborをライブ補完
+      try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('ensureMonth mix', s.id, ym, e); }
+      if (froze) lsSet(monthFrozenKey(s.id, ym), true); // 過去月のみ凍結（今月はフラグを立てない）
+    }));
+  })();
+  _ensureMonthInflight[ym] = p;
+  try { await p; } finally { delete _ensureMonthInflight[ym]; }
+}
+/* 月ナビ操作後：表示中の月をDBから読み込んでから再描画（過去月は初回だけ取得） */
+function loadMonthAndRerender(ym, page){
+  ensureMonthDataLoaded(ym).then(function(){ if (curPage===page) renderPage(page); });
+}
+/* ============================================================
+   「最新に更新」: アプリ唯一の手動更新（トップバー右上）
+   マスター/設定/運用データ(app_state)＋当月の売上・客数・勤怠・出数をまとめて取得し再描画。
+   各ページは開いた時に自前で最新を引くため（再取得フラグをリセット）、これ1つで全体が最新化される。
+============================================================ */
+async function refreshNow(){
+  showSyncSplash('最新に更新中…');
+  try {
+    await supaPullAllMasters();                 // マスター/設定/運用データ
+    try { refreshStores(); } catch(e){}
+    // 各ページの再取得フラグをリセット（次に開いた時クラウドから引き直す）
+    try { _vacPulled=false; } catch(e){}
+    try { _obPulled=false; } catch(e){}
+    try { _shiftPulled={}; } catch(e){}
+    try { if (typeof _msLoaded!=='undefined') _msLoaded={}; } catch(e){}
+    try { _laborTailTried={}; } catch(e){} // 直近Laborのライブ補完を再試行できるようにする
+    setSyncSplash('当月データを同期中…');
+    await ensureMonthDataLoaded(curYm());        // 当月の売上・客数・勤怠・出数
+    setSyncSplash('最新に更新しました');
+    await new Promise(function(r){ setTimeout(r,300); });
+  } catch(e){ console.warn('refreshNow', e); }
+  hideSyncSplash();
+  try { renderPage(curPage); } catch(e){}
+  try { showToast('最新の情報に更新しました','success'); } catch(e){}
+}
 /* 基礎根拠から曜日別の日次予算を取得 */
 function dayBudgetFromBases(b, dow) {
   // 曜日別モードが設定されていれば、その曜日の客数×客単価（3区分）を直接使う
@@ -6066,13 +6185,9 @@ function renderBudgetDaily() {
     var syncCol = ss.status==='success'?'var(--green)':ss.status==='failed'?'var(--red)':'var(--muted)';
     var syncDotHtml = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${syncCol};vertical-align:middle;margin-right:4px"></span>`;
     var statusText = ss.last ? `${syncDotHtml}最終更新: ${ss.last}` : `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);vertical-align:middle;margin-right:4px"></span>未連携`;
-    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>データ連携</div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:8px">${sStore.name} の売上・客数・Tip・Labor・天気をまとめて取得し、実績へ反映します。</p>
-      <button class="btn btn-primary" id="sync-all-btn" onclick="syncAllData('${sStore.id}','${sStore.toastGuid||''}')" style="width:100%"><i class="ti ti-refresh"></i> データ連携（Sync Data）</button>
-      <div id="sync-all-status" style="font-size:12px;margin-top:8px">
-        ${statusText}${ss.detail?` <span style="color:var(--muted)">· ${ss.detail}</span>`:''}
-        ${ss.status==='failed'&&ss.error?`<div style="color:var(--red);margin-top:4px"><i class="ti ti-alert-triangle"></i> ${ss.error} <button class="btn btn-danger btn-sm" style="margin-left:6px" onclick="syncAllData('${sStore.id}','${sStore.toastGuid||''}')">再実行</button></div>`:''}
-      </div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>データ連携（詳細）</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:4px">通常は右上の <i class="ti ti-refresh"></i>「最新に更新」で ${sStore.name} の売上・客数・勤怠・出数が反映されます。ここはGUID設定や期間の一括取り込みなど管理者向けです。</p>
+      <div id="sync-all-status" style="font-size:11px;margin-top:4px;color:var(--muted)">${statusText}${ss.detail?` · ${ss.detail}`:''}</div>`;
     if (!hasGuid) {
       html += `<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:11px"><i class="ti ti-alert-circle"></i> Toast GUID未設定のため売上連携はスキップされます。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div>`;
     }
@@ -8163,7 +8278,6 @@ function renderTipPeriodDaily(storeId, store, info) {
   var html = '';
   if (hasGuid) {
     html += `<div class="card" style="padding:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
       <button class="btn btn-secondary btn-sm" onclick="openTipTimeModal('${storeId}')"><i class="ti ti-clock-cog"></i> 時間設定</button>
       </div><div id="tip-status" style="font-size:11px;color:var(--muted);margin-top:6px">同期済みの勤怠を期間に反映します。</div></div>`;
   }
@@ -8489,7 +8603,12 @@ function attMonthDays() {
     arr.push({day:d, date:`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`, dow:DOW[(dt.getDay()+6)%7]}); }
   return arr;
 }
-function shiftAttMonth(delta){ attMonthOffset += delta; renderPage('attendance'); }
+function shiftAttMonth(delta){
+  attMonthOffset += delta;
+  var pg = (curPage==='labor'||curPage==='tip') ? curPage : 'attendance';
+  renderPage(pg);                               // まずキャッシュ/空で即描画
+  loadMonthAndRerender(ymFromOffset(attMonthOffset), pg);
+}
 
 function renderAttendance() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl') return financialBlocked();
@@ -8513,8 +8632,7 @@ function renderAttendanceBody(storeId, store) {
 
   // データ反映ボタン（実勤怠のみ。シフト連携なし）
   html += `<div class="card" style="padding:10px;margin-bottom:10px">
-    <button class="btn btn-secondary" style="width:100%" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センターで同期</button>
-    <button class="btn btn-secondary" id="att-backfill-btn" style="width:100%;margin-top:6px" onclick="attBackfillMonth('${storeId}','${store.toastGuid||''}')"><i class="ti ti-cloud-download"></i> Toastから月を直接取込</button>
+    <button class="btn btn-secondary" id="att-backfill-btn" style="width:100%" onclick="attBackfillMonth('${storeId}','${store.toastGuid||''}')"><i class="ti ti-cloud-download"></i> Toastから月を直接取込</button>
     <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'「同期DB」で取れない日は「直接取込」でToastから補完できます。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
 
   return html + renderAttMonthData(storeId, store);
@@ -8843,7 +8961,6 @@ function renderTipDaily(storeId, store, date) {
   if (hasGuid) {
     var basis = getTipHoursBasis(storeId);
     html += `<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
       <button class="btn btn-secondary btn-sm" onclick="doTipLaborFetch('${storeId}','${store.toastGuid}','${date}')"><i class="ti ti-cloud-download"></i> この日を取得</button>
       <button class="btn btn-secondary btn-sm" onclick="openTipTimeModal('${storeId}')"><i class="ti ti-clock-cog"></i> 時間設定</button>
       <span class="tag ${basis==='window'?'tag-blue':'tag-gray'}" style="font-size:10px">${basis==='window'?'営業時間帯のみ':'全勤務時間'}</span>
@@ -9015,7 +9132,7 @@ function renderLabor() {
     ? [['overview','サマリー'],['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']]
     : [['attendance','勤怠データ']];
   var tabsHtml = tabDefs.map(function(td){ return `<div class="phase-tab${laborTab===td[0]?' active':''}" onclick="setLaborTab('${td[0]}')">${td[1]}</div>`; }).join('');
-  var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${store.name} · 勤怠×時給／同期は同期センターに集約</div></div>${financial?`<button id="labor-refresh-btn" class="btn btn-primary btn-sm" onclick="refreshLaborFromCloud()"><i class="ti ti-cloud-download"></i> 最新を取得</button>`:''}</div>
+  var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${store.name} · 勤怠×時給</div></div></div>
   <div class="phase-tabs">${tabsHtml}</div>`;
   if (laborTab==='attendance') return html + renderAttendanceBody(storeId, store);
   if (laborTab==='detail') return html + renderLaborDetail(storeId, store);
@@ -9435,8 +9552,7 @@ function renderLaborDetail(storeId, store) {
         return `<option value="${w.sun}"${selWeek===w.sun?' selected':''}>週: ${w.range.label}${cross}</option>`;
       }).join('')}
     </select>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 表示: ${periodLabel}。OTは日曜起算の週ごとに40h超で自動算出（Hawaii基準）。同期は同期センターで。</div>
-    <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センターで同期</button>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 表示: ${periodLabel}。OTは日曜起算の週ごとに40h超で自動算出（Hawaii基準）。更新は右上の「最新に更新」から。</div>
   </div>`;
 
   var totalCost=0, totalReg=0, totalOt=0, shownCount=0;
@@ -9469,7 +9585,7 @@ function renderLaborDetail(storeId, store) {
     </tr>`;
   });
   if(!shownCount){
-    html += `<tr><td colspan="${canWage?4:3}" style="text-align:center;color:var(--muted);padding:18px">この期間の勤怠データがありません。<br>同期センターでToast勤怠を同期してください。</td></tr>`;
+    html += `<tr><td colspan="${canWage?4:3}" style="text-align:center;color:var(--muted);padding:18px">この期間の勤怠データがありません。<br>右上の「最新に更新」でToast勤怠を取得してください。</td></tr>`;
   }
   html += '</tbody></table>';
   if (unmatched.length) {
@@ -9482,7 +9598,7 @@ function renderLaborDetail(storeId, store) {
     ${kpi('OT時間', Math.round(totalOt*10)/10+'h', '週40h超', totalOt>0?'var(--yellow)':'var(--muted)')}
     ${canWage?kpi('賃金合計', '$'+Math.round(totalCost).toLocaleString(), 'OT1.5倍込み', 'var(--tm)'):''}
   </div>`;
-  html += `<p style="font-size:11px;color:var(--muted);margin-top:8px">※ 勤怠はToast打刻（同期センター）。OTは週(日〜土)40h超で算出。Order Only除外。給与税17%・保険はサマリーのLabor額/Labor率に反映。時給はGM/AM等のみ表示。</p>`;
+  html += `<p style="font-size:11px;color:var(--muted);margin-top:8px">※ 勤怠はToast打刻（右上「最新に更新」で取得）。OTは週(日〜土)40h超で算出。Order Only除外。給与税17%・保険はサマリーのLabor額/Labor率に反映。時給はGM/AM等のみ表示。</p>`;
   html += '</div>';
   return html;
 }
@@ -10065,7 +10181,6 @@ function renderShiftBuild(storeId, week) {
     <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-layout-grid"></i> ${shiftView==='grid'?'List':'Grid'}</button>
     ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center">公開済</span>`}
     <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像で保存/共有</button>
-    <button class="btn btn-secondary btn-sm" onclick="refreshShiftFromCloud('${storeId}','${week}')"><i class="ti ti-cloud-download"></i> 最新を取得</button>
   </div>`;
 
   if (warnings.length) {
@@ -11267,7 +11382,6 @@ function renderVacation() {
   var html = `<div class="section-header">
     <div class="section-title">休暇申請</div>
     <div style="display:flex;gap:6px">
-      <button class="btn btn-secondary btn-sm" onclick="refreshVacations()"><i class="ti ti-cloud-download"></i> 最新を取得</button>
       <button class="btn btn-primary btn-sm" onclick="openVacationModal()"><i class="ti ti-plus"></i> 申請</button>
     </div>
   </div>`;
@@ -11446,7 +11560,6 @@ function renderHiring() {
 
   var html = `<div class="section-header">
     <div><div class="section-title">採用・オンボーディング</div><div class="section-sub">応募 → 採用 → 本人入力 → 経理 → Payroll → 登録完了</div></div>
-    <button class="btn btn-secondary btn-sm" onclick="refreshOnboardings()"><i class="ti ti-cloud-download"></i> 最新を取得</button>
   </div>`;
   if (obPending) html += `<div class="alert alert-warning" style="padding:9px 12px;margin-bottom:10px;display:flex;align-items:center;gap:8px"><i class="ti ti-file-text"></i><div style="font-size:12px;flex:1"><b>採用書類の確認待ち ${obPending}件</b> · 提出された書類・署名を確認してください</div><button class="btn btn-primary btn-sm" onclick="document.getElementById('ob-section')&&document.getElementById('ob-section').scrollIntoView({behavior:'smooth'})">確認する</button></div>`;
 
@@ -13928,12 +14041,13 @@ function deleteVendor(vId) {
 const ALL_POSITIONS = ['Host','Server','Bar','Drink','Yakitori','Kitchen','Tempura','Sushi','Cold','Main Plater','Miso','Supporter','Prep','Front','Back','Food Runner','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'];
 const DEFAULT_STORE_POSITIONS = {
   'F01':['Host','Server','Bar','Drink','Yakitori','Kitchen','Energy','Leadership','サービスクオリティ','理念'],
-  'F02':['Host','Server','Tempura','Sushi','Cold','Drink','Energy','Leadership','サービスクオリティ','理念'],
-  'F03':['Prep','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'],
+  'F02':['Host','Server','Tempura','Sushi','Cold','Drink','Prep','Energy','Leadership','サービスクオリティ','理念'],
+  'F03':['Prep','FSP Kitchen','FSP Cashier','Energy','Leadership','サービスクオリティ','理念'],
+  'F03-G':['Prep','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'],
   'F04-K':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
   'F04-P':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
   'F04-A':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
-  'F05':['Host','Server','Front','Back','Food Runner','Supporter','Energy','Leadership','サービスクオリティ','理念'],
+  'F05':['Host','Server','Front','Back','Food Runner','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
 };
 /* スキルレベル基準（Lv0-3の達成基準）。Totoyaは実基準、他は汎用 */
 const SKILL_CRITERIA = {
@@ -14093,6 +14207,25 @@ function empEvalInfo(e){
   return {grade:grade, gnum:gnum, basis:basis, pct:pct, hasData:hasData, level: hasData?evalLevelFromPct(pct):null};
 }
 
+/* ===== フェーズA：専門職の部門別Career Score（部門ごとのA〜H 8軸） =====
+   設計書「専門職CareerScore」タブ準拠。専門職は運営共通A〜Hでなく部門別A〜Hで評価。 */
+var SPECIALIST_DEPTS = {
+  '経理': {label:'経理 / Accounting', axes:[{k:'A',n:'正確性'},{k:'B',n:'期限遵守'},{k:'C',n:'財務分析'},{k:'D',n:'税務・コンプラ'},{k:'E',n:'内部統制'},{k:'F',n:'仕組み化・改善'},{k:'G',n:'経理人材育成'},{k:'H',n:'理念（正直・誠実）'}]},
+  '調理': {label:'調理 / Culinary', axes:[{k:'A',n:'衛生・安全'},{k:'B',n:'品質・標準化'},{k:'C',n:'商品開発'},{k:'D',n:'原価・レシピ設計'},{k:'E',n:'厨房オペレーション'},{k:'F',n:'数字（原価管理）'},{k:'G',n:'料理人育成'},{k:'H',n:'食文化・理念'}]},
+  'サービス': {label:'サービス / Customer Service', axes:[{k:'A',n:'サービス基準設計'},{k:'B',n:'接客品質・CX'},{k:'C',n:'リピート・口コミ創出'},{k:'D',n:'顧客の声(VOC)・改善'},{k:'E',n:'サービス運営・設計'},{k:'F',n:'数字（CS指標）'},{k:'G',n:'サービス人材育成'},{k:'H',n:'おもてなし文化・理念'}]},
+  'マーケ': {label:'マーケ&プロモ', axes:[{k:'A',n:'集客・販促'},{k:'B',n:'デジタル運用'},{k:'C',n:'効果測定・ROI'},{k:'D',n:'ブランド・世界観'},{k:'E',n:'企画・体験'},{k:'F',n:'数字（指標管理）'},{k:'G',n:'チーム・育成'},{k:'H',n:'理念・ブランド一貫性'}]},
+};
+var SPECIALIST_TITLE_DEPT = {
+  'Accountant':'経理', 'Office Manager':'経理',
+  'Corporate Chef':'調理',
+  'Customer Service Manager':'サービス',
+};
+function empSpecialistDept(e){ return (e && SPECIALIST_TITLE_DEPT[e.title]) || null; }
+function specialistCats(dept){
+  var d=SPECIALIST_DEPTS[dept]; if(!d) return null;
+  return d.axes.map(function(a){ return {key:a.k, name:a.n, en:a.n, icon:'ti-star', items:[a.n]}; });
+}
+
 /* ===== Grade × Career Score 担当軸マップ（◎所有＝担当。○以下は参考） =====
    設計書「全Variant一覧」の◎◎/◎を担当軸として採用（F2b：重みなし・担当フラグのみ）。 */
 var GRADE_AXIS_BY_GRADE = {
@@ -14116,6 +14249,7 @@ function setGradeAxis(m){ lsSet('grade_axis', m); }
 /* その従業員の担当軸（A〜Hのkey配列） */
 function empAxes(e){
   if(!e) return [];
+  if(empSpecialistDept(e)) return ['A','B','C','D','E','F','G','H']; // 専門職は部門別A〜H全軸が担当
   var m=getGradeAxis();
   if(e.title && m[e.title]) return m[e.title].slice();
   var g=empGrade(e);
@@ -14130,7 +14264,7 @@ function empAxisEval(e){
   var L4=((getEvalLevels().find(function(x){return x.n===4;}))||{min:75}).min;
   var per=axes.map(function(k){
     var c=(sum.cats||[]).find(function(x){return x.key===k;})||{pct:0};
-    return {key:k, name:lssCatName(k), pct:c.pct||0, level:evalLevelFromPct(c.pct||0)};
+    return {key:k, name:(c.name||lssCatName(k)), pct:c.pct||0, level:evalLevelFromPct(c.pct||0)};
   });
   var minAxis=per.reduce(function(a,b){return b.pct<a.pct?b:a;}, per[0]);
   var pro=per.every(function(p){return p.pct>=L4;});
@@ -14277,6 +14411,27 @@ function migrateUniversalSkillItems(){
   if(changed) lsSet('store_positions', all);
 }
 
+/* C: FSP(F03)とGarlic Shack(F03-G)のポジション分割＋F02/F05へPrep追加（保存済みデータ用・冪等） */
+function migrateStorePositionsSplitC(){
+  var stored = ls('store_positions', null);
+  if(stored===null) return; // 未カスタマイズ＝DEFAULT_STORE_POSITIONS（既に分割済）
+  var all = stored; var changed=false;
+  var UNIV=['Energy','Leadership','サービスクオリティ','理念'];
+  if(all['F03']){
+    var f3=all['F03'].filter(function(p){ return p!=='WGS Kitchen' && p!=='WGS Cashier'; });
+    if(f3.length!==all['F03'].length){ all['F03']=f3; changed=true; }
+  }
+  if(!all['F03-G']){
+    all['F03-G']=['Prep','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'];
+    changed=true;
+  } else {
+    ['Prep','WGS Kitchen','WGS Cashier'].forEach(function(p){ if(all['F03-G'].indexOf(p)<0){ all['F03-G'].push(p); changed=true; } });
+    UNIV.forEach(function(p){ if(all['F03-G'].indexOf(p)<0){ all['F03-G'].push(p); changed=true; } });
+  }
+  ['F02','F05'].forEach(function(id){ if(all[id] && all[id].indexOf('Prep')<0){ all[id].push('Prep'); changed=true; } });
+  if(changed) lsSet('store_positions', all);
+}
+
 /* スキル(旧): { empName: { position: {level, status, ...} } }  店舗区別なし
    スキル(新 v2): { empName: { storeId: { position: {level, status, ...} } } }
    旧データは所属店舗のスキルとして自動移行（過去評価を保持） */
@@ -14417,6 +14572,17 @@ function lssCatsOrdered() {
   var rest = LSS_CATEGORIES.filter(c=>c.key!=='H');
   return h.concat(rest);
 }
+/* 従業員ごとの評価カテゴリ：専門職は部門別A〜H、それ以外は運営共通A〜H */
+function lssCatsForName(name){
+  try{
+    var e=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===name;}):null;
+    var dept=e?empSpecialistDept(e):null;
+    if(dept){ var sc=specialistCats(dept); if(sc) return sc; }
+  }catch(err){}
+  return lssCatsOrdered();
+}
+function curLssCats(){ return lssCatsForName(window._lssName); }
+function curLssCat(key){ return curLssCats().find(function(c){return c.key===key;}) || LSS_CATEGORIES.find(function(c){return c.key===key;}); }
 /* カテゴリ内のサブグループ定義（項目のインデックス範囲 [from,to] 両端含む）
    ※ 既存の採点データIDは項目順そのまま。グループは見た目とグループ別%のためだけ。 */
 const LSS_GROUPS = {
@@ -14430,6 +14596,8 @@ const LSS_GROUPS = {
   'H': [['素直さ・学ぶ姿勢',0,2],['正直・誠実',3,5],['思いやり・リスペクト',6,8],['前向き・課題解決',9,11],['主体性・責任感',12,14]],
 };
 function lssGroupsOf(catKey) {
+  var cc = (typeof curLssCat==='function') ? curLssCat(catKey) : null;
+  if (cc && cc.items && cc.items.length<=1) return [['',0,(cc.items.length||1)-1]]; // 専門職など単一項目
   if (LSS_GROUPS[catKey]) return LSS_GROUPS[catKey];
   var c = LSS_CATEGORIES.find(x=>x.key===catKey);
   return c ? [['',0,c.items.length-1]] : [];
@@ -14466,10 +14634,10 @@ function canViewOthersLss(){ return ['ceo','gm','am'].includes(curRole); }
 function lssSummary(name) {
   var rec = getLssScores(name);
   var scores = rec ? (rec.scores||{}) : {};
-  var cats = lssCatsOrdered().map(c=>{
+  var cats = lssCatsForName(name).map(c=>{
     var max = c.items.length*3, score=0;
     c.items.forEach((label,i)=>{ score += (parseInt(scores[lssItemId(c.key,i)])||0); });
-    return {key:c.key, name:c.name, en:c.en, score:score, max:max, pct: max?Math.round(score/max*100):0};
+    return {key:c.key, name:c.name, en:c.en, icon:c.icon, score:score, max:max, pct: max?Math.round(score/max*100):0};
   });
   var totalScore = cats.reduce((a,c)=>a+c.score,0);
   var totalMax = cats.reduce((a,c)=>a+c.max,0);
@@ -14793,7 +14961,7 @@ function renderLeadership() {
       sum.cats.forEach(c=>{
         var cc = c.pct>=80?'var(--green)':c.pct>=60?'var(--yellow)':'var(--red)';
         var catDef = LSS_CATEGORIES.find(x=>x.key===c.key)||{};
-        html += `<div style="font-size:10px"><div style="display:flex;justify-content:space-between"><span><i class="ti ${catDef.icon}" style="font-size:11px"></i></span><span style="color:${cc}">${c.pct}%</span></div>
+        html += `<div style="font-size:10px"><div style="display:flex;justify-content:space-between"><span><i class="ti ${c.icon||catDef.icon}" style="font-size:11px"></i></span><span style="color:${cc}">${c.pct}%</span></div>
           <div class="progress-bar" style="height:4px;margin-top:2px"><div class="progress-fill" style="background:${cc};width:${c.pct}%"></div></div></div>`;
       });
       html += `</div>`;
@@ -14900,7 +15068,7 @@ function openLssDetail(name) {
 /* 総合サマリー（ドラフト反映でリアルタイム） */
 function lssSummaryFromDraft() {
   var draft = window._lssDraft||{};
-  var cats = lssCatsOrdered().map(c=>{
+  var cats = curLssCats().map(c=>{
     var max=c.items.length*3, score=0;
     c.items.forEach((label,i)=>{ score += (parseInt(draft[lssItemId(c.key,i)])||0); });
     return {key:c.key, name:c.name, score:score, max:max, pct:max?Math.round(score/max*100):0};
@@ -14961,17 +15129,17 @@ function lssNextTargetHtml(name) {
 function renderLssCatTabs() {
   var el=document.getElementById('lss-cattabs'); if(!el) return;
   var sum=lssSummaryFromDraft();
-  el.innerHTML = `<div class="phase-tabs" style="flex-wrap:wrap">${lssCatsOrdered().map(c=>{
+  el.innerHTML = `<div class="phase-tabs" style="flex-wrap:wrap">${curLssCats().map(c=>{
     var cs=sum.cats.find(x=>x.key===c.key);
     var cc=cs.pct>=80?'var(--green)':cs.pct>=60?'var(--yellow)':cs.score>0?'var(--red)':'var(--muted)';
     return `<div class="phase-tab${window._lssCat===c.key?' active':''}" onclick="setLssCat('${c.key}')" title="${c.name}"><i class="ti ${c.icon}" style="font-size:14px"></i> <span style="font-size:9px;color:${window._lssCat===c.key?'#fff':cc}">${cs.pct}%</span></div>`;
   }).join('')}</div>
-  <div style="font-size:12px;font-weight:700;margin-top:6px;color:var(--accent)"><i class="ti ${LSS_CATEGORIES.find(c=>c.key===window._lssCat).icon}"></i> ${LSS_CATEGORIES.find(c=>c.key===window._lssCat).name}</div>`;
+  <div style="font-size:12px;font-weight:700;margin-top:6px;color:var(--accent)"><i class="ti ${(curLssCat(window._lssCat)||{}).icon}"></i> ${(curLssCat(window._lssCat)||{}).name}</div>`;
 }
 function setLssCat(key){ window._lssCat=key; renderLssCatTabs(); renderLssItems(); }
 function renderLssItems() {
   var el=document.getElementById('lss-items'); if(!el) return;
-  var c=LSS_CATEGORIES.find(x=>x.key===window._lssCat);
+  var c=curLssCat(window._lssCat);
   var draft=window._lssDraft||{};
   var canScore=canEditLss(window._lssName);
   var groups=lssGroupsOf(c.key);
@@ -15011,7 +15179,7 @@ function renderLssItems() {
 }
 /* 採点ポップアップ：基準（0〜3）を見ながら点数を選ぶ（編集時ポップアップ） */
 function openLssScorePopup(catKey, idx){
-  var c=LSS_CATEGORIES.find(x=>x.key===catKey); if(!c)return;
+  var c=curLssCat(catKey); if(!c)return;
   var label=c.items[idx]; if(catKey==='H' && (''+label).indexOf('：')>=0) label=label.split('：').slice(1).join('：');
   var id=lssItemId(catKey, idx);
   var cur=(window._lssDraft||{})[id]; cur=(cur!=null&&cur!=='')?parseInt(cur):null;
@@ -15045,7 +15213,7 @@ function lssPickScore(catKey, idx, n){
 }
 /* グループ別%のライブ更新（採点時） */
 function lssUpdateGroupPcts() {
-  var c=LSS_CATEGORIES.find(x=>x.key===window._lssCat); if(!c) return;
+  var c=curLssCat(window._lssCat); if(!c) return;
   var draft=window._lssDraft||{};
   var groups=lssGroupsOf(c.key);
   groups.forEach(function(g, gi){
@@ -15636,7 +15804,7 @@ function renderMypage() {
         ${lastReason?`<div style="font-size:11px;color:var(--tm);margin:0 0 8px;padding:6px 9px;background:var(--bg);border-radius:7px;border-left:2px solid var(--accent)"><span style="font-weight:700;color:var(--accent)"><i class="ti ti-message-2" style="font-size:11px"></i> ${t('前回の変更理由','Last change note')}</span><br>${escapeHtml(lastReason)}</div>`:''}
         <div style="border-top:1px solid var(--border);padding-top:8px">
           <div style="font-size:11px;font-weight:700;margin-bottom:4px">${t('今月のフォーカス','Focus This Month')}</div>
-          ${focusCats.map(c=>{var cd=LSS_CATEGORIES.find(x=>x.key===c.key)||{};return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0"><i class="ti ${cd.icon}" style="color:var(--accent2)"></i><span style="flex:1">${c.name}</span><span style="font-size:11px;color:var(--accent2)">${c.pct}%</span></div>`;}).join('')}
+          ${focusCats.map(c=>{var cd=LSS_CATEGORIES.find(x=>x.key===c.key)||{};return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0"><i class="ti ${c.icon||cd.icon}" style="color:var(--accent2)"></i><span style="flex:1">${c.name}</span><span style="font-size:11px;color:var(--accent2)">${c.pct}%</span></div>`;}).join('')}
         </div>`;
       // 昇格パス（担当軸L4 ＋ OJT修了）
       var gpe = gradePromoEval(meEmpL);
@@ -15995,10 +16163,10 @@ function renderMenu() {
 
   // 店舗 + 月 セレクタ
   html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-    ${visStores.length>1?`<select class="form-select" style="width:auto;padding:6px" onchange="window._menuStore=this.value;renderPage('menu')">${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>`:`<b style="font-size:13px">${storeObj.name}</b>`}
-    <select class="form-select" style="width:auto;padding:6px" onchange="window._menuPeriod=this.value;renderPage('menu')">${periodOptions(period)}</select>
+    ${visStores.length>1?`<select class="form-select" style="width:auto;padding:6px" onchange="onMenuStoreChange(this.value)">${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>`:`<b style="font-size:13px">${storeObj.name}</b>`}
+    <select class="form-select" style="width:auto;padding:6px" onchange="onMenuPeriodChange(this.value)">${periodOptions(period)}</select>
     ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> 出数を入力</button>`:''}
-    <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
+    <button class="btn btn-primary btn-sm" onclick="openMenuRangeModal('${storeId}')"><i class="ti ti-table-export"></i> 期間集計・出力</button>
     ${mix.toastSrc?`<span class="tag tag-green" style="font-size:9px">Toast同期済</span>`:''}
   </div></div>`;
 
@@ -16103,7 +16271,96 @@ function periodOptions(selected) {
   }
   return opts;
 }
+/* ============================================================
+   出数 期間集計・出力（複数月）：開始月〜終了月を指定し、商品×月の出数表を
+   画面表示＋CSV出力。各月はクラウドDB（toast_item_sales）から取得（過去月は凍結キャッシュ）。
+============================================================ */
+function shiftPeriod(period, delta){ var p=String(period).split('.'); var d=new Date(+p[0], (+p[1]-1)+delta, 1); return d.getFullYear()+'.'+(d.getMonth()+1); }
+function menuPeriodList(startP, endP){
+  var sp=String(startP).split('.'), ep=String(endP).split('.');
+  var sy=+sp[0], sm=+sp[1], ey=+ep[0], em=+ep[1];
+  if (sy>ey || (sy===ey && sm>em)) { return menuPeriodList(endP, startP); } // 逆順は入替
+  var list=[], y=sy, m=sm, guard=0;
+  while ((y<ey || (y===ey && m<=em)) && guard++<60){ list.push(y+'.'+m); m++; if(m>12){m=1;y++;} }
+  return list;
+}
+function menuRangeMatrix(storeId){
+  var periods = menuPeriodList(window._menuRangeStart, window._menuRangeEnd);
+  var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null);
+  var mixes = periods.map(function(p){ return getMenuMix(storeId, p); });
+  var rows = recipes.map(function(r){
+    var qtys = mixes.map(function(mx){ return parseFloat((mx.items||{})[r.id])||0; });
+    var total = qtys.reduce(function(a,b){ return a+b; }, 0);
+    return { name:r.name, category:r.category||'未分類', price:r.price||0, qtys:qtys, total:total };
+  }).filter(function(x){ return x.total>0; }).sort(function(a,b){ return b.total-a.total; });
+  var colTotals = periods.map(function(_,i){ return rows.reduce(function(a,x){ return a+x.qtys[i]; }, 0); });
+  var grand = colTotals.reduce(function(a,b){ return a+b; }, 0);
+  return { periods:periods, rows:rows, colTotals:colTotals, grand:grand };
+}
+function openMenuRangeModal(storeId){
+  if(!window._menuRangeStart) window._menuRangeStart = shiftPeriod(getPeriod(), -2); // 既定: 直近3か月
+  if(!window._menuRangeEnd) window._menuRangeEnd = getPeriod();
+  var s = STORES.find(function(x){ return x.id===storeId; })||{};
+  openModal(`<div class="modal-title"><i class="ti ti-table-export"></i> 出数 期間集計 — ${s.name||''} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <label style="font-size:12px;color:var(--muted)">開始</label>
+      <select class="form-select" style="width:auto;padding:6px" onchange="window._menuRangeStart=this.value;renderMenuRangeBody('${storeId}')">${periodOptions(window._menuRangeStart)}</select>
+      <label style="font-size:12px;color:var(--muted)">〜 終了</label>
+      <select class="form-select" style="width:auto;padding:6px" onchange="window._menuRangeEnd=this.value;renderMenuRangeBody('${storeId}')">${periodOptions(window._menuRangeEnd)}</select>
+      <button class="btn btn-secondary btn-sm" onclick="exportMenuRangeCsv('${storeId}')"><i class="ti ti-download"></i> CSV</button>
+    </div>
+    <div id="menu-range-body" style="max-height:60vh;overflow:auto"><div style="text-align:center;color:var(--muted);padding:20px"><i class="ti ti-loader"></i> 集計中…</div></div>`);
+  renderMenuRangeBody(storeId);
+}
+async function renderMenuRangeBody(storeId){
+  var bodyEl = document.getElementById('menu-range-body');
+  if (bodyEl) bodyEl.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px"><i class="ti ti-loader"></i> 集計中…</div>';
+  // 各月をクラウドDBから取得（過去月は凍結キャッシュ・今月は最新）
+  var periods = menuPeriodList(window._menuRangeStart, window._menuRangeEnd);
+  var s = STORES.find(function(x){ return x.id===storeId; });
+  if (s && s.toastGuid){ for (var i=0;i<periods.length;i++){ try{ await ensureMenuMixLoaded(storeId, periods[i]); }catch(e){} } }
+  bodyEl = document.getElementById('menu-range-body'); if(!bodyEl) return; // モーダルが閉じられた
+  var M = menuRangeMatrix(storeId);
+  if (!M.rows.length){ bodyEl.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px">この期間の出数データがありません</div>'; return; }
+  var head = '<th style="text-align:left;position:sticky;left:0;background:var(--surface)">商品</th>'
+    + M.periods.map(function(p){ return `<th style="text-align:right">${p}</th>`; }).join('')
+    + '<th style="text-align:right">合計</th>';
+  var body = M.rows.map(function(x){
+    return `<tr><td style="position:sticky;left:0;background:var(--surface);font-size:12px">${x.name}</td>`
+      + x.qtys.map(function(q){ return `<td style="text-align:right;font-size:12px">${q||'—'}</td>`; }).join('')
+      + `<td style="text-align:right;font-weight:700">${x.total.toLocaleString()}</td></tr>`;
+  }).join('');
+  var totalRow = `<tr style="font-weight:700;border-top:2px solid var(--border)"><td style="position:sticky;left:0;background:var(--surface)">合計</td>`
+    + M.colTotals.map(function(c){ return `<td style="text-align:right">${c.toLocaleString()}</td>`; }).join('')
+    + `<td style="text-align:right">${M.grand.toLocaleString()}</td></tr>`;
+  bodyEl.innerHTML = `<div style="overflow-x:auto"><table class="inv-table" style="min-width:${120+M.periods.length*70}px"><thead><tr>${head}</tr></thead><tbody>${body}${totalRow}</tbody></table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">${M.rows.length}商品 · ${M.periods.length}か月（${M.periods[0]}〜${M.periods[M.periods.length-1]}）· 出数の多い順</div>`;
+}
+function exportMenuRangeCsv(storeId){
+  var M = menuRangeMatrix(storeId);
+  if (!M.rows.length){ showToast('出力するデータがありません','warning'); return; }
+  var s = STORES.find(function(x){ return x.id===storeId; })||{};
+  var header = ['商品','カテゴリ','売価'].concat(M.periods).concat(['合計']);
+  var rows = [header];
+  M.rows.forEach(function(x){ rows.push([x.name, x.category, x.price].concat(x.qtys).concat([x.total])); });
+  rows.push(['合計','',''].concat(M.colTotals).concat([M.grand]));
+  downloadCSV(rows, `出数_${(s.name||storeId)}_${M.periods[0]}-${M.periods[M.periods.length-1]}.csv`);
+}
 /* 出数入力モーダル（月別・商品ごと） */
+/* menu画面: 店舗/期間の切替時に、その月の出数をクラウドDBから遅延ロード（過去月は一度だけ＝固定）。 */
+function onMenuStoreChange(val){ window._menuStore = val; renderPage('menu'); ensureMenuMixLoaded(val, window._menuPeriod); }
+function onMenuPeriodChange(val){ window._menuPeriod = val; renderPage('menu'); ensureMenuMixLoaded(window._menuStore, val); }
+async function ensureMenuMixLoaded(storeId, period){
+  var s = STORES.find(x=>x.id===storeId); if(!s || !s.toastGuid) return;
+  var pp = String(period).split('.'); var ym = pp[0]+'-'+String(parseInt(pp[1],10)).padStart(2,'0');
+  var fkey = 'menumixloaded_'+storeId+'_'+period;
+  if (isFrozenMonth(ym) && ls(fkey, false)) return;     // 凍結済みは取り直さない
+  try {
+    await loadMenuMixFromDB(storeId, s.toastGuid, ym);
+    if (isFrozenMonth(ym)) lsSet(fkey, true);            // 過去月のみ凍結
+  } catch(e){ console.warn('ensureMenuMixLoaded', e); }
+  if (curPage==='menu') renderPage('menu');
+}
 function openMenuMixModal(storeId, period) {
   var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null );
   var mix = getMenuMix(storeId, period);
@@ -19830,6 +20087,7 @@ try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMa
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
+try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePositionsSplitC', e); }
 try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
 (async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) bootLogin(); } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 </script>
