@@ -8261,11 +8261,15 @@ function renderTipMgmt() {
   html += `<div class="phase-tabs">
     <div class="phase-tab${tipPeriodView==='summary'?' active':''}" onclick="setTipPeriodView('summary')">期間サマリー</div>
     <div class="phase-tab${tipPeriodView==='daily'?' active':''}" onclick="setTipPeriodView('daily')">日別</div>
+    <div class="phase-tab${tipPeriodView==='matrix'?' active':''}" onclick="setTipPeriodView('matrix')">配分表</div>
     <div class="phase-tab${tipPeriodView==='staff'?' active':''}" onclick="setTipPeriodView('staff')">スタッフ別</div>
     <div class="phase-tab${tipPeriodView==='settle'?' active':''}" onclick="setTipPeriodView('settle')">SL精算</div>
   </div>`;
+  // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
+  html += `<div style="margin-bottom:10px"><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> 期間の日次L/D配分をCSV出力</button></div>`;
 
   if (tipPeriodView==='daily') return html + renderTipPeriodDaily(storeId, store, info);
+  if (tipPeriodView==='matrix') return html + renderTipPeriodMatrix(storeId, store, info);
   if (tipPeriodView==='staff') return html + renderTipPeriodStaff(storeId, store, info);
   if (tipPeriodView==='settle') return html + renderTipHalfMonth(storeId, store, info.anyDate);
   return html + renderTipPeriodSummary(storeId, store, info);
@@ -8382,6 +8386,92 @@ function renderTipPeriodSummary(storeId, store, info) {
 }
 
 /* ② 日別表示 */
+/* ペイロール期間(半月)の「毎日のランチ/ディナー配分内訳」をCSV出力。
+   行=従業員、列=各日のランチ/ディナー配分額、最終列=期間合計。
+   上部に各日の実Tip額(ランチ/ディナー)、最下部に配分合計。Excel(Tip share sheet)と同じ並び。 */
+/* 期間マトリクスの共有データ（CSV/画面の両方で使用） */
+function tipPeriodMatrix(storeId, info){
+  var dists = info.dates.map(function(d){ return {date:d, dist:calcTipDistribution(storeId, d)}; });
+  var names=[], seen={};
+  dists.forEach(function(x){ (x.dist.list||[]).forEach(function(r){ if(!seen[r.name]){seen[r.name]=1; names.push(r.name);} }); });
+  return { dists:dists, names:names };
+}
+function exportTipPeriodCsv(){
+  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
+  var info = tipPeriodInfo();
+  var r2 = function(v){ return Math.round((v||0)*100)/100; };
+  var md = function(d){ return d.slice(5).replace('-','/'); };
+  var M = tipPeriodMatrix(storeId, info), dists=M.dists, names=M.names;
+  // ヘッダ
+  var header=['従業員＼日付'];
+  dists.forEach(function(x){ header.push(md(x.date)+' ランチ'); header.push(md(x.date)+' ディナー'); });
+  header.push('期間合計');
+  var rows=[header];
+  // 実Tip額（各日のランチ/ディナー）
+  var tipRow=['実Tip額'], tipGrand=0;
+  dists.forEach(function(x){ var t=x.dist.tip||{}; tipRow.push(r2(t.lunchTotal)); tipRow.push(r2(t.dinnerTotal)); tipGrand+=(t.lunchTotal||0)+(t.dinnerTotal||0); });
+  tipRow.push(r2(tipGrand)); rows.push(tipRow);
+  // 従業員ごとの日次配分
+  names.forEach(function(nm){
+    var row=[nm], ptot=0;
+    dists.forEach(function(x){
+      var r=(x.dist.list||[]).find(function(z){return z.name===nm;});
+      var l=r?(r.lunch||0):0, dd=r?(r.dinner||0):0;
+      row.push(l?r2(l):''); row.push(dd?r2(dd):''); ptot+=l+dd;
+    });
+    row.push(r2(ptot)); rows.push(row);
+  });
+  // 配分合計
+  var sumRow=['配分合計'], grand=0;
+  dists.forEach(function(x){ var l=0,dd=0; (x.dist.list||[]).forEach(function(r){l+=r.lunch||0; dd+=r.dinner||0;}); sumRow.push(r2(l)); sumRow.push(r2(dd)); grand+=l+dd; });
+  sumRow.push(r2(grand)); rows.push(sumRow);
+  downloadCSV(rows, `Tip配分_${(store.name||storeId)}_${info.from}_${info.to}.csv`);
+  showToast('期間の日次L/D配分をCSV出力しました','success');
+}
+/* 配分表（常設）: ペイロール期間の日次ランチ/ディナー配分マトリクス（行=従業員・列=各日L/D） */
+function renderTipPeriodMatrix(storeId, store, info){
+  var M = tipPeriodMatrix(storeId, info);
+  var md = function(d){ return d.slice(5).replace('-','/'); };
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-table"></i>配分表（日次 L/D）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div>`;
+  if (!M.names.length){
+    html += `<div style="text-align:center;color:var(--muted);padding:18px">この期間の配分データがありません。「日別」で各日のTip・勤怠を確認してください。</div></div>`;
+    return html;
+  }
+  var bl = 'border-left:1px solid var(--border)';
+  var stick = 'position:sticky;left:0;background:var(--surface);z-index:2';
+  // ヘッダ2段（日付 / L・D）
+  var dayTh = M.dists.map(function(x){ return `<th colspan="2" style="text-align:center;${bl}">${md(x.date)}</th>`; }).join('');
+  var ldTh = M.dists.map(function(){ return `<th style="text-align:right;font-size:9px;color:#d98908;${bl}">L</th><th style="text-align:right;font-size:9px;color:#8b5cf6">D</th>`; }).join('');
+  html += `<div style="overflow-x:auto"><table class="inv-table" style="font-size:11px;min-width:${150+M.dists.length*78}px">
+    <thead>
+      <tr><th style="${stick}">従業員</th>${dayTh}<th style="text-align:right">合計</th></tr>
+      <tr><th style="${stick}"></th>${ldTh}<th></th></tr>
+    </thead><tbody>`;
+  // 実Tip額
+  var tipGrand=0, tipCells='';
+  M.dists.forEach(function(x){ var t=x.dist.tip||{}; tipGrand+=(t.lunchTotal||0)+(t.dinnerTotal||0);
+    tipCells+=`<td style="text-align:right;${bl}">${t.lunchTotal?Math.round(t.lunchTotal):'—'}</td><td style="text-align:right">${t.dinnerTotal?Math.round(t.dinnerTotal):'—'}</td>`; });
+  html += `<tr style="background:var(--surface2)"><td style="${stick};background:var(--surface2);font-weight:600">実Tip額</td>${tipCells}<td style="text-align:right;font-weight:700">$${Math.round(tipGrand)}</td></tr>`;
+  // 従業員ごと
+  M.names.forEach(function(nm){
+    var ptot=0, cells='';
+    M.dists.forEach(function(x){
+      var r=(x.dist.list||[]).find(function(z){return z.name===nm;});
+      var l=r?(r.lunch||0):0, dd=r?(r.dinner||0):0; ptot+=l+dd;
+      cells+=`<td style="text-align:right;${bl}">${l?Math.round(l):''}</td><td style="text-align:right">${dd?Math.round(dd):''}</td>`;
+    });
+    html+=`<tr><td style="${stick};font-size:11px">${nm}</td>${cells}<td style="text-align:right;font-weight:700;color:var(--green)">$${Math.round(ptot)}</td></tr>`;
+  });
+  // 配分合計
+  var grand=0, sumCells='';
+  M.dists.forEach(function(x){ var l=0,dd=0; (x.dist.list||[]).forEach(function(r){l+=r.lunch||0; dd+=r.dinner||0;}); grand+=l+dd;
+    sumCells+=`<td style="text-align:right;${bl}">${l?Math.round(l):'—'}</td><td style="text-align:right">${dd?Math.round(dd):'—'}</td>`; });
+  html+=`<tr style="border-top:2px solid var(--border);font-weight:700"><td style="${stick}">配分合計</td>${sumCells}<td style="text-align:right;color:var(--green)">$${Math.round(grand)}</td></tr>`;
+  html+=`</tbody></table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">L=ランチ配分 / D=ディナー配分（$・四捨五入）。最終列＝期間合計（支給額）。詳細・差額確認は「日別」、小数2桁の出力は上の「CSV出力」から。</div></div>`;
+  return html;
+}
 function renderTipPeriodDaily(storeId, store, info) {
   var agg = tipPeriodAggregate(storeId, info);
   var hasGuid = !!store.toastGuid;
@@ -11578,47 +11668,76 @@ function cancelApprovedVacation(id) {
   renderPage(curPage);
 }
 
+/* 種別の短縮ラベル（申請サマリー表示用） */
+function shortBenefitLabel(type){
+  var map={'有給休暇':'有給','傷病休暇':'Sick','バースデー':'誕生日','忌引き':'忌引','結婚':'結婚','出産':'出産','公休':'公休','無給休暇':'無給'};
+  return map[type]||type;
+}
 function openVacationModal() {
   var g = (typeof myGradeNum==='function') ? myGradeNum() : 1;
   var yr = new Date().getFullYear();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
-  var opts = '';
-  // Paid Off（有給・Sick・バースデー・忌引き・結婚・出産）はすべてG3以上のみ
+  // 内訳カテゴリ: G3以上はPaid Off各種（残日数表示）、全員に公休・無給
+  var cats = [];
   if (g>=3) {
-    var rem = (BENEFITS[0].days + benefitAdjust(yr, me, 'paid')) - benefitUsed(me, yr, '有給休暇', '承認');
-    opts += `<option value="有給休暇">有給休暇（${yr}年 残${rem}日）</option>`;
-    opts += `<option value="傷病休暇">傷病休暇 (Sick Leave)</option>`;
-    opts += `<option value="バースデー">バースデー</option><option value="忌引き">忌引き</option><option value="結婚">結婚休暇</option><option value="出産">出産休暇</option>`;
+    BENEFITS.forEach(function(b){
+      var rem = (b.days + benefitAdjust(yr, me, b.key)) - benefitUsed(me, yr, b.type, '承認');
+      cats.push({ type:b.type, label:b.label.replace('Paid Off（有給）','有給休暇'), hint:'残'+rem+'日' });
+    });
   }
-  // 無給休暇（通常のバケーション）は全員
-  opts += `<option value="無給休暇">無給休暇（バケーション）</option>`;
+  cats.push({ type:'公休', label:'公休（所定休）', hint:'' });
+  cats.push({ type:'無給休暇', label:'無給休暇（バケーション）', hint:'' });
+  var rowsHtml = cats.map(function(c){
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <div style="flex:1;font-size:13px">${c.label}${c.hint?` <span style="font-size:10px;color:var(--muted)">(${c.hint})</span>`:''}</div>
+      <input class="form-input" id="v-bd-${c.type}" type="number" min="0" step="0.5" value="" placeholder="0" style="width:70px;text-align:right" oninput="vacBreakdownPreview()"><span style="font-size:11px;color:var(--muted)">日</span>
+    </div>`;
+  }).join('');
   openModal(`<div class="modal-title">休暇申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">休暇種別</label>
-      <select class="form-select" id="v-type">${opts}</select>
-      ${g<3?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ Paid Off（有給・Sick・バースデー・忌引き・結婚・出産）はG3以上が対象です。G2以下は無給休暇（バケーション）のみ申請できます。</div>`:''}
-    </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="v-start" type="date"></div>
-      <div class="form-group"><label class="form-label">終了日</label><input class="form-input" id="v-end" type="date"></div>
+      <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="v-start" type="date" oninput="vacBreakdownPreview()"></div>
+      <div class="form-group"><label class="form-label">終了日</label><input class="form-input" id="v-end" type="date" oninput="vacBreakdownPreview()"></div>
+    </div>
+    <div class="form-group"><label class="form-label">内訳（取得日数を入力）</label>
+      <div style="background:var(--surface2);border-radius:8px;padding:8px">${rowsHtml}
+        <div id="v-bd-preview" style="font-size:11px;color:var(--muted);margin-top:6px;text-align:right"></div>
+      </div>
+      ${g<3?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ Paid Off（有給・Sick・誕生日・忌引き・結婚・出産）はG3以上が対象。G2以下は公休/無給のみ。</div>`:''}
     </div>
     <div class="form-group"><label class="form-label">理由</label><textarea class="form-textarea" id="v-reason" placeholder="休暇理由"></textarea></div>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
       <button class="btn btn-primary" onclick="submitVacation()">申請</button>
     </div>`);
+  vacBreakdownPreview();
 }
-
+/* 内訳合計と期間日数のライブ表示 */
+function vacBreakdownPreview(){
+  var el=document.getElementById('v-bd-preview'); if(!el) return;
+  var total=0;
+  document.querySelectorAll('[id^="v-bd-"]').forEach(function(i){ if(i.id==='v-bd-preview')return; total+=parseFloat(i.value)||0; });
+  var s=(document.getElementById('v-start')||{}).value, e=(document.getElementById('v-end')||{}).value, span='';
+  if(s&&e){ var sd=new Date(s+'T00:00:00'),ed=new Date(e+'T00:00:00'); if(!isNaN(sd)&&!isNaN(ed)&&ed>=sd){ span=' / 期間 '+(Math.round((ed-sd)/86400000)+1)+'日'; } }
+  el.textContent='内訳合計 '+(Math.round(total*10)/10)+'日'+span;
+}
 function submitVacation() {
-  var type = document.getElementById('v-type').value;
   var start = document.getElementById('v-start').value;
   var end   = document.getElementById('v-end').value;
   var reason = document.getElementById('v-reason').value.trim();
   if (!start || !end) { alert('日程を入力してください'); return; }
   if (end < start) { alert('終了日は開始日以降にしてください'); return; }
+  var breakdown={}, total=0;
+  document.querySelectorAll('[id^="v-bd-"]').forEach(function(i){
+    if(i.id==='v-bd-preview') return;
+    var type=i.id.replace('v-bd-',''); var v=parseFloat(i.value)||0;
+    if(v>0){ breakdown[type]=v; total+=v; }
+  });
+  if (total<=0) { alert('内訳の日数を入力してください（例: 有給2日・公休1日）'); return; }
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var meEmp = getEmployees().find(e=>e.name===me);
   var storeId = (meEmp && meEmp.store) || (curStore!=='ALL'?curStore:STORES[0].id);
-  var vac = {id:'v'+Date.now(), employee:me, storeId:storeId, type, startDate:start, endDate:end, reason:reason||'', status:'申請中', date:new Date().toLocaleDateString('ja')};
+  var summary = Object.keys(breakdown).map(function(k){ return shortBenefitLabel(k)+breakdown[k]; }).join('・');
+  var vac = {id:'v'+Date.now(), employee:me, storeId:storeId, type:summary, breakdown:breakdown, startDate:start, endDate:end, reason:reason||'', status:'申請中', date:new Date().toLocaleDateString('ja')};
   var my = getVacations();
   my.push(vac);
   saveVacations(my);
@@ -11665,11 +11784,15 @@ function setBenefitAdjust(year, name, key, val){
   lsSet('benefit_adjust', m);
 }
 /* ある人・年・種別の消化日数（status指定で承認済み/申請中を分けて集計） */
+/* 消化日数: 申請に内訳(breakdown)があればその種別の日数、無ければ旧来の type×期間日数。 */
 function benefitUsed(name, year, type, status){
   return getVacations().filter(function(v){
-    return v.employee===name && v.type===type && (status?v.status===status:true)
+    return v.employee===name && (status?v.status===status:true)
       && String((v.startDate||'').slice(0,4))===String(year);
-  }).reduce(function(a,v){ return a+vacationDays(v); },0);
+  }).reduce(function(a,v){
+    if (v.breakdown && typeof v.breakdown==='object') return a + (Number(v.breakdown[type])||0);
+    return a + (v.type===type ? vacationDays(v) : 0);
+  },0);
 }
 var _hrYear = new Date().getFullYear();
 function setHrYear(y){ _hrYear=parseInt(y,10)||new Date().getFullYear(); renderPage('hr'); }
@@ -11694,50 +11817,48 @@ function renderHR(){
   html+=`<div class="card"><div class="card-title"><i class="ti ti-gift" style="color:var(--accent)"></i>ベネフィット規定（${year}年）</div>
     <div style="overflow-x:auto"><table class="inv-table" style="min-width:360px"><thead><tr><th>種別</th><th style="text-align:right">付与</th><th>対象・備考</th></tr></thead><tbody>
     ${BENEFITS.map(function(b){return `<tr><td>${b.label}</td><td style="text-align:right;font-weight:600">${b.days}日</td><td style="font-size:11px;color:var(--muted)">${b.minGrade>=3?'G3以上':'全員'}${b.note?' · '+b.note:''}</td></tr>`;}).join('')}
-    </tbody></table></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px">Sick/バースデー/忌引き/結婚/出産の消化管理は今後拡張予定。まずはPaid Off（有給）を運用します。</div></div>`;
+    </tbody></table></div></div>`;
 
-  // Paid Off 消化状況（メイン）
-  html+=`<div class="card"><div class="card-title"><i class="ti ti-calendar-heart" style="color:var(--accent)"></i>Paid Off（有給）消化状況 — G3以上 ${targets.length}名</div>`;
+  // 全ベネフィット 消化状況マトリクス（G3以上）
+  html+=`<div class="card"><div class="card-title"><i class="ti ti-calendar-heart" style="color:var(--accent)"></i>消化状況 — G3以上 ${targets.length}名 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">各セル＝消化/付与</span></div>`;
   if(!targets.length){
     html+=`<div style="font-size:12px;color:var(--muted);padding:6px 0">対象（G3以上）の従業員がいません。</div>`;
   } else {
-    html+=`<div style="overflow-x:auto"><table class="inv-table" style="min-width:540px"><thead><tr>
-      <th>従業員</th><th>等級</th><th style="text-align:right">付与</th><th style="text-align:right">消化</th><th style="text-align:right">申請中</th><th style="text-align:right">残</th><th></th></tr></thead><tbody>`;
+    html+=`<div style="overflow-x:auto"><table class="inv-table" style="min-width:${260+BENEFITS.length*64}px"><thead><tr>
+      <th>従業員</th><th>等級</th>${BENEFITS.map(function(b){return `<th style="text-align:center;font-size:10px">${b.label.replace('Paid Off（有給）','有給')}</th>`;}).join('')}<th></th></tr></thead><tbody>`;
     targets.forEach(function(e){
-      var adj=benefitAdjust(year,e.name,'paid');
-      var grant=paid.days+adj;
-      var used=benefitUsed(e.name,year,paid.type,'承認');
-      var pending=benefitUsed(e.name,year,paid.type,'申請中');
-      var remain=grant-used;
-      var rcol=remain<=0?'var(--red)':remain<=1?'var(--yellow)':'var(--green)';
       var nm=e.name.replace(/'/g,"\\'");
-      html+=`<tr>
-        <td style="font-size:12px">${e.name}</td>
-        <td><span class="tag tag-gray" style="font-size:9px">${empGrade(e)}</span></td>
-        <td style="text-align:right">${grant}日${adj?`<span style="font-size:9px;color:var(--muted)">(${adj>0?'+':''}${adj})</span>`:''}</td>
-        <td style="text-align:right;font-weight:600">${used}日</td>
-        <td style="text-align:right;color:var(--muted)">${pending?pending+'日':'—'}</td>
-        <td style="text-align:right;font-weight:700;color:${rcol}">${remain}日</td>
-        <td style="text-align:center"><button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="openBenefitAdjust('${nm}')">調整</button></td>
-      </tr>`;
+      html+=`<tr><td style="font-size:12px">${e.name}</td><td><span class="tag tag-gray" style="font-size:9px">${empGrade(e)}</span></td>`;
+      BENEFITS.forEach(function(b){
+        var grant=b.days+benefitAdjust(year,e.name,b.key);
+        var used=benefitUsed(e.name,year,b.type,'承認');
+        var pending=benefitUsed(e.name,year,b.type,'申請中');
+        var remain=grant-used;
+        var col=remain<0?'var(--red)':remain===0?'var(--yellow)':'var(--tm)';
+        html+=`<td style="text-align:center;color:${col};font-weight:${used?700:400}" title="残${remain}日${pending?' / 申請中'+pending+'日':''}">${used}/${grant}${pending?`<span style="font-size:8px;color:var(--accent2)"> +${pending}</span>`:''}</td>`;
+      });
+      html+=`<td style="text-align:center"><button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="openBenefitAdjust('${nm}')">調整</button></td></tr>`;
     });
     html+=`</tbody></table></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px">消化＝承認済みの「有給休暇」申請の日数合計（暦日）。残＝付与−消化。「調整」で繰越・特別付与を加減できます。申請・承認は「休暇申請」画面から。</div></div>`;
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">各セル＝消化/付与（暦年・承認済み）。<span style="color:var(--accent2)">+n</span>＝申請中。消化は休暇申請の<b>内訳</b>から自動集計。残が赤＝超過。「調整」で繰越・特別付与を加減できます。申請・承認は「休暇申請」画面から。</div></div>`;
   }
   return html;
 }
 function openBenefitAdjust(name){
-  var cur=benefitAdjust(_hrYear,name,'paid');
+  var fields=BENEFITS.map(function(b){
+    var cur=benefitAdjust(_hrYear,name,b.key);
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <div style="flex:1;font-size:12px">${b.label}<span style="font-size:10px;color:var(--muted)"> 基本${b.days}日</span></div>
+      <input class="form-input" id="ba-${b.key}" type="number" step="1" value="${cur}" style="width:80px;text-align:right"> ±日</div>`;
+  }).join('');
   openModal(`<div class="modal-title">付与調整 — ${name} (${_hrYear}年) <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Paid Offの基本付与は${BENEFITS[0].days}日です。前年繰越や特別付与を ± で入力してください（例: 繰越 +2）。</div>
-    <div class="form-group"><label class="form-label">調整日数（±）</label><input class="form-input" id="ba-val" type="number" step="1" value="${cur}"></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">前年繰越や特別付与を ± で入力してください（例: 有給 繰越 +2）。0は調整なし。</div>
+    <div style="max-height:50vh;overflow-y:auto">${fields}</div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveBenefitAdjust('${name.replace(/'/g,"\\'")}')">保存</button></div>`);
 }
 function saveBenefitAdjust(name){
-  var v=parseInt(document.getElementById('ba-val').value,10)||0;
-  setBenefitAdjust(_hrYear,name,'paid',v);
+  BENEFITS.forEach(function(b){ var el=document.getElementById('ba-'+b.key); var v=el?(parseInt(el.value,10)||0):0; setBenefitAdjust(_hrYear,name,b.key,v); });
   closeModalDirect(); showToast('付与を調整しました','success'); renderPage('hr');
 }
 
