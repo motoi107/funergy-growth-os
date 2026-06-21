@@ -780,7 +780,7 @@ async function syncMenuFromToast(storeId, guid, period) {
       var rid = byGuid[g];
       if (rid && s.qty!=null) { mix.items[rid] = Number(s.qty); mixUpdated++; }
     });
-    var storeRecipes = getRecipes().filter(r=>r.storeId===storeId);
+    var storeRecipes = getRecipes().filter(r=>recipeInStore(r, storeId));
     storeRecipes.forEach(r=>{ var q=parseFloat(mix.items[r.id])||0; totalSales += q*(r.price||0); });
     mix.sales = totalSales; mix.savedAt = new Date().toLocaleString('ja'); mix.toastSrc = true;
     setMenuMix(storeId, period, mix);
@@ -1139,7 +1139,7 @@ function computeKpiActuals(storeId, offset){
   var out = {};
   // --- メニューmix（出数）ベース: 原価率・ドリンク比率・アップセル比率 ---
   var mix = getMenuMix(storeId, period);
-  var recipes = (typeof activeRecipes==='function'?activeRecipes():getRecipes()).filter(r=>r.storeId===storeId||r.storeId==null);
+  var recipes = (typeof activeRecipes==='function'?activeRecipes():getRecipes()).filter(function(r){return recipeInStore(r, storeId);});
   var totalQty=0, totalSales=0, totalCost=0, drinkQty=0, upsellQty=0;
   var cfg = getKpiConfig();
   var drinkCats = (cfg.drinkCats||[]).map(c=>String(c).toLowerCase());
@@ -2742,6 +2742,20 @@ function tipHoursFromShifts(storeId, shifts) {
   });
   return { lunch, dinner };
 }
+/* 休憩時間(時間単位): 同日の連続シフトの「間隔」を合計する。
+   Toastでは休憩は一旦クロックアウト→再クロックインとして記録されるため、
+   前シフトの outDate と次シフトの inDate の差＝休憩。実働(lunch/dinner)はこの間隔を含まない。 */
+function breakHoursFromShifts(shifts){
+  if (!shifts || shifts.length<2) return 0;
+  var ss = shifts.filter(function(s){ return s.inDate && s.outDate; })
+                 .slice().sort(function(a,b){ return new Date(a.inDate) - new Date(b.inDate); });
+  var brk=0;
+  for (var i=1;i<ss.length;i++){
+    var gap = (new Date(ss[i].inDate) - new Date(ss[i-1].outDate))/3600000;
+    if (gap>0) brk += gap;
+  }
+  return brk;
+}
 /* 設定変更時、保存済みの全日のtip_laborをshiftsから再計算 */
 function recomputeTipLabor(storeId) {
   var prefix = 'tip_labor_'+storeId+'_';
@@ -2829,6 +2843,43 @@ function setRecipes(rs) { lsSet('m_recipes', rs); }
 /* アクティブ/アーカイブ（やめたメニューもレシピは会社資産として保管） */
 function activeRecipes() { return getRecipes().filter(r=>!r.archived); }
 function archivedRecipes() { return getRecipes().filter(r=>r.archived); }
+
+/* ============================================================
+   レシピの店舗オーナー（店舗別レシピ管理）
+   - Totoya 3店舗(F04-K/P/A)は同一メニューなので 'TOTOYA' という1オーナーに束ねる。
+   - レシピは r.storeId に「オーナーキー」を持つ：実店舗ID / 'TOTOYA' / null(=全店共通)。
+   - 既存の店舗別レシピ(F04-K等)もTotoyaビューにまとめて表示（非破壊）。
+============================================================ */
+var TOTOYA_STORE_IDS = ['F04-K','F04-P','F04-A'];
+function isTotoyaStore(storeId){ return TOTOYA_STORE_IDS.indexOf(storeId)>=0; }
+/* 実店舗ID → レシピのオーナーキー（Totoya実店舗は'TOTOYA'に集約） */
+function recipeOwnerKey(storeId){ return isTotoyaStore(storeId) ? 'TOTOYA' : storeId; }
+/* レシピ r が店舗 storeId に適用されるか（メニュー/出数/原価の表示用フィルタ） */
+function recipeInStore(r, storeId){
+  if (!r) return false;
+  if (r.storeId==null) return true;                 // 全店共通（旧データ含む）
+  if (r.storeId===storeId) return true;             // その店舗専用
+  if (r.storeId==='TOTOYA' && isTotoyaStore(storeId)) return true; // Totoya共通→3店に適用
+  return false;
+}
+/* レシピ管理のオーナー選択肢。可視店舗からTotoyaを1つに畳む＋全店共通。 */
+function recipeOwners(){
+  var vis = (typeof getVisibleStores==='function') ? getVisibleStores() : (typeof STORES!=='undefined'?STORES:[]);
+  var owners=[], seen={};
+  vis.forEach(function(s){
+    var key = recipeOwnerKey(s.id);
+    if (seen[key]) return; seen[key]=1;
+    owners.push({ key:key, label: key==='TOTOYA' ? 'Totoya（3店舗共通）' : (s.name||s.id) });
+  });
+  owners.push({ key:'__ALL__', label:'全店共通' });
+  return owners;
+}
+function recipeOwnerLabel(key){
+  if (key==='TOTOYA') return 'Totoya（3店舗共通）';
+  if (key==='__ALL__'||key==null) return '全店共通';
+  var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===key;});
+  return s?s.name:key;
+}
 /* メニューをやめる（アーカイブ）— レシピは消さずログとして保管 */
 function archiveRecipe(id, reason) {
   var rs = getRecipes(); var r = rs.find(x=>x.id===id); if(!r) return;
@@ -6017,7 +6068,7 @@ async function loadMenuMixFromDB(storeId, guid, ym){
   var byGuid={}; getRecipes().forEach(function(r){ if(r.toastGuid && r.storeId===storeId) byGuid[r.toastGuid]=r.id; });
   var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
   sales.forEach(function(s){ var g=s.item_guid||s.guid; var rid=byGuid[g]; if(rid && s.qty!=null) mix.items[rid]=Number(s.qty); });
-  var total=0; getRecipes().filter(function(r){return r.storeId===storeId;}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
+  var total=0; getRecipes().filter(function(r){return recipeInStore(r, storeId);}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
   mix.sales=total; mix.savedAt=new Date().toLocaleString('ja'); mix.toastSrc=true;
   setMenuMix(storeId, period, mix);
 }
@@ -8720,13 +8771,15 @@ function renderAttMonthData(storeId, store) {
     var apprBadge = appr&&appr.status==='承認済み'
       ? `<span class="tag tag-green" style="font-size:8px">承認済</span>`
       : r.dayErr ? `<span class="tag tag-red" style="font-size:8px">要対応</span>` : `<span class="tag tag-gray" style="font-size:8px">未承認</span>`;
+    var dayBreak = r.names.reduce(function(a,n){ return a + breakHoursFromShifts((r.labor[n]||{}).shifts); }, 0);
     html += `<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-calendar-event"></i>${r.date.slice(5)} (${r.dow}) ${apprBadge}
-      <span style="margin-left:auto;font-size:12px;color:var(--muted);font-weight:400">${r.count}名 · ${r.dayHours.toFixed(1)}h</span></div>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted);font-weight:400">${r.count}名 · ${r.dayHours.toFixed(1)}h${dayBreak>0?' · 休憩'+Math.round(dayBreak*60)+'分':''}</span></div>
       <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
-        <th>スタッフ</th><th>Clock In</th><th>Clock Out</th><th>L</th><th>D</th><th>計</th></tr></thead><tbody>`;
+        <th>スタッフ</th><th>Clock In</th><th>Clock Out</th><th>休憩</th><th>L</th><th>D</th><th>計</th></tr></thead><tbody>`;
     r.names.forEach(n=>{
       var e = r.labor[n];
       var total = (e.lunch||0)+(e.dinner||0);
+      var brk = breakHoursFromShifts(e.shifts);
       var clockIn='—', clockOut='—', missingOut=false;
       if (e.shifts && e.shifts.length) {
         var ins = e.shifts.map(s=>s.inDate).filter(Boolean).sort();
@@ -8740,6 +8793,7 @@ function renderAttMonthData(storeId, store) {
         <td>${n}${matched?'':' <span class="tag tag-yellow" style="font-size:7px">未登録</span>'}${e.toastName&&e.toastName!==n?`<div style="font-size:9px;color:var(--muted)">Toast: ${e.toastName}</div>`:''}</td>
         <td style="text-align:center;color:var(--muted)">${clockIn}</td>
         <td style="text-align:center;color:${missingOut?'var(--red)':'var(--muted)'}">${missingOut?'漏れ':clockOut}</td>
+        <td style="text-align:right;color:${brk>0?'var(--tm)':'var(--muted)'}">${brk>0?Math.round(brk*60)+'分':'—'}</td>
         <td style="text-align:right">${e.lunch?e.lunch.toFixed(1):'—'}</td>
         <td style="text-align:right">${e.dinner?e.dinner.toFixed(1):'—'}</td>
         <td style="text-align:right;font-weight:600">${total.toFixed(1)}h</td>
@@ -16150,7 +16204,7 @@ function renderMenu() {
   var storeId = window._menuStore, period = window._menuPeriod;
   var storeObj = STORES.find(s=>s.id===storeId)||{};
   // 店舗ごとのメニュー: その店のレシピ + 店舗未指定（旧データ/手動）を表示
-  var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
   var mix = getMenuMix(storeId, period);
 
   // カテゴリ別にまとめる
@@ -16286,7 +16340,7 @@ function menuPeriodList(startP, endP){
 }
 function menuRangeMatrix(storeId){
   var periods = menuPeriodList(window._menuRangeStart, window._menuRangeEnd);
-  var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null);
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId));
   var mixes = periods.map(function(p){ return getMenuMix(storeId, p); });
   var rows = recipes.map(function(r){
     var qtys = mixes.map(function(mx){ return parseFloat((mx.items||{})[r.id])||0; });
@@ -16362,7 +16416,7 @@ async function ensureMenuMixLoaded(storeId, period){
   if (curPage==='menu') renderPage('menu');
 }
 function openMenuMixModal(storeId, period) {
-  var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
   var mix = getMenuMix(storeId, period);
   var storeObj = STORES.find(s=>s.id===storeId)||{};
   var rows = recipes.map(r=>{
@@ -16379,7 +16433,7 @@ function openMenuMixModal(storeId, period) {
     <button class="btn btn-primary" onclick="saveMenuMix('${storeId}','${period}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
 }
 function saveMenuMix(storeId, period) {
-  var recipes = activeRecipes().filter(r=> r.storeId===storeId || r.storeId==null );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
   var mix = getMenuMix(storeId, period);
   if (!mix.items) mix.items = {};
   var sales = 0;
@@ -16421,11 +16475,24 @@ function renderRecipe() {
   var canEdit = ROLE_CONFIG[curRole].canCreate || ROLE_CONFIG[curRole].financial;
   if (!window._recipeView) window._recipeView = 'active';
   var view = window._recipeView;
-  var actR = activeRecipes(), arcR = archivedRecipes();
+  // 店舗オーナー選択（Totoyaは3店舗共通で1つ）
+  var owners = recipeOwners();
+  if (!window._recipeOwner || !owners.find(function(o){return o.key===window._recipeOwner;})) {
+    var defKey = recipeOwnerKey(curStore!=='ALL'?curStore:(owners[0]?owners[0].key:''));
+    window._recipeOwner = owners.find(function(o){return o.key===defKey;}) ? defKey : (owners[0]?owners[0].key:'__ALL__');
+  }
+  var owner = window._recipeOwner;
+  var inOwner = function(r){ return owner==='__ALL__' ? (r.storeId==null) : (recipeOwnerKey(r.storeId)===owner); };
+  var actR = activeRecipes().filter(inOwner), arcR = archivedRecipes().filter(inOwner);
   var html = `<div class="section-header">
-    <div><div class="section-title">レシピ管理</div><div class="section-sub">${actR.length}メニュー稼働 · アーカイブ ${arcR.length} · 原価自動計算</div></div>
+    <div><div class="section-title">レシピ管理</div><div class="section-sub">${recipeOwnerLabel(owner)} · ${actR.length}メニュー稼働 · アーカイブ ${arcR.length}</div></div>
     ${canEdit&&view==='active'?`<button class="btn btn-primary btn-sm" onclick="openRecipeModal()"><i class="ti ti-plus"></i> メニュー追加</button>`:''}
   </div>
+  <div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <span style="font-size:12px;color:var(--muted)"><i class="ti ti-building-store"></i> 店舗</span>
+    <select class="form-select" style="width:auto;padding:6px" onchange="setRecipeOwner(this.value)">${owners.map(function(o){return `<option value="${o.key}" ${owner===o.key?'selected':''}>${o.label}</option>`;}).join('')}</select>
+    ${owner==='TOTOYA'?`<span class="tag tag-blue" style="font-size:9px">Kaimuki / Piikoi / Aiea 共通</span>`:''}
+  </div></div>
   <div class="phase-tabs">
     <div class="phase-tab${view==='active'?' active':''}" onclick="setRecipeView('active')"><i class="ti ti-chef-hat" style="font-size:12px"></i> 稼働中 (${actR.length})</div>
     <div class="phase-tab${view==='archived'?' active':''}" onclick="setRecipeView('archived')"><i class="ti ti-archive" style="font-size:12px"></i> アーカイブ (${arcR.length})</div>
@@ -16450,7 +16517,7 @@ function renderRecipe() {
     html += `<div class="card"${r.archived?' style="opacity:0.85"':''}>
       <div class="approval-header">
         <div><div class="approval-title">${r.name} ${r.archived?'<span class="tag tag-gray" style="font-size:8px">アーカイブ</span>':''}${r.toastGuid?'<span class="tag tag-blue" style="font-size:8px">Toast</span>':''}</div>
-          <div class="approval-meta">${r.category||'未分類'} · ${(r.items||[]).length}食材${r.archived&&r.archivedAt?' · '+r.archivedAt+'にアーカイブ':''}</div></div>
+          <div class="approval-meta">${r.category||'未分類'} · ${(r.items||[]).length}食材${recipeStoreBadge(r)}${r.archived&&r.archivedAt?' · '+r.archivedAt+'にアーカイブ':''}</div></div>
         <span class="tag ${rate<=31?'tag-green':rate<=35?'tag-yellow':'tag-red'}">原価率 ${rate.toFixed(1)}%</span>
       </div>
       ${r.archived&&r.archivedReason?`<div style="font-size:11px;color:var(--muted);margin:4px 0">理由: ${r.archivedReason}</div>`:''}
@@ -16472,6 +16539,15 @@ function renderRecipe() {
   return html;
 }
 function setRecipeView(v){ window._recipeView=v; renderPage('recipe'); }
+function setRecipeOwner(v){ window._recipeOwner=v; renderPage('recipe'); }
+/* レシピカードの所属店舗バッジ（Totoyaビューで各店の出所が分かるように） */
+function recipeStoreBadge(r){
+  if (!r) return '';
+  if (r.storeId==='TOTOYA') return ' <span class="tag tag-blue" style="font-size:8px">Totoya共通</span>';
+  if (r.storeId==null) return ' <span class="tag tag-gray" style="font-size:8px">全店共通</span>';
+  var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===r.storeId;});
+  return ' <span class="tag tag-gray" style="font-size:8px">'+(s?s.name:r.storeId)+'</span>';
+}
 /* メニュー変更ログ表示 */
 function renderMenuLog() {
   var log = getMenuLog();
@@ -16510,8 +16586,8 @@ function openRecipeModal(rId) {
   var recipes = getRecipes();
   var r = rId ? recipes.find(x=>x.id===rId) : {id:'', name:'', price:0, category:'', items:[]};
   recipeTmpItems = JSON.parse(JSON.stringify(r.items||[]));
-  var isNew = !rId;
-  renderRecipeModalBody(rId, r.name, r.price, r.category);
+  var owner = rId ? (r.storeId==null?'__ALL__':recipeOwnerKey(r.storeId)) : (window._recipeOwner||'__ALL__');
+  renderRecipeModalBody(rId, r.name, r.price, r.category, owner);
 }
 
 /* ============================================================
@@ -16611,9 +16687,18 @@ function ingPickChoose(code) {
   if (cb) cb(code);
 }
 
-function renderRecipeModalBody(rId, name, price, category) {
+function renderRecipeModalBody(rId, name, price, category, owner) {
   var ings = getIngredients();
   var isNew = !rId;
+  var r0 = rId ? getRecipes().find(function(x){return x.id===rId;}) : null;
+  var isToast = !!(r0 && r0.toastGuid);                 // Toast連携レシピは店舗固定
+  if (owner==null) owner = r0 ? (r0.storeId==null?'__ALL__':recipeOwnerKey(r0.storeId)) : (window._recipeOwner||'__ALL__');
+  var ownerField = isToast
+    ? `<div class="form-group"><label class="form-label">対象店舗</label>
+        <div style="font-size:13px">${recipeOwnerLabel(owner)} <span class="tag tag-blue" style="font-size:8px">Toast連携のため固定</span></div></div>`
+    : `<div class="form-group"><label class="form-label">対象店舗</label>
+        <select class="form-select" id="r-owner">${recipeOwners().map(function(o){return `<option value="${o.key}" ${owner===o.key?'selected':''}>${o.label}</option>`;}).join('')}</select>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Totoyaを選ぶと3店舗(Kaimuki/Piikoi/Aiea)共通のレシピになります。</div></div>`;
   var itemsHtml = recipeTmpItems.map((it,idx) => {
     var ing = ings.find(x=>x.code===it.code) || {name:'?', unit:'', price:0, yield:100};
     var lineCost = (ing.price/(ing.yield>0?ing.yield/100:1))*it.qty;
@@ -16631,6 +16716,7 @@ function renderRecipeModalBody(rId, name, price, category) {
       <div class="form-group"><label class="form-label">カテゴリ</label><input class="form-input" id="r-cat" value="${category||''}" placeholder="ラーメン等"></div>
     </div>
     <div class="form-group"><label class="form-label">売価 ($)（仮登録・後でToast連携）</label><input class="form-input" id="r-price" type="number" step="0.01" value="${price||0}"></div>
+    ${ownerField}
     <div class="form-group"><label class="form-label">使用食材</label>
       <div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:8px">
         ${itemsHtml || '<div style="color:var(--muted);font-size:12px;text-align:center;padding:8px">食材を追加してください</div>'}
@@ -16673,11 +16759,12 @@ function openRecipeIngPicker(rId) {
   var name = (document.getElementById('r-name')||{}).value||'';
   var price = (document.getElementById('r-price')||{}).value||'';
   var cat = (document.getElementById('r-cat')||{}).value||'';
-  window._recipeFormCache = {rId, name, price, cat};
+  var owner = (document.getElementById('r-owner')||{}).value;
+  window._recipeFormCache = {rId, name, price, cat, owner};
   openIngredientPicker(function(code){
     if (!recipeTmpItems.find(it=>it.code===code)) recipeTmpItems.push({code, qty:0.1});
     var c = window._recipeFormCache || {};
-    renderRecipeModalBody(c.rId||rId, c.name, c.price, c.cat);
+    renderRecipeModalBody(c.rId||rId, c.name, c.price, c.cat, c.owner);
   });
 }
 function addRecipeItem(rId) {
@@ -16685,8 +16772,9 @@ function addRecipeItem(rId) {
   var name = document.getElementById('r-name').value;
   var price = document.getElementById('r-price').value;
   var cat = document.getElementById('r-cat').value;
+  var owner = (document.getElementById('r-owner')||{}).value;
   if (!recipeTmpItems.find(it=>it.code===code)) recipeTmpItems.push({code, qty:0.1});
-  renderRecipeModalBody(rId, name, price, cat);
+  renderRecipeModalBody(rId, name, price, cat, owner);
 }
 function updateRecipeItemQty(idx, val) { recipeTmpItems[idx].qty = parseFloat(val)||0; }
 function removeRecipeItem(idx) {
@@ -16694,8 +16782,9 @@ function removeRecipeItem(idx) {
   var price = document.getElementById('r-price').value;
   var cat = document.getElementById('r-cat').value;
   var rId = document.querySelector('[onclick^="saveRecipe"]').getAttribute('onclick').match(/'([^']*)'/)[1];
+  var owner = (document.getElementById('r-owner')||{}).value;
   recipeTmpItems.splice(idx,1);
-  renderRecipeModalBody(rId, name, price, cat);
+  renderRecipeModalBody(rId, name, price, cat, owner);
 }
 
 function saveRecipe(rId) {
@@ -16703,15 +16792,22 @@ function saveRecipe(rId) {
   if (!name) { alert('メニュー名を入力してください'); return; }
   var price = parseFloat(document.getElementById('r-price').value) || 0;
   var category = document.getElementById('r-cat').value.trim();
+  // 対象店舗（オーナー）。'__ALL__'→null(全店共通) / 'TOTOYA' / 実店舗ID
+  var ownerSel = document.getElementById('r-owner');
+  var ownerKey = ownerSel ? ownerSel.value : null;            // Toast連携レシピはセレクタ無し→storeId据え置き
+  var ownerStoreId = (ownerKey==='__ALL__') ? null : ownerKey;
   var recipes = getRecipes();
   if (rId) {
     var r = recipes.find(x=>x.id===rId);
-    if (r) Object.assign(r, {name, price, category, items:recipeTmpItems});
-    addMenuLog({action:'変更', recipeId:rId, name:name, detail:`${(recipeTmpItems||[]).length}食材`, by:(ROLE_CONFIG[curRole]||{}).name||curUserName});
+    if (r) {
+      Object.assign(r, {name, price, category, items:recipeTmpItems});
+      if (ownerSel && !r.toastGuid) r.storeId = ownerStoreId;  // 手動レシピのみ対象店舗を変更可
+    }
+    addMenuLog({action:'変更', recipeId:rId, name:name, detail:`${(recipeTmpItems||[]).length}食材 · ${recipeOwnerLabel(ownerKey!=null?ownerKey:(r&&r.storeId))}`, by:(ROLE_CONFIG[curRole]||{}).name||curUserName});
   } else {
     var nid = 'r'+Date.now();
-    recipes.push({id:nid, name, price, category, items:recipeTmpItems});
-    addMenuLog({action:'追加', recipeId:nid, name:name, detail:`売価$${price.toFixed(2)} · ${(recipeTmpItems||[]).length}食材`, by:(ROLE_CONFIG[curRole]||{}).name||curUserName});
+    recipes.push({id:nid, name, price, category, items:recipeTmpItems, storeId: ownerStoreId});
+    addMenuLog({action:'追加', recipeId:nid, name:name, detail:`売価$${price.toFixed(2)} · ${(recipeTmpItems||[]).length}食材 · ${recipeOwnerLabel(ownerKey)}`, by:(ROLE_CONFIG[curRole]||{}).name||curUserName});
   }
   lsSet('m_recipes', recipes);
   closeModalDirect();
