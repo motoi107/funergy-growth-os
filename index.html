@@ -1273,7 +1273,7 @@ const NAV_ITEMS = [
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
   {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am']},
-  {id:'hr',          label:'HR・福利厚生', icon:'ti-heart-handshake',  roles:['ceo','gm','office','am','sl']},
+  {id:'hr',          label:'HR・福利厚生', icon:'ti-heart-handshake',  roles:['ceo','gm','office']},
   {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','am','sl']},
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
   {id:'ingredient_master',label:'食材マスター', icon:'ti-carrot',     roles:['ceo','gm','office','am','sl']},
@@ -11583,18 +11583,19 @@ function openVacationModal() {
   var yr = new Date().getFullYear();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var opts = '';
-  // 有給休暇はG3以上のみ（残日数を表示）
+  // Paid Off（有給・Sick・バースデー・忌引き・結婚・出産）はすべてG3以上のみ
   if (g>=3) {
     var rem = (BENEFITS[0].days + benefitAdjust(yr, me, 'paid')) - benefitUsed(me, yr, '有給休暇', '承認');
     opts += `<option value="有給休暇">有給休暇（${yr}年 残${rem}日）</option>`;
+    opts += `<option value="傷病休暇">傷病休暇 (Sick Leave)</option>`;
+    opts += `<option value="バースデー">バースデー</option><option value="忌引き">忌引き</option><option value="結婚">結婚休暇</option><option value="出産">出産休暇</option>`;
   }
-  opts += `<option value="傷病休暇">傷病休暇 (Sick Leave)</option>`;
-  opts += `<option value="無給休暇">無給休暇</option>`;
-  opts += `<option value="バースデー">バースデー</option><option value="忌引き">忌引き</option><option value="結婚">結婚休暇</option><option value="出産">出産休暇</option>`;
+  // 無給休暇（通常のバケーション）は全員
+  opts += `<option value="無給休暇">無給休暇（バケーション）</option>`;
   openModal(`<div class="modal-title">休暇申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="form-group"><label class="form-label">休暇種別</label>
       <select class="form-select" id="v-type">${opts}</select>
-      ${g<3?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ 有給休暇(Paid Off)はG3以上が対象です</div>`:''}
+      ${g<3?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ Paid Off（有給・Sick・バースデー・忌引き・結婚・出産）はG3以上が対象です。G2以下は無給休暇（バケーション）のみ申請できます。</div>`:''}
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="v-start" type="date"></div>
@@ -11631,13 +11632,14 @@ function submitVacation() {
    規定（暦年・一律）: 有給5日(G3以上) / Sick3日 / バースデー・忌引き・結婚・出産 各1日
    消化は承認済みの休暇申請(my_vacations)から自動集計。申請→承認は「休暇申請」画面。
 ============================================================ */
+/* すべてのPaid OffはG3以上が対象（G2以下は無給のバケーション申請のみ） */
 const BENEFITS = [
-  {key:'paid',        label:'Paid Off（有給）', days:5, type:'有給休暇', minGrade:3, note:'対象: G3以上'},
-  {key:'sick',        label:'Sick Leave',       days:3, type:'傷病休暇', minGrade:0, note:'有給消化としても使用可'},
-  {key:'birthday',    label:'バースデー',        days:1, type:'バースデー', minGrade:0},
-  {key:'bereavement', label:'忌引き',            days:1, type:'忌引き',     minGrade:0},
-  {key:'marriage',    label:'結婚',              days:1, type:'結婚',       minGrade:0},
-  {key:'maternity',   label:'出産',              days:1, type:'出産',       minGrade:0},
+  {key:'paid',        label:'Paid Off（有給）', days:5, type:'有給休暇', minGrade:3},
+  {key:'sick',        label:'Sick Leave',       days:3, type:'傷病休暇', minGrade:3, note:'有給消化としても使用可'},
+  {key:'birthday',    label:'バースデー',        days:1, type:'バースデー', minGrade:3},
+  {key:'bereavement', label:'忌引き',            days:1, type:'忌引き',     minGrade:3},
+  {key:'marriage',    label:'結婚',              days:1, type:'結婚',       minGrade:3},
+  {key:'maternity',   label:'出産',              days:1, type:'出産',       minGrade:3},
 ];
 function benefitByType(type){ return BENEFITS.find(function(b){return b.type===type;}); }
 /* 申請日数（開始〜終了の暦日・両端含む） */
@@ -11672,7 +11674,7 @@ function benefitUsed(name, year, type, status){
 var _hrYear = new Date().getFullYear();
 function setHrYear(y){ _hrYear=parseInt(y,10)||new Date().getFullYear(); renderPage('hr'); }
 function renderHR(){
-  if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
+  if(['ceo','gm','office'].indexOf(curRole)<0) return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">この画面は経理・GM・CEOのみ閲覧できます</div>';
   var year=_hrYear, paid=BENEFITS[0];
   var emps=(typeof getEmployees==='function'?getEmployees():[]).filter(function(e){ return (e.status==='在籍'||!e.status); });
   // GM/CEO/経理は全店、それ以外は可視店舗のみ
