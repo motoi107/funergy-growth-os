@@ -1337,6 +1337,7 @@ function firstAllowedChild(group) {
   if (!group || !group.children || !group.children.length) return 'mypage';
   var allowed = group.children.filter(function(pid){
     if (pid==='staff_master' && typeof canAccessStaffMaster==='function' && !canAccessStaffMaster()) return false;
+    if (pid==='dashboard') return (typeof canSeeDashboard==='function') ? canSeeDashboard() : true; // Totoya店長にも開放
     var it = (typeof NAV_ITEMS!=='undefined') ? NAV_ITEMS.find(function(n){return n.id===pid;}) : null;
     return !it || !it.roles || it.roles.includes(curRole);
   });
@@ -2870,6 +2871,19 @@ function archivedRecipes() { return getRecipes().filter(r=>r.archived); }
 ============================================================ */
 var TOTOYA_STORE_IDS = ['F04-K','F04-P','F04-A'];
 function isTotoyaStore(storeId){ return TOTOYA_STORE_IDS.indexOf(storeId)>=0; }
+/* ダッシュボード(Funergy Now)の閲覧可否: 財務ロール、またはTotoya店舗のSL(店長)。 */
+function canSeeDashboard(){
+  if ((ROLE_CONFIG[curRole]||{}).financial) return true;
+  if (curRole==='sl' && typeof myStoreId==='function' && isTotoyaStore(myStoreId())) return true;
+  return false;
+}
+/* Funergy Nowに表示する店舗: Totoya店長は3店舗、それ以外は通常の可視店舗。 */
+function funergyNowStores(){
+  if (curRole==='sl' && typeof myStoreId==='function' && isTotoyaStore(myStoreId())) {
+    return sortByLoginOrder(activeStores().filter(function(s){ return isTotoyaStore(s.id); }));
+  }
+  return sortByLoginOrder(getVisibleStores());
+}
 /* 実店舗ID → レシピのオーナーキー（Totoya実店舗は'TOTOYA'に集約） */
 function recipeOwnerKey(storeId){ return isTotoyaStore(storeId) ? 'TOTOYA' : storeId; }
 /* レシピ r が店舗 storeId に適用されるか（メニュー/出数/原価の表示用フィルタ） */
@@ -3855,8 +3869,8 @@ function buildNav() {
   var group = groups.find(g=>g.id===curGroup);
   if (group && group.children.length > 1) {
     var children = group.children.filter(pid => (pid!=='staff_master' || canAccessStaffMaster()));
-    // 役職制限のある項目を除外（NAV_ITEMSにroles指定があるもの）
-    children = children.filter(pid => { var it=NAV_ITEMS.find(n=>n.id===pid); return !it || !it.roles || it.roles.includes(curRole); });
+    // 役職制限のある項目を除外（NAV_ITEMSにroles指定があるもの）。dashboardはTotoya店長にも開放
+    children = children.filter(pid => { if(pid==='dashboard') return (typeof canSeeDashboard==='function')?canSeeDashboard():true; var it=NAV_ITEMS.find(n=>n.id===pid); return !it || !it.roles || it.roles.includes(curRole); });
     var pendingApprovals = ls('approvals', []).filter(a=>a.status==='pending').length;
     var pendingVacNav = getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
     sub.innerHTML = children.map(pid => {
@@ -4268,7 +4282,7 @@ function dashToggle(id){
 function dashCollapsed(id){ return window._dashOpen[id] !== true; } // 既定は閉じる
 function renderDashboard() {
   var rc = ROLE_CONFIG[curRole];
-  if (!rc.financial) return renderMypage();
+  if (!rc.financial) return canSeeDashboard() ? renderSlFunergyNow() : renderMypage();
   var stores = sortByLoginOrder(getVisibleStores()).map(s => storeData(s.id));
   var tB = stores.reduce((a,s)=>a+s.b,0);
   var tA = stores.reduce((a,s)=>a+s.a,0);
@@ -4459,12 +4473,24 @@ function renderDashboard() {
   setTimeout(function(){ if(document.getElementById('rt-sales-body')) loadRealtimeSales(); }, 100);
   return html;
 }
+/* 店長(SL)向けの軽量ダッシュボード: Funergy Now のみ（Totoya店長は3店舗）。 */
+function renderSlFunergyNow(){
+  var totoya = isTotoyaStore(myStoreId());
+  var label = totoya ? 'Totoya 3店舗' : ((STORES.find(function(s){return s.id===myStoreId();})||{}).name||'自店');
+  var html = `<div class="section-header"><div><div class="section-title">ダッシュボード</div><div class="section-sub">${label} · 本日のリアルタイム売上</div></div></div>`;
+  html += `<div class="card" id="rt-sales-card">
+    <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${label} · ${t('本日','Today')}</span></div>
+    <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
+  </div>`;
+  setTimeout(function(){ if(document.getElementById('rt-sales-body')) loadRealtimeSales(); }, 100);
+  return html;
+}
 /* ダッシュボードの本日リアルタイム売上を読み込んで描画 */
 async function loadRealtimeSales() {
   var body = document.getElementById('rt-sales-body');
   if (!body) return;
   body.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading…')}</div>`;
-  var stores = sortByLoginOrder(getVisibleStores());
+  var stores = funergyNowStores();
   var data = await fetchTodayRealtime(stores);
   var nowStr = new Date().toLocaleTimeString(curLang==='en'?'en-US':'ja',{hour:'2-digit',minute:'2-digit'});
   var html = '';
