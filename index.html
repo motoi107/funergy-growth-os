@@ -4583,6 +4583,27 @@ function renderSlFunergyNow(){
   }
   html += `</div>`;
 
+  // 本日のタスク（配属店舗）
+  var reqAlerts = [];
+  myStores.forEach(function(s){ var inc=getDailyOps(s.id).filter(function(t){return t.required&&!t.done;}); if(inc.length) reqAlerts.push({store:s.name, id:s.id, count:inc.length}); });
+  var taskRows = [];
+  overdue.slice(0,5).forEach(function(tk){ taskRows.push({s:'danger', t:tk.title, sub:'期限切れ', act:`go('tasks')`}); });
+  todayTasks.slice(0,5).forEach(function(tk){ taskRows.push({s:'warn', t:tk.title, sub:'本日期限', act:`go('tasks')`}); });
+  if (pendingVac) taskRows.push({s:'active', t:`休暇承認待ち ${pendingVac}件`, sub:'休暇申請', act:`go('vacation')`});
+  reqAlerts.forEach(function(r){ taskRows.push({s:'danger', t:`${r.store} 必須チェック`, sub:`${r.count}件未完`, act:`switchStore('${r.id}');openStoreCmd()`}); });
+  var otherTasks = myTasks.filter(function(tk){ return overdue.indexOf(tk)<0 && todayTasks.indexOf(tk)<0; });
+  otherTasks.slice(0,4).forEach(function(tk){ taskRows.push({s:'idle', t:tk.title, sub:tk.due||t('期限なし','No due date'), act:`go('tasks')`}); });
+  var openCount = myTasks.length + pendingVac + reqAlerts.reduce(function(a,r){return a+r.count;},0);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>${t('本日のタスク','Today Tasks')} <span class="tag ${openCount?'tag-yellow':'tag-green'}" style="margin-left:auto">${openCount}${t('件','')}</span></div>`;
+  if (!taskRows.length) {
+    html += `<div style="text-align:center;color:var(--green);padding:14px"><i class="ti ti-circle-check" style="font-size:22px"></i><div style="font-size:13px;margin-top:4px">${t('本日のタスクは完了です','All tasks done for today')}</div></div>`;
+  } else {
+    taskRows.forEach(function(r){ var st=r.s==='danger'?'danger':r.s==='warn'?'warn':r.s==='active'?'active':'idle';
+      html += `<div onclick="${r.act}" style="display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">${statusDot(st,9)}<div style="flex:1"><div style="font-size:13px">${r.t}</div><div style="font-size:10px;color:var(--muted)">${r.sub}</div></div><i class="ti ti-chevron-right" style="font-size:13px;color:var(--muted)"></i></div>`;
+    });
+  }
+  html += `</div>`;
+
   setTimeout(function(){ if(document.getElementById('rt-sales-body')) loadRealtimeSales(); }, 100);
   return html;
 }
