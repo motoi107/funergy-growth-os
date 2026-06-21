@@ -2373,11 +2373,28 @@ function getIngredients() {
   return ings;
 }
 /* === 店舗別 食材マスター（自店マスター） === */
-function getStoreIngredients(storeId){ var all=ls('store_ingredients',{}); return all[storeId]||[]; }
-function addStoreIngredient(storeId, code){ if(!storeId||storeId==='ALL')return; var all=ls('store_ingredients',{}); var arr=all[storeId]||[]; code=parseInt(code); if(arr.indexOf(code)<0){ arr.push(code); all[storeId]=arr; lsSet('store_ingredients', all); } }
-function removeStoreIngredient(storeId, code){ if(!storeId||storeId==='ALL')return; var all=ls('store_ingredients',{}); code=parseInt(code); all[storeId]=(all[storeId]||[]).filter(function(c){return c!==code;}); lsSet('store_ingredients', all); }
+/* 店舗食材マスターは店舗グループキーで保持（Totoya 3店舗→'TOTOYA'で共通）。recipeOwnerKeyで集約。 */
+function getStoreIngredients(storeId){ var all=ls('store_ingredients',{}); return all[recipeOwnerKey(storeId)]||[]; }
+function addStoreIngredient(storeId, code){ if(!storeId||storeId==='ALL')return; var k=recipeOwnerKey(storeId); var all=ls('store_ingredients',{}); var arr=all[k]||[]; code=parseInt(code); if(arr.indexOf(code)<0){ arr.push(code); all[k]=arr; lsSet('store_ingredients', all); } }
+function removeStoreIngredient(storeId, code){ if(!storeId||storeId==='ALL')return; var k=recipeOwnerKey(storeId); var all=ls('store_ingredients',{}); code=parseInt(code); all[k]=(all[k]||[]).filter(function(c){return c!==code;}); lsSet('store_ingredients', all); }
 function isInStoreMaster(storeId, code){ return getStoreIngredients(storeId).indexOf(parseInt(code))>=0; }
-function storesUsingIngredient(code){ var all=ls('store_ingredients',{}); code=parseInt(code); var out=[]; Object.keys(all).forEach(function(sid){ if((all[sid]||[]).indexOf(code)>=0) out.push(sid); }); return out; }
+function storesUsingIngredient(code){ var all=ls('store_ingredients',{}); code=parseInt(code); var out=[]; Object.keys(all).forEach(function(k){ if((all[k]||[]).indexOf(code)>=0){ if(k==='TOTOYA'){ TOTOYA_STORE_IDS.forEach(function(sid){ if(out.indexOf(sid)<0) out.push(sid); }); } else if(out.indexOf(k)<0){ out.push(k); } } }); return out; }
+/* 一度だけ: 既存のTotoya 3店舗別(store_ingredients[F04-K/P/A])を 'TOTOYA' に統合（和集合） */
+function migrateTotoyaStoreIngredients(){
+  try {
+    if (ls('_totoyaIngMerged', false)) return;
+    var all = ls('store_ingredients', null);
+    if (!all || typeof all!=='object') { lsSet('_totoyaIngMerged', true); return; }
+    var union = (all['TOTOYA']||[]).slice(), changed=false;
+    TOTOYA_STORE_IDS.forEach(function(sid){
+      (all[sid]||[]).forEach(function(c){ if(union.indexOf(c)<0) union.push(c); });
+      if (all[sid]!==undefined){ delete all[sid]; changed=true; }
+    });
+    if (union.length){ all['TOTOYA']=union; changed=true; }
+    if (changed) lsSet('store_ingredients', all);
+    lsSet('_totoyaIngMerged', true);
+  } catch(e){ console.warn('migrateTotoyaStoreIngredients', e); }
+}
 /* 1単位(g/ml/個等)あたりの実効原価 = 仕入価格 ÷ (内容量 × 歩留り)
    内容量が無い場合は仕入価格そのもの（1個=1単位とみなす） */
 function ingUnitCost(i) {
@@ -5590,7 +5607,20 @@ function basisAmount(basis) {
 }
 function budgetTotal(b) { return (b.bases||[]).reduce((a,bs)=>a+basisAmount(bs),0); }
 
+/* 共通: 表示店舗セレクタ（全店＋可視店舗）。onchangeFn(value) を呼ぶ。 */
+function storeSelectBar(current, onchangeFn, label){
+  var vis = (typeof getVisibleStores==='function') ? getVisibleStores() : [];
+  return `<div class="card" style="padding:8px 10px;margin-bottom:10px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--muted)"><i class="ti ti-building-store"></i> ${label||'表示店舗'}</span>
+    <select class="form-select" style="width:auto;padding:6px" onchange="${onchangeFn}(this.value)">
+      <option value="ALL" ${current==='ALL'?'selected':''}>全店</option>
+      ${vis.map(function(s){return `<option value="${s.id}" ${current===s.id?'selected':''}>${s.name}</option>`;}).join('')}
+    </select>
+  </div></div>`;
+}
+
 var budgetTab = 'summary';
+var _budgetStore = 'ALL';
 function renderBudget() {
   var html = `<div class="section-header">
     <div><div class="section-title">予実管理</div><div class="section-sub">${getPeriod()}</div></div>
@@ -5600,17 +5630,21 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">予算設定</div>
     <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">日次進捗</div>
   </div>`;
-  if (budgetTab==='daily') return html + renderBudgetDaily();
+  if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
+  html += storeSelectBar(_budgetStore, 'setBudgetStore');
   if (budgetTab==='setup') return html + renderBudgetSetup();
   return html + renderBudgetSummary();
 }
 function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
+function setBudgetStore(v){ _budgetStore = v; renderPage('budget'); }
+/* 予実サマリー/設定で表示する店舗（全店=可視店舗すべて、それ以外=その1店） */
+function budgetScopeStores(){ var vis=getVisibleStores(); return (_budgetStore && _budgetStore!=='ALL') ? vis.filter(function(s){return s.id===_budgetStore;}) : vis; }
 
 /* ===== 予算設定タブ（ランチ/ディナー/テイクアウト 3区分） ===== */
 function renderBudgetSetup() {
   if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">予算の閲覧権限がありません</div>';
   var budgets = getBudgets();
-  var stores = getVisibleStores();
+  var stores = budgetScopeStores();
   var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
 
   var html = '';
@@ -5928,7 +5962,7 @@ function saveSeg(storeId, seg) {
 
 function renderBudgetSummary() {
   var budgets = getBudgets();
-  var stores = getVisibleStores();
+  var stores = budgetScopeStores();
   var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
   var canEdit = ROLE_CONFIG[curRole].canCreate;
   var today = new Date();
@@ -6925,13 +6959,17 @@ function dailyOrderTotal(storeId, dateStr) {
   return orders.filter(o=>o.date===d).reduce((a,o)=>a+(o.amount||0),0);
 }
 
+var _fcStore = null;
 function renderFoodcost() {
   if (!ROLE_CONFIG[curRole].financial && curRole !== 'sl') return financialBlocked();
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
-  var store = STORES.find(s=>s.id===storeId)||STORES[0];
-
-  var html = `<div class="section-header"><div><div class="section-title">${store.name} · Food Cost</div><div class="section-sub">目標 29〜31%</div></div></div>
-  <div class="phase-tabs">
+  if (!_fcStore) _fcStore = (curStore && curStore!=='ALL') ? curStore : 'ALL';
+  var allStore = _fcStore==='ALL';
+  var store = allStore ? null : (STORES.find(function(s){return s.id===_fcStore;})||STORES[0]);
+  var html = `<div class="section-header"><div><div class="section-title">${allStore?'全店':store.name} · Food Cost</div><div class="section-sub">目標 29〜31%</div></div></div>`;
+  html += storeSelectBar(_fcStore, 'setFcStore');
+  if (allStore) return html + renderFcAllStores();
+  var storeId = store.id;
+  html += `<div class="phase-tabs">
     <div class="phase-tab${fcTab==='daily'?' active':''}" onclick="setFcTab('daily')">日次（簡易）</div>
     <div class="phase-tab${fcTab==='monthly'?' active':''}" onclick="setFcTab('monthly')">月次（実績）</div>
     <div class="phase-tab${fcTab==='variance'?' active':''}" onclick="setFcTab('variance')">理論原価</div>
@@ -6947,6 +6985,25 @@ function renderFoodcost() {
   return html;
 }
 function setFcTab(t) { fcTab = t; renderPage('foodcost'); }
+function setFcStore(v){ _fcStore = v; renderPage('foodcost'); }
+/* 全店の原価率サマリー（月次実績ベース） */
+function renderFcAllStores(){
+  var vis = getVisibleStores();
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-receipt" style="color:var(--accent)"></i>全店 原価率サマリー（月次実績）</div>
+    <div style="overflow-x:auto"><table class="inv-table" style="min-width:420px"><thead><tr><th>店舗</th><th style="text-align:right">使用原価</th><th style="text-align:right">売上</th><th style="text-align:right">原価率</th></tr></thead><tbody>`;
+  vis.forEach(function(s){
+    var fc = ls('fc_monthly_'+s.id, {beginInv:0,endInv:0,sales:0});
+    var data = storeData(s.id);
+    var purchases = monthOrderTotal(s.id) + monthPurchaseTotal(s.id);
+    var used = (parseFloat(fc.beginInv)||0) + purchases - (parseFloat(fc.endInv)||0);
+    var sales = parseFloat(fc.sales)||data.a||0;
+    var rate = sales ? Math.round(used/sales*1000)/10 : 0;
+    var col = !rate ? 'var(--muted)' : (rate<=31?'var(--green)':rate<=34?'var(--yellow)':'var(--red)');
+    html += `<tr><td style="cursor:pointer" onclick="setFcStore('${s.id}')">${s.name}</td><td style="text-align:right">$${Math.round(used).toLocaleString()}</td><td style="text-align:right">$${Math.round(sales).toLocaleString()}</td><td style="text-align:right;color:${col};font-weight:600">${rate?rate.toFixed(1)+'%':'—'}</td></tr>`;
+  });
+  html += `</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:6px">店舗名タップで各店の詳細（日次/月次/理論原価/買い出し/メニュー別）を表示。棚卸額が未入力の店は売上ベースのみ。</div></div>`;
+  return html;
+}
 
 /* 日次: 実績原価率 = 発注金額合計 ÷ 売上 */
 function renderFcDaily(storeId, store) {
@@ -9174,26 +9231,38 @@ async function refreshLaborFromCloud(){
   renderPage('labor');
 }
 
+var _laborStore = null;
 function renderLabor() {
   var financial = !!(ROLE_CONFIG[curRole]||{}).financial;
   if (!financial && curRole!=='sl') return financialBlocked();
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
-  var store = STORES.find(s=>s.id===storeId)||STORES[0];
-  // SL（非財務）は「勤怠データ」タブのみ
-  if (!financial) laborTab = 'attendance';
-  if (['overview','hours','detail','attendance'].indexOf(laborTab)<0) laborTab = financial?'overview':'attendance';
-  var tabDefs = financial
-    ? [['overview','サマリー'],['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']]
-    : [['attendance','勤怠データ']];
-  var tabsHtml = tabDefs.map(function(td){ return `<div class="phase-tab${laborTab===td[0]?' active':''}" onclick="setLaborTab('${td[0]}')">${td[1]}</div>`; }).join('');
-  var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${store.name} · 勤怠×時給</div></div></div>
-  <div class="phase-tabs">${tabsHtml}</div>`;
+  // SL（非財務）は自店の「勤怠データ」のみ
+  if (!financial) {
+    var sid = (curStore && curStore!=='ALL') ? curStore : ((getVisibleStores()[0]||{}).id);
+    var sstore = STORES.find(function(s){return s.id===sid;})||STORES[0];
+    laborTab = 'attendance';
+    return `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${sstore.name} · 勤怠</div></div></div>` + renderAttendanceBody(sid, sstore);
+  }
+  if (!_laborStore) _laborStore = (curStore && curStore!=='ALL') ? curStore : 'ALL';
+  var perStoreTabs = ['hours','detail','attendance'];
+  // 勤怠データ等(店舗別)をナビから開いた時に全店なら、最初の可視店舗へ
+  if (_laborStore==='ALL' && perStoreTabs.indexOf(laborTab)>=0) {
+    var v0=getVisibleStores()[0]; if(v0) _laborStore=v0.id;
+  }
+  var allStore = _laborStore==='ALL';
+  var store = allStore ? null : (STORES.find(function(s){return s.id===_laborStore;})||STORES[0]);
+  var storeId = allStore ? null : store.id;
+  var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${allStore?'全店集計':store.name} · 勤怠×時給</div></div></div>`;
+  html += storeSelectBar(_laborStore, 'setLaborStore');
+  if (allStore) return html + renderLaborOverview();
+  if (perStoreTabs.indexOf(laborTab)<0) laborTab = 'hours';
+  var tabDefs = [['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']];
+  html += `<div class="phase-tabs">${tabDefs.map(function(td){ return `<div class="phase-tab${laborTab===td[0]?' active':''}" onclick="setLaborTab('${td[0]}')">${td[1]}</div>`; }).join('')}</div>`;
   if (laborTab==='attendance') return html + renderAttendanceBody(storeId, store);
   if (laborTab==='detail') return html + renderLaborDetail(storeId, store);
-  if (laborTab==='hours') return html + renderLaborHours(storeId, store);
-  return html + renderLaborOverview();
+  return html + renderLaborHours(storeId, store);
 }
 function setLaborTab(t) { laborTab = t; renderPage('labor'); }
+function setLaborStore(v){ _laborStore = v; if(v==='ALL') laborTab='overview'; renderPage('labor'); }
 
 /* ④ 労働時間表示（日別総労働時間・1時間あたり売上） */
 function renderLaborHours(storeId, store) {
@@ -11555,10 +11624,25 @@ function submitVacation() {
 ============================================================ */
 const APPLICANT_STORES = ['ToriTon','Tenkichi','Totoya','Marujuu','Waikiki','未分類'];
 function getApplicants() {
-  return ls('applicants', [
-    {id:'a1', name:'Keiko Tanaka', store:'Waikiki', pos:'FSP Cashier', phone:'808-555-0101', email:'keiko@example.com', date:'2026-06-08', status:'応募中', source:'Indeed', skills:'接客2年', memo:''},
-    {id:'a2', name:'Ryan Matsuda', store:'Totoya', pos:'Main Plater', phone:'808-555-0102', email:'ryan@example.com', date:'2026-06-07', status:'応募中', source:'Indeed', memo:''},
-  ]);
+  return ls('applicants', []);
+}
+/* 一度だけ: テスト用の初期応募者（Keiko Tanaka / Ryan Matsuda 等）を削除 */
+function migrateClearTestApplicants(){
+  try{
+    if (ls('_testApplicantsCleared', false)) return;
+    var seedNames={'Keiko Tanaka':1,'Ryan Matsuda':1}, seedEmails={'keiko@example.com':1,'ryan@example.com':1};
+    var apps = ls('applicants', null);
+    if (Array.isArray(apps)) {
+      var cleaned = apps.filter(function(a){
+        if (a.id==='a1'||a.id==='a2') return false;
+        if (a.name && seedNames[a.name]) return false;
+        if (a.email && seedEmails[a.email]) return false;
+        return true;
+      });
+      if (cleaned.length!==apps.length) setApplicants(cleaned);
+    }
+    lsSet('_testApplicantsCleared', true);
+  }catch(e){ console.warn('migrateClearTestApplicants', e); }
 }
 function setApplicants(a) { lsSet('applicants', a); }
 /* ===== 不採用ログ（再応募チェック用） =====
@@ -11640,10 +11724,33 @@ function renderHiring() {
 
   // ===== 採用 → オンボーディング を1画面に統合（タブ廃止） =====
   html += renderHiringInner(apps);
+  html += renderRejectedList();
   html += `<div id="ob-section" class="section-header" style="margin-top:20px;border-top:1px solid var(--border);padding-top:14px">
     <div><div class="section-title" style="font-size:16px"><i class="ti ti-school" style="color:var(--accent)"></i> オンボーディング</div>
     <div class="section-sub">採用後の入社手続き（本人入力 → 経理 → I-9 → Payroll → 登録完了）</div></div></div>`;
   html += renderOnboardingInner();
+  return html;
+}
+/* 過去の不採用者リスト（reject_log）。折りたたみ表示。 */
+function renderRejectedList(){
+  var log = (typeof getRejectLog==='function') ? getRejectLog() : [];
+  if (!log.length) return '';
+  if (!window._showRejected) {
+    return `<div class="card" style="padding:10px"><div onclick="window._showRejected=true;renderPage('hiring')" style="cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)"><i class="ti ti-user-x"></i> 過去の不採用者リスト (${log.length}) <i class="ti ti-chevron-right" style="margin-left:auto"></i></div></div>`;
+  }
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-user-x" style="color:var(--muted)"></i>過去の不採用者リスト (${log.length})
+    <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="window._showRejected=false;renderPage('hiring')">閉じる</button></div>`;
+  log.slice().reverse().forEach(function(r){
+    html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="font-weight:600;font-size:13px">${r.name||'(無名)'} <span class="tag tag-red" style="font-size:9px">不採用</span></div>
+      <div style="font-size:11px;color:var(--muted)">${r.store||''}${r.applyDate?' · 応募 '+r.applyDate:''}${r.rejectDate?' · 不採用 '+r.rejectDate:''}</div>
+      <div style="font-size:11px;color:var(--red)">理由: ${r.reason||'—'}</div>
+      ${r.memo?`<div style="font-size:11px;color:var(--muted)">メモ: ${r.memo}</div>`:''}
+      ${(r.phone||r.email)?`<div style="font-size:10px;color:var(--muted)">${r.phone||''}${r.phone&&r.email?' · ':''}${r.email||''}</div>`:''}
+      ${r.by?`<div style="font-size:10px;color:var(--muted)">担当: ${r.by}</div>`:''}
+    </div>`;
+  });
+  html += `<div style="font-size:11px;color:var(--muted);margin-top:6px">同じ人が再応募すると応募者一覧で警告表示されます。</div></div>`;
   return html;
 }
 /* 採用（応募者）タブ */
@@ -11660,7 +11767,7 @@ function renderHiringInner(apps) {
     ${kpi('応募者', apps.length, '全体', 'var(--tm)')}
     ${kpi('応募中', apps.filter(c=>['応募中','新規応募','要確認'].includes(c.status)).length, '判定待ち', 'var(--accent2)')}
     ${kpi('採用', apps.filter(c=>c.status==='採用').length, '今期', 'var(--green)')}
-    ${kpi('不採用', apps.filter(c=>c.status==='不採用').length, 'ログ保存', 'var(--muted)')}
+    ${kpi('不採用', (typeof getRejectLog==='function'?getRejectLog().length:0), '過去ログ', 'var(--muted)')}
   </div>`;
 
   // 要確認（不足情報）
@@ -12067,12 +12174,12 @@ function confirmReject(id) {
   var memo=document.getElementById('rej-memo').value.trim();
   var by=document.getElementById('rej-by').value.trim();
   var today=new Date().toISOString().slice(0,10);
-  a.status='不採用'; a.rejectReason=reason; a.rejectDate=today;
-  setApplicants(apps);
+  // 不採用ログ（過去の不採用者リスト）へ保存し、アクティブな応募者一覧からは削除
   addRejectLog({name:a.name, phone:a.phone, email:a.email, store:a.store, applyDate:a.date,
     rejectDate:today, reason:reason, memo:memo, by:by, resumeName:a.resumeName||''});
+  setApplicants(apps.filter(function(x){return x.id!==id;}));
   closeModalDirect();
-  showToast(`${a.name}を不採用にしました（ログ保存）`,'info');
+  showToast(`${a.name}を不採用にしました（過去の不採用者リストへ移動）`,'info');
   renderPage('hiring');
 }
 /* 旧フロー関数（後方互換・無害化） */
@@ -13423,7 +13530,7 @@ function renderIngredientMaster() {
 
   // 自店マスター / 全店マスター 切替
   if (ingStore) {
-    var storeNm=(STORES.find(s=>s.id===ingStore)||{}).name||ingStore;
+    var storeNm=isTotoyaStore(ingStore)?'Totoya（3店舗共通）':((STORES.find(s=>s.id===ingStore)||{}).name||ingStore);
     var nStore=ings.filter(i=>isInStoreMaster(ingStore,i.code)).length;
     html += `<div class="phase-tabs">
       <div class="phase-tab${ingScope==='store'?' active':''}" onclick="setIngScope('store')"><i class="ti ti-building-store" style="font-size:12px"></i> ${storeNm}の食材 (${nStore})</div>
@@ -16509,7 +16616,28 @@ function renderRecipe() {
   if (view==='archived') {
     html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> やめたメニューもレシピは会社の資産として保管しています。いつでも復活できます。</div>`;
   }
-  recipes.forEach(r => {
+  // カテゴリー検索 ＋ 名前検索
+  var catList = []; recipes.forEach(function(r){ var c=r.category||'未分類'; if(catList.indexOf(c)<0) catList.push(c); }); catList.sort();
+  if (window._recipeCat && window._recipeCat!=='all' && catList.indexOf(window._recipeCat)<0) window._recipeCat='all';
+  var rcat = window._recipeCat||'all', rq=(window._recipeSearch||'').toLowerCase().trim();
+  html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <span style="font-size:12px;color:var(--muted)"><i class="ti ti-category"></i> カテゴリー</span>
+    <select class="form-select" style="width:auto;padding:6px" onchange="setRecipeCat(this.value)">
+      <option value="all" ${rcat==='all'?'selected':''}>すべて (${recipes.length})</option>
+      ${catList.map(function(c){var n=recipes.filter(function(r){return (r.category||'未分類')===c;}).length; return `<option value="${c.replace(/"/g,'&quot;')}" ${rcat===c?'selected':''}>${c} (${n})</option>`;}).join('')}
+    </select>
+    <input class="form-input" id="recipe-search" style="flex:1;min-width:140px;padding:6px" placeholder="メニュー名で検索" value="${(window._recipeSearch||'').replace(/"/g,'&quot;')}" oninput="recipeSearchInput(this.value)" autocomplete="off">
+  </div></div>`;
+  var filtered = recipes.filter(function(r){
+    if (rcat!=='all' && (r.category||'未分類')!==rcat) return false;
+    if (rq && (r.name||'').toLowerCase().indexOf(rq)<0) return false;
+    return true;
+  });
+  if (!filtered.length) {
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:20px">該当するメニューがありません（カテゴリー/検索条件を変更してください）</div>`;
+    return html;
+  }
+  filtered.forEach(r => {
     var cost = calcRecipeCost(r);
     var rate = recipeCostRate(r);
     var profit = (r.price||0) - cost;
@@ -16539,7 +16667,13 @@ function renderRecipe() {
   return html;
 }
 function setRecipeView(v){ window._recipeView=v; renderPage('recipe'); }
-function setRecipeOwner(v){ window._recipeOwner=v; renderPage('recipe'); }
+function setRecipeOwner(v){ window._recipeOwner=v; window._recipeCat='all'; renderPage('recipe'); }
+function setRecipeCat(v){ window._recipeCat=v; renderPage('recipe'); }
+function recipeSearchInput(v){
+  window._recipeSearch=v;
+  clearTimeout(window._recipeSearchTimer);
+  window._recipeSearchTimer=setTimeout(function(){ renderPage('recipe'); var s=document.getElementById('recipe-search'); if(s){ s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }, 350);
+}
 /* レシピカードの所属店舗バッジ（Totoyaビューで各店の出所が分かるように） */
 function recipeStoreBadge(r){
   if (!r) return '';
@@ -20181,6 +20315,8 @@ try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e
 try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
+try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
+try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
 try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePositionsSplitC', e); }
