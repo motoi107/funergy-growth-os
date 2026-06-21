@@ -1273,6 +1273,7 @@ const NAV_ITEMS = [
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
   {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am']},
+  {id:'hr',          label:'HR・福利厚生', icon:'ti-heart-handshake',  roles:['ceo','gm','office','am','sl']},
   {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','am','sl']},
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
   {id:'ingredient_master',label:'食材マスター', icon:'ti-carrot',     roles:['ceo','gm','office','am','sl']},
@@ -1300,7 +1301,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','invoice']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','hiring','skill','leadership','tiprate','tip','growthhub','growth_mgr','vacation']},
+    children:['staff_master','shift_admin','hiring','hr','skill','leadership','tiprate','tip','growthhub','growth_mgr','vacation']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','goals','required','company_msg_edit','approval','tasks','acct_export','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
@@ -3129,7 +3130,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','lss_requests','lss_history','lss_scores',
-  'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt'];
+  'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust'];
 var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
 function isOpSyncKey(key){
@@ -3941,6 +3942,7 @@ function renderPage(page) {
     case 'shift_admin':  el.innerHTML = renderShiftAdmin(); break;
     case 'shift_staff':  el.innerHTML = renderShiftStaff(); break;
     case 'vacation':     el.innerHTML = renderVacation(); break;
+    case 'hr':           el.innerHTML = renderHR(); break;
     case 'hiring':       el.innerHTML = renderHiring(); break;
     case 'onboarding':   hiringTab='onboard'; el.innerHTML = renderHiring(); break;
     case 'staff_master': el.innerHTML = renderStaffMaster(); break;
@@ -11577,11 +11579,22 @@ function cancelApprovedVacation(id) {
 }
 
 function openVacationModal() {
+  var g = (typeof myGradeNum==='function') ? myGradeNum() : 1;
+  var yr = new Date().getFullYear();
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var opts = '';
+  // 有給休暇はG3以上のみ（残日数を表示）
+  if (g>=3) {
+    var rem = (BENEFITS[0].days + benefitAdjust(yr, me, 'paid')) - benefitUsed(me, yr, '有給休暇', '承認');
+    opts += `<option value="有給休暇">有給休暇（${yr}年 残${rem}日）</option>`;
+  }
+  opts += `<option value="傷病休暇">傷病休暇 (Sick Leave)</option>`;
+  opts += `<option value="無給休暇">無給休暇</option>`;
+  opts += `<option value="バースデー">バースデー</option><option value="忌引き">忌引き</option><option value="結婚">結婚休暇</option><option value="出産">出産休暇</option>`;
   openModal(`<div class="modal-title">休暇申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="form-group"><label class="form-label">休暇種別</label>
-      <select class="form-select" id="v-type">
-        <option>有給休暇</option><option>傷病休暇</option><option>無給休暇</option>
-      </select>
+      <select class="form-select" id="v-type">${opts}</select>
+      ${g<3?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ 有給休暇(Paid Off)はG3以上が対象です</div>`:''}
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="v-start" type="date"></div>
@@ -11611,6 +11624,119 @@ function submitVacation() {
   closeModalDirect();
   showToast('休暇を申請しました（承認待ち）', 'success');
   renderPage('vacation');
+}
+
+/* ============================================================
+   HR・福利厚生（ベネフィット消化状況）— まず Paid Off（有給）から
+   規定（暦年・一律）: 有給5日(G3以上) / Sick3日 / バースデー・忌引き・結婚・出産 各1日
+   消化は承認済みの休暇申請(my_vacations)から自動集計。申請→承認は「休暇申請」画面。
+============================================================ */
+const BENEFITS = [
+  {key:'paid',        label:'Paid Off（有給）', days:5, type:'有給休暇', minGrade:3, note:'対象: G3以上'},
+  {key:'sick',        label:'Sick Leave',       days:3, type:'傷病休暇', minGrade:0, note:'有給消化としても使用可'},
+  {key:'birthday',    label:'バースデー',        days:1, type:'バースデー', minGrade:0},
+  {key:'bereavement', label:'忌引き',            days:1, type:'忌引き',     minGrade:0},
+  {key:'marriage',    label:'結婚',              days:1, type:'結婚',       minGrade:0},
+  {key:'maternity',   label:'出産',              days:1, type:'出産',       minGrade:0},
+];
+function benefitByType(type){ return BENEFITS.find(function(b){return b.type===type;}); }
+/* 申請日数（開始〜終了の暦日・両端含む） */
+function vacationDays(v){
+  if(!v||!v.startDate||!v.endDate) return 0;
+  var s=new Date(v.startDate+'T00:00:00'), e=new Date(v.endDate+'T00:00:00');
+  if(isNaN(s)||isNaN(e)||e<s) return 0;
+  return Math.round((e-s)/86400000)+1;
+}
+/* 現在ユーザーのグレード番号 */
+function myGradeNum(){
+  var e=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===curUserName;}):null;
+  var g=e?gradeNum(empGrade(e)):0;
+  if(!g){ if(curRole==='gm')g=7; else if(curRole==='am')g=6; else if(curRole==='sl')g=4; else if(curRole==='ceo')g=8; else g=1; }
+  return g;
+}
+/* 付与日数の個別調整（繰越・特別付与）: benefit_adjust[year][empName][key] = ±日数 */
+function getBenefitAdjust(){ return ls('benefit_adjust', {}); }
+function benefitAdjust(year, name, key){ var m=getBenefitAdjust(); return ((m[year]||{})[name]||{})[key]||0; }
+function setBenefitAdjust(year, name, key, val){
+  var m=getBenefitAdjust(); if(!m[year])m[year]={}; if(!m[year][name])m[year][name]={};
+  if(val) m[year][name][key]=val; else delete m[year][name][key];
+  lsSet('benefit_adjust', m);
+}
+/* ある人・年・種別の消化日数（status指定で承認済み/申請中を分けて集計） */
+function benefitUsed(name, year, type, status){
+  return getVacations().filter(function(v){
+    return v.employee===name && v.type===type && (status?v.status===status:true)
+      && String((v.startDate||'').slice(0,4))===String(year);
+  }).reduce(function(a,v){ return a+vacationDays(v); },0);
+}
+var _hrYear = new Date().getFullYear();
+function setHrYear(y){ _hrYear=parseInt(y,10)||new Date().getFullYear(); renderPage('hr'); }
+function renderHR(){
+  if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
+  var year=_hrYear, paid=BENEFITS[0];
+  var emps=(typeof getEmployees==='function'?getEmployees():[]).filter(function(e){ return (e.status==='在籍'||!e.status); });
+  // GM/CEO/経理は全店、それ以外は可視店舗のみ
+  if(['ceo','gm','office'].indexOf(curRole)<0){
+    var vis=getVisibleStores().map(function(s){return s.id;});
+    emps=emps.filter(function(e){ return !e.store||e.store==='ALL'||vis.indexOf(e.store)>=0; });
+  }
+  var targets=emps.filter(function(e){ return gradeNum(empGrade(e))>=paid.minGrade; })
+    .sort(function(a,b){ return gradeNum(empGrade(b))-gradeNum(empGrade(a)); });
+
+  var html=`<div class="section-header"><div><div class="section-title">HR・福利厚生</div><div class="section-sub">ベネフィット消化状況（暦年）</div></div>
+    <select class="form-select" style="width:auto;padding:6px" onchange="setHrYear(this.value)">
+      ${[year+1,year,year-1,year-2].map(function(y){return `<option value="${y}" ${y===year?'selected':''}>${y}年</option>`;}).join('')}
+    </select></div>`;
+
+  // ベネフィット規定（参考）
+  html+=`<div class="card"><div class="card-title"><i class="ti ti-gift" style="color:var(--accent)"></i>ベネフィット規定（${year}年）</div>
+    <div style="overflow-x:auto"><table class="inv-table" style="min-width:360px"><thead><tr><th>種別</th><th style="text-align:right">付与</th><th>対象・備考</th></tr></thead><tbody>
+    ${BENEFITS.map(function(b){return `<tr><td>${b.label}</td><td style="text-align:right;font-weight:600">${b.days}日</td><td style="font-size:11px;color:var(--muted)">${b.minGrade>=3?'G3以上':'全員'}${b.note?' · '+b.note:''}</td></tr>`;}).join('')}
+    </tbody></table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">Sick/バースデー/忌引き/結婚/出産の消化管理は今後拡張予定。まずはPaid Off（有給）を運用します。</div></div>`;
+
+  // Paid Off 消化状況（メイン）
+  html+=`<div class="card"><div class="card-title"><i class="ti ti-calendar-heart" style="color:var(--accent)"></i>Paid Off（有給）消化状況 — G3以上 ${targets.length}名</div>`;
+  if(!targets.length){
+    html+=`<div style="font-size:12px;color:var(--muted);padding:6px 0">対象（G3以上）の従業員がいません。</div>`;
+  } else {
+    html+=`<div style="overflow-x:auto"><table class="inv-table" style="min-width:540px"><thead><tr>
+      <th>従業員</th><th>等級</th><th style="text-align:right">付与</th><th style="text-align:right">消化</th><th style="text-align:right">申請中</th><th style="text-align:right">残</th><th></th></tr></thead><tbody>`;
+    targets.forEach(function(e){
+      var adj=benefitAdjust(year,e.name,'paid');
+      var grant=paid.days+adj;
+      var used=benefitUsed(e.name,year,paid.type,'承認');
+      var pending=benefitUsed(e.name,year,paid.type,'申請中');
+      var remain=grant-used;
+      var rcol=remain<=0?'var(--red)':remain<=1?'var(--yellow)':'var(--green)';
+      var nm=e.name.replace(/'/g,"\\'");
+      html+=`<tr>
+        <td style="font-size:12px">${e.name}</td>
+        <td><span class="tag tag-gray" style="font-size:9px">${empGrade(e)}</span></td>
+        <td style="text-align:right">${grant}日${adj?`<span style="font-size:9px;color:var(--muted)">(${adj>0?'+':''}${adj})</span>`:''}</td>
+        <td style="text-align:right;font-weight:600">${used}日</td>
+        <td style="text-align:right;color:var(--muted)">${pending?pending+'日':'—'}</td>
+        <td style="text-align:right;font-weight:700;color:${rcol}">${remain}日</td>
+        <td style="text-align:center"><button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="openBenefitAdjust('${nm}')">調整</button></td>
+      </tr>`;
+    });
+    html+=`</tbody></table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">消化＝承認済みの「有給休暇」申請の日数合計（暦日）。残＝付与−消化。「調整」で繰越・特別付与を加減できます。申請・承認は「休暇申請」画面から。</div></div>`;
+  }
+  return html;
+}
+function openBenefitAdjust(name){
+  var cur=benefitAdjust(_hrYear,name,'paid');
+  openModal(`<div class="modal-title">付与調整 — ${name} (${_hrYear}年) <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Paid Offの基本付与は${BENEFITS[0].days}日です。前年繰越や特別付与を ± で入力してください（例: 繰越 +2）。</div>
+    <div class="form-group"><label class="form-label">調整日数（±）</label><input class="form-input" id="ba-val" type="number" step="1" value="${cur}"></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveBenefitAdjust('${name.replace(/'/g,"\\'")}')">保存</button></div>`);
+}
+function saveBenefitAdjust(name){
+  var v=parseInt(document.getElementById('ba-val').value,10)||0;
+  setBenefitAdjust(_hrYear,name,'paid',v);
+  closeModalDirect(); showToast('付与を調整しました','success'); renderPage('hr');
 }
 
 /* ============================================================
