@@ -11823,7 +11823,7 @@ function cancelApprovedVacation(id) {
 
 /* 種別の短縮ラベル（申請サマリー表示用） */
 function shortBenefitLabel(type){
-  var map={'有給休暇':'有給','傷病休暇':'Sick','バースデー':'誕生日','忌引き':'忌引','結婚':'結婚','出産':'出産','公休':'公休','無給休暇':'無給'};
+  var map={'有給休暇':'有給','傷病休暇':'Sick','祝日休暇':'祝日','バースデー':'誕生日','忌引き':'忌引','結婚':'結婚','出産':'出産','公休':'公休','無給休暇':'無給'};
   return map[type]||type;
 }
 function openVacationModal() {
@@ -11887,6 +11887,23 @@ function submitVacation() {
   });
   if (total<=0) { alert('内訳の日数を入力してください（例: 有給2日・公休1日）'); return; }
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  // ルール: 有給と祝日休暇は連続申請不可（長期休暇防止）
+  var thisPaid = (breakdown['有給休暇']||0)>0, thisHoliday = (breakdown['祝日休暇']||0)>0;
+  if (thisPaid && thisHoliday) { alert('有給と祝日休暇は同じ申請に含められません（連続取得不可）'); return; }
+  if (thisPaid || thisHoliday) {
+    var dayMs=86400000, ns=new Date(start+'T00:00:00').getTime(), ne=new Date(end+'T00:00:00').getTime();
+    var conflict = getVacations().some(function(v){
+      if (v.employee!==me) return false;
+      if (v.status!=='申請中' && v.status!=='承認') return false;
+      var bd=v.breakdown||{}; var vP=(bd['有給休暇']||0)>0||v.type==='有給休暇'; var vH=(bd['祝日休暇']||0)>0||v.type==='祝日休暇';
+      var other = (thisPaid && vH) || (thisHoliday && vP);  // 有給↔祝日の組合せのみ対象
+      if (!other) return false;
+      var vs=new Date((v.startDate||'')+'T00:00:00').getTime(), veu=new Date((v.endDate||'')+'T00:00:00').getTime();
+      if (isNaN(vs)||isNaN(veu)) return false;
+      return Math.max(ns,vs) <= Math.min(ne,veu)+dayMs;          // 重複または隣接(連続)
+    });
+    if (conflict) { alert('有給と祝日休暇は連続して取得できません。既存の申請と日程が連続/重複しています。'); return; }
+  }
   var meEmp = getEmployees().find(e=>e.name===me);
   var storeId = (meEmp && meEmp.store) || (curStore!=='ALL'?curStore:STORES[0].id);
   var summary = Object.keys(breakdown).map(function(k){ return shortBenefitLabel(k)+breakdown[k]; }).join('・');
@@ -11908,10 +11925,11 @@ function submitVacation() {
 const BENEFITS = [
   {key:'paid',        label:'Paid Off（有給）', days:5, type:'有給休暇', minGrade:3},
   {key:'sick',        label:'Sick Leave',       days:3, type:'傷病休暇', minGrade:3, note:'有給消化としても使用可'},
+  {key:'bereavement', label:'忌引き',            days:3, type:'忌引き',     minGrade:3},
+  {key:'maternity',   label:'出産',              days:3, type:'出産',       minGrade:3},
+  {key:'marriage',    label:'結婚',              days:2, type:'結婚',       minGrade:3},
+  {key:'holiday',     label:'祝日休暇',          days:5, type:'祝日休暇',   minGrade:3, note:'有給と連続申請不可'},
   {key:'birthday',    label:'バースデー',        days:1, type:'バースデー', minGrade:3},
-  {key:'bereavement', label:'忌引き',            days:1, type:'忌引き',     minGrade:3},
-  {key:'marriage',    label:'結婚',              days:1, type:'結婚',       minGrade:3},
-  {key:'maternity',   label:'出産',              days:1, type:'出産',       minGrade:3},
 ];
 function benefitByType(type){ return BENEFITS.find(function(b){return b.type===type;}); }
 /* 申請日数（開始〜終了の暦日・両端含む） */
