@@ -17,6 +17,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Funergy+">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root {
   --bg: #fbf9f6;
@@ -620,11 +621,13 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
       <i class="ti ti-chevron-down" style="font-size:12px;"></i>
     </div>
     <div class="topbar-right">
+      <button id="topbar-notif" onclick="toggleNotifPanel(event)" title="通知" style="position:relative;background:none;border:none;color:var(--tm);font-size:18px;cursor:pointer;padding:4px 8px"><i class="ti ti-bell"></i><span id="notif-badge" style="display:none;position:absolute;top:-1px;right:1px;background:var(--red);color:#fff;border-radius:9px;font-size:9px;font-weight:700;min-width:14px;height:14px;line-height:14px;text-align:center;padding:0 2px"></span></button>
       <button id="topbar-sync" onclick="refreshNow()" title="最新に更新" style="background:none;border:none;color:var(--tm);font-size:18px;cursor:pointer;padding:4px 8px"><i class="ti ti-refresh"></i></button>
       <div class="topbar-role-badge" id="topbar-role"></div>
       <button class="logout-btn" onclick="doLogout()">ログアウト</button>
     </div>
   </div>
+  <div id="notif-panel" style="display:none;position:fixed;top:50px;right:8px;width:330px;max-width:92vw;max-height:72vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,0.22);z-index:300"></div>
   <div class="nav-bar" id="nav-bar"></div>
   <div class="subnav-bar" id="subnav-bar"></div>
   <div class="main" id="main-content"></div>
@@ -3171,7 +3174,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
 var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
-  'invoices','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
+  'invoices','notifications','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust'];
 var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
@@ -3729,6 +3732,7 @@ async function enterAppWithSync(){
   var lsEl=document.getElementById('login-screen'); if(lsEl) lsEl.style.display='none';
   var ap=document.getElementById('app-shell'); if(ap) ap.style.display='block';
   initApp();
+  try{ notifRealtimeStart(); }catch(e){}
 }
 /* ログイン者の役職・所属を、同期後の最新マスターから再解決する。
    ログイン画面の名簿はローカル（同期前のシード）から作られるため、シードの古い役職で
@@ -3771,6 +3775,7 @@ function toggleLoginAutosync(){
 }
 
 function doLogout() {
+  try{ notifRealtimeStop(); }catch(e){}
   curRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
   document.getElementById('app-shell').style.display = 'none';
@@ -3938,9 +3943,12 @@ function buildNav() {
     children = children.filter(pid => { if(pid==='dashboard') return (typeof canSeeDashboard==='function')?canSeeDashboard():true; var it=NAV_ITEMS.find(n=>n.id===pid); return !it || !it.roles || it.roles.includes(curRole); });
     var pendingApprovals = ls('approvals', []).filter(a=>a.status==='pending').length;
     var pendingVacNav = getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
+    var _invAll = ls('invoices', []);
+    var pendingAcctReview = _invAll.filter(function(i){var s=i.reviewStatus||'未確認'; return s==='未確認'||s==='確認中';}).length;
+    var myRejected = _invAll.filter(function(i){ return (i.reviewStatus==='差し戻し') && invIsMine(i); }).length;
     sub.innerHTML = children.map(pid => {
       var item = navItemById(pid);
-      var badgeN = (pid==='approval') ? pendingApprovals : (pid==='vacation' ? pendingVacNav : 0);
+      var badgeN = (pid==='approval') ? pendingApprovals : (pid==='vacation' ? pendingVacNav : (pid==='acct_review' ? pendingAcctReview : (pid==='invoice' ? myRejected : 0)));
       var badge = badgeN ? `<span style="background:var(--red);color:#fff;border-radius:9px;font-size:9px;padding:0 5px;margin-left:4px">${badgeN}</span>` : '';
       return `<button class="subnav-chip ${pid===curPage?'active':''}" onclick="go('${pid}')"><i class="ti ${item.icon}"></i>${item.label}${badge}</button>`;
     }).join('');
@@ -4043,6 +4051,7 @@ function renderPage(page) {
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
   attachPageEvents();
+  try{ renderNotifBell(); }catch(e){}
 }
 
 function attachPageEvents() {
@@ -17721,6 +17730,167 @@ function saveCostSheetAsRecipe() {
 /* ============================================================
    ⑦ Invoice管理 (仮OCR → 食材照合 → 価格更新)
 ============================================================ */
+/* ============================================================
+   通知センター（ベル）：OS内通知の作成・表示・既読
+   notifications は OP_SYNC_KEYS でクラウド同期 → 他端末/他ユーザーにも届く
+============================================================ */
+function getNotifs(){ return ls('notifications', []); }
+/* 通知を1件追加。n = {type,title,text,toUser,toRoles,page,refId} */
+function addNotif(n){
+  var arr = getNotifs();
+  arr.push(Object.assign({
+    id:'ntf'+Date.now()+Math.floor(Math.random()*1000),
+    at:new Date().toISOString(),
+    by:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''),
+    readBy:[]
+  }, n||{}));
+  if(arr.length>500) arr = arr.slice(arr.length-500); // 上限
+  lsSet('notifications', arr);
+  try{ renderNotifBell(); }catch(e){}
+}
+/* この通知が今のユーザー宛か（自分の操作は自分に出さない） */
+function notifForMe(n){
+  if(n.by && curUserName && n.by===curUserName) return false;
+  if(n.toUser) return !!(curUserName && n.toUser===curUserName);
+  if(n.toRoles && n.toRoles.length) return n.toRoles.indexOf(curRole)>=0;
+  return false;
+}
+function myNotifs(){ return getNotifs().filter(notifForMe).sort(function(a,b){ return (b.at||'').localeCompare(a.at||''); }); }
+function myUnreadCount(){ return myNotifs().filter(function(n){ return (n.readBy||[]).indexOf(curUserName)<0; }).length; }
+function markNotifRead(id){
+  var arr=getNotifs(); var n=arr.find(function(x){return x.id===id;}); if(!n) return;
+  if(!n.readBy) n.readBy=[];
+  if(n.readBy.indexOf(curUserName)<0){ n.readBy.push(curUserName); lsSet('notifications', arr); }
+}
+function markAllNotifRead(){
+  var arr=getNotifs(); var changed=false;
+  arr.forEach(function(n){ if(notifForMe(n) && (n.readBy||[]).indexOf(curUserName)<0){ if(!n.readBy)n.readBy=[]; n.readBy.push(curUserName); changed=true; } });
+  if(changed) lsSet('notifications', arr);
+  renderNotifBell(); renderNotifPanel();
+}
+function notifIcon(type){
+  if(type==='reject')   return {icon:'ti-arrow-back-up', col:'var(--red)'};
+  if(type==='resubmit') return {icon:'ti-send',          col:'var(--accent2)'};
+  if(type==='upload')   return {icon:'ti-upload',        col:'var(--green)'};
+  if(type==='approved') return {icon:'ti-circle-check',  col:'var(--green)'};
+  return {icon:'ti-bell', col:'var(--muted)'};
+}
+function notifAgo(iso){
+  try{ var d=new Date(iso); var s=Math.floor((Date.now()-d.getTime())/1000);
+    if(s<60) return 'たった今';
+    if(s<3600) return Math.floor(s/60)+'分前';
+    if(s<86400) return Math.floor(s/3600)+'時間前';
+    if(s<604800) return Math.floor(s/86400)+'日前';
+    return d.toLocaleDateString('ja');
+  }catch(e){ return ''; }
+}
+function renderNotifBell(){
+  var b=document.getElementById('notif-badge'); if(!b) return;
+  var n=myUnreadCount();
+  if(n>0){ b.textContent=(n>99?'99+':String(n)); b.style.display='inline-block'; }
+  else { b.style.display='none'; }
+}
+function toggleNotifPanel(ev){
+  if(ev){ ev.stopPropagation(); }
+  var p=document.getElementById('notif-panel'); if(!p) return;
+  if(p.style.display==='none' || !p.style.display){
+    renderNotifPanel();
+    p.style.display='block';
+    var btn=document.getElementById('topbar-notif');
+    if(btn){ var r=btn.getBoundingClientRect(); p.style.top=(r.bottom+6)+'px'; p.style.right=Math.max(6,(window.innerWidth-r.right))+'px'; }
+    setTimeout(function(){ document.addEventListener('click', notifOutside); }, 0);
+  } else { closeNotifPanel(); }
+}
+function notifOutside(e){
+  var p=document.getElementById('notif-panel'); var btn=document.getElementById('topbar-notif');
+  if(p && !p.contains(e.target) && btn && !btn.contains(e.target)) closeNotifPanel();
+}
+function closeNotifPanel(){ var p=document.getElementById('notif-panel'); if(p) p.style.display='none'; document.removeEventListener('click', notifOutside); }
+function renderNotifPanel(){
+  var p=document.getElementById('notif-panel'); if(!p) return;
+  var list=myNotifs();
+  var head='<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
+    +'<div style="font-weight:700;font-size:14px"><i class="ti ti-bell"></i> 通知</div>'
+    +(list.length?'<button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="markAllNotifRead()">すべて既読</button>':'')+'</div>';
+  if(!list.length){ p.innerHTML=head+'<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">通知はありません</div>'; return; }
+  var rows=list.slice(0,50).map(function(n){
+    var unread=(n.readBy||[]).indexOf(curUserName)<0;
+    var ic=notifIcon(n.type);
+    return '<div onclick="onNotifClick(\''+n.id+'\')" style="display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;background:'+(unread?'rgba(43,111,214,0.07)':'transparent')+'">'
+      +'<div style="flex-shrink:0;width:22px;text-align:center;color:'+ic.col+'"><i class="ti '+ic.icon+'"></i></div>'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:13px;font-weight:'+(unread?'700':'500')+';color:var(--tm)">'+escapeHtml(n.title||'')+'</div>'
+        +(n.text?'<div style="font-size:12px;color:var(--muted);margin-top:2px;word-break:break-word">'+escapeHtml(n.text)+'</div>':'')
+        +'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+escapeHtml(n.by||'')+' · '+notifAgo(n.at)+'</div>'
+      +'</div>'
+      +(unread?'<div style="flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--accent2);margin-top:6px"></div>':'')
+      +'</div>';
+  }).join('');
+  p.innerHTML=head+rows;
+}
+function onNotifClick(id){
+  markNotifRead(id);
+  var n=getNotifs().find(function(x){return x.id===id;});
+  closeNotifPanel(); renderNotifBell();
+  if(n && n.page){ go(n.page); }
+}
+
+/* ===== Realtime（即時）：app_state の notifications 変更を購読 =====
+   設定（Supabase側）: alter publication supabase_realtime add table public.app_state;
+   未設定でも 60秒フォールバック取得で自動更新される。 */
+var _rtClient=null, _rtChannel=null, _notifPollTimer=null;
+function notifRealtimeStart(){
+  notifRealtimeStop();
+  try{
+    if(window.supabase && window.supabase.createClient){
+      if(!_rtClient) _rtClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+      _rtChannel = _rtClient.channel('rt-notifications')
+        .on('postgres_changes', { event:'*', schema:'public', table:'app_state', filter:'key=eq.notifications' }, function(){ notifPullNow(); })
+        .subscribe();
+    }
+  }catch(e){ console.warn('realtime start', e); }
+  // フォールバック：Realtime未購読のときだけ60秒ごとに取得（設定漏れでも自動更新される保険）
+  if(_notifPollTimer) clearInterval(_notifPollTimer);
+  _notifPollTimer = setInterval(function(){
+    if(document.hidden) return;
+    if(_rtChannel && _rtChannel.state==='joined') return;
+    notifPullNow();
+  }, 60000);
+  document.addEventListener('visibilitychange', notifOnVisible);
+  notifPullNow(); // 入室時に一度最新化
+}
+function notifOnVisible(){ if(!document.hidden) notifPullNow(); }
+function notifRealtimeStop(){
+  try{ if(_rtChannel && _rtClient){ _rtClient.removeChannel(_rtChannel); } }catch(e){}
+  _rtChannel=null;
+  if(_notifPollTimer){ clearInterval(_notifPollTimer); _notifPollTimer=null; }
+  document.removeEventListener('visibilitychange', notifOnVisible);
+}
+/* app_stateから最新notificationsを取得→ローカル反映（lsSetは使わない＝再pushループ防止） */
+async function notifPullNow(){
+  try{
+    var r = await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.notifications&select=value', { headers: supaHeaders() });
+    if(!r.ok) return;
+    var rows = await r.json();
+    if(rows && rows[0] && rows[0].value!=null){ onNotifIncoming(rows[0].value); }
+  }catch(e){}
+}
+function onNotifIncoming(arr){
+  try{
+    if(!Array.isArray(arr)) return;
+    var before = myUnreadCount();
+    localStorage.setItem('notifications', JSON.stringify(arr));
+    var after = myUnreadCount();
+    renderNotifBell();
+    var p=document.getElementById('notif-panel');
+    if(p && p.style.display==='block') renderNotifPanel();
+    if(after>before){ try{ showToast('新しい通知があります','info'); }catch(e){} }
+  }catch(e){}
+}
+
+/* ============================================================
+   ⑭ Invoice / Receipt
+============================================================ */
 function renderInvoice() {
   var allInv = ls('invoices', []);
   var canAll = ['ceo','gm','office'].includes(curRole);
@@ -17738,6 +17908,16 @@ function renderInvoice() {
       var _empMeta = (inv.docType==='Receipt' && inv.empName) ? ` · <i class="ti ti-user"></i>${escapeHtml(inv.empName)}` : '';
       var _rs = inv.reviewStatus || '未確認';
       var _rsCol = _rs==='差し戻し'?'var(--red)':_rs==='確認済み'?'var(--green)':_rs==='確認中'?'var(--yellow)':'var(--muted)';
+      var _mine = invIsMine(inv);
+      var _rejBox = (_rs==='差し戻し') ? `<div style="font-size:12px;color:var(--red);background:#fff3f3;border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin-top:6px"><i class="ti ti-arrow-back-up"></i> 差し戻し理由：${escapeHtml(inv.reviewNote||'(理由未記入)')}${inv.reviewedBy?` <span style="color:var(--muted)">— ${escapeHtml(inv.reviewedBy)}</span>`:''}</div>` : '';
+      var _thread = renderReviewThread(inv);
+      var _actions = '';
+      if (_rs==='差し戻し' && _mine) {
+        _actions += `<button class="btn btn-primary btn-sm" style="background:var(--accent2);border-color:var(--accent2)" onclick="openRejectReply('${inv.id}')"><i class="ti ti-send"></i> 対応・再提出</button>`;
+      }
+      if (canDeleteInvoice(inv)) {
+        _actions += `<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteInvoiceConfirm('${inv.id}')"><i class="ti ti-trash"></i> 削除</button>`;
+      }
       html += `<div class="card">
         <div class="approval-header">
           <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}品目 · $${inv.total.toFixed(2)}${_empMeta}</div></div>
@@ -17748,6 +17928,9 @@ function renderInvoice() {
             <span class="tag ${inv.applied?'tag-green':'tag-yellow'}">${inv.applied?'価格更新済':'未反映'}</span>
           </div>
         </div>
+        ${_rejBox}
+        ${_thread}
+        ${_actions?`<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${_actions}</div>`:''}
       </div>`;
     });
   }
@@ -18145,7 +18328,7 @@ async function saveInvoice() {
     byUser:(curUserName||''), byEmail:(function(){var _e=getEmployees().find(function(x){return x.name===curUserName;});return (_e&&_e.email)?_e.email:'';})(),
     imagePath:imagePath||null,
     empId:_rcptEmpId, empName:_rcptEmp.name||'', cardLast4:_rcptCard,
-    reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', driveFileId:'', driveUrl:'', driveMoved:false};
+    reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', driveFileId:'', driveUrl:'', driveMoved:false, reviewThread:[]};
   invoices.push(_newInv);
   lsSet('invoices', invoices);
   // 経理へ通知（保存先＝Google Drive。経理レビューで確認）
@@ -18154,6 +18337,7 @@ async function saveInvoice() {
     notifyAccounting('【'+(invoiceDocType==='Receipt'?'レシート':'Invoice')+'】'+_stN+' '+vendor+' $'+total.toFixed(2),
       (invoiceDocType==='Receipt'?'カード/買い出しレシート':'業者Invoice')+'がアップロードされました。\n店舗: '+_stN+'\n業者/購入先: '+vendor+'\n金額: $'+total.toFixed(2)+(_rcptEmp.name?'\n社員（カード保有者）: '+_rcptEmp.name:'')+'\nアップロード者: '+(ROLE_CONFIG[curRole].name||'')+'\n\nOSの「請求書」→経理レビューで確認してください。');
   }catch(e){}
+  try{ addNotif({ type:'upload', title:'新しい'+(invoiceDocType==='Receipt'?'レシート':'Invoice'), text:((storeObj?storeObj.name:invStoreId)+' / '+vendor+' $'+total.toFixed(2)).slice(0,140), toRoles:['office','gm','ceo'], page:'acct_review', refId:_newInv.id }); }catch(e){}
   // Receiptの場合は買い出しにも反映
   if (invoiceDocType==='Receipt') {
     var storeId = invStoreId;
@@ -18298,6 +18482,7 @@ function renderAcctReview(){
     if(inv.reviewedBy){
       html += '<div style="font-size:11px;color:var(--muted);margin-top:4px">最終レビュー：'+escapeHtml(inv.reviewedBy)+(inv.reviewedAt?' · '+escapeHtml(inv.reviewedAt):'')+'</div>';
     }
+    html += renderReviewThread(inv);
 
     // アクションボタン
     html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">';
@@ -18313,6 +18498,9 @@ function renderAcctReview(){
       html += '<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="arRejectModal(\''+inv.id+'\')"><i class="ti ti-arrow-back-up"></i> 差し戻し</button>';
     } else {
       html += '<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="arRejectModal(\''+inv.id+'\')"><i class="ti ti-edit"></i> 理由を編集</button>';
+    }
+    if(canDeleteInvoice(inv)){
+      html += '<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteInvoiceConfirm(\''+inv.id+'\')"><i class="ti ti-trash"></i> 削除</button>';
     }
     html += '</div></div>';
   });
@@ -18353,6 +18541,7 @@ async function arApprove(id){
   inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
   inv.reviewedAt = new Date().toLocaleString('ja');
   lsSet('invoices', invoices);
+  try{ var _so3=STORES.find(function(x){return x.id===inv.storeId;}); var _stN3=_so3?_so3.name:(inv.storeId||''); addNotif({ type:'approved', title:'請求書が承認されました', text:(_stN3+' / '+inv.vendor+' $'+(inv.total||0).toFixed(2)).slice(0,140), toUser:(inv.byUser||''), page:'invoice', refId:inv.id }); }catch(e){}
   showToast('確認済みにしました','success');
   renderPage('acct_review');
 }
@@ -18361,19 +18550,16 @@ async function arApprove(id){
 function arRejectModal(id){
   var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
   var so=STORES.find(function(x){return x.id===inv.storeId;}); var stN=so?so.name:(inv.storeId||'');
-  var email=arUploaderEmail(inv);
   openModal('<div class="modal-title">差し戻し <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+escapeHtml(stN)+' · '+escapeHtml(inv.vendor)+' · $'+(inv.total||0).toFixed(2)+'</div>'
     +'<div class="form-group"><label class="form-label">差し戻し理由 <span style="color:var(--accent2)">*</span></label>'
-    +'<textarea class="form-input" id="ar-reason" rows="3" placeholder="例：金額が不鮮明です。再撮影をお願いします。">'+escapeHtml(inv.reviewNote||'')+'</textarea>'
-    +'<div style="font-size:11px;color:'+(email?'var(--muted)':'var(--red)')+';margin-top:4px">'
-      +(email?('アップロード者（'+escapeHtml(inv.byUser||inv.by||'')+' / '+escapeHtml(email)+'）へメール通知されます。')
-             :'アップロード者のメールが特定できません。状態のみ更新します（通知はスキップ）。')+'</div></div>'
+    +'<textarea class="form-input" id="ar-reason" rows="3" placeholder="例：金額が不鮮明です。再撮影をお願いします。"></textarea>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> アップロード者（'+escapeHtml(inv.byUser||inv.by||'不明')+'）の「請求書」タブに理由が表示され、サブナビに赤バッジが付きます（メール送信なし）。</div></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
-    +'<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="arRejectConfirm(\''+inv.id+'\')"><i class="ti ti-arrow-back-up"></i> 差し戻して通知</button></div>');
+    +'<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="arRejectConfirm(\''+inv.id+'\')"><i class="ti ti-arrow-back-up"></i> 差し戻す</button></div>');
 }
 
-/* 差し戻し確定：状態更新＋アップロード者へ通知 */
+/* 差し戻し確定：OS内で状態更新＋やり取りに記録（メールは使わない） */
 async function arRejectConfirm(id){
   var reason=(docVal('ar-reason')||'').trim();
   if(!reason){ showToast('差し戻し理由を入力してください','warning'); return; }
@@ -18382,21 +18568,112 @@ async function arRejectConfirm(id){
   inv.reviewNote=reason;
   inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
   inv.reviewedAt = new Date().toLocaleString('ja');
+  addReviewThread(inv, '差し戻し', reason);
+  try{ var _so=STORES.find(function(x){return x.id===inv.storeId;}); var _stN=_so?_so.name:(inv.storeId||''); addNotif({ type:'reject', title:'請求書が差し戻されました', text:(_stN+' / '+inv.vendor+' $'+(inv.total||0).toFixed(2)+'：'+reason).slice(0,140), toUser:(inv.byUser||''), page:'invoice', refId:inv.id }); }catch(e){}
   lsSet('invoices', invoices);
   closeModalDirect();
-  var email=arUploaderEmail(inv);
-  var so=STORES.find(function(x){return x.id===inv.storeId;}); var stN=so?so.name:(inv.storeId||'');
-  if(email){
-    var subj='【差し戻し】'+stN+' '+inv.vendor+' $'+(inv.total||0).toFixed(2);
-    var body='アップロードした'+((inv.docType==='Receipt')?'レシート':'Invoice')+'が差し戻されました。\n'
-      +'店舗: '+stN+'\n業者/購入先: '+inv.vendor+'\n金額: $'+(inv.total||0).toFixed(2)+'\n'
-      +'差し戻し理由: '+reason+'\n\nOSの「請求書」から内容を修正・再アップロードしてください。';
-    var ok=await notifyMessage(email, subj, body);
-    showToast(ok?'差し戻し、アップロード者へ通知しました':'差し戻しました（通知の送信に失敗）', ok?'success':'warning');
-  } else {
-    showToast('差し戻しました（アップロード者のメール未特定で通知はスキップ）','warning');
-  }
+  showToast('差し戻しました（アップロード者の請求書タブに表示されます）','success');
   renderPage('acct_review');
+}
+
+/* ===== OS内やり取り・再提出・削除 ===== */
+/* この書類を今のユーザーがアップロードしたか */
+function invIsMine(inv){
+  if(inv.byUser && curUserName) return inv.byUser===curUserName;
+  return inv.by === ((ROLE_CONFIG[curRole]||{}).name||'');
+}
+/* 削除権限：経理/GM/CEOは全件、AM/SLは自分のアップロードかつ確認済み以外 */
+function canDeleteInvoice(inv){
+  if(['ceo','gm','office'].includes(curRole)) return true;
+  return invIsMine(inv) && (inv.reviewStatus!=='確認済み');
+}
+/* やり取り1件追加 */
+function addReviewThread(inv, kind, text){
+  if(!inv.reviewThread) inv.reviewThread=[];
+  inv.reviewThread.push({ kind:kind, text:text||'', by:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''), role:curRole, at:new Date().toLocaleString('ja') });
+}
+/* やり取り表示（折りたたみ） */
+function renderReviewThread(inv){
+  var t = inv.reviewThread || [];
+  if(!t.length) return '';
+  var rows = t.map(function(e){
+    var col = e.kind==='差し戻し'?'var(--red)':e.kind==='再提出'?'var(--accent2)':'var(--muted)';
+    return '<div style="border-left:2px solid '+col+';padding:2px 0 2px 8px;margin:4px 0">'
+      +'<div style="font-size:10px;color:'+col+';font-weight:700">'+escapeHtml(e.kind||'コメント')+' · '+escapeHtml(e.by||'')+(e.at?' · '+escapeHtml(e.at):'')+'</div>'
+      +'<div style="font-size:12px;color:var(--tm)">'+escapeHtml(e.text||'')+'</div></div>';
+  }).join('');
+  return '<details style="margin-top:6px"><summary style="font-size:11px;color:var(--muted);cursor:pointer"><i class="ti ti-messages"></i> やり取り（'+t.length+'）</summary>'+rows+'</details>';
+}
+
+/* アップロード者：差し戻しへの対応・再提出 */
+function openRejectReply(id){
+  var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  window._rejReplyFile=null;
+  var so=STORES.find(function(x){return x.id===inv.storeId;}); var stN=so?so.name:(inv.storeId||'');
+  openModal('<div class="modal-title">差し戻しへの対応 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+escapeHtml(stN)+' · '+escapeHtml(inv.vendor)+' · $'+(inv.total||0).toFixed(2)+'</div>'
+    +'<div style="font-size:12px;color:var(--red);background:#fff3f3;border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin-bottom:8px"><i class="ti ti-arrow-back-up"></i> 差し戻し理由：'+escapeHtml(inv.reviewNote||'')+'</div>'
+    +'<div class="form-group"><label class="form-label">返信・対応内容 <span style="color:var(--accent2)">*</span></label>'
+    +'<textarea class="form-input" id="rej-reply" rows="3" placeholder="例：再撮影しました。金額をご確認ください。"></textarea></div>'
+    +'<div class="form-group"><label class="form-label">画像を差し替え（任意）</label>'
+    +'<input type="file" id="rej-photo" accept="image/*" capture="environment" style="display:none" onchange="window._rejReplyFile=this.files[0]; var b=document.getElementById(\'rej-photo-name\'); if(b) b.textContent=(this.files[0]?this.files[0].name:\'\');">'
+    +'<div style="border:2px dashed var(--border);border-radius:8px;padding:12px;text-align:center;cursor:pointer" onclick="document.getElementById(\'rej-photo\').click()"><i class="ti ti-camera" style="font-size:22px;color:var(--muted)"></i><div id="rej-photo-name" style="font-size:11px;color:var(--muted);margin-top:4px">タップして写真を撮影／選択（差し替える場合のみ）</div></div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="submitRejectReply(\''+inv.id+'\')"><i class="ti ti-send"></i> 再提出</button></div>');
+}
+async function submitRejectReply(id){
+  var reply=(docVal('rej-reply')||'').trim();
+  if(!reply){ showToast('対応内容を入力してください','warning'); return; }
+  var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  if(window._rejReplyFile){
+    var btn=document.querySelector('.modal .btn-primary'); if(btn){ btn.disabled=true; btn.textContent='画像を保存中…'; }
+    var so=STORES.find(function(x){return x.id===inv.storeId;});
+    var newPath=await uploadInvoiceImage(window._rejReplyFile, so?so.name:(inv.storeId||''));
+    if(newPath){
+      inv.imagePath=newPath; inv.driveFileId=''; inv.driveUrl=''; inv.driveMoved=false;
+      try{
+        var _iso=new Date().toISOString().slice(0,10);
+        var _ext=(String(newPath).split('.').pop()||'jpg');
+        var _dn=((inv.docType==='Receipt')?safeFileName(so?so.name:inv.storeId):safeFileName(inv.vendor))+'.'+_iso+'.'+_ext;
+        var _dr=await driveSync('push', { bucket:'invoices', storagePath:newPath, fileName:_dn, kind:(inv.docType==='Receipt'?'receipt':'invoice') });
+        if(_dr&&_dr.ok){ inv.driveFileId=_dr.fileId||''; inv.driveUrl=_dr.webViewLink||''; }
+      }catch(e){}
+    }
+  }
+  inv.reviewStatus='未確認';
+  addReviewThread(inv, '再提出', reply);
+  try{ var _so2=STORES.find(function(x){return x.id===inv.storeId;}); var _stN2=_so2?_so2.name:(inv.storeId||''); addNotif({ type:'resubmit', title:'差し戻しに再提出がありました', text:(_stN2+' / '+inv.vendor+' $'+(inv.total||0).toFixed(2)).slice(0,140), toRoles:['office','gm','ceo'], page:'acct_review', refId:inv.id }); }catch(e){}
+  lsSet('invoices', invoices);
+  closeModalDirect();
+  showToast('再提出しました（経理レビューに戻りました）','success');
+  renderPage('invoice');
+}
+
+/* 削除：確認モーダル → 実行 */
+function deleteInvoiceConfirm(id){
+  var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  if(!canDeleteInvoice(inv)){ showToast('この書類を削除する権限がありません','warning'); return; }
+  var so=STORES.find(function(x){return x.id===inv.storeId;}); var stN=so?so.name:(inv.storeId||'');
+  openModal('<div class="modal-title">削除の確認 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:13px;margin-bottom:8px">この書類を削除します。元に戻せません。</div>'
+    +'<div style="font-size:12px;color:var(--tm);background:#f6f7f9;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">'
+      +escapeHtml(stN)+' · '+escapeHtml(inv.vendor)+' · '+((inv.docType==='Receipt')?'レシート':'Invoice')+' · $'+(inv.total||0).toFixed(2)+' · '+escapeHtml(inv.date)+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-info-circle"></i> 一覧と保存画像（Storage）を削除します。※すでに反映した食材価格・買い出し記録は元に戻りません。Driveのファイルは残ります。</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="deleteInvoiceDo(\''+inv.id+'\')"><i class="ti ti-trash"></i> 削除する</button></div>');
+}
+async function deleteInvoiceDo(id){
+  var invoices=ls('invoices',[]); var idx=invoices.findIndex(function(x){return x.id===id;}); if(idx<0) return;
+  var inv=invoices[idx];
+  if(!canDeleteInvoice(inv)){ showToast('削除権限がありません','warning'); return; }
+  if(inv.imagePath){
+    try{ await fetch(SUPABASE_URL+'/storage/v1/object/invoices/'+encodeURI(inv.imagePath), { method:'DELETE', headers: supaHeaders() }); }catch(e){}
+  }
+  invoices.splice(idx,1);
+  lsSet('invoices', invoices);
+  closeModalDirect();
+  showToast('削除しました','success');
+  renderPage(curPage==='acct_review'?'acct_review':'invoice');
 }
 
 /* ============================================================
