@@ -1152,6 +1152,25 @@ function setKpiManual(storeId, period, vals){ var all=ls(kpiManualKey(period),{}
 /* ドリンクカテゴリ / アップセル対象商品の指定（GMが設定）。店舗共通でもよいが店舗別に持てる */
 function getKpiConfig(){ return ls('kpi_config', {drinkCats:[], upsellGuids:[]}); }
 function setKpiConfig(c){ lsSet('kpi_config', c); }
+/* 店舗別のドリンク/アップセル対象。byStore[店舗]に上書きが無ければ全店共通(トップレベル)へフォールバック。 */
+function getKpiConfigFor(storeId){
+  var c=getKpiConfig();
+  var s=(c && c.byStore && c.byStore[storeId]) || null;
+  return {
+    drinkCats:   (s && Array.isArray(s.drinkCats))   ? s.drinkCats   : (c.drinkCats||[]),
+    upsellGuids: (s && Array.isArray(s.upsellGuids)) ? s.upsellGuids : (c.upsellGuids||[]),
+    storeOverride: !!s
+  };
+}
+function setKpiConfigStore(storeId, patch){
+  var c=getKpiConfig(); if(!c.byStore || typeof c.byStore!=='object') c.byStore={};
+  c.byStore[storeId]=Object.assign({}, c.byStore[storeId]||{}, patch);
+  setKpiConfig(c);
+}
+function clearKpiConfigStore(storeId, key){
+  var c=getKpiConfig(); if(c.byStore && c.byStore[storeId]){ delete c.byStore[storeId][key];
+    if(!Object.keys(c.byStore[storeId]).length) delete c.byStore[storeId]; setKpiConfig(c); }
+}
 
 /* 指定月の period文字列（offset=0今月, -1先月） */
 function periodForOffset(offset){
@@ -1167,7 +1186,7 @@ function computeKpiActuals(storeId, offset){
   var mix = getMenuMix(storeId, period);
   var recipes = (typeof activeRecipes==='function'?activeRecipes():getRecipes()).filter(function(r){return recipeInStore(r, storeId);});
   var totalQty=0, totalSales=0, totalCost=0, drinkQty=0, upsellQty=0;
-  var cfg = getKpiConfig();
+  var cfg = getKpiConfigFor(storeId);
   var drinkCats = (cfg.drinkCats||[]).map(c=>String(c).toLowerCase());
   var upsellGuids = cfg.upsellGuids||[];
   recipes.forEach(r=>{
@@ -1313,7 +1332,7 @@ const NAV_ITEMS = [
   {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','am']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm']},
-  {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm']},
+  {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'acct_export', label:'経理出力',     icon:'ti-file-export',      roles:['ceo','gm','office']},
   {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm']},
@@ -1364,6 +1383,7 @@ function firstAllowedChild(group) {
   if (!group || !group.children || !group.children.length) return 'mypage';
   var allowed = group.children.filter(function(pid){
     if (pid==='staff_master' && typeof canAccessStaffMaster==='function' && !canAccessStaffMaster()) return false;
+    if (pid==='kpi_master' && typeof canAccessKpiMaster==='function' && !canAccessKpiMaster()) return false;
     if (pid==='dashboard') return (typeof canSeeDashboard==='function') ? canSeeDashboard() : true; // Totoya店長にも開放
     var it = (typeof NAV_ITEMS!=='undefined') ? NAV_ITEMS.find(function(n){return n.id===pid;}) : null;
     return !it || !it.roles || it.roles.includes(curRole);
@@ -2867,6 +2887,36 @@ function canViewWageOf(emp) {
   return scope.includes(emp.store);        // スコープ店舗のスタッフのみ
 }
 
+/* ===== KPI管理の権限（SM＝G3以上）=====
+   アクセス: CEO/GM/経理/AM/G3以上（一般Crew・G2以下は不可）
+   店舗別の編集スコープ: HQ=全店 / AM=管轄 / G3以上=配属店舗 */
+function kpiSelfStore(){
+  var s = (curStore && curStore!=='ALL') ? curStore : null;
+  if (!s) { var me = getEmployees().find(function(x){ return x.name===curUserName; }); s = me ? me.store : null; }
+  return s;
+}
+function isKpiSM(){ return (typeof myGradeNum==='function') ? myGradeNum()>=3 : false; }
+function canAccessKpiMaster(){
+  if (['ceo','gm','office','am'].indexOf(curRole)>=0) return true;
+  if (isKpiSM()) return true;
+  return false;
+}
+function canSetKpiStore(sid){
+  if (['ceo','gm','office'].indexOf(curRole)>=0) return true;
+  if (curRole==='am') return myAmStores().indexOf(sid)>=0;
+  if (isKpiSM()) return kpiSelfStore()===sid;
+  return false;
+}
+function kpiSettableStores(){
+  var all = activeStores();
+  if (['ceo','gm','office'].indexOf(curRole)>=0) return all;
+  if (curRole==='am'){ var ms=myAmStores(); return all.filter(function(s){ return ms.indexOf(s.id)>=0; }); }
+  if (isKpiSM()){ var st=kpiSelfStore(); return all.filter(function(s){ return s.id===st; }); }
+  return [];
+}
+/* ドリンク/アップセル対象を「全店共通」で編集できる役職（HQ）。AM/G3は店舗別override。 */
+function canEditKpiCfgGlobal(){ return ['ceo','gm','office'].indexOf(curRole)>=0; }
+
 /* ============================================================
    Phase2: レシピ / 予算 デフォルト
 ============================================================ */
@@ -3942,7 +3992,7 @@ function buildNav() {
   var sub = document.getElementById('subnav-bar');
   var group = groups.find(g=>g.id===curGroup);
   if (group && group.children.length > 1) {
-    var children = group.children.filter(pid => (pid!=='staff_master' || canAccessStaffMaster()));
+    var children = group.children.filter(pid => (pid!=='staff_master' || canAccessStaffMaster()) && (pid!=='kpi_master' || canAccessKpiMaster()));
     // 役職制限のある項目を除外（NAV_ITEMSにroles指定があるもの）。dashboardはTotoya店長にも開放
     children = children.filter(pid => { if(pid==='dashboard') return (typeof canSeeDashboard==='function')?canSeeDashboard():true; var it=NAV_ITEMS.find(n=>n.id===pid); return !it || !it.roles || it.roles.includes(curRole); });
     var pendingApprovals = ls('approvals', []).filter(a=>a.status==='pending').length;
@@ -6461,10 +6511,6 @@ function renderBudgetDaily() {
   // 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）
   html += keyKpiCard(scopeStores, days, title);
 
-  // Totoya: 丼内訳マトリクス（業態×時間帯）
-  if (scopeStores.length && scopeStores.every(function(s){return isTotoyaStore(s.id);})) {
-    html += totoyaBowlMatrixCard(scopeStores, days);
-  }
   // リピート率（Totoya=丼モディファイア / ToriTon・Tenkichi=Customers FT/RP/SR。データがあれば表示）
   html += repeatRateCard(scopeStores, days);
 
@@ -21655,6 +21701,14 @@ function savePositionConfig(storeId) {
    KPI管理（業態デフォルト + 店舗別上書き）
 ============================================================ */
 function renderKpiMaster() {
+  if (!canAccessKpiMaster()) {
+    return `<div class="section-header"><div class="section-title"><i class="ti ti-target" style="color:var(--accent)"></i> KPI管理</div></div>
+      <div class="card" style="text-align:center;padding:32px">
+        <i class="ti ti-lock" style="font-size:36px;color:var(--muted)"></i>
+        <div style="margin-top:12px;font-weight:600">アクセス権限がありません</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:6px">KPI管理は Store Manager 以上が利用できます。</div>
+      </div>`;
+  }
   if (!window._kpiTab || window._kpiTab==='format') window._kpiTab = 'store';
   var html = `<div class="section-header">
     <div><div class="section-title"><i class="ti ti-target" style="color:var(--accent)"></i> KPI管理</div>
@@ -21668,7 +21722,8 @@ function renderKpiMaster() {
   if (window._kpiTab==='manual') return html + renderKpiManualTab();
 
   // 店舗別タブ
-  var stores = activeStores();
+  var stores = kpiSettableStores();
+  if (!stores.length) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:20px">設定対象の店舗がありません</div>`;
   if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = stores[0] ? stores[0].id : null;
   var sid = window._kpiStore;
   var store = getStoresAll().find(s=>s.id===sid);
@@ -21724,8 +21779,8 @@ function renderKpiMaster() {
     <div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 「—」は未入力/対象未指定。手入力・対象指定は「実績入力/対象指定」タブで。</div>
   </div>`;
 
-  var canEditT = canEditWages();
-  html += `<div style="font-size:13px;font-weight:700;margin:14px 0 6px;color:var(--tm)"><i class="ti ti-adjustments"></i> 目標値の設定 ${canEditT?'':'<span style="font-size:11px;font-weight:400;color:var(--accent)">（閲覧のみ・編集はGM以上）</span>'}</div>`;
+  var canEditT = canSetKpiStore(sid);
+  html += `<div style="font-size:13px;font-weight:700;margin:14px 0 6px;color:var(--tm)"><i class="ti ti-adjustments"></i> 目標値の設定 ${canEditT?'':'<span style="font-size:11px;font-weight:400;color:var(--accent)">（この店舗の編集権限がありません）</span>'}</div>`;
   var base = getFormatKpi(store.format||'dining');
   var ov = getStoreKpiOverride(sid);
   var kpis = kpisForFormat(store.format||'dining');
@@ -21754,7 +21809,7 @@ function renderKpiMaster() {
   return html;
 }
 function saveStoreKpiFromForm(sid){
-  if (!canEditWages()) { showToast('目標値の編集はGM以上のみです','warning'); return; }
+  if (!canSetKpiStore(sid)) { showToast('この店舗のKPIを編集する権限がありません','warning'); return; }
   var store = getStoresAll().find(s=>s.id===sid);
   var kpis = kpisForFormat(store.format||'dining'); var ov={};
   kpis.forEach(k=>{ if(k.key==='lunchGuests'||k.key==='dinnerGuests') return; var el=document.getElementById('sk-'+k.key); if(el&&el.value!=='') ov[k.key]=parseFloat(el.value); });
@@ -21763,6 +21818,7 @@ function saveStoreKpiFromForm(sid){
   renderPage('kpi_master');
 }
 function clearStoreKpi(sid){
+  if (!canSetKpiStore(sid)) { showToast('この店舗のKPIを編集する権限がありません','warning'); return; }
   if(!confirm('この店舗の上書きをすべて消して、業態デフォルトに戻しますか？')) return;
   setStoreKpiOverride(sid, {});
   showToast('業態デフォルトに戻しました','info');
@@ -21770,11 +21826,14 @@ function clearStoreKpi(sid){
 }
 /* 実績入力タブ：手入力KPI（月別）＋ ドリンク/アップセル対象指定 */
 function renderKpiManualTab(){
-  var stores = activeStores();
+  var stores = kpiSettableStores();
+  if (!stores.length) return `<div class="card" style="text-align:center;color:var(--muted);padding:20px">設定対象の店舗がありません</div>`;
   if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = stores[0]?stores[0].id:null;
   if (!window._kpiManualOffset) window._kpiManualOffset = 0;
   var sid = window._kpiStore;
   var store = getStoresAll().find(s=>s.id===sid)||{};
+  var canManual = canSetKpiStore(sid);   // 店舗別の手入力（SM=自店/AM=管轄/HQ=全店）
+  var hqEdit = canEditWages();            // 全店共通設定（ドリンク/アップセル）はGM以上のみ
   var offset = window._kpiManualOffset;
   var period = periodForOffset(offset);
   var man = getKpiManual(sid, period);
@@ -21790,7 +21849,7 @@ function renderKpiManualTab(){
 
   // 手入力KPI
   html += `<div class="card"><div class="card-title"><i class="ti ti-edit"></i>手入力KPI <span style="font-size:11px;color:var(--muted);font-weight:400">${store.name} / ${period}</span></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Toastで取れないKPIです。月ごとに実績を入力してください（GM以上）。</div>`;
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Toastで取れないKPIです。月ごとに実績を入力してください（${canManual?'Store Manager以上':'閲覧のみ'}）。</div>`;
   var manKpis=[['repeatRate','リピート率','%'],['reviewScore','Google Review点数','★'],['reviewYelp','Yelp点数','★'],['reviewReply','口コミ返信率','%']];
   // 口コミページへのリンク（登録済みなら）
   if (store.googleUrl || store.yelpUrl) {
@@ -21804,63 +21863,77 @@ function renderKpiManualTab(){
   manKpis.forEach(m=>{
     html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
       <label style="flex:1;font-size:13px">${m[1]} <span style="font-size:10px;color:var(--muted)">(${m[2]})</span></label>
-      <input class="form-input" style="width:100px;padding:6px;text-align:right" type="number" step="any" id="km-${m[0]}" value="${man[m[0]]!=null?man[m[0]]:''}">
+      <input class="form-input" style="width:100px;padding:6px;text-align:right${canManual?'':';background:var(--surface2);color:var(--muted)'}" type="number" step="any" id="km-${m[0]}" value="${man[m[0]]!=null?man[m[0]]:''}" ${canManual?'':'readonly'}>
     </div>`;
   });
-  html += `<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveKpiManual('${sid}','${period}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`;
+  html += `${canManual?`<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveKpiManual('${sid}','${period}')"><i class="ti ti-device-floppy"></i> 保存</button>`:''}</div>`;
 
-  // ドリンク/アップセル対象指定（全店共通）
-  var cfg = getKpiConfig();
+  // ===== ドリンク/アップセル対象（HQ=全店共通 / AM=管轄 / G3以上=配属店舗） =====
+  var isCfgGlobal = canEditKpiCfgGlobal();
+  var cfgStore = getKpiConfigFor(sid);
+  var dcSel = isCfgGlobal ? (getKpiConfig().drinkCats||[]) : (cfgStore.drinkCats||[]);
+  var upSel = isCfgGlobal ? (getKpiConfig().upsellGuids||[]) : (cfgStore.upsellGuids||[]);
+  var cfgScopeLabel = isCfgGlobal ? '全店共通' : (store.name+'のみ');
+  var cfgEditable = canManual; // canSetKpiStore(sid)
   // 全店のメニューからカテゴリ一覧を集める
   var allCats = {}; (typeof getRecipes==='function'?getRecipes():[]).forEach(r=>{ if(r.category) allCats[r.category]=1; });
   var catList = Object.keys(allCats).sort();
-  html += `<div class="card"><div class="card-title"><i class="ti ti-glass-cocktail"></i>ドリンク比率の対象カテゴリ</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">「ドリンク」とみなすメニューカテゴリを選択（複数可）。選ぶと自動で比率を計算します。</div>
+  var dcOvHint = (!isCfgGlobal && cfgStore.storeOverride) ? `<button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="clearKpiCfgStore('${sid}','drinkCats')">全店共通に戻す</button>` : '';
+  html += `<div class="card"><div class="card-title"><i class="ti ti-glass-cocktail"></i>ドリンク比率の対象カテゴリ <span style="font-size:10px;font-weight:400;color:var(--accent)">（${cfgScopeLabel}）</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">「ドリンク」とみなすメニューカテゴリを選択（複数可）。${isCfgGlobal?'<b>全店に適用されます。</b>':'<b>'+store.name+'のみ</b>に適用（未設定なら全店共通を使用）。'}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px">`;
   if (catList.length){
     catList.forEach(c=>{
-      var on=(cfg.drinkCats||[]).includes(c);
-      html += `<label style="display:flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid ${on?'var(--accent)':'var(--border)'};border-radius:8px;cursor:pointer;font-size:12px;background:${on?'var(--accent)14':'transparent'}">
-        <input type="checkbox" class="kpi-drinkcat" value="${c.replace(/"/g,'&quot;')}" ${on?'checked':''}> ${c}</label>`;
+      var on=dcSel.includes(c);
+      html += `<label style="display:flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid ${on?'var(--accent)':'var(--border)'};border-radius:8px;cursor:${cfgEditable?'pointer':'default'};font-size:12px;background:${on?'var(--accent)14':'transparent'}">
+        <input type="checkbox" class="kpi-drinkcat" value="${c.replace(/"/g,'&quot;')}" ${on?'checked':''} ${cfgEditable?'':'disabled'}> ${c}</label>`;
     });
   } else { html += `<span style="font-size:12px;color:var(--muted)">メニューが未取込です。Toast同期後に選べます。</span>`; }
-  html += `</div><button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveDrinkCats()"><i class="ti ti-device-floppy"></i> ドリンクカテゴリを保存</button></div>`;
+  html += `</div>${cfgEditable?`<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="saveDrinkCats('${sid}')"><i class="ti ti-device-floppy"></i> ${isCfgGlobal?'全店に保存':store.name+'に保存'}</button>${dcOvHint}</div>`:''}</div>`;
 
-  html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-up-circle"></i>アップセル対象商品</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">トッピング/アップグレード等「アップセル」とみなす商品を指定（出数÷客数で比率計算）。${store.name}のメニューから選択。</div>`;
+  var upOvHint = (!isCfgGlobal && cfgStore.storeOverride) ? `<button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="clearKpiCfgStore('${sid}','upsellGuids')">全店共通に戻す</button>` : '';
+  html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-up-circle"></i>アップセル対象商品 <span style="font-size:10px;font-weight:400;color:var(--accent)">（${cfgScopeLabel}）</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">トッピング/アップグレード等「アップセル」とみなす商品を指定（出数÷客数で比率計算）。${store.name}のメニューから選択。${isCfgGlobal?'<b>全店に適用されます。</b>':'<b>'+store.name+'のみ</b>に適用。'}</div>`;
   var storeRecipes = (typeof getRecipes==='function'?getRecipes():[]).filter(r=>(r.storeId===sid||r.storeId==null)&&r.toastGuid);
   if (storeRecipes.length){
     html += `<div style="max-height:30vh;overflow-y:auto">`;
     storeRecipes.forEach(r=>{
-      var on=(cfg.upsellGuids||[]).includes(r.toastGuid);
-      html += `<label style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px">
-        <input type="checkbox" class="kpi-upsell" value="${r.toastGuid}" ${on?'checked':''}>
+      var on=upSel.includes(r.toastGuid);
+      html += `<label style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);cursor:${cfgEditable?'pointer':'default'};font-size:12px">
+        <input type="checkbox" class="kpi-upsell" value="${r.toastGuid}" ${on?'checked':''} ${cfgEditable?'':'disabled'}>
         <span style="flex:1">${r.name}</span><span style="font-size:10px;color:var(--muted)">${r.category||''}</span></label>`;
     });
     html += `</div>`;
   } else { html += `<span style="font-size:12px;color:var(--muted)">この店舗のメニューが未取込です。</span>`; }
-  html += `<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveUpsellGuids()"><i class="ti ti-device-floppy"></i> アップセル対象を保存</button></div>`;
+  html += `${cfgEditable?`<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="saveUpsellGuids('${sid}')"><i class="ti ti-device-floppy"></i> ${isCfgGlobal?'全店に保存':store.name+'に保存'}</button>${upOvHint}</div>`:''}</div>`;
   return html;
 }
 function saveKpiManual(sid, period){
+  if (!canSetKpiStore(sid)) { showToast('この店舗を編集する権限がありません','warning'); return; }
   var vals=getKpiManual(sid, period);
   ['repeatRate','reviewScore','reviewYelp','reviewReply'].forEach(k=>{ var el=document.getElementById('km-'+k); if(el) vals[k]= el.value!==''?parseFloat(el.value):undefined; });
   setKpiManual(sid, period, vals);
   showToast('手入力KPIを保存しました','success');
   renderPage('kpi_master');
 }
-function saveDrinkCats(){
-  var cfg=getKpiConfig();
-  cfg.drinkCats = Array.from(document.querySelectorAll('.kpi-drinkcat:checked')).map(c=>c.value);
-  setKpiConfig(cfg);
-  showToast('ドリンクカテゴリを保存しました','success');
+function saveDrinkCats(sid){
+  var vals = Array.from(document.querySelectorAll('.kpi-drinkcat:checked')).map(c=>c.value);
+  if (canEditKpiCfgGlobal()){ var cfg=getKpiConfig(); cfg.drinkCats=vals; setKpiConfig(cfg); showToast('ドリンクカテゴリを保存しました（全店共通）','success'); }
+  else if (canSetKpiStore(sid)){ setKpiConfigStore(sid,{drinkCats:vals}); showToast('ドリンクカテゴリを保存しました（配属店舗）','success'); }
+  else { showToast('編集権限がありません','warning'); return; }
   renderPage('kpi_master');
 }
-function saveUpsellGuids(){
-  var cfg=getKpiConfig();
-  cfg.upsellGuids = Array.from(document.querySelectorAll('.kpi-upsell:checked')).map(c=>c.value);
-  setKpiConfig(cfg);
-  showToast('アップセル対象を保存しました','success');
+function saveUpsellGuids(sid){
+  var vals = Array.from(document.querySelectorAll('.kpi-upsell:checked')).map(c=>c.value);
+  if (canEditKpiCfgGlobal()){ var cfg=getKpiConfig(); cfg.upsellGuids=vals; setKpiConfig(cfg); showToast('アップセル対象を保存しました（全店共通）','success'); }
+  else if (canSetKpiStore(sid)){ setKpiConfigStore(sid,{upsellGuids:vals}); showToast('アップセル対象を保存しました（配属店舗）','success'); }
+  else { showToast('編集権限がありません','warning'); return; }
+  renderPage('kpi_master');
+}
+function clearKpiCfgStore(sid, key){
+  if (!canSetKpiStore(sid)) { showToast('編集権限がありません','warning'); return; }
+  clearKpiConfigStore(sid, key);
+  showToast('全店共通に戻しました','info');
   renderPage('kpi_master');
 }
 
