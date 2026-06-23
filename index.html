@@ -562,7 +562,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 /* ===== PC（マウス操作の大画面）はUIが小さく見えるため全体を拡大表示。
    携帯・iPad（タッチ操作）は hover/pointer 条件に合致しないため対象外。 ===== */
 @media (hover: hover) and (pointer: fine) {
-  body { zoom: 1.2; }
+  body { zoom: 1.1; }
 }
 </style>
 </head>
@@ -5010,7 +5010,7 @@ function showDailyReport(storeId, date) {
     予算: $${Math.round(bud).toLocaleString()}　実績: $${Math.round(act).toLocaleString()}　達成: ${bud?Math.round(act/bud*100):0}%<br>
     Lunch: $${Math.round(av.lunchSales||0).toLocaleString()}　Dinner: $${Math.round(av.dinnerSales||0).toLocaleString()}<br>
     <div style="font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px;margin:8px 0 6px">${guestLabel}</div>
-    合計: ${gv.total!=null?gv.total:'—'}${gv.lunch!=null?`（L${gv.lunch}/D${gv.dinner}）`:''}${av.takeout!=null?`　T/O: ${av.takeout}`:''}<br>
+    合計: ${gv.total!=null?gv.total:'—'}${gv.lunch!=null?`（L${gv.lunch}/D${gv.dinner}）`:''}${gv.toTotal!=null?`　テイクアウト: ${gv.toTotal}${gv.toLunch!=null?`（L${gv.toLunch||0}/D${gv.toDinner||0}）`:''}`:''}${av.takeout!=null?`　<span style="color:var(--muted)">T/O件数: ${av.takeout}</span>`:''}<br>
     <div style="font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px;margin:8px 0 6px">チップ</div>
     クレジット: $${(tip.lunchCredit+tip.dinnerCredit).toFixed(2)}（控除後 $${((tip.lunchCredit+tip.dinnerCredit)*0.965).toFixed(2)}）<br>
     キャッシュ: $${(tip.lunchCash+tip.dinnerCash).toFixed(2)}<br>
@@ -6499,7 +6499,7 @@ function renderBudgetDaily() {
       <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}</td>
-      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:''):'—'}</td><td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
+      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td><td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${cumRate>=100?'var(--green)':cumRate>=90?'var(--yellow)':'var(--red)'};font-size:11px">${cumRate}%</span></td>
       ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted)">${event||'-'}</td>`}
@@ -6772,7 +6772,9 @@ function guestCountLabel(storeId) {
 function dayGuestValue(storeId, av) {
   if (!av) return { total:null, lunch:null, dinner:null };
   var t = guestCountType(storeId);
-  if (t==='bowls') return { total: av.bowls, lunch: av.lunchBowls, dinner: av.dinnerBowls };
+  if (t==='bowls') return { total: av.bowls, lunch: av.lunchBowls, dinner: av.dinnerBowls,
+    toTotal: (av.lunchTakeoutBowls!=null||av.dinnerTakeoutBowls!=null||av.takeoutBowls!=null) ? ((av.lunchTakeoutBowls||0)+(av.dinnerTakeoutBowls||0) || av.takeoutBowls || 0) : null,
+    toLunch: av.lunchTakeoutBowls, toDinner: av.dinnerTakeoutBowls };
   // plate は将来Waikiki接続時に専用フィールド。暫定でguest扱い
   return { total: av.guests, lunch: av.lunchGuests, dinner: av.dinnerGuests };
 }
