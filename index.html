@@ -727,8 +727,6 @@ async function fetchTodayRealtime(storeList) {
       var lG = Number(r.lunch_guests)||0, dG = Number(r.dinner_guests)||0;
       var lB = Number(r.lunch_bowls)||0, dB = Number(r.dinner_bowls)||0;  // Bowlsカテゴリ（テイクアウト除く）
       var toCount = Number(r.takeout_count)||0;
-      var toBowls = Number(r.takeout_bowls)||0;   // Take Out + Online Order の丼数
-      var toLB = Number(r.lunch_takeout_bowls)||0, toDB = Number(r.dinner_takeout_bowls)||0;  // テイクアウト丼 L/D内訳
       // 客数の数え方: Totoya=丼数(bowls) / Waikiki=皿 / それ以外=客数
       var metric = (typeof guestCountType==='function') ? guestCountType(s.id) : 'guest';
       var unit = metric==='bowls' ? '丼' : (metric==='plate' ? '皿' : t('名',''));
@@ -739,7 +737,7 @@ async function fetchTodayRealtime(storeList) {
         net:net, guests:guests, count:totCnt, ppa: totCnt>0?net/totCnt:0,
         lunch:{ sales:lSales, count:lCnt, ppa: lCnt>0?lSales/lCnt:0 },
         dinner:{ sales:dSales, count:dCnt, ppa: dCnt>0?dSales/dCnt:0 },
-        takeout:{ count:toCount, bowls:toBowls, lunchBowls:toLB, dinnerBowls:toDB } });
+        takeout:{ count:toCount } });
     } catch(e) {
       results.push({id:s.id, name:s.name, color:s.color, error:true});
     }
@@ -925,6 +923,8 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
           dinnerBowls: r.dinnerBowls!=null?Number(r.dinnerBowls):undefined,
           takeout: r.takeoutCount!=null?Number(r.takeoutCount):undefined,
           takeoutBowls: r.takeoutBowls!=null?Number(r.takeoutBowls):undefined,
+          lunchTakeoutBowls: r.lunchTakeoutBowls!=null?Number(r.lunchTakeoutBowls):undefined,
+          dinnerTakeoutBowls: r.dinnerTakeoutBowls!=null?Number(r.dinnerTakeoutBowls):undefined,
           creditTip: r.creditTip!=null?Number(r.creditTip):undefined,
           lunchCreditTip: r.lunchCreditTip!=null?Number(r.lunchCreditTip):undefined,
           dinnerCreditTip: r.dinnerCreditTip!=null?Number(r.dinnerCreditTip):undefined,
@@ -4056,12 +4056,10 @@ function fmtK(v) {
   var n = Math.round(parseFloat(v)||0);
   return '$' + n.toLocaleString('en-US');
 }
-/* 1セント単位（$X,XXX.XX）。予実の日次進捗など細かい金額表示用。 */
-function fmtCent(v) {
-  return '$' + (parseFloat(v)||0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-}
 /* 全額表示（明示用エイリアス） */
 function fmtMoney(v) { return fmtK(v); }
+/* セント単位（小数2桁）表示：日次進捗など */
+function fmtUSD2(v) { return '$' + (parseFloat(v)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function getPeriod() { var d = new Date(); return d.getFullYear() + '.' + (d.getMonth()+1); }
 function kpi(label, value, sub, color) {
   return `<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value" style="color:${color||'var(--tm)'}">${value}</div><div class="kpi-sub">${sub}</div></div>`;
@@ -4663,8 +4661,8 @@ async function loadRealtimeSales() {
         <div style="font-size:10px;color:var(--muted)">${r.dinner.count}${r.unit} · $${r.dinner.ppa.toFixed(2)}</div></div>
       <div style="background:var(--surface);padding:10px 8px;text-align:center">
         <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ti-shopping-bag" style="color:#2e6fd6"></i>${t('テイクアウト','Takeout')}</div>
-        <div style="font-size:14px;font-weight:700;margin-top:3px">${r.metric==='bowls' ? ((r.takeout.bowls||0)+'丼') : (r.takeout.count+t('件',''))}</div>
-        <div style="font-size:10px;color:var(--muted)">${r.metric==='bowls' ? ('L'+(r.takeout.lunchBowls||0)+' / D'+(r.takeout.dinnerBowls||0)) : t('注文数','Orders')}</div></div>
+        <div style="font-size:14px;font-weight:700;margin-top:3px">${r.takeout.count}${t('件','')}</div>
+        <div style="font-size:10px;color:var(--muted)">${t('注文数','Orders')}</div></div>
     </div></div>`;
   });
   html += `<div style="font-size:10px;color:var(--muted);text-align:right;margin-top:2px">${t('更新','Updated')} ${nowStr} · ${withData}/${data.length}${t('店','')}</div>`;
@@ -6418,12 +6416,17 @@ function renderBudgetDaily() {
 
   html += `<div class="card"><div class="card-title"><i class="ti ti-chart-line"></i>${title} 月間進捗</div>
     <div class="kpi-grid">
-      ${kpi('月間予算', fmtCent(sumBudget), getPeriod(), 'var(--muted)')}
-      ${kpi('実績累計', fmtCent(sumActual), '本日まで', 'var(--tm)')}
+      ${kpi('月間予算', fmtUSD2(sumBudget), getPeriod(), 'var(--muted)')}
+      ${kpi('実績累計', fmtUSD2(sumActual), '本日まで', 'var(--tm)')}
       ${kpi('対予算ペース', paceRate+'%', '本日時点', paceRate>=100?'var(--green)':paceRate>=90?'var(--yellow)':'var(--red)')}
       ${kpi('月間達成率', monthRate+'%', '対月予算', monthRate>=100?'var(--green)':'var(--muted)')}
     </div>
   </div>`;
+
+  // Totoya: 丼内訳マトリクス（業態×時間帯）
+  if (scopeStores.length && scopeStores.every(function(s){return isTotoyaStore(s.id);})) {
+    html += totoyaBowlMatrixCard(scopeStores, days);
+  }
 
   // データ連携（単店ビューのみ）— 1ボタンに集約
   if (!isAgg && scopeStores[0]) {
@@ -6476,7 +6479,7 @@ function renderBudgetDaily() {
       dayBud += bd;
       if (ov.actual!=null) { dayAct += ov.actual; hasAct=true; }
       if (ov.lunchSales!=null||ov.dinnerSales!=null) { dayLunch+=(ov.lunchSales||0); dayDinner+=(ov.dinnerSales||0); hasLD=true; }
-      if (!isAgg) { weather=ov.weather||''; event=ov.event||''; gv=dayGuestValue(s.id, ov); gv.takeout = (guestCountType(s.id)==='bowls') ? (ov.takeoutBowls!=null?ov.takeoutBowls:(ov.takeout||0)) : ov.takeout; gv.takeoutL = ov.lunchTakeoutBowls; gv.takeoutD = ov.dinnerTakeoutBowls; }
+      if (!isAgg) { weather=ov.weather||''; event=ov.event||''; gv=dayGuestValue(s.id, ov); gv.takeout=ov.takeout; }
       if (ov.toast||ov.toastSrc) isToast = true;
     });
     // チップ率（単店のみ）: チップ総額 ÷ 純売上
@@ -6494,9 +6497,9 @@ function renderBudgetDaily() {
     var rowBg = isToday?'background:#fdeee4':isWeekend?'background:rgba(255,255,255,0.02)':'';
     html += `<tr style="${rowBg}">
       <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
-      <td style="color:var(--muted)">${fmtCent(dayBud)}</td>
-      <td style="font-weight:600">${hasAct?fmtCent(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}</td>
-      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtCent(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtCent(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}${(gv.takeoutL!=null||gv.takeoutD!=null)?`(L${gv.takeoutL||0}/D${gv.takeoutD||0})`:''}</span>`:''):'—'}</td><td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(0)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
+      <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
+      <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}</td>
+      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:''):'—'}</td><td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${cumRate>=100?'var(--green)':cumRate>=90?'var(--yellow)':'var(--red)'};font-size:11px">${cumRate}%</span></td>
       ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted)">${event||'-'}</td>`}
@@ -6772,6 +6775,37 @@ function dayGuestValue(storeId, av) {
   if (t==='bowls') return { total: av.bowls, lunch: av.lunchBowls, dinner: av.dinnerBowls };
   // plate は将来Waikiki接続時に専用フィールド。暫定でguest扱い
   return { total: av.guests, lunch: av.lunchGuests, dinner: av.dinnerGuests };
+}
+
+/* Totoya丼内訳：業態（店内/Takeout）×時間帯（ランチ/ディナー）を合算 */
+function totoyaBowlMatrix(scopeStores, days){
+  var lDine=0,dDine=0,lTO=0,dTO=0,hasTO=false,hasAny=false;
+  scopeStores.forEach(function(s){
+    var da=getDailyActuals(s.id);
+    days.forEach(function(d){
+      var ov=da[d.date]||{};
+      if(ov.lunchBowls!=null){ lDine+=Number(ov.lunchBowls)||0; hasAny=true; }
+      if(ov.dinnerBowls!=null){ dDine+=Number(ov.dinnerBowls)||0; hasAny=true; }
+      if(ov.lunchTakeoutBowls!=null){ lTO+=Number(ov.lunchTakeoutBowls)||0; hasTO=true; hasAny=true; }
+      if(ov.dinnerTakeoutBowls!=null){ dTO+=Number(ov.dinnerTakeoutBowls)||0; hasTO=true; hasAny=true; }
+    });
+  });
+  return {lDine:lDine,dDine:dDine,lTO:lTO,dTO:dTO,hasTO:hasTO,hasAny:hasAny};
+}
+function totoyaBowlMatrixCard(scopeStores, days){
+  var m=totoyaBowlMatrix(scopeStores,days);
+  var lTot=m.lDine+m.lTO, dTot=m.dDine+m.dTO, dineTot=m.lDine+m.dDine, toTot=m.lTO+m.dTO, grand=dineTot+toTot;
+  function c(v,bold){ return '<td style="text-align:right;font-variant-numeric:tabular-nums'+(bold?';font-weight:700':'')+'">'+(Number(v)||0).toLocaleString()+'</td>'; }
+  var label=(typeof dailyMonthLabel==='function')?dailyMonthLabel():'';
+  var html='<div class="card"><div class="card-title"><i class="ti ti-bowl" style="color:var(--accent)"></i>丼内訳（業態×時間帯・'+label+'）</div>'
+    +'<table class="inv-table" style="font-size:12px"><thead><tr><th></th><th style="text-align:right">店内(Dine In)</th><th style="text-align:right">Takeout</th><th style="text-align:right">計</th></tr></thead><tbody>'
+    +'<tr><td>ランチ</td>'+c(m.lDine)+c(m.lTO)+c(lTot,1)+'</tr>'
+    +'<tr><td>ディナー</td>'+c(m.dDine)+c(m.dTO)+c(dTot,1)+'</tr>'
+    +'<tr style="border-top:2px solid var(--border)"><td style="font-weight:700">計</td>'+c(dineTot,1)+c(toTot,1)+c(grand,1)+'</tr>'
+    +'</tbody></table>';
+  if(!m.hasTO) html+='<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:11px"><i class="ti ti-info-circle"></i> テイクアウトの時間帯別丼数（Take Out＋Online Order）はToast連携の集計待ちです。Edge Functionで <code>lunch_takeout_bowls</code> / <code>dinner_takeout_bowls</code> を集計すると表示されます。</div>';
+  else html+='<div style="font-size:10px;color:var(--muted);margin-top:6px">店内＝Dine In／Takeout＝Take Out＋Online Order。単位は丼(Bowls)。</div>';
+  return html+'</div>';
 }
 
 function storeLatLng(storeId) {
@@ -15149,12 +15183,11 @@ const LSS_CATEGORIES = [
     '新人への教え方','相手のレベルに合わせた指導','褒める力','注意・改善指導の仕方','スタッフの強みを見つける力','スタッフの弱みを具体化する力',
     '成長目標を設定する力','スキルレベルを正しく判断する力','Tip Rate申請の判断力','スタッフのモチベーション管理','離職リスクに気づく力','次のリーダー候補を育てる力']},
   {key:'H', name:'Funergy Philosophy', short:'Philosophy', en:'Philosophy & Values', icon:'ti-heart-handshake', items:[
-    '素直さ・学ぶ姿勢：フィードバックを素直に受け止める','素直さ・学ぶ姿勢：知らないことを認め学ぼうとする','素直さ・学ぶ姿勢：改善を継続している',
-    '正直・誠実：嘘やごまかしをしない','正直・誠実：ミスを隠さず報告する','正直・誠実：報告・連絡・相談を適切に行う',
+    '素直さ・学ぶ姿勢：フィードバックを素直に受け止め改善する','素直さ・学ぶ姿勢：知らないことを認め、学ぼうとする','素直さ・学ぶ姿勢：自分の非を認められる',
+    '正直・誠実：嘘やごまかしをせず正直に行動する','正直・誠実：ミスを隠さず報告する','正直・誠実：見ていない所でも手を抜かない',
     '思いやり・リスペクト：仲間を思いやり助け合う','思いやり・リスペクト：お客様に心から向き合う','思いやり・リスペクト：相手の立場で考えられる',
-    '前向き・課題解決：できない理由より方法を探す','前向き・課題解決：困難でも前向きに取り組む','前向き・課題解決：解決策を考え行動する',
-    '主体性・責任感：指示待ちでなく自ら動く','主体性・責任感：任されたことをやり切る','主体性・責任感：店舗や会社全体を考えて行動する',
-    'Funergyらしさ（楽しむ）：自ら楽しみながら仕事に取り組む','Funergyらしさ（楽しむ）：周囲を明るく前向きにする','Funergyらしさ（楽しむ）：地域や仲間を元気にする行動がある']},
+    '前向き・課題解決：愚痴や不満でなく解決策を考える','前向き・課題解決：困難でも前向きに取り組む','前向き・課題解決：周りを前向きにする影響力がある',
+    '主体性・責任感：指示待ちでなく自ら動く','主体性・責任感：自分の仕事に責任を持つ','主体性・責任感：Funergyの一員としての自覚がある']},
 ];
 /* 表示順: Funergy Philosophy(H)を先頭に、その後A〜G */
 function lssCatsOrdered() {
@@ -15183,7 +15216,7 @@ const LSS_GROUPS = {
   'E': [['実行・リーダーシップ',0,4],['問題解決',5,8],['育成・配置',9,13],['MTG・数字運用',14,17],['報告・継続・展開',18,23]],
   'F': [['売上・予実',0,3],['コスト管理',4,6],['分析・改善',7,11]],
   'G': [['教え方',0,3],['見極め',4,8],['育成・定着',9,11]],
-  'H': [['素直さ・学ぶ姿勢',0,2],['正直・誠実',3,5],['思いやり・リスペクト',6,8],['前向き・課題解決',9,11],['主体性・責任感',12,14],['Funergyらしさ（楽しむ）',15,17]],
+  'H': [['素直さ・学ぶ姿勢',0,2],['正直・誠実',3,5],['思いやり・リスペクト',6,8],['前向き・課題解決',9,11],['主体性・責任感',12,14]],
 };
 function lssGroupsOf(catKey) {
   var cc = (typeof curLssCat==='function') ? curLssCat(catKey) : null;
