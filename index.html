@@ -1285,6 +1285,7 @@ const NAV_ITEMS = [
   {id:'recipe',      label:'レシピ',      icon:'ti-chef-hat',         roles:['ceo','gm','office','am','sl']},
   {id:'costsheet',   label:'原価計算',    icon:'ti-calculator',       roles:['ceo','gm','office','am','sl']},
   {id:'invoice',     label:'請求書',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl']},
+  {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office']},
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','am','sl']},
   {id:'tasks',       label:'タスク',      icon:'ti-list-check',       roles:['ceo','gm','am','sl']},
@@ -1322,7 +1323,7 @@ const MENU_GROUPS = [
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','monthly','labor','foodcost','kpi_master']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
-    children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','invoice']},
+    children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','invoice','acct_review']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['staff_master','shift_admin','hiring','hr','skill','leadership','tiprate','tip','growthhub','growth_mgr','vacation']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
@@ -4008,6 +4009,7 @@ function renderPage(page) {
     case 'recipe':       el.innerHTML = renderRecipe(); break;
     case 'costsheet':    el.innerHTML = renderCostSheet(); break;
     case 'invoice':      el.innerHTML = renderInvoice(); break;
+    case 'acct_review':  el.innerHTML = renderAcctReview(); break;
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'order':        el.innerHTML = renderOrder(); break;
     case 'dailyops':     el.innerHTML = renderDailyOps(); break;
@@ -18139,9 +18141,11 @@ async function saveInvoice() {
   var _rcptEmp = _rcptEmpId ? (getEmployees().find(function(e){return e.id===_rcptEmpId;})||{}) : {};
   var _rcptCard = (invoiceDocType==='Receipt') ? (docVal('inv-card4')||'').replace(/[^0-9]/g,'') : '';
   var _newInv = {id:'inv'+Date.now(), vendor, storeId:invStoreId, docType:invoiceDocType, date:new Date().toLocaleDateString('ja'),
-    lines:invoiceTmpLines, total, applied:true, by:ROLE_CONFIG[curRole].name, imagePath:imagePath||null,
+    lines:invoiceTmpLines, total, applied:true, by:ROLE_CONFIG[curRole].name,
+    byUser:(curUserName||''), byEmail:(function(){var _e=getEmployees().find(function(x){return x.name===curUserName;});return (_e&&_e.email)?_e.email:'';})(),
+    imagePath:imagePath||null,
     empId:_rcptEmpId, empName:_rcptEmp.name||'', cardLast4:_rcptCard,
-    reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', driveFileId:'', driveUrl:''};
+    reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', driveFileId:'', driveUrl:'', driveMoved:false};
   invoices.push(_newInv);
   lsSet('invoices', invoices);
   // 経理へ通知（保存先＝Google Drive。経理レビューで確認）
@@ -18180,6 +18184,219 @@ async function saveInvoice() {
   closeModalDirect();
   showToast(invoiceDocType==='Receipt'?'Receiptを保存し、買い出し＋価格を更新しました':'Invoiceを保存し、食材価格を更新しました', 'success');
   renderPage('invoice');
+}
+
+/* ============================================================
+   経理レビュー（office/gm/ceo）
+   一覧＋フィルタ／確認済み→Drive移動／差し戻し→アップロード者へ通知
+============================================================ */
+var AR_STATUSES = ['未確認','確認中','確認済み','差し戻し'];
+function arStatusColor(s){ return s==='差し戻し'?'var(--red)':s==='確認済み'?'var(--green)':s==='確認中'?'var(--yellow)':'var(--muted)'; }
+function arStatusRank(s){ return s==='未確認'?0:s==='確認中'?1:s==='差し戻し'?2:3; }
+function arYm(inv){ var d=parseJaDate(inv.date); if(!d) return ''; return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function arSetFilter(key, val){ window['_ar'+key]=val; renderPage('acct_review'); }
+/* アップロード者メール特定：byEmail → byUser/by を従業員名照合 */
+function arUploaderEmail(inv){
+  if(inv.byEmail) return inv.byEmail;
+  var emps=getEmployees();
+  var cands=[inv.byUser, inv.by].filter(Boolean);
+  for(var i=0;i<cands.length;i++){ var e=emps.find(function(x){return x.name===cands[i] && x.email;}); if(e) return e.email; }
+  return '';
+}
+
+function renderAcctReview(){
+  if(!['ceo','gm','office'].includes(curRole)){
+    return '<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-lock" style="font-size:32px;display:block;margin-bottom:8px"></i>この画面は経理（office）／GM／CEO専用です</div>';
+  }
+  var all = ls('invoices', []);
+  // フィルタ既定値
+  window._arType   = window._arType   || 'ALL';
+  window._arStore  = window._arStore  || 'ALL';
+  window._arMonth  = window._arMonth  || 'ALL';
+  window._arStatus = window._arStatus || 'ALL';
+
+  // ステータス件数（全件ベース）
+  var counts={未確認:0,確認中:0,確認済み:0,差し戻し:0};
+  all.forEach(function(inv){ var s=inv.reviewStatus||'未確認'; if(counts.hasOwnProperty(s)) counts[s]++; });
+
+  // 月の選択肢（請求書から抽出・降順）
+  var months={}; all.forEach(function(inv){ var ym=arYm(inv); if(ym) months[ym]=1; });
+  var monthList=Object.keys(months).sort().reverse();
+
+  // フィルタ適用
+  var rows = all.filter(function(inv){
+    if(window._arType!=='ALL'  && (inv.docType||'Invoice')!==window._arType) return false;
+    if(window._arStore!=='ALL' && inv.storeId!==window._arStore) return false;
+    if(window._arMonth!=='ALL' && arYm(inv)!==window._arMonth) return false;
+    if(window._arStatus!=='ALL'&& (inv.reviewStatus||'未確認')!==window._arStatus) return false;
+    return true;
+  });
+  // 並び：未確認→確認中→差し戻し→確認済み、同順位は日付降順
+  rows.sort(function(a,b){
+    var ra=arStatusRank(a.reviewStatus||'未確認'), rb=arStatusRank(b.reviewStatus||'未確認');
+    if(ra!==rb) return ra-rb;
+    var da=parseJaDate(a.date), db=parseJaDate(b.date);
+    return (db?db.getTime():0)-(da?da.getTime():0);
+  });
+
+  var storeOpts = '<option value="ALL">全店舗</option>'+activeStores().map(function(s){return '<option value="'+s.id+'" '+(window._arStore===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('');
+  var monthOpts = '<option value="ALL">全期間</option>'+monthList.map(function(ym){return '<option value="'+ym+'" '+(window._arMonth===ym?'selected':'')+'>'+ym+'</option>';}).join('');
+  var statusOpts= '<option value="ALL">全ステータス</option>'+AR_STATUSES.map(function(s){return '<option value="'+s+'" '+(window._arStatus===s?'selected':'')+'>'+s+'</option>';}).join('');
+  var typeOpts  = ['ALL','Invoice','Receipt'].map(function(t){return '<option value="'+t+'" '+(window._arType===t?'selected':'')+'>'+(t==='ALL'?'全種別':t==='Receipt'?'レシート':'Invoice')+'</option>';}).join('');
+
+  var html = '<div class="section-header"><div><div class="section-title">経理レビュー</div><div class="section-sub">アップロード書類の確認・差し戻し → 確認済みでDrive整理</div></div></div>';
+
+  // ステータスサマリー（タップでフィルタ）
+  html += '<div class="card" style="padding:10px"><div style="display:flex;gap:8px;flex-wrap:wrap">'
+    + AR_STATUSES.map(function(s){
+        var sel = window._arStatus===s;
+        var c = arStatusColor(s);
+        return '<div onclick="arSetFilter(\'Status\',\''+(sel?'ALL':s)+'\')" style="cursor:pointer;flex:1;min-width:72px;text-align:center;border:1px solid '+c+';border-radius:8px;padding:8px 4px;background:'+(sel?c:'transparent')+';">'
+          + '<div style="font-size:18px;font-weight:800;color:'+(sel?'#fff':c)+'">'+counts[s]+'</div>'
+          + '<div style="font-size:10px;color:'+(sel?'#fff':'var(--muted)')+'">'+s+'</div></div>';
+      }).join('')
+    + '</div></div>';
+
+  // フィルタバー
+  html += '<div class="card" style="padding:10px"><div style="display:flex;gap:6px;flex-wrap:wrap">'
+    + '<select class="form-select" style="flex:1;min-width:110px" onchange="arSetFilter(\'Type\',this.value)">'+typeOpts+'</select>'
+    + '<select class="form-select" style="flex:1;min-width:110px" onchange="arSetFilter(\'Store\',this.value)">'+storeOpts+'</select>'
+    + '<select class="form-select" style="flex:1;min-width:110px" onchange="arSetFilter(\'Month\',this.value)">'+monthOpts+'</select>'
+    + '<select class="form-select" style="flex:1;min-width:110px" onchange="arSetFilter(\'Status\',this.value)">'+statusOpts+'</select>'
+    + '</div></div>';
+
+  if(!rows.length){
+    html += '<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-checklist" style="font-size:32px;display:block;margin-bottom:8px"></i>該当する書類はありません</div>';
+    return html;
+  }
+
+  rows.forEach(function(inv){
+    var s = inv.storeId ? STORES.find(function(x){return x.id===inv.storeId;}) : null;
+    var storeBadge = s ? '<span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+' · ' : '';
+    var typeLabel = (inv.docType==='Receipt') ? 'レシート' : 'Invoice';
+    var empMeta = (inv.docType==='Receipt' && inv.empName) ? ' · <i class="ti ti-user"></i>'+escapeHtml(inv.empName) : '';
+    var rs = inv.reviewStatus || '未確認';
+    var rsCol = arStatusColor(rs);
+    var driveTag = inv.driveFileId ? (inv.driveMoved ? '<span class="tag tag-green" style="font-size:10px">Drive整理済</span>' : '<span class="tag tag-yellow" style="font-size:10px">Drive未整理</span>') : '<span class="tag" style="font-size:10px;color:var(--muted);border:1px solid var(--border)">Drive画像なし</span>';
+
+    html += '<div class="card">'
+      + '<div class="approval-header">'
+      +   '<div><div class="approval-title">'+escapeHtml(inv.vendor)+'</div>'
+      +     '<div class="approval-meta">'+storeBadge+escapeHtml(inv.date)+' · '+typeLabel+' · '+(inv.lines?inv.lines.length:0)+'品目 · $'+(inv.total||0).toFixed(2)+empMeta+'</div></div>'
+      +   '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">'
+      +     (inv.imagePath?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="viewInvoiceImage(\''+String(inv.imagePath).replace(/'/g,"\\'")+'\')"><i class="ti ti-photo"></i></button>':'')
+      +     (inv.driveUrl?'<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="'+inv.driveUrl+'" target="_blank" title="Driveで開く"><i class="ti ti-brand-google-drive"></i></a>':'')
+      +     '<span class="tag" style="font-size:10px;font-weight:700;color:'+rsCol+';border:1px solid '+rsCol+';background:transparent">'+rs+'</span>'
+      +     driveTag
+      +   '</div>'
+      + '</div>';
+
+    // メタ（レビュー履歴・差し戻し理由）
+    if(rs==='差し戻し' && inv.reviewNote){
+      html += '<div style="font-size:12px;color:var(--red);background:#fff3f3;border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin-top:6px"><i class="ti ti-arrow-back-up"></i> 差し戻し理由：'+escapeHtml(inv.reviewNote)+'</div>';
+    }
+    if(inv.reviewedBy){
+      html += '<div style="font-size:11px;color:var(--muted);margin-top:4px">最終レビュー：'+escapeHtml(inv.reviewedBy)+(inv.reviewedAt?' · '+escapeHtml(inv.reviewedAt):'')+'</div>';
+    }
+
+    // アクションボタン
+    html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">';
+    if(rs!=='確認中' && rs!=='確認済み'){
+      html += '<button class="btn btn-secondary btn-sm" onclick="arSetStatus(\''+inv.id+'\',\'確認中\')"><i class="ti ti-eye"></i> 確認中</button>';
+    }
+    if(rs!=='確認済み'){
+      html += '<button class="btn btn-primary btn-sm" style="background:var(--green);border-color:var(--green)" onclick="arApprove(\''+inv.id+'\')"><i class="ti ti-check"></i> 確認済み（Drive整理）</button>';
+    } else {
+      html += '<button class="btn btn-secondary btn-sm" onclick="arSetStatus(\''+inv.id+'\',\'確認中\')"><i class="ti ti-rotate"></i> 確認済みを取り消し</button>';
+    }
+    if(rs!=='差し戻し'){
+      html += '<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="arRejectModal(\''+inv.id+'\')"><i class="ti ti-arrow-back-up"></i> 差し戻し</button>';
+    } else {
+      html += '<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="arRejectModal(\''+inv.id+'\')"><i class="ti ti-edit"></i> 理由を編集</button>';
+    }
+    html += '</div></div>';
+  });
+
+  return html;
+}
+
+/* 確認中など、Drive移動を伴わない状態更新 */
+function arSetStatus(id, status){
+  var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  inv.reviewStatus=status;
+  inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
+  inv.reviewedAt = new Date().toLocaleString('ja');
+  lsSet('invoices', invoices);
+  renderPage('acct_review');
+}
+
+/* 確認済み：Driveでファイルを正式フォルダへ移動（社員ごと/店舗ごと）し、状態更新 */
+async function arApprove(id){
+  var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  if(inv.driveFileId && !inv.driveMoved){
+    var ym=arYm(inv) || new Date().toISOString().slice(0,7);
+    var so=STORES.find(function(x){return x.id===inv.storeId;});
+    var storeName=so?so.name:(inv.storeId||'');
+    var kind=(inv.docType==='Receipt')?'receipt':'invoice';
+    showToast('Driveでファイルを整理中…','info');
+    var res=await driveSync('move', { fileId:inv.driveFileId, kind:kind, store:storeName, employee:(inv.empName||''), ym:ym });
+    if(res && res.ok){
+      inv.driveMoved=true;
+      if(res.webViewLink) inv.driveUrl=res.webViewLink;
+    } else if(res && res.error==='not_configured'){
+      showToast('Drive未連携のため移動はスキップ（状態のみ更新）','warning');
+    } else {
+      showToast('Drive移動に失敗：'+(res&&res.error||'不明')+'（状態は更新します）','warning');
+    }
+  }
+  inv.reviewStatus='確認済み';
+  inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
+  inv.reviewedAt = new Date().toLocaleString('ja');
+  lsSet('invoices', invoices);
+  showToast('確認済みにしました','success');
+  renderPage('acct_review');
+}
+
+/* 差し戻し：理由入力モーダル */
+function arRejectModal(id){
+  var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  var so=STORES.find(function(x){return x.id===inv.storeId;}); var stN=so?so.name:(inv.storeId||'');
+  var email=arUploaderEmail(inv);
+  openModal('<div class="modal-title">差し戻し <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+escapeHtml(stN)+' · '+escapeHtml(inv.vendor)+' · $'+(inv.total||0).toFixed(2)+'</div>'
+    +'<div class="form-group"><label class="form-label">差し戻し理由 <span style="color:var(--accent2)">*</span></label>'
+    +'<textarea class="form-input" id="ar-reason" rows="3" placeholder="例：金額が不鮮明です。再撮影をお願いします。">'+escapeHtml(inv.reviewNote||'')+'</textarea>'
+    +'<div style="font-size:11px;color:'+(email?'var(--muted)':'var(--red)')+';margin-top:4px">'
+      +(email?('アップロード者（'+escapeHtml(inv.byUser||inv.by||'')+' / '+escapeHtml(email)+'）へメール通知されます。')
+             :'アップロード者のメールが特定できません。状態のみ更新します（通知はスキップ）。')+'</div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="arRejectConfirm(\''+inv.id+'\')"><i class="ti ti-arrow-back-up"></i> 差し戻して通知</button></div>');
+}
+
+/* 差し戻し確定：状態更新＋アップロード者へ通知 */
+async function arRejectConfirm(id){
+  var reason=(docVal('ar-reason')||'').trim();
+  if(!reason){ showToast('差し戻し理由を入力してください','warning'); return; }
+  var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  inv.reviewStatus='差し戻し';
+  inv.reviewNote=reason;
+  inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
+  inv.reviewedAt = new Date().toLocaleString('ja');
+  lsSet('invoices', invoices);
+  closeModalDirect();
+  var email=arUploaderEmail(inv);
+  var so=STORES.find(function(x){return x.id===inv.storeId;}); var stN=so?so.name:(inv.storeId||'');
+  if(email){
+    var subj='【差し戻し】'+stN+' '+inv.vendor+' $'+(inv.total||0).toFixed(2);
+    var body='アップロードした'+((inv.docType==='Receipt')?'レシート':'Invoice')+'が差し戻されました。\n'
+      +'店舗: '+stN+'\n業者/購入先: '+inv.vendor+'\n金額: $'+(inv.total||0).toFixed(2)+'\n'
+      +'差し戻し理由: '+reason+'\n\nOSの「請求書」から内容を修正・再アップロードしてください。';
+    var ok=await notifyMessage(email, subj, body);
+    showToast(ok?'差し戻し、アップロード者へ通知しました':'差し戻しました（通知の送信に失敗）', ok?'success':'warning');
+  } else {
+    showToast('差し戻しました（アップロード者のメール未特定で通知はスキップ）','warning');
+  }
+  renderPage('acct_review');
 }
 
 /* ============================================================
