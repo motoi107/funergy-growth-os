@@ -825,6 +825,7 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
         dinnerTakeoutBowls: r.dinner_takeout_bowls!=null?Number(r.dinner_takeout_bowls):undefined,
         firstTimeBowls: r.first_time_count!=null?Number(r.first_time_count):undefined,
         repeatBowls: r.repeat_count!=null?Number(r.repeat_count):undefined,
+        superRegular: r.super_regular_count!=null?Number(r.super_regular_count):undefined,
         creditTip: r.credit_tip!=null?Number(r.credit_tip):undefined,
         lunchCreditTip: r.lunch_credit_tip!=null?Number(r.lunch_credit_tip):undefined,
         dinnerCreditTip: r.dinner_credit_tip!=null?Number(r.dinner_credit_tip):undefined,
@@ -929,6 +930,7 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
           dinnerTakeoutBowls: r.dinnerTakeoutBowls!=null?Number(r.dinnerTakeoutBowls):undefined,
           firstTimeBowls: r.firstTimeBowls!=null?Number(r.firstTimeBowls):undefined,
           repeatBowls: r.repeatBowls!=null?Number(r.repeatBowls):undefined,
+          superRegular: r.srCount!=null?Number(r.srCount):undefined,
           creditTip: r.creditTip!=null?Number(r.creditTip):undefined,
           lunchCreditTip: r.lunchCreditTip!=null?Number(r.lunchCreditTip):undefined,
           dinnerCreditTip: r.dinnerCreditTip!=null?Number(r.dinnerCreditTip):undefined,
@@ -6431,6 +6433,8 @@ function renderBudgetDaily() {
   if (scopeStores.length && scopeStores.every(function(s){return isTotoyaStore(s.id);})) {
     html += totoyaBowlMatrixCard(scopeStores, days);
   }
+  // リピート率（Totoya=丼モディファイア / ToriTon・Tenkichi=Customers FT/RP/SR。データがあれば表示）
+  html += repeatRateCard(scopeStores, days);
 
   // データ連携（単店ビューのみ）— 1ボタンに集約
   if (!isAgg && scopeStores[0]) {
@@ -6813,19 +6817,39 @@ function totoyaBowlMatrixCard(scopeStores, days){
     +'</tbody></table>';
   if(!m.hasTO) html+='<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:11px"><i class="ti ti-info-circle"></i> テイクアウトの時間帯別丼数（Take Out＋Online Order）はToast連携の集計待ちです。Edge Functionで <code>lunch_takeout_bowls</code> / <code>dinner_takeout_bowls</code> を集計すると表示されます。</div>';
   else html+='<div style="font-size:10px;color:var(--muted);margin-top:6px">店内＝Dine In／Takeout＝Take Out＋Online Order。単位は丼(Bowls)。</div>';
-  // リピート率（店内Bowlの First time / Repeat モディファイア）
-  var rr=m.first+m.repeat;
-  if(m.hasRR && rr>0){
-    var rate=Math.round(m.repeat/rr*1000)/10;
-    var rc=rate>=50?'var(--green)':rate>=30?'var(--yellow)':'var(--red)';
-    html+='<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">'
-      +'<div style="display:flex;align-items:center;gap:8px"><i class="ti ti-repeat" style="color:var(--accent2)"></i><span style="font-weight:700">リピート率</span>'
-      +'<span style="margin-left:auto;font-size:18px;font-weight:800;color:'+rc+'">'+rate+'%</span></div>'
-      +'<div style="font-size:11px;color:var(--muted);margin-top:4px">Repeat '+m.repeat.toLocaleString()+' ／ First time '+m.first.toLocaleString()+'（店内Bowl・判定対象計 '+rr.toLocaleString()+'）</div></div>';
-  } else if(m.hasAny){
-    html+='<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> リピート率は、丼のモディファイア「First time / Repeat」がToast連携に入ると表示されます。</div>';
-  }
   return html+'</div>';
+}
+
+/* リピート率（全店共通）。Totoya=丼モディファイア / ToriTon・Tenkichi=Customersメニュー FT/RP/SR */
+function repeatStats(scopeStores, days){
+  var first=0,repeat=0,sr=0,has=false;
+  scopeStores.forEach(function(s){
+    var da=getDailyActuals(s.id);
+    days.forEach(function(d){
+      var ov=da[d.date]||{};
+      if(ov.firstTimeBowls!=null){ first+=Number(ov.firstTimeBowls)||0; has=true; }
+      if(ov.repeatBowls!=null){ repeat+=Number(ov.repeatBowls)||0; has=true; }
+      if(ov.superRegular!=null){ sr+=Number(ov.superRegular)||0; }
+    });
+  });
+  return {first:first,repeat:repeat,sr:sr,has:has,total:first+repeat};
+}
+function repeatRateCard(scopeStores, days){
+  var st=repeatStats(scopeStores,days);
+  if(!st.has || st.total<=0) return '';
+  var rate=Math.round(st.repeat/st.total*1000)/10;   // (Repeat)/(First+Repeat)
+  var rc=rate>=50?'var(--green)':rate>=30?'var(--yellow)':'var(--red)';
+  var srLine = st.sr>0 ? `<span style="color:var(--muted)">（うちSuper Regular ${st.sr.toLocaleString()}）</span>` : '';
+  var label=(typeof dailyMonthLabel==='function')?dailyMonthLabel():'';
+  return `<div class="card"><div class="card-title"><i class="ti ti-repeat" style="color:var(--accent2)"></i>リピート率・${label}</div>
+    <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:var(--muted)">Repeat ÷ 全体</span>
+      <span style="margin-left:auto;font-size:26px;font-weight:800;color:${rc}">${rate}%</span></div>
+    <div style="display:flex;gap:14px;margin-top:8px;font-size:12px;flex-wrap:wrap">
+      <div><span style="color:var(--muted)">リピート</span> <b>${st.repeat.toLocaleString()}</b> ${srLine}</div>
+      <div><span style="color:var(--muted)">初回</span> <b>${st.first.toLocaleString()}</b></div>
+      <div><span style="color:var(--muted)">対象計</span> <b>${st.total.toLocaleString()}</b></div>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-top:6px">リピート率＝リピート(RP+SR)÷(初回FT＋リピート)。</div></div>`;
 }
 
 function storeLatLng(storeId) {
