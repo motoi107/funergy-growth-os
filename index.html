@@ -3174,7 +3174,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
 var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
-  'invoices','notifications','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
+  'invoices','notifications','approval_routing','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust'];
 var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
@@ -3733,6 +3733,7 @@ async function enterAppWithSync(){
   var ap=document.getElementById('app-shell'); if(ap) ap.style.display='block';
   initApp();
   try{ notifRealtimeStart(); }catch(e){}
+  try{ checkShiftReminders(); }catch(e){}
 }
 /* ログイン者の役職・所属を、同期後の最新マスターから再解決する。
    ログイン画面の名簿はローカル（同期前のシード）から作られるため、シードの古い役職で
@@ -10300,7 +10301,9 @@ function saveShift(storeId) {
 function publishShift(storeId) {
   var shifts = ls('shifts_'+storeId, []);
   var s = shifts.find(x=>x.week===getWeekStr());
-  if (s) { s.status='公開済'; lsSet('shifts_'+storeId, shifts); showToast('シフトを公開しました', 'success'); renderPage('labor'); }
+  if (s) { s.status='公開済'; lsSet('shifts_'+storeId, shifts);
+    try{ var _ps=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'shift', title:'シフトが公開されました', text:((_ps?_ps.name:storeId)+'：'+getWeekStr()).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'shift_staff', refId:'shift_'+storeId+'_'+getWeekStr() }); }catch(e){}
+    showToast('シフトを公開しました', 'success'); renderPage('labor'); }
 }
 
 /* ============================================================
@@ -10646,6 +10649,7 @@ function createHelpReq(storeId, week){
     date:new Date().toLocaleDateString('ja'),
   });
   setHelpRequests(storeId, list);
+  try{ var _hr=list[list.length-1]; var _hs=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'help', title:'ヘルプ募集', text:((_hs?_hs.name:storeId)+' '+_hr.day+' '+_hr.period+(_hr.note?'：'+_hr.note:'')).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'mypage', refId:_hr.id }); }catch(e){}
   closeModalDirect();
   showToast('ヘルプ募集を出しました','success');
   renderPage('shift_admin');
@@ -10659,6 +10663,7 @@ function toggleHelpVolunteer(storeId, hrId){
   var i = h.volunteers.indexOf(me);
   if (i>=0) h.volunteers.splice(i,1); else h.volunteers.push(me);
   setHelpRequests(storeId, list);
+  try{ if(i<0 && h.createdBy){ var _hs2=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'help', title:'ヘルプ募集に応募がありました', text:(me+' が応募：'+(_hs2?_hs2.name:storeId)+' '+h.day+' '+h.period).slice(0,140), toUser:h.createdBy, page:'shift_admin', refId:h.id }); } }catch(e){}
   showToast(i>=0?'取り下げました':'手を挙げました！','success');
   renderPage(curPage);
 }
@@ -11622,6 +11627,7 @@ function publishShiftPlan(storeId, week) {
   if (warnings.length && !confirm(`警告が${warnings.length}件あります。公開しますか？`)) return;
   plan.status = '公開済'; plan.publishedDate = new Date().toLocaleDateString('ja');
   setShiftPlan(storeId, week, plan);
+  try{ var _ps2=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'shift', title:'シフトが公開されました', text:((_ps2?_ps2.name:storeId)+'：'+week).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'shift_staff', refId:'shiftplan_'+storeId+'_'+week }); }catch(e){}
   showToast('シフトを公開しました', 'success');
   renderPage('shift_admin');
 }
@@ -12794,6 +12800,7 @@ function startOnboardingFromApplicant(id) {
   });
   a.onboardId = candId; a.status='採用';
   setApplicants(apps);
+  try{ addNotif({ type:'onboard', title:'オンボーディング開始', text:(a.name+'（'+storeObj.name+'）の受け入れが始まりました').slice(0,140), toStore:storeObj.id, toRoles:['sl','am','gm'], page:'hiring', refId:candId }); }catch(e){}
   showToast(`${a.name}を採用。${candId} でOnboarding開始`,'success');
   goOnboarding();
 }
@@ -16142,8 +16149,10 @@ function approveLssRequest(id, status) {
 ============================================================ */
 function addApproval(obj) {
   var approvals = ls('approvals', []);
-  approvals.push(Object.assign({id:'ap'+Date.now(), status:'pending', date:new Date().toLocaleDateString('ja')}, obj));
+  var rec = Object.assign({id:'ap'+Date.now(), status:'pending', date:new Date().toLocaleDateString('ja')}, obj);
+  approvals.push(rec);
   lsSet('approvals', approvals);
+  try{ addNotif({ type:'approval', title:'承認待ち：'+(rec.type||'申請'), text:(rec.title||'').slice(0,140), toRoles:approversForType(rec.type), page:'approval', refId:rec.id }); }catch(e){}
 }
 /* type+refで承認待ちを解決（予算承認フロー連携用） */
 function resolveApprovalByRef(type, ref, status) {
@@ -16223,7 +16232,11 @@ function renderApproval() {
 function approveItem(id, status) {
   var approvals = ls('approvals', []);
   var a = approvals.find(a=>a.id===id);
-  if (a) { a.status = status; lsSet('approvals', approvals); renderPage('approval'); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger'); }
+  if (a) {
+    a.status = status; lsSet('approvals', approvals);
+    try{ addNotif({ type:(status==='approved'?'approved':'reject'), title:(a.type||'申請')+(status==='approved'?' が承認されました':' が却下されました'), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
+    renderPage('approval'); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
+  }
 }
 
 /* ============================================================
@@ -16835,6 +16848,11 @@ function renderSettings() {
 
   // Supabase同期（GM/CEOのみ）— 本番移行フェーズ1
   if (curRole==='gm' || curRole==='ceo') {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-route" style="color:var(--accent)"></i>承認ルーティング（誰が承認するか）</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">承認タイプごとに、承認待ち通知を受け取る役職を選びます。チェックした役職の人に通知が届きます。</p>
+      ${APPROVAL_TYPES.map(function(t){var sel=approversForType(t);return `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div style="font-weight:600;font-size:13px;margin-bottom:6px">${t}</div><div style="display:flex;gap:6px;flex-wrap:wrap">${APPROVER_ROLE_OPTS.map(function(rr){var on=sel.indexOf(rr[0])>=0;return `<button class="btn ${on?'btn-primary':'btn-secondary'} btn-sm" style="padding:3px 10px" onclick="toggleApprovalRole('${t}','${rr[0]}')">${on?'<i class="ti ti-check"></i> ':''}${rr[1]}</button>`;}).join('')}</div></div>`;}).join('')}
+      <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 変更は即保存・全端末に同期されます。誰も選ばない場合は既定（経理/GM/AM）に戻ります。</div>
+    </div>`;
     html += `<div class="card"><div class="card-title"><i class="ti ti-cloud-up" style="color:var(--accent)"></i>本番移行（Supabase同期）</div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:10px">マスターデータをクラウド（Supabase）にも保存します。ONにすると、以降のマスター変更が自動でSupabaseに同期されます。localStorageも維持されるので安全です。</p>
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
@@ -17752,7 +17770,13 @@ function addNotif(n){
 function notifForMe(n){
   if(n.by && curUserName && n.by===curUserName) return false;
   if(n.toUser) return !!(curUserName && n.toUser===curUserName);
-  if(n.toRoles && n.toRoles.length) return n.toRoles.indexOf(curRole)>=0;
+  if(n.toStore){
+    var inStore = (curStore===n.toStore) || _userSupportsStore(n.toStore);
+    if(!inStore) return false;
+    if(n.toRoles && n.toRoles.length) return _roleMatch(n.toRoles);
+    return true;
+  }
+  if(n.toRoles && n.toRoles.length) return _roleMatch(n.toRoles);
   return false;
 }
 function myNotifs(){ return getNotifs().filter(notifForMe).sort(function(a,b){ return (b.at||'').localeCompare(a.at||''); }); }
@@ -17773,6 +17797,11 @@ function notifIcon(type){
   if(type==='resubmit') return {icon:'ti-send',          col:'var(--accent2)'};
   if(type==='upload')   return {icon:'ti-upload',        col:'var(--green)'};
   if(type==='approved') return {icon:'ti-circle-check',  col:'var(--green)'};
+  if(type==='approval') return {icon:'ti-clipboard-check',col:'var(--accent2)'};
+  if(type==='consult')  return {icon:'ti-mood-heart',    col:'var(--accent)'};
+  if(type==='shift')    return {icon:'ti-calendar-event',col:'var(--accent2)'};
+  if(type==='help')     return {icon:'ti-urgent',        col:'var(--accent)'};
+  if(type==='onboard')  return {icon:'ti-user-plus',     col:'var(--green)'};
   return {icon:'ti-bell', col:'var(--muted)'};
 }
 function notifAgo(iso){
@@ -17885,6 +17914,81 @@ function onNotifIncoming(arr){
     var p=document.getElementById('notif-panel');
     if(p && p.style.display==='block') renderNotifPanel();
     if(after>before){ try{ showToast('新しい通知があります','info'); }catch(e){} }
+  }catch(e){}
+}
+
+/* ===== 承認ルーティング（タイプ別の承認者）＋ 店舗スコープ宛先の補助 ===== */
+var APPROVAL_TYPES = ['予算','シフト変更','採用','Leadership','TipRate','スキル'];
+var APPROVER_ROLE_OPTS = [['office','経理'],['gm','GM'],['am','AM'],['sm','SM'],['sl','SL'],['ceo','CEO']];
+function defaultApprovalRouting(){ var d={}; APPROVAL_TYPES.forEach(function(t){ d[t]=['office','gm','am']; }); return d; }
+function getApprovalRouting(){
+  var r = ls('approval_routing', null);
+  if(!r || typeof r!=='object') r = defaultApprovalRouting();
+  APPROVAL_TYPES.forEach(function(t){ if(!Array.isArray(r[t])) r[t]=['office','gm','am']; });
+  return r;
+}
+function setApprovalRouting(r){ lsSet('approval_routing', r); }
+function approversForType(type){ var roles=getApprovalRouting()[type]; return (roles && roles.length)?roles:['office','gm','am']; }
+function toggleApprovalRole(type, role){
+  var r=getApprovalRouting(); var arr=Array.isArray(r[type])?r[type].slice():[];
+  var i=arr.indexOf(role); if(i>=0) arr.splice(i,1); else arr.push(role);
+  r[type]=arr; setApprovalRouting(r); renderPage('settings');
+}
+/* 今のユーザーがその店舗の応援要員か（toStore宛先の判定補助） */
+function _userSupportsStore(storeId){
+  try{ var e=getEmployees().find(function(x){return x.name===curUserName;}); return !!(e && (e.support||[]).indexOf(storeId)>=0); }catch(_){ return false; }
+}
+/* 役職一致判定。'sm'(Store Manager)は権限ロールではなく肩書きで判定 */
+function _roleMatch(roles){
+  if(!roles || !roles.length) return false;
+  if(roles.indexOf(curRole)>=0) return true;
+  if(roles.indexOf('sm')>=0 && typeof isStoreManager==='function' && isStoreManager()) return true;
+  return false;
+}
+
+/* ===== シフト作成リマインド（ログイン時チェック・時限） ===== */
+/* 来週の月曜「M/D」（getWeekStrと同形式） */
+function nextWeekStr(){
+  var d=new Date(); var day=d.getDay();
+  var diff=d.getDate()-day+(day===0?-6:1);
+  var mon=new Date(d.getFullYear(), d.getMonth(), diff+7);
+  return (mon.getMonth()+1)+'/'+mon.getDate();
+}
+/* 今のユーザーが担当する店舗ID一覧 */
+function _myManagedStores(){
+  try{
+    if(['ceo','gm','office'].includes(curRole)) return getStoresAll().map(function(s){return s.id;});
+    if(curRole==='am') return myAmStores();
+    if(curRole==='sl'){
+      var e=getEmployees().find(function(x){return x.name===curUserName;});
+      var arr=[]; if(e){ if(e.store && e.store!=='ALL') arr.push(e.store); (e.support||[]).forEach(function(s){arr.push(s);}); }
+      return arr;
+    }
+  }catch(_){}
+  return [];
+}
+/* 来週シフトが未公開なら、担当店舗のSL/AM/GMにリマインド（木〜日のみ・店舗×週で1回） */
+function checkShiftReminders(){
+  try{
+    if(!['ceo','gm','am','sl'].includes(curRole)) return;
+    var day=new Date().getDay();
+    if(!(day===4||day===5||day===6||day===0)) return; // 木・金・土・日
+    var nw=nextWeekStr();
+    var stores=_myManagedStores(); if(!stores.length) return;
+    var arr=getNotifs(); var added=false;
+    stores.forEach(function(sid){
+      var plan=getShiftPlan(sid, nw);
+      if(plan && plan.status==='公開済') return;
+      var refId='shiftremind_'+sid+'_'+nw;
+      if(arr.some(function(n){return n.refId===refId;})) return;
+      var st=STORES.find(function(x){return x.id===sid;});
+      arr.push({ id:'ntf'+Date.now()+Math.floor(Math.random()*1000), at:new Date().toISOString(), by:'システム', readBy:[],
+        type:'shift', title:'来週のシフト未作成',
+        text:((st?st.name:sid)+'：来週('+nw+')のシフトがまだ公開されていません。作成してください。').slice(0,140),
+        toStore:sid, toRoles:['sl','am','gm'], page:'shift_admin', refId:refId });
+      added=true;
+    });
+    if(added){ if(arr.length>500) arr=arr.slice(arr.length-500); lsSet('notifications', arr); renderNotifBell(); }
   }catch(e){}
 }
 
@@ -18337,7 +18441,7 @@ async function saveInvoice() {
     notifyAccounting('【'+(invoiceDocType==='Receipt'?'レシート':'Invoice')+'】'+_stN+' '+vendor+' $'+total.toFixed(2),
       (invoiceDocType==='Receipt'?'カード/買い出しレシート':'業者Invoice')+'がアップロードされました。\n店舗: '+_stN+'\n業者/購入先: '+vendor+'\n金額: $'+total.toFixed(2)+(_rcptEmp.name?'\n社員（カード保有者）: '+_rcptEmp.name:'')+'\nアップロード者: '+(ROLE_CONFIG[curRole].name||'')+'\n\nOSの「請求書」→経理レビューで確認してください。');
   }catch(e){}
-  try{ addNotif({ type:'upload', title:'新しい'+(invoiceDocType==='Receipt'?'レシート':'Invoice'), text:((storeObj?storeObj.name:invStoreId)+' / '+vendor+' $'+total.toFixed(2)).slice(0,140), toRoles:['office','gm','ceo'], page:'acct_review', refId:_newInv.id }); }catch(e){}
+  try{ addNotif({ type:'upload', title:'新しい'+(invoiceDocType==='Receipt'?'レシート':'Invoice'), text:((storeObj?storeObj.name:invStoreId)+' / '+vendor+' $'+total.toFixed(2)).slice(0,140), toRoles:['office','gm'], page:'acct_review', refId:_newInv.id }); }catch(e){}
   // Receiptの場合は買い出しにも反映
   if (invoiceDocType==='Receipt') {
     var storeId = invStoreId;
@@ -18642,7 +18746,7 @@ async function submitRejectReply(id){
   }
   inv.reviewStatus='未確認';
   addReviewThread(inv, '再提出', reply);
-  try{ var _so2=STORES.find(function(x){return x.id===inv.storeId;}); var _stN2=_so2?_so2.name:(inv.storeId||''); addNotif({ type:'resubmit', title:'差し戻しに再提出がありました', text:(_stN2+' / '+inv.vendor+' $'+(inv.total||0).toFixed(2)).slice(0,140), toRoles:['office','gm','ceo'], page:'acct_review', refId:inv.id }); }catch(e){}
+  try{ var _so2=STORES.find(function(x){return x.id===inv.storeId;}); var _stN2=_so2?_so2.name:(inv.storeId||''); addNotif({ type:'resubmit', title:'差し戻しに再提出がありました', text:(_stN2+' / '+inv.vendor+' $'+(inv.total||0).toFixed(2)).slice(0,140), toRoles:['office','gm'], page:'acct_review', refId:inv.id }); }catch(e){}
   lsSet('invoices', invoices);
   closeModalDirect();
   showToast('再提出しました（経理レビューに戻りました）','success');
@@ -19572,6 +19676,7 @@ function saveGHPost() {
     store: emp?emp.store:(curStore!=='ALL'?curStore:''),
     date:new Date().toLocaleDateString('ja'), status:'未対応', replies:[]});
   lsSet('growthhub', posts);
+  try{ var _gp=posts[posts.length-1]; if(_gp.store){ addNotif({ type:'consult', title:'新しい相談が届きました', text:(_gp.title||'').slice(0,140), toStore:_gp.store, toRoles:['sl','am','gm'], page:'growthhub', refId:_gp.id }); } else { addNotif({ type:'consult', title:'新しい相談が届きました', text:(_gp.title||'').slice(0,140), toRoles:['gm','am'], page:'growthhub', refId:_gp.id }); } }catch(e){}
   closeModalDirect();
   showToast('相談を送信しました。管理者が確認します', 'success');
   renderPage('growthhub');
@@ -19596,6 +19701,10 @@ function saveGHReply(pId) {
     // 管理職が返信したら未対応→対応中に
     if (mgr && (p.status||'未対応')==='未対応') p.status='対応中';
     lsSet('growthhub', posts);
+    try{
+      if(mgr){ addNotif({ type:'consult', title:'相談に回答がありました', text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); }
+      else if(p.store){ addNotif({ type:'consult', title:'相談に返信がありました', text:(p.title||'').slice(0,140), toStore:p.store, toRoles:['sl','am','gm'], page:'growthhub', refId:p.id }); }
+    }catch(e){}
   }
   closeModalDirect();
   showToast('送信しました', 'success');
@@ -19604,7 +19713,7 @@ function saveGHReply(pId) {
 function ghSetStatus(pId, status){
   var posts = ls('growthhub', []);
   var p = posts.find(x=>x.id===pId);
-  if (p){ p.status=status; lsSet('growthhub', posts); }
+  if (p){ p.status=status; lsSet('growthhub', posts); try{ if(status==='解決'){ addNotif({ type:'consult', title:'相談が解決済みになりました', text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); } }catch(e){} }
   showToast(status+'にしました', status==='解決'?'success':'info');
   renderPage('growthhub');
 }
