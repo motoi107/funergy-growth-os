@@ -823,6 +823,8 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
         takeoutBowls: r.takeout_bowls!=null?Number(r.takeout_bowls):undefined,
         lunchTakeoutBowls: r.lunch_takeout_bowls!=null?Number(r.lunch_takeout_bowls):undefined,
         dinnerTakeoutBowls: r.dinner_takeout_bowls!=null?Number(r.dinner_takeout_bowls):undefined,
+        firstTimeBowls: r.first_time_count!=null?Number(r.first_time_count):undefined,
+        repeatBowls: r.repeat_count!=null?Number(r.repeat_count):undefined,
         creditTip: r.credit_tip!=null?Number(r.credit_tip):undefined,
         lunchCreditTip: r.lunch_credit_tip!=null?Number(r.lunch_credit_tip):undefined,
         dinnerCreditTip: r.dinner_credit_tip!=null?Number(r.dinner_credit_tip):undefined,
@@ -925,6 +927,8 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
           takeoutBowls: r.takeoutBowls!=null?Number(r.takeoutBowls):undefined,
           lunchTakeoutBowls: r.lunchTakeoutBowls!=null?Number(r.lunchTakeoutBowls):undefined,
           dinnerTakeoutBowls: r.dinnerTakeoutBowls!=null?Number(r.dinnerTakeoutBowls):undefined,
+          firstTimeBowls: r.firstTimeBowls!=null?Number(r.firstTimeBowls):undefined,
+          repeatBowls: r.repeatBowls!=null?Number(r.repeatBowls):undefined,
           creditTip: r.creditTip!=null?Number(r.creditTip):undefined,
           lunchCreditTip: r.lunchCreditTip!=null?Number(r.lunchCreditTip):undefined,
           dinnerCreditTip: r.dinnerCreditTip!=null?Number(r.dinnerCreditTip):undefined,
@@ -6781,7 +6785,7 @@ function dayGuestValue(storeId, av) {
 
 /* Totoya丼内訳：業態（店内/Takeout）×時間帯（ランチ/ディナー）を合算 */
 function totoyaBowlMatrix(scopeStores, days){
-  var lDine=0,dDine=0,lTO=0,dTO=0,hasTO=false,hasAny=false;
+  var lDine=0,dDine=0,lTO=0,dTO=0,hasTO=false,hasAny=false,first=0,repeat=0,hasRR=false;
   scopeStores.forEach(function(s){
     var da=getDailyActuals(s.id);
     days.forEach(function(d){
@@ -6790,9 +6794,11 @@ function totoyaBowlMatrix(scopeStores, days){
       if(ov.dinnerBowls!=null){ dDine+=Number(ov.dinnerBowls)||0; hasAny=true; }
       if(ov.lunchTakeoutBowls!=null){ lTO+=Number(ov.lunchTakeoutBowls)||0; hasTO=true; hasAny=true; }
       if(ov.dinnerTakeoutBowls!=null){ dTO+=Number(ov.dinnerTakeoutBowls)||0; hasTO=true; hasAny=true; }
+      if(ov.firstTimeBowls!=null){ first+=Number(ov.firstTimeBowls)||0; hasRR=true; }
+      if(ov.repeatBowls!=null){ repeat+=Number(ov.repeatBowls)||0; hasRR=true; }
     });
   });
-  return {lDine:lDine,dDine:dDine,lTO:lTO,dTO:dTO,hasTO:hasTO,hasAny:hasAny};
+  return {lDine:lDine,dDine:dDine,lTO:lTO,dTO:dTO,hasTO:hasTO,hasAny:hasAny,first:first,repeat:repeat,hasRR:hasRR};
 }
 function totoyaBowlMatrixCard(scopeStores, days){
   var m=totoyaBowlMatrix(scopeStores,days);
@@ -6807,6 +6813,18 @@ function totoyaBowlMatrixCard(scopeStores, days){
     +'</tbody></table>';
   if(!m.hasTO) html+='<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:11px"><i class="ti ti-info-circle"></i> テイクアウトの時間帯別丼数（Take Out＋Online Order）はToast連携の集計待ちです。Edge Functionで <code>lunch_takeout_bowls</code> / <code>dinner_takeout_bowls</code> を集計すると表示されます。</div>';
   else html+='<div style="font-size:10px;color:var(--muted);margin-top:6px">店内＝Dine In／Takeout＝Take Out＋Online Order。単位は丼(Bowls)。</div>';
+  // リピート率（店内Bowlの First time / Repeat モディファイア）
+  var rr=m.first+m.repeat;
+  if(m.hasRR && rr>0){
+    var rate=Math.round(m.repeat/rr*1000)/10;
+    var rc=rate>=50?'var(--green)':rate>=30?'var(--yellow)':'var(--red)';
+    html+='<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">'
+      +'<div style="display:flex;align-items:center;gap:8px"><i class="ti ti-repeat" style="color:var(--accent2)"></i><span style="font-weight:700">リピート率</span>'
+      +'<span style="margin-left:auto;font-size:18px;font-weight:800;color:'+rc+'">'+rate+'%</span></div>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:4px">Repeat '+m.repeat.toLocaleString()+' ／ First time '+m.first.toLocaleString()+'（店内Bowl・判定対象計 '+rr.toLocaleString()+'）</div></div>';
+  } else if(m.hasAny){
+    html+='<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> リピート率は、丼のモディファイア「First time / Repeat」がToast連携に入ると表示されます。</div>';
+  }
   return html+'</div>';
 }
 
