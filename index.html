@@ -3176,7 +3176,8 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
-  'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust'];
+  'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
+  'offboardings','offboard_template'];
 var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
 function isOpSyncKey(key){
@@ -3511,9 +3512,9 @@ function loginPickLocation(loc, el) {
   loginLocation = loc;
   var people;
   if (loc==='OFFICE') {
-    people = getEmployees().filter(e=>['ceo','gm','am','office','office_crew'].includes(e.role) && e.status!=='退職');
+    people = getEmployees().filter(e=>['ceo','gm','am','office','office_crew'].includes(e.role) && e.status!=='退職' && !e.osDisabled);
   } else {
-    people = getEmployees().filter(e=>e.status!=='退職' && (e.role==='sl'||e.role==='crew') && (e.store===loc || (e.support||[]).includes(loc)));
+    people = getEmployees().filter(e=>e.status!=='退職' && !e.osDisabled && (e.role==='sl'||e.role==='crew') && (e.store===loc || (e.support||[]).includes(loc)));
   }
   var locLabel = loc==='OFFICE' ? t('オフィス','Office') : (STORES.find(s=>s.id===loc)||{name:loc}).name;
   document.getElementById('login-name-loclabel').textContent = locLabel + t(' のスタッフを選択',' — select staff');
@@ -12386,6 +12387,7 @@ function renderHiring() {
     <div><div class="section-title" style="font-size:16px"><i class="ti ti-school" style="color:var(--accent)"></i> オンボーディング</div>
     <div class="section-sub">採用後の入社手続き（本人入力 → 経理 → I-9 → Payroll → 登録完了）</div></div></div>`;
   html += renderOnboardingInner();
+  html += renderOffboardHiringSection();
   return html;
 }
 /* 過去の不採用者リスト（reject_log）。折りたたみ表示。 */
@@ -13864,8 +13866,8 @@ function inactiveStaff(thresholdDays){
 function setInactiveDays(d){ window._inactiveDays=d; renderPage('staff_master'); }
 /* 在籍ステータスをワンタップ変更（退職は確認あり） */
 function setEmpStatusQuick(empId, status){
+  if(status==='退職'){ startOffboardingModal(empId); return; }
   var emps=getEmployees(); var e=emps.find(function(x){return x.id===empId;}); if(!e) return;
-  if(status==='退職'){ if(!confirm(e.name+' を退職処理しますか？')) return; if(!e.resignDate) e.resignDate=new Date().toISOString().slice(0,10); }
   e.status=status; lsSet('m_employees', emps);
   showToast(e.name+' を'+status+'にしました', status==='退職'?'danger':'info');
   renderPage('staff_master');
@@ -13944,7 +13946,7 @@ function renderStaffMaster() {
     </div>
   </div>
   ${renderInactiveCard()}
-  <div class="card" style="padding:10px;margin-bottom:10px">
+  ${renderOffboardingCard()}
     <div style="position:relative">
       <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted)"></i>
       <input class="form-input" style="padding-left:32px" id="emp-search" placeholder="名前・従業員コード・Email・電話で検索" value="${empSearchQ}" oninput="empSearch(this.value)">
@@ -13973,6 +13975,7 @@ function renderStaffMaster() {
     html += `<div style="margin-bottom:14px"><div class="role-section-label">${ROLE_CONFIG[role].label} (${group.length})</div>`;
     group.forEach(e => {
       var stepColor = e.step>=3?'var(--green)':e.step>=2?'var(--yellow)':'var(--muted)';
+      var obRec = e.status==='退職' ? getOffboardings().find(function(o){return o.empId===e.id;}) : null;
       var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
       var supportNames = (e.support||[]).map(id=>(STORES.find(s=>s.id===id)||{name:id}).name).join(',');
       var statusTag = e.status==='在籍'?'tag-green':e.status==='退職'?'tag-red':e.status==='研修中'?'tag-yellow':'tag-gray';
@@ -13988,6 +13991,10 @@ function renderStaffMaster() {
         <div style="text-align:right">
           <span class="tag ${statusTag}">${e.status}</span>
           ${canViewWageOf(e)?`<div style="font-size:10px;color:var(--green);margin-top:2px">${isMonthlyTitle(e.title)?'$'+empMonthlyOf(e).toLocaleString()+'/月':'$'+empWageOf(e)+'/h'}</div>`:''}
+          ${e.status==='退職'?`<div style="margin-top:5px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">
+            ${obRec?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px" onclick="event.stopPropagation();openOffboardingModal('${obRec.id}')"><i class="ti ti-clipboard-check"></i> 手続き${obRec.status==='進行中'?' '+offboardProgress(obRec).pct+'%':obRec.status==='完了'?' ✓':''}</button>`:''}
+            ${['ceo','gm','am','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px;color:var(--green);border-color:var(--green)" onclick="event.stopPropagation();restoreEmployee('${e.id}')"><i class="ti ti-arrow-back-up"></i> 復元</button>`:''}
+          </div>`:''}
         </div>
       </div>`;
     });
@@ -14177,7 +14184,7 @@ function openEmpModal(empId) {
     </div>
     </div>
     <div class="btn-row">
-      ${!isNew?`<button class="btn btn-danger" style="margin-right:auto" onclick="deleteEmp('${e.id}')">退職処理</button>`:''}
+      ${!isNew?`<button class="btn btn-danger" style="margin-right:auto" onclick="closeModalDirect();startOffboardingModal('${e.id}')">退職手続き</button>`:''}
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
       <button class="btn btn-primary" onclick="saveEmp('${e.id}')">${isNew?'登録':'保存'}</button>
     </div>`);
@@ -14253,6 +14260,360 @@ function deleteEmp(empId) {
   showToast('退職処理しました', 'danger');
   renderPage('staff_master');
 }
+
+/* ============================================================
+   退職フロー（Offboarding）  ★このセッション追加
+   - 退職理由・区分の記録 ／ 共通＋店舗別チェックリスト
+   - 清算チェック（最終給与・チップ・前借り・貸与品）
+   - OSアカウント無効化（osDisabled＝ログイン遮断）
+   - 承認：SL申請のみ承認待ち／AM以上は即時
+   - 退職者の閲覧・復元（誤操作対策）
+   データ: offboardings（記録） / offboard_template（テンプレ：共通＋店舗別）
+============================================================ */
+var OFFBOARD_REASONS = ['自己都合','会社都合','契約満了','解雇','その他'];
+var OFFBOARD_SETTLE = [
+  ['pay','最終給与の確定'],
+  ['tip','チップの清算'],
+  ['advance','前借り・立替金の精算'],
+  ['deposit','デポジット/貸与品費用の清算']
+];
+function defaultOffboardTemplate(){
+  return { common:[
+    {key:'lastshift', label:'最終シフトの確定・周知'},
+    {key:'handover',  label:'業務の引き継ぎ'},
+    {key:'uniform',   label:'制服・貸与品の返却'},
+    {key:'keys',      label:'鍵・セキュリティカードの回収'},
+    {key:'pos',       label:'POS/レジ権限の停止'},
+    {key:'personal',  label:'私物の返却・引き取り'},
+    {key:'locker',    label:'ロッカー/更衣スペースの返却'}
+  ], byStore:{} };
+}
+function getOffboardTemplate(){
+  var t = ls('offboard_template', null);
+  if(!t || typeof t!=='object' || !Array.isArray(t.common) || !t.common.length) t = defaultOffboardTemplate();
+  if(!t.byStore || typeof t.byStore!=='object') t.byStore = {};
+  return t;
+}
+function setOffboardTemplate(t){ lsSet('offboard_template', t); }
+function offboardChecklistFor(store){
+  var t = getOffboardTemplate(); var items = [];
+  (t.common||[]).forEach(function(c){ items.push({key:c.key, label:c.label, scope:'common', done:false, doneBy:'', doneAt:''}); });
+  (t.byStore[store]||[]).forEach(function(c){ items.push({key:'st_'+c.key, label:c.label, scope:'store', done:false, doneBy:'', doneAt:''}); });
+  return items;
+}
+
+function getOffboardings(){ return ls('offboardings', []); }
+function setOffboardings(a){ lsSet('offboardings', a); }
+function activeOffboarding(empId){ return getOffboardings().find(function(o){ return o.empId===empId && (o.status==='申請中'||o.status==='進行中'); }) || null; }
+function anyOffboarding(empId){ return getOffboardings().filter(function(o){ return o.empId===empId; }).sort(function(a,b){ return (b.initiatedAt||'').localeCompare(a.initiatedAt||''); })[0] || null; }
+function offboardById(id){ return getOffboardings().find(function(o){ return o.id===id; }) || null; }
+function offboardProgress(o){
+  var chk = o.checklist||[]; var done = chk.filter(function(x){return x.done;}).length; var tot = chk.length;
+  var s = o.settlement||{};
+  OFFBOARD_SETTLE.forEach(function(p){ tot++; if(s[p[0]]) done++; });
+  tot++; if(o.accountDisabled) done++; // OSアカウント無効化
+  return { done:done, total:tot, pct: tot ? Math.round(done/tot*100) : 0 };
+}
+function offboardCanEdit(o){ return ['ceo','gm','am','office'].indexOf(curRole)>=0 && o && o.status==='進行中'; }
+
+/* ===== 開始（理由・最終出勤日の入力） ===== */
+function startOffboardingModal(empId){
+  var e = getEmployees().find(function(x){return x.id===empId;}); if(!e) return;
+  var ex = activeOffboarding(empId);
+  if(ex){ closeModalDirect(); openOffboardingModal(ex.id); return; }
+  var today = new Date().toISOString().slice(0,10);
+  var isSL = (curRole==='sl');
+  openModal(
+    '<div class="modal-title"><i class="ti ti-user-off" style="color:var(--red)"></i> 退職手続きの開始 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:10px"><b>'+escapeHtml(e.name)+'</b> の退職手続きを開始します。'
+    +(isSL?'<div style="color:var(--accent);margin-top:4px"><i class="ti ti-info-circle"></i> SLからの申請は<b>上長の承認後</b>に確定します。</div>':'')+'</div>'
+    +'<div class="form-group"><label class="form-label">退職理由・区分</label>'
+    +'<select class="form-select" id="ob-reason">'+OFFBOARD_REASONS.map(function(r){return '<option>'+r+'</option>';}).join('')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">最終出勤日</label><input class="form-input" id="ob-last" type="date" value="'+(e.resignDate||today)+'"></div>'
+    +'<div class="form-group"><label class="form-label">メモ（任意）</label><textarea class="form-input" id="ob-note" rows="2" placeholder="補足・引き継ぎ事項など"></textarea></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn '+(isSL?'btn-primary':'btn-danger')+'" onclick="submitStartOffboarding(\''+empId+'\')">'
+    +(isSL?'<i class="ti ti-send"></i> 退職を申請':'<i class="ti ti-user-off"></i> 退職手続きを開始')+'</button></div>'
+  );
+}
+function submitStartOffboarding(empId){
+  var emps = getEmployees(); var e = emps.find(function(x){return x.id===empId;}); if(!e) return;
+  var reason = (document.getElementById('ob-reason')||{}).value || 'その他';
+  var last = (document.getElementById('ob-last')||{}).value || new Date().toISOString().slice(0,10);
+  var note = (document.getElementById('ob-note')||{}).value || '';
+  var isSL = (curRole==='sl');
+  var ob = {
+    id:'ob'+Date.now(), empId:empId, empName:e.name, store:e.store, role:e.role, title:e.title||'',
+    status: isSL ? '申請中' : '進行中', reason:reason, reasonNote:note, lastWorkDate:last,
+    initiatedBy:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''), initiatedAt:new Date().toISOString(),
+    approvedBy:'', approvedAt:'', approvalId:'',
+    checklist: offboardChecklistFor(e.store),
+    settlement:{pay:false,tip:false,advance:false,deposit:false,note:''},
+    accountDisabled:false, accountBy:'', accountAt:'',
+    completedBy:'', completedAt:''
+  };
+  var arr = getOffboardings(); arr.push(ob); setOffboardings(arr);
+  if(isSL){
+    addApproval({ title:e.name+' 退職申請（'+reason+'・最終 '+last+'）', type:'退職', from:(curUserName||''), store:e.store, ref:ob.id });
+    showToast('退職を申請しました（承認待ち）','info');
+  } else {
+    e.status='退職'; e.resignDate=last; lsSet('m_employees', emps);
+    try{ addNotif({ type:'offboard', title:'退職手続き開始：'+e.name, text:(reason+'／最終出勤 '+last).slice(0,140), toStore:e.store, toRoles:['office','gm','ceo','am','sl','sm'], page:'staff_master', refId:ob.id }); }catch(_){}
+    showToast(e.name+' の退職手続きを開始しました','danger');
+  }
+  closeModalDirect();
+  renderPage('staff_master');
+}
+
+/* ===== 手続き詳細（チェックリスト・清算・無効化・完了） ===== */
+function openOffboardingModal(obId){
+  var o = offboardById(obId); if(!o){ showToast('退職記録が見つかりません','danger'); return; }
+  var e = getEmployees().find(function(x){return x.id===o.empId;});
+  var sObj = STORES.find(function(s){return s.id===o.store;});
+  var pr = offboardProgress(o);
+  var editable = offboardCanEdit(o);
+  var storeName = sObj ? sObj.name : (o.store||'-');
+  var statusTag = o.status==='完了'?'tag-green':o.status==='進行中'?'tag-yellow':o.status==='申請中'?'tag-blue':'tag-gray';
+
+  var chkHtml = (o.checklist||[]).map(function(c,i){
+    return '<label style="display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--border);cursor:'+(editable?'pointer':'default')+'">'
+      +'<input type="checkbox" '+(c.done?'checked':'')+' '+(editable?'':'disabled')+' onchange="toggleOffboardCheck(\''+obId+'\','+i+')" style="margin-top:2px">'
+      +'<div style="flex:1"><div style="font-size:13px;'+(c.done?'color:var(--muted);text-decoration:line-through':'')+'">'+escapeHtml(c.label)+(c.scope==='store'?' <span class="tag tag-gray" style="font-size:9px">店舗</span>':'')+'</div>'
+      +(c.done&&c.doneBy?'<div style="font-size:10px;color:var(--muted)">✓ '+escapeHtml(c.doneBy)+(c.doneAt?' · '+new Date(c.doneAt).toLocaleDateString('ja'):'')+'</div>':'')
+      +'</div></label>';
+  }).join('') || '<div style="font-size:12px;color:var(--muted);padding:6px 0">チェック項目がありません</div>';
+
+  var settleHtml = OFFBOARD_SETTLE.map(function(p){
+    var on = !!(o.settlement&&o.settlement[p[0]]);
+    return '<label style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);cursor:'+(editable?'pointer':'default')+'">'
+      +'<input type="checkbox" '+(on?'checked':'')+' '+(editable?'':'disabled')+' onchange="toggleOffboardSettlement(\''+obId+'\',\''+p[0]+'\')">'
+      +'<span style="font-size:13px;'+(on?'color:var(--muted)':'')+'">'+p[1]+'</span></label>';
+  }).join('');
+
+  var acct = o.accountDisabled;
+  var acctHtml = '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+    +'<div><div style="font-size:13px;font-weight:600">OSアカウントの無効化</div>'
+    +'<div style="font-size:11px;color:var(--muted)">'+(acct?('無効化済み '+(o.accountBy?'· '+escapeHtml(o.accountBy):'')):'ログイン画面から本人を選べなくします')+'</div></div>'
+    +(editable
+      ? (acct
+          ? '<button class="btn btn-secondary btn-sm" onclick="enableOsAccount(\''+obId+'\')"><i class="ti ti-lock-open"></i> 解除</button>'
+          : '<button class="btn btn-danger btn-sm" onclick="disableOsAccount(\''+obId+'\')"><i class="ti ti-lock"></i> 無効化</button>')
+      : '<span class="tag '+(acct?'tag-red':'tag-gray')+'">'+(acct?'無効':'有効')+'</span>')
+    +'</div>';
+
+  var head = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">'
+    +'<div><div style="font-weight:700;font-size:15px">'+escapeHtml(o.empName)+' <span class="tag '+statusTag+'" style="font-size:10px">'+o.status+'</span></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+escapeHtml(storeName)+(o.title?' · '+escapeHtml(o.title):'')+' · 区分：'+escapeHtml(o.reason)+' · 最終出勤：'+escapeHtml(o.lastWorkDate||'-')+'</div>'
+    +(o.reasonNote?'<div style="font-size:11px;color:var(--muted);margin-top:3px">メモ：'+escapeHtml(o.reasonNote)+'</div>':'')
+    +(o.initiatedBy?'<div style="font-size:10px;color:var(--muted);margin-top:2px">起票：'+escapeHtml(o.initiatedBy)+(o.approvedBy?' / 承認：'+escapeHtml(o.approvedBy):'')+'</div>':'')
+    +'</div></div>';
+
+  var bar = '<div style="margin:4px 0 12px"><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:3px"><span>手続きの進捗</span><span>'+pr.done+'/'+pr.total+'（'+pr.pct+'%）</span></div>'
+    +'<div style="height:7px;background:var(--border);border-radius:4px;overflow:hidden"><div style="height:100%;width:'+pr.pct+'%;background:'+(pr.pct>=100?'var(--green)':'var(--accent)')+'"></div></div></div>';
+
+  var foot;
+  if(o.status==='進行中' && editable){
+    foot = '<div class="btn-row" style="margin-top:12px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+      +'<button class="btn btn-primary" onclick="completeOffboarding(\''+obId+'\')"><i class="ti ti-circle-check"></i> 退職手続きを完了</button></div>';
+  } else if(o.status==='申請中'){
+    foot = '<div style="font-size:12px;color:var(--accent);margin-top:10px"><i class="ti ti-clock"></i> 上長の承認待ちです。承認されると手続きを開始できます。</div>'
+      +'<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  } else {
+    foot = '<div class="btn-row" style="margin-top:12px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  }
+
+  openModal(
+    '<div class="modal-title">退職手続き <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + head + bar
+    + '<div class="card" style="padding:10px;margin-bottom:10px"><div class="card-title" style="font-size:13px"><i class="ti ti-list-check" style="color:var(--accent)"></i> 手続きチェックリスト</div>'+chkHtml+'</div>'
+    + '<div class="card" style="padding:10px;margin-bottom:10px"><div class="card-title" style="font-size:13px"><i class="ti ti-coin" style="color:var(--green)"></i> 清算チェック</div>'+settleHtml+'</div>'
+    + '<div class="card" style="padding:10px;margin-bottom:4px;border-left:3px solid '+(acct?'var(--red)':'var(--border)')+'">'+acctHtml+'</div>'
+    + foot
+  );
+}
+function toggleOffboardCheck(obId, i){
+  var arr=getOffboardings(); var o=arr.find(function(x){return x.id===obId;}); if(!o||!o.checklist[i]) return;
+  if(!offboardCanEdit(o)) return;
+  var c=o.checklist[i]; c.done=!c.done;
+  if(c.done){ c.doneBy=(curUserName||''); c.doneAt=new Date().toISOString(); } else { c.doneBy=''; c.doneAt=''; }
+  setOffboardings(arr); openOffboardingModal(obId);
+}
+function toggleOffboardSettlement(obId, key){
+  var arr=getOffboardings(); var o=arr.find(function(x){return x.id===obId;}); if(!o) return;
+  if(!offboardCanEdit(o)) return;
+  if(!o.settlement) o.settlement={};
+  o.settlement[key]=!o.settlement[key];
+  setOffboardings(arr); openOffboardingModal(obId);
+}
+function disableOsAccount(obId){
+  var arr=getOffboardings(); var o=arr.find(function(x){return x.id===obId;}); if(!o) return;
+  if(!offboardCanEdit(o)) return;
+  var emps=getEmployees(); var e=emps.find(function(x){return x.id===o.empId;});
+  if(e){ e.osDisabled=true; lsSet('m_employees', emps); }
+  o.accountDisabled=true; o.accountBy=(curUserName||''); o.accountAt=new Date().toISOString();
+  setOffboardings(arr); showToast('OSアカウントを無効化しました','danger'); openOffboardingModal(obId);
+}
+function enableOsAccount(obId){
+  var arr=getOffboardings(); var o=arr.find(function(x){return x.id===obId;}); if(!o) return;
+  if(!offboardCanEdit(o)) return;
+  var emps=getEmployees(); var e=emps.find(function(x){return x.id===o.empId;});
+  if(e){ e.osDisabled=false; lsSet('m_employees', emps); }
+  o.accountDisabled=false;
+  setOffboardings(arr); showToast('OSアカウントの無効化を解除しました','info'); openOffboardingModal(obId);
+}
+function completeOffboarding(obId){
+  var arr=getOffboardings(); var o=arr.find(function(x){return x.id===obId;}); if(!o) return;
+  if(!offboardCanEdit(o)) return;
+  var pr=offboardProgress(o);
+  if(pr.pct<100 && !confirm('未完了の項目が '+(pr.total-pr.done)+'件 あります。このまま完了にしますか？')) return;
+  o.status='完了'; o.completedBy=(curUserName||''); o.completedAt=new Date().toISOString();
+  setOffboardings(arr);
+  try{ addNotif({ type:'offboard', title:'退職手続き完了：'+o.empName, text:('最終出勤 '+(o.lastWorkDate||'')+'／全手続き完了').slice(0,140), toStore:o.store, toRoles:['office','gm','ceo','am'], page:'staff_master', refId:o.id }); }catch(_){}
+  closeModalDirect(); showToast(o.empName+' の退職手続きを完了しました','success'); renderPage('staff_master');
+}
+
+/* ===== 復元（誤操作対策：退職→在籍に戻す） ===== */
+function restoreEmployee(empId){
+  var emps=getEmployees(); var e=emps.find(function(x){return x.id===empId;}); if(!e) return;
+  if(!confirm(e.name+' を在籍に戻しますか？（OSログインも再び有効になります）')) return;
+  e.status='在籍'; e.resignDate=''; e.osDisabled=false; lsSet('m_employees', emps);
+  var arr=getOffboardings(); var changed=false;
+  arr.forEach(function(o){ if(o.empId===empId && o.status!=='取消'){ o.status='取消'; changed=true; } });
+  if(changed) setOffboardings(arr);
+  try{ addNotif({ type:'offboard', title:'退職を取消：'+e.name, text:'在籍に復元されました', toStore:e.store, toRoles:['office','gm','ceo','am'], page:'staff_master', refId:empId }); }catch(_){}
+  showToast(e.name+' を在籍に戻しました','info'); renderPage('staff_master');
+}
+
+/* ===== 従業員マスター上部カード（進行中の退職手続き） ===== */
+function renderOffboardingCard(){
+  if(['ceo','gm','am','office'].indexOf(curRole)<0) return '';
+  var all=getOffboardings().filter(function(o){ return o.status==='申請中'||o.status==='進行中'; });
+  if(curRole==='am'){ var ms=myAmStores(); all=all.filter(function(o){ return ms.indexOf(o.store)>=0; }); }
+  all.sort(function(a,b){ return (b.initiatedAt||'').localeCompare(a.initiatedAt||''); });
+  var canTpl=['ceo','gm'].indexOf(curRole)>=0;
+  var tplBtn = canTpl ? '<button class="btn btn-secondary btn-sm" style="padding:3px 8px;font-size:11px" onclick="openOffboardTemplateModal()"><i class="ti ti-list-details"></i> チェックリスト編集</button>' : '';
+  var body;
+  if(!all.length){
+    body='<div style="font-size:12px;color:var(--muted);padding:4px 0"><i class="ti ti-circle-check" style="color:var(--green)"></i> 進行中の退職手続きはありません。退職処理は従業員カードまたは非アクティブ検知の「退職にする」から開始できます。</div>';
+  } else {
+    body=all.map(function(o){
+      var pr=offboardProgress(o); var s=STORES.find(function(z){return z.id===o.store;});
+      var badge=s?'<span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+' · ':'';
+      var stTag=o.status==='申請中'?'<span class="tag tag-blue" style="font-size:9px">承認待ち</span>':'<span class="tag tag-yellow" style="font-size:9px">進行中</span>';
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+        +'<div style="min-width:0"><div style="font-weight:600;font-size:13px">'+escapeHtml(o.empName)+' '+stTag+'</div>'
+        +'<div style="font-size:11px;color:var(--muted)">'+badge+escapeHtml(o.reason)+' · 最終 '+escapeHtml(o.lastWorkDate||'-')+'</div></div>'
+        +'<button class="btn btn-secondary btn-sm" style="padding:3px 10px;white-space:nowrap" onclick="openOffboardingModal(\''+o.id+'\')"><i class="ti ti-clipboard-check"></i> 開く '+(o.status==='進行中'?pr.pct+'%':'')+'</button></div>'
+        +(o.status==='進行中'?'<div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin-top:6px"><div style="height:100%;width:'+pr.pct+'%;background:'+(pr.pct>=100?'var(--green)':'var(--accent)')+'"></div></div>':'')
+        +'</div>';
+    }).join('');
+  }
+  return '<div class="card" style="border-left:3px solid var(--red)">'
+    +'<div class="card-title" style="display:flex;justify-content:space-between;align-items:center"><span><i class="ti ti-user-off" style="color:var(--red)"></i> 退職手続き'+(all.length?' <span class="tag tag-yellow" style="font-size:10px">'+all.length+'件</span>':'')+'</span>'+tplBtn+'</div>'
+    + body + '</div>';
+}
+
+/* ===== チェックリスト テンプレ編集（共通＋店舗別） ===== */
+var _obTplStore = 'common';
+function openOffboardTemplateModal(){
+  if(['ceo','gm'].indexOf(curRole)<0){ showToast('権限がありません','danger'); return; }
+  var t=getOffboardTemplate();
+  var tabs='<button class="phase-tab'+(_obTplStore==='common'?' active':'')+'" onclick="obTplTab(\'common\')">共通</button>'
+    +STORES.map(function(s){ return '<button class="phase-tab'+(_obTplStore===s.id?' active':'')+'" style="white-space:nowrap" onclick="obTplTab(\''+s.id+'\')"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</button>'; }).join('');
+  var listArr = _obTplStore==='common' ? (t.common||[]) : (t.byStore[_obTplStore]||[]);
+  var rows = listArr.length ? listArr.map(function(c,i){
+    return '<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="flex:1;font-size:13px">'+escapeHtml(c.label)+(_obTplStore==='common'?'':' <span class="tag tag-gray" style="font-size:9px">店舗</span>')+'</span>'
+      +'<button class="btn btn-secondary btn-sm" style="padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="removeOffboardTemplateItem('+i+')"><i class="ti ti-trash"></i></button></div>';
+  }).join('') : '<div style="font-size:12px;color:var(--muted);padding:8px 0">項目がありません。下から追加してください。</div>';
+  var scopeLabel = _obTplStore==='common' ? '全店共通' : ('「'+((STORES.find(function(s){return s.id===_obTplStore;})||{}).name||_obTplStore)+'」店舗のみ');
+  openModal(
+    '<div class="modal-title">退職チェックリスト編集 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">共通項目は全店、店舗タブの項目はその店舗の退職手続きにだけ追加されます。<b>既存の進行中手続きには遡及しません</b>（次回開始分から反映）。</div>'
+    +'<div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:10px;padding-bottom:2px">'+tabs+'</div>'
+    +'<div class="card" style="padding:10px;margin-bottom:10px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">'+scopeLabel+' の項目</div>'+rows+'</div>'
+    +'<div class="form-row" style="gap:6px"><input class="form-input" id="ob-tpl-new" placeholder="項目を追加（例：駐車許可証の返却）" style="flex:1">'
+    +'<button class="btn btn-primary" onclick="addOffboardTemplateItem()"><i class="ti ti-plus"></i> 追加</button></div>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>'
+  );
+}
+function obTplTab(s){ _obTplStore=s; openOffboardTemplateModal(); }
+function addOffboardTemplateItem(){
+  var v=(document.getElementById('ob-tpl-new')||{}).value||''; v=v.trim(); if(!v) return;
+  var t=getOffboardTemplate();
+  var item={key:'c'+Date.now(), label:v};
+  if(_obTplStore==='common'){ t.common.push(item); }
+  else { if(!t.byStore[_obTplStore]) t.byStore[_obTplStore]=[]; t.byStore[_obTplStore].push(item); }
+  setOffboardTemplate(t); openOffboardTemplateModal();
+}
+function removeOffboardTemplateItem(i){
+  var t=getOffboardTemplate();
+  if(_obTplStore==='common'){ t.common.splice(i,1); }
+  else { (t.byStore[_obTplStore]||[]).splice(i,1); }
+  setOffboardTemplate(t); openOffboardTemplateModal();
+}
+
+/* ===== 退職対象の選択範囲（SLは自店、AMは担当店、HQは全社） ===== */
+function offboardEligibleEmps(){
+  var emps=getEmployees().filter(function(e){ return e.status!=='退職'; });
+  if(['ceo','gm','office'].indexOf(curRole)>=0) return emps;
+  if(curRole==='am'){ var ms=myAmStores(); return emps.filter(function(e){ return e.store==='ALL'||ms.indexOf(e.store)>=0||(e.support||[]).some(function(s){return ms.indexOf(s)>=0;}); }); }
+  if(curRole==='sl'){ var st=curStore; return emps.filter(function(e){ return (e.store===st||(e.support||[]).indexOf(st)>=0) && ['sl','crew'].indexOf(e.role)>=0 && e.name!==curUserName; }); }
+  return [];
+}
+function openOffboardPickerModal(){
+  var list=offboardEligibleEmps().sort(function(a,b){ return (a.store||'').localeCompare(b.store||'')||a.name.localeCompare(b.name); });
+  var isSL=(curRole==='sl');
+  var rows = list.length ? list.map(function(e){
+    var s=STORES.find(function(z){return z.id===e.store;});
+    var badge=s?'<span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+' · ':(e.store==='ALL'?'全店 · ':'');
+    var act=activeOffboarding(e.id);
+    var right=act?'<span class="tag tag-yellow" style="font-size:9px">手続き中</span>':'<i class="ti ti-chevron-right" style="color:var(--muted)"></i>';
+    return '<div class="staff-item" style="cursor:pointer" onclick="closeModalDirect();'+(act?('openOffboardingModal(\''+act.id+'\')'):('startOffboardingModal(\''+e.id+'\')'))+'">'
+      +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">'+escapeHtml(e.name)+'</div>'
+      +'<div style="font-size:11px;color:var(--muted)">'+badge+escapeHtml(e.title||(ROLE_CONFIG[e.role]||{}).label||'')+'</div></div>'
+      +'<div>'+right+'</div></div>';
+  }).join('') : '<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">対象スタッフがいません</div>';
+  openModal(
+    '<div class="modal-title"><i class="ti ti-user-off" style="color:var(--red)"></i> '+(isSL?'退職を申請':'退職手続きを開始')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+(isSL?'自店のスタッフを選択してください。SLからの申請は<b>上長の承認後</b>に確定します。':'スタッフを選択してください。')+'</div>'
+    +'<div class="card" style="padding:6px 10px;max-height:50vh;overflow:auto">'+rows+'</div>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button></div>'
+  );
+}
+/* ===== 採用・オンボーディングタブ内：退職手続きセクション ===== */
+function renderOffboardHiringSection(){
+  if(['ceo','gm','am','office','sl'].indexOf(curRole)<0) return '';
+  var isSL=(curRole==='sl');
+  var list=getOffboardings().filter(function(o){ return o.status==='申請中'||o.status==='進行中'; });
+  if(isSL){ list=list.filter(function(o){ return o.store===curStore || o.initiatedBy===curUserName; }); }
+  else if(curRole==='am'){ var ms=myAmStores(); list=list.filter(function(o){ return ms.indexOf(o.store)>=0; }); }
+  list.sort(function(a,b){ return (b.initiatedAt||'').localeCompare(a.initiatedAt||''); });
+  var startBtn='<button class="btn '+(isSL?'btn-primary':'btn-danger')+' btn-sm" onclick="openOffboardPickerModal()"><i class="ti ti-user-off"></i> '+(isSL?'退職を申請':'退職手続きを開始')+'</button>';
+  var body;
+  if(!list.length){
+    body='<div style="font-size:12px;color:var(--muted);padding:4px 0"><i class="ti ti-circle-check" style="color:var(--green)"></i> 進行中の退職手続きはありません。</div>';
+  } else {
+    body=list.map(function(o){
+      var pr=offboardProgress(o); var s=STORES.find(function(z){return z.id===o.store;});
+      var badge=s?'<span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+' · ':'';
+      var stTag=o.status==='申請中'?'<span class="tag tag-blue" style="font-size:9px">承認待ち</span>':'<span class="tag tag-yellow" style="font-size:9px">進行中</span>';
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+        +'<div style="min-width:0"><div style="font-weight:600;font-size:13px">'+escapeHtml(o.empName)+' '+stTag+'</div>'
+        +'<div style="font-size:11px;color:var(--muted)">'+badge+escapeHtml(o.reason)+' · 最終 '+escapeHtml(o.lastWorkDate||'-')+'</div></div>'
+        +'<button class="btn btn-secondary btn-sm" style="padding:3px 10px;white-space:nowrap" onclick="openOffboardingModal(\''+o.id+'\')"><i class="ti ti-clipboard-check"></i> 開く'+(o.status==='進行中'?' '+pr.pct+'%':'')+'</button></div>'
+        +(o.status==='進行中'?'<div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin-top:6px"><div style="height:100%;width:'+pr.pct+'%;background:'+(pr.pct>=100?'var(--green)':'var(--accent)')+'"></div></div>':'')
+        +'</div>';
+    }).join('');
+  }
+  return '<div class="section-header" style="margin-top:20px;border-top:1px solid var(--border);padding-top:14px">'
+    +'<div><div class="section-title" style="font-size:16px"><i class="ti ti-user-off" style="color:var(--red)"></i> 退職手続き</div>'
+    +'<div class="section-sub">'+(isSL?'自店スタッフの退職を申請（上長の承認後に確定）':'退職の起票・進行管理')+'</div></div>'+startBtn+'</div>'
+    +'<div class="card" style="border-left:3px solid var(--red)">'+body+'</div>';
+}
+
 
 /* ============================================================
    ③ 食材マスター (区分→カテゴリ 2階層)
@@ -16255,7 +16616,7 @@ function renderApproval() {
   var done = approvals.filter(a=>a.status!=='pending');
 
   // タイプ別アイコン
-  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar'};
+  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar','退職':'ti-user-off'};
   // タイプ別件数
   var byType = {};
   pending.forEach(a=>byType[a.type]=(byType[a.type]||0)+1);
@@ -16322,6 +16683,22 @@ function approveItem(id, status) {
   var a = approvals.find(a=>a.id===id);
   if (a) {
     a.status = status; lsSet('approvals', approvals);
+    if (a.type==='退職' && a.ref) {
+      try {
+        var _obs=getOffboardings(); var _ob=_obs.find(function(x){return x.id===a.ref;});
+        if(_ob){
+          if(status==='approved'){
+            _ob.status='進行中'; _ob.approvedBy=(curUserName||''); _ob.approvedAt=new Date().toISOString(); _ob.approvalId=a.id;
+            var _emps=getEmployees(); var _e=_emps.find(function(x){return x.id===_ob.empId;});
+            if(_e){ _e.status='退職'; _e.resignDate=_ob.lastWorkDate||_e.resignDate; lsSet('m_employees', _emps); }
+            addNotif({ type:'offboard', title:'退職手続き開始：'+_ob.empName, text:('承認されました／最終出勤 '+(_ob.lastWorkDate||'')).slice(0,140), toStore:_ob.store, toRoles:['office','gm','ceo','am','sl','sm'], page:'staff_master', refId:_ob.id });
+          } else {
+            _ob.status='却下';
+          }
+          setOffboardings(_obs);
+        }
+      } catch(_e){}
+    }
     try{ addNotif({ type:(status==='approved'?'approved':'reject'), title:(a.type||'申請')+(status==='approved'?' が承認されました':' が却下されました'), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
     renderPage('approval'); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
   }
@@ -17909,6 +18286,7 @@ function notifIcon(type){
   if(type==='shift')    return {icon:'ti-calendar-event',col:'var(--accent2)'};
   if(type==='help')     return {icon:'ti-urgent',        col:'var(--accent)'};
   if(type==='onboard')  return {icon:'ti-user-plus',     col:'var(--green)'};
+  if(type==='offboard') return {icon:'ti-user-off',      col:'var(--red)'};
   return {icon:'ti-bell', col:'var(--muted)'};
 }
 function notifAgo(iso){
@@ -18025,7 +18403,7 @@ function onNotifIncoming(arr){
 }
 
 /* ===== 承認ルーティング（タイプ別の承認者）＋ 店舗スコープ宛先の補助 ===== */
-var APPROVAL_TYPES = ['予算','シフト変更','採用','Leadership','TipRate','スキル'];
+var APPROVAL_TYPES = ['予算','シフト変更','採用','Leadership','TipRate','スキル','退職'];
 var APPROVER_ROLE_OPTS = [['office','経理'],['gm','GM'],['am','AM'],['sm','SM'],['sl','SL'],['ceo','CEO']];
 function defaultApprovalRouting(){ var d={}; APPROVAL_TYPES.forEach(function(t){ d[t]=['office','gm','am']; }); return d; }
 function getApprovalRouting(){
