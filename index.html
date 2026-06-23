@@ -642,6 +642,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 const SUPABASE_URL = 'https://tgbhgxzehzeouopklhje.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRnYmhneHplaHplb3VvcGtsaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMTIzODAsImV4cCI6MjA5NjY4ODM4MH0.A0cdXLDONy_HPvQhaHbfP-flsNYImg0ZFJd5AIQihdM';
 const TOAST_SYNC_FN = SUPABASE_URL + '/functions/v1/hyper-worker';
+const DRIVE_SYNC_FN = SUPABASE_URL + '/functions/v1/drive-sync';
 
 async function fetchToastSales(guid, dateFrom, dateTo) {
   try {
@@ -13218,7 +13219,12 @@ function renderObWizard(){
       + '<div style="text-align:right;margin-top:4px"><button class="btn btn-secondary btn-sm" style="padding:1px 10px;font-size:11px" onclick="clearOBSig()"><i class="ti ti-eraser"></i> 署名をクリア / Clear</button></div>';
   } else if (step===6){
     var p = ob.personal || {};
-    body = '<div style="font-weight:600;font-size:13px;margin-bottom:6px">基本情報 / Basic Info</div>'
+    body = '<div style="border:1px solid var(--accent);background:#fff6ef;border-radius:10px;padding:12px;margin-bottom:14px">'
+        + '<div style="font-weight:700;font-size:13px;color:var(--accent);display:flex;align-items:center;gap:6px"><i class="ti ti-alert-triangle"></i> W-4 税額設定について / About W-4 Tax Withholding</div>'
+        + '<div style="font-size:12px;margin-top:6px;white-space:pre-line;line-height:1.5">W-4の税額設定は最高税率がデフォルトになっています。変更したい場合は、Toast Payrollからご自身で変更してください。\n\nThe W-4 tax withholding setting is set to the highest withholding rate by default. If you would like to change it, please update it yourself through Toast Payroll.</div>'
+        + '<label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;margin-top:10px;cursor:pointer;font-weight:600"><input type="checkbox" id="pf-w4ack" style="margin-top:2px" '+(p.w4Ack?'checked':'')+'><span>上記のW-4税額設定について理解しました。/ I understand the W-4 tax withholding setting described above.</span></label>'
+      + '</div>'
+      + '<div style="font-weight:600;font-size:13px;margin-bottom:6px">基本情報 / Basic Info</div>'
       + '<div class="form-group"><label class="form-label">氏名 / Full Name <span style="color:var(--red)">*</span></label><input class="form-input" id="pf-name" value="'+escapeHtml(ob.name||'')+'" placeholder="例: 田中 太郎 / Taro Tanaka"></div>'
       + '<div class="form-group"><label class="form-label">住所 / Address <span style="color:var(--red)">*</span></label><input class="form-input" id="pf-address" value="'+escapeHtml(p.address||'')+'"></div>'
       + '<div class="form-row"><div class="form-group"><label class="form-label">電話 / Phone</label><input class="form-input" id="pf-phone" value="'+escapeHtml(p.phone||ob.phone||'')+'"></div>'
@@ -13324,6 +13330,7 @@ function obWizPersist(step){
     var visa=g('pf-visa');
     ob.personal=Object.assign({}, ob.personal, {
       address:g('pf-address'), phone:g('pf-phone'), email:g('pf-email'), dob:g('pf-dob'), ssn:g('pf-ssn'),
+      w4Ack:(document.getElementById('pf-w4ack')||{}).checked||false,
       visa:visa, visaDetail:(visa==='その他'?g('pf-visadetail-input'):'') });
   }
   lsSet('onboardings', obs);
@@ -13350,6 +13357,7 @@ function obWizValidate(step, ob){
     if (!pn.address || !pn.address.trim()){ alert('住所を入力してください'); return false; }
     if (!pn.dob){ alert('生年月日を入力してください'); return false; }
     if (!pn.ssn || !pn.ssn.trim()){ alert('SSNを入力してください'); return false; }
+    if (!pn.w4Ack){ alert('W-4税額設定の注意文を確認し、チェックを入れてください。\nPlease read the W-4 tax withholding notice and check the box.'); return false; }
     var dn=((ob.docs||[]).filter(function(d){ return d.image; })).map(function(d){ return d.name; });
     if (!(dn.indexOf('Passport')>=0 || (dn.indexOf('Driver License')>=0 && dn.indexOf('SSN Card')>=0))){
       alert('本人確認書類の画像が不足しています。\nパスポート、または Driver License/ID＋SSN Card（両方・画像）が必要です。'); return false;
@@ -13965,6 +13973,17 @@ function saveTitleWageTable() {
   renderPage('staff');
 }
 
+/* レシートOCRの下4桁から社員を特定（在籍・G3以上が対象）。複数一致は配列で返す */
+function empsByCardLast4(last4){
+  last4 = String(last4||'').replace(/[^0-9]/g,'');
+  if(last4.length!==4) return [];
+  return getEmployees().filter(function(e){
+    if(e.status && e.status!=='在籍') return false;
+    var g = (typeof gradeNum==='function' && typeof empGrade==='function') ? gradeNum(empGrade(e)) : 0;
+    if(g < 3) return false;
+    return String(e.cardLast4||'').split(',').map(function(x){return x.trim();}).indexOf(last4) >= 0;
+  });
+}
 function openEmpModal(empId) {
   var emps = getEmployees();
   var e = empId ? emps.find(x=>x.id===empId) : {id:'', name:'', empCode:'', role:'crew', store:STORES[0].id, support:[], emp:'パート', step:0, hireDate:'', resignDate:'', status:'在籍', perms:'crew', email:'', phone:'', insurance:false, dental:false};
@@ -14004,6 +14023,10 @@ function openEmpModal(empId) {
     <div class="form-row">
       <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="e-email" value="${e.email||''}" placeholder="name@example.com"></div>
       <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="e-phone" value="${e.phone||''}" placeholder="808-xxx-xxxx"></div>
+    </div>
+    <div class="form-group"><label class="form-label">会社カード下4桁 <span class="tag" style="font-size:8px;background:var(--surface2);color:var(--muted)">G3以上・レシート自動照合用</span></label>
+      <input class="form-input" id="e-cardlast4" value="${(e.cardLast4||'')}" placeholder="例: 1234（複数ある場合はカンマ区切り 1234,5678）" inputmode="numeric">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">レシートOCRが読み取った下4桁と照合し、社員を自動特定します。下4桁のみ保存（フルカード番号は保存しません）。</div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">雇用形態</label>
@@ -14079,6 +14102,7 @@ function saveEmp(empId) {
     perms: permFromRole(document.getElementById('e-role').value),
     email: document.getElementById('e-email').value.trim(),
     phone: document.getElementById('e-phone').value.trim(),
+    cardLast4: ((document.getElementById('e-cardlast4')||{}).value||'').replace(/[^0-9,]/g,'').split(',').map(function(x){return x.trim();}).filter(function(x){return x.length===4;}).join(','),
     insurance: document.getElementById('e-insurance').checked,
     dental: document.getElementById('e-dental').checked,
     title: (document.getElementById('e-title')||{}).value || '',
@@ -17700,7 +17724,7 @@ function renderInvoice() {
   var candIds = invoiceStoreCandidates().map(s=>s.id);
   var invoices = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
   var html = `<div class="section-header"><div><div class="section-title">Invoice管理</div><div class="section-sub">アップロード→照合→価格更新</div></div>
-    <button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> Invoice登録</button></div>`;
+    <div style="display:flex;gap:6px">${['ceo','gm','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> Drive連携</button>`:''}<button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> Invoice登録</button></div></div>`;
   if (!invoices.length) {
     html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-file-invoice" style="font-size:32px;margin-bottom:8px;display:block"></i>Invoice履歴なし</div>`;
   } else {
@@ -17708,11 +17732,16 @@ function renderInvoice() {
       var s = inv.storeId ? STORES.find(x=>x.id===inv.storeId) : null;
       var storeBadge = s ? `<span class="store-dot" style="background:${s.color}"></span>${s.name} · ` : '';
       var typeLabel = inv.docType==='Receipt' ? 'Receipt' : 'Invoice';
+      var _empMeta = (inv.docType==='Receipt' && inv.empName) ? ` · <i class="ti ti-user"></i>${escapeHtml(inv.empName)}` : '';
+      var _rs = inv.reviewStatus || '未確認';
+      var _rsCol = _rs==='差し戻し'?'var(--red)':_rs==='確認済み'?'var(--green)':_rs==='確認中'?'var(--yellow)':'var(--muted)';
       html += `<div class="card">
         <div class="approval-header">
-          <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}品目 · $${inv.total.toFixed(2)}</div></div>
+          <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}品目 · $${inv.total.toFixed(2)}${_empMeta}</div></div>
           <div style="display:flex;align-items:center;gap:6px">
             ${inv.imagePath?`<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="viewInvoiceImage('${inv.imagePath.replace(/'/g,"\\'")}')"><i class="ti ti-photo"></i></button>`:''}
+            ${inv.driveUrl?`<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="${inv.driveUrl}" target="_blank" title="Driveで開く"><i class="ti ti-brand-google-drive"></i></a>`:''}
+            <span class="tag" style="font-size:10px;font-weight:700;color:${_rsCol};border:1px solid ${_rsCol};background:transparent">${_rs}</span>
             <span class="tag ${inv.applied?'tag-green':'tag-yellow'}">${inv.applied?'価格更新済':'未反映'}</span>
           </div>
         </div>
@@ -17762,6 +17791,13 @@ function openInvoiceModal() {
       <datalist id="inv-vendor-list">${vendors.map(v=>`<option value="${v.name}">`).join('')}</datalist>
       <div id="inv-vendor-warn"></div>
     </div>
+    ${invoiceDocType==='Receipt' ? `<div class="form-group" style="border:1px solid var(--accent2);border-radius:8px;padding:10px;background:#f4f8ff">
+      <label class="form-label" style="color:var(--accent2)"><i class="ti ti-credit-card"></i> カード下4桁 → 社員自動特定（G3以上）</label>
+      <input class="form-input" id="inv-card4" inputmode="numeric" maxlength="4" placeholder="例: 1234（OCR/手入力）" oninput="invMatchEmp()">
+      <div id="inv-card-match" style="font-size:11px;color:var(--muted);margin-top:4px">カード下4桁を入れると社員を自動特定します。</div>
+      <label class="form-label" style="margin-top:8px">社員（カード保有者）</label>
+      <select class="form-select" id="inv-emp"><option value="">（選択）</option>${getEmployees().filter(function(e){return !e.status||e.status==='在籍';}).map(function(e){return '<option value="'+e.id+'">'+escapeHtml(e.name)+'</option>';}).join('')}</select>
+    </div>` : ''}
     <div class="form-group"><label class="form-label">${invoiceDocType}画像（AI読取）</label>
       <input type="file" id="inv-photo" accept="image/*" capture="environment" style="display:none" onchange="realInvoiceOCR(this)">
       <div style="border:2px dashed var(--border);border-radius:8px;padding:18px;text-align:center;cursor:pointer" onclick="document.getElementById('inv-photo').click()">
@@ -17780,6 +17816,16 @@ function openInvoiceModal() {
   setTimeout(renderOCRResult, 30);
 }
 function setInvDocType(t) { invoiceDocType = t; openInvoiceModal(); }
+/* 買い出し/カードレシート：下4桁→社員自動特定（在籍・G3以上） */
+function invMatchEmp(){
+  var last4=(docVal('inv-card4')||'').replace(/[^0-9]/g,'');
+  var box=document.getElementById('inv-card-match'); var sel=document.getElementById('inv-emp');
+  if(last4.length!==4){ if(box) box.innerHTML='カード下4桁を入れると社員を自動特定します。'; return; }
+  var ms=empsByCardLast4(last4);
+  if(ms.length===1){ if(sel) sel.value=ms[0].id; if(box) box.innerHTML='<span style="color:var(--green)"><i class="ti ti-check"></i> '+escapeHtml(ms[0].name)+' を自動特定</span>'; }
+  else if(ms.length>1){ if(box) box.innerHTML='<span style="color:var(--yellow)">複数一致：'+ms.map(function(e){return escapeHtml(e.name);}).join(' / ')+' — 社員を選択してください</span>'; }
+  else { if(box) box.innerHTML='<span style="color:var(--muted)">未登録の下4桁です。社員を手動選択（必要なら従業員マスターに登録）。</span>'; }
+}
 /* ===== 請求書画像：Supabase Storage（バケット invoices / 店舗名 × 年月） ===== */
 function saniStore(name){ return String(name||'store').replace(/[\/\\]/g,' ').trim().replace(/\s+/g,'_').replace(/[^\w\-]/g,'').replace(/_+/g,'_') || 'store'; }
 async function uploadInvoiceImage(file, storeName){
@@ -18088,9 +18134,21 @@ async function saveInvoice() {
   }
   // Invoice保存
   var invoices = ls('invoices', []);
-  invoices.push({id:'inv'+Date.now(), vendor, storeId:invStoreId, docType:invoiceDocType, date:new Date().toLocaleDateString('ja'),
-    lines:invoiceTmpLines, total, applied:true, by:ROLE_CONFIG[curRole].name, imagePath:imagePath||null});
+  var _rcptEmpId = (invoiceDocType==='Receipt') ? (docVal('inv-emp')||null) : null;
+  var _rcptEmp = _rcptEmpId ? (getEmployees().find(function(e){return e.id===_rcptEmpId;})||{}) : {};
+  var _rcptCard = (invoiceDocType==='Receipt') ? (docVal('inv-card4')||'').replace(/[^0-9]/g,'') : '';
+  var _newInv = {id:'inv'+Date.now(), vendor, storeId:invStoreId, docType:invoiceDocType, date:new Date().toLocaleDateString('ja'),
+    lines:invoiceTmpLines, total, applied:true, by:ROLE_CONFIG[curRole].name, imagePath:imagePath||null,
+    empId:_rcptEmpId, empName:_rcptEmp.name||'', cardLast4:_rcptCard,
+    reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', driveFileId:'', driveUrl:''};
+  invoices.push(_newInv);
   lsSet('invoices', invoices);
+  // 経理へ通知（保存先＝Google Drive。経理レビューで確認）
+  try{
+    var _stN=(storeObj?storeObj.name:invStoreId);
+    notifyAccounting('【'+(invoiceDocType==='Receipt'?'レシート':'Invoice')+'】'+_stN+' '+vendor+' $'+total.toFixed(2),
+      (invoiceDocType==='Receipt'?'カード/買い出しレシート':'業者Invoice')+'がアップロードされました。\n店舗: '+_stN+'\n業者/購入先: '+vendor+'\n金額: $'+total.toFixed(2)+(_rcptEmp.name?'\n社員（カード保有者）: '+_rcptEmp.name:'')+'\nアップロード者: '+(ROLE_CONFIG[curRole].name||'')+'\n\nOSの「請求書」→経理レビューで確認してください。');
+  }catch(e){}
   // Receiptの場合は買い出しにも反映
   if (invoiceDocType==='Receipt') {
     var storeId = invStoreId;
@@ -18098,6 +18156,25 @@ async function saveInvoice() {
     purchases.push({id:'pc'+Date.now(), date:new Date().toLocaleDateString('ja'), vendor, item:invoiceTmpLines.map(l=>l.name).join(', '),
       amount:total, kind:'Food', category:'買い出し', memo:'Receiptから登録', receipt:true, by:ROLE_CONFIG[curRole].name});
     lsSet('purchases_'+storeId, purchases);
+  }
+  // Google Driveへ保管（Unregistered）。imagePath（invoicesバケット）を転送し、Driveリンクを記録
+  if (imagePath) {
+    var saveBtn2 = document.querySelector('.modal .btn-primary');
+    if (saveBtn2) { saveBtn2.disabled = true; saveBtn2.textContent = 'Driveへ保存中…'; }
+    try{
+      var _iso = new Date().toISOString().slice(0,10);
+      var _ext = (String(imagePath).split('.').pop()||'jpg');
+      var _dn = (invoiceDocType==='Receipt' ? safeFileName(storeObj?storeObj.name:invStoreId) : safeFileName(vendor)) + '.' + _iso + '.' + _ext;
+      var _dr = await driveSync('push', { bucket:'invoices', storagePath:imagePath, fileName:_dn, kind:(invoiceDocType==='Receipt'?'receipt':'invoice') });
+      if (_dr && _dr.ok) {
+        _newInv.driveFileId = _dr.fileId || ''; _newInv.driveUrl = _dr.webViewLink || '';
+        lsSet('invoices', invoices);
+      } else if (_dr && _dr.error==='not_configured') {
+        console.warn('drive-sync 未設定（Storageのみ保存）');
+      } else {
+        console.warn('drive-sync push 失敗', _dr);
+      }
+    }catch(e){ console.warn('drive push error', e); }
   }
   closeModalDirect();
   showToast(invoiceDocType==='Receipt'?'Receiptを保存し、買い出し＋価格を更新しました':'Invoiceを保存し、食材価格を更新しました', 'success');
@@ -20953,10 +21030,116 @@ try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores
 try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
+/* ============================================================
+   ⑫ ペーパーレス：Invoice / カードレシート アップロード
+/* ===== ペーパーレス共通ヘルパー（請求書タブで使用） ===== */
+function docVal(id){ var e=document.getElementById(id); return e?e.value:''; }
+function safeFileName(s){ return String(s||'').trim().replace(/[\/\\:*?"<>|]+/g,'_').replace(/\s+/g,'_'); }
+function fileExt(name){ var m=String(name||'').match(/\.([a-zA-Z0-9]+)$/); return m?m[1].toLowerCase():'dat'; }
+async function notifyMessage(to, subject, text){
+  if(!to) return false;
+  var names=['hyper-service','send-message','send_message'];
+  for(var i=0;i<names.length;i++){
+    try{
+      var r=await fetch(SUPABASE_URL+'/functions/v1/'+names[i], { method:'POST', headers:supaHeaders(), body:JSON.stringify({channel:'email', to:to, subject:subject, text:text}) });
+      var d={}; try{ d=await r.json(); }catch(e){}
+      if(r.ok && !d.error) return true;
+      if(r.status!==404) return false;
+    }catch(e){}
+  }
+  return false;
+}
+function accountingEmails(){
+  return getEmployees().filter(function(e){ return e.role==='office' && e.email && (!e.status||e.status==='在籍'); }).map(function(e){ return e.email; });
+}
+async function notifyAccounting(subject, text){
+  var ems = accountingEmails(); var ok=false;
+  for(var i=0;i<ems.length;i++){ if(await notifyMessage(ems[i], subject, text)) ok=true; }
+  return ok;
+}
+/* Google Drive連携（drive-sync Edge Function）。未設定/失敗時は{ok:false}を返す */
+async function driveSync(action, payload){
+  try{
+    var r=await fetch(DRIVE_SYNC_FN, { method:'POST', headers:supaHeaders(), body:JSON.stringify(Object.assign({action:action}, payload||{})) });
+    var d={}; try{ d=await r.json(); }catch(e){}
+    if(!r.ok) return { ok:false, error:('HTTP '+r.status) };
+    return d || { ok:false };
+  }catch(e){ return { ok:false, error:String(e&&e.message||e) }; }
+}
+/* ===== Drive連携設定（OAuth・OSのボタンで取得） ===== */
+function driveRedirectUri(){ return location.origin + location.pathname; }
+function openDriveSetup(){
+  var cfg = ls('drive_oauth_tmp', {});
+  var ru = driveRedirectUri();
+  openModal('<div class="modal-title">Google Drive 連携設定 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:10px">サービスアカウント鍵が組織ポリシーで禁止のため、<b>OAuth方式</b>で連携します。下記3ステップ。取得したトークンは自動でSupabaseに保存され、Driveへの保管が有効になります。</div>'
+    +'<div id="drive-status" style="font-size:12px;margin-bottom:8px"></div>'
+    +'<ol style="font-size:12px;padding-left:18px;line-height:1.8;margin:0">'
+      +'<li>Google Cloudで <b>OAuthクライアントID</b> を作成（種類：ウェブアプリケーション）。<br><b>承認済みのリダイレクトURI</b> に下記を貼り付け：'
+        +'<div style="display:flex;gap:6px;margin:5px 0"><input class="form-input" id="drive-redirect" readonly value="'+escapeHtml(ru)+'" style="font-size:11px"><button class="btn btn-secondary btn-sm" onclick="copyInvite(\'drive-redirect\')">コピー</button></div></li>'
+      +'<li>発行された <b>Client ID / Client Secret</b> を入力：'
+        +'<input class="form-input" id="drive-cid" placeholder="Client ID（〜.apps.googleusercontent.com）" value="'+escapeHtml(cfg.clientId||'')+'" style="margin-top:5px;font-size:12px">'
+        +'<input class="form-input" id="drive-csec" placeholder="Client Secret" value="'+escapeHtml(cfg.clientSecret||'')+'" style="margin-top:5px;font-size:12px"></li>'
+      +'<li>下のボタンでGoogle認証 → 自動でトークンを取得・保存します。</li>'
+    +'</ol>'
+    +'<div style="text-align:right;margin-top:10px"><button class="btn btn-primary" onclick="startDriveOAuth()"><i class="ti ti-brand-google"></i> Googleで認証して連携</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:8px">※先に新しい <b>drive-sync</b> をデプロイ＆<b>Verify JWT を OFF</b>、<b>migration_drive_oauth.sql</b> を実行しておいてください。</div>');
+  setTimeout(driveRefreshStatus, 50);
+}
+async function driveRefreshStatus(){
+  var box=document.getElementById('drive-status'); if(!box) return;
+  box.innerHTML='<span style="color:var(--muted)"><i class="ti ti-loader"></i> 連携状態を確認中…</span>';
+  var st=await driveSync('status');
+  if(st && st.ok && st.configured){ box.innerHTML='<span style="color:var(--green)"><i class="ti ti-check"></i> 連携済み（'+(st.updated_at?String(st.updated_at).slice(0,10):'')+'）。再認証で更新できます。</span>'; }
+  else if(st && st.error==='not_configured'){ box.innerHTML='<span style="color:var(--muted)">未連携です。下の手順で認証してください。</span>'; }
+  else if(st && st.ok){ box.innerHTML='<span style="color:var(--yellow)">未連携です。</span>'; }
+  else { box.innerHTML='<span style="color:var(--red)">drive-sync 関数に接続できません（デプロイ／Verify JWT OFF を確認）。</span>'; }
+}
+function startDriveOAuth(){
+  var cid=(docVal('drive-cid')||'').trim(), csec=(docVal('drive-csec')||'').trim();
+  if(!cid||!csec){ showToast('Client ID と Client Secret を入力してください','warning'); return; }
+  lsSet('drive_oauth_tmp', { clientId:cid, clientSecret:csec });
+  var ru=driveRedirectUri();
+  var url='https://accounts.google.com/o/oauth2/v2/auth'
+    +'?client_id='+encodeURIComponent(cid)
+    +'&redirect_uri='+encodeURIComponent(ru)
+    +'&response_type=code'
+    +'&scope='+encodeURIComponent('https://www.googleapis.com/auth/drive')
+    +'&access_type=offline&prompt=consent&state=drive_oauth';
+  location.href=url;
+}
+async function checkDriveOAuthReturn(){
+  var p; try{ p=new URLSearchParams(location.search); }catch(e){ return false; }
+  if(p.get('state')!=='drive_oauth' || !p.get('code')) return false;
+  var code=p.get('code'); var cfg=ls('drive_oauth_tmp',{}); var ru=driveRedirectUri();
+  try{ history.replaceState({}, '', ru); }catch(e){}
+  openModal('<div class="modal-title">Google Drive 連携 <button class="modal-close" onclick="closeModalDirect()">×</button></div><div id="drive-oauth-result" style="font-size:13px"><i class="ti ti-loader"></i> トークンを取得・保存中…</div>');
+  var res=await driveSync('oauth_exchange', { clientId:cfg.clientId, clientSecret:cfg.clientSecret, code:code, redirectUri:ru });
+  var box=document.getElementById('drive-oauth-result'); if(!box) return true;
+  if(res && res.ok && res.saved){
+    lsSet('drive_oauth_tmp', {});
+    var setup=await driveSync('setup');
+    box.innerHTML='<div style="color:var(--green);font-weight:700"><i class="ti ti-check"></i> 連携が完了しました</div>'
+      +'<div style="font-size:12px;color:var(--muted);margin-top:6px">リフレッシュトークンをSupabaseに安全に保存しました。これ以降のアップロードは自動でGoogle Driveに保管されます。'
+      +(setup&&setup.ok?'<br>初期フォルダ（Invoices / Credit Card Receipts）も作成しました。':'')+'</div>'
+      +'<div style="text-align:right;margin-top:10px"><button class="btn btn-primary" onclick="closeModalDirect()">完了</button></div>';
+    showToast('Drive連携が完了しました','success');
+  } else {
+    var msg = (res&&(res.detail||res.error))||'unknown';
+    box.innerHTML='<div style="color:var(--red);font-weight:700"><i class="ti ti-alert-triangle"></i> 連携に失敗しました</div>'
+      +'<div style="font-size:12px;color:var(--muted);margin-top:6px">理由: '+escapeHtml(String(msg))+'<br>'
+      +(res&&res.error==='not_configured'?'drive-sync のデプロイ／Verify JWT OFF を確認してください。':'')
+      +(res&&res.error==='no_refresh_token'?'Googleアカウントの「サードパーティのアクセス」から本アプリのアクセスを一度削除し、もう一度お試しください。':'')
+      +'</div>'
+      +'<div style="text-align:right;margin-top:10px"><button class="btn btn-secondary" onclick="openDriveSetup()">設定に戻る</button></div>';
+  }
+  return true;
+}
 try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
 try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePositionsSplitC', e); }
 try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
 (async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) { try { await loginBootstrapPull(); } catch(_){} bootLogin(); } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
+setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }, 1200);
 </script>
 </body>
 </html>
