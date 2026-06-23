@@ -3174,8 +3174,8 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
 var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
-  'invoices','notifications','approval_routing','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
-  'skills','skills_v2','skill_requests','skill_history','lss_requests','lss_history','lss_scores',
+  'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
+  'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust'];
 var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
@@ -3734,6 +3734,8 @@ async function enterAppWithSync(){
   initApp();
   try{ notifRealtimeStart(); }catch(e){}
   try{ checkShiftReminders(); }catch(e){}
+  try{ checkTipPromotions(); }catch(e){}
+  try{ captureSkillSnapshots(); }catch(e){}
 }
 /* ログイン者の役職・所属を、同期後の最新マスターから再解決する。
    ログイン画面の名簿はローカル（同期前のシード）から作られるため、シードの古い役職で
@@ -4503,6 +4505,8 @@ function renderDashboard() {
   if (approvalsAll.length) alerts.push({lv:'warn', icon:'ti-checkbox', text:`承認待ち ${approvalsAll.length}件`, act:`go('approval')`});
   if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`休暇承認待ち ${pendingVac}件`, act:`go('vacation')`});
   if (pendingOB) alerts.push({lv:'warn', icon:'ti-file-text', text:`採用書類の確認待ち ${pendingOB}件`, act:`goOnboarding()`});
+  var _inact = (['ceo','gm','am','office'].indexOf(curRole)>=0)?(function(){var l=inactiveStaff(window._inactiveDays||30);if(curRole==='am'){var ms=myAmStores();l=l.filter(function(x){return ms.indexOf(x.emp.store)>=0||(x.emp.support||[]).some(function(s){return ms.indexOf(s)>=0;});});}return l.length;})():0;
+  if (_inact) alerts.push({lv:'warn', icon:'ti-user-off', text:`非アクティブの疑い ${_inact}名`, act:`go('staff_master')`});
   if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
 
   html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}">
@@ -13822,6 +13826,83 @@ function saveOB() {
 var empFilter = 'active';
 var empStoreFilter = 'all';
 var empSearchQ = '';
+/* ============================================================
+   非アクティブ検知（在籍だが Toast打刻が一定期間ない人）
+   勤怠データ(tip_labor_*)から社員別の最終勤務日を割り出す。
+   ※その店舗に勤怠データが無い場合は判定不能として除外（誤検知防止）
+============================================================ */
+function inactiveStaff(thresholdDays){
+  var th = thresholdDays||30;
+  var lw = {}, storeHasData = {};
+  var cutoffStr = new Date(Date.now()-th*86400000).toISOString().slice(0,10);
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(!k || k.indexOf('tip_labor_')!==0) continue;
+      var date=k.slice(k.lastIndexOf('_')+1);
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      var storeId=k.slice(10, k.lastIndexOf('_'));
+      var data; try{ data=JSON.parse(localStorage.getItem(k)); }catch(_){ continue; }
+      if(!data || typeof data!=='object') continue;
+      if(date>=cutoffStr) storeHasData[storeId]=true;
+      Object.keys(data).forEach(function(name){ if(!lw[name] || date>lw[name]) lw[name]=date; });
+    }
+  }catch(e){}
+  var now=Date.now();
+  var out=[];
+  getEmployees().filter(function(e){ return (e.status||'在籍')==='在籍'; }).forEach(function(e){
+    if(['ceo','gm','office','office_crew'].indexOf(e.role)>=0) return; // 打刻しない役職は対象外
+    if(!e.store || e.store==='ALL') return;                            // 本部所属は除外
+    if(!storeHasData[e.store]) return;                                 // 勤怠データ無し店舗は判定不能
+    var last=lw[e.name];
+    var days=last? Math.floor((now-new Date(last+'T00:00:00').getTime())/86400000) : null;
+    if(days===null || days>=th){ out.push({emp:e, last:last||null, days:days}); }
+  });
+  out.sort(function(a,b){ return (b.days==null?999999:b.days)-(a.days==null?999999:a.days); });
+  return out;
+}
+function setInactiveDays(d){ window._inactiveDays=d; renderPage('staff_master'); }
+/* 在籍ステータスをワンタップ変更（退職は確認あり） */
+function setEmpStatusQuick(empId, status){
+  var emps=getEmployees(); var e=emps.find(function(x){return x.id===empId;}); if(!e) return;
+  if(status==='退職'){ if(!confirm(e.name+' を退職処理しますか？')) return; if(!e.resignDate) e.resignDate=new Date().toISOString().slice(0,10); }
+  e.status=status; lsSet('m_employees', emps);
+  showToast(e.name+' を'+status+'にしました', status==='退職'?'danger':'info');
+  renderPage('staff_master');
+}
+function renderInactiveCard(){
+  if(['ceo','gm','am','office'].indexOf(curRole)<0) return '';
+  var th=window._inactiveDays||30;
+  var list=inactiveStaff(th);
+  if(curRole==='am'){ var ms=myAmStores(); list=list.filter(function(x){ return ms.indexOf(x.emp.store)>=0 || (x.emp.support||[]).some(function(s){return ms.indexOf(s)>=0;}); }); }
+  var opts=[14,30,45,60].map(function(d){return '<button class="phase-tab'+(th===d?' active':'')+'" onclick="setInactiveDays('+d+')">'+d+'日</button>';}).join('');
+  var body;
+  if(!list.length){
+    body='<div style="font-size:12px;color:var(--muted);padding:6px 0"><i class="ti ti-circle-check" style="color:var(--green)"></i> '+th+'日以上 打刻のない在籍スタッフはいません（勤怠データのある店舗のみ判定）。</div>';
+  } else {
+    body=list.map(function(x){
+      var e=x.emp; var s=STORES.find(function(z){return z.id===e.store;});
+      var badge=s?'<span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+' · ':'';
+      var lastTxt=x.last?(x.last+'（'+x.days+'日前）'):'打刻記録なし';
+      var col=(x.days==null||x.days>=60)?'var(--red)':'var(--accent)';
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+        +'<div><div style="font-weight:600;font-size:13px">'+escapeHtml(e.name)+'</div>'
+        +'<div style="font-size:11px;color:var(--muted)">'+badge+escapeHtml(e.title||(ROLE_CONFIG[e.role]||{}).label||'')+' · 最終勤務：<span style="color:'+col+'">'+lastTxt+'</span></div></div>'
+        +'<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">'
+        +'<button class="btn btn-secondary btn-sm" onclick="openEmpModal(\''+e.id+'\')"><i class="ti ti-eye"></i> 詳細</button>'
+        +'<button class="btn btn-secondary btn-sm" onclick="setEmpStatusQuick(\''+e.id+'\',\'休職\')">休職にする</button>'
+        +'<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="setEmpStatusQuick(\''+e.id+'\',\'退職\')">退職にする</button>'
+        +'</div></div>';
+    }).join('');
+  }
+  return '<div class="card" style="border-left:3px solid var(--accent)">'
+    +'<div class="card-title"><i class="ti ti-user-off" style="color:var(--accent)"></i> 非アクティブ検知'+(list.length?' <span class="tag tag-yellow" style="font-size:10px">'+list.length+'名</span>':'')+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin:2px 0 8px">在籍だが Toast打刻が一定期間ない人を表示。判定期間：</div>'
+    +'<div class="phase-tabs" style="margin-bottom:8px">'+opts+'</div>'
+    +body
+    +'</div>';
+}
+
 function renderStaffMaster() {
   if (!canAccessStaffMaster()) {
     return `<div class="section-header"><div class="section-title">従業員マスター</div></div>
@@ -13862,6 +13943,7 @@ function renderStaffMaster() {
       <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
     </div>
   </div>
+  ${renderInactiveCard()}
   <div class="card" style="padding:10px;margin-bottom:10px">
     <div style="position:relative">
       <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted)"></i>
@@ -16152,7 +16234,13 @@ function addApproval(obj) {
   var rec = Object.assign({id:'ap'+Date.now(), status:'pending', date:new Date().toLocaleDateString('ja')}, obj);
   approvals.push(rec);
   lsSet('approvals', approvals);
-  try{ addNotif({ type:'approval', title:'承認待ち：'+(rec.type||'申請'), text:(rec.title||'').slice(0,140), toRoles:approversForType(rec.type), page:'approval', refId:rec.id }); }catch(e){}
+  try{
+    var _sid=null;
+    if(rec.store && rec.store!=='---'){ var _s=STORES.find(function(x){return x.id===rec.store || x.name===rec.store;}); if(_s) _sid=_s.id; }
+    var _n={ type:'approval', title:'承認待ち：'+(rec.type||'申請'), text:(rec.title||'').slice(0,140), toRoles:approversForType(rec.type), page:'approval', refId:rec.id };
+    if(_sid) _n.toStore=_sid; // 店舗が特定できれば、その店舗の上長＋HQ承認者に絞る
+    addNotif(_n);
+  }catch(e){}
 }
 /* type+refで承認待ちを解決（予算承認フロー連携用） */
 function resolveApprovalByRef(type, ref, status) {
@@ -16853,6 +16941,25 @@ function renderSettings() {
       ${APPROVAL_TYPES.map(function(t){var sel=approversForType(t);return `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div style="font-weight:600;font-size:13px;margin-bottom:6px">${t}</div><div style="display:flex;gap:6px;flex-wrap:wrap">${APPROVER_ROLE_OPTS.map(function(rr){var on=sel.indexOf(rr[0])>=0;return `<button class="btn ${on?'btn-primary':'btn-secondary'} btn-sm" style="padding:3px 10px" onclick="toggleApprovalRole('${t}','${rr[0]}')">${on?'<i class="ti ti-check"></i> ':''}${rr[1]}</button>`;}).join('')}</div></div>`;}).join('')}
       <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 変更は即保存・全端末に同期されます。誰も選ばない場合は既定（経理/GM/AM）に戻ります。</div>
     </div>`;
+    var _ntc = getNoTipConfig();
+    var _brands = []; STORES.forEach(function(s){ if(s.brand && _brands.indexOf(s.brand)<0) _brands.push(s.brand); });
+    html += '<div class="card"><div class="card-title"><i class="ti ti-cash-off" style="color:var(--accent)"></i>No Tip期間（シフト数）</div>'
+      +'<p style="font-size:12px;color:var(--muted);margin-bottom:10px">初回勤務から、このシフト数（ランチ/ディナー各1回）を終えると<b>自動で80%</b>になります。空欄は上位を継承（店舗→業態→既定）。</p>'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)"><div style="font-weight:600;font-size:13px">既定（全店共通）</div>'
+        +'<input type="number" min="0" class="form-input" style="width:88px;text-align:center" value="'+(_ntc.default!=null?_ntc.default:2)+'" onchange="setNoTipDefault(this.value)"></div>';
+    if(_brands.length){
+      html += '<div style="font-size:11px;color:var(--muted);margin:10px 0 2px">業態別</div>';
+      _brands.forEach(function(b){
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0"><div style="font-size:13px">'+escapeHtml(b)+'</div>'
+          +'<input type="number" min="0" class="form-input" style="width:88px;text-align:center" placeholder="既定" value="'+(_ntc.byBrand[b]!=null?_ntc.byBrand[b]:'')+'" onchange="setNoTipBrand(\''+String(b).replace(/'/g,"\\'")+'\',this.value)"></div>';
+      });
+    }
+    html += '<div style="font-size:11px;color:var(--muted);margin:10px 0 2px">店舗別</div>';
+    STORES.forEach(function(s){
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0"><div style="font-size:13px"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+(s.brand?' <span style="color:var(--muted);font-size:11px">('+escapeHtml(s.brand)+')</span>':'')+'</div>'
+        +'<input type="number" min="0" class="form-input" style="width:88px;text-align:center" placeholder="'+noTipShifts(s.id)+'" value="'+(_ntc.byStore[s.id]!=null?_ntc.byStore[s.id]:'')+'" onchange="setNoTipStore(\''+s.id+'\',this.value)"></div>';
+    });
+    html += '<div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 各店舗の<b>適用中の値</b>はプレースホルダに表示。変更は即保存・全端末同期。</div></div>';
     html += `<div class="card"><div class="card-title"><i class="ti ti-cloud-up" style="color:var(--accent)"></i>本番移行（Supabase同期）</div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:10px">マスターデータをクラウド（Supabase）にも保存します。ONにすると、以降のマスター変更が自動でSupabaseに同期されます。localStorageも維持されるので安全です。</p>
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
@@ -17771,7 +17878,7 @@ function notifForMe(n){
   if(n.by && curUserName && n.by===curUserName) return false;
   if(n.toUser) return !!(curUserName && n.toUser===curUserName);
   if(n.toStore){
-    var inStore = (curStore===n.toStore) || _userSupportsStore(n.toStore);
+    var inStore = (curStore===n.toStore) || _userSupportsStore(n.toStore) || _amManagesStore(n.toStore) || ['gm','ceo','office'].indexOf(curRole)>=0;
     if(!inStore) return false;
     if(n.toRoles && n.toRoles.length) return _roleMatch(n.toRoles);
     return true;
@@ -17938,6 +18045,10 @@ function toggleApprovalRole(type, role){
 function _userSupportsStore(storeId){
   try{ var e=getEmployees().find(function(x){return x.name===curUserName;}); return !!(e && (e.support||[]).indexOf(storeId)>=0); }catch(_){ return false; }
 }
+/* 今のユーザー(AM)がその店舗の担当AMか */
+function _amManagesStore(storeId){
+  try{ if(curRole!=='am') return false; var st=STORES.find(function(s){return s.id===storeId;}); return !!(st && st.am && curUserName && st.am===curUserName); }catch(_){ return false; }
+}
 /* 役職一致判定。'sm'(Store Manager)は権限ロールではなく肩書きで判定 */
 function _roleMatch(roles){
   if(!roles || !roles.length) return false;
@@ -17989,6 +18100,37 @@ function checkShiftReminders(){
       added=true;
     });
     if(added){ if(arr.length>500) arr=arr.slice(arr.length-500); lsSet('notifications', arr); renderNotifBell(); }
+  }catch(e){}
+}
+
+/* ===== Tip Rate変更の検知 → その店舗の上長へ通知（ログイン時） =====
+   初回はベースライン化（通知なし）。以降の変化（No Tip→80自動 / 80→90 / 90→100 等）のみ上長へ。 */
+function checkTipPromotions(){
+  try{
+    if(curRole==='crew') return;
+    var stores=_myManagedStores();
+    var state=ls('tip_notify_state', {});
+    var arr=getNotifs(); var addedN=false, stateChanged=false;
+    getEmployees().filter(function(e){ return (e.status||'在籍')==='在籍' && (e.role==='crew'||e.role==='sl'); }).forEach(function(e){
+      if(stores.length && stores.indexOf(e.store)<0) return; // 担当店舗のみ
+      var rate=(typeof effectiveTipRate==='function')?effectiveTipRate(e.name):null;
+      if(rate==null) return;
+      var prev=state[e.name];
+      if(prev===undefined){ state[e.name]=rate; stateChanged=true; return; } // 初回＝ベースライン（通知なし）
+      if(prev===rate) return;
+      state[e.name]=rate; stateChanged=true;
+      var st=STORES.find(function(x){return x.id===e.store;});
+      var label=rate===0?'No Tip':rate+'%';
+      var refId='tipchg_'+e.name+'_'+rate+'_'+new Date().toISOString().slice(0,10);
+      if(arr.some(function(n){return n.refId===refId;})) return;
+      arr.push({ id:'ntf'+Date.now()+Math.floor(Math.random()*1000), at:new Date().toISOString(), by:'システム', readBy:[],
+        type:'approved', title:'Tip Rate変更：'+e.name+' → '+label,
+        text:((st?st.name:e.store)+'：'+e.name+' が '+label+' になりました'+(rate===80?'（No Tip期間終了・自動）':'')).slice(0,140),
+        toStore:e.store, toRoles:['sl','sm','am'], page:'tiprate', refId:refId });
+      addedN=true;
+    });
+    if(stateChanged) lsSet('tip_notify_state', state);
+    if(addedN){ if(arr.length>500) arr=arr.slice(arr.length-500); lsSet('notifications', arr); renderNotifBell(); }
   }catch(e){}
 }
 
@@ -18762,7 +18904,7 @@ function deleteInvoiceConfirm(id){
     +'<div style="font-size:13px;margin-bottom:8px">この書類を削除します。元に戻せません。</div>'
     +'<div style="font-size:12px;color:var(--tm);background:#f6f7f9;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">'
       +escapeHtml(stN)+' · '+escapeHtml(inv.vendor)+' · '+((inv.docType==='Receipt')?'レシート':'Invoice')+' · $'+(inv.total||0).toFixed(2)+' · '+escapeHtml(inv.date)+'</div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-info-circle"></i> 一覧と保存画像（Storage）を削除します。※すでに反映した食材価格・買い出し記録は元に戻りません。Driveのファイルは残ります。</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-info-circle"></i> 一覧・保存画像（Storage）・Driveのファイルを削除します。※すでに反映した食材価格・買い出し記録は元に戻りません。</div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
     +'<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="deleteInvoiceDo(\''+inv.id+'\')"><i class="ti ti-trash"></i> 削除する</button></div>');
 }
@@ -18770,6 +18912,7 @@ async function deleteInvoiceDo(id){
   var invoices=ls('invoices',[]); var idx=invoices.findIndex(function(x){return x.id===id;}); if(idx<0) return;
   var inv=invoices[idx];
   if(!canDeleteInvoice(inv)){ showToast('削除権限がありません','warning'); return; }
+  if(inv.driveFileId){ try{ await driveSync('delete', { fileId:inv.driveFileId }); }catch(e){} }
   if(inv.imagePath){
     try{ await fetch(SUPABASE_URL+'/storage/v1/object/invoices/'+encodeURI(inv.imagePath), { method:'DELETE', headers: supaHeaders() }); }catch(e){}
   }
@@ -19225,10 +19368,52 @@ const TIP_OPTIONS = [80, 90, 100];
 const DEFAULT_TIP_POLICY = '【Tip Rate Policy】\n・初回勤務後、店舗ごとのNo Tip期間（ToriTon/Tenkichi=3シフト、Totoya/Marujuu/Waikiki=2シフト）。\n・No Tip期間終了後は80%スタート。\n・90%/100%は条件を満たし承認されると昇格。\n・【初回勤務日から3ヶ月経過すると、承認を待たず自動的に100%になります】\n・90%：Responsibility/Skill/Quality/Teamwork/Passion の条件＋Store Manager承認。\n・100%：主要Lv3＋教育力等＋Store Manager＋Area Manager承認。';
 function getTipPolicy() { return ls('tip_policy', DEFAULT_TIP_POLICY); }
 
-/* 店舗別No Tip期間（初回勤務からのシフト数） */
+/* 店舗別No Tip期間（初回勤務からのシフト数）— 業態/店舗別に設定可能 */
+function defaultNoTipConfig(){
+  // 既定：ToriTon(F01)/Tenkichi(F02)=3、それ以外=2（従来挙動を維持）
+  return { default:2, byBrand:{}, byStore:{F01:3, F02:3} };
+}
+function getNoTipConfig(){
+  var c = ls('notip_config', null);
+  if(!c || typeof c!=='object') c = defaultNoTipConfig();
+  if(typeof c.default!=='number') c.default=2;
+  if(!c.byBrand || typeof c.byBrand!=='object') c.byBrand={};
+  if(!c.byStore || typeof c.byStore!=='object') c.byStore={};
+  return c;
+}
+function setNoTipConfig(c){ lsSet('notip_config', c); }
+/* 解決順：店舗 → 業態 → 既定 */
 function noTipShifts(storeId) {
-  // ToriTon(F01)/Tenkichi(F02)=3, Totoya(F03,F04*)/Marujuu(F05)=2
-  return (storeId==='F01'||storeId==='F02') ? 3 : 2;
+  var c=getNoTipConfig();
+  if(c.byStore[storeId]!=null) return c.byStore[storeId];
+  var st=STORES.find(function(s){return s.id===storeId;});
+  var brand=st?st.brand:null;
+  if(brand && c.byBrand[brand]!=null) return c.byBrand[brand];
+  return c.default;
+}
+function setNoTipDefault(v){ var c=getNoTipConfig(); c.default=Math.max(0,parseInt(v)||0); setNoTipConfig(c); renderPage('settings'); }
+function setNoTipBrand(brand,v){ var c=getNoTipConfig(); if(v===''||v==null){ delete c.byBrand[brand]; } else { c.byBrand[brand]=Math.max(0,parseInt(v)||0); } setNoTipConfig(c); renderPage('settings'); }
+function setNoTipStore(sid,v){ var c=getNoTipConfig(); if(v===''||v==null){ delete c.byStore[sid]; } else { c.byStore[sid]=Math.max(0,parseInt(v)||0); } setNoTipConfig(c); renderPage('settings'); }
+/* 初回勤務日以降の実勤務シフト数（ランチ/ディナー各1シフト＝勤務時間>0でカウント） */
+function workedShiftCount(emp){
+  if(!emp || !emp.store) return 0;
+  var fw=firstWorkDate(emp); var fwStr=fw?fw.toISOString().slice(0,10):null;
+  var name=emp.name, count=0, prefix='tip_labor_'+emp.store+'_';
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(!k || k.indexOf(prefix)!==0) continue;
+      var date=k.slice(prefix.length);
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      if(fwStr && date<fwStr) continue;
+      var data; try{ data=JSON.parse(localStorage.getItem(k)); }catch(_){ continue; }
+      var e=data && data[name]; if(!e) continue;
+      if((e.lunch||0)>0) count++;
+      if((e.dinner||0)>0) count++;
+      if(e.lunch==null && e.dinner==null) count++; // 構造不明時は1日=1
+    }
+  }catch(_){}
+  return count;
 }
 /* 初回勤務日（firstWork優先, なければhireDate） */
 function firstWorkDate(emp) {
@@ -19260,10 +19445,10 @@ function effectiveTipRate(name) {
   // 初回勤務日が未設定なら、既存の評価係数（coef）を尊重（インポートデータ保護）
   var fw = firstWorkDate(emp);
   if (!fw) return (emp.coef!=null ? Math.round(emp.coef*100) : 100);
-  // No Tip期間判定（日数近似）
-  var daysSince = Math.floor((new Date() - fw) / 86400000);
-  if (daysSince < noTipShifts(emp.store)) return 0;
-  return 80;
+  // No Tip期間判定（実シフト数：ランチ/ディナー各1シフト）
+  var shifts = workedShiftCount(emp);
+  if (shifts < noTipShifts(emp.store)) return 0; // No Tip期間中
+  return 80;                                     // 期間終了 → 自動80%
 }
 /* 表示用ラベル */
 function tipRateLabel(name) {
@@ -20552,6 +20737,9 @@ function renderSkillSelf() {
   });
   html += '</div>';
 
+  // 成長の推移（スキル）
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-line" style="color:var(--accent)"></i>成長の推移（スキル）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">毎月の合計レベルを自動記録</span></div>${skillTrendHtml(me)}</div>`;
+
   // ===== 次のTip Rate / レベルアップ条件（フェーズ2）=====
   var elig = checkLevelUpEligibility(me, storeId);
   if (elig && !elig.maxed && elig.target) {
@@ -20915,10 +21103,66 @@ function saveStaffSkillEdit(name, storeId) {
   renderPage('skill');
 }
 /* スキル変更履歴 */
-function addSkillHistory(name, storeId, position, fromLv, toLv, by) {
+function addSkillHistory(name, storeId, position, fromLv, toLv, by, note) {
   var h = ls('skill_history', []);
-  h.push({name, store:storeId, position, fromLv, toLv, by, date:new Date().toLocaleString('ja')});
+  h.push({name, store:storeId, position, fromLv, toLv, by, note:note||'', date:new Date().toLocaleString('ja')});
   lsSet('skill_history', h);
+}
+
+/* ===== スキル月次スナップショット＋成長推移 ===== */
+function getSkillSnapshots(){ return ls('skill_snapshots', {}); }
+/* 承認済みスキルの合計レベル・承認数・L3以上数 */
+function skillAggregate(name){
+  var sk=getEmpSkills(name); var total=0, approved=0, lv3=0;
+  Object.keys(sk).forEach(function(p){ var s=sk[p]; if(!s) return; if(s.status==='承認' && (s.level||0)>=1){ total+=(s.level||0); approved++; if((s.level||0)>=3) lv3++; } });
+  return { total:total, approved:approved, lv3:lv3 };
+}
+/* ログイン時：今月分のスナップショットを記録（担当範囲のCrew/SL、月1回・全端末同期） */
+function captureSkillSnapshots(){
+  try{
+    var month=new Date().toISOString().slice(0,7);
+    var snaps=getSkillSnapshots(); var changed=false, targets=[];
+    if(curRole==='crew'){ var me=getEmployees().find(function(x){return x.name===curUserName;}); if(me) targets=[me]; }
+    else { var stores=_myManagedStores(); targets=getEmployees().filter(function(e){ return (e.status||'在籍')==='在籍' && (e.role==='crew'||e.role==='sl') && (!stores.length || stores.indexOf(e.store)>=0); }); }
+    targets.forEach(function(e){
+      var arr=snaps[e.name]||[];
+      if(arr.some(function(s){return s.month===month;})) return;
+      var agg=skillAggregate(e.name);
+      if(agg.approved===0 && agg.total===0) return; // 未取得はスキップ
+      arr.push({ month:month, total:agg.total, approved:agg.approved, lv3:agg.lv3, date:new Date().toISOString().slice(0,10) });
+      if(arr.length>36) arr=arr.slice(arr.length-36);
+      snaps[e.name]=arr; changed=true;
+    });
+    if(changed) lsSet('skill_snapshots', snaps);
+  }catch(e){}
+}
+/* スキル成長の推移（月次バー＋差分＋最近の変更） */
+function skillTrendHtml(name){
+  var snaps=(getSkillSnapshots()[name]||[]).slice().sort(function(a,b){return (a.month||'').localeCompare(b.month||'');});
+  var hist=ls('skill_history',[]).filter(function(x){return x.name===name;}).slice(-6).reverse();
+  if(!snaps.length && !hist.length) return '<div style="font-size:12px;color:var(--muted)">まだ推移データがありません。毎月スキル状況が自動記録され、ここに推移が表示されます。</div>';
+  var html='';
+  if(snaps.length){
+    var max=Math.max.apply(null, snaps.map(function(s){return s.total||0;}).concat([1]));
+    var show=snaps.slice(-12);
+    html+='<div style="display:flex;align-items:flex-end;gap:3px;height:66px;margin-bottom:8px;padding:0 2px">'+show.map(function(s){
+      var hgt=Math.max(4, Math.round((s.total||0)/max*44));
+      return '<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px;min-width:0"><div style="font-size:8px;color:var(--muted)">'+(s.total||0)+'</div><div style="width:72%;height:'+hgt+'px;background:var(--accent2);border-radius:3px 3px 0 0"></div><div style="font-size:8px;color:var(--muted);white-space:nowrap">'+String(s.month||'').slice(2)+'</div></div>';
+    }).join('')+'</div>';
+    html+=snaps.slice(-6).reverse().map(function(s){
+      var idx=snaps.indexOf(s); var prev=idx>0?snaps[idx-1]:null;
+      var diff=prev?(s.total-prev.total):null;
+      var diffHtml=diff==null?'<span style="font-size:10px;color:var(--muted)">初回</span>':'<span style="color:'+(diff>=0?'var(--green)':'var(--red)')+';font-weight:700;font-size:11px">'+(diff>=0?'▲ +'+diff:'▼ '+diff)+'</span>';
+      return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:11px;color:var(--muted);width:56px;flex-shrink:0">'+escapeHtml(s.month||'')+'</span><span style="flex:1;font-size:13px;font-weight:700">合計 '+(s.total||0)+'<span style="font-size:10px;color:var(--muted);font-weight:400"> ・承認'+(s.approved||0)+'・L3↑'+(s.lv3||0)+'</span></span>'+diffHtml+'</div>';
+    }).join('');
+  }
+  if(hist.length){
+    html+='<div style="font-size:11px;color:var(--muted);margin-top:8px;margin-bottom:2px">最近のスキル変更</div>';
+    html+=hist.map(function(x){
+      return '<div style="font-size:11px;color:var(--muted);padding:2px 0"><span style="color:var(--tm);font-weight:600">'+escapeHtml(x.position||'')+'</span> L'+(x.fromLv||0)+'→L'+(x.toLv||0)+' <span style="color:var(--muted)">'+escapeHtml(String(x.date||'').slice(0,10))+(x.by?' · '+escapeHtml(x.by):'')+'</span>'+(x.note?'<div style="font-size:10px;color:var(--muted);margin-left:2px">理由: '+escapeHtml(x.note)+'</div>':'')+'</div>';
+    }).join('');
+  }
+  return html;
 }
 
 function openSkillReviewModal(reqId, action) {
@@ -20949,7 +21193,7 @@ function submitSkillReview(reqId, action) {
   if (action==='承認') {
     var lv = parseInt(document.getElementById('rv-level').value);
     setEmpSkillStore(r.name, storeId, r.position, {level:lv, status:'承認', selfComment:r.selfComment, mgrComment:comment, nextTask:task, date:r.date, evaluator:by});
-    addSkillHistory(r.name, storeId, r.position, (prev.status==='承認'?prev.level:0), lv, by);
+    addSkillHistory(r.name, storeId, r.position, (prev.status==='承認'?prev.level:0), lv, by, comment);
   } else {
     setEmpSkillStore(r.name, storeId, r.position, Object.assign({}, prev, {status:'差戻し', mgrComment:comment, nextTask:task}));
   }
