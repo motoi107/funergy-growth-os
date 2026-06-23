@@ -728,6 +728,7 @@ async function fetchTodayRealtime(storeList) {
       var lB = Number(r.lunch_bowls)||0, dB = Number(r.dinner_bowls)||0;  // Bowlsカテゴリ（テイクアウト除く）
       var toCount = Number(r.takeout_count)||0;
       var toBowls = Number(r.takeout_bowls)||0;   // Take Out + Online Order の丼数
+      var toLB = Number(r.lunch_takeout_bowls)||0, toDB = Number(r.dinner_takeout_bowls)||0;  // テイクアウト丼 L/D内訳
       // 客数の数え方: Totoya=丼数(bowls) / Waikiki=皿 / それ以外=客数
       var metric = (typeof guestCountType==='function') ? guestCountType(s.id) : 'guest';
       var unit = metric==='bowls' ? '丼' : (metric==='plate' ? '皿' : t('名',''));
@@ -738,7 +739,7 @@ async function fetchTodayRealtime(storeList) {
         net:net, guests:guests, count:totCnt, ppa: totCnt>0?net/totCnt:0,
         lunch:{ sales:lSales, count:lCnt, ppa: lCnt>0?lSales/lCnt:0 },
         dinner:{ sales:dSales, count:dCnt, ppa: dCnt>0?dSales/dCnt:0 },
-        takeout:{ count:toCount, bowls:toBowls } });
+        takeout:{ count:toCount, bowls:toBowls, lunchBowls:toLB, dinnerBowls:toDB } });
     } catch(e) {
       results.push({id:s.id, name:s.name, color:s.color, error:true});
     }
@@ -822,6 +823,8 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
         dinnerBowls: r.dinner_bowls!=null?Number(r.dinner_bowls):undefined,
         takeout: r.takeout_count!=null?Number(r.takeout_count):undefined,
         takeoutBowls: r.takeout_bowls!=null?Number(r.takeout_bowls):undefined,
+        lunchTakeoutBowls: r.lunch_takeout_bowls!=null?Number(r.lunch_takeout_bowls):undefined,
+        dinnerTakeoutBowls: r.dinner_takeout_bowls!=null?Number(r.dinner_takeout_bowls):undefined,
         creditTip: r.credit_tip!=null?Number(r.credit_tip):undefined,
         lunchCreditTip: r.lunch_credit_tip!=null?Number(r.lunch_credit_tip):undefined,
         dinnerCreditTip: r.dinner_credit_tip!=null?Number(r.dinner_credit_tip):undefined,
@@ -4661,7 +4664,7 @@ async function loadRealtimeSales() {
       <div style="background:var(--surface);padding:10px 8px;text-align:center">
         <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ti-shopping-bag" style="color:#2e6fd6"></i>${t('テイクアウト','Takeout')}</div>
         <div style="font-size:14px;font-weight:700;margin-top:3px">${r.metric==='bowls' ? ((r.takeout.bowls||0)+'丼') : (r.takeout.count+t('件',''))}</div>
-        <div style="font-size:10px;color:var(--muted)">${r.metric==='bowls' ? 'Take Out + Online' : t('注文数','Orders')}</div></div>
+        <div style="font-size:10px;color:var(--muted)">${r.metric==='bowls' ? ('L'+(r.takeout.lunchBowls||0)+' / D'+(r.takeout.dinnerBowls||0)) : t('注文数','Orders')}</div></div>
     </div></div>`;
   });
   html += `<div style="font-size:10px;color:var(--muted);text-align:right;margin-top:2px">${t('更新','Updated')} ${nowStr} · ${withData}/${data.length}${t('店','')}</div>`;
@@ -6473,7 +6476,7 @@ function renderBudgetDaily() {
       dayBud += bd;
       if (ov.actual!=null) { dayAct += ov.actual; hasAct=true; }
       if (ov.lunchSales!=null||ov.dinnerSales!=null) { dayLunch+=(ov.lunchSales||0); dayDinner+=(ov.dinnerSales||0); hasLD=true; }
-      if (!isAgg) { weather=ov.weather||''; event=ov.event||''; gv=dayGuestValue(s.id, ov); gv.takeout=ov.takeout; }
+      if (!isAgg) { weather=ov.weather||''; event=ov.event||''; gv=dayGuestValue(s.id, ov); gv.takeout = (guestCountType(s.id)==='bowls') ? (ov.takeoutBowls!=null?ov.takeoutBowls:(ov.takeout||0)) : ov.takeout; }
       if (ov.toast||ov.toastSrc) isToast = true;
     });
     // チップ率（単店のみ）: チップ総額 ÷ 純売上
