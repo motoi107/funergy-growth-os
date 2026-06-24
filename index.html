@@ -5548,6 +5548,14 @@ function toastLaborCostForDate(storeId, dateISO){
   });
   return cost;
 }
+/* 指定日のToast実績総労働時間(h) = Σ(従業員の lunch+dinner 時間)。 */
+function toastLaborHoursForDate(storeId, dateISO){
+  var labor = getTipLabor(storeId, dateISO);
+  if(!labor) return 0;
+  var h = 0;
+  Object.keys(labor).forEach(function(n){ var e=labor[n]; h += (e.lunch||0)+(e.dinner||0); });
+  return h;
+}
 /* 給与税率（自動計算）。Labor額 = 賃金 × (1+税率) + 保険日割り。 */
 var PAYROLL_TAX_RATE = 0.17;
 /* 従業員の会社負担 月額保険料 */
@@ -5671,6 +5679,9 @@ function prevMonthStats(storeId) { return monthStats(storeId, -1); }
 /* ===================== 月次サマリー（振り返り）v1 ===================== */
 var msOffset = 0;     // 0=今月, -1=先月 ...
 var msScope = 'ALL';  // 'ALL' または storeId
+var msView = 'summary'; // 'summary' | 'trend'（KPI推移一覧）
+function msSetView(v){ msView=v; renderPage('monthly'); }
+function gotoKpiTrend(){ msView='trend'; if(typeof go==='function') go('monthly'); else renderPage('monthly'); }
 
 function msMonthInfo(offset){
   var now=new Date();
@@ -5851,6 +5862,60 @@ function msKpiCard(mi, scopeName){
   return html;
 }
 
+/* ===== KPI推移一覧（縦=月 / 横=KPI項目）。重要KPI＋店舗別KPIを月次で一覧 ===== */
+function renderKpiTrendMatrix(){
+  var scopeStores = msScopeStores();
+  var single = msScope!=='ALL' && scopeStores.length===1;
+  var scopeName = msScope==='ALL'?('全'+scopeStores.length+'店'):((scopeStores[0]||{}).name||msScope);
+  var cols = [
+    {key:'budget',     label:'予算',     fmt:function(v){return v!=null?fmtK(v):'—';}},
+    {key:'sales',      label:'売上',     fmt:function(v){return v!=null?fmtK(v):'—';}},
+    {key:'guests',     label:'集客',     fmt:function(v){return (v!=null&&v>0)?v.toLocaleString():'—';}},
+    {key:'ppa',        label:'客単価',   fmt:function(v){return (v!=null&&v>0)?'$'+v.toLocaleString():'—';}},
+    {key:'fcRate',     label:'原価率',   fmt:function(v){return (v!=null&&v>0)?v+'%':'—';}, kind:'fc'},
+    {key:'laborRate',  label:'人件費率', fmt:function(v){return (v!=null&&v>0)?v+'%':'—';}, kind:'labor'},
+    {key:'repeatRate', label:'リピート率', fmt:function(v){return v!=null?v+'%':'—';}, kind:'repeat'}
+  ];
+  var extra=[];
+  if(single){
+    var shown={foodCost:1, laborPct:1, repeatRate:1};
+    (kpisForStore(scopeStores[0])||[]).forEach(function(k){ if(!shown[k.key]) extra.push(k); });
+  }
+  var months=[]; for(var o=0;o>=-11;o--) months.push(msMonthInfo(o));
+  var th='<th style="position:sticky;left:0;background:var(--surface);text-align:left;padding:7px 8px;z-index:1">月</th>';
+  cols.forEach(function(c){ th+='<th style="text-align:right;padding:7px 8px;white-space:nowrap">'+c.label+'</th>'; });
+  extra.forEach(function(k){ th+='<th style="text-align:right;padding:7px 8px;white-space:nowrap">'+k.label+(k.star?' ★':'')+'</th>'; });
+  var rows='';
+  months.forEach(function(mi){
+    var k=keyKpiStats(scopeStores, mi.days);
+    var actuals = single ? ((computeKpiActuals(scopeStores[0].id, mi.offset)||{}).actuals||{}) : {};
+    var tgts = single ? (getStoreKpiTargets(scopeStores[0].id, mi.offset)||{}) : {};
+    var tds='<td style="position:sticky;left:0;background:var(--surface);text-align:left;padding:7px 8px;white-space:nowrap;font-weight:600">'+mi.label+'</td>';
+    cols.forEach(function(c){
+      var v=k[c.key];
+      var col='var(--tm)';
+      if(c.kind==='fc'&&v>0) col=v<=31?'var(--green)':v<=34?'var(--yellow)':'var(--red)';
+      else if(c.kind==='labor'&&v>0) col=v<=28?'var(--green)':v<=31?'var(--yellow)':'var(--red)';
+      else if(c.kind==='repeat'&&v!=null) col=v>=50?'var(--green)':v>=30?'var(--yellow)':'var(--red)';
+      tds+='<td style="text-align:right;padding:7px 8px;white-space:nowrap;color:'+col+'">'+c.fmt(v)+'</td>';
+    });
+    extra.forEach(function(kp){
+      var av=actuals[kp.key], tv=tgts[kp.key];
+      var col='var(--muted)';
+      if(av!=null&&tv!=null) col=((kp.dir==='down'?av<=tv:av>=tv)?'var(--green)':'var(--red)');
+      else if(av!=null) col='var(--tm)';
+      var disp=(av!=null)?(av+(kp.unit==='%'?'%':kp.unit==='★'?'★':kp.unit==='$'?'':'')):'—';
+      tds+='<td style="text-align:right;padding:7px 8px;white-space:nowrap;color:'+col+'">'+disp+'</td>';
+    });
+    rows+='<tr style="border-top:1px solid var(--border)">'+tds+'</tr>';
+  });
+  var html='<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-table" style="color:var(--accent)"></i>KPI推移一覧 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">'+scopeName+' / 直近12ヶ月</span></div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">縦＝月、横＝KPI項目。①予算 ②売上 ③集客 ④客単価 ⑤原価率 ⑥人件費率 ⑦リピート率'+(single?('、⑧以降は'+scopeName+'の店舗別KPI'):'（店舗別KPIは上の選択で単店を選ぶと表示）')+'。色：緑=良好/黄=注意/赤=要改善。</div>';
+  html+='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--muted);font-size:11px">'+th+'</tr></thead><tbody>'+rows+'</tbody></table>';
+  html+='</div>';
+  return html;
+}
+
 function renderMonthlySummary(){
   if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
   var mi=msMonthInfo(msOffset);
@@ -5862,6 +5927,11 @@ function renderMonthlySummary(){
 
   var html='<div class="section-header"><div><div class="section-title">月次サマリー</div><div class="section-sub">振り返り・経営レビュー <span class="tag tag-yellow" style="font-size:10px">プレビュー</span></div></div></div>';
 
+  html+='<div class="phase-tabs" style="margin-bottom:8px">'
+    +'<div class="phase-tab'+(msView==='summary'?' active':'')+'" onclick="msSetView(\'summary\')"><i class="ti ti-layout-dashboard" style="font-size:12px"></i> サマリー</div>'
+    +'<div class="phase-tab'+(msView==='trend'?' active':'')+'" onclick="msSetView(\'trend\')"><i class="ti ti-table" style="font-size:12px"></i> KPI推移一覧</div>'
+    +'</div>';
+
   html+='<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
     +'<button class="btn btn-secondary btn-sm" onclick="msShift(-1)"><i class="ti ti-chevron-left"></i></button>'
     +'<div style="font-size:16px;font-weight:800;min-width:104px;text-align:center">'+mi.label+'</div>'
@@ -5871,6 +5941,8 @@ function renderMonthlySummary(){
     +'<option value="ALL"'+(msScope==='ALL'?' selected':'')+'>全店合算</option>'
     +stores.map(function(s){return '<option value="'+s.id+'"'+(msScope===s.id?' selected':'')+'>'+s.name+'</option>';}).join('')
     +'</select></div>';
+
+  if(msView==='trend'){ return html + renderKpiTrendMatrix(); }
 
   function tile(label,val,sub,col){
     return '<div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px">'
@@ -6676,15 +6748,18 @@ function renderBudgetDaily() {
       <span style="font-size:13px;font-weight:600">${dailyMonthLabel()}</span>
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div></div>
-    <table class="inv-table" style="min-width:${isAgg?'560':'900'}px;font-size:12px"><thead><tr>
-      <th>日</th><th>予算</th><th>実績</th>${isAgg?'':'<th>L売上</th><th>D売上</th><th>'+guestLabel+'</th><th>チップ率</th>'}<th>達成</th><th>累計達成</th>${isAgg?'':'<th>天気</th><th>イベント</th>'}${(!isAgg&&canEdit)?'<th></th>':''}
+    <table class="inv-table" style="min-width:${isAgg?'720':'1060'}px;font-size:12px"><thead><tr>
+      <th>日</th><th>予算</th><th>実績</th><th>ﾘﾋﾟｰﾄ</th><th>労働h</th><th>人件費</th>${isAgg?'':'<th>L売上</th><th>D売上</th><th>'+guestLabel+'</th><th>チップ率</th>'}<th>達成</th><th>累計達成</th>${isAgg?'':'<th>天気</th><th>イベント</th>'}${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
   var guestLabel = (!isAgg && scopeStores[0]) ? guestCountLabel(scopeStores[0].id) : '客数';
   var cumB=0, cumA=0;
+  var _ymD=(days[0]?days[0].date.slice(0,7):'');
+  var _storeExtra={}; scopeStores.forEach(function(s){ _storeExtra[s.id]={sal:(typeof storeSalaryDaily==='function')?storeSalaryDaily(s.id,_ymD):0, ins:(typeof storeInsuranceDaily==='function')?storeInsuranceDaily(s.id,_ymD):0}; });
   days.forEach(d => {
     var dayBud=0, dayAct=0, hasAct=false, weather='', event='', isToast=false;
     var dayLunch=0, dayDinner=0, hasLD=false, gv={total:null,lunch:null,dinner:null};
+    var dayFirst=0, dayRepeat=0, dayLaborH=0, dayLaborCost=0;
     scopeStores.forEach(s => {
       var b = budgets.find(x=>x.storeId===s.id);
       var ov = (getDailyActuals(s.id)[d.date]||{});
@@ -6694,7 +6769,13 @@ function renderBudgetDaily() {
       if (ov.lunchSales!=null||ov.dinnerSales!=null) { dayLunch+=(ov.lunchSales||0); dayDinner+=(ov.dinnerSales||0); hasLD=true; }
       if (!isAgg) { weather=ov.weather||''; event=ov.event||''; gv=dayGuestValue(s.id, ov); gv.takeout=ov.takeout; }
       if (ov.toast||ov.toastSrc) isToast = true;
+      dayFirst += Number(ov.firstTimeBowls)||0;
+      dayRepeat += Number(ov.repeatBowls)||0;
+      if(typeof toastLaborHoursForDate==='function') dayLaborH += toastLaborHoursForDate(s.id, d.date);
+      var _tl=(typeof toastLaborCostForDate==='function')?toastLaborCostForDate(s.id, d.date):0;
+      if(_tl>0){ var _ex=_storeExtra[s.id]||{sal:0,ins:0}; dayLaborCost += _tl*(1+PAYROLL_TAX_RATE)+_ex.sal*(1+PAYROLL_TAX_RATE)+_ex.ins; }
     });
+    var dayRT = (dayFirst+dayRepeat)>0 ? Math.round(dayRepeat/(dayFirst+dayRepeat)*1000)/10 : null;
     // チップ率（単店のみ）: チップ総額 ÷ 純売上
     var tipRate = null, tipTotal = 0;
     if (!isAgg && scopeStores[0]) {
@@ -6712,6 +6793,9 @@ function renderBudgetDaily() {
       <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}</td>
+      <td style="font-size:11px;color:${dayRT!=null?(dayRT>=50?'var(--green)':dayRT>=30?'var(--yellow)':'var(--red)'):'var(--muted)'}">${dayRT!=null?dayRT+'%':'—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${dayLaborH>0?dayLaborH.toFixed(1):'—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${dayLaborCost>0?fmtUSD2(dayLaborCost):'—'}</td>
       ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td><td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${cumRate>=100?'var(--green)':cumRate>=90?'var(--yellow)':'var(--red)'};font-size:11px">${cumRate}%</span></td>
@@ -7079,7 +7163,7 @@ function prevMonthDaysList(ym){
 }
 /* ===== 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）統一集計＋予実比較 ===== */
 function keyKpiStats(scopeStores, days){
-  var sales=0,budget=0,guests=0,food=0,labor=0;
+  var sales=0,budget=0,guests=0,food=0,labor=0,laborHours=0,dayHasActual={};
   var salesBud=0,guestBud=0,fcBud$=0,laborBud$=0,segSales$=0,hasGuestBud=false;
   var todayStr=new Date().toISOString().slice(0,10);
   var ym=(days&&days[0])?days[0].date.slice(0,7):'';
@@ -7108,6 +7192,8 @@ function keyKpiStats(scopeStores, days){
           var tl=(typeof toastLaborCostForDate==='function')?toastLaborCostForDate(s.id,d.date):0;
           if(tl>0) labor+=tl*(1+PAYROLL_TAX_RATE)+dailySalary*(1+PAYROLL_TAX_RATE)+dailyIns;
           else if(ov.labor!=null) labor+=ov.labor;
+          if(typeof toastLaborHoursForDate==='function') laborHours+=toastLaborHoursForDate(s.id,d.date);
+          dayHasActual[d.date]=1;
         }
       }
     });
@@ -7152,7 +7238,13 @@ function keyKpiStats(scopeStores, days){
     totoyaScope: totoyaScope,
     misoRate: tr.misoRate, ikuraRate: tr.ikuraRate,
     misoUp: tr.misoUp, misoAll: tr.misoAll, ikura: tr.ikura, ikuraBowls: tr.bowls,
-    misoTgt: misoTgt, ikuraTgt: ikuraTgt
+    misoTgt: misoTgt, ikuraTgt: ikuraTgt,
+    opDays: Object.keys(dayHasActual).length,
+    laborHoursTotal: laborHours,
+    avgFirstPerDay: (Object.keys(dayHasActual).length&&rs.has)?Math.round(rs.first/Object.keys(dayHasActual).length*10)/10:null,
+    avgRepeatPerDay: (Object.keys(dayHasActual).length&&rs.has)?Math.round(rs.repeat/Object.keys(dayHasActual).length*10)/10:null,
+    avgLaborHoursPerDay: (Object.keys(dayHasActual).length&&laborHours>0)?Math.round(laborHours/Object.keys(dayHasActual).length*10)/10:null,
+    avgLaborCostPerDay: (Object.keys(dayHasActual).length&&labor>0)?Math.round(labor/Object.keys(dayHasActual).length):null
   };
 }
 function sgn(n){ return (n>=0?'+':'')+n; }
@@ -7177,14 +7269,22 @@ function keyKpiCard(scopeStores, days, title){
   if(k.laborBudgetRate!=null){ lCol=k.laborRate<=0?'var(--muted)':(k.laborRate<=k.laborBudgetRate?'var(--green)':k.laborRate<=k.laborBudgetRate+3?'var(--yellow)':'var(--red)');
     lSub='目標 '+k.laborBudgetRate+'%'+(k.laborRate>0?'　'+sgn(Math.round((k.laborRate-k.laborBudgetRate)*10)/10)+'pt':''); }
   else { lCol=k.laborRate>0?(k.laborRate<=28?'var(--green)':k.laborRate<=31?'var(--yellow)':'var(--red)'):'var(--muted)'; lSub='目標 ≤28%'; }
+  // 人件費率の補足: 1日あたり平均労働時間・平均人件費
+  if(k.avgLaborHoursPerDay!=null||k.avgLaborCostPerDay!=null){
+    lSub += '<br><span style="font-size:9px;color:var(--muted)">労働'+(k.avgLaborHoursPerDay!=null?k.avgLaborHoursPerDay+'h':'—')+'/日 ・ '+(k.avgLaborCostPerDay!=null?'$'+k.avgLaborCostPerDay.toLocaleString():'—')+'/日</span>';
+  }
   // リピート率（前月比）
   var rSub = k.repeatHas ? ('Repeat '+k.repeat.toLocaleString()+' / 計'+k.rTotal.toLocaleString()+(k.repeatPrev!=null?'　前月'+k.repeatPrev+'%':'')) : '同期後に表示';
+  // リピート率の補足: 1日あたり平均ファーストタイマー数・平均リピーター数
+  if(k.repeatHas && (k.avgFirstPerDay!=null||k.avgRepeatPerDay!=null)){
+    rSub += '<br><span style="font-size:9px;color:var(--muted)">FT '+(k.avgFirstPerDay!=null?k.avgFirstPerDay:'—')+'/日 ・ RP '+(k.avgRepeatPerDay!=null?k.avgRepeatPerDay:'—')+'/日</span>';
+  }
   // Totoya専用（味噌汁アップグレード／いくらシャワー）
   var misoCol = k.misoRate==null?'var(--muted)':(k.misoTgt!=null?(k.misoRate>=k.misoTgt?'var(--green)':k.misoRate>=k.misoTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
   var ikuraCol = k.ikuraRate==null?'var(--muted)':(k.ikuraTgt!=null?(k.ikuraRate>=k.ikuraTgt?'var(--green)':k.ikuraRate>=k.ikuraTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
   var misoSub = (k.misoAll>0)?('②'+(k.misoUp||0).toLocaleString()+' / 全'+(k.misoAll||0).toLocaleString()+(k.misoTgt!=null?'　目標'+k.misoTgt+'%':'')):'同期後に表示';
   var ikuraSub = (k.ikuraBowls>0)?('③'+(k.ikura||0).toLocaleString()+' / 対象'+(k.ikuraBowls||0).toLocaleString()+(k.ikuraTgt!=null?'　目標'+k.ikuraTgt+'%':'')):'同期後に表示';
-  return `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>重要KPI${title?'・'+title:''}　<span style="font-size:10px;color:var(--muted);font-weight:400">実績／予算比較</span></div>
+  return `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>重要KPI${title?'・'+title:''}　<span style="font-size:10px;color:var(--muted);font-weight:400">実績／予算比較</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 10px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> KPI推移一覧</button></div>
     <div class="kpi-grid">
       ${kpi('売上', fmtUSD2(k.sales), '予算 '+fmtK(k.budget)+' / 達成'+k.achieve+'%', acCol)}
       ${kpi(k.unit==='丼'?'集客(丼数)':'集客', (k.guests||0).toLocaleString(), guestSub, guestCol)}
