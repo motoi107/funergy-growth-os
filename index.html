@@ -1118,8 +1118,8 @@ const KPI_DEFS = [
   {key:'laborPct',     label:'人件費率',       unit:'%',     dir:'down', scope:'both'},
   // ③ リピート率
   {key:'repeatRate',   label:'リピート率',     unit:'%',     dir:'up',   scope:'both', star:true},
-  // ④ ドリンク比率（居酒屋業態）
-  {key:'drinkRate',    label:'ドリンク比率',   unit:'%',     dir:'up',   scope:'izakaya'},
+  // ④ ドリンク比率（ドリンク売上÷総売上）。ToriTon/Tenkichi/Marujuu に適用
+  {key:'drinkRate',    label:'ドリンク比率',   unit:'%',     dir:'up',   scope:'drink'},
   // ⑤ トッピング/アップセル（食事業態）
   {key:'upsellRate',   label:'トッピング/アップセル比率', unit:'%', dir:'up', scope:'dining'},
   // ⑥ 味噌汁アップグレード率（Totoya専用）＝あおさ以外(エビ/カニ/サーモン/うどん)÷味噌汁全出数
@@ -1142,8 +1142,36 @@ function kpisForStore(store){
   return KPI_DEFS.filter(function(k){
     if (k.scope==='both' || k.scope===fmt) return true;
     if (k.scope==='totoya' && store && typeof isTotoyaStore==='function' && isTotoyaStore(store.id)) return true;
+    if (k.scope==='drink' && store && typeof isDrinkRateStore==='function' && isDrinkRateStore(store.id)) return true;
     return false;
   });
+}
+/* ドリンク比率KPIを表示する店舗（ToriTon/Tenkichi/Marujuu） */
+var DRINK_RATE_STORES = ['F01','F02','F05'];
+function isDrinkRateStore(id){ return DRINK_RATE_STORES.indexOf(id)>=0; }
+/* 指定店舗・月のドリンク売上/総売上（menu_mix出数×売価ベース） */
+function storeDrinkSales(storeId, period){
+  var mix=getMenuMix(storeId, period);
+  var recipes=(typeof activeRecipes==='function'?activeRecipes():getRecipes()).filter(function(r){return recipeInStore(r,storeId);});
+  var cfg=(typeof getKpiConfigFor==='function')?getKpiConfigFor(storeId):{drinkCats:[]};
+  var drinkCats=(cfg.drinkCats||[]).map(function(c){return String(c).toLowerCase();});
+  var total=0, drink=0;
+  recipes.forEach(function(r){
+    var q=parseFloat((mix.items||{})[r.id])||0; if(!q) return;
+    var s=q*(r.price||0); total+=s;
+    if(drinkCats.length && r.category && drinkCats.indexOf(String(r.category).toLowerCase())>=0) drink+=s;
+  });
+  return {drink:drink, total:total, hasCfg:drinkCats.length>0};
+}
+/* スコープ（複数店）のドリンク比率＝Σドリンク売上÷Σ総売上 */
+function drinkRateForScope(storeIds, period){
+  var d=0,t=0,has=false;
+  (storeIds||[]).forEach(function(sid){
+    if(typeof isDrinkRateStore==='function' && !isDrinkRateStore(sid)) return;
+    var ds=storeDrinkSales(sid, period);
+    if(ds.total>0){ d+=ds.drink; t+=ds.total; has=true; }
+  });
+  return has&&t>0 ? Math.round(d/t*1000)/10 : null;
 }
 /* 業態デフォルトKPI（編集後はm_format_kpiに保存） */
 function getFormatKpi(fmt){
@@ -1289,18 +1317,18 @@ function computeKpiActuals(storeId, offset){
   // --- メニューmix（出数）ベース: 原価率・ドリンク比率・アップセル比率 ---
   var mix = getMenuMix(storeId, period);
   var recipes = (typeof activeRecipes==='function'?activeRecipes():getRecipes()).filter(function(r){return recipeInStore(r, storeId);});
-  var totalQty=0, totalSales=0, totalCost=0, drinkQty=0, upsellQty=0;
+  var totalQty=0, totalSales=0, totalCost=0, drinkQty=0, drinkSales=0, upsellQty=0;
   var cfg = getKpiConfigFor(storeId);
   var drinkCats = (cfg.drinkCats||[]).map(c=>String(c).toLowerCase());
   var upsellGuids = cfg.upsellGuids||[];
   recipes.forEach(r=>{
     var q = parseFloat((mix.items||{})[r.id])||0; if(!q) return;
     totalQty += q; totalSales += q*(r.price||0); totalCost += q*calcRecipeCost(r);
-    if (drinkCats.length && r.category && drinkCats.includes(String(r.category).toLowerCase())) drinkQty += q;
+    if (drinkCats.length && r.category && drinkCats.includes(String(r.category).toLowerCase())) { drinkQty += q; drinkSales += q*(r.price||0); }
     if (upsellGuids.length && r.toastGuid && upsellGuids.includes(r.toastGuid)) upsellQty += q;
   });
   if (totalSales>0) out.foodCost = Math.round(totalCost/totalSales*1000)/10;
-  if (totalQty>0 && drinkCats.length) out.drinkRate = Math.round(drinkQty/totalQty*1000)/10;
+  if (totalSales>0 && drinkCats.length) out.drinkRate = Math.round(drinkSales/totalSales*1000)/10;
 
   // Totoya専用: 味噌汁アップグレード率／いくらシャワー注文率（出数＋手入力フォールバック）
   if (typeof isTotoyaStore==='function' && isTotoyaStore(storeId)){
@@ -5973,6 +6001,12 @@ function renderMonthlySummary(){
   }
   var misoColMs = trMs.misoRate==null?'var(--muted)':(msMisoTgt!=null?(trMs.misoRate>=msMisoTgt?'var(--green)':trMs.misoRate>=msMisoTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
   var ikuraColMs = trMs.ikuraRate==null?'var(--muted)':(msIkuraTgt!=null?(trMs.ikuraRate>=msIkuraTgt?'var(--green)':trMs.ikuraRate>=msIkuraTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
+  // ドリンク比率（スコープが全てドリンク対象店のとき）
+  var drinkScopeMs = msStoreIds.length>0 && msStoreIds.every(function(id){ return (typeof isDrinkRateStore==='function') && isDrinkRateStore(id); });
+  var drinkRateMs = drinkScopeMs ? drinkRateForScope(msStoreIds, mi.y+'.'+(mi.m+1)) : null;
+  var drinkTgtMs=null;
+  if(drinkScopeMs){ var _dt=0,_dc=0; msStoreIds.forEach(function(id){ var tg=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(id, msOffset)||{}):{}; if(tg.drinkRate!=null){_dt+=tg.drinkRate;_dc++;} }); if(_dc) drinkTgtMs=Math.round(_dt/_dc*10)/10; }
+  var drinkColMs = drinkRateMs==null?'var(--muted)':(drinkTgtMs!=null?(drinkRateMs>=drinkTgtMs?'var(--green)':drinkRateMs>=drinkTgtMs*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
   html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
     +tile('売上', fmtK(agg.sales), '予算 '+fmtK(agg.budget)+'　'+msDelta(agg,prevAgg,'sales')+' 前月')
     +tile('予算達成', agg.achieve+'%', scopeName+'・'+mi.label, acCol)
@@ -5981,6 +6015,7 @@ function renderMonthlySummary(){
     +tile('原価率(FC)', agg.fcRate>0?agg.fcRate+'%':'—', '前月 '+(prevAgg.fcRate||'—')+'%　'+msDelta(agg,prevAgg,'fcRate',true), fcCol)
     +tile('人件費率', agg.laborRate>0?agg.laborRate+'%':'—', '前月 '+(prevAgg.laborRate||'—')+'%　'+msDelta(agg,prevAgg,'laborRate',true), lCol)
     +tile('粗利', fmtK(agg.grossProfit), '売上-原価-人件費　'+(agg.gpRate||0)+'%')
+    +(drinkScopeMs?tile('ドリンク比率', drinkRateMs==null?'—':drinkRateMs+'%', 'ドリンク売上÷総売上'+(drinkTgtMs!=null?'　目標'+drinkTgtMs+'%':''), drinkColMs):'')
     +(totoyaScopeMs?tile('味噌汁UP率 ★', trMs.misoRate==null?'—':trMs.misoRate+'%', trMs.misoAll>0?('②'+(trMs.misoUp||0).toLocaleString()+' / 全'+(trMs.misoAll||0).toLocaleString()+(msMisoTgt!=null?'　目標'+msMisoTgt+'%':'')):'同期後に表示', misoColMs):'')
     +(totoyaScopeMs?tile('いくらシャワー率 ★', trMs.ikuraRate==null?'—':trMs.ikuraRate+'%', trMs.bowls>0?('③'+(trMs.ikura||0).toLocaleString()+' / 対象'+(trMs.bowls||0).toLocaleString()+(msIkuraTgt!=null?'　目標'+msIkuraTgt+'%':'')):'同期後に表示', ikuraColMs):'')
     +'</div>';
@@ -7223,6 +7258,11 @@ function keyKpiStats(scopeStores, days){
     if(mc) misoTgt=Math.round(mt/mc*10)/10;
     if(ic) ikuraTgt=Math.round(it/ic*10)/10;
   }
+  // ドリンク比率（スコープが全てドリンク対象店のとき）
+  var drinkScope = (scopeStores&&scopeStores.length>0) && scopeStores.every(function(s){ return (typeof isDrinkRateStore==='function') && isDrinkRateStore(s.id); });
+  var drinkRateV = (drinkScope && tperiod) ? drinkRateForScope(scopeStores.map(function(s){return s.id;}), tperiod) : null;
+  var drinkTgt=null;
+  if(drinkScope){ var _dt=0,_dc=0; scopeStores.forEach(function(s){ var tg=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(s.id, ofst)||{}):{}; if(tg.drinkRate!=null){_dt+=tg.drinkRate;_dc++;} }); if(_dc) drinkTgt=Math.round(_dt/_dc*10)/10; }
   return {
     sales:sales, budget:budget, guests:guests, food:food, labor:labor, unit: allBowls?'丼':'名',
     achieve: budget?Math.round(sales/budget*1000)/10:0,
@@ -7245,7 +7285,8 @@ function keyKpiStats(scopeStores, days){
     avgFirstPerDay: (Object.keys(dayHasActual).length&&rs.has)?Math.round(rs.first/Object.keys(dayHasActual).length*10)/10:null,
     avgRepeatPerDay: (Object.keys(dayHasActual).length&&rs.has)?Math.round(rs.repeat/Object.keys(dayHasActual).length*10)/10:null,
     avgLaborHoursPerDay: (Object.keys(dayHasActual).length&&laborHours>0)?Math.round(laborHours/Object.keys(dayHasActual).length*10)/10:null,
-    avgLaborCostPerDay: (Object.keys(dayHasActual).length&&labor>0)?Math.round(labor/Object.keys(dayHasActual).length):null
+    avgLaborCostPerDay: (Object.keys(dayHasActual).length&&labor>0)?Math.round(labor/Object.keys(dayHasActual).length):null,
+    drinkScope: drinkScope, drinkRate: drinkRateV, drinkTgt: drinkTgt
   };
 }
 function sgn(n){ return (n>=0?'+':'')+n; }
@@ -7285,6 +7326,9 @@ function keyKpiCard(scopeStores, days, title){
   var ikuraCol = k.ikuraRate==null?'var(--muted)':(k.ikuraTgt!=null?(k.ikuraRate>=k.ikuraTgt?'var(--green)':k.ikuraRate>=k.ikuraTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
   var misoSub = (k.misoAll>0)?('②'+(k.misoUp||0).toLocaleString()+' / 全'+(k.misoAll||0).toLocaleString()+(k.misoTgt!=null?'　目標'+k.misoTgt+'%':'')):'同期後に表示';
   var ikuraSub = (k.ikuraBowls>0)?('③'+(k.ikura||0).toLocaleString()+' / 対象'+(k.ikuraBowls||0).toLocaleString()+(k.ikuraTgt!=null?'　目標'+k.ikuraTgt+'%':'')):'同期後に表示';
+  // ドリンク比率（ToriTon/Tenkichi/Marujuu）
+  var drinkCol = k.drinkRate==null?'var(--muted)':(k.drinkTgt!=null?(k.drinkRate>=k.drinkTgt?'var(--green)':k.drinkRate>=k.drinkTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
+  var drinkSub = k.drinkRate!=null?('ドリンク売上÷総売上'+(k.drinkTgt!=null?'　目標'+k.drinkTgt+'%':'')):'メニュー出数待ち';
   return `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>重要KPI${title?'・'+title:''}　<span style="font-size:10px;color:var(--muted);font-weight:400">実績／予算比較</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 10px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> KPI推移一覧</button></div>
     <div class="kpi-grid">
       ${kpi('売上', fmtUSD2(k.sales), '予算 '+fmtK(k.budget)+' / 達成'+k.achieve+'%', acCol)}
@@ -7293,6 +7337,7 @@ function keyKpiCard(scopeStores, days, title){
       ${kpi('リピート率', k.repeatRate==null?'—':k.repeatRate+'%', rSub, rCol)}
       ${kpi('原価率', k.fcRate>0?k.fcRate+'%':'—', fcSub, fcCol)}
       ${kpi('人件費率', k.laborRate>0?k.laborRate+'%':'—', lSub, lCol)}
+      ${k.drinkScope?kpi('ドリンク比率', k.drinkRate==null?'—':k.drinkRate+'%', drinkSub, drinkCol):''}
       ${k.totoyaScope?kpi('味噌汁UP率', k.misoRate==null?'—':k.misoRate+'%', misoSub, misoCol):''}
       ${k.totoyaScope?kpi('いくらシャワー率', k.ikuraRate==null?'—':k.ikuraRate+'%', ikuraSub, ikuraCol):''}
     </div>
