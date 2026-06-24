@@ -16937,37 +16937,44 @@ function pipeOrgChip(e){
     +'<div style="margin-top:2px;white-space:nowrap"><span class="tag" style="font-size:8px;background:var(--surface);color:var(--tm);border:1px solid var(--border)">'+g+'</span>'+lvtxt+'</div>'
   +'</div>';
 }
+function pipeTreeLevel(label, chipsHtml){
+  return '<div style="text-align:center"><div style="font-size:8px;color:var(--muted);margin-bottom:3px;font-weight:600">'+label+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center">'+chipsHtml+'</div></div>';
+}
+function pipeConnector(){ return '<div style="width:2px;height:16px;background:var(--border);margin:3px auto"></div>'; }
 function renderPipeOrg(stores){
   var all=getEmployees().filter(function(e){ return e.status!=='退職' && e.role!=='ceo' && gradeNum(empGrade(e))>=2; });
   function lvN(e){ var i=empEvalInfo(e); return i.hasData?i.level.n:0; }
   function byGrade(a,b){ return gradeNum(empGrade(b))-gradeNum(empGrade(a)) || (lvN(b)-lvN(a)); }
   var html='<div style="font-weight:700;font-size:14px;margin:6px 2px 6px"><i class="ti ti-sitemap" style="color:var(--accent)"></i> 組織図（G2以上の配置・人的レベル）</div>';
-  html+='<div style="font-size:10px;color:var(--muted);margin:0 2px 8px;line-height:1.6">L＝Career Score/スキルから算出した習熟レベル。<span style="color:var(--green)">緑=L4+</span> / <span style="color:var(--accent)">橙=L3</span> / <span style="color:var(--yellow)">黄=L2</span> / <span style="color:var(--red)">赤=L1</span> / Lv—=未評価。各店の「平均L」が人的レベルの目安。</div>';
-  var apex=all.filter(function(e){ return gradeNum(empGrade(e))>=6; }).sort(byGrade);
-  if(apex.length){
-    html+='<div class="card" style="text-align:center;border-left:3px solid var(--purple)"><div style="font-size:11px;color:var(--muted);margin-bottom:6px">本部・エリア（G6+）</div>'
-      +'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center">'+apex.map(pipeOrgChip).join('')+'</div></div>';
+  html+='<div style="font-size:10px;color:var(--muted);margin:0 2px 8px;line-height:1.6">階層型（上位グレード→下位）。L＝習熟レベル（<span style="color:var(--green)">緑L4+</span>/<span style="color:var(--accent)">橙L3</span>/<span style="color:var(--yellow)">黄L2</span>/<span style="color:var(--red)">赤L1</span>/Lv—未評価）。各店の「平均L」が人的レベルの目安。</div>';
+  // 頂点：本部・エリア（G7→G6）
+  var g7=all.filter(function(e){ return gradeNum(empGrade(e))===7; }).sort(byGrade);
+  var g6=all.filter(function(e){ return gradeNum(empGrade(e))===6; }).sort(byGrade);
+  if(g7.length||g6.length){
+    var ax=[];
+    if(g7.length) ax.push(pipeTreeLevel('G7 General Manager', g7.map(pipeOrgChip).join('')));
+    if(g6.length) ax.push(pipeTreeLevel('G6 Area Manager / コーポレート', g6.map(pipeOrgChip).join('')));
+    html+='<div class="card" style="border-left:3px solid var(--purple)"><div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:8px">本部・エリア</div>'+ax.join(pipeConnector())+'</div>';
+    html+='<div style="text-align:center;color:var(--muted);font-size:11px;margin:2px 0 6px"><i class="ti ti-arrow-down"></i> 各店舗</div>';
   }
-  var tierLabels={5:'G5 店長 / 料理長',4:'G4 ストアリーダー',3:'G3 サーバー/キッチンL',2:'G2 クルーリーダー'};
+  var tiers=[{g:5,l:'G5 店長 / 料理長'},{g:4,l:'G4 ストアリーダー'},{g:3,l:'G3 サーバー / キッチンリーダー'},{g:2,l:'G2 クルーリーダー'}];
   stores.forEach(function(s){
     var staff=all.filter(function(e){ var n=gradeNum(empGrade(e)); return e.store===s.id && n>=2 && n<=5; });
     var withData=staff.map(function(e){ return empEvalInfo(e); }).filter(function(i){ return i.hasData; });
     var avgLv= withData.length? (withData.reduce(function(a,b){ return a+b.level.n; },0)/withData.length) : null;
     var lvColor= avgLv==null?'var(--muted)':(avgLv>=3.5?'var(--green)':avgLv>=2.5?'var(--accent)':avgLv>=1.5?'var(--yellow)':'var(--red)');
-    var body='';
-    [5,4,3,2].forEach(function(t){
-      var ppl=staff.filter(function(e){ return gradeNum(empGrade(e))===t; }).sort(byGrade);
-      if(!ppl.length) return;
-      body+='<div style="display:flex;align-items:flex-start;gap:8px;margin:7px 0">'
-        +'<div style="font-size:9px;color:var(--muted);width:118px;flex-shrink:0;padding-top:4px">'+tierLabels[t]+'</div>'
-        +'<div style="display:flex;gap:6px;flex-wrap:wrap;flex:1">'+ppl.map(pipeOrgChip).join('')+'</div></div>';
+    var levels=[];
+    tiers.forEach(function(t){
+      var ppl=staff.filter(function(e){ return gradeNum(empGrade(e))===t.g; }).sort(byGrade);
+      if(ppl.length) levels.push(pipeTreeLevel(t.l, ppl.map(pipeOrgChip).join('')));
     });
     html+='<div class="card">'
-      +'<div style="display:flex;justify-content:space-between;align-items:center">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:'+(levels.length?'10px':'0')+'">'
         +'<div style="font-weight:700"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</div>'
         +'<div style="font-size:11px;color:var(--muted)">G2+ <b>'+staff.length+'</b>名'+(avgLv!=null?(' · 平均 <b style="color:'+lvColor+'">L'+avgLv.toFixed(1)+'</b>'):'')+'</div>'
       +'</div>'
-      +(staff.length? body : '<div style="font-size:11px;color:var(--muted);margin-top:6px">G2以上の配置なし。</div>')
+      +(levels.length? levels.join(pipeConnector()) : '<div style="font-size:11px;color:var(--muted)">G2以上の配置なし。</div>')
     +'</div>';
   });
   return html;
