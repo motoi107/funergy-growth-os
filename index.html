@@ -1453,6 +1453,7 @@ const NAV_ITEMS = [
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','am','sl']},
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am','sl']},
+  {id:'store_power', label:'店舗総合力',    icon:'ti-chart-radar',      roles:['ceo','gm','am']},
   {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'attendance',  label:'勤怠データ', icon:'ti-clock-check',      roles:['ceo','gm','office','am','sl']},
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
@@ -1482,7 +1483,7 @@ const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
     children:['dashboard','store_cmd']},
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
-    children:['budget','monthly','labor','foodcost','kpi_master']},
+    children:['budget','monthly','store_power','labor','foodcost','kpi_master']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','invoice','acct_review']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
@@ -3366,7 +3367,7 @@ var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_h
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template'];
+  'offboardings','offboard_template','store_fixed_costs'];
 var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
 function isOpSyncKey(key){
@@ -4205,6 +4206,7 @@ function renderPage(page) {
     case 'store_ops_settings': el.innerHTML = renderStoreOpsSettings(); break;
     case 'budget':       el.innerHTML = renderBudget(); break;
     case 'monthly':      el.innerHTML = renderMonthlySummary(); break;
+    case 'store_power':  el.innerHTML = renderStorePower(); break;
     case 'foodcost':     el.innerHTML = renderFoodcost(); break;
     case 'menu':         el.innerHTML = renderMenu(); break;
     case 'recipe':       el.innerHTML = renderRecipe(); break;
@@ -5948,6 +5950,242 @@ function renderKpiTrendMatrix(){
   html+='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--muted);font-size:11px">'+th+'</tr></thead><tbody>'+rows+'</tbody></table>';
   html+='</div>';
   return html;
+}
+
+/* ============================================================
+   店舗総合力サマリー（予実・収益・客質・業態KPI・スタッフ力を横断比較）
+   ============================================================ */
+var spOffset = 0; // 月オフセット（0=今月）
+function setSpOffset(d){ spOffset += d; renderPage('store_power'); }
+function getStoreFixedCosts(){ return ls('store_fixed_costs', {}); }
+function spFormatLabel(s){
+  if (typeof isTotoyaStore==='function' && isTotoyaStore(s.id)) return 'Totoya（ポケ丼）';
+  if (s.format==='izakaya') return '居酒屋';
+  return 'ダイニング';
+}
+function spStaffStats(storeId){
+  var emps = getEmployees().filter(function(e){
+    return e.status==='在籍' && (e.store===storeId || (e.support||[]).includes(storeId)) && ['ceo','gm','office','am'].indexOf(e.role)<0;
+  });
+  var total = emps.length;
+  var shain = emps.filter(function(e){ return e.emp==='正社員'; }).length;
+  var leader = emps.some(function(e){ return e.isSL || /Leader|リーダー|Manager/i.test(e.title||''); });
+  var stepSum=0, stepN=0;
+  emps.forEach(function(e){ var st=parseInt(e.step,10); if(st>=1&&st<=3){ stepSum+=st; stepN++; } });
+  return { total:total, shain:shain, shainRate: total?Math.round(shain/total*100):0, leader:leader, avgStep: stepN?stepSum/stepN:0 };
+}
+/* 1店舗の総合力を算出 */
+function computeStorePower(s, days, allInact, allUnreg){
+  var k = keyKpiStats([s], days);
+  var staff = spStaffStats(s.id);
+  staff.inact = (allInact||[]).filter(function(x){ return x.emp.store===s.id || (x.emp.support||[]).includes(s.id); }).length;
+  staff.unreg = (allUnreg||[]).filter(function(x){ return x.stores.indexOf(s.id)>=0; }).length;
+  // 予実達成
+  var dAchieve = k.budget>0 ? Math.min(100, Math.round(k.achieve)) : null;
+  // 収益力（原価率＋人件費率 = プライムコスト。60%以下で満点、上がるほど減点）
+  var prime = (k.fcRate||0)+(k.laborRate||0);
+  var dProfit = k.sales>0 ? Math.max(0, Math.min(100, Math.round(100 - Math.max(0, prime-60)*2.5))) : null;
+  // 客質（リピート率＋客単価達成）
+  var repeatScore = k.repeatRate!=null ? Math.max(0,Math.min(100, Math.round(k.repeatRate*2))) : null;
+  var ppaScore = (k.ppaBudget&&k.ppa) ? Math.max(0,Math.min(100, Math.round(k.ppa/k.ppaBudget*100))) : null;
+  var qParts=[]; if(repeatScore!=null)qParts.push(repeatScore); if(ppaScore!=null)qParts.push(ppaScore);
+  var dQuality = qParts.length? Math.round(qParts.reduce(function(a,b){return a+b;},0)/qParts.length) : null;
+  // 業態KPI
+  var dBiz=null, bizLabel='—', bizActual='—';
+  if(k.totoyaScope){
+    bizLabel='味噌UP/いくら';
+    var parts=[];
+    if(k.misoTgt && k.misoRate!=null) parts.push(Math.min(120, k.misoRate/k.misoTgt*100));
+    if(k.ikuraTgt && k.ikuraRate!=null) parts.push(Math.min(120, k.ikuraRate/k.ikuraTgt*100));
+    if(parts.length) dBiz=Math.max(0,Math.min(100, Math.round(parts.reduce(function(a,b){return a+b;},0)/parts.length)));
+    bizActual = (k.misoRate!=null?('味噌'+k.misoRate+'%'):'')+(k.ikuraRate!=null?(' いくら'+k.ikuraRate+'%'):'') || '—';
+  } else if(k.drinkScope){
+    bizLabel='ドリンク比率';
+    if(k.drinkTgt && k.drinkRate!=null) dBiz=Math.max(0,Math.min(100, Math.round(Math.min(120, k.drinkRate/k.drinkTgt*100))));
+    bizActual = k.drinkRate!=null?(k.drinkRate+'%'):'—';
+  }
+  // スタッフ力
+  var dStaff=null;
+  if(staff.total>0){
+    var levelScore = Math.round(staff.avgStep/3*100);
+    var shainScore = Math.min(100, staff.shainRate);
+    var leaderScore = staff.leader?100:0;
+    var base = 0.4*levelScore + 0.3*shainScore + 0.3*leaderScore;
+    dStaff = Math.max(0, Math.min(100, Math.round(base - (staff.inact+staff.unreg)*5)));
+  }
+  var dims = [
+    {key:'achieve', label:'予実達成', short:'予実', score:dAchieve, w:0.30},
+    {key:'profit',  label:'収益力',   short:'収益', score:dProfit,  w:0.25},
+    {key:'quality', label:'客質',     short:'客質', score:dQuality, w:0.15},
+    {key:'biz',     label:'業態KPI',  short:'業態', score:dBiz,     w:0.10},
+    {key:'staff',   label:'スタッフ力', short:'人材', score:dStaff,  w:0.20}
+  ];
+  var wsum=0, ssum=0;
+  dims.forEach(function(d){ if(d.score!=null){ wsum+=d.w; ssum+=d.score*d.w; } });
+  var total = wsum>0 ? Math.round(ssum/wsum) : null;
+  // 固定費・営業利益
+  var fc = getStoreFixedCosts()[s.id] || {};
+  var fixedTotal = (Number(fc.rent)||0)+(Number(fc.utilities)||0)+(Number(fc.other)||0);
+  var hasFixed = fixedTotal>0;
+  var gross=null, grossRate=null, opProfit=null, opMargin=null;
+  if(k.sales>0){
+    gross = k.sales - (k.food||0) - (k.labor||0);
+    grossRate = Math.round(gross/k.sales*1000)/10;
+    if(hasFixed){ opProfit = gross - fixedTotal; opMargin = Math.round(opProfit/k.sales*1000)/10; }
+  }
+  // 強み・弱み
+  var strong = dims.filter(function(d){ return d.score!=null && d.score>=75; }).map(function(d){ return d.label; });
+  var weak   = dims.filter(function(d){ return d.score!=null && d.score<=50; }).map(function(d){ return d.label; });
+  // 示唆
+  var sug=[];
+  if(dAchieve!=null && dAchieve>=90 && dStaff!=null && dStaff<=55) sug.push('繁忙だが戦力が薄い → 増員・採用候補');
+  if(dStaff!=null && dStaff>=75 && dAchieve!=null && dAchieve<=70) sug.push('戦力に余裕 → 応援・異動の出し手候補');
+  if(dProfit!=null && dProfit<=50) sug.push('原価＋人件費が高め → シフト最適化・原価見直し');
+  if(!staff.leader && staff.total>0) sug.push('店舗リーダー不在 → 育成・配置が必要');
+  if((staff.inact+staff.unreg)>0) sug.push('勤怠の未登録/非アクティブあり → 整備');
+  return { s:s, k:k, staff:staff, dims:dims, total:total, bizLabel:bizLabel, bizActual:bizActual,
+           prime:prime, gross:gross, grossRate:grossRate, hasFixed:hasFixed, fixedTotal:fixedTotal, opProfit:opProfit, opMargin:opMargin,
+           strong:strong, weak:weak, sug:sug };
+}
+function spCol(v){ if(v==null) return 'var(--muted)'; return v>=75?'var(--green)':(v>=55?'var(--yellow)':'var(--red)'); }
+function spCell(v){ return '<td style="text-align:center;font-weight:600;color:'+spCol(v)+'">'+(v==null?'—':v)+'</td>'; }
+/* 5軸レーダー */
+function spRadar(dims, color){
+  var n=dims.length, cx=90, cy=82, R=56;
+  function pt(i,r){ var a=-Math.PI/2 + i*2*Math.PI/n; return [cx+r*Math.cos(a), cy+r*Math.sin(a)]; }
+  var grid='';
+  [0.25,0.5,0.75,1].forEach(function(f){
+    var pts=[]; for(var i=0;i<n;i++){ var p=pt(i,R*f); pts.push(p[0].toFixed(1)+','+p[1].toFixed(1)); }
+    grid+='<polygon points="'+pts.join(' ')+'" fill="none" stroke="var(--border)" stroke-width="0.7"/>';
+  });
+  var axes='';
+  for(var i=0;i<n;i++){ var p=pt(i,R); axes+='<line x1="'+cx+'" y1="'+cy+'" x2="'+p[0].toFixed(1)+'" y2="'+p[1].toFixed(1)+'" stroke="var(--border)" stroke-width="0.6"/>'; }
+  var poly=[];
+  for(var i=0;i<n;i++){ var v=(dims[i].score!=null?dims[i].score:0)/100; var p=pt(i, R*Math.max(0.02,Math.min(1,v))); poly.push(p[0].toFixed(1)+','+p[1].toFixed(1)); }
+  var labels='';
+  for(var i=0;i<n;i++){ var lp=pt(i,R+12); var anchor=Math.abs(lp[0]-cx)<6?'middle':(lp[0]<cx?'end':'start'); labels+='<text x="'+lp[0].toFixed(1)+'" y="'+(lp[1]+3).toFixed(1)+'" font-size="8.5" fill="var(--muted)" text-anchor="'+anchor+'">'+dims[i].short+'</text>'; }
+  return '<svg viewBox="0 0 180 172" style="width:100%;max-width:220px;display:block;margin:0 auto">'+grid+axes+'<polygon points="'+poly.join(' ')+'" fill="'+color+'33" stroke="'+color+'" stroke-width="1.6"/>'+labels+'</svg>';
+}
+function renderStorePower(){
+  if(['ceo','gm','am'].indexOf(curRole)<0) return '<div class="card">権限がありません。</div>';
+  var mi = msMonthInfo(spOffset);
+  var days = mi.days;
+  var stores = getVisibleStores().filter(function(s){ return s.active!==false; });
+  var allInact = (typeof inactiveStaff==='function')?inactiveStaff(30):[];
+  var allUnreg = (typeof unregisteredClockIns==='function')?unregisteredClockIns(30):[];
+  var rows = stores.map(function(s){ return computeStorePower(s, days, allInact, allUnreg); });
+  // 順位（総合スコアあり→降順、なし→末尾）
+  var ranked = rows.slice().sort(function(a,b){
+    if(a.total==null && b.total==null) return 0;
+    if(a.total==null) return 1; if(b.total==null) return -1;
+    return b.total-a.total;
+  });
+  ranked.forEach(function(r,i){ r.rank = r.total==null?null:(i+1); });
+
+  var html = '<div class="section-header"><div><div class="section-title">店舗総合力サマリー</div><div class="section-sub">'+mi.label+' · '+stores.length+'店舗</div></div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openFixedCostModal()"><i class="ti ti-building-bank"></i> 固定費設定</button></div>';
+  // 月セレクタ
+  html += '<div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:10px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="setSpOffset(-1)"><i class="ti ti-chevron-left"></i></button>'
+    +'<span style="font-weight:700">'+mi.label+'</span>'
+    +'<button class="btn btn-secondary btn-sm" onclick="setSpOffset(1)" '+(spOffset>=0?'disabled style="opacity:.4"':'')+'><i class="ti ti-chevron-right"></i></button></div>';
+  // 凡例
+  html += '<div class="card" style="background:var(--surface)"><div style="font-size:11px;color:var(--muted);line-height:1.7">'
+    +'<b>総合スコア</b>＝予実達成30% / 収益力25% / スタッフ力20% / 客質15% / 業態KPI10%（データの無い指標は除外して再計算）。'
+    +'<br><b>各指標</b>：予実達成＝売上÷予算。収益力＝原価率＋人件費率（低いほど高得点）。客質＝リピート率＋客単価達成。業態KPI＝Totoya:味噌UP/いくら、居酒屋系:ドリンク比率（目標比）。スタッフ力＝平均レベル40%＋社員比率30%＋リーダー有無30%（非アクティブ/未登録は減点）。'
+    +'<br>色：<span style="color:var(--green)">緑75+</span> / <span style="color:var(--yellow)">黄55-74</span> / <span style="color:var(--red)">赤55未満</span> / — 該当データなし。'
+    +'</div></div>';
+  // ===== 比較表 =====
+  html += '<div class="card"><div class="card-title"><i class="ti ti-table" style="color:var(--accent)"></i> 総合力ランキング</div>'
+    +'<div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:12px;min-width:560px"><thead><tr>'
+    +'<th style="text-align:center">順位</th><th>店舗</th><th style="text-align:center">予実</th><th style="text-align:center">収益</th><th style="text-align:center">客質</th><th style="text-align:center">業態</th><th style="text-align:center">人材</th><th style="text-align:center">総合</th></tr></thead><tbody>';
+  ranked.forEach(function(r){
+    var d={}; r.dims.forEach(function(x){ d[x.key]=x.score; });
+    var medal = r.rank===1?'🥇':r.rank===2?'🥈':r.rank===3?'🥉':(r.rank!=null?r.rank:'—');
+    html += '<tr><td style="text-align:center;font-weight:700">'+medal+'</td>'
+      +'<td><span class="store-dot" style="background:'+r.s.color+'"></span>'+escapeHtml(r.s.name)+'<div style="font-size:9px;color:var(--muted)">'+spFormatLabel(r.s)+'</div></td>'
+      +spCell(d.achieve)+spCell(d.profit)+spCell(d.quality)+spCell(d.biz)+spCell(d.staff)
+      +'<td style="text-align:center;font-weight:800;font-size:14px;color:'+spCol(r.total)+'">'+(r.total==null?'—':r.total)+'</td></tr>';
+  });
+  html += '</tbody></table></div></div>';
+  // ===== 業態別 詳細カード（レーダー＋数値＋示唆）=====
+  var groups={};
+  stores.forEach(function(s){ var g=spFormatLabel(s); (groups[g]=groups[g]||[]).push(s.id); });
+  Object.keys(groups).forEach(function(g){
+    html += '<div style="font-weight:700;font-size:14px;margin:14px 2px 6px"><i class="ti ti-layout-grid" style="color:var(--accent)"></i> '+escapeHtml(g)+'</div>';
+    groups[g].forEach(function(sid){
+      var r = rows.find(function(x){ return x.s.id===sid; });
+      var k=r.k, st=r.staff;
+      var profitLine = r.hasFixed
+        ? ('営業利益 '+(r.opProfit>=0?'':'-')+'$'+Math.abs(Math.round(r.opProfit)).toLocaleString()+'（'+r.opMargin+'%）')
+        : '<span style="color:var(--muted)">営業利益：固定費 未入力</span>';
+      html += '<div class="card">'
+        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+          +'<div><div style="font-weight:700;font-size:15px"><span class="store-dot" style="background:'+r.s.color+'"></span>'+escapeHtml(r.s.name)+'</div>'
+          +'<div style="font-size:11px;color:var(--muted)">'+(r.rank!=null?('総合 '+r.rank+'位'):'')+'</div></div>'
+          +'<div style="text-align:center"><div style="font-size:26px;font-weight:800;line-height:1;color:'+spCol(r.total)+'">'+(r.total==null?'—':r.total)+'</div><div style="font-size:9px;color:var(--muted)">総合スコア</div></div>'
+        +'</div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:6px">'
+          +'<div style="flex:1;min-width:180px">'+spRadar(r.dims, r.s.color)+'</div>'
+          +'<div style="flex:1;min-width:200px;font-size:11.5px">'
+            +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 10px">'
+              +'<div>売上：<b>$'+Math.round(k.sales).toLocaleString()+'</b></div>'
+              +'<div>達成：<b style="color:'+spCol(k.budget>0?Math.min(100,k.achieve):null)+'">'+(k.budget>0?k.achieve+'%':'—')+'</b></div>'
+              +'<div>原価率：<b>'+(k.sales>0?k.fcRate+'%':'—')+'</b></div>'
+              +'<div>人件費率：<b>'+(k.sales>0?k.laborRate+'%':'—')+'</b></div>'
+              +'<div>粗利率：<b>'+(r.grossRate!=null?r.grossRate+'%':'—')+'</b></div>'
+              +'<div>客単価：<b>'+(k.ppa?'$'+k.ppa.toFixed(2):'—')+'</b></div>'
+              +'<div>リピート：<b>'+(k.repeatRate!=null?k.repeatRate+'%':'—')+'</b></div>'
+              +'<div>'+escapeHtml(r.bizLabel)+'：<b>'+escapeHtml(r.bizActual)+'</b></div>'
+            +'</div>'
+            +'<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">'+profitLine+'</div>'
+            +'<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);color:var(--muted)">'
+              +'在籍 <b>'+st.total+'</b>名 · 社員比率 <b>'+st.shainRate+'%</b> · リーダー '+(st.leader?'<b style="color:var(--green)">有</b>':'<b style="color:var(--red)">無</b>')
+              +(st.inact?(' · <span style="color:var(--orange)">非アクティブ'+st.inact+'</span>'):'')+(st.unreg?(' · <span style="color:var(--orange)">未登録'+st.unreg+'</span>'):'')+'</div>'
+          +'</div>'
+        +'</div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">'
+          +r.strong.map(function(x){ return '<span class="tag tag-green" style="font-size:9px">強み: '+x+'</span>'; }).join('')
+          +r.weak.map(function(x){ return '<span class="tag tag-red" style="font-size:9px">弱み: '+x+'</span>'; }).join('')
+        +'</div>'
+        +(r.sug.length?('<div style="margin-top:8px;font-size:11.5px;background:var(--surface);border-radius:8px;padding:8px;line-height:1.7">'
+          +'<b><i class="ti ti-bulb" style="color:var(--yellow)"></i> 配置・採用の示唆</b><br>'+r.sug.map(function(x){return '・'+escapeHtml(x);}).join('<br>')+'</div>'):'')
+        +'</div>';
+    });
+  });
+  html += '<div style="font-size:10px;color:var(--muted);margin:6px 2px 24px;line-height:1.6">※ スコアは現状データに基づく簡易指標です。固定費を入力すると営業利益が反映されます。当月は途中集計のため、確定比較は前月以前を推奨。</div>';
+  return html;
+}
+/* 固定費入力モーダル（枠） */
+function openFixedCostModal(){
+  var map = getStoreFixedCosts();
+  var stores = getVisibleStores().filter(function(s){ return s.active!==false; });
+  var rows = stores.map(function(s){
+    var fc = map[s.id]||{};
+    return '<div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px">'
+      +'<div style="font-weight:600;font-size:13px;margin-bottom:6px"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</div>'
+      +'<div class="form-row"><div class="form-group"><label class="form-label">家賃 ($/月)</label><input class="form-input" id="fc-rent-'+s.id+'" type="number" placeholder="0" value="'+(fc.rent||'')+'"></div>'
+      +'<div class="form-group"><label class="form-label">光熱費 ($/月)</label><input class="form-input" id="fc-util-'+s.id+'" type="number" placeholder="0" value="'+(fc.utilities||'')+'"></div></div>'
+      +'<div class="form-row"><div class="form-group"><label class="form-label">その他固定費 ($/月)</label><input class="form-input" id="fc-other-'+s.id+'" type="number" placeholder="0" value="'+(fc.other||'')+'"></div>'
+      +'<div class="form-group"><label class="form-label">メモ</label><input class="form-input" id="fc-note-'+s.id+'" placeholder="保険・リース等" value="'+escapeHtml(fc.note||'')+'"></div></div>'
+      +'</div>';
+  }).join('');
+  openModal('<div class="modal-title">店舗別 固定費（月額）<button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px">家賃・光熱費・その他固定費を月額で入力。入力すると「営業利益（粗利−固定費）」が総合サマリーに反映されます。空欄＝未入力でOK。</div>'
+    +rows
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveStoreFixedCosts()">保存</button></div>');
+}
+function saveStoreFixedCosts(){
+  var map = getStoreFixedCosts();
+  getVisibleStores().filter(function(s){ return s.active!==false; }).forEach(function(s){
+    var r=document.getElementById('fc-rent-'+s.id); if(!r) return;
+    var u=document.getElementById('fc-util-'+s.id), o=document.getElementById('fc-other-'+s.id), n=document.getElementById('fc-note-'+s.id);
+    map[s.id] = { rent:parseFloat(r.value)||0, utilities:parseFloat(u.value)||0, other:parseFloat(o.value)||0, note:(n?n.value.trim():'') };
+  });
+  lsSet('store_fixed_costs', map);
+  closeModalDirect();
+  if(typeof showToast==='function') showToast('固定費を保存しました','info');
+  renderPage('store_power');
 }
 
 function renderMonthlySummary(){
