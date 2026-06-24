@@ -3367,7 +3367,7 @@ var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_h
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs'];
+  'offboardings','offboard_template','store_fixed_costs','dev_nominations'];
 var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
 function isOpSyncKey(key){
@@ -16911,13 +16911,15 @@ function pipeBar(pct, color){
 }
 function pipeCandRow(c){
   var st = pipeStatusMeta(c.status);
+  var nomTag='';
+  if(typeof activeNom==='function'){ if(activeNom(c.e.name,'育成')) nomTag=' <span class="tag" style="font-size:8px;background:var(--accent);color:#fff">育成中</span>'; else if(activeNom(c.e.name,'要注意')) nomTag=' <span class="tag" style="font-size:8px;background:var(--green);color:#fff">サポート中</span>'; }
   var nextTxt = c.path ? (c.grade+' → '+c.path.nextGrade+'（'+c.path.nextTitle+'）') : c.grade;
   var detail = c.hasData
     ? ('担当軸 '+c.axisL4+'/'+c.axisTotal+' がL4'+(c.ojtNeeded?(' · OJT'+(c.ojtOk?'修了':'未')):' · OJT不要')+(c.weakAxis?(' · 弱点: '+escapeHtml(c.weakAxis)):''))
     : '評価データ未入力（Career Scoreを登録すると準備度が出ます）';
   return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
-      +'<div style="font-weight:600;font-size:13px">'+escapeHtml(c.e.name)+' <span style="font-size:10px;color:var(--muted)">'+escapeHtml(c.e.title||'')+'</span></div>'
+      +'<div style="font-weight:600;font-size:13px">'+escapeHtml(c.e.name)+nomTag+' <span style="font-size:10px;color:var(--muted)">'+escapeHtml(c.e.title||'')+'</span></div>'
       +'<span class="tag" style="font-size:9px;background:'+st.color+';color:#fff">'+st.label+'</span>'
     +'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+escapeHtml(nextTxt)+'</div>'
@@ -16926,6 +16928,134 @@ function pipeCandRow(c){
     +'<div style="margin-top:5px"><button class="btn btn-secondary btn-sm" onclick="openLssDetail(\''+String(c.e.name).replace(/'/g,"\\'")+'\')"><i class="ti ti-eye"></i> 詳細</button></div>'
   +'</div>';
 }
+/* ============================================================
+   育成指名（特別育成 / 改善サポート）
+   指名は当面GM・CEOのみ。本人には前向き表示（"要注意"の語は本人に出さない）
+   ============================================================ */
+function getDevNoms(){ return ls('dev_nominations', []); }
+function activeNom(name, type){ return getDevNoms().filter(function(n){ return n.name===name && n.type===type && n.status==='active'; }).slice(-1)[0]; }
+function myActiveNoms(name){ return getDevNoms().filter(function(n){ return n.name===name && n.status==='active'; }); }
+function canNominate(){ return ['gm','ceo'].indexOf(curRole)>=0; }
+function nomBody(n){
+  var last=(n.updates&&n.updates.length)?n.updates[n.updates.length-1]:null;
+  return (n.focus?'<div style="font-size:12px;margin-top:2px"><b>重点領域：</b>'+escapeHtml(n.focus)+'</div>':'')
+    +(n.goal?'<div style="font-size:12px;margin-top:2px"><b>目標：</b>'+escapeHtml(n.goal)+'</div>':'')
+    +(n.targetGrade&&n.targetGrade!=='—'?'<div style="font-size:12px;margin-top:2px"><b>目標グレード：</b>'+escapeHtml(n.targetGrade)+'</div>':'')
+    +(n.until?'<div style="font-size:11px;color:var(--muted);margin-top:2px">期限：'+escapeHtml(n.until)+'</div>':'')
+    +(last?'<div style="font-size:11px;color:var(--muted);margin-top:4px;padding-top:4px;border-top:1px solid var(--border)"><i class="ti ti-history"></i> '+escapeHtml(last.date)+'：'+escapeHtml(last.note)+'</div>':'');
+}
+function nomCard(n, color){
+  var emp=getEmployees().find(function(e){ return e.name===n.name; });
+  var store=(STORES.find(function(s){ return s.id===(emp&&emp.store); })||{}).name||'';
+  return '<div class="card" style="border-left:3px solid '+color+'">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start">'
+      +'<div><div style="font-weight:700;font-size:14px">'+escapeHtml(n.name)+' <span style="font-size:10px;color:var(--muted)">'+escapeHtml((emp&&emp.title)||'')+(store?' · '+escapeHtml(store):'')+'</span></div>'
+      +'<div style="font-size:10px;color:var(--muted)">指名 '+escapeHtml(n.by||'')+' · '+escapeHtml(n.date||'')+(n.until?' · 期限 '+escapeHtml(n.until):'')+'</div></div>'
+      +(n.targetGrade&&n.targetGrade!=='—'?'<span class="tag" style="font-size:9px;background:'+color+';color:#fff">目標 '+escapeHtml(n.targetGrade)+'</span>':'')
+    +'</div>'
+    +nomBody(n)
+    +(n.note?'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+escapeHtml(n.note)+'</div>':'')
+    +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+      +'<button class="btn btn-secondary btn-sm" onclick="addNomUpdate(\''+n.id+'\')"><i class="ti ti-message-plus"></i> 進捗</button>'
+      +'<button class="btn btn-secondary btn-sm" onclick="openNominateModal(\'\',\'\',\''+n.id+'\')"><i class="ti ti-edit"></i> 編集</button>'
+      +'<button class="btn btn-secondary btn-sm" style="color:var(--green);border-color:var(--green)" onclick="setNomStatus(\''+n.id+'\',\'完了\')">完了</button>'
+      +'<button class="btn btn-secondary btn-sm" style="color:var(--muted)" onclick="setNomStatus(\''+n.id+'\',\'解除\')">解除</button>'
+    +'</div>'
+  +'</div>';
+}
+function renderDevNominate(){
+  if(['ceo','gm'].indexOf(curRole)<0) return '<div class="card">この画面はGM・CEOのみ表示できます。</div>';
+  var active=getDevNoms().filter(function(n){ return n.status==='active'; });
+  var ikusei=active.filter(function(n){ return n.type==='育成'; });
+  var support=active.filter(function(n){ return n.type==='要注意'; });
+  var html='<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
+    +'<button class="btn btn-primary btn-sm" onclick="openNominateModal(\'\',\'育成\')"><i class="ti ti-star"></i> 特別育成を指名</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openNominateModal(\'\',\'要注意\')"><i class="ti ti-mood-heart"></i> 改善サポートを登録</button>'
+    +'</div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin:0 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 指名は現在GM・CEOのみ。本人には「特別育成中／改善サポート中」として前向きに通知・表示されます（「要注意」の語は本人に出しません）。</div>';
+  html+='<div style="font-weight:700;font-size:14px;margin:6px 2px 6px"><i class="ti ti-star" style="color:var(--accent)"></i> 特別育成中 <span class="tag tag-gray" style="font-size:10px">'+ikusei.length+'</span></div>';
+  if(!ikusei.length) html+='<div class="card" style="color:var(--muted);font-size:12px">指名なし。上の「特別育成を指名」から登録できます。</div>';
+  ikusei.forEach(function(n){ html+=nomCard(n,'var(--accent)'); });
+  html+='<div style="font-weight:700;font-size:14px;margin:14px 2px 6px"><i class="ti ti-mood-heart" style="color:var(--green)"></i> 改善サポート中 <span class="tag tag-gray" style="font-size:10px">'+support.length+'</span></div>';
+  if(!support.length) html+='<div class="card" style="color:var(--muted);font-size:12px">登録なし。</div>';
+  support.forEach(function(n){ html+=nomCard(n,'var(--green)'); });
+  return html;
+}
+function openNominateModal(presetName, presetType, nomId){
+  if(['ceo','gm'].indexOf(curRole)<0){ showToast('指名はGM・CEOのみです','warning'); return; }
+  var rec = nomId ? getDevNoms().find(function(x){ return x.id===nomId; }) : null;
+  var name = rec? rec.name : (presetName||'');
+  var type = rec? rec.type : (presetType||'育成');
+  var focus = rec? (rec.focus||'') : '';
+  var goal = rec? (rec.goal||'') : '';
+  var tg = rec? (rec.targetGrade||'—') : '—';
+  var until = rec? (rec.until||'') : '';
+  var note = rec? (rec.note||'') : '';
+  var emps = getEmployees().filter(function(e){ return e.status!=='退職' && e.role!=='ceo'; });
+  var opts = '<option value="">選択…</option>'+emps.map(function(e){
+    var sn=(STORES.find(function(s){ return s.id===e.store; })||{}).name||'';
+    return '<option value="'+escapeHtml(e.name)+'"'+(e.name===name?' selected':'')+'>'+escapeHtml(e.name)+(e.title?'（'+escapeHtml(e.title)+'）':'')+(sn?' · '+escapeHtml(sn):'')+'</option>';
+  }).join('');
+  var grades=['—','G2','G3','G4','G5','G6','G7'];
+  openModal('<div class="modal-title">'+(rec?'指名を編集':'育成指名')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="form-group"><label class="form-label">対象者</label><select class="form-select" id="nom-name">'+opts+'</select></div>'
+    +'<div class="form-group"><label class="form-label">種別</label><select class="form-select" id="nom-type">'
+      +'<option value="育成"'+(type==='育成'?' selected':'')+'>特別育成（前向き・集中育成）</option>'
+      +'<option value="要注意"'+(type==='要注意'?' selected':'')+'>改善サポート（伸び悩み・要フォロー）</option></select></div>'
+    +'<div class="form-group"><label class="form-label">重点領域</label><input class="form-input" id="nom-focus" value="'+escapeHtml(focus)+'" placeholder="例：リーダーシップ、原価管理、接客"></div>'
+    +'<div class="form-group"><label class="form-label">目標</label><input class="form-input" id="nom-goal" value="'+escapeHtml(goal)+'" placeholder="例：3ヶ月でStore Leader準備度80%"></div>'
+    +'<div class="form-row"><div class="form-group"><label class="form-label">目標グレード（任意）</label><select class="form-select" id="nom-tg">'+grades.map(function(g){ return '<option'+(g===tg?' selected':'')+'>'+g+'</option>'; }).join('')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">期限（任意）</label><input class="form-input" id="nom-until" type="date" value="'+escapeHtml(until)+'"></div></div>'
+    +'<div class="form-group"><label class="form-label">メモ（任意）</label><textarea class="form-input" id="nom-note" rows="2">'+escapeHtml(note)+'</textarea></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:8px">※「改善サポート」を選んでも、本人には「改善サポート中」として前向きに表示されます。</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveNomination(\''+(nomId||'')+'\')">'+(rec?'保存':'指名する')+'</button></div>');
+}
+function saveNomination(nomId){
+  var name=(document.getElementById('nom-name')||{}).value||'';
+  if(!name){ alert('対象者を選んでください'); return; }
+  var type=document.getElementById('nom-type').value;
+  var focus=document.getElementById('nom-focus').value.trim();
+  var goal=document.getElementById('nom-goal').value.trim();
+  var tg=document.getElementById('nom-tg').value;
+  var until=document.getElementById('nom-until').value;
+  var note=document.getElementById('nom-note').value.trim();
+  var arr=getDevNoms();
+  if(nomId){
+    var n=arr.find(function(x){ return x.id===nomId; });
+    if(n){ n.type=type; n.focus=focus; n.goal=goal; n.targetGrade=tg; n.until=until; n.note=note; }
+    lsSet('dev_nominations', arr);
+    closeModalDirect(); showToast('指名を更新しました','info'); renderPage('leadership'); return;
+  }
+  var rec={ id:'nom'+Date.now(), name:name, type:type, by:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''), byRole:curRole,
+            date:new Date().toLocaleDateString('ja'), focus:focus, goal:goal, targetGrade:tg, until:until, note:note, status:'active', updates:[] };
+  arr.push(rec); lsSet('dev_nominations', arr);
+  // 通知（本人＝前向き表示／上長＝把握）
+  try{
+    var emp=getEmployees().find(function(e){ return e.name===name; });
+    var store=emp?emp.store:null;
+    if(type==='育成'){
+      addNotif({ type:'onboard', title:'特別育成に指名されました', text:('重点：'+(focus||'—')+(goal?'／目標：'+goal:'')).slice(0,140), toUser:name, page:'mypage', refId:rec.id });
+    } else {
+      addNotif({ type:'consult', title:'改善サポートが始まりました', text:('一緒に伸ばすポイント：'+(focus||'—')+(goal?'／目標：'+goal:'')).slice(0,140), toUser:name, page:'mypage', refId:rec.id });
+    }
+    if(store){ addNotif({ type:(type==='育成'?'onboard':'consult'), title:(type==='育成'?'特別育成指名':'改善サポート開始')+'：'+name, text:('重点：'+(focus||'—')).slice(0,140), toStore:store, toRoles:['am','gm','ceo'], page:'leadership', refId:rec.id }); }
+  }catch(e){}
+  closeModalDirect(); showToast('指名を登録しました','success'); renderPage('leadership');
+}
+function setNomStatus(id, status){
+  var arr=getDevNoms(); var n=arr.find(function(x){ return x.id===id; }); if(!n) return;
+  n.status=status; if(status!=='active') n.closedDate=new Date().toLocaleDateString('ja');
+  lsSet('dev_nominations', arr);
+  showToast(status==='完了'?'育成を完了にしました':(status==='解除'?'指名を解除しました':'更新しました'),'info');
+  renderPage('leadership');
+}
+function addNomUpdate(id){
+  var note=prompt('進捗・メモを入力してください'); if(!note) return;
+  var arr=getDevNoms(); var n=arr.find(function(x){ return x.id===id; }); if(!n) return;
+  n.updates=n.updates||[]; n.updates.push({ date:new Date().toLocaleDateString('ja'), by:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''), note:note });
+  lsSet('dev_nominations', arr); showToast('進捗を追加しました','success'); renderPage('leadership');
+}
+
 function pipeOrgChip(e){
   var g=empGrade(e); var info=empEvalInfo(e);
   var lvtxt = info.hasData
@@ -17077,8 +17207,10 @@ function renderLeadership() {
     html += `<div class="phase-tabs" style="margin-bottom:12px">
       <button class="phase-tab${lssView==='score'?' active':''}" onclick="setLssView('score')">Career Score</button>
       <button class="phase-tab${lssView==='pipeline'?' active':''}" onclick="setLssView('pipeline')">育成パイプライン</button>
+      <button class="phase-tab${lssView==='nominate'?' active':''}" onclick="setLssView('nominate')">育成指名</button>
     </div>`;
     if(lssView==='pipeline') return html + renderTalentPipeline();
+    if(lssView==='nominate') return html + renderDevNominate();
   }
 
   // 承認待ち（昇格・Tip申請）
@@ -17811,6 +17943,17 @@ function renderMypage() {
       <div class="fy-levelbar"><i style="width:${heroPct}%"></i></div>`:''}
     </div>
   </div>`;
+
+  // ===== 特別育成 / 改善サポート（本人向け・前向き表示）=====
+  try{
+    (typeof myActiveNoms==='function'?myActiveNoms(me):[]).forEach(function(n){
+      var isIku = n.type==='育成';
+      html += '<div class="card" style="border-left:3px solid '+(isIku?'var(--accent)':'var(--green)')+'">'
+        +'<div class="card-title"><i class="ti '+(isIku?'ti-star':'ti-mood-heart')+'" style="color:'+(isIku?'var(--accent)':'var(--green)')+'"></i> '+(isIku?'特別育成中':'改善サポート中')+'</div>'
+        +'<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+(isIku?(escapeHtml(n.by||'上長')+'から特別育成に指名されています。集中して伸ばしていきましょう。'):'一緒に伸ばすポイントを設定しています。下記を意識して取り組みましょう。')+'</div>'
+        +nomBody(n)+'</div>';
+    });
+  }catch(e){}
 
   // ===== ヘルプ募集（自店・応援店の募集に手を挙げる）=====
   var helps = (typeof myHelpRequests==='function') ? myHelpRequests() : [];
