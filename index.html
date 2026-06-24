@@ -21605,9 +21605,20 @@ function ojtSelectPerson(name){ _ojtSel = name; renderPage('ojtmap'); }
 
 function renderOjtMap(){
   var canEdit = (curRole==='gm' || curRole==='ceo');
-  var html = '<div class="section-header"><div><div class="section-title">OJTマップ / 成長フェーズ</div><div class="section-sub">担当軸 × ゲート基準 → チップ進行</div></div>'
-    + (canEdit?'<button class="btn btn-secondary btn-sm" onclick="openOjtPhaseMapEditor()"><i class="ti ti-edit"></i> 基準編集</button>':'')
+  var subTxt = (_ojtMode==='career') ? '昇格パス × 役職OJT（Career Score）' : '担当軸 × ゲート基準 → チップ進行';
+  var html = '<div class="section-header"><div><div class="section-title">OJTマップ / 成長フェーズ</div><div class="section-sub">'+subTxt+'</div></div>'
+    + ((_ojtMode!=='career' && canEdit)?'<button class="btn btn-secondary btn-sm" onclick="openOjtPhaseMapEditor()"><i class="ti ti-edit"></i> 基準編集</button>':'')
     + '</div>';
+  html += '<div style="display:flex;gap:6px;margin-bottom:12px">'
+    + '<button class="btn '+(_ojtMode!=='career'?'btn-primary':'btn-secondary')+' btn-sm" style="flex:1" onclick="setOjtMode(\'tip\')"><i class="ti ti-coin"></i> Tip比率（G1）</button>'
+    + '<button class="btn '+(_ojtMode==='career'?'btn-primary':'btn-secondary')+' btn-sm" style="flex:1" onclick="setOjtMode(\'career\')"><i class="ti ti-trending-up"></i> Career Score（G2+）</button>'
+    + '</div>';
+  html += (_ojtMode==='career') ? renderOjtCareerBody() : renderOjtTipBody();
+  return html;
+}
+
+function renderOjtTipBody(){
+  var html = '';
 
   // Crew（自分の成長ラダー）
   if(curRole==='crew'){
@@ -21655,6 +21666,195 @@ function renderOjtMap(){
     html += ojtLadderHtml(selEmp);
   }
   html += ojtPhaseMapTableHtml();
+  return html;
+}
+
+/* ===== OJTマップ Career Score版（G2以上の昇格パス × 役職OJT） =====
+   流れ：G1→G2 Crew Leader OJT / G2→G3 Server・Kitchen Leader OJT / G3→G4 Store Leader OJT
+   ゲート：担当軸 全てL4 ＋ 次役職OJT修了（既存 gradePromoEval / pipeReadiness を流用）
+   OJT修了の登録はGM/CEOのみ。ロスターは店舗別検索。 */
+var _ojtMode = 'tip';        // 'tip' | 'career'
+var _ojtcSel = null;         // Career版ドリルダウン選択中
+var _ojtcStore = 'ALL';      // Career版ロスターの店舗フィルタ
+function setOjtMode(m){ _ojtMode = m; renderPage('ojtmap'); }
+function ojtcSelectPerson(name){ _ojtcSel = name; renderPage('ojtmap'); }
+function setOjtcStore(sid){ _ojtcStore = sid; _ojtcSel = null; renderPage('ojtmap'); }
+function ojtcToggleOjt(name, key, done){
+  if(!['gm','ceo'].includes(curRole)){ showToast('OJT修了の登録はGM/CEOのみです','warning'); return; }
+  setOjtDone(name, key, done);
+  showToast(done?'OJT修了を登録しました':'OJT修了を取消しました', done?'success':'info');
+  renderPage('ojtmap');
+}
+
+/* G2以上の対象リスト（店舗フィルタ適用・グレード降順） */
+function ojtCareerList(){
+  var sel = _ojtcStore;
+  var list = getEmployees().filter(function(e){
+    if(e.status==='退職') return false;
+    if(gradeNum(empGrade(e)) < 2) return false;
+    if(sel && sel!=='ALL' && !(e.store===sel || (e.support||[]).includes(sel))) return false;
+    return true;
+  });
+  list.sort(function(a,b){ var d=gradeNum(empGrade(b))-gradeNum(empGrade(a)); return d!==0?d:String(a.name).localeCompare(String(b.name)); });
+  return list;
+}
+
+/* 昇格OJTの流れ（参照カード） */
+function ojtCareerFlowCardHtml(){
+  var steps = [
+    {g:'G1 → G2', ojt:'Crew Leader OJT'},
+    {g:'G2 → G3', ojt:'Server / Kitchen Leader OJT'},
+    {g:'G3 → G4', ojt:'Store Leader OJT'},
+  ];
+  var rows = steps.map(function(s){
+    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0">'
+      + '<span class="tag tag-blue" style="font-size:10px;min-width:58px;text-align:center">'+s.g+'</span>'
+      + '<i class="ti ti-arrow-right" style="color:var(--muted);font-size:13px"></i>'
+      + '<span style="font-size:12px;font-weight:600">'+escapeHtml(s.ojt)+'</span></div>';
+  }).join('');
+  return '<div class="card"><div class="card-title"><i class="ti ti-route"></i>昇格OJTの流れ</div>'+rows
+    + '<div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> ゲート＝担当軸 全てL4 ＋ 次役職OJT修了。G4以上は固定OJTなし（実績＋総合Lv・GM承認）。</div></div>';
+}
+
+/* 個人の昇格ラダー（OJT登録つき） */
+function ojtCareerLadderHtml(e){
+  var grade = empGrade(e), gnum = gradeNum(grade);
+  var pe = gradePromoEval(e);
+  var pr = pipeReadiness(e);
+  var ax = empAxisEval(e);
+  var canReg = ['gm','ceo'].includes(curRole);
+  var storeName = (STORES.find(function(s){return s.id===e.store;})||{name:e.store||''}).name;
+  var chips = ax.hasData ? (ax.perAxis||[]).map(function(p){
+    var c=(p.level&&p.level.color)||'var(--muted)';
+    return '<span class="tag" style="background:'+c+';color:#fff;font-size:9px;font-weight:700" title="'+escapeHtml(p.name||p.key)+'">'+p.key+' L'+((p.level&&p.level.n)||0)+'</span>';
+  }).join(' ') : '<span style="font-size:11px;color:var(--muted)">Career Score評価データなし</span>';
+  var readyStr = pr.topped?'最上位':(pr.hasData?(pr.readiness+'%'):'—');
+  var st0 = pipeStatusMeta(pr.status||(pr.topped?'topped':'nodata'));
+
+  var html = '<div class="card" style="background:linear-gradient(135deg,var(--accent-soft,#fceee4),var(--surface))">'
+    + '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+    +   '<div style="flex:1"><div style="font-weight:700;font-size:15px">'+escapeHtml(e.name)+' <span class="tag tag-gray" style="font-size:9px">'+grade+'</span></div>'
+    +     '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(e.title||'')+' · '+escapeHtml(storeName)+'</div></div>'
+    +   '<div style="text-align:right"><div style="font-size:22px;font-weight:800;color:'+st0.color+';line-height:1">'+readyStr+'</div><div style="font-size:10px;color:var(--muted)">昇格準備度</div></div>'
+    + '</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">'+chips+'</div></div>';
+
+  html += '<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin:2px 2px 10px">'
+    + '<span><i class="ti ti-circle-check" style="color:var(--green)"></i> 達成</span>'
+    + '<span><i class="ti ti-player-play" style="color:var(--accent2)"></i> 進行中</span>'
+    + '<span><i class="ti ti-lock" style="color:var(--muted)"></i> 未到達</span></div>';
+
+  var trans = [
+    {from:1, ojt:'Crew Leader OJT',            key:'ojt_g2', nextT:'G2 Crew Leader'},
+    {from:2, ojt:'Server / Kitchen Leader OJT', key:'ojt_g3', nextT:'G3 Server/Kitchen Leader'},
+    {from:3, ojt:'Store Leader OJT',           key:'ojt_g4', nextT:'G4 Store Leader'},
+  ];
+  trans.forEach(function(t, idx){
+    var toNum = t.from+1;
+    var st = (gnum>=toNum)?'done':(gnum===t.from?'current':'locked');
+    var circleBg, circleCol, icon, brd;
+    if(st==='done'){ circleBg='var(--green)'; circleCol='#fff'; icon='ti-check'; brd=''; }
+    else if(st==='current'){ circleBg='var(--accent2)'; circleCol='#fff'; icon='ti-player-play'; brd=''; }
+    else { circleBg='var(--surface)'; circleCol='var(--muted)'; icon='ti-lock'; brd='border:1px solid var(--border);'; }
+    var cardBorder = st==='current' ? '2px solid var(--accent2)' : '1px solid var(--border)';
+    var opacity = st==='locked' ? '0.7' : '1';
+    var connector = idx<trans.length-1 ? '<div style="flex:1;width:2px;background:var(--border);margin-top:2px"></div>' : '';
+    var doneVal = ojtDone(e.name, t.key);
+    var ojtBadge = st==='done'
+      ? '<span class="tag tag-green" style="font-size:10px">G'+toNum+' 到達</span>'
+      : (st==='current' ? '<span class="tag tag-blue" style="font-size:10px">→ G'+toNum+'</span>' : '<span class="tag tag-gray" style="font-size:10px">→ G'+toNum+'</span>');
+
+    html += '<div style="display:flex;gap:10px;margin-bottom:10px">'
+      + '<div style="display:flex;flex-direction:column;align-items:center">'
+      +   '<div style="width:30px;height:30px;border-radius:50%;background:'+circleBg+';color:'+circleCol+';display:flex;align-items:center;justify-content:center;'+brd+'"><i class="ti '+icon+'" style="font-size:15px"></i></div>'
+      +   connector
+      + '</div>'
+      + '<div style="flex:1;background:var(--surface);border:'+cardBorder+';border-radius:10px;padding:10px 12px;opacity:'+opacity+'">'
+      +   '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px">'
+      +     '<div style="font-size:14px;font-weight:700">G'+t.from+'→G'+toNum+(st==='current'?' <span style="font-size:10px;color:var(--accent2);font-weight:600">· 進行中</span>':'')+'</div>'
+      +     ojtBadge
+      +   '</div>'
+      +   '<div style="font-size:12px;font-weight:600;color:var(--tm)"><i class="ti ti-school" style="color:var(--accent2)"></i> '+escapeHtml(t.ojt)+'</div>';
+
+    if(st==='current'){
+      var axisTotal = (ax.perAxis||[]).length;
+      var axisL4 = (ax.perAxis||[]).filter(function(p){return p.pct>=(ax.L4||75);}).length;
+      var axisOk = ax.hasData && ax.pro;
+      html += '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;flex-direction:column;gap:5px">';
+      html += '<div style="font-size:12px;display:flex;align-items:center;gap:6px"><i class="ti '+(axisOk?'ti-circle-check':'ti-circle')+'" style="color:'+(axisOk?'var(--green)':'var(--yellow)')+'"></i> 担当軸 全てL4 '+(ax.hasData?('（'+axisL4+'/'+axisTotal+'）'):'（評価未入力）')+'</div>';
+      html += '<div style="font-size:12px;display:flex;align-items:center;gap:6px"><i class="ti '+(doneVal?'ti-circle-check':'ti-circle')+'" style="color:'+(doneVal?'var(--green)':'var(--yellow)')+'"></i> '+escapeHtml(t.ojt)+' '+(doneVal?'修了':'未修了')+'</div>';
+      if(pe.can){ html += '<div style="font-size:12px;color:var(--green);font-weight:600"><i class="ti ti-circle-check"></i> 昇格可（'+escapeHtml(t.nextT)+'）</div>'; }
+      if(canReg){
+        html += '<div style="margin-top:3px"><button class="btn '+(doneVal?'btn-secondary':'btn-primary')+' btn-sm" onclick="ojtcToggleOjt(\''+String(e.name).replace(/'/g,"\\'")+'\',\''+t.key+'\','+(!doneVal)+')"><i class="ti ti-school"></i> '+(doneVal?'OJT修了を取消':'OJT修了を登録')+'</button></div>';
+      }
+      html += '</div>';
+    } else if(st==='done' && doneVal){
+      var m = getGradeOjt(); var rec = (m[e.name] && m[e.name][t.key]) || {};
+      html += '<div style="font-size:11px;color:var(--green);margin-top:6px"><i class="ti ti-circle-check"></i> '+escapeHtml(t.ojt)+' 修了'+(rec.date?'（'+escapeHtml(rec.date)+'）':'')+'</div>';
+    }
+    html += '</div></div>';
+  });
+
+  if(gnum>=4){
+    html += '<div style="display:flex;gap:10px;margin-bottom:6px">'
+      + '<div style="display:flex;flex-direction:column;align-items:center"><div style="width:30px;height:30px;border-radius:50%;background:var(--purple,#8b5cf6);color:#fff;display:flex;align-items:center;justify-content:center"><i class="ti ti-crown" style="font-size:15px"></i></div></div>'
+      + '<div style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px">'
+      +   '<div style="font-size:14px;font-weight:700">G4以上</div>'
+      +   '<div style="font-size:12px;color:var(--muted);margin-top:3px">固定OJTなし。実績＋Career Score総合Lvで判断（GM承認）。</div></div></div>';
+  }
+  return html;
+}
+
+/* 管理者：G2以上ロスター（店舗別検索） */
+function ojtCareerRosterHtml(){
+  var stores = activeStores();
+  var sel = _ojtcStore;
+  var filter = '<select class="form-select" style="font-size:12px;padding:6px 8px;max-width:180px" onchange="setOjtcStore(this.value)">'
+    + '<option value="ALL"'+(sel==='ALL'?' selected':'')+'>全店舗</option>'
+    + stores.map(function(s){return '<option value="'+s.id+'"'+(sel===s.id?' selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('')
+    + '</select>';
+  var list = ojtCareerList();
+  var html = '<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px"><div class="card-title" style="margin:0"><i class="ti ti-list-check"></i>G2以上 昇格ロスター</div>'+filter+'</div>';
+  if(!list.length){ html += '<p style="font-size:12px;color:var(--muted)">対象スタッフがいません</p></div>'; return html; }
+  html += '<div style="overflow-x:auto"><table class="inv-table" style="min-width:460px;font-size:12px"><thead><tr><th>名前</th><th>店舗</th><th>現G→次役職</th><th style="text-align:center">軸L4</th><th style="text-align:center">OJT</th><th style="text-align:center">準備度</th></tr></thead><tbody>';
+  list.slice(0,80).forEach(function(e){
+    var pr = pipeReadiness(e);
+    var selRow = (_ojtcSel===e.name);
+    var nextTxt = pr.topped ? (empGrade(e)+'（最上位）') : (pr.path?(pr.grade+' → '+pr.path.nextGrade):pr.grade);
+    var axisTxt = pr.topped ? '—' : (pr.hasData?(pr.axisL4+'/'+pr.axisTotal):'—');
+    var ojtTxt = pr.topped ? '—' : (pr.ojtNeeded?(pr.ojtOk?'<span style="color:var(--green)">✓</span>':'<span style="color:var(--muted)">未</span>'):'不要');
+    var stm = pipeStatusMeta(pr.status||(pr.topped?'topped':'nodata'));
+    var readyTxt = pr.topped ? '最上位' : (pr.hasData?(pr.readiness+'%'):'—');
+    html += '<tr style="cursor:pointer'+(selRow?';background:var(--accent-soft,#fceee4)':'')+'" onclick="ojtcSelectPerson(\''+String(e.name).replace(/'/g,"\\'")+'\')">'
+      + '<td style="font-weight:600">'+escapeHtml(e.name)+' <span style="font-size:10px;color:var(--muted)">'+escapeHtml(e.title||'')+'</span></td>'
+      + '<td style="color:var(--muted)">'+escapeHtml((STORES.find(function(s){return s.id===e.store;})||{name:e.store||''}).name)+'</td>'
+      + '<td style="font-size:11px">'+escapeHtml(nextTxt)+'</td>'
+      + '<td style="text-align:center">'+axisTxt+'</td>'
+      + '<td style="text-align:center">'+ojtTxt+'</td>'
+      + '<td style="text-align:center;font-weight:700;color:'+stm.color+'">'+readyTxt+'</td></tr>';
+  });
+  html += '</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-hand-finger"></i> 行をタップで個人の昇格ラダー・OJT登録</div></div>';
+  return html;
+}
+
+function renderOjtCareerBody(){
+  var html = ojtCareerFlowCardHtml();
+  if(curRole==='crew'){
+    var me = (ROLE_CONFIG[curRole]||{}).name;
+    var meEmp = getEmployees().find(function(x){return x.name===me;});
+    if(!meEmp) return html + '<div class="card"><p style="color:var(--muted)">従業員データが見つかりません</p></div>';
+    html += '<div class="section-sub" style="margin:6px 2px;font-weight:600">▼ '+escapeHtml(meEmp.name)+' の昇格ラダー</div>';
+    html += ojtCareerLadderHtml(meEmp);
+    return html;
+  }
+  html += ojtCareerRosterHtml();
+  var list = ojtCareerList();
+  var selName = _ojtcSel || (list[0] && list[0].name);
+  var selEmp = selName ? getEmployees().find(function(x){return x.name===selName;}) : null;
+  if(selEmp){
+    html += '<div class="section-sub" style="margin:6px 2px;font-weight:600">▼ '+escapeHtml(selEmp.name)+' の昇格ラダー</div>';
+    html += ojtCareerLadderHtml(selEmp);
+  }
   return html;
 }
 
