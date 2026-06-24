@@ -22040,6 +22040,7 @@ function renderKpiManualTab(){
       ${_bd('③ いくらシャワー', _tk.sel.i, totoyaItemBreakdown(sid, period, _tc.ikuraGuids, _tc.ikuraKw))}
       ${_bd('④ 対象丼', _tk.sel.b, totoyaItemBreakdown(sid, period, _tc.ikuraBowlGuids, _tc.ikuraBowlKw))}
       <div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 赤い「0」や漏れがある場合、そのモディファイヤーはToast出数に乗っていません。下の「手入力カウント」に月次の合計件数を入れると確実です。</div>
+      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="showToastRawSales('${sid}','${period}')"><i class="ti ti-database-search"></i> 商品出数の生データ</button><button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="showToastSalesColumns('${sid}')"><i class="ti ti-columns"></i> toast_sales カラム確認</button></div>
     </div>`;
     var kwInput=function(id,val,ph){ return '<input class="form-input" style="padding:6px;margin-top:5px;font-size:12px" id="'+id+'" value="'+escapeHtml(val||'')+'" placeholder="'+ph+'" '+(canT?'':'readonly')+'>'; };
     var kwHint='<div style="font-size:10px;color:var(--muted);margin-top:2px">↑ または<b>キーワードで一括指定</b>（商品名に含む文字・カンマ区切り）。全Bowl分のモディファイヤーをまとめて拾えます。</div>';
@@ -22132,6 +22133,68 @@ function applyMisoPreset(){
   });
   showToast('味噌汁プリセット（4種）を適用しました','success');
   renderPage('kpi_master');
+}
+/* Toast出数の生データ確認: toast_item_sales を直接読み、モディファイヤー行の有無を可視化 */
+function toastRawFilter(inp){
+  var q=(inp.value||'').toLowerCase();
+  document.querySelectorAll('#traw .trow').forEach(function(el){ el.style.display=(!q||(el.getAttribute('data-n')||'').indexOf(q)>=0)?'':'none'; });
+}
+async function showToastRawSales(sid, period){
+  var st=getStoresAll().find(function(s){return s.id===sid;})||{};
+  var guid=st.toastGuid;
+  if(!guid){ showToast('この店舗のToast GUIDが未設定です','warning'); return; }
+  openModal('<div class="modal-title">Toast出数 生データ <button class="modal-close" onclick="closeModalDirect()">×</button></div><div style="padding:24px;text-align:center;color:var(--muted)">読み込み中…</div>');
+  var rows=[];
+  try{ rows = await fetchToastItemSales(guid, period) || []; }catch(e){ rows=[]; }
+  var recipes=getRecipes().filter(function(r){return r.toastGuid && recipeInStore(r,sid);});
+  var recByGuid={}; recipes.forEach(function(r){ recByGuid[r.toastGuid]=r; });
+  var cols={}; rows.forEach(function(r){ Object.keys(r).forEach(function(k){cols[k]=1;}); });
+  var nameKey = Object.keys(cols).find(function(k){ return /name|item_name|menu/i.test(k) && !/guid/i.test(k); }) || null;
+  var grpKey = Object.keys(cols).find(function(k){ return /group|category|modifier|parent/i.test(k); }) || null;
+  var html='<div class="modal-title">Toast出数 生データ <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+escapeHtml(st.name)+' / '+period+' ・ <b>'+rows.length+'行</b>（toast_item_sales）。「miso」で検索してMiso Soupのモディファイヤー行があるか確認してください。</div>';
+  html+='<input class="form-input" style="margin-bottom:8px;padding:6px" placeholder="検索（例: miso, udon, ikura）" oninput="toastRawFilter(this)">';
+  if(!rows.length){
+    html+='<div style="color:var(--red);padding:10px;font-size:13px"><i class="ti ti-plug-connected-x"></i> この店舗・月のtoast_item_salesが空です（Toast取り込みが未連携／未実行）。</div>';
+  } else {
+    if(grpKey) html+='<div style="font-size:10px;color:var(--green);margin-bottom:4px">グループ列あり: '+escapeHtml(grpKey)+'（モディファイヤー識別に使えます）</div>';
+    html+='<div id="traw" style="max-height:52vh;overflow:auto;font-size:12px;border:1px solid var(--border);border-radius:8px">';
+    rows.forEach(function(r){
+      var g=r.item_guid||r.guid||''; var nm=nameKey?r[nameKey]:''; var grp=grpKey?r[grpKey]:''; var mapped=recByGuid[g];
+      var dn=((nm||'')+' '+(grp||'')+' '+(g||'')).toLowerCase();
+      html+='<div class="trow" data-n="'+escapeHtml(dn)+'" style="display:flex;gap:8px;padding:5px 6px;border-bottom:1px solid var(--border)">'
+        +'<span style="flex:1">'+escapeHtml(nm||'(名称カラムなし)')+(grp?(' <span style="font-size:9px;color:var(--muted)">['+escapeHtml(String(grp))+']</span>'):'')+(mapped?'':' <span style="color:var(--accent);font-size:9px">未マップ</span>')
+        +'<div style="font-size:9px;color:var(--muted)">'+escapeHtml(String(g||''))+'</div></span>'
+        +'<span style="font-weight:700;white-space:nowrap">'+(r.qty!=null?r.qty:'-')+'</span></div>';
+    });
+    html+='</div>';
+    if(!nameKey) html+='<div style="font-size:10px;color:var(--red);margin-top:6px">※このテーブルに商品名カラムがありません（GUID＋数量のみ）。Miso Soupが「未マップのGUID」として出ているか、数量で当たりを付けてください。</div>';
+  }
+  openModal(html);
+}
+/* toast_sales（日次）の全カラム確認: モディファイヤー集計列(first_time_count等)や miso/ikura 列の有無を見る */
+async function showToastSalesColumns(sid){
+  var st=getStoresAll().find(function(s){return s.id===sid;})||{};
+  var guid=st.toastGuid;
+  if(!guid){ showToast('この店舗のToast GUIDが未設定です','warning'); return; }
+  openModal('<div class="modal-title">toast_sales カラム確認 <button class="modal-close" onclick="closeModalDirect()">×</button></div><div style="padding:24px;text-align:center;color:var(--muted)">読み込み中…</div>');
+  var f=function(d){ return d.toISOString().slice(0,10); };
+  var rows=[]; try{ rows = await fetchToastSales(guid, f(new Date(Date.now()-45*86400000)), f(new Date())) || []; }catch(e){ rows=[]; }
+  var row=null; for(var i=rows.length-1;i>=0;i--){ if(rows[i]){ row=rows[i]; break; } }
+  var html='<div class="modal-title">toast_sales カラム確認 <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  if(!row){ html+='<div style="color:var(--red);padding:10px;font-size:13px"><i class="ti ti-plug-connected-x"></i> 直近45日にtoast_salesの行がありません（Toast取り込みが未連携の可能性）。</div>'; openModal(html); return; }
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+escapeHtml(st.name)+' / '+escapeHtml(String(row.business_date||''))+' の1行・全カラム。<b>first_time_count 等</b>（モディファイヤー集計が動いている証拠）と、<b>miso_/ikura_ 系の列</b>の有無を確認できます。</div>';
+  html+='<input class="form-input" style="margin-bottom:8px;padding:6px" placeholder="検索（miso, ikura, count 等）" oninput="toastRawFilter(this)">';
+  html+='<div id="traw" style="max-height:55vh;overflow:auto;font-size:12px;border:1px solid var(--border);border-radius:8px">';
+  Object.keys(row).sort().forEach(function(k){
+    var v=row[k]; var hl=/miso|ikura|modifier|first_time|repeat|super_regular/i.test(k);
+    html+='<div class="trow" data-n="'+escapeHtml(k.toLowerCase())+'" style="display:flex;gap:8px;padding:5px 6px;border-bottom:1px solid var(--border)'+(hl?';background:rgba(99,102,241,.10)':'')+'">'
+      +'<span style="flex:1'+(hl?';font-weight:700;color:var(--accent)':'')+'">'+escapeHtml(k)+'</span>'
+      +'<span style="white-space:nowrap;color:var(--muted)">'+escapeHtml(String(v))+'</span></div>';
+  });
+  html+='</div>';
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:6px">first_time_count / repeat_count があれば、hyper-worker はモディファイヤー集計が可能です。miso_/ikura_ 系の列が無ければ、同じ要領で集計列を追加すれば自動化できます。</div>';
+  openModal(html);
 }
 function kpiTotoyaFilter(inp, listId){
   var q=(inp.value||'').toLowerCase(); var box=document.getElementById(listId); if(!box) return;
