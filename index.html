@@ -22006,6 +22006,8 @@ function renderKpiManualTab(){
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">出数（モディファイヤー/商品）ベースで自動計算します。下で対象を選択してください。</div>`;
     // 診断プレビュー（手入力＝出数フォールバック後の実効値）
     var _tk = totoyaKpiCalc(sid, period);
+    var _mixChk = getMenuMix(sid, period);
+    var _hasMix = Object.keys((_mixChk&&_mixChk.items)||{}).length>0;
     var _na = function(n){ return n==null?'—':n; };
     var _src = function(autoV,manV){ return (manV!=null&&manV!=='')?'手入力':(autoV!=null?'自動':'—'); };
     var _misoStat = (_tk.misoRate!=null)
@@ -22030,6 +22032,7 @@ function renderKpiManualTab(){
     };
     html += `<div class="card" style="background:var(--surface2);padding:8px 10px;margin-bottom:10px">
       <div style="font-size:11px;font-weight:700;margin-bottom:4px"><i class="ti ti-stethoscope"></i> 診断プレビュー <span style="font-weight:400;color:var(--muted)">（${store.name} / ${period}）</span></div>
+      ${_hasMix?'':'<div style="font-size:11px;color:var(--red);margin-bottom:6px"><i class="ti ti-plug-connected-x"></i> この店舗は当月のToast出数が未取込です（同期未連携の可能性）。自動計算はできません。手入力カウントをご利用ください。</div>'}
       <div style="font-size:12px;padding:3px 0">味噌汁アップグレード率：${_misoStat} <span style="font-size:10px;color:var(--muted)">（②${_na(_tk.eff.misoUp)}[${_src(_tk.auto.misoUp,_tk.man.misoUp)}] ÷ ①${_na(_tk.eff.misoAll)}[${_src(_tk.auto.misoAll,_tk.man.misoAll)}]）</span></div>
       ${_bd('② アップグレード', _tk.sel.u, totoyaItemBreakdown(sid, period, _tc.misoUpGuids, _tc.misoUpKw))}
       ${_bd('① 味噌汁・全', _tk.sel.a, totoyaItemBreakdown(sid, period, _tc.misoAllGuids, _tc.misoAllKw))}
@@ -22040,6 +22043,7 @@ function renderKpiManualTab(){
     </div>`;
     var kwInput=function(id,val,ph){ return '<input class="form-input" style="padding:6px;margin-top:5px;font-size:12px" id="'+id+'" value="'+escapeHtml(val||'')+'" placeholder="'+ph+'" '+(canT?'':'readonly')+'>'; };
     var kwHint='<div style="font-size:10px;color:var(--muted);margin-top:2px">↑ または<b>キーワードで一括指定</b>（商品名に含む文字・カンマ区切り）。全Bowl分のモディファイヤーをまとめて拾えます。</div>';
+    html += `${canT?`<div style="margin:4px 0 8px"><button class="btn btn-secondary btn-sm" onclick="applyMisoPreset()"><i class="ti ti-wand"></i> 味噌汁プリセットを適用（Aosa/Crab/Today's/Udon）</button> <span style="font-size:10px;color:var(--muted)">①に4種・②に非Aosaの3種をキーワード設定</span></div>`:''}`;
     html += `<div style="font-weight:700;font-size:12px;margin:6px 0 3px">① 味噌汁・全出数（分母）<span style="font-size:10px;color:var(--muted);font-weight:400"> ／ あおさ＋全アップグレード</span></div>`+pickList('tk-misoAll', tcfg.misoAllGuids, '味噌汁を検索')+kwInput('tkw-misoAll', tcfg.misoAllKw, '例: 味噌汁, miso')+kwHint;
     html += `<div style="font-weight:700;font-size:12px;margin:10px 0 3px">② アップグレード（分子）<span style="font-size:10px;color:var(--muted);font-weight:400"> ／ あおさ以外：エビ/カニ/サーモン/うどん</span></div>`+pickList('tk-misoUp', tcfg.misoUpGuids, 'アップグレードを検索')+kwInput('tkw-misoUp', tcfg.misoUpKw, '例: エビ, カニ, サーモン, うどん')+kwHint;
     html += `<div style="font-size:10px;color:var(--accent);margin-top:4px"><i class="ti ti-math-symbols"></i> 味噌汁アップグレード率 ＝ ② ÷ ①</div>`;
@@ -22116,6 +22120,17 @@ function saveTotoyaKpiCfg(){
   });
   setKpiManual(sid, period, man);
   showToast('Totoya KPIを保存しました','success');
+  renderPage('kpi_master');
+}
+/* Totoya味噌汁プリセット: メニューの4モディファイヤー名でキーワード一括設定 */
+function applyMisoPreset(){
+  var sid=window._kpiStore;
+  if(!isTotoyaStore(sid)||!canSetKpiStore(sid)){ showToast('編集権限がありません','warning'); return; }
+  setTotoyaKpiCfg({
+    misoAllKw: "Aosa Miso, Crab Miso, Today's Miso, Udon Noodles",
+    misoUpKw:  "Crab Miso, Today's Miso, Udon Noodles"
+  });
+  showToast('味噌汁プリセット（4種）を適用しました','success');
   renderPage('kpi_master');
 }
 function kpiTotoyaFilter(inp, listId){
