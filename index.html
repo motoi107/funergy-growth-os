@@ -830,6 +830,10 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
         firstTimeBowls: r.first_time_count!=null?Number(r.first_time_count):undefined,
         repeatBowls: r.repeat_count!=null?Number(r.repeat_count):undefined,
         superRegular: r.super_regular_count!=null?Number(r.super_regular_count):undefined,
+        misoTotal: r.miso_total_count!=null?Number(r.miso_total_count):undefined,
+        misoUpgrade: r.miso_upgrade_count!=null?Number(r.miso_upgrade_count):undefined,
+        ikuraShower: r.ikura_shower_count!=null?Number(r.ikura_shower_count):undefined,
+        ikuraBowls: r.ikura_bowls_count!=null?Number(r.ikura_bowls_count):undefined,
         creditTip: r.credit_tip!=null?Number(r.credit_tip):undefined,
         lunchCreditTip: r.lunch_credit_tip!=null?Number(r.lunch_credit_tip):undefined,
         dinnerCreditTip: r.dinner_credit_tip!=null?Number(r.dinner_credit_tip):undefined,
@@ -935,6 +939,10 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
           firstTimeBowls: r.firstTimeBowls!=null?Number(r.firstTimeBowls):undefined,
           repeatBowls: r.repeatBowls!=null?Number(r.repeatBowls):undefined,
           superRegular: r.superRegular!=null?Number(r.superRegular):undefined,
+          misoTotal: r.misoTotal!=null?Number(r.misoTotal):undefined,
+          misoUpgrade: r.misoUpgrade!=null?Number(r.misoUpgrade):undefined,
+          ikuraShower: r.ikuraShower!=null?Number(r.ikuraShower):undefined,
+          ikuraBowls: r.ikuraBowls!=null?Number(r.ikuraBowls):undefined,
           creditTip: r.creditTip!=null?Number(r.creditTip):undefined,
           lunchCreditTip: r.lunchCreditTip!=null?Number(r.lunchCreditTip):undefined,
           dinnerCreditTip: r.dinnerCreditTip!=null?Number(r.dinnerCreditTip):undefined,
@@ -1212,14 +1220,33 @@ function totoyaKpiCalc(sid, period){
     });
     return has?s:null;
   };
-  var eff=function(av, mk){ var m=man[mk]; return (m!=null && m!=='' && !isNaN(m)) ? Number(m) : av; };
-  var aA=autoSum(tcfg.misoAllGuids,tcfg.misoAllKw), aU=autoSum(tcfg.misoUpGuids,tcfg.misoUpKw), aI=autoSum(tcfg.ikuraGuids,tcfg.ikuraKw), aB=autoSum(tcfg.ikuraBowlGuids,tcfg.ikuraBowlKw);
-  var misoAll=eff(aA,'tMisoAll'), misoUp=eff(aU,'tMisoUp'), ikura=eff(aI,'tIkura'), bowls=eff(aB,'tBowls');
+  // toast_sales のモディファイア集計列（first_time_count等と同じ仕組み）を月内合計
+  var da=(typeof getDailyActuals==='function')?getDailyActuals(sid):{};
+  var ymStr=(function(){ var p=String(period).split('.'); return p[0]+'-'+String(p[1]).padStart(2,'0'); })();
+  var dSum=function(field){ var has=false,s=0; Object.keys(da).forEach(function(d){ if(d.indexOf(ymStr)===0){ var v=(da[d]||{})[field]; if(v!=null&&!isNaN(v)){ s+=Number(v); has=true; } } }); return has?s:null; };
+  // 優先順位: 手入力 > Toast(モディファイア集計) > menu_mix(GUID/キーワード)
+  var resolve=function(guids,kw,dailyField,manKey){
+    var d=dSum(dailyField);
+    var a=(d!=null)?d:autoSum(guids,kw);
+    var aSrc=(d!=null)?'Toast':(a!=null?'menu_mix':null);
+    var m=man[manKey];
+    if(m!=null&&m!==''&&!isNaN(m)) return {v:Number(m), src:'手入力', na:a, naSrc:aSrc};
+    return {v:a, src:aSrc, na:a, naSrc:aSrc};
+  };
+  var rA=resolve(tcfg.misoAllGuids,tcfg.misoAllKw,'misoTotal','tMisoAll');
+  var rU=resolve(tcfg.misoUpGuids,tcfg.misoUpKw,'misoUpgrade','tMisoUp');
+  var rI=resolve(tcfg.ikuraGuids,tcfg.ikuraKw,'ikuraShower','tIkura');
+  var rB=resolve(tcfg.ikuraBowlGuids,tcfg.ikuraBowlKw,'ikuraBowls','tBowls');
+  var misoAll=rA.v, misoUp=rU.v, ikura=rI.v, bowls=rB.v;
   return {
-    auto:{misoAll:aA,misoUp:aU,ikura:aI,bowls:aB},
-    man:{misoAll:man.tMisoAll,misoUp:man.tMisoUp,ikura:man.tIkura,bowls:man.tBowls},
     eff:{misoAll:misoAll,misoUp:misoUp,ikura:ikura,bowls:bowls},
-    sel:{ a:(tcfg.misoAllGuids||[]).length+(_totoyaKw(tcfg.misoAllKw).length?1:0), u:(tcfg.misoUpGuids||[]).length+(_totoyaKw(tcfg.misoUpKw).length?1:0), i:(tcfg.ikuraGuids||[]).length+(_totoyaKw(tcfg.ikuraKw).length?1:0), b:(tcfg.ikuraBowlGuids||[]).length+(_totoyaKw(tcfg.ikuraBowlKw).length?1:0) },
+    src:{misoAll:rA.src,misoUp:rU.src,ikura:rI.src,bowls:rB.src},
+    na:{misoAll:rA.na,misoUp:rU.na,ikura:rI.na,bowls:rB.na},
+    man:{misoAll:man.tMisoAll,misoUp:man.tMisoUp,ikura:man.tIkura,bowls:man.tBowls},
+    sel:{ a:(tcfg.misoAllGuids||[]).length+(_totoyaKw(tcfg.misoAllKw).length?1:0)+(dSum('misoTotal')!=null?1:0),
+          u:(tcfg.misoUpGuids||[]).length+(_totoyaKw(tcfg.misoUpKw).length?1:0)+(dSum('misoUpgrade')!=null?1:0),
+          i:(tcfg.ikuraGuids||[]).length+(_totoyaKw(tcfg.ikuraKw).length?1:0)+(dSum('ikuraShower')!=null?1:0),
+          b:(tcfg.ikuraBowlGuids||[]).length+(_totoyaKw(tcfg.ikuraBowlKw).length?1:0)+(dSum('ikuraBowls')!=null?1:0) },
     misoRate:(misoAll!=null&&misoAll>0&&misoUp!=null)?Math.round(misoUp/misoAll*1000)/10:null,
     ikuraRate:(bowls!=null&&bowls>0&&ikura!=null)?Math.round(ikura/bowls*1000)/10:null
   };
@@ -22009,7 +22036,7 @@ function renderKpiManualTab(){
     var _mixChk = getMenuMix(sid, period);
     var _hasMix = Object.keys((_mixChk&&_mixChk.items)||{}).length>0;
     var _na = function(n){ return n==null?'—':n; };
-    var _src = function(autoV,manV){ return (manV!=null&&manV!=='')?'手入力':(autoV!=null?'自動':'—'); };
+    var _src = function(s){ return s||'—'; };
     var _misoStat = (_tk.misoRate!=null)
       ? '<b style="color:var(--green)">'+_tk.misoRate+'%</b>'
       : ((_tk.sel.a||_tk.sel.u||_tk.man.misoAll!=null||_tk.man.misoUp!=null)
@@ -22033,10 +22060,10 @@ function renderKpiManualTab(){
     html += `<div class="card" style="background:var(--surface2);padding:8px 10px;margin-bottom:10px">
       <div style="font-size:11px;font-weight:700;margin-bottom:4px"><i class="ti ti-stethoscope"></i> 診断プレビュー <span style="font-weight:400;color:var(--muted)">（${store.name} / ${period}）</span></div>
       ${_hasMix?'':'<div style="font-size:11px;color:var(--red);margin-bottom:6px"><i class="ti ti-plug-connected-x"></i> この店舗は当月のToast出数が未取込です（同期未連携の可能性）。自動計算はできません。手入力カウントをご利用ください。</div>'}
-      <div style="font-size:12px;padding:3px 0">味噌汁アップグレード率：${_misoStat} <span style="font-size:10px;color:var(--muted)">（②${_na(_tk.eff.misoUp)}[${_src(_tk.auto.misoUp,_tk.man.misoUp)}] ÷ ①${_na(_tk.eff.misoAll)}[${_src(_tk.auto.misoAll,_tk.man.misoAll)}]）</span></div>
+      <div style="font-size:12px;padding:3px 0">味噌汁アップグレード率：${_misoStat} <span style="font-size:10px;color:var(--muted)">（②${_na(_tk.eff.misoUp)}[${_src(_tk.src.misoUp)}] ÷ ①${_na(_tk.eff.misoAll)}[${_src(_tk.src.misoAll)}]）</span></div>
       ${_bd('② アップグレード', _tk.sel.u, totoyaItemBreakdown(sid, period, _tc.misoUpGuids, _tc.misoUpKw))}
       ${_bd('① 味噌汁・全', _tk.sel.a, totoyaItemBreakdown(sid, period, _tc.misoAllGuids, _tc.misoAllKw))}
-      <div style="font-size:12px;padding:3px 0;margin-top:4px;border-top:1px dashed var(--border)">いくらシャワー注文率：${_ikuraStat} <span style="font-size:10px;color:var(--muted)">（③${_na(_tk.eff.ikura)}[${_src(_tk.auto.ikura,_tk.man.ikura)}] ÷ ④${_na(_tk.eff.bowls)}[${_src(_tk.auto.bowls,_tk.man.bowls)}]）</span></div>
+      <div style="font-size:12px;padding:3px 0;margin-top:4px;border-top:1px dashed var(--border)">いくらシャワー注文率：${_ikuraStat} <span style="font-size:10px;color:var(--muted)">（③${_na(_tk.eff.ikura)}[${_src(_tk.src.ikura)}] ÷ ④${_na(_tk.eff.bowls)}[${_src(_tk.src.bowls)}]）</span></div>
       ${_bd('③ いくらシャワー', _tk.sel.i, totoyaItemBreakdown(sid, period, _tc.ikuraGuids, _tc.ikuraKw))}
       ${_bd('④ 対象丼', _tk.sel.b, totoyaItemBreakdown(sid, period, _tc.ikuraBowlGuids, _tc.ikuraBowlKw))}
       <div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 赤い「0」や漏れがある場合、そのモディファイヤーはToast出数に乗っていません。下の「手入力カウント」に月次の合計件数を入れると確実です。</div>
@@ -22060,10 +22087,10 @@ function renderKpiManualTab(){
     html += `<div class="card" style="background:var(--surface2);padding:8px 10px;margin-top:12px;border-top:1px solid var(--border)">
       <div style="font-size:11px;font-weight:700"><i class="ti ti-keyboard"></i> 手入力カウント（${period}・${store.name}）</div>
       <div style="font-size:10px;color:var(--muted);margin:3px 0 6px"><b>いくらシャワーや味噌汁のアップグレードはモディファイヤー</b>のため、Toast出数に乗らないことがあります。その場合は月次の件数をここに入力してください（入力した項目は出数より<b>優先</b>・空欄＝出数から自動）。</div>`
-      + _mc('tMisoAll','① 味噌汁・全件数（あおさ含む）', _tk.auto.misoAll, _tk.man.misoAll)
-      + _mc('tMisoUp','② アップグレード件数（あおさ以外）', _tk.auto.misoUp, _tk.man.misoUp)
-      + _mc('tIkura','③ いくらシャワー件数', _tk.auto.ikura, _tk.man.ikura)
-      + _mc('tBowls','④ Take/Matsu/Tokujo 件数', _tk.auto.bowls, _tk.man.bowls)
+      + _mc('tMisoAll','① 味噌汁・全件数（あおさ含む）', _tk.na.misoAll, _tk.man.misoAll)
+      + _mc('tMisoUp','② アップグレード件数（あおさ以外）', _tk.na.misoUp, _tk.man.misoUp)
+      + _mc('tIkura','③ いくらシャワー件数', _tk.na.ikura, _tk.man.ikura)
+      + _mc('tBowls','④ Take/Matsu/Tokujo 件数', _tk.na.bowls, _tk.man.bowls)
       + `</div>`;
     html += `${canT?`<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="saveTotoyaKpiCfg()"><i class="ti ti-device-floppy"></i> Totoya KPIを保存</button></div>`:''}</div>`;
   }
