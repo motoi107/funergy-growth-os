@@ -1461,9 +1461,9 @@ const NAV_ITEMS = [
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
-  {id:'tasks',       label:'タスク',      icon:'ti-list-check',       roles:['ceo','gm','am','sl']},
-  {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','am','sl']},
-  {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','am','sl']},
+  {id:'tasks',       label:'タスク',      icon:'ti-list-check',       roles:['ceo','gm','office','am','sl']},
+  {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','office','am','sl']},
+  {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am','sl']},
   {id:'store_power', label:'店舗総合力',    icon:'ti-chart-radar',      roles:['ceo','gm','am']},
   {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl','office_crew']},
@@ -1476,18 +1476,18 @@ const NAV_ITEMS = [
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
   {id:'ingredient_master',label:'食材マスター', icon:'ti-carrot',     roles:['ceo','gm','office','am','sl']},
   {id:'vendor_master',label:'業者マスター', icon:'ti-truck',          roles:['ceo','gm','office','am']},
-  {id:'skill',       label:'スキルレベル', icon:'ti-stairs-up',        roles:['ceo','gm','am','sl','crew']},
+  {id:'skill',       label:'スキルレベル', icon:'ti-stairs-up',        roles:['ceo','gm','office','am','sl','crew']},
   {id:'leadership',  label:'Career Score', icon:'ti-trending-up',       roles:['ceo','gm','am','sl']},
   {id:'tiprate',     label:'チップ率',    icon:'ti-coin',             roles:['ceo','gm','am','sl','crew']},
   {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
-  {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','am']},
+  {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','office','am']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew']},
-  {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm']},
+  {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm','office']},
   {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'acct_export', label:'経理出力',     icon:'ti-file-export',      roles:['ceo','gm','office']},
-  {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm']},
-  {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm']},
+  {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm','office']},
+  {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm','office']},
 ];
 
 /* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
@@ -3998,7 +3998,7 @@ function setCompanyMessage(data) { lsSet('company_message', data); }
 function companyMsgSeenKey() { var m=getCompanyMessage(); return 'company_msg_seen_'+(curUserName||'anon')+'_'+(m?m.month:''); }
 function companyMsgSeen() { var m=getCompanyMessage(); if(!m) return true; return ls(companyMsgSeenKey(), false)===true; }
 function markCompanyMsgSeen() { var m=getCompanyMessage(); if(!m) return; lsSet(companyMsgSeenKey(), true); }
-function canEditCompanyMsg() { return ['gm','ceo'].includes(curRole); }
+function canEditCompanyMsg() { return ['gm','ceo','office'].includes(curRole); }
 /* ログイン後、今月分が未読ならポップアップ */
 function maybeShowCompanyMessage() {
   var m = getCompanyMessage();
@@ -15941,7 +15941,33 @@ function getSupplyOrders(){ return ls('supply_orders', []); }
 function soVendors(){ return ['Amazon','Costco','Restaurant Depot','Webstaurant','その他']; }
 function soCategories(){ return ['消耗品','レジ用品','清掃用品','厨房備品','事務用品','その他']; }
 function soVendorName(o){ return o.vendor||'Amazon'; }
-function canRequestSupply(){ return ['ceo','gm','office','am','sl'].indexOf(curRole)>=0; }
+function _curEmp(){ try{ return getEmployees().find(function(x){return x.name===curUserName;})||null; }catch(e){ return null; } }
+function empGradeNum(e){ return (e && typeof gradeNum==='function' && typeof empGrade==='function') ? gradeNum(empGrade(e)) : 0; }
+function canRequestSupply(){
+  if(['ceo','gm','office','am','sl'].indexOf(curRole)>=0) return true;
+  var e=_curEmp(); return !!e && empGradeNum(e)>=2;
+}
+function notifySupplyStoreG2(o, title, text){
+  try{
+    addNotif({type:'order', title:title, text:text, toRoles:['office'], page:'supply_order', refId:o.id});
+    getEmployees().filter(function(e){ return e.store===o.store && (!e.status||e.status==='在籍') && empGradeNum(e)>=2; })
+      .forEach(function(e){ addNotif({type:'order', title:title, text:text, toUser:e.name, page:'supply_order', refId:o.id}); });
+  }catch(_e){}
+}
+function canCancelSupply(o){
+  if(['ceo','gm','office','am'].indexOf(curRole)>=0) return true;
+  return !!o && o.by===curUserName;
+}
+function cancelSupplyOrder(id){
+  var arr=getSupplyOrders(); var o=arr.find(function(x){return x.id===id;}); if(!o) return;
+  if(!canCancelSupply(o)){ showToast('取り消し権限がありません','warning'); return; }
+  if(['承認待ち','発注待機'].indexOf(o.status)<0){ showToast('この状態は取り消せません','warning'); return; }
+  if(!confirm('この発注依頼を取り消しますか？')) return;
+  o.status='取消'; o.cancelledBy=(curUserName||''); o.cancelledAt=new Date().toLocaleDateString('ja');
+  lsSet('supply_orders', arr);
+  try{ if(o.by && o.by!==curUserName) addNotif({type:'order', title:'発注が取り消されました', text:o.name, toUser:o.by, page:'supply_order', refId:o.id}); }catch(_e){}
+  showToast('取り消しました','info'); renderPage('supply_order');
+}
 function canProcessSupply(){ return ['ceo','gm','office','am'].indexOf(curRole)>=0; }
 function canApproveSupplyOrder(o){
   if(!o || o.status!=='承認待ち') return false;
@@ -16050,7 +16076,11 @@ function markSupplyOrdered(id){
     }
   }
   lsSet('supply_orders', arr);
-  try{ if(o.by) addNotif({type:'order', title:'発注しました', text:(o.name+'（到着予定 '+(o.order.eta||'未定')+'）').slice(0,140), toUser:o.by, page:'supply_order', refId:o.id}); }catch(e){}
+  try{
+    var _emsg=(o.name+' ×'+o.qty+'（到着予定 '+(o.order.eta||'未定')+'）').slice(0,140);
+    notifySupplyStoreG2(o, '発注しました（'+soStoreName(o.store)+'）', _emsg);
+    if(o.by) addNotif({type:'order', title:'発注しました（到着予定）', text:_emsg, toUser:o.by, page:'supply_order', refId:o.id});
+  }catch(e){}
   closeModalDirect(); showToast('発注済みにしました','success'); renderPage('supply_order');
 }
 function markSupplyReceived(id){
@@ -16138,7 +16168,7 @@ function setOrderThreshold(){
   if(v===null) return; var n=parseFloat(v); if(isNaN(n)||n<0){ alert('正しい金額を入力してください'); return; }
   lsSet('order_config', {threshold:n}); showToast('しきい値を$'+n+'に設定しました','success'); renderPage('supply_order');
 }
-function soStatusColor(st){ return st==='承認待ち'?'var(--yellow)':st==='発注待機'?'var(--accent)':st==='発注済み'?'var(--purple)':st==='入荷済み'?'var(--green)':st==='却下'?'var(--red)':'var(--muted)'; }
+function soStatusColor(st){ return st==='承認待ち'?'var(--yellow)':st==='発注待機'?'var(--accent)':st==='発注済み'?'var(--purple)':st==='入荷済み'?'var(--green)':st==='却下'?'var(--red)':st==='取消'?'var(--muted)':'var(--muted)'; }
 function renderSupplyOrderCard(o){
   var c=soStatusColor(o.status);
   var od=o.order||{};
@@ -16154,6 +16184,9 @@ function renderSupplyOrderCard(o){
     actions=(od.trackingUrl?'<a class="btn btn-secondary btn-sm" href="'+od.trackingUrl+'" target="_blank"><i class="ti ti-map-pin"></i> 追跡</a>':'')
       +(canProcessSupply()?'<button class="btn btn-success btn-sm" onclick="markSupplyReceived(\''+o.id+'\')"><i class="ti ti-package"></i> 入荷済み</button>':'');
   }
+  if(['承認待ち','発注待機'].indexOf(o.status)>=0 && canCancelSupply(o)){
+    actions += '<button class="btn btn-secondary btn-sm" style="color:var(--red)" onclick="cancelSupplyOrder(\''+o.id+'\')"><i class="ti ti-x"></i> 取り消し</button>';
+  }
   var meta='';
   if(o.status==='発注済み'||o.status==='入荷済み'){
     meta='<div style="font-size:11px;color:var(--muted);margin-top:4px">'
@@ -16164,6 +16197,7 @@ function renderSupplyOrderCard(o){
     var _ap=o.approval||{};
     meta='<div style="font-size:10px;color:var(--muted);margin-top:4px">承認状況: '+(_ap.needAm?('AM '+(_ap.am?'<span style=\"color:var(--green)\">\u2713</span>':'待ち')):'AM不要')+' ／ GM '+(_ap.gm?'<span style=\"color:var(--green)\">\u2713</span>':'待ち')+'</div>';
   }
+  if(o.status==='取消'){ meta='<div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-ban"></i> 取消: '+escapeHtml(o.cancelledBy||'')+' '+escapeHtml(o.cancelledAt||'')+'</div>'; }
   if(o.status==='却下' && o.approval && o.approval.note){ meta='<div style="font-size:11px;color:var(--red);margin-top:4px"><i class="ti ti-arrow-back-up"></i> '+escapeHtml(o.approval.note)+'</div>'; }
   return '<div class="card" style="border-left:3px solid '+c+'">'
     +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
@@ -16207,7 +16241,7 @@ function renderSupplyOrder(){
 
   // 発注リスト
   var orders=soVisibleOrders();
-  var statuses=['承認待ち','発注待機','発注済み','入荷済み','却下'];
+  var statuses=['承認待ち','発注待機','発注済み','入荷済み','取消','却下'];
   var counts={}; statuses.forEach(function(s){counts[s]=0;}); orders.forEach(function(o){ if(counts[o.status]!=null) counts[o.status]++; });
   var cur=window._soStatus||'承認待ち';
   if(!counts[cur] && cur==='承認待ち' && (counts['発注待機']>0)) cur='発注待機';
