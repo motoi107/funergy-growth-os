@@ -5868,13 +5868,13 @@ function renderKpiTrendMatrix(){
   var single = msScope!=='ALL' && scopeStores.length===1;
   var scopeName = msScope==='ALL'?('全'+scopeStores.length+'店'):((scopeStores[0]||{}).name||msScope);
   var cols = [
-    {key:'budget',     label:'予算',     fmt:function(v){return v!=null?fmtK(v):'—';}},
-    {key:'sales',      label:'売上',     fmt:function(v){return v!=null?fmtK(v):'—';}},
-    {key:'guests',     label:'集客',     fmt:function(v){return (v!=null&&v>0)?v.toLocaleString():'—';}},
-    {key:'ppa',        label:'客単価',   fmt:function(v){return (v!=null&&v>0)?'$'+v.toLocaleString():'—';}},
-    {key:'fcRate',     label:'原価率',   fmt:function(v){return (v!=null&&v>0)?v+'%':'—';}, kind:'fc'},
-    {key:'laborRate',  label:'人件費率', fmt:function(v){return (v!=null&&v>0)?v+'%':'—';}, kind:'labor'},
-    {key:'repeatRate', label:'リピート率', fmt:function(v){return v!=null?v+'%':'—';}, kind:'repeat'}
+    {key:'budget',     label:'予算',     fmt:function(v){return v!=null?fmtK(v):'—';}, tgt:function(k){return null;}},
+    {key:'sales',      label:'売上',     fmt:function(v){return v!=null?fmtK(v):'—';}, tgt:function(k){return k.budget!=null?fmtK(k.budget):null;}},
+    {key:'guests',     label:'集客',     fmt:function(v){return (v!=null&&v>0)?v.toLocaleString():'—';}, tgt:function(k){return k.guestBudget!=null?k.guestBudget.toLocaleString():null;}},
+    {key:'ppa',        label:'客単価',   fmt:function(v){return (v!=null&&v>0)?'$'+v.toLocaleString():'—';}, tgt:function(k){return k.ppaBudget!=null?'$'+k.ppaBudget.toLocaleString():null;}},
+    {key:'fcRate',     label:'原価率',   fmt:function(v){return (v!=null&&v>0)?v+'%':'—';}, kind:'fc', tgt:function(k){return k.fcBudgetRate!=null?k.fcBudgetRate+'%':null;}},
+    {key:'laborRate',  label:'人件費率', fmt:function(v){return (v!=null&&v>0)?v+'%':'—';}, kind:'labor', tgt:function(k){return k.laborBudgetRate!=null?k.laborBudgetRate+'%':null;}},
+    {key:'repeatRate', label:'リピート率', fmt:function(v){return v!=null?v+'%':'—';}, kind:'repeat', tgt:function(k,sid,off){ if(!sid) return null; var t=(getStoreKpiTargets(sid,off)||{}).repeatRate; return t!=null?t+'%':null; }}
   ];
   var extra=[];
   if(single){
@@ -5897,15 +5897,19 @@ function renderKpiTrendMatrix(){
       if(c.kind==='fc'&&v>0) col=v<=31?'var(--green)':v<=34?'var(--yellow)':'var(--red)';
       else if(c.kind==='labor'&&v>0) col=v<=28?'var(--green)':v<=31?'var(--yellow)':'var(--red)';
       else if(c.kind==='repeat'&&v!=null) col=v>=50?'var(--green)':v>=30?'var(--yellow)':'var(--red)';
-      tds+='<td style="text-align:right;padding:7px 8px;white-space:nowrap;color:'+col+'">'+c.fmt(v)+'</td>';
+      var tg=c.tgt?c.tgt(k, single?scopeStores[0].id:null, mi.offset):null;
+      var tgHtml = tg!=null ? (' <span style="font-size:9px;color:var(--muted)">目標'+tg+'</span>') : '';
+      tds+='<td style="text-align:right;padding:7px 8px;white-space:nowrap;color:'+col+'">'+c.fmt(v)+tgHtml+'</td>';
     });
     extra.forEach(function(kp){
       var av=actuals[kp.key], tv=tgts[kp.key];
       var col='var(--muted)';
       if(av!=null&&tv!=null) col=((kp.dir==='down'?av<=tv:av>=tv)?'var(--green)':'var(--red)');
       else if(av!=null) col='var(--tm)';
-      var disp=(av!=null)?(av+(kp.unit==='%'?'%':kp.unit==='★'?'★':kp.unit==='$'?'':'')):'—';
-      tds+='<td style="text-align:right;padding:7px 8px;white-space:nowrap;color:'+col+'">'+disp+'</td>';
+      var unitSfx=(kp.unit==='%'?'%':kp.unit==='★'?'★':kp.unit==='$'?'':'');
+      var disp=(av!=null)?(av+unitSfx):'—';
+      var tgHtml = tv!=null ? (' <span style="font-size:9px;color:var(--muted)">目標'+tv+unitSfx+'</span>') : '';
+      tds+='<td style="text-align:right;padding:7px 8px;white-space:nowrap;color:'+col+'">'+disp+tgHtml+'</td>';
     });
     rows+='<tr style="border-top:1px solid var(--border)">'+tds+'</tr>';
   });
@@ -6682,6 +6686,33 @@ function renderBudgetDaily() {
   var isAgg = dailyStoreScope==='ALL' && multiStore;
   var title = isAgg ? `全${vis.length}店集計` : (scopeStores[0]||{name:'—'}).name;
 
+  // データ連携（単店ビューのみ）— 1ボタンに集約
+  if (!isAgg && scopeStores[0]) {
+    var sStore = scopeStores[0];
+    var hasGuid = !!sStore.toastGuid;
+    var ss = getSyncState(sStore.id);
+    var syncCol = ss.status==='success'?'var(--green)':ss.status==='failed'?'var(--red)':'var(--muted)';
+    var syncDotHtml = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${syncCol};vertical-align:middle;margin-right:4px"></span>`;
+    var statusText = ss.last ? `${syncDotHtml}最終更新: ${ss.last}` : `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);vertical-align:middle;margin-right:4px"></span>未連携`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>データ連携（詳細）</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:4px">通常は右上の <i class="ti ti-refresh"></i>「最新に更新」で ${sStore.name} の売上・客数・勤怠・出数が反映されます。ここはGUID設定や期間の一括取り込みなど管理者向けです。</p>
+      <div id="sync-all-status" style="font-size:11px;margin-top:4px;color:var(--muted)">${statusText}${ss.detail?` · ${ss.detail}`:''}</div>`;
+    if (!hasGuid) {
+      html += `<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:11px"><i class="ti ti-alert-circle"></i> Toast GUID未設定のため売上連携はスキップされます。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div>`;
+    }
+    // 詳細（管理者向け・折りたたみ）
+    html += `<details style="margin-top:10px"><summary style="font-size:12px;color:var(--muted);cursor:pointer">詳細オプション</summary>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        ${hasGuid?`<button class="btn btn-secondary btn-sm" onclick="doToastFetchToday('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-cloud-download"></i> 昨日分を取得</button>
+        <button class="btn btn-secondary btn-sm" onclick="openRangeModal('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-calendar-plus"></i> 期間一括取り込み</button>`:''}
+        <button class="btn btn-secondary btn-sm" onclick="doWeatherSync('${sStore.id}')"><i class="ti ti-cloud"></i> 天気・祝日のみ</button>
+        <button class="btn btn-secondary btn-sm" onclick="openGuidModal('${sStore.id}')"><i class="ti ti-settings"></i> GUID設定</button>
+      </div>
+      <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:8px"></div>
+    </details>
+    </div>`;
+  }
+
   // 月間累計サマリー
   var todayStr = new Date().toISOString().slice(0,10);
   var sumBudget=0, sumActual=0, sumBudgetToToday=0;
@@ -6710,49 +6741,19 @@ function renderBudgetDaily() {
   // 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）
   html += keyKpiCard(scopeStores, days, title);
 
-  // リピート率（Totoya=丼モディファイア / ToriTon・Tenkichi=Customers FT/RP/SR。データがあれば表示）
-  html += repeatRateCard(scopeStores, days);
-
-  // データ連携（単店ビューのみ）— 1ボタンに集約
-  if (!isAgg && scopeStores[0]) {
-    var sStore = scopeStores[0];
-    var hasGuid = !!sStore.toastGuid;
-    var ss = getSyncState(sStore.id);
-    var syncCol = ss.status==='success'?'var(--green)':ss.status==='failed'?'var(--red)':'var(--muted)';
-    var syncDotHtml = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${syncCol};vertical-align:middle;margin-right:4px"></span>`;
-    var statusText = ss.last ? `${syncDotHtml}最終更新: ${ss.last}` : `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);vertical-align:middle;margin-right:4px"></span>未連携`;
-    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i>データ連携（詳細）</div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:4px">通常は右上の <i class="ti ti-refresh"></i>「最新に更新」で ${sStore.name} の売上・客数・勤怠・出数が反映されます。ここはGUID設定や期間の一括取り込みなど管理者向けです。</p>
-      <div id="sync-all-status" style="font-size:11px;margin-top:4px;color:var(--muted)">${statusText}${ss.detail?` · ${ss.detail}`:''}</div>`;
-    if (!hasGuid) {
-      html += `<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:11px"><i class="ti ti-alert-circle"></i> Toast GUID未設定のため売上連携はスキップされます。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="openGuidModal('${sStore.id}')">GUID設定</button></div>`;
-    }
-    // 詳細（管理者向け・折りたたみ）
-    html += `<details style="margin-top:10px"><summary style="font-size:12px;color:var(--muted);cursor:pointer">詳細オプション</summary>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-        ${hasGuid?`<button class="btn btn-secondary btn-sm" onclick="doToastFetchToday('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-cloud-download"></i> 昨日分を取得</button>
-        <button class="btn btn-secondary btn-sm" onclick="openRangeModal('${sStore.id}','${sStore.toastGuid}')"><i class="ti ti-calendar-plus"></i> 期間一括取り込み</button>`:''}
-        <button class="btn btn-secondary btn-sm" onclick="doWeatherSync('${sStore.id}')"><i class="ti ti-cloud"></i> 天気・祝日のみ</button>
-        <button class="btn btn-secondary btn-sm" onclick="openGuidModal('${sStore.id}')"><i class="ti ti-settings"></i> GUID設定</button>
-      </div>
-      <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:8px"></div>
-    </details>
-    </div>`;
-  }
-
   // 日次テーブル
   var canEdit = ROLE_CONFIG[curRole].canCreate;
+  var guestLabel = (!isAgg && scopeStores[0]) ? guestCountLabel(scopeStores[0].id) : '客数';
   html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>日次一覧
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>
       <span style="font-size:13px;font-weight:600">${dailyMonthLabel()}</span>
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div></div>
-    <table class="inv-table" style="min-width:${isAgg?'720':'1060'}px;font-size:12px"><thead><tr>
-      <th>日</th><th>予算</th><th>実績</th><th>ﾘﾋﾟｰﾄ</th><th>労働h</th><th>人件費</th>${isAgg?'':'<th>L売上</th><th>D売上</th><th>'+guestLabel+'</th><th>チップ率</th>'}<th>達成</th><th>累計達成</th>${isAgg?'':'<th>天気</th><th>イベント</th>'}${(!isAgg&&canEdit)?'<th></th>':''}
+    <table class="inv-table" style="min-width:${isAgg?'620':'1080'}px;font-size:12px"><thead><tr>
+      <th>日</th>${isAgg?'':'<th>天気</th><th>イベント</th>'}<th>予算</th><th>実績</th>${isAgg?'':'<th>L売上</th><th>D売上</th><th>'+guestLabel+'</th>'}<th>達成</th><th>累計達成</th>${isAgg?'':'<th>チップ率</th>'}<th>労働h</th><th>人件費</th>${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
-  var guestLabel = (!isAgg && scopeStores[0]) ? guestCountLabel(scopeStores[0].id) : '客数';
   var cumB=0, cumA=0;
   var _ymD=(days[0]?days[0].date.slice(0,7):'');
   var _storeExtra={}; scopeStores.forEach(function(s){ _storeExtra[s.id]={sal:(typeof storeSalaryDaily==='function')?storeSalaryDaily(s.id,_ymD):0, ins:(typeof storeInsuranceDaily==='function')?storeInsuranceDaily(s.id,_ymD):0}; });
@@ -6791,15 +6792,15 @@ function renderBudgetDaily() {
     var rowBg = isToday?'background:#fdeee4':isWeekend?'background:rgba(255,255,255,0.02)':'';
     html += `<tr style="${rowBg}">
       <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
+      ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted)">${event||'-'}</td>`}
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}</td>
-      <td style="font-size:11px;color:${dayRT!=null?(dayRT>=50?'var(--green)':dayRT>=30?'var(--yellow)':'var(--red)'):'var(--muted)'}">${dayRT!=null?dayRT+'%':'—'}</td>
-      <td style="font-size:11px;color:var(--muted)">${dayLaborH>0?dayLaborH.toFixed(1):'—'}</td>
-      <td style="font-size:11px;color:var(--muted)">${dayLaborCost>0?fmtUSD2(dayLaborCost):'—'}</td>
-      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td><td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
+      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${cumRate>=100?'var(--green)':cumRate>=90?'var(--yellow)':'var(--red)'};font-size:11px">${cumRate}%</span></td>
-      ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted)">${event||'-'}</td>`}
+      ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
+      <td style="font-size:11px;color:var(--muted)">${dayLaborH>0?dayLaborH.toFixed(1):'—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${dayLaborCost>0?fmtUSD2(dayLaborCost):'—'}</td>
       ${(!isAgg&&canEdit)?`<td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openDailyActualModal('${scopeStores[0].id}','${d.date}','${d.dow}')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>`:''}
     </tr>`;
   });
