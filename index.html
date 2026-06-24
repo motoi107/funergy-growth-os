@@ -4697,6 +4697,8 @@ function renderDashboard() {
   if (pendingOB) alerts.push({lv:'warn', icon:'ti-file-text', text:`採用書類の確認待ち ${pendingOB}件`, act:`goOnboarding()`});
   var _inact = (['ceo','gm','am','office'].indexOf(curRole)>=0)?(function(){var l=inactiveStaff(window._inactiveDays||30);if(curRole==='am'){var ms=myAmStores();l=l.filter(function(x){return ms.indexOf(x.emp.store)>=0||(x.emp.support||[]).some(function(s){return ms.indexOf(s)>=0;});});}return l.length;})():0;
   if (_inact) alerts.push({lv:'warn', icon:'ti-user-off', text:`非アクティブの疑い ${_inact}名`, act:`go('staff_master')`});
+  var _unreg = (['ceo','gm','am','office'].indexOf(curRole)>=0)?(function(){var l=unregisteredClockIns(window._unregDays||30);if(curRole==='am'){var ms=myAmStores();l=l.filter(function(x){return x.stores.some(function(s){return ms.indexOf(s)>=0;});});}return l.length;})():0;
+  if (_unreg) alerts.push({lv:'warn', icon:'ti-user-question', text:`未登録の打刻 ${_unreg}名`, act:`go('staff_master')`});
   if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
 
   html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}">
@@ -5696,7 +5698,7 @@ function monthStats(storeId, offset) {
   return {
     label: `${ref.getFullYear()}/${ref.getMonth()+1}`,
     sales, guests, labor, food, daysWithData,
-    avgSpend: guests ? Math.round(sales/guests) : 0,
+    avgSpend: guests ? Math.round(sales/guests*100)/100 : 0,
     laborRate: sales ? Math.round(labor/sales*1000)/10 : 0,
     fcRate: sales ? Math.round(food/sales*1000)/10 : 0,
     hasData: daysWithData>0,
@@ -5757,7 +5759,7 @@ function msAgg(storeId, mi){
     fcRate:sales?Math.round(food/sales*1000)/10:0,
     laborRate:sales?Math.round(labor/sales*1000)/10:0,
     achieve:budget?Math.round(sales/budget*1000)/10:0,
-    avgSpend:guests?Math.round(sales/guests):0,
+    avgSpend:guests?Math.round(sales/guests*100)/100:0,
     grossProfit:sales-food-labor,
     gpRate:sales?Math.round((sales-food-labor)/sales*1000)/10:0,
     trend:trend};
@@ -5790,7 +5792,7 @@ function msScopeAgg(mi){
   agg.fcRate=agg.sales?Math.round(agg.food/agg.sales*1000)/10:0;
   agg.laborRate=agg.sales?Math.round(agg.labor/agg.sales*1000)/10:0;
   agg.achieve=agg.budget?Math.round(agg.sales/agg.budget*1000)/10:0;
-  agg.avgSpend=agg.guests?Math.round(agg.sales/agg.guests):0;
+  agg.avgSpend=agg.guests?Math.round(agg.sales/agg.guests*100)/100:0;
   agg.grossProfit=agg.sales-agg.food-agg.labor;
   agg.gpRate=agg.sales?Math.round((agg.sales-agg.food-agg.labor)/agg.sales*1000)/10:0;
   return agg;
@@ -5899,7 +5901,7 @@ function renderKpiTrendMatrix(){
     {key:'budget',     label:'予算',     fmt:function(v){return v!=null?fmtK(v):'—';}, tgt:function(k){return null;}},
     {key:'sales',      label:'売上',     fmt:function(v){return v!=null?fmtK(v):'—';}, tgt:function(k){return k.budget!=null?fmtK(k.budget):null;}},
     {key:'guests',     label:'集客',     fmt:function(v){return (v!=null&&v>0)?v.toLocaleString():'—';}, tgt:function(k){return k.guestBudget!=null?k.guestBudget.toLocaleString():null;}},
-    {key:'ppa',        label:'客単価',   fmt:function(v){return (v!=null&&v>0)?'$'+v.toLocaleString():'—';}, tgt:function(k){return k.ppaBudget!=null?'$'+k.ppaBudget.toLocaleString():null;}},
+    {key:'ppa',        label:'客単価',   fmt:function(v){return (v!=null&&v>0)?'$'+v.toFixed(2):'—';}, tgt:function(k){return k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):null;}},
     {key:'fcRate',     label:'原価率',   fmt:function(v){return (v!=null&&v>0)?v+'%':'—';}, kind:'fc', tgt:function(k){return k.fcBudgetRate!=null?k.fcBudgetRate+'%':null;}},
     {key:'laborRate',  label:'人件費率', fmt:function(v){return (v!=null&&v>0)?v+'%':'—';}, kind:'labor', tgt:function(k){return k.laborBudgetRate!=null?k.laborBudgetRate+'%':null;}},
     {key:'repeatRate', label:'リピート率', fmt:function(v){return v!=null?v+'%':'—';}, kind:'repeat', tgt:function(k,sid,off){ if(!sid) return null; var t=(getStoreKpiTargets(sid,off)||{}).repeatRate; return t!=null?t+'%':null; }}
@@ -6010,7 +6012,7 @@ function renderMonthlySummary(){
   html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
     +tile('売上', fmtK(agg.sales), '予算 '+fmtK(agg.budget)+'　'+msDelta(agg,prevAgg,'sales')+' 前月')
     +tile('予算達成', agg.achieve+'%', scopeName+'・'+mi.label, acCol)
-    +tile('集客 / 客単価', (agg.guests||0).toLocaleString()+' / $'+(agg.avgSpend||0), mi.label)
+    +tile('集客 / 客単価', (agg.guests||0).toLocaleString()+' / $'+(agg.avgSpend||0).toFixed(2), mi.label)
     +tile('リピート率', rRateM==null?'—':rRateM+'%', rRateM==null?'同期後に表示':('Repeat '+rsM.repeat.toLocaleString()+' / 計'+rsM.total.toLocaleString()), rColM)
     +tile('原価率(FC)', agg.fcRate>0?agg.fcRate+'%':'—', '前月 '+(prevAgg.fcRate||'—')+'%　'+msDelta(agg,prevAgg,'fcRate',true), fcCol)
     +tile('人件費率', agg.laborRate>0?agg.laborRate+'%':'—', '前月 '+(prevAgg.laborRate||'—')+'%　'+msDelta(agg,prevAgg,'laborRate',true), lCol)
@@ -6235,7 +6237,7 @@ function renderPrevMonthCompare(storeId, budTotal, laborB, fcB) {
       <tr style="font-size:10px;color:var(--muted)"><td></td><td style="text-align:right">前月実績</td><td style="text-align:right">今月予算</td><td style="text-align:right">差</td></tr>
       ${row('売上', fmtK(Math.round(pm.sales)), fmtK(Math.round(budTotal)), false, false)}
       ${row('客数', pm.guests?pm.guests.toLocaleString():'—', '—', false, false)}
-      ${row('客単価', pm.avgSpend?'$'+pm.avgSpend:'—', '—', false, false)}
+      ${row('客単価', pm.avgSpend?'$'+pm.avgSpend.toFixed(2):'—', '—', false, false)}
       ${row('Labor率', pm.laborRate?pm.laborRate+'%':'—', laborBudPct?laborBudPct+'%':'—', true, true)}
       ${row('Food Cost率', pm.fcRate?pm.fcRate+'%':'—', fcBudPct?fcBudPct+'%':'—', true, true)}
     </table>
@@ -7266,13 +7268,13 @@ function keyKpiStats(scopeStores, days){
   return {
     sales:sales, budget:budget, guests:guests, food:food, labor:labor, unit: allBowls?'丼':'名',
     achieve: budget?Math.round(sales/budget*1000)/10:0,
-    ppa: guests?Math.round(sales/guests):0,
+    ppa: guests?Math.round(sales/guests*100)/100:0,
     fcRate: sales?Math.round(food/sales*1000)/10:0,
     laborRate: sales?Math.round(labor/sales*1000)/10:0,
     repeatRate: (rs.has&&rs.total>0)?Math.round(rs.repeat/rs.total*1000)/10:null,
     repeatHas: rs.has&&rs.total>0, repeat:rs.repeat, first:rs.first, sr:rs.sr, rTotal:rs.total,
     guestBudget: hasGuestBud&&guestBud>0?guestBud:null,
-    ppaBudget: (hasGuestBud&&guestBud>0)?Math.round((salesBud||budget)/guestBud):null,
+    ppaBudget: (hasGuestBud&&guestBud>0)?Math.round((salesBud||budget)/guestBud*100)/100:null,
     fcBudgetRate: segSales$?Math.round(fcBud$/segSales$*1000)/10:null,
     laborBudgetRate: segSales$?Math.round(laborBud$/segSales$*1000)/10:null,
     repeatPrev: (rsPrev.has&&rsPrev.total>0)?Math.round(rsPrev.repeat/rsPrev.total*1000)/10:null,
@@ -7300,7 +7302,7 @@ function keyKpiCard(scopeStores, days, title){
   var guestSub = k.guestBudget!=null ? ('予算 '+k.guestBudget.toLocaleString()+'　達成'+Math.round(k.guests/k.guestBudget*100)+'%') : unitTxt;
   var guestCol = k.guestBudget!=null ? (k.guests>=k.guestBudget?'var(--green)':k.guests>=k.guestBudget*0.9?'var(--yellow)':'var(--red)') : 'var(--tm)';
   // 客単価（予実）
-  var ppaSub = k.ppaBudget!=null ? ('予算 $'+k.ppaBudget.toLocaleString()+'　'+sgn(k.ppa-k.ppaBudget)) : ('売上÷'+unitTxt);
+  var ppaSub = k.ppaBudget!=null ? ('予算 $'+k.ppaBudget.toFixed(2)+'　'+sgn(Math.round((k.ppa-k.ppaBudget)*100)/100)) : ('売上÷'+unitTxt);
   // 原価率（予実：目標＝予算原価率）
   var fcCol, fcSub;
   if(k.fcBudgetRate!=null){ fcCol=k.fcRate<=0?'var(--muted)':(k.fcRate<=k.fcBudgetRate?'var(--green)':k.fcRate<=k.fcBudgetRate+3?'var(--yellow)':'var(--red)');
@@ -7333,7 +7335,7 @@ function keyKpiCard(scopeStores, days, title){
     <div class="kpi-grid">
       ${kpi('売上', fmtUSD2(k.sales), '予算 '+fmtK(k.budget)+' / 達成'+k.achieve+'%', acCol)}
       ${kpi(k.unit==='丼'?'集客(丼数)':'集客', (k.guests||0).toLocaleString(), guestSub, guestCol)}
-      ${kpi('客単価', '$'+(k.ppa||0).toLocaleString(), ppaSub, 'var(--tm)')}
+      ${kpi('客単価', '$'+(k.ppa||0).toFixed(2), ppaSub, 'var(--tm)')}
       ${kpi('リピート率', k.repeatRate==null?'—':k.repeatRate+'%', rSub, rCol)}
       ${kpi('原価率', k.fcRate>0?k.fcRate+'%':'—', fcSub, fcCol)}
       ${kpi('人件費率', k.laborRate>0?k.laborRate+'%':'—', lSub, lCol)}
@@ -10337,7 +10339,7 @@ function sumWeekStats(storeId, dates) {
     if (hadH) laborCost += storeSalaryDaily(storeId, date.slice(0,7)); // 月給制の日割り（生）
   });
   return {sales, guests, hours, laborCost, food,
-    avgSpend: guests?Math.round(sales/guests):0,
+    avgSpend: guests?Math.round(sales/guests*100)/100:0,
     laborRate: sales?Math.round(laborCost/sales*1000)/10:0,
     fcRate: sales?Math.round(food/sales*1000)/10:0};
 }
@@ -10364,11 +10366,11 @@ function renderPrevSameWeekCompare(storeId) {
     var diff = c - p;
     var col = 'var(--muted)';
     if (c!==0 || p!==0) { if (lowerBetter) col=diff<=0?'var(--green)':'var(--red)'; else col=diff>=0?'var(--green)':'var(--red)'; }
-    var fmt = v => isMoney?fmtK(v):(isPct?v+'%':(label==='総労働時間'?v.toFixed(1)+'h':v.toLocaleString()));
+    var fmt = v => label==='客単価'?'$'+(v||0).toFixed(2):(isMoney?fmtK(v):(isPct?v+'%':(label==='総労働時間'?v.toFixed(1)+'h':v.toLocaleString())));
     var sign = diff>0?'+':'';
     return `<tr style="font-size:12px"><td style="color:var(--muted);padding:3px 0">${label}</td>
       <td style="text-align:right">${fmt(p)}</td><td style="text-align:right;font-weight:600">${fmt(c)}</td>
-      <td style="text-align:right;color:${col}">${sign}${isMoney?fmtK(diff):(isPct?diff.toFixed(1)+'pt':(label==='総労働時間'?diff.toFixed(1)+'h':diff.toLocaleString()))}</td></tr>`;
+      <td style="text-align:right;color:${col}">${sign}${label==='客単価'?((diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2)):(isMoney?fmtK(diff):(isPct?diff.toFixed(1)+'pt':(label==='総労働時間'?diff.toFixed(1)+'h':diff.toLocaleString())))}</td></tr>`;
   }
   var html = `<div class="card"><div class="card-title"><i class="ti ti-arrows-diff" style="color:var(--accent)"></i>前月同週比較（第${wom}週）</div>
     <table style="width:100%;border-collapse:collapse">
@@ -14217,6 +14219,71 @@ function setEmpStatusQuick(empId, status){
   showToast(e.name+' を'+status+'にしました', status==='退職'?'danger':'info');
   renderPage('staff_master');
 }
+/* 打刻はあるが従業員登録が無い人（Toast名↔登録名で照合）。inactiveと同じ要領でtip_labor走査。 */
+function unregisteredClockIns(days){
+  var th=days||30;
+  var cutoffStr=new Date(Date.now()-th*86400000).toISOString().slice(0,10);
+  var map={};
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(!k || k.indexOf('tip_labor_')!==0) continue;
+      var date=k.slice(k.lastIndexOf('_')+1);
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      if(date<cutoffStr) continue;
+      var storeId=k.slice(10, k.lastIndexOf('_'));
+      var data; try{ data=JSON.parse(localStorage.getItem(k)); }catch(_){ continue; }
+      if(!data || typeof data!=='object') continue;
+      Object.keys(data).forEach(function(name){
+        if(typeof isOrderOnlyAccount==='function' && isOrderOnlyAccount(name)) return;
+        var e=data[name]||{};
+        if(typeof isOrderOnlyAccount==='function' && e.toastName && isOrderOnlyAccount(e.toastName)) return;
+        var m=map[name]; if(!m){ m=map[name]={name:name, toastName:e.toastName||name, stores:{}, dates:{}, hours:0, last:null}; }
+        m.stores[storeId]=true; m.dates[date]=true;
+        m.hours += (e.lunch||0)+(e.dinner||0);
+        if(!m.last || date>m.last) m.last=date;
+      });
+    }
+  }catch(e){}
+  var emps=getEmployees();
+  var out=[];
+  Object.keys(map).forEach(function(name){
+    var m=map[name];
+    var matched=emps.find(function(x){ return x.name===name || (x.toastName && (x.toastName===name || x.toastName===m.toastName)); });
+    if(matched) return;
+    out.push({ name:name, toastName:m.toastName, stores:Object.keys(m.stores), last:m.last, days:Object.keys(m.dates).length, hours:Math.round(m.hours*10)/10 });
+  });
+  out.sort(function(a,b){ return (b.last||'').localeCompare(a.last||''); });
+  return out;
+}
+function setUnregDays(d){ window._unregDays=d; renderPage('staff_master'); }
+function renderUnregisteredCard(){
+  if(['ceo','gm','am','office'].indexOf(curRole)<0) return '';
+  var th=window._unregDays||30;
+  var list=unregisteredClockIns(th);
+  if(curRole==='am'){ var ms=myAmStores(); list=list.filter(function(x){ return x.stores.some(function(s){return ms.indexOf(s)>=0;}); }); }
+  var opts=[14,30,45,60].map(function(d){return '<button class="phase-tab'+(th===d?' active':'')+'" onclick="setUnregDays('+d+')">'+d+'日</button>';}).join('');
+  var body;
+  if(!list.length){
+    body='<div style="font-size:12px;color:var(--muted);padding:6px 0"><i class="ti ti-circle-check" style="color:var(--green)"></i> 直近'+th+'日で、打刻はあるが従業員登録が無い人はいません。<span style="color:var(--muted)">※Toast勤怠データのある店舗のみ判定</span></div>';
+  } else {
+    body=list.map(function(x){
+      var storeBadges=x.stores.map(function(sid){ var s=STORES.find(function(z){return z.id===sid;}); return s?('<span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)):escapeHtml(sid); }).join(' · ');
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+        +'<div><div style="font-weight:600;font-size:13px">'+escapeHtml(x.name)+' <span class="tag tag-yellow" style="font-size:8px">未登録</span></div>'
+        +'<div style="font-size:11px;color:var(--muted)">'+storeBadges+' · 直近打刻 '+escapeHtml(x.last||'—')+' · '+x.days+'日 / '+x.hours+'h'+(x.toastName&&x.toastName!==x.name?' · Toast: '+escapeHtml(x.toastName):'')+'</div></div>'
+        +'<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">'
+        +'<button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 従業員登録</button>'
+        +'</div></div>';
+    }).join('');
+  }
+  return '<div class="card" style="border-left:3px solid var(--yellow)">'
+    +'<div class="card-title"><i class="ti ti-user-question" style="color:var(--yellow)"></i> 未登録の打刻検知'+(list.length?' <span class="tag tag-yellow" style="font-size:10px">'+list.length+'名</span>':'')+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin:2px 0 8px">Toastでクロックインしているが、従業員マスターに登録が無い人を表示。判定期間：</div>'
+    +'<div class="phase-tabs" style="margin-bottom:8px">'+opts+'</div>'
+    +body
+    +'</div>';
+}
 function renderInactiveCard(){
   if(['ceo','gm','am','office'].indexOf(curRole)<0) return '';
   var th=window._inactiveDays||30;
@@ -14291,6 +14358,7 @@ function renderStaffMaster() {
     </div>
   </div>
   ${renderInactiveCard()}
+  ${renderUnregisteredCard()}
   ${renderOffboardingCard()}
     <div style="position:relative">
       <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted)"></i>
