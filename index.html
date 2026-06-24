@@ -1211,6 +1211,16 @@ function totoyaKpiCalc(sid, period){
     ikuraRate:(bowls!=null&&bowls>0&&ikura!=null)?Math.round(ikura/bowls*1000)/10:null
   };
 }
+/* 選択した各GUIDの出数内訳（どのモディファイヤーが拾えているか可視化） */
+function totoyaItemBreakdown(sid, period, guids){
+  var mix=getMenuMix(sid, period);
+  var recipes=(typeof activeRecipes==='function'?activeRecipes():getRecipes()).filter(function(r){return recipeInStore(r,sid);});
+  return (guids||[]).map(function(g){
+    var rs=recipes.filter(function(r){return r.toastGuid===g;});
+    var qty=0, name=''; rs.forEach(function(r){ qty+=parseFloat((mix.items||{})[r.id])||0; if(r.name) name=r.name; });
+    return { guid:g, name:name||'(未取込)', qty:qty, found:rs.length>0 };
+  });
+}
 
 /* 指定月の period文字列（offset=0今月, -1先月） */
 function periodForOffset(offset){
@@ -21991,10 +22001,23 @@ function renderKpiManualTab(){
       : ((_tk.sel.i||_tk.sel.b||_tk.man.ikura!=null||_tk.man.bowls!=null)
           ? '<span style="color:var(--red)">自動取得できません。下の「手入力カウント」③（いくらシャワー）に月次件数を入力してください</span>'
           : '<span style="color:var(--muted)">対象を選ぶ／手入力で件数を入れてください</span>');
+    var _bd = function(label, selCount, rows){
+      if(!selCount || !rows || !rows.length) return '';
+      var inner = rows.map(function(x){
+        var c = (x.found && x.qty>0) ? 'var(--muted)' : 'var(--red)';
+        return '<span style="color:'+c+'">'+escapeHtml(x.name)+':'+x.qty+'</span>';
+      }).join(' ／ ');
+      return '<div style="font-size:10px;color:var(--muted);padding:0 0 2px 10px">'+label+' 内訳: '+inner+'</div>';
+    };
     html += `<div class="card" style="background:var(--surface2);padding:8px 10px;margin-bottom:10px">
       <div style="font-size:11px;font-weight:700;margin-bottom:4px"><i class="ti ti-stethoscope"></i> 診断プレビュー <span style="font-weight:400;color:var(--muted)">（${store.name} / ${period}）</span></div>
       <div style="font-size:12px;padding:3px 0">味噌汁アップグレード率：${_misoStat} <span style="font-size:10px;color:var(--muted)">（②${_na(_tk.eff.misoUp)}[${_src(_tk.auto.misoUp,_tk.man.misoUp)}] ÷ ①${_na(_tk.eff.misoAll)}[${_src(_tk.auto.misoAll,_tk.man.misoAll)}]）</span></div>
-      <div style="font-size:12px;padding:3px 0">いくらシャワー注文率：${_ikuraStat} <span style="font-size:10px;color:var(--muted)">（③${_na(_tk.eff.ikura)}[${_src(_tk.auto.ikura,_tk.man.ikura)}] ÷ ④${_na(_tk.eff.bowls)}[${_src(_tk.auto.bowls,_tk.man.bowls)}]）</span></div>
+      ${_bd('② アップグレード', _tk.sel.u, totoyaItemBreakdown(sid, period, getTotoyaKpiCfg().misoUpGuids))}
+      ${_bd('① 味噌汁・全', _tk.sel.a, totoyaItemBreakdown(sid, period, getTotoyaKpiCfg().misoAllGuids))}
+      <div style="font-size:12px;padding:3px 0;margin-top:4px;border-top:1px dashed var(--border)">いくらシャワー注文率：${_ikuraStat} <span style="font-size:10px;color:var(--muted)">（③${_na(_tk.eff.ikura)}[${_src(_tk.auto.ikura,_tk.man.ikura)}] ÷ ④${_na(_tk.eff.bowls)}[${_src(_tk.auto.bowls,_tk.man.bowls)}]）</span></div>
+      ${_bd('③ いくらシャワー', _tk.sel.i, totoyaItemBreakdown(sid, period, getTotoyaKpiCfg().ikuraGuids))}
+      ${_bd('④ 対象丼', _tk.sel.b, totoyaItemBreakdown(sid, period, getTotoyaKpiCfg().ikuraBowlGuids))}
+      <div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 赤い「0」や漏れがある場合、そのモディファイヤーはToast出数に乗っていません。下の「手入力カウント」に月次の合計件数を入れると確実です。</div>
     </div>`;
     html += `<div style="font-weight:700;font-size:12px;margin:6px 0 3px">① 味噌汁・全出数（分母）<span style="font-size:10px;color:var(--muted);font-weight:400"> ／ あおさ＋全アップグレード</span></div>`+pickList('tk-misoAll', tcfg.misoAllGuids, '味噌汁を検索');
     html += `<div style="font-weight:700;font-size:12px;margin:10px 0 3px">② アップグレード（分子）<span style="font-size:10px;color:var(--muted);font-weight:400"> ／ あおさ以外：エビ/カニ/サーモン/うどん</span></div>`+pickList('tk-misoUp', tcfg.misoUpGuids, 'アップグレードを検索');
