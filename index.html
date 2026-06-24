@@ -17072,41 +17072,73 @@ function pipeTreeLevel(label, chipsHtml){
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center">'+chipsHtml+'</div></div>';
 }
 function pipeConnector(){ return '<div style="width:2px;height:16px;background:var(--border);margin:3px auto"></div>'; }
+function orgMatChip(e){
+  var info=empEvalInfo(e);
+  var lv = info.hasData
+    ? '<span style="display:inline-block;font-size:7px;font-weight:700;color:#fff;background:'+info.level.color+';border-radius:4px;padding:0 3px;margin-left:3px">L'+info.level.n+'</span>'
+    : '<span style="font-size:7px;color:var(--muted);margin-left:3px">L\u2014</span>';
+  return '<div style="font-size:10.5px;line-height:1.4;margin-bottom:3px">'+escapeHtml(e.name)+lv+'</div>';
+}
 function renderPipeOrg(stores){
-  var all=getEmployees().filter(function(e){ return e.status!=='退職' && e.role!=='ceo' && gradeNum(empGrade(e))>=2; });
+  var all=getEmployees().filter(function(e){ return e.status!=='\u9000\u8077' && (gradeNum(empGrade(e))>=2 || e.role==='ceo'); });
   function lvN(e){ var i=empEvalInfo(e); return i.hasData?i.level.n:0; }
   function byGrade(a,b){ return gradeNum(empGrade(b))-gradeNum(empGrade(a)) || (lvN(b)-lvN(a)); }
-  var html='<div style="font-weight:700;font-size:14px;margin:6px 2px 6px"><i class="ti ti-sitemap" style="color:var(--accent)"></i> 組織図（G2以上の配置・人的レベル）</div>';
-  html+='<div style="font-size:10px;color:var(--muted);margin:0 2px 8px;line-height:1.6">階層型（上位グレード→下位）。L＝習熟レベル（<span style="color:var(--green)">緑L4+</span>/<span style="color:var(--accent)">橙L3</span>/<span style="color:var(--yellow)">黄L2</span>/<span style="color:var(--red)">赤L1</span>/Lv—未評価）。各店の「平均L」が人的レベルの目安。</div>';
-  // 頂点：本部・エリア（G7→G6）
+  function gcount(g){ return all.filter(function(e){ return gradeNum(empGrade(e))===g; }).length; }
+  var ceoT=all.filter(function(e){ return e.role==='ceo'; }).sort(byGrade);
   var g7=all.filter(function(e){ return gradeNum(empGrade(e))===7; }).sort(byGrade);
   var g6=all.filter(function(e){ return gradeNum(empGrade(e))===6; }).sort(byGrade);
-  if(g7.length||g6.length){
-    var ax=[];
-    if(g7.length) ax.push(pipeTreeLevel('G7 General Manager', g7.map(pipeOrgChip).join('')));
-    if(g6.length) ax.push(pipeTreeLevel('G6 Area Manager / コーポレート', g6.map(pipeOrgChip).join('')));
-    html+='<div class="card" style="border-left:3px solid var(--purple)"><div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:8px">本部・エリア</div>'+ax.join(pipeConnector())+'</div>';
-    html+='<div style="text-align:center;color:var(--muted);font-size:11px;margin:2px 0 6px"><i class="ti ti-arrow-down"></i> 各店舗</div>';
-  }
-  var tiers=[{g:5,l:'G5 店長 / 料理長'},{g:4,l:'G4 ストアリーダー'},{g:3,l:'G3 サーバー / キッチンリーダー'},{g:2,l:'G2 クルーリーダー'}];
-  stores.forEach(function(s){
-    var staff=all.filter(function(e){ var n=gradeNum(empGrade(e)); return e.store===s.id && n>=2 && n<=5; });
-    var withData=staff.map(function(e){ return empEvalInfo(e); }).filter(function(i){ return i.hasData; });
-    var avgLv= withData.length? (withData.reduce(function(a,b){ return a+b.level.n; },0)/withData.length) : null;
-    var lvColor= avgLv==null?'var(--muted)':(avgLv>=3.5?'var(--green)':avgLv>=2.5?'var(--accent)':avgLv>=1.5?'var(--yellow)':'var(--red)');
-    var levels=[];
-    tiers.forEach(function(t){
-      var ppl=staff.filter(function(e){ return gradeNum(empGrade(e))===t.g; }).sort(byGrade);
-      if(ppl.length) levels.push(pipeTreeLevel(t.l, ppl.map(pipeOrgChip).join('')));
-    });
-    html+='<div class="card">'
-      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:'+(levels.length?'10px':'0')+'">'
-        +'<div style="font-weight:700"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</div>'
-        +'<div style="font-size:11px;color:var(--muted)">G2+ <b>'+staff.length+'</b>名'+(avgLv!=null?(' · 平均 <b style="color:'+lvColor+'">L'+avgLv.toFixed(1)+'</b>'):'')+'</div>'
-      +'</div>'
-      +(levels.length? levels.join(pipeConnector()) : '<div style="font-size:11px;color:var(--muted)">G2以上の配置なし。</div>')
+  var noLeaderStores=stores.filter(function(s){ return !all.some(function(e){ return e.store===s.id && gradeNum(empGrade(e))>=4; }); });
+
+  var html='<div style="font-weight:700;font-size:14px;margin:6px 2px 6px"><i class="ti ti-sitemap" style="color:var(--accent)"></i> \u7d44\u7e54\u56f3\uff08\u5168\u793e\u30de\u30c8\u30ea\u30af\u30b9\uff09</div>';
+  html+='<div style="font-size:10px;color:var(--muted);margin:0 2px 8px;line-height:1.6">\u6a2a\u8ef8\uff1d\u5e97\u8217\u3001\u7e26\u8ef8\uff1dGrade\uff08\u968e\u5c64\uff09\u3002\u5404\u30bb\u30eb\uff1d\u305d\u306e\u5e97\u30fb\u305d\u306e\u30b0\u30ec\u30fc\u30c9\u306e\u4eba\u3002<span style="color:var(--muted)">\u672a\u914d\u7f6e</span>\uff1d\u4eba\u304c\u8db3\u308a\u306a\u3044\u7b87\u6240\u3002L\uff1d\u7fd2\u719f\u30ec\u30d9\u30eb\uff08<span style="color:var(--green)">\u7dd1L4+</span>/<span style="color:var(--accent)">\u6a59L3</span>/<span style="color:var(--yellow)">\u9ec4L2</span>/<span style="color:var(--red)">\u8d64L1</span>\uff09\u3002</div>';
+
+  function sc(label,val,danger){ return '<div style="text-align:center"><div style="font-size:18px;font-weight:800;color:'+((danger&&val>0)?'var(--red)':'var(--tm)')+'">'+val+'</div><div style="font-size:9px;color:var(--muted)">'+label+'</div></div>'; }
+  html+='<div class="card"><div class="card-title"><i class="ti ti-building" style="color:var(--accent)"></i> \u5168\u793e\u30b5\u30de\u30ea\u30fc</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px 6px">'
+      +sc('CEO',ceoT.length)+sc('GM',gcount(7))+sc('AM',gcount(6))+sc('\u5e97\u9577 G5',gcount(5))
+      +sc('\uff7d\uff84\uff71\uff98\uff70\uff80\uff9e\uff70 G4',gcount(4))+sc('\uff7b\uff70\uff8a\uff9e\uff70/\uff77\uff6f\uff81\uff9d G3',gcount(3))+sc('\uff78\uff99\uff70\uff98\uff70\uff80\uff9e\uff70 G2',gcount(2))+sc('\u30ea\u30fc\u30c0\u30fc\u4e0d\u5728',noLeaderStores.length,true)
+    +'</div>'
+    +(noLeaderStores.length?'<div style="font-size:11px;color:var(--red);margin-top:8px;line-height:1.6"><i class="ti ti-alert-triangle"></i> \u30ea\u30fc\u30c0\u30fc\u4e0d\u5728\uff1a'+noLeaderStores.map(function(s){return escapeHtml(s.name);}).join('\u3001')+'</div>':'')
     +'</div>';
+
+  var ax=[];
+  if(ceoT.length) ax.push(pipeTreeLevel('CEO', ceoT.map(pipeOrgChip).join('')));
+  if(g7.length) ax.push(pipeTreeLevel('G7 General Manager', g7.map(pipeOrgChip).join('')));
+  if(g6.length) ax.push(pipeTreeLevel('G6 Area Manager / \u30b3\u30fc\u30dd\u30ec\u30fc\u30c8', g6.map(pipeOrgChip).join('')));
+  if(ax.length){
+    html+='<div class="card" style="border-left:3px solid var(--purple)"><div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:8px">\u672c\u90e8\u30fb\u30a8\u30ea\u30a2</div>'+ax.join(pipeConnector())+'</div>';
+    html+='<div style="text-align:center;color:var(--muted);font-size:11px;margin:2px 0 6px"><i class="ti ti-arrow-down"></i> \u5404\u5e97\u8217\uff08\u6a2a\uff1d\u5e97\u8217\u30fb\u7e26\uff1dGrade\uff09</div>';
+  }
+
+  var tiers=[{g:5,l:'G5',sub:'\u5e97\u9577/\u6599\u7406\u9577'},{g:4,l:'G4',sub:'\uff7d\uff84\uff71\uff98\uff70\uff80\uff9e\uff70'},{g:3,l:'G3',sub:'\uff7b\uff70\uff8a\uff9e\uff70/\uff77\uff6f\uff81\uff9dL'},{g:2,l:'G2',sub:'\uff78\uff99\uff70\uff98\uff70\uff80\uff9e\uff70'}];
+  var th='padding:6px 8px;border:1px solid var(--border);font-size:11px;';
+  var colW=124;
+  var tbl='<div class="card" style="padding:8px"><div style="overflow-x:auto"><table style="border-collapse:collapse;min-width:'+(150+stores.length*colW)+'px;width:100%">';
+  tbl+='<tr><th style="'+th+'position:sticky;left:0;z-index:2;background:var(--surface);text-align:left;min-width:118px"><div style="font-size:10px;color:var(--muted)">\u5e97\u8217 \u2192</div><div style="font-size:10px;color:var(--muted)">\u2193 Grade\uff08\u968e\u5c64\uff09</div></th>';
+  stores.forEach(function(s){
+    var nl = noLeaderStores.indexOf(s)>=0;
+    var stStaff=all.filter(function(e){ var n=gradeNum(empGrade(e)); return e.store===s.id && n>=2 && n<=5; });
+    var wd=stStaff.map(function(e){ return empEvalInfo(e); }).filter(function(i){ return i.hasData; });
+    var avg= wd.length? (wd.reduce(function(a,b){ return a+b.level.n; },0)/wd.length):null;
+    var avgC= avg==null?'var(--muted)':(avg>=3.5?'var(--green)':avg>=2.5?'var(--accent)':avg>=1.5?'var(--yellow)':'var(--red)');
+    tbl+='<th style="'+th+'min-width:'+colW+'px;background:'+s.color+'18;text-align:center;vertical-align:top">'
+      +'<span class="store-dot" style="background:'+s.color+'"></span><span style="font-weight:700;font-size:11px">'+escapeHtml(s.name)+'</span>'
+      +(avg!=null?'<div style="font-size:9px;color:'+avgC+';font-weight:700">\u5e73\u5747L'+avg.toFixed(1)+'</div>':'')
+      +(nl?'<div><span class="tag tag-red" style="font-size:8px">\u30ea\u30fc\u30c0\u30fc\u4e0d\u5728</span></div>':'')
+      +'</th>';
   });
+  tbl+='</tr>';
+  tiers.forEach(function(t){
+    tbl+='<tr><th style="'+th+'position:sticky;left:0;z-index:1;background:var(--surface);text-align:left;vertical-align:top"><div style="font-weight:700">'+t.l+'</div><div style="font-size:9px;color:var(--muted)">'+t.sub+'</div></th>';
+    stores.forEach(function(s){
+      var ppl=all.filter(function(e){ return e.store===s.id && gradeNum(empGrade(e))===t.g; }).sort(byGrade);
+      var cell = ppl.length ? ppl.map(orgMatChip).join('') : '<span style="font-size:9px;color:var(--muted);border:1px dashed var(--border);border-radius:5px;padding:1px 5px">\u672a\u914d\u7f6e</span>';
+      tbl+='<td style="'+th+'vertical-align:top;min-width:'+colW+'px">'+cell+'</td>';
+    });
+    tbl+='</tr>';
+  });
+  tbl+='</table></div></div>';
+  html+=tbl;
   return html;
 }
 function renderTalentPipeline(){
