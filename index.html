@@ -16872,6 +16872,179 @@ function approveEval(staffId) {
 /* ============================================================
    Funergy Career Score 画面
 ============================================================ */
+/* ============================================================
+   育成パイプライン（昇格準備度＋リーダー候補マップ）
+   既存の昇格ゲート（gradePromoEval：担当軸L4＋次役職OJT修了）を準備度に変換
+   ============================================================ */
+var lssView = 'score';
+function setLssView(v){ lssView = v; renderPage('leadership'); }
+function pipeReadiness(e){
+  var grade = empGrade(e), gnum = gradeNum(grade);
+  var pe = gradePromoEval(e);
+  if(pe.topped){ return {e:e, grade:grade, gnum:gnum, topped:true, hasData:false, readiness:null, status:'topped'}; }
+  var ax = pe.ax || empAxisEval(e);
+  var L4 = ax.L4 || 75;
+  var axisTotal = (ax.perAxis||[]).length;
+  var axisL4 = (ax.perAxis||[]).filter(function(p){ return p.pct>=L4; }).length;
+  var axisPct = axisTotal? Math.round(axisL4/axisTotal*100) : 0;
+  var ojtNeeded = !!(pe.path && pe.path.ojt);
+  var ojtOk = pe.ojtOk;
+  var readiness = ojtNeeded ? Math.round(axisPct*0.6 + (ojtOk?100:0)*0.4) : axisPct;
+  var status;
+  if(!ax.hasData) status='nodata';
+  else if(pe.can) status='can';
+  else if(readiness>=70) status='almost';
+  else status='dev';
+  var weakAxis = (ax.minAxis && status!=='can') ? (ax.minAxis.name||ax.minAxis.key) : null;
+  return {e:e, grade:grade, gnum:gnum, path:pe.path, pe:pe, ax:ax, axisTotal:axisTotal, axisL4:axisL4, axisPct:axisPct,
+          ojtNeeded:ojtNeeded, ojtOk:ojtOk, readiness:readiness, status:status, weakAxis:weakAxis, hasData:ax.hasData, topped:false};
+}
+function pipeStatusMeta(st){
+  if(st==='can')    return {label:'昇格可',  color:'var(--green)'};
+  if(st==='almost') return {label:'もう一息', color:'var(--accent)'};
+  if(st==='dev')    return {label:'育成中',  color:'var(--muted)'};
+  if(st==='topped') return {label:'最上位',  color:'var(--purple)'};
+  return {label:'未評価', color:'var(--muted)'};
+}
+function pipeBar(pct, color){
+  return '<div class="progress-bar" style="height:6px;flex:1"><div class="progress-fill" style="width:'+Math.max(2,Math.min(100,pct||0))+'%;background:'+color+'"></div></div>';
+}
+function pipeCandRow(c){
+  var st = pipeStatusMeta(c.status);
+  var nextTxt = c.path ? (c.grade+' → '+c.path.nextGrade+'（'+c.path.nextTitle+'）') : c.grade;
+  var detail = c.hasData
+    ? ('担当軸 '+c.axisL4+'/'+c.axisTotal+' がL4'+(c.ojtNeeded?(' · OJT'+(c.ojtOk?'修了':'未')):' · OJT不要')+(c.weakAxis?(' · 弱点: '+escapeHtml(c.weakAxis)):''))
+    : '評価データ未入力（Career Scoreを登録すると準備度が出ます）';
+  return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+      +'<div style="font-weight:600;font-size:13px">'+escapeHtml(c.e.name)+' <span style="font-size:10px;color:var(--muted)">'+escapeHtml(c.e.title||'')+'</span></div>'
+      +'<span class="tag" style="font-size:9px;background:'+st.color+';color:#fff">'+st.label+'</span>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+escapeHtml(nextTxt)+'</div>'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'+pipeBar(c.readiness||0, st.color)+'<span style="font-size:12px;font-weight:700;color:'+st.color+';min-width:34px;text-align:right">'+(c.hasData?(c.readiness+'%'):'—')+'</span></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+detail+'</div>'
+    +'<div style="margin-top:5px"><button class="btn btn-secondary btn-sm" onclick="openLssDetail(\''+String(c.e.name).replace(/'/g,"\\'")+'\')"><i class="ti ti-eye"></i> 詳細</button></div>'
+  +'</div>';
+}
+function pipeOrgChip(e){
+  var g=empGrade(e); var info=empEvalInfo(e);
+  var lvtxt = info.hasData
+    ? ('<span class="tag" style="font-size:8px;background:'+info.level.color+';color:#fff;margin-left:3px">L'+info.level.n+'</span>')
+    : '<span style="font-size:8px;color:var(--muted);margin-left:3px">Lv—</span>';
+  return '<div style="border:1px solid var(--border);border-radius:8px;padding:5px 8px;background:var(--surface)">'
+    +'<div style="font-size:12px;font-weight:600;white-space:nowrap">'+escapeHtml(e.name)+'</div>'
+    +'<div style="font-size:9px;color:var(--muted);white-space:nowrap">'+escapeHtml(e.title||'')+'</div>'
+    +'<div style="margin-top:2px;white-space:nowrap"><span class="tag" style="font-size:8px;background:var(--surface);color:var(--tm);border:1px solid var(--border)">'+g+'</span>'+lvtxt+'</div>'
+  +'</div>';
+}
+function renderPipeOrg(stores){
+  var all=getEmployees().filter(function(e){ return e.status!=='退職' && e.role!=='ceo' && gradeNum(empGrade(e))>=2; });
+  function lvN(e){ var i=empEvalInfo(e); return i.hasData?i.level.n:0; }
+  function byGrade(a,b){ return gradeNum(empGrade(b))-gradeNum(empGrade(a)) || (lvN(b)-lvN(a)); }
+  var html='<div style="font-weight:700;font-size:14px;margin:6px 2px 6px"><i class="ti ti-sitemap" style="color:var(--accent)"></i> 組織図（G2以上の配置・人的レベル）</div>';
+  html+='<div style="font-size:10px;color:var(--muted);margin:0 2px 8px;line-height:1.6">L＝Career Score/スキルから算出した習熟レベル。<span style="color:var(--green)">緑=L4+</span> / <span style="color:var(--accent)">橙=L3</span> / <span style="color:var(--yellow)">黄=L2</span> / <span style="color:var(--red)">赤=L1</span> / Lv—=未評価。各店の「平均L」が人的レベルの目安。</div>';
+  var apex=all.filter(function(e){ return gradeNum(empGrade(e))>=6; }).sort(byGrade);
+  if(apex.length){
+    html+='<div class="card" style="text-align:center;border-left:3px solid var(--purple)"><div style="font-size:11px;color:var(--muted);margin-bottom:6px">本部・エリア（G6+）</div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center">'+apex.map(pipeOrgChip).join('')+'</div></div>';
+  }
+  var tierLabels={5:'G5 店長 / 料理長',4:'G4 ストアリーダー',3:'G3 サーバー/キッチンL',2:'G2 クルーリーダー'};
+  stores.forEach(function(s){
+    var staff=all.filter(function(e){ var n=gradeNum(empGrade(e)); return e.store===s.id && n>=2 && n<=5; });
+    var withData=staff.map(function(e){ return empEvalInfo(e); }).filter(function(i){ return i.hasData; });
+    var avgLv= withData.length? (withData.reduce(function(a,b){ return a+b.level.n; },0)/withData.length) : null;
+    var lvColor= avgLv==null?'var(--muted)':(avgLv>=3.5?'var(--green)':avgLv>=2.5?'var(--accent)':avgLv>=1.5?'var(--yellow)':'var(--red)');
+    var body='';
+    [5,4,3,2].forEach(function(t){
+      var ppl=staff.filter(function(e){ return gradeNum(empGrade(e))===t; }).sort(byGrade);
+      if(!ppl.length) return;
+      body+='<div style="display:flex;align-items:flex-start;gap:8px;margin:7px 0">'
+        +'<div style="font-size:9px;color:var(--muted);width:118px;flex-shrink:0;padding-top:4px">'+tierLabels[t]+'</div>'
+        +'<div style="display:flex;gap:6px;flex-wrap:wrap;flex:1">'+ppl.map(pipeOrgChip).join('')+'</div></div>';
+    });
+    html+='<div class="card">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center">'
+        +'<div style="font-weight:700"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</div>'
+        +'<div style="font-size:11px;color:var(--muted)">G2+ <b>'+staff.length+'</b>名'+(avgLv!=null?(' · 平均 <b style="color:'+lvColor+'">L'+avgLv.toFixed(1)+'</b>'):'')+'</div>'
+      +'</div>'
+      +(staff.length? body : '<div style="font-size:11px;color:var(--muted);margin-top:6px">G2以上の配置なし。</div>')
+    +'</div>';
+  });
+  return html;
+}
+function renderTalentPipeline(){
+  if(['ceo','gm'].indexOf(curRole)<0) return '<div class="card">この一覧はGM・CEOのみ表示できます。</div>';
+  var stores = getVisibleStores().filter(function(s){ return s.active!==false; });
+  var storeIds = stores.map(function(s){ return s.id; });
+  var staff = getEmployees().filter(function(e){
+    return e.status!=='退職' && e.role!=='ceo' && (storeIds.indexOf(e.store)>=0 || (e.support||[]).some(function(s){ return storeIds.indexOf(s)>=0; }));
+  });
+  var rows = staff.map(pipeReadiness);
+  // サマリー
+  var nCan=0,nAlmost=0,nDev=0,nNo=0;
+  rows.forEach(function(r){ if(r.topped) return; if(r.status==='can')nCan++; else if(r.status==='almost')nAlmost++; else if(r.status==='dev')nDev++; else nNo++; });
+  function tile(label,val,color){ return '<div style="background:var(--surface);border-radius:10px;padding:10px;text-align:center"><div style="font-size:22px;font-weight:800;color:'+color+'">'+val+'</div><div style="font-size:11px;color:var(--muted)">'+label+'</div></div>'; }
+  var html = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">'
+    +tile('昇格可',nCan,'var(--green)')+tile('もう一息',nAlmost,'var(--accent)')+tile('育成中',nDev,'var(--muted)')+tile('未評価',nNo,'var(--muted)')
+    +'</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin:0 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 準備度＝担当軸のL4達成率(60%)＋次役職OJT修了(40%)。G4以上はOJT無しのため軸達成率ベース＋GM判断。「昇格可」＝担当軸が全てL4かつOJT修了（既存の昇格ゲート）。</div>';
+
+  // ===== 組織図（G2以上の配置・人的レベル）=====
+  html += renderPipeOrg(stores);
+
+  // ===== リーダー候補マップ（店舗別）=====
+  html += '<div style="font-weight:700;font-size:14px;margin:6px 2px 6px"><i class="ti ti-map-2" style="color:var(--accent)"></i> リーダー候補マップ（店舗別）</div>';
+  stores.forEach(function(s){
+    var leaderInfo = (typeof spStaffStats==='function') ? spStaffStats(s.id) : {leader:false};
+    var cands = rows.filter(function(r){ return !r.topped && r.gnum>=1 && r.gnum<=3 && r.e.store===s.id; })
+                    .sort(function(a,b){ if(a.hasData!==b.hasData) return a.hasData?-1:1; return (b.readiness||0)-(a.readiness||0); });
+    html += '<div class="card">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center">'
+        +'<div style="font-weight:700"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</div>'
+        +(leaderInfo.leader?'<span class="tag tag-green" style="font-size:9px">リーダー有</span>':'<span class="tag tag-red" style="font-size:9px">リーダー無</span>')
+      +'</div>';
+    if(!leaderInfo.leader){
+      var best = cands.filter(function(c){return c.gnum===3 && c.hasData;})[0] || cands.filter(function(c){return c.hasData;})[0];
+      html += '<div style="font-size:11px;color:var(--red);margin-top:5px"><i class="ti ti-alert-triangle"></i> リーダー不在。'
+        +(best?('最有力候補：<b>'+escapeHtml(best.e.name)+'</b>（準備度'+best.readiness+'%）'):'昇格候補が育っていません → 採用・異動を検討')+'</div>';
+    }
+    if(!cands.length){
+      html += '<div style="font-size:11px;color:var(--muted);margin-top:6px">昇格候補（G1〜G3）がいません。</div>';
+    } else {
+      cands.slice(0,6).forEach(function(c){ html += pipeCandRow(c); });
+    }
+    html += '</div>';
+  });
+
+  // ===== 昇格準備度ランキング（全グレード）=====
+  html += '<div style="font-weight:700;font-size:14px;margin:14px 2px 6px"><i class="ti ti-list-numbers" style="color:var(--accent)"></i> 昇格準備度ランキング（全グレード）</div>';
+  var ranked = rows.filter(function(r){ return !r.topped; }).sort(function(a,b){
+    if(a.hasData!==b.hasData) return a.hasData?-1:1;
+    return (b.readiness||0)-(a.readiness||0);
+  });
+  html += '<div class="card"><div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:11.5px;min-width:580px"><thead><tr>'
+    +'<th>名前</th><th>店舗</th><th>現G→次役職</th><th style="text-align:center">軸L4</th><th style="text-align:center">OJT</th><th style="text-align:center">準備度</th><th style="text-align:center">判定</th></tr></thead><tbody>';
+  if(!ranked.length){
+    html += '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:16px">対象スタッフがいません。</td></tr>';
+  }
+  ranked.forEach(function(c){
+    var st = pipeStatusMeta(c.status);
+    var storeName = (STORES.find(function(s){ return s.id===c.e.store; })||{}).name||'';
+    html += '<tr>'
+      +'<td style="font-weight:600">'+escapeHtml(c.e.name)+'</td>'
+      +'<td style="color:var(--muted)">'+escapeHtml(storeName)+'</td>'
+      +'<td>'+(c.path?(c.grade+'→'+escapeHtml(c.path.nextTitle)):c.grade)+'</td>'
+      +'<td style="text-align:center">'+(c.hasData?(c.axisL4+'/'+c.axisTotal):'—')+'</td>'
+      +'<td style="text-align:center">'+(c.ojtNeeded?(c.ojtOk?'<span style="color:var(--green)">✓</span>':'<span style="color:var(--muted)">未</span>'):'<span style="color:var(--muted)">不要</span>')+'</td>'
+      +'<td style="text-align:center;font-weight:700;color:'+st.color+'">'+(c.hasData?(c.readiness+'%'):'—')+'</td>'
+      +'<td style="text-align:center"><span class="tag" style="font-size:8px;background:'+st.color+';color:#fff">'+st.label+'</span></td>'
+    +'</tr>';
+  });
+  html += '</tbody></table></div></div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin:6px 2px 24px;line-height:1.6">※ 「未評価」はCareer Score未登録の人。各人の「詳細」から評価を入れると準備度に反映されます。判定はあくまで要件充足の目安で、最終的な昇格はGM/CEOの承認が必要です。</div>';
+  return html;
+}
+
 function renderLeadership() {
   // 対象＝リーダー以上
   var leaders = visibleStaffForManager().filter(e=>isLeaderPlus(e) && e.status!=='退職' && e.role!=='ceo');
@@ -16893,6 +17066,13 @@ function renderLeadership() {
     ${['ceo','gm'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openEvalLevelsModal()"><i class="ti ti-stairs-up"></i> Level基準</button>`:''}
     ${['ceo','gm'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openGradeAxisModal()"><i class="ti ti-sitemap"></i> 担当軸</button>`:''}
   </div>`;
+  if(['ceo','gm'].includes(curRole)){
+    html += `<div class="phase-tabs" style="margin-bottom:12px">
+      <button class="phase-tab${lssView==='score'?' active':''}" onclick="setLssView('score')">Career Score</button>
+      <button class="phase-tab${lssView==='pipeline'?' active':''}" onclick="setLssView('pipeline')">育成パイプライン</button>
+    </div>`;
+    if(lssView==='pipeline') return html + renderTalentPipeline();
+  }
 
   // 承認待ち（昇格・Tip申請）
   var pendingReqs = getLssRequests().filter(r=>r.status==='申請中');
