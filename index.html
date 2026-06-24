@@ -1347,9 +1347,20 @@ function computeKpiActuals(storeId, offset){
     if (ms.laborPct!=null) out.laborPct = Math.round(ms.laborPct*10)/10;
     if (totalQty>0 && upsellGuids.length && ms.guests>0) out.upsellRate = Math.round(upsellQty/ms.guests*1000)/10;
   }
-  // --- 手入力（リピート率・Google Review・口コミ返信率）---
+  // --- リピート率：月次サマリーと同じ算出（bowls の repeat/(first+repeat)）をそのまま反映 ---
+  //     FSP(F03)・WGS(F03-G)は除外（手入力 or 「—」）。それ以外は月次サマリーの数字を反映し、手入力は無効。
+  var _useBowlsRepeat = ['F03','F03-G'].indexOf(storeId)<0;
+  try{
+    if(_useBowlsRepeat && typeof repeatStats==='function' && typeof msMonthInfo==='function'){
+      var _rdays = msMonthInfo(offset).days;
+      var _rrs = repeatStats([store], _rdays);
+      if(_rrs.has && _rrs.total>0) out.repeatRate = Math.round(_rrs.repeat/_rrs.total*1000)/10;
+    }
+  }catch(e){}
+  // --- 手入力（Google Review・口コミ返信率は常に手入力。リピート率はFSP/WGSのみ手入力可）---
   var man = getKpiManual(storeId, period);
-  ['repeatRate','reviewScore','reviewYelp','reviewReply'].forEach(k=>{ if(man[k]!=null && man[k]!=='') out[k]=Number(man[k]); });
+  ['reviewScore','reviewYelp','reviewReply'].forEach(k=>{ if(man[k]!=null && man[k]!=='') out[k]=Number(man[k]); });
+  if(!_useBowlsRepeat){ if(man.repeatRate!=null && man.repeatRate!=='') out.repeatRate=Number(man.repeatRate); }
   return {period:period, actuals:out};
 }
 /* 達成率％（全KPIの平均達成度）。実績がある項目だけで平均。
@@ -19687,8 +19698,14 @@ function openInvoiceModal() {
       <label class="form-label" style="color:var(--accent2)"><i class="ti ti-credit-card"></i> カード下4桁 → 社員自動特定（G3以上）</label>
       <input class="form-input" id="inv-card4" inputmode="numeric" maxlength="4" placeholder="例: 1234（OCR/手入力）" oninput="invMatchEmp()">
       <div id="inv-card-match" style="font-size:11px;color:var(--muted);margin-top:4px">カード下4桁を入れると社員を自動特定します。</div>
-      <label class="form-label" style="margin-top:8px">社員（カード保有者）</label>
-      <select class="form-select" id="inv-emp"><option value="">（選択）</option>${getEmployees().filter(function(e){return !e.status||e.status==='在籍';}).map(function(e){return '<option value="'+e.id+'">'+escapeHtml(e.name)+'</option>';}).join('')}</select>
+      <label class="form-label" style="margin-top:8px">社員（カード保有者・G3以上）</label>
+      <select class="form-select" id="inv-emp"><option value="">（選択）</option>${getEmployees().filter(function(e){return (!e.status||e.status==='在籍') && gradeNum(empGrade(e))>=3;}).sort(function(a,b){return gradeNum(empGrade(b))-gradeNum(empGrade(a))||String(a.name).localeCompare(b.name);}).map(function(e){var _sn=(STORES.find(function(s){return s.id===e.store;})||{}).name||'';return '<option value="'+e.id+'">'+escapeHtml(e.name)+'（'+empGrade(e)+(_sn?' · '+escapeHtml(_sn):'')+'）</option>';}).join('')}</select>
+      <label class="form-label" style="margin-top:8px">対象店舗（複数可・金額を均等按分）</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${candidates.map(function(s){return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;border:1px solid var(--border);border-radius:6px;padding:4px 8px;cursor:pointer"><input type="checkbox" class="inv-mstore" value="'+s.id+'" '+(s.id===window._invoiceStore?'checked':'')+'><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</label>';}).join('')}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px">2店舗分まとめて購入した時は複数選択→金額を均等に分けてFood Costに反映します。</div>
+      <label class="form-label" style="margin-top:8px">用途</label>
+      <select class="form-select" id="inv-purpose"><option value="">（選択）</option><option>仕入れ・仕込み</option><option>賄い</option><option>差し入れ</option><option>面談</option><option>イベント・販促</option><option>備品・消耗品</option><option>その他</option></select>
+      <input class="form-input" id="inv-purpose-memo" placeholder="用途の補足（例: 新人面談ランチ）" style="margin-top:6px">
     </div>` : ''}
     <div class="form-group"><label class="form-label">${invoiceDocType}画像（AI読取）</label>
       <input type="file" id="inv-photo" accept="image/*" capture="environment" style="display:none" onchange="realInvoiceOCR(this)">
@@ -20000,6 +20017,10 @@ async function saveInvoice() {
   var total = invoiceTmpLines.reduce((a,l)=>a+(l.newPrice||0)*(l.qty||0),0);
   var selEl = document.getElementById('invoice-store');
   var invStoreId = selEl ? selEl.value : (window._invoiceStore || (curStore==='ALL'?STORES[0].id:curStore));
+  var rcptStores=[]; if(invoiceDocType==='Receipt'){ rcptStores=Array.prototype.slice.call(document.querySelectorAll('.inv-mstore:checked')).map(function(c){return c.value;}); }
+  if(!rcptStores.length) rcptStores=[invStoreId];
+  var _purpose=(docVal('inv-purpose')||''); var _pmemo=(docVal('inv-purpose-memo')||'').trim();
+  var priceStores = (invoiceDocType==='Receipt') ? rcptStores : [invStoreId];
   // 食材マスターの価格を更新（全店共通の最新価格＝price）＋店舗別の最新仕入価格を記録
   var ings = getIngredients();
   var _today = new Date().toLocaleDateString('ja');
@@ -20012,7 +20033,7 @@ async function saveInvoice() {
       ing.price = l.newPrice;
       // 店舗別 最新仕入価格（メモ）: 店舗ごとに上書き保存（店舗差が見える）
       if (!ing.storePrices) ing.storePrices = {};
-      ing.storePrices[invStoreId] = { price:l.newPrice, date:_today, vendor:vendor };
+      priceStores.forEach(function(_sid){ ing.storePrices[_sid] = { price:l.newPrice, date:_today, vendor:vendor }; });
     }
   });
   lsSet('m_ingredients', ings);
@@ -20033,7 +20054,7 @@ async function saveInvoice() {
     lines:invoiceTmpLines, total, applied:true, by:ROLE_CONFIG[curRole].name,
     byUser:(curUserName||''), byEmail:(function(){var _e=getEmployees().find(function(x){return x.name===curUserName;});return (_e&&_e.email)?_e.email:'';})(),
     imagePath:imagePath||null,
-    empId:_rcptEmpId, empName:_rcptEmp.name||'', cardLast4:_rcptCard,
+    empId:_rcptEmpId, empName:_rcptEmp.name||'', cardLast4:_rcptCard, splitStores:(invoiceDocType==='Receipt'?rcptStores:[]), purpose:_purpose, purposeMemo:_pmemo,
     reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', driveFileId:'', driveUrl:'', driveMoved:false, reviewThread:[]};
   invoices.push(_newInv);
   lsSet('invoices', invoices);
@@ -20041,16 +20062,22 @@ async function saveInvoice() {
   try{
     var _stN=(storeObj?storeObj.name:invStoreId);
     notifyAccounting('【'+(invoiceDocType==='Receipt'?'レシート':'Invoice')+'】'+_stN+' '+vendor+' $'+total.toFixed(2),
-      (invoiceDocType==='Receipt'?'カード/買い出しレシート':'業者Invoice')+'がアップロードされました。\n店舗: '+_stN+'\n業者/購入先: '+vendor+'\n金額: $'+total.toFixed(2)+(_rcptEmp.name?'\n社員（カード保有者）: '+_rcptEmp.name:'')+'\nアップロード者: '+(ROLE_CONFIG[curRole].name||'')+'\n\nOSの「請求書」→経理レビューで確認してください。');
+      (invoiceDocType==='Receipt'?'カード/買い出しレシート':'業者Invoice')+'がアップロードされました。\n店舗: '+_stN+'\n業者/購入先: '+vendor+'\n金額: $'+total.toFixed(2)+(_rcptEmp.name?'\n社員（カード保有者）: '+_rcptEmp.name:'')+(invoiceDocType==='Receipt'&&_purpose?'\n用途: '+_purpose+(_pmemo?'（'+_pmemo+'）':''):'')+(invoiceDocType==='Receipt'&&rcptStores.length>1?'\n按分: '+rcptStores.map(function(id){return (STORES.find(function(s){return s.id===id;})||{}).name||id;}).join('・')+'（各$'+(Math.round(total/rcptStores.length*100)/100).toFixed(2)+'）':'')+'\nアップロード者: '+(ROLE_CONFIG[curRole].name||'')+'\n\nOSの「請求書」→経理レビューで確認してください。');
   }catch(e){}
   try{ addNotif({ type:'upload', title:'新しい'+(invoiceDocType==='Receipt'?'レシート':'Invoice'), text:((storeObj?storeObj.name:invStoreId)+' / '+vendor+' $'+total.toFixed(2)).slice(0,140), toRoles:['office','gm'], page:'acct_review', refId:_newInv.id }); }catch(e){}
   // Receiptの場合は買い出しにも反映
   if (invoiceDocType==='Receipt') {
-    var storeId = invStoreId;
-    var purchases = getPurchases(storeId);
-    purchases.push({id:'pc'+Date.now(), date:new Date().toLocaleDateString('ja'), vendor, item:invoiceTmpLines.map(l=>l.name).join(', '),
-      amount:total, kind:'Food', category:'買い出し', memo:'Receiptから登録', receipt:true, by:ROLE_CONFIG[curRole].name});
-    lsSet('purchases_'+storeId, purchases);
+    var _n = rcptStores.length || 1;
+    var _per = Math.round((total/_n)*100)/100;
+    var _splitNote = _n>1 ? ('／'+_n+'店舗で按分（各$'+_per.toFixed(2)+'）') : '';
+    var _purpTxt = (_purpose?('【'+_purpose+'】'):'')+(_pmemo?(' '+_pmemo):'');
+    var _itemTxt = invoiceTmpLines.map(function(l){return l.name;}).join(', ');
+    rcptStores.forEach(function(_sid){
+      var _ps=getPurchases(_sid);
+      _ps.push({id:'pc'+Date.now()+'_'+_sid, date:new Date().toLocaleDateString('ja'), vendor:vendor, item:_itemTxt,
+        amount:_per, kind:'Food', category:'買い出し', purpose:_purpose, memo:(_purpTxt||'Receiptから登録')+_splitNote, receipt:true, by:ROLE_CONFIG[curRole].name});
+      lsSet('purchases_'+_sid, _ps);
+    });
   }
   // Google Driveへ保管（Unregistered）。imagePath（invoicesバケット）を転送し、Driveリンクを記録
   if (imagePath) {
@@ -20180,6 +20207,14 @@ function renderAcctReview(){
       +     driveTag
       +   '</div>'
       + '</div>';
+
+    if(inv.docType==='Receipt' && (inv.purpose || (inv.splitStores&&inv.splitStores.length>1))){
+      var _splTxt = (inv.splitStores&&inv.splitStores.length>1) ? (inv.splitStores.map(function(id){return (STORES.find(function(x){return x.id===id;})||{}).name||id;}).join('・')+'で按分（各$'+(Math.round((inv.total||0)/inv.splitStores.length*100)/100).toFixed(2)+'）') : '';
+      html += '<div style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;flex-wrap:wrap;gap:10px">'
+        + (inv.purpose?'<span><i class="ti ti-tag"></i> 用途：<b style="color:var(--tm)">'+escapeHtml(inv.purpose)+'</b>'+(inv.purposeMemo?'（'+escapeHtml(inv.purposeMemo)+'）':'')+'</span>':'')
+        + (_splTxt?'<span><i class="ti ti-arrows-split"></i> '+_splTxt+'</span>':'')
+        + '</div>';
+    }
 
     // メタ（レビュー履歴・差し戻し理由）
     if(rs==='差し戻し' && inv.reviewNote){
