@@ -15509,6 +15509,42 @@ function renderAcctExport() {
   }
   html += `</div>`;
 
+  // ===== カードレシート（社員別）集計 =====
+  var crd=cardReceiptAcctData(y,m);
+  html += '<div class="card"><div class="card-title"><i class="ti ti-credit-card" style="color:#7c5cff"></i>カードレシート（社員別）集計</div>'
+    +'<p style="font-size:12px;color:var(--muted);margin-bottom:10px">'+acctMonthLabel()+'のカード/買い出しレシートを、社員（カード保有者）別に集計（'+crd.inMonth.length+'件・計$'+crd.grand.toFixed(2)+'）。用途内訳つき。</p>';
+  if(!crd.inMonth.length){ html+='<p style="color:var(--muted);font-size:13px">この月のレシートはありません。</p>'; }
+  else {
+    var _purList=Object.keys(crd.purposes);
+    html+='<div style="overflow-x:auto"><table class="inv-table" style="font-size:12px;min-width:520px"><thead><tr><th>社員</th>'+_purList.map(function(pp){return '<th style="text-align:right">'+escapeHtml(pp)+'</th>';}).join('')+'<th style="text-align:right">合計</th></tr></thead><tbody>';
+    Object.keys(crd.byEmp).sort(function(a,b){return crd.byEmp[b].total-crd.byEmp[a].total;}).forEach(function(emp){
+      var e=crd.byEmp[emp];
+      html+='<tr><td>'+escapeHtml(emp)+'</td>'+_purList.map(function(pp){return '<td style="text-align:right">'+(e.byPurpose[pp]?'$'+e.byPurpose[pp].toFixed(2):'—')+'</td>';}).join('')+'<td style="text-align:right;font-weight:700">$'+e.total.toFixed(2)+'</td></tr>';
+    });
+    html+='<tr style="font-weight:700;border-top:2px solid var(--border)"><td>合計</td>'+_purList.map(function(pp){return '<td style="text-align:right">$'+crd.purposes[pp].toFixed(2)+'</td>';}).join('')+'<td style="text-align:right">$'+crd.grand.toFixed(2)+'</td></tr>';
+    html+='</tbody></table></div>';
+    html+='<div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-secondary" style="flex:1" onclick="exportCardReceiptCSV('+y+','+m+')"><i class="ti ti-file-text"></i> 明細CSV</button><button class="btn btn-primary" style="flex:1" onclick="exportCardReceiptSummaryCSV('+y+','+m+')"><i class="ti ti-table"></i> 社員別集計CSV</button></div>';
+    html+='<p style="font-size:11px;color:var(--muted);margin-top:6px">※ 明細＝日付・社員・店舗・業者・用途・品目・金額。集計＝社員×用途。複数店舗按分は金額を均等割で店舗集計に反映。</p>';
+  }
+  html += '</div>';
+
+  // ===== 備品発注（店舗別・経理区分別）集計 =====
+  var spa=supplyAcctData(y,m);
+  html += '<div class="card"><div class="card-title"><i class="ti ti-package" style="color:var(--accent)"></i>備品発注（店舗別・経理区分別）集計</div>'
+    +'<p style="font-size:12px;color:var(--muted);margin-bottom:10px">'+acctMonthLabel()+'に発注した備品を、店舗×経理区分で集計（'+spa.placed.length+'件・計$'+spa.grand.toFixed(2)+'）。発注済み/入荷済みが対象。区分は備品発注の各カードで変更できます。</p>';
+  if(!spa.placed.length){ html+='<p style="color:var(--muted);font-size:13px">この月に発注（発注済み以降）された備品はありません。</p>'; }
+  else {
+    html+='<div style="overflow-x:auto"><table class="inv-table" style="font-size:12px;min-width:560px"><thead><tr><th>店舗</th>'+spa.classes.map(function(c){return '<th style="text-align:right">'+escapeHtml(c)+'</th>';}).join('')+'<th style="text-align:right">合計</th></tr></thead><tbody>';
+    Object.keys(spa.matrix).forEach(function(sn){
+      html+='<tr><td>'+escapeHtml(sn)+'</td>'+spa.classes.map(function(c){return '<td style="text-align:right">'+(spa.matrix[sn][c]?'$'+spa.matrix[sn][c].toFixed(2):'—')+'</td>';}).join('')+'<td style="text-align:right;font-weight:700">$'+spa.storeTotals[sn].toFixed(2)+'</td></tr>';
+    });
+    html+='<tr style="font-weight:700;border-top:2px solid var(--border)"><td>合計</td>'+spa.classes.map(function(c){return '<td style="text-align:right">$'+(spa.clsTotals[c]||0).toFixed(2)+'</td>';}).join('')+'<td style="text-align:right">$'+spa.grand.toFixed(2)+'</td></tr>';
+    html+='</tbody></table></div>';
+    html+='<div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-secondary" style="flex:1" onclick="exportSupplyAcctCSV('+y+','+m+')"><i class="ti ti-file-text"></i> 明細CSV</button><button class="btn btn-primary" style="flex:1" onclick="exportSupplyAcctSummaryCSV('+y+','+m+')"><i class="ti ti-table"></i> 店舗別区分集計CSV</button></div>';
+    html+='<p style="font-size:11px;color:var(--muted);margin-top:6px">※ 明細＝日付・店舗・品名・業者・カテゴリ・経理区分・数量・単価・金額・状態。</p>';
+  }
+  html += '</div>';
+
   return html;
 }
 function invHistInMonth(h, y, m) {
@@ -15520,6 +15556,73 @@ function parseJaDate(s) {
   var mt = String(s).match(/(\d{4})[\/年-](\d{1,2})[\/月-](\d{1,2})/);
   if (!mt) return null;
   return new Date(parseInt(mt[1]), parseInt(mt[2])-1, parseInt(mt[3]));
+}
+function cardReceiptAcctData(y,m){
+  var invoices=ls('invoices',[]);
+  var inMonth=invoices.filter(function(inv){ if((inv.docType||'')!=='Receipt') return false; var d=parseJaDate(inv.date); return d && d.getFullYear()===y && d.getMonth()===m; });
+  var byEmp={}, purposes={}, grand=0;
+  inMonth.forEach(function(inv){
+    var emp=inv.empName||'（未特定）'; var amt=Number(inv.total)||0; var pur=inv.purpose||'未分類';
+    if(!byEmp[emp]) byEmp[emp]={total:0, byPurpose:{}, byStore:{}, items:[]};
+    byEmp[emp].total+=amt; grand+=amt;
+    byEmp[emp].byPurpose[pur]=(byEmp[emp].byPurpose[pur]||0)+amt;
+    purposes[pur]=(purposes[pur]||0)+amt;
+    var stores=(inv.splitStores&&inv.splitStores.length)?inv.splitStores:[inv.storeId];
+    var per=amt/(stores.length||1);
+    var snames=stores.map(function(sid){ return (STORES.find(function(s){return s.id===sid;})||{}).name||sid; });
+    stores.forEach(function(sid){ var sn=(STORES.find(function(s){return s.id===sid;})||{}).name||sid; byEmp[emp].byStore[sn]=(byEmp[emp].byStore[sn]||0)+per; });
+    byEmp[emp].items.push({date:inv.date, store:snames.join('・'), vendor:inv.vendor||'', purpose:pur, memo:inv.purposeMemo||'', total:amt, name:(inv.lines||[]).map(function(l){return l.name;}).join(', ')});
+  });
+  return {inMonth:inMonth, byEmp:byEmp, purposes:purposes, grand:grand};
+}
+function exportCardReceiptCSV(y,m){
+  var crd=cardReceiptAcctData(y,m);
+  var rows=[['日付','社員','店舗','業者/購入先','用途','メモ','品目','金額']];
+  Object.keys(crd.byEmp).forEach(function(emp){ crd.byEmp[emp].items.forEach(function(it){ rows.push([it.date, emp, it.store, it.vendor, it.purpose, it.memo, it.name, it.total.toFixed(2)]); }); });
+  downloadCSV(rows, 'カードレシート明細_'+y+'-'+String(m+1).padStart(2,'0')+'.csv');
+}
+function exportCardReceiptSummaryCSV(y,m){
+  var crd=cardReceiptAcctData(y,m);
+  var purList=Object.keys(crd.purposes);
+  var rows=[['社員'].concat(purList).concat(['合計'])];
+  Object.keys(crd.byEmp).sort(function(a,b){return crd.byEmp[b].total-crd.byEmp[a].total;}).forEach(function(emp){
+    var e=crd.byEmp[emp];
+    rows.push([emp].concat(purList.map(function(pp){return (e.byPurpose[pp]||0).toFixed(2);})).concat([e.total.toFixed(2)]));
+  });
+  rows.push(['合計'].concat(purList.map(function(pp){return crd.purposes[pp].toFixed(2);})).concat([crd.grand.toFixed(2)]));
+  downloadCSV(rows, 'カードレシート社員別集計_'+y+'-'+String(m+1).padStart(2,'0')+'.csv');
+}
+function supplyAcctData(y,m){
+  var arr=getSupplyOrders();
+  var placed=arr.filter(function(o){
+    if(['発注済み','入荷済み'].indexOf(o.status)<0) return false;
+    var dstr=(o.order&&o.order.placedAt)?o.order.placedAt:o.date; var d=parseJaDate(dstr);
+    return d && d.getFullYear()===y && d.getMonth()===m;
+  });
+  var classes=(typeof supplyAcctClasses==='function')?supplyAcctClasses():['その他'];
+  var matrix={}, storeTotals={}, clsTotals={}, grand=0, details=[];
+  classes.forEach(function(c){clsTotals[c]=0;});
+  placed.forEach(function(o){
+    var sn=(STORES.find(function(s){return s.id===o.store;})||{}).name||o.store;
+    var cl=(typeof supplyAcctClass==='function')?supplyAcctClass(o):'その他'; var amt=Number(o.total)||0;
+    if(!matrix[sn]){ matrix[sn]={}; classes.forEach(function(c){matrix[sn][c]=0;}); storeTotals[sn]=0; }
+    matrix[sn][cl]=(matrix[sn][cl]||0)+amt; storeTotals[sn]+=amt; if(clsTotals[cl]==null)clsTotals[cl]=0; clsTotals[cl]+=amt; grand+=amt;
+    details.push({date:(o.order&&o.order.placedAt)?o.order.placedAt:o.date, store:sn, name:o.name, vendor:o.vendor||'', category:o.category||'', acctClass:cl, qty:o.qty, price:o.price, total:amt, status:o.status});
+  });
+  return {placed:placed, matrix:matrix, storeTotals:storeTotals, clsTotals:clsTotals, grand:grand, details:details, classes:classes};
+}
+function exportSupplyAcctCSV(y,m){
+  var d=supplyAcctData(y,m);
+  var rows=[['日付','店舗','品名','業者','カテゴリ','経理区分','数量','単価','金額','状態']];
+  d.details.forEach(function(it){ rows.push([it.date,it.store,it.name,it.vendor,it.category,it.acctClass,it.qty,(Number(it.price)||0).toFixed(2),it.total.toFixed(2),it.status]); });
+  downloadCSV(rows,'備品発注明細_'+y+'-'+String(m+1).padStart(2,'0')+'.csv');
+}
+function exportSupplyAcctSummaryCSV(y,m){
+  var d=supplyAcctData(y,m);
+  var rows=[['店舗'].concat(d.classes).concat(['合計'])];
+  Object.keys(d.matrix).forEach(function(sn){ rows.push([sn].concat(d.classes.map(function(c){return (d.matrix[sn][c]||0).toFixed(2);})).concat([d.storeTotals[sn].toFixed(2)])); });
+  rows.push(['合計'].concat(d.classes.map(function(c){return (d.clsTotals[c]||0).toFixed(2);})).concat([d.grand.toFixed(2)]));
+  downloadCSV(rows,'備品発注_店舗別区分集計_'+y+'-'+String(m+1).padStart(2,'0')+'.csv');
 }
 function downloadCSV(rows, filename) {
   var csv = rows.map(r=>r.map(c=>`"${String(c==null?'':c).replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -15940,6 +16043,20 @@ function getOrderCatalog(){ return ls('order_catalog', []); }
 function getSupplyOrders(){ return ls('supply_orders', []); }
 function soVendors(){ return ['Amazon','Costco','Restaurant Depot','Webstaurant','その他']; }
 function soCategories(){ return ['消耗品','レジ用品','清掃用品','厨房備品','事務用品','その他']; }
+function supplyAcctClasses(){ return ['消耗品費','備品費','事務用品費','清掃費','福利厚生費','雑費','その他']; }
+function autoAcctClass(cat){
+  if(cat==='消耗品'||cat==='レジ用品') return '消耗品費';
+  if(cat==='清掃用品') return '清掃費';
+  if(cat==='厨房備品') return '備品費';
+  if(cat==='事務用品') return '事務用品費';
+  return '雑費';
+}
+function supplyAcctClass(o){ return (o&&o.acctClass) ? o.acctClass : autoAcctClass(o&&o.category); }
+function setSupplyAcctClass(id,val){
+  if(['ceo','gm','office'].indexOf(curRole)<0){ showToast('経理区分の変更は事務Crew・GM・CEOのみ','warning'); return; }
+  var arr=getSupplyOrders(); var o=arr.find(function(x){return x.id===id;}); if(!o) return;
+  o.acctClass=val; lsSet('supply_orders', arr); showToast('経理区分を更新しました','success'); renderPage('supply_order');
+}
 function soVendorName(o){ return o.vendor||'Amazon'; }
 function _curEmp(){ try{ return getEmployees().find(function(x){return x.name===curUserName;})||null; }catch(e){ return null; } }
 function empGradeNum(e){ return (e && typeof gradeNum==='function' && typeof empGrade==='function') ? gradeNum(empGrade(e)) : 0; }
@@ -16199,13 +16316,17 @@ function renderSupplyOrderCard(o){
   }
   if(o.status==='取消'){ meta='<div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-ban"></i> 取消: '+escapeHtml(o.cancelledBy||'')+' '+escapeHtml(o.cancelledAt||'')+'</div>'; }
   if(o.status==='却下' && o.approval && o.approval.note){ meta='<div style="font-size:11px;color:var(--red);margin-top:4px"><i class="ti ti-arrow-back-up"></i> '+escapeHtml(o.approval.note)+'</div>'; }
+  var acctSel='';
+  if(['ceo','gm','office'].indexOf(curRole)>=0 && ['取消','却下'].indexOf(o.status)<0){
+    acctSel='<div style="margin-top:6px;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px"><i class="ti ti-tag"></i>経理区分: <select onchange="setSupplyAcctClass(\''+o.id+'\',this.value)" style="font-size:11px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card)">'+supplyAcctClasses().map(function(cl){return '<option'+(cl===supplyAcctClass(o)?' selected':'')+'>'+cl+'</option>';}).join('')+'</select></div>';
+  }
   return '<div class="card" style="border-left:3px solid '+c+'">'
     +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
       +'<div><div style="font-weight:700;font-size:14px">'+escapeHtml(o.name)+' <span style="font-size:11px;color:var(--muted)">×'+o.qty+'</span></div>'
       +'<div style="font-size:11px;color:var(--muted)">'+escapeHtml(soVendorName(o))+' · '+escapeHtml(o.category||'')+' · '+escapeHtml(soStoreName(o.store))+' · 概算 $'+(o.total||0).toFixed(2)+'</div>'
       +'<div style="font-size:10px;color:var(--muted)">依頼 '+escapeHtml(o.by||'')+' · '+escapeHtml(o.date||'')+(function(){var a=o.approval||{};var pr=[];if(a.am&&a.am.by)pr.push('AM:'+a.am.by);if(a.gm&&a.gm.by)pr.push('GM:'+a.gm.by);return pr.length?' · 承認 '+escapeHtml(pr.join(' / ')):'';})()+'</div></div>'
       +'<span class="tag" style="font-size:9px;background:'+c+';color:#fff">'+o.status+'</span>'
-    +'</div>'+meta
+    +'</div>'+meta+acctSel
     +(actions?'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'+actions+'</div>':'')
   +'</div>';
 }
@@ -20459,8 +20580,13 @@ async function saveInvoice() {
     try{
       var _iso = new Date().toISOString().slice(0,10);
       var _ext = (String(imagePath).split('.').pop()||'jpg');
-      var _dn = (invoiceDocType==='Receipt' ? safeFileName(storeObj?storeObj.name:invStoreId) : safeFileName(vendor)) + '.' + _iso + '.' + _ext;
-      var _dr = await driveSync('push', { bucket:'invoices', storagePath:imagePath, fileName:_dn, kind:(invoiceDocType==='Receipt'?'receipt':'invoice') });
+      var _recStore0 = safeFileName(storeObj?storeObj.name:invStoreId);
+      var _dn = (invoiceDocType==='Receipt'
+        ? safeFileName(_rcptEmp.name||'未割当')+'_'+_iso+'_'+_recStore0+(_purpose?'_'+safeFileName(_purpose):'')+'_'+(total||0).toFixed(2)
+        : safeFileName(vendor)+'.'+_iso) + '.' + _ext;
+      var _pp = { bucket:'invoices', storagePath:imagePath, fileName:_dn, kind:(invoiceDocType==='Receipt'?'receipt':'invoice') };
+      if(invoiceDocType==='Receipt'){ _pp.empName=_rcptEmp.name||'未割当'; _pp.subfolder='Credit Card Receipts/'+safeFileName(_rcptEmp.name||'未割当')+'/'+_iso.slice(0,7); }
+      var _dr = await driveSync('push', _pp);
       if (_dr && _dr.ok) {
         _newInv.driveFileId = _dr.fileId || ''; _newInv.driveUrl = _dr.webViewLink || '';
         lsSet('invoices', invoices);
@@ -20748,8 +20874,12 @@ async function submitRejectReply(id){
       try{
         var _iso=new Date().toISOString().slice(0,10);
         var _ext=(String(newPath).split('.').pop()||'jpg');
-        var _dn=((inv.docType==='Receipt')?safeFileName(so?so.name:inv.storeId):safeFileName(inv.vendor))+'.'+_iso+'.'+_ext;
-        var _dr=await driveSync('push', { bucket:'invoices', storagePath:newPath, fileName:_dn, kind:(inv.docType==='Receipt'?'receipt':'invoice') });
+        var _dn=((inv.docType==='Receipt')
+          ? safeFileName(inv.empName||'未割当')+'_'+_iso+'_'+safeFileName(so?so.name:inv.storeId)+(inv.purpose?'_'+safeFileName(inv.purpose):'')+'_'+((Number(inv.total)||0).toFixed(2))
+          : safeFileName(inv.vendor)+'.'+_iso)+'.'+_ext;
+        var _pl={ bucket:'invoices', storagePath:newPath, fileName:_dn, kind:(inv.docType==='Receipt'?'receipt':'invoice') };
+        if(inv.docType==='Receipt'){ _pl.empName=inv.empName||'未割当'; _pl.subfolder='Credit Card Receipts/'+safeFileName(inv.empName||'未割当')+'/'+_iso.slice(0,7); }
+        var _dr=await driveSync('push', _pl);
         if(_dr&&_dr.ok){ inv.driveFileId=_dr.fileId||''; inv.driveUrl=_dr.webViewLink||''; }
       }catch(e){}
     }
