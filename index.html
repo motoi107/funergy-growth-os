@@ -7044,7 +7044,7 @@ function renderBudgetDaily() {
   var _ymD=(days[0]?days[0].date.slice(0,7):'');
   var _storeExtra={}; scopeStores.forEach(function(s){ _storeExtra[s.id]={sal:(typeof storeSalaryDaily==='function')?storeSalaryDaily(s.id,_ymD):0, ins:(typeof storeInsuranceDaily==='function')?storeInsuranceDaily(s.id,_ymD):0}; });
   days.forEach(d => {
-    var dayBud=0, dayAct=0, hasAct=false, weather='', event='', isToast=false;
+    var dayBud=0, dayAct=0, hasAct=false, weather='', event='', eventAuto=false, isToast=false;
     var dayLunch=0, dayDinner=0, hasLD=false, gv={total:null,lunch:null,dinner:null};
     var dayFirst=0, dayRepeat=0, dayLaborH=0, dayLaborCost=0;
     scopeStores.forEach(s => {
@@ -7054,7 +7054,7 @@ function renderBudgetDaily() {
       dayBud += bd;
       if (ov.actual!=null) { dayAct += ov.actual; hasAct=true; }
       if (ov.lunchSales!=null||ov.dinnerSales!=null) { dayLunch+=(ov.lunchSales||0); dayDinner+=(ov.dinnerSales||0); hasLD=true; }
-      if (!isAgg) { weather=ov.weather||''; event=ov.event||''; gv=dayGuestValue(s.id, ov); gv.takeout=ov.takeout; }
+      if (!isAgg) { weather=ov.weather||''; event=ov.event||''; eventAuto=ov.eventAuto||false; gv=dayGuestValue(s.id, ov); gv.takeout=ov.takeout; }
       if (ov.toast||ov.toastSrc) isToast = true;
       dayFirst += Number(ov.firstTimeBowls)||0;
       dayRepeat += Number(ov.repeatBowls)||0;
@@ -7063,6 +7063,8 @@ function renderBudgetDaily() {
       if(_tl>0){ var _ex=_storeExtra[s.id]||{sal:0,ins:0}; dayLaborCost += _tl*(1+PAYROLL_TAX_RATE)+_ex.sal*(1+PAYROLL_TAX_RATE)+_ex.ins; }
     });
     var dayRT = (dayFirst+dayRepeat)>0 ? Math.round(dayRepeat/(dayFirst+dayRepeat)*1000)/10 : null;
+    var dayHol = !isAgg ? dayEventFor(d.date) : '';
+    var dayMemo = (!isAgg && event && !eventAuto) ? event : '';
     // チップ率（単店のみ）: チップ総額 ÷ 純売上
     var tipRate = null, tipTotal = 0;
     if (!isAgg && scopeStores[0]) {
@@ -7078,7 +7080,7 @@ function renderBudgetDaily() {
     var rowBg = isToday?'background:#fdeee4':isWeekend?'background:rgba(255,255,255,0.02)':'';
     html += `<tr style="${rowBg}">
       <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
-      ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted)">${event||'-'}</td>`}
+      ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="タップでメモ編集"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">＋メモ</span>':'-'):''}</td>`}
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}</td>
       ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
@@ -7687,6 +7689,32 @@ function holidayFor(dateISO) {
   var h = usHolidays(y);
   return h[dateISO] || '';
 }
+/* 文化イベント・記念日（休日ではないが集客に影響）。Father's Day等 */
+function culturalEvents(year){
+  function nthWeekday(month, weekday, n){ var d=new Date(year,month,1); var add=(weekday-d.getDay()+7)%7+(n-1)*7; return new Date(year,month,1+add); }
+  function iso(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+  var e={};
+  e[year+'-02-14']='\u{1F49D}Valentine\u2019s Day';
+  e[year+'-03-17']='\u2618\uFE0FSt. Patrick\u2019s Day';
+  e[year+'-05-05']='\u{1F32E}Cinco de Mayo';
+  e[iso(nthWeekday(4,0,2))]='\u{1F490}Mother\u2019s Day';
+  e[iso(nthWeekday(5,0,3))]='\u{1F454}Father\u2019s Day';
+  e[year+'-10-31']='\u{1F383}Halloween';
+  e[year+'-11-11']='';
+  e[year+'-12-24']='\u{1F384}Christmas Eve';
+  e[year+'-12-31']='\u{1F389}New Year\u2019s Eve';
+  var th=nthWeekday(10,4,4); var bf=new Date(year,10,th.getDate()+1); e[iso(bf)]='\u{1F6CD}\uFE0FBlack Friday';
+  e[iso(nthWeekday(1,0,1))]='\u{1F3C8}Super Bowl(\u76EE\u5B89)';
+  Object.keys(e).forEach(function(k){ if(!e[k]) delete e[k]; });
+  return e;
+}
+function dayEventFor(dateISO){
+  var hol = holidayFor(dateISO);
+  if(hol) return hol;
+  var y=parseInt(dateISO.slice(0,4));
+  var ev=culturalEvents(y);
+  return ev[dateISO]||'';
+}
 
 async function fetchWeatherForView(storeId, days) {
   var from = days[0].date, to = days[days.length-1].date;
@@ -7703,14 +7731,7 @@ async function fetchWeatherForView(storeId, days) {
         updated++;
       }
     }
-    // 祝日をイベント欄へ（手入力イベントがなければ）
-    var hol = holidayFor(d.date);
-    if (hol) {
-      var p = actuals[d.date] || {};
-      if (!p.event || p.eventAuto) {
-        actuals[d.date] = Object.assign({}, p, { event: hol, eventAuto: true });
-      }
-    }
+    // 祝日・イベントは日次一覧で自動表示（dayEventFor）。ov.eventは店舗メモ専用。
   });
   setDailyActuals(storeId, actuals);
   return { updated };
@@ -7727,6 +7748,28 @@ async function doWeatherSyncSilent(storeId) {
   return await fetchWeatherForView(storeId, monthDays());
 }
 
+function openDayMemo(storeId, date, dow){
+  var actuals=getDailyActuals(storeId);
+  var ov=actuals[date]||{};
+  var hol=(typeof dayEventFor==='function')?dayEventFor(date):'';
+  var memo=(ov.event && !ov.eventAuto)?ov.event:'';
+  openModal('<div class="modal-title">'+date+' ('+dow+') \u304a\u5e97\u30e1\u30e2 <button class="modal-close" onclick="closeModalDirect()">\u00d7</button></div>'
+    +(hol?'<div style="font-size:12px;color:var(--accent);margin-bottom:8px"><i class="ti ti-confetti"></i> '+hol+'</div>':'')
+    +'<div class="form-group"><label class="form-label">\u30e1\u30e2\uff08\u30a4\u30d9\u30f3\u30c8\u30fb\u7279\u8a18\u4e8b\u9805\uff09</label><textarea class="form-input" id="dm-memo" rows="3" placeholder="\u4f8b: \u8fd1\u96a3\u3067\u304a\u796d\u308a / \u56e3\u4f53\u4e88\u7d0420\u540d / \u96e8\u3067\u5ba2\u8db3\u6e1b">'+escapeHtml(memo)+'</textarea></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">\u3053\u306e\u65e5\u306e\u5e97\u8217\u30e1\u30e2\u3068\u3057\u3066\u4fdd\u5b58\u3055\u308c\u3001\u65e5\u6b21\u4e00\u89a7\u306e\u30a4\u30d9\u30f3\u30c8\u6b04\u306b\u8868\u793a\u3055\u308c\u307e\u3059\u3002</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">\u30ad\u30e3\u30f3\u30bb\u30eb</button><button class="btn btn-primary" onclick="saveDayMemo(\''+storeId+'\',\''+date+'\')">\u4fdd\u5b58</button></div>');
+}
+function saveDayMemo(storeId, date){
+  var actuals=getDailyActuals(storeId);
+  var ov=actuals[date]||{};
+  var v=((document.getElementById('dm-memo')||{}).value||'').trim();
+  ov.event=v; ov.eventAuto=false;
+  actuals[date]=ov;
+  setDailyActuals(storeId, actuals);
+  closeModalDirect();
+  showToast('\u30e1\u30e2\u3092\u4fdd\u5b58\u3057\u307e\u3057\u305f','success');
+  renderPage('budget');
+}
 function openDailyActualModal(storeId, date, dow) {
   var b = getBudgetForMonth(storeId, (date||'').slice(0,7) || new Date().toISOString().slice(0,7));
   var actuals = getDailyActuals(storeId);
@@ -7741,7 +7784,7 @@ function openDailyActualModal(storeId, date, dow) {
         <select class="form-select" id="da-weather">${['','快晴','晴','曇','霧','小雨','雨','嵐','雪'].map(w=>`<option value="${w}"${ov.weather===w?' selected':''}>${w?weatherIcon(w)+' '+w:'—'}</option>`).join('')}</select>
       </div>
     </div>
-    <div class="form-group"><label class="form-label">イベント・メモ</label><input class="form-input" id="da-event" value="${ov.event||''}" placeholder="例: 近隣で祭り / 雨で客足減"></div>
+    <div class="form-group"><label class="form-label">お店メモ（イベント・特記）</label>${(function(){var _h=(typeof dayEventFor==='function')?dayEventFor(date):'';return _h?'<div style=\"font-size:11px;color:var(--accent);margin-bottom:3px\">'+_h+'</div>':'';})()}<input class="form-input" id="da-event" value="${(ov.event&&!ov.eventAuto)?ov.event:''}" placeholder="例: 近隣で祭り / 団体予約20名"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">当日原価 ($)</label><input class="form-input" id="da-food" type="number" value="${ov.foodCost!=null?ov.foodCost:''}" placeholder="任意"></div>
       <div class="form-group"><label class="form-label">当日人件費 ($)</label><input class="form-input" id="da-labor" type="number" value="${ov.labor!=null?ov.labor:''}" placeholder="任意"></div>
@@ -7763,7 +7806,7 @@ function saveDailyActual(storeId, date) {
     actual: actual===''?null:parseFloat(actual),
     guests: guests===''?null:parseFloat(guests),
     weather: document.getElementById('da-weather').value,
-    event: document.getElementById('da-event').value.trim(),
+    event: document.getElementById('da-event').value.trim(), eventAuto:false,
     foodCost: food===''?(prev.foodCost!=null?prev.foodCost:null):parseFloat(food),
     labor: labor===''?(prev.labor!=null?prev.labor:null):parseFloat(labor),
   });
