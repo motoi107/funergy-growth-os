@@ -16070,7 +16070,7 @@ function openSupplyRequestModal(prefill){
     +'<div class="form-group"><label class="form-label">品名</label><input class="form-input" id="so-name" value="'+escapeHtml(prefill.name||'')+'" placeholder="例: レジロール紙 80mm" '+(isCat?'readonly':'')+'></div>'
     +'<div class="form-row"><div class="form-group"><label class="form-label">業者</label><select class="form-select" id="so-vendor">'+soVendors().map(function(v){return '<option'+(v===(prefill.vendor||'Amazon')?' selected':'')+'>'+v+'</option>';}).join('')+'</select></div>'
     +'<div class="form-group"><label class="form-label">カテゴリ</label><select class="form-select" id="so-category">'+soCategories().map(function(c){return '<option'+(c===(prefill.category||'消耗品')?' selected':'')+'>'+c+'</option>';}).join('')+'</select></div></div>'
-    +'<div class="form-group"><label class="form-label">商品URL</label><input class="form-input" id="so-url" value="'+escapeHtml(prefill.url||'')+'" placeholder="https://www.amazon.com/..."></div>'
+    +'<div class="form-group"><label class="form-label">商品URL</label><div style="display:flex;gap:6px"><input class="form-input" id="so-url" value="'+escapeHtml(prefill.url||'')+'" placeholder="https://www.amazon.com/..." style="flex:1"><button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="fetchProductInfo()"><i class="ti ti-wand"></i> 読み取り</button></div><div id="so-fetch-status" style="font-size:11px;color:var(--muted);margin-top:4px">URLを貼って「読み取り」で品名・価格を自動入力（Amazon等）。</div></div>'
     +'<div class="form-row"><div class="form-group"><label class="form-label">数量</label><input class="form-input" id="so-qty" type="number" min="1" value="'+(prefill.qty||1)+'"></div>'
     +'<div class="form-group"><label class="form-label">単価 ($)</label><input class="form-input" id="so-price" type="number" step="0.01" value="'+(prefill.price!=null?prefill.price:'')+'" placeholder="0.00"></div></div>'
     +'<div class="form-group"><label class="form-label">店舗</label><select class="form-select" id="so-store">'+stores.map(function(s){return '<option value="'+s.id+'"'+(s.id===defStore?' selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('')+'</select></div>'
@@ -16088,6 +16088,39 @@ function saveSupplyRequest(){
   closeModalDirect();
   showToast(o.status==='承認待ち'?'承認待ちで依頼しました':'発注待機に追加しました','success');
   renderPage('supply_order');
+}
+function vendorFromUrl(url){
+  try{ var h=new URL(url).hostname.replace(/^www\./,'').toLowerCase();
+    if(h.indexOf('amazon.')>=0) return 'Amazon';
+    if(h.indexOf('costco.')>=0) return 'Costco';
+    if(h.indexOf('webstaurantstore')>=0) return 'Webstaurant';
+    if(h.indexOf('restaurantdepot')>=0) return 'Restaurant Depot';
+    return '';
+  }catch(e){ return ''; }
+}
+function _soSetVendor(v){ if(!v) return; var ve=document.getElementById('so-vendor'); if(!ve) return; for(var i=0;i<ve.options.length;i++){ if(ve.options[i].value===v){ ve.value=v; return; } } }
+async function fetchProductInfo(){
+  var url=((document.getElementById('so-url')||{}).value||'').trim();
+  var box=document.getElementById('so-fetch-status');
+  if(!url){ if(box) box.textContent='URLを入力してください'; return; }
+  // ベンダーはURLから即時推定
+  _soSetVendor(vendorFromUrl(url));
+  if(box) box.innerHTML='<span style="color:var(--muted)"><i class="ti ti-loader"></i> 読み取り中…</span>';
+  try{
+    var r=await fetch(SUPABASE_URL+'/functions/v1/fetch-product', {method:'POST', headers:supaHeaders(), body:JSON.stringify({url:url})});
+    if(r.status===404){ if(box) box.innerHTML='<span style="color:var(--yellow)">読み取り機能が未設定です。管理者がEdge Function「fetch-product」を有効化してください（品名・価格は手入力できます）。</span>'; return; }
+    var d=await r.json();
+    var nameEl=document.getElementById('so-name'), priceEl=document.getElementById('so-price');
+    if(d && d.ok){
+      if(d.vendor) _soSetVendor(d.vendor);
+      if(d.name && nameEl && !nameEl.readOnly) nameEl.value=d.name;
+      if(d.price!=null && priceEl) priceEl.value=d.price;
+      if(box) box.innerHTML='<span style="color:var(--green)"><i class="ti ti-check"></i> 読み取りました'+(d.price==null?'（価格は取得できず・手入力してください）':'')+'</span>';
+    } else {
+      if(d && d.name && nameEl && !nameEl.readOnly && !nameEl.value) nameEl.value=d.name;
+      if(box) box.innerHTML='<span style="color:var(--yellow)">自動読み取りできませんでした（サイトが拒否した可能性）。品名・価格を手入力してください。'+((d&&d.name)?'（候補: '+escapeHtml(d.name)+'）':'')+'</span>';
+    }
+  }catch(e){ if(box) box.innerHTML='<span style="color:var(--red)">読み取りに失敗しました。手入力してください。</span>'; }
 }
 function reorderFromCatalog(catalogId){
   var c=getOrderCatalog().find(function(x){return x.id===catalogId;}); if(!c) return;
