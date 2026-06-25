@@ -23134,6 +23134,64 @@ function growthMgrBack() { growthMgrSel = null; renderPage('growth_mgr'); }
 function getSkillRequests() { return ls('skill_requests', []); }
 function setSkillRequests(r) { lsSet('skill_requests', r); }
 
+/* ===== スキルレーダーチャート（依存ライブラリなしの自作SVG） =====
+   職位（軸）× 承認レベル（0〜3）を多角形で表示。本人ビュー／従業員別ビュー共通。 */
+function skillRadarSvg(labels, values, max, opts){
+  opts = opts || {};
+  var size = opts.size || 260;
+  var n = labels.length;
+  if(n < 3){
+    return '<div style="font-size:12px;color:var(--muted);text-align:center;padding:18px">レーダー表示にはポジションが3つ以上必要です</div>';
+  }
+  max = max || 3;
+  var cx = size/2, cy = size/2;
+  var pad = (opts.pad!=null) ? opts.pad : Math.round(size*0.20);
+  var R = size/2 - pad;
+  var fs = n>14 ? 7 : (n>10 ? 8 : 9);
+  function pt(i, val){
+    var ang = -Math.PI/2 + (i*2*Math.PI/n);
+    var r = R * (val/max);
+    return [cx + r*Math.cos(ang), cy + r*Math.sin(ang)];
+  }
+  var svg = '<svg viewBox="0 0 '+size+' '+size+'" width="100%" style="max-width:'+size+'px;display:block;margin:0 auto" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="スキルレーダー">';
+  // グリッドリング
+  for(var ring=1; ring<=max; ring++){
+    var rp=[];
+    for(var i=0;i<n;i++){ var p=pt(i,ring); rp.push(p[0].toFixed(1)+','+p[1].toFixed(1)); }
+    svg += '<polygon points="'+rp.join(' ')+'" fill="none" stroke="var(--border)" stroke-width="1"/>';
+  }
+  // スポーク＋ラベル
+  for(var i=0;i<n;i++){
+    var edge = pt(i, max);
+    svg += '<line x1="'+cx+'" y1="'+cy+'" x2="'+edge[0].toFixed(1)+'" y2="'+edge[1].toFixed(1)+'" stroke="var(--border)" stroke-width="1"/>';
+    var ang = -Math.PI/2 + (i*2*Math.PI/n);
+    var lr = R + Math.max(10, size*0.05);
+    var lx = cx + lr*Math.cos(ang), ly = cy + lr*Math.sin(ang);
+    var anchor = Math.abs(Math.cos(ang))<0.30 ? 'middle' : (Math.cos(ang)>0 ? 'start' : 'end');
+    var lab = String(labels[i]); if(lab.length>7) lab = lab.slice(0,7);
+    svg += '<text x="'+lx.toFixed(1)+'" y="'+ly.toFixed(1)+'" text-anchor="'+anchor+'" dominant-baseline="middle" font-size="'+fs+'" fill="var(--muted)">'+escapeHtml(lab)+'</text>';
+  }
+  // データ多角形
+  var dp=[];
+  for(var i=0;i<n;i++){ var v=Math.max(0,Math.min(max, values[i]||0)); var p=pt(i,v); dp.push(p[0].toFixed(1)+','+p[1].toFixed(1)); }
+  svg += '<polygon points="'+dp.join(' ')+'" fill="var(--accent)" fill-opacity="0.22" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>';
+  // 頂点
+  for(var i=0;i<n;i++){ var v=Math.max(0,Math.min(max, values[i]||0)); if(v>0){ var p=pt(i,v); svg += '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.5" fill="var(--accent)"/>'; } }
+  svg += '</svg>';
+  return svg;
+}
+
+/* 指定 社員 × 店舗 の承認レベルでレーダーを構築 */
+function skillRadarForStore(name, storeId, size){
+  var positions = getStorePositions(storeId);
+  var sk = getEmpSkillsStore(name, storeId);
+  var vals = positions.map(function(p){ var s=sk[p]||{}; return (s.status==='承認') ? (s.level||0) : 0; });
+  var hasAny = vals.some(function(v){return v>0;});
+  var chart = skillRadarSvg(positions, vals, 3, {size:size||240});
+  if(!hasAny){ chart += '<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:2px">承認済みスキルがまだありません</div>'; }
+  return chart;
+}
+
 function renderSkill() {
   if (curRole==='crew') return renderSkillSelf();
   if (curRole==='sl') {
@@ -23161,6 +23219,9 @@ function renderSkillSelf() {
 
   var html = `<div class="section-header"><div><div class="section-title">Skill Level</div><div class="section-sub">自己評価申請 → 管理者承認</div></div></div>`;
   html += evalRubricLegendHtml();
+
+  // スキルレーダー
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar"></i>スキルレーダー</div>${skillRadarForStore(me, storeId, 260)}<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">承認済みレベル（Lv0–3）</div></div>`;
 
   // 現在のスキル状況
   html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>現在のSkill Level</div>`;
@@ -23471,6 +23532,7 @@ function renderSkillStaffView() {
           ${elig&&!elig.maxed&&elig.allOk?`<span class="tag tag-green" style="font-size:8px;margin-left:auto">${elig.target.label}可</span>`:''}
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:2px">${ap.length?ap.map(p=>`<span class="tag tag-green" style="font-size:8px">${p}</span>`).join(' '):'承認済みなし'}</div>
+        <div style="margin-top:6px">${skillRadarForStore(e.name, sid, 210)}</div>
       </div>`;
     });
     html += `<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openStaffSkillEdit('${e.name.replace(/'/g,"\\'")}','${e.store}')"><i class="ti ti-edit"></i> スキル編集</button></div>`;
