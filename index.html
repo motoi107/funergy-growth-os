@@ -159,6 +159,16 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
   cursor: pointer;
 }
 .logout-btn:hover { color: var(--tm); border-color: var(--muted); }
+.topbar-icon-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; cursor: pointer; position: relative; padding: 0;
+}
+.topbar-icon-btn:hover { color: var(--tm); border-color: var(--muted); }
 
 /* ====== NAV ====== */
 .nav-bar {
@@ -621,10 +631,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
       <i class="ti ti-chevron-down" style="font-size:12px;"></i>
     </div>
     <div class="topbar-right">
-      <button id="topbar-notif" onclick="toggleNotifPanel(event)" title="通知" style="position:relative;background:none;border:none;color:var(--tm);font-size:18px;cursor:pointer;padding:4px 8px"><i class="ti ti-bell"></i><span id="notif-badge" style="display:none;position:absolute;top:-1px;right:1px;background:var(--red);color:#fff;border-radius:9px;font-size:9px;font-weight:700;min-width:14px;height:14px;line-height:14px;text-align:center;padding:0 2px"></span></button>
-      <button id="topbar-sync" onclick="refreshNow()" title="最新に更新" style="background:none;border:none;color:var(--tm);font-size:18px;cursor:pointer;padding:4px 8px"><i class="ti ti-refresh"></i></button>
+      <button id="topbar-notif" class="topbar-icon-btn" onclick="toggleNotifPanel(event)" title="通知"><i class="ti ti-bell"></i><span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;border-radius:9px;font-size:9px;font-weight:700;min-width:15px;height:15px;line-height:15px;text-align:center;padding:0 2px"></span></button>
+      <button id="topbar-sync" class="topbar-icon-btn" onclick="refreshNow()" title="最新に更新"><i class="ti ti-refresh"></i></button>
       <div class="topbar-role-badge" id="topbar-role"></div>
-      <button class="logout-btn" onclick="doLogout()">ログアウト</button>
+      <button class="topbar-icon-btn" onclick="doLogout()" title="ログアウト"><i class="ti ti-logout"></i></button>
     </div>
   </div>
   <div id="notif-panel" style="display:none;position:fixed;top:50px;right:8px;width:330px;max-width:92vw;max-height:72vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 34px rgba(0,0,0,0.22);z-index:300"></div>
@@ -1451,11 +1461,9 @@ const NAV_ITEMS = [
   {id:'dashboard',   label:'ダッシュボード',   icon:'ti-layout-dashboard', roles:['ceo','gm','office','am']},
   {id:'store_cmd',   label:'店舗オペレーション', icon:'ti-building-store',   roles:['ceo','gm','am','sl','crew']},
   {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl']},
-  {id:'monthly',     label:'月次サマリー',  icon:'ti-calendar-stats',   roles:['ceo','gm','office','am','sl']},
   {id:'foodcost',    label:'原価率(FC)',   icon:'ti-receipt',          roles:['ceo','gm','office','am','sl']},
   {id:'menu',        label:'メニュー',    icon:'ti-tools-kitchen-2',  roles:['ceo','gm','office','am','sl']},
-  {id:'recipe',      label:'レシピ',      icon:'ti-chef-hat',         roles:['ceo','gm','office','am','sl']},
-  {id:'costsheet',   label:'原価計算',    icon:'ti-calculator',       roles:['ceo','gm','office','am','sl']},
+  {id:'recipe',      label:'原価登録',    icon:'ti-receipt-2',        roles:['ceo','gm','office','am','sl']},
   {id:'invoice',     label:'請求書',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl']},
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office']},
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
@@ -1496,9 +1504,9 @@ const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
     children:['dashboard','store_cmd']},
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
-    children:['budget','monthly','store_power','labor','foodcost','kpi_master']},
+    children:['budget','store_power','labor','foodcost','kpi_master']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
-    children:['menu','recipe','costsheet','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
+    children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['staff_master','shift_admin','hiring','hr','skill','leadership','tiprate','ojtmap','tip','growthhub','growth_mgr','vacation']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
@@ -5728,8 +5736,8 @@ function prevMonthStats(storeId) { return monthStats(storeId, -1); }
 var msOffset = 0;     // 0=今月, -1=先月 ...
 var msScope = 'ALL';  // 'ALL' または storeId
 var msView = 'summary'; // 'summary' | 'trend'（KPI推移一覧）
-function msSetView(v){ msView=v; renderPage('monthly'); }
-function gotoKpiTrend(){ msView='trend'; if(typeof go==='function') go('monthly'); else renderPage('monthly'); }
+function msSetView(v){ msView=v; renderPage('budget'); }
+function gotoKpiTrend(){ msView='trend'; budgetTab='monthly'; if(typeof go==='function') go('budget'); else renderPage('budget'); }
 
 function msMonthInfo(offset){
   var now=new Date();
@@ -6213,7 +6221,7 @@ function renderMonthlySummary(){
   var scopeName=msScope==='ALL'?'全店':((stores.find(function(s){return s.id===msScope;})||{}).name||msScope);
   var canNext=msOffset<0;
 
-  var html='<div class="section-header"><div><div class="section-title">月次サマリー</div><div class="section-sub">振り返り・経営レビュー <span class="tag tag-yellow" style="font-size:10px">プレビュー</span></div></div></div>';
+  var html='';
 
   html+='<div class="phase-tabs" style="margin-bottom:8px">'
     +'<div class="phase-tab'+(msView==='summary'?' active':'')+'" onclick="msSetView(\'summary\')"><i class="ti ti-layout-dashboard" style="font-size:12px"></i> サマリー</div>'
@@ -6307,8 +6315,8 @@ function renderMonthlySummary(){
   setTimeout(function(){ try{ msLoadMonth(false); }catch(e){} }, 60);
   return html;
 }
-function msShift(d){ var n=msOffset+d; if(n>0) n=0; msOffset=n; renderPage('monthly'); }
-function msSetScope(v){ msScope=v; renderPage('monthly'); }
+function msShift(d){ var n=msOffset+d; if(n>0) n=0; msOffset=n; renderPage('budget'); }
+function msSetScope(v){ msScope=v; renderPage('budget'); }
 
 /* 選択中の月・スコープの勤怠(tip_labor)と売上(toast_sales)をクラウドから取得して再描画。
    月/スコープごとに1回だけ自動取得（再取得はリフレッシュボタン）。 */
@@ -6330,7 +6338,7 @@ async function msLoadMonth(force){
     try{ await syncStoreActualsFromToast(stores[i].id, stores[i].toastGuid, days); }catch(e){}
   }
   _msLoaded[loadKey]=true;
-  if(curPage==='monthly') renderPage('monthly'); // 取得後に最新値で再描画（_msLoadedで再取得はしない）
+  if(curPage==='budget' && budgetTab==='monthly') renderPage('budget'); // 取得後に最新値で再描画（_msLoadedで再取得はしない）
 }
 function msRefreshMonth(){ var mi=msMonthInfo(msOffset); _msLoaded[mi.ym+'|'+msScope]=false; msLoadMonth(true); }
 
@@ -6366,13 +6374,16 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">サマリー</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">予算設定</div>
     <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">日次進捗</div>
+    <div class="phase-tab${budgetTab==='monthly'?' active':''}" onclick="setBudgetTab('monthly')">月次サマリー</div>
   </div>`;
+  if (budgetTab==='monthly') return html + renderMonthlySummary();
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   html += storeSelectBar(_budgetStore, 'setBudgetStore');
   if (budgetTab==='setup') return html + renderBudgetSetup();
   return html + renderBudgetSummary();
 }
 function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
+function setCostView(v){ window._costView = v; renderPage('recipe'); }
 function setBudgetStore(v){ _budgetStore = v; renderPage('budget'); }
 /* 予実サマリー/設定で表示する店舗（全店=可視店舗すべて、それ以外=その1店） */
 function budgetScopeStores(){ var vis=getVisibleStores(); return (_budgetStore && _budgetStore!=='ALL') ? vis.filter(function(s){return s.id===_budgetStore;}) : vis; }
@@ -19157,7 +19168,7 @@ function renderMenu() {
       </div>`;
     if (open) {
       html += `<div style="overflow-x:auto"><table class="inv-table" style="min-width:540px"><thead><tr>
-        <th style="text-align:center">ABC</th><th>商品</th><th style="text-align:right">売価</th><th style="text-align:right">出数</th><th style="text-align:right">原価率</th><th style="text-align:center">レシピ</th>
+        <th style="text-align:center">ABC</th><th>商品</th><th style="text-align:right">売価</th><th style="text-align:right">出数</th><th style="text-align:right">原価率</th><th style="text-align:center">原価登録</th>
       </tr></thead><tbody>`;
       itemsSorted.forEach(r=>{
         var qty = qtyOf(r);
@@ -19341,6 +19352,14 @@ async function doMenuSync(storeId, period) {
 }
 
 function renderRecipe() {
+  var _costView = window._costView || 'reg';
+  var _costTabbar = '<div class="phase-tabs" style="margin-bottom:10px">'
+    + '<div class="phase-tab'+(_costView!=='calc'?' active':'')+'" onclick="setCostView(\'reg\')">原価登録</div>'
+    + '<div class="phase-tab'+(_costView==='calc'?' active':'')+'" onclick="setCostView(\'calc\')">原価計算</div>'
+    + '</div>';
+  if(_costView==='calc'){
+    return '<div class="section-header"><div><div class="section-title">原価登録</div><div class="section-sub">原価計算シート・試算用</div></div></div>' + _costTabbar + renderCostSheet();
+  }
   var canEdit = ROLE_CONFIG[curRole].canCreate || ROLE_CONFIG[curRole].financial;
   if (!window._recipeView) window._recipeView = 'active';
   var view = window._recipeView;
@@ -19354,9 +19373,9 @@ function renderRecipe() {
   var inOwner = function(r){ return owner==='__ALL__' ? (r.storeId==null) : (recipeOwnerKey(r.storeId)===owner); };
   var actR = activeRecipes().filter(inOwner), arcR = archivedRecipes().filter(inOwner);
   var html = `<div class="section-header">
-    <div><div class="section-title">レシピ管理</div><div class="section-sub">${recipeOwnerLabel(owner)} · ${actR.length}メニュー稼働 · アーカイブ ${arcR.length}</div></div>
+    <div><div class="section-title">原価登録</div><div class="section-sub">${recipeOwnerLabel(owner)} · ${actR.length}メニュー稼働 · アーカイブ ${arcR.length}</div></div>
     ${canEdit&&view==='active'?`<button class="btn btn-primary btn-sm" onclick="openRecipeModal()"><i class="ti ti-plus"></i> メニュー追加</button>`:''}
-  </div>
+  </div>` + _costTabbar + `
   <div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     <span style="font-size:12px;color:var(--muted)"><i class="ti ti-building-store"></i> 店舗</span>
     <select class="form-select" style="width:auto;padding:6px" onchange="setRecipeOwner(this.value)">${owners.map(function(o){return `<option value="${o.key}" ${owner===o.key?'selected':''}>${o.label}</option>`;}).join('')}</select>
@@ -19753,8 +19772,7 @@ function renderCostSheet() {
   var rate = price>0 ? totalCost/price*100 : 0;
   var profit = price - totalCost;
 
-  var html = `<div class="section-header"><div><div class="section-title">原価計算シート</div><div class="section-sub">新商品開発・試算用</div></div>
-    <button class="btn btn-secondary btn-sm" onclick="resetCostSheet()"><i class="ti ti-refresh"></i> クリア</button></div>
+  var html = `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="resetCostSheet()"><i class="ti ti-refresh"></i> クリア</button></div>
   <div class="card">
     <div class="card-title"><i class="ti ti-flask"></i>試算</div>
     <div class="form-group"><label class="form-label">想定売価 ($)</label><input class="form-input" id="cs-price" type="number" step="0.01" value="${price}" onchange="setCSPrice(this.value)"></div>
@@ -19792,21 +19810,21 @@ function renderCostSheet() {
   return html;
 }
 
-function setCSPrice(v) { window._csPrice = parseFloat(v)||0; renderPage('costsheet'); }
+function setCSPrice(v) { window._csPrice = parseFloat(v)||0; renderPage('recipe'); }
 function openCSIngPicker() {
   openIngredientPicker(function(code){
     if (!costSheetItems.find(it=>it.code===code)) costSheetItems.push({code, qty:0.1});
-    renderPage('costsheet');
+    renderPage('recipe');
   });
 }
 function addCSItem() {
   var code = parseInt(document.getElementById('cs-add-ing').value);
   if (!costSheetItems.find(it=>it.code===code)) costSheetItems.push({code, qty:0.1});
-  renderPage('costsheet');
+  renderPage('recipe');
 }
-function updateCSQty(idx, val) { costSheetItems[idx].qty = parseFloat(val)||0; renderPage('costsheet'); }
-function removeCSItem(idx) { costSheetItems.splice(idx,1); renderPage('costsheet'); }
-function resetCostSheet() { costSheetItems = []; window._csPrice = 0; renderPage('costsheet'); }
+function updateCSQty(idx, val) { costSheetItems[idx].qty = parseFloat(val)||0; renderPage('recipe'); }
+function removeCSItem(idx) { costSheetItems.splice(idx,1); renderPage('recipe'); }
+function resetCostSheet() { costSheetItems = []; window._csPrice = 0; renderPage('recipe'); }
 function saveCostSheetAsRecipe() {
   var name = prompt('メニュー名を入力してください');
   if (!name) return;
@@ -19900,7 +19918,7 @@ function toggleNotifPanel(ev){
     renderNotifPanel();
     p.style.display='block';
     var btn=document.getElementById('topbar-notif');
-    if(btn){ var r=btn.getBoundingClientRect(); p.style.top=(r.bottom+6)+'px'; p.style.right=Math.max(6,(window.innerWidth-r.right))+'px'; }
+    if(btn){ var r=btn.getBoundingClientRect(); p.style.top=(r.bottom+6)+'px'; } p.style.right='8px'; p.style.left='auto';
     setTimeout(function(){ document.addEventListener('click', notifOutside); }, 0);
   } else { closeNotifPanel(); }
 }
@@ -21631,7 +21649,8 @@ function renderOjtTipBody(){
   }
 
   // 管理者：ロスター＋ドリルダウン
-  var storeId = (curStore==='ALL') ? null : curStore;
+  html += storeSelectBar(_ojtTipStore, 'setOjtTipStore');
+  var storeId = (_ojtTipStore==='ALL') ? null : _ojtTipStore;
   var crew = getEmployees().filter(function(e){
     return (e.role==='crew'||e.role==='sl') && e.status!=='退職' && (!storeId || e.store===storeId || (e.support||[]).includes(storeId));
   });
@@ -21674,9 +21693,11 @@ function renderOjtTipBody(){
    ゲート：担当軸 全てL4 ＋ 次役職OJT修了（既存 gradePromoEval / pipeReadiness を流用）
    OJT修了の登録はGM/CEOのみ。ロスターは店舗別検索。 */
 var _ojtMode = 'tip';        // 'tip' | 'career'
+var _ojtTipStore = 'ALL';     // Tip比率版ロスターの店舗フィルタ
 var _ojtcSel = null;         // Career版ドリルダウン選択中
 var _ojtcStore = 'ALL';      // Career版ロスターの店舗フィルタ
 function setOjtMode(m){ _ojtMode = m; renderPage('ojtmap'); }
+function setOjtTipStore(v){ _ojtTipStore = v; renderPage('ojtmap'); }
 function ojtcSelectPerson(name){ _ojtcSel = name; renderPage('ojtmap'); }
 function setOjtcStore(sid){ _ojtcStore = sid; _ojtcSel = null; renderPage('ojtmap'); }
 function ojtcToggleOjt(name, key, done){
