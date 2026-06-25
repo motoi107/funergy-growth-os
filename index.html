@@ -3389,7 +3389,7 @@ var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_h
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config'];
-var OP_SYNC_PREFIX = ['help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
+var OP_SYNC_PREFIX = ['skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
 function isOpSyncKey(key){
   if (!key) return false;
@@ -16941,20 +16941,56 @@ function migrateSkillsV2() {
   lsSet('skills_v2', migrated);
   return migrated;
 }
-function getSkillsV2() { return migrateSkillsV2(); }
-function setSkillsV2(s) { lsSet('skills_v2', s); }
-/* 店舗別スキル取得 { position: {...} } */
-function getEmpSkillsStore(name, storeId) {
-  var v2 = getSkillsV2();
-  return (v2[name] && v2[name][storeId]) ? v2[name][storeId] : {};
+/* ===== 同期粒度の改善：スキルは店舗別キー(skills_st_{店舗}) / Career Scoreは従業員別キー(lss_emp_{社員}) =====
+   保存は該当キーだけpush＝他店/他者を巻き込まない。読み取りは per-key＋レガシーをマージ（per-keyが新権威）。移行不要。 */
+var SKILL_STORE_PREFIX = 'skills_st_';
+var LSS_EMP_PREFIX = 'lss_emp_';
+function legacySkillsV2(){ var v = ls('skills_v2', null); if (v) return v; return migrateSkillsV2(); }
+/* 1店舗ぶん {name:{position:{...}}}（per-store優先・レガシー補完） */
+function getStoreSkillsMap(storeId){
+  var out = {};
+  var legacy = legacySkillsV2();
+  Object.keys(legacy).forEach(function(name){ if (legacy[name] && legacy[name][storeId]) out[name] = Object.assign({}, legacy[name][storeId]); });
+  var per = ls(SKILL_STORE_PREFIX+storeId, null);
+  if (per) Object.keys(per).forEach(function(name){ out[name] = per[name]; });
+  return out;
 }
-/* 店舗別スキルを書き込む */
-function setEmpSkillStore(name, storeId, position, data) {
-  var v2 = getSkillsV2();
-  if (!v2[name]) v2[name] = {};
-  if (!v2[name][storeId]) v2[name][storeId] = {};
-  v2[name][storeId][position] = data;
-  setSkillsV2(v2);
+function setStoreSkills(storeId, map){ lsSet(SKILL_STORE_PREFIX+storeId, map); }
+function getSkillsV2(){
+  var combined = {};
+  var legacy = legacySkillsV2();
+  Object.keys(legacy).forEach(function(name){
+    combined[name] = combined[name] || {};
+    Object.keys(legacy[name]||{}).forEach(function(st){ combined[name][st] = Object.assign({}, legacy[name][st]); });
+  });
+  try{
+    for (var i=0;i<localStorage.length;i++){
+      var k = localStorage.key(i);
+      if (k && k.indexOf(SKILL_STORE_PREFIX)===0){
+        var st = k.slice(SKILL_STORE_PREFIX.length);
+        var per = ls(k, {});
+        Object.keys(per).forEach(function(name){ combined[name] = combined[name]||{}; combined[name][st] = per[name]; });
+      }
+    }
+  }catch(e){}
+  return combined;
+}
+function setSkillsV2(s){
+  var byStore = {};
+  Object.keys(s).forEach(function(name){ Object.keys(s[name]||{}).forEach(function(st){ byStore[st]=byStore[st]||{}; byStore[st][name]=s[name][st]; }); });
+  Object.keys(byStore).forEach(function(st){
+    var cur = ls(SKILL_STORE_PREFIX+st, null);
+    if (JSON.stringify(cur)!==JSON.stringify(byStore[st])) lsSet(SKILL_STORE_PREFIX+st, byStore[st]);
+  });
+}
+/* 店舗別スキル取得 { position: {...} } */
+function getEmpSkillsStore(name, storeId){ var m=getStoreSkillsMap(storeId); return m[name]||{}; }
+/* 1ポジション保存（該当店舗キーだけ更新） */
+function setEmpSkillStore(name, storeId, position, data){
+  var map = getStoreSkillsMap(storeId);
+  if (!map[name]) map[name] = {};
+  map[name][position] = data;
+  setStoreSkills(storeId, map);
 }
 /* この人がスキルを持つ店舗ID一覧 */
 function skillStoresForEmp(name) {
@@ -17099,8 +17135,8 @@ function lssItemId(catKey, idx){ return catKey+idx; }
 function lssAllItems() {
   var out=[]; LSS_CATEGORIES.forEach(c=>c.items.forEach((label,i)=>out.push({id:lssItemId(c.key,i), cat:c.key, label:label}))); return out;
 }
-function getLssScores(name) { var all=ls('lss_scores', {}); return all[name]||null; }
-function setLssScores(name, data) { var all=ls('lss_scores', {}); all[name]=data; lsSet('lss_scores', all); }
+function getLssScores(name){ var per = ls(LSS_EMP_PREFIX+name, null); if (per!==null) return per; var all = ls('lss_scores', {}); return all[name]||null; }
+function setLssScores(name, data){ lsSet(LSS_EMP_PREFIX+name, data); }
 /* 変更理由の閲覧可否：評価できるAM以上（ceo/gm/am）のみ。SL・評価対象本人には非表示 */
 function canViewLssChangeReason() { return ['ceo','gm','am'].includes(curRole); }
 /* LSSロールの上下関係（評価対象の階層比較用） */
@@ -17892,9 +17928,10 @@ function saveLssRules() {
   showToast('申請条件を保存しました','success');
   renderPage('leadership');
 }
-function openLssDetail(name) {
+async function openLssDetail(name) {
   var realMe = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   if (name !== realMe && !canViewOthersLss()) { showToast('他のスタッフのCareer Scoreは閲覧できません','warning'); return; }
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(LSS_EMP_PREFIX+name); }catch(e){}
   window._lssName = name;
   window._lssCat = window._lssCat || 'H';
   var rec = getLssScores(name) || {};
@@ -23419,6 +23456,7 @@ function renderSkillManager() {
     <div style="display:flex;gap:6px">
       ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openLevelRuleModal()"><i class="ti ti-adjustments"></i> 昇格条件</button>`:''}
       ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openPositionConfigModal()"><i class="ti ti-settings"></i> ポジション設定</button>`:''}
+      ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openSkillRecovery()"><i class="ti ti-history"></i> 履歴から復旧</button>`:''}
     </div>
   </div>`;
   html += evalRubricLegendHtml();
@@ -23583,7 +23621,8 @@ function renderSkillPositionView(storeId, visStores) {
   return html;
 }
 /* 管理者が直接スタッフの店舗別スキルを編集 */
-function openStaffSkillEdit(name, storeId, focusPos) {
+async function openStaffSkillEdit(name, storeId, focusPos) {
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(SKILL_STORE_PREFIX+storeId); }catch(e){}
   var positions = getStorePositions(storeId);
   var sk = getEmpSkillsStore(name, storeId);
   var storeObj = STORES.find(s=>s.id===storeId)||{};
@@ -23628,6 +23667,82 @@ function saveStaffSkillEdit(name, storeId) {
   renderPage('skill');
 }
 /* スキル変更履歴 */
+/* ===== スキル履歴からの復旧（同期事故/上書き対策・GM/CEO限定） =====
+   skill_history は OP_SYNC_KEYS でクラウド同期されるため、skills_v2 が上書きされても
+   履歴が残っていれば各職位の最新 toLv から「承認済みレベル」を再構築できる。 */
+function openSkillRecovery(storeId){
+  if(!['gm','ceo'].includes(curRole)){ showToast('復旧はGM/CEOのみです','warning'); return; }
+  storeId = storeId || (curStore!=='ALL'?curStore:'F02');
+  var sName = (STORES.find(function(s){return s.id===storeId;})||{name:storeId}).name;
+  var html = '<div class="modal-title">スキル履歴から復旧 <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  html += '<div style="margin-bottom:8px"><label class="form-label">店舗</label><select class="form-select" onchange="openSkillRecovery(this.value)">'
+    + activeStores().map(function(s){return '<option value="'+s.id+'"'+(s.id===storeId?' selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('')
+    + '</select></div>';
+  var hist = ls('skill_history', []).filter(function(h){ return h && h.store===storeId; });
+  if(!hist.length){
+    html += '<div class="alert alert-warning"><i class="ti ti-alert-triangle"></i> '+escapeHtml(sName)+' のスキル履歴がこの端末／クラウドにありません。履歴からの復旧はできません。</div>';
+    html += '<div style="font-size:12px;color:var(--muted)">保存した端末（同期・リロードしていないもの）に残っていれば、そこから1ポジション保存し直して復旧してください。</div>';
+    html += '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+    openModal(html); return;
+  }
+  // (name,position) ごとの最新エントリ（配列順＝時系列、後勝ち）
+  var latest = {};
+  hist.forEach(function(h){ if(h.name&&h.position){ latest[h.name+'||'+h.position]=h; } });
+  var byName = {};
+  Object.keys(latest).forEach(function(k){ var h=latest[k]; if((h.toLv||0)>0){ (byName[h.name]=byName[h.name]||[]).push(h); } });
+  var names = Object.keys(byName).sort();
+  if(!names.length){
+    html += '<div class="alert alert-warning">復元できるレベル（Lv1以上）の履歴がありません。</div><div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+    openModal(html); return;
+  }
+  var v2 = getSkillsV2();
+  html += '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">履歴の最新レベルから復元します。<b style="color:var(--accent)">オレンジ</b>＝現在と違う（復元で変わる）／<span style="color:var(--green)">緑</span>＝既に一致。</div>';
+  html += '<div style="max-height:48vh;overflow:auto">';
+  var changeCount=0;
+  names.forEach(function(nm){
+    var rows = byName[nm].slice().sort(function(a,b){return String(a.position)<String(b.position)?-1:1;});
+    html += '<div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px"><div style="font-weight:700;font-size:13px;margin-bottom:4px">'+escapeHtml(nm)+'</div>';
+    rows.forEach(function(h){
+      var slot = (v2[nm]&&v2[nm][storeId]&&v2[nm][storeId][h.position]) ? v2[nm][storeId][h.position] : null;
+      var cur = slot ? (slot.level||0) : 0;
+      var curStatus = slot ? (slot.status||'未取得') : '未取得';
+      var diff = (cur!==h.toLv) || (curStatus!=='承認');
+      if(diff) changeCount++;
+      html += '<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0">'
+        + '<span>'+escapeHtml(h.position)+'<span style="color:var(--muted);font-size:10px"> · '+escapeHtml(h.date||'')+'</span></span>'
+        + '<span style="'+(diff?'font-weight:700;color:var(--accent)':'color:var(--green)')+'">→ Lv'+h.toLv+(diff?(' （現在 '+(curStatus==='承認'?('Lv'+cur):escapeHtml(curStatus))+'）'):' ✓')+'</span></div>';
+    });
+    html += '</div>';
+  });
+  html += '</div>';
+  html += '<div style="font-size:12px;color:var(--muted);margin:6px 0"><i class="ti ti-info-circle"></i> 復元すると上記を「承認済み」レベルとして '+escapeHtml(sName)+' に書き戻し、クラウドへ同期します（他店舗・他項目は変更しません）。</div>';
+  html += '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    + '<button class="btn btn-primary" onclick="applySkillRecovery(\''+storeId+'\')"><i class="ti ti-history"></i> '+changeCount+'件を復元する</button></div>';
+  openModal(html);
+}
+function applySkillRecovery(storeId){
+  if(!['gm','ceo'].includes(curRole)){ showToast('復旧はGM/CEOのみです','warning'); return; }
+  var hist = ls('skill_history', []).filter(function(h){ return h && h.store===storeId; });
+  var latest = {};
+  hist.forEach(function(h){ if(h.name&&h.position){ latest[h.name+'||'+h.position]=h; } });
+  var map = getStoreSkillsMap(storeId);
+  var today = new Date().toISOString().slice(0,10);
+  var n=0;
+  Object.keys(latest).forEach(function(k){
+    var h=latest[k]; if((h.toLv||0)<=0) return;
+    if(!map[h.name]) map[h.name]={};
+    var cur=map[h.name][h.position];
+    if(!cur || (cur.level||0)!==h.toLv || cur.status!=='承認'){
+      map[h.name][h.position]=Object.assign({}, cur||{}, {level:h.toLv, status:'承認', date:today, evaluator:(h.by||'履歴復旧'), recovered:true});
+      n++;
+    }
+  });
+  setStoreSkills(storeId, map);
+  closeModalDirect();
+  showToast(n+'件のスキルを履歴から復元しました','success');
+  try{ renderPage('skill'); }catch(e){}
+}
+
 function addSkillHistory(name, storeId, position, fromLv, toLv, by, note) {
   var h = ls('skill_history', []);
   h.push({name, store:storeId, position, fromLv, toLv, by, note:note||'', date:new Date().toLocaleString('ja')});
@@ -23690,9 +23805,10 @@ function skillTrendHtml(name){
   return html;
 }
 
-function openSkillReviewModal(reqId, action) {
+async function openSkillReviewModal(reqId, action) {
   var r = getSkillRequests().find(x=>x.id===reqId);
   if (!r) return;
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(SKILL_STORE_PREFIX+r.store); }catch(e){}
   openModal(`<div class="modal-title">${r.name} · ${r.position} を${action} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">自己評価: ${r.selfComment}</div>
     ${action==='承認'?`<div class="form-group"><label class="form-label">承認レベル <span style="font-size:10px;color:var(--muted);font-weight:400">（タップで基準を見て選択）</span></label>
