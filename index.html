@@ -11277,6 +11277,32 @@ function cycleScheduledHours(storeId, me, cyc){
   });
   return { total:total, reg:reg, ot:ot, days:days };
 }
+/* 給与サイクル内の支払対象時間：実勤怠(Toast)を優先し、未記録日は公開シフトで補完。週ごとにReg/OT算出 */
+function cyclePayHours(storeId, me, cyc){
+  var weekHours={}, actual=0, sched=0, days=0;
+  cyc.dates.forEach(function(d){
+    var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    var wk = mondayMDof(d);
+    var dow = DOW[(d.getDay()+6)%7];
+    var hrs=0, isAct=false;
+    try{
+      var labor = (typeof getTipLabor==='function') ? getTipLabor(storeId, ds) : null;
+      if(labor && labor[me]){ var e=labor[me]; var ah=(e.lunch||0)+(e.dinner||0); if(ah>0){ hrs=ah; isAct=true; } }
+    }catch(err){}
+    if(!isAct){
+      var plan=getShiftPlan(storeId, wk);
+      if(plan && plan.status==='公開済' && plan.cells){
+        var sh=0;
+        Object.keys(plan.cells).forEach(function(k){ if(plan.cells[k]!==me) return; var parts=k.split('_'); if(parts[0]!==dow) return; sh+=(SHIFT_HOURS[parts[1]]||4); });
+        if(sh>0) hrs=sh;
+      }
+    }
+    if(hrs>0){ weekHours[wk]=(weekHours[wk]||0)+hrs; days++; if(isAct) actual+=hrs; else sched+=hrs; }
+  });
+  var total=0, reg=0, ot=0;
+  Object.keys(weekHours).forEach(function(wk){ var h=weekHours[wk]; total+=h; reg+=Math.min(h,40); ot+=Math.max(h-40,0); });
+  return { total:total, reg:reg, ot:ot, days:days, actual:actual, sched:sched };
+}
 /* サイクル内の各週の公開シフトを本人端末へ取込（不足週のみ）*/
 function maybePullCycleShifts(storeId, cyc){
   var weeks={}; cyc.dates.forEach(function(d){ weeks[mondayMDof(d)]=1; });
@@ -12701,9 +12727,9 @@ function submitShiftChange(storeId, week, slot) {
   var reason = document.getElementById('chg-reason').value.trim();
   if (!reason) { alert('理由を入力してください'); return; }
   var changes = ls('shift_changes', []);
-  changes.push({id:'sc'+Date.now(), name:ROLE_CONFIG[curRole].name, storeId, week, slot, reason, status:'申請中', date:new Date().toLocaleDateString('ja')});
+  changes.push({id:'sc'+Date.now(), name:myName(), storeId, week, slot, reason, status:'申請中', date:new Date().toLocaleDateString('ja')});
   lsSet('shift_changes', changes);
-  addApproval({title:`${ROLE_CONFIG[curRole].name} シフト変更 (${slot})`, type:'シフト変更', from:ROLE_CONFIG[curRole].name, store:(STORES.find(s=>s.id===storeId)||{name:storeId}).name});
+  addApproval({title:`${myName()} シフト変更 (${slot})`, type:'シフト変更', from:myName(), store:(STORES.find(s=>s.id===storeId)||{name:storeId}).name});
   closeModalDirect();
   showToast('変更申請しました', 'success');
   renderPage('shift_staff');
@@ -19037,23 +19063,28 @@ function renderMypage() {
   }
   var meEmpRec = getEmployees().find(x=>x.name===me) || {role:curRole};
   var wage = empWageOf(meEmpRec);
-  // 給与サイクル（1–15日 / 16–末日）でスケジュール集計
+  // 給与サイクル（1–15日 / 16–末日）。実勤怠(Toast)を優先し、未記録日は公開シフトで補完
   var cyc = payCycleRange();
   maybePullCycleShifts(storeId, cyc);
-  var ch = cycleScheduledHours(storeId, me, cyc);
+  var ch = cyclePayHours(storeId, me, cyc);
+  var fmtH = function(h){ return (Math.round(h*10)/10).toString(); };
   var cycHours = ch.total, regularH = ch.reg, otH = ch.ot;
   var estPay = regularH*wage + otH*wage*1.5;
   var cycLabel = cyc.label;
   var cycSub = curLang==='en' ? ('Pay cycle '+cycLabel+(cyc.startDay===1?' (1st–15th)':' (16th–end)')) : ('給与サイクル '+cycLabel+(cyc.startDay===1?'（1〜15日）':'（16〜末日）'));
+  var mixNote = '';
+  if (ch.actual>0 && ch.sched>0) mixNote = curLang==='en' ? (' · '+fmtH(ch.actual)+'h actual + '+fmtH(ch.sched)+'h sched') : ('・実績'+fmtH(ch.actual)+'h＋予定'+fmtH(ch.sched)+'h');
+  else if (ch.actual>0) mixNote = curLang==='en' ? ' · actual hours' : '・実勤怠';
+  else if (ch.sched>0) mixNote = curLang==='en' ? ' · scheduled' : '・予定シフト';
   // チップ見込み（今の半月の自分の配分合計＋半月精算後）
   var myTipName = curUserName || me;
   var tipEst = estimateMyTip(storeId, myTipName);
   html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${cycLabel}</span></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${cycSub}${ch.days?' · '+(curLang==='en'?(ch.days+' days'):(ch.days+'日')):''}</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${cycSub}${ch.days?' · '+(curLang==='en'?(ch.days+' days'):(ch.days+'日')):''}${mixNote}</div>
     <div class="kpi-grid">
-      ${kpi(t('期間勤務','Cycle hours'), cycHours+'h', t('公開シフト','Scheduled'), 'var(--tm)')}
-      ${kpi('Regular', regularH+'h', t('通常','Regular'), 'var(--tm)')}
-      ${kpi('Overtime', otH+'h', t('残業','OT'), otH?'var(--yellow)':'var(--muted)')}
+      ${kpi(t('期間勤務','Cycle hours'), fmtH(cycHours)+'h', t('実勤怠+予定','Actual+Sched'), 'var(--tm)')}
+      ${kpi('Regular', fmtH(regularH)+'h', t('通常','Regular'), 'var(--tm)')}
+      ${kpi('Overtime', fmtH(otH)+'h', t('残業','OT'), otH?'var(--yellow)':'var(--muted)')}
       ${kpi(t('見込給与','Est. pay'), '$'+Math.round(estPay), cycLabel, 'var(--green)')}
     </div>
     <div class="kpi-grid" style="margin-top:8px">
@@ -19061,7 +19092,7 @@ function renderMypage() {
       ${kpi(t('給与+チップ','Pay + Tips'), '$'+Math.round(estPay+tipEst.total), t('この給与サイクル','This pay cycle'), 'var(--green)')}
     </div>
     ${tipEst.total>0?`<button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="showMyTipDetail('${storeId}','${myTipName.replace(/'/g,"")}')"><i class="ti ti-list-details"></i> ${t('チップ内訳（シフト毎）を見る','View tip breakdown by shift')}</button>`:''}
-    <p style="font-size:11px;color:var(--muted);margin-top:8px">${t('※ 見込み（確定給与ではありません）。公開済みシフトを元に算出。残業は週40h超で計算。','* Estimate only (not final pay). Based on published shifts. OT calculated above 40h/week.')}</p>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px">${t('※ 見込み（確定給与ではありません）。実勤怠(Toast)を優先し、未記録日は公開シフトで補完。残業は週40h超で計算。','* Estimate only (not final pay). Uses actual Toast hours; un-recorded days filled with published shifts. OT above 40h/week.')}</p>
   </div>`;
 
   // 8. 勤怠記録（自分のToast打刻・今月）
@@ -21313,7 +21344,7 @@ function setDailyPhase(p) { dailyPhase = p; renderPage('store_cmd'); }
 function toggleDailyOp(storeId, tId) {
   var items = getDailyOps(storeId);
   var t = items.find(x=>x.id===tId);
-  if (t) { t.done = !t.done; t.by = t.done ? ROLE_CONFIG[curRole].name : ''; setDailyOps(storeId, items); renderPage('store_cmd'); }
+  if (t) { t.done = !t.done; t.by = t.done ? myName() : ''; setDailyOps(storeId, items); renderPage('store_cmd'); }
 }
 function openDailyOpsAdd(storeId, phase, editId) {
   var ph = phase || dailyPhase;
@@ -21364,7 +21395,7 @@ function getTasks() { return ls('tasks_all', []); }
 function renderTasks() {
   var tasks = getTasks();
   var storeFilter = curStore;
-  var visible = curRole==='crew' ? tasks.filter(t=>t.assignee===ROLE_CONFIG[curRole].name || t.store===curStore)
+  var visible = curRole==='crew' ? tasks.filter(t=>t.assignee===myName() || t.store===curStore)
               : curStore==='ALL' ? tasks : tasks.filter(t=>t.store===curStore || t.store==='ALL');
 
   var active = visible.filter(t=>t.status!=='完了');
@@ -21538,7 +21569,7 @@ function renderGoals() {
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var allGoals = ls('goals_v2', []);
   var storeGoals = allGoals.filter(g=>g.scope==='store' && (g.storeId===storeId || g.storeId==='ALL'));
-  var myGoals = allGoals.filter(g=>g.scope==='personal' && g.owner===ROLE_CONFIG[curRole].name);
+  var myGoals = allGoals.filter(g=>g.scope==='personal' && g.owner===myName());
   var list = goalScope==='store' ? storeGoals : myGoals;
 
   var html = pageStoreTabs(storeId, false) + `<div class="section-header">
@@ -22188,7 +22219,7 @@ function renderTipRate() {
   }
 
   if (curRole === 'crew' || curRole === 'sl') {
-    var me = ROLE_CONFIG[curRole].name;
+    var me = myName();
     var emp = getEmployees().find(e=>e.name===me);
     var myStore = emp ? emp.store : (curStore==='ALL'?STORES[0].id:curStore);
     if (myStore==='ALL') myStore = STORES[0].id;
@@ -22281,9 +22312,9 @@ function submitTipRequest() {
   if (!rate) { alert('Tip Rateを選択してください'); return; }
   var reason = document.getElementById('tip-reason').value.trim();
   var requests = ls('tip_requests', []);
-  requests.push({id:'tip'+Date.now(), name:ROLE_CONFIG[curRole].name, rate, reason, status:'申請中', date:new Date().toLocaleDateString('ja')});
+  requests.push({id:'tip'+Date.now(), name:myName(), rate, reason, status:'申請中', date:new Date().toLocaleDateString('ja')});
   lsSet('tip_requests', requests);
-  addApproval({title:`${ROLE_CONFIG[curRole].name} Tip Rate申請 ${rate}%`, type:'TipRate', from:ROLE_CONFIG[curRole].name, store:'---'});
+  addApproval({title:`${myName()} Tip Rate申請 ${rate}%`, type:'TipRate', from:myName(), store:'---'});
   closeModalDirect();
   showToast('Tip Rateを申請しました', 'success');
   renderPage('tiprate');
@@ -22306,7 +22337,7 @@ function approveTip(id, status) {
 }
 /* スキル条件達成からTip申請（店舗・根拠つき） */
 function openTipApplyFromSkill(storeId, rate) {
-  var me = ROLE_CONFIG[curRole].name;
+  var me = myName();
   var elig = checkLevelUpEligibility(me, storeId);
   var storeName = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
   var basis = elig && elig.checks.length ? elig.checks.map(c=>c.label+'('+c.detail+')').join(' / ') : '';
@@ -22318,7 +22349,7 @@ function openTipApplyFromSkill(storeId, rate) {
     <button class="btn btn-primary" onclick="submitTipFromSkill('${storeId}',${rate})"><i class="ti ti-send"></i> 申請する</button></div>`);
 }
 function submitTipFromSkill(storeId, rate) {
-  var me = ROLE_CONFIG[curRole].name;
+  var me = myName();
   var reason = document.getElementById('tip-sk-reason').value.trim();
   var requests = ls('tip_requests', []);
   requests.push({id:'tip'+Date.now(), name:me, rate:rate, store:storeId, reason:reason, basis:'skill', status:'申請中', date:new Date().toLocaleDateString('ja')});
@@ -23456,11 +23487,18 @@ function maybePullSkillStore(storeId){
   if(!storeId || storeId==='ALL' || _skillStorePulled[storeId]) return;
   _skillStorePulled[storeId]=true;
   if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return;
-  try{ pullOpKey(SKILL_STORE_PREFIX+storeId).then(function(){ if(curPage==='skill'||curPage==='mypage') renderPage(curPage); }); }catch(e){}
+  try{
+    // 店舗別バケット + レガシー(skills_v2 / skills) も取り込む（旧版で承認されたスキルはレガシー側にあるため）
+    Promise.all([
+      pullOpKey(SKILL_STORE_PREFIX+storeId),
+      pullOpKey('skills_v2'),
+      pullOpKey('skills')
+    ]).then(function(){ if(curPage==='skill'||curPage==='mypage') renderPage(curPage); });
+  }catch(e){}
 }
 function tSkStatus(st){ if(curLang!=='en') return st; var m={'未取得':'Not started','承認':'Approved','申請中':'Pending','確認中':'In review','差戻し':'Returned'}; return m[st]||st; }
 function renderSkillSelf() {
-  var me = ROLE_CONFIG[curRole].name;
+  var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
   var storeId = emp ? emp.store : (curStore==='ALL'?STORES[0].id:curStore);
   if (storeId==='ALL') storeId = STORES[0].id;
@@ -23633,7 +23671,7 @@ function openSkillRequestModal(position) {
     <button class="btn btn-primary" onclick="submitSkillRequest('${position}')">申請提出</button></div>`);
 }
 function submitSkillRequest(position) {
-  var me = ROLE_CONFIG[curRole].name;
+  var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
   var level = parseInt(document.getElementById('sk-level').value);
   var comment = document.getElementById('sk-comment').value.trim();
@@ -23644,10 +23682,11 @@ function submitSkillRequest(position) {
     selfComment:comment, evidence:document.getElementById('sk-evidence').value.trim(),
     status:'申請中', mgrComment:'', nextTask:'', date:new Date().toLocaleDateString('ja')});
   setSkillRequests(reqs);
-  // スキル状態を申請中に
-  var all = getSkills(); if(!all[me]) all[me]={};
-  all[me][position] = Object.assign(all[me][position]||{level:0}, {status:'申請中', selfComment:comment});
-  setSkills(all);
+  // スキル状態を申請中に（店舗別バケットへ＝表示・同期の正となるキー）
+  var stStore = emp ? emp.store : (curStore==='ALL'?STORES[0].id:curStore);
+  if (stStore==='ALL') stStore = STORES[0].id;
+  var prevSk = getEmpSkillsStore(me, stStore)[position] || {level:0};
+  setEmpSkillStore(me, stStore, position, Object.assign({}, prevSk, {status:'申請中', selfComment:comment}));
   addApproval({title:`${me} スキル申請 (${position})`, type:'スキル', from:me, store:(STORES.find(s=>s.id===(emp?emp.store:''))||{name:''}).name, ref:_srid});
   closeModalDirect();
   showToast('スキルを申請しました', 'success');
