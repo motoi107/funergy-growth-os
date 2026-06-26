@@ -22106,6 +22106,38 @@ function ojtPhaseEval(e){
     clearedCount:clearedCount, currentIdx:currentIdx, allCleared:allCleared};
 }
 
+/* G1向け：スキルレベル（承認済みLv0-3）ベースのフェーズ評価。
+   - 総合% = 承認済みレベル合計 / (ポジション数×3)
+   - 担当軸最低 = 全ポジションの最低承認レベル
+   ojtPhaseEval と同じ形を返すので ojtLadderHtml をそのまま流用できる。 */
+function ojtPhaseEvalSkill(e){
+  var map = getOjtPhaseMap();
+  var storeId = (e.store==='ALL'||!e.store) ? STORES[0].id : e.store;
+  var positions = (typeof getStorePositions==='function') ? getStorePositions(storeId) : [];
+  var sk = (typeof getEmpSkillsStore==='function') ? getEmpSkillsStore(e.name, storeId) : {};
+  var anyRec = positions.some(function(p){ return sk[p] && sk[p].status; });
+  var levels = positions.map(function(p){ var s=sk[p]; return (s && s.status==='承認') ? (s.level||0) : 0; });
+  var minLv = positions.length ? Math.min.apply(null, levels) : 0;
+  var sumLv = levels.reduce(function(a,b){return a+b;},0);
+  var totalPct = positions.length ? Math.round(sumLv/(positions.length*3)*100) : 0;
+  var perAxis = positions.map(function(p,i){
+    var lv = levels[i];
+    var color = lv>=3?'var(--green)':lv>=2?'var(--accent2)':lv>=1?'var(--yellow)':'var(--muted)';
+    return {key:p, name:p, level:{n:lv, color:color}};
+  });
+  var phases = map.map(function(ph){
+    var axisOk = anyRec && (minLv >= ph.minAxisLevel);
+    var totalOk = totalPct >= ph.minTotalPct;
+    return {key:ph.key, name:ph.name, note:ph.note, unlock:ph.unlock, minAxisLevel:ph.minAxisLevel, minTotalPct:ph.minTotalPct,
+      axisOk:axisOk, totalOk:totalOk, cleared:(axisOk&&totalOk)};
+  });
+  var clearedCount=0; for(var i=0;i<phases.length;i++){ if(phases[i].cleared) clearedCount++; else break; }
+  var allCleared = clearedCount>=phases.length;
+  var currentIdx = allCleared ? phases.length-1 : clearedCount;
+  return {phases:phases, hasData:anyRec, totalPct:totalPct, minLv:minLv, perAxis:perAxis, axes:positions,
+    clearedCount:clearedCount, currentIdx:currentIdx, allCleared:allCleared, skillBased:true};
+}
+
 /* 個人の成長ラダー（個人ビュー／管理者ドリルダウン共通） */
 function ojtLadderHtml(e, ev){
   ev = ev || ojtPhaseEval(e);
@@ -22113,11 +22145,12 @@ function ojtLadderHtml(e, ev){
   var rateStr = rate===0?'No Tip':(rate!=null?rate+'%':'—');
   var rateCol = rate===100?'var(--green)':rate===0?'var(--red)':'var(--accent)';
   var curPh = ev.phases[ev.currentIdx];
+  var sb = ev.skillBased;
   var storeName = (STORES.find(function(s){return s.id===e.store;})||{name:e.store||''}).name;
   var chips = ev.hasData ? ev.perAxis.map(function(p){
     var c=(p.level&&p.level.color)||'var(--muted)';
-    return '<span class="tag" style="background:'+c+';color:#fff;font-size:9px;font-weight:700" title="'+escapeHtml(p.name||p.key)+'">'+p.key+' L'+((p.level&&p.level.n)||0)+'</span>';
-  }).join(' ') : '<span style="font-size:11px;color:var(--muted)">Career Score評価データなし</span>';
+    return '<span class="tag" style="background:'+c+';color:#fff;font-size:9px;font-weight:700" title="'+escapeHtml(p.name||p.key)+'">'+escapeHtml(p.key)+' '+(sb?'Lv':'L')+((p.level&&p.level.n)||0)+'</span>';
+  }).join(' ') : '<span style="font-size:11px;color:var(--muted)">'+(sb?'スキル評価データなし':'Career Score評価データなし')+'</span>';
 
   var html = '<div class="card" style="background:linear-gradient(135deg,var(--accent-soft,#fceee4),var(--surface))">'
     + '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
@@ -22161,17 +22194,17 @@ function ojtLadderHtml(e, ev){
       +     unlockBadge
       +   '</div>'
       +   '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(ph.note)+'</div>'
-      +   '<div style="font-size:12px;margin-top:6px">ゲート：担当軸 全て ≥ L'+ph.minAxisLevel+' ＋ 総合 ≥ '+ph.minTotalPct+'%</div>';
+      +   '<div style="font-size:12px;margin-top:6px">'+(sb?'ゲート：スキル 全ポジション ≥ Lv':'ゲート：担当軸 全て ≥ L')+ph.minAxisLevel+' ＋ 総合 ≥ '+ph.minTotalPct+'%</div>';
 
     if(st==='current' && !ev.allCleared){
       var rows='';
       if(ev.hasData){
         var weak = ev.perAxis.filter(function(p){ return ((p.level&&p.level.n)||0) < ph.minAxisLevel; });
         rows += weak.map(function(p){
-          return '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-circle" style="color:var(--yellow)"></i> '+p.key+'軸 L'+((p.level&&p.level.n)||0)+' → L'+ph.minAxisLevel+'（'+escapeHtml(p.name||'')+'）</div>';
+          return '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-circle" style="color:var(--yellow)"></i> '+(sb?(escapeHtml(p.name||p.key)+' Lv'+((p.level&&p.level.n)||0)+' → Lv'+ph.minAxisLevel):(p.key+'軸 L'+((p.level&&p.level.n)||0)+' → L'+ph.minAxisLevel+'（'+escapeHtml(p.name||'')+'）'))+'</div>';
         }).join('');
       } else {
-        rows += '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-circle" style="color:var(--yellow)"></i> Career Score評価の入力が必要</div>';
+        rows += '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-circle" style="color:var(--yellow)"></i> '+(sb?'スキル評価の入力が必要':'Career Score評価の入力が必要')+'</div>';
       }
       if(ev.totalPct < ph.minTotalPct){
         rows += '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-circle" style="color:var(--yellow)"></i> 総合 '+ev.totalPct+'% → '+ph.minTotalPct+'%（あと'+(ph.minTotalPct-ev.totalPct)+'pt）</div>';
@@ -22188,17 +22221,18 @@ function ojtLadderHtml(e, ev){
 }
 
 /* 合格基準マップ（基準値の一覧・全員に表示） */
-function ojtPhaseMapTableHtml(){
+function ojtPhaseMapTableHtml(skillBased){
   var map = getOjtPhaseMap();
+  var lbl = skillBased ? 'Lv' : 'L';
   var rows = map.map(function(ph){
     return '<tr><td style="font-weight:600">'+ph.key+' '+escapeHtml(ph.name)+'</td>'
-      + '<td style="text-align:center">全て ≥ L'+ph.minAxisLevel+'</td>'
+      + '<td style="text-align:center">全て ≥ '+lbl+ph.minAxisLevel+'</td>'
       + '<td style="text-align:center">≥ '+ph.minTotalPct+'%</td>'
       + '<td style="text-align:center">'+escapeHtml(ph.unlock)+'</td></tr>';
   }).join('');
   return '<div class="card"><div class="card-title"><i class="ti ti-table"></i>合格基準マップ</div>'
-    + '<div style="overflow-x:auto"><table class="inv-table" style="min-width:360px;font-size:12px"><thead><tr><th>フェーズ</th><th style="text-align:center">担当軸</th><th style="text-align:center">総合</th><th style="text-align:center">解禁</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
-    + '<div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 軸レベルはCareer Score（担当軸A〜H）から自動算出。フェーズはチップ判定の可視化で、実Tip Rate は既存ロジック（No Tip／3ヶ月自動100%）のまま。</div></div>';
+    + '<div style="overflow-x:auto"><table class="inv-table" style="min-width:360px;font-size:12px"><thead><tr><th>フェーズ</th><th style="text-align:center">'+(skillBased?'スキルLv':'担当軸')+'</th><th style="text-align:center">総合</th><th style="text-align:center">解禁</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '+(skillBased?'スキルLv・総合%はスキルレベル評価（承認済み）から自動算出。総合%＝承認レベル合計÷(ポジション数×3)。':'軸レベルはCareer Score（担当軸A〜H）から自動算出。')+'フェーズはチップ判定の可視化で、実Tip Rate は既存ロジック（No Tip／3ヶ月自動100%）のまま。</div></div>';
 }
 
 /* 管理者ロスターで選択中のCrew名 */
@@ -22227,8 +22261,8 @@ function renderOjtTipBody(){
     var me = (ROLE_CONFIG[curRole]||{}).name;
     var meEmp = getEmployees().find(function(x){return x.name===me;});
     if(!meEmp){ return html + '<div class="card"><p style="color:var(--muted)">従業員データが見つかりません</p></div>'; }
-    html += ojtLadderHtml(meEmp);
-    html += ojtPhaseMapTableHtml();
+    html += ojtLadderHtml(meEmp, ojtPhaseEvalSkill(meEmp));
+    html += ojtPhaseMapTableHtml(true);
     return html;
   }
 
@@ -22243,9 +22277,9 @@ function renderOjtTipBody(){
   if(!crew.length){
     html += '<p style="font-size:12px;color:var(--muted)">対象Crewがいません</p>';
   } else {
-    html += '<div style="overflow-x:auto"><table class="inv-table" style="min-width:430px;font-size:12px"><thead><tr><th>Crew</th><th>店舗</th><th style="text-align:center">フェーズ</th><th style="text-align:center">担当軸最低</th><th style="text-align:center">総合</th><th style="text-align:center">Tip</th></tr></thead><tbody>';
+    html += '<div style="overflow-x:auto"><table class="inv-table" style="min-width:430px;font-size:12px"><thead><tr><th>Crew</th><th>店舗</th><th style="text-align:center">フェーズ</th><th style="text-align:center">スキル最低</th><th style="text-align:center">総合</th><th style="text-align:center">Tip</th></tr></thead><tbody>';
     crew.slice(0,80).forEach(function(e){
-      var ev = ojtPhaseEval(e);
+      var ev = ojtPhaseEvalSkill(e);
       var ph = ev.phases[ev.currentIdx];
       var rate = (typeof effectiveTipRate==='function') ? effectiveTipRate(e.name) : null;
       var rateStr = rate===0?'No Tip':(rate!=null?rate+'%':'—');
@@ -22255,7 +22289,7 @@ function renderOjtTipBody(){
         + '<td style="font-weight:600">'+escapeHtml(e.name)+'</td>'
         + '<td style="color:var(--muted)">'+escapeHtml((STORES.find(function(s){return s.id===e.store;})||{name:e.store||''}).name)+'</td>'
         + '<td style="text-align:center"><span style="font-weight:700;color:'+phCol+'">'+ph.key+'</span>'+(ev.allCleared?' <i class="ti ti-crown" style="color:var(--green);font-size:11px"></i>':'')+'</td>'
-        + '<td style="text-align:center">'+(ev.hasData?('L'+ev.minLv):'<span style="color:var(--muted)">—</span>')+'</td>'
+        + '<td style="text-align:center">'+(ev.hasData?('Lv'+ev.minLv):'<span style="color:var(--muted)">—</span>')+'</td>'
         + '<td style="text-align:center">'+ev.totalPct+'%</td>'
         + '<td style="text-align:center;font-weight:600">'+rateStr+'</td></tr>';
     });
@@ -22266,9 +22300,9 @@ function renderOjtTipBody(){
   var selEmp = selName ? getEmployees().find(function(x){return x.name===selName;}) : null;
   if(selEmp){
     html += '<div class="section-sub" style="margin:6px 2px;font-weight:600">▼ '+escapeHtml(selEmp.name)+' の成長ラダー</div>';
-    html += ojtLadderHtml(selEmp);
+    html += ojtLadderHtml(selEmp, ojtPhaseEvalSkill(selEmp));
   }
-  html += ojtPhaseMapTableHtml();
+  html += ojtPhaseMapTableHtml(true);
   return html;
 }
 
@@ -22957,7 +22991,7 @@ function setGrowthTab(t){ growthMgrTab=t; growthMgrSel=null; renderPage('growth_
 function renderGrowthManager() {
   if (growthMgrSel) {
     var emp = getEmployees().find(e=>e.name===growthMgrSel);
-    var isLeaderTrack = emp && (emp.emp==='正社員' || (emp.title||'').includes('F-Crew') || leaderCandidate(emp));
+    var isLeaderTrack = emp && isLeaderTrackEmp(emp);
     var html = `<div class="section-header">
       <div><div class="section-title">${growthMgrSel}</div><div class="section-sub">${isLeaderTrack?'Leader候補/社員 成長管理':'Crew 成長管理'}</div></div>
       <button class="btn btn-secondary btn-sm" onclick="growthMgrBack()"><i class="ti ti-arrow-left"></i> 一覧</button>
@@ -23189,10 +23223,12 @@ function leaderCandidate(e) {
   if (typeof leaderSkillApproved==='function' && leaderSkillApproved(e.name)) return true;
   return false;
 }
+/* Leader候補/社員タブの対象＝候補条件 かつ G2以上（G1はCrew成長管理へ） */
+function isLeaderTrackEmp(e){ return !!e && leaderCandidate(e) && (typeof empGradeNum==='function' ? empGradeNum(e)>=2 : false); }
 
 /* ===== ① Crew成長管理（スキルレベル中心） ===== */
 function renderCrewGrowthList() {
-  var staff = visibleStaffForManager().filter(e=>e.role==='crew' && !leaderCandidate(e));
+  var staff = visibleStaffForManager().filter(e=>e.role==='crew' && !isLeaderTrackEmp(e));
   var html = `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>Crew一覧 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>`;
   if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象Crewなし</p></div>`; return html; }
   staff.forEach(e => {
@@ -23294,7 +23330,7 @@ function dev90Progress(emp) {
   return {days:elapsed, pct, endDate:end.toISOString().slice(0,10), start};
 }
 function renderLeaderGrowthList() {
-  var staff = visibleStaffForManager().filter(e=>e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office'&&e.role!=='am'&&leaderCandidate(e));
+  var staff = visibleStaffForManager().filter(e=>e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office'&&e.role!=='am'&&isLeaderTrackEmp(e));
   var html = `<div class="card"><div class="card-title"><i class="ti ti-crown"></i>Leader候補/社員 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>
     <p style="font-size:11px;color:var(--muted);margin-bottom:6px">入社・登用から90日を目安に現場オペレーションを習得する期間として管理します。</p>`;
   if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象者なし</p></div>`; return html; }
