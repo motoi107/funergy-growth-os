@@ -23745,6 +23745,8 @@ function renderSkillPositionView(storeId, visStores) {
   return html;
 }
 /* 管理者が直接スタッフの店舗別スキルを編集 */
+/* ポジション名→衝突しない一意のDOM ID（日本語名でも個別化。旧: 英数字以外を除去で空文字衝突していた） */
+function skillPosId(p){ return 'p_'+Array.from(String(p||'')).map(function(c){return c.charCodeAt(0).toString(36);}).join('_'); }
 async function openStaffSkillEdit(name, storeId, focusPos) {
   try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(SKILL_STORE_PREFIX+storeId); }catch(e){}
   var positions = getStorePositions(storeId);
@@ -23753,7 +23755,7 @@ async function openStaffSkillEdit(name, storeId, focusPos) {
   var rows = positions.map(p=>{
     var s = sk[p] || {level:0, status:'未取得'};
     var lvl = (s.status==='承認')?s.level:0;
-    var safe = p.replace(/[^A-Za-z0-9]/g,'');
+    var safe = skillPosId(p);
     return `<div style="padding:8px 0;border-bottom:1px solid var(--border)${focusPos===p?';background:var(--surface2)':''}">
       <div style="font-size:13px;margin-bottom:5px">${p}${s.status&&s.status!=='未取得'&&s.status!=='承認'?` <span class="tag tag-yellow" style="font-size:9px">${s.status}</span>`:''}</div>
       ${skillLevelChipHtml(p, lvl, 'ssk-'+safe, 'sskc-'+safe, 0)}
@@ -23773,7 +23775,7 @@ function saveStaffSkillEdit(name, storeId) {
   var by = (ROLE_CONFIG[curRole]||{}).name||curUserName||curRole;
   var today = new Date().toLocaleDateString('ja');
   positions.forEach(p=>{
-    var el = document.getElementById('ssk-'+p.replace(/[^A-Za-z0-9]/g,''));
+    var el = document.getElementById('ssk-'+skillPosId(p));
     if (!el) return;
     var lv = parseInt(el.value)||0;
     var prev = v2[name][storeId][p] || {};
