@@ -3459,7 +3459,7 @@ var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_h
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
-  'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
+  'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_'];
 function isOpSyncKey(key){
   if (!key) return false;
   // 設定キーは除外（app_settings 側で扱う。例: dailyops_template_*）
@@ -11459,6 +11459,7 @@ function renderShiftAdmin() {
     <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')">Labor Cost</div>
     ${['ceo','gm','am','sl'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='rules'?' active':''}" onclick="setShiftAdminTab('rules')">特別ルール</div>`:''}
+    ${['ceo','gm','am'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='opt'?' active':''}" onclick="setShiftAdminTab('opt')"><i class="ti ti-adjustments" style="font-size:12px"></i> 最適化設定</div>`:''}
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
@@ -11466,6 +11467,7 @@ function renderShiftAdmin() {
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
   else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
+  else if (shiftAdminTab==='opt') html += renderShiftOptConfig(storeId);
   else html += renderShiftLabor(storeId, week);
   setTimeout(function(){ try{ maybePullShift(storeId, week); }catch(e){} }, 60); // F2-a: クラウドから当週シフトを取込
   return html;
@@ -12015,6 +12017,290 @@ function assignablePositions(storeId) {
 }
 /* Training中スタッフ（初回勤務基準。step<=0 を訓練中とみなす） */
 function isTraining(emp) { return (emp.step||1) <= 0; }
+
+/* ===== シフト最適化 設定（Aiea先行・汎用） ===== */
+function getShiftOptCfg(storeId){
+  var d = ls('shiftopt_cfg_'+storeId, null) || {};
+  return Object.assign({
+    enabled:false, headcount:3, bowlThreshold:60,
+    hiLv3:3, hiLv2:0,        // 平均≥しきい値: Lv3×3
+    loLv3:2, loLv2:1,        // 平均<しきい値: Lv3×2 + Lv2×1
+    mainPositions:[],        // Lv3必須のメインポジション
+    bowlOverride:null,       // 3週平均の手動上書き（null=自動）
+    leaderOptional:true      // Leader不在OK
+  }, d);
+}
+function setShiftOptCfg(storeId, cfg){ lsSet('shiftopt_cfg_'+storeId, cfg); }
+function getShiftOptMembers(storeId){ return ls('shiftopt_mem_'+storeId, {}) || {}; }
+function setShiftOptMembers(storeId, m){ lsSet('shiftopt_mem_'+storeId, m); }
+function getShiftOptMember(storeId, name){
+  var m = getShiftOptMembers(storeId);
+  return Object.assign({ minShifts:0, minDaysOff:0, allowConsecutive:true, leaderEligible:false }, m[name]||{});
+}
+function setShiftOptMember(storeId, name, patch){
+  var m = getShiftOptMembers(storeId);
+  m[name] = Object.assign(getShiftOptMember(storeId, name), patch);
+  setShiftOptMembers(storeId, m);
+}
+/* 直近3週間（21日）の1日あたり平均ボール数（丼数=店内+Takeout）。データのある日のみで平均 */
+function bowlAvg3w(storeId, refDate){
+  var da = (typeof getDailyActuals==='function') ? getDailyActuals(storeId) : {};
+  var end = refDate ? new Date(refDate) : new Date();
+  var sum=0, cnt=0;
+  for (var i=1; i<=21; i++){
+    var d=new Date(end.getFullYear(), end.getMonth(), end.getDate()-i);
+    var ds=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    var ov=da[ds];
+    if (ov && (ov.bowls!=null || ov.takeoutBowls!=null || ov.lunchBowls!=null || ov.dinnerBowls!=null)){
+      var b=(Number(ov.bowls)||0)+(Number(ov.takeoutBowls)||0);
+      if (b===0 && (ov.lunchBowls!=null||ov.dinnerBowls!=null)) b=(Number(ov.lunchBowls)||0)+(Number(ov.dinnerBowls)||0);
+      sum+=b; cnt++;
+    }
+  }
+  return { avg: cnt? Math.round(sum/cnt) : null, days:cnt, sum:sum };
+}
+/* 有効ボール平均（手動上書き優先） */
+function effectiveBowlAvg(storeId){
+  var cfg=getShiftOptCfg(storeId);
+  if (cfg.bowlOverride!=null && cfg.bowlOverride!=='') return { avg:Number(cfg.bowlOverride), source:'manual', days:null };
+  var a=bowlAvg3w(storeId); return { avg:a.avg, source:'auto', days:a.days };
+}
+/* 当週に必要なスキル構成（ボール平均で分岐） */
+function requiredSkillMix(storeId){
+  var cfg=getShiftOptCfg(storeId);
+  var eb=effectiveBowlAvg(storeId);
+  var hi = (eb.avg!=null && eb.avg>=cfg.bowlThreshold);
+  return { hi:hi, lv3: hi?cfg.hiLv3:cfg.loLv3, lv2: hi?cfg.hiLv2:cfg.loLv2, avg:eb.avg, source:eb.source, threshold:cfg.bowlThreshold, headcount:cfg.headcount };
+}
+
+/* 最適化設定UI（シフト作成→最適化設定タブ） */
+function renderShiftOptConfig(storeId){
+  var store = STORES.find(s=>s.id===storeId)||{};
+  var cfg = getShiftOptCfg(storeId);
+  var mix = requiredSkillMix(storeId);
+  var eb = effectiveBowlAvg(storeId);
+  var auto = bowlAvg3w(storeId);
+  var positions = getStorePositions(storeId).filter(p=>p!=='Energy'&&p!=='Leadership');
+  var staff = staffForStore(storeId).slice().sort(function(a,b){return a.name.localeCompare(b.name);});
+
+  var html = `<div class="card">
+    <div class="card-title"><i class="ti ti-adjustments"></i>最適化設定 — ${store.name}</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">1日=1シフト（その日に必要人数を確保）。Availability・スキル・下記条件で最適メンバーを自動選出します。</div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+      <input type="checkbox" id="so-enabled" ${cfg.enabled?'checked':''}> この店舗で最適化シフトを有効にする
+    </label>
+  </div>`;
+
+  html += `<div class="card" style="border-left:3px solid var(--accent2)">
+    <div class="card-title"><i class="ti ti-tools-kitchen-2"></i>直近3週間のボール平均</div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
+      <div style="text-align:center"><div style="font-size:28px;font-weight:800;color:var(--accent);line-height:1">${auto.avg!=null?auto.avg:'—'}</div><div style="font-size:10px;color:var(--muted)">自動 (${auto.days}日)</div></div>
+      <div style="flex:1;font-size:12px;color:var(--muted)">
+        手動上書き(空=自動): <input type="number" id="so-bowlover" value="${cfg.bowlOverride!=null?cfg.bowlOverride:''}" style="width:72px" placeholder="auto">
+        <div style="margin-top:4px">採用値: <b style="color:var(--tm)">${eb.avg!=null?eb.avg:'—'}</b>（${eb.source==='manual'?'手動':'自動'}）</div>
+      </div>
+    </div>
+    <div class="alert ${mix.hi?'alert-warning':'alert-info'}" style="margin:0;padding:8px 10px;font-size:12px">
+      <i class="ti ti-users"></i> 判定: 平均 ${eb.avg!=null?eb.avg:'—'} ${mix.hi?'≥':'<'} しきい値 ${cfg.bowlThreshold} → <b>必要スキル Lv3×${mix.lv3}${mix.lv2?' ＋ Lv2×'+mix.lv2:''}</b>（1日 ${cfg.headcount}名）
+    </div>
+  </div>`;
+
+  html += `<div class="card"><div class="card-title"><i class="ti ti-settings"></i>店舗ルール</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">
+      <label>1日の確保人数<br><input type="number" id="so-headcount" value="${cfg.headcount}" style="width:80px"></label>
+      <label>ボールしきい値<br><input type="number" id="so-threshold" value="${cfg.bowlThreshold}" style="width:80px"></label>
+      <label>≥しきい値<br>Lv3×<input type="number" id="so-hilv3" value="${cfg.hiLv3}" style="width:46px"> Lv2×<input type="number" id="so-hilv2" value="${cfg.hiLv2}" style="width:46px"></label>
+      <label>＜しきい値<br>Lv3×<input type="number" id="so-lolv3" value="${cfg.loLv3}" style="width:46px"> Lv2×<input type="number" id="so-lolv2" value="${cfg.loLv2}" style="width:46px"></label>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:10px">
+      <input type="checkbox" id="so-leaderopt" ${cfg.leaderOptional?'checked':''}> Leader不在のシフトもOK
+    </label>
+    <div style="font-size:12px;margin-top:10px;font-weight:600">メイン（Lv3必須）ポジション</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+      ${positions.length?positions.map(function(p){return `<label class="tag ${cfg.mainPositions.indexOf(p)>=0?'tag-green':'tag-gray'}" style="cursor:pointer;padding:5px 9px"><input type="checkbox" class="so-main" value="${p.replace(/"/g,'')}" ${cfg.mainPositions.indexOf(p)>=0?'checked':''} style="margin-right:5px;vertical-align:middle">${p}</label>`;}).join(''):'<span style="font-size:12px;color:var(--muted)">ポジション未設定</span>'}
+    </div>
+    <button class="btn btn-primary btn-sm" style="margin-top:12px;width:100%" onclick="saveShiftOptCfg('${storeId}')"><i class="ti ti-device-floppy"></i> 店舗ルールを保存</button>
+  </div>`;
+
+  html += `<div class="card"><div class="card-title"><i class="ti ti-user-cog"></i>メンバー別 条件 (${staff.length})</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">最低シフト=週の最低出勤日数（保証フロア）。最低休み=週の最低休み日数。変更は即保存。</div>
+    <div style="overflow-x:auto"><table class="inv-table" style="min-width:520px;font-size:12px"><thead><tr>
+      <th style="text-align:left">メンバー</th><th>最低<br>シフト</th><th>最低<br>休み</th><th>2連勤</th><th>Leader<br>適格</th></tr></thead><tbody>`;
+  staff.forEach(function(e){
+    var mc=getShiftOptMember(storeId, e.name);
+    var nm=e.name.replace(/'/g,"");
+    html += `<tr>
+      <td style="font-weight:600;text-align:left">${e.name}</td>
+      <td style="text-align:center"><input type="number" min="0" max="7" value="${mc.minShifts}" style="width:46px" onchange="setShiftOptMemberField('${storeId}','${nm}','minShifts',this.value)"></td>
+      <td style="text-align:center"><input type="number" min="0" max="7" value="${mc.minDaysOff}" style="width:46px" onchange="setShiftOptMemberField('${storeId}','${nm}','minDaysOff',this.value)"></td>
+      <td style="text-align:center"><input type="checkbox" ${mc.allowConsecutive?'checked':''} onchange="setShiftOptMemberField('${storeId}','${nm}','allowConsecutive',this.checked)"></td>
+      <td style="text-align:center"><input type="checkbox" ${mc.leaderEligible?'checked':''} onchange="setShiftOptMemberField('${storeId}','${nm}','leaderEligible',this.checked)"></td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 相性（一緒に組むと良い/避けたいペア）は今後追加予定。現状は「特別ルール」タブの禁止ペアが反映されます。</div>
+  </div>`;
+
+  // 最適化生成
+  html += `<div class="card"><div class="card-title"><i class="ti ti-wand"></i>最適化生成</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${getWeekStr()}週のAvailability提出を元に、上記条件で最適メンバーを自動選出します。</div>
+    <button class="btn btn-secondary" style="width:100%" onclick="showOptPreview('${storeId}')"><i class="ti ti-player-play"></i> ${getWeekStr()}週のプレビューを生成</button>
+  </div>`;
+  if (window._optPreview && _optPreview.storeId===storeId && _optPreview.week===getWeekStr()) {
+    html += optPreviewHtml(_optPreview.res, storeId, getWeekStr());
+  }
+  return html;
+}
+function saveShiftOptCfg(storeId){
+  var cfg=getShiftOptCfg(storeId);
+  function v(id){ var el=document.getElementById(id); return el?el.value:''; }
+  function ck(id){ var el=document.getElementById(id); return el?el.checked:false; }
+  cfg.enabled=ck('so-enabled');
+  cfg.headcount=parseInt(v('so-headcount'))||3;
+  cfg.bowlThreshold=parseInt(v('so-threshold'))||60;
+  cfg.hiLv3=parseInt(v('so-hilv3'))||0; cfg.hiLv2=parseInt(v('so-hilv2'))||0;
+  cfg.loLv3=parseInt(v('so-lolv3'))||0; cfg.loLv2=parseInt(v('so-lolv2'))||0;
+  cfg.leaderOptional=ck('so-leaderopt');
+  var bo=v('so-bowlover'); cfg.bowlOverride=(bo===''||bo==null)?null:Number(bo);
+  var mains=[]; document.querySelectorAll('.so-main').forEach(function(el){ if(el.checked) mains.push(el.value); });
+  cfg.mainPositions=mains;
+  setShiftOptCfg(storeId,cfg);
+  showToast('店舗ルールを保存しました','success');
+  renderPage('shift_admin');
+}
+function setShiftOptMemberField(storeId,name,field,val){
+  var patch={};
+  if(field==='minShifts'||field==='minDaysOff') patch[field]=parseInt(val)||0;
+  else patch[field]=!!val;
+  setShiftOptMember(storeId,name,patch);
+  showToast('保存しました','success');
+}
+
+/* ===== Phase2: 最適化エンジン（1日=N人 / スキル構成 / メンバー制約） ===== */
+function _optStoreLevels(name, storeId, positions){
+  var max=0, lv3pos=[], lv2pos=[];
+  positions.forEach(function(p){
+    var lv=positionLevelStore(name, p, storeId);
+    if(lv>max) max=lv;
+    if(lv>=3) lv3pos.push(p);
+    if(lv>=2) lv2pos.push(p);
+  });
+  return {max:max, lv3pos:lv3pos, lv2pos:lv2pos};
+}
+function optimizeShift(storeId, week){
+  var cfg=getShiftOptCfg(storeId);
+  var mix=requiredSkillMix(storeId);
+  var positions=assignablePositions(storeId);
+  var mainPos=(cfg.mainPositions||[]).filter(function(p){return positions.indexOf(p)>=0;});
+  var staff=staffForStore(storeId);
+  var avail=getAvailability(storeId, week);
+  var days=DOW_SHIFT.slice();
+  var info={};
+  staff.forEach(function(e){
+    var lv=_optStoreLevels(e.name, storeId, positions);
+    var mc=getShiftOptMember(storeId, e.name);
+    var av=avail.find(function(a){return a.name===e.name;});
+    var availDays={}; if(av&&av.slots) av.slots.forEach(function(s){ availDays[s.day]=true; });
+    info[e.name]={emp:e, lv:lv, mc:mc, availDays:availDays,
+      mainCap: mainPos.some(function(p){return positionLevelStore(e.name,p,storeId)>=3;}),
+      maxWork: 7-(mc.minDaysOff||0)};
+  });
+  var workDays={}, lastDay={}, assigned={};
+  staff.forEach(function(e){ workDays[e.name]=0; lastDay[e.name]=-9; });
+  function canWork(name, di){
+    var f=info[name]; if(!f) return false;
+    var day=days[di];
+    if(!f.availDays[day]) return false;
+    if(typeof isOnLeaveDow==='function' && isOnLeaveDow(name, week, day)) return false;
+    if(!workCondOk(storeId, name, day, 'Dinner') && !workCondOk(storeId, name, day, 'Lunch')) return false;
+    if(workDays[name] >= f.maxWork) return false;
+    if(!f.mc.allowConsecutive && lastDay[name]===di-1) return false;
+    return true;
+  }
+  function place(name, di){ var day=days[di]; (assigned[day]=assigned[day]||[]).push(name); workDays[name]++; lastDay[name]=di; }
+
+  // 最低シフトは「候補の優先度」で尊重（先行配置はしない＝人数超過を防ぐ）。
+  // PASS: 各日をスキル構成で充足（人数は上限）
+  var roster={};
+  days.forEach(function(day, di){
+    var picked=(assigned[day]||[]).slice();
+    function nLv3(){ return picked.filter(function(n){return info[n].lv.max>=3;}).length; }
+    function nLv2(){ return picked.filter(function(n){return info[n].lv.max>=2;}).length; }
+    function hasMain(){ return picked.some(function(n){return info[n].mainCap;}); }
+    function cands(fn){
+      return staff.map(function(e){return e.name;})
+        .filter(function(n){ return picked.indexOf(n)<0 && canWork(n,di) && fn(n); })
+        .sort(function(a,b){
+          var au=(workDays[a]<(info[a].mc.minShifts||0))?0:1, bu=(workDays[b]<(info[b].mc.minShifts||0))?0:1;
+          if(au!==bu) return au-bu;
+          if(workDays[a]!==workDays[b]) return workDays[a]-workDays[b];
+          return info[b].lv.max-info[a].lv.max;
+        });
+    }
+    if(mainPos.length && !hasMain() && picked.length<mix.headcount){ var m0=cands(function(n){return info[n].mainCap;})[0]; if(m0){ picked.push(m0); place(m0,di); } }
+    while(nLv3() < mix.lv3 && picked.length<mix.headcount){ var c=cands(function(n){return info[n].lv.max>=3;})[0]; if(!c) break; picked.push(c); place(c,di); }
+    while(nLv2() < (mix.lv3+mix.lv2) && picked.length<mix.headcount){ var c2=cands(function(n){return info[n].lv.max>=2;})[0]; if(!c2) break; picked.push(c2); place(c2,di); }
+    while(picked.length < mix.headcount){ var c3=cands(function(){return true;})[0]; if(!c3) break; picked.push(c3); place(c3,di); }
+    var deficit={ lv3:Math.max(mix.lv3-nLv3(),0), lv2:Math.max((mix.lv3+mix.lv2)-nLv2(),0), head:Math.max(mix.headcount-picked.length,0), main:(mainPos.length && !hasMain())?1:0 };
+    var leader=null; var le=picked.find(function(n){return info[n].mc.leaderEligible;}); if(le) leader=le;
+    roster[day]={ picked:picked.map(function(n){return {name:n, lv:info[n].lv.max, main:info[n].mainCap, leader:(n===leader)};}), leader:leader, deficit:deficit };
+  });
+  var unmet=[];
+  staff.forEach(function(e){ var need=info[e.name].mc.minShifts||0; if(workDays[e.name]<need) unmet.push({name:e.name, have:workDays[e.name], need:need}); });
+  return { roster:roster, days:days, workDays:workDays, unmet:unmet, mix:mix, cfg:cfg };
+}
+function optPreviewHtml(res, storeId, week){
+  var html='<div class="card"><div class="card-title"><i class="ti ti-wand"></i>最適化プレビュー ('+week+'週)</div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">必要: 1日'+res.mix.headcount+'名 / Lv3×'+res.mix.lv3+(res.mix.lv2?' ＋Lv2×'+res.mix.lv2:'')+'（平均'+(res.mix.avg!=null?res.mix.avg:'—')+'） · ⭐=Leader ◆=メインLv3可</div>';
+  res.days.forEach(function(day){
+    var r=res.roster[day]; if(!r) return;
+    var def=r.deficit; var short=def.head>0||def.lv3>0||def.lv2>0||def.main>0;
+    html+='<div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px">';
+    html+='<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:13px">'+day+'曜</b>'+(short?'<span class="tag tag-red" style="font-size:9px">人員不足</span>':'<span class="tag tag-green" style="font-size:9px">OK</span>')+'</div>';
+    html+='<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px">';
+    if(r.picked.length){ r.picked.forEach(function(pk){ var b=pk.lv>=3?'tag-green':pk.lv>=2?'tag-yellow':'tag-gray'; html+='<span class="tag '+b+'" style="font-size:10px">'+escapeHtml(pk.name)+' Lv'+pk.lv+(pk.leader?' ⭐':'')+(pk.main?' ◆':'')+'</span>'; }); }
+    else html+='<span style="font-size:12px;color:var(--muted)">候補なし</span>';
+    html+='</div>';
+    if(short){ var parts=[]; if(def.head>0)parts.push('人数あと'+def.head+'名'); if(def.lv3>0)parts.push('Lv3あと'+def.lv3+'名'); if(def.lv2>0)parts.push('Lv2以上あと'+def.lv2+'名'); if(def.main>0)parts.push('メインLv3不在');
+      html+='<div style="font-size:11px;color:var(--red);margin-top:5px"><i class="ti ti-alert-triangle"></i> '+parts.join(' / ')+' → <a href="#" onclick="event.preventDefault();shiftAdminTab=\'help\';renderPage(\'shift_admin\')" style="color:var(--accent2)">ヘルプ募集へ</a></div>'; }
+    html+='</div>';
+  });
+  if(res.unmet.length) html+='<div class="alert alert-warning" style="margin:8px 0 0;padding:8px 10px;font-size:12px"><i class="ti ti-user-exclamation"></i> 最低シフト未達: '+res.unmet.map(function(u){return escapeHtml(u.name)+'('+u.have+'/'+u.need+')';}).join('、')+'</div>';
+  html+='<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="applyOptShift(\''+storeId+'\')"><i class="ti ti-check"></i> この内容をシフト下書きに反映</button>';
+  html+='</div>';
+  return html;
+}
+function showOptPreview(storeId){
+  var cfg=getShiftOptCfg(storeId);
+  if(!cfg.enabled){ if(!confirm('この店舗の最適化が無効です。プレビューだけ生成しますか？')) return; }
+  var week=getWeekStr();
+  window._optPreview={storeId:storeId, week:week, res:optimizeShift(storeId, week)};
+  renderPage('shift_admin');
+}
+function applyOptShift(storeId){
+  if(!confirm('最適化結果をシフト下書きに反映しますか？（当週の既存配置は上書きされます）')) return;
+  var week=getWeekStr();
+  var res=optimizeShift(storeId, week);
+  var positions=assignablePositions(storeId);
+  var avail=getAvailability(storeId, week);
+  var plan={status:'下書き', cells:{}};
+  res.days.forEach(function(day){
+    var r=res.roster[day]; if(!r) return;
+    var usedPos={};
+    r.picked.forEach(function(pk){
+      var name=pk.name;
+      var av=avail.find(function(a){return a.name===name;});
+      var period=['Dinner','Lunch'].filter(function(p){ return av&&av.slots&&av.slots.some(function(s){return s.day===day&&s.period===p;}); })[0]||'Dinner';
+      var cand=positions.filter(function(p){ return !usedPos[p] && positionLevelStore(name,p,storeId)>=1; })
+        .sort(function(a,b){ return positionLevelStore(name,b,storeId)-positionLevelStore(name,a,storeId); })[0];
+      if(cand){ usedPos[cand]=true; plan.cells[day+'_'+period+'_'+cand]=name; }
+    });
+  });
+  setShiftPlan(storeId, week, plan);
+  window._optPreview=null;
+  showToast('最適化結果を下書きに反映しました（シフト作成タブで確認）','success');
+  shiftAdminTab='build'; renderPage('shift_admin');
+}
 
 function autoGenShift(storeId, week) {
   if (!confirm('Availability・スキル・優先度を元にシフトを自動生成しますか？（既存の配置は上書きされます）')) return;
