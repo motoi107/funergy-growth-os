@@ -3363,7 +3363,8 @@ var _SPLIT_KEYS = {
   offboardings:     {type:'arr', by:function(r){return r&&r.name;}},
   order_catalog:    {type:'arr', by:function(r){return r&&r.store;}},
   dev_nominations:  {type:'arr', by:function(r){return r&&r.name;}},
-  company_message_stores:{type:'obj'}
+  company_message_stores:{type:'obj'},
+  skill_eval_log:   {type:'obj'}
 };
 function _splitPrefix(key){ return 'spl_'+key+'_'; }
 function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
@@ -3558,11 +3559,23 @@ async function supaPushAllMasters(){
 
 /* PostgRESTからテーブルの全行を取得 */
 async function supaFetchAll(table, select){
+  // ページング取得：分割でapp_stateの行数が増えたため、既定の行数上限で切り捨てられないよう全行を取得
+  var all=[]; var pageSize=1000; var from=0; var got=false;
   try {
-    var res = await fetch(SUPABASE_URL+'/rest/v1/'+table+'?select='+encodeURIComponent(select||'*'), { headers: supaHeaders() });
-    if(!res.ok){ console.warn('supaFetchAll '+table+' failed', res.status); return null; }
-    return await res.json();
-  } catch(e){ console.warn('supaFetchAll error', table, e); return null; }
+    while(true){
+      var res = await fetch(SUPABASE_URL+'/rest/v1/'+table+'?select='+encodeURIComponent(select||'*'),
+        { headers: Object.assign({}, supaHeaders(), {'Range-Unit':'items','Range':from+'-'+(from+pageSize-1)}) });
+      if(!res.ok){ if(!got){ console.warn('supaFetchAll '+table+' failed', res.status); return null; } break; }
+      var rows = await res.json();
+      got=true;
+      if(!Array.isArray(rows) || !rows.length) break;
+      all = all.concat(rows);
+      if(rows.length < pageSize) break;     // 最終ページ
+      from += pageSize;
+      if(from > 200000) break;              // 安全弁（無限ループ防止）
+    }
+    return all;
+  } catch(e){ console.warn('supaFetchAll error', table, e); return all.length?all:null; }
 }
 /* クラウド→この端末: 全マスターをSupabaseから取り込みlocalStorageへ反映（クラウドにデータがある分のみ上書き） */
 async function supaPullAllMasters(){
@@ -11223,7 +11236,7 @@ var _staffShiftPulled={};
 function maybePullStaffShift(storeId, week){
   var k=storeId+'_'+week; if(_staffShiftPulled[k]) return; _staffShiftPulled[k]=true;
   Promise.all([ pullAvailability(storeId, week), pullShiftPlan(storeId, week), pullOpKey('reminded_'+storeId+'_'+week) ])
-    .then(function(){ if(curPage==='shift_staff') renderPage('shift_staff'); });
+    .then(function(){ if(curPage==='shift_staff'||curPage==='mypage') renderPage(curPage); });
 }
 async function shiftCloudHas(table, storeId, week){
   try{
@@ -18681,6 +18694,7 @@ function renderMypage() {
   // 本人の所属店舗を優先（応援店舗ではなく自店のデータを見せる）
   var meEmp = getEmployees().find(e=>e.name===me);
   if (meEmp && meEmp.store && meEmp.store!=='ALL') { storeId = meEmp.store; store = STORES.find(s=>s.id===storeId)||store; }
+  try{ if(typeof maybePullSkillStore==='function') maybePullSkillStore(storeId); }catch(e){}
 
   // 成長レベル（承認スキルから簡易算出）— Crew用
   var heroLevel = '', heroNext = '', heroPct = 0;
@@ -18793,7 +18807,8 @@ function renderMypage() {
   }
   html += '</div>';
 
-  // 2. 今日・今週の自分のシフト
+  // 2. 今日・今週の自分のシフト（シフト計画はマネージャが別端末で公開→本人端末にプルして勤務時間を反映）
+  try{ if(typeof maybePullStaffShift==='function') maybePullStaffShift(storeId, week); }catch(e){}
   var plan = getShiftPlan(storeId, week);
   html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check"></i>${t('今週のシフト',"This Week's Shifts")}
     <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('shift_staff')">${t('詳細','Details')}</button></div>`;
@@ -23395,11 +23410,19 @@ function setSlSkillView(v){ window._slSkillView = (v==='mgr'?'mgr':'self'); rend
 function setSkillStaffStore(sid){ window._skillStaffStore = sid; renderPage('skill'); }
 
 /* ---- Crew本人ビュー ---- */
+var _skillStorePulled = {};
+function maybePullSkillStore(storeId){
+  if(!storeId || storeId==='ALL' || _skillStorePulled[storeId]) return;
+  _skillStorePulled[storeId]=true;
+  if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return;
+  try{ pullOpKey(SKILL_STORE_PREFIX+storeId).then(function(){ if(curPage==='skill'||curPage==='mypage') renderPage(curPage); }); }catch(e){}
+}
 function renderSkillSelf() {
   var me = ROLE_CONFIG[curRole].name;
   var emp = getEmployees().find(e=>e.name===me);
   var storeId = emp ? emp.store : (curStore==='ALL'?STORES[0].id:curStore);
   if (storeId==='ALL') storeId = STORES[0].id;
+  maybePullSkillStore(storeId);
   var positions = getStorePositions(storeId);
   var sk = getEmpSkillsStore(me, storeId);
   var reqs = getSkillRequests().filter(r=>r.name===me);
@@ -23699,6 +23722,69 @@ function renderSkillManager() {
 function setSkillMatrixStore(storeId) { window._skillMatrixStore = storeId; renderPage('skill'); }
 function setSkillView(v) { window._skillView = v; renderPage('skill'); }
 /* 従業員別ビュー */
+/* 各スキルのレベル一覧（店舗別・コンパクト） */
+function skillLevelListHtml(name, sid){
+  var positions = getStorePositions(sid);
+  var sk = getEmpSkillsStore(name, sid);
+  if(!positions.length) return '';
+  return '<div style="margin-top:6px">'+positions.map(function(p){
+    var s = sk[p]||{}; var lv=(s.status==='承認')?(s.level||0):0;
+    var col = lv>=3?'var(--accent)':lv===2?'var(--green)':lv===1?'var(--yellow)':'var(--muted)';
+    var bars=[1,2,3].map(function(n){return '<span style="width:13px;height:5px;border-radius:2px;display:inline-block;background:'+((lv>0&&n<=lv)?col:'var(--border)')+'"></span>';}).join('');
+    var pend=(s.status&&s.status!=='承認'&&s.status!=='未取得')?' <span class="tag tag-yellow" style="font-size:8px">'+escapeHtml(s.status)+'</span>':'';
+    return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:1.5px 0">'
+      +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(p)+pend+'</span>'
+      +'<span style="display:flex;gap:2px">'+bars+'</span>'
+      +'<span style="width:28px;text-align:right;color:'+col+';font-weight:700">Lv'+lv+'</span></div>';
+  }).join('')+'</div>';
+}
+/* 次に取り組むべき事のサジェスト（店舗別・低レベル優先） */
+function nextSkillSuggestions(name, sid){
+  var positions = getStorePositions(sid);
+  var sk = getEmpSkillsStore(name, sid);
+  var todo = positions.map(function(p){ var s=sk[p]||{}; return {p:p, lv:(s.status==='承認')?(s.level||0):0}; })
+                      .filter(function(x){return x.lv<3;})
+                      .sort(function(a,b){return a.lv-b.lv;});
+  return todo.slice(0,3).map(function(x){
+    return x.lv===0 ? ('「'+x.p+'」を習得（→Lv1）') : ('「'+x.p+'」を Lv'+x.lv+'→Lv'+(x.lv+1));
+  });
+}
+/* 評価コメントログ（従業員別・per-name同期） */
+function getSkillEvalLog(name){ var m=ls('skill_eval_log',{}); return (m[name]||[]).slice(); }
+function addSkillEvalNote(name, text){
+  text=String(text||'').trim(); if(!text) return false;
+  var m=ls('skill_eval_log',{}); if(!m[name]) m[name]=[];
+  m[name].push({date:new Date().toLocaleString('ja'), by:(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole, text:text});
+  lsSet('skill_eval_log', m); return true;
+}
+function deleteSkillEvalNote(name, idx){
+  var m=ls('skill_eval_log',{}); if(!m[name]) return; if(idx>=0&&idx<m[name].length){ m[name].splice(idx,1); lsSet('skill_eval_log', m); }
+}
+function submitSkillEvalNote(name, elId){
+  var el=document.getElementById(elId); if(!el) return;
+  if(addSkillEvalNote(name, el.value)){ showToast('評価コメントを記録しました','success'); renderPage('skill'); }
+  else showToast('コメントを入力してください','warning');
+}
+function skillEvalSectionHtml(name){
+  var log = getSkillEvalLog(name);
+  var rev = log.slice().reverse();
+  var elId = 'sevn-'+skillPosId(name);
+  var canDel = ['gm','ceo','am'].includes(curRole);
+  var nm = name.replace(/'/g,"\\'");
+  var logHtml = rev.length ? rev.map(function(en,i){
+    var realIdx = log.length-1-i;
+    return '<div style="font-size:11px;padding:4px 0;border-bottom:1px dashed var(--border)">'
+      +'<div style="color:var(--muted);font-size:10px;display:flex;gap:6px;align-items:center"><span>'+escapeHtml(en.date||'')+'</span><span>· '+escapeHtml(en.by||'')+'</span>'
+      +(canDel?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:0 6px;font-size:9px" onclick="if(confirm(\'このコメントを削除しますか？\')){deleteSkillEvalNote(\''+nm+'\','+realIdx+');renderPage(\'skill\');}">削除</button>':'')
+      +'</div><div style="color:var(--tm);white-space:pre-wrap;margin-top:1px">'+escapeHtml(en.text||'')+'</div></div>';
+  }).join('') : '<div style="font-size:11px;color:var(--muted);padding:2px 0">まだコメントはありません</div>';
+  return '<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">'
+    +'<div style="font-size:11px;font-weight:700;color:var(--tm);margin-bottom:4px"><i class="ti ti-message-2" style="color:var(--accent)"></i> 評価コメント'+(log.length?' <span style="color:var(--muted);font-weight:400">('+log.length+')</span>':'')+'</div>'
+    +'<div style="max-height:130px;overflow-y:auto;margin-bottom:6px">'+logHtml+'</div>'
+    +'<textarea id="'+elId+'" class="form-textarea" rows="2" placeholder="評価・フィードバックを記録（過去ログに追加）" style="font-size:12px"></textarea>'
+    +'<button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="submitSkillEvalNote(\''+nm+'\',\''+elId+'\')"><i class="ti ti-plus"></i> 記録</button>'
+    +'</div>';
+}
 function renderSkillStaffView() {
   var visStores = getVisibleStores();
   if(window._skillStaffStore && window._skillStaffStore!=='ALL' && !visStores.find(function(s){return s.id===window._skillStaffStore;})) window._skillStaffStore='ALL';
@@ -23725,6 +23811,9 @@ function renderSkillStaffView() {
       var sc = skillScoreStore(e.name, sid);
       var ap = approvedPositionsStore(e.name, sid);
       var elig = checkLevelUpEligibility(e.name, sid);
+      var _lvHtml = skillLevelListHtml(e.name, sid);
+      var _sgg = nextSkillSuggestions(e.name, sid);
+      var _sggHtml = _sgg.length ? `<div style="font-size:11px;margin-top:6px;background:var(--surface2);border-radius:6px;padding:6px 8px"><span style="color:var(--accent2);font-weight:700">次に取り組む: </span>${_sgg.map(function(t){return escapeHtml(t);}).join(' ／ ')}</div>` : '';
       html += `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
         <div style="display:flex;align-items:center;gap:6px;font-size:12px">
           <span style="width:8px;height:8px;border-radius:50%;background:${sObj.color}"></span>
@@ -23734,8 +23823,11 @@ function renderSkillStaffView() {
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:2px">${ap.length?ap.map(p=>`<span class="tag tag-green" style="font-size:8px">${p}</span>`).join(' '):'承認済みなし'}</div>
         <div style="margin-top:6px">${skillRadarForStore(e.name, sid, 210)}</div>
+        ${_lvHtml}
+        ${_sggHtml}
       </div>`;
     });
+    html += skillEvalSectionHtml(e.name);
     html += `<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openStaffSkillEdit('${e.name.replace(/'/g,"\\'")}','${e.store}')"><i class="ti ti-edit"></i> スキル編集</button></div>`;
   });
   return html;
