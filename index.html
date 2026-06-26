@@ -1467,6 +1467,7 @@ const NAV_ITEMS = [
   {id:'recipe',      label:'原価登録',    icon:'ti-receipt-2',        roles:['ceo','gm','office','am','sl']},
   {id:'invoice',     label:'請求書',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl']},
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office']},
+  {id:'office_mgr',  label:'オフィス管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office']},
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
@@ -3460,7 +3461,7 @@ var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_h
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
-  'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_'];
+  'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
 function isOpSyncKey(key){
   if (!key) return false;
   // 設定キーは除外（app_settings 側で扱う。例: dailyops_template_*）
@@ -4352,6 +4353,7 @@ function renderPage(page) {
     case 'costsheet':    el.innerHTML = renderCostSheet(); break;
     case 'invoice':      el.innerHTML = renderInvoice(); break;
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
+    case 'office_mgr':   el.innerHTML = renderOfficeMgr(); break;
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'order':        el.innerHTML = renderOrder(); break;
     case 'supply_order': el.innerHTML = renderSupplyOrder(); break;
@@ -15965,6 +15967,387 @@ function acctMonthLabel() {
   return `${r.getFullYear()}年${r.getMonth()+1}月`;
 }
 function setAcctMonth(delta) { acctExportMonth += delta; renderPage('acct_export'); }
+/* ============================================================
+   オフィス管理（事務・経理の集約：経理業務 / 勤怠 / メンバー・育成）
+============================================================ */
+var officeMgrTab = 'acct';
+function setOfficeMgrTab(t){ officeMgrTab=t; renderPage('office_mgr'); }
+function officeMembers(){ return getEmployees().filter(function(e){ return (e.role==='office'||e.role==='office_crew') && e.status!=='退職'; }); }
+function officeLaunch(page, label){
+  return '<div class="card" style="cursor:pointer;padding:14px;text-align:center" onclick="go(\''+page+'\')">'
+    +'<i class="ti '+label.icon+'" style="font-size:22px;color:var(--accent);display:block;margin-bottom:6px"></i>'
+    +'<div style="font-size:13px;font-weight:600">'+label.title+'</div>'
+    +(label.sub?'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+label.sub+'</div>':'')
+    +'</div>';
+}
+function renderOfficeMgr(){
+  var html = '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> オフィス管理</div><div class="section-sub">事務・経理の業務と勤怠・育成を集約</div></div></div>';
+  html += '<div class="phase-tabs">'
+    +'<div class="phase-tab'+(officeMgrTab==='acct'?' active':'')+'" onclick="setOfficeMgrTab(\'acct\')"><i class="ti ti-calculator" style="font-size:12px"></i> 経理業務</div>'
+    +'<div class="phase-tab'+(officeMgrTab==='attend'?' active':'')+'" onclick="setOfficeMgrTab(\'attend\')"><i class="ti ti-clock" style="font-size:12px"></i> 勤怠</div>'
+    +'<div class="phase-tab'+(officeMgrTab==='member'?' active':'')+'" onclick="setOfficeMgrTab(\'member\')"><i class="ti ti-users" style="font-size:12px"></i> メンバー・育成</div>'
+    +'</div>';
+  if(officeMgrTab==='attend') return html + renderOfficeAttend();
+  if(officeMgrTab==='member') return html + renderOfficeMember();
+  return html + renderOfficeAcct();
+}
+
+function renderOfficeAcct(){
+  var html = '<div class="card-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">';
+  html += officeLaunch('invoice',    {icon:'ti-file-invoice',  title:'請求書',     sub:'Invoice'});
+  html += officeLaunch('acct_export',{icon:'ti-credit-card',   title:'カード明細',  sub:'レシート/Drive'});
+  html += officeLaunch('acct_review',{icon:'ti-checklist',     title:'経理レビュー', sub:'区分・承認'});
+  html += officeLaunch('acct_export',{icon:'ti-file-export',   title:'経理出力',    sub:'CSV/Payroll'});
+  html += officeLaunch('monthly',    {icon:'ti-calendar-stats',title:'月次締め',    sub:'振り返り'});
+  html += officeLaunch('budget',     {icon:'ti-chart-bar',     title:'予実管理',    sub:'全社/店舗'});
+  html += '</div>';
+
+  // オフィスメンバー早見
+  var mem = officeMembers();
+  html += '<div class="card"><div class="card-title"><i class="ti ti-users"></i>オフィスメンバー <span class="tag tag-gray" style="margin-left:auto">'+mem.length+'名</span></div>';
+  if(!mem.length){ html += '<p style="color:var(--muted);font-size:13px;text-align:center;padding:12px">メンバーなし</p>'; }
+  else mem.forEach(function(e){
+    var roleLabel = e.role==='office'?'経理':'事務Crew';
+    html += '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border)">'
+      +'<span style="width:30px;height:30px;border-radius:50%;background:var(--accent2);color:#fff;font-size:12px;display:inline-flex;align-items:center;justify-content:center">'+escapeHtml(e.name[0]||'?')+'</span>'
+      +'<div style="flex:1"><div style="font-size:13px;font-weight:600">'+escapeHtml(e.name)+'</div><div style="font-size:11px;color:var(--muted)">'+roleLabel+(e.title?' · '+escapeHtml(e.title):'')+'</div></div>'
+      +'</div>';
+  });
+  html += '</div>';
+
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:8px;padding:0 2px"><i class="ti ti-info-circle"></i> 各ボタンから既存の経理機能へ移動します。「勤怠」「メンバー・育成」は次フェーズで実装予定です。</div>';
+  return html;
+}
+
+function renderOfficeAttendStub(){
+  return '<div class="card"><div class="card-title"><i class="ti ti-clock"></i>オフィス勤怠（次フェーズで実装）</div>'
+    +'<p style="font-size:13px;color:var(--muted);line-height:1.7">端末が無いため、<b>本人がアプリで出勤/退勤を打刻</b>し、管理者が修正・承認する方式で実装します。</p>'
+    +'<ul style="font-size:13px;color:var(--muted);line-height:1.8;padding-left:18px">'
+    +'<li>本人：その場で「出勤／退勤」打刻（休憩も記録）</li>'
+    +'<li>月次タイムシート：日次の出退勤・実働時間を自動集計</li>'
+    +'<li>管理者：打刻漏れの手修正・月締め承認</li>'
+    +'<li>給与は<b>人により月給／時給</b>（時給者は打刻×時給を経理出力へ）</li>'
+    +'</ul></div>';
+}
+function renderOfficeMemberStub(){
+  return '<div class="card"><div class="card-title"><i class="ti ti-users"></i>メンバー・育成（次フェーズで実装）</div>'
+    +'<p style="font-size:13px;color:var(--muted);line-height:1.7">オフィス職能の <b>Career Score／スキル管理</b> を、店舗と同じ Lv0–3＋A–H の枠組みで運用します。</p>'
+    +'<ul style="font-size:13px;color:var(--muted);line-height:1.8;padding-left:18px">'
+    +'<li>経理トラック：請求書処理／月次締め／カード明細照合／給与計算／税務・DOH対応／レポート</li>'
+    +'<li>事務・CSトラック：データ入力／書類管理／採用事務／電話・メール対応／在庫事務</li>'
+    +'<li>OFFICEユニットとして既存のスキル・成長管理の仕組みを再利用</li>'
+    +'</ul>'
+    +'<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="go(\'growth_mgr\')"><i class="ti ti-chart-arcs"></i> 現状の成長管理を開く</button></div>';
+}
+
+/* ===== オフィス勤怠（本人打刻＋管理者修正・承認／混在給与） ===== */
+var officeAttendMonth = null;  // 'YYYY-MM'
+var officeAttendName = null;   // 管理者が閲覧中のメンバー
+function nowHM(){ var d=new Date(); return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }
+function officeAttendKey(name){ return 'office_attend_'+name; }
+function getOfficeAttend(name){ return ls(officeAttendKey(name), []); }
+function setOfficeAttend(name, arr){ lsSet(officeAttendKey(name), arr); }
+function officeCalcHours(rec){
+  if(!rec || !rec.in || !rec.out) return 0;
+  var i=rec.in.split(':'), o=rec.out.split(':');
+  var mins=(parseInt(o[0])*60+parseInt(o[1]))-(parseInt(i[0])*60+parseInt(i[1]))-(rec.breakMin||0);
+  return Math.max(0, Math.round(mins/60*100)/100);
+}
+function officeHourly(emp){ return !!(emp && (emp.wage||0)>0); } // wage>0=時給 / 0=月給
+function officeEmpByName(n){ return getEmployees().find(function(e){return e.name===n;})||null; }
+
+function officeClockIn(){
+  var name=myName(); var date=isoDateStr(new Date());
+  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
+  if(rec && rec.in){ showToast('本日は出勤打刻済みです','info'); return; }
+  if(!rec){ rec={date:date, in:'', out:'', breakMin:0, status:'勤務中', log:[]}; arr.push(rec); }
+  rec.in=nowHM(); rec.status='勤務中'; rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'出勤 '+rec.in});
+  setOfficeAttend(name, arr); showToast('出勤を記録しました','success'); renderPage('office_mgr');
+}
+function officeClockOut(){
+  var name=myName(); var date=isoDateStr(new Date());
+  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
+  if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
+  if(rec.out){ showToast('本日は退勤打刻済みです','info'); return; }
+  rec.out=nowHM(); rec.hours=officeCalcHours(rec); rec.status='記録済';
+  rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'退勤 '+rec.out});
+  setOfficeAttend(name, arr); showToast('退勤を記録しました（'+rec.hours+'h）','success'); renderPage('office_mgr');
+}
+function officeAttendEdit(name, date, field, val){
+  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
+  if(!rec){ rec={date:date, in:'', out:'', breakMin:0, status:'記録済', log:[]}; arr.push(rec); }
+  if(rec.status==='承認' && !['ceo','gm','office'].includes(curRole)){ return; }
+  if(field==='breakMin') val=parseInt(val)||0;
+  rec[field]=val; rec.hours=officeCalcHours(rec);
+  if(rec.in && rec.out && rec.status==='勤務中') rec.status='記録済';
+  rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:myName(), action:'修正 '+field+'='+(val||'—')});
+  setOfficeAttend(name, arr); renderPage('office_mgr');
+}
+function officeAttendAddDay(name){
+  var d=document.getElementById('oa-adddate'); var date=d?d.value:'';
+  if(!date){ showToast('日付を選択してください','info'); return; }
+  var arr=getOfficeAttend(name);
+  if(arr.some(function(r){return r.date===date;})){ showToast('その日は既にあります','info'); return; }
+  arr.push({date:date, in:'09:00', out:'17:00', breakMin:0, status:'記録済', log:[{at:tsNow(), by:myName(), action:'手動追加'}]});
+  arr[arr.length-1].hours=officeCalcHours(arr[arr.length-1]);
+  setOfficeAttend(name, arr); showToast('日を追加しました','success'); renderPage('office_mgr');
+}
+function officeAttendApprove(name, ym){
+  var arr=getOfficeAttend(name); var n=0;
+  arr.forEach(function(r){ if(r.date.slice(0,7)===ym && r.in && r.out && r.status!=='承認'){ r.status='承認'; n++; } });
+  setOfficeAttend(name, arr); showToast(n+'件を承認しました','success'); renderPage('office_mgr');
+}
+function officeAttendDelDay(name, date){
+  if(!confirm('この日の記録を削除しますか？')) return;
+  setOfficeAttend(name, getOfficeAttend(name).filter(function(r){return r.date!==date;}));
+  renderPage('office_mgr');
+}
+function officeAttendShiftMonth(delta){
+  var ym=officeAttendMonth||isoDateStr(new Date()).slice(0,7);
+  var y=parseInt(ym.slice(0,4)), m=parseInt(ym.slice(5,7))-1+delta;
+  var d=new Date(y, m, 1); officeAttendMonth=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2);
+  renderPage('office_mgr');
+}
+
+function officePunchCard(name){
+  var date=isoDateStr(new Date());
+  var rec=getOfficeAttend(name).find(function(r){return r.date===date;});
+  var emp=officeEmpByName(name);
+  var arr=getOfficeAttend(name);
+  var ym=date.slice(0,7);
+  var monthRecs=arr.filter(function(r){return r.date.slice(0,7)===ym;});
+  var monthH=monthRecs.reduce(function(a,r){return a+(officeCalcHours(r)||0);},0);
+  var days=monthRecs.filter(function(r){return r.in;}).length;
+  var btn, statusLine;
+  if(!rec || !rec.in){ btn='<button class="btn btn-primary" style="background:var(--green);border-color:var(--green)" onclick="officeClockIn()"><i class="ti ti-login-2"></i> 出勤</button>'; statusLine='未出勤'; }
+  else if(!rec.out){ btn='<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="officeClockOut()"><i class="ti ti-logout-2"></i> 退勤</button>'; statusLine='出勤中（'+rec.in+'〜）'; }
+  else { btn='<span class="tag tag-green" style="padding:8px 14px">本日 完了 '+rec.hours+'h</span>'; statusLine=rec.in+'〜'+rec.out; }
+  var html='<div class="card" style="border-left:3px solid var(--accent2)">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
+    +'<span style="width:36px;height:36px;border-radius:50%;background:var(--accent2);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px">'+escapeHtml(name[0]||'?')+'</span>'
+    +'<div style="flex:1"><div style="font-size:14px;font-weight:700">'+escapeHtml(name)+'</div><div style="font-size:12px;color:var(--muted)">'+(emp?(officeHourly(emp)?'時給':'月給'):'')+' · '+statusLine+'</div></div>'
+    +btn+'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">本日</div><div style="font-size:18px;font-weight:700">'+(rec&&rec.hours?rec.hours+'h':(rec&&rec.in&&!rec.out?'勤務中':'—'))+'</div></div>'
+    +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">今月累計</div><div style="font-size:18px;font-weight:700">'+(Math.round(monthH*10)/10)+'h</div></div>'
+    +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">勤務日</div><div style="font-size:18px;font-weight:700">'+days+'日</div></div>'
+    +'</div></div>';
+  return html;
+}
+
+var WDAY_JA=['日','月','火','水','木','金','土'];
+function officeTimesheet(name, ym, canEdit){
+  var emp=officeEmpByName(name);
+  var hourly=officeHourly(emp);
+  var arr=getOfficeAttend(name).filter(function(r){return r.date.slice(0,7)===ym;}).sort(function(a,b){return a.date<b.date?-1:1;});
+  var totalH=arr.reduce(function(a,r){return a+(officeCalcHours(r)||0);},0);
+  var days=arr.filter(function(r){return r.in;}).length;
+  var approved=arr.length && arr.every(function(r){return !r.in||!r.out||r.status==='承認';}) && arr.some(function(r){return r.status==='承認';});
+  var html='<div class="card">';
+  html+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="officeAttendShiftMonth(-1)"><i class="ti ti-chevron-left"></i></button>'
+    +'<div style="font-weight:700;font-size:14px">'+ym+' タイムシート</div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="officeAttendShiftMonth(1)"><i class="ti ti-chevron-right"></i></button>'
+    +'<span class="tag '+(approved?'tag-green':'tag-gray')+'" style="margin-left:auto">'+(approved?'承認済':'未承認')+'</span>'
+    +'</div>';
+  html+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:12px"><thead><tr>'
+    +'<th style="text-align:left">日付</th><th style="text-align:center">出勤</th><th style="text-align:center">退勤</th><th style="text-align:center">休憩</th><th style="text-align:center">実働</th><th style="text-align:center">状態</th>'+(canEdit?'<th></th>':'')+'</tr></thead><tbody>';
+  if(!arr.length){ html+='<tr><td colspan="'+(canEdit?7:6)+'" style="text-align:center;color:var(--muted);padding:14px">記録なし</td></tr>'; }
+  arr.forEach(function(r){
+    var wd=new Date(r.date+'T00:00:00').getDay();
+    var dlabel=parseInt(r.date.slice(8,10))+'('+WDAY_JA[wd]+')';
+    var stc=r.status==='承認'?'var(--green)':r.status==='勤務中'?'var(--accent2)':'var(--muted)';
+    if(canEdit){
+      html+='<tr style="border-top:1px solid var(--border)">'
+        +'<td style="padding:5px 0">'+dlabel+'</td>'
+        +'<td style="text-align:center"><input type="time" value="'+(r.in||'')+'" style="width:78px;font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--tm)" onchange="officeAttendEdit(\''+name+'\',\''+r.date+'\',\'in\',this.value)"></td>'
+        +'<td style="text-align:center"><input type="time" value="'+(r.out||'')+'" style="width:78px;font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--tm)" onchange="officeAttendEdit(\''+name+'\',\''+r.date+'\',\'out\',this.value)"></td>'
+        +'<td style="text-align:center"><input type="number" value="'+(r.breakMin||0)+'" min="0" step="15" style="width:52px;font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--tm);text-align:center" onchange="officeAttendEdit(\''+name+'\',\''+r.date+'\',\'breakMin\',this.value)"><span style="font-size:10px;color:var(--muted)">分</span></td>'
+        +'<td style="text-align:center;font-weight:600">'+(officeCalcHours(r)||0)+'h</td>'
+        +'<td style="text-align:center"><span style="color:'+stc+';font-size:11px">'+r.status+'</span></td>'
+        +'<td style="text-align:center"><i class="ti ti-trash" style="color:var(--muted);cursor:pointer" onclick="officeAttendDelDay(\''+name+'\',\''+r.date+'\')"></i></td>'
+        +'</tr>';
+    } else {
+      html+='<tr style="border-top:1px solid var(--border)">'
+        +'<td style="padding:5px 0">'+dlabel+'</td>'
+        +'<td style="text-align:center">'+(r.in||'—')+'</td>'
+        +'<td style="text-align:center">'+(r.out||'—')+'</td>'
+        +'<td style="text-align:center">'+(r.breakMin||0)+'分</td>'
+        +'<td style="text-align:center;font-weight:600">'+(officeCalcHours(r)||0)+'h</td>'
+        +'<td style="text-align:center"><span style="color:'+stc+';font-size:11px">'+r.status+'</span></td>'
+        +'</tr>';
+    }
+  });
+  html+='</tbody></table></div>';
+  // 合計
+  html+='<div style="display:flex;gap:8px;margin-top:10px">'
+    +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">総勤務時間</div><div style="font-size:18px;font-weight:700">'+(Math.round(totalH*10)/10)+'h</div></div>'
+    +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">勤務日数</div><div style="font-size:18px;font-weight:700">'+days+'日</div></div>'
+    +(hourly?'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">概算給与</div><div style="font-size:18px;font-weight:700">$'+Math.round(totalH*(emp.wage||0)).toLocaleString()+'</div></div>':'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">給与形態</div><div style="font-size:14px;font-weight:700;margin-top:3px">月給</div></div>')
+    +'</div>';
+  if(canEdit){
+    html+='<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+      +'<input type="date" id="oa-adddate" style="font-size:12px;padding:5px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--tm)">'
+      +'<button class="btn btn-secondary btn-sm" onclick="officeAttendAddDay(\''+name+'\')"><i class="ti ti-plus"></i> 日を追加</button>'
+      +'<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="officeAttendApprove(\''+name+'\',\''+ym+'\')"><i class="ti ti-check"></i> 月締め承認</button>'
+      +'</div>';
+  }
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 実働＝退勤−出勤−休憩。'+(hourly?'時給者は概算給与＝実働×時給。':'月給者は時間記録のみ。')+'打刻漏れは管理者が修正・承認できます。</div>';
+  html+='</div>';
+  return html;
+}
+
+function renderOfficeAttend(){
+  var me=_curEmp();
+  var isOffice = me && (me.role==='office'||me.role==='office_crew');
+  var canManage = ['ceo','gm','office'].indexOf(curRole)>=0;
+  var ym = officeAttendMonth || isoDateStr(new Date()).slice(0,7);
+  var html='';
+  if(isOffice){ html += officePunchCard(myName()); }
+  var mem=officeMembers();
+  var sel = officeAttendName || (isOffice?myName():(mem[0]?mem[0].name:myName()));
+  if(canManage && mem.length){
+    html += '<div class="card" style="padding:10px"><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:var(--muted)">メンバー</span>'
+      +'<select class="form-select" style="flex:1" onchange="officeAttendName=this.value;renderPage(\'office_mgr\')">'
+      + mem.map(function(e){ return '<option'+(e.name===sel?' selected':'')+'>'+escapeHtml(e.name)+'</option>'; }).join('')
+      +'</select></div></div>';
+  }
+  html += officeTimesheet(sel, ym, canManage);
+  return html;
+}
+
+/* ===== オフィス育成（職能スキル評価＋Career Score導線） ===== */
+var officeMemberSel = null;
+var OFFICE_SKILL_CRITERIA = {
+  '請求書処理':['未対応','受領～仕訳の基本フローを理解し補助できる','一通りの請求書を独力で処理・仕訳できる','例外・差異対応まで判断し、後輩に指導できる'],
+  '月次締め':['未対応','締め作業の一部を手順通りに実施できる','月次締めを独力で期日内に完了できる','締めを統括し、改善・効率化を主導できる'],
+  'カード明細照合':['未対応','明細とレシートの突合を補助できる','社員別の照合・区分を独力で完了できる','不一致の調査・是正と運用改善ができる'],
+  '給与計算':['未対応','勤怠データの集計を補助できる','給与計算を独力で正確に処理できる','税・保険含め全体を統括し検証できる'],
+  '売上・入出金管理':['未対応','日次入力を手順通りに実施できる','入出金・売上管理を独力で完了できる','資金繰りの把握と異常検知・報告ができる'],
+  '税務・DOH対応':['未対応','必要書類の準備を補助できる','申請・更新を独力で対応できる','期限管理と当局対応を主導できる'],
+  'データ入力':['未対応','フォーマット通りに入力できる','正確かつ高速に独力で入力・確認できる','入力ルール整備とチェック体制を作れる'],
+  '書類管理':['未対応','指示通りにファイリングできる','体系立てて書類を管理・検索提供できる','文書管理ルールを設計・徹底できる'],
+  '採用事務':['未対応','応募対応の一部を補助できる','面接調整～入社手続きを独力で回せる','採用フロー全体を設計・改善できる'],
+  '電話・メール対応':['未対応','基本的な取次ぎができる','丁寧かつ的確に独力で対応できる','難しい問い合わせも解決し模範となる'],
+  '理念':['理念をまだ理解していない','理念を理解し意識した行動が時々見られる','理念を判断・行動の基準に体現できている','理念の模範でありチームに浸透させられる']
+};
+function officeSkillStat(name){
+  var pos=getStorePositions('OFFICE'); var sk=getEmpSkillsStore(name,'OFFICE');
+  var sum=0, appr=0;
+  pos.forEach(function(p){ var s=sk[p]; if(s&&s.status==='承認'){ sum+=(s.level||0); appr++; } });
+  return {pct: pos.length?Math.round(sum/(pos.length*3)*100):0, appr:appr, total:pos.length};
+}
+function officeSetSkill(name, position, lv){
+  if(['ceo','gm','office'].indexOf(curRole)<0) return;
+  try{ maybePullSkillStore('OFFICE'); }catch(e){}
+  var prev=getEmpSkillsStore(name,'OFFICE')[position]||{};
+  var prevLv=(prev.status==='承認')?(prev.level||0):0;
+  setEmpSkillStore(name,'OFFICE',position, Object.assign({}, prev, {level:lv, status:'承認', date:isoDateStr(new Date()), evaluator:myName()}));
+  try{ if(typeof addSkillHistory==='function') addSkillHistory(name, 'OFFICE', position, prevLv, lv, myName(), '評価更新'); }catch(e){}
+  showToast(position+' を Lv'+lv+' に評価しました','success');
+  renderPage('office_mgr');
+}
+function renderOfficeMember(){
+  try{ maybePullSkillStore('OFFICE'); }catch(e){}
+  var canEval = ['ceo','gm','office'].indexOf(curRole)>=0;
+  var mem=officeMembers();
+  var pos=getStorePositions('OFFICE');
+  var html='';
+
+  html+='<div class="card"><div class="card-title"><i class="ti ti-users"></i>オフィスメンバー <span class="tag tag-gray" style="margin-left:auto">'+mem.length+'名</span></div>';
+  if(!mem.length){ html+='<p style="color:var(--muted);font-size:13px;text-align:center;padding:12px">メンバーなし</p>'; }
+  mem.forEach(function(e){
+    var st=officeSkillStat(e.name); var col=evalColor(st.pct);
+    var roleLabel=e.role==='office'?'経理':'事務Crew';
+    html+='<div class="staff-item" style="cursor:pointer" onclick="officeMemberSel=\''+e.name.replace(/'/g,"")+'\';renderPage(\'office_mgr\')">'
+      +'<div class="staff-avatar" style="border-color:'+col+'">'+escapeHtml(e.name[0]||'?')+'</div>'
+      +'<div style="flex:1"><div class="staff-name">'+escapeHtml(e.name)+' <span class="tag tag-gray" style="font-size:9px">'+roleLabel+'</span></div>'
+      +'<div class="staff-role">スキル承認 '+st.appr+'/'+st.total+' · 総合 '+st.pct+'%</div>'
+      +'<div class="progress-bar" style="margin-top:4px"><div class="progress-fill" style="background:'+col+';width:'+st.pct+'%"></div></div></div>'
+      +'<i class="ti ti-chevron-right" style="color:var(--muted)"></i></div>';
+  });
+  html+='</div>';
+
+  var sel=officeMemberSel||(mem[0]?mem[0].name:null);
+  if(sel){
+    var sk=getEmpSkillsStore(sel,'OFFICE');
+    html+='<div class="card"><div class="card-title"><i class="ti ti-chart-radar"></i>'+escapeHtml(sel)+' の職能スキル</div>';
+    try{ html+=skillRadarForStore(sel,'OFFICE',240); }catch(e){}
+    html+='<div style="font-size:10px;color:var(--muted);text-align:center;margin:2px 0 8px">承認済みレベル（Lv0–3）</div>';
+    pos.forEach(function(p){
+      var s=sk[p]||{}; var lv=(s.status==='承認')?(s.level||0):0;
+      var crit=(OFFICE_SKILL_CRITERIA[p]||[])[lv]||'';
+      html+='<div style="padding:8px 0;border-top:1px solid var(--border)">'
+        +'<div style="display:flex;align-items:center;gap:8px"><span style="flex:1;font-size:13px;font-weight:600">'+escapeHtml(p)+'</span>'
+        +'<span class="tag" style="background:'+evalColorLv(lv,3)+';color:#fff;font-size:10px">Lv'+lv+'</span></div>';
+      if(crit) html+='<div style="font-size:11px;color:var(--muted);margin-top:3px">'+escapeHtml(crit)+'</div>';
+      if(canEval){
+        html+='<div style="display:flex;gap:5px;margin-top:6px">'
+          +[0,1,2,3].map(function(n){ return '<button class="btn btn-sm '+(n===lv?'btn-primary':'btn-secondary')+'" style="font-size:11px;padding:3px 10px" onclick="officeSetSkill(\''+sel.replace(/'/g,"")+'\',\''+p+'\','+n+')">Lv'+n+'</button>'; }).join('')
+          +'</div>';
+      }
+      html+='</div>';
+    });
+    html+='</div>';
+    html+='<div class="card"><div class="card-title"><i class="ti ti-chart-arcs"></i>Career Score（リーダー以上）</div>'
+      +'<p style="font-size:12px;color:var(--muted);line-height:1.6">オフィスの総合評価（Leadership Skill Score）は成長管理の枠組みで運用します。経理・事務の専門A〜H軸は次段で定義予定です。</p>'
+      +'<button class="btn btn-secondary btn-sm" onclick="go(\'growth_mgr\')"><i class="ti ti-external-link"></i> 成長管理を開く</button></div>';
+  }
+  return html;
+}
+
+/* ===== オフィス勤怠 → 給与（半月）連携 ===== */
+function officeHalfRange(y,m,half){
+  var mm=String(m+1).padStart(2,'0');
+  var end=new Date(y,m+1,0).getDate();
+  if(half===1) return {from:y+'-'+mm+'-01', to:y+'-'+mm+'-15', label:'1〜15日'};
+  if(half===2) return {from:y+'-'+mm+'-16', to:y+'-'+mm+'-'+String(end).padStart(2,'0'), label:'16〜末日'};
+  return {from:y+'-'+mm+'-01', to:y+'-'+mm+'-'+String(end).padStart(2,'0'), label:'月計'};
+}
+function officePayrollRows(y,m,half){
+  var r=officeHalfRange(y,m,half);
+  return officeMembers().map(function(e){
+    var recs=getOfficeAttend(e.name).filter(function(x){ return x.date>=r.from && x.date<=r.to; });
+    var hours=Math.round(recs.reduce(function(a,x){return a+(officeCalcHours(x)||0);},0)*100)/100;
+    var days=recs.filter(function(x){return x.in&&x.out;}).length;
+    var approved=recs.length>0 && recs.every(function(x){return !x.in||!x.out||x.status==='承認';});
+    var hourly=officeHourly(e);
+    var pay=hourly?Math.round(hours*(e.wage||0)):null;
+    return {name:e.name, role:(e.role==='office'?'経理':'事務'), type:hourly?'時給':'月給', wage:(e.wage||0), hours:hours, days:days, pay:pay, approved:approved};
+  });
+}
+function exportOfficePayrollCSV(y,m,half){
+  var r=officeHalfRange(y,m,half);
+  var rows=officePayrollRows(y,m,half);
+  if(!rows.length){ showToast('オフィスメンバーがいません','danger'); return; }
+  var header=['社員','役割','雇用区分','期間From','期間To','実働時間','時給','概算給与','勤務日数','承認'];
+  var data=[header].concat(rows.map(function(x){ return [x.name,x.role,x.type,r.from,r.to,x.hours,(x.type==='時給'?x.wage:''),(x.pay==null?'':x.pay),x.days,(x.approved?'承認':'未承認')]; }));
+  downloadCSV(data, 'オフィス給与_'+y+'-'+String(m+1).padStart(2,'0')+'_'+r.label+'.csv');
+  showToast('オフィス給与（'+r.label+'）を出力しました','success');
+}
+function officePayrollCardHtml(y,m){
+  var rows=officePayrollRows(y,m,0);
+  var html='<div class="card"><div class="card-title"><i class="ti ti-clock-dollar" style="color:var(--accent2)"></i>オフィス勤怠・給与（半月）</div>';
+  if(!rows.length){ html+='<p style="color:var(--muted);font-size:13px;text-align:center;padding:10px">オフィスメンバーなし</p></div>'; return html; }
+  html+='<div style="overflow-x:auto"><table class="inv-table" style="font-size:12px;min-width:460px"><thead><tr><th>社員</th><th style="text-align:center">区分</th><th style="text-align:right">実働(月)</th><th style="text-align:right">時給</th><th style="text-align:right">概算給与</th><th style="text-align:center">日数</th></tr></thead><tbody>';
+  rows.forEach(function(x){
+    html+='<tr><td>'+escapeHtml(x.name)+'</td>'
+      +'<td style="text-align:center"><span class="tag '+(x.type==='時給'?'tag-blue':'tag-gray')+'" style="font-size:9px">'+x.type+'</span></td>'
+      +'<td style="text-align:right">'+x.hours+'h</td>'
+      +'<td style="text-align:right">'+(x.type==='時給'?('$'+x.wage):'—')+'</td>'
+      +'<td style="text-align:right;font-weight:600">'+(x.pay==null?'<span style="color:var(--muted)">月給</span>':('$'+x.pay.toLocaleString()))+'</td>'
+      +'<td style="text-align:center">'+x.days+'</td></tr>';
+  });
+  html+='</tbody></table></div>';
+  html+='<div style="display:flex;gap:8px;margin-top:10px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="exportOfficePayrollCSV('+y+','+m+',1)">1〜15日</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="exportOfficePayrollCSV('+y+','+m+',2)">16〜末</button>'
+    +'<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="exportOfficePayrollCSV('+y+','+m+',0)"><i class="ti ti-download"></i> 月計CSV</button>'
+    +'</div>';
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 時給者＝実働×時給で概算給与を算出。月給者は時間記録のみ。実働は勤怠タブの打刻・承認データに連動します。</div>';
+  html+='</div>';
+  return html;
+}
 function renderAcctExport() {
   if (!['ceo','gm','office'].includes(curRole)) {
     return `<div class="card" style="text-align:center;padding:32px"><i class="ti ti-lock" style="font-size:36px;color:var(--muted)"></i><div style="margin-top:12px;font-weight:600">経理出力の権限がありません</div></div>`;
@@ -15999,6 +16382,8 @@ function renderAcctExport() {
       </div></div>`;
   });
   html += `<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="exportAllTipCSV('${d1}','${d2}')"><i class="ti ti-download"></i> 全店まとめて出力（両期間）</button>`;
+
+  html += officePayrollCardHtml(y, m);
   html += `</div>`;
 
   html += `<div class="card"><div class="card-title"><i class="ti ti-clipboard-list" style="color:var(--accent)"></i>月次棚卸一覧</div>
@@ -17055,6 +17440,7 @@ const DEFAULT_STORE_POSITIONS = {
   'F04-P':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
   'F04-A':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
   'F05':['Host','Server','Front','Back','Food Runner','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
+  'OFFICE':['請求書処理','月次締め','カード明細照合','給与計算','売上・入出金管理','税務・DOH対応','データ入力','書類管理','採用事務','電話・メール対応','理念'],
 };
 /* スキルレベル基準（Lv0-3の達成基準）。Totoyaは実基準、他は汎用 */
 const SKILL_CRITERIA = {
