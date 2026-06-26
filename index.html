@@ -3332,11 +3332,67 @@ function canAccessStaffMaster() {
   return false;
 }
 
+/* ===== 分割管理キー：モノリシック1キーを per-entity バケット(spl_{key}_{id})へ自動分割 =====
+   ls/lsSet の最下層で透過処理。呼び出し側は無改修。保存は変更のあったエンティティのキーだけpush
+   ＝他店/他者を巻き込まない。読み取りは レガシー＋バケット をマージ（バケットが新権威）。 */
+var _SPLIT_KEYS = {
+  grade_ojt:        {type:'obj'},
+  career_track:     {type:'obj'},
+  skill_snapshots:  {type:'obj'},
+  store_fixed_costs:{type:'obj'},
+  skill_requests:   {type:'arr', by:function(r){return r&&r.name;}},
+  skill_history:    {type:'arr', by:function(r){return r&&r.name;}},
+  lss_requests:     {type:'arr', by:function(r){return r&&r.name;}},
+  lss_history:      {type:'arr', by:function(r){return r&&r.name;}},
+  career_history:   {type:'arr', by:function(r){return r&&r.name;}},
+  tasks_all:        {type:'arr', by:function(r){return r&&r.store;}},
+  supply_orders:    {type:'arr', by:function(r){return r&&r.store;}},
+  invoices:         {type:'arr', by:function(r){return r&&r.storeId;}},
+  tip_requests:     {type:'arr', by:function(r){return r&&r.name;}},
+  tip_history:      {type:'arr', by:function(r){return r&&r.name;}},
+  ot_requests:      {type:'arr', by:function(r){return r&&r.name;}},
+  my_vacations:     {type:'arr', by:function(r){return r&&r.employee;}}
+};
+function _splitPrefix(key){ return 'spl_'+key+'_'; }
+function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
+function _splitRead(key, sp){
+  var pre=_splitPrefix(key);
+  if(sp.type==='obj'){
+    var out={}; var legacy=_lsRaw(key,{})||{};
+    Object.keys(legacy).forEach(function(id){ out[id]=legacy[id]; });
+    try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){ out[k.slice(pre.length)]=_lsRaw(k,null); } } }catch(e){}
+    return out;
+  }
+  var byId={}, order=[];
+  (_lsRaw(key,[])||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); if(!byId[id]){byId[id]=[];order.push(id);} byId[id].push(r); });
+  try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){ var id=k.slice(pre.length); byId[id]=_lsRaw(k,[])||[]; if(order.indexOf(id)<0) order.push(id); } } }catch(e){}
+  var out=[]; order.forEach(function(id){ out=out.concat(byId[id]); });
+  return out;
+}
+function _splitWrite(key, sp, val){
+  var pre=_splitPrefix(key);
+  var curMerged=_splitRead(key, sp);   // 現在のマージ後の値と比較（実際に変更したエンティティだけ書く）
+  if(sp.type==='obj'){
+    val=val||{};
+    Object.keys(val).forEach(function(id){
+      if(JSON.stringify(curMerged[id])!==JSON.stringify(val[id])) lsSet(pre+id, val[id]);
+    });
+    return;
+  }
+  val=val||[];
+  var byId={}; val.forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (byId[id]=byId[id]||[]).push(r); });
+  var curById={}; (curMerged||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (curById[id]=curById[id]||[]).push(r); });
+  Object.keys(byId).forEach(function(id){
+    if(JSON.stringify(curById[id])!==JSON.stringify(byId[id])) lsSet(pre+id, byId[id]);
+  });
+}
 function ls(key, def) {
+  var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp) return _splitRead(key, sp);
   try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
   catch(e) { return def; }
 }
 function lsSet(key, val) {
+  var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ _splitWrite(key, sp, val); return; }
   try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){}
   // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
   try { if (SUPA_SYNC_ENABLED) syncMasterToSupabase(key, val); } catch(e){ console.warn('supa sync skip', e); }
@@ -3389,7 +3445,7 @@ var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_h
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config'];
-var OP_SYNC_PREFIX = ['skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
+var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_'];
 function isOpSyncKey(key){
   if (!key) return false;
