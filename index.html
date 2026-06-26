@@ -9624,11 +9624,21 @@ function renderTipPeriodMatrix(storeId, store, info){
       <tr><th style="${stick}">従業員</th>${dayTh}<th style="text-align:right">合計</th></tr>
       <tr><th style="${stick}"></th>${ldTh}<th></th></tr>
     </thead><tbody>`;
-  // 実Tip額
+  // 実チップ額の計算内訳：① クレジット ② -3.5%手数料 ③ キャッシュ ④ 実チップ額
+  function tipBreakRow(label, color, val, neg){
+    var cells='', g=0;
+    M.dists.forEach(function(x){ var t=x.dist.tip||{}; var l=val(t,'l'), d=val(t,'d'); g+=l+d;
+      cells+=`<td style="text-align:right;${bl};color:${color}">${l?(neg?'-':'')+Math.round(l):'—'}</td><td style="text-align:right;color:${color}">${d?(neg?'-':'')+Math.round(d):'—'}</td>`; });
+    return `<tr style="font-size:10px"><td style="${stick};font-size:10px;color:${color}">${label}</td>${cells}<td style="text-align:right;color:${color};font-size:10px">${g?(neg?'-':'')+'$'+Math.round(g):''}</td></tr>`;
+  }
+  html += tipBreakRow('① クレジット','var(--muted)', function(t,k){return k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0);}, false);
+  html += tipBreakRow('② -3.5%手数料','var(--red)', function(t,k){return (k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0))*TIP_CC_FEE;}, true);
+  html += tipBreakRow('③ キャッシュ','var(--accent2)', function(t,k){return k==='l'?(t.lunchCash||0):(t.dinnerCash||0);}, false);
+  // ④ 実チップ額（= ①×(1-3.5%) + ③）
   var tipGrand=0, tipCells='';
   M.dists.forEach(function(x){ var t=x.dist.tip||{}; tipGrand+=(t.lunchTotal||0)+(t.dinnerTotal||0);
     tipCells+=`<td style="text-align:right;${bl}">${t.lunchTotal?Math.round(t.lunchTotal):'—'}</td><td style="text-align:right">${t.dinnerTotal?Math.round(t.dinnerTotal):'—'}</td>`; });
-  html += `<tr style="background:var(--surface2)"><td style="${stick};background:var(--surface2);font-weight:600">実Tip額</td>${tipCells}<td style="text-align:right;font-weight:700">$${Math.round(tipGrand)}</td></tr>`;
+  html += `<tr style="background:var(--surface2)"><td style="${stick};background:var(--surface2);font-weight:700">④ 実チップ額</td>${tipCells}<td style="text-align:right;font-weight:700">$${Math.round(tipGrand)}</td></tr>`;
   // 従業員ごと
   M.names.forEach(function(nm){
     var ptot=0, cells='';
@@ -9660,17 +9670,19 @@ function renderTipPeriodDaily(storeId, store, info) {
   html += `<div class="card"><div class="card-title"><i class="ti ti-calendar"></i>日別データ <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">行タップで振り分け詳細</span></div>
     <div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:11px;min-width:420px"><thead><tr>
       <th>日付</th><th style="text-align:right"><i class="ti ti-sun" style="color:#d98908"></i>L</th><th style="text-align:right"><i class="ti ti-moon" style="color:#8b5cf6"></i>D</th><th style="text-align:right">合計</th><th style="text-align:center">人数</th><th style="text-align:center">差額</th></tr></thead><tbody>`;
+  var sumL=0, sumD=0, sumT=0;
   agg.daily.forEach(d=>{
     var dist = calcTipDistribution(storeId, d.date);
     var lD=0,dD=0; dist.list.forEach(r=>{lD+=r.lunch||0; dD+=r.dinner||0;});
     var lDiff=dist.tip.lunchTotal-lD, dDiff=dist.tip.dinnerTotal-dD;
     var diffOK=Math.abs(lDiff)<0.5 && Math.abs(dDiff)<0.5;
     var hasData = d.tip>0 || dist.hasLabor;
+    sumL+=dist.tip.lunchTotal||0; sumD+=dist.tip.dinnerTotal||0; sumT+=d.tip||0;
     var diffCell = !hasData ? '<span style="color:var(--muted)">—</span>'
       : diffOK ? '<span style="color:var(--green)"><i class="ti ti-check"></i></span>'
       : '<span class="tag tag-red" style="font-size:8px">差額</span>';
     html += `<tr style="cursor:pointer${d.error||(hasData&&!diffOK)?';background:rgba(229,72,77,0.05)':''}" onclick="openTipDayDetail('${storeId}','${d.date}')">
-      <td style="font-weight:600">${d.date.slice(5)}</td>
+      <td style="font-weight:600;white-space:nowrap">${d.date.slice(5)} <button class="btn btn-secondary btn-sm" style="padding:0 5px;font-size:9px;vertical-align:middle" title="キャッシュチップ登録" onclick="event.stopPropagation();openCashTipModal('${storeId}','${d.date}')"><i class="ti ti-cash"></i></button></td>
       <td style="text-align:right">${dist.tip.lunchTotal>0?'$'+dist.tip.lunchTotal.toFixed(0):'—'}</td>
       <td style="text-align:right">${dist.tip.dinnerTotal>0?'$'+dist.tip.dinnerTotal.toFixed(0):'—'}</td>
       <td style="text-align:right;font-weight:700">${d.tip?'$'+d.tip.toFixed(0):'—'}</td>
@@ -9678,8 +9690,15 @@ function renderTipPeriodDaily(storeId, store, info) {
       <td style="text-align:center">${diffCell}</td>
     </tr>`;
   });
+  html += `<tr style="border-top:2px solid var(--border);font-weight:700;background:var(--surface2)">
+      <td>合計</td>
+      <td style="text-align:right;color:#d98908">${sumL>0?'$'+Math.round(sumL):'—'}</td>
+      <td style="text-align:right;color:#8b5cf6">${sumD>0?'$'+Math.round(sumD):'—'}</td>
+      <td style="text-align:right;color:var(--green)">${sumT>0?'$'+Math.round(sumT):'—'}</td>
+      <td colspan="2"></td>
+    </tr>`;
   html += `</tbody></table></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 「差額」に赤が出たら、その日のTip入力漏れか勤怠取得漏れの可能性。行をタップで詳細確認・修正。</div></div>`;
+    <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 日付の横の<i class="ti ti-cash"></i>でキャッシュチップ登録。L/D列＝ランチ/ディナーの実チップ、最下部「合計」＝期間のランチ・ディナー合算。行タップで配分詳細・修正。</div></div>`;
   return html;
 }
 /* 日別詳細：Excel 5/16 と同じ「ランチ|ディナー」の振り分け内訳（差額チェック付き） */
