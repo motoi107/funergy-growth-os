@@ -6380,64 +6380,217 @@ function msDayHeadcount(storeId, date){
 }
 function msAnalysisWindow(){ var to=new Date(); var from=new Date(); from.setDate(from.getDate()-90); return {from:from.toISOString().slice(0,10), to:to.toISOString().slice(0,10)}; }
 
+/* セグメント（lunch/dinner）別のその日の人数：実績勤怠優先、無ければシフト計画 */
+function msSegHeadcount(storeId, date, seg){
+  try{ var tl=getTipLabor(storeId,date); if(tl){ var n=0; Object.keys(tl).forEach(function(k){ if(tl[k] && (tl[k][seg]||0)>0) n++; }); if(n>0) return n; } }catch(e){}
+  try{
+    var dt=new Date(date+'T00:00:00'); var wk=mondayMDof(dt); var plan=getShiftPlan(storeId,wk);
+    if(plan && plan.cells){
+      var dow=DOW[(dt.getDay()+6)%7]; var period=(seg==='lunch')?'Lunch':'Dinner'; var names={};
+      Object.keys(plan.cells).forEach(function(key){ if(key.indexOf(dow+'_'+period+'_')===0){ var v=plan.cells[key]; if(v) names[v]=1; } });
+      var c=Object.keys(names).length; if(c>0) return c;
+    }
+  }catch(e){}
+  return null;
+}
+/* セグメント別：人数→平均売上（＋1人あたり） */
+function msSegBars(storeId, seg, win){
+  var byHc={}; var act=getDailyActuals(storeId);
+  Object.keys(act).forEach(function(date){
+    if(date<win.from||date>win.to) return;
+    var v=act[date]; var sales=(seg==='lunch')?v.lunchSales:v.dinnerSales;
+    if(sales==null||sales<=0) return;
+    var hc=msSegHeadcount(storeId,date,seg); if(hc==null) return;
+    if(!byHc[hc]) byHc[hc]={sum:0,n:0};
+    byHc[hc].sum+=sales; byHc[hc].n++;
+  });
+  return Object.keys(byHc).map(Number).sort(function(a,b){return a-b;}).map(function(k){
+    var o=byHc[k]; var avg=Math.round(o.sum/o.n);
+    return {label:k+'人', value:avg, sub:o.n+'日 ・'+msMoneyShort(Math.round(avg/k))+'/人'};
+  });
+}
+/* フォールバック：1日合計の人数→平均売上 */
+function msTotalHcBars(storeId, win){
+  var byHc={}; var act=getDailyActuals(storeId);
+  Object.keys(act).forEach(function(date){
+    if(date<win.from||date>win.to) return;
+    var v=act[date]; if(v.actual==null||v.actual<=0) return;
+    var hc=msDayHeadcount(storeId,date); if(hc==null) return;
+    if(!byHc[hc]) byHc[hc]={sum:0,n:0};
+    byHc[hc].sum+=v.actual; byHc[hc].n++;
+  });
+  return Object.keys(byHc).map(Number).sort(function(a,b){return a-b;}).map(function(k){ var o=byHc[k]; return {label:k+'人', value:Math.round(o.sum/o.n), sub:o.n+'日'}; });
+}
+
+/* ---- 期間・サブビュー状態 ---- */
+var saRange='3m';      // current/3m/6m/12m
+var saMonthView='budget'; // budget/ld/guests
+var saDowView='ld';    // ld/guests
+function saSetRange(r){ saRange=r; renderPage('budget'); }
+function saSetMonthView(v){ saMonthView=v; renderPage('budget'); }
+function saSetDowView(v){ saDowView=v; renderPage('budget'); }
+function saWindow(){
+  var to=new Date(), from=new Date();
+  if(saRange==='current'){ from=new Date(to.getFullYear(),to.getMonth(),1); }
+  else { var d=({'3m':90,'6m':180,'12m':365})[saRange]||90; from.setDate(from.getDate()-d); }
+  return {from:from.toISOString().slice(0,10), to:to.toISOString().slice(0,10)};
+}
+function saMonthCount(){ return ({current:1,'3m':3,'6m':6,'12m':12})[saRange]||3; }
+function saRangeLabel(){ return ({current:'当月','3m':'3ヶ月','6m':'6ヶ月','12m':'12ヶ月'})[saRange]||'3ヶ月'; }
+/* 月のL/D売上合計（日次から） */
+function msMonthLD(stores, mi){
+  var lunch=0,dinner=0;
+  stores.forEach(function(s){ var act=getDailyActuals(s.id); mi.days.forEach(function(d){ var v=act[d.date]; if(!v)return; if(v.lunchSales!=null)lunch+=v.lunchSales; if(v.dinnerSales!=null)dinner+=v.dinnerSales; }); });
+  return {lunch:Math.round(lunch), dinner:Math.round(dinner)};
+}
+
+/* ---- 積み上げ棒グラフ ---- */
+function msStackedBar(data, opts){
+  opts=opts||{};
+  var totals=data.map(function(d){return (d.segs||[]).reduce(function(a,s){return a+(s.v||0);},0);});
+  if(!data.length || totals.every(function(v){return !v;})) return '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">データがありません</div>';
+  var n=data.length, W=Math.max(340,n*46+30), H=195, padB=42, padT=18;
+  var max=Math.max.apply(null,totals)||1;
+  var gap=(W-20)/n, bw=Math.min(40,gap-10);
+  var g='';
+  data.forEach(function(d,i){
+    var x=10+i*gap+(gap-bw)/2, yb=H-padB, tot=totals[i];
+    (d.segs||[]).forEach(function(s){
+      var h=Math.max(0,Math.round((s.v/max)*(H-padB-padT)));
+      yb-=h; g+='<rect x="'+x.toFixed(1)+'" y="'+yb.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" fill="'+s.color+'"></rect>';
+    });
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(yb-4).toFixed(1)+'" text-anchor="middle" font-size="9" fill="var(--muted)">'+(opts.money?msMoneyShort(tot):tot)+'</text>';
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+14)+'" text-anchor="middle" font-size="10" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
+    if(d.sub) g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+26)+'" text-anchor="middle" font-size="8" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
+  });
+  return '<div style="overflow-x:auto"><svg viewBox="0 0 '+W+' '+H+'" style="width:100%;min-width:'+Math.min(W,360)+'px;height:auto"><line x1="10" y1="'+(H-padB)+'" x2="'+(W-10)+'" y2="'+(H-padB)+'" stroke="var(--border)"></line>'+g+'</svg></div>';
+}
+function msLegend(items){
+  return '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:4px">'
+    + items.map(function(it){ return '<span><span style="display:inline-block;width:10px;height:10px;background:'+it.color+';border-radius:2px;vertical-align:-1px"></span> '+escapeHtml(it.label)+'</span>'; }).join('') + '</div>';
+}
+
+/* ---- 棒＋折れ線（2軸/予算ライン） ---- */
+function msBarsWithLine(data, opts){
+  opts=opts||{};
+  var vals=data.map(function(d){return d.value||0;});
+  if(!data.length || vals.every(function(v){return !v;})) return '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">データがありません</div>';
+  var n=data.length, W=Math.max(340,n*46+30), H=195, padB=42, padT=20;
+  var maxBar=Math.max.apply(null,vals)||1;
+  var lineVals=data.map(function(d){return d.lineVal;}).filter(function(v){return v!=null;});
+  var lineMax=lineVals.length?Math.max.apply(null,lineVals):0;
+  var lineScaleMax=opts.lineScale==='same'?maxBar:(lineMax||1);
+  var gap=(W-20)/n, bw=Math.min(40,gap-10);
+  var bars='', pts=[];
+  data.forEach(function(d,i){
+    var h=Math.max(1,Math.round((d.value/maxBar)*(H-padB-padT)));
+    var x=10+i*gap+(gap-bw)/2, y=H-padB-h;
+    bars+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" rx="3" fill="'+(d.color||opts.color||'var(--accent)')+'"></rect>';
+    if(d.topLabel) bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y-4).toFixed(1)+'" text-anchor="middle" font-size="9" fill="'+(d.topColor||'var(--muted)')+'">'+escapeHtml(String(d.topLabel))+'</text>';
+    bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+14)+'" text-anchor="middle" font-size="10" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
+    if(d.sub) bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+26)+'" text-anchor="middle" font-size="8" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
+    if(d.lineVal!=null){ var ly=H-padB-Math.round((d.lineVal/lineScaleMax)*(H-padB-padT)); pts.push([(x+bw/2),ly]); }
+  });
+  var line='';
+  if(pts.length>1) line='<polyline points="'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+(opts.lineColor||'var(--purple)')+'" stroke-width="2"'+(opts.lineDash?' stroke-dasharray="4 3"':'')+'></polyline>';
+  var dots=pts.map(function(p){return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.5" fill="'+(opts.lineColor||'var(--purple)')+'"></circle>';}).join('');
+  return '<div style="overflow-x:auto"><svg viewBox="0 0 '+W+' '+H+'" style="width:100%;min-width:'+Math.min(W,360)+'px;height:auto"><line x1="10" y1="'+(H-padB)+'" x2="'+(W-10)+'" y2="'+(H-padB)+'" stroke="var(--border)"></line>'+bars+line+dots+'</svg></div>';
+}
+
 function renderSalesAnalysis(){
   var single = msScope!=='ALL';
   var storeId = single ? msScope : null;
   var stores = msScopeStores();
   var scopeName = single ? ((stores[0]||{}).name||storeId) : '全店合算';
+  var win=saWindow();
   var html='';
 
-  // 1) 月別売上（過去12ヶ月）
-  var months=[];
-  for(var off=-11; off<=0; off++){
-    var mi=msMonthInfo(off);
-    var sales=stores.reduce(function(a,s){ return a+(msAgg(s.id,mi).sales||0); },0);
-    months.push({label:(mi.m+1)+'月', value:Math.round(sales)});
-  }
-  html+='<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>月別売上（過去12ヶ月・'+escapeHtml(scopeName)+'）</div>'
-    + msBarChart(months,{money:true,color:'var(--accent)'})+'</div>';
+  // 期間切替
+  html+='<div class="card" style="padding:8px 10px"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">期間</span>'
+    + [['current','当月'],['3m','3ヶ月'],['6m','6ヶ月'],['12m','12ヶ月']].map(function(r){ return '<button class="btn btn-sm '+(saRange===r[0]?'btn-primary':'btn-secondary')+'" style="font-size:11px;padding:4px 10px" onclick="saSetRange(\''+r[0]+'\')">'+r[1]+'</button>'; }).join('')
+    + '</div></div>';
 
-  // 2) 曜日別 平均売上（直近90日）
-  var win=msAnalysisWindow();
-  var byDow={}; DOW.forEach(function(d){ byDow[d]={sum:0,n:0}; });
+  // 1) 月別売上（サブタブ：予実 / L/D / 客数）
+  var mc=saMonthCount();
+  var months=[];
+  for(var off=-(mc-1); off<=0; off++){
+    var mi=msMonthInfo(off);
+    var a={sales:0,budget:0,guests:0}; stores.forEach(function(s){ var ag=msAgg(s.id,mi); a.sales+=ag.sales||0; a.budget+=ag.budget||0; a.guests+=ag.guests||0; });
+    var ld=msMonthLD(stores, mi);
+    months.push({label:(mi.m+1)+'月', sales:Math.round(a.sales), budget:Math.round(a.budget), guests:Math.round(a.guests), lunch:ld.lunch, dinner:ld.dinner});
+  }
+  html+='<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>月別売上（'+escapeHtml(scopeName)+'）</div>';
+  html+='<div style="display:flex;gap:5px;margin-bottom:8px">'
+    + [['budget','予実'],['ld','L/D'],['guests','客数']].map(function(v){ return '<button class="btn btn-sm '+(saMonthView===v[0]?'btn-primary':'btn-secondary')+'" style="font-size:11px;padding:3px 10px" onclick="saSetMonthView(\''+v[0]+'\')">'+v[1]+'</button>'; }).join('')
+    + '</div>';
+  if(saMonthView==='budget'){
+    var bdata=months.map(function(m,i){
+      var ach=m.budget?Math.round(m.sales/m.budget*100):0;
+      var prev=i>0?months[i-1].sales:null;
+      var delta=(prev&&prev>0)?Math.round((m.sales-prev)/prev*100):null;
+      return {label:m.label, value:m.sales, color:(typeof budgetScore==='function'?budgetScore(ach).color:'var(--accent)'), lineVal:m.budget,
+        topLabel:(delta==null?'':(delta>=0?'+':'')+delta+'%'), topColor:(delta==null?'var(--muted)':(delta>=0?'var(--eval-high)':'var(--eval-low)'))};
+    });
+    html+=msBarsWithLine(bdata,{money:true,lineScale:'same',lineColor:'var(--muted)',lineDash:true});
+    html+='<div style="font-size:10px;color:var(--muted);margin-top:4px">バー色＝予算達成率／破線＝予算ライン／上の数字＝前月比</div>';
+  } else if(saMonthView==='ld'){
+    var ldata=months.map(function(m){ return {label:m.label, segs:[{v:m.lunch,color:'#9fc4f4'},{v:m.dinner,color:'#185fa5'}]}; });
+    html+=msStackedBar(ldata,{money:true})+msLegend([{label:'ランチ',color:'#9fc4f4'},{label:'ディナー',color:'#185fa5'}]);
+  } else {
+    var gdata=months.map(function(m){ return {label:m.label, value:m.sales, color:'var(--accent)', lineVal:m.guests, sub:(m.guests?m.guests.toLocaleString()+'人':'')}; });
+    html+=msBarsWithLine(gdata,{money:true,lineScale:'auto',lineColor:'var(--purple)'});
+    html+='<div style="font-size:10px;color:var(--muted);margin-top:4px"><span style="color:var(--accent)">■</span> 売上　<span style="color:var(--purple)">●</span> 客数（折れ線・右軸）</div>';
+  }
+  html+='</div>';
+
+  // 2) 曜日別（サブタブ：L/D / 客数単価）
+  var byDow={}; DOW.forEach(function(d){ byDow[d]={sales:0,lunch:0,dinner:0,guests:0,n:0}; });
   stores.forEach(function(s){
     var act=getDailyActuals(s.id);
     Object.keys(act).forEach(function(date){
       if(date<win.from||date>win.to) return;
       var v=act[date]; if(v.actual==null||v.actual<=0) return;
-      var dt=new Date(date+'T00:00:00'); var dow=DOW[(dt.getDay()+6)%7];
-      byDow[dow].sum+=v.actual; byDow[dow].n++;
+      var dt=new Date(date+'T00:00:00'); var dow=DOW[(dt.getDay()+6)%7]; var o=byDow[dow];
+      o.sales+=v.actual; o.n++;
+      if(v.lunchSales!=null)o.lunch+=v.lunchSales; if(v.dinnerSales!=null)o.dinner+=v.dinnerSales;
+      if(v.guests!=null)o.guests+=v.guests;
     });
   });
-  var wkData=DOW.map(function(d){ var o=byDow[d]; return {label:d, value:o.n?Math.round(o.sum/o.n):0, sub:o.n?o.n+'日':''}; });
-  html+='<div class="card"><div class="card-title"><i class="ti ti-calendar-week" style="color:var(--accent2)"></i>曜日別 平均売上（直近90日）</div>'
-    + msBarChart(wkData,{money:true,color:'var(--accent2)'})
-    + '<div style="font-size:10px;color:var(--muted);margin-top:4px">各曜日の1日あたり平均売上（実績がある日のみ）</div></div>';
+  html+='<div class="card"><div class="card-title"><i class="ti ti-calendar-week" style="color:var(--accent2)"></i>曜日別 平均売上（'+saRangeLabel()+'）</div>';
+  html+='<div style="display:flex;gap:5px;margin-bottom:8px">'
+    + [['ld','L/D積み上げ'],['guests','客数・客単価']].map(function(v){ return '<button class="btn btn-sm '+(saDowView===v[0]?'btn-primary':'btn-secondary')+'" style="font-size:11px;padding:3px 10px" onclick="saSetDowView(\''+v[0]+'\')">'+v[1]+'</button>'; }).join('')
+    + '</div>';
+  if(saDowView==='ld'){
+    var wld=DOW.map(function(d){ var o=byDow[d]; var div=o.n||1; return {label:d, segs:[{v:Math.round(o.lunch/div),color:'#9fc4f4'},{v:Math.round(o.dinner/div),color:'#185fa5'}], sub:o.n?o.n+'日':''}; });
+    html+=msStackedBar(wld,{money:true})+msLegend([{label:'ランチ',color:'#9fc4f4'},{label:'ディナー',color:'#185fa5'}]);
+  } else {
+    var wg=DOW.map(function(d){ var o=byDow[d]; var div=o.n||1; var ag=Math.round(o.guests/div); var spend=o.guests?Math.round(o.sales/o.guests*100)/100:0; return {label:d, value:ag, color:'var(--accent2)', lineVal:spend, sub:o.guests?('$'+spend):''}; });
+    html+=msBarsWithLine(wg,{money:false,lineScale:'auto',lineColor:'var(--purple)'});
+    html+='<div style="font-size:10px;color:var(--muted);margin-top:4px"><span style="color:var(--accent2)">■</span> 平均客数　<span style="color:var(--purple)">●</span> 客単価（折れ線）</div>';
+  }
+  html+='</div>';
 
-  // 3) シフト数別 平均売上（単一店舗）
+  // 3) シフト数別（ランチ/ディナー別・既存）
   if(single){
-    var byHc={};
-    var act=getDailyActuals(storeId);
-    Object.keys(act).forEach(function(date){
-      if(date<win.from||date>win.to) return;
-      var v=act[date]; if(v.actual==null||v.actual<=0) return;
-      var hc=msDayHeadcount(storeId, date); if(hc==null) return;
-      if(!byHc[hc]) byHc[hc]={sum:0,n:0};
-      byHc[hc].sum+=v.actual; byHc[hc].n++;
-    });
-    var keys=Object.keys(byHc).map(Number).sort(function(a,b){return a-b;});
-    html+='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--green)"></i>シフト数別 平均売上（直近90日）</div>';
-    if(keys.length){
-      var hcData=keys.map(function(k){ var o=byHc[k]; return {label:k+'人', value:Math.round(o.sum/o.n), sub:o.n+'日'}; });
-      html+= msBarChart(hcData,{money:true,color:'var(--green)'})
-        + '<div style="font-size:10px;color:var(--muted);margin-top:4px">その日の出勤人数（勤怠／シフト計画）ごとの平均売上。最適な人員配置の参考に。</div>';
+    var lunchData=msSegBars(storeId,'lunch',win);
+    var dinnerData=msSegBars(storeId,'dinner',win);
+    if(lunchData.length || dinnerData.length){
+      html+='<div class="card"><div class="card-title"><i class="ti ti-sun" style="color:var(--accent2)"></i>ランチ：人数別 平均売上（'+saRangeLabel()+'）</div>'
+        + (lunchData.length ? msBarChart(lunchData,{money:true,color:'var(--accent2)'}) : '<div style="font-size:12px;color:var(--muted);padding:14px;text-align:center">ランチのデータがありません</div>')
+        + '<div style="font-size:10px;color:var(--muted);margin-top:4px">サブ表記＝「日数 ・1人あたり売上」</div></div>';
+      html+='<div class="card"><div class="card-title"><i class="ti ti-moon" style="color:var(--purple)"></i>ディナー：人数別 平均売上（'+saRangeLabel()+'）</div>'
+        + (dinnerData.length ? msBarChart(dinnerData,{money:true,color:'var(--purple)'}) : '<div style="font-size:12px;color:var(--muted);padding:14px;text-align:center">ディナーのデータがありません</div>')
+        + '<div style="font-size:10px;color:var(--muted);margin-top:4px">サブ表記＝「日数 ・1人あたり売上」</div></div>';
     } else {
-      html+='<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">勤怠またはシフト計画のデータが不足しています。<br>シフト計画を公開するか勤怠連携後に表示されます。</div>';
+      var totalData=msTotalHcBars(storeId,win);
+      html+='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--green)"></i>シフト数別 平均売上（'+saRangeLabel()+'）</div>';
+      html+= totalData.length ? (msBarChart(totalData,{money:true,color:'var(--green)'})+'<div style="font-size:10px;color:var(--muted);margin-top:4px">L/D別売上が無いため合計人数で集計。Toast連携で詳細化。</div>')
+        : '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">勤怠／シフト計画のデータが不足しています。</div>';
+      html+='</div>';
     }
-    html+='</div>';
   } else {
     html+='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--green)"></i>シフト数別 平均売上</div>'
-      +'<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">上の店舗セレクタで店舗を選択すると表示されます（全店合算では非対応）</div></div>';
+      +'<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">店舗を選択すると表示されます（全店合算では非対応）</div></div>';
   }
   return html;
 }
