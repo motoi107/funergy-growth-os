@@ -18447,6 +18447,31 @@ function approveItem(id, status) {
         }
       } catch(_e){}
     }
+    if (a.type==='スキル') {
+      try {
+        var _sreqs = getSkillRequests();
+        var _sr = a.ref ? _sreqs.find(function(x){return x.id===a.ref;}) : null;
+        if (!_sr) {
+          var _pm = String(a.title||'').match(/\(([^)]+)\)\s*$/);
+          var _pos = _pm ? _pm[1] : null;
+          var _cands = _sreqs.filter(function(x){ return x.name===a.from && x.status==='申請中' && (!_pos || x.position===_pos); });
+          if (_cands.length===1) _sr = _cands[0];
+        }
+        if (_sr && _sr.status==='申請中') {
+          var _by = (ROLE_CONFIG[curRole]||{}).name || curUserName;
+          var _sid = _sr.store || ((getEmployees().find(function(e){return e.name===_sr.name;})||{}).store) || STORES[0].id;
+          if (status==='approved') {
+            var _prev = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {level:0};
+            var _lv = parseInt(_sr.level)||0;
+            _sr.status='承認'; _sr.reviewer=_by; setSkillRequests(_sreqs);
+            setEmpSkillStore(_sr.name, _sid, _sr.position, {level:_lv, status:'承認', selfComment:_sr.selfComment, mgrComment:_sr.mgrComment||'', nextTask:_sr.nextTask||'', date:_sr.date, evaluator:_by});
+            if ((_prev.status==='承認'?_prev.level:0)!==_lv) addSkillHistory(_sr.name, _sid, _sr.position, (_prev.status==='承認'?_prev.level:0), _lv, _by);
+          } else {
+            _sr.status='差戻し'; _sr.reviewer=_by; setSkillRequests(_sreqs);
+          }
+        }
+      } catch(_e){}
+    }
     try{ addNotif({ type:(status==='approved'?'approved':'reject'), title:(a.type||'申請')+(status==='approved'?' が承認されました':' が却下されました'), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
     renderPage('approval'); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
   }
@@ -23555,7 +23580,8 @@ function submitSkillRequest(position) {
   var comment = document.getElementById('sk-comment').value.trim();
   if (!comment) { alert('自己評価コメントを入力してください'); return; }
   var reqs = getSkillRequests();
-  reqs.push({id:'sr'+Date.now(), name:me, store:emp?emp.store:'', position, level,
+  var _srid = 'sr'+Date.now();
+  reqs.push({id:_srid, name:me, store:emp?emp.store:'', position, level,
     selfComment:comment, evidence:document.getElementById('sk-evidence').value.trim(),
     status:'申請中', mgrComment:'', nextTask:'', date:new Date().toLocaleDateString('ja')});
   setSkillRequests(reqs);
@@ -23563,7 +23589,7 @@ function submitSkillRequest(position) {
   var all = getSkills(); if(!all[me]) all[me]={};
   all[me][position] = Object.assign(all[me][position]||{level:0}, {status:'申請中', selfComment:comment});
   setSkills(all);
-  addApproval({title:`${me} スキル申請 (${position})`, type:'スキル', from:me, store:(STORES.find(s=>s.id===(emp?emp.store:''))||{name:''}).name});
+  addApproval({title:`${me} スキル申請 (${position})`, type:'スキル', from:me, store:(STORES.find(s=>s.id===(emp?emp.store:''))||{name:''}).name, ref:_srid});
   closeModalDirect();
   showToast('スキルを申請しました', 'success');
   renderPage('skill');
