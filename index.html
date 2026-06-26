@@ -6331,170 +6331,148 @@ function saveStoreFixedCosts(){
   renderPage('store_power');
 }
 
-/* ===================== 売上分析（月別・曜日別・シフト数別） ===================== */
-function msMoneyShort(n){
-  n=Math.round(parseFloat(n)||0);
-  if(Math.abs(n)>=1000) return '$'+(Math.round(n/100)/10)+'k';
-  return '$'+n;
-}
-function msBarChart(data, opts){
-  opts=opts||{};
-  var vals=data.map(function(d){return d.value||0;});
-  if(!data.length || vals.every(function(v){return !v;})) return '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">データがありません</div>';
-  var n=data.length;
-  var W=Math.max(340, n*46+30), H=190, padB=40, padT=16;
-  var max=Math.max.apply(null, vals)||1;
-  var col=opts.color||'var(--accent)';
-  var gap=(W-20)/n, bw=Math.min(40, gap-10);
-  var bars='';
-  data.forEach(function(d,i){
-    var h=Math.max(1, Math.round((d.value/max)*(H-padB-padT)));
-    var x=10+i*gap+(gap-bw)/2, y=H-padB-h;
-    bars+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" rx="3" fill="'+col+'"></rect>';
-    bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y-4).toFixed(1)+'" text-anchor="middle" font-size="9" fill="var(--muted)">'+(opts.money?msMoneyShort(d.value):d.value)+'</text>';
-    bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+14)+'" text-anchor="middle" font-size="10" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
-    if(d.sub) bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+26)+'" text-anchor="middle" font-size="8" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
-  });
-  return '<div style="overflow-x:auto"><svg viewBox="0 0 '+W+' '+H+'" style="width:100%;min-width:'+Math.min(W,360)+'px;height:auto">'
-    +'<line x1="10" y1="'+(H-padB)+'" x2="'+(W-10)+'" y2="'+(H-padB)+'" stroke="var(--border)"></line>'
-    +bars+'</svg></div>';
-}
-/* その日の人数（シフト数）：実績勤怠(getTipLabor)優先、無ければ公開シフト計画の人数 */
-function msDayHeadcount(storeId, date){
-  try{
-    var tl=getTipLabor(storeId, date);
-    if(tl){ var n=Object.keys(tl).length; if(n>0) return n; }
-  }catch(e){}
-  try{
-    var dt=new Date(date+'T00:00:00');
-    var wk=mondayMDof(dt);
-    var plan=getShiftPlan(storeId, wk);
-    if(plan && plan.cells){
-      var dow=DOW[(dt.getDay()+6)%7];
-      var names={};
-      Object.keys(plan.cells).forEach(function(k){ if(k.indexOf(dow+'_')===0){ var v=plan.cells[k]; if(v) names[v]=1; } });
-      var c=Object.keys(names).length; if(c>0) return c;
-    }
-  }catch(e){}
-  return null;
-}
-function msAnalysisWindow(){ var to=new Date(); var from=new Date(); from.setDate(from.getDate()-90); return {from:from.toISOString().slice(0,10), to:to.toISOString().slice(0,10)}; }
-
-/* セグメント（lunch/dinner）別のその日の人数：実績勤怠優先、無ければシフト計画 */
-function msSegHeadcount(storeId, date, seg){
-  try{ var tl=getTipLabor(storeId,date); if(tl){ var n=0; Object.keys(tl).forEach(function(k){ if(tl[k] && (tl[k][seg]||0)>0) n++; }); if(n>0) return n; } }catch(e){}
-  try{
-    var dt=new Date(date+'T00:00:00'); var wk=mondayMDof(dt); var plan=getShiftPlan(storeId,wk);
-    if(plan && plan.cells){
-      var dow=DOW[(dt.getDay()+6)%7]; var period=(seg==='lunch')?'Lunch':'Dinner'; var names={};
-      Object.keys(plan.cells).forEach(function(key){ if(key.indexOf(dow+'_'+period+'_')===0){ var v=plan.cells[key]; if(v) names[v]=1; } });
-      var c=Object.keys(names).length; if(c>0) return c;
-    }
-  }catch(e){}
-  return null;
-}
-/* セグメント別：人数→平均売上（＋1人あたり） */
-function msSegBars(storeId, seg, win){
-  var byHc={}; var act=getDailyActuals(storeId);
-  Object.keys(act).forEach(function(date){
-    if(date<win.from||date>win.to) return;
-    var v=act[date]; var sales=(seg==='lunch')?v.lunchSales:v.dinnerSales;
-    if(sales==null||sales<=0) return;
-    var hc=msSegHeadcount(storeId,date,seg); if(hc==null) return;
-    if(!byHc[hc]) byHc[hc]={sum:0,n:0};
-    byHc[hc].sum+=sales; byHc[hc].n++;
-  });
-  return Object.keys(byHc).map(Number).sort(function(a,b){return a-b;}).map(function(k){
-    var o=byHc[k]; var avg=Math.round(o.sum/o.n);
-    return {label:k+'人', value:avg, sub:o.n+'日 ・'+msMoneyShort(Math.round(avg/k))+'/人'};
-  });
-}
-/* フォールバック：1日合計の人数→平均売上 */
-function msTotalHcBars(storeId, win){
-  var byHc={}; var act=getDailyActuals(storeId);
-  Object.keys(act).forEach(function(date){
-    if(date<win.from||date>win.to) return;
-    var v=act[date]; if(v.actual==null||v.actual<=0) return;
-    var hc=msDayHeadcount(storeId,date); if(hc==null) return;
-    if(!byHc[hc]) byHc[hc]={sum:0,n:0};
-    byHc[hc].sum+=v.actual; byHc[hc].n++;
-  });
-  return Object.keys(byHc).map(Number).sort(function(a,b){return a-b;}).map(function(k){ var o=byHc[k]; return {label:k+'人', value:Math.round(o.sum/o.n), sub:o.n+'日'}; });
-}
-
-/* ---- 期間・サブビュー状態 ---- */
-var saRange='3m';      // current/3m/6m/12m
-var saMonthView='budget'; // budget/ld/guests
-var saDowView='ld';    // ld/guests
+/* ===================== 売上分析（月別・曜日別・シフト別） ===================== */
+var saRange='3m', saMonthView='budget', saDowView='ld';
 function saSetRange(r){ saRange=r; renderPage('budget'); }
 function saSetMonthView(v){ saMonthView=v; renderPage('budget'); }
 function saSetDowView(v){ saDowView=v; renderPage('budget'); }
-function saWindow(){
-  var to=new Date(), from=new Date();
-  if(saRange==='current'){ from=new Date(to.getFullYear(),to.getMonth(),1); }
-  else { var d=({'3m':90,'6m':180,'12m':365})[saRange]||90; from.setDate(from.getDate()-d); }
-  return {from:from.toISOString().slice(0,10), to:to.toISOString().slice(0,10)};
-}
+function saWindow(){ var to=new Date(), from=new Date(); if(saRange==='current'){ from=new Date(to.getFullYear(),to.getMonth(),1); } else { var d=({'3m':90,'6m':180,'12m':365})[saRange]||90; from.setDate(from.getDate()-d); } return {from:from.toISOString().slice(0,10), to:to.toISOString().slice(0,10)}; }
 function saMonthCount(){ return ({current:1,'3m':3,'6m':6,'12m':12})[saRange]||3; }
 function saRangeLabel(){ return ({current:'当月','3m':'3ヶ月','6m':'6ヶ月','12m':'12ヶ月'})[saRange]||'3ヶ月'; }
-/* 月のL/D売上合計（日次から） */
-function msMonthLD(stores, mi){
-  var lunch=0,dinner=0;
-  stores.forEach(function(s){ var act=getDailyActuals(s.id); mi.days.forEach(function(d){ var v=act[d.date]; if(!v)return; if(v.lunchSales!=null)lunch+=v.lunchSales; if(v.dinnerSales!=null)dinner+=v.dinnerSales; }); });
-  return {lunch:Math.round(lunch), dinner:Math.round(dinner)};
+function msMoneyShort(n){ n=Math.round(parseFloat(n)||0); var a=Math.abs(n); if(a>=1000000) return '$'+(Math.round(n/100000)/10)+'M'; if(a>=1000) return '$'+(Math.round(n/100)/10)+'k'; return '$'+n; }
+function msMonthLD(stores, mi){ var lunch=0,dinner=0; stores.forEach(function(s){ var act=getDailyActuals(s.id); mi.days.forEach(function(d){ var v=act[d.date]; if(!v)return; if(v.lunchSales!=null)lunch+=v.lunchSales; if(v.dinnerSales!=null)dinner+=v.dinnerSales; }); }); return {lunch:Math.round(lunch), dinner:Math.round(dinner)}; }
+
+/* ---- 共通チャート基盤（コンパクト＆分析調） ---- */
+var CH={H:148, padB:30, padT:14, x0:38, padR:8};
+function _msGrid(W, max, money){
+  var g='', n=4, x1=W-CH.padR;
+  for(var i=0;i<=n;i++){
+    var y=CH.padT+(CH.H-CH.padB-CH.padT)*(i/n);
+    var val=max*(1-i/n);
+    g+='<line x1="'+CH.x0+'" y1="'+y.toFixed(1)+'" x2="'+x1+'" y2="'+y.toFixed(1)+'" stroke="var(--border)" stroke-width="1" opacity="'+(i===n?0.85:0.32)+'"></line>';
+    if(i<n||i===n) g+='<text x="'+(CH.x0-4)+'" y="'+(y+2.6).toFixed(1)+'" text-anchor="end" font-size="7" fill="var(--muted)" opacity="0.85">'+(money?msMoneyShort(val):Math.round(val))+'</text>';
+  }
+  return g;
+}
+function _msSvg(W, inner){
+  return '<div style="overflow-x:auto;margin:2px -4px 0"><svg viewBox="0 0 '+W+' '+CH.H+'" style="width:100%;max-width:'+Math.min(W+30,560)+'px;min-width:'+Math.min(W,300)+'px;height:auto;display:block">'+inner+'</svg></div>';
+}
+function _msEmpty(msg){ return '<div style="font-size:12px;color:var(--muted);padding:14px;text-align:center">'+(msg||'データがありません')+'</div>'; }
+function _msX(W,n){ return {x0:CH.x0, x1:W-CH.padR, slot:((W-CH.padR)-CH.x0)/n, y1:CH.H-CH.padB, top:CH.padT}; }
+
+/* 単一バー */
+function msBarChart(data, opts){
+  opts=opts||{};
+  var vals=data.map(function(d){return d.value||0;});
+  if(!data.length || vals.every(function(v){return !v;})) return _msEmpty();
+  var n=data.length, W=Math.max(300, n*48+44), max=Math.max.apply(null,vals)||1;
+  var ax=_msX(W,n), col=opts.color||'var(--accent)', bw=Math.min(30, ax.slot-10);
+  var g=_msGrid(W,max,opts.money);
+  data.forEach(function(d,i){
+    var h=Math.max(1,Math.round((d.value/max)*(ax.y1-ax.top)));
+    var x=ax.x0+i*ax.slot+(ax.slot-bw)/2, y=ax.y1-h;
+    g+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" rx="3" fill="'+col+'"></rect>';
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y-3).toFixed(1)+'" text-anchor="middle" font-size="7.5" fill="var(--muted)">'+(opts.money?msMoneyShort(d.value):d.value)+'</text>';
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="9" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
+    if(d.sub) g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(ax.y1+22)+'" text-anchor="middle" font-size="7.5" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
+  });
+  return _msSvg(W,g);
 }
 
-/* ---- 積み上げ棒グラフ ---- */
+/* 積み上げバー */
 function msStackedBar(data, opts){
   opts=opts||{};
   var totals=data.map(function(d){return (d.segs||[]).reduce(function(a,s){return a+(s.v||0);},0);});
-  if(!data.length || totals.every(function(v){return !v;})) return '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">データがありません</div>';
-  var n=data.length, W=Math.max(340,n*46+30), H=195, padB=42, padT=18;
-  var max=Math.max.apply(null,totals)||1;
-  var gap=(W-20)/n, bw=Math.min(40,gap-10);
-  var g='';
+  if(!data.length || totals.every(function(v){return !v;})) return _msEmpty();
+  var n=data.length, W=Math.max(300, n*48+44), max=Math.max.apply(null,totals)||1;
+  var ax=_msX(W,n), bw=Math.min(30, ax.slot-10);
+  var g=_msGrid(W,max,opts.money);
   data.forEach(function(d,i){
-    var x=10+i*gap+(gap-bw)/2, yb=H-padB, tot=totals[i];
-    (d.segs||[]).forEach(function(s){
-      var h=Math.max(0,Math.round((s.v/max)*(H-padB-padT)));
-      yb-=h; g+='<rect x="'+x.toFixed(1)+'" y="'+yb.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" fill="'+s.color+'"></rect>';
-    });
-    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(yb-4).toFixed(1)+'" text-anchor="middle" font-size="9" fill="var(--muted)">'+(opts.money?msMoneyShort(tot):tot)+'</text>';
-    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+14)+'" text-anchor="middle" font-size="10" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
-    if(d.sub) g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+26)+'" text-anchor="middle" font-size="8" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
+    var x=ax.x0+i*ax.slot+(ax.slot-bw)/2, yb=ax.y1, tot=totals[i];
+    (d.segs||[]).forEach(function(s){ var h=Math.max(0,Math.round((s.v/max)*(ax.y1-ax.top))); yb-=h; g+='<rect x="'+x.toFixed(1)+'" y="'+yb.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" fill="'+s.color+'"></rect>'; });
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(yb-3).toFixed(1)+'" text-anchor="middle" font-size="7.5" fill="var(--muted)">'+(opts.money?msMoneyShort(tot):tot)+'</text>';
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="9" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
+    if(d.sub) g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(ax.y1+22)+'" text-anchor="middle" font-size="7.5" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
   });
-  return '<div style="overflow-x:auto"><svg viewBox="0 0 '+W+' '+H+'" style="width:100%;min-width:'+Math.min(W,360)+'px;height:auto"><line x1="10" y1="'+(H-padB)+'" x2="'+(W-10)+'" y2="'+(H-padB)+'" stroke="var(--border)"></line>'+g+'</svg></div>';
-}
-function msLegend(items){
-  return '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:4px">'
-    + items.map(function(it){ return '<span><span style="display:inline-block;width:10px;height:10px;background:'+it.color+';border-radius:2px;vertical-align:-1px"></span> '+escapeHtml(it.label)+'</span>'; }).join('') + '</div>';
+  return _msSvg(W,g);
 }
 
-/* ---- 棒＋折れ線（2軸/予算ライン） ---- */
+/* グループ化バー（複数系列を横並び比較） */
+function msGroupedBar(data, opts){
+  opts=opts||{};
+  var allv=[]; data.forEach(function(d){ (d.bars||[]).forEach(function(b){ allv.push(b.value||0); }); });
+  if(!data.length || allv.every(function(v){return !v;})) return _msEmpty();
+  var n=data.length, W=Math.max(320, n*58+44), max=Math.max.apply(null,allv)||1;
+  var ax=_msX(W,n);
+  var g=_msGrid(W,max,opts.money);
+  data.forEach(function(d,i){
+    var nb=(d.bars||[]).length||1, gw=Math.min(46, ax.slot-12), bw=Math.min(16,(gw/nb)-3);
+    var gx=ax.x0+i*ax.slot+(ax.slot-gw)/2;
+    (d.bars||[]).forEach(function(b,j){
+      var h=Math.max(1,Math.round(((b.value||0)/max)*(ax.y1-ax.top)));
+      var x=gx + j*(gw/nb) + ((gw/nb)-bw)/2, y=ax.y1-h;
+      g+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" rx="2.5" fill="'+b.color+'"></rect>';
+      g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y-3).toFixed(1)+'" text-anchor="middle" font-size="7" fill="var(--muted)">'+(opts.money?msMoneyShort(b.value):b.value)+'</text>';
+    });
+    g+='<text x="'+(ax.x0+i*ax.slot+ax.slot/2).toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="9.5" fill="var(--tm)" font-weight="600">'+escapeHtml(String(d.label))+'</text>';
+    if(d.sub) g+='<text x="'+(ax.x0+i*ax.slot+ax.slot/2).toFixed(1)+'" y="'+(ax.y1+22)+'" text-anchor="middle" font-size="7.5" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
+  });
+  return _msSvg(W,g);
+}
+
+/* バー＋折れ線（2軸/予算ライン） */
 function msBarsWithLine(data, opts){
   opts=opts||{};
   var vals=data.map(function(d){return d.value||0;});
-  if(!data.length || vals.every(function(v){return !v;})) return '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">データがありません</div>';
-  var n=data.length, W=Math.max(340,n*46+30), H=195, padB=42, padT=20;
-  var maxBar=Math.max.apply(null,vals)||1;
+  if(!data.length || vals.every(function(v){return !v;})) return _msEmpty();
+  var n=data.length, W=Math.max(300, n*48+44), maxBar=Math.max.apply(null,vals)||1;
   var lineVals=data.map(function(d){return d.lineVal;}).filter(function(v){return v!=null;});
   var lineMax=lineVals.length?Math.max.apply(null,lineVals):0;
   var lineScaleMax=opts.lineScale==='same'?maxBar:(lineMax||1);
-  var gap=(W-20)/n, bw=Math.min(40,gap-10);
-  var bars='', pts=[];
+  var ax=_msX(W,n), bw=Math.min(30, ax.slot-10);
+  var g=_msGrid(W,maxBar,opts.money), pts=[];
   data.forEach(function(d,i){
-    var h=Math.max(1,Math.round((d.value/maxBar)*(H-padB-padT)));
-    var x=10+i*gap+(gap-bw)/2, y=H-padB-h;
-    bars+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" rx="3" fill="'+(d.color||opts.color||'var(--accent)')+'"></rect>';
-    if(d.topLabel) bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y-4).toFixed(1)+'" text-anchor="middle" font-size="9" fill="'+(d.topColor||'var(--muted)')+'">'+escapeHtml(String(d.topLabel))+'</text>';
-    bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+14)+'" text-anchor="middle" font-size="10" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
-    if(d.sub) bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+26)+'" text-anchor="middle" font-size="8" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
-    if(d.lineVal!=null){ var ly=H-padB-Math.round((d.lineVal/lineScaleMax)*(H-padB-padT)); pts.push([(x+bw/2),ly]); }
+    var h=Math.max(1,Math.round((d.value/maxBar)*(ax.y1-ax.top)));
+    var x=ax.x0+i*ax.slot+(ax.slot-bw)/2, y=ax.y1-h;
+    g+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" rx="3" fill="'+(d.color||opts.color||'var(--accent)')+'"></rect>';
+    if(d.topLabel) g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y-3).toFixed(1)+'" text-anchor="middle" font-size="7.5" fill="'+(d.topColor||'var(--muted)')+'">'+escapeHtml(String(d.topLabel))+'</text>';
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="9" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
+    if(d.sub) g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(ax.y1+22)+'" text-anchor="middle" font-size="7.5" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
+    if(d.lineVal!=null){ var ly=ax.y1-Math.round((d.lineVal/lineScaleMax)*(ax.y1-ax.top)); pts.push([(x+bw/2),ly]); }
   });
-  var line='';
-  if(pts.length>1) line='<polyline points="'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+(opts.lineColor||'var(--purple)')+'" stroke-width="2"'+(opts.lineDash?' stroke-dasharray="4 3"':'')+'></polyline>';
-  var dots=pts.map(function(p){return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.5" fill="'+(opts.lineColor||'var(--purple)')+'"></circle>';}).join('');
-  return '<div style="overflow-x:auto"><svg viewBox="0 0 '+W+' '+H+'" style="width:100%;min-width:'+Math.min(W,360)+'px;height:auto"><line x1="10" y1="'+(H-padB)+'" x2="'+(W-10)+'" y2="'+(H-padB)+'" stroke="var(--border)"></line>'+bars+line+dots+'</svg></div>';
+  if(pts.length>1) g+='<polyline points="'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+(opts.lineColor||'var(--purple)')+'" stroke-width="1.8"'+(opts.lineDash?' stroke-dasharray="4 3"':'')+'></polyline>';
+  g+=pts.map(function(p){return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.3" fill="'+(opts.lineColor||'var(--purple)')+'"></circle>';}).join('');
+  return _msSvg(W,g);
+}
+function msLegend(items){ return '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:var(--muted);margin-top:2px">'+items.map(function(it){ return '<span><span style="display:inline-block;width:9px;height:9px;background:'+it.color+';border-radius:2px;vertical-align:-1px"></span> '+escapeHtml(it.label)+'</span>'; }).join('')+'</div>'; }
+
+/* ---- シフト人数（セグメント別） ---- */
+function msDayHeadcount(storeId, date){
+  try{ var tl=getTipLabor(storeId, date); if(tl){ var n=Object.keys(tl).length; if(n>0) return n; } }catch(e){}
+  try{ var dt=new Date(date+'T00:00:00'); var plan=getShiftPlan(storeId, mondayMDof(dt)); if(plan&&plan.cells){ var dow=DOW[(dt.getDay()+6)%7]; var names={}; Object.keys(plan.cells).forEach(function(k){ if(k.indexOf(dow+'_')===0){ var v=plan.cells[k]; if(v) names[v]=1; } }); var c=Object.keys(names).length; if(c>0) return c; } }catch(e){}
+  return null;
+}
+function msSegHeadcount(storeId, date, seg){
+  try{ var tl=getTipLabor(storeId,date); if(tl){ var n=0; Object.keys(tl).forEach(function(k){ if(tl[k] && (tl[k][seg]||0)>0) n++; }); if(n>0) return n; } }catch(e){}
+  try{ var dt=new Date(date+'T00:00:00'); var plan=getShiftPlan(storeId, mondayMDof(dt)); if(plan&&plan.cells){ var dow=DOW[(dt.getDay()+6)%7]; var period=(seg==='lunch')?'Lunch':'Dinner'; var names={}; Object.keys(plan.cells).forEach(function(key){ if(key.indexOf(dow+'_'+period+'_')===0){ var v=plan.cells[key]; if(v) names[v]=1; } }); var c=Object.keys(names).length; if(c>0) return c; } }catch(e){}
+  return null;
+}
+/* セグメント別 {hc:{sum,n}} */
+function msSegMap(storeId, seg, win){
+  var map={}; var act=getDailyActuals(storeId);
+  Object.keys(act).forEach(function(date){ if(date<win.from||date>win.to) return; var v=act[date]; var sales=(seg==='lunch')?v.lunchSales:v.dinnerSales; if(sales==null||sales<=0) return; var hc=msSegHeadcount(storeId,date,seg); if(hc==null) return; if(!map[hc]) map[hc]={sum:0,n:0}; map[hc].sum+=sales; map[hc].n++; });
+  return map;
+}
+function msSegBars(storeId, seg, win){ var map=msSegMap(storeId,seg,win); return Object.keys(map).map(Number).sort(function(a,b){return a-b;}).map(function(k){ var o=map[k]; var avg=Math.round(o.sum/o.n); return {label:k+'人', value:avg, sub:o.n+'日 ・'+msMoneyShort(Math.round(avg/k))+'/人'}; }); }
+function msTotalHcBars(storeId, win){ var byHc={}; var act=getDailyActuals(storeId); Object.keys(act).forEach(function(date){ if(date<win.from||date>win.to) return; var v=act[date]; if(v.actual==null||v.actual<=0) return; var hc=msDayHeadcount(storeId,date); if(hc==null) return; if(!byHc[hc]) byHc[hc]={sum:0,n:0}; byHc[hc].sum+=v.actual; byHc[hc].n++; }); return Object.keys(byHc).map(Number).sort(function(a,b){return a-b;}).map(function(k){ var o=byHc[k]; return {label:k+'人', value:Math.round(o.sum/o.n), sub:o.n+'日'}; }); }
+
+function saCard(title, icon, iconCol, controls, body){
+  return '<div class="card" style="padding:12px 14px">'
+    +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><i class="ti '+icon+'" style="color:'+iconCol+';font-size:15px"></i><span style="font-size:13px;font-weight:600">'+title+'</span>'
+    +(controls?'<span style="margin-left:auto;display:flex;gap:4px">'+controls+'</span>':'')+'</div>'+body+'</div>';
+}
+function saSegBtns(cur, setter, opts){
+  return opts.map(function(o){ return '<button onclick="'+setter+'(\''+o[0]+'\')" style="font-size:10.5px;padding:3px 9px;border-radius:14px;border:1px solid '+(cur===o[0]?'var(--accent)':'var(--border)')+';background:'+(cur===o[0]?'var(--accent)':'transparent')+';color:'+(cur===o[0]?'#fff':'var(--muted)')+';cursor:pointer">'+o[1]+'</button>'; }).join('');
 }
 
 function renderSalesAnalysis(){
@@ -6505,92 +6483,57 @@ function renderSalesAnalysis(){
   var win=saWindow();
   var html='';
 
-  // 期間切替
-  html+='<div class="card" style="padding:8px 10px"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">期間</span>'
-    + [['current','当月'],['3m','3ヶ月'],['6m','6ヶ月'],['12m','12ヶ月']].map(function(r){ return '<button class="btn btn-sm '+(saRange===r[0]?'btn-primary':'btn-secondary')+'" style="font-size:11px;padding:4px 10px" onclick="saSetRange(\''+r[0]+'\')">'+r[1]+'</button>'; }).join('')
+  // 期間切替（セグメントピル）
+  html+='<div class="card" style="padding:9px 12px;margin-bottom:8px"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><i class="ti ti-calendar-stats" style="color:var(--accent);font-size:14px"></i><span style="font-size:11px;color:var(--muted);margin-right:2px">期間</span>'
+    + saSegBtns(saRange,'saSetRange',[['current','当月'],['3m','3ヶ月'],['6m','6ヶ月'],['12m','12ヶ月']])
     + '</div></div>';
 
-  // 1) 月別売上（サブタブ：予実 / L/D / 客数）
-  var mc=saMonthCount();
-  var months=[];
-  for(var off=-(mc-1); off<=0; off++){
-    var mi=msMonthInfo(off);
-    var a={sales:0,budget:0,guests:0}; stores.forEach(function(s){ var ag=msAgg(s.id,mi); a.sales+=ag.sales||0; a.budget+=ag.budget||0; a.guests+=ag.guests||0; });
-    var ld=msMonthLD(stores, mi);
-    months.push({label:(mi.m+1)+'月', sales:Math.round(a.sales), budget:Math.round(a.budget), guests:Math.round(a.guests), lunch:ld.lunch, dinner:ld.dinner});
-  }
-  html+='<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>月別売上（'+escapeHtml(scopeName)+'）</div>';
-  html+='<div style="display:flex;gap:5px;margin-bottom:8px">'
-    + [['budget','予実'],['ld','L/D'],['guests','客数']].map(function(v){ return '<button class="btn btn-sm '+(saMonthView===v[0]?'btn-primary':'btn-secondary')+'" style="font-size:11px;padding:3px 10px" onclick="saSetMonthView(\''+v[0]+'\')">'+v[1]+'</button>'; }).join('')
-    + '</div>';
+  // 月別
+  var mc=saMonthCount(), months=[];
+  for(var off=-(mc-1); off<=0; off++){ var mi=msMonthInfo(off); var a={sales:0,budget:0,guests:0}; stores.forEach(function(s){ var ag=msAgg(s.id,mi); a.sales+=ag.sales||0; a.budget+=ag.budget||0; a.guests+=ag.guests||0; }); var ld=msMonthLD(stores,mi); months.push({label:(mi.m+1)+'月', sales:Math.round(a.sales), budget:Math.round(a.budget), guests:Math.round(a.guests), lunch:ld.lunch, dinner:ld.dinner}); }
+  var mBody, mNote='';
   if(saMonthView==='budget'){
-    var bdata=months.map(function(m,i){
-      var ach=m.budget?Math.round(m.sales/m.budget*100):0;
-      var prev=i>0?months[i-1].sales:null;
-      var delta=(prev&&prev>0)?Math.round((m.sales-prev)/prev*100):null;
-      return {label:m.label, value:m.sales, color:(typeof budgetScore==='function'?budgetScore(ach).color:'var(--accent)'), lineVal:m.budget,
-        topLabel:(delta==null?'':(delta>=0?'+':'')+delta+'%'), topColor:(delta==null?'var(--muted)':(delta>=0?'var(--eval-high)':'var(--eval-low)'))};
-    });
-    html+=msBarsWithLine(bdata,{money:true,lineScale:'same',lineColor:'var(--muted)',lineDash:true});
-    html+='<div style="font-size:10px;color:var(--muted);margin-top:4px">バー色＝予算達成率／破線＝予算ライン／上の数字＝前月比</div>';
+    var bdata=months.map(function(m,i){ var ach=m.budget?Math.round(m.sales/m.budget*100):0; var prev=i>0?months[i-1].sales:null; var delta=(prev&&prev>0)?Math.round((m.sales-prev)/prev*100):null; return {label:m.label, value:m.sales, color:(typeof budgetScore==='function'?budgetScore(ach).color:'var(--accent)'), lineVal:m.budget, topLabel:(delta==null?'':(delta>=0?'+':'')+delta+'%'), topColor:(delta==null?'var(--muted)':(delta>=0?'var(--eval-high)':'var(--eval-low)'))}; });
+    mBody=msBarsWithLine(bdata,{money:true,lineScale:'same',lineColor:'var(--muted)',lineDash:true});
+    mNote='バー色＝予算達成率／破線＝予算／上＝前月比';
   } else if(saMonthView==='ld'){
-    var ldata=months.map(function(m){ return {label:m.label, segs:[{v:m.lunch,color:'#9fc4f4'},{v:m.dinner,color:'#185fa5'}]}; });
-    html+=msStackedBar(ldata,{money:true})+msLegend([{label:'ランチ',color:'#9fc4f4'},{label:'ディナー',color:'#185fa5'}]);
+    mBody=msStackedBar(months.map(function(m){return {label:m.label, segs:[{v:m.lunch,color:'#9fc4f4'},{v:m.dinner,color:'#185fa5'}]};}),{money:true})+msLegend([{label:'ランチ',color:'#9fc4f4'},{label:'ディナー',color:'#185fa5'}]);
   } else {
-    var gdata=months.map(function(m){ return {label:m.label, value:m.sales, color:'var(--accent)', lineVal:m.guests, sub:(m.guests?m.guests.toLocaleString()+'人':'')}; });
-    html+=msBarsWithLine(gdata,{money:true,lineScale:'auto',lineColor:'var(--purple)'});
-    html+='<div style="font-size:10px;color:var(--muted);margin-top:4px"><span style="color:var(--accent)">■</span> 売上　<span style="color:var(--purple)">●</span> 客数（折れ線・右軸）</div>';
+    mBody=msBarsWithLine(months.map(function(m){return {label:m.label, value:m.sales, color:'var(--accent)', lineVal:m.guests, sub:(m.guests?m.guests.toLocaleString()+'人':'')};}),{money:true,lineScale:'auto',lineColor:'var(--purple)'});
+    mNote='■売上　●客数（折れ線・右軸）';
   }
-  html+='</div>';
+  html+=saCard('月別売上 · '+escapeHtml(scopeName), 'ti-chart-bar', 'var(--accent)', saSegBtns(saMonthView,'saSetMonthView',[['budget','予実'],['ld','L/D'],['guests','客数']]), mBody+(mNote?'<div style="font-size:9.5px;color:var(--muted);margin-top:3px">'+mNote+'</div>':''));
 
-  // 2) 曜日別（サブタブ：L/D / 客数単価）
+  // 曜日別
   var byDow={}; DOW.forEach(function(d){ byDow[d]={sales:0,lunch:0,dinner:0,guests:0,n:0}; });
-  stores.forEach(function(s){
-    var act=getDailyActuals(s.id);
-    Object.keys(act).forEach(function(date){
-      if(date<win.from||date>win.to) return;
-      var v=act[date]; if(v.actual==null||v.actual<=0) return;
-      var dt=new Date(date+'T00:00:00'); var dow=DOW[(dt.getDay()+6)%7]; var o=byDow[dow];
-      o.sales+=v.actual; o.n++;
-      if(v.lunchSales!=null)o.lunch+=v.lunchSales; if(v.dinnerSales!=null)o.dinner+=v.dinnerSales;
-      if(v.guests!=null)o.guests+=v.guests;
-    });
-  });
-  html+='<div class="card"><div class="card-title"><i class="ti ti-calendar-week" style="color:var(--accent2)"></i>曜日別 平均売上（'+saRangeLabel()+'）</div>';
-  html+='<div style="display:flex;gap:5px;margin-bottom:8px">'
-    + [['ld','L/D積み上げ'],['guests','客数・客単価']].map(function(v){ return '<button class="btn btn-sm '+(saDowView===v[0]?'btn-primary':'btn-secondary')+'" style="font-size:11px;padding:3px 10px" onclick="saSetDowView(\''+v[0]+'\')">'+v[1]+'</button>'; }).join('')
-    + '</div>';
+  stores.forEach(function(s){ var act=getDailyActuals(s.id); Object.keys(act).forEach(function(date){ if(date<win.from||date>win.to) return; var v=act[date]; if(v.actual==null||v.actual<=0) return; var dt=new Date(date+'T00:00:00'); var o=byDow[DOW[(dt.getDay()+6)%7]]; o.sales+=v.actual; o.n++; if(v.lunchSales!=null)o.lunch+=v.lunchSales; if(v.dinnerSales!=null)o.dinner+=v.dinnerSales; if(v.guests!=null)o.guests+=v.guests; }); });
+  var dBody, dNote='';
   if(saDowView==='ld'){
-    var wld=DOW.map(function(d){ var o=byDow[d]; var div=o.n||1; return {label:d, segs:[{v:Math.round(o.lunch/div),color:'#9fc4f4'},{v:Math.round(o.dinner/div),color:'#185fa5'}], sub:o.n?o.n+'日':''}; });
-    html+=msStackedBar(wld,{money:true})+msLegend([{label:'ランチ',color:'#9fc4f4'},{label:'ディナー',color:'#185fa5'}]);
+    dBody=msStackedBar(DOW.map(function(d){ var o=byDow[d]; var div=o.n||1; return {label:d, segs:[{v:Math.round(o.lunch/div),color:'#9fc4f4'},{v:Math.round(o.dinner/div),color:'#185fa5'}], sub:o.n?o.n+'日':''}; }),{money:true})+msLegend([{label:'ランチ',color:'#9fc4f4'},{label:'ディナー',color:'#185fa5'}]);
   } else {
-    var wg=DOW.map(function(d){ var o=byDow[d]; var div=o.n||1; var ag=Math.round(o.guests/div); var spend=o.guests?Math.round(o.sales/o.guests*100)/100:0; return {label:d, value:ag, color:'var(--accent2)', lineVal:spend, sub:o.guests?('$'+spend):''}; });
-    html+=msBarsWithLine(wg,{money:false,lineScale:'auto',lineColor:'var(--purple)'});
-    html+='<div style="font-size:10px;color:var(--muted);margin-top:4px"><span style="color:var(--accent2)">■</span> 平均客数　<span style="color:var(--purple)">●</span> 客単価（折れ線）</div>';
+    dBody=msBarsWithLine(DOW.map(function(d){ var o=byDow[d]; var div=o.n||1; var ag=Math.round(o.guests/div); var spend=o.guests?Math.round(o.sales/o.guests*100)/100:0; return {label:d, value:ag, color:'var(--accent2)', lineVal:spend, sub:o.guests?('$'+spend):''}; }),{money:false,lineScale:'auto',lineColor:'var(--purple)'});
+    dNote='■平均客数　●客単価（折れ線）';
   }
-  html+='</div>';
+  html+=saCard('曜日別 平均売上 · '+saRangeLabel(), 'ti-calendar-week', 'var(--accent2)', saSegBtns(saDowView,'saSetDowView',[['ld','L/D'],['guests','客数単価']]), dBody+(dNote?'<div style="font-size:9.5px;color:var(--muted);margin-top:3px">'+dNote+'</div>':''));
 
-  // 3) シフト数別（ランチ/ディナー別・既存）
+  // シフト別（ランチ/ディナーを1グラフでグループ比較）
   if(single){
-    var lunchData=msSegBars(storeId,'lunch',win);
-    var dinnerData=msSegBars(storeId,'dinner',win);
-    if(lunchData.length || dinnerData.length){
-      html+='<div class="card"><div class="card-title"><i class="ti ti-sun" style="color:var(--accent2)"></i>ランチ：人数別 平均売上（'+saRangeLabel()+'）</div>'
-        + (lunchData.length ? msBarChart(lunchData,{money:true,color:'var(--accent2)'}) : '<div style="font-size:12px;color:var(--muted);padding:14px;text-align:center">ランチのデータがありません</div>')
-        + '<div style="font-size:10px;color:var(--muted);margin-top:4px">サブ表記＝「日数 ・1人あたり売上」</div></div>';
-      html+='<div class="card"><div class="card-title"><i class="ti ti-moon" style="color:var(--purple)"></i>ディナー：人数別 平均売上（'+saRangeLabel()+'）</div>'
-        + (dinnerData.length ? msBarChart(dinnerData,{money:true,color:'var(--purple)'}) : '<div style="font-size:12px;color:var(--muted);padding:14px;text-align:center">ディナーのデータがありません</div>')
-        + '<div style="font-size:10px;color:var(--muted);margin-top:4px">サブ表記＝「日数 ・1人あたり売上」</div></div>';
+    var lmap=msSegMap(storeId,'lunch',win), dmap=msSegMap(storeId,'dinner',win);
+    var keys={}; Object.keys(lmap).forEach(function(k){keys[k]=1;}); Object.keys(dmap).forEach(function(k){keys[k]=1;});
+    var ks=Object.keys(keys).map(Number).sort(function(a,b){return a-b;});
+    if(ks.length){
+      var gdata=ks.map(function(k){
+        var lo=lmap[k], doo=dmap[k];
+        var lav=lo?Math.round(lo.sum/lo.n):0, dav=doo?Math.round(doo.sum/doo.n):0;
+        return {label:k+'人', bars:[{value:lav,color:'#3b82f6'},{value:dav,color:'#8b5cf6'}], sub:'L'+(lo?lo.n:0)+'/D'+(doo?doo.n:0)+'日'};
+      });
+      html+=saCard('シフト人数別 平均売上（ランチ vs ディナー）', 'ti-users-group', 'var(--green)', '', msGroupedBar(gdata,{money:true})+msLegend([{label:'ランチ',color:'#3b82f6'},{label:'ディナー',color:'#8b5cf6'}])+'<div style="font-size:9.5px;color:var(--muted);margin-top:3px">同じ人数でのランチ/ディナー売上を比較。サブ＝L/D各日数</div>');
     } else {
       var totalData=msTotalHcBars(storeId,win);
-      html+='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--green)"></i>シフト数別 平均売上（'+saRangeLabel()+'）</div>';
-      html+= totalData.length ? (msBarChart(totalData,{money:true,color:'var(--green)'})+'<div style="font-size:10px;color:var(--muted);margin-top:4px">L/D別売上が無いため合計人数で集計。Toast連携で詳細化。</div>')
-        : '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">勤怠／シフト計画のデータが不足しています。</div>';
-      html+='</div>';
+      html+=saCard('シフト人数別 平均売上', 'ti-users-group', 'var(--green)', '', totalData.length?(msBarChart(totalData,{money:true,color:'var(--green)'})+'<div style="font-size:9.5px;color:var(--muted);margin-top:3px">L/D別売上が無いため合計人数で集計</div>'):_msEmpty('勤怠／シフト計画のデータが不足しています'));
     }
   } else {
-    html+='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--green)"></i>シフト数別 平均売上</div>'
-      +'<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">店舗を選択すると表示されます（全店合算では非対応）</div></div>';
+    html+=saCard('シフト人数別 平均売上', 'ti-users-group', 'var(--green)', '', _msEmpty('店舗を選択すると表示されます（全店合算は非対応）'));
   }
   return html;
 }
