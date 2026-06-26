@@ -4319,27 +4319,34 @@ function openStoreSwitcher() {
   var rc = ROLE_CONFIG[curRole];
   if (!rc.allStores && curRole !== 'am') return;
   var stores = sortByLoginOrder(curRole === 'am' ? activeStores().filter(s => myAmStores().includes(s.id)) : activeStores());
-  openModal(`<div class="modal-title">店舗切替 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  var showOffice = ['ceo','gm','office'].includes(curRole);
+  openModal(`<div class="modal-title">ロケーション切替 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="store-grid">
       ${(rc.allStores ? [{id:'ALL',name:'全店舗',color:'#6b7591'},...stores] : stores).map(s=>
         `<div class="store-btn${s.id===curStore?' sel':''}" style="border-left-color:${s.color}" onclick="switchStore('${s.id}')">${s.name}</div>`
       ).join('')}
-    </div>`);
+    </div>
+    ${showOffice?`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)"><div class="store-picker-label">本部</div><div class="store-grid"><div class="store-btn${curStore==='OFFICE'?' sel':''}" style="border-left-color:#8b5cf6" onclick="switchStore('OFFICE')"><i class="ti ti-building-skyscraper" style="font-size:13px"></i> オフィス</div></div></div>`:''}`);
 }
 
 function switchStore(id) {
   curStore = id;
-  var storeName = id === 'ALL' ? '全店舗' : (STORES.find(s=>s.id===id)||{name:id}).name;
-  document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
+  var storeName = id === 'ALL' ? '全店舗' : (id==='OFFICE' ? 'オフィス' : (STORES.find(s=>s.id===id)||{name:id}).name);
+  var sicon = id==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
+  document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
   closeModalDirect();
+  if (id === 'OFFICE') { curPage = 'office_mgr'; if(typeof buildNav==='function') buildNav(); renderPage('office_mgr'); window.scrollTo(0,0); return; }
   renderPage(curPage);
 }
+/* オフィスモードで表示を許可するページ（それ以外はハブへ集約） */
+var OFFICE_OK_PAGES = ['office_mgr','invoice','acct_review','acct_export','supply_order','order','monthly','budget','profile','settings','notifications','staff_dev','approval','vacation'];
 
 /* ============================================================
    ROUTER
 ============================================================ */
 function renderPage(page) {
   var el = document.getElementById('main-content');
+  if (curStore === 'OFFICE' && OFFICE_OK_PAGES.indexOf(page) < 0) { el.innerHTML = renderOfficeMgr(); window.scrollTo(0,0); return; }
   switch(page) {
     case 'dashboard':    el.innerHTML = renderDashboard(); break;
     case 'store_cmd':    el.innerHTML = renderStoreCmd(); break;
@@ -16179,7 +16186,7 @@ function setAcctMonth(delta) { acctExportMonth += delta; renderPage('acct_export
 /* ============================================================
    オフィス管理（事務・経理の集約：経理業務 / 勤怠 / メンバー・育成）
 ============================================================ */
-var officeMgrTab = 'acct';
+var officeMgrTab = 'dash';
 function setOfficeMgrTab(t){ officeMgrTab=t; renderPage('office_mgr'); }
 function officeMembers(){ return getEmployees().filter(function(e){ return (e.role==='office'||e.role==='office_crew') && e.status!=='退職'; }); }
 function officeLaunch(page, label){
@@ -16190,15 +16197,167 @@ function officeLaunch(page, label){
     +'</div>';
 }
 function renderOfficeMgr(){
-  var html = '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> オフィス管理</div><div class="section-sub">事務・経理の業務と勤怠・育成を集約</div></div></div>';
-  html += '<div class="phase-tabs">'
-    +'<div class="phase-tab'+(officeMgrTab==='acct'?' active':'')+'" onclick="setOfficeMgrTab(\'acct\')"><i class="ti ti-calculator" style="font-size:12px"></i> 経理業務</div>'
-    +'<div class="phase-tab'+(officeMgrTab==='attend'?' active':'')+'" onclick="setOfficeMgrTab(\'attend\')"><i class="ti ti-clock" style="font-size:12px"></i> 勤怠</div>'
-    +'<div class="phase-tab'+(officeMgrTab==='member'?' active':'')+'" onclick="setOfficeMgrTab(\'member\')"><i class="ti ti-users" style="font-size:12px"></i> メンバー・育成</div>'
-    +'</div>';
+  var html = '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> オフィス（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
+  var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['export','出力センター','ti-file-export'],['attend','勤怠','ti-clock'],['tasks','タスク','ti-checklist'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];
+  html += '<div class="phase-tabs" style="flex-wrap:wrap">'
+    + tabs.map(function(t){ return '<div class="phase-tab'+(officeMgrTab===t[0]?' active':'')+'" onclick="setOfficeMgrTab(\''+t[0]+'\')"><i class="ti '+t[2]+'" style="font-size:12px"></i> '+t[1]+'</div>'; }).join('')
+    + '</div>';
+  if(officeMgrTab==='export') return html + renderOfficeExport();
   if(officeMgrTab==='attend') return html + renderOfficeAttend();
+  if(officeMgrTab==='tasks')  return html + renderOfficeTasks();
+  if(officeMgrTab==='report') return html + renderOfficeReport();
   if(officeMgrTab==='member') return html + renderOfficeMember();
-  return html + renderOfficeAcct();
+  return html + renderOfficeDash();
+}
+
+/* ---------- ① ダッシュボード ---------- */
+function pendingAcctReviewCount(){ try{ return ls('invoices',[]).filter(function(i){var s=i.reviewStatus||'未確認'; return s==='未確認'||s==='確認中';}).length; }catch(e){ return 0; } }
+function officeTodayStr(){ return new Date().toISOString().slice(0,10); }
+function officeOnDutyCount(){
+  var today=officeTodayStr(), n=0;
+  officeMembers().forEach(function(e){ var recs=getOfficeAttend(e.name)||[]; var r=recs.find(function(x){return x.date===today;}); if(r && r.in && !r.out) n++; });
+  return n;
+}
+function officeOpenTasks(){ try{ return getTasksN().filter(function(t){ return t.store==='OFFICE' && t.status!=='完了'; }); }catch(e){ return []; } }
+function officePendingApprovals(){
+  var n=0;
+  try{ getSupplyOrders().forEach(function(o){ if(o.status==='承認待ち'||o.status==='発注待機') n++; }); }catch(e){}
+  try{ n += (typeof pendingAcctReviewCount==='function')?pendingAcctReviewCount():0; }catch(e){}
+  return n;
+}
+function renderOfficeDash(){
+  var mem=officeMembers(), onduty=officeOnDutyCount(), tasks=officeOpenTasks(), appr=officePendingApprovals();
+  var now=new Date(); var ym=now.getFullYear()+'年'+(now.getMonth()+1)+'月';
+  function tile(label,val,sub,col,act){
+    return '<div style="flex:1;min-width:150px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px'+(act?';cursor:pointer':'')+'"'+(act?' onclick="'+act+'"':'')+'>'
+      +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+label+'</div>'
+      +'<div style="font-size:24px;font-weight:800;color:'+(col||'var(--tm)')+'">'+val+'</div>'
+      +(sub?'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+sub+'</div>':'')+'</div>';
+  }
+  var html='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
+    + tile('出勤中','<span style="font-size:18px">'+onduty+'</span> / '+mem.length+'名', 'オフィスメンバー', onduty>0?'var(--green)':'var(--muted)', "setOfficeMgrTab('attend')")
+    + tile('未処理タスク', tasks.length, '進行中・未着手', tasks.length>0?'var(--accent)':'var(--muted)', "setOfficeMgrTab('tasks')")
+    + tile('承認待ち', appr, '発注・経理レビュー', appr>0?'var(--yellow)':'var(--muted)', "setOfficeMgrTab('report')")
+    + tile('今月', ym, '締め・出力の対象月', 'var(--accent2)', "setOfficeMgrTab('export')")
+    + '</div>';
+  // クイックアクション
+  html+='<div class="card"><div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>クイックアクセス</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">'
+    + officeLaunch('invoice',{icon:'ti-file-invoice',title:'請求書',sub:'Invoice'})
+    + officeLaunch('acct_review',{icon:'ti-checklist',title:'経理レビュー',sub:'区分・承認'})
+    + '<div class="quick-card" onclick="setOfficeMgrTab(\'export\')" style="cursor:pointer;border:1px solid var(--border);border-radius:12px;padding:14px;text-align:center"><i class="ti ti-file-export" style="font-size:22px;color:var(--accent)"></i><div style="font-size:13px;font-weight:600;margin-top:6px">出力センター</div><div style="font-size:11px;color:var(--muted)">CSV/帳票</div></div>'
+    + '</div></div>';
+  // 直近タスク
+  html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>未処理タスク <span class="tag tag-gray" style="margin-left:auto">'+tasks.length+'</span></div>';
+  if(!tasks.length) html+='<p style="font-size:12px;color:var(--muted);text-align:center;padding:10px">未処理のタスクはありません</p>';
+  else tasks.slice(0,5).forEach(function(t){ try{ html+=taskCardHtml(t); }catch(e){ html+='<div style="font-size:13px;padding:6px 0;border-top:1px solid var(--border)">'+escapeHtml(t.title||'')+'</div>'; } });
+  if(tasks.length>5) html+='<div style="text-align:center;margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\'tasks\')">すべて見る</button></div>';
+  html+='</div>';
+  return html;
+}
+
+/* ---------- ② 出力センター ---------- */
+function renderOfficeExport(){
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:10px"><i class="ti ti-info-circle"></i> 全ての帳票・CSV出力をここから。各ボタンで該当機能へ移動します。</div>';
+  function grp(title, items){
+    var h='<div class="card"><div class="card-title">'+title+'</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">';
+    h+=items.map(function(it){
+      var onclick = it.fn ? it.fn : "go('"+it.page+"')";
+      return '<div onclick="'+onclick+'" style="cursor:pointer;border:1px solid var(--border);border-radius:12px;padding:13px;text-align:center"><i class="ti '+it.icon+'" style="font-size:21px;color:'+(it.col||'var(--accent)')+'"></i><div style="font-size:12.5px;font-weight:600;margin-top:6px">'+it.title+'</div><div style="font-size:10.5px;color:var(--muted)">'+it.sub+'</div></div>';
+    }).join('');
+    return h+'</div></div>';
+  }
+  html+=grp('<i class="ti ti-file-invoice" style="color:var(--accent)"></i>請求書・レシート（Drive）',[
+    {page:'invoice', icon:'ti-file-invoice', title:'請求書', sub:'店舗別・Drive保存'},
+    {page:'acct_export', icon:'ti-credit-card', title:'カードレシート', sub:'社員別・Drive保存'},
+    {page:'acct_review', icon:'ti-checklist', title:'経理レビュー', sub:'区分・承認'}
+  ]);
+  html+=grp('<i class="ti ti-cash" style="color:var(--green)"></i>給与・経理CSV',[
+    {page:'acct_export', icon:'ti-table-export', title:'給与CSV（店舗）', sub:'店舗別Payroll'},
+    {fn:"setOfficeMgrTab('attend')", icon:'ti-building-skyscraper', title:'給与CSV（オフィス）', sub:'月給/時給混在', col:'var(--accent2)'},
+    {page:'acct_export', icon:'ti-file-spreadsheet', title:'経理区分エクスポート', sub:'区分別集計'}
+  ]);
+  html+=grp('<i class="ti ti-chart-bar" style="color:var(--accent2)"></i>売上・発注・分析',[
+    {page:'monthly', icon:'ti-calendar-stats', title:'月次サマリー', sub:'KPI・売上分析'},
+    {page:'supply_order', icon:'ti-truck-delivery', title:'発注CSV', sub:'Amazon/業者'},
+    {page:'budget', icon:'ti-chart-dots', title:'予実管理', sub:'全社/店舗'}
+  ]);
+  // 出力ログ（簡易）
+  var logs=ls('office_export_log',[]);
+  html+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--muted)"></i>出力ログ <span class="tag tag-gray" style="margin-left:auto">'+logs.length+'</span></div>';
+  if(!logs.length) html+='<p style="font-size:11.5px;color:var(--muted);text-align:center;padding:8px">まだ記録がありません。オフィスから出力すると履歴が残ります。</p>';
+  else logs.slice(0,12).forEach(function(l){ html+='<div style="display:flex;gap:8px;font-size:12px;padding:5px 0;border-top:1px solid var(--border)"><span style="flex:1">'+escapeHtml(l.label)+'</span><span style="color:var(--muted)">'+escapeHtml(l.by||'')+'・'+escapeHtml(l.date||'')+'</span></div>'; });
+  html+='</div>';
+  return html;
+}
+function logOfficeExport(label){ var l=ls('office_export_log',[]); l.unshift({label:label, by:(ROLE_CONFIG[curRole]||{}).name||curUserName, date:new Date().toLocaleString('ja')}); lsSet('office_export_log', l.slice(0,50)); }
+
+/* ---------- ③ タスク（オフィス） ---------- */
+function renderOfficeTasks(){
+  var canEdit=['ceo','gm','office'].includes(curRole);
+  var tasks; try{ tasks=getTasksN().filter(function(t){return t.store==='OFFICE';}); }catch(e){ tasks=[]; }
+  var html='';
+  if(canEdit){
+    html+='<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px"><input id="office-quick-task" placeholder="オフィスタスクを追加（Enterで登録）" style="flex:1;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface);font-size:13px" onkeydown="if(event.key===\'Enter\'){officeQuickAddTask();}"><button class="btn btn-primary btn-sm" onclick="officeQuickAddTask()"><i class="ti ti-plus"></i></button></div>'
+      +'<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="openTaskModal(\'店舗\',\'OFFICE\')"><i class="ti ti-settings"></i> 詳細タスク作成</button></div></div>';
+  }
+  var groups=[['未着手','未着手'],['進行中','進行中'],['レビュー','レビュー']];
+  groups.forEach(function(g){
+    var arr=tasks.filter(function(t){return t.status===g[1];});
+    if(!arr.length) return;
+    html+='<div class="card"><div class="card-title">'+g[0]+' <span class="tag tag-gray" style="margin-left:auto">'+arr.length+'</span></div>';
+    arr.forEach(function(t){ try{ html+=taskCardHtml(t); }catch(e){ html+='<div style="font-size:13px;padding:6px 0;border-top:1px solid var(--border)">'+escapeHtml(t.title)+'</div>'; } });
+    html+='</div>';
+  });
+  var done=tasks.filter(function(t){return t.status==='完了';});
+  if(!tasks.length) html+='<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:14px">オフィスタスクはまだありません。請求書処理・月次締め・給与計算などを登録しましょう。</p></div>';
+  if(done.length) html+='<details style="margin-top:4px"><summary style="font-size:12px;color:var(--muted);cursor:pointer;padding:6px">完了済み（'+done.length+'）</summary>'+done.map(function(t){ try{return taskCardHtml(t);}catch(e){return '';} }).join('')+'</details>';
+  return html;
+}
+function officeQuickAddTask(){
+  var el=document.getElementById('office-quick-task'); if(!el) return; var v=(el.value||'').trim(); if(!v) return;
+  try{
+    var t=normalizeTask({id:'tk'+Date.now(), title:v, type:'店舗', store:'OFFICE', assignee:'', priority:'中', due:'', place:'', status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[]});
+    addTaskLog(t,'作成（オフィス・クイック）'); saveTaskObj(t);
+    showToast('オフィスタスクを追加しました','success');
+  }catch(e){ showToast('追加に失敗しました','warning'); }
+  setOfficeMgrTab('tasks');
+}
+
+/* ---------- ⑤ 報告・承認 ---------- */
+function getOfficeReports(){ return ls('office_reports', []); }
+function postOfficeReport(){
+  var t=(document.getElementById('office-rep-title')||{}).value||''; var b=(document.getElementById('office-rep-body')||{}).value||'';
+  if(!t.trim()){ showToast('タイトルを入力してください','warning'); return; }
+  var l=getOfficeReports(); l.unshift({id:'or'+Date.now(), title:t.trim(), body:b.trim(), by:(ROLE_CONFIG[curRole]||{}).name||curUserName, date:new Date().toLocaleString('ja')});
+  lsSet('office_reports', l.slice(0,100));
+  showToast('報告を記録しました','success'); setOfficeMgrTab('report');
+}
+function renderOfficeReport(){
+  var html='';
+  // 承認待ちキュー
+  var supply=[]; try{ getSupplyOrders().forEach(function(o){ if(o.status==='承認待ち'||o.status==='発注待機') supply.push(o); }); }catch(e){}
+  var acctN=0; try{ acctN=(typeof pendingAcctReviewCount==='function')?pendingAcctReviewCount():0; }catch(e){}
+  html+='<div class="card"><div class="card-title"><i class="ti ti-clipboard-check" style="color:var(--yellow)"></i>承認待ちキュー</div>';
+  html+='<div style="display:flex;flex-direction:column;gap:8px">';
+  html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px"><i class="ti ti-truck-delivery" style="color:var(--accent)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">発注の承認・経理確定</div><div style="font-size:11px;color:var(--muted)">'+supply.length+'件待ち</div></div><button class="btn btn-'+(supply.length?'primary':'secondary')+' btn-sm" onclick="go(\'supply_order\')">開く</button></div>';
+  html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px"><i class="ti ti-checklist" style="color:var(--accent2)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">経理レビュー（請求書区分）</div><div style="font-size:11px;color:var(--muted)">'+acctN+'件待ち</div></div><button class="btn btn-'+(acctN?'primary':'secondary')+' btn-sm" onclick="go(\'acct_review\')">開く</button></div>';
+  html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px;opacity:0.7"><i class="ti ti-cash" style="color:var(--green)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">給与確定</div><div style="font-size:11px;color:var(--muted)">勤怠タブで月次を確定 → CSV出力</div></div><button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\'attend\')">勤怠へ</button></div>';
+  html+='</div></div>';
+  // 報告
+  var canPost=['ceo','gm','office'].includes(curRole);
+  if(canPost){
+    html+='<div class="card"><div class="card-title"><i class="ti ti-clipboard-text" style="color:var(--accent)"></i>報告を記録</div>'
+      +'<input id="office-rep-title" placeholder="タイトル（例：6月度 月次締め完了）" style="width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface);font-size:13px;margin-bottom:8px">'
+      +'<textarea id="office-rep-body" placeholder="内容・特記事項" style="width:100%;min-height:64px;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface);font-size:13px"></textarea>'
+      +'<div style="margin-top:8px;text-align:right"><button class="btn btn-primary btn-sm" onclick="postOfficeReport()"><i class="ti ti-send"></i> 記録する</button></div></div>';
+  }
+  var reps=getOfficeReports();
+  html+='<div class="card"><div class="card-title"><i class="ti ti-news" style="color:var(--muted)"></i>報告ログ <span class="tag tag-gray" style="margin-left:auto">'+reps.length+'</span></div>';
+  if(!reps.length) html+='<p style="font-size:12px;color:var(--muted);text-align:center;padding:10px">報告はまだありません</p>';
+  else reps.slice(0,15).forEach(function(r){ html+='<div style="padding:8px 0;border-top:1px solid var(--border)"><div style="font-size:13px;font-weight:600">'+escapeHtml(r.title)+'</div>'+(r.body?'<div style="font-size:12px;color:var(--tm);margin:3px 0;white-space:pre-wrap">'+escapeHtml(r.body)+'</div>':'')+'<div style="font-size:10.5px;color:var(--muted)">'+escapeHtml(r.by||'')+'・'+escapeHtml(r.date||'')+'</div></div>'; });
+  html+='</div>';
+  return html;
 }
 
 function renderOfficeAcct(){
@@ -18381,6 +18540,132 @@ function toggleOjtDone(name, key, done){
   showToast(done?'OJT修了を登録しました':'OJT修了を取消しました', done?'success':'info');
   if(typeof openLssDetail==='function') openLssDetail(name);
 }
+/* ===================== G1→G2 Crew Leader OJT（モジュール式・自動反映） ===================== */
+var OJT_G1G2 = {
+  key:'ojt_g2', gradeLabel:'G1 → G2', title:'Crew Leader OJT',
+  modules:[
+    {id:'m1',no:1,axis:'A',title:'マルチポジション習熟',goal:'2つ目・3つ目のポジションを独力で回せる',practical:'担当外のポジションで1シフトを独力で回す（トレーナー確認）',hasTest:true,reflect:{skill:'multi',axisFloor:2}},
+    {id:'m2',no:2,axis:'A',title:'オープン / クローズを独力で',goal:'Opening/Closing・Required Checkを一人で正確に運用',practical:'開店または閉店を独力で完了する',hasTest:false,reflect:{axisFloor:2}},
+    {id:'m3',no:3,axis:'C',title:'キッチン / プレップ基礎理解',goal:'商品知識・仕込み工程・食材/在庫の基本（C軸の入口）',practical:'プレップ1工程を担当しトレーナー確認',hasTest:true,reflect:{skill:'kitchen',axisFloor:2}},
+    {id:'m4',no:4,axis:'A',title:'新人Crewのサポート',goal:'新人に基本を教え・チェックリスト運用を補助できる',practical:'新人1名のOJT補助を1回担当する',hasTest:false,reflect:{axisFloor:2}},
+    {id:'m5',no:5,axis:'B',title:'サービスを一段上へ',goal:'提案・客単価UP・クレーム一次対応ができる',practical:'提案で追加注文を獲得＋クレーム一次対応を1回',hasTest:false,reflect:{axisFloor:2}},
+    {id:'m6',no:6,axis:'H',title:'理念の体現とリード',goal:'クレド/ミッション/バリューを行動で示しEnergyをリード',practical:'Energy（やまびこ）をリードする',hasTest:true,reflect:{axisFloor:2}}
+  ]
+};
+var OJT_G1G2_TESTS = {
+  m1:[
+    {q:'別ポジションに入る前に最初に確認すべきことは？',opts:['そのポジションの担当業務とチェックリスト','自分の休憩時間','その日の売上目標'],a:0},
+    {q:'複数ポジションを任される目的として最も適切なのは？',opts:['店全体を理解しヘルプに動けるようになるため','時給を上げるため','楽をするため'],a:0},
+    {q:'「独力で回せる」状態とは？',opts:['手順を見ずに標準時間で正確にこなせる','誰かに聞きながらできる','半分だけできる'],a:0}
+  ],
+  m3:[
+    {q:'プレップ（仕込み）で最も重要なのは？',opts:['衛生・鮮度・分量の基準を守ること','とにかく速く作ること','見た目だけ整えること'],a:0},
+    {q:'食材在庫を管理する目的は？',opts:['欠品と廃棄ロスを防ぐため','倉庫を埋めるため','発注量を増やすため'],a:0},
+    {q:'商品知識が必要な理由は？',opts:['お客様に説明・提案でき品質を保てるから','レジを速くするため','特に必要ない'],a:0}
+  ],
+  m6:[
+    {q:'理念（クレド/バリュー）を体現するとは？',opts:['日々の行動・判断に落とし込むこと','暗記しておくこと','掲示しておくこと'],a:0},
+    {q:'Energy（やまびこ）をリードする意義は？',opts:['チームの一体感と活気を作るため','声出しのノルマだから','個人評価のため'],a:0},
+    {q:'Crew Leaderが理念で最も意識すべきは？',opts:['自分が手本になり新人に伝えること','理念を批評すること','理念を気にしないこと'],a:0}
+  ]
+};
+
+function getG2Prog(name){ var m=getGradeOjt(); var e=(m[name]&&m[name].ojt_g2)||{}; return e.modules||{}; }
+function g2ModDone(prog, mod){ var p=prog[mod.id]||{}; return !!p.practical && (!mod.hasTest || !!p.testPass); }
+function g2Progress(name){ var prog=getG2Prog(name); var done=OJT_G1G2.modules.filter(function(m){return g2ModDone(prog,m);}).length; var tot=OJT_G1G2.modules.length; return {done:done,total:tot,pct:Math.round(done/tot*100),all:done===tot}; }
+function g2CanEdit(){ return ['gm','ceo','am','sl'].includes(curRole); }
+function _g2Write(name, fn){ var m=getGradeOjt(); if(!m[name])m[name]={}; if(!m[name].ojt_g2)m[name].ojt_g2={}; if(!m[name].ojt_g2.modules)m[name].ojt_g2.modules={}; fn(m[name].ojt_g2); lsSet('grade_ojt', m); }
+
+function _g2SkillLv(name,store,pos){ var s=getEmpSkillsStore(name,store)[pos]; return s?(s.level!=null?s.level:(typeof s==='number'?s:0)):0; }
+function _g2SetSkill(name,store,pos,lv,by,note){ var prev=getEmpSkillsStore(name,store)[pos]||{}; var from=_g2SkillLv(name,store,pos); setEmpSkillStore(name,store,pos,Object.assign({},prev,{level:lv,status:'承認',date:new Date().toLocaleDateString('ja'),evaluator:by})); if(typeof addSkillHistory==='function'){ try{ addSkillHistory(name,store,pos,from,lv,by,note); }catch(e){} } }
+function g2RaiseAxisFloor(name, axisKey, floor){
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined'&&SUPA_SYNC_ENABLED&&typeof pullOpKey==='function') pullOpKey(LSS_EMP_PREFIX+name); }catch(e){}
+  var rec=getLssScores(name); if(!rec) rec={scores:{}}; var scores=Object.assign({}, rec.scores||{});
+  var cats=lssCatsForName(name); var cat=cats.find(function(c){return c.key===axisKey;}); if(!cat) return;
+  var changed=false;
+  cat.items.forEach(function(label,i){ var id=lssItemId(cat.key,i); var cur=parseInt(scores[id])||0; if(cur<floor){ scores[id]=floor; changed=true; } });
+  if(changed){ var data=Object.assign({}, rec, {scores:scores, date:new Date().toLocaleDateString('ja'), autoOjt:true}); if(!data.evaluator) data.evaluator='OJT自動反映'; if(!data.status) data.status='確定'; setLssScores(name, data); }
+}
+function g2AutoReflect(name, mod){
+  var by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
+  var emp=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===name;}):null;
+  var store=emp?((emp.store&&emp.store!=='ALL')?emp.store:((typeof STORES!=='undefined'&&STORES[0])?STORES[0].id:null)):null;
+  if(mod.reflect&&mod.reflect.skill&&store){
+    if(mod.reflect.skill==='multi'){
+      var sk=getEmpSkillsStore(name,store)||{};
+      Object.keys(sk).forEach(function(pos){ if(_g2SkillLv(name,store,pos)<2) _g2SetSkill(name,store,pos,2,by,'OJT G1→G2 M1自動反映'); });
+    } else if(mod.reflect.skill==='kitchen'){
+      var positions=(typeof getStorePositions==='function')?(getStorePositions(store)||[]):[];
+      positions.filter(function(p){return /Kitchen|Prep|Tempura|Sushi|Cold|Yakitori|Miso|キッチン|プレップ|仕込/i.test(p);}).forEach(function(pos){ if(_g2SkillLv(name,store,pos)<2) _g2SetSkill(name,store,pos,2,by,'OJT G1→G2 M3自動反映'); });
+    }
+  }
+  if(mod.reflect&&mod.reflect.axisFloor) g2RaiseAxisFloor(name, mod.axis, mod.reflect.axisFloor);
+}
+function _g2AfterChange(name, mod, wasDone){
+  var nowDone=g2ModDone(getG2Prog(name), mod);
+  if(nowDone&&!wasDone) g2AutoReflect(name, mod);
+  var pr=g2Progress(name); var cur=ojtDone(name,'ojt_g2');
+  if(pr.all&&!cur){ _g2Write(name,function(o){ o.done=true; o.date=new Date().toLocaleDateString('ja'); o.by=(ROLE_CONFIG[curRole]||{}).name||curUserName; }); showToast('🎉 Crew Leader OJT 全モジュール修了 → 昇格OJT修了として登録','success'); }
+  else if(!pr.all&&cur){ _g2Write(name,function(o){ o.done=false; delete o.date; delete o.by; }); }
+}
+function g2SetPractical(name, modId, done){
+  if(!g2CanEdit()){ showToast('実技サインはリーダー以上（SL/AM/GM）のみ','warning'); return; }
+  var mod=OJT_G1G2.modules.find(function(x){return x.id===modId;}); if(!mod) return;
+  var was=g2ModDone(getG2Prog(name), mod);
+  _g2Write(name,function(o){ if(!o.modules[modId])o.modules[modId]={}; o.modules[modId].practical=done; o.modules[modId].pBy=(ROLE_CONFIG[curRole]||{}).name||curUserName; o.modules[modId].pDate=new Date().toLocaleDateString('ja'); });
+  _g2AfterChange(name, mod, was);
+  if(typeof openG1G2Ojt==='function') openG1G2Ojt(name);
+}
+function g2GradeTest(name, modId){
+  if(!g2CanEdit()){ showToast('テスト記録はリーダー以上のみ','warning'); return; }
+  var qs=OJT_G1G2_TESTS[modId]||[]; var score=0, answered=0;
+  qs.forEach(function(q,i){ var sel=document.querySelector('input[name="g2t_'+modId+'_'+i+'"]:checked'); if(sel){ answered++; if(parseInt(sel.value)===q.a) score++; } });
+  if(answered<qs.length){ showToast('全問に回答してください','warning'); return; }
+  var pass=score>=Math.ceil(qs.length*2/3);
+  var mod=OJT_G1G2.modules.find(function(x){return x.id===modId;});
+  var was=g2ModDone(getG2Prog(name), mod);
+  _g2Write(name,function(o){ if(!o.modules[modId])o.modules[modId]={}; o.modules[modId].testScore=score; o.modules[modId].testTotal=qs.length; o.modules[modId].testPass=pass; o.modules[modId].testDate=new Date().toLocaleDateString('ja'); });
+  showToast('テスト：'+score+'/'+qs.length+'（'+(pass?'合格':'不合格・2/3以上で合格')+'）', pass?'success':'warning');
+  _g2AfterChange(name, mod, was);
+  if(typeof openG1G2Ojt==='function') openG1G2Ojt(name);
+}
+function g2TestHtml(modId){ var qs=OJT_G1G2_TESTS[modId]||[]; return '<div style="margin:6px 0 4px">'+qs.map(function(q,i){ return '<div style="margin-bottom:8px"><div style="font-size:12px;font-weight:600;margin-bottom:3px">Q'+(i+1)+'. '+escapeHtml(q.q)+'</div>'+q.opts.map(function(o,j){ return '<label style="display:block;font-size:12px;padding:2px 0;cursor:pointer"><input type="radio" name="g2t_'+modId+'_'+i+'" value="'+j+'" style="margin-right:6px">'+escapeHtml(o)+'</label>'; }).join('')+'</div>'; }).join('')+'</div>'; }
+function g2ProgressBar(pr){ return '<div style="margin:6px 0 12px"><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:3px"><span>進捗</span><span>'+pr.done+' / '+pr.total+'（'+pr.pct+'%）</span></div><div style="height:8px;background:var(--surface2);border-radius:4px;overflow:hidden"><div style="height:100%;width:'+pr.pct+'%;background:'+(pr.all?'var(--green)':'var(--accent)')+';border-radius:4px"></div></div></div>'; }
+
+function openG1G2Ojt(name){
+  var esc=String(name).replace(/'/g,"\\'");
+  var prog=getG2Prog(name), pr=g2Progress(name), canEdit=g2CanEdit();
+  var axisColor={A:'var(--accent2)',B:'var(--green)',C:'var(--yellow)',H:'var(--purple)'};
+  var axisName={A:'基本業務',B:'サービス',C:'キッチン/プレップ',H:'理念'};
+  var rows=OJT_G1G2.modules.map(function(m){
+    var p=prog[m.id]||{}, done=g2ModDone(prog,m);
+    var practicalBtn = canEdit
+      ? '<button class="btn btn-'+(p.practical?'secondary':'primary')+' btn-sm" onclick="g2SetPractical(\''+esc+'\',\''+m.id+'\','+(!p.practical)+')">'+(p.practical?'実技サイン済 ✓（取消）':'実技サイン')+'</button>'
+      : '<span class="tag" style="font-size:10px">'+(p.practical?'実技済':'実技未')+'</span>';
+    var testBlock='';
+    if(m.hasTest){
+      if(p.testPass){ testBlock='<span class="tag tag-green" style="font-size:10px">テスト合格 '+(p.testScore||0)+'/'+(p.testTotal||0)+'</span>'; }
+      else if(canEdit){ testBlock='<details style="width:100%;margin-top:4px"><summary style="font-size:12px;cursor:pointer;color:var(--accent)">理解度テストを受ける'+(p.testScore!=null?'（前回 '+p.testScore+'/'+p.testTotal+'）':'')+'</summary>'+g2TestHtml(m.id)+'<button class="btn btn-primary btn-sm" onclick="g2GradeTest(\''+esc+'\',\''+m.id+'\')">採点する</button></details>'; }
+      else { testBlock='<span class="tag" style="font-size:10px">テスト未</span>'; }
+    }
+    return '<div style="border:1px solid var(--border);border-left:3px solid '+axisColor[m.axis]+';border-radius:0 10px 10px 0;padding:10px 12px;margin-bottom:8px'+(done?';background:rgba(21,166,106,0.06)':'')+'">'
+      +'<div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--surface2);font-size:11px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">'+m.no+'</span>'
+      +'<span style="font-size:13px;font-weight:600;flex:1">'+escapeHtml(m.title)+'</span>'
+      +'<span class="tag" style="background:'+axisColor[m.axis]+'1f;color:'+axisColor[m.axis]+';font-size:9.5px;font-weight:700">'+m.axis+' '+axisName[m.axis]+(m.axis==='C'?'★':'')+'</span>'
+      +(done?'<i class="ti ti-circle-check-filled" style="color:var(--green);font-size:18px"></i>':'')+'</div>'
+      +'<div style="font-size:11.5px;color:var(--muted);margin:5px 0 4px">'+escapeHtml(m.goal)+'</div>'
+      +'<div style="font-size:11.5px;margin-bottom:7px"><b>実技</b>：'+escapeHtml(m.practical)+(p.pBy?' <span style="color:var(--muted)">（'+escapeHtml(p.pBy)+'・'+p.pDate+'）</span>':'')+'</div>'
+      +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'+practicalBtn+testBlock+'</div>'
+      +'</div>';
+  }).join('');
+  var html='<div class="modal-title">G1→G2 Crew Leader OJT — '+escapeHtml(name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">「自分の仕事ができる人」→「基礎を任せられ・新人を支え・店全体を見られる人」へ</div>'
+    +g2ProgressBar(pr)+rows
+    +'<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0;line-height:1.6"><i class="ti ti-bolt" style="color:var(--accent)"></i> 各モジュール合格で、対応する<b>スキルLv</b>と<b>Career Score軸</b>へ自動反映（既存評価は下げません）。全6モジュール修了で昇格OJT修了 → 担当軸A・B・C・HがL4で<b>G2昇格可</b>。</div>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(html);
+}
+
 /* 昇格判定：担当軸が全てL4 ＋ 次役職OJT修了（G4+はOJT不要・GM手動判断） */
 function gradePromoEval(e){
   if(!e) return {topped:true, can:false};
@@ -19103,10 +19388,14 @@ async function openLssDetail(name) {
     var _gp = gradePromoEval(dEmp);
     if (!_gp.topped && _gp.path.ojt) {
       var _done=_gp.ojtOk, _canReg=['gm','ceo'].includes(curRole);
-      ojtBlock = '<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:8px 0;display:flex;align-items:center;gap:8px">'
-        +'<div style="flex:1"><div style="font-size:11px;color:var(--muted)">次の役職OJT（'+_gp.path.nextGrade+' '+escapeHtml(_gp.path.nextTitle)+'）</div><div style="font-size:13px;font-weight:600">'+escapeHtml(_gp.path.ojt)+'</div></div>'
+      var _isG2=(_gp.path.ojtKey==='ojt_g2' && typeof g2Progress==='function');
+      var _g2pr=_isG2?g2Progress(name):null;
+      ojtBlock = '<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        +'<div style="flex:1;min-width:150px"><div style="font-size:11px;color:var(--muted)">次の役職OJT（'+_gp.path.nextGrade+' '+escapeHtml(_gp.path.nextTitle)+'）</div><div style="font-size:13px;font-weight:600">'+escapeHtml(_gp.path.ojt)+(_isG2?(' <span style="font-size:10px;color:var(--muted);font-weight:400">モジュール '+_g2pr.done+'/'+_g2pr.total+'</span>'):'')+'</div></div>'
         +'<span class="tag" style="background:'+(_done?'var(--green)':'var(--surface2)')+';color:'+(_done?'#fff':'var(--muted)')+';font-size:10px;font-weight:700">'+(_done?'修了':'未修了')+'</span>'
-        +(_canReg?('<button class="btn btn-secondary btn-sm" onclick="toggleOjtDone(\''+name.replace(/'/g,"\\'")+'\',\''+_gp.path.ojtKey+'\','+(!_done)+')">'+(_done?'取消':'修了登録')+'</button>'):'')
+        +(_isG2
+            ? '<button class="btn btn-primary btn-sm" onclick="openG1G2Ojt(\''+name.replace(/'/g,"\\'")+'\')"><i class="ti ti-list-check"></i> OJT詳細</button>'
+            : (_canReg?('<button class="btn btn-secondary btn-sm" onclick="toggleOjtDone(\''+name.replace(/'/g,"\\'")+'\',\''+_gp.path.ojtKey+'\','+(!_done)+')">'+(_done?'取消':'修了登録')+'</button>'):''))
       +'</div>';
     }
   }
@@ -22615,7 +22904,7 @@ function quickAddTask(storeId, type){
 function openTaskModal(type, storeId){
   type=type||'店舗';
   var emps=getEmployees().filter(function(e){return e.status!=='退職';});
-  var storeOpts=[{id:'ALL',name:'全社'}].concat(STORES);
+  var storeOpts=[{id:'ALL',name:'全社'}].concat(STORES).concat([{id:'OFFICE',name:'オフィス'}]);
   openModal('<div class="modal-title">'+(type==='個人'?'個人タスク作成':'店舗タスク作成')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div class="form-group"><label class="form-label">タスク名</label><input class="form-input" id="t-title" placeholder="タスク内容"></div>'
     +'<div class="form-group"><label class="form-label">詳細（任意）</label><textarea class="form-input" id="t-desc" rows="2" placeholder="補足・手順など"></textarea></div>'
