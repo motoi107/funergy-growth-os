@@ -6331,6 +6331,117 @@ function saveStoreFixedCosts(){
   renderPage('store_power');
 }
 
+/* ===================== 売上分析（月別・曜日別・シフト数別） ===================== */
+function msMoneyShort(n){
+  n=Math.round(parseFloat(n)||0);
+  if(Math.abs(n)>=1000) return '$'+(Math.round(n/100)/10)+'k';
+  return '$'+n;
+}
+function msBarChart(data, opts){
+  opts=opts||{};
+  var vals=data.map(function(d){return d.value||0;});
+  if(!data.length || vals.every(function(v){return !v;})) return '<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">データがありません</div>';
+  var n=data.length;
+  var W=Math.max(340, n*46+30), H=190, padB=40, padT=16;
+  var max=Math.max.apply(null, vals)||1;
+  var col=opts.color||'var(--accent)';
+  var gap=(W-20)/n, bw=Math.min(40, gap-10);
+  var bars='';
+  data.forEach(function(d,i){
+    var h=Math.max(1, Math.round((d.value/max)*(H-padB-padT)));
+    var x=10+i*gap+(gap-bw)/2, y=H-padB-h;
+    bars+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h+'" rx="3" fill="'+col+'"></rect>';
+    bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y-4).toFixed(1)+'" text-anchor="middle" font-size="9" fill="var(--muted)">'+(opts.money?msMoneyShort(d.value):d.value)+'</text>';
+    bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+14)+'" text-anchor="middle" font-size="10" fill="var(--tm)">'+escapeHtml(String(d.label))+'</text>';
+    if(d.sub) bars+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-padB+26)+'" text-anchor="middle" font-size="8" fill="var(--muted)">'+escapeHtml(String(d.sub))+'</text>';
+  });
+  return '<div style="overflow-x:auto"><svg viewBox="0 0 '+W+' '+H+'" style="width:100%;min-width:'+Math.min(W,360)+'px;height:auto">'
+    +'<line x1="10" y1="'+(H-padB)+'" x2="'+(W-10)+'" y2="'+(H-padB)+'" stroke="var(--border)"></line>'
+    +bars+'</svg></div>';
+}
+/* その日の人数（シフト数）：実績勤怠(getTipLabor)優先、無ければ公開シフト計画の人数 */
+function msDayHeadcount(storeId, date){
+  try{
+    var tl=getTipLabor(storeId, date);
+    if(tl){ var n=Object.keys(tl).length; if(n>0) return n; }
+  }catch(e){}
+  try{
+    var dt=new Date(date+'T00:00:00');
+    var wk=mondayMDof(dt);
+    var plan=getShiftPlan(storeId, wk);
+    if(plan && plan.cells){
+      var dow=DOW[(dt.getDay()+6)%7];
+      var names={};
+      Object.keys(plan.cells).forEach(function(k){ if(k.indexOf(dow+'_')===0){ var v=plan.cells[k]; if(v) names[v]=1; } });
+      var c=Object.keys(names).length; if(c>0) return c;
+    }
+  }catch(e){}
+  return null;
+}
+function msAnalysisWindow(){ var to=new Date(); var from=new Date(); from.setDate(from.getDate()-90); return {from:from.toISOString().slice(0,10), to:to.toISOString().slice(0,10)}; }
+
+function renderSalesAnalysis(){
+  var single = msScope!=='ALL';
+  var storeId = single ? msScope : null;
+  var stores = msScopeStores();
+  var scopeName = single ? ((stores[0]||{}).name||storeId) : '全店合算';
+  var html='';
+
+  // 1) 月別売上（過去12ヶ月）
+  var months=[];
+  for(var off=-11; off<=0; off++){
+    var mi=msMonthInfo(off);
+    var sales=stores.reduce(function(a,s){ return a+(msAgg(s.id,mi).sales||0); },0);
+    months.push({label:(mi.m+1)+'月', value:Math.round(sales)});
+  }
+  html+='<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>月別売上（過去12ヶ月・'+escapeHtml(scopeName)+'）</div>'
+    + msBarChart(months,{money:true,color:'var(--accent)'})+'</div>';
+
+  // 2) 曜日別 平均売上（直近90日）
+  var win=msAnalysisWindow();
+  var byDow={}; DOW.forEach(function(d){ byDow[d]={sum:0,n:0}; });
+  stores.forEach(function(s){
+    var act=getDailyActuals(s.id);
+    Object.keys(act).forEach(function(date){
+      if(date<win.from||date>win.to) return;
+      var v=act[date]; if(v.actual==null||v.actual<=0) return;
+      var dt=new Date(date+'T00:00:00'); var dow=DOW[(dt.getDay()+6)%7];
+      byDow[dow].sum+=v.actual; byDow[dow].n++;
+    });
+  });
+  var wkData=DOW.map(function(d){ var o=byDow[d]; return {label:d, value:o.n?Math.round(o.sum/o.n):0, sub:o.n?o.n+'日':''}; });
+  html+='<div class="card"><div class="card-title"><i class="ti ti-calendar-week" style="color:var(--accent2)"></i>曜日別 平均売上（直近90日）</div>'
+    + msBarChart(wkData,{money:true,color:'var(--accent2)'})
+    + '<div style="font-size:10px;color:var(--muted);margin-top:4px">各曜日の1日あたり平均売上（実績がある日のみ）</div></div>';
+
+  // 3) シフト数別 平均売上（単一店舗）
+  if(single){
+    var byHc={};
+    var act=getDailyActuals(storeId);
+    Object.keys(act).forEach(function(date){
+      if(date<win.from||date>win.to) return;
+      var v=act[date]; if(v.actual==null||v.actual<=0) return;
+      var hc=msDayHeadcount(storeId, date); if(hc==null) return;
+      if(!byHc[hc]) byHc[hc]={sum:0,n:0};
+      byHc[hc].sum+=v.actual; byHc[hc].n++;
+    });
+    var keys=Object.keys(byHc).map(Number).sort(function(a,b){return a-b;});
+    html+='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--green)"></i>シフト数別 平均売上（直近90日）</div>';
+    if(keys.length){
+      var hcData=keys.map(function(k){ var o=byHc[k]; return {label:k+'人', value:Math.round(o.sum/o.n), sub:o.n+'日'}; });
+      html+= msBarChart(hcData,{money:true,color:'var(--green)'})
+        + '<div style="font-size:10px;color:var(--muted);margin-top:4px">その日の出勤人数（勤怠／シフト計画）ごとの平均売上。最適な人員配置の参考に。</div>';
+    } else {
+      html+='<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">勤怠またはシフト計画のデータが不足しています。<br>シフト計画を公開するか勤怠連携後に表示されます。</div>';
+    }
+    html+='</div>';
+  } else {
+    html+='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--green)"></i>シフト数別 平均売上</div>'
+      +'<div style="font-size:12px;color:var(--muted);padding:16px;text-align:center">上の店舗セレクタで店舗を選択すると表示されます（全店合算では非対応）</div></div>';
+  }
+  return html;
+}
+
 function renderMonthlySummary(){
   if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
   var mi=msMonthInfo(msOffset);
@@ -6345,6 +6456,7 @@ function renderMonthlySummary(){
   html+='<div class="phase-tabs" style="margin-bottom:8px">'
     +'<div class="phase-tab'+(msView==='summary'?' active':'')+'" onclick="msSetView(\'summary\')"><i class="ti ti-layout-dashboard" style="font-size:12px"></i> サマリー</div>'
     +'<div class="phase-tab'+(msView==='trend'?' active':'')+'" onclick="msSetView(\'trend\')"><i class="ti ti-table" style="font-size:12px"></i> KPI推移一覧</div>'
+    +'<div class="phase-tab'+(msView==='analysis'?' active':'')+'" onclick="msSetView(\'analysis\')"><i class="ti ti-chart-histogram" style="font-size:12px"></i> 売上分析</div>'
     +'</div>';
 
   html+='<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
@@ -6358,6 +6470,7 @@ function renderMonthlySummary(){
     +'</select></div>';
 
   if(msView==='trend'){ return html + renderKpiTrendMatrix(); }
+  if(msView==='analysis'){ return html + renderSalesAnalysis(); }
 
   function tile(label,val,sub,col){
     return '<div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px">'
@@ -16289,9 +16402,29 @@ function renderOfficeMember(){
       html+='</div>';
     });
     html+='</div>';
-    html+='<div class="card"><div class="card-title"><i class="ti ti-chart-arcs"></i>Career Score（リーダー以上）</div>'
-      +'<p style="font-size:12px;color:var(--muted);line-height:1.6">オフィスの総合評価（Leadership Skill Score）は成長管理の枠組みで運用します。経理・事務の専門A〜H軸は次段で定義予定です。</p>'
-      +'<button class="btn btn-secondary btn-sm" onclick="go(\'growth_mgr\')"><i class="ti ti-external-link"></i> 成長管理を開く</button></div>';
+    var oemp=officeEmpByName(sel);
+    var odept=empSpecialistDept(oemp);
+    var osum=lssSummary(sel);
+    var olvl=lssLevel(osum.totalPct);
+    var oax=empAxisEval(oemp);
+    var odeptLabel=odept?(SPECIALIST_DEPTS[odept]?SPECIALIST_DEPTS[odept].label:odept):'一般評価軸';
+    var ocanEval=canEditLss(sel);
+    html+='<div class="card"><div class="card-title"><i class="ti ti-chart-arcs"></i>Career Score <span class="tag '+(odept?'tag-blue':'tag-gray')+'" style="margin-left:auto;font-size:9px">'+escapeHtml(odeptLabel)+'</span></div>';
+    if(osum.hasData){
+      html+='<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">'
+        +'<div style="font-size:30px;font-weight:800;color:'+evalColor(osum.totalPct)+';line-height:1">'+osum.totalPct+'%</div>'
+        +'<div><div style="font-size:13px;font-weight:600">'+olvl.label+'</div><div style="font-size:11px;color:var(--muted)">総合 Career Score</div></div></div>';
+      if(oax.hasData){
+        html+='<div style="display:flex;flex-wrap:wrap;gap:5px">'
+          +oax.perAxis.map(function(p){ return '<span class="tag" style="background:'+evalColor(p.pct)+';color:#fff;font-size:9px" title="'+escapeHtml(p.name)+'">'+p.key+' '+p.pct+'%</span>'; }).join('')
+          +'</div>';
+        html+='<div style="font-size:10px;color:var(--muted);margin-top:6px">'+(odept?'経理の専門A〜H軸で評価':'担当軸で評価')+'</div>';
+      }
+    } else {
+      html+='<p style="font-size:12px;color:var(--muted);line-height:1.6">まだCareer Scoreの評価がありません。'+(ocanEval?'下のボタンから評価できます。':'GM/CEOが評価します。')+'</p>';
+    }
+    html+='<button class="btn btn-'+(osum.hasData?'secondary':'primary')+' btn-sm" style="margin-top:8px" onclick="openLssDetail(\''+sel.replace(/'/g,"")+'\')"><i class="ti ti-'+(ocanEval?'edit':'eye')+'"></i> '+((osum.hasData||!ocanEval)?'評価シートを開く':'評価する')+'</button>';
+    html+='</div>';
   }
   return html;
 }
