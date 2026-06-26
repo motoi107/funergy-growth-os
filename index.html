@@ -3362,7 +3362,8 @@ var _SPLIT_KEYS = {
   onboardings:      {type:'arr', by:function(r){return r&&r.name;}},
   offboardings:     {type:'arr', by:function(r){return r&&r.name;}},
   order_catalog:    {type:'arr', by:function(r){return r&&r.store;}},
-  dev_nominations:  {type:'arr', by:function(r){return r&&r.name;}}
+  dev_nominations:  {type:'arr', by:function(r){return r&&r.name;}},
+  company_message_stores:{type:'obj'}
 };
 function _splitPrefix(key){ return 'spl_'+key+'_'; }
 function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
@@ -4070,34 +4071,57 @@ function doLogout() {
 function curMonthKey() { var n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); }
 function getCompanyMessage() { return ls('company_message', null); }
 function setCompanyMessage(data) { lsSet('company_message', data); }
-/* このユーザーが今月のメッセージを既読か（ポップアップ抑制用） */
-function companyMsgSeenKey() { var m=getCompanyMessage(); return 'company_msg_seen_'+(curUserName||'anon')+'_'+(m?m.month:''); }
-function companyMsgSeen() { var m=getCompanyMessage(); if(!m) return true; return ls(companyMsgSeenKey(), false)===true; }
-function markCompanyMsgSeen() { var m=getCompanyMessage(); if(!m) return; lsSet(companyMsgSeenKey(), true); }
-function canEditCompanyMsg() { return ['gm','ceo','office'].includes(curRole); }
-/* ログイン後、今月分が未読ならポップアップ */
-function maybeShowCompanyMessage() {
-  var m = getCompanyMessage();
-  if (!m || !m.body) return;
-  if (m.month !== curMonthKey()) return; // 今月のメッセージのみ
-  if (companyMsgSeen()) return;
-  showCompanyMsgPopup(m);
+/* 店舗別メッセージ {storeId:data} */
+function getCompanyMsgStores() { return ls('company_message_stores', {}); }
+function getCompanyMessageStore(storeId) { var a=getCompanyMsgStores(); return a[storeId]||null; }
+function setCompanyMessageStore(storeId, data) { var a=getCompanyMsgStores(); if(data) a[storeId]=data; else delete a[storeId]; lsSet('company_message_stores', a); }
+/* 既読管理（scope='ALL'|storeId × 月 × ユーザー） */
+function cmSeenKey(scope, month) { return 'company_msg_seen_'+(curUserName||'anon')+'_'+scope+'_'+(month||''); }
+function cmSeen(scope, month) { return ls(cmSeenKey(scope,month), false)===true; }
+function cmMarkSeen(scope, month) { lsSet(cmSeenKey(scope,month), true); }
+/* 現ユーザーに表示すべき今月メッセージ（全社＋自店舗） */
+function myCompanyMessages() {
+  var out=[], mk=curMonthKey();
+  var g=getCompanyMessage();
+  if (g && g.body && g.month===mk) out.push({scope:'ALL', m:g});
+  var sid = (typeof myStoreId==='function') ? myStoreId() : null;
+  var sm = sid ? getCompanyMessageStore(sid) : null;
+  if (sm && sm.body && sm.month===mk) out.push({scope:sid, m:sm});
+  return out;
 }
-function showCompanyMsgPopup(m) {
-  var monthLabel = fmtMonthLabel(m.month);
+function companyMsgSeen() { return myCompanyMessages().every(function(x){return cmSeen(x.scope,x.m.month);}); }
+function markCompanyMsgSeen() { myCompanyMessages().forEach(function(x){ cmMarkSeen(x.scope,x.m.month); }); }
+function canEditCompanyMsg() { return ['gm','ceo','office'].includes(curRole); }
+/* ログイン後、今月分の未読があればポップアップ */
+function maybeShowCompanyMessage() {
+  var msgs = myCompanyMessages().filter(function(x){ return !cmSeen(x.scope, x.m.month); });
+  if (!msgs.length) return;
+  showCompanyMsgPopup(msgs);
+}
+var _cmShown = [];
+function showCompanyMsgPopup(msgs) {
+  if (!Array.isArray(msgs)) msgs = [ msgs.scope ? msgs : {scope:'ALL', m:msgs} ];
+  _cmShown = msgs.map(function(x){ return {scope:x.scope, month:x.m.month}; });
+  var blocks = msgs.map(function(x){
+    var m=x.m, monthLabel=fmtMonthLabel(m.month);
+    var scopeLabel = x.scope==='ALL' ? t('全社','Company') : ((STORES.find(function(s){return s.id===x.scope;})||{name:x.scope}).name);
+    return `<div style="margin-top:14px">
+      <div style="font-size:11px;font-weight:700;color:var(--accent)">${escapeHtml(scopeLabel)} · ${monthLabel}${m.author?' · '+escapeHtml(m.author):''}</div>
+      <div style="font-size:16px;font-weight:800;color:var(--tm);margin:2px 0 6px">${escapeHtml(m.title||monthLabel)}</div>
+      <div style="font-size:14px;line-height:1.8;white-space:pre-wrap;color:var(--tm)">${escapeHtml(m.body)}</div>
+    </div>`;
+  }).join('<div style="border-top:1px solid var(--border);margin-top:12px"></div>');
   var html = `<div style="max-width:480px">
-    <div style="background:linear-gradient(135deg,var(--accent),#f0902b);margin:-20px -20px 0;padding:22px 22px 18px;border-radius:14px 14px 0 0;color:#fff;position:relative;overflow:hidden">
+    <div style="background:linear-gradient(135deg,var(--accent),#f0902b);margin:-20px -20px 0;padding:20px 22px 14px;border-radius:14px 14px 0 0;color:#fff;position:relative;overflow:hidden">
       <div style="position:absolute;right:-30px;top:-40px;width:130px;height:130px;border-radius:50%;background:rgba(255,255,255,.12)"></div>
       <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.9;position:relative">${t('会社からのメッセージ','Company Message')}</div>
-      <div style="font-size:20px;font-weight:800;margin-top:4px;position:relative">${escapeHtml(m.title||monthLabel)}</div>
-      <div style="font-size:12px;opacity:.9;margin-top:2px;position:relative">${monthLabel}${m.author?' · '+escapeHtml(m.author):''}</div>
     </div>
-    <div style="padding:18px 2px 6px;font-size:14px;line-height:1.8;white-space:pre-wrap;color:var(--tm);max-height:48vh;overflow-y:auto">${escapeHtml(m.body)}</div>
+    <div style="padding:2px 2px 6px;max-height:52vh;overflow-y:auto">${blocks}</div>
     <button class="btn btn-primary" style="width:100%;margin-top:12px" onclick="ackCompanyMsg()"><i class="ti ti-check"></i> ${t('確認しました','Got it')}</button>
   </div>`;
   openModal(html);
 }
-function ackCompanyMsg() { markCompanyMsgSeen(); closeModalDirect(); }
+function ackCompanyMsg() { _cmShown.forEach(function(x){ cmMarkSeen(x.scope, x.month); }); closeModalDirect(); }
 function fmtMonthLabel(monthKey) {
   if (!monthKey) return '';
   var p = monthKey.split('-'); var y=p[0], mo=parseInt(p[1],10);
@@ -4105,16 +4129,15 @@ function fmtMonthLabel(monthKey) {
   return y+'年'+mo+'月';
 }
 function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-/* ダッシュボード/マイページ上部に出すカード */
-function renderCompanyMessageCard() {
-  var m = getCompanyMessage();
-  if (!m || !m.body || m.month !== curMonthKey()) return '';
+/* ダッシュボード/マイページ上部に出すカード（全社＋自店舗） */
+function companyMsgCardHtml(m, scope) {
   var monthLabel = fmtMonthLabel(m.month);
-  return `<div class="card" style="border-left:4px solid var(--accent);background:linear-gradient(180deg,var(--surface),var(--surface))">
+  var scopeLabel = scope==='ALL' ? t('会社からのメッセージ','Company Message') : ((STORES.find(function(s){return s.id===scope;})||{name:scope}).name+' '+t('メッセージ','Message'));
+  return `<div class="card" style="border-left:4px solid var(--accent)">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="width:30px;height:30px;border-radius:9px;background:var(--accent-soft, #fbeee4);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-speakerphone" style="font-size:17px"></i></span>
       <div style="flex:1;min-width:0">
-        <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">${t('会社からのメッセージ','Company Message')} · ${monthLabel}</div>
+        <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">${escapeHtml(scopeLabel)} · ${monthLabel}</div>
         <div style="font-size:15px;font-weight:700;color:var(--tm)">${escapeHtml(m.title||monthLabel)}</div>
       </div>
       ${canEditCompanyMsg()?`<button class="btn btn-secondary btn-sm" onclick="go('company_msg_edit')"><i class="ti ti-pencil"></i></button>`:''}
@@ -4123,40 +4146,51 @@ function renderCompanyMessageCard() {
     ${m.author?`<div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:right">— ${escapeHtml(m.author)}</div>`:''}
   </div>`;
 }
-/* GM/CEO用 編集ページ */
+function renderCompanyMessageCard() {
+  return myCompanyMessages().map(function(x){ return companyMsgCardHtml(x.m, x.scope); }).join('');
+}
+/* GM/CEO用 編集ページ（全社＋店舗別） */
+function setCmScope(s){ window._cmScope = s; renderPage('company_msg_edit'); }
 function renderCompanyMsgEdit() {
   if (!canEditCompanyMsg()) return `<div class="card">権限がありません。</div>`;
-  var m = getCompanyMessage() || {};
+  var scope = window._cmScope || 'ALL';
+  var stores = (typeof accessibleStoresForUser==='function') ? accessibleStoresForUser() : [];
+  if (scope!=='ALL' && !stores.find(function(s){return s.id===scope;})) scope='ALL';
+  var m = (scope==='ALL' ? getCompanyMessage() : getCompanyMessageStore(scope)) || {};
   var thisMonth = curMonthKey();
   var isThisMonth = m.month === thisMonth;
+  var scopeName = scope==='ALL' ? t('全社','Company') : ((STORES.find(function(s){return s.id===scope;})||{name:scope}).name);
   var html = `<div class="section-header"><div class="section-title"><i class="ti ti-speakerphone" style="color:var(--accent)"></i> 今月の会社メッセージ</div></div>`;
+  html += `<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:10px">
+    <div class="phase-tab${scope==='ALL'?' active':''}" onclick="setCmScope('ALL')">${t('全社','Company')}</div>
+    ${stores.map(function(s){return `<div class="phase-tab${scope===s.id?' active':''}" style="${scope===s.id?('background:'+s.color+';border-color:'+s.color):''}" onclick="setCmScope('${s.id}')">${escapeHtml(s.name)}</div>`;}).join('')}
+  </div>`;
   html += `<div class="card">
-    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">全スタッフがログイン後に見るメッセージです。${fmtMonthLabel(thisMonth)}分として保存され、その月の初回ログイン時にポップアップ表示、以降はダッシュボード/マイページ上部にカード表示されます。</p>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">${scope==='ALL'?'全スタッフ':escapeHtml(scopeName)+'のスタッフ'}がログイン後に見るメッセージです。${fmtMonthLabel(thisMonth)}分として保存され、初回ログイン時にポップアップ、以降はダッシュボード上部にカード表示されます。</p>
     <label style="font-size:12px;font-weight:600;color:var(--tm)">タイトル（任意）</label>
     <input id="cm-title" type="text" maxlength="60" placeholder="例：今月のテーマ・感謝・目標など" value="${isThisMonth?escapeHtml(m.title||''):''}" style="width:100%;padding:10px;margin:4px 0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px">
     <label style="font-size:12px;font-weight:600;color:var(--tm)">本文</label>
-    <textarea id="cm-body" rows="8" placeholder="全社員へのメッセージを入力..." style="width:100%;padding:10px;margin:4px 0 6px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px;line-height:1.7;resize:vertical;font-family:inherit">${isThisMonth?escapeHtml(m.body||''):''}</textarea>
+    <textarea id="cm-body" rows="8" placeholder="${scope==='ALL'?'全社員へのメッセージを入力...':escapeHtml(scopeName)+'のスタッフへのメッセージを入力...'}" style="width:100%;padding:10px;margin:4px 0 6px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px;line-height:1.7;resize:vertical;font-family:inherit">${isThisMonth?escapeHtml(m.body||''):''}</textarea>
     <label style="font-size:12px;font-weight:600;color:var(--tm)">差出人（任意）</label>
     <input id="cm-author" type="text" maxlength="40" placeholder="例：Moto / 経営チーム" value="${isThisMonth?escapeHtml(m.author||''):(ROLE_CONFIG[curRole]||{}).name||curUserName||''}" style="width:100%;padding:10px;margin:4px 0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px">
     <div style="display:flex;gap:8px">
-      <button class="btn btn-primary" onclick="saveCompanyMsg()"><i class="ti ti-device-floppy"></i> 保存して全員に表示</button>
+      <button class="btn btn-primary" onclick="saveCompanyMsg()"><i class="ti ti-device-floppy"></i> ${scope==='ALL'?'保存して全員に表示':'保存して'+escapeHtml(scopeName)+'に表示'}</button>
       ${(m.body&&isThisMonth)?`<button class="btn btn-secondary" onclick="clearCompanyMsg()"><i class="ti ti-trash"></i> 今月分を削除</button>`:''}
     </div>
   </div>`;
-  // プレビュー
   if (isThisMonth && m.body) {
     html += `<div class="section-header" style="margin-top:8px"><div class="section-title" style="font-size:14px"><i class="ti ti-eye"></i> 現在の表示プレビュー</div></div>`;
-    html += renderCompanyMessageCard();
+    html += companyMsgCardHtml(m, scope);
   }
-  // 過去メッセージがある場合の注記
   if (m.body && !isThisMonth) {
-    html += `<div class="alert alert-warning" style="padding:8px 10px;font-size:12px"><i class="ti ti-info-circle"></i> 保存済みのメッセージは${fmtMonthLabel(m.month)}分です。新しく保存すると${fmtMonthLabel(thisMonth)}分として全員に表示されます。</div>`;
+    html += `<div class="alert alert-warning" style="padding:8px 10px;font-size:12px"><i class="ti ti-info-circle"></i> 保存済みのメッセージは${fmtMonthLabel(m.month)}分です。新しく保存すると${fmtMonthLabel(thisMonth)}分として表示されます。</div>`;
   }
   return html;
 }
 function saveCompanyMsg() {
   var body = (document.getElementById('cm-body').value||'').trim();
   if (!body) { showToast('本文を入力してください','warning'); return; }
+  var scope = window._cmScope || 'ALL';
   var data = {
     title: (document.getElementById('cm-title').value||'').trim(),
     body: body,
@@ -4164,15 +4198,15 @@ function saveCompanyMsg() {
     month: curMonthKey(),
     updatedAt: new Date().toLocaleString('ja'),
   };
-  setCompanyMessage(data);
-  // 自分は既読扱い（保存直後に自分にポップアップが出ないように）
-  markCompanyMsgSeen();
+  if (scope==='ALL') setCompanyMessage(data); else setCompanyMessageStore(scope, data);
+  cmMarkSeen(scope, data.month);
   showToast('会社メッセージを保存しました','success');
   renderPage('company_msg_edit');
 }
 function clearCompanyMsg() {
   if (!confirm('今月の会社メッセージを削除しますか？')) return;
-  setCompanyMessage(null);
+  var scope = window._cmScope || 'ALL';
+  if (scope==='ALL') setCompanyMessage(null); else setCompanyMessageStore(scope, null);
   showToast('削除しました','info');
   renderPage('company_msg_edit');
 }
@@ -6420,6 +6454,27 @@ function basisAmount(basis) {
 function budgetTotal(b) { return (b.bases||[]).reduce((a,bs)=>a+basisAmount(bs),0); }
 
 /* 共通: 表示店舗セレクタ（全店＋可視店舗）。onchangeFn(value) を呼ぶ。 */
+function accessibleStoresForUser(){
+  var act = (typeof activeStores==='function')?activeStores():[];
+  if(curRole==='am'){
+    var ids=[].concat(typeof myAmStores==='function'?myAmStores():[]).concat(typeof mySupportStores==='function'?mySupportStores():[]);
+    return act.filter(function(s){return ids.indexOf(s.id)>=0;});
+  }
+  if(curRole==='sl'||curRole==='crew'){
+    var ids2=[(typeof myStoreId==='function'?myStoreId():null)].concat(typeof mySupportStores==='function'?mySupportStores():[]);
+    return act.filter(function(s){return ids2.indexOf(s.id)>=0;});
+  }
+  return act;
+}
+/* AM以上向け：ページ内 店舗選択タブ（switchStoreで全体店舗を切替・上部表示も同期） */
+function pageStoreTabs(activeId, includeAll){
+  var stores = accessibleStoresForUser();
+  if(stores.length<=1 && !includeAll) return '';
+  var tabs='';
+  if(includeAll){ tabs += '<div class="phase-tab'+((!activeId||activeId==='ALL')?' active':'')+'" onclick="switchStore(\'ALL\')">全社</div>'; }
+  tabs += stores.map(function(s){ var on=(s.id===activeId); return '<div class="phase-tab'+(on?' active':'')+'" style="'+(on?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="switchStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>'; }).join('');
+  return '<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:10px">'+tabs+'</div>';
+}
 function storeSelectBar(current, onchangeFn, label){
   var vis = (typeof getVisibleStores==='function') ? getVisibleStores() : [];
   return `<div class="card" style="padding:8px 10px;margin-bottom:10px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -8484,7 +8539,7 @@ function renderInventory() {
   var classCounts = {}; CLASSES.forEach(c=>classCounts[c.id]=items.filter(i=>i.cls===c.id).length);
   var canConfig = ROLE_CONFIG[curRole].canCreate;
 
-  var html = `<div class="section-header">
+  var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">${store.name} · 棚卸</div><div class="section-sub">${new Date().toLocaleDateString('ja')}</div></div>
     <div style="display:flex;gap:6px">
       <button class="btn btn-secondary btn-sm" onclick="showInvHistory('${storeId}')"><i class="ti ti-history"></i> 履歴</button>
@@ -8942,7 +8997,7 @@ function renderOrder() {
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var orders = ls('orders_'+storeId, []);
   var canConfig = ROLE_CONFIG[curRole].canCreate;
-  var html = `<div class="section-header">
+  var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">${store.name} · 発注管理</div><div class="section-sub">業者ごとの発注リストから発注</div></div>
     ${orderTab==='order'?`<button class="btn btn-primary btn-sm" onclick="openOrderModal('${storeId}')"><i class="ti ti-plus"></i> 発注作成</button>`:''}
   </div>`;
@@ -9350,7 +9405,7 @@ function renderTipMgmt() {
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var info = tipPeriodInfo();
 
-  var html = `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div></div>`;
+  var html = pageStoreTabs(storeId, false) + `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div></div>`;
 
   // 期間セレクタ
   html += `<div class="card" style="padding:10px;margin-bottom:10px">
@@ -11307,7 +11362,7 @@ function renderShiftAdmin() {
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var week = getWeekStr();
 
-  var html = `<div class="section-header">
+  var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${week}週</div></div>
   </div>
   <div class="phase-tabs">
@@ -15428,7 +15483,7 @@ function renderIngredientMaster() {
   var classCounts = {};
   CLASSES.forEach(c => classCounts[c.id] = ings.filter(i=>catClass(i.cat)===c.id).length);
 
-  var html = `<div class="section-header">
+  var html = pageStoreTabs(curStore, true) + `<div class="section-header">
     <div><div class="section-title">食材マスター</div><div class="section-sub">${ings.length}品目 / ${cats.length}カテゴリ</div></div>
     <div style="display:flex;gap:6px">
       <button class="btn btn-secondary btn-sm" onclick="openCatModal()"><i class="ti ti-category"></i> カテゴリ</button>
@@ -21326,7 +21381,7 @@ function renderRequired() {
   var incomplete = required.filter(t=>!t.done);
   var warnings = ls('warnings_'+storeId, []);
 
-  var html = `<div class="section-header">
+  var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Required管理</div><div class="section-sub">必須タスクの遵守状況</div></div>
   </div>
   <div class="kpi-grid" style="margin-bottom:12px">
@@ -21399,7 +21454,7 @@ function renderGoals() {
   var myGoals = allGoals.filter(g=>g.scope==='personal' && g.owner===ROLE_CONFIG[curRole].name);
   var list = goalScope==='store' ? storeGoals : myGoals;
 
-  var html = `<div class="section-header">
+  var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">Goal管理</div><div class="section-sub">${store.name}</div></div>
     <button class="btn btn-primary btn-sm" onclick="openGoalV2Modal('${storeId}')"><i class="ti ti-plus"></i> Goal設定</button>
   </div>
@@ -22327,6 +22382,8 @@ function renderGrowthHub() {
     // 管理職ビュー: スコープ内の投稿、ステータスフィルタ
     var scope = ghScopeStores();
     var visible = posts.filter(p=> scope===null ? true : scope.includes(p.store));
+    if(curStore && curStore!=='ALL') visible = visible.filter(function(p){return p.store===curStore;});
+    html += pageStoreTabs(curStore, true);
     var statuses=[{id:'all',label:'全て'},{id:'未対応',label:'未対応'},{id:'対応中',label:'対応中'},{id:'解決',label:'解決'}];
     var list = ghFilter==='all'?visible:visible.filter(p=>(p.status||'未対応')===ghFilter);
     // 未対応を上に
