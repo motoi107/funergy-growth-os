@@ -11238,6 +11238,54 @@ function maybePullStaffShift(storeId, week){
   Promise.all([ pullAvailability(storeId, week), pullShiftPlan(storeId, week), pullOpKey('reminded_'+storeId+'_'+week) ])
     .then(function(){ if(curPage==='shift_staff'||curPage==='mypage') renderPage(curPage); });
 }
+/* ===== 給与サイクル（1–15日 / 16–末日）ヘルパー ===== */
+function payCycleRange(refDate){
+  var d = refDate ? new Date(refDate) : new Date();
+  var y=d.getFullYear(), m=d.getMonth(), day=d.getDate();
+  var startDay, endDay;
+  if(day<=15){ startDay=1; endDay=15; }
+  else { startDay=16; endDay=new Date(y,m+1,0).getDate(); }
+  var dates=[]; for(var dd=startDay; dd<=endDay; dd++) dates.push(new Date(y,m,dd));
+  return { y:y, m:m, startDay:startDay, endDay:endDay, dates:dates,
+    label:(m+1)+'/'+startDay+'–'+(m+1)+'/'+endDay };
+}
+/* 日付→その週の月曜の M/D（getWeekStr と同形式）*/
+function mondayMDof(dt){
+  var x=new Date(dt.getFullYear(),dt.getMonth(),dt.getDate());
+  var day=x.getDay();
+  var diff=x.getDate()-day+(day===0?-6:1);
+  x.setDate(diff);
+  return (x.getMonth()+1)+'/'+x.getDate();
+}
+/* 給与サイクル内の自分のスケジュール時間を集計（公開済シフトのみ）*/
+function cycleScheduledHours(storeId, me, cyc){
+  var weeks={};
+  cyc.dates.forEach(function(d){ var wk=mondayMDof(d); var dow=DOW[(d.getDay()+6)%7]; (weeks[wk]=weeks[wk]||{})[dow]=1; });
+  var total=0, reg=0, ot=0, days=0;
+  Object.keys(weeks).forEach(function(wk){
+    var plan=getShiftPlan(storeId, wk);
+    if(!plan || plan.status!=='公開済' || !plan.cells) return;
+    var dows=weeks[wk], wkH=0, seen={};
+    Object.keys(plan.cells).forEach(function(k){
+      if(plan.cells[k]!==me) return;
+      var parts=k.split('_'); var dow=parts[0];
+      if(!dows[dow]) return;
+      wkH += (SHIFT_HOURS[parts[1]]||4); seen[dow]=1;
+    });
+    days += Object.keys(seen).length;
+    total+=wkH; reg+=Math.min(wkH,40); ot+=Math.max(wkH-40,0);
+  });
+  return { total:total, reg:reg, ot:ot, days:days };
+}
+/* サイクル内の各週の公開シフトを本人端末へ取込（不足週のみ）*/
+function maybePullCycleShifts(storeId, cyc){
+  var weeks={}; cyc.dates.forEach(function(d){ weeks[mondayMDof(d)]=1; });
+  var toPull=Object.keys(weeks).filter(function(wk){ return !_staffShiftPulled[storeId+'_'+wk]; });
+  if(!toPull.length) return;
+  var proms=[];
+  toPull.forEach(function(wk){ _staffShiftPulled[storeId+'_'+wk]=true; proms.push(pullShiftPlan(storeId, wk)); });
+  Promise.all(proms).then(function(){ if(curPage==='mypage'||curPage==='shift_staff') renderPage(curPage); });
+}
 async function shiftCloudHas(table, storeId, week){
   try{
     var res=await fetch(SUPABASE_URL+'/rest/v1/'+table+'?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=store_id', { headers: supaHeaders() });
@@ -12531,6 +12579,7 @@ function renderRiskAnalysis(storeId, week, plan, hoursByName) {
 var availTmp = {};
 /* ログイン中の本人名（実名優先・なければ役職名）。Availability提出者の特定に使用 */
 function myName(){ return curUserName || (ROLE_CONFIG[curRole]||{}).name; }
+function tWday(d){ if(curLang!=='en') return d; var m={'月':'Mon','火':'Tue','水':'Wed','木':'Thu','金':'Fri','土':'Sat','日':'Sun'}; return m[d]||d; }
 function renderShiftStaff() {
   var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
@@ -12541,63 +12590,59 @@ function renderShiftStaff() {
   var reminded = ls('reminded_'+storeId+'_'+week, []);
   var isReminded = !myAvail && Array.isArray(reminded) && reminded.indexOf(me)>=0;
 
-  var html = `<div class="section-header"><div><div class="section-title">My Shift</div><div class="section-sub">${week}週</div></div></div>`;
+  var html = `<div class="section-header"><div><div class="section-title">My Shift</div><div class="section-sub">${curLang==='en'?week:(week+'週')}</div></div></div>`;
 
   if (isReminded) {
     html += `<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-bell" style="font-size:18px"></i><div>
-      <p style="font-size:13px;font-weight:700">シフト希望の提出をお願いします</p>
-      <p style="font-size:12px;margin-top:2px">${week}週の提出がまだです。下の「Submit Availability」から提出してください。</p></div></div>`;
+      <p style="font-size:13px;font-weight:700">${t('シフト希望の提出をお願いします','Please submit your availability')}</p>
+      <p style="font-size:12px;margin-top:2px">${curLang==='en'?('You have not submitted for '+week+' yet. Use the "Submit Availability" button below.'):(week+'週の提出がまだです。下の「Submit Availability」から提出してください。')}</p></div></div>`;
   }
 
-  setTimeout(function(){ try{ maybePullStaffShift(storeId, week); }catch(e){} }, 60); // クラウドから最新の提出/Remind/公開を取込
+  setTimeout(function(){ try{ maybePullStaffShift(storeId, week); }catch(e){} }, 60);
 
-  // 勤務条件ルール表示
-  html += `<div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>勤務条件</div>
+  html += `<div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>${t('勤務条件','Work Conditions')}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px">
       <span class="tag tag-gray">Min 6 shifts</span><span class="tag tag-gray">Max 8 shifts</span>
       <span class="tag tag-gray">Consecutive OK</span>
-      ${emp&&emp.support&&emp.support.length?`<span class="tag tag-blue">応援可: ${emp.support.map(id=>(STORES.find(s=>s.id===id)||{name:id}).name).join(',')}</span>`:''}
+      ${emp&&emp.support&&emp.support.length?`<span class="tag tag-blue">${t('応援可','Can support')}: ${emp.support.map(id=>(STORES.find(s=>s.id===id)||{name:id}).name).join(',')}</span>`:''}
     </div>
   </div>`;
 
-  // Availability提出/編集
   if (myAvail) {
     html += `<div class="card"><div class="alert alert-success" style="margin:0"><i class="ti ti-circle-check"></i><div>
       <p style="font-size:13px;font-weight:600">Availability Submitted</p>
-      <p style="font-size:12px;margin-top:2px">提出枠: ${myAvail.slots.length} · ありがとうございます！</p></div></div>
+      <p style="font-size:12px;margin-top:2px">${t('提出枠','Slots submitted')}: ${myAvail.slots.length}${curLang==='en'?' · Thank you!':' · ありがとうございます！'}</p></div></div>
       <button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="openAvailModal('${storeId}','${week}')"><i class="ti ti-edit"></i> Edit Submission</button>
     </div>`;
   } else {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-plus"></i>Availability提出</div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${week}週の勤務可能枠を提出してください</p>
+    html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-plus"></i>${t('Availability提出','Submit Availability')}</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${curLang==='en'?('Please submit your available slots for '+week):(week+'週の勤務可能枠を提出してください')}</p>
       <button class="btn btn-primary" style="width:100%" onclick="openAvailModal('${storeId}','${week}')"><i class="ti ti-send"></i> Submit Availability</button>
     </div>`;
   }
 
-  // 公開シフト確認
   if (plan && plan.status==='公開済') {
     var myCells = Object.keys(plan.cells).filter(k=>plan.cells[k]===me);
-    html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check"></i>公開シフト</div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check"></i>${t('公開シフト','Published Shift')}</div>`;
     if (myCells.length) {
       myCells.forEach(k => {
         var parts = k.split('_');
         html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
-          <div><div style="font-size:13px;font-weight:600">${parts[0]}曜 ${parts[1]}</div><div style="font-size:11px;color:var(--muted)">${parts[2]}</div></div>
-          <button class="btn btn-secondary btn-sm" onclick="openShiftChangeModal('${storeId}','${week}','${k}')">変更申請</button>
+          <div><div style="font-size:13px;font-weight:600">${tWday(parts[0])}${curLang==='en'?'':'曜'} ${parts[1]}</div><div style="font-size:11px;color:var(--muted)">${parts[2]}</div></div>
+          <button class="btn btn-secondary btn-sm" onclick="openShiftChangeModal('${storeId}','${week}','${k}')">${t('変更申請','Request change')}</button>
         </div>`;
       });
-    } else { html += `<p style="color:var(--muted);font-size:13px">この週のシフトはありません</p>`; }
+    } else { html += `<p style="color:var(--muted);font-size:13px">${t('この週のシフトはありません','No shifts assigned this week')}</p>`; }
     html += '</div>';
   } else {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-calendar" style="font-size:28px;display:block;margin-bottom:6px"></i>シフト未公開</div>`;
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-calendar" style="font-size:28px;display:block;margin-bottom:6px"></i>${t('シフト未公開','Shift not published yet')}</div>`;
   }
 
-  // 変更申請履歴
   var changes = ls('shift_changes', []).filter(c=>c.name===me);
   if (changes.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>変更申請</div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>${t('変更申請','Change Requests')}</div>`;
     changes.slice().reverse().forEach(c => {
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${c.slot}</div><span class="tag ${c.status==='承認'?'tag-green':c.status==='却下'?'tag-red':'tag-yellow'}">${c.status}</span></div>
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${c.slot}</div><span class="tag ${c.status==='承認'?'tag-green':c.status==='却下'?'tag-red':'tag-yellow'}">${curLang==='en'?({'承認':'Approved','却下':'Rejected','申請中':'Pending'}[c.status]||c.status):c.status}</span></div>
         <div class="approval-meta">${c.reason}</div></div>`;
     });
     html += '</div>';
@@ -18992,29 +19037,31 @@ function renderMypage() {
   }
   var meEmpRec = getEmployees().find(x=>x.name===me) || {role:curRole};
   var wage = empWageOf(meEmpRec);
-  var weekHours = 0;
-  if (plan && plan.status==='公開済') {
-    myShifts.forEach(k=>{ var period=k.split('_')[1]; weekHours += (SHIFT_HOURS[period]||4); });
-  }
-  var regularH = Math.min(weekHours, 40);
-  var otH = Math.max(weekHours-40, 0);
+  // 給与サイクル（1–15日 / 16–末日）でスケジュール集計
+  var cyc = payCycleRange();
+  maybePullCycleShifts(storeId, cyc);
+  var ch = cycleScheduledHours(storeId, me, cyc);
+  var cycHours = ch.total, regularH = ch.reg, otH = ch.ot;
   var estPay = regularH*wage + otH*wage*1.5;
+  var cycLabel = cyc.label;
+  var cycSub = curLang==='en' ? ('Pay cycle '+cycLabel+(cyc.startDay===1?' (1st–15th)':' (16th–end)')) : ('給与サイクル '+cycLabel+(cyc.startDay===1?'（1〜15日）':'（16〜末日）'));
   // チップ見込み（今の半月の自分の配分合計＋半月精算後）
   var myTipName = curUserName || me;
   var tipEst = estimateMyTip(storeId, myTipName);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}</div>
+  html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${cycLabel}</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${cycSub}${ch.days?' · '+(curLang==='en'?(ch.days+' days'):(ch.days+'日')):''}</div>
     <div class="kpi-grid">
-      ${kpi(t('今週勤務','This week'), weekHours+'h', t('公開シフト','Scheduled'), 'var(--tm)')}
+      ${kpi(t('期間勤務','Cycle hours'), cycHours+'h', t('公開シフト','Scheduled'), 'var(--tm)')}
       ${kpi('Regular', regularH+'h', t('通常','Regular'), 'var(--tm)')}
       ${kpi('Overtime', otH+'h', t('残業','OT'), otH?'var(--yellow)':'var(--muted)')}
-      ${kpi(t('見込給与','Est. pay'), '$'+Math.round(estPay), t('今週','This week'), 'var(--green)')}
+      ${kpi(t('見込給与','Est. pay'), '$'+Math.round(estPay), cycLabel, 'var(--green)')}
     </div>
     <div class="kpi-grid" style="margin-top:8px">
       ${kpi(t('チップ見込','Est. tips'), '$'+tipEst.total.toFixed(0), tipEst.range, 'var(--accent2)')}
-      ${kpi(t('給与+チップ','Pay + Tips'), '$'+Math.round(estPay+tipEst.total), t('今週+半月チップ','Week + half-month'), 'var(--green)')}
+      ${kpi(t('給与+チップ','Pay + Tips'), '$'+Math.round(estPay+tipEst.total), t('この給与サイクル','This pay cycle'), 'var(--green)')}
     </div>
     ${tipEst.total>0?`<button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="showMyTipDetail('${storeId}','${myTipName.replace(/'/g,"")}')"><i class="ti ti-list-details"></i> ${t('チップ内訳（シフト毎）を見る','View tip breakdown by shift')}</button>`:''}
-    <p style="font-size:11px;color:var(--muted);margin-top:8px">${t('※ 見込み（確定給与ではありません）。チップは現在の半月の配分です。次回支払予定: 隔週金曜','* Estimate only (not final pay). Tips are the current half-month allocation. Next payday: every other Friday.')}</p>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px">${t('※ 見込み（確定給与ではありません）。公開済みシフトを元に算出。残業は週40h超で計算。','* Estimate only (not final pay). Based on published shifts. OT calculated above 40h/week.')}</p>
   </div>`;
 
   // 8. 勤怠記録（自分のToast打刻・今月）
@@ -21822,13 +21869,13 @@ function ojtSelectPerson(name){ _ojtSel = name; renderPage('ojtmap'); }
 
 function renderOjtMap(){
   var canEdit = (curRole==='gm' || curRole==='ceo');
-  var subTxt = (_ojtMode==='career') ? '昇格パス × 役職OJT（Career Score）' : '担当軸 × ゲート基準 → チップ進行';
-  var html = '<div class="section-header"><div><div class="section-title">OJTマップ / 成長フェーズ</div><div class="section-sub">'+subTxt+'</div></div>'
-    + ((_ojtMode!=='career' && canEdit)?'<button class="btn btn-secondary btn-sm" onclick="openOjtPhaseMapEditor()"><i class="ti ti-edit"></i> 基準編集</button>':'')
+  var subTxt = (_ojtMode==='career') ? t('昇格パス × 役職OJT（Career Score）','Promotion path × Role OJT (Career Score)') : t('担当軸 × ゲート基準 → チップ進行','Skill axes × gate criteria → Tip progression');
+  var html = '<div class="section-header"><div><div class="section-title">'+t('OJTマップ / 成長フェーズ','OJT Map / Growth Phases')+'</div><div class="section-sub">'+subTxt+'</div></div>'
+    + ((_ojtMode!=='career' && canEdit)?'<button class="btn btn-secondary btn-sm" onclick="openOjtPhaseMapEditor()"><i class="ti ti-edit"></i> '+t('基準編集','Edit criteria')+'</button>':'')
     + '</div>';
   html += '<div style="display:flex;gap:6px;margin-bottom:12px">'
-    + '<button class="btn '+(_ojtMode!=='career'?'btn-primary':'btn-secondary')+' btn-sm" style="flex:1" onclick="setOjtMode(\'tip\')"><i class="ti ti-coin"></i> Tip比率（G1）</button>'
-    + '<button class="btn '+(_ojtMode==='career'?'btn-primary':'btn-secondary')+' btn-sm" style="flex:1" onclick="setOjtMode(\'career\')"><i class="ti ti-trending-up"></i> Career Score（G2+）</button>'
+    + '<button class="btn '+(_ojtMode!=='career'?'btn-primary':'btn-secondary')+' btn-sm" style="flex:1" onclick="setOjtMode(\'tip\')"><i class="ti ti-coin"></i> '+t('Tip比率（G1）','Tip Rate (G1)')+'</button>'
+    + '<button class="btn '+(_ojtMode==='career'?'btn-primary':'btn-secondary')+' btn-sm" style="flex:1" onclick="setOjtMode(\'career\')"><i class="ti ti-trending-up"></i> '+t('Career Score（G2+）','Career Score (G2+)')+'</button>'
     + '</div>';
   html += (_ojtMode==='career') ? renderOjtCareerBody() : renderOjtTipBody();
   return html;
@@ -22111,39 +22158,35 @@ function renderTipRate() {
   var canEditPolicy = curRole==='gm' || curRole==='ceo';
 
   var html = `<div class="section-header">
-    <div><div class="section-title">Tip Rate</div><div class="section-sub">自己申請 → 上長承認</div></div>
-    ${canEditPolicy?`<button class="btn btn-secondary btn-sm" onclick="openTipPolicyModal()"><i class="ti ti-edit"></i> Policy編集</button>`:''}
+    <div><div class="section-title">Tip Rate</div><div class="section-sub">${t('自己申請 → 上長承認','Self-request → Manager approval')}</div></div>
+    ${canEditPolicy?`<button class="btn btn-secondary btn-sm" onclick="openTipPolicyModal()"><i class="ti ti-edit"></i> ${t('Policy編集','Edit Policy')}</button>`:''}
   </div>`;
 
-  // Policy表示
   html += `<div class="card"><div class="card-title"><i class="ti ti-file-text"></i>Tip Rate Policy</div>
     <div style="font-size:12px;color:var(--muted);white-space:pre-line;line-height:1.7">${getTipPolicy()}</div>
   </div>`;
 
-  // 3段階の説明カード
-  html += `<div class="card"><div class="card-title"><i class="ti ti-coin"></i>Tip Rate 区分</div>
+  html += `<div class="card"><div class="card-title"><i class="ti ti-coin"></i>${t('Tip Rate 区分','Tip Rate Tiers')}</div>
     <div style="display:flex;gap:8px">${TIP_OPTIONS.map(o=>`<div class="kpi" style="flex:1;text-align:center"><div class="kpi-value" style="color:var(--accent)">${o}%</div></div>`).join('')}</div>
   </div>`;
 
-  // 現在のTip Rate一覧（管理者向け: スタッフ全員のeffective rate）
   if (canApprove || canEditPolicy) {
     var storeId2 = curStore==='ALL'?null:curStore;
     var staffList = getEmployees().filter(e=>(e.role==='crew'||e.role==='sl') && e.status!=='退職' && (!storeId2 || e.store===storeId2 || (e.support||[]).includes(storeId2)));
-    html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>スタッフ別 現在のTip Rate</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">初回勤務から3ヶ月経過で自動100%。それ以前は承認・No Tip期間で決定。</div>
-      <div style="overflow-x:auto"><table class="inv-table" style="min-width:400px;font-size:12px"><thead><tr><th>スタッフ</th><th>店舗</th><th>初回勤務</th><th>Tip Rate</th></tr></thead><tbody>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>${t('スタッフ別 現在のTip Rate','Current Tip Rate by Staff')}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${t('初回勤務から3ヶ月経過で自動100%。それ以前は承認・No Tip期間で決定。','Auto 100% after 3 months from first shift. Before that, set by approval and No-Tip period.')}</div>
+      <div style="overflow-x:auto"><table class="inv-table" style="min-width:400px;font-size:12px"><thead><tr><th>${t('スタッフ','Staff')}</th><th>${t('店舗','Store')}</th><th>${t('初回勤務','First shift')}</th><th>Tip Rate</th></tr></thead><tbody>`;
     staffList.slice(0,60).forEach(e=>{
       var rate = effectiveTipRate(e.name);
       var auto = isThreeMonths(e);
       var col = rate===100?'var(--green)':rate===0?'var(--red)':'var(--accent)';
       html += `<tr><td>${e.name}</td><td style="color:var(--muted)">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name}</td>
-        <td style="color:var(--muted);font-size:11px">${firstWorkDate(e)?firstWorkDate(e).toLocaleDateString('ja'):'—'}</td>
-        <td style="font-weight:700;color:${col}">${rate===0?'No Tip':rate+'%'}${auto?' <span class="tag tag-green" style="font-size:8px">自動</span>':''}</td></tr>`;
+        <td style="color:var(--muted);font-size:11px">${firstWorkDate(e)?firstWorkDate(e).toLocaleDateString(langDateLocale()):'—'}</td>
+        <td style="font-weight:700;color:${col}">${rate===0?'No Tip':rate+'%'}${auto?' <span class="tag tag-green" style="font-size:8px">'+t('自動','Auto')+'</span>':''}</td></tr>`;
     });
     html += `</tbody></table></div></div>`;
   }
 
-  // Crew/SL: スキル連動の統合ステータス（現在地→次条件→申請）
   if (curRole === 'crew' || curRole === 'sl') {
     var me = ROLE_CONFIG[curRole].name;
     var emp = getEmployees().find(e=>e.name===me);
@@ -22155,63 +22198,61 @@ function renderTipRate() {
     var sc = skillScoreStore(me, myStore);
 
     html += `<div class="card" style="background:linear-gradient(135deg,var(--accent-soft,#fceee4),var(--surface))">
-      <div class="card-title"><i class="ti ti-coin" style="color:var(--accent)"></i>あなたのTip Rate</div>
+      <div class="card-title"><i class="ti ti-coin" style="color:var(--accent)"></i>${t('あなたのTip Rate','Your Tip Rate')}</div>
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
         <div style="text-align:center"><div style="font-size:32px;font-weight:800;color:${curRate===100?'var(--green)':curRate===0?'var(--red)':'var(--accent)'};line-height:1">${curRate===0?'No Tip':curRate+'%'}</div>
-          <div style="font-size:10px;color:var(--muted)">現在 · ${storeName}</div></div>
-        <div style="flex:1;font-size:12px;color:var(--muted)">スキル合計 <b style="color:var(--tm)">${sc.total}点</b> · Lv3 <b style="color:var(--tm)">${sc.lv3}項目</b></div>
+          <div style="font-size:10px;color:var(--muted)">${t('現在','Now')} · ${storeName}</div></div>
+        <div style="flex:1;font-size:12px;color:var(--muted)">${t('スキル合計','Skill total')} <b style="color:var(--tm)">${sc.total}${curLang==='en'?'pts':'点'}</b> · Lv3 <b style="color:var(--tm)">${sc.lv3}${curLang==='en'?'':'項目'}</b></div>
       </div>`;
     if (elig && elig.maxed) {
-      html += `<div class="alert alert-success" style="margin:0"><i class="ti ti-crown"></i>最高Tip Rateに到達しています</div>`;
+      html += `<div class="alert alert-success" style="margin:0"><i class="ti ti-crown"></i>${t('最高Tip Rateに到達しています','You have reached the highest Tip Rate')}</div>`;
     } else if (elig && elig.target) {
-      var t = elig.target;
+      var tgt = elig.target;
       html += `<div style="border-top:1px solid var(--border);padding-top:10px">
-        <div style="font-size:12px;font-weight:700;margin-bottom:6px">次の目標：Tip Rate ${t.label}</div>`;
+        <div style="font-size:12px;font-weight:700;margin-bottom:6px">${t('次の目標：','Next goal: ')}Tip Rate ${tgt.label}</div>`;
       elig.checks.forEach(c=>{
         html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px">
           <i class="ti ${c.ok?'ti-circle-check':'ti-circle'}" style="color:${c.ok?'var(--green)':'var(--muted)'}"></i>
           <span style="flex:1">${c.label}</span><span style="font-size:11px;color:${c.ok?'var(--green)':'var(--accent2)'}">${c.detail}</span></div>`;
       });
-      if (elig.mgrPending) html += `<div style="font-size:11px;color:var(--muted);padding:3px 0"><i class="ti ti-user-check"></i> ＋ Store Manager 承認</div>`;
+      if (elig.mgrPending) html += `<div style="font-size:11px;color:var(--muted);padding:3px 0"><i class="ti ti-user-check"></i> ＋ ${t('Store Manager 承認','Store Manager approval')}</div>`;
       var myReqPend = requests.filter(r=>r.name===me && r.status==='申請中').slice(-1)[0];
       if (myReqPend) {
-        html += `<div class="alert alert-warning" style="margin:8px 0 0"><i class="ti ti-clock"></i>${myReqPend.rate}% を申請中（承認待ち）</div>`;
+        html += `<div class="alert alert-warning" style="margin:8px 0 0"><i class="ti ti-clock"></i>${myReqPend.rate}% ${t('を申請中（承認待ち）','requested (awaiting approval)')}</div>`;
       } else if (elig.allOk) {
-        html += `<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="openTipApplyFromSkill('${myStore}',${t.rate})"><i class="ti ti-send"></i> Tip Rate ${t.label} を申請する</button>`;
+        html += `<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="openTipApplyFromSkill('${myStore}',${tgt.rate})"><i class="ti ti-send"></i> ${curLang==='en'?('Request Tip Rate '+tgt.label):('Tip Rate '+tgt.label+' を申請する')}</button>`;
       } else {
         var remaining = elig.checks.filter(c=>!c.ok).length;
-        html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-info-circle"></i> 申請条件まであと${remaining}項目</div>`;
+        html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-info-circle"></i> ${curLang==='en'?(remaining+' more to qualify'):('申請条件まであと'+remaining+'項目')}</div>`;
       }
       html += `</div>`;
     }
     html += `</div>`;
   }
 
-  // 承認待ち
   var pending = requests.filter(r=>r.status==='申請中');
   if (pending.length && canApprove) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>承認待ち (${pending.length})</div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>${t('承認待ち','Pending Approval')} (${pending.length})</div>`;
     pending.forEach(r => {
       var storeName = r.store ? ((STORES.find(s=>s.id===r.store)||{}).name||r.store) : '';
-      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${r.name} ${r.basis==='skill'?'<span class="tag tag-green" style="font-size:8px">条件達成</span>':''}</div>
-        <div class="approval-meta">申請 ${r.rate}%${storeName?' · '+storeName:''}${r.reason?' · '+r.reason:''}</div></div><span class="tag tag-yellow">${r.rate}%</span></div>
+      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${r.name} ${r.basis==='skill'?'<span class="tag tag-green" style="font-size:8px">'+t('条件達成','Qualified')+'</span>':''}</div>
+        <div class="approval-meta">${t('申請','Requested')} ${r.rate}%${storeName?' · '+storeName:''}${r.reason?' · '+r.reason:''}</div></div><span class="tag tag-yellow">${r.rate}%</span></div>
         <div class="approval-actions">
-          <button class="btn btn-success btn-sm" onclick="approveTip('${r.id}','承認')"><i class="ti ti-check"></i> 承認</button>
-          <button class="btn btn-danger btn-sm" onclick="approveTip('${r.id}','却下')"><i class="ti ti-x"></i> 却下</button>
+          <button class="btn btn-success btn-sm" onclick="approveTip('${r.id}','承認')"><i class="ti ti-check"></i> ${t('承認','Approve')}</button>
+          <button class="btn btn-danger btn-sm" onclick="approveTip('${r.id}','却下')"><i class="ti ti-x"></i> ${t('却下','Reject')}</button>
         </div></div>`;
     });
     html += '</div>';
   }
 
-  // 履歴
   var history = requests.filter(r=>r.status!=='申請中');
   if (history.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>Tip Rate 変更履歴</div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>${t('Tip Rate 変更履歴','Tip Rate History')}</div>`;
     history.slice().reverse().slice(0,10).forEach(r => {
       var storeName = r.store ? ((STORES.find(s=>s.id===r.store)||{}).name||'') : '';
       html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.name} · ${r.rate}%</div>
-        <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${r.status}</span></div>
-        <div class="approval-meta">${r.approvedDate||r.date}${storeName?' · '+storeName:''}${r.approver?' · 承認: '+r.approver:''}${r.basis==='skill'?' · スキル条件達成':''}</div></div>`;
+        <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${curLang==='en'?(r.status==='承認'?'Approved':'Rejected'):r.status}</span></div>
+        <div class="approval-meta">${r.approvedDate||r.date}${storeName?' · '+storeName:''}${r.approver?(curLang==='en'?' · by '+r.approver:' · 承認: '+r.approver):''}${r.basis==='skill'?(curLang==='en'?' · Skill criteria met':' · スキル条件達成'):''}</div></div>`;
     });
     html += '</div>';
   }
@@ -23417,6 +23458,7 @@ function maybePullSkillStore(storeId){
   if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return;
   try{ pullOpKey(SKILL_STORE_PREFIX+storeId).then(function(){ if(curPage==='skill'||curPage==='mypage') renderPage(curPage); }); }catch(e){}
 }
+function tSkStatus(st){ if(curLang!=='en') return st; var m={'未取得':'Not started','承認':'Approved','申請中':'Pending','確認中':'In review','差戻し':'Returned'}; return m[st]||st; }
 function renderSkillSelf() {
   var me = ROLE_CONFIG[curRole].name;
   var emp = getEmployees().find(e=>e.name===me);
@@ -23427,14 +23469,12 @@ function renderSkillSelf() {
   var sk = getEmpSkillsStore(me, storeId);
   var reqs = getSkillRequests().filter(r=>r.name===me);
 
-  var html = `<div class="section-header"><div><div class="section-title">Skill Level</div><div class="section-sub">自己評価申請 → 管理者承認</div></div></div>`;
+  var html = `<div class="section-header"><div><div class="section-title">Skill Level</div><div class="section-sub">${t('自己評価申請 → 管理者承認','Self-assessment → Manager approval')}</div></div></div>`;
   html += evalRubricLegendHtml();
 
-  // スキルレーダー
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar"></i>スキルレーダー</div>${skillRadarForStore(me, storeId, 260)}<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">承認済みレベル（Lv0–3）</div></div>`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar"></i>${t('スキルレーダー','Skill Radar')}</div>${skillRadarForStore(me, storeId, 260)}<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">${t('承認済みレベル（Lv0–3）','Approved levels (Lv0–3)')}</div></div>`;
 
-  // 現在のスキル状況
-  html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>現在のSkill Level</div>`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>${t('現在のSkill Level','Current Skill Levels')}</div>`;
   positions.forEach(p => {
     var s = sk[p] || {level:0, status:'未取得'};
     var crit = skillCriteria(p);
@@ -23446,28 +23486,26 @@ function renderSkillSelf() {
           ${s.status==='承認'?`<span style="font-size:11px;color:var(--green)"> · ${lvLabel}</span>`:''}
         </div>
         <div style="display:flex;align-items:center;gap:6px">
-          <span class="tag ${col}">${s.status}</span>
-          <button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px" onclick="showCriteria('${p.replace(/'/g,'')}')">基準</button>
-          ${(s.status==='未取得'||s.status==='差戻し'||s.status==='承認')?`<button class="btn btn-secondary btn-sm" onclick="openSkillRequestModal('${p.replace(/'/g,'')}')">申請</button>`:''}
+          <span class="tag ${col}">${tSkStatus(s.status)}</span>
+          <button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px" onclick="showCriteria('${p.replace(/'/g,'')}')">${t('基準','Criteria')}</button>
+          ${(s.status==='未取得'||s.status==='差戻し'||s.status==='承認')?`<button class="btn btn-secondary btn-sm" onclick="openSkillRequestModal('${p.replace(/'/g,'')}')">${t('申請','Request')}</button>`:''}
         </div>
       </div>
       ${s.status==='承認'&&s.level>=0?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${crit[s.level]||''}</div>`:''}
-      ${s.mgrComment&&s.status!=='承認'?`<div style="font-size:11px;color:var(--muted);margin-top:3px">管理者: ${s.mgrComment}</div>`:''}
-      ${s.nextTask?`<div style="font-size:11px;color:var(--accent2);margin-top:2px">次の課題: ${s.nextTask}</div>`:''}
+      ${s.mgrComment&&s.status!=='承認'?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${t('管理者','Manager')}: ${s.mgrComment}</div>`:''}
+      ${s.nextTask?`<div style="font-size:11px;color:var(--accent2);margin-top:2px">${t('次の課題','Next task')}: ${s.nextTask}</div>`:''}
     </div>`;
   });
   html += '</div>';
 
-  // 成長の推移（スキル）
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-line" style="color:var(--accent)"></i>成長の推移（スキル）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">毎月の合計レベルを自動記録</span></div>${skillTrendHtml(me)}</div>`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-line" style="color:var(--accent)"></i>${t('成長の推移（スキル）','Skill Growth')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${t('毎月の合計レベルを自動記録','Monthly totals, auto-recorded')}</span></div>${skillTrendHtml(me)}</div>`;
 
-  // ===== 次のTip Rate / レベルアップ条件（フェーズ2）=====
   var elig = checkLevelUpEligibility(me, storeId);
   if (elig && !elig.maxed && elig.target) {
-    var t = elig.target;
+    var tgt = elig.target;
     html += `<div class="card" style="border-left:3px solid ${elig.allOk?'var(--green)':'var(--accent2)'}">
-      <div class="card-title"><i class="ti ti-target-arrow" style="color:${elig.allOk?'var(--green)':'var(--accent)'}"></i>次の目標 — Tip Rate ${t.label}</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">現在 ${elig.curRate}% → 次 ${t.rate}%</div>`;
+      <div class="card-title"><i class="ti ti-target-arrow" style="color:${elig.allOk?'var(--green)':'var(--accent)'}"></i>${t('次の目標','Next goal')} — Tip Rate ${tgt.label}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('現在','Current')} ${elig.curRate}% → ${t('次','Next')} ${tgt.rate}%</div>`;
     if (elig.checks.length) {
       elig.checks.forEach(c=>{
         html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px">
@@ -23476,32 +23514,30 @@ function renderSkillSelf() {
           <span style="font-size:11px;color:${c.ok?'var(--green)':'var(--accent2)'}">${c.detail}</span></div>`;
       });
     }
-    if (elig.mgrPending) html += `<div style="font-size:11px;color:var(--muted);padding:4px 0"><i class="ti ti-user-check"></i> ＋ Store Manager の承認</div>`;
+    if (elig.mgrPending) html += `<div style="font-size:11px;color:var(--muted);padding:4px 0"><i class="ti ti-user-check"></i> ＋ ${t('Store Manager の承認','Store Manager approval')}</div>`;
     var remaining = elig.checks.filter(c=>!c.ok).length;
     if (elig.allOk) {
-      html += `<div class="alert alert-success" style="margin:8px 0 0"><i class="ti ti-circle-check"></i>条件達成！Tip Rate ${t.label} を申請できます</div>
-        <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="openTipApplyFromSkill('${storeId}',${t.rate})"><i class="ti ti-send"></i> Tip Rate ${t.label} を申請する</button>`;
+      html += `<div class="alert alert-success" style="margin:8px 0 0"><i class="ti ti-circle-check"></i>${t('条件達成！','All requirements met! ')}Tip Rate ${tgt.label} ${t('を申請できます','is now available to request')}</div>
+        <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="openTipApplyFromSkill('${storeId}',${tgt.rate})"><i class="ti ti-send"></i> ${curLang==='en'?('Request Tip Rate '+tgt.label):('Tip Rate '+tgt.label+' を申請する')}</button>`;
     } else {
-      html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-info-circle"></i> 申請条件まであと${remaining}項目</div>`;
+      html += `<div style="font-size:12px;color:var(--accent2);margin-top:8px"><i class="ti ti-info-circle"></i> ${curLang==='en'?(remaining+' more to qualify'):('申請条件まであと'+remaining+'項目')}</div>`;
     }
     html += `</div>`;
   }
 
-  // 対応可能ポジション
   var ap = approvedPositionsStore(me, storeId);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-checkbox"></i>対応可能ポジション (${ap.length})</div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px">${ap.length?ap.map(p=>`<span class="tag tag-green">${p}</span>`).join(''):'<span style="color:var(--muted);font-size:13px">承認済みポジションなし</span>'}</div>
-    ${ap.length<positions.length?`<div style="font-size:11px;color:var(--accent2);margin-top:8px">次に覚えるべき: ${positions.filter(p=>!ap.includes(p)).slice(0,3).join(', ')}</div>`:''}
+  html += `<div class="card"><div class="card-title"><i class="ti ti-checkbox"></i>${t('対応可能ポジション','Positions You Can Cover')} (${ap.length})</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">${ap.length?ap.map(p=>`<span class="tag tag-green">${p}</span>`).join(''):'<span style="color:var(--muted);font-size:13px">'+t('承認済みポジションなし','No approved positions yet')+'</span>'}</div>
+    ${ap.length<positions.length?`<div style="font-size:11px;color:var(--accent2);margin-top:8px">${t('次に覚えるべき','Learn next')}: ${positions.filter(p=>!ap.includes(p)).slice(0,3).join(', ')}</div>`:''}
   </div>`;
 
-  // 申請履歴
   if (reqs.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>申請履歴</div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>${t('申請履歴','Request History')}</div>`;
     reqs.slice().reverse().forEach(r => {
       var col = r.status==='承認'?'tag-green':r.status==='差戻し'?'tag-red':'tag-yellow';
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.position} 申請</div><span class="tag ${col}">${r.status}</span></div>
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.position} ${t('申請','request')}</div><span class="tag ${col}">${tSkStatus(r.status)}</span></div>
         <div class="approval-meta">${r.date} · ${r.selfComment||''}</div>
-        ${r.mgrComment?`<div style="font-size:11px;color:var(--muted);margin-top:4px">管理者コメント: ${r.mgrComment}</div>`:''}</div>`;
+        ${r.mgrComment?`<div style="font-size:11px;color:var(--muted);margin-top:4px">${t('管理者コメント','Manager comment')}: ${r.mgrComment}</div>`:''}</div>`;
     });
     html += '</div>';
   }
