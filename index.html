@@ -4029,6 +4029,8 @@ async function enterAppWithSync(){
   try{ notifRealtimeStart(); }catch(e){}
   try{ checkShiftReminders(); }catch(e){}
   try{ checkTipPromotions(); }catch(e){}
+  try{ ensureRecurringTasks(); }catch(e){}
+  try{ taskDeadlineReminders(); }catch(e){}
   try{ captureSkillSnapshots(); }catch(e){}
 }
 /* ログイン者の役職・所属を、同期後の最新マスターから再解決する。
@@ -21725,104 +21727,418 @@ function deleteDailyOpTemplate(storeId, id) {
 }
 
 /* ============================================================
-   ⑭ タスク管理 (担当/期限/進捗/完了/履歴)
+   ⑭ タスク管理 v2（店舗/個人・詳細ステータス・メモ/ログ・管理ビュー）
 ============================================================ */
+var taskTab = 'store';
+var TASK_STATUSES = ['未着手','進行中','レビュー','完了'];
+function setTaskTab(t){ taskTab=t; renderPage('tasks'); }
 function getTasks() { return ls('tasks_all', []); }
-function renderTasks() {
-  var tasks = getTasks();
-  var storeFilter = curStore;
-  var visible = curRole==='crew' ? tasks.filter(t=>t.assignee===myName() || t.store===curStore)
-              : curStore==='ALL' ? tasks : tasks.filter(t=>t.store===curStore || t.store==='ALL');
+function setTasks(arr){ lsSet('tasks_all', arr); }
+function tsNow(){ var d=new Date(); return d.toLocaleDateString('ja')+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }
+function normalizeTask(t){
+  if(!t.type) t.type='店舗';
+  if(t.progress==null) t.progress=0;
+  if(!t.status) t.status = t.progress>=100?'完了':(t.progress>0?'進行中':'未着手');
+  if(!t.priority) t.priority='中';
+  if(!t.place) t.place='';
+  if(!Array.isArray(t.memos)) t.memos=[];
+  if(!Array.isArray(t.log)) t.log=[];
+  if(!t.recur || typeof t.recur!=='object') t.recur={type:'none'};
+  if(!t.seriesId) t.seriesId = t.id;
+  if(!t.updatedTs) t.updatedTs = t.created ? Date.parse(t.created)||Date.now() : Date.now();
+  return t;
+}
+function getTasksN(){ return getTasks().map(normalizeTask); }
+function taskById(id){ return getTasksN().find(function(t){return t.id===id;}); }
+function saveTaskObj(t){ var arr=getTasks(); var i=arr.findIndex(function(x){return x.id===t.id;}); if(i>=0)arr[i]=t; else arr.push(t); setTasks(arr); }
+function addTaskLog(t, action){ t.log.push({date:tsNow(), by:myName(), action:action}); t.updatedTs=Date.now(); }
 
-  var active = visible.filter(t=>t.status!=='完了');
-  var done = visible.filter(t=>t.status==='完了');
+function taskPriColor(p){ return p==='高'?'var(--eval-low)':p==='中'?'var(--eval-mid)':'var(--muted)'; }
+function taskStatusColor(s){ return s==='完了'?'var(--green)':s==='レビュー'?'var(--purple)':s==='進行中'?'var(--accent2)':'var(--muted)'; }
+function taskDueInfo(due){
+  if(!due) return {label:'',color:'var(--muted)',overdue:false};
+  var d=new Date(due+'T00:00:00'), today=new Date(); today.setHours(0,0,0,0);
+  var diff=Math.round((d-today)/86400000);
+  if(diff<0) return {label:'期限超過 '+(-diff)+'日',color:'var(--eval-low)',overdue:true};
+  if(diff===0) return {label:'今日',color:'var(--eval-mid)',overdue:false};
+  if(diff<=7) return {label:'今週 '+due.slice(5),color:'var(--eval-mid)',overdue:false};
+  return {label:due.slice(5),color:'var(--muted)',overdue:false};
+}
+function taskStalled(t){ return t.status!=='完了' && t.updatedTs && (Date.now()-t.updatedTs)/86400000 >= 3; }
 
-  var html = `<div class="section-header">
-    <div><div class="section-title">タスク管理</div><div class="section-sub">進行中 ${active.length} / 完了 ${done.length}</div></div>
-    ${ROLE_CONFIG[curRole].canCreate?`<button class="btn btn-primary btn-sm" onclick="openTaskModal()"><i class="ti ti-plus"></i> タスク作成</button>`:''}
-  </div>`;
+/* ===== 繰り返しタスク ===== */
+var TASK_RECUR_LABELS = {none:'なし', daily:'毎日', weekly:'毎週', monthly:'毎月'};
+function isoDateStr(d){ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+function daysInMonth(y,m){ return new Date(y,m+1,0).getDate(); }
+function nextRecurDue(recur, fromDue){
+  if(!recur || recur.type==='none' || !fromDue) return null;
+  var b=new Date(fromDue+'T00:00:00');
+  if(recur.type==='daily'){ b.setDate(b.getDate()+1); return isoDateStr(b); }
+  if(recur.type==='weekly'){ b.setDate(b.getDate()+7); return isoDateStr(b); }
+  if(recur.type==='monthly'){ var dom=b.getDate(); var nm=new Date(b.getFullYear(), b.getMonth()+1, 1); nm.setDate(Math.min(dom, daysInMonth(nm.getFullYear(), nm.getMonth()))); return isoDateStr(nm); }
+  return null;
+}
+/* 期日が来た繰り返しタスクの次回分を自動生成（最大6件まで遡及生成）*/
+function ensureRecurringTasks(){
+  var arr=getTasks(); var changed=false; var todayISO=isoDateStr(new Date());
+  var series={};
+  arr.forEach(function(t){ if(t.recur && t.recur.type && t.recur.type!=='none' && t.due){ var sid=t.seriesId||t.id; (series[sid]=series[sid]||[]).push(t); } });
+  Object.keys(series).forEach(function(sid){
+    var list=series[sid].slice().sort(function(a,b){return (a.due||'')<(b.due||'')?-1:1;});
+    var latest=normalizeTask(Object.assign({}, list[list.length-1]));
+    var cap=6;
+    while(latest.due && latest.due<=todayISO && cap>0){
+      var nd=nextRecurDue(latest.recur, latest.due);
+      if(!nd) break;
+      var exists=arr.some(function(t){ return (t.seriesId||t.id)===sid && t.due===nd; });
+      if(exists){ latest.due=nd; cap--; continue; }
+      var inst=normalizeTask({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), seriesId:sid,
+        title:latest.title, desc:latest.desc, type:latest.type, store:latest.store, assignee:latest.assignee,
+        place:latest.place, priority:latest.priority, due:nd, recur:latest.recur,
+        status:'未着手', progress:0, createdBy:latest.createdBy||'system', created:tsNow(), memos:[], log:[] });
+      inst.log.push({date:tsNow(), by:'system', action:'繰り返し自動生成'});
+      arr.push(inst); changed=true;
+      if(inst.assignee) notifyTaskAssigned(inst);
+      latest=inst; cap--;
+    }
+  });
+  if(changed) setTasks(arr);
+  return changed;
+}
 
-  if (active.length) {
-    active.forEach(t => {
-      var overdue = t.due && new Date(t.due) < new Date() && t.status!=='完了';
-      var pColor = t.priority==='高'?'tag-red':t.priority==='中'?'tag-yellow':'tag-gray';
-      html += `<div class="card">
-        <div class="approval-header">
-          <div><div class="approval-title">${t.title}</div>
-          <div class="approval-meta">担当: ${t.assignee||'未割当'} ${t.store!=='ALL'?'· '+(STORES.find(s=>s.id===t.store)||{name:''}).name:''} ${t.due?'· 期限 '+t.due:''}</div></div>
-          <span class="tag ${pColor}">${t.priority||'低'}</span>
-        </div>
-        ${overdue?'<div class="alert alert-danger" style="margin:8px 0;padding:6px 10px"><i class="ti ti-clock"></i>期限超過</div>':''}
-        <div class="progress-bar" style="margin:8px 0"><div class="progress-fill" style="background:var(--accent2);width:${t.progress||0}%"></div></div>
-        <div class="approval-actions">
-          <button class="btn btn-secondary btn-sm" onclick="updateTaskProgress('${t.id}',25)">25%</button>
-          <button class="btn btn-secondary btn-sm" onclick="updateTaskProgress('${t.id}',50)">50%</button>
-          <button class="btn btn-secondary btn-sm" onclick="updateTaskProgress('${t.id}',75)">75%</button>
-          <button class="btn btn-success btn-sm" onclick="completeTask('${t.id}')"><i class="ti ti-check"></i> 完了</button>
-        </div>
-      </div>`;
+/* ===== タスク通知 ===== */
+function notifHasRef(rid){ return getNotifs().some(function(n){ return n.refId===rid; }); }
+function notifyTaskAssigned(t){
+  if(!t || !t.assignee || t.assignee===myName()) return;
+  var rid='taskassign_'+t.id;
+  if(notifHasRef(rid)) return;
+  try{ addNotif({ type:'task', title:'タスクが割り当てられました', text:(t.title+(t.due?'（期限 '+t.due+'）':'')).slice(0,140), toUser:t.assignee, page:'tasks', refId:rid }); }catch(e){}
+}
+/* 期限が近い/超過したタスクのリマインド（担当へ・1日1回） */
+function taskDeadlineReminders(){
+  var todayISO=isoDateStr(new Date());
+  var tmrw=new Date(); tmrw.setDate(tmrw.getDate()+1); var tmrwISO=isoDateStr(tmrw);
+  getTasksN().forEach(function(t){
+    if(t.status==='完了' || !t.assignee || !t.due) return;
+    if(t.due>tmrwISO) return; // 明日より先はまだ
+    var rid='taskdue_'+t.id+'_'+todayISO;
+    if(notifHasRef(rid)) return;
+    var when = t.due<todayISO ? ('期限超過（'+t.due+'）') : t.due===todayISO ? '本日が期限' : '明日が期限';
+    try{ addNotif({ type:'task', title:'タスク期限リマインド', text:(t.title+'：'+when).slice(0,140), toUser:t.assignee, page:'tasks', refId:rid }); }catch(e){}
+  });
+}
+
+function taskCardHtml(t){
+  var pr=taskPriColor(t.priority);
+  var di=taskDueInfo(t.due);
+  var av=t.assignee?escapeHtml(t.assignee[0]):'?';
+  return '<div class="card" style="border-left:3px solid '+pr+';border-radius:0 12px 12px 0;cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')">'
+    +'<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="font-size:14px;font-weight:600">'+escapeHtml(t.title)+'</div>'
+    +'<span class="tag" style="background:'+pr+';color:#fff;font-size:10px;flex-shrink:0">'+t.priority+'</span></div>'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px;color:var(--muted);flex-wrap:wrap">'
+    +(t.assignee?'<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:18px;height:18px;border-radius:50%;background:var(--accent2);color:#fff;font-size:10px;display:inline-flex;align-items:center;justify-content:center">'+av+'</span>'+escapeHtml(t.assignee)+'</span>':'<span style="color:var(--red)">未割当</span>')
+    +(di.label?'<span style="color:'+di.color+'"><i class="ti ti-clock"></i> '+di.label+'</span>':'')
+    +(t.place?'<span><i class="ti ti-map-pin"></i> '+t.place+'</span>':'')
+    +(taskStalled(t)?'<span class="tag tag-red" style="font-size:8px">停滞</span>':'')
+    +(t.recur&&t.recur.type&&t.recur.type!=='none'?'<span class="tag tag-blue" style="font-size:8px"><i class="ti ti-repeat"></i> '+(TASK_RECUR_LABELS[t.recur.type]||'')+'</span>':'')
+    +(t.memos.length?'<span style="margin-left:auto"><i class="ti ti-message-2"></i> '+t.memos.length+'</span>':'')
+    +'</div>'
+    +'<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:'+taskStatusColor(t.status)+';width:'+(t.progress||0)+'%"></div></div>'
+    +'</div>';
+}
+
+function renderTasks(){
+  try{ ensureRecurringTasks(); taskDeadlineReminders(); }catch(e){}
+  var canManage = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
+  var html = '<div class="section-header"><div><div class="section-title">タスク管理</div><div class="section-sub">店舗タスクと個人タスクを管理</div></div></div>';
+  html += '<div class="phase-tabs">'
+    +'<div class="phase-tab'+(taskTab==='store'?' active':'')+'" onclick="setTaskTab(\'store\')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗タスク</div>'
+    +'<div class="phase-tab'+(taskTab==='mine'?' active':'')+'" onclick="setTaskTab(\'mine\')"><i class="ti ti-user" style="font-size:12px"></i> 個人タスク</div>'
+    +(canManage?'<div class="phase-tab'+(taskTab==='admin'?' active':'')+'" onclick="setTaskTab(\'admin\')"><i class="ti ti-eye" style="font-size:12px"></i> 管理ビュー</div>':'')
+    +'</div>';
+  if(taskTab==='mine') return html + renderTaskMine();
+  if(taskTab==='admin' && canManage) return html + renderTaskAdmin();
+  return html + renderTaskStore();
+}
+
+function renderTaskStore(){
+  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var html = pageStoreTabs(storeId, true);
+  html += '<div class="card"><div style="display:flex;gap:8px;align-items:center">'
+    +'<input class="form-input" id="qadd-title" placeholder="タスク名を入力して Enter で追加…" style="flex:1" onkeydown="if(event.key===\'Enter\')quickAddTask(\''+storeId+'\',\'店舗\')">'
+    +'<button class="btn btn-primary btn-sm" onclick="quickAddTask(\''+storeId+'\',\'店舗\')"><i class="ti ti-plus"></i></button>'
+    +'<button class="btn btn-secondary btn-sm" title="詳細作成" onclick="openTaskModal(\'店舗\',\''+storeId+'\')"><i class="ti ti-adjustments"></i></button>'
+    +'</div></div>';
+  var tasks = getTasksN().filter(function(t){ return t.type==='店舗' && (storeId==='ALL'?true:(t.store===storeId||t.store==='ALL')); });
+  ['未着手','進行中','レビュー'].forEach(function(st){
+    var list=tasks.filter(function(t){return t.status===st;});
+    html += '<div style="margin:10px 2px 4px;font-size:12px;font-weight:600;color:'+taskStatusColor(st)+'">'+st+' <span style="color:var(--muted)">('+list.length+')</span></div>';
+    if(!list.length) html += '<div style="font-size:12px;color:var(--muted);padding:4px 2px">なし</div>';
+    list.sort(function(a,b){ var po={'高':0,'中':1,'低':2}; if(po[a.priority]!==po[b.priority]) return po[a.priority]-po[b.priority]; return (a.due||'9999')<(b.due||'9999')?-1:1; });
+    list.forEach(function(t){ html += taskCardHtml(t); });
+  });
+  var done=tasks.filter(function(t){return t.status==='完了';});
+  if(done.length){
+    html += '<details style="margin-top:10px"><summary style="font-size:13px;font-weight:600;cursor:pointer;color:var(--green)"><i class="ti ti-history"></i> 完了 ('+done.length+')</summary>';
+    done.slice().reverse().slice(0,20).forEach(function(t){
+      html += '<div class="approval-item" style="cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">'+escapeHtml(t.title)+'</div><span class="tag tag-green">完了</span></div><div class="approval-meta">'+escapeHtml(t.assignee||'')+' · '+(t.completedDate||'')+'</div></div>';
     });
-  } else {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:30px"><i class="ti ti-checks" style="font-size:28px;display:block;margin-bottom:8px"></i>進行中タスクなし</div>`;
-  }
-
-  if (done.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>完了履歴</div>`;
-    done.slice().reverse().slice(0,6).forEach(t => {
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">${t.title}</div><span class="tag tag-green">完了</span></div>
-        <div class="approval-meta">${t.assignee||''} · ${t.completedDate||''}</div></div>`;
-    });
-    html += '</div>';
+    html += '</details>';
   }
   return html;
 }
 
-function openTaskModal() {
-  var emps = getEmployees().filter(e=>e.status!=='退職');
-  var storeOpts = [{id:'ALL',name:'全店'},...STORES];
-  openModal(`<div class="modal-title">タスク作成 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">タスク名</label><input class="form-input" id="t-title" placeholder="タスク内容"></div>
-    <div class="form-row">
-      <div class="form-group"><label class="form-label">担当者</label>
-        <select class="form-select" id="t-assignee"><option value="">未割当</option>${emps.map(e=>`<option>${e.name}</option>`).join('')}</select>
-      </div>
-      <div class="form-group"><label class="form-label">店舗</label>
-        <select class="form-select" id="t-store">${storeOpts.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select>
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label class="form-label">優先度</label><select class="form-select" id="t-priority"><option>低</option><option selected>中</option><option>高</option></select></div>
-      <div class="form-group"><label class="form-label">期限</label><input class="form-input" id="t-due" type="date"></div>
-    </div>
-    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveTask()">作成</button></div>`);
+function renderTaskMine(){
+  var me = myName();
+  var html = '<div class="card"><div style="display:flex;gap:8px;align-items:center">'
+    +'<input class="form-input" id="qadd-title" placeholder="自分のタスクを Enter で追加…" style="flex:1" onkeydown="if(event.key===\'Enter\')quickAddTask(\'\',\'個人\')">'
+    +'<button class="btn btn-primary btn-sm" onclick="quickAddTask(\'\',\'個人\')"><i class="ti ti-plus"></i></button>'
+    +'<button class="btn btn-secondary btn-sm" title="詳細作成" onclick="openTaskModal(\'個人\',\'\')"><i class="ti ti-adjustments"></i></button>'
+    +'</div></div>';
+  var tasks = getTasksN().filter(function(t){ return t.assignee===me && t.status!=='完了'; });
+  var groups=[
+    {key:'overdue', label:'期限超過', color:'var(--eval-low)', f:function(t){ return taskDueInfo(t.due).overdue; }},
+    {key:'today', label:'今日', color:'var(--eval-mid)', f:function(t){ return taskDueInfo(t.due).label==='今日'; }},
+    {key:'week', label:'今週', color:'var(--eval-mid)', f:function(t){ var l=taskDueInfo(t.due).label; return l.indexOf('今週')===0; }},
+    {key:'later', label:'それ以降・期限なし', color:'var(--muted)', f:function(t){ var di=taskDueInfo(t.due); return !di.overdue && di.label!=='今日' && di.label.indexOf('今週')!==0; }},
+  ];
+  var shown={};
+  groups.forEach(function(g){
+    var list=tasks.filter(function(t){ return !shown[t.id] && g.f(t); });
+    list.forEach(function(t){ shown[t.id]=1; });
+    if(!list.length) return;
+    html += '<div style="margin:10px 2px 4px;font-size:12px;font-weight:600;color:'+g.color+'">'+g.label+' ('+list.length+')</div>';
+    list.forEach(function(t){ html += taskCardHtml(t); });
+  });
+  if(!tasks.length) html += '<div class="card" style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-checks" style="font-size:26px;display:block;margin-bottom:6px"></i>未完了の個人タスクなし</div>';
+  var done=getTasksN().filter(function(t){ return t.assignee===me && t.status==='完了'; });
+  if(done.length){
+    html += '<details style="margin-top:10px"><summary style="font-size:13px;font-weight:600;cursor:pointer;color:var(--green)"><i class="ti ti-history"></i> 完了履歴 ('+done.length+')</summary>';
+    done.slice().reverse().slice(0,20).forEach(function(t){ html += '<div class="approval-item" style="cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">'+escapeHtml(t.title)+'</div><span class="tag tag-green">完了</span></div><div class="approval-meta">'+(t.completedDate||'')+'</div></div>'; });
+    html += '</details>';
+  }
+  return html;
 }
 
-function saveTask() {
-  var title = document.getElementById('t-title').value.trim();
-  if (!title) { alert('タスク名を入力してください'); return; }
-  var tasks = getTasks();
-  tasks.push({id:'tk'+Date.now(), title,
-    assignee:document.getElementById('t-assignee').value,
-    store:document.getElementById('t-store').value,
-    priority:document.getElementById('t-priority').value,
-    due:document.getElementById('t-due').value,
-    progress:0, status:'進行中', created:new Date().toLocaleDateString('ja')});
-  lsSet('tasks_all', tasks);
-  closeModalDirect();
-  showToast('タスクを作成しました', 'success');
+function renderTaskAdmin(){
+  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var html = pageStoreTabs(storeId, true);
+  var tasks = getTasksN().filter(function(t){ return (storeId==='ALL'?true:(t.store===storeId||t.store==='ALL')); });
+  var active = tasks.filter(function(t){return t.status!=='完了';});
+  var overdue = active.filter(function(t){ return taskDueInfo(t.due).overdue; });
+  var stalled = active.filter(taskStalled);
+  html += '<div class="kpi-grid" style="margin-bottom:10px">'
+    + kpi('進行中', active.length, '全担当', 'var(--tm)')
+    + kpi('期限超過', overdue.length, '要対応', overdue.length?'var(--eval-low)':'var(--green)')
+    + kpi('停滞(3日+)', stalled.length, '進捗なし', stalled.length?'var(--eval-mid)':'var(--green)')
+    + '</div>';
+
+  // 遅延・停滞スタッフ
+  var byPerson={};
+  active.forEach(function(t){ var k=t.assignee||'未割当'; (byPerson[k]=byPerson[k]||[]).push(t); });
+  var slow=Object.keys(byPerson).map(function(n){
+    var list=byPerson[n];
+    return {name:n, od:list.filter(function(t){return taskDueInfo(t.due).overdue;}).length, st:list.filter(taskStalled).length, total:list.length};
+  }).filter(function(p){ return p.od>0 || p.st>0; }).sort(function(a,b){ return (b.od+b.st)-(a.od+a.st); });
+  if(slow.length){
+    html += '<div class="card" style="border-left:3px solid var(--eval-low)"><div class="card-title"><i class="ti ti-alert-triangle" style="color:var(--eval-low)"></i>遅延しているスタッフ</div>';
+    slow.forEach(function(p){
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">'
+        +'<span style="width:22px;height:22px;border-radius:50%;background:'+(p.od?'var(--eval-low)':'var(--eval-mid)')+';color:#fff;font-size:10px;display:inline-flex;align-items:center;justify-content:center">'+escapeHtml(p.name[0]||'?')+'</span>'
+        +'<span style="font-weight:600">'+escapeHtml(p.name)+'</span>'
+        +'<span style="color:var(--muted);font-size:12px">'+(p.od?'期限超過 '+p.od+'件':'')+(p.od&&p.st?' · ':'')+(p.st?'停滞 '+p.st+'件':'')+'</span>'
+        +'<button class="btn btn-secondary btn-sm" style="margin-left:auto;font-size:11px" onclick="taskFollowUp(\''+p.name.replace(/'/g,"")+'\')">フォロー</button>'
+        +'</div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="alert alert-success"><i class="ti ti-circle-check"></i>遅延・停滞しているスタッフはいません</div>';
+  }
+
+  // G2以上の業務（店舗内/店舗外）
+  var emps=getEmployees();
+  function gradeOfName(n){ var e=emps.find(function(x){return x.name===n;}); return e?empGradeNum(e):0; }
+  var g2=active.filter(function(t){ return t.assignee && gradeOfName(t.assignee)>=2; });
+  var inStore=g2.filter(function(t){return t.place==='店舗内';});
+  var outStore=g2.filter(function(t){return t.place==='店舗外';});
+  var noPlace=g2.filter(function(t){return !t.place;});
+  html += '<div class="card"><div class="card-title"><i class="ti ti-briefcase"></i>G2以上の業務 ('+g2.length+')</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px">'
+    +'<div><div style="color:var(--muted);margin-bottom:4px"><i class="ti ti-building-store"></i> 店舗内 ('+inStore.length+')</div>'+(inStore.length?inStore.map(function(t){return '<div style="padding:2px 0;cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')">· '+escapeHtml(t.title)+' <span style="color:var(--muted)">'+escapeHtml(t.assignee)+'</span></div>';}).join(''):'<div style="color:var(--muted)">なし</div>')+'</div>'
+    +'<div><div style="color:var(--muted);margin-bottom:4px"><i class="ti ti-map-pin"></i> 店舗外 ('+outStore.length+')</div>'+(outStore.length?outStore.map(function(t){return '<div style="padding:2px 0;cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')">· '+escapeHtml(t.title)+' <span style="color:var(--muted)">'+escapeHtml(t.assignee)+'</span></div>';}).join(''):'<div style="color:var(--muted)">なし</div>')+'</div>'
+    +'</div>'
+    +(noPlace.length?'<div style="font-size:11px;color:var(--muted);margin-top:8px">※ 場所未設定 '+noPlace.length+'件（タスク詳細で店舗内/外を設定できます）</div>':'')
+    +'</div>';
+
+  // 担当別 全タスク把握
+  html += '<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>担当別タスク</div>';
+  Object.keys(byPerson).sort().forEach(function(n){
+    var list=byPerson[n];
+    html += '<details style="border-top:1px solid var(--border);padding:4px 0"><summary style="font-size:13px;font-weight:600;cursor:pointer">'+escapeHtml(n)+' <span style="color:var(--muted);font-weight:400">('+list.length+')</span></summary>';
+    list.forEach(function(t){ var di=taskDueInfo(t.due); html += '<div style="display:flex;gap:8px;font-size:12px;padding:3px 0 3px 10px;cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><span class="tag" style="background:'+taskStatusColor(t.status)+';color:#fff;font-size:8px">'+t.status+'</span><span style="flex:1">'+escapeHtml(t.title)+'</span>'+(di.label?'<span style="color:'+di.color+'">'+di.label+'</span>':'')+'</div>'; });
+    html += '</details>';
+  });
+  if(!Object.keys(byPerson).length) html += '<div style="color:var(--muted);font-size:13px;text-align:center;padding:12px">進行中タスクなし</div>';
+  html += '</div>';
+  return html;
+}
+
+function quickAddTask(storeId, type){
+  var el=document.getElementById('qadd-title'); var title=el?el.value.trim():'';
+  if(!title){ return; }
+  var t=normalizeTask({id:'tk'+Date.now(), title:title, type:type||'店舗',
+    store: type==='個人' ? (curStore==='ALL'?'ALL':curStore) : (storeId==='ALL'?'ALL':storeId),
+    assignee: type==='個人' ? myName() : '',
+    priority:'中', due:'', place:'', status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[]});
+  addTaskLog(t, type==='個人'?'作成（個人・クイック）':'作成（クイック）');
+  saveTaskObj(t);
+  if(el) el.value='';
+  showToast('タスクを追加しました','success');
   renderPage('tasks');
 }
-function updateTaskProgress(id, p) {
-  var tasks = getTasks();
-  var t = tasks.find(x=>x.id===id);
-  if (t) { t.progress = p; lsSet('tasks_all', tasks); renderPage('tasks'); }
+
+function openTaskModal(type, storeId){
+  type=type||'店舗';
+  var emps=getEmployees().filter(function(e){return e.status!=='退職';});
+  var storeOpts=[{id:'ALL',name:'全社'}].concat(STORES);
+  openModal('<div class="modal-title">'+(type==='個人'?'個人タスク作成':'店舗タスク作成')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="form-group"><label class="form-label">タスク名</label><input class="form-input" id="t-title" placeholder="タスク内容"></div>'
+    +'<div class="form-group"><label class="form-label">詳細（任意）</label><textarea class="form-input" id="t-desc" rows="2" placeholder="補足・手順など"></textarea></div>'
+    +'<div class="form-row">'
+    +'<div class="form-group"><label class="form-label">区分</label><select class="form-select" id="t-type"><option'+(type==='店舗'?' selected':'')+'>店舗</option><option'+(type==='個人'?' selected':'')+'>個人</option></select></div>'
+    +'<div class="form-group"><label class="form-label">店舗</label><select class="form-select" id="t-store">'+storeOpts.map(function(s){return '<option value="'+s.id+'"'+((storeId&&s.id===storeId)?' selected':'')+'>'+s.name+'</option>';}).join('')+'</select></div>'
+    +'</div>'
+    +'<div class="form-row">'
+    +'<div class="form-group"><label class="form-label">担当者</label><select class="form-select" id="t-assignee"><option value="">未割当</option>'+emps.map(function(e){return '<option'+(type==='個人'&&e.name===myName()?' selected':'')+'>'+e.name+'</option>';}).join('')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">場所</label><select class="form-select" id="t-place"><option value="">—</option><option>店舗内</option><option>店舗外</option></select></div>'
+    +'</div>'
+    +'<div class="form-row">'
+    +'<div class="form-group"><label class="form-label">重要度</label><select class="form-select" id="t-priority"><option>低</option><option selected>中</option><option>高</option></select></div>'
+    +'<div class="form-group"><label class="form-label">期限</label><input class="form-input" id="t-due" type="date"></div>'
+    +'</div>'
+    +'<div class="form-group"><label class="form-label">繰り返し（期限日を基準に自動生成）</label><select class="form-select" id="t-recur"><option value="none">なし</option><option value="daily">毎日</option><option value="weekly">毎週</option><option value="monthly">毎月</option></select></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveTask()">作成</button></div>');
 }
-function completeTask(id) {
-  var tasks = getTasks();
-  var t = tasks.find(x=>x.id===id);
-  if (t) { t.status='完了'; t.progress=100; t.completedDate=new Date().toLocaleDateString('ja'); lsSet('tasks_all', tasks); showToast('タスク完了', 'success'); renderPage('tasks'); }
+function saveTask(){
+  var title=document.getElementById('t-title').value.trim();
+  if(!title){ alert('タスク名を入力してください'); return; }
+  var t=normalizeTask({id:'tk'+Date.now(), title:title,
+    desc:document.getElementById('t-desc').value.trim(),
+    type:document.getElementById('t-type').value,
+    store:document.getElementById('t-store').value,
+    assignee:document.getElementById('t-assignee').value,
+    place:document.getElementById('t-place').value,
+    priority:document.getElementById('t-priority').value,
+    due:document.getElementById('t-due').value,
+    recur:{type:(document.getElementById('t-recur')||{}).value||'none'},
+    status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[]});
+  addTaskLog(t,'作成');
+  saveTaskObj(t);
+  notifyTaskAssigned(t);
+  closeModalDirect();
+  showToast('タスクを作成しました','success');
+  renderPage('tasks');
 }
+
+function openTaskDetail(id){
+  var t=taskById(id); if(!t) return;
+  var emps=getEmployees().filter(function(e){return e.status!=='退職';});
+  var canEdit = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0 || t.assignee===myName() || t.createdBy===myName();
+  var stIdx=TASK_STATUSES.indexOf(t.status);
+  var nextSt=stIdx>=0&&stIdx<TASK_STATUSES.length-1?TASK_STATUSES[stIdx+1]:null;
+  var di=taskDueInfo(t.due);
+  var h='<div class="modal-title">タスク詳細 <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  h+='<div style="max-height:70vh;overflow-y:auto">';
+  h+='<div style="font-size:16px;font-weight:700;margin-bottom:4px">'+escapeHtml(t.title)+'</div>';
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+    +'<span class="tag" style="background:'+taskPriColor(t.priority)+';color:#fff;font-size:10px">重要度 '+t.priority+'</span>'
+    +'<span class="tag" style="background:'+taskStatusColor(t.status)+';color:#fff;font-size:10px">'+t.status+'</span>'
+    +'<span class="tag tag-gray" style="font-size:10px">'+t.type+'</span>'
+    +(t.recur&&t.recur.type&&t.recur.type!=='none'?'<span class="tag tag-blue" style="font-size:10px"><i class="ti ti-repeat"></i> '+(TASK_RECUR_LABELS[t.recur.type]||'')+'</span>':'')
+    +(t.place?'<span class="tag tag-gray" style="font-size:10px">'+t.place+'</span>':'')
+    +(di.label?'<span class="tag" style="background:'+di.color+';color:#fff;font-size:10px">'+di.label+'</span>':'')
+    +'</div>';
+  if(t.desc) h+='<div style="font-size:13px;color:var(--muted);margin-bottom:8px;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
+  // 編集フィールド
+  if(canEdit){
+    h+='<div class="form-row">'
+      +'<div class="form-group"><label class="form-label">担当者</label><select class="form-select" id="td-assignee" onchange="taskField(\''+t.id+'\',\'assignee\',this.value)"><option value="">未割当</option>'+emps.map(function(e){return '<option'+(e.name===t.assignee?' selected':'')+'>'+e.name+'</option>';}).join('')+'</select></div>'
+      +'<div class="form-group"><label class="form-label">期限</label><input class="form-input" type="date" id="td-due" value="'+(t.due||'')+'" onchange="taskField(\''+t.id+'\',\'due\',this.value)"></div>'
+      +'</div>';
+    h+='<div class="form-row">'
+      +'<div class="form-group"><label class="form-label">重要度</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'priority\',this.value)">'+['低','中','高'].map(function(p){return '<option'+(p===t.priority?' selected':'')+'>'+p+'</option>';}).join('')+'</select></div>'
+      +'<div class="form-group"><label class="form-label">場所</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'place\',this.value)"><option value="">—</option>'+['店舗内','店舗外'].map(function(p){return '<option'+(p===t.place?' selected':'')+'>'+p+'</option>';}).join('')+'</select></div>'
+      +'</div>';
+    h+='<div class="form-group"><label class="form-label">繰り返し（期限日基準で自動生成）</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'recur\',this.value)">'+['none','daily','weekly','monthly'].map(function(r){return '<option value="'+r+'"'+((t.recur&&t.recur.type===r)?' selected':'')+'>'+TASK_RECUR_LABELS[r]+'</option>';}).join('')+'</select></div>';
+    // ステータス & 進捗
+    h+='<div class="form-group"><label class="form-label">ステータス</label><div style="display:flex;gap:6px;flex-wrap:wrap">'
+      +TASK_STATUSES.map(function(s){return '<button class="btn btn-sm '+(s===t.status?'btn-primary':'btn-secondary')+'" style="font-size:11px" onclick="taskSetStatus(\''+t.id+'\',\''+s+'\')">'+s+'</button>';}).join('')
+      +'</div></div>';
+    h+='<div class="form-group"><label class="form-label">進捗 '+(t.progress||0)+'%</label><div style="display:flex;gap:6px">'
+      +[0,25,50,75,100].map(function(p){return '<button class="btn btn-secondary btn-sm" style="font-size:11px" onclick="taskField(\''+t.id+'\',\'progress\','+p+')">'+p+'%</button>';}).join('')
+      +'</div></div>';
+  }
+  // メモ
+  h+='<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><i class="ti ti-message-2"></i> メモ書き</div>';
+  if(t.memos.length){ t.memos.slice().reverse().forEach(function(m){ h+='<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);font-size:10px">'+m.date+' · '+escapeHtml(m.by)+'</span><div style="white-space:pre-line">'+escapeHtml(m.text)+'</div></div>'; }); }
+  else h+='<div style="font-size:12px;color:var(--muted)">メモはまだありません</div>';
+  h+='<div style="display:flex;gap:6px;margin-top:8px"><input class="form-input" id="td-memo" placeholder="メモを追加…" style="flex:1"><button class="btn btn-secondary btn-sm" onclick="addTaskMemo(\''+t.id+'\')">追加</button></div></div>';
+  // ログ
+  h+='<details style="margin-top:10px"><summary style="font-size:13px;font-weight:600;cursor:pointer"><i class="ti ti-history"></i> アクティビティログ ('+t.log.length+')</summary>';
+  t.log.slice().reverse().forEach(function(l){ h+='<div style="font-size:11px;color:var(--muted);padding:3px 0">'+l.date+' · '+escapeHtml(l.by)+' — '+escapeHtml(l.action)+'</div>'; });
+  h+='</details>';
+  h+='</div>';
+  h+='<div class="btn-row" style="margin-top:10px">';
+  if(canEdit && t.status!=='完了') h+='<button class="btn btn-success" onclick="taskSetStatus(\''+t.id+'\',\'完了\')"><i class="ti ti-check"></i> 完了にする</button>';
+  if(canEdit) h+='<button class="btn btn-danger btn-sm" onclick="deleteTask(\''+t.id+'\')"><i class="ti ti-trash"></i></button>';
+  h+='<button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(h);
+}
+function taskField(id, field, val){
+  var arr=getTasks(); var t=normalizeTask(arr.find(function(x){return x.id===id;})||{}); if(!t.id) return;
+  var old=t[field];
+  if(field==='progress') val=parseInt(val)||0;
+  if(field==='recur'){ old=(t.recur&&t.recur.type)||'none'; t.recur={type:val}; }
+  else t[field]=val;
+  if(field==='progress'){ if(val>=100 && t.status!=='完了'){ t.status='完了'; t.completedDate=tsNow(); } else if(val>0 && t.status==='未着手'){ t.status='進行中'; } }
+  var disp = field==='recur' ? (TASK_RECUR_LABELS[old]+' → '+TASK_RECUR_LABELS[val]) : ((old||'—')+' → '+(val||'—'));
+  addTaskLog(t, field+': '+disp);
+  if(field==='assignee' && val) notifyTaskAssigned(t);
+  saveTaskObj(t);
+  renderPage('tasks');
+  if(document.getElementById('modal-overlay').classList.contains('open')) openTaskDetail(id);
+}
+function taskSetStatus(id, st){
+  var arr=getTasks(); var t=normalizeTask(arr.find(function(x){return x.id===id;})||{}); if(!t.id) return;
+  t.status=st;
+  if(st==='完了'){ t.progress=100; t.completedDate=tsNow(); }
+  else if(st==='進行中' && (t.progress||0)===0){ t.progress=25; }
+  addTaskLog(t,'ステータス → '+st);
+  saveTaskObj(t);
+  showToast(st==='完了'?'タスク完了':'更新しました','success');
+  renderPage('tasks');
+  if(st==='完了'){ closeModalDirect(); } else if(document.getElementById('modal-overlay').classList.contains('open')){ openTaskDetail(id); }
+}
+function addTaskMemo(id){
+  var el=document.getElementById('td-memo'); var txt=el?el.value.trim():''; if(!txt) return;
+  var arr=getTasks(); var t=normalizeTask(arr.find(function(x){return x.id===id;})||{}); if(!t.id) return;
+  t.memos.push({date:tsNow(), by:myName(), text:txt});
+  t.updatedTs=Date.now();
+  saveTaskObj(t);
+  openTaskDetail(id);
+}
+function taskFollowUp(name){
+  showToast(name+' のフォロー：本人の個人タスク／スキル評価／1on1メモで対応できます','info');
+}
+function deleteTask(id){
+  if(!confirm('このタスクを削除しますか？')) return;
+  setTasks(getTasks().filter(function(x){return x.id!==id;}));
+  closeModalDirect();
+  showToast('削除しました','success');
+  renderPage('tasks');
+}
+function updateTaskProgress(id,p){ taskField(id,'progress',p); }
+function completeTask(id){ taskSetStatus(id,'完了'); }
 
 /* ============================================================
    ⑯ Required管理 (必須設定/未完了検知/注意ログ/警告カウント)
