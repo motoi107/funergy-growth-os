@@ -28,6 +28,7 @@
   --muted: #847a6e;
   --accent: #f0661f;
   --accent2: #3b82f6;
+  --eval-none: #9b938a; --eval-low: #e23b3b; --eval-mid: #e8920b; --eval-high: #3b82f6; --eval-top: #1d4fd0;
   --green: #15a66a;
   --red: #e23b3b;
   --yellow: #e8920b;
@@ -4449,13 +4450,13 @@ function statusFromPct(p, goodAt, warnAt){ goodAt=goodAt||100; warnAt=warnAt||90
 
 /* ===== 予実スコア判定（達成率→ステータス＋メッセージ＋色） ===== */
 function budgetScore(rate) {
-  if (rate>=105) return {label:'最高', msg:'この調子で継続してください。', color:'var(--green)', tag:'tag-green', icon:'ti-trophy'};
-  if (rate>=100) return {label:'素晴らしい', msg:'目標達成中です。', color:'var(--green)', tag:'tag-green', icon:'ti-circle-check'};
-  if (rate>=95)  return {label:'あと一歩', msg:'追加施策で達成が見込めます。', color:'var(--accent2)', tag:'tag-blue', icon:'ti-flame'};
-  if (rate>=90)  return {label:'アクション必要', msg:'達成のためにアクションが必要です。客数・客単価・追加施策を確認してください。', color:'var(--yellow)', tag:'tag-yellow', icon:'ti-alert-triangle'};
-  if (rate>=80)  return {label:'要対応', msg:'即効性のある対策が必要です。', color:'var(--orange)', tag:'tag-orange', icon:'ti-alert-octagon'};
-  if (rate>=70)  return {label:'要MTG', msg:'原因分析と改善施策をチームで決めてください。', color:'var(--red)', tag:'tag-red', icon:'ti-users-group'};
-  return {label:'緊急対応', msg:'GMまたはArea Managerと改善MTGを設定してください。', color:'var(--red)', tag:'tag-red', icon:'ti-urgent'};
+  if (rate>=105) return {label:'最高', msg:'この調子で継続してください。', color:'var(--eval-top)', tag:'tag-blue', icon:'ti-trophy'};
+  if (rate>=100) return {label:'素晴らしい', msg:'目標達成中です。', color:'var(--eval-top)', tag:'tag-blue', icon:'ti-circle-check'};
+  if (rate>=95)  return {label:'あと一歩', msg:'追加施策で達成が見込めます。', color:'var(--eval-high)', tag:'tag-blue', icon:'ti-flame'};
+  if (rate>=90)  return {label:'アクション必要', msg:'達成のためにアクションが必要です。客数・客単価・追加施策を確認してください。', color:'var(--eval-mid)', tag:'tag-yellow', icon:'ti-alert-triangle'};
+  if (rate>=80)  return {label:'要対応', msg:'即効性のある対策が必要です。', color:'var(--eval-low)', tag:'tag-red', icon:'ti-alert-octagon'};
+  if (rate>=70)  return {label:'要MTG', msg:'原因分析と改善施策をチームで決めてください。', color:'var(--eval-low)', tag:'tag-red', icon:'ti-users-group'};
+  return {label:'緊急対応', msg:'GMまたはArea Managerと改善MTGを設定してください。', color:'var(--eval-low)', tag:'tag-red', icon:'ti-urgent'};
 }
 /* アクション提案（売上未達 / Labor超過 / FC超過） */
 function budgetActions(salesRate, laborRate, laborTarget, fcRate, fcTarget) {
@@ -4649,7 +4650,7 @@ function renderKpiDashCard(stores){
     var fm = formatMeta(store.format||'dining');
     var ach = kpiAchievement(sd.id, offset);
     var pct = ach.pct;
-    var col = pct==null?'var(--muted)':pct>=100?'var(--green)':pct>=85?'var(--yellow)':'var(--red)';
+    var col = evalColor(pct);
     // 1行サマリー（タップで店舗別KPIへ）
     html += `<div onclick="openStoreKpi('${sd.id}')" style="display:flex;align-items:center;gap:10px;padding:12px 10px;border-bottom:1px solid var(--border);cursor:pointer">
       <span style="width:10px;height:10px;border-radius:50%;background:${store.color};flex-shrink:0"></span>
@@ -15208,7 +15209,7 @@ function renderStaffMaster() {
     if (!group.length) return;
     html += `<div style="margin-bottom:14px"><div class="role-section-label">${ROLE_CONFIG[role].label} (${group.length})</div>`;
     group.forEach(e => {
-      var stepColor = e.step>=3?'var(--green)':e.step>=2?'var(--yellow)':'var(--muted)';
+      var stepColor = evalColorLv(e.step,3);
       var obRec = e.status==='退職' ? getOffboardings().find(function(o){return o.empId===e.id;}) : null;
       var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
       var supportNames = (e.support||[]).map(id=>(STORES.find(s=>s.id===id)||{name:id}).name).join(',');
@@ -17083,7 +17084,34 @@ function getEvalRubric(){
   return r;
 }
 function setEvalRubric(r){ lsSet('eval_rubric', r); }
-function evalRubricColor(lv){ return lv===0?'var(--muted)':lv===3?'var(--accent)':lv===2?'var(--green)':'var(--yellow)'; }
+/* ===== 統一評価カラースケール（未=灰 / 低=赤 / 中=黄 / 高=青 / 卓越=濃青） =====
+   score = 良さ(0-100、高いほど良い)。コスト系は「達成度スコア」に変換して渡す。 */
+function evalColor(score){
+  if(score==null || isNaN(score)) return 'var(--eval-none)';
+  if(score>=90) return 'var(--eval-top)';
+  if(score>=70) return 'var(--eval-high)';
+  if(score>=40) return 'var(--eval-mid)';
+  if(score>0)   return 'var(--eval-low)';
+  return 'var(--eval-none)';
+}
+/* スキルLv等の離散値用（max基準）。最大=高(青)、卓越は集計%用に温存 */
+function evalColorLv(lv, max){
+  if(!lv) return 'var(--eval-none)';
+  var p = max ? lv/max : 0;
+  if(p>=1)    return 'var(--eval-high)';
+  if(p>=0.66) return 'var(--eval-mid)';
+  return 'var(--eval-low)';
+}
+/* tagクラス版（背景タグ用） */
+function evalTag(score){
+  if(score==null || isNaN(score)) return 'tag-gray';
+  if(score>=70) return 'tag-blue';
+  if(score>=40) return 'tag-yellow';
+  if(score>0)   return 'tag-red';
+  return 'tag-gray';
+}
+function evalRubricColor(lv){ return evalColorLv(lv, 3); }
+function tipRateColor(rate){ if(rate===0) return 'var(--eval-low)'; if(rate>=100) return 'var(--eval-top)'; if(rate>=90) return 'var(--eval-high)'; return 'var(--eval-mid)'; }
 /* 採点時の短いラベル（ボタン下に出す） */
 function evalRubricShort(lv){ return ['未','時々','継続','模範'][lv]||(''+lv); }
 /* 折りたたみ凡例（採点画面の上部に常設） */
@@ -17686,11 +17714,12 @@ function lssSummary(name) {
   return {cats:cats, totalScore:totalScore, totalMax:totalMax, totalPct:totalPct, hasData:!!rec, rec:rec};
 }
 function lssLevel(pct) {
-  if (pct>=90) return {label:'Excellent Leader', color:'var(--green)'};
-  if (pct>=80) return {label:'Strong Leader', color:'var(--green)'};
-  if (pct>=70) return {label:'Good Leader', color:'var(--accent)'};
-  if (pct>=60) return {label:'Developing Leader', color:'var(--yellow)'};
-  return {label:'Training Required', color:'var(--red)'};
+  if (pct>=90) return {label:'Excellent Leader', color:'var(--eval-top)'};
+  if (pct>=80) return {label:'Strong Leader', color:'var(--eval-high)'};
+  if (pct>=70) return {label:'Good Leader', color:'var(--eval-high)'};
+  if (pct>=60) return {label:'Developing Leader', color:'var(--eval-mid)'};
+  if (pct>0)   return {label:'Training Required', color:'var(--eval-low)'};
+  return {label:'Training Required', color:'var(--eval-none)'};
 }
 /* リーダー以上判定（肩書きベース） */
 const LSS_TITLES = ['Crew Leader','Server Leader','Kitchen Leader','Store Leader','Store Manager','Area Manager','General Manager'];
@@ -18366,7 +18395,7 @@ function renderLeadership() {
     var storeName = (STORES.find(s=>s.id===e.store)||{}).name||'';
     html += `<div class="card">
       <div style="display:flex;align-items:center;gap:14px">
-        <div style="position:relative;flex-shrink:0">${healthRing(sum.totalPct, lv.color.replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d'), 60)}
+        <div style="position:relative;flex-shrink:0">${healthRing(sum.totalPct, lv.color.replace('var(--eval-top)','#1d4fd0').replace('var(--eval-high)','#3b82f6').replace('var(--eval-mid)','#e8920b').replace('var(--eval-low)','#e23b3b').replace('var(--eval-none)','#9b938a').replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d'), 60)}
           <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:${lv.color}">${sum.hasData?sum.totalPct+'%':'—'}</div></div>
         <div style="flex:1;min-width:0">
           <div style="font-size:15px;font-weight:700">${e.name}</div>
@@ -18379,7 +18408,7 @@ function renderLeadership() {
     if (sum.hasData) {
       html += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;margin-top:10px">`;
       sum.cats.forEach(c=>{
-        var cc = c.pct>=80?'var(--green)':c.pct>=60?'var(--yellow)':'var(--red)';
+        var cc = evalColor(c.pct);
         var catDef = LSS_CATEGORIES.find(x=>x.key===c.key)||{};
         html += `<div style="font-size:10px"><div style="display:flex;justify-content:space-between"><span><i class="ti ${c.icon||catDef.icon}" style="font-size:11px"></i></span><span style="color:${cc}">${c.pct}%</span></div>
           <div class="progress-bar" style="height:4px;margin-top:2px"><div class="progress-fill" style="background:${cc};width:${c.pct}%"></div></div></div>`;
@@ -18504,7 +18533,7 @@ function renderLssSummary() {
   var rec=getLssScores(name)||{};
   var sum=lssSummaryFromDraft();
   var lv=lssLevel(sum.totalPct);
-  var ringColor=lv.color.replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d');
+  var ringColor=lv.color.replace('var(--eval-top)','#1d4fd0').replace('var(--eval-high)','#3b82f6').replace('var(--eval-mid)','#e8920b').replace('var(--eval-low)','#e23b3b').replace('var(--eval-none)','#9b938a').replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d');
   var sorted=sum.cats.slice().sort((a,b)=>b.pct-a.pct);
   var strengths=sorted.slice(0,3), improvements=sorted.slice(-3).reverse();
   var hasAny = sum.totalScore>0;
@@ -18552,7 +18581,7 @@ function renderLssCatTabs() {
   var sum=lssSummaryFromDraft();
   el.innerHTML = `<div class="phase-tabs" style="flex-wrap:wrap">${curLssCats().map(c=>{
     var cs=sum.cats.find(x=>x.key===c.key);
-    var cc=cs.pct>=80?'var(--green)':cs.pct>=60?'var(--yellow)':cs.score>0?'var(--red)':'var(--muted)';
+    var cc=evalColor(cs.pct);
     return `<div class="phase-tab${window._lssCat===c.key?' active':''}" onclick="setLssCat('${c.key}')" title="${c.name}"><i class="ti ${c.icon}" style="font-size:14px"></i> <span style="font-size:9px;color:${window._lssCat===c.key?'#fff':cc}">${cs.pct}%</span></div>`;
   }).join('')}</div>
   <div style="font-size:12px;font-weight:700;margin-top:6px;color:var(--accent)"><i class="ti ${(curLssCat(window._lssCat)||{}).icon}"></i> ${(curLssCat(window._lssCat)||{}).name}</div>`;
@@ -18577,7 +18606,7 @@ function renderLssItems() {
     var gScore=0, gMax=0;
     for (var i=from;i<=to;i++){ gScore += parseInt(draft[lssItemId(c.key,i)])||0; gMax+=3; }
     var gpct = gMax?Math.round(gScore/gMax*100):0;
-    var gcol = gpct>=80?'var(--green)':gpct>=60?'var(--yellow)':gScore>0?'var(--red)':'var(--muted)';
+    var gcol = evalColor(gpct);
     if (gname) {
       out += `<div id="lssg-${c.key}-${gi}" data-from="${from}" data-to="${to}" style="display:flex;align-items:center;gap:8px;margin:12px 0 4px;padding-top:6px">
         <span style="font-size:12px;font-weight:700;color:var(--tm)">${gname}</span>
@@ -18642,7 +18671,7 @@ function lssUpdateGroupPcts() {
     var from=g[1], to=g[2], gScore=0, gMax=0;
     for (var i=from;i<=to;i++){ gScore += parseInt(draft[lssItemId(c.key,i)])||0; gMax+=3; }
     var gpct = gMax?Math.round(gScore/gMax*100):0;
-    var gcol = gpct>=80?'var(--green)':gpct>=60?'var(--yellow)':gScore>0?'var(--red)':'var(--muted)';
+    var gcol = evalColor(gpct);
     var bar=el.querySelector('.lssg-bar'), pc=el.querySelector('.lssg-pct');
     if(bar){ bar.style.width=gpct+'%'; bar.style.background=gcol; }
     if(pc){ pc.textContent=gpct+'%'; pc.style.color=gcol; }
@@ -19225,7 +19254,7 @@ function renderMypage() {
     <div class="card-title"><i class="ti ti-stairs-up" style="color:var(--accent)"></i>${t('Your Skill Progress','Your Skill Progress')}
       <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('skill')">${t('詳細','Detail')}</button></div>
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
-      <div style="text-align:center"><div style="font-size:26px;font-weight:800;color:${curRate===100?'var(--green)':curRate===0?'var(--red)':'var(--accent)'};line-height:1">${curRate===0?'No':curRate+'%'}</div><div style="font-size:10px;color:var(--muted)">Tip Rate</div></div>
+      <div style="text-align:center"><div style="font-size:26px;font-weight:800;color:${tipRateColor(curRate)};line-height:1">${curRate===0?'No':curRate+'%'}</div><div style="font-size:10px;color:var(--muted)">Tip Rate</div></div>
       <div style="flex:1"><div style="font-size:13px;font-weight:700">${store.name}</div>
         <div style="font-size:11px;color:var(--muted)">${t('スキル合計','Total')} ${sc.total}${t('点','pt')} · Lv3×${sc.lv3} · ${t('できる','Can do')} ${apPos.length}/${positions.length}</div></div>
     </div>
@@ -19268,7 +19297,7 @@ function renderMypage() {
     var lsum = lssSummary(me);
     if (lsum.hasData) {
       var llv = lssLevel(lsum.totalPct);
-      var lcolor = llv.color.replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d');
+      var lcolor = llv.color.replace('var(--eval-top)','#1d4fd0').replace('var(--eval-high)','#3b82f6').replace('var(--eval-mid)','#e8920b').replace('var(--eval-low)','#e23b3b').replace('var(--eval-none)','#9b938a').replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d');
       var lhist = ls('lss_history', []).filter(h=>h.name===me);
       var lastDiff = null;
       if (lhist.length>=1 && lhist[lhist.length-1].prevPct!=null) lastDiff = lhist[lhist.length-1].pct - lhist[lhist.length-1].prevPct;
@@ -22122,7 +22151,7 @@ function ojtPhaseEvalSkill(e){
   var totalPct = positions.length ? Math.round(sumLv/(positions.length*3)*100) : 0;
   var perAxis = positions.map(function(p,i){
     var lv = levels[i];
-    var color = lv>=3?'var(--green)':lv>=2?'var(--accent2)':lv>=1?'var(--yellow)':'var(--muted)';
+    var color = evalColorLv(lv,3);
     return {key:p, name:p, level:{n:lv, color:color}};
   });
   var phases = map.map(function(ph){
@@ -22143,7 +22172,7 @@ function ojtLadderHtml(e, ev){
   ev = ev || ojtPhaseEval(e);
   var rate = (typeof effectiveTipRate==='function') ? effectiveTipRate(e.name) : null;
   var rateStr = rate===0?'No Tip':(rate!=null?rate+'%':'—');
-  var rateCol = rate===100?'var(--green)':rate===0?'var(--red)':'var(--accent)';
+  var rateCol = tipRateColor(rate);
   var curPh = ev.phases[ev.currentIdx];
   var sb = ev.skillBased;
   var storeName = (STORES.find(function(s){return s.id===e.store;})||{name:e.store||''}).name;
@@ -22551,7 +22580,7 @@ function renderTipRate() {
     staffList.slice(0,60).forEach(e=>{
       var rate = effectiveTipRate(e.name);
       var auto = isThreeMonths(e);
-      var col = rate===100?'var(--green)':rate===0?'var(--red)':'var(--accent)';
+      var col = tipRateColor(rate);
       html += `<tr><td>${e.name}</td><td style="color:var(--muted)">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name}</td>
         <td style="color:var(--muted);font-size:11px">${firstWorkDate(e)?firstWorkDate(e).toLocaleDateString(langDateLocale()):'—'}</td>
         <td style="font-weight:700;color:${col}">${rate===0?'No Tip':rate+'%'}${auto?' <span class="tag tag-green" style="font-size:8px">'+t('自動','Auto')+'</span>':''}</td></tr>`;
@@ -22572,7 +22601,7 @@ function renderTipRate() {
     html += `<div class="card" style="background:linear-gradient(135deg,var(--accent-soft,#fceee4),var(--surface))">
       <div class="card-title"><i class="ti ti-coin" style="color:var(--accent)"></i>${t('あなたのTip Rate','Your Tip Rate')}</div>
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
-        <div style="text-align:center"><div style="font-size:32px;font-weight:800;color:${curRate===100?'var(--green)':curRate===0?'var(--red)':'var(--accent)'};line-height:1">${curRate===0?'No Tip':curRate+'%'}</div>
+        <div style="text-align:center"><div style="font-size:32px;font-weight:800;color:${tipRateColor(curRate)};line-height:1">${curRate===0?'No Tip':curRate+'%'}</div>
           <div style="font-size:10px;color:var(--muted)">${t('現在','Now')} · ${storeName}</div></div>
         <div style="flex:1;font-size:12px;color:var(--muted)">${t('スキル合計','Skill total')} <b style="color:var(--tm)">${sc.total}${curLang==='en'?'pts':'点'}</b> · Lv3 <b style="color:var(--tm)">${sc.lv3}${curLang==='en'?'':'項目'}</b></div>
       </div>`;
@@ -23932,7 +23961,7 @@ function showCriteria(position) {
   var html = `<div class="modal-title">${position} スキル基準 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:13px">`;
   [0,1,2,3].forEach(lv=>{
-    var col = lv===0?'var(--muted)':lv===3?'var(--accent)':'var(--tm)';
+    var col = evalColorLv(lv,3);
     html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
       <span class="tag ${lv===3?'tag-orange':'tag-gray'}" style="font-size:10px">Lv${lv}</span>
       <span style="color:${col};margin-left:6px">${crit[lv]||'—'}</span></div>`;
@@ -24622,7 +24651,7 @@ function renderKpiMaster() {
   var soff = window._kpiStoreOffset;
   var speriod = periodForOffset(soff);
   var ach = kpiAchievement(sid, soff);
-  var achCol = ach.pct==null?'var(--muted)':ach.pct>=100?'var(--green)':ach.pct>=85?'var(--yellow)':'var(--red)';
+  var achCol = evalColor(ach.pct);
   var sTargets = getStoreKpiTargets(sid, soff);
   var sAct = computeKpiActuals(sid, soff).actuals;
   var sKpis = kpisForStore(store);
