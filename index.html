@@ -1508,7 +1508,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','hiring','hr','skill','leadership','tiprate','ojtmap','tip','growthhub','growth_mgr','vacation']},
+    children:['staff_master','shift_admin','hiring','skill','leadership','tip','growth_mgr','growthhub','hr','vacation']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','goals','required','company_msg_edit','approval','tasks','acct_export','settings']},
   {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
@@ -9421,7 +9421,7 @@ function renderTipMgmt() {
   var html = pageStoreTabs(storeId, false) + `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div></div>`;
 
   // 期間セレクタ
-  html += `<div class="card" style="padding:10px;margin-bottom:10px">
+  if (tipPeriodView!=='rate') html += `<div class="card" style="padding:10px;margin-bottom:10px">
     <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px">
       <button class="btn btn-secondary btn-sm" onclick="setTipMonth(-1)"><i class="ti ti-chevron-left"></i></button>
       <span style="font-size:15px;font-weight:700">${info.y}年${info.m+1}月</span>
@@ -9440,11 +9440,13 @@ function renderTipMgmt() {
     <div class="phase-tab${tipPeriodView==='matrix'?' active':''}" onclick="setTipPeriodView('matrix')">配分表</div>
     <div class="phase-tab${tipPeriodView==='staff'?' active':''}" onclick="setTipPeriodView('staff')">スタッフ別</div>
     <div class="phase-tab${tipPeriodView==='settle'?' active':''}" onclick="setTipPeriodView('settle')">SL精算</div>
+    <div class="phase-tab${tipPeriodView==='rate'?' active':''}" onclick="setTipPeriodView('rate')"><i class="ti ti-percentage" style="font-size:12px"></i> チップ率</div>
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
-  html += `<div style="margin-bottom:10px"><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> 期間の日次L/D配分をCSV出力</button></div>`;
+  if (tipPeriodView!=='rate') html += `<div style="margin-bottom:10px"><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> 期間の日次L/D配分をCSV出力</button></div>`;
 
-  if (tipPeriodView==='daily') return html + renderTipPeriodDaily(storeId, store, info);
+  if (tipPeriodView==='rate')   return html + renderTipRate();
+  if (tipPeriodView==='daily')  return html + renderTipPeriodDaily(storeId, store, info);
   if (tipPeriodView==='matrix') return html + renderTipPeriodMatrix(storeId, store, info);
   if (tipPeriodView==='staff') return html + renderTipPeriodStaff(storeId, store, info);
   if (tipPeriodView==='settle') return html + renderTipHalfMonth(storeId, store, info.anyDate);
@@ -22972,9 +22974,11 @@ function renderGrowthManager() {
     <div class="phase-tab${growthMgrTab==='journey'?' active':''}" onclick="setGrowthTab('journey')"><i class="ti ti-route" style="font-size:12px"></i> キャリア</div>
     <div class="phase-tab${growthMgrTab==='crew'?' active':''}" onclick="setGrowthTab('crew')">Crew成長管理</div>
     <div class="phase-tab${growthMgrTab==='leader'?' active':''}" onclick="setGrowthTab('leader')">Leader候補/社員</div>
+    <div class="phase-tab${growthMgrTab==='ojt'?' active':''}" onclick="setGrowthTab('ojt')"><i class="ti ti-stairs-up" style="font-size:12px"></i> OJTマップ</div>
   </div>`;
   if (growthMgrTab==='journey') return html + renderCareerPipeline();
   if (growthMgrTab==='leader') return html + renderLeaderGrowthList();
+  if (growthMgrTab==='ojt') return html + renderOjtMap();
   return html + renderCrewGrowthList();
 }
 /* キャリアパイプライン（ステージ別＋OJT待機リスト） */
