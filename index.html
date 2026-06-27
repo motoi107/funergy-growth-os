@@ -18869,8 +18869,61 @@ function openG1G2Ojt(name){
   }).join('');
   var html='<div class="modal-title">G1→G2 Crew Leader OJT — '+escapeHtml(name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">「自分の仕事ができる人」→「基礎を任せられ・新人を支え・店全体を見られる人」へ</div>'
+    +'<div style="margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="openOjtScriptModal()"><i class="ti ti-book-2"></i> 講師台本を開く</button></div>'
     +g2ProgressBar(pr)+rows
     +'<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0;line-height:1.6"><i class="ti ti-bolt" style="color:var(--accent)"></i> 各モジュール合格で、対応する<b>スキルLv</b>と<b>Career Score軸</b>へ自動反映（既存評価は下げません）。全モジュール修了で昇格OJT修了 → 担当軸A・B・C・HがL4で<b>G2昇格可</b>。</div>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(html);
+}
+
+/* ===================== 講師台本（トレーナー向け・モジュールに連動） ===================== */
+function ojtTrainerScript(){
+  var mods=g2Modules(), tests=g2Tests(), aName=_ojtAxisName(), aCol=_ojtAxisColor();
+  var h='';
+  h+='<div style="background:var(--surface2);border-radius:10px;padding:12px 14px;margin-bottom:12px">'
+    +'<div style="font-size:13px;font-weight:800;margin-bottom:6px"><i class="ti ti-target" style="color:var(--accent)"></i> この台本の目的</div>'
+    +'<div style="font-size:12px;line-height:1.6;color:var(--tm)">G1（自分の作業ができる）から G2（店全体を見て人を動かし、結果に責任を持つ）への引き上げOJTです。最重要は<b>「考え方の差」を理解してもらうこと</b>。作業の正解を教えるのではなく、<b>なぜそうするのか</b>を一緒に考えさせてください。</div></div>';
+  h+='<div class="card" style="padding:11px 13px;margin-bottom:12px"><div style="font-size:12px;font-weight:800;margin-bottom:6px"><i class="ti ti-list-numbers" style="color:var(--accent)"></i> 進め方の原則（効率よく・間違いなく）</div>'
+    +'<ol style="margin:0;padding-left:18px;font-size:12px;line-height:1.8;color:var(--tm)">'
+    +'<li><b>1シフトで1〜2モジュール</b>に絞る（詰め込まない）</li>'
+    +'<li>各項目は <b>①説明 → ②やってみせる → ③やらせる → ④確認してサイン</b> の順</li>'
+    +'<li>できていない時は手順でなく<b>「考え方」に立ち返る</b></li>'
+    +'<li>記入式テストは正解当てでなく<b>考えの確認</b>。評価ポイントを基準に対話する</li>'
+    +'<li>できたら<b>その場で承認・称賛</b>してサインする（後回しにしない）</li>'
+    +'</ol></div>';
+  mods.forEach(function(m){
+    var col=aCol[m.axis]||'var(--muted)';
+    h+='<div class="card" style="border-left:3px solid '+col+';margin-bottom:10px">';
+    h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px"><span style="width:22px;height:22px;border-radius:50%;background:var(--surface2);font-size:11px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">'+m.no+'</span><span style="font-size:14px;font-weight:800;flex:1">'+escapeHtml(m.title)+'</span><span class="tag" style="background:'+col+'1f;color:'+col+';font-size:9.5px;font-weight:700">'+m.axis+' '+escapeHtml(aName[m.axis]||'')+'</span></div>';
+    if(m.mindset) h+='<div style="font-size:12px;line-height:1.6;margin-bottom:8px;background:'+col+'12;border-radius:7px;padding:7px 9px"><b style="color:'+col+'">① 導入で伝える（考え方）</b><br>'+escapeHtml(m.mindset)+'<div style="font-size:11px;color:var(--muted);margin-top:4px">セリフ例：「ここからは&quot;自分ができる&quot;だけじゃなく、&quot;店全体がそうなる&quot;ように動いてもらうよ。だから◯◯を意識してね」</div></div>';
+    h+='<div style="font-size:12px;margin-bottom:8px"><b>② ゴールを共有</b><br>'+escapeHtml(m.goal)+'</div>';
+    if(m.checks&&m.checks.length){
+      h+='<div style="font-size:12px;margin-bottom:5px"><b>③ 各項目を進める</b><span style="font-size:11px;color:var(--muted)">（やってみせる→やらせる→確認）</span></div>';
+      h+=m.checks.map(function(c,ci){
+        return '<div style="display:flex;gap:7px;align-items:flex-start;margin-bottom:5px;font-size:11.5px;line-height:1.45"><span style="flex-shrink:0;color:'+col+';font-weight:700">'+(ci+1)+'.</span><span>'+escapeHtml(c)+'<span style="color:var(--muted)"> … 実際にやらせ、できていれば即サイン。曖昧なら「なぜそうするか」を聞いて考え方を補強。</span></span></div>';
+      }).join('');
+    }
+    if(m.hasTest){
+      var qs=tests[m.id]||[];
+      h+='<div style="font-size:12px;margin:8px 0 5px"><b>④ 記入式テスト（考えの確認）</b></div>'
+        +'<div style="background:var(--surface2);border-radius:8px;padding:8px 10px;font-size:11.5px;line-height:1.55">'
+        +'進め方：設問を渡して記入してもらう → 書いた内容を一緒に見ながら、下の「合格の目安」が押さえられているか<b>対話で確認</b> → 押さえられていれば合格にサイン。'
+        +qs.map(function(q,i){ return '<div style="margin-top:6px"><b>Q'+(i+1)+'.</b> '+escapeHtml(q.q)+(q.guide?'<div style="color:var(--muted);margin-left:12px">合格の目安：'+escapeHtml(q.guide)+'</div>':'')+'</div>'; }).join('')
+        +'</div>';
+    } else {
+      h+='<div style="font-size:11px;color:var(--muted);margin-top:6px">※ このモジュールはテストなし。現場チェックの達成で修了。</div>';
+    }
+    h+='<div style="font-size:11px;color:var(--muted);margin-top:8px;border-top:1px dashed var(--border);padding-top:6px"><b>サイン基準</b>：全チェック項目を実際に確認＋（テストありなら）考えの確認ができたら。<b>形だけのチェックにしない。</b></div>';
+    h+='</div>';
+  });
+  h+='<div class="card" style="padding:11px 13px"><div style="font-size:12px;font-weight:800;margin-bottom:6px"><i class="ti ti-flag" style="color:var(--accent)"></i> 仕上げ（フィードバック）</div>'
+    +'<div style="font-size:12px;line-height:1.6">全モジュール修了で G2 昇格OJT修了。最後に<b>「G1の時と比べて考え方がどう変わったか」</b>を本人の言葉で言ってもらい、できている点を具体的に承認。Crew Leaderとして任せる役割を伝えて締める。</div></div>';
+  return h;
+}
+function openOjtScriptModal(){
+  var html='<div class="modal-title">講師台本：G1→G2 Crew Leader OJT <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-link"></i> OJTの内容に連動（OJT管理で編集すると台本も自動更新）。</div>'
+    +ojtTrainerScript()
     +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
   openModal(html);
 }
@@ -18890,6 +18943,7 @@ function renderOjtAdmin(){
     +'<div class="phase-tab" style="opacity:.45;cursor:default" title="今後追加します">G3→G4（準備中）</div></div>';
   html+='<div class="card" style="padding:10px 12px;margin-bottom:8px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
     +'<button class="btn btn-secondary btn-sm" onclick="openOjtPreview()"><i class="ti ti-eye"></i> プレビュー</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openOjtScriptModal()"><i class="ti ti-book-2"></i> 講師台本</button>'
     +'<button class="btn btn-secondary btn-sm" onclick="ojtResetDraft()"><i class="ti ti-rotate-2"></i> 初期値に戻す</button>'
     +'<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="ojtSaveDraft()"><i class="ti ti-device-floppy"></i> 保存</button>'
     +'</div><div style="font-size:10.5px;color:var(--muted);margin-top:6px">編集後は「保存」で反映されます。「プレビュー」は未保存の編集内容で実際のOJT画面を表示します。</div></div>';
