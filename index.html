@@ -24694,9 +24694,33 @@ function renderStaffGrowthCombined(){
   return html;
 }
 
+/* ポジション別スキルレベルの段階ゲージ（見やすい進捗表示） */
+function skillLevelGaugeHtml(name, storeId){
+  var sid=(storeId==='ALL'||!storeId)?((typeof STORES!=='undefined'&&STORES[0])?STORES[0].id:storeId):storeId;
+  var positions=(typeof getStorePositions==='function')?getStorePositions(sid).filter(function(p){return p!=='Energy'&&p!=='Leadership';}):[];
+  var sk=(typeof getEmpSkills==='function')?(getEmpSkills(name)||{}):{};
+  if(!positions.length) return '';
+  function lvColor(lv){ return lv>=3?'var(--accent)':lv>=2?'var(--green)':lv>=1?'var(--yellow)':'var(--border)'; }
+  var c3=0,c2=0,c1=0;
+  var segs=positions.map(function(p){ var s=sk[p]; var lv=(s&&s.status==='承認')?(s.level||0):0; if(lv>=3)c3++;else if(lv>=2)c2++;else if(lv>=1)c1++; return '<div title="'+escapeHtml(p)+' Lv'+lv+'" style="flex:1;height:9px;border-radius:2px;background:'+lvColor(lv)+'"></div>'; }).join('');
+  var lv2plus=c2+c3;
+  return '<div style="margin-top:5px">'
+    +'<div style="display:flex;gap:2px">'+segs+'</div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:3px">習得 Lv2+ <b style="color:var(--green)">'+lv2plus+'</b>/'+positions.length+(c3?' ・ Lv3 <b style="color:var(--accent)">'+c3+'</b>':'')+'</div>'
+    +'</div>';
+}
+function skillLegendHtml(){
+  return '<div style="display:flex;gap:10px;font-size:9.5px;color:var(--muted);margin:2px 2px 6px">'
+    +'<span><span style="display:inline-block;width:9px;height:7px;background:var(--border);border-radius:2px;vertical-align:0"></span> Lv0</span>'
+    +'<span><span style="display:inline-block;width:9px;height:7px;background:var(--yellow);border-radius:2px;vertical-align:0"></span> Lv1</span>'
+    +'<span><span style="display:inline-block;width:9px;height:7px;background:var(--green);border-radius:2px;vertical-align:0"></span> Lv2</span>'
+    +'<span><span style="display:inline-block;width:9px;height:7px;background:var(--accent);border-radius:2px;vertical-align:0"></span> Lv3</span>'
+    +'<span style="margin-left:auto">ポジション別スキル</span></div>';
+}
 function renderCrewGrowthList() {
   var staff = visibleStaffForManager().filter(e=>e.role==='crew' && !isLeaderTrackEmp(e) && growthStoreMatch(e));
   var html = `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>Crew一覧 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>`;
+  html += skillLegendHtml();
   if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象Crewなし</p></div>`; return html; }
   staff.forEach(e => {
     var ap = approvedPositions(e.name);
@@ -24708,8 +24732,8 @@ function renderCrewGrowthList() {
     html += `<div class="staff-item" style="cursor:pointer" onclick="growthMgrOpen('${e.name}')">
       <div class="staff-avatar">${e.name[0]}</div>
       <div style="flex:1"><div class="staff-name">${e.name}</div>
-        <div class="staff-role">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name} · 対応 ${ap.length}/${totalPos}ポジ${lv3?' · Lv3×'+lv3:''} · Tip ${rate}%</div>
-        <div class="progress-bar" style="margin-top:4px"><div class="progress-fill" style="background:var(--accent2);width:${coverage}%"></div></div>
+        <div class="staff-role">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name} · 対応 ${ap.length}/${totalPos} · Tip ${rate}%</div>
+        ${skillLevelGaugeHtml(e.name, e.store)}
       </div>
       <i class="ti ti-chevron-right" style="color:var(--muted)"></i>
     </div>`;
@@ -24801,6 +24825,7 @@ function renderLeaderGrowthList() {
   var staff = visibleStaffForManager().filter(e=>e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office'&&e.role!=='am'&&isLeaderTrackEmp(e)&&growthStoreMatch(e));
   var html = `<div class="card"><div class="card-title"><i class="ti ti-crown"></i>Leader候補/社員 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>
     <p style="font-size:11px;color:var(--muted);margin-bottom:6px">入社・登用から90日を目安に現場オペレーションを習得する期間として管理します。</p>`;
+  html += skillLegendHtml();
   if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象者なし</p></div>`; return html; }
   staff.forEach(e => {
     var prog = dev90Progress(e);
@@ -24810,7 +24835,7 @@ function renderLeaderGrowthList() {
       <div class="staff-avatar" style="border-color:${col}">${e.name[0]}</div>
       <div style="flex:1"><div class="staff-name">${e.name} ${career?`<span class="tag tag-blue" style="font-size:9px">${career}</span>`:''}</div>
         <div class="staff-role">${(STORES.find(s=>s.id===e.store)||{name:e.store}).name} · 90日育成 ${prog.days>=0?prog.days+'日経過':'未開始'}</div>
-        <div class="progress-bar" style="margin-top:4px"><div class="progress-fill" style="background:${col};width:${prog.pct}%"></div></div>
+        ${skillLevelGaugeHtml(e.name, e.store)}
       </div>
       <i class="ti ti-chevron-right" style="color:var(--muted)"></i>
     </div>`;
