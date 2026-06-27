@@ -16225,6 +16225,49 @@ function officePendingApprovals(){
   try{ n += (typeof pendingAcctReviewCount==='function')?pendingAcctReviewCount():0; }catch(e){}
   return n;
 }
+function officeClockCard(){
+  var name=myName(); var today=officeTodayStr();
+  var arr=getOfficeAttend(name)||[]; var rec=arr.find(function(r){return r.date===today;})||{};
+  var inDone=!!rec.in, outDone=!!rec.out, onBreak=!!rec.breakStart;
+  var statusTxt, statusCol;
+  if(outDone){ statusTxt='退勤済 '+rec.in+'〜'+rec.out+(rec.hours!=null?'（'+rec.hours+'h）':''); statusCol='var(--muted)'; }
+  else if(onBreak){ statusTxt='休憩中（'+rec.breakStart+'〜）'; statusCol='var(--yellow)'; }
+  else if(inDone){ var _bt=officeSumBreaks(rec), _bn=(rec.breaks||[]).length; statusTxt='勤務中 '+rec.in+'〜'+(_bt>0?'　休憩'+_bn+'回/'+_bt+'分':''); statusCol='var(--green)'; }
+  else { statusTxt='未出勤'; statusCol='var(--muted)'; }
+  return '<div class="card" style="padding:14px;border-left:3px solid var(--accent2)">'
+    +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
+    +'<div style="flex:1;min-width:150px"><div style="font-size:11px;color:var(--muted)">本日の勤怠 ・ '+escapeHtml(name)+'</div><div style="font-size:16px;font-weight:800;color:'+statusCol+'">'+statusTxt+'</div></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn '+(inDone?'btn-secondary':'btn-primary')+' btn-sm" '+(inDone?'disabled style="opacity:.45"':'')+' onclick="officeClockIn()"><i class="ti ti-login-2"></i> 出勤</button>'
+    +'<button class="btn '+(onBreak?'btn-primary':'btn-secondary')+' btn-sm" '+((!inDone||outDone||onBreak)?'disabled style="opacity:.45"':'')+' onclick="officeBreakStart()"><i class="ti ti-coffee"></i> 休憩開始</button>'
+    +'<button class="btn '+(onBreak?'btn-primary':'btn-secondary')+' btn-sm" '+(onBreak?'':'disabled style="opacity:.45"')+' onclick="officeBreakEnd()"><i class="ti ti-coffee-off"></i> 休憩終了</button>'
+    +'<button class="btn '+((inDone&&!outDone&&!onBreak)?'btn-primary':'btn-secondary')+' btn-sm" '+((!inDone||outDone)?'disabled style="opacity:.45"':'')+' onclick="officeClockOut()"><i class="ti ti-logout-2"></i> 退勤</button>'
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 打刻・休憩は「勤怠」タブの月次タイムシートに自動反映されます（休憩は労働時間から控除）。</div></div>';
+}
+function officeTodayBoard(){
+  var today=officeTodayStr(); var mem=officeMembers();
+  var html='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--accent2)"></i>本日の出勤状況 <span class="tag tag-gray" style="margin-left:auto">'+officeOnDutyCount()+' / '+mem.length+'</span></div>';
+  if(!mem.length){ html+='<p style="font-size:12px;color:var(--muted);text-align:center;padding:10px">オフィスメンバーがいません</p>'; return html+'</div>'; }
+  mem.forEach(function(e){
+    var rec=(getOfficeAttend(e.name)||[]).find(function(r){return r.date===today;})||{};
+    var _cfg=getOfficeAttendCfg(); var _bt=officeSumBreaks(rec); var _over=_cfg.breakStdMin>0 && _bt>_cfg.breakStdMin; var _bi=_bt>0?('　休憩'+_bt+'分'+(_over?' ⚠':'')):'';
+    var st, col, dot;
+    if(rec.out){ st='退勤 '+rec.in+'〜'+rec.out+(rec.hours!=null?'（'+rec.hours+'h）':'')+_bi; col='var(--muted)'; dot='var(--muted)'; }
+    else if(rec.breakStart){ st='休憩中（'+rec.breakStart+'〜）'; col='var(--yellow)'; dot='var(--yellow)'; }
+    else if(rec.in){ st='勤務中 '+rec.in+'〜'+_bi; col='var(--green)'; dot='var(--green)'; }
+    else { st='未出勤'; col='var(--muted)'; dot='var(--border)'; }
+    var roleLabel=e.role==='office'?'経理':'事務Crew';
+    html+='<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">'
+      +'<span style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0"></span>'
+      +'<span style="width:30px;height:30px;border-radius:50%;background:var(--accent2);color:#fff;font-size:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">'+escapeHtml(e.name[0]||'?')+'</span>'
+      +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">'+escapeHtml(e.name)+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+roleLabel+'</span></div></div>'
+      +'<span style="font-size:12px;font-weight:600;color:'+col+';text-align:right">'+st+'</span>'
+      +'</div>';
+  });
+  return html+'</div>';
+}
 function renderOfficeDash(){
   var mem=officeMembers(), onduty=officeOnDutyCount(), tasks=officeOpenTasks(), appr=officePendingApprovals();
   var now=new Date(); var ym=now.getFullYear()+'年'+(now.getMonth()+1)+'月';
@@ -16234,12 +16277,15 @@ function renderOfficeDash(){
       +'<div style="font-size:24px;font-weight:800;color:'+(col||'var(--tm)')+'">'+val+'</div>'
       +(sub?'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+sub+'</div>':'')+'</div>';
   }
-  var html='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
+  var html=officeClockCard();
+  html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
     + tile('出勤中','<span style="font-size:18px">'+onduty+'</span> / '+mem.length+'名', 'オフィスメンバー', onduty>0?'var(--green)':'var(--muted)', "setOfficeMgrTab('attend')")
     + tile('未処理タスク', tasks.length, '進行中・未着手', tasks.length>0?'var(--accent)':'var(--muted)', "setOfficeMgrTab('tasks')")
     + tile('承認待ち', appr, '発注・経理レビュー', appr>0?'var(--yellow)':'var(--muted)', "setOfficeMgrTab('report')")
     + tile('今月', ym, '締め・出力の対象月', 'var(--accent2)', "setOfficeMgrTab('export')")
     + '</div>';
+  // 本日の出勤状況（オフィス全員）
+  html+=officeTodayBoard();
   // クイックアクション
   html+='<div class="card"><div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>クイックアクセス</div>'
     +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">'
@@ -16437,9 +16483,80 @@ function officeClockOut(){
   var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
   if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
   if(rec.out){ showToast('本日は退勤打刻済みです','info'); return; }
+  if(rec.breakStart){ var bm=Math.max(0,hmDiffMin(rec.breakStart, nowHM())); var endm=nowHM(); rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=endm; rec.breaks[bi].min=bm; break; } } delete rec.breakStart; rec.breakMin=officeSumBreaks(rec); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩自動終了（+'+bm+'分）'}); }
   rec.out=nowHM(); rec.hours=officeCalcHours(rec); rec.status='記録済';
   rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'退勤 '+rec.out});
   setOfficeAttend(name, arr); showToast('退勤を記録しました（'+rec.hours+'h）','success'); renderPage('office_mgr');
+}
+function hmDiffMin(from, to){ if(!from||!to) return 0; var a=from.split(':'), b=to.split(':'); return (parseInt(b[0])*60+parseInt(b[1]))-(parseInt(a[0])*60+parseInt(a[1])); }
+function officeSumBreaks(rec){ if(rec && rec.breaks && rec.breaks.length) return rec.breaks.reduce(function(a,b){return a+(b.min||0);},0); return (rec&&rec.breakMin)||0; }
+function getOfficeAttendCfg(){ return ls('office_attend_config', null) || {breakStdMin:60}; }
+function setOfficeBreakStd(v){ if(['ceo','gm','office'].indexOf(curRole)<0) return; var c=getOfficeAttendCfg(); c.breakStdMin=Math.max(0,parseInt(v)||0); lsSet('office_attend_config', c); showToast('休憩の標準上限を更新しました','success'); renderPage('office_mgr'); }
+function officeBreakStart(){
+  var name=myName(); var date=isoDateStr(new Date());
+  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
+  if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
+  if(rec.out){ showToast('退勤済みです','info'); return; }
+  if(rec.breakStart){ showToast('既に休憩中です','info'); return; }
+  rec.breakStart=nowHM(); rec.breaks=rec.breaks||[]; rec.breaks.push({start:rec.breakStart, end:'', min:0});
+  rec.status='休憩中'; rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩開始 '+rec.breakStart});
+  setOfficeAttend(name, arr); showToast('休憩を開始しました','success'); renderPage('office_mgr');
+}
+function officeBreakEnd(){
+  var name=myName(); var date=isoDateStr(new Date());
+  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
+  if(!rec || !rec.breakStart){ showToast('休憩中ではありません','info'); return; }
+  var mins=Math.max(0, hmDiffMin(rec.breakStart, nowHM())); var ended=nowHM();
+  rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=ended; rec.breaks[bi].min=mins; break; } }
+  delete rec.breakStart; rec.breakMin=officeSumBreaks(rec); rec.status='勤務中';
+  var cfg=getOfficeAttendCfg(); var over=cfg.breakStdMin>0 && rec.breakMin>cfg.breakStdMin;
+  rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩終了 '+ended+'（+'+mins+'分）'});
+  setOfficeAttend(name, arr); showToast('休憩を終了しました（+'+mins+'分'+(over?'・計'+rec.breakMin+'分/上限超過':'')+'）', over?'warning':'success'); renderPage('office_mgr');
+}
+function recomputeBreakMin(rec){ rec.breakMin=officeSumBreaks(rec); }
+function _officeBreakRec(name,date){ var arr=getOfficeAttend(name); return {arr:arr, rec:arr.find(function(r){return r.date===date;})}; }
+function openOfficeBreakDetail(name, date){
+  var canEdit=['ceo','gm','office'].indexOf(curRole)>=0;
+  var o=_officeBreakRec(name,date); var rec=o.rec; if(!rec){ return; }
+  var breaks=rec.breaks||[]; var cfg=getOfficeAttendCfg(); var total=officeSumBreaks(rec); var over=cfg.breakStdMin>0 && total>cfg.breakStdMin;
+  var rows=breaks.map(function(b,i){
+    if(canEdit){
+      return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-top:1px solid var(--border)">'
+        +'<span style="font-size:11px;color:var(--muted);width:16px">'+(i+1)+'</span>'
+        +'<input type="time" value="'+(b.start||'')+'" onchange="officeBreakSessionEdit(\''+name+'\',\''+date+'\','+i+',\'start\',this.value)" style="font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--tm)">'
+        +'<span style="color:var(--muted)">〜</span>'
+        +'<input type="time" value="'+(b.end||'')+'" onchange="officeBreakSessionEdit(\''+name+'\',\''+date+'\','+i+',\'end\',this.value)" style="font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--tm)">'
+        +'<span style="font-size:12px;font-weight:700;margin-left:auto">'+(b.min||0)+'分</span>'
+        +'<i class="ti ti-trash" style="color:var(--muted);cursor:pointer" onclick="officeBreakSessionDel(\''+name+'\',\''+date+'\','+i+')"></i></div>';
+    }
+    return '<div style="display:flex;gap:8px;padding:5px 0;border-top:1px solid var(--border);font-size:12px"><span style="width:16px;color:var(--muted)">'+(i+1)+'</span><span>'+(b.start||'—')+' 〜 '+(b.end||'<span style="color:var(--yellow)">休憩中</span>')+'</span><span style="margin-left:auto;font-weight:700">'+(b.min||0)+'分</span></div>';
+  }).join('');
+  var html='<div class="modal-title">休憩明細 — '+escapeHtml(name)+' / '+date+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:13px;color:var(--muted)">休憩 '+breaks.length+'回</span><span style="font-size:16px;font-weight:800;color:'+(over?'var(--red)':'var(--tm)')+'">計 '+total+'分'+(over?' <span style="font-size:11px">⚠上限'+cfg.breakStdMin+'分超過</span>':'')+'</span></div>'
+    +(breaks.length?rows:'<p style="font-size:12px;color:var(--muted);text-align:center;padding:10px">休憩記録なし</p>')
+    +(canEdit?'<div style="margin-top:10px"><button class="btn btn-secondary btn-sm" onclick="officeBreakSessionAdd(\''+name+'\',\''+date+'\')"><i class="ti ti-plus"></i> 休憩を追加</button></div>':'')
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(html);
+}
+function officeBreakSessionEdit(name,date,idx,field,val){
+  if(['ceo','gm','office'].indexOf(curRole)<0) return;
+  var o=_officeBreakRec(name,date); if(!o.rec||!o.rec.breaks||!o.rec.breaks[idx]) return;
+  var b=o.rec.breaks[idx]; b[field]=val; b.min=(b.start&&b.end)?Math.max(0,hmDiffMin(b.start,b.end)):(b.min||0);
+  recomputeBreakMin(o.rec); if(o.rec.out) o.rec.hours=officeCalcHours(o.rec);
+  setOfficeAttend(name,o.arr); openOfficeBreakDetail(name,date);
+}
+function officeBreakSessionAdd(name,date){
+  if(['ceo','gm','office'].indexOf(curRole)<0) return;
+  var o=_officeBreakRec(name,date); if(!o.rec) return;
+  o.rec.breaks=o.rec.breaks||[]; o.rec.breaks.push({start:'12:00', end:'12:30', min:30});
+  recomputeBreakMin(o.rec); if(o.rec.out) o.rec.hours=officeCalcHours(o.rec);
+  setOfficeAttend(name,o.arr); openOfficeBreakDetail(name,date);
+}
+function officeBreakSessionDel(name,date,idx){
+  if(['ceo','gm','office'].indexOf(curRole)<0) return;
+  var o=_officeBreakRec(name,date); if(!o.rec||!o.rec.breaks) return;
+  o.rec.breaks.splice(idx,1); recomputeBreakMin(o.rec); if(o.rec.out) o.rec.hours=officeCalcHours(o.rec);
+  setOfficeAttend(name,o.arr); openOfficeBreakDetail(name,date);
 }
 function officeAttendEdit(name, date, field, val){
   var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
@@ -16504,11 +16621,25 @@ function officePunchCard(name){
 }
 
 var WDAY_JA=['日','月','火','水','木','金','土'];
+function officeBreakCell(name, r, canEdit){
+  var cfg=getOfficeAttendCfg(); var tot=officeSumBreaks(r); var over=cfg.breakStdMin>0 && tot>cfg.breakStdMin;
+  var col=over?'var(--red)':'var(--tm)';
+  var warn=over?' <i class="ti ti-alert-triangle" style="color:var(--red);font-size:11px"></i>':'';
+  if(r.breaks && r.breaks.length){
+    return '<td style="text-align:center"><span style="cursor:pointer;color:'+col+';font-weight:600;border-bottom:1px dashed var(--muted)" onclick="openOfficeBreakDetail(\''+name+'\',\''+r.date+'\')">'+tot+'分</span> <span style="font-size:9px;color:var(--muted)">('+r.breaks.length+'回)</span>'+warn+'</td>';
+  }
+  if(canEdit){
+    return '<td style="text-align:center"><input type="number" value="'+(r.breakMin||0)+'" min="0" step="15" style="width:50px;font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:'+col+';text-align:center" onchange="officeAttendEdit(\''+name+'\',\''+r.date+'\',\'breakMin\',this.value)"><span style="font-size:10px;color:var(--muted)">分</span>'+warn+'</td>';
+  }
+  return '<td style="text-align:center;color:'+col+'">'+(r.breakMin||0)+'分'+warn+'</td>';
+}
 function officeTimesheet(name, ym, canEdit){
   var emp=officeEmpByName(name);
   var hourly=officeHourly(emp);
   var arr=getOfficeAttend(name).filter(function(r){return r.date.slice(0,7)===ym;}).sort(function(a,b){return a.date<b.date?-1:1;});
   var totalH=arr.reduce(function(a,r){return a+(officeCalcHours(r)||0);},0);
+  var totalBreak=arr.reduce(function(a,r){return a+officeSumBreaks(r);},0);
+  var cfgTs=getOfficeAttendCfg(); var overDays=arr.filter(function(r){return cfgTs.breakStdMin>0 && officeSumBreaks(r)>cfgTs.breakStdMin;}).length;
   var days=arr.filter(function(r){return r.in;}).length;
   var approved=arr.length && arr.every(function(r){return !r.in||!r.out||r.status==='承認';}) && arr.some(function(r){return r.status==='承認';});
   var html='<div class="card">';
@@ -16530,7 +16661,7 @@ function officeTimesheet(name, ym, canEdit){
         +'<td style="padding:5px 0">'+dlabel+'</td>'
         +'<td style="text-align:center"><input type="time" value="'+(r.in||'')+'" style="width:78px;font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--tm)" onchange="officeAttendEdit(\''+name+'\',\''+r.date+'\',\'in\',this.value)"></td>'
         +'<td style="text-align:center"><input type="time" value="'+(r.out||'')+'" style="width:78px;font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--tm)" onchange="officeAttendEdit(\''+name+'\',\''+r.date+'\',\'out\',this.value)"></td>'
-        +'<td style="text-align:center"><input type="number" value="'+(r.breakMin||0)+'" min="0" step="15" style="width:52px;font-size:12px;padding:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--tm);text-align:center" onchange="officeAttendEdit(\''+name+'\',\''+r.date+'\',\'breakMin\',this.value)"><span style="font-size:10px;color:var(--muted)">分</span></td>'
+        +officeBreakCell(name,r,true)
         +'<td style="text-align:center;font-weight:600">'+(officeCalcHours(r)||0)+'h</td>'
         +'<td style="text-align:center"><span style="color:'+stc+';font-size:11px">'+r.status+'</span></td>'
         +'<td style="text-align:center"><i class="ti ti-trash" style="color:var(--muted);cursor:pointer" onclick="officeAttendDelDay(\''+name+'\',\''+r.date+'\')"></i></td>'
@@ -16540,7 +16671,7 @@ function officeTimesheet(name, ym, canEdit){
         +'<td style="padding:5px 0">'+dlabel+'</td>'
         +'<td style="text-align:center">'+(r.in||'—')+'</td>'
         +'<td style="text-align:center">'+(r.out||'—')+'</td>'
-        +'<td style="text-align:center">'+(r.breakMin||0)+'分</td>'
+        +officeBreakCell(name,r,false)
         +'<td style="text-align:center;font-weight:600">'+(officeCalcHours(r)||0)+'h</td>'
         +'<td style="text-align:center"><span style="color:'+stc+';font-size:11px">'+r.status+'</span></td>'
         +'</tr>';
@@ -16551,6 +16682,7 @@ function officeTimesheet(name, ym, canEdit){
   html+='<div style="display:flex;gap:8px;margin-top:10px">'
     +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">総勤務時間</div><div style="font-size:18px;font-weight:700">'+(Math.round(totalH*10)/10)+'h</div></div>'
     +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">勤務日数</div><div style="font-size:18px;font-weight:700">'+days+'日</div></div>'
+    +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">休憩計</div><div style="font-size:18px;font-weight:700;color:'+(overDays>0?'var(--red)':'var(--tm)')+'">'+totalBreak+'分</div>'+(overDays>0?'<div style="font-size:9px;color:var(--red)">上限超過 '+overDays+'日</div>':'')+'</div>'
     +(hourly?'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">概算給与</div><div style="font-size:18px;font-weight:700">$'+Math.round(totalH*(emp.wage||0)).toLocaleString()+'</div></div>':'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">給与形態</div><div style="font-size:14px;font-weight:700;margin-top:3px">月給</div></div>')
     +'</div>';
   if(canEdit){
@@ -16579,6 +16711,10 @@ function renderOfficeAttend(){
       +'<select class="form-select" style="flex:1" onchange="officeAttendName=this.value;renderPage(\'office_mgr\')">'
       + mem.map(function(e){ return '<option'+(e.name===sel?' selected':'')+'>'+escapeHtml(e.name)+'</option>'; }).join('')
       +'</select></div></div>';
+  }
+  if(canManage){
+    var _cfg=getOfficeAttendCfg();
+    html+='<div class="card" style="padding:10px 12px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-coffee" style="color:var(--accent)"></i><span style="font-size:12px;color:var(--muted)">休憩の標準上限</span><input type="number" value="'+_cfg.breakStdMin+'" min="0" step="15" onchange="setOfficeBreakStd(this.value)" style="width:64px;padding:5px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm);text-align:center"><span style="font-size:12px;color:var(--muted)">分／日（超過で ⚠ 表示）</span></div></div>';
   }
   html += officeTimesheet(sel, ym, canManage);
   return html;
@@ -24235,7 +24371,7 @@ function visibleStaffForManager() {
 }
 
 var growthMgrSel = null;
-var growthMgrTab = 'crew';
+var growthMgrTab = 'staff';
 function setGrowthTab(t){ growthMgrTab=t; growthMgrSel=null; renderPage('growth_mgr'); }
 function renderGrowthManager() {
   if (growthMgrSel) {
@@ -24254,15 +24390,13 @@ function renderGrowthManager() {
     <div><div class="section-title">成長管理</div><div class="section-sub">Crew と Leader候補/社員を分けて育成</div></div>
   </div>
   <div class="phase-tabs">
-    <div class="phase-tab${growthMgrTab==='journey'?' active':''}" onclick="setGrowthTab('journey')"><i class="ti ti-route" style="font-size:12px"></i> キャリア</div>
-    <div class="phase-tab${growthMgrTab==='crew'?' active':''}" onclick="setGrowthTab('crew')">Crew成長管理</div>
-    <div class="phase-tab${growthMgrTab==='leader'?' active':''}" onclick="setGrowthTab('leader')">Leader候補/社員</div>
-    <div class="phase-tab${growthMgrTab==='ojt'?' active':''}" onclick="setGrowthTab('ojt')"><i class="ti ti-stairs-up" style="font-size:12px"></i> OJTマップ</div>
+    <div class="phase-tab${growthMgrTab==='staff'?' active':''}" onclick="setGrowthTab('staff')"><i class="ti ti-users" style="font-size:12px"></i> スタッフ別</div>
+    <div class="phase-tab${growthMgrTab==='map'?' active':''}" onclick="setGrowthTab('map')"><i class="ti ti-stairs-up" style="font-size:12px"></i> 昇格マップ</div>
+    <div class="phase-tab${growthMgrTab==='progress'?' active':''}" onclick="setGrowthTab('progress')"><i class="ti ti-list-check" style="font-size:12px"></i> OJT進捗一覧</div>
   </div>`;
-  if (growthMgrTab==='journey') return html + renderCareerPipeline();
-  if (growthMgrTab==='leader') return html + renderLeaderGrowthList();
-  if (growthMgrTab==='ojt') return html + renderOjtMap();
-  return html + renderCrewGrowthList();
+  if (growthMgrTab==='map') return html + renderOjtMap();
+  if (growthMgrTab==='progress') return html + renderOjtProgressList();
+  return html + renderStaffGrowthCombined();
 }
 /* キャリアパイプライン（ステージ別＋OJT待機リスト） */
 function renderCareerPipeline() {
@@ -24476,6 +24610,76 @@ function leaderCandidate(e) {
 function isLeaderTrackEmp(e){ return !!e && leaderCandidate(e) && (typeof empGradeNum==='function' ? empGradeNum(e)>=2 : false); }
 
 /* ===== ① Crew成長管理（スキルレベル中心） ===== */
+/* 成長ジャーニー：現在地バー＋現在のOJTカード（個別詳細トップ） */
+function growthJourneyTop(name, emp){
+  emp = emp || getEmployees().find(function(e){return e.name===name;}) || {};
+  var g=(typeof empGradeNum==='function')?empGradeNum(emp):0; var gKey='G'+(g||1);
+  var path=(typeof PROMO_PATH!=='undefined')?PROMO_PATH[gKey]:null;
+  var isG1=(g<=1);
+  var curTitle=emp.title || (g<=1?'Crew':gKey);
+  var html='<div class="card" style="border-left:3px solid var(--accent)">';
+  html+='<div class="card-title"><i class="ti ti-route" style="color:var(--accent)"></i>成長ジャーニー</div>';
+  if(path){
+    var emph=isG1;
+    html+='<div style="display:flex;align-items:center;gap:8px;margin:2px 0 8px">'
+      +'<div style="flex:1;text-align:center;padding:9px 6px;border-radius:10px;background:var(--surface2)"><div style="font-size:10px;color:var(--muted)">現在</div><div style="font-size:14px;font-weight:800">'+gKey+' '+escapeHtml(curTitle)+'</div></div>'
+      +'<div style="text-align:center;'+(emph?'color:var(--accent)':'color:var(--muted)')+'"><i class="ti ti-arrow-right" style="font-size:'+(emph?'24':'18')+'px"></i></div>'
+      +'<div style="flex:1;text-align:center;padding:9px 6px;border-radius:10px;background:'+(emph?'var(--accent)':'var(--surface2)')+';color:'+(emph?'#fff':'var(--tm)')+'"><div style="font-size:10px;opacity:.85">次</div><div style="font-size:14px;font-weight:800">'+path.nextGrade+' '+escapeHtml(path.nextTitle)+'</div></div>'
+      +'</div>';
+    if(emph) html+='<div style="font-size:10.5px;color:var(--accent);text-align:center;margin-bottom:8px;font-weight:600">★ 最初の大きな分岐：Crew → Crew Leader</div>';
+  } else {
+    html+='<div style="text-align:center;padding:8px"><div style="font-size:15px;font-weight:800">'+gKey+' '+escapeHtml(curTitle)+'</div><div style="font-size:11px;color:var(--muted)">最上位グレード帯（固定OJTなし）</div></div>';
+  }
+  // 現在のOJTカード
+  if(isG1 && typeof g2Progress==='function' && typeof OJT_G1G2!=='undefined'){
+    var pr=g2Progress(name); var mp=getG2Prog(name);
+    var dots=OJT_G1G2.modules.map(function(m){ var dn=g2ModDone(mp,m); return '<div title="'+escapeHtml(m.title)+'" style="flex:1;height:7px;border-radius:3px;background:'+(dn?'var(--green)':'var(--border)')+'"></div>'; }).join('');
+    html+='<div style="border:1px solid var(--border);border-radius:10px;padding:11px 12px">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px"><i class="ti ti-list-check" style="color:var(--accent)"></i><span style="font-size:13px;font-weight:700;flex:1">G1→G2 Crew Leader OJT</span><span class="tag '+(pr.all?'tag-green':'tag-gray')+'" style="font-size:10px;font-weight:700">'+pr.done+'/'+pr.total+'</span></div>'
+      +'<div style="display:flex;gap:3px;margin-bottom:9px">'+dots+'</div>'
+      +'<button class="btn btn-primary btn-sm" style="width:100%" onclick="openG1G2Ojt(\''+name.replace(/'/g,"\\'")+'\')"><i class="ti ti-external-link"></i> OJTを開く（6モジュール）</button>'
+      +'</div>';
+  } else if(path && path.ojt){
+    var done=(typeof ojtDone==='function')?ojtDone(name, path.ojtKey):false;
+    html+='<div style="border:1px solid var(--border);border-radius:10px;padding:11px 12px;display:flex;align-items:center;gap:8px"><i class="ti ti-school" style="color:var(--accent)"></i><div style="flex:1"><div style="font-size:13px;font-weight:700">'+escapeHtml(path.ojt)+'</div><div style="font-size:11px;color:var(--muted)">'+path.nextGrade+' '+escapeHtml(path.nextTitle)+' への昇格OJT</div></div><span class="tag '+(done?'tag-green':'tag-gray')+'" style="font-size:10px;font-weight:700">'+(done?'修了':'未修了')+'</span></div>';
+  } else if(path && !path.ojt){
+    html+='<div style="border:1px solid var(--border);border-radius:10px;padding:11px 12px;font-size:12px;color:var(--muted)"><i class="ti ti-bulb" style="color:var(--accent)"></i> 固定OJTなし。実績＋Career Score総合レベルで昇格判断（GM承認）。</div>';
+  }
+  html+='</div>';
+  return html;
+}
+
+/* OJT進捗一覧（全スタッフ） */
+function renderOjtProgressList(){
+  var emps=getEmployees().filter(function(e){return e.status!=='退職';});
+  emps.sort(function(a,b){ return (empGradeNum(a)-empGradeNum(b)) || (a.name<b.name?-1:1); });
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 全スタッフの現在のOJTと進捗。タップで個別の成長ジャーニーへ。</div>';
+  html+='<div class="card" style="padding:6px 12px">';
+  if(!emps.length){ html+='<p style="font-size:13px;color:var(--muted);text-align:center;padding:14px">スタッフがいません</p>'; }
+  emps.forEach(function(e){
+    var g=empGradeNum(e); var gKey='G'+(g||1); var path=(typeof PROMO_PATH!=='undefined')?PROMO_PATH[gKey]:null;
+    var pct=0, col='var(--muted)', label='';
+    if(g<=1 && typeof g2Progress==='function'){ var pr=g2Progress(e.name); pct=pr.pct; label='G1→G2 Crew Leader OJT　'+pr.done+'/'+pr.total; col=pr.all?'var(--green)':'var(--accent)'; }
+    else if(path && path.ojt){ var done=(typeof ojtDone==='function')?ojtDone(e.name, path.ojtKey):false; pct=done?100:0; label=path.ojt+(done?'（修了）':'（未修了）'); col=done?'var(--green)':'var(--muted)'; }
+    else { label='最上位帯（固定OJTなし）'; pct=0; }
+    html+='<div onclick="growthMgrSel=\''+String(e.name).replace(/'/g,"")+'\';renderPage(\'growth_mgr\')" style="cursor:pointer;display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border)">'
+      +'<span class="tag" style="background:var(--surface2);font-size:10px;font-weight:700;min-width:28px;text-align:center">'+gKey+'</span>'
+      +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">'+escapeHtml(e.name)+'</div><div style="font-size:11px;color:var(--muted)">'+escapeHtml(label)+'</div>'
+      +'<div style="height:5px;background:var(--surface2);border-radius:3px;margin-top:4px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+col+'"></div></div></div>'
+      +'<i class="ti ti-chevron-right" style="color:var(--muted)"></i></div>';
+  });
+  html+='</div>';
+  return html;
+}
+
+/* スタッフ別（Crew＋Leader統合） */
+function renderStaffGrowthCombined(){
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><i class="ti ti-users"></i> スタッフを選ぶと「成長ジャーニー」（現在地・OJT・Career Score・スキル）が見られます。</div>';
+  html+='<div style="font-size:12px;font-weight:700;margin:8px 2px 4px;color:var(--accent2)"><i class="ti ti-user"></i> Crew</div>'+renderCrewGrowthList();
+  html+='<div style="font-size:12px;font-weight:700;margin:14px 2px 4px;color:var(--accent)"><i class="ti ti-user-star"></i> Leader候補 / 社員</div>'+renderLeaderGrowthList();
+  return html;
+}
+
 function renderCrewGrowthList() {
   var staff = visibleStaffForManager().filter(e=>e.role==='crew' && !isLeaderTrackEmp(e));
   var html = `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>Crew一覧 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>`;
@@ -24508,7 +24712,8 @@ function renderCrewGrowthDetail(name, emp) {
   var rate = typeof effectiveTipRate==='function'?effectiveTipRate(name):0;
   var trainingDone = (emp.step||0)>=1;
 
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-id"></i>基本情報</div>
+  var html = growthJourneyTop(name, emp);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-id"></i>基本情報</div>
     <div style="font-size:13px;line-height:1.8">
       所属店舗: <b>${(STORES.find(s=>s.id===storeId)||{name:storeId}).name}</b><br>
       Training状況: ${trainingDone?'<span style="color:var(--green)">修了</span>':'<span style="color:var(--yellow)">研修中</span>'}<br>
@@ -24837,7 +25042,8 @@ function renderLeaderGrowthDetail(name, emp) {
   var prog = dev90Progress(emp);
   var career = getCareerTrack(name);
 
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-calendar-stats"></i>90日育成期間</div>`;
+  var html = growthJourneyTop(name, emp);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-stats"></i>90日育成期間</div>`;
   if (!prog.start) {
     html += `<p style="font-size:12px;color:var(--muted);margin-bottom:8px">育成開始日が未設定です。初回勤務日または登用日を設定してください。</p>
       <button class="btn btn-primary btn-sm" onclick="promptDevStart('${name}')"><i class="ti ti-calendar-plus"></i> 育成開始日を設定</button>`;
