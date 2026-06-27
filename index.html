@@ -3463,6 +3463,30 @@ var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_h
   'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
+/* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
+function authObPriv(payload){
+  return fetch(SUPABASE_URL+'/functions/v1/ob-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(payload) }).then(function(r){ return r.json(); });
+}
+var _OB_SENSITIVE = ['address','phone','email','dob','ssn','visa','visaDetail'];
+function stripObPII(ob){
+  try {
+    var c = JSON.parse(JSON.stringify(ob));
+    if (c && c.personal) _OB_SENSITIVE.forEach(function(k){ delete c.personal[k]; });
+    if (c && Array.isArray(c.docs)) c.docs = c.docs.map(function(d){ return { name:d.name, uploadedAt:d.uploadedAt }; });
+    return c;
+  } catch(e){ return ob; }
+}
+function obSecretOf(ob){
+  var p = (ob && ob.personal) || {};
+  var sec = {};
+  _OB_SENSITIVE.forEach(function(k){ sec[k] = p[k] || ''; });
+  sec.docs = ((ob && ob.docs) || []).map(function(d){ return { name:d.name, image:d.image||'', uploadedAt:d.uploadedAt }; });
+  return sec;
+}
+function obPushSecret(ob){
+  if (!ob || !ob.id || !ob.inviteToken) return;
+  try { authObPriv({ action:'save', obId:ob.id, token:ob.inviteToken, secret:obSecretOf(ob) }).catch(function(){}); } catch(e){}
+}
 function isOpSyncKey(key){
   if (!key) return false;
   // 設定キーは除外（app_settings 側で扱う。例: dailyops_template_*）
@@ -3495,7 +3519,8 @@ async function syncMasterToSupabase(key, val){
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
-    await supaUpsert('app_state', [{ key:key, value:val, updated_at:new Date().toISOString() }]);
+    var _outVal = (key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val;
+    await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
   }
 }
 function supaSettingCategory(key){
@@ -14501,22 +14526,18 @@ function renderOnboardingInner() {
     // 本人入力情報（権限により表示制御）
     if (ob.personal) {
       var p = ob.personal;
-      var canSeePII = isOffice; // SSN/書類はOffice/GM/CEOのみ
+      var canSeePII = isOffice; // 機密はOffice/GM/CEOのみ（サーバーから取得）
       var sigCount = Object.values(ob.signatures||{}).filter(Boolean).length;
       var i9Count = Object.values(ob.i9||{}).filter(Boolean).length;
       html += `<div style="font-size:12px;background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:8px">
         <div style="font-weight:600;margin-bottom:4px">本人入力情報 <span style="font-size:10px;color:var(--muted);font-weight:400">${ob.candId||''}</span></div>
-        住所: ${p.address||'—'}<br>
-        生年月日: ${p.dob||'—'} · 就労: ${p.visa||'—'}${p.visaDetail?'（'+p.visaDetail+'）':''}<br>
         時給: ${canEditWages()?'$'+(ob.wage||p.wage||'—'):'***'} · 開始予定: ${ob.plannedStart||p.startDate||'—'}<br>
-        SSN: ${canSeePII?(p.ssn||'—'):'<span style="color:var(--muted)">（経理/GM/CEOのみ）</span>'}<br>
         電子署名: ${sigCount}/4 ${sigCount>=4?'<span style="color:var(--green)">✓</span>':''} · I-9: ${i9Count}/5 ${i9Count>=5?'<span style="color:var(--green)">✓</span>':''}<br>
-        書類: ${ob.docs&&ob.docs.length?(canSeePII?'':ob.docs.length+'件（経理のみ）'):'未提出'}
-        ${canSeePII && ob.docs && ob.docs.length ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">${ob.docs.map((d,i)=>d.image?`<div style="text-align:center"><img src="${d.image}" style="width:56px;height:56px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="viewOBDocImage('${ob.id}',${i})"><div style="font-size:8px;color:var(--muted)">${d.name}</div></div>`:`<span style="font-size:10px;color:var(--muted)">${d.name}（画像なし）</span>`).join('')}</div>`:''}
+        書類: ${ob.docs&&ob.docs.length?ob.docs.length+'件':'未提出'}
+        ${canSeePII?`<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" style="font-size:11px" onclick="openObSecret('${ob.id}')"><i class="ti ti-shield-lock" style="color:var(--accent)"></i> 機密情報（住所・生年月日・SSN・身分証）を表示</button></div>`:`<div style="margin-top:6px;font-size:10px;color:var(--muted)">機密情報は経理/GM/CEOのみ閲覧できます</div>`}
         ${canSeePII && ob.signatureImage ? `<div style="margin-top:8px"><div style="font-size:10px;color:var(--muted)">署名 / Signature</div><img src="${ob.signatureImage}" style="height:46px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:2px"></div>`:''}
       </div>`;
     }
-
     // アクションボタン（ステータス×権限）
     html += `<div class="approval-actions">`;
     // 本人入力（デモ: 誰でも代理入力可。実運用は本人リンク）
@@ -14771,6 +14792,7 @@ function obWizPersist(step){
       visa:visa, visaDetail:(visa==='その他'?g('pf-visadetail-input'):'') });
   }
   lsSet('onboardings', obs);
+  obPushSecret(ob);
   return ob;
 }
 function obWizValidate(step, ob){
@@ -14843,6 +14865,7 @@ function obWizSubmit(){
   ob.personal=Object.assign({}, ob.personal, { startDate:ob.plannedStart||'', wage:ob.wage||0, submittedAt:new Date().toISOString() });
   ob.obStatus='提出完了'; ob.rejectReason='';
   lsSet('onboardings', obs);
+  obPushSecret(ob);
   addApproval({ title: ob.name+' 採用書類 提出完了（経理確認待ち）', type:'採用', from:ob.name, store:ob.storeName||'' });
   _obWiz=null;
   closeModalDirect();
@@ -14855,12 +14878,12 @@ function addOBDoc(obId, name) {
   // 署名・条件同意の途中入力を保持
   persistPersonalDraft(ob);
   ob.docs.push({name, uploadedAt:new Date().toISOString()});
-  lsSet('onboardings',obs); var box=document.getElementById('pf-docs'); if(box) box.innerHTML=renderOBDocsList(ob,obId);
+  lsSet('onboardings',obs); obPushSecret(ob); var box=document.getElementById('pf-docs'); if(box) box.innerHTML=renderOBDocsList(ob,obId);
 }
 function removeOBDoc(obId,i) {
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
   persistPersonalDraft(ob);
-  ob.docs.splice(i,1); lsSet('onboardings',obs);
+  ob.docs.splice(i,1); lsSet('onboardings',obs); obPushSecret(ob);
   var box=document.getElementById('pf-docs'); if(box) box.innerHTML=renderOBDocsList(ob,obId);
 }
 /* 本人確認書類リスト（サムネイル付き） */
@@ -14888,7 +14911,7 @@ function handleOBDocFile(obId, type, input){
     var idx=ob.docs.findIndex(function(d){return d.name===type;});
     var rec={name:type, image:dataURL, uploadedAt:new Date().toISOString()};
     if(idx>=0) ob.docs[idx]=rec; else ob.docs.push(rec);
-    lsSet('onboardings',obs);
+    lsSet('onboardings',obs); obPushSecret(ob);
     var box=document.getElementById('pf-docs'); if(box) box.innerHTML=renderOBDocsList(ob,obId);
     showToast(type+'の画像を添付しました','success');
   });
@@ -14911,6 +14934,42 @@ function compressImageFile(file, cb){
   reader.readAsDataURL(file);
 }
 /* 書類画像を拡大表示（フォームを閉じずにオーバーレイ） */
+async function openObSecret(obId){
+  if(!(curRole==='office'||curRole==='gm'||curRole==='ceo')){ alert('機密情報は経理/GM/CEOのみです'); return; }
+  var ap = (window._pinAdmin&&window._pinAdmin.pin) ? window._pinAdmin.pin : prompt('本人確認のため、あなたのログインPIN（4桁）を入力:');
+  if(ap===null) return; ap=String(ap).trim();
+  var j;
+  try{ j = await authObPriv({action:'get', adminName:curUserName, adminPin:ap, obId:obId}); }
+  catch(e){ alert('通信に失敗しました'); return; }
+  if(!j||!j.ok){ alert('確認できませんでした（PINまたは権限）'); return; }
+  window._pinAdmin = {name:curUserName, pin:ap};
+  var sObj = j.secret||{};
+  var docsHtml = (sObj.docs||[]).map(function(d){ return d.image?`<div style="text-align:center"><img src="${d.image}" style="width:90px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="openImgOverlay(this.src)"><div style="font-size:9px;color:var(--muted)">${escapeHtml(d.name)}</div></div>`:`<span style="font-size:10px;color:var(--muted)">${escapeHtml(d.name)}（画像なし）</span>`; }).join('');
+  openModal(`<div class="modal-title"><i class="ti ti-shield-lock"></i> 機密情報 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:13px;line-height:1.9">
+      住所: ${escapeHtml(sObj.address||'—')}<br>
+      電話: ${escapeHtml(sObj.phone||'—')} · Email: ${escapeHtml(sObj.email||'—')}<br>
+      生年月日: ${escapeHtml(sObj.dob||'—')} · 就労: ${escapeHtml(sObj.visa||'—')}${sObj.visaDetail?'（'+escapeHtml(sObj.visaDetail)+'）':''}<br>
+      SSN: <b>${escapeHtml(sObj.ssn||'—')}</b>
+    </div>
+    <div style="margin-top:10px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">身分証</div><div style="display:flex;gap:8px;flex-wrap:wrap">${docsHtml||'<span style="font-size:11px;color:var(--muted)">なし</span>'}</div></div>
+    <div style="font-size:10px;color:var(--muted);margin-top:10px"><i class="ti ti-shield-lock"></i> サーバーから安全に取得（端末に保存されません）</div>
+    <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`);
+}
+function openImgOverlay(src){ openModal(`<div class="modal-title">画像 <button class="modal-close" onclick="closeModalDirect()">×</button></div><img src="${src}" style="width:100%;border-radius:8px">`); }
+async function runObMigrate(){
+  if(!(curRole==='gm'||curRole==='ceo')) return;
+  if(!confirm('既存オンボの機密情報（SSN・身分証・個人情報）を保護領域へ移行します。実行しますか？')) return;
+  var ap = (window._pinAdmin&&window._pinAdmin.pin)?window._pinAdmin.pin:prompt('本人確認のため、あなたのログインPIN（4桁）:');
+  if(ap===null) return; ap=String(ap).trim();
+  var j;
+  try{ j = await authObPriv({action:'migrate', adminName:curUserName, adminPin:ap}); }
+  catch(e){ alert('通信に失敗しました'); return; }
+  if(!j||!j.ok){ alert('実行できませんでした（PINまたは権限）'); return; }
+  window._pinAdmin={name:curUserName,pin:ap};
+  try{ await pullOpKey('onboardings'); }catch(e){}
+  showToast(j.moved+'件の機密情報を保護領域へ移行しました','success');
+}
 function viewOBDocImage(obId, i){
   var ob=ls('onboardings',[]).find(o=>o.id===obId);
   if(!ob||!ob.docs||!ob.docs[i]||!ob.docs[i].image){ alert('画像がありません'); return; }
@@ -21359,6 +21418,10 @@ function renderMypage() {
 ============================================================ */
 function renderSettings() {
   var html = `<div class="section-header"><div class="section-title">設定</div></div>
+  ${(curRole==='gm'||curRole==='ceo')?`<div class="card"><div class="card-title"><i class="ti ti-shield-lock" style="color:var(--accent)"></i> セキュリティ：オンボ機密情報</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">既存オンボのSSN・身分証・個人情報を、匿名キーから触れない保護領域へ移します（最初に1回だけ）。</div>
+    <button class="btn btn-primary btn-sm" onclick="runObMigrate()"><i class="ti ti-database-export"></i> 保護領域へ移行する</button>
+  </div>`:''}
   <div class="card"><div class="card-title"><i class="ti ti-device-mobile-vibration" style="color:var(--accent)"></i>触感・アプリ</div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
       <div><div style="font-weight:600;font-size:13px">バイブレーション（触感フィードバック）</div>
@@ -27599,6 +27662,15 @@ async function checkOnboardToken(){
     }
     // 招待リンクで開いた端末（受信者）でも、提出内容をクラウドへ反映させる
     SUPA_SYNC_ENABLED = true; _supaBooting = false;
+    // 機密情報（SSN・身分証等）を保護領域から本人トークンで取得し、ローカルに補完
+    try {
+      var _sec = await authObPriv({ action:'getself', obId:ob.id, token:token });
+      if (_sec && _sec.ok && _sec.secret) {
+        var _s=_sec.secret; ob.personal = Object.assign({}, ob.personal, { address:_s.address, phone:_s.phone, email:_s.email, dob:_s.dob, ssn:_s.ssn, visa:_s.visa, visaDetail:_s.visaDetail });
+        if (_s.docs && _s.docs.length) ob.docs = _s.docs;
+        try { var _obs=ls('onboardings',[]); var _i=_obs.findIndex(function(o){return o.id===ob.id;}); if(_i>=0){ _obs[_i]=ob; localStorage.setItem('onboardings', JSON.stringify(_obs)); } } catch(e){}
+      }
+    } catch(e){}
     // 教材マスター＋Tipポリシーを最新化（受信者端末にはローカルが無いため）
     try { await pullTrainMaterials(); } catch(e){}
     // デモ: 専用ページの代わりに本人入力フォームを直接開く（本番では隔離した専用画面）
