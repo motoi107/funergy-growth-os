@@ -24694,20 +24694,25 @@ function renderStaffGrowthCombined(){
   return html;
 }
 
-/* ポジション別スキルレベルの段階ゲージ（見やすい進捗表示） */
+/* ポジション別スキルレベル（レベル高い順・項目とLvを明記） */
 function skillLevelGaugeHtml(name, storeId){
   var sid=(storeId==='ALL'||!storeId)?((typeof STORES!=='undefined'&&STORES[0])?STORES[0].id:storeId):storeId;
   var positions=(typeof getStorePositions==='function')?getStorePositions(sid).filter(function(p){return p!=='Energy'&&p!=='Leadership';}):[];
   var sk=(typeof getEmpSkills==='function')?(getEmpSkills(name)||{}):{};
   if(!positions.length) return '';
-  function lvColor(lv){ return lv>=3?'var(--accent)':lv>=2?'var(--green)':lv>=1?'var(--yellow)':'var(--border)'; }
-  var c3=0,c2=0,c1=0;
-  var segs=positions.map(function(p){ var s=sk[p]; var lv=(s&&s.status==='承認')?(s.level||0):0; if(lv>=3)c3++;else if(lv>=2)c2++;else if(lv>=1)c1++; return '<div title="'+escapeHtml(p)+' Lv'+lv+'" style="flex:1;height:9px;border-radius:2px;background:'+lvColor(lv)+'"></div>'; }).join('');
-  var lv2plus=c2+c3;
-  return '<div style="margin-top:5px">'
-    +'<div style="display:flex;gap:2px">'+segs+'</div>'
-    +'<div style="font-size:10px;color:var(--muted);margin-top:3px">習得 Lv2+ <b style="color:var(--green)">'+lv2plus+'</b>/'+positions.length+(c3?' ・ Lv3 <b style="color:var(--accent)">'+c3+'</b>':'')+'</div>'
-    +'</div>';
+  function lvColor(lv){ return lv>=3?'var(--accent)':lv>=2?'var(--green)':lv>=1?'var(--yellow)':'var(--muted)'; }
+  var items=positions.map(function(p){ var s=sk[p]; var lv=(s&&s.status==='承認')?(s.level||0):0; return {p:p, lv:lv}; });
+  items.sort(function(a,b){ return b.lv-a.lv || (a.p<b.p?-1:1); }); // レベル高い順
+  var c3=items.filter(function(x){return x.lv>=3;}).length;
+  var lv2plus=items.filter(function(x){return x.lv>=2;}).length;
+  var c0=items.filter(function(x){return x.lv===0;}).length;
+  var chips=items.filter(function(x){return x.lv>=1;}).map(function(it){
+    var c=lvColor(it.lv);
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:2px 7px;border-radius:11px;background:'+c+'1f;color:'+c+';border:1px solid '+c+'4d;margin:0 4px 4px 0">'+escapeHtml(it.p)+' <b>Lv'+it.lv+'</b></span>';
+  }).join('');
+  if(c0) chips+='<span style="font-size:10px;padding:2px 7px;border-radius:11px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);margin:0 4px 4px 0">未習得 '+c0+'</span>';
+  return '<div style="margin-top:5px"><div style="display:flex;flex-wrap:wrap;align-items:center">'+chips+'</div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:1px">習得 Lv2+ <b style="color:var(--green)">'+lv2plus+'</b>/'+positions.length+(c3?' ・ Lv3 <b style="color:var(--accent)">'+c3+'</b>':'')+'</div></div>';
 }
 function skillLegendHtml(){
   return '<div style="display:flex;gap:10px;font-size:9.5px;color:var(--muted);margin:2px 2px 6px">'
