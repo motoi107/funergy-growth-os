@@ -1492,7 +1492,7 @@ const NAV_ITEMS = [
   {id:'ojtmap',      label:'OJTマップ',   icon:'ti-stairs-up',        roles:['ceo','gm','office','am','sl','crew']},
   {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
-  {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm']},
+  {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am']},
   {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','office','am']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm','office']},
@@ -1505,17 +1505,17 @@ const NAV_ITEMS = [
 /* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
 const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
-    children:['dashboard','store_cmd']},
+    children:['dashboard','store_cmd','mypage']},
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','store_power','labor','foodcost','kpi_master']},
-  {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
-    children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
+  {id:'g_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office','am','sl'],
+    children:['tasks']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation']},
+  {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
+    children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['store_master','goals','required','company_msg_edit','approval','tasks','acct_export','settings']},
-  {id:'g_mypage', label:'マイページ', icon:'ti-user', roles:['ceo','gm','office','am','sl','crew'],
-    children:['mypage']},
+    children:['store_master','goals','required','company_msg_edit','approval','acct_export','settings']},
 ];
 /* Crew専用のシンプルメニュー（マイページ中心） */
 const CREW_GROUPS = [
@@ -3450,7 +3450,7 @@ var SUPA_MASTER_MAP = {
 };
 /* app_settings に入れるマスター設定キー（プレフィックス一致も可） */
 var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
-  'staff_pins','store_pins','tip_policy','tip_leader_split','tip_hours_basis','tip_window',
+  'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
   'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
@@ -3686,19 +3686,33 @@ function getStaffPins() { return ls('staff_pins', {}); }
 /* PIN一覧を見られるのはGM/CEOのみ（PIN忘れ対応） */
 function canViewPins() { return curRole==='gm' || curRole==='ceo'; }
 /* GM/CEO: 全スタッフのPIN一覧（忘れ対応）＋リセット */
-function openPinListModal(){
+/* GM/CEO: PIN一覧（サーバーから本人認証後に取得）＋リセット。PINは端末に保存しない。 */
+async function openPinListModal(){
   if (!canViewPins()) return;
+  var ap = prompt('本人確認のため、あなたのログインPIN（4桁）を入力してください:');
+  if (ap===null) return;
+  ap = String(ap).trim();
+  var j;
+  try { j = await authPin({action:'list', adminName: curUserName, adminPin: ap}); }
+  catch(e){ alert('通信に失敗しました'); return; }
+  if (!j || !j.ok) { alert('確認できませんでした（PINが違うか、GM/CEO権限がありません）'); return; }
+  window._pinAdmin = { name: curUserName, pin: ap };
+  window._pinCache = { staff: j.staffPins||{}, store: j.storePins||{}, defStore: j.defaultStore||{}, defStaff: j.defaultStaff||'0000' };
+  renderPinListBody();
+}
+function _staffPinView(name){ var c=window._pinCache; if(!c) return '----'; var v=c.staff[name]; return (v!=null&&v!=='')?v:(c.defStaff||'0000'); }
+function renderPinListBody(){
   var emps = getEmployees().filter(e=>e.status!=='退職').sort((a,b)=>(a.store||'').localeCompare(b.store||'')||a.name.localeCompare(b.name));
   var rows = emps.map(e=>{
     var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
     return `<tr>
-      <td style="padding:6px 8px">${e.name}<div style="font-size:10px;color:var(--muted)">${storeName}${e.title?' · '+e.title:''}</div></td>
-      <td style="text-align:center;padding:6px 8px"><span style="font-family:monospace;letter-spacing:2px;font-size:15px;font-weight:700;color:var(--tm)">${getStaffPin(e.name)}</span></td>
+      <td style="padding:6px 8px">${escapeHtml(e.name)}<div style="font-size:10px;color:var(--muted)">${escapeHtml(storeName)}${e.title?' · '+escapeHtml(e.title):''}</div></td>
+      <td style="text-align:center;padding:6px 8px"><span style="font-family:monospace;letter-spacing:2px;font-size:15px;font-weight:700;color:var(--tm)">${_staffPinView(e.name)}</span></td>
       <td style="text-align:right;padding:6px 8px"><button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="resetStaffPin('${e.name.replace(/'/g,"\\'")}')">リセット</button></td>
     </tr>`;
   }).join('');
   openModal(`<div class="modal-title"><i class="ti ti-lock"></i> ログインPIN一覧 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-eye"></i> GM/CEOのみ閲覧可。スタッフがPINを忘れた時の確認用です。</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-shield-lock"></i> サーバーから安全に取得（PINは端末に保存されません）。GM/CEOのみ閲覧可。</div>
     <div style="max-height:60vh;overflow-y:auto">
       <table style="width:100%;font-size:13px;border-collapse:collapse">
         <thead><tr style="background:var(--surface2)"><th style="text-align:left;padding:6px 8px">スタッフ</th><th style="text-align:center;padding:6px 8px">PIN</th><th style="padding:6px 8px"></th></tr></thead>
@@ -3706,42 +3720,50 @@ function openPinListModal(){
     </div>
     <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`);
 }
-function resetStaffPin(name){
-  if (!canViewPins()) return;
-  var np = prompt(name+' さんの新しいPIN（4桁）を入力:', getStaffPin(name));
+async function resetStaffPin(name){
+  if (!canViewPins() || !window._pinAdmin) return;
+  var np = prompt(name+' さんの新しいPIN（4桁）を入力:', '');
   if (np===null) return;
   np = String(np).trim();
   if (!/^\d{4}$/.test(np)) { alert('PINは4桁の数字で入力してください'); return; }
-  setStaffPin(name, np);
+  var j;
+  try { j = await authPin({action:'reset', adminName:window._pinAdmin.name, adminPin:window._pinAdmin.pin, scope:'staff', target:name, newPin:np}); }
+  catch(e){ alert('通信に失敗しました'); return; }
+  if (!j || !j.ok) { alert('更新できませんでした（権限またはPIN）'); return; }
+  if (window._pinCache) window._pinCache.staff[name]=np;
   showToast(name+' のPINを更新しました','success');
-  openPinListModal();
+  renderPinListBody();
 }
 function getStaffPin(name) { var p=getStaffPins(); return p[name] || DEFAULT_STAFF_PIN; }
 function setStaffPin(name, pin) {
   var p=getStaffPins(); p[name]=pin; lsSet('staff_pins', p);
-  // PINはクラウドを正にするため、全体同期がOFFでも必ずSupabaseへ反映
-  try { if (!SUPA_SYNC_ENABLED) supaUpsert('app_settings', [{key:'staff_pins', value:p, category:'pin'}]); } catch(e){}
+  /* PINはサーバー(auth_pins)が正。app_settingsへは書き込まない（漏洩防止） */
 }
 /* 本人がマイページから自分のPINを設定・変更 */
 function openMyPinModal(){
-  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
-  var cur = getStaffPin(me);
   openModal(`<div class="modal-title"><i class="ti ti-lock"></i> ${t('ログインPIN設定','Login PIN')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${t('個人ログイン時に使う4桁のPINです。忘れた場合はGM/管理者が確認できます。','Your 4-digit login PIN. GM can look it up if forgotten.')}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${t('個人ログイン時に使う4桁のPINです。変更には現在のPINが必要です。','Your 4-digit login PIN. Current PIN required to change.')}</div>
+    <div class="form-group"><label class="form-label">${t('現在のPIN','Current PIN')}</label>
+      <input class="form-input" id="my-pin-old" type="tel" inputmode="numeric" maxlength="4" placeholder="0000" style="font-family:monospace;letter-spacing:6px;font-size:18px;text-align:center"></div>
     <div class="form-group"><label class="form-label">${t('新しいPIN（4桁）','New PIN (4 digits)')}</label>
-      <input class="form-input" id="my-pin" type="tel" inputmode="numeric" maxlength="4" value="${cur||''}" placeholder="0000" style="font-family:monospace;letter-spacing:6px;font-size:18px;text-align:center"></div>
+      <input class="form-input" id="my-pin" type="tel" inputmode="numeric" maxlength="4" placeholder="0000" style="font-family:monospace;letter-spacing:6px;font-size:18px;text-align:center"></div>
     <div class="form-group"><label class="form-label">${t('確認のためもう一度','Confirm PIN')}</label>
       <input class="form-input" id="my-pin2" type="tel" inputmode="numeric" maxlength="4" placeholder="0000" style="font-family:monospace;letter-spacing:6px;font-size:18px;text-align:center"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${t('※初期PINは 0000 です','Initial PIN is 0000')}</div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">${t('キャンセル','Cancel')}</button>
     <button class="btn btn-primary" onclick="saveMyPin()"><i class="ti ti-device-floppy"></i> ${t('保存','Save')}</button></div>`);
 }
-function saveMyPin(){
+async function saveMyPin(){
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  var op=(document.getElementById('my-pin-old')||{}).value||'';
   var p1=(document.getElementById('my-pin')||{}).value||'';
   var p2=(document.getElementById('my-pin2')||{}).value||'';
   if (!/^\d{4}$/.test(p1)) { alert(t('PINは4桁の数字で入力してください','PIN must be 4 digits')); return; }
   if (p1!==p2) { alert(t('確認用PINが一致しません','PINs do not match')); return; }
-  setStaffPin(me, p1);
+  var j;
+  try { j = await authPin({action:'selfset', name:me, oldPin:String(op).trim(), newPin:p1}); }
+  catch(e){ alert('通信に失敗しました'); return; }
+  if (!j || !j.ok) { alert(j&&j.error==='oldpin' ? t('現在のPINが違います','Current PIN is wrong') : t('更新できませんでした','Update failed')); return; }
   closeModalDirect();
   showToast(t('PINを更新しました','PIN updated'),'success');
 }
@@ -3905,35 +3927,35 @@ async function refreshStaffPinsFromCloud(){
     return false;
   } catch(e){ console.warn('refreshStaffPinsFromCloud', e); return false; }
 }
+/* === PINはサーバー側(Edge Function auth-pin)で照合。PIN一覧はブラウザに保存しない === */
+async function authPin(payload){
+  var r = await fetch(SUPABASE_URL+'/functions/v1/auth-pin', { method:'POST', headers:supaHeaders(), body:JSON.stringify(payload) });
+  return await r.json();
+}
+async function authPinVerify(scope, key, pin){
+  try { var j = await authPin({action:'verify', scope:scope, key:key, pin:pin}); return !!(j && j.ok); }
+  catch(e){ console.error('authPinVerify', e); return false; }
+}
 function doStaffLogin() {
-  // 店舗共有アカウント
-  if (loginStoreMode) {
-    var pin = (document.getElementById('login-pin-input').value||'').trim();
-    if (pin !== getStorePin(loginLocation)) {
-      document.getElementById('login-pin-err').style.display='block';
-      return;
-    }
-    var s = STORES.find(x=>x.id===loginLocation) || {name:loginLocation};
-    curRole = 'sl';                 // SL相当の権限（店舗運営）
-    curStoreLogin = true;           // 店舗共有ログインフラグ
-    curUserName = s.name;           // 表示名は店舗名
-    curStore = loginLocation;
-    enterAppWithSync();
-    return;
-  }
-  if (!loginPerson) return;
-  var pin2 = (document.getElementById('login-pin-input').value||'').trim();
-  // PINだけ先にクラウドの最新を取得してから照合（別端末での変更を反映）
+  var errEl = document.getElementById('login-pin-err');
   var btn = document.getElementById('login-pin-btn');
+  function fail(){ if(errEl) errEl.style.display='block'; if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } }
   if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.textContent = '確認中…'; }
-  refreshStaffPinsFromCloud().then(function(){
-    if (btn) { btn.disabled = false; if (btn.dataset._t) btn.textContent = btn.dataset._t; }
-    if (pin2 !== getStaffPin(loginPerson.name)) {
-      document.getElementById('login-pin-err').style.display='block';
-      return;
+  (async function(){
+    if (loginStoreMode) {
+      var pin = (document.getElementById('login-pin-input').value||'').trim();
+      var okS = await authPinVerify('store', loginLocation, pin);
+      if (!okS) { fail(); return; }
+      var s = STORES.find(x=>x.id===loginLocation) || {name:loginLocation};
+      curRole='sl'; curStoreLogin=true; curUserName=s.name; curStore=loginLocation;
+      enterAppWithSync(); return;
     }
+    if (!loginPerson) { if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } return; }
+    var pin2 = (document.getElementById('login-pin-input').value||'').trim();
+    var ok = await authPinVerify('staff', loginPerson.name, pin2);
+    if (!ok) { fail(); return; }
     finishStaffLogin();
-  });
+  })();
 }
 function finishStaffLogin() {
   var emp = loginPerson;
@@ -5330,7 +5352,7 @@ function renderStoreCmdTip(storeId, store, canEdit) {
     <table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Lunch</td><td style="text-align:right">Dinner</td><td style="text-align:right">計</td></tr>
     <tr><td>クレジット</td><td style="text-align:right">$${tip.lunchCredit.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCredit.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCredit+tip.dinnerCredit).toFixed(2)}</td></tr>
     <tr style="color:var(--muted);font-size:11px"><td>手数料控除後(×0.965)</td><td style="text-align:right">$${(tip.lunchCredit*0.965).toFixed(2)}</td><td style="text-align:right">$${(tip.dinnerCredit*0.965).toFixed(2)}</td><td style="text-align:right">$${((tip.lunchCredit+tip.dinnerCredit)*0.965).toFixed(2)}</td></tr>
-    <tr><td>キャッシュ${canEdit?' <button class="btn btn-secondary btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">入力</button>':''}</td><td style="text-align:right">$${tip.lunchCash.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCash+tip.dinnerCash).toFixed(2)}</td></tr>
+    <tr><td>キャッシュ${canEdit?' <button class="btn btn-secondary btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(cashTipMissing(storeId,sel)?'入力':'修正')+'</button>':''}</td><td style="text-align:right">$${tip.lunchCash.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCash+tip.dinnerCash).toFixed(2)}</td></tr>
     <tr style="font-weight:700;border-top:1px solid var(--border)"><td>チップ総額</td><td style="text-align:right">$${tip.lunchTotal.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerTotal.toFixed(2)}</td><td style="text-align:right;color:var(--green)">$${tip.total.toFixed(2)}</td></tr>
     </table>`;
 
@@ -19476,7 +19498,7 @@ var ojtAdminKey='ojt_g2';
 function ojtAdminInit(){ if(!window._ojtDraftMap)window._ojtDraftMap={}; if(!window._ojtDraftMap[ojtAdminKey]){ var dd=getOjtDefK(ojtAdminKey); if(!dd.tests)dd.tests={}; window._ojtDraftMap[ojtAdminKey]=dd; } window._ojtDraft=window._ojtDraftMap[ojtAdminKey]; }
 function setOjtAdminKey(key){ ojtAdminKey=key; ojtAdminInit(); renderPage('ojt_admin'); }
 function renderOjtAdmin(){
-  if(!(curRole==='gm'||curRole==='ceo')) return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">この画面はGM / CEO専用です。</div>';
+  if(['gm','ceo','am'].indexOf(curRole)<0) return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">この画面はAM以上（AM / GM / CEO）専用です。</div>';
   ojtAdminInit();
   var d=window._ojtDraft;
   var axisOpts=(typeof LSS_CATEGORIES!=='undefined')?LSS_CATEGORIES:[];
@@ -27239,7 +27261,7 @@ function renderStoreMaster() {
         <span>${s.toastGuid?'Toast: '+s.toastGuid.slice(0,8)+'...':'Toast未設定'}</span>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:6px">
-        <i class="ti ti-lock" style="font-size:13px"></i>店舗ログインPIN: <span style="font-family:monospace;letter-spacing:2px;color:var(--tm)">${getStorePin(s.id)}</span>
+        <i class="ti ti-lock" style="font-size:13px"></i>店舗ログインPIN: <span style="font-family:monospace;letter-spacing:2px;color:var(--tm)">••••</span>
         <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="editStorePin('${s.id}','${s.name}')">変更</button>
       </div>
       <div class="approval-actions">
@@ -27251,13 +27273,18 @@ function renderStoreMaster() {
   return html;
 }
 
-function editStorePin(storeId, name) {
-  var cur = getStorePin(storeId);
-  var pin = prompt(name + ' の店舗ログインPIN（4〜6桁）を入力', cur);
-  if (pin == null) return;
-  pin = pin.trim();
+async function editStorePin(storeId, name) {
+  if (!canViewPins()) { alert('店舗PINの変更はGM/CEOのみです'); return; }
+  var ap = window._pinAdmin ? window._pinAdmin.pin : prompt('本人確認のため、あなたのログインPIN（4桁）を入力:');
+  if (ap===null) return; ap=String(ap).trim();
+  var pin = prompt(name + ' の店舗ログインPIN（4〜6桁）を入力');
+  if (pin == null) return; pin = pin.trim();
   if (!/^\d{4,6}$/.test(pin)) { alert('PINは4〜6桁の数字で入力してください'); return; }
-  setStorePin(storeId, pin);
+  var j;
+  try { j = await authPin({action:'reset', adminName:curUserName, adminPin:ap, scope:'store', target:storeId, newPin:pin}); }
+  catch(e){ alert('通信に失敗しました'); return; }
+  if (!j || !j.ok) { alert('更新できませんでした（権限またはPIN）'); return; }
+  window._pinAdmin = { name: curUserName, pin: ap };
   showToast(name + ' のPINを更新しました', 'success');
   renderPage('store_master');
 }
