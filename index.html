@@ -24372,6 +24372,18 @@ function visibleStaffForManager() {
 
 var growthMgrSel = null;
 var growthMgrTab = 'staff';
+var growthStore = 'ALL';
+function setGrowthStore(v){ growthStore=v; growthMgrSel=null; renderPage('growth_mgr'); }
+function growthStoreMatch(e){ return growthStore==='ALL' || e.store===growthStore || (e.support||[]).includes(growthStore); }
+function isEvalExempt(e){ return !!(e && e.role==='ceo'); }
+function growthStoreSelectorHtml(){
+  var vis=(typeof getVisibleStores==='function')?getVisibleStores():(typeof STORES!=='undefined'?STORES:[]);
+  return '<div class="card" style="padding:8px 10px;margin-bottom:8px"><div style="display:flex;align-items:center;gap:8px"><i class="ti ti-building-store" style="color:var(--accent);font-size:14px"></i><span style="font-size:12px;color:var(--muted)">店舗</span>'
+    +'<select onchange="setGrowthStore(this.value)" style="flex:1;padding:7px 9px;border-radius:8px;background:var(--surface);border:1px solid var(--border);color:var(--tm);font-size:13px">'
+    +'<option value="ALL"'+(growthStore==='ALL'?' selected':'')+'>全店舗</option>'
+    +vis.map(function(s){ return '<option value="'+s.id+'"'+(growthStore===s.id?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('')
+    +'</select></div></div>';
+}
 function setGrowthTab(t){ growthMgrTab=t; growthMgrSel=null; renderPage('growth_mgr'); }
 function renderGrowthManager() {
   if (growthMgrSel) {
@@ -24394,6 +24406,7 @@ function renderGrowthManager() {
     <div class="phase-tab${growthMgrTab==='map'?' active':''}" onclick="setGrowthTab('map')"><i class="ti ti-stairs-up" style="font-size:12px"></i> 昇格マップ</div>
     <div class="phase-tab${growthMgrTab==='progress'?' active':''}" onclick="setGrowthTab('progress')"><i class="ti ti-list-check" style="font-size:12px"></i> OJT進捗一覧</div>
   </div>`;
+  if (growthMgrTab!=='map') html += growthStoreSelectorHtml();
   if (growthMgrTab==='map') return html + renderOjtMap();
   if (growthMgrTab==='progress') return html + renderOjtProgressList();
   return html + renderStaffGrowthCombined();
@@ -24613,6 +24626,7 @@ function isLeaderTrackEmp(e){ return !!e && leaderCandidate(e) && (typeof empGra
 /* 成長ジャーニー：現在地バー＋現在のOJTカード（個別詳細トップ） */
 function growthJourneyTop(name, emp){
   emp = emp || getEmployees().find(function(e){return e.name===name;}) || {};
+  if(isEvalExempt(emp)){ return '<div class="card" style="border-left:3px solid var(--muted)"><div class="card-title"><i class="ti ti-crown" style="color:var(--muted)"></i>成長ジャーニー</div><div style="font-size:12px;color:var(--muted);padding:6px 2px">CEOのため、OJT・評価の対象外です。</div></div>'; }
   var g=(typeof empGradeNum==='function')?empGradeNum(emp):0; var gKey='G'+(g||1);
   var path=(typeof PROMO_PATH!=='undefined')?PROMO_PATH[gKey]:null;
   var isG1=(g<=1);
@@ -24651,7 +24665,7 @@ function growthJourneyTop(name, emp){
 
 /* OJT進捗一覧（全スタッフ） */
 function renderOjtProgressList(){
-  var emps=getEmployees().filter(function(e){return e.status!=='退職';});
+  var emps=getEmployees().filter(function(e){return e.status!=='退職' && !isEvalExempt(e) && growthStoreMatch(e);});
   emps.sort(function(a,b){ return (empGradeNum(a)-empGradeNum(b)) || (a.name<b.name?-1:1); });
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 全スタッフの現在のOJTと進捗。タップで個別の成長ジャーニーへ。</div>';
   html+='<div class="card" style="padding:6px 12px">';
@@ -24681,7 +24695,7 @@ function renderStaffGrowthCombined(){
 }
 
 function renderCrewGrowthList() {
-  var staff = visibleStaffForManager().filter(e=>e.role==='crew' && !isLeaderTrackEmp(e));
+  var staff = visibleStaffForManager().filter(e=>e.role==='crew' && !isLeaderTrackEmp(e) && growthStoreMatch(e));
   var html = `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>Crew一覧 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>`;
   if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象Crewなし</p></div>`; return html; }
   staff.forEach(e => {
@@ -24784,7 +24798,7 @@ function dev90Progress(emp) {
   return {days:elapsed, pct, endDate:end.toISOString().slice(0,10), start};
 }
 function renderLeaderGrowthList() {
-  var staff = visibleStaffForManager().filter(e=>e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office'&&e.role!=='am'&&isLeaderTrackEmp(e));
+  var staff = visibleStaffForManager().filter(e=>e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office'&&e.role!=='am'&&isLeaderTrackEmp(e)&&growthStoreMatch(e));
   var html = `<div class="card"><div class="card-title"><i class="ti ti-crown"></i>Leader候補/社員 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>
     <p style="font-size:11px;color:var(--muted);margin-bottom:6px">入社・登用から90日を目安に現場オペレーションを習得する期間として管理します。</p>`;
   if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象者なし</p></div>`; return html; }
