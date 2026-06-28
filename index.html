@@ -8835,151 +8835,131 @@ var invClassFilter = 'all';
 var invSearch = '';       // 検索キーワード
 var invView = 'all';      // 'all' | 'todo'(未入力) | 'done'(入力済み) | 'recent'(前回使用)
 var invAutosaveAt = '';   // 自動保存ステータス表示用
-function renderInventory() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
-  var store = STORES.find(s=>s.id===storeId) || STORES[0];
-  var allItems = getInvItems(storeId);
-  // 選択中テンプレで対象を絞る
-  var templates = getInvTemplates(storeId);
-  if (!templates.find(t=>t.id===invTemplate)) invTemplate = templates[0].id;
-  var curTpl = getInvTemplate(storeId, invTemplate);
-  invMode = (curTpl.kind==='monthly') ? 'monthly' : 'daily';  // 後方互換（繰越判定など）
-  var items = itemsForTemplate(storeId, invTemplate);
-  var filtered = invClassFilter==='all' ? items : items.filter(i=>i.cls===invClassFilter);
-  var classCounts = {}; CLASSES.forEach(c=>classCounts[c.id]=items.filter(i=>i.cls===c.id).length);
-  var canConfig = ROLE_CONFIG[curRole].canCreate;
+/* ===== 棚卸（新）：自店マスター食材 × 業者別 × 金額集計 × 入力毎保存 ===== */
+function invFmtMoney(n){ return '$'+(Number(n)||0).toFixed(2); }
+function getInvCounts(storeId){ return ls('inv_count_'+storeId, {})||{}; }
+function setInvCount(storeId, code, val){
+  var c=getInvCounts(storeId); var v=parseFloat(val);
+  if(val===''||isNaN(v)) delete c[code]; else c[code]=v;
+  lsSet('inv_count_'+storeId, c);
+  invRecalcTotals(storeId);
+  var st=document.getElementById('inv-autosave');
+  if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
+}
+function invUnitValue(i, storeId){
+  if(!i) return 0;
+  var sp = i.storePrices && i.storePrices[storeId];
+  var price = (sp && sp.price!=null) ? sp.price : (i.price||0);
+  return (i.qty && i.qty>0) ? price/i.qty : price;
+}
+function invComputeTotals(storeId){
+  var ings=getIngredients(), codes=getStoreIngredients(storeId), counts=getInvCounts(storeId);
+  var perItem={}, perVendor={}, perClass={food:0,liquor:0,beverage:0,supply:0}, grand=0;
+  codes.forEach(function(code){
+    var i=ings.find(function(x){return x.code===code;}); if(!i) return;
+    var cnt=counts[code]; if(cnt==null) return;
+    var val=cnt*invUnitValue(i,storeId);
+    perItem[code]=val;
+    var v=i.vendor||'未設定'; perVendor[v]=(perVendor[v]||0)+val;
+    var cls=i.cls||catClass(i.cat); perClass[cls]=(perClass[cls]||0)+val;
+    grand+=val;
+  });
+  return {perItem:perItem, perVendor:perVendor, perClass:perClass, grand:grand};
+}
+function _invVendorList(storeId){
+  var ings=getIngredients(), codes=getStoreIngredients(storeId), vs=[];
+  codes.forEach(function(code){ var i=ings.find(function(x){return x.code===code;}); if(i){ var v=i.vendor||'未設定'; if(vs.indexOf(v)<0) vs.push(v); } });
+  vs.sort(); return vs;
+}
+function invRecalcTotals(storeId){
+  var t=invComputeTotals(storeId), counts=getInvCounts(storeId), codes=getStoreIngredients(storeId);
+  codes.forEach(function(code){ var el=document.getElementById('inv-amt-'+code); if(el) el.textContent=(counts[code]!=null)?invFmtMoney(t.perItem[code]||0):'—'; });
+  _invVendorList(storeId).forEach(function(v,idx){ var el=document.getElementById('inv-vsub-'+idx); if(el) el.textContent=invFmtMoney(t.perVendor[v]||0); });
+  ['food','liquor','beverage','supply'].forEach(function(cl){ var el=document.getElementById('inv-csub-'+cl); if(el) el.textContent=invFmtMoney(t.perClass[cl]||0); });
+  var g=document.getElementById('inv-grand'); if(g) g.textContent=invFmtMoney(t.grand);
+}
 
-  var html = pageStoreTabs(storeId, false) + `<div class="section-header">
-    <div><div class="section-title">${store.name} · 棚卸</div><div class="section-sub">${new Date().toLocaleDateString('ja')}</div></div>
-    <div style="display:flex;gap:6px">
+function renderInventory(){
+  var storeId = curStore==='ALL' ? STORES[0].id : curStore;
+  var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
+  var ings=getIngredients(), codes=getStoreIngredients(storeId);
+  var items=codes.map(function(c){return ings.find(function(x){return x.code===c;});}).filter(Boolean);
+  var counts=getInvCounts(storeId), t=invComputeTotals(storeId);
+  var html = pageStoreTabs(storeId,false) + `<div class="section-header">
+    <div><div class="section-title">${escapeHtml(store.name)} · 棚卸</div><div class="section-sub">自店マスターの食材を業者別に棚卸（${new Date().toLocaleDateString('ja')}）</div></div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <span id="inv-autosave" style="font-size:10px;color:var(--muted)"></span>
       <button class="btn btn-secondary btn-sm" onclick="showInvHistory('${storeId}')"><i class="ti ti-history"></i> 履歴</button>
-      <button class="btn btn-success btn-sm" onclick="saveInventory('${storeId}')"><i class="ti ti-device-floppy"></i> 確定</button>
+      <button class="btn btn-success btn-sm" onclick="saveInventory('${storeId}')"><i class="ti ti-circle-check"></i> 確定</button>
     </div>
   </div>`;
-
-  // テンプレート選択タブ（Daily/Monthlyも既定テンプレ）
-  html += `<div class="phase-tabs" style="flex-wrap:wrap">
-    ${templates.map(tpl=>{
-      var n = (tpl.codes==null) ? allItems.length : tpl.codes.length;
-      var icon = tpl.kind==='daily'?'ti-sun':tpl.kind==='monthly'?'ti-calendar-month':'ti-clipboard-list';
-      return `<div class="phase-tab${invTemplate===tpl.id?' active':''}" onclick="setInvTemplate('${tpl.id}')"><i class="ti ${icon}" style="font-size:12px"></i> ${tpl.name} (${n})</div>`;
-    }).join('')}
-  </div>`;
-
-  // テンプレ操作（編集権限者）
-  if (canConfig) {
-    html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
-      <button class="btn btn-secondary btn-sm" onclick="openInvTemplateEdit('${storeId}','${invTemplate}')"><i class="ti ti-edit"></i> このテンプレを編集</button>
-      <button class="btn btn-secondary btn-sm" onclick="openInvTemplateFromOrder('${storeId}')"><i class="ti ti-link"></i> 発注リストから棚卸表</button>
-      <button class="btn btn-secondary btn-sm" onclick="openNewInvTemplate('${storeId}')"><i class="ti ti-plus"></i> 新規テンプレ</button>
-    </div>`;
+  if(!items.length){
+    html += `<div class="card" style="text-align:center;padding:26px"><i class="ti ti-carrot" style="font-size:34px;color:var(--muted)"></i><div style="font-size:14px;font-weight:600;margin-top:8px">自店マスターに食材が登録されていません</div><div style="font-size:12px;color:var(--muted);margin:6px 0 12px;line-height:1.6">食材マスターでこの店舗に食材を登録すると、ここに業者別で表示されます。</div><button class="btn btn-primary btn-sm" onclick="go('ingredient_master')"><i class="ti ti-arrow-right"></i> 食材マスターへ</button></div>`;
+    return html;
   }
-
-  html += `<div class="alert ${invMode==='daily'?'alert-success':'alert-warning'}" style="padding:8px 12px">
-    <i class="ti ti-info-circle"></i><div style="font-size:12px">${curTpl.kind==='monthly'
-      ? 'Monthly（全品）：理論在庫との差異・ロスを算出します。'
-      : curTpl.kind==='daily' ? 'Daily（主要食材）：日次の数量チェック用。'
-      : 'テンプレ「'+curTpl.name+'」の品目を棚卸します。'}</div></div>`;
-
-  // 区分フィルタ
-  html += `<div class="phase-tabs">
-    <div class="phase-tab${invClassFilter==='all'?' active':''}" onclick="setInvFilter('all')">全区分 (${items.length})</div>
-    ${CLASSES.map(c=>`<div class="phase-tab${invClassFilter===c.id?' active':''}" style="${invClassFilter===c.id?`background:${c.color};border-color:${c.color}`:''}" onclick="setInvFilter('${c.id}')">${c.name} (${classCounts[c.id]})</div>`).join('')}
-  </div>`;
-
-  // 検索バー
-  html += `<input class="form-input" id="inv-search" placeholder="食材名・コード・業者で検索" value="${invSearch}" oninput="invSearchInput(this.value)" autocomplete="off" style="margin-bottom:8px">`;
-
-  // ビュー切替（全部 / 未入力 / 入力済み / 前回使用）
-  var doneN = items.filter(i=>i.count!=='').length;
-  var todoN = items.length - doneN;
-  var prevUsed = ls('inv_recent_codes_'+storeId, []);
-  html += `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
-    <button class="btn btn-sm ${invView==='all'?'btn-primary':'btn-secondary'}" style="padding:4px 10px;font-size:12px" onclick="setInvView('all')">全部 (${items.length})</button>
-    <button class="btn btn-sm ${invView==='todo'?'btn-primary':'btn-secondary'}" style="padding:4px 10px;font-size:12px" onclick="setInvView('todo')">未入力 (${todoN})</button>
-    <button class="btn btn-sm ${invView==='done'?'btn-primary':'btn-secondary'}" style="padding:4px 10px;font-size:12px" onclick="setInvView('done')">入力済み (${doneN})</button>
-    ${prevUsed.length?`<button class="btn btn-sm ${invView==='recent'?'btn-primary':'btn-secondary'}" style="padding:4px 10px;font-size:12px" onclick="setInvView('recent')">前回使用 (${prevUsed.length})</button>`:''}
-  </div>`;
-
-  // 検索 + ビューで絞り込み
-  var q = invSearch.toLowerCase().trim();
-  if (q) filtered = filtered.filter(i=> (i.name||'').toLowerCase().includes(q) || String(i.code).includes(q) || (invItemVendor(i.code)||'').toLowerCase().includes(q));
-  if (invView==='todo') filtered = filtered.filter(i=>i.count==='');
-  else if (invView==='done') filtered = filtered.filter(i=>i.count!=='');
-  else if (invView==='recent') filtered = filtered.filter(i=>prevUsed.includes(i.code));
-
-  // 自動保存ステータス
-  html += `<div id="inv-autosave" style="font-size:11px;color:var(--muted);margin-bottom:6px;text-align:right">${invAutosaveAt?'<i class="ti ti-cloud-check" style="color:var(--green)"></i> 自動保存済み '+invAutosaveAt:'<i class="ti ti-cloud"></i> 入力すると自動保存されます'}</div>`;
-
-  // ===== 業者ごとにグループ表示 =====
-  // 業者名→アイテム配列
-  var byVendor = {};
-  filtered.forEach(it => { var v = invItemVendor(it.code); (byVendor[v]=byVendor[v]||[]).push(it); });
-  var vendorNames = Object.keys(byVendor).sort((a,b)=>{
-    if (a==='未設定') return 1; if (b==='未設定') return -1; return a.localeCompare(b,'ja');
+  // サマリー（大分類 + 総合計）
+  html += `<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--green)"></i>棚卸額サマリー</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">`;
+  CLASSES.forEach(function(cl){
+    html += `<div style="flex:1;min-width:80px;text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px"><i class="ti ${cl.icon}" style="color:${cl.color};font-size:14px"></i><div style="font-size:9.5px;color:var(--muted)">${cl.name}</div><div id="inv-csub-${cl.id}" style="font-size:14px;font-weight:800">${invFmtMoney(t.perClass[cl.id]||0)}</div></div>`;
   });
-
-  function invRowHtml(it) {
-    if (invMode==='daily') {
-      var cnt = it.count===''?null:parseFloat(it.count);
-      var statusHtml;
-      if (cnt===null) statusHtml='<span class="tag tag-gray">未</span>';
-      else { var ratio=it.par>0?cnt/it.par:1; statusHtml= ratio>=0.7?'<span class="tag tag-green">OK</span>':ratio>=0.3?'<span class="tag tag-yellow">要注意</span>':'<span class="tag tag-red">要発注</span>'; }
-      return `<tr>
-        <td style="font-weight:600">${it.name}<div style="font-size:11px;color:var(--muted);font-weight:400">${className(it.cls)} · ${it.unit}</div></td>
-        <td style="color:var(--muted)">${it.par}</td>
-        <td><input class="inv-input" type="number" step="0.1" min="0" value="${it.count}" onchange="updateInv('${storeId}','${it.code}',this.value)" placeholder="0"></td>
-        <td>${statusHtml}</td>
+  html += `</div><div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--border);padding-top:10px"><span style="font-size:13px;font-weight:600">棚額 総合計</span><span id="inv-grand" style="font-size:22px;font-weight:800;color:var(--green)">${invFmtMoney(t.grand)}</span></div></div>`;
+  // 業者別
+  _invVendorList(storeId).forEach(function(v,idx){
+    var vItems=items.filter(function(i){return (i.vendor||'未設定')===v;});
+    html += `<div class="card" style="padding:0;overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border-bottom:1px solid var(--border)">
+      <span style="width:26px;height:26px;border-radius:8px;background:var(--surface);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-truck" style="font-size:15px"></i></span>
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">${escapeHtml(v)}</div><div style="font-size:10px;color:var(--muted)">${vItems.length}品目</div></div>
+      <div style="text-align:right"><div style="font-size:9px;color:var(--muted)">小計</div><div id="inv-vsub-${idx}" style="font-size:14px;font-weight:700">${invFmtMoney(t.perVendor[v]||0)}</div></div>
+    </div>
+    <table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">食材</th><th>単価</th><th>数量</th><th>金額</th></tr></thead><tbody>`;
+    vItems.forEach(function(i){
+      var uv=invUnitValue(i,storeId), cnt=counts[i.code];
+      var clsMeta=CLASSES.find(function(c){return c.id===(i.cls||catClass(i.cat));})||{};
+      html += `<tr>
+        <td style="text-align:left"><div style="font-weight:600">${escapeHtml(i.name)}</div><div style="font-size:9px;color:var(--muted)"><span style="color:${clsMeta.color||'var(--muted)'}">${clsMeta.name||''}</span> · ${escapeHtml(i.unit||'')}</div></td>
+        <td style="text-align:right;color:var(--muted)">$${uv.toFixed(uv<1?4:2)}<div style="font-size:8px">/${escapeHtml(i.unit||'')}</div></td>
+        <td style="text-align:center"><input type="number" step="0.01" inputmode="decimal" value="${cnt!=null?cnt:''}" oninput="setInvCount('${storeId}',${i.code},this.value)" style="width:62px;padding:6px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:13px"></td>
+        <td id="inv-amt-${i.code}" style="text-align:right;font-weight:600">${cnt!=null?invFmtMoney(uv*cnt):'—'}</td>
       </tr>`;
-    } else {
-      var theory = (parseFloat(it.last)||0)+(parseFloat(it.received)||0)-(parseFloat(it.consumed)||0);
-      var actual = it.count===''?null:parseFloat(it.count);
-      var diff = actual===null?null:actual-theory;
-      var diffHtml = diff===null?'<span class="tag tag-gray">未入力</span>':Math.abs(diff)<0.01?'<span class="tag tag-green">±0</span>':`<span class="tag ${diff<0?'tag-red':'tag-yellow'}">${diff>0?'+':''}${diff.toFixed(1)}</span>`;
-      return `<tr>
-        <td style="font-weight:600">${it.name}<div style="font-size:11px;color:var(--muted);font-weight:400">${className(it.cls)} · ${it.unit}</div></td>
-        <td style="color:var(--muted)">${theory.toFixed(1)}</td>
-        <td><input class="inv-input" type="number" step="0.1" min="0" value="${it.count}" onchange="updateInv('${storeId}','${it.code}',this.value)" placeholder="0"></td>
-        <td>${diffHtml}</td>
-      </tr>`;
-    }
-  }
-
-  var headCols = invMode==='daily' ? '<th>アイテム</th><th>PAR</th><th>現在庫</th><th>状態</th>' : '<th>アイテム</th><th>理論</th><th>実棚</th><th>差異</th>';
-
-  if (!filtered.length) {
-    html += `<div class="card"><div style="text-align:center;color:var(--muted);padding:20px">${invMode==='daily'?'Daily項目が未設定です（右上「Daily項目」で選択）':'項目なし'}</div></div>`;
-  } else {
-    vendorNames.forEach(vn => {
-      var vItems = byVendor[vn];
-      var doneCount = vItems.filter(i=>i.count!=='').length;
-      html += `<div class="card" style="padding:0;overflow:hidden">
-        <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border-bottom:1px solid var(--border)">
-          <span style="width:26px;height:26px;border-radius:8px;background:var(--accent-soft,#fceee4);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-truck" style="font-size:15px"></i></span>
-          <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700;color:var(--tm)">${vn}</div>
-            <div style="font-size:10px;color:var(--muted)">${vItems.length}品目 · ${doneCount}件入力済み</div></div>
-        </div>
-        <table class="inv-table" style="margin:0"><thead><tr>${headCols}</tr></thead><tbody>
-        ${vItems.map(invRowHtml).join('')}
-        </tbody></table></div>`;
     });
-  }
-
-  // Monthly差異サマリー
-  if (invMode==='monthly') {
-    var counted = items.filter(i=>i.count!=='');
-    if (counted.length) {
-      var shortages = counted.filter(i=>{var t=(parseFloat(i.last)||0)+(parseFloat(i.received)||0)-(parseFloat(i.consumed)||0);return (parseFloat(i.count)-t)<-0.01;});
-      html += `<div class="card"><div class="card-title"><i class="ti ti-alert-triangle" style="color:${shortages.length?'var(--red)':'var(--green)'}"></i>差異サマリー</div>
-        <div class="kpi-grid">
-          ${kpi('カウント済', counted.length+'/'+items.length, '進捗', 'var(--tm)')}
-          ${kpi('差異あり', counted.filter(i=>{var t=(parseFloat(i.last)||0)+(parseFloat(i.received)||0)-(parseFloat(i.consumed)||0);return Math.abs(parseFloat(i.count)-t)>=0.01;}).length, '要確認', 'var(--yellow)')}
-          ${kpi('棚卸ロス', shortages.length, 'マイナス差異', shortages.length?'var(--red)':'var(--green)')}
-        </div></div>`;
-    }
-  }
+    html += `</tbody></table></div>`;
+  });
+  html += `<div style="font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6"><i class="ti ti-info-circle"></i> 入力すると自動保存されます。「確定」で当月の棚卸として記録し、Food Costの期末在庫額に反映します。単価は内容量があれば「価格÷内容量」、なければ仕入価格を使用します。</div>`;
   return html;
 }
+
+function saveInventory(storeId){
+  var t=invComputeTotals(storeId), counts=getInvCounts(storeId), ings=getIngredients(), codes=getStoreIngredients(storeId);
+  var lines=[];
+  codes.forEach(function(code){
+    var i=ings.find(function(x){return x.code===code;}); if(!i) return;
+    var cnt=counts[code]; if(cnt==null) return;
+    var uv=invUnitValue(i,storeId);
+    lines.push({code:code, name:i.name, cls:(i.cls||catClass(i.cat)), vendor:i.vendor||'未設定', unit:i.unit||'', actual:cnt, unitVal:uv, value:cnt*uv});
+  });
+  if(!lines.length){ alert('棚卸数が入力されていません'); return; }
+  var snap={date:new Date().toLocaleString('ja'), by:ROLE_CONFIG[curRole].name, mode:'monthly', grand:t.grand, perClass:t.perClass, perVendor:t.perVendor, lines:lines};
+  var hist=ls('inv_hist_'+storeId,[]); hist.push(snap); lsSet('inv_hist_'+storeId, hist);
+  // Food Cost：今回total→endInv、前回endInv→beginInv
+  var fc=ls('fc_monthly_'+storeId, {beginInv:0,endInv:0,sales:0}); var prevEnd=fc.endInv||0;
+  lsSet('fc_monthly_'+storeId, {beginInv:prevEnd, endInv:Math.round(t.grand), sales:fc.sales||((typeof storeData==='function')?storeData(storeId).a:0), beginAuto:true,
+    history:(fc.history||[]).concat([{date:new Date().toLocaleDateString('ja'), endInv:Math.round(t.grand), by:ROLE_CONFIG[curRole].name}])});
+  showToast('棚卸を確定しました（総額 '+invFmtMoney(t.grand)+'）','success');
+  renderPage('inventory');
+}
+
+function showInvHistory(storeId){
+  var mHist=ls('inv_hist_'+storeId, [])||[];
+  var rows = mHist.length ? mHist.slice().reverse().slice(0,8).map(function(h){
+    return `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(h.date||'')}</div><span class="tag tag-green">${invFmtMoney(h.grand!=null?h.grand:(h.lines||[]).reduce(function(a,l){return a+(l.value||0);},0))}</span></div>
+      <div class="approval-meta">${escapeHtml(h.by||'')} · ${(h.lines||[]).length}品目</div></div>`;
+  }).join('') : `<p style="color:var(--muted);font-size:13px">棚卸履歴はまだありません</p>`;
+  openModal(`<div class="modal-title">棚卸履歴 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="role-section-label">月次棚卸（総額）</div>${rows}
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`);
+}
+
 
 function setInvMode(m) { invMode = m; invClassFilter='all'; invSearch=''; invView='all'; renderPage('inventory'); }
 function setInvTemplate(tplId) { invTemplate = tplId; invClassFilter='all'; invSearch=''; invView='all'; renderPage('inventory'); }
@@ -9140,52 +9120,7 @@ function invSearchInput(v) {
 }
 function setInvView(v) { invView = v; renderPage('inventory'); }
 
-function saveInventory(storeId) {
-  var allItems = getInvItems(storeId);
-  var scope = itemsForTemplate(storeId, invTemplate);
-  var counted = scope.filter(i=>i.count!=='');
-  if (!counted.length) { alert('棚卸数を入力してください'); return; }
-  var histKey = invMode==='daily' ? 'inv_hist_daily_'+storeId : 'inv_hist_'+storeId;
-  var hist = ls(histKey, []);
-  var snapshot = {date:new Date().toLocaleString('ja'), by:ROLE_CONFIG[curRole].name, mode:invMode,
-    lines: counted.map(i=>{
-      var t=(parseFloat(i.last)||0)+(parseFloat(i.received)||0)-(parseFloat(i.consumed)||0);
-      return {name:i.name, cls:i.cls, theory:t, actual:parseFloat(i.count), diff:parseFloat(i.count)-t};
-    })};
-  hist.push(snapshot);
-  lsSet(histKey, hist);
-  // Monthly のみ繰越（Dailyは数量チェックなので繰越しない）
-  if (invMode==='monthly') {
-    // 棚卸総額を算出（実棚×単価）して期末在庫額として記録
-    var ings = getIngredients();
-    var invValue = counted.reduce((a,i)=>{ var ing=ings.find(x=>x.code===i.code); return a + (ing?ing.price:0)*(parseFloat(i.count)||0); }, 0);
-    invValue = Math.round(invValue);
-    // 当月のFood Cost: 今回をendInv、前回のendInvをbeginInvに自動反映
-    var fc = ls('fc_monthly_'+storeId, {beginInv:0, endInv:0, sales:0});
-    var prevEnd = fc.endInv || 0;
-    var newFc = {beginInv:prevEnd, endInv:invValue, sales:fc.sales||storeData(storeId).a,
-      beginAuto:true, history:(fc.history||[]).concat([{date:new Date().toLocaleDateString('ja'), endInv:invValue, by:ROLE_CONFIG[curRole].name}])};
-    lsSet('fc_monthly_'+storeId, newFc);
-    allItems.forEach(i=>{ if(i.count!==''){ i.last = parseFloat(i.count); i.received=0; i.consumed=0; i.count=''; } });
-  } else {
-    scope.forEach(i=>{ var it=allItems.find(x=>x.code===i.code); if(it) it.count=''; });
-  }
-  setInvItems(storeId, allItems);
-  // 自動発注算出（基準在庫比較→必要数→発注単位丸め→業者別）
-  var drafts = computeAutoOrders(storeId, counted);
-  if (drafts.length) {
-    var totalItems = drafts.reduce((a,d)=>a+d.lines.length,0);
-    showToast(`棚卸を記録。${drafts.length}業者・${totalItems}品目の発注ドラフトを自動作成しました`, 'success');
-    // Orderingタスク自動生成
-    var tasks = getTasks();
-    tasks.push({id:'tk'+Date.now(), title:`[自動] ${(STORES.find(s=>s.id===storeId)||{name:storeId}).name} 発注確認 (${drafts.length}業者)`,
-      assignee:'', store:storeId, priority:'高', due:new Date().toISOString().slice(0,10), progress:0, status:'進行中', created:new Date().toLocaleDateString('ja')});
-    lsSet('tasks_all', tasks);
-  } else {
-    showToast(invMode==='daily'?'Daily棚卸を記録しました（発注不要）':'月間棚卸を確定しました', 'success');
-  }
-  renderPage('inventory');
-}
+
 
 /* 自動発注算出: 必要数 = 基準在庫 − 現在庫 + 予測使用量 − 発注済 → 発注ロットへ丸め → 業者別 */
 function computeAutoOrders(storeId, countedItems) {
@@ -9222,19 +9157,7 @@ function computeAutoOrders(storeId, countedItems) {
   return drafts;
 }
 
-function showInvHistory(storeId) {
-  var dHist = ls('inv_hist_daily_'+storeId, []);
-  var mHist = ls('inv_hist_'+storeId, []);
-  var render = (arr,label) => arr.length ? arr.slice().reverse().slice(0,6).map(h=>{
-    var lossCount = h.lines.filter(l=>l.diff<-0.01).length;
-    return `<div class="approval-item"><div class="approval-header"><div class="approval-title">${h.date}</div><span class="tag ${lossCount?'tag-red':'tag-green'}">${h.mode==='daily'?'Daily':(lossCount?lossCount+'件ロス':'差異なし')}</span></div>
-      <div class="approval-meta">${h.by} · ${h.lines.length}品目</div></div>`;
-  }).join('') : `<p style="color:var(--muted);font-size:13px">${label}履歴なし</p>`;
-  openModal(`<div class="modal-title">棚卸履歴 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="role-section-label">Monthly月間</div>${render(mHist,'月間')}
-    <div class="role-section-label" style="margin-top:12px">Daily日次</div>${render(dHist,'Daily')}
-    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`);
-}
+
 
 /* ============================================================
    ⑨ 発注管理 (作成→承認→送信→履歴・業者連動)
@@ -20314,7 +20237,7 @@ var GRADE_MAP_DATA = [
       {ja:'※ G6(GM)昇進前に <b>Trainee期間</b> あり', en:'※ A <b>Trainee period</b> precedes promotion to G6 (GM)'}],
     ng:[{ja:'エリア最適に偏らない', en:"Don't over-optimize for your area alone"}] },
 
-  { g:'G6', role:'GM', jp:'ゼネラルマネージャー（全責任）', col:'#2b2018', tip:false, hr:true, career:true, fill:100,
+  { g:'G6', role:'GM', jp:'ゼネラルマネージャー（全責任）', col:'#2b2018', tip:false, hr:true, career:true, trainee:true, fill:100,
     one:{ja:'会社・全店の最終責任を負う。すべての到達点。', en:'Bears ultimate responsibility for the company and all stores.'},
     scope:{ja:'全社（全店舗・全エリア）', en:'The whole company (all stores & areas)'},
     behave:[
@@ -20721,10 +20644,19 @@ var DEFAULT_TRAINEE_DEFS = {
     {id:'g5_area', ja:'エリア視点のPL・基準統一を理解', en:'Understands area-level P&L and standardization'},
     {id:'g5_expand', ja:'出店/人員計画に関与', en:'Involved in opening / staffing plans'},
     {id:'g5_career', ja:'Career Score 評価が基準に到達', en:'Career Score meets the bar'}
+  ],
+  G6:[
+    {id:'g6_areas', ja:'複数エリア／全店を俯瞰して見た経験', en:'Experience overseeing multiple areas / all stores'},
+    {id:'g6_dev', ja:'エリアマネージャー(G5)を育成した実績', en:'Track record of developing an Area Manager (G5)'},
+    {id:'g6_pl', ja:'全社PL・予実を理解し、全社最適の打ち手を出せる', en:'Understands company-wide P&L and drives company-level optimization'},
+    {id:'g6_system', ja:'制度・基準・オペレーションの標準化を設計・推進できる', en:'Designs & drives standardization of systems, standards, and operations'},
+    {id:'g6_strategy', ja:'出店・人材・投資など中長期の戦略に関与', en:'Involved in mid/long-term strategy (expansion, talent, investment)'},
+    {id:'g6_career', ja:'Career Score 評価が基準に到達', en:'Career Score meets the bar'},
+    {id:'g6_philosophy', ja:'理念を体現し、全社へ浸透させるリーダーシップ', en:'Embodies and instills the philosophy company-wide'}
   ]
 };
-var TRAINEE_TARGETS = [['G3','専門リーダー / Specialist Leader'],['G4','店長 / Store Manager'],['G5','エリアM / Area Manager']];
-function getTraineeDefs(){ var r=ls('trainee_checklists',null); return (r && r.G3 && r.G4 && r.G5)? r : JSON.parse(JSON.stringify(DEFAULT_TRAINEE_DEFS)); }
+var TRAINEE_TARGETS = [['G3','専門リーダー / Specialist Leader'],['G4','店長 / Store Manager'],['G5','エリアM / Area Manager'],['G6','GM / General Manager']];
+function getTraineeDefs(){ var r=ls('trainee_checklists',null); if(!(r && r.G3 && r.G4 && r.G5)) return JSON.parse(JSON.stringify(DEFAULT_TRAINEE_DEFS)); TRAINEE_TARGETS.forEach(function(t){ if(!r[t[0]]) r[t[0]]=JSON.parse(JSON.stringify(DEFAULT_TRAINEE_DEFS[t[0]]||[])); }); return r; }
 function setTraineeDefs(o){ lsSet('trainee_checklists', o); }
 function getTrainees(){ return ls('trainees',[]); }
 function saveTrainees(a){ lsSet('trainees', a); }
