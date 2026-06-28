@@ -1485,6 +1485,7 @@ const NAV_ITEMS = [
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
   {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am']},
   {id:'mileage',     label:'ガソリン代',  icon:'ti-gas-station',      roles:['ceo','gm','office','am','sl','crew']},
+  {id:'expense',     label:'事前経費申請',icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl','crew']},
   {id:'hr',          label:'HR・福利厚生', icon:'ti-heart-handshake',  roles:['ceo','gm','office']},
   {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','am','sl']},
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
@@ -1497,7 +1498,7 @@ const NAV_ITEMS = [
   {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
   {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am']},
-  {id:'approval',    label:'承認',        icon:'ti-check',            roles:['ceo','gm','office','am']},
+  {id:'approval',    label:'承認センター',icon:'ti-checklist',         roles:['ceo','gm','office','am']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm','office']},
   {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
@@ -1515,7 +1516,7 @@ const MENU_GROUPS = [
   {id:'g_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office','am','sl'],
     children:['tasks']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation','mileage']},
+    children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
@@ -1539,7 +1540,6 @@ const CREW_GROUPS = [
   {id:'g_myshift', label:'シフト', icon:'ti-calendar-event', children:['shift_staff']},
   {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['skill','ojtmap']},
   {id:'g_tip', label:'チップ', icon:'ti-coin', children:['tiprate']},
-  {id:'g_mile', label:'交通費', icon:'ti-gas-station', children:['mileage']},
   {id:'g_store', label:'店舗オペレーション', icon:'ti-building-store', children:['store_cmd']},
 ];
 /* 店舗共有アカウント（タブレット等）: 店舗オペレーション中心の絞ったメニュー */
@@ -3385,6 +3385,7 @@ var _SPLIT_KEYS = {
   ot_requests:      {type:'arr', by:function(r){return r&&r.name;}},
   my_vacations:     {type:'arr', by:function(r){return r&&r.employee;}},
   mileage_requests: {type:'arr', by:function(r){return r&&r.employee;}},
+  expense_requests: {type:'arr', by:function(r){return r&&r.employee;}},
   crew_education:   {type:'obj'},
   benefit_adjust:   {type:'obj'},
   store_ingredients:{type:'obj'},
@@ -3491,7 +3492,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
-  'my_vacations','mileage_requests','mileage_config','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
+  'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
@@ -4458,6 +4459,7 @@ function renderPage(page) {
     case 'shift_staff':  el.innerHTML = renderShiftStaff(); break;
     case 'vacation':     el.innerHTML = renderVacation(); break;
     case 'mileage':      el.innerHTML = renderMileage(); break;
+    case 'expense':      el.innerHTML = renderExpense(); break;
     case 'hr':           el.innerHTML = renderHR(); break;
     case 'hiring':       el.innerHTML = renderHiring(); break;
     case 'onboarding':   hiringTab='onboard'; el.innerHTML = renderHiring(); break;
@@ -6912,8 +6914,7 @@ function renderBudgetSetup() {
       html += `<button class="btn btn-primary btn-sm" onclick="submitBudget('${b.storeId}')"><i class="ti ti-send"></i> GMへ提出</button>`;
     }
     if (st==='GM承認待ち' && ['gm','ceo'].includes(curRole)) {
-      html += `<button class="btn btn-success btn-sm" onclick="approveBudgetSeg('${b.storeId}')"><i class="ti ti-check"></i> 承認</button>
-        <button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg('${b.storeId}')"><i class="ti ti-arrow-back"></i> 差し戻し</button>`;
+      html += `<button class="btn btn-secondary btn-sm" onclick="go('approval')"><i class="ti ti-checklist"></i> 承認センターで承認</button>`;
     }
     if (st==='承認済み' && ['gm','ceo'].includes(curRole)) {
       html += `<button class="btn btn-secondary btn-sm" onclick="reopenBudget('${b.storeId}')"><i class="ti ti-lock-open"></i> 再オープン</button>`;
@@ -14029,6 +14030,119 @@ function weekDateForDow(dow) {
 /* ============================================================
    VACATION
 ============================================================ */
+/* ===== 事前立替経費 承認申請（Pre-Approval for Reimbursable Expense） ===== */
+function getExpenseRequests(){ return ls('expense_requests', [])||[]; }
+function saveExpenseReqs(v){ lsSet('expense_requests', v); }
+function expenseMyName(){ return curUserName||(ROLE_CONFIG[curRole]||{}).name; }
+function canApproveExpense(r){ return curRole==='gm'||curRole==='ceo'; } /* フォーム規定：承認者はGM/CEO */
+function canSubmitExpense(){ return (typeof myGradeNum==='function'?myGradeNum():1) >= 4; }
+
+function openExpenseModal(){
+  if(!canSubmitExpense()){ alert('経費申請はG4以上が対象です'); return; }
+  var today=new Date().toISOString().slice(0,10);
+  var me=expenseMyName();
+  var meEmp=getEmployees().find(function(e){return e.name===me;});
+  var dept=(meEmp&&meEmp.store)?((STORES.find(function(s){return s.id===meEmp.store;})||{}).name||meEmp.store):'';
+  openModal('<div class="modal-title"><i class="ti ti-file-invoice"></i> 事前経費 承認申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px;padding:6px 8px;background:var(--surface2);border-radius:6px"><i class="ti ti-info-circle"></i> 事前承認必須 / Pre-approval required ・ 原則会社カード / Company card standard ・ 承認者：GM または CEO</div>'
+    +'<div class="form-row" style="gap:8px"><div class="form-group" style="flex:1"><label class="form-label">申請日 / Date</label><input class="form-input" id="ex-date" type="date" value="'+today+'"></div>'
+    +'<div class="form-group" style="flex:1"><label class="form-label">申請者 / Applicant</label><input class="form-input" value="'+escapeHtml(me)+'" readonly style="background:var(--surface2)"></div></div>'
+    +'<div class="form-group"><label class="form-label">所属店舗・部署 / Store or Department</label><input class="form-input" id="ex-dept" value="'+escapeHtml(dept)+'"></div>'
+    +'<div class="form-group"><label class="form-label">案件名 / Project or Event Name</label><input class="form-input" id="ex-project" placeholder="例: 店舗スタッフ歓迎会"></div>'
+    +'<div class="form-group"><label class="form-label">目的 / Purpose</label><input class="form-input" id="ex-purpose" placeholder="例: チームビルディング"></div>'
+    +'<div class="form-group"><label class="form-label">内容 / Description</label><textarea class="form-input" id="ex-desc" rows="2" placeholder="具体的な内容"></textarea></div>'
+    +'<div class="form-row" style="gap:8px"><div class="form-group" style="flex:1"><label class="form-label">日程 / Event Date(s)</label><input class="form-input" id="ex-dates" placeholder="例: 2026-07-10〜07-11"></div>'
+    +'<div class="form-group" style="flex:1"><label class="form-label">場所 / Location</label><input class="form-input" id="ex-location" placeholder="例: 店舗 / レストラン名"></div></div>'
+    +'<div class="form-row" style="gap:8px"><div class="form-group" style="flex:1"><label class="form-label">予定人数 / Participants</label><input class="form-input" id="ex-participants" type="number" min="0" step="1" oninput="expenseUpdateTotal()" placeholder="人数"></div>'
+    +'<div class="form-group" style="flex:1"><label class="form-label">一人当たり予算 ($)</label><input class="form-input" id="ex-perperson" type="number" min="0" step="0.01" oninput="expenseUpdateTotal()" placeholder="$/人"></div></div>'
+    +'<div class="form-group"><label class="form-label">予定総額 ($) / Estimated Total <span style="font-size:10px;color:var(--muted)">※人数×一人予算で自動・手修正可</span></label><input class="form-input" id="ex-total" type="number" min="0" step="0.01" placeholder="$"></div>'
+    +'<div class="form-group"><label class="form-label">メモ（任意）</label><input class="form-input" id="ex-memo" placeholder="補足"></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="saveExpenseRequest()">申請する</button></div>');
+}
+function expenseUpdateTotal(){
+  var p=parseFloat((document.getElementById('ex-participants')||{}).value)||0;
+  var b=parseFloat((document.getElementById('ex-perperson')||{}).value)||0;
+  var t=document.getElementById('ex-total'); if(t) t.value=(Math.round(p*b*100)/100)||'';
+}
+function saveExpenseRequest(){
+  var me=expenseMyName();
+  var project=(document.getElementById('ex-project').value||'').trim();
+  if(!project){ alert('案件名を入力してください'); return; }
+  var total=parseFloat((document.getElementById('ex-total')||{}).value)||0;
+  if(total<=0){ alert('予定総額を入力してください（人数×一人予算で自動計算されます）'); return; }
+  var meEmp=getEmployees().find(function(e){return e.name===me;});
+  var storeId=(meEmp&&meEmp.store)||(curStore!=='ALL'?curStore:STORES[0].id);
+  var req={ id:'ex'+Date.now(), employee:me, storeId:storeId,
+    date:(document.getElementById('ex-date').value||new Date().toISOString().slice(0,10)),
+    dept:(document.getElementById('ex-dept').value||'').trim(),
+    project:project, purpose:(document.getElementById('ex-purpose').value||'').trim(),
+    description:(document.getElementById('ex-desc').value||'').trim(),
+    eventDates:(document.getElementById('ex-dates').value||'').trim(),
+    location:(document.getElementById('ex-location').value||'').trim(),
+    participants:parseFloat((document.getElementById('ex-participants')||{}).value)||0,
+    perPerson:parseFloat((document.getElementById('ex-perperson')||{}).value)||0,
+    total:total, memo:(document.getElementById('ex-memo')||{}).value||'',
+    status:'申請中', createdAt:new Date().toLocaleString('ja') };
+  var arr=getExpenseRequests(); arr.push(req); saveExpenseReqs(arr);
+  try{ addApproval({type:'経費', title:(req.project||'経費')+' $'+total.toFixed(2)+(req.participants?'（'+req.participants+'名）':''), from:me, store:storeId, ref:req.id}); }catch(e){}
+  closeModalDirect(); showToast('経費申請を送信しました（$'+total.toFixed(2)+'）承認センターで承認','success'); renderPage('expense');
+}
+function approveExpense(id){ var arr=getExpenseRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveExpense(r)){ alert('承認はGM/CEOのみです'); return; } r.status='承認'; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.approvedAt=new Date().toLocaleString('ja'); saveExpenseReqs(arr); showToast(r.employee+' の経費を承認しました（$'+(r.total||0).toFixed(2)+'）','success'); renderPage('expense'); }
+function rejectExpense(id){ var arr=getExpenseRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveExpense(r)){ alert('承認はGM/CEOのみです'); return; } var re=prompt('却下理由（任意）:')||''; r.status='却下'; r.rejectReason=re; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole; saveExpenseReqs(arr); showToast('却下しました','info'); renderPage('expense'); }
+function deleteMyExpense(id){
+  var me=expenseMyName(); var arr=getExpenseRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
+  if(r.employee!==me){ alert('自分の申請のみ取消できます'); return; }
+  if(r.status!=='申請中'){ alert('承認待ちの申請のみ取消できます'); return; }
+  if(!confirm('この経費申請を取り消しますか？')) return;
+  var idx=arr.findIndex(function(x){return x.id===id;}); arr.splice(idx,1); saveExpenseReqs(arr);
+  showToast('申請を取り消しました','info'); renderPage('expense');
+}
+function _expRow(r, withActions){
+  var sName=(STORES.find(function(s){return s.id===r.storeId;})||{name:r.storeId}).name;
+  var sc=r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
+  var h='<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+    +'<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">'
+    +'<div style="flex:1"><div style="font-size:13px;font-weight:600">'+escapeHtml(r.project||'')+' <span style="font-size:10px;color:var(--muted)">· '+escapeHtml(r.employee)+' · '+escapeHtml(sName)+' · '+escapeHtml(r.date||'')+'</span></div>'
+    +(r.purpose?'<div style="font-size:12px;color:var(--muted)">目的: '+escapeHtml(r.purpose)+'</div>':'')
+    +(r.description?'<div style="font-size:12px;color:var(--muted)">'+escapeHtml(r.description)+'</div>':'')
+    +'<div style="font-size:12px;color:var(--muted)">'+(r.eventDates?escapeHtml(r.eventDates)+' · ':'')+(r.location?escapeHtml(r.location)+' · ':'')+(r.participants?r.participants+'名':'')+(r.perPerson?' × $'+r.perPerson:'')+'</div>'
+    +'<div style="font-size:13px">予定総額 <b>$'+(r.total||0).toFixed(2)+'</b></div>'
+    +(r.memo?'<div style="font-size:11px;color:var(--muted)">memo: '+escapeHtml(r.memo)+'</div>':'')
+    +(r.status==='承認'&&r.approvedBy?'<div style="font-size:11px;color:var(--green)">承認: '+escapeHtml(r.approvedBy)+'（'+escapeHtml(r.approvedAt||'')+'）</div>':'')
+    +(r.status==='却下'&&r.rejectReason?'<div style="font-size:11px;color:var(--red)">却下理由: '+escapeHtml(r.rejectReason)+'</div>':'')
+    +'</div><span class="tag '+sc+'">'+r.status+'</span></div>';
+  if(withActions==='approve'){
+    h+='<div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-success btn-sm" style="padding:2px 12px" onclick="approveExpense(\''+r.id+'\')"><i class="ti ti-check"></i> 承認</button>'
+      +'<button class="btn btn-danger btn-sm" style="padding:2px 12px" onclick="rejectExpense(\''+r.id+'\')"><i class="ti ti-x"></i> 却下</button></div>';
+  } else if(withActions==='cancel' && r.status==='申請中'){
+    h+='<div style="margin-top:6px;text-align:right"><button class="btn btn-secondary btn-sm" style="padding:2px 10px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="deleteMyExpense(\''+r.id+'\')"><i class="ti ti-x"></i> 申請を取消</button></div>';
+  }
+  return h+'</div>';
+}
+function renderExpense(){
+  var all=getExpenseRequests(); var me=expenseMyName(); var isApprover=(curRole==='gm'||curRole==='ceo');
+  var html='<div class="section-header"><div class="section-title">事前経費 承認申請</div>'
+    +(canSubmitExpense()?'<button class="btn btn-primary btn-sm" onclick="openExpenseModal()"><i class="ti ti-plus"></i> 申請</button>':'')+'</div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 事前承認必須・原則会社カード。案件/イベントの立替が発生する前にGM/CEOの承認を得るための申請です（G4以上が申請可）。</div>';
+  if(isApprover){
+    var pending=all.filter(function(r){ return r.status==='申請中'; });
+    html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'">'+pending.length+'</span>'+(pending.length?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go(\'approval\')"><i class="ti ti-checklist"></i> 承認センターで承認</button>':'')+'</div>';
+    html+= pending.length ? pending.map(function(r){return _expRow(r,null);}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
+    html+='</div>';
+    var approved=all.filter(function(r){ return r.status==='承認'; }).sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}).slice(0,15);
+    if(approved.length){
+      var sum=approved.reduce(function(a,r){return a+(r.total||0);},0);
+      html+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--green)"></i>承認済み（直近）<span class="tag tag-green" style="margin-left:auto">$'+sum.toFixed(2)+'</span></div>'+approved.map(function(r){return _expRow(r,null);}).join('')+'</div>';
+    }
+  }
+  var mine=all.filter(function(r){return r.employee===me;});
+  html+='<div class="card"><div class="card-title"><i class="ti ti-file-invoice"></i>自分の申請</div>';
+  html+= mine.length ? mine.slice().reverse().map(function(r){return _expRow(r,'cancel');}).join('') : '<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">申請履歴なし</div>';
+  html+='</div>';
+  return html;
+}
+
 /* ===== ガソリン代（マイレージ）精算：自動距離計算(Google Maps)＋マイル×単価 ===== */
 function getMileageConfig(){ var c=ls('mileage_config', {})||{}; return { gmapsKey:c.gmapsKey||'', ratePerMile:(c.ratePerMile!=null?Number(c.ratePerMile):0.70), roundTripDefault:(c.roundTripDefault!==false) }; }
 function setMileageConfig(c){ lsSet('mileage_config', c); }
@@ -14045,6 +14159,7 @@ function canApproveMileage(r){
   return false;
 }
 function canManageMileage(){ return ['ceo','gm','office'].includes(curRole) || canManageVacations(); }
+function canSubmitMileage(){ return (typeof myGradeNum==='function'?myGradeNum():1) >= 4; }
 
 var _gmapsLoading=null;
 function ensureGoogleMaps(){
@@ -14083,6 +14198,7 @@ function saveMileageConfigDo(){
 
 var _mileOneWay=null;
 function openMileageModal(){
+  if(!canSubmitMileage()){ alert('ガソリン代の申請はG4以上が対象です'); return; }
   var c=getMileageConfig();
   var today=new Date().toISOString().slice(0,10);
   _mileOneWay=null;
@@ -14154,6 +14270,7 @@ function saveMileageRequest(){
     oneWayMiles:_mileOneWay, roundTrip:!!rt, miles:totalMiles, rate:rate, amount:amount,
     memo:(document.getElementById('mi-memo')||{}).value||'', status:'申請中', createdAt:new Date().toLocaleString('ja') };
   var arr=getMileageRequests(); arr.push(req); saveMileageReqs(arr);
+  try{ addApproval({type:'ガソリン代', title:(req.purpose||'移動')+' '+req.origin+'→'+req.destination+' '+req.miles+'mi $'+amount.toFixed(2), from:me, store:storeId, ref:req.id}); }catch(e){}
   closeModalDirect(); showToast('ガソリン代を申請しました（$'+amount.toFixed(2)+'）','success'); renderPage('mileage');
 }
 function approveMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; } r.status='承認'; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.approvedAt=new Date().toLocaleString('ja'); saveMileageReqs(arr); showToast(r.employee+' のガソリン代を承認しました（$'+(r.amount||0).toFixed(2)+'）','success'); renderPage('mileage'); }
@@ -14190,12 +14307,12 @@ function renderMileage(){
   var c=getMileageConfig();
   var html='<div class="section-header"><div class="section-title">ガソリン代申請</div>'
     +'<div style="display:flex;gap:6px">'+(isMgr?'<button class="btn btn-secondary btn-sm" onclick="openMileageConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
-    +'<button class="btn btn-primary btn-sm" onclick="openMileageModal()"><i class="ti ti-plus"></i> 申請</button></div></div>';
+    +(canSubmitMileage()?'<button class="btn btn-primary btn-sm" onclick="openMileageModal()"><i class="ti ti-plus"></i> 申請</button>':'')+'</div></div>';
   html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。「Google Mapsで距離を調べる」で出発地→目的地の距離を確認し、マイルで入力 → $'+c.ratePerMile+'/マイルで自動算定します。</div>';
   if(isMgr){
     var pending=all.filter(function(r){ return r.status==='申請中' && canApproveMileage(r); });
-    html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'" style="margin-left:auto">'+pending.length+'</span></div>';
-    html+= pending.length ? pending.map(function(r){return _mileRow(r,'approve');}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
+    html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'">'+pending.length+'</span>'+(pending.length?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go(\'approval\')"><i class="ti ti-checklist"></i> 承認センターで承認</button>':'')+'</div>';
+    html+= pending.length ? pending.map(function(r){return _mileRow(r,null);}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
     html+='</div>';
     var approved=all.filter(function(r){ return r.status==='承認' && canApproveMileage(r); }).sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}).slice(0,15);
     if(approved.length){
@@ -14307,7 +14424,7 @@ function renderVacation() {
   // 管理者: 承認待ちキュー（自分が承認できるもの）
   if (isManager) {
     var pending = all.filter(v=> v.status==='申請中' && canApproveVacation(v));
-    html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag ${pending.length?'tag-yellow':'tag-gray'}" style="margin-left:auto">${pending.length}</span></div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag ${pending.length?'tag-yellow':'tag-gray'}">${pending.length}</span>${pending.length?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('approval')"><i class="ti ti-checklist"></i> 承認センターで承認</button>`:''}</div>`;
     if (!pending.length) {
       html += `<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちの休暇はありません</div>`;
     } else {
@@ -14319,10 +14436,7 @@ function renderVacation() {
               <div style="font-size:12px;color:var(--muted)">${v.startDate} 〜 ${v.endDate} · ${v.type}</div>
               ${v.reason?`<div style="font-size:11px;color:var(--muted)">理由: ${v.reason}</div>`:''}</div>
           </div>
-          <div style="display:flex;gap:6px;margin-top:6px">
-            <button class="btn btn-success btn-sm" style="padding:2px 12px" onclick="approveVacation('${v.id}')"><i class="ti ti-check"></i> 承認</button>
-            <button class="btn btn-danger btn-sm" style="padding:2px 12px" onclick="rejectVacation('${v.id}')"><i class="ti ti-x"></i> 却下</button>
-          </div></div>`;
+          <div style="margin-top:6px"><span class="tag tag-yellow" style="font-size:10px">承認待ち</span> <span style="font-size:10px;color:var(--muted)">承認は承認センターで</span></div></div>`;
       });
     }
     html += `</div>`;
@@ -14475,6 +14589,7 @@ function submitVacation() {
   var my = getVacations();
   my.push(vac);
   saveVacations(my);
+  try{ addApproval({type:'休暇', title:(summary||'休暇')+' '+start+'〜'+end, from:me, store:storeId, ref:vac.id}); }catch(e){}
   closeModalDirect();
   showToast('休暇を申請しました（承認待ち）', 'success');
   renderPage('vacation');
@@ -22986,68 +23101,141 @@ function resolveApprovalByRef(type, ref, status) {
   lsSet('approvals', approvals);
 }
 
+/* ===== 承認センター（店舗別・複数承認者の可視化） ===== */
+function _approvalRoleLabel(role){ return ({ceo:'CEO', gm:'GM', office:'本部', am:'AM/店長', sl:'SL/リーダー', sm:'店長', crew:'クルー'})[role] || role; }
+function approvalRequiredRoles(a){ var r=approversForType(a&&a.type); return (r&&r.length)?r:['gm']; }
+function _approvalStore(a){
+  var v=a&&a.store;
+  if(!v || v==='---' || v==='本部' || v==='office' || v==='OFFICE' || v==='HQ') return {id:'OFFICE', name:'本部 / Office'};
+  var s=STORES.find(function(x){return x.id===v||x.name===v;});
+  return s?{id:s.id,name:s.name}:{id:String(v),name:String(v)};
+}
+function _approvalStoreId(a){ return _approvalStore(a).id; }
+/* 現在ユーザーが、この案件で未承認の必要役職のうち埋められる役職一覧 */
+function _approvalMyRoles(a){
+  if(a && a.from && curUserName && a.from===curUserName) return []; /* 自己承認不可 */
+  var req=approvalRequiredRoles(a);
+  var signed=( (a.signoffs)||[] ).map(function(s){return s.role;});
+  var out=[];
+  req.forEach(function(role){
+    if(signed.indexOf(role)>=0) return;
+    var match = (role===curRole) || (role==='gm'&&curRole==='ceo') || (role==='sm'&&typeof isStoreManager==='function'&&isStoreManager());
+    if(!match) return;
+    if(role==='am' && curRole==='am'){ var sid=_approvalStoreId(a); if(sid && sid!=='OFFICE' && typeof myAmStores==='function' && myAmStores().indexOf(sid)<0) return; }
+    out.push(role);
+  });
+  return out;
+}
+function _approvalSignedMap(a){ var m={}; ((a.signoffs)||[]).forEach(function(s){ m[s.role]=s; }); return m; }
+function _approvalAllDone(a){ var req=approvalRequiredRoles(a); var m=_approvalSignedMap(a); return req.every(function(r){return !!m[r];}); }
+function _approvalChainHtml(a){
+  var req=approvalRequiredRoles(a); var m=_approvalSignedMap(a);
+  var chips=req.map(function(role){
+    var s=m[role];
+    return s
+      ? '<span class="tag tag-green" style="font-size:10px"><i class="ti ti-check"></i> '+_approvalRoleLabel(role)+'：'+escapeHtml(s.name)+'</span>'
+      : '<span class="tag tag-gray" style="font-size:10px"><i class="ti ti-clock"></i> '+_approvalRoleLabel(role)+'：未承認</span>';
+  }).join(' ');
+  var all=_approvalAllDone(a);
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap;margin:6px 0">'+chips+(all?' <span class="tag tag-green" style="font-size:10px;font-weight:700"><i class="ti ti-circle-check"></i> 全承認':'')+'</div>';
+}
+function signoffApproval(id){
+  var approvals = ls('approvals', []);
+  var a = approvals.find(function(x){return x.id===id;}); if(!a) return;
+  var roles=_approvalMyRoles(a);
+  if(!roles.length){ alert('あなたが承認できる役職枠がありません（他の承認者待ち、または権限対象外）'); return; }
+  a.signoffs = a.signoffs||[];
+  var nm=(ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
+  roles.forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm, at:new Date().toLocaleString('ja')}); });
+  lsSet('approvals', approvals);
+  if(_approvalAllDone(a)){
+    approveItem(id,'approved'); /* 全承認 → 確定＋申請者へ通知（approveItem内） */
+  } else {
+    var req=approvalRequiredRoles(a); var m=_approvalSignedMap(a);
+    var remain=req.filter(function(r){return !m[r];});
+    showToast('承認しました（残り：'+remain.map(_approvalRoleLabel).join('・')+'）','success');
+    renderPage('approval');
+  }
+}
+function overrideApproveAll(id){
+  if(!(curRole==='gm'||curRole==='ceo')){ alert('代理での全承認はGM/CEOのみです'); return; }
+  if(!confirm('残りの承認者の代わりに、この案件を全承認として確定しますか？')) return;
+  var approvals = ls('approvals', []);
+  var a = approvals.find(function(x){return x.id===id;}); if(!a) return;
+  a.signoffs = a.signoffs||[];
+  var nm=(ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
+  approvalRequiredRoles(a).forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm+'(代理)', at:new Date().toLocaleString('ja')}); });
+  lsSet('approvals', approvals);
+  approveItem(id,'approved');
+}
+function rejectApprovalItem(id){
+  if(!confirm('この申請を却下しますか？')) return;
+  approveItem(id,'rejected'); /* 申請者へ却下通知（approveItem内） */
+}
 function renderApproval() {
   var approvals = ls('approvals', []);
-  var pending = approvals.filter(a=>a.status==='pending');
-  var done = approvals.filter(a=>a.status!=='pending');
+  var pending = approvals.filter(function(a){return a.status==='pending';});
+  var done = approvals.filter(function(a){return a.status!=='pending';});
+  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar','退職':'ti-user-off','経費':'ti-file-invoice'};
 
-  // タイプ別アイコン
-  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar','退職':'ti-user-off'};
-  // タイプ別件数
-  var byType = {};
-  pending.forEach(a=>byType[a.type]=(byType[a.type]||0)+1);
+  // 店舗別グルーピング（本部含む）
+  var groups={}, order=[];
+  pending.forEach(function(a){ var st=_approvalStore(a); if(!groups[st.id]){ groups[st.id]={name:st.name, items:[]}; order.push(st.id); } groups[st.id].items.push(a); });
+  // 本部は最後に
+  order.sort(function(x,y){ return (x==='OFFICE'?1:0)-(y==='OFFICE'?1:0); });
 
-  var html = `<div class="section-header">
-    <div><div class="section-title">承認センター</div><div class="section-sub">全ての承認を一箇所で</div></div>
-    <span class="tag ${pending.length?'tag-yellow':'tag-green'}">${pending.length}件待ち</span>
-  </div>`;
-
-  // タイプ別サマリー（バッジ）
-  if (pending.length) {
-    html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">`;
-    Object.keys(byType).forEach(t=>{
-      html += `<span class="tag tag-yellow" style="font-size:11px"><i class="ti ${typeIcon[t]||'ti-circle'}"></i> ${t} ${byType[t]}</span>`;
-    });
-    html += `</div>`;
-  }
+  var html = '<div class="section-header"><div><div class="section-title">承認センター</div><div class="section-sub">店舗別・承認状況（誰が承認／未承認）</div></div>'
+    +'<span class="tag '+(pending.length?'tag-yellow':'tag-green')+'">'+pending.length+'件待ち</span></div>';
 
   if (!pending.length) {
-    html += `<div class="card" style="text-align:center;padding:20px"><i class="ti ti-circle-check" style="font-size:24px;color:var(--green)"></i><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:4px">承認待ちはありません</div></div>`;
+    html += '<div class="card" style="text-align:center;padding:20px"><i class="ti ti-circle-check" style="font-size:24px;color:var(--green)"></i><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:4px">承認待ちはありません</div></div>';
   } else {
-    // タイプごとにグループ表示
-    Object.keys(byType).forEach(type=>{
-      var items = pending.filter(a=>a.type===type);
-      html += `<div class="card"><div class="card-title"><i class="ti ${typeIcon[type]||'ti-circle'}" style="color:var(--accent)"></i>${type} <span class="tag tag-yellow" style="margin-left:auto">${items.length}</span></div>`;
-      items.forEach(a => {
+    order.forEach(function(sid){
+      var g=groups[sid];
+      var sicon = sid==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
+      html += '<div class="card"><div class="card-title"><i class="ti '+sicon+'" style="color:var(--accent)"></i>'+escapeHtml(g.name)+' <span class="tag tag-yellow" style="margin-left:auto">'+g.items.length+'</span></div>';
+      g.items.forEach(function(a){
         var isBudget = a.type==='予算' && a.ref;
-        html += `<div class="approval-item">
-          <div class="approval-header">
-            <div><div class="approval-title">${a.title}</div>
-            <div class="approval-meta">${a.from} · ${a.store} · ${a.date}</div></div>
-          </div>
-          <div class="approval-actions">
-            ${isBudget
-              ? `<button class="btn btn-secondary btn-sm" onclick="switchStore('${a.ref}');go('budget')"><i class="ti ti-eye"></i> 予算を確認</button>
-                 <button class="btn btn-success btn-sm" onclick="approveBudgetSeg('${a.ref}')"><i class="ti ti-check"></i> 承認</button>
-                 <button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg('${a.ref}')"><i class="ti ti-arrow-back"></i> 差し戻し</button>`
-              : `<button class="btn btn-success btn-sm" onclick="approveItem('${a.id}','approved')"><i class="ti ti-check"></i> 承認</button>
-                 <button class="btn btn-danger btn-sm" onclick="approveItem('${a.id}','rejected')"><i class="ti ti-x"></i> 却下</button>`}
-          </div>
-        </div>`;
+        var canSign = _approvalMyRoles(a).length>0;
+        var isMgr = (curRole==='gm'||curRole==='ceo');
+        html += '<div class="approval-item"><div class="approval-header"><div><div class="approval-title"><i class="ti '+(typeIcon[a.type]||'ti-circle')+'" style="font-size:12px;color:var(--muted)"></i> '+escapeHtml(a.title||'')+'</div>'
+          +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+'</div></div></div>';
+        html += _approvalChainHtml(a);
+        html += '<div class="approval-actions">';
+        if (isBudget) {
+          html += '<button class="btn btn-secondary btn-sm" onclick="switchStore(\''+a.ref+'\');go(\'budget\')"><i class="ti ti-eye"></i> 予算確認</button>'
+            +'<button class="btn btn-success btn-sm" onclick="approveBudgetSeg(\''+a.ref+'\')"><i class="ti ti-check"></i> 承認</button>'
+            +'<button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg(\''+a.ref+'\')"><i class="ti ti-arrow-back"></i> 差し戻し</button>';
+        } else {
+          if (canSign) {
+            html += '<button class="btn btn-success btn-sm" onclick="signoffApproval(\''+a.id+'\')"><i class="ti ti-check"></i> 承認する</button>';
+          }
+          html += '<button class="btn btn-danger btn-sm" onclick="rejectApprovalItem(\''+a.id+'\')"><i class="ti ti-x"></i> 却下</button>';
+          if (!canSign && !isMgr) html += '<span style="font-size:11px;color:var(--muted);align-self:center"><i class="ti ti-clock"></i> 他の承認者待ち</span>';
+          if (isMgr && !_approvalAllDone(a)) html += '<button class="btn btn-secondary btn-sm" onclick="overrideApproveAll(\''+a.id+'\')"><i class="ti ti-shield-check"></i> 代理で全承認</button>';
+        }
+        html += '</div></div>';
       });
-      html += `</div>`;
+      html += '</div>';
     });
   }
 
   if (done.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>処理済み</div>`;
-    done.slice(-6).reverse().forEach(a => {
-      html += `<div class="approval-item">
-        <div class="approval-header">
-          <div><div class="approval-title">${a.title}</div><div class="approval-meta">${a.from} · ${a.type}</div></div>
-          <span class="tag ${a.status==='approved'?'tag-green':'tag-red'}">${a.status==='approved'?'承認':'却下'}</span>
-        </div>
-      </div>`;
+    var dgroups={}, dorder=[];
+    done.forEach(function(a){ var st=_approvalStore(a); if(!dgroups[st.id]){ dgroups[st.id]={name:st.name, items:[]}; dorder.push(st.id); } dgroups[st.id].items.push(a); });
+    dorder.sort(function(x,y){ return (x==='OFFICE'?1:0)-(y==='OFFICE'?1:0); });
+    html += '<div class="card"><div class="card-title"><i class="ti ti-history"></i>過去ログ（店舗別）</div>';
+    dorder.forEach(function(sid){
+      var g=dgroups[sid];
+      var sicon = sid==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
+      html += '<details style="margin:2px 0"><summary style="cursor:pointer;font-size:13px;font-weight:600;padding:6px 0"><i class="ti '+sicon+'"></i> '+escapeHtml(g.name)+' <span class="tag tag-gray" style="font-size:10px">'+g.items.length+'</span></summary>';
+      g.items.slice().reverse().slice(0,40).forEach(function(a){
+        var ok=a.status==='approved';
+        html += '<div class="approval-item" style="padding-left:6px"><div class="approval-header"><div><div class="approval-title" style="font-size:12px">'+escapeHtml(a.title||'')+'</div>'
+          +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+(a.signoffs&&a.signoffs.length?' · 承認者: '+a.signoffs.map(function(s){return escapeHtml(s.name);}).join('、'):'')+'</div></div>'
+          +'<span class="tag '+(ok?'tag-green':'tag-red')+'">'+(ok?'全承認':'却下')+'</span></div></div>';
+      });
+      html += '</details>';
     });
     html += '</div>';
   }
@@ -23100,6 +23288,9 @@ function approveItem(id, status) {
         }
       } catch(_e){}
     }
+    if (a.type==='休暇' && a.ref) { try{ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status=(status==='approved'?'承認':'却下'); _v.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _v.approvedAt=new Date().toLocaleString('ja'); saveVacations(_vs); } }catch(_e){} }
+    if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(status==='approved'?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=new Date().toLocaleString('ja'); saveMileageReqs(_ms); } }catch(_e){} }
+    if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(status==='approved'?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=new Date().toLocaleString('ja'); saveExpenseReqs(_es); } }catch(_e){} }
     try{ addNotif({ type:(status==='approved'?'approved':'reject'), title:(a.type||'申請')+(status==='approved'?' が承認されました':' が却下されました'), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
     renderPage('approval'); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
   }
@@ -23687,6 +23878,32 @@ function renderMypage() {
     });
   } else { html += `<p style="color:var(--muted);font-size:13px">${t('申請履歴なし','No requests')}</p>`; }
   html += '</div>';
+
+  // 9b. 申請（G4以上のみ・G3以下は対象外）— 経費申請 / ガソリン代
+  if ((typeof myGradeNum==='function' ? myGradeNum() : 1) >= 4) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-files"></i>${t('申請','Requests')}</div>`;
+    var myExp = (typeof getExpenseRequests==='function') ? getExpenseRequests().filter(function(r){return r.employee===me;}) : [];
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0">
+      <div style="font-size:13px;font-weight:600"><i class="ti ti-file-invoice" style="color:var(--accent)"></i> ${t('事前経費申請','Pre-Approval Expense')}</div>
+      <button class="btn btn-secondary btn-sm" onclick="go('expense')">${t('申請・確認','Open')}</button></div>`;
+    if (myExp.length) {
+      myExp.slice(-2).reverse().forEach(function(r){
+        var sc = r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
+        html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(r.project||'')}</div><span class="tag ${sc}">${r.status}</span></div><div class="approval-meta">$${(r.total||0).toFixed(2)}</div></div>`;
+      });
+    }
+    var myMile = (typeof getMileageRequests==='function') ? getMileageRequests().filter(function(r){return r.employee===me;}) : [];
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--border);margin-top:4px">
+      <div style="font-size:13px;font-weight:600"><i class="ti ti-gas-station" style="color:var(--accent2)"></i> ${t('ガソリン代','Mileage')}</div>
+      <button class="btn btn-secondary btn-sm" onclick="go('mileage')">${t('申請・確認','Open')}</button></div>`;
+    if (myMile.length) {
+      myMile.slice(-2).reverse().forEach(function(r){
+        var sc = r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
+        html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(r.date||'')} ${escapeHtml(r.purpose||'')}</div><span class="tag ${sc}">${r.status}</span></div><div class="approval-meta">${r.miles} mi · $${(r.amount||0).toFixed(2)}</div></div>`;
+      });
+    }
+    html += '</div>';
+  }
 
   // 9. Growth Hub（My Page内に埋め込み）
   var posts = ls('growthhub', []);
@@ -24836,13 +25053,14 @@ function onNotifIncoming(arr){
 }
 
 /* ===== 承認ルーティング（タイプ別の承認者）＋ 店舗スコープ宛先の補助 ===== */
-var APPROVAL_TYPES = ['予算','シフト変更','採用','Leadership','TipRate','スキル','退職'];
+var APPROVAL_TYPES = ['予算','シフト変更','採用','Leadership','TipRate','スキル','退職','休暇','ガソリン代','経費'];
+function _aprDefaultRoles(t){ return ({'休暇':['am'],'ガソリン代':['am'],'経費':['gm'],'予算':['gm']})[t] || ['office','gm','am']; }
 var APPROVER_ROLE_OPTS = [['office','経理'],['gm','GM'],['am','AM'],['sm','SM'],['sl','SL'],['ceo','CEO']];
-function defaultApprovalRouting(){ var d={}; APPROVAL_TYPES.forEach(function(t){ d[t]=['office','gm','am']; }); return d; }
+function defaultApprovalRouting(){ var d={}; APPROVAL_TYPES.forEach(function(t){ d[t]=_aprDefaultRoles(t); }); return d; }
 function getApprovalRouting(){
   var r = ls('approval_routing', null);
   if(!r || typeof r!=='object') r = defaultApprovalRouting();
-  APPROVAL_TYPES.forEach(function(t){ if(!Array.isArray(r[t])) r[t]=['office','gm','am']; });
+  APPROVAL_TYPES.forEach(function(t){ if(!Array.isArray(r[t])) r[t]=_aprDefaultRoles(t); });
   return r;
 }
 function setApprovalRouting(r){ lsSet('approval_routing', r); }
