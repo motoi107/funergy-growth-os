@@ -1517,6 +1517,18 @@ const MENU_GROUPS = [
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','goals','required','company_msg_edit','approval','acct_export','settings']},
 ];
+
+/* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
+const OFFICE_GROUPS = [
+  {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
+    children:['office_mgr','approval','vacation','notifications']},
+  {id:'go_acct', label:'経理', icon:'ti-calculator', roles:['ceo','gm','office'],
+    children:['invoice','acct_review','acct_export','monthly','budget']},
+  {id:'go_order', label:'発注', icon:'ti-package', roles:['ceo','gm','office'],
+    children:['supply_order','order']},
+  {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
+    children:['settings','profile']},
+];
 /* Crew専用のシンプルメニュー（マイページ中心） */
 const CREW_GROUPS = [
   {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage']},
@@ -1536,6 +1548,7 @@ function navItemById(id) { return NAV_ITEMS.find(n=>n.id===id) || {id, label:id,
 function groupsForRole() {
   if (curStoreLogin) return STORE_GROUPS;
   if (curRole==='crew') return CREW_GROUPS;
+  if (curStore==='OFFICE' && ['ceo','gm','office'].includes(curRole)) return OFFICE_GROUPS.filter(g=>!g.roles||g.roles.includes(curRole));
   return MENU_GROUPS.filter(g=>g.roles.includes(curRole));
 }
 function groupOfPage(pageId) {
@@ -4395,6 +4408,8 @@ function switchStore(id) {
   document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
   closeModalDirect();
   if (id === 'OFFICE') { curPage = 'office_mgr'; if(typeof buildNav==='function') buildNav(); renderPage('office_mgr'); window.scrollTo(0,0); return; }
+  if (['office_mgr','error_center'].indexOf(curPage)>=0) curPage='dashboard';
+  if(typeof buildNav==='function') buildNav();
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
