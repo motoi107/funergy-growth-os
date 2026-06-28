@@ -7187,9 +7187,27 @@ function renderBudgetSummary() {
   var monthRate = agg.budMonth ? Math.round(agg.actMonth/agg.budMonth*1000)/10 : 0;
   var diff = agg.actToToday - agg.budToToday;
 
-  // ===== 現在地（本日時点の累計）=====
+  // ===== 当月=現在地（前日まで累計）／それ以外=その月の月間実績 =====
+  var _selOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
+  var _monLabel = (typeof dailyMonthLabel==='function')?dailyMonthLabel():'';
+  var html='';
+  if (_selOff!==0) {
+    var mDiff = agg.actMonth - agg.budMonth;
+    var mColor = statusColor(statusFromPct(monthRate));
+    html += `<div class="card" style="border-left:4px solid ${mColor}">
+    <div class="card-title"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i>${_monLabel} 実績（月間合計）</div>
+    <div class="kpi-grid">
+      ${kpi('月予算', fmtK(Math.round(agg.budMonth)), _monLabel, 'var(--muted)')}
+      ${kpi('月実績', fmtK(Math.round(agg.actMonth)), _selOff>0?'予算ベース':'確定', mColor)}
+      ${kpi('達成率', monthRate+'%', mDiff>=0?'▲'+fmtK(Math.abs(Math.round(mDiff))):'▼'+fmtK(Math.abs(Math.round(mDiff))), mColor)}
+      ${kpi('差異', (mDiff>=0?'+':'')+fmtK(Math.round(mDiff)), '実績−予算', mDiff>=0?'var(--green)':'var(--red)')}
+    </div>
+    <div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:${mColor};width:${Math.min(monthRate,100)}%"></div></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">${_selOff>0?'来月の予算（実績はこれから入力）':'この月の予算と実績の月間合計（累計ではなく月単独）'}</div>
+  </div>`;
+  } else {
   var _yest = new Date(today.getTime()-86400000);
-  var html = `<div class="card" style="border-left:4px solid ${statusColor(statusFromPct(pace))}">
+  html += `<div class="card" style="border-left:4px solid ${statusColor(statusFromPct(pace))}">
     <div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>現在地（${_yest.getMonth()+1}/${_yest.getDate()} 前日まで累計）</div>
     <div class="kpi-grid">
       ${kpi('累計予算', fmtK(Math.round(agg.budToToday)), '前日まで', 'var(--muted)')}
@@ -7200,6 +7218,7 @@ function renderBudgetSummary() {
     <div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:${statusColor(statusFromPct(pace))};width:${Math.min(pace,100)}%"></div></div>
     <div style="font-size:11px;color:var(--muted);margin-top:6px">月予算 ${fmtK(Math.round(agg.budMonth))} / 月間達成率 ${monthRate}%（実績入力済の累計ベース）</div>
   </div>`;
+  }
 
   // ===== 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）=====
   html += keyKpiCard(budgetScopeStores(), monthDays(), '');
@@ -7213,7 +7232,7 @@ function renderBudgetSummary() {
   if (agg.costToToday>0 || agg.laborToToday>0) {
     var costR = agg.actToToday ? Math.round(agg.costToToday/agg.actToToday*1000)/10 : 0;
     var laborR = agg.actToToday ? Math.round(agg.laborToToday/agg.actToToday*1000)/10 : 0;
-    html += `<div class="card"><div class="card-title"><i class="ti ti-receipt-2" style="color:var(--accent)"></i>累計コスト（本日まで）</div>
+    html += `<div class="card"><div class="card-title"><i class="ti ti-receipt-2" style="color:var(--accent)"></i>${_selOff!==0?_monLabel+' コスト（月間）':'累計コスト（本日まで）'}</div>
       <div class="kpi-grid">
         ${kpi('累計原価', fmtK(Math.round(agg.costToToday)), '本日まで', 'var(--muted)')}
         ${kpi('原価率', costR+'%', '目標 ≤31%', statusColor(statusFromCeil(costR,31,34)))}
@@ -7226,6 +7245,28 @@ function renderBudgetSummary() {
   visible.forEach(b => {
     var s = STORES.find(x=>x.id===b.storeId) || {name:b.storeId, color:'#888'};
     var c = cumByStore[b.storeId];
+    var _editBtns = canEdit?`<div class="approval-actions">
+        <button class="btn btn-secondary btn-sm" onclick="openBudgetEditor('${b.storeId}')"><i class="ti ti-edit"></i> 予算編集</button>
+        <button class="btn btn-secondary btn-sm" onclick="setBudgetTab('daily')"><i class="ti ti-calendar"></i> 日次入力</button>
+      </div>`:'';
+    if (_selOff!==0) {
+      var smColor = statusColor(statusFromPct(c.monthRate));
+      var smDiff = c.actMonth - c.budMonth;
+      html += `<div class="card">
+      <div class="approval-header">
+        <div class="card-title" style="color:${s.color};margin:0"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
+        <span class="tag ${statusTag(statusFromPct(c.monthRate))}">達成 ${c.monthRate}%</span>
+      </div>
+      <div class="kpi-grid" style="margin:8px 0;">
+        ${kpi('月予算', fmtK(Math.round(c.budMonth)), _monLabel, 'var(--muted)')}
+        ${kpi('月実績', fmtK(Math.round(c.actMonth)), c.daysWithActual+'日入力', smColor)}
+        ${kpi('達成率', c.monthRate+'%', smDiff>=0?'▲':'▼', smColor)}
+        ${kpi('差異', (smDiff>=0?'+':'')+fmtK(Math.round(smDiff)), '実績−予算', smDiff>=0?'var(--green)':'var(--red)')}
+      </div>
+      <div class="progress-bar"><div class="progress-fill" style="background:${smColor};width:${Math.min(c.monthRate,100)}%"></div></div>
+      ${_editBtns}
+    </div>`;
+    } else {
     var st = statusFromPct(c.paceRate);
     var color = statusColor(st);
     var sdiff = c.actToToday - c.budToToday;
@@ -7242,11 +7283,9 @@ function renderBudgetSummary() {
       </div>
       <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(c.paceRate,100)}%"></div></div>
       <div style="font-size:11px;color:var(--muted);margin-top:6px">${c.daysPassed}日経過 · 差異 ${sdiff>=0?'+':''}${fmtK(Math.round(sdiff))}</div>
-      ${canEdit?`<div class="approval-actions">
-        <button class="btn btn-secondary btn-sm" onclick="openBudgetEditor('${b.storeId}')"><i class="ti ti-edit"></i> 予算編集</button>
-        <button class="btn btn-secondary btn-sm" onclick="setBudgetTab('daily')"><i class="ti ti-calendar"></i> 日次入力</button>
-      </div>`:''}
+      ${_editBtns}
     </div>`;
+    }
   });
   return html;
 }
@@ -7489,11 +7528,13 @@ function renderBudgetDaily() {
   var paceRate = sumBudgetToToday ? Math.round(sumActual/sumBudgetToToday*1000)/10 : 0;
   var monthRate = sumBudget ? Math.round(sumActual/sumBudget*1000)/10 : 0;
 
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-line"></i>${title} 月間進捗</div>
+  var _dOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
+  var _dLbl = (typeof dailyMonthLabel==='function')?dailyMonthLabel():getPeriod();
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-line"></i>${title} ${_dOff!==0?_dLbl+' 月間実績':'月間進捗'}</div>
     <div class="kpi-grid">
-      ${kpi('月間予算', fmtUSD2(sumBudget), getPeriod(), 'var(--muted)')}
-      ${kpi('実績累計', fmtUSD2(sumActual), '本日まで', 'var(--tm)')}
-      ${kpi('対予算ペース', paceRate+'%', '本日時点', paceRate>=100?'var(--green)':paceRate>=90?'var(--yellow)':'var(--red)')}
+      ${kpi('月間予算', fmtUSD2(sumBudget), _dLbl, 'var(--muted)')}
+      ${kpi(_dOff!==0?'月実績':'実績累計', fmtUSD2(sumActual), _dOff!==0?'月間合計':'本日まで', 'var(--tm)')}
+      ${kpi(_dOff!==0?'達成率':'対予算ペース', paceRate+'%', _dOff!==0?'対予算':'本日時点', paceRate>=100?'var(--green)':paceRate>=90?'var(--yellow)':'var(--red)')}
       ${kpi('月間達成率', monthRate+'%', '対月予算', monthRate>=100?'var(--green)':'var(--muted)')}
     </div>
   </div>`;
