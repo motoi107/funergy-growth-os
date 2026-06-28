@@ -18456,7 +18456,7 @@ function lssTrendHtml(name){
   }).join('');
   return '<div style="display:flex;align-items:flex-end;gap:3px;height:58px;margin-bottom:8px;padding:0 2px">'+bars+'</div>'+rows;
 }
-function getStorePositions(storeId) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); return all[storeId]||ALL_POSITIONS; }
+function getStorePositions(storeId) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); return all[storeId] || DEFAULT_STORE_POSITIONS[storeId] || ALL_POSITIONS; }
 function setStorePositions(storeId, positions) { var all=ls('store_positions', DEFAULT_STORE_POSITIONS); all[storeId]=positions; lsSet('store_positions', all); }
 /* 全店共通スキル項目（サービスクオリティ・理念）を、既存の保存済み店舗ポジションにも追加 */
 function migrateUniversalSkillItems(){
@@ -18475,6 +18475,15 @@ function migrateUniversalSkillItems(){
   if(changed) lsSet('store_positions', all);
 }
 
+/* オフィス用スキルポジションを保存済みデータに注入（無ければDEFAULTを採用・冪等） */
+function migrateOfficePositions(){
+  var stored = ls('store_positions', null);
+  if(stored===null) return; // 未カスタマイズ＝DEFAULTを使う
+  if(!stored['OFFICE'] || !stored['OFFICE'].length){
+    stored['OFFICE'] = (DEFAULT_STORE_POSITIONS['OFFICE']||[]).slice();
+    lsSet('store_positions', stored);
+  }
+}
 /* C: FSP(F03)とGarlic Shack(F03-G)のポジション分割＋F02/F05へPrep追加（保存済みデータ用・冪等） */
 function migrateStorePositionsSplitC(){
   var stored = ls('store_positions', null);
@@ -28633,6 +28642,7 @@ async function checkDriveOAuthReturn(){
 }
 try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
 try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePositionsSplitC', e); }
+try { migrateOfficePositions(); } catch(e) { console.error('migrateOfficePositions', e); }
 try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
 try { migrateStoreManagers(); } catch(e) { console.error('migrateStoreManagers', e); }
 (async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) { try { await loginBootstrapPull(); } catch(_){} bootLogin(); } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
