@@ -15646,7 +15646,7 @@ function openEmpModal(empId) {
   var emps = getEmployees();
   var e = empId ? emps.find(x=>x.id===empId) : {id:'', name:'', empCode:'', role:'crew', store:STORES[0].id, support:[], emp:'パート', step:0, hireDate:'', resignDate:'', status:'在籍', perms:'crew', email:'', phone:'', insurance:false, dental:false};
   var isNew = !empId;
-  var storeOpts = [{id:'ALL',name:'全店'},...STORES];
+  var storeOpts = [{id:'ALL',name:'全店'},{id:'OFFICE',name:'オフィス'},...STORES];
   // 現在のシフト条件
   var wc = (typeof getWorkCondition==='function' && e.store && e.store!=='ALL') ? getWorkCondition(e.store, e.name) : null;
   openModal(`<div class="modal-title">${isNew?'従業員登録':'従業員編集'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
@@ -20927,7 +20927,7 @@ function renderTalentPipeline(){
 
 function renderLeadership() {
   // 対象＝リーダー以上
-  var leaders = visibleStaffForManager().filter(e=>isLeaderPlus(e) && e.status!=='退職' && e.role!=='ceo');
+  var leaders = visibleStaffForManager().filter(e=>(isLeaderPlus(e) || gradeNum(empGrade(e))>=2) && e.status!=='退職' && e.role!=='ceo');
   // 自分がリーダー以上なら自分も含める
   var meName = (ROLE_CONFIG[curRole]||{}).name||curUserName;
   var canScore = ['ceo','gm','am'].includes(curRole);
@@ -27154,11 +27154,12 @@ function renderSkillManager() {
 
   // ===== ビュー別の本体 =====
   var visStores = getVisibleStores();
-  if (!window._skillMatrixStore || !visStores.find(s=>s.id===window._skillMatrixStore)) {
+  if (!window._skillMatrixStore || (!visStores.find(s=>s.id===window._skillMatrixStore) && window._skillMatrixStore!=='OFFICE')) {
     window._skillMatrixStore = (curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));
   }
   var mgrStoreId = window._skillMatrixStore;
-  var storeObj = STORES.find(s=>s.id===mgrStoreId)||{};
+  var storeObj = STORES.find(s=>s.id===mgrStoreId)||(mgrStoreId==='OFFICE'?{name:'オフィス',color:'#6b7280'}:{});
+  var skillStores = visStores.slice(); if(['gm','ceo','office'].indexOf(curRole)>=0 && !skillStores.find(function(x){return x.id==='OFFICE';})) skillStores.push({id:'OFFICE',name:'オフィス',color:'#6b7280'});
 
   if (window._skillView==='staff') { html += renderSkillStaffView(); return html; }
   if (window._skillView==='position') { html += renderSkillPositionView(mgrStoreId, visStores); return html; }
@@ -27167,13 +27168,15 @@ function renderSkillManager() {
   var matrixPos = getStorePositions(mgrStoreId);
   html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>スキルマトリクス（店舗別）</div>`;
   // 店舗切替タブ
-  if (visStores.length>1) {
+  if (skillStores.length>1) {
     html += `<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:8px">
-      ${visStores.map(s=>`<div class="phase-tab${mgrStoreId===s.id?' active':''}" style="${mgrStoreId===s.id?`background:${s.color};border-color:${s.color}`:''}" onclick="setSkillMatrixStore('${s.id}')">${s.name}</div>`).join('')}
+      ${skillStores.map(s=>`<div class="phase-tab${mgrStoreId===s.id?' active':''}" style="${mgrStoreId===s.id?`background:${s.color};border-color:${s.color}`:''}" onclick="setSkillMatrixStore('${s.id}')">${s.name}</div>`).join('')}
     </div>`;
   }
   // この店舗で働くスタッフ（所属 or 勤務可能店舗）
-  var staffHere = visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role) && !e.prep && (e.store===mgrStoreId || (e.support||[]).includes(mgrStoreId)));
+  var staffHere = (mgrStoreId==='OFFICE')
+    ? visibleStaffForManager().filter(e=>['office','office_crew'].includes(e.role) && e.status!=='退職')
+    : visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role) && !e.prep && (e.store===mgrStoreId || (e.support||[]).includes(mgrStoreId)));
   // 不足ポジション（Lv3が誰もいない）
   var shortPos = matrixPos.filter(p=>p!=='Energy'&&p!=='Leadership').filter(p=>!staffHere.some(e=>positionLevelStore(e.name,p,mgrStoreId)>=3));
   if (shortPos.length) {
