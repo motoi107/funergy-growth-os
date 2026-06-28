@@ -20032,6 +20032,24 @@ function savePrepPos(storeId){
   closeModalDirect(); showToast('Prep評価項目を保存しました','success');
   renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
 }
+function prepCellBg(v){ return v>=5?'#1d4fd0':v===4?'var(--accent)':v===3?'var(--green)':v===2?'var(--yellow)':v===1?'var(--red)':'transparent'; }
+function openPrepCellPopup(empId, storeId, posIdx){
+  if(!canEditWages()) return;
+  var e=getEmployees().find(function(x){return x.id===empId;}); if(!e) return;
+  var position=getPrepPositions(storeId)[posIdx]; if(position==null) return;
+  var cur=Number((prepSkillsOf(e,storeId)[position])||0);
+  var html=`<div class="modal-title">${escapeHtml(e.name)} · ${escapeHtml(position)} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">レベルを選択（総合レベル＝時給に連動）。同じ数字をもう一度押すと解除。</div>
+    <div style="display:flex;flex-direction:column;gap:8px">`;
+  [1,2,3,4,5].forEach(function(n){
+    var on=cur===n;
+    html+=`<div onclick="setPrepSkill('${empId}','${storeId}',${posIdx},${n});closeModalDirect()" style="display:flex;align-items:center;gap:10px;border:1.5px solid ${on?'var(--accent)':'var(--border)'};border-radius:10px;padding:10px 12px;cursor:pointer">
+      <span style="flex-shrink:0;width:26px;height:26px;border-radius:7px;background:${prepCellBg(n)};color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center">${n}</span>
+      <span style="font-size:13px;font-weight:600">${PREP_SKILL_LEGEND[n]}</span>${on?' <span style="font-size:10px;color:var(--accent);margin-left:auto">現在</span>':''}</div>`;
+  });
+  html+=`</div><div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`;
+  openModal(html);
+}
 function renderStorePrepPanel(storeId){
   if(typeof canViewWages==='function' && !canViewWages()) return '';
   var canEdit = (typeof canEditWages==='function') ? canEditWages() : false;
@@ -20043,8 +20061,7 @@ function renderStorePrepPanel(storeId){
   var positions = getPrepPositions(storeId);
   var method = getPrepLevelMethod();
   var levels = PREP_LEVELS();
-  var h = `<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2" style="color:#7d9b4e"></i>Prep スキルレベル（評価＝時給連動）${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openPrepPosModal('${storeId}')"><i class="ti ti-settings"></i> 項目編集</button>`:''}</div>`;
-  h += `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">各項目をLv1〜5で評価 → 総合レベルが自動算出され時給に直結（変更はGM/CEO・従業員マスター連動）。</div>`;
+  var h = `<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2" style="color:#7d9b4e"></i>Prep スキルマトリクス（評価＝時給連動）${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openPrepPosModal('${storeId}')"><i class="ti ti-settings"></i> 項目編集</button>`:''}</div>`;
   h += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><span style="font-size:10px;color:var(--muted)">${levels.map(function(l){return 'Lv'+l.lv+' $'+l.wage;}).join(' / ')}</span>`;
   if(canEdit){
     h += `<span style="margin-left:auto;font-size:10px;color:var(--muted)">総合:</span><div style="display:flex;gap:4px">`;
@@ -20055,32 +20072,29 @@ function renderStorePrepPanel(storeId){
     h += `</div>`;
   }
   h += `</div>`;
-  h += `<div style="font-size:9.5px;color:var(--muted);margin-bottom:8px">1:${PREP_SKILL_LEGEND[1]} / 2:${PREP_SKILL_LEGEND[2]} / 3:${PREP_SKILL_LEGEND[3]} / 4:${PREP_SKILL_LEGEND[4]} / 5:${PREP_SKILL_LEGEND[5]}（同じ数字を再タップで解除）</div>`;
-  if(!preps.length) h += `<div style="font-size:12px;color:var(--muted)">この店舗のプレップ専門職は未登録です。下から追加できます。</div>`;
-  preps.forEach(function(e){
-    var sk = prepSkillsOf(e, storeId);
-    var lv = prepOverallLevel(e, storeId);
-    var wage = prepWageForLv(lv);
-    h += `<div style="border:1px solid var(--border);border-radius:9px;padding:9px 10px;margin-bottom:8px">`;
-    h += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-weight:700;font-size:13px">${escapeHtml(e.name)}</div><div style="text-align:right"><span style="font-size:11px;font-weight:800;color:var(--accent)">総合 Lv${lv}</span> <span style="font-family:ui-monospace,monospace;font-weight:800;color:#15a66a">$${Number(wage).toFixed(2)}</span></div></div>`;
-    positions.forEach(function(p, i){
-      var cur = Number(sk[p]||0);
-      h += `<div style="display:flex;align-items:center;gap:6px;margin:3px 0"><span style="flex:1;min-width:0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p)}</span><div style="display:flex;gap:3px">`;
-      [1,2,3,4,5].forEach(function(n){
-        var on = cur===n;
-        h += `<div ${canEdit?`onclick="setPrepSkill('${e.id}','${storeId}',${i},${n})"`:''} title="${PREP_SKILL_LEGEND[n]}" style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;border-radius:5px;border:1px solid ${on?'var(--accent)':'var(--border)'};background:${on?'var(--accent)':'var(--surface2)'};color:${on?'#fff':'var(--muted)'};cursor:${canEdit?'pointer':'default'}">${n}</div>`;
-      });
-      h += `</div></div>`;
+  if(!preps.length){
+    h += `<div style="font-size:12px;color:var(--muted)">この店舗のプレップ専門職は未登録です。下から追加できます。</div>`;
+  } else {
+    h += `<div style="overflow-x:auto"><table class="inv-table" style="min-width:500px"><thead><tr><th>スタッフ</th>${positions.map(function(p){return `<th style="font-size:10px" title="${escapeHtml(p)}">${escapeHtml(p.slice(0,5))}</th>`;}).join('')}<th style="font-size:10px">総合/時給</th></tr></thead><tbody>`;
+    preps.forEach(function(e){
+      var sk = prepSkillsOf(e, storeId);
+      var lv = prepOverallLevel(e, storeId);
+      var wage = prepWageForLv(lv);
+      h += `<tr><td style="font-weight:600;font-size:12px${canEdit?';cursor:pointer':''}"${canEdit?` onclick="removePrepEmp('${e.id}')" title="タップで指定解除"`:''}>${escapeHtml(e.name)}</td>${positions.map(function(p,i){
+        var v=Number(sk[p]||0); var bg=prepCellBg(v);
+        return `<td ${canEdit?`onclick="openPrepCellPopup('${e.id}','${storeId}',${i})"`:''} style="text-align:center;cursor:${canEdit?'pointer':'default'};color:${v?'#fff':'var(--muted)'};background:${bg};border-radius:4px">${v||'-'}</td>`;
+      }).join('')}<td style="text-align:center;font-size:11px"><b style="color:var(--accent)">Lv${lv}</b><div style="font-family:ui-monospace,monospace;color:#15a66a;font-size:10px">$${Number(wage).toFixed(2)}</div></td></tr>`;
     });
-    if(canEdit) h += `<div style="text-align:right;margin-top:5px"><span style="font-size:10px;color:var(--muted);cursor:pointer;text-decoration:underline" onclick="removePrepEmp('${e.id}')">指定を外す</span></div>`;
-    h += `</div>`;
-  });
+    h += `</tbody></table></div>`;
+    h += `<div style="font-size:11px;color:var(--muted);margin-top:6px">セルをタップで評価（1:${PREP_SKILL_LEGEND[1]} / 2:${PREP_SKILL_LEGEND[2]} / 3:${PREP_SKILL_LEGEND[3]} / 4:${PREP_SKILL_LEGEND[4]} / 5:${PREP_SKILL_LEGEND[5]}）· 「総合/時給」＝${method==='min'?'最低項目':'平均'}で算出した時給連動レベル${canEdit?' · 氏名タップで指定解除':''}</div>`;
+  }
   if(canEdit && cands.length){
     h += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><select id="prepAddSelSk" class="form-select" style="flex:1;min-width:140px;padding:7px;font-size:12px"><option value="">クルーを選択…</option>${cands.map(function(e){return `<option value="${e.id}">${escapeHtml(e.name)}</option>`;}).join('')}</select><button class="btn btn-primary btn-sm" onclick="addPrepEmp(document.getElementById('prepAddSelSk').value)">プレップに追加</button></div>`;
   }
   h += `</div>`;
   return h;
 }
+
 
 
 function setPrepLv(empId, lv){
