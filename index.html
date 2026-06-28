@@ -5621,8 +5621,9 @@ function getDow(b) {
 }
 /* 予算対象月（getPeriod の "YYYY.M" を年月に） */
 function budgetYM() {
-  var p = getPeriod().split('.');
-  return { y: parseInt(p[0],10), m: parseInt(p[1],10) };
+  var off = (typeof dailyMonthOffset!=='undefined' ? (dailyMonthOffset||0) : 0);
+  var d = new Date(); d.setMonth(d.getMonth()+off);
+  return { y: d.getFullYear(), m: d.getMonth()+1 };
 }
 /* その月に各曜日（月→日）が何回あるか。返り値は長さ7の配列 */
 function weekdayCountsForMonth(y, m) {
@@ -6807,9 +6808,25 @@ function storeSelectBar(current, onchangeFn, label){
 
 var budgetTab = 'summary';
 var _budgetStore = 'ALL';
+function budgetMonthOptions(){
+  var off, opts='';
+  var cur=(typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
+  for(off=1; off>=-6; off--){
+    var d=new Date(); d.setMonth(d.getMonth()+off);
+    var tag = off===0?'（今月）':off===1?'（来月）':off===-1?'（先月）':'';
+    opts += '<option value="'+off+'"'+(off===cur?' selected':'')+'>'+d.getFullYear()+'年'+(d.getMonth()+1)+'月'+tag+'</option>';
+  }
+  return opts;
+}
+function setBudgetMonthSel(v){
+  var off=parseInt(v,10)||0; dailyMonthOffset=off;
+  renderPage('budget');
+  if(off<=0){ try{ loadMonthAndRerender(ymFromOffset(off),'budget'); }catch(e){} }
+}
 function renderBudget() {
   var html = `<div class="section-header">
-    <div><div class="section-title">予実管理</div><div class="section-sub">${getPeriod()}</div></div>
+    <div><div class="section-title">予実管理</div><div class="section-sub">対象月を選択（前月実績の確認・来月の予算設定）</div></div>
+    <select class="form-select" style="width:auto;min-width:150px;font-size:13px" onchange="setBudgetMonthSel(this.value)">${budgetMonthOptions()}</select>
   </div>
   <div class="phase-tabs">
     <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">サマリー</div>
@@ -6873,7 +6890,7 @@ function renderBudgetSetup() {
       ${segCard('ディナー', dowMode?dowBd.dinner:segSales(segs.dinner,'dinner'), 'var(--accent)')}
       ${segCard('テイクアウト', dowMode?dowBd.takeout:segSales(segs.takeout,'takeout'), 'var(--accent2)')}
     </div>
-    ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> 曜日別で作成（${getPeriod()}月の曜日数で自動計算）</div>`:''}
+    ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> 曜日別で作成（${dailyMonthLabel()}の曜日数で自動計算）</div>`:''}
     <div class="kpi-grid" style="margin:8px 0">
       ${kpi('月間売上予算', fmtK(Math.round(total)), '3区分合計', 'var(--tm)')}
       ${kpi('Labor予算', fmtK(Math.round(laborB)), total?Math.round(laborB/total*100)+'%':'—', 'var(--muted)')}
