@@ -1484,6 +1484,7 @@ const NAV_ITEMS = [
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
   {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am']},
+  {id:'mileage',     label:'ガソリン代',  icon:'ti-gas-station',      roles:['ceo','gm','office','am','sl','crew']},
   {id:'hr',          label:'HR・福利厚生', icon:'ti-heart-handshake',  roles:['ceo','gm','office']},
   {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','am','sl']},
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
@@ -1514,7 +1515,7 @@ const MENU_GROUPS = [
   {id:'g_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office','am','sl'],
     children:['tasks']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation']},
+    children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation','mileage']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
@@ -1524,7 +1525,7 @@ const MENU_GROUPS = [
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
 const OFFICE_GROUPS = [
   {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
-    children:['office_mgr','approval','vacation','notifications']},
+    children:['office_mgr','approval','vacation','mileage','notifications']},
   {id:'go_acct', label:'経理', icon:'ti-calculator', roles:['ceo','gm','office'],
     children:['invoice','acct_review','acct_export','monthly','budget']},
   {id:'go_order', label:'発注', icon:'ti-package', roles:['ceo','gm','office'],
@@ -1538,6 +1539,7 @@ const CREW_GROUPS = [
   {id:'g_myshift', label:'シフト', icon:'ti-calendar-event', children:['shift_staff']},
   {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['skill','ojtmap']},
   {id:'g_tip', label:'チップ', icon:'ti-coin', children:['tiprate']},
+  {id:'g_mile', label:'交通費', icon:'ti-gas-station', children:['mileage']},
   {id:'g_store', label:'店舗オペレーション', icon:'ti-building-store', children:['store_cmd']},
 ];
 /* 店舗共有アカウント（タブレット等）: 店舗オペレーション中心の絞ったメニュー */
@@ -3382,6 +3384,7 @@ var _SPLIT_KEYS = {
   tip_history:      {type:'arr', by:function(r){return r&&r.name;}},
   ot_requests:      {type:'arr', by:function(r){return r&&r.name;}},
   my_vacations:     {type:'arr', by:function(r){return r&&r.employee;}},
+  mileage_requests: {type:'arr', by:function(r){return r&&r.employee;}},
   crew_education:   {type:'obj'},
   benefit_adjust:   {type:'obj'},
   store_ingredients:{type:'obj'},
@@ -3488,7 +3491,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
-  'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
+  'my_vacations','mileage_requests','mileage_config','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
@@ -4418,7 +4421,7 @@ function switchStore(id) {
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['office_mgr','error_center','invoice','acct_review','acct_export','supply_order','order','monthly','budget','profile','settings','notifications','staff_dev','approval','vacation'];
+var OFFICE_OK_PAGES = ['office_mgr','error_center','invoice','acct_review','acct_export','supply_order','order','monthly','budget','profile','settings','notifications','staff_dev','approval','vacation','mileage'];
 
 /* ============================================================
    ROUTER
@@ -4454,6 +4457,7 @@ function renderPage(page) {
     case 'shift_admin':  el.innerHTML = renderShiftAdmin(); break;
     case 'shift_staff':  el.innerHTML = renderShiftStaff(); break;
     case 'vacation':     el.innerHTML = renderVacation(); break;
+    case 'mileage':      el.innerHTML = renderMileage(); break;
     case 'hr':           el.innerHTML = renderHR(); break;
     case 'hiring':       el.innerHTML = renderHiring(); break;
     case 'onboarding':   hiringTab='onboard'; el.innerHTML = renderHiring(); break;
@@ -13967,6 +13971,179 @@ function weekDateForDow(dow) {
 /* ============================================================
    VACATION
 ============================================================ */
+/* ===== ガソリン代（マイレージ）精算：自動距離計算(Google Maps)＋マイル×単価 ===== */
+function getMileageConfig(){ var c=ls('mileage_config', {})||{}; return { gmapsKey:c.gmapsKey||'', ratePerMile:(c.ratePerMile!=null?Number(c.ratePerMile):0.70), roundTripDefault:(c.roundTripDefault!==false) }; }
+function setMileageConfig(c){ lsSet('mileage_config', c); }
+function getMileageRequests(){ return ls('mileage_requests', [])||[]; }
+function saveMileageReqs(v){ lsSet('mileage_requests', v); }
+function mileMyName(){ return curUserName||(ROLE_CONFIG[curRole]||{}).name; }
+function canApproveMileage(r){
+  if(curRole==='gm'||curRole==='ceo'||curRole==='office') return true;
+  if(curRole==='am') return myAmStores().includes(r.storeId);
+  if((curRole==='sl' && (typeof vacManagerGrade==='function'?vacManagerGrade():0)>=4) || curStoreLogin){
+    var myStore = curStore!=='ALL' ? curStore : (getEmployees().find(function(e){return e.name===curUserName;})||{}).store;
+    return r.storeId===myStore;
+  }
+  return false;
+}
+function canManageMileage(){ return ['ceo','gm','office'].includes(curRole) || canManageVacations(); }
+
+var _gmapsLoading=null;
+function ensureGoogleMaps(){
+  var key=getMileageConfig().gmapsKey;
+  if(!key) return Promise.reject(new Error('no_key'));
+  if(window.google && window.google.maps && window.google.maps.places) return Promise.resolve(window.google.maps);
+  if(_gmapsLoading) return _gmapsLoading;
+  _gmapsLoading=new Promise(function(res,rej){
+    var s=document.createElement('script');
+    s.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(key)+'&libraries=places&loading=async';
+    s.async=true; s.onload=function(){ if(window.google&&window.google.maps) res(window.google.maps); else rej(new Error('gmaps load')); };
+    s.onerror=function(){ _gmapsLoading=null; rej(new Error('gmaps load')); };
+    document.head.appendChild(s);
+  });
+  return _gmapsLoading;
+}
+
+function openMileageConfig(){
+  if(!canManageMileage()){ alert('権限がありません'); return; }
+  var c=getMileageConfig();
+  openModal('<div class="modal-title">ガソリン代・地図設定 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Google Mapsで出発地→目的地の運転距離を自動計算します。Google Maps Platformの<b>APIキー</b>（Maps JavaScript API＋Places API＋Distance Matrix API を有効化・課金ON）を登録してください。キーは<b>ブラウザ用</b>として、HTTPリファラーを <code>'+escapeHtml(location.origin)+'/*</code> に制限することを推奨します。</div>'
+    +'<div class="form-group"><label class="form-label">Google Maps APIキー</label><input class="form-input" id="mi-key" value="'+escapeHtml(c.gmapsKey)+'" placeholder="AIza..."></div>'
+    +'<div class="form-group"><label class="form-label">単価（$ / マイル, IRS方式）</label><input class="form-input" id="mi-rate" type="number" step="0.01" value="'+c.ratePerMile+'"></div>'
+    +'<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="mi-rtdef" '+(c.roundTripDefault?'checked':'')+'> 既定で往復にする</label></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="saveMileageConfigDo()">保存</button></div>');
+}
+function saveMileageConfigDo(){
+  var key=(document.getElementById('mi-key').value||'').trim();
+  var rate=parseFloat(document.getElementById('mi-rate').value)||0.70;
+  var rt=document.getElementById('mi-rtdef').checked;
+  setMileageConfig({ gmapsKey:key, ratePerMile:rate, roundTripDefault:rt });
+  closeModalDirect(); showToast('設定を保存しました','success'); renderPage('mileage');
+}
+
+var _mileOneWay=null;
+function openMileageModal(){
+  var c=getMileageConfig();
+  var today=new Date().toISOString().slice(0,10);
+  _mileOneWay=null;
+  openModal('<div class="modal-title"><i class="ti ti-gas-station"></i> ガソリン代を申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +(c.gmapsKey?'':'<div class="alert alert-warning" style="padding:8px 10px;font-size:12px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i> Google Maps APIキーが未設定です。'+(canManageMileage()?'<a href="#" onclick="openMileageConfig();return false;">設定する</a>':'管理者に設定を依頼してください')+'。距離は手入力になります。</div>')
+    +'<div class="form-row" style="gap:8px"><div class="form-group" style="flex:1"><label class="form-label">日付</label><input class="form-input" id="mi-date" type="date" value="'+today+'"></div>'
+    +'<div class="form-group" style="flex:1"><label class="form-label">目的</label><select class="form-select" id="mi-purpose"><option>買い出し</option><option>ミーティング</option><option>銀行・郵便</option><option>店舗間移動</option><option>その他</option></select></div></div>'
+    +'<div class="form-group"><label class="form-label">出発地</label><input class="form-input" id="mi-origin" placeholder="住所・店舗名で検索" autocomplete="off"></div>'
+    +'<div class="form-group"><label class="form-label">目的地</label><input class="form-input" id="mi-dest" placeholder="住所・店舗名で検索" autocomplete="off"></div>'
+    +'<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="mi-roundtrip" '+(c.roundTripDefault?'checked':'')+' onchange="mileageUpdateAmount()"> 往復</label></div>'
+    +'<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><button class="btn btn-secondary btn-sm" onclick="mileageCalcDistance()"><i class="ti ti-route"></i> 距離を計算</button>'
+    +'<input class="form-input" id="mi-miles-manual" type="number" step="0.1" placeholder="距離(片道mi)手入力" style="flex:1;font-size:12px" oninput="mileageManualMiles(this.value)"></div>'
+    +'<div id="mi-dist-status" style="font-size:13px;padding:8px;background:var(--surface2);border-radius:8px;margin-bottom:8px;color:var(--muted)">距離を計算してください</div>'
+    +'<div class="form-group"><label class="form-label">メモ（任意）</label><input class="form-input" id="mi-memo" placeholder="補足"></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="saveMileageRequest()">申請する</button></div>');
+  if(c.gmapsKey){ setTimeout(mileageInitAutocomplete, 120); }
+}
+function mileageInitAutocomplete(){
+  ensureGoogleMaps().then(function(maps){
+    ['mi-origin','mi-dest'].forEach(function(id){
+      var elx=document.getElementById(id); if(!elx||elx._ac) return;
+      try{ var ac=new maps.places.Autocomplete(elx, {fields:['formatted_address','name','geometry']}); elx._ac=ac; }catch(e){}
+    });
+  }).catch(function(){});
+}
+function mileageManualMiles(v){ var m=parseFloat(v); _mileOneWay=(isNaN(m)?null:Math.round(m*10)/10); mileageUpdateAmount(); }
+function mileageCalcDistance(){
+  var o=(document.getElementById('mi-origin').value||'').trim(), d=(document.getElementById('mi-dest').value||'').trim();
+  var st=document.getElementById('mi-dist-status');
+  if(!o||!d){ if(st) st.innerHTML='出発地と目的地を入力してください'; return; }
+  if(st) st.innerHTML='<i class="ti ti-loader"></i> 距離を計算中…';
+  ensureGoogleMaps().then(function(maps){
+    var svc=new maps.DistanceMatrixService();
+    svc.getDistanceMatrix({origins:[o], destinations:[d], travelMode:maps.TravelMode.DRIVING, unitSystem:maps.UnitSystem.IMPERIAL}, function(resp,status){
+      if(status!=='OK'||!resp||!resp.rows[0]||!resp.rows[0].elements[0]||resp.rows[0].elements[0].status!=='OK'){ if(st) st.innerHTML='距離を取得できませんでした。住所を具体的に入力するか、手入力してください。'; return; }
+      var elx=resp.rows[0].elements[0]; var miles=elx.distance.value/1609.344;
+      _mileOneWay=Math.round(miles*10)/10; mileageUpdateAmount();
+    });
+  }).catch(function(e){ if(st) st.innerHTML=(e&&e.message==='no_key')?'APIキー未設定。手入力してください。':'地図の読込に失敗しました。手入力してください。'; });
+}
+function mileageUpdateAmount(){
+  var st=document.getElementById('mi-dist-status'); if(!st) return;
+  if(_mileOneWay==null){ st.innerHTML='距離を計算してください'; return; }
+  var rt=(document.getElementById('mi-roundtrip')||{}).checked; var rate=getMileageConfig().ratePerMile;
+  var total=Math.round(_mileOneWay*(rt?2:1)*10)/10; var amt=Math.round(total*rate*100)/100;
+  st.innerHTML='片道 <b>'+_mileOneWay+' mi</b>'+(rt?'　往復 <b>'+total+' mi</b>':'')+'　× $'+rate+'/mi　＝　<b style="color:var(--green);font-size:15px">$'+amt.toFixed(2)+'</b>';
+}
+function saveMileageRequest(){
+  var me=mileMyName();
+  var o=(document.getElementById('mi-origin').value||'').trim(), d=(document.getElementById('mi-dest').value||'').trim();
+  if(!o||!d){ alert('出発地と目的地を入力してください'); return; }
+  if(_mileOneWay==null){ alert('距離を計算するか、手入力してください'); return; }
+  var rt=(document.getElementById('mi-roundtrip')||{}).checked; var rate=getMileageConfig().ratePerMile;
+  var totalMiles=Math.round(_mileOneWay*(rt?2:1)*10)/10; var amount=Math.round(totalMiles*rate*100)/100;
+  var meEmp=getEmployees().find(function(e){return e.name===me;});
+  var storeId=(meEmp&&meEmp.store)||(curStore!=='ALL'?curStore:STORES[0].id);
+  var req={ id:'mi'+Date.now(), employee:me, storeId:storeId,
+    date:(document.getElementById('mi-date').value||new Date().toISOString().slice(0,10)),
+    purpose:document.getElementById('mi-purpose').value, origin:o, destination:d,
+    oneWayMiles:_mileOneWay, roundTrip:!!rt, miles:totalMiles, rate:rate, amount:amount,
+    memo:(document.getElementById('mi-memo')||{}).value||'', status:'申請中', createdAt:new Date().toLocaleString('ja') };
+  var arr=getMileageRequests(); arr.push(req); saveMileageReqs(arr);
+  closeModalDirect(); showToast('ガソリン代を申請しました（$'+amount.toFixed(2)+'）','success'); renderPage('mileage');
+}
+function approveMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; } r.status='承認'; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.approvedAt=new Date().toLocaleString('ja'); saveMileageReqs(arr); showToast(r.employee+' のガソリン代を承認しました（$'+(r.amount||0).toFixed(2)+'）','success'); renderPage('mileage'); }
+function rejectMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; } var re=prompt('却下理由（任意）:')||''; r.status='却下'; r.rejectReason=re; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole; saveMileageReqs(arr); showToast('却下しました','info'); renderPage('mileage'); }
+function deleteMyMileage(id){
+  var me=mileMyName(); var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
+  if(r.employee!==me){ alert('自分の申請のみ取消できます'); return; }
+  if(r.status!=='申請中'){ alert('承認待ちの申請のみ取消できます'); return; }
+  if(!confirm('この申請を取り消しますか？')) return;
+  var idx=arr.findIndex(function(x){return x.id===id;}); arr.splice(idx,1); saveMileageReqs(arr);
+  showToast('申請を取り消しました','info'); renderPage('mileage');
+}
+function _mileRow(r, withActions){
+  var sName=(STORES.find(function(s){return s.id===r.storeId;})||{name:r.storeId}).name;
+  var sc=r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
+  var h='<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+    +'<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">'
+    +'<div style="flex:1"><div style="font-size:13px;font-weight:600">'+escapeHtml(r.employee)+' <span style="font-size:10px;color:var(--muted)">· '+escapeHtml(sName)+' · '+escapeHtml(r.date||'')+'</span></div>'
+    +'<div style="font-size:12px;color:var(--muted)">'+escapeHtml(r.purpose||'')+'：'+escapeHtml(r.origin||'')+' → '+escapeHtml(r.destination||'')+'</div>'
+    +'<div style="font-size:12px">'+r.miles+' mi'+(r.roundTrip?'（往復）':'')+' × $'+r.rate+' = <b>$'+(r.amount||0).toFixed(2)+'</b></div>'
+    +(r.memo?'<div style="font-size:11px;color:var(--muted)">memo: '+escapeHtml(r.memo)+'</div>':'')
+    +(r.status==='却下'&&r.rejectReason?'<div style="font-size:11px;color:var(--red)">却下理由: '+escapeHtml(r.rejectReason)+'</div>':'')
+    +'</div><span class="tag '+sc+'">'+r.status+'</span></div>';
+  if(withActions==='approve'){
+    h+='<div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-success btn-sm" style="padding:2px 12px" onclick="approveMileage(\''+r.id+'\')"><i class="ti ti-check"></i> 承認</button>'
+      +'<button class="btn btn-danger btn-sm" style="padding:2px 12px" onclick="rejectMileage(\''+r.id+'\')"><i class="ti ti-x"></i> 却下</button></div>';
+  } else if(withActions==='cancel' && r.status==='申請中'){
+    h+='<div style="margin-top:6px;text-align:right"><button class="btn btn-secondary btn-sm" style="padding:2px 10px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="deleteMyMileage(\''+r.id+'\')"><i class="ti ti-x"></i> 申請を取消</button></div>';
+  }
+  return h+'</div>';
+}
+function renderMileage(){
+  var all=getMileageRequests(); var me=mileMyName(); var isMgr=canManageMileage();
+  var c=getMileageConfig();
+  var html='<div class="section-header"><div class="section-title">ガソリン代申請</div>'
+    +'<div style="display:flex;gap:6px">'+(isMgr?'<button class="btn btn-secondary btn-sm" onclick="openMileageConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
+    +'<button class="btn btn-primary btn-sm" onclick="openMileageModal()"><i class="ti ti-plus"></i> 申請</button></div></div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。出発地→目的地の運転距離を自動計算し、$'+c.ratePerMile+'/マイルで算定します。</div>';
+  if(isMgr){
+    var pending=all.filter(function(r){ return r.status==='申請中' && canApproveMileage(r); });
+    html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'" style="margin-left:auto">'+pending.length+'</span></div>';
+    html+= pending.length ? pending.map(function(r){return _mileRow(r,'approve');}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
+    html+='</div>';
+    var approved=all.filter(function(r){ return r.status==='承認' && canApproveMileage(r); }).sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}).slice(0,15);
+    if(approved.length){
+      var sum=approved.reduce(function(a,r){return a+(r.amount||0);},0);
+      html+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--green)"></i>承認済み（直近）<span class="tag tag-green" style="margin-left:auto">$'+sum.toFixed(2)+'</span></div>'+approved.map(function(r){return _mileRow(r,null);}).join('')+'</div>';
+    }
+  }
+  var mine=all.filter(function(r){return r.employee===me;});
+  html+='<div class="card"><div class="card-title"><i class="ti ti-gas-station"></i>自分の申請</div>';
+  html+= mine.length ? mine.slice().reverse().map(function(r){return _mileRow(r,'cancel');}).join('') : '<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">申請履歴なし</div>';
+  html+='</div>';
+  return html;
+}
+
 /* ============ 休暇リクエスト（承認→シフト反映） ============
    my_vacations: [{id, employee, storeId, type, startDate, endDate, reason, status:'申請中'|'承認'|'却下', date, approvedBy, approvedAt}]
    承認できるのは: 所属店舗のSL以上 / AM / GM */
@@ -24806,13 +24983,16 @@ function openInvoiceModal() {
     </div>` : ''}
     <div class="form-group"><label class="form-label">${invoiceDocType}画像（AI読取）</label>
       <input type="file" id="inv-photo" accept="image/*" capture="environment" style="display:none" onchange="realInvoiceOCR(this)">
+      <input type="file" id="inv-file" accept="image/*,application/pdf" style="display:none" onchange="onInvoiceFilePicked(this)">
       <div style="border:2px dashed var(--border);border-radius:8px;padding:18px;text-align:center;cursor:pointer" onclick="document.getElementById('inv-photo').click()">
         <i class="ti ti-camera" style="font-size:28px;color:var(--muted)"></i>
         <div style="font-size:12px;color:var(--muted);margin-top:6px">写真を撮影／選択してAIで読み取り</div>
       </div>
       <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('inv-file').click()"><i class="ti ti-file-upload"></i> ファイルから読込（PDF/画像）</button>
         <button class="btn btn-secondary btn-sm" style="flex:1" onclick="addManualInvoiceLine()"><i class="ti ti-plus"></i> 手入力で品目追加</button>
       </div>
+      <div style="font-size:10.5px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> メール等でデータ受領したInvoice（PDF/画像）をそのまま読み込めます。PDFは自動で画像化してAI読取します（最大3ページ）。</div>
     </div>
     <div id="ocr-result"></div>
     <div class="btn-row">
@@ -24926,6 +25106,60 @@ var INV_MATCH_SUGGEST = 0.45;  // これ以上〜AUTO未満：要確認で候補
 function matchLineToIngredient(name){ var r=matchLineBest(name); return r.score>=INV_MATCH_AUTO ? r.ing : null; }
 async function realInvoiceOCR(input){
   var file=input&&input.files&&input.files[0];
+  if(!file) return;
+  await runInvoiceOCR(file);
+  try{ input.value=''; }catch(e){}
+}
+async function onInvoiceFilePicked(input){
+  var file=input&&input.files&&input.files[0];
+  if(!file){ return; }
+  var el=document.getElementById('ocr-result');
+  var isPdf = (file.type==='application/pdf') || /\.pdf$/i.test(file.name||'');
+  if(isPdf){
+    if(el) el.innerHTML='<div class="alert alert-info" style="margin-bottom:8px"><i class="ti ti-loader"></i> PDFを画像に変換中…</div>';
+    try{
+      var img=await pdfToImageFile(file);
+      await runInvoiceOCR(img);
+    }catch(e){
+      console.warn('pdf ocr', e);
+      if(el) el.innerHTML='<div class="alert alert-warning" style="margin-bottom:8px"><i class="ti ti-alert-triangle"></i> PDFの読込に失敗しました。画像（JPG/PNG）にして読み取るか、手入力で追加してください。</div>';
+    }
+  } else {
+    await runInvoiceOCR(file);
+  }
+  try{ input.value=''; }catch(e){}
+}
+function _loadScriptOnce(src){ return new Promise(function(res,rej){ if(document.querySelector('script[data-src="'+src+'"]')){ res(); return; } var sc=document.createElement('script'); sc.src=src; sc.setAttribute('data-src',src); sc.onload=function(){res();}; sc.onerror=function(){rej(new Error('load fail '+src));}; document.head.appendChild(sc); }); }
+async function ensurePdfJs(){
+  if(window.pdfjsLib) return window.pdfjsLib;
+  await _loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+  if(window.pdfjsLib){ try{ window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){} }
+  return window.pdfjsLib;
+}
+async function pdfToImageFile(file){
+  var lib=await ensurePdfJs(); if(!lib) throw new Error('pdfjs unavailable');
+  var buf=await file.arrayBuffer();
+  var pdf=await lib.getDocument({data:buf}).promise;
+  var nPages=Math.min(pdf.numPages||1, 3);
+  var rendered=[], maxW=0, totalH=0;
+  for(var p=1;p<=nPages;p++){
+    var page=await pdf.getPage(p);
+    var base=page.getViewport({scale:1});
+    var scale=Math.min(2, 1500/(base.width||1000));
+    var vp=page.getViewport({scale:scale});
+    var c=document.createElement('canvas'); c.width=Math.ceil(vp.width); c.height=Math.ceil(vp.height);
+    await page.render({canvasContext:c.getContext('2d'), viewport:vp}).promise;
+    rendered.push(c); maxW=Math.max(maxW,c.width); totalH+=c.height;
+  }
+  var out=document.createElement('canvas'); out.width=maxW; out.height=totalH;
+  var ctx=out.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,out.width,out.height);
+  var y=0; rendered.forEach(function(c){ ctx.drawImage(c,0,y); y+=c.height; });
+  var blob=await new Promise(function(r){ out.toBlob(r,'image/jpeg',0.85); });
+  if(!blob) throw new Error('canvas toBlob failed');
+  var nm=(file.name||'invoice').replace(/\.pdf$/i,'')+'.jpg';
+  return new File([blob], nm, {type:'image/jpeg'});
+}
+async function runInvoiceOCR(file){
   if(!file) return;
   window._invoicePhotoFile = file;
   var el=document.getElementById('ocr-result');
