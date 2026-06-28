@@ -18698,6 +18698,9 @@ const LSS_GROUPS = {
 };
 function lssGroupsOf(catKey) {
   var cc = (typeof curLssCat==='function') ? curLssCat(catKey) : null;
+  // 専門職（部門別A〜H軸）は一般カテゴリのグループ定義を流用しない（項目ズレ防止）
+  var _isSpec=false; try{ var _se=getEmployees().find(function(x){return x.name===window._lssName;}); _isSpec=!!(_se&&empSpecialistDept(_se)); }catch(_e){}
+  if (_isSpec) return [['',0,(((cc&&cc.items&&cc.items.length)||1))-1]];
   if (cc && cc.items && cc.items.length<=1) return [['',0,(cc.items.length||1)-1]]; // 専門職など単一項目
   if (LSS_GROUPS[catKey]) return LSS_GROUPS[catKey];
   var c = LSS_CATEGORIES.find(x=>x.key===catKey);
@@ -20972,6 +20975,15 @@ function renderPipeOrg(stores){
   });
   tbl+='</table></div></div>';
   html+=tbl;
+  // オフィス（本部機能・全店横断）
+  var officeStaff=getEmployees().filter(function(e){ return ['office','office_crew'].includes(e.role) && e.status!=='退職'; });
+  if(officeStaff.length){
+    officeStaff.sort(byGrade);
+    html+='<div class="card" style="margin-top:10px"><div class="card-title"><i class="ti ti-briefcase" style="color:#6b7280"></i> オフィス（本部機能・全店横断）</div>';
+    html+='<div style="font-size:10px;color:var(--muted);margin-bottom:8px">経理・事務などの本部機能。特定店舗に属さず全店を横断で支援します（会計／給与／請求／採用事務など）。スキル評価はスキル画面の「オフィス」タブ。</div>';
+    html+='<div style="display:flex;gap:6px;flex-wrap:wrap">'+officeStaff.map(function(e){ var dept=empSpecialistDept(e); return '<div style="border:1px solid var(--border);border-radius:8px;padding:6px 9px;min-width:118px">'+pipeOrgChip(e)+'<div style="font-size:9px;color:var(--muted);margin-top:3px">'+escapeHtml(e.title||(e.role==='office'?'経理':'事務Crew'))+' · '+empGrade(e)+(dept?(' · '+escapeHtml(dept)):'')+'</div></div>'; }).join('')+'</div>';
+    html+='</div>';
+  }
   return html;
 }
 function renderTalentPipeline(){
@@ -21330,7 +21342,7 @@ function renderLssItems() {
     for (var i=from;i<=to;i++){
       var label=c.items[i];
       // Hカテゴリは項目テキストの「グループ名：」を除去（見出しと重複するため）
-      if (c.key==='H' && label.indexOf('：')>=0) label=label.split('：').slice(1).join('：');
+      if (c.key==='H' && label && (''+label).indexOf('：')>=0) label=(''+label).split('：').slice(1).join('：');
       var id=lssItemId(c.key,i); var has=(draft[id]!=null && draft[id]!==''); var val=parseInt(draft[id])||0;
       out += `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
         <div style="flex:1;font-size:12px">${label}</div>
@@ -21343,7 +21355,7 @@ function renderLssItems() {
 /* 採点ポップアップ：基準（0〜3）を見ながら点数を選ぶ（編集時ポップアップ） */
 function openLssScorePopup(catKey, idx){
   var c=curLssCat(catKey); if(!c)return;
-  var label=c.items[idx]; if(catKey==='H' && (''+label).indexOf('：')>=0) label=label.split('：').slice(1).join('：');
+  var label=c.items[idx]; if(catKey==='H' && label && (''+label).indexOf('：')>=0) label=(''+label).split('：').slice(1).join('：');
   var id=lssItemId(catKey, idx);
   var cur=(window._lssDraft||{})[id]; cur=(cur!=null&&cur!=='')?parseInt(cur):null;
   var canScore=canEditLss(window._lssName);
@@ -25391,7 +25403,8 @@ function ojtCareerList(){
   var list = getEmployees().filter(function(e){
     if(e.status==='退職') return false;
     if(gradeNum(empGrade(e)) < 2) return false;
-    if(sel && sel!=='ALL' && !(e.store===sel || (e.support||[]).includes(sel))) return false;
+    if(sel==='OFFICE'){ if(!['office','office_crew'].includes(e.role)) return false; }
+    else if(sel && sel!=='ALL' && !(e.store===sel || (e.support||[]).includes(sel))) return false;
     return true;
   });
   list.sort(function(a,b){ var d=gradeNum(empGrade(b))-gradeNum(empGrade(a)); return d!==0?d:String(a.name).localeCompare(String(b.name)); });
@@ -27284,7 +27297,7 @@ function renderSkillManager() {
   var skillStores = visStores.slice(); if(['gm','ceo','office'].indexOf(curRole)>=0 && !skillStores.find(function(x){return x.id==='OFFICE';})) skillStores.push({id:'OFFICE',name:'オフィス',color:'#6b7280'});
 
   if (window._skillView==='staff') { html += renderSkillStaffView(); return html; }
-  if (window._skillView==='position') { html += renderSkillPositionView(mgrStoreId, visStores); return html; }
+  if (window._skillView==='position') { html += renderSkillPositionView(mgrStoreId, skillStoreListUI()); return html; }
 
   // ===== 店舗別ビュー（マトリクス） =====
   var matrixPos = getStorePositions(mgrStoreId);
@@ -27336,6 +27349,11 @@ function renderSkillManager() {
   return html;
 }
 
+function skillStoreListUI(){
+  var v=getVisibleStores().slice();
+  if(['gm','ceo','office'].indexOf(curRole)>=0 && !v.find(function(x){return x.id==='OFFICE';})) v.push({id:'OFFICE',name:'オフィス',color:'#6b7280'});
+  return v;
+}
 function setSkillMatrixStore(storeId) { window._skillMatrixStore = storeId; renderPage('skill'); }
 function setSkillView(v) { window._skillView = v; renderPage('skill'); }
 
@@ -27405,28 +27423,29 @@ function skillEvalSectionHtml(name){
 }
 function renderSkillStaffView() {
   var visStores = getVisibleStores();
-  if(window._skillStaffStore && window._skillStaffStore!=='ALL' && !visStores.find(function(s){return s.id===window._skillStaffStore;})) window._skillStaffStore='ALL';
+  if(window._skillStaffStore && window._skillStaffStore!=='ALL' && window._skillStaffStore!=='OFFICE' && !visStores.find(function(s){return s.id===window._skillStaffStore;})) window._skillStaffStore='ALL';
   var selStore = window._skillStaffStore || 'ALL';
   var tabs = '<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:8px">'
     + '<div class="phase-tab'+(selStore==='ALL'?' active':'')+'" onclick="setSkillStaffStore(\'ALL\')">全店</div>'
-    + visStores.map(function(s){return '<div class="phase-tab'+(selStore===s.id?' active':'')+'" style="'+(selStore===s.id?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="setSkillStaffStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>';}).join('')
+    + skillStoreListUI().map(function(s){return '<div class="phase-tab'+(selStore===s.id?' active':'')+'" style="'+(selStore===s.id?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="setSkillStaffStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>';}).join('')
     + '</div>';
   var staff = visibleStaffForManager().filter(function(e){
-    if(!['sl','crew'].includes(e.role)) return false;
     if(e.prep) return false; // プレップ専門職は一般スキル評価から除外（プレップLvで評価）
+    if(selStore==='OFFICE') return ['office','office_crew'].includes(e.role);
+    if(!['sl','crew'].includes(e.role)) return false;
     if(selStore!=='ALL' && !(e.store===selStore || (e.support||[]).includes(selStore))) return false;
     return true;
   });
   var html = tabs + `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">スタッフごとに、勤務する各店舗のスキル状況・現在のTip Rate・次の条件を表示します。</div>`;
   if (!staff.length) return html + '<div class="card" style="text-align:center;color:var(--muted);padding:20px">対象スタッフなし</div>';
   staff.slice(0,40).forEach(e=>{
-    var stores = [e.store].concat(e.support||[]).filter((v,i,a)=>v&&a.indexOf(v)===i);
+    var stores = ['office','office_crew'].includes(e.role) ? ['OFFICE'] : [e.store].concat(e.support||[]).filter((v,i,a)=>v&&a.indexOf(v)===i);
     if(selStore!=='ALL') stores = stores.filter(function(sid){return sid===selStore;});
     var rate = effectiveTipRate(e.name);
     html += `<div class="card"><div class="card-title"><i class="ti ti-user"></i>${e.name}
       <span class="tag ${rate===100?'tag-green':'tag-gray'}" style="margin-left:auto">Tip ${rate===0?'No':rate+'%'}</span></div>`;
     stores.forEach(sid=>{
-      var sObj = STORES.find(s=>s.id===sid)||{name:sid,color:'#888'};
+      var sObj = STORES.find(s=>s.id===sid)||{name:(sid==='OFFICE'?'オフィス':sid),color:'#6b7280'};
       var sc = skillScoreStore(e.name, sid);
       var ap = approvedPositionsStore(e.name, sid);
       var elig = checkLevelUpEligibility(e.name, sid);
@@ -27460,7 +27479,9 @@ function renderSkillPositionView(storeId, visStores) {
     </div>`;
   }
   var positions = getStorePositions(storeId).filter(p=>p!=='Energy'&&p!=='Leadership');
-  var staffHere = visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role) && !e.prep && (e.store===storeId || (e.support||[]).includes(storeId)));
+  var staffHere = (storeId==='OFFICE')
+    ? visibleStaffForManager().filter(e=>['office','office_crew'].includes(e.role) && e.status!=='退職')
+    : visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role) && !e.prep && (e.store===storeId || (e.support||[]).includes(storeId)));
   positions.forEach(pos=>{
     var lv3=[], lv2=[], lv1=[];
     staffHere.forEach(e=>{ var lv=positionLevelStore(e.name,pos,storeId); if(lv>=3)lv3.push(e.name); else if(lv===2)lv2.push(e.name); else if(lv===1)lv1.push(e.name); });
