@@ -593,7 +593,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
       <button type="button" id="lang-en" onclick="pickLang('en')" style="flex:1;max-width:140px;padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--tm);font-size:13px;font-weight:600;cursor:pointer">English</button>
     </div>
 
-    <!-- STEP 1: 所属（店舗・オフィスを同列で） -->
+    <!-- STEP 1: 所属（店舗・Officeを同列で） -->
     <div id="login-step-location">
       <div class="role-section">
         <div class="role-section-label" id="sec-store-label">所属を選択</div>
@@ -1467,7 +1467,8 @@ const NAV_ITEMS = [
   {id:'recipe',      label:'原価登録',    icon:'ti-receipt-2',        roles:['ceo','gm','office','am','sl']},
   {id:'invoice',     label:'請求書',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl']},
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office']},
-  {id:'office_mgr',  label:'オフィス管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office']},
+  {id:'office_mgr',  label:'Office管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office']},
+  {id:'error_center', label:'エラーセンター', icon:'ti-alert-hexagon', roles:['ceo','gm','office']},
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
@@ -2780,7 +2781,7 @@ function toggleTipExclude(storeId, date, name, slot) {
 function getTipLeaderSplit() { return false; /* Store Leader 50%別枠は廃止 */ }
 function setTipLeaderSplit(v) { lsSet('tip_leader_split', !!v); }
 
-/* Store Manager以上（管理職）＋オフィスはTip対象外。役職(title)ベースで判定
+/* Store Manager以上（管理職）＋OfficeはTip対象外。役職(title)ベースで判定
    ※権限ロールでは Store Manager=sl のため、roleだけでは除外できない */
 var TIP_EXCLUDED_TITLES = ['Prep','Prep Specialist','Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
 function isTipExcludedTitle(title){ return !!title && TIP_EXCLUDED_TITLES.indexOf(title) >= 0; }
@@ -3467,7 +3468,7 @@ var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config'
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
-var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
+var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
@@ -3810,8 +3811,8 @@ function bootLogin() {
   refreshLoginLabels();
   var grid = document.getElementById('login-store-grid');
   if (!grid) return;
-  // オフィスを店舗と同列・同サイズで先頭に表示
-  var officeCard = `<div class="store-btn" style="border-left:3px solid var(--accent)" onclick="loginPickLocation('OFFICE',this)"><i class="ti ti-building-skyscraper" style="font-size:13px;margin-right:3px"></i>${t('オフィス','Office')}</div>`;
+  // Officeを店舗と同列・同サイズで先頭に表示
+  var officeCard = `<div class="store-btn" style="border-left:3px solid var(--accent)" onclick="loginPickLocation('OFFICE',this)"><i class="ti ti-building-skyscraper" style="font-size:13px;margin-right:3px"></i>${t('Office','Office')}</div>`;
   // ②に空欄（レイアウト用の非表示セル）
   var blankCard = `<div class="store-btn" style="visibility:hidden;pointer-events:none"></div>`;
   // ログイン画面の並び順（共通の sortByLoginOrder を使用）。ログインは誰もロックアウトしないよう全店表示。
@@ -3824,7 +3825,7 @@ function pickLang(lang) {
   setLang(lang);
   applyLangToggle();
   refreshLoginLabels();
-  // オフィスラベル更新
+  // Officeラベル更新
   bootLogin();
 }
 function applyLangToggle() {
@@ -3869,7 +3870,7 @@ function loginPickLocation(loc, el) {
   } else {
     people = getEmployees().filter(e=>e.status!=='退職' && !e.osDisabled && (e.role==='sl'||e.role==='crew') && (e.store===loc || (e.support||[]).includes(loc)));
   }
-  var locLabel = loc==='OFFICE' ? t('オフィス','Office') : (STORES.find(s=>s.id===loc)||{name:loc}).name;
+  var locLabel = loc==='OFFICE' ? t('Office','Office') : (STORES.find(s=>s.id===loc)||{name:loc}).name;
   document.getElementById('login-name-loclabel').textContent = locLabel + t(' のスタッフを選択',' — select staff');
   var ng = document.getElementById('login-name-grid');
   var storeLoginBtn = '';
@@ -3910,7 +3911,7 @@ function loginPickPerson(empId, el) {
   loginStoreMode = false;
   document.getElementById('login-pin-name').textContent = emp.name;
   var roleLabel = roleLabelI18n(emp.role);
-  var locLabel = loginLocation==='OFFICE'?t('オフィス','Office'):(STORES.find(s=>s.id===loginLocation)||{name:loginLocation}).name;
+  var locLabel = loginLocation==='OFFICE'?t('Office','Office'):(STORES.find(s=>s.id===loginLocation)||{name:loginLocation}).name;
   document.getElementById('login-pin-role').textContent = roleLabel + ' · ' + locLabel;
   document.getElementById('login-step-name').style.display='none';
   document.getElementById('login-step-pin').style.display='block';
@@ -4385,20 +4386,20 @@ function openStoreSwitcher() {
         `<div class="store-btn${s.id===curStore?' sel':''}" style="border-left-color:${s.color}" onclick="switchStore('${s.id}')">${s.name}</div>`
       ).join('')}
     </div>
-    ${showOffice?`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)"><div class="store-picker-label">本部</div><div class="store-grid"><div class="store-btn${curStore==='OFFICE'?' sel':''}" style="border-left-color:#8b5cf6" onclick="switchStore('OFFICE')"><i class="ti ti-building-skyscraper" style="font-size:13px"></i> オフィス</div></div></div>`:''}`);
+    ${showOffice?`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)"><div class="store-picker-label">本部</div><div class="store-grid"><div class="store-btn${curStore==='OFFICE'?' sel':''}" style="border-left-color:#8b5cf6" onclick="switchStore('OFFICE')"><i class="ti ti-building-skyscraper" style="font-size:13px"></i> Office</div></div></div>`:''}`);
 }
 
 function switchStore(id) {
   curStore = id;
-  var storeName = id === 'ALL' ? '全店舗' : (id==='OFFICE' ? 'オフィス' : (STORES.find(s=>s.id===id)||{name:id}).name);
+  var storeName = id === 'ALL' ? '全店舗' : (id==='OFFICE' ? 'Office' : (STORES.find(s=>s.id===id)||{name:id}).name);
   var sicon = id==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
   document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
   closeModalDirect();
   if (id === 'OFFICE') { curPage = 'office_mgr'; if(typeof buildNav==='function') buildNav(); renderPage('office_mgr'); window.scrollTo(0,0); return; }
   renderPage(curPage);
 }
-/* オフィスモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['office_mgr','invoice','acct_review','acct_export','supply_order','order','monthly','budget','profile','settings','notifications','staff_dev','approval','vacation'];
+/* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
+var OFFICE_OK_PAGES = ['office_mgr','error_center','invoice','acct_review','acct_export','supply_order','order','monthly','budget','profile','settings','notifications','staff_dev','approval','vacation'];
 
 /* ============================================================
    ROUTER
@@ -4420,6 +4421,7 @@ function renderPage(page) {
     case 'invoice':      el.innerHTML = renderInvoice(); break;
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
     case 'office_mgr':   el.innerHTML = renderOfficeMgr(); break;
+    case 'error_center': el.innerHTML = renderErrorCenter(); break;
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'order':        el.innerHTML = renderOrder(); break;
     case 'supply_order': el.innerHTML = renderSupplyOrder(); break;
@@ -10672,7 +10674,7 @@ function renderTipDaily(storeId, store, date) {
       </tfoot></table>`;
     if (Math.abs(dist.distSum-tip.total)<0.5) html += `<div class="alert alert-success" style="padding:7px 10px;margin-top:8px;font-size:12px"><i class="ti ti-circle-check"></i>配分合計とチップ総額が一致しています（ミスなし）</div>`;
     else html += `<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:12px"><i class="ti ti-alert-triangle"></i>差額があります。勤怠やキャッシュチップを確認してください。</div>`;
-    html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">※ チップ総額を pt（時間×評価係数）で全員按分。Store Manager以上・オフィスは対象外。Lunch/Dinner別に計算。</div>`;
+    html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">※ チップ総額を pt（時間×評価係数）で全員按分。Store Manager以上・Officeは対象外。Lunch/Dinner別に計算。</div>`;
     html += '</div>';
   }
   return html;
@@ -14812,7 +14814,7 @@ function renderOnboardingInner() {
 const OB_SIGNATURES = [
   {id:'employee_agreement', label:'Employee Agreement（雇用契約）', text:'本書は、あなたとFunergy Groupとの雇用条件（職務・時給・勤務地・雇用区分など）を定めるものです。上記「採用条件確認」の内容に同意のうえ署名してください。\n\nThis Employee Agreement sets out your employment terms (role, wage, location, classification) with Funergy Group. Please review the offer details above and sign.'},
   {id:'handbook', label:'Handbook Acknowledgement（就業規則）', text:'就業規則（ハンドブック）の内容を受領・確認したことを証します。勤務ルール・行動規範・安全衛生などを含みます。\n\nI acknowledge that I have received and read the Employee Handbook (work rules, code of conduct, health & safety).'},
-  {id:'tip_policy', label:'Tip Policy Agreement（チップ方針）', text:'チップ配分の方針（対象者・計算方法・受取時期）に同意します。Store Manager以上・オフィスは配分対象外です。\n\nI agree to the Tip distribution policy. Store Manager and above, and office staff, are excluded from tip distribution.'},
+  {id:'tip_policy', label:'Tip Policy Agreement（チップ方針）', text:'チップ配分の方針（対象者・計算方法・受取時期）に同意します。Store Manager以上・Officeは配分対象外です。\n\nI agree to the Tip distribution policy. Store Manager and above, and office staff, are excluded from tip distribution.'},
   {id:'attendance', label:'Attendance Policy（勤怠方針）', text:'出退勤の打刻、遅刻・欠勤時の連絡方法、シフト遵守に関する方針に同意します。\n\nI agree to the Attendance policy (clock-in/out, notice for lateness/absence, shift adherence).'},
 ];
 /* ============================================================
@@ -15860,11 +15862,12 @@ function empsByCardLast4(last4){
     return String(e.cardLast4||'').split(',').map(function(x){return x.trim();}).indexOf(last4) >= 0;
   });
 }
+function empAge(dob){ if(!dob) return ''; var d=new Date(dob); if(isNaN(d.getTime())) return ''; var t=new Date(); var a=t.getFullYear()-d.getFullYear(); var m=t.getMonth()-d.getMonth(); if(m<0||(m===0&&t.getDate()<d.getDate())) a--; return (a>=0&&a<130)?a:''; }
 function openEmpModal(empId) {
   var emps = getEmployees();
   var e = empId ? emps.find(x=>x.id===empId) : {id:'', name:'', empCode:'', role:'crew', store:STORES[0].id, support:[], emp:'パート', step:0, hireDate:'', resignDate:'', status:'在籍', perms:'crew', email:'', phone:'', insurance:false, dental:false};
   var isNew = !empId;
-  var storeOpts = [{id:'ALL',name:'全店'},{id:'OFFICE',name:'オフィス'},...STORES];
+  var storeOpts = [{id:'ALL',name:'全店'},{id:'OFFICE',name:'Office'},...STORES];
   // 現在のシフト条件
   var wc = (typeof getWorkCondition==='function' && e.store && e.store!=='ALL') ? getWorkCondition(e.store, e.name) : null;
   openModal(`<div class="modal-title">${isNew?'従業員登録':'従業員編集'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
@@ -15920,8 +15923,12 @@ function openEmpModal(empId) {
       </div>
     </div>
     <div class="form-row">
+      <div class="form-group"><label class="form-label">生年月日${e.dob?` <span class="tag tag-gray" style="font-size:8px">${empAge(e.dob)}歳</span>`:''}</label><input class="form-input" id="e-dob" type="date" value="${e.dob||''}"></div>
       <div class="form-group"><label class="form-label">入社日</label><input class="form-input" id="e-hire" type="date" value="${e.hireDate||''}"></div>
+    </div>
+    <div class="form-row">
       <div class="form-group"><label class="form-label">退社日</label><input class="form-input" id="e-resign" type="date" value="${e.resignDate||''}"></div>
+      <div class="form-group"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">初回勤務日（Tip Rate 3ヶ月起算）</label><input class="form-input" id="e-firstwork" type="date" value="${e.firstWork||''}"></div>
@@ -15978,6 +15985,7 @@ function saveEmp(empId) {
     support,
     emp: document.getElementById('e-emp').value,
     step: parseInt(document.getElementById('e-step').value),
+    dob: (document.getElementById('e-dob')||{}).value || '',
     hireDate: document.getElementById('e-hire').value,
     resignDate: document.getElementById('e-resign').value,
     firstWork: (document.getElementById('e-firstwork')||{}).value || '',
@@ -16508,7 +16516,7 @@ function acctMonthLabel() {
 }
 function setAcctMonth(delta) { acctExportMonth += delta; renderPage('acct_export'); }
 /* ============================================================
-   オフィス管理（事務・経理の集約：経理業務 / 勤怠 / メンバー・育成）
+   Office管理（事務・経理の集約：経理業務 / 勤怠 / メンバー・育成）
 ============================================================ */
 var officeMgrTab = 'dash';
 function setOfficeMgrTab(t){ officeMgrTab=t; renderPage('office_mgr'); }
@@ -16520,8 +16528,188 @@ function officeLaunch(page, label){
     +(label.sub?'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+label.sub+'</div>':'')
     +'</div>';
 }
+/* ===== エラーセンター（運用品質チェック・GM/CEO/Office） ===== */
+function _ecYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function _ecRecentDates(n){ var out=[],d=new Date(); for(var i=0;i<n;i++){ out.push(_ecYmd(d)); d.setDate(d.getDate()-1);} return out; }
+function _ecEmpAlive(e){ return e && e.status!=='退職'; }
+
+/* — 従業員マスター系（1ループで複数検知） — */
+function ecDetEmpMaster(){
+  var issues=[]; var emps=(typeof getEmployees==='function')?getEmployees():[];
+  var byName={}, byEmail={};
+  emps.forEach(function(e){
+    var nm=e.name||e.id, fix={label:'編集',action:"openEmpModal('"+e.id+"')"};
+    // ステータス不整合
+    if(!e.status) issues.push({sev:'mid',cat:'従業員',title:nm+'：ステータス未設定',detail:'在籍状況（在籍/研修中/休職/退職）が未設定です。',fix:fix});
+    if(e.resignDate && e.status!=='退職') issues.push({sev:'mid',cat:'従業員',title:nm+'：退職日ありだが在籍中',detail:'退職日（'+e.resignDate+'）が設定済みですが、ステータスが退職ではありません。',fix:fix});
+    if(e.status==='退職' && !e.resignDate) issues.push({sev:'mid',cat:'従業員',title:nm+'：退職だが退職日なし',detail:'ステータスが退職ですが退職日が未入力です。',fix:fix});
+    // 配属店舗未設定（＝店舗未登録）
+    if(_ecEmpAlive(e) && (!e.store||e.store==='ALL') && e.role!=='office'&&e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office_crew') issues.push({sev:'mid',cat:'従業員',title:nm+'：配属店舗が未設定',detail:'在籍中ですが配属店舗が未設定です（打刻・集計・チップに影響）。',fix:fix});
+    // 連絡先・DOB
+    if(_ecEmpAlive(e) && !(e.email&&e.email.trim())) issues.push({sev:'low',cat:'従業員',title:nm+'：Email未登録',detail:'通知・招待が届きません。',fix:fix});
+    if(_ecEmpAlive(e) && !(e.dob&&String(e.dob).trim())) issues.push({sev:'low',cat:'従業員',title:nm+'：生年月日 未登録',detail:'生年月日が未登録です。',fix:fix});
+    // 給与係数の不整合（チップ対象外なのにチップ係数）
+    if(typeof isTipExcludedTitle==='function' && isTipExcludedTitle(e.title) && e.coef && e.coef>1) issues.push({sev:'low',cat:'従業員',title:nm+'：チップ係数の不整合',detail:'チップ対象外の役職（'+e.title+'）ですが、チップ係数が'+e.coef+'に設定されています。',fix:fix});
+    // 重複収集
+    if(_ecEmpAlive(e)){
+      var k=(e.name||'').trim(); if(k){ byName[k]=(byName[k]||0)+1; }
+      var em=(e.email||'').trim().toLowerCase(); if(em){ byEmail[em]=(byEmail[em]||0)+1; }
+    }
+  });
+  Object.keys(byName).forEach(function(k){ if(byName[k]>1) issues.push({sev:'low',cat:'従業員',title:'氏名の重複：'+k+'（'+byName[k]+'件）',detail:'同じ氏名の在籍者が複数います。別人なら問題ありませんが確認推奨。',fix:{label:'マスター',action:"go('staff_master')"}}); });
+  Object.keys(byEmail).forEach(function(k){ if(byEmail[k]>1) issues.push({sev:'mid',cat:'従業員',title:'Emailの重複：'+k+'（'+byEmail[k]+'件）',detail:'同じEmailが複数の在籍者に登録されています。',fix:{label:'マスター',action:"go('staff_master')"}}); });
+  return issues;
+}
+
+/* — キャッシュチップ未登録（直近14日×全店） — */
+function ecDetCashTip(){
+  var issues=[], dates=_ecRecentDates(14);
+  (typeof STORES!=='undefined'?STORES:[]).forEach(function(st){
+    dates.forEach(function(dt){
+      try{ if(cashTipMissing(st.id, dt)){ issues.push({sev:'high',cat:'チップ',title:st.name+'：'+dt+' キャッシュチップ未登録',detail:'クレジットチップの記録はありますが現金チップが未入力です。現金が無い場合も「0」で確定が必要です。',fix:{label:'入力',action:"openCashTipModal('"+st.id+"','"+dt+"')"}}); } }catch(e){}
+    });
+  });
+  return issues;
+}
+
+/* — 退勤打刻漏れ（直近7日×全店） — */
+function ecDetClock(){
+  var issues=[], dates=_ecRecentDates(7);
+  (typeof STORES!=='undefined'?STORES:[]).forEach(function(st){
+    dates.forEach(function(dt){
+      var labor; try{ labor=getTipLabor(st.id, dt); }catch(e){ return; }
+      if(!labor) return;
+      Object.keys(labor).forEach(function(nm){
+        var e=labor[nm];
+        if(e&&e.shifts&&e.shifts.some(function(s){return s.inDate&&!s.outDate;})) issues.push({sev:'high',cat:'勤怠',title:st.name+'：'+dt+' '+nm+' 退勤打刻漏れ',detail:'出勤打刻はありますが退勤打刻がありません。勤怠・給与計算に影響します。',fix:{label:'勤怠',action:"go('tip')"}});
+      });
+    });
+  });
+  return issues;
+}
+
+/* — OBの不備・停滞 — */
+function ecDetOnboard(){
+  var issues=[]; var obs=(typeof ls==='function'?ls('onboardings',[]):[])||[];
+  obs.forEach(function(o){
+    if(o.obStatus==='登録完了') return;
+    var nm=o.name||(o.personal&&o.personal.name)||'(無名)';
+    if(o.obStatus==='提出完了'||o.obStatus==='I-9確認待ち'||o.obStatus==='経理確認中'||o.obStatus==='Payroll登録中')
+      issues.push({sev:'mid',cat:'OB',title:nm+'：Office対応待ち（'+o.obStatus+'）',detail:'オンボーディングがOffice側の対応待ちです。',fix:{label:'採用',action:"go('hiring')"}});
+    else if(o.obStatus==='本人入力待ち'||o.obStatus==='差し戻し')
+      issues.push({sev:'low',cat:'OB',title:nm+'：本人入力待ち（'+o.obStatus+'）',detail:'招待済みですが本人の入力が完了していません。',fix:{label:'採用',action:"go('hiring')"}});
+  });
+  return issues;
+}
+
+/* — 承認待ちの放置（3日以上） — */
+function ecDetApproval(){
+  var issues=[]; var orders=(typeof getSupplyOrders==='function'?getSupplyOrders():(ls('supply_orders',[])||[]));
+  var now=new Date();
+  orders.forEach(function(o){
+    if(o.status!=='承認待ち') return;
+    var d=o.date?new Date(String(o.date)):null;
+    var days=(d&&!isNaN(d.getTime()))?Math.floor((now-d)/86400000):null;
+    if(days===null||days>=3){
+      var snm=((typeof STORES!=='undefined'?STORES:[]).find(function(s){return s.id===o.store;})||{name:o.store||''}).name;
+      issues.push({sev:'mid',cat:'承認',title:(o.name||'発注')+'：承認待ち'+(days!=null?'（'+days+'日経過）':''),detail:snm+'・$'+(o.total||0)+' が承認待ちのままです。',fix:{label:'備品発注',action:"go('supply_order')"}});
+    }
+  });
+  return issues;
+}
+
+/* — 月次締め未完了（前月） — */
+function ecDetClose(){
+  var issues=[]; var d=new Date(); d.setMonth(d.getMonth()-1);
+  var ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  if(typeof OFFICE_CLOSE_ITEMS==='undefined') return issues;
+  var done=getOfficeClose(ym), total=OFFICE_CLOSE_ITEMS.length;
+  var doneN=OFFICE_CLOSE_ITEMS.filter(function(it){return done[it.id];}).length;
+  if(doneN<total) issues.push({sev:'mid',cat:'月次締め',title:ymLabelJP(ym)+'の締めが未完了（'+doneN+'/'+total+'）',detail:'前月の月次締めチェックリストに未完了の項目があります。',fix:{label:'Office',action:"go('office_mgr')"}});
+  return issues;
+}
+
+/* — 棚卸の異常値（各店の最新スナップショット） — */
+function ecDetInventory(){
+  var issues=[];
+  (typeof STORES!=='undefined'?STORES:[]).forEach(function(st){
+    ['inv_hist_'+st.id,'inv_hist_daily_'+st.id].forEach(function(key){
+      var hist=(typeof ls==='function'?ls(key,[]):[])||[]; if(!hist.length) return;
+      var snap=hist[hist.length-1]; var lines=(snap&&snap.lines)||[];
+      lines.forEach(function(ln){
+        var problems=[];
+        if(typeof ln.actual!=='number'||isNaN(ln.actual)) problems.push('実棚が数値でない');
+        else if(ln.actual<0) problems.push('実棚がマイナス');
+        if(typeof ln.theory==='number'&&ln.theory>0&&typeof ln.diff==='number'){
+          var ratio=Math.abs(ln.diff)/ln.theory;
+          if(ratio>=0.5&&Math.abs(ln.diff)>=3) problems.push('理論比'+Math.round(ratio*100)+'%差');
+        }
+        if(problems.length) issues.push({sev:'mid',cat:'棚卸',title:st.name+'：'+(ln.name||'品目')+' 異常値',detail:problems.join('・')+'（実棚 '+ln.actual+' ／理論 '+ln.theory+' ／差 '+ln.diff+'）・'+(snap.date||''),fix:{label:'棚卸',action:"go('inventory')"}});
+      });
+    });
+  });
+  return issues;
+}
+
+var EC_DETECTORS=[ecDetCashTip, ecDetClock, ecDetEmpMaster, ecDetOnboard, ecDetApproval, ecDetClose, ecDetInventory];
+function ecCollect(){
+  var all=[];
+  EC_DETECTORS.forEach(function(fn){ try{ var r=fn(); if(r&&r.length) all=all.concat(r); }catch(e){ /* detector失敗は無視 */ } });
+  return all;
+}
+
+var EC_CAT_META={
+  'チップ':{icon:'ti-coin'}, '勤怠':{icon:'ti-clock'}, '従業員':{icon:'ti-user'},
+  'OB':{icon:'ti-user-plus'}, '承認':{icon:'ti-clipboard-check'}, '月次締め':{icon:'ti-calendar-check'}, '棚卸':{icon:'ti-box'}
+};
+function ecSevMeta(sev){ return sev==='high'?{c:'#e23b3b',l:'要対応'}:(sev==='mid'?{c:'#e0a020',l:'確認'}:{c:'#8a8f98',l:'情報'}); }
+
+function renderErrorCenter(){
+  if(['ceo','gm','office'].indexOf(curRole)<0) return '<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:20px">このページはGM/CEO/Officeのみ閲覧できます。</p></div>';
+  var issues=ecCollect();
+  var hi=issues.filter(function(x){return x.sev==='high';}).length;
+  var mi=issues.filter(function(x){return x.sev==='mid';}).length;
+  var lo=issues.filter(function(x){return x.sev==='low';}).length;
+  var html='<div class="section-header"><div><div class="section-title"><i class="ti ti-alert-hexagon"></i> エラーセンター</div><div class="section-sub">運用・データの不備を自動検知（直近の勤怠/チップは14日・打刻は7日を対象）</div></div></div>';
+  // サマリー
+  function tile(n,label,col){ return '<div style="flex:1;min-width:90px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px;text-align:center"><div style="font-size:26px;font-weight:800;color:'+(n>0?col:'var(--muted)')+'">'+n+'</div><div style="font-size:11px;color:var(--muted);margin-top:2px">'+label+'</div></div>'; }
+  html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
+    +tile(hi,'🔴 要対応','#e23b3b')+tile(mi,'🟡 確認','#e0a020')+tile(lo,'⚪ 情報','#8a8f98')
+    +'<div style="flex:1;min-width:90px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px;text-align:center"><div style="font-size:26px;font-weight:800">'+issues.length+'</div><div style="font-size:11px;color:var(--muted);margin-top:2px">合計</div></div>'
+    +'</div>';
+  html+='<div style="text-align:right;margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="renderPage(\'error_center\')"><i class="ti ti-refresh"></i> 再チェック</button></div>';
+  if(!issues.length){
+    html+='<div class="card" style="text-align:center;padding:28px"><i class="ti ti-circle-check" style="font-size:38px;color:var(--green)"></i><div style="font-size:14px;font-weight:600;margin-top:8px">検知された不備はありません</div><div style="font-size:12px;color:var(--muted);margin-top:4px">勤怠・チップ・従業員・OB・承認・月次締め・棚卸をチェック済み</div></div>';
+    return html;
+  }
+  // カテゴリ別（深刻度順）
+  var order={high:0,mid:1,low:2};
+  var cats={}; issues.forEach(function(x){ (cats[x.cat]=cats[x.cat]||[]).push(x); });
+  Object.keys(cats).sort(function(a,b){
+    var ha=Math.min.apply(null,cats[a].map(function(x){return order[x.sev];}));
+    var hb=Math.min.apply(null,cats[b].map(function(x){return order[x.sev];}));
+    return ha-hb;
+  }).forEach(function(cat){
+    var list=cats[cat].slice().sort(function(a,b){return order[a.sev]-order[b.sev];});
+    var meta=EC_CAT_META[cat]||{icon:'ti-alert-circle'};
+    html+='<div class="card"><div class="card-title"><i class="ti '+meta.icon+'" style="color:var(--accent)"></i>'+cat+' <span class="tag tag-gray" style="margin-left:auto">'+list.length+'</span></div>';
+    list.forEach(function(x){
+      var sm=ecSevMeta(x.sev);
+      html+='<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--border)">'
+        +'<span style="flex-shrink:0;width:9px;height:9px;border-radius:50%;background:'+sm.c+';margin-top:5px"></span>'
+        +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">'+escapeHtml(x.title)+'</div>'
+        +'<div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:1px">'+escapeHtml(x.detail)+'</div></div>'
+        +(x.fix?'<button class="btn btn-secondary btn-sm" onclick="'+x.fix.action+'" style="flex-shrink:0;padding:4px 9px;font-size:11px"><i class="ti ti-arrow-right"></i> '+escapeHtml(x.fix.label)+'</button>':'')
+        +'</div>';
+    });
+    html+='</div>';
+  });
+  html+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6"><i class="ti ti-info-circle"></i> 打刻・チップの検知はToast同期データに依存します。未同期の店舗・日付は検知対象外です。</div>';
+  return html;
+}
+
 function renderOfficeMgr(){
-  var html = '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> オフィス（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
+  var html = '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
   var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['export','出力センター','ti-file-export'],['attend','勤怠','ti-clock'],['tasks','タスク','ti-checklist'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];
   html += '<div class="phase-tabs" style="flex-wrap:wrap">'
     + tabs.map(function(t){ return '<div class="phase-tab'+(officeMgrTab===t[0]?' active':'')+'" onclick="setOfficeMgrTab(\''+t[0]+'\')"><i class="ti '+t[2]+'" style="font-size:12px"></i> '+t[1]+'</div>'; }).join('')
@@ -16573,7 +16761,7 @@ function officeClockCard(){
 function officeTodayBoard(){
   var today=officeTodayStr(); var mem=officeMembers();
   var html='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--accent2)"></i>本日の出勤状況 <span class="tag tag-gray" style="margin-left:auto">'+officeOnDutyCount()+' / '+mem.length+'</span></div>';
-  if(!mem.length){ html+='<p style="font-size:12px;color:var(--muted);text-align:center;padding:10px">オフィスメンバーがいません</p>'; return html+'</div>'; }
+  if(!mem.length){ html+='<p style="font-size:12px;color:var(--muted);text-align:center;padding:10px">Officeメンバーがいません</p>'; return html+'</div>'; }
   mem.forEach(function(e){
     var rec=(getOfficeAttend(e.name)||[]).find(function(r){return r.date===today;})||{};
     var _cfg=getOfficeAttendCfg(); var _bt=officeSumBreaks(rec); var _over=_cfg.breakStdMin>0 && _bt>_cfg.breakStdMin; var _bi=_bt>0?('　休憩'+_bt+'分'+(_over?' ⚠':'')):'';
@@ -16592,6 +16780,70 @@ function officeTodayBoard(){
   });
   return html+'</div>';
 }
+var OFFICE_CLOSE_ITEMS=[
+  {id:'inv',      label:'請求書の回収・Drive保存（全店）', page:'invoice'},
+  {id:'card',     label:'カード明細の照合（社員別レシート）', page:'acct_export'},
+  {id:'review',   label:'経理区分の確定・承認', page:'acct_review'},
+  {id:'attend',   label:'勤怠の確定（Toast打刻チェック）', tab:'attend'},
+  {id:'tip',      label:'キャッシュチップの確定', page:'tip'},
+  {id:'payStore', label:'給与CSV出力（店舗）', page:'acct_export'},
+  {id:'payOffice',label:'給与CSV出力（Office・月給/時給）', tab:'attend'},
+  {id:'summary',  label:'月次サマリー（KPI）確認', page:'monthly'},
+  {id:'order',    label:'発注・在庫の締め', page:'supply_order'},
+  {id:'tax',      label:'DOH・税務 対応事項の確認'}
+];
+var officeCloseMonth=(function(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })();
+function shiftOfficeCloseMonth(delta){ var p=officeCloseMonth.split('-'); var d=new Date(parseInt(p[0]),parseInt(p[1])-1+delta,1); officeCloseMonth=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); renderPage('office_mgr'); }
+function getOfficeCloseAll(){ return ls('office_close',{})||{}; }
+function getOfficeClose(ym){ var a=getOfficeCloseAll(); return a[ym]||{}; }
+function toggleOfficeClose(ym,id){ var a=getOfficeCloseAll(); if(!a[ym]) a[ym]={}; if(a[ym][id]) delete a[ym][id]; else a[ym][id]=true; lsSet('office_close',a); renderPage('office_mgr'); }
+function ymLabelJP(ym){ var p=ym.split('-'); return p[0]+'年'+parseInt(p[1],10)+'月'; }
+
+function renderOfficeCloseCard(){
+  var ym=officeCloseMonth, done=getOfficeClose(ym), items=OFFICE_CLOSE_ITEMS;
+  var doneN=items.filter(function(it){return done[it.id];}).length;
+  var pct=Math.round(doneN/items.length*100);
+  var h='<div class="card"><div class="card-title"><i class="ti ti-calendar-check" style="color:var(--accent)"></i>月次締めチェックリスト'
+    +'<span style="margin-left:auto;display:flex;align-items:center;gap:5px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="shiftOfficeCloseMonth(-1)" style="padding:2px 7px"><i class="ti ti-chevron-left"></i></button>'
+    +'<span style="font-size:12px;font-weight:600;min-width:72px;text-align:center">'+ymLabelJP(ym)+'</span>'
+    +'<button class="btn btn-secondary btn-sm" onclick="shiftOfficeCloseMonth(1)" style="padding:2px 7px"><i class="ti ti-chevron-right"></i></button>'
+    +'</span></div>';
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="flex:1;height:8px;background:var(--surface2);border-radius:5px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:'+(pct===100?'var(--green)':'var(--accent)')+'"></div></div><span style="font-size:12px;font-weight:700;color:'+(pct===100?'var(--green)':'var(--tm)')+'">'+doneN+'/'+items.length+'</span></div>';
+  if(pct===100) h+='<div class="alert alert-success" style="padding:7px 10px;margin-bottom:8px;font-size:12px"><i class="ti ti-circle-check"></i> '+ymLabelJP(ym)+'の締め項目が完了しています</div>';
+  items.forEach(function(it){
+    var on=!!done[it.id];
+    h+='<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border)">'
+      +'<div onclick="toggleOfficeClose(\''+ym+'\',\''+it.id+'\')" style="cursor:pointer;width:22px;height:22px;border-radius:6px;border:1.5px solid '+(on?'var(--green)':'var(--border)')+';background:'+(on?'var(--green)':'transparent')+';display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(on?'<i class="ti ti-check" style="color:#fff;font-size:14px"></i>':'')+'</div>'
+      +'<div style="flex:1;font-size:13px;'+(on?'color:var(--muted);text-decoration:line-through':'')+'">'+escapeHtml(it.label)+'</div>'
+      +(it.page?'<button class="btn btn-secondary btn-sm" onclick="go(\''+it.page+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.tab?'<button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\''+it.tab+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':''))
+      +'</div>';
+  });
+  h+='</div>';
+  return h;
+}
+
+function renderOfficeObStatus(){
+  var obs=ls('onboardings',[])||[];
+  var stages=[
+    {label:'本人入力待ち', n:obs.filter(function(o){return o.obStatus==='本人入力待ち'||o.obStatus==='差し戻し';}).length, col:'var(--yellow)', icon:'ti-forms'},
+    {label:'提出完了',     n:obs.filter(function(o){return o.obStatus==='提出完了';}).length, col:'var(--blue)', icon:'ti-send'},
+    {label:'I-9/経理',     n:obs.filter(function(o){return o.obStatus==='I-9確認待ち'||o.obStatus==='経理確認中';}).length, col:'var(--blue)', icon:'ti-clipboard-check'},
+    {label:'Payroll',      n:obs.filter(function(o){return o.obStatus==='Payroll登録中';}).length, col:'var(--accent)', icon:'ti-user-dollar'}
+  ];
+  var actionN=stages[1].n+stages[2].n+stages[3].n;
+  var h='<div class="card"><div class="card-title"><i class="ti ti-user-plus" style="color:var(--accent)"></i>採用事務（オンボーディング）の状況'
+    +'<span class="tag '+(actionN>0?'tag-yellow':'tag-gray')+'" style="margin-left:auto">要対応 '+actionN+'</span></div>';
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">';
+  stages.forEach(function(s){
+    h+='<div style="flex:1;min-width:72px;text-align:center;background:var(--surface2);border-radius:9px;padding:9px 4px"><i class="ti '+s.icon+'" style="font-size:15px;color:'+s.col+'"></i><div style="font-size:18px;font-weight:800;color:'+(s.n>0?s.col:'var(--muted)')+'">'+s.n+'</div><div style="font-size:9.5px;color:var(--muted)">'+s.label+'</div></div>';
+  });
+  h+='</div>';
+  h+='<button class="btn btn-secondary btn-sm" onclick="go(\'hiring\')" style="width:100%"><i class="ti ti-arrow-right"></i> 採用・オンボーディングを開く</button>';
+  h+='</div>';
+  return h;
+}
+
 function renderOfficeDash(){
   var mem=officeMembers(), onduty=officeOnDutyCount(), tasks=officeOpenTasks(), appr=officePendingApprovals();
   var now=new Date(); var ym=now.getFullYear()+'年'+(now.getMonth()+1)+'月';
@@ -16603,12 +16855,12 @@ function renderOfficeDash(){
   }
   var html=officeClockCard();
   html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
-    + tile('出勤中','<span style="font-size:18px">'+onduty+'</span> / '+mem.length+'名', 'オフィスメンバー', onduty>0?'var(--green)':'var(--muted)', "setOfficeMgrTab('attend')")
+    + tile('出勤中','<span style="font-size:18px">'+onduty+'</span> / '+mem.length+'名', 'Officeメンバー', onduty>0?'var(--green)':'var(--muted)', "setOfficeMgrTab('attend')")
     + tile('未処理タスク', tasks.length, '進行中・未着手', tasks.length>0?'var(--accent)':'var(--muted)', "setOfficeMgrTab('tasks')")
     + tile('承認待ち', appr, '発注・経理レビュー', appr>0?'var(--yellow)':'var(--muted)', "setOfficeMgrTab('report')")
     + tile('今月', ym, '締め・出力の対象月', 'var(--accent2)', "setOfficeMgrTab('export')")
     + '</div>';
-  // 本日の出勤状況（オフィス全員）
+  // 本日の出勤状況（Office全員）
   html+=officeTodayBoard();
   // クイックアクション
   html+='<div class="card"><div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>クイックアクセス</div>'
@@ -16617,6 +16869,9 @@ function renderOfficeDash(){
     + officeLaunch('acct_review',{icon:'ti-checklist',title:'経理レビュー',sub:'区分・承認'})
     + '<div class="quick-card" onclick="setOfficeMgrTab(\'export\')" style="cursor:pointer;border:1px solid var(--border);border-radius:12px;padding:14px;text-align:center"><i class="ti ti-file-export" style="font-size:22px;color:var(--accent)"></i><div style="font-size:13px;font-weight:600;margin-top:6px">出力センター</div><div style="font-size:11px;color:var(--muted)">CSV/帳票</div></div>'
     + '</div></div>';
+  // 月次締め + 採用事務
+  html+=renderOfficeCloseCard();
+  html+=renderOfficeObStatus();
   // 直近タスク
   html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>未処理タスク <span class="tag tag-gray" style="margin-left:auto">'+tasks.length+'</span></div>';
   if(!tasks.length) html+='<p style="font-size:12px;color:var(--muted);text-align:center;padding:10px">未処理のタスクはありません</p>';
@@ -16644,7 +16899,7 @@ function renderOfficeExport(){
   ]);
   html+=grp('<i class="ti ti-cash" style="color:var(--green)"></i>給与・経理CSV',[
     {page:'acct_export', icon:'ti-table-export', title:'給与CSV（店舗）', sub:'店舗別Payroll'},
-    {fn:"setOfficeMgrTab('attend')", icon:'ti-building-skyscraper', title:'給与CSV（オフィス）', sub:'月給/時給混在', col:'var(--accent2)'},
+    {fn:"setOfficeMgrTab('attend')", icon:'ti-building-skyscraper', title:'給与CSV（Office）', sub:'月給/時給混在', col:'var(--accent2)'},
     {page:'acct_export', icon:'ti-file-spreadsheet', title:'経理区分エクスポート', sub:'区分別集計'}
   ]);
   html+=grp('<i class="ti ti-chart-bar" style="color:var(--accent2)"></i>売上・発注・分析',[
@@ -16655,20 +16910,20 @@ function renderOfficeExport(){
   // 出力ログ（簡易）
   var logs=ls('office_export_log',[]);
   html+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--muted)"></i>出力ログ <span class="tag tag-gray" style="margin-left:auto">'+logs.length+'</span></div>';
-  if(!logs.length) html+='<p style="font-size:11.5px;color:var(--muted);text-align:center;padding:8px">まだ記録がありません。オフィスから出力すると履歴が残ります。</p>';
+  if(!logs.length) html+='<p style="font-size:11.5px;color:var(--muted);text-align:center;padding:8px">まだ記録がありません。Officeから出力すると履歴が残ります。</p>';
   else logs.slice(0,12).forEach(function(l){ html+='<div style="display:flex;gap:8px;font-size:12px;padding:5px 0;border-top:1px solid var(--border)"><span style="flex:1">'+escapeHtml(l.label)+'</span><span style="color:var(--muted)">'+escapeHtml(l.by||'')+'・'+escapeHtml(l.date||'')+'</span></div>'; });
   html+='</div>';
   return html;
 }
 function logOfficeExport(label){ var l=ls('office_export_log',[]); l.unshift({label:label, by:(ROLE_CONFIG[curRole]||{}).name||curUserName, date:new Date().toLocaleString('ja')}); lsSet('office_export_log', l.slice(0,50)); }
 
-/* ---------- ③ タスク（オフィス） ---------- */
+/* ---------- ③ タスク（Office） ---------- */
 function renderOfficeTasks(){
   var canEdit=['ceo','gm','office'].includes(curRole);
   var tasks; try{ tasks=getTasksN().filter(function(t){return t.store==='OFFICE';}); }catch(e){ tasks=[]; }
   var html='';
   if(canEdit){
-    html+='<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px"><input id="office-quick-task" placeholder="オフィスタスクを追加（Enterで登録）" style="flex:1;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface);font-size:13px" onkeydown="if(event.key===\'Enter\'){officeQuickAddTask();}"><button class="btn btn-primary btn-sm" onclick="officeQuickAddTask()"><i class="ti ti-plus"></i></button></div>'
+    html+='<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px"><input id="office-quick-task" placeholder="Officeタスクを追加（Enterで登録）" style="flex:1;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface);font-size:13px" onkeydown="if(event.key===\'Enter\'){officeQuickAddTask();}"><button class="btn btn-primary btn-sm" onclick="officeQuickAddTask()"><i class="ti ti-plus"></i></button></div>'
       +'<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="openTaskModal(\'店舗\',\'OFFICE\')"><i class="ti ti-settings"></i> 詳細タスク作成</button></div></div>';
   }
   var groups=[['未着手','未着手'],['進行中','進行中'],['レビュー','レビュー']];
@@ -16680,7 +16935,7 @@ function renderOfficeTasks(){
     html+='</div>';
   });
   var done=tasks.filter(function(t){return t.status==='完了';});
-  if(!tasks.length) html+='<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:14px">オフィスタスクはまだありません。請求書処理・月次締め・給与計算などを登録しましょう。</p></div>';
+  if(!tasks.length) html+='<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:14px">Officeタスクはまだありません。請求書処理・月次締め・給与計算などを登録しましょう。</p></div>';
   if(done.length) html+='<details style="margin-top:4px"><summary style="font-size:12px;color:var(--muted);cursor:pointer;padding:6px">完了済み（'+done.length+'）</summary>'+done.map(function(t){ try{return taskCardHtml(t);}catch(e){return '';} }).join('')+'</details>';
   return html;
 }
@@ -16688,8 +16943,8 @@ function officeQuickAddTask(){
   var el=document.getElementById('office-quick-task'); if(!el) return; var v=(el.value||'').trim(); if(!v) return;
   try{
     var t=normalizeTask({id:'tk'+Date.now(), title:v, type:'店舗', store:'OFFICE', assignee:'', priority:'中', due:'', place:'', status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[]});
-    addTaskLog(t,'作成（オフィス・クイック）'); saveTaskObj(t);
-    showToast('オフィスタスクを追加しました','success');
+    addTaskLog(t,'作成（Office・クイック）'); saveTaskObj(t);
+    showToast('Officeタスクを追加しました','success');
   }catch(e){ showToast('追加に失敗しました','warning'); }
   setOfficeMgrTab('tasks');
 }
@@ -16740,9 +16995,9 @@ function renderOfficeAcct(){
   html += officeLaunch('budget',     {icon:'ti-chart-bar',     title:'予実管理',    sub:'全社/店舗'});
   html += '</div>';
 
-  // オフィスメンバー早見
+  // Officeメンバー早見
   var mem = officeMembers();
-  html += '<div class="card"><div class="card-title"><i class="ti ti-users"></i>オフィスメンバー <span class="tag tag-gray" style="margin-left:auto">'+mem.length+'名</span></div>';
+  html += '<div class="card"><div class="card-title"><i class="ti ti-users"></i>Officeメンバー <span class="tag tag-gray" style="margin-left:auto">'+mem.length+'名</span></div>';
   if(!mem.length){ html += '<p style="color:var(--muted);font-size:13px;text-align:center;padding:12px">メンバーなし</p>'; }
   else mem.forEach(function(e){
     var roleLabel = e.role==='office'?'経理':'事務Crew';
@@ -16758,7 +17013,7 @@ function renderOfficeAcct(){
 }
 
 function renderOfficeAttendStub(){
-  return '<div class="card"><div class="card-title"><i class="ti ti-clock"></i>オフィス勤怠（次フェーズで実装）</div>'
+  return '<div class="card"><div class="card-title"><i class="ti ti-clock"></i>Office勤怠（次フェーズで実装）</div>'
     +'<p style="font-size:13px;color:var(--muted);line-height:1.7">端末が無いため、<b>本人がアプリで出勤/退勤を打刻</b>し、管理者が修正・承認する方式で実装します。</p>'
     +'<ul style="font-size:13px;color:var(--muted);line-height:1.8;padding-left:18px">'
     +'<li>本人：その場で「出勤／退勤」打刻（休憩も記録）</li>'
@@ -16769,7 +17024,7 @@ function renderOfficeAttendStub(){
 }
 function renderOfficeMemberStub(){
   return '<div class="card"><div class="card-title"><i class="ti ti-users"></i>メンバー・育成（次フェーズで実装）</div>'
-    +'<p style="font-size:13px;color:var(--muted);line-height:1.7">オフィス職能の <b>Career Score／スキル管理</b> を、店舗と同じ Lv0–3＋A–H の枠組みで運用します。</p>'
+    +'<p style="font-size:13px;color:var(--muted);line-height:1.7">Office職能の <b>Career Score／スキル管理</b> を、店舗と同じ Lv0–3＋A–H の枠組みで運用します。</p>'
     +'<ul style="font-size:13px;color:var(--muted);line-height:1.8;padding-left:18px">'
     +'<li>経理トラック：請求書処理／月次締め／カード明細照合／給与計算／税務・DOH対応／レポート</li>'
     +'<li>事務・CSトラック：データ入力／書類管理／採用事務／電話・メール対応／在庫事務</li>'
@@ -16778,7 +17033,7 @@ function renderOfficeMemberStub(){
     +'<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="go(\'growth_mgr\')"><i class="ti ti-chart-arcs"></i> 現状の成長管理を開く</button></div>';
 }
 
-/* ===== オフィス勤怠（本人打刻＋管理者修正・承認／混在給与） ===== */
+/* ===== Office勤怠（本人打刻＋管理者修正・承認／混在給与） ===== */
 var officeAttendMonth = null;  // 'YYYY-MM'
 var officeAttendName = null;   // 管理者が閲覧中のメンバー
 function nowHM(){ var d=new Date(); return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }
@@ -17044,7 +17299,7 @@ function renderOfficeAttend(){
   return html;
 }
 
-/* ===== オフィス育成（職能スキル評価＋Career Score導線） ===== */
+/* ===== Office育成（職能スキル評価＋Career Score導線） ===== */
 var officeMemberSel = null;
 var OFFICE_SKILL_CRITERIA = {
   '請求書処理':['未対応','受領～仕訳の基本フローを理解し補助できる','一通りの請求書を独力で処理・仕訳できる','例外・差異対応まで判断し、後輩に指導できる'],
@@ -17082,7 +17337,7 @@ function renderOfficeMember(){
   var pos=getStorePositions('OFFICE');
   var html='';
 
-  html+='<div class="card"><div class="card-title"><i class="ti ti-users"></i>オフィスメンバー <span class="tag tag-gray" style="margin-left:auto">'+mem.length+'名</span></div>';
+  html+='<div class="card"><div class="card-title"><i class="ti ti-users"></i>Officeメンバー <span class="tag tag-gray" style="margin-left:auto">'+mem.length+'名</span></div>';
   if(!mem.length){ html+='<p style="color:var(--muted);font-size:13px;text-align:center;padding:12px">メンバーなし</p>'; }
   mem.forEach(function(e){
     var st=officeSkillStat(e.name); var col=evalColor(st.pct);
@@ -17144,7 +17399,7 @@ function renderOfficeMember(){
   return html;
 }
 
-/* ===== オフィス勤怠 → 給与（半月）連携 ===== */
+/* ===== Office勤怠 → 給与（半月）連携 ===== */
 function officeHalfRange(y,m,half){
   var mm=String(m+1).padStart(2,'0');
   var end=new Date(y,m+1,0).getDate();
@@ -17167,16 +17422,16 @@ function officePayrollRows(y,m,half){
 function exportOfficePayrollCSV(y,m,half){
   var r=officeHalfRange(y,m,half);
   var rows=officePayrollRows(y,m,half);
-  if(!rows.length){ showToast('オフィスメンバーがいません','danger'); return; }
+  if(!rows.length){ showToast('Officeメンバーがいません','danger'); return; }
   var header=['社員','役割','雇用区分','期間From','期間To','実働時間','時給','概算給与','勤務日数','承認'];
   var data=[header].concat(rows.map(function(x){ return [x.name,x.role,x.type,r.from,r.to,x.hours,(x.type==='時給'?x.wage:''),(x.pay==null?'':x.pay),x.days,(x.approved?'承認':'未承認')]; }));
-  downloadCSV(data, 'オフィス給与_'+y+'-'+String(m+1).padStart(2,'0')+'_'+r.label+'.csv');
-  showToast('オフィス給与（'+r.label+'）を出力しました','success');
+  downloadCSV(data, 'Office給与_'+y+'-'+String(m+1).padStart(2,'0')+'_'+r.label+'.csv');
+  showToast('Office給与（'+r.label+'）を出力しました','success');
 }
 function officePayrollCardHtml(y,m){
   var rows=officePayrollRows(y,m,0);
-  var html='<div class="card"><div class="card-title"><i class="ti ti-clock-dollar" style="color:var(--accent2)"></i>オフィス勤怠・給与（半月）</div>';
-  if(!rows.length){ html+='<p style="color:var(--muted);font-size:13px;text-align:center;padding:10px">オフィスメンバーなし</p></div>'; return html; }
+  var html='<div class="card"><div class="card-title"><i class="ti ti-clock-dollar" style="color:var(--accent2)"></i>Office勤怠・給与（半月）</div>';
+  if(!rows.length){ html+='<p style="color:var(--muted);font-size:13px;text-align:center;padding:10px">Officeメンバーなし</p></div>'; return html; }
   html+='<div style="overflow-x:auto"><table class="inv-table" style="font-size:12px;min-width:460px"><thead><tr><th>社員</th><th style="text-align:center">区分</th><th style="text-align:right">実働(月)</th><th style="text-align:right">時給</th><th style="text-align:right">概算給与</th><th style="text-align:center">日数</th></tr></thead><tbody>';
   rows.forEach(function(x){
     html+='<tr><td>'+escapeHtml(x.name)+'</td>'
@@ -18693,7 +18948,7 @@ function migrateUniversalSkillItems(){
   if(changed) lsSet('store_positions', all);
 }
 
-/* オフィス用スキルポジションを保存済みデータに注入（無ければDEFAULTを採用・冪等） */
+/* Office用スキルポジションを保存済みデータに注入（無ければDEFAULTを採用・冪等） */
 function migrateOfficePositions(){
   var stored = ls('store_positions', null);
   if(stored===null) return; // 未カスタマイズ＝DEFAULTを使う
@@ -21270,12 +21525,12 @@ function renderPipeOrg(stores){
   });
   tbl+='</table></div></div>';
   html+=tbl;
-  // オフィス（本部機能・全店横断）
+  // Office（本部機能・全店横断）
   var officeStaff=getEmployees().filter(function(e){ return ['office','office_crew'].includes(e.role) && e.status!=='退職'; });
   if(officeStaff.length){
     officeStaff.sort(byGrade);
-    html+='<div class="card" style="margin-top:10px"><div class="card-title"><i class="ti ti-briefcase" style="color:#6b7280"></i> オフィス（本部機能・全店横断）</div>';
-    html+='<div style="font-size:10px;color:var(--muted);margin-bottom:8px">経理・事務などの本部機能。特定店舗に属さず全店を横断で支援します（会計／給与／請求／採用事務など）。スキル評価はスキル画面の「オフィス」タブ。</div>';
+    html+='<div class="card" style="margin-top:10px"><div class="card-title"><i class="ti ti-briefcase" style="color:#6b7280"></i> Office（本部機能・全店横断）</div>';
+    html+='<div style="font-size:10px;color:var(--muted);margin-bottom:8px">経理・事務などの本部機能。特定店舗に属さず全店を横断で支援します（会計／給与／請求／採用事務など）。スキル評価はスキル画面の「Office」タブ。</div>';
     html+='<div style="display:flex;gap:6px;flex-wrap:wrap">'+officeStaff.map(function(e){ var dept=empSpecialistDept(e); return '<div style="border:1px solid var(--border);border-radius:8px;padding:6px 9px;min-width:118px">'+pipeOrgChip(e)+'<div style="font-size:9px;color:var(--muted);margin-top:3px">'+escapeHtml(e.title||(e.role==='office'?'経理':'事務Crew'))+' · '+empGrade(e)+(dept?(' · '+escapeHtml(dept)):'')+'</div></div>'; }).join('')+'</div>';
     html+='</div>';
   }
@@ -25026,7 +25281,7 @@ function quickAddTask(storeId, type){
 function openTaskModal(type, storeId){
   type=type||'店舗';
   var emps=getEmployees().filter(function(e){return e.status!=='退職';});
-  var storeOpts=[{id:'ALL',name:'全社'}].concat(STORES).concat([{id:'OFFICE',name:'オフィス'}]);
+  var storeOpts=[{id:'ALL',name:'全社'}].concat(STORES).concat([{id:'OFFICE',name:'Office'}]);
   openModal('<div class="modal-title">'+(type==='個人'?'個人タスク作成':'店舗タスク作成')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div class="form-group"><label class="form-label">タスク名</label><input class="form-input" id="t-title" placeholder="タスク内容"></div>'
     +'<div class="form-group"><label class="form-label">詳細（任意）</label><textarea class="form-input" id="t-desc" rows="2" placeholder="補足・手順など"></textarea></div>'
@@ -27591,8 +27846,8 @@ function renderSkillManager() {
     window._skillMatrixStore = (curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));
   }
   var mgrStoreId = window._skillMatrixStore;
-  var storeObj = STORES.find(s=>s.id===mgrStoreId)||(mgrStoreId==='OFFICE'?{name:'オフィス',color:'#6b7280'}:{});
-  var skillStores = visStores.slice(); if(['gm','ceo','office'].indexOf(curRole)>=0 && !skillStores.find(function(x){return x.id==='OFFICE';})) skillStores.push({id:'OFFICE',name:'オフィス',color:'#6b7280'});
+  var storeObj = STORES.find(s=>s.id===mgrStoreId)||(mgrStoreId==='OFFICE'?{name:'Office',color:'#6b7280'}:{});
+  var skillStores = visStores.slice(); if(['gm','ceo','office'].indexOf(curRole)>=0 && !skillStores.find(function(x){return x.id==='OFFICE';})) skillStores.push({id:'OFFICE',name:'Office',color:'#6b7280'});
 
   if (window._skillView==='prep') { html += renderPrepLevel(); return html; }
   if (window._skillView==='staff') { html += renderSkillStaffView(); return html; }
@@ -27650,7 +27905,7 @@ function renderSkillManager() {
 
 function skillStoreListUI(){
   var v=getVisibleStores().slice();
-  if(['gm','ceo','office'].indexOf(curRole)>=0 && !v.find(function(x){return x.id==='OFFICE';})) v.push({id:'OFFICE',name:'オフィス',color:'#6b7280'});
+  if(['gm','ceo','office'].indexOf(curRole)>=0 && !v.find(function(x){return x.id==='OFFICE';})) v.push({id:'OFFICE',name:'Office',color:'#6b7280'});
   return v;
 }
 function setSkillMatrixStore(storeId) { window._skillMatrixStore = storeId; renderPage('skill'); }
@@ -27744,7 +27999,7 @@ function renderSkillStaffView() {
     html += `<div class="card"><div class="card-title"><i class="ti ti-user"></i>${e.name}
       <span class="tag ${rate===100?'tag-green':'tag-gray'}" style="margin-left:auto">Tip ${rate===0?'No':rate+'%'}</span></div>`;
     stores.forEach(sid=>{
-      var sObj = STORES.find(s=>s.id===sid)||{name:(sid==='OFFICE'?'オフィス':sid),color:'#6b7280'};
+      var sObj = STORES.find(s=>s.id===sid)||{name:(sid==='OFFICE'?'Office':sid),color:'#6b7280'};
       var sc = skillScoreStore(e.name, sid);
       var ap = approvedPositionsStore(e.name, sid);
       var elig = checkLevelUpEligibility(e.name, sid);
