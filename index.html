@@ -3471,7 +3471,7 @@ var OP_SYNC_KEYS = ['applicants','onboardings','approvals','evaluations','eval_h
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'my_vacations','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists'];
+  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
@@ -18085,7 +18085,7 @@ const SKILL_CRITERIA = {
   '理念':['Funergyの理念（クレド・ミッション・バリュー）をまだ理解しておらず、行動に表れていない','理念を理解しており、意識した行動が時々見られる','理念を日々の判断・行動の基準にして安定して体現できている','理念を体現する模範であり、チームに浸透させ、メンバーを導いている'],
 };
 function skillCriteria(pos) {
-  return SKILL_CRITERIA[pos] || ['未経験','サポートがあればできる','一人でできる','教えられる・リーダーとして行動できる'];
+  return SKILL_CRITERIA[pos] || (typeof OFFICE_SKILL_CRITERIA!=='undefined' && OFFICE_SKILL_CRITERIA[pos]) || ['未経験','サポートがあればできる','一人でできる','教えられる・リーダーとして行動できる'];
 }
 /* ===== 評価基準（0〜3）共通マスター：Career Score・スキルレベルで共通表示。GM/CEO編集可 ===== */
 function defaultEvalRubric(){
@@ -18272,9 +18272,22 @@ var SPECIALIST_TITLE_DEPT = {
   'Customer Service Manager':'サービス',
 };
 function empSpecialistDept(e){ return (e && (e.career || SPECIALIST_TITLE_DEPT[e.title])) || null; }
+var SPECIALIST_AXIS_ITEMS = {
+  '経理': {
+    A:['仕訳・記帳の正確さ','数値の照合・検算','残高・整合性のチェック','ミスの早期発見と修正'],
+    B:['月次締めの期日厳守','支払・入金の期限管理','申告・提出期限の管理','依頼への迅速な対応'],
+    C:['PL/BSを読み解く力','店舗別収益性の分析','予実差異の把握と説明','改善につながる示唆出し'],
+    D:['GET・源泉等の基本理解','DOH・各種申請の対応','法令・社内規程の遵守','税理士・当局との連携'],
+    E:['承認フロー・職務分掌の理解','現金・カードの管理統制','証憑保管・監査対応','誤り・不正を防ぐ仕組み'],
+    F:['業務フローの標準化','Excel/ツールでの効率化','自動化・ペーパーレス推進','属人化の排除'],
+    G:['後輩への業務指導','マニュアル整備','チェック体制の構築','チーム全体の底上げ'],
+    H:['数字に誠実（粉飾しない）','透明性のある報告','理念に基づく判断','模範となる行動']
+  }
+};
 function specialistCats(dept){
   var d=SPECIALIST_DEPTS[dept]; if(!d) return null;
-  return d.axes.map(function(a){ return {key:a.k, name:a.n, en:a.n, icon:'ti-star', items:[a.n]}; });
+  var its=SPECIALIST_AXIS_ITEMS[dept]||{};
+  return d.axes.map(function(a){ var arr=(its[a.k]&&its[a.k].length)?its[a.k]:[a.n]; return {key:a.k, name:a.n, en:a.n, icon:'ti-star', items:arr}; });
 }
 
 /* ===== Grade × Career Score 担当軸マップ（◎所有＝担当。○以下は参考） =====
@@ -19948,6 +19961,115 @@ function PREP_LEVELS(){ var d=(typeof GRADE_MAP_DATA!=='undefined')?GRADE_MAP_DA
 function prepWageForLv(lv){ var L=PREP_LEVELS().find(function(x){return Number(x.lv)===Number(lv);}); return L?parseFloat(L.wage):16; }
 function getPrepHistory(){ return ls('prep_history',[]); }
 function addPrepHistory(rec){ var h=getPrepHistory(); h.unshift(rec); if(h.length>200) h=h.slice(0,200); lsSet('prep_history',h); }
+/* ===== (1) Prep 店舗別スキルマトリクス（評価レベル＝時給レベル / 従業員マスター連動） ===== */
+var DEFAULT_PREP_POSITIONS = {
+  'F01':['チキン','ポーク','キッチン','仕込み段取り・量','鮮度・衛生','在庫','引継ぎ報連相','理念'],
+  'F03':['魚のカット','ソース','野菜のカット','在庫','引継ぎ報連相','理念'],
+  'F03-G':['ガーリックソース','野菜のカット','揚げ仕込み','在庫','引継ぎ報連相','理念']
+};
+var DEFAULT_PREP_POSITIONS_GENERIC = ['仕込み','鮮度・衛生','在庫','引継ぎ報連相','理念'];
+function getPrepPositions(storeId){
+  var all = ls('prep_positions', null);
+  if(all && all[storeId] && all[storeId].length) return all[storeId];
+  return DEFAULT_PREP_POSITIONS[storeId] || DEFAULT_PREP_POSITIONS_GENERIC;
+}
+function setPrepPositions(storeId, arr){
+  var all = ls('prep_positions', {}) || {}; all[storeId] = arr; lsSet('prep_positions', all);
+}
+function getPrepLevelMethod(){ return ls('prep_level_method','avg'); }
+function setPrepLevelMethod(m){ lsSet('prep_level_method', m); }
+var PREP_SKILL_LEGEND = ['','まだできない','補助があればできる','独力でできる','安定して速く正確','指導・改善できる'];
+function prepSkillsOf(e, storeId){ return (e && e.prepSkills && e.prepSkills[storeId]) ? e.prepSkills[storeId] : {}; }
+function prepOverallLevel(e, storeId){
+  var pos = getPrepPositions(storeId), sk = prepSkillsOf(e, storeId);
+  var vals = pos.map(function(p){ return Number(sk[p]||0); }).filter(function(v){ return v>=1; });
+  if(!vals.length) return Number((e&&e.prepLv)||1);
+  var lv = (getPrepLevelMethod()==='min')
+    ? Math.min.apply(null, vals)
+    : Math.round(vals.reduce(function(a,b){return a+b;},0)/vals.length);
+  return Math.max(1, Math.min(5, lv));
+}
+function setPrepSkill(empId, storeId, posIdx, level){
+  if(!canEditWages()){ alert('時給に連動するため、評価はGM/CEOのみです。'); return; }
+  var emps = getEmployees(), e = emps.find(function(x){return x.id===empId;}); if(!e) return;
+  var position = getPrepPositions(storeId)[posIdx]; if(position==null) return;
+  if(!e.prepSkills) e.prepSkills = {}; if(!e.prepSkills[storeId]) e.prepSkills[storeId] = {};
+  if(Number(e.prepSkills[storeId][position])===Number(level)) e.prepSkills[storeId][position]=0;
+  else e.prepSkills[storeId][position] = Number(level);
+  var prevLv = e.prepLv||0, newLv = prepOverallLevel(e, storeId);
+  e.prepLv = newLv; e.wage = prepWageForLv(newLv);
+  lsSet('m_employees', emps);
+  if(newLv!==prevLv) addPrepHistory({name:e.name, store:storeId, fromLv:prevLv, toLv:newLv, wage:e.wage, by:myName(), at:new Date().toISOString()});
+  renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
+}
+function openPrepPosModal(storeId){
+  if(!canEditWages()) return;
+  var pos = getPrepPositions(storeId);
+  var sname = (STORES.find(function(s){return s.id===storeId;})||{name:storeId}).name;
+  openModal(`<div class="modal-title">Prep評価項目の編集 · ${escapeHtml(sname)} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">1行＝1項目。順番も保存されます。共通項目（在庫・引継ぎ報連相・理念）も自由に追加/編集できます。</div>
+    <textarea id="prepPosTa" class="form-input" style="width:100%;height:210px;font-size:13px;line-height:1.7">${pos.join(String.fromCharCode(10))}</textarea>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="savePrepPos('${storeId}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
+}
+function savePrepPos(storeId){
+  var ta = document.getElementById('prepPosTa'); if(!ta) return;
+  var arr = ta.value.split(String.fromCharCode(10)).map(function(x){return x.trim();}).filter(function(x){return x.length;});
+  if(!arr.length){ alert('1項目以上必要です'); return; }
+  setPrepPositions(storeId, arr);
+  closeModalDirect(); showToast('Prep評価項目を保存しました','success');
+  renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
+}
+function renderStorePrepPanel(storeId){
+  if(typeof canViewWages==='function' && !canViewWages()) return '';
+  var canEdit = (typeof canEditWages==='function') ? canEditWages() : false;
+  var emps = getEmployees();
+  function atStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
+  var preps = emps.filter(function(e){ return e.prep===true && e.status!=='退職' && atStore(e); });
+  var cands = emps.filter(function(e){ return !e.prep && e.status!=='退職' && (e.role==='crew'||e.role==='office_crew') && atStore(e); });
+  if(!preps.length && !canEdit) return '';
+  var positions = getPrepPositions(storeId);
+  var method = getPrepLevelMethod();
+  var levels = PREP_LEVELS();
+  var h = `<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2" style="color:#7d9b4e"></i>Prep スキルレベル（評価＝時給連動）${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openPrepPosModal('${storeId}')"><i class="ti ti-settings"></i> 項目編集</button>`:''}</div>`;
+  h += `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">各項目をLv1〜5で評価 → 総合レベルが自動算出され時給に直結（変更はGM/CEO・従業員マスター連動）。</div>`;
+  h += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><span style="font-size:10px;color:var(--muted)">${levels.map(function(l){return 'Lv'+l.lv+' $'+l.wage;}).join(' / ')}</span>`;
+  if(canEdit){
+    h += `<span style="margin-left:auto;font-size:10px;color:var(--muted)">総合:</span><div style="display:flex;gap:4px">`;
+    [['avg','平均'],['min','弱点基準']].forEach(function(m){
+      var on = method===m[0];
+      h += `<span onclick="setPrepLevelMethod('${m[0]}');renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin')" style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;cursor:pointer;border:1px solid ${on?'var(--accent)':'var(--border)'};background:${on?'var(--accent)':'var(--surface2)'};color:${on?'#fff':'var(--muted)'}">${m[1]}</span>`;
+    });
+    h += `</div>`;
+  }
+  h += `</div>`;
+  h += `<div style="font-size:9.5px;color:var(--muted);margin-bottom:8px">1:${PREP_SKILL_LEGEND[1]} / 2:${PREP_SKILL_LEGEND[2]} / 3:${PREP_SKILL_LEGEND[3]} / 4:${PREP_SKILL_LEGEND[4]} / 5:${PREP_SKILL_LEGEND[5]}（同じ数字を再タップで解除）</div>`;
+  if(!preps.length) h += `<div style="font-size:12px;color:var(--muted)">この店舗のプレップ専門職は未登録です。下から追加できます。</div>`;
+  preps.forEach(function(e){
+    var sk = prepSkillsOf(e, storeId);
+    var lv = prepOverallLevel(e, storeId);
+    var wage = prepWageForLv(lv);
+    h += `<div style="border:1px solid var(--border);border-radius:9px;padding:9px 10px;margin-bottom:8px">`;
+    h += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-weight:700;font-size:13px">${escapeHtml(e.name)}</div><div style="text-align:right"><span style="font-size:11px;font-weight:800;color:var(--accent)">総合 Lv${lv}</span> <span style="font-family:ui-monospace,monospace;font-weight:800;color:#15a66a">$${Number(wage).toFixed(2)}</span></div></div>`;
+    positions.forEach(function(p, i){
+      var cur = Number(sk[p]||0);
+      h += `<div style="display:flex;align-items:center;gap:6px;margin:3px 0"><span style="flex:1;min-width:0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p)}</span><div style="display:flex;gap:3px">`;
+      [1,2,3,4,5].forEach(function(n){
+        var on = cur===n;
+        h += `<div ${canEdit?`onclick="setPrepSkill('${e.id}','${storeId}',${i},${n})"`:''} title="${PREP_SKILL_LEGEND[n]}" style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;border-radius:5px;border:1px solid ${on?'var(--accent)':'var(--border)'};background:${on?'var(--accent)':'var(--surface2)'};color:${on?'#fff':'var(--muted)'};cursor:${canEdit?'pointer':'default'}">${n}</div>`;
+      });
+      h += `</div></div>`;
+    });
+    if(canEdit) h += `<div style="text-align:right;margin-top:5px"><span style="font-size:10px;color:var(--muted);cursor:pointer;text-decoration:underline" onclick="removePrepEmp('${e.id}')">指定を外す</span></div>`;
+    h += `</div>`;
+  });
+  if(canEdit && cands.length){
+    h += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><select id="prepAddSelSk" class="form-select" style="flex:1;min-width:140px;padding:7px;font-size:12px"><option value="">クルーを選択…</option>${cands.map(function(e){return `<option value="${e.id}">${escapeHtml(e.name)}</option>`;}).join('')}</select><button class="btn btn-primary btn-sm" onclick="addPrepEmp(document.getElementById('prepAddSelSk').value)">プレップに追加</button></div>`;
+  }
+  h += `</div>`;
+  return h;
+}
+
 
 function setPrepLv(empId, lv){
   if(!canEditWages()){ alert('時給に連動するため、レベルの変更はGM/CEOのみです。'); return; }
@@ -27216,35 +27338,7 @@ function renderSkillManager() {
 
 function setSkillMatrixStore(storeId) { window._skillMatrixStore = storeId; renderPage('skill'); }
 function setSkillView(v) { window._skillView = v; renderPage('skill'); }
-/* D: 店舗別スキル画面のPrepスキルレベル評価（e.prepLv連動） */
-function renderStorePrepPanel(storeId){
-  if(typeof canViewWages==='function' && !canViewWages()) return '';
-  var canEdit=(typeof canEditWages==='function')?canEditWages():false;
-  var levels=PREP_LEVELS();
-  var emps=getEmployees();
-  function atStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
-  var preps=emps.filter(function(e){return e.prep===true && e.status!=='退職' && atStore(e);});
-  var cands=emps.filter(function(e){return !e.prep && e.status!=='退職' && (e.role==='crew'||e.role==='office_crew') && atStore(e);});
-  if(!preps.length && !canEdit) return '';
-  var h='<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2" style="color:#7d9b4e"></i>Prep スキルレベル（時給連動）</div>';
-  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">プレップ専門職(G1-P)のLv1〜5を評価＝時給が連動（変更はGM/CEO）。一般スキルマトリクスとは別管理で、従業員マスターのプレップLvと同じです。</div>';
-  h+='<div style="font-size:10px;color:var(--muted);margin-bottom:7px">'+levels.map(function(l){return 'Lv'+l.lv+' $'+l.wage;}).join('　/　')+'</div>';
-  if(!preps.length) h+='<div style="font-size:12px;color:var(--muted)">この店舗のプレップ専門職は未登録です。</div>';
-  preps.forEach(function(e){
-    var lv=e.prepLv||1; var wage=(e.wage!=null?e.wage:prepWageForLv(lv));
-    h+='<div style="border:1px solid var(--border);border-radius:9px;padding:8px 10px;margin-bottom:7px">';
-    h+='<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-weight:700;font-size:13px">'+escapeHtml(e.name)+' <span style="font-size:10px;color:var(--muted)">現在 Lv'+lv+'</span></div><div style="font-family:ui-monospace,monospace;font-weight:800;color:#15a66a">$'+Number(wage).toFixed(2)+'</div></div>';
-    h+='<div style="display:flex;gap:5px;margin-top:7px;flex-wrap:wrap">'+levels.map(function(l){ var on=Number(l.lv)===Number(lv); return '<div onclick="'+(canEdit?'setPrepLv(\''+e.id+'\','+l.lv+')':'')+'" style="flex:1;min-width:46px;text-align:center;font-size:11px;font-weight:800;padding:6px 3px;border-radius:7px;border:1px solid '+(on?'var(--accent)':'var(--border)')+';background:'+(on?'var(--accent)':'var(--surface2)')+';color:'+(on?'#fff':'var(--muted)')+';cursor:'+(canEdit?'pointer':'default')+'">Lv'+l.lv+'<div style="font-size:8px;font-family:ui-monospace,monospace;opacity:.85">$'+l.wage+'</div></div>'; }).join('')+'</div>';
-    if(canEdit) h+='<div style="text-align:right;margin-top:5px"><span style="font-size:10px;color:var(--muted);cursor:pointer;text-decoration:underline" onclick="removePrepEmp(\''+e.id+'\')">指定を外す</span></div>';
-    h+='</div>';
-  });
-  if(canEdit && cands.length){
-    h+='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><select id="prepAddSelSk" class="form-select" style="flex:1;min-width:140px;padding:7px;font-size:12px"><option value="">クルーを選択…</option>'+cands.map(function(e){return '<option value="'+e.id+'">'+escapeHtml(e.name)+'</option>';}).join('')+'</select><button class="btn btn-primary btn-sm" onclick="addPrepEmp(document.getElementById(\'prepAddSelSk\').value)">プレップに追加</button></div>';
-    h+='<div style="font-size:10px;color:var(--muted);margin-top:4px">追加するとLv1（$16）からスタート。役職も「Prep Specialist」になります。</div>';
-  }
-  h+='</div>';
-  return h;
-}
+
 /* 従業員別ビュー */
 /* 各スキルのレベル一覧（店舗別・コンパクト） */
 function skillLevelListHtml(name, sid){
