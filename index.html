@@ -9426,13 +9426,21 @@ function getInvTop(storeId){ return ls('inv_top_'+storeId, {})||{}; }
 function setInvTop(storeId, field, val){
   var o=getInvTop(storeId); var v=parseFloat(val);
   o[field]=(val===''||isNaN(v))?'':v; lsSet('inv_top_'+storeId, o);
-  var t=invComputeTotals(storeId), prev=invLastConfirmedGrand(storeId);
+  var t=invComputeTotals(storeId), prev=invPrevStock(storeId);
   var purchase=parseFloat(o.purchase)||0, moves=parseFloat(o.moves)||0;
   var sales=(o.sales!=null&&o.sales!=='')?parseFloat(o.sales):((typeof storeData==='function')?(storeData(storeId).a||0):0);
   var cogs=prev+purchase+moves-t.grand; var rate=sales>0?(cogs/sales*100):null;
   var rc=document.getElementById('inv-costrate'); if(rc) rc.textContent=(rate!=null?rate.toFixed(1)+'%':'—');
   var cg=document.getElementById('inv-cogs'); if(cg) cg.textContent=invFmtMoney(cogs);
   var st=document.getElementById('inv-autosave'); if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
+}
+function invPrevStock(storeId){
+  var fc=ls('fc_monthly_'+storeId, {})||{};
+  var now=new Date(); var ym=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  if(fc.invMonth===ym) return parseFloat(fc.beginInv)||0;        // 当月確定済→期首=前月末
+  var end=parseFloat(fc.endInv); if(end>0) return end;            // 前月確定の期末
+  var beg=parseFloat(fc.beginInv); if(beg>0) return beg;          // 初月の手入力期首
+  return invLastConfirmedGrand(storeId);
 }
 function invLastConfirmedGrand(storeId){
   var h=ls('inv_hist_'+storeId,[])||[]; if(!h.length) return 0;
@@ -9456,7 +9464,7 @@ function invRefreshInputSection(storeId){
 }
 function renderInvToppageInner(storeId){
   var t=invComputeTotals(storeId), top=getInvTop(storeId);
-  var prev=invLastConfirmedGrand(storeId), cur=t.grand;
+  var prev=invPrevStock(storeId), cur=t.grand;
   var purchase=parseFloat(top.purchase)||0, moves=parseFloat(top.moves)||0;
   var sales=(top.sales!=null&&top.sales!=='')?parseFloat(top.sales):((typeof storeData==='function')?(storeData(storeId).a||0):0);
   var cogs=prev+purchase+moves-cur, rate=sales>0?(cogs/sales*100):null;
@@ -9590,13 +9598,27 @@ function saveInventory(storeId){
     lines.push({code:code, name:i.name, cls:(i.cls||catClass(i.cat)), vendor:i.vendor||'未設定', unit:i.unit||'', actual:cnt, unitVal:uv, value:cnt*uv});
   });
   if(!lines.length){ alert('棚卸数が入力されていません'); return; }
-  var snap={date:new Date().toLocaleString('ja'), by:ROLE_CONFIG[curRole].name, mode:'monthly', grand:t.grand, perClass:t.perClass, perVendor:t.perVendor, lines:lines};
-  var hist=ls('inv_hist_'+storeId,[]); hist.push(snap); lsSet('inv_hist_'+storeId, hist);
-  // Food Cost：今回total→endInv、前回endInv→beginInv
-  var fc=ls('fc_monthly_'+storeId, {beginInv:0,endInv:0,sales:0}); var prevEnd=fc.endInv||0;
-  lsSet('fc_monthly_'+storeId, {beginInv:prevEnd, endInv:Math.round(t.grand), sales:fc.sales||((typeof storeData==='function')?storeData(storeId).a:0), beginAuto:true,
-    history:(fc.history||[]).concat([{date:new Date().toLocaleDateString('ja'), endInv:Math.round(t.grand), by:ROLE_CONFIG[curRole].name}])});
-  showToast('棚卸を確定しました（総額 '+invFmtMoney(t.grand)+'）','success');
+  var now=new Date(); var ym=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  var snap={date:now.toLocaleString('ja'), ym:ym, by:ROLE_CONFIG[curRole].name, mode:'monthly', grand:t.grand, perClass:t.perClass, perVendor:t.perVendor, lines:lines};
+  var hist=ls('inv_hist_'+storeId,[])||[];
+  // 同月の確定は置き換え（重複防止）
+  var ridx=-1;
+  for(var k=hist.length-1;k>=0;k--){
+    var hym=hist[k].ym; if(!hym){ var dt=parseJaDate(hist[k].date); hym=dt?(dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')):''; }
+    if(hym===ym){ ridx=k; break; }
+  }
+  var replaced = ridx>=0;
+  if(replaced) hist[ridx]=snap; else hist.push(snap);
+  lsSet('inv_hist_'+storeId, hist);
+  // Food Cost連携: 同月再確定はbeginInvを保持、新しい月のみ前月末をbeginInvへシフト
+  var fc=ls('fc_monthly_'+storeId, {beginInv:0,endInv:0,sales:0});
+  var sameMonth = (fc.invMonth===ym);
+  var beginInv = sameMonth ? (parseFloat(fc.beginInv)||0)
+               : ((parseFloat(fc.endInv)||0)>0 ? parseFloat(fc.endInv) : (parseFloat(fc.beginInv)||0));
+  lsSet('fc_monthly_'+storeId, { beginInv:beginInv, endInv:Math.round(t.grand), invMonth:ym, beginAuto:!sameMonth,
+    sales:fc.sales||((typeof storeData==='function')?storeData(storeId).a:0),
+    history:(fc.history||[]).concat([{date:now.toLocaleDateString('ja'), endInv:Math.round(t.grand), by:ROLE_CONFIG[curRole].name, redo:replaced}]) });
+  showToast(replaced?('棚卸を再確定しました（同月更新・総額 '+invFmtMoney(t.grand)+'）'):('棚卸を確定しました（総額 '+invFmtMoney(t.grand)+'）'),'success');
   renderPage('inventory');
 }
 
