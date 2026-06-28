@@ -13798,81 +13798,185 @@ function pendingOnboardOffice(){
 }
 function setHiringTab(t){ hiringTab=t; renderPage('hiring'); }
 function goOnboarding(){ hiringTab='onboard'; go('hiring'); }
-function renderCareerExplain(){
-  var ladder=[
-    {g:'G1',  t:'Crew',            jp:'クルー',           d:'まずは現場の一人前。接客・調理など担当ポジションを習得。',                col:'#5DB554'},
-    {g:'G2',  t:'Crew Leader',     jp:'クルーリーダー',   d:'自分の仕事＋周りを動かす。シフトの中心としてチームをリード。',          col:'#3A8FD6'},
-    {g:'G3',  t:'Specialist Leader',jp:'専門リーダー',     d:'サービス／キッチン／運営のいずれかで専門性を発揮するリーダー。',        col:'#0E78C4'},
-    {g:'G4',  t:'Store Manager',   jp:'店長',             d:'お店の責任者。P&L（損益）と人の育成に責任を持つ。【管理職】',          col:'#D98E3B'},
-    {g:'G5',  t:'Area Manager',    jp:'エリアマネージャー',d:'複数店舗を統括。エリア全体の成果に責任。',                            col:'#F07820'},
-    {g:'G6',  t:'General Manager', jp:'GM',               d:'全社を統括する最終責任者。',                                          col:'#D4A800'}
+function setCeMode(m){ window._ceMode=m; renderPage('hiring'); }
+function _ceLadder(){
+  return [
+    {g:'G1',  t:'Crew',             jp:'クルー',            pay:'時給', tip:'対象',   ev:'Skill Level',  hr:'—',  pl:'—',     col:'#5DB554', d:'現場の一人前。接客・調理など担当ポジションを習得し、自分の仕事を確実にこなす。', req:'担当ポジションのスキル習得（できることを増やす）', promo:'必要ポジションを習得 ＋ Crew Leader OJT 修了'},
+    {g:'G2',  t:'Crew Leader',      jp:'クルーリーダー',     pay:'時給', tip:'対象',   ev:'Career Score', hr:'—',  pl:'—',     col:'#3A8FD6', d:'自分の仕事＋周りを動かす。シフトの中心としてチームをリードし、結果に責任を持つ。', req:'A基本業務・B サービス・C キッチン・H 理念', promo:'担当軸 全てL4 ＋ Specialist Leader OJT 修了'},
+    {g:'G3',  t:'Specialist Leader',jp:'専門リーダー',       pay:'時給', tip:'対象',   ev:'Career Score', hr:'—',  pl:'—',     col:'#0E78C4', d:'サービス／キッチン／運営のいずれかで専門性を発揮するリーダー。店の活気と品質を作る。', req:'役職別の担当軸（Server=A・B・H／Kitchen=A・C・H／Operation=A・E・H）', promo:'担当軸 全てL4 ＋ 実績・Career Score総合（管理職へ・本昇進前にTrainee期間）', boundary:true},
+    {g:'G4',  t:'Store Manager',    jp:'店長',              pay:'月給', tip:'対象外', ev:'Career Score', hr:'あり', pl:'自店',  col:'#D98E3B', d:'お店の責任者。売上・利益（P&L）と人の育成に全責任を持つ。【管理職】', req:'A基本業務・D マーケ・E マネジメント・F 数字・G 育成・H 理念', promo:'実績 ＋ Career Score総合Lv ＋ Trainee（GM承認・固定OJTなし）'},
+    {g:'G5',  t:'Area Manager',     jp:'エリアマネージャー', pay:'月給', tip:'対象外', ev:'Career Score', hr:'あり', pl:'エリア', col:'#F07820', d:'複数店舗を統括。エリア全体の成果・人材・出店に責任を持つ。', req:'D マーケ・E マネジメント・F 数字・G 育成・H 理念', promo:'実績 ＋ Career Score総合Lv ＋ Trainee（GM承認）'},
+    {g:'G6',  t:'General Manager',  jp:'GM',                pay:'月給', tip:'対象外', ev:'Career Score', hr:'あり', pl:'全社',  col:'#D4A800', d:'全社を統括する最終責任者。経営に近い視点で会社全体を動かす。', req:'D マーケ・E マネジメント・F 数字・G 育成・H 理念', promo:'最終グレード（実績・総合Lv・経営判断）'}
   ];
-  var h='';
-  h+=`<div style="font-size:11px;color:var(--muted);margin:0 2px 12px;line-height:1.6"><i class="ti ti-user-star" style="color:var(--accent)"></i> 候補者に「入社後どう成長できるか」を説明するための資料です。採用面談でそのまま使えます。</div>`;
+}
 
-  // 1) 全体の歩み（ジャーニー）
-  h+=`<div class="card"><div class="card-title"><i class="ti ti-route" style="color:var(--accent)"></i>入社後の歩み（全体像）</div>`;
-  h+=`<div style="display:flex;align-items:center;gap:3px;flex-wrap:wrap;font-size:11px;margin-bottom:4px">`
-    +`<span style="border:1px solid var(--border);border-radius:7px;padding:3px 8px;background:var(--surface2)"><i class="ti ti-user-plus"></i> 入社</span>`
-    +`<i class="ti ti-arrow-right" style="color:var(--muted)"></i>`
-    +`<span style="border:1px solid var(--border);border-radius:7px;padding:3px 8px;background:var(--surface2)"><i class="ti ti-school"></i> OJTで一人前に</span>`
-    +ladder.map(function(l){ return `<i class="ti ti-arrow-right" style="color:var(--muted)"></i><span style="border:1px solid ${l.col};border-radius:7px;padding:3px 8px;color:var(--tm)"><b>${l.g}</b> ${escapeHtml(l.jp)}</span>`; }).join('')
+function renderCareerExplain(){
+  if(!window._ceMode) window._ceMode='show';
+  var mode=window._ceMode;
+  var h=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+    <button class="phase-tab${mode==='show'?' active':''}" onclick="setCeMode('show')"><i class="ti ti-eye"></i> 見せる用（候補者に見せる）</button>
+    <button class="phase-tab${mode==='guide'?' active':''}" onclick="setCeMode('guide')"><i class="ti ti-notebook"></i> 解説用（採用担当メモ）</button>
+  </div>`;
+  return h + (mode==='guide' ? renderCareerExplainGuide() : renderCareerExplainShow());
+}
+
+/* ===== 見せる用（候補者に見せる・ビジュアル重視） ===== */
+function renderCareerExplainShow(){
+  var ladder=_ceLadder();
+  var h='';
+  h+=`<div style="font-size:11px;color:var(--muted);margin:0 2px 12px;line-height:1.6"><i class="ti ti-eye" style="color:var(--accent)"></i> この画面をそのまま候補者に見せられます。</div>`;
+
+  // 全体像
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-route" style="color:var(--accent)"></i>Funergyでのキャリアの歩み</div>`;
+  h+=`<div style="display:flex;align-items:stretch;gap:0;overflow-x:auto;padding:4px 0 8px">`;
+  var stages=[
+    {ic:'ti-user-plus', t:'入社', s:'スタート', c:'#9b938a'},
+    {ic:'ti-school',    t:'OJT', s:'一人前まで育成', c:'#5DB554'},
+    {ic:'ti-tools',     t:'クルー', s:'G1', c:'#5DB554'},
+    {ic:'ti-users',     t:'リーダー', s:'G2-G3', c:'#0E78C4'},
+    {ic:'ti-building-store', t:'店長', s:'G4', c:'#D98E3B'},
+    {ic:'ti-building',  t:'エリア/GM', s:'G5-G6', c:'#D4A800'}
+  ];
+  stages.forEach(function(st,i){
+    h+=`<div style="min-width:84px;flex:1;text-align:center;position:relative">
+      <div style="width:42px;height:42px;border-radius:50%;background:${st.c};color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto 5px"><i class="ti ${st.ic}" style="font-size:20px"></i></div>
+      <div style="font-size:12px;font-weight:700">${st.t}</div><div style="font-size:9px;color:var(--muted)">${st.s}</div>
+      ${i<stages.length-1?'<div style="position:absolute;top:21px;right:-1px;width:50%;height:2px;background:var(--border)"></div>':''}
+    </div>`;
+  });
+  h+=`</div>`;
+  h+=`<div style="background:var(--surface2);border-radius:9px;padding:10px 12px;font-size:12px;line-height:1.7;margin-top:4px">`
+    +`やる気と実力次第で、<b>クルー → リーダー → 店長 → エリア → GM</b> と道が明確に開けています。<br>`
+    +`さらに「現場リーダー」だけでなく、<b>仕込み・経理・調理・サービス・マーケの専門職</b>として極める道も選べます。`
     +`</div>`;
-  h+=`<div style="font-size:10px;color:var(--muted)">やる気と実力次第で、クルー → リーダー → 店長 → エリア → GM と道が明確に開けています。</div>`;
   h+=`</div>`;
 
-  // 2) 最初の数ヶ月（OJTで一人前へ）
+  // OJT
   h+=`<div class="card"><div class="card-title"><i class="ti ti-school" style="color:var(--accent)"></i>入社直後：OJTで「一人前」まで丁寧に育てる</div>`;
   var phases=[
-    ['Phase 0','オリエンテーション','理念・ルール・衛生／安全の基礎を理解'],
-    ['Phase 1〜3','実地トレーニング','担当ポジションを一つずつ習得（できることを増やす）'],
-    ['Phase 4','一人前認定','クルーとして独り立ち（クルー認定）']
+    ['Phase 0','オリエンテーション','理念・ルール・衛生／安全の基礎を理解','ti-flag'],
+    ['Phase 1〜3','実地トレーニング','担当ポジションを一つずつ習得（できることを増やす）','ti-tools'],
+    ['Phase 4','一人前認定','クルーとして独り立ち（クルー認定）','ti-rosette']
   ];
-  h+=phases.map(function(p){ return `<div style="display:flex;gap:10px;align-items:flex-start;padding:5px 0"><span class="tag tag-blue" style="font-size:9px;min-width:62px;text-align:center">${p[0]}</span><div><div style="font-size:12px;font-weight:600">${escapeHtml(p[1])}</div><div style="font-size:11px;color:var(--muted)">${escapeHtml(p[2])}</div></div></div>`; }).join('');
-  h+=`<div style="font-size:11px;color:var(--muted);margin-top:6px;background:var(--surface2);border-radius:8px;padding:8px 10px"><i class="ti ti-coin"></i> <b>チップ</b>：最初の15時間は研修（NoTip）→ 90% → 一人前で 100% と段階的に上がります。</div>`;
+  h+=phases.map(function(p){ return `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)"><div style="width:30px;height:30px;border-radius:8px;background:var(--surface2);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ${p[3]}" style="color:var(--accent)"></i></div><div style="flex:1"><div style="font-size:12px;font-weight:700">${p[0]} <span style="color:var(--muted);font-weight:400">${escapeHtml(p[1])}</span></div><div style="font-size:11px;color:var(--muted)">${escapeHtml(p[2])}</div></div></div>`; }).join('');
+  h+=`<div style="font-size:12px;margin-top:8px;background:var(--surface2);border-radius:8px;padding:9px 11px;line-height:1.7"><i class="ti ti-coin" style="color:var(--accent)"></i> <b>チップも段階的にUP</b><br>研修中（最初の15時間）はNoTip → <b>90%</b> → 一人前で <b>100%</b>（満額）</div>`;
   h+=`</div>`;
 
-  // 3) キャリアラダー詳細
-  h+=`<div class="card"><div class="card-title"><i class="ti ti-stairs-up" style="color:var(--accent)"></i>キャリアラダー（G1→G6）</div>`;
-  h+=ladder.map(function(l){
-    return `<div style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--border)">`
-      +`<span style="flex-shrink:0;width:34px;height:34px;border-radius:9px;background:${l.col};color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:13px">${l.g}</span>`
+  // キャリアラダー（カード）
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-stairs-up" style="color:var(--accent)"></i>キャリアラダー（G1 → G6）</div>`;
+  ladder.forEach(function(l){
+    h+=`<div style="display:flex;gap:11px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--border)">`
+      +`<span style="flex-shrink:0;width:38px;height:38px;border-radius:10px;background:${l.col};color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:14px">${l.g}</span>`
       +`<div style="flex:1"><div style="font-size:13px;font-weight:700">${escapeHtml(l.jp)} <span style="font-size:10px;color:var(--muted);font-weight:400">${escapeHtml(l.t)}</span></div>`
-      +`<div style="font-size:11px;color:var(--muted);line-height:1.5">${escapeHtml(l.d)}</div></div></div>`;
-  }).join('');
-  h+=`<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-flag"></i> G3→G4が「管理職の境界」。ここからチップ対象外・人事権あり・お店のP&L全責任になります。</div>`;
+      +`<div style="font-size:11px;color:var(--muted);line-height:1.5;margin:2px 0 4px">${escapeHtml(l.d)}</div>`
+      +`<div style="display:flex;gap:5px;flex-wrap:wrap">`
+        +`<span class="tag tag-gray" style="font-size:8px">${l.pay}</span>`
+        +`<span class="tag ${l.tip==='対象'?'tag-green':'tag-gray'}" style="font-size:8px">チップ${l.tip}</span>`
+        +`<span class="tag ${l.ev==='Career Score'?'tag-blue':'tag-gray'}" style="font-size:8px">${l.ev}</span>`
+        +(l.hr==='あり'?`<span class="tag tag-yellow" style="font-size:8px">人事権</span>`:'')
+        +(l.pl!=='—'?`<span class="tag tag-yellow" style="font-size:8px">P&L:${l.pl}</span>`:'')
+      +`</div></div></div>`;
+    if(l.boundary){ h+=`<div style="background:#e23b3b14;border:1px dashed #e23b3b;border-radius:8px;padding:6px 10px;margin:6px 0;font-size:11px;color:#c0392b"><i class="ti ti-flag"></i> ここが「管理職の境界」。G4からはチップ対象外・人事権あり・お店のP&L全責任になります。</div>`; }
+  });
   h+=`</div>`;
 
-  // 4) 評価の2軸
+  // 評価の見える化
   h+=`<div class="card"><div class="card-title"><i class="ti ti-chart-arcs" style="color:var(--accent)"></i>評価の見える化（2つのものさし）</div>`;
-  h+=`<div style="border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:8px"><div style="font-size:13px;font-weight:700"><span class="tag tag-gray" style="font-size:9px">G1・G1-P</span> Skill Level（スキルレベル）</div><div style="font-size:11px;color:var(--muted);margin-top:3px;line-height:1.6">担当ポジションごとに「できる度合い」を評価。できることが増える＝評価・時給がUP。マトリクスで一目で分かります。</div></div>`;
-  h+=`<div style="border:1px solid var(--border);border-radius:10px;padding:9px 11px"><div style="font-size:13px;font-weight:700"><span class="tag tag-blue" style="font-size:9px">G2以上</span> Career Score（キャリアスコア）</div><div style="font-size:11px;color:var(--muted);margin-top:3px;line-height:1.6">A〜Hの8軸（業務・サービス・キッチン・マーケ・マネジメント・数字・育成・理念）で多面評価。担当軸が全てL4＋次役職OJT修了で昇格できます。「何をすれば次に行けるか」が明確です。</div></div>`;
+  h+=`<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px">`
+    +`<div style="font-size:13px;font-weight:700"><span class="tag tag-gray" style="font-size:9px">G1・G1-P</span> Skill Level（スキルレベル）</div>`
+    +`<div style="font-size:11px;color:var(--muted);margin:4px 0 7px;line-height:1.6">担当ポジションごとに「できる度合い」をLvで評価。<b>できることが増える＝評価・時給がUP</b>。マトリクスで一目で分かります。</div>`
+    +`<div style="display:flex;gap:4px;flex-wrap:wrap">`+['未経験','サポートがあれば','一人でできる','教えられる'].map(function(x,i){ var cols=['var(--muted)','var(--yellow)','var(--green)','var(--accent)']; return `<span style="font-size:10px;border:1px solid ${cols[i]};color:${cols[i]};border-radius:6px;padding:2px 7px">Lv${i} ${x}</span>`; }).join('')+`</div>`
+    +`</div>`;
+  h+=`<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px">`
+    +`<div style="font-size:13px;font-weight:700"><span class="tag tag-blue" style="font-size:9px">G2以上</span> Career Score（キャリアスコア）</div>`
+    +`<div style="font-size:11px;color:var(--muted);margin:4px 0 7px;line-height:1.6">A〜Hの<b>8つの軸</b>で多面的に評価。<b>担当軸が全てL4＋次役職OJT修了で昇格</b>。「何をすれば次に行けるか」が明確です。</div>`
+    +`<div style="display:flex;gap:4px;flex-wrap:wrap">`+(typeof LSS_CATEGORIES!=='undefined'?LSS_CATEGORIES.map(function(c){ return `<span style="font-size:10px;background:var(--surface2);border-radius:6px;padding:2px 7px"><b>${c.key}</b> ${escapeHtml(c.name)}</span>`; }).join(''):'')+`</div>`
+    +`</div>`;
   h+=`</div>`;
 
-  // 5) 専門職という選択肢
+  // 専門職
   h+=`<div class="card"><div class="card-title"><i class="ti ti-briefcase" style="color:var(--accent)"></i>「専門性を極める」道もある</div>`;
-  h+=`<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">現場リーダー（運営トラック）だけでなく、専門職として深く極める道も用意しています。</div>`;
   h+=`<div style="font-size:12px;font-weight:600;margin-bottom:3px"><i class="ti ti-tools-kitchen-2" style="color:#7d9b4e"></i> G1-P Prep Specialist（仕込み専門職）</div>`;
-  h+=`<div style="font-size:11px;color:var(--muted);margin-bottom:8px">仕込みのプロ。独自の時給ラダー（$16→$22）でスキルが上がるほど時給UP。</div>`;
-  h+=`<div style="font-size:12px;font-weight:600;margin-bottom:3px"><i class="ti ti-star" style="color:var(--accent)"></i> 専門職キャリア</div>`;
+  h+=`<div style="font-size:11px;color:var(--muted);margin-bottom:9px;line-height:1.6">仕込みのプロ。独自の時給ラダー（$16 → $22）で、スキルが上がるほど時給がUP。</div>`;
+  h+=`<div style="font-size:12px;font-weight:600;margin-bottom:4px"><i class="ti ti-star" style="color:var(--accent)"></i> 専門職キャリア</div>`;
   h+=`<div style="display:flex;gap:6px;flex-wrap:wrap">`+(typeof SPECIALIST_DEPTS!=='undefined'?Object.keys(SPECIALIST_DEPTS).map(function(d){ return `<span style="border:1px solid var(--border);border-radius:7px;padding:3px 9px;font-size:11px;font-weight:600">${escapeHtml(SPECIALIST_DEPTS[d].label)}</span>`; }).join(''):'')+`</div>`;
-  h+=`<div style="font-size:10px;color:var(--muted);margin-top:6px">経理・調理・サービス・マーケなど、部門別のCareer Scoreで専門性を評価します。</div>`;
+  h+=`<div style="font-size:10px;color:var(--muted);margin-top:7px">経理・調理・サービス・マーケなど、部門別のCareer Scoreで専門性を評価します。</div>`;
   h+=`</div>`;
 
-  // 6) 採用責任者の説明トーク
-  h+=`<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-message-2" style="color:var(--accent)"></i>こう説明する（採用トーク例）</div>`;
+  return h;
+}
+
+/* ===== 解説用（採用担当の手元メモ・詳細） ===== */
+function renderCareerExplainGuide(){
+  var ladder=_ceLadder();
+  var rub=(typeof getEvalRubric==='function')?getEvalRubric():[{level:0,label:'できていない'},{level:1,label:'時々できる'},{level:2,label:'継続してできる（期待）'},{level:3,label:'模範となっている'}];
+  var skillLv=['未経験','サポートがあればできる','一人でできる','教えられる・リーダーとして行動できる'];
+  var h='';
+  h+=`<div style="font-size:11px;color:var(--muted);margin:0 2px 12px;line-height:1.6"><i class="ti ti-notebook" style="color:var(--accent)"></i> 採用担当の手元メモ。候補者には見せず、説明の裏付け・トークに使います。</div>`;
+
+  // 制度の考え方
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-bulb" style="color:var(--accent)"></i>制度の考え方（なぜこう作ったか）</div>`;
+  h+=`<div style="font-size:12px;line-height:1.8">`
+    +`・<b>「入ってからどう伸びるか」を仕組みにしている</b>。感覚評価ではなく、スキルレベルとCareer Scoreで成長を見える化。<br>`
+    +`・道は<b>二本立て</b>：①運営トラック（クルー→リーダー→店長→エリア→GM）、②専門職トラック（Prep・経理・調理・サービス・マーケ）。<br>`
+    +`・<b>G3→G4が「管理職の境界」</b>。ここでチップ対象外になり、人事権とP&L責任を持つ。役割が大きく変わる節目。<br>`
+    +`・<b>昇格条件が明確</b>：担当軸が全てL4＋次役職OJT修了（G4以上は実績＋総合Lv＋Trainee期間＋GM承認）。`
+    +`</div></div>`;
+
+  // キャリアラダー詳細テーブル
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-stairs-up" style="color:var(--accent)"></i>キャリアラダー 詳細</div>`;
+  h+=ladder.map(function(l){
+    return `<div style="border:1px solid var(--border);border-left:4px solid ${l.col};border-radius:8px;padding:9px 11px;margin-bottom:8px">`
+      +`<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px"><b style="font-size:14px">${l.g} ${escapeHtml(l.jp)}</b><span style="font-size:10px;color:var(--muted)">${escapeHtml(l.t)}</span></div>`
+      +`<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:6px">${escapeHtml(l.d)}</div>`
+      +`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 10px;font-size:11px">`
+        +`<div><span style="color:var(--muted)">評価：</span>${l.ev}</div>`
+        +`<div><span style="color:var(--muted)">給与：</span>${l.pay}</div>`
+        +`<div><span style="color:var(--muted)">チップ：</span>${l.tip}</div>`
+        +`<div><span style="color:var(--muted)">人事権：</span>${l.hr}</div>`
+        +`<div><span style="color:var(--muted)">P&L：</span>${l.pl}</div>`
+      +`</div>`
+      +`<div style="font-size:11px;margin-top:6px;line-height:1.6"><span style="color:var(--muted)">求められること（担当軸）：</span>${escapeHtml(l.req)}</div>`
+      +`<div style="font-size:11px;margin-top:2px;line-height:1.6"><span style="color:var(--muted)">次への昇格条件：</span><b>${escapeHtml(l.promo)}</b></div>`
+      +`</div>`;
+  }).join('');
+  h+=`</div>`;
+
+  // 評価の見える化 詳細
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-chart-arcs" style="color:var(--accent)"></i>評価の見える化 詳細</div>`;
+  // Skill Level
+  h+=`<div style="font-size:13px;font-weight:700;margin-bottom:4px">① Skill Level（G1・G1-P）</div>`;
+  h+=`<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:6px">担当ポジションごとに下記のLvで評価。承認されたLvに応じてスキルマトリクスが埋まり、できることが増えるほど評価・時給・チップ率に反映されます。</div>`;
+  h+=`<table class="inv-table" style="width:100%;margin-bottom:12px"><thead><tr><th style="width:50px">Lv</th><th>意味</th></tr></thead><tbody>`
+    +skillLv.map(function(x,i){ var cols=['var(--muted)','var(--yellow)','var(--green)','var(--accent)']; return `<tr><td style="text-align:center"><span style="display:inline-block;width:22px;height:22px;border-radius:6px;background:${cols[i]};color:#fff;font-weight:700;line-height:22px">${i}</span></td><td style="font-size:12px">${escapeHtml(x)}</td></tr>`; }).join('')
+    +`</tbody></table>`;
+  // Career Score
+  h+=`<div style="font-size:13px;font-weight:700;margin-bottom:4px">② Career Score（G2以上）</div>`;
+  h+=`<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:6px">A〜Hの8軸を、それぞれ複数項目で0〜3点採点。<b>担当軸が全てL4（=各項目で安定して期待レベル）＋次役職OJT修了</b>で昇格できます。四半期ごとにスナップショットを取り、推移も見えます。</div>`;
+  h+=`<div style="font-size:11px;font-weight:600;margin-bottom:3px">8つの軸：</div>`;
+  h+=`<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">`+(typeof LSS_CATEGORIES!=='undefined'?LSS_CATEGORIES.map(function(c){ return `<span style="font-size:10px;background:var(--surface2);border-radius:6px;padding:3px 8px"><b>${c.key}</b> ${escapeHtml(c.name)}</span>`; }).join(''):'')+`</div>`;
+  h+=`<div style="font-size:11px;font-weight:600;margin-bottom:3px">採点の基準（0〜3点）：</div>`;
+  h+=`<table class="inv-table" style="width:100%"><thead><tr><th style="width:50px">点</th><th>意味</th></tr></thead><tbody>`
+    +rub.map(function(r){ var cols=['var(--muted)','var(--yellow)','var(--green)','var(--accent)']; return `<tr><td style="text-align:center"><span style="display:inline-block;width:22px;height:22px;border-radius:6px;background:${cols[r.level]};color:#fff;font-weight:700;line-height:22px">${r.level}</span></td><td style="font-size:12px">${escapeHtml(r.label)}</td></tr>`; }).join('')
+    +`</tbody></table>`;
+  h+=`</div>`;
+
+  // 採用トーク
+  h+=`<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-message-2" style="color:var(--accent)"></i>採用トーク例（こう伝える）</div>`;
   var talks=[
     '「うちは"入ってからどう伸びるか"を仕組みにしています。」',
     '「最初はOJTで一人前まで丁寧に育てます。チップも段階的に上がるので安心してください。」',
     '「クルー → リーダー → 店長と、やる気と実力次第で上がれる道がはっきりしています。」',
     '「現場リーダーだけでなく、仕込み・経理・調理・サービス・マーケの"専門職"として極める道も選べます。」',
-    '「評価は感覚ではなく、スキルレベルとCareer Scoreで見える化。"何をすれば次に行けるか"が自分で分かります。」'
+    '「評価は感覚ではなく、スキルレベルとCareer Scoreで見える化。"何をすれば次に行けるか"が自分で分かります。」',
+    '「G3から先（店長）は、お店の数字と人の育成に責任を持つ"経営に近いポジション"です。」'
   ];
   h+=talks.map(function(t){ return `<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;font-size:12px;line-height:1.6"><i class="ti ti-quote" style="color:var(--accent);flex-shrink:0;margin-top:2px"></i><span>${escapeHtml(t)}</span></div>`; }).join('');
   h+=`</div>`;
 
   return h;
 }
+
 function renderHiring() {
   if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">採用管理の閲覧権限がありません</div>';
   maybePullOnboardings();
