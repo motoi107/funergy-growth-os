@@ -740,14 +740,17 @@ async function fetchTodayRealtime(storeList) {
       var guests = Number(r.guest_count)||0;
       var lSales = Number(r.lunch_sales)||0, dSales = Number(r.dinner_sales)||0;
       var lG = Number(r.lunch_guests)||0, dG = Number(r.dinner_guests)||0;
-      var lB = Number(r.lunch_bowls)||0, dB = Number(r.dinner_bowls)||0;  // Bowlsカテゴリ（テイクアウト除く）
+      var lB = Number(r.lunch_bowls)||0, dB = Number(r.dinner_bowls)||0;  // 店内Bowls（テイクアウト除く）
+      var lTOB = Number(r.lunch_takeout_bowls)||0, dTOB = Number(r.dinner_takeout_bowls)||0;
       var toCount = Number(r.takeout_count)||0;
+      // テイクアウト丼数: 時間帯別→合計→注文数 の順で取得（他ビューと同じくテイクアウトを出数に含める）
+      var toBowls = Number(r.takeout_bowls)||0; if(!(toBowls>0)) toBowls = (lTOB+dTOB>0 ? (lTOB+dTOB) : toCount);
       // 客数の数え方: Totoya=丼数(bowls) / Waikiki=皿 / それ以外=客数
       var metric = (typeof guestCountType==='function') ? guestCountType(s.id) : 'guest';
       var unit = metric==='bowls' ? '丼' : (metric==='plate' ? '皿' : t('名',''));
-      var lCnt = metric==='bowls' ? lB : lG;
-      var dCnt = metric==='bowls' ? dB : dG;
-      var totCnt = metric==='bowls' ? (lB+dB) : guests;
+      var lCnt = metric==='bowls' ? (lB + lTOB) : lG;
+      var dCnt = metric==='bowls' ? (dB + dTOB) : dG;
+      var totCnt = metric==='bowls' ? (lB + dB + toBowls) : guests;
       results.push({ id:s.id, name:s.name, color:s.color, hasData:true, metric:metric, unit:unit,
         net:net, guests:guests, count:totCnt, ppa: totCnt>0?net/totCnt:0,
         lunch:{ sales:lSales, count:lCnt, ppa: lCnt>0?lSales/lCnt:0 },
@@ -16992,6 +16995,7 @@ function renderOffboardHiringSection(){
 ============================================================ */
 var ingClassFilter = 'all';
 var ingCatFilter = 'all';
+var ingVendorFilter = 'all';
 var ingMasterSearch = '';
 function renderIngredientMaster() {
   var cats = getCategories();
@@ -17005,6 +17009,7 @@ function renderIngredientMaster() {
   if (ingScope==='store' && ingStore) list = list.filter(i => isInStoreMaster(ingStore, i.code));
   if (ingClassFilter !== 'all') list = list.filter(i => catClass(i.cat) === ingClassFilter);
   if (ingCatFilter !== 'all') list = list.filter(i => i.cat === parseInt(ingCatFilter));
+  if (ingVendorFilter !== 'all') list = list.filter(i => (i.vendor||'') === ingVendorFilter);
   var ingQ = (ingMasterSearch||'').toLowerCase().trim();
   if (ingQ) list = list.filter(i => (i.name||'').toLowerCase().includes(ingQ) || (i.nameEN||'').toLowerCase().includes(ingQ) || String(i.code).includes(ingQ) || (i.vendor||'').toLowerCase().includes(ingQ) || (i.subVendor||'').toLowerCase().includes(ingQ));
 
@@ -17048,6 +17053,7 @@ function renderIngredientMaster() {
     </div>`;
   }
 
+  html += `<select class="form-select" id="ing-vendor-filter" onchange="setIngVendorFilter(this.value)" style="margin-bottom:8px"><option value="all"${ingVendorFilter==='all'?' selected':''}>全業者 (${ings.length})</option>${ingVendorOptions().map(function(v){var n=ings.filter(function(x){return (x.vendor||'')===v;}).length; return `<option value="${escapeHtml(v)}"${ingVendorFilter===v?' selected':''}>${escapeHtml(v)} (${n})</option>`;}).join('')}</select>`;
   html += `<input class="form-input" id="ing-master-search" placeholder="食材名・コード・業者で検索" value="${ingMasterSearch}" oninput="ingMasterSearchInput(this.value)" autocomplete="off" style="margin-bottom:8px">`;
 
   html += `<div class="card">
@@ -18436,6 +18442,13 @@ function exportByClass() {
   showToast('区分別CSVを出力しました', 'success');
 }
 
+function ingVendorOptions(){
+  var set={};
+  (getVendors()||[]).forEach(function(v){ if(v&&v.name) set[v.name]=1; });
+  (getIngredients()||[]).forEach(function(i){ if(i&&i.vendor) set[i.vendor]=1; });
+  return Object.keys(set).sort(function(a,b){ return String(a).localeCompare(String(b),'ja'); });
+}
+function setIngVendorFilter(v){ ingVendorFilter = v; renderPage('ingredient_master'); }
 function setIngClassFilter(f) { ingClassFilter = f; ingCatFilter = 'all'; renderPage('ingredient_master'); }
 function setIngCatFilter(f) { ingCatFilter = f; renderPage('ingredient_master'); }
 function ingMasterSearchInput(v) {
@@ -18489,7 +18502,7 @@ function openIngModal(code) {
     ${!isNew?ingStorePriceHtml(i):''}
     ${!isNew?ingAliasHtml(i):''}
     <div class="form-group"><label class="form-label">仕入先</label>
-      <select class="form-select" id="i-vendor"><option value="自家製">自家製</option>${vendors.map(v=>`<option value="${v.name}"${i.vendor===v.name?' selected':''}>${v.name}</option>`).join('')}</select>
+      <select class="form-select" id="i-vendor">${(function(){var opts=ingVendorOptions(); if(opts.indexOf('自家製')<0) opts.unshift('自家製'); if(i.vendor&&opts.indexOf(i.vendor)<0) opts.unshift(i.vendor); return opts.map(function(v){return `<option value="${escapeHtml(v)}"${i.vendor===v?' selected':''}>${escapeHtml(v)}</option>`;}).join('');})()}</select>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">仕入価格 ($)</label><input class="form-input" id="i-price" type="number" step="0.01" value="${i.price}" oninput="updateIngUnitCost()"></div>
