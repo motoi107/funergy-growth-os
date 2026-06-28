@@ -14008,9 +14008,9 @@ function openMileageConfig(){
   if(!canManageMileage()){ alert('権限がありません'); return; }
   var c=getMileageConfig();
   openModal('<div class="modal-title">ガソリン代・地図設定 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Google Mapsで出発地→目的地の運転距離を自動計算します。Google Maps Platformの<b>APIキー</b>（Maps JavaScript API＋Places API＋Distance Matrix API を有効化・課金ON）を登録してください。キーは<b>ブラウザ用</b>として、HTTPリファラーを <code>'+escapeHtml(location.origin)+'/*</code> に制限することを推奨します。</div>'
-    +'<div class="form-group"><label class="form-label">Google Maps APIキー</label><input class="form-input" id="mi-key" value="'+escapeHtml(c.gmapsKey)+'" placeholder="AIza..."></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:10px"><b>単価</b>を設定してください。距離は申請画面の「Google Mapsで距離を調べる」で確認 → マイルで入力する方式です（<b>APIキー不要・無料</b>）。<br>※APIキー（任意）を入れると「自動」ボタンで距離を自動取得できます（Google Maps Platformの課金設定が必要）。</div>'
     +'<div class="form-group"><label class="form-label">単価（$ / マイル, IRS方式）</label><input class="form-input" id="mi-rate" type="number" step="0.01" value="'+c.ratePerMile+'"></div>'
+    +'<div class="form-group"><label class="form-label">Google Maps APIキー（任意・自動計算用）</label><input class="form-input" id="mi-key" value="'+escapeHtml(c.gmapsKey)+'" placeholder="未設定でOK（AIza...）"></div>'
     +'<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="mi-rtdef" '+(c.roundTripDefault?'checked':'')+'> 既定で往復にする</label></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
     +'<button class="btn btn-primary" onclick="saveMileageConfigDo()">保存</button></div>');
@@ -14028,16 +14028,17 @@ function openMileageModal(){
   var c=getMileageConfig();
   var today=new Date().toISOString().slice(0,10);
   _mileOneWay=null;
+  var autoBtn = c.gmapsKey ? '<button class="btn btn-secondary btn-sm" onclick="mileageCalcDistance()" title="APIキー設定時のみ"><i class="ti ti-route"></i> 自動</button>' : '';
   openModal('<div class="modal-title"><i class="ti ti-gas-station"></i> ガソリン代を申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +(c.gmapsKey?'':'<div class="alert alert-warning" style="padding:8px 10px;font-size:12px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i> Google Maps APIキーが未設定です。'+(canManageMileage()?'<a href="#" onclick="openMileageConfig();return false;">設定する</a>':'管理者に設定を依頼してください')+'。距離は手入力になります。</div>')
     +'<div class="form-row" style="gap:8px"><div class="form-group" style="flex:1"><label class="form-label">日付</label><input class="form-input" id="mi-date" type="date" value="'+today+'"></div>'
     +'<div class="form-group" style="flex:1"><label class="form-label">目的</label><select class="form-select" id="mi-purpose"><option>買い出し</option><option>ミーティング</option><option>銀行・郵便</option><option>店舗間移動</option><option>その他</option></select></div></div>'
-    +'<div class="form-group"><label class="form-label">出発地</label><input class="form-input" id="mi-origin" placeholder="住所・店舗名で検索" autocomplete="off"></div>'
-    +'<div class="form-group"><label class="form-label">目的地</label><input class="form-input" id="mi-dest" placeholder="住所・店舗名で検索" autocomplete="off"></div>'
+    +'<div class="form-group"><label class="form-label">出発地</label><input class="form-input" id="mi-origin" placeholder="住所・店舗名（例: ToriTon Honolulu）" autocomplete="off"></div>'
+    +'<div class="form-group"><label class="form-label">目的地</label><input class="form-input" id="mi-dest" placeholder="住所・店舗名（例: Costco Iwilei）" autocomplete="off"></div>'
+    +'<button class="btn btn-secondary btn-sm" style="width:100%;margin-bottom:8px" onclick="mileageOpenGmaps()"><i class="ti ti-map-pin"></i> Google Mapsで距離を調べる（別タブで開く）</button>'
+    +'<div class="form-group"><label class="form-label">距離（片道・マイル） <span style="font-size:10px;color:var(--muted)">※Google Mapsに出た距離を入力</span></label>'
+    +'<div style="display:flex;gap:6px;align-items:center"><input class="form-input" id="mi-miles-manual" type="number" step="0.1" inputmode="decimal" placeholder="例: 5.2" oninput="mileageManualMiles(this.value)" style="flex:1">'+autoBtn+'</div></div>'
     +'<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="mi-roundtrip" '+(c.roundTripDefault?'checked':'')+' onchange="mileageUpdateAmount()"> 往復</label></div>'
-    +'<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><button class="btn btn-secondary btn-sm" onclick="mileageCalcDistance()"><i class="ti ti-route"></i> 距離を計算</button>'
-    +'<input class="form-input" id="mi-miles-manual" type="number" step="0.1" placeholder="距離(片道mi)手入力" style="flex:1;font-size:12px" oninput="mileageManualMiles(this.value)"></div>'
-    +'<div id="mi-dist-status" style="font-size:13px;padding:8px;background:var(--surface2);border-radius:8px;margin-bottom:8px;color:var(--muted)">距離を計算してください</div>'
+    +'<div id="mi-dist-status" style="font-size:13px;padding:8px;background:var(--surface2);border-radius:8px;margin-bottom:8px;color:var(--muted)">距離（片道マイル）を入力してください</div>'
     +'<div class="form-group"><label class="form-label">メモ（任意）</label><input class="form-input" id="mi-memo" placeholder="補足"></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
     +'<button class="btn btn-primary" onclick="saveMileageRequest()">申請する</button></div>');
@@ -14052,6 +14053,13 @@ function mileageInitAutocomplete(){
   }).catch(function(){});
 }
 function mileageManualMiles(v){ var m=parseFloat(v); _mileOneWay=(isNaN(m)?null:Math.round(m*10)/10); mileageUpdateAmount(); }
+function mileageOpenGmaps(){
+  var o=(document.getElementById('mi-origin').value||'').trim(), d=(document.getElementById('mi-dest').value||'').trim();
+  if(!o||!d){ alert('出発地と目的地を入力してください'); return; }
+  var url='https://www.google.com/maps/dir/?api=1&origin='+encodeURIComponent(o)+'&destination='+encodeURIComponent(d)+'&travelmode=driving';
+  window.open(url,'_blank');
+  var st=document.getElementById('mi-dist-status'); if(st) st.innerHTML='Google Mapsで距離（マイル）を確認し、上の「距離（片道・マイル）」に入力してください。';
+}
 function mileageCalcDistance(){
   var o=(document.getElementById('mi-origin').value||'').trim(), d=(document.getElementById('mi-dest').value||'').trim();
   var st=document.getElementById('mi-dist-status');
@@ -14068,7 +14076,7 @@ function mileageCalcDistance(){
 }
 function mileageUpdateAmount(){
   var st=document.getElementById('mi-dist-status'); if(!st) return;
-  if(_mileOneWay==null){ st.innerHTML='距離を計算してください'; return; }
+  if(_mileOneWay==null){ st.innerHTML='距離（片道マイル）を入力してください'; return; }
   var rt=(document.getElementById('mi-roundtrip')||{}).checked; var rate=getMileageConfig().ratePerMile;
   var total=Math.round(_mileOneWay*(rt?2:1)*10)/10; var amt=Math.round(total*rate*100)/100;
   st.innerHTML='片道 <b>'+_mileOneWay+' mi</b>'+(rt?'　往復 <b>'+total+' mi</b>':'')+'　× $'+rate+'/mi　＝　<b style="color:var(--green);font-size:15px">$'+amt.toFixed(2)+'</b>';
@@ -14125,7 +14133,7 @@ function renderMileage(){
   var html='<div class="section-header"><div class="section-title">ガソリン代申請</div>'
     +'<div style="display:flex;gap:6px">'+(isMgr?'<button class="btn btn-secondary btn-sm" onclick="openMileageConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
     +'<button class="btn btn-primary btn-sm" onclick="openMileageModal()"><i class="ti ti-plus"></i> 申請</button></div></div>';
-  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。出発地→目的地の運転距離を自動計算し、$'+c.ratePerMile+'/マイルで算定します。</div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。「Google Mapsで距離を調べる」で出発地→目的地の距離を確認し、マイルで入力 → $'+c.ratePerMile+'/マイルで自動算定します。</div>';
   if(isMgr){
     var pending=all.filter(function(r){ return r.status==='申請中' && canApproveMileage(r); });
     html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'" style="margin-left:auto">'+pending.length+'</span></div>';
