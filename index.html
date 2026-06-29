@@ -1498,6 +1498,7 @@ const NAV_ITEMS = [
   {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
   {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am','sl']},
+  {id:'growth_karte',label:'成長カルテ',  icon:'ti-id-badge-2',       roles:['ceo','gm']},
   {id:'approval',    label:'承認センター',icon:'ti-checklist',         roles:['ceo','gm','office','am']},
   {id:'error_center',label:'エラーセンター',icon:'ti-alert-hexagon',    roles:['ceo','gm','office']},
   {id:'notifications',label:'通知',       icon:'ti-bell',             roles:['ceo','gm','office']},
@@ -1519,7 +1520,7 @@ const MENU_GROUPS = [
   {id:'g_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office','am','sl'],
     children:['tasks']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation']},
+    children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','growth_karte','ojt_admin','growthhub','hr','vacation']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
@@ -3498,7 +3499,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria'];
+  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
@@ -4486,6 +4487,7 @@ function renderPage(page) {
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
     case 'company_msg_edit': el.innerHTML = renderCompanyMsgEdit(); break;
     case 'notifications': el.innerHTML = renderNotifications(); break;
+    case 'growth_karte': el.innerHTML = renderGrowthKarte(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
@@ -14809,12 +14811,13 @@ function _ceLadder(){
 
 function _ceOjtInfo(){
   return {
-    pre:{ic:'ti-school', name:'OJT Phase 0〜4（入社研修）', cov:'オリエン（理念・ルール・衛生／安全）→ 実地トレーニング（担当ポジションを1つずつ習得）→ 一人前認定', gate:'クルー認定 ／ チップ：最初の15時間NoTip → 90% → 100%'},
+    pre:{ic:'ti-school', name:'オリエンテーション（Phase 0）→ OJT（Phase 1〜4）', cov:'オリエン（理念・ルール・衛生／安全）→ 実地トレーニング（担当ポジションを1つずつ習得）→ 一人前認定', gate:'クルー認定 ／ チップ：No Tip（2〜3シフト）→ 80% → 90% → 100%'},
     G1:{ic:'ti-school', name:'Crew Leader OJT（G1→G2）', cov:'「自分の仕事ができる人」→「店全体を見て人を動かし、結果に責任を持つ人」へ。モジュール式で進捗が評価に反映', gate:'担当軸（A基本業務・B サービス・C キッチン・H 理念）全てL4 ＋ Crew Leader OJT 修了'},
     G2:{ic:'ti-school', name:'Specialist Leader OJT（G2→G3／Server・Kitchen・Operation）', cov:'いずれかの専門トラックを選択。サービス／品質・数値（衛生・在庫・原価）／運営 の専門性を高める', gate:'役職別の担当軸 全てL4 ＋ 専門リーダーOJT 修了'},
     G3:{ic:'ti-flag', name:'Trainee期間（G3→G4・管理職へ）', cov:'決まったOJTではなく、実績＋Career Score総合Lv＋本昇進前のTrainee期間で見極め。ここで「チップ対象外・人事権・お店のP&L全責任」に切り替わる', gate:'GM承認（実績・Career Score総合Lv・Trainee完了）', boundary:true},
     G4:{ic:'ti-arrow-up', name:'Trainee期間（G4→G5）', cov:'エリア統括へ。実績＋Career Score総合Lv＋Trainee期間で見極め', gate:'GM承認（実績・総合Lv・Trainee完了）'},
-    G5:{ic:'ti-arrow-up', name:'Trainee期間（G5→G6）', cov:'全社統括へ。実績＋総合Lv＋経営判断', gate:'最終グレード（経営判断）'}
+    G5:{ic:'ti-arrow-up', name:'Trainee期間（G5→G6・GM昇格前）', cov:'エリア統括の実績を踏まえ、全社視点・GM後継として準備', gate:'GM/CEO承認（実績・Career Score総合Lv・Trainee完了）'},
+    G6:{ic:'ti-crown', name:'GM Trainee（昇格前の育成枠）', cov:'全社を俯瞰しエリアM(G5)を育成。全社PL・制度設計・中長期戦略に関与し、GMとしての準備を確認（Trainee枠 G6 と連動）', gate:'GM/CEO承認（実績・Career Score総合Lv・Trainee完了）'}
   };
 }
 function _ceMarkerShow(o){
@@ -14855,6 +14858,7 @@ function renderCareerExplainShow(){
   h+=`<div style="display:flex;align-items:stretch;gap:0;overflow-x:auto;padding:4px 0 8px">`;
   var stages=[
     {ic:'ti-user-plus', t:'入社', s:'スタート', c:'#9b938a'},
+    {ic:'ti-flag',      t:'オリエン', s:'入社直後', c:'#9b938a'},
     {ic:'ti-school',    t:'OJT', s:'一人前まで育成', c:'#5DB554'},
     {ic:'ti-tools',     t:'クルー', s:'G1', c:'#5DB554'},
     {ic:'ti-users',     t:'リーダー', s:'G2-G3', c:'#0E78C4'},
@@ -14876,14 +14880,14 @@ function renderCareerExplainShow(){
   h+=`</div>`;
 
   // OJT
-  h+=`<div class="card"><div class="card-title"><i class="ti ti-school" style="color:var(--accent)"></i>入社直後：OJTで「一人前」まで丁寧に育てる</div>`;
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-school" style="color:var(--accent)"></i>入社直後：オリエンテーション → OJTで「一人前」まで育てる</div>`;
   var phases=[
     ['Phase 0','オリエンテーション','理念・ルール・衛生／安全の基礎を理解','ti-flag'],
     ['Phase 1〜3','実地トレーニング','担当ポジションを一つずつ習得（できることを増やす）','ti-tools'],
     ['Phase 4','一人前認定','クルーとして独り立ち（クルー認定）','ti-rosette']
   ];
   h+=phases.map(function(p){ return `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)"><div style="width:30px;height:30px;border-radius:8px;background:var(--surface2);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ${p[3]}" style="color:var(--accent)"></i></div><div style="flex:1"><div style="font-size:12px;font-weight:700">${p[0]} <span style="color:var(--muted);font-weight:400">${escapeHtml(p[1])}</span></div><div style="font-size:11px;color:var(--muted)">${escapeHtml(p[2])}</div></div></div>`; }).join('');
-  h+=`<div style="font-size:12px;margin-top:8px;background:var(--surface2);border-radius:8px;padding:9px 11px;line-height:1.7"><i class="ti ti-coin" style="color:var(--accent)"></i> <b>チップも段階的にUP</b><br>研修中（最初の15時間）はNoTip → <b>90%</b> → 一人前で <b>100%</b>（満額）</div>`;
+  h+=`<div style="font-size:12px;margin-top:8px;background:var(--surface2);border-radius:8px;padding:9px 11px;line-height:1.7"><i class="ti ti-coin" style="color:var(--accent)"></i> <b>チップも段階的にUP</b><br>No Tip（最初の2〜3シフト）→ <b>80%</b> → <b>90%</b> → 一人前で <b>100%</b>（満額）</div>`;
   h+=`</div>`;
 
   // キャリアラダー（カード + OJTタイミング）
@@ -21886,6 +21890,235 @@ function delTraineeCrit(grade, id){
   var defs=getTraineeDefs(); defs[grade]=(defs[grade]||[]).filter(function(d){return d.id!==id;}); setTraineeDefs(defs); renderPage('ojt_admin');
 }
 
+/* ===================== 成長カルテ（GM/CEO・G3以上・査定/面談資料） Phase1 ===================== */
+var KARTE_GRADES = ['G6','G5','G4','G3'];
+function _money(n){ return '$'+Math.round(n||0).toLocaleString('en-US'); }
+function _curQuarter(){ var d=new Date(); return d.getFullYear()+'-Q'+(Math.floor(d.getMonth()/3)+1); }
+function _karteStoreNm(id){ var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===id;}); return s?s.name:id; }
+
+function kbCfg(){
+  var d={ poolRate:0.12, profit:0, quarter:_curQuarter(), gradeBase:{G3:3000,G4:5000,G5:8000,G6:12000}, csMin:0.7, csMax:1.3 };
+  var r=ls('karte_bonus_config',null);
+  if(r && typeof r==='object'){ d=Object.assign(d,r); d.gradeBase=Object.assign({G3:3000,G4:5000,G5:8000,G6:12000}, r.gradeBase||{}); }
+  return d;
+}
+function kbSave(c){ lsSet('karte_bonus_config', c); }
+function getKarteAll(){ return ls('growth_karte',{}); }
+function getKarte(empId){ var m=getKarteAll(); return m[empId]||{}; }
+function saveKarte(empId, k){ var m=getKarteAll(); k.updatedAt=new Date().toISOString(); k.evaluator=(typeof myName==='function'?myName():(curUserName||'')); m[empId]=k; lsSet('growth_karte', m); }
+
+function karteEligibleEmps(){
+  var cfg=kbCfg();
+  return getEmployees().filter(function(e){
+    if(e.status && e.status!=='在籍') return false;
+    var g=empGrade(e); return g && cfg.gradeBase[g]!=null;
+  }).sort(function(a,b){ return empGradeNum(b)-empGradeNum(a) || String(a.name||'').localeCompare(String(b.name||'')); });
+}
+function csCoef(pct, cfg){ var mn=cfg.csMin, mx=cfg.csMax; var f=mn+(mx-mn)*(Math.max(0,Math.min(100,pct))/100); return Math.round(f*100)/100; }
+function bonusForEmp(e, cfg){
+  var g=empGrade(e); var base=(cfg.gradeBase[g]!=null?cfg.gradeBase[g]:0); var coef=(e.coef!=null?e.coef:1);
+  var sum=(typeof lssSummary==='function')?lssSummary(e.name):null;
+  var pct=(sum&&sum.hasData)?sum.totalPct:0; var csf=csCoef(pct,cfg);
+  return {grade:g, base:base, coef:coef, csPct:pct, csCoef:csf, amount:Math.round(base*coef*csf), hasCS:!!(sum&&sum.hasData)};
+}
+function bonusPool(cfg){ return Math.round((cfg.profit||0)*(cfg.poolRate||0)); }
+function bonusTotals(cfg){
+  var emps=karteEligibleEmps(); var total=0;
+  var rows=emps.map(function(e){ var b=bonusForEmp(e,cfg); total+=b.amount; return {e:e,b:b}; });
+  var pool=bonusPool(cfg); var over=total>pool && pool>0; var factor=over?(pool/total):1;
+  return {rows:rows, total:total, pool:pool, over:over, factor:factor, diff:pool-total};
+}
+
+/* --- config 編集 --- */
+function bonusSetProfit(v){ var c=kbCfg(); c.profit=Math.max(0,parseFloat(String(v).replace(/[, ]/g,''))||0); kbSave(c); kbRefresh(); }
+function bonusSetRate(v){ var c=kbCfg(); c.poolRate=Math.max(0,(parseFloat(v)||0)/100); kbSave(c); kbRefresh(); }
+function bonusSetQuarter(v){ var c=kbCfg(); c.quarter=v; kbSave(c); kbRefresh(); }
+function bonusSetGradeBase(g,v){ var c=kbCfg(); c.gradeBase[g]=Math.max(0,parseFloat(String(v).replace(/[, ]/g,''))||0); kbSave(c); kbRefresh(); }
+function bonusSetCs(which,v){ var c=kbCfg(); c[which]=parseFloat(v)||0; kbSave(c); kbRefresh(); }
+
+/* --- karte 編集 --- */
+function karteSetField(empId, field, val){ var k=getKarte(empId); k[field]=val; saveKarte(empId,k); } /* textはonchange・再描画しない */
+function karteQuickCert(empId, name){ var k=getKarte(empId); k.certs=k.certs||[]; k.certs.push({id:'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), name:name||'', have:true, acq:'', exp:''}); saveKarte(empId,k); openKarteDetail(empId); }
+function karteSetCert(empId, cid, field, val){ var k=getKarte(empId); (k.certs||[]).forEach(function(c){ if(c.id===cid) c[field]=val; }); saveKarte(empId,k); }
+function karteToggleCert(empId, cid){ var k=getKarte(empId); (k.certs||[]).forEach(function(c){ if(c.id===cid) c.have=!c.have; }); saveKarte(empId,k); openKarteDetail(empId); }
+function karteDelCert(empId, cid){ var k=getKarte(empId); k.certs=(k.certs||[]).filter(function(c){return c.id!==cid;}); saveKarte(empId,k); openKarteDetail(empId); }
+
+function karteAutoSkills(e){
+  var sum=(typeof lssSummary==='function')?lssSummary(e.name):null;
+  if(!sum||!sum.hasData) return {strong:[],weak:[],sum:sum};
+  var cats=sum.cats.slice().sort(function(a,b){return b.pct-a.pct;});
+  var strong=cats.slice(0,3).filter(function(c){return c.pct>0;}).map(function(c){return {key:c.key,name:c.name,pct:c.pct};});
+  var weak=cats.slice().sort(function(a,b){return a.pct-b.pct;}).slice(0,3).map(function(c){return {key:c.key,name:c.name,pct:c.pct};});
+  return {strong:strong, weak:weak, sum:sum};
+}
+
+/* ===== メイン ===== */
+function renderGrowthKarte(){
+  if(['gm','ceo'].indexOf(curRole)<0) return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">この画面は GM / CEO 専用です。</div>';
+  var cfg=kbCfg(); var tot=bonusTotals(cfg);
+  var h='<div class="section-header"><div><div class="section-title"><i class="ti ti-id-badge-2"></i> 成長カルテ</div><div class="section-sub">G3以上の査定（ボーナス算出）と面談資料</div></div></div>';
+
+  /* 原資・係数 設定 */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--accent)"></i>ボーナス原資・係数（四半期）</div>';
+  h+='<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">';
+  h+='<div><label class="form-label">四半期</label><input class="form-input" style="width:110px" value="'+escapeHtml(cfg.quarter||'')+'" onchange="bonusSetQuarter(this.value)"></div>';
+  h+='<div><label class="form-label">四半期 経常利益（$）</label><input class="form-input" style="width:150px;text-align:right" value="'+(cfg.profit||0)+'" onchange="bonusSetProfit(this.value)"></div>';
+  h+='<div><label class="form-label">原資率（%）</label><input class="form-input" style="width:90px;text-align:right" value="'+(Math.round((cfg.poolRate||0)*1000)/10)+'" onchange="bonusSetRate(this.value)"></div>';
+  h+='<div style="background:var(--surface2);border-radius:8px;padding:7px 12px"><div style="font-size:10px;color:var(--muted)">原資（上限）</div><div style="font-size:16px;font-weight:800;color:var(--accent)">'+_money(tot.pool)+'</div></div>';
+  h+='</div>';
+  h+='<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">';
+  KARTE_GRADES.slice().reverse().forEach(function(g){
+    h+='<div><label class="form-label">'+g+' 基準額（$）</label><input class="form-input" style="width:104px;text-align:right" value="'+(cfg.gradeBase[g]!=null?cfg.gradeBase[g]:0)+'" onchange="bonusSetGradeBase(\''+g+'\',this.value)"></div>';
+  });
+  h+='<div><label class="form-label">CS係数 下限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.csMin+'" onchange="bonusSetCs(\'csMin\',this.value)"></div>';
+  h+='<div><label class="form-label">CS係数 上限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.csMax+'" onchange="bonusSetCs(\'csMax\',this.value)"></div>';
+  h+='</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 個人額＝<b>Grade基準額 × 係数(coef) × CS係数</b>。CS係数＝Career Score% を 下限〜上限 に線形マップ（0%→下限・100%→上限）。全て仮値・編集可。</div>';
+  h+='</div>';
+
+  h+='<div id="kbResult">'+kbResultHtml()+'</div>';
+  return h;
+}
+
+function kbResultHtml(){
+  var cfg=kbCfg(); var tot=bonusTotals(cfg);
+  var h='';
+  /* 原資サマリ */
+  h+='<div class="card" style="border-left:3px solid '+(tot.over?'var(--red)':'var(--green)')+'"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">';
+  h+='<div><div style="font-size:10px;color:var(--muted)">算出合計</div><div style="font-size:18px;font-weight:800">'+_money(tot.total)+'</div></div>';
+  h+='<div><div style="font-size:10px;color:var(--muted)">原資（'+(Math.round((cfg.poolRate||0)*1000)/10)+'%）</div><div style="font-size:18px;font-weight:800">'+_money(tot.pool)+'</div></div>';
+  h+='<div><div style="font-size:10px;color:var(--muted)">'+(tot.over?'超過':'余剰')+'</div><div style="font-size:18px;font-weight:800;color:'+(tot.over?'var(--red)':'var(--green)')+'">'+(tot.diff>=0?'+':'')+_money(tot.diff)+'</div></div>';
+  if(tot.over){ h+='<div style="background:#e23b3b14;border-radius:8px;padding:6px 11px;font-size:11px;color:var(--red);line-height:1.5"><b>原資超過</b>。原資調整係数 ×'+tot.factor.toFixed(3)+' を適用すると合計が原資に収まります（下表「調整後」）。</div>'; }
+  h+='</div></div>';
+
+  /* ボーナス一覧 */
+  h+='<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:560px">';
+  h+='<thead><tr style="background:var(--surface2);text-align:left">'
+    +['氏名','店舗','G','Lv','基準額','係数','CS%','CS係数','算出額'].concat(tot.over?['調整後']:[]).map(function(x){return '<th style="padding:8px 10px;font-size:10.5px;color:var(--muted);white-space:nowrap">'+x+'</th>';}).join('')
+    +'</tr></thead><tbody>';
+  if(!tot.rows.length){ h+='<tr><td colspan="10" style="padding:18px;text-align:center;color:var(--muted)">対象者（G3以上・在籍）がいません</td></tr>'; }
+  tot.rows.forEach(function(r){
+    var e=r.e, b=r.b; var lv=(typeof evalLevelFromPct==='function')?evalLevelFromPct(b.csPct):{n:'-',color:'var(--muted)'};
+    h+='<tr style="border-top:1px solid var(--border);cursor:pointer" onclick="openKarteDetail(\''+e.id+'\')">'
+      +'<td style="padding:8px 10px;font-weight:700;white-space:nowrap">'+escapeHtml(e.name||'')+'</td>'
+      +'<td style="padding:8px 10px;color:var(--muted);white-space:nowrap">'+escapeHtml(e.store||'')+'</td>'
+      +'<td style="padding:8px 10px;font-weight:700">'+b.grade+'</td>'
+      +'<td style="padding:8px 10px"><span style="color:'+lv.color+';font-weight:700">L'+lv.n+'</span></td>'
+      +'<td style="padding:8px 10px;text-align:right">'+_money(b.base)+'</td>'
+      +'<td style="padding:8px 10px;text-align:right">'+b.coef.toFixed(2)+'</td>'
+      +'<td style="padding:8px 10px;text-align:right">'+(b.hasCS?b.csPct+'%':'<span style="color:var(--muted)">未</span>')+'</td>'
+      +'<td style="padding:8px 10px;text-align:right">'+b.csCoef.toFixed(2)+'</td>'
+      +'<td style="padding:8px 10px;text-align:right;font-weight:800">'+_money(b.amount)+'</td>'
+      +(tot.over?'<td style="padding:8px 10px;text-align:right;font-weight:800;color:var(--accent)">'+_money(b.amount*tot.factor)+'</td>':'')
+      +'</tr>';
+  });
+  h+='</tbody></table></div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0"><i class="ti ti-click"></i> 行をタップで個人カルテ（面談資料）を開きます。給与/ボーナス履歴・面談ログは次フェーズで追加します。</div>';
+  return h;
+}
+function kbRefresh(){
+  var el=document.getElementById('kbResult');
+  if(el){ el.innerHTML=kbResultHtml(); } else { renderPage('growth_karte'); }
+}
+
+/* ===== 個人カルテ（面談資料） ===== */
+function openKarteDetail(empId){
+  var e=getEmployees().find(function(x){return x.id===empId;}); if(!e){ showToast('対象者が見つかりません'); return; }
+  var cfg=kbCfg(); var k=getKarte(empId); var b=bonusForEmp(e,cfg);
+  var as=karteAutoSkills(e); var sum=as.sum;
+  var g=empGrade(e); var pct=(sum&&sum.hasData)?sum.totalPct:0;
+  var lv=(typeof evalLevelFromPct==='function')?evalLevelFromPct(pct):{n:'-',label:'',color:'var(--muted)'};
+  var gcol=(function(){ var gm=(typeof GRADE_MAP_DATA!=='undefined')?GRADE_MAP_DATA.find(function(x){return x.g===g;}):null; return gm?gm.col:'var(--accent)'; })();
+
+  var radar='';
+  if(sum&&sum.hasData){ var dims=sum.cats.map(function(c){return {score:c.pct, short:c.key};}); radar=spRadar(dims, gcol); }
+
+  var h='<div class="modal-title" style="display:flex;align-items:center;gap:8px"><i class="ti ti-id-badge-2" style="color:'+gcol+'"></i>成長カルテ：'+escapeHtml(e.name||'')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  h+='<div style="max-height:72vh;overflow:auto;padding:2px 2px 8px">';
+
+  /* 基本情報 */
+  h+='<div class="card" style="margin-bottom:10px"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
+    +'<span style="background:'+gcol+';color:#fff;font-weight:800;border-radius:8px;padding:4px 10px;font-size:14px">'+g+'</span>'
+    +'<span style="background:'+lv.color+';color:#fff;font-weight:700;border-radius:6px;padding:3px 9px;font-size:12px">L'+lv.n+' '+escapeHtml(lv.label||'')+'</span>'
+    +'<span style="font-weight:700">'+escapeHtml(e.title||'')+'</span>'
+    +'<span style="color:var(--muted);font-size:12px">'+escapeHtml(e.store||'')+(e.support&&e.support.length?'（応援: '+e.support.map(_karteStoreNm).join('・')+'）':'')+'</span></div>';
+  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">';
+  h+='<div><label class="form-label">入社日</label><input type="date" class="form-input" value="'+escapeHtml(k.hireDate||'')+'" onchange="karteSetField(\''+empId+'\',\'hireDate\',this.value)"></div>';
+  h+='<div><label class="form-label">旧所属店舗（履歴）</label><input class="form-input" placeholder="例：F02→F01" value="'+escapeHtml(k.oldStores||'')+'" onchange="karteSetField(\''+empId+'\',\'oldStores\',this.value)"></div>';
+  h+='<div><label class="form-label">評価者</label><input class="form-input" value="'+escapeHtml(k.evaluator||(typeof myName==='function'?myName():''))+'" onchange="karteSetField(\''+empId+'\',\'evaluator\',this.value)"></div>';
+  h+='<div><label class="form-label">最終更新日</label><input class="form-input" disabled value="'+escapeHtml(k.updatedAt?new Date(k.updatedAt).toLocaleString('ja'):'—')+'"></div>';
+  h+='</div></div>';
+
+  /* 評価（レーダー） */
+  h+='<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>現在の評価（Career Score）</div>';
+  if(sum&&sum.hasData){
+    h+='<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">';
+    h+='<div style="flex:0 0 200px">'+radar+'</div>';
+    h+='<div style="flex:1;min-width:160px">'
+      +'<div style="font-size:13px"><b>総合</b> '+sum.totalScore+'/'+sum.totalMax+'点 ・ <span style="color:'+lv.color+';font-weight:700">'+pct+'%（L'+lv.n+'）</span></div>'
+      +'<div style="margin-top:6px;display:flex;flex-direction:column;gap:3px">'
+      +sum.cats.map(function(c){ return '<div style="display:flex;align-items:center;gap:6px"><span style="width:16px;font-weight:700;font-size:11px">'+c.key+'</span><div style="flex:1;height:6px;background:var(--surface2);border-radius:4px;overflow:hidden"><div style="width:'+c.pct+'%;height:100%;background:'+gcol+'"></div></div><span style="font-size:10px;color:var(--muted);width:34px;text-align:right">'+c.pct+'%</span></div>'; }).join('')
+      +'</div></div>';
+    h+='</div>';
+  } else { h+='<div style="color:var(--muted);font-size:12px;padding:8px 0">Career Score 未評価。スキル評価を登録するとレーダーが表示されます。</div>'; }
+  h+='</div>';
+
+  /* 強み・成長点・改善・総合 */
+  h+='<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-bulb" style="color:var(--accent)"></i>強み・成長課題・総合評価</div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:3px">現在の強み（自動：高得点の軸）</div>';
+  h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">'+(as.strong.length?as.strong.map(function(s){return '<span class="tag tag-green" style="font-size:10px">'+s.key+' '+escapeHtml(s.name)+' '+s.pct+'%</span>';}).join(''):'<span style="font-size:11px;color:var(--muted)">—</span>')+'</div>';
+  h+='<textarea class="form-textarea" placeholder="強みの補足（任意）" onchange="karteSetField(\''+empId+'\',\'strengthsNote\',this.value)" style="min-height:46px">'+escapeHtml(k.strengthsNote||'')+'</textarea>';
+  h+='<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">今後さらに成長してほしい点（自動：低得点の軸）</div>';
+  h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">'+(as.weak.length?as.weak.map(function(s){return '<span class="tag tag-yellow" style="font-size:10px">'+s.key+' '+escapeHtml(s.name)+' '+s.pct+'%</span>';}).join(''):'<span style="font-size:11px;color:var(--muted)">—</span>')+'</div>';
+  h+='<textarea class="form-textarea" placeholder="成長してほしい点の補足（任意）" onchange="karteSetField(\''+empId+'\',\'growthNote\',this.value)" style="min-height:46px">'+escapeHtml(k.growthNote||'')+'</textarea>';
+  h+='<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">改善項目</div><textarea class="form-textarea" placeholder="改善してほしい具体項目" onchange="karteSetField(\''+empId+'\',\'improveNote\',this.value)" style="min-height:46px">'+escapeHtml(k.improveNote||'')+'</textarea>';
+  h+='<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">総合評価（良い点を中心に）</div><textarea class="form-textarea" placeholder="総合所見" onchange="karteSetField(\''+empId+'\',\'overall\',this.value)" style="min-height:60px">'+escapeHtml(k.overall||'')+'</textarea>';
+  h+='</div>';
+
+  /* 給与・ボーナス */
+  h+='<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-coin" style="color:var(--accent)"></i>給与・ボーナス（'+escapeHtml(cfg.quarter||'')+'）</div>';
+  h+='<div style="font-size:12px;margin-bottom:8px"><span style="color:var(--muted)">現在給与：</span><b>'+(e.wage?('$'+e.wage):'—')+'</b> <span style="color:var(--muted);font-size:10px">（'+(e.emp||'')+'）</span></div>';
+  h+='<table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>'
+    +'<tr><td style="padding:4px 0;color:var(--muted)">Grade基準額</td><td style="text-align:right;font-weight:700">'+_money(b.base)+'</td></tr>'
+    +'<tr><td style="padding:4px 0;color:var(--muted)">係数(coef)</td><td style="text-align:right;font-weight:700">×'+b.coef.toFixed(2)+'</td></tr>'
+    +'<tr><td style="padding:4px 0;color:var(--muted)">CS係数（'+(b.hasCS?b.csPct+'%':'未評価')+'）</td><td style="text-align:right;font-weight:700">×'+b.csCoef.toFixed(2)+'</td></tr>'
+    +'<tr style="border-top:1px solid var(--border)"><td style="padding:6px 0;font-weight:800">ボーナス算出額</td><td style="text-align:right;font-weight:800;font-size:15px;color:var(--accent)">'+_money(b.amount)+'</td></tr>'
+    +'</tbody></table>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">給与履歴・ボーナス履歴（支給日/金額）は次フェーズで追加します。</div>';
+  h+='</div>';
+
+  /* 資格・スキル */
+  h+='<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-certificate" style="color:var(--accent)"></i>資格・スキル</div>';
+  var certs=k.certs||[];
+  if(certs.length){
+    h+='<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">';
+    certs.forEach(function(c){
+      h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+        +'<button class="btn '+(c.have?'btn-primary':'btn-secondary')+' btn-sm" style="padding:2px 8px" onclick="karteToggleCert(\''+empId+'\',\''+c.id+'\')">'+(c.have?'<i class="ti ti-check"></i> 有':'無')+'</button>'
+        +'<input class="form-input" style="flex:1;min-width:120px" placeholder="資格名" value="'+escapeHtml(c.name||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'name\',this.value)">'
+        +'<input type="date" class="form-input" style="width:140px" title="取得日" value="'+escapeHtml(c.acq||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'acq\',this.value)">'
+        +'<input type="date" class="form-input" style="width:140px" title="期限" value="'+escapeHtml(c.exp||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'exp\',this.value)">'
+        +'<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red);padding:2px 7px" onclick="karteDelCert(\''+empId+'\',\''+c.id+'\')">×</button>'
+        +'</div>';
+    });
+    h+='</div>';
+  } else { h+='<div style="font-size:11px;color:var(--muted);padding:4px 0 8px">未登録</div>'; }
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap"><span style="font-size:11px;color:var(--muted);align-self:center">追加：</span>'
+    +'<button class="btn btn-secondary btn-sm" onclick="karteQuickCert(\''+empId+'\',\'リカーカード\')">＋ リカーカード</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="karteQuickCert(\''+empId+'\',\'フードハンドラー\')">＋ フードハンドラー</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="karteQuickCert(\''+empId+'\',\'\')">＋ その他</button></div>';
+  h+='</div>';
+
+  /* メモ */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-note" style="color:var(--accent)"></i>メモ</div>';
+  h+='<textarea class="form-textarea" placeholder="面談用メモ・申し送り等" onchange="karteSetField(\''+empId+'\',\'memo\',this.value)" style="min-height:60px">'+escapeHtml(k.memo||'')+'</textarea>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">過去の面談ログは次フェーズで追加します。</div></div>';
+
+  h+='</div>';
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button><button class="btn btn-primary" onclick="closeModalDirect();renderPage(\'growth_karte\')"><i class="ti ti-check"></i> 完了</button></div>';
+  openModal(h);
+}
+
 function renderTrainee(){
   var css='<style>'
     +'.tr-wrap{max-width:760px}'
@@ -21970,7 +22203,7 @@ function renderTrainee(){
 /* ===================== OJT Phase1-4 ゲート基準マップ（店舗毎・編集可） ===================== */
 var OJT_GATE_FRAME = [
   { id:'p0', name:'Phase 0 オリエン',     gate:'オリエンテーション', tip:'対象外',         col:'var(--muted)',   editable:false },
-  { id:'p1', name:'Phase 1 基礎OJT',      gate:'基礎習得',           tip:'NoTip（初15h）', col:'var(--muted)',   editable:true },
+  { id:'p1', name:'Phase 1 基礎OJT',      gate:'基礎習得',           tip:'No Tip（2〜3シフト）→ 80%', col:'var(--accent2)', editable:true },
   { id:'p2', name:'Phase 2 Step1ゲート',  gate:'基本オペ自立',       tip:'90%',            col:'var(--accent2)', editable:true },
   { id:'p3', name:'Phase 3 Step2ゲート',  gate:'応用・独り立ち',     tip:'100%',           col:'var(--accent)',  editable:true },
   { id:'p4', name:'Phase 4 一人前認定',   gate:'crew cert',          tip:'100%維持',       col:'var(--accent)',  editable:true },
