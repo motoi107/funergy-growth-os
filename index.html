@@ -1505,6 +1505,7 @@ const NAV_ITEMS = [
   {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'acct_export', label:'経理出力',     icon:'ti-file-export',      roles:['ceo','gm','office']},
   {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm','office']},
+  {id:'announce',     label:'アナウンス',   icon:'ti-speakerphone',     roles:['ceo','gm','office','am','sl']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm','office']},
 ];
 
@@ -1521,7 +1522,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['store_master','goals','required','company_msg_edit','approval','error_center','settings']},
+    children:['store_master','announce','required','approval','error_center','settings']},
 ];
 
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
@@ -3493,6 +3494,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
+  'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
@@ -4239,7 +4241,7 @@ function companyMsgCardHtml(m, scope) {
         <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">${escapeHtml(scopeLabel)} · ${monthLabel}</div>
         <div style="font-size:15px;font-weight:700;color:var(--tm)">${escapeHtml(m.title||monthLabel)}</div>
       </div>
-      ${canEditCompanyMsg()?`<button class="btn btn-secondary btn-sm" onclick="go('company_msg_edit')"><i class="ti ti-pencil"></i></button>`:''}
+      ${canEditCompanyMsg()?`<button class="btn btn-secondary btn-sm" onclick="go('announce')"><i class="ti ti-pencil"></i></button>`:''}
     </div>
     <div style="font-size:13.5px;line-height:1.7;white-space:pre-wrap;color:var(--tm);margin-top:4px">${escapeHtml(m.body)}</div>
     ${m.author?`<div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:right">— ${escapeHtml(m.author)}</div>`:''}
@@ -4249,7 +4251,7 @@ function renderCompanyMessageCard() {
   return myCompanyMessages().map(function(x){ return companyMsgCardHtml(x.m, x.scope); }).join('');
 }
 /* GM/CEO用 編集ページ（全社＋店舗別） */
-function setCmScope(s){ window._cmScope = s; renderPage('company_msg_edit'); }
+function setCmScope(s){ window._cmScope = s; renderPage(curPage); }
 function renderCompanyMsgEdit() {
   if (!canEditCompanyMsg()) return `<div class="card">権限がありません。</div>`;
   var scope = window._cmScope || 'ALL';
@@ -4300,14 +4302,14 @@ function saveCompanyMsg() {
   if (scope==='ALL') setCompanyMessage(data); else setCompanyMessageStore(scope, data);
   cmMarkSeen(scope, data.month);
   showToast('会社メッセージを保存しました','success');
-  renderPage('company_msg_edit');
+  renderPage(curPage);
 }
 function clearCompanyMsg() {
   if (!confirm('今月の会社メッセージを削除しますか？')) return;
   var scope = window._cmScope || 'ALL';
   if (scope==='ALL') setCompanyMessage(null); else setCompanyMessageStore(scope, null);
   showToast('削除しました','info');
-  renderPage('company_msg_edit');
+  renderPage(curPage);
 }
 /* ============ 店舗PIN管理（店舗マスターで使用） ============ */
 var DEFAULT_STORE_PINS = { 'F01':'1111','F02':'2222','F03':'3333','F04-K':'4111','F04-P':'4222','F04-A':'4333','F05':'5555' };
@@ -4453,6 +4455,7 @@ function renderPage(page) {
     case 'tasks':        el.innerHTML = renderTasks(); break;
     case 'required':     el.innerHTML = renderRequired(); break;
     case 'goals':        el.innerHTML = renderGoals(); break;
+    case 'announce':     el.innerHTML = renderAnnounce(); break;
     case 'labor':        el.innerHTML = renderLabor(); break;
     case 'tip':          el.innerHTML = renderTipMgmt(); break;
     case 'attendance':   laborTab='attendance'; el.innerHTML = renderLabor(); break;
@@ -17656,6 +17659,73 @@ var EC_CAT_META={
 };
 function ecSevMeta(sev){ return sev==='high'?{c:'#e23b3b',l:'要対応'}:(sev==='mid'?{c:'#e0a020',l:'確認'}:{c:'#8a8f98',l:'情報'}); }
 
+/* ===== エラーセンター 過去ログ（査定用：店舗別・人別の集計）===== */
+var ecView='now', ecRangeDays=90;
+function setEcView(v){ ecView=v; renderPage(curPage); }
+function setEcRange(d){ ecRangeDays=d; renderPage(curPage); }
+function getEcLog(){ return ls('ec_log', []); }
+function _ecAttribute(issue){
+  var title=String(issue.title||''); var store='', emp='';
+  try{ STORES.forEach(function(sx){ if(!store && sx.name && title.indexOf(sx.name)>=0) store=sx.id; }); }catch(e){}
+  var pre=(title.indexOf('：')>=0?title.split('：')[0]:(title.indexOf(':')>=0?title.split(':')[0]:'')).trim();
+  if(pre){
+    if(!store){ var sById=STORES.find(function(sx){return sx.name===pre || sx.id===pre;}); if(sById) store=sById.id; }
+    if(!emp){ try{ var e=getEmployees().find(function(x){return x.name===pre;}); if(e){ emp=e.name; if(!store && e.store) store=e.store; } }catch(_e){} }
+  }
+  return {store:store, emp:emp};
+}
+function ecSnapshot(){
+  var today=new Date().toISOString().slice(0,10);
+  var log=getEcLog();
+  var todaySet={}; log.forEach(function(r){ if(r.date===today) todaySet[r.title]=1; });
+  var added=0;
+  try{ ecCollect().forEach(function(x){
+    if(todaySet[x.title]) return;
+    var at=_ecAttribute(x);
+    log.push({id:'ec'+Date.now()+'_'+Math.random().toString(36).slice(2,6), date:today, ts:Date.now(), sev:x.sev, cat:x.cat, title:x.title, store:at.store, emp:at.emp});
+    todaySet[x.title]=1; added++;
+  }); }catch(e){}
+  if(log.length>4000) log=log.slice(log.length-4000);
+  lsSet('ec_log', log);
+  return added;
+}
+function ecMaybeAutoSnapshot(){
+  var today=new Date().toISOString().slice(0,10);
+  if(ls('ec_log_last','')===today) return;
+  try{ ecSnapshot(); lsSet('ec_log_last', today); }catch(e){}
+}
+function ecSnapshotNow(){ var n=ecSnapshot(); lsSet('ec_log_last', new Date().toISOString().slice(0,10)); showToast(n>0?(n+'件を記録しました'):'本日分は記録済みです（新規なし）', n>0?'success':'info'); renderPage(curPage); }
+function ecLogInRange(){ var log=getEcLog(); if(!ecRangeDays) return log; var cutoff=new Date(Date.now()-ecRangeDays*86400000).toISOString().slice(0,10); return log.filter(function(r){ return (r.date||'')>=cutoff; }); }
+function ecRenderLogView(){
+  var rows=ecLogInRange();
+  var html='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
+  [['30','30日'],['90','90日'],['180','180日'],['0','全期間']].forEach(function(o){ html+='<button class="btn '+(String(ecRangeDays)===o[0]?'btn-primary':'btn-secondary')+' btn-sm" style="font-size:11px" onclick="setEcRange('+o[0]+')">'+o[1]+'</button>'; });
+  html+='<button class="btn btn-secondary btn-sm" style="font-size:11px;margin-left:auto" onclick="ecSnapshotNow()"><i class="ti ti-camera"></i> 今すぐ記録</button></div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 1日1回、検知された不備を自動記録。査定の参考として店舗別・人別の検知件数を集計します（●赤=要対応 ●黄=確認 ●灰=情報）。</div>';
+  if(!rows.length) return html+'<div class="card" style="text-align:center;padding:24px;color:var(--muted)">記録された過去ログはまだありません</div>';
+  var byStore={}, byEmp={};
+  rows.forEach(function(r){
+    var sev=r.sev==='high'?'h':r.sev==='mid'?'m':'l';
+    var sk=r.store||'未分類'; byStore[sk]=byStore[sk]||{h:0,m:0,l:0,n:0}; byStore[sk].n++; byStore[sk][sev]++;
+    if(r.emp){ byEmp[r.emp]=byEmp[r.emp]||{h:0,m:0,l:0,n:0}; byEmp[r.emp].n++; byEmp[r.emp][sev]++; }
+  });
+  function bars(o){ return '<span style="font-size:10px;white-space:nowrap"><span style="color:#e23b3b">●'+o.h+'</span> <span style="color:#e0a020">●'+o.m+'</span> <span style="color:#8a8f98">●'+o.l+'</span></span>'; }
+  function tbl(ttl,icon,obj,nameFn){
+    var keys=Object.keys(obj).sort(function(a,b){return obj[b].n-obj[a].n;});
+    var h='<div class="card"><div class="card-title"><i class="ti '+icon+'" style="color:var(--accent)"></i>'+ttl+'</div>';
+    if(!keys.length) return h+'<div style="font-size:12px;color:var(--muted);padding:4px 0">データなし</div></div>';
+    keys.forEach(function(k){ var o=obj[k]; h+='<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--border)"><div style="flex:1;font-size:13px;font-weight:600;min-width:0">'+escapeHtml(nameFn(k))+'</div>'+bars(o)+'<div style="font-size:15px;font-weight:800;width:34px;text-align:right">'+o.n+'</div></div>'; });
+    return h+'</div>';
+  }
+  html+=tbl('店舗別 検知件数','ti-building-store',byStore,function(k){ if(k==='未分類') return '未分類'; var sx=STORES.find(function(x){return x.id===k;}); return sx?sx.name:k; });
+  html+=tbl('人別 検知件数','ti-user',byEmp,function(k){return k;});
+  html+='<details style="margin-top:6px"><summary style="font-size:13px;font-weight:600;cursor:pointer;padding:6px 0"><i class="ti ti-list"></i> 記録ログ（直近100件）</summary>';
+  rows.slice().reverse().slice(0,100).forEach(function(r){ var sm=ecSevMeta(r.sev); html+='<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-top:1px solid var(--border)"><span style="flex-shrink:0;width:8px;height:8px;border-radius:50%;background:'+sm.c+';margin-top:5px"></span><div style="flex:1;min-width:0"><div style="font-size:12px">'+escapeHtml(r.title)+'</div><div style="font-size:10px;color:var(--muted)">'+r.date+' · '+(r.cat||'')+(r.store?' · '+((STORES.find(function(x){return x.id===r.store;})||{name:r.store}).name):'')+(r.emp?' · '+escapeHtml(r.emp):'')+'</div></div></div>'; });
+  html+='</details>';
+  return html;
+}
+
+
 function renderErrorCenter(embedded){
   if(['ceo','gm','office'].indexOf(curRole)<0) return embedded?'':'<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:20px">GM/CEO/Officeのみ閲覧できます。</p></div>';
   var issues=ecCollect();
@@ -17665,6 +17735,12 @@ function renderErrorCenter(embedded){
   var html=embedded
     ?'<div style="display:flex;align-items:center;gap:7px;margin:2px 2px 12px"><i class="ti ti-alert-hexagon" style="font-size:20px;color:var(--accent)"></i><div><div style="font-weight:700;font-size:15px">エラーセンター</div><div style="font-size:11px;color:var(--muted)">運用・データの不備を自動検知（勤怠/チップ14日・打刻7日）</div></div></div>'
     :'<div class="section-header"><div><div class="section-title"><i class="ti ti-alert-hexagon"></i> エラーセンター</div><div class="section-sub">運用・データの不備を自動検知（直近の勤怠/チップは14日・打刻は7日を対象）</div></div></div>';
+  try{ ecMaybeAutoSnapshot(); }catch(e){}
+  html+='<div class="phase-tabs" style="margin-bottom:10px">'
+    +'<div class="phase-tab'+(ecView==='now'?' active':'')+'" onclick="setEcView(\'now\')"><i class="ti ti-alert-hexagon" style="font-size:11px"></i> 現在の不備</div>'
+    +'<div class="phase-tab'+(ecView==='log'?' active':'')+'" onclick="setEcView(\'log\')"><i class="ti ti-history" style="font-size:11px"></i> 過去ログ（査定用）</div>'
+    +'</div>';
+  if(ecView==='log'){ return html + ecRenderLogView(); }
   // サマリー
   function tile(n,label,col){ return '<div style="flex:1;min-width:90px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px;text-align:center"><div style="font-size:26px;font-weight:800;color:'+(n>0?col:'var(--muted)')+'">'+n+'</div><div style="font-size:11px;color:var(--muted);margin-top:2px">'+label+'</div></div>'; }
   html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
@@ -23122,7 +23198,7 @@ function _approvalMyRoles(a){
     if(signed.indexOf(role)>=0) return;
     var match = (role===curRole) || (role==='gm'&&curRole==='ceo') || (role==='sm'&&typeof isStoreManager==='function'&&isStoreManager());
     if(!match) return;
-    if(role==='am' && curRole==='am'){ var sid=_approvalStoreId(a); if(sid && sid!=='OFFICE' && typeof myAmStores==='function' && myAmStores().indexOf(sid)<0) return; }
+    if(role==='am' && curRole==='am'){ var sid=_approvalStoreId(a); if(sid==='OFFICE' || !sid || (typeof myAmStores==='function' && myAmStores().indexOf(sid)<0)) return; } /* AMは管轄店のみ */
     out.push(role);
   });
   return out;
@@ -26774,6 +26850,67 @@ function logWarning(storeId) {
    ⑬ Goal管理 (店舗/個人 × Daily/Weekly/Monthly)
 ============================================================ */
 var goalScope = 'store';
+/* ===== アナウンス（会社メッセージ＋Goal統合）===== */
+function canAnnounceAll(){ return ['gm','ceo','office'].indexOf(curRole)>=0; }
+function announceManagedStores(){
+  if(canAnnounceAll()) return STORES.map(function(s){return s.id;});
+  if(curRole==='am' && typeof myAmStores==='function') return myAmStores();
+  if(myGradeNum()>=4){ var e=_curEmp(); var st=(e&&e.store)||(curStore!=='ALL'?curStore:null); return st?[st]:[]; }
+  return [];
+}
+function canAnnounceStore(sid){ if(canAnnounceAll()) return true; return announceManagedStores().indexOf(sid)>=0; }
+function setAnnounceScope(s){ window._cmScope=s; renderPage('announce'); }
+function renderAnnounce(){
+  var canAll=canAnnounceAll();
+  var myStores=announceManagedStores();
+  if(!canAll && !myStores.length) return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-lock" style="font-size:26px;display:block;margin-bottom:8px"></i>アナウンスの編集権限がありません。<div style="font-size:11px;margin-top:4px">全社=GM以上 / 管轄店=G4以上</div></div>';
+  var scope=window._cmScope||(canAll?'ALL':myStores[0]);
+  if(scope==='ALL' && !canAll) scope=myStores[0];
+  if(scope!=='ALL' && !canAll && myStores.indexOf(scope)<0) scope=myStores[0];
+  window._cmScope=scope;
+  var scopeName=scope==='ALL'?'全社':((STORES.find(function(s){return s.id===scope;})||{name:scope}).name);
+  var canEditScope=scope==='ALL'?canAll:canAnnounceStore(scope);
+  var html='<div class="section-header"><div><div class="section-title"><i class="ti ti-speakerphone" style="color:var(--accent)"></i> アナウンス</div><div class="section-sub">メッセージ・Goalを管理（全社=GM以上 / 管轄店=G4以上）</div></div></div>';
+  html+='<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:10px">';
+  if(canAll) html+='<div class="phase-tab'+(scope==='ALL'?' active':'')+'" onclick="setAnnounceScope(\'ALL\')"><i class="ti ti-building-skyscraper" style="font-size:11px"></i> 全社</div>';
+  var storeList=canAll?STORES.map(function(s){return s.id;}):myStores;
+  storeList.forEach(function(sid){ var s=STORES.find(function(x){return x.id===sid;})||{id:sid,name:sid}; html+='<div class="phase-tab'+(scope===sid?' active':'')+'" '+((scope===sid&&s.color)?('style="background:'+s.color+';border-color:'+s.color+'"'):'')+' onclick="setAnnounceScope(\''+sid+'\')">'+escapeHtml(s.name)+'</div>'; });
+  html+='</div>';
+  // メッセージ
+  var thisMonth=curMonthKey();
+  var m=(scope==='ALL'?getCompanyMessage():getCompanyMessageStore(scope))||{};
+  var isThisMonth=m.month===thisMonth;
+  html+='<div class="card"><div class="card-title"><i class="ti ti-message-2"></i> '+escapeHtml(scopeName)+' メッセージ</div>';
+  if(canEditScope){
+    html+='<p style="font-size:12px;color:var(--muted);margin-bottom:10px">'+(scope==='ALL'?'全スタッフ':escapeHtml(scopeName)+'のスタッフ')+'がログイン後に見るメッセージ（'+fmtMonthLabel(thisMonth)+'分）。</p>'
+      +'<label style="font-size:12px;font-weight:600">タイトル（任意）</label><input id="cm-title" type="text" maxlength="60" value="'+(isThisMonth?escapeHtml(m.title||''):'')+'" style="width:100%;padding:9px;margin:4px 0 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px">'
+      +'<label style="font-size:12px;font-weight:600">本文</label><textarea id="cm-body" rows="6" style="width:100%;padding:9px;margin:4px 0 6px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px;line-height:1.7;resize:vertical;font-family:inherit">'+(isThisMonth?escapeHtml(m.body||''):'')+'</textarea>'
+      +'<label style="font-size:12px;font-weight:600">差出人（任意）</label><input id="cm-author" type="text" maxlength="40" value="'+(isThisMonth?escapeHtml(m.author||''):((ROLE_CONFIG[curRole]||{}).name||curUserName||''))+'" style="width:100%;padding:9px;margin:4px 0 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:14px">'
+      +'<div style="display:flex;gap:8px"><button class="btn btn-primary" onclick="saveCompanyMsg()"><i class="ti ti-device-floppy"></i> 保存</button>'+((m.body&&isThisMonth)?'<button class="btn btn-secondary" onclick="clearCompanyMsg()"><i class="ti ti-trash"></i> 今月分を削除</button>':'')+'</div>';
+  } else {
+    html+=(m.body&&isThisMonth)?('<div style="font-size:13px;white-space:pre-line">'+escapeHtml(m.body)+'</div>'):'<div style="font-size:12px;color:var(--muted)">メッセージはありません</div>';
+  }
+  html+='</div>';
+  // Goal
+  var goalStoreId=scope==='ALL'?'ALL':scope;
+  var sGoals=ls('goals_v2',[]).filter(function(g){return g.scope==='store' && g.storeId===goalStoreId;});
+  html+='<div class="card"><div class="card-title"><i class="ti ti-target"></i> '+escapeHtml(scopeName)+' Goal'+(canEditScope?'<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openGoalV2Modal(\''+goalStoreId+'\')"><i class="ti ti-plus"></i> Goal設定</button>':'')+'</div>';
+  if(!sGoals.length) html+='<div style="font-size:12px;color:var(--muted);padding:6px 0">Goalはまだありません</div>';
+  ['Daily','Weekly','Monthly'].forEach(function(period){
+    var pg=sGoals.filter(function(g){return g.period===period;});
+    if(!pg.length) return;
+    html+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin:8px 0 4px">'+period+'</div>';
+    pg.forEach(function(g){
+      var prog=Math.min(Math.round((g.current||0)/g.target*100),100);
+      var color=prog>=100?'var(--green)':prog>=70?'var(--yellow)':'var(--accent2)';
+      html+='<div class="goal-item"><div class="goal-header"><div class="goal-title">'+escapeHtml(g.title)+'</div>'+(canEditScope?'<button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="updateGoalProgress(\''+g.id+'\')">更新</button>':'')+'</div>'
+        +'<div style="display:flex;align-items:center;gap:8px"><div class="progress-bar" style="flex:1"><div class="progress-fill" style="background:'+color+';width:'+prog+'%"></div></div><div class="goal-progress">'+prog+'%</div></div>'
+        +'<div class="store-meta">'+(g.current||0)+' / '+g.target+' '+(g.unit||'')+'</div></div>';
+    });
+  });
+  html+='</div>';
+  return html;
+}
 function renderGoals() {
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
@@ -26852,7 +26989,7 @@ function saveGoalV2(storeId) {
   lsSet('goals_v2', goals);
   closeModalDirect();
   showToast('Goalを設定しました', 'success');
-  renderPage('goals');
+  renderPage(curPage);
 }
 function updateGoalProgress(gId) {
   var goals = ls('goals_v2', []);
@@ -26863,7 +27000,7 @@ function updateGoalProgress(gId) {
   g.current = parseFloat(val)||0;
   lsSet('goals_v2', goals);
   showToast('進捗を更新しました', 'success');
-  renderPage('goals');
+  renderPage(curPage);
 }
 
 /* ============================================================
