@@ -1499,6 +1499,7 @@ const NAV_ITEMS = [
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
   {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am']},
   {id:'approval',    label:'承認センター',icon:'ti-checklist',         roles:['ceo','gm','office','am']},
+  {id:'error_center',label:'エラーセンター',icon:'ti-alert-hexagon',    roles:['ceo','gm','office']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm','office']},
   {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
@@ -1520,7 +1521,7 @@ const MENU_GROUPS = [
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['store_master','goals','required','company_msg_edit','approval','acct_export','settings']},
+    children:['store_master','goals','required','company_msg_edit','approval','error_center','settings']},
 ];
 
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
@@ -14206,8 +14207,8 @@ function openMileageModal(){
   openModal('<div class="modal-title"><i class="ti ti-gas-station"></i> ガソリン代を申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div class="form-row" style="gap:8px"><div class="form-group" style="flex:1"><label class="form-label">日付</label><input class="form-input" id="mi-date" type="date" value="'+today+'"></div>'
     +'<div class="form-group" style="flex:1"><label class="form-label">目的</label><select class="form-select" id="mi-purpose"><option>買い出し</option><option>ミーティング</option><option>銀行・郵便</option><option>店舗間移動</option><option>その他</option></select></div></div>'
-    +'<div class="form-group"><label class="form-label">出発地</label><input class="form-input" id="mi-origin" placeholder="住所・店舗名（例: ToriTon Honolulu）" autocomplete="off"></div>'
-    +'<div class="form-group"><label class="form-label">目的地</label><input class="form-input" id="mi-dest" placeholder="住所・店舗名（例: Costco Iwilei）" autocomplete="off"></div>'
+    +'<div class="form-group"><label class="form-label" style="color:var(--green);font-weight:700"><i class="ti ti-circle-dot"></i> 出発地</label><input class="form-input" id="mi-origin" placeholder="住所・店舗名（例: ToriTon Honolulu）" autocomplete="off" style="border:1.5px solid var(--green);border-left:5px solid var(--green);background:rgba(34,197,94,0.06)"></div>'
+    +'<div class="form-group"><label class="form-label" style="color:var(--red);font-weight:700"><i class="ti ti-map-pin"></i> 目的地</label><input class="form-input" id="mi-dest" placeholder="住所・店舗名（例: Costco Iwilei）" autocomplete="off" style="border:1.5px solid var(--red);border-left:5px solid var(--red);background:rgba(239,68,68,0.06)"></div>'
     +'<button class="btn btn-secondary btn-sm" style="width:100%;margin-bottom:8px" onclick="mileageOpenGmaps()"><i class="ti ti-map-pin"></i> Google Mapsで距離を調べる（別タブで開く）</button>'
     +'<div class="form-group"><label class="form-label">距離（片道・マイル） <span style="font-size:10px;color:var(--muted)">※Google Mapsに出た距離を入力</span></label>'
     +'<div style="display:flex;gap:6px;align-items:center"><input class="form-input" id="mi-miles-manual" type="number" step="0.1" inputmode="decimal" placeholder="例: 5.2" oninput="mileageManualMiles(this.value)" style="flex:1">'+autoBtn+'</div></div>'
@@ -26343,23 +26344,61 @@ function taskDeadlineReminders(){
   });
 }
 
+var taskSearch='';
+function taskSearchSet(v){ taskSearch=v||''; renderPage('tasks'); var el=document.getElementById('task-search'); if(el){ try{ el.focus(); el.setSelectionRange(el.value.length,el.value.length); }catch(e){} } }
+function taskApplySearch(list){ if(!taskSearch) return list; var q=taskSearch.toLowerCase(); return list.filter(function(t){ return (String(t.assignee||'').toLowerCase().indexOf(q)>=0) || (String(t.title||'').toLowerCase().indexOf(q)>=0); }); }
+function taskAssigneeDatalistHtml(){ var names=getEmployees().filter(function(e){return e.status!=='退職';}).map(function(e){return e.name;}); return '<datalist id="dl-task-assignees">'+names.map(function(n){return '<option value="'+escapeHtml(n)+'">';}).join('')+'</datalist>'; }
+function addTaskMemoInline(id){
+  var el=document.getElementById('tmemo-'+id); var txt=el?el.value.trim():''; if(!txt) return;
+  var arr=getTasks(); var t=normalizeTask(arr.find(function(x){return x.id===id;})||{}); if(!t.id) return;
+  t.memos.push({date:tsNow(), by:myName(), text:txt}); t.updatedTs=Date.now();
+  addTaskLog(t,'メモ追加'); saveTaskObj(t); renderPage('tasks');
+}
 function taskCardHtml(t){
   var pr=taskPriColor(t.priority);
   var di=taskDueInfo(t.due);
-  var av=t.assignee?escapeHtml(t.assignee[0]):'?';
-  return '<div class="card" style="border-left:3px solid '+pr+';border-radius:0 12px 12px 0;cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')">'
-    +'<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="font-size:14px;font-weight:600">'+escapeHtml(t.title)+'</div>'
-    +'<span class="tag" style="background:'+pr+';color:#fff;font-size:10px;flex-shrink:0">'+t.priority+'</span></div>'
-    +'<div style="display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px;color:var(--muted);flex-wrap:wrap">'
-    +(t.assignee?'<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:18px;height:18px;border-radius:50%;background:var(--accent2);color:#fff;font-size:10px;display:inline-flex;align-items:center;justify-content:center">'+av+'</span>'+escapeHtml(t.assignee)+'</span>':'<span style="color:var(--red)">未割当</span>')
-    +(di.label?'<span style="color:'+di.color+'"><i class="ti ti-clock"></i> '+di.label+'</span>':'')
-    +(t.place?'<span><i class="ti ti-map-pin"></i> '+t.place+'</span>':'')
-    +(taskStalled(t)?'<span class="tag tag-red" style="font-size:8px">停滞</span>':'')
-    +(t.recur&&t.recur.type&&t.recur.type!=='none'?'<span class="tag tag-blue" style="font-size:8px"><i class="ti ti-repeat"></i> '+(TASK_RECUR_LABELS[t.recur.type]||'')+'</span>':'')
-    +(t.memos.length?'<span style="margin-left:auto"><i class="ti ti-message-2"></i> '+t.memos.length+'</span>':'')
-    +'</div>'
-    +'<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:'+taskStatusColor(t.status)+';width:'+(t.progress||0)+'%"></div></div>'
+  var canEdit = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0 || t.assignee===myName() || t.createdBy===myName();
+  var h='<div class="card" style="border-left:4px solid '+pr+';border-radius:0 12px 12px 0">';
+  h+='<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">'
+    +'<div style="font-size:14px;font-weight:700">'+escapeHtml(t.title)+'</div>'
+    +'<div style="display:flex;gap:4px;flex-shrink:0;align-items:center"><span class="tag" style="background:'+pr+';color:#fff;font-size:10px">'+t.priority+'</span>'
+    +(canEdit?'<button class="btn btn-secondary btn-sm" style="padding:1px 7px" onclick="deleteTask(\''+t.id+'\')"><i class="ti ti-trash" style="font-size:12px"></i></button>':'')
+    +'</div></div>';
+  if(t.desc) h+='<div style="font-size:12px;color:var(--muted);margin-top:4px;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
+  // ステータス（常時表示・変更可）
+  h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">'
+    +TASK_STATUSES.map(function(sname){return '<button class="btn btn-sm '+(sname===t.status?'btn-primary':'btn-secondary')+'" style="font-size:10px;padding:2px 9px" '+(canEdit?'onclick="taskSetStatus(\''+t.id+'\',\''+sname+'\')"':'disabled')+'>'+sname+'</button>';}).join('')
     +'</div>';
+  // 担当者（名前検索）・期限・重要度
+  if(canEdit){
+    h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">'
+      +'<input class="form-input" list="dl-task-assignees" value="'+escapeHtml(t.assignee||'')+'" placeholder="担当者（名前で検索）" style="flex:1;min-width:130px;font-size:12px;padding:5px 8px" onchange="taskField(\''+t.id+'\',\'assignee\',this.value)">'
+      +'<input class="form-input" type="date" value="'+(t.due||'')+'" style="font-size:12px;padding:5px 8px;width:148px'+(di.overdue?';border:1.5px solid var(--red)':'')+'" onchange="taskField(\''+t.id+'\',\'due\',this.value)">'
+      +'<select class="form-select" style="font-size:12px;padding:5px 8px;width:auto" onchange="taskField(\''+t.id+'\',\'priority\',this.value)">'+['低','中','高'].map(function(p){return '<option'+(p===t.priority?' selected':'')+'>'+p+'</option>';}).join('')+'</select>'
+      +'</div>';
+  } else {
+    h+='<div style="font-size:12px;color:var(--muted);margin-top:6px">'+(t.assignee?'<i class="ti ti-user"></i> '+escapeHtml(t.assignee):'<span style="color:var(--red)">未割当</span>')+(di.label?' · <span style="color:'+di.color+'"><i class="ti ti-clock"></i> '+di.label+'</span>':'')+'</div>';
+  }
+  // 進捗
+  h+='<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:'+taskStatusColor(t.status)+';width:'+(t.progress||0)+'%"></div></div>';
+  if(canEdit){
+    h+='<div style="display:flex;gap:4px;margin-top:6px;align-items:center;flex-wrap:wrap"><span style="font-size:10px;color:var(--muted)">進捗 '+(t.progress||0)+'%</span>'
+      +[0,25,50,75,100].map(function(p){return '<button class="btn btn-secondary btn-sm" style="font-size:10px;padding:1px 7px'+(((t.progress||0)===p)?';background:var(--accent2);color:#fff':'')+'" onclick="taskField(\''+t.id+'\',\'progress\','+p+')">'+p+'</button>';}).join('')
+      +'</div>';
+  }
+  // メモ（インライン）
+  h+='<details style="margin-top:8px"'+(t.memos.length?' open':'')+'><summary style="font-size:11px;color:var(--muted);cursor:pointer"><i class="ti ti-message-2"></i> メモ ('+t.memos.length+')</summary>';
+  t.memos.slice().reverse().slice(0,5).forEach(function(m){ h+='<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);font-size:9px">'+m.date+' · '+escapeHtml(m.by)+'</span><div style="white-space:pre-line">'+escapeHtml(m.text)+'</div></div>'; });
+  if(canEdit) h+='<div style="display:flex;gap:4px;margin-top:6px"><input class="form-input" id="tmemo-'+t.id+'" placeholder="メモ追加…" style="flex:1;font-size:11px;padding:4px 8px"><button class="btn btn-secondary btn-sm" style="font-size:10px" onclick="addTaskMemoInline(\''+t.id+'\')">追加</button></div>';
+  h+='</details>';
+  // メタ
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<span>作成: '+escapeHtml(t.createdBy||'')+'</span>'
+    +(t.recur&&t.recur.type&&t.recur.type!=='none'?'<span class="tag tag-blue" style="font-size:8px"><i class="ti ti-repeat"></i> '+(TASK_RECUR_LABELS[t.recur.type]||'')+'</span>':'')
+    +(taskStalled(t)?'<span class="tag tag-red" style="font-size:8px">停滞</span>':'')
+    +'</div>';
+  h+='</div>';
+  return h;
 }
 
 function renderTasks(){
@@ -26371,6 +26410,10 @@ function renderTasks(){
     +'<div class="phase-tab'+(taskTab==='mine'?' active':'')+'" onclick="setTaskTab(\'mine\')"><i class="ti ti-user" style="font-size:12px"></i> 個人タスク</div>'
     +(canManage?'<div class="phase-tab'+(taskTab==='admin'?' active':'')+'" onclick="setTaskTab(\'admin\')"><i class="ti ti-eye" style="font-size:12px"></i> 管理ビュー</div>':'')
     +'</div>';
+  html += taskAssigneeDatalistHtml();
+  html += '<div class="card" style="padding:8px 12px;margin-bottom:8px"><div style="display:flex;gap:6px;align-items:center"><i class="ti ti-search" style="color:var(--muted)"></i>'
+    +'<input class="form-input" id="task-search" list="dl-task-assignees" value="'+escapeHtml(taskSearch)+'" placeholder="担当者名で検索（タスク名も可）…" style="flex:1;font-size:13px" oninput="taskSearchSet(this.value)">'
+    +(taskSearch?'<button class="btn btn-secondary btn-sm" onclick="taskSearchSet(\'\')">クリア</button>':'')+'</div></div>';
   if(taskTab==='mine') return html + renderTaskMine();
   if(taskTab==='admin' && canManage) return html + renderTaskAdmin();
   return html + renderTaskStore();
@@ -26384,7 +26427,7 @@ function renderTaskStore(){
     +'<button class="btn btn-primary btn-sm" onclick="quickAddTask(\''+storeId+'\',\'店舗\')"><i class="ti ti-plus"></i></button>'
     +'<button class="btn btn-secondary btn-sm" title="詳細作成" onclick="openTaskModal(\'店舗\',\''+storeId+'\')"><i class="ti ti-adjustments"></i></button>'
     +'</div></div>';
-  var tasks = getTasksN().filter(function(t){ return t.type==='店舗' && (storeId==='ALL'?true:(t.store===storeId||t.store==='ALL')); });
+  var tasks = taskApplySearch(getTasksN().filter(function(t){ return t.type==='店舗' && (storeId==='ALL'?true:(t.store===storeId||t.store==='ALL')); }));
   ['未着手','進行中','レビュー'].forEach(function(st){
     var list=tasks.filter(function(t){return t.status===st;});
     html += '<div style="margin:10px 2px 4px;font-size:12px;font-weight:600;color:'+taskStatusColor(st)+'">'+st+' <span style="color:var(--muted)">('+list.length+')</span></div>';
@@ -26410,7 +26453,7 @@ function renderTaskMine(){
     +'<button class="btn btn-primary btn-sm" onclick="quickAddTask(\'\',\'個人\')"><i class="ti ti-plus"></i></button>'
     +'<button class="btn btn-secondary btn-sm" title="詳細作成" onclick="openTaskModal(\'個人\',\'\')"><i class="ti ti-adjustments"></i></button>'
     +'</div></div>';
-  var tasks = getTasksN().filter(function(t){ return t.assignee===me && t.status!=='完了'; });
+  var tasks = taskApplySearch(getTasksN().filter(function(t){ return t.assignee===me && t.status!=='完了'; }));
   var groups=[
     {key:'overdue', label:'期限超過', color:'var(--eval-low)', f:function(t){ return taskDueInfo(t.due).overdue; }},
     {key:'today', label:'今日', color:'var(--eval-mid)', f:function(t){ return taskDueInfo(t.due).label==='今日'; }},
@@ -26438,7 +26481,7 @@ function renderTaskMine(){
 function renderTaskAdmin(){
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
   var html = pageStoreTabs(storeId, true);
-  var tasks = getTasksN().filter(function(t){ return (storeId==='ALL'?true:(t.store===storeId||t.store==='ALL')); });
+  var tasks = taskApplySearch(getTasksN().filter(function(t){ return (storeId==='ALL'?true:(t.store===storeId||t.store==='ALL')); }));
   var active = tasks.filter(function(t){return t.status!=='完了';});
   var overdue = active.filter(function(t){ return taskDueInfo(t.due).overdue; });
   var stalled = active.filter(taskStalled);
