@@ -2611,6 +2611,7 @@ function getIngredients() {
     if (i.uc===undefined) i.uc = ingUnitCost(i);
     if (i.storePrices===undefined) i.storePrices = {};   // 店舗別 最新仕入価格（{storeId:{price,date,vendor}}）
     if (i.aliases===undefined) i.aliases = [];           // 照合用の別名（請求書名のゆれを学習）
+    if (i.orderUnit===undefined) i.orderUnit = '';        // 発注・棚卸カウント単位
   });
   return ings;
 }
@@ -2622,6 +2623,22 @@ function removeStoreIngredient(storeId, code){ if(!storeId||storeId==='ALL')retu
 function isInStoreMaster(storeId, code){ return getStoreIngredients(storeId).indexOf(parseInt(code))>=0; }
 function storesUsingIngredient(code){ var all=ls('store_ingredients',{}); code=parseInt(code); var out=[]; Object.keys(all).forEach(function(k){ if((all[k]||[]).indexOf(code)>=0){ if(k==='TOTOYA'){ TOTOYA_STORE_IDS.forEach(function(sid){ if(out.indexOf(sid)<0) out.push(sid); }); } else if(out.indexOf(k)<0){ out.push(k); } } }); return out; }
 /* 一度だけ: 既存のTotoya 3店舗別(store_ingredients[F04-K/P/A])を 'TOTOYA' に統合（和集合） */
+var EXCEL_ORDER_UNITS = {'ahi':'lb','ahi mince':'pack','aosa':'pack','avocado oil':'bottle','awase miso (yamajirushi)':'tub','coke':'can','crispy noodle':'pack','dashi bonito pack(yamaki)':'bag','dashi konbu sheet':'lb','dashi miyako':'bottle','fish cake':'pack','ginger':'pack','green breeze':'pack','herring roe':'pack','hondashi (ajinomoto)':'bag','ikura':'pack','mayonnaise':'bottle','mirin':'bottle','negitoro':'pack','ocean salad':'box','red shrimp':'box','salmon':'lb','scallop 4s':'box','snow crab':'pack','soy sauce amakuchi':'bottle','soy sauce koikuchi':'bottle','sushi vinegar（mtkn)':'tub','sweet shrimp':'box','swimming crab':'box','tenkasu':'bag','tobiko':'pack','udon noodle':'bag','uni':'pack','utage':'bag','wasabi':'pack','white gari':'pack','white sesame':'bag','yakinori half size':'pack','yuzu kajyu(yamajirushi)':'bottle','yuzu miso dressing':'bottle','yuzu shichimi':'pack'};
+function _normIngNm(s){ return String(s||'').toLowerCase().replace(/\s+/g,' ').trim(); }
+function orderUnitFor(name){ return EXCEL_ORDER_UNITS[_normIngNm(name)] || ''; }
+/* 一度きり: Excel(Totoya棚卸シート)の発注・棚卸単位を食材マスターに名前照合で反映（既存unitは不変） */
+function migrateOrderUnits(){
+  try{
+    if(ls('_orderUnitsMerged_v1', false)) return;
+    var ings = ls('m_ingredients', DEFAULT_INGREDIENTS);
+    if(!Array.isArray(ings)){ lsSet('_orderUnitsMerged_v1', true); return; }
+    var n=0;
+    ings.forEach(function(it){ if(it.orderUnit) return; var u=orderUnitFor(it.name); if(u){ it.orderUnit=u; n++; } });
+    if(n>0) lsSet('m_ingredients', ings);
+    lsSet('_orderUnitsMerged_v1', true);
+  }catch(e){ console.warn('migrateOrderUnits', e); }
+}
+
 function migrateTotoyaStoreIngredients(){
   try {
     if (ls('_totoyaIngMerged', false)) return;
@@ -17488,7 +17505,7 @@ function renderIngredientMaster() {
         ${ingStore?`<button class="btn ${isInStoreMaster(ingStore,i.code)?'btn-secondary':'btn-primary'} btn-sm" style="margin-top:4px;padding:1px 8px;font-size:10px" onclick="event.stopPropagation();toggleStoreIngredient('${i.code}')">${isInStoreMaster(ingStore,i.code)?'✓自店':'＋自店'}</button>`:''}
       </td>
       <td><span class="tag" style="background:var(--surface2);color:${classColor(clsId)}">${className(clsId)}</span><div style="font-size:11px;color:var(--muted);margin-top:2px">${catName(i.cat)}</div></td>
-      <td>$${i.price.toFixed(2)}<div style="font-size:10px;color:var(--muted)">${i.qty?i.qty+i.unit:i.unit}</div></td>
+      <td>$${i.price.toFixed(2)}<div style="font-size:10px;color:var(--muted)">${i.qty?i.qty+i.unit:i.unit}</div>${i.orderUnit?`<div style="font-size:9px;color:var(--accent2)">発注:${escapeHtml(i.orderUnit)}</div>`:""}</td>
       <td style="color:var(--accent);font-weight:600">$${uc.toFixed(4)}<div style="font-size:10px;color:var(--muted);font-weight:400">/${i.unit}</div></td>
       <td><span class="tag ${i.yield>=90?'tag-green':i.yield>=75?'tag-yellow':'tag-red'}">${i.yield}%</span></td>
     </tr>`;
@@ -19022,6 +19039,7 @@ function openIngModal(code) {
       </div>
       <div class="form-group"><label class="form-label">単位</label><input class="form-input" id="i-unit" value="${i.unit}" placeholder="kg, L, 本"></div>
     </div>
+    <div class="form-group"><label class="form-label">発注・棚卸単位</label><input class="form-input" id="i-orderunit" list="orderUnitDL" value="${i.orderUnit||''}" placeholder="bag, bottle, pack, box, lb, tub, can…"><datalist id="orderUnitDL"><option value="bag"><option value="bottle"><option value="box"><option value="pack"><option value="tub"><option value="lb"><option value="can"><option value="袋"><option value="本"><option value="ケース"></datalist><div style="font-size:10.5px;color:var(--muted);margin-top:3px">発注・棚卸でのカウント単位（原価計算の単位とは別）</div></div>
     ${!isNew?`<div class="form-group"><label class="form-label">コード / 区分</label><input class="form-input" value="${i.code}  (${className(catClass(i.cat))} · ${catName(i.cat)})" disabled></div>`:''}
     ${!isNew?ingStorePriceHtml(i):''}
     ${!isNew?ingAliasHtml(i):''}
@@ -19061,17 +19079,18 @@ function saveIng(code) {
   var qty = parseFloat(document.getElementById('i-qty').value) || 0;
   var yld = parseFloat(document.getElementById('i-yield').value) || 100;
   var unit = document.getElementById('i-unit').value.trim() || 'kg';
+  var orderUnit = ((document.getElementById('i-orderunit')||{}).value||'').trim();
   var vendor = document.getElementById('i-vendor').value;
   var uc = qty>0 ? price/(qty*(yld/100||1)) : price/(yld/100||1);
   if (code) {
     var i = ings.find(x=>x.code===parseInt(code));
-    if (i) Object.assign(i, {name, nameEN, unit, vendor, price, qty, yield:yld, uc:Math.round(uc*100000)/100000});
+    if (i) Object.assign(i, {name, nameEN, unit, orderUnit, vendor, price, qty, yield:yld, uc:Math.round(uc*100000)/100000});
   } else {
     var cat = parseInt(document.getElementById('i-cat').value);
     var inCat = ings.filter(x=>x.code>=cat && x.code<cat+1000);
     var maxCode = inCat.length ? Math.max(...inCat.map(x=>x.code)) : cat;
     var newCode = maxCode + 1;
-    ings.push({code:newCode, name, nameEN, cat, unit, vendor, price, qty, yield:yld, uc:Math.round(uc*100000)/100000});
+    ings.push({code:newCode, name, nameEN, cat, unit, orderUnit, vendor, price, qty, yield:yld, uc:Math.round(uc*100000)/100000});
   }
   lsSet('m_ingredients', ings);
   if (!code) { var _sid=(curStore&&curStore!=='ALL')?curStore:null; if(_sid){ addStoreIngredient(_sid, newCode); } } // 新規は自店マスターにも自動登録
@@ -30956,6 +30975,7 @@ try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
+try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 /* ============================================================
