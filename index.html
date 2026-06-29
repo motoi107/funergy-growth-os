@@ -2650,6 +2650,28 @@ function migrateUnitFromExcel(){
     lsSet('_unitFromExcel_v1', true);
   }catch(e){ console.warn('migrateUnitFromExcel', e); }
 }
+/* ===== Excel発注単位を 食材マスターunitへ手動反映（完全起動後・クラウドデータに直接適用） ===== */
+var _EXCEL_KEYS_SORTED=null;
+function _excelKeysSorted(){ if(!_EXCEL_KEYS_SORTED){ _EXCEL_KEYS_SORTED=Object.keys(EXCEL_ORDER_UNITS).sort(function(a,b){return b.length-a.length;}); } return _EXCEL_KEYS_SORTED; }
+function _stripIngNm(s){ return _normIngNm(String(s||'').replace(/[（(][^)）]*[)）]/g,' ')); }
+function bestExcelUnit(it){
+  if(!it) return '';
+  var cands=[it.name, it.nameEN], i, raw, st;
+  for(i=0;i<cands.length;i++){ raw=_normIngNm(cands[i]); if(raw && EXCEL_ORDER_UNITS[raw]) return EXCEL_ORDER_UNITS[raw]; st=_stripIngNm(cands[i]); if(st && EXCEL_ORDER_UNITS[st]) return EXCEL_ORDER_UNITS[st]; }
+  var keys=_excelKeysSorted();
+  for(i=0;i<cands.length;i++){ raw=_normIngNm(cands[i]); if(!raw) continue; for(var k=0;k<keys.length;k++){ var key=keys[k]; if(raw===key || raw.indexOf(key+' ')===0) return EXCEL_ORDER_UNITS[key]; } }
+  return '';
+}
+function applyExcelUnits(){
+  try{
+    var ings=getIngredients(), n=0, matched=[];
+    ings.forEach(function(it){ var u=bestExcelUnit(it); if(u){ matched.push(it); if(it.unit!==u){ it.unit=u; n++; } } });
+    if(matched.length===0){ alert('Excelと一致する品目が見つかりませんでした。\n食材名がExcelの英語名（例: Tenkasu, Wasabi, Ikura）と一致しているかご確認ください。'); return; }
+    lsSet('m_ingredients', ings);
+    if(typeof showToast==='function') showToast('一致 '+matched.length+'品目中 '+n+'件の単位をExcelで更新しました', 'success');
+    if(typeof renderPage==='function') renderPage('ingredient_master');
+  }catch(e){ console.error('applyExcelUnits', e); alert('反映中にエラー: '+(e&&e.message)); }
+}
 
 function migrateTotoyaStoreIngredients(){
   try {
@@ -17467,6 +17489,7 @@ function renderIngredientMaster() {
   var html = pageStoreTabs(curStore, true) + `<div class="section-header">
     <div><div class="section-title">食材マスター</div><div class="section-sub">${ings.length}品目 / ${cats.length}カテゴリ</div></div>
     <div style="display:flex;gap:6px">
+      ${(curRole==='gm'||curRole==='ceo')?`<button class="btn btn-secondary btn-sm" onclick="applyExcelUnits()" title="Excel(Totoya棚卸)の発注単位を単位フィールドに反映"><i class="ti ti-ruler-2"></i> Excel単位反映</button>`:''}
       <button class="btn btn-secondary btn-sm" onclick="openCatModal()"><i class="ti ti-category"></i> カテゴリ</button>
       <button class="btn btn-primary btn-sm" onclick="openIngModal()"><i class="ti ti-plus"></i> 追加</button>
     </div>
@@ -30986,7 +31009,6 @@ try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMa
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
 try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
-try { migrateUnitFromExcel(); } catch(e) { console.error('migrateUnitFromExcel', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 /* ============================================================
