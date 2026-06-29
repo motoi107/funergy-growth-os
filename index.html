@@ -1500,6 +1500,7 @@ const NAV_ITEMS = [
   {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am','sl']},
   {id:'approval',    label:'承認センター',icon:'ti-checklist',         roles:['ceo','gm','office','am']},
   {id:'error_center',label:'エラーセンター',icon:'ti-alert-hexagon',    roles:['ceo','gm','office']},
+  {id:'notifications',label:'通知',       icon:'ti-bell',             roles:['ceo','gm','office']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm','office']},
   {id:'kpi_master',  label:'KPI管理',      icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
@@ -4484,6 +4485,7 @@ function renderPage(page) {
     case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
     case 'company_msg_edit': el.innerHTML = renderCompanyMsgEdit(); break;
+    case 'notifications': el.innerHTML = renderNotifications(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
@@ -24152,7 +24154,6 @@ function renderMypage() {
 ============================================================ */
 function renderSettings() {
   var html = `<div class="section-header"><div class="section-title">設定</div></div>
-  ${(['ceo','gm','office'].indexOf(curRole)>=0)?renderErrorCenter(true):''}
   ${(curRole==='gm'||curRole==='ceo')?`<div class="card"><div class="card-title"><i class="ti ti-shield-lock" style="color:var(--accent)"></i> セキュリティ：オンボ機密情報</div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">既存オンボのSSN・身分証・個人情報を、匿名キーから触れない保護領域へ移します（最初に1回だけ）。</div>
     <button class="btn btn-primary btn-sm" onclick="runObMigrate()"><i class="ti ti-database-export"></i> 保護領域へ移行する</button>
@@ -25172,6 +25173,50 @@ function notifAgo(iso){
     return d.toLocaleDateString('ja');
   }catch(e){ return ''; }
 }
+/* ===== 本部「通知」フルページ（ベルの内容を全画面で一覧） ===== */
+var _notifPageFilter='all';
+function setNotifPageFilter(f){ _notifPageFilter=f; renderPage('notifications'); }
+function markAllNotifReadPage(){ markAllNotifRead(); renderPage('notifications'); }
+function onNotifClickPage(id){
+  markNotifRead(id);
+  var n=getNotifs().find(function(x){return x.id===id;});
+  renderNotifBell();
+  if(n && n.page){ go(n.page); } else { renderPage('notifications'); }
+}
+function renderNotifications(){
+  var all=myNotifs();
+  var unreadN=all.filter(function(n){ return (n.readBy||[]).indexOf(curUserName)<0; }).length;
+  var list=(_notifPageFilter==='unread')?all.filter(function(n){ return (n.readBy||[]).indexOf(curUserName)<0; }):all;
+  var html='<div class="section-header"><div><div class="section-title"><i class="ti ti-bell"></i> 通知</div>'
+    +'<div class="section-sub">あなた宛の通知一覧（最新順）'+(unreadN?(' ・未読 '+unreadN+'件'):'')+'</div></div>'
+    +(all.length?'<button class="btn btn-secondary btn-sm" onclick="markAllNotifReadPage()"><i class="ti ti-checks"></i> すべて既読</button>':'')
+    +'</div>';
+  html+='<div class="phase-tabs" style="margin-bottom:8px">'
+    +'<div class="phase-tab'+(_notifPageFilter==='all'?' active':'')+'" onclick="setNotifPageFilter(\'all\')">すべて'+(all.length?('（'+all.length+'）'):'')+'</div>'
+    +'<div class="phase-tab'+(_notifPageFilter==='unread'?' active':'')+'" onclick="setNotifPageFilter(\'unread\')">未読'+(unreadN?('（'+unreadN+'）'):'')+'</div>'
+    +'</div>';
+  if(!list.length){
+    return html+'<div class="card" style="text-align:center;padding:32px;color:var(--muted)"><i class="ti ti-bell-off" style="font-size:28px"></i><div style="margin-top:8px;font-size:13px">'+(_notifPageFilter==='unread'?'未読の通知はありません':'通知はありません')+'</div></div>';
+  }
+  html+='<div class="card" style="padding:0;overflow:hidden">';
+  html+=list.slice(0,200).map(function(n){
+    var unread=(n.readBy||[]).indexOf(curUserName)<0;
+    var ic=notifIcon(n.type);
+    return '<div onclick="onNotifClickPage(\''+n.id+'\')" style="display:flex;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;background:'+(unread?'rgba(43,111,214,0.07)':'transparent')+'">'
+      +'<div style="flex-shrink:0;width:24px;text-align:center;color:'+ic.col+';padding-top:1px"><i class="ti '+ic.icon+'" style="font-size:18px"></i></div>'
+      +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:13.5px;font-weight:'+(unread?'700':'500')+';color:var(--tm)">'+escapeHtml(n.title||'')+'</div>'
+        +(n.text?('<div style="font-size:12px;color:var(--muted);margin-top:2px;word-break:break-word">'+escapeHtml(n.text)+'</div>'):'')
+        +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+escapeHtml(n.by||'')+' · '+notifAgo(n.at)+(n.page?' · <i class="ti ti-arrow-right"></i> 開く':'')+'</div>'
+      +'</div>'
+      +(unread?'<div style="flex-shrink:0;width:9px;height:9px;border-radius:50%;background:var(--accent2);margin-top:6px"></div>':'')
+      +'</div>';
+  }).join('');
+  html+='</div>';
+  if(list.length>200){ html+='<div style="text-align:center;font-size:11px;color:var(--muted);margin-top:8px">直近200件を表示</div>'; }
+  return html;
+}
+
 function renderNotifBell(){
   var b=document.getElementById('notif-badge'); if(!b) return;
   var n=myUnreadCount();
