@@ -1470,7 +1470,7 @@ const NAV_ITEMS = [
   {id:'recipe',      label:'原価登録',    icon:'ti-receipt-2',        roles:['ceo','gm','office','am','sl']},
   {id:'invoice',     label:'請求書',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl']},
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office']},
-  {id:'office_mgr',  label:'Office管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office']},
+  {id:'office_mgr',  label:'Office管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office','office_crew']},
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
@@ -1540,6 +1540,7 @@ const OFFICE_GROUPS = [
 ];
 /* 事務Crew（office_crew）専用：各店の予実・Tip */
 const OFFICE_CREW_GROUPS = [
+  {id:'go_home', label:'本部', icon:'ti-building-skyscraper', children:['office_mgr','notifications']},
   {id:'goc_mng', label:'店舗管理', icon:'ti-building-store', children:['budget','tip']},
   {id:'goc_my',  label:'マイページ', icon:'ti-user', children:['mypage']},
 ];
@@ -4428,7 +4429,7 @@ function switchStore(id) {
   var sicon = id==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
   document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
   closeModalDirect();
-  if (id === 'OFFICE') { curPage = (curRole==='office_crew') ? 'budget' : 'office_mgr'; if(typeof buildNav==='function') buildNav(); renderPage(curPage); window.scrollTo(0,0); return; }
+  if (id === 'OFFICE') { curPage = 'office_mgr'; if(typeof buildNav==='function') buildNav(); renderPage('office_mgr'); window.scrollTo(0,0); return; }
   if (['office_mgr','error_center'].indexOf(curPage)>=0) curPage='dashboard';
   if(typeof buildNav==='function') buildNav();
   renderPage(curPage);
@@ -17794,6 +17795,7 @@ function renderErrorCenter(embedded){
 function renderOfficeMgr(){
   var html = '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
   var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['export','出力センター','ti-file-export'],['errors','エラーセンター','ti-alert-hexagon'],['attend','勤怠','ti-clock'],['tasks','タスク','ti-checklist'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];
+  if(curRole==='office_crew'){ if(officeMgrTab==='export') officeMgrTab='dash'; tabs=tabs.filter(function(t){ return t[0]!=='export'; }); }
   html += '<div class="phase-tabs" style="flex-wrap:wrap">'
     + tabs.map(function(t){ return '<div class="phase-tab'+(officeMgrTab===t[0]?' active':'')+'" onclick="setOfficeMgrTab(\''+t[0]+'\')"><i class="ti '+t[2]+'" style="font-size:12px"></i> '+t[1]+'</div>'; }).join('')
     + '</div>';
@@ -18083,7 +18085,7 @@ function renderOfficeReport(){
   html+='<div style="display:flex;flex-direction:column;gap:8px">';
   html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px"><i class="ti ti-truck-delivery" style="color:var(--accent)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">発注の承認・経理確定</div><div style="font-size:11px;color:var(--muted)">'+supply.length+'件待ち</div></div><button class="btn btn-'+(supply.length?'primary':'secondary')+' btn-sm" onclick="go(\'supply_order\')">開く</button></div>';
   html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px"><i class="ti ti-checklist" style="color:var(--accent2)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">経理レビュー（請求書区分）</div><div style="font-size:11px;color:var(--muted)">'+acctN+'件待ち</div></div><button class="btn btn-'+(acctN?'primary':'secondary')+' btn-sm" onclick="go(\'acct_review\')">開く</button></div>';
-  html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px;opacity:0.7"><i class="ti ti-cash" style="color:var(--green)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">給与確定</div><div style="font-size:11px;color:var(--muted)">勤怠タブで月次を確定 → CSV出力</div></div><button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\'attend\')">勤怠へ</button></div>';
+  if(curRole!=='office_crew') html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px;opacity:0.7"><i class="ti ti-cash" style="color:var(--green)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">給与確定</div><div style="font-size:11px;color:var(--muted)">勤怠タブで月次を確定 → CSV出力</div></div><button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\'attend\')">勤怠へ</button></div>';
   html+='</div></div>';
   // 報告
   var canPost=['ceo','gm','office'].includes(curRole);
