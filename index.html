@@ -1464,7 +1464,7 @@ const ROLE_CONFIG = {
 const NAV_ITEMS = [
   {id:'dashboard',   label:'ダッシュボード',   icon:'ti-layout-dashboard', roles:['ceo','gm','office','am']},
   {id:'store_cmd',   label:'店舗オペレーション', icon:'ti-building-store',   roles:['ceo','gm','am','sl','crew']},
-  {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl']},
+  {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'foodcost',    label:'原価率(FC)',   icon:'ti-receipt',          roles:['ceo','gm','office','am','sl']},
   {id:'menu',        label:'メニュー',    icon:'ti-tools-kitchen-2',  roles:['ceo','gm','office','am','sl']},
   {id:'recipe',      label:'原価登録',    icon:'ti-receipt-2',        roles:['ceo','gm','office','am','sl']},
@@ -1538,6 +1538,11 @@ const OFFICE_GROUPS = [
   {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
     children:['settings','profile']},
 ];
+/* 事務Crew（office_crew）専用：各店の予実・Tip */
+const OFFICE_CREW_GROUPS = [
+  {id:'goc_mng', label:'店舗管理', icon:'ti-building-store', children:['budget','tip']},
+  {id:'goc_my',  label:'マイページ', icon:'ti-user', children:['mypage']},
+];
 /* Crew専用のシンプルメニュー（マイページ中心） */
 const CREW_GROUPS = [
   {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage']},
@@ -1557,6 +1562,7 @@ function navItemById(id) { return NAV_ITEMS.find(n=>n.id===id) || {id, label:id,
 function groupsForRole() {
   if (curStoreLogin) return STORE_GROUPS;
   if (curRole==='crew') return CREW_GROUPS;
+  if (curRole==='office_crew') return OFFICE_CREW_GROUPS;
   if (curStore==='OFFICE' && ['ceo','gm','office'].includes(curRole)) return OFFICE_GROUPS.filter(g=>!g.roles||g.roles.includes(curRole));
   return MENU_GROUPS.filter(g=>g.roles.includes(curRole));
 }
@@ -4428,7 +4434,7 @@ function switchStore(id) {
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['office_mgr','error_center','invoice','acct_review','acct_export','supply_order','order','monthly','budget','profile','settings','notifications','staff_dev','approval','vacation','mileage'];
+var OFFICE_OK_PAGES = ['office_mgr','error_center','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage'];
 
 /* ============================================================
    ROUTER
@@ -4700,7 +4706,7 @@ function getVisibleStores() {
   }
   // 全権（CEO/GM/経理）
   else {
-    out = (curStore === 'ALL') ? activeStores() : activeStores().filter(s => s.id === curStore);
+    out = (curStore === 'ALL' || curStore === 'OFFICE') ? activeStores() : activeStores().filter(s => s.id === curStore);
   }
   // 全画面で店舗の並びをログイン画面と統一
   return sortByLoginOrder(out);
