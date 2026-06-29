@@ -3499,7 +3499,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config'];
+  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
@@ -21895,6 +21895,35 @@ var KARTE_GRADES = ['G6','G5','G4','G3'];
 function _money(n){ return '$'+Math.round(n||0).toLocaleString('en-US'); }
 function _curQuarter(){ var d=new Date(); return d.getFullYear()+'-Q'+(Math.floor(d.getMonth()/3)+1); }
 function _karteStoreNm(id){ var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===id;}); return s?s.name:id; }
+/* --- 成長カルテ 専用PINゲート（既定 1234・GM/CEOが変更可・app_state同期） --- */
+function getKartePin(){ var p=ls('karte_pin','1234'); return (p==null||p==='')?'1234':String(p); }
+function setKartePin(p){ lsSet('karte_pin', String(p)); }
+function karteTryUnlock(){
+  var el=document.getElementById('kartePinIn'); var v=el?String(el.value||'').trim():'';
+  if(v===getKartePin()){ window._karteUnlocked=true; renderPage('growth_karte'); }
+  else { var e=document.getElementById('kartePinErr'); if(e) e.style.display='block'; if(el){ el.value=''; el.focus(); } }
+}
+function karteLock(){ window._karteUnlocked=false; renderPage('growth_karte'); }
+function karteChangePin(){
+  if(['gm','ceo'].indexOf(curRole)<0) return;
+  var cur=prompt('現在のPIN'); if(cur===null) return;
+  if(String(cur).trim()!==getKartePin()){ alert('現在のPINが違います'); return; }
+  var np=prompt('新しいPIN（4桁の数字）'); if(np===null) return; np=String(np).trim();
+  if(!/^\d{4}$/.test(np)){ alert('4桁の数字で入力してください'); return; }
+  setKartePin(np); showToast('成長カルテのPINを変更しました','success');
+}
+function karteLockHtml(){
+  return '<div class="section-header"><div><div class="section-title"><i class="ti ti-id-badge-2"></i> 成長カルテ</div><div class="section-sub">G3以上の査定（ボーナス算出）と面談資料</div></div></div>'
+    +'<div class="card" style="max-width:360px;margin:20px auto;text-align:center;padding:26px 22px">'
+    +'<i class="ti ti-lock" style="font-size:30px;color:var(--accent)"></i>'
+    +'<div style="font-weight:800;font-size:15px;margin:8px 0 4px">PINロック</div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6">報酬・査定情報を含むため、PINで保護されています。</div>'
+    +'<input id="kartePinIn" type="tel" inputmode="numeric" maxlength="6" placeholder="PIN" style="width:100%;padding:12px;text-align:center;letter-spacing:6px;font-size:18px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--tm)" onkeydown="if(event.key===\'Enter\')karteTryUnlock()">'
+    +'<div id="kartePinErr" style="display:none;color:var(--red);font-size:12px;margin-top:6px">PINが違います</div>'
+    +'<button class="btn btn-primary" style="margin-top:12px;width:100%" onclick="karteTryUnlock()"><i class="ti ti-lock-open"></i> 解除</button>'
+    +'</div>';
+}
+
 
 function kbCfg(){
   var d={ poolRate:0.12, profit:0, quarter:_curQuarter(), gradeBase:{G3:3000,G4:5000,G5:8000,G6:12000}, csMin:0.7, csMax:1.3 };
@@ -21955,8 +21984,10 @@ function karteAutoSkills(e){
 /* ===== メイン ===== */
 function renderGrowthKarte(){
   if(['gm','ceo'].indexOf(curRole)<0) return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">この画面は GM / CEO 専用です。</div>';
+  if(!window._karteUnlocked){ return karteLockHtml(); }
   var cfg=kbCfg(); var tot=bonusTotals(cfg);
   var h='<div class="section-header"><div><div class="section-title"><i class="ti ti-id-badge-2"></i> 成長カルテ</div><div class="section-sub">G3以上の査定（ボーナス算出）と面談資料</div></div></div>';
+  h+='<div style="display:flex;gap:6px;justify-content:flex-end;margin:-4px 2px 8px"><button class="btn btn-secondary btn-sm" onclick="karteChangePin()"><i class="ti ti-key"></i> PIN変更</button><button class="btn btn-secondary btn-sm" onclick="karteLock()"><i class="ti ti-lock"></i> ロック</button></div>';
 
   /* 原資・係数 設定 */
   h+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--accent)"></i>ボーナス原資・係数（四半期）</div>';
