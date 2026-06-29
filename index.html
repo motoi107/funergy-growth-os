@@ -1497,7 +1497,7 @@ const NAV_ITEMS = [
   {id:'ojtmap',      label:'OJTマップ',   icon:'ti-stairs-up',        roles:['ceo','gm','office','am','sl','crew']},
   {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
-  {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am']},
+  {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am','sl']},
   {id:'approval',    label:'承認センター',icon:'ti-checklist',         roles:['ceo','gm','office','am']},
   {id:'error_center',label:'エラーセンター',icon:'ti-alert-hexagon',    roles:['ceo','gm','office']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew']},
@@ -3371,6 +3371,7 @@ function canAccessStaffMaster() {
    ＝他店/他者を巻き込まない。読み取りは レガシー＋バケット をマージ（バケットが新権威）。 */
 var _SPLIT_KEYS = {
   grade_ojt:        {type:'obj'},
+  ojt_gate_criteria:{type:'obj'},
   career_track:     {type:'obj'},
   skill_snapshots:  {type:'obj'},
   store_fixed_costs:{type:'obj'},
@@ -3496,7 +3497,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method'];
+  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
@@ -21964,11 +21965,157 @@ function renderTrainee(){
   return h;
 }
 
+/* ===================== OJT Phase1-4 ゲート基準マップ（店舗毎・編集可） ===================== */
+var OJT_GATE_FRAME = [
+  { id:'p0', name:'Phase 0 オリエン',     gate:'オリエンテーション', tip:'対象外',         col:'var(--muted)',   editable:false },
+  { id:'p1', name:'Phase 1 基礎OJT',      gate:'基礎習得',           tip:'NoTip（初15h）', col:'var(--muted)',   editable:true },
+  { id:'p2', name:'Phase 2 Step1ゲート',  gate:'基本オペ自立',       tip:'90%',            col:'var(--accent2)', editable:true },
+  { id:'p3', name:'Phase 3 Step2ゲート',  gate:'応用・独り立ち',     tip:'100%',           col:'var(--accent)',  editable:true },
+  { id:'p4', name:'Phase 4 一人前認定',   gate:'crew cert',          tip:'100%維持',       col:'var(--accent)',  editable:true },
+];
+var _ojtGateStore = null;
+function _ojtStoreNm(id){ var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===id;}); return s?s.name:id; }
+function getOjtGateCriteria(){ return ls('ojt_gate_criteria', {}); }
+function saveOjtGateCriteria(m){ lsSet('ojt_gate_criteria', m); }
+function ojtGateOf(store, phaseId){ var m=getOjtGateCriteria(); var a=(m[store]||{})[phaseId]; return Array.isArray(a)?a:[]; }
+function ojtGateNewId(){ return 'g'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+function ojtGateVisibleStores(){
+  var all=(typeof activeStores==='function')?activeStores():[];
+  if(curRole==='gm'||curRole==='ceo'||curRole==='office') return sortByLoginOrder(all);
+  if(curRole==='am'){ var ids=myAmStores().concat(mySupportStores()); return sortByLoginOrder(all.filter(function(s){return ids.indexOf(s.id)>=0;})); }
+  var mids=[myStoreId()].concat(mySupportStores());
+  return sortByLoginOrder(all.filter(function(s){return mids.indexOf(s.id)>=0;}));
+}
+function canEditOjtGate(store){
+  if(curRole==='gm'||curRole==='ceo') return true;          /* 全店 */
+  if(curRole==='am') return myAmStores().indexOf(store)>=0 || mySupportStores().indexOf(store)>=0; /* 管轄店 */
+  if(myGradeNum()>=4){                                       /* 実グレードG4以上（SL/SM相当）→ 自店 */
+    var ids=[myStoreId()].concat(mySupportStores());
+    return ids.indexOf(store)>=0;
+  }
+  return false;
+}
+function setOjtGateStore(id){ _ojtGateStore=id; renderPage('ojt_admin'); }
+function ojtGateAdd(store, phaseId){
+  if(!canEditOjtGate(store)) return;
+  var m=getOjtGateCriteria(); if(!m[store])m[store]={}; if(!Array.isArray(m[store][phaseId]))m[store][phaseId]=[];
+  m[store][phaseId].push({ id:ojtGateNewId(), text:'' }); saveOjtGateCriteria(m); renderPage('ojt_admin');
+}
+function ojtGateEditText(store, phaseId, cid, val){
+  var m=getOjtGateCriteria(); var arr=(m[store]||{})[phaseId]; if(!Array.isArray(arr))return;
+  var it=arr.find(function(x){return x.id===cid;}); if(!it)return; it.text=val; saveOjtGateCriteria(m); /* 再描画しない（フォーカス維持） */
+}
+function ojtGateDel(store, phaseId, cid){
+  if(!canEditOjtGate(store)) return;
+  var m=getOjtGateCriteria(); var arr=(m[store]||{})[phaseId]; if(!Array.isArray(arr))return;
+  m[store][phaseId]=arr.filter(function(x){return x.id!==cid;}); saveOjtGateCriteria(m); renderPage('ojt_admin');
+}
+function ojtGateMove(store, phaseId, cid, dir){
+  if(!canEditOjtGate(store)) return;
+  var m=getOjtGateCriteria(); var arr=(m[store]||{})[phaseId]; if(!Array.isArray(arr))return;
+  var i=arr.findIndex(function(x){return x.id===cid;}); if(i<0)return;
+  var j=i+dir; if(j<0||j>=arr.length)return;
+  var tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; saveOjtGateCriteria(m); renderPage('ojt_admin');
+}
+function ojtGateCopyFrom(store, src){
+  if(!canEditOjtGate(store)) return;
+  if(!src||src===store){ showToast('コピー元を選んでください'); return; }
+  var m=getOjtGateCriteria(); var s=m[src]||{};
+  var any=OJT_GATE_FRAME.some(function(p){ return p.editable && Array.isArray(s[p.id]) && s[p.id].length; });
+  if(!any){ showToast('コピー元に基準が未設定です'); return; }
+  if(!confirm(_ojtStoreNm(src)+' の基準を '+_ojtStoreNm(store)+' に上書きコピーします。よろしいですか？')) return;
+  if(!m[store])m[store]={};
+  OJT_GATE_FRAME.forEach(function(p){
+    if(!p.editable) return;
+    var srcArr=Array.isArray(s[p.id])?s[p.id]:[];
+    m[store][p.id]=srcArr.map(function(it){ return { id:ojtGateNewId(), text:it.text }; });
+  });
+  saveOjtGateCriteria(m); showToast('コピーしました'); renderPage('ojt_admin');
+}
+function renderOjtGateMap(){
+  var vis=ojtGateVisibleStores();
+  if(!vis.length) return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">表示できる店舗がありません。</div>';
+  if(!_ojtGateStore || !vis.some(function(s){return s.id===_ojtGateStore;})) _ojtGateStore=vis[0].id;
+  var store=_ojtGateStore;
+  var canEdit=canEditOjtGate(store);
+  var h='';
+  h+='<div class="card" style="padding:10px 12px;margin-bottom:8px;background:var(--surface2)">'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.7">'
+    +'<i class="ti ti-lock"></i> <b>骨格（Phase／ゲート／チップ）は全店共通で固定。</b><br>'
+    +'<i class="ti ti-edit"></i> <b>criteria（基準項目）は店舗毎に設定。</b>初期は空欄、各店で追加・編集できます（全て仮・タタキ台）。'
+    +'</div></div>';
+  h+='<div class="card" style="padding:10px 12px;margin-bottom:8px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
+  h+='<label style="font-size:11px;color:var(--muted)">店舗</label>';
+  h+='<select onchange="setOjtGateStore(this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:13px;font-weight:700">'
+    +vis.map(function(s){ return '<option value="'+s.id+'"'+(s.id===store?' selected':'')+'>'+escapeHtml(s.id+'　'+s.name)+'</option>'; }).join('')+'</select>';
+  h+=(canEdit
+      ? '<span style="font-size:10.5px;color:var(--accent)"><i class="ti ti-pencil"></i> 編集可</span>'
+      : '<span style="font-size:10.5px;color:var(--muted)"><i class="ti ti-eye"></i> 閲覧のみ</span>');
+  h+='</div>';
+  if(canEdit){
+    var others=(typeof activeStores==='function'?activeStores():[]).filter(function(s){return s.id!==store;});
+    if(others.length){
+      h+='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">'
+        +'<label style="font-size:11px;color:var(--muted)">他店からコピー</label>'
+        +'<select id="ojtGateCopySrc" style="padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:12px">'
+        +'<option value="">— 選択 —</option>'
+        +others.map(function(s){ return '<option value="'+s.id+'">'+escapeHtml(s.id+'　'+s.name)+'</option>'; }).join('')+'</select>'
+        +'<button class="btn btn-secondary btn-sm" onclick="ojtGateCopyFrom(\''+store+'\', (document.getElementById(\'ojtGateCopySrc\')||{}).value)"><i class="ti ti-copy"></i> 上書きコピー</button>'
+        +'</div>';
+    }
+  }
+  h+='</div>';
+  OJT_GATE_FRAME.forEach(function(p){
+    h+='<div class="card" style="border-left:3px solid '+p.col+'">';
+    h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:'+(p.editable?'8px':'0')+'">'
+      +'<span style="font-size:14px;font-weight:800;color:var(--tm)">'+escapeHtml(p.name)+'</span>'
+      +'<span style="font-size:11px;color:var(--muted)">ゲート：'+escapeHtml(p.gate)+'</span>'
+      +'<span style="margin-left:auto;font-size:11px;font-weight:800;padding:3px 10px;border-radius:999px;background:var(--surface2);color:'+p.col+';border:1px solid '+p.col+'">チップ '+escapeHtml(p.tip)+'</span>'
+      +'</div>';
+    if(!p.editable){
+      h+='<div style="font-size:11px;color:var(--muted);margin-top:6px">座学・手続き・カルチャー（procedures／orientation）。ゲート評価の対象外のため、基準項目は設定しません。</div>';
+      h+='</div>'; return;
+    }
+    var arr=ojtGateOf(store, p.id);
+    if(!arr.length){
+      h+='<div style="font-size:12px;color:var(--muted);padding:6px 0">基準未設定'+(canEdit?'（下のボタンで追加）':'')+'</div>';
+    } else {
+      h+='<div style="margin:2px 0 6px">';
+      arr.forEach(function(c, ci){
+        h+='<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'
+          +'<span style="font-size:10px;color:var(--muted);flex-shrink:0;width:16px;text-align:right">'+(ci+1)+'</span>';
+        if(canEdit){
+          h+='<input value="'+escapeHtml(c.text)+'" onchange="ojtGateEditText(\''+store+'\',\''+p.id+'\',\''+c.id+'\',this.value)" placeholder="基準項目（Skill Level）" style="flex:1;font-size:12px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)">'
+            +'<button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="ojtGateMove(\''+store+'\',\''+p.id+'\',\''+c.id+'\',-1)" title="上へ">▲</button>'
+            +'<button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="ojtGateMove(\''+store+'\',\''+p.id+'\',\''+c.id+'\',1)" title="下へ">▼</button>'
+            +'<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red);padding:2px 8px" onclick="ojtGateDel(\''+store+'\',\''+p.id+'\',\''+c.id+'\')" title="削除">×</button>';
+        } else {
+          h+='<span style="flex:1;font-size:12px;color:var(--tm)">'+escapeHtml(c.text||'')+'</span>';
+        }
+        h+='</div>';
+      });
+      h+='</div>';
+    }
+    if(canEdit){
+      h+='<button class="btn btn-secondary btn-sm" onclick="ojtGateAdd(\''+store+'\',\''+p.id+'\')"><i class="ti ti-plus"></i> 基準項目を追加</button>';
+    }
+    h+='</div>';
+  });
+  return h;
+}
+
 function renderOjtAdmin(){
   if(ojtAdminKey==='preplv') ojtAdminKey='trainee';
-  if(['gm','ceo','am'].indexOf(curRole)<0) return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">この画面はAM以上（AM / GM / CEO）専用です。</div>';
-  var tabs=[['ojt_g2','G1→G2 Crew'],['ojt_g3_server','G3 Server'],['ojt_g3_kitchen','G3 Kitchen'],['ojt_g4','G3 Operation'],['trainee','Trainee'],['rolemap','役割と責任マップ']];
+  var _amPlus=['gm','ceo','am'].indexOf(curRole)>=0, _gateOnly=false;
+  if(!_amPlus){
+    if(myGradeNum()>=4){ _gateOnly=true; ojtAdminKey='gatemap'; }
+    else return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">この画面はAM以上（AM / GM / CEO）専用です。<br>※「ゲート基準マップ」は実グレードG4以上で編集できます。</div>';
+  }
+  var tabs=_gateOnly?[['gatemap','ゲート基準マップ']]:[['ojt_g2','G1→G2 Crew'],['ojt_g3_server','G3 Server'],['ojt_g3_kitchen','G3 Kitchen'],['ojt_g4','G3 Operation'],['trainee','Trainee'],['gatemap','ゲート基準マップ'],['rolemap','役割と責任マップ']];
   var tabsHtml='<div class="phase-tabs" style="flex-wrap:wrap">'+tabs.map(function(t){ return '<div class="phase-tab'+(ojtAdminKey===t[0]?' active':'')+'" onclick="setOjtAdminKey(\''+t[0]+'\')">'+t[1]+'</div>'; }).join('')+'</div>';
+  if(ojtAdminKey==='gatemap'){
+    return '<div class="section-header"><div><div class="section-title">OJT管理</div><div class="section-sub">Phase1-4 ゲート基準マップ（店舗毎・チップ進行連動）</div></div></div>'+tabsHtml+renderOjtGateMap();
+  }
   if(ojtAdminKey==='rolemap'){
     return '<div class="section-header"><div><div class="section-title">OJT管理</div><div class="section-sub">G1〜G5の役割と責任の全体像（タタキ台）</div></div></div>'+tabsHtml+renderResponsibilityMap();
   }
