@@ -599,6 +599,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
         <div class="role-section-label" id="sec-store-label">所属を選択</div>
         <div class="store-grid" id="login-store-grid"></div>
       </div>
+      <div style="margin-top:16px;text-align:center;border-top:1px solid var(--border);padding-top:12px">
+        <button type="button" onclick="showManagerLogin()" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline"><i class="ti ti-shield-lock"></i> 管理者ログイン（CEO / GM / 経理）</button>
+      </div>
     </div>
 
     <!-- STEP 2: 名前選択 -->
@@ -620,6 +623,37 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
       <p class="login-err" id="login-pin-err">PINが違います</p>
       <button class="login-btn" id="login-pin-btn" onclick="doStaffLogin()" style="margin-top:8px">ログイン</button>
       <p style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px" id="login-pin-hint">初期PINは <b>0000</b> です</p>
+    </div>
+  </div>
+</div>
+
+<!-- ====== 管理者ログイン（メール認証） ====== -->
+<div id="manager-login-screen" style="display:none;position:fixed;inset:0;z-index:60;background:var(--bg);align-items:center;justify-content:center;padding:24px">
+  <div class="login-card">
+    <div class="login-logo"><i class="ti ti-shield-lock" style="font-size:24px;color:#fff;"></i></div>
+    <div class="login-title">管理者ログイン</div>
+    <div class="login-sub">CEO / GM / 経理 専用（メール認証）</div>
+    <input id="mgr-email" type="email" autocomplete="username" placeholder="メールアドレス" style="width:100%;padding:12px;font-size:15px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--tm);margin-top:12px">
+    <input id="mgr-pass" type="password" autocomplete="current-password" placeholder="パスワード" style="width:100%;padding:12px;font-size:15px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--tm);margin-top:10px" onkeydown="if(event.key==='Enter')doManagerLogin()">
+    <p class="login-err" id="mgr-err" style="display:none">メールまたはパスワードが違います</p>
+    <button class="login-btn" id="mgr-btn" onclick="doManagerLogin()" style="margin-top:10px">ログイン</button>
+    <button type="button" onclick="hideManagerLogin()" style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;margin-top:12px"><i class="ti ti-arrow-left"></i> 通常ログインへ戻る</button>
+  </div>
+</div>
+
+<!-- ====== 管理者セキュアページ ====== -->
+<div id="manager-secure-screen" style="display:none;position:fixed;inset:0;z-index:60;background:var(--bg);overflow:auto">
+  <div style="max-width:720px;margin:0 auto;padding:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px">
+      <div style="font-size:18px;font-weight:800"><i class="ti ti-shield-lock" style="color:var(--accent)"></i> 管理者セキュアページ</div>
+      <button onclick="managerLogout()" class="btn btn-secondary btn-sm"><i class="ti ti-logout"></i> ログアウト</button>
+    </div>
+    <div class="card" style="padding:14px;margin-bottom:12px">
+      <div id="mgr-who" style="font-size:14px"></div>
+      <div style="font-size:12px;color:var(--green);margin-top:6px"><i class="ti ti-circle-check"></i> 本物のAuthセッションでログイン中（DBレベルで保護）</div>
+    </div>
+    <div class="card" style="padding:14px">
+      <div style="font-size:13px;color:var(--muted);line-height:1.6">このページに、給与・個人情報などの機密管理を順次追加していきます（S3）。<br>現在は最小構成（ログイン基盤の動作確認）です。</div>
     </div>
   </div>
 </div>
@@ -3935,6 +3969,57 @@ async function saveMyPin(){
 }
 
 /* ログイン画面初期化（所属選択の店舗グリッドを描画） */
+/* ===== 管理者ログイン（Supabase Auth・メール認証） ===== */
+function showManagerLogin(){
+  var ls=document.getElementById('login-screen'); if(ls) ls.style.display='none';
+  var m=document.getElementById('manager-login-screen'); if(m) m.style.display='flex';
+  var e=document.getElementById('mgr-err'); if(e) e.style.display='none';
+  var em=document.getElementById('mgr-email'); if(em) em.focus();
+}
+function hideManagerLogin(){
+  var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
+  var ls=document.getElementById('login-screen'); if(ls) ls.style.display='flex';
+}
+async function doManagerLogin(){
+  var emailEl=document.getElementById('mgr-email'), passEl=document.getElementById('mgr-pass');
+  var errEl=document.getElementById('mgr-err'), btn=document.getElementById('mgr-btn');
+  var email=((emailEl&&emailEl.value)||'').trim(), pass=(passEl&&passEl.value)||'';
+  function fail(msg){ if(errEl){ errEl.textContent=msg; errEl.style.display='block'; } if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } }
+  if(!email||!pass){ fail('メールとパスワードを入力してください'); return; }
+  if(btn){ btn.disabled=true; btn.dataset._t=btn.textContent; btn.textContent='確認中…'; }
+  try{
+    var r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=password',{ method:'POST',
+      headers:{ 'apikey':SUPABASE_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify({ email:email, password:pass }) });
+    var j=await r.json();
+    if(!j || !j.access_token){ fail('メールまたはパスワードが違います'); return; }
+    // manager_auth から役職を取得（RLSで本人行のみ返る）
+    var mr=await fetch(SUPABASE_URL+'/rest/v1/manager_auth?select=emp_id,role',{
+      headers:{ 'apikey':SUPABASE_ANON, 'Authorization':'Bearer '+j.access_token } });
+    var rows=await mr.json();
+    if(!Array.isArray(rows) || !rows.length){ fail('このアカウントは管理者として登録されていません'); return; }
+    window._authSession={ access_token:j.access_token, refresh_token:j.refresh_token, email:email, emp_id:rows[0].emp_id, role:rows[0].role };
+    if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; }
+    if(passEl) passEl.value='';
+    showManagerSecure();
+  }catch(e){ fail('通信エラーが発生しました'); }
+}
+function showManagerSecure(){
+  var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
+  var ls=document.getElementById('login-screen'); if(ls) ls.style.display='none';
+  var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='block';
+  var who=document.getElementById('mgr-who');
+  if(who && window._authSession){
+    var roleLabel={ceo:'CEO',gm:'GM',office:'経理'}[window._authSession.role]||window._authSession.role;
+    who.innerHTML='<b>'+escapeHtml(window._authSession.email)+'</b><span style="color:var(--muted)"> として認証済み（'+roleLabel+'）</span>';
+  }
+}
+function managerLogout(){
+  window._authSession=null;
+  var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='none';
+  var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
+  var ls=document.getElementById('login-screen'); if(ls) ls.style.display='flex';
+}
 function bootLogin() {
   applyLangToggle();
   refreshLoginLabels();
