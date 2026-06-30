@@ -12487,25 +12487,31 @@ function cycleScheduledHours(storeId, me, cyc){
 }
 /* 給与サイクル内の支払対象時間：実勤怠(Toast)を優先し、未記録日は公開シフトで補完。週ごとにReg/OT算出 */
 function cyclePayHours(storeId, me, cyc){
+  /* 複数店舗対応：全店舗を横断して実勤怠＋公開シフトを集計。残業は週40h超（全店合算）で計算 */
+  var _stores = (typeof getStoresAll==='function'?getStoresAll():STORES);
   var weekHours={}, actual=0, sched=0, days=0;
   cyc.dates.forEach(function(d){
     var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     var wk = mondayMDof(d);
     var dow = DOW[(d.getDay()+6)%7];
-    var hrs=0, isAct=false;
-    try{
-      var labor = (typeof getTipLabor==='function') ? getTipLabor(storeId, ds) : null;
-      if(labor && labor[me]){ var e=labor[me]; var ah=(e.lunch||0)+(e.dinner||0); if(ah>0){ hrs=ah; isAct=true; } }
-    }catch(err){}
-    if(!isAct){
-      var plan=getShiftPlan(storeId, wk);
-      if(plan && plan.status==='公開済' && plan.cells){
-        var sh=0;
-        Object.keys(plan.cells).forEach(function(k){ if(plan.cells[k]!==me) return; var parts=k.split('_'); if(parts[0]!==dow) return; sh+=(SHIFT_HOURS[parts[1]]||4); });
-        if(sh>0) hrs=sh;
+    var dayTotal=0;
+    _stores.forEach(function(st){
+      var hrs=0, isAct=false;
+      try{
+        var labor = (typeof getTipLabor==='function') ? getTipLabor(st.id, ds) : null;
+        if(labor && labor[me]){ var e=labor[me]; var ah=(e.lunch||0)+(e.dinner||0); if(ah>0){ hrs=ah; isAct=true; } }
+      }catch(err){}
+      if(!isAct){
+        var plan=getShiftPlan(st.id, wk);
+        if(plan && plan.status==='公開済' && plan.cells){
+          var sh=0;
+          Object.keys(plan.cells).forEach(function(k){ if(plan.cells[k]!==me) return; var parts=k.split('_'); if(parts[0]!==dow) return; sh+=(SHIFT_HOURS[parts[1]]||4); });
+          if(sh>0) hrs=sh;
+        }
       }
-    }
-    if(hrs>0){ weekHours[wk]=(weekHours[wk]||0)+hrs; days++; if(isAct) actual+=hrs; else sched+=hrs; }
+      if(hrs>0){ dayTotal+=hrs; if(isAct) actual+=hrs; else sched+=hrs; }
+    });
+    if(dayTotal>0){ weekHours[wk]=(weekHours[wk]||0)+dayTotal; days++; }
   });
   var total=0, reg=0, ot=0;
   Object.keys(weekHours).forEach(function(wk){ var h=weekHours[wk]; total+=h; reg+=Math.min(h,40); ot+=Math.max(h-40,0); });
@@ -24529,7 +24535,7 @@ function renderMypage() {
   // チップ見込み（今の半月の自分の配分合計＋半月精算後）
   var myTipName = curUserName || me;
   var tipEst = estimateMyTip(storeId, myTipName);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${cycLabel}</span></div>
+  html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}<span style="font-size:12px;font-weight:700;color:var(--yellow);background:var(--surface2);border:1px solid var(--yellow);border-radius:6px;padding:2px 9px;margin-left:8px">${t('未確定','Estimate')}</span><span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${cycLabel}</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${cycSub}${ch.days?' · '+(curLang==='en'?(ch.days+' days'):(ch.days+'日')):''}${mixNote}</div>
     <div class="kpi-grid">
       ${kpi(t('期間勤務','Cycle hours'), fmtH(cycHours)+'h', t('実勤怠+予定','Actual+Sched'), 'var(--tm)')}
@@ -24549,28 +24555,35 @@ function renderMypage() {
   html += `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-4"></i>${t('今月の勤怠記録',"This Month's Attendance")}</div>`;
   var attRows = [];
   var attTotalH = 0;
+  var _attStores = (typeof getStoresAll==='function'?getStoresAll():STORES);
+  var attStoreSet = {};
   attMonthDays().forEach(d=>{
-    var labor = getTipLabor(storeId, d.date);
-    if (!labor || !labor[me]) return;
-    var e = labor[me];
-    var total = (e.lunch||0)+(e.dinner||0);
-    if (total<=0 && !(e.shifts&&e.shifts.length)) return;
-    var clockIn='—', clockOut='—', missingOut=false;
-    if (e.shifts && e.shifts.length) {
-      var ins=e.shifts.map(s=>s.inDate).filter(Boolean).sort();
-      var outs=e.shifts.map(s=>s.outDate).filter(Boolean).sort();
-      if (ins.length) clockIn=fmtClockHST(ins[0]);
-      if (outs.length) clockOut=fmtClockHST(outs[outs.length-1]);
-      if (e.shifts.some(s=>s.inDate&&!s.outDate)) missingOut=true;
-    }
-    attTotalH += total;
-    attRows.push({date:d.date, dow:d.dow, clockIn, clockOut, missingOut, total});
+    _attStores.forEach(function(st){
+      var labor = getTipLabor(st.id, d.date);
+      if (!labor || !labor[me]) return;
+      var e = labor[me];
+      var total = (e.lunch||0)+(e.dinner||0);
+      if (total<=0 && !(e.shifts&&e.shifts.length)) return;
+      var clockIn='—', clockOut='—', missingOut=false;
+      if (e.shifts && e.shifts.length) {
+        var ins=e.shifts.map(s=>s.inDate).filter(Boolean).sort();
+        var outs=e.shifts.map(s=>s.outDate).filter(Boolean).sort();
+        if (ins.length) clockIn=fmtClockHST(ins[0]);
+        if (outs.length) clockOut=fmtClockHST(outs[outs.length-1]);
+        if (e.shifts.some(s=>s.inDate&&!s.outDate)) missingOut=true;
+      }
+      attTotalH += total;
+      attStoreSet[st.id]=true;
+      attRows.push({date:d.date, dow:d.dow, store:st.name, clockIn, clockOut, missingOut, total});
+    });
   });
   if (attRows.length) {
-    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">${attMonthLabel()} · ${t(attRows.length+'日勤務',attRows.length+' days')} · ${t('計','total')}${attTotalH.toFixed(1)}h</div>
-      <table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th>${t('日付','Date')}</th><th>In</th><th>Out</th><th>${t('計','Total')}</th></tr></thead><tbody>`;
+    var _attStoreCount = Object.keys(attStoreSet).length;
+    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">${attMonthLabel()} · ${t(attRows.length+'日勤務',attRows.length+' days')} · ${t('計','total')}${attTotalH.toFixed(1)}h${_attStoreCount>1?' · '+_attStoreCount+t('店舗',' stores'):''}</div>
+      <table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th>${t('日付','Date')}</th><th>${t('店舗','Store')}</th><th>In</th><th>Out</th><th>${t('計','Total')}</th></tr></thead><tbody>`;
     attRows.slice().reverse().forEach(r=>{
       html += `<tr><td>${r.date.slice(5)} (${r.dow})</td>
+        <td style="font-size:10px;color:var(--muted)">${escapeHtml(r.store||'')}</td>
         <td style="text-align:center;color:var(--muted)">${r.clockIn}</td>
         <td style="text-align:center;color:${r.missingOut?'var(--red)':'var(--muted)'}">${r.missingOut?t('漏れ','Missing'):r.clockOut}</td>
         <td style="text-align:right;font-weight:600">${r.total.toFixed(1)}h</td></tr>`;
@@ -24582,8 +24595,8 @@ function renderMypage() {
   }
   html += '</div>';
 
-  // 9. 休暇申請
-  var myVac = ls('my_vacations', []);
+  // 9. 休暇申請（本人の申請のみ表示。他人の申請は見せない）
+  var myVac = ls('my_vacations', []).filter(function(v){ return v.employee===me; });
   html += `<div class="card"><div class="card-title"><i class="ti ti-beach"></i>${t('休暇申請','Time Off')}
     <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('vacation')">${t('申請','Request')}</button></div>`;
   if (myVac.length) {
