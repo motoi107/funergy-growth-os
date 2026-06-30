@@ -2751,8 +2751,8 @@ function getEmployees() {
 /* 機微情報（給与/メール/電話）を権限者だけサーバーから取得して上書き用に保持 */
 async function fetchEmpPrivate(){
   try{
-    if(!window._sessionPin || !curUserName) return;
-    if(['ceo','gm','office','am'].indexOf(curRole)<0) return;
+    if(!window._sessionPin || !curUserName || curStoreLogin) return;
+    /* CEO/GM/経理は全員分、その他の各スタッフは本人分のみサーバーが返す（マイページ給与予定用） */
     var r = await fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify({action:'pull', name:curUserName, pin:window._sessionPin}) });
     var j = await r.json();
     if(j && j.ok && j.private){ window._empPrivate = j.private; }
@@ -2762,7 +2762,7 @@ async function fetchEmpPrivate(){
 function saveEmpPrivate(empId, wage, email, phone, monthlySalary){
   try{
     if(!window._sessionPin || !curUserName) return;
-    if(['ceo','gm','office','am'].indexOf(curRole)<0) return;
+    if(['ceo','gm','office'].indexOf(curRole)<0) return;
     fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify({action:'save', name:curUserName, pin:window._sessionPin, empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary}) })
       .then(function(){ if(!window._empPrivate) window._empPrivate={}; window._empPrivate[empId]={wage:Number(wage)||0,email:email||'',phone:phone||'',monthlySalary:(monthlySalary==null?null:Number(monthlySalary))}; })
       .catch(function(){});
@@ -3157,6 +3157,11 @@ function canViewWages() {
   if ((ROLE_CONFIG[curRole]||{}).noWage) return false; // 事務Crew等は給与一切不可
   return curRole==='ceo' || curRole==='gm' || curRole==='office' || curRole==='am' || isStoreManager();
 }
+/* 個人の給与額を表示できる役職（機密情報担当=CEO/GM/経理のみ）。AM/SMは合計は見えるが個人額は不可。 */
+function canViewIndividualWage() {
+  if ((ROLE_CONFIG[curRole]||{}).noWage) return false;
+  return curRole==='ceo' || curRole==='gm' || curRole==='office';
+}
 /* 給与を編集できるのは GM/CEO のみ（従来どおり） */
 function canEditWages() { return curRole==='gm' || curRole==='ceo'; }
 /* 給与閲覧の対象店舗（AM=管轄, SM=自店, 全権=null=全店） */
@@ -3173,11 +3178,11 @@ function wageScopeStores() {
 /* 特定スタッフの給与を見られるか */
 function canViewWageOf(emp) {
   if (!emp) return false;
-  if (!canViewWages()) return false;
-  var scope = wageScopeStores();
-  if (scope===null) return true;           // 全店OK
-  if (!scope.length) return false;
-  return scope.includes(emp.store);        // スコープ店舗のスタッフのみ
+  /* 本人の給与予定は本人が見られる（noWage役職を除く） */
+  if (emp.name===curUserName && !((ROLE_CONFIG[curRole]||{}).noWage)) return true;
+  /* 他人の個人給与額は 機密情報担当(CEO/GM/経理)のみ */
+  if (!canViewIndividualWage()) return false;
+  return true; // 全店OK（CEO/GM/経理は全店）
 }
 
 /* ===== KPI管理の権限（SM＝G3以上）=====
@@ -11773,7 +11778,7 @@ function openLaborBreakdown(storeId, dateISO){
   var days = dateISO ? [{date:dateISO}] : attMonthDays();
   var periodLabel = dateISO ? dateISO.slice(5).replace('-','/') : attMonthLabel();
   var bk = laborBreakdownForPeriod(storeId, days);
-  var canWage = canViewWages();
+  var canWage = canViewIndividualWage();
   var money = function(v){ return '$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
   var html = '<div class="modal-title"><i class="ti ti-clock-dollar"></i> '+escapeHtml(store.name||'')+' Labor内訳 '
     + '<span style="font-size:12px;color:var(--muted);font-weight:400">'+periodLabel+'</span>'
@@ -12013,7 +12018,7 @@ function laborForEmployee(name, entry) {
 }
 
 function renderLaborDetail(storeId, store) {
-  var canWage = canViewWages();
+  var canWage = canViewIndividualWage();
   var ym = attMonthRef().toISOString().slice(0,7);
   var weeks = laborMonthWeeks(ym);
   // 週選択（無効値は月全体に）
