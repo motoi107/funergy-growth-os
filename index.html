@@ -10619,21 +10619,27 @@ function tipPeriodMatrix(storeId, info){
   return { dists:dists, names:names };
 }
 function exportTipPeriodCsv(){
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var storeId = (curStore==='ALL'||curStore==='OFFICE')?STORES[0].id:curStore;
   var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
   var info = tipPeriodInfo();
   var r2 = function(v){ return Math.round((v||0)*100)/100; };
   var md = function(d){ return d.slice(5).replace('-','/'); };
   var M = tipPeriodMatrix(storeId, info), dists=M.dists, names=M.names;
   // ヘッダ
-  var header=['従業員＼日付'];
+  var header=['項目・従業員＼日付'];
   dists.forEach(function(x){ header.push(md(x.date)+' ランチ'); header.push(md(x.date)+' ディナー'); });
   header.push('期間合計');
   var rows=[header];
-  // 実Tip額（各日のランチ/ディナー）
-  var tipRow=['実Tip額'], tipGrand=0;
-  dists.forEach(function(x){ var t=x.dist.tip||{}; tipRow.push(r2(t.lunchTotal)); tipRow.push(r2(t.dinnerTotal)); tipGrand+=(t.lunchTotal||0)+(t.dinnerTotal||0); });
-  tipRow.push(r2(tipGrand)); rows.push(tipRow);
+  // 配分表通り: ①クレジット ②-3.5%手数料 ③キャッシュチップ ④実チップ額
+  function _tipBreakRow(label, fn){
+    var row=[label], g=0;
+    dists.forEach(function(x){ var t=x.dist.tip||{}; var l=fn(t,'l'), d=fn(t,'d'); row.push(r2(l)); row.push(r2(d)); g+=l+d; });
+    row.push(r2(g)); return row;
+  }
+  rows.push(_tipBreakRow('① クレジット', function(t,k){ return k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0); }));
+  rows.push(_tipBreakRow('② -3.5%手数料', function(t,k){ return -((k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0))*TIP_CC_FEE); }));
+  rows.push(_tipBreakRow('③ キャッシュチップ', function(t,k){ return k==='l'?(t.lunchCash||0):(t.dinnerCash||0); }));
+  rows.push(_tipBreakRow('④ 実チップ額', function(t,k){ return k==='l'?(t.lunchTotal||0):(t.dinnerTotal||0); }));
   // 従業員ごとの日次配分
   names.forEach(function(nm){
     var row=[nm], ptot=0;
@@ -10649,7 +10655,7 @@ function exportTipPeriodCsv(){
   dists.forEach(function(x){ var l=0,dd=0; (x.dist.list||[]).forEach(function(r){l+=r.lunch||0; dd+=r.dinner||0;}); sumRow.push(r2(l)); sumRow.push(r2(dd)); grand+=l+dd; });
   sumRow.push(r2(grand)); rows.push(sumRow);
   downloadCSV(rows, `Tip配分_${(store.name||storeId)}_${info.from}_${info.to}.csv`);
-  showToast('期間の日次L/D配分をCSV出力しました','success');
+  showToast('配分表（①〜④＋各スタッフ／セント単位）をCSV出力しました','success');
 }
 /* 配分表（常設）: ペイロール期間の日次ランチ/ディナー配分マトリクス（行=従業員・列=各日L/D） */
 function renderTipPeriodMatrix(storeId, store, info){
@@ -10674,8 +10680,8 @@ function renderTipPeriodMatrix(storeId, store, info){
   function tipBreakRow(label, color, val, neg){
     var cells='', g=0;
     M.dists.forEach(function(x){ var t=x.dist.tip||{}; var l=val(t,'l'), d=val(t,'d'); g+=l+d;
-      cells+=`<td style="text-align:right;${bl};color:${color}">${l?(neg?'-':'')+Math.round(l):'—'}</td><td style="text-align:right;color:${color}">${d?(neg?'-':'')+Math.round(d):'—'}</td>`; });
-    return `<tr style="font-size:10px"><td style="${stick};font-size:10px;color:${color}">${label}</td>${cells}<td style="text-align:right;color:${color};font-size:10px">${g?(neg?'-':'')+'$'+Math.round(g):''}</td></tr>`;
+      cells+=`<td style="text-align:right;${bl};color:${color}">${l?(neg?'-':'')+l.toFixed(2):'—'}</td><td style="text-align:right;color:${color}">${d?(neg?'-':'')+d.toFixed(2):'—'}</td>`; });
+    return `<tr style="font-size:10px"><td style="${stick};font-size:10px;color:${color}">${label}</td>${cells}<td style="text-align:right;color:${color};font-size:10px">${g?(neg?'-':'')+'$'+g.toFixed(2):''}</td></tr>`;
   }
   html += tipBreakRow('① クレジット','var(--muted)', function(t,k){return k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0);}, false);
   html += tipBreakRow('② -3.5%手数料','var(--red)', function(t,k){return (k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0))*TIP_CC_FEE;}, true);
@@ -10683,25 +10689,25 @@ function renderTipPeriodMatrix(storeId, store, info){
   // ④ 実チップ額（= ①×(1-3.5%) + ③）
   var tipGrand=0, tipCells='';
   M.dists.forEach(function(x){ var t=x.dist.tip||{}; tipGrand+=(t.lunchTotal||0)+(t.dinnerTotal||0);
-    tipCells+=`<td style="text-align:right;${bl}">${t.lunchTotal?Math.round(t.lunchTotal):'—'}</td><td style="text-align:right">${t.dinnerTotal?Math.round(t.dinnerTotal):'—'}</td>`; });
-  html += `<tr style="background:var(--surface2)"><td style="${stick};background:var(--surface2);font-weight:700">④ 実チップ額</td>${tipCells}<td style="text-align:right;font-weight:700">$${Math.round(tipGrand)}</td></tr>`;
+    tipCells+=`<td style="text-align:right;${bl}">${t.lunchTotal?t.lunchTotal.toFixed(2):'—'}</td><td style="text-align:right">${t.dinnerTotal?t.dinnerTotal.toFixed(2):'—'}</td>`; });
+  html += `<tr style="background:var(--surface2)"><td style="${stick};background:var(--surface2);font-weight:700">④ 実チップ額</td>${tipCells}<td style="text-align:right;font-weight:700">$${tipGrand.toFixed(2)}</td></tr>`;
   // 従業員ごと
   M.names.forEach(function(nm){
     var ptot=0, cells='';
     M.dists.forEach(function(x){
       var r=(x.dist.list||[]).find(function(z){return z.name===nm;});
       var l=r?(r.lunch||0):0, dd=r?(r.dinner||0):0; ptot+=l+dd;
-      cells+=`<td style="text-align:right;${bl}">${l?Math.round(l):''}</td><td style="text-align:right">${dd?Math.round(dd):''}</td>`;
+      cells+=`<td style="text-align:right;${bl}">${l?l.toFixed(2):''}</td><td style="text-align:right">${dd?dd.toFixed(2):''}</td>`;
     });
-    html+=`<tr><td style="${stick};font-size:11px">${nm}</td>${cells}<td style="text-align:right;font-weight:700;color:var(--green)">$${Math.round(ptot)}</td></tr>`;
+    html+=`<tr><td style="${stick};font-size:11px">${nm}</td>${cells}<td style="text-align:right;font-weight:700;color:var(--green)">$${ptot.toFixed(2)}</td></tr>`;
   });
   // 配分合計
   var grand=0, sumCells='';
   M.dists.forEach(function(x){ var l=0,dd=0; (x.dist.list||[]).forEach(function(r){l+=r.lunch||0; dd+=r.dinner||0;}); grand+=l+dd;
-    sumCells+=`<td style="text-align:right;${bl}">${l?Math.round(l):'—'}</td><td style="text-align:right">${dd?Math.round(dd):'—'}</td>`; });
-  html+=`<tr style="border-top:2px solid var(--border);font-weight:700"><td style="${stick}">配分合計</td>${sumCells}<td style="text-align:right;color:var(--green)">$${Math.round(grand)}</td></tr>`;
+    sumCells+=`<td style="text-align:right;${bl}">${l?l.toFixed(2):'—'}</td><td style="text-align:right">${dd?dd.toFixed(2):'—'}</td>`; });
+  html+=`<tr style="border-top:2px solid var(--border);font-weight:700"><td style="${stick}">配分合計</td>${sumCells}<td style="text-align:right;color:var(--green)">$${grand.toFixed(2)}</td></tr>`;
   html+=`</tbody></table></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px">L=ランチ配分 / D=ディナー配分（$・四捨五入）。最終列＝期間合計（支給額）。詳細・差額確認は「日別」、小数2桁の出力は上の「CSV出力」から。</div></div>`;
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">L=ランチ配分 / D=ディナー配分（$・セント単位）。最終列＝期間合計（支給額）。詳細・差額確認は「日別」。</div></div>`;
   return html;
 }
 function renderTipPeriodDaily(storeId, store, info) {
@@ -10729,18 +10735,18 @@ function renderTipPeriodDaily(storeId, store, info) {
       : '<span class="tag tag-red" style="font-size:8px">差額</span>';
     html += `<tr style="cursor:pointer${d.error||(hasData&&!diffOK)?';background:rgba(229,72,77,0.05)':''}" onclick="openTipDayDetail('${storeId}','${d.date}')">
       <td style="font-weight:600;white-space:nowrap">${d.date.slice(5)} <button class="btn btn-secondary btn-sm" style="padding:0 5px;font-size:9px;vertical-align:middle" title="キャッシュチップ登録" onclick="event.stopPropagation();openCashTipModal('${storeId}','${d.date}')"><i class="ti ti-cash"></i></button></td>
-      <td style="text-align:right">${dist.tip.lunchTotal>0?'$'+dist.tip.lunchTotal.toFixed(0):'—'}</td>
-      <td style="text-align:right">${dist.tip.dinnerTotal>0?'$'+dist.tip.dinnerTotal.toFixed(0):'—'}</td>
-      <td style="text-align:right;font-weight:700">${d.tip?'$'+d.tip.toFixed(0):'—'}</td>
+      <td style="text-align:right">${dist.tip.lunchTotal>0?'$'+dist.tip.lunchTotal.toFixed(2):'—'}</td>
+      <td style="text-align:right">${dist.tip.dinnerTotal>0?'$'+dist.tip.dinnerTotal.toFixed(2):'—'}</td>
+      <td style="text-align:right;font-weight:700">${d.tip?'$'+d.tip.toFixed(2):'—'}</td>
       <td style="text-align:center;color:var(--muted)">${d.ppl||'—'}</td>
       <td style="text-align:center">${diffCell}</td>
     </tr>`;
   });
   html += `<tr style="border-top:2px solid var(--border);font-weight:700;background:var(--surface2)">
       <td>合計</td>
-      <td style="text-align:right;color:#d98908">${sumL>0?'$'+Math.round(sumL):'—'}</td>
-      <td style="text-align:right;color:#8b5cf6">${sumD>0?'$'+Math.round(sumD):'—'}</td>
-      <td style="text-align:right;color:var(--green)">${sumT>0?'$'+Math.round(sumT):'—'}</td>
+      <td style="text-align:right;color:#d98908">${sumL>0?'$'+sumL.toFixed(2):'—'}</td>
+      <td style="text-align:right;color:#8b5cf6">${sumD>0?'$'+sumD.toFixed(2):'—'}</td>
+      <td style="text-align:right;color:var(--green)">${sumT>0?'$'+sumT.toFixed(2):'—'}</td>
       <td colspan="2"></td>
     </tr>`;
   html += `</tbody></table></div>
