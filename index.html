@@ -1503,6 +1503,7 @@ const NAV_ITEMS = [
   {id:'invoice',     label:'請求書',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl']},
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office']},
   {id:'office_mgr',  label:'Office管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office','office_crew']},
+  {id:'office_export', label:'出力センター', icon:'ti-file-export', roles:['ceo','gm','office']},
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
@@ -1519,7 +1520,7 @@ const NAV_ITEMS = [
   {id:'mileage',     label:'ガソリン代',  icon:'ti-gas-station',      roles:['ceo','gm','office','am','sl','crew']},
   {id:'expense',     label:'事前経費申請',icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl','crew']},
   {id:'hr',          label:'HR・福利厚生', icon:'ti-heart-handshake',  roles:['ceo','gm','office']},
-  {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','am','sl']},
+  {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','office','am','sl']},
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
   {id:'ingredient_master',label:'食材マスター', icon:'ti-carrot',     roles:['ceo','gm','office','am','sl']},
   {id:'vendor_master',label:'業者マスター', icon:'ti-truck',          roles:['ceo','gm','office','am']},
@@ -1562,7 +1563,7 @@ const MENU_GROUPS = [
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
 const OFFICE_GROUPS = [
   {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
-    children:['office_mgr','approval','vacation','mileage','notifications']},
+    children:['office_mgr','tip','hr','growthhub','hiring','approval','office_export','error_center','vacation','mileage','notifications']},
   {id:'go_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office'],
     children:['budget','store_power','labor','foodcost','kpi_master']},
   {id:'go_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office'],
@@ -4634,7 +4635,7 @@ function switchStore(id) {
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['office_mgr','error_center','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','store_power','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory'];
+var OFFICE_OK_PAGES = ['office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','store_power','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory'];
 
 /* ============================================================
    ROUTER
@@ -4656,6 +4657,7 @@ function renderPage(page) {
     case 'invoice':      el.innerHTML = renderInvoice(); break;
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
     case 'office_mgr':   el.innerHTML = renderOfficeMgr(); break;
+    case 'office_export': el.innerHTML = '<div class="section-header"><div><div class="section-title"><i class="ti ti-file-export"></i> 出力センター</div><div class="section-sub">全ての帳票・CSV出力</div></div></div>' + renderOfficeExport(); break;
     case 'error_center': el.innerHTML = renderErrorCenter(); break;
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'order':        el.innerHTML = renderOrder(); break;
@@ -15235,10 +15237,12 @@ function renderHiring() {
     <div><div class="section-title">採用・オンボーディング</div><div class="section-sub">応募 → 採用 → 本人入力 → 経理 → Payroll → 登録完了</div></div>
   </div>`;
   html += `<div class="phase-tabs" style="margin-bottom:12px">
-    <button class="phase-tab${hiringTab!=='career'?' active':''}" onclick="setHiringTab('main')">採用・オンボーディング</button>
+    <button class="phase-tab${hiringTab!=='career'&&hiringTab!=='offboard'?' active':''}" onclick="setHiringTab('main')">採用・オンボーディング</button>
     <button class="phase-tab${hiringTab==='career'?' active':''}" onclick="setHiringTab('career')">キャリア説明</button>
+    <button class="phase-tab${hiringTab==='offboard'?' active':''}" onclick="setHiringTab('offboard')">退職手続き</button>
   </div>`;
   if (hiringTab==='career') return html + renderCareerExplain();
+  if (hiringTab==='offboard') return html + renderOffboardingCard();
   if (obPending) html += `<div class="alert alert-warning" style="padding:9px 12px;margin-bottom:10px;display:flex;align-items:center;gap:8px"><i class="ti ti-file-text"></i><div style="font-size:12px;flex:1"><b>採用書類の確認待ち ${obPending}件</b> · 提出された書類・署名を確認してください</div><button class="btn btn-primary btn-sm" onclick="document.getElementById('ob-section')&&document.getElementById('ob-section').scrollIntoView({behavior:'smooth'})">確認する</button></div>`;
 
   // ===== 採用→オンボーディング パイプライン（全体の見える化） =====
@@ -16779,7 +16783,7 @@ function inactiveStaff(thresholdDays){
   out.sort(function(a,b){ return (b.days==null?999999:b.days)-(a.days==null?999999:a.days); });
   return out;
 }
-function setInactiveDays(d){ window._inactiveDays=d; renderPage('staff_master'); }
+function setInactiveDays(d){ window._inactiveDays=d; renderPage(curPage); }
 /* 在籍ステータスをワンタップ変更（退職は確認あり） */
 function setEmpStatusQuick(empId, status){
   if(status==='退職'){ startOffboardingModal(empId); return; }
@@ -16825,7 +16829,7 @@ function unregisteredClockIns(days){
   out.sort(function(a,b){ return (b.last||'').localeCompare(a.last||''); });
   return out;
 }
-function setUnregDays(d){ window._unregDays=d; renderPage('staff_master'); }
+function setUnregDays(d){ window._unregDays=d; renderPage(curPage); }
 function renderUnregisteredCard(){
   if(['ceo','gm','am','office'].indexOf(curRole)<0) return '';
   var th=window._unregDays||30;
@@ -17960,8 +17964,12 @@ function renderErrorCenter(embedded){
   html+='<div class="phase-tabs" style="margin-bottom:10px">'
     +'<div class="phase-tab'+(ecView==='now'?' active':'')+'" onclick="setEcView(\'now\')"><i class="ti ti-alert-hexagon" style="font-size:11px"></i> 現在の不備</div>'
     +'<div class="phase-tab'+(ecView==='log'?' active':'')+'" onclick="setEcView(\'log\')"><i class="ti ti-history" style="font-size:11px"></i> 過去ログ（査定用）</div>'
+    +'<div class="phase-tab'+(ecView==='inactive'?' active':'')+'" onclick="setEcView(\'inactive\')"><i class="ti ti-user-off" style="font-size:11px"></i> 非アクティブ検知</div>'
+    +'<div class="phase-tab'+(ecView==='unreg'?' active':'')+'" onclick="setEcView(\'unreg\')"><i class="ti ti-user-question" style="font-size:11px"></i> 未登録打刻検知</div>'
     +'</div>';
   if(ecView==='log'){ return html + ecRenderLogView(); }
+  if(ecView==='inactive'){ return html + renderInactiveCard(); }
+  if(ecView==='unreg'){ return html + renderUnregisteredCard(); }
   // サマリー
   function tile(n,label,col){ return '<div style="flex:1;min-width:90px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px;text-align:center"><div style="font-size:26px;font-weight:800;color:'+(n>0?col:'var(--muted)')+'">'+n+'</div><div style="font-size:11px;color:var(--muted);margin-top:2px">'+label+'</div></div>'; }
   html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
@@ -18001,7 +18009,7 @@ function renderErrorCenter(embedded){
 
 function renderOfficeMgr(){
   var html = '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
-  var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['export','出力センター','ti-file-export'],['errors','エラーセンター','ti-alert-hexagon'],['attend','勤怠','ti-clock'],['tasks','タスク','ti-checklist'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];
+  var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['errors','エラーセンター','ti-alert-hexagon'],['attend','勤怠','ti-clock'],['tasks','タスク','ti-checklist'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];
   if(curRole==='office_crew'){ if(officeMgrTab==='export') officeMgrTab='dash'; tabs=tabs.filter(function(t){ return t[0]!=='export'; }); }
   html += '<div class="phase-tabs" style="flex-wrap:wrap">'
     + tabs.map(function(t){ return '<div class="phase-tab'+(officeMgrTab===t[0]?' active':'')+'" onclick="setOfficeMgrTab(\''+t[0]+'\')"><i class="ti '+t[2]+'" style="font-size:12px"></i> '+t[1]+'</div>'; }).join('')
