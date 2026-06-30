@@ -2745,7 +2745,7 @@ function getEmployees() {
     if(e.coef===undefined) e.coef = 1.0;
   });
   /* セキュリティ#2: 給与・メール・電話は emp-private(サーバー)から取得した分のみ上書き（権限者のみ） */
-  if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ e.wage=pr.wage; e.email=pr.email; e.phone=pr.phone; } }); }
+  if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ e.wage=pr.wage; e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }
   return emps;
 }
 /* 機微情報（給与/メール/電話）を権限者だけサーバーから取得して上書き用に保持 */
@@ -2759,12 +2759,12 @@ async function fetchEmpPrivate(){
   }catch(e){ console.warn('fetchEmpPrivate', e); }
 }
 /* 従業員編集時、機微情報を保護テーブル(employees_private)へ保存 */
-function saveEmpPrivate(empId, wage, email, phone){
+function saveEmpPrivate(empId, wage, email, phone, monthlySalary){
   try{
     if(!window._sessionPin || !curUserName) return;
     if(['ceo','gm','office','am'].indexOf(curRole)<0) return;
-    fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify({action:'save', name:curUserName, pin:window._sessionPin, empId:empId, wage:wage, email:email, phone:phone}) })
-      .then(function(){ if(!window._empPrivate) window._empPrivate={}; window._empPrivate[empId]={wage:Number(wage)||0,email:email||'',phone:phone||''}; })
+    fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify({action:'save', name:curUserName, pin:window._sessionPin, empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary}) })
+      .then(function(){ if(!window._empPrivate) window._empPrivate={}; window._empPrivate[empId]={wage:Number(wage)||0,email:email||'',phone:phone||'',monthlySalary:(monthlySalary==null?null:Number(monthlySalary))}; })
       .catch(function(){});
   }catch(e){ console.warn('saveEmpPrivate', e); }
 }
@@ -3572,7 +3572,8 @@ var SUPA_MASTER_MAP = {
   m_stores:      { type:'rows', table:'stores', pk:'id',
     map:function(o){ return { id:o.id, name:o.name, brand:o.brand||null, format:o.format||null, color:o.color||null, am:o.am||null, toast_guid:o.toastGuid||null, hours:o.hours||null, days:o.days||null, active:o.active!==false, data:o }; } },
   m_employees:   { type:'rows', table:'employees', pk:'id',
-    map:function(o){ return { id:o.id, name:o.name, emp_code:o.empCode||null, role:o.role||null, perms:o.perms||null, title:o.title||null, store:o.store||null, support:o.support||[], status:o.status||null, emp_type:o.emp||null, email:o.email||null, phone:o.phone||null, data:o }; } },
+    /* セキュリティ#2: 匿名キーで読める従業員テーブルには 給与/月給/メール/電話 を書かない（保護テーブルへ隔離） */
+    map:function(o){ var d=Object.assign({},o); delete d.wage; delete d.monthlySalary; delete d.email; delete d.phone; return { id:o.id, name:o.name, emp_code:o.empCode||null, role:o.role||null, perms:o.perms||null, title:o.title||null, store:o.store||null, support:o.support||[], status:o.status||null, emp_type:o.emp||null, email:null, phone:null, data:d }; } },
   m_ingredients: { type:'rows', table:'ingredients', pk:'code',
     map:function(o){ return { code:o.code, name:o.name, cat:o.cat||null, unit:o.unit||null, vendor:o.vendor||null, price:o.price||null, qty:o.qty||null, yield:o.yield||null, uc:o.uc||null, data:o }; } },
   m_recipes:     { type:'rows', table:'recipes', pk:'id',
@@ -17130,7 +17131,7 @@ function saveEmp(empId) {
     emps.push(data);
   }
   lsSet('m_employees', emps);
-  try{ var _se = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_se) saveEmpPrivate(_se.id, _se.wage, _se.email, _se.phone); }catch(e){}
+  try{ var _se = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_se) saveEmpPrivate(_se.id, _se.wage, _se.email, _se.phone, _se.monthlySalary); }catch(e){}
   // シフト条件を保存（配属店舗がある場合）。最大時間のみ更新、曜日×区分の詳細はシフト画面で。
   var store = data.store;
   if (store && store!=='ALL' && typeof setWorkCondition==='function') {
