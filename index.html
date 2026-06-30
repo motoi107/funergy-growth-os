@@ -652,9 +652,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
       <div id="mgr-who" style="font-size:14px"></div>
       <div style="font-size:12px;color:var(--green);margin-top:6px"><i class="ti ti-circle-check"></i> 本物のAuthセッションでログイン中（DBレベルで保護）</div>
     </div>
-    <div class="card" style="padding:14px">
-      <div style="font-size:13px;color:var(--muted);line-height:1.6">このページに、給与・個人情報などの機密管理を順次追加していきます（S3）。<br>現在は最小構成（ログイン基盤の動作確認）です。</div>
-    </div>
+    <div id="mgr-secure-body"></div>
   </div>
 </div>
 
@@ -4004,7 +4002,7 @@ async function doManagerLogin(){
     showManagerSecure();
   }catch(e){ fail('通信エラーが発生しました'); }
 }
-function showManagerSecure(){
+async function showManagerSecure(){
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
   var ls=document.getElementById('login-screen'); if(ls) ls.style.display='none';
   var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='block';
@@ -4013,9 +4011,24 @@ function showManagerSecure(){
     var roleLabel={ceo:'CEO',gm:'GM',office:'経理'}[window._authSession.role]||window._authSession.role;
     who.innerHTML='<b>'+escapeHtml(window._authSession.email)+'</b><span style="color:var(--muted)"> として認証済み（'+roleLabel+'）</span>';
   }
+  var body=document.getElementById('mgr-secure-body');
+  if(body) body.innerHTML='<div class="card" style="padding:24px;text-align:center;color:var(--muted)"><i class="ti ti-loader"></i> 読み込み中…</div>';
+  /* 最新データへ同期（成長カルテ・従業員マスター） */
+  try{ await supaPullAllMasters(); }catch(e){ console.warn('secure sync', e); }
+  /* セキュアセッションのコンテキスト設定（カルテはGM/CEO判定を使う） */
+  window._secureMode=true;
+  window._karteUnlocked=true;
+  curRole=window._authSession.role;
+  curStore='ALL';
+  try{ var me=getEmployees().find(function(x){return x.id===window._authSession.emp_id;}); curUserName=me?me.name:(window._authSession.email||''); }catch(e){ curUserName=window._authSession.email||''; }
+  if(body){
+    try{ body.innerHTML=renderGrowthKarte(); }catch(e){ body.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; }
+  }
 }
 function managerLogout(){
   window._authSession=null;
+  window._secureMode=false; window._karteUnlocked=false;
+  curRole=null; curUserName=null; curStore=null;
   var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='none';
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
   var ls=document.getElementById('login-screen'); if(ls) ls.style.display='flex';
@@ -22102,10 +22115,12 @@ function getKartePin(){ var p=ls('karte_pin','1234'); return (p==null||p==='')?'
 function setKartePin(p){ lsSet('karte_pin', String(p)); }
 function karteTryUnlock(){
   var el=document.getElementById('kartePinIn'); var v=el?String(el.value||'').trim():'';
-  if(v===getKartePin()){ window._karteUnlocked=true; renderPage('growth_karte'); }
+  if(v===getKartePin()){ window._karteUnlocked=true; karteRerender(); }
   else { var e=document.getElementById('kartePinErr'); if(e) e.style.display='block'; if(el){ el.value=''; el.focus(); } }
 }
-function karteLock(){ window._karteUnlocked=false; renderPage('growth_karte'); }
+function karteLock(){ window._karteUnlocked=false; karteRerender(); }
+/* 成長カルテの再描画：セキュアページ内なら専用コンテナへ、通常はrenderPage */
+function karteRerender(){ if(window._secureMode){ var b=document.getElementById('mgr-secure-body'); if(b){ try{ b.innerHTML=renderGrowthKarte(); }catch(e){} } return; } renderPage('growth_karte'); }
 function karteChangePin(){
   if(['gm','ceo'].indexOf(curRole)<0) return;
   var cur=prompt('現在のPIN'); if(cur===null) return;
@@ -22189,7 +22204,7 @@ function renderGrowthKarte(){
   if(!window._karteUnlocked){ return karteLockHtml(); }
   var cfg=kbCfg(); var tot=bonusTotals(cfg);
   var h='<div class="section-header"><div><div class="section-title"><i class="ti ti-id-badge-2"></i> 成長カルテ</div><div class="section-sub">G3以上の査定（ボーナス算出）と面談資料</div></div></div>';
-  h+='<div style="display:flex;gap:6px;justify-content:flex-end;margin:-4px 2px 8px"><button class="btn btn-secondary btn-sm" onclick="karteChangePin()"><i class="ti ti-key"></i> PIN変更</button><button class="btn btn-secondary btn-sm" onclick="karteLock()"><i class="ti ti-lock"></i> ロック</button></div>';
+  if(!window._secureMode){ h+='<div style="display:flex;gap:6px;justify-content:flex-end;margin:-4px 2px 8px"><button class="btn btn-secondary btn-sm" onclick="karteChangePin()"><i class="ti ti-key"></i> PIN変更</button><button class="btn btn-secondary btn-sm" onclick="karteLock()"><i class="ti ti-lock"></i> ロック</button></div>'; }
 
   /* 原資・係数 設定 */
   h+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--accent)"></i>ボーナス原資・係数（四半期）</div>';
@@ -22251,7 +22266,7 @@ function kbResultHtml(){
 }
 function kbRefresh(){
   var el=document.getElementById('kbResult');
-  if(el){ el.innerHTML=kbResultHtml(); } else { renderPage('growth_karte'); }
+  if(el){ el.innerHTML=kbResultHtml(); } else { karteRerender(); }
 }
 
 /* ===== 個人カルテ（面談資料） ===== */
