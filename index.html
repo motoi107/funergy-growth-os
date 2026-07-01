@@ -1245,7 +1245,7 @@ function kpiManualKey(period){ return 'kpi_manual_'+period; } // {storeId:{repea
 function getKpiManual(storeId, period){ var all=ls(kpiManualKey(period),{}); return all[storeId]||{}; }
 function setKpiManual(storeId, period, vals){ var all=ls(kpiManualKey(period),{}); all[storeId]=vals; lsSet(kpiManualKey(period), all); }
 /* ドリンクカテゴリ / アップセル対象商品の指定（GMが設定）。店舗共通でもよいが店舗別に持てる */
-function getKpiConfig(){ return ls('kpi_config', {drinkCats:[], upsellGuids:[]}); }
+function getKpiConfig(){ return ls('kpi_config', {drinkCats:[], upsellGuids:[], alcoholCats:[]}); }
 function setKpiConfig(c){ lsSet('kpi_config', c); }
 /* 店舗別のドリンク/アップセル対象。byStore[店舗]に上書きが無ければ全店共通(トップレベル)へフォールバック。 */
 function getKpiConfigFor(storeId){
@@ -1253,6 +1253,7 @@ function getKpiConfigFor(storeId){
   var s=(c && c.byStore && c.byStore[storeId]) || null;
   return {
     drinkCats:   (s && Array.isArray(s.drinkCats))   ? s.drinkCats   : (c.drinkCats||[]),
+    alcoholCats: (s && Array.isArray(s.alcoholCats)) ? s.alcoholCats : (c.alcoholCats||[]),
     upsellGuids: (s && Array.isArray(s.upsellGuids)) ? s.upsellGuids : (c.upsellGuids||[]),
     storeOverride: !!s
   };
@@ -4925,11 +4926,10 @@ function mySupportStores() {
   return (me && Array.isArray(me.support)) ? me.support.slice() : [];
 }
 function storeData(id) {
-  var d = DEMO_BUDGET[id] || {b:200000,a:190000,fc:30,labor:28};
-  var result = Object.assign({}, d, {id, name:(STORES.find(s=>s.id===id)||{name:id}).name,
-    color:(STORES.find(s=>s.id===id)||{color:'#888'}).color});
-  // FC/Labor率は実データ（日次原価・Toast勤怠）のみ反映。データが無ければ0（デモ値は使わない）。
-  result.fc = 0; result.labor = 0;
+  // 予算・実績・原価率・人件費率はすべて実データのみ。未設定/データ無しは0（デモ値は一切使わない）。
+  var result = { b:0, a:0, fc:0, labor:0, id:id,
+    name:(STORES.find(s=>s.id===id)||{name:id}).name,
+    color:(STORES.find(s=>s.id===id)||{color:'#888'}).color };
   // 予算は常に「予算設定タブ(budgets_v2)」を正とする。実績は日次実績/Toast同期の累計。
   try {
     var c = cumulativeToToday(id);
@@ -5808,11 +5808,8 @@ function getBudgetForMonth(storeId, ym){
 
 function getBudgets() {
   var def = STORES.map(s => {
-    var d = DEMO_BUDGET[s.id] || {b:200000, a:190000};
-    // 基礎根拠を逆算（均等割の仮データ）
-    var perDay = Math.round(d.b/30);
-    var base = {id:'bs1', type:'base', name:'既存店ベース', days:DOW.map(()=>({guests:Math.round(perDay/25), spend:25}))};
-    return {storeId:s.id, period:getPeriod(), bases:[base], actual:d.a, status:'承認済'};
+    // デモ予算は生成しない。未設定店は予算0（下書き）。実績は日次入力/Toastから別途累計。
+    return {storeId:s.id, period:getPeriod(), segments:null, bases:[], actual:0, status:'下書き'};
   });
   return ls('budgets_v2', def);
 }
@@ -6284,6 +6281,73 @@ function msTrendSvg(trend){
   return '<div style="overflow-x:auto"><svg viewBox="0 0 '+w+' '+h+'" width="'+(n>20?w:'100%')+'" height="'+h+'" preserveAspectRatio="xMinYMin meet" style="display:block;max-width:'+(n>20?'none':'100%')+'">'+bars+line+'</svg></div>';
 }
 
+/* 実データの売上構成: メニュー出数(menu_mix)×売価をカテゴリ分類。ドリンクはdrinkCats、うちお酒はalcoholCats。テイクアウトはdaily_actualsのtakeout件数 */
+function salesMixForScope(storeIds, mixPeriod, ym){
+  var recipes=(typeof activeRecipes==='function'?activeRecipes():(typeof getRecipes==='function'?getRecipes():[]));
+  var food=0, alcohol=0, soft=0, total=0, takeoutCnt=0, hasTakeout=false, hasMenu=false;
+  (storeIds||[]).forEach(function(sid){
+    var cfg=(typeof getKpiConfigFor==='function')?getKpiConfigFor(sid):{drinkCats:[],alcoholCats:[]};
+    var drinkCats=(cfg.drinkCats||[]).map(function(c){return String(c).toLowerCase();});
+    var alcCats=(cfg.alcoholCats||[]).map(function(c){return String(c).toLowerCase();});
+    var mix=(typeof getMenuMix==='function')?getMenuMix(sid, mixPeriod):{items:{}};
+    var srec=recipes.filter(function(r){return (typeof recipeInStore==='function')?recipeInStore(r,sid):true;});
+    srec.forEach(function(r){
+      var q=parseFloat((mix.items||{})[r.id])||0; if(!q) return;
+      hasMenu=true;
+      var sVal=q*(parseFloat(r.price)||0); total+=sVal;
+      var cat=r.category?String(r.category).toLowerCase():'';
+      var isDrink = drinkCats.length && cat && drinkCats.indexOf(cat)>=0;
+      if(isDrink){ if(alcCats.length && cat && alcCats.indexOf(cat)>=0) alcohol+=sVal; else soft+=sVal; }
+      else { food+=sVal; }
+    });
+    if(ym && typeof getDailyActuals==='function'){
+      var acts=getDailyActuals(sid);
+      Object.keys(acts).forEach(function(date){
+        if(String(date).slice(0,7)!==ym) return;
+        var tv=Number((acts[date]||{}).takeout)||0;
+        if(tv>0){ takeoutCnt+=tv; hasTakeout=true; }
+      });
+    }
+  });
+  return { food:food, alcohol:alcohol, soft:soft, drink:alcohol+soft, total:total,
+    takeoutCount:takeoutCnt, hasTakeout:hasTakeout, hasMenu:hasMenu };
+}
+function renderSalesMixCard(mix){
+  var m=function(v){return '$'+Math.round(v).toLocaleString();};
+  var CF='#e8794a', CA='#9b59b6', CS='#4a90e8';
+  var h='<div class="card"><div class="card-title"><i class="ti ti-chart-pie" style="color:var(--accent)"></i>売上構成（フード / ドリンク / テイクアウト）</div>';
+  if(!mix.hasMenu || mix.total<=0){
+    h+='<div style="font-size:12px;color:var(--muted);padding:6px 0"><i class="ti ti-info-circle"></i> メニュー出数が未取込です。食材管理→メニュー同期（Toast出数）後に、カテゴリ別の実売上構成が表示されます。</div>';
+    if(mix.hasTakeout) h+='<div style="font-size:12px;margin-top:2px">テイクアウト: <b>'+mix.takeoutCount.toLocaleString()+'件</b> <span style="font-size:10px;color:var(--muted)">（同期間・件数）</span></div>';
+    return h+'</div>';
+  }
+  var T=mix.total;
+  var foodPct=Math.round(mix.food/T*1000)/10;
+  var drinkPct=Math.round(mix.drink/T*1000)/10;
+  var alcW=mix.alcohol/T*100, softW=mix.soft/T*100;
+  h+='<div style="margin-bottom:12px">'
+    +'<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+CF+';margin-right:5px"></span>フード</span><span><b>'+foodPct+'%</b> <span style="color:var(--muted)">'+m(mix.food)+'</span></span></div>'
+    +'<div style="height:12px;background:var(--surface2);border-radius:6px;overflow:hidden"><div style="height:100%;width:'+foodPct+'%;background:'+CF+'"></div></div></div>';
+  h+='<div style="margin-bottom:6px">'
+    +'<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+CA+';margin-right:2px"></span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+CS+';margin-right:5px"></span>ドリンク（お酒＋ソフト）</span><span><b>'+drinkPct+'%</b> <span style="color:var(--muted)">'+m(mix.drink)+'</span></span></div>'
+    +'<div style="height:12px;background:var(--surface2);border-radius:6px;overflow:hidden;display:flex">'
+    +'<div style="height:100%;width:'+alcW+'%;background:'+CA+'" title="お酒"></div>'
+    +'<div style="height:100%;width:'+softW+'%;background:'+CS+'" title="ソフトドリンク"></div></div>'
+    +'<div style="display:flex;gap:14px;margin-top:5px;font-size:11px">'
+    +'<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+CA+';margin-right:4px"></span>お酒 <b>'+m(mix.alcohol)+'</b> <span style="color:var(--muted)">('+(mix.drink?Math.round(mix.alcohol/mix.drink*100):0)+'%)</span></span>'
+    +'<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+CS+';margin-right:4px"></span>ソフト <b>'+m(mix.soft)+'</b> <span style="color:var(--muted)">('+(mix.drink?Math.round(mix.soft/mix.drink*100):0)+'%)</span></span></div></div>';
+  if(mix.hasTakeout){
+    h+='<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'
+      +'<div style="display:flex;justify-content:space-between;font-size:12px"><span><i class="ti ti-shopping-bag" style="color:var(--accent2)"></i> テイクアウト</span><span><b>'+mix.takeoutCount.toLocaleString()+'件</b></span></div>'
+      +'<div style="font-size:10px;color:var(--muted);margin-top:3px">※テイクアウトは販売チャネル（件数）。上のフード/ドリンク構成に内包されます。売上$の分離はToast明細連携後に対応可能。</div></div>';
+  }
+  var _cfgAll=(typeof getKpiConfig==='function')?getKpiConfig():{};
+  if(!(_cfgAll.alcoholCats&&_cfgAll.alcoholCats.length)){
+    h+='<div style="font-size:10.5px;color:var(--yellow);margin-top:8px"><i class="ti ti-alert-triangle"></i> お酒カテゴリ未設定のため、ドリンクは全て「ソフト」に計上中。KPI管理→「お酒の対象カテゴリ」で設定してください。</div>';
+  }
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">メニュー出数×売価で算出。フード＝ドリンク以外。ドリンクはお酒＋ソフトを同一バーに合算（内訳色分け）。</div>';
+  return h+'</div>';
+}
 function msSampleCategories(){
   return [
     {name:'フード（料理）', pct:54, color:'#e8794a'},
@@ -6940,9 +7004,7 @@ function renderMonthlySummary(){
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><span style="color:var(--accent)">■</span> 実績　<span style="color:var(--muted)">– –</span> 予算</div>'
     +msTrendSvg(agg.trend)+'</div>';
 
-  html+='<div class="card"><div class="card-title"><i class="ti ti-chart-pie" style="color:var(--accent)"></i>売上構成（カテゴリ別） <span class="tag tag-gray" style="font-size:10px">サンプル</span></div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px">※本実装でToast出数（toast_item_sales）と連携し、実データのカテゴリ構成を表示します</div>'
-    +msCategoryBars(msSampleCategories())+'</div>';
+  html+=renderSalesMixCard(salesMixForScope(msScopeStores().map(function(s){return s.id;}), mi.y+'.'+(mi.m+1), mi.y+'-'+String(mi.m+1).padStart(2,'0')));
 
   if(msScope==='ALL' && agg.perStore.length>1){
     html+='<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別内訳</div>'
@@ -6960,7 +7022,7 @@ function renderMonthlySummary(){
     html+='</tbody></table></div></div>';
   }
 
-  html+='<div class="card" style="background:var(--surface2)"><div style="font-size:12px;color:var(--muted)">このページはv1プレビューです。売上・原価率・レイバー・達成率・トレンド・店舗別・前月比は実データ（前日まで／過去月は全日）。売上構成は本実装でToast連携予定。デザインのご確認用にすぐ使えます。</div></div>';
+  html+='<div class="card" style="background:var(--surface2)"><div style="font-size:12px;color:var(--muted)">このページはv1プレビューです。売上・原価率・レイバー・達成率・トレンド・店舗別・前月比は実データ（前日まで／過去月は全日）。売上構成はメニュー出数（同期後）から実データ算出。</div></div>';
 
   setTimeout(function(){ try{ msLoadMonth(false); }catch(e){} }, 60);
   return html;
@@ -7673,12 +7735,8 @@ function dayBudgetFromBases(b, dow) {
     var days = (typeof monthDays==='function') ? monthDays().length : 30;
     return days ? monthly/days : 0;
   }
-  var base = (b.bases||[]).find(x=>x.type==='base');
-  if (!base || !base.days) return 0;
-  var idx2 = DOW.indexOf(dow);
-  if (idx2<0) return 0;
-  var dd = base.days[idx2]||{guests:0,spend:0};
-  return (parseFloat(dd.guests)||0)*(parseFloat(dd.spend)||0);
+  // 旧bases（デモ均等割）は予算として扱わない＝未設定は0。segments/dowの実設定のみが予算。
+  return 0;
 }
 function getDailyActuals(storeId) { return ls('daily_actuals_'+storeId, {}); }
 function setDailyActuals(storeId, data) { lsSet('daily_actuals_'+storeId, data); }
@@ -11752,7 +11810,8 @@ function renderLabor() {
     return `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${sstore.name} · 勤怠</div></div></div>` + renderAttendanceBody(sid, sstore);
   }
   if (!_laborStore) _laborStore = (curStore && curStore!=='ALL') ? curStore : 'ALL';
-  var perStoreTabs = ['hours','detail','attendance'];
+  var _canLaborDetail = ['gm','ceo'].indexOf(curRole)>=0; // 勤怠明細（個人賃金・固定給）はGM以上のみ
+  var perStoreTabs = _canLaborDetail ? ['hours','detail','attendance'] : ['hours','attendance'];
   // 勤怠データ等(店舗別)をナビから開いた時に全店なら、最初の可視店舗へ
   if (_laborStore==='ALL' && perStoreTabs.indexOf(laborTab)>=0) {
     var v0=getVisibleStores()[0]; if(v0) _laborStore=v0.id;
@@ -11764,11 +11823,11 @@ function renderLabor() {
   html += storeSelectBar(_laborStore, 'setLaborStore');
   if (allStore) return html + renderLaborOverview();
   if (perStoreTabs.indexOf(laborTab)<0) laborTab = 'hours';
-  var tabDefs = [['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']];
+  var tabDefs = _canLaborDetail ? [['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']] : [['hours','労働時間'],['attendance','勤怠データ']];
   html += `<div class="phase-tabs">${tabDefs.map(function(td){ return `<div class="phase-tab${laborTab===td[0]?' active':''}" onclick="setLaborTab('${td[0]}')">${td[1]}</div>`; }).join('')}</div>`;
   if (laborTab==='attendance') return html + renderAttendanceBody(storeId, store);
   html += laborSummaryCard(storeId);
-  if (laborTab==='detail') return html + renderLaborDetail(storeId, store);
+  if (laborTab==='detail') return _canLaborDetail ? (html + renderLaborDetail(storeId, store)) : (html + renderLaborHours(storeId, store));
   return html + renderLaborHours(storeId, store);
 }
 function setLaborTab(t) { laborTab = t; renderPage('labor'); }
@@ -12199,6 +12258,7 @@ function renderLaborDetail(storeId, store) {
     <th>従業員</th><th>通常h</th><th>OT h</th>${canWage?'<th>賃金</th>':''}</tr></thead><tbody>`;
   // マスター在籍スタッフ
   staff.forEach(function(e){
+    if(typeof empPayType==='function' && empPayType(e)==='monthly') return; // 月給制は下の固定給セクションで計上
     var a = agg[e.name];
     if(!a || (a.reg<=0 && a.ot<=0)) return; // この期間に勤務が無い人は省略
     var calc = laborForEmployee(e.name, {regular:a.reg, ot:a.ot});
@@ -12208,6 +12268,24 @@ function renderLaborDetail(storeId, store) {
       <td>${calc.reg>0?calc.reg+'h':'—'}</td>
       <td>${calc.ot>0?`<span class="tag tag-yellow" style="font-size:9px">${calc.ot}h</span>`:'—'}</td>
       ${canWage?`<td style="font-weight:600">$${Math.round(calc.total).toLocaleString()}<div style="font-size:8px;color:var(--muted)">通$${Math.round(calc.regPay)}+OT$${Math.round(calc.otPay)}</div></td>`:''}
+    </tr>`;
+  });
+  // 月給制スタッフ（固定給・日割り）— 打刻の有無に関わらず計上（G4以上等）
+  var _dimM = (typeof daysInMonthOf==='function')?daysInMonthOf(ym):30;
+  var _periodDaysM = 0;
+  periodWeeks.forEach(function(w){ laborWeekDays(w.sun).forEach(function(dt){ if(String(dt).slice(0,7)===ym) _periodDaysM++; }); });
+  var _mStaff = (typeof storeMonthlyStaff==='function')?storeMonthlyStaff(storeId):[];
+  _mStaff.forEach(function(e){
+    var _msal = (typeof empMonthlyOf==='function')?empMonthlyOf(e):0;
+    if(!(_msal>0)) return;
+    var _amt = (_dimM>0) ? Math.round(_msal*_periodDaysM/_dimM*100)/100 : 0;
+    var a = agg[e.name]||{reg:0,ot:0};
+    totalCost += _amt; totalReg += (a.reg||0); totalOt += (a.ot||0); shownCount++;
+    html += `<tr>
+      <td>${escapeHtml(e.name)} <span class="tag tag-gray" style="font-size:8px">月給</span><div style="font-size:9px;color:var(--muted)">${(ROLE_CONFIG[e.role]||{}).label||''}</div></td>
+      <td>${a.reg>0?a.reg+'h':'<span style="color:var(--muted)">—</span>'}</td>
+      <td>${a.ot>0?`<span class="tag tag-yellow" style="font-size:9px">${a.ot}h</span>`:'—'}</td>
+      ${canWage?`<td style="font-weight:600">$${Math.round(_amt).toLocaleString()}<div style="font-size:8px;color:var(--muted)">固定給 日割 ${_periodDaysM}/${_dimM}日</div></td>`:''}
     </tr>`;
   });
   // マスター未登録（tip_laborにはあるがマスターに無い名前）
@@ -12235,9 +12313,9 @@ function renderLaborDetail(storeId, store) {
   html += `<div class="kpi-grid" style="margin-top:12px">
     ${kpi('通常時間', Math.round(totalReg*10)/10+'h', shownCount+'名', 'var(--tm)')}
     ${kpi('OT時間', Math.round(totalOt*10)/10+'h', '週40h超', totalOt>0?'var(--yellow)':'var(--muted)')}
-    ${canWage?kpi('賃金合計', '$'+Math.round(totalCost).toLocaleString(), 'OT1.5倍込み', 'var(--tm)'):''}
+    ${canWage?kpi('賃金合計', '$'+Math.round(totalCost).toLocaleString(), '時給OT1.5倍＋固定給日割', 'var(--tm)'):''}
   </div>`;
-  html += `<p style="font-size:11px;color:var(--muted);margin-top:8px">※ 勤怠はToast打刻（右上「最新に更新」で取得）。OTは週(日〜土)40h超で算出。Order Only除外。給与税17%・保険はサマリーのLabor額/Labor率に反映。時給はGM/AM等のみ表示。</p>`;
+  html += `<p style="font-size:11px;color:var(--muted);margin-top:8px">※ 勤怠はToast打刻（右上「最新に更新」で取得）。OTは週(日〜土)40h超で算出。Order Only除外。<b>月給制（固定給・G4以上等）は打刻の有無に関わらず月額の日割りで賃金計上</b>。給与税17%・保険はサマリーのLabor額/Labor率に反映。時給はGM/AM等のみ表示。</p>`;
   html += '</div>';
   return html;
 }
@@ -30934,6 +31012,21 @@ function renderKpiManualTab(){
   } else { html += `<span style="font-size:12px;color:var(--muted)">メニューが未取込です。Toast同期後に選べます。</span>`; }
   html += `</div>${cfgEditable?`<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="saveDrinkCats('${sid}')"><i class="ti ti-device-floppy"></i> ${isCfgGlobal?'全店に保存':store.name+'に保存'}</button>${dcOvHint}</div>`:''}</div>`;
 
+  // ===== お酒（アルコール）の対象カテゴリ =====（ドリンクのうちお酒。ソフト＝ドリンク−お酒）
+  var acSel = isCfgGlobal ? (getKpiConfig().alcoholCats||[]) : (cfgStore.alcoholCats||[]);
+  var acOvHint = (!isCfgGlobal && cfgStore.storeOverride) ? `<button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="clearKpiCfgStore('${sid}','alcoholCats')">全店共通に戻す</button>` : '';
+  html += `<div class="card"><div class="card-title"><i class="ti ti-bottle"></i>お酒の対象カテゴリ <span style="font-size:10px;font-weight:400;color:var(--accent)">（${cfgScopeLabel}）</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">売上構成グラフで「お酒」に分類するカテゴリを選択（ドリンクの内訳）。選ばなかったドリンクは「ソフトドリンク」になります。</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">`;
+  if (catList.length){
+    catList.forEach(c=>{
+      var on=acSel.includes(c);
+      html += `<label style="display:flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid ${on?'#9b59b6':'var(--border)'};border-radius:8px;cursor:${cfgEditable?'pointer':'default'};font-size:12px;background:${on?'#9b59b620':'transparent'}">
+        <input type="checkbox" class="kpi-alccat" value="${c.replace(/"/g,'&quot;')}" ${on?'checked':''} ${cfgEditable?'':'disabled'}> ${c}</label>`;
+    });
+  } else { html += `<span style="font-size:12px;color:var(--muted)">メニューが未取込です。Toast同期後に選べます。</span>`; }
+  html += `</div>${cfgEditable?`<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="saveAlcoholCats('${sid}')"><i class="ti ti-device-floppy"></i> ${isCfgGlobal?'全店に保存':store.name+'に保存'}</button>${acOvHint}</div>`:''}</div>`;
+
   var upOvHint = (!isCfgGlobal && cfgStore.storeOverride) ? `<button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="clearKpiCfgStore('${sid}','upsellGuids')">全店共通に戻す</button>` : '';
   html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-up-circle"></i>アップセル対象商品 <span style="font-size:10px;font-weight:400;color:var(--accent)">（${cfgScopeLabel}）</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">トッピング/アップグレード等「アップセル」とみなす商品を指定（出数÷客数で比率計算）。${store.name}のメニューから選択。${isCfgGlobal?'<b>全店に適用されます。</b>':'<b>'+store.name+'のみ</b>に適用。'}</div>
@@ -30991,6 +31084,13 @@ function saveDrinkCats(sid){
   var vals = Array.from(document.querySelectorAll('.kpi-drinkcat:checked')).map(c=>c.value);
   if (canEditKpiCfgGlobal()){ var cfg=getKpiConfig(); cfg.drinkCats=vals; setKpiConfig(cfg); showToast('ドリンクカテゴリを保存しました（全店共通）','success'); }
   else if (canSetKpiStore(sid)){ setKpiConfigStore(sid,{drinkCats:vals}); showToast('ドリンクカテゴリを保存しました（配属店舗）','success'); }
+  else { showToast('編集権限がありません','warning'); return; }
+  renderPage('kpi_master');
+}
+function saveAlcoholCats(sid){
+  var vals = Array.from(document.querySelectorAll('.kpi-alccat:checked')).map(c=>c.value);
+  if (canEditKpiCfgGlobal()){ var cfg=getKpiConfig(); cfg.alcoholCats=vals; setKpiConfig(cfg); showToast('お酒カテゴリを保存しました（全店共通）','success'); }
+  else if (canSetKpiStore(sid)){ setKpiConfigStore(sid,{alcoholCats:vals}); showToast('お酒カテゴリを保存しました（配属店舗）','success'); }
   else { showToast('編集権限がありません','warning'); return; }
   renderPage('kpi_master');
 }
