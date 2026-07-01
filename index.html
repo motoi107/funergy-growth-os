@@ -6056,8 +6056,7 @@ function storeMonthlyStaff(storeId){
 function cumulativeToToday(storeId, ymOpt) {
   var ym = ymOpt || curYm();
   var days = ymOpt ? daysOfYm(ymOpt) : monthDays();
-  var _frozen = (typeof isFrozenMonth==='function') && isFrozenMonth(ym);
-  var _salaryDays = 0, _insDays = 0;
+  var _core = laborCoreForYm(storeId, ym); // Labor額は共通コア（労働時間/勤怠明細/予実で同一）
   var b = getBudgetForMonth(storeId, ym); // 1〜6月はファイル取込、7月以降は予算設定タブ
   var actuals = getDailyActuals(storeId);
   var todayStr = todayISO();
@@ -6080,35 +6079,24 @@ function cumulativeToToday(storeId, ymOpt) {
       daysPassed++;
       if (ov.actual!=null && ov.actual>0) {
         daysWithActual++;
-        // 原価・人件費（日次入力があれば反映）
+        // 原価（日次入力があれば反映）。人件費はループ外の共通コア(laborCoreForYm)で一括算出。
         if (ov.foodCost!=null) costToToday += ov.foodCost;
-        // 人件費: Toast打刻×時給(実績勤怠)を優先＋給与税17%＋保険日割り。無い日は手入力の当日人件費(額そのまま)。
-        var toastLab = toastLaborCostForDate(storeId, d.date);
-        if (toastLab>0) {
-          var _wage = toastLab + dailySalary;          // 賃金（実勤怠×時給 ＋ 固定給の日割り）
-          var _tax = _wage * PAYROLL_TAX_RATE;         // 給与税17%
-          laborWageToToday += _wage; laborTaxToToday += _tax; laborInsToToday += dailyIns;
-          laborToToday += _wage + _tax + dailyIns;
-          _salaryDays++; _insDays++;
-        } else if (ov.labor!=null) { laborToToday += ov.labor; laborManualToToday += ov.labor; }
       }
     }
   });
-  // 確定月: 固定給・保険を月額満額に補正（営業日数分しか計上されない日割りを埋める）
-  if (_frozen) {
-    var _dim = days.length || daysInMonthOf(ym);
-    var _addSal = dailySalary * Math.max(0, _dim - _salaryDays);
-    var _addIns = dailyIns * Math.max(0, _dim - _insDays);
-    if (_addSal > 0) { var _addTax = _addSal * PAYROLL_TAX_RATE; laborWageToToday += _addSal; laborTaxToToday += _addTax; laborToToday += _addSal + _addTax; }
-    if (_addIns > 0) { laborInsToToday += _addIns; laborToToday += _addIns; }
-  }
+  // Labor額: 共通コア（週次OT×1.5込み・固定給/保険は暦日割り・確定月は満額）
+  laborToToday = _core.total;
+  laborWageToToday = _core.wage;
+  laborTaxToToday = _core.tax;
+  laborInsToToday = _core.ins;
+  laborManualToToday = _core.manual;
   return {
     budToToday, actToToday, budMonth, actMonth, daysPassed, daysWithActual,
-    costToToday, laborToToday, frozen:_frozen,
-    laborWageToToday: Math.round(laborWageToToday*100)/100,
-    laborTaxToToday: Math.round(laborTaxToToday*100)/100,
-    laborInsToToday: Math.round(laborInsToToday*100)/100,
-    laborManualToToday: Math.round(laborManualToToday*100)/100,
+    costToToday, laborToToday, frozen:_core.frozen,
+    laborWageToToday: laborWageToToday,
+    laborTaxToToday: laborTaxToToday,
+    laborInsToToday: laborInsToToday,
+    laborManualToToday: laborManualToToday,
     paceRate: budToToday ? Math.round(actToToday/budToToday*1000)/10 : 0,
     monthRate: budMonth ? Math.round(actMonth/budMonth*1000)/10 : 0,
     costRate: actToToday ? Math.round(costToToday/actToToday*1000)/10 : 0,
@@ -6186,12 +6174,11 @@ function msAgg(storeId, mi){
     if(past && ov.actual!=null && ov.actual>0){
       daysWithActual++;
       if(ov.foodCost!=null) food+=ov.foodCost;
-      var tl=toastLaborCostForDate(storeId,d.date);
-      if(tl>0) labor+=tl*(1+PAYROLL_TAX_RATE)+dailySalary*(1+PAYROLL_TAX_RATE)+dailyIns;
-      else if(ov.labor!=null) labor+=ov.labor;
     }
     trend.push({day:d.day, date:d.date, actual:(past?dayAct:null), budget:dayBud});
   });
+  // Labor月計は共通コア（週次OT×1.5込み）に統一。日次トレンドは近似のまま。
+  try { labor = laborCoreForYm(storeId, mi.ym).total; } catch(e){}
   return {sales:sales,budget:budget,guests:guests,food:food,labor:labor,daysWithActual:daysWithActual,
     fcRate:sales?Math.round(food/sales*1000)/10:0,
     laborRate:sales?Math.round(labor/sales*1000)/10:0,
@@ -8303,6 +8290,8 @@ function keyKpiStats(scopeStores, days){
   var allBowls=(scopeStores&&scopeStores.length>0) && scopeStores.every(function(s){return gct(s.id)==='bowls';});
   var now=new Date(), ofst=0;
   if(ym){ var pp=ym.split('-'); ofst=(parseInt(pp[0],10)-now.getFullYear())*12+(parseInt(pp[1],10)-(now.getMonth()+1)); }
+  // Labor月計は共通コア（労働時間/勤怠明細/予実サマリーと同一計算）
+  if(ym){ (scopeStores||[]).forEach(function(s){ try{ labor += laborCoreForYm(s.id, ym).total; }catch(e){} }); }
   (scopeStores||[]).forEach(function(s){
     var actuals=getDailyActuals(s.id);
     var b=getBudgetForMonth(s.id, ym);
@@ -8321,9 +8310,6 @@ function keyKpiStats(scopeStores, days){
         guests+=cnt;
         if(ov.actual>0){
           if(ov.foodCost!=null) food+=ov.foodCost;
-          var tl=(typeof toastLaborCostForDate==='function')?toastLaborCostForDate(s.id,d.date):0;
-          if(tl>0) labor+=tl*(1+PAYROLL_TAX_RATE)+dailySalary*(1+PAYROLL_TAX_RATE)+dailyIns;
-          else if(ov.labor!=null) labor+=ov.labor;
           if(typeof toastLaborHoursForDate==='function') laborHours+=toastLaborHoursForDate(s.id,d.date);
           dayHasActual[d.date]=1;
         }
@@ -11945,6 +11931,30 @@ function renderLaborHours(storeId, store) {
 /* 期間内の従業員別レイバー内訳（実勤怠Toast: 名前×時給×勤務時間×Labor額）。
    days省略時は当月(attMonthDays)。Order OnlyはgetTipLabor側で除外済み。 */
 function laborBreakdownForPeriod(storeId, days){
+  /* 月単位（2日以上）は共通コア(laborCoreForYm)で算出＝労働時間/勤怠明細/予実と同一。単日はその日の時間×時給。 */
+  if ((days||[]).length > 1) {
+    var _ym = String(days[0].date).slice(0,7);
+    var _core = laborCoreForYm(storeId, _ym);
+    var rows = Object.keys(_core.byName).map(function(n){
+      var a=_core.byName[n]; var calc=laborForEmployee(n,{regular:a.reg,ot:a.ot});
+      return { name:n, hours:a.hours, reg:a.reg, ot:a.ot, wage:calc.wage, amount:Math.round(calc.total*100)/100 };
+    }).filter(function(r){ return r.hours>0 && !((storeMonthlyStaff(storeId)||[]).some(function(e){return e.name===r.name && empMonthlyOf(e)>0;})); })
+      .sort(function(x,y){ return (y.amount-x.amount)||(y.hours-x.hours); });
+    var salaryRows = (storeMonthlyStaff(storeId)||[]).map(function(e){
+      var monthly=empMonthlyOf(e);
+      var amount=_core.dim>0?Math.round(monthly*_core.periodDays/_core.dim*100)/100:0;
+      return { name:e.name, monthly:true, monthlySalary:monthly, hours:0, wage:0, amount:amount };
+    }).filter(function(r){ return r.monthlySalary>0; }).sort(function(x,y){return y.amount-x.amount;});
+    return {
+      rows: rows, salaryRows: salaryRows,
+      totalHours: Math.round(rows.reduce(function(s,r){return s+r.hours;},0)*100)/100,
+      totalAmount: _core.hourly,
+      salaryTotal: _core.salary, salaryMonthly: storeSalaryMonthly(storeId),
+      tax: _core.tax, taxRate: PAYROLL_TAX_RATE,
+      insurance: _core.ins, manual: _core.manual, daysWithData: _core.daysWithActual, insuranceMonthly: storeInsuranceMonthly(storeId),
+      totalWithBurden: _core.total, frozen: _core.frozen
+    };
+  }
   var agg = {};
   var daysWithData = 0;
   (days||[]).forEach(function(d){
@@ -12066,7 +12076,7 @@ function renderLaborOverview() {
     var laborTarget = (tgt && tgt.laborPct!=null && tgt.laborPct>0) ? tgt.laborPct : 29;
     var warnTarget = laborTarget + 3;
     var color = s.labor<=laborTarget?'var(--green)':s.labor<=warnTarget?'var(--yellow)':'var(--red)';
-    var bk = laborBreakdownForPeriod(s.id, attMonthDays());
+    var bk = laborBreakdownForPeriod(s.id, daysOfYm(curYm())); // 全店ビューは常に当月（勤怠タブの月ナビ状態に影響されない）
     var hasActual = bk.rows.length>0 && bk.totalWithBurden>0;
     var laborAmt = hasActual ? bk.totalWithBurden : Math.round(s.a*s.labor/100);
     var amtSub = hasActual ? '実績(賃金+税+保険) ›' : '今月推計 ›';
@@ -12203,37 +12213,6 @@ function laborMonthWeeks(ym){
   }
   return weeks;
 }
-/* 指定の週リストから従業員別の通常/OTを集計。OTは「週(日〜土)ごとに40h超」をHawaii基準で算出。
-   データ源はtip_labor(日次・Order Only除外済み)。reg/otは週単位で計算し期間で合算。 */
-function laborDetailAgg(storeId, weeks){
-  var byName = {};
-  (weeks||[]).forEach(function(w){
-    var days = laborWeekDays(w.sun);
-    var weekHours = {}; // name -> その週の合計時間
-    days.forEach(function(dt){
-      var labor = getTipLabor(storeId, dt);
-      if(!labor) return;
-      Object.keys(labor).forEach(function(n){
-        var e=labor[n]; var h=(e.lunch||0)+(e.dinner||0);
-        if(h<=0) return;
-        weekHours[n]=(weekHours[n]||0)+h;
-      });
-    });
-    Object.keys(weekHours).forEach(function(n){
-      var wh = weekHours[n];
-      var ot = Math.max(0, wh-40), reg = wh-ot;
-      if(!byName[n]) byName[n]={reg:0, ot:0, hours:0};
-      byName[n].reg+=reg; byName[n].ot+=ot; byName[n].hours+=wh;
-    });
-  });
-  // 丸め
-  Object.keys(byName).forEach(function(n){
-    byName[n].reg=Math.round(byName[n].reg*100)/100;
-    byName[n].ot=Math.round(byName[n].ot*100)/100;
-    byName[n].hours=Math.round(byName[n].hours*100)/100;
-  });
-  return byName;
-}
 function setLaborDetailWeek(v){ laborDetailWeek = v||''; renderPage('labor'); }
 
 function laborForEmployee(name, entry) {
@@ -12246,6 +12225,65 @@ function laborForEmployee(name, entry) {
   return { wage, reg, ot, regPay, otPay, total: regPay+otPay };
 }
 
+/* ============================================================
+   Labor集計の唯一の正（全ページ共通コア）
+   - 時給: 週(日〜土)40h超をOT×1.5で加算。月跨ぎ週は「その月に属する日」の時間のみ計上
+   - 固定給・保険: 暦日割り（期間日数/月日数）。過去月=全日=満額、当月=前日まで
+   - 手入力人件費: Toast打刻の無い日の日次実績labor（額そのまま加算）
+   - 給与税17%は時給＋固定給に適用
+   opts: { weekSun: 週選択(明細タブ), endBefore: 集計終端(既定=当月なら今日/過去月なら無し) }
+============================================================ */
+function laborCoreForYm(storeId, ym, opts){
+  opts = opts||{};
+  var cutoff = (opts.endBefore!==undefined) ? opts.endBefore : (ym===curYm() ? todayISO() : null);
+  var weeks = laborMonthWeeks(ym).filter(function(w){ return !opts.weekSun || w.sun===opts.weekSun; });
+  var inRange = function(dt){ return String(dt).slice(0,7)===ym && (!cutoff || dt<cutoff); };
+  var byName = {};
+  weeks.forEach(function(w){
+    var weekHours = {};
+    laborWeekDays(w.sun).forEach(function(dt){
+      if(!inRange(dt)) return;
+      var labor = getTipLabor(storeId, dt); if(!labor) return;
+      Object.keys(labor).forEach(function(n){ var e=labor[n]; var h=(e.lunch||0)+(e.dinner||0); if(h>0) weekHours[n]=(weekHours[n]||0)+h; });
+    });
+    Object.keys(weekHours).forEach(function(n){
+      var wh=weekHours[n]; var ot=Math.max(0, wh-40), reg=wh-ot;
+      if(!byName[n]) byName[n]={reg:0, ot:0, hours:0};
+      byName[n].reg+=reg; byName[n].ot+=ot; byName[n].hours+=wh;
+    });
+  });
+  Object.keys(byName).forEach(function(n){ byName[n].reg=Math.round(byName[n].reg*100)/100; byName[n].ot=Math.round(byName[n].ot*100)/100; byName[n].hours=Math.round(byName[n].hours*100)/100; });
+  var monthlyNames = {};
+  var mStaff = (typeof storeMonthlyStaff==='function') ? (storeMonthlyStaff(storeId)||[]) : [];
+  mStaff.forEach(function(e){ if((typeof empMonthlyOf==='function'?empMonthlyOf(e):0)>0) monthlyNames[e.name]=1; });
+  var hourly = 0;
+  Object.keys(byName).forEach(function(n){ if(monthlyNames[n]) return; var a=byName[n]; hourly += laborForEmployee(n, {regular:a.reg, ot:a.ot}).total; });
+  var dim = daysInMonthOf(ym);
+  var periodDays=0, sales=0, manual=0, daysWithActual=0, seen={};
+  var acts = getDailyActuals(storeId);
+  weeks.forEach(function(w){
+    laborWeekDays(w.sun).forEach(function(dt){
+      if(!inRange(dt) || seen[dt]) return; seen[dt]=1; periodDays++;
+      var v = acts[dt]||{};
+      if(v.actual!=null){ sales += Number(v.actual)||0; if(v.actual>0) daysWithActual++; }
+      var lb = getTipLabor(storeId, dt);
+      var has = lb && Object.keys(lb).some(function(n){ var e=lb[n]; return ((e.lunch||0)+(e.dinner||0))>0; });
+      if(!has && v.labor!=null) manual += Number(v.labor)||0;
+    });
+  });
+  var salary = 0;
+  mStaff.forEach(function(e){ var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(m>0 && dim>0) salary += m*periodDays/dim; });
+  salary = Math.round(salary*100)/100;
+  var ins = Math.round(((typeof storeInsuranceDaily==='function')?storeInsuranceDaily(storeId, ym):0)*periodDays*100)/100;
+  var wage = Math.round((hourly+salary)*100)/100;
+  var tax = Math.round(wage*PAYROLL_TAX_RATE*100)/100;
+  manual = Math.round(manual*100)/100;
+  var total = Math.round((wage+tax+ins+manual)*100)/100;
+  return { byName:byName, hourly:Math.round(hourly*100)/100, salary:salary, wage:wage, tax:tax, ins:ins, manual:manual,
+    total:total, sales:Math.round(sales*100)/100, rate: sales?Math.round(total/sales*1000)/10:0,
+    periodDays:periodDays, dim:dim, daysWithActual:daysWithActual, cutoff:cutoff, frozen:isFrozenMonth(ym) };
+}
+
 function renderLaborDetail(storeId, store) {
   var canWage = canViewIndividualWage();
   var ym = ymOf(attMonthRef());
@@ -12254,7 +12292,8 @@ function renderLaborDetail(storeId, store) {
   var selWeek = laborDetailWeek && weeks.some(function(w){return w.sun===laborDetailWeek;}) ? laborDetailWeek : '';
   var periodWeeks = selWeek ? weeks.filter(function(w){return w.sun===selWeek;}) : weeks;
   var periodLabel = selWeek ? (weeks.find(function(w){return w.sun===selWeek;}).range.label) : (attMonthLabel()+' 全体');
-  var agg = laborDetailAgg(storeId, periodWeeks);
+  var _core = laborCoreForYm(storeId, ym, selWeek?{weekSun:selWeek}:{});
+  var agg = _core.byName;
   var staff = staffForStore(storeId);
   var staffNames = staff.map(function(s){return s.name;});
 
@@ -12275,7 +12314,7 @@ function renderLaborDetail(storeId, store) {
         return `<option value="${w.sun}"${selWeek===w.sun?' selected':''}>週: ${w.range.label}${cross}</option>`;
       }).join('')}
     </select>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 表示: ${periodLabel}。OTは日曜起算の週ごとに40h超で自動算出（Hawaii基準）。更新は右上の「最新に更新」から。</div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 表示: ${periodLabel}${_core.cutoff?'（本日分は明日反映）':''}。OTは日曜起算の週ごとに40h超×1.5で自動算出（月跨ぎ週はこの月の分のみ）。更新は右上の「最新に更新」から。</div>
   </div>`;
 
   var totalCost=0, totalReg=0, totalOt=0, shownCount=0;
@@ -12295,9 +12334,8 @@ function renderLaborDetail(storeId, store) {
     </tr>`;
   });
   // 月給制スタッフ（固定給・日割り）— 打刻の有無に関わらず計上（G4以上等）
-  var _dimM = (typeof daysInMonthOf==='function')?daysInMonthOf(ym):30;
-  var _periodDaysM = 0;
-  periodWeeks.forEach(function(w){ laborWeekDays(w.sun).forEach(function(dt){ if(String(dt).slice(0,7)===ym) _periodDaysM++; }); });
+  var _dimM = _core.dim;
+  var _periodDaysM = _core.periodDays;
   var _mStaff = (typeof storeMonthlyStaff==='function')?storeMonthlyStaff(storeId):[];
   _mStaff.forEach(function(e){
     var _msal = (typeof empMonthlyOf==='function')?empMonthlyOf(e):0;
@@ -12328,12 +12366,11 @@ function renderLaborDetail(storeId, store) {
   if(!shownCount){
     _tbody += `<tr><td colspan="${canWage?4:3}" style="text-align:center;color:var(--muted);padding:18px">この期間の勤怠データがありません。<br>右上の「最新に更新」でToast勤怠を取得してください。</td></tr>`;
   }
-  // ===== 連動サマリー（下の勤怠明細と同一期間・同一賃金：給与合計＝賃金合計）=====
-  var _tax = Math.round(totalCost*PAYROLL_TAX_RATE*100)/100;
-  var _ins = Math.round((typeof storeInsuranceDaily==='function'?storeInsuranceDaily(storeId, ym):0)*_periodDaysM*100)/100;
-  var _laborTotal = Math.round((totalCost+_tax+_ins)*100)/100;
-  var _pSales=0; var _acts=(typeof getDailyActuals==='function')?getDailyActuals(storeId):{};
-  periodWeeks.forEach(function(w){ laborWeekDays(w.sun).forEach(function(dt){ if(String(dt).slice(0,7)!==ym) return; var v=_acts[dt]; if(v&&v.actual!=null) _pSales+=Number(v.actual)||0; }); });
+  // ===== 連動サマリー（共通コア: 労働時間タブ・予実と同一計算）=====
+  var _tax = _core.tax;
+  var _ins = _core.ins;
+  var _laborTotal = _core.total;
+  var _pSales = _core.sales;
   var _tgt=(typeof getStoreKpiTargets==='function')?getStoreKpiTargets(storeId):{}; var _lt=(_tgt&&_tgt.laborPct>0)?_tgt.laborPct:29;
   var _rate=_pSales?Math.round(_laborTotal/_pSales*1000)/10:0;
   var _rcol=_rate<=_lt?'var(--green)':(_rate<=_lt+3?'var(--yellow)':'var(--red)');
@@ -12343,11 +12380,12 @@ function renderLaborDetail(storeId, store) {
       +(_pSales?'<span class="tag" style="margin-left:auto;font-size:12px;font-weight:800;color:'+_rcol+';border:1px solid '+_rcol+';background:transparent">Labor率 '+_rate+'%</span>':'')+'</div>'
       +'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">給与合計 <span style="font-size:10px;color:var(--muted)">（時給OT＋固定給日割り）</span></span><b>'+_m(totalCost)+'</b></div>'
       +'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">給与税 <span style="font-size:10px;color:var(--muted)">（17%）</span></span><b>'+_m(_tax)+'</b></div>'
-      +'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">保険料 <span style="font-size:10px;color:var(--muted)">（日割り '+_periodDaysM+'/'+_dimM+'日）</span></span><b>'+_m(_ins)+'</b></div>'
+      +'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">保険料 <span style="font-size:10px;color:var(--muted)">（'+(_core.frozen?'月額':'日割り '+_periodDaysM+'/'+_dimM+'日')+'）</span></span><b>'+_m(_ins)+'</b></div>'
+      +(_core.manual>0?'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">手入力人件費 <span style="font-size:10px;color:var(--muted)">（打刻が無い日）</span></span><b>'+_m(_core.manual)+'</b></div>':'')
       +'<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:2px solid var(--border)"><span style="font-size:14px;font-weight:800">Labor額 合計</span><b style="font-size:16px;color:var(--accent)">'+_m(_laborTotal)+'</b></div>'
       +'<div style="display:flex;justify-content:space-between;padding:8px 0"><span style="font-size:12px;color:var(--muted)">'+periodLabel+' 売上</span><b>'+(_pSales?_m(_pSales):'—')+'</b></div>'
       +(_pSales?'<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0"><span style="font-size:13px;font-weight:700">人件費率 <span style="font-size:10px;color:var(--muted);font-weight:400">目標 ≤'+_lt+'%</span></span><span style="font-size:22px;font-weight:800;color:'+_rcol+'">'+_rate+'%</span></div>':'<div style="font-size:11px;color:var(--muted);padding:2px 0">この期間の売上が未入力のため人件費率は表示できません。</div>')
-      +'<div style="font-size:10.5px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> このサマリーは下の勤怠明細と同一期間・同一賃金です（給与合計＝賃金合計）。給与税17%・保険日割りを加算。</div></div>';
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 労働時間タブ・予実管理と同一計算（週次OT×1.5込み・給与税17%・保険'+(_core.frozen?'月額':'日割り')+'）。'+(_core.cutoff?'当月は前日まで（本日分は明日反映）。':'')+'</div></div>';
   }
   html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>勤怠明細（従業員別）</div><table class="inv-table" style="width:100%;font-size:12px"><thead><tr>
     <th>従業員</th><th>通常h</th><th>OT h</th>${canWage?'<th>賃金</th>':''}</tr></thead><tbody>`+_tbody+`</tbody></table>`;
