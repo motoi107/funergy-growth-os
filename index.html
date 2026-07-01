@@ -1504,14 +1504,14 @@ const NAV_ITEMS = [
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office']},
   {id:'office_mgr',  label:'Office管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office','office_crew']},
   {id:'office_export', label:'出力センター', icon:'ti-file-export', roles:['ceo','gm','office']},
-  {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','am','sl']},
-  {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','am','sl']},
+  {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','office','am','sl']},
+  {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','office','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
   {id:'tasks',       label:'タスク',      icon:'ti-list-check',       roles:['ceo','gm','office','am','sl']},
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','office','am','sl']},
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am','sl']},
-  {id:'store_power', label:'店舗総合力',    icon:'ti-chart-radar',      roles:['ceo','gm','am']},
+  {id:'store_power', label:'店舗総合力',    icon:'ti-chart-radar',      roles:['ceo','gm','office','am']},
   {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'attendance',  label:'勤怠データ', icon:'ti-clock-check',      roles:['ceo','gm','office','am','sl']},
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
@@ -3519,6 +3519,7 @@ var _SPLIT_KEYS = {
   tasks_all:        {type:'arr', by:function(r){return r&&r.store;}},
   supply_orders:    {type:'arr', by:function(r){return r&&r.store;}},
   invoices:         {type:'arr', by:function(r){return r&&r.storeId;}},
+  reimbursements:   {type:'arr', by:function(r){return r&&r.storeId;}},
   tip_requests:     {type:'arr', by:function(r){return r&&r.name;}},
   tip_history:      {type:'arr', by:function(r){return r&&r.name;}},
   ot_requests:      {type:'arr', by:function(r){return r&&r.name;}},
@@ -3634,7 +3635,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin'];
+  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_'];
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
@@ -6103,6 +6104,7 @@ function cumulativeToToday(storeId) {
   var dailySalary = storeSalaryDaily(storeId, ym); // 月給の日割り（その店舗・暦日割）
   var budToToday=0, actToToday=0, budMonth=0, actMonth=0;
   var costToToday=0, laborToToday=0, daysPassed=0, daysWithActual=0;
+  var laborWageToToday=0, laborTaxToToday=0, laborInsToToday=0, laborManualToToday=0;
   days.forEach(d => {
     var ov = actuals[d.date] || {};
     var dayBud = ov.budget!=null ? ov.budget : (b?dayBudgetFromBases(b,d.dow):0);
@@ -6121,14 +6123,22 @@ function cumulativeToToday(storeId) {
         if (ov.foodCost!=null) costToToday += ov.foodCost;
         // 人件費: Toast打刻×時給(実績勤怠)を優先＋給与税17%＋保険日割り。無い日は手入力の当日人件費(額そのまま)。
         var toastLab = toastLaborCostForDate(storeId, d.date);
-        if (toastLab>0) laborToToday += toastLab*(1+PAYROLL_TAX_RATE) + dailySalary*(1+PAYROLL_TAX_RATE) + dailyIns;
-        else if (ov.labor!=null) laborToToday += ov.labor;
+        if (toastLab>0) {
+          var _wage = toastLab + dailySalary;          // 賃金（実勤怠×時給 ＋ 固定給の日割り）
+          var _tax = _wage * PAYROLL_TAX_RATE;         // 給与税17%
+          laborWageToToday += _wage; laborTaxToToday += _tax; laborInsToToday += dailyIns;
+          laborToToday += _wage + _tax + dailyIns;
+        } else if (ov.labor!=null) { laborToToday += ov.labor; laborManualToToday += ov.labor; }
       }
     }
   });
   return {
     budToToday, actToToday, budMonth, actMonth, daysPassed, daysWithActual,
     costToToday, laborToToday,
+    laborWageToToday: Math.round(laborWageToToday*100)/100,
+    laborTaxToToday: Math.round(laborTaxToToday*100)/100,
+    laborInsToToday: Math.round(laborInsToToday*100)/100,
+    laborManualToToday: Math.round(laborManualToToday*100)/100,
     paceRate: budToToday ? Math.round(actToToday/budToToday*1000)/10 : 0,
     monthRate: budMonth ? Math.round(actMonth/budMonth*1000)/10 : 0,
     costRate: actToToday ? Math.round(costToToday/actToToday*1000)/10 : 0,
@@ -11706,6 +11716,31 @@ async function refreshLaborFromCloud(){
 }
 
 var _laborStore = null;
+function laborSummaryCard(storeId){
+  var c = cumulativeToToday(storeId);
+  var tgt = getStoreKpiTargets(storeId);
+  var laborTarget = (tgt && tgt.laborPct!=null && tgt.laborPct>0) ? tgt.laborPct : 29;
+  var rate = c.laborRate||0;
+  var col = rate<=laborTarget?'var(--green)':(rate<=laborTarget+3?'var(--yellow)':'var(--red)');
+  var wage=c.laborWageToToday||0, tax=c.laborTaxToToday||0, ins=c.laborInsToToday||0, manual=c.laborManualToToday||0;
+  var total=c.laborToToday||0, sales=c.actToToday||0;
+  var m=function(v){return '$'+Math.round(v).toLocaleString();};
+  var line=function(label,sub,val,bd){ return '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:'+(bd?'8px':'5px')+' 0;border-bottom:'+(bd?'2px':'1px')+' solid var(--border)">'
+      +'<span style="font-size:'+(bd?'14px;font-weight:800':'12px')+'">'+label+(sub?' <span style="font-size:10px;color:var(--muted);font-weight:400">'+sub+'</span>':'')+'</span>'
+      +'<span style="font-size:'+(bd?'16px;font-weight:800;color:var(--accent)':'13px;font-weight:700')+'">'+val+'</span></div>'; };
+  var h='<div class="card"><div class="card-title"><i class="ti ti-report-money" style="color:var(--accent)"></i>人件費サマリー <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:4px">今月・本日まで累計</span>'
+    +'<span class="tag" style="margin-left:auto;font-size:12px;font-weight:800;color:'+col+';border:1px solid '+col+';background:transparent">Labor率 '+rate+'%</span></div>';
+  h+=line('給与合計','時給＋固定給日割り',m(wage),false);
+  h+=line('給与税','17%',m(tax),false);
+  h+=line('保険料','日割り',m(ins),false);
+  if(manual>0) h+=line('手入力人件費','Toast打刻が無い日',m(manual),false);
+  h+=line('Labor額 合計','給与＋税＋保険',m(total),true);
+  h+='<div style="display:flex;justify-content:space-between;padding:8px 0"><span style="font-size:12px;color:var(--muted)">累計売上（本日まで）</span><b>'+m(sales)+'</b></div>';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0"><span style="font-size:13px;font-weight:700">累計人件費率 <span style="font-size:10px;color:var(--muted);font-weight:400">目標 ≤'+laborTarget+'%</span></span><span style="font-size:22px;font-weight:800;color:'+col+'">'+rate+'%</span></div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 固定給・保険は暦日割り、その他は実勤怠×時給。給与税17%込み。累計人件費率＝Labor額合計 ÷ 累計売上（本日までの実績日）。予算の人件費率と同じ計算です。</div>';
+  h+='</div>';
+  return h;
+}
 function renderLabor() {
   var financial = !!(ROLE_CONFIG[curRole]||{}).financial;
   if (!financial && curRole!=='sl') return financialBlocked();
@@ -11732,6 +11767,7 @@ function renderLabor() {
   var tabDefs = [['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']];
   html += `<div class="phase-tabs">${tabDefs.map(function(td){ return `<div class="phase-tab${laborTab===td[0]?' active':''}" onclick="setLaborTab('${td[0]}')">${td[1]}</div>`; }).join('')}</div>`;
   if (laborTab==='attendance') return html + renderAttendanceBody(storeId, store);
+  html += laborSummaryCard(storeId);
   if (laborTab==='detail') return html + renderLaborDetail(storeId, store);
   return html + renderLaborHours(storeId, store);
 }
@@ -11803,7 +11839,7 @@ function renderLaborHours(storeId, store) {
   // 日別テーブル
   html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>日別 労働時間</div>
     <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
-      <th>日付</th><th>売上</th><th>予定h</th><th>実績h</th><th>差異</th>${canWage?'<th>Labor%</th>':''}<th>$/h</th></tr></thead><tbody>`;
+      <th>日付</th><th>売上</th><th>予定h</th><th>実績h</th><th>差異</th>${canWage?'<th>時給%</th>':''}<th>$/h</th></tr></thead><tbody>`;
   rows.forEach(r=>{
     html += `<tr style="cursor:pointer" onclick="openLaborBreakdown('${storeId}','${r.date}')" title="タップで従業員別の内訳">
       <td>${r.date.slice(5)}(${r.dow})</td>
@@ -11816,7 +11852,7 @@ function renderLaborHours(storeId, store) {
     </tr>`;
   });
   html += `</tbody></table>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px">予定h=公開シフト、実績h=Toast打刻。$/h=売上÷実績労働時間。</div></div>`;
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">予定h=公開シフト、実績h=Toast打刻。$/h=売上÷実績労働時間。<br>時給%＝時給ベース（給与税・保険は含みません）。税・保険込みの<b>実効人件費率</b>は上部「人件費サマリー」を参照。</div></div>`;
 
   // ⑤ 前月同週比較
   html += renderPrevSameWeekCompare(storeId);
@@ -11960,6 +11996,12 @@ function renderLaborOverview() {
         ${kpi('Labor率', s.labor+'%', '目標 ≤'+laborTarget+'%', color)}
         ${laborTile}
       </div>
+      ${(function(){ var cc=cumulativeToToday(s.id); var m=function(v){return '$'+Math.round(v).toLocaleString();};
+        return '<div style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:6px">'
+          +'<span>給与合計 <b style="color:var(--tm)">'+m(cc.laborWageToToday)+'</b></span>'
+          +'<span>給与税 <b>'+m(cc.laborTaxToToday)+'</b></span>'
+          +'<span>保険料 <b>'+m(cc.laborInsToToday)+'</b></span>'
+          +'<span>＝ Labor額 <b style="color:var(--accent)">'+m(cc.laborToToday)+'</b> <span style="font-size:9px">(本日まで)</span></span></div>'; })()}
     </div>`;
   });
   html += `<div class="card"><div class="card-title"><i class="ti ti-calendar"></i>週次シフトのLabor Cost</div>
@@ -14531,25 +14573,91 @@ function _mileRow(r, withActions){
   }
   return h+'</div>';
 }
+var mileagePastOpen=false;
+function canMileageMonthEnd(){ return ['ceo','gm','office'].indexOf(curRole)>=0; }
+function mileageMonthEndClose(mk){
+  if(!canMileageMonthEnd()){ alert('月末処理の権限がありません（経理・GM・CEO）'); return; }
+  mk = mk || new Date().toISOString().slice(0,7);
+  var arr=getMileageRequests();
+  var target=arr.filter(function(r){ return !r.archived && (r.date||'').slice(0,7)===mk; });
+  if(!target.length){ alert(mk+' の未処理レコードがありません'); return; }
+  var apprRecs=target.filter(function(r){return r.status==='承認';});
+  var apprSum=apprRecs.reduce(function(a,r){return a+(r.amount||0);},0);
+  var pend=target.filter(function(r){return r.status==='申請中';}).length;
+  var msg=mk+' の月末処理を実行します。\n承認済み '+apprRecs.length+'件（$'+apprSum.toFixed(2)+'）を精算確定として過去ログへ移動します。';
+  if(pend) msg+='\n⚠ 申請中 '+pend+'件も過去ログへ移動します（未承認のまま記録されます）。先に承認/却下することを推奨します。';
+  msg+='\n\nよろしいですか？';
+  if(!confirm(msg)) return;
+  var now=new Date().toLocaleString('ja'); var by=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole;
+  target.forEach(function(r){ r.archived=true; r.archivedMonth=mk; r.archivedAt=now; r.archivedBy=by; });
+  saveMileageReqs(arr);
+  showToast(mk+' を月末処理しました（過去ログへ移動）','success');
+  renderPage('mileage');
+}
+function renderMileagePastLog(archived){
+  var byMonth={};
+  archived.forEach(function(r){ var mk=r.archivedMonth||(r.date||'').slice(0,7); (byMonth[mk]=byMonth[mk]||[]).push(r); });
+  var months=Object.keys(byMonth).sort().reverse();
+  var h='';
+  months.forEach(function(mk){
+    var recs=byMonth[mk];
+    var appr=recs.filter(function(r){return r.status==='承認';});
+    var tot=appr.reduce(function(a,r){return a+(r.amount||0);},0);
+    var byStaff={}; appr.forEach(function(r){ byStaff[r.employee]=(byStaff[r.employee]||0)+(r.amount||0); });
+    h+='<details style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><summary style="cursor:pointer;font-size:13px;font-weight:600">'+mk+' <span style="color:var(--green)">$'+tot.toFixed(2)+'</span> <span style="font-size:10px;color:var(--muted);font-weight:400">／ '+Object.keys(byStaff).length+'名・'+appr.length+'件'+(recs[0].archivedBy?(' · 処理: '+escapeHtml(recs[0].archivedBy)):'')+'</span></summary>';
+    h+='<table class="inv-table" style="width:100%;font-size:11px;margin-top:4px"><tbody>';
+    Object.keys(byStaff).sort(function(a,b){return byStaff[b]-byStaff[a];}).forEach(function(n){
+      var cnt=appr.filter(function(r){return r.employee===n;}).length;
+      h+='<tr><td style="padding:3px 0">'+escapeHtml(n)+' <span style="font-size:9px;color:var(--muted)">('+cnt+'件)</span></td><td style="text-align:right;font-weight:600">$'+byStaff[n].toFixed(2)+'</td></tr>';
+    });
+    h+='</tbody></table></details>';
+  });
+  return h;
+}
 function renderMileage(){
   var all=getMileageRequests(); var me=mileMyName(); var isMgr=canManageMileage();
   var c=getMileageConfig();
+  var active=all.filter(function(r){return !r.archived;});
+  var curMonth=new Date().toISOString().slice(0,7);
   var html='<div class="section-header"><div class="section-title">ガソリン代申請</div>'
     +'<div style="display:flex;gap:6px">'+(isMgr?'<button class="btn btn-secondary btn-sm" onclick="openMileageConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
     +(canSubmitMileage()?'<button class="btn btn-primary btn-sm" onclick="openMileageModal()"><i class="ti ti-plus"></i> 申請</button>':'')+'</div></div>';
   html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。「Google Mapsで距離を調べる」で出発地→目的地の距離を確認し、マイルで入力 → $'+c.ratePerMile+'/マイルで自動算定します。</div>';
   if(isMgr){
-    var pending=all.filter(function(r){ return r.status==='申請中' && canApproveMileage(r); });
+    var pending=active.filter(function(r){ return r.status==='申請中' && canApproveMileage(r); });
     html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'">'+pending.length+'</span>'+(pending.length?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go(\'approval\')"><i class="ti ti-checklist"></i> 承認センターで承認</button>':'')+'</div>';
     html+= pending.length ? pending.map(function(r){return _mileRow(r,null);}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
     html+='</div>';
-    var approved=all.filter(function(r){ return r.status==='承認' && canApproveMileage(r); }).sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}).slice(0,15);
-    if(approved.length){
-      var sum=approved.reduce(function(a,r){return a+(r.amount||0);},0);
-      html+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--green)"></i>承認済み（直近）<span class="tag tag-green" style="margin-left:auto">$'+sum.toFixed(2)+'</span></div>'+approved.map(function(r){return _mileRow(r,null);}).join('')+'</div>';
+    // 今月の精算（スタッフ別・承認済み）
+    var moApproved=active.filter(function(r){ return r.status==='承認' && (r.date||'').slice(0,7)===curMonth && canApproveMileage(r); });
+    var byStaff={}; moApproved.forEach(function(r){ byStaff[r.employee]=(byStaff[r.employee]||0)+(r.amount||0); });
+    var staffNames=Object.keys(byStaff).sort(function(a,b){return byStaff[b]-byStaff[a];});
+    var moTotal=moApproved.reduce(function(a,r){return a+(r.amount||0);},0);
+    html+='<div class="card"><div class="card-title"><i class="ti ti-calendar-dollar" style="color:var(--green)"></i>'+curMonth+' 精算（スタッフ別・承認済み）<span class="tag tag-green" style="margin-left:auto">$'+moTotal.toFixed(2)+'</span></div>';
+    if(staffNames.length){
+      html+='<table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">スタッフ</th><th style="text-align:center">件数</th><th style="text-align:right">精算額</th></tr></thead><tbody>';
+      staffNames.forEach(function(n){
+        var cnt=moApproved.filter(function(r){return r.employee===n;}).length;
+        html+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 0;font-weight:600">'+escapeHtml(n)+'</td><td style="text-align:center;color:var(--muted)">'+cnt+'件</td><td style="text-align:right;font-weight:700;color:var(--green)">$'+byStaff[n].toFixed(2)+'</td></tr>';
+      });
+      html+='</tbody></table>';
+    } else {
+      html+='<div style="font-size:12px;color:var(--muted);padding:4px 0">今月の承認済み精算はまだありません</div>';
+    }
+    if(canMileageMonthEnd()){
+      html+='<button class="btn btn-primary btn-sm" style="width:100%;margin-top:10px" onclick="mileageMonthEndClose(\''+curMonth+'\')"><i class="ti ti-archive"></i> '+curMonth+' を月末処理（過去ログへ）</button>';
+      html+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> 月末処理するとこの月の申請が過去ログへ移動し、当月の積み上げがリセットされます。</div>';
+    }
+    html+='</div>';
+    // 過去ログ（月末処理済み）
+    var archived=all.filter(function(r){return r.archived && canApproveMileage(r);});
+    if(archived.length){
+      html+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--muted)"></i>過去ログ（月末処理済み）<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="mileagePastOpen=!mileagePastOpen;renderPage(\'mileage\')">'+(mileagePastOpen?'閉じる':'開く')+'</button></div>';
+      if(mileagePastOpen){ html+=renderMileagePastLog(archived); }
+      html+='</div>';
     }
   }
-  var mine=all.filter(function(r){return r.employee===me;});
+  var mine=active.filter(function(r){return r.employee===me;});
   html+='<div class="card"><div class="card-title"><i class="ti ti-gas-station"></i>自分の申請</div>';
   html+= mine.length ? mine.slice().reverse().map(function(r){return _mileRow(r,'cancel');}).join('') : '<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">申請履歴なし</div>';
   html+='</div>';
@@ -24012,6 +24120,7 @@ function approveItem(id, status) {
     if (a.type==='休暇' && a.ref) { try{ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status=(status==='approved'?'承認':'却下'); _v.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _v.approvedAt=new Date().toLocaleString('ja'); saveVacations(_vs); } }catch(_e){} }
     if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(status==='approved'?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=new Date().toLocaleString('ja'); saveMileageReqs(_ms); } }catch(_e){} }
     if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(status==='approved'?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=new Date().toLocaleString('ja'); saveExpenseReqs(_es); } }catch(_e){} }
+    if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(status==='approved'?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=new Date().toLocaleString('ja'); saveReimbursements(_rbs); } }catch(_e){} }
     try{ addNotif({ type:(status==='approved'?'approved':'reject'), title:(a.type||'申請')+(status==='approved'?' が承認されました':' が却下されました'), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
     renderPage('approval'); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
   }
@@ -25944,6 +26053,7 @@ function renderInvoice() {
   var invoices = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
   var html = `<div class="section-header"><div><div class="section-title">Invoice管理</div><div class="section-sub">アップロード→照合→価格更新</div></div>
     <div style="display:flex;gap:6px">${['ceo','gm','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> Drive連携</button>`:''}<button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> Invoice登録</button></div></div>`;
+  html += renderReimburseCard();
   if (!invoices.length) {
     html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-file-invoice" style="font-size:32px;margin-bottom:8px;display:block"></i>Invoice履歴なし</div>`;
   } else {
@@ -26016,6 +26126,7 @@ function openInvoiceModal() {
       <div style="display:flex;gap:8px">
         <button class="btn ${invoiceDocType==='Invoice'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Invoice')">業者Invoice</button>
         <button class="btn ${invoiceDocType==='Receipt'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Receipt')">買い出しReceipt</button>
+        <button class="btn ${invoiceDocType==='Reimburse'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Reimburse')">建て替え経費</button>
       </div>
     </div>
     <div class="form-group"><label class="form-label">業者 / 購入先</label>
@@ -26036,7 +26147,28 @@ function openInvoiceModal() {
       <select class="form-select" id="inv-purpose"><option value="">（選択）</option><option>仕入れ・仕込み</option><option>賄い</option><option>差し入れ</option><option>面談</option><option>イベント・販促</option><option>備品・消耗品</option><option>その他</option></select>
       <input class="form-input" id="inv-purpose-memo" placeholder="用途の補足（例: 新人面談ランチ）" style="margin-top:6px">
     </div>` : ''}
-    <div class="form-group"><label class="form-label">${invoiceDocType}画像（AI読取）</label>
+    ${invoiceDocType==='Reimburse' ? `<div class="form-group" style="border:1px solid var(--accent);border-radius:8px;padding:10px;background:rgba(124,58,237,0.05)">
+      <label class="form-label" style="color:var(--accent)"><i class="ti ti-user-dollar"></i> 建て替え者（社員以外も可）<span style="color:var(--accent2)">*</span></label>
+      <input class="form-input" id="inv-payer" list="inv-payer-list" placeholder="氏名を入力（社員はリストから選択可）" autocomplete="off">
+      <datalist id="inv-payer-list">${getEmployees().filter(function(e){return !e.status||e.status==='在籍';}).map(function(e){return '<option value="'+escapeHtml(e.name)+'">';}).join('')}</datalist>
+      <label class="form-label" style="margin-top:8px">連絡先（任意・社員以外の返済用）</label>
+      <input class="form-input" id="inv-payer-contact" placeholder="電話 / メール / Venmo等（返済に使用）">
+      <label class="form-label" style="margin-top:8px">立替金額（$）<span style="color:var(--accent2)">*</span></label>
+      <input class="form-input" id="inv-reimburse-amount" type="number" step="0.01" inputmode="decimal" placeholder="例: 45.80">
+      <label class="form-label" style="margin-top:8px">用途</label>
+      <select class="form-select" id="inv-purpose"><option value="">（選択）</option><option>仕入れ・仕込み</option><option>賄い</option><option>差し入れ</option><option>面談</option><option>イベント・販促</option><option>備品・消耗品</option><option>修繕・設備</option><option>その他</option></select>
+      <input class="form-input" id="inv-purpose-memo" placeholder="用途の補足（例: 急ぎの備品購入）" style="margin-top:6px">
+    </div>
+    <div class="form-group"><label class="form-label">レシート画像（添付）</label>
+      <input type="file" id="rb-photo" accept="image/*" capture="environment" style="display:none" onchange="attachReimburseReceipt(this)">
+      <input type="file" id="rb-file" accept="image/*,application/pdf" style="display:none" onchange="attachReimburseReceipt(this)">
+      <div style="border:2px dashed var(--border);border-radius:8px;padding:18px;text-align:center;cursor:pointer" onclick="document.getElementById('rb-photo').click()">
+        <i class="ti ti-camera" style="font-size:28px;color:var(--muted)"></i>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px">レシートを撮影／選択して添付</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:6px" onclick="document.getElementById('rb-file').click()"><i class="ti ti-file-upload"></i> ファイルから添付（PDF/画像）</button>
+      <div id="rb-attach-status" style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 金額は上の「立替金額」に手入力。レシート画像は承認者・経理が確認できます。</div>
+    </div>` : `<div class="form-group"><label class="form-label">${invoiceDocType}画像（AI読取）</label>
       <input type="file" id="inv-photo" accept="image/*" capture="environment" style="display:none" onchange="realInvoiceOCR(this)">
       <input type="file" id="inv-file" accept="image/*,application/pdf" style="display:none" onchange="onInvoiceFilePicked(this)">
       <div style="border:2px dashed var(--border);border-radius:8px;padding:18px;text-align:center;cursor:pointer" onclick="document.getElementById('inv-photo').click()">
@@ -26048,11 +26180,11 @@ function openInvoiceModal() {
         <button class="btn btn-secondary btn-sm" style="flex:1" onclick="addManualInvoiceLine()"><i class="ti ti-plus"></i> 手入力で品目追加</button>
       </div>
       <div style="font-size:10.5px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> メール等でデータ受領したInvoice（PDF/画像）をそのまま読み込めます。PDFは自動で画像化してAI読取します（最大3ページ）。</div>
-    </div>
+    </div>`}
     <div id="ocr-result"></div>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-      <button class="btn btn-primary" onclick="saveInvoice()">保存・価格更新</button>
+      <button class="btn btn-primary" onclick="saveInvoice()">${invoiceDocType==='Reimburse'?'申請する':'保存・価格更新'}</button>
     </div>`);
   setTimeout(renderOCRResult, 30);
 }
@@ -26397,6 +26529,7 @@ function closeInvOverlay(id){ var o=document.getElementById(id); if(o){ try{ doc
 var _invLinkIdx=null, _invLinkQ='', _invNewIdx=null;
 
 async function saveInvoice() {
+  if (invoiceDocType==='Reimburse') { return saveReimbursement(); }
   if (!invoiceTmpLines.length) { alert('品目がありません。写真読取か「手入力で品目追加」で追加してください'); return; }
   var vendor = document.getElementById('inv-vendor').value.trim();
   if (!vendor) { alert('業者・購入先を入力してください'); return; }
@@ -26492,6 +26625,153 @@ async function saveInvoice() {
   closeModalDirect();
   showToast(invoiceDocType==='Receipt'?'Receiptを保存し、買い出し＋価格を更新しました':'Invoiceを保存し、食材価格を更新しました', 'success');
   renderPage('invoice');
+}
+
+/* ============================================================
+   建て替え経費（社員以外も可）：申請→承認(管理者or経理1名)→返済(支払済)管理
+============================================================ */
+function getReimbursements(){ return ls('reimbursements', [])||[]; }
+function saveReimbursements(v){ lsSet('reimbursements', v); }
+function canManageReimburse(){ return ['ceo','gm','office','am'].indexOf(curRole)>=0; }
+function canApproveReimburse(r){
+  if(['ceo','gm','office'].indexOf(curRole)>=0) return true;
+  if(curRole==='am') return (myAmStores().indexOf(r.storeId)>=0) || (mySupportStores().indexOf(r.storeId)>=0);
+  return false;
+}
+function canMarkReimbursePaid(){ return ['ceo','gm','office'].indexOf(curRole)>=0; }
+function attachReimburseReceipt(input){
+  var f=input&&input.files&&input.files[0]; if(!f) return;
+  window._invoicePhotoFile=f;
+  var st=document.getElementById('rb-attach-status');
+  if(st) st.innerHTML='<span style="color:var(--green)"><i class="ti ti-check"></i> 添付: '+escapeHtml(f.name)+'（'+Math.round(f.size/1024)+'KB）</span>';
+}
+async function saveReimbursement(){
+  var payer=(docVal('inv-payer')||'').trim();
+  if(!payer){ alert('建て替え者（氏名）を入力してください'); return; }
+  var amount=parseFloat(docVal('inv-reimburse-amount'))||0;
+  if(amount<=0){ alert('立替金額を入力してください'); return; }
+  var selEl=document.getElementById('invoice-store');
+  var storeId=selEl?selEl.value:(window._invoiceStore||(curStore==='ALL'?STORES[0].id:curStore));
+  var storeObj=STORES.find(function(x){return x.id===storeId;});
+  var purpose=(docVal('inv-purpose')||''); var pmemo=(docVal('inv-purpose-memo')||'').trim();
+  var vendor=(docVal('inv-vendor')||'').trim();
+  var empMatch=getEmployees().find(function(e){return e.name===payer;});
+  var imagePath=null;
+  if(window._invoicePhotoFile){
+    var sb=document.querySelector('.modal .btn-primary'); if(sb){sb.disabled=true;sb.textContent='画像を保存中…';}
+    imagePath=await uploadInvoiceImage(window._invoicePhotoFile, storeObj?storeObj.name:storeId);
+  }
+  var rec={ id:'rb'+Date.now(), payer:payer, payerContact:(docVal('inv-payer-contact')||'').trim(),
+    isEmployee:!!empMatch, empId:empMatch?empMatch.id:'', storeId:storeId, amount:Math.round(amount*100)/100,
+    vendor:vendor, purpose:purpose, purposeMemo:pmemo, date:new Date().toISOString().slice(0,10),
+    imagePath:imagePath||null, driveUrl:'', driveFileId:'',
+    status:'申請中', approvedBy:'', approvedAt:'', rejectReason:'',
+    payStatus:'未払い', paidAt:'', paidBy:'', payMethodNote:'',
+    by:(ROLE_CONFIG[curRole]||{}).name||'', byUser:(curUserName||''), createdAt:new Date().toLocaleString('ja') };
+  var arr=getReimbursements(); arr.push(rec); saveReimbursements(arr);
+  var stN=(storeObj?storeObj.name:storeId);
+  try{ addApproval({type:'建替経費', title:payer+' 立替 $'+rec.amount.toFixed(2)+(purpose?'（'+purpose+'）':'')+' / '+stN, from:(curUserName||rec.by), store:storeId, ref:rec.id}); }catch(e){}
+  try{ notifyAccounting('【建て替え経費】'+stN+' '+payer+' $'+rec.amount.toFixed(2),
+      '建て替え経費の承認依頼です。\n建て替え者: '+payer+(rec.payerContact?'（'+rec.payerContact+'）':'')+'\n店舗: '+stN+'\n金額: $'+rec.amount.toFixed(2)+(purpose?'\n用途: '+purpose+(pmemo?'（'+pmemo+'）':''):'')+(vendor?'\n購入先: '+vendor:'')+'\n申請者: '+(curUserName||rec.by)+'\n\nOSの「承認センター」または「Invoice管理」で承認してください。'); }catch(e){}
+  try{ addNotif({ type:'approval', title:'承認待ち：建替経費', text:(stN+' / '+payer+' $'+rec.amount.toFixed(2)).slice(0,140), toRoles:['office','gm','am'], toStore:storeId, page:'approval', refId:rec.id }); }catch(e){}
+  if(imagePath){
+    var sb2=document.querySelector('.modal .btn-primary'); if(sb2){sb2.disabled=true;sb2.textContent='Driveへ保存中…';}
+    try{
+      var iso=rec.date; var ext=(String(imagePath).split('.').pop()||'jpg');
+      var dn=safeFileName(payer)+'_'+iso+'_'+safeFileName(stN)+'_'+rec.amount.toFixed(2)+'.'+ext;
+      var pp={ bucket:'invoices', storagePath:imagePath, fileName:dn, kind:'receipt', empName:payer, subfolder:'Reimbursements/'+safeFileName(payer)+'/'+iso.slice(0,7) };
+      var dr=await driveSync('push', pp);
+      if(dr&&dr.ok){ rec.driveFileId=dr.fileId||''; rec.driveUrl=dr.webViewLink||''; saveReimbursements(arr); }
+    }catch(e){ console.warn('reimburse drive push', e); }
+  }
+  closeModalDirect();
+  showToast('建て替え経費を申請しました（$'+rec.amount.toFixed(2)+'）。管理者・経理へ通知しました。','success');
+  renderPage('invoice');
+}
+function reimburseScoped(){
+  var all=getReimbursements();
+  if(['ceo','gm','office'].indexOf(curRole)>=0) return all;
+  var ids=invoiceStoreCandidates().map(function(s){return s.id;});
+  return all.filter(function(r){ return ids.indexOf(r.storeId)>=0 || r.byUser===curUserName || r.payer===curUserName; });
+}
+function _rbStoreName(id){ return (STORES.find(function(s){return s.id===id;})||{name:id}).name; }
+function approveReimburse(id, ok){
+  var arr=getReimbursements(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
+  if(!canApproveReimburse(r)){ alert('承認権限がありません'); return; }
+  if(!ok){ var re=prompt('却下理由（任意）:'); if(re===null) return; r.status='却下'; r.rejectReason=re||''; }
+  else { r.status='承認'; }
+  r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.approvedAt=new Date().toLocaleString('ja');
+  saveReimbursements(arr);
+  try{ resolveApprovalByRef('建替経費', id, ok?'approved':'rejected'); }catch(e){}
+  try{ addNotif({type:(ok?'approved':'reject'), title:'建替経費'+(ok?' が承認されました':' が却下されました'), text:(r.payer+' $'+(r.amount||0).toFixed(2)).slice(0,140), toUser:(r.byUser||''), page:'invoice', refId:r.id}); }catch(e){}
+  showToast(ok?'承認しました':'却下しました', ok?'success':'danger'); renderPage('invoice');
+}
+function markReimbursePaid(id){
+  if(!canMarkReimbursePaid()){ alert('支払い処理は経理・GM・CEOのみ'); return; }
+  var arr=getReimbursements(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
+  if(r.status!=='承認'){ alert('承認済みの立替のみ支払い済みにできます'); return; }
+  var note=prompt('支払い方法・メモ（任意・例: 現金 / Venmo / 給与同時）:'); if(note===null) return;
+  r.payStatus='支払済'; r.paidAt=new Date().toLocaleString('ja'); r.paidBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.payMethodNote=note||'';
+  saveReimbursements(arr);
+  try{ addNotif({type:'approved', title:'立替金 支払済', text:(r.payer+' $'+(r.amount||0).toFixed(2)).slice(0,140), toUser:(r.byUser||''), page:'invoice', refId:r.id}); }catch(e){}
+  showToast(r.payer+' へ $'+(r.amount||0).toFixed(2)+' を支払済みにしました','success'); renderPage('invoice');
+}
+function undoReimbursePaid(id){
+  if(!canMarkReimbursePaid()) return;
+  var arr=getReimbursements(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
+  if(!confirm('支払済みを取り消しますか？')) return;
+  r.payStatus='未払い'; r.paidAt=''; r.paidBy=''; r.payMethodNote=''; saveReimbursements(arr); renderPage('invoice');
+}
+function _rbRow(r, mgr){
+  var sc=r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
+  var pc=r.payStatus==='支払済'?'var(--green)':'var(--yellow)';
+  var h='<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+    +'<div style="display:flex;justify-content:space-between;gap:8px"><div style="flex:1">'
+    +'<div style="font-size:13px;font-weight:700">'+escapeHtml(r.payer)+(r.isEmployee?'':' <span style="font-size:9px;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:0 4px">社外</span>')+' <span style="font-size:13px;color:var(--green)">$'+(r.amount||0).toFixed(2)+'</span></div>'
+    +'<div style="font-size:11px;color:var(--muted)">'+escapeHtml(_rbStoreName(r.storeId))+' · '+escapeHtml(r.date||'')+(r.purpose?' · '+escapeHtml(r.purpose):'')+(r.vendor?' · '+escapeHtml(r.vendor):'')+'</div>'
+    +(r.purposeMemo?'<div style="font-size:11px;color:var(--muted)">memo: '+escapeHtml(r.purposeMemo)+'</div>':'')
+    +(r.payerContact?'<div style="font-size:11px;color:var(--muted)">連絡先: '+escapeHtml(r.payerContact)+'</div>':'')
+    +(r.status==='却下'&&r.rejectReason?'<div style="font-size:11px;color:var(--red)">却下理由: '+escapeHtml(r.rejectReason)+'</div>':'')
+    +(r.status==='承認'?'<div style="font-size:11px;color:'+pc+';font-weight:600">'+(r.payStatus==='支払済'?('✓ 支払済 '+escapeHtml(r.paidAt||'')+(r.paidBy?'（'+escapeHtml(r.paidBy)+'）':'')+(r.payMethodNote?' / '+escapeHtml(r.payMethodNote):'')):'● 未払い')+'</div>':'')
+    +'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
+    +(r.imagePath?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="viewInvoiceImage(\''+String(r.imagePath).replace(/'/g,"\\'")+'\')"><i class="ti ti-photo"></i></button>':'')
+    +(r.driveUrl?'<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="'+r.driveUrl+'" target="_blank"><i class="ti ti-brand-google-drive"></i></a>':'')
+    +'<span class="tag '+sc+'">'+r.status+'</span></div></div>';
+  if(mgr){
+    var btns='';
+    if(r.status==='申請中' && canApproveReimburse(r)){
+      btns+='<button class="btn btn-success btn-sm" style="padding:2px 12px" onclick="approveReimburse(\''+r.id+'\',true)"><i class="ti ti-check"></i> 承認</button>'
+        +'<button class="btn btn-danger btn-sm" style="padding:2px 12px" onclick="approveReimburse(\''+r.id+'\',false)"><i class="ti ti-x"></i> 却下</button>';
+    }
+    if(r.status==='承認' && r.payStatus!=='支払済' && canMarkReimbursePaid()){
+      btns+='<button class="btn btn-primary btn-sm" style="padding:2px 12px" onclick="markReimbursePaid(\''+r.id+'\')"><i class="ti ti-cash"></i> 支払済にする</button>';
+    }
+    if(r.status==='承認' && r.payStatus==='支払済' && canMarkReimbursePaid()){
+      btns+='<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="undoReimbursePaid(\''+r.id+'\')">支払取消</button>';
+    }
+    if(btns) h+='<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">'+btns+'</div>';
+  }
+  return h+'</div>';
+}
+function renderReimburseCard(){
+  if(['ceo','gm','office','am'].indexOf(curRole)<0 && !getReimbursements().some(function(r){return r.byUser===curUserName||r.payer===curUserName;})) return '';
+  var scoped=reimburseScoped();
+  var mgr=canManageReimburse();
+  var pending=scoped.filter(function(r){return r.status==='申請中';});
+  var unpaid=scoped.filter(function(r){return r.status==='承認' && r.payStatus!=='支払済';});
+  var paid=scoped.filter(function(r){return r.status==='承認' && r.payStatus==='支払済';}).sort(function(a,b){return (b.paidAt||'').localeCompare(a.paidAt||'');}).slice(0,10);
+  var rej=scoped.filter(function(r){return r.status==='却下';}).slice(-5);
+  var unpaidSum=unpaid.reduce(function(a,r){return a+(r.amount||0);},0);
+  var h='<div class="card"><div class="card-title"><i class="ti ti-user-dollar" style="color:var(--accent)"></i>建て替え経費'
+    +(unpaid.length?'<span class="tag tag-yellow" style="margin-left:auto">未払い $'+unpaidSum.toFixed(2)+'</span>':'<span class="tag tag-gray" style="margin-left:auto">未払いなし</span>')+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><i class="ti ti-info-circle"></i> 社員以外が立て替えた経費もここで管理。「Invoice登録」→種別「建て替え経費」から申請。承認＝管理者または経理の1名でOK。</div>';
+  if(pending.length){ h+='<div style="font-size:12px;font-weight:700;margin:6px 0 2px">承認待ち <span class="tag tag-yellow">'+pending.length+'</span></div>'+pending.map(function(r){return _rbRow(r,mgr);}).join(''); }
+  if(unpaid.length){ h+='<div style="font-size:12px;font-weight:700;margin:8px 0 2px">承認済み・未払い <span class="tag tag-yellow">'+unpaid.length+'</span></div>'+unpaid.map(function(r){return _rbRow(r,mgr);}).join(''); }
+  if(paid.length){ h+='<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--muted)">支払済ログ（直近'+paid.length+'件）</summary>'+paid.map(function(r){return _rbRow(r,mgr);}).join('')+'</details>'; }
+  if(rej.length){ h+='<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">却下（直近）</summary>'+rej.map(function(r){return _rbRow(r,false);}).join('')+'</details>'; }
+  if(!pending.length && !unpaid.length && !paid.length && !rej.length){ h+='<div style="font-size:12px;color:var(--muted);padding:6px 0">建て替え経費の申請はまだありません</div>'; }
+  h+='</div>';
+  return h;
 }
 
 /* ============================================================
