@@ -7139,7 +7139,7 @@ function budgetHasRealData(b){
   }catch(e){}
   return false;
 }
-function budgetIsRegistered(b){ return !!budgetAuthorLabel(b) || budgetHasRealData(b); }
+function budgetIsRegistered(b){ return !!budgetAuthorLabel(b); } // 登録者（提出/承認/編集/作成）がある予算のみ有効。データだけ＝デモは未登録扱い
 /* デモ/空予算（作成者なし・実データなし）を「未登録（0・下書き）」に正規化 */
 function normalizeBudgetsDemo(){
   try{
@@ -7149,6 +7149,8 @@ function normalizeBudgetsDemo(){
       if(b.status && b.status!=='下書き'){ b.status='下書き'; changed=true; }
       if(b.actual){ b.actual=0; changed=true; }
       if(b.bases && b.bases.length){ b.bases=[]; changed=true; }
+      if(b.segments){ b.segments=null; changed=true; }
+      if(b.dow){ b.dow=null; changed=true; }
     });
     if(changed) saveBudgets(budgets);
   }catch(e){}
@@ -7198,7 +7200,7 @@ function renderBudgetSetup() {
     var fcB = segmentsFcBudget(segs);
     var profit = total - laborB - fcB;
     var _author = budgetAuthorLabel(b);
-    var _registered = !!_author || budgetHasRealData(b);
+    var _registered = !!_author;
     var st = _registered ? (b.status || '下書き') : '未登録';
     var editable = canEditBudget(b);
 
@@ -7764,6 +7766,7 @@ async function refreshNow(){
 }
 /* 基礎根拠から曜日別の日次予算を取得 */
 function dayBudgetFromBases(b, dow) {
+  if (b && typeof budgetAuthorLabel==='function' && !budgetAuthorLabel(b)) return 0; // 登録者のない予算（デモ/未登録）は0
   // 曜日別モードが設定されていれば、その曜日の客数×客単価（3区分）を直接使う
   if (usesDowMode(b)) {
     var idx = DOW.indexOf(dow);
