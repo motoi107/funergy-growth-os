@@ -1446,6 +1446,34 @@ function kpiAchievement(storeId, offset){
   });
   return { pct: n? Math.round(sum/n*100):null, met:met, total:total, measured:n };
 }
+/* 客単価3パターン（ランチ/ディナー/全体）の1行表示。Toast出数同期済みのL/D売上・客数から算出 */
+function ppaTriple(storeId, offset){
+  try{
+    var ms = safeMonthStats(storeId, offset||0);
+    if(!ms) return null;
+    var f = function(v){ return v!=null ? '$'+(Math.round(v*100)/100).toFixed(2) : '—'; };
+    return { l: f(ms.ppaLunch), d: f(ms.ppaDinner), all: f(ms.ppa),
+      lg: ms.lunchGuests||0, dg: ms.dinnerGuests||0, g: ms.guests||0,
+      has: (ms.ppa!=null || ms.ppaLunch!=null || ms.ppaDinner!=null) };
+  }catch(e){ return null; }
+}
+function ppaTripleLine(storeId, offset){
+  var p = ppaTriple(storeId, offset);
+  if(!p || !p.has) return '';
+  return `<span><span style="font-size:10px;color:var(--muted)">客単価 </span><b style="color:var(--tm)">L ${p.l}</b><span style="font-size:10px;color:var(--muted)"> ／ </span><b style="color:var(--tm)">D ${p.d}</b><span style="font-size:10px;color:var(--muted)"> ／ </span><b style="color:var(--accent)">全体 ${p.all}</b></span>`;
+}
+function ppaTripleCard(storeId, offset, label){
+  var p = ppaTriple(storeId, offset);
+  if(!p) return '';
+  return `<div class="card"><div class="card-title"><i class="ti ti-receipt-2" style="color:var(--accent)"></i>客単価（${label||'当月'}）</div>
+    <div class="kpi-grid">
+      ${kpi('ランチ客単価', p.l, p.lg?('客数 '+p.lg.toLocaleString()):'—', 'var(--yellow)')}
+      ${kpi('ディナー客単価', p.d, p.dg?('客数 '+p.dg.toLocaleString()):'—', 'var(--accent)')}
+      ${kpi('全体客単価', p.all, p.g?('客数 '+p.g.toLocaleString()):'—', 'var(--tm)')}
+    </div>
+    ${!p.has?'<div style="font-size:10.5px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> L/D別の売上・客数はToast同期後に表示されます（右上「最新に更新」）。</div>':''}
+  </div>`;
+}
 /* 指定月の集計（ローカルのdailyActualsから）。集客L/D・客単価・テイクアウト比率・人件費 */
 function safeMonthStats(storeId, offset){
   try {
@@ -2855,7 +2883,11 @@ function getCashTips(storeId) { return ls('cash_tips_'+storeId, {}); }
 function setCashTips(storeId, data) { lsSet('cash_tips_'+storeId, data); }
 function getCashTip(storeId, date) { return getCashTips(storeId)[date] || {lunch:0, dinner:0, entered:false}; }
 function saveCashTip(storeId, date, lunch, dinner) {
-  var d = getCashTips(storeId); d[date] = {lunch:lunch||0, dinner:dinner||0, entered:true}; setCashTips(storeId, d);
+  var d = getCashTips(storeId); var prev = d[date];
+  var rec = {lunch:lunch||0, dinner:dinner||0, entered:true};
+  if (prev && prev.entered) { rec.by = prev.by||null; rec.at = prev.at||null; rec.editedBy = myName(); rec.editedAt = nowJP(); }
+  else { rec.by = myName(); rec.at = nowJP(); }
+  d[date] = rec; setCashTips(storeId, d);
 }
 /* キャッシュチップが未入力か（クレジットはあるのにキャッシュ未確定＝要入力） */
 function cashTipMissing(storeId, date) {
@@ -5074,6 +5106,7 @@ function renderDashboard() {
               <span><span style="font-size:10px;color:var(--muted)">FC </span><b style="color:${sFc}">${s.fc>0?s.fc+'%':'—'}</b></span>
               <span><span style="font-size:10px;color:var(--muted)">Labor </span><b style="color:${sL}">${s.labor>0?s.labor+'%':'—'}</b></span>
             </div>
+            ${(function(){var _p=ppaTripleLine(s.id,0); return _p?'<div style="margin-top:5px;font-size:13px">'+_p+'</div>':'';})()}
           </div>
           <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
         </div>`;
@@ -5606,7 +5639,9 @@ function renderStoreCmdTip(storeId, store, canEdit) {
   var av = getDailyActuals(storeId)[sel] || {};
   var hasCredit = av.lunchCreditTip!=null || av.dinnerCreditTip!=null;
   var html = `<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--green)"></i>チップ管理・日報
-    <input type="date" value="${sel}" onchange="setCmdTipDate(this.value)" style="margin-left:auto;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 6px;font-size:12px"></div>`;
+    <input type="date" value="${sel}" max="${today}" onchange="setCmdTipDate(this.value)" style="margin-left:auto;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 6px;font-size:12px"></div>`;
+  var _cash = getCashTips(storeId)[sel];
+  var _isFuture = sel > today, _isToday = sel === today;
 
   // キャッシュチップ未入力アラート
   if (cashTipMissing(storeId, sel)) {
@@ -5621,9 +5656,12 @@ function renderStoreCmdTip(storeId, store, canEdit) {
     <table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Lunch</td><td style="text-align:right">Dinner</td><td style="text-align:right">計</td></tr>
     <tr><td>クレジット</td><td style="text-align:right">$${tip.lunchCredit.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCredit.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCredit+tip.dinnerCredit).toFixed(2)}</td></tr>
     <tr style="color:var(--muted);font-size:11px"><td>手数料控除後(×0.965)</td><td style="text-align:right">$${(tip.lunchCredit*0.965).toFixed(2)}</td><td style="text-align:right">$${(tip.dinnerCredit*0.965).toFixed(2)}</td><td style="text-align:right">$${((tip.lunchCredit+tip.dinnerCredit)*0.965).toFixed(2)}</td></tr>
-    <tr><td>キャッシュ${canEdit?' <button class="btn btn-secondary btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(cashTipMissing(storeId,sel)?'入力':'修正')+'</button>':''}</td><td style="text-align:right">$${tip.lunchCash.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCash+tip.dinnerCash).toFixed(2)}</td></tr>
+    <tr><td>キャッシュ${canEdit&&!_isFuture?' <button class="btn '+(_isToday&&!(_cash&&_cash.entered)?'btn-primary':'btn-secondary')+' btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(_isToday?((_cash&&_cash.entered)?'修正':'入力'):'修正')+'</button>':''}${_isFuture?' <span style="font-size:9px;color:var(--muted)">未来日は入力不可</span>':''}</td><td style="text-align:right">$${tip.lunchCash.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCash+tip.dinnerCash).toFixed(2)}</td></tr>
     <tr style="font-weight:700;border-top:1px solid var(--border)"><td>チップ総額</td><td style="text-align:right">$${tip.lunchTotal.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerTotal.toFixed(2)}</td><td style="text-align:right;color:var(--green)">$${tip.total.toFixed(2)}</td></tr>
     </table>`;
+  if (_cash && _cash.entered && _cash.by) {
+    html += `<div style="font-size:10px;color:var(--muted);margin:-6px 0 8px"><i class="ti ti-user-check"></i> キャッシュ記録: ${escapeHtml(_cash.by)} ${escapeHtml(_cash.at||'')}${_cash.editedBy?` ／ <span style="color:var(--yellow)">修正: ${escapeHtml(_cash.editedBy)} ${escapeHtml(_cash.editedAt||'')}</span>`:''}</div>`;
+  }
 
   // 日報出力
   html += `<div style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px">
@@ -5634,19 +5672,28 @@ function renderStoreCmdTip(storeId, store, canEdit) {
 function setCmdTipDate(d) { window._cmdTipDate = d; renderPage('store_cmd'); }
 
 function openCashTipModal(storeId, date) {
+  var today = todayISO();
+  if (date > today) { showToast('未来日のキャッシュチップは入力できません', 'warning'); return; }
   var cash = getCashTip(storeId, date);
-  openModal(`<div class="modal-title">キャッシュチップ入力 — ${date} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  var isPast = date < today;
+  var isEdit = !!cash.entered;
+  openModal(`<div class="modal-title">キャッシュチップ${isEdit?'修正':isPast?'入力（過去分）':'入力'} — ${date} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    ${isPast?`<div class="alert alert-warning" style="padding:7px 10px;font-size:11px"><i class="ti ti-history"></i> 過去日の${isEdit?'修正':'入力'}です。${isEdit&&cash.by?`元の記録: ${escapeHtml(cash.by)} ${escapeHtml(cash.at||'')}。`:''}修正者・日時が記録に残ります。</div>`:''}
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Lunch キャッシュチップ ($)</label><input class="form-input" id="ct-lunch" type="number" inputmode="decimal" step="0.01" value="${cash.lunch||0}"></div>
-      <div class="form-group"><label class="form-label">Dinner キャッシュチップ ($)</label><input class="form-input" id="ct-dinner" type="number" inputmode="decimal" step="0.01" value="${cash.dinner||0}"></div>
+      <div class="form-group"><label class="form-label">Lunch キャッシュチップ ($) <span style="color:var(--red)">*</span></label><input class="form-input" id="ct-lunch" type="number" inputmode="decimal" step="0.01" value="${isEdit?cash.lunch:''}" placeholder="0の場合も「0」と入力"></div>
+      <div class="form-group"><label class="form-label">Dinner キャッシュチップ ($) <span style="color:var(--red)">*</span></label><input class="form-input" id="ct-dinner" type="number" inputmode="decimal" step="0.01" value="${isEdit?cash.dinner:''}" placeholder="0の場合も「0」と入力"></div>
     </div>
-    <div style="font-size:11px;color:var(--muted)">クレジットチップはToastから自動取得されます。ここには現金チップのみ入力してください。</div>
+    <div style="font-size:11px;color:var(--muted)">現金チップが無い日も「0」を入力して確定してください（空欄では保存できません）。クレジットチップはToastから自動取得されます。</div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveCashTipModal('${storeId}','${date}')">保存</button></div>`);
 }
 function saveCashTipModal(storeId, date) {
-  var l = parseFloat(document.getElementById('ct-lunch').value)||0;
-  var d = parseFloat(document.getElementById('ct-dinner').value)||0;
+  if (date > todayISO()) { showToast('未来日のキャッシュチップは入力できません', 'warning'); return; }
+  var lv = document.getElementById('ct-lunch').value;
+  var dv = document.getElementById('ct-dinner').value;
+  if (lv==='' || dv==='') { showToast('LunchとDinnerの両方に金額を入力してください（0の場合も「0」）', 'warning'); return; }
+  var l = parseFloat(lv), d = parseFloat(dv);
+  if (isNaN(l) || isNaN(d) || l<0 || d<0) { showToast('金額が正しくありません', 'warning'); return; }
   saveCashTip(storeId, date, l, d);
   closeModalDirect();
   showToast('キャッシュチップを保存しました', 'success');
@@ -5659,7 +5706,7 @@ function showDailyReport(storeId, date) {
   var av = getDailyActuals(storeId)[date] || {};
   var tip = tipForDay(storeId, date);
   var b = getBudgetForMonth(storeId, (date||'').slice(0,7) || curYm());
-  var bud = av.budget!=null ? av.budget : (b?dayBudgetFromBases(b, ['日','月','火','水','木','金','土'][new Date(date+'T00:00:00').getDay()]):0);
+  var bud = av.budget!=null ? av.budget : (b?dayBudgetFor(b, date, ['日','月','火','水','木','金','土'][new Date(date+'T00:00:00').getDay()]):0);
   var act = av.actual||0;
   var gt = guestCountType(storeId);
   var guestLabel = guestCountLabel(storeId);
@@ -6067,7 +6114,7 @@ function cumulativeToToday(storeId, ymOpt) {
   var laborWageToToday=0, laborTaxToToday=0, laborInsToToday=0, laborManualToToday=0;
   days.forEach(d => {
     var ov = actuals[d.date] || {};
-    var dayBud = ov.budget!=null ? ov.budget : (b?dayBudgetFromBases(b,d.dow):0);
+    var dayBud = ov.budget!=null ? ov.budget : (b?dayBudgetFor(b,d.date,d.dow):0);
     budMonth += dayBud;
     var dayAct = ov.actual!=null ? ov.actual : 0;
     actMonth += dayAct;
@@ -6161,7 +6208,7 @@ function msAgg(storeId, mi){
   var sales=0,budget=0,guests=0,food=0,labor=0,daysWithActual=0,trend=[];
   mi.days.forEach(function(d){
     var ov=actuals[d.date]||{};
-    var dayBud=ov.budget!=null?ov.budget:(b?dayBudgetFromBases(b,d.dow):0);
+    var dayBud=ov.budget!=null?ov.budget:(b?dayBudgetFor(b,d.date,d.dow):0);
     budget+=dayBud;
     var past=(mi.offset<0)||(d.date<todayStr); // 過去月=全日, 当月=前日まで
     var dayAct=(ov.actual!=null && past)?ov.actual:0;
@@ -7156,6 +7203,8 @@ function renderBudgetSetup() {
     var dow = getDow(b);
     var dowBd = dowMode ? dowSegBreakdown(dow) : null;
     var total = dowMode ? (dowBd.lunch+dowBd.dinner+dowBd.takeout) : segmentsTotal(segs);
+    var dayOv = hasDayBudget(b);
+    if (dayOv) { total = daysOfYm(curYm()).reduce(function(a,dd){ return a + dayBudgetFor(b, dd.date); }, 0); }
     var laborB = segmentsLaborBudget(segs);
     var fcB = segmentsFcBudget(segs);
     var profit = total - laborB - fcB;
@@ -7187,6 +7236,7 @@ function renderBudgetSetup() {
       ${segCard('テイクアウト', dowMode?dowBd.takeout:segSales(segs.takeout,'takeout'), 'var(--accent2)')}
     </div>
     ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> 曜日別で作成（${dailyMonthLabel()}の曜日数で自動計算）</div>`:''}
+    ${dayOv?`<div style="font-size:11px;color:var(--accent);margin:-2px 0 8px"><i class="ti ti-calendar-dollar"></i> <b>日別調整あり</b>（${escapeHtml(b.daysBy||'')} ${escapeHtml(b.daysAt||'')}）— 月間予算は日別一覧の合計です</div>`:''}
     <div class="kpi-grid" style="margin:8px 0">
       ${kpi('月間売上予算', fmtK(Math.round(total)), '3区分合計', 'var(--tm)')}
       ${kpi('Labor予算', fmtK(Math.round(laborB)), total?Math.round(laborB/total*100)+'%':'—', 'var(--muted)')}
@@ -7199,7 +7249,8 @@ function renderBudgetSetup() {
 
     html += `<div class="approval-actions">`;
     if (editable) {
-      html += `<button class="btn btn-primary btn-sm" onclick="openDowEditor('${b.storeId}')"><i class="ti ti-calendar-stats"></i> 曜日別で作成</button>
+      html += `<button class="btn btn-primary btn-sm" onclick="openDayBudgetEditor('${b.storeId}')"><i class="ti ti-calendar-dollar"></i> 日別予算一覧</button>
+        <button class="btn btn-secondary btn-sm" onclick="openDowEditor('${b.storeId}')"><i class="ti ti-calendar-stats"></i> 曜日別で作成</button>
         <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','lunch')"><i class="ti ti-sun"></i> ランチ</button>
         <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','dinner')"><i class="ti ti-moon"></i> ディナー</button>
         <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','takeout')"><i class="ti ti-shopping-bag"></i> テイクアウト</button>`;
@@ -7520,6 +7571,12 @@ function renderBudgetSummary() {
   // ===== 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）=====
   html += keyKpiCard(budgetScopeStores(), monthDays(), '');
 
+  // ===== 客単価 3パターン（単店選択時・選択月） =====
+  (function(){
+    var _sc = budgetScopeStores();
+    if (_sc.length===1) html += ppaTripleCard(_sc[0].id, _selOff, _monLabel||'当月');
+  })();
+
   // ===== スコア判定＋アクション =====
   var costRForScore = agg.actToToday ? Math.round(agg.costToToday/agg.actToToday*1000)/10 : 0;
   var laborRForScore = agg.actToToday ? Math.round(agg.laborToToday/agg.actToToday*1000)/10 : 0;
@@ -7734,6 +7791,17 @@ async function refreshNow(){
   try { showToast('最新の情報に更新しました','success'); } catch(e){}
 }
 /* 基礎根拠から曜日別の日次予算を取得 */
+/* 日別予算：b.days['YYYY-MM-DD'] の手動値を最優先。未設定日は従来の曜日別/区分から自動算出 */
+function hasDayBudget(b){ return !!(b && b.days && Object.keys(b.days).some(function(k){ return b.days[k]!=null && b.days[k]!==''; })); }
+function dayBudgetFor(b, dateISO, dow){
+  if (b && b.days && b.days[dateISO]!=null && b.days[dateISO]!=='') { var _v=parseFloat(b.days[dateISO]); if(!isNaN(_v)) return _v; }
+  if (!dow){ try{ dow = ['日','月','火','水','木','金','土'][new Date(dateISO+'T00:00:00').getDay()]; }catch(e){} }
+  return dayBudgetFromBases(b, dow);
+}
+function dayBudgetAuto(b, dateISO){
+  var dow = ['日','月','火','水','木','金','土'][new Date(dateISO+'T00:00:00').getDay()];
+  return dayBudgetFromBases(b, dow);
+}
 function dayBudgetFromBases(b, dow) {
   if (b && typeof budgetAuthorLabel==='function' && !budgetAuthorLabel(b)) return 0; // 登録者のない予算（デモ/未登録）は0
   // 曜日別モードが設定されていれば、その曜日の客数×客単価（3区分）を直接使う
@@ -7810,7 +7878,7 @@ function renderBudgetDaily() {
     scopeStores.forEach(s => {
       var b = budgets.find(x=>x.storeId===s.id);
       var override = (getDailyActuals(s.id)[d.date]||{});
-      var dayBud = override.budget!=null ? override.budget : (b?dayBudgetFromBases(b,d.dow):0);
+      var dayBud = override.budget!=null ? override.budget : (b?dayBudgetFor(b,d.date,d.dow):0);
       sumBudget += dayBud;
       if (d.date<=todayStr) sumBudgetToToday += dayBud;
       sumActual += (override.actual!=null?override.actual:0);
@@ -7850,18 +7918,19 @@ function renderBudgetDaily() {
   var _ymD=(days[0]?days[0].date.slice(0,7):'');
   var _storeExtra={}; scopeStores.forEach(function(s){ _storeExtra[s.id]={sal:(typeof storeSalaryDaily==='function')?storeSalaryDaily(s.id,_ymD):0, ins:(typeof storeInsuranceDaily==='function')?storeInsuranceDaily(s.id,_ymD):0}; });
   days.forEach(d => {
-    var dayBud=0, dayAct=0, hasAct=false, weather='', event='', eventAuto=false, isToast=false;
+    var dayBud=0, dayAct=0, hasAct=false, weather='', event='', eventAuto=false, isToast=false, _manBy=null;
     var dayLunch=0, dayDinner=0, hasLD=false, gv={total:null,lunch:null,dinner:null};
     var dayFirst=0, dayRepeat=0, dayLaborH=0, dayLaborCost=0;
     scopeStores.forEach(s => {
       var b = budgets.find(x=>x.storeId===s.id);
       var ov = (getDailyActuals(s.id)[d.date]||{});
-      var bd = ov.budget!=null ? ov.budget : (b?dayBudgetFromBases(b,d.dow):0);
+      var bd = ov.budget!=null ? ov.budget : (b?dayBudgetFor(b,d.date,d.dow):0);
       dayBud += bd;
       if (ov.actual!=null) { dayAct += ov.actual; hasAct=true; }
       if (ov.lunchSales!=null||ov.dinnerSales!=null) { dayLunch+=(ov.lunchSales||0); dayDinner+=(ov.dinnerSales||0); hasLD=true; }
       if (!isAgg) { weather=ov.weather||''; event=ov.event||''; eventAuto=ov.eventAuto||false; gv=dayGuestValue(s.id, ov); gv.takeout=ov.takeout; }
       if (ov.toast||ov.toastSrc) isToast = true;
+      if (!isAgg && (ov.by||ov.editBy)) _manBy = (ov.editBy||ov.by) + (ov.editBy?'（修正）':'');
       dayFirst += Number(ov.firstTimeBowls)||0;
       dayRepeat += Number(ov.repeatBowls)||0;
       if(typeof toastLaborHoursForDate==='function') dayLaborH += toastLaborHoursForDate(s.id, d.date);
@@ -7888,7 +7957,7 @@ function renderBudgetDaily() {
       <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
       ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="タップでメモ編集"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">＋メモ</span>':'-'):''}</td>`}
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
-      <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}</td>
+      <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="手入力: ${escapeHtml(_manBy)}"></i>`:''}</td>
       ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${cumRate>=100?'var(--green)':cumRate>=90?'var(--yellow)':'var(--red)'};font-size:11px">${cumRate}%</span></td>
@@ -8301,7 +8370,7 @@ function keyKpiStats(scopeStores, days){
     var metric=gct(s.id);
     (days||[]).forEach(function(d){
       var ov=actuals[d.date]||{};
-      var dayBud=ov.budget!=null?ov.budget:(b?dayBudgetFromBases(b,d.dow):0);
+      var dayBud=ov.budget!=null?ov.budget:(b?dayBudgetFor(b,d.date,d.dow):0);
       budget+=dayBud;
       var past=d.date<=todayStr;
       if(past && ov.actual!=null){
@@ -8603,7 +8672,7 @@ function openDailyActualModal(storeId, date, dow) {
   var b = getBudgetForMonth(storeId, (date||'').slice(0,7) || curYm());
   var actuals = getDailyActuals(storeId);
   var ov = actuals[date] || {};
-  var defBud = b ? Math.round(dayBudgetFromBases(b, dow)) : 0;
+  var defBud = b ? Math.round(dayBudgetFor(b, date, dow)) : 0;
   openModal(`<div class="modal-title">${date} (${dow}) 実績入力 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="form-group"><label class="form-label">予算（自動: $${defBud.toLocaleString()}、修正可）</label><input class="form-input" id="da-budget" type="number" inputmode="decimal" value="${ov.budget!=null?ov.budget:defBud}"></div>
     <div class="form-group"><label class="form-label">実績売上 ($)</label><input class="form-input" id="da-actual" type="number" inputmode="decimal" value="${ov.actual!=null?ov.actual:''}" placeholder="当日売上"></div>
@@ -8619,6 +8688,7 @@ function openDailyActualModal(storeId, date, dow) {
       <div class="form-group"><label class="form-label">当日人件費 ($)</label><input class="form-input" id="da-labor" type="number" inputmode="decimal" value="${ov.labor!=null?ov.labor:''}" placeholder="任意"></div>
     </div>
     <div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">原価・人件費を入れると累計の原価率・人件費率が現在地に反映されます</div>
+    ${ov.by?`<div style="font-size:10px;color:var(--muted);margin-bottom:8px"><i class="ti ti-user-check"></i> 記録: ${escapeHtml(ov.by)} ${escapeHtml(ov.at||'')}${ov.editBy?` ／ <span style="color:var(--yellow)">修正: ${escapeHtml(ov.editBy)} ${escapeHtml(ov.editAt||'')}</span>`:''}</div>`:''}
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveDailyActual('${storeId}','${date}')">保存</button></div>`);
 }
@@ -8630,6 +8700,7 @@ function saveDailyActual(storeId, date) {
   var guests = document.getElementById('da-guests').value;
   var food = document.getElementById('da-food').value;
   var labor = document.getElementById('da-labor').value;
+  var _meta = prev.by ? { by:prev.by, at:prev.at, editBy:myName(), editAt:nowJP() } : { by:myName(), at:nowJP() };
   actuals[date] = Object.assign({}, prev, {
     budget: isNaN(budget)?null:budget,
     actual: actual===''?null:parseFloat(actual),
@@ -8638,13 +8709,89 @@ function saveDailyActual(storeId, date) {
     event: document.getElementById('da-event').value.trim(), eventAuto:false,
     foodCost: food===''?(prev.foodCost!=null?prev.foodCost:null):parseFloat(food),
     labor: labor===''?(prev.labor!=null?prev.labor:null):parseFloat(labor),
-  });
+  }, _meta);
   setDailyActuals(storeId, actuals);
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId);
   if (b) { b.actual = Object.values(actuals).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
   closeModalDirect();
   showToast('日次実績を保存しました', 'success');
+  renderPage('budget');
+}
+
+/* ===== 日別予算エディタ =====
+   曜日別/区分の自動値をベースに、日毎に上書きできる（店休=0、祝日増減など）。
+   空欄＝自動値。入力した日だけ b.days に保存され、月間予算・日次進捗・現在地すべてに反映。 */
+function openDayBudgetEditor(storeId){
+  var budgets = getBudgets();
+  var b = budgets.find(function(x){return x.storeId===storeId;});
+  if (!b) return;
+  var st = STORES.find(function(x){return x.id===storeId;})||{name:storeId};
+  var days = daysOfYm(curYm());
+  var rows = days.map(function(dd){
+    var dt = new Date(dd.date+'T00:00:00');
+    var dowJ = ['日','月','火','水','木','金','土'][dt.getDay()];
+    var auto = Math.round(dayBudgetAuto(b, dd.date));
+    var cur = (b.days && b.days[dd.date]!=null && b.days[dd.date]!=='') ? b.days[dd.date] : '';
+    var ev = (typeof dayEventFor==='function') ? dayEventFor(dd.date) : '';
+    var isWk = (dt.getDay()===0||dt.getDay()===6);
+    return `<tr>
+      <td style="white-space:nowrap;${isWk?'color:var(--accent);font-weight:600':''}">${parseInt(dd.date.slice(8),10)}日(${dowJ})${ev?`<div style="font-size:9px;color:var(--accent2);font-weight:400">${ev}</div>`:''}</td>
+      <td style="text-align:right;color:var(--muted);font-size:11px;white-space:nowrap">$${auto.toLocaleString()}</td>
+      <td><input class="form-input dbud-in" style="padding:5px 6px;font-size:12px;text-align:right" type="number" inputmode="decimal" min="0" data-date="${dd.date}" data-auto="${auto}" value="${cur}" placeholder="自動" oninput="dayBudgetLiveTotal()"></td>
+    </tr>`;
+  }).join('');
+  openModal(`<div class="modal-title">${escapeHtml(st.name)} — 日別予算（${dailyMonthLabel()}） <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">空欄＝自動（曜日別/区分から算出）。店休日は <b>0</b>、イベント日は任意の額を入力。入力した日だけが上書きされます。</div>
+    <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
+      <button class="btn btn-secondary btn-sm" onclick="dayBudgetFillAuto()"><i class="ti ti-wand"></i> 自動値で全て埋める</button>
+      <button class="btn btn-secondary btn-sm" onclick="dayBudgetClearAll()"><i class="ti ti-eraser"></i> 全て空欄（自動に戻す）</button>
+    </div>
+    <div style="max-height:44vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
+      <table class="inv-table" style="width:100%"><thead><tr><th>日付</th><th style="text-align:right">自動</th><th style="width:110px;text-align:right">予算 ($)</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px 0">
+      <span style="font-size:12px;color:var(--muted)">月間予算 合計</span><b id="dbud-total" style="font-size:16px;color:var(--accent)">—</b>
+    </div>
+    ${b.daysBy?`<div style="font-size:10px;color:var(--muted)"><i class="ti ti-user-check"></i> 前回の日別調整: ${escapeHtml(b.daysBy)} ${escapeHtml(b.daysAt||'')}</div>`:''}
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveDayBudget('${storeId}')">保存</button></div>`);
+  dayBudgetLiveTotal();
+}
+function dayBudgetLiveTotal(){
+  var t=0;
+  document.querySelectorAll('.dbud-in').forEach(function(inp){
+    var v = inp.value==='' ? parseFloat(inp.getAttribute('data-auto'))||0 : (parseFloat(inp.value)||0);
+    t += v;
+  });
+  var el=document.getElementById('dbud-total'); if(el) el.textContent = '$'+Math.round(t).toLocaleString();
+}
+function dayBudgetFillAuto(){
+  document.querySelectorAll('.dbud-in').forEach(function(inp){ inp.value = inp.getAttribute('data-auto'); });
+  dayBudgetLiveTotal();
+}
+function dayBudgetClearAll(){
+  document.querySelectorAll('.dbud-in').forEach(function(inp){ inp.value=''; });
+  dayBudgetLiveTotal();
+}
+function saveDayBudget(storeId){
+  var budgets = getBudgets();
+  var b = budgets.find(function(x){return x.storeId===storeId;});
+  if (!b) return;
+  var days = {};
+  var any = false;
+  document.querySelectorAll('.dbud-in').forEach(function(inp){
+    var v = inp.value;
+    if (v!=='' && !isNaN(parseFloat(v)) && parseFloat(v)>=0) { days[inp.getAttribute('data-date')] = parseFloat(v); any = true; }
+  });
+  b.days = any ? days : null;
+  if (any) { b.daysBy = myName(); b.daysAt = nowJP(); }
+  else { b.daysBy = null; b.daysAt = null; }
+  if (!b.editedBy && !b.createdBy && !b.submittedBy && !b.approvedBy) b.editedBy = myName();
+  b.editedAt = nowJP();
+  saveBudgets(budgets);
+  closeModalDirect();
+  showToast(any ? '日別予算を保存しました（月間予算に反映）' : '日別調整をクリアしました（自動値に戻ります）', 'success');
   renderPage('budget');
 }
 
@@ -9765,13 +9912,61 @@ function importMarujuuIngredients(){
   renderPage('inventory');
 }
 
-function getInvTop(storeId){ return ls('inv_top_'+storeId, {})||{}; }
+/* ===== 棚卸の月別管理 =====
+   カウント・表紙は inv_count_<店>_<YYYY-MM> / inv_top_<店>_<YYYY-MM> に月別保存。
+   確定スナップショットは inv_hist（ym付き）。過去確定月は「修正」から再入力→再確定（修正履歴つき）。 */
+var invMonthOffset = 0;
+function invYm(){ return ymFromOffset(invMonthOffset); }
+function invNavMonth(d){ invMonthOffset += d; if(invMonthOffset>0) invMonthOffset=0; window._invEditYm=null; renderPage('inventory'); }
+function invSnapForYm(storeId, ym){
+  var h=ls('inv_hist_'+storeId,[])||[];
+  for(var k=h.length-1;k>=0;k--){
+    var hym=h[k].ym; if(!hym){ var dt=parseJaDate(h[k].date); hym=dt?(dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')):''; }
+    if(hym===ym) return h[k];
+  }
+  return null;
+}
+/* 一回限りの移行（2026-07デプロイ時）: 初回入力分を「6月棚卸」として付け替え */
+function _invMigrateToJune(storeId){
+  try{
+    if (curYm()!=='2026-07') return;
+    var flagKey='inv_mig_j26_'+storeId;
+    if (ls(flagKey, false)) return;
+    var JUN='2026-06', JUL='2026-07';
+    var legacyC=ls('inv_count_'+storeId, null);
+    if (legacyC && Object.keys(legacyC).length && !ls('inv_count_'+storeId+'_'+JUN, null)) lsSet('inv_count_'+storeId+'_'+JUN, legacyC);
+    var legacyT=ls('inv_top_'+storeId, null);
+    if (legacyT && Object.keys(legacyT).length && !ls('inv_top_'+storeId+'_'+JUN, null)) lsSet('inv_top_'+storeId+'_'+JUN, legacyT);
+    var hist=ls('inv_hist_'+storeId,[])||[]; var moved=null, changed=false;
+    hist.forEach(function(h){ if(h.ym===JUL){ h.ym=JUN; h.migrated='7月→6月へ付け替え'; moved=h; changed=true; } });
+    if (changed){
+      var seen={}; var out=[];
+      for(var k=hist.length-1;k>=0;k--){ var ym=hist[k].ym||''; if(ym===JUN){ if(seen[JUN]) continue; seen[JUN]=1; } out.unshift(hist[k]); }
+      lsSet('inv_hist_'+storeId, out);
+    }
+    if (moved){
+      var g=Math.round(moved.grand||0);
+      var fj=getFcMonthly(storeId, JUN);
+      setFcMonthly(storeId, JUN, Object.assign({}, fj, { endInv:g, invMonth:JUN,
+        history:(fj.history||[]).concat([{date:todayJP(), endInv:g, by:'システム移行', note:'棚卸月を6月へ付け替え'}]) }));
+      var f7=ls(fcKey(storeId, JUL), null);
+      if (f7 && Math.round(parseFloat(f7.endInv)||0)===g){
+        f7.endInv=0; f7.beginInv=g; f7.beginAuto=true; delete f7.invMonth;
+        f7.history=(f7.history||[]).concat([{date:todayJP(), by:'システム移行', note:'期末を6月へ移動・期首=6月末を継承'}]);
+        lsSet(fcKey(storeId, JUL), f7);
+      }
+    }
+    lsSet(flagKey, true);
+  }catch(e){ console.warn('inv migrate', e); }
+}
+function getInvTop(storeId, ym){ ym=ym||invYm(); return ls('inv_top_'+storeId+'_'+ym, null) || {}; }
 function setInvTop(storeId, field, val){
-  var o=getInvTop(storeId); var v=parseFloat(val);
-  o[field]=(val===''||isNaN(v))?'':v; lsSet('inv_top_'+storeId, o);
-  var t=invComputeTotals(storeId), prev=invPrevStock(storeId);
+  var _ym=invYm();
+  var o=getInvTop(storeId,_ym); var v=parseFloat(val);
+  o[field]=(val===''||isNaN(v))?'':v; lsSet('inv_top_'+storeId+'_'+_ym, o);
+  var t=invComputeTotals(storeId), prev=invPrevStockYm(storeId,_ym);
   var purchase=parseFloat(o.purchase)||0, moves=parseFloat(o.moves)||0;
-  var sales=(o.sales!=null&&o.sales!=='')?parseFloat(o.sales):((typeof storeData==='function')?(storeData(storeId).a||0):0);
+  var sales=(o.sales!=null&&o.sales!=='')?parseFloat(o.sales):Math.round((monthStats(storeId, invMonthOffset)||{}).sales||0);
   var cogs=prev+purchase+moves-t.grand; var rate=sales>0?(cogs/sales*100):null;
   var rc=document.getElementById('inv-costrate'); if(rc) rc.textContent=(rate!=null?rate.toFixed(1)+'%':'—');
   var cg=document.getElementById('inv-cogs'); if(cg) cg.textContent=invFmtMoney(cogs);
@@ -9784,6 +9979,18 @@ function invPrevStock(storeId){
   var pv=ls(fcKey(storeId, ymShift(ym,-1)), null);
   if(pv && parseFloat(pv.endInv)>0) return parseFloat(pv.endInv); // 前月確定の期末
   return invLastConfirmedGrand(storeId);
+}
+function invPrevStockYm(storeId, ym){
+  ym = ym || curYm();
+  if (ym === curYm()) return invPrevStock(storeId);
+  var pvYm = ymShift(ym,-1);
+  var pv = ls(fcKey(storeId, pvYm), null);
+  if (pv && parseFloat(pv.endInv)>0) return parseFloat(pv.endInv);
+  var snap = invSnapForYm(storeId, pvYm);
+  if (snap && snap.grand>0) return snap.grand;
+  var cur = getFcMonthly(storeId, ym);
+  var beg = parseFloat(cur.beginInv); if (beg>0) return beg;
+  return 0;
 }
 function invLastConfirmedGrand(storeId){
   var h=ls('inv_hist_'+storeId,[])||[]; if(!h.length) return 0;
@@ -9806,10 +10013,11 @@ function invRefreshInputSection(storeId){
   _invVendorList(storeId).forEach(function(v,idx){ var el=document.getElementById('inv-vsub-'+idx); if(el) el.textContent=invFmtMoney(t.perVendor[v]||0); });
 }
 function renderInvToppageInner(storeId){
-  var t=invComputeTotals(storeId), top=getInvTop(storeId);
-  var prev=invPrevStock(storeId), cur=t.grand;
+  var _ym=invYm();
+  var t=invComputeTotals(storeId), top=getInvTop(storeId,_ym);
+  var prev=invPrevStockYm(storeId,_ym), cur=t.grand;
   var purchase=parseFloat(top.purchase)||0, moves=parseFloat(top.moves)||0;
-  var sales=(top.sales!=null&&top.sales!=='')?parseFloat(top.sales):((typeof storeData==='function')?(storeData(storeId).a||0):0);
+  var sales=(top.sales!=null&&top.sales!=='')?parseFloat(top.sales):Math.round((monthStats(storeId, invMonthOffset)||{}).sales||0);
   var cogs=prev+purchase+moves-cur, rate=sales>0?(cogs/sales*100):null;
   var m=invComputeMatrix(storeId);
   function box(label,inner,sub){ return '<div style="background:var(--surface2);border-radius:10px;padding:9px 10px"><div style="font-size:10px;color:var(--muted)">'+label+'</div>'+inner+(sub?'<div style="font-size:9px;color:var(--muted)">'+sub+'</div>':'')+'</div>'; }
@@ -9842,11 +10050,12 @@ function renderInvToppageInner(storeId){
 
 /* ===== 棚卸（新）：自店マスター食材 × 業者別 × 金額集計 × 入力毎保存 ===== */
 function invFmtMoney(n){ return '$'+(Number(n)||0).toFixed(2); }
-function getInvCounts(storeId){ return ls('inv_count_'+storeId, {})||{}; }
+function getInvCounts(storeId, ym){ ym=ym||invYm(); return ls('inv_count_'+storeId+'_'+ym, null) || {}; }
 function setInvCount(storeId, code, val){
-  var c=getInvCounts(storeId); var v=parseFloat(val);
+  var _ym=invYm();
+  var c=getInvCounts(storeId,_ym); var v=parseFloat(val);
   if(val===''||isNaN(v)) delete c[code]; else c[code]=v;
-  lsSet('inv_count_'+storeId, c);
+  lsSet('inv_count_'+storeId+'_'+_ym, c);
   invRefreshInputSection(storeId);
   var tp=document.getElementById('inv-toppage'); if(tp) tp.innerHTML=renderInvToppageInner(storeId);
   var st=document.getElementById('inv-autosave');
@@ -9888,18 +10097,39 @@ function invRecalcTotals(storeId){
 function renderInventory(){
   var storeId = (curStore==='ALL' || curStore==='OFFICE' || !STORES.find(function(s){return s.id===curStore;})) ? STORES[0].id : curStore;
   var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
+  _invMigrateToJune(storeId);
+  var _ym = invYm();
+  var _p = _ym.split('-');
+  var _mLabel = parseInt(_p[0],10)+'年'+parseInt(_p[1],10)+'月';
+  var _snap = invSnapForYm(storeId, _ym);
+  var _editing = (window._invEditYm === _ym);
+  var _readOnly = !!_snap && !_editing;
   var ings=getIngredients(), codes=getStoreIngredients(storeId);
   var items=codes.map(function(c){return ings.find(function(x){return x.code===c;});}).filter(Boolean);
   var counts=getInvCounts(storeId), t=invComputeTotals(storeId);
   var html = pageStoreTabs(storeId,false) + `<div class="section-header">
-    <div><div class="section-title">${escapeHtml(store.name)} · 棚卸</div><div class="section-sub">自店マスターの食材を業者別に棚卸（${todayJP()}）</div></div>
+    <div><div class="section-title">${escapeHtml(store.name)} · 棚卸</div><div class="section-sub">${_mLabel}分の棚卸 — 月別に確定・保管されます</div></div>
     <div style="display:flex;gap:6px;align-items:center">
       <span id="inv-autosave" style="font-size:10px;color:var(--muted)"></span>
-      ${_hasInvSeed(storeId)?`<button class="btn btn-secondary btn-sm" onclick="importInvSeedFor('${storeId}')"><i class="ti ti-file-import"></i> Excel取込</button>`:''}
+      ${(!_readOnly && _hasInvSeed(storeId))?`<button class="btn btn-secondary btn-sm" onclick="importInvSeedFor('${storeId}')"><i class="ti ti-file-import"></i> Excel取込</button>`:''}
       <button class="btn btn-secondary btn-sm" onclick="showInvHistory('${storeId}')"><i class="ti ti-history"></i> 履歴</button>
-      <button class="btn btn-success btn-sm" onclick="saveInventory('${storeId}')"><i class="ti ti-circle-check"></i> 確定</button>
+      ${_readOnly?`<button class="btn btn-primary btn-sm" onclick="invStartEdit('${storeId}','${_ym}')"><i class="ti ti-pencil"></i> 修正</button>`
+        :`<button class="btn btn-success btn-sm" onclick="saveInventory('${storeId}')"><i class="ti ti-circle-check"></i> ${_snap?'再確定（修正記録）':parseInt(_p[1],10)+'月分として確定'}</button>`}
     </div>
   </div>`;
+  // 月ナビ
+  html += `<div class="card" style="padding:8px 10px;display:flex;align-items:center;gap:8px;margin-bottom:10px">
+    <button class="btn btn-secondary btn-sm" onclick="invNavMonth(-1)"><i class="ti ti-chevron-left"></i></button>
+    <div style="flex:1;text-align:center;font-weight:700;font-size:14px">${_mLabel} ${_snap?`<span class="tag tag-green" style="font-size:10px">✓ 確定済み</span>`:(Object.keys(counts).length?`<span class="tag tag-yellow" style="font-size:10px">入力中</span>`:`<span class="tag tag-gray" style="font-size:10px">未入力</span>`)}</div>
+    <button class="btn btn-secondary btn-sm" ${invMonthOffset>=0?'disabled style="opacity:.4"':''} onclick="invNavMonth(1)"><i class="ti ti-chevron-right"></i></button>
+    ${invMonthOffset<0?`<button class="btn btn-secondary btn-sm" onclick="invMonthOffset=0;window._invEditYm=null;renderPage('inventory')">今月へ</button>`:''}
+  </div>`;
+  if (_editing && _snap) {
+    html += `<div class="alert alert-warning" style="padding:8px 12px;margin-bottom:10px"><i class="ti ti-pencil"></i><div style="font-size:12px;flex:1"><b>${_mLabel}分（確定済み）を修正中</b> — 「再確定」で上書きされ、修正者・日時が記録されます。</div><button class="btn btn-secondary btn-sm" onclick="invCancelEdit()">修正をやめる</button></div>`;
+  }
+  if (_readOnly) {
+    return html + invRenderConfirmedView(storeId, _snap, _ym);
+  }
   if(!items.length){
     html += `<div class="card" style="text-align:center;padding:26px"><i class="ti ti-carrot" style="font-size:34px;color:var(--muted)"></i><div style="font-size:14px;font-weight:600;margin-top:8px">自店マスターに食材が登録されていません</div><div style="font-size:12px;color:var(--muted);margin:6px 0 12px;line-height:1.6">食材マスターでこの店舗に食材を登録すると、ここに業者別で表示されます。</div><button class="btn btn-primary btn-sm" onclick="go('ingredient_master')"><i class="ti ti-arrow-right"></i> 食材マスターへ</button>${_hasInvSeed(storeId)?` <button class="btn btn-success btn-sm" onclick="importInvSeedFor('${storeId}')"><i class="ti ti-file-import"></i> ${(INV_SEED_LABELS[recipeOwnerKey(storeId)]||'Excel')}食材を取込</button>`:''}</div>`;
     return html;
@@ -9931,6 +10161,54 @@ function renderInventory(){
   return html;
 }
 
+/* 確定済み月の読み取り専用ビュー */
+function invRenderConfirmedView(storeId, snap, ym){
+  var p=ym.split('-'); var mLabel=parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月';
+  var h='';
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-clipboard-check" style="color:var(--green)"></i>${mLabel}分 棚卸（確定済み）</div>
+    <div class="kpi-grid">
+      ${kpi('棚卸総額', invFmtMoney(snap.grand||0), (snap.lines||[]).length+'品目', 'var(--green)')}
+      ${kpi('確定', escapeHtml(snap.origBy||snap.by||''), escapeHtml(snap.origDate||snap.date||''), 'var(--tm)')}
+      ${kpi('修正', (snap.edits&&snap.edits.length)?snap.edits.length+'回':'なし', (snap.edits&&snap.edits.length)?escapeHtml(snap.edits[snap.edits.length-1].by+' '+snap.edits[snap.edits.length-1].at):'—', (snap.edits&&snap.edits.length)?'var(--yellow)':'var(--muted)')}
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">`;
+  CLASSES.forEach(function(cl){ var v=(snap.perClass||{})[cl.id]||0; if(!v) return; h+=`<span style="font-size:10px;border:1px solid ${cl.color};color:${cl.color};border-radius:6px;padding:2px 8px">${cl.name} ${invFmtMoney(v)}</span>`; });
+  h+=`</div>
+    ${(snap.edits&&snap.edits.length)?`<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">修正履歴（${snap.edits.length}件）</summary>${snap.edits.map(function(e){return '<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><i class="ti ti-pencil" style="color:var(--yellow)"></i> '+escapeHtml(e.by||'')+' '+escapeHtml(e.at||'')+(e.prevGrand!=null?' <span style="color:var(--muted)">（修正前総額 '+invFmtMoney(e.prevGrand)+'）</span>':'')+'</div>';}).join('')}</details>`:''}
+    <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-lock"></i> 確定済みのため表示のみ。数量の修正・追加入力は右上の「修正」ボタンから行えます（修正履歴が残ります）。</div>
+  </div>`;
+  // 明細（業者別）
+  var byVendor={};
+  (snap.lines||[]).forEach(function(l){ var v=l.vendor||'未設定'; (byVendor[v]=byVendor[v]||[]).push(l); });
+  Object.keys(byVendor).sort().forEach(function(v){
+    var lines=byVendor[v]; var sub=lines.reduce(function(a,l){return a+(l.value||0);},0);
+    h+=`<div class="card" style="padding:0;overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border-bottom:1px solid var(--border)">
+      <span style="width:26px;height:26px;border-radius:8px;background:var(--surface);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-truck" style="font-size:15px"></i></span>
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">${escapeHtml(v)}</div><div style="font-size:10px;color:var(--muted)">${lines.length}品目</div></div>
+      <div style="text-align:right"><div style="font-size:9px;color:var(--muted)">小計</div><div style="font-size:14px;font-weight:700">${invFmtMoney(sub)}</div></div>
+    </div>
+    <table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">食材</th><th>単価</th><th>数量</th><th>金額</th></tr></thead><tbody>
+    ${lines.map(function(l){ return `<tr><td style="text-align:left"><div style="font-weight:600">${escapeHtml(l.name)}</div><div style="font-size:9px;color:var(--muted)">${escapeHtml(l.unit||'')}</div></td><td style="text-align:right;color:var(--muted)">$${(l.unitVal||0).toFixed((l.unitVal||0)<1?4:2)}</td><td style="text-align:center;font-weight:600">${l.actual}</td><td style="text-align:right;font-weight:600">${invFmtMoney(l.value||0)}</td></tr>`; }).join('')}
+    </tbody></table></div>`;
+  });
+  return h;
+}
+/* 確定済み月の修正を開始: スナップショットの数量をその月の入力シートへ展開 */
+function invStartEdit(storeId, ym){
+  var snap = invSnapForYm(storeId, ym);
+  if (snap) {
+    var counts = getInvCounts(storeId, ym);
+    if (!Object.keys(counts).length) {
+      var c={};
+      (snap.lines||[]).forEach(function(l){ if(l.actual!=null) c[l.code]=l.actual; });
+      lsSet('inv_count_'+storeId+'_'+ym, c);
+    }
+  }
+  window._invEditYm = ym;
+  renderPage('inventory');
+}
+function invCancelEdit(){ window._invEditYm=null; renderPage('inventory'); }
+
 function saveInventory(storeId){
   var t=invComputeTotals(storeId), counts=getInvCounts(storeId), ings=getIngredients(), codes=getStoreIngredients(storeId);
   var lines=[];
@@ -9941,7 +10219,10 @@ function saveInventory(storeId){
     lines.push({code:code, name:i.name, cls:(i.cls||catClass(i.cat)), vendor:i.vendor||'未設定', unit:i.unit||'', actual:cnt, unitVal:uv, value:cnt*uv});
   });
   if(!lines.length){ alert('棚卸数が入力されていません'); return; }
-  var now=new Date(); var ym=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  var ym = invYm();
+  var _p = ym.split('-');
+  if(!confirm(parseInt(_p[0],10)+'年'+parseInt(_p[1],10)+'月分の棚卸として確定しますか？')) return;
+  var now=new Date();
   var snap={date:nowJP(), ym:ym, by:ROLE_CONFIG[curRole].name, mode:'monthly', grand:t.grand, perClass:t.perClass, perVendor:t.perVendor, lines:lines};
   var hist=ls('inv_hist_'+storeId,[])||[];
   // 同月の確定は置き換え（重複防止）
@@ -9951,23 +10232,31 @@ function saveInventory(storeId){
     if(hym===ym){ ridx=k; break; }
   }
   var replaced = ridx>=0;
-  if(replaced) hist[ridx]=snap; else hist.push(snap);
+  if(replaced){
+    var _old = hist[ridx];
+    snap.edits = (_old.edits||[]).concat([{by:ROLE_CONFIG[curRole].name, at:nowJP(), prevGrand:_old.grand}]);
+    if(!snap.origDate) snap.origDate = _old.origDate || _old.date;
+    if(!snap.origBy) snap.origBy = _old.origBy || _old.by;
+    hist[ridx]=snap;
+  } else hist.push(snap);
   lsSet('inv_hist_'+storeId, hist);
+  window._invEditYm = null;
   // Food Cost連携: 棚卸月の月次レコードへ期末を書き込み（期首は既存値 or 前月末を継承）
   var fc=getFcMonthly(storeId, ym);
   var beginInv=parseFloat(fc.beginInv)||0;
   setFcMonthly(storeId, ym, { beginInv:beginInv, endInv:Math.round(t.grand), invMonth:ym, beginAuto:fc.beginAuto&&!fc._virtual?fc.beginAuto:(beginInv>0&&fc._virtual),
     sales:parseFloat(fc.sales)||0,
     history:(fc.history||[]).concat([{date:fmtJP(now), endInv:Math.round(t.grand), by:ROLE_CONFIG[curRole].name, redo:replaced}]) });
-  showToast(replaced?('棚卸を再確定しました（同月更新・総額 '+invFmtMoney(t.grand)+'）'):('棚卸を確定しました（総額 '+invFmtMoney(t.grand)+'）'),'success');
+  showToast(replaced?(parseInt(_p[1],10)+'月分の棚卸を修正・再確定しました（総額 '+invFmtMoney(t.grand)+'）'):(parseInt(_p[1],10)+'月分の棚卸を確定しました（総額 '+invFmtMoney(t.grand)+'）'),'success');
   renderPage('inventory');
 }
 
 function showInvHistory(storeId){
   var mHist=ls('inv_hist_'+storeId, [])||[];
-  var rows = mHist.length ? mHist.slice().reverse().slice(0,8).map(function(h){
-    return `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(h.date||'')}</div><span class="tag tag-green">${invFmtMoney(h.grand!=null?h.grand:(h.lines||[]).reduce(function(a,l){return a+(l.value||0);},0))}</span></div>
-      <div class="approval-meta">${escapeHtml(h.by||'')} · ${(h.lines||[]).length}品目</div></div>`;
+  var rows = mHist.length ? mHist.slice().reverse().slice(0,12).map(function(h){
+    var _ymL = h.ym ? (parseInt(h.ym.split('-')[0],10)+'年'+parseInt(h.ym.split('-')[1],10)+'月分') : '';
+    return `<div class="approval-item"><div class="approval-header"><div class="approval-title">${_ymL?_ymL+' · ':''}${escapeHtml(h.date||'')}</div><span class="tag tag-green">${invFmtMoney(h.grand!=null?h.grand:(h.lines||[]).reduce(function(a,l){return a+(l.value||0);},0))}</span></div>
+      <div class="approval-meta">${escapeHtml(h.by||'')} · ${(h.lines||[]).length}品目${(h.edits&&h.edits.length)?` · <span style="color:var(--yellow)">修正${h.edits.length}回（最終: ${escapeHtml(h.edits[h.edits.length-1].by||'')}）</span>`:''}${h.migrated?` · <span style="color:var(--accent2)">${escapeHtml(h.migrated)}</span>`:''}</div></div>`;
   }).join('') : `<p style="color:var(--muted);font-size:13px">棚卸履歴はまだありません</p>`;
   openModal(`<div class="modal-title">棚卸履歴 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="role-section-label">月次棚卸（総額）</div>${rows}
@@ -11315,6 +11604,74 @@ async function attBackfillMonth(storeId, guid) {
 }
 
 /* 月単位の実勤怠データ一覧（Toast取得結果の確認用・シフト照合なし） */
+/* ===== 勤怠 手動修正（経理/GM/CEO）。att_override_<store>_<date> に丸ごと保存し getTipLabor が優先参照 ===== */
+function openAttFixModal(storeId, date) {
+  if (['office','gm','ceo'].indexOf(curRole)<0) { showToast('勤怠の修正は経理・GMのみです','warning'); return; }
+  var labor = getTipLabor(storeId, date) || {};
+  var rows = Object.keys(labor).map(function(n){ var e=labor[n]||{}; return {name:n, lunch:e.lunch!=null?e.lunch:'', dinner:e.dinner!=null?e.dinner:'', _orig:e}; });
+  window._attFix = { storeId:storeId, date:date, rows:rows };
+  _renderAttFixModal();
+}
+function _renderAttFixModal(){
+  var st = window._attFix; if(!st) return;
+  var store = STORES.find(function(x){return x.id===st.storeId;})||{};
+  var ovr = getAttOverride(st.storeId, st.date);
+  var appr = (typeof getDayApproval==='function') ? getDayApproval(st.storeId, st.date) : null;
+  var existing = st.rows.map(function(r){return r.name;});
+  var candidates = staffForStore(st.storeId).map(function(e){return e.name;}).filter(function(n){ return existing.indexOf(n)<0; });
+  var body = `<div class="modal-title">勤怠修正 — ${escapeHtml(store.name||st.storeId)} ${st.date} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    ${ovr?`<div style="font-size:10px;color:var(--yellow);margin-bottom:6px"><i class="ti ti-pencil"></i> 前回修正: ${escapeHtml(ovr.by||'')} ${escapeHtml(ovr.at||'')}</div>`:''}
+    ${appr&&appr.status==='承認済み'?`<div class="alert alert-warning" style="padding:7px 10px;font-size:11px"><i class="ti ti-alert-triangle"></i> この日は日次承認済みです。修正後は内容を確認し、必要なら承認をやり直してください。</div>`:''}
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">時間はランチ帯／ディナー帯の実働h（休憩除く）。両方0の行は削除されます。</div>
+    <div style="max-height:46vh;overflow-y:auto">
+    <table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th>スタッフ</th><th style="width:78px">L (h)</th><th style="width:78px">D (h)</th></tr></thead><tbody>`;
+  st.rows.forEach(function(r,i){
+    body += `<tr><td>${escapeHtml(r.name)}</td>
+      <td><input class="form-input" style="padding:5px 6px;font-size:12px" type="number" inputmode="decimal" step="0.01" min="0" value="${r.lunch}" onchange="window._attFix.rows[${i}].lunch=this.value"></td>
+      <td><input class="form-input" style="padding:5px 6px;font-size:12px" type="number" inputmode="decimal" step="0.01" min="0" value="${r.dinner}" onchange="window._attFix.rows[${i}].dinner=this.value"></td></tr>`;
+  });
+  body += `</tbody></table></div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <select class="form-select" id="attfix-add" style="flex:1;min-width:130px;padding:6px 8px;font-size:12px"><option value="">＋ スタッフを追加…</option>${candidates.map(function(n){return '<option value="'+escapeHtml(n)+'">'+escapeHtml(n)+'</option>';}).join('')}</select>
+      <button class="btn btn-secondary btn-sm" onclick="attFixAddRow()">追加</button>
+    </div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    ${ovr?`<button class="btn btn-secondary" onclick="attFixRevert()"><i class="ti ti-arrow-back-up"></i> Toast値に戻す</button>`:''}
+    <button class="btn btn-primary" onclick="saveAttFix()">保存（修正として記録）</button></div>`;
+  openModal(body);
+}
+function attFixAddRow(){
+  var sel = document.getElementById('attfix-add'); var n = sel ? sel.value : '';
+  if(!n) return;
+  window._attFix.rows.push({name:n, lunch:'', dinner:'', _orig:{}});
+  _renderAttFixModal();
+}
+function attFixRevert(){
+  var st = window._attFix; if(!st) return;
+  if(!confirm('手動修正を取り消してToast取得値に戻しますか？')) return;
+  lsSet('att_override_'+st.storeId+'_'+st.date, null);
+  closeModalDirect();
+  showToast('Toast取得値に戻しました','success');
+  renderPage(curPage);
+}
+function saveAttFix(){
+  var st = window._attFix; if(!st) return;
+  var data = {};
+  var bad = null;
+  st.rows.forEach(function(r){
+    var l = r.lunch===''?0:parseFloat(r.lunch);
+    var d = r.dinner===''?0:parseFloat(r.dinner);
+    if (isNaN(l)||isNaN(d)||l<0||d<0||l>24||d>24) { bad = r.name; return; }
+    if (l<=0 && d<=0) return; // 両方0＝削除
+    data[r.name] = Object.assign({}, r._orig||{}, {lunch:Math.round(l*100)/100, dinner:Math.round(d*100)/100});
+  });
+  if (bad) { showToast(bad+' の時間が正しくありません（0〜24h）','warning'); return; }
+  lsSet('att_override_'+st.storeId+'_'+st.date, { data:data, by:myName(), at:nowJP() });
+  closeModalDirect();
+  showToast(st.date+' の勤怠を修正しました（Labor・Tipに反映）','success');
+  renderPage(curPage);
+}
+
 function renderAttMonthData(storeId, store) {
   var days = attMonthDays();
   var rows = [];
@@ -11352,14 +11709,24 @@ function renderAttMonthData(storeId, store) {
   }
 
   var canApprove = attDayCanApprove();
+  if (['office','gm','ceo'].indexOf(curRole)>=0) {
+    html += `<div class="card" style="padding:10px 14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div style="font-size:12px;font-weight:600"><i class="ti ti-calendar-plus" style="color:var(--accent)"></i> データの無い日を手入力で追加</div>
+      <input type="date" id="att-fix-date" max="${todayISO()}" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:12px">
+      <button class="btn btn-secondary btn-sm" onclick="(function(){var d=document.getElementById('att-fix-date').value; if(!d){showToast('日付を選択してください','warning');return;} openAttFixModal('${storeId}', d);})()"><i class="ti ti-pencil-plus"></i> 開く</button>
+    </div><div style="font-size:10px;color:var(--muted);margin-top:4px">経理・GMのみ。修正・追加した勤怠は「修正済」として記録され、Labor計算・Tip配分に反映されます。</div></div>`;
+  }
   rows.forEach(r=>{
     var appr = r.appr;
     var apprBadge = appr&&appr.status==='承認済み'
       ? `<span class="tag tag-green" style="font-size:9px">承認済</span>`
       : r.dayErr ? `<span class="tag tag-red" style="font-size:9px">要対応</span>` : `<span class="tag tag-gray" style="font-size:9px">未承認</span>`;
     var dayBreak = r.names.reduce(function(a,n){ return a + breakHoursFromShifts((r.labor[n]||{}).shifts); }, 0);
-    html += `<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-calendar-event"></i>${r.date.slice(5)} (${r.dow}) ${apprBadge}
-      <span style="margin-left:auto;font-size:12px;color:var(--muted);font-weight:400">${r.count}名 · ${r.dayHours.toFixed(1)}h${dayBreak>0?' · 休憩'+Math.round(dayBreak*60)+'分':''}</span></div>
+    var _ovr = getAttOverride(storeId, r.date);
+    var _canFix = ['office','gm','ceo'].indexOf(curRole)>=0;
+    html += `<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-calendar-event"></i>${r.date.slice(5)} (${r.dow}) ${apprBadge}${_ovr?' <span class="tag tag-yellow" style="font-size:9px">修正済</span>':''}
+      <span style="margin-left:auto;font-size:12px;color:var(--muted);font-weight:400">${r.count}名 · ${r.dayHours.toFixed(1)}h${dayBreak>0?' · 休憩'+Math.round(dayBreak*60)+'分':''}</span>${_canFix?`<button class="btn btn-secondary btn-sm" style="margin-left:8px;padding:0 8px;font-size:10px" onclick="openAttFixModal('${storeId}','${r.date}')"><i class="ti ti-pencil"></i> 修正</button>`:''}</div>
+      ${_ovr?`<div style="font-size:10px;color:var(--yellow);margin:-2px 0 6px"><i class="ti ti-pencil"></i> 手動修正: ${escapeHtml(_ovr.by||'')} ${escapeHtml(_ovr.at||'')}（Toast取得値を上書き中）</div>`:''}
       <table class="inv-table" style="width:100%;font-size:11px"><thead><tr>
         <th>スタッフ</th><th>Clock In</th><th>Clock Out</th><th>休憩</th><th>L</th><th>D</th><th>計</th></tr></thead><tbody>`;
     r.names.forEach(n=>{
@@ -26396,6 +26763,7 @@ function renderInvoice() {
             <span class="tag ${inv.applied?'tag-green':'tag-yellow'}">${inv.applied?'価格更新済':'未反映'}</span>
           </div>
         </div>
+        ${invChangesDetail(inv)}
         ${_rejBox}
         ${_thread}
         ${_actions?`<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${_actions}</div>`:''}
@@ -26405,6 +26773,40 @@ function renderInvoice() {
   return html;
 }
 
+/* ===== Invoice読取・価格更新の内訳表示 =====
+   保存済みlinesの oldPrice/newPrice/code/rawName から、何を読み取り・マスターの何をどう更新したかを判定。
+   過去に読み取った分もそのまま表示できる（保存時にoldPriceを記録済みのため）。 */
+function invLineStatus(l){
+  if (l.code==null) return {key:'un', tag:'<span class="tag tag-gray" style="font-size:9px">未照合</span>', text:'マスター未更新'};
+  if (l.oldPrice==null) return {key:'new', tag:'<span class="tag tag-blue" style="font-size:9px">新規登録</span>', text:'#'+l.code+' をマスターへ追加・価格 $'+(Number(l.newPrice)||0).toFixed(2)};
+  var o=Number(l.oldPrice)||0, n=Number(l.newPrice)||0;
+  if (Math.abs(o-n)<0.005) return {key:'same', tag:'<span class="tag tag-gray" style="font-size:9px">変更なし</span>', text:'$'+o.toFixed(2)+' のまま'};
+  var up = n>o;
+  return {key:'chg', tag:'<span class="tag '+(up?'tag-red':'tag-green')+'" style="font-size:9px">'+(up?'値上げ':'値下げ')+'</span>',
+    text:'$'+o.toFixed(2)+' → <b style="color:'+(up?'var(--red)':'var(--green)')+'">$'+n.toFixed(2)+'</b>'+(o>0?'（'+(up?'+':'')+Math.round((n-o)/o*1000)/10+'%）':'')};
+}
+function invChangesDetail(inv){
+  var lines = inv.lines||[];
+  if (!lines.length) return '';
+  var cnt={chg:0,new:0,same:0,un:0};
+  var rows = lines.map(function(l){
+    var st=invLineStatus(l); cnt[st.key]++;
+    var nameHtml = escapeHtml(l.name||'')+((l.rawName&&l.rawName!==l.name)?'<div style="font-size:9px;color:var(--muted)">読取名: '+escapeHtml(l.rawName)+'</div>':'');
+    return '<tr><td style="text-align:left">'+nameHtml+'</td>'
+      +'<td style="text-align:right">'+(l.qty||0)+'</td>'
+      +'<td style="text-align:right">$'+(Number(l.newPrice)||0).toFixed(2)+'</td>'
+      +'<td style="text-align:left">'+st.tag+' <span style="font-size:10px">'+st.text+'</span></td></tr>';
+  }).join('');
+  var sum=[];
+  if(cnt.chg) sum.push('<span style="color:var(--red)">価格変更 '+cnt.chg+'</span>');
+  if(cnt.new) sum.push('<span style="color:var(--accent2)">新規登録 '+cnt.new+'</span>');
+  if(cnt.same) sum.push('変更なし '+cnt.same);
+  if(cnt.un) sum.push('<span style="color:var(--yellow)">未照合 '+cnt.un+'</span>');
+  return '<details style="margin-top:8px"><summary style="font-size:11.5px;cursor:pointer;color:var(--tm)"><i class="ti ti-list-search"></i> 読取・更新内容（'+sum.join(' · ')+'）</summary>'
+    +'<div style="overflow-x:auto;margin-top:6px"><table class="inv-table" style="width:100%;min-width:440px;font-size:11px"><thead><tr><th style="text-align:left">品目（読取）</th><th style="text-align:right">数量</th><th style="text-align:right">単価</th><th style="text-align:left">食材マスターの更新</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> 「価格変更」＝マスターの仕入価格を旧→新に更新（履歴保存）。「新規登録」＝保存時にマスターへ追加した食材。「未照合」＝マスターに紐付かず更新なし（手動で紐付け or 新規登録できます）。</div>'
+    +'</details>';
+}
 var invoiceTmpLines = [];
 var invoiceDocType = 'Invoice';
 /* この人がInvoice/Receiptを登録できる対象店舗（curStoreで絞らず全候補） */
