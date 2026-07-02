@@ -3679,7 +3679,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -4046,6 +4046,62 @@ async function doManagerLogin(){
     showManagerSecure();
   }catch(e){ fail('通信エラーが発生しました'); }
 }
+/* ============================================================
+   簡易PL（セキュアページ内タブ）
+   売上=日次実績 / 原価=棚卸法(FC月次) / 人件費=Labor共通コア /
+   変動費=月次平均(実PL 1〜5月から算出・上書き可)＋建替経費実費 /
+   GET=売上×率 / 固定費=実PL5月の実数 / 営業利益を算出。
+   実PL（Excel/手入力）と3列比較で差異検証。
+============================================================ */
+var PL_VC_CATS = [ ['util','光熱費'], ['repair','修繕・メンテ'], ['adv','広告・メニュー'], ['supply','備品・消耗品'], ['meet','会議・交際'], ['makanai','賄い'], ['fee','手数料(銀行/カード)'], ['other','その他運営費'] ];
+var PL_FIX_CATS = [ ['rent','家賃'], ['ins','保険'], ['sys','リース・システム'] ];
+var PL_SEED = {
+  vcAvg: {"F01": {"util": 2438, "repair": 1691, "adv": 121, "supply": 1968, "meet": 3, "makanai": 9, "fee": 3039, "other": 94}, "F02": {"util": 2517, "repair": 880, "adv": 206, "supply": 2133, "meet": 18, "makanai": 4, "fee": 3512, "other": 197}, "F03": {"util": 1797, "repair": 1606, "adv": 67, "supply": 2042, "meet": 0, "makanai": 0, "fee": 3358, "other": 107}, "F04-A": {"util": 1058, "repair": 245, "adv": 60, "supply": 4775, "meet": 8, "makanai": 94, "fee": 2242, "other": 300}, "F04-K": {"util": 2076, "repair": 1110, "adv": 71, "supply": 2884, "meet": 9, "makanai": 89, "fee": 2671, "other": 2}, "F04-P": {"util": 1556, "repair": 337, "adv": 14, "supply": 2116, "meet": 13, "makanai": 45, "fee": 3163, "other": 0}, "F05": {"util": 3805, "repair": 1243, "adv": 157, "supply": 2929, "meet": 8, "makanai": 3, "fee": 2005, "other": 48}},
+  fixed: {"F01": {"rent": 7404, "ins": 255, "sys": 2204}, "F02": {"rent": 5605, "ins": 255, "sys": 2424}, "F03": {"rent": 14835, "ins": 255, "sys": 132}, "F04-A": {"rent": 5670, "ins": 0, "sys": 658}, "F04-K": {"rent": 2142, "ins": 255, "sys": 728}, "F04-P": {"rent": 4422, "ins": 255, "sys": 501}, "F05": {"rent": 10096, "ins": 255, "sys": 795}},
+  actualMay: {"F01": {"sales": 120538, "cogs": 29135, "payroll": 35965, "opex": 25367, "netop": 30071}, "F02": {"sales": 143503, "cogs": 44974, "payroll": 40273, "opex": 25576, "netop": 32681}, "F03": {"sales": 122595, "cogs": 45524, "payroll": 28699, "opex": 29733, "netop": 18639}, "F04-A": {"sales": 122301, "cogs": 38714, "payroll": 29300, "opex": 20873, "netop": 33414}, "F04-K": {"sales": 102444, "cogs": 32754, "payroll": 25298, "opex": 15771, "netop": 28621}, "F04-P": {"sales": 116929, "cogs": 38176, "payroll": 22707, "opex": 18154, "netop": 37892}, "F05": {"sales": 94417, "cogs": 24636, "payroll": 36099, "opex": 27640, "netop": 6042}}
+};
+function getPlConfig(){
+  var c = ls('pl_config', null);
+  if (!c) { c = { vcAvg: PL_SEED.vcAvg, fixed: PL_SEED.fixed, getRate: 4.712, seededFrom: '実PL 2026年1〜5月平均 / 固定費=5月実数' }; lsSet('pl_config', c); }
+  return c;
+}
+function getPlActual(){
+  var a = ls('pl_actual', null);
+  if (!a) { a = { '2026-05': PL_SEED.actualMay, _src:{'2026-05':'Excel取込（暫定PL）'} }; lsSet('pl_actual', a); }
+  return a;
+}
+function getPlOverrides(){ return ls('pl_overrides', {})||{}; }
+var plOff = 0;
+function plYm(){ return ymFromOffset(plOff); }
+function plNav(d){ plOff+=d; if(plOff>0) plOff=0; _secRerender(); }
+function plVcVal(cfg, ovr, sid, ym, cat){
+  var o = ovr[ym] && ovr[ym][sid] && ovr[ym][sid][cat];
+  if (o!=null && o!=='') return Number(o)||0;
+  return Number((cfg.vcAvg[sid]||{})[cat])||0;
+}
+function plReimburseTotal(sid, ym){
+  return getReimbursements().filter(function(r){ return r.storeId===sid && r.status==='承認' && String(r.date||'').slice(0,7)===ym; })
+    .reduce(function(a,r){ return a+(Number(r.amount)||0); },0);
+}
+function plComputeStore(sid, ym, off){
+  var cfg=getPlConfig(), ovr=getPlOverrides();
+  var sales = Math.round((monthStats(sid, off)||{}).sales||0);
+  var fc = getFcMonthly(sid, ym);
+  var purch = monthOrderTotalYm(sid, ym) + monthPurchaseTotalYm(sid, ym);
+  var cogs = Math.round((parseFloat(fc.beginInv)||0) + purch - (parseFloat(fc.endInv)||0));
+  var cogsSrc = ((parseFloat(fc.beginInv)||0)>0 || (parseFloat(fc.endInv)||0)>0) ? '棚卸法' : '仕入合計';
+  if (cogs<0) cogs=Math.round(purch);
+  var labor = 0; try{ labor = Math.round(laborCoreForYm(sid, ym).total); }catch(e){}
+  var vc = {}; var vcT=0;
+  PL_VC_CATS.forEach(function(c){ var v=Math.round(plVcVal(cfg, ovr, sid, ym, c[0])); vc[c[0]]=v; vcT+=v; });
+  var reimb = Math.round(plReimburseTotal(sid, ym)); vcT+=reimb;
+  var get = Math.round(sales * (cfg.getRate||4.712)/100);
+  var fixT = 0; PL_FIX_CATS.forEach(function(c){ fixT += Number((cfg.fixed[sid]||{})[c[0]])||0; }); fixT=Math.round(fixT);
+  var expT = vcT + get + fixT;
+  var profit = sales - cogs - labor - expT;
+  var hasOvr = !!(ovr[ym] && ovr[ym][sid] && Object.keys(ovr[ym][sid]).some(function(k){ return ovr[ym][sid][k]!=null && ovr[ym][sid][k]!==''; }));
+  return { sales:sales, cogs:cogs, cogsSrc:cogsSrc, gross:sales-cogs, labor:labor, vc:vc, vcT:vcT, reimb:reimb, get:get, fixT:fixT, expT:expT, profit:profit, hasOvr:hasOvr };
+}
 async function showManagerSecure(){
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
   var ls=document.getElementById('login-screen'); if(ls) ls.style.display='none';
@@ -4066,8 +4122,155 @@ async function showManagerSecure(){
   curStore='ALL';
   try{ var me=getEmployees().find(function(x){return x.id===window._authSession.emp_id;}); curUserName=me?me.name:(window._authSession.email||''); }catch(e){ curUserName=window._authSession.email||''; }
   if(body){
-    try{ body.innerHTML=renderGrowthKarte(); }catch(e){ body.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; }
+    try{ body.innerHTML=renderSecureBody(); }catch(e){ body.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; }
   }
+}
+/* セキュアページの中身（タブ: 成長カルテ｜簡易PL） */
+function _secRerender(){ var b=document.getElementById('mgr-secure-body'); if(b){ try{ b.innerHTML=renderSecureBody(); }catch(e){ b.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; } } }
+function secTab(t){ window._secTab=t; _secRerender(); }
+function renderSecureBody(){
+  var t = window._secTab==='pl' ? 'pl' : 'karte';
+  var bar = '<div class="phase-tabs" style="margin-bottom:12px">'
+    +'<div class="phase-tab'+(t==='karte'?' active':'')+'" onclick="secTab(\'karte\')"><i class="ti ti-id-badge-2" style="font-size:12px"></i> 成長カルテ</div>'
+    +'<div class="phase-tab'+(t==='pl'?' active':'')+'" onclick="secTab(\'pl\')"><i class="ti ti-report-money" style="font-size:12px"></i> 簡易PL</div>'
+    +'</div>';
+  return bar + (t==='pl' ? renderSimplePL() : renderGrowthKarte());
+}
+/* ===== 簡易PL 本体 ===== */
+function renderSimplePL(){
+  var ym = plYm(); var p=ym.split('-');
+  var mLabel = parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月';
+  var cfg = getPlConfig();
+  var actual = (getPlActual()[ym])||null;
+  var actualSrc = (getPlActual()._src||{})[ym]||'';
+  var stores = sortByLoginOrder(activeStores());
+  var m=function(v){ return '$'+Math.round(v).toLocaleString(); };
+  var pct=function(v,s){ return s>0?(Math.round(v/s*1000)/10)+'%':'—'; };
+  var diffCell=function(simp, act){
+    if(act==null) return '<td style="text-align:right;color:var(--muted)">—</td><td style="text-align:right;color:var(--muted)">—</td>';
+    var d=simp-act; var c=Math.abs(d)<Math.max(50, Math.abs(act)*0.03)?'var(--muted)':(d>0?'var(--red)':'var(--accent2)');
+    return '<td style="text-align:right">'+m(act)+'</td><td style="text-align:right;color:'+c+'">'+(d>=0?'+':'')+m(d).replace('$-','-$')+'</td>';
+  };
+  var h = '<div class="card" style="padding:8px 10px;display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="plNav(-1)"><i class="ti ti-chevron-left"></i></button>'
+    +'<div style="flex:1;text-align:center;font-weight:700;font-size:14px">'+mLabel+' '+(actual?'<span class="tag tag-green" style="font-size:9px">実PLあり（'+escapeHtml(actualSrc)+'）</span>':'<span class="tag tag-gray" style="font-size:9px">実PL未取込</span>')+'</div>'
+    +'<button class="btn btn-secondary btn-sm" '+(plOff>=0?'disabled style="opacity:.4"':'')+' onclick="plNav(1)"><i class="ti ti-chevron-right"></i></button>'
+    +(plOff<0?'<button class="btn btn-secondary btn-sm" onclick="plOff=0;_secRerender()">今月へ</button>':'')
+    +'</div>';
+  h += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 簡易PL＝売上(日次実績)・原価(棚卸法)・人件費(Labor共通コア)は<b>実数</b>、変動費は<b>実PL 1〜5月の平均</b>(店舗別・上書き可)＋建替経費の実費、GET='+(cfg.getRate||4.712)+'%、固定費は<b>実PL 5月の実数</b>。実PL列と並べて差異を検証できます。</div>';
+
+  // 全店合計
+  var tot={sales:0,cogs:0,labor:0,expT:0,profit:0}, atot=actual?{sales:0,cogs:0,payroll:0,opex:0,netop:0}:null;
+  var comp={};
+  stores.forEach(function(st){
+    var c=plComputeStore(st.id, ym, plOff); comp[st.id]=c;
+    tot.sales+=c.sales; tot.cogs+=c.cogs; tot.labor+=c.labor; tot.expT+=c.expT; tot.profit+=c.profit;
+    if(atot && actual[st.id]){ ['sales','cogs','payroll','opex','netop'].forEach(function(k){ atot[k]+=actual[st.id][k]||0; }); }
+  });
+  h += '<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-building-skyscraper" style="color:var(--accent)"></i>全店合計（'+mLabel+'）</div>'
+    +'<div class="kpi-grid">'
+    +kpi('売上', m(tot.sales), atot?('実PL '+m(atot.sales)):'', 'var(--tm)')
+    +kpi('営業利益', m(tot.profit), pct(tot.profit,tot.sales)+(atot?('　実PL '+m(atot.netop)):''), tot.profit>=0?'var(--green)':'var(--red)')
+    +kpi('原価率', pct(tot.cogs,tot.sales), atot?('実PL '+pct(atot.cogs,atot.sales)):'', 'var(--yellow)')
+    +kpi('人件費率', pct(tot.labor,tot.sales), atot?('実PL '+pct(atot.payroll,atot.sales)):'', 'var(--accent2)')
+    +'</div></div>';
+
+  stores.forEach(function(st){
+    var c=comp[st.id];
+    var a=actual?actual[st.id]:null;
+    var aExp=a?(a.opex||0):null;
+    var hasCfg = !!(cfg.vcAvg[st.id]||cfg.fixed[st.id]);
+    h += '<div class="card"><div class="card-title"><span class="store-dot" style="background:'+(st.color||'#888')+'"></span>'+escapeHtml(st.name)
+      +(c.hasOvr?' <span class="tag tag-blue" style="font-size:9px">月次調整あり</span>':'')
+      +'<span style="margin-left:auto;display:flex;gap:5px">'
+      +'<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="openPlOverrideModal(\''+st.id+'\')"><i class="ti ti-adjustments-dollar"></i> 実額調整</button>'
+      +'<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="openPlConfigModal(\''+st.id+'\')"><i class="ti ti-settings"></i> 設定</button>'
+      +'<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="openPlActualModal(\''+st.id+'\')"><i class="ti ti-file-spreadsheet"></i> 実PL</button>'
+      +'</span></div>';
+    if(!hasCfg) h += '<div style="font-size:10px;color:var(--yellow);margin-bottom:6px"><i class="ti ti-alert-circle"></i> この店舗の変動費・固定費が未設定です（新店等）。「設定」から登録してください（現在0で計算）。</div>';
+    h += '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:430px;font-size:11.5px"><thead><tr><th style="text-align:left">項目</th><th style="text-align:right">簡易PL</th><th style="text-align:right">実PL</th><th style="text-align:right">差異</th></tr></thead><tbody>';
+    var row=function(label, simp, act, sub, bold, col){
+      return '<tr'+(bold?' style="font-weight:700;border-top:2px solid var(--border)"':'')+'><td style="text-align:left">'+label+(sub?' <span style="font-size:9px;color:var(--muted)">'+sub+'</span>':'')+'</td>'
+        +'<td style="text-align:right'+(col?';color:'+col:'')+'">'+m(simp)+'</td>'+diffCell(simp, act)+'</tr>';
+    };
+    h += row('売上', c.sales, a?a.sales:null, '日次実績');
+    h += row('原価', c.cogs, a?a.cogs:null, c.cogsSrc+'・'+pct(c.cogs,c.sales));
+    h += row('粗利', c.gross, a?(a.sales-a.cogs):null, '', false, 'var(--tm)');
+    h += row('人件費', c.labor, a?a.payroll:null, 'Laborコア・'+pct(c.labor,c.sales));
+    h += '<tr><td style="text-align:left">変動費 <span style="font-size:9px;color:var(--muted)">平均'+(c.hasOvr?'+調整':'')+(c.reimb?'＋建替'+m(c.reimb):'')+'</span></td><td style="text-align:right">'+m(c.vcT)+'</td><td style="text-align:right;color:var(--muted)" rowspan="3" title="実PLの運営費計">'+(aExp!=null?m(aExp):'—')+'</td><td style="text-align:right;color:var(--muted)" rowspan="3">'+(aExp!=null?(function(){var d=c.expT-aExp;return (d>=0?'+':'')+m(d).replace('$-','-$');})():'—')+'</td></tr>';
+    h += '<tr><td style="text-align:left">消費税(GET) <span style="font-size:9px;color:var(--muted)">売上×'+(cfg.getRate||4.712)+'%</span></td><td style="text-align:right">'+m(c.get)+'</td></tr>';
+    h += '<tr><td style="text-align:left">固定費 <span style="font-size:9px;color:var(--muted)">家賃・保険・システム</span></td><td style="text-align:right">'+m(c.fixT)+'</td></tr>';
+    h += row('経費計', c.expT, aExp, '変動+GET+固定 vs 実PL運営費');
+    h += row('営業利益', c.profit, a?a.netop:null, pct(c.profit,c.sales), true, c.profit>=0?'var(--green)':'var(--red)');
+    h += '</tbody></table></div></div>';
+  });
+  return h;
+}
+function openPlConfigModal(sid){
+  var cfg=getPlConfig(); var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
+  var vc=cfg.vcAvg[sid]||{}; var fx=cfg.fixed[sid]||{};
+  var vcRows=PL_VC_CATS.map(function(c){ return '<div class="form-group" style="margin-bottom:6px"><label class="form-label" style="font-size:11px">'+c[1]+' ($/月)</label><input class="form-input" style="padding:6px 8px" id="plc-'+c[0]+'" type="number" inputmode="decimal" value="'+(vc[c[0]]!=null?vc[c[0]]:'')+'"></div>'; }).join('');
+  var fxRows=PL_FIX_CATS.map(function(c){ return '<div class="form-group" style="margin-bottom:6px"><label class="form-label" style="font-size:11px">'+c[1]+' ($/月)</label><input class="form-input" style="padding:6px 8px" id="plf-'+c[0]+'" type="number" inputmode="decimal" value="'+(fx[c[0]]!=null?fx[c[0]]:'')+'"></div>'; }).join('');
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 簡易PL設定 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:8px">'+escapeHtml(cfg.seededFrom||'')+'。変動費は毎月の既定値（月別の実額は「実額調整」から）。</div>'
+    +'<div style="font-size:12px;font-weight:700;margin-bottom:4px">変動費（月次平均）</div><div class="form-row" style="flex-wrap:wrap">'+vcRows+'</div>'
+    +'<div style="font-size:12px;font-weight:700;margin:8px 0 4px">固定費（そのまま反映）</div><div class="form-row" style="flex-wrap:wrap">'+fxRows+'</div>'
+    +'<div class="form-group"><label class="form-label" style="font-size:11px">GET税率 (%・全店共通)</label><input class="form-input" style="padding:6px 8px" id="plc-getrate" type="number" inputmode="decimal" step="0.001" value="'+(cfg.getRate||4.712)+'"></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="savePlConfig(\''+sid+'\')">保存</button></div>');
+}
+function savePlConfig(sid){
+  var cfg=getPlConfig();
+  cfg.vcAvg[sid]=cfg.vcAvg[sid]||{}; cfg.fixed[sid]=cfg.fixed[sid]||{};
+  PL_VC_CATS.forEach(function(c){ var v=document.getElementById('plc-'+c[0]).value; cfg.vcAvg[sid][c[0]]=v===''?0:(parseFloat(v)||0); });
+  PL_FIX_CATS.forEach(function(c){ var v=document.getElementById('plf-'+c[0]).value; cfg.fixed[sid][c[0]]=v===''?0:(parseFloat(v)||0); });
+  var gr=parseFloat(document.getElementById('plc-getrate').value); if(!isNaN(gr)&&gr>=0) cfg.getRate=gr;
+  cfg.editedBy=myName(); cfg.editedAt=nowJP();
+  lsSet('pl_config', cfg);
+  closeModalDirect(); showToast('簡易PL設定を保存しました','success'); _secRerender();
+}
+function openPlOverrideModal(sid){
+  var ym=plYm(); var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
+  var cfg=getPlConfig(); var ovr=getPlOverrides(); var cur=(ovr[ym]&&ovr[ym][sid])||{};
+  var rows=PL_VC_CATS.map(function(c){
+    var avg=Number((cfg.vcAvg[sid]||{})[c[0]])||0;
+    return '<div class="form-group" style="margin-bottom:6px"><label class="form-label" style="font-size:11px">'+c[1]+' <span style="color:var(--muted)">(平均 $'+avg.toLocaleString()+')</span></label><input class="form-input" style="padding:6px 8px" id="plo-'+c[0]+'" type="number" inputmode="decimal" placeholder="空欄=平均" value="'+(cur[c[0]]!=null?cur[c[0]]:'')+'"></div>';
+  }).join('');
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — '+ym.replace('-','年')+'月 変動費の実額調整 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:8px">Invoiceや請求書で実額が分かった項目だけ入力してください（空欄＝平均値のまま）。建替経費は自動で加算されます。</div>'
+    +'<div class="form-row" style="flex-wrap:wrap">'+rows+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="savePlOverride(\''+sid+'\')">保存</button></div>');
+}
+function savePlOverride(sid){
+  var ym=plYm(); var ovr=getPlOverrides();
+  ovr[ym]=ovr[ym]||{}; ovr[ym][sid]={};
+  var any=false;
+  PL_VC_CATS.forEach(function(c){ var v=document.getElementById('plo-'+c[0]).value; if(v!==''){ ovr[ym][sid][c[0]]=parseFloat(v)||0; any=true; } });
+  if(!any) delete ovr[ym][sid];
+  lsSet('pl_overrides', ovr);
+  closeModalDirect(); showToast(any?'この月の実額を保存しました':'調整をクリアしました（平均値に戻ります）','success'); _secRerender();
+}
+function openPlActualModal(sid){
+  var ym=plYm(); var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
+  var a=(getPlActual()[ym]||{})[sid]||{};
+  var f=function(id,label,val){ return '<div class="form-group" style="margin-bottom:6px"><label class="form-label" style="font-size:11px">'+label+' ($)</label><input class="form-input" style="padding:6px 8px" id="pla-'+id+'" type="number" inputmode="decimal" value="'+(val!=null?val:'')+'"></div>'; };
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — '+ym.replace('-','年')+'月 実PL入力 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:8px">会計PL（QuickBooks等）の確定数値を入力すると、簡易PLと3列比較できます。</div>'
+    +'<div class="form-row" style="flex-wrap:wrap">'
+    +f('sales','売上（Total Income）',a.sales)+f('cogs','原価（Total COGS）',a.cogs)
+    +f('payroll','人件費（Total Payroll）',a.payroll)+f('opex','運営費（Total Operating Exp）',a.opex)
+    +f('netop','営業利益（Net Operating Income）',a.netop)
+    +'</div><div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="savePlActual(\''+sid+'\')">保存</button></div>');
+}
+function savePlActual(sid){
+  var ym=plYm(); var act=getPlActual();
+  act[ym]=act[ym]||{}; act._src=act._src||{};
+  var g=function(id){ var v=document.getElementById('pla-'+id).value; return v===''?null:(parseFloat(v)||0); };
+  var rec={sales:g('sales'),cogs:g('cogs'),payroll:g('payroll'),opex:g('opex'),netop:g('netop')};
+  var any=Object.keys(rec).some(function(k){return rec[k]!=null;});
+  if(any){ act[ym][sid]=rec; if(!act._src[ym]) act._src[ym]='手入力'; }
+  else { delete act[ym][sid]; }
+  lsSet('pl_actual', act);
+  closeModalDirect(); showToast('実PLを保存しました','success'); _secRerender();
 }
 function managerLogout(){
   window._authSession=null;
@@ -4659,7 +4862,7 @@ function openStoreSwitcher() {
   var showOffice = ['ceo','gm','office','office_crew'].includes(curRole);
   openModal(`<div class="modal-title">ロケーション切替 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="store-grid">
-      ${(rc.allStores ? [{id:'ALL',name:'全店舗',color:'#6b7591'},...stores] : stores).map(s=>
+      ${((rc.allStores || curRole==='am') ? [{id:'ALL',name:curRole==='am'?'全店舗（管轄すべて）':'全店舗',color:'#6b7591'},...stores] : stores).map(s=>
         `<div class="store-btn${s.id===curStore?' sel':''}" style="border-left-color:${s.color}" onclick="switchStore('${s.id}')">${s.name}</div>`
       ).join('')}
     </div>
@@ -15458,7 +15661,7 @@ function openVacationModal() {
   var cats = [];
   if (g>=3) {
     BENEFITS.forEach(function(b){
-      var rem = (b.days + benefitAdjust(yr, me, b.key)) - benefitUsed(me, yr, b.type, '承認');
+      var rem = (b.days + benefitAdjust(yr, me, b.key)) - benefitUsed(me, yr, b.type, '承認') - benefitManualUsed(yr, me, b.key);
       cats.push({ type:b.type, label:b.label.replace('Paid Off（有給）','有給休暇'), hint:'残'+rem+'日' });
     });
   }
@@ -15579,6 +15782,42 @@ function setBenefitAdjust(year, name, key, val){
   if(val) m[year][name][key]=val; else delete m[year][name][key];
   lsSet('benefit_adjust', m);
 }
+/* 手動消化（システム外で既に取得済みの休暇）: benefit_manual[year][name][key]={d,memo,by,at} */
+function getBenefitManual(){ return ls('benefit_manual', {}); }
+function benefitManualUsed(year, name, key){
+  var m=getBenefitManual(); var r=((m[year]||{})[name]||{})[key];
+  return r ? (Number(r.d)||0) : 0;
+}
+function setBenefitManual(year, name, key, days, memo){
+  var m=getBenefitManual();
+  if(!m[year]) m[year]={}; if(!m[year][name]) m[year][name]={};
+  if(days>0) m[year][name][key]={d:days, memo:memo||'', by:myName(), at:nowJP()};
+  else delete m[year][name][key];
+  lsSet('benefit_manual', m);
+}
+function openBenefitManualModal(){
+  var year=_hrYear;
+  var emps=getEmployees().filter(function(e){return e.status==='在籍'||!e.status;}).slice().sort(function(a,b){return String(a.name).localeCompare(String(b.name));});
+  var m=getBenefitManual()[year]||{};
+  var rows=Object.keys(m).map(function(nm){
+    return Object.keys(m[nm]).map(function(k){
+      var b=BENEFITS.find(function(x){return x.key===k;})||{label:k}; var r=m[nm][k];
+      return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;padding:5px 0;border-bottom:1px solid var(--border)">'
+        +'<div style="flex:1">'+escapeHtml(nm)+' · '+escapeHtml(b.label)+' <b>'+r.d+'日</b>'+(r.memo?' <span style="color:var(--muted);font-size:10px">'+escapeHtml(r.memo)+'</span>':'')
+        +'<div style="font-size:9px;color:var(--muted)">'+escapeHtml(r.by||'')+' '+escapeHtml(r.at||'')+'</div></div>'
+        +'<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;color:var(--red)" onclick="setBenefitManual('+year+',\''+String(nm).replace(/'/g,"\\'")+'\',\''+k+'\',0);openBenefitManualModal()">削除</button></div>';
+    }).join('');
+  }).join('');
+  openModal('<div class="modal-title">手動消化の入力（'+year+'年） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:8px">システム導入前や申請外で<b>すでに消化済み</b>の日数を登録します。残日数から自動で差し引かれます。</div>'
+    +'<div class="form-row"><div class="form-group"><label class="form-label">従業員</label><select class="form-select" id="bm-emp">'+emps.map(function(e){return '<option>'+escapeHtml(e.name)+'</option>';}).join('')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">ベネフィット</label><select class="form-select" id="bm-key">'+BENEFITS.map(function(b){return '<option value="'+b.key+'">'+b.label+'</option>';}).join('')+'</select></div></div>'
+    +'<div class="form-row"><div class="form-group"><label class="form-label">消化日数</label><input class="form-input" id="bm-days" type="number" inputmode="decimal" step="0.5" min="0" placeholder="例: 2"></div>'
+    +'<div class="form-group"><label class="form-label">メモ（任意）</label><input class="form-input" id="bm-memo" placeholder="例: 3月に口頭申請で取得"></div></div>'
+    +'<div class="btn-row" style="margin-bottom:10px"><button class="btn btn-primary" onclick="(function(){var d=parseFloat(document.getElementById(\'bm-days\').value)||0; if(d<=0){showToast(\'日数を入力してください\',\'warning\');return;} setBenefitManual('+year+', document.getElementById(\'bm-emp\').value, document.getElementById(\'bm-key\').value, d, document.getElementById(\'bm-memo\').value.trim()); showToast(\'手動消化を登録しました\',\'success\'); openBenefitManualModal();})()"><i class="ti ti-plus"></i> 登録</button></div>'
+    +(rows?('<div style="font-size:12px;font-weight:700;margin-bottom:4px">登録済み（'+year+'年）</div>'+rows):'<div style="font-size:11px;color:var(--muted)">登録済みの手動消化はありません</div>')
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect();renderPage(\'hr\')">閉じる</button></div>');
+}
 /* ある人・年・種別の消化日数（status指定で承認済み/申請中を分けて集計） */
 /* 消化日数: 申請に内訳(breakdown)があればその種別の日数、無ければ旧来の type×期間日数。 */
 function benefitUsed(name, year, type, status){
@@ -15605,6 +15844,7 @@ function renderHR(){
     .sort(function(a,b){ return gradeNum(empGrade(b))-gradeNum(empGrade(a)); });
 
   var html=`<div class="section-header"><div><div class="section-title">HR・福利厚生</div><div class="section-sub">ベネフィット消化状況（暦年）</div></div>
+    <button class="btn btn-secondary btn-sm" onclick="openBenefitManualModal()"><i class="ti ti-pencil-plus"></i> 手動消化の入力</button>
     <select class="form-select" style="width:auto;padding:6px" onchange="setHrYear(this.value)">
       ${[year+1,year,year-1,year-2].map(function(y){return `<option value="${y}" ${y===year?'selected':''}>${y}年</option>`;}).join('')}
     </select></div>`;
@@ -15627,7 +15867,7 @@ function renderHR(){
       html+=`<tr><td style="font-size:12px">${e.name}</td><td><span class="tag tag-gray" style="font-size:9px">${empGrade(e)}</span></td>`;
       BENEFITS.forEach(function(b){
         var grant=b.days+benefitAdjust(year,e.name,b.key);
-        var used=benefitUsed(e.name,year,b.type,'承認');
+        var used=benefitUsed(e.name,year,b.type,'承認') + benefitManualUsed(year,e.name,b.key);
         var pending=benefitUsed(e.name,year,b.type,'申請中');
         var remain=grant-used;
         var col=remain<0?'var(--red)':remain===0?'var(--yellow)':'var(--tm)';
@@ -19231,7 +19471,8 @@ function officeLaunch(page, label){
 }
 /* ===== エラーセンター（運用品質チェック・GM/CEO/Office） ===== */
 function _ecYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
-function _ecRecentDates(n){ var out=[],d=new Date(); for(var i=0;i<n;i++){ out.push(_ecYmd(d)); d.setDate(d.getDate()-1);} return out; }
+var EC_MIN_DATE = '2026-07-01'; // エラー検知の開始日（前月まではログイン運用が無いため対象外）
+function _ecRecentDates(n){ var out=[],d=new Date(); for(var i=0;i<n;i++){ var ymd=_ecYmd(d); if(ymd>=EC_MIN_DATE) out.push(ymd); d.setDate(d.getDate()-1);} return out; }
 function _ecEmpAlive(e){ return e && e.status!=='退職'; }
 
 /* — 従業員マスター系（1ループで複数検知） — */
@@ -23610,7 +23851,7 @@ function karteTryUnlock(){
 }
 function karteLock(){ window._karteUnlocked=false; karteRerender(); }
 /* 成長カルテの再描画：セキュアページ内なら専用コンテナへ、通常はrenderPage */
-function karteRerender(){ if(window._secureMode){ var b=document.getElementById('mgr-secure-body'); if(b){ try{ b.innerHTML=renderGrowthKarte(); }catch(e){} } return; } renderPage('growth_karte'); }
+function karteRerender(){ if(window._secureMode){ _secRerender(); return; } renderPage('growth_karte'); }
 async function karteChangePin(){
   if(['gm','ceo'].indexOf(curRole)<0) return;
   var cur = await askInput({title:'成長カルテPINの変更', label:'現在のPIN', type:'password', required:true, okLabel:'次へ'});
@@ -25374,6 +25615,12 @@ function renderApproval() {
   var approvals = ls('approvals', []);
   var pending = approvals.filter(function(a){return a.status==='pending';});
   var done = approvals.filter(function(a){return a.status!=='pending';});
+  // スコープ: G3/G4=自店, G5(AM)=管轄店, GM/CEO/経理=全店（本部案件含む）
+  if (['gm','ceo','office'].indexOf(curRole)<0) {
+    var _vis = getVisibleStores(); var _vId=_vis.map(function(x){return x.id;}), _vNm=_vis.map(function(x){return x.name;});
+    var _inScope=function(a){ var st=_approvalStore(a); return _vId.indexOf(st.id)>=0 || _vNm.indexOf(st.name)>=0; };
+    pending = pending.filter(_inScope); done = done.filter(_inScope);
+  }
   var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar','退職':'ti-user-off','経費':'ti-file-invoice'};
 
   // 店舗別グルーピング（本部含む）
@@ -25698,6 +25945,36 @@ function renderBadges(name, emp) {
   return html;
 }
 
+/* Crew本人のスキルカード: レーダーチャート＋ポジション別Lv */
+function mySkillCardHtml(name, storeId){
+  try{
+    var positions = getStorePositions(storeId).filter(function(p){return p!=='Energy'&&p!=='Leadership';});
+    if(!positions.length) return '';
+    var sk = getEmpSkills(name)||{};
+    var vals = positions.map(function(p){ var x=sk[p]; return (x&&x.status==='承認')?(x.level||0):0; });
+    var n = positions.length, W=280, H=210, cx=W/2, cy=H/2+4, R=76;
+    function pt(i, r){ var a=-Math.PI/2 + i*2*Math.PI/n; return [cx+r*Math.cos(a), cy+r*Math.sin(a)]; }
+    var rings='';
+    [1,2,3].forEach(function(lv){
+      var pts=positions.map(function(_,i){ return pt(i, R*lv/3).map(Math.round).join(','); }).join(' ');
+      rings += '<polygon points="'+pts+'" fill="none" stroke="var(--border)" stroke-width="1"/>';
+    });
+    var axes = positions.map(function(p,i){
+      var e=pt(i,R); var l=pt(i,R+16);
+      var anchor = Math.abs(l[0]-cx)<10?'middle':(l[0]>cx?'start':'end');
+      return '<line x1="'+cx+'" y1="'+cy+'" x2="'+Math.round(e[0])+'" y2="'+Math.round(e[1])+'" stroke="var(--border)" stroke-width="1"/>'
+        +'<text x="'+Math.round(l[0])+'" y="'+Math.round(l[1])+'" font-size="9" fill="var(--muted)" text-anchor="'+anchor+'" dominant-baseline="middle">'+escapeHtml(p)+'</text>';
+    }).join('');
+    var poly = positions.map(function(_,i){ return pt(i, R*Math.max(0.04,vals[i]/3)).map(Math.round).join(','); }).join(' ');
+    var dots = positions.map(function(_,i){ var c=pt(i, R*Math.max(0.04,vals[i]/3)); return '<circle cx="'+Math.round(c[0])+'" cy="'+Math.round(c[1])+'" r="2.5" fill="var(--accent)"/>'; }).join('');
+    var svg = '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:340px;height:auto;display:block;margin:0 auto">'
+      +rings+axes+'<polygon points="'+poly+'" fill="var(--accent)" fill-opacity="0.22" stroke="var(--accent)" stroke-width="2"/>'+dots+'</svg>';
+    return '<div class="card"><div class="card-title"><i class="ti ti-radar-2" style="color:var(--accent)"></i>'+t('あなたのスキルレベル','Your Skill Levels')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">Lv0〜3（承認済みのみ）</span></div>'
+      +svg
+      +(typeof skillLevelGaugeHtml==='function'?skillLevelGaugeHtml(name, storeId):'')
+      +'<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '+t('レベルは管理者承認後に反映されます。Lvが上がるとチップ配分・昇格に近づきます。','Levels reflect approved skills.')+'</div></div>';
+  }catch(e){ return ''; }
+}
 function renderMypage() {
   var rc = ROLE_CONFIG[curRole];
   var isCrewView = (curRole==='crew' || curRole==='sl');
@@ -25733,6 +26010,9 @@ function renderMypage() {
       <div class="fy-levelbar"><i style="width:${heroPct}%"></i></div>`:''}
     </div>
   </div>`;
+
+  // ===== スキルレベル（全Crew: レーダー＋各Lv）=====
+  if (isCrewView) { html += mySkillCardHtml(me, storeId); }
 
   // ===== 特別育成 / 改善サポート（本人向け・前向き表示）=====
   try{
@@ -28940,6 +29220,10 @@ function renderWorkCenter(){
   var canErr = ['ceo','gm','office'].indexOf(curRole)>=0;
   var canAnn = ((typeof canAnnounceAll==='function'&&canAnnounceAll()) || (typeof announceManagedStores==='function'&&announceManagedStores().length>0));
   var pend = ls('approvals',[]).filter(function(a){return a.status==='pending';});
+  if (['gm','ceo','office'].indexOf(curRole)<0) {
+    var _v=getVisibleStores(); var _vi=_v.map(function(x){return x.id;}), _vn=_v.map(function(x){return x.name;});
+    pend = pend.filter(function(a){ var st=(typeof _approvalStore==='function')?_approvalStore(a):{id:a.store,name:a.store}; return _vi.indexOf(st.id)>=0 || _vn.indexOf(st.name)>=0; });
+  }
   var issues = []; if (canErr){ try{ issues = ecCollect(); }catch(e){} }
   var hi = issues.filter(function(x){return x.sev==='high';}).length;
   var openT = getTasks().filter(function(t){ return t.status!=='完了' && (t.store==='ALL' || !t.store || getVisibleStores().some(function(st){return st.id===t.store;})); });
@@ -29026,7 +29310,7 @@ function checkCashTipTasks(){
 function renderTasks(){
   try{ ensureRecurringTasks(); taskDeadlineReminders(); checkCashTipTasks(); }catch(e){}
   var canManage = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
-  var html = '<div class="section-header"><div><div class="section-title">タスク管理</div><div class="section-sub">店舗タスクと個人タスクを管理</div></div></div>';
+  var html = '<div class="section-header"><div><div class="section-title">タスク</div><div class="section-sub">ワークセンター — 店舗タスクと個人タスク</div></div></div>';
   html += '<div class="phase-tabs">'
     +'<div class="phase-tab'+(taskTab==='store'?' active':'')+'" onclick="setTaskTab(\'store\')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗タスク</div>'
     +'<div class="phase-tab'+(taskTab==='mine'?' active':'')+'" onclick="setTaskTab(\'mine\')"><i class="ti ti-user" style="font-size:12px"></i> 個人タスク</div>'
@@ -30454,6 +30738,21 @@ function renderGrowthHub() {
   }
   return html;
 }
+/* 担当者の設定/解除。担当が決まると初動タスクを自動完了し、投稿者へ通知 */
+function ghAssignMe(id, off){
+  var posts=ls('growthhub',[]); var p=posts.find(function(x){return x.id===id;}); if(!p) return;
+  var me=curUserName||(ROLE_CONFIG[curRole]||{}).name;
+  if(off){ p.assignee=''; }
+  else {
+    p.assignee=me; p.assignedAt=nowJP();
+    if((p.status||'未対応')==='未対応') p.status='対応中';
+    try{ var tk=getTasks(); var hit=false; tk.forEach(function(t){ if(t.refId==='gh_'+id && t.status!=='完了'){ t.status='完了'; t.progress=100; t.doneAt=nowJP(); hit=true; } }); if(hit) lsSet('tasks_all', tk); }catch(e){}
+    try{ addNotif({type:'consult', title:'相談の担当者が決まりました', text:(me+' が対応します: '+String(p.title||'').slice(0,80)), toUser:p.author, page:'growthhub', refId:id}); }catch(e){}
+  }
+  lsSet('growthhub', posts);
+  showToast(off?'担当を外れました':'あなたが担当になりました（対応中に変更）','success');
+  renderPage('growthhub');
+}
 /* 投稿カード。mgr=trueなら管理職操作（返信・ステータス）を表示 */
 function ghPostCard(p, mgr){
   var st = p.status||'未対応';
@@ -30464,6 +30763,11 @@ function ghPostCard(p, mgr){
       <div class="approval-title">${p.title}</div>
       <div class="approval-meta">${mgr?p.author+' · ':''}${store?store.name+' · ':''}${p.date}</div></div>
       <span class="tag ${stCol}">${st}</span></div>
+    ${mgr?`<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px">
+      <i class="ti ti-user-shield" style="color:var(--accent)"></i>担当: ${p.assignee?`<b>${escapeHtml(p.assignee)}</b>`:'<span style="color:var(--red)">未定</span>'}
+      ${!p.assignee?`<button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:10px" onclick="ghAssignMe('${p.id}')"><i class="ti ti-hand-stop"></i> 担当する</button>`
+        :(p.assignee===(curUserName||(ROLE_CONFIG[curRole]||{}).name)?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="ghAssignMe('${p.id}', true)">担当を外れる</button>`:'')}
+    </div>`:''}
     <div style="font-size:13px;margin-top:8px;white-space:pre-wrap">${p.body}</div>`;
   // スレッド（往復）
   (p.replies||[]).forEach(r=>{
@@ -30509,6 +30813,16 @@ function saveGHPost() {
     store: emp?emp.store:(curStore!=='ALL'?curStore:''),
     date:todayJP(), status:'未対応', replies:[]});
   lsSet('growthhub', posts);
+  // 初動タスク: 内容確認＋担当決め（ワークセンターに集約）
+  try{
+    var _p2=posts[posts.length-1];
+    var _tk=getTasks();
+    _tk.push({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), refId:'gh_'+_p2.id, auto:'consult',
+      title:'【相談】内容確認と担当決め: '+String(_p2.title||'').slice(0,40),
+      desc:'お悩み相談室に新しい相談が届きました。内容を確認し、「担当する」で対応者を決めてください。',
+      assignee:'', store:_p2.store||'ALL', priority:'高', due:todayISO(), progress:0, status:'進行中', created:todayJP() });
+    lsSet('tasks_all', _tk);
+  }catch(e){}
   try{ var _gp=posts[posts.length-1]; if(_gp.store){ addNotif({ type:'consult', title:'新しい相談が届きました', text:(_gp.title||'').slice(0,140), toStore:_gp.store, toRoles:['sl','am','gm'], page:'growthhub', refId:_gp.id }); } else { addNotif({ type:'consult', title:'新しい相談が届きました', text:(_gp.title||'').slice(0,140), toRoles:['gm','am'], page:'growthhub', refId:_gp.id }); } }catch(e){}
   closeModalDirect();
   showToast('相談を送信しました。管理者が確認します', 'success');
