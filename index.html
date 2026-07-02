@@ -1049,7 +1049,7 @@ function getStoresAll() {
     if(x.dinnerHours===undefined) x.dinnerHours = '17:00-22:00';
     if(x.takeout===undefined) x.takeout = true;
   });
-  return s;
+  return sortByLoginOrder(s); // 全画面共通の店舗並び順（ToriTon→Tenkichi→Kaimuki→Piikoi→Aiea→Marujuu→FSP→WGS）
 }
 function setStoresAll(s) { lsSet('m_stores', s); refreshStores(); }
 /* ログイン画面と同じ店舗並び順（全画面共通） */
@@ -1060,6 +1060,22 @@ function sortByLoginOrder(stores){
     var ib = LOGIN_STORE_ORDER.indexOf(b.id); if (ib<0) ib = 999;
     return ia - ib;
   });
+}
+/* 一度だけ: 事務Crew Akane Yoshizawa の勤務形態を時給に（勤怠サイクルは他スタッフと同じ半月管理） */
+function migrateAkaneHourly(){
+  try{
+    if (ls('_fix_akane_hourly', false)) return;
+    var emps = ls('m_employees', null);
+    if (Array.isArray(emps)) {
+      var hit = false;
+      emps.forEach(function(e){
+        var n = String(e.name||'').toLowerCase();
+        if (n.indexOf('akane')>=0 && n.indexOf('yoshizawa')>=0) { e.payTypeOverride = 'hourly'; hit = true; }
+      });
+      if (hit) lsSet('m_employees', emps);
+    }
+    lsSet('_fix_akane_hourly', true);
+  }catch(e){}
 }
 /* 一度だけ: 既存「Waikiki」を「Waikiki Five Star Poke」(現アカウント) と「Waikiki Garlic Shack」(新規) に分割 */
 function migrateWaikikiSplit() {
@@ -1551,7 +1567,7 @@ const NAV_ITEMS = [
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','office','am','sl']},
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','office','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
-  {id:'tasks',       label:'タスク',      icon:'ti-list-check',       roles:['ceo','gm','office','am','sl']},
+  {id:'tasks',       label:'ワークセンター', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl']},
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','office','am','sl']},
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am','sl']},
@@ -1575,7 +1591,6 @@ const NAV_ITEMS = [
   {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
   {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am','sl']},
-  {id:'growth_karte',label:'成長カルテ',  icon:'ti-id-badge-2',       roles:['ceo','gm']},
   {id:'approval',    label:'承認センター',icon:'ti-checklist',         roles:['ceo','gm','office','am']},
   {id:'error_center',label:'エラーセンター',icon:'ti-alert-hexagon',    roles:['ceo','gm','office']},
   {id:'notifications',label:'通知',       icon:'ti-bell',             roles:['ceo','gm','office']},
@@ -1597,17 +1612,17 @@ const MENU_GROUPS = [
   {id:'g_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office','am','sl'],
     children:['tasks']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','growth_karte','ojt_admin','growthhub','hr','vacation']},
+    children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['store_master','announce','required','approval','error_center','settings']},
+    children:['store_master','required','settings']},
 ];
 
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
 const OFFICE_GROUPS = [
   {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
-    children:['office_mgr','tip','hr','growthhub','hiring','approval','office_export','error_center','vacation','mileage','notifications']},
+    children:['office_mgr','tip','hr','growthhub','hiring','office_export','vacation','mileage','notifications']},
   {id:'go_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office'],
     children:['budget','store_power','labor','foodcost','kpi_master']},
   {id:'go_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office'],
@@ -2888,6 +2903,12 @@ function saveCashTip(storeId, date, lunch, dinner) {
   if (prev && prev.entered) { rec.by = prev.by||null; rec.at = prev.at||null; rec.editedBy = myName(); rec.editedAt = nowJP(); }
   else { rec.by = myName(); rec.at = nowJP(); }
   d[date] = rec; setCashTips(storeId, d);
+  // 未入力タスクを自動完了
+  try{
+    var _t = getTasks(); var _hit=false;
+    _t.forEach(function(t){ if(t.refId==='ctip_'+storeId+'_'+date && t.status!=='完了'){ t.status='完了'; t.progress=100; t.doneAt=nowJP(); _hit=true; } });
+    if(_hit) lsSet('tasks_all', _t);
+  }catch(e){}
 }
 /* キャッシュチップが未入力か（クレジットはあるのにキャッシュ未確定＝要入力） */
 function cashTipMissing(storeId, date) {
@@ -4680,15 +4701,15 @@ function renderPage(page) {
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
     case 'office_mgr':   el.innerHTML = renderOfficeMgr(); break;
     case 'office_export': el.innerHTML = '<div class="section-header"><div><div class="section-title"><i class="ti ti-file-export"></i> 出力センター</div><div class="section-sub">全ての帳票・CSV出力</div></div></div>' + renderOfficeExport(); break;
-    case 'error_center': el.innerHTML = renderErrorCenter(); break;
+    case 'error_center': workTab='error'; el.innerHTML = renderWorkCenter(); break;
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'order':        el.innerHTML = renderOrder(); break;
     case 'supply_order': el.innerHTML = renderSupplyOrder(); break;
     case 'dailyops':     el.innerHTML = renderDailyOps(); break;
-    case 'tasks':        el.innerHTML = renderTasks(); break;
+    case 'tasks':        el.innerHTML = renderWorkCenter(); break;
     case 'required':     el.innerHTML = renderRequired(); break;
     case 'goals':        el.innerHTML = renderGoals(); break;
-    case 'announce':     el.innerHTML = renderAnnounce(); break;
+    case 'announce':     workTab='announce'; el.innerHTML = renderWorkCenter(); break;
     case 'labor':        el.innerHTML = renderLabor(); break;
     case 'tip':          el.innerHTML = renderTipMgmt(); break;
     case 'attendance':   laborTab='attendance'; el.innerHTML = renderLabor(); break;
@@ -4710,7 +4731,7 @@ function renderPage(page) {
     case 'growthhub':    el.innerHTML = renderGrowthHub(); break;
     case 'growth_mgr':   el.innerHTML = renderGrowthManager(); break;
     case 'ojt_admin':    el.innerHTML = renderOjtAdmin(); break;
-    case 'approval':     el.innerHTML = renderApproval(); break;
+    case 'approval':     workTab='approval'; el.innerHTML = renderWorkCenter(); break;
     case 'mypage':       el.innerHTML = renderMypage(); break;
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
     case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
@@ -5981,13 +6002,43 @@ function submitBudget(storeId) {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
   if (!hasSegments(b)) { alert('ランチ/ディナー/テイクアウトのいずれかに予算を入力してください'); return; }
+  // 提出前に「予算の考え方」（根拠・重点）を必須入力
+  var dow = usesDowMode(b) ? getDow(b) : null;
+  var total = dow ? (function(){ var bd=dowSegBreakdown(dow); return bd.lunch+bd.dinner+bd.takeout; })() : segmentsTotal(getSegments(b));
+  if (hasDayBudget(b)) total = daysOfYm(curYm()).reduce(function(a,dd){ return a + dayBudgetFor(b, dd.date); }, 0);
+  var prevSales = Math.round((monthStats(storeId,-1)||{}).sales||0);
+  var vsPrev = prevSales ? Math.round(total/prevSales*1000)/10 : null;
+  var method = [usesDowMode(b)?'曜日別':'区分（単価×客数）', hasDayBudget(b)?'日別調整あり':''].filter(Boolean).join(' + ');
+  var r = b.rationale||{};
+  openModal(`<div class="modal-title">予算の考え方 — GM提出 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:9px 11px;margin-bottom:10px;line-height:1.8">
+      <b>月間予算 $${Math.round(total).toLocaleString()}</b>（${method}）<br>
+      前月実績 ${prevSales?('$'+prevSales.toLocaleString()+'（対比 '+vsPrev+'%）'):'—'}
+    </div>
+    <div class="form-group"><label class="form-label">① 予算の根拠 <span style="color:var(--red)">*</span> <span style="font-size:9px;color:var(--muted)">何を基準に組んだか</span></label>
+      <textarea class="form-input" id="bs-basis" rows="3" placeholder="例: 前月実績×105%。土日の客数増加傾向と客単価$${'{'}xx想定で算出">${escapeHtml(r.basis||'')}</textarea></div>
+    <div class="form-group"><label class="form-label">② 今月の重点・変化点 <span style="color:var(--red)">*</span> <span style="font-size:9px;color:var(--muted)">イベント・施策・休業・価格改定など</span></label>
+      <textarea class="form-input" id="bs-focus" rows="3" placeholder="例: 7/4祝日は店休（日別0設定済み）。新メニュー投入でディナー単価UP狙い">${escapeHtml(r.focus||'')}</textarea></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="_doSubmitBudget('${storeId}')"><i class="ti ti-send"></i> GMへ提出</button></div>`);
+}
+function _doSubmitBudget(storeId){
+  var basis=(document.getElementById('bs-basis')||{}).value||''; basis=basis.trim();
+  var focus=(document.getElementById('bs-focus')||{}).value||''; focus=focus.trim();
+  if(!basis){ showToast('① 予算の根拠を入力してください','warning'); return; }
+  if(!focus){ showToast('② 今月の重点・変化点を入力してください','warning'); return; }
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  if (b.rationale && b.rationale.basis) { b.rationaleHistory = (b.rationaleHistory||[]).concat([b.rationale]).slice(-6); }
+  b.rationale = { basis:basis, focus:focus, by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:nowJP() };
   b.status = 'GM承認待ち';
   b.submittedBy = (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
   b.submittedAt = nowJP();
   saveBudgets(budgets);
   var sName = (STORES.find(s=>s.id===storeId)||{}).name || storeId;
   addApproval({title:`予算承認依頼 — ${sName}（${b.period||getPeriod()}）`, type:'予算', from:b.submittedBy, store:sName, ref:storeId});
-  showToast('GMへ承認申請を送信しました','success');
+  closeModalDirect();
+  showToast('GMへ承認申請を送信しました（考え方を添付）','success');
   renderPage('budget');
 }
 /* GM承認 */
@@ -7247,6 +7298,7 @@ function renderBudgetSetup() {
     </div>
     ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> 曜日別で作成（${dailyMonthLabel()}の曜日数で自動計算）</div>`:''}
     ${dayOv?`<div style="font-size:11px;color:var(--accent);margin:-2px 0 8px"><i class="ti ti-calendar-dollar"></i> <b>日別調整あり</b>（${escapeHtml(b.daysBy||'')} ${escapeHtml(b.daysAt||'')}）— 月間予算は日別一覧の合計です</div>`:''}
+    ${(b.rationale&&b.rationale.basis)?`<details style="margin:-2px 0 8px"><summary style="font-size:11px;color:var(--tm);cursor:pointer"><i class="ti ti-bulb"></i> 提出時の考え方（${escapeHtml(b.rationale.by||'')} ${escapeHtml(b.rationale.at||'')}）</summary><div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:4px;line-height:1.7"><b>根拠：</b>${escapeHtml(b.rationale.basis)}<br><b>重点・変化点：</b>${escapeHtml(b.rationale.focus||'')}</div></details>`:''}
     <div class="kpi-grid" style="margin:8px 0">
       ${kpi('月間売上予算', fmtK(Math.round(total)), '3区分合計', 'var(--tm)')}
       ${kpi('Labor予算', fmtK(Math.round(laborB)), total?Math.round(laborB/total*100)+'%':'—', 'var(--muted)')}
@@ -7968,7 +8020,7 @@ function renderBudgetDaily() {
       ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="タップでメモ編集"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">＋メモ</span>':'-'):''}</td>`}
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="手入力: ${escapeHtml(_manBy)}"></i>`:''}</td>
-      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
+      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${cumRate>=100?'var(--green)':cumRate>=90?'var(--yellow)':'var(--red)'};font-size:11px">${cumRate}%</span></td>
       ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
@@ -8362,6 +8414,7 @@ function prevMonthDaysList(ym){
 /* ===== 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）統一集計＋予実比較 ===== */
 function keyKpiStats(scopeStores, days){
   var sales=0,budget=0,guests=0,food=0,labor=0,laborHours=0,dayHasActual={};
+  var lunchS=0,lunchG=0,dinnerS=0,dinnerG=0;
   var salesBud=0,guestBud=0,fcBud$=0,laborBud$=0,segSales$=0,hasGuestBud=false;
   var todayStr=todayISO();
   var ym=(days&&days[0])?days[0].date.slice(0,7):'';
@@ -8390,6 +8443,8 @@ function keyKpiStats(scopeStores, days){
         if(ov.actual>0){
           if(ov.foodCost!=null) food+=ov.foodCost;
           if(typeof toastLaborHoursForDate==='function') laborHours+=toastLaborHoursForDate(s.id,d.date);
+          lunchS+=Number(ov.lunchSales)||0; lunchG+=Number(ov.lunchGuests)||0;
+          dinnerS+=Number(ov.dinnerSales)||0; dinnerG+=Number(ov.dinnerGuests)||0;
           dayHasActual[d.date]=1;
         }
       }
@@ -8428,6 +8483,8 @@ function keyKpiStats(scopeStores, days){
     sales:sales, budget:budget, guests:guests, food:food, labor:labor, unit: allBowls?'丼':'名',
     achieve: budget?Math.round(sales/budget*1000)/10:0,
     ppa: guests?Math.round(sales/guests*100)/100:0,
+    ppaLunch: lunchG>0?Math.round(lunchS/lunchG*100)/100:null, lunchGuests:lunchG,
+    ppaDinner: dinnerG>0?Math.round(dinnerS/dinnerG*100)/100:null, dinnerGuests:dinnerG,
     fcRate: sales?Math.round(food/sales*1000)/10:0,
     laborRate: sales?Math.round(labor/sales*1000)/10:0,
     repeatRate: (rs.has&&rs.total>0)?Math.round(rs.repeat/rs.total*1000)/10:null,
@@ -8495,6 +8552,8 @@ function keyKpiCard(scopeStores, days, title){
       ${kpi('売上', fmtUSD2(k.sales), '予算 '+fmtK(k.budget)+' / 達成'+k.achieve+'%', acCol)}
       ${kpi(k.unit==='丼'?'集客(丼数)':'集客', (k.guests||0).toLocaleString(), guestSub, guestCol)}
       ${kpi('客単価', '$'+(k.ppa||0).toFixed(2), ppaSub, 'var(--tm)')}
+      ${kpi('ランチ客単価', k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—', k.lunchGuests?('L客数 '+k.lunchGuests.toLocaleString()):'Toast同期後に表示', 'var(--yellow)')}
+      ${kpi('ディナー客単価', k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—', k.dinnerGuests?('D客数 '+k.dinnerGuests.toLocaleString()):'Toast同期後に表示', 'var(--accent)')}
       ${kpi('リピート率', k.repeatRate==null?'—':k.repeatRate+'%', rSub, rCol)}
       ${kpi('原価率', k.fcRate>0?k.fcRate+'%':'—', fcSub, fcCol)}
       ${kpi('人件費率', k.laborRate>0?k.laborRate+'%':'—', lSub, lCol)}
@@ -12940,7 +12999,10 @@ function getTitleWageTable() {
 }
 function setTitleWageTable(tbl) { lsSet('m_titlewage', tbl); }
 /* 従業員の実効給与（個別上書き > 役職デフォルト） */
-function empPayType(e){ return isMonthlyTitle(e.title) ? 'monthly' : 'hourly'; }
+function empPayType(e){
+  if (e && e.payTypeOverride) return e.payTypeOverride; // 個別上書き（例: 事務Crewは時給）
+  return isMonthlyTitle(e.title) ? 'monthly' : 'hourly';
+}
 function empWageOf(e) {
   if (empPayType(e)==='monthly') return 0; // 月給者は時給0
   if (e.wage!=null && e.wage!=='') return parseFloat(e.wage);   // 個別上書き
@@ -15716,9 +15778,9 @@ function _ceOjtInfo(){
       gate:'スキルレベル合計点（Lv込み）が規定点数に到達すると本人と管理者へ自動通知 → 希望 または 指名でOJT → 研修＋テスト合格'},
     G2:{ic:'ti-bell-ringing', name:'Specialist Leader OJT（G2→G3／Server・Kitchen・Operation）', cov:'いずれかの専門トラックを選択。サービス／品質・数値（衛生・在庫・原価）／運営 の専門性を高める',
       gate:'Career Score 総合点が規定に到達すると本人と管理者へ自動通知 → 希望 または 指名でOJT → 研修＋テスト合格'},
-    G3:{ic:'ti-flag', name:'Trainee期間（G3→G4・管理職へ）【最難関】', cov:'Career Score＋実績で見極める、キャリアで一番厳しい関門。ここで「チップ対象外・月給・人事権・お店のP&L全責任」に切り替わる',
+    G3:{ic:'ti-flag', name:'Trainee期間（G3→G4・管理職へ）【最難関】', cov:'Career Score＋実績で見極める、キャリアで一番厳しい関門。ここで「チップ対象外・月給・人事権・お店のP&L全責任」に切り替わる。TraineeはG3以上、段階を上がるごとに毎回適用',
       gate:'Career Score 総合点＋実績 → 通知 → OJT＋Trainee期間 → GM承認', boundary:true},
-    G4:{ic:'ti-arrow-up', name:'G4以降は「結果」で判断（G4→G5）', cov:'エリア統括へ。実績＋Career Score総合Lv＋Trainee期間で見極め', gate:'GM承認（実績・総合Lv・Trainee完了）'},
+    G4:{ic:'ti-arrow-up', name:'G4以降は「結果」で判断（G4→G5）', cov:'エリア統括へ。実績＋Career Score総合Lv＋Trainee期間で見極め（Traineeは毎回適用）', gate:'GM承認（実績・総合Lv・Trainee完了）'},
     G5:{ic:'ti-arrow-up', name:'結果で判断（G5→G6・GM昇格前）', cov:'エリア統括の実績を踏まえ、全社視点・GM後継として準備', gate:'GM/CEO承認（実績・Career Score総合Lv・Trainee完了）'},
     G6:{ic:'ti-crown', name:'GM Trainee（昇格前の育成枠）', cov:'全社を俯瞰しエリアM(G5)を育成。全社PL・制度設計・中長期戦略に関与', gate:'GM/CEO承認（実績・Career Score総合Lv・Trainee完了）'}
   };
@@ -15875,6 +15937,7 @@ function renderCareerExplainInternal(){
   // 9. G4以降
   h+=`<div class="card">${_ceSecTitle(9,'STEP 5｜G4以降（G5・G6）— 「結果」がすべてを語る')}
     <div style="font-size:11.5px;line-height:1.8">G4から先の昇格は、点数の積み上げよりも<b>結果で判断</b>します。実績（店・エリアの数字と人材育成）＋Career Score総合Lv＋Trainee期間を経て、GM/CEOが承認します。</div>
+    <div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:8px;line-height:1.7"><i class="ti ti-flag" style="color:var(--accent)"></i> <b>Trainee期間はG3以上のすべての昇格に適用</b>：G3→G4、G4→G5、G5→G6と、段階を上がるたびに毎回Traineeとして見極め期間を経ます（1回通過して終わりではありません）。</div>
     <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.7">G5（エリアマネージャー）＝複数店舗の成果と人材に責任。G4店長を育てた実績が問われます。<br>G6（GM）＝全社の最終責任者。エリアMの育成・全社P&L・制度設計・中長期戦略。</div></div>`;
 
   // 10. 専門職キャリア
@@ -17755,11 +17818,16 @@ function renderStaffMaster() {
     return html;
   }
 
-  var roleOrder = ['ceo','gm','office','office_crew','am','sl','crew'];
-  roleOrder.forEach(role => {
-    var group = list.filter(e=>e.role===role);
+  // Grade順（高い順）→ Lv(STEP評価)順 → 名前順で整理
+  var _gOrder = ['G7','G6','G5','G4','G3','G2','G1',''];
+  _gOrder.forEach(gr => {
+    var group = list.filter(e=>(empGrade(e)||'')===gr);
     if (!group.length) return;
-    html += `<div style="margin-bottom:14px"><div class="role-section-label">${ROLE_CONFIG[role].label} (${group.length})</div>`;
+    group = group.slice().sort(function(a,b){
+      var d=(parseInt(b.step,10)||0)-(parseInt(a.step,10)||0);
+      return d!==0?d:String(a.name).localeCompare(String(b.name));
+    });
+    html += `<div style="margin-bottom:14px"><div class="role-section-label">${gr||'Grade未設定'} (${group.length})</div>`;
     group.forEach(e => {
       var stepColor = evalColorLv(e.step,3);
       var obRec = e.status==='退職' ? getOffboardings().find(function(o){return o.empId===e.id;}) : null;
@@ -25331,6 +25399,15 @@ function renderApproval() {
         html += '<div class="approval-item"><div class="approval-header"><div><div class="approval-title"><i class="ti '+(typeIcon[a.type]||'ti-circle')+'" style="font-size:12px;color:var(--muted)"></i> '+escapeHtml(a.title||'')+'</div>'
           +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+'</div></div></div>';
         html += _approvalChainHtml(a);
+        if (isBudget) {
+          var _rb = (getBudgets().find(function(x){return x.storeId===a.ref;})||{}).rationale;
+          if (_rb && _rb.basis) {
+            html += '<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin:6px 0;line-height:1.7">'
+              +'<div><b><i class="ti ti-bulb" style="color:var(--accent)"></i> 予算の根拠：</b>'+escapeHtml(_rb.basis)+'</div>'
+              +'<div style="margin-top:3px"><b><i class="ti ti-flag" style="color:var(--accent2)"></i> 重点・変化点：</b>'+escapeHtml(_rb.focus||'')+'</div>'
+              +'<div style="font-size:9px;color:var(--muted);margin-top:3px">'+escapeHtml(_rb.by||'')+' '+escapeHtml(_rb.at||'')+'</div></div>';
+          }
+        }
         html += '<div class="approval-actions">';
         if (isBudget) {
           html += '<button class="btn btn-secondary btn-sm" onclick="switchStore(\''+a.ref+'\');go(\'budget\')"><i class="ti ti-eye"></i> 予算確認</button>'
@@ -28852,8 +28929,102 @@ function taskCardHtml(t){
   return h;
 }
 
+/* ============================================================
+   ワークセンター（作業ハブ）: タスク・承認・エラー・アナウンスを1箇所に統合
+   表示: G3以上＋事務（sl/am/gm/ceo/office）
+============================================================ */
+var workTab = 'today';
+function setWorkTab(t){ workTab = t; renderPage('tasks'); }
+function renderWorkCenter(){
+  try{ checkCashTipTasks(); }catch(e){}
+  var canErr = ['ceo','gm','office'].indexOf(curRole)>=0;
+  var canAnn = ((typeof canAnnounceAll==='function'&&canAnnounceAll()) || (typeof announceManagedStores==='function'&&announceManagedStores().length>0));
+  var pend = ls('approvals',[]).filter(function(a){return a.status==='pending';});
+  var issues = []; if (canErr){ try{ issues = ecCollect(); }catch(e){} }
+  var hi = issues.filter(function(x){return x.sev==='high';}).length;
+  var openT = getTasks().filter(function(t){ return t.status!=='完了' && (t.store==='ALL' || !t.store || getVisibleStores().some(function(st){return st.id===t.store;})); });
+  var today = todayISO();
+  var dueT = openT.filter(function(t){ return t.due && t.due<=today; });
+  if (workTab==='announce' && !canAnn) workTab='today';
+  if (workTab==='error' && !canErr) workTab='today';
+  var bar = `<div class="section-header"><div><div class="section-title"><i class="ti ti-layout-dashboard" style="color:var(--accent)"></i> ワークセンター</div><div class="section-sub">タスク・承認・エラー・アナウンスの作業ハブ</div></div></div>
+  <div class="phase-tabs" style="margin-bottom:10px">
+    <div class="phase-tab${workTab==='today'?' active':''}" onclick="setWorkTab('today')"><i class="ti ti-sun" style="font-size:12px"></i> 今日</div>
+    <div class="phase-tab${workTab==='tasks'?' active':''}" onclick="setWorkTab('tasks')"><i class="ti ti-list-check" style="font-size:12px"></i> タスク${openT.length?' <span class="tag tag-yellow" style="font-size:8px">'+openT.length+'</span>':''}</div>
+    <div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>
+    ${canErr?`<div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> エラー${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>`:''}
+    ${canAnn?`<div class="phase-tab${workTab==='announce'?' active':''}" onclick="setWorkTab('announce')"><i class="ti ti-speakerphone" style="font-size:12px"></i> アナウンス</div>`:''}
+  </div>`;
+  if (workTab==='tasks')    return bar + renderTasks();
+  if (workTab==='approval') return bar + renderApproval();
+  if (workTab==='error')    return bar + renderErrorCenter(true);
+  if (workTab==='announce') return bar + renderAnnounce();
+  // ===== 今日タブ =====
+  var h = bar;
+  h += `<div class="kpi-grid" style="margin-bottom:12px">
+    <div style="cursor:pointer" onclick="setWorkTab('approval')">${kpi('承認待ち', pend.length+'件', pend.length?'タップで処理へ':'すべて処理済み', pend.length?'var(--red)':'var(--green)')}</div>
+    <div style="cursor:pointer" onclick="setWorkTab('tasks')">${kpi('期限内タスク', dueT.length+'件', '未完了 '+openT.length+'件中・今日まで', dueT.length?'var(--yellow)':'var(--green)')}</div>
+    ${canErr?`<div style="cursor:pointer" onclick="setWorkTab('error')">${kpi('エラー検知', issues.length+'件', hi?('重要 '+hi+'件'):'重要なし', hi?'var(--red)':issues.length?'var(--yellow)':'var(--green)')}</div>`:''}
+  </div>`;
+  // 承認クイックリスト
+  if (pend.length){
+    h += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--red)"></i>承認待ち <span class="tag tag-red" style="margin-left:auto">${pend.length}</span></div>`;
+    pend.slice(0,5).forEach(function(a){
+      h += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+        <div style="flex:1;min-width:0"><b>${escapeHtml(a.title||'')}</b><div style="font-size:10px;color:var(--muted)">${escapeHtml(a.type||'')} · ${escapeHtml(a.from||'')} · ${escapeHtml(a.date||'')}</div></div>
+        <button class="btn btn-primary btn-sm" style="padding:3px 10px" onclick="setWorkTab('approval')">処理</button></div>`;
+    });
+    if (pend.length>5) h += `<div style="font-size:11px;color:var(--muted);margin-top:6px">他 ${pend.length-5} 件 — 承認タブへ</div>`;
+    h += `</div>`;
+  }
+  // 期限タスク クイックリスト
+  if (dueT.length){
+    h += `<div class="card"><div class="card-title"><i class="ti ti-alarm" style="color:var(--yellow)"></i>今日までのタスク <span class="tag tag-yellow" style="margin-left:auto">${dueT.length}</span></div>`;
+    dueT.slice(0,5).forEach(function(t){
+      var st = STORES.find(function(x){return x.id===t.store;});
+      h += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+        <div style="flex:1;min-width:0"><b>${escapeHtml(t.title||'')}</b><div style="font-size:10px;color:var(--muted)">${st?escapeHtml(st.name):(t.store==='ALL'?'全店':'')} · 期限 ${escapeHtml(t.due||'')}${t.assignee?' · '+escapeHtml(t.assignee):''}</div></div>
+        <button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="setWorkTab('tasks')">開く</button></div>`;
+    });
+    h += `</div>`;
+  }
+  // エラー クイックリスト（重要のみ）
+  if (canErr && hi){
+    h += `<div class="card"><div class="card-title"><i class="ti ti-alert-hexagon" style="color:var(--red)"></i>重要エラー <span class="tag tag-red" style="margin-left:auto">${hi}</span></div>`;
+    issues.filter(function(x){return x.sev==='high';}).slice(0,4).forEach(function(x){
+      h += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><b>${escapeHtml(x.title||x.text||'')}</b>${x.store?`<span style="font-size:10px;color:var(--muted)"> · ${escapeHtml(x.store)}</span>`:''}</div>`;
+    });
+    h += `<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="setWorkTab('error')">エラーセンターで対応</button></div>`;
+  }
+  if (!pend.length && !dueT.length && !(canErr&&hi)){
+    h += `<div class="card" style="text-align:center;padding:28px"><i class="ti ti-confetti" style="font-size:30px;color:var(--green)"></i><div style="font-weight:700;margin-top:8px;color:var(--green)">今処理すべきものはありません</div><div style="font-size:11px;color:var(--muted);margin-top:4px">承認・期限タスク・重要エラーはすべてクリアです</div></div>`;
+  }
+  return h;
+}
+/* 前日のキャッシュチップ未入力を検知 → タスク化＋店舗のG3以上へ通知（0なら「0」と入力の注意つき） */
+function checkCashTipTasks(){
+  try{
+    var y = isoOf(new Date(Date.now()-86400000));
+    if (window._ctipChk === y) return; window._ctipChk = y;
+    var tasks = getTasks(); var changed=false;
+    activeStores().forEach(function(st){
+      if (typeof cashTipMissing!=='function' || !cashTipMissing(st.id, y)) return;
+      var refId = 'ctip_'+st.id+'_'+y;
+      if (tasks.some(function(t){ return t.refId===refId; })) return;
+      tasks.push({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), refId:refId, auto:'cashtip',
+        title:'【要入力】キャッシュチップ未入力（'+y.slice(5).replace('-','/')+'）',
+        desc:'現金チップが無い日も必ず「0」と入力して確定してください（Store CMD → チップ管理）',
+        assignee:'', store:st.id, priority:'高', due:todayISO(), progress:0, status:'進行中', created:todayJP() });
+      addNotif({ type:'warning', title:'キャッシュチップ未入力: '+st.name,
+        text:y.slice(5).replace('-','/')+' のキャッシュチップが未入力です。0の場合も「0」と入力して確定してください。',
+        toStore:st.id, toRoles:['sl','sm','am','gm','ceo'], page:'store_cmd', refId:refId });
+      changed=true;
+    });
+    if (changed) lsSet('tasks_all', tasks);
+  }catch(e){ console.warn('ctip check', e); }
+}
 function renderTasks(){
-  try{ ensureRecurringTasks(); taskDeadlineReminders(); }catch(e){}
+  try{ ensureRecurringTasks(); taskDeadlineReminders(); checkCashTipTasks(); }catch(e){}
   var canManage = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
   var html = '<div class="section-header"><div><div class="section-title">タスク管理</div><div class="section-sub">店舗タスクと個人タスクを管理</div></div></div>';
   html += '<div class="phase-tabs">'
@@ -30773,6 +30944,9 @@ function renderCrewGrowthList() {
   var html = `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>Crew一覧 <span class="tag tag-gray" style="margin-left:auto">${staff.length}名</span></div>`;
   html += skillLegendHtml();
   if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象Crewなし</p></div>`; return html; }
+  // Lv合計が高い順（次のステップに近い人を上に）
+  var _tot = function(nm){ var sk=getEmpSkills(nm)||{}; return Object.values(sk).reduce(function(a,x){ return a+((x&&x.status==='承認')?(x.level||0):0); },0); };
+  staff = staff.slice().sort(function(a,b){ return _tot(b.name)-_tot(a.name) || String(a.name).localeCompare(String(b.name)); });
   staff.forEach(e => {
     var ap = approvedPositions(e.name);
     var sk = getEmpSkills(e.name);
@@ -30878,6 +31052,9 @@ function renderLeaderGrowthList() {
     <p style="font-size:11px;color:var(--muted);margin-bottom:6px">入社・登用から90日を目安に現場オペレーションを習得する期間として管理します。</p>`;
   html += skillLegendHtml();
   if (!staff.length) { html += `<p style="color:var(--muted);font-size:13px;text-align:center;padding:16px">対象者なし</p></div>`; return html; }
+  // Lv合計が高い順（次のステップに近い人を上に）
+  var _totL = function(nm){ var sk=getEmpSkills(nm)||{}; return Object.values(sk).reduce(function(a,x){ return a+((x&&x.status==='承認')?(x.level||0):0); },0); };
+  staff = staff.slice().sort(function(a,b){ return _totL(b.name)-_totL(a.name) || String(a.name).localeCompare(String(b.name)); });
   staff.forEach(e => {
     var prog = dev90Progress(e);
     var career = getCareerTrack(e.name);
@@ -32935,6 +33112,8 @@ async function checkOnboardToken(){
   } catch(e){ console.error('onboard token', e); return false; }
 }
 try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
+try { migrateAkaneHourly(); } catch(e) { console.error('migrateAkaneHourly', e); }
+try { setTimeout(function(){ try{ checkCashTipTasks(); }catch(e){} }, 5000); } catch(e) {}
 try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
