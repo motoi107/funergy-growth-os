@@ -3658,7 +3658,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -5118,6 +5118,7 @@ function renderDashboard() {
 
   // ====== 今月の会社メッセージ（最上部） ======
   html += renderCompanyMessageCard();
+  html += renderPriceAlertCard();
 
   // ====== KPI実績（業態別・目標vs実績）======
   if (!window._kpiDashOffset) window._kpiDashOffset = 0;
@@ -5383,6 +5384,7 @@ function renderStoreCmd() {
 
   // 会社メッセージ（あれば最上部）
   html += renderCompanyMessageCard();
+  html += renderPriceAlertCard();
 
   // ===== ヒーロー: 店舗名 + 本日の進捗リング（常に表示・上部固定相当）=====
   var pct = ops.length?Math.round(opsDone/ops.length*100):0;
@@ -18416,6 +18418,518 @@ var ingClassFilter = 'all';
 var ingCatFilter = 'all';
 var ingVendorFilter = 'all';
 var ingMasterSearch = '';
+/* ============================================================
+   食材マスター2.0（Invoice駆動・移行期間用）
+   - 移行モード中は現行マスター(m_ingredients)の価格を凍結（棚卸・レシピはそのまま）
+   - Invoice読取のたびに m_ingredients_v2 へ自動登録（読取名で同一品をまとめ・エイリアス学習）
+   - 各商品に仕様（発注単位・ケース入数・内容量・棚卸単位・計量単位）を後から入力
+============================================================ */
+function ingMigrationOn(){ return ls('ing_migration_mode', true)!==false; }
+function setIngMigration(on){
+  if(curRole!=='gm'&&curRole!=='ceo'){ showToast('移行モードの切替はGMのみです','warning'); return; }
+  lsSet('ing_migration_mode', !!on);
+  showToast(on?'移行モードON：Invoiceは新マスターにのみ登録されます':'移行モードOFF：現行マスターの価格更新を再開します', 'success');
+  renderPage('ingredient_master');
+}
+function getIngV2(){ return ls('m_ingredients_v2', [])||[]; }
+function saveIngV2(a){ lsSet('m_ingredients_v2', a); }
+function _v2Find(arr, nm){
+  var key = normName(nm);
+  if(!key) return null;
+  return arr.find(function(x){ return normName(x.name)===key || (x.rawNames||[]).some(function(r){ return normName(r)===key; }); }) || null;
+}
+/* Invoiceの品目行を新マスターへ取込（同一Invoiceの再取込はスキップ＝冪等） */
+function ingestInvoiceToV2(lines, vendor, storeIds, invId, dateStr){
+  var arr = getIngV2();
+  var seq = ls('ing_v2_seq', 1);
+  var changes = [];
+  var touched = false;
+  (lines||[]).forEach(function(l){
+    var nm = (l.rawName && l.rawName.trim()) ? l.rawName.trim() : (l.name||'').trim();
+    if(!nm || nm==='(不明)') nm = (l.name||'').trim();
+    if(!nm) return;
+    var price = Number(l.newPrice)||0;
+    var it = _v2Find(arr, nm);
+    if(!it && l.code!=null && l.name){ it = _v2Find(arr, l.name); }
+    if(!it){
+      it = { id:'v2_'+seq, name:(l.code!=null && l.name)?l.name:nm, rawNames:[], legacyCode:(l.code!=null?l.code:null),
+        cls:null, vendor:vendor||'', vendors:{}, spec:{}, specDone:false,
+        price:null, priceHistory:[], stores:[], srcInv:[], by:myName(), at:nowJP() };
+      seq++; arr.push(it);
+    }
+    if((it.srcInv||[]).indexOf(invId)>=0) return; // 同一Invoiceの再取込防止
+    var prev = (it.price!=null) ? Number(it.price) : null;
+    if(it.rawNames.indexOf(nm)<0 && normName(nm)!==normName(it.name)) it.rawNames.push(nm);
+    if(l.code!=null && it.legacyCode==null) it.legacyCode = l.code;
+    if(vendor){ it.vendor = vendor; it.vendors = it.vendors||{}; it.vendors[vendor] = {price:price, date:dateStr||todayJP()}; }
+    (storeIds||[]).forEach(function(sid){ if(sid && it.stores.indexOf(sid)<0) it.stores.push(sid); });
+    it.srcInv = it.srcInv||[]; it.srcInv.push(invId);
+    it.priceHistory = it.priceHistory||[];
+    it.priceHistory.push({date:dateStr||todayJP(), price:price, prev:prev, vendor:vendor||'', invId:invId, qty:(Number(l.qty)||0)});
+    if(prev!=null && Math.abs(prev-price)>=0.005) changes.push({id:it.id, name:it.name, from:prev, to:price, stores:it.stores.slice()});
+    it.price = price;
+    touched = true;
+  });
+  if(touched || arr.length){ lsSet('ing_v2_seq', seq); saveIngV2(arr); }
+  return { changes:changes };
+}
+/* 一回限りの遡及処理：
+   1) 既存Invoiceが現行マスターへ反映した価格を「移行前の価格」に復元（storePrices/履歴ノイズもクリア）
+   2) 既存Invoice全件を時系列で新マスターへ取込
+   3) 対象Invoiceに v2Only フラグ（一覧の表示用） */
+function ensureIngV2Backfill(){
+  try{
+    if (ls('ing_v2_backfill_done', false)) return;
+    var all = ls('invoices', [])||[];
+    var invs = all.filter(function(i){ return i.docType!=='Reimburse'; })
+      .slice().sort(function(a,b){ var da=parseJaDate(a.date), db=parseJaDate(b.date); return (da?da.getTime():0)-(db?db.getTime():0); });
+    // 1) 現行マスター復元
+    var ings = getIngredients();
+    var firstOld = {}; var firstDate = {};
+    invs.forEach(function(inv){ (inv.lines||[]).forEach(function(l){
+      if(l.code==null || l.oldPrice==null) return;
+      if(firstOld[l.code]===undefined){ firstOld[l.code]=Number(l.oldPrice); firstDate[l.code]=inv.date; }
+    }); });
+    var restored = 0;
+    Object.keys(firstOld).forEach(function(code){
+      var ing = ings.find(function(x){ return x.code===parseInt(code,10); }); if(!ing) return;
+      if(Number(ing.price)!==firstOld[code]){ ing.price = firstOld[code]; restored++; }
+      var fd = parseJaDate(firstDate[code]);
+      if(fd && ing.priceHistory) ing.priceHistory = ing.priceHistory.filter(function(hh){ var d=parseJaDate(hh.date); return !d || d.getTime()<fd.getTime(); });
+      ing.storePrices = {};
+    });
+    if(Object.keys(firstOld).length) lsSet('m_ingredients', ings);
+    // 2) V2取込＋3) フラグ
+    invs.forEach(function(inv){
+      var sids = (inv.splitStores&&inv.splitStores.length)?inv.splitStores:(inv.storeId?[inv.storeId]:[]);
+      ingestInvoiceToV2(inv.lines||[], inv.vendor||'', sids, inv.id, inv.date);
+      inv.v2Only = true;
+    });
+    lsSet('invoices', all);
+    lsSet('ing_v2_backfill_done', true);
+    if (restored) console.log('[V2移行] 現行マスター '+restored+'品目の価格を復元');
+  }catch(e){ console.warn('v2 backfill', e); }
+}
+/* ===== 仕入分析・価格変動 ===== */
+/* Invoiceの読取履歴から価格変動を抽出（oldPrice記録済みのため過去分も対象） */
+function priceChangesRecent(daysBack){
+  var cut = Date.now() - (daysBack||90)*86400000;
+  var out = [];
+  // 新マスターにデータがあれば、その価格イベント（前回読取→今回）を正とする
+  var v2 = getIngV2();
+  if (v2.length){
+    v2.forEach(function(it){
+      (it.priceHistory||[]).forEach(function(hh){
+        if (hh.prev==null) return;
+        var o=Number(hh.prev)||0, n=Number(hh.price)||0;
+        if (Math.abs(o-n)<0.005) return;
+        var d=parseJaDate(hh.date); if(!d || d.getTime()<cut) return;
+        out.push({ date:hh.date, dt:d.getTime(), code:'v2:'+it.id, v2Id:it.id, name:it.name, from:o, to:n,
+          pct:o>0?Math.round((n-o)/o*1000)/10:null, vendor:hh.vendor||it.vendor||'', storeId:(it.stores&&it.stores[0])||'', stores:(it.stores||[]).slice(), invId:hh.invId||'' });
+      });
+    });
+    out.sort(function(a,b){ return b.dt-a.dt; });
+    return out;
+  }
+  (ls('invoices',[])||[]).forEach(function(inv){
+    if (inv.docType==='Reimburse') return;
+    var d = parseJaDate(inv.date); if(!d || d.getTime()<cut) return;
+    (inv.lines||[]).forEach(function(l){
+      if (l.code==null || l.oldPrice==null) return;
+      var o=Number(l.oldPrice)||0, n=Number(l.newPrice)||0;
+      if (Math.abs(o-n)<0.005) return;
+      out.push({ date:inv.date, dt:d.getTime(), code:l.code, name:l.name||'', from:o, to:n,
+        pct:o>0?Math.round((n-o)/o*1000)/10:null, vendor:inv.vendor||'', storeId:inv.storeId||'', invId:inv.id });
+    });
+  });
+  out.sort(function(a,b){ return b.dt-a.dt; });
+  return out;
+}
+function goPurchaseAnalysis(){ window._ingTab='analysis'; go('ingredient_master'); }
+function openTrendAny(ref){
+  if (String(ref).indexOf('v2:')===0) return openIngV2Trend(String(ref).slice(3));
+  var c=parseInt(ref,10); if(!isNaN(c)) openPriceTrendModal(c);
+}
+function setIngTab(t){ window._ingTab=t; renderPage('ingredient_master'); }
+/* G3以上のダッシュボード: 価格変動アラート（直近14日・可視店舗で使用中の食材のみ） */
+function renderPriceAlertCard(){
+  try{
+    if (['sl','sm','am','gm','ceo'].indexOf(curRole)<0) return '';
+    var visIds = getVisibleStores().map(function(s){return s.id;});
+    var raw = priceChangesRecent(14);
+    var seen={}, chgs=[];
+    raw.forEach(function(c){
+      if (seen[c.code]) return;
+      var used = c.stores ? c.stores : storesUsingIngredient(c.code); // V2は登録店舗、旧はマスター逆引き
+      var hit = (used&&used.length) ? used.some(function(id){return visIds.indexOf(id)>=0;}) : (visIds.indexOf(c.storeId)>=0);
+      if (!hit) return;
+      seen[c.code]=1; chgs.push(c);
+    });
+    if (!chgs.length) return '';
+    var ups=chgs.filter(function(c){return c.to>c.from;}).length, downs=chgs.length-ups;
+    var h = `<div class="card" style="border-left:4px solid var(--yellow)"><div class="card-title"><i class="ti ti-trending-up" style="color:var(--yellow)"></i>価格変動アラート <span style="font-size:11px;color:var(--muted);font-weight:400">直近14日 · <span style="color:var(--red)">値上げ${ups}</span> / <span style="color:var(--green)">値下げ${downs}</span></span>
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="goPurchaseAnalysis()"><i class="ti ti-chart-line"></i> 仕入分析</button></div>`;
+    chgs.slice(0,6).forEach(function(c){
+      var up=c.to>c.from;
+      h += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+        <i class="ti ${up?'ti-arrow-up-right':'ti-arrow-down-right'}" style="color:${up?'var(--red)':'var(--green)'}"></i>
+        <div style="flex:1;min-width:0"><b>${escapeHtml(c.name)}</b> <span style="font-size:10px;color:var(--muted)">${escapeHtml(c.vendor)} · ${escapeHtml(String(c.date).slice(5))}</span></div>
+        <div style="white-space:nowrap">$${c.from.toFixed(2)} → <b style="color:${up?'var(--red)':'var(--green)'}">$${c.to.toFixed(2)}</b> <span style="font-size:10px;color:${up?'var(--red)':'var(--green)'}">${c.pct!=null?((up?'+':'')+c.pct+'%'):''}</span></div>
+      </div>`;
+    });
+    if (chgs.length>6) h += `<div style="font-size:11px;color:var(--muted);margin-top:6px">他 ${chgs.length-6} 件は仕入分析タブで確認できます</div>`;
+    return h+'</div>';
+  }catch(e){ return ''; }
+}
+/* ===== 新マスター（移行中）タブ ===== */
+function renderIngredientV2(){
+  var arr = getIngV2();
+  var mig = ingMigrationOn();
+  var done = arr.filter(function(x){return x.specDone;}).length;
+  var vendors = {}; arr.forEach(function(x){ Object.keys(x.vendors||{}).forEach(function(v){ vendors[v]=1; }); });
+  var q = (window._v2q||'').toLowerCase().trim();
+  var onlyTodo = !!window._v2Todo;
+  var list = arr.slice();
+  if (q) list = list.filter(function(x){ return (x.name||'').toLowerCase().includes(q) || (x.rawNames||[]).some(function(r){return r.toLowerCase().includes(q);}) || (x.vendor||'').toLowerCase().includes(q); });
+  if (onlyTodo) list = list.filter(function(x){ return !x.specDone; });
+  list.sort(function(a,b){ return (a.specDone?1:0)-(b.specDone?1:0) || String(a.name).localeCompare(String(b.name)); });
+
+  var h = `<div class="card" style="border-left:4px solid var(--accent2)"><div class="card-title"><i class="ti ti-sparkles" style="color:var(--accent2)"></i>新マスター 進捗
+    ${(curRole==='gm'||curRole==='ceo')?`<label style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11px;font-weight:400;cursor:pointer"><input type="checkbox" ${mig?'checked':''} onchange="setIngMigration(this.checked)"> 移行モード（現行マスター凍結）</label>`:''}</div>
+    <div class="kpi-grid">
+      ${kpi('登録商品', arr.length+'品', 'Invoice読取から自動', 'var(--accent2)')}
+      ${kpi('仕様入力済み', done+'/'+arr.length, arr.length?Math.round(done/arr.length*100)+'%':'—', done===arr.length&&arr.length?'var(--green)':'var(--yellow)')}
+      ${kpi('業者数', Object.keys(vendors).length+'社', '', 'var(--tm)')}
+      ${kpi('モード', mig?'移行中':'通常', mig?'現行マスター価格は凍結':'現行マスターへ反映', mig?'var(--accent2)':'var(--muted)')}
+    </div>
+    <div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.6"><i class="ti ti-info-circle"></i> Invoiceを読み取るたびに商品が自動登録されます（同じ読取名は同一商品にまとめ）。各商品の「仕様入力」で発注単位・ケース入数・棚卸/計量単位を整備してください。</div>
+  </div>`;
+
+  h += `<div class="card" style="padding:10px 14px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <input class="form-input" style="flex:1;min-width:150px;padding:7px 10px;font-size:13px" placeholder="商品名・読取名・業者で検索" value="${escapeHtml(window._v2q||'')}" oninput="window._v2q=this.value;renderPage('ingredient_master')">
+    <label style="display:flex;align-items:center;gap:5px;font-size:11px;white-space:nowrap;cursor:pointer"><input type="checkbox" ${onlyTodo?'checked':''} onchange="window._v2Todo=this.checked;renderPage('ingredient_master')"> 仕様未入力のみ</label>
+  </div></div>`;
+
+  if (!arr.length) {
+    h += `<div class="card" style="text-align:center;color:var(--muted);padding:36px"><i class="ti ti-file-invoice" style="font-size:32px;display:block;margin-bottom:8px"></i>まだ登録がありません。<br><span style="font-size:12px">Invoiceを読み取ると、ここに商品が自動で貯まっていきます。</span></div>`;
+    return h;
+  }
+  if (!list.length) {
+    h += `<div class="card" style="text-align:center;color:var(--muted);padding:24px;font-size:12px">条件に一致する商品がありません</div>`;
+    return h;
+  }
+  list.forEach(function(it){
+    var sp = it.spec||{};
+    var specLine = it.specDone
+      ? [sp.orderUnit?('発注: '+sp.orderUnit):'', (sp.packQty&&sp.packUnit)?('入数: '+sp.packQty+' '+sp.packUnit):'', (sp.contentQty&&sp.contentUnit)?('内容量: '+sp.contentQty+sp.contentUnit):'', sp.invUnit?('棚卸: '+sp.invUnit):'', sp.measureUnit?('計量: '+sp.measureUnit):''].filter(Boolean).join(' · ')
+      : '';
+    var vlist = Object.keys(it.vendors||{});
+    h += `<div class="card" style="padding:11px 14px">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:700">${escapeHtml(it.name)} ${it.specDone?'<span class="tag tag-green" style="font-size:9px">仕様入力済</span>':'<span class="tag tag-yellow" style="font-size:9px">仕様未入力</span>'}${it.legacyCode?`<span class="tag tag-gray" style="font-size:9px" title="現行マスター紐付け">旧#${it.legacyCode}</span>`:''}</div>
+          ${(it.rawNames&&it.rawNames.length)?`<div style="font-size:9.5px;color:var(--muted);margin-top:1px">読取名: ${it.rawNames.slice(0,2).map(escapeHtml).join(' / ')}${it.rawNames.length>2?' 他'+(it.rawNames.length-2):''}</div>`:''}
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">${vlist.map(function(v){return escapeHtml(v)+' <b style="color:var(--tm)">$'+((it.vendors[v]||{}).price||0).toFixed(2)+'</b>';}).join(' ／ ')}${(it.stores&&it.stores.length)?' · '+it.stores.map(function(sid){var st=STORES.find(function(x){return x.id===sid;});return st?st.name.split(' ')[0]:sid;}).join('・'):''}</div>
+          ${specLine?`<div style="font-size:10.5px;color:var(--accent2);margin-top:3px">${escapeHtml(specLine)}</div>`:''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0">
+          <button class="btn ${it.specDone?'btn-secondary':'btn-primary'} btn-sm" style="padding:3px 10px;font-size:11px" onclick="openIngV2Modal('${it.id}')"><i class="ti ti-adjustments"></i> 仕様${it.specDone?'編集':'入力'}</button>
+          <button class="btn btn-secondary btn-sm" style="padding:3px 10px;font-size:11px" onclick="openIngV2Trend('${it.id}')"><i class="ti ti-chart-line"></i> 推移</button>
+        </div>
+      </div>
+    </div>`;
+  });
+  return h;
+}
+function openIngV2Modal(id){
+  var arr=getIngV2(); var it=arr.find(function(x){return x.id===id;}); if(!it) return;
+  var sp=it.spec||{};
+  var others = arr.filter(function(x){return x.id!==id;});
+  openModal(`<div class="modal-title">商品仕様 — ${escapeHtml(it.name)} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:10.5px;color:var(--muted);margin-bottom:8px">最新価格 <b style="color:var(--tm)">$${(Number(it.price)||0).toFixed(2)}</b>（${escapeHtml(it.vendor||'')}）${(it.rawNames&&it.rawNames.length)?' · 読取名 '+it.rawNames.length+'件':''}</div>
+    <div class="form-group"><label class="form-label">正式名称</label><input class="form-input" id="v2-name" value="${escapeHtml(it.name)}"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">区分</label><select class="form-select" id="v2-cls">${['','food','liquor','beverage','supply'].map(function(c){var lbl={'':'—',food:'食材',liquor:'お酒',beverage:'飲料',supply:'消耗品'}[c];return '<option value="'+c+'"'+((it.cls||'')===c?' selected':'')+'>'+lbl+'</option>';}).join('')}</select></div>
+      <div class="form-group"><label class="form-label">発注単位 <span style="font-size:9px;color:var(--muted)">(case/pack/bottle/lb…)</span></label><input class="form-input" id="v2-orderUnit" value="${escapeHtml(sp.orderUnit||'')}" placeholder="case" oninput="v2CalcPreview()"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">ケース入数</label><input class="form-input" id="v2-packQty" type="number" inputmode="decimal" step="any" value="${sp.packQty||''}" placeholder="24" oninput="v2CalcPreview()"></div>
+      <div class="form-group"><label class="form-label">入りの単位</label><input class="form-input" id="v2-packUnit" value="${escapeHtml(sp.packUnit||'')}" placeholder="本 / pack / lb" oninput="v2CalcPreview()"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">1つの内容量</label><input class="form-input" id="v2-contentQty" type="number" inputmode="decimal" step="any" value="${sp.contentQty||''}" placeholder="2000" oninput="v2CalcPreview()"></div>
+      <div class="form-group"><label class="form-label">内容量の単位（計量）</label><input class="form-input" id="v2-contentUnit" value="${escapeHtml(sp.contentUnit||'')}" placeholder="ml / g / oz" oninput="v2CalcPreview()"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">棚卸時の単位</label><input class="form-input" id="v2-invUnit" value="${escapeHtml(sp.invUnit||'')}" placeholder="本 / case / lb"></div>
+      <div class="form-group"><label class="form-label">計量（レシピ）の単位</label><input class="form-input" id="v2-measureUnit" value="${escapeHtml(sp.measureUnit||'')}" placeholder="ml / g"></div>
+    </div>
+    <div id="v2-preview" style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.7"></div>
+    <div class="form-group"><label class="form-label">メモ</label><input class="form-input" id="v2-note" value="${escapeHtml(sp.note||'')}" placeholder="任意"></div>
+    ${(it.rawNames&&it.rawNames.length)?`<div style="font-size:10px;color:var(--muted);margin-bottom:8px">読取名エイリアス: ${it.rawNames.map(escapeHtml).join(' / ')}</div>`:''}
+    ${others.length?`<details style="margin-bottom:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">別の商品と統合する（重複をまとめる）</summary>
+      <div style="display:flex;gap:6px;margin-top:6px"><select class="form-select" id="v2-merge" style="flex:1;font-size:12px">${others.map(function(o){return '<option value="'+o.id+'">'+escapeHtml(o.name)+'（$'+(Number(o.price)||0).toFixed(2)+'）</option>';}).join('')}</select>
+      <button class="btn btn-secondary btn-sm" onclick="doIngV2Merge('${it.id}')">統合</button></div>
+      <div style="font-size:9.5px;color:var(--muted);margin-top:3px">この商品を選択先へ統合します（読取名・価格履歴・店舗を引き継ぎ、この商品は削除）</div></details>`:''}
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveIngV2Spec('${it.id}')">保存</button></div>`);
+  window._v2CurPrice = Number(it.price)||0;
+  v2CalcPreview();
+}
+function v2CalcPreview(){
+  var g=function(id){ var e=document.getElementById(id); return e?e.value:''; };
+  var el=document.getElementById('v2-preview'); if(!el) return;
+  var price=window._v2CurPrice||0;
+  var ou=g('v2-orderUnit')||'発注単位', pq=parseFloat(g('v2-packQty')), pu=g('v2-packUnit')||'個', cq=parseFloat(g('v2-contentQty')), cu=g('v2-contentUnit')||'';
+  var h='<i class="ti ti-calculator" style="color:var(--accent)"></i> <b>単価換算プレビュー</b><br>$'+price.toFixed(2)+' / '+escapeHtml(ou);
+  if(pq>0){ var per=price/pq; h+=' → <b>$'+per.toFixed(3)+'</b> / '+escapeHtml(pu);
+    if(cq>0&&cu){ h+=' → <b>$'+(per/cq).toFixed(5)+'</b> / '+escapeHtml(cu); }
+  } else if(cq>0&&cu){ h+=' → <b>$'+(price/cq).toFixed(5)+'</b> / '+escapeHtml(cu); }
+  el.innerHTML=h;
+}
+function saveIngV2Spec(id){
+  var arr=getIngV2(); var it=arr.find(function(x){return x.id===id;}); if(!it) return;
+  var g=function(gid){ var e=document.getElementById(gid); return e?e.value:''; };
+  var nm=g('v2-name').trim(); if(nm) it.name=nm;
+  it.cls=g('v2-cls')||null;
+  it.spec={ orderUnit:g('v2-orderUnit').trim(), packQty:parseFloat(g('v2-packQty'))||null, packUnit:g('v2-packUnit').trim(),
+    contentQty:parseFloat(g('v2-contentQty'))||null, contentUnit:g('v2-contentUnit').trim(),
+    invUnit:g('v2-invUnit').trim(), measureUnit:g('v2-measureUnit').trim(), note:g('v2-note').trim() };
+  it.specDone = !!(it.spec.orderUnit && (it.spec.invUnit||it.spec.measureUnit));
+  it.editedBy=myName(); it.editedAt=nowJP();
+  saveIngV2(arr);
+  closeModalDirect();
+  showToast('仕様を保存しました'+(it.specDone?'':'（発注単位＋棚卸/計量単位で「入力済み」になります）'), 'success');
+  renderPage('ingredient_master');
+}
+function doIngV2Merge(fromId){
+  var sel=document.getElementById('v2-merge'); var toId=sel?sel.value:null; if(!toId) return;
+  var arr=getIngV2(); var src=arr.find(function(x){return x.id===fromId;}); var dst=arr.find(function(x){return x.id===toId;});
+  if(!src||!dst) return;
+  if(!confirm('「'+src.name+'」を「'+dst.name+'」へ統合しますか？')) return;
+  dst.rawNames=(dst.rawNames||[]).concat([src.name]).concat(src.rawNames||[]).filter(function(v,i,a){return v&&a.indexOf(v)===i&&normName(v)!==normName(dst.name);});
+  dst.priceHistory=(dst.priceHistory||[]).concat(src.priceHistory||[]).sort(function(a,b){var da=parseJaDate(a.date),db=parseJaDate(b.date);return (da?da.getTime():0)-(db?db.getTime():0);});
+  Object.keys(src.vendors||{}).forEach(function(v){ var cur=dst.vendors[v]; var sv=src.vendors[v]; if(!cur || (parseJaDate(sv.date)||0) > (parseJaDate(cur.date)||0)) dst.vendors[v]=sv; });
+  (src.stores||[]).forEach(function(sid){ if(dst.stores.indexOf(sid)<0) dst.stores.push(sid); });
+  dst.srcInv=(dst.srcInv||[]).concat(src.srcInv||[]);
+  if(src.legacyCode&&!dst.legacyCode) dst.legacyCode=src.legacyCode;
+  var lastH=dst.priceHistory[dst.priceHistory.length-1]; if(lastH) dst.price=lastH.price;
+  dst.editedBy=myName(); dst.editedAt=nowJP();
+  saveIngV2(arr.filter(function(x){return x.id!==fromId;}));
+  closeModalDirect();
+  showToast('統合しました：'+dst.name, 'success');
+  renderPage('ingredient_master');
+}
+function openIngV2Trend(id){
+  var it=getIngV2().find(function(x){return x.id===id;}); if(!it) return;
+  var pts=(it.priceHistory||[]).map(function(hh){ var d=parseJaDate(hh.date); return d?{dt:d.getTime(), date:hh.date, price:Number(hh.price)||0, vendor:hh.vendor||''}:null; }).filter(Boolean).sort(function(a,b){return a.dt-b.dt;});
+  var svg='';
+  if (pts.length>=2){
+    var vals=pts.map(function(p){return p.price;});
+    var mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals);
+    var pad=(mx-mn)||1; mn-=pad*0.15; mx+=pad*0.15;
+    var W=300,H=110;
+    var xy=function(p,i){ return [Math.round(10+(W-20)*i/(pts.length-1)), Math.round(H-10-(H-20)*((p.price-mn)/(mx-mn)))]; };
+    svg=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:var(--surface2);border-radius:8px">
+      <polyline points="${pts.map(function(p,i){return xy(p,i).join(',');}).join(' ')}" fill="none" stroke="var(--accent2)" stroke-width="2"/>
+      ${pts.map(function(p,i){var c=xy(p,i);return '<circle cx="'+c[0]+'" cy="'+c[1]+'" r="3" fill="var(--accent2)"/>';}).join('')}
+    </svg>`;
+  }
+  var rows=pts.slice().reverse().slice(0,14).map(function(p){ return `<tr><td style="text-align:left;color:var(--muted)">${escapeHtml(p.date)}</td><td style="text-align:left;color:var(--muted)">${escapeHtml(p.vendor)}</td><td style="text-align:right;font-weight:600">$${p.price.toFixed(2)}</td></tr>`; }).join('');
+  openModal(`<div class="modal-title">${escapeHtml(it.name)} — 価格推移（新マスター） <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">現在 <b style="color:var(--tm)">$${(Number(it.price)||0).toFixed(2)}</b>${it.spec&&it.spec.orderUnit?' / '+escapeHtml(it.spec.orderUnit):''} · ${escapeHtml(it.vendor||'')}</div>
+    ${svg||'<div style="font-size:11px;color:var(--muted);padding:8px 0">読取が2回以上になると推移グラフが表示されます。</div>'}
+    <table class="inv-table" style="width:100%;font-size:11px;margin-top:8px"><thead><tr><th style="text-align:left">日付</th><th style="text-align:left">業者</th><th style="text-align:right">価格</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`);
+}
+/* ===== 仕入分析タブ本体 ===== */
+function renderPurchaseAnalysis(){
+  var h='';
+  var now=Date.now();
+  var chgs90 = priceChangesRecent(90);
+  var chgs30 = chgs90.filter(function(c){ return c.dt >= now-30*86400000; });
+  var ups30 = chgs30.filter(function(c){return c.to>c.from;});
+  var downs30 = chgs30.filter(function(c){return c.to<c.from;});
+  var maxUp = ups30.slice().sort(function(a,b){return (b.pct||0)-(a.pct||0);})[0];
+  var maxDown = downs30.slice().sort(function(a,b){return (a.pct||0)-(b.pct||0);})[0];
+  // 当月・先月の仕入額（Invoice読取の明細合計）
+  function invMonthTotal(ym){
+    var t=0;
+    (ls('invoices',[])||[]).forEach(function(inv){
+      if (inv.docType==='Reimburse') return;
+      if (!dateInYm(inv.date, ym)) return;
+      (inv.lines||[]).forEach(function(l){ t += (Number(l.newPrice)||0)*(Number(l.qty)||0); });
+    });
+    return t;
+  }
+  var curTotal=invMonthTotal(curYm()), prevTotal=invMonthTotal(ymShift(curYm(),-1));
+
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-dashboard" style="color:var(--accent)"></i>仕入サマリー（直近30日）</div>
+    <div class="kpi-grid">
+      ${kpi('価格変動', chgs30.length+'件', '↑'+ups30.length+' / ↓'+downs30.length, chgs30.length?'var(--yellow)':'var(--muted)')}
+      ${kpi('最大値上げ', maxUp?('+'+maxUp.pct+'%'):'—', maxUp?maxUp.name:'', 'var(--red)')}
+      ${kpi('最大値下げ', maxDown?(maxDown.pct+'%'):'—', maxDown?maxDown.name:'', 'var(--green)')}
+      ${kpi('当月 Invoice仕入', '$'+Math.round(curTotal).toLocaleString(), prevTotal?('先月 $'+Math.round(prevTotal).toLocaleString()):'—', 'var(--tm)')}
+    </div>
+    <div style="font-size:10.5px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> Invoice読取データから集計。読み取りが増えるほど分析の精度が上がります。</div></div>`;
+
+  // ① 価格変動の推移（直近90日）
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-trending-up" style="color:var(--red)"></i>価格変動の推移 <span style="font-size:11px;color:var(--muted);font-weight:400">直近90日 · ${chgs90.length}件 · タップで価格推移</span></div>`;
+  if (!chgs90.length) {
+    h+=`<div style="text-align:center;color:var(--muted);padding:20px;font-size:12px">直近90日の価格変動はありません（Invoice読取で自動記録されます）</div>`;
+  } else {
+    h+=`<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:460px;font-size:11px"><thead><tr><th style="text-align:left">食材</th><th style="text-align:left">業者</th><th>日付</th><th style="text-align:right">旧 → 新</th><th style="text-align:right">変動</th></tr></thead><tbody>`;
+    chgs90.slice(0,40).forEach(function(c){
+      var up=c.to>c.from;
+      h+=`<tr style="cursor:pointer" onclick="openTrendAny('${c.code}')">
+        <td style="text-align:left;font-weight:600">${escapeHtml(c.name)}</td>
+        <td style="text-align:left;color:var(--muted)">${escapeHtml(c.vendor)}</td>
+        <td style="white-space:nowrap;color:var(--muted)">${escapeHtml(String(c.date).slice(5))}</td>
+        <td style="text-align:right;white-space:nowrap">$${c.from.toFixed(2)} → <b style="color:${up?'var(--red)':'var(--green)'}">$${c.to.toFixed(2)}</b></td>
+        <td style="text-align:right;color:${up?'var(--red)':'var(--green)'};font-weight:700">${c.pct!=null?((up?'+':'')+c.pct+'%'):'—'}</td>
+      </tr>`;
+    });
+    h+=`</tbody></table></div>`;
+    if (chgs90.length>40) h+=`<div style="font-size:10px;color:var(--muted);margin-top:4px">最新40件を表示</div>`;
+  }
+  h+=`</div>`;
+
+  // ② 同じ食材の業者間 価格比較（新マスター優先）
+  var compRows=[];
+  var _v2c = getIngV2();
+  if (_v2c.length){
+    _v2c.forEach(function(it){
+      var vs=Object.keys(it.vendors||{});
+      if (vs.length<2) return;
+      var arr=vs.map(function(v){ return {vendor:v, price:Number((it.vendors[v]||{}).price)||0, date:(it.vendors[v]||{}).date||''}; }).filter(function(x){return x.price>0;});
+      if (arr.length<2) return;
+      arr.sort(function(a,b){return a.price-b.price;});
+      var lo=arr[0], hi=arr[arr.length-1];
+      if (hi.price===lo.price) return;
+      compRows.push({ref:'v2:'+it.id, name:it.name, lo:lo, hi:hi, diffPct:Math.round((hi.price-lo.price)/lo.price*1000)/10});
+    });
+  } else {
+    var byCode={};
+    (ls('invoices',[])||[]).forEach(function(inv){
+      if (inv.docType==='Reimburse') return;
+      var d=parseJaDate(inv.date); if(!d) return;
+      (inv.lines||[]).forEach(function(l){
+        if (l.code==null) return;
+        var v=inv.vendor||'不明';
+        var rec=(byCode[l.code]=byCode[l.code]||{name:l.name, vendors:{}});
+        if (l.name) rec.name=l.name;
+        var cur=rec.vendors[v];
+        if (!cur || d.getTime()>cur.dt) rec.vendors[v]={price:Number(l.newPrice)||0, dt:d.getTime(), date:inv.date};
+      });
+    });
+    Object.keys(byCode).forEach(function(code){
+      var rec=byCode[code]; var vs=Object.keys(rec.vendors);
+      if (vs.length<2) return;
+      var arr=vs.map(function(v){ return {vendor:v, price:rec.vendors[v].price, date:rec.vendors[v].date}; }).filter(function(x){return x.price>0;});
+      if (arr.length<2) return;
+      arr.sort(function(a,b){return a.price-b.price;});
+      var lo=arr[0], hi=arr[arr.length-1];
+      if (lo.price<=0 || hi.price===lo.price) return;
+      compRows.push({ref:String(code), name:rec.name, lo:lo, hi:hi, diffPct:Math.round((hi.price-lo.price)/lo.price*1000)/10});
+    });
+  }
+  compRows.sort(function(a,b){return b.diffPct-a.diffPct;});
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-scale" style="color:var(--accent2)"></i>同じ食材の業者間 価格比較 <span style="font-size:11px;color:var(--muted);font-weight:400">差が大きい順 · 最安が緑</span></div>`;
+  if (!compRows.length) {
+    h+=`<div style="text-align:center;color:var(--muted);padding:20px;font-size:12px">複数業者から仕入れた食材がまだありません。<br>同じ食材を別業者のInvoiceで読み取ると、ここで自動比較されます。</div>`;
+  } else {
+    h+=`<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:480px;font-size:11px"><thead><tr><th style="text-align:left">食材</th><th style="text-align:left">最安</th><th style="text-align:left">最高</th><th style="text-align:right">価格差</th></tr></thead><tbody>`;
+    compRows.slice(0,25).forEach(function(r){
+      h+=`<tr style="cursor:pointer" onclick="openTrendAny('${r.ref}')">
+        <td style="text-align:left;font-weight:600">${escapeHtml(r.name)}</td>
+        <td style="text-align:left"><b style="color:var(--green)">$${r.lo.price.toFixed(2)}</b> <span style="color:var(--muted);font-size:10px">${escapeHtml(r.lo.vendor)}</span></td>
+        <td style="text-align:left">$${r.hi.price.toFixed(2)} <span style="color:var(--muted);font-size:10px">${escapeHtml(r.hi.vendor)}</span></td>
+        <td style="text-align:right;font-weight:700;color:${r.diffPct>=15?'var(--red)':'var(--yellow)'}">+${r.diffPct}%</td>
+      </tr>`;
+    });
+    h+=`</tbody></table></div><div style="font-size:10px;color:var(--muted);margin-top:4px"><i class="ti ti-bulb"></i> 価格差が大きい食材は、最安業者への切替や価格交渉の候補です。</div>`;
+  }
+  h+=`</div>`;
+
+  // ③ 業者別 当月仕入額
+  var vt={};
+  (ls('invoices',[])||[]).forEach(function(inv){
+    if (inv.docType==='Reimburse' || !dateInYm(inv.date, curYm())) return;
+    var t=(inv.lines||[]).reduce(function(a,l){return a+(Number(l.newPrice)||0)*(Number(l.qty)||0);},0);
+    vt[inv.vendor||'不明']=(vt[inv.vendor||'不明']||0)+t;
+  });
+  var vRows=Object.keys(vt).map(function(v){return {v:v,t:vt[v]};}).sort(function(a,b){return b.t-a.t;});
+  var vMax=vRows.length?vRows[0].t:0;
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-truck" style="color:var(--accent)"></i>業者別 仕入額（当月・Invoice読取分）</div>`;
+  if (!vRows.length) h+=`<div style="text-align:center;color:var(--muted);padding:16px;font-size:12px">当月の読取Invoiceがまだありません</div>`;
+  else vRows.slice(0,10).forEach(function(r){
+    var pct=curTotal?Math.round(r.t/curTotal*100):0;
+    h+=`<div style="padding:5px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span style="font-weight:600">${escapeHtml(r.v)}</span><span>$${Math.round(r.t).toLocaleString()} <span style="color:var(--muted);font-size:10px">${pct}%</span></span></div>
+      <div class="progress-bar" style="height:6px;margin-top:3px"><div class="progress-fill" style="width:${vMax?Math.round(r.t/vMax*100):0}%;background:var(--accent)"></div></div></div>`;
+  });
+  h+=`</div>`;
+
+  // ④ 月別 仕入推移（6ヶ月）
+  var mRows=[];
+  for (var o=-5;o<=0;o++){ var ym=ymShift(curYm(),o); mRows.push({ym:ym, t:invMonthTotal(ym)}); }
+  var mMax=Math.max.apply(null, mRows.map(function(r){return r.t;}).concat([1]));
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--tm)"></i>月別 仕入推移（Invoice読取分）</div>
+    <div style="display:flex;align-items:flex-end;gap:8px;height:110px;padding:4px 2px 0">`;
+  mRows.forEach(function(r){
+    var p=r.ym.split('-');
+    h+=`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;justify-content:flex-end">
+      <div style="font-size:9px;color:var(--muted)">${r.t?('$'+(r.t>=1000?Math.round(r.t/100)/10+'k':Math.round(r.t))):''}</div>
+      <div style="width:100%;max-width:44px;background:${r.ym===curYm()?'var(--accent)':'var(--accent2)'};border-radius:5px 5px 0 0;height:${Math.max(2,Math.round(r.t/mMax*78))}px"></div>
+      <div style="font-size:10px;color:var(--muted)">${parseInt(p[1],10)}月</div>
+    </div>`;
+  });
+  h+=`</div><div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 発注・買い出し等の全仕入ではなく、Invoiceとして読み取った分の集計です。</div></div>`;
+  return h;
+}
+/* 食材の価格推移モーダル（履歴＋SVG折れ線＋業者別・店舗別の最新価格） */
+function openPriceTrendModal(code){
+  var ing=getIngredients().find(function(x){return x.code===code;});
+  if(!ing){ showToast('食材が見つかりません','warning'); return; }
+  var pts=(ing.priceHistory||[]).map(function(hh){ var d=parseJaDate(hh.date); return d?{dt:d.getTime(), date:hh.date, price:Number(hh.price)||0}:null; }).filter(Boolean);
+  pts.push({dt:Date.now(), date:todayJP()+'（現在）', price:Number(ing.price)||0});
+  pts.sort(function(a,b){return a.dt-b.dt;});
+  var svg='';
+  var vals=pts.map(function(p){return p.price;});
+  if (pts.length>=2){
+    var mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals);
+    var pad=(mx-mn)||1; mn-=pad*0.15; mx+=pad*0.15;
+    var W=300,H=110;
+    var poly=pts.map(function(p,i){ var x=10+(W-20)*i/(pts.length-1); var y=H-10-(H-20)*((p.price-mn)/(mx-mn)); return Math.round(x)+','+Math.round(y); }).join(' ');
+    svg=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:var(--surface2);border-radius:8px">
+      <polyline points="${poly}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+      ${pts.map(function(p,i){ var x=10+(W-20)*i/(pts.length-1); var y=H-10-(H-20)*((p.price-mn)/(mx-mn)); return '<circle cx="'+Math.round(x)+'" cy="'+Math.round(y)+'" r="3" fill="var(--accent)"/>'; }).join('')}
+    </svg>`;
+  }
+  var vendorRows='';
+  var byV={};
+  (ls('invoices',[])||[]).forEach(function(inv){
+    if (inv.docType==='Reimburse') return;
+    var d=parseJaDate(inv.date); if(!d) return;
+    (inv.lines||[]).forEach(function(l){ if(l.code!==code) return; var v=inv.vendor||'不明'; var cur=byV[v]; if(!cur||d.getTime()>cur.dt) byV[v]={price:Number(l.newPrice)||0, dt:d.getTime(), date:inv.date}; });
+  });
+  var vKeys=Object.keys(byV);
+  if (vKeys.length){
+    var arr=vKeys.map(function(v){return {v:v, p:byV[v].price, date:byV[v].date};}).sort(function(a,b){return a.p-b.p;});
+    vendorRows = `<div style="font-size:12px;font-weight:700;margin:10px 0 4px">業者別 最新価格</div>`+arr.map(function(r,i){
+      return `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><span>${i===0?'<i class="ti ti-crown" style="color:var(--green)"></i> ':''}${escapeHtml(r.v)} <span style="font-size:9px;color:var(--muted)">${escapeHtml(String(r.date).slice(0,10))}</span></span><b style="color:${i===0?'var(--green)':'var(--tm)'}">$${r.p.toFixed(2)}</b></div>`;
+    }).join('');
+  }
+  var histRows = pts.slice().reverse().slice(0,12).map(function(p){
+    return `<tr><td style="text-align:left;color:var(--muted)">${escapeHtml(p.date)}</td><td style="text-align:right;font-weight:600">$${p.price.toFixed(2)}</td></tr>`;
+  }).join('');
+  openModal(`<div class="modal-title">${escapeHtml(ing.name)} — 価格推移 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">#${ing.code} · ${escapeHtml(ing.vendor||'')} · 現在 <b style="color:var(--tm)">$${(Number(ing.price)||0).toFixed(2)}</b>${ing.unit?' / '+escapeHtml(ing.unit):''}</div>
+    ${svg||'<div style="font-size:11px;color:var(--muted);padding:8px 0">価格履歴がまだ1件のため、推移グラフは次回の変動から表示されます。</div>'}
+    ${vendorRows}
+    <div style="font-size:12px;font-weight:700;margin:10px 0 4px">価格履歴</div>
+    <table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th style="text-align:left">日付</th><th style="text-align:right">価格</th></tr></thead><tbody>${histRows}</tbody></table>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`);
+}
 function renderIngredientMaster() {
   var cats = getCategories();
   var ings = getIngredients();
@@ -18436,14 +18950,23 @@ function renderIngredientMaster() {
   var classCounts = {};
   CLASSES.forEach(c => classCounts[c.id] = ings.filter(i=>catClass(i.cat)===c.id).length);
 
+  ensureIngV2Backfill();
+  var _ingTab = (window._ingTab==='analysis'||window._ingTab==='v2') ? window._ingTab : 'master';
   var html = pageStoreTabs(curStore, true) + `<div class="section-header">
-    <div><div class="section-title">食材マスター</div><div class="section-sub">${ings.length}品目 / ${cats.length}カテゴリ</div></div>
+    <div><div class="section-title">食材管理</div><div class="section-sub">${_ingTab==='analysis'?'仕入分析 — 価格変動・業者比較':_ingTab==='v2'?'Invoice読取から新しい食材マスターを構築':(ings.length+'品目 / '+cats.length+'カテゴリ'+(ingMigrationOn()?' · 移行モード中（価格凍結）':''))}</div></div>
     <div style="display:flex;gap:6px">
-      ${(curRole==='gm'||curRole==='ceo')?`<button class="btn btn-secondary btn-sm" onclick="applyExcelUnits()" title="Excel(Totoya棚卸)の発注単位を単位フィールドに反映"><i class="ti ti-ruler-2"></i> Excel単位反映</button>`:''}
+      ${_ingTab!=='analysis'?`${(curRole==='gm'||curRole==='ceo')?`<button class="btn btn-secondary btn-sm" onclick="applyExcelUnits()" title="Excel(Totoya棚卸)の発注単位を単位フィールドに反映"><i class="ti ti-ruler-2"></i> Excel単位反映</button>`:''}
       <button class="btn btn-secondary btn-sm" onclick="openCatModal()"><i class="ti ti-category"></i> カテゴリ</button>
-      <button class="btn btn-primary btn-sm" onclick="openIngModal()"><i class="ti ti-plus"></i> 追加</button>
+      <button class="btn btn-primary btn-sm" onclick="openIngModal()"><i class="ti ti-plus"></i> 追加</button>`:''}
     </div>
   </div>`;
+  html += `<div class="phase-tabs" style="margin-bottom:10px">
+    <div class="phase-tab${_ingTab==='master'?' active':''}" onclick="setIngTab('master')"><i class="ti ti-list-details" style="font-size:12px"></i> 食材マスター${ingMigrationOn()?' <span class="tag tag-gray" style="font-size:8px">凍結中</span>':''}</div>
+    <div class="phase-tab${_ingTab==='v2'?' active':''}" onclick="setIngTab('v2')"><i class="ti ti-sparkles" style="font-size:12px"></i> 新マスター（移行中）${(function(){var n=getIngV2().length;return n?' <span class="tag tag-blue" style="font-size:8px">'+n+'</span>':'';})()}</div>
+    <div class="phase-tab${_ingTab==='analysis'?' active':''}" onclick="setIngTab('analysis')"><i class="ti ti-chart-line" style="font-size:12px"></i> 仕入分析</div>
+  </div>`;
+  if (_ingTab==='analysis') return html + renderPurchaseAnalysis();
+  if (_ingTab==='v2') return html + renderIngredientV2();
 
   // 自店マスター / 全店マスター 切替
   if (ingStore) {
@@ -25077,6 +25600,7 @@ function renderMypage() {
   if (!isCrewView) {
     // 管理者は従来のPGD中心
     html += renderCompanyMessageCard();
+  html += renderPriceAlertCard();
     html += `<div class="section-header" style="margin-bottom:8px"><div class="section-title" style="font-size:15px"><i class="ti ti-rocket" style="color:var(--accent)"></i> Personal Growth Dashboard</div></div>`;
     html += renderPGD(me, false);
     return html;
@@ -25094,6 +25618,7 @@ function renderMypage() {
 
   // ===== 今月の会社メッセージ =====
   html += renderCompanyMessageCard();
+  html += renderPriceAlertCard();
 
   // ===== ゲーミフィケーション（実績バッジ） =====
   html += renderBadges(me, emp);
@@ -26726,6 +27251,7 @@ function checkTipPromotions(){
    ⑭ Invoice / Receipt
 ============================================================ */
 function renderInvoice() {
+  ensureIngV2Backfill();
   var allInv = ls('invoices', []);
   var canAll = ['ceo','gm','office'].includes(curRole);
   var candIds = invoiceStoreCandidates().map(s=>s.id);
@@ -26760,7 +27286,7 @@ function renderInvoice() {
             ${inv.imagePath?`<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="viewInvoiceImage('${inv.imagePath.replace(/'/g,"\\'")}')"><i class="ti ti-photo"></i></button>`:''}
             ${inv.driveUrl?`<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="${inv.driveUrl}" target="_blank" title="Driveで開く"><i class="ti ti-brand-google-drive"></i></a>`:''}
             <span class="tag" style="font-size:10px;font-weight:700;color:${_rsCol};border:1px solid ${_rsCol};background:transparent">${_rs}</span>
-            <span class="tag ${inv.applied?'tag-green':'tag-yellow'}">${inv.applied?'価格更新済':'未反映'}</span>
+            <span class="tag ${inv.applied?(inv.v2Only?'tag-blue':'tag-green'):'tag-yellow'}">${inv.applied?(inv.v2Only?'新マスター登録済':'価格更新済'):'未反映'}</span>
           </div>
         </div>
         ${invChangesDetail(inv)}
@@ -26804,7 +27330,7 @@ function invChangesDetail(inv){
   if(cnt.un) sum.push('<span style="color:var(--yellow)">未照合 '+cnt.un+'</span>');
   return '<details style="margin-top:8px"><summary style="font-size:11.5px;cursor:pointer;color:var(--tm)"><i class="ti ti-list-search"></i> 読取・更新内容（'+sum.join(' · ')+'）</summary>'
     +'<div style="overflow-x:auto;margin-top:6px"><table class="inv-table" style="width:100%;min-width:440px;font-size:11px"><thead><tr><th style="text-align:left">品目（読取）</th><th style="text-align:right">数量</th><th style="text-align:right">単価</th><th style="text-align:left">食材マスターの更新</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
-    +'<div style="font-size:10px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> 「価格変更」＝マスターの仕入価格を旧→新に更新（履歴保存）。「新規登録」＝保存時にマスターへ追加した食材。「未照合」＝マスターに紐付かず更新なし（手動で紐付け or 新規登録できます）。</div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> '+(inv.v2Only?'<b>移行モード</b>：現行マスターの価格は更新していません（読取品目は「新マスター（移行中）」タブへ自動登録済み）。表の旧→新は現行マスターとの比較参考です。':'「価格変更」＝マスターの仕入価格を旧→新に更新（履歴保存）。「新規登録」＝保存時にマスターへ追加した食材。「未照合」＝マスターに紐付かず更新なし（手動で紐付け or 新規登録できます）。')+'</div>'
     +'</details>';
 }
 var invoiceTmpLines = [];
@@ -27254,22 +27780,58 @@ async function saveInvoice() {
   if(!rcptStores.length) rcptStores=[invStoreId];
   var _purpose=(docVal('inv-purpose')||''); var _pmemo=(docVal('inv-purpose-memo')||'').trim();
   var priceStores = (invoiceDocType==='Receipt') ? rcptStores : [invStoreId];
-  // 食材マスターの価格を更新（全店共通の最新価格＝price）＋店舗別の最新仕入価格を記録
-  var ings = getIngredients();
+  ensureIngV2Backfill();
+  var _mig = ingMigrationOn();
   var _today = todayJP();
-  invoiceTmpLines.forEach(l => {
-    var ing = ings.find(x=>x.code===l.code);
-    if (ing) {
-      var hist = ing.priceHistory || [];
-      hist.push({date:_today, price:ing.price});
-      ing.priceHistory = hist;
-      ing.price = l.newPrice;
-      // 店舗別 最新仕入価格（メモ）: 店舗ごとに上書き保存（店舗差が見える）
-      if (!ing.storePrices) ing.storePrices = {};
-      priceStores.forEach(function(_sid){ ing.storePrices[_sid] = { price:l.newPrice, date:_today, vendor:vendor }; });
+  var _invIdPre = 'inv'+Date.now();
+  if (!_mig) {
+    // 通常モード: 食材マスターの価格を更新（全店共通の最新価格＝price）＋店舗別の最新仕入価格を記録
+    var ings = getIngredients();
+    invoiceTmpLines.forEach(l => {
+      var ing = ings.find(x=>x.code===l.code);
+      if (ing) {
+        var hist = ing.priceHistory || [];
+        hist.push({date:_today, price:ing.price});
+        ing.priceHistory = hist;
+        ing.price = l.newPrice;
+        if (!ing.storePrices) ing.storePrices = {};
+        priceStores.forEach(function(_sid){ ing.storePrices[_sid] = { price:l.newPrice, date:_today, vendor:vendor }; });
+      }
+    });
+    lsSet('m_ingredients', ings);
+  }
+  // 新マスターへは常に取込（移行モード中はこちらが正）
+  var _v2res = ingestInvoiceToV2(invoiceTmpLines, vendor, priceStores, _invIdPre, _today);
+  // 価格変動があった食材 → 使用店舗のG3以上へ通知
+  try{
+    var _byStore = {};
+    if (_mig) {
+      // 移行モード: 新マスター内の変動（前回読取価格との差）で通知
+      (_v2res.changes||[]).forEach(function(c){
+        var used = (c.stores&&c.stores.length)?c.stores.slice():priceStores.slice();
+        priceStores.forEach(function(sid){ if(used.indexOf(sid)<0) used.push(sid); });
+        used.forEach(function(sid){ (_byStore[sid]=_byStore[sid]||[]).push({name:c.name, o:c.from, n:c.to}); });
+      });
+    } else {
+      invoiceTmpLines.forEach(function(l){
+        if (l.code==null || l.oldPrice==null) return;
+        var o=Number(l.oldPrice)||0, n=Number(l.newPrice)||0;
+        if (Math.abs(o-n)<0.005) return;
+        var used = storesUsingIngredient(l.code);
+        if (!used.length) used = priceStores.slice();
+        used.forEach(function(sid){ (_byStore[sid]=_byStore[sid]||[]).push({name:l.name, o:o, n:n}); });
+      });
     }
-  });
-  lsSet('m_ingredients', ings);
+    Object.keys(_byStore).forEach(function(sid){
+      var ls_ = _byStore[sid];
+      var _txt = ls_.slice(0,3).map(function(x){
+        var up=x.n>x.o;
+        return x.name+' $'+x.o.toFixed(2)+'→$'+x.n.toFixed(2)+(x.o>0?'('+(up?'+':'')+(Math.round((x.n-x.o)/x.o*1000)/10)+'%)':'');
+      }).join('、') + (ls_.length>3?(' 他'+(ls_.length-3)+'件'):'');
+      addNotif({ type:'price', title:'価格変動: '+vendor+'（'+ls_.length+'件）', text:_txt.slice(0,140),
+        toStore:sid, toRoles:['sl','sm','am','gm','ceo'], page:'ingredient_master', refId:'price_'+Date.now()+'_'+sid });
+    });
+  }catch(e){ console.warn('price notify', e); }
   // 画像をSupabase Storageへ（店舗 × 年月で振り分け）
   var storeObj = STORES.find(x=>x.id===invStoreId);
   var imagePath = null;
@@ -27283,8 +27845,8 @@ async function saveInvoice() {
   var _rcptEmpId = (invoiceDocType==='Receipt') ? (docVal('inv-emp')||null) : null;
   var _rcptEmp = _rcptEmpId ? (getEmployees().find(function(e){return e.id===_rcptEmpId;})||{}) : {};
   var _rcptCard = (invoiceDocType==='Receipt') ? (docVal('inv-card4')||'').replace(/[^0-9]/g,'') : '';
-  var _newInv = {id:'inv'+Date.now(), vendor, storeId:invStoreId, docType:invoiceDocType, date:todayJP(),
-    lines:invoiceTmpLines, total, applied:true, by:ROLE_CONFIG[curRole].name,
+  var _newInv = {id:_invIdPre, vendor, storeId:invStoreId, docType:invoiceDocType, date:todayJP(),
+    lines:invoiceTmpLines, total, applied:true, v2Only:_mig, by:ROLE_CONFIG[curRole].name,
     byUser:(curUserName||''), byEmail:(function(){var _e=getEmployees().find(function(x){return x.name===curUserName;});return (_e&&_e.email)?_e.email:'';})(),
     imagePath:imagePath||null,
     empId:_rcptEmpId, empName:_rcptEmp.name||'', cardLast4:_rcptCard, splitStores:(invoiceDocType==='Receipt'?rcptStores:[]), purpose:_purpose, purposeMemo:_pmemo,
