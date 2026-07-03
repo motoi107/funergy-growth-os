@@ -14621,7 +14621,7 @@ function renderShiftBuild(storeId, week) {
     var _hsecs = shiftSectionsFor(storeId).filter(function(sc){ return sc.headcount; });
     if (_hsecs.length) {
       html += `<div class="card" style="overflow-x:auto"><div style="font-size:12px;font-weight:700;margin-bottom:6px"><i class="ti ti-users" style="color:var(--accent)"></i> 曜日別 営業本数（合計人数）— 固定枠を差し引いた残りが自動でServer枠になります</div>
-        <table class="inv-table" style="min-width:560px"><thead><tr><th style="font-size:10px">営業</th>${DOW_SHIFT.map(d=>`<th style="text-align:center;font-size:10px">${d}</th>`).join('')}</tr></thead><tbody>`;
+        <table class="inv-table" style="min-width:560px"><thead><tr><th style="font-size:10px">営業</th>${DOW_SHIFT.map(d=>`<th style="text-align:center;font-size:10px;padding:4px 2px">${shiftDayHeadHtml(d)}</th>`).join('')}</tr></thead><tbody>`;
       _hsecs.forEach(function(sc){
         var fixed=(sc.slots||[]).length;
         html += `<tr><td style="font-size:10px;white-space:nowrap">${sc.label}<div style="font-size:9px;color:var(--muted)">固定${fixed}＋Server</div></td>`;
@@ -14702,7 +14702,7 @@ function renderShiftBuild(storeId, week) {
 
   if (shiftView==='grid') {
     var splan = shiftSlotPlan(storeId);
-    html += `<div class="card" style="overflow-x:auto"><table class="inv-table" style="min-width:560px"><thead><tr><th>枠</th>${DOW_SHIFT.map(d=>`<th style="text-align:center">${d}</th>`).join('')}</tr></thead><tbody>`;
+    html += `<div class="card" style="overflow-x:auto"><table class="inv-table" style="min-width:560px"><thead><tr><th>枠</th>${DOW_SHIFT.map(d=>`<th style="text-align:center;padding:4px 2px">${shiftDayHeadHtml(d)}</th>`).join('')}</tr></thead><tbody>`;
     splan.forEach(sec => {
       html += `<tr><td colspan="8" style="background:var(--surface2);font-weight:800;font-size:11px;color:var(--accent);padding:5px 8px"><i class="ti ti-layout-list"></i> ${sec.label}${sec.sec&&sec.sec.headcount?' <span style="font-size:9px;color:var(--muted);font-weight:400">（本数は下の設定パネル）</span>':''}</td></tr>`;
       sec.slots.forEach(slot => {
@@ -14712,7 +14712,7 @@ function renderShiftBuild(storeId, week) {
           if(!active){ html += `<td style="text-align:center;padding:2px"><div style="font-size:9px;padding:3px;min-height:24px;color:var(--muted);background:var(--surface2);border-radius:6px;opacity:.5">－</div></td>`; return; }
           var key = shiftCellKey(day, sec.key, slot.label);
           var assigned = plan.cells[key] || '';
-          html += `<td style="text-align:center;padding:2px"><div class="shift-slot${assigned?' sel':''}" style="font-size:10px;padding:3px;min-height:24px" onclick="openCellAssign('${storeId}','${week}','${key}','${day}','${sec.key}','${slot.pos.replace(/'/g,"")}')">${assigned?assigned.split(' ')[0].slice(0,5):'+'}</div></td>`;
+          html += `<td style="text-align:center;padding:2px"><div class="shift-slot${assigned?' sel':''}" style="font-size:10px;padding:3px;min-height:24px" onclick="openCellAssign('${storeId}','${week}','${key}','${day}','${sec.key}','${slot.pos.replace(/'/g,"")}')">${assigned?shiftCellLabel(assigned, slot.pos, storeId):'+'}</div></td>`;
         });
         html += '</tr>';
       });
@@ -14723,10 +14723,14 @@ function renderShiftBuild(storeId, week) {
     DOW_SHIFT.forEach(day => {
       var dayKeys = Object.keys(plan.cells).filter(k=>k.startsWith(day+'_') && plan.cells[k]);
       if (!dayKeys.length) return;
-      html += `<div class="card"><div class="card-title">${day}曜日</div>`;
+      var _iso=weekDateForDow(day); var _hol=_iso?holidayFor(_iso):''; var _eve=(_iso&&!_hol)?eveOfHoliday(_iso):'';
+      var _md=_iso?(Number(_iso.split('-')[1])+'/'+Number(_iso.split('-')[2])):'';
+      html += `<div class="card"><div class="card-title">${day}曜日 <span style="font-size:11px;color:var(--muted);font-weight:400">${_md}</span>${_hol?' <span style="font-size:10px;color:var(--red);font-weight:700">祝日</span>':(_eve?' <span style="font-size:10px;color:var(--accent2);font-weight:700">祝前</span>':'')}</div>`;
       dayKeys.forEach(k => {
-        var parts = k.split('_'); 
-        html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><span>${parts[1]} ${parts[2]}</span><span style="font-weight:600">${plan.cells[k]}</span></div>`;
+        var parts = k.split('_');
+        var _pos = parts.slice(2).join('_').replace(/ \d+$/,''); // "Server 2"→"Server"
+        var _lv = (typeof positionLevelStore==='function')?positionLevelStore(plan.cells[k], _pos, storeId):0;
+        html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><span>${parts[1]} ${parts.slice(2).join('_')}</span><span style="font-weight:600">${plan.cells[k]}${_lv>0?' <span style="font-size:10px;color:var(--accent)">L'+_lv+'</span>':''}</span></div>`;
       });
       html += '</div>';
     });
@@ -16046,6 +16050,32 @@ function weekDateForDow(dow) {
   var mon = new Date(getWeekMondayISO()+'T00:00:00');
   var d = new Date(mon); d.setDate(mon.getDate()+idx);
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+/* 祝前日か（翌日が祝日） */
+function eveOfHoliday(dateISO){
+  try{ var d=new Date(dateISO+'T00:00:00'); d.setDate(d.getDate()+1);
+    var nx=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    return holidayFor(nx)||''; }catch(e){ return ''; }
+}
+/* シフトグリッドの曜日ヘッダHTML（日付＋祝日/祝前） */
+function shiftDayHeadHtml(day){
+  var iso=weekDateForDow(day); if(!iso) return day;
+  var p=iso.split('-'); var md=Number(p[1])+'/'+Number(p[2]);
+  var col=(day==='日')?'var(--red)':(day==='土'?'var(--accent2)':'var(--tm)');
+  var hol=holidayFor(iso); var eve=hol?'':eveOfHoliday(iso);
+  var tag='';
+  if(hol) tag='<div style="font-size:8px;color:var(--red);font-weight:700;line-height:1.1;margin-top:1px">祝</div>';
+  else if(eve) tag='<div style="font-size:8px;color:var(--accent2);font-weight:700;line-height:1.1;margin-top:1px">祝前</div>';
+  var tip = hol ? ' title="'+escapeHtml(hol)+'"' : (eve?' title="翌日: '+escapeHtml(eve)+'"':'');
+  return '<div'+tip+'><div style="color:'+col+';font-weight:700">'+day+'</div><div style="font-size:9px;color:var(--muted);font-weight:400">'+md+'</div>'+tag+'</div>';
+}
+/* セル表示: スタッフ名（名） + そのポジションのLv */
+function shiftCellLabel(name, pos, storeId){
+  if(!name) return '+';
+  var first=name.split(' ')[0].slice(0,5);
+  var lv=(typeof positionLevelStore==='function')?positionLevelStore(name, pos, storeId):0;
+  var lvTag = lv>0 ? '<span style="font-size:8px;color:var(--accent);font-weight:700"> L'+lv+'</span>' : '';
+  return first+lvTag;
 }
 
 /* ============================================================
