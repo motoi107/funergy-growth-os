@@ -2966,8 +2966,13 @@ function saveCashTip(storeId, date, lunch, dinner) {
     if(_hit) lsSet('tasks_all', _t);
   }catch(e){}
 }
+/* キャッシュチップ登録の対象外店舗（Waikikiの2店: FSP / Waikiki Garlic Shack）。
+   クレジットチップのシェア（配分）は通常どおり。未入力アラート・エラーセンター・自動タスクからも除外。 */
+var NO_CASHTIP_STORES = ['F03','F03-G'];
+function isNoCashTipStore(storeId){ return NO_CASHTIP_STORES.indexOf(storeId)>=0; }
 /* キャッシュチップが未入力か（クレジットはあるのにキャッシュ未確定＝要入力） */
 function cashTipMissing(storeId, date) {
+  if (isNoCashTipStore(storeId)) return false; // 対象外店舗は常に未入力扱いしない
   var av = getDailyActuals(storeId)[date] || {};
   var hasCredit = (av.lunchCreditTip!=null) || (av.dinnerCreditTip!=null) || (av.actual>0);
   var cash = getCashTips(storeId)[date];
@@ -3812,7 +3817,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -6348,6 +6353,7 @@ function setCmdTipDate(d) { window._cmdTipDate = d; renderPage('store_cmd'); }
 
 function openCashTipModal(storeId, date) {
   var today = todayISO();
+  if (isNoCashTipStore(storeId)) { showToast('この店舗はキャッシュチップ登録の対象外です（クレジットのチップシェアは通常どおり）', 'info'); return; }
   if (date > today) { showToast('未来日のキャッシュチップは入力できません', 'warning'); return; }
   var cash = getCashTip(storeId, date);
   var isPast = date < today;
@@ -29919,68 +29925,117 @@ function renderGradeGuide(){
     +'</div></details>';
   return h;
 }
+/* ===== 責任マトリクス（編集可能版）=====
+   セルはプルダウンで自由に変更可（GM/CEOのみ・確定まで調整用）。
+   データ: ls('resp_matrix')={rows:[...]}（Supabase同期対象）。行=配列[名前,G1..G6,経理,備考]、{cat:'icon|見出し'}はカテゴリ行 */
+var RESP_LEVEL_OPTS = ['','●','◎','○','△','●義務','●全責任','●提案','●実施','●中間棚卸','◎義務','◎部分','◎決定','◎推薦','◎監督','◎修正実務','○推薦','○実施','○補助','○実PL入力','△把握','△報告','承認'];
+function respDefaultRows(){ return [
+  {cat:'ti-tools-kitchen-2|日々の店舗運営'},
+  ['ポジションワークの遂行','◎','○','●','','','','','指示どおりに実行（G1）。手本・確認はG2、当日の采配と品質チェックはG3'],
+  ['在庫少の報告・必要仕込の記入','◎','○','●','','','','','少ない材料は即報告、必要な仕込を記入・報告（G1）。発注への反映はG3'],
+  ['売上・日報','','○','◎','●','△','△','','売上/客数の入力・日報確認はG3が実行、数字の正はG4'],
+  ['キャッシュチップの入力','○','○','◎','●','','','','入力は誰でもOK（0でも0）。確定と未入力解消の責任はG3/G4。※Waikiki 2店（FSP/WGS）は登録対象外'],
+  ['日々の発注確定','○','○','●','◎','','','','発注ミス・欠品対応の一次責任はG3'],
+  ['代替材料の確保（欠品時）','','○','●','◎','','','','G3が即断で確保→G4へ報告'],
+  ['消耗品の発注','','○','●','◎','','','','実務はG2（責任なし）、確定はG3'],
+  ['オーバーポーション管理','○','◎','●','◎','','','','現場の徹底はG2/G3、原価率への影響はG4'],
+  ['店舗修繕','','○','◎部分','●','','','','気づき・実務はG2、部分責任はG3、最終はG4'],
+  {cat:'ti-calendar-time|シフト・勤怠'},
+  ['シフト作成','','△','◎義務','●','△','','','G3以上に作成義務。最終確認はG4'],
+  ['シフト運用・OT管理','','','△把握','●全責任','△','','','週40h超・ワーキングスケジュールの責任はG4。G3は把握と即報告'],
+  ['勤怠の正確性','','○','○','●','','','◎修正実務','修正実務は経理/GM、店の勤怠の正はG4'],
+  {cat:'ti-coin|お金・数字'},
+  ['予算作成','','','◎義務','●義務','○','承認','','G3たたき台→G4最終化→GM承認必須。根拠・重点の記入必須'],
+  ['日別予算調整（店休・イベント）','','','◎','●','△','','','月中の調整もG3/G4で即時反映'],
+  ['予算の調整（管轄・本部）','','','','△把握','●','◎','','管轄横断の予算調整はG5が最終責任、G6が実行監督、G4は把握'],
+  ['Tip管理（配分・確定）','','','','●','◎','△','','店のTip配分・確定の最終責任はG4。G5が実行監督、G6は把握'],
+  ['棚卸の実施・記入','○','○','●実施','◎','','','','カウント・入力は誰でもOK（責任なし）。数えて確定するのはG3'],
+  ['棚卸エラーの最終責任','','','△','●中間棚卸','△','','','エラー時はG4の責任で中間棚卸→修正再確定'],
+  ['原価の数字すべて（自店）','','','○','●','△','△','','理論原価・月次原価の整合はG4が保証'],
+  ['管轄店の原価','','','','○','◎','●','','管轄横断の原価改善はG5が実行、最終責任はG6'],
+  ['売価変更・おすすめ提案','','','●提案','◎決定','○','','','提案はG3の義務、採否と結果はG4'],
+  ['Invoice読取（請求書の取り込み）','','','◎','●','△','','○','読取はG3/G4、完了責任はG4。経理は確認・補助'],
+  ['管轄店の合計数字','','','','△','●','','','店舗間標準化・横比較改善はG5'],
+  ['会社PL・本部予算','','','','','◎','●','○実PL入力','簡易PL・本部予算はG6（GM/CEO）。実PL入力は経理'],
+  {cat:'ti-users-group|人・育成'},
+  ['トレーニング経過の報告','','◎','●','△','','△把握','','G2が経過を報告、G3が集約・判断、G4は把握。GMは全体を把握'],
+  ['担当分野のチームビルド・育成','','','●','◎','','△把握','','自分の専門分野のチーム作りはG3の責任'],
+  ['採用・トレーニング（担当分野）','','','◎','●','△','△把握','','担当分野の採用・トレーニングはG3が実行、最終はG4'],
+  ['担当分野のマニュアル整備','','','●','◎','','△把握','','担当分野のマニュアルはG3が整備・更新'],
+  ['人材育成・スキル承認','','○','◎','●','△','△把握','','日々のOJTはG2/G3、育成計画と昇格推薦はG4'],
+  ['相談対応（お悩み）','','','◎','●','△','△把握','','初動24hで担当決め。店で解決できない案件はG5へ'],
+  {cat:'ti-building-bank|制度・マスター（G6管轄）'},
+  ['新マスターの整備','','','','△把握','△把握','●','','食材マスター等の制度マスター整備はG6が最終責任、G4/G5は把握'],
+  ['OJT管理（カリキュラム・基準）','','','','','○','●','','カリキュラム・ゲート基準の管理はG6が最終責任'],
+  ['Grade管理（昇格の最終判断）','','','','○推薦','◎推薦','●','','推薦はG4/G5、昇格の最終判断はG6'],
+  ['時給管理・Career Score','','','','','','●','','時給とCareer Scoreの管理はG6が最終責任'],
+]; }
+function getRespMatrix(){
+  var v = ls('resp_matrix', null);
+  if (v && v.rows && v.rows.length) return v;
+  return {rows: respDefaultRows(), v:1};
+}
+function saveRespMatrix(mx){ mx.at=nowJP(); mx.by=(typeof myName==='function')?myName():''; lsSet('resp_matrix', mx); }
+function _respRerender(){ renderPage((typeof curPage!=='undefined'&&curPage==='ojt_admin')?'ojt_admin':'biz_guide'); }
+function respToggleEdit(){ window._respEdit=!window._respEdit; _respRerender(); }
+function respReset(){ if(!confirm('責任マトリクスを既定（Claude納品時の内容）に戻します。編集内容は失われます。よろしいですか？')) return; lsSet('resp_matrix', {rows:respDefaultRows(), v:1}); showToast('既定に戻しました','success'); _respRerender(); }
+function respSetCell(ri, ci, val){ var mx=getRespMatrix(); if(!mx.rows[ri]||mx.rows[ri].cat!==undefined&&!Array.isArray(mx.rows[ri])) return; mx.rows[ri][ci]=val; saveRespMatrix(mx); }
+function respSetName(ri, val){ var mx=getRespMatrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][0]=val; saveRespMatrix(mx); }
+function respSetNote(ri, val){ var mx=getRespMatrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][8]=val; saveRespMatrix(mx); }
+function respDelRow(ri){ var mx=getRespMatrix(); if(!Array.isArray(mx.rows[ri])) return; if(!confirm('「'+(mx.rows[ri][0]||'')+'」の行を削除しますか？')) return; mx.rows.splice(ri,1); saveRespMatrix(mx); _respRerender(); }
+function respAddRow(catRi){ var mx=getRespMatrix(); var ins=catRi+1; while(ins<mx.rows.length && Array.isArray(mx.rows[ins])) ins++; mx.rows.splice(ins,0,['新しい業務','','','','','','','','']); saveRespMatrix(mx); _respRerender(); }
+function respCellHtml(t){
+  t=String(t||''); if(!t) return '';
+  var sym=t.charAt(0);
+  if('●◎○△'.indexOf(sym)<0) return t;
+  var ann=t.slice(1);
+  return sym+(ann?'<br><span style="font-size:9px">'+ann+'</span>':'');
+}
 function renderRespMatrix(){
-  // ●=最終責任(結果に責任) ◎=実行責任(やり切る責任) ○=実務・補助(責任なし) △=把握・報告
-  // 行: [業務名, G1, G2, G3, G4, G5, G6(GM), 経理, 備考] ／ {cat:...} はカテゴリ見出し
-  var sm=function(t){ return '<br><span style="font-size:9px">'+t+'</span>'; };
-  var rows=[
-    {cat:'ti-tools-kitchen-2|日々の店舗運営'},
-    ['ポジションワークの遂行','◎','○','●','','','','','指示どおりに実行（G1）。手本・確認はG2、当日の采配と品質チェックはG3'],
-    ['在庫少の報告・必要仕込の記入','◎','○','●','','','','','少ない材料は即報告、必要な仕込を記入・報告（G1）。発注への反映はG3'],
-    ['売上・日報','','○','◎','●','△','△','','売上/客数の入力・日報確認はG3が実行、数字の正はG4'],
-    ['キャッシュチップの入力','○','○','◎','●','','','','入力は誰でもOK（0でも0）。確定と未入力解消の責任はG3/G4'],
-    ['日々の発注確定','○','○','●','◎','','','','発注ミス・欠品対応の一次責任はG3'],
-    ['代替材料の確保（欠品時）','','○','●','◎','','','','G3が即断で確保→G4へ報告'],
-    ['消耗品の発注','','○','●','◎','','','','実務はG2（責任なし）、確定はG3'],
-    ['オーバーポーション管理','○','◎','●','◎','','','','現場の徹底はG2/G3、原価率への影響はG4'],
-    ['店舗修繕','','○','◎'+sm('部分'),'●','','','','気づき・実務はG2、部分責任はG3、最終はG4'],
-    {cat:'ti-calendar-time|シフト・勤怠'},
-    ['シフト作成','','△','◎'+sm('義務'),'●','△','','','G3以上に作成義務。最終確認はG4'],
-    ['シフト運用・OT管理','','','△'+sm('把握'),'●'+sm('全責任'),'△','','','週40h超・ワーキングスケジュールの責任はG4。G3は把握と即報告'],
-    ['勤怠の正確性','','○','○','●','','','◎'+sm('修正実務'),'修正実務は経理/GM、店の勤怠の正はG4'],
-    {cat:'ti-coin|お金・数字'},
-    ['予算作成','','','◎'+sm('義務'),'●'+sm('義務'),'○','承認','','G3たたき台→G4最終化→GM承認必須。根拠・重点の記入必須'],
-    ['日別予算調整（店休・イベント）','','','◎','●','△','','','月中の調整もG3/G4で即時反映'],
-    ['予算の調整（管轄・本部）','','','','△'+sm('把握'),'●','◎','','管轄横断の予算調整はG5が最終責任、G6が実行監督、G4は把握'],
-    ['Tip管理（配分・確定）','','','','●','◎','△','','店のTip配分・確定の最終責任はG4。G5が実行監督、G6は把握'],
-    ['棚卸の実施・記入','○','○','●'+sm('実施'),'◎','','','','カウント・入力は誰でもOK（責任なし）。数えて確定するのはG3'],
-    ['棚卸エラーの最終責任','','','△','●'+sm('中間棚卸'),'△','','','エラー時はG4の責任で中間棚卸→修正再確定'],
-    ['原価の数字すべて（自店）','','','○','●','△','△','','理論原価・月次原価の整合はG4が保証'],
-    ['管轄店の原価','','','','○','◎','●','','管轄横断の原価改善はG5が実行、最終責任はG6'],
-    ['売価変更・おすすめ提案','','','●'+sm('提案'),'◎'+sm('決定'),'○','','','提案はG3の義務、採否と結果はG4'],
-    ['Invoice読取（請求書の取り込み）','','','◎','●','△','','○','読取はG3/G4、完了責任はG4。経理は確認・補助'],
-    ['管轄店の合計数字','','','','△','●','','','店舗間標準化・横比較改善はG5'],
-    ['会社PL・本部予算','','','','','◎','●','○'+sm('実PL入力'),'簡易PL・本部予算はG6（GM/CEO）。実PL入力は経理'],
-    {cat:'ti-users-group|人・育成'},
-    ['トレーニング経過の報告','','◎','●','△','','','','G2が経過を報告、G3が集約・判断、G4は把握'],
-    ['担当分野のチームビルド・育成','','','●','◎','','','','自分の専門分野のチーム作りはG3の責任'],
-    ['採用・トレーニング（担当分野）','','','◎','●','△','','','担当分野の採用・トレーニングはG3が実行、最終はG4'],
-    ['担当分野のマニュアル整備','','','●','◎','','','','担当分野のマニュアルはG3が整備・更新'],
-    ['人材育成・スキル承認','','○','◎','●','△','','','日々のOJTはG2/G3、育成計画と昇格推薦はG4'],
-    ['相談対応（お悩み）','','','◎','●','△','','','初動24hで担当決め。店で解決できない案件はG5へ'],
-    {cat:'ti-building-bank|制度・マスター（G6管轄）'},
-    ['新マスターの整備','','','','△'+sm('把握'),'△'+sm('把握'),'●','','食材マスター等の制度マスター整備はG6が最終責任、G4/G5は把握'],
-    ['OJT管理（カリキュラム・基準）','','','','','○','●','','カリキュラム・ゲート基準の管理はG6が最終責任'],
-    ['Grade管理（昇格の最終判断）','','','','○'+sm('推薦'),'◎'+sm('推薦'),'●','','推薦はG4/G5、昇格の最終判断はG6'],
-    ['時給管理・Career Score','','','','','','●','','時給とCareer Scoreの管理はG6が最終責任'],
-  ];
+  var mx=getRespMatrix();
+  var rows=mx.rows;
+  var canEdit=(['gm','ceo'].indexOf(curRole)>=0);
+  var editing=canEdit && !!window._respEdit;
   // 全員共通の責任（Grade問わず）
-  var h='<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-users" style="color:var(--accent)"></i>全員共通の責任（Grade問わず）</div>'
+  var h='<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-users" style="color:var(--accent)"></i>全員共通の責任（Grade問わず）'
+    +(canEdit?'<span style="margin-left:auto;display:flex;gap:6px">'
+      +'<button class="btn btn-'+(editing?'primary':'secondary')+' btn-sm" style="padding:3px 10px;font-size:10px" onclick="respToggleEdit()"><i class="ti ti-'+(editing?'check':'pencil')+'"></i> '+(editing?'編集を終了':'編集モード')+'</button>'
+      +(editing?'<button class="btn btn-secondary btn-sm" style="padding:3px 10px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="respReset()"><i class="ti ti-restore"></i> 既定に戻す</button>':'')
+      +'</span>':'')+'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;font-size:12px">'
     +[['ti-heart-handshake','理念を守る'],['ti-mood-smile','全員接客'],['ti-speakerphone','声出し・返事の徹底'],['ti-clock-check','自己勤怠の管理<br><span style="font-size:10px;color:var(--muted)">打刻・シフト希望の提出</span>']].map(function(x){
       return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 10px;display:flex;align-items:center;gap:8px"><i class="ti '+x[0]+'" style="color:var(--accent);font-size:16px"></i><b>'+x[1]+'</b></div>';
     }).join('')+'</div></div>';
-  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助（責任なし）／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。</div>'
-    +'<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:720px;font-size:11px"><thead><tr><th style="text-align:left">業務</th><th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>G5</th><th>G6<br><span style="font-size:9px">GM</span></th><th>経理</th><th style="text-align:left">備考</th></tr></thead><tbody>';
-  rows.forEach(function(r){
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助（責任なし）／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。'
+    +(editing?'<br><b style="color:var(--accent)">編集モード:</b> セルのプルダウンで責任を変更（即保存）。業務名・備考も直接編集、行の追加・削除も可能です。':(canEdit?'　<span style="color:var(--muted)">（GM/CEOは右上の編集モードで調整できます）</span>':''))
+    +(mx.at?'<br><span style="font-size:10px">最終更新: '+escapeHtml(mx.at)+(mx.by?'（'+escapeHtml(mx.by)+'）':'')+'</span>':'')+'</div>'
+    +'<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:'+(editing?'880':'720')+'px;font-size:11px"><thead><tr><th style="text-align:left">業務</th><th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>G5</th><th>G6<br><span style="font-size:9px">GM</span></th><th>経理</th><th style="text-align:left">備考</th>'+(editing?'<th></th>':'')+'</tr></thead><tbody>';
+  var selCell=function(ri, ci, cur){
+    return '<select onchange="respSetCell('+ri+','+ci+',this.value)" style="width:100%;min-width:62px;padding:3px 2px;font-size:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)">'
+      +RESP_LEVEL_OPTS.map(function(o){ return '<option value="'+o+'"'+(o===cur?' selected':'')+'>'+(o||'—')+'</option>'; }).join('')+'</select>';
+  };
+  rows.forEach(function(r, ri){
     if(r.cat){
-      var p=r.cat.split('|');
-      h+='<tr><td colspan="9" style="text-align:left;background:var(--surface2);font-weight:800;font-size:11px;padding:6px 8px;color:var(--accent)"><i class="ti '+p[0]+'"></i> '+p[1]+'</td></tr>';
+      var p=String(r.cat).split('|');
+      h+='<tr><td colspan="'+(editing?'10':'9')+'" style="text-align:left;background:var(--surface2);font-weight:800;font-size:11px;padding:6px 8px;color:var(--accent)"><i class="ti '+p[0]+'"></i> '+p[1]
+        +(editing?' <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:9px;margin-left:8px" onclick="respAddRow('+ri+')"><i class="ti ti-plus"></i> 行追加</button>':'')+'</td></tr>';
       return;
     }
-    h+='<tr><td style="text-align:left;font-weight:600">'+r[0]+'</td>'
-      +[r[1]||'',r[2]||'',r[3]||'',r[4]||'',r[5]||'',r[6]||'',r[7]||''].map(function(c){var col=c.indexOf('●')>=0?'var(--red)':c.indexOf('◎')>=0?'var(--accent)':'var(--muted)';return '<td style="text-align:center;color:'+col+';font-weight:700">'+c+'</td>';}).join('')
-      +'<td style="text-align:left;font-size:10px;color:var(--muted)">'+r[8]+'</td></tr>';
+    if(!Array.isArray(r)) return;
+    h+='<tr><td style="text-align:left;font-weight:600">'
+      +(editing?'<input value="'+escapeHtml(r[0]||'')+'" onchange="respSetName('+ri+',this.value)" style="width:100%;min-width:120px;padding:3px 6px;font-size:11px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)">':escapeHtml(r[0]||''))+'</td>';
+    for(var ci=1; ci<=7; ci++){
+      var c=String(r[ci]||'');
+      if(editing){ h+='<td style="text-align:center;padding:3px 2px">'+selCell(ri, ci, c)+'</td>'; }
+      else {
+        var col=c.indexOf('●')>=0?'var(--red)':c.indexOf('◎')>=0?'var(--accent)':'var(--muted)';
+        h+='<td style="text-align:center;color:'+col+';font-weight:700">'+respCellHtml(c)+'</td>';
+      }
+    }
+    h+='<td style="text-align:left;font-size:10px;color:var(--muted)">'
+      +(editing?'<input value="'+escapeHtml(r[8]||'')+'" onchange="respSetNote('+ri+',this.value)" style="width:100%;min-width:180px;padding:3px 6px;font-size:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)">':escapeHtml(r[8]||''))+'</td>';
+    if(editing) h+='<td style="text-align:center"><button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="respDelRow('+ri+')">×</button></td>';
+    h+='</tr>';
   });
   h+='</tbody></table></div>';
   h+=_bgSec('ti-arrow-down','指示系統（誰が誰に指示するか）', _bgLi([
