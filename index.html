@@ -3820,7 +3820,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -13970,6 +13970,7 @@ var SHIFT_LAYOUTS = {
         {label:'Host', pos:'Host'}, {label:'Cold', pos:'Cold'}, {label:'Tempura', pos:'Tempura'} ] },
       { key:'LPrep', label:'ランチ Prep（仕込み）', hours:3, optional:true, slots:[ {label:'Prep', pos:'Prep'} ] },
       { key:'LWork', label:'ランチ 作業（Tip対象外・事務）', hours:4, optional:true, noTip:true, slots:[ {label:'作業', pos:'作業'} ] },
+      { key:'DSetting', label:'ディナー セッティングバッチ', hours:2, optional:true, slots:[ {label:'Setting', pos:'Server'} ] },
       { key:'Dinner', label:'ディナー営業', hours:5,
         headcount:{ fillPos:'Server', fillLabel:'Server', min:5, max:10, default:6 },
         slots:[
@@ -14635,6 +14636,7 @@ function renderShiftBuild(storeId, week) {
     ${usesShiftLayout(storeId) ? (
       SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.optional).map(sec=>`<button class="btn ${shiftSectionEnabled(storeId,sec.key)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftSection('${storeId}','${sec.key}')"><i class="ti ti-layout-list"></i> ${sec.label}${shiftSectionEnabled(storeId,sec.key)?' ON':''}</button>`).join('')
     ) : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
+    <button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor('${storeId}')"><i class="ti ti-clock"></i> シフト時間設定</button>
     <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像で保存/共有</button>
   </div>`;
   // ===== 曜日別 営業本数パネル（headcount店舗のみ） =====
@@ -16096,7 +16098,52 @@ function shiftCellLabel(name, pos, storeId){
   var first=name.split(' ')[0].slice(0,5);
   var lv=(typeof positionLevelStore==='function')?positionLevelStore(name, pos, storeId):0;
   var lvTag = lv>0 ? '<span style="font-size:8px;color:var(--accent);font-weight:700"> L'+lv+'</span>' : '';
-  return first+lvTag;
+  var tm=shiftPosTimeLabel(storeId, pos);
+  var tmTag = tm ? '<div style="font-size:8px;color:var(--muted);font-weight:400;line-height:1.1">'+tm+'</div>' : '';
+  return first+lvTag+tmTag;
+}
+/* ===== ポジション別シフト時間（店舗ごと）=====
+   shift_postime[storeId][pos] = {start:'16:00', end:'22:00'} */
+function getShiftPosTimes(storeId){ try{ var c=ls('shift_postime',{})||{}; return c[storeId]||{}; }catch(e){ return {}; } }
+function setShiftPosTime(storeId, pos, start, end){
+  var c=ls('shift_postime',{})||{}; if(!c[storeId])c[storeId]={};
+  if(!start&&!end){ delete c[storeId][pos]; } else { c[storeId][pos]={start:start||'', end:end||''}; }
+  lsSet('shift_postime', c);
+}
+function shiftPosTimeLabel(storeId, pos){
+  var t=getShiftPosTimes(storeId)[pos]; if(!t) return '';
+  if(t.start&&t.end) return t.start+'–'+t.end;
+  return t.start||t.end||'';
+}
+/* この店舗のシフトに登場する全ポジション（時間設定の対象一覧） */
+function shiftAllPositions(storeId){
+  var set={}, out=[];
+  var lay=SHIFT_LAYOUTS[storeId];
+  if(lay){ lay.sections.forEach(function(sec){ (sec.slots||[]).forEach(function(sl){ if(!set[sl.pos]){set[sl.pos]=1;out.push(sl.pos);} }); if(sec.headcount&&!set[sec.headcount.fillPos]){set[sec.headcount.fillPos]=1;out.push(sec.headcount.fillPos);} }); }
+  else { assignablePositions(storeId).forEach(function(p){ if(!set[p]){set[p]=1;out.push(p);} }); }
+  return out;
+}
+function openShiftTimeEditor(storeId){
+  var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
+  var poss=shiftAllPositions(storeId);
+  var times=getShiftPosTimes(storeId);
+  var rows=poss.map(function(p){
+    var t=times[p]||{};
+    return '<tr><td style="text-align:left;font-weight:600;font-size:12px;white-space:nowrap">'+escapeHtml(p)+'</td>'
+      +'<td style="padding:2px"><input class="form-input st-start" data-pos="'+escapeHtml(p)+'" type="time" value="'+(t.start||'')+'" style="padding:5px;font-size:12px"></td>'
+      +'<td style="padding:2px"><input class="form-input st-end" data-pos="'+escapeHtml(p)+'" type="time" value="'+(t.end||'')+'" style="padding:5px;font-size:12px"></td></tr>';
+  }).join('');
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — シフト時間設定（ポジション別） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">各ポジションの標準シフト時間を設定します。設定するとシフト表の各セルに時間が表示されます（空欄＝非表示）。</div>'
+    +'<div style="max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"><table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">ポジション</th><th>開始</th><th>終了</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveShiftTimes(\''+storeId+'\')">保存</button></div>');
+}
+function saveShiftTimes(storeId){
+  var starts={}, ends={};
+  document.querySelectorAll('.st-start').forEach(function(i){ starts[i.getAttribute('data-pos')]=i.value; });
+  document.querySelectorAll('.st-end').forEach(function(i){ ends[i.getAttribute('data-pos')]=i.value; });
+  Object.keys(starts).forEach(function(p){ setShiftPosTime(storeId, p, starts[p], ends[p]); });
+  closeModalDirect(); showToast('シフト時間を保存しました','success'); renderPage('shift_admin');
 }
 
 /* ============================================================
