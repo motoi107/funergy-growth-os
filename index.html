@@ -3820,7 +3820,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_varcount'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -13959,8 +13959,43 @@ var SHIFT_LAYOUTS = {
       { key:'Prep', label:'Prep（仕込み）', hours:4, optional:true, slots:[
         {label:'Pork', pos:'Kitchen'}, {label:'Chicken', pos:'Kitchen'}, {label:'Kitchen', pos:'Kitchen'} ] }
     ]
+  },
+  'F02': {  // Tenkichi: L（Host/Server/Cold/Tempura ＋ Prep任意 ＋ 作業任意）／D（固定5枠＋Server可変1〜3）
+    sections: [
+      { key:'Lunch', label:'ランチ営業', hours:4, slots:[
+        {label:'Host', pos:'Host'}, {label:'Server', pos:'Server'}, {label:'Cold', pos:'Cold'}, {label:'Tempura', pos:'Tempura'} ] },
+      { key:'LPrep', label:'ランチ Prep（仕込み）', hours:3, optional:true, slots:[ {label:'Prep', pos:'Prep'} ] },
+      { key:'LWork', label:'ランチ 作業（Tip対象外・事務）', hours:4, optional:true, noTip:true, slots:[ {label:'作業', pos:'作業'} ] },
+      { key:'Dinner', label:'ディナー営業', hours:5,
+        variable:{ pos:'Server', label:'Server', min:1, max:3, default:1 },  // Server枠を1〜3で切替
+        slots:[
+        {label:'Host', pos:'Host'}, {label:'Cold', pos:'Cold'}, {label:'Sushi', pos:'Sushi'},
+        {label:'Tempura', pos:'Tempura'}, {label:'Drink', pos:'Drink'} ] }
+    ]
   }
 };
+/* 可変枠（Server数など）の現在値 */
+function shiftVarCount(storeId, secKey){
+  var lay=SHIFT_LAYOUTS[storeId]; if(!lay) return 0;
+  var sec=(lay.sections||[]).find(function(x){return x.key===secKey;});
+  if(!sec||!sec.variable) return 0;
+  try{ var c=ls('shift_varcount',{})||{}; var v=(c[storeId]&&c[storeId][secKey]); return (v!=null)?v:(sec.variable.default||sec.variable.min||1); }catch(e){ return sec.variable.default||1; }
+}
+function setShiftVarCount(storeId, secKey, n){
+  var lay=SHIFT_LAYOUTS[storeId]; var sec=(lay.sections||[]).find(function(x){return x.key===secKey;}); if(!sec||!sec.variable) return;
+  n=Math.max(sec.variable.min, Math.min(sec.variable.max, n));
+  var c=ls('shift_varcount',{})||{}; if(!c[storeId])c[storeId]={}; c[storeId][secKey]=n; lsSet('shift_varcount',c);
+}
+function shiftVarStep(storeId, secKey, d){ setShiftVarCount(storeId, secKey, shiftVarCount(storeId, secKey)+d); renderPage('shift_admin'); }
+/* セクションの実効スロット（固定slots＋可変枠を展開） */
+function sectionEffectiveSlots(storeId, sec){
+  var slots = (sec.slots||[]).slice();
+  if(sec.variable){
+    var n=shiftVarCount(storeId, sec.key);
+    for(var i=1;i<=n;i++) slots.push({label:sec.variable.label+' '+i, pos:sec.variable.pos});
+  }
+  return slots;
+}
 /* この店舗がセクション別レイアウトを使うか */
 function usesShiftLayout(storeId){ return !!SHIFT_LAYOUTS[storeId]; }
 /* 有効なセクション（任意セクションはトグルON時のみ） */
@@ -13977,7 +14012,7 @@ function shiftCellKey(day, secKey, slotLabel){ return day+'_'+secKey+'_'+slotLab
 /* 新旧共通: この店舗の「(secKey, hours, slots[])」配列を返す。旧店舗は Lunch/Dinner×assignablePositions */
 function shiftSlotPlan(storeId){
   var secs = shiftSectionsFor(storeId);
-  if(secs) return secs.map(function(sec){ return {key:sec.key, label:sec.label, hours:sec.hours||SHIFT_HOURS[sec.key]||4, slots:sec.slots}; });
+  if(secs) return secs.map(function(sec){ return {key:sec.key, label:sec.label, hours:sec.hours||SHIFT_HOURS[sec.key]||4, slots:sectionEffectiveSlots(storeId, sec)}; });
   // 従来モデル
   var positions = assignablePositions(storeId);
   return SHIFT_PERIODS.map(function(p){ return {key:p, label:p, hours:SHIFT_HOURS[p]||4, slots:positions.map(function(pos){ return {label:pos, pos:pos}; })}; });
@@ -14540,7 +14575,10 @@ function renderShiftBuild(storeId, week) {
     <button class="btn btn-primary btn-sm" onclick="autoGenShift('${storeId}','${week}')"><i class="ti ti-wand"></i> Auto-Generate</button>
     <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-layout-grid"></i> ${shiftView==='grid'?'List':'Grid'}</button>
     ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center">公開済</span>`}
-    ${usesShiftLayout(storeId) ? (SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.optional).map(sec=>`<button class="btn ${shiftSectionEnabled(storeId,sec.key)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftSection('${storeId}','${sec.key}')"><i class="ti ti-layout-list"></i> ${sec.label}${shiftSectionEnabled(storeId,sec.key)?' ON':''}</button>`).join('')) : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
+    ${usesShiftLayout(storeId) ? (
+      SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.optional).map(sec=>`<button class="btn ${shiftSectionEnabled(storeId,sec.key)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftSection('${storeId}','${sec.key}')"><i class="ti ti-layout-list"></i> ${sec.label}${shiftSectionEnabled(storeId,sec.key)?' ON':''}</button>`).join('')
+      + SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.variable).map(sec=>`<span class="tag tag-gray" style="align-self:center;display:inline-flex;align-items:center;gap:4px;padding:3px 8px"><span style="font-size:11px">${sec.label} ${sec.variable.label}</span><button class="btn btn-secondary btn-sm" style="padding:0 7px" onclick="shiftVarStep('${storeId}','${sec.key}',-1)">−</button><b style="min-width:14px;text-align:center">${shiftVarCount(storeId,sec.key)}</b><button class="btn btn-secondary btn-sm" style="padding:0 7px" onclick="shiftVarStep('${storeId}','${sec.key}',1)">＋</button></span>`).join('')
+    ) : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
     <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像で保存/共有</button>
   </div>`;
 
@@ -14644,7 +14682,7 @@ function openCellAssign(storeId, week, key, day, period, pos) {
   var candidates = staff.filter(e => {
     var av = avail.find(a=>a.name===e.name);
     var available = av && av.slots.some(s=>s.day===day && s.period===period);
-    var posOk = pos==='Server'||pos==='Prep'||pos==='Host'||pos==='Cashier'||pos==='Kitchen' ? true : approvedPositions(e.name).includes(pos) || e.role==='sl' || e.role==='am';
+    var posOk = pos==='Server'||pos==='Prep'||pos==='Host'||pos==='Cashier'||pos==='Kitchen'||pos==='作業' ? true : approvedPositions(e.name).includes(pos) || e.role==='sl' || e.role==='am';
     return available || !av; // availabilityある人優先だが、未提出者も選べる
   });
   var plan = getShiftPlan(storeId, week) || {status:'下書き', cells:{}};
@@ -14892,6 +14930,7 @@ function shiftPriority(emp) {
 /* そのスタッフが Lv1以上で対応できるポジションか（Energy/Leadershipは評価軸なので除外） */
 function canDoPosition(name, pos, storeId) {
   if (pos==='Energy' || pos==='Leadership') return true; // 評価軸（必須枠ではない）
+  if (pos==='作業') return true; // Tip対象外の事務作業枠は誰でも配置可（スキル判定なし）
   // 店舗指定時はその店舗のスキルで判定（複数店舗勤務者を正しく扱う）
   var sk = storeId ? getEmpSkillsStore(name, storeId) : getEmpSkills(name);
   var s = sk[pos];
