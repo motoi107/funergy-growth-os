@@ -3820,7 +3820,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_varcount'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -13951,37 +13951,41 @@ const DOW_SHIFT = ['月','火','水','木','金','土','日'];
    枠は {label:表示名, pos:スキル判定に使う元ポジション} 。同役割を複数出す場合 label に番号を付ける。
    optional:true のセクションはトグルで任意表示（Prep等）。未定義店は従来モデル（assignablePositions×Lunch/Dinner）で動く。 */
 var SHIFT_LAYOUTS = {
-  'F01': {  // ToriTon: ランチなし。ディナー営業＋Prep（任意）
+  'F01': {  // ToriTon: ランチなし。ディナー営業（曜日別本数→Server自動）＋Prep（任意・常時3枠）
     sections: [
-      { key:'Dinner', label:'ディナー営業', hours:5, slots:[
-        {label:'Host', pos:'Host'}, {label:'Server', pos:'Server'}, {label:'Bar', pos:'Bar'},
-        {label:'Drink', pos:'Drink'}, {label:'Yakitori', pos:'Yakitori'}, {label:'Kitchen', pos:'Kitchen'} ] },
+      { key:'Dinner', label:'ディナー営業', hours:5,
+        headcount:{ fillPos:'Server', fillLabel:'Server', min:5, max:12, default:6 },  // 合計人数を曜日別設定。固定枠を差引いた残りをServerで自動
+        slots:[
+        {label:'Host', pos:'Host'}, {label:'Bar', pos:'Bar'}, {label:'Drink', pos:'Drink'},
+        {label:'Yakitori', pos:'Yakitori'}, {label:'Kitchen', pos:'Kitchen'} ] },
       { key:'Prep', label:'Prep（仕込み）', hours:4, optional:true, slots:[
         {label:'Pork', pos:'Kitchen'}, {label:'Chicken', pos:'Kitchen'}, {label:'Kitchen', pos:'Kitchen'} ] }
     ]
   },
-  'F02': {  // Tenkichi: L（Host/Server/Cold/Tempura ＋ Prep任意 ＋ 作業任意）／D（固定5枠＋Server可変1〜3）
+  'F02': {  // Tenkichi: L（曜日別本数→Server自動 ＋ Prep任意 ＋ 作業任意）／D（曜日別本数→Server自動）
     sections: [
-      { key:'Lunch', label:'ランチ営業', hours:4, slots:[
-        {label:'Host', pos:'Host'}, {label:'Server', pos:'Server'}, {label:'Cold', pos:'Cold'}, {label:'Tempura', pos:'Tempura'} ] },
+      { key:'Lunch', label:'ランチ営業', hours:4,
+        headcount:{ fillPos:'Server', fillLabel:'Server', min:4, max:8, default:4 },
+        slots:[
+        {label:'Host', pos:'Host'}, {label:'Cold', pos:'Cold'}, {label:'Tempura', pos:'Tempura'} ] },
       { key:'LPrep', label:'ランチ Prep（仕込み）', hours:3, optional:true, slots:[ {label:'Prep', pos:'Prep'} ] },
       { key:'LWork', label:'ランチ 作業（Tip対象外・事務）', hours:4, optional:true, noTip:true, slots:[ {label:'作業', pos:'作業'} ] },
       { key:'Dinner', label:'ディナー営業', hours:5,
-        variable:{ pos:'Server', label:'Server', min:1, max:3, default:1 },  // Server枠を1〜3で切替
+        headcount:{ fillPos:'Server', fillLabel:'Server', min:5, max:10, default:6 },
         slots:[
         {label:'Host', pos:'Host'}, {label:'Cold', pos:'Cold'}, {label:'Sushi', pos:'Sushi'},
         {label:'Tempura', pos:'Tempura'}, {label:'Drink', pos:'Drink'} ] }
     ]
   },
-  'F05': {  // Marujuu: L/DともServer可変枠。固定枠は Host/Front/Back/Food Runner/Supporter
+  'F05': {  // Marujuu: L/Dとも曜日別本数→Server自動。固定枠は Host/Front/Back/Food Runner/Supporter
     sections: [
       { key:'Lunch', label:'ランチ営業', hours:4,
-        variable:{ pos:'Server', label:'Server', min:0, max:4, default:0 },  // 5人回し時は0
+        headcount:{ fillPos:'Server', fillLabel:'Server', min:5, max:9, default:5 },
         slots:[
         {label:'Host', pos:'Host'}, {label:'Front', pos:'Front'}, {label:'Back', pos:'Back'},
         {label:'Food Runner', pos:'Food Runner'}, {label:'Supporter', pos:'Supporter'} ] },
       { key:'Dinner', label:'ディナー営業', hours:5,
-        variable:{ pos:'Server', label:'Server', min:0, max:4, default:1 },
+        headcount:{ fillPos:'Server', fillLabel:'Server', min:5, max:9, default:6 },
         slots:[
         {label:'Host', pos:'Host'}, {label:'Front', pos:'Front'}, {label:'Back', pos:'Back'},
         {label:'Food Runner', pos:'Food Runner'}, {label:'Supporter', pos:'Supporter'} ] }
@@ -13989,26 +13993,44 @@ var SHIFT_LAYOUTS = {
   }
 };
 /* 可変枠（Server数など）の現在値 */
-function shiftVarCount(storeId, secKey){
+/* ===== 曜日別 営業本数（headcount）=====
+   店舗×セクション×曜日で「その営業の合計人数」を持つ。固定枠数を差し引いた残りが fillPos(Server)枠。 */
+function shiftHeadKey(storeId, secKey){ return storeId+'::'+secKey; }
+function shiftHeadcount(storeId, secKey, day){
   var lay=SHIFT_LAYOUTS[storeId]; if(!lay) return 0;
   var sec=(lay.sections||[]).find(function(x){return x.key===secKey;});
-  if(!sec||!sec.variable) return 0;
-  try{ var c=ls('shift_varcount',{})||{}; var v=(c[storeId]&&c[storeId][secKey]); return (v!=null)?v:(sec.variable.default||sec.variable.min||1); }catch(e){ return sec.variable.default||1; }
+  if(!sec||!sec.headcount) return 0;
+  try{ var c=ls('shift_headcount',{})||{}; var m=c[shiftHeadKey(storeId,secKey)]; var v=(m&&m[day]); return (v!=null)?v:(sec.headcount.default||sec.headcount.min||0); }catch(e){ return sec.headcount.default||0; }
 }
-function setShiftVarCount(storeId, secKey, n){
-  var lay=SHIFT_LAYOUTS[storeId]; var sec=(lay.sections||[]).find(function(x){return x.key===secKey;}); if(!sec||!sec.variable) return;
-  n=Math.max(sec.variable.min, Math.min(sec.variable.max, n));
-  var c=ls('shift_varcount',{})||{}; if(!c[storeId])c[storeId]={}; c[storeId][secKey]=n; lsSet('shift_varcount',c);
+function setShiftHeadcount(storeId, secKey, day, n){
+  var lay=SHIFT_LAYOUTS[storeId]; var sec=(lay.sections||[]).find(function(x){return x.key===secKey;}); if(!sec||!sec.headcount) return;
+  n=Math.max(sec.headcount.min, Math.min(sec.headcount.max, n));
+  var c=ls('shift_headcount',{})||{}; var k=shiftHeadKey(storeId,secKey); if(!c[k])c[k]={}; c[k][day]=n; lsSet('shift_headcount',c);
 }
-function shiftVarStep(storeId, secKey, d){ setShiftVarCount(storeId, secKey, shiftVarCount(storeId, secKey)+d); renderPage('shift_admin'); }
-/* セクションの実効スロット（固定slots＋可変枠を展開） */
+function shiftHeadStep(storeId, secKey, day, d){ setShiftHeadcount(storeId, secKey, day, shiftHeadcount(storeId, secKey, day)+d); renderPage('shift_admin'); }
+/* その曜日のfill(Server)枠数 = 本数 − 固定枠数（0未満は0） */
+function shiftFillCount(storeId, sec, day){
+  if(!sec.headcount) return 0;
+  var fixed=(sec.slots||[]).length;
+  return Math.max(0, shiftHeadcount(storeId, sec.key, day) - fixed);
+}
+/* 週内でそのセクションのfill枠が最大何本になるか（グリッドの行数決定用） */
+function shiftMaxFill(storeId, sec){
+  var mx=0; DOW_SHIFT.forEach(function(day){ mx=Math.max(mx, shiftFillCount(storeId, sec, day)); }); return mx;
+}
+/* セクションの実効スロット（固定slots＋fill枠を週最大本数ぶん展開）。行レイアウト用 */
 function sectionEffectiveSlots(storeId, sec){
   var slots = (sec.slots||[]).slice();
-  if(sec.variable){
-    var n=shiftVarCount(storeId, sec.key);
-    for(var i=1;i<=n;i++) slots.push({label:sec.variable.label+' '+i, pos:sec.variable.pos});
+  if(sec.headcount){
+    var n=shiftMaxFill(storeId, sec);
+    for(var i=1;i<=n;i++) slots.push({label:sec.headcount.fillLabel+' '+i, pos:sec.headcount.fillPos, fill:true, fillIdx:i});
   }
   return slots;
+}
+/* この日、このスロットが有効か（fill枠はその日の本数を超えたら無効=空欄グレー） */
+function slotActiveForDay(storeId, sec, slot, day){
+  if(!slot.fill) return true;
+  return slot.fillIdx <= shiftFillCount(storeId, sec, day);
 }
 /* この店舗がセクション別レイアウトを使うか */
 function usesShiftLayout(storeId){ return !!SHIFT_LAYOUTS[storeId]; }
@@ -14026,7 +14048,7 @@ function shiftCellKey(day, secKey, slotLabel){ return day+'_'+secKey+'_'+slotLab
 /* 新旧共通: この店舗の「(secKey, hours, slots[])」配列を返す。旧店舗は Lunch/Dinner×assignablePositions */
 function shiftSlotPlan(storeId){
   var secs = shiftSectionsFor(storeId);
-  if(secs) return secs.map(function(sec){ return {key:sec.key, label:sec.label, hours:sec.hours||SHIFT_HOURS[sec.key]||4, slots:sectionEffectiveSlots(storeId, sec)}; });
+  if(secs) return secs.map(function(sec){ return {key:sec.key, label:sec.label, hours:sec.hours||SHIFT_HOURS[sec.key]||4, sec:sec, slots:sectionEffectiveSlots(storeId, sec)}; });
   // 従来モデル
   var positions = assignablePositions(storeId);
   return SHIFT_PERIODS.map(function(p){ return {key:p, label:p, hours:SHIFT_HOURS[p]||4, slots:positions.map(function(pos){ return {label:pos, pos:pos}; })}; });
@@ -14591,10 +14613,31 @@ function renderShiftBuild(storeId, week) {
     ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center">公開済</span>`}
     ${usesShiftLayout(storeId) ? (
       SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.optional).map(sec=>`<button class="btn ${shiftSectionEnabled(storeId,sec.key)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftSection('${storeId}','${sec.key}')"><i class="ti ti-layout-list"></i> ${sec.label}${shiftSectionEnabled(storeId,sec.key)?' ON':''}</button>`).join('')
-      + SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.variable).map(sec=>`<span class="tag tag-gray" style="align-self:center;display:inline-flex;align-items:center;gap:4px;padding:3px 8px"><span style="font-size:11px">${sec.label} ${sec.variable.label}</span><button class="btn btn-secondary btn-sm" style="padding:0 7px" onclick="shiftVarStep('${storeId}','${sec.key}',-1)">−</button><b style="min-width:14px;text-align:center">${shiftVarCount(storeId,sec.key)}</b><button class="btn btn-secondary btn-sm" style="padding:0 7px" onclick="shiftVarStep('${storeId}','${sec.key}',1)">＋</button></span>`).join('')
     ) : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
     <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像で保存/共有</button>
   </div>`;
+  // ===== 曜日別 営業本数パネル（headcount店舗のみ） =====
+  if (usesShiftLayout(storeId)) {
+    var _hsecs = shiftSectionsFor(storeId).filter(function(sc){ return sc.headcount; });
+    if (_hsecs.length) {
+      html += `<div class="card" style="overflow-x:auto"><div style="font-size:12px;font-weight:700;margin-bottom:6px"><i class="ti ti-users" style="color:var(--accent)"></i> 曜日別 営業本数（合計人数）— 固定枠を差し引いた残りが自動でServer枠になります</div>
+        <table class="inv-table" style="min-width:560px"><thead><tr><th style="font-size:10px">営業</th>${DOW_SHIFT.map(d=>`<th style="text-align:center;font-size:10px">${d}</th>`).join('')}</tr></thead><tbody>`;
+      _hsecs.forEach(function(sc){
+        var fixed=(sc.slots||[]).length;
+        html += `<tr><td style="font-size:10px;white-space:nowrap">${sc.label}<div style="font-size:9px;color:var(--muted)">固定${fixed}＋Server</div></td>`;
+        DOW_SHIFT.forEach(function(day){
+          var hc=shiftHeadcount(storeId, sc.key, day);
+          var fill=Math.max(0, hc-fixed);
+          html += `<td style="text-align:center;padding:2px"><div style="display:inline-flex;align-items:center;gap:3px">
+            <button class="btn btn-secondary btn-sm" style="padding:0 6px" onclick="shiftHeadStep('${storeId}','${sc.key}','${day}',-1)">−</button>
+            <span style="min-width:34px;text-align:center;font-weight:700">${hc}<div style="font-size:8px;color:var(--muted);font-weight:400">S${fill}</div></span>
+            <button class="btn btn-secondary btn-sm" style="padding:0 6px" onclick="shiftHeadStep('${storeId}','${sc.key}','${day}',1)">＋</button></div></td>`;
+        });
+        html += '</tr>';
+      });
+      html += `</tbody></table><div style="font-size:10px;color:var(--muted);margin-top:4px">数字＝その営業の合計人数、S＝そのうちServer枠数。Auto-Generateで本数ぶんに提出者を自動振り分けします。</div></div>`;
+    }
+  }
 
   if (warnings.length) {
     html += `<div class="alert alert-warning"><i class="ti ti-alert-triangle"></i><div><p style="font-size:12px;font-weight:600">警告 ${warnings.length}件</p>
@@ -14661,10 +14704,12 @@ function renderShiftBuild(storeId, week) {
     var splan = shiftSlotPlan(storeId);
     html += `<div class="card" style="overflow-x:auto"><table class="inv-table" style="min-width:560px"><thead><tr><th>枠</th>${DOW_SHIFT.map(d=>`<th style="text-align:center">${d}</th>`).join('')}</tr></thead><tbody>`;
     splan.forEach(sec => {
-      html += `<tr><td colspan="8" style="background:var(--surface2);font-weight:800;font-size:11px;color:var(--accent);padding:5px 8px"><i class="ti ti-layout-list"></i> ${sec.label}</td></tr>`;
+      html += `<tr><td colspan="8" style="background:var(--surface2);font-weight:800;font-size:11px;color:var(--accent);padding:5px 8px"><i class="ti ti-layout-list"></i> ${sec.label}${sec.sec&&sec.sec.headcount?' <span style="font-size:9px;color:var(--muted);font-weight:400">（本数は下の設定パネル）</span>':''}</td></tr>`;
       sec.slots.forEach(slot => {
         html += `<tr><td style="font-size:11px;white-space:nowrap">${slot.label}</td>`;
         DOW_SHIFT.forEach(day => {
+          var active = sec.sec ? slotActiveForDay(storeId, sec.sec, slot, day) : true;
+          if(!active){ html += `<td style="text-align:center;padding:2px"><div style="font-size:9px;padding:3px;min-height:24px;color:var(--muted);background:var(--surface2);border-radius:6px;opacity:.5">－</div></td>`; return; }
           var key = shiftCellKey(day, sec.key, slot.label);
           var assigned = plan.cells[key] || '';
           html += `<td style="text-align:center;padding:2px"><div class="shift-slot${assigned?' sel':''}" style="font-size:10px;padding:3px;min-height:24px" onclick="openCellAssign('${storeId}','${week}','${key}','${day}','${sec.key}','${slot.pos.replace(/'/g,"")}')">${assigned?assigned.split(' ')[0].slice(0,5):'+'}</div></td>`;
@@ -15283,6 +15328,7 @@ function autoGenShift(storeId, week) {
       function availOk(e){ var av=avail.find(a=>a.name===e.name); if(!av) return false; return av.slots.some(s=>s.day===day&&(s.period===period|| (period!=='Lunch'&&period!=='Dinner'))); }
 
       sec.slots.forEach(slot => {
+        if (sec.sec && !slotActiveForDay(storeId, sec.sec, slot, day)) return; // その日の本数を超えるServer枠はスキップ
         var pos = slot.pos;
         // 既に同時間帯に入っている人は除外（1人1枠/時間帯）
         var used = assignedSlot[slotKey];
