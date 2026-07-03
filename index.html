@@ -2898,7 +2898,28 @@ var TIP_CC_FEE = 0.035;
 function getCashTips(storeId) { return ls('cash_tips_'+storeId, {}); }
 function setCashTips(storeId, data) { lsSet('cash_tips_'+storeId, data); }
 function getCashTip(storeId, date) { return getCashTips(storeId)[date] || {lunch:0, dinner:0, entered:false}; }
+/* L/D どちらか片方だけでも保存できる。両方入力済みで entered=true（未入力タスクも解消） */
+function saveCashTipSides(storeId, date, lunchVal, dinnerVal) {
+  var d = getCashTips(storeId); var prev = d[date] || {};
+  var rec = Object.assign({}, prev);
+  if (prev.entered && rec.lunchEntered===undefined) { rec.lunchEntered=true; rec.dinnerEntered=true; }
+  var changed=false;
+  if (lunchVal!==null && lunchVal!==undefined) { rec.lunch=lunchVal; rec.lunchEntered=true; changed=true; }
+  if (dinnerVal!==null && dinnerVal!==undefined) { rec.dinner=dinnerVal; rec.dinnerEntered=true; changed=true; }
+  if (!changed) return;
+  rec.entered = !!(rec.lunchEntered && rec.dinnerEntered);
+  if (prev.by) { rec.editedBy = myName(); rec.editedAt = nowJP(); }
+  else { rec.by = myName(); rec.at = nowJP(); }
+  d[date] = rec; setCashTips(storeId, d);
+  if (rec.entered) { try{
+    var _t = getTasks(); var _hit=false;
+    _t.forEach(function(t){ if(t.refId==='ctip_'+storeId+'_'+date && t.status!=='完了'){ t.status='完了'; t.progress=100; t.doneAt=nowJP(); _hit=true; } });
+    if(_hit) lsSet('tasks_all', _t);
+  }catch(e){} }
+}
 function saveCashTip(storeId, date, lunch, dinner) {
+  saveCashTipSides(storeId, date, lunch||0, dinner||0);
+  return;
   var d = getCashTips(storeId); var prev = d[date];
   var rec = {lunch:lunch||0, dinner:dinner||0, entered:true};
   if (prev && prev.entered) { rec.by = prev.by||null; rec.at = prev.at||null; rec.editedBy = myName(); rec.editedAt = nowJP(); }
@@ -2916,7 +2937,7 @@ function cashTipMissing(storeId, date) {
   var av = getDailyActuals(storeId)[date] || {};
   var hasCredit = (av.lunchCreditTip!=null) || (av.dinnerCreditTip!=null) || (av.actual>0);
   var cash = getCashTips(storeId)[date];
-  return hasCredit && !(cash && cash.entered);
+  return hasCredit && !(cash && (cash.entered || (cash.lunchEntered && cash.dinnerEntered)));
 }
 function tipForDay(storeId, date) {
   var av = getDailyActuals(storeId)[date] || {};
@@ -2939,9 +2960,84 @@ function isOrderOnlyAccount(name){
   return n.indexOf('orderonly')>=0 || n==='order';
 }
 
+function openTipHoursModal(){
+  var c=ls('tip_hours_config',{})||{};
+  var rows=sortByLoginOrder(activeStores()).map(function(st){
+    var g=c[st.id]||{mode:'all'};
+    var hrs = g.mode==='hours';
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700"><span class="store-dot" style="background:${st.color||'#888'}"></span>${escapeHtml(st.name)}
+        <select class="form-select" id="th-mode-${st.id}" style="margin-left:auto;width:auto;padding:4px 8px;font-size:11px" onchange="document.getElementById('th-hrs-${st.id}').style.display=this.value==='hours'?'flex':'none'">
+          <option value="all" ${!hrs?'selected':''}>勤怠時間すべて</option>
+          <option value="hours" ${hrs?'selected':''}>営業時間のみ</option>
+        </select></div>
+      <div id="th-hrs-${st.id}" style="display:${hrs?'flex':'none'};gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11px">
+        L <input class="form-input" id="th-l1-${st.id}" style="width:74px;padding:4px 6px" value="${g.l1||(st.lunchHours||'11:00-14:30').split('-')[0]||''}" placeholder="11:00">〜<input class="form-input" id="th-l2-${st.id}" style="width:74px;padding:4px 6px" value="${g.l2||(st.lunchHours||'').split('-')[1]||''}" placeholder="14:30">
+        ／ D <input class="form-input" id="th-d1-${st.id}" style="width:74px;padding:4px 6px" value="${g.d1||(st.dinnerHours||'17:00-22:00').split('-')[0]||''}" placeholder="17:00">〜<input class="form-input" id="th-d2-${st.id}" style="width:74px;padding:4px 6px" value="${g.d2||(st.dinnerHours||'').split('-')[1]||''}" placeholder="22:00">
+      </div></div>`;
+  }).join('');
+  openModal(`<div class="modal-title">Tip対象時間の設定（店舗別） <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:10.5px;color:var(--muted);margin-bottom:8px;line-height:1.7">「勤怠時間すべて」＝打刻時間がそのままTip配分の対象。「営業時間のみ」＝仕込み・片付け等の営業時間外を除外し、L/D窓に重なる時間だけで配分します（店舗マスターの営業時間が初期値）。変更は当日以降のTip計算に反映。</div>
+    <div style="max-height:52vh;overflow-y:auto">${rows}</div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
+    <button class="btn btn-primary" onclick="saveTipHoursCfg()">保存</button></div>`);
+}
+function saveTipHoursCfg(){
+  var c=ls('tip_hours_config',{})||{};
+  var bad=null;
+  activeStores().forEach(function(st){
+    var mode=(document.getElementById('th-mode-'+st.id)||{}).value||'all';
+    if(mode!=='hours'){ c[st.id]={mode:'all'}; return; }
+    var g={mode:'hours',
+      l1:(document.getElementById('th-l1-'+st.id)||{}).value.trim(), l2:(document.getElementById('th-l2-'+st.id)||{}).value.trim(),
+      d1:(document.getElementById('th-d1-'+st.id)||{}).value.trim(), d2:(document.getElementById('th-d2-'+st.id)||{}).value.trim()};
+    if(_thToMin(g.l1)==null||_thToMin(g.l2)==null||_thToMin(g.d1)==null||_thToMin(g.d2)==null){ bad=st.name; return; }
+    c[st.id]=g;
+  });
+  if(bad){ showToast(bad+' の時間形式が正しくありません（HH:MM）','warning'); return; }
+  lsSet('tip_hours_config', c);
+  closeModalDirect(); showToast('Tip対象時間を保存しました','success'); renderPage('tip');
+}
+/* Tip対象時間の店舗別設定: tip_hours_config = {sid:{mode:'all'|'hours', l1,l2,d1,d2}} */
+function getTipHoursCfg(sid){ var c=ls('tip_hours_config',{})||{}; return c[sid]||{mode:'all'}; }
+function setTipHoursCfg(sid, cfg){ var c=ls('tip_hours_config',{})||{}; c[sid]=cfg; lsSet('tip_hours_config', c); }
+function _thToMin(t){ var m=String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m?(+m[1]*60+ +m[2]):null; }
+function _thOverlapH(inDate, outDate, date, t1, t2){
+  var a=_thToMin(t1), b=_thToMin(t2); if(a==null||b==null) return null;
+  var di=new Date(inDate), doo=new Date(outDate); if(isNaN(di)||isNaN(doo)) return null;
+  var base=new Date(date+'T00:00:00');
+  var w1=new Date(base.getTime()+a*60000), w2=new Date(base.getTime()+b*60000);
+  if (b<=a) w2=new Date(w2.getTime()+86400000);
+  var st=Math.max(di.getTime(), w1.getTime()), en=Math.min(doo.getTime(), w2.getTime());
+  return Math.max(0,(en-st)/3600000);
+}
+/* 営業時間モード: 打刻をL/D窓に切り詰めた時間をTip配分用に付与（シフト詳細が無い人は元の値） */
+function applyTipHoursClip(storeId, date, data){
+  try{
+    var cfg=getTipHoursCfg(storeId);
+    if(!cfg || cfg.mode!=='hours' || !data) return data;
+    Object.keys(data).forEach(function(nm){
+      var e=data[nm]||{}; var sh=e.shifts;
+      if(!sh || !sh.length || !sh[0].inDate) return;
+      var L=0, D=0, ok=true;
+      sh.forEach(function(x){
+        if(!x.inDate||!x.outDate){ ok=false; return; }
+        var lv=_thOverlapH(x.inDate,x.outDate,date,cfg.l1,cfg.l2);
+        var dv=_thOverlapH(x.inDate,x.outDate,date,cfg.d1,cfg.d2);
+        if(lv==null||dv==null){ ok=false; return; }
+        L+=lv; D+=dv;
+      });
+      if(ok){ e.lunch=Math.round(L*100)/100; e.dinner=Math.round(D*100)/100; }
+    });
+  }catch(err){}
+  return data;
+}
+function getAttOverride(storeId, date) { return ls('att_override_'+storeId+'_'+date, null); }
 /* 日別チップ用勤怠（Lunch/Dinner別hours）の保存 */
 function getTipLabor(storeId, date) {
-  var d = ls('tip_labor_'+storeId+'_'+date, null);
+  var _ovr = getAttOverride(storeId, date);
+  var _useOvr = !!(_ovr && _ovr.data);
+  var d = _useOvr ? JSON.parse(JSON.stringify(_ovr.data)) : ls('tip_labor_'+storeId+'_'+date, null);
   if (d && typeof d==='object') {
     // Order Only（注文専用アカウント）はレイバー/チップ計算から除外
     var out={}, removed=false;
@@ -2950,7 +3046,9 @@ function getTipLabor(storeId, date) {
       if (isOrderOnlyAccount(k) || (e && isOrderOnlyAccount(e.toastName))) { removed=true; return; }
       out[k] = e;
     });
-    return removed ? out : d;
+    var _res = removed ? out : d;
+    if (!_useOvr) _res = applyTipHoursClip(storeId, date, _res); // 手動修正日はクリップしない（修正値が正）
+    return _res;
   }
   return d;
 }
@@ -3680,7 +3778,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -5307,9 +5405,10 @@ function storeData(id) {
   // 予算は常に「予算設定タブ(budgets_v2)」を正とする。実績は日次実績/Toast同期の累計。
   try {
     var c = cumulativeToToday(id);
-    if (c && (c.budToToday > 0 || c.budMonth > 0)) {
-      result.b = Math.round(c.budToToday > 0 ? c.budToToday : c.budMonth); // 前日までの累計予算
-      result.a = Math.round(c.actToToday);                                 // 前日までの累計実績（無ければ0）
+    if (c) {
+      // 実績は予算の有無に関係なく反映（予算未提出の店で売上が消えるバグを修正）
+      result.a = Math.round(c.actToToday);
+      if (c.budToToday > 0 || c.budMonth > 0) result.b = Math.round(c.budToToday > 0 ? c.budToToday : c.budMonth);
       if (c.daysWithActual > 0) result.cumulative = true;
     }
     if (c) {
@@ -6036,10 +6135,10 @@ function openCashTipModal(storeId, date) {
   openModal(`<div class="modal-title">キャッシュチップ${isEdit?'修正':isPast?'入力（過去分）':'入力'} — ${date} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     ${isPast?`<div class="alert alert-warning" style="padding:7px 10px;font-size:11px"><i class="ti ti-history"></i> 過去日の${isEdit?'修正':'入力'}です。${isEdit&&cash.by?`元の記録: ${escapeHtml(cash.by)} ${escapeHtml(cash.at||'')}。`:''}修正者・日時が記録に残ります。</div>`:''}
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Lunch キャッシュチップ ($) <span style="color:var(--red)">*</span></label><input class="form-input" id="ct-lunch" type="number" inputmode="decimal" step="0.01" value="${isEdit?cash.lunch:''}" placeholder="0の場合も「0」と入力"></div>
-      <div class="form-group"><label class="form-label">Dinner キャッシュチップ ($) <span style="color:var(--red)">*</span></label><input class="form-input" id="ct-dinner" type="number" inputmode="decimal" step="0.01" value="${isEdit?cash.dinner:''}" placeholder="0の場合も「0」と入力"></div>
+      <div class="form-group"><label class="form-label">Lunch キャッシュチップ ($) ${(cash.lunchEntered||cash.entered)?'<span class="tag tag-green" style="font-size:8px">入力済</span>':''}</label><input class="form-input" id="ct-lunch" type="number" inputmode="decimal" step="0.01" value="${(cash.lunchEntered||cash.entered)?cash.lunch:''}" placeholder="0の場合も「0」と入力"></div>
+      <div class="form-group"><label class="form-label">Dinner キャッシュチップ ($) ${(cash.dinnerEntered||cash.entered)?'<span class="tag tag-green" style="font-size:8px">入力済</span>':''}</label><input class="form-input" id="ct-dinner" type="number" inputmode="decimal" step="0.01" value="${(cash.dinnerEntered||cash.entered)?cash.dinner:''}" placeholder="0の場合も「0」と入力"></div>
     </div>
-    <div style="font-size:11px;color:var(--muted)">現金チップが無い日も「0」を入力して確定してください（空欄では保存できません）。クレジットチップはToastから自動取得されます。</div>
+    <div style="font-size:11px;color:var(--muted)">Lunch終了時にLunch分だけ先に保存できます（片方ずつOK）。現金チップが無い場合も「0」を入力。両方入力で確定です。</div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveCashTipModal('${storeId}','${date}')">保存</button></div>`);
 }
@@ -6047,12 +6146,13 @@ function saveCashTipModal(storeId, date) {
   if (date > todayISO()) { showToast('未来日のキャッシュチップは入力できません', 'warning'); return; }
   var lv = document.getElementById('ct-lunch').value;
   var dv = document.getElementById('ct-dinner').value;
-  if (lv==='' || dv==='') { showToast('LunchとDinnerの両方に金額を入力してください（0の場合も「0」）', 'warning'); return; }
-  var l = parseFloat(lv), d = parseFloat(dv);
-  if (isNaN(l) || isNaN(d) || l<0 || d<0) { showToast('金額が正しくありません', 'warning'); return; }
-  saveCashTip(storeId, date, l, d);
+  if (lv==='' && dv==='') { showToast('LunchまたはDinnerに金額を入力してください（0の場合も「0」）', 'warning'); return; }
+  var l = lv===''?null:parseFloat(lv), d = dv===''?null:parseFloat(dv);
+  if ((l!=null&&(isNaN(l)||l<0)) || (d!=null&&(isNaN(d)||d<0))) { showToast('金額が正しくありません', 'warning'); return; }
+  saveCashTipSides(storeId, date, l, d);
+  var rec = getCashTips(storeId)[date]||{};
   closeModalDirect();
-  showToast('キャッシュチップを保存しました', 'success');
+  showToast(rec.entered?'キャッシュチップを保存しました（L/D確定）':'保存しました（もう片方は後から入力できます）', 'success');
   renderPage('store_cmd');
 }
 
@@ -7972,11 +8072,6 @@ function renderBudgetSummary() {
   // ===== 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）=====
   html += keyKpiCard(budgetScopeStores(), monthDays(), '');
 
-  // ===== 客単価 3パターン（単店選択時・選択月） =====
-  (function(){
-    var _sc = budgetScopeStores();
-    if (_sc.length===1) html += ppaTripleCard(_sc[0].id, _selOff, _monLabel||'当月');
-  })();
 
   // ===== スコア判定＋アクション =====
   var costRForScore = agg.actToToday ? Math.round(agg.costToToday/agg.actToToday*1000)/10 : 0;
@@ -8197,11 +8292,25 @@ function hasDayBudget(b){ return !!(b && b.days && Object.keys(b.days).some(func
 function dayBudgetFor(b, dateISO, dow){
   if (b && b.days && b.days[dateISO]!=null && b.days[dateISO]!=='') { var _v=parseFloat(b.days[dateISO]); if(!isNaN(_v)) return _v; }
   if (!dow){ try{ dow = ['日','月','火','水','木','金','土'][new Date(dateISO+'T00:00:00').getDay()]; }catch(e){} }
-  return dayBudgetFromBases(b, dow);
+  return dayBudgetFromBases(b, dow) * (b&&b.storeId?bizDayFactor(b.storeId, dow, b):1);
+}
+/* 店舗マスターの定休設定係数: 終日休=0 / L休・D休=その部を除いた比率 */
+function bizDayFactor(storeId, dow, b){
+  try{
+    var st=STORES.find(function(x){return x.id===storeId;});
+    var v=st&&st.bizDays?st.bizDays[dow]:null;
+    if(!v) return 1;
+    if(v==='closed') return 0;
+    var segs=(typeof getSegments==='function'&&b)?getSegments(b):null;
+    var l=segs?(segSales(segs.lunch,'lunch')||0):0, dn=segs?(segSales(segs.dinner,'dinner')||0):0, t=segs?(segSales(segs.takeout,'takeout')||0):0;
+    var tot=l+dn+t;
+    if(tot>0){ if(v==='lclose') return (dn+t)/tot; if(v==='dclose') return (l+t)/tot; }
+    return v==='lclose'||v==='dclose' ? 0.5 : 1;
+  }catch(e){ return 1; }
 }
 function dayBudgetAuto(b, dateISO){
   var dow = ['日','月','火','水','木','金','土'][new Date(dateISO+'T00:00:00').getDay()];
-  return dayBudgetFromBases(b, dow);
+  return dayBudgetFromBases(b, dow) * (b&&b.storeId?bizDayFactor(b.storeId, dow, b):1);
 }
 function dayBudgetFromBases(b, dow) {
   if (b && typeof budgetAuthorLabel==='function' && !budgetAuthorLabel(b)) return 0; // 登録者のない予算（デモ/未登録）は0
@@ -8340,6 +8449,7 @@ function renderBudgetDaily() {
     });
     var dayRT = (dayFirst+dayRepeat)>0 ? Math.round(dayRepeat/(dayFirst+dayRepeat)*1000)/10 : null;
     var dayHol = !isAgg ? dayEventFor(d.date) : '';
+    if (!isAgg) { try{ var _bd=(STORES.find(function(x){return x.id===scopeStores[0].id;})||{}).bizDays; var _bv=_bd?_bd[d.dow]:null; if(_bv){ dayHol=(dayHol?dayHol+' ':'')+(_bv==='closed'?'定休':_bv==='lclose'?'L休':'D休'); } }catch(e){} }
     var dayMemo = (!isAgg && event && !eventAuto) ? event : '';
     // チップ率（単店のみ）: チップ総額 ÷ 純売上
     var tipRate = null, tipTotal = 0;
@@ -11347,7 +11457,10 @@ function renderTipMgmt() {
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var info = tipPeriodInfo();
 
-  var html = pageStoreTabs(storeId, false) + `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div></div>`;
+  var html = pageStoreTabs(storeId, false) + `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
+    ${['gm','ceo','office','am'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openTipHoursModal()"><i class="ti ti-clock-cog"></i> 対象時間設定</button>`:''}
+  </div>`;
+  (function(){ var _c=getTipHoursCfg(storeId); if(_c.mode==='hours'){ html += `<div style="font-size:10.5px;color:var(--accent2);margin:-4px 2px 8px"><i class="ti ti-clock-check"></i> この店舗のTip対象時間: L ${_c.l1}〜${_c.l2} ／ D ${_c.d1}〜${_c.d2}（営業時間外の勤怠はTip配分から除外）</div>`; } })();
 
   // 期間セレクタ
   if (tipPeriodView!=='rate') html += `<div class="card" style="padding:10px;margin-bottom:10px">
@@ -15931,7 +16044,7 @@ function setBenefitManual(year, name, key, days, memo){
 }
 function openBenefitManualModal(){
   var year=_hrYear;
-  var emps=getEmployees().filter(function(e){return e.status==='在籍'||!e.status;}).slice().sort(function(a,b){return String(a.name).localeCompare(String(b.name));});
+  var emps=getEmployees().filter(function(e){return (e.status==='在籍'||!e.status) && gradeNum(empGrade(e))>=2;}).slice().sort(function(a,b){return String(a.name).localeCompare(String(b.name));});
   var m=getBenefitManual()[year]||{};
   var rows=Object.keys(m).map(function(nm){
     return Object.keys(m[nm]).map(function(k){
@@ -33356,7 +33469,18 @@ function openStoreModal(storeId) {
       <div class="form-group"><label class="form-label">ランチ営業時間</label><input class="form-input" id="st-lunch" value="${s.lunchHours||''}" placeholder="11:00-14:30"></div>
       <div class="form-group"><label class="form-label">ディナー営業時間</label><input class="form-input" id="st-dinner" value="${s.dinnerHours||''}" placeholder="17:00-22:00"></div>
     </div>
-    <div class="form-group"><label class="form-label">営業日</label><input class="form-input" id="st-days" value="${s.days||''}" placeholder="毎日 / 火-日"></div>
+    <div class="form-group"><label class="form-label">定休日設定（曜日別）</label>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">
+      ${['月','火','水','木','金','土','日'].map(function(dw){
+        var v=(s.bizDays||{})[dw]||'open';
+        return '<div style="text-align:center"><div style="font-size:10px;color:var(--muted)">'+dw+'</div><select class="form-select" id="st-bd-'+dw+'" style="padding:4px 2px;font-size:10px">'
+          +[['open','営業'],['closed','終日休'],['lclose','L休'],['dclose','D休']].map(function(o){return '<option value="'+o[0]+'"'+(v===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')
+          +'</select></div>';
+      }).join('')}
+      </div>
+      <input type="hidden" id="st-days" value="${s.days||''}">
+      <div style="font-size:9.5px;color:var(--muted);margin-top:3px">終日休の曜日は自動予算=0、L休/D休はその部の予算を0に。祝日・イベントの臨時休業は予算設定の「日別予算一覧」で0を入力してください。</div>
+    </div>
     <div class="form-group"><label class="form-label">エリアマネージャー (AM)</label>
       ${(function(){
         var ams = getEmployees().filter(e=>e.role==='am' && e.status!=='退職');
@@ -33397,6 +33521,7 @@ function saveStore(storeId) {
     googleUrl: (document.getElementById('st-gurl')||{}).value ? document.getElementById('st-gurl').value.trim() : '',
     yelpUrl: (document.getElementById('st-yurl')||{}).value ? document.getElementById('st-yurl').value.trim() : '',
     days: document.getElementById('st-days').value.trim(),
+    bizDays: (function(){ var o={}; ['月','火','水','木','金','土','日'].forEach(function(dw){ var el=document.getElementById('st-bd-'+dw); if(el&&el.value!=='open') o[dw]=el.value; }); return o; })(),
     am: (document.getElementById('st-am')||{}).value ? document.getElementById('st-am').value.trim() : '',
     color: document.getElementById('st-color').value,
     active: document.getElementById('st-active').checked,
