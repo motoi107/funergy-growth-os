@@ -7927,7 +7927,7 @@ function renderBudget() {
   if (budgetTab==='monthly') budgetTab='summary'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   html += storeSelectBar(_budgetStore, 'setBudgetStore');
-  if (budgetTab==='setup') return html + renderBudgetSetup();
+  if (budgetTab==='setup') return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup());
   return html + renderBudgetSummary();
 }
 function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
@@ -8006,8 +8006,7 @@ function renderBudgetSetup() {
 
     html += `<div class="approval-actions">`;
     if (editable) {
-      html += `<button class="btn btn-primary btn-sm" onclick="openDayBudgetEditor('${b.storeId}')"><i class="ti ti-calendar-dollar"></i> 日別予算一覧</button>
-        <button class="btn btn-secondary btn-sm" onclick="openDowEditor('${b.storeId}')"><i class="ti ti-calendar-stats"></i> 曜日別で作成</button>
+      html += `<button class="btn btn-primary btn-sm" onclick="bbOpen('${b.storeId}')"><i class="ti ti-calendar-dollar"></i> 予算エディタ（曜日設定＋日別一覧）</button>
         <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','lunch')"><i class="ti ti-sun"></i> ランチ</button>
         <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','dinner')"><i class="ti ti-moon"></i> ディナー</button>
         <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','takeout')"><i class="ti ti-shopping-bag"></i> テイクアウト</button>`;
@@ -8073,6 +8072,162 @@ function renderPrevMonthCompare(storeId, budTotal, laborB, fcB) {
     <div style="font-size:10px;color:var(--muted);margin-top:2px">前月${pm.daysWithData}日分の実績データから集計</div>
     </div></details>`;
 }
+/* ===== 予算ビルダー（ページ内）: 上部＝曜日設定（L/D/TO 客数×客単価）→反映→下部＝日別一覧（日毎手動修正可） ===== */
+var _bbStore=null, _bbDow=null;
+function bbOpen(storeId){
+  var b=getBudgets().find(function(x){return x.storeId===storeId;});
+  if(!b){ showToast('この店舗の予算がまだありません','warning'); return; }
+  _bbStore=storeId;
+  _bbDow=JSON.parse(JSON.stringify(getDow(b)));
+  budgetTab='setup';
+  renderPage('budget'); window.scrollTo(0,0);
+  setTimeout(function(){ bbRecalcDow(); bbDayTotal(); }, 80);
+}
+function bbClose(){ _bbStore=null; _bbDow=null; renderPage('budget'); }
+function renderBudgetBuilder(storeId){
+  var b=getBudgets().find(function(x){return x.storeId===storeId;});
+  if(!b){ _bbStore=null; return renderBudgetSetup(); }
+  if(!_bbDow) _bbDow=JSON.parse(JSON.stringify(getDow(b)));
+  var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
+  var editable=canEditBudget(b);
+  var ym=budgetYM(); var counts=weekdayCountsForMonth(ym.y, ym.m);
+  var h='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-secondary btn-sm" onclick="bbClose()"><i class="ti ti-arrow-left"></i> 店舗一覧へ</button>'
+    +'<b style="flex:1;font-size:13px;min-width:140px">'+escapeHtml(st.name)+' — 予算エディタ（'+ym.y+'年'+ym.m+'月）</b>'
+    +'<span style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted)">'+escapeHtml(b.status||'下書き')+'</span></div>';
+  if(!editable) h+='<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-lock"></i> この予算は現在編集できません（ステータス: '+escapeHtml(b.status||'下書き')+'）。閲覧のみ可能です。</div>';
+  var dis=editable?'':' disabled';
+  // ===== ① 曜日設定パネル =====
+  var segs=[['lunch','ランチ','客数'],['dinner','ディナー','客数'],['takeout','TO','注文数']];
+  h+='<div class="card"><div class="card-title"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i>① 曜日設定（客数 × 客単価）'
+    +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+ym.m+'月の曜日数で月間換算</span></div>'
+    +'<div style="overflow-x:auto"><table style="width:100%;min-width:620px;border-collapse:collapse;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px">'
+    +'<th style="text-align:left;padding:4px">曜日</th>'
+    +segs.map(function(sg){ return '<th style="text-align:right;padding:4px 2px">'+sg[1]+'<br>'+sg[2]+'</th><th style="text-align:right;padding:4px 2px">'+sg[1]+'<br>単価$</th>'; }).join('')
+    +'<th style="text-align:right;padding:4px">日計</th></tr></thead><tbody>';
+  for(var i=0;i<7;i++){
+    var isWk=(i===5||i===6);
+    h+='<tr style="'+(isWk?'background:var(--surface2)':'')+'"><td style="padding:4px;font-weight:700;color:'+(i===6?'var(--red)':i===5?'var(--accent2)':'var(--tm)')+'">'+DOW[i]+'<div style="font-size:9px;color:var(--muted);font-weight:400">×'+counts[i]+'日</div></td>';
+    segs.forEach(function(sg){
+      var cell=(_bbDow[sg[0]]&&_bbDow[sg[0]][i])||{};
+      var q=(sg[0]==='takeout')?(cell.orders||''):(cell.guests||'');
+      h+='<td style="padding:2px"><input class="form-input" style="padding:5px 4px;text-align:right;font-size:12px;min-width:52px" type="number" inputmode="numeric" value="'+q+'" placeholder="0"'+dis+' oninput="bbDowIn('+i+',\''+sg[0]+'\',\'qty\',this.value)"></td>'
+        +'<td style="padding:2px"><input class="form-input" style="padding:5px 4px;text-align:right;font-size:12px;min-width:56px" type="number" inputmode="decimal" step="0.01" value="'+(cell.spend||'')+'" placeholder="0"'+dis+' oninput="bbDowIn('+i+',\''+sg[0]+'\',\'spend\',this.value)"></td>';
+    });
+    h+='<td id="bb-dowday-'+i+'" style="padding:4px;text-align:right;font-weight:700;color:var(--accent);white-space:nowrap">—</td></tr>';
+  }
+  h+='</tbody></table></div>'
+    +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+    +(editable?'<button class="btn btn-secondary btn-sm" onclick="bbCopy(4)"><i class="ti ti-copy"></i> 月→平日コピー</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="bbCopy(6)"><i class="ti ti-arrows-down"></i> 月→全曜日コピー</button>':'')
+    +'<span style="margin-left:auto;font-size:11px;color:var(--muted);align-self:center">曜日設定の月間合計: <b id="bb-dowtotal" style="color:var(--accent);font-size:14px">—</b></span></div>'
+    +(editable?'<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="bbApplyDow()"><i class="ti ti-arrow-big-down-lines"></i> ↓ 日別一覧へ反映（全日を曜日設定の値で上書き）</button>':'')
+    +'</div>';
+  // ===== ② 日別一覧 =====
+  var days=daysOfYm(curYm());
+  h+='<div class="card"><div class="card-title"><i class="ti ti-calendar-dollar" style="color:var(--accent)"></i>② 日別一覧（日毎に手動修正可）'
+    +(editable?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 8px;font-size:10px" onclick="bbClearDays()"><i class="ti ti-eraser"></i> 全て空欄（自動）に戻す</button>':'')+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">空欄＝自動（曜日設定から算出）。店休日は <b>0</b>、イベント日は任意の額に修正。</div>'
+    +'<div style="max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">'
+    +'<table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">日付</th><th style="text-align:right">自動</th><th style="width:112px;text-align:right">予算 ($)</th></tr></thead><tbody>';
+  days.forEach(function(dd){
+    var dt=new Date(dd.date+'T00:00:00');
+    var dowJ=['日','月','火','水','木','金','土'][dt.getDay()];
+    var isWk=(dt.getDay()===0||dt.getDay()===6);
+    var auto=Math.round(bbDowDayVal((dt.getDay()+6)%7));
+    var autoBase=Math.round(dayBudgetAuto(b, dd.date));
+    var cur=(b.days&&b.days[dd.date]!=null&&b.days[dd.date]!=='')?b.days[dd.date]:'';
+    var ev=(typeof dayEventFor==='function')?dayEventFor(dd.date):'';
+    h+='<tr><td style="text-align:left;white-space:nowrap;'+(isWk?'color:var(--accent);font-weight:600':'')+'">'+parseInt(dd.date.slice(8),10)+'日('+dowJ+')'+(ev?'<div style="font-size:9px;color:var(--accent2);font-weight:400">'+escapeHtml(ev)+'</div>':'')+'</td>'
+      +'<td style="text-align:right;color:var(--muted);font-size:11px;white-space:nowrap" class="bb-auto" data-dow="'+((dt.getDay()+6)%7)+'">$'+autoBase.toLocaleString()+'</td>'
+      +'<td><input class="form-input bb-day" style="padding:5px 6px;font-size:12px;text-align:right" type="number" inputmode="decimal" min="0" data-date="'+dd.date+'" data-auto="'+autoBase+'" value="'+cur+'" placeholder="自動"'+dis+' oninput="bbDayTotal()"></td></tr>';
+  });
+  h+='</tbody></table></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 2px 0"><span style="font-size:12px;color:var(--muted)">月間予算 合計</span><b id="bb-total" style="font-size:18px;color:var(--accent)">—</b></div>'
+    +(b.daysBy?'<div style="font-size:10px;color:var(--muted)"><i class="ti ti-user-check"></i> 前回の日別調整: '+escapeHtml(b.daysBy)+' '+escapeHtml(b.daysAt||'')+'</div>':'')
+    +(editable?'<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="bbSave()"><i class="ti ti-device-floppy"></i> 保存（曜日設定＋日別一覧）</button>':'')
+    +'</div>';
+  return h;
+}
+function bbDowIn(i, seg, f, val){
+  if(!_bbDow) return;
+  if(!_bbDow[seg]) _bbDow[seg]={};
+  var cell=_bbDow[seg][i]||(_bbDow[seg][i]={});
+  var v=parseFloat(val)||0;
+  if(f==='qty'){ if(seg==='takeout') cell.orders=v; else cell.guests=v; }
+  else cell.spend=v;
+  bbRecalcDow();
+}
+function bbDowDayVal(i){
+  if(!_bbDow) return 0;
+  var t=0;
+  ['lunch','dinner','takeout'].forEach(function(sg){
+    var c=(_bbDow[sg]&&_bbDow[sg][i])||{};
+    t += (parseFloat(sg==='takeout'?c.orders:c.guests)||0)*(parseFloat(c.spend)||0);
+  });
+  return t;
+}
+function bbRecalcDow(){
+  if(!_bbDow) return;
+  var ym=budgetYM(); var counts=weekdayCountsForMonth(ym.y, ym.m);
+  var total=0;
+  for(var i=0;i<7;i++){
+    var v=bbDowDayVal(i);
+    total += v*counts[i];
+    var el=document.getElementById('bb-dowday-'+i);
+    if(el) el.textContent = v?('$'+Math.round(v).toLocaleString()):'—';
+  }
+  var t=document.getElementById('bb-dowtotal'); if(t) t.textContent='$'+Math.round(total).toLocaleString();
+}
+function bbCopy(upto){
+  if(!_bbDow) return;
+  ['lunch','dinner','takeout'].forEach(function(sg){
+    if(!_bbDow[sg]) _bbDow[sg]={};
+    var src=_bbDow[sg][0]||{};
+    for(var i=1;i<=upto;i++) _bbDow[sg][i]=JSON.parse(JSON.stringify(src));
+  });
+  renderPage('budget'); setTimeout(function(){ bbRecalcDow(); bbDayTotal(); }, 60);
+}
+function bbApplyDow(){
+  document.querySelectorAll('.bb-day').forEach(function(inp){
+    var dt=new Date(inp.getAttribute('data-date')+'T00:00:00');
+    var v=Math.round(bbDowDayVal((dt.getDay()+6)%7));
+    inp.value=v;
+  });
+  bbDayTotal();
+  showToast('曜日設定を全日に反映しました。日毎の修正は入力欄で。','success');
+}
+function bbClearDays(){
+  document.querySelectorAll('.bb-day').forEach(function(inp){ inp.value=''; });
+  bbDayTotal();
+}
+function bbDayTotal(){
+  var t=0;
+  document.querySelectorAll('.bb-day').forEach(function(inp){
+    var v=inp.value===''?(parseFloat(inp.getAttribute('data-auto'))||0):(parseFloat(inp.value)||0);
+    t+=v;
+  });
+  var el=document.getElementById('bb-total'); if(el) el.textContent='$'+Math.round(t).toLocaleString();
+}
+function bbSave(){
+  var budgets=getBudgets();
+  var b=budgets.find(function(x){return x.storeId===_bbStore;}); if(!b) return;
+  if(!canEditBudget(b)){ alert('この予算は現在編集できません（ステータス: '+(b.status||'下書き')+'）'); return; }
+  b.dow=_bbDow;
+  var days={}; var any=false;
+  document.querySelectorAll('.bb-day').forEach(function(inp){
+    var v=inp.value;
+    if(v!==''&&!isNaN(parseFloat(v))&&parseFloat(v)>=0){ days[inp.getAttribute('data-date')]=parseFloat(v); any=true; }
+  });
+  b.days=any?days:null;
+  if(any){ b.daysBy=myName(); b.daysAt=nowJP(); } else { b.daysBy=null; b.daysAt=null; }
+  if(b.status==='差し戻し') b.status='再提出済み';
+  if(!b.status) b.status='下書き';
+  b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
+  saveBudgets(budgets);
+  showToast('予算を保存しました（曜日設定＋日別一覧）','success');
+  renderPage('budget'); setTimeout(function(){ bbRecalcDow(); bbDayTotal(); }, 60);
+}
 /* ===== 曜日別予算エディタ ===== */
 var dowEditState = null; // {storeId, dow, seg}
 function openDowEditor(storeId, seg) {
@@ -8121,7 +8276,7 @@ function renderDowModal() {
   var grandTotal = dowMonthlyTotal(st.dow, ym);
 
   openModal(`<div class="modal-title">${sName} — 曜日別予算 <button class="modal-close" onclick="closeDowEditor()">×</button></div>
-    ${budgetEditorTabs(storeId,'dow')}
+    ${budgetEditorTabs(st.storeId,'dow')}
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 曜日ごとに目標${qtyLabel}×客単価を入力。${ym.y}年${ym.m}月の曜日数で月間予算を自動計算します。</div>
     <div style="display:flex;gap:4px;margin-bottom:10px">${tabs}</div>
     <div style="max-height:46vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
@@ -9538,7 +9693,7 @@ function saveDailyActual(storeId, date) {
    空欄＝自動値。入力した日だけ b.days に保存され、月間予算・日次進捗・現在地すべてに反映。 */
 /* 予算エディタ共通タブ: モーダル間をワンタップで移動 */
 function budgetEditorTabs(storeId, active){
-  var tabs=[['day','日別一覧','openDayBudgetEditor(\''+storeId+'\')'],['dow','曜日別','openDowEditor(\''+storeId+'\')'],['lunch','ランチ',"openSegEditor('"+storeId+"','lunch')"],['dinner','ディナー',"openSegEditor('"+storeId+"','dinner')"],['takeout','TO',"openSegEditor('"+storeId+"','takeout')"]];
+  var tabs=[['day','予算エディタ','closeModalDirect();bbOpen(\''+storeId+'\')'],['lunch','ランチ',"openSegEditor('"+storeId+"','lunch')"],['dinner','ディナー',"openSegEditor('"+storeId+"','dinner')"],['takeout','TO',"openSegEditor('"+storeId+"','takeout')"]];
   return '<div class="phase-tabs" style="margin-bottom:8px">'+tabs.map(function(t){
     return '<div class="phase-tab'+(active===t[0]?' active':'')+'" style="font-size:11px;padding:5px 8px" onclick="'+t[2].replace(/"/g,'&quot;')+'">'+t[1]+'</div>';
   }).join('')+'</div>';
