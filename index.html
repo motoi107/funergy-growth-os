@@ -1624,7 +1624,7 @@ const MENU_GROUPS = [
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','store_power','labor','foodcost','kpi_master']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
-    children:['tasks','biz_guide']},
+    children:['tasks']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
@@ -24748,13 +24748,21 @@ function renderOjtGateMap(){
 
 function renderOjtAdmin(){
   if(ojtAdminKey==='preplv') ojtAdminKey='trainee';
-  var _amPlus=['gm','ceo','am'].indexOf(curRole)>=0, _gateOnly=false;
-  if(!_amPlus){
-    if(myGradeNum()>=4){ _gateOnly=true; ojtAdminKey='gatemap'; }
-    else return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">この画面はAM以上（AM / GM / CEO）専用です。<br>※「ゲート基準マップ」は実グレードG4以上で編集できます。</div>';
+  var _amPlus=['gm','ceo','am'].indexOf(curRole)>=0;
+  var tabs;
+  if(_amPlus){
+    tabs=[['ojt_g2','G1→G2 Crew'],['ojt_g3_server','G3 Server'],['ojt_g3_kitchen','G3 Kitchen'],['ojt_g4','G3 Operation'],['trainee','Trainee'],['gatemap','ゲート基準マップ'],['rolemap','役割と責任マップ'],['bizguide','業務ガイド']];
+  } else if(myGradeNum()>=4){
+    tabs=[['gatemap','ゲート基準マップ'],['bizguide','業務ガイド']];
+    if(ojtAdminKey!=='gatemap' && ojtAdminKey!=='bizguide') ojtAdminKey='gatemap';
+  } else {
+    tabs=[['bizguide','業務ガイド']]; // G3以下のSLも業務ガイドは閲覧可（旧・ワークセンター内から移設）
+    ojtAdminKey='bizguide';
   }
-  var tabs=_gateOnly?[['gatemap','ゲート基準マップ']]:[['ojt_g2','G1→G2 Crew'],['ojt_g3_server','G3 Server'],['ojt_g3_kitchen','G3 Kitchen'],['ojt_g4','G3 Operation'],['trainee','Trainee'],['gatemap','ゲート基準マップ'],['rolemap','役割と責任マップ']];
   var tabsHtml='<div class="phase-tabs" style="flex-wrap:wrap">'+tabs.map(function(t){ return '<div class="phase-tab'+(ojtAdminKey===t[0]?' active':'')+'" onclick="setOjtAdminKey(\''+t[0]+'\')">'+t[1]+'</div>'; }).join('')+'</div>';
+  if(ojtAdminKey==='bizguide'){
+    return '<div class="section-header"><div><div class="section-title">OJT管理</div><div class="section-sub">業務ガイド — Grade別のアプリ活用と責任マトリクス</div></div></div>'+tabsHtml+renderBizGuideBody();
+  }
   if(ojtAdminKey==='gatemap'){
     return '<div class="section-header"><div><div class="section-title">OJT管理</div><div class="section-sub">Phase1-4 ゲート基準マップ（店舗毎・チップ進行連動）</div></div></div>'+tabsHtml+renderOjtGateMap();
   }
@@ -29641,12 +29649,16 @@ function taskCardHtml(t){
    業務ガイド: Grade別のアプリ活用ガイド＋責任マトリクス（G3以上）
 ============================================================ */
 var bizTab='guide';
-function setBizTab(t){ bizTab=t; renderPage('biz_guide'); }
+function setBizTab(t){ bizTab=t; renderPage((typeof curPage!=='undefined'&&curPage==='ojt_admin')?'ojt_admin':'biz_guide'); }
 function _bgSec(icon,title,inner){ return '<div class="card"><div class="card-title"><i class="ti '+icon+'" style="color:var(--accent)"></i>'+title+'</div><div style="font-size:12px;line-height:1.9">'+inner+'</div></div>'; }
 function _bgLi(items){ return items.map(function(x){ return '<div style="padding:3px 0;border-bottom:1px dashed var(--border)"><b style="color:var(--tm)">'+x[0]+'</b> — '+x[1]+'</div>'; }).join(''); }
 function renderBizGuide(){
-  var h = '<div class="section-header"><div><div class="section-title"><i class="ti ti-book-2" style="color:var(--accent)"></i> 業務ガイド</div><div class="section-sub">Grade別のアプリ活用と責任範囲</div></div></div>'
-    +'<div class="phase-tabs" style="margin-bottom:10px">'
+  var h = '<div class="section-header"><div><div class="section-title"><i class="ti ti-book-2" style="color:var(--accent)"></i> 業務ガイド</div><div class="section-sub">Grade別のアプリ活用と責任範囲</div></div></div>';
+  return h + renderBizGuideBody();
+}
+/* 業務ガイド本体（OJT管理タブ内・独立ページの両方から利用） */
+function renderBizGuideBody(){
+  var h = '<div class="phase-tabs" style="margin-bottom:10px">'
     +'<div class="phase-tab'+(bizTab==='guide'?' active':'')+'" onclick="setBizTab(\'guide\')"><i class="ti ti-device-mobile" style="font-size:12px"></i> 使い方（Grade別）</div>'
     +'<div class="phase-tab'+(bizTab==='resp'?' active':'')+'" onclick="setBizTab(\'resp\')"><i class="ti ti-shield-check" style="font-size:12px"></i> 責任マトリクス</div>'
     +'</div>';
@@ -29722,34 +29734,67 @@ function renderGradeGuide(){
   return h;
 }
 function renderRespMatrix(){
-  // ●=最終責任(Accountable) ◎=実行責任(Responsible) ○=実務・補助 △=把握・報告
+  // ●=最終責任(結果に責任) ◎=実行責任(やり切る責任) ○=実務・補助(責任なし) △=把握・報告
+  // 行: [業務名, G1, G2, G3, G4, G5, G6(GM), 経理, 備考] ／ {cat:...} はカテゴリ見出し
+  var sm=function(t){ return '<br><span style="font-size:9px">'+t+'</span>'; };
   var rows=[
-    ['売上・日報','','○','◎','●','△','△','売上/客数の入力・日報確認はG3が実行、数字の正はG4'],
-    ['キャッシュTip入力','','○','◎','●','','','締めで必ず入力（0でも0）。未入力タスクの解消はG3'],
-    ['予算作成','','','◎<br><span style="font-size:9px">義務</span>','●<br><span style="font-size:9px">義務</span>','○','承認','G3たたき台→G4最終化→GM承認必須。根拠・重点の記入必須'],
-    ['日別予算調整（店休・イベント）','','','◎','●','△','','月中の調整もG3/G4で即時反映'],
-    ['シフト作成','','△','◎<br><span style="font-size:9px">義務</span>','●','△','','G3以上に作成義務。最終確認はG4'],
-    ['シフト運用・OT管理','','','△<br><span style="font-size:9px">把握</span>','●<br><span style="font-size:9px">全責任</span>','△','','週40h超・ワーキングスケジュールの責任はG4。G3は把握と即報告'],
-    ['勤怠の正確性','','○','○','●','','◎<br><span style="font-size:9px">修正実務</span>','修正実務は経理/GM、店の勤怠の正はG4'],
-    ['日々の発注確定','○','○','●','◎','','','発注ミス・欠品対応の一次責任はG3'],
-    ['代替材料の確保（欠品時）','','○','●','◎','','','G3が即断で確保→G4へ報告'],
-    ['売価変更・おすすめ提案','','','●<br><span style="font-size:9px">提案</span>','◎<br><span style="font-size:9px">決定</span>','○','','提案はG3の義務、採否と結果はG4'],
-    ['オーバーポーション管理','○','◎','●','◎','','','現場の徹底はG2/G3、原価率への影響はG4'],
-    ['棚卸の実施・記入','','○','●<br><span style="font-size:9px">実施</span>','◎','','','G3が数えて確定。記入ミスの一次修正もG3'],
-    ['棚卸エラーの最終責任','','','△','●<br><span style="font-size:9px">中間棚卸</span>','△','','エラー時はG4の責任で中間棚卸→修正再確定'],
-    ['原価の数字すべて','','','○','●','△','△','理論原価・月次原価の整合はG4が保証'],
-    ['Invoice読取・新マスター整備','','','◎','●','△','○','読取はG3/G4、仕様入力の完了責任はG4'],
-    ['人材育成・スキル承認','','○','◎','●','△','','日々のOJTはG2/G3、育成計画と昇格推薦はG4'],
-    ['相談対応（お悩み）','','','◎','●','△','','初動24hで担当決め。店で解決できない案件はG5へ'],
-    ['管轄店の合計数字','','','','△','●','','店舗間標準化・横比較改善はG5'],
-    ['会社PL・制度','','','','','◎','●=GM/CEO','簡易PL・本部予算・制度改定はGM/CEO'],
+    {cat:'ti-tools-kitchen-2|日々の店舗運営'},
+    ['ポジションワークの遂行','◎','○','●','','','','','指示どおりに実行（G1）。手本・確認はG2、当日の采配と品質チェックはG3'],
+    ['在庫少の報告・必要仕込の記入','◎','○','●','','','','','少ない材料は即報告、必要な仕込を記入・報告（G1）。発注への反映はG3'],
+    ['売上・日報','','○','◎','●','△','△','','売上/客数の入力・日報確認はG3が実行、数字の正はG4'],
+    ['キャッシュチップの入力','○','○','◎','●','','','','入力は誰でもOK（0でも0）。確定と未入力解消の責任はG3/G4'],
+    ['日々の発注確定','○','○','●','◎','','','','発注ミス・欠品対応の一次責任はG3'],
+    ['代替材料の確保（欠品時）','','○','●','◎','','','','G3が即断で確保→G4へ報告'],
+    ['消耗品の発注','','○','●','◎','','','','実務はG2（責任なし）、確定はG3'],
+    ['オーバーポーション管理','○','◎','●','◎','','','','現場の徹底はG2/G3、原価率への影響はG4'],
+    ['店舗修繕','','○','◎'+sm('部分'),'●','','','','気づき・実務はG2、部分責任はG3、最終はG4'],
+    {cat:'ti-calendar-time|シフト・勤怠'},
+    ['シフト作成','','△','◎'+sm('義務'),'●','△','','','G3以上に作成義務。最終確認はG4'],
+    ['シフト運用・OT管理','','','△'+sm('把握'),'●'+sm('全責任'),'△','','','週40h超・ワーキングスケジュールの責任はG4。G3は把握と即報告'],
+    ['勤怠の正確性','','○','○','●','','','◎'+sm('修正実務'),'修正実務は経理/GM、店の勤怠の正はG4'],
+    {cat:'ti-coin|お金・数字'},
+    ['予算作成','','','◎'+sm('義務'),'●'+sm('義務'),'○','承認','','G3たたき台→G4最終化→GM承認必須。根拠・重点の記入必須'],
+    ['日別予算調整（店休・イベント）','','','◎','●','△','','','月中の調整もG3/G4で即時反映'],
+    ['予算の調整（管轄・本部）','','','','△'+sm('把握'),'●','◎','','管轄横断の予算調整はG5が最終責任、G6が実行監督、G4は把握'],
+    ['Tip管理（配分・確定）','','','','●','◎','△','','店のTip配分・確定の最終責任はG4。G5が実行監督、G6は把握'],
+    ['棚卸の実施・記入','○','○','●'+sm('実施'),'◎','','','','カウント・入力は誰でもOK（責任なし）。数えて確定するのはG3'],
+    ['棚卸エラーの最終責任','','','△','●'+sm('中間棚卸'),'△','','','エラー時はG4の責任で中間棚卸→修正再確定'],
+    ['原価の数字すべて（自店）','','','○','●','△','△','','理論原価・月次原価の整合はG4が保証'],
+    ['管轄店の原価','','','','○','◎','●','','管轄横断の原価改善はG5が実行、最終責任はG6'],
+    ['売価変更・おすすめ提案','','','●'+sm('提案'),'◎'+sm('決定'),'○','','','提案はG3の義務、採否と結果はG4'],
+    ['Invoice読取（請求書の取り込み）','','','◎','●','△','','○','読取はG3/G4、完了責任はG4。経理は確認・補助'],
+    ['管轄店の合計数字','','','','△','●','','','店舗間標準化・横比較改善はG5'],
+    ['会社PL・本部予算','','','','','◎','●','○'+sm('実PL入力'),'簡易PL・本部予算はG6（GM/CEO）。実PL入力は経理'],
+    {cat:'ti-users-group|人・育成'},
+    ['トレーニング経過の報告','','◎','●','△','','','','G2が経過を報告、G3が集約・判断、G4は把握'],
+    ['担当分野のチームビルド・育成','','','●','◎','','','','自分の専門分野のチーム作りはG3の責任'],
+    ['採用・トレーニング（担当分野）','','','◎','●','△','','','担当分野の採用・トレーニングはG3が実行、最終はG4'],
+    ['担当分野のマニュアル整備','','','●','◎','','','','担当分野のマニュアルはG3が整備・更新'],
+    ['人材育成・スキル承認','','○','◎','●','△','','','日々のOJTはG2/G3、育成計画と昇格推薦はG4'],
+    ['相談対応（お悩み）','','','◎','●','△','','','初動24hで担当決め。店で解決できない案件はG5へ'],
+    {cat:'ti-building-bank|制度・マスター（G6管轄）'},
+    ['新マスターの整備','','','','△'+sm('把握'),'△'+sm('把握'),'●','','食材マスター等の制度マスター整備はG6が最終責任、G4/G5は把握'],
+    ['OJT管理（カリキュラム・基準）','','','','','○','●','','カリキュラム・ゲート基準の管理はG6が最終責任'],
+    ['Grade管理（昇格の最終判断）','','','','○'+sm('推薦'),'◎'+sm('推薦'),'●','','推薦はG4/G5、昇格の最終判断はG6'],
+    ['時給管理・Career Score','','','','','','●','','時給とCareer Scoreの管理はG6が最終責任'],
   ];
-  var h='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。</div>'
-    +'<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:640px;font-size:11px"><thead><tr><th style="text-align:left">業務</th><th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>G5</th><th>GM/経理</th><th style="text-align:left">備考</th></tr></thead><tbody>';
+  // 全員共通の責任（Grade問わず）
+  var h='<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-users" style="color:var(--accent)"></i>全員共通の責任（Grade問わず）</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;font-size:12px">'
+    +[['ti-heart-handshake','理念を守る'],['ti-mood-smile','全員接客'],['ti-speakerphone','声出し・返事の徹底'],['ti-clock-check','自己勤怠の管理<br><span style="font-size:10px;color:var(--muted)">打刻・シフト希望の提出</span>']].map(function(x){
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 10px;display:flex;align-items:center;gap:8px"><i class="ti '+x[0]+'" style="color:var(--accent);font-size:16px"></i><b>'+x[1]+'</b></div>';
+    }).join('')+'</div></div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助（責任なし）／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。</div>'
+    +'<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:720px;font-size:11px"><thead><tr><th style="text-align:left">業務</th><th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>G5</th><th>G6<br><span style="font-size:9px">GM</span></th><th>経理</th><th style="text-align:left">備考</th></tr></thead><tbody>';
   rows.forEach(function(r){
+    if(r.cat){
+      var p=r.cat.split('|');
+      h+='<tr><td colspan="9" style="text-align:left;background:var(--surface2);font-weight:800;font-size:11px;padding:6px 8px;color:var(--accent)"><i class="ti '+p[0]+'"></i> '+p[1]+'</td></tr>';
+      return;
+    }
     h+='<tr><td style="text-align:left;font-weight:600">'+r[0]+'</td>'
-      +[r[1]||'',r[2]||'',r[3]||'',r[4]||'',r[5]||'',r[6]||''].map(function(c){var col=c.indexOf('●')>=0?'var(--red)':c.indexOf('◎')>=0?'var(--accent)':'var(--muted)';return '<td style="text-align:center;color:'+col+';font-weight:700">'+c+'</td>';}).join('')
-      +'<td style="text-align:left;font-size:10px;color:var(--muted)">'+r[7]+'</td></tr>';
+      +[r[1]||'',r[2]||'',r[3]||'',r[4]||'',r[5]||'',r[6]||'',r[7]||''].map(function(c){var col=c.indexOf('●')>=0?'var(--red)':c.indexOf('◎')>=0?'var(--accent)':'var(--muted)';return '<td style="text-align:center;color:'+col+';font-weight:700">'+c+'</td>';}).join('')
+      +'<td style="text-align:left;font-size:10px;color:var(--muted)">'+r[8]+'</td></tr>';
   });
   h+='</tbody></table></div>';
   h+=_bgSec('ti-arrow-down','指示系統（誰が誰に指示するか）', _bgLi([
