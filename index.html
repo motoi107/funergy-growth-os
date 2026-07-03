@@ -1568,6 +1568,7 @@ const NAV_ITEMS = [
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','office','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
   {id:'tasks',       label:'ワークセンター', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl']},
+  {id:'biz_guide',   label:'業務ガイド',    icon:'ti-book-2',           roles:['ceo','gm','office','am','sl']},
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','office','am','sl']},
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am','sl']},
@@ -3679,7 +3680,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -4129,12 +4130,140 @@ async function showManagerSecure(){
 function _secRerender(){ var b=document.getElementById('mgr-secure-body'); if(b){ try{ b.innerHTML=renderSecureBody(); }catch(e){ b.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; } } }
 function secTab(t){ window._secTab=t; _secRerender(); }
 function renderSecureBody(){
-  var t = window._secTab==='pl' ? 'pl' : 'karte';
+  var t = (window._secTab==='pl'||window._secTab==='hq') ? window._secTab : 'karte';
   var bar = '<div class="phase-tabs" style="margin-bottom:12px">'
     +'<div class="phase-tab'+(t==='karte'?' active':'')+'" onclick="secTab(\'karte\')"><i class="ti ti-id-badge-2" style="font-size:12px"></i> 成長カルテ</div>'
     +'<div class="phase-tab'+(t==='pl'?' active':'')+'" onclick="secTab(\'pl\')"><i class="ti ti-report-money" style="font-size:12px"></i> 簡易PL</div>'
+    +'<div class="phase-tab'+(t==='hq'?' active':'')+'" onclick="secTab(\'hq\')"><i class="ti ti-building-bank" style="font-size:12px"></i> 本部予算</div>'
     +'</div>';
-  return bar + (t==='pl' ? renderSimplePL() : renderGrowthKarte());
+  return bar + (t==='pl' ? renderSimplePL() : t==='hq' ? renderHqBudget() : renderGrowthKarte());
+}
+/* ============================================================
+   本部予算（セキュアページ）: 店舗予算 vs 本部目標のギャップ分析
+   hq_budget[ym][sid]={total,by,at,note} / hq_actions[ym][sid]=[{text,owner,due,done}]
+============================================================ */
+function getHqBudget(){ return ls('hq_budget', {})||{}; }
+function getHqActions(){ return ls('hq_actions', {})||{}; }
+function storeBudgetTotalForYm(sid, ym){
+  if (ym === curYm()){
+    var b = getBudgets().find(function(x){return x.storeId===sid;});
+    if (!b || !budgetHasRealData(b)) return null;
+    return Math.round(daysOfYm(ym).reduce(function(a,dd){ return a + dayBudgetFor(b, dd.date); },0));
+  }
+  var mb = (typeof getBudgetForMonth==='function') ? getBudgetForMonth(sid, ym) : null;
+  if (mb && budgetHasRealData(mb)) return Math.round(daysOfYm(ym).reduce(function(a,dd){ return a + dayBudgetFor(mb, dd.date); },0));
+  return null;
+}
+function renderHqBudget(){
+  var ym = plYm(); var p = ym.split('-');
+  var mLabel = parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月';
+  var hq = getHqBudget()[ym]||{};
+  var acts = getHqActions()[ym]||{};
+  var stores = sortByLoginOrder(activeStores());
+  var m=function(v){ return '$'+(Math.round(v)||0).toLocaleString(); };
+  var h = '<div class="card" style="padding:8px 10px;display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="plNav(-1)"><i class="ti ti-chevron-left"></i></button>'
+    +'<div style="flex:1;text-align:center;font-weight:700;font-size:14px">'+mLabel+'</div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="plNav(1)" '+(plOff>=1?'disabled style="opacity:.4"':'')+'><i class="ti ti-chevron-right"></i></button>'
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.7"><i class="ti ti-info-circle"></i> <b>店舗予算</b>＝各店がGM提出した予算（日別調整込み）。<b>本部予算</b>＝GMが設定する会社目標。差異が大きい店には<b>ギャップ分析</b>（必要客数/客単価）と<b>ネクストアクション</b>を設定し、タスクとして店へ送れます。</div>';
+  var totStore=0, totHq=0, nStore=0;
+  var rowsHtml='';
+  stores.forEach(function(st){
+    var sb = storeBudgetTotalForYm(st.id, ym);
+    var hb = hq[st.id] ? Number(hq[st.id].total)||0 : null;
+    if (sb!=null){ totStore+=sb; nStore++; }
+    if (hb!=null) totHq+=hb;
+    var gap = (sb!=null && hb!=null) ? hb - sb : null;
+    var ms = safeMonthStats(st.id, plOff-1)||{};
+    var days = daysOfYm(ym).length;
+    var gapAnalysis='';
+    if (gap!=null && gap>0){
+      var perDay = gap/days;
+      var needG = ms.ppa>0 ? Math.ceil(perDay/ms.ppa) : null;
+      var needPpa = (ms.guests>0) ? (gap/ms.guests) : null;
+      gapAnalysis = '<div style="font-size:10.5px;background:var(--surface2);border-radius:8px;padding:7px 10px;margin-top:6px;line-height:1.7"><i class="ti ti-target-arrow" style="color:var(--yellow)"></i> <b>ギャップを埋めるには</b>（前月確定ベース）: '
+        +'1日あたり <b>+'+m(perDay)+'</b>'
+        +(needG!=null?(' ＝ 客数 <b>+'+needG+'名/日</b>（客単価 $'+ms.ppa.toFixed(2)+'のまま）'):'')
+        +(needPpa!=null?(' <span style="color:var(--muted)">or</span> 客単価 <b>+$'+needPpa.toFixed(2)+'</b>（客数そのまま）'):'')
+        +'</div>';
+    }
+    var aList = acts[st.id]||[];
+    var actsHtml = aList.map(function(a,i){
+      return '<div style="display:flex;align-items:center;gap:7px;font-size:11px;padding:4px 0;border-bottom:1px dashed var(--border)">'
+        +'<input type="checkbox" '+(a.done?'checked':'')+' onchange="hqToggleAction(\''+ym+'\',\''+st.id+'\','+i+',this.checked)">'
+        +'<div style="flex:1;'+(a.done?'text-decoration:line-through;color:var(--muted)':'')+'">'+escapeHtml(a.text)+(a.owner?' <span style="color:var(--muted);font-size:9px">→'+escapeHtml(a.owner)+'</span>':'')+'</div>'
+        +'<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:9px" onclick="hqSendTask(\''+ym+'\',\''+st.id+'\','+i+')" title="店舗タスクとして送る"><i class="ti ti-send"></i></button>'
+        +'</div>';
+    }).join('');
+    var gapCol = gap==null?'var(--muted)':(gap>0?'var(--red)':'var(--green)');
+    rowsHtml += '<div class="card"><div class="card-title"><span class="store-dot" style="background:'+(st.color||'#888')+'"></span>'+escapeHtml(st.name)
+      +'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:2px 9px;font-size:10px" onclick="openHqBudgetModal(\''+ym+'\',\''+st.id+'\')"><i class="ti ti-pencil"></i> 本部予算</button></div>'
+      +'<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-bottom:2px">'
+      +'<span><span style="font-size:10px;color:var(--muted)">店舗予算 </span><b>'+(sb!=null?m(sb):'未提出')+'</b></span>'
+      +'<span><span style="font-size:10px;color:var(--muted)">本部予算 </span><b style="color:var(--accent)">'+(hb!=null?m(hb):'未設定')+'</b></span>'
+      +'<span><span style="font-size:10px;color:var(--muted)">差異 </span><b style="color:'+gapCol+'">'+(gap!=null?((gap>=0?'+':'')+m(gap).replace('$-','-$')+'（'+(sb>0?(Math.round(gap/sb*1000)/10):'—')+'%）'):'—')+'</b></span>'
+      +'<span><span style="font-size:10px;color:var(--muted)">前月実績 </span>'+(ms.sales?m(ms.sales):'—')+'</span>'
+      +'</div>'
+      +(hq[st.id]&&hq[st.id].note?'<div style="font-size:10.5px;color:var(--tm);margin-top:2px"><i class="ti ti-message-2"></i> '+escapeHtml(hq[st.id].note)+'</div>':'')
+      +gapAnalysis
+      +'<div style="margin-top:8px"><div style="font-size:11px;font-weight:700;margin-bottom:2px"><i class="ti ti-list-check" style="color:var(--accent2)"></i> ネクストアクション'+(aList.length?'（'+aList.filter(function(a){return a.done;}).length+'/'+aList.length+'）':'')+'</div>'
+      +actsHtml
+      +'<div style="display:flex;gap:6px;margin-top:6px"><input class="form-input" id="hqact-'+st.id+'" style="flex:1;padding:6px 8px;font-size:11px" placeholder="例: 週末ディナーのセット提案でD客単価+$2">'
+      +'<button class="btn btn-secondary btn-sm" onclick="hqAddAction(\''+ym+'\',\''+st.id+'\')">追加</button></div></div>'
+      +'</div>';
+  });
+  // 全社サマリー
+  var gapAll = totHq - totStore;
+  h += '<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-building-bank" style="color:var(--accent)"></i>全社（'+mLabel+'）</div>'
+    +'<div class="kpi-grid">'
+    +kpi('店舗予算 合計', m(totStore), nStore+'店 提出/設定済み', 'var(--tm)')
+    +kpi('本部予算 合計', m(totHq), Object.keys(hq).length+'店 設定済み', 'var(--accent)')
+    +kpi('差異（本部−店舗）', (gapAll>=0?'+':'')+m(gapAll).replace('$-','-$'), totStore>0?((Math.round(gapAll/totStore*1000)/10)+'%'):'', gapAll>0?'var(--red)':'var(--green)')
+    +'</div></div>';
+  return h + rowsHtml;
+}
+function openHqBudgetModal(ym, sid){
+  var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
+  var hq=getHqBudget(); var cur=(hq[ym]||{})[sid]||{};
+  var sb=storeBudgetTotalForYm(sid, ym);
+  var ms=safeMonthStats(sid, plOff-1)||{};
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 本部予算（'+ym+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.7">店舗予算: <b>'+(sb!=null?('$'+sb.toLocaleString()):'未提出')+'</b>／前月実績: '+(ms.sales?('$'+Math.round(ms.sales).toLocaleString()):'—')
+    +(ms.ppa?('<br>前月客単価: L '+(ms.ppaLunch!=null?'$'+ms.ppaLunch.toFixed(2):'—')+' ／ D '+(ms.ppaDinner!=null?'$'+ms.ppaDinner.toFixed(2):'—')+' ／ 全体 $'+ms.ppa.toFixed(2)):'')+'</div>'
+    +'<div class="form-group"><label class="form-label">本部予算（月間売上目標 $）</label><input class="form-input" id="hqb-total" type="number" inputmode="decimal" value="'+(cur.total!=null?cur.total:'')+'"></div>'
+    +'<div class="form-group"><label class="form-label">目標の根拠・メッセージ（店に伝わる考え方）</label><textarea class="form-input" id="hqb-note" rows="2" placeholder="例: 前年同月+8%。祝日3回のD強化で到達可能">'+escapeHtml(cur.note||'')+'</textarea></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveHqBudget(\''+ym+'\',\''+sid+'\')">保存</button></div>');
+}
+function saveHqBudget(ym, sid){
+  var v=parseFloat(document.getElementById('hqb-total').value);
+  var note=document.getElementById('hqb-note').value.trim();
+  var hq=getHqBudget(); hq[ym]=hq[ym]||{};
+  if(isNaN(v)||v<=0){ delete hq[ym][sid]; }
+  else hq[ym][sid]={total:Math.round(v), note:note, by:myName(), at:nowJP()};
+  lsSet('hq_budget', hq);
+  closeModalDirect(); showToast('本部予算を保存しました','success'); _secRerender();
+}
+function hqAddAction(ym, sid){
+  var inp=document.getElementById('hqact-'+sid); var txt=(inp&&inp.value||'').trim();
+  if(!txt){ showToast('アクション内容を入力してください','warning'); return; }
+  var a=getHqActions(); a[ym]=a[ym]||{}; a[ym][sid]=a[ym][sid]||[];
+  a[ym][sid].push({text:txt, owner:'', due:'', done:false, by:myName(), at:nowJP()});
+  lsSet('hq_actions', a); _secRerender();
+}
+function hqToggleAction(ym, sid, i, done){
+  var a=getHqActions(); if(!a[ym]||!a[ym][sid]||!a[ym][sid][i]) return;
+  a[ym][sid][i].done=!!done; lsSet('hq_actions', a); _secRerender();
+}
+function hqSendTask(ym, sid, i){
+  var a=getHqActions(); var it=(a[ym]&&a[ym][sid]&&a[ym][sid][i]); if(!it) return;
+  var tk=getTasks();
+  tk.push({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), refId:'hq_'+ym+'_'+sid+'_'+i, auto:'hq',
+    title:'【本部】'+String(it.text).slice(0,60), desc:'本部予算（'+ym+'）達成のためのアクションです。',
+    assignee:'', store:sid, priority:'高', due:'', progress:0, status:'進行中', created:todayJP() });
+  lsSet('tasks_all', tk);
+  try{ addNotif({type:'warning', title:'本部からのアクション', text:String(it.text).slice(0,120), toStore:sid, toRoles:['sl','sm','am','gm','ceo'], page:'tasks', refId:'hq_'+ym+'_'+sid+'_'+i}); }catch(e){}
+  showToast('店舗タスクとして送信しました','success');
 }
 /* ===== 簡易PL 本体 ===== */
 function renderSimplePL(){
@@ -4881,7 +5010,7 @@ function switchStore(id) {
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','store_power','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory'];
+var OFFICE_OK_PAGES = ['biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','store_power','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory'];
 
 /* ============================================================
    ROUTER
@@ -4910,6 +5039,7 @@ function renderPage(page) {
     case 'supply_order': el.innerHTML = renderSupplyOrder(); break;
     case 'dailyops':     el.innerHTML = renderDailyOps(); break;
     case 'tasks':        el.innerHTML = renderWorkCenter(); break;
+    case 'biz_guide':    el.innerHTML = renderBizGuide(); break;
     case 'required':     el.innerHTML = renderRequired(); break;
     case 'goals':        el.innerHTML = renderGoals(); break;
     case 'announce':     workTab='announce'; el.innerHTML = renderWorkCenter(); break;
@@ -29214,6 +29344,135 @@ function taskCardHtml(t){
   return h;
 }
 
+/* ============================================================
+   業務ガイド: Grade別のアプリ活用ガイド＋責任マトリクス（G3以上）
+============================================================ */
+var bizTab='guide';
+function setBizTab(t){ bizTab=t; renderPage('biz_guide'); }
+function _bgSec(icon,title,inner){ return '<div class="card"><div class="card-title"><i class="ti '+icon+'" style="color:var(--accent)"></i>'+title+'</div><div style="font-size:12px;line-height:1.9">'+inner+'</div></div>'; }
+function _bgLi(items){ return items.map(function(x){ return '<div style="padding:3px 0;border-bottom:1px dashed var(--border)"><b style="color:var(--tm)">'+x[0]+'</b> — '+x[1]+'</div>'; }).join(''); }
+function renderBizGuide(){
+  var h = '<div class="section-header"><div><div class="section-title"><i class="ti ti-book-2" style="color:var(--accent)"></i> 業務ガイド</div><div class="section-sub">Grade別のアプリ活用と責任範囲</div></div></div>'
+    +'<div class="phase-tabs" style="margin-bottom:10px">'
+    +'<div class="phase-tab'+(bizTab==='guide'?' active':'')+'" onclick="setBizTab(\'guide\')"><i class="ti ti-device-mobile" style="font-size:12px"></i> 使い方（Grade別）</div>'
+    +'<div class="phase-tab'+(bizTab==='resp'?' active':'')+'" onclick="setBizTab(\'resp\')"><i class="ti ti-shield-check" style="font-size:12px"></i> 責任マトリクス</div>'
+    +'</div>';
+  return h + (bizTab==='resp' ? renderRespMatrix() : renderGradeGuide());
+}
+function renderGradeGuide(){
+  var h='';
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.7"><i class="ti ti-info-circle"></i> 自分のGradeの段を開いて、<b>毎日・毎週・毎月なにを設定し、どこを見れば何がわかるか</b>を確認してください。上位Gradeは下位の項目もすべて含みます。</div>';
+
+  h+='<details class="card" open><summary style="font-weight:800;font-size:14px;cursor:pointer;color:var(--accent)">G3（SL）— 現場リーダー：日々の入力と確定の起点</summary><div style="font-size:12px;line-height:1.9;margin-top:8px">'
+    +_bgSec('ti-sun','毎日（営業前・営業中・締め）', _bgLi([
+      ['Store CMD',' 出勤したらまず開く。今日の予算・天気・イベント・シフトを確認。締めで<b>キャッシュチップ入力（0でも「0」）</b>。未入力は翌朝タスク＋通知が飛びます'],
+      ['発注の確定','食材発注・供給発注を確定。欠品時は<b>代替材料を確保</b>し、使った代替はInvoice/買い出しに記録'],
+      ['ワークセンター「今日」','承認待ち・期限タスク・相談の初動タスクを処理。相談が来たら<b>「担当する」</b>で必ず誰かが拾う'],
+      ['日次進捗','昨日の売上・L/D客単価（@表示）・✎手入力マークを確認。異常値は当日中に原因メモ（イベント欄）'],
+      ['オーバーポーション監視','盛り付け基準の徹底。原価率が跳ねた日は日次進捗→原価入力を確認']]))
+    +_bgSec('ti-calendar-week','毎週', _bgLi([
+      ['シフト作成（義務）','シフト希望を承認→翌週シフトを作成。週40h超（OT）が出そうな人は事前にG4へ報告'],
+      ['スキル承認','Crewの申請スキルを確認しLv承認。マイページのレーダーに反映され、Tip配分・昇格に直結'],
+      ['価格変動アラート','ダッシュボードのアラートを確認。仕入分析タブで業者比較→気づきはG4へ提案']]))
+    +_bgSec('ti-calendar-month','毎月', _bgLi([
+      ['予算たたき台の作成（義務）','予算設定→日別予算一覧をベースに作成。<b>前月確定の客単価L/D/全体</b>を見て単価×客数で組む→根拠・重点を書いて<b>GM提出（承認必須）</b>'],
+      ['棚卸の実施と記入','月末に棚卸ページで数える→<b>その月分として確定</b>。ミスに気づいたら即G4へ（最終責任はG4）'],
+      ['売価変更・おすすめメニュー提案','仕入分析の値上がりを根拠に、売価変更・おすすめ設計をG4へ提案']]))
+    +'</div></details>';
+
+  h+='<details class="card"><summary style="font-weight:800;font-size:14px;cursor:pointer;color:var(--accent2)">G4（店長）— 店の数字すべてに最終責任</summary><div style="font-size:12px;line-height:1.9;margin-top:8px">'
+    +_bgSec('ti-sun','毎日', _bgLi([
+      ['予実「現在地」','朝一で自店の現在地（累計実績vs予算・原価率・人件費率・重要KPI）を確認。乖離5%で原因特定'],
+      ['労働時間タブ','週次OTの発生状況を監視。<b>ワーキングスケジュールとオーバーワーク管理はG4の責任</b>。40h超が見えたらシフトを即調整'],
+      ['勤怠データ','Toast打刻の異常（エラーセンター検知）を確認。修正は経理/GMへ依頼、承認は日次で'],
+      ['ワークセンター承認','建替・経費・休暇・供給の承認処理。予算承認依頼の根拠をチェック']]))
+    +_bgSec('ti-calendar-week','毎週', _bgLi([
+      ['シフトの運用・管理（全責任）','G3が作ったシフトの最終確認・当日変更の采配・人時売上の最適化'],
+      ['Invoice読取','届いた請求書をその週のうちに読取。新マスターの<b>仕様未入力</b>を潰す。価格変動通知に対応'],
+      ['月次サマリー','先週までの推移を店舗横比較。客単価L/Dの変化をメニュー・オペと結びつける']]))
+    +_bgSec('ti-calendar-month','毎月', _bgLi([
+      ['予算の最終化と提出','G3のたたき台をレビュー→<b>根拠・重点を必須記入してGM提出</b>。承認後は日別予算で店休・イベント調整'],
+      ['棚卸の確定と数字の全責任','棚卸エラーがあれば<b>G4の責任で中間棚卸を実施</b>し修正・再確定（修正履歴が残る）。原価月次の期首期末・理論原価の整合はG4が保証'],
+      ['簡易PL意識','GMから共有される簡易PL（売上-原価-人件費-変動費-固定費）で自店の営業利益を把握。目標利益から逆算した打ち手を翌月予算の「重点」に書く']]))
+    +'</div></details>';
+
+  h+='<details class="card"><summary style="font-weight:800;font-size:14px;cursor:pointer;color:var(--yellow)">G5（AM）— 管轄店を横串で最適化</summary><div style="font-size:12px;line-height:1.9;margin-top:8px">'
+    +_bgSec('ti-building-store','日々・週次', _bgLi([
+      ['全店舗（管轄すべて）タブ','ロケーション切替の先頭から管轄横断ビューへ。店舗別状況タイルで売上/FC/Labor/客単価を横比較し、外れ値の店に入る'],
+      ['ワークセンター（管轄スコープ）','管轄店の承認・タスク・相談を横断処理。滞留（担当未定の相談・期限切れタスク）を潰す'],
+      ['仕入分析の店舗差','新マスターの<b>店舗差バッジ</b>（同じ食材の店舗間価格差）を毎週確認→安い仕入への統一・業者交渉'],
+      ['成長管理','Lv合計順の一覧で次の昇格候補を把握。パイプラインの停滞者にOJTを割当']]))
+    +_bgSec('ti-calendar-month','月次', _bgLi([
+      ['予算の横審査','管轄店の予算根拠を比較し、弱い根拠は差し戻し前にG4と練り直す'],
+      ['店舗間の標準化','うまくいっている店のやり方（シフト構成・おすすめ設計）を他店へ移植。責任: 管轄全店の合計数字']]))
+    +'</div></details>';
+
+  h+='<details class="card"><summary style="font-weight:800;font-size:14px;cursor:pointer;color:var(--red)">G6/GM・CEO — 会社の数字と制度</summary><div style="font-size:12px;line-height:1.9;margin-top:8px">'
+    +_bgSec('ti-lock','セキュアページ', _bgLi([
+      ['簡易PL','毎月: 全店の売上→営業利益を確認。実PL入力で差異検証。利益の薄い店は変動費実額調整で精度を上げ原因特定'],
+      ['本部予算','各店予算と本部目標のギャップ分析→ネクストアクションを設定し、タスクとして店へ落とす'],
+      ['成長カルテ','昇格・昇給の最終判断材料']]))
+    +_bgSec('ti-checklist','日々・月次', _bgLi([
+      ['予算承認','ワークセンター承認タブで<b>根拠・重点を読んでから</b>承認/差し戻し'],
+      ['HR・福利厚生','消化状況の監督。手動消化の補正は経理と連携'],
+      ['制度メンテ','キャリア説明・評価基準・このガイド自体の更新（制度マスター準拠）']]))
+    +'</div></details>';
+
+  h+='<details class="card"><summary style="font-weight:800;font-size:14px;cursor:pointer;color:var(--tm)">経理（Office）— 正確性の門番</summary><div style="font-size:12px;line-height:1.9;margin-top:8px">'
+    +_bgSec('ti-calculator','日々・月次', _bgLi([
+      ['勤怠修正','勤怠データタブの修正ボタンでToast誤りを補正（記録が残る）。Labor・Tipに即反映'],
+      ['ワークセンター エラータブ','検知エラーを日次でゼロに'],
+      ['建替・経費・Invoice','承認処理とDrive保存の確認'],
+      ['実PL入力','会計確定後にセキュアページの実PLへ入力→簡易PLとの差異を毎月レビュー'],
+      ['HR手動消化','システム外で取得済みの休暇を登録し残日数を正しく保つ']]))
+    +'</div></details>';
+  return h;
+}
+function renderRespMatrix(){
+  // ●=最終責任(Accountable) ◎=実行責任(Responsible) ○=実務・補助 △=把握・報告
+  var rows=[
+    ['売上・日報','','○','◎','●','△','△','売上/客数の入力・日報確認はG3が実行、数字の正はG4'],
+    ['キャッシュTip入力','','○','◎','●','','','締めで必ず入力（0でも0）。未入力タスクの解消はG3'],
+    ['予算作成','','','◎<br><span style="font-size:9px">義務</span>','●<br><span style="font-size:9px">義務</span>','○','承認','G3たたき台→G4最終化→GM承認必須。根拠・重点の記入必須'],
+    ['日別予算調整（店休・イベント）','','','◎','●','△','','月中の調整もG3/G4で即時反映'],
+    ['シフト作成','','△','◎<br><span style="font-size:9px">義務</span>','●','△','','G3以上に作成義務。最終確認はG4'],
+    ['シフト運用・OT管理','','','△<br><span style="font-size:9px">把握</span>','●<br><span style="font-size:9px">全責任</span>','△','','週40h超・ワーキングスケジュールの責任はG4。G3は把握と即報告'],
+    ['勤怠の正確性','','○','○','●','','◎<br><span style="font-size:9px">修正実務</span>','修正実務は経理/GM、店の勤怠の正はG4'],
+    ['日々の発注確定','○','○','●','◎','','','発注ミス・欠品対応の一次責任はG3'],
+    ['代替材料の確保（欠品時）','','○','●','◎','','','G3が即断で確保→G4へ報告'],
+    ['売価変更・おすすめ提案','','','●<br><span style="font-size:9px">提案</span>','◎<br><span style="font-size:9px">決定</span>','○','','提案はG3の義務、採否と結果はG4'],
+    ['オーバーポーション管理','○','◎','●','◎','','','現場の徹底はG2/G3、原価率への影響はG4'],
+    ['棚卸の実施・記入','','○','●<br><span style="font-size:9px">実施</span>','◎','','','G3が数えて確定。記入ミスの一次修正もG3'],
+    ['棚卸エラーの最終責任','','','△','●<br><span style="font-size:9px">中間棚卸</span>','△','','エラー時はG4の責任で中間棚卸→修正再確定'],
+    ['原価の数字すべて','','','○','●','△','△','理論原価・月次原価の整合はG4が保証'],
+    ['Invoice読取・新マスター整備','','','◎','●','△','○','読取はG3/G4、仕様入力の完了責任はG4'],
+    ['人材育成・スキル承認','','○','◎','●','△','','日々のOJTはG2/G3、育成計画と昇格推薦はG4'],
+    ['相談対応（お悩み）','','','◎','●','△','','初動24hで担当決め。店で解決できない案件はG5へ'],
+    ['管轄店の合計数字','','','','△','●','','店舗間標準化・横比較改善はG5'],
+    ['会社PL・制度','','','','','◎','●=GM/CEO','簡易PL・本部予算・制度改定はGM/CEO'],
+  ];
+  var h='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。</div>'
+    +'<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:640px;font-size:11px"><thead><tr><th style="text-align:left">業務</th><th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>G5</th><th>GM/経理</th><th style="text-align:left">備考</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    h+='<tr><td style="text-align:left;font-weight:600">'+r[0]+'</td>'
+      +[r[1]||'',r[2]||'',r[3]||'',r[4]||'',r[5]||'',r[6]||''].map(function(c){var col=c.indexOf('●')>=0?'var(--red)':c.indexOf('◎')>=0?'var(--accent)':'var(--muted)';return '<td style="text-align:center;color:'+col+';font-weight:700">'+c+'</td>';}).join('')
+      +'<td style="text-align:left;font-size:10px;color:var(--muted)">'+r[7]+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  h+=_bgSec('ti-arrow-down','指示系統（誰が誰に指示するか）', _bgLi([
+    ['G2 → G1','持ち場の作業指示・新人とペアで手本を見せる・チェックリストの消し込み確認。<b>G2は「作業が正しく終わる」ことに実行責任</b>'],
+    ['G3 → G2','当日の持ち場割り・優先順位の采配・品質チェック・スキル評価の一次判断。G2からの報告を集約しG4へ'],
+    ['G4 → G3','数値目標（日次売上・原価率・人時）の提示と是正指示・シフトの最終決定・提案の採否'],
+    ['G5 → G4','管轄目標の配分・店舗間の標準化指示・G4の育成'],
+    ['GM → G5/G4','会社目標・本部予算・制度の伝達。承認と監査']]));
+  h+=_bgSec('ti-repeat','業務の流れ（1ヶ月の型）', _bgLi([
+    ['前月25日頃','G3が予算たたき台（日別予算一覧・前月客単価参照）→G4最終化・根拠重点記入→GM提出'],
+    ['月初','GM承認→承認済み予算で運用開始。本部予算とのギャップはGMからアクション指示'],
+    ['毎日','売上/Tip入力（G3）→現在地確認（G4）→承認・タスク処理（ワークセンター）'],
+    ['毎週','シフト作成（G3）→OT監視（G4）→Invoice読取・価格変動対応'],
+    ['月末','棚卸実施（G3）→月分確定→エラーあればG4が中間棚卸→原価確定→GMが簡易PLで利益確認→実PL入力（経理）で差異検証']]));
+  return h;
+}
 /* ============================================================
    ワークセンター（作業ハブ）: タスク・承認・エラー・アナウンスを1箇所に統合
    表示: G3以上＋事務（sl/am/gm/ceo/office）
