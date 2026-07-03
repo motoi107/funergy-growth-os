@@ -14446,13 +14446,14 @@ function renderShiftAdmin() {
   var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${week}週</div></div>
   </div>
-  <div class="phase-tabs">
-    <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')">提出状況</div>
-    <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')">シフト作成</div>
-    <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')">カバー候補</div>
+  <div class="phase-tabs" style="flex-wrap:wrap;gap:4px">
+    <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')"><i class="ti ti-clipboard-check" style="font-size:12px"></i> 提出状況</div>
+    <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')"><i class="ti ti-calendar-plus" style="font-size:12px"></i> シフト作成</div>
+    <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')"><i class="ti ti-users-group" style="font-size:12px"></i> カバー候補</div>
     <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
-    <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')">Labor Cost</div>
-    ${['ceo','gm','am','sl'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='rules'?' active':''}" onclick="setShiftAdminTab('rules')">特別ルール</div>`:''}
+    <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')"><i class="ti ti-coin" style="font-size:12px"></i> Labor Cost</div>
+    ${(['ceo','gm','am','sl'].includes(curRole)||['ceo','gm','am'].includes(curRole))?`<div style="width:1px;background:var(--border);margin:2px 2px"></div>`:''}
+    ${['ceo','gm','am','sl'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='rules'?' active':''}" onclick="setShiftAdminTab('rules')"><i class="ti ti-adjustments-alt" style="font-size:12px"></i> 特別ルール</div>`:''}
     ${['ceo','gm','am'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='opt'?' active':''}" onclick="setShiftAdminTab('opt')"><i class="ti ti-adjustments" style="font-size:12px"></i> 最適化設定</div>`:''}
   </div>`;
 
@@ -14641,21 +14642,28 @@ function renderShiftBuild(storeId, week) {
   var plan = getShiftPlan(storeId, week) || {status:'下書き', cells:{}};
   var warnings = checkShiftWarnings(storeId, week, plan);
 
-  var html = `<div style="display:flex;gap:6px;margin-bottom:10px">
-    <button class="btn btn-primary btn-sm" onclick="autoGenShift('${storeId}','${week}')"><i class="ti ti-wand"></i> Auto-Generate</button>
-    <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-layout-grid"></i> ${shiftView==='grid'?'List':'Grid'}</button>
-    ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center">公開済</span>`}
-    ${usesShiftLayout(storeId) ? (
-      SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.optional).map(sec=>`<button class="btn ${shiftSectionEnabled(storeId,sec.key)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftSection('${storeId}','${sec.key}')"><i class="ti ti-layout-list"></i> ${sec.label}${shiftSectionEnabled(storeId,sec.key)?' ON':''}</button>`).join('')
-    ) : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
-    <button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor('${storeId}')"><i class="ti ti-clock"></i> シフト時間設定</button>
-    <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像で保存/共有</button>
+  var _optSecs = usesShiftLayout(storeId) ? SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.optional) : [];
+  var html = `<div class="card" style="padding:10px 12px;margin-bottom:10px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-primary btn-sm" onclick="autoGenShift('${storeId}','${week}')"><i class="ti ti-wand"></i> 自動作成</button>
+      <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-${shiftView==='grid'?'list':'layout-grid'}"></i> ${shiftView==='grid'?'リスト表示':'グリッド表示'}</button>
+      <div style="flex:1"></div>
+      ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> 公開済</span>`}
+      <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+      <span style="font-size:10px;color:var(--muted);align-self:center"><i class="ti ti-settings"></i> 設定:</span>
+      <button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor('${storeId}')"><i class="ti ti-clock"></i> シフト時間</button>
+      ${usesShiftLayout(storeId)
+        ? _optSecs.map(sec=>`<button class="btn ${shiftSectionEnabled(storeId,sec.key)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftSection('${storeId}','${sec.key}')"><i class="ti ti-layout-list"></i> ${sec.label}${shiftSectionEnabled(storeId,sec.key)?' ON':''}</button>`).join('')
+        : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
+    </div>
   </div>`;
   // ===== 曜日別 営業本数パネル（headcount店舗のみ） =====
   if (usesShiftLayout(storeId)) {
     var _hsecs = shiftSectionsFor(storeId).filter(function(sc){ return sc.headcount; });
     if (_hsecs.length) {
-      html += `<div class="card" style="overflow-x:auto"><div style="font-size:12px;font-weight:700;margin-bottom:6px"><i class="ti ti-users" style="color:var(--accent)"></i> 曜日別 営業本数（合計人数）— 固定枠を差し引いた残りが自動でServer枠になります</div>
+      html += `<details open class="card" style="overflow-x:auto"><summary style="font-size:12px;font-weight:700;cursor:pointer;list-style:none"><i class="ti ti-users" style="color:var(--accent)"></i> 曜日別 営業本数（合計人数）<span style="font-size:10px;color:var(--muted);font-weight:400">— 固定枠を差し引いた残りが自動でServer枠</span></summary><div style="margin-top:8px">
         <table class="inv-table" style="min-width:560px"><thead><tr><th style="font-size:10px">営業</th>${DOW_SHIFT.map(d=>`<th style="text-align:center;font-size:10px;padding:4px 2px">${shiftDayHeadHtml(d)}</th>`).join('')}</tr></thead><tbody>`;
       _hsecs.forEach(function(sc){
         var fixed=(sc.slots||[]).length;
@@ -14670,7 +14678,7 @@ function renderShiftBuild(storeId, week) {
         });
         html += '</tr>';
       });
-      html += `</tbody></table><div style="font-size:10px;color:var(--muted);margin-top:4px">数字＝その営業の合計人数、S＝そのうちServer枠数。Auto-Generateで本数ぶんに提出者を自動振り分けします。</div></div>`;
+      html += `</tbody></table><div style="font-size:10px;color:var(--muted);margin-top:4px">数字＝その営業の合計人数、S＝そのうちServer枠数。Auto-Generateで本数ぶんに提出者を自動振り分けします。</div></div></details>`;
     }
   }
 
