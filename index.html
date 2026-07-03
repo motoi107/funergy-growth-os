@@ -3820,7 +3820,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -14499,6 +14499,7 @@ function renderShiftBuild(storeId, week) {
     <button class="btn btn-primary btn-sm" onclick="autoGenShift('${storeId}','${week}')"><i class="ti ti-wand"></i> Auto-Generate</button>
     <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-layout-grid"></i> ${shiftView==='grid'?'List':'Grid'}</button>
     ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center">公開済</span>`}
+    <button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>
     <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像で保存/共有</button>
   </div>`;
 
@@ -14861,8 +14862,21 @@ function positionLevelStore(name, pos, storeId) {
 }
 /* 実際にアサインが必要なポジション（Energy/Leadershipは評価軸なので枠から除外） */
 function assignablePositions(storeId) {
-  return getStorePositions(storeId).filter(p=>p!=='Energy' && p!=='Leadership');
+  // Totoya 3店は Host / Main Plater / Miso / Supporter の4枠に固定（Trainee は shiftTraineeEnabled で任意追加）
+  if (isTotoyaStore(storeId)) {
+    var base = TOTOYA_SHIFT_POSITIONS.slice();
+    if (shiftTraineeEnabled(storeId)) base.push('Trainee');
+    return base;
+  }
+  // その他の店舗: スキル判定専用の軸（Server/Prep/サービスクオリティ/理念/Energy/Leadership）はシフト枠から除外
+  var list = getStorePositions(storeId).filter(function(p){ return SHIFT_NON_POSITIONS.indexOf(p)<0; });
+  if (shiftTraineeEnabled(storeId) && list.indexOf('Trainee')<0) list.push('Trainee');
+  return list;
 }
+/* Trainee枠をシフトに出すか（店舗別トグル。任意追加） */
+function shiftTraineeEnabled(storeId){ try{ var c=ls('shift_trainee_pos',{})||{}; return !!c[storeId]; }catch(e){ return false; } }
+function setShiftTraineeEnabled(storeId,on){ var c=ls('shift_trainee_pos',{})||{}; c[storeId]=!!on; lsSet('shift_trainee_pos',c); }
+function toggleShiftTrainee(storeId,week){ setShiftTraineeEnabled(storeId, !shiftTraineeEnabled(storeId)); showToast(shiftTraineeEnabled(storeId)?'Trainee枠を追加しました':'Trainee枠を外しました','success'); renderPage('shift_admin'); }
 /* Training中スタッフ（初回勤務基準。step<=0 を訓練中とみなす） */
 function isTraining(emp) { return (emp.step||1) <= 0; }
 
@@ -22396,16 +22410,21 @@ function deleteVendor(vId) {
 ============================================================ */
 const ALL_POSITIONS = ['Host','Server','Bar','Drink','Yakitori','Kitchen','Tempura','Sushi','Cold','Main Plater','Miso','Supporter','Prep','Front','Back','Food Runner','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'];
 const DEFAULT_STORE_POSITIONS = {
-  'F01':['Host','Server','Bar','Drink','Yakitori','Kitchen','Energy','Leadership','サービスクオリティ','理念'],
-  'F02':['Host','Server','Tempura','Sushi','Cold','Drink','Prep','Energy','Leadership','サービスクオリティ','理念'],
-  'F03':['Prep','FSP Kitchen','FSP Cashier','Energy','Leadership','サービスクオリティ','理念'],
-  'F03-G':['Prep','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'],
-  'F04-K':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
-  'F04-P':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
-  'F04-A':['Host','Main Plater','Miso','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
-  'F05':['Host','Server','Front','Back','Food Runner','Supporter','Prep','Energy','Leadership','サービスクオリティ','理念'],
+  'F01':['Host','Bar','Drink','Yakitori','Kitchen','Energy','Leadership','サービスクオリティ','理念'],
+  'F02':['Host','Tempura','Sushi','Cold','Drink','Energy','Leadership','サービスクオリティ','理念'],
+  'F03':['FSP Kitchen','FSP Cashier','Energy','Leadership','サービスクオリティ','理念'],
+  'F03-G':['WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'],
+  'F04-K':['Host','Main Plater','Miso','Supporter','Energy','Leadership','サービスクオリティ','理念'],
+  'F04-P':['Host','Main Plater','Miso','Supporter','Energy','Leadership','サービスクオリティ','理念'],
+  'F04-A':['Host','Main Plater','Miso','Supporter','Energy','Leadership','サービスクオリティ','理念'],
+  'F05':['Host','Front','Back','Food Runner','Supporter','Energy','Leadership','サービスクオリティ','理念'],
   'OFFICE':['請求書処理','月次締め','カード明細照合','給与計算','売上・入出金管理','税務・DOH対応','データ入力','書類管理','採用事務','電話・メール対応','理念'],
 };
+/* シフト割当ポジションから常に除外する「スキルレベル判定専用の軸」。
+   これらはスキル評価には使うが、実ポジションではないためシフト作成の枠には出さない。 */
+const SHIFT_NON_POSITIONS = ['Energy','Leadership','サービスクオリティ','理念','Server','Prep'];
+/* Totoyaの標準シフトポジション（4枠）。Trainee は別枠で任意追加。TOTOYA_STORE_IDS は上方で定義済み。 */
+const TOTOYA_SHIFT_POSITIONS = ['Host','Main Plater','Miso','Supporter'];
 /* スキルレベル基準（Lv0-3の達成基準）。Totoyaは実基準、他は汎用 */
 const SKILL_CRITERIA = {
   'Main Plater':['未経験','米を丼に盛りtobikoを正しくかけられる','全ての丼を正しく作り1シフト50皿以上＋setup/closing対応','オープンラッシュ中に17皿を25分で同品質で作れる'],
