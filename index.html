@@ -4220,7 +4220,8 @@ function plComputeStore(sid, ym, off){
   var cfg=getPlConfig(), ovr=getPlOverrides();
   var sales = Math.round((monthStats(sid, off)||{}).sales||0);
   var fc = getFcMonthly(sid, ym);
-  var purch = monthOrderTotalYm(sid, ym) + monthPurchaseTotalYm(sid, ym);
+  var purchOrder = monthOrderTotalYm(sid, ym), purchBuy = monthPurchaseTotalYm(sid, ym);
+  var purch = purchOrder + purchBuy;
   var cogs = Math.round((parseFloat(fc.beginInv)||0) + purch - (parseFloat(fc.endInv)||0));
   var cogsSrc = ((parseFloat(fc.beginInv)||0)>0 || (parseFloat(fc.endInv)||0)>0) ? '棚卸法' : '仕入合計';
   if (cogs<0) cogs=Math.round(purch);
@@ -4233,7 +4234,8 @@ function plComputeStore(sid, ym, off){
   var expT = vcT + get + fixT;
   var profit = sales - cogs - labor - expT;
   var hasOvr = !!(ovr[ym] && ovr[ym][sid] && Object.keys(ovr[ym][sid]).some(function(k){ return ovr[ym][sid][k]!=null && ovr[ym][sid][k]!==''; }));
-  return { sales:sales, cogs:cogs, cogsSrc:cogsSrc, gross:sales-cogs, labor:labor, vc:vc, vcT:vcT, reimb:reimb, get:get, fixT:fixT, expT:expT, profit:profit, hasOvr:hasOvr };
+  return { sales:sales, cogs:cogs, cogsSrc:cogsSrc, gross:sales-cogs, labor:labor, vc:vc, vcT:vcT, reimb:reimb, get:get, fixT:fixT, expT:expT, profit:profit, hasOvr:hasOvr,
+    beginInv:Math.round(parseFloat(fc.beginInv)||0), endInv:Math.round(parseFloat(fc.endInv)||0), purchOrder:Math.round(purchOrder), purchBuy:Math.round(purchBuy) };
 }
 async function showManagerSecure(){
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
@@ -4271,11 +4273,9 @@ function renderSecureBody(){
   return bar + (t==='pl' ? renderSimplePL() : t==='hq' ? renderHqBudget() : renderGrowthKarte());
 }
 /* ============================================================
-   本部予算（セキュアページ）: 店舗予算 vs 本部目標のギャップ分析
-   hq_budget[ym][sid]={total,by,at,note} / hq_actions[ym][sid]=[{text,owner,due,done}]
+   本部予算（セキュアページ）: 年間計画表（本部予算 vs 店舗予算 vs 実績）
 ============================================================ */
 function getHqBudget(){ return ls('hq_budget', {})||{}; }
-function getHqActions(){ return ls('hq_actions', {})||{}; }
 function storeBudgetTotalForYm(sid, ym){
   if (ym === curYm()){
     var b = getBudgets().find(function(x){return x.storeId===sid;});
@@ -4286,116 +4286,217 @@ function storeBudgetTotalForYm(sid, ym){
   if (mb && budgetHasRealData(mb)) return Math.round(daysOfYm(ym).reduce(function(a,dd){ return a + dayBudgetFor(mb, dd.date); },0));
   return null;
 }
+/* ===== 本部予算（年間計画表）=====
+   行=PL項目 × 列=1〜12月＋年間。層トグル: 本部予算/店舗予算/実績/差異(実−本)。
+   本部予算入力=客数×客単価(売上自動)＋目標原価率/人件費率 → 変動費・GET・固定費(簡易PL設定)を自動適用し営業利益まで展開。
+   データ: hq_budget[ym][sid]={total,guests,ppa,fcRate,laborRate,note,by,at}（旧形式: totalのみでも表示可） */
+var _hqYear = (new Date()).getFullYear();
+var _hqLayer = 'hq';    // hq|store|act|diff
+var _hqScope = 'ALL';   // 'ALL' or storeId
+function hqSetYear(d){ _hqYear+=d; _secRerender(); }
+function hqSetLayer(l){ _hqLayer=l; _secRerender(); }
+function hqSetScope(v){ _hqScope=v; _secRerender(); }
+function _hqOffOf(ym){ var n=new Date(); var p=ym.split('-'); return (parseInt(p[0],10)-n.getFullYear())*12+(parseInt(p[1],10)-1-n.getMonth()); }
+/* 本部予算層（GMの計画）: 客数×客単価→売上、目標率→原価/人件費、変動費・GET・固定費は簡易PL設定 */
+function hqPlanForYm(sid, ym){
+  var e=(getHqBudget()[ym]||{})[sid]; if(!e) return null;
+  var g=Number(e.guests)||0, p=Number(e.ppa)||0;
+  var sales=(g>0&&p>0)?Math.round(g*p):(Number(e.total)||0);
+  if(!(sales>0)) return null;
+  var cfg=getPlConfig();
+  var cogs=(Number(e.fcRate)>0)?sales*Number(e.fcRate)/100:null;
+  var labor=(Number(e.laborRate)>0)?sales*Number(e.laborRate)/100:null;
+  var vcT=0; PL_VC_CATS.forEach(function(c){ vcT+=Number((cfg.vcAvg[sid]||{})[c[0]])||0; });
+  var get=sales*(cfg.getRate||4.712)/100;
+  var fixT=0; PL_FIX_CATS.forEach(function(c){ fixT+=Number((cfg.fixed[sid]||{})[c[0]])||0; });
+  var profit=(cogs!=null&&labor!=null)?(sales-cogs-labor-vcT-get-fixT):null;
+  return {guests:g>0?g:null, ppa:p>0?p:null, sales:sales, cogs:cogs, gross:cogs!=null?sales-cogs:null, labor:labor, vcT:vcT, get:get, fixT:fixT, profit:profit, note:e.note||''};
+}
+/* 店舗予算層（現場の承認予算）: 売上＋予算原価率/人件費率＋客数予算から展開 */
+function hqStoreForYm(sid, ym){
+  var sales=storeBudgetTotalForYm(sid, ym); if(sales==null||!(sales>0)) return null;
+  var b=(ym===curYm())?getBudgets().find(function(x){return x.storeId===sid;}):((typeof getBudgetForMonth==='function')?getBudgetForMonth(sid,ym):null);
+  var segs=(b&&typeof getSegments==='function')?getSegments(b):null;
+  var segT=segs?segmentsTotal(segs):0;
+  var cogs=(segs&&segT>0)?segmentsFcBudget(segs)/segT*sales:null;
+  var labor=(segs&&segT>0)?segmentsLaborBudget(segs)/segT*sales:null;
+  var g=(typeof monthGuestBudget==='function')?monthGuestBudget(sid, _hqOffOf(ym)):null;
+  var cfg=getPlConfig();
+  var vcT=0; PL_VC_CATS.forEach(function(c){ vcT+=Number((cfg.vcAvg[sid]||{})[c[0]])||0; });
+  var get=sales*(cfg.getRate||4.712)/100;
+  var fixT=0; PL_FIX_CATS.forEach(function(c){ fixT+=Number((cfg.fixed[sid]||{})[c[0]])||0; });
+  var profit=(cogs!=null&&labor!=null)?(sales-cogs-labor-vcT-get-fixT):null;
+  return {guests:(g!=null&&g>0)?g:null, ppa:(g!=null&&g>0)?sales/g:null, sales:sales, cogs:cogs, gross:cogs!=null?sales-cogs:null, labor:labor, vcT:vcT, get:get, fixT:fixT, profit:profit};
+}
+/* 実績層（簡易PLと同一計算・当月まで） */
+function hqActForYm(sid, ym){
+  if(ym>curYm()) return null;
+  var off=_hqOffOf(ym);
+  var c=plComputeStore(sid, ym, off);
+  if(!(c.sales>0)) return null;
+  var ms=safeMonthStats(sid, off)||{};
+  var g=(ms&&ms.guests>0)?ms.guests:null;
+  return {guests:g, ppa:g?c.sales/g:null, sales:c.sales, cogs:c.cogs, gross:c.gross, labor:c.labor, vcT:c.vcT, get:c.get, fixT:c.fixT, profit:c.profit};
+}
+function _hqAggAdd(t, v){
+  ['guests','sales','cogs','labor','vcT','get','fixT','profit'].forEach(function(k){ if(v[k]!=null){ t[k]=(t[k]||0)+v[k]; t._has[k]=true; } });
+}
+function _hqAggFin(t){
+  if(!t._has.sales) return null;
+  ['guests','cogs','labor','profit'].forEach(function(k){ if(!t._has[k]) t[k]=null; });
+  t.gross=(t.cogs!=null)?t.sales-t.cogs:null;
+  t.ppa=(t.guests!=null&&t.guests>0)?t.sales/t.guests:null;
+  return t;
+}
+function hqLayerVal(layer, sid, ym){
+  if(layer==='hq') return hqPlanForYm(sid, ym);
+  if(layer==='store') return hqStoreForYm(sid, ym);
+  if(layer==='act') return hqActForYm(sid, ym);
+  return null;
+}
+/* 選択スコープでの月値（全店合算 or 単店）。diff=実績−本部 */
+function hqCellData(layer, ym){
+  if(layer==='diff'){
+    var a=hqCellData('act', ym), hh=hqCellData('hq', ym);
+    if(!a||!hh) return null;
+    var d={};
+    ['guests','ppa','sales','cogs','gross','labor','vcT','get','fixT','profit'].forEach(function(k){ d[k]=(a[k]!=null&&hh[k]!=null)?a[k]-hh[k]:null; });
+    return d;
+  }
+  var stores=(_hqScope==='ALL')?activeStores():activeStores().filter(function(x){return x.id===_hqScope;});
+  if(stores.length===1) return hqLayerVal(layer, stores[0].id, ym);
+  var t={_has:{}}; var any=false;
+  stores.forEach(function(st){ var v=hqLayerVal(layer, st.id, ym); if(v){ any=true; _hqAggAdd(t,v); } });
+  return any?_hqAggFin(t):null;
+}
 function renderHqBudget(){
-  var ym = plYm(); var p = ym.split('-');
-  var mLabel = parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月';
-  var hq = getHqBudget()[ym]||{};
-  var acts = getHqActions()[ym]||{};
-  var stores = sortByLoginOrder(activeStores());
-  var m=function(v){ return '$'+(Math.round(v)||0).toLocaleString(); };
-  var h = '<div class="card" style="padding:8px 10px;display:flex;align-items:center;gap:8px;margin-bottom:10px">'
-    +'<button class="btn btn-secondary btn-sm" onclick="plNav(-1)"><i class="ti ti-chevron-left"></i></button>'
-    +'<div style="flex:1;text-align:center;font-weight:700;font-size:14px">'+mLabel+'</div>'
-    +'<button class="btn btn-secondary btn-sm" onclick="plNav(1)" '+(plOff>=1?'disabled style="opacity:.4"':'')+'><i class="ti ti-chevron-right"></i></button>'
-    +'</div>'
-    +'<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.7"><i class="ti ti-info-circle"></i> <b>店舗予算</b>＝各店がGM提出した予算（日別調整込み）。<b>本部予算</b>＝GMが設定する会社目標。差異が大きい店には<b>ギャップ分析</b>（必要客数/客単価）と<b>ネクストアクション</b>を設定し、タスクとして店へ送れます。</div>';
-  var totStore=0, totHq=0, nStore=0;
-  var rowsHtml='';
-  stores.forEach(function(st){
-    var sb = storeBudgetTotalForYm(st.id, ym);
-    var hb = hq[st.id] ? Number(hq[st.id].total)||0 : null;
-    if (sb!=null){ totStore+=sb; nStore++; }
-    if (hb!=null) totHq+=hb;
-    var gap = (sb!=null && hb!=null) ? hb - sb : null;
-    var ms = safeMonthStats(st.id, plOff-1)||{};
-    var days = daysOfYm(ym).length;
-    var gapAnalysis='';
-    if (gap!=null && gap>0){
-      var perDay = gap/days;
-      var needG = ms.ppa>0 ? Math.ceil(perDay/ms.ppa) : null;
-      var needPpa = (ms.guests>0) ? (gap/ms.guests) : null;
-      gapAnalysis = '<div style="font-size:10.5px;background:var(--surface2);border-radius:8px;padding:7px 10px;margin-top:6px;line-height:1.7"><i class="ti ti-target-arrow" style="color:var(--yellow)"></i> <b>ギャップを埋めるには</b>（前月確定ベース）: '
-        +'1日あたり <b>+'+m(perDay)+'</b>'
-        +(needG!=null?(' ＝ 客数 <b>+'+needG+'名/日</b>（客単価 $'+ms.ppa.toFixed(2)+'のまま）'):'')
-        +(needPpa!=null?(' <span style="color:var(--muted)">or</span> 客単価 <b>+$'+needPpa.toFixed(2)+'</b>（客数そのまま）'):'')
-        +'</div>';
-    }
-    var aList = acts[st.id]||[];
-    var actsHtml = aList.map(function(a,i){
-      return '<div style="display:flex;align-items:center;gap:7px;font-size:11px;padding:4px 0;border-bottom:1px dashed var(--border)">'
-        +'<input type="checkbox" '+(a.done?'checked':'')+' onchange="hqToggleAction(\''+ym+'\',\''+st.id+'\','+i+',this.checked)">'
-        +'<div style="flex:1;'+(a.done?'text-decoration:line-through;color:var(--muted)':'')+'">'+escapeHtml(a.text)+(a.owner?' <span style="color:var(--muted);font-size:9px">→'+escapeHtml(a.owner)+'</span>':'')+'</div>'
-        +'<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:9px" onclick="hqSendTask(\''+ym+'\',\''+st.id+'\','+i+')" title="店舗タスクとして送る"><i class="ti ti-send"></i></button>'
-        +'</div>';
-    }).join('');
-    var gapCol = gap==null?'var(--muted)':(gap>0?'var(--red)':'var(--green)');
-    rowsHtml += '<div class="card"><div class="card-title"><span class="store-dot" style="background:'+(st.color||'#888')+'"></span>'+escapeHtml(st.name)
-      +'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:2px 9px;font-size:10px" onclick="openHqBudgetModal(\''+ym+'\',\''+st.id+'\')"><i class="ti ti-pencil"></i> 本部予算</button></div>'
-      +'<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-bottom:2px">'
-      +'<span><span style="font-size:10px;color:var(--muted)">店舗予算 </span><b>'+(sb!=null?m(sb):'未提出')+'</b></span>'
-      +'<span><span style="font-size:10px;color:var(--muted)">本部予算 </span><b style="color:var(--accent)">'+(hb!=null?m(hb):'未設定')+'</b></span>'
-      +'<span><span style="font-size:10px;color:var(--muted)">差異 </span><b style="color:'+gapCol+'">'+(gap!=null?((gap>=0?'+':'')+m(gap).replace('$-','-$')+'（'+(sb>0?(Math.round(gap/sb*1000)/10):'—')+'%）'):'—')+'</b></span>'
-      +'<span><span style="font-size:10px;color:var(--muted)">前月実績 </span>'+(ms.sales?m(ms.sales):'—')+'</span>'
-      +'</div>'
-      +(hq[st.id]&&hq[st.id].note?'<div style="font-size:10.5px;color:var(--tm);margin-top:2px"><i class="ti ti-message-2"></i> '+escapeHtml(hq[st.id].note)+'</div>':'')
-      +gapAnalysis
-      +'<div style="margin-top:8px"><div style="font-size:11px;font-weight:700;margin-bottom:2px"><i class="ti ti-list-check" style="color:var(--accent2)"></i> ネクストアクション'+(aList.length?'（'+aList.filter(function(a){return a.done;}).length+'/'+aList.length+'）':'')+'</div>'
-      +actsHtml
-      +'<div style="display:flex;gap:6px;margin-top:6px"><input class="form-input" id="hqact-'+st.id+'" style="flex:1;padding:6px 8px;font-size:11px" placeholder="例: 週末ディナーのセット提案でD客単価+$2">'
-      +'<button class="btn btn-secondary btn-sm" onclick="hqAddAction(\''+ym+'\',\''+st.id+'\')">追加</button></div></div>'
-      +'</div>';
+  var yr=_hqYear;
+  var stores=sortByLoginOrder(activeStores());
+  var scopeName=_hqScope==='ALL'?'全店合算':((stores.find(function(x){return x.id===_hqScope;})||{}).name||_hqScope);
+  var yms=[]; for(var i=1;i<=12;i++) yms.push(yr+'-'+String(i).padStart(2,'0'));
+  var layers=[['hq','本部予算'],['store','店舗予算'],['act','実績'],['diff','差異(実−本)']];
+  var h='<div class="card" style="padding:8px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="hqSetYear(-1)"><i class="ti ti-chevron-left"></i></button>'
+    +'<div style="font-weight:800;font-size:15px;min-width:70px;text-align:center">'+yr+'年</div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="hqSetYear(1)"><i class="ti ti-chevron-right"></i></button>'
+    +'<select onchange="hqSetScope(this.value)" style="margin-left:auto;padding:7px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--tm);font-size:12px">'
+    +'<option value="ALL"'+(_hqScope==='ALL'?' selected':'')+'>全店合算</option>'
+    +stores.map(function(x){return '<option value="'+x.id+'"'+(_hqScope===x.id?' selected':'')+'>'+escapeHtml(x.name)+'</option>';}).join('')
+    +'</select></div>';
+  h+='<div class="phase-tabs" style="margin-bottom:8px">'+layers.map(function(l){ return '<div class="phase-tab'+(_hqLayer===l[0]?' active':'')+'" onclick="hqSetLayer(\''+l[0]+'\')">'+l[1]+'</div>'; }).join('')+'</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.7"><i class="ti ti-info-circle"></i> <b>本部予算</b>＝GMの年間計画（客数×客単価→売上、目標原価率/人件費率→営業利益まで自動展開）。<b>店舗予算</b>＝各店の承認予算。<b>実績</b>＝簡易PLと同一計算。'
+    +(_hqScope==='ALL'?'編集は店舗を選択してから月ヘッダをタップ。':'<b>月ヘッダ（✎）をタップで本部予算を編集。</b>')+'変動費・GET・固定費は簡易PL設定を自動適用。金額は$1単位に丸めて表示。</div>';
+
+  var data=yms.map(function(ym){ try{ return hqCellData(_hqLayer, ym); }catch(e){ return null; } });
+  var tot={_has:{}}; var anyT=false;
+  data.forEach(function(v){ if(v){ anyT=true; _hqAggAdd(tot, v); } });
+  var totF=anyT?_hqAggFin(tot):null;
+
+  var isDiff=(_hqLayer==='diff');
+  var sgn=function(v){ return (isDiff&&v>=0)?'+':''; };
+  var m0=function(v){ if(v==null)return '—'; return sgn(v)+(v<0?'-':'')+'$'+Math.abs(Math.round(v)).toLocaleString(); };
+  var n0=function(v){ if(v==null)return '—'; return sgn(v)+Math.round(v).toLocaleString(); };
+  var p2f=function(v){ if(v==null)return '—'; return sgn(v)+(v<0?'-':'')+'$'+Math.abs(v).toFixed(2); };
+  var rows=[
+    ['客数','guests',n0,false],
+    ['客単価','ppa',p2f,false],
+    ['売上','sales',m0,true],
+    ['原価','cogs',m0,false],
+    ['粗利','gross',m0,false],
+    ['人件費','labor',m0,false],
+    ['変動費','vcT',m0,false],
+    ['GET','get',m0,false],
+    ['固定費','fixT',m0,false],
+    ['営業利益','profit',m0,true]
+  ];
+  var curYmStr=curYm();
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:1020px;font-size:11px"><thead><tr>'
+    +'<th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:72px">'+escapeHtml(scopeName)+'</th>';
+  yms.forEach(function(ym,i){
+    var isCurM=(ym===curYmStr);
+    var edit=(_hqScope!=='ALL');
+    h+='<th style="text-align:right;min-width:68px'+(isCurM?';color:var(--accent)':'')+(edit?';cursor:pointer':'')+'"'+(edit?' onclick="openHqPlanModal(\''+ym+'\',\''+_hqScope+'\')"':'')+'>'+(i+1)+'月'+(edit?' <i class="ti ti-pencil" style="font-size:9px;color:var(--muted)"></i>':'')+'</th>';
   });
-  // 全社サマリー
-  var gapAll = totHq - totStore;
-  h += '<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-building-bank" style="color:var(--accent)"></i>全社（'+mLabel+'）</div>'
+  h+='<th style="text-align:right;min-width:82px;border-left:2px solid var(--border)">年間</th></tr></thead><tbody>';
+  var costKeys=['cogs','labor','vcT','get','fixT'];
+  rows.forEach(function(r){
+    var fm=r[2];
+    h+='<tr'+(r[3]?' style="font-weight:800"':'')+'><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface);z-index:1">'+r[0]+'</td>';
+    yms.forEach(function(ym,i){
+      var v=data[i]?data[i][r[1]]:null;
+      var col='';
+      if(v!=null){
+        if(r[1]==='profit') col=';color:'+(v>=0?'var(--green)':'var(--red)');
+        else if(isDiff){ var isCost=costKeys.indexOf(r[1])>=0; col=';color:'+(((v>=0)!==isCost)?'var(--green)':'var(--red)'); }
+      }
+      h+='<td style="text-align:right'+col+'">'+fm(v)+'</td>';
+    });
+    var tv=totF?((r[1]==='ppa')?totF.ppa:totF[r[1]]):null;
+    var tc=''; if(tv!=null&&r[1]==='profit') tc=';color:'+(tv>=0?'var(--green)':'var(--red)');
+    h+='<td style="text-align:right;font-weight:800;border-left:2px solid var(--border)'+tc+'">'+fm(tv)+'</td></tr>';
+  });
+  var rateRow=function(label, num){
+    h+='<tr><td style="text-align:left;color:var(--muted);font-size:10px;position:sticky;left:0;background:var(--surface);z-index:1">'+label+'</td>';
+    yms.forEach(function(ym,i){
+      var v=data[i]; var r=(!isDiff&&v&&v[num]!=null&&v.sales>0)?(v[num]/v.sales*100):null;
+      h+='<td style="text-align:right;color:var(--muted);font-size:10px">'+(r!=null?r.toFixed(1)+'%':'—')+'</td>';
+    });
+    var tr2=(!isDiff&&totF&&totF[num]!=null&&totF.sales>0)?(totF[num]/totF.sales*100):null;
+    h+='<td style="text-align:right;color:var(--muted);font-size:10px;border-left:2px solid var(--border)">'+(tr2!=null?tr2.toFixed(1)+'%':'—')+'</td></tr>';
+  };
+  rateRow('原価率','cogs');
+  rateRow('人件費率','labor');
+  rateRow('利益率','profit');
+  h+='</tbody></table></div>';
+
+  // 年間サマリー（3層比較）
+  var sums={};
+  ['hq','store','act'].forEach(function(L){
+    var t={_has:{}}; var any=false;
+    yms.forEach(function(ym){ try{ var v=hqCellData(L, ym); if(v){ any=true; _hqAggAdd(t,v); } }catch(e){} });
+    sums[L]=any?_hqAggFin(t):null;
+  });
+  var mS=function(v){ return v==null?'—':'$'+Math.round(v).toLocaleString(); };
+  h+='<div class="card" style="border:1.5px solid var(--accent);margin-top:10px"><div class="card-title"><i class="ti ti-building-bank" style="color:var(--accent)"></i>'+yr+'年 年間サマリー（'+escapeHtml(scopeName)+'）</div>'
     +'<div class="kpi-grid">'
-    +kpi('店舗予算 合計', m(totStore), nStore+'店 提出/設定済み', 'var(--tm)')
-    +kpi('本部予算 合計', m(totHq), Object.keys(hq).length+'店 設定済み', 'var(--accent)')
-    +kpi('差異（本部−店舗）', (gapAll>=0?'+':'')+m(gapAll).replace('$-','-$'), totStore>0?((Math.round(gapAll/totStore*1000)/10)+'%'):'', gapAll>0?'var(--red)':'var(--green)')
+    +kpi('本部予算 売上', mS(sums.hq&&sums.hq.sales), (sums.hq&&sums.hq.profit!=null)?('計画利益 '+mS(sums.hq.profit)):'', 'var(--accent)')
+    +kpi('店舗予算 売上', mS(sums.store&&sums.store.sales), (sums.hq&&sums.hq.sales>0&&sums.store)?('本部比 '+(Math.round(sums.store.sales/sums.hq.sales*1000)/10)+'%'):'', 'var(--tm)')
+    +kpi('実績 売上（累計）', mS(sums.act&&sums.act.sales), (sums.hq&&sums.hq.sales>0&&sums.act)?('本部比 '+(Math.round(sums.act.sales/sums.hq.sales*1000)/10)+'%'):'', 'var(--green)')
     +'</div></div>';
-  return h + rowsHtml;
+  return h;
 }
-function openHqBudgetModal(ym, sid){
+function openHqPlanModal(ym, sid){
   var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
-  var hq=getHqBudget(); var cur=(hq[ym]||{})[sid]||{};
+  var cur=(getHqBudget()[ym]||{})[sid]||{};
   var sb=storeBudgetTotalForYm(sid, ym);
-  var ms=safeMonthStats(sid, plOff-1)||{};
-  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 本部予算（'+ym+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.7">店舗予算: <b>'+(sb!=null?('$'+sb.toLocaleString()):'未提出')+'</b>／前月実績: '+(ms.sales?('$'+Math.round(ms.sales).toLocaleString()):'—')
-    +(ms.ppa?('<br>前月客単価: L '+(ms.ppaLunch!=null?'$'+ms.ppaLunch.toFixed(2):'—')+' ／ D '+(ms.ppaDinner!=null?'$'+ms.ppaDinner.toFixed(2):'—')+' ／ 全体 $'+ms.ppa.toFixed(2)):'')+'</div>'
-    +'<div class="form-group"><label class="form-label">本部予算（月間売上目標 $）</label><input class="form-input" id="hqb-total" type="number" inputmode="decimal" value="'+(cur.total!=null?cur.total:'')+'"></div>'
-    +'<div class="form-group"><label class="form-label">目標の根拠・メッセージ（店に伝わる考え方）</label><textarea class="form-input" id="hqb-note" rows="2" placeholder="例: 前年同月+8%。祝日3回のD強化で到達可能">'+escapeHtml(cur.note||'')+'</textarea></div>'
-    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveHqBudget(\''+ym+'\',\''+sid+'\')">保存</button></div>');
+  var p=ym.split('-'); var lbl=parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月';
+  var calc="(function(){var g=parseFloat(document.getElementById('hqp-guests').value)||0,pp=parseFloat(document.getElementById('hqp-ppa').value)||0;var el=document.getElementById('hqp-sales');if(el)el.textContent=(g>0&&pp>0)?('$'+Math.round(g*pp).toLocaleString()):'—';})()";
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 本部予算（'+lbl+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.7">店舗予算（参考）: <b>'+(sb!=null?('$'+Math.round(sb).toLocaleString()):'未提出')+'</b></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+    +'<div class="form-group"><label class="form-label">客数（月間）</label><input class="form-input" id="hqp-guests" type="number" inputmode="numeric" value="'+(cur.guests!=null?cur.guests:'')+'" oninput="'+calc+'"></div>'
+    +'<div class="form-group"><label class="form-label">客単価 ($)</label><input class="form-input" id="hqp-ppa" type="number" inputmode="decimal" step="0.01" value="'+(cur.ppa!=null?cur.ppa:'')+'" oninput="'+calc+'"></div>'
+    +'</div>'
+    +'<div style="font-size:12px;margin:2px 0 10px">→ 売上予算: <b id="hqp-sales" style="color:var(--accent)">'+((cur.guests>0&&cur.ppa>0)?('$'+Math.round(cur.guests*cur.ppa).toLocaleString()):(cur.total?('$'+Math.round(cur.total).toLocaleString()):'—'))+'</b></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+    +'<div class="form-group"><label class="form-label">目標原価率 (%)</label><input class="form-input" id="hqp-fc" type="number" inputmode="decimal" step="0.1" value="'+(cur.fcRate!=null?cur.fcRate:'')+'"></div>'
+    +'<div class="form-group"><label class="form-label">目標人件費率 (%)</label><input class="form-input" id="hqp-labor" type="number" inputmode="decimal" step="0.1" value="'+(cur.laborRate!=null?cur.laborRate:'')+'"></div>'
+    +'</div>'
+    +'<div class="form-group"><label class="form-label">売上直接入力 ($)<span style="font-size:9px;color:var(--muted)"> 客数×客単価が空のときのみ使用</span></label><input class="form-input" id="hqp-total" type="number" inputmode="decimal" value="'+(cur.total!=null?cur.total:'')+'"></div>'
+    +'<div class="form-group"><label class="form-label">目標の根拠・メッセージ</label><textarea class="form-input" id="hqp-note" rows="2" placeholder="例: 前年同月+8%。祝日3回のD強化で到達可能">'+escapeHtml(cur.note||'')+'</textarea></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:8px">変動費・GET・固定費は簡易PLの店舗設定を自動適用し、営業利益まで自動計算されます。</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveHqPlan(\''+ym+'\',\''+sid+'\')">保存</button></div>');
 }
-function saveHqBudget(ym, sid){
-  var v=parseFloat(document.getElementById('hqb-total').value);
-  var note=document.getElementById('hqb-note').value.trim();
+function saveHqPlan(ym, sid){
+  var gv=function(id){ var el=document.getElementById(id); return el?parseFloat(el.value):NaN; };
+  var g=gv('hqp-guests'), pp=gv('hqp-ppa'), fc=gv('hqp-fc'), lb=gv('hqp-labor'), tt=gv('hqp-total');
+  var note=(document.getElementById('hqp-note').value||'').trim();
   var hq=getHqBudget(); hq[ym]=hq[ym]||{};
-  if(isNaN(v)||v<=0){ delete hq[ym][sid]; }
-  else hq[ym][sid]={total:Math.round(v), note:note, by:myName(), at:nowJP()};
+  var sales=(g>0&&pp>0)?Math.round(g*pp):((!isNaN(tt)&&tt>0)?Math.round(tt):null);
+  if(sales==null && !note){ delete hq[ym][sid]; }
+  else hq[ym][sid]={ total:sales, guests:(g>0?g:null), ppa:(pp>0?Math.round(pp*100)/100:null), fcRate:(!isNaN(fc)&&fc>0?fc:null), laborRate:(!isNaN(lb)&&lb>0?lb:null), note:note, by:myName(), at:nowJP() };
   lsSet('hq_budget', hq);
   closeModalDirect(); showToast('本部予算を保存しました','success'); _secRerender();
-}
-function hqAddAction(ym, sid){
-  var inp=document.getElementById('hqact-'+sid); var txt=(inp&&inp.value||'').trim();
-  if(!txt){ showToast('アクション内容を入力してください','warning'); return; }
-  var a=getHqActions(); a[ym]=a[ym]||{}; a[ym][sid]=a[ym][sid]||[];
-  a[ym][sid].push({text:txt, owner:'', due:'', done:false, by:myName(), at:nowJP()});
-  lsSet('hq_actions', a); _secRerender();
-}
-function hqToggleAction(ym, sid, i, done){
-  var a=getHqActions(); if(!a[ym]||!a[ym][sid]||!a[ym][sid][i]) return;
-  a[ym][sid][i].done=!!done; lsSet('hq_actions', a); _secRerender();
-}
-function hqSendTask(ym, sid, i){
-  var a=getHqActions(); var it=(a[ym]&&a[ym][sid]&&a[ym][sid][i]); if(!it) return;
-  var tk=getTasks();
-  tk.push({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), refId:'hq_'+ym+'_'+sid+'_'+i, auto:'hq',
-    title:'【本部】'+String(it.text).slice(0,60), desc:'本部予算（'+ym+'）達成のためのアクションです。',
-    assignee:'', store:sid, priority:'高', due:'', progress:0, status:'進行中', created:todayJP() });
-  lsSet('tasks_all', tk);
-  try{ addNotif({type:'warning', title:'本部からのアクション', text:String(it.text).slice(0,120), toStore:sid, toRoles:['sl','sm','am','gm','ceo'], page:'tasks', refId:'hq_'+ym+'_'+sid+'_'+i}); }catch(e){}
-  showToast('店舗タスクとして送信しました','success');
 }
 /* ===== 簡易PL 本体 ===== */
 function renderSimplePL(){
@@ -4418,7 +4519,7 @@ function renderSimplePL(){
     +'<button class="btn btn-secondary btn-sm" '+(plOff>=0?'disabled style="opacity:.4"':'')+' onclick="plNav(1)"><i class="ti ti-chevron-right"></i></button>'
     +(plOff<0?'<button class="btn btn-secondary btn-sm" onclick="plOff=0;_secRerender()">今月へ</button>':'')
     +'</div>';
-  h += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 簡易PL＝売上(日次実績)・原価(棚卸法)・人件費(Labor共通コア)は<b>実数</b>、変動費は<b>実PL 1〜5月の平均</b>(店舗別・上書き可)＋建替経費の実費、GET='+(cfg.getRate||4.712)+'%、固定費は<b>実PL 5月の実数</b>。実PL列と並べて差異を検証できます。</div>';
+  h += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 簡易PL＝売上(日次実績)・原価(棚卸法)・人件費(Labor共通コア)は<b>実数</b>、変動費は<b>実PL 1〜5月の平均</b>(店舗別・上書き可)＋建替経費の実費、GET='+(cfg.getRate||4.712)+'%、固定費は<b>実PL 5月の実数</b>。実PL列と並べて差異を検証できます。<b>各項目行をタップで内訳を表示。</b></div>';
 
   // 全店合計
   var tot={sales:0,cogs:0,labor:0,expT:0,profit:0}, atot=actual?{sales:0,cogs:0,payroll:0,opex:0,netop:0}:null;
@@ -4450,22 +4551,107 @@ function renderSimplePL(){
       +'</span></div>';
     if(!hasCfg) h += '<div style="font-size:10px;color:var(--yellow);margin-bottom:6px"><i class="ti ti-alert-circle"></i> この店舗の変動費・固定費が未設定です（新店等）。「設定」から登録してください（現在0で計算）。</div>';
     h += '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:430px;font-size:11.5px"><thead><tr><th style="text-align:left">項目</th><th style="text-align:right">簡易PL</th><th style="text-align:right">実PL</th><th style="text-align:right">差異</th></tr></thead><tbody>';
-    var row=function(label, simp, act, sub, bold, col){
-      return '<tr'+(bold?' style="font-weight:700;border-top:2px solid var(--border)"':'')+'><td style="text-align:left">'+label+(sub?' <span style="font-size:9px;color:var(--muted)">'+sub+'</span>':'')+'</td>'
+    var row=function(label, simp, act, sub, bold, col, key){
+      var trAttr = (key?(' onclick="openPlDetailModal(\''+st.id+'\',\''+key+'\')"'):'')+' style="'+(key?'cursor:pointer;':'')+(bold?'font-weight:700;border-top:2px solid var(--border)':'')+'"';
+      return '<tr'+trAttr+'><td style="text-align:left">'+(key?'<i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> ':'')+label+(sub?' <span style="font-size:9px;color:var(--muted)">'+sub+'</span>':'')+'</td>'
         +'<td style="text-align:right'+(col?';color:'+col:'')+'">'+m(simp)+'</td>'+diffCell(simp, act)+'</tr>';
     };
-    h += row('売上', c.sales, a?a.sales:null, '日次実績');
-    h += row('原価', c.cogs, a?a.cogs:null, c.cogsSrc+'・'+pct(c.cogs,c.sales));
-    h += row('粗利', c.gross, a?(a.sales-a.cogs):null, '', false, 'var(--tm)');
-    h += row('人件費', c.labor, a?a.payroll:null, 'Laborコア・'+pct(c.labor,c.sales));
-    h += '<tr><td style="text-align:left">変動費 <span style="font-size:9px;color:var(--muted)">平均'+(c.hasOvr?'+調整':'')+(c.reimb?'＋建替'+m(c.reimb):'')+'</span></td><td style="text-align:right">'+m(c.vcT)+'</td><td style="text-align:right;color:var(--muted)" rowspan="3" title="実PLの運営費計">'+(aExp!=null?m(aExp):'—')+'</td><td style="text-align:right;color:var(--muted)" rowspan="3">'+(aExp!=null?(function(){var d=c.expT-aExp;return (d>=0?'+':'')+m(d).replace('$-','-$');})():'—')+'</td></tr>';
-    h += '<tr><td style="text-align:left">消費税(GET) <span style="font-size:9px;color:var(--muted)">売上×'+(cfg.getRate||4.712)+'%</span></td><td style="text-align:right">'+m(c.get)+'</td></tr>';
-    h += '<tr><td style="text-align:left">固定費 <span style="font-size:9px;color:var(--muted)">家賃・保険・システム</span></td><td style="text-align:right">'+m(c.fixT)+'</td></tr>';
+    h += row('売上', c.sales, a?a.sales:null, '日次実績', false, null, 'sales');
+    h += row('原価', c.cogs, a?a.cogs:null, c.cogsSrc+'・'+pct(c.cogs,c.sales), false, null, 'cogs');
+    h += row('粗利', c.gross, a?(a.sales-a.cogs):null, '売上−原価', false, 'var(--tm)');
+    h += row('人件費', c.labor, a?a.payroll:null, 'Laborコア・'+pct(c.labor,c.sales), false, null, 'labor');
+    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'vc\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 変動費 <span style="font-size:9px;color:var(--muted)">平均'+(c.hasOvr?'+調整':'')+(c.reimb?'＋建替'+m(c.reimb):'')+'</span></td><td style="text-align:right">'+m(c.vcT)+'</td><td style="text-align:right;color:var(--muted)" rowspan="3" title="実PLの運営費計">'+(aExp!=null?m(aExp):'—')+'</td><td style="text-align:right;color:var(--muted)" rowspan="3">'+(aExp!=null?(function(){var d=c.expT-aExp;return (d>=0?'+':'')+m(d).replace('$-','-$');})():'—')+'</td></tr>';
+    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'get\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 消費税(GET) <span style="font-size:9px;color:var(--muted)">売上×'+(cfg.getRate||4.712)+'%</span></td><td style="text-align:right">'+m(c.get)+'</td></tr>';
+    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'fix\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 固定費 <span style="font-size:9px;color:var(--muted)">家賃・保険・システム</span></td><td style="text-align:right">'+m(c.fixT)+'</td></tr>';
     h += row('経費計', c.expT, aExp, '変動+GET+固定 vs 実PL運営費');
-    h += row('営業利益', c.profit, a?a.netop:null, pct(c.profit,c.sales), true, c.profit>=0?'var(--green)':'var(--red)');
+    h += row('営業利益', c.profit, a?a.netop:null, pct(c.profit,c.sales), true, c.profit>=0?'var(--green)':'var(--red)', 'profit');
     h += '</tbody></table></div></div>';
   });
   return h;
+}
+/* 簡易PL 項目ドリルダウン: 各行タップで内訳を表示 */
+function openPlDetailModal(sid, key){
+  var ym=plYm(); var off=plOff;
+  var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
+  var c=plComputeStore(sid, ym, off);
+  var cfg=getPlConfig(); var ovr=getPlOverrides();
+  var m=function(v){ return '$'+(parseFloat(v)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); };
+  var pct=function(v,sv){ return sv>0?(Math.round(v/sv*1000)/10)+'%':'—'; };
+  var li=function(a){ return a.map(function(x){ return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12.5px"><span style="color:var(--tm)">'+x[0]+(x[3]?' <span style="font-size:9px;color:var(--muted)">'+x[3]+'</span>':'')+'</span><b style="white-space:nowrap'+(x[2]?';color:'+x[2]:'')+'">'+x[1]+'</b></div>'; }).join(''); };
+  var title='', body='';
+  if(key==='sales'){
+    var acts=getDailyActuals(sid); var lS=0,dS=0,toS=0,g=0,days=0;
+    Object.keys(acts).forEach(function(dt){ if(String(dt).slice(0,7)!==ym) return; var r=acts[dt]||{}; if(r.actual==null) return; days++;
+      lS+=Number(r.lunchSales)||0; dS+=Number(r.dinnerSales)||0; toS+=(Number(r.toLunchSales)||0)+(Number(r.toDinnerSales)||0); g+=Number(r.guests)||0; });
+    var ms=safeMonthStats(sid, off)||{};
+    title='売上の内訳';
+    body=li([
+      ['売上合計', m(c.sales), 'var(--accent)', '日次実績・'+days+'営業日'],
+      ['ランチ売上', lS>0?m(lS):'—', null, toS>0?'TO含む':''],
+      ['ディナー売上', dS>0?m(dS):'—', null, toS>0?'TO含む':''],
+      ['テイクアウト売上', toS>0?m(toS):'—'],
+      ['客数', g>0?g.toLocaleString():'—'],
+      ['客単価（全体）', (ms&&ms.ppa)?('$'+ms.ppa.toFixed(2)):'—'],
+      ['客単価 L / D', ((ms&&ms.ppaLunch!=null)?('$'+ms.ppaLunch.toFixed(2)):'—')+' / '+((ms&&ms.ppaDinner!=null)?('$'+ms.ppaDinner.toFixed(2)):'—'), null, (ms&&ms.hasTO)?'店内のみ（TO除外）':''],
+      ['客単価 TO', (ms&&ms.ppaTO!=null)?('$'+ms.ppaTO.toFixed(2)):'—']
+    ]);
+  } else if(key==='cogs'){
+    title='原価の内訳（'+c.cogsSrc+'）';
+    body=li([
+      ['期首棚卸', m(c.beginInv)],
+      ['＋ 仕入（発注）', m(c.purchOrder)],
+      ['＋ 仕入（買い出し・Invoice）', m(c.purchBuy)],
+      ['− 期末棚卸', m(c.endInv)],
+      ['原価（COGS）', m(c.cogs), 'var(--accent)', '原価率 '+pct(c.cogs,c.sales)]
+    ]);
+    if(c.cogsSrc!=='棚卸法') body+='<div style="font-size:10px;color:var(--yellow);margin-top:6px"><i class="ti ti-alert-circle"></i> 棚卸（期首/期末）が未入力のため仕入合計で計算しています。</div>';
+  } else if(key==='labor'){
+    var core={}; try{ core=laborCoreForYm(sid, ym)||{}; }catch(e){}
+    title='人件費の内訳（Labor共通コア）';
+    body=li([
+      ['時給給与', m(core.wage||0), null, '週次OT×1.5込み'],
+      ['雇用税', m(core.tax||0)],
+      ['保険', m(core.ins||0), null, '暦日割り'],
+      ['固定給（月給・手動分）', m(core.manual||0)],
+      ['人件費合計', m(core.total||c.labor), 'var(--accent)', '人件費率 '+pct(c.labor,c.sales)]
+    ]);
+  } else if(key==='vc'){
+    title='変動費の内訳';
+    var items=PL_VC_CATS.map(function(cat){
+      var o=ovr[ym]&&ovr[ym][sid]&&ovr[ym][sid][cat[0]];
+      var adj=(o!=null&&o!=='');
+      return [cat[1], m(plVcVal(cfg, ovr, sid, ym, cat[0])), null, adj?'実額調整':'1〜5月平均'];
+    });
+    items.push(['建替経費（承認済み実費）', m(c.reimb)]);
+    items.push(['変動費合計', m(c.vcT), 'var(--accent)', pct(c.vcT,c.sales)]);
+    body=li(items);
+  } else if(key==='get'){
+    title='消費税（GET）';
+    body=li([
+      ['売上', m(c.sales)],
+      ['× 税率', (cfg.getRate||4.712)+'%'],
+      ['GET', m(c.get), 'var(--accent)']
+    ]);
+  } else if(key==='fix'){
+    title='固定費の内訳';
+    var fx=cfg.fixed[sid]||{};
+    body=li(PL_FIX_CATS.map(function(cat){ return [cat[1], m(fx[cat[0]]||0)]; }).concat([['固定費合計', m(c.fixT), 'var(--accent)', pct(c.fixT,c.sales)]]));
+  } else if(key==='profit'){
+    title='営業利益の計算';
+    body=li([
+      ['売上', m(c.sales)],
+      ['− 原価', m(c.cogs), null, pct(c.cogs,c.sales)],
+      ['− 人件費', m(c.labor), null, pct(c.labor,c.sales)],
+      ['− 変動費', m(c.vcT)],
+      ['− GET', m(c.get)],
+      ['− 固定費', m(c.fixT)],
+      ['営業利益', m(c.profit), c.profit>=0?'var(--green)':'var(--red)', '利益率 '+pct(c.profit,c.sales)]
+    ]);
+  } else return;
+  var p=ym.split('-');
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — '+title+'（'+parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +body
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
 }
 function openPlConfigModal(sid){
   var cfg=getPlConfig(); var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
@@ -29715,7 +29901,7 @@ function renderGradeGuide(){
   h+='<details class="card"><summary style="font-weight:800;font-size:14px;cursor:pointer;color:var(--red)">G6/GM・CEO — 会社の数字と制度</summary><div style="font-size:12px;line-height:1.9;margin-top:8px">'
     +_bgSec('ti-lock','セキュアページ', _bgLi([
       ['簡易PL','毎月: 全店の売上→営業利益を確認。実PL入力で差異検証。利益の薄い店は変動費実額調整で精度を上げ原因特定'],
-      ['本部予算','各店予算と本部目標のギャップ分析→ネクストアクションを設定し、タスクとして店へ落とす'],
+      ['本部予算','年間計画表（PL項目×12ヶ月）で本部予算vs店舗予算vs実績を層切替で比較。客数×客単価で売上計画を設定'],
       ['成長カルテ','昇格・昇給の最終判断材料']]))
     +_bgSec('ti-checklist','日々・月次', _bgLi([
       ['予算承認','ワークセンター承認タブで<b>根拠・重点を読んでから</b>承認/差し戻し'],
