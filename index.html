@@ -6764,7 +6764,7 @@ function msAgg(storeId, mi){
     }
     if(past && ov.actual!=null && ov.actual>0){
       daysWithActual++;
-      food += (ov.foodCost!=null) ? ov.foodCost : dayCostReal(s.id, d.date);
+      food += (ov.foodCost!=null) ? ov.foodCost : dayCostReal(storeId, d.date);
     }
     trend.push({day:d.day, date:d.date, actual:(past?dayAct:null), budget:dayBud});
   });
@@ -8068,127 +8068,106 @@ function saveSeg(storeId, seg) {
 }
 
 function renderBudgetSummary() {
-  var budgets = getBudgets();
   var stores = budgetScopeStores();
-  var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
-  var canEdit = ROLE_CONFIG[curRole].canCreate;
-  var today = new Date();
-
-  // 全店舗の累計を集計
-  var agg = {budToToday:0, actToToday:0, budMonth:0, actMonth:0, costToToday:0, laborToToday:0};
-  var cumByStore = {};
-  visible.forEach(b => {
-    var c = cumulativeToToday(b.storeId);
-    cumByStore[b.storeId] = c;
-    agg.budToToday += c.budToToday; agg.actToToday += c.actToToday;
-    agg.budMonth += c.budMonth; agg.actMonth += c.actMonth;
-    agg.costToToday += c.costToToday; agg.laborToToday += c.laborToToday;
-  });
-  var pace = agg.budToToday ? Math.round(agg.actToToday/agg.budToToday*1000)/10 : 0;
-  var monthRate = agg.budMonth ? Math.round(agg.actMonth/agg.budMonth*1000)/10 : 0;
-  var diff = agg.actToToday - agg.budToToday;
-
-  // ===== 当月=現在地（前日まで累計）／それ以外=その月の月間実績 =====
   var _selOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
-  var _monLabel = (typeof dailyMonthLabel==='function')?dailyMonthLabel():'';
-  var html='';
-  if (_selOff!==0) {
-    var mDiff = agg.actMonth - agg.budMonth;
-    var mColor = statusColor(statusFromPct(monthRate));
-    html += `<div class="card" style="border-left:4px solid ${mColor}">
-    <div class="card-title"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i>${_monLabel} 実績（月間合計）</div>
-    <div class="kpi-grid">
-      ${kpi('月予算', fmtK(Math.round(agg.budMonth)), _monLabel, 'var(--muted)')}
-      ${kpi('月実績', fmtK(Math.round(agg.actMonth)), _selOff>0?'予算ベース':'確定', mColor)}
-      ${kpi('達成率', monthRate+'%', mDiff>=0?'▲'+fmtK(Math.abs(Math.round(mDiff))):'▼'+fmtK(Math.abs(Math.round(mDiff))), mColor)}
-      ${kpi('差異', (mDiff>=0?'+':'')+fmtK(Math.round(mDiff)), '実績−予算', mDiff>=0?'var(--green)':'var(--red)')}
-    </div>
-    <div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:${mColor};width:${Math.min(monthRate,100)}%"></div></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px">${_selOff>0?'来月の予算（実績はこれから入力）':'この月の予算と実績の月間合計（累計ではなく月単独）'}</div>
-  </div>`;
-  } else {
-  var _yest = new Date(today.getTime()-86400000);
-  html += `<div class="card" style="border-left:4px solid ${statusColor(statusFromPct(pace))}">
-    <div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>現在地（${_yest.getMonth()+1}/${_yest.getDate()} 前日まで累計）</div>
-    <div class="kpi-grid">
-      ${kpi('累計予算', fmtK(Math.round(agg.budToToday)), '前日まで', 'var(--muted)')}
-      ${kpi('累計実績', fmtK(Math.round(agg.actToToday)), '前日まで', statusColor(statusFromPct(pace)))}
-      ${kpi('対予算', pace+'%', diff>=0?'▲'+fmtK(Math.abs(Math.round(diff))):'▼'+fmtK(Math.abs(Math.round(diff))), statusColor(statusFromPct(pace)))}
-      ${kpi('着地見込', fmtK(Math.round(agg.actToToday/(agg.budToToday||1)*agg.budMonth)), '対月予算', 'var(--muted)')}
-    </div>
-    <div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:${statusColor(statusFromPct(pace))};width:${Math.min(pace,100)}%"></div></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px">月予算 ${fmtK(Math.round(agg.budMonth))} / 月間達成率 ${monthRate}%（実績入力済の累計ベース）</div>
-  </div>`;
-  }
+  var _monLabel = (typeof dailyMonthLabel==='function')?dailyMonthLabel():'当月';
+  var isCur = (_selOff===0);
+  var days; try{ days = daysOfYm(ymFromOffset(_selOff)); }catch(e){ days = monthDays(); }
+  var mdays = days.length;
 
-  // ===== 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）=====
-  html += keyKpiCard(budgetScopeStores(), monthDays(), '');
-
-
-  // ===== スコア判定＋アクション =====
-  var costRForScore = agg.actToToday ? Math.round(agg.costToToday/agg.actToToday*1000)/10 : 0;
-  var laborRForScore = agg.actToToday ? Math.round(agg.laborToToday/agg.actToToday*1000)/10 : 0;
-  html += renderScoreCard(Math.round(pace), pace, laborRForScore, 29, costRForScore, 31);
-
-  // 原価・人件費の累計（入力がある場合のみ）
-  if (agg.costToToday>0 || agg.laborToToday>0) {
-    var costR = agg.actToToday ? Math.round(agg.costToToday/agg.actToToday*1000)/10 : 0;
-    var laborR = agg.actToToday ? Math.round(agg.laborToToday/agg.actToToday*1000)/10 : 0;
-    html += `<div class="card"><div class="card-title"><i class="ti ti-receipt-2" style="color:var(--accent)"></i>${_selOff!==0?_monLabel+' コスト（月間）':'累計コスト（本日まで）'}</div>
-      <div class="kpi-grid">
-        ${kpi('累計原価', fmtK(Math.round(agg.costToToday)), '本日まで', 'var(--muted)')}
-        ${kpi('原価率', costR+'%', '目標 ≤31%', statusColor(statusFromCeil(costR,31,34)))}
-        ${kpi('累計人件費', fmtK(Math.round(agg.laborToToday)), '本日まで', 'var(--muted)')}
-        ${kpi('人件費率', laborR+'%', '目標 ≤29%', statusColor(statusFromCeil(laborR,29,32)))}
-      </div></div>`;
-  }
-
-  // ===== 店舗別の現在地 =====
-  visible.forEach(b => {
-    var s = STORES.find(x=>x.id===b.storeId) || {name:b.storeId, color:'#888'};
-    var c = cumByStore[b.storeId];
-    var _editBtns = canEdit?`<div class="approval-actions">
-        <button class="btn btn-secondary btn-sm" onclick="openBudgetEditor('${b.storeId}')"><i class="ti ti-edit"></i> 予算編集</button>
-        <button class="btn btn-secondary btn-sm" onclick="setBudgetTab('daily')"><i class="ti ti-calendar"></i> 日次入力</button>
-      </div>`:'';
-    if (_selOff!==0) {
-      var smColor = statusColor(statusFromPct(c.monthRate));
-      var smDiff = c.actMonth - c.budMonth;
-      html += `<div class="card">
-      <div class="approval-header">
-        <div class="card-title" style="color:${s.color};margin:0"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
-        <span class="tag ${statusTag(statusFromPct(c.monthRate))}">達成 ${c.monthRate}%</span>
-      </div>
-      <div class="kpi-grid" style="margin:8px 0;">
-        ${kpi('月予算', fmtK(Math.round(c.budMonth)), _monLabel, 'var(--muted)')}
-        ${kpi('月実績', fmtK(Math.round(c.actMonth)), c.daysWithActual+'日入力', smColor)}
-        ${kpi('達成率', c.monthRate+'%', smDiff>=0?'▲':'▼', smColor)}
-        ${kpi('差異', (smDiff>=0?'+':'')+fmtK(Math.round(smDiff)), '実績−予算', smDiff>=0?'var(--green)':'var(--red)')}
-      </div>
-      <div class="progress-bar"><div class="progress-fill" style="background:${smColor};width:${Math.min(c.monthRate,100)}%"></div></div>
-      ${_editBtns}
-    </div>`;
-    } else {
-    var st = statusFromPct(c.paceRate);
-    var color = statusColor(st);
-    var sdiff = c.actToToday - c.budToToday;
-    html += `<div class="card">
-      <div class="approval-header">
-        <div class="card-title" style="color:${s.color};margin:0"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
-        <span class="tag ${statusTag(st)}">対予算 ${c.paceRate}%</span>
-      </div>
-      <div class="kpi-grid" style="margin:8px 0;">
-        ${kpi('累計予算', fmtK(Math.round(c.budToToday)), '前日まで', 'var(--muted)')}
-        ${kpi('累計実績', fmtK(Math.round(c.actToToday)), c.daysWithActual+'日入力', color)}
-        ${kpi('対予算', c.paceRate+'%', sdiff>=0?'▲':'▼', color)}
-        ${kpi('月予算', fmtK(Math.round(c.budMonth)), '着地'+(c.budToToday?Math.round(c.actToToday/c.budToToday*100):0)+'%見込', 'var(--muted)')}
-      </div>
-      <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(c.paceRate,100)}%"></div></div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px">${c.daysPassed}日経過 · 差異 ${sdiff>=0?'+':''}${fmtK(Math.round(sdiff))}</div>
-      ${_editBtns}
-    </div>`;
-    }
+  // ===== 集計（予算に対して今どこか） =====
+  var agg = {budToToday:0, actToToday:0, budMonth:0, actMonth:0, costToToday:0, laborToToday:0, daysPassed:0, daysWithActual:0};
+  var cumByStore = {};
+  stores.forEach(function(st){
+    var c = cumulativeToToday(st.id, isCur?null:ymFromOffset(_selOff)) || {};
+    cumByStore[st.id] = c;
+    agg.budToToday += c.budToToday||0; agg.actToToday += c.actToToday||0;
+    agg.budMonth += c.budMonth||0; agg.actMonth += c.actMonth||0;
+    agg.costToToday += c.costToToday||0; agg.laborToToday += c.laborToToday||0;
+    agg.daysPassed = Math.max(agg.daysPassed, c.daysPassed||0);
+    agg.daysWithActual = Math.max(agg.daysWithActual, c.daysWithActual||0);
   });
+  var refBud = isCur ? agg.budToToday : agg.budMonth;
+  var refAct = isCur ? agg.actToToday : agg.actMonth;
+  var pace = refBud>0 ? Math.round(refAct/refBud*1000)/10 : null;
+  var diff = refAct - refBud;
+  var landing = (isCur && agg.daysPassed>0) ? refAct/agg.daysPassed*mdays : refAct;
+  var landPct = agg.budMonth>0 ? Math.round(landing/agg.budMonth*1000)/10 : null;
+  var barPct = pace!=null ? Math.min(120, pace) : 0;
+  var heroCol = pace==null?'var(--muted)':(pace>=100?'var(--green)':pace>=93?'var(--yellow)':'var(--red)');
+
+  var html = '';
+
+  // ===== ① 今月の現在地（ヒーロー） =====
+  html += `<div class="card" style="border:1.5px solid ${heroCol}">
+    <div class="card-title"><i class="ti ti-target-arrow" style="color:${heroCol}"></i>${escapeHtml(_monLabel)}の現在地 — 予算に対して
+      <span style="margin-left:auto;font-size:10px;color:var(--muted);font-weight:400">${isCur?('前日まで '+agg.daysPassed+'/'+mdays+'日'):'月間確定'}</span></div>
+    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+      <div style="font-size:34px;font-weight:800;color:${heroCol}">${pace!=null?pace.toFixed(1)+'%':'—'}</div>
+      <div style="font-size:12px;color:var(--tm)">実績 <b>${fmtK(refAct)}</b> / 予算 ${fmtK(refBud)}
+        <span style="color:${diff>=0?'var(--green)':'var(--red)'};font-weight:700">（${diff>=0?'+':''}${fmtK(diff).replace('$-','-$')}）</span></div>
+    </div>
+    <div style="height:10px;background:var(--surface2);border-radius:6px;overflow:hidden;margin:8px 0 6px">
+      <div style="height:100%;width:${barPct}%;background:${heroCol};border-radius:6px"></div>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--tm)">
+      ${isCur?`<span><i class="ti ti-plane-arrival" style="color:${landPct==null?'var(--muted)':landPct>=100?'var(--green)':'var(--red)'}"></i> 着地予測 <b>${fmtK(landing)}</b>${landPct!=null?`（月間予算比 <b style="color:${landPct>=100?'var(--green)':'var(--red)'}">${landPct.toFixed(1)}%</b>）`:''}</span>
+      <span style="color:var(--muted)">月間予算 ${fmtK(agg.budMonth)}</span>`:`<span style="color:var(--muted)">月間予算 ${fmtK(agg.budMonth)} / 月間実績 ${fmtK(agg.actMonth)}</span>`}
+    </div>
+  </div>`;
+
+  // ===== ② KPI目標との差 =====
+  var k = keyKpiStats(stores, days);
+  var rowFmt = function(icon, label, act, tgt, lowerBetter, unit, sub){
+    var hasT = tgt!=null && act!=null;
+    var d = hasT ? Math.round((act-tgt)*100)/100 : null;
+    var good = hasT ? (lowerBetter ? d<=0 : d>=0) : null;
+    var col = good==null?'var(--muted)':(good?'var(--green)':'var(--red)');
+    var fmtV = function(v){ return v==null?'—':(unit==='%'?v.toFixed(1)+'%':unit==='$'?'$'+Number(v).toFixed(2):Math.round(v).toLocaleString()); };
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12.5px">
+      <i class="ti ${icon}" style="color:${col};width:18px"></i>
+      <div style="flex:1;min-width:0"><b>${label}</b>${sub?`<div style="font-size:10px;color:var(--muted)">${sub}</div>`:''}</div>
+      <div style="text-align:right;min-width:64px;font-weight:700;color:${col}">${fmtV(act)}</div>
+      <div style="text-align:right;min-width:64px;font-size:11px;color:var(--muted)">目標 ${fmtV(tgt)}</div>
+      <div style="text-align:right;min-width:58px;font-size:11px;color:${col};font-weight:700">${d!=null?((d>=0?'+':'')+(unit==='%'?d.toFixed(1)+'pt':unit==='$'?'$'+d.toFixed(2):Math.round(d).toLocaleString())):'—'}</div>
+    </div>`;
+  };
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>KPI目標との差 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">目標＝承認予算から算出</span></div>`;
+  html += rowFmt('ti-percentage','原価率', k.fcRate||null, k.fcBudgetRate!=null?k.fcBudgetRate:31, true, '%', '低いほど良い');
+  html += rowFmt('ti-users-group','人件費率', k.laborRate||null, k.laborBudgetRate!=null?k.laborBudgetRate:30, true, '%', '低いほど良い');
+  html += rowFmt('ti-coin','客単価（全体）', k.ppa||null, k.ppaBudget, false, '$', 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''));
+  html += rowFmt('ti-friends','客数', k.guests||null, k.guestBudget, false, 'n', null);
+  if (k.repeatHas) html += rowFmt('ti-repeat','リピート率', k.repeatRate, null, false, '%', 'リピート '+(k.repeat||0)+' / 対象 '+(k.rTotal||0));
+  html += `</div>`;
+
+  // ===== ③ 店舗別ワンライン（複数店スコープ時のみ） =====
+  if (stores.length > 1){
+    html += `<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent2)"></i>店舗別（タップで単店表示）</div>`;
+    sortByLoginOrder(stores).forEach(function(st){
+      var c = cumByStore[st.id]||{};
+      var b2 = isCur ? (c.budToToday||0) : (c.budMonth||0);
+      var a2 = isCur ? (c.actToToday||0) : (c.actMonth||0);
+      var p2 = b2>0 ? Math.round(a2/b2*1000)/10 : null;
+      var fc2 = a2>0 ? Math.round((c.costToToday||0)/a2*1000)/10 : null;
+      var lb2 = a2>0 ? Math.round((c.laborToToday||0)/a2*1000)/10 : null;
+      var col2 = p2==null?'var(--muted)':(p2>=100?'var(--green)':p2>=93?'var(--yellow)':'var(--red)');
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="setBudgetStore('${st.id}')">
+        <span class="store-dot" style="background:${st.color||'#888'}"></span>
+        <div style="min-width:86px;font-size:12px;font-weight:600">${escapeHtml(st.name)}</div>
+        <div style="flex:1;height:7px;background:var(--surface2);border-radius:4px;overflow:hidden"><div style="height:100%;width:${p2!=null?Math.min(120,p2):0}%;background:${col2}"></div></div>
+        <div style="min-width:52px;text-align:right;font-weight:700;color:${col2};font-size:12px">${p2!=null?p2.toFixed(1)+'%':'—'}</div>
+        <div style="min-width:72px;text-align:right;font-size:10px;color:var(--muted)">原${fc2!=null?fc2.toFixed(1)+'%':'—'}・人${lb2!=null?lb2.toFixed(1)+'%':'—'}</div>
+      </div>`;
+    });
+    html += `<div style="font-size:10px;color:var(--muted);margin-top:6px">達成率＝${isCur?'前日までの累計予算比':'月間予算比'}。原＝原価率・人＝人件費率（実数）。</div></div>`;
+  }
+
+  // ===== 承認待ちの控えめな通知 =====
+  try{
+    var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && b.status==='GM承認待ち'; });
+    if (pendB.length) html += `<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab('setup')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">GM承認待ちの予算が <b>${pendB.length}店</b> あります — タップで予算設定へ</div></div>`;
+  }catch(e){}
+
   return html;
 }
 
@@ -9602,25 +9581,46 @@ function renderFcAllStores(){
   return html;
 }
 
-/* 日次: 実績原価率 = 発注金額合計 ÷ 売上 */
+/* 日次: 実数原価率 = (Invoice仕入＋買い出し) ÷ 売上実績（速報値・棚卸は月次で反映） */
+function _purchOnISO(storeId, iso){
+  var jp = iso.replace(/-/g,'/');
+  return getPurchases(storeId).filter(function(p){ return String(p.date||'').indexOf(jp)===0; })
+    .reduce(function(a,p){ return a+(parseFloat(p.amount)||0); },0);
+}
 function renderFcDaily(storeId, store) {
-  var data = storeData(storeId);
-  var dailySales = Math.round(data.a/30); // 仮: 月商÷30
+  var actuals = getDailyActuals(storeId);
   var todayOrder = dailyOrderTotal(storeId);
-  var todayShopping = getPurchases(storeId).filter(p=>p.date===todayJP()).reduce((a,p)=>a+(parseFloat(p.amount)||0),0);
-  var totalCost = todayOrder + todayShopping;
-  var rate = dailySales ? Math.round(totalCost/dailySales*1000)/10 : 0;
-  var color = rate<=31?'var(--green)':rate<=33?'var(--yellow)':'var(--red)';
-
-  var html = `<div class="alert alert-success" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">日次は<strong>発注金額合計 ÷ 売上</strong>の簡易原価率です（速報値）</div></div>
-  <div class="card"><div class="card-title"><i class="ti ti-calendar-stats"></i>本日の簡易原価率</div>
+  var rows='', latest=null;
+  for (var i=0; i<7; i++){
+    var dt = new Date(Date.now()-i*86400000);
+    var iso = dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+    var ov = actuals[iso]||{};
+    var sales = Number(ov.actual)||0;
+    var inv = Math.round(dayCostReal(storeId, iso)*100)/100;
+    var shop = Math.round(_purchOnISO(storeId, iso)*100)/100;
+    var cost = (ov.foodCost!=null) ? Number(ov.foodCost) : (inv+shop);
+    var rate = sales>0 && cost>0 ? Math.round(cost/sales*1000)/10 : null;
+    if (!latest && sales>0) latest = {iso:iso, sales:sales, cost:cost, rate:rate};
+    var col = rate==null?'var(--muted)':(rate<=31?'var(--green)':rate<=34?'var(--yellow)':'var(--red)');
+    rows += `<tr><td>${iso.slice(5).replace('-','/')}（${['日','月','火','水','木','金','土'][dt.getDay()]}）</td>
+      <td style="text-align:right">${sales?fmtUSD2(sales):'—'}</td>
+      <td style="text-align:right">${inv?fmtUSD2(inv):'—'}</td>
+      <td style="text-align:right">${shop?fmtUSD2(shop):'—'}</td>
+      <td style="text-align:right;color:${col};font-weight:600">${rate!=null?rate.toFixed(1)+'%':'—'}</td></tr>`;
+  }
+  var head = latest
+    ? kpi('直近の実数原価率', latest.rate!=null?latest.rate.toFixed(1)+'%':'—', latest.iso.slice(5).replace('-','/')+'・仕入 '+fmtUSD2(latest.cost)+' / 売上 '+fmtUSD2(latest.sales), latest.rate==null?'var(--muted)':(latest.rate<=31?'var(--green)':latest.rate<=34?'var(--yellow)':'var(--red)'))
+    : kpi('直近の実数原価率', '—', '売上実績が未入力です', 'var(--muted)');
+  var html = `<div class="alert alert-success" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">日次は<strong>（Invoice仕入＋買い出し）÷ 売上実績</strong>の実数速報です。正確な原価率（棚卸法）は「月次」タブで確定します。</div></div>
+  <div class="card"><div class="card-title"><i class="ti ti-calendar-stats"></i>日次 実数原価率（直近7日）</div>
     <div class="kpi-grid">
-      ${kpi('発注金額', '$'+todayOrder.toLocaleString(), '本日発注', 'var(--tm)')}
-      ${kpi('買い出し', '$'+todayShopping.toLocaleString(), '本日購入', 'var(--tm)')}
-      ${kpi('売上(仮)', '$'+dailySales.toLocaleString(), 'Toast連携前', 'var(--muted)')}
-      ${kpi('簡易原価率', rate+'%', '目標≤31%', color)}
+      ${head}
+      ${kpi('本日の発注', fmtUSD2(todayOrder), '納品日ベースは仕入に反映', 'var(--tm)')}
     </div>
-    <p style="font-size:11px;color:var(--muted);margin-top:8px">※ 売上はToast連携後に実数反映。現在は月商÷30の仮値</p>
+    <div style="overflow-x:auto;margin-top:8px"><table class="inv-table" style="width:100%;min-width:430px;font-size:11.5px">
+      <thead><tr><th style="text-align:left">日付</th><th style="text-align:right">売上（実）</th><th style="text-align:right">Invoice仕入</th><th style="text-align:right">買い出し</th><th style="text-align:right">原価率</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px">売上＝日次実績（Toast同期/手入力）。仕入＝読取済みInvoice（買い出しReceiptは対象店按分）＋買い出し記録。当日原価を手入力した日はその値を優先。</p>
   </div>`;
   return html;
 }
@@ -11793,6 +11793,33 @@ function renderTipPeriodMatrix(storeId, store, info){
     });
     html+=`<tr><td style="${stick};font-size:11px">${nm}</td>${cells}<td style="text-align:right;font-weight:700;color:var(--green)">$${ptot.toFixed(2)}</td></tr>`;
   });
+  // No Tip（Tip Rate 0%）スタッフの勤務時間 — 配分対象外シフトの消化確認用（管理者・本人向け）
+  try{
+    var ntNames = {};
+    M.dists.forEach(function(x){
+      var lab = getTipLabor(storeId, x.date) || {};
+      Object.keys(lab).forEach(function(nm){
+        var rt = (typeof effectiveTipRate==='function') ? effectiveTipRate(nm) : null;
+        if (rt===0){
+          var e=lab[nm]||{};
+          (ntNames[nm]=ntNames[nm]||{})[x.date]={l:Number(e.lunch)||0, d:Number(e.dinner)||0};
+        }
+      });
+    });
+    var ntKeys = Object.keys(ntNames).sort();
+    if (ntKeys.length){
+      html += `<tr><td colspan="${2+M.dists.length*2}" style="${stick};background:var(--surface2);font-size:10px;font-weight:700;color:var(--red);padding-top:8px"><i class="ti ti-user-x"></i> No Tip（Training中）— 勤務時間(h)・配分対象外</td></tr>`;
+      ntKeys.forEach(function(nm){
+        var tot=0, cells='';
+        M.dists.forEach(function(x){
+          var v = ntNames[nm][x.date];
+          var l = v? v.l:0, dd = v? v.d:0; tot += l+dd;
+          cells += `<td style="text-align:right;${bl};color:var(--muted);font-size:10px">${l?l.toFixed(1)+'h':''}</td><td style="text-align:right;color:var(--muted);font-size:10px">${dd?dd.toFixed(1)+'h':''}</td>`;
+        });
+        html += `<tr><td style="${stick};font-size:11px;color:var(--muted)">${escapeHtml(nm)} <span class="tag tag-red" style="font-size:8px">No Tip</span></td>${cells}<td style="text-align:right;color:var(--muted);font-size:10px">${tot?tot.toFixed(1)+'h':''}</td></tr>`;
+      });
+    }
+  }catch(e){}
   // 配分合計
   var grand=0, sumCells='';
   M.dists.forEach(function(x){ var l=0,dd=0; (x.dist.list||[]).forEach(function(r){l+=r.lunch||0; dd+=r.dinner||0;}); grand+=l+dd;
