@@ -29977,7 +29977,7 @@ function getRespMatrix(){
 }
 function saveRespMatrix(mx){ mx.at=nowJP(); mx.by=(typeof myName==='function')?myName():''; lsSet('resp_matrix', mx); }
 function _respRerender(){ renderPage((typeof curPage!=='undefined'&&curPage==='ojt_admin')?'ojt_admin':'biz_guide'); }
-function respToggleEdit(){ window._respEdit=!window._respEdit; _respRerender(); }
+function respToggleEdit(){ window._respEdit=(window._respEdit===false); _respRerender(); }
 function respReset(){ if(!confirm('責任マトリクスを既定（Claude納品時の内容）に戻します。編集内容は失われます。よろしいですか？')) return; lsSet('resp_matrix', {rows:respDefaultRows(), v:1}); showToast('既定に戻しました','success'); _respRerender(); }
 function respSetCell(ri, ci, val){ var mx=getRespMatrix(); if(!mx.rows[ri]||mx.rows[ri].cat!==undefined&&!Array.isArray(mx.rows[ri])) return; mx.rows[ri][ci]=val; saveRespMatrix(mx); }
 function respSetName(ri, val){ var mx=getRespMatrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][0]=val; saveRespMatrix(mx); }
@@ -29995,19 +29995,19 @@ function renderRespMatrix(){
   var mx=getRespMatrix();
   var rows=mx.rows;
   var canEdit=(['gm','ceo'].indexOf(curRole)>=0);
-  var editing=canEdit && !!window._respEdit;
+  var editing=canEdit && (window._respEdit!==false); // GM/CEOは初期状態から編集モード（プルダウン表示）
   // 全員共通の責任（Grade問わず）
   var h='<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-users" style="color:var(--accent)"></i>全員共通の責任（Grade問わず）'
     +(canEdit?'<span style="margin-left:auto;display:flex;gap:6px">'
-      +'<button class="btn btn-'+(editing?'primary':'secondary')+' btn-sm" style="padding:3px 10px;font-size:10px" onclick="respToggleEdit()"><i class="ti ti-'+(editing?'check':'pencil')+'"></i> '+(editing?'編集を終了':'編集モード')+'</button>'
-      +(editing?'<button class="btn btn-secondary btn-sm" style="padding:3px 10px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="respReset()"><i class="ti ti-restore"></i> 既定に戻す</button>':'')
+      +'<button class="btn btn-secondary btn-sm" style="padding:3px 10px;font-size:10px" onclick="respToggleEdit()"><i class="ti ti-'+(editing?'eye':'pencil')+'"></i> '+(editing?'表示モードで見る':'編集モードへ')+'</button>'
+      +'<button class="btn btn-secondary btn-sm" style="padding:3px 10px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="respReset()"><i class="ti ti-restore"></i> 既定に戻す</button>'
       +'</span>':'')+'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;font-size:12px">'
     +[['ti-heart-handshake','理念を守る'],['ti-mood-smile','全員接客'],['ti-speakerphone','声出し・返事の徹底'],['ti-clock-check','自己勤怠の管理<br><span style="font-size:10px;color:var(--muted)">打刻・シフト希望の提出</span>']].map(function(x){
       return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 10px;display:flex;align-items:center;gap:8px"><i class="ti '+x[0]+'" style="color:var(--accent);font-size:16px"></i><b>'+x[1]+'</b></div>';
     }).join('')+'</div></div>';
   h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助（責任なし）／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。'
-    +(editing?'<br><b style="color:var(--accent)">編集モード:</b> セルのプルダウンで責任を変更（即保存）。業務名・備考も直接編集、行の追加・削除も可能です。':(canEdit?'　<span style="color:var(--muted)">（GM/CEOは右上の編集モードで調整できます）</span>':''))
+    +(editing?'<br><b style="color:var(--accent)">編集モード（GM/CEO）:</b> セルのプルダウンで責任を変更→<b>即保存・全端末に同期</b>。業務名・備考も直接編集、カテゴリごとの行追加・行削除も可能。確定したら「表示モードで見る」で仕上がりを確認。':'')
     +(mx.at?'<br><span style="font-size:10px">最終更新: '+escapeHtml(mx.at)+(mx.by?'（'+escapeHtml(mx.by)+'）':'')+'</span>':'')+'</div>'
     +'<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:'+(editing?'880':'720')+'px;font-size:11px"><thead><tr><th style="text-align:left">業務</th><th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>G5</th><th>G6<br><span style="font-size:9px">GM</span></th><th>経理</th><th style="text-align:left">備考</th>'+(editing?'<th></th>':'')+'</tr></thead><tbody>';
   var selCell=function(ri, ci, cur){
@@ -30134,6 +30134,10 @@ function checkCashTipTasks(){
     var y = isoOf(new Date(Date.now()-86400000));
     if (window._ctipChk === y) return; window._ctipChk = y;
     var tasks = getTasks(); var changed=false;
+    // 対象外店舗（Waikiki 2店: F03/F03-G）の自動生成済みキャッシュチップタスクを一括削除
+    var before = tasks.length;
+    tasks = tasks.filter(function(t){ return !(t && t.auto==='cashtip' && typeof isNoCashTipStore==='function' && isNoCashTipStore(t.store)); });
+    if (tasks.length !== before) changed = true;
     activeStores().forEach(function(st){
       if (typeof cashTipMissing!=='function' || !cashTipMissing(st.id, y)) return;
       var refId = 'ctip_'+st.id+'_'+y;
