@@ -14735,7 +14735,7 @@ function renderShiftBuild(storeId, week) {
           if(!active){ html += `<td style="text-align:center;padding:2px"><div style="font-size:9px;padding:3px;min-height:24px;color:var(--muted);background:var(--surface2);border-radius:6px;opacity:.5">－</div></td>`; return; }
           var key = shiftCellKey(day, sec.key, slot.label);
           var assigned = plan.cells[key] || '';
-          html += `<td style="text-align:center;padding:2px"><div class="shift-slot${assigned?' sel':''}" style="font-size:10px;padding:3px;min-height:24px" onclick="openCellAssign('${storeId}','${week}','${key}','${day}','${sec.key}','${slot.pos.replace(/'/g,"")}')">${assigned?shiftCellLabel(assigned, slot.pos, storeId):'+'}</div></td>`;
+          html += `<td style="text-align:center;padding:2px"><div class="shift-slot${assigned?' sel':''}" style="font-size:10px;padding:3px;min-height:24px" onclick="openCellAssign('${storeId}','${week}','${key}','${day}','${sec.key}','${slot.pos.replace(/'/g,"")}')">${assigned?shiftCellLabel(assigned, slot.pos, storeId, sec.key):'+'}</div></td>`;
         });
         html += '</tr>';
       });
@@ -14753,7 +14753,8 @@ function renderShiftBuild(storeId, week) {
         var parts = k.split('_');
         var _pos = parts.slice(2).join('_').replace(/ \d+$/,''); // "Server 2"→"Server"
         var _lv = (typeof positionLevelStore==='function')?positionLevelStore(plan.cells[k], _pos, storeId):0;
-        html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><span>${parts[1]} ${parts.slice(2).join('_')}</span><span style="font-weight:600">${plan.cells[k]}${_lv>0?' <span style="font-size:10px;color:var(--accent)">L'+_lv+'</span>':''}</span></div>`;
+        var _tm = shiftPosTimeLabel(storeId, parts[1], _pos);
+        html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><span>${parts[1]} ${parts.slice(2).join('_')}${_tm?' <span style="font-size:10px;color:var(--muted)">'+_tm+'</span>':''}</span><span style="font-weight:600">${plan.cells[k]}${_lv>0?' <span style="font-size:10px;color:var(--accent)">L'+_lv+'</span>':''}</span></div>`;
       });
       html += '</div>';
     });
@@ -16093,56 +16094,77 @@ function shiftDayHeadHtml(day){
   return '<div'+tip+'><div style="color:'+col+';font-weight:700">'+day+'</div><div style="font-size:9px;color:var(--muted);font-weight:400">'+md+'</div>'+tag+'</div>';
 }
 /* セル表示: スタッフ名（名） + そのポジションのLv */
-function shiftCellLabel(name, pos, storeId){
+function shiftCellLabel(name, pos, storeId, secKey){
   if(!name) return '+';
   var first=name.split(' ')[0].slice(0,5);
   var lv=(typeof positionLevelStore==='function')?positionLevelStore(name, pos, storeId):0;
   var lvTag = lv>0 ? '<span style="font-size:8px;color:var(--accent);font-weight:700"> L'+lv+'</span>' : '';
-  var tm=shiftPosTimeLabel(storeId, pos);
+  var tm=shiftPosTimeLabel(storeId, secKey, pos);
   var tmTag = tm ? '<div style="font-size:8px;color:var(--muted);font-weight:400;line-height:1.1">'+tm+'</div>' : '';
   return first+lvTag+tmTag;
 }
-/* ===== ポジション別シフト時間（店舗ごと）=====
-   shift_postime[storeId][pos] = {start:'16:00', end:'22:00'} */
+/* ===== ポジション別シフト時間（店舗×セクション×ポジション）=====
+   shift_postime[storeId][secKey::pos] = {start:'16:00', end:'22:00'}
+   Prep/ランチ/ディナー等、時間帯ごとに同じポジションでも別時間を設定可能。 */
 function getShiftPosTimes(storeId){ try{ var c=ls('shift_postime',{})||{}; return c[storeId]||{}; }catch(e){ return {}; } }
-function setShiftPosTime(storeId, pos, start, end){
+function _stKey(secKey, pos){ return (secKey||'')+'::'+pos; }
+function setShiftPosTime(storeId, secKey, pos, start, end){
   var c=ls('shift_postime',{})||{}; if(!c[storeId])c[storeId]={};
-  if(!start&&!end){ delete c[storeId][pos]; } else { c[storeId][pos]={start:start||'', end:end||''}; }
+  var k=_stKey(secKey,pos);
+  if(!start&&!end){ delete c[storeId][k]; } else { c[storeId][k]={start:start||'', end:end||''}; }
   lsSet('shift_postime', c);
 }
-function shiftPosTimeLabel(storeId, pos){
-  var t=getShiftPosTimes(storeId)[pos]; if(!t) return '';
+function shiftPosTimeLabel(storeId, secKey, pos){
+  var m=getShiftPosTimes(storeId);
+  var t=m[_stKey(secKey,pos)] || m[pos]; // 旧データ(pos単独キー)も後方互換で参照
+  if(!t) return '';
   if(t.start&&t.end) return t.start+'–'+t.end;
   return t.start||t.end||'';
 }
-/* この店舗のシフトに登場する全ポジション（時間設定の対象一覧） */
-function shiftAllPositions(storeId){
-  var set={}, out=[];
+/* この店舗の (secKey, secLabel, [pos...]) 一覧（時間設定の対象） */
+function shiftTimeTargets(storeId){
   var lay=SHIFT_LAYOUTS[storeId];
-  if(lay){ lay.sections.forEach(function(sec){ (sec.slots||[]).forEach(function(sl){ if(!set[sl.pos]){set[sl.pos]=1;out.push(sl.pos);} }); if(sec.headcount&&!set[sec.headcount.fillPos]){set[sec.headcount.fillPos]=1;out.push(sec.headcount.fillPos);} }); }
-  else { assignablePositions(storeId).forEach(function(p){ if(!set[p]){set[p]=1;out.push(p);} }); }
-  return out;
+  if(lay){
+    return lay.sections.map(function(sec){
+      var set={}, poss=[];
+      (sec.slots||[]).forEach(function(sl){ if(!set[sl.pos]){set[sl.pos]=1;poss.push(sl.pos);} });
+      if(sec.headcount&&!set[sec.headcount.fillPos]){ poss.push(sec.headcount.fillPos); }
+      return {key:sec.key, label:sec.label, poss:poss};
+    });
+  }
+  // 従来店: Lunch/Dinner × assignablePositions
+  var ap=assignablePositions(storeId);
+  return SHIFT_PERIODS.map(function(p){ return {key:p, label:p, poss:ap}; });
 }
 function openShiftTimeEditor(storeId){
   var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
-  var poss=shiftAllPositions(storeId);
+  var targets=shiftTimeTargets(storeId);
   var times=getShiftPosTimes(storeId);
-  var rows=poss.map(function(p){
-    var t=times[p]||{};
-    return '<tr><td style="text-align:left;font-weight:600;font-size:12px;white-space:nowrap">'+escapeHtml(p)+'</td>'
-      +'<td style="padding:2px"><input class="form-input st-start" data-pos="'+escapeHtml(p)+'" type="time" value="'+(t.start||'')+'" style="padding:5px;font-size:12px"></td>'
-      +'<td style="padding:2px"><input class="form-input st-end" data-pos="'+escapeHtml(p)+'" type="time" value="'+(t.end||'')+'" style="padding:5px;font-size:12px"></td></tr>';
-  }).join('');
-  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — シフト時間設定（ポジション別） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">各ポジションの標準シフト時間を設定します。設定するとシフト表の各セルに時間が表示されます（空欄＝非表示）。</div>'
-    +'<div style="max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"><table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">ポジション</th><th>開始</th><th>終了</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+  var body='';
+  targets.forEach(function(sec){
+    body+='<div style="font-weight:800;font-size:12px;color:var(--accent);background:var(--surface2);padding:5px 8px;border-radius:6px;margin:8px 0 4px"><i class="ti ti-clock-hour-4"></i> '+escapeHtml(sec.label)+'</div>';
+    body+='<table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">ポジション</th><th>開始</th><th>終了</th></tr></thead><tbody>';
+    sec.poss.forEach(function(p){
+      var t=times[_stKey(sec.key,p)]||times[p]||{};
+      body+='<tr><td style="text-align:left;font-weight:600;font-size:12px;white-space:nowrap">'+escapeHtml(p)+'</td>'
+        +'<td style="padding:2px"><input class="form-input st-time" data-sec="'+escapeHtml(sec.key)+'" data-pos="'+escapeHtml(p)+'" data-kind="start" type="time" value="'+(t.start||'')+'" style="padding:5px;font-size:12px"></td>'
+        +'<td style="padding:2px"><input class="form-input st-time" data-sec="'+escapeHtml(sec.key)+'" data-pos="'+escapeHtml(p)+'" data-kind="end" type="time" value="'+(t.end||'')+'" style="padding:5px;font-size:12px"></td></tr>';
+    });
+    body+='</tbody></table>';
+  });
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — シフト時間設定 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:4px">時間帯（Prep／ランチ／ディナー等）ごとに、ポジション別の標準シフト時間を設定します。設定するとシフト表の各セルに時間が表示されます（空欄＝非表示）。</div>'
+    +'<div style="max-height:56vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:0 8px 8px">'+body+'</div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveShiftTimes(\''+storeId+'\')">保存</button></div>');
 }
 function saveShiftTimes(storeId){
-  var starts={}, ends={};
-  document.querySelectorAll('.st-start').forEach(function(i){ starts[i.getAttribute('data-pos')]=i.value; });
-  document.querySelectorAll('.st-end').forEach(function(i){ ends[i.getAttribute('data-pos')]=i.value; });
-  Object.keys(starts).forEach(function(p){ setShiftPosTime(storeId, p, starts[p], ends[p]); });
+  var map={};
+  document.querySelectorAll('.st-time').forEach(function(i){
+    var k=i.getAttribute('data-sec')+'||'+i.getAttribute('data-pos');
+    if(!map[k]) map[k]={sec:i.getAttribute('data-sec'), pos:i.getAttribute('data-pos'), start:'', end:''};
+    map[k][i.getAttribute('data-kind')]=i.value;
+  });
+  Object.keys(map).forEach(function(k){ var m=map[k]; setShiftPosTime(storeId, m.sec, m.pos, m.start, m.end); });
   closeModalDirect(); showToast('シフト時間を保存しました','success'); renderPage('shift_admin');
 }
 
