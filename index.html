@@ -885,6 +885,10 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
         lunchBowls: r.lunch_bowls!=null?Number(r.lunch_bowls):undefined,
         dinnerBowls: r.dinner_bowls!=null?Number(r.dinner_bowls):undefined,
         takeout: r.takeout_count!=null?Number(r.takeout_count):undefined,
+        toLunchSales: r.to_lunch_sales!=null?Number(r.to_lunch_sales):undefined,
+        toDinnerSales: r.to_dinner_sales!=null?Number(r.to_dinner_sales):undefined,
+        toLunchCount: r.to_lunch_count!=null?Number(r.to_lunch_count):undefined,
+        toDinnerCount: r.to_dinner_count!=null?Number(r.to_dinner_count):undefined,
         takeoutBowls: r.takeout_bowls!=null?Number(r.takeout_bowls):undefined,
         lunchTakeoutBowls: r.lunch_takeout_bowls!=null?Number(r.lunch_takeout_bowls):undefined,
         dinnerTakeoutBowls: r.dinner_takeout_bowls!=null?Number(r.dinner_takeout_bowls):undefined,
@@ -1468,7 +1472,7 @@ function ppaTriple(storeId, offset){
     var ms = safeMonthStats(storeId, offset||0);
     if(!ms) return null;
     var f = function(v){ return v!=null ? '$'+(Math.round(v*100)/100).toFixed(2) : '—'; };
-    return { l: f(ms.ppaLunch), d: f(ms.ppaDinner), all: f(ms.ppa),
+    return { l: f(ms.ppaLunch), d: f(ms.ppaDinner), all: f(ms.ppa), to: ms.ppaTO!=null?f(ms.ppaTO):null,
       lg: ms.lunchGuests||0, dg: ms.dinnerGuests||0, g: ms.guests||0,
       has: (ms.ppa!=null || ms.ppaLunch!=null || ms.ppaDinner!=null) };
   }catch(e){ return null; }
@@ -1476,7 +1480,7 @@ function ppaTriple(storeId, offset){
 function ppaTripleLine(storeId, offset){
   var p = ppaTriple(storeId, offset);
   if(!p || !p.has) return '';
-  return `<span><span style="font-size:10px;color:var(--muted)">客単価 </span><b style="color:var(--tm)">L ${p.l}</b><span style="font-size:10px;color:var(--muted)"> ／ </span><b style="color:var(--tm)">D ${p.d}</b><span style="font-size:10px;color:var(--muted)"> ／ </span><b style="color:var(--accent)">全体 ${p.all}</b></span>`;
+  return `<span><span style="font-size:10px;color:var(--muted)">客単価 </span><b style="color:var(--tm)">L ${p.l}</b><span style="font-size:10px;color:var(--muted)"> ／ </span><b style="color:var(--tm)">D ${p.d}</b><span style="font-size:10px;color:var(--muted)"> ／ </span><b style="color:var(--accent)">全体 ${p.all}</b>${p.to?`<span style="font-size:10px;color:var(--muted)"> ／ </span><b style="color:var(--yellow)">TO ${p.to}</b>`:''}</span>`;
 }
 function ppaTripleCard(storeId, offset, label){
   var p = ppaTriple(storeId, offset);
@@ -1496,7 +1500,7 @@ function safeMonthStats(storeId, offset){
     var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
     var ym = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); // YYYY-MM
     var actuals = (typeof getDailyActuals==='function') ? getDailyActuals(storeId) : {};
-    var sales=0, guests=0, lunchG=0, dinnerG=0, lunchS=0, dinnerS=0, takeout=0, orders=0, days=0;
+    var sales=0, guests=0, lunchG=0, dinnerG=0, lunchS=0, dinnerS=0, takeout=0, orders=0, days=0, toLS=0, toDS=0, toLC=0, toDC=0;
     Object.keys(actuals).forEach(date=>{
       if (String(date).slice(0,7)!==ym) return;
       var r=actuals[date]; if(!r) return;
@@ -1508,12 +1512,21 @@ function safeMonthStats(storeId, offset){
       if(r.lunchSales!=null) lunchS += Number(r.lunchSales)||0;
       if(r.dinnerSales!=null) dinnerS += Number(r.dinnerSales)||0;
       if(r.takeout!=null) takeout += Number(r.takeout)||0;
+      if(r.toLunchSales!=null) toLS += Number(r.toLunchSales)||0;
+      if(r.toDinnerSales!=null) toDS += Number(r.toDinnerSales)||0;
+      if(r.toLunchCount!=null) toLC += Number(r.toLunchCount)||0;
+      if(r.toDinnerCount!=null) toDC += Number(r.toDinnerCount)||0;
     });
     if (!days) return null;
-    var res = { days:days, guests:guests, lunchGuests:lunchG, dinnerGuests:dinnerG,
+    // TO分離データがあれば L/D は「店内客単価」（TO売上・件数を控除）、TOは別軸
+    var hasTO = (toLS+toDS)>0 && (toLC+toDC)>0;
+    var inLG = hasTO ? Math.max(0, lunchG - toLC) : lunchG;
+    var inDG = hasTO ? Math.max(0, dinnerG - toDC) : dinnerG;
+    var res = { days:days, guests:guests, lunchGuests:lunchG, dinnerGuests:dinnerG, hasTO:hasTO,
       ppa: guests>0 ? sales/guests : null,
-      ppaLunch: lunchG>0 ? lunchS/lunchG : null,
-      ppaDinner: dinnerG>0 ? dinnerS/dinnerG : null };
+      ppaLunch: hasTO ? (inLG>0 ? (lunchS-toLS)/inLG : null) : (lunchG>0 ? lunchS/lunchG : null),
+      ppaDinner: hasTO ? (inDG>0 ? (dinnerS-toDS)/inDG : null) : (dinnerG>0 ? dinnerS/dinnerG : null),
+      ppaTO: hasTO ? (toLS+toDS)/(toLC+toDC) : null, toCount: toLC+toDC };
     // テイクアウト比率（注文数の代理が無いので、件数/客数で近似は誤解を招くため保留）
     // 人件費率は既存storeData（今月のみ）から
     if ((offset||0)===0){ var sd=storeData(storeId); if(sd&&sd.labor!=null) res.laborPct=sd.labor; }
@@ -1610,8 +1623,8 @@ const MENU_GROUPS = [
     children:['dashboard','store_cmd','mypage']},
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','store_power','labor','foodcost','kpi_master']},
-  {id:'g_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office','am','sl'],
-    children:['tasks']},
+  {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
+    children:['tasks','biz_guide']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
@@ -1623,11 +1636,11 @@ const MENU_GROUPS = [
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
 const OFFICE_GROUPS = [
   {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
-    children:['office_mgr','tip','hr','growthhub','hiring','office_export','vacation','mileage','notifications']},
+    children:['office_mgr','acct_review','tip','hr','growthhub','hiring','office_export','vacation','mileage','notifications']},
   {id:'go_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office'],
     children:['budget','store_power','labor','foodcost','kpi_master']},
-  {id:'go_tasks', label:'タスク管理', icon:'ti-checklist', roles:['ceo','gm','office'],
-    children:['tasks']},
+  {id:'go_tasks', label:'ワークセンター', icon:'ti-layout-dashboard', roles:['ceo','gm','office'],
+    children:['tasks','biz_guide']},
   {id:'go_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office'],
     children:['menu','recipe','ingredient_master','vendor_master','inventory']},
   {id:'go_acct', label:'経理', icon:'ti-calculator', roles:['ceo','gm','office'],
@@ -2671,7 +2684,28 @@ function getCategories() {
   if (!cats.find(function(c){return c.code===11000;})) cats.push({code:11000,name:'加工品', cls:'food'});
   return cats;
 }
+/* 業者名の表記ゆれ（前後空白・大小文字・連続空白）で2重表示される問題を一回だけ正規化 */
+function _vendorDedupeFix(){
+  try{
+    if (window._vdf) return; window._vdf=1;
+    if (ls('vendor_dedupe_fix', false)) return;
+    var ings = ls('m_ingredients', null);
+    if (Array.isArray(ings)) {
+      var canon = {};
+      ings.forEach(function(i){
+        var v = String(i.vendor||'').replace(/\s+/g,' ').trim();
+        if (!v) { i.vendor=''; return; }
+        var k = v.toLowerCase();
+        if (!canon[k]) canon[k] = v;   // 最初に出た表記を正とする
+        i.vendor = canon[k];
+      });
+      lsSet('m_ingredients', ings);
+    }
+    lsSet('vendor_dedupe_fix', true);
+  }catch(e){}
+}
 function getIngredients() {
+  _vendorDedupeFix();
   var ings = ls('m_ingredients', DEFAULT_INGREDIENTS);
   // 発注関連フィールドの既定値を補完（基準在庫=PAR, 発注ロット等）
   ings.forEach(i => {
@@ -6594,6 +6628,22 @@ function empIsMonthlyByName(name){
 function storeMonthlyStaff(storeId){
   return getEmployees().filter(function(e){ return e && e.store===storeId && e.status!=='退職' && empPayType(e)==='monthly'; });
 }
+/* 実数原価: Invoice読取（Receipt買出しは対象店舗で按分）を店舗×日付で集計。手入力foodCostが無い日の実数として使用 */
+function _invDayCostMap(){
+  var inv = ls('invoices', [])||[];
+  if (window._idcN===inv.length && window._idc) return window._idc;
+  var m = {};
+  inv.forEach(function(v){
+    var d = parseJaDate(v.date); if(!d) return;
+    var iso = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    var sids = (v.splitStores&&v.splitStores.length)?v.splitStores:(v.storeId?[v.storeId]:[]);
+    if(!sids.length) return;
+    var share = (Number(v.total)||0)/sids.length;
+    sids.forEach(function(sid){ (m[sid]=m[sid]||{})[iso]=(m[sid][iso]||0)+share; });
+  });
+  window._idc=m; window._idcN=inv.length; return m;
+}
+function dayCostReal(sid, iso){ var m=_invDayCostMap(); return (m[sid]&&m[sid][iso])||0; }
 function cumulativeToToday(storeId, ymOpt) {
   var ym = ymOpt || curYm();
   var days = ymOpt ? daysOfYm(ymOpt) : monthDays();
@@ -6621,7 +6671,7 @@ function cumulativeToToday(storeId, ymOpt) {
       if (ov.actual!=null && ov.actual>0) {
         daysWithActual++;
         // 原価（日次入力があれば反映）。人件費はループ外の共通コア(laborCoreForYm)で一括算出。
-        if (ov.foodCost!=null) costToToday += ov.foodCost;
+        costToToday += (ov.foodCost!=null) ? ov.foodCost : dayCostReal(storeId, d.date);
       }
     }
   });
@@ -6714,7 +6764,7 @@ function msAgg(storeId, mi){
     }
     if(past && ov.actual!=null && ov.actual>0){
       daysWithActual++;
-      if(ov.foodCost!=null) food+=ov.foodCost;
+      food += (ov.foodCost!=null) ? ov.foodCost : dayCostReal(s.id, d.date);
     }
     trend.push({day:d.day, date:d.date, actual:(past?dayAct:null), budget:dayBud});
   });
@@ -7865,6 +7915,7 @@ function renderDowModal() {
   var grandTotal = dowMonthlyTotal(st.dow, ym);
 
   openModal(`<div class="modal-title">${sName} — 曜日別予算 <button class="modal-close" onclick="closeDowEditor()">×</button></div>
+    ${budgetEditorTabs(storeId,'dow')}
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 曜日ごとに目標${qtyLabel}×客単価を入力。${ym.y}年${ym.m}月の曜日数で月間予算を自動計算します。</div>
     <div style="display:flex;gap:4px;margin-bottom:10px">${tabs}</div>
     <div style="max-height:46vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">
@@ -7981,6 +8032,7 @@ function openSegEditor(storeId, seg) {
       <div class="form-group"><label class="form-label">施策メモ</label><textarea class="form-textarea" id="sg-memo">${sg.memo||''}</textarea></div>`;
   }
   openModal(`<div class="modal-title">${sName} — ${labels[seg]}予算 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    ${budgetEditorTabs(storeId, seg)}
     <div style="max-height:62vh;overflow-y:auto">${body}
     <div style="background:var(--surface2);border-radius:8px;padding:10px;margin-top:8px;text-align:center">
       <div style="font-size:11px;color:var(--muted)">予測売上（${labels[seg]}）</div>
@@ -8863,7 +8915,7 @@ function prevMonthDaysList(ym){
 /* ===== 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）統一集計＋予実比較 ===== */
 function keyKpiStats(scopeStores, days){
   var sales=0,budget=0,guests=0,food=0,labor=0,laborHours=0,dayHasActual={};
-  var lunchS=0,lunchG=0,dinnerS=0,dinnerG=0;
+  var lunchS=0,lunchG=0,dinnerS=0,dinnerG=0,toLS=0,toDS=0,toLC=0,toDC=0;
   var salesBud=0,guestBud=0,fcBud$=0,laborBud$=0,segSales$=0,hasGuestBud=false;
   var todayStr=todayISO();
   var ym=(days&&days[0])?days[0].date.slice(0,7):'';
@@ -8890,10 +8942,12 @@ function keyKpiStats(scopeStores, days){
         var cnt = metric==='bowls' ? ((Number(ov.bowls)||0)+(Number(ov.takeoutBowls)||0)) : (Number(ov.guests)||0);
         guests+=cnt;
         if(ov.actual>0){
-          if(ov.foodCost!=null) food+=ov.foodCost;
+          food += (ov.foodCost!=null) ? ov.foodCost : dayCostReal(s.id, d.date);
           if(typeof toastLaborHoursForDate==='function') laborHours+=toastLaborHoursForDate(s.id,d.date);
           lunchS+=Number(ov.lunchSales)||0; lunchG+=Number(ov.lunchGuests)||0;
           dinnerS+=Number(ov.dinnerSales)||0; dinnerG+=Number(ov.dinnerGuests)||0;
+          toLS+=Number(ov.toLunchSales)||0; toDS+=Number(ov.toDinnerSales)||0;
+          toLC+=Number(ov.toLunchCount)||0; toDC+=Number(ov.toDinnerCount)||0;
           dayHasActual[d.date]=1;
         }
       }
@@ -8932,8 +8986,9 @@ function keyKpiStats(scopeStores, days){
     sales:sales, budget:budget, guests:guests, food:food, labor:labor, unit: allBowls?'丼':'名',
     achieve: budget?Math.round(sales/budget*1000)/10:0,
     ppa: guests?Math.round(sales/guests*100)/100:0,
-    ppaLunch: lunchG>0?Math.round(lunchS/lunchG*100)/100:null, lunchGuests:lunchG,
-    ppaDinner: dinnerG>0?Math.round(dinnerS/dinnerG*100)/100:null, dinnerGuests:dinnerG,
+    ppaLunch: (function(){ var g=((toLS+toDS)>0)?Math.max(0,lunchG-toLC):lunchG; var sv=((toLS+toDS)>0)?(lunchS-toLS):lunchS; return g>0?Math.round(sv/g*100)/100:null; })(), lunchGuests:lunchG,
+    ppaDinner: (function(){ var g=((toLS+toDS)>0)?Math.max(0,dinnerG-toDC):dinnerG; var sv=((toLS+toDS)>0)?(dinnerS-toDS):dinnerS; return g>0?Math.round(sv/g*100)/100:null; })(), dinnerGuests:dinnerG,
+    ppaTO: ((toLS+toDS)>0&&(toLC+toDC)>0)?Math.round((toLS+toDS)/(toLC+toDC)*100)/100:null,
     fcRate: sales?Math.round(food/sales*1000)/10:0,
     laborRate: sales?Math.round(labor/sales*1000)/10:0,
     repeatRate: (rs.has&&rs.total>0)?Math.round(rs.repeat/rs.total*1000)/10:null,
@@ -9000,7 +9055,7 @@ function keyKpiCard(scopeStores, days, title){
     <div class="kpi-grid">
       ${kpi('売上', fmtUSD2(k.sales), '予算 '+fmtK(k.budget)+' / 達成'+k.achieve+'%', acCol)}
       ${kpi(k.unit==='丼'?'集客(丼数)':'集客', (k.guests||0).toLocaleString(), guestSub, guestCol)}
-      ${kpi('客単価（全体）', '$'+(k.ppa||0).toFixed(2), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—'), 'var(--tm)')}
+      ${kpi('客単価（全体）', '$'+(k.ppa||0).toFixed(2), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), 'var(--tm)')}
       ${kpi('リピート率', k.repeatRate==null?'—':k.repeatRate+'%', rSub, rCol)}
       ${kpi('原価率', k.fcRate>0?k.fcRate+'%':'—', fcSub, fcCol)}
       ${kpi('人件費率', k.laborRate>0?k.laborRate+'%':'—', lSub, lCol)}
@@ -9238,6 +9293,13 @@ function saveDailyActual(storeId, date) {
 /* ===== 日別予算エディタ =====
    曜日別/区分の自動値をベースに、日毎に上書きできる（店休=0、祝日増減など）。
    空欄＝自動値。入力した日だけ b.days に保存され、月間予算・日次進捗・現在地すべてに反映。 */
+/* 予算エディタ共通タブ: モーダル間をワンタップで移動 */
+function budgetEditorTabs(storeId, active){
+  var tabs=[['day','日別一覧','openDayBudgetEditor(\''+storeId+'\')'],['dow','曜日別','openDowEditor(\''+storeId+'\')'],['lunch','ランチ',"openSegEditor('"+storeId+"','lunch')"],['dinner','ディナー',"openSegEditor('"+storeId+"','dinner')"],['takeout','TO',"openSegEditor('"+storeId+"','takeout')"]];
+  return '<div class="phase-tabs" style="margin-bottom:8px">'+tabs.map(function(t){
+    return '<div class="phase-tab'+(active===t[0]?' active':'')+'" style="font-size:11px;padding:5px 8px" onclick="'+t[2].replace(/"/g,'&quot;')+'">'+t[1]+'</div>';
+  }).join('')+'</div>';
+}
 function openDayBudgetEditor(storeId){
   var budgets = getBudgets();
   var b = budgets.find(function(x){return x.storeId===storeId;});
@@ -9258,6 +9320,7 @@ function openDayBudgetEditor(storeId){
     </tr>`;
   }).join('');
   openModal(`<div class="modal-title">${escapeHtml(st.name)} — 日別予算（${dailyMonthLabel()}） <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    ${budgetEditorTabs(storeId,'day')}
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">空欄＝自動（曜日別/区分から算出）。店休日は <b>0</b>、イベント日は任意の額を入力。入力した日だけが上書きされます。</div>
     <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
       <button class="btn btn-secondary btn-sm" onclick="dayBudgetFillAuto()"><i class="ti ti-wand"></i> 自動値で全て埋める</button>
@@ -10627,6 +10690,7 @@ function renderInventory(){
     <div><div class="section-title">${escapeHtml(store.name)} · 棚卸</div><div class="section-sub">${_mLabel}分の棚卸 — 月別に確定・保管されます</div></div>
     <div style="display:flex;gap:6px;align-items:center">
       <span id="inv-autosave" style="font-size:10px;color:var(--muted)"></span>
+      ${!_readOnly?`<button class="btn btn-secondary btn-sm" onclick="openInvAddItemModal('${storeId}')"><i class="ti ti-playlist-add"></i> 品目追加</button>`:''}
       ${(!_readOnly && _hasInvSeed(storeId))?`<button class="btn btn-secondary btn-sm" onclick="importInvSeedFor('${storeId}')"><i class="ti ti-file-import"></i> Excel取込</button>`:''}
       <button class="btn btn-secondary btn-sm" onclick="showInvHistory('${storeId}')"><i class="ti ti-history"></i> 履歴</button>
       ${_readOnly?`<button class="btn btn-primary btn-sm" onclick="invStartEdit('${storeId}','${_ym}')"><i class="ti ti-pencil"></i> 修正</button>`
@@ -10710,6 +10774,36 @@ function invRenderConfirmedView(storeId, snap, ym){
   return h;
 }
 /* 確定済み月の修正を開始: スナップショットの数量をその月の入力シートへ展開 */
+/* 棚卸に食材マスターから品目を追加（検索つき・複数追加可） */
+function openInvAddItemModal(storeId){
+  window._invAddQ='';
+  _renderInvAddItemModal(storeId);
+}
+function _renderInvAddItemModal(storeId){
+  var q=(window._invAddQ||'').toLowerCase().trim();
+  var have=getStoreIngredients(storeId);
+  var cands=getIngredients().filter(function(i){ return have.indexOf(i.code)<0; });
+  if(q) cands=cands.filter(function(i){ return String(i.name||'').toLowerCase().includes(q)||String(i.vendor||'').toLowerCase().includes(q)||String(i.code).includes(q); });
+  cands=cands.slice(0,40);
+  var rows=cands.map(function(i){
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+      <div style="flex:1;min-width:0"><b>${escapeHtml(i.name)}</b> <span style="font-size:9px;color:var(--muted)">#${i.code}</span><div style="font-size:10px;color:var(--muted)">${escapeHtml(i.vendor||'業者未設定')} · $${(Number(i.price)||0).toFixed(2)}${i.unit?' / '+escapeHtml(i.unit):''}</div></div>
+      <button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:10px" onclick="invAddItem('${storeId}',${i.code})">追加</button>
+    </div>`;
+  }).join('');
+  openModal(`<div class="modal-title">品目追加 — 食材マスターから <button class="modal-close" onclick="closeModalDirect();renderPage('inventory')">×</button></div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">業者リストに無い食材を自店の棚卸表へ追加します（複数連続で追加できます）。</div>
+    <input class="form-input" style="margin-bottom:8px" placeholder="食材名・業者・コードで検索" value="${escapeHtml(window._invAddQ||'')}" oninput="window._invAddQ=this.value;_renderInvAddItemModal('${storeId}')">
+    <div style="max-height:48vh;overflow-y:auto">${rows||'<div style="text-align:center;color:var(--muted);padding:20px;font-size:12px">該当なし（すでに全て追加済みか、検索条件を変えてください）</div>'}</div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect();renderPage('inventory')">閉じる</button></div>`);
+  var inp=document.querySelector('#modal-body input.form-input'); if(inp){ inp.focus(); var v=inp.value; inp.value=''; inp.value=v; }
+}
+function invAddItem(storeId, code){
+  addStoreIngredient(storeId, code);
+  var ing=getIngredients().find(function(x){return x.code===code;})||{};
+  showToast((ing.name||'品目')+' を追加しました','success');
+  _renderInvAddItemModal(storeId);
+}
 function invStartEdit(storeId, ym){
   var snap = invSnapForYm(storeId, ym);
   if (snap) {
@@ -29594,8 +29688,8 @@ var workTab = 'today';
 function setWorkTab(t){ workTab = t; renderPage('tasks'); }
 function renderWorkCenter(){
   try{ checkCashTipTasks(); }catch(e){}
-  var canErr = ['ceo','gm','office'].indexOf(curRole)>=0;
-  var canAnn = ((typeof canAnnounceAll==='function'&&canAnnounceAll()) || (typeof announceManagedStores==='function'&&announceManagedStores().length>0));
+  var canErr = true;  // G3以上（＋事務）はワークセンターの全項目を閲覧可
+  var canAnn = true;
   var pend = ls('approvals',[]).filter(function(a){return a.status==='pending';});
   if (['gm','ceo','office'].indexOf(curRole)<0) {
     var _v=getVisibleStores(); var _vi=_v.map(function(x){return x.id;}), _vn=_v.map(function(x){return x.name;});
