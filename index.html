@@ -4144,7 +4144,7 @@ function renderSimplePL(){
   var actual = (getPlActual()[ym])||null;
   var actualSrc = (getPlActual()._src||{})[ym]||'';
   var stores = sortByLoginOrder(activeStores());
-  var m=function(v){ return '$'+Math.round(v).toLocaleString(); };
+  var m=function(v){ return '$'+(parseFloat(v)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); };
   var pct=function(v,s){ return s>0?(Math.round(v/s*1000)/10)+'%':'—'; };
   var diffCell=function(simp, act){
     if(act==null) return '<td style="text-align:right;color:var(--muted)">—</td><td style="text-align:right;color:var(--muted)">—</td>';
@@ -4966,8 +4966,8 @@ function attachPageEvents() {
 function pct(a,b) { return b ? Math.round(a/b*100) : 0; }
 /* 金額は全額表示（K表記廃止）。例: $120,000 */
 function fmtK(v) {
-  var n = Math.round(parseFloat(v)||0);
-  return '$' + n.toLocaleString('en-US');
+  // 全金額はセント単位（小数2桁）で表記
+  return '$' + (parseFloat(v)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 /* 全額表示（明示用エイリアス） */
 function fmtMoney(v) { return fmtK(v); }
@@ -7501,6 +7501,12 @@ function renderBudgetSetup() {
     </div>
     ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> 曜日別で作成（${dailyMonthLabel()}の曜日数で自動計算）</div>`:''}
     ${dayOv?`<div style="font-size:11px;color:var(--accent);margin:-2px 0 8px"><i class="ti ti-calendar-dollar"></i> <b>日別調整あり</b>（${escapeHtml(b.daysBy||'')} ${escapeHtml(b.daysAt||'')}）— 月間予算は日別一覧の合計です</div>`:''}
+    ${(function(){
+      var ms = safeMonthStats(b.storeId, -1)||{};
+      if(!ms.sales) return '';
+      var f=function(v){ return v!=null?('$'+(Math.round(v*100)/100).toFixed(2)):'—'; };
+      return '<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:7px 10px;margin:-2px 0 8px;line-height:1.7"><i class="ti ti-history" style="color:var(--tm)"></i> <b>前月確定実績</b>: 売上 '+fmtUSD2(ms.sales)+' ／ 客単価 <b>L '+f(ms.ppaLunch)+'</b>・<b>D '+f(ms.ppaDinner)+'</b>・<b>全体 '+f(ms.ppa)+'</b>'+(ms.guests?('（客数 '+ms.guests.toLocaleString()+'）'):'')+'</div>';
+    })()}
     ${(b.rationale&&b.rationale.basis)?`<details style="margin:-2px 0 8px"><summary style="font-size:11px;color:var(--tm);cursor:pointer"><i class="ti ti-bulb"></i> 提出時の考え方（${escapeHtml(b.rationale.by||'')} ${escapeHtml(b.rationale.at||'')}）</summary><div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:4px;line-height:1.7"><b>根拠：</b>${escapeHtml(b.rationale.basis)}<br><b>重点・変化点：</b>${escapeHtml(b.rationale.focus||'')}</div></details>`:''}
     <div class="kpi-grid" style="margin:8px 0">
       ${kpi('月間売上予算', fmtK(Math.round(total)), '3区分合計', 'var(--tm)')}
@@ -8754,9 +8760,7 @@ function keyKpiCard(scopeStores, days, title){
     <div class="kpi-grid">
       ${kpi('売上', fmtUSD2(k.sales), '予算 '+fmtK(k.budget)+' / 達成'+k.achieve+'%', acCol)}
       ${kpi(k.unit==='丼'?'集客(丼数)':'集客', (k.guests||0).toLocaleString(), guestSub, guestCol)}
-      ${kpi('客単価', '$'+(k.ppa||0).toFixed(2), ppaSub, 'var(--tm)')}
-      ${kpi('ランチ客単価', k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—', k.lunchGuests?('L客数 '+k.lunchGuests.toLocaleString()):'Toast同期後に表示', 'var(--yellow)')}
-      ${kpi('ディナー客単価', k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—', k.dinnerGuests?('D客数 '+k.dinnerGuests.toLocaleString()):'Toast同期後に表示', 'var(--accent)')}
+      ${kpi('客単価（全体）', '$'+(k.ppa||0).toFixed(2), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—'), 'var(--tm)')}
       ${kpi('リピート率', k.repeatRate==null?'—':k.repeatRate+'%', rSub, rCol)}
       ${kpi('原価率', k.fcRate>0?k.fcRate+'%':'—', fcSub, fcCol)}
       ${kpi('人件費率', k.laborRate>0?k.laborRate+'%':'—', lSub, lCol)}
@@ -28076,11 +28080,12 @@ async function runInvoiceOCR(file){
     var lines=(data&&data.lines)||[];
     invoiceTmpLines = lines.map(function(l){
       var r=matchLineBest(l.name);
-      var ing = (r.score>=INV_MATCH_SUGGEST) ? r.ing : null;
-      return { code: ing?ing.code:null, name: ing?ing.name:(l.name||'(不明)'),
+      // 商品名は請求書の記載どおり（曖昧一致で別商品名に置き換えない）。確実な一致のみ参照コードを付与。
+      var ing = (r.score>=INV_MATCH_AUTO) ? r.ing : null;
+      return { code: ing?ing.code:null, name: (l.name||'(不明)'),
         rawName: (l.name||''), oldPrice: ing?ing.price:null,
         newPrice: (parseFloat(l.unitPrice)||0), qty: (parseFloat(l.qty)||1),
-        score: r.score, low: ing ? (r.score<INV_MATCH_AUTO) : false };
+        score: r.score, low: ing ? false : (r.score>=INV_MATCH_SUGGEST) };
     });
     renderOCRResult();
     if(!lines.length) showToast('品目を読み取れませんでした。手入力で追加してください','warning');
