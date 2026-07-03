@@ -13992,6 +13992,27 @@ var SHIFT_LAYOUTS = {
     ]
   }
 };
+/* Totoya 3店（K/P/A）: Host/Main Plater/Miso固定＋Supporter可変。単一営業。 */
+['F04-K','F04-P','F04-A'].forEach(function(sid){
+  SHIFT_LAYOUTS[sid] = { sections:[
+    { key:'Service', label:'営業', hours:5,
+      headcount:{ fillPos:'Supporter', fillLabel:'Supporter', min:3, max:8, default:4 },
+      slots:[ {label:'Host', pos:'Host'}, {label:'Main Plater', pos:'Main Plater'}, {label:'Miso', pos:'Miso'} ] },
+    { key:'Trainee', label:'Trainee枠', hours:5, optional:true, slots:[ {label:'Trainee', pos:'Trainee'} ] }
+  ] };
+});
+/* FSP（F03）: FSP Kitchen固定＋FSP Cashier可変 */
+SHIFT_LAYOUTS['F03'] = { sections:[
+  { key:'Service', label:'営業', hours:5,
+    headcount:{ fillPos:'FSP Cashier', fillLabel:'Cashier', min:2, max:6, default:2 },
+    slots:[ {label:'FSP Kitchen', pos:'FSP Kitchen'} ] }
+] };
+/* WGS（F03-G）: WGS Kitchen固定＋WGS Cashier可変 */
+SHIFT_LAYOUTS['F03-G'] = { sections:[
+  { key:'Service', label:'営業', hours:5,
+    headcount:{ fillPos:'WGS Cashier', fillLabel:'Cashier', min:2, max:6, default:2 },
+    slots:[ {label:'WGS Kitchen', pos:'WGS Kitchen'} ] }
+] };
 /* 可変枠（Server数など）の現在値 */
 /* ===== 曜日別 営業本数（headcount）=====
    店舗×セクション×曜日で「その営業の合計人数」を持つ。固定枠数を差し引いた残りが fillPos(Server)枠。 */
@@ -14745,7 +14766,7 @@ function openCellAssign(storeId, week, key, day, period, pos) {
   var candidates = staff.filter(e => {
     var av = avail.find(a=>a.name===e.name);
     var available = av && av.slots.some(s=>s.day===day && s.period===period);
-    var posOk = pos==='Server'||pos==='Prep'||pos==='Host'||pos==='Cashier'||pos==='Kitchen'||pos==='作業' ? true : approvedPositions(e.name).includes(pos) || e.role==='sl' || e.role==='am';
+    var posOk = ['Server','Prep','Host','Cashier','FSP Cashier','WGS Cashier','Kitchen','FSP Kitchen','WGS Kitchen','作業','Trainee','Supporter'].indexOf(pos)>=0 ? true : approvedPositions(e.name).includes(pos) || e.role==='sl' || e.role==='am';
     return available || !av; // availabilityある人優先だが、未提出者も選べる
   });
   var plan = getShiftPlan(storeId, week) || {status:'下書き', cells:{}};
@@ -14993,7 +15014,7 @@ function shiftPriority(emp) {
 /* そのスタッフが Lv1以上で対応できるポジションか（Energy/Leadershipは評価軸なので除外） */
 function canDoPosition(name, pos, storeId) {
   if (pos==='Energy' || pos==='Leadership') return true; // 評価軸（必須枠ではない）
-  if (pos==='作業') return true; // Tip対象外の事務作業枠は誰でも配置可（スキル判定なし）
+  if (pos==='作業' || pos==='Trainee') return true; // 作業/Trainee枠は誰でも配置可（スキル判定なし）
   // 店舗指定時はその店舗のスキルで判定（複数店舗勤務者を正しく扱う）
   var sk = storeId ? getEmpSkillsStore(name, storeId) : getEmpSkills(name);
   var s = sk[pos];
