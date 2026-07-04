@@ -9381,8 +9381,10 @@ function keyKpiStats(scopeStores, days){
   var allBowls=(scopeStores&&scopeStores.length>0) && scopeStores.every(function(s){return gct(s.id)==='bowls';});
   var now=new Date(), ofst=0;
   if(ym){ var pp=ym.split('-'); ofst=(parseInt(pp[0],10)-now.getFullYear())*12+(parseInt(pp[1],10)-(now.getMonth()+1)); }
-  // Labor月計は共通コア（労働時間/勤怠明細/予実サマリーと同一計算）
-  if(ym){ (scopeStores||[]).forEach(function(s){ try{ labor += laborCoreForYm(s.id, ym).total; }catch(e){} }); }
+  // Labor月計は共通コア（労働時間/勤怠明細/予実サマリーと同一計算）。
+  // 人件費率は分子分母とも laborCoreForYm の整合値を使い「人件費勤怠」タブと完全一致させる。
+  var laborSalesCore=0;
+  if(ym){ (scopeStores||[]).forEach(function(s){ try{ var lc=laborCoreForYm(s.id, ym); labor += lc.total; laborSalesCore += (lc.sales||0); }catch(e){} }); }
   (scopeStores||[]).forEach(function(s){
     var actuals=getDailyActuals(s.id);
     var b=getBudgetForMonth(s.id, ym);
@@ -9448,7 +9450,7 @@ function keyKpiStats(scopeStores, days){
     ppaDinner: (function(){ var g=((toLS+toDS)>0)?Math.max(0,dinnerG-toDC):dinnerG; var sv=((toLS+toDS)>0)?(dinnerS-toDS):dinnerS; return g>0?Math.round(sv/g*100)/100:null; })(), dinnerGuests:dinnerG,
     ppaTO: ((toLS+toDS)>0&&(toLC+toDC)>0)?Math.round((toLS+toDS)/(toLC+toDC)*100)/100:null,
     fcRate: sales?Math.round(food/sales*1000)/10:0,
-    laborRate: sales?Math.round(labor/sales*1000)/10:0,
+    laborRate: laborSalesCore?Math.round(labor/laborSalesCore*1000)/10:(sales?Math.round(labor/sales*1000)/10:0),
     repeatRate: (rs.has&&rs.total>0)?Math.round(rs.repeat/rs.total*1000)/10:null,
     repeatHas: rs.has&&rs.total>0, repeat:rs.repeat, first:rs.first, sr:rs.sr, rTotal:rs.total,
     guestBudget: hasGuestBud&&guestBud>0?guestBud:null,
