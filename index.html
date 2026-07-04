@@ -5036,6 +5036,34 @@ async function enterAppWithSync(){
   try{ ensureRecurringTasks(); }catch(e){}
   try{ taskDeadlineReminders(); }catch(e){}
   try{ captureSkillSnapshots(); }catch(e){}
+  // ログイン時に全店のToast売上を自動同期（バックグラウンド・UIはブロックしない）
+  try{ loginToastAutoSync(); }catch(e){}
+}
+/* ログイン時: GUID設定済みの全店をバックグラウンドで順次Toast同期。
+   1日1回に制限（同日に何度もログインしても連打しない）。完了時に控えめに通知。 */
+async function loginToastAutoSync(){
+  if (ls('login_toast_sync', true)===false) return;        // 設定でOFF可
+  var today = todayISO();
+  if (ls('_toastSyncDay', null) === today) return;          // 今日すでに実行済みならスキップ
+  var stores = (typeof getStoresAll==='function'?getStoresAll():[]).filter(function(s){ return s.toastGuid; });
+  if (!stores.length) return;
+  lsSet('_toastSyncDay', today);
+  var ok=0, ng=0;
+  var _win = recentDays(14); // 直近2週間（後日の修正取り込みに対応）
+  for (var i=0;i<stores.length;i++){
+    try{ var r = await syncCenterRunStore(stores[i].id, _win); if(r && r.err) ng++; else ok++; }
+    catch(e){ ng++; }
+  }
+  try{
+    if (ok>0) showToast('全店の売上を同期しました（'+ok+'店'+(ng?' / 失敗'+ng:'')+'）', ng?'warning':'success');
+    // 予実・ダッシュボードを開いていれば最新値で再描画
+    if (typeof curPage!=='undefined' && ['dashboard','budget','monthly'].indexOf(curPage)>=0) renderPage(curPage);
+  }catch(e){}
+}
+function toggleLoginToastSync(){
+  var cur = ls('login_toast_sync', true)!==false;
+  lsSet('login_toast_sync', !cur);
+  showToast(!cur?'ログイン時の売上同期をONにしました':'OFFにしました', 'success');
 }
 /* ログイン者の役職・所属を、同期後の最新マスターから再解決する。
    ログイン画面の名簿はローカル（同期前のシード）から作られるため、シードの古い役職で
@@ -8619,6 +8647,14 @@ function monthDays() {
   }
   return arr;
 }
+/* 直近n日（今日を含む）の {date,dow} 配列。ログイン時同期・当日同期で範囲を絞るのに使う。 */
+function recentDays(n){
+  var arr=[]; var base=new Date(); base.setHours(0,0,0,0);
+  for(var i=n-1;i>=0;i--){ var dt=new Date(base.getTime()-i*86400000);
+    arr.push({date:dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'), dow:DOW[(dt.getDay()+6)%7]}); }
+  return arr;
+}
+function todayDays(){ return recentDays(1); }
 function dailyMonthLabel() {
   var now = new Date();
   var ref = new Date(now.getFullYear(), now.getMonth()+dailyMonthOffset, 1);
@@ -8739,6 +8775,17 @@ async function refreshNow(){
     try { _laborTailTried={}; } catch(e){} // 直近Laborのライブ補完を再試行できるようにする
     setSyncSplash('当月データを同期中…');
     await ensureMonthDataLoaded(curYm());        // 当月の売上・客数・勤怠・出数
+    // Funergy Now / 予実を見る時は、表示中スコープの「当日」をToastからリアルタイム取得
+    try {
+      var _nowStores = (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){ return s.toastGuid; });
+      if (_nowStores.length){
+        setSyncSplash('本日の売上をToastから取得中…');
+        var _td = todayDays();
+        for (var _i=0;_i<_nowStores.length;_i++){
+          try{ await syncCenterRunStore(_nowStores[_i].id, _td); }catch(e){}
+        }
+      }
+    } catch(e){ console.warn('refreshNow toast today', e); }
     setSyncSplash('最新に更新しました');
     await new Promise(function(r){ setTimeout(r,300); });
   } catch(e){ console.warn('refreshNow', e); }
@@ -8963,15 +9010,16 @@ function setSyncState(storeId, st) { lsSet('sync_state_'+storeId, st); }
    同期センター（各ページに散っていた同期を1か所に集約）
 ============================================================ */
 /* 1店舗のToastデータ同期（売上・客数・Tip・Labor・天気）。ページUIに依存しない */
-async function syncCenterRunStore(storeId) {
+async function syncCenterRunStore(storeId, daysArg) {
   var s = getStoresAll().find(x=>x.id===storeId) || {};
   var guid = s.toastGuid || '';
+  var _days = daysArg || monthDays();
   var detail = [], err = null;
   try {
     if (guid) {
-      var r1 = await syncStoreActualsFromToast(storeId, guid, monthDays());
+      var r1 = await syncStoreActualsFromToast(storeId, guid, _days);
       if (r1 && r1.error) err = r1.error; else if (r1) detail.push('売上/客数 '+(r1.updated!=null?r1.updated+'日':'OK'));
-      var r2 = await syncTipLaborFromDB(storeId, guid, monthDays());
+      var r2 = await syncTipLaborFromDB(storeId, guid, _days);
       if (r2 && r2.error) err = err||r2.error; else if (r2) detail.push('Tip/Labor '+(r2.updated!=null?r2.updated+'日':'OK'));
     } else { detail.push('GUID未設定（Toastスキップ）'); }
     try { if (typeof doWeatherSyncSilent==='function'){ await doWeatherSyncSilent(storeId); detail.push('天気'); } } catch(e){}
@@ -9073,7 +9121,9 @@ function openSyncCenter() {
         <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> 取り込む</button>
         <button class="btn ${SUPA_SYNC_ENABLED?'btn-success':'btn-secondary'} btn-sm" onclick="toggleSupaSync();openSyncCenter()">${SUPA_SYNC_ENABLED?'<i class=\"ti ti-check\"></i> 自動同期 ON':'自動同期 OFF'}</button>
         <button class="btn ${ls('login_autosync',true)!==false?'btn-success':'btn-secondary'} btn-sm" onclick="toggleLoginAutosync();openSyncCenter()">${ls('login_autosync',true)!==false?'<i class=\"ti ti-check\"></i> ログイン時同期 ON':'ログイン時同期 OFF'}</button>
+        <button class="btn ${ls('login_toast_sync',true)!==false?'btn-success':'btn-secondary'} btn-sm" onclick="toggleLoginToastSync();openSyncCenter()">${ls('login_toast_sync',true)!==false?'<i class=\\"ti ti-check\\"></i> ログイン時に売上同期 ON':'ログイン時に売上同期 OFF'}</button>
       </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">「ログイン時に売上同期」ON: 全店のToast売上・客数・Tip・Laborを1日1回バックグラウンド取り込み。</div>
       <div style="font-size:11px;color:var(--muted);margin-top:6px">「ログイン時同期」ON: ログインのたびにクラウドの最新マスター（店舗・従業員・予算・KPI・会社メッセージ等）を取り込みます。端末でマスターを編集したら「アップロード」でクラウドへ反映してください。</div>`:''}
     <div style="font-size:11px;color:var(--muted);margin-top:12px"><i class="ti ti-info-circle"></i> 各ページの同期ボタンも今まで通り使えます。ここから一括／個別どちらも実行できます。</div>`);
 }
