@@ -2976,11 +2976,28 @@ function tipForDay(storeId, date) {
   var lCredit = av.lunchCreditTip||0, dCredit = av.dinnerCreditTip||0;
   var lTotal = lCredit*(1-TIP_CC_FEE) + (cash.lunch||0);
   var dTotal = dCredit*(1-TIP_CC_FEE) + (cash.dinner||0);
+  // その日ランチOFF（曜日別設定でLオフ＝ディナーのみ営業）の店は、ランチTipを全てディナーに合算しランチ項目を消す。
+  // 例: ToriTonのランチ時間帯に打った事前注文のTipがランチに計上されても、ディナーのシェア対象になる。
+  if (tipDayLunchOff(storeId, date)) {
+    dTotal += lTotal; dCredit += lCredit;
+    var _lc = cash.lunch||0; cash = { dinner:(cash.dinner||0)+_lc, lunch:0 };
+    lTotal = 0; lCredit = 0;
+  }
   return {
     lunchCredit:lCredit, dinnerCredit:dCredit,
     lunchCash:cash.lunch||0, dinnerCash:cash.dinner||0,
     lunchTotal:lTotal, dinnerTotal:dTotal, total:lTotal+dTotal,
+    lunchOff: tipDayLunchOff(storeId, date),
   };
+}
+/* その日のTip対象時間でランチがOFFか（＝ディナーのみ営業日）。曜日別Tip設定のLトグルを参照。 */
+function tipDayLunchOff(storeId, date){
+  try{
+    var cfg=getTipHoursCfg(storeId);
+    if(!cfg || cfg.mode!=='hours' || !cfg.dow) return false;
+    var w=tipHoursWindowFor(storeId, date);
+    return w && w.lOn===false;
+  }catch(e){ return false; }
 }
 
 /* Order Only（各店の注文専用アカウント）判定。レイバー/人件費/チップ計算から除外する。
@@ -6439,13 +6456,24 @@ function renderStoreCmdTip(storeId, store, canEdit) {
   }
 
   // クレジットチップ（Toast自動）
-  html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">クレジットチップ ${hasCredit?'<i class="ti ti-plug-connected" style="color:var(--accent2)"></i> Toast自動':'（未取得：右上「最新に更新」で取得）'}</div>
-    <table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Lunch</td><td style="text-align:right">Dinner</td><td style="text-align:right">計</td></tr>
+  var _loff = tip.lunchOff;  // その日ランチOFF＝ディナーのみ表示
+  html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">クレジットチップ ${hasCredit?'<i class="ti ti-plug-connected" style="color:var(--accent2)"></i> Toast自動':'（未取得：右上「最新に更新」で取得）'}${_loff?' <span style="font-size:10px;color:var(--accent)">· ディナーのみ営業（ランチTipはディナーに合算）</span>':''}</div>`;
+  if (_loff) {
+    // ディナーのみ: L列を出さず、Dinner=計 の2列
+    html += `<table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Dinner</td></tr>
+    <tr><td>クレジット</td><td style="text-align:right">$${tip.dinnerCredit.toFixed(2)}</td></tr>
+    <tr style="color:var(--muted);font-size:11px"><td>手数料控除後(×0.965)</td><td style="text-align:right">$${(tip.dinnerCredit*0.965).toFixed(2)}</td></tr>
+    <tr><td>キャッシュ${canEdit&&!_isFuture?' <button class="btn '+(_isToday&&!(_cash&&_cash.entered)?'btn-primary':'btn-secondary')+' btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(_isToday?((_cash&&_cash.entered)?'修正':'入力'):'修正')+'</button>':''}${_isFuture?' <span style="font-size:9px;color:var(--muted)">未来日は入力不可</span>':''}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td></tr>
+    <tr style="font-weight:700;border-top:1px solid var(--border)"><td>チップ総額</td><td style="text-align:right;color:var(--green)">$${tip.total.toFixed(2)}</td></tr>
+    </table>`;
+  } else {
+  html += `<table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Lunch</td><td style="text-align:right">Dinner</td><td style="text-align:right">計</td></tr>
     <tr><td>クレジット</td><td style="text-align:right">$${tip.lunchCredit.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCredit.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCredit+tip.dinnerCredit).toFixed(2)}</td></tr>
     <tr style="color:var(--muted);font-size:11px"><td>手数料控除後(×0.965)</td><td style="text-align:right">$${(tip.lunchCredit*0.965).toFixed(2)}</td><td style="text-align:right">$${(tip.dinnerCredit*0.965).toFixed(2)}</td><td style="text-align:right">$${((tip.lunchCredit+tip.dinnerCredit)*0.965).toFixed(2)}</td></tr>
     <tr><td>キャッシュ${canEdit&&!_isFuture?' <button class="btn '+(_isToday&&!(_cash&&_cash.entered)?'btn-primary':'btn-secondary')+' btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(_isToday?((_cash&&_cash.entered)?'修正':'入力'):'修正')+'</button>':''}${_isFuture?' <span style="font-size:9px;color:var(--muted)">未来日は入力不可</span>':''}</td><td style="text-align:right">$${tip.lunchCash.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCash+tip.dinnerCash).toFixed(2)}</td></tr>
     <tr style="font-weight:700;border-top:1px solid var(--border)"><td>チップ総額</td><td style="text-align:right">$${tip.lunchTotal.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerTotal.toFixed(2)}</td><td style="text-align:right;color:var(--green)">$${tip.total.toFixed(2)}</td></tr>
     </table>`;
+  }
   if (_cash && _cash.entered && _cash.by) {
     html += `<div style="font-size:10px;color:var(--muted);margin:-6px 0 8px"><i class="ti ti-user-check"></i> キャッシュ記録: ${escapeHtml(_cash.by)} ${escapeHtml(_cash.at||'')}${_cash.editedBy?` ／ <span style="color:var(--yellow)">修正: ${escapeHtml(_cash.editedBy)} ${escapeHtml(_cash.editedAt||'')}</span>`:''}</div>`;
   }
@@ -14074,7 +14102,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに手動で上げる。 */
-const APP_VERSION = 'v2026.07.04-01';
+const APP_VERSION = 'v2026.07.04-02';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
