@@ -29154,6 +29154,10 @@ function matchLineBest(name){
 var INV_MATCH_AUTO = 0.60;     // これ以上：自動マッチ
 var INV_MATCH_SUGGEST = 0.45;  // これ以上〜AUTO未満：要確認で候補提示／未満：新規
 function matchLineToIngredient(name){ var r=matchLineBest(name); return r.score>=INV_MATCH_AUTO ? r.ing : null; }
+function retakeInvoicePhoto(){
+  var inp=document.getElementById('inv-photo');
+  if(inp){ try{ inp.value=''; }catch(e){} inp.click(); }
+}
 async function realInvoiceOCR(input){
   var file=input&&input.files&&input.files[0];
   if(!file) return;
@@ -29223,6 +29227,20 @@ async function runInvoiceOCR(file){
     });
     if(!res.ok){ throw new Error('HTTP '+res.status); }
     var data=await res.json();
+    // ★ 画像がブレ・不鮮明で判読不可 → 自動差し戻し（再撮影を促す）
+    var _blurry = data && (data.blurry===true || data.readable===false || String(data.quality||'').toLowerCase()==='unreadable');
+    if(_blurry){
+      var _reason = (data && data.reason) ? String(data.reason) : '画像がブレている、または不鮮明です';
+      window._invoicePhotoFile = null;
+      invoiceTmpLines = [];
+      if(el) el.innerHTML='<div class="alert alert-warning" style="margin-bottom:8px;line-height:1.7">'
+        +'<i class="ti ti-camera-off"></i> <b>読み取りできませんでした（自動差し戻し）</b><br>'
+        +'<span style="font-size:12px">'+escapeHtml(_reason)+'。ピントを合わせ、明るい場所で請求書全体が入るよう<b>撮り直してください</b>。</span>'
+        +'<div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="retakeInvoicePhoto()"><i class="ti ti-camera"></i> 撮り直す</button>'
+        +' <button class="btn btn-secondary btn-sm" onclick="addManualInvoiceLine()"><i class="ti ti-pencil"></i> 手入力する</button></div></div>';
+      showToast('画像が不鮮明なため差し戻しました。撮り直してください','warning');
+      return;
+    }
     if(data && data.vendor){ var vEl=document.getElementById('inv-vendor'); if(vEl && !vEl.value){ vEl.value=data.vendor; if(typeof checkVendorRegistered==='function') checkVendorRegistered(); } }
     // 店舗名の自動判定（OCR応答に storeName / shipTo 等があれば対象店舗を自動選択）
     try{
