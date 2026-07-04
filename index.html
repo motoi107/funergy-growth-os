@@ -3820,7 +3820,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -14716,6 +14716,8 @@ function renderShiftBuild(storeId, week) {
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
       <span style="font-size:10px;color:var(--muted);align-self:center"><i class="ti ti-settings"></i> 設定:</span>
       <button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor('${storeId}')"><i class="ti ti-clock"></i> シフト時間</button>
+      <button class="btn btn-secondary btn-sm" onclick="openWeeklyOffEditor('${storeId}')"><i class="ti ti-calendar-off"></i> 定休日</button>
+      <button class="btn btn-secondary btn-sm" onclick="openClosureEditor('${storeId}','${week}')"><i class="ti ti-calendar-x"></i> 店休（祝日/イベント）</button>
       ${usesShiftLayout(storeId)
         ? _optSecs.map(sec=>`<button class="btn ${shiftSectionEnabled(storeId,sec.key)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftSection('${storeId}','${sec.key}')"><i class="ti ti-layout-list"></i> ${sec.label}${shiftSectionEnabled(storeId,sec.key)?' ON':''}</button>`).join('')
         : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
@@ -14813,6 +14815,9 @@ function renderShiftBuild(storeId, week) {
       sec.slots.forEach(slot => {
         html += `<tr><td style="font-size:11px;white-space:nowrap">${slot.label}</td>`;
         DOW_SHIFT.forEach(day => {
+          var _diso = weekDateForDow(day);
+          var _closed = sectionClosedForDay(storeId, sec.key, _diso, day);
+          if(_closed){ html += `<td style="text-align:center;padding:2px"><div style="font-size:9px;padding:3px;min-height:24px;color:var(--red);background:var(--surface2);border-radius:6px;opacity:.6" title="店休/定休">休</div></td>`; return; }
           var active = sec.sec ? slotActiveForDay(storeId, sec.sec, slot, day) : true;
           if(!active){ html += `<td style="text-align:center;padding:2px"><div style="font-size:9px;padding:3px;min-height:24px;color:var(--muted);background:var(--surface2);border-radius:6px;opacity:.5">－</div></td>`; return; }
           var key = shiftCellKey(day, sec.key, slot.label);
@@ -15433,11 +15438,13 @@ function autoGenShift(storeId, week) {
       var slotKey = day+'_'+period;
       assignedSlot[slotKey] = assignedSlot[slotKey] || [];
       var addH = sec.hours || SHIFT_HOURS[period] || 4;
+      var _closedDay = sectionClosedForDay(storeId, sec.key, weekDateForDow(day), day);
 
       // この時間帯に出せる人（Step1: Availability。新モデルはLunch/Dinner区分が無いためsectionと一致しない場合は全可）
       function availOk(e){ var av=avail.find(a=>a.name===e.name); if(!av) return false; return av.slots.some(s=>s.day===day&&(s.period===period|| (period!=='Lunch'&&period!=='Dinner'))); }
 
       sec.slots.forEach(slot => {
+        if (_closedDay) return; // 店休・定休の営業はこの日スキップ
         if (sec.sec && !slotActiveForDay(storeId, sec.sec, slot, day)) return; // その日の本数を超えるServer枠はスキップ
         var pos = slot.pos;
         // 既に同時間帯に入っている人は除外（1人1枠/時間帯）
@@ -16248,6 +16255,96 @@ function saveShiftTimes(storeId){
   });
   Object.keys(map).forEach(function(k){ var m=map[k]; setShiftPosTime(storeId, m.sec, m.pos, m.start, m.end); });
   closeModalDirect(); showToast('シフト時間を保存しました','success'); renderPage('shift_admin');
+}
+
+/* ============================================================
+   定休日（曜日別）＆ 店休（特定日: 祝日・イベント）
+   - 曜日別定休は店舗マスター bizDays を利用（open/closed/lclose/dclose）
+   - 特定日店休は store_closures[storeId][YYYY-MM-DD] = 'closed'|'lclose'|'dclose'（＋任意メモ note）
+   セクション（Lunch/Dinner/Prep等）が休みかを判定し、シフトのグリッドで枠をグレーアウトする。
+============================================================ */
+function getStoreClosures(storeId){ try{ var c=ls('store_closures',{})||{}; return c[storeId]||{}; }catch(e){ return {}; } }
+function setStoreClosure(storeId, dateISO, mode, note){
+  var c=ls('store_closures',{})||{}; if(!c[storeId])c[storeId]={};
+  if(!mode||mode==='open'){ delete c[storeId][dateISO]; }
+  else { c[storeId][dateISO]={mode:mode, note:(note||'').trim()}; }
+  lsSet('store_closures', c);
+}
+/* その日のその「営業区分」が休みか。secKind: 'lunch'|'dinner'|null(判定不要) を渡す。
+   戻り: 'closed'(終日)|'lclose'|'dclose'|null。曜日定休と特定日店休の両方を考慮（特定日を優先）。 */
+function dayClosureMode(storeId, dateISO, dow){
+  var sp=getStoreClosures(storeId)[dateISO];
+  if(sp && sp.mode) return sp.mode;
+  try{ var st=STORES.find(function(x){return x.id===storeId;}); var v=st&&st.bizDays?st.bizDays[dow]:null; if(v && v!=='open') return v; }catch(e){}
+  return null;
+}
+/* セクションがその日休みか（true=休み→グレーアウト・自動配置しない） */
+function sectionClosedForDay(storeId, secKey, dateISO, dow){
+  var m=dayClosureMode(storeId, dateISO, dow);
+  if(!m) return false;
+  if(m==='closed') return true;
+  // L休/D休はセクションの時間帯で判定。キー名から昼夜を推定（Lunch/L*=昼, Dinner/D*=夜, それ以外＝両営業扱いで休まない）
+  var k=String(secKey||'').toLowerCase();
+  var isLunchSec = k.indexOf('lunch')>=0 || k==='l' || (k.charAt(0)==='l' && k!=='lwork'&&k!=='lprep') ;
+  var isDinnerSec = k.indexOf('dinner')>=0 || k==='d' || k==='dsetting';
+  // Prep/作業/Trainee等は終日休(closed)のみ休みとする（部分休では動く）
+  if(m==='lclose') return isLunchSec;
+  if(m==='dclose') return isDinnerSec;
+  return false;
+}
+function openWeeklyOffEditor(storeId){
+  var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
+  var bd=st.bizDays||{};
+  var rows=['月','火','水','木','金','土','日'].map(function(dw){
+    var v=bd[dw]||'open';
+    return '<tr><td style="text-align:left;font-weight:600;padding:4px 8px">'+dw+'曜</td>'
+      +'<td style="padding:2px"><select class="form-select wo-sel" data-dw="'+dw+'" style="padding:6px;font-size:12px">'
+      +[['open','営業'],['closed','終日休'],['lclose','ランチ休'],['dclose','ディナー休']].map(function(o){return '<option value="'+o[0]+'"'+(v===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')
+      +'</select></td></tr>';
+  }).join('');
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 定休日設定（曜日別） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">毎週の定休を曜日ごとに設定します。ランチ休/ディナー休なら片方だけシフト枠が出ます。シフト表・日別予算の両方に反映されます。</div>'
+    +'<table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">曜日</th><th>営業/休み</th></tr></thead><tbody>'+rows+'</tbody></table>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveWeeklyOff(\''+storeId+'\')">保存</button></div>');
+}
+function saveWeeklyOff(storeId){
+  var stores=getStoresAll(); var st=stores.find(function(x){return x.id===storeId;}); if(!st) return;
+  var o={};
+  document.querySelectorAll('.wo-sel').forEach(function(sel){ if(sel.value!=='open') o[sel.getAttribute('data-dw')]=sel.value; });
+  st.bizDays=o;
+  try{ lsSet('m_stores', stores); }catch(e){}
+  try{ if(typeof refreshStores==='function') refreshStores(); }catch(e){}
+  closeModalDirect(); showToast('定休日を保存しました','success'); renderPage('shift_admin');
+}
+function openClosureEditor(storeId, week){
+  var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
+  var cls=getStoreClosures(storeId);
+  // 当月＋来月の日付を対象（祝日・イベント名を併記）
+  var today=new Date(); today.setHours(0,0,0,0);
+  var days=[]; for(var i=0;i<62;i++){ var dt=new Date(today.getTime()+i*86400000);
+    var iso=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+    days.push({iso:iso, dow:['日','月','火','水','木','金','土'][dt.getDay()]}); }
+  var rows=days.map(function(d){
+    var c=cls[d.iso]||{}; var ev=(typeof dayEventFor==='function')?dayEventFor(d.iso):'';
+    var md=Number(d.iso.slice(5,7))+'/'+Number(d.iso.slice(8,10));
+    return '<tr><td style="text-align:left;white-space:nowrap;padding:4px 8px;font-size:12px">'+md+'('+d.dow+')'+(ev?'<div style="font-size:9px;color:var(--accent2)">'+escapeHtml(ev)+'</div>':'')+'</td>'
+      +'<td style="padding:2px"><select class="form-select cl-sel" data-iso="'+d.iso+'" style="padding:5px;font-size:11px">'
+      +[['open','営業'],['closed','終日休'],['lclose','ランチ休'],['dclose','ディナー休']].map(function(o){return '<option value="'+o[0]+'"'+((c.mode||'open')===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')
+      +'</select></td>'
+      +'<td style="padding:2px"><input class="form-input cl-note" data-iso="'+d.iso+'" value="'+escapeHtml(c.note||'')+'" placeholder="メモ(任意)" style="padding:5px;font-size:11px;min-width:90px"></td></tr>';
+  }).join('');
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 店休設定（祝日・イベント） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">特定の日を臨時休業にします（祝日・カンパニーイベント等）。曜日定休より優先され、シフト表と日別予算に反映されます。今日から約2か月分。</div>'
+    +'<div style="max-height:56vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"><table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">日付</th><th>状態</th><th>メモ</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveClosures(\''+storeId+'\')">保存</button></div>');
+}
+function saveClosures(storeId){
+  var notes={};
+  document.querySelectorAll('.cl-note').forEach(function(i){ notes[i.getAttribute('data-iso')]=i.value; });
+  document.querySelectorAll('.cl-sel').forEach(function(sel){
+    var iso=sel.getAttribute('data-iso'); setStoreClosure(storeId, iso, sel.value, notes[iso]||'');
+  });
+  closeModalDirect(); showToast('店休設定を保存しました','success'); renderPage('shift_admin');
 }
 
 /* ============================================================
