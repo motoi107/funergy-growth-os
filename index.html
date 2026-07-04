@@ -14102,7 +14102,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '100';
+const APP_VERSION = '101';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -14313,8 +14313,8 @@ function getShiftPlan(storeId, week) { return ls('shiftplan_'+storeId+'_'+week, 
 function setShiftPlan(storeId, week, plan) { lsSet('shiftplan_'+storeId+'_'+week, plan); pushShiftPlan(storeId, week, plan); }
 
 /* === F2-a: シフト＆提出のクラウド同期（shift_plans / shift_availability） === */
-async function pushShiftPlan(storeId, week, plan){
-  if(_supaBooting) return;
+async function pushShiftPlan(storeId, week, plan, force){
+  if(_supaBooting && !force) return;
   try{
     await fetch(SUPABASE_URL+'/rest/v1/shift_plans', {
       method:'POST',
@@ -14336,8 +14336,8 @@ async function pullShiftPlan(storeId, week){
   }catch(e){ console.warn('pullShiftPlan', e); }
   return false;
 }
-async function pushAvailability(storeId, week, avail){
-  if(_supaBooting) return;
+async function pushAvailability(storeId, week, avail, force){
+  if(_supaBooting && !force) return;
   var arr=(avail||[]).filter(function(e){ return e && e.name; });
   if(!arr.length) return;
   try{
@@ -14348,7 +14348,7 @@ async function pushAvailability(storeId, week, avail){
     });
   }catch(e){ console.warn('pushAvailability', e); }
 }
-async function pushAvailEntry(storeId, week, entry){ return pushAvailability(storeId, week, [entry]); }
+async function pushAvailEntry(storeId, week, entry){ return pushAvailability(storeId, week, [entry], true); }
 async function pullAvailability(storeId, week){
   try{
     var res=await fetch(SUPABASE_URL+'/rest/v1/shift_availability?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=name,slots,notes,submitted_date', { headers: supaHeaders() });
@@ -15000,8 +15000,11 @@ function assignCell(storeId, week, key, name) {
   } else {
     delete plan.cells[key];
   }
-  plan.status = '下書き';
-  setShiftPlan(storeId, week, plan);
+  // 公開済みシフトの微修正は公開状態のまま反映（下書きに戻さない）。下書き中はそのまま下書き。
+  var _wasPublished = plan.status === '公開済';
+  if (!_wasPublished) plan.status = '下書き';
+  lsSet('shiftplan_'+storeId+'_'+week, plan);
+  pushShiftPlan(storeId, week, plan, _wasPublished);
   closeModalDirect();
   renderPage('shift_admin');
 }
@@ -15051,8 +15054,10 @@ function approveOTAndAssign(storeId, week, key, name) {
   setOTApproval(storeId, week, name, ROLE_CONFIG[curRole].name || curRole);
   var plan = getShiftPlan(storeId, week) || {status:'下書き', cells:{}};
   plan.cells[key] = name;
-  plan.status = '下書き';
-  setShiftPlan(storeId, week, plan);
+  var _wasPub = plan.status === '公開済';
+  if (!_wasPub) plan.status = '下書き';
+  lsSet('shiftplan_'+storeId+'_'+week, plan);
+  pushShiftPlan(storeId, week, plan, _wasPub);
   closeModalDirect();
   showToast(`${name}のオーバーワークを承認し配置しました`, 'success');
   renderPage('shift_admin');
@@ -16000,7 +16005,8 @@ function publishShiftPlan(storeId, week) {
   var warnings = checkShiftWarnings(storeId, week, plan);
   if (warnings.length && !confirm(`警告が${warnings.length}件あります。公開しますか？`)) return;
   plan.status = '公開済'; plan.publishedDate = todayJP();
-  setShiftPlan(storeId, week, plan);
+  lsSet('shiftplan_'+storeId+'_'+week, plan);
+  pushShiftPlan(storeId, week, plan, true); // 公開は必ずクラウドへ（ブート中でも）
   try{ var _ps2=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'shift', title:'シフトが公開されました', text:((_ps2?_ps2.name:storeId)+'：'+week).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'shift_staff', refId:'shiftplan_'+storeId+'_'+week }); }catch(e){}
   showToast('シフトを公開しました', 'success');
   renderPage('shift_admin');
