@@ -874,36 +874,24 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
     var r = byDate[d.date];
     if (r) {
       var prev = actuals[d.date] || {};
-      actuals[d.date] = Object.assign({}, prev, {
-        actual: Number(r.net_sales)||0,
-        guests: r.guest_count!=null ? Number(r.guest_count) : prev.guests,
-        lunchSales: r.lunch_sales!=null?Number(r.lunch_sales):undefined,
-        dinnerSales: r.dinner_sales!=null?Number(r.dinner_sales):undefined,
-        lunchGuests: r.lunch_guests!=null?Number(r.lunch_guests):undefined,
-        dinnerGuests: r.dinner_guests!=null?Number(r.dinner_guests):undefined,
-        bowls: r.bowls_count!=null?Number(r.bowls_count):undefined,
-        lunchBowls: r.lunch_bowls!=null?Number(r.lunch_bowls):undefined,
-        dinnerBowls: r.dinner_bowls!=null?Number(r.dinner_bowls):undefined,
-        takeout: r.takeout_count!=null?Number(r.takeout_count):undefined,
-        toLunchSales: r.to_lunch_sales!=null?Number(r.to_lunch_sales):undefined,
-        toDinnerSales: r.to_dinner_sales!=null?Number(r.to_dinner_sales):undefined,
-        toLunchCount: r.to_lunch_count!=null?Number(r.to_lunch_count):undefined,
-        toDinnerCount: r.to_dinner_count!=null?Number(r.to_dinner_count):undefined,
-        takeoutBowls: r.takeout_bowls!=null?Number(r.takeout_bowls):undefined,
-        lunchTakeoutBowls: r.lunch_takeout_bowls!=null?Number(r.lunch_takeout_bowls):undefined,
-        dinnerTakeoutBowls: r.dinner_takeout_bowls!=null?Number(r.dinner_takeout_bowls):undefined,
-        firstTimeBowls: r.first_time_count!=null?Number(r.first_time_count):undefined,
-        repeatBowls: r.repeat_count!=null?Number(r.repeat_count):undefined,
-        superRegular: r.super_regular_count!=null?Number(r.super_regular_count):undefined,
-        misoTotal: r.miso_total_count!=null?Number(r.miso_total_count):undefined,
-        misoUpgrade: r.miso_upgrade_count!=null?Number(r.miso_upgrade_count):undefined,
-        ikuraShower: r.ikura_shower_count!=null?Number(r.ikura_shower_count):undefined,
-        ikuraBowls: r.ikura_bowls_count!=null?Number(r.ikura_bowls_count):undefined,
-        creditTip: r.credit_tip!=null?Number(r.credit_tip):undefined,
-        lunchCreditTip: r.lunch_credit_tip!=null?Number(r.lunch_credit_tip):undefined,
-        dinnerCreditTip: r.dinner_credit_tip!=null?Number(r.dinner_credit_tip):undefined,
-        toastSrc: true,
-      });
+      // 同期レスポンスに値があるフィールドだけを反映。null/欠落は prev を維持（既存値をundefinedで消さない）
+      var _patch = { actual: Number(r.net_sales)||0, toastSrc: true };
+      function _put(key, raw){ if(raw!=null) _patch[key] = Number(raw); }
+      _put('guests', r.guest_count);
+      _put('lunchSales', r.lunch_sales); _put('dinnerSales', r.dinner_sales);
+      _put('lunchGuests', r.lunch_guests); _put('dinnerGuests', r.dinner_guests);
+      _put('bowls', r.bowls_count); _put('lunchBowls', r.lunch_bowls); _put('dinnerBowls', r.dinner_bowls);
+      _put('takeout', r.takeout_count);
+      _put('toLunchSales', r.to_lunch_sales); _put('toDinnerSales', r.to_dinner_sales);
+      _put('toLunchCount', r.to_lunch_count); _put('toDinnerCount', r.to_dinner_count);
+      _put('takeoutBowls', r.takeout_bowls);
+      _put('lunchTakeoutBowls', r.lunch_takeout_bowls); _put('dinnerTakeoutBowls', r.dinner_takeout_bowls);
+      _put('firstTimeBowls', r.first_time_count); _put('repeatBowls', r.repeat_count);
+      _put('superRegular', r.super_regular_count);
+      _put('misoTotal', r.miso_total_count); _put('misoUpgrade', r.miso_upgrade_count);
+      _put('ikuraShower', r.ikura_shower_count); _put('ikuraBowls', r.ikura_bowls_count);
+      _put('creditTip', r.credit_tip); _put('lunchCreditTip', r.lunch_credit_tip); _put('dinnerCreditTip', r.dinner_credit_tip);
+      actuals[d.date] = Object.assign({}, prev, _patch);
       updated++;
     }
   });
