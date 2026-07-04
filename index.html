@@ -14102,7 +14102,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '101';
+const APP_VERSION = '102';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -27423,7 +27423,10 @@ function renderMypage() {
   </div>`;
 
   // ===== スキルレベル（全Crew: レーダー＋各Lv）=====
-  if (isCrewView) { html += mySkillCardHtml(me, storeId); }
+  // Crewビューでは給与の直前に配置するため、ここでは変数に退避。管理者ビューはそのまま先頭表示。
+  var _skillRadarHtml = isCrewView ? mySkillCardHtml(me, storeId) : '';
+  if (isCrewView && curRole!=='crew') { /* SL等はここでは出さず後段の給与前へ */ }
+  if (!isCrewView) { /* 管理者は下でPGDへ */ }
 
   // ===== 特別育成 / 改善サポート（本人向け・前向き表示）=====
   try{
@@ -27490,6 +27493,9 @@ function renderMypage() {
   // ===== ゲーミフィケーション（実績バッジ） =====
   html += renderBadges(me, emp);
 
+  // ▼ 上部に配置: ①今週のシフト ②タスク ③勤怠実績（後段で組み立てた内容をここに差し込む）
+  html += '<!--TOP_OPS-->';
+
   var allGoals = ls('goals_v2', []);
   var storeGoals = allGoals.filter(g=>g.scope==='store' && (g.storeId===storeId||g.storeId==='ALL'));
   var personalGoals = allGoals.filter(g=>g.scope==='personal' && g.owner===me);
@@ -27517,27 +27523,27 @@ function renderMypage() {
   // 2. 今日・今週の自分のシフト（シフト計画はマネージャが別端末で公開→本人端末にプルして勤務時間を反映）
   try{ if(typeof maybePullStaffShift==='function') maybePullStaffShift(storeId, week); }catch(e){}
   var plan = getShiftPlan(storeId, week);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check"></i>${t('今週のシフト',"This Week's Shifts")}
+  var _shiftCard = `<div class="card"><div class="card-title"><i class="ti ti-calendar-check"></i>${t('今週のシフト',"This Week's Shifts")}
     <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('shift_staff')">${t('詳細','Details')}</button></div>`;
   var myShifts = [];
   if (plan && plan.status==='公開済') {
     myShifts = Object.keys(plan.cells).filter(k=>plan.cells[k]===me);
   }
   if (myShifts.length) {
-    myShifts.forEach(k=>{ var p=k.split('_'); html += `<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)"><span>${p[0]}${t('曜','')} ${p[1]}</span><span style="color:var(--muted)">${p[2]}</span></div>`; });
-  } else { html += `<p style="color:var(--muted);font-size:13px">${t('公開シフトはまだありません。Availabilityを提出しましょう','No published shifts yet. Please submit your availability.')}</p>`; }
-  html += '</div>';
+    myShifts.forEach(k=>{ var p=k.split('_'); _shiftCard += `<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)"><span>${p[0]}${t('曜','')} ${p[1]}</span><span style="color:var(--muted)">${p[2]}</span></div>`; });
+  } else { _shiftCard += `<p style="color:var(--muted);font-size:13px">${t('公開シフトはまだありません。Availabilityを提出しましょう','No published shifts yet. Please submit your availability.')}</p>`; }
+  _shiftCard += '</div>';
 
   // 3. 個人タスク
   var myTasks = getTasks().filter(t=>t.assignee===me && t.status!=='完了');
-  html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>${t('今日のタスク',"Today's Tasks")}</div>`;
+  var _taskCard = `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>${t('今日のタスク',"Today's Tasks")}</div>`;
   if (myTasks.length) {
     myTasks.forEach(tk => {
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${tk.title}</div><span class="tag ${tk.priority==='高'?'tag-red':'tag-yellow'}">${tk.priority||t('低','Low')}</span></div>
+      _taskCard += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${tk.title}</div><span class="tag ${tk.priority==='高'?'tag-red':'tag-yellow'}">${tk.priority||t('低','Low')}</span></div>
         <div class="approval-meta">${tk.due?t('期限 ','Due ')+tk.due:''} · ${t('進捗','Progress')} ${tk.progress||0}%</div></div>`;
     });
-  } else { html += `<p style="color:var(--muted);font-size:13px">${t('担当タスクはありません','No assigned tasks')}</p>`; }
-  html += '</div>';
+  } else { _taskCard += `<p style="color:var(--muted);font-size:13px">${t('担当タスクはありません','No assigned tasks')}</p>`; }
+  _taskCard += '</div>';
 
   // 4-5-6. Your Skill Progress（店舗別スキル現在地 + 次の目標 + Tip連動）
   var positions = getStorePositions(storeId);
@@ -27715,6 +27721,8 @@ function renderMypage() {
   // チップ見込み（今の半月の自分の配分合計＋半月精算後）
   var myTipName = curUserName || me;
   var tipEst = estimateMyTip(storeId, myTipName);
+  // ▼ スキルレベル（レーダーチャート）を給与の直前に配置
+  html += _skillRadarHtml;
   html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}<span style="font-size:12px;font-weight:700;color:var(--yellow);background:var(--surface2);border:1px solid var(--yellow);border-radius:6px;padding:2px 9px;margin-left:8px">${t('未確定','Estimate')}</span><span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${cycLabel}</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${cycSub}${ch.days?' · '+(curLang==='en'?(ch.days+' days'):(ch.days+'日')):''}${mixNote}</div>
     <div class="kpi-grid">
@@ -27731,8 +27739,8 @@ function renderMypage() {
     <p style="font-size:11px;color:var(--muted);margin-top:8px">${t('※ 見込み（確定給与ではありません）。実勤怠(Toast)を優先し、未記録日は公開シフトで補完。残業は週40h超で計算。','* Estimate only (not final pay). Uses actual Toast hours; un-recorded days filled with published shifts. OT above 40h/week.')}</p>
   </div>`;
 
-  // 8. 勤怠記録（自分のToast打刻・今月）
-  html += `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-4"></i>${t('今月の勤怠記録',"This Month's Attendance")}</div>`;
+  // 8. 勤怠記録（自分のToast打刻・今月）※上部に配置するため変数化
+  var _attCard = `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-4"></i>${t('今月の勤怠記録',"This Month's Attendance")}</div>`;
   var attRows = [];
   var attTotalH = 0;
   var _attStores = (typeof getStoresAll==='function'?getStoresAll():STORES);
@@ -27759,21 +27767,21 @@ function renderMypage() {
   });
   if (attRows.length) {
     var _attStoreCount = Object.keys(attStoreSet).length;
-    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">${attMonthLabel()} · ${t(attRows.length+'日勤務',attRows.length+' days')} · ${t('計','total')}${attTotalH.toFixed(1)}h${_attStoreCount>1?' · '+_attStoreCount+t('店舗',' stores'):''}</div>
+    _attCard += `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">${attMonthLabel()} · ${t(attRows.length+'日勤務',attRows.length+' days')} · ${t('計','total')}${attTotalH.toFixed(1)}h${_attStoreCount>1?' · '+_attStoreCount+t('店舗',' stores'):''}</div>
       <table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th>${t('日付','Date')}</th><th>${t('店舗','Store')}</th><th>In</th><th>Out</th><th>${t('計','Total')}</th></tr></thead><tbody>`;
     attRows.slice().reverse().forEach(r=>{
-      html += `<tr><td>${r.date.slice(5)} (${r.dow})</td>
+      _attCard += `<tr><td>${r.date.slice(5)} (${r.dow})</td>
         <td style="font-size:10px;color:var(--muted)">${escapeHtml(r.store||'')}</td>
         <td style="text-align:center;color:var(--muted)">${r.clockIn}</td>
         <td style="text-align:center;color:${r.missingOut?'var(--red)':'var(--muted)'}">${r.missingOut?t('漏れ','Missing'):r.clockOut}</td>
         <td style="text-align:right;font-weight:600">${r.total.toFixed(1)}h</td></tr>`;
     });
-    html += `</tbody></table>
+    _attCard += `</tbody></table>
       <p style="font-size:11px;color:var(--muted);margin-top:6px">${t('今月の全勤務日を表示。Toast打刻データに基づきます。','Showing all worked days this month. Based on Toast clock data.')}</p>`;
   } else {
-    html += `<p style="color:var(--muted);font-size:13px">${t(attMonthLabel()+'の勤怠記録がまだありません。',"No attendance records yet for "+attMonthLabel()+".")}<br>${t('店舗で勤怠データが反映されると表示されます。','Records appear once your store syncs attendance.')}</p>`;
+    _attCard += `<p style="color:var(--muted);font-size:13px">${t(attMonthLabel()+'の勤怠記録がまだありません。',"No attendance records yet for "+attMonthLabel()+".")}<br>${t('店舗で勤怠データが反映されると表示されます。','Records appear once your store syncs attendance.')}</p>`;
   }
-  html += '</div>';
+  _attCard += '</div>';
 
   // 9. 休暇申請（本人の申請のみ表示。他人の申請は見せない）
   var myVac = ls('my_vacations', []).filter(function(v){ return v.employee===me; });
@@ -27827,6 +27835,9 @@ function renderMypage() {
     });
   } else { html += `<p style="color:var(--muted);font-size:13px">${t('相談はまだありません。困ったことがあれば気軽に','No posts yet')}</p>`; }
   html += '</div>';
+
+  // ▼ 上部プレースホルダを ①今週のシフト ②タスク ③勤怠実績 に差し替え
+  html = html.replace('<!--TOP_OPS-->', (_shiftCard||'') + (_taskCard||'') + (_attCard||''));
 
   return html;
 }
