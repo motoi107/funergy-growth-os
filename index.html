@@ -7621,12 +7621,12 @@ function msLegend(items){ return '<div style="display:flex;gap:14px;flex-wrap:wr
 /* ---- シフト人数（セグメント別） ---- */
 function msDayHeadcount(storeId, date){
   try{ var tl=getTipLabor(storeId, date); if(tl){ var n=Object.keys(tl).length; if(n>0) return n; } }catch(e){}
-  try{ var dt=new Date(date+'T00:00:00'); var plan=getShiftPlan(storeId, mondayMDof(dt)); if(plan&&plan.cells){ var dow=DOW[(dt.getDay()+6)%7]; var names={}; Object.keys(plan.cells).forEach(function(k){ if(k.indexOf(dow+'_')===0){ var v=plan.cells[k]; if(v) names[v]=1; } }); var c=Object.keys(names).length; if(c>0) return c; } }catch(e){}
+  try{ var dt=new Date(date+'T00:00:00'); var plan=getShiftPlan(storeId, mondayMDof(dt)); if(plan&&plan.cells){ var dow=DOW_SHIFT[dt.getDay()]; var names={}; Object.keys(plan.cells).forEach(function(k){ if(k.indexOf(dow+'_')===0){ var v=plan.cells[k]; if(v) names[v]=1; } }); var c=Object.keys(names).length; if(c>0) return c; } }catch(e){}
   return null;
 }
 function msSegHeadcount(storeId, date, seg){
   try{ var tl=getTipLabor(storeId,date); if(tl){ var n=0; Object.keys(tl).forEach(function(k){ if(tl[k] && (tl[k][seg]||0)>0) n++; }); if(n>0) return n; } }catch(e){}
-  try{ var dt=new Date(date+'T00:00:00'); var plan=getShiftPlan(storeId, mondayMDof(dt)); if(plan&&plan.cells){ var dow=DOW[(dt.getDay()+6)%7]; var period=(seg==='lunch')?'Lunch':'Dinner'; var names={}; Object.keys(plan.cells).forEach(function(key){ if(key.indexOf(dow+'_'+period+'_')===0){ var v=plan.cells[key]; if(v) names[v]=1; } }); var c=Object.keys(names).length; if(c>0) return c; } }catch(e){}
+  try{ var dt=new Date(date+'T00:00:00'); var plan=getShiftPlan(storeId, mondayMDof(dt)); if(plan&&plan.cells){ var dow=DOW_SHIFT[dt.getDay()]; var period=(seg==='lunch')?'Lunch':'Dinner'; var names={}; Object.keys(plan.cells).forEach(function(key){ if(key.indexOf(dow+'_'+period+'_')===0){ var v=plan.cells[key]; if(v) names[v]=1; } }); var c=Object.keys(names).length; if(c>0) return c; } }catch(e){}
   return null;
 }
 /* セグメント別 {hc:{sum,n}} */
@@ -12545,10 +12545,10 @@ function weekStrForDate(dateISO) {
   var mon = new Date(d.getFullYear(), d.getMonth(), diff);
   return (mon.getMonth()+1)+'/'+(mon.getDate());
 }
-/* 日付→曜日ラベル（DOW_SHIFT形式 月..日） */
+/* 日付→曜日ラベル（DOW_SHIFT形式 日..土） */
 function dowLabelForDate(dateISO) {
   var d = new Date(dateISO+'T00:00:00');
-  return DOW_SHIFT[(d.getDay()+6)%7];
+  return DOW_SHIFT[d.getDay()];
 }
 /* 予定シフト時間（その店・その日・人別）h */
 function plannedHoursForDate(storeId, dateISO) {
@@ -14007,7 +14007,7 @@ function publishShift(storeId) {
    ⑤ Shift Builder (Availability + Skill/Tip連動 + Auto-Gen + Labor Cost)
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
-const DOW_SHIFT = ['月','火','水','木','金','土','日'];
+const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
    枠は {label:表示名, pos:スキル判定に使う元ポジション} 。同役割を複数出す場合 label に番号を付ける。
@@ -14296,16 +14296,15 @@ function payCycleRange(refDate){
 }
 /* 日付→その週の月曜の M/D（getWeekStr と同形式）*/
 function mondayMDof(dt){
+  // シフト週キー: 日曜始まり基準（getWeekStr と同じ規則）
   var x=new Date(dt.getFullYear(),dt.getMonth(),dt.getDate());
-  var day=x.getDay();
-  var diff=x.getDate()-day+(day===0?-6:1);
-  x.setDate(diff);
+  x.setDate(x.getDate()-x.getDay()); // その週の日曜へ
   return (x.getMonth()+1)+'/'+x.getDate();
 }
 /* 給与サイクル内の自分のスケジュール時間を集計（公開済シフトのみ）*/
 function cycleScheduledHours(storeId, me, cyc){
   var weeks={};
-  cyc.dates.forEach(function(d){ var wk=mondayMDof(d); var dow=DOW[(d.getDay()+6)%7]; (weeks[wk]=weeks[wk]||{})[dow]=1; });
+  cyc.dates.forEach(function(d){ var wk=mondayMDof(d); var dow=DOW_SHIFT[d.getDay()]; (weeks[wk]=weeks[wk]||{})[dow]=1; });
   var total=0, reg=0, ot=0, days=0;
   Object.keys(weeks).forEach(function(wk){
     var plan=getShiftPlan(storeId, wk);
@@ -14330,7 +14329,7 @@ function cyclePayHours(storeId, me, cyc){
   cyc.dates.forEach(function(d){
     var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     var wk = mondayMDof(d);
-    var dow = DOW[(d.getDay()+6)%7];
+    var dow = DOW_SHIFT[d.getDay()];
     var dayTotal=0;
     _stores.forEach(function(st){
       var hrs=0, isAct=false;
@@ -14506,8 +14505,9 @@ function renderShiftAdmin() {
   var week = getWeekStr();
 
   var html = pageStoreTabs(storeId, false) + `<div class="section-header">
-    <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${week}週</div></div>
+    <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${shiftWeekRangeLabel()}</div></div>
   </div>
+  ${shiftWeekNavHtml()}
   <div class="phase-tabs" style="flex-wrap:wrap;gap:4px">
     <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')"><i class="ti ti-clipboard-check" style="font-size:12px"></i> 提出状況</div>
     <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')"><i class="ti ti-calendar-plus" style="font-size:12px"></i> シフト作成</div>
@@ -16025,7 +16025,17 @@ function renderShiftStaff() {
   var reminded = ls('reminded_'+storeId+'_'+week, []);
   var isReminded = !myAvail && Array.isArray(reminded) && reminded.indexOf(me)>=0;
 
-  var html = `<div class="section-header"><div><div class="section-title">My Shift</div><div class="section-sub">${curLang==='en'?week:(week+'週')}</div></div></div>`;
+  var html = `<div class="section-header"><div><div class="section-title">My Shift</div><div class="section-sub">${shiftWeekRelLabel()} · ${shiftWeekRangeLabel()}</div></div></div>`;
+  // スタッフ用 週選択ナビ（どの週を提出しているか明示）
+  html += `<div class="card" style="padding:8px 10px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+    <button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(${_shiftWeekOff-1})"><i class="ti ti-chevron-left"></i></button>
+    <div style="flex:1;text-align:center">
+      <div style="font-size:13px;font-weight:800;color:var(--accent)">${shiftWeekRelLabel()}${myAvail?' <span style="font-size:10px;color:var(--green);font-weight:700">提出済</span>':' <span style="font-size:10px;color:var(--yellow);font-weight:700">未提出</span>'}</div>
+      <div style="font-size:11px;color:var(--muted)">${shiftWeekRangeLabel()}</div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(${_shiftWeekOff+1})"><i class="ti ti-chevron-right"></i></button>
+    ${_shiftWeekOff!==0?`<button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(0)">${t('今週','This')}</button>`:''}
+  </div>`;
 
   if (isReminded) {
     html += `<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-bell" style="font-size:18px"></i><div>
@@ -16093,11 +16103,13 @@ function openAvailModal(storeId, week) {
   renderAvailBody(storeId, week);
 }
 function renderAvailBody(storeId, week) {
-  var html = `<div class="modal-title">Availability (${week}週) <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  var html = `<div class="modal-title">${shiftWeekRelLabel()}のAvailability <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <p style="font-size:11px;color:var(--accent);margin-bottom:2px;font-weight:700">${shiftWeekRangeLabel()}</p>
     <p style="font-size:11px;color:var(--muted);margin-bottom:8px">勤務可能な枠をタップ</p>
     <table class="inv-table"><thead><tr><th></th>${SHIFT_PERIODS.map(p=>`<th style="text-align:center">${p}</th>`).join('')}</tr></thead><tbody>`;
   DOW_SHIFT.forEach(day => {
-    html += `<tr><td style="font-weight:600">${day}</td>${SHIFT_PERIODS.map(p=>{
+    var _iso=weekDateForDow(day); var _md=_iso?(Number(_iso.slice(5,7))+'/'+Number(_iso.slice(8,10))):'';
+    html += `<tr><td style="font-weight:600">${tWday(day)}<div style="font-size:9px;color:var(--muted);font-weight:400">${_md}</div></td>${SHIFT_PERIODS.map(p=>{
       var key=day+'_'+p; var sel=availTmp[key];
       return `<td style="text-align:center"><div class="shift-slot${sel?' sel':''}" onclick="toggleAvail('${storeId}','${week}','${key}')">${sel?'✓':'-'}</div></td>`;
     }).join('')}</tr>`;
@@ -16145,23 +16157,54 @@ function submitShiftChange(storeId, week, slot) {
 }
 
 function getWeekStr() {
-  var d = new Date(); var day = d.getDay();
-  var diff = d.getDate() - day + (day===0?-6:1);
-  var mon = new Date(d.setDate(diff));
-  return (mon.getMonth()+1)+'/'+(mon.getDate());
+  var sun = new Date(getWeekSundayISO()+'T00:00:00');
+  return (sun.getMonth()+1)+'/'+sun.getDate();
 }
+/* 週の日〜土の範囲ラベル（例: 7/5(日)〜7/11(土)） */
+function shiftWeekRangeLabel(off){
+  var sun=new Date(getWeekSundayISO(off)+'T00:00:00');
+  var sat=new Date(sun); sat.setDate(sun.getDate()+6);
+  return (sun.getMonth()+1)+'/'+sun.getDate()+'(日)〜'+(sat.getMonth()+1)+'/'+sat.getDate()+'(土)';
+}
+/* 週の相対名（今週/来週/翌々週…） */
+function shiftWeekRelLabel(off){
+  var o=(off===undefined)?_shiftWeekOff:off;
+  if(o===0) return '今週';
+  if(o===1) return '来週';
+  if(o===2) return '翌々週';
+  if(o===-1) return '先週';
+  return (o>0?'+'+o:o)+'週';
+}
+/* 週選択ナビ（◀ 前週 / 相対名+範囲 / 翌週 ▶ ＋ 今週へ） */
+function shiftWeekNavHtml(){
+  return `<div class="card" style="padding:8px 10px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+    <button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(${_shiftWeekOff-1})"><i class="ti ti-chevron-left"></i></button>
+    <div style="flex:1;text-align:center">
+      <div style="font-size:13px;font-weight:800;color:var(--accent)">${shiftWeekRelLabel()}</div>
+      <div style="font-size:11px;color:var(--muted)">${shiftWeekRangeLabel()}</div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(${_shiftWeekOff+1})"><i class="ti ti-chevron-right"></i></button>
+    ${_shiftWeekOff!==0?`<button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(0)">今週</button>`:''}
+  </div>`;
+}
+function setShiftWeekOff(o){ _shiftWeekOff = o; renderPage(typeof curPage!=='undefined'?curPage:'shift_admin'); }
 /* 今週の月曜のフル日付(YYYY-MM-DD) */
-function getWeekMondayISO() {
-  var d = new Date(); var day = d.getDay();
-  var diff = d.getDate() - day + (day===0?-6:1);
-  var mon = new Date(d.getFullYear(), d.getMonth(), diff);
-  return mon.getFullYear()+'-'+String(mon.getMonth()+1).padStart(2,'0')+'-'+String(mon.getDate()).padStart(2,'0');
+/* シフトの週選択オフセット（0=今週, 1=翌週, 2=翌々週, -1=先週…）。日曜始まり基準。 */
+var _shiftWeekOff = 0;
+/* 指定オフセット週の日曜のフル日付(YYYY-MM-DD)。off省略時は現在の選択週。 */
+function getWeekSundayISO(off) {
+  var o = (off===undefined) ? _shiftWeekOff : off;
+  var d = new Date(); d.setHours(0,0,0,0);
+  d.setDate(d.getDate() - d.getDay() + o*7);   // getDay(): 日=0 → その週の日曜へ
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
-/* 今週の曜日(月→日)のフル日付 */
+/* 後方互換: 旧名。日曜始まりの週基準日を返す（内部は日曜）。 */
+function getWeekMondayISO() { return getWeekSundayISO(); }
+/* 選択週の曜日(日→土)のフル日付 */
 function weekDateForDow(dow) {
   var idx = DOW_SHIFT.indexOf(dow); if(idx<0) return null;
-  var mon = new Date(getWeekMondayISO()+'T00:00:00');
-  var d = new Date(mon); d.setDate(mon.getDate()+idx);
+  var sun = new Date(getWeekSundayISO()+'T00:00:00');
+  var d = new Date(sun); d.setDate(sun.getDate()+idx);
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
 /* 祝前日か（翌日が祝日） */
