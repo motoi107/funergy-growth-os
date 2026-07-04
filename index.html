@@ -1574,7 +1574,6 @@ const NAV_ITEMS = [
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','office','am','sl']},
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am','sl']},
-  {id:'store_power', label:'店舗総合力',    icon:'ti-chart-radar',      roles:['ceo','gm','office','am']},
   {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'attendance',  label:'勤怠データ', icon:'ti-clock-check',      roles:['ceo','gm','office','am','sl']},
   {id:'shift_admin', label:'シフト作成',icon:'ti-calendar',        roles:['ceo','gm','am','sl']},
@@ -1612,7 +1611,7 @@ const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
     children:['dashboard','store_cmd','mypage']},
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
-    children:['budget','store_power','labor','foodcost','kpi_master']},
+    children:['budget','labor','foodcost','kpi_master']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
     children:['tasks']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
@@ -1628,7 +1627,7 @@ const OFFICE_GROUPS = [
   {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
     children:['office_mgr','acct_review','tip','hr','growthhub','hiring','office_export','vacation','mileage','notifications','crew_handbook']},
   {id:'go_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office'],
-    children:['budget','store_power','labor','foodcost','kpi_master']},
+    children:['budget','labor','foodcost','kpi_master']},
   {id:'go_tasks', label:'ワークセンター', icon:'ti-layout-dashboard', roles:['ceo','gm','office'],
     children:['tasks','biz_guide']},
   {id:'go_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office'],
@@ -4652,16 +4651,17 @@ function renderSimplePL(){
     h += '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:430px;font-size:11.5px"><thead><tr><th style="text-align:left">項目</th><th style="text-align:right">簡易PL</th><th style="text-align:right">実PL</th><th style="text-align:right">差異</th></tr></thead><tbody>';
     var row=function(label, simp, act, sub, bold, col, key){
       var trAttr = (key?(' onclick="openPlDetailModal(\''+st.id+'\',\''+key+'\')"'):'')+' style="'+(key?'cursor:pointer;':'')+(bold?'font-weight:700;border-top:2px solid var(--border)':'')+'"';
+      var pctStr = (label==='売上') ? '' : ' <span style="font-size:9px;color:var(--muted);font-weight:400">'+pct(simp,c.sales)+'</span>';
       return '<tr'+trAttr+'><td style="text-align:left">'+(key?'<i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> ':'')+label+(sub?' <span style="font-size:9px;color:var(--muted)">'+sub+'</span>':'')+'</td>'
-        +'<td style="text-align:right'+(col?';color:'+col:'')+'">'+m(simp)+'</td>'+diffCell(simp, act)+'</tr>';
+        +'<td style="text-align:right'+(col?';color:'+col:'')+'">'+m(simp)+pctStr+'</td>'+diffCell(simp, act)+'</tr>';
     };
     h += row('売上', c.sales, a?a.sales:null, '日次実績', false, null, 'sales');
     h += row('原価', c.cogs, a?a.cogs:null, c.cogsSrc+'・'+pct(c.cogs,c.sales), false, null, 'cogs');
     h += row('粗利', c.gross, a?(a.sales-a.cogs):null, '売上−原価', false, 'var(--tm)');
     h += row('人件費', c.labor, a?a.payroll:null, 'Laborコア・'+pct(c.labor,c.sales), false, null, 'labor');
-    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'vc\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 変動費 <span style="font-size:9px;color:var(--muted)">平均'+(c.hasOvr?'+調整':'')+(c.reimb?'＋建替'+m(c.reimb):'')+'</span></td><td style="text-align:right">'+m(c.vcT)+'</td><td style="text-align:right;color:var(--muted)" rowspan="3" title="実PLの運営費計">'+(aExp!=null?m(aExp):'—')+'</td><td style="text-align:right;color:var(--muted)" rowspan="3">'+(aExp!=null?(function(){var d=c.expT-aExp;return (d>=0?'+':'')+m(d).replace('$-','-$');})():'—')+'</td></tr>';
-    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'get\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 消費税(GET) <span style="font-size:9px;color:var(--muted)">売上×'+(cfg.getRate||4.712)+'%</span></td><td style="text-align:right">'+m(c.get)+'</td></tr>';
-    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'fix\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 固定費 <span style="font-size:9px;color:var(--muted)">家賃・保険・システム</span></td><td style="text-align:right">'+m(c.fixT)+'</td></tr>';
+    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'vc\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 変動費 <span style="font-size:9px;color:var(--muted)">平均'+(c.hasOvr?'+調整':'')+(c.reimb?'＋建替'+m(c.reimb):'')+'</span></td><td style="text-align:right">'+m(c.vcT)+' <span style="font-size:9px;color:var(--muted);font-weight:400">'+pct(c.vcT,c.sales)+'</span></td><td style="text-align:right;color:var(--muted)" rowspan="3" title="実PLの運営費計">'+(aExp!=null?m(aExp):'—')+'</td><td style="text-align:right;color:var(--muted)" rowspan="3">'+(aExp!=null?(function(){var d=c.expT-aExp;return (d>=0?'+':'')+m(d).replace('$-','-$');})():'—')+'</td></tr>';
+    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'get\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 消費税(GET) <span style="font-size:9px;color:var(--muted)">売上×'+(cfg.getRate||4.712)+'%</span></td><td style="text-align:right">'+m(c.get)+' <span style="font-size:9px;color:var(--muted);font-weight:400">'+pct(c.get,c.sales)+'</span></td></tr>';
+    h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'fix\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 固定費 <span style="font-size:9px;color:var(--muted)">家賃・保険・システム</span></td><td style="text-align:right">'+m(c.fixT)+' <span style="font-size:9px;color:var(--muted);font-weight:400">'+pct(c.fixT,c.sales)+'</span></td></tr>';
     h += row('経費計', c.expT, aExp, '変動+GET+固定 vs 実PL運営費');
     h += row('営業利益', c.profit, a?a.netop:null, pct(c.profit,c.sales), true, c.profit>=0?'var(--green)':'var(--red)', 'profit');
     h += '</tbody></table></div></div>';
@@ -5456,7 +5456,7 @@ function switchStore(id) {
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','store_power','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory'];
+var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory'];
 
 /* ============================================================
    ROUTER
@@ -14102,7 +14102,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '102';
+const APP_VERSION = '103';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30753,6 +30753,9 @@ function respDefaultRows(){ return [
   ['消耗品の発注','○','○','●','●全責任','○補助','','','実務は誰でもOK（責任なし）。確定はG3、店の結果はG4、G5は補助'],
   ['オーバーポーション管理','○','●','●','●全責任','◎監督','△把握','','盛り付け基準の徹底はG2/G3がやり切る。原価率への影響はG4、G5が横断監督、GMは把握'],
   ['店舗修繕','△報告','○','◎部分','●全責任','◎監督','△把握','','気づいたら即報告（G1）。実務はG2、部分責任G3、最終はG4。G5が管轄監督、GMは把握'],
+  ['POS各デバイス管理','△報告','○','◎部分','●全責任','◎監督','△把握','','端末・プリンタ・KDS等の日常管理。不具合は即報告（G1）、実務G2、部分責任G3、最終はG4。G5が管轄監督、GMは把握'],
+  ['POS追加発注と価格交渉','','','○','●全責任','◎監督','○補助','','デバイス・消耗品の追加発注と価格交渉。実務・見積はG3、契約と店の結果はG4。G5が管轄監督、本部が調達で補助'],
+  ['POSシステム設定','','','○','●全責任','◎監督','○補助','','メニュー・料金・権限等のPOS設定。実務はG3、設定の正と店の結果はG4。G5が管轄監督、本部が補助'],
   {cat:'ti-calendar-time|シフト・勤怠'},
   ['シフト作成','','△','◎義務','●全責任','△把握','△把握','','G3以上に作成義務。最終確認と当日采配の結果はG4。G5/GMは把握'],
   ['シフト運用・OT管理','','△把握','△把握','●全責任','△把握','△把握','','週40h超・ワーキングスケジュールはG4の全責任。他Gradeは把握と即報告'],
@@ -30785,9 +30788,9 @@ function respDefaultRows(){ return [
 ]; }
 function getRespMatrix(){
   var v = ls('resp_matrix', null);
-  if (v && v.rows && v.rows.length && (v.v||1)>=2) return v;
-  var fresh = {rows: respDefaultRows(), v:2};
-  if (v) { lsSet('resp_matrix', fresh); } // v1保存分はMoto確定版(v2)へ一度だけ置き換え
+  if (v && v.rows && v.rows.length && (v.v||1)>=3) return v;
+  var fresh = {rows: respDefaultRows(), v:3};
+  if (v) { lsSet('resp_matrix', fresh); } // v2以前の保存分はPOS3項目追加版(v3)へ一度だけ置き換え
   return fresh;
 }
 function saveRespMatrix(mx){ mx.at=nowJP(); mx.by=(typeof myName==='function')?myName():''; lsSet('resp_matrix', mx); }
