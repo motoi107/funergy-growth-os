@@ -3001,32 +3001,95 @@ function openTipHoursModal(){
           <option value="all" ${!hrs?'selected':''}>勤怠時間すべて</option>
           <option value="hours" ${hrs?'selected':''}>営業時間のみ</option>
         </select></div>
-      <div id="th-hrs-${st.id}" style="display:${hrs?'flex':'none'};gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11px">
-        L <input class="form-input" id="th-l1-${st.id}" style="width:74px;padding:4px 6px" value="${g.l1||(st.lunchHours||'11:00-14:30').split('-')[0]||''}" placeholder="11:00">〜<input class="form-input" id="th-l2-${st.id}" style="width:74px;padding:4px 6px" value="${g.l2||(st.lunchHours||'').split('-')[1]||''}" placeholder="14:30">
-        ／ D <input class="form-input" id="th-d1-${st.id}" style="width:74px;padding:4px 6px" value="${g.d1||(st.dinnerHours||'17:00-22:00').split('-')[0]||''}" placeholder="17:00">〜<input class="form-input" id="th-d2-${st.id}" style="width:74px;padding:4px 6px" value="${g.d2||(st.dinnerHours||'').split('-')[1]||''}" placeholder="22:00">
+      <div id="th-hrs-${st.id}" style="display:${hrs?'block':'none'};margin-top:6px;font-size:11px">
+        <button class="btn btn-secondary btn-sm" onclick="openTipDowEditor('${st.id}')"><i class="ti ti-calendar-cog"></i> 曜日別 L/D時間を設定</button>
+        <span style="font-size:10px;color:var(--muted);margin-left:6px">${tipDowSummary(st.id)}</span>
       </div></div>`;
   }).join('');
   openModal(`<div class="modal-title">Tip対象時間の設定（店舗別） <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:10.5px;color:var(--muted);margin-bottom:8px;line-height:1.7">「勤怠時間すべて」＝打刻時間がそのままTip配分の対象。「営業時間のみ」＝仕込み・片付け等の営業時間外を除外し、L/D窓に重なる時間だけで配分します（店舗マスターの営業時間が初期値）。変更は当日以降のTip計算に反映。</div>
+    <div style="font-size:10.5px;color:var(--muted);margin-bottom:8px;line-height:1.7">「勤怠時間すべて」＝打刻時間がそのままTip配分の対象。「営業時間のみ」＝仕込み・片付け等の営業時間外を除外し、曜日別のL/D窓に重なる時間だけで配分します。ランチ営業がない日はLをOFFにしてください。変更は当日以降のTip計算に反映。</div>
     <div style="max-height:52vh;overflow-y:auto">${rows}</div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveTipHoursCfg()">保存</button></div>`);
 }
 function saveTipHoursCfg(){
   var c=ls('tip_hours_config',{})||{};
-  var bad=null;
   activeStores().forEach(function(st){
     var mode=(document.getElementById('th-mode-'+st.id)||{}).value||'all';
-    if(mode!=='hours'){ c[st.id]={mode:'all'}; return; }
-    var g={mode:'hours',
-      l1:(document.getElementById('th-l1-'+st.id)||{}).value.trim(), l2:(document.getElementById('th-l2-'+st.id)||{}).value.trim(),
-      d1:(document.getElementById('th-d1-'+st.id)||{}).value.trim(), d2:(document.getElementById('th-d2-'+st.id)||{}).value.trim()};
-    if(_thToMin(g.l1)==null||_thToMin(g.l2)==null||_thToMin(g.d1)==null||_thToMin(g.d2)==null){ bad=st.name; return; }
-    c[st.id]=g;
+    var prev=c[st.id]||{};
+    if(mode!=='hours'){ c[st.id]={mode:'all', dow:prev.dow, l1:prev.l1, l2:prev.l2, d1:prev.d1, d2:prev.d2}; return; }
+    // hoursモード: 曜日別設定(dow)は openTipDowEditor で編集済み。ここではmodeのみ確定。
+    c[st.id]=Object.assign({}, prev, {mode:'hours'});
   });
-  if(bad){ showToast(bad+' の時間形式が正しくありません（HH:MM）','warning'); return; }
   lsSet('tip_hours_config', c);
   closeModalDirect(); showToast('Tip対象時間を保存しました','success'); renderPage('tip');
+}
+/* 曜日別サマリー（設定済みか） */
+function tipDowSummary(sid){
+  var cfg=getTipHoursCfg(sid);
+  if(!cfg.dow) return '未設定（全曜日 L+D）';
+  var offDays=DOW_SHIFT.filter(function(d){ return cfg.dow[d] && cfg.dow[d].lOn===false; });
+  return offDays.length ? ('ランチ無し: '+offDays.join('・')) : '曜日別設定済み';
+}
+/* 曜日別 L/D 時間エディタ */
+function openTipDowEditor(sid){
+  var st=getStoresAll().find(function(x){return x.id===sid;})||{name:sid};
+  var cfg=getTipHoursCfg(sid);
+  var dL=(st.lunchHours||'11:00-14:30').split('-'), dD=(st.dinnerHours||'17:00-22:00').split('-');
+  var rows=DOW_SHIFT.map(function(dw){
+    var w=(cfg.dow&&cfg.dow[dw])||{};
+    var lOn=(w.lOn!==false), dOn=(w.dOn!==false);
+    var l1=w.l1||cfg.l1||dL[0]||'', l2=w.l2||cfg.l2||dL[1]||'', d1=w.d1||cfg.d1||dD[0]||'', d2=w.d2||cfg.d2||dD[1]||'';
+    var col=(dw==='日')?'var(--red)':(dw==='土'?'var(--accent2)':'var(--tm)');
+    return '<tr>'
+      +'<td style="text-align:center;font-weight:700;color:'+col+'">'+dw+'</td>'
+      +'<td style="text-align:center;padding:3px"><input type="checkbox" class="tpd-lon" data-dw="'+dw+'" '+(lOn?'checked':'')+' onchange="tipDowToggle(this,\'tpd-l\')"></td>'
+      +'<td style="padding:2px"><input class="form-input tpd-l tpd-l1" data-dw="'+dw+'" value="'+l1+'" '+(lOn?'':'disabled')+' style="width:64px;padding:4px;font-size:11px"></td>'
+      +'<td style="padding:2px"><input class="form-input tpd-l tpd-l2" data-dw="'+dw+'" value="'+l2+'" '+(lOn?'':'disabled')+' style="width:64px;padding:4px;font-size:11px"></td>'
+      +'<td style="text-align:center;padding:3px"><input type="checkbox" class="tpd-don" data-dw="'+dw+'" '+(dOn?'checked':'')+' onchange="tipDowToggle(this,\'tpd-d\')"></td>'
+      +'<td style="padding:2px"><input class="form-input tpd-d tpd-d1" data-dw="'+dw+'" value="'+d1+'" '+(dOn?'':'disabled')+' style="width:64px;padding:4px;font-size:11px"></td>'
+      +'<td style="padding:2px"><input class="form-input tpd-d tpd-d2" data-dw="'+dw+'" value="'+d2+'" '+(dOn?'':'disabled')+' style="width:64px;padding:4px;font-size:11px"></td>'
+      +'</tr>';
+  }).join('');
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 曜日別 Tip対象時間 <button class="modal-close" onclick="openTipHoursModal()">×</button></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:8px;line-height:1.7">曜日ごとにランチ(L)・ディナー(D)の対象時間を設定します。チェックを外すとその帯は対象外（ランチ営業がない日はLのチェックを外す）。</div>'
+    +'<div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn btn-secondary btn-sm" onclick="tipDowCopyMon()"><i class="ti ti-copy"></i> 月→全曜日コピー</button></div>'
+    +'<div style="max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"><table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th>曜</th><th>L</th><th>開始</th><th>終了</th><th>D</th><th>開始</th><th>終了</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="openTipHoursModal()">戻る</button><button class="btn btn-primary" onclick="saveTipDowCfg(\''+sid+'\')">保存</button></div>');
+}
+function tipDowToggle(cb, cls){
+  var tr=cb.closest('tr'); if(!tr) return;
+  tr.querySelectorAll('.'+cls).forEach(function(i){ i.disabled=!cb.checked; });
+}
+function tipDowCopyMon(){
+  var g=function(cls,dw){ return document.querySelector('.'+cls+'[data-dw="'+dw+'"]'); };
+  var srcLon=g('tpd-lon','月').checked, srcL1=g('tpd-l1','月').value, srcL2=g('tpd-l2','月').value;
+  var srcDon=g('tpd-don','月').checked, srcD1=g('tpd-d1','月').value, srcD2=g('tpd-d2','月').value;
+  DOW_SHIFT.forEach(function(dw){ if(dw==='月')return;
+    g('tpd-lon',dw).checked=srcLon; g('tpd-l1',dw).value=srcL1; g('tpd-l2',dw).value=srcL2;
+    g('tpd-don',dw).checked=srcDon; g('tpd-d1',dw).value=srcD1; g('tpd-d2',dw).value=srcD2;
+    g('tpd-l1',dw).disabled=!srcLon; g('tpd-l2',dw).disabled=!srcLon;
+    g('tpd-d1',dw).disabled=!srcDon; g('tpd-d2',dw).disabled=!srcDon;
+  });
+}
+function saveTipDowCfg(sid){
+  var c=ls('tip_hours_config',{})||{}; var prev=c[sid]||{};
+  var dow={}, bad=null;
+  DOW_SHIFT.forEach(function(dw){
+    var lon=document.querySelector('.tpd-lon[data-dw="'+dw+'"]').checked;
+    var don=document.querySelector('.tpd-don[data-dw="'+dw+'"]').checked;
+    var l1=document.querySelector('.tpd-l1[data-dw="'+dw+'"]').value.trim();
+    var l2=document.querySelector('.tpd-l2[data-dw="'+dw+'"]').value.trim();
+    var d1=document.querySelector('.tpd-d1[data-dw="'+dw+'"]').value.trim();
+    var d2=document.querySelector('.tpd-d2[data-dw="'+dw+'"]').value.trim();
+    if(lon && (_thToMin(l1)==null||_thToMin(l2)==null)) bad=dw+'曜のランチ';
+    if(don && (_thToMin(d1)==null||_thToMin(d2)==null)) bad=dw+'曜のディナー';
+    dow[dw]={lOn:lon, l1:l1, l2:l2, dOn:don, d1:d1, d2:d2};
+  });
+  if(bad){ showToast(bad+'の時間形式が正しくありません（HH:MM）','warning'); return; }
+  c[sid]=Object.assign({}, prev, {mode:'hours', dow:dow});
+  lsSet('tip_hours_config', c);
+  showToast('曜日別Tip対象時間を保存しました','success'); openTipHoursModal();
 }
 /* Tip対象時間の店舗別設定: tip_hours_config = {sid:{mode:'all'|'hours', l1,l2,d1,d2}} */
 function getTipHoursCfg(sid){ var c=ls('tip_hours_config',{})||{}; return c[sid]||{mode:'all'}; }
@@ -3041,19 +3104,20 @@ function _thOverlapH(inDate, outDate, date, t1, t2){
   var st=Math.max(di.getTime(), w1.getTime()), en=Math.min(doo.getTime(), w2.getTime());
   return Math.max(0,(en-st)/3600000);
 }
-/* 営業時間モード: 打刻をL/D窓に切り詰めた時間をTip配分用に付与（シフト詳細が無い人は元の値） */
+/* 営業時間モード: 打刻をL/D窓に切り詰めた時間をTip配分用に付与（シフト詳細が無い人は元の値）。曜日別対応。 */
 function applyTipHoursClip(storeId, date, data){
   try{
     var cfg=getTipHoursCfg(storeId);
     if(!cfg || cfg.mode!=='hours' || !data) return data;
+    var win=tipHoursWindowFor(storeId, date); // その日のL/D窓（曜日別）。{lOn,l1,l2,dOn,d1,d2}
     Object.keys(data).forEach(function(nm){
       var e=data[nm]||{}; var sh=e.shifts;
       if(!sh || !sh.length || !sh[0].inDate) return;
       var L=0, D=0, ok=true;
       sh.forEach(function(x){
         if(!x.inDate||!x.outDate){ ok=false; return; }
-        var lv=_thOverlapH(x.inDate,x.outDate,date,cfg.l1,cfg.l2);
-        var dv=_thOverlapH(x.inDate,x.outDate,date,cfg.d1,cfg.d2);
+        var lv = win.lOn ? _thOverlapH(x.inDate,x.outDate,date,win.l1,win.l2) : 0;
+        var dv = win.dOn ? _thOverlapH(x.inDate,x.outDate,date,win.d1,win.d2) : 0;
         if(lv==null||dv==null){ ok=false; return; }
         L+=lv; D+=dv;
       });
@@ -3061,6 +3125,18 @@ function applyTipHoursClip(storeId, date, data){
     });
   }catch(err){}
   return data;
+}
+/* 指定日のTip対象時間窓を曜日別設定から解決。曜日別が無ければ一律(l1/l2/d1/d2)にフォールバック。 */
+function tipHoursWindowFor(storeId, date){
+  var cfg=getTipHoursCfg(storeId);
+  var dow=(typeof dowLabelForDate==='function')?dowLabelForDate(date):null;
+  var base={ lOn:true, l1:cfg.l1, l2:cfg.l2, dOn:true, d1:cfg.d1, d2:cfg.d2 };
+  if(cfg.dow && dow && cfg.dow[dow]){
+    var w=cfg.dow[dow];
+    return { lOn:(w.lOn!==false), l1:w.l1||cfg.l1, l2:w.l2||cfg.l2,
+             dOn:(w.dOn!==false), d1:w.d1||cfg.d1, d2:w.d2||cfg.d2 };
+  }
+  return base;
 }
 function getAttOverride(storeId, date) { return ls('att_override_'+storeId+'_'+date, null); }
 /* 日別チップ用勤怠（Lunch/Dinner別hours）の保存 */
