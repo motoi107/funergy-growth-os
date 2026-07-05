@@ -14102,7 +14102,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '103';
+const APP_VERSION = '104';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -20563,7 +20563,7 @@ function renderPurchaseAnalysis(){
     (ls('invoices',[])||[]).forEach(function(inv){
       if (inv.docType==='Reimburse') return;
       if (!dateInYm(inv.date, ym)) return;
-      (inv.lines||[]).forEach(function(l){ t += (Number(l.newPrice)||0)*(Number(l.qty)||0); });
+      (inv.lines||[]).forEach(function(l){ t += (l.lineTotal!=null?Number(l.lineTotal):(Number(l.newPrice)||0)*(Number(l.qty)||0)); });
     });
     return t;
   }
@@ -20660,7 +20660,7 @@ function renderPurchaseAnalysis(){
   var vt={};
   (ls('invoices',[])||[]).forEach(function(inv){
     if (inv.docType==='Reimburse' || !dateInYm(inv.date, curYm())) return;
-    var t=(inv.lines||[]).reduce(function(a,l){return a+(Number(l.newPrice)||0)*(Number(l.qty)||0);},0);
+    var t=(inv.lines||[]).reduce(function(a,l){return a+(l.lineTotal!=null?Number(l.lineTotal):(Number(l.newPrice)||0)*(Number(l.qty)||0));},0);
     vt[inv.vendor||'不明']=(vt[inv.vendor||'不明']||0)+t;
   });
   var vRows=Object.keys(vt).map(function(v){return {v:v,t:vt[v]};}).sort(function(a,b){return b.t-a.t;});
@@ -22115,7 +22115,7 @@ function invoiceAcctData(y, m) {
       var ing = (l.code!=null) ? ingByCode[l.code] : null;
       var cls = ing ? ingClass(ing) : 'food';
       if (!clsTotals.hasOwnProperty(cls)) cls = 'food';
-      var amt = (l.newPrice||0) * (l.qty||0);
+      var amt = (l.lineTotal!=null) ? l.lineTotal : ((l.newPrice||0) * (l.qty||0));
       matrix[sid] = matrix[sid] || {food:0,liquor:0,beverage:0,supply:0};
       matrix[sid][cls] += amt;
       storeTotals[sid] = (storeTotals[sid]||0) + amt;
@@ -29518,11 +29518,16 @@ async function runInvoiceOCR(file){
       var r=matchLineBest(l.name);
       // 商品名は請求書の記載どおり（曖昧一致で別商品名に置き換えない）。確実な一致のみ参照コードを付与。
       var ing = (r.score>=INV_MATCH_AUTO) ? r.ing : null;
+      var _qty = (parseFloat(l.qty)||1);
+      var _unit = (parseFloat(l.unitPrice)||0);
+      var _ltot = (l.lineTotal!=null) ? (parseFloat(l.lineTotal)||0) : (_unit*_qty);
       return { code: ing?ing.code:null, name: (l.name||'(不明)'),
         rawName: (l.name||''), oldPrice: ing?ing.price:null,
-        newPrice: (parseFloat(l.unitPrice)||0), qty: (parseFloat(l.qty)||1),
+        newPrice: _unit, qty: _qty, lineTotal: _ltot, mismatch: !!l.mismatch,
         score: r.score, low: ing ? false : (r.score>=INV_MATCH_SUGGEST) };
     });
+    // 請求書合計との突き合わせ結果を保持（renderOCRResultで警告表示）
+    window._invoiceTotalCheck = (data && data.invoiceTotal!=null) ? { invoiceTotal:Number(data.invoiceTotal)||0, linesSum:(data.linesSum!=null?Number(data.linesSum):null), mismatch:!!data.totalMismatch } : null;
     renderOCRResult();
     if(!lines.length) showToast('品目を読み取れませんでした。手入力で追加してください','warning');
   }catch(e){
@@ -29536,21 +29541,47 @@ function addManualInvoiceLine(){
     renderOCRResult();
   });
 }
-function updateInvLine(idx, field, val){ if(!invoiceTmpLines[idx])return; invoiceTmpLines[idx][field]= (parseFloat(val)||0); var t=document.getElementById('inv-total'); if(t) t.textContent='$'+invoiceTmpLines.reduce(function(a,l){return a+(l.newPrice||0)*(l.qty||0);},0).toFixed(2); }
+function updateInvLine(idx, field, val){
+  var l=invoiceTmpLines[idx]; if(!l)return;
+  var v=parseFloat(val)||0;
+  l[field]=v;
+  // 編集に応じて3値の整合を取り直す
+  if(field==='qty' || field==='newPrice'){
+    l.lineTotal = Math.round((l.newPrice||0)*(l.qty||0)*100)/100;
+  } else if(field==='lineTotal'){
+    if(l.qty) l.newPrice = Math.round((l.lineTotal/l.qty)*10000)/10000;
+  }
+  l.mismatch=false; // 手動修正で警告解除
+  renderOCRResult();
+}
 function removeInvLine(idx){ invoiceTmpLines.splice(idx,1); renderOCRResult(); }
 
 function renderOCRResult() {
   var el = document.getElementById('ocr-result');
   if (!el) return;
   if (!invoiceTmpLines.length){ el.innerHTML=''; return; }
-  var total = invoiceTmpLines.reduce((a,l)=>a+(l.newPrice||0)*(l.qty||0),0);
+  // 合計は各行の「行合計(lineTotal)」の和を基準にする（単価×数量の再計算による誤差を避ける）
+  var total = invoiceTmpLines.reduce((a,l)=>a+(l.lineTotal!=null?l.lineTotal:(l.newPrice||0)*(l.qty||0)),0);
   var newCount = invoiceTmpLines.filter(l=>l.code==null).length;
   var lowCount = invoiceTmpLines.filter(l=>l.code!=null && l.low).length;
+  var mismatchCount = invoiceTmpLines.filter(l=>l.mismatch).length;
   var summary = invoiceTmpLines.length+'品目';
   if (newCount) summary += ' ・ <span style="color:var(--accent2)">新規 '+newCount+'</span>';
   if (lowCount) summary += ' ・ <span style="color:#d97706">要確認 '+lowCount+'</span>';
-  el.innerHTML = `<div style="font-size:12px;color:var(--muted);margin:6px 0">${summary}（数量・単価は修正できます）</div>
-    <table class="inv-table"><thead><tr><th>品目</th><th style="width:54px">数量</th><th style="width:74px">単価</th><th style="width:28px"></th></tr></thead><tbody>
+  if (mismatchCount) summary += ' ・ <span style="color:var(--red)">数量/単価要確認 '+mismatchCount+'</span>';
+  // 請求書合計との突き合わせバナー
+  var chk = window._invoiceTotalCheck;
+  var banner='';
+  if (chk && chk.invoiceTotal>0){
+    var diff = Math.abs(total - chk.invoiceTotal);
+    var ok = diff <= Math.max(0.5, chk.invoiceTotal*0.02);
+    banner = '<div class="alert '+(ok?'alert-success':'alert-warning')+'" style="margin:6px 0;font-size:12px;line-height:1.6">'
+      +(ok?'<i class="ti ti-circle-check"></i> 請求書合計と一致（$'+chk.invoiceTotal.toFixed(2)+'）':
+        '<i class="ti ti-alert-triangle"></i> <b>合計が請求書と一致しません</b><br>読み取り合計 $'+total.toFixed(2)+' / 請求書記載 $'+chk.invoiceTotal.toFixed(2)+'（差 $'+diff.toFixed(2)+'）。数量・単価・抜け行を確認してください。')
+      +'</div>';
+  }
+  el.innerHTML = `${banner}<div style="font-size:12px;color:var(--muted);margin:6px 0">${summary}（数量・単価は修正できます）</div>
+    <table class="inv-table"><thead><tr><th>品目</th><th style="width:50px">数量</th><th style="width:68px">単価</th><th style="width:72px">行合計</th><th style="width:24px"></th></tr></thead><tbody>
     ${invoiceTmpLines.map((l,idx)=>{
       var status, actions='';
       if (l.code==null){
@@ -29563,10 +29594,13 @@ function renderOCRResult() {
       } else {
         status = (l.oldPrice!=null && l.newPrice!==l.oldPrice) ? `<span style="font-size:9px;color:${l.newPrice>l.oldPrice?'var(--red)':'var(--green)'}">旧$${l.oldPrice.toFixed(2)}</span>` : '';
       }
-      return `<tr>
-        <td style="font-size:12px">${escapeHtml(l.name)}<div>${status}</div>${actions}</td>
+      var mm = l.mismatch ? '<div style="font-size:9px;color:var(--red);margin-top:2px"><i class="ti ti-alert-circle"></i> 数量×単価が行合計と不一致。確認を</div>' : '';
+      var rowStyle = l.mismatch ? ' style="background:rgba(220,50,50,.06)"' : '';
+      return `<tr${rowStyle}>
+        <td style="font-size:12px">${escapeHtml(l.name)}<div>${status}</div>${mm}${actions}</td>
         <td><input class="form-input" style="padding:3px 5px;font-size:12px" type="number" inputmode="decimal" step="any" value="${l.qty}" onchange="updateInvLine(${idx},'qty',this.value)"></td>
         <td><input class="form-input" style="padding:3px 5px;font-size:12px" type="number" inputmode="decimal" step="any" value="${l.newPrice}" onchange="updateInvLine(${idx},'newPrice',this.value)"></td>
+        <td><input class="form-input" style="padding:3px 5px;font-size:12px" type="number" inputmode="decimal" step="any" value="${(l.lineTotal!=null?l.lineTotal:(l.newPrice||0)*(l.qty||0)).toFixed(2)}" onchange="updateInvLine(${idx},'lineTotal',this.value)"></td>
         <td><button class="btn btn-secondary btn-sm" style="padding:1px 6px" onclick="removeInvLine(${idx})">×</button></td>
       </tr>`;
     }).join('')}
@@ -29686,7 +29720,7 @@ async function saveInvoice() {
   if (!invoiceTmpLines.length) { alert('品目がありません。写真読取か「手入力で品目追加」で追加してください'); return; }
   var vendor = document.getElementById('inv-vendor').value.trim();
   if (!vendor) { alert('業者・購入先を入力してください'); return; }
-  var total = invoiceTmpLines.reduce((a,l)=>a+(l.newPrice||0)*(l.qty||0),0);
+  var total = invoiceTmpLines.reduce((a,l)=>a+(l.lineTotal!=null?l.lineTotal:(l.newPrice||0)*(l.qty||0)),0);
   var selEl = document.getElementById('invoice-store');
   var invStoreId = selEl ? selEl.value : (window._invoiceStore || (curStore==='ALL'?STORES[0].id:curStore));
   var rcptStores=[]; if(invoiceDocType==='Receipt'){ rcptStores=Array.prototype.slice.call(document.querySelectorAll('.inv-mstore:checked')).map(function(c){return c.value;}); }
