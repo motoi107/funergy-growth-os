@@ -9290,6 +9290,33 @@ async function scDetail(kind){
   if(kind==='weather'){ var el=document.getElementById('toast-sync-status'); if(el) el.textContent='天気・祝日を取得中…'; var r=await doWeatherSyncSilent(sid); if(el) el.textContent=r&&r.error?r.error:('天気・祝日を反映しました（'+st.name+'）'); showToast('天気・祝日を反映しました','success'); return; }
 }
 /* 同期センター モーダル */
+async function runCustDebug(){
+  var stores=getVisibleStores().filter(function(s){return s.toastGuid;});
+  if(!stores.length){ showToast('対象店舗がありません','warning'); return; }
+  var s=stores[0];
+  var d=new Date(); d.setDate(d.getDate()-1);
+  var ymd=d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+  var box=document.getElementById('sync-center-result');
+  if(box) box.innerHTML='<i class="ti ti-loader"></i> '+escapeHtml(s.name)+' の来店区分を診断中…（'+ymd+'）';
+  try{
+    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
+      body: JSON.stringify({ restaurantGuid:s.toastGuid, mode:'bowlDebug', businessDate:ymd }) });
+    var j=await res.json();
+    var cd=j['来店区分診断']||{};
+    var g=cd['Customers商品GUID数']||{};
+    var m=cd['注文で照合したFT_RP_SR']||{};
+    var nm=cd['照合できた商品名']||{};
+    var mod=cd['モディファイア由来']||{};
+    var html='<div style="font-size:12px;line-height:1.7;background:var(--surface2);border-radius:8px;padding:10px">'
+      +'<b>'+escapeHtml(s.name)+' 来店区分診断（'+ymd+'・注文'+ (j.orders||0) +'件）</b><br>'
+      +'CustomersグループのFT/RP/SR商品数: FT '+(g.ft||0)+' / RP '+(g.rp||0)+' / SR '+(g.sr||0)+'<br>'
+      +'注文で照合できた件数: FT '+(m.ft||0)+' / RP '+(m.rp||0)+' / SR '+(m.sr||0)+'<br>'
+      +'モディファイア由来: first '+(mod.first||0)+' / repeat '+(mod.repeat||0)+' / sr '+(mod.sr||0)+'<br>'
+      +'照合商品名: '+(Object.keys(nm).length?escapeHtml(Object.keys(nm).map(function(k){return k+'×'+nm[k];}).join(', ')):'（なし）')
+      +'</div>';
+    if(box) box.innerHTML=html;
+  }catch(e){ if(box) box.innerHTML='<span style="color:var(--red)">診断エラー: '+escapeHtml(String(e))+'</span>'; }
+}
 function openSyncCenter() {
   var stores = getVisibleStores();
   var scopeLabel = curStore==='ALL' ? ('全店（'+stores.length+'店舗）') : ((getStoresAll().find(x=>x.id===curStore)||{}).name||'—');
@@ -9312,6 +9339,7 @@ function openSyncCenter() {
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">対象: <b>${escapeHtml(scopeLabel)}</b> <span style="font-size:11px">（上部の店舗切替で変更）</span></div>
     <button class="btn btn-primary" style="width:100%" onclick="syncCenterRunAll()"><i class="ti ti-bolt"></i> すべて同期（売上・客数・Tip・Labor・天気）</button>
     <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="syncCenterMenuAll()"><i class="ti ti-tools-kitchen-2"></i> メニュー・出数を同期</button>
+    ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断</button>`:''}
     <div id="sync-center-result" style="font-size:12px;margin-top:10px"></div>
     <div style="font-weight:700;font-size:13px;margin:14px 0 4px">Toast 店舗別</div>
     ${rows||'<div style="font-size:12px;color:var(--muted)">対象店舗がありません</div>'}
@@ -14219,7 +14247,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '109';
+const APP_VERSION = '110';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
