@@ -14358,7 +14358,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '113';
+const APP_VERSION = '114';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -21416,7 +21416,7 @@ function officePendingApprovals(){
 }
 function officeClockCard(){
   var name=myName(); var today=officeTodayStr();
-  var arr=getOfficeAttend(name)||[]; var rec=arr.find(function(r){return r.date===today;})||{};
+  var arr=getOfficeAttend(name)||[]; var rec=officeOpenRec(arr)||arr.find(function(r){return r.date===today;})||{};
   var inDone=!!rec.in, outDone=!!rec.out, onBreak=!!rec.breakStart;
   var statusTxt, statusCol;
   if(outDone){ statusTxt='退勤済 '+rec.in+'〜'+rec.out+(rec.hours!=null?'（'+rec.hours+'h）':''); statusCol='var(--muted)'; }
@@ -21752,37 +21752,43 @@ function setOfficeAttend(name, arr){ lsSet(officeAttendKey(name), arr); }
 function officeCalcHours(rec){
   if(!rec || !rec.in || !rec.out) return 0;
   var i=rec.in.split(':'), o=rec.out.split(':');
-  var mins=(parseInt(o[0])*60+parseInt(o[1]))-(parseInt(i[0])*60+parseInt(i[1]))-(rec.breakMin||0);
+  var gross=(parseInt(o[0])*60+parseInt(o[1]))-(parseInt(i[0])*60+parseInt(i[1]));
+  if(gross<0) gross+=24*60; // 日跨ぎ勤務（翌0時以降の退勤）に対応
+  var mins=gross-(rec.breakMin||0);
   return Math.max(0, Math.round(mins/60*100)/100);
 }
 function officeHourly(emp){ return !!(emp && (emp.wage||0)>0); } // wage>0=時給 / 0=月給
 function officeEmpByName(n){ return getEmployees().find(function(e){return e.name===n;})||null; }
+/* 現在開いている勤務（出勤済・未退勤）を日付に依存せず取得。日跨ぎ・海外(端末ローカル時刻)対応 */
+function officeOpenRec(arr){ if(!arr) return null; for(var i=arr.length-1;i>=0;i--){ if(arr[i].in && !arr[i].out) return arr[i]; } return null; }
 
 function officeClockIn(){
-  var name=myName(); var date=isoDateStr(new Date());
-  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
-  if(rec && rec.in){ showToast('本日は出勤打刻済みです','info'); return; }
+  var name=myName(); var arr=getOfficeAttend(name);
+  var open=officeOpenRec(arr);
+  if(open){ showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); return; }
+  var date=isoDateStr(new Date()); var rec=arr.find(function(r){return r.date===date;});
+  if(rec && rec.in && rec.out){ showToast('本日は出勤打刻済みです','info'); return; }
   if(!rec){ rec={date:date, in:'', out:'', breakMin:0, status:'勤務中', log:[]}; arr.push(rec); }
   rec.in=nowHM(); rec.status='勤務中'; rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'出勤 '+rec.in});
   setOfficeAttend(name, arr); showToast('出勤を記録しました','success'); renderPage('office_mgr');
 }
 function officeClockOut(){
-  var name=myName(); var date=isoDateStr(new Date());
-  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
+  var name=myName(); var arr=getOfficeAttend(name);
+  var rec=officeOpenRec(arr);
+  if(!rec){ var date=isoDateStr(new Date()); rec=arr.find(function(r){return r.date===date;}); }
   if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
-  if(rec.out){ showToast('本日は退勤打刻済みです','info'); return; }
+  if(rec.out){ showToast('退勤打刻済みです','info'); return; }
   if(rec.breakStart){ var bm=Math.max(0,hmDiffMin(rec.breakStart, nowHM())); var endm=nowHM(); rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=endm; rec.breaks[bi].min=bm; break; } } delete rec.breakStart; rec.breakMin=officeSumBreaks(rec); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩自動終了（+'+bm+'分）'}); }
   rec.out=nowHM(); rec.hours=officeCalcHours(rec); rec.status='記録済';
   rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'退勤 '+rec.out});
   setOfficeAttend(name, arr); showToast('退勤を記録しました（'+rec.hours+'h）','success'); renderPage('office_mgr');
 }
-function hmDiffMin(from, to){ if(!from||!to) return 0; var a=from.split(':'), b=to.split(':'); return (parseInt(b[0])*60+parseInt(b[1]))-(parseInt(a[0])*60+parseInt(a[1])); }
+function hmDiffMin(from, to){ if(!from||!to) return 0; var a=from.split(':'), b=to.split(':'); var d=(parseInt(b[0])*60+parseInt(b[1]))-(parseInt(a[0])*60+parseInt(a[1])); if(d<0) d+=24*60; return d; }
 function officeSumBreaks(rec){ if(rec && rec.breaks && rec.breaks.length) return rec.breaks.reduce(function(a,b){return a+(b.min||0);},0); return (rec&&rec.breakMin)||0; }
-function getOfficeAttendCfg(){ return ls('office_attend_config', null) || {breakStdMin:60}; }
+function getOfficeAttendCfg(){ var c=ls('office_attend_config', null)||{}; c.breakStdMin=0; return c; } /* 休憩・戻りの時間制限は撤廃（無制限）。全てのover判定は無効化される */
 function setOfficeBreakStd(v){ if(['ceo','gm','office'].indexOf(curRole)<0) return; var c=getOfficeAttendCfg(); c.breakStdMin=Math.max(0,parseInt(v)||0); lsSet('office_attend_config', c); showToast('休憩の標準上限を更新しました','success'); renderPage('office_mgr'); }
 function officeBreakStart(){
-  var name=myName(); var date=isoDateStr(new Date());
-  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
+  var name=myName(); var arr=getOfficeAttend(name); var rec=officeOpenRec(arr);
   if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
   if(rec.out){ showToast('退勤済みです','info'); return; }
   if(rec.breakStart){ showToast('既に休憩中です','info'); return; }
@@ -21791,8 +21797,7 @@ function officeBreakStart(){
   setOfficeAttend(name, arr); showToast('休憩を開始しました','success'); renderPage('office_mgr');
 }
 function officeBreakEnd(){
-  var name=myName(); var date=isoDateStr(new Date());
-  var arr=getOfficeAttend(name); var rec=arr.find(function(r){return r.date===date;});
+  var name=myName(); var arr=getOfficeAttend(name); var rec=officeOpenRec(arr);
   if(!rec || !rec.breakStart){ showToast('休憩中ではありません','info'); return; }
   var mins=Math.max(0, hmDiffMin(rec.breakStart, nowHM())); var ended=nowHM();
   rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=ended; rec.breaks[bi].min=mins; break; } }
@@ -21884,7 +21889,7 @@ function officeAttendShiftMonth(delta){
 
 function officePunchCard(name){
   var date=isoDateStr(new Date());
-  var rec=getOfficeAttend(name).find(function(r){return r.date===date;});
+  var _pcArr=getOfficeAttend(name); var rec=officeOpenRec(_pcArr)||_pcArr.find(function(r){return r.date===date;});
   var emp=officeEmpByName(name);
   var arr=getOfficeAttend(name);
   var ym=date.slice(0,7);
@@ -22000,10 +22005,7 @@ function renderOfficeAttend(){
       + mem.map(function(e){ return '<option'+(e.name===sel?' selected':'')+'>'+escapeHtml(e.name)+'</option>'; }).join('')
       +'</select></div></div>';
   }
-  if(canManage){
-    var _cfg=getOfficeAttendCfg();
-    html+='<div class="card" style="padding:10px 12px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-coffee" style="color:var(--accent)"></i><span style="font-size:12px;color:var(--muted)">休憩の標準上限</span><input type="number" inputmode="decimal" value="'+_cfg.breakStdMin+'" min="0" step="15" onchange="setOfficeBreakStd(this.value)" style="width:64px;padding:5px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm);text-align:center"><span style="font-size:12px;color:var(--muted)">分／日（超過で ⚠ 表示）</span></div></div>';
-  }
+  /* 休憩の標準上限UIは撤廃（休憩・戻りの時間制限なし） */
   html += officeTimesheet(sel, ym, canManage);
   return html;
 }
