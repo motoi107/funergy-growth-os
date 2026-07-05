@@ -753,11 +753,11 @@ async function syncToastMenuFetch(guid, period) {
     return await res.json();
   } catch (e) { console.error('syncToastMenuFetch', e); return { error: String(e) }; }
 }
-/* DBからメニュー商品を読む（カテゴリ・商品名・売価・GUID） */
+/* DBからメニュー商品を読む（カテゴリ・商品名・売価・GUID）。全件取得（上限引き上げ） */
 async function fetchToastMenuItems(guid) {
   try {
-    var url = SUPABASE_URL + '/rest/v1/toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(guid) + '&order=category.asc';
-    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    var url = SUPABASE_URL + '/rest/v1/toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(guid) + '&order=category.asc&limit=10000';
+    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON, 'Range-Unit':'items', 'Prefer':'count=none' } });
     if (!res.ok) return [];
     return await res.json();
   } catch (e) { console.error('fetchToastMenuItems', e); return []; }
@@ -767,7 +767,7 @@ async function fetchToastItemSales(guid, period) {
   try {
     var parts = String(period).split('.');
     var ym = parts[0] + '-' + String(parts[1]).padStart(2,'0');
-    var url = SUPABASE_URL + '/rest/v1/toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_month=eq.' + ym;
+    var url = SUPABASE_URL + '/rest/v1/toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_month=eq.' + ym + '&limit=10000';
     var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
     if (!res.ok) return [];
     return await res.json();
@@ -14219,7 +14219,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '107';
+const APP_VERSION = '108';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
