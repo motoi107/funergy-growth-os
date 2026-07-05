@@ -4395,18 +4395,32 @@ function hqSetYear(d){ _hqYear+=d; _secRerender(); }
 function hqSetLayer(l){ _hqLayer=l; _secRerender(); }
 function hqSetScope(v){ _hqScope=v; _secRerender(); }
 function _hqOffOf(ym){ var n=new Date(); var p=ym.split('-'); return (parseInt(p[0],10)-n.getFullYear())*12+(parseInt(p[1],10)-1-n.getMonth()); }
-/* 本部予算層（GMの計画）: 客数×客単価→売上、目標率→原価/人件費、変動費・GET・固定費は簡易PL設定 */
+/* 本部予算層（GMの計画）: 客数×客単価→売上、目標率/金額→原価/人件費、変動費・GET・固定費は
+   本部予算での上書き（vcOvr/getOvr/fixOvr）を優先し、無ければ簡易PL設定を使用。 */
 function hqPlanForYm(sid, ym){
   var e=(getHqBudget()[ym]||{})[sid]; if(!e) return null;
   var g=Number(e.guests)||0, p=Number(e.ppa)||0;
   var sales=(g>0&&p>0)?Math.round(g*p):(Number(e.total)||0);
   if(!(sales>0)) return null;
   var cfg=getPlConfig();
-  var cogs=(Number(e.fcRate)>0)?sales*Number(e.fcRate)/100:null;
-  var labor=(Number(e.laborRate)>0)?sales*Number(e.laborRate)/100:null;
-  var vcT=0; PL_VC_CATS.forEach(function(c){ vcT+=Number((cfg.vcAvg[sid]||{})[c[0]])||0; });
-  var get=sales*(cfg.getRate||4.712)/100;
-  var fixT=0; PL_FIX_CATS.forEach(function(c){ fixT+=Number((cfg.fixed[sid]||{})[c[0]])||0; });
+  // 原価: 金額指定(fcAmt)優先、次に率(fcRate)
+  var cogs = (Number(e.fcAmt)>0) ? Number(e.fcAmt)
+           : (Number(e.fcRate)>0 ? sales*Number(e.fcRate)/100 : null);
+  // 人件費: 金額指定(laborAmt)優先、次に率(laborRate)
+  var labor = (Number(e.laborAmt)>0) ? Number(e.laborAmt)
+            : (Number(e.laborRate)>0 ? sales*Number(e.laborRate)/100 : null);
+  // 変動費: 項目ごとに上書き(vcOvr)があればそれ、無ければ簡易PL設定
+  var vcOvr=e.vcOvr||{};
+  var vcT=0; PL_VC_CATS.forEach(function(c){
+    var ov=vcOvr[c[0]]; vcT += (ov!=null&&ov!=='') ? (Number(ov)||0) : (Number((cfg.vcAvg[sid]||{})[c[0]])||0);
+  });
+  // GET: 上書き(getOvr)があれば金額、無ければ率
+  var get = (e.getOvr!=null&&e.getOvr!=='') ? (Number(e.getOvr)||0) : sales*(cfg.getRate||4.712)/100;
+  // 固定費: 項目ごとに上書き(fixOvr)
+  var fixOvr=e.fixOvr||{};
+  var fixT=0; PL_FIX_CATS.forEach(function(c){
+    var ov=fixOvr[c[0]]; fixT += (ov!=null&&ov!=='') ? (Number(ov)||0) : (Number((cfg.fixed[sid]||{})[c[0]])||0);
+  });
   var profit=(cogs!=null&&labor!=null)?(sales-cogs-labor-vcT-get-fixT):null;
   return {guests:g>0?g:null, ppa:p>0?p:null, sales:sales, cogs:cogs, gross:cogs!=null?sales-cogs:null, labor:labor, vcT:vcT, get:get, fixT:fixT, profit:profit, note:e.note||''};
 }
@@ -4566,33 +4580,112 @@ function renderHqBudget(){
 function openHqPlanModal(ym, sid){
   var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
   var cur=(getHqBudget()[ym]||{})[sid]||{};
+  var cfg=getPlConfig();
   var sb=storeBudgetTotalForYm(sid, ym);
   var p=ym.split('-'); var lbl=parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月';
-  var calc="(function(){var g=parseFloat(document.getElementById('hqp-guests').value)||0,pp=parseFloat(document.getElementById('hqp-ppa').value)||0;var el=document.getElementById('hqp-sales');if(el)el.textContent=(g>0&&pp>0)?('$'+Math.round(g*pp).toLocaleString()):'—';})()";
+  var calc="hqpRecalc()";
+  var vcOvr=cur.vcOvr||{}, fixOvr=cur.fixOvr||{};
+  // 変動費・固定費の項目別入力（placeholderに簡易PL自動値）
+  var vcRows=PL_VC_CATS.map(function(c){
+    var auto=Number((cfg.vcAvg[sid]||{})[c[0]])||0;
+    var val=(vcOvr[c[0]]!=null&&vcOvr[c[0]]!=='')?vcOvr[c[0]]:'';
+    return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="flex:1;font-size:11px">'+c[1]+'</span>'
+      +'<input class="form-input hqp-vc" data-cat="'+c[0]+'" type="number" inputmode="decimal" value="'+val+'" placeholder="自動 $'+Math.round(auto).toLocaleString()+'" oninput="hqpRecalc()" style="width:120px;padding:4px 6px;font-size:12px"></div>';
+  }).join('');
+  var fixRows=PL_FIX_CATS.map(function(c){
+    var auto=Number((cfg.fixed[sid]||{})[c[0]])||0;
+    var val=(fixOvr[c[0]]!=null&&fixOvr[c[0]]!=='')?fixOvr[c[0]]:'';
+    return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="flex:1;font-size:11px">'+c[1]+'</span>'
+      +'<input class="form-input hqp-fix" data-cat="'+c[0]+'" type="number" inputmode="decimal" value="'+val+'" placeholder="自動 $'+Math.round(auto).toLocaleString()+'" oninput="hqpRecalc()" style="width:120px;padding:4px 6px;font-size:12px"></div>';
+  }).join('');
+  var getAuto=Math.round(((cur.guests>0&&cur.ppa>0)?cur.guests*cur.ppa:(cur.total||0))*(cfg.getRate||4.712)/100);
   openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 本部予算（'+lbl+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="max-height:66vh;overflow-y:auto;padding-right:4px">'
     +'<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.7">店舗予算（参考）: <b>'+(sb!=null?('$'+Math.round(sb).toLocaleString()):'未提出')+'</b></div>'
+    // 売上
+    +'<div class="form-label" style="font-weight:700;color:var(--accent);margin-bottom:4px">① 売上</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
     +'<div class="form-group"><label class="form-label">客数（月間）</label><input class="form-input" id="hqp-guests" type="number" inputmode="numeric" value="'+(cur.guests!=null?cur.guests:'')+'" oninput="'+calc+'"></div>'
     +'<div class="form-group"><label class="form-label">客単価 ($)</label><input class="form-input" id="hqp-ppa" type="number" inputmode="decimal" step="0.01" value="'+(cur.ppa!=null?cur.ppa:'')+'" oninput="'+calc+'"></div>'
     +'</div>'
-    +'<div style="font-size:12px;margin:2px 0 10px">→ 売上予算: <b id="hqp-sales" style="color:var(--accent)">'+((cur.guests>0&&cur.ppa>0)?('$'+Math.round(cur.guests*cur.ppa).toLocaleString()):(cur.total?('$'+Math.round(cur.total).toLocaleString()):'—'))+'</b></div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
-    +'<div class="form-group"><label class="form-label">目標原価率 (%)</label><input class="form-input" id="hqp-fc" type="number" inputmode="decimal" step="0.1" value="'+(cur.fcRate!=null?cur.fcRate:'')+'"></div>'
-    +'<div class="form-group"><label class="form-label">目標人件費率 (%)</label><input class="form-input" id="hqp-labor" type="number" inputmode="decimal" step="0.1" value="'+(cur.laborRate!=null?cur.laborRate:'')+'"></div>'
+    +'<div class="form-group"><label class="form-label">売上直接入力 ($)<span style="font-size:9px;color:var(--muted)"> 客数×客単価が空のときのみ使用</span></label><input class="form-input" id="hqp-total" type="number" inputmode="decimal" value="'+(cur.total!=null&&!(cur.guests>0&&cur.ppa>0)?cur.total:'')+'" oninput="'+calc+'"></div>'
+    +'<div style="font-size:13px;margin:2px 0 12px">→ 売上予算: <b id="hqp-sales" style="color:var(--accent)">—</b></div>'
+    // 原価・人件費（率/金額切替）
+    +'<div class="form-label" style="font-weight:700;color:var(--accent);margin-bottom:4px">② 原価・人件費</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px">'
+    +'<div class="form-group"><label class="form-label">目標原価率 (%)</label><input class="form-input" id="hqp-fc" type="number" inputmode="decimal" step="0.1" value="'+(cur.fcRate!=null?cur.fcRate:'')+'" oninput="document.getElementById(\'hqp-fcamt\').value=\'\';hqpRecalc()"></div>'
+    +'<div class="form-group"><label class="form-label">原価 金額指定 ($)</label><input class="form-input" id="hqp-fcamt" type="number" inputmode="decimal" value="'+(cur.fcAmt!=null?cur.fcAmt:'')+'" placeholder="率より優先" oninput="hqpRecalc()"></div>'
     +'</div>'
-    +'<div class="form-group"><label class="form-label">売上直接入力 ($)<span style="font-size:9px;color:var(--muted)"> 客数×客単価が空のときのみ使用</span></label><input class="form-input" id="hqp-total" type="number" inputmode="decimal" value="'+(cur.total!=null?cur.total:'')+'"></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'
+    +'<div class="form-group"><label class="form-label">目標人件費率 (%)</label><input class="form-input" id="hqp-labor" type="number" inputmode="decimal" step="0.1" value="'+(cur.laborRate!=null?cur.laborRate:'')+'" oninput="document.getElementById(\'hqp-laboramt\').value=\'\';hqpRecalc()"></div>'
+    +'<div class="form-group"><label class="form-label">人件費 金額指定 ($)</label><input class="form-input" id="hqp-laboramt" type="number" inputmode="decimal" value="'+(cur.laborAmt!=null?cur.laborAmt:'')+'" placeholder="率より優先" oninput="hqpRecalc()"></div>'
+    +'</div>'
+    // 変動費（項目別上書き）
+    +'<div class="form-label" style="font-weight:700;color:var(--accent);margin-bottom:4px">③ 変動費（空欄＝簡易PL自動値）</div>'
+    +'<div style="background:var(--surface2);border-radius:8px;padding:8px;margin-bottom:10px">'+vcRows+'</div>'
+    // GET
+    +'<div class="form-group"><label class="form-label">GET（$・空欄＝売上×'+(cfg.getRate||4.712)+'%自動）</label><input class="form-input" id="hqp-get" type="number" inputmode="decimal" value="'+(cur.getOvr!=null&&cur.getOvr!==''?cur.getOvr:'')+'" placeholder="自動 $'+getAuto.toLocaleString()+'" oninput="hqpRecalc()"></div>'
+    // 固定費（項目別上書き）
+    +'<div class="form-label" style="font-weight:700;color:var(--accent);margin:6px 0 4px">④ 固定費（空欄＝簡易PL自動値）</div>'
+    +'<div style="background:var(--surface2);border-radius:8px;padding:8px;margin-bottom:10px">'+fixRows+'</div>'
+    // 営業利益プレビュー
+    +'<div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:10px;font-size:13px">計画 営業利益: <b id="hqp-profit" style="color:var(--green)">—</b> <span id="hqp-profitrate" style="font-size:11px;color:var(--muted)"></span></div>'
+    // メモ
     +'<div class="form-group"><label class="form-label">目標の根拠・メッセージ</label><textarea class="form-input" id="hqp-note" rows="2" placeholder="例: 前年同月+8%。祝日3回のD強化で到達可能">'+escapeHtml(cur.note||'')+'</textarea></div>'
-    +'<div style="font-size:10px;color:var(--muted);margin-bottom:8px">変動費・GET・固定費は簡易PLの店舗設定を自動適用し、営業利益まで自動計算されます。</div>'
-    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveHqPlan(\''+ym+'\',\''+sid+'\')">保存</button></div>');
+    +'</div>'
+    +'<div class="btn-row" style="flex-wrap:wrap"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-secondary" onclick="hqCopyToRest(\''+ym+'\',\''+sid+'\')"><i class="ti ti-copy"></i> この内容を残り全月へ</button>'
+    +'<button class="btn btn-primary" onclick="saveHqPlan(\''+ym+'\',\''+sid+'\')">保存</button></div>');
+  hqpRecalc();
+}
+/* 編集モーダルのライブ再計算（売上・営業利益プレビュー） */
+function hqpRecalc(){
+  var gv=function(id){ var el=document.getElementById(id); return el?parseFloat(el.value):NaN; };
+  var g=gv('hqp-guests'), pp=gv('hqp-ppa'), tt=gv('hqp-total');
+  var sales=(g>0&&pp>0)?Math.round(g*pp):((tt>0)?Math.round(tt):0);
+  var se=document.getElementById('hqp-sales'); if(se) se.textContent = sales>0?('$'+sales.toLocaleString()):'—';
+  var fc=gv('hqp-fc'), fca=gv('hqp-fcamt'), lb=gv('hqp-labor'), lba=gv('hqp-laboramt');
+  var cogs=(fca>0)?fca:(fc>0?sales*fc/100:null);
+  var labor=(lba>0)?lba:(lb>0?sales*lb/100:null);
+  var vcT=0; document.querySelectorAll('.hqp-vc').forEach(function(i){ var v=parseFloat(i.value); if(v>0) vcT+=v; else { var ph=i.placeholder.replace(/[^0-9.]/g,''); vcT+=parseFloat(ph)||0; } });
+  var getEl=gv('hqp-get'); var get=(getEl>0)?getEl:(function(){ var ph=(document.getElementById('hqp-get').placeholder||'').replace(/[^0-9.]/g,''); return parseFloat(ph)||0; })();
+  var fixT=0; document.querySelectorAll('.hqp-fix').forEach(function(i){ var v=parseFloat(i.value); if(v>0) fixT+=v; else { var ph=i.placeholder.replace(/[^0-9.]/g,''); fixT+=parseFloat(ph)||0; } });
+  var pe=document.getElementById('hqp-profit'), pr=document.getElementById('hqp-profitrate');
+  if(sales>0 && cogs!=null && labor!=null){
+    var profit=Math.round(sales-cogs-labor-vcT-get-fixT);
+    if(pe) pe.textContent='$'+profit.toLocaleString();
+    if(pr) pr.textContent='（営業利益率 '+(sales>0?Math.round(profit/sales*1000)/10:0)+'%）';
+  } else { if(pe) pe.textContent='—（原価・人件費を入力）'; if(pr) pr.textContent=''; }
+}
+/* この月の内容を残り全月（同年内の未設定含む全月）へコピー */
+function hqCopyToRest(ym, sid){
+  if(!confirm('この店舗の '+ym+' の本部予算を、今年の他の全月にコピーします。よろしいですか？（既存の各月設定は上書きされます）')) return;
+  var hq=getHqBudget(); var src=(hq[ym]||{})[sid]; if(!src){ showToast('先に保存してからコピーしてください','warning'); return; }
+  var year=ym.split('-')[0];
+  for(var m=1;m<=12;m++){
+    var t=year+'-'+String(m).padStart(2,'0'); if(t===ym) continue;
+    hq[t]=hq[t]||{}; hq[t][sid]=Object.assign({}, src, {by:myName(), at:nowJP()});
+  }
+  lsSet('hq_budget', hq);
+  closeModalDirect(); showToast(year+'年の全月へコピーしました','success'); _secRerender();
 }
 function saveHqPlan(ym, sid){
   var gv=function(id){ var el=document.getElementById(id); return el?parseFloat(el.value):NaN; };
-  var g=gv('hqp-guests'), pp=gv('hqp-ppa'), fc=gv('hqp-fc'), lb=gv('hqp-labor'), tt=gv('hqp-total');
+  var g=gv('hqp-guests'), pp=gv('hqp-ppa'), fc=gv('hqp-fc'), fca=gv('hqp-fcamt'), lb=gv('hqp-labor'), lba=gv('hqp-laboramt'), tt=gv('hqp-total'), getv=gv('hqp-get');
   var note=(document.getElementById('hqp-note').value||'').trim();
+  var vcOvr={}; document.querySelectorAll('.hqp-vc').forEach(function(i){ var v=parseFloat(i.value); if(v>0) vcOvr[i.getAttribute('data-cat')]=v; });
+  var fixOvr={}; document.querySelectorAll('.hqp-fix').forEach(function(i){ var v=parseFloat(i.value); if(v>0) fixOvr[i.getAttribute('data-cat')]=v; });
   var hq=getHqBudget(); hq[ym]=hq[ym]||{};
   var sales=(g>0&&pp>0)?Math.round(g*pp):((!isNaN(tt)&&tt>0)?Math.round(tt):null);
-  if(sales==null && !note){ delete hq[ym][sid]; }
-  else hq[ym][sid]={ total:sales, guests:(g>0?g:null), ppa:(pp>0?Math.round(pp*100)/100:null), fcRate:(!isNaN(fc)&&fc>0?fc:null), laborRate:(!isNaN(lb)&&lb>0?lb:null), note:note, by:myName(), at:nowJP() };
+  var hasDetail = note || Object.keys(vcOvr).length || Object.keys(fixOvr).length || (getv>0) || (fca>0) || (lba>0);
+  if(sales==null && !hasDetail){ delete hq[ym][sid]; }
+  else hq[ym][sid]={
+    total:sales, guests:(g>0?g:null), ppa:(pp>0?Math.round(pp*100)/100:null),
+    fcRate:(!isNaN(fc)&&fc>0?fc:null), laborRate:(!isNaN(lb)&&lb>0?lb:null),
+    fcAmt:(!isNaN(fca)&&fca>0?Math.round(fca):null), laborAmt:(!isNaN(lba)&&lba>0?Math.round(lba):null),
+    vcOvr:Object.keys(vcOvr).length?vcOvr:null, fixOvr:Object.keys(fixOvr).length?fixOvr:null,
+    getOvr:(!isNaN(getv)&&getv>0?Math.round(getv):null),
+    note:note, by:myName(), at:nowJP() };
   lsSet('hq_budget', hq);
   closeModalDirect(); showToast('本部予算を保存しました','success'); _secRerender();
 }
@@ -14102,7 +14195,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '104';
+const APP_VERSION = '105';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
