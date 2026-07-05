@@ -14358,7 +14358,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '114';
+const APP_VERSION = '115';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -27280,6 +27280,78 @@ function rejectApprovalItem(id){
   if(!confirm('この申請を却下しますか？')) return;
   approveItem(id,'rejected'); /* 申請者へ却下通知（approveItem内） */
 }
+/* ===== 予算レビュー: 考え方（客数×単価 L/D/TO）＋日別一覧を一目で。読み取り専用＝保存に影響なし ===== */
+function openBudgetReview(storeId){
+  var b=getBudgets().find(function(x){return x.storeId===storeId;});
+  if(!b){ showToast('予算が見つかりません','info'); return; }
+  var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
+  var ym=curYm(); var yp=ym.split('-'); var yy=parseInt(yp[0],10), mm=parseInt(yp[1],10);
+  var days=daysOfYm(ym);
+  var total=Math.round(days.reduce(function(a,dd){return a+dayBudgetFor(b,dd.date);},0));
+  var prev=Math.round((monthStats(storeId,-1)||{}).sales||0);
+  var vs=prev?Math.round(total/prev*1000)/10:null;
+  var dowMode=usesDowMode(b);
+  var method=[dowMode?'曜日別（客数×単価）':(hasSegments(b)?'区分（客数×単価）':'—'), hasDayBudget(b)?'日別調整あり':''].filter(Boolean).join(' + ');
+  var r=b.rationale||{};
+  var h='<div style="font-size:12px;background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:10px;line-height:1.9">'
+    +'<div style="font-size:20px;font-weight:800;color:var(--accent)">$'+total.toLocaleString()+' <span style="font-size:11px;color:var(--muted);font-weight:400">月間予算</span></div>'
+    +'<div>組み方: <b>'+escapeHtml(method)+'</b></div>'
+    +'<div>前月実績: '+(prev?('$'+prev.toLocaleString()+' <b style="color:'+(vs>=100?'var(--red)':'var(--green)')+'">対比 '+vs+'%</b>'):'—')+'</div>'
+    +'<div style="font-size:10px;color:var(--muted)">ステータス '+escapeHtml(b.status||'下書き')+(b.submittedBy?(' ・ 提出 '+escapeHtml(b.submittedBy)+' '+escapeHtml(b.submittedAt||'')):'')+'</div></div>';
+  if(r.basis||r.focus){
+    h+='<div style="font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:10px;line-height:1.7">'
+      +'<div><b><i class="ti ti-bulb" style="color:var(--accent)"></i> 根拠：</b>'+escapeHtml(r.basis||'—')+'</div>'
+      +'<div style="margin-top:3px"><b><i class="ti ti-flag" style="color:var(--accent2)"></i> 重点・変化点：</b>'+escapeHtml(r.focus||'—')+'</div>'
+      +(r.by?'<div style="font-size:9px;color:var(--muted);margin-top:3px">'+escapeHtml(r.by)+' '+escapeHtml(r.at||'')+'</div>':'')+'</div>';
+  }
+  h+='<div class="card-title" style="font-size:13px;margin:2px 0 6px"><i class="ti ti-calculator" style="color:var(--accent)"></i> 客数 × 単価の考え方</div>';
+  if(dowMode){
+    var dow=getDow(b); var counts=weekdayCountsForMonth(yy,mm); var bd=dowSegBreakdown(dow,{y:yy,m:mm});
+    function cellTxt(q,sp){ return q?('<b>'+q+'</b><span style="color:var(--muted);font-size:9px"> ×$'+sp+'</span>'):'<span style="color:var(--border)">—</span>'; }
+    var rows='';
+    for(var i=0;i<7;i++){
+      var L=dow.lunch[i]||{}, D=dow.dinner[i]||{}, T=dow.takeout[i]||{};
+      var lg=parseFloat(L.guests)||0, lsp=parseFloat(L.spend)||0, dg=parseFloat(D.guests)||0, dsp=parseFloat(D.spend)||0, to=parseFloat(T.orders)||0, tsp=parseFloat(T.spend)||0;
+      var dayv=lg*lsp+dg*dsp+to*tsp; var wend=(i===5||i===6);
+      rows+='<tr style="'+(wend?'background:var(--surface2)':'')+'">'
+        +'<td style="padding:4px;font-weight:700;color:'+(i===6?'var(--red)':i===5?'var(--accent2)':'var(--tm)')+'">'+DOW[i]+'<span style="font-size:9px;color:var(--muted);font-weight:400"> ×'+counts[i]+'</span></td>'
+        +'<td style="text-align:right;padding:4px 2px">'+cellTxt(lg,lsp)+'</td>'
+        +'<td style="text-align:right;padding:4px 2px">'+cellTxt(dg,dsp)+'</td>'
+        +'<td style="text-align:right;padding:4px 2px">'+cellTxt(to,tsp)+'</td>'
+        +'<td style="text-align:right;padding:4px;font-weight:700;color:var(--accent);white-space:nowrap">$'+Math.round(dayv).toLocaleString()+'</td></tr>';
+    }
+    h+='<div style="overflow-x:auto"><table style="width:100%;min-width:360px;border-collapse:collapse;font-size:11px">'
+      +'<thead><tr style="color:var(--muted);font-size:9.5px"><th style="text-align:left;padding:4px">曜日</th><th style="text-align:right;padding:4px 2px">ランチ<br>客数</th><th style="text-align:right;padding:4px 2px">ディナー<br>客数</th><th style="text-align:right;padding:4px 2px">TO<br>注文</th><th style="text-align:right;padding:4px">日計</th></tr></thead>'
+      +'<tbody>'+rows+'</tbody></table></div>'
+      +'<div style="display:flex;gap:6px;margin:8px 0 2px;flex-wrap:wrap;font-size:11px">'
+      +'<span class="tag" style="background:var(--surface2)">ランチ月計 <b>$'+Math.round(bd.lunch).toLocaleString()+'</b></span>'
+      +'<span class="tag" style="background:var(--surface2)">ディナー月計 <b>$'+Math.round(bd.dinner).toLocaleString()+'</b></span>'
+      +'<span class="tag" style="background:var(--surface2)">TO月計 <b>$'+Math.round(bd.takeout).toLocaleString()+'</b></span></div>';
+  } else if(hasSegments(b)){
+    var sg=getSegments(b);
+    function segRow(lbl,seg,isTO){ var q=isTO?(parseFloat(seg.orders)||0):(parseFloat(seg.guests)||0); var sp=parseFloat(seg.spend)||0; var m=segSales(seg,isTO?'takeout':'lunch');
+      return '<tr><td style="padding:4px;font-weight:700">'+lbl+'</td><td style="text-align:right;padding:4px">'+(q||'—')+'</td><td style="text-align:right;padding:4px">'+(sp?('$'+sp):'—')+'</td><td style="text-align:right;padding:4px;font-weight:700;color:var(--accent)">$'+Math.round(m).toLocaleString()+'</td></tr>'; }
+    h+='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">区分</th><th style="text-align:right;padding:4px">客数/注文</th><th style="text-align:right;padding:4px">単価</th><th style="text-align:right;padding:4px">月間売上</th></tr></thead><tbody>'
+      +segRow('ランチ',sg.lunch,false)+segRow('ディナー',sg.dinner,false)+segRow('テイクアウト',sg.takeout,true)+'</tbody></table>';
+  } else {
+    h+='<div style="font-size:12px;color:var(--muted);padding:6px 2px">客数×単価の内訳データがありません。</div>';
+  }
+  h+='<div class="card-title" style="font-size:13px;margin:14px 0 6px"><i class="ti ti-calendar-dollar" style="color:var(--accent)"></i> 日別一覧（'+mm+'月）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">手=手動修正 ・ 空欄=自動</span></div>';
+  var dayRows=days.map(function(dd){
+    var dt=new Date(dd.date+'T00:00:00'); var dowJ=['日','月','火','水','木','金','土'][dt.getDay()];
+    var wend=(dt.getDay()===0||dt.getDay()===6);
+    var manual=!!(b.days && b.days[dd.date]!=null && b.days[dd.date]!=='');
+    var val=Math.round(dayBudgetFor(b, dd.date));
+    var ev=(typeof dayEventFor==='function')?dayEventFor(dd.date):'';
+    return '<tr style="'+(wend?'background:var(--surface2)':'')+'"><td style="padding:4px 6px;white-space:nowrap;'+(wend?'color:var(--accent)':'')+'">'+parseInt(dd.date.slice(8),10)+'日('+dowJ+')'+(ev?'<span style="font-size:9px;color:var(--accent2)"> '+escapeHtml(ev)+'</span>':'')+'</td>'
+      +'<td style="text-align:right;padding:4px 6px;white-space:nowrap">'+(val===0?'<span style="color:var(--muted)">休/0</span>':('$'+val.toLocaleString()))+(manual?'<span class="tag" style="font-size:8px;padding:0 4px;margin-left:4px;background:var(--accent);color:#fff">手</span>':'')+'</td></tr>';
+  }).join('');
+  h+='<div style="max-height:38vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"><table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>'+dayRows+'</tbody></table></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:8px 4px 0;font-size:12px"><span style="color:var(--muted)">月間合計</span><b style="color:var(--accent);font-size:15px">$'+total.toLocaleString()+'</b></div>';
+  openModal('<div class="modal-title">予算の考え方 — '+escapeHtml(st.name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="max-height:72vh;overflow-y:auto;padding-right:4px">'+h+'</div>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
+}
 function renderApproval() {
   var approvals = ls('approvals', []);
   var pending = approvals.filter(function(a){return a.status==='pending';});
@@ -27326,7 +27398,7 @@ function renderApproval() {
         }
         html += '<div class="approval-actions">';
         if (isBudget) {
-          html += '<button class="btn btn-secondary btn-sm" onclick="switchStore(\''+a.ref+'\');go(\'budget\')"><i class="ti ti-eye"></i> 予算確認</button>'
+          html += '<button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+a.ref+'\')"><i class="ti ti-clipboard-list"></i> 考え方・日別</button>'
             +'<button class="btn btn-success btn-sm" onclick="approveBudgetSeg(\''+a.ref+'\')"><i class="ti ti-check"></i> 承認</button>'
             +'<button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg(\''+a.ref+'\')"><i class="ti ti-arrow-back"></i> 差し戻し</button>';
         } else {
