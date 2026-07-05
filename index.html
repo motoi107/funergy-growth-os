@@ -718,8 +718,8 @@ async function fetchToastSales(guid, dateFrom, dateTo) {
 async function syncToastDay(guid, businessDateYmd) {
   var _bc = (typeof getBowlCatCfgByGuid==='function') ? getBowlCatCfgByGuid(guid) : null;
   var _body = { restaurantGuid: guid, businessDate: businessDateYmd };
-  if (_bc && ((_bc.foodCats&&_bc.foodCats.length)||(_bc.takeoutCats&&_bc.takeoutCats.length))) {
-    _body.bowlCfg = { foodCats:_bc.foodCats||[], takeoutCats:_bc.takeoutCats||[] };
+  if (_bc && ((_bc.foodGuids&&_bc.foodGuids.length)||(_bc.takeoutGuids&&_bc.takeoutGuids.length))) {
+    _body.bowlCfg = { foodGuids:_bc.foodGuids||[], takeoutGuids:_bc.takeoutGuids||[] };
   }
   var res = await fetch(TOAST_SYNC_FN, {
     method: 'POST',
@@ -1276,18 +1276,18 @@ function setKpiManual(storeId, period, vals){ var all=ls(kpiManualKey(period),{}
 /* ドリンクカテゴリ / アップセル対象商品の指定（GMが設定）。店舗共通でもよいが店舗別に持てる */
 function getKpiConfig(){ return ls('kpi_config', {drinkCats:[], upsellGuids:[], alcoholCats:[]}); }
 function setKpiConfig(c){ lsSet('kpi_config', c); }
-/* ★ Bowl対象カテゴリ（店内/テイクアウト）を店舗別に保持。空なら自動判定。
-   kpi_config.bowlCats[storeId] = {foodCats:[...メニューカテゴリ名], takeoutCats:[...]} */
+/* ★ Bowl対象商品（店内/テイクアウト）を店舗別に保持。空なら自動判定。
+   kpi_config.bowlGuids[storeId] = {foodGuids:[...商品GUID], takeoutGuids:[...]} */
 function getBowlCatCfg(storeId){
-  var c=getKpiConfig(); var m=(c && c.bowlCats && c.bowlCats[storeId]) || {};
-  return { foodCats: Array.isArray(m.foodCats)?m.foodCats:[], takeoutCats: Array.isArray(m.takeoutCats)?m.takeoutCats:[] };
+  var c=getKpiConfig(); var m=(c && c.bowlGuids && c.bowlGuids[storeId]) || {};
+  return { foodGuids: Array.isArray(m.foodGuids)?m.foodGuids:[], takeoutGuids: Array.isArray(m.takeoutGuids)?m.takeoutGuids:[] };
 }
-function setBowlCatCfg(storeId, foodCats, takeoutCats){
-  var c=getKpiConfig(); if(!c.bowlCats||typeof c.bowlCats!=='object') c.bowlCats={};
-  c.bowlCats[storeId]={ foodCats:foodCats||[], takeoutCats:takeoutCats||[] };
+function setBowlCatCfg(storeId, foodGuids, takeoutGuids){
+  var c=getKpiConfig(); if(!c.bowlGuids||typeof c.bowlGuids!=='object') c.bowlGuids={};
+  c.bowlGuids[storeId]={ foodGuids:foodGuids||[], takeoutGuids:takeoutGuids||[] };
   setKpiConfig(c);
 }
-/* Toast GUIDから店舗を逆引きして、その店のBowlカテゴリ設定を返す（同期時にEdgeへ渡す用） */
+/* Toast GUIDから店舗を逆引きして、その店のBowl商品設定を返す（同期時にEdgeへ渡す用） */
 function getBowlCatCfgByGuid(guid){
   try{
     var st=getStoresAll().find(function(x){ return x.toastGuid===guid || x.restaurant_guid===guid; });
@@ -14219,7 +14219,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '106';
+const APP_VERSION = '107';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34698,49 +34698,76 @@ function renderKpiManualTab(){
       + _mc('tIkura','③ いくらシャワー件数（店内）', _tk.na.ikura, _tk.man.ikura)
       + _mc('tBowls','④ Take/Matsu/Tokujo 件数（店内）', _tk.na.bowls, _tk.man.bowls)
       + `</div>`;
-    // ★ 丼カウント対象カテゴリの選択（店内Bowl / テイクアウトBowl を別々に指定 → 同期時にEdgeへ渡す）
+    // ★ 丼カウント対象商品の選択（店内Bowl / テイクアウトBowl を商品ごとに指定 → 同期時にEdgeへ渡す）
     var _bc = getBowlCatCfg(sid);
-    var _bcSum = ((_bc.foodCats||[]).length||(_bc.takeoutCats||[]).length)
-      ? ('店内: '+((_bc.foodCats||[]).join('・')||'—')+' ／ テイクアウト: '+((_bc.takeoutCats||[]).join('・')||'—'))
+    var _bcSum = ((_bc.foodGuids||[]).length||(_bc.takeoutGuids||[]).length)
+      ? ('店内 '+((_bc.foodGuids||[]).length)+'品 ／ テイクアウト '+((_bc.takeoutGuids||[]).length)+'品')
       : '未設定（メニュー構造から自動判定）';
     html += `<div class="card" style="background:var(--surface2);padding:8px 10px;margin-top:10px">
-      <div style="font-size:11px;font-weight:700"><i class="ti ti-bowl"></i> 丼カウント対象カテゴリ</div>
-      <div style="font-size:10px;color:var(--muted);margin:3px 0 6px">店内Bowl・テイクアウトBowlの対象カテゴリを選ぶと、その商品だけを丼数・テイクアウト数にカウントします（空欄なら自動判定）。設定後、対象日を再同期してください。</div>
+      <div style="font-size:11px;font-weight:700"><i class="ti ti-bowl"></i> 丼カウント対象商品</div>
+      <div style="font-size:10px;color:var(--muted);margin:3px 0 6px">店内Bowl・テイクアウトBowlの対象商品を選ぶと、その商品だけを丼数・テイクアウト数にカウントします（空欄なら自動判定）。設定後、対象日を再同期してください。</div>
       <div style="font-size:11px;margin-bottom:6px">現在: <b>${escapeHtml(_bcSum)}</b></div>
-      ${canT?`<button class="btn btn-secondary btn-sm" onclick="openBowlCatModal('${sid}')"><i class="ti ti-list-check"></i> カテゴリを選択</button>`:''}
+      ${canT?`<button class="btn btn-secondary btn-sm" onclick="openBowlCatModal('${sid}')"><i class="ti ti-list-check"></i> 商品を選択</button>`:''}
     </div>`;
     html += `${canT?`<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="saveTotoyaKpiCfg()"><i class="ti ti-device-floppy"></i> 手入力を保存</button></div>`:''}</div>`;
   }
   return html;
 }
-/* 丼カウント対象カテゴリ選択モーダル（店内/テイクアウトを別々にチェック） */
+/* 丼カウント対象商品選択モーダル（全商品から店内/テイクアウトを商品ごとにチェック・検索付き） */
 async function openBowlCatModal(sid){
   var st=getStoresAll().find(function(x){return x.id===sid;})||{name:sid};
   var guid=st.toastGuid||st.restaurant_guid;
   if(!guid){ showToast('この店舗にToast GUIDが設定されていません','warning'); return; }
-  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 丼カウント対象カテゴリ</div><div style="padding:20px;text-align:center;color:var(--muted)"><i class="ti ti-loader"></i> メニューを読み込み中…</div>');
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 丼カウント対象商品</div><div style="padding:20px;text-align:center;color:var(--muted)"><i class="ti ti-loader"></i> メニューを読み込み中…</div>');
   var items=await fetchToastMenuItems(guid);
-  var cats={}; (items||[]).forEach(function(it){ if(it.category) cats[it.category]=(cats[it.category]||0)+1; });
-  var catList=Object.keys(cats).sort();
-  if(!catList.length){ openModal('<div class="modal-title">'+escapeHtml(st.name)+'</div><div style="padding:16px">メニューが取得できませんでした。先に「メニュー同期」を実行してください。<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div></div>'); return; }
+  if(!items||!items.length){ openModal('<div class="modal-title">'+escapeHtml(st.name)+'</div><div style="padding:16px">メニューが取得できませんでした。先に「メニュー同期」を実行してください。<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div></div>'); return; }
+  // GUID重複排除・カテゴリ→商品名でソート
+  var seen={}; var list=[];
+  items.forEach(function(it){ if(it.guid && !seen[it.guid]){ seen[it.guid]=1; list.push(it); } });
+  list.sort(function(a,b){ return (a.category||'').localeCompare(b.category||'')||(a.name||'').localeCompare(b.name||''); });
+  window._bowlPickItems=list;
   var cur=getBowlCatCfg(sid);
-  var fset=new Set((cur.foodCats||[]).map(String)); var tset=new Set((cur.takeoutCats||[]).map(String));
-  var rows=catList.map(function(cat){
-    return '<tr><td style="text-align:left;font-size:12px;padding:4px 6px">'+escapeHtml(cat)+' <span style="color:var(--muted);font-size:10px">('+cats[cat]+')</span></td>'
-      +'<td style="text-align:center;padding:4px"><input type="checkbox" class="bc-food" value="'+escapeHtml(cat)+'" '+(fset.has(cat)?'checked':'')+'></td>'
-      +'<td style="text-align:center;padding:4px"><input type="checkbox" class="bc-to" value="'+escapeHtml(cat)+'" '+(tset.has(cat)?'checked':'')+'></td></tr>';
-  }).join('');
-  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 丼カウント対象カテゴリ <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:8px;line-height:1.7">Toastメニューのカテゴリ一覧です。<b>店内Bowl</b>と<b>テイクアウトBowl</b>に該当するカテゴリをそれぞれチェックしてください。選んだカテゴリ配下の商品を丼としてカウントします。</div>'
-    +'<div style="max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"><table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">カテゴリ</th><th>店内</th><th>テイクアウト</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+  window._bowlPickFood=new Set((cur.foodGuids||[]).map(String));
+  window._bowlPickTO=new Set((cur.takeoutGuids||[]).map(String));
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+' — 丼カウント対象商品 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px;line-height:1.7">全商品の一覧です。<b>店内Bowl</b>と<b>テイクアウトBowl</b>に該当する商品をそれぞれチェックしてください。選んだ商品だけを丼としてカウントします。</div>'
+    +'<input class="form-input" id="bowl-search" placeholder="商品名・カテゴリで絞り込み" oninput="renderBowlPickList(\''+sid+'\')" style="margin-bottom:6px;padding:7px 10px">'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:4px">選択中: <span id="bowl-pick-count"></span></div>'
+    +'<div id="bowl-pick-list" style="max-height:48vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveBowlCatCfg(\''+sid+'\')">保存</button></div>');
+  renderBowlPickList(sid);
+}
+function renderBowlPickList(sid){
+  var q=((document.getElementById('bowl-search')||{}).value||'').trim().toLowerCase();
+  var list=window._bowlPickItems||[];
+  var fset=window._bowlPickFood, tset=window._bowlPickTO;
+  var rows='', lastCat=null;
+  list.forEach(function(it){
+    var hay=((it.name||'')+' '+(it.category||'')).toLowerCase();
+    if(q && hay.indexOf(q)<0) return;
+    if(it.category!==lastCat){ lastCat=it.category; rows+='<tr><td colspan="3" style="background:var(--surface2);font-size:10px;font-weight:700;color:var(--muted);padding:4px 8px">'+escapeHtml(it.category||'(カテゴリなし)')+'</td></tr>'; }
+    var g=String(it.guid);
+    rows+='<tr><td style="text-align:left;font-size:12px;padding:4px 8px">'+escapeHtml(it.name||'(無名)')+(it.price!=null?' <span style="color:var(--muted);font-size:10px">$'+Number(it.price).toFixed(2)+'</span>':'')+'</td>'
+      +'<td style="text-align:center;padding:4px;width:52px"><input type="checkbox" class="bp-food" data-g="'+g+'" '+(fset.has(g)?'checked':'')+' onchange="bowlPickToggle(this,\'food\')"></td>'
+      +'<td style="text-align:center;padding:4px;width:70px"><input type="checkbox" class="bp-to" data-g="'+g+'" '+(tset.has(g)?'checked':'')+' onchange="bowlPickToggle(this,\'to\')"></td></tr>';
+  });
+  var el=document.getElementById('bowl-pick-list');
+  if(el) el.innerHTML='<table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">商品</th><th>店内</th><th>テイク<br>アウト</th></tr></thead><tbody>'+(rows||'<tr><td colspan="3" style="padding:12px;text-align:center;color:var(--muted)">該当なし</td></tr>')+'</tbody></table>';
+  var cnt=document.getElementById('bowl-pick-count'); if(cnt) cnt.textContent='店内 '+fset.size+'品 ／ テイクアウト '+tset.size+'品';
+}
+/* チェックの増減を即座にSetへ反映（検索で絞り込んでも選択保持） */
+function bowlPickToggle(cb, kind){
+  var g=cb.getAttribute('data-g');
+  var set=(kind==='food')?window._bowlPickFood:window._bowlPickTO;
+  if(cb.checked) set.add(g); else set.delete(g);
+  var cnt=document.getElementById('bowl-pick-count'); if(cnt) cnt.textContent='店内 '+window._bowlPickFood.size+'品 ／ テイクアウト '+window._bowlPickTO.size+'品';
 }
 function saveBowlCatCfg(sid){
-  var foodCats=Array.from(document.querySelectorAll('.bc-food:checked')).map(function(c){return c.value;});
-  var takeoutCats=Array.from(document.querySelectorAll('.bc-to:checked')).map(function(c){return c.value;});
-  setBowlCatCfg(sid, foodCats, takeoutCats);
+  var foodGuids=Array.from(window._bowlPickFood||[]);
+  var takeoutGuids=Array.from(window._bowlPickTO||[]);
+  setBowlCatCfg(sid, foodGuids, takeoutGuids);
   closeModalDirect();
-  showToast('丼カウント対象カテゴリを保存しました。対象日を再同期してください','success');
+  showToast('丼カウント対象商品を保存しました。対象日を再同期してください','success');
   renderPage('kpi_master');
 }
 function saveKpiManual(sid, period){
