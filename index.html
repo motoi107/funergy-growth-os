@@ -14441,7 +14441,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '416';
+const APP_VERSION = '417';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -22359,7 +22359,10 @@ function renderAcctExport() {
   return html;
 }
 function invHistInMonth(h, y, m) {
-  var dt = parseJaDate(h.date);
+  // 棚卸の「対象月(ym)」で判定する（確定日ではない）。修正・再確定で確定日が変わっても正しく一致する。
+  var ymStr = y + '-' + String(m+1).padStart(2,'0');
+  if (h && h.ym) return h.ym === ymStr;
+  var dt = parseJaDate(h && h.date); // 旧データ（ym無し）は確定日で判定
   return dt && dt.getFullYear()===y && dt.getMonth()===m;
 }
 function parseJaDate(s) {
@@ -22545,13 +22548,15 @@ function invStoreVendorData(storeId, y, m){
   var h=mHist.slice().sort(function(a,b){ var da=parseJaDate(a.date),db=parseJaDate(b.date); return (da?da.getTime():0)-(db?db.getTime():0); }).pop();
   var byVendor={}, byClass={};
   (h.lines||[]).forEach(function(l){
-    var ing=ings.find(function(x){return x.name===l.name;});
-    var vendor=(ing&&ing.vendor)?ing.vendor:'（業者未設定）';
-    var uc=ing?(Number(ing.price)||0):0, actual=Number(l.actual)||0, val=uc*actual;
-    if(!byVendor[vendor]) byVendor[vendor]={items:[], total:0, count:0};
-    byVendor[vendor].items.push({cls:className(l.cls)||l.cls||'', name:l.name, actual:actual, uc:uc, val:val});
-    byVendor[vendor].total+=val; byVendor[vendor].count++;
+    var actual=Number(l.actual)||0;
+    // 確定時に保存された値をそのまま使う（マスター再計算しない＝修正・再確定の内容をそのまま反映）
+    var vendor=l.vendor||((function(){ var ing=ings.find(function(x){return x.name===l.name;}); return (ing&&ing.vendor)?ing.vendor:'（業者未設定）'; })());
+    var uc=(l.unitVal!=null)?(Number(l.unitVal)||0):((function(){ var ing=ings.find(function(x){return x.name===l.name;}); return ing?(Number(ing.price)||0):0; })());
+    var val=(l.value!=null)?(Number(l.value)||0):(uc*actual);
     var clsN=className(l.cls)||l.cls||'（区分なし）';
+    if(!byVendor[vendor]) byVendor[vendor]={items:[], total:0, count:0};
+    byVendor[vendor].items.push({cls:clsN, name:l.name, actual:actual, uc:uc, val:val});
+    byVendor[vendor].total+=val; byVendor[vendor].count++;
     if(!byClass[clsN]) byClass[clsN]={total:0, count:0};
     byClass[clsN].total+=val; byClass[clsN].count++;
   });
