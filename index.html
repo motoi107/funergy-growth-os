@@ -6930,7 +6930,7 @@ function hasSegments(b) {
 function submitBudget(storeId) {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  if (!hasSegments(b)) { alert('ランチ/ディナー/テイクアウトのいずれかに予算を入力してください'); return; }
+  if (!hasSegments(b) && !usesDowMode(b) && !hasDayBudget(b)) { alert('予算エディタで予算を入力してから提出してください'); return; }
   // 提出前に「予算の考え方」（根拠・重点）を必須入力
   var dow = usesDowMode(b) ? getDow(b) : null;
   var total = dow ? (function(){ var bd=dowSegBreakdown(dow); return bd.lunch+bd.dinner+bd.takeout; })() : segmentsTotal(getSegments(b));
@@ -6939,27 +6939,43 @@ function submitBudget(storeId) {
   var vsPrev = prevSales ? Math.round(total/prevSales*1000)/10 : null;
   var method = [usesDowMode(b)?'曜日別':'区分（単価×客数）', hasDayBudget(b)?'日別調整あり':''].filter(Boolean).join(' + ');
   var r = b.rationale||{};
-  openModal(`<div class="modal-title">予算の考え方 — GM提出 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  openModal(`<div class="modal-title">予算の考え方（提出前・必須） <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:9px 11px;margin-bottom:10px;line-height:1.8">
       <b>月間予算 $${Math.round(total).toLocaleString()}</b>（${method}）<br>
       前月実績 ${prevSales?('$'+prevSales.toLocaleString()+'（対比 '+vsPrev+'%）'):'—'}
+      <br><span style="color:var(--muted)">提出には考え方（根拠・重点）の記入が必要です。（下書き保存は未入力でもOK・いつでも再開できます）</span>
     </div>
     <div class="form-group"><label class="form-label">① 予算の根拠 <span style="color:var(--red)">*</span> <span style="font-size:9px;color:var(--muted)">何を基準に組んだか</span></label>
       <textarea class="form-input" id="bs-basis" rows="3" placeholder="例: 前月実績×105%。土日の客数増加傾向と客単価$${'{'}xx想定で算出">${escapeHtml(r.basis||'')}</textarea></div>
     <div class="form-group"><label class="form-label">② 今月の重点・変化点 <span style="color:var(--red)">*</span> <span style="font-size:9px;color:var(--muted)">イベント・施策・休業・価格改定など</span></label>
       <textarea class="form-input" id="bs-focus" rows="3" placeholder="例: 7/4祝日は店休（日別0設定済み）。新メニュー投入でディナー単価UP狙い">${escapeHtml(r.focus||'')}</textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="_doSubmitBudget('${storeId}')"><i class="ti ti-send"></i> GMへ提出</button></div>`);
+    <button class="btn btn-secondary" onclick="_saveRationaleDraft('${storeId}')"><i class="ti ti-device-floppy"></i> 下書き保存</button>
+    <button class="btn btn-primary" onclick="_reviewBeforeSubmit('${storeId}')"><i class="ti ti-arrow-right"></i> 確認画面へ</button></div>`);
 }
-function _doSubmitBudget(storeId){
-  var basis=(document.getElementById('bs-basis')||{}).value||''; basis=basis.trim();
-  var focus=(document.getElementById('bs-focus')||{}).value||''; focus=focus.trim();
+function _reviewBeforeSubmit(storeId){
+  var basis=((document.getElementById('bs-basis')||{}).value||'').trim();
+  var focus=((document.getElementById('bs-focus')||{}).value||'').trim();
   if(!basis){ showToast('① 予算の根拠を入力してください','warning'); return; }
   if(!focus){ showToast('② 今月の重点・変化点を入力してください','warning'); return; }
-  var budgets = getBudgets();
-  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  var budgets=getBudgets(); var b=budgets.find(function(x){return x.storeId===storeId;}); if(!b) return;
   if (b.rationale && b.rationale.basis) { b.rationaleHistory = (b.rationaleHistory||[]).concat([b.rationale]).slice(-6); }
   b.rationale = { basis:basis, focus:focus, by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:nowJP() };
+  saveBudgets(budgets);
+  openBudgetReview(storeId, true); // 本人の最終確認画面（GMと同じ内容）→ ここから提出
+}
+function _saveRationaleDraft(storeId){
+  var basis=((document.getElementById('bs-basis')||{}).value||'').trim();
+  var focus=((document.getElementById('bs-focus')||{}).value||'').trim();
+  var budgets=getBudgets(); var b=budgets.find(function(x){return x.storeId===storeId;}); if(!b) return;
+  b.rationale = { basis:basis, focus:focus, by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:nowJP() };
+  saveBudgets(budgets);
+  closeModalDirect(); showToast('考え方を下書き保存しました（提出は確認画面から）','success');
+}
+function _doSubmitBudget(storeId){
+  var budgets = getBudgets();
+  var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
+  if(!(b.rationale && (b.rationale.basis||'').trim() && (b.rationale.focus||'').trim())){ showToast('提出には考え方（根拠・重点）の記入が必要です','warning'); return; }
   b.status = 'GM承認待ち';
   b.submittedBy = (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
   b.submittedAt = nowJP();
@@ -8349,10 +8365,7 @@ function renderBudgetSetup() {
     html += `<div class="approval-actions">`;
     html += `<button class="btn btn-secondary btn-sm" onclick="openBudgetReview('${b.storeId}')"><i class="ti ti-clipboard-list"></i> 考え方</button>`;
     if (editable) {
-      html += `<button class="btn btn-primary btn-sm" onclick="bbOpen('${b.storeId}')"><i class="ti ti-calendar-dollar"></i> 予算エディタ（曜日設定＋日別一覧）</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','lunch')"><i class="ti ti-sun"></i> ランチ</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','dinner')"><i class="ti ti-moon"></i> ディナー</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSegEditor('${b.storeId}','takeout')"><i class="ti ti-shopping-bag"></i> テイクアウト</button>`;
+      html += `<button class="btn btn-primary btn-sm" onclick="bbOpen('${b.storeId}')"><i class="ti ti-calendar-dollar"></i> 予算エディタ（曜日設定＋日別一覧）</button>`;
     }
     if ((st==='下書き'||st==='差し戻し'||st==='再提出済み') && editable && ['sl','am','gm','ceo'].includes(curRole)) {
       html += `<button class="btn btn-primary btn-sm" onclick="submitBudget('${b.storeId}')"><i class="ti ti-send"></i> GMへ提出</button>`;
@@ -14359,7 +14372,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '409';
+const APP_VERSION = '411';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -27282,7 +27295,7 @@ function rejectApprovalItem(id){
   approveItem(id,'rejected'); /* 申請者へ却下通知（approveItem内） */
 }
 /* ===== 予算レビュー: 考え方（客数×単価 L/D/TO）＋日別一覧を一目で。読み取り専用＝保存に影響なし ===== */
-function openBudgetReview(storeId){
+function openBudgetReview(storeId, submitMode){
   var b=getBudgets().find(function(x){return x.storeId===storeId;});
   if(!b){ showToast('予算が見つかりません','info'); return; }
   var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
@@ -27349,9 +27362,13 @@ function openBudgetReview(storeId){
   }).join('');
   h+='<div style="max-height:38vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"><table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>'+dayRows+'</tbody></table></div>'
     +'<div style="display:flex;justify-content:space-between;padding:8px 4px 0;font-size:12px"><span style="color:var(--muted)">月間合計</span><b style="color:var(--accent);font-size:15px">$'+total.toLocaleString()+'</b></div>';
-  openModal('<div class="modal-title">予算の考え方 — '+escapeHtml(st.name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="max-height:72vh;overflow-y:auto;padding-right:4px">'+h+'</div>'
-    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
+  var _foot = submitMode
+    ? '<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="submitBudget(\''+storeId+'\')"><i class="ti ti-arrow-left"></i> 考え方を直す</button><button class="btn btn-primary" onclick="_doSubmitBudget(\''+storeId+'\')"><i class="ti ti-send"></i> この内容でGM提出</button></div>'
+    : '<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal('<div class="modal-title">'+(submitMode?'提出前の最終確認':'予算の考え方')+' — '+escapeHtml(st.name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +(submitMode?'<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.6"><i class="ti ti-eye-check" style="color:var(--accent)"></i> この内容がそのままGMへ提出されます。客数×単価・日別・考え方をご確認のうえ提出してください。</div>':'')
+    +'<div style="max-height:'+(submitMode?'62vh':'72vh')+';overflow-y:auto;padding-right:4px">'+h+'</div>'
+    +_foot);
 }
 function renderApproval() {
   var approvals = ls('approvals', []);
