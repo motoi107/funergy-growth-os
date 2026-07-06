@@ -13610,13 +13610,15 @@ async function refreshLaborFromCloud(){
   }
   if (btn) { btn.disabled = true; btn.dataset._t = btn.innerHTML; btn.innerHTML = '<i class="ti ti-loader"></i> 取得中…'; }
   var days = monthDays();
+  var liveFill = (ymOf(attMonthRef()) === bizYm());
+  _laborLoaded={}; // 再取得を許可
   var ok = 0;
   for (var i=0;i<withGuid.length;i++){
     if (btn) btn.innerHTML = '<i class="ti ti-loader"></i> 取得中… ('+(i+1)+'/'+withGuid.length+')';
-    try { var r = await syncTipLaborFromDB(withGuid[i].id, withGuid[i].toastGuid, days); if (r && !r.error) ok++; }
+    try { await loadStoreLabor(withGuid[i].id, withGuid[i].toastGuid, days, liveFill); ok++; }
     catch(e){ console.warn('refreshLaborFromCloud', withGuid[i].id, e); }
   }
-  var msg = '最新のレイバーを取得しました（'+ok+'/'+withGuid.length+'店・前日まで）';
+  var msg = '最新のレイバーを取得しました（'+ok+'/'+withGuid.length+'店・当月はToast補完込み）';
   if (noGuid.length) msg += ' ／ GUID未設定でスキップ: '+noGuid.map(function(s){return s.name;}).join('、');
   showToast(msg, 'success');
   renderPage('labor');
@@ -13667,6 +13669,38 @@ function _laborLoadKey(){
   return ym+'|'+stores.map(function(s){return s.id;}).join(',');
 }
 function _laborLoading(){ return !!_laborLoadInflight[_laborLoadKey()]; }
+/* 1店舗の当月Laborをロード: DB(cron・前日まで)→データが無い日はToastから直接ライブ取得。
+   fetchTipLaborはDB未保存のため、GMだけローカルに溜まりCEOがDBから取れない食い違いを解消する。 */
+async function loadStoreLabor(sid, guid, days, liveFill){
+  if(!guid || !days || !days.length) return;
+  try{ await syncTipLaborFromDB(sid, guid, days); }catch(e){}
+  if(!liveFill) return;
+  var today=bizToday();
+  for(var i=0;i<days.length;i++){
+    var dt=days[i].date; if(dt>today) break;
+    var lb=getTipLabor(sid, dt); if(lb && Object.keys(lb).length) continue; // 既にデータあり
+    var tk='ll_'+sid+'_'+dt; if(_laborTailTried[tk]) continue; _laborTailTried[tk]=true;
+    try{ await fetchTipLabor(sid, guid, dt); }catch(e){}
+  }
+}
+/* Labor診断: 端末で「DBに実データがあるか／ローカルにあるか／集計時間・賃金」を可視化。CEO/GMで比較して原因を確定 */
+async function runLaborDiag(){
+  var ym=ymOf(attMonthRef()); var days=daysOfYm(ym); var d0=days[0].date, d1=days[days.length-1].date;
+  var stores=(typeof getVisibleStores==='function'?getVisibleStores():[]);
+  openModal('<div class="modal-title">Labor診断 — '+ym+' <button class="modal-close" onclick="closeModalDirect()">×</button></div><div id="ldiag-body" style="font-size:12px;padding:6px 2px"><i class="ti ti-loader"></i> 診断中…</div>');
+  var out=[];
+  for(var i=0;i<stores.length;i++){
+    var s=stores[i], guid=s.toastGuid||'', dbRows=0, dbData=0;
+    if(guid){ try{ var r=await fetchTipLaborFromDB(guid, d0, d1); r=r||[]; dbRows=r.length; dbData=r.filter(function(x){ var d=x.data; return d && (Array.isArray(d)?d.length:Object.keys(d).length); }).length; }catch(e){} }
+    var localDays=0; days.forEach(function(dd){ var lb=getTipLabor(s.id, dd.date); if(lb && Object.keys(lb).length) localDays++; });
+    var hrs=0, wage=0; try{ var c=laborCoreForYm(s.id, ym); wage=Math.round(c.wage||0); Object.keys(c.byName||{}).forEach(function(n){ hrs+=c.byName[n].hours||0; }); }catch(e){}
+    out.push({name:s.name, guid:!!guid, dbData:dbData, dbRows:dbRows, localDays:localDays, hrs:Math.round(hrs), wage:wage});
+  }
+  var h='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="color:var(--muted)"><th style="text-align:left;padding:4px">店舗</th><th style="padding:4px">GUID</th><th style="padding:4px">DB(有/全)</th><th style="padding:4px">ローカル</th><th style="padding:4px">時間h</th><th style="padding:4px">賃金$</th></tr></thead><tbody>';
+  out.forEach(function(r){ h+='<tr><td style="padding:4px">'+escapeHtml(r.name)+'</td><td style="text-align:center">'+(r.guid?'✓':'✗')+'</td><td style="text-align:center">'+r.dbData+'/'+r.dbRows+'</td><td style="text-align:center">'+r.localDays+'</td><td style="text-align:right">'+r.hrs+'</td><td style="text-align:right">$'+r.wage.toLocaleString()+'</td></tr>'; });
+  h+='</tbody></table></div><div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.7"><b>DB(有/全)</b>=クラウドtip_laborに実データがある日数/全行。<b>0/0ならDB未保存</b>＝この端末はDBから取れません。<b>ローカル</b>=この端末キャッシュの日数。<br>CEOでDB=0・GMでローカル多数 → GMのライブ取得がDB未保存が原因（今回の更新で当月はToastから直接補完します）。</div>';
+  var body=document.getElementById('ldiag-body'); if(body) body.innerHTML=h;
+}
 async function ensureLaborLoaded(){
   var ym = ymOf(attMonthRef());
   var stores = (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){return s.toastGuid;});
@@ -13676,7 +13710,8 @@ async function ensureLaborLoaded(){
   _laborLoadInflight[key]=true;
   try{
     var days = daysOfYm(ym);
-    await Promise.all(stores.map(function(s){ return syncTipLaborFromDB(s.id, s.toastGuid, days).catch(function(){}); }));
+    var liveFill = (ym === bizYm()); // 当月のみToastライブ補完（過去月はDB/凍結）
+    await Promise.all(stores.map(function(s){ return loadStoreLabor(s.id, s.toastGuid, days, liveFill).catch(function(){}); }));
     _laborLoaded[key]=true;
   } finally {
     delete _laborLoadInflight[key];
@@ -13706,6 +13741,7 @@ function renderLabor() {
   var storeId = allStore ? null : store.id;
   var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${allStore?'全店集計':store.name} · 勤怠×時給</div></div></div>`;
   html += laborStoreChips(_laborStore);
+  if(['ceo','gm','office'].indexOf(curRole)>=0) html += '<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="labor-refresh-btn" onclick="refreshLaborFromCloud()"><i class="ti ti-refresh"></i> 取得（Toast補完込み）</button><button class="btn btn-secondary btn-sm" onclick="runLaborDiag()"><i class="ti ti-stethoscope"></i> 診断</button></div>';
   if (_laborLoading()) html += '<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> 勤怠データをクラウドから同期中…（全店・前日まで）。数値は同期完了後に確定します。</div>';
   if (allStore) return html + renderLaborOverview();
   if (perStoreTabs.indexOf(laborTab)<0) laborTab = 'hours';
@@ -14405,7 +14441,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '415';
+const APP_VERSION = '416';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
