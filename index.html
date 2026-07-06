@@ -7159,6 +7159,7 @@ function cumulativeToToday(storeId, ymOpt) {
   laborTaxToToday = _core.tax;
   laborInsToToday = _core.ins;
   laborManualToToday = _core.manual;
+  var laborLeaveToToday = _core.leave||0;
   return {
     budToToday, actToToday, budMonth, actMonth, daysPassed, daysWithActual,
     costToToday, laborToToday, frozen:_core.frozen,
@@ -7166,6 +7167,7 @@ function cumulativeToToday(storeId, ymOpt) {
     laborTaxToToday: laborTaxToToday,
     laborInsToToday: laborInsToToday,
     laborManualToToday: laborManualToToday,
+    laborLeaveToToday: laborLeaveToToday,
     paceRate: budToToday ? Math.round(actToToday/budToToday*1000)/10 : 0,
     monthRate: budMonth ? Math.round(actMonth/budMonth*1000)/10 : 0,
     costRate: actToToday ? Math.round(costToToday/actToToday*1000)/10 : 0,
@@ -13640,6 +13642,7 @@ function laborSummaryCard(storeId){
   var rate = c.laborRate||0;
   var col = rate<=laborTarget?'var(--green)':(rate<=laborTarget+3?'var(--yellow)':'var(--red)');
   var wage=c.laborWageToToday||0, tax=c.laborTaxToToday||0, ins=c.laborInsToToday||0, manual=c.laborManualToToday||0;
+  var leave=c.laborLeaveToToday||0;
   var total=c.laborToToday||0, sales=c.actToToday||0;
   var m=function(v){return '$'+Math.round(v).toLocaleString();};
   var line=function(label,sub,val,bd){ return '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:'+(bd?'8px':'5px')+' 0;border-bottom:'+(bd?'2px':'1px')+' solid var(--border)">'
@@ -13648,7 +13651,8 @@ function laborSummaryCard(storeId){
   var h='<div class="card"><div class="card-title"><i class="ti ti-report-money" style="color:var(--accent)"></i>人件費サマリー <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:4px">'+(_frozen?attMonthLabel()+'・月間確定':'今月・本日まで累計')+'</span>'
     +(_frozen?'<span class="tag tag-green" style="font-size:10px;margin-left:4px">✓ 確定</span>':'')
     +'<span class="tag" style="margin-left:auto;font-size:12px;font-weight:800;color:'+col+';border:1px solid '+col+';background:transparent">Labor率 '+rate+'%</span></div>';
-  h+=line('給与合計','時給＋固定給日割り',m(wage),false);
+  h+=line('給与合計','時給＋固定給日割り'+(leave>0?'＋有給':''),m(wage),false);
+  if(leave>0) h+=line('　└ うち有給消化','標準時間×時給',m(leave),false);
   h+=line('給与税','17%',m(tax),false);
   h+=line('保険料',_frozen?'月額':'日割り',m(ins),false);
   if(manual>0) h+=line('手入力人件費','Toast打刻が無い日',m(manual),false);
@@ -14182,6 +14186,29 @@ function laborCoreForYm(storeId, ym, opts){
   mStaff.forEach(function(e){ if((typeof empMonthlyOf==='function'?empMonthlyOf(e):0)>0) monthlyNames[e.name]=1; });
   var hourly = 0;
   Object.keys(byName).forEach(function(n){ if(monthlyNames[n]) return; var a=byName[n]; hourly += laborForEmployee(n, {regular:a.reg, ot:a.ot}).total; });
+  // ★ 有給消化中の時給者: 期間内の営業日 × 標準時間 × 時給 を店舗Laborに加算（月給者は月額按分で計上済みのため対象外）
+  var leavePay = 0, leaveDays = 0;
+  try {
+    var _ymDays = daysOfYm(ym);
+    (getEmployees()||[]).forEach(function(le){
+      if(!le || le.store!==storeId) return;
+      if(!le.leaveStart || !le.leaveEnd) return;
+      if((typeof empPayType==='function'?empPayType(le):'hourly')==='monthly') return;
+      var lh = (le.leaveHrs!=null && le.leaveHrs!=='') ? Number(le.leaveHrs) : 8;
+      if(!(lh>0)) return;
+      var lw = (typeof empWage==='function') ? (Number(empWage(le.name))||0) : 0;
+      if(!(lw>0)) return;
+      _ymDays.forEach(function(dd){
+        var dt=dd.date;
+        if(dt<le.leaveStart || dt>le.leaveEnd) return;
+        if(!inRange(dt)) return; // 当月・前日まで（cutoff整合）
+        var dow=new Date(dt+'T00:00:00').getDay(); // 0=日..6=土（店休判定と同規約）
+        if((typeof dayClosureMode==='function') && dayClosureMode(storeId, dt, dow)==='closed') return; // 全休日はスキップ
+        leaveDays++; leavePay += lh*lw;
+      });
+    });
+  } catch(e){}
+  leavePay = Math.round(leavePay*100)/100;
   var dim = daysInMonthOf(ym);
   var periodDays=0, sales=0, manual=0, daysWithActual=0, seen={};
   var acts = getDailyActuals(storeId);
@@ -14199,11 +14226,11 @@ function laborCoreForYm(storeId, ym, opts){
   mStaff.forEach(function(e){ var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(m>0 && dim>0) salary += m*periodDays/dim; });
   salary = Math.round(salary*100)/100;
   var ins = Math.round(((typeof storeInsuranceDaily==='function')?storeInsuranceDaily(storeId, ym):0)*periodDays*100)/100;
-  var wage = Math.round((hourly+salary)*100)/100;
+  var wage = Math.round((hourly+salary+leavePay)*100)/100;
   var tax = Math.round(wage*PAYROLL_TAX_RATE*100)/100;
   manual = Math.round(manual*100)/100;
   var total = Math.round((wage+tax+ins+manual)*100)/100;
-  return { byName:byName, hourly:Math.round(hourly*100)/100, salary:salary, wage:wage, tax:tax, ins:ins, manual:manual,
+  return { byName:byName, hourly:Math.round(hourly*100)/100, salary:salary, leave:leavePay, leaveDays:leaveDays, wage:wage, tax:tax, ins:ins, manual:manual,
     total:total, sales:Math.round(sales*100)/100, rate: sales?Math.round(total/sales*1000)/10:0,
     periodDays:periodDays, dim:dim, daysWithActual:daysWithActual, cutoff:cutoff, frozen:isFrozenMonth(ym) };
 }
@@ -14444,7 +14471,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '419';
+const APP_VERSION = '420';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -19994,6 +20021,15 @@ function openEmpModal(empId) {
       <div class="form-group"><label class="form-label">退社日</label><input class="form-input" id="e-resign" type="date" value="${e.resignDate||''}"></div>
       <div class="form-group"></div>
     </div>
+    <div class="form-group" style="background:var(--surface2);border-radius:8px;padding:10px 12px">
+      <label class="form-label" style="font-weight:700"><i class="ti ti-calendar-off" style="color:var(--accent)"></i> 有給消化（人件費を配属店舗に計上）</label>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label" style="font-size:11px">開始日</label><input class="form-input" id="e-leave-start" type="date" value="${e.leaveStart||''}"></div>
+        <div class="form-group"><label class="form-label" style="font-size:11px">終了日</label><input class="form-input" id="e-leave-end" type="date" value="${e.leaveEnd||''}"></div>
+      </div>
+      <div class="form-group"><label class="form-label" style="font-size:11px">1日の標準時間（h）</label><input class="form-input" id="e-leave-hrs" type="number" inputmode="decimal" step="0.5" value="${e.leaveHrs!=null&&e.leaveHrs!==''?e.leaveHrs:''}" placeholder="既定 8"></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">開始〜終了の<b>営業日</b> × 標準時間 × 時給 を配属店舗のLabor額に加算（時給者のみ／月給者は月額で計上済み）。給与税17%は自動。全休日は自動で除外。</div>
+    </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">初回勤務日（Tip Rate 3ヶ月起算）</label><input class="form-input" id="e-firstwork" type="date" value="${e.firstWork||''}"></div>
       <div class="form-group"><label class="form-label">ステータス</label>
@@ -20052,6 +20088,9 @@ function saveEmp(empId) {
     dob: (document.getElementById('e-dob')||{}).value || '',
     hireDate: document.getElementById('e-hire').value,
     resignDate: document.getElementById('e-resign').value,
+    leaveStart: ((document.getElementById('e-leave-start')||{}).value)||'',
+    leaveEnd: ((document.getElementById('e-leave-end')||{}).value)||'',
+    leaveHrs: (function(){ var el=document.getElementById('e-leave-hrs'); return (el && el.value!=='') ? parseFloat(el.value) : null; })(),
     firstWork: (document.getElementById('e-firstwork')||{}).value || '',
     status: document.getElementById('e-status').value,
     perms: permFromRole(document.getElementById('e-role').value),
