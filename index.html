@@ -7043,7 +7043,7 @@ function toastLaborCostForDate(storeId, dateISO){
   var cost = 0;
   Object.keys(labor).forEach(function(n){
     var e = labor[n];
-    var h = (e.lunch||0)+(e.dinner||0);
+    var h = _laborHrs(e);
     if (h>0) cost += h*(empWage(n)||0);
   });
   return cost;
@@ -7053,7 +7053,7 @@ function toastLaborHoursForDate(storeId, dateISO){
   var labor = getTipLabor(storeId, dateISO);
   if(!labor) return 0;
   var h = 0;
-  Object.keys(labor).forEach(function(n){ var e=labor[n]; h += (e.lunch||0)+(e.dinner||0); });
+  Object.keys(labor).forEach(function(n){ var e=labor[n]; h += _laborHrs(e); });
   return h;
 }
 /* 給与税率（自動計算）。Labor額 = 賃金 × (1+税率) + 保険日割り。 */
@@ -13173,7 +13173,7 @@ function renderAttMonthData(storeId, store) {
     if (!names.length) return;
     totalDays++;
     var dayHours = 0, dayErr=false;
-    names.forEach(n=>{ var e=labor[n]; dayHours += (e.lunch||0)+(e.dinner||0); staffSet[n]=true;
+    names.forEach(n=>{ var e=labor[n]; dayHours += _laborHrs(e); staffSet[n]=true;
       if (e.shifts && e.shifts.some(s=>s.inDate&&!s.outDate)) dayErr=true; });
     totalHours += dayHours;
     var appr = getDayApproval(storeId, d.date);
@@ -13221,7 +13221,7 @@ function renderAttMonthData(storeId, store) {
         <th>スタッフ</th><th>Clock In</th><th>Clock Out</th><th>休憩</th><th>L</th><th>D</th><th>計</th></tr></thead><tbody>`;
     r.names.forEach(n=>{
       var e = r.labor[n];
-      var total = (e.lunch||0)+(e.dinner||0);
+      var total = _laborHrs(e);
       var brk = breakHoursFromShifts(e.shifts);
       var clockIn='—', clockOut='—', missingOut=false;
       if (e.shifts && e.shifts.length) {
@@ -13776,7 +13776,7 @@ function renderLaborHours(storeId, store) {
     var ov = actuals[d.date] || {};
     var sales = ov.actual!=null ? ov.actual : 0;
     var actualH = 0;
-    if (labor) Object.keys(labor).forEach(n=>{ var e=labor[n]; actualH += (e.lunch||0)+(e.dinner||0); });
+    if (labor) Object.keys(labor).forEach(n=>{ var e=labor[n]; actualH += _laborHrs(e); });
     // 予定労働時間（公開シフトから）
     var plannedH = 0;
     try {
@@ -13786,7 +13786,7 @@ function renderLaborHours(storeId, store) {
     if (actualH<=0 && sales<=0 && plannedH<=0) return;
     if (d.date<=todayStr) { cumHours+=actualH; cumSales+=sales; cumPlanned+=plannedH; }
     var laborCost = 0;
-    if (labor) Object.keys(labor).forEach(n=>{ var w=empWage(n)||0; var h=(labor[n].lunch||0)+(labor[n].dinner||0); laborCost += w*h; });
+    if (labor) Object.keys(labor).forEach(n=>{ var w=empWage(n)||0; var h=_laborHrs(labor[n]); laborCost += w*h; });
     if (actualH>0) laborCost += storeSalaryDaily(storeId, d.date.slice(0,7)); // 月給制の日割り（生・税なし＝時給と同扱い）
     rows.push({date:d.date, dow:d.dow, sales, plannedH, actualH, diff:actualH-plannedH,
       laborCost, laborRate: sales?Math.round(laborCost/sales*1000)/10:0,
@@ -14154,6 +14154,9 @@ function laborForEmployee(name, entry) {
    - 給与税17%は時給＋固定給に適用
    opts: { weekSun: 週選択(明細タブ), endBefore: 集計終端(既定=当月なら今日/過去月なら無し) }
 ============================================================ */
+/* Labor(総労働時間)は素の実働(rawLunch+rawDinner)を使う。lunch/dinnerはTip対象時間窓を適用済みで、
+   ランチOFFや深夜帯クリップ等で0になり得る（＝Tip用であってLabor用ではない）。安全のため大きい方を採用（現状より減らない）。 */
+function _laborHrs(e){ if(!e) return 0; var raw=(Number(e.rawLunch)||0)+(Number(e.rawDinner)||0); var win=(Number(e.lunch)||0)+(Number(e.dinner)||0); return Math.max(raw, win); }
 function laborCoreForYm(storeId, ym, opts){
   opts = opts||{};
   var cutoff = (opts.endBefore!==undefined) ? opts.endBefore : (ym===curYm() ? bizToday() : null);
@@ -14165,7 +14168,7 @@ function laborCoreForYm(storeId, ym, opts){
     laborWeekDays(w.sun).forEach(function(dt){
       if(!inRange(dt)) return;
       var labor = getTipLabor(storeId, dt); if(!labor) return;
-      Object.keys(labor).forEach(function(n){ var e=labor[n]; var h=(e.lunch||0)+(e.dinner||0); if(h>0) weekHours[n]=(weekHours[n]||0)+h; });
+      Object.keys(labor).forEach(function(n){ var e=labor[n]; var h=_laborHrs(e); if(h>0) weekHours[n]=(weekHours[n]||0)+h; });
     });
     Object.keys(weekHours).forEach(function(n){
       var wh=weekHours[n]; var ot=Math.max(0, wh-40), reg=wh-ot;
@@ -14188,7 +14191,7 @@ function laborCoreForYm(storeId, ym, opts){
       var v = acts[dt]||{};
       if(v.actual!=null){ sales += Number(v.actual)||0; if(v.actual>0) daysWithActual++; }
       var lb = getTipLabor(storeId, dt);
-      var has = lb && Object.keys(lb).some(function(n){ var e=lb[n]; return ((e.lunch||0)+(e.dinner||0))>0; });
+      var has = lb && Object.keys(lb).some(function(n){ return _laborHrs(lb[n])>0; });
       if(!has && v.labor!=null) manual += Number(v.labor)||0;
     });
   });
@@ -14441,7 +14444,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '418';
+const APP_VERSION = '419';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
