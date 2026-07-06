@@ -14405,7 +14405,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '414';
+const APP_VERSION = '415';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -22507,7 +22507,7 @@ function invStoreVendorData(storeId, y, m){
   var mHist=(ls('inv_hist_'+storeId,[])||[]).filter(function(h){return invHistInMonth(h,y,m);});
   if(!mHist.length) return null;
   var h=mHist.slice().sort(function(a,b){ var da=parseJaDate(a.date),db=parseJaDate(b.date); return (da?da.getTime():0)-(db?db.getTime():0); }).pop();
-  var byVendor={};
+  var byVendor={}, byClass={};
   (h.lines||[]).forEach(function(l){
     var ing=ings.find(function(x){return x.name===l.name;});
     var vendor=(ing&&ing.vendor)?ing.vendor:'（業者未設定）';
@@ -22515,35 +22515,49 @@ function invStoreVendorData(storeId, y, m){
     if(!byVendor[vendor]) byVendor[vendor]={items:[], total:0, count:0};
     byVendor[vendor].items.push({cls:className(l.cls)||l.cls||'', name:l.name, actual:actual, uc:uc, val:val});
     byVendor[vendor].total+=val; byVendor[vendor].count++;
+    var clsN=className(l.cls)||l.cls||'（区分なし）';
+    if(!byClass[clsN]) byClass[clsN]={total:0, count:0};
+    byClass[clsN].total+=val; byClass[clsN].count++;
   });
   var grand=0; Object.keys(byVendor).forEach(function(v){ grand+=byVendor[v].total; });
-  return {store:(STORES.find(function(s){return s.id===storeId;})||{name:storeId,id:storeId}), h:h, byVendor:byVendor, grand:grand, count:(h.lines||[]).length};
+  return {store:(STORES.find(function(s){return s.id===storeId;})||{name:storeId,id:storeId}), h:h, byVendor:byVendor, byClass:byClass, grand:grand, count:(h.lines||[]).length};
 }
 var _r2=function(x){return Math.round((Number(x)||0)*100)/100;};
 /* 1店舗ぶんのシート行（業者別サマリー＋業者別明細＋小計） */
 function invStoreSheetRows(storeId, y, m){
   var d=invStoreVendorData(storeId, y, m); if(!d) return null;
   var rows=[];
-  rows.push([{v:d.store.name+' 月次棚卸（業者別）',bold:true}, y+'年'+(m+1)+'月']);
+  var vnames=Object.keys(d.byVendor).sort(function(a,b){ return d.byVendor[b].total-d.byVendor[a].total; });
+  var cnames=Object.keys(d.byClass).sort(function(a,b){ return d.byClass[b].total-d.byClass[a].total; });
+  rows.push([{v:d.store.name+' 月次棚卸',bold:true}, y+'年'+(m+1)+'月']);
   rows.push(['確定日: '+d.h.date, '担当: '+(d.h.by||''), '品目数: '+d.count]);
   rows.push([]);
-  var vnames=Object.keys(d.byVendor).sort(function(a,b){ return d.byVendor[b].total-d.byVendor[a].total; });
-  rows.push([{v:'■ 業者別サマリー',bold:true}]);
-  rows.push([{v:'業者',bold:true},{v:'品目数',bold:true},{v:'棚卸金額($)',bold:true}]);
-  vnames.forEach(function(v){ rows.push([v, d.byVendor[v].count, _r2(d.byVendor[v].total)]); });
-  rows.push([{v:'合計',bold:true},{v:d.count,bold:true},{v:_r2(d.grand),bold:true}]);
+  /* 上部: 区分別トータル | 業者別トータル（横並び） */
+  rows.push([{v:'■ 区分別トータル',bold:true},'','',{v:'■ 業者別トータル',bold:true}]);
+  rows.push([{v:'区分',bold:true},{v:'金額($)',bold:true},'',{v:'業者',bold:true},{v:'金額($)',bold:true}]);
+  var topN=Math.max(cnames.length, vnames.length);
+  for(var i=0;i<topN;i++){
+    var lc = i<cnames.length ? [cnames[i], _r2(d.byClass[cnames[i]].total)] : ['',''];
+    var rc = i<vnames.length ? [vnames[i], _r2(d.byVendor[vnames[i]].total)] : ['',''];
+    rows.push([lc[0], lc[1], '', rc[0], rc[1]]);
+  }
+  rows.push([{v:'合計',bold:true},{v:_r2(d.grand),bold:true},'',{v:'合計',bold:true},{v:_r2(d.grand),bold:true}]);
   rows.push([]);
-  rows.push([{v:'■ 明細（業者別）',bold:true}]);
-  rows.push([{v:'業者',bold:true},{v:'区分',bold:true},{v:'アイテム',bold:true},{v:'実棚',bold:true},{v:'単価($)',bold:true},{v:'棚卸金額($)',bold:true}]);
-  vnames.forEach(function(v){
-    var g=d.byVendor[v];
-    g.items.slice().sort(function(a,b){return b.val-a.val;}).forEach(function(it){
-      rows.push([v, it.cls, it.name, _r2(it.actual), _r2(it.uc), _r2(it.val)]);
-    });
-    rows.push(['','',{v:v+' 小計',bold:true},'','',{v:_r2(g.total),bold:true}]);
-    rows.push([]);
-  });
-  rows.push(['','',{v:'棚卸総額',bold:true},'','',{v:_r2(d.grand),bold:true}]);
+  /* 業者別 明細（横並び）: 各業者 = アイテム/実棚/金額 の3列 + 区切り1列 */
+  rows.push([{v:'■ 業者別 明細（横並び）',bold:true}]);
+  var sorted={}, maxItems=0;
+  vnames.forEach(function(v){ sorted[v]=d.byVendor[v].items.slice().sort(function(a,b){return b.val-a.val;}); maxItems=Math.max(maxItems, sorted[v].length); });
+  var hdr=[], sub=[];
+  vnames.forEach(function(v){ hdr.push({v:v,bold:true},'','',''); sub.push({v:'アイテム',bold:true},{v:'実棚',bold:true},{v:'金額($)',bold:true},''); });
+  rows.push(hdr); rows.push(sub);
+  for(var r=0;r<maxItems;r++){
+    var row=[];
+    vnames.forEach(function(v){ var it=sorted[v][r]; if(it) row.push(it.name, _r2(it.actual), _r2(it.val), ''); else row.push('','','',''); });
+    rows.push(row);
+  }
+  var subt=[];
+  vnames.forEach(function(v){ subt.push({v:'小計',bold:true}, '', {v:_r2(d.byVendor[v].total),bold:true}, ''); });
+  rows.push(subt);
   return rows;
 }
 /* 全店サマリーシート（店舗別合計＋店舗×業者マトリクス） */
@@ -22663,7 +22677,7 @@ function exportAllInventoryCSV(y, m) {
   var datas = [];
   stores.forEach(function(s){ var d=invStoreVendorData(s.id, y, m); if(d) datas.push(d); });
   if (!datas.length) { showToast('対象月の棚卸記録がありません','danger'); return; }
-  var sheets = [{name:'全店サマリー', rows:invAllSummaryRows(datas, y, m)}];
+  var sheets = [];
   datas.forEach(function(d){ sheets.push({name:d.store.name, rows:invStoreSheetRows(d.store.id, y, m)}); });
   downloadExcelSheets(sheets, `月次棚卸_全店_${y}-${String(m+1).padStart(2,'0')}.xls`);
   showToast('全店の月次棚卸（店舗別タブ・業者別集計）を出力しました','success');
