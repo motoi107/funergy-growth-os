@@ -14405,7 +14405,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '413';
+const APP_VERSION = '414';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -21632,7 +21632,7 @@ function renderOfficeExport(){
     {page:'budget', icon:'ti-chart-dots', title:'予実管理', sub:'全社/店舗'}
   ]);
   html+=grp('<i class="ti ti-clipboard-list" style="color:var(--green)"></i>在庫・棚卸',[
-    {fn:"openInvExportModal()", icon:'ti-clipboard-list', title:'棚卸CSV', sub:'月次・店舗別/全店', col:'var(--green)'},
+    {fn:"openInvExportModal()", icon:'ti-clipboard-list', title:'棚卸Excel', sub:'店舗別タブ・業者別集計', col:'var(--green)'},
     {page:'inventory', icon:'ti-box', title:'棚卸入力へ', sub:'店舗の棚卸画面'},
     {page:'monthly', icon:'ti-calculator', title:'月次原価率', sub:'期首+仕入−期末', col:'var(--accent2)'}
   ]);
@@ -21659,12 +21659,12 @@ function openInvExportModal(){
       +'<button class="btn btn-secondary btn-sm" '+(mHist.length?'':'disabled')+' onclick="invExpStore(\''+s.id+'\','+y+','+m+')"><i class="ti ti-download"></i> 出力</button></div>';
   }).join('');
   var anyData=stores.some(function(s){ return (ls('inv_hist_'+s.id,[])||[]).some(function(h){return invHistInMonth(h,y,m);}); });
-  openModal('<div class="modal-title"><i class="ti ti-clipboard-list" style="color:var(--green)"></i> 棚卸CSV出力 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+  openModal('<div class="modal-title"><i class="ti ti-clipboard-list" style="color:var(--green)"></i> 棚卸Excel出力（店舗別タブ・業者別集計） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:8px">'
     +'<button class="btn btn-secondary btn-sm" onclick="setInvExpMonth(-1)"><i class="ti ti-chevron-left"></i></button>'
     +'<span style="font-weight:700;min-width:110px;text-align:center">'+label+'</span>'
     +'<button class="btn btn-secondary btn-sm" '+(_invExpMonth>=0?'disabled':'')+' onclick="setInvExpMonth(1)"><i class="ti ti-chevron-right"></i></button></div>'
-    +'<p style="font-size:11px;color:var(--muted);margin-bottom:8px">各店のMonthly棚卸（区分・実棚・単価・金額）をCSV出力します。'+label+'に確定された棚卸が対象です。</p>'
+    +'<p style="font-size:11px;color:var(--muted);margin-bottom:8px">各店のMonthly棚卸を業者別に集計したExcelを出力します（全店出力は店舗ごとにタブ＋先頭に全店サマリー）。'+label+'に確定された棚卸が対象です。</p>'
     +'<div class="card" style="padding:6px 12px">'+rows+'</div>'
     +'<button class="btn btn-primary" style="width:100%;margin-top:10px" '+(anyData?'':'disabled')+' onclick="invExpAll('+y+','+m+')"><i class="ti ti-download"></i> 全店まとめて出力</button>'
     +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
@@ -22479,6 +22479,90 @@ function downloadExcel(rows, filename, sheetName) {
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
+/* ===== 複数タブExcel（SpreadsheetML 2003・ライブラリ不要）＋ 棚卸の業者別集計 ===== */
+function _xlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function _xlCell(c){
+  var v=(c && typeof c==='object' && ('v' in c))?c.v:c;
+  var bold=(c && typeof c==='object' && c.bold);
+  var isNum=(typeof v==='number' && isFinite(v));
+  return '<Cell'+(bold?' ss:StyleID="b"':'')+'><Data ss:Type="'+(isNum?'Number':'String')+'">'+(isNum?String(v):_xlEsc(String(v==null?'':v)))+'</Data></Cell>';
+}
+function _xlSheetName(n){ return (String(n||'Sheet').replace(/[\\\/\?\*\[\]:]/g,' ').slice(0,31))||'Sheet'; }
+function downloadExcelSheets(sheets, filename){
+  var used={};
+  var ws=sheets.map(function(sh){
+    var nm=_xlSheetName(sh.name), base=nm, i=2; while(used[nm]){ nm=(base.slice(0,28)+'_'+i).slice(0,31); i++; } used[nm]=1;
+    var rows=(sh.rows||[]).map(function(r){ if(!r||!r.length) return '<Row/>'; return '<Row>'+r.map(_xlCell).join('')+'</Row>'; }).join('');
+    return '<Worksheet ss:Name="'+_xlEsc(nm)+'"><Table>'+rows+'</Table></Worksheet>';
+  }).join('');
+  var xml='<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n'
+    +'<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+    +'<Styles><Style ss:ID="b"><Font ss:Bold="1"/></Style></Styles>'+ws+'</Workbook>';
+  var blob=new Blob([xml],{type:'application/vnd.ms-excel;charset=utf-8;'});
+  var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
+}
+/* 指定月の店舗棚卸を「最新確定＝月末棚卸」として業者別に集計 */
+function invStoreVendorData(storeId, y, m){
+  var ings=getIngredients();
+  var mHist=(ls('inv_hist_'+storeId,[])||[]).filter(function(h){return invHistInMonth(h,y,m);});
+  if(!mHist.length) return null;
+  var h=mHist.slice().sort(function(a,b){ var da=parseJaDate(a.date),db=parseJaDate(b.date); return (da?da.getTime():0)-(db?db.getTime():0); }).pop();
+  var byVendor={};
+  (h.lines||[]).forEach(function(l){
+    var ing=ings.find(function(x){return x.name===l.name;});
+    var vendor=(ing&&ing.vendor)?ing.vendor:'（業者未設定）';
+    var uc=ing?(Number(ing.price)||0):0, actual=Number(l.actual)||0, val=uc*actual;
+    if(!byVendor[vendor]) byVendor[vendor]={items:[], total:0, count:0};
+    byVendor[vendor].items.push({cls:className(l.cls)||l.cls||'', name:l.name, actual:actual, uc:uc, val:val});
+    byVendor[vendor].total+=val; byVendor[vendor].count++;
+  });
+  var grand=0; Object.keys(byVendor).forEach(function(v){ grand+=byVendor[v].total; });
+  return {store:(STORES.find(function(s){return s.id===storeId;})||{name:storeId,id:storeId}), h:h, byVendor:byVendor, grand:grand, count:(h.lines||[]).length};
+}
+var _r2=function(x){return Math.round((Number(x)||0)*100)/100;};
+/* 1店舗ぶんのシート行（業者別サマリー＋業者別明細＋小計） */
+function invStoreSheetRows(storeId, y, m){
+  var d=invStoreVendorData(storeId, y, m); if(!d) return null;
+  var rows=[];
+  rows.push([{v:d.store.name+' 月次棚卸（業者別）',bold:true}, y+'年'+(m+1)+'月']);
+  rows.push(['確定日: '+d.h.date, '担当: '+(d.h.by||''), '品目数: '+d.count]);
+  rows.push([]);
+  var vnames=Object.keys(d.byVendor).sort(function(a,b){ return d.byVendor[b].total-d.byVendor[a].total; });
+  rows.push([{v:'■ 業者別サマリー',bold:true}]);
+  rows.push([{v:'業者',bold:true},{v:'品目数',bold:true},{v:'棚卸金額($)',bold:true}]);
+  vnames.forEach(function(v){ rows.push([v, d.byVendor[v].count, _r2(d.byVendor[v].total)]); });
+  rows.push([{v:'合計',bold:true},{v:d.count,bold:true},{v:_r2(d.grand),bold:true}]);
+  rows.push([]);
+  rows.push([{v:'■ 明細（業者別）',bold:true}]);
+  rows.push([{v:'業者',bold:true},{v:'区分',bold:true},{v:'アイテム',bold:true},{v:'実棚',bold:true},{v:'単価($)',bold:true},{v:'棚卸金額($)',bold:true}]);
+  vnames.forEach(function(v){
+    var g=d.byVendor[v];
+    g.items.slice().sort(function(a,b){return b.val-a.val;}).forEach(function(it){
+      rows.push([v, it.cls, it.name, _r2(it.actual), _r2(it.uc), _r2(it.val)]);
+    });
+    rows.push(['','',{v:v+' 小計',bold:true},'','',{v:_r2(g.total),bold:true}]);
+    rows.push([]);
+  });
+  rows.push(['','',{v:'棚卸総額',bold:true},'','',{v:_r2(d.grand),bold:true}]);
+  return rows;
+}
+/* 全店サマリーシート（店舗別合計＋店舗×業者マトリクス） */
+function invAllSummaryRows(datas, y, m){
+  var rows=[];
+  rows.push([{v:'全店 月次棚卸サマリー',bold:true}, y+'年'+(m+1)+'月']);
+  rows.push([]);
+  rows.push([{v:'店舗',bold:true},{v:'品目数',bold:true},{v:'棚卸総額($)',bold:true}]);
+  var grand=0; datas.forEach(function(d){ rows.push([d.store.name, d.count, _r2(d.grand)]); grand+=d.grand; });
+  rows.push([{v:'全店合計',bold:true},'',{v:_r2(grand),bold:true}]);
+  rows.push([]);
+  var vset={}; datas.forEach(function(d){ Object.keys(d.byVendor).forEach(function(v){ vset[v]=(vset[v]||0)+d.byVendor[v].total; }); });
+  var vnames=Object.keys(vset).sort(function(a,b){ return vset[b]-vset[a]; });
+  rows.push([{v:'■ 店舗 × 業者（棚卸金額 $）',bold:true}]);
+  rows.push([{v:'店舗',bold:true}].concat(vnames.map(function(v){return {v:v,bold:true};})).concat([{v:'合計',bold:true}]));
+  datas.forEach(function(d){ rows.push([d.store.name].concat(vnames.map(function(v){ return _r2((d.byVendor[v]||{}).total||0); })).concat([_r2(d.grand)])); });
+  rows.push([{v:'合計',bold:true}].concat(vnames.map(function(v){return {v:_r2(vset[v]),bold:true};})).concat([{v:_r2(grand),bold:true}]));
+  return rows;
+}
 function tipCSVRows(storeId, anyDate) {
   var s = STORES.find(x=>x.id===storeId)||{name:storeId};
   var settle = calcHalfMonthSettlement(storeId, anyDate);
@@ -22569,23 +22653,20 @@ function inventoryCSVRows(storeId, y, m) {
 }
 function exportInventoryCSV(storeId, y, m) {
   var s = STORES.find(x=>x.id===storeId)||{name:storeId};
-  var mHist = ls('inv_hist_'+storeId, []).filter(h=>invHistInMonth(h, y, m));
-  if (!mHist.length) { showToast('この月の棚卸記録がありません','danger'); return; }
-  downloadCSV(inventoryCSVRows(storeId, y, m), `棚卸_${s.name}_${y}-${String(m+1).padStart(2,'0')}.csv`);
-  showToast(`${s.name} の月次棚卸を出力しました`,'success');
+  var rows = invStoreSheetRows(storeId, y, m);
+  if (!rows) { showToast('この月の棚卸記録がありません','danger'); return; }
+  downloadExcelSheets([{name:s.name, rows:rows}], `棚卸_${s.name}_${y}-${String(m+1).padStart(2,'0')}.xls`);
+  showToast(`${s.name} の月次棚卸（業者別集計）を出力しました`,'success');
 }
 function exportAllInventoryCSV(y, m) {
   var stores = getVisibleStores();
-  var rows = [];
-  stores.forEach(s=>{
-    var mHist = ls('inv_hist_'+s.id, []).filter(h=>invHistInMonth(h, y, m));
-    if (!mHist.length) return;
-    rows = rows.concat(inventoryCSVRows(s.id, y, m));
-    rows.push([]); rows.push([]);
-  });
-  if (!rows.length) { showToast('対象月の棚卸記録がありません','danger'); return; }
-  downloadCSV(rows, `月次棚卸_全店_${y}-${String(m+1).padStart(2,'0')}.csv`);
-  showToast('全店の月次棚卸を出力しました','success');
+  var datas = [];
+  stores.forEach(function(s){ var d=invStoreVendorData(s.id, y, m); if(d) datas.push(d); });
+  if (!datas.length) { showToast('対象月の棚卸記録がありません','danger'); return; }
+  var sheets = [{name:'全店サマリー', rows:invAllSummaryRows(datas, y, m)}];
+  datas.forEach(function(d){ sheets.push({name:d.store.name, rows:invStoreSheetRows(d.store.id, y, m)}); });
+  downloadExcelSheets(sheets, `月次棚卸_全店_${y}-${String(m+1).padStart(2,'0')}.xls`);
+  showToast('全店の月次棚卸（店舗別タブ・業者別集計）を出力しました','success');
 }
 
 function exportByClass() {
