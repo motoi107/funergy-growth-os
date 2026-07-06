@@ -9100,6 +9100,7 @@ async function refreshNow(){
     try { _obPulled=false; } catch(e){}
     try { _shiftPulled={}; } catch(e){}
     try { if (typeof _msLoaded!=='undefined') _msLoaded={}; } catch(e){}
+    try { _laborLoaded={}; } catch(e){} // 人件費ページの当月勤怠を再取得できるように
     try { _laborTailTried={}; } catch(e){} // 直近Laborのライブ補完を再試行できるようにする
     setSyncSplash('当月データを同期中…');
     await ensureMonthDataLoaded(curYm());        // 当月の売上・客数・勤怠・出数
@@ -13008,7 +13009,7 @@ function attendanceClearForTip(storeId, info) {
 
 /* 勤怠データ閲覧（独立した月ナビ・シフト照合なし） */
 var attMonthOffset = 0; // 0=今月, -1=先月（勤怠チェック専用、他と非共有）
-function attMonthRef() { var n=new Date(); return new Date(n.getFullYear(), n.getMonth()+attMonthOffset, 1); }
+function attMonthRef() { var n=bizNow(); return new Date(n.getFullYear(), n.getMonth()+attMonthOffset, 1); }
 function attMonthLabel() { var r=attMonthRef(); return `${r.getFullYear()}年${r.getMonth()+1}月`; }
 function attMonthDays() {
   var r = attMonthRef(); var y=r.getFullYear(), m=r.getMonth();
@@ -13656,6 +13657,32 @@ function laborSummaryCard(storeId){
   h+='</div>';
   return h;
 }
+/* 人件費ページを開いた時に全店の当月勤怠(tip_labor)をクラウドDBから取得→完了後に再描画。
+   tip_laborはOP同期対象外の端末キャッシュのため、これが無いと端末により賃金が0で表示され食い違う。
+   セッション中ym+可視店舗ごとに1回だけ（手動「取得」/「最新に更新」で再取得可）。 */
+var _laborLoaded = {}, _laborLoadInflight = {};
+function _laborLoadKey(){
+  var ym = ymOf(attMonthRef());
+  var stores = (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){return s.toastGuid;});
+  return ym+'|'+stores.map(function(s){return s.id;}).join(',');
+}
+function _laborLoading(){ return !!_laborLoadInflight[_laborLoadKey()]; }
+async function ensureLaborLoaded(){
+  var ym = ymOf(attMonthRef());
+  var stores = (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){return s.toastGuid;});
+  if(!stores.length) return;
+  var key = _laborLoadKey();
+  if(_laborLoaded[key] || _laborLoadInflight[key]) return;
+  _laborLoadInflight[key]=true;
+  try{
+    var days = daysOfYm(ym);
+    await Promise.all(stores.map(function(s){ return syncTipLaborFromDB(s.id, s.toastGuid, days).catch(function(){}); }));
+    _laborLoaded[key]=true;
+  } finally {
+    delete _laborLoadInflight[key];
+    if(curPage==='labor') renderPage('labor');
+  }
+}
 function renderLabor() {
   var financial = !!(ROLE_CONFIG[curRole]||{}).financial;
   if (!financial && curRole!=='sl') return financialBlocked();
@@ -13667,6 +13694,7 @@ function renderLabor() {
     return `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${sstore.name} · 勤怠</div></div></div>` + renderAttendanceBody(sid, sstore);
   }
   if (!_laborStore) _laborStore = (curStore && curStore!=='ALL') ? curStore : 'ALL';
+  ensureLaborLoaded(); // 開いた時に全店の当月勤怠をクラウドから取得→完了後に再描画（端末間で同一表示に）
   var _canLaborDetail = ['gm','ceo'].indexOf(curRole)>=0; // 勤怠明細（個人賃金・固定給）はGM以上のみ
   var perStoreTabs = _canLaborDetail ? ['hours','detail','attendance'] : ['hours','attendance'];
   // 勤怠データ等(店舗別)をナビから開いた時に全店なら、最初の可視店舗へ
@@ -13678,6 +13706,7 @@ function renderLabor() {
   var storeId = allStore ? null : store.id;
   var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${allStore?'全店集計':store.name} · 勤怠×時給</div></div></div>`;
   html += laborStoreChips(_laborStore);
+  if (_laborLoading()) html += '<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> 勤怠データをクラウドから同期中…（全店・前日まで）。数値は同期完了後に確定します。</div>';
   if (allStore) return html + renderLaborOverview();
   if (perStoreTabs.indexOf(laborTab)<0) laborTab = 'hours';
   var tabDefs = _canLaborDetail ? [['hours','労働時間'],['detail','勤怠明細'],['attendance','勤怠データ']] : [['hours','労働時間'],['attendance','勤怠データ']];
@@ -14376,7 +14405,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '412';
+const APP_VERSION = '413';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
