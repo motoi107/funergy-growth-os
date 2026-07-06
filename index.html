@@ -1627,6 +1627,7 @@ const NAV_ITEMS = [
   {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','office','am','sl']},
   {id:'staff_master',label:'従業員マスター', icon:'ti-users',         roles:['ceo','gm','office','am']},
   {id:'ingredient_master',label:'食材マスター', icon:'ti-carrot',     roles:['ceo','gm','office','am','sl']},
+  {id:'ing_transfer',label:'食材移動', icon:'ti-arrows-exchange', roles:['ceo','gm','office','am','sl']},
   {id:'vendor_master',label:'業者マスター', icon:'ti-truck',          roles:['ceo','gm','office','am']},
   {id:'skill',       label:'スキルレベル', icon:'ti-stairs-up',        roles:['ceo','gm','office','am','sl','crew']},
   {id:'leadership',  label:'Career Score', icon:'ti-trending-up',       roles:['ceo','gm','am','sl']},
@@ -1659,7 +1660,7 @@ const MENU_GROUPS = [
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['staff_master','shift_admin','tip','hiring','skill','leadership','growth_mgr','ojt_admin','growthhub','hr','vacation','crew_handbook']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
-    children:['menu','recipe','ingredient_master','vendor_master','inventory','order','supply_order','invoice','acct_review']},
+    children:['menu','recipe','ingredient_master','ing_transfer','vendor_master','inventory','order','supply_order','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','required','settings']},
 ];
@@ -1673,7 +1674,7 @@ const OFFICE_GROUPS = [
   {id:'go_tasks', label:'ワークセンター', icon:'ti-layout-dashboard', roles:['ceo','gm','office'],
     children:['tasks','biz_guide']},
   {id:'go_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office'],
-    children:['menu','recipe','ingredient_master','vendor_master','inventory']},
+    children:['menu','recipe','ingredient_master','ing_transfer','vendor_master','inventory']},
   {id:'go_acct', label:'経理', icon:'ti-calculator', roles:['ceo','gm','office'],
     children:['invoice','acct_review','acct_export','monthly']},
   {id:'go_order', label:'発注', icon:'ti-package', roles:['ceo','gm','office'],
@@ -3943,7 +3944,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','kpi_config','meeting_minutes'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','kpi_config','meeting_minutes','ingredient_transfers'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -4362,7 +4363,8 @@ function plComputeStore(sid, ym, off){
   var fc = getFcMonthly(sid, ym);
   var purchOrder = monthOrderTotalYm(sid, ym), purchBuy = monthPurchaseTotalYm(sid, ym);
   var purch = purchOrder + purchBuy;
-  var cogs = Math.round((parseFloat(fc.beginInv)||0) + purch - (parseFloat(fc.endInv)||0));
+  var _tnet = (typeof monthTransferNetYm==='function') ? monthTransferNetYm(sid, ym) : {inAmt:0,outAmt:0,net:0};
+  var cogs = Math.round((parseFloat(fc.beginInv)||0) + purch + _tnet.net - (parseFloat(fc.endInv)||0));
   var cogsSrc = ((parseFloat(fc.beginInv)||0)>0 || (parseFloat(fc.endInv)||0)>0) ? '棚卸法' : '仕入合計';
   if (cogs<0) cogs=Math.round(purch);
   var labor = 0; try{ labor = Math.round(laborCoreForYm(sid, ym).total); }catch(e){}
@@ -4375,7 +4377,7 @@ function plComputeStore(sid, ym, off){
   var profit = sales - cogs - labor - expT;
   var hasOvr = !!(ovr[ym] && ovr[ym][sid] && Object.keys(ovr[ym][sid]).some(function(k){ return ovr[ym][sid][k]!=null && ovr[ym][sid][k]!==''; }));
   return { sales:sales, cogs:cogs, cogsSrc:cogsSrc, gross:sales-cogs, labor:labor, vc:vc, vcT:vcT, reimb:reimb, get:get, fixT:fixT, expT:expT, profit:profit, hasOvr:hasOvr,
-    beginInv:Math.round(parseFloat(fc.beginInv)||0), endInv:Math.round(parseFloat(fc.endInv)||0), purchOrder:Math.round(purchOrder), purchBuy:Math.round(purchBuy) };
+    beginInv:Math.round(parseFloat(fc.beginInv)||0), endInv:Math.round(parseFloat(fc.endInv)||0), purchOrder:Math.round(purchOrder), purchBuy:Math.round(purchBuy), transferIn:Math.round(_tnet.inAmt), transferOut:Math.round(_tnet.outAmt) };
 }
 async function showManagerSecure(){
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
@@ -4831,13 +4833,12 @@ function openPlDetailModal(sid, key){
     ]);
   } else if(key==='cogs'){
     title='原価の内訳（'+c.cogsSrc+'）';
-    body=li([
-      ['期首棚卸', m(c.beginInv)],
-      ['＋ 仕入（発注）', m(c.purchOrder)],
-      ['＋ 仕入（買い出し・Invoice）', m(c.purchBuy)],
-      ['− 期末棚卸', m(c.endInv)],
-      ['原価（COGS）', m(c.cogs), 'var(--accent)', '原価率 '+pct(c.cogs,c.sales)]
-    ]);
+    var _cr=[['期首棚卸', m(c.beginInv)],['＋ 仕入（発注）', m(c.purchOrder)],['＋ 仕入（買い出し・Invoice）', m(c.purchBuy)]];
+    if(c.transferIn>0) _cr.push(['＋ 食材移動（借入）', m(c.transferIn)]);
+    if(c.transferOut>0) _cr.push(['− 食材移動（貸出）', m(c.transferOut)]);
+    _cr.push(['− 期末棚卸', m(c.endInv)]);
+    _cr.push(['原価（COGS）', m(c.cogs), 'var(--accent)', '原価率 '+pct(c.cogs,c.sales)]);
+    body=li(_cr);
     if(c.cogsSrc!=='棚卸法') body+='<div style="font-size:10px;color:var(--yellow);margin-top:6px"><i class="ti ti-alert-circle"></i> 棚卸（期首/期末）が未入力のため仕入合計で計算しています。</div>';
   } else if(key==='labor'){
     var core={}; try{ core=laborCoreForYm(sid, ym)||{}; }catch(e){}
@@ -5638,6 +5639,7 @@ function renderPage(page) {
     case 'onboarding':   hiringTab='onboard'; el.innerHTML = renderHiring(); break;
     case 'staff_master': el.innerHTML = renderStaffMaster(); break;
     case 'ingredient_master': el.innerHTML = renderIngredientMaster(); break;
+    case 'ing_transfer': el.innerHTML = renderIngTransfer(); break;
     case 'vendor_master': el.innerHTML = renderVendorMaster(); break;
     case 'leadership':   el.innerHTML = renderLeadership(); break;
     case 'skill':        el.innerHTML = renderSkill(); break;
@@ -10486,7 +10488,8 @@ function renderFcMonthly(storeId, store) {
   var orderTotal = monthOrderTotalYm(storeId, ym);
   var purchaseTotal = monthPurchaseTotalYm(storeId, ym);
   var purchases = orderTotal + purchaseTotal;
-  var usedCost = (parseFloat(fc.beginInv)||0) + purchases - (parseFloat(fc.endInv)||0);
+  var _fcTnet = (typeof monthTransferNetYm==='function') ? monthTransferNetYm(storeId, ym) : {inAmt:0,outAmt:0,net:0};
+  var usedCost = (parseFloat(fc.beginInv)||0) + purchases + _fcTnet.net - (parseFloat(fc.endInv)||0);
   var sales = parseFloat(fc.sales)||stats.sales||0;
   var rate = sales ? Math.round(usedCost/sales*1000)/10 : 0;
   var target = 30;
@@ -10500,6 +10503,8 @@ function renderFcMonthly(storeId, store) {
       <tr><td>期首棚卸額 ${fc.beginAuto?'<span class="tag tag-blue" style="font-size:9px">前月末から自動</span>':''}</td><td style="text-align:right">$${(parseFloat(fc.beginInv)||0).toLocaleString()}</td></tr>
       <tr><td>月間仕入れ（発注確定分）</td><td style="text-align:right">$${orderTotal.toLocaleString()}</td></tr>
       <tr><td>買い出し合計</td><td style="text-align:right">$${purchaseTotal.toLocaleString()}</td></tr>
+      ${_fcTnet.inAmt>0?`<tr><td>＋ 食材移動（借入）</td><td style="text-align:right">$${Math.round(_fcTnet.inAmt).toLocaleString()}</td></tr>`:''}
+      ${_fcTnet.outAmt>0?`<tr><td>− 食材移動（貸出）</td><td style="text-align:right">− $${Math.round(_fcTnet.outAmt).toLocaleString()}</td></tr>`:''}
       <tr><td>期末棚卸額</td><td style="text-align:right">− $${(parseFloat(fc.endInv)||0).toLocaleString()}</td></tr>
       <tr style="font-weight:700"><td>使用原価</td><td style="text-align:right;color:var(--accent)">$${usedCost.toLocaleString()}</td></tr>
       <tr><td>売上${(!fc.sales&&stats.sales)?' <span style="font-size:9px;color:var(--muted)">（日次実績から自動）</span>':''}</td><td style="text-align:right">$${Math.round(sales).toLocaleString()}</td></tr>
@@ -14471,7 +14476,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '420';
+const APP_VERSION = '421';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -21115,6 +21120,92 @@ function openPriceTrendModal(code){
     <div style="font-size:12px;font-weight:700;margin:10px 0 4px">価格履歴</div>
     <table class="inv-table" style="width:100%;font-size:11px"><thead><tr><th style="text-align:left">日付</th><th style="text-align:right">価格</th></tr></thead><tbody>${histRows}</tbody></table>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`);
+}
+/* ===== 食材移動（店舗間）: A店→B店に食材を移動。金額をCOGSに反映（貸出=−/借入=+） =====
+   評価は「仕入単価(store別価格 or マスター価格) × 数量」＝直感的かつ原価(支払額)基準。月次COGSに net(借入−貸出)を加算。 */
+function getIngTransfers(){ var a=ls('ingredient_transfers',[]); return Array.isArray(a)?a:[]; }
+function saveIngTransfers(a){ lsSet('ingredient_transfers', a); }
+function transferUnitVal(i, store){ if(!i) return 0; var sp=i.storePrices && i.storePrices[store]; return (sp && sp.price!=null)?(Number(sp.price)||0):(Number(i.price)||0); }
+function monthTransferNetYm(storeId, ym){
+  var inAmt=0, outAmt=0, inC=0, outC=0;
+  getIngTransfers().forEach(function(t){
+    if(String(t.date).slice(0,7)!==ym) return;
+    if(t.to===storeId){ inAmt+=Number(t.amount)||0; inC++; }
+    if(t.from===storeId){ outAmt+=Number(t.amount)||0; outC++; }
+  });
+  return { inAmt:inAmt, outAmt:outAmt, net:inAmt-outAmt, inCount:inC, outCount:outC };
+}
+function itResolve(v){ v=(v||'').split('｜')[0].trim(); if(!v) return null; var ings=getIngredients(); return ings.find(function(i){return i.name===v;}) || ings.find(function(i){return (i.name||'').indexOf(v)===0;}) || null; }
+function itPreview(){
+  var name=(document.getElementById('it-ing')||{}).value||'';
+  var from=(document.getElementById('it-from')||{}).value||'';
+  var qty=parseFloat((document.getElementById('it-qty')||{}).value)||0;
+  var ing=itResolve(name);
+  var el=document.getElementById('it-amt'); if(!el) return;
+  if(!ing){ el.innerHTML='<span style="color:var(--muted)">食材を選択してください</span>'; return; }
+  var uv=transferUnitVal(ing, from); var amt=Math.round(qty*uv*100)/100;
+  el.innerHTML='単価 <b>$'+_r2(uv)+'</b> /'+escapeHtml(ing.orderUnit||ing.unit||'単位')+' × '+qty+' ＝ 移動額 <b style="color:var(--accent)">$'+_r2(amt).toLocaleString()+'</b>';
+}
+function ingTransferSubmit(){
+  var from=(document.getElementById('it-from')||{}).value||'';
+  var to=(document.getElementById('it-to')||{}).value||'';
+  var name=(document.getElementById('it-ing')||{}).value||'';
+  var qty=parseFloat((document.getElementById('it-qty')||{}).value)||0;
+  var ing=itResolve(name);
+  if(!from||!to){ showToast('貸出店・借入店を選択してください','warning'); return; }
+  if(from===to){ showToast('同じ店舗は選べません','warning'); return; }
+  if(!ing){ showToast('食材マスターから食材を選択してください','warning'); return; }
+  if(!(qty>0)){ showToast('数量を入力してください','warning'); return; }
+  var uv=transferUnitVal(ing, from); var amt=Math.round(qty*uv*100)/100;
+  var fn=(STORES.find(function(s){return s.id===from;})||{}).name||from;
+  var tn=(STORES.find(function(s){return s.id===to;})||{}).name||to;
+  var arr=getIngTransfers();
+  var _d=((document.getElementById('it-date')||{}).value)||(typeof bizToday==='function'?bizToday():todayISO());
+  arr.push({ id:'it_'+Date.now()+'_'+Math.floor(Math.random()*1000), date:_d,
+    from:from, to:to, code:ing.code||'', name:ing.name, qty:qty, unit:(ing.orderUnit||ing.unit||''), unitVal:uv, amount:amt,
+    by:(typeof myName==='function'?myName():''), at:(typeof nowJP==='function'?nowJP():'') });
+  saveIngTransfers(arr);
+  showToast(fn+'→'+tn+'  '+ing.name+' '+qty+'（$'+amt.toLocaleString()+'）を移動しました','success');
+  renderPage('ing_transfer');
+}
+function ingTransferDelete(id){
+  if(!confirm('この食材移動を取り消しますか？（原価も元に戻ります）')) return;
+  saveIngTransfers(getIngTransfers().filter(function(t){return t.id!==id;}));
+  showToast('食材移動を取り消しました','success'); renderPage('ing_transfer');
+}
+function renderIngTransfer(){
+  var ings=getIngredients();
+  var sn=function(id){ return (STORES.find(function(s){return s.id===id;})||{}).name||id; };
+  var storeOptsFrom=STORES.map(function(s,i){ return '<option value="'+s.id+'"'+(i===0?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('');
+  var storeOptsTo=STORES.map(function(s,i){ return '<option value="'+s.id+'"'+(i===1?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('');
+  var dl=ings.map(function(i){ return '<option value="'+escapeHtml(i.name)+(i.code?(' ｜ '+escapeHtml(String(i.code))):'')+'">'; }).join('');
+  var h='<div class="card"><div class="card-title"><i class="ti ti-arrows-exchange" style="color:var(--accent)"></i> 食材移動（店舗間）</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.7">A店→B店へ食材を移動すると、移動額を原価に反映します。<b>貸した店＝原価マイナス</b>／<b>借りた店＝原価プラス</b>（＝原価率に反映）。評価は仕入単価×数量。</div>'
+    +'<div class="form-group"><label class="form-label">移動日</label><input class="form-input" id="it-date" type="date" value="'+(typeof bizToday==='function'?bizToday():todayISO())+'"></div>'
+    +'<div class="form-row"><div class="form-group"><label class="form-label">貸出店（From）</label><select class="form-select" id="it-from" onchange="itPreview()">'+storeOptsFrom+'</select></div>'
+    +'<div class="form-group"><label class="form-label">借入店（To）</label><select class="form-select" id="it-to" onchange="itPreview()">'+storeOptsTo+'</select></div></div>'
+    +'<div class="form-group"><label class="form-label">食材（マスターから検索）</label><input class="form-input" id="it-ing" list="it-ings" placeholder="食材名で検索して選択" oninput="itPreview()"><datalist id="it-ings">'+dl+'</datalist></div>'
+    +'<div class="form-group"><label class="form-label">数量</label><input class="form-input" id="it-qty" type="number" inputmode="decimal" step="0.1" placeholder="数量" oninput="itPreview()"></div>'
+    +'<div id="it-amt" style="font-size:13px;padding:8px 10px;background:var(--surface2);border-radius:8px;margin-bottom:10px"><span style="color:var(--muted)">食材を選択してください</span></div>'
+    +'<button class="btn btn-primary" style="width:100%" onclick="ingTransferSubmit()"><i class="ti ti-check"></i> 完了（移動を記録）</button></div>';
+  // 履歴（台帳）
+  var arr=getIngTransfers().slice().sort(function(a,b){ return (b.at||b.date||'').localeCompare(a.at||a.date||''); }).slice(0,40);
+  h+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--accent)"></i> 移動履歴（最新40件）</div>';
+  if(!arr.length){ h+='<div style="font-size:12px;color:var(--muted);padding:6px 2px">まだ移動記録はありません。</div>'; }
+  else {
+    h+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">日付</th><th style="text-align:left;padding:4px">移動</th><th style="text-align:left;padding:4px">食材</th><th style="text-align:right;padding:4px">数量</th><th style="text-align:right;padding:4px">金額</th><th style="padding:4px"></th></tr></thead><tbody>';
+    arr.forEach(function(t){
+      h+='<tr><td style="padding:4px;white-space:nowrap">'+escapeHtml(t.date||'')+'</td>'
+        +'<td style="padding:4px;white-space:nowrap"><span style="color:var(--red)">'+escapeHtml(sn(t.from))+'</span> → <span style="color:var(--green)">'+escapeHtml(sn(t.to))+'</span></td>'
+        +'<td style="padding:4px">'+escapeHtml(t.name||'')+'</td>'
+        +'<td style="text-align:right;padding:4px;white-space:nowrap">'+t.qty+(t.unit?(' '+escapeHtml(t.unit)):'')+'</td>'
+        +'<td style="text-align:right;padding:4px;white-space:nowrap">$'+_r2(t.amount).toLocaleString()+'</td>'
+        +'<td style="text-align:center;padding:4px"><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="ingTransferDelete(\''+t.id+'\')">取消</button></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div>';
+  return h;
 }
 function renderIngredientMaster() {
   var cats = getCategories();
