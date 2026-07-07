@@ -14476,7 +14476,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '426';
+const APP_VERSION = '427';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -14899,53 +14899,56 @@ function shiftWeekMatrix(storeId, week){
   return rows;
 }
 
-/* Aiea用 画像出力: 画面表示（担当×7日, L/D, 👑, 4週ボール数）と同じ内容をcanvasで描画 */
+/* Aiea用 画像出力: 画面と同じ「サービス別ブロック(担当×7曜日)」で描画 */
 function exportAieaShiftImage(storeId, week){
   var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
   var plan=getShiftPlan(storeId,week)||{cells:{}}; var cells=plan.cells||{};
   var splan=shiftSlotPlan(storeId).filter(function(sc){return sc.slots&&sc.slots.length;});
-  var posOrder=[]; splan.forEach(function(sec){(sec.slots||[]).forEach(function(sl){if(posOrder.indexOf(sl.pos)<0)posOrder.push(sl.pos);});});
-  if(!posOrder.length){ showToast('No shift to export.', 'warning'); return; }
+  if(!splan.length){ showToast('No shift to export.', 'warning'); return; }
   var dates=DOW_SHIFT.map(weekDateForDow);
   var md=function(iso){return iso?(Number(iso.split('-')[1])+'/'+Number(iso.split('-')[2])):'';};
   var EN={'日':'Sun','月':'Mon','火':'Tue','水':'Wed','木':'Thu','金':'Fri','土':'Sat'};
-  var secShort=function(k){return k==='Lunch'?'L':k==='Dinner'?'D':k==='Prep'?'Prep':k==='Trainee'?'Trn':k==='LPrep'?'LP':k;};
+  var secTitle=function(k){ return ({Lunch:'Lunch',Dinner:'Dinner',Prep:'Prep',Trainee:'Trainee',LPrep:'Lunch Prep',DSetting:'Dinner Setup'})[k]||k; };
   function leaderOf(day,sec){ var as=(sec.slots||[]).map(function(sl){return {name:cells[shiftCellKey(day,sec.key,sl.label)],pos:sl.pos};}).filter(function(x){return x.name;}); var ld=null,lv=-1; as.forEach(function(a){var l=(typeof positionLevelStore==='function')?(positionLevelStore(a.name,a.pos,storeId)||0):0; if(l>lv){lv=l;ld=a.name;}}); return ld; }
-  var scale=2, nameW=86, dayW=108, headH=68, titleH=58, padB=26, lineH=17;
-  var rowHs=posOrder.map(function(pos){ var mx=1; DOW_SHIFT.forEach(function(day){ var iso=weekDateForDow(day); var c=0; splan.forEach(function(sec){ var slot=(sec.slots||[]).find(function(sl){return sl.pos===pos;}); if(slot && !sectionClosedForDay(storeId,sec.key,iso,day)) c++; }); if(c>mx)mx=c; }); return Math.max(26, 8+mx*lineH); });
-  var totalRowH=rowHs.reduce(function(a,b){return a+b;},0);
-  var W=nameW+dayW*7, H=titleH+headH+totalRowH+padB;
+  var scale=2, nameW=92, dayW=108, rowH=34, secHeadH=30, gap=12, topH=54;
+  var blocks=[]; var H=topH;
+  splan.forEach(function(sec){ var isMain=(sec.key==='Lunch'||sec.key==='Dinner'); var dh=isMain?54:38; blocks.push({sec:sec,isMain:isMain,dh:dh,top:H}); H+=secHeadH+dh+rowH*(sec.slots||[]).length+gap; });
+  H+=6; var W=nameW+dayW*7;
   var cv=document.createElement('canvas'); cv.width=W*scale; cv.height=H*scale; var ctx=cv.getContext('2d'); ctx.scale(scale,scale); ctx.textBaseline='middle';
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
-  ctx.fillStyle='#2b2b2b'; ctx.font='bold 20px sans-serif'; ctx.textAlign='left'; ctx.fillText(store.name+' Weekly Shift', 14,26);
-  ctx.fillStyle='#8a857c'; ctx.font='12px sans-serif'; ctx.fillText(md(dates[0])+' - '+md(dates[6])+(plan.status==='公開済'?'  [Published]':'  [Draft]'),14,46);
-  var y0=titleH; ctx.fillStyle='#f3efe8'; ctx.fillRect(0,y0,W,headH);
-  ctx.fillStyle='#2b2b2b'; ctx.textAlign='left'; ctx.font='bold 12px sans-serif'; ctx.fillText('Role',8,y0+headH/2);
-  DOW_SHIFT.forEach(function(day,i){ var x=nameW+dayW*i; ctx.textAlign='center';
-    ctx.fillStyle=(day==='日')?'#d65a4a':(day==='土'?'#4a7fd6':'#2b2b2b'); ctx.font='bold 14px sans-serif'; ctx.fillText(EN[day]||day, x+dayW/2, y0+15);
-    ctx.fillStyle='#8a857c'; ctx.font='10px sans-serif'; ctx.fillText(md(dates[i]), x+dayW/2, y0+30);
-    var bd=aieaBowlAvg4wByDay(storeId,day); if(bd){ ctx.font='9px sans-serif'; ctx.fillStyle='#8a857c'; ctx.fillText('L '+bd.lb+'/'+bd.ltb+'  D '+bd.db+'/'+bd.dtb, x+dayW/2, y0+48); }
-  });
-  var y=titleH+headH;
-  posOrder.forEach(function(pos,ri){
-    var rh=rowHs[ri];
-    if(ri%2){ ctx.fillStyle='#faf8f4'; ctx.fillRect(0,y,W,rh); }
-    ctx.strokeStyle='#eee'; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
-    ctx.fillStyle='#2b2b2b'; ctx.textAlign='left'; ctx.font='bold 11px sans-serif'; ctx.fillText(String(pos).slice(0,10),6,y+rh/2);
-    DOW_SHIFT.forEach(function(day,di){
-      var x=nameW+dayW*di; var iso=weekDateForDow(day); var ly=y+9;
-      splan.forEach(function(sec){ var slot=(sec.slots||[]).find(function(sl){return sl.pos===pos;}); if(!slot) return; if(sectionClosedForDay(storeId,sec.key,iso,day)) return;
-        var nm=cells[shiftCellKey(day,sec.key,slot.label)]||''; var isL=(nm&&nm===leaderOf(day,sec));
-        ctx.textAlign='left'; ctx.font='10px sans-serif'; ctx.fillStyle='#8a857c'; ctx.fillText(secShort(sec.key)+':', x+6, ly);
-        ctx.fillStyle=nm?'#2b2b2b':'#c9c4bb'; ctx.font=(isL?'bold ':'')+'11px sans-serif';
-        ctx.fillText((isL?'* ':'')+(nm?String(nm.split(' ')[0]||nm).slice(0,10):'-'), x+30, ly);
-        ly+=lineH;
-      });
+  ctx.fillStyle='#2b2b2b'; ctx.font='bold 20px sans-serif'; ctx.textAlign='left'; ctx.fillText(store.name+' Weekly Shift', 14,24);
+  ctx.fillStyle='#8a857c'; ctx.font='12px sans-serif'; ctx.fillText(md(dates[0])+' - '+md(dates[6])+(plan.status==='公開済'?'  [Published]':'  [Draft]'),14,43);
+  blocks.forEach(function(block){
+    var sec=block.sec; var y=block.top;
+    ctx.fillStyle='#e9e4da'; ctx.fillRect(0,y,W,secHeadH);
+    ctx.fillStyle='#2b2b2b'; ctx.textAlign='left'; ctx.font='bold 14px sans-serif'; ctx.fillText(secTitle(sec.key), 10, y+secHeadH/2);
+    y+=secHeadH;
+    ctx.fillStyle='#f7f4ee'; ctx.fillRect(0,y,W,block.dh);
+    ctx.fillStyle='#2b2b2b'; ctx.textAlign='left'; ctx.font='bold 11px sans-serif'; ctx.fillText('Role',8,y+block.dh/2);
+    DOW_SHIFT.forEach(function(day,di){ var x=nameW+dayW*di; ctx.textAlign='center';
+      ctx.fillStyle=(day==='日')?'#d65a4a':(day==='土'?'#4a7fd6':'#2b2b2b'); ctx.font='bold 13px sans-serif'; ctx.fillText(EN[day]||day, x+dayW/2, y+(block.isMain?13:block.dh/2-5));
+      ctx.fillStyle='#8a857c'; ctx.font='10px sans-serif'; ctx.fillText(md(dates[di]), x+dayW/2, y+(block.isMain?28:block.dh/2+9));
+      if(block.isMain){ var bd=aieaBowlAvg4wByDay(storeId,day); if(bd){ var b=(sec.key==='Lunch')?bd.lb:bd.db; var t=(sec.key==='Lunch')?bd.ltb:bd.dtb; ctx.font='9px sans-serif'; ctx.fillStyle='#8a857c'; ctx.fillText('Bowl'+b+' TO'+t, x+dayW/2, y+44); } }
     });
-    y+=rh;
+    y+=block.dh;
+    (sec.slots||[]).forEach(function(slot,ri){
+      if(ri%2){ ctx.fillStyle='#faf8f4'; ctx.fillRect(0,y,W,rowH); }
+      ctx.strokeStyle='#eee'; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+      ctx.fillStyle='#2b2b2b'; ctx.textAlign='left'; ctx.font='bold 11px sans-serif'; ctx.fillText(String(slot.pos).slice(0,11),6,y+rowH/2);
+      DOW_SHIFT.forEach(function(day,di){ var x=nameW+dayW*di; var iso=weekDateForDow(day);
+        ctx.strokeStyle='#eee'; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y+rowH); ctx.stroke();
+        ctx.textAlign='center';
+        if(sectionClosedForDay(storeId,sec.key,iso,day)){ ctx.fillStyle='#d65a4a'; ctx.font='10px sans-serif'; ctx.fillText('off', x+dayW/2, y+rowH/2); return; }
+        var nm=cells[shiftCellKey(day,sec.key,slot.label)]||''; var isL=(nm&&nm===leaderOf(day,sec));
+        ctx.fillStyle=nm?'#2b2b2b':'#c9c4bb'; ctx.font=(isL?'bold ':'')+'12px sans-serif';
+        ctx.fillText((isL?'* ':'')+(nm?String(nm.split(' ')[0]||nm).slice(0,11):'-'), x+dayW/2, y+rowH/2);
+      });
+      y+=rowH;
+    });
   });
   try{ var url=cv.toDataURL('image/png'); var a=document.createElement('a'); a.href=url; a.download=store.name+'_shift_'+String(week).replace('/','-')+'.png'; a.click(); showToast('Saved shift image', 'success'); }catch(e){ showToast('Image export failed', 'danger'); }
 }
+
 function exportShiftImage(storeId, week){
   if(storeId==='F04-A'){ return exportAieaShiftImage(storeId, week); }
   var store = STORES.find(function(s){return s.id===storeId;}) || {name:storeId};
@@ -15285,58 +15288,56 @@ function aieaBowlAvg4wByDay(storeId, day){
 }
 /* 曜日ラベル英語 */
 function dowEN(day){ return ({'日':'Sun','月':'Mon','火':'Tue','水':'Wed','木':'Thu','金':'Fri','土':'Sat'})[day]||day; }
-/* Aiea専用 シフト作成ビュー(英語): 縦=担当 / 横=7曜日(1週間が収まる)。各セルにL/D。列見出しに直近4週ボール数、各シフト最高スキルに👑。申請・警告は下部 */
+/* Aiea専用 シフト作成ビュー(英語): サービス別(Lunch/Dinner/Prep/Trainee)にブロック分割。各ブロック=担当×7曜日。
+   縦に長くなるが視認性重視。列見出しに直近4週ボール数、各シフト最高スキルに👑。申請・警告は下部 */
 function renderAieaBuild(storeId, week, plan, warnings){
   plan = plan || (getShiftPlan(storeId, week)||{status:'下書き',cells:{}});
   var cells = plan.cells||{};
   var splan = shiftSlotPlan(storeId).filter(function(sc){ return sc.slots && sc.slots.length; });
-  var posOrder=[]; splan.forEach(function(sec){ (sec.slots||[]).forEach(function(sl){ if(posOrder.indexOf(sl.pos)<0) posOrder.push(sl.pos); }); });
-  var secShort=function(k){ return k==='Lunch'?'L':k==='Dinner'?'D':k==='Prep'?'Prep':k==='Trainee'?'Trn':k==='LPrep'?'LP':k; };
   var mdOf=function(iso){ return iso?(Number(iso.split('-')[1])+'/'+Number(iso.split('-')[2])):''; };
+  var secTitle=function(k){ return ({Lunch:'Lunch',Dinner:'Dinner',Prep:'Prep',Trainee:'Trainee',LPrep:'Lunch Prep',DSetting:'Dinner Setup'})[k]||k; };
+  var secIcon=function(k){ return k==='Lunch'?'ti-sun':k==='Dinner'?'ti-moon':k==='Prep'?'ti-tools-kitchen-2':k==='Trainee'?'ti-school':'ti-layout-list'; };
   function leaderOf(day, sec){
     var as=(sec.slots||[]).map(function(sl){ return {name:cells[shiftCellKey(day,sec.key,sl.label)], pos:sl.pos}; }).filter(function(x){return x.name;});
     var ld=null,lv=-1; as.forEach(function(a){ var l=(typeof positionLevelStore==='function')?(positionLevelStore(a.name,a.pos,storeId)||0):0; if(l>lv){lv=l;ld=a.name;} }); return ld;
   }
-  var h='<div class="card" style="overflow:hidden;padding:8px"><div class="card-title" style="font-size:13px"><i class="ti ti-layout-grid" style="color:var(--accent)"></i> Shift Table (Role × Day)<span style="font-size:8.5px;color:var(--muted);font-weight:400;margin-left:auto">👑 Leader · Bowls = 4-wk avg (dine-in/TO)</span></div>';
-  h+='<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:10px"><thead><tr><th style="width:46px;text-align:left;padding:2px;border-bottom:1px solid var(--border)">Role</th>';
-  DOW_SHIFT.forEach(function(day){
-    var iso=weekDateForDow(day); var bd=aieaBowlAvg4wByDay(storeId, day);
-    var bh = bd ? ('<div style="font-size:7px;color:var(--muted);font-weight:400;line-height:1.2">L'+bd.lb+'/'+bd.ltb+'<br>D'+bd.db+'/'+bd.dtb+'</div>') : '';
-    var wd=(day==='日'||day==='土');
-    h+='<th style="padding:2px 1px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><div style="font-weight:700;'+(wd?'color:var(--accent)':'')+'">'+dowEN(day)+'</div><div style="font-size:7.5px;color:var(--muted);font-weight:400">'+mdOf(iso)+'</div>'+bh+'</th>';
-  });
-  h+='</tr></thead><tbody>';
-  posOrder.forEach(function(pos){
-    h+='<tr><td style="padding:2px;font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:8.5px">'+escapeHtml(pos)+'</td>';
+  var h='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.6"><i class="ti ti-info-circle"></i> Role × Day, split by service. 👑 = Leader (top skill). Bowls = 4-week avg (dine-in / takeout). Tap a cell to assign.</div>';
+  splan.forEach(function(sec){
+    var isMain=(sec.key==='Lunch'||sec.key==='Dinner');
+    h+='<div class="card" style="overflow-x:auto;padding:8px 8px 10px"><div class="card-title" style="font-size:13px"><i class="ti '+secIcon(sec.key)+'" style="color:var(--accent)"></i> '+secTitle(sec.key)+'</div>';
+    h+='<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:11px"><thead><tr><th style="width:58px;text-align:left;padding:4px 3px;border-bottom:2px solid var(--border)">Role</th>';
     DOW_SHIFT.forEach(function(day){
-      var iso=weekDateForDow(day); var minis='';
-      splan.forEach(function(sec){
-        var slot=(sec.slots||[]).find(function(sl){ return sl.pos===pos; });
-        if(!slot) return;
-        if(sectionClosedForDay(storeId, sec.key, iso, day)) return;
+      var iso=weekDateForDow(day); var wd=(day==='日'||day==='土'); var bh='';
+      if(isMain){ var bd=aieaBowlAvg4wByDay(storeId, day); if(bd){ var b=(sec.key==='Lunch')?bd.lb:bd.db; var t=(sec.key==='Lunch')?bd.ltb:bd.dtb; bh='<div style="font-size:8px;color:var(--muted);font-weight:400;line-height:1.3;margin-top:1px">Bowl'+b+' TO'+t+'</div>'; } }
+      h+='<th style="padding:3px 1px;text-align:center;border-bottom:2px solid var(--border);border-left:1px solid var(--border)"><div style="font-weight:700;'+(wd?'color:var(--accent)':'')+'">'+dowEN(day)+'</div><div style="font-size:8px;color:var(--muted);font-weight:400">'+mdOf(iso)+'</div>'+bh+'</th>';
+    });
+    h+='</tr></thead><tbody>';
+    (sec.slots||[]).forEach(function(slot){
+      h+='<tr><td style="padding:3px;font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px">'+escapeHtml(slot.pos)+'</td>';
+      DOW_SHIFT.forEach(function(day){
+        var iso=weekDateForDow(day);
+        if(sectionClosedForDay(storeId, sec.key, iso, day)){ h+='<td style="padding:2px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><div style="font-size:9px;color:var(--red);opacity:.55;padding:8px 2px">off</div></td>'; return; }
         var key=shiftCellKey(day, sec.key, slot.label);
         var assigned=cells[key]||'';
         var isLeader=(assigned && assigned===leaderOf(day, sec));
-        var nm = assigned ? ((isLeader?'👑':'')+escapeHtml((assigned.split(' ')[0]||assigned))) : '+';
-        minis+='<div class="shift-slot'+(assigned?' sel':'')+'" style="font-size:8px;padding:1px 2px;margin:1px 0;min-height:13px;line-height:1.2;text-align:left'+(isLeader?';box-shadow:inset 0 0 0 1.5px var(--accent)':'')+'" onclick="openCellAssign(\''+storeId+'\',\''+week+'\',\''+key+'\',\''+day+'\',\''+sec.key+'\',\''+slot.pos.replace(/'/g,'')+'\')"><span style="color:var(--muted);font-size:6.5px">'+secShort(sec.key)+'</span> '+nm+'</div>';
+        var nm=assigned?((isLeader?'👑 ':'')+escapeHtml((assigned.split(' ')[0]||assigned))):'+';
+        h+='<td style="padding:2px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><div class="shift-slot'+(assigned?' sel':'')+'" style="font-size:10.5px;padding:6px 3px;min-height:32px;line-height:1.25;display:flex;align-items:center;justify-content:center'+(isLeader?';box-shadow:inset 0 0 0 2px var(--accent)':'')+'" onclick="openCellAssign(\''+storeId+'\',\''+week+'\',\''+key+'\',\''+day+'\',\''+sec.key+'\',\''+slot.pos.replace(/'/g,'')+'\')">'+nm+'</div></td>';
       });
-      if(!minis) minis='<span style="color:var(--border)">·</span>';
-      h+='<td style="padding:1px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border);vertical-align:top">'+minis+'</td>';
+      h+='</tr>';
     });
-    h+='</tr>';
+    h+='</tbody></table></div>';
   });
-  h+='</tbody></table></div>';
   // Availability (bottom)
   var avail=getAvailability(storeId, week)||[];
   h+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-clipboard-text" style="color:var(--accent)"></i> Availability ('+avail.length+' submitted)</div>';
   if(!avail.length){ h+='<div style="font-size:12px;color:var(--muted)">No submissions yet.</div>'; }
   else {
-    h+='<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:10px"><thead><tr><th style="width:62px;text-align:left;padding:2px;border-bottom:1px solid var(--border)">Staff</th>'+DOW_SHIFT.map(function(d){var wd=(d==='日'||d==='土');return '<th style="padding:2px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border);'+(wd?'color:var(--accent)':'')+'">'+dowEN(d)+'</th>';}).join('')+'</tr></thead><tbody>';
+    h+='<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:10.5px"><thead><tr><th style="width:62px;text-align:left;padding:3px;border-bottom:2px solid var(--border)">Staff</th>'+DOW_SHIFT.map(function(d){var wd=(d==='日'||d==='土');return '<th style="padding:3px;text-align:center;border-bottom:2px solid var(--border);border-left:1px solid var(--border);'+(wd?'color:var(--accent)':'')+'">'+dowEN(d)+'</th>';}).join('')+'</tr></thead><tbody>';
     avail.forEach(function(a){
-      h+='<tr><td style="padding:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--border)">'+escapeHtml((a.name||'').split(' ')[0])+'</td>';
+      h+='<tr><td style="padding:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--border)">'+escapeHtml((a.name||'').split(' ')[0])+'</td>';
       DOW_SHIFT.forEach(function(d){
         var ps=(a.slots||[]).filter(function(s){return s.day===d;}).map(function(s){return s.period==='Lunch'?'L':s.period==='Dinner'?'D':(s.period||'').slice(0,1);});
-        h+='<td style="text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border)">'+(ps.length?('<span style="color:var(--green);font-weight:700">'+ps.join('/')+'</span>'):'<span style="color:var(--border)">-</span>')+'</td>';
+        h+='<td style="text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border);padding:3px">'+(ps.length?('<span style="color:var(--green);font-weight:700">'+ps.join('/')+'</span>'):'<span style="color:var(--border)">-</span>')+'</td>';
       });
       h+='</tr>';
     });
@@ -15345,7 +15346,7 @@ function renderAieaBuild(storeId, week, plan, warnings){
     if(notes.length){ h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">'+notes.map(function(a){return '<b>'+escapeHtml((a.name||'').split(' ')[0])+'</b>: '+escapeHtml(a.notes);}).join('<br>')+'</div>'; }
   }
   h+='</div>';
-  // Days off / OT / Warnings (bottom, English)
+  // Days off / OT / Warnings (bottom)
   var weekDates=DOW_SHIFT.map(weekDateForDow), leaveByDay={};
   staffForStore(storeId).forEach(function(e){ DOW_SHIFT.forEach(function(day,di){ if(isOnLeave(e.name, weekDates[di])){ (leaveByDay[day]=leaveByDay[day]||[]).push(e.name); } }); });
   if(Object.keys(leaveByDay).length){
