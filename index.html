@@ -13036,10 +13036,10 @@ function openTipDayDetail(storeId, date) {
       <th style="text-align:right;padding:5px 8px"><i class="ti ti-moon" style="color:#8b5cf6"></i> ディナー</th>
       <th style="text-align:right;padding:5px 8px">合計</th>
     </tr></thead><tbody>
-    ${sumRow('クレジットTip', tip.lunchCredit, tip.dinnerCredit)}
+    ${sumRow('クレジットTip（Toast照合）', tip.lunchCredit, tip.dinnerCredit, {color:'var(--accent2)'})}
     ${sumRow('手数料 (3.5%)', -lFeeAmt, -dFeeAmt, {color:'var(--muted)'})}
     ${sumRow('キャッシュTip', tip.lunchCash, tip.dinnerCash)}
-    ${sumRow('実Tip額', tip.lunchTotal, tip.dinnerTotal, {bold:true, color:'var(--green)', top:true})}
+    ${sumRow('実Tip額（配分）', tip.lunchTotal, tip.dinnerTotal, {bold:true, color:'var(--green)', top:true})}
     ${sumRow('配分合計', lDist, dDist, {color:'var(--muted)'})}
     <tr style="border-top:2px solid var(--border)">
       <td style="font-size:11px;padding:5px 8px;font-weight:700">差額（0が正常）</td>
@@ -13051,7 +13051,8 @@ function openTipDayDetail(storeId, date) {
       <td style="text-align:right;font-size:10px;color:var(--muted);padding:3px 8px">${lPpl}名 / ${lHrs.toFixed(1)}h</td>
       <td style="text-align:right;font-size:10px;color:var(--muted);padding:3px 8px">${dPpl}名 / ${dHrs.toFixed(1)}h</td>
       <td></td></tr>
-    </tbody></table>`;
+    </tbody></table>
+    <div style="font-size:10.5px;color:var(--muted);margin:-4px 0 10px;line-height:1.7"><i class="ti ti-info-circle"></i> <b>「クレジットTip（Toast照合）」がToast/Tip診断と一致する生の額</b>です（L+D＝Toastのクレジットチップ）。<b>「実Tip額（配分）」＝クレジット −手数料3.5% ＋キャッシュTip</b> なので、Toastのクレジット額とは一致しません（＝差の正体）。日別一覧のL/D列はこの「実Tip額」です。</div>`;
 
   if (!diffOK) {
     html += `<div class="alert alert-danger" style="padding:7px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i> <span style="font-size:12px">実Tip額と配分合計に差があります。クレジット/キャッシュTipの入力漏れ、または勤怠の取得漏れの可能性があります。</span></div>`;
@@ -14742,7 +14743,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '434';
+const APP_VERSION = '436';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30263,6 +30264,48 @@ function checkTipPromotions(){
 /* ============================================================
    ⑭ Invoice / Receipt
 ============================================================ */
+function setInvMainView(v){ window._invMainView=v; renderPage('invoice'); }
+function setCuMonth(d){ window._cuOff=(window._cuOff||0)+d; renderPage('invoice'); }
+/* カード使用管理: 用途別×月別＋社員別。GM/CEO/経理が全社員の用途別使用額を把握 */
+function renderCardUsage(){
+  var now=(typeof bizNow==='function')?bizNow():new Date();
+  var ref=new Date(now.getFullYear(), now.getMonth()+(window._cuOff||0), 1);
+  var y=ref.getFullYear(), m=ref.getMonth();
+  var crd=cardReceiptAcctData(y,m);
+  var purList=Object.keys(crd.purposes).sort(function(a,b){return crd.purposes[b]-crd.purposes[a];});
+  var empList=Object.keys(crd.byEmp).sort(function(a,b){return crd.byEmp[b].total-crd.byEmp[a].total;});
+  var mny=function(v){ return '$'+(Number(v)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
+  var html='<div class="card" style="padding:10px 12px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="setCuMonth(-1)">◀</button>'
+    +'<div style="flex:1;text-align:center"><div style="font-size:15px;font-weight:800">'+y+'年'+(m+1)+'月 カード使用</div><div style="font-size:11px;color:var(--muted)">'+crd.inMonth.length+'件 ・ 計 '+mny(crd.grand)+'</div></div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="setCuMonth(1)">▶</button></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> カード/レシート（Receipt読み取り）を用途別・社員別に集計。誰が何の用途にいくら使ったかを把握できます。</div></div>';
+  if(!crd.inMonth.length){ html+='<div class="card" style="text-align:center;color:var(--muted);padding:30px">この月のカード/レシートはありません</div>'; return html; }
+  // 用途別
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-chart-donut" style="color:var(--accent)"></i> 用途別</div>';
+  purList.forEach(function(pp){ var amt=crd.purposes[pp]; var pct=crd.grand?Math.round(amt/crd.grand*100):0;
+    html+='<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span>'+escapeHtml(pp)+'</span><span style="font-weight:700">'+mny(amt)+' <span style="color:var(--muted);font-weight:400">('+pct+'%)</span></span></div>'
+      +'<div style="height:7px;background:var(--surface2);border-radius:4px;overflow:hidden;margin-top:2px"><div style="height:100%;width:'+pct+'%;background:var(--accent)"></div></div></div>';
+  });
+  html+='</div>';
+  // 社員 × 用途 マトリクス
+  html+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-users" style="color:var(--accent)"></i> 社員別 × 用途</div>';
+  html+='<table style="border-collapse:collapse;width:100%;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px;position:sticky;left:0;background:var(--surface)">社員</th>'+purList.map(function(pp){return '<th style="text-align:right;padding:4px;white-space:nowrap">'+escapeHtml(pp)+'</th>';}).join('')+'<th style="text-align:right;padding:4px">合計</th></tr></thead><tbody>';
+  empList.forEach(function(emp){ var e=crd.byEmp[emp];
+    html+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 4px;font-weight:600;position:sticky;left:0;background:var(--surface);white-space:nowrap">'+escapeHtml(emp)+'</td>'+purList.map(function(pp){var v=e.byPurpose[pp]||0;return '<td style="text-align:right;padding:5px 4px;white-space:nowrap">'+(v?'$'+Math.round(v).toLocaleString():'<span style="color:var(--border)">-</span>')+'</td>';}).join('')+'<td style="text-align:right;padding:5px 4px;font-weight:700;white-space:nowrap">$'+Math.round(e.total).toLocaleString()+'</td></tr>';
+  });
+  html+='<tr style="border-top:2px solid var(--border);font-weight:700"><td style="padding:5px 4px;position:sticky;left:0;background:var(--surface)">合計</td>'+purList.map(function(pp){return '<td style="text-align:right;padding:5px 4px;white-space:nowrap">$'+Math.round(crd.purposes[pp]).toLocaleString()+'</td>';}).join('')+'<td style="text-align:right;padding:5px 4px;white-space:nowrap">$'+Math.round(crd.grand).toLocaleString()+'</td></tr>';
+  html+='</tbody></table></div>';
+  // 社員別 明細（展開）
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-list-details" style="color:var(--accent)"></i> 社員別 明細</div>';
+  empList.forEach(function(emp){ var e=crd.byEmp[emp];
+    html+='<details style="border-top:1px solid var(--border);padding:4px 0"><summary style="font-size:12px;font-weight:700;cursor:pointer;display:flex;justify-content:space-between;list-style:none"><span><i class="ti ti-user"></i> '+escapeHtml(emp)+'</span><span>'+mny(e.total)+'</span></summary>';
+    html+='<div style="margin-top:4px">'+e.items.slice().sort(function(a,b){return String(a.date).localeCompare(b.date);}).map(function(it){return '<div style="font-size:11px;color:var(--tm);padding:3px 0;display:flex;justify-content:space-between;gap:8px"><span>'+escapeHtml(it.date)+' · <b>'+escapeHtml(it.purpose)+'</b> · '+escapeHtml(it.vendor||it.name||'')+(it.memo?'（'+escapeHtml(it.memo)+'）':'')+'</span><span style="white-space:nowrap">'+mny(it.total)+'</span></div>';}).join('')+'</div></details>';
+  });
+  html+='</div>';
+  html+='<div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn btn-secondary" style="flex:1" onclick="exportCardReceiptSummaryCSV('+y+','+m+')"><i class="ti ti-file-text"></i> 用途集計CSV</button><button class="btn btn-secondary" style="flex:1" onclick="exportCardReceiptCSV('+y+','+m+')"><i class="ti ti-list"></i> 明細CSV</button></div>';
+  return html;
+}
 function renderInvoice() {
   ensureIngV2Backfill();
   var allInv = ls('invoices', []);
@@ -30271,6 +30314,9 @@ function renderInvoice() {
   var invoices = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
   var html = `<div class="section-header"><div><div class="section-title">Invoice管理</div><div class="section-sub">アップロード→照合→価格更新</div></div>
     <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> Drive連携</button>`:''}<button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> Invoice登録</button></div></div>`;
+  var _canCard = ['ceo','gm','office','office_crew'].includes(curRole);
+  html += `<div class="mm-tabs" style="margin-bottom:10px"><button class="mm-tab${(window._invMainView||'list')!=='cardusage'?' active':''}" onclick="setInvMainView('list')"><i class="ti ti-file-invoice"></i> Invoice一覧</button>${_canCard?`<button class="mm-tab${(window._invMainView||'list')==='cardusage'?' active':''}" onclick="setInvMainView('cardusage')"><i class="ti ti-credit-card"></i> カード使用管理</button>`:''}</div>`;
+  if ((window._invMainView||'list')==='cardusage' && _canCard) return html + renderCardUsage();
   html += renderReimburseCard();
   if (!invoices.length) {
     html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-file-invoice" style="font-size:32px;margin-bottom:8px;display:block"></i>Invoice履歴なし</div>`;
@@ -30378,7 +30424,7 @@ function openInvoiceModal() {
     <div class="form-group"><label class="form-label">種別</label>
       <div style="display:flex;gap:8px">
         <button class="btn ${invoiceDocType==='Invoice'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Invoice')">業者Invoice</button>
-        <button class="btn ${invoiceDocType==='Receipt'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Receipt')">買い出しReceipt</button>
+        <button class="btn ${invoiceDocType==='Receipt'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Receipt')">Receipt読み取り</button>
         <button class="btn ${invoiceDocType==='Reimburse'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Reimburse')">建て替え経費</button>
       </div>
     </div>
@@ -30396,7 +30442,7 @@ function openInvoiceModal() {
       <label class="form-label" style="margin-top:8px">対象店舗（複数可・金額を均等按分）</label>
       <div style="display:flex;flex-wrap:wrap;gap:8px">${candidates.map(function(s){return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;border:1px solid var(--border);border-radius:6px;padding:4px 8px;cursor:pointer"><input type="checkbox" class="inv-mstore" value="'+s.id+'" '+(s.id===window._invoiceStore?'checked':'')+'><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</label>';}).join('')}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:3px">2店舗分まとめて購入した時は複数選択→金額を均等に分けてFood Costに反映します。</div>
-      <label class="form-label" style="margin-top:8px">用途</label>
+      <label class="form-label" style="margin-top:8px">用途 <span style="color:var(--accent2)">*</span></label>
       <select class="form-select" id="inv-purpose"><option value="">（選択）</option><option>仕入れ・仕込み</option><option>賄い</option><option>差し入れ</option><option>面談</option><option>イベント・販促</option><option>備品・消耗品</option><option>その他</option></select>
       <input class="form-input" id="inv-purpose-memo" placeholder="用途の補足（例: 新人面談ランチ）" style="margin-top:6px">
     </div>` : ''}
@@ -30861,6 +30907,7 @@ async function saveInvoice() {
   var rcptStores=[]; if(invoiceDocType==='Receipt'){ rcptStores=Array.prototype.slice.call(document.querySelectorAll('.inv-mstore:checked')).map(function(c){return c.value;}); }
   if(!rcptStores.length) rcptStores=[invStoreId];
   var _purpose=(docVal('inv-purpose')||''); var _pmemo=(docVal('inv-purpose-memo')||'').trim();
+  if(invoiceDocType==='Receipt' && !_purpose){ alert('用途を選択してください（必須）'); return; }
   var priceStores = (invoiceDocType==='Receipt') ? rcptStores : [invStoreId];
   ensureIngV2Backfill();
   var _mig = ingMigrationOn();
