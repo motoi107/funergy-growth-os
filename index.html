@@ -8333,7 +8333,14 @@ function _qbMonthData(storeId, ym){
   var aG=ms.guests||0, aS=ms.sales||0;
   return { ym:ym, mm:mm, seg:seg, tSales:tSales, tGuests:tGuests, tPpa:tGuests?Math.round(tSales/tGuests*100)/100:0, tFc:kpi.foodCost||0, tLb:kpi.laborPct||0,
     aSales:aS, aGuests:aG, aPpa:aG?Math.round(aS/aG*100)/100:0, aFc:ms.fcRate||0, aLb:ms.laborRate||0, hasData:!!ms.hasData, elapsed:off<=0,
-    rationale:(b&&b.rationale)||null };
+    rationale:_qbMonthRationale(b, ym) };
+}
+/* その月“専用”の予算に紐づく考え方のみ返す。現行予算(budgets_v2)は全月に返るため、予算のperiod月と一致する月だけ表示（未入力の月は空）。 */
+function _qbMonthRationale(b, ym){
+  if(!b || !b.rationale || b._fromFile) return null;
+  var p=b.period; if(!p) return null;
+  var a=String(p).split('.'); var bym=(a.length===2)?(a[0]+'-'+String(a[1]).padStart(2,'0')):String(p).slice(0,7);
+  return (bym===ym) ? b.rationale : null;
 }
 /* 進捗1行: バー＋達成%＋不足(あと○○) */
 function _qbProgLine(label, act, tgt, opts){
@@ -14743,7 +14750,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '437';
+const APP_VERSION = '438';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
