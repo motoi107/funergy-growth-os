@@ -3062,7 +3062,7 @@ function openTipHoursModal(){
           <option value="all" ${!hrs?'selected':''}>勤怠時間すべて</option>
           <option value="hours" ${hrs?'selected':''}>営業時間のみ</option>
         </select></div>
-      <div style="margin-top:6px;font-size:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="color:var(--muted)"><i class="ti ti-arrows-split"></i> L/Dの境目（この時刻〜＝ディナー）:</span><select class="form-select" id="th-split-${st.id}" style="width:auto;padding:4px 8px;font-size:11px">${[11,12,13,14,15,16,17,18,19,20].map(function(hh){return '<option value="'+hh+'" '+(((g.splitHour||16)===hh)?'selected':'')+'>'+hh+':00</option>';}).join('')}</select></div>
+      <div style="margin-top:6px;font-size:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="color:var(--muted)"><i class="ti ti-arrows-split"></i> L/Dの境目（この時刻〜＝ディナー・15分刻み）:</span><input type="time" step="900" class="form-input" id="th-split-${st.id}" value="${_hhFromFrac(g.splitHour!=null?g.splitHour:16)}" style="width:96px;padding:4px 8px;font-size:11px"></div>
       <div id="th-hrs-${st.id}" style="display:${hrs?'block':'none'};margin-top:6px;font-size:11px">
         <button class="btn btn-secondary btn-sm" onclick="openTipDowEditor('${st.id}')"><i class="ti ti-calendar-cog"></i> 曜日別 L/D時間を設定</button>
         <span style="font-size:10px;color:var(--muted);margin-left:6px">${tipDowSummary(st.id)}</span>
@@ -3078,7 +3078,7 @@ function saveTipHoursCfg(){
   var c=ls('tip_hours_config',{})||{};
   activeStores().forEach(function(st){
     var mode=(document.getElementById('th-mode-'+st.id)||{}).value||'all';
-    var splitH=parseInt((document.getElementById('th-split-'+st.id)||{}).value||'16',10); if(!(splitH>=0&&splitH<=23)) splitH=16;
+    var splitH=_fracFromHH((document.getElementById('th-split-'+st.id)||{}).value||'16:00');
     var prev=c[st.id]||{};
     if(mode!=='hours'){ c[st.id]={mode:'all', splitHour:splitH, dow:prev.dow, l1:prev.l1, l2:prev.l2, d1:prev.d1, d2:prev.d2}; return; }
     // hoursモード: 曜日別設定(dow)は openTipDowEditor で編集済み。ここではmode/splitHourを確定。
@@ -3159,7 +3159,9 @@ function saveTipDowCfg(sid){
 /* Tip対象時間の店舗別設定: tip_hours_config = {sid:{mode:'all'|'hours', l1,l2,d1,d2}} */
 function getTipHoursCfg(sid){ var c=ls('tip_hours_config',{})||{}; return c[sid]||{mode:'all'}; }
 function setTipHoursCfg(sid, cfg){ var c=ls('tip_hours_config',{})||{}; c[sid]=cfg; lsSet('tip_hours_config', c); }
-function tipSplitHourFor(sid){ var h=parseInt((getTipHoursCfg(sid)||{}).splitHour,10); return (h>=0&&h<=23)?h:16; }
+function tipSplitHourFor(sid){ var v=Number((getTipHoursCfg(sid)||{}).splitHour); return (v>=0&&v<=24)?v:16; }
+function _hhFromFrac(f){ f=Number(f); if(!(f>=0&&f<=24)) f=16; var H=Math.floor(f), M=Math.round((f-H)*60); if(M===60){H++;M=0;} return String(H).padStart(2,'0')+':'+String(M).padStart(2,'0'); }
+function _fracFromHH(hh){ var m=String(hh||'').match(/^(\d{1,2}):(\d{2})$/); if(!m) return 16; var f=(+m[1])+(+m[2])/60; f=Math.round(f*4)/4; return (f>=0&&f<=24)?f:16; }
 function _thToMin(t){ var m=String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m?(+m[1]*60+ +m[2]):null; }
 function _thOverlapH(inDate, outDate, date, t1, t2){
   var a=_thToMin(t1), b=_thToMin(t2); if(a==null||b==null) return null;
@@ -14780,7 +14782,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '443';
+const APP_VERSION = '444';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
