@@ -8277,12 +8277,13 @@ function quarterTargets(storeId,y,q){
   months.forEach(function(ym){
     var pp=ym.split('-'), yy=+pp[0], mm=+pp[1];
     var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(storeId, ym):null;
-    var dow=b?getDow(b):null; var seg={lunch:0,dinner:0,takeout:0}, msales=0, mguests=0;
+    var registered=_qbBudgetIsForMonth(b, ym);
+    var dow=(b && registered)?getDow(b):null; var seg={lunch:0,dinner:0,takeout:0}, msales=0, mguests=0;
     if(dow){ var bd=dowSegBreakdown(dow,{y:yy,m:mm}); seg={lunch:bd.lunch,dinner:bd.dinner,takeout:bd.takeout}; msales=bd.lunch+bd.dinner+bd.takeout; var counts=bd.counts||weekdayCountsForMonth(yy,mm);
       ['lunch','dinner'].forEach(function(sg){ for(var k=0;k<7;k++){ var c=(dow[sg]||[])[k]||{}; mguests+=(parseFloat(c.guests)||0)*(counts[k]||0); } }); }
     var el=(_ymToOffset(ym)<=0);
     salesT+=msales; guestsT+=mguests; if(el){ salesEl+=msales; guestsEl+=mguests; }
-    byMonth.push({ym:ym, sales:msales, guests:mguests, seg:seg, elapsed:el, rationale:(b&&b.rationale)||null});
+    byMonth.push({ym:ym, sales:msales, guests:mguests, seg:seg, elapsed:el, registered:registered, rationale:_qbMonthRationale(b, ym)});
   });
   var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId)||{}):{};
   return { sales:salesT, guests:guestsT, salesEl:salesEl, guestsEl:guestsEl, ppa:guestsT?Math.round(salesT/guestsT*100)/100:0, fcRate:kpi.foodCost||0, laborRate:kpi.laborPct||0, repeat:kpi.repeatRate||0, byMonth:byMonth };
@@ -8325,22 +8326,28 @@ var QB_FOCUS_ITEMS=[
 function _qbMonthData(storeId, ym){
   var pp=ym.split('-'), yy=+pp[0], mm=+pp[1];
   var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(storeId, ym):null;
-  var dow=b?getDow(b):null; var seg={lunch:0,dinner:0,takeout:0}, tSales=0, tGuests=0;
+  var registered=_qbBudgetIsForMonth(b, ym);
+  var dow=(b && registered)?getDow(b):null; var seg={lunch:0,dinner:0,takeout:0}, tSales=0, tGuests=0;
   if(dow){ var bd=dowSegBreakdown(dow,{y:yy,m:mm}); seg={lunch:bd.lunch,dinner:bd.dinner,takeout:bd.takeout}; tSales=bd.lunch+bd.dinner+bd.takeout; var counts=bd.counts||weekdayCountsForMonth(yy,mm);
     ['lunch','dinner'].forEach(function(sg){ for(var k=0;k<7;k++){ var c=(dow[sg]||[])[k]||{}; tGuests+=(parseFloat(c.guests)||0)*(counts[k]||0); } }); }
   var off=_ymToOffset(ym); var ms=(off<=0)?(monthStats(storeId,off)||{}):{};
   var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId)||{}):{};
   var aG=ms.guests||0, aS=ms.sales||0;
   return { ym:ym, mm:mm, seg:seg, tSales:tSales, tGuests:tGuests, tPpa:tGuests?Math.round(tSales/tGuests*100)/100:0, tFc:kpi.foodCost||0, tLb:kpi.laborPct||0,
-    aSales:aS, aGuests:aG, aPpa:aG?Math.round(aS/aG*100)/100:0, aFc:ms.fcRate||0, aLb:ms.laborRate||0, hasData:!!ms.hasData, elapsed:off<=0,
+    aSales:aS, aGuests:aG, aPpa:aG?Math.round(aS/aG*100)/100:0, aFc:ms.fcRate||0, aLb:ms.laborRate||0, hasData:!!ms.hasData, elapsed:off<=0, registered:registered,
     rationale:_qbMonthRationale(b, ym) };
 }
 /* その月“専用”の予算に紐づく考え方のみ返す。現行予算(budgets_v2)は全月に返るため、予算のperiod月と一致する月だけ表示（未入力の月は空）。 */
+function _qbBudgetIsForMonth(b, ym){
+  if(!b) return false;
+  if(b._fromFile) return true; // BUDGET_MONTHLY(1〜6月)はその月専用
+  if(!b.period) return false;
+  var a=String(b.period).split('.'); var bym=(a.length===2)?(a[0]+'-'+String(a[1]).padStart(2,'0')):String(b.period).slice(0,7);
+  return bym===ym;
+}
 function _qbMonthRationale(b, ym){
-  if(!b || !b.rationale || b._fromFile) return null;
-  var p=b.period; if(!p) return null;
-  var a=String(p).split('.'); var bym=(a.length===2)?(a[0]+'-'+String(a[1]).padStart(2,'0')):String(p).slice(0,7);
-  return (bym===ym) ? b.rationale : null;
+  if(!b || !b.rationale) return null;
+  return _qbBudgetIsForMonth(b, ym) ? b.rationale : null;
 }
 /* 進捗1行: バー＋達成%＋不足(あと○○) */
 function _qbProgLine(label, act, tgt, opts){
@@ -8435,6 +8442,10 @@ function renderQuarterBudget(){
   // 月ごとの考え方（目標＋考え方・未入力表示）
   html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-bulb" style="color:var(--accent)"></i> 月ごとの考え方</div>';
   mds.forEach(function(md){
+    if(!md.registered){
+      html+='<div style="border-left:3px solid var(--border);padding:6px 10px;margin-bottom:8px"><div style="font-size:12px;font-weight:700">'+md.mm+'月</div><div style="font-size:10.5px;color:var(--muted);margin-top:2px">予算未登録（この月の予算設定がありません）</div></div>';
+      return;
+    }
     var segTot=md.seg.lunch+md.seg.dinner+md.seg.takeout; var pf=function(v){return segTot?Math.round(v/segTot*100):0;};
     var r=md.rationale;
     html+='<div style="border-left:3px solid var(--accent);padding:6px 10px;margin-bottom:8px">'
@@ -14750,7 +14761,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '438';
+const APP_VERSION = '439';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
