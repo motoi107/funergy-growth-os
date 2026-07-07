@@ -14476,7 +14476,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '422';
+const APP_VERSION = '423';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -14728,9 +14728,15 @@ async function pullAvailability(storeId, week){
     var res=await fetch(SUPABASE_URL+'/rest/v1/shift_availability?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=name,slots,notes,submitted_date', { headers: supaHeaders() });
     if(!res.ok) return false;
     var rows=await res.json();
-    if(Array.isArray(rows) && rows.length){
-      var arr=rows.map(function(r){ return { name:r.name, slots:r.slots||[], notes:r.notes||'', date:r.submitted_date||'' }; });
-      try{ localStorage.setItem('avail_'+storeId+'_'+week, JSON.stringify(arr)); }catch(e){}
+    if(Array.isArray(rows)){
+      var cloud=rows.map(function(r){ return { name:r.name, slots:r.slots||[], notes:r.notes||'', date:r.submitted_date||'' }; });
+      // ★ 上書きではなく名前でマージ（クラウド優先）。片方の欠落で提出が消えるのを防止（5/10問題対策）
+      var local=(function(){ try{ return JSON.parse(localStorage.getItem('avail_'+storeId+'_'+week))||[]; }catch(e){ return []; } })();
+      var byName={};
+      (Array.isArray(local)?local:[]).forEach(function(e){ if(e&&e.name) byName[e.name]=e; });
+      cloud.forEach(function(e){ if(e&&e.name) byName[e.name]=e; });
+      var merged=Object.keys(byName).map(function(n){ return byName[n]; });
+      try{ localStorage.setItem('avail_'+storeId+'_'+week, JSON.stringify(merged)); }catch(e){}
       return true;
     }
   }catch(e){ console.warn('pullAvailability', e); }
@@ -15119,6 +15125,30 @@ function renderShiftHelp(storeId, week) {
 }
 
 /* 提出状況 */
+/* 提出の保存状況を診断: ローカル件数・名前と、クラウド(shift_availability)の件数・名前を突合表示（5/10問題の切り分け用） */
+async function checkAvailSaveStatus(storeId, week){
+  var local=(getAvailability(storeId, week)||[]).map(function(a){return a.name;}).filter(Boolean);
+  openModal('<div class="modal-title">提出の保存状況 — '+escapeHtml(week)+'週 <button class="modal-close" onclick="closeModalDirect()">×</button></div><div id="sav-body" style="font-size:12px;padding:6px 2px"><i class="ti ti-loader"></i> クラウド照会中…</div>');
+  var cloud=[];
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/shift_availability?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=name,submitted_date', { headers: supaHeaders() });
+    if(res.ok){ var rows=await res.json(); cloud=(rows||[]).map(function(r){return r.name;}).filter(Boolean); }
+  }catch(e){}
+  var lset={}, cset={}; local.forEach(function(n){lset[n]=1;}); cloud.forEach(function(n){cset[n]=1;});
+  var onlyLocal=Object.keys(lset).filter(function(n){return !cset[n];});
+  var onlyCloud=Object.keys(cset).filter(function(n){return !lset[n];});
+  var h='<div style="line-height:1.9">'
+    +'<div>この端末（ローカル）：<b>'+local.length+'名</b></div>'
+    +'<div>クラウド（保存済み）：<b>'+cloud.length+'名</b></div></div>'
+    +'<div style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.7">'
+    +(onlyLocal.length?('・クラウド未保存（この端末のみ）：'+onlyLocal.map(escapeHtml).join('、')+'<br>'):'')
+    +(onlyCloud.length?('・この端末に未取得（クラウドのみ）：'+onlyCloud.map(escapeHtml).join('、')+'<br>'):'')
+    +(!onlyLocal.length&&!onlyCloud.length?'・ローカルとクラウドは一致しています。':'')
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.7">クラウド件数が提出人数より少ない → 一部の提出がクラウドに届いていません（その端末で再提出 or ネットワーク）。<br>クラウドは多いのにこの端末が少ない → 「最新に更新」で取得できます。</div>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="closeModalDirect();refreshShiftFromCloud(\''+storeId+'\',\''+week+'\')">最新に更新して閉じる</button></div>';
+  var body=document.getElementById('sav-body'); if(body) body.innerHTML=h;
+}
 function renderShiftStatus(storeId, week) {
   var staff = staffForStore(storeId);
   var avail = getAvailability(storeId, week);
@@ -15127,7 +15157,11 @@ function renderShiftStatus(storeId, week) {
   var rate = staff.length ? Math.round(submitted.length/staff.length*100) : 0;
   var reminded = ls('reminded_'+storeId+'_'+week, []);
 
-  var html = `<div class="kpi-grid" style="margin-bottom:12px">
+  var html = `<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <button class="btn btn-secondary btn-sm" onclick="refreshShiftFromCloud('${storeId}','${week}')"><i class="ti ti-refresh"></i> 最新に更新</button>
+    <button class="btn btn-secondary btn-sm" onclick="checkAvailSaveStatus('${storeId}','${week}')"><i class="ti ti-cloud-check"></i> 保存状況チェック</button>
+  </div>
+  <div class="kpi-grid" style="margin-bottom:12px">
     ${kpi('提出済', submitted.length, '名', 'var(--green)')}
     ${kpi('未提出', pending.length, '名', pending.length?'var(--red)':'var(--green)')}
     ${kpi('提出率', rate+'%', week+'週', rate>=80?'var(--green)':'var(--yellow)')}
