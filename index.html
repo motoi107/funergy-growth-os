@@ -14476,7 +14476,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '425';
+const APP_VERSION = '426';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -14899,7 +14899,55 @@ function shiftWeekMatrix(storeId, week){
   return rows;
 }
 
+/* Aiea用 画像出力: 画面表示（担当×7日, L/D, 👑, 4週ボール数）と同じ内容をcanvasで描画 */
+function exportAieaShiftImage(storeId, week){
+  var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
+  var plan=getShiftPlan(storeId,week)||{cells:{}}; var cells=plan.cells||{};
+  var splan=shiftSlotPlan(storeId).filter(function(sc){return sc.slots&&sc.slots.length;});
+  var posOrder=[]; splan.forEach(function(sec){(sec.slots||[]).forEach(function(sl){if(posOrder.indexOf(sl.pos)<0)posOrder.push(sl.pos);});});
+  if(!posOrder.length){ showToast('No shift to export.', 'warning'); return; }
+  var dates=DOW_SHIFT.map(weekDateForDow);
+  var md=function(iso){return iso?(Number(iso.split('-')[1])+'/'+Number(iso.split('-')[2])):'';};
+  var EN={'日':'Sun','月':'Mon','火':'Tue','水':'Wed','木':'Thu','金':'Fri','土':'Sat'};
+  var secShort=function(k){return k==='Lunch'?'L':k==='Dinner'?'D':k==='Prep'?'Prep':k==='Trainee'?'Trn':k==='LPrep'?'LP':k;};
+  function leaderOf(day,sec){ var as=(sec.slots||[]).map(function(sl){return {name:cells[shiftCellKey(day,sec.key,sl.label)],pos:sl.pos};}).filter(function(x){return x.name;}); var ld=null,lv=-1; as.forEach(function(a){var l=(typeof positionLevelStore==='function')?(positionLevelStore(a.name,a.pos,storeId)||0):0; if(l>lv){lv=l;ld=a.name;}}); return ld; }
+  var scale=2, nameW=86, dayW=108, headH=68, titleH=58, padB=26, lineH=17;
+  var rowHs=posOrder.map(function(pos){ var mx=1; DOW_SHIFT.forEach(function(day){ var iso=weekDateForDow(day); var c=0; splan.forEach(function(sec){ var slot=(sec.slots||[]).find(function(sl){return sl.pos===pos;}); if(slot && !sectionClosedForDay(storeId,sec.key,iso,day)) c++; }); if(c>mx)mx=c; }); return Math.max(26, 8+mx*lineH); });
+  var totalRowH=rowHs.reduce(function(a,b){return a+b;},0);
+  var W=nameW+dayW*7, H=titleH+headH+totalRowH+padB;
+  var cv=document.createElement('canvas'); cv.width=W*scale; cv.height=H*scale; var ctx=cv.getContext('2d'); ctx.scale(scale,scale); ctx.textBaseline='middle';
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#2b2b2b'; ctx.font='bold 20px sans-serif'; ctx.textAlign='left'; ctx.fillText(store.name+' Weekly Shift', 14,26);
+  ctx.fillStyle='#8a857c'; ctx.font='12px sans-serif'; ctx.fillText(md(dates[0])+' - '+md(dates[6])+(plan.status==='公開済'?'  [Published]':'  [Draft]'),14,46);
+  var y0=titleH; ctx.fillStyle='#f3efe8'; ctx.fillRect(0,y0,W,headH);
+  ctx.fillStyle='#2b2b2b'; ctx.textAlign='left'; ctx.font='bold 12px sans-serif'; ctx.fillText('Role',8,y0+headH/2);
+  DOW_SHIFT.forEach(function(day,i){ var x=nameW+dayW*i; ctx.textAlign='center';
+    ctx.fillStyle=(day==='日')?'#d65a4a':(day==='土'?'#4a7fd6':'#2b2b2b'); ctx.font='bold 14px sans-serif'; ctx.fillText(EN[day]||day, x+dayW/2, y0+15);
+    ctx.fillStyle='#8a857c'; ctx.font='10px sans-serif'; ctx.fillText(md(dates[i]), x+dayW/2, y0+30);
+    var bd=aieaBowlAvg4wByDay(storeId,day); if(bd){ ctx.font='9px sans-serif'; ctx.fillStyle='#8a857c'; ctx.fillText('L '+bd.lb+'/'+bd.ltb+'  D '+bd.db+'/'+bd.dtb, x+dayW/2, y0+48); }
+  });
+  var y=titleH+headH;
+  posOrder.forEach(function(pos,ri){
+    var rh=rowHs[ri];
+    if(ri%2){ ctx.fillStyle='#faf8f4'; ctx.fillRect(0,y,W,rh); }
+    ctx.strokeStyle='#eee'; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+    ctx.fillStyle='#2b2b2b'; ctx.textAlign='left'; ctx.font='bold 11px sans-serif'; ctx.fillText(String(pos).slice(0,10),6,y+rh/2);
+    DOW_SHIFT.forEach(function(day,di){
+      var x=nameW+dayW*di; var iso=weekDateForDow(day); var ly=y+9;
+      splan.forEach(function(sec){ var slot=(sec.slots||[]).find(function(sl){return sl.pos===pos;}); if(!slot) return; if(sectionClosedForDay(storeId,sec.key,iso,day)) return;
+        var nm=cells[shiftCellKey(day,sec.key,slot.label)]||''; var isL=(nm&&nm===leaderOf(day,sec));
+        ctx.textAlign='left'; ctx.font='10px sans-serif'; ctx.fillStyle='#8a857c'; ctx.fillText(secShort(sec.key)+':', x+6, ly);
+        ctx.fillStyle=nm?'#2b2b2b':'#c9c4bb'; ctx.font=(isL?'bold ':'')+'11px sans-serif';
+        ctx.fillText((isL?'* ':'')+(nm?String(nm.split(' ')[0]||nm).slice(0,10):'-'), x+30, ly);
+        ly+=lineH;
+      });
+    });
+    y+=rh;
+  });
+  try{ var url=cv.toDataURL('image/png'); var a=document.createElement('a'); a.href=url; a.download=store.name+'_shift_'+String(week).replace('/','-')+'.png'; a.click(); showToast('Saved shift image', 'success'); }catch(e){ showToast('Image export failed', 'danger'); }
+}
 function exportShiftImage(storeId, week){
+  if(storeId==='F04-A'){ return exportAieaShiftImage(storeId, week); }
   var store = STORES.find(function(s){return s.id===storeId;}) || {name:storeId};
   var rows = shiftWeekMatrix(storeId, week);
   if(!rows.length){ showToast('割り当てがありません。シフトを作成してからお試しください。', 'warning'); return; }
@@ -15235,91 +15283,88 @@ function aieaBowlAvg4wByDay(storeId, day){
   if(!n) return null;
   return { lb:Math.round(lb/n), db:Math.round(db/n), ltb:Math.round(ltb/n), dtb:Math.round(dtb/n), n:n };
 }
-/* Aiea専用 シフト作成ビュー: 縦=担当 / 横=シフト(日×L/D)、列見出しに直近4週ボール数、各シフトの最高スキル者に👑、申請・警告は下部 */
+/* 曜日ラベル英語 */
+function dowEN(day){ return ({'日':'Sun','月':'Mon','火':'Tue','水':'Wed','木':'Thu','金':'Fri','土':'Sat'})[day]||day; }
+/* Aiea専用 シフト作成ビュー(英語): 縦=担当 / 横=7曜日(1週間が収まる)。各セルにL/D。列見出しに直近4週ボール数、各シフト最高スキルに👑。申請・警告は下部 */
 function renderAieaBuild(storeId, week, plan, warnings){
   plan = plan || (getShiftPlan(storeId, week)||{status:'下書き',cells:{}});
   var cells = plan.cells||{};
   var splan = shiftSlotPlan(storeId).filter(function(sc){ return sc.slots && sc.slots.length; });
-  var posOrder=[];
-  splan.forEach(function(sec){ (sec.slots||[]).forEach(function(sl){ if(posOrder.indexOf(sl.pos)<0) posOrder.push(sl.pos); }); });
-  var cols=[];
-  DOW_SHIFT.forEach(function(day){
-    var _iso=weekDateForDow(day);
-    splan.forEach(function(sec){ if(sectionClosedForDay(storeId, sec.key, _iso, day)) return; cols.push({day:day, iso:_iso, sec:sec}); });
-  });
-  cols.forEach(function(col){
-    var assigned=(col.sec.slots||[]).map(function(sl){ return {name:cells[shiftCellKey(col.day,col.sec.key,sl.label)], pos:sl.pos}; }).filter(function(x){return x.name;});
-    var ld=null, lv=-1;
-    assigned.forEach(function(a){ var l=(typeof positionLevelStore==='function')?(positionLevelStore(a.name,a.pos,storeId)||0):0; if(l>lv){lv=l; ld=a.name;} });
-    col.leader=ld;
-  });
-  var secShort=function(k){ return k==='Lunch'?'ランチ':k==='Dinner'?'ディナー':k==='Prep'?'Prep':k==='Trainee'?'Trainee':k==='LPrep'?'昼Prep':k; };
+  var posOrder=[]; splan.forEach(function(sec){ (sec.slots||[]).forEach(function(sl){ if(posOrder.indexOf(sl.pos)<0) posOrder.push(sl.pos); }); });
+  var secShort=function(k){ return k==='Lunch'?'L':k==='Dinner'?'D':k==='Prep'?'Prep':k==='Trainee'?'Trn':k==='LPrep'?'LP':k; };
   var mdOf=function(iso){ return iso?(Number(iso.split('-')[1])+'/'+Number(iso.split('-')[2])):''; };
-  var h='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-layout-grid" style="color:var(--accent)"></i> シフト表（担当 × シフト）<span style="font-size:9.5px;color:var(--muted);font-weight:400;margin-left:auto">👑=リーダー(最高スキル)／丼=直近4週平均 店内/TO</span></div>';
-  h+='<table class="inv-table" style="min-width:'+(150+cols.length*84)+'px;font-size:11px"><thead><tr><th style="position:sticky;left:0;background:var(--surface);z-index:2;text-align:left">担当</th>';
-  var lastDay=null;
-  cols.forEach(function(col){
-    var newDay=(col.day!==lastDay); lastDay=col.day;
-    var bd=(col.sec.key==='Lunch'||col.sec.key==='Dinner')?aieaBowlAvg4wByDay(storeId,col.day):null;
-    var bh='';
-    if(bd){ var _b=(col.sec.key==='Lunch')?bd.lb:bd.db; var _t=(col.sec.key==='Lunch')?bd.ltb:bd.dtb; bh='<div style="font-size:8.5px;color:var(--muted);font-weight:400;line-height:1.4;margin-top:1px">丼'+_b+' / TO'+_t+'</div>'; }
-    h+='<th style="text-align:center;padding:3px 2px;'+(newDay?'border-left:2px solid var(--border)':'')+'"><div style="font-weight:700">'+col.day+'</div><div style="font-size:9px;color:var(--muted);font-weight:400">'+mdOf(col.iso)+'</div><div style="font-size:9px;color:var(--accent);font-weight:600">'+secShort(col.sec.key)+'</div>'+bh+'</th>';
+  function leaderOf(day, sec){
+    var as=(sec.slots||[]).map(function(sl){ return {name:cells[shiftCellKey(day,sec.key,sl.label)], pos:sl.pos}; }).filter(function(x){return x.name;});
+    var ld=null,lv=-1; as.forEach(function(a){ var l=(typeof positionLevelStore==='function')?(positionLevelStore(a.name,a.pos,storeId)||0):0; if(l>lv){lv=l;ld=a.name;} }); return ld;
+  }
+  var h='<div class="card" style="overflow:hidden;padding:8px"><div class="card-title" style="font-size:13px"><i class="ti ti-layout-grid" style="color:var(--accent)"></i> Shift Table (Role × Day)<span style="font-size:8.5px;color:var(--muted);font-weight:400;margin-left:auto">👑 Leader · Bowls = 4-wk avg (dine-in/TO)</span></div>';
+  h+='<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:10px"><thead><tr><th style="width:46px;text-align:left;padding:2px;border-bottom:1px solid var(--border)">Role</th>';
+  DOW_SHIFT.forEach(function(day){
+    var iso=weekDateForDow(day); var bd=aieaBowlAvg4wByDay(storeId, day);
+    var bh = bd ? ('<div style="font-size:7px;color:var(--muted);font-weight:400;line-height:1.2">L'+bd.lb+'/'+bd.ltb+'<br>D'+bd.db+'/'+bd.dtb+'</div>') : '';
+    var wd=(day==='日'||day==='土');
+    h+='<th style="padding:2px 1px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><div style="font-weight:700;'+(wd?'color:var(--accent)':'')+'">'+dowEN(day)+'</div><div style="font-size:7.5px;color:var(--muted);font-weight:400">'+mdOf(iso)+'</div>'+bh+'</th>';
   });
   h+='</tr></thead><tbody>';
   posOrder.forEach(function(pos){
-    h+='<tr><td style="position:sticky;left:0;background:var(--surface);z-index:1;font-weight:600;white-space:nowrap">'+escapeHtml(pos)+'</td>';
-    lastDay=null;
-    cols.forEach(function(col){
-      var newDay=(col.day!==lastDay); lastDay=col.day;
-      var slot=(col.sec.slots||[]).find(function(sl){ return sl.pos===pos; });
-      if(!slot){ h+='<td style="text-align:center;padding:2px;'+(newDay?'border-left:2px solid var(--border)':'')+'"><span style="color:var(--border)">·</span></td>'; return; }
-      var key=shiftCellKey(col.day, col.sec.key, slot.label);
-      var assigned=cells[key]||'';
-      var isLeader=(assigned && assigned===col.leader);
-      var lbl=assigned?((isLeader?'👑 ':'')+shiftCellLabel(assigned, slot.pos, storeId, col.sec.key)):'+';
-      h+='<td style="text-align:center;padding:2px;'+(newDay?'border-left:2px solid var(--border)':'')+'"><div class="shift-slot'+(assigned?' sel':'')+'" style="font-size:10px;padding:3px;min-height:22px'+(isLeader?';box-shadow:inset 0 0 0 2px var(--accent)':'')+'" onclick="openCellAssign(\''+storeId+'\',\''+week+'\',\''+key+'\',\''+col.day+'\',\''+col.sec.key+'\',\''+slot.pos.replace(/'/g,'')+'\')">'+lbl+'</div></td>';
+    h+='<tr><td style="padding:2px;font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:8.5px">'+escapeHtml(pos)+'</td>';
+    DOW_SHIFT.forEach(function(day){
+      var iso=weekDateForDow(day); var minis='';
+      splan.forEach(function(sec){
+        var slot=(sec.slots||[]).find(function(sl){ return sl.pos===pos; });
+        if(!slot) return;
+        if(sectionClosedForDay(storeId, sec.key, iso, day)) return;
+        var key=shiftCellKey(day, sec.key, slot.label);
+        var assigned=cells[key]||'';
+        var isLeader=(assigned && assigned===leaderOf(day, sec));
+        var nm = assigned ? ((isLeader?'👑':'')+escapeHtml((assigned.split(' ')[0]||assigned))) : '+';
+        minis+='<div class="shift-slot'+(assigned?' sel':'')+'" style="font-size:8px;padding:1px 2px;margin:1px 0;min-height:13px;line-height:1.2;text-align:left'+(isLeader?';box-shadow:inset 0 0 0 1.5px var(--accent)':'')+'" onclick="openCellAssign(\''+storeId+'\',\''+week+'\',\''+key+'\',\''+day+'\',\''+sec.key+'\',\''+slot.pos.replace(/'/g,'')+'\')"><span style="color:var(--muted);font-size:6.5px">'+secShort(sec.key)+'</span> '+nm+'</div>';
+      });
+      if(!minis) minis='<span style="color:var(--border)">·</span>';
+      h+='<td style="padding:1px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border);vertical-align:top">'+minis+'</td>';
     });
     h+='</tr>';
   });
   h+='</tbody></table></div>';
-  // シフト申請（下部）
+  // Availability (bottom)
   var avail=getAvailability(storeId, week)||[];
-  h+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-clipboard-text" style="color:var(--accent)"></i> シフト申請（'+avail.length+'名提出）</div>';
-  if(!avail.length){ h+='<div style="font-size:12px;color:var(--muted)">提出はまだありません。</div>'; }
+  h+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-clipboard-text" style="color:var(--accent)"></i> Availability ('+avail.length+' submitted)</div>';
+  if(!avail.length){ h+='<div style="font-size:12px;color:var(--muted)">No submissions yet.</div>'; }
   else {
-    h+='<table class="inv-table" style="min-width:'+(110+DOW_SHIFT.length*46)+'px;font-size:11px"><thead><tr><th style="text-align:left">従業員</th>'+DOW_SHIFT.map(function(d){return '<th style="text-align:center">'+d+'</th>';}).join('')+'</tr></thead><tbody>';
+    h+='<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:10px"><thead><tr><th style="width:62px;text-align:left;padding:2px;border-bottom:1px solid var(--border)">Staff</th>'+DOW_SHIFT.map(function(d){var wd=(d==='日'||d==='土');return '<th style="padding:2px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border);'+(wd?'color:var(--accent)':'')+'">'+dowEN(d)+'</th>';}).join('')+'</tr></thead><tbody>';
     avail.forEach(function(a){
-      h+='<tr><td style="white-space:nowrap">'+escapeHtml((a.name||'').split(' ')[0])+'</td>';
+      h+='<tr><td style="padding:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--border)">'+escapeHtml((a.name||'').split(' ')[0])+'</td>';
       DOW_SHIFT.forEach(function(d){
         var ps=(a.slots||[]).filter(function(s){return s.day===d;}).map(function(s){return s.period==='Lunch'?'L':s.period==='Dinner'?'D':(s.period||'').slice(0,1);});
-        h+='<td style="text-align:center">'+(ps.length?('<span style="color:var(--green);font-weight:700">'+ps.join('/')+'</span>'):'<span style="color:var(--border)">-</span>')+'</td>';
+        h+='<td style="text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border)">'+(ps.length?('<span style="color:var(--green);font-weight:700">'+ps.join('/')+'</span>'):'<span style="color:var(--border)">-</span>')+'</td>';
       });
       h+='</tr>';
     });
     h+='</tbody></table>';
     var notes=avail.filter(function(a){return a.notes;});
-    if(notes.length){ h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'+notes.map(function(a){return '<b>'+escapeHtml((a.name||'').split(' ')[0])+'</b>: '+escapeHtml(a.notes);}).join('<br>')+'</div>'; }
+    if(notes.length){ h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">'+notes.map(function(a){return '<b>'+escapeHtml((a.name||'').split(' ')[0])+'</b>: '+escapeHtml(a.notes);}).join('<br>')+'</div>'; }
   }
   h+='</div>';
-  // 休み・OT・警告（下部）
+  // Days off / OT / Warnings (bottom, English)
   var weekDates=DOW_SHIFT.map(weekDateForDow), leaveByDay={};
   staffForStore(storeId).forEach(function(e){ DOW_SHIFT.forEach(function(day,di){ if(isOnLeave(e.name, weekDates[di])){ (leaveByDay[day]=leaveByDay[day]||[]).push(e.name); } }); });
   if(Object.keys(leaveByDay).length){
-    h+='<div class="card" style="border-left:3px solid var(--accent2);padding:10px 12px"><div style="font-size:12px;font-weight:600;margin-bottom:4px"><i class="ti ti-beach" style="color:var(--accent2)"></i> 今週の休み（承認済み）</div><div style="font-size:11px;color:var(--tm)">'+DOW_SHIFT.filter(function(d){return leaveByDay[d];}).map(function(d){return '<b>'+d+'</b>: '+leaveByDay[d].map(function(n){return n.split(' ')[0];}).join('、');}).join(' ／ ')+'</div></div>';
+    h+='<div class="card" style="border-left:3px solid var(--accent2);padding:10px 12px"><div style="font-size:12px;font-weight:600;margin-bottom:4px"><i class="ti ti-beach" style="color:var(--accent2)"></i> Approved days off this week</div><div style="font-size:11px;color:var(--tm)">'+DOW_SHIFT.filter(function(d){return leaveByDay[d];}).map(function(d){return '<b>'+dowEN(d)+'</b>: '+leaveByDay[d].map(function(n){return n.split(' ')[0];}).join(', ');}).join(' / ')+'</div></div>';
   }
   var otApprovals=getOTApprovals(storeId, week)||{}, hoursMap={};
   Object.keys(cells).forEach(function(k){ var nm=cells[k]; if(!nm) return; var period=k.split('_')[1]; hoursMap[nm]=(hoursMap[nm]||0)+(SHIFT_HOURS[period]||4); });
   var overList=Object.keys(hoursMap).filter(function(nm){return hoursMap[nm]>40;});
   if(overList.length){
-    h+='<div class="alert '+(overList.every(function(nm){return otApprovals[nm];})?'alert-success':'alert-warning')+'" style="padding:8px 10px"><i class="ti ti-clock-exclamation"></i><div style="font-size:11px"><b>オーバーワーク（40h超）'+overList.length+'名</b><br>'+overList.map(function(nm){return escapeHtml(nm)+': '+hoursMap[nm]+'h '+(otApprovals[nm]?'<span style="color:var(--green)">✓承認済</span>':'<span style="color:var(--red)">未承認</span>');}).join('<br>')+'</div></div>';
+    h+='<div class="alert '+(overList.every(function(nm){return otApprovals[nm];})?'alert-success':'alert-warning')+'" style="padding:8px 10px"><i class="ti ti-clock-exclamation"></i><div style="font-size:11px"><b>Overtime (>40h): '+overList.length+'</b><br>'+overList.map(function(nm){return escapeHtml(nm)+': '+hoursMap[nm]+'h '+(otApprovals[nm]?'<span style="color:var(--green)">approved</span>':'<span style="color:var(--red)">not approved</span>');}).join('<br>')+'</div></div>';
   }
   if(warnings && warnings.length){
-    h+='<div class="alert alert-warning"><i class="ti ti-alert-triangle"></i><div><p style="font-size:12px;font-weight:600">警告 '+warnings.length+'件</p><div style="font-size:11px">'+warnings.map(function(w){return '・'+escapeHtml(w);}).join('<br>')+'</div></div></div>';
+    h+='<div class="alert alert-warning"><i class="ti ti-alert-triangle"></i><div><p style="font-size:12px;font-weight:600">Warnings ('+warnings.length+')</p><div style="font-size:11px">'+warnings.map(function(w){return '- '+escapeHtml(w);}).join('<br>')+'</div></div></div>';
   } else {
-    h+='<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i>警告なし</div>';
+    h+='<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i> No warnings</div>';
   }
   return h;
 }
+
 function renderShiftBuild(storeId, week) {
   var positions = assignablePositions(storeId);
   var plan = getShiftPlan(storeId, week) || {status:'下書き', cells:{}};
@@ -15328,20 +15373,20 @@ function renderShiftBuild(storeId, week) {
   var _optSecs = usesShiftLayout(storeId) ? SHIFT_LAYOUTS[storeId].sections.filter(sec=>sec.optional) : [];
   var html = `<div class="card" style="padding:10px 12px;margin-bottom:10px">
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-primary btn-sm" onclick="autoGenShift('${storeId}','${week}')"><i class="ti ti-wand"></i> 自動作成</button>
-      <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-${shiftView==='grid'?'list':'layout-grid'}"></i> ${shiftView==='grid'?'リスト表示':'グリッド表示'}</button>
+      <button class="btn btn-primary btn-sm" onclick="autoGenShift('${storeId}','${week}')"><i class="ti ti-wand"></i> Auto</button>
+      <button class="btn btn-secondary btn-sm" onclick="setShiftView('${shiftView==='grid'?'list':'grid'}')"><i class="ti ti-${shiftView==='grid'?'list':'layout-grid'}"></i> ${shiftView==='grid'?'List':'Grid'}</button>
       <div style="flex:1"></div>
-      ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> 公開</button>`:`<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> 公開済</span>`}
-      <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> 画像</button>
+      ${plan.status==='下書き'?`<button class="btn btn-success btn-sm" onclick="publishShiftPlan('${storeId}','${week}')"><i class="ti ti-send"></i> Publish</button>`:`<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>`}
+      <button class="btn btn-secondary btn-sm" onclick="exportShiftImage('${storeId}','${week}')"><i class="ti ti-photo-down"></i> Image</button>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
-      <span style="font-size:10px;color:var(--muted);align-self:center"><i class="ti ti-settings"></i> 設定:</span>
-      <button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor('${storeId}')"><i class="ti ti-clock"></i> シフト時間</button>
-      <button class="btn btn-secondary btn-sm" onclick="openWeeklyOffEditor('${storeId}')"><i class="ti ti-calendar-off"></i> 定休日</button>
-      <button class="btn btn-secondary btn-sm" onclick="openClosureEditor('${storeId}','${week}')"><i class="ti ti-calendar-x"></i> 店休（祝日/イベント）</button>
+      <span style="font-size:10px;color:var(--muted);align-self:center"><i class="ti ti-settings"></i> Settings:</span>
+      <button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor('${storeId}')"><i class="ti ti-clock"></i> Hours</button>
+      <button class="btn btn-secondary btn-sm" onclick="openWeeklyOffEditor('${storeId}')"><i class="ti ti-calendar-off"></i> Closed days</button>
+      <button class="btn btn-secondary btn-sm" onclick="openClosureEditor('${storeId}','${week}')"><i class="ti ti-calendar-x"></i> Holiday/Event</button>
       ${usesShiftLayout(storeId)
         ? _optSecs.map(sec=>`<button class="btn ${shiftSectionEnabled(storeId,sec.key)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftSection('${storeId}','${sec.key}')"><i class="ti ti-layout-list"></i> ${sec.label}${shiftSectionEnabled(storeId,sec.key)?' ON':''}</button>`).join('')
-        : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
+        : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
     </div>
   </div>`;
   if (storeId==='F04-A') return html + renderAieaBuild(storeId, week, plan, warnings); // Aiea専用ビュー（担当×シフト・4週ボール数・リーダー・申請/警告を下部）
@@ -16454,24 +16499,42 @@ function coverCandidates(storeId, week, day, period, pos) {
 }
 
 function renderShiftCover(storeId, week) {
-  var plan = getShiftPlan(storeId, week);
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-user-search" style="color:var(--accent)"></i>当欠・カバー候補</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">欠員が出た枠を選ぶと、カバー候補を優先順位順で表示します（管理者専用）。</div>`;
-  if (!plan || !Object.keys(plan.cells).length) {
-    html += `<div style="text-align:center;color:var(--muted);padding:16px">シフトがまだありません。先にシフトを作成してください。</div></div>`;
-    return html;
-  }
-  // 配置済みの枠から欠員対象を選ぶ
-  html += `<div class="form-group"><label class="form-label">欠員が出た枠を選択</label>
-    <select class="form-select" id="cover-slot" onchange="renderCoverResult('${storeId}','${week}')">
-      <option value="">選択してください</option>`;
-  Object.keys(plan.cells).filter(k=>plan.cells[k]).sort().forEach(k=>{
-    var parts=k.split('_');
-    html += `<option value="${k}">${parts[0]} ${parts[1]} ${parts[2]} — ${plan.cells[k]}</option>`;
+  var plan = getShiftPlan(storeId, week) || {cells:{}};
+  var avail = getAvailability(storeId, week) || [];
+  // assigned per day_period
+  var assignedBySlot = {};
+  Object.keys(plan.cells||{}).forEach(function(k){ var nm=plan.cells[k]; if(!nm) return; var pt=k.split('_'); var sk=pt[0]+'_'+pt[1]; (assignedBySlot[sk]=assignedBySlot[sk]||[]).push(nm); });
+  var html = '<div class="card" style="overflow-x:auto;padding:8px"><div class="card-title" style="font-size:13px"><i class="ti ti-user-search" style="color:var(--accent)"></i> Cover Availability<span style="font-size:8.5px;color:var(--muted);font-weight:400;margin-left:auto">Who can pick up each shift (available & not scheduled)</span></div>';
+  if (!avail.length) { html += '<div style="font-size:12px;color:var(--muted)">No availability submitted yet.</div></div>'; return html; }
+  html += '<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:10px"><thead><tr><th style="width:66px;text-align:left;padding:2px;border-bottom:1px solid var(--border)">Staff</th>';
+  DOW_SHIFT.forEach(function(day){ var wd=(day==='日'||day==='土'); html += '<th style="padding:2px;text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border);'+(wd?'color:var(--accent)':'')+'">'+dowEN(day)+'</th>'; });
+  html += '</tr></thead><tbody>';
+  // sort: most free first
+  var rows = avail.slice().map(function(a){
+    var free=0;
+    DOW_SHIFT.forEach(function(day){ SHIFT_PERIODS.forEach(function(period){ var av=(a.slots||[]).some(function(s){return s.day===day&&s.period===period;}); var asn=(assignedBySlot[day+'_'+period]||[]).indexOf(a.name)>=0; if(av&&!asn) free++; }); });
+    return {a:a, free:free};
+  }).sort(function(x,y){ return y.free-x.free; });
+  rows.forEach(function(r){
+    var a=r.a;
+    html += '<tr><td style="padding:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--border)">'+escapeHtml((a.name||'').split(' ')[0])+'</td>';
+    DOW_SHIFT.forEach(function(day){
+      var marks=[];
+      SHIFT_PERIODS.forEach(function(period){
+        var av=(a.slots||[]).some(function(s){return s.day===day&&s.period===period;});
+        if(!av) return;
+        var asn=(assignedBySlot[day+'_'+period]||[]).indexOf(a.name)>=0;
+        if(asn) return;
+        marks.push(period==='Lunch'?'L':'D');
+      });
+      html += '<td style="text-align:center;border-bottom:1px solid var(--border);border-left:1px solid var(--border)">'+(marks.length?('<span style="color:var(--green);font-weight:700">'+marks.join('/')+'</span>'):'<span style="color:var(--border)">-</span>')+'</td>';
+    });
+    html += '</tr>';
   });
-  html += `</select></div><div id="cover-result"></div></div>`;
+  html += '</tbody></table><div style="font-size:9px;color:var(--muted);margin-top:6px;line-height:1.6">Green L/D = available and NOT yet scheduled that shift (can cover). Blank = unavailable or already working.</div></div>';
   return html;
 }
+
 function renderCoverResult(storeId, week) {
   var key = document.getElementById('cover-slot').value;
   var el = document.getElementById('cover-result');
