@@ -8266,9 +8266,13 @@ function _ymToOffset(ym){ var d=(typeof bizNow==='function')?bizNow():new Date()
 function getQBudget(storeId,y,q){ var all=ls('q_budgets',{})||{}; return all[storeId+'_'+y+'Q'+q]||null; }
 function setQBudgetObj(storeId,y,q,obj){ var all=ls('q_budgets',{})||{}; all[storeId+'_'+y+'Q'+q]=obj; lsSet('q_budgets', all); }
 function quarterActuals(storeId,y,q){
-  var months=_quarterMonths(y,q); var st={sales:0,guests:0,labor:0,food:0,elapsed:0,dataMonths:0};
-  months.forEach(function(ym){ var off=_ymToOffset(ym); if(off>0) return; var ms=monthStats(storeId, off)||{}; st.sales+=ms.sales||0; st.guests+=ms.guests||0; st.labor+=ms.labor||0; st.food+=ms.food||0; st.elapsed++; if(ms.hasData)st.dataMonths++; });
+  var months=_quarterMonths(y,q); var st={sales:0,guests:0,labor:0,food:0,elapsed:0,dataMonths:0,ftB:0,rpB:0};
+  months.forEach(function(ym){ var off=_ymToOffset(ym); if(off>0) return; var ms=monthStats(storeId, off)||{}; st.sales+=ms.sales||0; st.guests+=ms.guests||0; st.elapsed++; if(ms.hasData)st.dataMonths++;
+    try{ var pl=plComputeStore(storeId, ym, off); st.food+=pl.cogs||0; st.labor+=pl.labor||0; }catch(e){ st.food+=ms.food||0; st.labor+=ms.labor||0; }
+    var _r=_qbRepeatRate(storeId, ym); st.ftB+=_r.ft; st.rpB+=_r.rp;
+  });
   st.fcRate=st.sales?Math.round(st.food/st.sales*1000)/10:0; st.laborRate=st.sales?Math.round(st.labor/st.sales*1000)/10:0; st.ppa=st.guests?Math.round(st.sales/st.guests*100)/100:0;
+  st.repeat=(st.ftB+st.rpB)?Math.round(st.rpB/(st.ftB+st.rpB)*1000)/10:0;
   return st;
 }
 /* 単月予算(getBudgetForMonth)から四半期目標を自動算出。売上・客数は月次予算合計、率はKPI目標。 */
@@ -8323,6 +8327,11 @@ var QB_FOCUS_ITEMS=[
   {key:'cs',label:'接客・CS向上'},{key:'staff',label:'スタッフ育成'},{key:'review',label:'レビュー・口コミ'}
 ];
 /* 月別の目標(単月予算)と実績(monthStats)をまとめる */
+function _qbRepeatRate(storeId, ym){
+  var da=(typeof getDailyActuals==='function')?getDailyActuals(storeId):{}; var ft=0,rp=0,has=false;
+  Object.keys(da).forEach(function(d){ if(d.indexOf(ym)===0){ var v=da[d]||{}; if(v.firstTimeBowls!=null||v.repeatBowls!=null){ ft+=Number(v.firstTimeBowls)||0; rp+=Number(v.repeatBowls)||0; has=true; } } });
+  var tot=ft+rp; return {rate:(has&&tot>0)?Math.round(rp/tot*1000)/10:0, ft:ft, rp:rp, has:has};
+}
 function _qbMonthData(storeId, ym){
   var pp=ym.split('-'), yy=+pp[0], mm=+pp[1];
   var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(storeId, ym):null;
@@ -8333,8 +8342,12 @@ function _qbMonthData(storeId, ym){
   var off=_ymToOffset(ym); var ms=(off<=0)?(monthStats(storeId,off)||{}):{};
   var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId)||{}):{};
   var aG=ms.guests||0, aS=ms.sales||0;
-  return { ym:ym, mm:mm, seg:seg, tSales:tSales, tGuests:tGuests, tPpa:tGuests?Math.round(tSales/tGuests*100)/100:0, tFc:kpi.foodCost||0, tLb:kpi.laborPct||0,
-    aSales:aS, aGuests:aG, aPpa:aG?Math.round(aS/aG*100)/100:0, aFc:ms.fcRate||0, aLb:ms.laborRate||0, hasData:!!ms.hasData, elapsed:off<=0, registered:registered,
+  // 原価率・人件費率は棚卸法COGS(食材移動込み)＋laborCoreForYm（現行集計）を反映
+  var aFc=0, aLb=0, cogsSrc='';
+  if(off<=0){ try{ var pl=plComputeStore(storeId, ym, off); if(pl.sales){ aFc=Math.round(pl.cogs/pl.sales*1000)/10; aLb=Math.round(pl.labor/pl.sales*1000)/10; } cogsSrc=pl.cogsSrc; }catch(e){} }
+  var _rep=_qbRepeatRate(storeId, ym);
+  return { ym:ym, mm:mm, seg:seg, tSales:tSales, tGuests:tGuests, tPpa:tGuests?Math.round(tSales/tGuests*100)/100:0, tFc:kpi.foodCost||0, tLb:kpi.laborPct||0, tRep:kpi.repeatRate||0,
+    aSales:aS, aGuests:aG, aPpa:aG?Math.round(aS/aG*100)/100:0, aFc:aFc, aLb:aLb, aRep:_rep.rate, cogsSrc:cogsSrc, hasData:!!ms.hasData, elapsed:off<=0, registered:registered,
     rationale:_qbMonthRationale(b, ym) };
 }
 /* その月“専用”の予算に紐づく考え方のみ返す。現行予算(budgets_v2)は全月に返るため、予算のperiod月と一致する月だけ表示（未入力の月は空）。 */
@@ -8396,6 +8409,9 @@ function renderQuarterBudget(){
     html+=_qbItemRow({label:'客単価', tgt:tPpa, act:aPpa, unit:'', money:true, lower:false});
     html+=_qbItemRow({label:'原価率', tgt:tFc, act:aFc, unit:'%', money:false, lower:true});
     html+=_qbItemRow({label:'人件費率', tgt:tLb, act:aLb, unit:'%', money:false, lower:true});
+    var _aFtB=0,_aRpB=0,_repTs=[]; stores.forEach(function(st){ var aa=quarterActuals(st.id,y,q), tt=quarterTargets(st.id,y,q); _aFtB+=aa.ftB||0; _aRpB+=aa.rpB||0; if(tt.repeat)_repTs.push(tt.repeat); });
+    var _aRep=(_aFtB+_aRpB)?Math.round(_aRpB/(_aFtB+_aRpB)*1000)/10:0; var _tRep=_repTs.length?Math.round(_repTs.reduce(function(a,b){return a+b;},0)/_repTs.length*10)/10:0;
+    html+=_qbItemRow({label:'リピート率', tgt:_tRep, act:_aRep, unit:'%', money:false, lower:false});
     html+='</tbody></table></div>';
     // 店舗別サマリー
     html+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> 店舗別サマリー</div>'
@@ -8434,11 +8450,13 @@ function renderQuarterBudget(){
       +_qbProgLine('売上', md.aSales, md.tSales, {money:true})
       +_qbProgLine('客数', md.aGuests, md.tGuests, {unit:'名'})
       +_qbProgLine('客単価', md.aPpa, md.tPpa, {money:true})
-      +_qbProgLine('原価率', md.aFc, md.tFc, {unit:'%', lower:true})
+      +_qbProgLine('原価率'+(md.cogsSrc?'（'+md.cogsSrc+'）':''), md.aFc, md.tFc, {unit:'%', lower:true})
       +_qbProgLine('人件費率', md.aLb, md.tLb, {unit:'%', lower:true})
+      +_qbProgLine('リピート率', md.aRep, md.tRep, {unit:'%'})
+      +(md.cogsSrc==='仕入合計'?'<div style="font-size:9px;color:var(--yellow);margin-top:2px">※原価率は棚卸未確定のため仕入合計で暫定。棚卸確定（食材移動含む）で確定値になります。</div>':'')
       +'</div>';
   });
-  html+='</div>';
+  html+='<div style="font-size:9px;color:var(--muted);margin-top:2px">原価率＝棚卸法COGS（期首＋仕入＋食材移動−期末）／人件費率＝実勤怠×時給＋固定給＋有給。リピート率＝Toast来店区分。</div></div>';
   // 月ごとの考え方（目標＋考え方・未入力表示）
   html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-bulb" style="color:var(--accent)"></i> 月ごとの考え方</div>';
   mds.forEach(function(md){
@@ -14761,7 +14779,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '439';
+const APP_VERSION = '440';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
