@@ -12607,6 +12607,47 @@ function tipConfirmKey(storeId, info){ return 'tip_confirm_'+storeId+'_'+info.fr
 function getTipConfirm(storeId, info){ return ls(tipConfirmKey(storeId,info), null); }
 function setTipConfirm(storeId, info, data){ lsSet(tipConfirmKey(storeId,info), data); }
 
+/* Tip診断: クレジットチップを営業日別/決済日別で集計しToast Payment Summaryと照合（Edge tipDateDebug） */
+function openTipDateDebug(){
+  var sid = (curStore && curStore!=='ALL') ? curStore : (STORES[0]&&STORES[0].id);
+  var st = STORES.find(function(s){return s.id===sid;})||{};
+  var guid = st.toastGuid||'';
+  var today = (typeof bizToday==='function')?bizToday():new Date().toISOString().slice(0,10);
+  openModal('<div class="modal-title"><i class="ti ti-stethoscope"></i> Tip診断（Toast Payment Summary照合） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+escapeHtml(st.name||sid||'')+' のクレジットチップを「営業日別」と「決済日別」で集計し、Toastのどちらと一致するか確認します。</div>'
+    +(guid?'':'<div style="color:var(--red);font-size:12px;margin-bottom:6px">この店舗はToast GUID未設定です。</div>')
+    +'<div class="form-group"><label class="form-label" style="font-size:11px">対象日</label><input class="form-input" id="tdd-date" type="date" value="'+today+'"></div>'
+    +'<button class="btn btn-primary" style="width:100%" onclick="runTipDateDebug(\''+sid+'\')"'+(guid?'':' disabled')+'><i class="ti ti-search"></i> 診断を実行（10〜20秒）</button>'
+    +'<div id="tdd-result" style="margin-top:10px"></div>');
+}
+async function runTipDateDebug(sid){
+  var st=STORES.find(function(s){return s.id===sid;})||{}; var guid=st.toastGuid||'';
+  var dateEl=document.getElementById('tdd-date'); var date=dateEl?dateEl.value:'';
+  if(!date){ showToast('日付を選んでください','warning'); return; }
+  var ymd=date.replace(/-/g,'');
+  var box=document.getElementById('tdd-result'); if(box) box.innerHTML='<div style="font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> Toast照会中…（前後日も取得するため10〜20秒）</div>';
+  try{
+    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json',Authorization:'Bearer '+SUPABASE_ANON}, body: JSON.stringify({ restaurantGuid:guid, mode:'tipDateDebug', businessDate:ymd }) });
+    var j=await res.json();
+    if(!j || j.error){ if(box) box.innerHTML='<div style="color:var(--red);font-size:12px">エラー: '+escapeHtml(JSON.stringify(j||{}).slice(0,200))+'<br>（Edgeが未デプロイの可能性。toast-sync.tsの貼り替えをご確認ください）</div>'; return; }
+    var allBiz=j.creditTip_byBusinessDate||{}, allPaid=j.creditTip_byPaidDate||{};
+    var biz=allBiz[ymd]||0, paid=allPaid[ymd]||0;
+    var typeRows=Object.keys(j.byPaymentType||{}).map(function(k){ return k+': $'+j.byPaymentType[k]; }).join(' / ');
+    var h='<div style="border:1px solid var(--border);border-radius:8px;padding:12px;font-size:13px">'
+      +'<div style="margin-bottom:8px"><b>'+date+' のクレジットチップ</b></div>'
+      +'<div style="display:flex;justify-content:space-between;padding:5px 0"><span>① 営業日ベース（現行Edge）</span><b>$'+biz+'</b></div>'
+      +'<div style="display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--border)"><span>② 決済日ベース（Payment Summary相当）</span><b style="color:var(--accent)">$'+paid+'</b></div>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:8px">Toast Payment Summary の値が <b>①</b>か<b>②</b>のどちらと一致するか確認してください。②が一致 → 決済日ベースに変更して一致させます。</div>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:6px">種別内訳: '+(typeRows||'-')+'</div></div>';
+    var keys=Array.from(new Set(Object.keys(allBiz).concat(Object.keys(allPaid)))).sort();
+    if(keys.length){
+      h+='<div style="margin-top:10px;font-size:12px"><div style="color:var(--muted);margin-bottom:4px">前後日（チップの日ズレ確認）</div><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:3px">日</th><th style="text-align:right;padding:3px">①営業日基準</th><th style="text-align:right;padding:3px">②決済日基準</th></tr>';
+      keys.forEach(function(k){ var kd=(k.length===8)?(k.slice(0,4)+'-'+k.slice(4,6)+'-'+k.slice(6,8)):k; h+='<tr'+(k===ymd?' style="font-weight:800;background:var(--surface2)"':'')+'><td style="padding:3px">'+kd+'</td><td style="text-align:right;padding:3px">$'+(allBiz[k]||0)+'</td><td style="text-align:right;padding:3px">$'+(allPaid[k]||0)+'</td></tr>'; });
+      h+='</table></div>';
+    }
+    if(box) box.innerHTML=h;
+  }catch(e){ if(box) box.innerHTML='<div style="color:var(--red);font-size:12px">通信エラー: '+escapeHtml(String(e))+'</div>'; }
+}
 function renderTipMgmt() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl' && curRole!=='office_crew') return financialBlocked();
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
@@ -12616,6 +12657,7 @@ function renderTipMgmt() {
   var html = pageStoreTabs(storeId, false) + `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
+      <button class="btn btn-secondary btn-sm" onclick="openTipDateDebug()"><i class="ti ti-stethoscope"></i> Tip診断</button>
       ${['gm','ceo','office','am'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openTipHoursModal()"><i class="ti ti-clock-cog"></i> 対象時間設定</button>`:''}
     </div>
   </div>`;
@@ -14684,7 +14726,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '431';
+const APP_VERSION = '432';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
