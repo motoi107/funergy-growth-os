@@ -8289,6 +8289,7 @@ function saveQBudget(storeId, commit){
   var g=function(id){ var el=document.getElementById('qb-'+storeId+'-'+id); return el?el.value:''; };
   var obj = getQBudget(storeId,_qbY,_qbQ)||{};
   obj.basis=(g('basis')||'').trim(); obj.focus=(g('focus')||'').trim();
+  obj.focusItems=QB_FOCUS_ITEMS.filter(function(fi){ var el=document.getElementById('qbf-'+storeId+'-'+fi.key); return el&&el.checked; }).map(function(fi){return fi.key;});
   obj.by=(typeof myName==='function')?myName():curRole; obj.savedAt=(typeof nowJP==='function')?nowJP():'';
   if(commit){ if(!obj.basis){ showToast('コミットには「達成の軸・根拠」の記入が必要です','warning'); return; } obj.status='committed'; obj.committedAt=obj.savedAt; obj.committedBy=obj.by; }
   else { if(obj.status!=='committed') obj.status='draft'; }
@@ -8309,6 +8310,41 @@ function _qbItemRow(it){
     +'<td style="text-align:right;padding:6px 4px;color:var(--muted);white-space:nowrap">'+(it.tgt?fmt(it.tgt)+it.unit:'—')+'</td>'
     +'<td style="text-align:right;padding:6px 4px;font-weight:700;color:'+actCol+';white-space:nowrap">'+fmt(it.act)+it.unit+'</td>'
     +'<td style="text-align:center;padding:6px 4px">'+judge+'</td></tr>';
+}
+var QB_FOCUS_ITEMS=[
+  {key:'newcust',label:'新規客獲得'},{key:'repeat',label:'リピート強化'},{key:'ppa',label:'客単価UP'},
+  {key:'dinner',label:'ディナー強化'},{key:'lunch',label:'ランチ強化'},{key:'takeout',label:'テイクアウト強化'},
+  {key:'foodcost',label:'原価改善'},{key:'labor',label:'人件費最適化'},{key:'menu',label:'メニュー・商品力'},
+  {key:'cs',label:'接客・CS向上'},{key:'staff',label:'スタッフ育成'},{key:'review',label:'レビュー・口コミ'}
+];
+/* 月別の目標(単月予算)と実績(monthStats)をまとめる */
+function _qbMonthData(storeId, ym){
+  var pp=ym.split('-'), yy=+pp[0], mm=+pp[1];
+  var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(storeId, ym):null;
+  var dow=b?getDow(b):null; var seg={lunch:0,dinner:0,takeout:0}, tSales=0, tGuests=0;
+  if(dow){ var bd=dowSegBreakdown(dow,{y:yy,m:mm}); seg={lunch:bd.lunch,dinner:bd.dinner,takeout:bd.takeout}; tSales=bd.lunch+bd.dinner+bd.takeout; var counts=bd.counts||weekdayCountsForMonth(yy,mm);
+    ['lunch','dinner'].forEach(function(sg){ for(var k=0;k<7;k++){ var c=(dow[sg]||[])[k]||{}; tGuests+=(parseFloat(c.guests)||0)*(counts[k]||0); } }); }
+  var off=_ymToOffset(ym); var ms=(off<=0)?(monthStats(storeId,off)||{}):{};
+  var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId)||{}):{};
+  var aG=ms.guests||0, aS=ms.sales||0;
+  return { ym:ym, mm:mm, seg:seg, tSales:tSales, tGuests:tGuests, tPpa:tGuests?Math.round(tSales/tGuests*100)/100:0, tFc:kpi.foodCost||0, tLb:kpi.laborPct||0,
+    aSales:aS, aGuests:aG, aPpa:aG?Math.round(aS/aG*100)/100:0, aFc:ms.fcRate||0, aLb:ms.laborRate||0, hasData:!!ms.hasData, elapsed:off<=0,
+    rationale:(b&&b.rationale)||null };
+}
+/* 進捗1行: バー＋達成%＋不足(あと○○) */
+function _qbProgLine(label, act, tgt, opts){
+  opts=opts||{}; var unit=opts.unit||''; var money=opts.money, lower=opts.lower;
+  var fmt=function(v){ return money?('$'+Math.round(v).toLocaleString()):(Math.round(v*10)/10); };
+  if(!tgt){ return '<div style="margin:4px 0;font-size:11px"><span>'+label+'</span> <span style="color:var(--muted)">目標未入力</span>'+(act?(' ・ 実績 '+fmt(act)+unit):'')+'</div>'; }
+  if(lower){
+    var ok=act>0 && act<=tgt; var over=Math.round((act-tgt)*10)/10; var col=(!act)?'var(--muted)':(ok?'var(--green)':'var(--red)');
+    return '<div style="margin:5px 0"><div style="display:flex;justify-content:space-between;font-size:11px"><span>'+label+'</span><span style="color:'+col+';font-weight:700">'+(act||'—')+unit+' <span style="color:var(--muted);font-weight:400">/ '+tgt+unit+'</span> '+(act?(ok?'✓ 達成':'（+'+over+unit+' 超過）'):'')+'</span></div></div>';
+  }
+  var pct=act?Math.round(act/tgt*100):0; var gap=Math.max(0,tgt-act); var ok=pct>=100;
+  var col=ok?'var(--green)':(pct>=70?'var(--yellow)':'var(--red)');
+  return '<div style="margin:5px 0"><div style="display:flex;justify-content:space-between;font-size:11px"><span>'+label+'</span><span style="font-weight:700;color:'+col+'">'+fmt(act)+unit+' <span style="color:var(--muted);font-weight:400">/ '+fmt(tgt)+unit+'</span></span></div>'
+    +'<div style="height:7px;background:var(--surface2);border-radius:4px;overflow:hidden;margin-top:2px"><div style="height:100%;width:'+Math.min(100,pct)+'%;background:'+col+'"></div></div>'
+    +'<div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:1px"><span>'+pct+'% 達成</span><span>'+(ok?'達成 ✓':('あと '+fmt(gap)+unit))+'</span></div></div>';
 }
 function renderQuarterBudget(){
   _qEnsure();
@@ -8365,42 +8401,55 @@ function renderQuarterBudget(){
   // ===== 各店タブ =====
   var st=stores.find(function(x){return x.id===_qbStore;})||stores[0]; if(!st) return html+'<div class="card">店舗がありません</div>';
   var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
-  // 項目別 進捗
-  html+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-target" style="color:var(--accent)"></i> '+escapeHtml(st.name)+' Q'+q+' 進捗（達成/未達）</div>';
+  var mds=months.map(function(ym){ return _qbMonthData(st.id, ym); });
+  // 四半期サマリー（合計）
   var pct=t.sales?Math.round(a.sales/t.sales*100):0, pace=Math.round(a.elapsed/3*100), onPace=t.salesEl?a.sales>=t.salesEl*0.995:false;
-  html+='<div style="margin:2px 0 8px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>四半期売上</span><span style="font-weight:800;color:'+(onPace?'var(--green)':'var(--red)')+'">$'+Math.round(a.sales).toLocaleString()+' <span style="color:var(--muted);font-weight:400">/ $'+Math.round(t.sales).toLocaleString()+' ('+pct+'%)</span></span></div>'
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-target" style="color:var(--accent)"></i> '+escapeHtml(st.name)+' Q'+q+' 合計進捗</div>';
+  html+='<div style="margin:2px 0 6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>四半期売上</span><span style="font-weight:800;color:'+(onPace?'var(--green)':'var(--red)')+'">$'+Math.round(a.sales).toLocaleString()+' <span style="color:var(--muted);font-weight:400">/ $'+Math.round(t.sales).toLocaleString()+' ('+pct+'%)</span></span></div>'
     +'<div style="height:9px;background:var(--surface2);border-radius:5px;overflow:hidden;margin-top:3px;position:relative"><div style="height:100%;width:'+Math.min(100,pct)+'%;background:'+(onPace?'var(--green)':'var(--accent)')+'"></div><div style="position:absolute;top:-2px;bottom:-2px;left:'+Math.min(100,pace)+'%;width:2px;background:var(--red)"></div></div>'
-    +'<div style="font-size:9px;color:var(--muted)">経過 '+a.elapsed+'/3ヶ月 ・ 赤線=想定ペース('+pace+'%) ・ 判定は経過月予算との比較</div></div>';
-  html+='<table style="border-collapse:collapse;width:100%;font-size:12px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">項目</th><th style="text-align:right;padding:4px">四半期目標</th><th style="text-align:right;padding:4px">実績(累計)</th><th style="text-align:center;padding:4px">判定</th></tr></thead><tbody>';
-  html+=_qbItemRow({label:'売上', tgt:t.sales, act:a.sales, unit:'', money:true, lower:false, elTgt:t.salesEl});
-  html+=_qbItemRow({label:'客数', tgt:t.guests, act:a.guests, unit:'名', money:false, lower:false, elTgt:t.guestsEl});
-  html+=_qbItemRow({label:'客単価', tgt:t.ppa, act:a.ppa, unit:'', money:true, lower:false});
-  html+=_qbItemRow({label:'原価率', tgt:t.fcRate, act:a.fcRate, unit:'%', money:false, lower:true});
-  html+=_qbItemRow({label:'人件費率', tgt:t.laborRate, act:a.laborRate, unit:'%', money:false, lower:true});
-  html+='</tbody></table></div>';
-  // 月ごとの考え方（達成の軸）
-  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-bulb" style="color:var(--accent)"></i> 月ごとの考え方（達成の軸）</div>';
-  t.byMonth.forEach(function(m){
-    var mm=+m.ym.split('-')[1];
-    var segTot=m.seg.lunch+m.seg.dinner+m.seg.takeout;
-    var pctOf=function(v){ return segTot?Math.round(v/segTot*100):0; };
-    html+='<div style="border-left:3px solid '+(m.elapsed?'var(--green)':'var(--border)')+';padding:6px 10px;margin-bottom:8px">'
-      +'<div style="font-size:12px;font-weight:700">'+mm+'月 <span style="font-size:10px;color:var(--muted);font-weight:400">'+(m.elapsed?'（経過）':'（予定）')+'</span> — 売上目標 $'+Math.round(m.sales).toLocaleString()+' / 客数 '+Math.round(m.guests).toLocaleString()+'名</div>'
-      +'<div style="font-size:10.5px;color:var(--tm);margin-top:3px">軸: ランチ $'+Math.round(m.seg.lunch).toLocaleString()+'('+pctOf(m.seg.lunch)+'%) ・ ディナー $'+Math.round(m.seg.dinner).toLocaleString()+'('+pctOf(m.seg.dinner)+'%) ・ テイクアウト $'+Math.round(m.seg.takeout).toLocaleString()+'('+pctOf(m.seg.takeout)+'%)</div>'
-      +(m.rationale&&(m.rationale.basis||m.rationale.focus)?('<div style="font-size:10.5px;color:var(--muted);margin-top:3px;line-height:1.6">'+(m.rationale.basis?('<b>根拠:</b> '+escapeHtml(m.rationale.basis)):'')+(m.rationale.focus?(' / <b>重点:</b> '+escapeHtml(m.rationale.focus)):'')+'</div>'):'')
+    +'<div style="font-size:9px;color:var(--muted)">経過 '+a.elapsed+'/3ヶ月 ・ 赤線=想定ペース('+pace+'%)</div></div></div>';
+  // 月別 進捗カード（不足の見える化）
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i> 月別 進捗（達成/不足）</div>';
+  mds.forEach(function(md){
+    html+='<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px">'
+      +'<div style="font-size:12px;font-weight:800;margin-bottom:2px">'+md.mm+'月'+(md.hasData?'':' <span style="font-size:10px;color:var(--muted);font-weight:400">実績なし</span>')+'</div>'
+      +_qbProgLine('売上', md.aSales, md.tSales, {money:true})
+      +_qbProgLine('客数', md.aGuests, md.tGuests, {unit:'名'})
+      +_qbProgLine('客単価', md.aPpa, md.tPpa, {money:true})
+      +_qbProgLine('原価率', md.aFc, md.tFc, {unit:'%', lower:true})
+      +_qbProgLine('人件費率', md.aLb, md.tLb, {unit:'%', lower:true})
       +'</div>';
   });
-  html+='<div style="font-size:9.5px;color:var(--muted)">「軸」＝月次予算の客数×単価から算出したランチ/ディナー/TOの構成。何で売上を作るかが分かります。</div></div>';
-  // 四半期の考え方（コミット）
+  html+='</div>';
+  // 月ごとの考え方（目標＋考え方・未入力表示）
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-bulb" style="color:var(--accent)"></i> 月ごとの考え方</div>';
+  mds.forEach(function(md){
+    var segTot=md.seg.lunch+md.seg.dinner+md.seg.takeout; var pf=function(v){return segTot?Math.round(v/segTot*100):0;};
+    var r=md.rationale;
+    html+='<div style="border-left:3px solid var(--accent);padding:6px 10px;margin-bottom:8px">'
+      +'<div style="font-size:12px;font-weight:700">'+md.mm+'月</div>'
+      +'<div style="font-size:10.5px;color:var(--tm);margin-top:2px">目標: 売上 $'+Math.round(md.tSales).toLocaleString()+' ・ 客数 '+Math.round(md.tGuests).toLocaleString()+'名 ・ 客単価 $'+md.tPpa+'</div>'
+      +'<div style="font-size:10.5px;color:var(--tm)">軸: ランチ $'+Math.round(md.seg.lunch).toLocaleString()+'('+pf(md.seg.lunch)+'%) ・ ディナー $'+Math.round(md.seg.dinner).toLocaleString()+'('+pf(md.seg.dinner)+'%) ・ TO $'+Math.round(md.seg.takeout).toLocaleString()+'('+pf(md.seg.takeout)+'%)</div>'
+      +'<div style="font-size:10.5px;margin-top:3px;line-height:1.6">考え方: '+((r&&r.basis)?('<span style="color:var(--fg)">'+escapeHtml(r.basis)+'</span>'):'<span style="color:var(--muted)">未入力</span>')+((r&&r.focus)?(' <br>重点: '+escapeHtml(r.focus)):'')+'</div>'
+      +'</div>';
+  });
+  html+='<div style="font-size:9px;color:var(--muted)">「軸」＝月次予算の客数×単価から算出したL/D/TO構成。考え方は単月予算の提出時メモ。</div></div>';
+  // 四半期の達成方針（重点項目チェック＋補足）
   html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> 四半期の達成方針'+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">コミット済</span>':'')+'</div>';
   if(qbCanEdit()){
-    html+='<div class="form-group"><label class="form-label" style="font-size:11px">達成の軸・根拠（コミットに必須）</label><textarea class="form-input" id="qb-'+st.id+'-basis" rows="3" placeholder="この3か月で何を軸に(例:ディナー客数・客単価UP・TO強化)どう達成するか">'+escapeHtml(qb.basis||'')+'</textarea></div>'
-      +'<div class="form-group"><label class="form-label" style="font-size:11px">重点施策</label><textarea class="form-input" id="qb-'+st.id+'-focus" rows="2" placeholder="重点的に取り組むこと">'+escapeHtml(qb.focus||'')+'</textarea></div>'
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">重点項目（この四半期で力を入れること・複数可）</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
+    QB_FOCUS_ITEMS.forEach(function(fi){ var on=(qb.focusItems||[]).indexOf(fi.key)>=0;
+      html+='<label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:5px 10px;border-radius:16px;border:1.5px solid '+(on?'var(--accent)':'var(--border)')+';background:var(--surface2);cursor:pointer"><input type="checkbox" id="qbf-'+st.id+'-'+fi.key+'" '+(on?'checked':'')+' onchange="this.parentNode.style.borderColor=this.checked?\'var(--accent)\':\'var(--border)\'" style="margin:0;width:14px;height:14px"> '+fi.label+'</label>';
+    });
+    html+='</div>';
+    html+='<div class="form-group"><label class="form-label" style="font-size:11px">達成の軸・根拠（コミットに必須）</label><textarea class="form-input" id="qb-'+st.id+'-basis" rows="3" placeholder="上の重点項目を、何を軸にどう達成するか（例：ディナー客数と客単価を軸に、リピート施策で…）">'+escapeHtml(qb.basis||'')+'</textarea></div>'
+      +'<div class="form-group"><label class="form-label" style="font-size:11px">具体施策</label><textarea class="form-input" id="qb-'+st.id+'-focus" rows="2" placeholder="具体的に取り組むこと">'+escapeHtml(qb.focus||'')+'</textarea></div>'
       +'<div class="btn-row"><button class="btn btn-secondary btn-sm" onclick="saveQBudget(\''+st.id+'\',false)">下書き保存</button><button class="btn btn-primary btn-sm" onclick="saveQBudget(\''+st.id+'\',true)"><i class="ti ti-check"></i> コミット</button></div>';
     if(qb.committedAt) html+='<div style="font-size:10px;color:var(--muted);margin-top:4px">コミット: '+escapeHtml(qb.committedBy||'')+' '+escapeHtml(qb.committedAt||'')+'</div>';
-  } else if(qb.basis){
-    html+='<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>達成の軸:</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>重点:</b> '+escapeHtml(qb.focus)):'')+'</div>';
-  } else { html+='<div style="font-size:11px;color:var(--muted)">まだ設定されていません。</div>'; }
+  } else {
+    var chips=(qb.focusItems||[]).map(function(k){ var fi=QB_FOCUS_ITEMS.find(function(x){return x.key===k;}); return fi?('<span class="tag" style="font-size:10px;background:var(--accent);color:#fff;margin:2px">'+fi.label+'</span>'):''; }).join('');
+    html+=(chips?('<div style="margin-bottom:6px">'+chips+'</div>'):'')+(qb.basis?('<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>達成の軸:</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>具体施策:</b> '+escapeHtml(qb.focus)):'')+'</div>'):'<div style="font-size:11px;color:var(--muted)">まだ設定されていません。</div>');
+  }
   html+='</div>';
   return html;
 }
@@ -14632,7 +14681,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '429';
+const APP_VERSION = '430';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
