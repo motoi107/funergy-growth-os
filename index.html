@@ -14476,7 +14476,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '423';
+const APP_VERSION = '425';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -14711,17 +14711,23 @@ async function pullShiftPlan(storeId, week){
   return false;
 }
 async function pushAvailability(storeId, week, avail, force){
-  if(_supaBooting && !force) return;
+  if(_supaBooting && !force) return false;
   var arr=(avail||[]).filter(function(e){ return e && e.name; });
-  if(!arr.length) return;
+  if(!arr.length) return false;
   try{
-    await fetch(SUPABASE_URL+'/rest/v1/shift_availability', {
+    var res=await fetch(SUPABASE_URL+'/rest/v1/shift_availability', {
       method:'POST',
       headers: supaHeaders({ Prefer:'resolution=merge-duplicates,return=minimal' }),
       body: JSON.stringify(arr.map(function(e){ return { store_id:storeId, week:week, name:e.name, slots:e.slots||[], notes:e.notes||'', submitted_date:e.date||'', updated_at:new Date().toISOString() }; }))
     });
-  }catch(e){ console.warn('pushAvailability', e); }
+    return !!(res && res.ok);
+  }catch(e){ console.warn('pushAvailability', e); return false; }
 }
+/* 未送信キュー（端末ローカルの送信待ち。接続時に自動再送信） */
+function _availPending(){ try{ var a=ls('avail_pending',[]); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+function _markAvailPending(storeId, week, entry){ var q=_availPending().filter(function(x){ return !(x.storeId===storeId && x.week===week && x.entry && x.entry.name===entry.name); }); q.push({storeId:storeId, week:week, entry:entry}); lsSet('avail_pending', q); }
+function _clearAvailPending(storeId, week, name){ lsSet('avail_pending', _availPending().filter(function(x){ return !(x.storeId===storeId && x.week===week && x.entry && x.entry.name===name); })); }
+async function retryAvailPending(){ var q=_availPending(); for(var i=0;i<q.length;i++){ var it=q[i]; try{ var ok=await pushAvailEntry(it.storeId, it.week, it.entry); if(ok) _clearAvailPending(it.storeId, it.week, it.entry.name); }catch(e){} } }
 async function pushAvailEntry(storeId, week, entry){ return pushAvailability(storeId, week, [entry], true); }
 async function pullAvailability(storeId, week){
   try{
@@ -14747,6 +14753,7 @@ function maybePullShift(storeId, week, force){
   var k=storeId+'_'+week;
   if(!force && _shiftPulled[k]) return;
   _shiftPulled[k]=true;
+  try{ retryAvailPending(); }catch(e){}
   Promise.all([
     pullShiftPlan(storeId, week).then(function(ok){ if(!ok){ var l=getShiftPlan(storeId,week); if(l&&l.cells&&Object.keys(l.cells).length) pushShiftPlan(storeId,week,l); } }),
     pullAvailability(storeId, week).then(function(ok){ if(!ok){ var a=getAvailability(storeId,week); if(a&&a.length) pushAvailability(storeId,week,a); } })
@@ -14756,8 +14763,13 @@ function refreshShiftFromCloud(storeId, week){ _shiftPulled[storeId+'_'+week]=fa
 var _staffShiftPulled={};
 function maybePullStaffShift(storeId, week){
   var k=storeId+'_'+week; if(_staffShiftPulled[k]) return; _staffShiftPulled[k]=true;
+  try{ retryAvailPending(); }catch(e){}
   Promise.all([ pullAvailability(storeId, week), pullShiftPlan(storeId, week), pullOpKey('reminded_'+storeId+'_'+week) ])
-    .then(function(){ if(curPage==='shift_staff'||curPage==='mypage') renderPage(curPage); });
+    .then(function(){
+      // ★ 自己修復: ローカルに自分の提出があればクラウドへ再送信（欠落分の自動復旧・idempotent）
+      try{ var me=myName(); var mine=(getAvailability(storeId,week)||[]).find(function(a){return a.name===me;}); if(mine) pushAvailEntry(storeId, week, mine); }catch(e){}
+      if(curPage==='shift_staff'||curPage==='mypage') renderPage(curPage);
+    });
 }
 /* ===== 給与サイクル（1–15日 / 16–末日）ヘルパー ===== */
 function payCycleRange(refDate){
@@ -15203,6 +15215,111 @@ function remindAll(storeId, week) {
 }
 
 /* シフト作成（Grid + Auto-Generate + 警告） */
+/* 直近4週の同一曜日のボール数平均（店内L/D・テイクアウトL/D）。データのある日のみ最大4日で平均 */
+function aieaBowlAvg4wByDay(storeId, day){
+  var da = (typeof getDailyActuals==='function')?getDailyActuals(storeId):{};
+  var dowIdx = DOW_SHIFT.indexOf(day);
+  var today = (typeof bizNow==='function')?bizNow():new Date();
+  var d = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  var lb=0,db=0,ltb=0,dtb=0,n=0,found=0,guard=0;
+  while(found<4 && guard<60){
+    guard++; d.setDate(d.getDate()-1);
+    if(d.getDay()!==dowIdx) continue;
+    var ds=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    var ov=da[ds]; if(!ov) continue;
+    if(ov.lunchBowls==null && ov.dinnerBowls==null && ov.bowls==null) continue;
+    lb+=Number(ov.lunchBowls)||0; db+=Number(ov.dinnerBowls)||0;
+    ltb+=Number(ov.lunchTakeoutBowls)||0; dtb+=Number(ov.dinnerTakeoutBowls)||0;
+    n++; found++;
+  }
+  if(!n) return null;
+  return { lb:Math.round(lb/n), db:Math.round(db/n), ltb:Math.round(ltb/n), dtb:Math.round(dtb/n), n:n };
+}
+/* Aiea専用 シフト作成ビュー: 縦=担当 / 横=シフト(日×L/D)、列見出しに直近4週ボール数、各シフトの最高スキル者に👑、申請・警告は下部 */
+function renderAieaBuild(storeId, week, plan, warnings){
+  plan = plan || (getShiftPlan(storeId, week)||{status:'下書き',cells:{}});
+  var cells = plan.cells||{};
+  var splan = shiftSlotPlan(storeId).filter(function(sc){ return sc.slots && sc.slots.length; });
+  var posOrder=[];
+  splan.forEach(function(sec){ (sec.slots||[]).forEach(function(sl){ if(posOrder.indexOf(sl.pos)<0) posOrder.push(sl.pos); }); });
+  var cols=[];
+  DOW_SHIFT.forEach(function(day){
+    var _iso=weekDateForDow(day);
+    splan.forEach(function(sec){ if(sectionClosedForDay(storeId, sec.key, _iso, day)) return; cols.push({day:day, iso:_iso, sec:sec}); });
+  });
+  cols.forEach(function(col){
+    var assigned=(col.sec.slots||[]).map(function(sl){ return {name:cells[shiftCellKey(col.day,col.sec.key,sl.label)], pos:sl.pos}; }).filter(function(x){return x.name;});
+    var ld=null, lv=-1;
+    assigned.forEach(function(a){ var l=(typeof positionLevelStore==='function')?(positionLevelStore(a.name,a.pos,storeId)||0):0; if(l>lv){lv=l; ld=a.name;} });
+    col.leader=ld;
+  });
+  var secShort=function(k){ return k==='Lunch'?'ランチ':k==='Dinner'?'ディナー':k==='Prep'?'Prep':k==='Trainee'?'Trainee':k==='LPrep'?'昼Prep':k; };
+  var mdOf=function(iso){ return iso?(Number(iso.split('-')[1])+'/'+Number(iso.split('-')[2])):''; };
+  var h='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-layout-grid" style="color:var(--accent)"></i> シフト表（担当 × シフト）<span style="font-size:9.5px;color:var(--muted);font-weight:400;margin-left:auto">👑=リーダー(最高スキル)／丼=直近4週平均 店内/TO</span></div>';
+  h+='<table class="inv-table" style="min-width:'+(150+cols.length*84)+'px;font-size:11px"><thead><tr><th style="position:sticky;left:0;background:var(--surface);z-index:2;text-align:left">担当</th>';
+  var lastDay=null;
+  cols.forEach(function(col){
+    var newDay=(col.day!==lastDay); lastDay=col.day;
+    var bd=(col.sec.key==='Lunch'||col.sec.key==='Dinner')?aieaBowlAvg4wByDay(storeId,col.day):null;
+    var bh='';
+    if(bd){ var _b=(col.sec.key==='Lunch')?bd.lb:bd.db; var _t=(col.sec.key==='Lunch')?bd.ltb:bd.dtb; bh='<div style="font-size:8.5px;color:var(--muted);font-weight:400;line-height:1.4;margin-top:1px">丼'+_b+' / TO'+_t+'</div>'; }
+    h+='<th style="text-align:center;padding:3px 2px;'+(newDay?'border-left:2px solid var(--border)':'')+'"><div style="font-weight:700">'+col.day+'</div><div style="font-size:9px;color:var(--muted);font-weight:400">'+mdOf(col.iso)+'</div><div style="font-size:9px;color:var(--accent);font-weight:600">'+secShort(col.sec.key)+'</div>'+bh+'</th>';
+  });
+  h+='</tr></thead><tbody>';
+  posOrder.forEach(function(pos){
+    h+='<tr><td style="position:sticky;left:0;background:var(--surface);z-index:1;font-weight:600;white-space:nowrap">'+escapeHtml(pos)+'</td>';
+    lastDay=null;
+    cols.forEach(function(col){
+      var newDay=(col.day!==lastDay); lastDay=col.day;
+      var slot=(col.sec.slots||[]).find(function(sl){ return sl.pos===pos; });
+      if(!slot){ h+='<td style="text-align:center;padding:2px;'+(newDay?'border-left:2px solid var(--border)':'')+'"><span style="color:var(--border)">·</span></td>'; return; }
+      var key=shiftCellKey(col.day, col.sec.key, slot.label);
+      var assigned=cells[key]||'';
+      var isLeader=(assigned && assigned===col.leader);
+      var lbl=assigned?((isLeader?'👑 ':'')+shiftCellLabel(assigned, slot.pos, storeId, col.sec.key)):'+';
+      h+='<td style="text-align:center;padding:2px;'+(newDay?'border-left:2px solid var(--border)':'')+'"><div class="shift-slot'+(assigned?' sel':'')+'" style="font-size:10px;padding:3px;min-height:22px'+(isLeader?';box-shadow:inset 0 0 0 2px var(--accent)':'')+'" onclick="openCellAssign(\''+storeId+'\',\''+week+'\',\''+key+'\',\''+col.day+'\',\''+col.sec.key+'\',\''+slot.pos.replace(/'/g,'')+'\')">'+lbl+'</div></td>';
+    });
+    h+='</tr>';
+  });
+  h+='</tbody></table></div>';
+  // シフト申請（下部）
+  var avail=getAvailability(storeId, week)||[];
+  h+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-clipboard-text" style="color:var(--accent)"></i> シフト申請（'+avail.length+'名提出）</div>';
+  if(!avail.length){ h+='<div style="font-size:12px;color:var(--muted)">提出はまだありません。</div>'; }
+  else {
+    h+='<table class="inv-table" style="min-width:'+(110+DOW_SHIFT.length*46)+'px;font-size:11px"><thead><tr><th style="text-align:left">従業員</th>'+DOW_SHIFT.map(function(d){return '<th style="text-align:center">'+d+'</th>';}).join('')+'</tr></thead><tbody>';
+    avail.forEach(function(a){
+      h+='<tr><td style="white-space:nowrap">'+escapeHtml((a.name||'').split(' ')[0])+'</td>';
+      DOW_SHIFT.forEach(function(d){
+        var ps=(a.slots||[]).filter(function(s){return s.day===d;}).map(function(s){return s.period==='Lunch'?'L':s.period==='Dinner'?'D':(s.period||'').slice(0,1);});
+        h+='<td style="text-align:center">'+(ps.length?('<span style="color:var(--green);font-weight:700">'+ps.join('/')+'</span>'):'<span style="color:var(--border)">-</span>')+'</td>';
+      });
+      h+='</tr>';
+    });
+    h+='</tbody></table>';
+    var notes=avail.filter(function(a){return a.notes;});
+    if(notes.length){ h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'+notes.map(function(a){return '<b>'+escapeHtml((a.name||'').split(' ')[0])+'</b>: '+escapeHtml(a.notes);}).join('<br>')+'</div>'; }
+  }
+  h+='</div>';
+  // 休み・OT・警告（下部）
+  var weekDates=DOW_SHIFT.map(weekDateForDow), leaveByDay={};
+  staffForStore(storeId).forEach(function(e){ DOW_SHIFT.forEach(function(day,di){ if(isOnLeave(e.name, weekDates[di])){ (leaveByDay[day]=leaveByDay[day]||[]).push(e.name); } }); });
+  if(Object.keys(leaveByDay).length){
+    h+='<div class="card" style="border-left:3px solid var(--accent2);padding:10px 12px"><div style="font-size:12px;font-weight:600;margin-bottom:4px"><i class="ti ti-beach" style="color:var(--accent2)"></i> 今週の休み（承認済み）</div><div style="font-size:11px;color:var(--tm)">'+DOW_SHIFT.filter(function(d){return leaveByDay[d];}).map(function(d){return '<b>'+d+'</b>: '+leaveByDay[d].map(function(n){return n.split(' ')[0];}).join('、');}).join(' ／ ')+'</div></div>';
+  }
+  var otApprovals=getOTApprovals(storeId, week)||{}, hoursMap={};
+  Object.keys(cells).forEach(function(k){ var nm=cells[k]; if(!nm) return; var period=k.split('_')[1]; hoursMap[nm]=(hoursMap[nm]||0)+(SHIFT_HOURS[period]||4); });
+  var overList=Object.keys(hoursMap).filter(function(nm){return hoursMap[nm]>40;});
+  if(overList.length){
+    h+='<div class="alert '+(overList.every(function(nm){return otApprovals[nm];})?'alert-success':'alert-warning')+'" style="padding:8px 10px"><i class="ti ti-clock-exclamation"></i><div style="font-size:11px"><b>オーバーワーク（40h超）'+overList.length+'名</b><br>'+overList.map(function(nm){return escapeHtml(nm)+': '+hoursMap[nm]+'h '+(otApprovals[nm]?'<span style="color:var(--green)">✓承認済</span>':'<span style="color:var(--red)">未承認</span>');}).join('<br>')+'</div></div>';
+  }
+  if(warnings && warnings.length){
+    h+='<div class="alert alert-warning"><i class="ti ti-alert-triangle"></i><div><p style="font-size:12px;font-weight:600">警告 '+warnings.length+'件</p><div style="font-size:11px">'+warnings.map(function(w){return '・'+escapeHtml(w);}).join('<br>')+'</div></div></div>';
+  } else {
+    h+='<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i>警告なし</div>';
+  }
+  return h;
+}
 function renderShiftBuild(storeId, week) {
   var positions = assignablePositions(storeId);
   var plan = getShiftPlan(storeId, week) || {status:'下書き', cells:{}};
@@ -15227,6 +15344,7 @@ function renderShiftBuild(storeId, week) {
         : `<button class="btn ${shiftTraineeEnabled(storeId)?'btn-primary':'btn-secondary'} btn-sm" onclick="toggleShiftTrainee('${storeId}','${week}')"><i class="ti ti-school"></i> Trainee枠${shiftTraineeEnabled(storeId)?' ON':''}</button>`}
     </div>
   </div>`;
+  if (storeId==='F04-A') return html + renderAieaBuild(storeId, week, plan, warnings); // Aiea専用ビュー（担当×シフト・4週ボール数・リーダー・申請/警告を下部）
   // ===== 曜日別 営業本数パネル（headcount店舗のみ） =====
   if (usesShiftLayout(storeId)) {
     var _hsecs = shiftSectionsFor(storeId).filter(function(sc){ return sc.headcount; });
@@ -16631,7 +16749,7 @@ function renderAvailBody(storeId, week) {
   openModal(html);
 }
 function toggleAvail(storeId, week, key) { availTmp[key]=!availTmp[key]; renderAvailBody(storeId, week); }
-function submitAvail(storeId, week) {
+async function submitAvail(storeId, week) {
   var slots = Object.keys(availTmp).filter(k=>availTmp[k]).map(k=>{var p=k.split('_');return {day:p[0],period:p[1]};});
   if (!slots.length) { alert('勤務可能枠を選択してください'); return; }
   var me = myName();
@@ -16640,9 +16758,12 @@ function submitAvail(storeId, week) {
   var myEntry={name:me, slots, notes, date:todayJP()};
   avail.push(myEntry);
   lsSet('avail_'+storeId+'_'+week, avail);
-  pushAvailEntry(storeId, week, myEntry);
   closeModalDirect();
-  showToast('Availabilityを提出しました', 'success');
+  showToast('送信中…', 'info');
+  var ok=false;
+  for(var t=0;t<3 && !ok;t++){ ok = await pushAvailEntry(storeId, week, myEntry); if(!ok) await new Promise(function(r){setTimeout(r,600*(t+1));}); }
+  if(ok){ _clearAvailPending(storeId, week, me); showToast('Availabilityを提出しました（保存済み）', 'success'); }
+  else { _markAvailPending(storeId, week, myEntry); showToast('提出は端末に保存しました。クラウド送信に失敗したため、接続時に自動で再送信します', 'warning'); }
   renderPage('shift_staff');
 }
 
