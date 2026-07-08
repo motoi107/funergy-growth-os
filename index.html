@@ -8219,6 +8219,22 @@ function normalizeBudgetsDemo(){
     if(changed) saveBudgets(budgets);
   }catch(e){}
 }
+/* 予実用：店舗をコンパクトな略称チップ（色分け）で選択（携帯で見やすく統一） */
+var _BSTORE_ABBR = { 'F01':'TT','F02':'TK','F03':'FSP','F03-G':'WGS','F04-K':'TTY-K','F04-P':'TTY-P','F04-A':'TTY-A','F05':'MJ' };
+var _BSTORE_COLOR = { 'F01':'#F07820','F02':'#E0A020','F03':'#7CB342','F03-G':'#7CB342','F04-K':'#2B79D0','F04-P':'#2B79D0','F04-A':'#2B79D0','F05':'#8B5E3C','ALL':'#7E57C2' };
+function _bStoreAbbr(s){ if(!s) return '?'; if(_BSTORE_ABBR[s.id]) return _BSTORE_ABBR[s.id]; var n=(s.name||s.id||'').split(' ').join(''); return n.slice(0,3).toUpperCase(); }
+function _bStoreCol(id){ if(_BSTORE_COLOR[id]) return _BSTORE_COLOR[id]; var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===id;}); return (s&&s.color)||'#888'; }
+function bStoreChips(current, setter){
+  var vis = (typeof getVisibleStores==='function')?getVisibleStores():[];
+  function chip(id,label,col,active,full){
+    return '<button title="'+escapeHtml(full||label)+'" onclick="'+setter+'(\''+id+'\')" style="flex:0 0 auto;padding:6px 11px;border-radius:10px;border:1.5px solid '+col+';background:'+(active?col:'transparent')+';color:'+(active?'#fff':col)+';font-weight:800;font-size:12.5px;line-height:1;white-space:nowrap;cursor:pointer;transition:all .12s">'+escapeHtml(label)+'</button>';
+  }
+  var h='<div style="display:flex;gap:6px;overflow-x:auto;padding:6px 2px 8px;margin-bottom:6px;-webkit-overflow-scrolling:touch;scrollbar-width:none">';
+  h+=chip('ALL','全店', _bStoreCol('ALL'), current==='ALL','全店');
+  vis.forEach(function(s){ h+=chip(s.id, _bStoreAbbr(s), _bStoreCol(s.id), current===s.id, s.name); });
+  h+='</div>';
+  return h;
+}
 function renderBudget() {
   normalizeBudgetsDemo();
   var html = `<div class="section-header">
@@ -8236,7 +8252,7 @@ function renderBudget() {
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   if (budgetTab==='minutes') return html + renderMeetingMinutes(); // 議事録は独自のシート選択あり
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
-  html += storeChipBar(_budgetStore, 'setBudgetStore');
+  html += bStoreChips(_budgetStore, 'setBudgetStore');
   if (budgetTab==='setup') return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup());
   return html + renderBudgetSummary();
 }
@@ -8409,7 +8425,7 @@ function renderQuarterBudget(){
     +'<button class="btn btn-secondary btn-sm" onclick="setQbQuarter(1)">▶</button></div>'
     +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.7"><i class="ti ti-target"></i> 目標は<b>単月予算(月次)を自動合算</b>。実績は当四半期の経過月累計。達成/未達を項目別に表示します。</div></div>';
   // store tabs
-  html+=storeChipBar(_qbStore,'setQbStore'); // FC/人件費と表示統一
+  html+=bStoreChips(_qbStore,'setQbStore'); // 略称チップで統一
 
   if(_qbStore==='ALL'){
     // 集計（全店合計の項目別）
@@ -8425,7 +8441,7 @@ function renderQuarterBudget(){
     var _qItems = stores.map(function(st){
       var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q);
       var _pc = (a.elapsed!=null)?Math.round(a.elapsed/3*100):null;
-      return { id:st.id, name:st.name, color:st.color||'#888',
+      return { id:st.id, name:st.name, color:_bStoreCol(st.id),
         actual:a.sales||0, budget:t.sales||0, pace:_pc,
         actStr:'$'+Math.round(a.sales||0).toLocaleString(), budStr:'$'+Math.round(t.sales||0).toLocaleString(),
         sub:'原価率 '+(a.fcRate?a.fcRate+'%':'—')+' ・ 人件費率 '+(a.laborRate?a.laborRate+'%':'—')+' ・ 経過 '+(a.elapsed||0)+'/3ヶ月' };
@@ -9129,7 +9145,7 @@ function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
     var act = isCur ? (c.actToToday||0) : (c.actMonth||0);
     var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
     var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
-    return { id:st.id, name:st.name, color:st.color||'#888', actual:act, budget:bud, pace:(isCur?paceRef:null),
+    return { id:st.id, name:st.name, color:_bStoreCol(st.id), actual:act, budget:bud, pace:(isCur?paceRef:null),
       sub:'原価率 '+(fc!=null?fc+'%':'—')+' ・ 人件費率 '+(lb!=null?lb+'%':'—') };
   });
   var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別 月次進捗 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">実績／月間予算・達成率'+(isCur?'（縦線＝今日の暦日ペース）':'')+'</span></div>';
@@ -9518,10 +9534,8 @@ function renderBudgetDaily() {
   var html = '';
   // 店舗スコープ切替（管轄が複数店ある場合）
   if (multiStore) {
-    html += `<div class="phase-tabs" style="margin-bottom:8px">
-      <div class="phase-tab${dailyStoreScope==='ALL'?' active':''}" onclick="setDailyScope('ALL')">全${vis.length}店集計</div>
-      ${vis.map(s=>`<div class="phase-tab${dailyStoreScope===s.id?' active':''}" onclick="setDailyScope('${s.id}')">${s.name}</div>`).join('')}
-    </div>`;
+    var _dCur = dailyStoreScope==='current' ? (vis[0]?vis[0].id:'ALL') : dailyStoreScope;
+    html += bStoreChips(_dCur, 'setDailyScope');
   } else {
     dailyStoreScope = 'current';
   }
@@ -9538,7 +9552,7 @@ function renderBudgetDaily() {
       var act = c.actToToday||0, bud = (c.budToToday>0)?c.budToToday:(c.budMonth||0);
       var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
       var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
-      return { id:s.id, name:s.name, color:s.color||'#888', actual:act, budget:bud, pace:null,
+      return { id:s.id, name:s.name, color:_bStoreCol(s.id), actual:act, budget:bud, pace:null,
         sub:'累計予算＝本日まで ・ 原価率 '+(fc!=null?fc+'%':'—')+' ・ 人件費率 '+(lb!=null?lb+'%':'—') };
     });
     html += '<div class="card"><div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>店舗別 今日の現在地 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">累計売上／累計予算・対予算ペース</span></div>';
@@ -14895,7 +14909,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '453';
+const APP_VERSION = '454';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
