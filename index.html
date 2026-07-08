@@ -304,6 +304,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .store-name { font-weight: 600; font-size: 13px; flex: 1; }
 .store-meta { font-size: 12px; color: var(--muted); }
 .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 4px; }
+@media (max-width:640px){ .inv-table .d-wx{display:none} }
 .progress-fill { height: 100%; border-radius: 2px; transition: width .3s; }
 
 /* task list */
@@ -6037,20 +6038,8 @@ function renderDashboard() {
     var lAggDisp  = wL>0 ? wL+'%' : '—';
     html += `<div class="card">
       <div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${t('前日まで','through yesterday')}</span></div>
-      <div style="background:var(--surface2);border-radius:12px;padding:12px;margin-bottom:10px">
-        <div style="font-size:12px;color:var(--muted);font-weight:700;margin-bottom:6px">${t('全店合算','All stores')}${curRole==='am'?'（'+t('管轄','my stores')+'）':''}</div>
-        <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:10px">
-          <span style="font-size:24px;font-weight:800;color:var(--tm)">${fmtK(tA)}</span>
-          <span style="font-size:14px;color:var(--muted)">/ ${fmtK(tB)}</span>
-          <span class="tag ${statusTag(statusFromPct(tp))}" style="margin-left:auto;font-size:13px">${tp}%</span>
-        </div>
-        <div style="display:flex;gap:24px">
-          <div><div style="font-size:11px;color:var(--muted)">FC</div><div style="font-size:20px;font-weight:800;color:${fcColAgg}">${fcAggDisp}</div></div>
-          <div><div style="font-size:11px;color:var(--muted)">Labor</div><div style="font-size:20px;font-weight:800;color:${lColAgg}">${lAggDisp}</div></div>
-          <div style="margin-left:auto;text-align:right"><div style="font-size:11px;color:var(--muted)">売上</div><div style="font-size:14px;font-weight:700;color:var(--tm)">${fmtK(tA)}</div></div>
-        </div>
-      </div>`;
-    if (stores.length > 1) {
+`;
+    if (stores.length >= 1) {
       html += `<div class="acc-head${dashCollapsed('dash-stores')?'':' open'}" id="dash-stores-head" onclick="dashToggle('dash-stores')"><i class="ti ti-list"></i>店舗別 <span style="font-size:11px;color:var(--muted);font-weight:400">· ${stores.length}${t('店','stores')}</span><i class="ti ti-chevron-down acc-chev"></i></div>
         <div id="dash-stores" style="display:${dashCollapsed('dash-stores')?'none':''}">`;
       stores.forEach(s => {
@@ -8146,22 +8135,8 @@ function pageStoreTabs(activeId, includeAll){
   tabs += stores.map(function(s){ var on=(s.id===activeId); return '<div class="phase-tab'+(on?' active':'')+'" style="'+(on?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="switchStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>'; }).join('');
   return '<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:10px">'+tabs+'</div>';
 }
-function storeChipBar(current, fnName, label){
-  var vis = (typeof getVisibleStores==='function')?getVisibleStores():[];
-  var chips = '<button class="phase-tab'+(current==='ALL'?' active':'')+'" style="white-space:nowrap" onclick="'+fnName+'(\'ALL\')"><i class="ti ti-building" style="font-size:12px"></i> 全店</button>';
-  chips += vis.map(function(s){ return '<button class="phase-tab'+(current===s.id?' active':'')+'" style="white-space:nowrap" onclick="'+fnName+'(\''+s.id+'\')"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</button>'; }).join('');
-  return '<div class="card" style="padding:8px 10px;margin-bottom:10px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px"><i class="ti ti-building-store"></i> '+(label||'表示店舗')+'</div><div class="phase-tabs" style="flex-wrap:wrap;gap:6px">'+chips+'</div></div>';
-}
-function storeSelectBar(current, onchangeFn, label){
-  var vis = (typeof getVisibleStores==='function') ? getVisibleStores() : [];
-  return `<div class="card" style="padding:8px 10px;margin-bottom:10px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <span style="font-size:12px;color:var(--muted)"><i class="ti ti-building-store"></i> ${label||'表示店舗'}</span>
-    <select class="form-select" style="width:auto;padding:6px" onchange="${onchangeFn}(this.value)">
-      <option value="ALL" ${current==='ALL'?'selected':''}>全店</option>
-      ${vis.map(function(s){return `<option value="${s.id}" ${current===s.id?'selected':''}>${s.name}</option>`;}).join('')}
-    </select>
-  </div></div>`;
-}
+function storeChipBar(current, fnName, label){ return bStoreChips(current, fnName); }
+function storeSelectBar(current, onchangeFn, label){ return bStoreChips(current, onchangeFn); }
 
 var budgetTab = 'summary';
 var _budgetStore = 'ALL';
@@ -8220,18 +8195,22 @@ function normalizeBudgetsDemo(){
   }catch(e){}
 }
 /* 予実用：店舗をコンパクトな略称チップ（色分け）で選択（携帯で見やすく統一） */
-var _BSTORE_ABBR = { 'F01':'TT','F02':'TK','F03':'FSP','F03-G':'WGS','F04-K':'TTY-K','F04-P':'TTY-P','F04-A':'TTY-A','F05':'MJ' };
+var _BSTORE_ABBR = { 'F01':'TT','F02':'TK','F03':'FSP','F03-G':'WGS','F04-K':'T-K','F04-P':'T-P','F04-A':'T-A','F05':'MJ' };
 var _BSTORE_COLOR = { 'F01':'#F07820','F02':'#E0A020','F03':'#7CB342','F03-G':'#7CB342','F04-K':'#2B79D0','F04-P':'#2B79D0','F04-A':'#2B79D0','F05':'#8B5E3C','ALL':'#7E57C2' };
 function _bStoreAbbr(s){ if(!s) return '?'; if(_BSTORE_ABBR[s.id]) return _BSTORE_ABBR[s.id]; var n=(s.name||s.id||'').split(' ').join(''); return n.slice(0,3).toUpperCase(); }
 function _bStoreCol(id){ if(_BSTORE_COLOR[id]) return _BSTORE_COLOR[id]; var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===id;}); return (s&&s.color)||'#888'; }
-function bStoreChips(current, setter){
-  var vis = (typeof getVisibleStores==='function')?getVisibleStores():[];
+function bStoreChips(current, setter, opts){
+  opts = opts||{};
+  var vis = opts.stores || ((typeof getVisibleStores==='function')?getVisibleStores():[]);
+  var allVal = ('allVal' in opts) ? opts.allVal : 'ALL';
+  var showAll = opts.showAll !== false;
+  function colOf(s){ return _BSTORE_COLOR[s.id] || s.color || '#888'; }
   function chip(id,label,col,active,full){
     return '<button title="'+escapeHtml(full||label)+'" onclick="'+setter+'(\''+id+'\')" style="flex:0 0 auto;padding:6px 11px;border-radius:10px;border:1.5px solid '+col+';background:'+(active?col:'transparent')+';color:'+(active?'#fff':col)+';font-weight:800;font-size:12.5px;line-height:1;white-space:nowrap;cursor:pointer;transition:all .12s">'+escapeHtml(label)+'</button>';
   }
   var h='<div style="display:flex;gap:6px;overflow-x:auto;padding:6px 2px 8px;margin-bottom:6px;-webkit-overflow-scrolling:touch;scrollbar-width:none">';
-  h+=chip('ALL','全店', _bStoreCol('ALL'), current==='ALL','全店');
-  vis.forEach(function(s){ h+=chip(s.id, _bStoreAbbr(s), _bStoreCol(s.id), current===s.id, s.name); });
+  if(showAll) h+=chip(allVal,'全店', _BSTORE_COLOR['ALL'], current===allVal,'全店');
+  vis.forEach(function(s){ h+=chip(s.id, _bStoreAbbr(s), colOf(s), current===s.id, s.name); });
   h+='</div>';
   return h;
 }
@@ -9623,7 +9602,7 @@ function renderBudgetDaily() {
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div></div>
     <table class="inv-table" style="min-width:${isAgg?'620':'1080'}px;font-size:12px"><thead><tr>
-      <th>日</th>${isAgg?'':'<th>天気</th><th>イベント</th>'}<th>予算</th><th>実績</th>${isAgg?'':'<th>L売上</th><th>D売上</th><th>'+guestLabel+'</th>'}<th>達成</th><th>累計達成</th>${isAgg?'':'<th>チップ率</th>'}<th>労働h</th><th>人件費</th>${(!isAgg&&canEdit)?'<th></th>':''}
+      <th>日</th>${isAgg?'':'<th class="d-wx">天気</th><th class="d-wx">イベント</th>'}<th>予算</th><th>実績</th>${isAgg?'':'<th>L売上</th><th>D売上</th><th>'+guestLabel+'</th>'}<th>達成</th><th>累計達成</th>${isAgg?'':'<th>チップ率</th>'}<th>労働h</th><th>人件費</th>${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
   var cumB=0, cumA=0;
@@ -9668,7 +9647,7 @@ function renderBudgetDaily() {
     var rowBg = isToday?'background:#fdeee4':isWeekend?'background:rgba(255,255,255,0.02)':'';
     html += `<tr style="${rowBg}">
       <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
-      ${isAgg?'':`<td style="font-size:14px">${weatherIcon(weather)}</td><td style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="タップでメモ編集"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">＋メモ</span>':'-'):''}</td>`}
+      ${isAgg?'':`<td class="d-wx" style="font-size:14px">${weatherIcon(weather)}</td><td class="d-wx" style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="タップでメモ編集"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">＋メモ</span>':'-'):''}</td>`}
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="手入力: ${escapeHtml(_manBy)}"></i>`:''}</td>
       ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
@@ -14065,12 +14044,7 @@ async function refreshLaborFromCloud(){
 }
 
 var _laborStore = null;
-function laborStoreChips(current){
-  var vis = (typeof getVisibleStores==='function')?getVisibleStores():[];
-  var chips = '<button class="phase-tab'+(current==='ALL'?' active':'')+'" style="white-space:nowrap" onclick="setLaborStore(\'ALL\')"><i class="ti ti-building" style="font-size:12px"></i> 全店</button>';
-  chips += vis.map(function(s){ return '<button class="phase-tab'+(current===s.id?' active':'')+'" style="white-space:nowrap" onclick="setLaborStore(\''+s.id+'\')"><span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+'</button>'; }).join('');
-  return '<div class="card" style="padding:8px 10px;margin-bottom:10px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px"><i class="ti ti-building-store"></i> 表示店舗</div><div class="phase-tabs" style="flex-wrap:wrap;gap:6px">'+chips+'</div></div>';
-}
+function laborStoreChips(current){ return bStoreChips(current, 'setLaborStore'); }
 function laborSummaryCard(storeId){
   var _ym = ymOf(attMonthRef());
   var _frozen = isFrozenMonth(_ym);
@@ -14909,7 +14883,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '454';
+const APP_VERSION = '455';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -20491,10 +20465,7 @@ function renderStaffMaster() {
       <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted)"></i>
       <input class="form-input" style="padding-left:32px" id="emp-search" placeholder="名前・従業員コード・Email・電話で検索" value="${empSearchQ}" oninput="empSearch(this.value)">
     </div>
-    <div style="display:flex;gap:6px;overflow-x:auto;margin-top:8px;padding-bottom:2px">
-      <button class="phase-tab${empStoreFilter==='all'?' active':''}" style="white-space:nowrap" onclick="setEmpStore('all')">全店</button>
-      ${STORES.map(s=>`<button class="phase-tab${empStoreFilter===s.id?' active':''}" style="white-space:nowrap" onclick="setEmpStore('${s.id}')"><span class="store-dot" style="background:${s.color}"></span>${s.name}</button>`).join('')}
-    </div>
+    ${bStoreChips(empStoreFilter,'setEmpStore',{stores:STORES,allVal:'all'})}
   </div>
   <div class="phase-tabs">
     <div class="phase-tab${empFilter==='active'?' active':''}" onclick="setEmpFilter('active')">在籍</div>
@@ -35224,9 +35195,7 @@ function renderSkillManager() {
   html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>スキルマトリクス（店舗別）</div>`;
   // 店舗切替タブ
   if (skillStores.length>1) {
-    html += `<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:8px">
-      ${skillStores.map(s=>`<div class="phase-tab${mgrStoreId===s.id?' active':''}" style="${mgrStoreId===s.id?`background:${s.color};border-color:${s.color}`:''}" onclick="setSkillMatrixStore('${s.id}')">${s.name}</div>`).join('')}
-    </div>`;
+    html += bStoreChips(mgrStoreId,'setSkillMatrixStore',{stores:skillStores,showAll:false});
   }
   // この店舗で働くスタッフ（所属 or 勤務可能店舗）
   var staffHere = (mgrStoreId==='OFFICE')
@@ -35345,10 +35314,7 @@ function renderSkillStaffView() {
   var visStores = getVisibleStores();
   if(window._skillStaffStore && window._skillStaffStore!=='ALL' && window._skillStaffStore!=='OFFICE' && !visStores.find(function(s){return s.id===window._skillStaffStore;})) window._skillStaffStore='ALL';
   var selStore = window._skillStaffStore || 'ALL';
-  var tabs = '<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:8px">'
-    + '<div class="phase-tab'+(selStore==='ALL'?' active':'')+'" onclick="setSkillStaffStore(\'ALL\')">全店</div>'
-    + skillStoreListUI().map(function(s){return '<div class="phase-tab'+(selStore===s.id?' active':'')+'" style="'+(selStore===s.id?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="setSkillStaffStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>';}).join('')
-    + '</div>';
+  var tabs = bStoreChips(selStore,'setSkillStaffStore',{stores:skillStoreListUI()});
   var staff = visibleStaffForManager().filter(function(e){
     if(e.prep) return false; // プレップ専門職は一般スキル評価から除外（プレップLvで評価）
     if(selStore==='OFFICE') return ['office','office_crew'].includes(e.role);
