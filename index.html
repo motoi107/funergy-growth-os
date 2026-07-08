@@ -3008,10 +3008,20 @@ function isNoCashTipStore(storeId){ return NO_CASHTIP_STORES.indexOf(storeId)>=0
 /* キャッシュチップが未入力か（クレジットはあるのにキャッシュ未確定＝要入力） */
 function cashTipMissing(storeId, date) {
   if (isNoCashTipStore(storeId)) return false; // 対象外店舗は常に未入力扱いしない
+  // 店舗マスターの営業設定（定休/ランチ休/ディナー休）を尊重：営業していない区分は入力不要
+  var _dow; try{ _dow = ['日','月','火','水','木','金','土'][new Date(date+'T00:00:00').getDay()]; }catch(e){ _dow=null; }
+  var _cm = (typeof dayClosureMode==='function') ? dayClosureMode(storeId, date, _dow) : null;
+  if (_cm === 'closed') return false; // 終日定休 → 入力不要
+  var _lunchOff  = (_cm === 'lclose') || (typeof tipDayLunchOff==='function' && tipDayLunchOff(storeId, date));
+  var _dinnerOff = (_cm === 'dclose');
   var av = getDailyActuals(storeId)[date] || {};
   var hasCredit = (av.lunchCreditTip!=null) || (av.dinnerCreditTip!=null) || (av.actual>0);
+  if (!hasCredit) return false;
   var cash = getCashTips(storeId)[date];
-  return hasCredit && !(cash && (cash.entered || (cash.lunchEntered && cash.dinnerEntered)));
+  if (cash && cash.entered) return false; // 単一確定でOK
+  var lunchOK  = _lunchOff  || (cash && cash.lunchEntered);
+  var dinnerOK = _dinnerOff || (cash && cash.dinnerEntered);
+  return !(lunchOK && dinnerOK);
 }
 function tipForDay(storeId, date) {
   var av = getDailyActuals(storeId)[date] || {};
@@ -14801,7 +14811,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '447';
+const APP_VERSION = '448';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -17679,7 +17689,7 @@ function _mileRow(r, withActions){
     +'<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">'
     +'<div style="flex:1"><div style="font-size:13px;font-weight:600">'+escapeHtml(r.employee)+' <span style="font-size:10px;color:var(--muted)">· '+escapeHtml(sName)+' · '+escapeHtml(r.date||'')+'</span></div>'
     +'<div style="font-size:12px;color:var(--muted)">'+escapeHtml(r.purpose||'')+'：'+escapeHtml(r.origin||'')+' → '+escapeHtml(r.destination||'')+'</div>'
-    +'<div style="font-size:12px">'+r.miles+' mi'+(r.roundTrip?'（往復）':'')+' × $'+r.rate+' = <b>$'+(r.amount||0).toFixed(2)+'</b></div>'
+    +'<div style="font-size:12px;background:var(--bg2);border-radius:6px;padding:4px 8px;margin-top:3px;display:inline-block">'+(r.oneWayMiles!=null?('片道 <b>'+r.oneWayMiles+'mi</b>'+(r.roundTrip?' × 2（往復）= <b>'+r.miles+'mi</b>':'')):('<b>'+r.miles+'mi</b>'+(r.roundTrip?'（往復）':'')))+' × $'+r.rate+'/mi = <b style="color:var(--green);font-size:14px">$'+(r.amount||0).toFixed(2)+'</b></div>'
     +(r.memo?'<div style="font-size:11px;color:var(--muted)">memo: '+escapeHtml(r.memo)+'</div>':'')
     +(r.status==='却下'&&r.rejectReason?'<div style="font-size:11px;color:var(--red)">却下理由: '+escapeHtml(r.rejectReason)+'</div>':'')
     +'</div><span class="tag '+sc+'">'+r.status+'</span></div>';
@@ -17732,6 +17742,27 @@ function renderMileagePastLog(archived){
   });
   return h;
 }
+function renderMileagePerPerson(recs){
+  var appr=recs.filter(function(r){ return r.status==='承認'; });
+  if(!appr.length) return '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認済みの精算はまだありません</div>';
+  var byEmp={}; appr.forEach(function(r){ (byEmp[r.employee]=byEmp[r.employee]||[]).push(r); });
+  var names=Object.keys(byEmp).sort(function(a,b){ var ta=byEmp[a].reduce(function(s,r){return s+(r.amount||0);},0), tb=byEmp[b].reduce(function(s,r){return s+(r.amount||0);},0); return tb-ta; });
+  var h='';
+  names.forEach(function(n){
+    var list=byEmp[n].slice().sort(function(a,b){return String(b.date||'').localeCompare(String(a.date||''));});
+    var tot=list.reduce(function(s,r){return s+(r.amount||0);},0);
+    h+='<details style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px"><summary style="cursor:pointer;font-size:13px;font-weight:600;display:flex;justify-content:space-between;gap:8px"><span>'+escapeHtml(n)+' <span style="font-size:10px;color:var(--muted);font-weight:400">('+list.length+'件)</span></span><span style="color:var(--green)">$'+tot.toFixed(2)+'</span></summary>';
+    list.forEach(function(r){
+      h+='<div style="font-size:11px;padding:5px 0 5px 8px;border-top:1px dashed var(--border)">'
+        +'<div style="color:var(--muted)">'+escapeHtml(r.date||'')+' · '+escapeHtml(r.purpose||'')+(r.archivedMonth?' · '+r.archivedMonth+'締':'')+'</div>'
+        +'<div>'+escapeHtml(r.origin||'')+' → '+escapeHtml(r.destination||'')+'</div>'
+        +'<div>'+(r.oneWayMiles!=null?('片道 '+r.oneWayMiles+'mi'+(r.roundTrip?' ×2 = '+r.miles+'mi':'')):(r.miles+'mi'))+' × $'+r.rate+' = <b style="color:var(--green)">$'+(r.amount||0).toFixed(2)+'</b></div>'
+        +'</div>';
+    });
+    h+='</details>';
+  });
+  return h;
+}
 function renderMileage(){
   var all=getMileageRequests(); var me=mileMyName(); var isMgr=canManageMileage();
   var c=getMileageConfig();
@@ -17766,6 +17797,11 @@ function renderMileage(){
       html+='<button class="btn btn-primary btn-sm" style="width:100%;margin-top:10px" onclick="mileageMonthEndClose(\''+curMonth+'\')"><i class="ti ti-archive"></i> '+curMonth+' を月末処理（過去ログへ）</button>';
       html+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> 月末処理するとこの月の申請が過去ログへ移動し、当月の積み上げがリセットされます。</div>';
     }
+    html+='</div>';
+    // 個人別 過去ログ（承認済み・全期間）＝承認後すぐ反映
+    var _apprAll=all.filter(function(r){ return r.status==='承認' && canApproveMileage(r); });
+    html+='<div class="card"><div class="card-title"><i class="ti ti-users" style="color:var(--accent2)"></i>個人別 過去ログ（承認済み・全期間）<span class="tag tag-green" style="margin-left:auto">$'+_apprAll.reduce(function(a,r){return a+(r.amount||0);},0).toFixed(2)+'</span></div>';
+    html+=renderMileagePerPerson(_apprAll);
     html+='</div>';
     // 過去ログ（月末処理済み）
     var archived=all.filter(function(r){return r.archived && canApproveMileage(r);});
@@ -21888,6 +21924,14 @@ function _ecYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2
 var EC_MIN_DATE = '2026-07-01'; // エラー検知の開始日（前月まではログイン運用が無いため対象外）
 function _ecRecentDates(n){ var out=[],d=new Date(); for(var i=0;i<n;i++){ var ymd=_ecYmd(d); if(ymd>=EC_MIN_DATE) out.push(ymd); d.setDate(d.getDate()-1);} return out; }
 function _ecEmpAlive(e){ return e && e.status!=='退職'; }
+function migrateEcResetPreJuly(){
+  try{
+    if(localStorage.getItem('_ec_reset_v1')==='1') return;
+    lsSet('ec_log', []); // 運用開始(7月)以前の蓄積エラーログを一度リセット
+    try{ localStorage.removeItem('ec_log_last'); }catch(e){} // 本日ぶんを再スナップショット（ゲート済み検知で7月以降のみ）
+    localStorage.setItem('_ec_reset_v1','1');
+  }catch(e){}
+}
 
 /* — 従業員マスター系（1ループで複数検知） — */
 function ecDetEmpMaster(){
@@ -21964,6 +22008,8 @@ function ecDetApproval(){
   var now=new Date();
   orders.forEach(function(o){
     if(o.status!=='承認待ち') return;
+    var _od=o.date?(parseJaDate(String(o.date))||new Date(String(o.date))):null;
+    if(_od && !isNaN(_od.getTime()) && _ecYmd(_od) < EC_MIN_DATE) return; // 7月以前の申請は対象外
     var d=o.date?new Date(String(o.date)):null;
     var days=(d&&!isNaN(d.getTime()))?Math.floor((now-d)/86400000):null;
     if(days===null||days>=3){
@@ -21978,6 +22024,7 @@ function ecDetApproval(){
 function ecDetClose(){
   var issues=[]; var d=new Date(); d.setMonth(d.getMonth()-1);
   var ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  if(ym < EC_MIN_DATE.slice(0,7)) return issues; // 運用開始(7月)以前の前月締めは対象外
   if(typeof OFFICE_CLOSE_ITEMS==='undefined') return issues;
   var done=getOfficeClose(ym), total=OFFICE_CLOSE_ITEMS.length;
   var doneN=OFFICE_CLOSE_ITEMS.filter(function(it){return done[it.id];}).length;
@@ -21992,6 +22039,8 @@ function ecDetInventory(){
     ['inv_hist_'+st.id,'inv_hist_daily_'+st.id].forEach(function(key){
       var hist=(typeof ls==='function'?ls(key,[]):[])||[]; if(!hist.length) return;
       var snap=hist[hist.length-1]; var lines=(snap&&snap.lines)||[];
+      var _snapIso=(snap&&snap.ym)?(snap.ym+'-01'):((snap&&snap.date)?(function(){var _p=parseJaDate(snap.date)||new Date(snap.date);return (_p&&!isNaN(_p.getTime()))?_ecYmd(_p):null;})():null);
+      if(_snapIso && _snapIso < EC_MIN_DATE) return; // 7月以前の棚卸は対象外
       lines.forEach(function(ln){
         var problems=[];
         if(typeof ln.actual!=='number'||isNaN(ln.actual)) problems.push('実棚が数値でない');
@@ -36690,6 +36739,7 @@ try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores
 try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
 try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
+try { migrateEcResetPreJuly(); } catch(e) { console.error('migrateEcResetPreJuly', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 /* ============================================================
    ⑫ ペーパーレス：Invoice / カードレシート アップロード
