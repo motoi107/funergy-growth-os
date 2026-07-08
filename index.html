@@ -3897,9 +3897,16 @@ function ls(key, def) {
   try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
   catch(e) { return def; }
 }
+var _lsQuotaWarned=false;
 function lsSet(key, val) {
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ _splitWrite(key, sp, val); return; }
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch(e){}
+  try { localStorage.setItem(key, JSON.stringify(val)); }
+  catch(e){
+    if(e && (e.name==='QuotaExceededError' || e.code===22 || e.code===1014)){
+      if(!_lsQuotaWarned){ _lsQuotaWarned=true; try{ if(typeof showToast==='function') showToast('保存容量が上限に達しました。変更が保存されていない可能性があります（古いデータの整理が必要です）','error'); }catch(_){} }
+    }
+    console.warn('lsSet failed', key, e);
+  }
   // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
   try { if (SUPA_SYNC_ENABLED) syncMasterToSupabase(key, val); } catch(e){ console.warn('supa sync skip', e); }
 }
@@ -3952,7 +3959,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','kpi_config','meeting_minutes','ingredient_transfers','q_budgets'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','meeting_minutes','ingredient_transfers','q_budgets'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -10586,7 +10593,16 @@ function ymShift(ym, delta){ var p=ym.split('-'); var d=new Date(parseInt(p[0],1
 function dateInYm(dstr, ym){ if(!dstr) return false; var m=String(dstr).match(/^(\d{4})[\/-](\d{1,2})/); if(!m) return false; return (m[1]+'-'+String(parseInt(m[2],10)).padStart(2,'0'))===ym; }
 function fcKey(storeId, ym){ return 'fc_monthly_'+storeId+'_'+ym; }
 function getFcMonthly(storeId, ym){
-  var v = ls(fcKey(storeId, ym), null); if(v) return v;
+  var v = ls(fcKey(storeId, ym), null);
+  if(v){
+    /* 期首が自動継承(beginAuto)なら、前月末棚卸の最新値へ常時追随（前月の棚卸修正を翌月期首へ即反映） */
+    if(v.beginAuto){
+      var _pvB = ls(fcKey(storeId, ymShift(ym,-1)), null);
+      var _begB = _pvB ? (parseFloat(_pvB.endInv)||0) : 0;
+      if((parseFloat(v.beginInv)||0)!==_begB) v = Object.assign({}, v, { beginInv:_begB });
+    }
+    return v;
+  }
   /* レガシー（単一レコード）を invMonth または今月として一度だけ移行 */
   var legacy = ls('fc_monthly_'+storeId, null);
   if(legacy && !legacy._migrated){
@@ -10789,11 +10805,15 @@ function saveFcMonthly(storeId, ym) {
     history = history.concat([{date:todayJP(), edit:'期首修正', from:prev.beginInv, to:newBegin, by:ROLE_CONFIG[curRole].name}]);
   }
   if (isFrozenMonth(ym)) history = history.concat([{date:todayJP(), edit:'確定月修正', by:ROLE_CONFIG[curRole].name}]);
+  /* 期首を「前月末と同額」で保存したときは自動継承(beginAuto)を維持し、以後の前月修正へ追随させる */
+  var _pvS = ls(fcKey(storeId, ymShift(ym,-1)), null);
+  var _autoBeg = _pvS ? (parseFloat(_pvS.endInv)||0) : 0;
+  var _keepAuto = (prev.beginAuto!==false) && (newBegin===_autoBeg);
   setFcMonthly(storeId, ym, {
     beginInv: newBegin,
     endInv: parseFloat(document.getElementById('fc-end').value)||0,
     sales: parseFloat(document.getElementById('fc-sales').value)||0,
-    beginAuto: false, history: history,
+    beginAuto: _keepAuto, history: history,
   });
   closeModalDirect();
   showToast(ym.replace('-','年')+'月の原価データを保存しました', 'success');
@@ -14775,7 +14795,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '445';
+const APP_VERSION = '446';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -33554,9 +33574,9 @@ function openMinutesModal(mId) {
     <div style="font-size:13px;font-weight:600;margin-bottom:8px">${m.title}</div>
     <div class="form-group"><label class="form-label">議事録</label><textarea class="form-textarea" id="min-text" style="min-height:140px" placeholder="決定事項・議論内容">${m.minutes||''}</textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveMinutes('${mId}')">保存</button></div>`);
+    <button class="btn btn-primary" onclick="saveMeetingMinutes('${mId}')">保存</button></div>`);
 }
-function saveMinutes(mId) {
+function saveMeetingMinutes(mId) {
   var meetings = ls('meetings', []);
   var m = meetings.find(x=>x.id===mId);
   if (m) { m.minutes = document.getElementById('min-text').value.trim(); lsSet('meetings', meetings); }
