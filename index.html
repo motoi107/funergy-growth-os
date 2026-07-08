@@ -8419,15 +8419,38 @@ function _qbProgLine(label, act, tgt, opts){
     +''+'<div style="margin-top:2px">'+progBar(pct,{h:7,color:col})+'</div>'+''
     +'<div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:1px"><span>'+pct+'% 達成</span><span>'+(ok?'達成 ✓':('あと '+fmt(gap)+unit))+'</span></div></div>';
 }
+/* 議事録KGIシート(2026数値及びKGI)の各店「売上目標」行から、指定月(1-12)の数字を拾う */
+function minutesMonthlySales(storeId, m){
+  try{
+    var rowMap={'F01':13,'F02':17,'F03':21,'F04-K':25,'F04-P':29,'F04-A':33,'F05':37}; // F03-G(WGS)はWaikiki合算(F03)に含む
+    var r=rowMap[storeId]; if(!r) return 0;
+    var col=String.fromCharCode(67+(m-1)); // C=1月 ... N=12月
+    var mm=(typeof getMinutes==='function')?getMinutes():{edits:{}};
+    var ek='0:'+r+':'+col;
+    var v=(mm.edits && mm.edits[ek]!=null) ? mm.edits[ek] : (function(){ var sh=MINUTES_SEED[0]; var row=(sh.rows||[]).find(function(x){return x.r===r;}); return (row&&row.c)?row.c[col]:null; })();
+    var n=parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,''));
+    return isNaN(n)?0:n;
+  }catch(e){ return 0; }
+}
 function renderAnnualPlan(){
   var y = budgetYM().y;
   var stores = budgetScopeStores();
   var isAgg = stores.length>1;
+  function _annualQ(sid,q){
+    var qt=quarterTargets(sid,y,q); var out={sales:0,guests:0,byMonth:[]};
+    (qt.byMonth||[]).forEach(function(mb){
+      var m=+String(mb.ym).split('-')[1]; var sales=mb.sales, reg=mb.registered, fromMin=false;
+      if(!sales || !reg){ var ms=minutesMonthlySales(sid,m); if(ms>0){ sales=ms; fromMin=true; reg=true; } } // 未登録月は議事録KGIから補完
+      out.sales+=sales; out.guests+=(mb.guests||0);
+      out.byMonth.push({ym:mb.ym, sales:sales, guests:mb.guests||0, registered:reg, fromMinutes:fromMin});
+    });
+    return out;
+  }
   function qData(q){
-    if(!isAgg && stores[0]) return quarterTargets(stores[0].id, y, q);
+    if(!isAgg && stores[0]) return _annualQ(stores[0].id, q);
     var agg={sales:0,guests:0,byMonth:[]};
-    stores.forEach(function(s){ var qt=quarterTargets(s.id,y,q); agg.sales+=qt.sales; agg.guests+=qt.guests;
-      (qt.byMonth||[]).forEach(function(mb,i){ if(!agg.byMonth[i]) agg.byMonth[i]={ym:mb.ym,sales:0,guests:0,registered:false}; agg.byMonth[i].sales+=mb.sales; agg.byMonth[i].guests+=mb.guests; if(mb.registered) agg.byMonth[i].registered=true; }); });
+    stores.forEach(function(s){ var qt=_annualQ(s.id,q); agg.sales+=qt.sales; agg.guests+=qt.guests;
+      qt.byMonth.forEach(function(mb,i){ if(!agg.byMonth[i]) agg.byMonth[i]={ym:mb.ym,sales:0,guests:0,registered:false,fromMinutes:false}; agg.byMonth[i].sales+=mb.sales; agg.byMonth[i].guests+=mb.guests; if(mb.registered) agg.byMonth[i].registered=true; if(mb.fromMinutes) agg.byMonth[i].fromMinutes=true; }); });
     return agg;
   }
   var qColors={1:'#5DB554',2:'#2B79D0',3:'#D98E3B',4:'#8B5E3C'};
@@ -8447,7 +8470,7 @@ function renderAnnualPlan(){
       qhtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border);cursor:pointer" onclick="planGoMonth(\''+mb.ym+'\')">'
         +'<span style="font-size:12px;font-weight:600;width:38px;color:var(--muted)">'+mm+'月</span>'
         +'<span style="flex:1;font-size:13px;font-weight:700">'+fmtUSD2(mb.sales)+'</span>'
-        +(mb.registered?'<span class="tag tag-green" style="font-size:9px">登録済</span>':'<span class="tag tag-gray" style="font-size:9px">未登録</span>')
+        +(mb.fromMinutes?'<span class="tag tag-blue" style="font-size:9px">議事録</span>':(mb.registered?'<span class="tag tag-green" style="font-size:9px">登録済</span>':'<span class="tag tag-gray" style="font-size:9px">未登録</span>'))
         +'<i class="ti ti-chevron-right" style="color:var(--muted);font-size:14px"></i></div>';
     });
     qhtml += '</div>';
@@ -8637,6 +8660,11 @@ function renderBudgetSetup() {
   var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
 
   var html = '';
+  var _bsYm=budgetYM();
+  html += '<div class="card" style="padding:12px 14px;margin-bottom:10px;border-left:4px solid var(--accent);display:flex;align-items:center;gap:10px">'
+    +'<i class="ti ti-calendar-event" style="font-size:22px;color:var(--accent)"></i>'
+    +'<div><div style="font-size:10px;color:var(--muted)">この画面で設定する対象月</div><div style="font-size:19px;font-weight:800">'+_bsYm.y+'年 '+_bsYm.m+'月</div></div>'
+    +'<span style="margin-left:auto;font-size:10px;color:var(--muted);text-align:right">月を変える→<br>上部の月セレクタ</span></div>';
   var statusCol = {'下書き':'tag-gray','GM承認待ち':'tag-yellow','承認済み':'tag-green','差し戻し':'tag-red','再提出済み':'tag-blue'};
 
   visible.forEach(b => {
@@ -12885,7 +12913,7 @@ function renderTipMgmt() {
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var info = tipPeriodInfo();
 
-  var html = pageStoreTabs(storeId, false) + `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
+  var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
       <button class="btn btn-secondary btn-sm" onclick="openTipDateDebug()"><i class="ti ti-stethoscope"></i> Tip診断</button>
@@ -14949,7 +14977,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '464';
+const APP_VERSION = '465';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -15516,7 +15544,7 @@ function renderShiftAdmin() {
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var week = getWeekStr();
 
-  var html = pageStoreTabs(storeId, false) + `<div class="section-header">
+  var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${shiftWeekRangeLabel()}</div></div>
   </div>
   ${shiftWeekNavHtml()}
