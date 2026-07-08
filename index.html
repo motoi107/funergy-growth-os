@@ -238,7 +238,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
   margin-bottom: 12px;
   box-shadow: var(--shadow);
 }
-.card-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.card-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; letter-spacing: .01em; }
+.card-title > i:first-child { color: var(--accent); font-size: 17px; }
 .acc-head { display:flex; align-items:center; gap:8px; cursor:pointer; -webkit-user-select:none; user-select:none; font-size:14px; font-weight:600; padding:6px 8px; margin:-4px -8px 0; border-radius:8px; }
 .acc-head:hover, .acc-head:active { background:var(--surface2); }
 .acc-head .acc-chev { margin-left:auto; transition:transform .2s; font-size:18px; color:var(--muted); }
@@ -249,12 +250,15 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .kpi {
   background: var(--surface2);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
+  border-radius: 10px;
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 62px;
 }
-.kpi-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-.kpi-value { font-size: 20px; font-weight: 700; }
-.kpi-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.kpi-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; line-height: 1.25; }
+.kpi-value { font-size: 21px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.kpi-sub { font-size: 10.5px; color: var(--muted); margin-top: auto; padding-top: 3px; line-height: 1.3; }
 /* リッチKPI（数字＋状態＋比較＋次の行動） */
 .kpi-rich {
   background: var(--surface);
@@ -5748,6 +5752,19 @@ function statusColor(s){ return (STATUS[s]||STATUS.idle).col; }
 function statusTag(s){ return (STATUS[s]||STATUS.idle).tag; }
 /* 数値→ステータス（高い方が良い指標: 達成率など） */
 function statusFromPct(p, goodAt, warnAt){ goodAt=goodAt||100; warnAt=warnAt||90; return p>=goodAt?'good':p>=warnAt?'warn':'danger'; }
+/* 進捗率→色（全画面共通。null/NaNはグレー・100緑・90黄・それ未満赤） */
+function pctColor(p){ if(p==null||isNaN(p)) return 'var(--muted)'; return statusColor(statusFromPct(p)); }
+/* 進捗バー共通部品（全画面で太さ・色・ペース線を統一）。opts:{h,color,pace} */
+function progBar(pct, opts){
+  opts=opts||{}; var h=opts.h||10; var r=Math.round(h/2);
+  var col=opts.color||pctColor(pct);
+  var w=(pct==null||isNaN(pct))?0:Math.min(100,Math.max(0,pct));
+  var pace=(opts.pace!=null&&!isNaN(opts.pace))?Math.min(100,Math.max(0,opts.pace)):null;
+  return '<div style="position:relative;height:'+h+'px;background:var(--surface2);border-radius:'+r+'px">'
+    +'<div style="height:'+h+'px;width:'+w+'%;background:'+col+';border-radius:'+r+'px"></div>'
+    +(pace!=null?'<div style="position:absolute;top:-2px;left:'+pace+'%;height:'+(h+4)+'px;width:2px;background:var(--tm)"></div>':'')
+    +'</div>';
+}
 
 /* ===== 予実スコア判定（達成率→ステータス＋メッセージ＋色） ===== */
 function budgetScore(rate) {
@@ -8011,7 +8028,7 @@ function renderMonthlySummary(){
   }
   var fcCol=agg.fcRate>0?(agg.fcRate<=31?'var(--green)':agg.fcRate<=34?'var(--yellow)':'var(--red)'):'var(--muted)';
   var lCol=agg.laborRate>0?(agg.laborRate<=28?'var(--green)':agg.laborRate<=31?'var(--yellow)':'var(--red)'):'var(--muted)';
-  var acCol=agg.achieve>=100?'var(--green)':agg.achieve>=90?'var(--yellow)':'var(--red)';
+  var acCol=pctColor(agg.achieve);
   var rsM=repeatStats(msScopeStores(), mi.days);
   var rRateM=(rsM.has&&rsM.total>0)?Math.round(rsM.repeat/rsM.total*1000)/10:null;
   var rColM=rRateM==null?'var(--muted)':(rRateM>=50?'var(--green)':rRateM>=30?'var(--yellow)':'var(--red)');
@@ -9109,10 +9126,7 @@ function _bStoreProgCards(items, setter){
         +'<b style="font-size:16px;color:var(--tm)">'+(it.actStr!=null?it.actStr:fmtK(it.actual))+'</b>'
         +'<span style="font-size:11px;color:var(--muted)">／ '+(it.budStr!=null?it.budStr:fmtK(it.budget))+'</span>'
       +'</div>'
-      +'<div style="position:relative;height:9px;background:var(--surface2);border-radius:5px;margin:7px 0 3px">'
-        +'<div style="height:9px;width:'+(p!=null?Math.min(100,Math.max(0,p)):0)+'%;background:'+col+';border-radius:5px"></div>'
-        +(pr!=null?'<div style="position:absolute;left:'+Math.min(100,pr)+'%;top:-2px;height:13px;width:2px;background:var(--tm)"></div>':'')
-      +'</div>'
+      +'<div style="margin:7px 0 3px">'+progBar(p,{h:10,color:col,pace:pr})+'</div>'
       +(it.sub?'<div style="font-size:10.5px;color:var(--muted)">'+it.sub+'</div>':'')
       +'</div>';
   }).join('');
@@ -9183,10 +9197,7 @@ function renderBudgetSummary() {
       <div style="font-size:26px;font-weight:800">${fmtK(refAct)}</div>
       <div style="font-size:12px;color:var(--muted)">／ 月間予算 ${fmtK(agg.budMonth)}</div>
     </div>
-    <div style="position:relative;height:12px;background:var(--surface2);border-radius:6px;margin:10px 0 6px">
-      <div style="position:absolute;left:0;top:0;height:12px;width:${achv!=null?Math.min(100,achv):0}%;background:${heroCol};border-radius:6px"></div>
-      ${isCur?`<div style="position:absolute;left:${Math.min(100,paceRef)}%;top:-4px;height:20px;width:2px;background:var(--tm);border-radius:1px"></div>`:''}
-    </div>
+    <div style="margin:10px 0 6px">${progBar(achv,{h:12,color:heroCol,pace:isCur?paceRef:null})}</div>
     <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11.5px">
       <span style="color:${heroCol};font-weight:700">達成 ${achv!=null?achv.toFixed(1)+'%':'—'}</span>
       ${isCur?`<span style="color:var(--tm)">今日のペース ${paceRef.toFixed(1)}%（${agg.daysPassed}/${mdays}日） → <b style="color:${heroCol}">${paceDiff!=null?((paceDiff>=0?'+':'')+paceDiff.toFixed(1)+'pt '+(paceDiff>=0?'先行':'ビハインド')):'—'}</b></span>`:`<span style="color:var(--muted)">月間実績 ${fmtK(agg.actMonth)}</span>`}
@@ -9219,7 +9230,7 @@ function renderBudgetSummary() {
   var _spAct = isCur ? agg.actToToday : agg.actMonth;
   var _spBud = agg.budToToday>0 ? agg.budToToday : agg.budMonth;
   var _sp = _spBud>0 ? Math.round(_spAct/_spBud*1000)/10 : null;
-  var _spCol = _sp==null?'var(--muted)':(_sp>=100?'var(--green)':_sp>=90?'var(--yellow)':'var(--red)');
+  var _spCol = pctColor(_sp);
   html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>KPI 目標との差・前週比 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">目標＝承認予算から算出</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">`;
   html += kpiTile('ti-trending-up','売上進捗', _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), '実績 '+fmtK(_spAct)+' / 予算 '+fmtK(_spBud)+(isCur?'（前日まで）':''));
@@ -9574,7 +9585,7 @@ function renderBudgetDaily() {
   var _dOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
   var _dLbl = (typeof dailyMonthLabel==='function')?dailyMonthLabel():getPeriod();
   // 日次進捗メインカード：今日の現在地（累計売上／累計予算・本日まで）
-  var _dpCol = paceRate>=100?'var(--green)':paceRate>=90?'var(--yellow)':'var(--red)';
+  var _dpCol = pctColor(paceRate);
   html += `<div class="card" style="border:1.5px solid ${_dpCol}">
     <div class="card-title"><i class="ti ti-map-pin" style="color:${_dpCol}"></i>${escapeHtml(title)} 今日の現在地 — 累計売上／累計予算${_dOff!==0?'（'+_dLbl+'）':''}</div>
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
@@ -9582,9 +9593,7 @@ function renderBudgetDaily() {
       <div style="font-size:12px;color:var(--muted)">／ 累計予算 ${fmtUSD2(sumBudgetToToday)}</div>
       <span class="tag ${paceRate>=100?'tag-green':paceRate>=90?'tag-yellow':'tag-red'}" style="margin-left:auto;font-size:13px">${paceRate}%</span>
     </div>
-    <div style="height:12px;background:var(--surface2);border-radius:6px;margin:10px 0 6px">
-      <div style="height:12px;width:${Math.min(100,Math.max(0,paceRate))}%;background:${_dpCol};border-radius:6px"></div>
-    </div>
+    <div style="margin:10px 0 6px">${progBar(paceRate,{h:12,color:_dpCol})}</div>
     <div style="font-size:11.5px;color:${_dpCol};font-weight:700">対予算ペース ${paceRate}%<span style="color:var(--muted);font-weight:400"> ・ 累計売上 ÷ 累計予算（本日まで）</span></div>
     <div style="font-size:11px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">月間で見た現在地：売上実績 <b style="color:var(--tm)">${fmtUSD2(sumActual)}</b> ／ 総予算 ${fmtUSD2(sumBudget)}（月間達成率 <b>${monthRate}%</b>）</div>
   </div>`;
@@ -9652,7 +9661,7 @@ function renderBudgetDaily() {
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="手入力: ${escapeHtml(_manBy)}"></i>`:''}</td>
       ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
-      <td><span style="color:${cumRate>=100?'var(--green)':cumRate>=90?'var(--yellow)':'var(--red)'};font-size:11px">${cumRate}%</span></td>
+      <td><span style="color:${pctColor(cumRate)};font-size:11px">${cumRate}%</span></td>
       ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
       <td style="font-size:11px;color:var(--muted)">${dayLaborH>0?dayLaborH.toFixed(1):'—'}</td>
       <td style="font-size:11px;color:var(--muted)">${dayLaborCost>0?fmtUSD2(dayLaborCost):'—'}</td>
@@ -10190,7 +10199,7 @@ function sgn(n){ return (n>=0?'+':'')+n; }
 function keyKpiCard(scopeStores, days, title){
   var k=keyKpiStats(scopeStores,days);
   var unitTxt=k.unit==='丼'?'丼数':'客数';
-  var acCol=k.achieve>=100?'var(--green)':k.achieve>=90?'var(--yellow)':'var(--red)';
+  var acCol=pctColor(k.achieve);
   var rCol=k.repeatRate==null?'var(--muted)':(k.repeatRate>=50?'var(--green)':k.repeatRate>=30?'var(--yellow)':'var(--red)');
   // 集客（予実）
   var guestSub = k.guestBudget!=null ? ('予算 '+k.guestBudget.toLocaleString()+'　達成'+Math.round(k.guests/k.guestBudget*100)+'%') : unitTxt;
@@ -14883,7 +14892,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '455';
+const APP_VERSION = '459';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
