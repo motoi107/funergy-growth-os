@@ -8421,17 +8421,18 @@ function renderQuarterBudget(){
     var fcTs=[],lbTs=[]; stores.forEach(function(st){ var t=quarterTargets(st.id,y,q); if(t.fcRate)fcTs.push(t.fcRate); if(t.laborRate)lbTs.push(t.laborRate); });
     var tFc=fcTs.length?Math.round(fcTs.reduce(function(a,b){return a+b;},0)/fcTs.length*10)/10:0;
     var tLb=lbTs.length?Math.round(lbTs.reduce(function(a,b){return a+b;},0)/lbTs.length*10)/10:0;
-    html+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-chart-bar" style="color:var(--accent)"></i> 全店 合計 進捗（項目別）</div>';
-    html+='<table style="border-collapse:collapse;width:100%;font-size:12px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">項目</th><th style="text-align:right;padding:4px">四半期目標</th><th style="text-align:right;padding:4px">実績(累計)</th><th style="text-align:center;padding:4px">判定</th></tr></thead><tbody>';
-    html+=_qbItemRow({label:'売上', tgt:T.sales, act:A.sales, unit:'', money:true, lower:false, elTgt:T.salesEl});
-    html+=_qbItemRow({label:'客数', tgt:T.guests, act:A.guests, unit:'名', money:false, lower:false, elTgt:T.guestsEl});
-    html+=_qbItemRow({label:'客単価', tgt:tPpa, act:aPpa, unit:'', money:true, lower:false});
-    html+=_qbItemRow({label:'原価率', tgt:tFc, act:aFc, unit:'%', money:false, lower:true});
-    html+=_qbItemRow({label:'人件費率', tgt:tLb, act:aLb, unit:'%', money:false, lower:true});
-    var _aFtB=0,_aRpB=0,_repTs=[]; stores.forEach(function(st){ var aa=quarterActuals(st.id,y,q), tt=quarterTargets(st.id,y,q); _aFtB+=aa.ftB||0; _aRpB+=aa.rpB||0; if(tt.repeat)_repTs.push(tt.repeat); });
-    var _aRep=(_aFtB+_aRpB)?Math.round(_aRpB/(_aFtB+_aRpB)*1000)/10:0; var _tRep=_repTs.length?Math.round(_repTs.reduce(function(a,b){return a+b;},0)/_repTs.length*10)/10:0;
-    html+=_qbItemRow({label:'リピート率', tgt:_tRep, act:_aRep, unit:'%', money:false, lower:false});
-    html+='</tbody></table></div>';
+    // 店舗別 Q進捗カード（合算ではなく店舗毎に）
+    var _qItems = stores.map(function(st){
+      var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q);
+      var _pc = (a.elapsed!=null)?Math.round(a.elapsed/3*100):null;
+      return { id:st.id, name:st.name, color:st.color||'#888',
+        actual:a.sales||0, budget:t.sales||0, pace:_pc,
+        actStr:'$'+Math.round(a.sales||0).toLocaleString(), budStr:'$'+Math.round(t.sales||0).toLocaleString(),
+        sub:'原価率 '+(a.fcRate?a.fcRate+'%':'—')+' ・ 人件費率 '+(a.laborRate?a.laborRate+'%':'—')+' ・ 経過 '+(a.elapsed||0)+'/3ヶ月' };
+    });
+    html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> 店舗別 Q進捗 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">四半期売上 実/目標・達成率（縦線＝想定ペース）</span></div>';
+    html+=_bStoreProgCards(_qItems,'setQbStore');
+    html+='</div>';
     // 店舗別サマリー
     html+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> 店舗別サマリー</div>'
       +'<table style="border-collapse:collapse;width:100%;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">店舗</th><th style="text-align:right;padding:4px">売上 実/目標</th><th style="text-align:center;padding:4px">達成</th><th style="text-align:center;padding:4px">原価率</th><th style="text-align:center;padding:4px">人件費率</th><th style="text-align:center;padding:4px">方針</th></tr></thead><tbody>';
@@ -9097,6 +9098,54 @@ function wowBadge(v, goodWhenUp, pt, suffix){
   return '<span style="font-size:10px;padding:1px 7px;border-radius:9px;border:1px solid '+col+';color:'+col+';font-weight:700;white-space:nowrap">'
     +(v>=0?'▲':'▼')+Math.abs(v).toFixed(1)+(pt?'pt':'%')+(word?' '+word:'')+(suffix?' '+suffix:'')+'</span>';
 }
+function _bStoreProgCards(items, setter){
+  return items.map(function(it){
+    var p = it.budget>0 ? Math.round(it.actual/it.budget*1000)/10 : null;
+    var tg = it.tgt||100;
+    var col = p==null?'var(--muted)':(p>=tg?'var(--green)':p>=tg*0.9?'var(--yellow)':'var(--red)');
+    var pr = (it.pace!=null && !isNaN(it.pace)) ? it.pace : null;
+    return '<div style="border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-bottom:8px;cursor:pointer" onclick="'+setter+'(\''+it.id+'\')">'
+      +'<div style="display:flex;align-items:center;gap:8px">'
+        +'<span class="store-dot" style="background:'+(it.color||'#888')+'"></span>'
+        +'<div style="font-weight:700;font-size:14px;flex:1;min-width:0">'+escapeHtml(it.name)+'</div>'
+        +'<span style="font-weight:800;font-size:15px;color:'+col+'">'+(p!=null?p.toFixed(1)+'%':'—')+'</span>'
+      +'</div>'
+      +'<div style="display:flex;align-items:baseline;gap:6px;margin-top:3px">'
+        +'<b style="font-size:16px;color:var(--tm)">'+(it.actStr!=null?it.actStr:fmtK(it.actual))+'</b>'
+        +'<span style="font-size:11px;color:var(--muted)">／ '+(it.budStr!=null?it.budStr:fmtK(it.budget))+'</span>'
+      +'</div>'
+      +'<div style="position:relative;height:9px;background:var(--surface2);border-radius:5px;margin:7px 0 3px">'
+        +'<div style="height:9px;width:'+(p!=null?Math.min(100,Math.max(0,p)):0)+'%;background:'+col+';border-radius:5px"></div>'
+        +(pr!=null?'<div style="position:absolute;left:'+Math.min(100,pr)+'%;top:-2px;height:13px;width:2px;background:var(--tm)"></div>':'')
+      +'</div>'
+      +(it.sub?'<div style="font-size:10.5px;color:var(--muted)">'+it.sub+'</div>':'')
+      +'</div>';
+  }).join('');
+}
+function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
+  var items = (typeof sortByLoginOrder==='function'?sortByLoginOrder(stores):stores).map(function(st){
+    var c = cumByStore[st.id]||{};
+    var bud = c.budMonth||0;
+    var act = isCur ? (c.actToToday||0) : (c.actMonth||0);
+    var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
+    var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
+    return { id:st.id, name:st.name, color:st.color||'#888', actual:act, budget:bud, pace:(isCur?paceRef:null),
+      sub:'原価率 '+(fc!=null?fc+'%':'—')+' ・ 人件費率 '+(lb!=null?lb+'%':'—') };
+  });
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別 月次進捗 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">実績／月間予算・達成率'+(isCur?'（縦線＝今日の暦日ペース）':'')+'</span></div>';
+  h += _bStoreProgCards(items, 'setBudgetStore');
+  h += '</div>';
+  h += '<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoMonthlyReview()"><i class="ti ti-calendar-stats"></i> 月次振り返り</button>'
+    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> KPI推移一覧</button>'
+    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoSalesAnalysis()"><i class="ti ti-chart-histogram"></i> 売上分析</button>'
+    +'</div></div>';
+  try{
+    var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && b.status==='GM承認待ち'; });
+    if (pendB.length) h += '<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab(\'setup\')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">GM承認待ちの予算が <b>'+pendB.length+'店</b> あります — タップで予算設定へ</div></div>';
+  }catch(e){}
+  return h;
+}
 function renderBudgetSummary() {
   var stores = budgetScopeStores();
   var _selOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
@@ -9127,6 +9176,9 @@ function renderBudgetSummary() {
   var wow = isCur ? wowStats(stores) : {sales:null,guests:null,ppa:null,fcPt:null};
 
   var html = '';
+
+  // 全店/複数店：合算ではなく店舗別の月次進捗カードを表示（1画面で店舗毎に把握）
+  if (stores.length > 1) { return html + renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef); }
 
   // ===== ① 今月の現在地（実績／月間予算＋暦日ペースライン＋前週比） =====
   html += `<div class="card" style="border:1.5px solid ${heroCol}">
@@ -9476,6 +9528,24 @@ function renderBudgetDaily() {
 
   var isAgg = dailyStoreScope==='ALL' && multiStore;
   var title = isAgg ? `全${vis.length}店集計` : (scopeStores[0]||{name:'—'}).name;
+  if (isAgg) {
+    html += '<div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:8px">'
+      +'<button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>'
+      +'<span style="font-size:13px;font-weight:600">'+dailyMonthLabel()+'</span>'
+      +'<button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button></div>';
+    var _dItems = vis.map(function(s){
+      var c = cumulativeToToday(s.id) || {};
+      var act = c.actToToday||0, bud = (c.budToToday>0)?c.budToToday:(c.budMonth||0);
+      var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
+      var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
+      return { id:s.id, name:s.name, color:s.color||'#888', actual:act, budget:bud, pace:null,
+        sub:'累計予算＝本日まで ・ 原価率 '+(fc!=null?fc+'%':'—')+' ・ 人件費率 '+(lb!=null?lb+'%':'—') };
+    });
+    html += '<div class="card"><div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>店舗別 今日の現在地 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">累計売上／累計予算・対予算ペース</span></div>';
+    html += _bStoreProgCards(_dItems, 'setDailyScope');
+    html += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">タップで各店の日次詳細（日別入力・KPI）へ。</div></div>';
+    return html;
+  }
 
   // データ連携（単店ビューのみ）— 1ボタンに集約
   if (!isAgg && scopeStores[0]) {
@@ -14825,7 +14895,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '452';
+const APP_VERSION = '453';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
