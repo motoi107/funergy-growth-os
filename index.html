@@ -9887,6 +9887,10 @@ function openSyncCenter() {
   var stores = getVisibleStores();
   var scopeLabel = curStore==='ALL' ? ('全店（'+stores.length+'店舗）') : ((getStoresAll().find(x=>x.id===curStore)||{}).name||'—');
   var isGM = curRole==='gm' || curRole==='ceo';
+  var _scRoleG = ({ceo:9,gm:6,am:5,office:5,sl:3,office_crew:1,crew:1})[curRole]||0;
+  var _scMe = (typeof getEmployees==='function')?getEmployees().find(function(e){return e.name===(typeof myName==='function'?myName():'');}):null;
+  var scG3 = Math.max(_scRoleG, (_scMe&&typeof empGradeNum==='function')?empGradeNum(_scMe):0) >= 3; // G3以上
+  var scDetailAllowed = scG3 || curRole==='office_crew'; // 店舗別詳細は事務Crew(G1)にも開放
   var rows = stores.map(function(s){
     var st = getSyncState(s.id);
     var dot = st.status==='success'?'var(--green)':st.status==='failed'?'var(--red)':'var(--muted)';
@@ -9909,7 +9913,7 @@ function openSyncCenter() {
     <div id="sync-center-result" style="font-size:12px;margin-top:10px"></div>
     <div style="font-weight:700;font-size:13px;margin:14px 0 4px">Toast 店舗別</div>
     ${rows||'<div style="font-size:12px;color:var(--muted)">対象店舗がありません</div>'}
-    ${isGM?`<div style="font-weight:700;font-size:13px;margin:16px 0 6px;border-top:1px solid var(--border);padding-top:12px">店舗別 詳細オプション</div>
+    ${scDetailAllowed?`<div style="font-weight:700;font-size:13px;margin:16px 0 6px;border-top:1px solid var(--border);padding-top:12px">店舗別 詳細オプション</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
         <select class="form-select" id="sc-store" style="width:auto;flex:1;min-width:140px;padding:6px 10px;font-size:12px">${stores.map(function(x){return '<option value="'+x.id+'">'+escapeHtml(x.name)+'</option>';}).join('')}</select>
       </div>
@@ -9919,8 +9923,8 @@ function openSyncCenter() {
         <button class="btn btn-secondary btn-sm" onclick="scDetail('weather')"><i class="ti ti-cloud"></i> 天気・祝日</button>
         <button class="btn btn-secondary btn-sm" onclick="scDetail('guid')"><i class="ti ti-settings"></i> GUID設定</button>
       </div>
-      <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
-      <div style="font-weight:700;font-size:13px;margin:16px 0 6px;border-top:1px solid var(--border);padding-top:12px">クラウド（マスター）</div>
+      <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:6px"></div>`:''}
+    ${scG3?`<div style="font-weight:700;font-size:13px;margin:16px 0 6px;border-top:1px solid var(--border);padding-top:12px">クラウド（マスター）</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-secondary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> アップロード</button>
         <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> 取り込む</button>
@@ -14977,7 +14981,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '465';
+const APP_VERSION = '467';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
