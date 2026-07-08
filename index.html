@@ -9168,13 +9168,19 @@ function renderBudgetSummary() {
   var gCol = (k.guestBudget!=null&&k.guests>0)?(k.guests>=k.guestBudget?'var(--green)':k.guests>=k.guestBudget*0.9?'var(--yellow)':'var(--red)'):'var(--tm)';
   var rCol = k.repeatRate==null?'var(--muted)':(k.repeatRate>=50?'var(--green)':k.repeatRate>=30?'var(--yellow)':'var(--red)');
   var rateCol = function(v,tgt){ return tgt!=null?(v>=tgt?'var(--green)':v>=tgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)'; };
+  // 売上進捗（実績÷予算・前日まで／過去月は確定値）
+  var _spAct = isCur ? agg.actToToday : agg.actMonth;
+  var _spBud = agg.budToToday>0 ? agg.budToToday : agg.budMonth;
+  var _sp = _spBud>0 ? Math.round(_spAct/_spBud*1000)/10 : null;
+  var _spCol = _sp==null?'var(--muted)':(_sp>=100?'var(--green)':_sp>=90?'var(--yellow)':'var(--red)');
   html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>KPI 目標との差・前週比 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">目標＝承認予算から算出</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">`;
+  html += kpiTile('ti-trending-up','売上進捗', _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), '実績 '+fmtK(_spAct)+' / 予算 '+fmtK(_spBud)+(isCur?'（前日まで）':''));
+  if (k.repeatHas) html += kpiTile('ti-repeat','リピート率', k.repeatRate.toFixed(1)+'%', '', rCol, '', 'リピート '+(k.repeat||0).toLocaleString()+' / 対象 '+(k.rTotal||0).toLocaleString()+(k.repeatPrev!=null?'　前月 '+k.repeatPrev.toFixed(1)+'%':''));
+  html += kpiTile('ti-friends', k.unit==='丼'?'丼数':'客数', k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null);
+  html += kpiTile('ti-coin','客単価（全体）', k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''));
   html += kpiTile('ti-percentage','原価率', k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), '低いほど良い');
   html += kpiTile('ti-users-group','人件費率', k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', '低いほど良い（月累計）');
-  html += kpiTile('ti-coin','客単価（全体）', k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''));
-  html += kpiTile('ti-friends', k.unit==='丼'?'丼数':'客数', k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null);
-  if (k.repeatHas) html += kpiTile('ti-repeat','リピート率', k.repeatRate.toFixed(1)+'%', '', rCol, '', 'リピート '+(k.repeat||0).toLocaleString()+' / 対象 '+(k.rTotal||0).toLocaleString()+(k.repeatPrev!=null?'　前月 '+k.repeatPrev.toFixed(1)+'%':''));
   if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup','味噌汁UP率 ★', k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null);
   if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish','いくらシャワー率 ★', k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null);
   if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-cocktail','ドリンク比率', k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null);
@@ -9504,14 +9510,7 @@ function renderBudgetDaily() {
 
   var _dOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
   var _dLbl = (typeof dailyMonthLabel==='function')?dailyMonthLabel():getPeriod();
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-line"></i>${title} ${_dOff!==0?_dLbl+' 月間実績':'月間進捗'}</div>
-    <div class="kpi-grid">
-      ${kpi('月間予算', fmtUSD2(sumBudget), _dLbl, 'var(--muted)')}
-      ${kpi(_dOff!==0?'月実績':'実績累計', fmtUSD2(sumActual), _dOff!==0?'月間合計':'本日まで', 'var(--tm)')}
-      ${kpi(_dOff!==0?'達成率':'対予算ペース', paceRate+'%', _dOff!==0?'対予算':'本日時点', paceRate>=100?'var(--green)':paceRate>=90?'var(--yellow)':'var(--red)')}
-      ${kpi('月間達成率', monthRate+'%', '対月予算', monthRate>=100?'var(--green)':'var(--muted)')}
-    </div>
-  </div>`;
+  // 月間進捗カードは削除（ユーザー要望・v450）
 
   // 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）
   html += keyKpiCard(scopeStores, days, title);
@@ -14812,7 +14811,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '449';
+const APP_VERSION = '450';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
