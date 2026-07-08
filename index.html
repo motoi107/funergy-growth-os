@@ -14981,7 +14981,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '467';
+const APP_VERSION = '468';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -18499,6 +18499,7 @@ function pendingOnboardOffice(){
 function setHiringTab(t){ hiringTab=t; renderPage('hiring'); }
 function goOnboarding(){ hiringTab='onboard'; go('hiring'); }
 function setCeMode(m){ window._ceMode=m; renderPage('hiring'); }
+function setCeRmLang(l){ window._rmLang=l; renderPage('hiring'); } // キャリア説明の役割マップ/責任マトリクスの言語切替
 /* ============================================================
    キャリア説明（採用OB）全面刷新版
    - internal: 社内向け 完全ガイド（社員が制度を詳細に把握するための資料）
@@ -18564,7 +18565,18 @@ function renderCareerExplain(){
   var h=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
     <button class="phase-tab${mode==='internal'?' active':''}" onclick="setCeMode('internal')"><i class="ti ti-book"></i> 社内向け 完全ガイド</button>
     <button class="phase-tab${mode==='show'?' active':''}" onclick="setCeMode('show')"><i class="ti ti-eye"></i> 候補者向け（面接で見せる）</button>
+    <button class="phase-tab${mode==='rolemap'?' active':''}" onclick="setCeMode('rolemap')"><i class="ti ti-map-2"></i> 役割と責任マップ</button>
+    <button class="phase-tab${mode==='respmatrix'?' active':''}" onclick="setCeMode('respmatrix')"><i class="ti ti-shield-check"></i> 責任マトリクス</button>
   </div>`;
+  if(mode==='rolemap' || mode==='respmatrix'){
+    var _en=window._rmLang==='en';
+    h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--muted)"><i class="ti ti-language"></i> 面接用 表示言語</span>
+      <button class="phase-tab${!_en?' active':''}" style="padding:5px 14px" onclick="setCeRmLang('ja')">日本語</button>
+      <button class="phase-tab${_en?' active':''}" style="padding:5px 14px" onclick="setCeRmLang('en')">English</button>
+    </div>`;
+    return h + (mode==='rolemap' ? renderResponsibilityMap() : renderRespMatrix());
+  }
   return h + (mode==='show' ? renderCareerExplainShow() : renderCareerExplainInternal());
 }
 
@@ -27141,7 +27153,7 @@ function renderOjtAdmin(){
   var _amPlus=['gm','ceo','am'].indexOf(curRole)>=0;
   var tabs;
   if(_amPlus){
-    tabs=[['ojt_g2','G1→G2 Crew'],['ojt_g3_server','G3 Server'],['ojt_g3_kitchen','G3 Kitchen'],['ojt_g4','G3 Operation'],['trainee','Trainee'],['gatemap','ゲート基準マップ'],['rolemap','役割と責任マップ'],['bizguide','業務ガイド']];
+    tabs=[['ojt_g2','G1→G2 Crew'],['ojt_g3_server','G3 Server'],['ojt_g3_kitchen','G3 Kitchen'],['ojt_g4','G3 Operation'],['trainee','Trainee'],['gatemap','ゲート基準マップ'],['bizguide','業務ガイド']];
   } else if(myGradeNum()>=4){
     tabs=[['gatemap','ゲート基準マップ'],['bizguide','業務ガイド']];
     if(ojtAdminKey!=='gatemap' && ojtAdminKey!=='bizguide') ojtAdminKey='gatemap';
@@ -32233,11 +32245,7 @@ function renderBizGuide(){
 }
 /* 業務ガイド本体（OJT管理タブ内・独立ページの両方から利用） */
 function renderBizGuideBody(){
-  var h = '<div class="phase-tabs" style="margin-bottom:10px">'
-    +'<div class="phase-tab'+(bizTab==='guide'?' active':'')+'" onclick="setBizTab(\'guide\')"><i class="ti ti-device-mobile" style="font-size:12px"></i> 使い方（Grade別）</div>'
-    +'<div class="phase-tab'+(bizTab==='resp'?' active':'')+'" onclick="setBizTab(\'resp\')"><i class="ti ti-shield-check" style="font-size:12px"></i> 責任マトリクス</div>'
-    +'</div>';
-  return h + (bizTab==='resp' ? renderRespMatrix() : renderGradeGuide());
+  return renderGradeGuide(); // 責任マトリクスはキャリア説明タブへ移動
 }
 function renderGradeGuide(){
   var h='';
