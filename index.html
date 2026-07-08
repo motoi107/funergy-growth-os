@@ -12848,7 +12848,7 @@ function renderTipMgmt() {
   (function(){ var _c=getTipHoursCfg(storeId); if(_c.mode==='hours'){ html += `<div style="font-size:10.5px;color:var(--accent2);margin:-4px 2px 8px"><i class="ti ti-clock-check"></i> この店舗のTip対象時間: L ${_c.l1}〜${_c.l2} ／ D ${_c.d1}〜${_c.d2}（営業時間外の勤怠はTip配分から除外）</div>`; } })();
 
   // 期間セレクタ
-  if (tipPeriodView!=='rate') html += `<div class="card" style="padding:10px;margin-bottom:10px">
+  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div class="card" style="padding:10px;margin-bottom:10px">
     <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px">
       <button class="btn btn-secondary btn-sm" onclick="setTipMonth(-1)"><i class="ti ti-chevron-left"></i></button>
       <span style="font-size:15px;font-weight:700">${info.y}年${info.m+1}月</span>
@@ -12861,14 +12861,17 @@ function renderTipMgmt() {
   </div>`;
 
   // 表示切替（配分表・チップ率のみ）
-  if (tipPeriodView!=='rate' && tipPeriodView!=='matrix') tipPeriodView='matrix';
+  var _tipG2 = (['gm','ceo','office','am'].indexOf(curRole)>=0) || (function(){ var me=getEmployees().find(function(x){return x.name===(typeof myName==='function'?myName():'');}); return me?empGradeNum(me)>=2:false; })();
+  if (['rate','matrix'].concat(_tipG2?['ratemgmt']:[]).indexOf(tipPeriodView)<0) tipPeriodView='matrix';
   html += `<div class="phase-tabs">
     <div class="phase-tab${tipPeriodView==='matrix'?' active':''}" onclick="setTipPeriodView('matrix')">配分表</div>
     <div class="phase-tab${tipPeriodView==='rate'?' active':''}" onclick="setTipPeriodView('rate')"><i class="ti ti-percentage" style="font-size:12px"></i> チップ率</div>
+    ${_tipG2?`<div class="phase-tab${tipPeriodView==='ratemgmt'?' active':''}" onclick="setTipPeriodView('ratemgmt')"><i class="ti ti-adjustments-check" style="font-size:12px"></i> Tip Rate管理</div>`:''}
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
-  if (tipPeriodView!=='rate') html += `<div style="margin-bottom:10px"><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> 期間の日次L/D配分をCSV出力</button></div>`;
+  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px"><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> 期間の日次L/D配分をCSV出力</button></div>`;
 
+  if (tipPeriodView==='ratemgmt') return html + renderTipRateMgmt();
   if (tipPeriodView==='rate')   return html + renderTipRate();
   return html + renderTipPeriodMatrix(storeId, store, info);
 }
@@ -14899,7 +14902,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '461';
+const APP_VERSION = '463';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -21208,6 +21211,42 @@ function setIngMigration(on){
   renderPage('ingredient_master');
 }
 function getIngV2(){ return ls('m_ingredients_v2', [])||[]; }
+function _setIngV2(a){ lsSet('m_ingredients_v2', a||[]); }
+/* ===== 業者名の正規化＋エイリアス（自動反映の表記ゆれ対策） ===== */
+function getVendorAlias(){ return ls('m_vendor_alias', {})||{}; }
+function setVendorAlias(m){ lsSet('m_vendor_alias', m||{}); }
+function normVendor(v){ v=String(v==null?'':v); try{ v=v.normalize('NFKC'); }catch(e){} return v.replace(/\s+/g,' ').trim(); }
+function vendorCanon(v){ var n=normVendor(v); if(!n) return ''; var a=getVendorAlias(); return a[n.toLowerCase()]||n; }
+/* v2の全業者参照を正規化＋エイリアス適用で書き換え */
+function normalizeV2Vendors(){
+  try{
+    var arr=getIngV2(); if(!Array.isArray(arr)||!arr.length) return 0; var ch=0;
+    arr.forEach(function(it){
+      if(it.vendor!=null){ var c=vendorCanon(it.vendor); if(c!==it.vendor){ it.vendor=c; ch++; } }
+      if(it.vendors){ var nv={}; Object.keys(it.vendors).forEach(function(k){ nv[vendorCanon(k)]=it.vendors[k]; }); it.vendors=nv; }
+      if(it.storePrices){ Object.keys(it.storePrices).forEach(function(sid){ var sp=it.storePrices[sid]; if(sp&&sp.vendor!=null) sp.vendor=vendorCanon(sp.vendor); }); }
+      if(Array.isArray(it.priceHistory)){ it.priceHistory.forEach(function(h){ if(h&&h.vendor!=null) h.vendor=vendorCanon(h.vendor); }); }
+    });
+    if(ch) _setIngV2(arr);
+    return ch;
+  }catch(e){ return 0; }
+}
+function mergeVendorTo(fromName, toName){
+  var from=normVendor(fromName), to=normVendor(toName);
+  if(!from||!to){ return; }
+  if(from.toLowerCase()===to.toLowerCase()){ showToast('同じ業者です','warning'); return; }
+  var a=getVendorAlias(); a[from.toLowerCase()]=to; setVendorAlias(a);
+  var n=normalizeV2Vendors();
+  showToast('「'+from+'」→「'+to+'」に統合（'+n+'品目を更新）','success');
+  if(typeof renderPage==='function') renderPage('vendor_master');
+}
+function mergeDupKey(key, canon){
+  var a=getVendorAlias(); a[key]=canon; setVendorAlias(a);
+  var n=normalizeV2Vendors();
+  showToast('表記ゆれを「'+canon+'」に統一（'+n+'品目を更新）','success');
+  if(typeof renderPage==='function') renderPage('vendor_master');
+}
+function _v2VendorNormOnce(){ try{ if(ls('_v2vnorm_v1',false)) return; normalizeV2Vendors(); lsSet('_v2vnorm_v1',true); }catch(e){} }
 function saveIngV2(a){ lsSet('m_ingredients_v2', a); }
 function _v2Find(arr, nm){
   var key = normName(nm);
@@ -21216,6 +21255,7 @@ function _v2Find(arr, nm){
 }
 /* Invoiceの品目行を新マスターへ取込（同一Invoiceの再取込はスキップ＝冪等） */
 function ingestInvoiceToV2(lines, vendor, storeIds, invId, dateStr){
+  vendor = vendorCanon(vendor); // 表記ゆれを統一してから取込
   var arr = getIngV2();
   var seq = ls('ing_v2_seq', 1);
   var changes = [];
@@ -24148,6 +24188,38 @@ function renderVendorMaster() {
       </div>
     </div>`;
   });
+  // ===== 自動反映された業者名の整理（新マスターv2） =====
+  (function(){
+    var _v2=getIngV2(); var _vc={};
+    _v2.forEach(function(it){ var vn=(it.vendor||'').trim(); if(vn) _vc[vn]=(_vc[vn]||0)+1; });
+    var _vn=Object.keys(_vc).sort(function(a,b){return _vc[b]-_vc[a];});
+    if(!_vn.length) return;
+    function vchip(nm,cnt){ return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);margin:0 4px 4px 0">'+escapeHtml(nm)+'<b style="color:var(--muted);font-size:9px">'+cnt+'</b></span>'; }
+    var _grp={}; _vn.forEach(function(nm){ var k=normVendor(nm).toLowerCase(); (_grp[k]=_grp[k]||[]).push(nm); });
+    var _dup=Object.keys(_grp).filter(function(k){return _grp[k].length>1;});
+    html+='<div class="card"><div class="card-title"><i class="ti ti-arrows-join"></i>業者名の整理（自動反映）<span class="tag tag-gray" style="margin-left:auto">'+_vn.length+'種</span></div>';
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Invoiceから自動反映された業者名です。以後の取込は自動で正規化されます。表記ゆれは下で統合できます。</div>';
+    if(_dup.length){
+      html+='<div style="font-size:12px;font-weight:700;color:var(--yellow);margin:2px 0 4px">⚠ 重複候補（表記ゆれ）</div>';
+      _dup.forEach(function(k){
+        var vars=_grp[k]; var canon=vars.slice().sort(function(a,b){return _vc[b]-_vc[a];})[0];
+        html+='<div style="border:1px solid var(--yellow);border-radius:8px;padding:7px 9px;margin-bottom:6px">'
+          +'<div style="display:flex;flex-wrap:wrap;align-items:center">'+vars.map(function(nm){return vchip(nm,_vc[nm]);}).join('')+'</div>'
+          +'<button class="btn btn-primary btn-sm" style="margin-top:4px" onclick="mergeDupKey('+JSON.stringify(k)+','+JSON.stringify(canon)+')">「'+escapeHtml(canon)+'」に統一</button></div>';
+      });
+    }
+    // 手動統合
+    var opts=_vn.map(function(nm){return '<option value="'+escapeHtml(nm)+'">'+escapeHtml(nm)+'（'+_vc[nm]+'品）</option>';}).join('');
+    html+='<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:8px">'
+      +'<div style="font-size:11.5px;font-weight:700;margin-bottom:4px">手動で統合</div>'
+      +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+      +'<select class="form-select" id="vm-from" style="flex:1;min-width:120px;padding:6px">'+opts+'</select>'
+      +'<i class="ti ti-arrow-right" style="color:var(--muted)"></i>'
+      +'<select class="form-select" id="vm-to" style="flex:1;min-width:120px;padding:6px">'+opts+'</select>'
+      +'<button class="btn btn-secondary btn-sm" onclick="mergeVendorTo(document.getElementById(\'vm-from\').value,document.getElementById(\'vm-to\').value)">統合</button>'
+      +'</div><div style="font-size:10px;color:var(--muted);margin-top:3px">左（統合元）→ 右（統合先）に寄せます。</div></div>';
+    html+='</div>';
+  })();
   return html;
 }
 
@@ -33476,6 +33548,39 @@ function saveOjtPhaseMap(){
   renderPage('ojtmap');
 }
 
+function renderTipRateMgmt(){
+  // 対象：crew/sl・在籍・現Tip率が100%未満。配属店ごとにスキルと並べて評価適正を確認。
+  var emps = getEmployees().filter(function(e){ return (e.role==='crew'||e.role==='sl') && e.status!=='退職'; });
+  var below = emps.filter(function(e){ return effectiveTipRate(e.name) < 100; });
+  var byStore={};
+  below.forEach(function(e){ var s=e.store||'—'; (byStore[s]=byStore[s]||[]).push(e); });
+  var html = '<div class="card"><div class="card-title"><i class="ti ti-adjustments-check"></i>Tip Rate 100%未満（スキル適正チェック）<span class="tag tag-gray" style="margin-left:auto">'+below.length+'名</span></div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.6">現在のTip率と保有スキル（ポジション別Lv）を並べています。Tip率（評価）が保有スキルに見合っているか、あと何が足りないかを確認できます。<br>No Tip → 80% → 90% → 100%（3ヶ月経過で自動100%）</div>'
+    + skillLegendHtml() + '</div>';
+  if(!below.length){ html += '<div class="card"><p style="text-align:center;color:var(--muted);padding:16px;font-size:13px">全員100%に到達しています 🎉</p></div>'; return html; }
+  STORES.map(function(s){return s.id;}).filter(function(sid){return byStore[sid];}).forEach(function(sid){
+    var stName=(STORES.find(function(s){return s.id===sid;})||{name:sid}).name;
+    var list=byStore[sid].sort(function(a,b){ return effectiveTipRate(b.name)-effectiveTipRate(a.name) || skillScoreStore(b.name,sid)-skillScoreStore(a.name,sid); });
+    html+='<div class="card"><div class="card-title">'+storeBadge(sid)+'<span style="font-weight:700">'+escapeHtml(stName)+'</span><span class="tag tag-gray" style="margin-left:auto">'+list.length+'名</span></div>';
+    list.forEach(function(e){
+      var rate=effectiveTipRate(e.name); var rc=(typeof tipRateColor==='function')?tipRateColor(rate):'var(--tm)';
+      var next=rate===0?80:(rate<80?80:(rate<90?90:100));
+      var fw=(typeof firstWorkDate==='function')?firstWorkDate(e):null;
+      html+='<div style="border-top:1px solid var(--border);padding:8px 0 6px">'
+        +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+          +'<b style="font-size:13px;flex:1;min-width:90px">'+escapeHtml(e.name)+(e.title?' <span style="font-size:10px;color:var(--muted);font-weight:400">'+escapeHtml(e.title)+'</span>':'')+'</b>'
+          +'<span style="font-size:10px;color:var(--muted)">現</span><span style="font-weight:800;font-size:13px;color:'+rc+'">'+(rate===0?'No Tip':rate+'%')+'</span>'
+          +'<i class="ti ti-arrow-right" style="font-size:12px;color:var(--muted)"></i>'
+          +'<span style="font-size:10px;color:var(--muted)">次</span><span style="font-weight:700;font-size:12px;color:var(--accent)">'+next+'%</span>'
+        +'</div>'
+        +(fw?'<div style="font-size:10px;color:var(--muted);margin-top:1px">初回勤務 '+fw.toLocaleDateString(langDateLocale())+'</div>':'')
+        +(skillLevelGaugeHtml(e.name, sid)||'<div style="font-size:10px;color:var(--muted);margin-top:3px">スキル未登録</div>')
+        +'</div>';
+    });
+    html+='</div>';
+  });
+  return html;
+}
 function renderTipRate() {
   var requests = ls('tip_requests', []);
   var canApprove = ROLE_CONFIG[curRole].canApprove;
@@ -36831,6 +36936,7 @@ try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoya
 try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateClearSampleOB(); } catch(e) { console.error('migrateClearSampleOB', e); }
+try { _v2VendorNormOnce(); } catch(e) { console.error('_v2VendorNormOnce', e); }
 try { migrateEcResetPreJuly(); } catch(e) { console.error('migrateEcResetPreJuly', e); }
 try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
 /* ============================================================
