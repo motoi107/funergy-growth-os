@@ -14981,7 +14981,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '469';
+const APP_VERSION = '470';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30756,9 +30756,10 @@ var invoiceTmpLines = [];
 var invoiceDocType = 'Invoice';
 /* この人がInvoice/Receiptを登録できる対象店舗（curStoreで絞らず全候補） */
 function invoiceStoreCandidates() {
-  if (curRole === 'am') { var ids = myAmStores().concat(mySupportStores()); return activeStores().filter(s=>ids.includes(s.id)); }
+  var OFFICE_STORE = {id:'OFFICE', name:'Office', color:'#6b7280'};
+  if (curRole === 'am') { var ids = myAmStores().concat(mySupportStores()); return activeStores().filter(s=>ids.includes(s.id)).concat([OFFICE_STORE]); }
   if (curRole === 'sl' || curRole === 'crew') { var ids = [myStoreId()].concat(mySupportStores()); return activeStores().filter(s=>ids.includes(s.id)); }
-  return activeStores(); // ceo/gm/office
+  return activeStores().concat([OFFICE_STORE]); // ceo/gm/office ＋ Office
 }
 function openInvoiceModal() {
   invoiceTmpLines = [];
@@ -32365,10 +32366,10 @@ function getRespMatrix(){
   if (v) { lsSet('resp_matrix', fresh); } // v2以前の保存分はPOS3項目追加版(v3)へ一度だけ置き換え
   return fresh;
 }
-function saveRespMatrix(mx){ mx.at=nowJP(); mx.by=(typeof myName==='function')?myName():''; lsSet('resp_matrix', mx); }
+function saveRespMatrix(mx){ if(curRole!=='gm'&&curRole!=='ceo'){ if(typeof showToast==='function') showToast('責任マトリクスの編集はGM以上に限定されています','warning'); return; } mx.at=nowJP(); mx.by=(typeof myName==='function')?myName():''; lsSet('resp_matrix', mx); }
 function _respRerender(){ renderPage((typeof curPage!=='undefined'&&curPage==='ojt_admin')?'ojt_admin':'biz_guide'); }
 function respToggleEdit(){ window._respEdit=(window._respEdit===false); _respRerender(); }
-function respReset(){ if(!confirm('責任マトリクスを既定（Claude納品時の内容）に戻します。編集内容は失われます。よろしいですか？')) return; lsSet('resp_matrix', {rows:respDefaultRows(), v:1}); showToast('既定に戻しました','success'); _respRerender(); }
+function respReset(){ if(curRole!=='gm'&&curRole!=='ceo'){ showToast('責任マトリクスの編集はGM以上に限定されています','warning'); return; } if(!confirm('責任マトリクスを既定（Claude納品時の内容）に戻します。編集内容は失われます。よろしいですか？')) return; lsSet('resp_matrix', {rows:respDefaultRows(), v:1}); showToast('既定に戻しました','success'); _respRerender(); }
 function respSetCell(ri, ci, val){ var mx=getRespMatrix(); if(!mx.rows[ri]||mx.rows[ri].cat!==undefined&&!Array.isArray(mx.rows[ri])) return; mx.rows[ri][ci]=val; saveRespMatrix(mx); }
 function respSetName(ri, val){ var mx=getRespMatrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][0]=val; saveRespMatrix(mx); }
 function respSetNote(ri, val){ var mx=getRespMatrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][8]=val; saveRespMatrix(mx); }
