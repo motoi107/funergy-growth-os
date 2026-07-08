@@ -8217,16 +8217,16 @@ function renderBudget() {
   </div>
   <div class="phase-tabs">
     <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">サマリー</div>
+    <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">日次進捗</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">予算設定</div>
     <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">四半期</div>
-    <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">日次進捗</div>
     <div class="phase-tab${budgetTab==='minutes'?' active':''}" onclick="setBudgetTab('minutes')">議事録</div>
   </div>`;
   if (budgetTab==='monthly') budgetTab='summary'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   if (budgetTab==='minutes') return html + renderMeetingMinutes(); // 議事録は独自のシート選択あり
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
-  html += storeSelectBar(_budgetStore, 'setBudgetStore');
+  html += storeChipBar(_budgetStore, 'setBudgetStore');
   if (budgetTab==='setup') return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup());
   return html + renderBudgetSummary();
 }
@@ -8399,8 +8399,7 @@ function renderQuarterBudget(){
     +'<button class="btn btn-secondary btn-sm" onclick="setQbQuarter(1)">▶</button></div>'
     +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.7"><i class="ti ti-target"></i> 目標は<b>単月予算(月次)を自動合算</b>。実績は当四半期の経過月累計。達成/未達を項目別に表示します。</div></div>';
   // store tabs
-  html+='<div class="mm-tabs" style="margin-bottom:10px"><button class="mm-tab'+(_qbStore==='ALL'?' active':'')+'" onclick="setQbStore(\'ALL\')">全店</button>'
-    +stores.map(function(st){ return '<button class="mm-tab'+(_qbStore===st.id?' active':'')+'" onclick="setQbStore(\''+st.id+'\')">'+escapeHtml(st.name)+'</button>'; }).join('')+'</div>';
+  html+=storeChipBar(_qbStore,'setQbStore'); // FC/人件費と表示統一
 
   if(_qbStore==='ALL'){
     // 集計（全店合計の項目別）
@@ -10595,12 +10594,11 @@ function fcKey(storeId, ym){ return 'fc_monthly_'+storeId+'_'+ym; }
 function getFcMonthly(storeId, ym){
   var v = ls(fcKey(storeId, ym), null);
   if(v){
-    /* 期首が自動継承(beginAuto)なら、前月末棚卸の最新値へ常時追随（前月の棚卸修正を翌月期首へ即反映） */
-    if(v.beginAuto){
-      var _pvB = ls(fcKey(storeId, ymShift(ym,-1)), null);
-      var _begB = _pvB ? (parseFloat(_pvB.endInv)||0) : 0;
-      if((parseFloat(v.beginInv)||0)!==_begB) v = Object.assign({}, v, { beginInv:_begB });
-    }
+    /* 期首は常に「前月末棚卸(期末)」へ追随させる（前月の棚卸修正を翌月期首へ必ず反映）。
+       前月末が未確定(0)のときのみ、保存済みの期首値を使う。 */
+    var _pvB = ls(fcKey(storeId, ymShift(ym,-1)), null);
+    var _begB = _pvB ? (parseFloat(_pvB.endInv)||0) : 0;
+    if(_begB>0 && (parseFloat(v.beginInv)||0)!==_begB){ v = Object.assign({}, v, { beginInv:_begB, beginAuto:true }); }
     return v;
   }
   /* レガシー（単一レコード）を invMonth または今月として一度だけ移行 */
@@ -10658,6 +10656,7 @@ function renderFoodcost() {
   var allStore = _fcStore==='ALL';
   var store = allStore ? null : (STORES.find(function(s){return s.id===_fcStore;})||STORES[0]);
   var html = `<div class="section-header"><div><div class="section-title">${allStore?'全店':store.name} · Food Cost</div><div class="section-sub">目標 29〜31%</div></div></div>`;
+  if(fcTab==='shopping') fcTab='daily'; // 買い出しタブ廃止のフォールバック
   html += storeChipBar(_fcStore, 'setFcStore');
   if (allStore) return html + renderFcAllStores();
   var storeId = store.id;
@@ -10665,7 +10664,6 @@ function renderFoodcost() {
     <div class="phase-tab${fcTab==='daily'?' active':''}" onclick="setFcTab('daily')">日次（簡易）</div>
     <div class="phase-tab${fcTab==='monthly'?' active':''}" onclick="setFcTab('monthly')">月次（実績）</div>
     <div class="phase-tab${fcTab==='variance'?' active':''}" onclick="setFcTab('variance')">理論原価</div>
-    <div class="phase-tab${fcTab==='shopping'?' active':''}" onclick="setFcTab('shopping')">買い出し</div>
     <div class="phase-tab${fcTab==='menu'?' active':''}" onclick="setFcTab('menu')">メニュー別</div>
   </div>`;
 
@@ -10726,10 +10724,18 @@ function renderFcDaily(storeId, store) {
       <td style="text-align:right">${shop?fmtUSD2(shop):'—'}</td>
       <td style="text-align:right;color:${col};font-weight:600">${rate!=null?rate.toFixed(1)+'%':'—'}</td></tr>`;
   }
-  var head = latest
-    ? kpi('直近の実数原価率', latest.rate!=null?latest.rate.toFixed(1)+'%':'—', latest.iso.slice(5).replace('-','/')+'・仕入 '+fmtUSD2(latest.cost)+' / 売上 '+fmtUSD2(latest.sales), latest.rate==null?'var(--muted)':(latest.rate<=31?'var(--green)':latest.rate<=34?'var(--yellow)':'var(--red)'))
-    : kpi('直近の実数原価率', '—', '売上実績が未入力です', 'var(--muted)');
-  var html = `<div class="alert alert-success" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">日次は<strong>（Invoice仕入＋買い出し）÷ 売上実績</strong>の実数速報です。正確な原価率（棚卸法）は「月次」タブで確定します。</div></div>
+  // 当月累計の実質原価率 ＝（当月Invoice合計＋当月買い出し合計）÷ 当月売上合計
+  var _fcYm = curYm();
+  var _mInv=0, _mSales=0;
+  daysOfYm(_fcYm).forEach(function(d){ _mInv += dayCostReal(storeId, d.date); var _o=actuals[d.date]||{}; _mSales += Number(_o.actual)||0; });
+  var _mShop = monthPurchaseTotalYm(storeId, _fcYm);
+  var _mCost = _mInv + _mShop;
+  var _mRate = _mSales>0 ? Math.round(_mCost/_mSales*1000)/10 : null;
+  var _mLabel = (+_fcYm.split('-')[1])+'月';
+  var head = (_mSales>0)
+    ? kpi('当月 実質原価率', _mRate!=null?_mRate.toFixed(1)+'%':'—', _mLabel+'累計・仕入 '+fmtUSD2(_mCost)+' / 売上 '+fmtUSD2(_mSales), _mRate==null?'var(--muted)':(_mRate<=31?'var(--green)':_mRate<=34?'var(--yellow)':'var(--red)'))
+    : kpi('当月 実質原価率', '—', _mLabel+'の売上実績が未入力です', 'var(--muted)');
+  var html = `<div class="alert alert-success" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">上部の<strong>当月 実質原価率</strong>＝（当月Invoice合計＋買い出し合計）÷ 当月売上合計。下の表は直近7日の実数速報。正確な原価率（棚卸法）は「月次」タブで確定します。</div></div>
   <div class="card"><div class="card-title"><i class="ti ti-calendar-stats"></i>日次 実数原価率（直近7日）</div>
     <div class="kpi-grid">
       ${head}
@@ -10789,7 +10795,7 @@ function openFcMonthlyModal(storeId, ym) {
   var fc = getFcMonthly(storeId, ym);
   openModal(`<div class="modal-title">${ym.replace('-','年')}月 原価 入力 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     ${frozen?'<div class="alert alert-warning" style="padding:6px 10px;font-size:11px"><i class="ti ti-lock-open"></i> 確定月の修正です。変更は履歴に記録されます。</div>':''}
-    <div class="form-group"><label class="form-label">期首棚卸額 ($) ${fc.beginAuto?'※前月末から自動反映。修正すると履歴に残ります':''}</label><input class="form-input" id="fc-begin" type="number" inputmode="decimal" value="${fc.beginInv||0}"></div>
+    <div class="form-group"><label class="form-label">期首棚卸額 ($) ${fc.beginAuto?'※前月末（期末）から自動。修正は前月の期末で':''}</label><input class="form-input" id="fc-begin" type="number" inputmode="decimal" value="${fc.beginInv||0}"${fc.beginAuto?' readonly style="background:var(--bg2);opacity:.75"':''}></div>
     <div class="form-group"><label class="form-label">期末棚卸額 ($)（月次棚卸確定で自動更新）</label><input class="form-input" id="fc-end" type="number" inputmode="decimal" value="${fc.endInv||0}"></div>
     <div class="form-group"><label class="form-label">売上 ($)（空欄なら日次実績から自動: $${Math.round(stats.sales||0).toLocaleString()}）</label><input class="form-input" id="fc-sales" type="number" inputmode="decimal" value="${fc.sales||''}"></div>
     <p style="font-size:11px;color:var(--muted)">仕入れ・買い出しはこの月の発注/買い出しデータから自動集計されます。</p>
@@ -14795,7 +14801,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '446';
+const APP_VERSION = '447';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
