@@ -15000,7 +15000,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '477';
+const APP_VERSION = '478';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -17231,10 +17231,14 @@ var availTmp = {};
 /* ログイン中の本人名（実名優先・なければ役職名）。Availability提出者の特定に使用 */
 function myName(){ return curUserName || (ROLE_CONFIG[curRole]||{}).name; }
 function tWday(d){ if(curLang!=='en') return d; var m={'月':'Mon','火':'Tue','水':'Wed','木':'Thu','金':'Fri','土':'Sat','日':'Sun'}; return m[d]||d; }
+function setMyShiftStore(id){ window._myShiftStore=id; if(typeof renderPage==='function') renderPage('shift_staff'); }
 function renderShiftStaff() {
   var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
-  var storeId = emp ? (emp.store==='ALL'?STORES[0].id:emp.store) : (curStore==='ALL'?STORES[0].id:curStore);
+  var _mainStore = emp ? (emp.store==='ALL'?STORES[0].id:emp.store) : (curStore==='ALL'?STORES[0].id:curStore);
+  var _myStores = [_mainStore].concat((emp&&emp.support)||[]).filter(function(v,i,a){return v && a.indexOf(v)===i;}); // 配属店＋応援店
+  if(!window._myShiftStore || _myStores.indexOf(window._myShiftStore)<0) window._myShiftStore=_mainStore;
+  var storeId = window._myShiftStore;
   var week = getWeekStr();
   var myAvail = getAvailability(storeId, week).find(a=>a.name===me);
   var plan = getShiftPlan(storeId, week);
@@ -17242,6 +17246,15 @@ function renderShiftStaff() {
   var isReminded = !myAvail && Array.isArray(reminded) && reminded.indexOf(me)>=0;
 
   var html = `<div class="section-header"><div><div class="section-title">My Shift</div><div class="section-sub">${shiftWeekRelLabel()} · ${shiftWeekRangeLabel()}</div></div></div>`;
+  if (_myStores.length>1){
+    html += `<div class="card" style="padding:8px 10px;margin-bottom:8px"><div style="font-size:11px;color:var(--muted);margin-bottom:5px"><i class="ti ti-building-store"></i> ${t('提出先の店舗（応援店にも提出できます）','Store to submit (support stores included)')}</div><div style="display:flex;flex-wrap:wrap;gap:6px">`;
+    _myStores.forEach(function(sid){
+      var s=STORES.find(function(x){return x.id===sid;})||{id:sid,name:sid};
+      var col=(typeof _bStoreCol==='function')?_bStoreCol(sid):'var(--accent)'; var on=sid===storeId;
+      html += '<button onclick="setMyShiftStore(\''+sid+'\')" style="padding:5px 12px;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;border:1px solid '+col+';background:'+(on?col:'transparent')+';color:'+(on?'#fff':col)+'">'+escapeHtml(s.name)+(sid===_mainStore?'':' <span style="font-size:9px;opacity:.85">'+t('応援','Support')+'</span>')+'</button>';
+    });
+    html += `</div></div>`;
+  }
   // スタッフ用 週選択ナビ（どの週を提出しているか明示）
   html += `<div class="card" style="padding:8px 10px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
     <button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(${_shiftWeekOff-1})"><i class="ti ti-chevron-left"></i></button>
