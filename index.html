@@ -825,9 +825,10 @@ async function fetchTodayRealtime(storeList) {
       // 客数の数え方: Totoya=丼数(bowls) / Waikiki=皿 / それ以外=客数
       var metric = (typeof guestCountType==='function') ? guestCountType(s.id) : 'guest';
       var unit = metric==='bowls' ? '丼' : (metric==='plate' ? '皿' : t('名',''));
-      var lCnt = metric==='bowls' ? (lB + lTOB) : lG;
-      var dCnt = metric==='bowls' ? (dB + dTOB) : dG;
-      var totCnt = metric==='bowls' ? (lB + dB + toBowls) : guests;
+      var _bowlBased = (metric==='bowls') || (metric==='plate' && (lB+dB+lTOB+dTOB)>0); // FSP/WGSは選択商品があればそれを客数に
+      var lCnt = _bowlBased ? (lB + lTOB) : lG;
+      var dCnt = _bowlBased ? (dB + dTOB) : dG;
+      var totCnt = _bowlBased ? (lB + dB + toBowls) : guests;
       results.push({ id:s.id, name:s.name, color:s.color, hasData:true, metric:metric, unit:unit,
         net:net, guests:guests, count:totCnt, ppa: totCnt>0?net/totCnt:0,
         lunch:{ sales:lSales, count:lCnt, ppa: lCnt>0?lSales/lCnt:0 },
@@ -5092,7 +5093,7 @@ function loginPickLocation(loc, el) {
   if (loc==='OFFICE') {
     people = getEmployees().filter(e=>['ceo','gm','am','office','office_crew'].includes(e.role) && e.status!=='退職' && !e.osDisabled);
   } else {
-    people = getEmployees().filter(e=>e.status!=='退職' && !e.osDisabled && (e.role==='sl'||e.role==='crew') && (e.store===loc || (e.support||[]).includes(loc)));
+    people = getEmployees().filter(e=>e.status!=='退職' && !e.osDisabled && ['g4','sl','g2','crew'].includes(e.role) && (e.store===loc || (e.support||[]).includes(loc)));
   }
   var locLabel = loc==='OFFICE' ? t('Office','Office') : (STORES.find(s=>s.id===loc)||{name:loc}).name;
   document.getElementById('login-name-loclabel').textContent = locLabel + t(' のスタッフを選択',' — select staff');
@@ -5106,7 +5107,7 @@ function loginPickLocation(loc, el) {
   if (!people.length) {
     ng.innerHTML = storeLoginBtn + `<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:16px;font-size:13px">${t('この所属に登録スタッフがいません','No staff registered for this location')}</div>`;
   } else {
-    var order={ceo:0,gm:1,office:2,office_crew:3,am:4,sl:5,crew:6};
+    var order={ceo:0,gm:1,office:2,office_crew:3,am:4,g4:5,sl:6,g2:7,crew:8};
     people.sort((a,b)=>(order[a.role]-order[b.role])||a.name.localeCompare(b.name));
     ng.innerHTML = storeLoginBtn + people.map(p=>{
       var roleLabel = roleLabelI18n(p.role);
@@ -5122,7 +5123,7 @@ function loginPickLocation(loc, el) {
 }
 /* 役職ラベルの英日 */
 function roleLabelI18n(role) {
-  var map = {ceo:['CEO','CEO'], gm:['GM','GM'], office:['経理','Office'], am:['エリアMG','Area Manager'], sl:['Store Leader','Store Leader'], office_crew:['事務Crew','Office Crew'], crew:['スタッフ','Crew']};
+  var map = {ceo:['CEO','CEO'], gm:['GM','GM'], office:['経理','Office'], am:['G5(エリアMG)','G5(Area Mgr)'], g4:['G4','G4'], sl:['G3','G3'], g2:['G2','G2'], office_crew:['事務Crew','Office Crew'], crew:['G1','G1']};
   var m = map[role]; if(!m) return (ROLE_CONFIG[role]||{}).label||role;
   return curLang==='en'?m[1]:m[0];
 }
@@ -10120,7 +10121,7 @@ function wmoToWeather(code) {
 /* 店舗の客数定義: 'bowls'(Totoya=丼数), 'plate'(Waikiki=Plate数), 'guest'(通常客数) */
 function guestCountType(storeId) {
   var s = (typeof STORES!=='undefined'?STORES:[]).find(x=>x.id===storeId) || {};
-  if (storeId==='F03') return 'plate';            // Waikiki
+  if (storeId==='F03' || storeId==='F03-G') return 'plate'; // Waikiki FSP / WGS（選択商品で客数カウント）
   if (s.brand==='Totoya') return 'bowls';         // Totoya全店
   return 'guest';                                  // ToriTon/Tenkichi/Marujuu等
 }
@@ -15043,7 +15044,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '482';
+const APP_VERSION = '485';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -36250,6 +36251,19 @@ function renderKpiManualTab(){
       ${canT?`<button class="btn btn-secondary btn-sm" onclick="openBowlCatModal('${sid}')"><i class="ti ti-list-check"></i> 商品を選択</button>`:''}
     </div>`;
     html += `${canT?`<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="saveTotoyaKpiCfg()"><i class="ti ti-device-floppy"></i> 手入力を保存</button></div>`:''}</div>`;
+  }
+  // ===== FSP / WGS 客数カウント対象商品（商品ごとに客数カウント） =====
+  if (sid==='F03' || sid==='F03-G'){
+    var canF = canManual;
+    var _fc = getBowlCatCfg(sid);
+    var _fcN = (_fc.foodGuids||[]).length, _fcT = (_fc.takeoutGuids||[]).length;
+    var _fcSum = (_fcN||_fcT) ? ('店内 '+_fcN+'品 ／ テイクアウト '+_fcT+'品') : '未設定';
+    var _unitL = sid==='F03' ? '皿' : '客数';
+    html += `<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2" style="color:var(--accent)"></i>${store.name} 客数カウント対象商品</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">選んだ商品を「${_unitL}」として客数にカウントします（店内／テイクアウトを商品ごとに指定）。設定後、対象日を再同期してください。<br><span style="color:var(--yellow)"><i class="ti ti-alert-triangle"></i> 集計への反映には同期用Edge Function（toast-sync）の対応が必要です。設定はsync時にEdgeへ送信されます。</span></div>
+      <div style="font-size:11px;margin-bottom:6px">現在: <b>${escapeHtml(_fcSum)}</b></div>
+      ${canF?`<button class="btn btn-secondary btn-sm" onclick="openBowlCatModal('${sid}')"><i class="ti ti-list-check"></i> 商品を選択</button>`:''}
+    </div>`;
   }
   return html;
 }
