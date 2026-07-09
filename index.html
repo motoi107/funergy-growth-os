@@ -3566,7 +3566,7 @@ function kpiSelfStore(){
   if (!s) { var me = getEmployees().find(function(x){ return x.name===curUserName; }); s = me ? me.store : null; }
   return s;
 }
-function isKpiSM(){ return (typeof myGradeNum==='function') ? myGradeNum()>=3 : false; }
+function isKpiSM(){ return (typeof myGradeNum==='function') ? myGradeNum()>=2 : false; }
 function canAccessKpiMaster(){
   if (['ceo','gm','office','am'].indexOf(curRole)>=0) return true;
   if (isKpiSM()) return true;
@@ -3622,7 +3622,7 @@ function isTotoyaStore(storeId){ return TOTOYA_STORE_IDS.indexOf(storeId)>=0; }
 /* ダッシュボード(Funergy Now)の閲覧可否: 財務ロール、またはG3以上。 */
 function canSeeDashboard(){
   if ((ROLE_CONFIG[curRole]||{}).financial) return true;
-  if (typeof myGradeNum==='function' && myGradeNum()>=3) return true;
+  if (typeof myGradeNum==='function' && myGradeNum()>=2) return true;
   return false;
 }
 /* Funergy Nowに表示する店舗:
@@ -3631,7 +3631,7 @@ function canSeeDashboard(){
    - 財務ロール → 通常の可視店舗（全店/選択店） */
 function funergyNowStores(){
   var financial = !!(ROLE_CONFIG[curRole]||{}).financial;
-  var g3 = (typeof myGradeNum==='function') ? myGradeNum()>=3 : false;
+  var g3 = (typeof myGradeNum==='function') ? myGradeNum()>=2 : false;
   if (!financial && g3 && typeof myStoreId==='function' && isTotoyaStore(myStoreId())) {
     return sortByLoginOrder(activeStores().filter(function(s){ return isTotoyaStore(s.id); }));
   }
@@ -9908,7 +9908,7 @@ function openSyncCenter() {
   var isGM = curRole==='gm' || curRole==='ceo';
   var _scRoleG = ({ceo:9,gm:6,am:5,office:5,sl:3,office_crew:1,crew:1})[curRole]||0;
   var _scMe = (typeof getEmployees==='function')?getEmployees().find(function(e){return e.name===(typeof myName==='function'?myName():'');}):null;
-  var scG3 = Math.max(_scRoleG, (_scMe&&typeof empGradeNum==='function')?empGradeNum(_scMe):0) >= 3; // G3以上
+  var scG3 = Math.max(_scRoleG, (_scMe&&typeof empGradeNum==='function')?empGradeNum(_scMe):0) >= 2; // G3以上
   var scDetailAllowed = scG3 || curRole==='office_crew'; // 店舗別詳細は事務Crew(G1)にも開放
   var rows = stores.map(function(s){
     var st = getSyncState(s.id);
@@ -15013,7 +15013,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '479';
+const APP_VERSION = '480';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -15590,9 +15590,9 @@ function renderShiftAdmin() {
     <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')"><i class="ti ti-users-group" style="font-size:12px"></i> カバー候補</div>
     <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')"><i class="ti ti-coin" style="font-size:12px"></i> Labor Cost</div>
-    ${(['ceo','gm','am','sl'].includes(curRole) || ((typeof myGradeNum==='function'?myGradeNum():0)>=3 && storeId==='F04-A'))?`<div style="width:1px;background:var(--border);margin:2px 2px"></div>`:''}
+    ${(['ceo','gm','am','sl'].includes(curRole) || ((typeof myGradeNum==='function'?myGradeNum():0)>=2 && storeId==='F04-A'))?`<div style="width:1px;background:var(--border);margin:2px 2px"></div>`:''}
     ${['ceo','gm','am','sl'].includes(curRole)?`<div class="phase-tab${shiftAdminTab==='rules'?' active':''}" onclick="setShiftAdminTab('rules')"><i class="ti ti-adjustments-alt" style="font-size:12px"></i> 特別ルール</div>`:''}
-    ${(['ceo','gm','am'].includes(curRole) || ((typeof myGradeNum==='function'?myGradeNum():0)>=3 && storeId==='F04-A'))?`<div class="phase-tab${shiftAdminTab==='opt'?' active':''}" onclick="setShiftAdminTab('opt')"><i class="ti ti-adjustments" style="font-size:12px"></i> 最適化設定</div>`:''}
+    ${(['ceo','gm','am'].includes(curRole) || ((typeof myGradeNum==='function'?myGradeNum():0)>=2 && storeId==='F04-A'))?`<div class="phase-tab${shiftAdminTab==='opt'?' active':''}" onclick="setShiftAdminTab('opt')"><i class="ti ti-adjustments" style="font-size:12px"></i> 最適化設定</div>`:''}
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
@@ -18217,7 +18217,7 @@ function openVacationModal() {
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   // 内訳カテゴリ: G3以上はPaid Off各種（残日数表示）、全員に公休・無給
   var cats = [];
-  if (g>=3) {
+  if (g>=2) {
     BENEFITS.forEach(function(b){
       var rem = (b.days + benefitAdjust(yr, me, b.key)) - benefitUsed(me, yr, b.type, '承認') - benefitManualUsed(yr, me, b.key);
       cats.push({ type:b.type, label:b.label.replace('Paid Off（有給）','有給休暇'), hint:'残'+rem+'日' });
@@ -18240,7 +18240,7 @@ function openVacationModal() {
       <div style="background:var(--surface2);border-radius:8px;padding:8px">${rowsHtml}
         <div id="v-bd-preview" style="font-size:11px;color:var(--muted);margin-top:6px;text-align:right"></div>
       </div>
-      ${g<3?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ Paid Off（有給・Sick・誕生日・忌引き・結婚・出産）はG3以上が対象。G2以下は公休/無給のみ。</div>`:''}
+      ${g<2?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ Paid Off（有給・Sick・誕生日・忌引き・結婚・出産）はG2以上が対象。G1は公休/無給のみ。</div>`:''}
     </div>
     <div class="form-group"><label class="form-label">理由</label><textarea class="form-textarea" id="v-reason" placeholder="休暇理由"></textarea></div>
     <div class="btn-row">
@@ -18309,13 +18309,13 @@ function submitVacation() {
 ============================================================ */
 /* すべてのPaid OffはG3以上が対象（G2以下は無給のバケーション申請のみ） */
 const BENEFITS = [
-  {key:'paid',        label:'Paid Off（有給）', days:5, type:'有給休暇', minGrade:3},
-  {key:'sick',        label:'Sick Leave',       days:3, type:'傷病休暇', minGrade:3, note:'有給消化としても使用可'},
-  {key:'bereavement', label:'忌引き',            days:3, type:'忌引き',     minGrade:3},
-  {key:'maternity',   label:'出産',              days:3, type:'出産',       minGrade:3},
-  {key:'marriage',    label:'結婚',              days:2, type:'結婚',       minGrade:3},
-  {key:'holiday',     label:'祝日休暇',          days:5, type:'祝日休暇',   minGrade:3, note:'有給と連続申請不可'},
-  {key:'birthday',    label:'バースデー',        days:1, type:'バースデー', minGrade:3},
+  {key:'paid',        label:'Paid Off（有給）', days:5, type:'有給休暇', minGrade:2},
+  {key:'sick',        label:'Sick Leave',       days:3, type:'傷病休暇', minGrade:2, note:'有給消化としても使用可'},
+  {key:'bereavement', label:'忌引き',            days:3, type:'忌引き',     minGrade:2},
+  {key:'maternity',   label:'出産',              days:3, type:'出産',       minGrade:2},
+  {key:'marriage',    label:'結婚',              days:2, type:'結婚',       minGrade:2},
+  {key:'holiday',     label:'祝日休暇',          days:5, type:'祝日休暇',   minGrade:2, note:'有給と連続申請不可'},
+  {key:'birthday',    label:'バースデー',        days:1, type:'バースデー', minGrade:2},
 ];
 function benefitByType(type){ return BENEFITS.find(function(b){return b.type===type;}); }
 /* 申請日数（開始〜終了の暦日・両端含む） */
@@ -20763,7 +20763,7 @@ function empsByCardLast4(last4){
   return getEmployees().filter(function(e){
     if(e.status && e.status!=='在籍') return false;
     var g = (typeof gradeNum==='function' && typeof empGrade==='function') ? gradeNum(empGrade(e)) : 0;
-    if(g < 3) return false;
+    if(g < 2) return false;
     return String(e.cardLast4||'').split(',').map(function(x){return x.trim();}).indexOf(last4) >= 0;
   });
 }
