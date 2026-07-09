@@ -1597,10 +1597,12 @@ const ROLE_CONFIG = {
   ceo:    { label:'CEO', name:'Tac', financial:true, allStores:true, canApprove:true, canCreate:true },
   gm:     { label:'GM',  name:'Moto', financial:true, allStores:true, canApprove:true, canCreate:true },
   office: { label:'経理', name:'Marcia', financial:true, allStores:true, canApprove:false, canCreate:false },
-  am:     { label:'G4&G5',  name:'Yuki', financial:true, allStores:false, canApprove:true, canCreate:true },
-  sl:     { label:'G2&G3',  name:'Store Leader', financial:false, allStores:false, canApprove:false, canCreate:true },
+  am:     { label:'G5',  name:'Yuki', financial:true, allStores:false, canApprove:true, canCreate:true },
+  sl:     { label:'G3',  name:'Store Leader', financial:false, allStores:false, canApprove:false, canCreate:true },
   office_crew: { label:'事務Crew', name:'事務スタッフ', financial:false, allStores:true, canApprove:false, canCreate:false, noWage:true },
   crew:   { label:'G1',name:'スタッフ', financial:false, allStores:false, canApprove:false, canCreate:false },
+  g2:     { label:'G2', name:'Crew Leader',  financial:false, allStores:false, canApprove:false, canCreate:true },
+  g4:     { label:'G4', name:'Store Manager', financial:true,  allStores:false, canApprove:true,  canCreate:true },
 };
 
 const NAV_ITEMS = [
@@ -1715,11 +1717,32 @@ const STORE_GROUPS = [
 ];
 function navItemById(id) { return NAV_ITEMS.find(n=>n.id===id) || {id, label:id, icon:'ti-circle'}; }
 function groupsForRole() {
-  if (curStoreLogin) return STORE_GROUPS;
-  if (curRole==='crew') return CREW_GROUPS;
-  if (curRole==='office_crew') return OFFICE_CREW_GROUPS;
-  if (curStore==='OFFICE' && ['ceo','gm','office'].includes(curRole)) return OFFICE_GROUPS.filter(g=>!g.roles||g.roles.includes(curRole));
-  return MENU_GROUPS.filter(g=>g.roles.includes(curRole));
+  var groups;
+  if (curStoreLogin) groups = STORE_GROUPS;
+  else if (curRole==='crew') groups = CREW_GROUPS;
+  else if (curRole==='office_crew') groups = OFFICE_CREW_GROUPS;
+  else if (curStore==='OFFICE' && ['ceo','gm','office'].includes(curRole)) groups = OFFICE_GROUPS.filter(g=>!g.roles||g.roles.includes(curRole));
+  else groups = MENU_GROUPS.filter(g=>g.roles.includes(curRole));
+  if (curRealRole==='g2' || curRealRole==='g4') {
+    var hide = getRoleHide(curRealRole);
+    if (hide.length) groups = groups.map(function(g){ return Object.assign({}, g, {children: g.children.filter(function(c){ return hide.indexOf(c)<0; })}); }).filter(function(g){ return g.children && g.children.length>0; });
+  }
+  return groups;
+}
+function _pagesForBaseRole(base){ var ids=[]; MENU_GROUPS.filter(function(g){return g.roles.includes(base);}).forEach(function(g){ g.children.forEach(function(c){ if(ids.indexOf(c)<0) ids.push(c); }); }); return ids; }
+function togglePageHide(sub, pid){ var arr=getRoleHide(sub); var i=arr.indexOf(pid); if(i>=0) arr.splice(i,1); else arr.push(pid); setRoleHide(sub, arr); renderPage('settings'); }
+function renderRoleHideConfig(){
+  var html='';
+  [['g2','G2','sl','G3'],['g4','G4','am','G5']].forEach(function(r){
+    var sub=r[0], subL=r[1], base=r[2], baseL=r[3]; var ids=_pagesForBaseRole(base); var hide=getRoleHide(sub);
+    html+='<div class="card"><div class="card-title"><i class="ti ti-eye-off" style="color:var(--accent)"></i> '+subL+' の非表示ページ（'+baseL+'の画面から選択）</div>';
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:4px">チェックした画面は '+subL+' には表示されません（'+baseL+'は全て表示）。<span style="color:var(--yellow)">'+hide.length+'件 非表示中</span></div>';
+    ids.forEach(function(pid){ var it=(typeof NAV_ITEMS!=='undefined')?NAV_ITEMS.find(function(x){return x.id===pid;}):null; if(!it) return; var on=hide.indexOf(pid)>=0;
+      html+='<label style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-top:1px solid var(--border);cursor:pointer"><span style="font-size:12.5px'+(on?';color:var(--muted);text-decoration:line-through':'')+'"><i class="ti '+it.icon+'" style="font-size:12px;margin-right:5px"></i>'+escapeHtml(it.label)+'</span><input type="checkbox" '+(on?'checked':'')+' onchange="togglePageHide(\''+sub+'\',\''+pid+'\')" style="width:18px;height:18px;flex:0 0 auto"></label>';
+    });
+    html+='</div>';
+  });
+  return html;
 }
 function groupOfPage(pageId) {
   var groups = groupsForRole();
@@ -3820,6 +3843,12 @@ function ingClass(ing) { return catClass(ing.cat); }
    STATE
 ============================================================ */
 var curRole = null, curStore = null, curPage = 'dashboard';
+var curRealRole = null; // g2/g4 を保持（curRole は sl/am にエイリアス）
+var ROLE_ALIAS = { g2:'sl', g4:'am' };
+function _applyRole(raw){ curRealRole = raw || null; curRole = (raw && ROLE_ALIAS[raw]) ? ROLE_ALIAS[raw] : raw; }
+function getRoleHide(sub){ return ls('role_hide_'+sub, [])||[]; }
+function setRoleHide(sub, arr){ lsSet('role_hide_'+sub, arr||[]); }
+function isPageHiddenForMe(pid){ return (curRealRole==='g2'||curRealRole==='g4') ? (getRoleHide(curRealRole).indexOf(pid)>=0) : false; }
 var curSLName = 'Store Leader';
 var curStoreLogin = false;
 var curUserName = null;
@@ -3973,7 +4002,7 @@ var SUPA_MASTER_MAP = {
 var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
-  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display'];
+  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
@@ -4433,7 +4462,7 @@ async function showManagerSecure(){
   /* セキュアセッションのコンテキスト設定（カルテはGM/CEO判定を使う） */
   window._secureMode=true;
   window._karteUnlocked=true;
-  curRole=window._authSession.role;
+  _applyRole(window._authSession.role);
   curStore='ALL';
   try{ var me=getEmployees().find(function(x){return x.id===window._authSession.emp_id;}); curUserName=me?me.name:(window._authSession.email||''); }catch(e){ curUserName=window._authSession.email||''; }
   if(body){
@@ -5198,7 +5227,7 @@ function doStaffLogin() {
 }
 function finishStaffLogin() {
   var emp = loginPerson;
-  curRole = emp.role;
+  _applyRole(emp.role);
   curUserName = emp.name;
   curStoreLogin = false;
   // 所属店舗の決定
@@ -5334,7 +5363,7 @@ function resolveLoginIdentity(){
   var emp = (loginPerson.id && all.find(function(e){return e.id===loginPerson.id;}))
          || all.find(function(e){return e.name===loginPerson.name;});
   if (!emp) return;
-  curRole = emp.role || curRole;
+  _applyRole(emp.role || curRealRole || 'crew');
   curUserName = emp.name;
   if (loginLocation==='OFFICE') curStore = 'ALL';
   else curStore = (emp.store && emp.store!=='ALL') ? emp.store : loginLocation;
@@ -5367,7 +5396,7 @@ function toggleLoginAutosync(){
 
 function doLogout() {
   try{ notifRealtimeStop(); }catch(e){}
-  curRole = null; curStore = null; curStoreLogin = false; curUserName = null;
+  curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
   window._sessionPin = null; window._empPrivate = null;
   document.getElementById('app-shell').style.display = 'none';
@@ -5647,6 +5676,7 @@ var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export',
    ROUTER
 ============================================================ */
 function renderPage(page) {
+  if (typeof isPageHiddenForMe==='function' && isPageHiddenForMe(page)) { var _ga=groupsForRole()[0]; page = (_ga && _ga.children && _ga.children[0]) || 'mypage'; }
   var el = document.getElementById('main-content');
   if (curStore === 'OFFICE' && OFFICE_OK_PAGES.indexOf(page) < 0) { el.innerHTML = renderOfficeMgr(); window.scrollTo(0,0); return; }
   switch(page) {
@@ -15013,7 +15043,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '481';
+const APP_VERSION = '482';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -20783,7 +20813,7 @@ function openEmpModal(empId) {
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">権限ロール ${canEditWages()?'':'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)">GM以上のみ変更可</span>'}</label>
-        <select class="form-select" id="e-role" onchange="empRoleChanged()" ${canEditWages()?'':'disabled'}>${['ceo','gm','office','am','sl','office_crew','crew'].map(r=>`<option value="${r}"${e.role===r?' selected':''}>${ROLE_CONFIG[r].label}（${PERM_LEVELS.find(p=>p.id===permFromRole(r)).label}）</option>`).join('')}</select>
+        <select class="form-select" id="e-role" onchange="empRoleChanged()" ${canEditWages()?'':'disabled'}>${['ceo','gm','office','am','g4','sl','g2','office_crew','crew'].map(r=>`<option value="${r}"${e.role===r?' selected':''}>${ROLE_CONFIG[r].label}（${PERM_LEVELS.find(p=>p.id===permFromRole(r)).label}）</option>`).join('')}</select>
         <input type="hidden" id="e-perms" value="${e.perms||permFromRole(e.role)}">
         <div style="font-size:11px;color:var(--muted);margin-top:4px">権限ロールで権限レベル（アクセス範囲）が自動で決まります。</div>
       </div>
@@ -29401,6 +29431,7 @@ function renderSettings() {
     </label>
     ${!salaryDisplayOn()?'<div style="font-size:11.5px;color:var(--yellow);font-weight:700"><i class="ti ti-alert-triangle"></i> 現在オフ：給与情報は全員に非表示です</div>':''}
   </div>` : ''}
+  ${(curRole==='gm'||curRole==='ceo')?renderRoleHideConfig():''}
   <div class="card"><div class="card-title"><i class="ti ti-device-mobile-vibration" style="color:var(--accent)"></i>触感・アプリ</div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
       <div><div style="font-weight:600;font-size:13px">バイブレーション（触感フィードバック）</div>
