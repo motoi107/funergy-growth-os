@@ -5112,9 +5112,10 @@ function loginPickLocation(loc, el) {
     ng.innerHTML = storeLoginBtn + `<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:16px;font-size:13px">${t('この所属に登録スタッフがいません','No staff registered for this location')}</div>`;
   } else {
     var order={ceo:0,gm:1,office:2,office_crew:3,am:4,g4:5,sl:6,g2:7,crew:8};
-    people.sort((a,b)=>(order[a.role]-order[b.role])||a.name.localeCompare(b.name));
+    if (loc==='OFFICE') people.sort((a,b)=>(order[a.role]-order[b.role])||a.name.localeCompare(b.name));
+    else people.sort((a,b)=>(empGradeNum(b)-empGradeNum(a))||a.name.localeCompare(b.name)); // 店舗は実Grade降順
     ng.innerHTML = storeLoginBtn + people.map(p=>{
-      var roleLabel = roleLabelI18n(p.role);
+      var roleLabel = (loc==='OFFICE') ? roleLabelI18n(p.role) : (empGrade(p) || roleLabelI18n(p.role)); // 店舗は実Grade（肩書優先）
       return `<div class="store-btn" style="text-align:left" onclick="loginPickPerson('${p.id}',this)">
         <div style="font-size:13px;font-weight:600">${p.name}</div>
         <div style="font-size:10px;color:var(--muted)">${roleLabel}${p.title?' · '+p.title:''}</div></div>`;
@@ -15056,7 +15057,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '487';
+const APP_VERSION = '488';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -24653,7 +24654,7 @@ function empGrade(e){
   var g=gradeOf(e&&e.title);
   if(g) return g;
   var r=e&&e.role;
-  if(r==='gm') return 'G6'; if(r==='am') return 'G5'; if(r==='sl') return 'G3';
+  if(r==='gm') return 'G6'; if(r==='am') return 'G5'; if(r==='g4') return 'G4'; if(r==='sl') return 'G3'; if(r==='g2') return 'G2';
   if(r==='crew'||r==='office_crew') return 'G1';
   return '';
 }
