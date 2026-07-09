@@ -3520,12 +3520,17 @@ function isStoreManager() {
   return false;
 }
 /* 給与を「何らかのスタッフに」見られる役職か（給与表・列の表示可否） */
+/* 給与情報のグローバル表示スイッチ（GM設定でON/OFF・全社同期・既定ON） */
+function salaryDisplayOn(){ return ls('salary_display', true)!==false; }
+function setSalaryDisplay(on){ lsSet('salary_display', !!on); if(typeof showToast==='function') showToast(on?'給与情報を表示に戻しました':'給与情報を全員に非表示にしました（全社）','success'); if(typeof renderPage==='function') renderPage('settings'); }
 function canViewWages() {
+  if (!salaryDisplayOn()) return false; // グローバル非表示（PIN確認までの安全策）
   if ((ROLE_CONFIG[curRole]||{}).noWage) return false; // 事務Crew等は給与一切不可
   return curRole==='ceo' || curRole==='gm' || curRole==='office' || curRole==='am' || isStoreManager();
 }
 /* 個人の給与額を表示できる役職（機密情報担当=CEO/GM/経理のみ）。AM/SMは合計は見えるが個人額は不可。 */
 function canViewIndividualWage() {
+  if (!salaryDisplayOn()) return false;
   if ((ROLE_CONFIG[curRole]||{}).noWage) return false;
   return curRole==='ceo' || curRole==='gm' || curRole==='office';
 }
@@ -3545,6 +3550,7 @@ function wageScopeStores() {
 /* 特定スタッフの給与を見られるか */
 function canViewWageOf(emp) {
   if (!emp) return false;
+  if (!salaryDisplayOn()) return false; // グローバル非表示（本人分も隠す）
   /* 本人の給与予定は本人が見られる（noWage役職を除く） */
   if (emp.name===curUserName && !((ROLE_CONFIG[curRole]||{}).noWage)) return true;
   /* 他人の個人給与額は 機密情報担当(CEO/GM/経理)のみ */
@@ -3967,7 +3973,7 @@ var SUPA_MASTER_MAP = {
 var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
-  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map'];
+  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
@@ -14994,7 +15000,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '474';
+const APP_VERSION = '476';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -29360,6 +29366,14 @@ function renderSettings() {
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">既存オンボのSSN・身分証・個人情報を、匿名キーから触れない保護領域へ移します（最初に1回だけ）。</div>
     <button class="btn btn-primary btn-sm" onclick="runObMigrate()"><i class="ti ti-database-export"></i> 保護領域へ移行する</button>
   </div>`:''}
+  ${(curRole==='gm'||curRole==='ceo')?`<div class="card"><div class="card-title"><i class="ti ti-eye-off" style="color:var(--accent)"></i> 給与情報の表示</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">全スタッフにログインを解放する期間など、PIN設定が確認できるまで給与情報を<b>全員に一時非表示</b>にできます（他人のアカウントに誤ってログインしても給与が見えないようにする安全策）。</div>
+    <label style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;cursor:pointer">
+      <div><div style="font-weight:600;font-size:13px">給与情報を表示する</div><div style="font-size:11px;color:var(--muted)">OFF＝本人分も含め全員に非表示（全社同期）</div></div>
+      <input type="checkbox" ${salaryDisplayOn()?'checked':''} onchange="setSalaryDisplay(this.checked)" style="width:22px;height:22px;flex:0 0 auto">
+    </label>
+    ${!salaryDisplayOn()?'<div style="font-size:11.5px;color:var(--yellow);font-weight:700"><i class="ti ti-alert-triangle"></i> 現在オフ：給与情報は全員に非表示です</div>':''}
+  </div>` : ''}
   <div class="card"><div class="card-title"><i class="ti ti-device-mobile-vibration" style="color:var(--accent)"></i>触感・アプリ</div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
       <div><div style="font-weight:600;font-size:13px">バイブレーション（触感フィードバック）</div>
@@ -31086,7 +31100,12 @@ async function runInvoiceOCR(file){
     renderOCRResult();
     if(!lines.length) showToast('品目を読み取れませんでした。手入力で追加してください','warning');
   }catch(e){
-    if(el) el.innerHTML='<div class="alert alert-warning" style="margin-bottom:8px"><i class="ti ti-alert-triangle"></i> AI読取に失敗しました（Edge Function未設定の可能性）。手入力で品目を追加してください。</div>';
+    var _msg=(e&&e.message)?String(e.message):'不明なエラー';
+    var _hint = /HTTP 404/.test(_msg) ? 'invoice_ocr Edge Function が未デプロイの可能性（Supabaseにデプロイ／JWT OFF）'
+      : /HTTP 401|HTTP 403/.test(_msg) ? '認証エラー（Edge FunctionのJWTをOFFに）'
+      : /HTTP 5\d\d/.test(_msg) ? 'サーバー側エラー（APIキー未設定などEdge Function設定を確認）'
+      : 'ネットワーク、またはEdge Function設定を確認（カメラ側の問題ではありません）';
+    if(el) el.innerHTML='<div class="alert alert-warning" style="margin-bottom:8px;line-height:1.7"><i class="ti ti-alert-triangle"></i> <b>AI読取に失敗しました</b><br><span style="font-size:12px">'+escapeHtml(_hint)+'<br>詳細: '+escapeHtml(_msg)+'</span><div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="addManualInvoiceLine()"><i class="ti ti-pencil"></i> 手入力で品目追加</button></div></div>';
     console.warn('invoice OCR', e);
   }
 }
