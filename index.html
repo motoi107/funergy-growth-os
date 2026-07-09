@@ -134,25 +134,28 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .topbar-logo { font-weight: 800; font-size: 15px; letter-spacing: -.3px; }
 .topbar-logo span { color: var(--accent); }
 .topbar-store {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 600;
+  background: var(--accent-soft, #fceee4);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 5px 11px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent);
   cursor: pointer;
   display: flex; align-items: center; gap: 5px;
+  white-space: nowrap; max-width: 46vw; overflow: hidden; text-overflow: ellipsis;
 }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .topbar-role-badge {
+  display: flex; align-items: center; gap: 6px;
   background: var(--surface2);
   border: 1px solid var(--border);
   border-radius: 20px;
-  padding: 3px 10px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
+  padding: 2px 6px 2px 4px;
+  max-width: 200px;
 }
+.topbar-role-badge .tb-role { font-size:10px; font-weight:800; color:#fff; background:var(--accent); border-radius:12px; padding:2px 9px; white-space:nowrap; max-width:120px; overflow:hidden; text-overflow:ellipsis; }
+.topbar-role-badge .tb-name { font-size:11px; font-weight:600; color:var(--tm); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:96px; }
 .logout-btn {
   background: none;
   border: 1px solid var(--border);
@@ -2736,7 +2739,7 @@ const PERM_LEVELS = [
   {id:'crew',    label:'クルー'},
 ];
 /* 権限ロール → 権限レベル（自動対応）。役職と権限を統合管理。 */
-const ROLE_TO_PERM = { ceo:'full', gm:'full', office:'finance', am:'manager', sl:'leader', office_crew:'office_crew', crew:'crew' };
+const ROLE_TO_PERM = { ceo:'full', gm:'full', office:'finance', am:'manager', g4:'manager', sl:'leader', g2:'leader', office_crew:'office_crew', crew:'crew' };
 function permFromRole(role){ return ROLE_TO_PERM[role] || 'crew'; }
 
 /* マスター取得ヘルパー */
@@ -5565,7 +5568,15 @@ function initApp() {
   // Topbar
   var storeName = curStore === 'ALL' ? '全店舗' : (STORES.find(s=>s.id===curStore)||{name:curStore}).name;
   document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
-  document.getElementById('topbar-role').textContent = rc.label + ' / ' + (curUserName || rc.name);
+  (function(){
+    var _hr = (typeof curRealRole!=='undefined' && curRealRole) ? curRealRole : curRole;
+    var _hlabel = ((typeof ROLE_CONFIG!=='undefined' && ROLE_CONFIG[_hr]) ? ROLE_CONFIG[_hr].label : rc.label);
+    var _hme = (typeof getEmployees==='function') ? getEmployees().find(function(x){ return x.name===(curUserName||rc.name); }) : null;
+    var _hdisp = (_hme && _hme.title) ? _hme.title : _hlabel; // 肩書があれば肩書、無ければグレード表記
+    var _hname = curUserName || rc.name;
+    var _hb = document.getElementById('topbar-role');
+    if(_hb) _hb.innerHTML = '<span class="tb-role">'+escapeHtml(_hdisp)+'</span><span class="tb-name">'+escapeHtml(_hname)+'</span>';
+  })();
   var _sb = document.getElementById('topbar-sync'); if (_sb) _sb.style.display = ''; // 全ロールに「最新に更新」を常設
 
   // Nav
@@ -15045,7 +15056,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '486';
+const APP_VERSION = '487';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
