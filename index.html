@@ -3560,15 +3560,16 @@ function isStoreManager() {
 /* 給与を「何らかのスタッフに」見られる役職か（給与表・列の表示可否） */
 /* 給与情報のグローバル表示スイッチ（GM設定でON/OFF・全社同期・既定ON） */
 function salaryDisplayOn(){ return ls('salary_display', true)!==false; }
+function salaryVisibleToMe(){ return salaryDisplayOn() || curRole==='gm' || curRole==='ceo'; } // GM/CEOは常に閲覧可
 function setSalaryDisplay(on){ lsSet('salary_display', !!on); if(typeof showToast==='function') showToast(on?'給与情報を表示に戻しました':'給与情報を全員に非表示にしました（全社）','success'); if(typeof renderPage==='function') renderPage('settings'); }
 function canViewWages() {
-  if (!salaryDisplayOn()) return false; // グローバル非表示（PIN確認までの安全策）
+  if (!salaryVisibleToMe()) return false; // グローバル非表示（PIN確認までの安全策）
   if ((ROLE_CONFIG[curRole]||{}).noWage) return false; // 事務Crew等は給与一切不可
   return curRole==='ceo' || curRole==='gm' || curRole==='office' || curRole==='am' || isStoreManager();
 }
 /* 個人の給与額を表示できる役職（機密情報担当=CEO/GM/経理のみ）。AM/SMは合計は見えるが個人額は不可。 */
 function canViewIndividualWage() {
-  if (!salaryDisplayOn()) return false;
+  if (!salaryVisibleToMe()) return false;
   if ((ROLE_CONFIG[curRole]||{}).noWage) return false;
   return curRole==='ceo' || curRole==='gm' || curRole==='office';
 }
@@ -3588,7 +3589,7 @@ function wageScopeStores() {
 /* 特定スタッフの給与を見られるか */
 function canViewWageOf(emp) {
   if (!emp) return false;
-  if (!salaryDisplayOn()) return false; // グローバル非表示（本人分も隠す）
+  if (!salaryVisibleToMe()) return false; // グローバル非表示（本人分も隠す）
   /* 本人の給与予定は本人が見られる（noWage役職を除く） */
   if (emp.name===curUserName && !((ROLE_CONFIG[curRole]||{}).noWage)) return true;
   /* 他人の個人給与額は 機密情報担当(CEO/GM/経理)のみ */
@@ -15067,7 +15068,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '489';
+const APP_VERSION = '490';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -15255,6 +15256,7 @@ function setTitleWageTable(tbl) { lsSet('m_titlewage', tbl); }
 /* 従業員の実効給与（個別上書き > 役職デフォルト） */
 function empPayType(e){
   if (e && e.payTypeOverride) return e.payTypeOverride; // 個別上書き（例: 事務Crewは時給）
+  if (e && e.monthlySalary!=null && e.monthlySalary!=='' && parseFloat(e.monthlySalary)>0) return 'monthly'; // 月給額が設定されていれば月給者（固定給を人件費に反映）
   return isMonthlyTitle(e.title) ? 'monthly' : 'hourly';
 }
 function empWageOf(e) {
@@ -29318,7 +29320,7 @@ function renderMypage() {
   var tipEst = estimateMyTip(storeId, myTipName);
   // ▼ スキルレベル（レーダーチャート）を給与の直前に配置
   html += _skillRadarHtml;
-  if (salaryDisplayOn()) html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}<span style="font-size:12px;font-weight:700;color:var(--yellow);background:var(--surface2);border:1px solid var(--yellow);border-radius:6px;padding:2px 9px;margin-left:8px">${t('未確定','Estimate')}</span><span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${cycLabel}</span></div>
+  if (salaryVisibleToMe()) html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}<span style="font-size:12px;font-weight:700;color:var(--yellow);background:var(--surface2);border:1px solid var(--yellow);border-radius:6px;padding:2px 9px;margin-left:8px">${t('未確定','Estimate')}</span><span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${cycLabel}</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${cycSub}${ch.days?' · '+(curLang==='en'?(ch.days+' days'):(ch.days+'日')):''}${mixNote}</div>
     <div class="kpi-grid">
       ${kpi(t('期間勤務','Cycle hours'), fmtH(cycHours)+'h', t('実勤怠+予定','Actual+Sched'), 'var(--tm)')}
@@ -29333,7 +29335,7 @@ function renderMypage() {
     ${tipEst.total>0?`<button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="showMyTipDetail('${storeId}','${myTipName.replace(/'/g,"")}')"><i class="ti ti-list-details"></i> ${t('チップ内訳（シフト毎）を見る','View tip breakdown by shift')}</button>`:''}
     <p style="font-size:11px;color:var(--muted);margin-top:8px">${t('※ 見込み（確定給与ではありません）。実勤怠(Toast)を優先し、未記録日は公開シフトで補完。残業は週40h超で計算。','* Estimate only (not final pay). Uses actual Toast hours; un-recorded days filled with published shifts. OT above 40h/week.')}</p>
   </div>`;
-  if (!salaryDisplayOn()) html += `<div class="card"><div class="card-title"><i class="ti ti-eye-off"></i>${t('給与予定','Estimated Pay')}</div><p style="font-size:12px;color:var(--muted);margin:2px 0">${t('給与情報は現在、管理者により非表示に設定されています。','Salary information is currently hidden by the administrator.')}</p></div>`;
+  if (!salaryVisibleToMe()) html += `<div class="card"><div class="card-title"><i class="ti ti-eye-off"></i>${t('給与予定','Estimated Pay')}</div><p style="font-size:12px;color:var(--muted);margin:2px 0">${t('給与情報は現在、管理者により非表示に設定されています。','Salary information is currently hidden by the administrator.')}</p></div>`;
 
   // 8. 勤怠記録（自分のToast打刻・今月）※上部に配置するため変数化
   var _attCard = `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-4"></i>${t('今月の勤怠記録',"This Month's Attendance")}</div>`;
