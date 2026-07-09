@@ -13134,11 +13134,24 @@ function exportTipPeriodCsv(){
   downloadCSV(rows, `Tip配分_${(store.name||storeId)}_${info.from}_${info.to}.csv`);
   showToast('配分表（①〜④＋各スタッフ／セント単位）をCSV出力しました','success');
 }
+function tipMatrixToggleExcl(storeId, date, name, slot){ toggleTipExclude(storeId, date, name, slot); if(typeof renderPage==='function') renderPage('tip'); }
+/* 配分表のセル1つ（タップでTip対象外の切替） */
+function tipCellHtml(storeId, date, name, slot, r, bl){
+  var hrs = r ? (Number(r[slot+'Hours'])||0) : 0;
+  var amt = r ? (Number(r[slot])||0) : 0;
+  var excl = r ? !!r[slot+'Excl'] : false;
+  var safe = String(name).replace(/'/g,"\\'");
+  if (hrs<=0 && amt<=0 && !excl) return '<td style="text-align:right;'+bl+'"></td>'; // シフトなし
+  var inner;
+  if (excl) inner = '<span style="color:var(--red);text-decoration:line-through;font-size:10px">'+(hrs?hrs.toFixed(1)+'h':'—')+'</span><span style="font-size:8px;color:var(--red);margin-left:2px">除外</span>';
+  else inner = amt? amt.toFixed(2) : (hrs? '<span style="color:var(--muted);font-size:10px">'+hrs.toFixed(1)+'h</span>' : '');
+  return '<td style="text-align:right;'+bl+';cursor:pointer" onclick="tipMatrixToggleExcl(\''+storeId+'\',\''+date+'\',\''+safe+'\',\''+slot+'\')" title="'+(excl?'除外中（タップで戻す）':'タップでこのシフトをTip対象外にする')+'">'+inner+'</td>';
+}
 /* 配分表（常設）: ペイロール期間の日次ランチ/ディナー配分マトリクス（行=従業員・列=各日L/D） */
 function renderTipPeriodMatrix(storeId, store, info){
   var M = tipPeriodMatrix(storeId, info);
   var md = function(d){ return d.slice(5).replace('-','/'); };
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-table"></i>配分表（日次 L/D）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div>`;
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-table"></i>配分表（日次 L/D）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px"><i class="ti ti-hand-finger"></i> 各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。</div>`;
   if (!M.names.length){
     html += `<div style="text-align:center;color:var(--muted);padding:18px">この期間の配分データがありません。「日別」で各日のTip・勤怠を確認してください。</div></div>`;
     return html;
@@ -13174,7 +13187,7 @@ function renderTipPeriodMatrix(storeId, store, info){
     M.dists.forEach(function(x){
       var r=(x.dist.list||[]).find(function(z){return z.name===nm;});
       var l=r?(r.lunch||0):0, dd=r?(r.dinner||0):0; ptot+=l+dd;
-      cells+=`<td style="text-align:right;${bl}">${l?l.toFixed(2):''}</td><td style="text-align:right">${dd?dd.toFixed(2):''}</td>`;
+      cells+=tipCellHtml(storeId, x.date, nm, 'lunch', r, bl)+tipCellHtml(storeId, x.date, nm, 'dinner', r, '');
     });
     html+=`<tr><td style="${stick};font-size:11px">${nm}</td>${cells}<td style="text-align:right;font-weight:700;color:var(--green)">$${ptot.toFixed(2)}</td></tr>`;
   });
@@ -15000,7 +15013,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '478';
+const APP_VERSION = '479';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
