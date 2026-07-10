@@ -1753,7 +1753,7 @@ function renderRoleHideConfig(){
     html+='<div class="card"><div class="card-title"><i class="ti ti-eye-off" style="color:var(--accent)"></i> '+subL+' の非表示ページ（'+baseL+'の画面から選択）</div>';
     html+='<div style="font-size:11px;color:var(--muted);margin-bottom:4px">チェックした画面は '+subL+' には表示されません（'+baseL+'は全て表示）。<span style="color:var(--yellow)">'+hide.length+'件 非表示中</span></div>';
     ids.forEach(function(pid){ var it=(typeof NAV_ITEMS!=='undefined')?NAV_ITEMS.find(function(x){return x.id===pid;}):null; if(!it) return; var on=hide.indexOf(pid)>=0;
-      html+='<label style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-top:1px solid var(--border);cursor:pointer"><span style="font-size:12.5px'+(on?';color:var(--muted);text-decoration:line-through':'')+'"><i class="ti '+it.icon+'" style="font-size:12px;margin-right:5px"></i>'+escapeHtml(it.label)+'</span><input type="checkbox" '+(on?'checked':'')+' onchange="togglePageHide(\''+sub+'\',\''+pid+'\')" style="width:18px;height:18px;flex:0 0 auto"></label>';
+      html+='<label style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-top:1px solid var(--border);cursor:pointer"><span style="font-size:12.5px'+(on?';color:var(--muted);text-decoration:line-through':'')+'"><i class="ti '+it.icon+'" style="font-size:12px;margin-right:5px"></i>'+escapeHtml(navLabelEn(it.label))+'</span><input type="checkbox" '+(on?'checked':'')+' onchange="togglePageHide(\''+sub+'\',\''+pid+'\')" style="width:18px;height:18px;flex:0 0 auto"></label>';
     });
     html+='</div>';
   });
@@ -3878,6 +3878,26 @@ function t(ja, en) {
   return curLang==='en' ? (en!=null?en:ja) : ja;
 }
 function langDateLocale() { return curLang==='en' ? 'en-US' : 'ja'; }
+/* ===== ナビ（グループ/タブ）ラベルの英語出し分け辞書。表示専用。IDやデータ値は不変。 ===== */
+var NAV_LABEL_EN = {
+  'ダッシュボード':'Dashboard','店舗オペレーション':'Store Operations','予実管理':'Budget vs Actual',
+  '原価率(FC)':'Food Cost (FC)','メニュー':'Menu','原価登録':'Recipe Costing','Invoice管理':'Invoice Mgmt',
+  '経理レビュー':'Accounting Review','Office管理':'Office Admin','出力センター':'Export Center',
+  '棚卸し':'Inventory','発注':'Ordering','備品発注':'Supply Orders','ワークセンター':'Work Center',
+  '業務ガイド':'Ops Guide','必須チェック':'Required Checks','目標':'Goals','人件費・勤怠':'Labor & Attendance',
+  'チップ管理':'Tip Mgmt','勤怠データ':'Attendance Data','シフト作成':'Shift Builder','マイシフト':'My Shift',
+  '休暇申請':'Vacation Request','ガソリン代':'Mileage','事前経費申請':'Expense Request','HR・福利厚生':'HR & Benefits',
+  '採用・オンボーディング':'Hiring & Onboarding','従業員マスター':'Employee Master','食材マスター':'Ingredient Master',
+  '食材移動':'Ingredient Transfer','業者マスター':'Vendor Master','スキルレベル':'Skill Level','チップ率':'Tip Rate',
+  'OJTマップ':'OJT Map','お悩み相談室':'Support Room','成長管理':'Growth Mgmt','OJT管理':'OJT Admin',
+  '承認センター':'Approval Center','エラーセンター':'Error Center','通知':'Notifications','マイページ':'My Page',
+  '店舗マスター':'Store Master','KPI管理':'KPI Mgmt','経理出力':'Accounting Export','会社メッセージ':'Company Message',
+  'アナウンス':'Announcements','設定':'Settings',
+  '予実':'Budget','人材管理':'People','育成・評価':'Development','食材管理':'Ingredients',
+  '本部':'HQ','経理':'Accounting','店舗管理':'Store Mgmt','シフト':'Shift','スキル':'Skills','チップ':'Tips',
+  '休暇承認':'Vacation Approval'
+};
+function navLabelEn(l){ return (curLang==='en' && NAV_LABEL_EN[l]!=null) ? NAV_LABEL_EN[l] : l; }
 /* 従業員マスターを閲覧・編集できる個人（役職ではなく個人名・名で判定） */
 var MASTER_ADMINS = ['Moto Kubota','Tac Tsutsumi','Marcia Kodama'];
 function canAccessStaffMaster() {
@@ -3968,7 +3988,11 @@ function ls(key, def) {
 }
 var _lsQuotaWarned=false;
 /* ===== 端末保存容量（localStorage）管理：メーター・整理・自動整理 ===== */
-var _LS_PRUNABLE = ['daily_actuals_','menu_mix_','labor_hours_','cash_tips_','dailyops_','orders_','purchases_','fc_monthly_','att_day_approve_','att_approve_','office_attend_','tip_exclude_','warnings_','shiftopt_','spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','reminded_','inv_'];
+/* v500: 予実・財務・KPIの元データ（daily_actuals_/menu_mix_/labor_hours_/fc_monthly_）は
+   キャッシュ整理・自動整理の対象から除外。削除すると予実/財務が0表示になり、
+   getDailyActuals 等が描画時に即pullしないため。これらはクラウド(app_state)保持のため、
+   再ログイン(自動同期)または設定＞クラウドから取り込むで復元される。 */
+var _LS_PRUNABLE = ['cash_tips_','dailyops_','orders_','purchases_','att_day_approve_','att_approve_','office_attend_','tip_exclude_','warnings_','shiftopt_','spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','reminded_','inv_'];
 function lsBytesTotal(){ var tt=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; } }catch(e){} return tt; }
 function lsIsPrunable(k){ return _LS_PRUNABLE.some(function(pf){ return k.indexOf(pf)===0; }); }
 function lsPrunableInfo(){ var tt=0,n=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)){ var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; n++; } } }catch(e){} return {bytes:tt,count:n}; }
@@ -5650,7 +5674,7 @@ function buildNav() {
   var nav = document.getElementById('nav-bar');
   nav.innerHTML = groups.map(function(g){
     var gc=_groupColor(g.id);
-    return '<button class="nav-btn '+(g.id===curGroup?'active':'')+'" style="--gc:'+gc+'" onclick="goGroup(\''+g.id+'\')"><i class="ti '+g.icon+'" style="color:'+gc+'"></i>'+g.label+'</button>';
+    return '<button class="nav-btn '+(g.id===curGroup?'active':'')+'" style="--gc:'+gc+'" onclick="goGroup(\''+g.id+'\')"><i class="ti '+g.icon+'" style="color:'+gc+'"></i>'+navLabelEn(g.label)+'</button>';
   }).join('');
   // サブメニュー
   var sub = document.getElementById('subnav-bar');
@@ -5669,7 +5693,7 @@ function buildNav() {
       var item = navItemById(pid);
       var badgeN = (pid==='approval') ? pendingApprovals : (pid==='vacation' ? pendingVacNav : (pid==='acct_review' ? pendingAcctReview : (pid==='invoice' ? myRejected : (pid==='supply_order' ? pendingSupply : 0))));
       var badge = badgeN ? `<span style="background:var(--red);color:#fff;border-radius:9px;font-size:9px;padding:0 5px;margin-left:4px">${badgeN}</span>` : '';
-      return `<button class="subnav-chip ${pid===curPage?'active':''}" onclick="go('${pid}')"><i class="ti ${item.icon}"></i>${item.label}${badge}</button>`;
+      return `<button class="subnav-chip ${pid===curPage?'active':''}" onclick="go('${pid}')"><i class="ti ${item.icon}"></i>${navLabelEn(item.label)}${badge}</button>`;
     }).join('');
   } else { sub.innerHTML = ''; }
 }
@@ -6159,10 +6183,10 @@ function renderDashboard() {
     var fcAggDisp = wFC>0 ? wFC+'%' : '—';
     var lAggDisp  = wL>0 ? wL+'%' : '—';
     html += `<div class="card">
-      <div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${t('前日まで','through yesterday')}</span></div>
+      <div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>${t('店舗別状況','Store status')} <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${t('前日まで','through yesterday')}</span></div>
 `;
     if (stores.length >= 1) {
-      html += `<div class="acc-head${dashCollapsed('dash-stores')?'':' open'}" id="dash-stores-head" onclick="dashToggle('dash-stores')"><i class="ti ti-list"></i>店舗別 <span style="font-size:11px;color:var(--muted);font-weight:400">· ${stores.length}${t('店','stores')}</span><i class="ti ti-chevron-down acc-chev"></i></div>
+      html += `<div class="acc-head${dashCollapsed('dash-stores')?'':' open'}" id="dash-stores-head" onclick="dashToggle('dash-stores')"><i class="ti ti-list"></i>${t('店舗別','By store')} <span style="font-size:11px;color:var(--muted);font-weight:400">· ${stores.length}${t('店','stores')}</span><i class="ti ti-chevron-down acc-chev"></i></div>
         <div id="dash-stores" style="display:${dashCollapsed('dash-stores')?'none':''}">`;
       stores.forEach(s => {
         var color = statusColor(s.status);
@@ -6177,7 +6201,7 @@ function renderDashboard() {
             </div>
             <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
             <div style="display:flex;gap:16px;margin-top:7px;font-size:14px;flex-wrap:wrap">
-              <span><span style="font-size:10px;color:var(--muted)">売上 </span><b>${fmtK(s.a)}</b><span style="font-size:11px;color:var(--muted)">/${fmtK(s.b)}</span></span>
+              <span><span style="font-size:10px;color:var(--muted)">${t('売上','Sales')} </span><b>${fmtK(s.a)}</b><span style="font-size:11px;color:var(--muted)">/${fmtK(s.b)}</span></span>
               <span><span style="font-size:10px;color:var(--muted)">FC </span><b style="color:${sFc}">${s.fc>0?s.fc+'%':'—'}</b></span>
               <span><span style="font-size:10px;color:var(--muted)">Labor </span><b style="color:${sL}">${s.labor>0?s.labor+'%':'—'}</b></span>
             </div>
@@ -6226,7 +6250,7 @@ function renderDashboard() {
         <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:${col}">${score}</div></div>
       <div style="flex:1;min-width:0">
         <div style="font-weight:700;font-size:14px;color:var(--tm)"><span class="store-dot" style="background:${store.color}"></span>${store.name} <span class="tag" style="font-size:9px;background:${fm.color}1a;color:${fm.color}">${fm.name}</span></div>
-        <div style="font-size:11px;color:${col};font-weight:600">${hl.label}<span style="color:var(--muted);font-weight:400"> · ${ach.total>0?'達成 '+ach.met+'/'+ach.total:'実績待ち'}</span></div>
+        <div style="font-size:11px;color:${col};font-weight:600">${hl.label}<span style="color:var(--muted);font-weight:400"> · ${ach.total>0?t('達成 ','Met ')+ach.met+'/'+ach.total:t('実績待ち','Awaiting')}</span></div>
       </div>
       <div style="text-align:right;flex-shrink:0">
         <div style="font-size:11px;color:${delta>=0?'var(--green)':'var(--red)'};font-weight:700">${delta>=0?'+':''}${delta}</div>
@@ -6241,19 +6265,19 @@ function renderDashboard() {
   var alerts = [];
   var pendingVac = getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
   var pendingOB = pendingOnboardOffice();
-  danger.forEach(s=>alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} 売上未達 ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`}));
-  laborOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} Labor超過 ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`}));
-  fcOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} Food Cost超過 ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`}));
-  reqAlerts.forEach(r=>alerts.push({lv:'danger', icon:'ti-checklist', text:`${r.store} 必須チェック未完 ${r.count}件`, act:`switchStore('${r.id}');openStoreCmd()`}));
-  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`期限切れタスク ${overdue.length}件`, act:`go('tasks')`});
-  if (approvalsAll.length) alerts.push({lv:'warn', icon:'ti-checkbox', text:`承認待ち ${approvalsAll.length}件`, act:`go('approval')`});
-  if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`休暇承認待ち ${pendingVac}件`, act:`go('vacation')`});
-  if (pendingOB) alerts.push({lv:'warn', icon:'ti-file-text', text:`採用書類の確認待ち ${pendingOB}件`, act:`goOnboarding()`});
+  danger.forEach(s=>alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} ${t('売上未達','Sales short')} ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`}));
+  laborOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} ${t('Labor超過','Labor over')} ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`}));
+  fcOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} ${t('Food Cost超過','Food cost over')} ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`}));
+  reqAlerts.forEach(r=>alerts.push({lv:'danger', icon:'ti-checklist', text:`${r.store} ${t('必須チェック未完','Required incomplete')} ${r.count}${t('件','')}`, act:`switchStore('${r.id}');openStoreCmd()`}));
+  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`${t('期限切れタスク','Overdue tasks')} ${overdue.length}${t('件','')}`, act:`go('tasks')`});
+  if (approvalsAll.length) alerts.push({lv:'warn', icon:'ti-checkbox', text:`${t('承認待ち','Pending approvals')} ${approvalsAll.length}${t('件','')}`, act:`go('approval')`});
+  if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`${t('休暇承認待ち','Vacation approvals')} ${pendingVac}${t('件','')}`, act:`go('vacation')`});
+  if (pendingOB) alerts.push({lv:'warn', icon:'ti-file-text', text:`${t('採用書類の確認待ち','Hiring docs to review')} ${pendingOB}${t('件','')}`, act:`goOnboarding()`});
   var _inact = (['ceo','gm','am','office'].indexOf(curRole)>=0)?(function(){var l=inactiveStaff(window._inactiveDays||30);if(curRole==='am'){var ms=myAmStores();l=l.filter(function(x){return ms.indexOf(x.emp.store)>=0||(x.emp.support||[]).some(function(s){return ms.indexOf(s)>=0;});});}return l.length;})():0;
-  if (_inact) alerts.push({lv:'warn', icon:'ti-user-off', text:`非アクティブの疑い ${_inact}名`, act:`go('staff_master')`});
+  if (_inact) alerts.push({lv:'warn', icon:'ti-user-off', text:`${t('非アクティブの疑い','Possibly inactive')} ${_inact}${t('名','')}`, act:`go('staff_master')`});
   var _unreg = (['ceo','gm','am','office'].indexOf(curRole)>=0)?(function(){var l=unregisteredClockIns(window._unregDays||30);if(curRole==='am'){var ms=myAmStores();l=l.filter(function(x){return x.stores.some(function(s){return ms.indexOf(s)>=0;});});}return l.length;})():0;
-  if (_unreg) alerts.push({lv:'warn', icon:'ti-user-question', text:`未登録の打刻 ${_unreg}名`, act:`go('staff_master')`});
-  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
+  if (_unreg) alerts.push({lv:'warn', icon:'ti-user-question', text:`${t('未登録の打刻','Unregistered clock-ins')} ${_unreg}${t('名','')}`, act:`go('staff_master')`});
+  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`${t('本日期限タスク','Tasks due today')} ${todayTasks.length}${t('件','')}`, act:`go('tasks')`});
 
   html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}">
     <div class="card-title"><i class="ti ti-bell" style="color:var(--accent)"></i>${t('優先アクション','Priority Actions')}</div>`;
@@ -6272,16 +6296,16 @@ function renderDashboard() {
   html += `</div>`;
 
   // ====== ④ 本日のタスク（隠さない） ======
-  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>本日のタスク`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>${t('本日のタスク',"Today's tasks")}`;
   var openCount = myTasks.length + approvalsAll.length + pendingVac + pendingOB + reqAlerts.reduce((a,r)=>a+r.count,0);
-  html += ` <span class="tag ${openCount?'tag-yellow':'tag-green'}" style="margin-left:auto">${openCount}件</span></div>`;
+  html += ` <span class="tag ${openCount?'tag-yellow':'tag-green'}" style="margin-left:auto">${openCount}${t('件','')}</span></div>`;
   var taskRows = [];
-  overdue.slice(0,5).forEach(t=>taskRows.push({s:'danger', t:t.title, sub:'期限切れ', act:`go('tasks')`}));
-  todayTasks.slice(0,5).forEach(t=>taskRows.push({s:'warn', t:t.title, sub:'本日期限', act:`go('tasks')`}));
-  if (approvalsAll.length) taskRows.push({s:'active', t:`承認待ち ${approvalsAll.length}件`, sub:'承認センター', act:`go('approval')`});
-  if (pendingVac) taskRows.push({s:'active', t:`休暇承認待ち ${pendingVac}件`, sub:'休暇申請', act:`go('vacation')`});
-  if (pendingOB) taskRows.push({s:'active', t:`採用書類の確認待ち ${pendingOB}件`, sub:'オンボーディング', act:`goOnboarding()`});
-  reqAlerts.forEach(r=>taskRows.push({s:'danger', t:`${r.store} 必須チェック`, sub:`${r.count}件未完`, act:`switchStore('${r.id}');openStoreCmd()`}));
+  overdue.slice(0,5).forEach(t=>taskRows.push({s:'danger', t:t.title, sub:(curLang==='en'?'Overdue':'期限切れ'), act:`go('tasks')`}));
+  todayTasks.slice(0,5).forEach(t=>taskRows.push({s:'warn', t:t.title, sub:(curLang==='en'?'Due today':'本日期限'), act:`go('tasks')`}));
+  if (approvalsAll.length) taskRows.push({s:'active', t:`${t('承認待ち','Pending approvals')} ${approvalsAll.length}${t('件','')}`, sub:t('承認センター','Approval Center'), act:`go('approval')`});
+  if (pendingVac) taskRows.push({s:'active', t:`${t('休暇承認待ち','Vacation approvals')} ${pendingVac}${t('件','')}`, sub:t('休暇申請','Vacation'), act:`go('vacation')`});
+  if (pendingOB) taskRows.push({s:'active', t:`${t('採用書類の確認待ち','Hiring docs to review')} ${pendingOB}${t('件','')}`, sub:t('オンボーディング','Onboarding'), act:`goOnboarding()`});
+  reqAlerts.forEach(r=>taskRows.push({s:'danger', t:`${r.store} ${t('必須チェック','Required check')}`, sub:`${r.count}${t('件未完',' incomplete')}`, act:`switchStore('${r.id}');openStoreCmd()`}));
   var otherTasks = myTasks.filter(t=>!overdue.includes(t)&&!todayTasks.includes(t));
   otherTasks.slice(0,4).forEach(tk=>taskRows.push({s:'idle', t:tk.title, sub:tk.due||t('期限なし','No due date'), act:`go('tasks')`}));
   if (!taskRows.length) {
@@ -6304,9 +6328,9 @@ function renderDashboard() {
 /* 店長(SL)向けの軽量ダッシュボード: Funergy Now のみ（Totoya店長は3店舗）。 */
 function renderSlFunergyNow(){
   var totoya = isTotoyaStore(myStoreId());
-  var label = totoya ? 'Totoya 3店舗' : ((STORES.find(function(s){return s.id===myStoreId();})||{}).name||'自店');
+  var label = totoya ? ('Totoya '+t('3店舗','(3 stores)')) : ((STORES.find(function(s){return s.id===myStoreId();})||{}).name||t('自店','My store'));
   var myStores = funergyNowStores();                       // Totoya店長=3店、それ以外=配属店
-  var html = `<div class="section-header"><div><div class="section-title">ダッシュボード</div><div class="section-sub">${label} · 本日</div></div></div>`;
+  var html = `<div class="section-header"><div><div class="section-title">${t('ダッシュボード','Dashboard')}</div><div class="section-sub">${label} · ${t('本日','Today')}</div></div></div>`;
   // Funergy Now
   html += `<div class="card" id="rt-sales-card">
     <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${label} · ${t('本日','Today')}</span></div>
@@ -6315,7 +6339,7 @@ function renderSlFunergyNow(){
 
   // 店舗別状況（全店合算なし。Totoyaは3店を店舗別で表示）
   var sdata = myStores.map(function(s){ return storeData(s.id); });
-  html += `<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別状況 <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${t('前日まで','through yesterday')}</span></div>`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>${t('店舗別状況','Store status')} <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">${t('前日まで','through yesterday')}</span></div>`;
   sdata.forEach(function(s){
     var color = statusColor(s.status);
     var sFc = s.fc>0 ? statusColor(statusFromCeil(s.fc,31,34)) : 'var(--muted)';
@@ -6326,7 +6350,7 @@ function renderSlFunergyNow(){
         <div style="display:flex;align-items:center;justify-content:space-between"><div class="store-name">${s.name}</div><span class="tag ${statusTag(s.status)}">${s.sp}%</span></div>
         <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
         <div style="display:flex;gap:16px;margin-top:7px;font-size:14px;flex-wrap:wrap">
-          <span><span style="font-size:10px;color:var(--muted)">売上 </span><b>${fmtK(s.a)}</b><span style="font-size:11px;color:var(--muted)">/${fmtK(s.b)}</span></span>
+          <span><span style="font-size:10px;color:var(--muted)">${t('売上','Sales')} </span><b>${fmtK(s.a)}</b><span style="font-size:11px;color:var(--muted)">/${fmtK(s.b)}</span></span>
           <span><span style="font-size:10px;color:var(--muted)">FC </span><b style="color:${sFc}">${s.fc>0?s.fc+'%':'—'}</b></span>
           <span><span style="font-size:10px;color:var(--muted)">Labor </span><b style="color:${sL}">${s.labor>0?s.labor+'%':'—'}</b></span>
         </div>
@@ -6341,18 +6365,18 @@ function renderSlFunergyNow(){
   var todayStr = todayISO();
   var alerts = [];
   sdata.forEach(function(s){
-    if (s.status==='danger') alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} 売上未達 ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`});
-    if (s.labor>32) alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} Labor超過 ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`});
-    if (s.fc>34) alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} Food Cost超過 ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`});
+    if (s.status==='danger') alerts.push({lv:'danger', icon:'ti-alert-triangle', text:`${s.name} ${t('売上未達','Sales short')} ${s.sp}%`, act:`switchStore('${s.id}');go('budget')`});
+    if (s.labor>32) alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} ${t('Labor超過','Labor over')} ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`});
+    if (s.fc>34) alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} ${t('Food Cost超過','Food cost over')} ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`});
   });
-  myStores.forEach(function(s){ var inc=getDailyOps(s.id).filter(function(t){return t.required&&!t.done;}); if(inc.length) alerts.push({lv:'danger', icon:'ti-checklist', text:`${s.name} 必須チェック未完 ${inc.length}件`, act:`switchStore('${s.id}');openStoreCmd()`}); });
+  myStores.forEach(function(s){ var inc=getDailyOps(s.id).filter(function(t){return t.required&&!t.done;}); if(inc.length) alerts.push({lv:'danger', icon:'ti-checklist', text:`${s.name} ${t('必須チェック未完','Required incomplete')} ${inc.length}${t('件','')}`, act:`switchStore('${s.id}');openStoreCmd()`}); });
   var myTasks = getTasks().filter(function(t){ return t.status!=='完了' && t.assignee===me; });
   var overdue = myTasks.filter(function(t){ return t.due && t.due<todayStr; });
   var todayTasks = myTasks.filter(function(t){ return t.due===todayStr; });
-  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`期限切れタスク ${overdue.length}件`, act:`go('tasks')`});
-  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`本日期限タスク ${todayTasks.length}件`, act:`go('tasks')`});
+  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`${t('期限切れタスク','Overdue tasks')} ${overdue.length}${t('件','')}`, act:`go('tasks')`});
+  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`${t('本日期限タスク','Tasks due today')} ${todayTasks.length}${t('件','')}`, act:`go('tasks')`});
   var pendingVac = getVacations().filter(function(v){ return v.status==='申請中' && canApproveVacation(v); }).length;
-  if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`休暇承認待ち ${pendingVac}件`, act:`go('vacation')`});
+  if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`${t('休暇承認待ち','Vacation approvals')} ${pendingVac}${t('件','')}`, act:`go('vacation')`});
   html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}"><div class="card-title"><i class="ti ti-bell" style="color:var(--accent)"></i>${t('優先アクション','Priority Actions')}</div>`;
   if (!alerts.length) {
     html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;color:var(--green)">${statusDot('good',10)}<span style="font-size:14px;font-weight:600">${t('全項目正常','All clear')}</span></div>`;
@@ -6367,10 +6391,10 @@ function renderSlFunergyNow(){
   var reqAlerts = [];
   myStores.forEach(function(s){ var inc=getDailyOps(s.id).filter(function(t){return t.required&&!t.done;}); if(inc.length) reqAlerts.push({store:s.name, id:s.id, count:inc.length}); });
   var taskRows = [];
-  overdue.slice(0,5).forEach(function(tk){ taskRows.push({s:'danger', t:tk.title, sub:'期限切れ', act:`go('tasks')`}); });
-  todayTasks.slice(0,5).forEach(function(tk){ taskRows.push({s:'warn', t:tk.title, sub:'本日期限', act:`go('tasks')`}); });
-  if (pendingVac) taskRows.push({s:'active', t:`休暇承認待ち ${pendingVac}件`, sub:'休暇申請', act:`go('vacation')`});
-  reqAlerts.forEach(function(r){ taskRows.push({s:'danger', t:`${r.store} 必須チェック`, sub:`${r.count}件未完`, act:`switchStore('${r.id}');openStoreCmd()`}); });
+  overdue.slice(0,5).forEach(function(tk){ taskRows.push({s:'danger', t:tk.title, sub:t('期限切れ','Overdue'), act:`go('tasks')`}); });
+  todayTasks.slice(0,5).forEach(function(tk){ taskRows.push({s:'warn', t:tk.title, sub:t('本日期限','Due today'), act:`go('tasks')`}); });
+  if (pendingVac) taskRows.push({s:'active', t:`${t('休暇承認待ち','Vacation approvals')} ${pendingVac}${t('件','')}`, sub:t('休暇申請','Vacation'), act:`go('vacation')`});
+  reqAlerts.forEach(function(r){ taskRows.push({s:'danger', t:`${r.store} ${t('必須チェック','Required check')}`, sub:`${r.count}${t('件未完',' incomplete')}`, act:`switchStore('${r.id}');openStoreCmd()`}); });
   var otherTasks = myTasks.filter(function(tk){ return overdue.indexOf(tk)<0 && todayTasks.indexOf(tk)<0; });
   otherTasks.slice(0,4).forEach(function(tk){ taskRows.push({s:'idle', t:tk.title, sub:tk.due||t('期限なし','No due date'), act:`go('tasks')`}); });
   var openCount = myTasks.length + pendingVac + reqAlerts.reduce(function(a,r){return a+r.count;},0);
@@ -6604,15 +6628,15 @@ function openPhaseModal(storeId, phase) {
       <div style="flex:1">
         <div style="font-size:15px;font-weight:${t.done?'400':'600'};color:${t.done?'var(--muted)':'var(--tm)'};text-decoration:${t.done?'line-through':'none'}">${t.text}</div>
         <div style="display:flex;gap:6px;margin-top:3px">
-          ${t.required?'<span class="tag tag-red" style="font-size:9px">必須</span>':''}
-          ${t.photo?'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)"><i class="ti ti-camera" style="font-size:10px"></i> 写真</span>':''}
-          ${t.done&&t.by?`<span style="font-size:10px;color:var(--muted)">完了: ${t.by}</span>`:''}
+          ${t.required?'<span class="tag tag-red" style="font-size:9px">'+(curLang==='en'?'Req':'必須')+'</span>':''}
+          ${t.photo?'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)"><i class="ti ti-camera" style="font-size:10px"></i> '+(curLang==='en'?'Photo':'写真')+'</span>':''}
+          ${t.done&&t.by?`<span style="font-size:10px;color:var(--muted)">${curLang==='en'?'Done':'完了'}: ${t.by}</span>`:''}
         </div>
       </div>
     </div>`;
   });
   html += `</div>`;
-  if (canEdit) html += `<button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="openDailyOpsAdd('${storeId}','${phase}')"><i class="ti ti-plus"></i> 項目を追加</button>`;
+  if (canEdit) html += `<button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="openDailyOpsAdd('${storeId}','${phase}')"><i class="ti ti-plus"></i> ${t('項目を追加','Add item')}</button>`;
   html += `<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" style="width:100%" onclick="closeModalDirect()">${t('閉じる','Close')}</button></div>`;
   openModal(html);
 }
@@ -6633,7 +6657,7 @@ function renderStoreOpsSettings() {
   STORE_OPS_SECTIONS.forEach(s=>{
     var on = s.always ? true : cfg[s.key]!==false;
     html += `<div style="display:flex;align-items:center;gap:10px;padding:12px 4px;border-bottom:1px solid var(--border)">
-      <div style="flex:1;font-size:14px;font-weight:500">${s.label}${s.always?' <span style="font-size:10px;color:var(--muted)">（常に表示）</span>':''}</div>
+      <div style="flex:1;font-size:14px;font-weight:500">${s.label}${s.always?' <span style="font-size:10px;color:var(--muted)">'+t('（常に表示）','(always shown)')+'</span>':''}</div>
       ${s.always?`<i class="ti ti-lock" style="color:var(--muted)"></i>`
         :`<div onclick="toggleStoreOpsSection('${s.key}')" style="width:46px;height:26px;border-radius:13px;background:${on?'var(--green)':'var(--border)'};position:relative;cursor:pointer;transition:.2s">
           <div style="width:20px;height:20px;border-radius:50%;background:#fff;position:absolute;top:3px;left:${on?'23px':'3px'};transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)"></div></div>`}
@@ -6650,7 +6674,7 @@ function renderStoreOpsSettings() {
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var tmpl = getDailyOpsTemplate(storeId);
   html += `<div class="section-header" style="margin-top:18px">
-    <div><div class="section-title" style="font-size:16px"><i class="ti ti-checklist" style="color:var(--accent)"></i> Daily Operations テンプレート</div>
+    <div><div class="section-title" style="font-size:16px"><i class="ti ti-checklist" style="color:var(--accent)"></i> Daily Operations ${t('テンプレート','Template')}</div>
     <div class="section-sub">${t('工程ごとに毎日使う項目を設定（翌日も残ります）','Set recurring items per phase')}</div></div>
   </div>`;
   // 店舗セレクタ（複数店舗の場合）
@@ -6667,12 +6691,12 @@ function renderStoreOpsSettings() {
     var pItems = tmpl.filter(x=>x.phase===phase);
     html += `<div class="card" style="border-left:3px solid ${meta.color}">
       <div class="card-title" style="margin-bottom:8px"><span style="width:30px;height:30px;border-radius:8px;background:${meta.color}1a;color:${meta.color};display:inline-flex;align-items:center;justify-content:center;margin-right:6px"><i class="ti ${meta.icon}" style="font-size:16px"></i></span>${phase}
-        <span style="margin-left:auto;font-size:11px;color:var(--muted)">${pItems.length}項目</span></div>`;
+        <span style="margin-left:auto;font-size:11px;color:var(--muted)">${pItems.length}${t('項目',' items')}</span></div>`;
     if (pItems.length) {
       pItems.forEach(it=>{
         html += `<div style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--border)">
           <div style="flex:1;font-size:13px">${it.text}
-            ${it.required?'<span class="tag tag-red" style="font-size:9px">必須</span>':''}
+            ${it.required?'<span class="tag tag-red" style="font-size:9px">'+t('必須','Req')+'</span>':''}
             ${it.photo?'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)"><i class="ti ti-camera" style="font-size:9px"></i></span>':''}</div>
           <button class="btn btn-secondary btn-sm" style="padding:4px 8px" onclick="openDailyOpsAdd('${storeId}','${phase}','${it.id}')"><i class="ti ti-edit"></i></button>
           <button class="btn btn-secondary btn-sm" style="padding:4px 8px" onclick="deleteDailyOpTemplate('${storeId}','${it.id}')"><i class="ti ti-trash"></i></button>
@@ -8347,16 +8371,16 @@ function bStoreChips(current, setter, opts){
 function renderBudget() {
   normalizeBudgetsDemo();
   var html = `<div class="section-header">
-    <div><div class="section-title">予実管理</div><div class="section-sub">対象月を選択（前月実績の確認・来月の予算設定）</div></div>
+    <div><div class="section-title">${t('予実管理','Budget vs Actual')}</div><div class="section-sub">${t('対象月を選択（前月実績の確認・来月の予算設定）',"Select a month (review last month, set next month's budget)")}</div></div>
     <select class="form-select" style="width:auto;min-width:150px;font-size:13px" onchange="setBudgetMonthSel(this.value)">${budgetMonthOptions()}</select>
   </div>
   <div class="phase-tabs">
-    <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">日次進捗</div>
-    <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">月次進捗</div>
-    <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">Qコミットビュー</div>
-    <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">年間計画</div>
-    <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">予算設定</div>
-    <div class="phase-tab${budgetTab==='minutes'?' active':''}" onclick="setBudgetTab('minutes')">議事録</div>
+    <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">${t('日次進捗','Daily')}</div>
+    <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">${t('月次進捗','Monthly')}</div>
+    <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
+    <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
+    <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
+    <div class="phase-tab${budgetTab==='minutes'?' active':''}" onclick="setBudgetTab('minutes')">${t('議事録','Minutes')}</div>
   </div>`;
   if (budgetTab==='monthly') budgetTab='summary'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
@@ -8564,30 +8588,30 @@ function renderAnnualPlan(){
     var qt=qData(q); yearSales+=qt.sales; yearGuests+=qt.guests;
     var m1=(q-1)*3+1, m3=(q-1)*3+3;
     var badge='';
-    if(!isAgg && stores[0]){ var c=getQBudget(stores[0].id,y,q); badge = (c&&c.status==='committed')?'<span class="tag tag-green" style="font-size:9px">コミット済</span>':'<span class="tag tag-gray" style="font-size:9px">未コミット</span>'; }
-    else { var cc=stores.filter(function(s){ var c=getQBudget(s.id,y,q); return c&&c.status==='committed'; }).length; if(cc) badge='<span class="tag tag-green" style="font-size:9px">'+cc+'/'+stores.length+' コミット</span>'; }
+    if(!isAgg && stores[0]){ var c=getQBudget(stores[0].id,y,q); badge = (c&&c.status==='committed')?'<span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'<span class="tag tag-gray" style="font-size:9px">'+t('未コミット','Not committed')+'</span>'; }
+    else { var cc=stores.filter(function(s){ var c=getQBudget(s.id,y,q); return c&&c.status==='committed'; }).length; if(cc) badge='<span class="tag tag-green" style="font-size:9px">'+cc+'/'+stores.length+' '+t('コミット','committed')+'</span>'; }
     var col=qColors[q];
     qhtml += '<div class="card" style="border-left:3px solid '+col+';padding:10px 12px;margin-bottom:8px">'
-      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font-size:15px;color:'+col+'">Q'+q+'</b><span style="font-size:11px;color:var(--muted)">'+m1+'〜'+m3+'月</span>'+badge
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font-size:15px;color:'+col+'">Q'+q+'</b><span style="font-size:11px;color:var(--muted)">'+m1+'〜'+m3+t('月','')+'</span>'+badge
       +'<span style="margin-left:auto;font-weight:800;font-size:15px">'+fmtUSD2(qt.sales)+'</span></div>';
     (qt.byMonth||[]).forEach(function(mb){
       var mm=+String(mb.ym).split('-')[1];
       qhtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border);cursor:pointer" onclick="planGoMonth(\''+mb.ym+'\')">'
-        +'<span style="font-size:12px;font-weight:600;width:38px;color:var(--muted)">'+mm+'月</span>'
+        +'<span style="font-size:12px;font-weight:600;width:38px;color:var(--muted)">'+mm+t('月','')+'</span>'
         +'<span style="flex:1;font-size:13px;font-weight:700">'+fmtUSD2(mb.sales)+'</span>'
-        +(mb.fromMinutes?'<span class="tag tag-blue" style="font-size:9px">議事録</span>':(mb.registered?'<span class="tag tag-green" style="font-size:9px">登録済</span>':'<span class="tag tag-gray" style="font-size:9px">未登録</span>'))
+        +(mb.fromMinutes?'<span class="tag tag-blue" style="font-size:9px">'+t('議事録','Minutes')+'</span>':(mb.registered?'<span class="tag tag-green" style="font-size:9px">'+t('登録済','Registered')+'</span>':'<span class="tag tag-gray" style="font-size:9px">'+t('未登録','Not set')+'</span>'))
         +'<i class="ti ti-chevron-right" style="color:var(--muted);font-size:14px"></i></div>';
     });
     qhtml += '</div>';
   });
   var html='';
   html += bStoreChips(_budgetStore, 'setBudgetStore');
-  html += '<div class="card"><div class="card-title"><i class="ti ti-calendar-month"></i>年間計画 '+y+'年<span style="margin-left:auto;font-weight:800;font-size:16px">'+fmtUSD2(yearSales)+'</span></div>'
-    +'<div style="font-size:11px;color:var(--muted);line-height:1.6">各月の売上予算をQ単位でまとめています。数字は予算設定（＝Qコミットビュー）と連動。月をタップするとその月の予算設定へ移動します。</div></div>';
+  html += '<div class="card"><div class="card-title"><i class="ti ti-calendar-month"></i>'+t('年間計画','Annual Plan')+' '+y+t('年','')+'<span style="margin-left:auto;font-weight:800;font-size:16px">'+fmtUSD2(yearSales)+'</span></div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.6">'+t('各月の売上予算をQ単位でまとめています。数字は予算設定（＝Qコミットビュー）と連動。月をタップするとその月の予算設定へ移動します。',"Monthly sales budgets grouped by quarter. Figures sync with Budget Setup (= Q Commit view). Tap a month to open that month's budget.")+'</div></div>';
   html += qhtml;
-  html += '<div class="card" style="text-align:center;padding:14px"><div style="font-size:11px;color:var(--muted)">'+y+'年 年間売上予算</div>'
+  html += '<div class="card" style="text-align:center;padding:14px"><div style="font-size:11px;color:var(--muted)">'+y+t('年','')+' '+t('年間売上予算','Annual sales budget')+'</div>'
     +'<div style="font-size:24px;font-weight:800;color:var(--accent)">'+fmtUSD2(yearSales)+'</div>'
-    +(yearGuests?'<div style="font-size:11px;color:var(--muted)">客数計 '+Math.round(yearGuests).toLocaleString()+'名</div>':'')+'</div>';
+    +(yearGuests?'<div style="font-size:11px;color:var(--muted)">'+t('客数計','Guests total')+' '+Math.round(yearGuests).toLocaleString()+t('名','')+'</div>':'')+'</div>';
   return html;
 }
 function planGoMonth(ym){ try{ dailyMonthOffset=_ymToOffset(ym); }catch(e){} if(typeof setBudgetTab==='function') setBudgetTab('setup'); }
@@ -8595,13 +8619,13 @@ function renderQuarterBudget(){
   _qEnsure();
   var y=_qbY, q=_qbQ; var months=_quarterMonths(y,q);
   var stores=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
-  var monLabel=months.map(function(ym){return (+ym.split('-')[1])+'月';}).join('・');
+  var monLabel=months.map(function(ym){return (+ym.split('-')[1])+(curLang==='en'?'':'月');}).join('・');
   // header + quarter nav + store tabs
   var html='<div class="card" style="padding:10px 12px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px">'
     +'<button class="btn btn-secondary btn-sm" onclick="setQbQuarter(-1)">◀</button>'
-    +'<div style="flex:1;text-align:center"><div style="font-size:16px;font-weight:800">'+y+'年 Q'+q+' <span style="font-size:11px;color:var(--muted);font-weight:400">('+monLabel+')</span></div></div>'
+    +'<div style="flex:1;text-align:center"><div style="font-size:16px;font-weight:800">'+y+t('年','')+' Q'+q+' <span style="font-size:11px;color:var(--muted);font-weight:400">('+monLabel+')</span></div></div>'
     +'<button class="btn btn-secondary btn-sm" onclick="setQbQuarter(1)">▶</button></div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.7"><i class="ti ti-target"></i> 目標は<b>単月予算(月次)を自動合算</b>。実績は当四半期の経過月累計。達成/未達を項目別に表示します。</div></div>';
+    +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.7"><i class="ti ti-target"></i> '+t('目標は','Target = ')+'<b>'+t('単月予算(月次)を自動合算','auto-sum of monthly budgets')+'</b>'+t('。実績は当四半期の経過月累計。達成/未達を項目別に表示します。','. Actual = MTD cumulative for the quarter. Hit/miss shown by item.')+'</div></div>';
   // store tabs
   html+=bStoreChips(_qbStore,'setQbStore'); // 略称チップで統一
 
@@ -8622,14 +8646,14 @@ function renderQuarterBudget(){
       return { id:st.id, name:st.name, color:_bStoreCol(st.id),
         actual:a.sales||0, budget:t.sales||0, pace:_pc,
         actStr:fmtUSD2(a.sales||0), budStr:fmtUSD2(t.sales||0),
-        sub:'原価率 '+(a.fcRate?a.fcRate+'%':'—')+' ・ 人件費率 '+(a.laborRate?a.laborRate+'%':'—')+' ・ 経過 '+(a.elapsed||0)+'/3ヶ月' };
+        sub:t('原価率','FC')+' '+(a.fcRate?a.fcRate+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(a.laborRate?a.laborRate+'%':'—')+' ・ '+t('経過','Elapsed')+' '+(a.elapsed||0)+'/'+t('3ヶ月','3mo') };
     });
-    html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> 店舗別 Q進捗 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">四半期売上 実/目標・達成率（縦線＝想定ペース）</span></div>';
+    html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> '+t('店舗別 Q進捗','By Store · Q')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('四半期売上 実/目標・達成率（縦線＝想定ペース）','Q sales Act/Target · achievement (line = expected pace)')+'</span></div>';
     html+=_bStoreProgCards(_qItems,'setQbStore');
     html+='</div>';
     // 店舗別サマリー
-    html+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> 店舗別サマリー</div>'
-      +'<table style="border-collapse:collapse;width:100%;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">店舗</th><th style="text-align:right;padding:4px">売上 実/目標</th><th style="text-align:center;padding:4px">達成</th><th style="text-align:center;padding:4px">原価率</th><th style="text-align:center;padding:4px">人件費率</th><th style="text-align:center;padding:4px">方針</th></tr></thead><tbody>';
+    html+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> '+t('店舗別サマリー','By-store summary')+'</div>'
+      +'<table style="border-collapse:collapse;width:100%;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">'+t('店舗','Store')+'</th><th style="text-align:right;padding:4px">'+t('売上 実/目標','Sales A/T')+'</th><th style="text-align:center;padding:4px">'+t('達成','Hit')+'</th><th style="text-align:center;padding:4px">'+t('原価率','FC')+'</th><th style="text-align:center;padding:4px">'+t('人件費率','Labor')+'</th><th style="text-align:center;padding:4px">'+t('方針','Plan')+'</th></tr></thead><tbody>';
     stores.forEach(function(st){
       var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
       var okS=(t.salesEl>0)?(a.sales>=t.salesEl*0.995):null;
@@ -8640,80 +8664,80 @@ function renderQuarterBudget(){
         +'<td style="text-align:center;padding:5px 4px">'+(okS===null?'—':(okS?'<span style="color:var(--green);font-weight:700">✓</span>':'<span style="color:var(--red);font-weight:700">✗</span>'))+'</td>'
         +'<td style="text-align:center;padding:5px 4px;color:'+fcCol+'">'+(a.fcRate||'—')+(t.fcRate?'<span style="font-size:9px;color:var(--muted)">/'+t.fcRate+'</span>':'')+'</td>'
         +'<td style="text-align:center;padding:5px 4px;color:'+lbCol+'">'+(a.laborRate||'—')+(t.laborRate?'<span style="font-size:9px;color:var(--muted)">/'+t.laborRate+'</span>':'')+'</td>'
-        +'<td style="text-align:center;padding:5px 4px">'+(qb.status==='committed'?'<span class="tag tag-green" style="font-size:9px">コミット済</span>':(qb.basis?'<span class="tag tag-yellow" style="font-size:9px">下書き</span>':'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)">未</span>'))+'</td></tr>';
+        +'<td style="text-align:center;padding:5px 4px">'+(qb.status==='committed'?'<span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':(qb.basis?'<span class="tag tag-yellow" style="font-size:9px">'+t('下書き','Draft')+'</span>':'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)">'+t('未','—')+'</span>'))+'</td></tr>';
     });
     html+='</tbody></table></div>';
     return html;
   }
 
   // ===== 各店タブ =====
-  var st=stores.find(function(x){return x.id===_qbStore;})||stores[0]; if(!st) return html+'<div class="card">店舗がありません</div>';
+  var st=stores.find(function(x){return x.id===_qbStore;})||stores[0]; if(!st) return html+'<div class="card">'+t('店舗がありません','No stores')+'</div>';
   var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
   var mds=months.map(function(ym){ return _qbMonthData(st.id, ym); });
   // 四半期サマリー（合計）
   var pct=t.sales?Math.round(a.sales/t.sales*100):0, pace=Math.round(a.elapsed/3*100), onPace=t.salesEl?a.sales>=t.salesEl*0.995:false;
-  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-target" style="color:var(--accent)"></i> '+escapeHtml(st.name)+' Q'+q+' 合計進捗</div>';
-  html+='<div style="margin:2px 0 6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>四半期売上</span><span style="font-weight:800;color:'+(onPace?'var(--green)':'var(--red)')+'">$'+Math.round(a.sales).toLocaleString()+' <span style="color:var(--muted);font-weight:400">/ $'+Math.round(t.sales).toLocaleString()+' ('+pct+'%)</span></span></div>'
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-target" style="color:var(--accent)"></i> '+escapeHtml(st.name)+' Q'+q+' '+t('合計進捗','Total progress')+'</div>';
+  html+='<div style="margin:2px 0 6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>'+t('四半期売上','Quarter sales')+'</span><span style="font-weight:800;color:'+(onPace?'var(--green)':'var(--red)')+'">$'+Math.round(a.sales).toLocaleString()+' <span style="color:var(--muted);font-weight:400">/ $'+Math.round(t.sales).toLocaleString()+' ('+pct+'%)</span></span></div>'
     +''+'<div style="margin-top:3px">'+progBar(pct,{h:9,color:onPace?'var(--green)':'var(--accent)',pace:pace})+'</div>'+''
-    +'<div style="font-size:9px;color:var(--muted)">経過 '+a.elapsed+'/3ヶ月 ・ 赤線=想定ペース('+pace+'%)</div></div></div>';
+    +'<div style="font-size:9px;color:var(--muted)">'+t('経過','Elapsed')+' '+a.elapsed+t('/3ヶ月 ・ 赤線=想定ペース','/3mo · red = expected pace')+'('+pace+'%)</div></div></div>';
   // 月別 進捗カード（不足の見える化）
-  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i> 月別 進捗（達成/不足）</div>';
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i> '+t('月別 進捗（達成/不足）','Monthly progress (hit/short)')+'</div>';
   mds.forEach(function(md){
     html+='<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px">'
-      +'<div style="font-size:12px;font-weight:800;margin-bottom:2px">'+md.mm+'月'+(md.hasData?'':' <span style="font-size:10px;color:var(--muted);font-weight:400">実績なし</span>')+'</div>'
-      +_qbProgLine('売上', md.aSales, md.tSales, {money:true})
-      +_qbProgLine('客数', md.aGuests, md.tGuests, {unit:'名'})
-      +_qbProgLine('客単価', md.aPpa, md.tPpa, {money:true})
-      +_qbProgLine('原価率'+(md.cogsSrc?'（'+md.cogsSrc+'）':''), md.aFc, md.tFc, {unit:'%', lower:true})
-      +_qbProgLine('人件費率', md.aLb, md.tLb, {unit:'%', lower:true})
-      +_qbProgLine('リピート率', md.aRep, md.tRep, {unit:'%'})
-      +(md.cogsSrc==='仕入合計'?'<div style="font-size:9px;color:var(--yellow);margin-top:2px">※原価率は棚卸未確定のため仕入合計で暫定。棚卸確定（食材移動含む）で確定値になります。</div>':'')
+      +'<div style="font-size:12px;font-weight:800;margin-bottom:2px">'+md.mm+t('月','')+(md.hasData?'':' <span style="font-size:10px;color:var(--muted);font-weight:400">'+t('実績なし','No actual')+'</span>')+'</div>'
+      +_qbProgLine(t('売上','Sales'), md.aSales, md.tSales, {money:true})
+      +_qbProgLine(t('客数','Guests'), md.aGuests, md.tGuests, {unit:t('名','')})
+      +_qbProgLine(t('客単価','Avg check'), md.aPpa, md.tPpa, {money:true})
+      +_qbProgLine(t('原価率','FC')+(md.cogsSrc?'（'+md.cogsSrc+'）':''), md.aFc, md.tFc, {unit:'%', lower:true})
+      +_qbProgLine(t('人件費率','Labor %'), md.aLb, md.tLb, {unit:'%', lower:true})
+      +_qbProgLine(t('リピート率','Repeat rate'), md.aRep, md.tRep, {unit:'%'})
+      +(md.cogsSrc==='仕入合計'?'<div style="font-size:9px;color:var(--yellow);margin-top:2px">'+t('※原価率は棚卸未確定のため仕入合計で暫定。棚卸確定（食材移動含む）で確定値になります。','※ FC is provisional (purchases) until inventory is finalized; final after count (incl. transfers).')+'</div>':'')
       +'</div>';
   });
-  html+='<div style="font-size:9px;color:var(--muted);margin-top:2px">原価率＝棚卸法COGS（期首＋仕入＋食材移動−期末）／人件費率＝実勤怠×時給＋固定給＋有給。リピート率＝Toast来店区分。</div></div>';
+  html+='<div style="font-size:9px;color:var(--muted);margin-top:2px">'+t('原価率＝棚卸法COGS（期首＋仕入＋食材移動−期末）／人件費率＝実勤怠×時給＋固定給＋有給。リピート率＝Toast来店区分。','FC = inventory COGS (open + purchases + transfers − close) / Labor = actual hours×wage + salary + PTO. Repeat = Toast visit type.')+'</div></div>';
   // 月ごとの考え方（目標＋考え方・未入力表示）
-  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-bulb" style="color:var(--accent)"></i> 月ごとの考え方</div>';
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-bulb" style="color:var(--accent)"></i> '+t('月ごとの考え方','Monthly rationale')+'</div>';
   mds.forEach(function(md){
     if(!md.registered){
-      html+='<div style="border-left:3px solid var(--border);padding:6px 10px;margin-bottom:8px"><div style="font-size:12px;font-weight:700">'+md.mm+'月</div><div style="font-size:10.5px;color:var(--muted);margin-top:2px">予算未登録（この月の予算設定がありません）</div></div>';
+      html+='<div style="border-left:3px solid var(--border);padding:6px 10px;margin-bottom:8px"><div style="font-size:12px;font-weight:700">'+md.mm+t('月','')+'</div><div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+t('予算未登録（この月の予算設定がありません）','Budget not set (no budget for this month)')+'</div></div>';
       return;
     }
     var segTot=md.seg.lunch+md.seg.dinner+md.seg.takeout; var pf=function(v){return segTot?Math.round(v/segTot*100):0;};
     var r=md.rationale;
     html+='<div style="border-left:3px solid var(--accent);padding:6px 10px;margin-bottom:8px">'
-      +'<div style="font-size:12px;font-weight:700">'+md.mm+'月</div>'
-      +'<div style="font-size:10.5px;color:var(--tm);margin-top:2px">目標: 売上 $'+Math.round(md.tSales).toLocaleString()+' ・ 客数 '+Math.round(md.tGuests).toLocaleString()+'名 ・ 客単価 $'+md.tPpa+'</div>'
-      +'<div style="font-size:10.5px;color:var(--tm)">軸: ランチ $'+Math.round(md.seg.lunch).toLocaleString()+'('+pf(md.seg.lunch)+'%) ・ ディナー $'+Math.round(md.seg.dinner).toLocaleString()+'('+pf(md.seg.dinner)+'%) ・ TO $'+Math.round(md.seg.takeout).toLocaleString()+'('+pf(md.seg.takeout)+'%)</div>'
-      +'<div style="font-size:10.5px;margin-top:3px;line-height:1.6">考え方: '+((r&&r.basis)?('<span style="color:var(--fg)">'+escapeHtml(r.basis)+'</span>'):'<span style="color:var(--muted)">未入力</span>')+((r&&r.focus)?(' <br>重点: '+escapeHtml(r.focus)):'')+'</div>'
+      +'<div style="font-size:12px;font-weight:700">'+md.mm+t('月','')+'</div>'
+      +'<div style="font-size:10.5px;color:var(--tm);margin-top:2px">'+t('目標','Target')+': '+t('売上','Sales')+' $'+Math.round(md.tSales).toLocaleString()+' ・ '+t('客数','Guests')+' '+Math.round(md.tGuests).toLocaleString()+t('名','')+' ・ '+t('客単価','Avg check')+' $'+md.tPpa+'</div>'
+      +'<div style="font-size:10.5px;color:var(--tm)">'+t('軸','Axis')+': '+t('ランチ','Lunch')+' $'+Math.round(md.seg.lunch).toLocaleString()+'('+pf(md.seg.lunch)+'%) ・ '+t('ディナー','Dinner')+' $'+Math.round(md.seg.dinner).toLocaleString()+'('+pf(md.seg.dinner)+'%) ・ TO $'+Math.round(md.seg.takeout).toLocaleString()+'('+pf(md.seg.takeout)+'%)</div>'
+      +'<div style="font-size:10.5px;margin-top:3px;line-height:1.6">'+t('考え方','Rationale')+': '+((r&&r.basis)?('<span style="color:var(--fg)">'+escapeHtml(r.basis)+'</span>'):'<span style="color:var(--muted)">'+t('未入力','Not entered')+'</span>')+((r&&r.focus)?(' <br>'+t('重点','Focus')+': '+escapeHtml(r.focus)):'')+'</div>'
       +'</div>';
   });
-  html+='<div style="font-size:9px;color:var(--muted)">「軸」＝月次予算の客数×単価から算出したL/D/TO構成。考え方は単月予算の提出時メモ。</div></div>';
+  html+='<div style="font-size:9px;color:var(--muted)">'+t('「軸」＝月次予算の客数×単価から算出したL/D/TO構成。考え方は単月予算の提出時メモ。','"Axis" = L/D/TO mix from monthly guests × avg check. Rationale is from the monthly budget submission memo.')+'</div></div>';
   // 四半期の達成方針（重点項目チェック＋補足）
-  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> 四半期の達成方針'+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">コミット済</span>':'')+'</div>';
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> '+t('四半期の達成方針','Quarter plan')+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'')+'</div>';
   if(qbCanEdit()){
-    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">重点項目（この四半期で力を入れること・複数可）</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('重点項目（この四半期で力を入れること・複数可）','Focus items (what to prioritize this quarter · multiple)')+'</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
     QB_FOCUS_ITEMS.forEach(function(fi){ var on=(qb.focusItems||[]).indexOf(fi.key)>=0;
       html+='<label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:5px 10px;border-radius:16px;border:1.5px solid '+(on?'var(--accent)':'var(--border)')+';background:var(--surface2);cursor:pointer"><input type="checkbox" id="qbf-'+st.id+'-'+fi.key+'" '+(on?'checked':'')+' onchange="this.parentNode.style.borderColor=this.checked?\'var(--accent)\':\'var(--border)\'" style="margin:0;width:14px;height:14px"> '+fi.label+'</label>';
     });
     html+='</div>';
-    html+='<div class="form-group"><label class="form-label" style="font-size:11px">達成の軸・根拠（コミットに必須）</label><textarea class="form-input" id="qb-'+st.id+'-basis" rows="3" placeholder="上の重点項目を、何を軸にどう達成するか（例：ディナー客数と客単価を軸に、リピート施策で…）">'+escapeHtml(qb.basis||'')+'</textarea></div>'
-      +'<div class="form-group"><label class="form-label" style="font-size:11px">具体施策</label><textarea class="form-input" id="qb-'+st.id+'-focus" rows="2" placeholder="具体的に取り組むこと">'+escapeHtml(qb.focus||'')+'</textarea></div>'
-      +'<div class="btn-row"><button class="btn btn-secondary btn-sm" onclick="saveQBudget(\''+st.id+'\',false)">下書き保存</button><button class="btn btn-primary btn-sm" onclick="saveQBudget(\''+st.id+'\',true)"><i class="ti ti-check"></i> コミット</button></div>';
-    if(qb.committedAt) html+='<div style="font-size:10px;color:var(--muted);margin-top:4px">コミット: '+escapeHtml(qb.committedBy||'')+' '+escapeHtml(qb.committedAt||'')+'</div>';
+    html+='<div class="form-group"><label class="form-label" style="font-size:11px">'+t('達成の軸・根拠（コミットに必須）','Axis & basis (required to commit)')+'</label><textarea class="form-input" id="qb-'+st.id+'-basis" rows="3" placeholder="'+t('上の重点項目を、何を軸にどう達成するか（例：ディナー客数と客単価を軸に、リピート施策で…）','How you\'ll achieve the focus items above (e.g. driven by dinner guests & avg check, with repeat tactics…)')+'">'+escapeHtml(qb.basis||'')+'</textarea></div>'
+      +'<div class="form-group"><label class="form-label" style="font-size:11px">'+t('具体施策','Actions')+'</label><textarea class="form-input" id="qb-'+st.id+'-focus" rows="2" placeholder="'+t('具体的に取り組むこと','Concrete actions')+'">'+escapeHtml(qb.focus||'')+'</textarea></div>'
+      +'<div class="btn-row"><button class="btn btn-secondary btn-sm" onclick="saveQBudget(\''+st.id+'\',false)">'+t('下書き保存','Save draft')+'</button><button class="btn btn-primary btn-sm" onclick="saveQBudget(\''+st.id+'\',true)"><i class="ti ti-check"></i> '+t('コミット','Commit')+'</button></div>';
+    if(qb.committedAt) html+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'+t('コミット: ','Committed: ')+escapeHtml(qb.committedBy||'')+' '+escapeHtml(qb.committedAt||'')+'</div>';
   } else {
     var chips=(qb.focusItems||[]).map(function(k){ var fi=QB_FOCUS_ITEMS.find(function(x){return x.key===k;}); return fi?('<span class="tag" style="font-size:10px;background:var(--accent);color:#fff;margin:2px">'+fi.label+'</span>'):''; }).join('');
-    html+=(chips?('<div style="margin-bottom:6px">'+chips+'</div>'):'')+(qb.basis?('<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>達成の軸:</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>具体施策:</b> '+escapeHtml(qb.focus)):'')+'</div>'):'<div style="font-size:11px;color:var(--muted)">まだ設定されていません。</div>');
+    html+=(chips?('<div style="margin-bottom:6px">'+chips+'</div>'):'')+(qb.basis?('<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>'+t('達成の軸','Axis')+':</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>'+t('具体施策','Actions')+':</b> '+escapeHtml(qb.focus)):'')+'</div>'):'<div style="font-size:11px;color:var(--muted)">'+t('まだ設定されていません。','Not set yet.')+'</div>');
   }
   html+='</div>';
   return html;
 }
 
 function renderMeetingMinutes(){
-  if(!MINUTES_SEED.length) return '<div class="card">議事録データがありません。</div>';
+  if(!MINUTES_SEED.length) return '<div class="card">'+t('議事録データがありません。','No minutes data.')+'</div>';
   var sel=_mmSheet; if(sel<0||sel>=MINUTES_SEED.length) sel=0;
   var sh=MINUTES_SEED[sel];
   var tabs=MINUTES_SEED.map(function(s2,i){ return '<button class="mm-tab'+(i===sel?' active':'')+'" onclick="setMmSheet('+i+')">'+escapeHtml(s2.label)+'</button>'; }).join('');
-  var html='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.7"><i class="ti ti-info-circle"></i> 経営計画書（KGI＋各店舗）。セルをタップで編集＝自動保存。下部でシート毎のメモ（議事録）を追記できます。数値は添付Excelの取込値です。</div>';
+  var html='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.7"><i class="ti ti-info-circle"></i> '+t('経営計画書（KGI＋各店舗）。セルをタップで編集＝自動保存。下部でシート毎のメモ（議事録）を追記できます。数値は添付Excelの取込値です。','Business plan (KGI + stores). Tap a cell to edit = auto-save. Add per-sheet memos (minutes) below. Figures are imported from the attached Excel.')+'</div>';
   html+='<div class="mm-tabs">'+tabs+'</div>';
   var cols=mmColLetters(sh.minc, sh.maxc), body='';
   (sh.rows||[]).forEach(function(row){
@@ -8728,14 +8752,14 @@ function renderMeetingMinutes(){
   var m=getMinutes(), memos=(m.memos[sel]||[]);
   var memoHtml=memos.length ? memos.map(function(mo,idx){
     return '<div class="mm-memo"><div class="mm-memo-h"><span>'+escapeHtml(mo.by||'')+' · '+escapeHtml(mo.ts||'')+'</span><button class="mm-memo-del" onclick="mmDelMemo('+sel+','+idx+')">×</button></div><div class="mm-memo-b">'+escapeHtml(mo.text||'')+'</div></div>';
-  }).join('') : '<div style="font-size:11px;color:var(--muted);padding:6px 2px">メモはまだありません。</div>';
-  html+='<div class="mm-memo-sec"><div class="mm-memo-title"><i class="ti ti-note"></i> メモ / 議事録（'+escapeHtml(sh.label)+'）</div>'+memoHtml
-    +'<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick="openMmMemo('+sel+')"><i class="ti ti-plus"></i> メモを追加</button>'
-    +'<button class="btn btn-secondary btn-sm" onclick="mmResetSheet('+sel+')" style="margin-left:auto"><i class="ti ti-rotate"></i> このシートの編集をリセット</button></div></div>';
+  }).join('') : '<div style="font-size:11px;color:var(--muted);padding:6px 2px">'+t('メモはまだありません。','No memos yet.')+'</div>';
+  html+='<div class="mm-memo-sec"><div class="mm-memo-title"><i class="ti ti-note"></i> '+t('メモ / 議事録（','Memo / Minutes (')+escapeHtml(sh.label)+t('）',')')+'</div>'+memoHtml
+    +'<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick="openMmMemo('+sel+')"><i class="ti ti-plus"></i> '+t('メモを追加','Add memo')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="mmResetSheet('+sel+')" style="margin-left:auto"><i class="ti ti-rotate"></i> '+t('このシートの編集をリセット',"Reset this sheet's edits")+'</button></div></div>';
   return html;
 }
 function openMmMemo(si){
-  openModal('<div class="modal-title">メモを追加 — '+escapeHtml(MINUTES_SEED[si].label)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+  openModal('<div class="modal-title">'+t('メモを追加 — ','Add memo — ')+escapeHtml(MINUTES_SEED[si].label)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div class="form-group"><textarea class="form-input" id="mm-memo-in" rows="5" placeholder="議事録・決定事項・気づきなど"></textarea></div>'
     +'<button class="btn btn-primary" style="width:100%" onclick="saveMmMemo('+si+')">保存</button>');
 }
@@ -8759,7 +8783,7 @@ function budgetScopeStores(){ var vis=getVisibleStores(); return (_budgetStore &
 
 /* ===== 予算設定タブ（ランチ/ディナー/テイクアウト 3区分） ===== */
 function renderBudgetSetup() {
-  if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">予算の閲覧権限がありません</div>';
+  if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">'+t('予算の閲覧権限がありません','No permission to view budgets')+'</div>';
   var budgets = getBudgets();
   var stores = budgetScopeStores();
   var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
@@ -8768,8 +8792,8 @@ function renderBudgetSetup() {
   var _bsYm=budgetYM();
   html += '<div class="card" style="padding:12px 14px;margin-bottom:10px;border-left:4px solid var(--accent);display:flex;align-items:center;gap:10px">'
     +'<i class="ti ti-calendar-event" style="font-size:22px;color:var(--accent)"></i>'
-    +'<div><div style="font-size:10px;color:var(--muted)">この画面で設定する対象月</div><div style="font-size:19px;font-weight:800">'+_bsYm.y+'年 '+_bsYm.m+'月</div></div>'
-    +'<span style="margin-left:auto;font-size:10px;color:var(--muted);text-align:right">月を変える→<br>上部の月セレクタ</span></div>';
+    +'<div><div style="font-size:10px;color:var(--muted)">'+t('この画面で設定する対象月','Target month set on this screen')+'</div><div style="font-size:19px;font-weight:800">'+(curLang==='en'?(_bsYm.y+'-'+String(_bsYm.m).padStart(2,'0')):(_bsYm.y+'年 '+_bsYm.m+'月'))+'</div></div>'
+    +'<span style="margin-left:auto;font-size:10px;color:var(--muted);text-align:right">'+t('月を変える→<br>上部の月セレクタ','Change month →<br>use the top month selector')+'</span></div>';
   var statusCol = {'下書き':'tag-gray','GM承認待ち':'tag-yellow','承認済み':'tag-green','差し戻し':'tag-red','再提出済み':'tag-blue'};
 
   visible.forEach(b => {
@@ -8792,61 +8816,61 @@ function renderBudgetSetup() {
     html += `<div class="card">
       <div class="approval-header">
         <div class="card-title" style="color:${s.color};margin:0"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
-        <span class="tag ${_registered?(statusCol[st]||'tag-gray'):'tag-gray'}">${st}</span>
+        <span class="tag ${_registered?(statusCol[st]||'tag-gray'):'tag-gray'}">${tStatus(st)}</span>
       </div>
-      <div style="font-size:11px;margin:2px 0 6px"><i class="ti ti-user" style="color:var(--muted)"></i> 登録者: ${_registered ? `<b>${escapeHtml(_author||'（実績データのみ）')}</b>${(b.approvedAt||b.editedAt)?` <span style=\"color:var(--muted)\">${escapeHtml(b.approvedAt||b.editedAt||'')}</span>`:''}` : '<span style="color:var(--yellow)">— 未登録（デモ/未設定・予算0）</span>'}</div>`;
+      <div style="font-size:11px;margin:2px 0 6px"><i class="ti ti-user" style="color:var(--muted)"></i> ${t('登録者','By')}: ${_registered ? `<b>${escapeHtml(_author||t('（実績データのみ）','(actual data only)'))}</b>${(b.approvedAt||b.editedAt)?` <span style=\"color:var(--muted)\">${escapeHtml(b.approvedAt||b.editedAt||'')}</span>`:''}` : '<span style="color:var(--yellow)">'+t('— 未登録（デモ/未設定・予算0）','— Not set (demo/unset · budget 0)')+'</span>'}</div>`;
 
     if (st==='差し戻し' && b.rejectReason) {
-      html += `<div class="alert alert-danger" style="padding:8px 10px;margin:8px 0"><i class="ti ti-arrow-back"></i><div style="font-size:12px"><b>差し戻し理由:</b> ${b.rejectReason}</div></div>`;
+      html += `<div class="alert alert-danger" style="padding:8px 10px;margin:8px 0"><i class="ti ti-arrow-back"></i><div style="font-size:12px"><b>${t('差し戻し理由','Return reason')}:</b> ${b.rejectReason}</div></div>`;
     }
     if (st==='GM承認待ち') {
-      html += `<div class="alert alert-warning" style="padding:8px 10px;margin:8px 0"><i class="ti ti-clock"></i><div style="font-size:12px">${b.submittedBy||''} が提出 · GM承認待ち</div></div>`;
+      html += `<div class="alert alert-warning" style="padding:8px 10px;margin:8px 0"><i class="ti ti-clock"></i><div style="font-size:12px">${b.submittedBy||''}${t(' が提出 · GM承認待ち',' submitted · Pending GM approval')}</div></div>`;
     }
     if (st==='承認済み') {
-      html += `<div style="font-size:11px;color:var(--green);margin:6px 0"><i class="ti ti-circle-check"></i> ${b.approvedBy||'GM'} が承認 (${b.approvedAt||''})</div>`;
+      html += `<div style="font-size:11px;color:var(--green);margin:6px 0"><i class="ti ti-circle-check"></i> ${b.approvedBy||'GM'}${t(' が承認 (',' approved (')}${b.approvedAt||''})</div>`;
     }
 
     html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:8px 0">
-      ${segCard('ランチ', dowMode?dowBd.lunch:segSales(segs.lunch,'lunch'), 'var(--yellow)')}
-      ${segCard('ディナー', dowMode?dowBd.dinner:segSales(segs.dinner,'dinner'), 'var(--accent)')}
-      ${segCard('テイクアウト', dowMode?dowBd.takeout:segSales(segs.takeout,'takeout'), 'var(--accent2)')}
+      ${segCard(t('ランチ','Lunch'), dowMode?dowBd.lunch:segSales(segs.lunch,'lunch'), 'var(--yellow)')}
+      ${segCard(t('ディナー','Dinner'), dowMode?dowBd.dinner:segSales(segs.dinner,'dinner'), 'var(--accent)')}
+      ${segCard(t('テイクアウト','Takeout'), dowMode?dowBd.takeout:segSales(segs.takeout,'takeout'), 'var(--accent2)')}
     </div>
-    ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> 曜日別で作成（${dailyMonthLabel()}の曜日数で自動計算）</div>`:''}
-    ${dayOv?`<div style="font-size:11px;color:var(--accent);margin:-2px 0 8px"><i class="ti ti-calendar-dollar"></i> <b>日別調整あり</b>（${escapeHtml(b.daysBy||'')} ${escapeHtml(b.daysAt||'')}）— 月間予算は日別一覧の合計です</div>`:''}
+    ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> ${t('曜日別で作成（','By weekday (')}${dailyMonthLabel()}${t('の曜日数で自動計算）',' weekday counts, auto)')}</div>`:''}
+    ${dayOv?`<div style="font-size:11px;color:var(--accent);margin:-2px 0 8px"><i class="ti ti-calendar-dollar"></i> <b>${t('日別調整あり','Per-day adjustments')}</b>（${escapeHtml(b.daysBy||'')} ${escapeHtml(b.daysAt||'')}）${t('— 月間予算は日別一覧の合計です','— Monthly budget = sum of daily list')}</div>`:''}
     ${(function(){
       var ms = safeMonthStats(b.storeId, -1)||{};
       if(!ms.sales) return '';
       var f=function(v){ return v!=null?('$'+(Math.round(v*100)/100).toFixed(2)):'—'; };
-      return '<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:7px 10px;margin:-2px 0 8px;line-height:1.7"><i class="ti ti-history" style="color:var(--tm)"></i> <b>前月確定実績</b>: 売上 '+fmtUSD2(ms.sales)+' ／ 客単価 <b>L '+f(ms.ppaLunch)+'</b>・<b>D '+f(ms.ppaDinner)+'</b>・<b>全体 '+f(ms.ppa)+'</b>'+(ms.guests?('（客数 '+ms.guests.toLocaleString()+'）'):'')+'</div>';
+      return '<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:7px 10px;margin:-2px 0 8px;line-height:1.7"><i class="ti ti-history" style="color:var(--tm)"></i> <b>'+t('前月確定実績','Prev month actual')+'</b>: '+t('売上','Sales')+' '+fmtUSD2(ms.sales)+' ／ '+t('客単価','Avg check')+' <b>L '+f(ms.ppaLunch)+'</b>・<b>D '+f(ms.ppaDinner)+'</b>・<b>'+t('全体','All')+' '+f(ms.ppa)+'</b>'+(ms.guests?('（'+t('客数','Guests')+' '+ms.guests.toLocaleString()+'）'):'')+'</div>';
     })()}
-    ${(b.rationale&&b.rationale.basis)?`<details style="margin:-2px 0 8px"><summary style="font-size:11px;color:var(--tm);cursor:pointer"><i class="ti ti-bulb"></i> 提出時の考え方（${escapeHtml(b.rationale.by||'')} ${escapeHtml(b.rationale.at||'')}）</summary><div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:4px;line-height:1.7"><b>根拠：</b>${escapeHtml(b.rationale.basis)}<br><b>重点・変化点：</b>${escapeHtml(b.rationale.focus||'')}</div></details>`:''}
+    ${(b.rationale&&b.rationale.basis)?`<details style="margin:-2px 0 8px"><summary style="font-size:11px;color:var(--tm);cursor:pointer"><i class="ti ti-bulb"></i> ${t('提出時の考え方','Rationale at submission')}（${escapeHtml(b.rationale.by||'')} ${escapeHtml(b.rationale.at||'')}）</summary><div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:4px;line-height:1.7"><b>${t('根拠','Basis')}：</b>${escapeHtml(b.rationale.basis)}<br><b>${t('重点・変化点','Focus / changes')}：</b>${escapeHtml(b.rationale.focus||'')}</div></details>`:''}
     <div class="kpi-grid" style="margin:8px 0">
-      ${kpi('月間売上予算', fmtK(Math.round(total)), '3区分合計', 'var(--tm)')}
-      ${kpi('Labor予算', fmtK(Math.round(laborB)), total?Math.round(laborB/total*100)+'%':'—', 'var(--muted)')}
-      ${kpi('Food Cost予算', fmtK(Math.round(fcB)), total?Math.round(fcB/total*100)+'%':'—', 'var(--muted)')}
-      ${kpi('利益予測', fmtK(Math.round(profit)), total?Math.round(profit/total*100)+'%':'—', profit>0?'var(--green)':'var(--red)')}
+      ${kpi(t('月間売上予算','Monthly sales budget'), fmtK(Math.round(total)), t('3区分合計','Sum of 3 segments'), 'var(--tm)')}
+      ${kpi(t('Labor予算','Labor budget'), fmtK(Math.round(laborB)), total?Math.round(laborB/total*100)+'%':'—', 'var(--muted)')}
+      ${kpi(t('Food Cost予算','Food cost budget'), fmtK(Math.round(fcB)), total?Math.round(fcB/total*100)+'%':'—', 'var(--muted)')}
+      ${kpi(t('利益予測','Profit forecast'), fmtK(Math.round(profit)), total?Math.round(profit/total*100)+'%':'—', profit>0?'var(--green)':'var(--red)')}
     </div>`;
 
     // 前月比較（予算根拠の参考）
     html += renderPrevMonthCompare(b.storeId, total, laborB, fcB);
 
     html += `<div class="approval-actions">`;
-    html += `<button class="btn btn-secondary btn-sm" onclick="openBudgetReview('${b.storeId}')"><i class="ti ti-clipboard-list"></i> 考え方</button>`;
+    html += `<button class="btn btn-secondary btn-sm" onclick="openBudgetReview('${b.storeId}')"><i class="ti ti-clipboard-list"></i> ${t('考え方','Rationale')}</button>`;
     if (editable) {
-      html += `<button class="btn btn-primary btn-sm" onclick="bbOpen('${b.storeId}')"><i class="ti ti-calendar-dollar"></i> 予算エディタ（曜日設定＋日別一覧）</button>`;
+      html += `<button class="btn btn-primary btn-sm" onclick="bbOpen('${b.storeId}')"><i class="ti ti-calendar-dollar"></i> ${t('予算エディタ（曜日設定＋日別一覧）','Budget editor (weekday + daily list)')}</button>`;
     }
     if ((st==='下書き'||st==='差し戻し'||st==='再提出済み') && editable && ['sl','am','gm','ceo'].includes(curRole)) {
-      html += `<button class="btn btn-primary btn-sm" onclick="submitBudget('${b.storeId}')"><i class="ti ti-send"></i> GMへ提出</button>`;
+      html += `<button class="btn btn-primary btn-sm" onclick="submitBudget('${b.storeId}')"><i class="ti ti-send"></i> ${t('GMへ提出','Submit to GM')}</button>`;
     }
     if (st==='GM承認待ち' && ['gm','ceo'].includes(curRole)) {
-      html += `<button class="btn btn-secondary btn-sm" onclick="go('approval')"><i class="ti ti-checklist"></i> 承認センターで承認</button>`;
+      html += `<button class="btn btn-secondary btn-sm" onclick="go('approval')"><i class="ti ti-checklist"></i> ${t('承認センターで承認','Approve in Approval Center')}</button>`;
     }
     if (st==='承認済み' && ['gm','ceo'].includes(curRole)) {
-      html += `<button class="btn btn-secondary btn-sm" onclick="reopenBudget('${b.storeId}')"><i class="ti ti-lock-open"></i> 再オープン</button>`;
+      html += `<button class="btn btn-secondary btn-sm" onclick="reopenBudget('${b.storeId}')"><i class="ti ti-lock-open"></i> ${t('再オープン','Reopen')}</button>`;
     }
     html += `</div></div>`;
   });
-  if (!visible.length) html += `<div class="card" style="text-align:center;color:var(--muted);padding:24px">対象店舗がありません</div>`;
+  if (!visible.length) html += `<div class="card" style="text-align:center;color:var(--muted);padding:24px">${t('対象店舗がありません','No stores in scope')}</div>`;
   return html;
 }
 function segCard(label, amount, color) {
@@ -8918,24 +8942,24 @@ function renderBudgetBuilder(storeId){
   var editable=canEditBudget(b);
   var ym=budgetYM(); var counts=weekdayCountsForMonth(ym.y, ym.m);
   var h='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:0;z-index:20;box-shadow:0 2px 8px rgba(0,0,0,0.06)">'
-    +'<button class="btn btn-secondary btn-sm" onclick="bbCloseGuarded()"><i class="ti ti-arrow-left"></i> 店舗一覧へ</button>'
-    +'<b style="flex:1;font-size:13px;min-width:120px">'+escapeHtml(st.name)+' — 予算エディタ（'+ym.y+'年'+ym.m+'月）</b>'
-    +'<span id="bb-dirty" style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted);display:none">未保存</span>'
-    +(editable?'<button id="bb-save-top" class="btn btn-primary btn-sm" onclick="bbSave()"><i class="ti ti-device-floppy"></i> 保存</button>':'')
-    +'<span style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted)">'+escapeHtml(b.status||'下書き')+'</span></div>';
-  if(!editable) h+='<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-lock"></i> この予算は現在編集できません（ステータス: '+escapeHtml(b.status||'下書き')+'）。閲覧のみ可能です。</div>';
+    +'<button class="btn btn-secondary btn-sm" onclick="bbCloseGuarded()"><i class="ti ti-arrow-left"></i> '+t('店舗一覧へ','Store list')+'</button>'
+    +'<b style="flex:1;font-size:13px;min-width:120px">'+escapeHtml(st.name)+(curLang==='en'?(' — Budget editor ('+ym.y+'-'+String(ym.m).padStart(2,'0')+')</b>'):(' — 予算エディタ（'+ym.y+'年'+ym.m+'月）</b>'))
+    +'<span id="bb-dirty" style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted);display:none">'+t('未保存','Unsaved')+'</span>'
+    +(editable?'<button id="bb-save-top" class="btn btn-primary btn-sm" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t('保存','Save')+'</button>':'')
+    +'<span style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted)">'+escapeHtml(tStatus(b.status||'下書き'))+'</span></div>';
+  if(!editable) h+='<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-lock"></i> '+t('この予算は現在編集できません（ステータス: ','Not editable (status: ')+escapeHtml(tStatus(b.status||'下書き'))+t('）。閲覧のみ可能です。','). View only.')+'</div>';
   var dis=editable?'':' disabled';
   // ===== ① 曜日設定パネル =====
-  var segs=[['lunch','ランチ','客数'],['dinner','ディナー','客数'],['takeout','TO','注文数']];
-  h+='<div class="card"><div class="card-title"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i>① 曜日設定（客数 × 客単価）'
-    +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+ym.m+'月の曜日数で月間換算</span></div>'
+  var segs=[['lunch','ランチ','客数','Lunch','Guests'],['dinner','ディナー','客数','Dinner','Guests'],['takeout','TO','注文数','TO','Orders']];
+  h+='<div class="card"><div class="card-title"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i>'+t('① 曜日設定（客数 × 客単価）','① Weekday setup (guests × avg check)')+''
+    +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+(curLang==='en'?'Monthly (by weekday counts)':(ym.m+'月の曜日数で月間換算'))+'</span></div>'
     +'<div style="overflow-x:auto"><table style="width:100%;min-width:620px;border-collapse:collapse;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px">'
-    +'<th style="text-align:left;padding:4px">曜日</th>'
-    +segs.map(function(sg){ return '<th style="text-align:right;padding:4px 2px">'+sg[1]+'<br>'+sg[2]+'</th><th style="text-align:right;padding:4px 2px">'+sg[1]+'<br>単価$</th>'; }).join('')
-    +'<th style="text-align:right;padding:4px">日計</th></tr></thead><tbody>';
+    +'<th style="text-align:left;padding:4px">'+t('曜日','Day')+'</th>'
+    +segs.map(function(sg){ return '<th style="text-align:right;padding:4px 2px">'+(curLang==='en'?sg[3]:sg[1])+'<br>'+(curLang==='en'?sg[4]:sg[2])+'</th><th style="text-align:right;padding:4px 2px">'+(curLang==='en'?sg[3]:sg[1])+'<br>'+t('単価$','$/unit')+'</th>'; }).join('')
+    +'<th style="text-align:right;padding:4px">'+t('日計','Daily')+'</th></tr></thead><tbody>';
   for(var i=0;i<7;i++){
     var isWk=(i===5||i===6);
-    h+='<tr style="'+(isWk?'background:var(--surface2)':'')+'"><td style="padding:4px;font-weight:700;color:'+(i===6?'var(--red)':i===5?'var(--accent2)':'var(--tm)')+'">'+DOW[i]+'<div style="font-size:9px;color:var(--muted);font-weight:400">×'+counts[i]+'日</div></td>';
+    h+='<tr style="'+(isWk?'background:var(--surface2)':'')+'"><td style="padding:4px;font-weight:700;color:'+(i===6?'var(--red)':i===5?'var(--accent2)':'var(--tm)')+'">'+(curLang==='en'?['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][i]:DOW[i])+'<div style="font-size:9px;color:var(--muted);font-weight:400">×'+counts[i]+(curLang==='en'?'d':'日')+'</div></td>';
     segs.forEach(function(sg){
       var cell=(_bbDow[sg[0]]&&_bbDow[sg[0]][i])||{};
       var q=(sg[0]==='takeout')?(cell.orders||''):(cell.guests||'');
@@ -8946,34 +8970,34 @@ function renderBudgetBuilder(storeId){
   }
   h+='</tbody></table></div>'
     +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
-    +(editable?'<button class="btn btn-secondary btn-sm" onclick="bbCopy(4)"><i class="ti ti-copy"></i> 月→平日コピー</button>'
-    +'<button class="btn btn-secondary btn-sm" onclick="bbCopy(6)"><i class="ti ti-arrows-down"></i> 月→全曜日コピー</button>':'')
-    +'<span style="margin-left:auto;font-size:11px;color:var(--muted);align-self:center">曜日設定の月間合計: <b id="bb-dowtotal" style="color:var(--accent);font-size:14px">—</b></span></div>'
-    +(editable?'<button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="bbApplyDow()"><i class="ti ti-arrow-big-down-lines"></i> ↓ 日別一覧へ反映（全日を曜日設定の値で上書き）</button><div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">※これは下の一覧へ流し込むだけです。<b style="color:var(--accent)">最後に「保存」を押すまで確定しません。</b></div>':'')
+    +(editable?'<button class="btn btn-secondary btn-sm" onclick="bbCopy(4)"><i class="ti ti-copy"></i> '+t('月→平日コピー','Mon→Weekdays')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="bbCopy(6)"><i class="ti ti-arrows-down"></i> '+t('月→全曜日コピー','Mon→All days')+'</button>':'')
+    +'<span style="margin-left:auto;font-size:11px;color:var(--muted);align-self:center">'+t('曜日設定の月間合計: ','Weekday setup monthly total: ')+'<b id="bb-dowtotal" style="color:var(--accent);font-size:14px">—</b></span></div>'
+    +(editable?'<button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="bbApplyDow()"><i class="ti ti-arrow-big-down-lines"></i> '+t('↓ 日別一覧へ反映（全日を曜日設定の値で上書き）','↓ Apply to daily list (overwrite all days)')+'</button><div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">'+t('※これは下の一覧へ流し込むだけです。','※ This only fills the list below. ')+'<b style="color:var(--accent)">'+t('最後に「保存」を押すまで確定しません。','Nothing is committed until you press Save.')+'</b></div>':'')
     +'</div>';
   // ===== ② 日別一覧 =====
   var days=daysOfYm(curYm());
-  h+='<div class="card"><div class="card-title"><i class="ti ti-calendar-dollar" style="color:var(--accent)"></i>② 日別一覧（日毎に手動修正可）'
-    +(editable?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 8px;font-size:10px" onclick="bbClearDays()"><i class="ti ti-eraser"></i> 全て空欄（自動）に戻す</button>':'')+'</div>'
-    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">空欄＝自動（曜日設定から算出）。店休日は <b>0</b>、イベント日は任意の額に修正。</div>'
+  h+='<div class="card"><div class="card-title"><i class="ti ti-calendar-dollar" style="color:var(--accent)"></i>'+t('② 日別一覧（日毎に手動修正可）','② Daily list (edit any day)')+''
+    +(editable?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 8px;font-size:10px" onclick="bbClearDays()"><i class="ti ti-eraser"></i> '+t('全て空欄（自動）に戻す','Clear all (auto)')+'</button>':'')+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">'+t('空欄＝自動（曜日設定から算出）。店休日は ','Blank = auto (from weekday setup). Closed days = ')+'<b>0</b>'+t('、イベント日は任意の額に修正。',', event days = set any amount.')+'</div>'
     +'<div style="max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">'
-    +'<table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">日付</th><th style="text-align:right">自動</th><th style="width:112px;text-align:right">予算 ($)</th></tr></thead><tbody>';
+    +'<table class="inv-table" style="width:100%"><thead><tr><th style="text-align:left">'+t('日付','Date')+'</th><th style="text-align:right">'+t('自動','Auto')+'</th><th style="width:112px;text-align:right">'+t('予算 ($)','Budget ($)')+'</th></tr></thead><tbody>';
   days.forEach(function(dd){
     var dt=new Date(dd.date+'T00:00:00');
-    var dowJ=['日','月','火','水','木','金','土'][dt.getDay()];
+    var dowJ=(curLang==='en'?['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getDay()]:['日','月','火','水','木','金','土'][dt.getDay()]);
     var isWk=(dt.getDay()===0||dt.getDay()===6);
     var auto=Math.round(bbDowDayVal((dt.getDay()+6)%7));
     var autoBase=Math.round(dayBudgetAuto(b, dd.date));
     var cur=(b.days&&b.days[dd.date]!=null&&b.days[dd.date]!=='')?b.days[dd.date]:'';
     var ev=(typeof dayEventFor==='function')?dayEventFor(dd.date):'';
-    h+='<tr><td style="text-align:left;white-space:nowrap;'+(isWk?'color:var(--accent);font-weight:600':'')+'">'+parseInt(dd.date.slice(8),10)+'日('+dowJ+')'+(ev?'<div style="font-size:9px;color:var(--accent2);font-weight:400">'+escapeHtml(ev)+'</div>':'')+'</td>'
+    h+='<tr><td style="text-align:left;white-space:nowrap;'+(isWk?'color:var(--accent);font-weight:600':'')+'">'+parseInt(dd.date.slice(8),10)+(curLang==='en'?' (':'日(')+dowJ+')'+(ev?'<div style="font-size:9px;color:var(--accent2);font-weight:400">'+escapeHtml(ev)+'</div>':'')+'</td>'
       +'<td style="text-align:right;color:var(--muted);font-size:11px;white-space:nowrap" class="bb-auto" data-dow="'+((dt.getDay()+6)%7)+'">$'+autoBase.toLocaleString()+'</td>'
-      +'<td><input class="form-input bb-day" style="padding:5px 6px;font-size:12px;text-align:right" type="number" inputmode="decimal" min="0" data-date="'+dd.date+'" data-auto="'+autoBase+'" value="'+cur+'" placeholder="自動"'+dis+' oninput="bbDayTotal()"></td></tr>';
+      +'<td><input class="form-input bb-day" style="padding:5px 6px;font-size:12px;text-align:right" type="number" inputmode="decimal" min="0" data-date="'+dd.date+'" data-auto="'+autoBase+'" value="'+cur+'" placeholder="'+t('自動','Auto')+'"'+dis+' oninput="bbDayTotal()"></td></tr>';
   });
   h+='</tbody></table></div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 2px 0"><span style="font-size:12px;color:var(--muted)">月間予算 合計</span><b id="bb-total" style="font-size:18px;color:var(--accent)">—</b></div>'
-    +(b.daysBy?'<div style="font-size:10px;color:var(--muted)"><i class="ti ti-user-check"></i> 前回の日別調整: '+escapeHtml(b.daysBy)+' '+escapeHtml(b.daysAt||'')+'</div>':'')
-    +(editable?'<button id="bb-save-bottom" class="btn btn-primary" style="width:100%;margin-top:10px;font-size:15px;padding:12px" onclick="bbSave()"><i class="ti ti-device-floppy"></i> 保存する（曜日設定＋日別一覧）</button><div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">このボタンを押さないと入力は保存されません。</div>':'')
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 2px 0"><span style="font-size:12px;color:var(--muted)">'+t('月間予算 合計','Monthly budget total')+'</span><b id="bb-total" style="font-size:18px;color:var(--accent)">—</b></div>'
+    +(b.daysBy?'<div style="font-size:10px;color:var(--muted)"><i class="ti ti-user-check"></i> '+t('前回の日別調整: ','Last per-day adj: ')+escapeHtml(b.daysBy)+' '+escapeHtml(b.daysAt||'')+'</div>':'')
+    +(editable?'<button id="bb-save-bottom" class="btn btn-primary" style="width:100%;margin-top:10px;font-size:15px;padding:12px" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t('保存する（曜日設定＋日別一覧）','Save (weekday + daily list)')+'</button><div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">'+t('このボタンを押さないと入力は保存されません。','Your input is not saved until you press this button.')+'</div>':'')
     +'</div>';
   return h;
 }
@@ -9326,26 +9350,26 @@ function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
     var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
     var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
     return { id:st.id, name:st.name, color:_bStoreCol(st.id), actual:act, budget:bud, pace:(isCur?paceRef:null),
-      sub:'原価率 '+(fc!=null?fc+'%':'—')+' ・ 人件費率 '+(lb!=null?lb+'%':'—') };
+      sub:t('原価率','FC')+' '+(fc!=null?fc+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(lb!=null?lb+'%':'—') };
   });
-  var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別 月次進捗 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">実績／月間予算・達成率'+(isCur?'（縦線＝今日の暦日ペース）':'')+'</span></div>';
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+t('店舗別 月次進捗','By Store · Monthly')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('実績／月間予算・達成率','Actual / Monthly budget · Achievement')+(isCur?t('（縦線＝今日の暦日ペース）',' (line = today\'s pace)'):'')+'</span></div>';
   h += _bStoreProgCards(items, 'setBudgetStore');
   h += '</div>';
   h += '<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px;flex-wrap:wrap">'
-    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoMonthlyReview()"><i class="ti ti-calendar-stats"></i> 月次振り返り</button>'
-    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> KPI推移一覧</button>'
-    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoSalesAnalysis()"><i class="ti ti-chart-histogram"></i> 売上分析</button>'
+    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoMonthlyReview()"><i class="ti ti-calendar-stats"></i> '+t('月次振り返り','Monthly Review')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> '+t('KPI推移一覧','KPI Trend')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoSalesAnalysis()"><i class="ti ti-chart-histogram"></i> '+t('売上分析','Sales Analysis')+'</button>'
     +'</div></div>';
   try{
     var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && b.status==='GM承認待ち'; });
-    if (pendB.length) h += '<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab(\'setup\')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">GM承認待ちの予算が <b>'+pendB.length+'店</b> あります — タップで予算設定へ</div></div>';
+    if (pendB.length) h += '<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab(\'setup\')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">'+t('GM承認待ちの予算が','Budgets pending GM approval:')+' <b>'+pendB.length+t('店',' stores')+'</b> '+t('あります — タップで予算設定へ','— tap to open Budget Setup')+'</div></div>';
   }catch(e){}
   return h;
 }
 function renderBudgetSummary() {
   var stores = budgetScopeStores();
   var _selOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
-  var _monLabel = (typeof dailyMonthLabel==='function')?dailyMonthLabel():'当月';
+  var _monLabel = (typeof dailyMonthLabel==='function')?dailyMonthLabel():t('当月','This month');
   var isCur = (_selOff===0);
   var days; try{ days = daysOfYm(ymFromOffset(_selOff)); }catch(e){ days = monthDays(); }
   var mdays = days.length;
@@ -9378,19 +9402,19 @@ function renderBudgetSummary() {
 
   // ===== ① 今月の現在地（実績／月間予算＋暦日ペースライン＋前週比） =====
   html += `<div class="card" style="border:1.5px solid ${heroCol}">
-    <div class="card-title"><i class="ti ti-target-arrow" style="color:${heroCol}"></i>${escapeHtml(_monLabel)}の現在地 — 売上 実績／予算
-      <span style="margin-left:auto">${wow.sales!=null?wowBadge(wow.sales,true,false,'前週比'):`<span style="font-size:10px;color:var(--muted);font-weight:400">${isCur?('前日まで '+agg.daysPassed+'/'+mdays+'日'):'月間確定'}</span>`}</span></div>
+    <div class="card-title"><i class="ti ti-target-arrow" style="color:${heroCol}"></i>${escapeHtml(_monLabel)}${t('の現在地 — 売上 実績／予算',' — Sales: Actual / Budget')}
+      <span style="margin-left:auto">${wow.sales!=null?wowBadge(wow.sales,true,false,t('前週比','WoW')):`<span style="font-size:10px;color:var(--muted);font-weight:400">${isCur?(t('前日まで','through')+' '+agg.daysPassed+'/'+mdays+t('日','d')):t('月間確定','Month final')}</span>`}</span></div>
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
       <div style="font-size:26px;font-weight:800">${fmtK(refAct)}</div>
-      <div style="font-size:12px;color:var(--muted)">／ 月間予算 ${fmtK(agg.budMonth)}</div>
+      <div style="font-size:12px;color:var(--muted)">${t('／ 月間予算','/ Monthly budget')} ${fmtK(agg.budMonth)}</div>
     </div>
     <div style="margin:10px 0 6px">${progBar(achv,{h:12,color:heroCol,pace:isCur?paceRef:null})}</div>
     <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11.5px">
-      <span style="color:${heroCol};font-weight:700">達成 ${achv!=null?achv.toFixed(1)+'%':'—'}</span>
-      ${isCur?`<span style="color:var(--tm)">今日のペース ${paceRef.toFixed(1)}%（${agg.daysPassed}/${mdays}日） → <b style="color:${heroCol}">${paceDiff!=null?((paceDiff>=0?'+':'')+paceDiff.toFixed(1)+'pt '+(paceDiff>=0?'先行':'ビハインド')):'—'}</b></span>`:`<span style="color:var(--muted)">月間実績 ${fmtK(agg.actMonth)}</span>`}
+      <span style="color:${heroCol};font-weight:700">${t('達成','Achieved')} ${achv!=null?achv.toFixed(1)+'%':'—'}</span>
+      ${isCur?`<span style="color:var(--tm)">${t('今日のペース',"Today's pace")} ${paceRef.toFixed(1)}%（${agg.daysPassed}/${mdays}${t('日','d')}） → <b style="color:${heroCol}">${paceDiff!=null?((paceDiff>=0?'+':'')+paceDiff.toFixed(1)+'pt '+(paceDiff>=0?t('先行','ahead'):t('ビハインド','behind'))):'—'}</b></span>`:`<span style="color:var(--muted)">${t('月間実績','Month actual')} ${fmtK(agg.actMonth)}</span>`}
     </div>
     ${isCur?`<div style="font-size:11px;color:var(--tm);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">
-      <i class="ti ti-plane-arrival" style="color:${landPct==null?'var(--muted)':landPct>=100?'var(--green)':'var(--red)'}"></i> 着地予測 <b>${fmtK(landing)}</b>${landPct!=null?`（予算比 <b style="color:${landPct>=100?'var(--green)':'var(--red)'}">${landPct.toFixed(1)}%</b>）`:''}
+      <i class="ti ti-plane-arrival" style="color:${landPct==null?'var(--muted)':landPct>=100?'var(--green)':'var(--red)'}"></i> ${t('着地予測','Projected')} <b>${fmtK(landing)}</b>${landPct!=null?`（${t('予算比','vs budget')} <b style="color:${landPct>=100?'var(--green)':'var(--red)'}">${landPct.toFixed(1)}%</b>）`:''}
     </div>`:''}
   </div>`;
 
@@ -9398,7 +9422,7 @@ function renderBudgetSummary() {
   var k = keyKpiStats(stores, days);
   var kpiTile = function(icon, label, valStr, tgtStr, col, badge, sub){
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px">
-      <div style="font-size:10.5px;color:var(--muted);display:flex;align-items:center;gap:4px"><i class="ti ${icon}"></i><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</span>${tgtStr?`<span style="margin-left:auto;white-space:nowrap">目標 ${tgtStr}</span>`:''}</div>
+      <div style="font-size:10.5px;color:var(--muted);display:flex;align-items:center;gap:4px"><i class="ti ${icon}"></i><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</span>${tgtStr?`<span style="margin-left:auto;white-space:nowrap">${t('目標','Target')} ${tgtStr}</span>`:''}</div>
       <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px;flex-wrap:wrap">
         <span style="font-size:19px;font-weight:800;color:${col}">${valStr}</span>${badge||''}
       </div>
@@ -9418,30 +9442,30 @@ function renderBudgetSummary() {
   var _spBud = agg.budToToday>0 ? agg.budToToday : agg.budMonth;
   var _sp = _spBud>0 ? Math.round(_spAct/_spBud*1000)/10 : null;
   var _spCol = pctColor(_sp);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>KPI 目標との差・前週比 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">目標＝承認予算から算出</span></div>
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>${t('KPI 目標との差・前週比','KPI vs Target · WoW')} <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${t('目標＝承認予算から算出','Target = from approved budget')}</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">`;
-  html += kpiTile('ti-trending-up','売上進捗', _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), '実績 '+fmtK(_spAct)+' / 予算 '+fmtK(_spBud)+(isCur?'（前日まで）':''));
-  if (k.repeatHas) html += kpiTile('ti-repeat','リピート率', k.repeatRate.toFixed(1)+'%', '', rCol, '', 'リピート '+(k.repeat||0).toLocaleString()+' / 対象 '+(k.rTotal||0).toLocaleString()+(k.repeatPrev!=null?'　前月 '+k.repeatPrev.toFixed(1)+'%':''));
-  html += kpiTile('ti-friends', k.unit==='丼'?'丼数':'客数', k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null);
-  html += kpiTile('ti-coin','客単価（全体）', k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''));
-  html += kpiTile('ti-percentage','原価率', k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), '低いほど良い');
-  html += kpiTile('ti-users-group','人件費率', k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', '低いほど良い（月累計）');
-  if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup','味噌汁UP率 ★', k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null);
-  if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish','いくらシャワー率 ★', k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null);
-  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-cocktail','ドリンク比率', k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null);
+  html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''));
+  if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', '', rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString()+(k.repeatPrev!=null?'　'+t('前月','prev')+' '+k.repeatPrev.toFixed(1)+'%':''));
+  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null);
+  html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''));
+  html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'));
+  html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'));
+  if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('味噌汁UP率 ★','Miso upsell % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null);
+  if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null);
+  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-cocktail',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null);
   html += `</div>
-    <div style="font-size:10px;color:var(--muted);margin-top:6px">前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。</div></div>`;
+    <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
 
   // ===== ②b 分析へのショートカット（旧・月次サマリー機能へ） =====
   html += `<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px;flex-wrap:wrap">
-    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoMonthlyReview()"><i class="ti ti-calendar-stats"></i> 月次振り返り</button>
-    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> KPI推移一覧</button>
-    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoSalesAnalysis()"><i class="ti ti-chart-histogram"></i> 売上分析</button>
+    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoMonthlyReview()"><i class="ti ti-calendar-stats"></i> ${t('月次振り返り','Monthly Review')}</button>
+    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> ${t('KPI推移一覧','KPI Trend')}</button>
+    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoSalesAnalysis()"><i class="ti ti-chart-histogram"></i> ${t('売上分析','Sales Analysis')}</button>
   </div></div>`;
 
   // ===== ③ 店舗別ワンライン（複数店スコープ時のみ） =====
   if (stores.length > 1){
-    html += `<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent2)"></i>店舗別（タップで単店表示）</div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent2)"></i>${t('店舗別（タップで単店表示）','By store (tap for single)')}</div>`;
     sortByLoginOrder(stores).forEach(function(st){
       var c = cumByStore[st.id]||{};
       var b2 = c.budMonth||0;
@@ -9456,16 +9480,16 @@ function renderBudgetSummary() {
         <div style="min-width:86px;font-size:12px;font-weight:600">${escapeHtml(st.name)}</div>
         <div style="flex:1">${progBar(p2,{h:7,color:col2,pace:isCur?paceRef:null})}</div>
         <div style="min-width:52px;text-align:right;font-weight:700;color:${col2};font-size:12px">${p2!=null?p2.toFixed(1)+'%':'—'}</div>
-        <div style="min-width:72px;text-align:right;font-size:10px;color:var(--muted)">原${fc2!=null?fc2.toFixed(1)+'%':'—'}・人${lb2!=null?lb2.toFixed(1)+'%':'—'}</div>
+        <div style="min-width:72px;text-align:right;font-size:10px;color:var(--muted)">${t('原','FC')}${fc2!=null?fc2.toFixed(1)+'%':'—'}・${t('人','Labor')}${lb2!=null?lb2.toFixed(1)+'%':'—'}</div>
       </div>`;
     });
-    html += `<div style="font-size:10px;color:var(--muted);margin-top:6px">達成率＝月間予算比${isCur?'（前日までの実績）。縦線＝今日の暦日ペース、色＝ペース比':''}。原＝原価率・人＝人件費率（実数）。</div></div>`;
+    html += `<div style="font-size:10px;color:var(--muted);margin-top:6px">${t('達成率＝月間予算比','Achievement = vs monthly budget')}${isCur?t('（前日までの実績）。縦線＝今日の暦日ペース、色＝ペース比'," (actual through yesterday). Line = today's calendar pace, color = vs pace"):''}${t('。原＝原価率・人＝人件費率（実数）。','. FC = food cost %, Labor = labor % (actual).')}</div></div>`;
   }
 
   // ===== 承認待ちの控えめな通知 =====
   try{
     var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && b.status==='GM承認待ち'; });
-    if (pendB.length) html += `<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab('setup')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">GM承認待ちの予算が <b>${pendB.length}店</b> あります — タップで予算設定へ</div></div>`;
+    if (pendB.length) html += `<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab('setup')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">${t('GM承認待ちの予算が','Budgets pending GM approval:')} <b>${pendB.length}${t('店',' stores')}</b> ${t('あります — タップで予算設定へ','— tap to open Budget Setup')}</div></div>`;
   }catch(e){}
 
   return html;
@@ -9718,7 +9742,7 @@ function renderBudgetDaily() {
   }
 
   var isAgg = dailyStoreScope==='ALL' && multiStore;
-  var title = isAgg ? `全${vis.length}店集計` : (scopeStores[0]||{name:'—'}).name;
+  var title = isAgg ? `${t('全','All ')}${vis.length}${t('店集計',' stores')}` : (scopeStores[0]||{name:'—'}).name;
   if (isAgg) {
     html += '<div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:8px">'
       +'<button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>'
@@ -9730,11 +9754,11 @@ function renderBudgetDaily() {
       var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
       var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
       return { id:s.id, name:s.name, color:_bStoreCol(s.id), actual:act, budget:bud, pace:null,
-        sub:'累計予算＝本日まで ・ 原価率 '+(fc!=null?fc+'%':'—')+' ・ 人件費率 '+(lb!=null?lb+'%':'—') };
+        sub:t('累計予算＝本日まで','Cum. budget = through today')+' ・ '+t('原価率','FC')+' '+(fc!=null?fc+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(lb!=null?lb+'%':'—') };
     });
-    html += '<div class="card"><div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>店舗別 今日の現在地 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">累計売上／累計予算・対予算ペース</span></div>';
+    html += '<div class="card"><div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>'+t('店舗別 今日の現在地','By Store · Today')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('累計売上／累計予算・対予算ペース','Cum. sales / Cum. budget · vs-budget pace')+'</span></div>';
     html += _bStoreProgCards(_dItems, 'setDailyScope');
-    html += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">タップで各店の日次詳細（日別入力・KPI）へ。</div></div>';
+    html += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+t('タップで各店の日次詳細（日別入力・KPI）へ。','Tap a store for daily detail (per-day input · KPI).')+'</div></div>';
     return html;
   }
 
@@ -9745,10 +9769,10 @@ function renderBudgetDaily() {
     var ss = getSyncState(sStore.id);
     var syncCol = ss.status==='success'?'var(--green)':ss.status==='failed'?'var(--red)':'var(--muted)';
     var syncDotHtml = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${syncCol};vertical-align:middle;margin-right:4px"></span>`;
-    var statusText = ss.last ? `${syncDotHtml}最終更新: ${ss.last}` : `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);vertical-align:middle;margin-right:4px"></span>未連携`;
+    var statusText = ss.last ? `${syncDotHtml}${t('最終更新','Updated')}: ${ss.last}` : `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);vertical-align:middle;margin-right:4px"></span>${t('未連携','Not linked')}`;
     html += `<div class="card" style="padding:10px 14px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <div style="flex:1;min-width:180px;font-size:11px;color:var(--muted)"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i> ${statusText}${ss.detail?` · ${ss.detail}`:''}${hasGuid?'':' · <span style="color:var(--yellow)">GUID未設定</span>'}</div>
-      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
+      <div style="flex:1;min-width:180px;font-size:11px;color:var(--muted)"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i> ${statusText}${ss.detail?` · ${ss.detail}`:''}${hasGuid?'':' · <span style="color:var(--yellow)">'+t('GUID未設定','GUID not set')+'</span>'}</div>
+      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> ${t('同期センター','Sync Center')}</button>
     </div>
     <div id="toast-sync-status" style="font-size:11px;color:var(--muted)"></div></div>`;
   }
@@ -9774,15 +9798,15 @@ function renderBudgetDaily() {
   // 日次進捗メインカード：今日の現在地（累計売上／累計予算・本日まで）
   var _dpCol = pctColor(paceRate);
   html += `<div class="card" style="border:1.5px solid ${_dpCol}">
-    <div class="card-title"><i class="ti ti-map-pin" style="color:${_dpCol}"></i>${escapeHtml(title)} 今日の現在地 — 累計売上／累計予算${_dOff!==0?'（'+_dLbl+'）':''}</div>
+    <div class="card-title"><i class="ti ti-map-pin" style="color:${_dpCol}"></i>${escapeHtml(title)}${t(' 今日の現在地 — 累計売上／累計予算',' — Today · Cum. sales / Cum. budget')}${_dOff!==0?'（'+_dLbl+'）':''}</div>
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
       <div style="font-size:26px;font-weight:800;color:var(--tm)">${fmtUSD2(sumActual)}</div>
-      <div style="font-size:12px;color:var(--muted)">／ 累計予算 ${fmtUSD2(sumBudgetToToday)}</div>
+      <div style="font-size:12px;color:var(--muted)">${t('／ 累計予算','/ Cum. budget')} ${fmtUSD2(sumBudgetToToday)}</div>
       <span class="tag ${paceRate>=100?'tag-green':paceRate>=90?'tag-yellow':'tag-red'}" style="margin-left:auto;font-size:13px">${paceRate}%</span>
     </div>
     <div style="margin:10px 0 6px">${progBar(paceRate,{h:12,color:_dpCol})}</div>
-    <div style="font-size:11.5px;color:${_dpCol};font-weight:700">対予算ペース ${paceRate}%<span style="color:var(--muted);font-weight:400"> ・ 累計売上 ÷ 累計予算（本日まで）</span></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">月間で見た現在地：売上実績 <b style="color:var(--tm)">${fmtUSD2(sumActual)}</b> ／ 総予算 ${fmtUSD2(sumBudget)}（月間達成率 <b>${monthRate}%</b>）</div>
+    <div style="font-size:11.5px;color:${_dpCol};font-weight:700">${t('対予算ペース','vs-budget pace')} ${paceRate}%<span style="color:var(--muted);font-weight:400"> ${t('・ 累計売上 ÷ 累計予算（本日まで）','· Cum. sales ÷ cum. budget (through today)')}</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">${t('月間で見た現在地：売上実績','Month view · Actual sales')} <b style="color:var(--tm)">${fmtUSD2(sumActual)}</b> ${t('／ 総予算','/ Total budget')} ${fmtUSD2(sumBudget)}（${t('月間達成率','Month achievement')} <b>${monthRate}%</b>）</div>
   </div>`;
 
   // 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）
@@ -9790,15 +9814,15 @@ function renderBudgetDaily() {
 
   // 日次テーブル
   var canEdit = ROLE_CONFIG[curRole].canCreate;
-  var guestLabel = (!isAgg && scopeStores[0]) ? guestCountLabel(scopeStores[0].id) : '客数';
-  html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>日次一覧
+  var guestLabel = (!isAgg && scopeStores[0]) ? guestCountLabel(scopeStores[0].id) : t('客数','Guests');
+  html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>${t('日次一覧','Daily list')}
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>
       <span style="font-size:13px;font-weight:600">${dailyMonthLabel()}</span>
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div></div>
     <table class="inv-table" style="min-width:${isAgg?'620':'1080'}px;font-size:12px"><thead><tr>
-      <th>日</th>${isAgg?'':'<th class="d-wx">天気</th><th class="d-wx">イベント</th>'}<th>予算</th><th>実績</th>${isAgg?'':'<th>L売上</th><th>D売上</th><th>'+guestLabel+'</th>'}<th>達成</th><th>累計達成</th>${isAgg?'':'<th>チップ率</th>'}<th>労働h</th><th>人件費</th>${(!isAgg&&canEdit)?'<th></th>':''}
+      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'</th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
   var cumB=0, cumA=0;
@@ -9817,7 +9841,7 @@ function renderBudgetDaily() {
       if (ov.lunchSales!=null||ov.dinnerSales!=null) { dayLunch+=(ov.lunchSales||0); dayDinner+=(ov.dinnerSales||0); hasLD=true; }
       if (!isAgg) { weather=ov.weather||''; event=ov.event||''; eventAuto=ov.eventAuto||false; gv=dayGuestValue(s.id, ov); gv.takeout=ov.takeout; }
       if (ov.toast||ov.toastSrc) isToast = true;
-      if (!isAgg && (ov.by||ov.editBy)) _manBy = (ov.editBy||ov.by) + (ov.editBy?'（修正）':'');
+      if (!isAgg && (ov.by||ov.editBy)) _manBy = (ov.editBy||ov.by) + (ov.editBy?t('（修正）','(edited)'):'');
       dayFirst += Number(ov.firstTimeBowls)||0;
       dayRepeat += Number(ov.repeatBowls)||0;
       if(typeof toastLaborHoursForDate==='function') dayLaborH += toastLaborHoursForDate(s.id, d.date);
@@ -9826,7 +9850,7 @@ function renderBudgetDaily() {
     });
     var dayRT = (dayFirst+dayRepeat)>0 ? Math.round(dayRepeat/(dayFirst+dayRepeat)*1000)/10 : null;
     var dayHol = !isAgg ? dayEventFor(d.date) : '';
-    if (!isAgg) { try{ var _bd=(STORES.find(function(x){return x.id===scopeStores[0].id;})||{}).bizDays; var _bv=_bd?_bd[d.dow]:null; if(_bv){ dayHol=(dayHol?dayHol+' ':'')+(_bv==='closed'?'定休':_bv==='lclose'?'L休':'D休'); } }catch(e){} }
+    if (!isAgg) { try{ var _bd=(STORES.find(function(x){return x.id===scopeStores[0].id;})||{}).bizDays; var _bv=_bd?_bd[d.dow]:null; if(_bv){ dayHol=(dayHol?dayHol+' ':'')+(_bv==='closed'?t('定休','Closed'):_bv==='lclose'?t('L休','L off'):t('D休','D off')); } }catch(e){} }
     var dayMemo = (!isAgg && event && !eventAuto) ? event : '';
     // チップ率（単店のみ）: チップ総額 ÷ 純売上
     var tipRate = null, tipTotal = 0;
@@ -9843,20 +9867,20 @@ function renderBudgetDaily() {
     var rowBg = isToday?'background:#fdeee4':isWeekend?'background:rgba(255,255,255,0.02)':'';
     html += `<tr style="${rowBg}">
       <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
-      ${isAgg?'':`<td class="d-wx" style="font-size:14px">${weatherIcon(weather)}</td><td class="d-wx" style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="タップでメモ編集"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">＋メモ</span>':'-'):''}</td>`}
+      ${isAgg?'':`<td class="d-wx" style="font-size:14px">${weatherIcon(weather)}</td><td class="d-wx" style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="${t('タップでメモ編集','Tap to edit memo')}"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">'+t('＋メモ','+Memo')+'</span>':'-'):''}</td>`}
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
-      <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="Toast実績"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="手入力: ${escapeHtml(_manBy)}"></i>`:''}</td>
-      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="テイクアウト丼数"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
+      <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="'+t('Toast実績','Toast actual')+'"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="${t('手入力','Manual')}: ${escapeHtml(_manBy)}"></i>`:''}</td>
+      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="${t('テイクアウト丼数','Takeout bowls')}"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${pctColor(cumRate)};font-size:11px">${cumRate}%</span></td>
-      ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="チップ総額 $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
+      ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="${t('チップ総額','Tip total')} $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
       <td style="font-size:11px;color:var(--muted)">${dayLaborH>0?dayLaborH.toFixed(1):'—'}</td>
       <td style="font-size:11px;color:var(--muted)">${dayLaborCost>0?fmtUSD2(dayLaborCost):'—'}</td>
       ${(!isAgg&&canEdit)?`<td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openDailyActualModal('${scopeStores[0].id}','${d.date}','${d.dow}')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>`:''}
     </tr>`;
   });
   html += '</tbody></table>';
-  if (isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">集計ビューでは天気・イベントは各店ビューで確認・入力できます</p>`;
+  if (isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('集計ビューでは天気・イベントは各店ビューで確認・入力できます','In aggregate view, weather/events are viewed and entered per store')}</p>`;
   html += '</div>';
   return html;
 }
@@ -10389,53 +10413,53 @@ function sgn(n){ return (n>=0?'+':'')+n; }
 /* 重要KPIカード（6指標＋予実比較）。各予実画面で共通利用 */
 function keyKpiCard(scopeStores, days, title){
   var k=keyKpiStats(scopeStores,days);
-  var unitTxt=k.unit==='丼'?'丼数':'客数';
+  var unitTxt=k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests');
   var acCol=pctColor(k.achieve);
   var rCol=k.repeatRate==null?'var(--muted)':(k.repeatRate>=50?'var(--green)':k.repeatRate>=30?'var(--yellow)':'var(--red)');
   // 集客（予実）
-  var guestSub = k.guestBudget!=null ? ('予算 '+k.guestBudget.toLocaleString()+'　達成'+Math.round(k.guests/k.guestBudget*100)+'%') : unitTxt;
+  var guestSub = k.guestBudget!=null ? (t('予算','Bud')+' '+k.guestBudget.toLocaleString()+'　'+t('達成','ach ')+Math.round(k.guests/k.guestBudget*100)+'%') : unitTxt;
   var guestCol = k.guestBudget!=null ? (k.guests>=k.guestBudget?'var(--green)':k.guests>=k.guestBudget*0.9?'var(--yellow)':'var(--red)') : 'var(--tm)';
   // 客単価（予実）
-  var ppaSub = k.ppaBudget!=null ? ('予算 $'+k.ppaBudget.toFixed(2)+'　'+sgn(Math.round((k.ppa-k.ppaBudget)*100)/100)) : ('売上÷'+unitTxt);
+  var ppaSub = k.ppaBudget!=null ? (t('予算','Bud')+' $'+k.ppaBudget.toFixed(2)+'　'+sgn(Math.round((k.ppa-k.ppaBudget)*100)/100)) : (t('売上÷','Sales ÷ ')+unitTxt);
   // 原価率（予実：目標＝予算原価率）
   var fcCol, fcSub;
   if(k.fcBudgetRate!=null){ fcCol=k.fcRate<=0?'var(--muted)':(k.fcRate<=k.fcBudgetRate?'var(--green)':k.fcRate<=k.fcBudgetRate+3?'var(--yellow)':'var(--red)');
-    fcSub='目標 '+k.fcBudgetRate+'%'+(k.fcRate>0?'　'+sgn(Math.round((k.fcRate-k.fcBudgetRate)*10)/10)+'pt':''); }
-  else { fcCol=k.fcRate>0?(k.fcRate<=31?'var(--green)':k.fcRate<=34?'var(--yellow)':'var(--red)'):'var(--muted)'; fcSub='目標 ≤31%'; }
+    fcSub=t('目標','Tgt')+' '+k.fcBudgetRate+'%'+(k.fcRate>0?'　'+sgn(Math.round((k.fcRate-k.fcBudgetRate)*10)/10)+'pt':''); }
+  else { fcCol=k.fcRate>0?(k.fcRate<=31?'var(--green)':k.fcRate<=34?'var(--yellow)':'var(--red)'):'var(--muted)'; fcSub=t('目標 ≤31%','Tgt ≤31%'); }
   // 人件費率（予実）
   var lCol, lSub;
   if(k.laborBudgetRate!=null){ lCol=k.laborRate<=0?'var(--muted)':(k.laborRate<=k.laborBudgetRate?'var(--green)':k.laborRate<=k.laborBudgetRate+3?'var(--yellow)':'var(--red)');
-    lSub='目標 '+k.laborBudgetRate+'%'+(k.laborRate>0?'　'+sgn(Math.round((k.laborRate-k.laborBudgetRate)*10)/10)+'pt':''); }
-  else { lCol=k.laborRate>0?(k.laborRate<=28?'var(--green)':k.laborRate<=31?'var(--yellow)':'var(--red)'):'var(--muted)'; lSub='目標 ≤28%'; }
+    lSub=t('目標','Tgt')+' '+k.laborBudgetRate+'%'+(k.laborRate>0?'　'+sgn(Math.round((k.laborRate-k.laborBudgetRate)*10)/10)+'pt':''); }
+  else { lCol=k.laborRate>0?(k.laborRate<=28?'var(--green)':k.laborRate<=31?'var(--yellow)':'var(--red)'):'var(--muted)'; lSub=t('目標 ≤28%','Tgt ≤28%'); }
   // 人件費率の補足: 1日あたり平均労働時間・平均人件費
   if(k.avgLaborHoursPerDay!=null||k.avgLaborCostPerDay!=null){
-    lSub += '<br><span style="font-size:9px;color:var(--muted)">労働'+(k.avgLaborHoursPerDay!=null?k.avgLaborHoursPerDay+'h':'—')+'/日 ・ '+(k.avgLaborCostPerDay!=null?'$'+k.avgLaborCostPerDay.toLocaleString():'—')+'/日</span>';
+    lSub += '<br><span style="font-size:9px;color:var(--muted)">'+t('労働','Labor')+(k.avgLaborHoursPerDay!=null?k.avgLaborHoursPerDay+'h':'—')+t('/日','/d')+' ・ '+(k.avgLaborCostPerDay!=null?'$'+k.avgLaborCostPerDay.toLocaleString():'—')+t('/日','/d')+'</span>';
   }
   // リピート率（前月比）
-  var rSub = k.repeatHas ? ('Repeat '+k.repeat.toLocaleString()+' / 計'+k.rTotal.toLocaleString()+(k.repeatPrev!=null?'　前月'+k.repeatPrev+'%':'')) : '同期後に表示';
+  var rSub = k.repeatHas ? ('Repeat '+k.repeat.toLocaleString()+' / '+t('計','Tot ')+k.rTotal.toLocaleString()+(k.repeatPrev!=null?'　'+t('前月','prev')+k.repeatPrev+'%':'')) : t('同期後に表示','Shows after sync');
   // リピート率の補足: 1日あたり平均ファーストタイマー数・平均リピーター数
   if(k.repeatHas && (k.avgFirstPerDay!=null||k.avgRepeatPerDay!=null)){
-    rSub += '<br><span style="font-size:9px;color:var(--muted)">FT '+(k.avgFirstPerDay!=null?k.avgFirstPerDay:'—')+'/日 ・ RP '+(k.avgRepeatPerDay!=null?k.avgRepeatPerDay:'—')+'/日</span>';
+    rSub += '<br><span style="font-size:9px;color:var(--muted)">FT '+(k.avgFirstPerDay!=null?k.avgFirstPerDay:'—')+''+t('/日','/d')+' ・ RP '+(k.avgRepeatPerDay!=null?k.avgRepeatPerDay:'—')+t('/日','/d')+'</span>';
   }
   // Totoya専用（味噌汁アップグレード／いくらシャワー）
   var misoCol = k.misoRate==null?'var(--muted)':(k.misoTgt!=null?(k.misoRate>=k.misoTgt?'var(--green)':k.misoRate>=k.misoTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
   var ikuraCol = k.ikuraRate==null?'var(--muted)':(k.ikuraTgt!=null?(k.ikuraRate>=k.ikuraTgt?'var(--green)':k.ikuraRate>=k.ikuraTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
-  var misoSub = (k.misoAll>0)?('②'+(k.misoUp||0).toLocaleString()+' / 全'+(k.misoAll||0).toLocaleString()+(k.misoTgt!=null?'　目標'+k.misoTgt+'%':'')):'同期後に表示';
-  var ikuraSub = (k.ikuraBowls>0)?('③'+(k.ikura||0).toLocaleString()+' / 対象'+(k.ikuraBowls||0).toLocaleString()+(k.ikuraTgt!=null?'　目標'+k.ikuraTgt+'%':'')):'同期後に表示';
+  var misoSub = (k.misoAll>0)?('②'+(k.misoUp||0).toLocaleString()+' / '+t('全','of ')+(k.misoAll||0).toLocaleString()+(k.misoTgt!=null?'　'+t('目標','tgt')+k.misoTgt+'%':'')):t('同期後に表示','Shows after sync');
+  var ikuraSub = (k.ikuraBowls>0)?('③'+(k.ikura||0).toLocaleString()+' / '+t('対象','of ')+(k.ikuraBowls||0).toLocaleString()+(k.ikuraTgt!=null?'　'+t('目標','tgt')+k.ikuraTgt+'%':'')):t('同期後に表示','Shows after sync');
   // ドリンク比率（ToriTon/Tenkichi/Marujuu）
   var drinkCol = k.drinkRate==null?'var(--muted)':(k.drinkTgt!=null?(k.drinkRate>=k.drinkTgt?'var(--green)':k.drinkRate>=k.drinkTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
-  var drinkSub = k.drinkRate!=null?('ドリンク売上÷総売上'+(k.drinkTgt!=null?'　目標'+k.drinkTgt+'%':'')):'メニュー出数待ち';
-  return `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>重要KPI${title?'・'+title:''}　<span style="font-size:10px;color:var(--muted);font-weight:400">実績／予算比較</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 10px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> KPI推移一覧</button></div>
+  var drinkSub = k.drinkRate!=null?(t('ドリンク売上÷総売上','Drink sales ÷ total')+(k.drinkTgt!=null?'　'+t('目標','tgt')+k.drinkTgt+'%':'')):t('メニュー出数待ち','Awaiting menu mix');
+  return `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>${t('重要KPI','Key KPIs')}${title?'・'+title:''}　<span style="font-size:10px;color:var(--muted);font-weight:400">${t('実績／予算比較','Actual / Budget')}</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 10px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> ${t('KPI推移一覧','KPI Trend')}</button></div>
     <div class="kpi-grid">
-      ${kpi('売上', fmtUSD2(k.sales), '予算 '+fmtK(k.budget)+' / 達成'+k.achieve+'%', acCol)}
-      ${kpi(k.unit==='丼'?'集客(丼数)':'集客', (k.guests||0).toLocaleString(), guestSub, guestCol)}
-      ${kpi('客単価（全体）', '$'+(k.ppa||0).toFixed(2), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), 'var(--tm)')}
-      ${kpi('リピート率', k.repeatRate==null?'—':k.repeatRate+'%', rSub, rCol)}
-      ${kpi('原価率', k.fcRate>0?k.fcRate+'%':'—', fcSub, fcCol)}
-      ${kpi('人件費率', k.laborRate>0?k.laborRate+'%':'—', lSub, lCol)}
-      ${k.drinkScope?kpi('ドリンク比率', k.drinkRate==null?'—':k.drinkRate+'%', drinkSub, drinkCol):''}
-      ${k.totoyaScope?kpi('味噌汁UP率', k.misoRate==null?'—':k.misoRate+'%', misoSub, misoCol):''}
-      ${k.totoyaScope?kpi('いくらシャワー率', k.ikuraRate==null?'—':k.ikuraRate+'%', ikuraSub, ikuraCol):''}
+      ${kpi(t('売上','Sales'), fmtUSD2(k.sales), t('予算','Bud')+' '+fmtK(k.budget)+' / '+t('達成','ach ')+k.achieve+'%', acCol)}
+      ${kpi(k.unit==='丼'?t('集客(丼数)','Guests (bowls)'):t('集客','Guests'), (k.guests||0).toLocaleString(), guestSub, guestCol)}
+      ${kpi(t('客単価（全体）','Avg check (all)'), '$'+(k.ppa||0).toFixed(2), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), 'var(--tm)')}
+      ${kpi(t('リピート率','Repeat rate'), k.repeatRate==null?'—':k.repeatRate+'%', rSub, rCol)}
+      ${kpi(t('原価率','Food cost %'), k.fcRate>0?k.fcRate+'%':'—', fcSub, fcCol)}
+      ${kpi(t('人件費率','Labor %'), k.laborRate>0?k.laborRate+'%':'—', lSub, lCol)}
+      ${k.drinkScope?kpi(t('ドリンク比率','Drink ratio'), k.drinkRate==null?'—':k.drinkRate+'%', drinkSub, drinkCol):''}
+      ${k.totoyaScope?kpi(t('味噌汁UP率','Miso upsell %'), k.misoRate==null?'—':k.misoRate+'%', misoSub, misoCol):''}
+      ${k.totoyaScope?kpi(t('いくらシャワー率','Ikura shower %'), k.ikuraRate==null?'—':k.ikuraRate+'%', ikuraSub, ikuraCol):''}
     </div>
   </div>`;
 }
@@ -13024,7 +13048,7 @@ function renderTipMgmt() {
 
   var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header"><div><div class="section-title">チップ管理</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
-      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> 同期センター</button>
+      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> ${t('同期センター','Sync Center')}</button>
       <button class="btn btn-secondary btn-sm" onclick="openTipDateDebug()"><i class="ti ti-stethoscope"></i> Tip診断</button>
       ${['gm','ceo','office','am'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openTipHoursModal()"><i class="ti ti-clock-cog"></i> 対象時間設定</button>`:''}
     </div>
@@ -15099,7 +15123,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '499';
+const APP_VERSION = '510';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -28668,11 +28692,11 @@ function renderApproval() {
   // 本部は最後に
   order.sort(function(x,y){ return (x==='OFFICE'?1:0)-(y==='OFFICE'?1:0); });
 
-  var html = '<div class="section-header"><div><div class="section-title">承認センター</div><div class="section-sub">店舗別・承認状況（誰が承認／未承認）</div></div>'
-    +'<span class="tag '+(pending.length?'tag-yellow':'tag-green')+'">'+pending.length+'件待ち</span></div>';
+  var html = '<div class="section-header"><div><div class="section-title">'+t('承認センター','Approval Center')+'</div><div class="section-sub">'+t('店舗別・承認状況（誰が承認／未承認）','By store · approval status (who approved / pending)')+'</div></div>'
+    +'<span class="tag '+(pending.length?'tag-yellow':'tag-green')+'">'+pending.length+t('件待ち',' pending')+'</span></div>';
 
   if (!pending.length) {
-    html += '<div class="card" style="text-align:center;padding:20px"><i class="ti ti-circle-check" style="font-size:24px;color:var(--green)"></i><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:4px">承認待ちはありません</div></div>';
+    html += '<div class="card" style="text-align:center;padding:20px"><i class="ti ti-circle-check" style="font-size:24px;color:var(--green)"></i><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:4px">'+t('承認待ちはありません','No pending approvals')+'</div></div>';
   } else {
     order.forEach(function(sid){
       var g=groups[sid];
@@ -28689,23 +28713,23 @@ function renderApproval() {
           var _rb = (getBudgets().find(function(x){return x.storeId===a.ref;})||{}).rationale;
           if (_rb && _rb.basis) {
             html += '<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin:6px 0;line-height:1.7">'
-              +'<div><b><i class="ti ti-bulb" style="color:var(--accent)"></i> 予算の根拠：</b>'+escapeHtml(_rb.basis)+'</div>'
-              +'<div style="margin-top:3px"><b><i class="ti ti-flag" style="color:var(--accent2)"></i> 重点・変化点：</b>'+escapeHtml(_rb.focus||'')+'</div>'
+              +'<div><b><i class="ti ti-bulb" style="color:var(--accent)"></i> '+t('予算の根拠','Budget basis')+'：</b>'+escapeHtml(_rb.basis)+'</div>'
+              +'<div style="margin-top:3px"><b><i class="ti ti-flag" style="color:var(--accent2)"></i> '+t('重点・変化点','Focus / changes')+'：</b>'+escapeHtml(_rb.focus||'')+'</div>'
               +'<div style="font-size:9px;color:var(--muted);margin-top:3px">'+escapeHtml(_rb.by||'')+' '+escapeHtml(_rb.at||'')+'</div></div>';
           }
         }
         html += '<div class="approval-actions">';
         if (isBudget) {
-          html += '<button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+a.ref+'\')"><i class="ti ti-clipboard-list"></i> 考え方・日別</button>'
-            +'<button class="btn btn-success btn-sm" onclick="approveBudgetSeg(\''+a.ref+'\')"><i class="ti ti-check"></i> 承認</button>'
-            +'<button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg(\''+a.ref+'\')"><i class="ti ti-arrow-back"></i> 差し戻し</button>';
+          html += '<button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+a.ref+'\')"><i class="ti ti-clipboard-list"></i> '+t('考え方・日別','Rationale / daily')+'</button>'
+            +'<button class="btn btn-success btn-sm" onclick="approveBudgetSeg(\''+a.ref+'\')"><i class="ti ti-check"></i> '+t('承認','Approve')+'</button>'
+            +'<button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg(\''+a.ref+'\')"><i class="ti ti-arrow-back"></i> '+t('差し戻し','Return')+'</button>';
         } else {
           if (canSign) {
-            html += '<button class="btn btn-success btn-sm" onclick="signoffApproval(\''+a.id+'\')"><i class="ti ti-check"></i> 承認する</button>';
+            html += '<button class="btn btn-success btn-sm" onclick="signoffApproval(\''+a.id+'\')"><i class="ti ti-check"></i> '+t('承認する','Approve')+'</button>';
           }
-          html += '<button class="btn btn-danger btn-sm" onclick="rejectApprovalItem(\''+a.id+'\')"><i class="ti ti-x"></i> 却下</button>';
-          if (!canSign && !isMgr) html += '<span style="font-size:11px;color:var(--muted);align-self:center"><i class="ti ti-clock"></i> 他の承認者待ち</span>';
-          if (isMgr && !_approvalAllDone(a)) html += '<button class="btn btn-secondary btn-sm" onclick="overrideApproveAll(\''+a.id+'\')"><i class="ti ti-shield-check"></i> 代理で全承認</button>';
+          html += '<button class="btn btn-danger btn-sm" onclick="rejectApprovalItem(\''+a.id+'\')"><i class="ti ti-x"></i> '+t('却下','Reject')+'</button>';
+          if (!canSign && !isMgr) html += '<span style="font-size:11px;color:var(--muted);align-self:center"><i class="ti ti-clock"></i> '+t('他の承認者待ち','Awaiting other approvers')+'</span>';
+          if (isMgr && !_approvalAllDone(a)) html += '<button class="btn btn-secondary btn-sm" onclick="overrideApproveAll(\''+a.id+'\')"><i class="ti ti-shield-check"></i> '+t('代理で全承認','Approve all (override)')+'</button>';
         }
         html += '</div></div>';
       });
@@ -28717,7 +28741,7 @@ function renderApproval() {
     var dgroups={}, dorder=[];
     done.forEach(function(a){ var st=_approvalStore(a); if(!dgroups[st.id]){ dgroups[st.id]={name:st.name, items:[]}; dorder.push(st.id); } dgroups[st.id].items.push(a); });
     dorder.sort(function(x,y){ return (x==='OFFICE'?1:0)-(y==='OFFICE'?1:0); });
-    html += '<div class="card"><div class="card-title"><i class="ti ti-history"></i>過去ログ（店舗別）</div>';
+    html += '<div class="card"><div class="card-title"><i class="ti ti-history"></i>'+t('過去ログ（店舗別）','History (by store)')+'</div>';
     dorder.forEach(function(sid){
       var g=dgroups[sid];
       var sicon = sid==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
@@ -28725,8 +28749,8 @@ function renderApproval() {
       g.items.slice().reverse().slice(0,40).forEach(function(a){
         var ok=a.status==='approved';
         html += '<div class="approval-item" style="padding-left:6px"><div class="approval-header"><div><div class="approval-title" style="font-size:12px">'+escapeHtml(a.title||'')+'</div>'
-          +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+(a.signoffs&&a.signoffs.length?' · 承認者: '+a.signoffs.map(function(s){return escapeHtml(s.name);}).join('、'):'')+'</div></div>'
-          +'<span class="tag '+(ok?'tag-green':'tag-red')+'">'+(ok?'全承認':'却下')+'</span></div></div>';
+          +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+(a.signoffs&&a.signoffs.length?' · '+t('承認者','Approvers')+': '+a.signoffs.map(function(s){return escapeHtml(s.name);}).join(curLang==='en'?', ':'、'):'')+'</div></div>'
+          +'<span class="tag '+(ok?'tag-green':'tag-red')+'">'+(ok?t('全承認','Approved'):t('却下','Rejected'))+'</span></div></div>';
       });
       html += '</details>';
     });
@@ -35311,7 +35335,7 @@ function maybePullSkillStore(storeId){
   }catch(e){}
 }
 function tSkStatus(st){ if(curLang!=='en') return st; var m={'未取得':'Not started','承認':'Approved','申請中':'Pending','確認中':'In review','差戻し':'Returned'}; return m[st]||st; }
-function tStatus(st){ if(curLang!=='en'||!st) return st; var m={'承認':'Approved','承認待ち':'Pending','却下':'Rejected','申請中':'Pending','確認中':'In review','差戻し':'Returned','完了':'Done','未対応':'Open','対応中':'In progress','解決':'Resolved','未取得':'Not started'}; return m[st]||st; }
+function tStatus(st){ if(curLang!=='en'||!st) return st; var m={'承認':'Approved','承認待ち':'Pending','却下':'Rejected','申請中':'Pending','確認中':'In review','差戻し':'Returned','完了':'Done','未対応':'Open','対応中':'In progress','解決':'Resolved','未取得':'Not started','下書き':'Draft','GM承認待ち':'Pending (GM)','承認済み':'Approved','差し戻し':'Returned','再提出済み':'Resubmitted','未登録':'Not set'}; return m[st]||st; }
 function renderSkillSelf() {
   var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
