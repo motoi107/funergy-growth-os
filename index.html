@@ -15123,7 +15123,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '512';
+const APP_VERSION = '513';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -23271,7 +23271,7 @@ function renderOfficeMember(){
       var s=sk[p]||{}; var lv=(s.status==='承認')?(s.level||0):0;
       var crit=(skillCriteria(p)||[])[lv]||'';
       html+='<div style="padding:8px 0;border-top:1px solid var(--border)">'
-        +'<div style="display:flex;align-items:center;gap:8px"><span style="flex:1;font-size:13px;font-weight:600">'+escapeHtml(p)+'</span>'
+        +'<div style="display:flex;align-items:center;gap:8px"><span style="flex:1;font-size:13px;font-weight:600">'+escapeHtml(posLabel(p))+'</span>'
         +'<span class="tag" style="background:'+evalColorLv(lv,3)+';color:#fff;font-size:10px">Lv'+lv+'</span></div>';
       if(crit) html+='<div style="font-size:11px;color:var(--muted);margin-top:3px">'+escapeHtml(crit)+'</div>';
       if(canEval){
@@ -35323,13 +35323,15 @@ function skillRadarSvg(labels, values, max, opts){
 }
 
 /* 指定 社員 × 店舗 の承認レベルでレーダーを構築 */
+/* ポジション名の表示用ラベル。キー（lookup用データ）は不変。日本語キーの一部を常に英語表示。 */
+function posLabel(p){ var M={'理念':'Philosophy','サービスクオリティ':'Service Quality'}; return (M[p]!=null?M[p]:p); }
 function skillRadarForStore(name, storeId, size){
   var positions = getStorePositions(storeId);
   var sk = getEmpSkillsStore(name, storeId);
   var vals = positions.map(function(p){ var s=sk[p]||{}; return (s.status==='承認') ? (s.level||0) : 0; });
   var hasAny = vals.some(function(v){return v>0;});
-  var chart = skillRadarSvg(positions, vals, 3, {size:size||240});
-  if(!hasAny){ chart += '<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:2px">承認済みスキルがまだありません</div>'; }
+  var chart = skillRadarSvg(positions.map(posLabel), vals, 3, {size:size||240});
+  if(!hasAny){ chart += '<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:2px">'+t('承認済みスキルがまだありません','No approved skills yet')+'</div>'; }
   return chart;
 }
 
@@ -35390,7 +35392,7 @@ function renderSkillSelf() {
     var col = s.status==='承認'?'tag-green':s.status==='申請中'||s.status==='確認中'?'tag-yellow':s.status==='差戻し'?'tag-red':'tag-gray';
     html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <div><span style="font-size:13px;font-weight:600">${p}</span>
+        <div><span style="font-size:13px;font-weight:600">${posLabel(p)}</span>
           ${s.status==='承認'?`<span style="font-size:11px;color:var(--green)"> · ${lvLabel}</span>`:''}
         </div>
         <div style="display:flex;align-items:center;gap:6px">
@@ -35435,8 +35437,8 @@ function renderSkillSelf() {
 
   var ap = approvedPositionsStore(me, storeId);
   html += `<div class="card"><div class="card-title"><i class="ti ti-checkbox"></i>${t('対応可能ポジション','Positions You Can Cover')} (${ap.length})</div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px">${ap.length?ap.map(p=>`<span class="tag tag-green">${p}</span>`).join(''):'<span style="color:var(--muted);font-size:13px">'+t('承認済みポジションなし','No approved positions yet')+'</span>'}</div>
-    ${ap.length<positions.length?`<div style="font-size:11px;color:var(--accent2);margin-top:8px">${t('次に覚えるべき','Learn next')}: ${positions.filter(p=>!ap.includes(p)).slice(0,3).join(', ')}</div>`:''}
+    <div style="display:flex;flex-wrap:wrap;gap:6px">${ap.length?ap.map(p=>`<span class="tag tag-green">${posLabel(p)}</span>`).join(''):'<span style="color:var(--muted);font-size:13px">'+t('承認済みポジションなし','No approved positions yet')+'</span>'}</div>
+    ${ap.length<positions.length?`<div style="font-size:11px;color:var(--accent2);margin-top:8px">${t('次に覚えるべき','Learn next')}: ${positions.filter(p=>!ap.includes(p)).slice(0,3).map(posLabel).join(', ')}</div>`:''}
   </div>`;
 
   if (reqs.length) {
@@ -35454,7 +35456,7 @@ function renderSkillSelf() {
 
 function showCriteria(position) {
   var crit = skillCriteria(position);
-  var html = `<div class="modal-title">${position} スキル基準 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  var html = `<div class="modal-title">${posLabel(position)} ${t('スキル基準','Skill criteria')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:13px">`;
   [0,1,2,3].forEach(lv=>{
     var col = evalColorLv(lv,3);
@@ -35530,7 +35532,7 @@ function skillCritPick(selectId, lv){
 }
 function openSkillRequestModal(position) {
   var crit = skillCriteria(position);
-  openModal(`<div class="modal-title">${position} スキル申請 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  openModal(`<div class="modal-title">${posLabel(position)} ${t('スキル申請','Skill request')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">「できるようになったこと」を申請してください。管理者が実務確認して承認します。</p>
     <div class="form-group"><label class="form-label">希望レベル <span style="font-size:10px;color:var(--muted);font-weight:400">（タップで基準を見て選択）</span></label>
       ${skillLevelChipHtml(position, 1, 'sk-level','sk-level-chip',1)}
@@ -35636,9 +35638,9 @@ function renderSkillManager() {
   // 不足ポジション（Lv3が誰もいない）
   var shortPos = matrixPos.filter(p=>p!=='Energy'&&p!=='Leadership').filter(p=>!staffHere.some(e=>positionLevelStore(e.name,p,mgrStoreId)>=3));
   if (shortPos.length) {
-    html += `<div class="alert alert-warning" style="padding:6px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div style="font-size:12px">${t('Lv3不在のポジション','No Lv3 for')}: <b>${shortPos.join(', ')}</b>${t('（シフトのリスク）',' (shift risk)')}</div></div>`;
+    html += `<div class="alert alert-warning" style="padding:6px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div style="font-size:12px">${t('Lv3不在のポジション','No Lv3 for')}: <b>${shortPos.map(posLabel).join(', ')}</b>${t('（シフトのリスク）',' (shift risk)')}</div></div>`;
   }
-  html += `<div style="overflow-x:auto"><table class="inv-table" style="min-width:500px"><thead><tr><th>${t('スタッフ','Staff')}</th>${matrixPos.map(p=>`<th style="font-size:10px">${p.slice(0,5)}</th>`).join('')}<th style="font-size:10px">${t('点/Lv3','Pts/Lv3')}</th></tr></thead><tbody>`;
+  html += `<div style="overflow-x:auto"><table class="inv-table" style="min-width:500px"><thead><tr><th>${t('スタッフ','Staff')}</th>${matrixPos.map(p=>`<th style="font-size:10px">${posLabel(p).slice(0,5)}</th>`).join('')}<th style="font-size:10px">${t('点/Lv3','Pts/Lv3')}</th></tr></thead><tbody>`;
   if (!staffHere.length) {
     html += `<tr><td colspan="${matrixPos.length+2}" style="text-align:center;color:var(--muted);padding:14px">${storeObj.name}${t('で勤務するスタッフがいません',' — no staff')}</td></tr>`;
   }
@@ -35777,7 +35779,7 @@ function renderSkillStaffView() {
           <span style="color:var(--muted)">${sc.total}点 · Lv3×${sc.lv3}</span>
           ${elig&&!elig.maxed&&elig.allOk?`<span class="tag tag-green" style="font-size:9px;margin-left:auto">${elig.target.label}可</span>`:''}
         </div>
-        <div style="font-size:11px;color:var(--muted);margin-top:2px">${ap.length?ap.map(p=>`<span class="tag tag-green" style="font-size:9px">${p}</span>`).join(' '):'承認済みなし'}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${ap.length?ap.map(p=>`<span class="tag tag-green" style="font-size:9px">${posLabel(p)}</span>`).join(' '):t('承認済みなし','None approved')}</div>
         <div style="margin-top:6px">${skillRadarForStore(e.name, sid, 210)}</div>
         ${_lvHtml}
         ${_sggHtml}
@@ -35806,7 +35808,7 @@ function renderSkillPositionView(storeId, visStores) {
     var riskColor = lv3.length===0 ? 'var(--red)' : lv3.length===1 ? 'var(--yellow)' : 'var(--green)';
     html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-        <span style="font-size:13px;font-weight:700">${pos}</span>
+        <span style="font-size:13px;font-weight:700">${posLabel(pos)}</span>
         <span style="width:8px;height:8px;border-radius:50%;background:${riskColor}"></span>
         <span style="font-size:10px;color:var(--muted)">Lv3 ${lv3.length}人</span>
         ${lv3.length===0?'<span class="tag tag-red" style="font-size:9px;margin-left:auto">育成必要</span>':''}
