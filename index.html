@@ -3072,8 +3072,9 @@ function tipForDay(storeId, date) {
   var av = getDailyActuals(storeId)[date] || {};
   var cash = getCashTip(storeId, date);
   var lCredit = av.lunchCreditTip||0, dCredit = av.dinnerCreditTip||0;
-  var lTotal = lCredit*(1-TIP_CC_FEE) + (cash.lunch||0);
-  var dTotal = dCredit*(1-TIP_CC_FEE) + (cash.dinner||0);
+  var _wkk = (storeId==='F03' || storeId==='F03-G'); // Waikikiはクレジットチップのみシェア（現金は対象外）
+  var lTotal = lCredit*(1-TIP_CC_FEE) + (_wkk ? 0 : (cash.lunch||0));
+  var dTotal = dCredit*(1-TIP_CC_FEE) + (_wkk ? 0 : (cash.dinner||0));
   // その日ランチOFF（曜日別設定でLオフ＝ディナーのみ営業）の店は、ランチTipを全てディナーに合算しランチ項目を消す。
   // 例: ToriTonのランチ時間帯に打った事前注文のTipがランチに計上されても、ディナーのシェア対象になる。
   if (tipDayLunchOff(storeId, date)) {
@@ -15068,7 +15069,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '491';
+const APP_VERSION = '498';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -17328,7 +17329,7 @@ function renderShiftStaff() {
   html += `<div class="card" style="padding:8px 10px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
     <button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(${_shiftWeekOff-1})"><i class="ti ti-chevron-left"></i></button>
     <div style="flex:1;text-align:center">
-      <div style="font-size:13px;font-weight:800;color:var(--accent)">${shiftWeekRelLabel()}${myAvail?' <span style="font-size:10px;color:var(--green);font-weight:700">提出済</span>':' <span style="font-size:10px;color:var(--yellow);font-weight:700">未提出</span>'}</div>
+      <div style="font-size:13px;font-weight:800;color:var(--accent)">${shiftWeekRelLabel()}${myAvail?' <span style="font-size:10px;color:var(--green);font-weight:700">'+t('提出済','Submitted')+'</span>':' <span style="font-size:10px;color:var(--yellow);font-weight:700">'+t('未提出','Not submitted')+'</span>'}</div>
       <div style="font-size:11px;color:var(--muted)">${shiftWeekRangeLabel()}</div>
     </div>
     <button class="btn btn-secondary btn-sm" onclick="setShiftWeekOff(${_shiftWeekOff+1})"><i class="ti ti-chevron-right"></i></button>
@@ -18178,18 +18179,18 @@ function renderVacation() {
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var isManager = canManageVacations();
   var html = `<div class="section-header">
-    <div class="section-title">休暇申請</div>
+    <div class="section-title">${t('休暇申請','Time Off Requests')}</div>
     <div style="display:flex;gap:6px">
-      <button class="btn btn-primary btn-sm" onclick="openVacationModal()"><i class="ti ti-plus"></i> 申請</button>
+      <button class="btn btn-primary btn-sm" onclick="openVacationModal()"><i class="ti ti-plus"></i> ${t('申請','Request')}</button>
     </div>
   </div>`;
 
   // 管理者: 承認待ちキュー（自分が承認できるもの）
   if (isManager) {
     var pending = all.filter(v=> v.status==='申請中' && canApproveVacation(v));
-    html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag ${pending.length?'tag-yellow':'tag-gray'}">${pending.length}</span>${pending.length?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('approval')"><i class="ti ti-checklist"></i> 承認センターで承認</button>`:''}</div>`;
+    html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>${t('承認待ち','Pending Approval')} <span class="tag ${pending.length?'tag-yellow':'tag-gray'}">${pending.length}</span>${pending.length?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('approval')"><i class="ti ti-checklist"></i> ${t('承認センターで承認','Approve in Approval Center')}</button>`:''}</div>`;
     if (!pending.length) {
-      html += `<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちの休暇はありません</div>`;
+      html += `<div style="font-size:12px;color:var(--muted);padding:4px 0">${t('承認待ちの休暇はありません','No pending time-off requests')}</div>`;
     } else {
       pending.forEach(v=>{
         var sName = (STORES.find(s=>s.id===v.storeId)||{name:v.storeId}).name;
@@ -18197,9 +18198,9 @@ function renderVacation() {
           <div style="display:flex;justify-content:space-between;align-items:start">
             <div><div style="font-size:13px;font-weight:600">${v.employee} <span style="font-size:10px;color:var(--muted)">· ${sName}</span></div>
               <div style="font-size:12px;color:var(--muted)">${v.startDate} 〜 ${v.endDate} · ${v.type}</div>
-              ${v.reason?`<div style="font-size:11px;color:var(--muted)">理由: ${v.reason}</div>`:''}</div>
+              ${v.reason?`<div style="font-size:11px;color:var(--muted)">${t('理由','Reason')}: ${v.reason}</div>`:''}</div>
           </div>
-          <div style="margin-top:6px"><span class="tag tag-yellow" style="font-size:10px">承認待ち</span> <span style="font-size:10px;color:var(--muted)">承認は承認センターで</span></div></div>`;
+          <div style="margin-top:6px"><span class="tag tag-yellow" style="font-size:10px">${t('承認待ち','Pending')}</span> <span style="font-size:10px;color:var(--muted)">${t('承認は承認センターで','Approve in Approval Center')}</span></div></div>`;
       });
     }
     html += `</div>`;
@@ -18208,11 +18209,11 @@ function renderVacation() {
     var today = todayISO();
     var upcoming = all.filter(v=> v.status==='承認' && canApproveVacation(v) && v.endDate>=today).sort((a,b)=>a.startDate.localeCompare(b.startDate));
     if (upcoming.length) {
-      html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check" style="color:var(--green)"></i>承認済み（今後の休み）</div>`;
+      html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check" style="color:var(--green)"></i>${t('承認済み（今後の休み）','Approved (Upcoming)')}</div>`;
       upcoming.forEach(v=>{
         html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
           <span><b>${v.employee}</b> · ${v.startDate}〜${v.endDate} <span style="color:var(--muted)">(${v.type})</span></span>
-          <button class="btn btn-secondary btn-sm" style="padding:0 8px;font-size:10px" onclick="cancelApprovedVacation('${v.id}')">取消</button></div>`;
+          <button class="btn btn-secondary btn-sm" style="padding:0 8px;font-size:10px" onclick="cancelApprovedVacation('${v.id}')">${t('取消','Cancel')}</button></div>`;
       });
       html += `</div>`;
     }
@@ -18220,9 +18221,9 @@ function renderVacation() {
 
   // 自分の申請履歴
   var mine = all.filter(v=> v.employee===me);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-beach"></i>自分の申請</div>`;
+  html += `<div class="card"><div class="card-title"><i class="ti ti-beach"></i>${t('自分の申請','My Requests')}</div>`;
   if (!mine.length) {
-    html += `<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">申請履歴なし</div>`;
+    html += `<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">${t('申請履歴なし','No request history')}</div>`;
   } else {
     mine.slice().reverse().forEach(v => {
       var statusClass = v.status==='承認'?'tag-green':v.status==='却下'?'tag-red':'tag-yellow';
@@ -18230,10 +18231,10 @@ function renderVacation() {
         <div class="approval-header">
           <div><div class="approval-title">${v.startDate} 〜 ${v.endDate}</div>
           <div class="approval-meta">${v.type}${v.reason?' · '+v.reason:''}</div>
-          ${v.status==='却下'&&v.rejectReason?`<div style="font-size:11px;color:var(--red)">却下理由: ${v.rejectReason}</div>`:''}</div>
-          <span class="tag ${statusClass}">${v.status}</span>
+          ${v.status==='却下'&&v.rejectReason?`<div style="font-size:11px;color:var(--red)">${t('却下理由','Rejection reason')}: ${v.rejectReason}</div>`:''}</div>
+          <span class="tag ${statusClass}">${tStatus(v.status)}</span>
         </div>
-        ${v.status==='申請中'?`<div style="margin-top:6px;text-align:right"><button class="btn btn-secondary btn-sm" style="padding:2px 10px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="deleteMyVacation('${v.id}')"><i class="ti ti-x"></i> 申請を取消</button></div>`:''}</div>`;
+        ${v.status==='申請中'?`<div style="margin-top:6px;text-align:right"><button class="btn btn-secondary btn-sm" style="padding:2px 10px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="deleteMyVacation('${v.id}')"><i class="ti ti-x"></i> ${t('申請を取消','Cancel request')}</button></div>`:''}</div>`;
     });
   }
   html += `</div>`;
@@ -24607,8 +24608,8 @@ function evalRubricLegendHtml(opts){
   }).join('');
   return '<details '+(opts.open?'open':'')+' style="border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:10px;background:var(--surface)">'
     +'<summary style="font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px">'
-      +'<i class="ti ti-list-check" style="color:var(--muted)"></i> 評価基準（0〜3）'
-      +(canEdit?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="event.preventDefault();event.stopPropagation();openEvalRubricModal()"><i class="ti ti-edit"></i> 編集</button>':'<span style="margin-left:auto;color:var(--muted);font-size:11px;font-weight:400">タップで開閉</span>')
+      +'<i class="ti ti-list-check" style="color:var(--muted)"></i> '+t('評価基準（0〜3）','Rubric (Lv0–3)')
+      +(canEdit?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="event.preventDefault();event.stopPropagation();openEvalRubricModal()"><i class="ti ti-edit"></i> '+t('編集','Edit')+'</button>':'<span style="margin-left:auto;color:var(--muted);font-size:11px;font-weight:400">'+t('タップで開閉','Tap to expand')+'</span>')
     +'</summary>'
     +'<div style="margin-top:4px">'+rows+'</div>'
   +'</details>';
@@ -28115,7 +28116,7 @@ function renderLeadership() {
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>履歴</div>`;
     reqHist.slice().reverse().slice(0,6).forEach(r=>{
       html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.name} · ${r.kind==='promo'?'昇格':'Tip'}申請 ${r.pct}%</div>
-        <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${r.status}</span></div>
+        <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${tStatus(r.status)}</span></div>
         <div class="approval-meta">${r.approvedDate||r.date}${r.approver?' · 承認: '+r.approver:''}${r.wantTitle?' · '+r.wantTitle:''}</div></div>`;
     });
     lssHist.slice().reverse().slice(0,6).forEach(h=>{
@@ -28882,7 +28883,7 @@ function renderPGD(empName, isManagerView) {
   if (tipReqs.length) {
     html += `<div style="font-size:12px;font-weight:600;margin:8px 0 4px">Tip Rate履歴</div>`;
     tipReqs.slice().reverse().slice(0,4).forEach(r=>{
-      html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0"><span>${r.rate}% ${r.reason?'· '+r.reason:''}</span><span class="tag ${r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow'}" style="font-size:9px">${r.status}</span></div>`;
+      html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0"><span>${r.rate}% ${r.reason?'· '+r.reason:''}</span><span class="tag ${r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow'}" style="font-size:9px">${tStatus(r.status)}</span></div>`;
     });
   }
   html += '</div>';
@@ -29042,8 +29043,8 @@ function renderMypage() {
     (typeof myActiveNoms==='function'?myActiveNoms(me):[]).forEach(function(n){
       var isIku = n.type==='育成';
       html += '<div class="card" style="border-left:3px solid '+(isIku?'var(--accent)':'var(--green)')+'">'
-        +'<div class="card-title"><i class="ti '+(isIku?'ti-star':'ti-mood-heart')+'" style="color:'+(isIku?'var(--accent)':'var(--green)')+'"></i> '+(isIku?'特別育成中':'改善サポート中')+'</div>'
-        +'<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+(isIku?(escapeHtml(n.by||'上長')+'から特別育成に指名されています。集中して伸ばしていきましょう。'):'一緒に伸ばすポイントを設定しています。下記を意識して取り組みましょう。')+'</div>'
+        +'<div class="card-title"><i class="ti '+(isIku?'ti-star':'ti-mood-heart')+'" style="color:'+(isIku?'var(--accent)':'var(--green)')+'"></i> '+(isIku?t('特別育成中','Special Development'):t('改善サポート中','Improvement Support'))+'</div>'
+        +'<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+(isIku?(escapeHtml(n.by||t('上長','Manager'))+t('から特別育成に指名されています。集中して伸ばしていきましょう。',' has selected you for special development. Let\'s focus and grow!')):t('一緒に伸ばすポイントを設定しています。下記を意識して取り組みましょう。','We have set points to improve together. Please keep the following in mind.'))+'</div>'
         +nomBody(n)+'</div>';
     });
   }catch(e){}
@@ -29400,7 +29401,7 @@ function renderMypage() {
   if (myVac.length) {
     myVac.slice(-2).reverse().forEach(v => {
       var sc = v.status==='承認'?'tag-green':v.status==='却下'?'tag-red':'tag-yellow';
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${v.startDate}〜${v.endDate}</div><span class="tag ${sc}">${v.status}</span></div><div class="approval-meta">${v.type}</div></div>`;
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${v.startDate}〜${v.endDate}</div><span class="tag ${sc}">${tStatus(v.status)}</span></div><div class="approval-meta">${v.type}</div></div>`;
     });
   } else { html += `<p style="color:var(--muted);font-size:13px">${t('申請履歴なし','No requests')}</p>`; }
   html += '</div>';
@@ -29415,7 +29416,7 @@ function renderMypage() {
     if (myExp.length) {
       myExp.slice(-2).reverse().forEach(function(r){
         var sc = r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
-        html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(r.project||'')}</div><span class="tag ${sc}">${r.status}</span></div><div class="approval-meta">$${(r.total||0).toFixed(2)}</div></div>`;
+        html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(r.project||'')}</div><span class="tag ${sc}">${tStatus(r.status)}</span></div><div class="approval-meta">$${(r.total||0).toFixed(2)}</div></div>`;
       });
     }
     var myMile = (typeof getMileageRequests==='function') ? getMileageRequests().filter(function(r){return r.employee===me;}) : [];
@@ -29425,7 +29426,7 @@ function renderMypage() {
     if (myMile.length) {
       myMile.slice(-2).reverse().forEach(function(r){
         var sc = r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
-        html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(r.date||'')} ${escapeHtml(r.purpose||'')}</div><span class="tag ${sc}">${r.status}</span></div><div class="approval-meta">${r.miles} mi · $${(r.amount||0).toFixed(2)}</div></div>`;
+        html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(r.date||'')} ${escapeHtml(r.purpose||'')}</div><span class="tag ${sc}">${tStatus(r.status)}</span></div><div class="approval-meta">${r.miles} mi · $${(r.amount||0).toFixed(2)}</div></div>`;
       });
     }
     html += '</div>';
@@ -33274,6 +33275,7 @@ function isThreeMonths(emp) {
 function effectiveTipRate(name) {
   var emp = getEmployees().find(e=>e.name===name);
   if (!emp) return 100;
+  if (emp.store==='F03' || emp.store==='F03-G') return 100; // Waikiki(FSP/WGS)は80/90/100制度から除外。クレジットチップを勤務時間で均等シェア
   if (emp.role!=='crew' && emp.role!=='sl') return 100;
   // 3ヶ月自動100%
   if (isThreeMonths(emp)) return 100;
@@ -34093,9 +34095,9 @@ function renderGrowthHub() {
   var mgr = ghIsManager();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var html = `<div class="section-header">
-    <div><div class="section-title"><i class="ti ti-mood-heart" style="color:var(--accent)"></i> お悩み相談室</div>
-    <div class="section-sub">${mgr?'スタッフからの相談に1対1で対応':'困っていること、気軽に相談できます（管理者だけが見ます）'}</div></div>
-    ${!mgr?`<button class="btn btn-primary btn-sm" onclick="openGHModal()"><i class="ti ti-plus"></i> 相談する</button>`:''}
+    <div><div class="section-title"><i class="ti ti-mood-heart" style="color:var(--accent)"></i> '+t('お悩み相談室','Consultation Room')+'</div>
+    <div class="section-sub">${mgr?t('スタッフからの相談に1対1で対応','Respond 1-on-1 to staff consultations'):t('困っていること、気軽に相談できます（管理者だけが見ます）','Feel free to reach out — only managers can see this')}</div></div>
+    ${!mgr?`<button class="btn btn-primary btn-sm" onclick="openGHModal()"><i class="ti ti-plus"></i> '+t('相談する','New consultation')+'</button>`:''}
   </div>`;
 
   if (mgr) {
@@ -34104,7 +34106,7 @@ function renderGrowthHub() {
     var visible = posts.filter(p=> scope===null ? true : scope.includes(p.store));
     if(curStore && curStore!=='ALL') visible = visible.filter(function(p){return p.store===curStore;});
     html += pageStoreTabs(curStore, true);
-    var statuses=[{id:'all',label:'全て'},{id:'未対応',label:'未対応'},{id:'対応中',label:'対応中'},{id:'解決',label:'解決'}];
+    var statuses=[{id:'all',label:t('全て','All')},{id:'未対応',label:tStatus('未対応')},{id:'対応中',label:tStatus('対応中')},{id:'解決',label:tStatus('解決')}];
     var list = ghFilter==='all'?visible:visible.filter(p=>(p.status||'未対応')===ghFilter);
     // 未対応を上に
     list = list.slice().sort((a,b)=>{
@@ -34115,7 +34117,7 @@ function renderGrowthHub() {
     var openCount = visible.filter(p=>(p.status||'未対応')!=='解決').length;
     html += `<div class="phase-tabs">${statuses.map(s=>`<div class="phase-tab${ghFilter===s.id?' active':''}" onclick="setGHFilter('${s.id}')">${s.label}${s.id==='未対応'&&openCount?` <span style="background:var(--red);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${visible.filter(p=>(p.status||'未対応')==='未対応').length}</span>`:''}</div>`).join('')}</div>`;
     if (!list.length) {
-      html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-mood-smile" style="font-size:32px;margin-bottom:8px;display:block"></i>該当する相談はありません</div>`;
+      html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-mood-smile" style="font-size:32px;margin-bottom:8px;display:block"></i>'+t('該当する相談はありません','No consultations found')+'</div>`;
     } else {
       list.forEach(p=> html += ghPostCard(p, true));
     }
@@ -34127,12 +34129,12 @@ function renderGrowthHub() {
   if (!mine.length) {
     html += `<div class="card" style="text-align:center;color:var(--muted);padding:36px">
       <i class="ti ti-mood-heart" style="font-size:34px;margin-bottom:10px;display:block;color:var(--accent)"></i>
-      <div style="font-size:14px;color:var(--tm);font-weight:600;margin-bottom:4px">困っていること、ありませんか？</div>
-      <div style="font-size:12px">仕事のこと・シフト・人間関係など、何でも気軽に相談してください。<br>あなたの相談は<b>管理者だけ</b>が見ます。同僚には見えません。</div>
-      <button class="btn btn-primary" style="margin-top:14px" onclick="openGHModal()"><i class="ti ti-plus"></i> 相談する</button>
+      <div style="font-size:14px;color:var(--tm);font-weight:600;margin-bottom:4px">'+t('困っていること、ありませんか？','Anything on your mind?')+'</div>
+      <div style="font-size:12px">${t('仕事のこと・シフト・人間関係など、何でも気軽に相談してください。','Work, shifts, relationships — feel free to consult about anything.')}<br>${t('あなたの相談は<b>管理者だけ</b>が見ます。同僚には見えません。','Only <b>managers</b> can see your consultation. Coworkers cannot.')}</div>
+      <button class="btn btn-primary" style="margin-top:14px" onclick="openGHModal()"><i class="ti ti-plus"></i> '+t('相談する','New consultation')+'</button>
     </div>`;
   } else {
-    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">あなたの相談（管理者だけが見ています）</div>`;
+    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+t('あなたの相談（管理者だけが見ています）','Your consultations (only managers can see)')+'</div>`;
     mine.slice().reverse().forEach(p=> html += ghPostCard(p, false));
   }
   return html;
@@ -35278,6 +35280,7 @@ function maybePullSkillStore(storeId){
   }catch(e){}
 }
 function tSkStatus(st){ if(curLang!=='en') return st; var m={'未取得':'Not started','承認':'Approved','申請中':'Pending','確認中':'In review','差戻し':'Returned'}; return m[st]||st; }
+function tStatus(st){ if(curLang!=='en'||!st) return st; var m={'承認':'Approved','承認待ち':'Pending','却下':'Rejected','申請中':'Pending','確認中':'In review','差戻し':'Returned','完了':'Done','未対応':'Open','対応中':'In progress','解決':'Resolved','未取得':'Not started'}; return m[st]||st; }
 function renderSkillSelf() {
   var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
@@ -35506,7 +35509,7 @@ function renderSkillManager() {
       var crit = skillCriteria(r.position);
       html += `<div class="approval-item">
         <div class="approval-header"><div><div class="approval-title">${r.name} · ${r.position} Lv${r.level}</div>
-        <div class="approval-meta">${r.date} · ${(STORES.find(s=>s.id===r.store)||{name:''}).name}</div></div><span class="tag tag-yellow">${r.status}</span></div>
+        <div class="approval-meta">${r.date} · ${(STORES.find(s=>s.id===r.store)||{name:''}).name}</div></div><span class="tag tag-yellow">${tStatus(r.status)}</span></div>
         <div style="font-size:11px;color:var(--accent2);margin-top:4px">Lv${r.level}基準: ${crit[r.level]||''}</div>
         <div style="font-size:12px;margin-top:6px">自己評価: ${r.selfComment}</div>
         ${r.evidence?`<div style="font-size:11px;color:var(--muted)">証拠: ${r.evidence}</div>`:''}
@@ -35573,7 +35576,7 @@ function renderSkillManager() {
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>評価履歴</div>`;
     done.slice().reverse().slice(0,8).forEach(r => {
       html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.name} · ${r.position}</div>
-        <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${r.status}</span></div>
+        <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${tStatus(r.status)}</span></div>
         <div class="approval-meta">${r.date}${r.mgrComment?' · '+r.mgrComment:''}</div></div>`;
     });
     html += '</div>';
