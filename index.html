@@ -3967,12 +3967,41 @@ function ls(key, def) {
   catch(e) { return def; }
 }
 var _lsQuotaWarned=false;
+/* ===== 端末保存容量（localStorage）管理：メーター・整理・自動整理 ===== */
+var _LS_PRUNABLE = ['daily_actuals_','menu_mix_','labor_hours_','cash_tips_','dailyops_','orders_','purchases_','fc_monthly_','att_day_approve_','att_approve_','office_attend_','tip_exclude_','warnings_','shiftopt_','spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','reminded_','inv_'];
+function lsBytesTotal(){ var tt=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; } }catch(e){} return tt; }
+function lsIsPrunable(k){ return _LS_PRUNABLE.some(function(pf){ return k.indexOf(pf)===0; }); }
+function lsPrunableInfo(){ var tt=0,n=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)){ var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; n++; } } }catch(e){} return {bytes:tt,count:n}; }
+function _lsPrunableKeys(){ var a=[]; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)) a.push(k); } }catch(e){} return a; }
+function autoPruneIfCritical(){ try{ if(lsBytesTotal() > 4.3*1024*1024){ _lsPrunableKeys().forEach(function(k){ try{localStorage.removeItem(k);}catch(e){} }); } }catch(e){} }
+function runStorageCleanup(){
+  var keys=_lsPrunableKeys();
+  if(!keys.length){ if(typeof showToast==='function') showToast(t('整理できるキャッシュはありません','No cache to clean'),'info'); return; }
+  if(!confirm(t('再取得可能なキャッシュ '+keys.length+' 件を整理して空き容量を作ります。データはクラウドに保存済みなので安全です（必要になれば自動で再取得されます）。よろしいですか？','Clean '+keys.length+' re-fetchable cache items to free space? Your data is safely stored in the cloud and will re-sync automatically. Continue?'))) return;
+  var before=lsBytesTotal();
+  keys.forEach(function(k){ try{ localStorage.removeItem(k); }catch(e){} });
+  _lsQuotaWarned=false;
+  var freed=Math.max(0, before-lsBytesTotal());
+  if(typeof showToast==='function') showToast(t((freed/1048576).toFixed(1)+'MB を整理しました（クラウドから自動で再取得されます）',(freed/1048576).toFixed(1)+'MB freed (re-syncs from cloud automatically)'),'success');
+  if(typeof renderPage==='function') renderPage('settings');
+}
+function renderStorageCard(){
+  var used=lsBytesTotal(); var cap=5*1024*1024; var pct=Math.min(100, Math.round(used/cap*100));
+  var pr=lsPrunableInfo();
+  var col= pct>=85?'var(--red)':pct>=65?'var(--yellow)':'var(--green)';
+  return '<div class="card"><div class="card-title"><i class="ti ti-database" style="color:var(--accent)"></i>'+t('保存容量（この端末）','Device Storage')+'</div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><b style="color:'+col+'">'+(used/1048576).toFixed(1)+' MB</b> / ~5 MB '+t('使用中','used')+' ('+pct+'%)</div>'
+    +'<div style="height:10px;background:var(--surface2);border-radius:6px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:'+pct+'%;background:'+col+'"></div></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+t('整理可能なキャッシュ','Re-fetchable cache')+': '+(pr.bytes/1048576).toFixed(1)+'MB ('+pr.count+'). '+t('データはクラウドに保存済みです。上限に近づいたら整理してください。','Your data is stored in the cloud. Clean up if you approach the limit.')+'</div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="runStorageCleanup()"><i class="ti ti-eraser"></i> '+t('キャッシュを整理して空ける','Clean cache & free space')+'</button></div>';
+}
 function lsSet(key, val) {
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ _splitWrite(key, sp, val); return; }
   try { localStorage.setItem(key, JSON.stringify(val)); }
   catch(e){
     if(e && (e.name==='QuotaExceededError' || e.code===22 || e.code===1014)){
-      if(!_lsQuotaWarned){ _lsQuotaWarned=true; try{ if(typeof showToast==='function') showToast('保存容量が上限に達しました。変更が保存されていない可能性があります（古いデータの整理が必要です）','error'); }catch(_){} }
+      try{ autoPruneIfCritical(); }catch(_){}
+      if(!_lsQuotaWarned){ _lsQuotaWarned=true; try{ if(typeof showToast==='function') showToast(t('保存容量が上限に達しました。設定＞保存容量の「キャッシュを整理」で空けてください（データはクラウドに保存済みです）','Device storage is full. Use Settings ▸ Device Storage ▸ Clean cache to free space. Your data is safe in the cloud.'),'error'); }catch(_){} }
     }
     console.warn('lsSet failed', key, e);
   }
@@ -5576,6 +5605,7 @@ function setStorePin(storeId, pin) { var p=getStorePins(); p[storeId]=pin; lsSet
    APP INIT
 ============================================================ */
 function initApp() {
+  try{ autoPruneIfCritical(); }catch(e){}
   var rc = ROLE_CONFIG[curRole];
   try { migrateMenuStore(); } catch(e){}
   // Topbar
@@ -15069,7 +15099,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '498';
+const APP_VERSION = '499';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -29471,6 +29501,7 @@ function renderSettings() {
     ${!salaryDisplayOn()?'<div style="font-size:11.5px;color:var(--yellow);font-weight:700"><i class="ti ti-alert-triangle"></i> 現在オフ：給与情報は全員に非表示です</div>':''}
   </div>` : ''}
   ${(curRole==='gm'||curRole==='ceo')?renderRoleHideConfig():''}
+  ${renderStorageCard()}
   <div class="card"><div class="card-title"><i class="ti ti-device-mobile-vibration" style="color:var(--accent)"></i>触感・アプリ</div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
       <div><div style="font-weight:600;font-size:13px">バイブレーション（触感フィードバック）</div>
