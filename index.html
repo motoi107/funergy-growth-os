@@ -15068,7 +15068,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '490';
+const APP_VERSION = '491';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -20696,7 +20696,7 @@ function renderStaffMaster() {
   }
 
   // Grade順（高い順）→ Lv(STEP評価)順 → 名前順で整理
-  var _gOrder = ['G7','G6','G5','G4','G3','G2','G1',''];
+  var _gOrder = ['G7','G6','G5','G4','G3','G2','G1','G1-P',''];
   _gOrder.forEach(gr => {
     var group = list.filter(e=>(empGrade(e)||'')===gr);
     if (!group.length) return;
@@ -28956,15 +28956,27 @@ function renderBadges(name, emp) {
 /* Crew本人のスキルカード: レーダーチャート＋ポジション別Lv */
 function mySkillCardHtml(name, storeId){
   try{
-    var positions = getStorePositions(storeId).filter(function(p){return p!=='Energy'&&p!=='Leadership';});
-    if(!positions.length) return '';
-    var sk = getEmpSkills(name)||{};
-    var vals = positions.map(function(p){ var x=sk[p]; return (x&&x.status==='承認')?(x.level||0):0; });
+    var _emp = getEmployees().find(function(x){return x.name===name;});
+    var _isPrep = _emp && typeof empGrade==='function' && empGrade(_emp)==='G1-P'; // プレップ(G1-P)はPrepスキル
+    var positions, vals, maxLv, titleLabel, legendLabel;
+    if (_isPrep) {
+      positions = (typeof getPrepPositions==='function') ? getPrepPositions(storeId) : [];
+      if(!positions.length) return '';
+      var psk = (typeof prepSkillsOf==='function') ? prepSkillsOf(_emp, storeId) : {};
+      vals = positions.map(function(p){ return Number(psk[p])||0; });
+      maxLv = 5; titleLabel = t('あなたのPrepスキルレベル','Your Prep Skill Levels'); legendLabel = 'Lv0〜5';
+    } else {
+      positions = getStorePositions(storeId).filter(function(p){return p!=='Energy'&&p!=='Leadership';});
+      if(!positions.length) return '';
+      var sk = getEmpSkills(name)||{};
+      vals = positions.map(function(p){ var x=sk[p]; return (x&&x.status==='承認')?(x.level||0):0; });
+      maxLv = 3; titleLabel = t('あなたのスキルレベル','Your Skill Levels'); legendLabel = 'Lv0〜3（承認済みのみ）';
+    }
     var n = positions.length, W=280, H=210, cx=W/2, cy=H/2+4, R=76;
     function pt(i, r){ var a=-Math.PI/2 + i*2*Math.PI/n; return [cx+r*Math.cos(a), cy+r*Math.sin(a)]; }
     var rings='';
-    [1,2,3].forEach(function(lv){
-      var pts=positions.map(function(_,i){ return pt(i, R*lv/3).map(Math.round).join(','); }).join(' ');
+    (maxLv===5?[1,2,3,4,5]:[1,2,3]).forEach(function(lv){
+      var pts=positions.map(function(_,i){ return pt(i, R*lv/maxLv).map(Math.round).join(','); }).join(' ');
       rings += '<polygon points="'+pts+'" fill="none" stroke="var(--border)" stroke-width="1"/>';
     });
     var axes = positions.map(function(p,i){
@@ -28973,14 +28985,14 @@ function mySkillCardHtml(name, storeId){
       return '<line x1="'+cx+'" y1="'+cy+'" x2="'+Math.round(e[0])+'" y2="'+Math.round(e[1])+'" stroke="var(--border)" stroke-width="1"/>'
         +'<text x="'+Math.round(l[0])+'" y="'+Math.round(l[1])+'" font-size="9" fill="var(--muted)" text-anchor="'+anchor+'" dominant-baseline="middle">'+escapeHtml(p)+'</text>';
     }).join('');
-    var poly = positions.map(function(_,i){ return pt(i, R*Math.max(0.04,vals[i]/3)).map(Math.round).join(','); }).join(' ');
-    var dots = positions.map(function(_,i){ var c=pt(i, R*Math.max(0.04,vals[i]/3)); return '<circle cx="'+Math.round(c[0])+'" cy="'+Math.round(c[1])+'" r="2.5" fill="var(--accent)"/>'; }).join('');
+    var poly = positions.map(function(_,i){ return pt(i, R*Math.max(0.04,vals[i]/maxLv)).map(Math.round).join(','); }).join(' ');
+    var dots = positions.map(function(_,i){ var c=pt(i, R*Math.max(0.04,vals[i]/maxLv)); return '<circle cx="'+Math.round(c[0])+'" cy="'+Math.round(c[1])+'" r="2.5" fill="var(--accent)"/>'; }).join('');
     var svg = '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:340px;height:auto;display:block;margin:0 auto">'
       +rings+axes+'<polygon points="'+poly+'" fill="var(--accent)" fill-opacity="0.22" stroke="var(--accent)" stroke-width="2"/>'+dots+'</svg>';
-    return '<div class="card"><div class="card-title"><i class="ti ti-radar-2" style="color:var(--accent)"></i>'+t('あなたのスキルレベル','Your Skill Levels')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">Lv0〜3（承認済みのみ）</span></div>'
+    return '<div class="card"><div class="card-title"><i class="ti ti-radar-2" style="color:var(--accent)"></i>'+titleLabel+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+legendLabel+'</span></div>'
       +svg
-      +(typeof skillLevelGaugeHtml==='function'?skillLevelGaugeHtml(name, storeId):'')
-      +'<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '+t('レベルは管理者承認後に反映されます。Lvが上がるとチップ配分・昇格に近づきます。','Levels reflect approved skills.')+'</div></div>';
+      +(_isPrep ? '' : (typeof skillLevelGaugeHtml==='function'?skillLevelGaugeHtml(name, storeId):''))
+      +'<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '+(_isPrep?t('Prepポジション別のスキルレベルです。','Your prep skill levels by position.'):t('レベルは管理者承認後に反映されます。Lvが上がるとチップ配分・昇格に近づきます。','Levels reflect approved skills.'))+'</div></div>';
   }catch(e){ return ''; }
 }
 function renderMypage() {
