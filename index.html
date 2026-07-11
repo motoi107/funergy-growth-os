@@ -15123,7 +15123,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '544';
+const APP_VERSION = '545';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -26952,6 +26952,7 @@ function karteAutoSkills(e){
 function renderGrowthKarte(){
   if(['gm','ceo'].indexOf(curRole)<0) return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)">この画面は GM / CEO 専用です。</div>';
   if(!window._karteUnlocked){ return karteLockHtml(); }
+  if(window._karteViewEmp){ return renderKarteDetailPage(window._karteViewEmp); }
   var cfg=kbCfg(); var tot=bonusTotals(cfg);
   var h='<div class="section-header"><div><div class="section-title"><i class="ti ti-id-badge-2"></i> 成長カルテ</div><div class="section-sub">G2以上の査定（ボーナス算出）と面談資料</div></div></div>';
   if(!window._secureMode){ h+='<div style="display:flex;gap:6px;justify-content:flex-end;margin:-4px 2px 8px"><button class="btn btn-secondary btn-sm" onclick="karteChangePin()"><i class="ti ti-key"></i> PIN変更</button><button class="btn btn-secondary btn-sm" onclick="karteLock()"><i class="ti ti-lock"></i> ロック</button></div>'; }
@@ -27025,7 +27026,7 @@ function kbResultHtml(){
       +'</tr>';
   });
   h+='</tbody></table></div>';
-  h+='<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0"><i class="ti ti-click"></i> 行をタップで個人カルテ（面談資料）を開きます。給与/ボーナス履歴・面談ログは次フェーズで追加します。</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0"><i class="ti ti-click"></i> 行をタップで個人の総合人事評価ページ（推移・ボーナス査定・面談サポート）を開きます。</div>';
   return h;
 }
 function kbRefresh(){
@@ -27034,103 +27035,218 @@ function kbRefresh(){
 }
 
 /* ===== 個人カルテ（面談資料） ===== */
-function openKarteDetail(empId){
-  var e=getEmployees().find(function(x){return x.id===empId;}); if(!e){ showToast('対象者が見つかりません'); return; }
+/* ===== 個人カルテ = 総合人事評価ページ（面談資料） ===== */
+function openKarteDetail(empId){ window._karteViewEmp=empId; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
+function karteBackToList(){ window._karteViewEmp=null; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
+
+function karteTenure(hire){
+  if(!hire) return '—';
+  var d=new Date(hire+'T00:00:00'); if(isNaN(d.getTime())) return '—';
+  var now=new Date(); var mo=(now.getFullYear()-d.getFullYear())*12+(now.getMonth()-d.getMonth()); if(now.getDate()<d.getDate()) mo--; if(mo<0) mo=0;
+  var y=Math.floor(mo/12), m=mo%12;
+  return (y>0?y+'年':'')+(m>0||y===0?m+'ヶ月':'');
+}
+
+/* ボーナス「なぜこの金額か」説明（原資・計算式は出さない・係数のみ） */
+function karteBonusExplain(e, b){
+  var out=[];
+  out.push('Grade <b>'+b.grade+'</b> の基準額 <b>'+_money(b.base)+'</b> をベースに査定しています。');
+  if(b.hasCS){
+    var csDir = b.csCoef>1.0?'標準を上回る':(b.csCoef<1.0?'標準を下回る':'標準どおりの');
+    out.push('Career Score <b>'+b.csPct+'%</b> の評価により、評価係数は'+csDir+' <b>×'+b.csCoef.toFixed(2)+'</b> が反映されています。');
+  } else {
+    out.push('Career Score が未評価のため、評価係数は標準（×1.00相当）で扱っています。評価を登録するとここに反映されます。');
+  }
+  if(b.spCoef!=null){
+    var spDir = b.spCoef>1.0?'目標超過':(b.spCoef<1.0?'目標未達':'目標どおり');
+    out.push('所属店の利益達成率 <b>'+b.spPct+'%</b>（'+spDir+'）により、店舗係数 <b>×'+b.spCoef.toFixed(2)+'</b> が反映されています。チームの成果が個人の評価にも連動します。');
+  }
+  out.push('個人の評価係数（Tip Rate評価）<b>×'+b.coef.toFixed(2)+'</b> を反映しています。');
+  out.push('以上を総合し、今期の査定額は <b>'+_money(b.amount)+'</b> です。');
+  return out;
+}
+
+/* 面談トークポイント（自動生成） */
+function karteTalkingPoints(e, b, as, elig){
+  var tp=[];
+  if(as && as.strong && as.strong.length){ tp.push({ic:'ti-star',col:'var(--green)',t:'<b>まず強みを承認</b>：'+as.strong.slice(0,2).map(function(s){return escapeHtml(s.name)+'('+s.pct+'%)';}).join('・')}); }
+  if(as && as.weak && as.weak.length){ tp.push({ic:'ti-target',col:'var(--accent2)',t:'<b>伸びしろを合意</b>：'+as.weak.slice(0,2).map(function(s){return escapeHtml(s.name)+'('+s.pct+'%)';}).join('・')+' を次期テーマに'}); }
+  if(elig && elig.target){ var rem=(elig.checks||[]).filter(function(c){return !c.ok;}).length; tp.push({ic:'ti-coin',col:'var(--accent)',t:'<b>Tip Rate</b>：次は '+elig.target.label+'。あと '+rem+' 項目でチャレンジ可能。何を伸ばせば届くか具体化する'}); }
+  else if(elig && elig.maxed){ tp.push({ic:'ti-crown',col:'var(--accent)',t:'<b>Tip Rate は最高到達</b>。維持と後進育成・次のGradeを期待として伝える'}); }
+  var k=getKarte(e.id);
+  (k.certs||[]).forEach(function(c){ if(c.have&&c.exp){ var d=new Date(c.exp+'T00:00:00'); var days=Math.round((d.getTime()-Date.now())/86400000); if(!isNaN(days)&&days<=60){ tp.push({ic:'ti-alert-triangle',col:'var(--red)',t:'資格「'+escapeHtml(c.name||'')+'」の更新期限が近い（'+escapeHtml(c.exp)+'）。更新の段取りを確認'}); } } });
+  (k.goals||[]).filter(function(g){return !g.done && g.text;}).slice(0,2).forEach(function(g){ tp.push({ic:'ti-flag',col:'var(--muted)',t:'前回の目標「'+escapeHtml(g.text)+'」の進捗を確認'}); });
+  tp.push({ic:'ti-message',col:'var(--muted)',t:'本人の希望・キャリア志向をヒアリング（次のGrade / 挑戦したいこと / 働き方）'});
+  return tp;
+}
+
+/* tile / factor / note ヘルパー */
+function _kTile(label,val,sub,col){ return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px"><div style="font-size:10px;color:var(--muted)">'+label+'</div><div style="font-size:19px;font-weight:800;color:'+(col||'var(--tm)')+';line-height:1.1">'+val+'</div>'+(sub?'<div style="font-size:10px;color:var(--muted)">'+sub+'</div>':'')+'</div>'; }
+function _kFactor(label,val,col){ return '<div style="background:var(--surface2);border-radius:8px;padding:6px 11px;min-width:92px"><div style="font-size:10px;color:var(--muted)">'+label+'</div><div style="font-size:15px;font-weight:800;color:'+(col||'var(--tm)')+'">'+val+'</div></div>'; }
+function _kNote(label, field, k, empId, autoTags){
+  var s='<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">'+label+'</div>';
+  if(autoTags&&autoTags.length){ s+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:5px">'+autoTags.map(function(x){return '<span class="tag" style="background:var(--surface2);font-size:10px">'+x.key+' '+escapeHtml(x.name)+' '+x.pct+'%</span>';}).join('')+'</div>'; }
+  s+='<textarea class="form-textarea" style="min-height:48px" onchange="karteSetField(\''+empId+'\',\''+field+'\',this.value)">'+escapeHtml(k[field]||'')+'</textarea>';
+  return s;
+}
+
+/* ===== 総合人事評価ページ ===== */
+function renderKarteDetailPage(empId){
+  var e=getEmployees().find(function(x){return x.id===empId;});
+  if(!e){ window._karteViewEmp=null; return '<div class="card">対象者が見つかりません。 <button class="btn btn-secondary btn-sm" onclick="karteBackToList()">一覧へ</button></div>'; }
   var cfg=kbCfg(); var k=getKarte(empId); var b=bonusForEmp(e,cfg);
   var as=karteAutoSkills(e); var sum=as.sum;
   var g=empGrade(e); var pct=(sum&&sum.hasData)?sum.totalPct:0;
   var lv=(typeof evalLevelFromPct==='function')?evalLevelFromPct(pct):{n:'-',label:'',color:'var(--muted)'};
   var gcol=(function(){ var gm=(typeof GRADE_MAP_DATA!=='undefined')?GRADE_MAP_DATA.find(function(x){return x.g===g;}):null; return gm?gm.col:'var(--accent)'; })();
+  var rate=(typeof effectiveTipRate==='function')?effectiveTipRate(e.name):null;
+  var storeId=(e.store&&e.store!=='ALL')?e.store:null;
+  var elig=(typeof checkLevelUpEligibility==='function'&&storeId)?checkLevelUpEligibility(e.name,storeId):null;
 
-  var radar='';
-  if(sum&&sum.hasData){ var dims=sum.cats.map(function(c){return {score:c.pct, short:c.key};}); radar=spRadar(dims, gcol); }
+  var h='';
+  /* ヘッダー */
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">';
+  h+='<button class="btn btn-secondary btn-sm" onclick="karteBackToList()"><i class="ti ti-arrow-left"></i> 一覧</button>';
+  h+='<div style="font-weight:800;font-size:16px"><i class="ti ti-id-badge-2" style="color:'+gcol+'"></i> '+escapeHtml(e.name||'')+'</div>';
+  h+='<span style="background:'+gcol+';color:#fff;font-weight:800;border-radius:8px;padding:3px 9px;font-size:13px">'+g+'</span>';
+  h+='<span style="background:'+lv.color+';color:#fff;font-weight:700;border-radius:6px;padding:2px 8px;font-size:11px">L'+lv.n+' '+escapeHtml(lv.label||'')+'</span>';
+  h+='<span style="margin-left:auto"><button class="btn btn-secondary btn-sm" onclick="window.print()"><i class="ti ti-printer"></i> 印刷</button></span>';
+  h+='</div>';
+  h+='<div style="font-size:12px;color:var(--muted);margin:0 2px 10px">'+escapeHtml(e.title||'')+' ・ '+escapeHtml((typeof _karteStoreNm==='function'?_karteStoreNm(e.store):null)||e.store||'')+' ・ 勤続 '+karteTenure(k.hireDate)+'</div>';
 
-  var h='<div class="modal-title" style="display:flex;align-items:center;gap:8px"><i class="ti ti-id-badge-2" style="color:'+gcol+'"></i>成長カルテ：'+escapeHtml(e.name||'')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div>';
-  h+='<div style="max-height:72vh;overflow:auto;padding:2px 2px 8px">';
+  /* サマリー tiles */
+  var skAcq=0, skTot=0;
+  try{ if(storeId){ var poss=getStorePositions(storeId).filter(function(p){return p!=='Energy'&&p!=='Leadership';}); var sk=getEmpSkills(e.name)||{}; skTot=poss.length; skAcq=poss.filter(function(p){return sk[p]&&sk[p].status==='承認'&&sk[p].level>=2;}).length; } }catch(_e){}
+  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:8px;margin-bottom:10px">';
+  h+=_kTile('Career Score', (sum&&sum.hasData)?(pct+'%'):'未評価', 'レベル L'+lv.n, lv.color);
+  h+=_kTile('Tip Rate', (rate===0?'No Tip':(rate!=null?rate+'%':'—')), (elig&&elig.target?('次: '+elig.target.label):''), 'var(--accent)');
+  h+=_kTile('スキル Lv2+', skAcq+' / '+skTot, '習得ポジション', 'var(--green)');
+  h+=_kTile('今期ボーナス', _money(b.amount), escapeHtml(cfg.quarter||''), gcol);
+  h+='</div>';
 
-  /* 基本情報 */
-  h+='<div class="card" style="margin-bottom:10px"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
-    +'<span style="background:'+gcol+';color:#fff;font-weight:800;border-radius:8px;padding:4px 10px;font-size:14px">'+g+'</span>'
-    +'<span style="background:'+lv.color+';color:#fff;font-weight:700;border-radius:6px;padding:3px 9px;font-size:12px">L'+lv.n+' '+escapeHtml(lv.label||'')+'</span>'
-    +'<span style="font-weight:700">'+escapeHtml(e.title||'')+'</span>'
-    +'<span style="color:var(--muted);font-size:12px">'+escapeHtml(e.store||'')+(e.support&&e.support.length?'（応援: '+e.support.map(_karteStoreNm).join('・')+'）':'')+'</span></div>';
-  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">';
-  h+='<div><label class="form-label">入社日</label><input type="date" class="form-input" value="'+escapeHtml(k.hireDate||'')+'" onchange="karteSetField(\''+empId+'\',\'hireDate\',this.value)"></div>';
-  h+='<div><label class="form-label">旧所属店舗（履歴）</label><input class="form-input" placeholder="例：F02→F01" value="'+escapeHtml(k.oldStores||'')+'" onchange="karteSetField(\''+empId+'\',\'oldStores\',this.value)"></div>';
-  h+='<div><label class="form-label">評価者</label><input class="form-input" value="'+escapeHtml(k.evaluator||(typeof myName==='function'?myName():''))+'" onchange="karteSetField(\''+empId+'\',\'evaluator\',this.value)"></div>';
-  h+='<div><label class="form-label">最終更新日</label><input class="form-input" disabled value="'+escapeHtml(k.updatedAt?new Date(k.updatedAt).toLocaleString('ja'):'—')+'"></div>';
-  h+='</div></div>';
-
-  /* 評価（レーダー） */
-  h+='<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>現在の評価（Career Score）</div>';
+  /* Career Score 推移 */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i>Career Score の推移</div>';
+  h+=lssTrendHtml(e.name);
   if(sum&&sum.hasData){
-    h+='<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">';
-    h+='<div style="flex:0 0 200px">'+radar+'</div>';
-    h+='<div style="flex:1;min-width:160px">'
-      +'<div style="font-size:13px"><b>総合</b> '+sum.totalScore+'/'+sum.totalMax+'点 ・ <span style="color:'+lv.color+';font-weight:700">'+pct+'%（L'+lv.n+'）</span></div>'
-      +'<div style="margin-top:6px;display:flex;flex-direction:column;gap:3px">'
-      +sum.cats.map(function(c){ return '<div style="display:flex;align-items:center;gap:6px"><span style="width:16px;font-weight:700;font-size:11px">'+c.key+'</span><div style="flex:1;height:6px;background:var(--surface2);border-radius:4px;overflow:hidden"><div style="width:'+c.pct+'%;height:100%;background:'+gcol+'"></div></div><span style="font-size:10px;color:var(--muted);width:34px;text-align:right">'+c.pct+'%</span></div>'; }).join('')
-      +'</div></div>';
+    h+='<div style="font-size:11px;color:var(--muted);margin:10px 0 4px">評価軸の内訳（現在）</div>';
+    h+='<div style="display:flex;flex-direction:column;gap:3px">'+sum.cats.map(function(c){ return '<div style="display:flex;align-items:center;gap:6px"><span style="width:18px;font-weight:700;font-size:11px">'+c.key+'</span><span style="flex:0 0 116px;font-size:10.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(c.name)+'</span><div style="flex:1;height:6px;background:var(--surface2);border-radius:4px;overflow:hidden"><div style="width:'+c.pct+'%;height:100%;background:'+gcol+'"></div></div><span style="font-size:10px;color:var(--muted);width:34px;text-align:right">'+c.pct+'%</span></div>'; }).join('')+'</div>';
+  }
+  h+='</div>';
+
+  /* スキル */
+  if(storeId){
+    h+='<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>スキル（現状と履歴）</div>';
+    try{ h+='<div style="max-width:250px;margin:0 auto">'+skillRadarForStore(e.name, storeId, 230)+'</div>'; }catch(_e){}
+    try{ h+=skillLevelGaugeHtml(e.name, storeId); }catch(_e){}
+    var sh=ls('skill_history',[]).filter(function(x){return x.name===e.name;}).slice(-6).reverse();
+    if(sh.length){ h+='<div style="font-size:11px;color:var(--muted);margin:10px 0 3px">最近のスキル更新</div>'; sh.forEach(function(x){ h+='<div style="display:flex;gap:8px;font-size:11.5px;padding:3px 0;border-top:1px solid var(--border)"><span style="color:var(--muted);width:72px;flex-shrink:0">'+escapeHtml(String(x.date||x.at||'')).slice(0,10)+'</span><span style="flex:1">'+escapeHtml((typeof posLabel==='function'?posLabel(x.position||x.pos||''):(x.position||x.pos||'')))+'</span><span style="font-weight:700">Lv'+(x.from!=null?x.from:'?')+' → Lv'+(x.to!=null?x.to:(x.level!=null?x.level:'?'))+'</span></div>'; }); }
     h+='</div>';
-  } else { h+='<div style="color:var(--muted);font-size:12px;padding:8px 0">Career Score 未評価。スキル評価を登録するとレーダーが表示されます。</div>'; }
+  }
+
+  /* Tip Rate 推移 */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-coin" style="color:var(--accent)"></i>Tip Rate の推移</div>';
+  h+='<div style="font-size:13px;margin-bottom:6px">現在：<b style="color:var(--accent)">'+(rate===0?'No Tip':(rate!=null?rate+'%':'—'))+'</b>';
+  if(elig&&elig.target){ h+=' <span style="color:var(--muted);font-size:11px">→ 次の目標 '+elig.target.label+'</span>'; }
+  h+='</div>';
+  var th=ls('tip_history',[]).filter(function(x){return x.name===e.name;}).slice(-8).reverse();
+  if(th.length){ th.forEach(function(x){ h+='<div style="display:flex;gap:8px;font-size:11.5px;padding:3px 0;border-top:1px solid var(--border)"><span style="color:var(--muted);width:72px;flex-shrink:0">'+escapeHtml(String(x.date||'')).slice(0,10)+'</span><span style="flex:1">'+(typeof tStatus==='function'?tStatus(x.status||''):escapeHtml(x.status||''))+(x.basis?' <span style="color:var(--muted)">('+escapeHtml(x.basis)+')</span>':'')+'</span><span style="font-weight:700">'+x.rate+'%</span></div>'; }); }
+  else { h+='<div style="font-size:11px;color:var(--muted)">変更履歴なし</div>'; }
   h+='</div>';
 
-  /* 強み・成長点・改善・総合 */
-  h+='<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-bulb" style="color:var(--accent)"></i>強み・成長課題・総合評価</div>';
-  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:3px">現在の強み（自動：高得点の軸）</div>';
-  h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">'+(as.strong.length?as.strong.map(function(s){return '<span class="tag tag-green" style="font-size:10px">'+s.key+' '+escapeHtml(s.name)+' '+s.pct+'%</span>';}).join(''):'<span style="font-size:11px;color:var(--muted)">—</span>')+'</div>';
-  h+='<textarea class="form-textarea" placeholder="強みの補足（任意）" onchange="karteSetField(\''+empId+'\',\'strengthsNote\',this.value)" style="min-height:46px">'+escapeHtml(k.strengthsNote||'')+'</textarea>';
-  h+='<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">今後さらに成長してほしい点（自動：低得点の軸）</div>';
-  h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">'+(as.weak.length?as.weak.map(function(s){return '<span class="tag tag-yellow" style="font-size:10px">'+s.key+' '+escapeHtml(s.name)+' '+s.pct+'%</span>';}).join(''):'<span style="font-size:11px;color:var(--muted)">—</span>')+'</div>';
-  h+='<textarea class="form-textarea" placeholder="成長してほしい点の補足（任意）" onchange="karteSetField(\''+empId+'\',\'growthNote\',this.value)" style="min-height:46px">'+escapeHtml(k.growthNote||'')+'</textarea>';
-  h+='<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">改善項目</div><textarea class="form-textarea" placeholder="改善してほしい具体項目" onchange="karteSetField(\''+empId+'\',\'improveNote\',this.value)" style="min-height:46px">'+escapeHtml(k.improveNote||'')+'</textarea>';
-  h+='<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">総合評価（良い点を中心に）</div><textarea class="form-textarea" placeholder="総合所見" onchange="karteSetField(\''+empId+'\',\'overall\',this.value)" style="min-height:60px">'+escapeHtml(k.overall||'')+'</textarea>';
+  /* 給与・ボーナス査定（係数の見える化・原資/計算式は非表示） */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--accent)"></i>給与・ボーナス査定（'+escapeHtml(cfg.quarter||'')+'）</div>';
+  h+='<div style="font-size:12px;margin-bottom:8px"><span style="color:var(--muted)">現在給与：</span><b>'+(e.wage?('$'+e.wage):'—')+'</b></div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">';
+  h+=_kFactor('Grade基準額', _money(b.base), gcol);
+  h+=_kFactor('個人係数', '×'+b.coef.toFixed(2), 'var(--accent2)');
+  h+=_kFactor('Career Score係数', '×'+b.csCoef.toFixed(2)+(b.hasCS?'':' (未)'), lv.color);
+  if(b.spCoef!=null) h+=_kFactor('店舗利益係数', '×'+b.spCoef.toFixed(2), 'var(--green)');
+  h+='</div>';
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border-radius:10px;padding:10px 14px"><span style="font-weight:800">査定ボーナス</span><span style="font-weight:800;font-size:20px;color:'+gcol+'">'+_money(b.amount)+'</span></div>';
+  h+='<div style="margin-top:8px;font-size:11.5px;line-height:1.7;color:var(--tm)"><div style="font-weight:700;color:var(--muted);margin-bottom:2px"><i class="ti ti-info-circle"></i> この金額になった理由（説明用）</div><ul style="margin:0;padding-left:18px">'+karteBonusExplain(e,b).map(function(s){return '<li>'+s+'</li>';}).join('')+'</ul></div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin:10px 0 4px">給与・ボーナス履歴</div>';
+  var pl=(k.payLog||[]).slice().reverse();
+  if(pl.length){ pl.forEach(function(p){ h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px">'
+    +'<input type="date" class="form-input" style="width:150px" value="'+escapeHtml(p.date||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'date\',this.value)">'
+    +'<select class="form-select" style="width:112px" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'type\',this.value)">'+['ボーナス','昇給','給与改定'].map(function(o){return '<option'+(p.type===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select>'
+    +'<input class="form-input" style="width:110px;text-align:right" placeholder="金額$" value="'+escapeHtml(p.amount||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'amount\',this.value)">'
+    +'<input class="form-input" style="flex:1;min-width:120px" placeholder="メモ" value="'+escapeHtml(p.note||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'note\',this.value)">'
+    +'<button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="kartePayDel(\''+empId+'\',\''+p.id+'\')">×</button></div>'; }); }
+  else { h+='<div style="font-size:11px;color:var(--muted)">履歴なし（支給の都度、記録すると推移が残ります）</div>'; }
+  h+='<button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="kartePayAdd(\''+empId+'\')"><i class="ti ti-plus"></i> 履歴を追加</button>';
   h+='</div>';
 
-  /* 給与・ボーナス */
-  h+='<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-coin" style="color:var(--accent)"></i>給与・ボーナス（'+escapeHtml(cfg.quarter||'')+'）</div>';
-  h+='<div style="font-size:12px;margin-bottom:8px"><span style="color:var(--muted)">現在給与：</span><b>'+(e.wage?('$'+e.wage):'—')+'</b> <span style="color:var(--muted);font-size:10px">（'+(e.emp||'')+'）</span></div>';
-  h+='<table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>'
-    +'<tr><td style="padding:4px 0;color:var(--muted)">Grade基準額</td><td style="text-align:right;font-weight:700">'+_money(b.base)+'</td></tr>'
-    +'<tr><td style="padding:4px 0;color:var(--muted)">係数(coef)</td><td style="text-align:right;font-weight:700">×'+b.coef.toFixed(2)+'</td></tr>'
-    +'<tr><td style="padding:4px 0;color:var(--muted)">CS係数（'+(b.hasCS?b.csPct+'%':'未評価')+'）</td><td style="text-align:right;font-weight:700">×'+b.csCoef.toFixed(2)+'</td></tr>'
-    +'<tr style="border-top:1px solid var(--border)"><td style="padding:6px 0;font-weight:800">ボーナス算出額</td><td style="text-align:right;font-weight:800;font-size:15px;color:var(--accent)">'+_money(b.amount)+'</td></tr>'
-    +'</tbody></table>';
-  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">給与履歴・ボーナス履歴（支給日/金額）は次フェーズで追加します。</div>';
+  /* 面談サポート */
+  h+='<div class="card" style="border-left:3px solid var(--accent)"><div class="card-title"><i class="ti ti-messages" style="color:var(--accent)"></i>面談サポート</div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:4px">今回のトークポイント（自動生成／上から順に話すとスムーズ）</div>';
+  var tps=karteTalkingPoints(e,b,as,elig);
+  h+='<div style="display:flex;flex-direction:column;gap:5px;margin-bottom:10px">'+tps.map(function(p){ return '<div style="display:flex;gap:7px;align-items:flex-start;font-size:12px"><i class="ti '+p.ic+'" style="color:'+p.col+';margin-top:2px"></i><span>'+p.t+'</span></div>'; }).join('')+'</div>';
+  h+=_kNote('強み（承認する点）', 'strengthsNote', k, empId, as.strong);
+  h+=_kNote('成長課題（次に伸ばす点）', 'growthNote', k, empId, as.weak);
+  h+=_kNote('改善してほしい点', 'improveNote', k, empId, null);
+  h+=_kNote('総合所見（良い点を中心に）', 'overall', k, empId, null);
   h+='</div>';
 
-  /* 資格・スキル */
-  h+='<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-certificate" style="color:var(--accent)"></i>資格・スキル</div>';
+  /* 次期の目標 */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-flag" style="color:var(--accent)"></i>次期の目標（合意事項）</div>';
+  var goals=k.goals||[];
+  if(goals.length){ goals.forEach(function(gg){ h+='<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap">'
+    +'<button class="btn '+(gg.done?'btn-primary':'btn-secondary')+' btn-sm" style="padding:2px 9px" onclick="karteToggleGoal(\''+empId+'\',\''+gg.id+'\')">'+(gg.done?'<i class="ti ti-check"></i>':'○')+'</button>'
+    +'<input class="form-input" style="flex:2;min-width:150px" placeholder="目標（具体的に）" value="'+escapeHtml(gg.text||'')+'" onchange="karteSetGoal(\''+empId+'\',\''+gg.id+'\',\'text\',this.value)">'
+    +'<input class="form-input" style="flex:1;min-width:110px" placeholder="達成の目安・指標" value="'+escapeHtml(gg.metric||'')+'" onchange="karteSetGoal(\''+empId+'\',\''+gg.id+'\',\'metric\',this.value)">'
+    +'<input type="date" class="form-input" style="width:150px" title="期限" value="'+escapeHtml(gg.due||'')+'" onchange="karteSetGoal(\''+empId+'\',\''+gg.id+'\',\'due\',this.value)">'
+    +'<button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="karteDelGoal(\''+empId+'\',\''+gg.id+'\')">×</button></div>'; }); }
+  else { h+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">目標が未設定です。面談で合意した目標（何を・いつまでに・どうなったら達成か）を追加しましょう。</div>'; }
+  h+='<button class="btn btn-secondary btn-sm" onclick="karteAddGoal(\''+empId+'\')"><i class="ti ti-plus"></i> 目標を追加</button>';
+  h+='</div>';
+
+  /* 面談ログ */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--accent)"></i>面談ログ</div>';
+  var mtgs=(k.meetings||[]).slice().reverse();
+  if(mtgs.length){ mtgs.forEach(function(m){ h+='<div style="border-top:1px solid var(--border);padding:7px 0"><div style="display:flex;gap:8px;align-items:center;margin-bottom:3px"><input type="date" class="form-input" style="width:150px" value="'+escapeHtml(m.date||'')+'" onchange="karteSetMeeting(\''+empId+'\',\''+m.id+'\',\'date\',this.value)"><span style="color:var(--muted);font-size:10px">'+escapeHtml(m.by||'')+'</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 7px;color:var(--red)" onclick="karteDelMeeting(\''+empId+'\',\''+m.id+'\')">×</button></div><textarea class="form-textarea" style="min-height:44px" placeholder="所感・合意事項・申し送り" onchange="karteSetMeeting(\''+empId+'\',\''+m.id+'\',\'note\',this.value)">'+escapeHtml(m.note||'')+'</textarea></div>'; }); }
+  else { h+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">まだ面談記録がありません。実施したら記録して次回の申し送りに使いましょう。</div>'; }
+  h+='<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="karteAddMeeting(\''+empId+'\')"><i class="ti ti-plus"></i> 面談を記録</button>';
+  h+='</div>';
+
+  /* 資格・基本情報 */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-certificate" style="color:var(--accent)"></i>資格・基本情報</div>';
+  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:8px">';
+  h+='<div><label class="form-label">入社日</label><input type="date" class="form-input" value="'+escapeHtml(k.hireDate||'')+'" onchange="karteSetField(\''+empId+'\',\'hireDate\',this.value)"></div>';
+  h+='<div><label class="form-label">評価者</label><input class="form-input" value="'+escapeHtml(k.evaluator||(typeof myName==='function'?myName():''))+'" onchange="karteSetField(\''+empId+'\',\'evaluator\',this.value)"></div>';
+  h+='</div>';
   var certs=k.certs||[];
-  if(certs.length){
-    h+='<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">';
-    certs.forEach(function(c){
-      h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
-        +'<button class="btn '+(c.have?'btn-primary':'btn-secondary')+' btn-sm" style="padding:2px 8px" onclick="karteToggleCert(\''+empId+'\',\''+c.id+'\')">'+(c.have?'<i class="ti ti-check"></i> 有':'無')+'</button>'
-        +'<input class="form-input" style="flex:1;min-width:120px" placeholder="資格名" value="'+escapeHtml(c.name||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'name\',this.value)">'
-        +'<input type="date" class="form-input" style="width:140px" title="取得日" value="'+escapeHtml(c.acq||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'acq\',this.value)">'
-        +'<input type="date" class="form-input" style="width:140px" title="期限" value="'+escapeHtml(c.exp||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'exp\',this.value)">'
-        +'<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red);padding:2px 7px" onclick="karteDelCert(\''+empId+'\',\''+c.id+'\')">×</button>'
-        +'</div>';
-    });
-    h+='</div>';
-  } else { h+='<div style="font-size:11px;color:var(--muted);padding:4px 0 8px">未登録</div>'; }
+  if(certs.length){ h+='<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">'; certs.forEach(function(c){ h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+    +'<button class="btn '+(c.have?'btn-primary':'btn-secondary')+' btn-sm" style="padding:2px 8px" onclick="karteToggleCert(\''+empId+'\',\''+c.id+'\')">'+(c.have?'<i class="ti ti-check"></i> 有':'無')+'</button>'
+    +'<input class="form-input" style="flex:1;min-width:120px" placeholder="資格名" value="'+escapeHtml(c.name||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'name\',this.value)">'
+    +'<input type="date" class="form-input" style="width:150px" title="取得日" value="'+escapeHtml(c.acq||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'acq\',this.value)">'
+    +'<input type="date" class="form-input" style="width:150px" title="期限" value="'+escapeHtml(c.exp||'')+'" onchange="karteSetCert(\''+empId+'\',\''+c.id+'\',\'exp\',this.value)">'
+    +'<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red);padding:2px 7px" onclick="karteDelCert(\''+empId+'\',\''+c.id+'\')">×</button></div>'; }); h+='</div>'; }
+  else { h+='<div style="font-size:11px;color:var(--muted);padding:4px 0 8px">資格 未登録</div>'; }
   h+='<div style="display:flex;gap:6px;flex-wrap:wrap"><span style="font-size:11px;color:var(--muted);align-self:center">追加：</span>'
     +'<button class="btn btn-secondary btn-sm" onclick="karteQuickCert(\''+empId+'\',\'リカーカード\')">＋ リカーカード</button>'
     +'<button class="btn btn-secondary btn-sm" onclick="karteQuickCert(\''+empId+'\',\'フードハンドラー\')">＋ フードハンドラー</button>'
     +'<button class="btn btn-secondary btn-sm" onclick="karteQuickCert(\''+empId+'\',\'\')">＋ その他</button></div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:8px">最終更新：'+escapeHtml(k.updatedAt?new Date(k.updatedAt).toLocaleString('ja'):'—')+'</div>';
   h+='</div>';
 
-  /* メモ */
-  h+='<div class="card"><div class="card-title"><i class="ti ti-note" style="color:var(--accent)"></i>メモ</div>';
-  h+='<textarea class="form-textarea" placeholder="面談用メモ・申し送り等" onchange="karteSetField(\''+empId+'\',\'memo\',this.value)" style="min-height:60px">'+escapeHtml(k.memo||'')+'</textarea>';
-  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">過去の面談ログは次フェーズで追加します。</div></div>';
-
-  h+='</div>';
-  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button><button class="btn btn-primary" onclick="closeModalDirect();renderPage(\'growth_karte\')"><i class="ti ti-check"></i> 完了</button></div>';
-  openModal(h);
+  return h;
 }
 
+/* goals */
+function karteAddGoal(empId){ var k=getKarte(empId); k.goals=k.goals||[]; k.goals.push({id:'g'+Date.now().toString(36), text:'', metric:'', due:'', done:false}); saveKarte(empId,k); openKarteDetail(empId); }
+function karteSetGoal(empId,gid,field,val){ var k=getKarte(empId); (k.goals||[]).forEach(function(g){ if(g.id===gid) g[field]=val; }); saveKarte(empId,k); }
+function karteToggleGoal(empId,gid){ var k=getKarte(empId); (k.goals||[]).forEach(function(g){ if(g.id===gid) g.done=!g.done; }); saveKarte(empId,k); openKarteDetail(empId); }
+function karteDelGoal(empId,gid){ var k=getKarte(empId); k.goals=(k.goals||[]).filter(function(g){return g.id!==gid;}); saveKarte(empId,k); openKarteDetail(empId); }
+
+/* meetings */
+function karteAddMeeting(empId){ var k=getKarte(empId); k.meetings=k.meetings||[]; k.meetings.push({id:'m'+Date.now().toString(36), date:(typeof todayISO==='function'?todayISO():''), note:'', by:(typeof myName==='function'?myName():'')}); saveKarte(empId,k); openKarteDetail(empId); }
+function karteSetMeeting(empId,mid,field,val){ var k=getKarte(empId); (k.meetings||[]).forEach(function(m){ if(m.id===mid) m[field]=val; }); saveKarte(empId,k); }
+function karteDelMeeting(empId,mid){ var k=getKarte(empId); k.meetings=(k.meetings||[]).filter(function(m){return m.id!==mid;}); saveKarte(empId,k); openKarteDetail(empId); }
+
+/* pay log */
+function kartePayAdd(empId){ var k=getKarte(empId); k.payLog=k.payLog||[]; k.payLog.push({id:'p'+Date.now().toString(36), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:'', note:''}); saveKarte(empId,k); openKarteDetail(empId); }
+function kartePaySet(empId,pid,field,val){ var k=getKarte(empId); (k.payLog||[]).forEach(function(p){ if(p.id===pid) p[field]=val; }); saveKarte(empId,k); }
+function kartePayDel(empId,pid){ var k=getKarte(empId); k.payLog=(k.payLog||[]).filter(function(p){return p.id!==pid;}); saveKarte(empId,k); openKarteDetail(empId); }
 function renderTrainee(){
   var css='<style>'
     +'.tr-wrap{max-width:760px}'
