@@ -4357,7 +4357,7 @@ async function openPinListModal(){
 }
 function _staffPinView(name){ var c=window._pinCache; if(!c) return '----'; var v=c.staff[name]; return (v!=null&&v!=='')?v:(c.defStaff||'0000'); }
 function renderPinListBody(){
-  var emps = getEmployees().filter(e=>e.status!=='退職').sort((a,b)=>(a.store||'').localeCompare(b.store||'')||a.name.localeCompare(b.name));
+  var emps = getEmployees().filter(e=>e.status!=='退職').sort((a,b)=>((a.role==='ceo')?0:1)-((b.role==='ceo')?0:1)||(a.store||'').localeCompare(b.store||'')||a.name.localeCompare(b.name));
   var rows = emps.map(e=>{
     var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
     return `<tr>
@@ -15123,7 +15123,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '547';
+const APP_VERSION = '548';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -20751,9 +20751,9 @@ function renderStaffMaster() {
   }
 
   // Grade順（高い順）→ Lv(STEP評価)順 → 名前順で整理
-  var _gOrder = ['G7','G6','G5','G4','G3','G2','G1','G1-P',''];
+  var _gOrder = ['CEO','G7','G6','G5','G4','G3','G2','G1','G1-P',''];
   _gOrder.forEach(gr => {
-    var group = list.filter(e=>(empGrade(e)||'')===gr);
+    var group = (gr==='CEO') ? list.filter(e=>e.role==='ceo') : list.filter(e=>e.role!=='ceo' && (empGrade(e)||'')===gr);
     if (!group.length) return;
     group = group.slice().sort(function(a,b){
       var d=(parseInt(b.step,10)||0)-(parseInt(a.step,10)||0);
@@ -26911,8 +26911,10 @@ function bonusForEmp(e, cfg){
   var g=empGrade(e); var base=(cfg.gradeBase[g]!=null?cfg.gradeBase[g]:0); var coef=(e.coef!=null?e.coef:1);
   var sum=(typeof lssSummary==='function')?lssSummary(e.name):null;
   var pct=(sum&&sum.hasData)?sum.totalPct:0; var csf=csCoef(pct,cfg);
-  var _psid=(typeof karteEmpStore==='function')?karteEmpStore(cfg,e):e.store; var spPct=storeScoreOf(cfg, _psid); var spf=spCoef(spPct,cfg);
-  return {grade:g, base:base, coef:coef, csPct:pct, csCoef:csf, spPct:spPct, spCoef:spf, profitStore:_psid, amount:Math.round(base*coef*csf*spf), hasCS:!!(sum&&sum.hasData)};
+  var _psids=(typeof karteEmpStores==='function')?karteEmpStores(cfg,e):(e.store?[e.store]:[]);
+  var spPct; if(_psids.length){ var _ss=0; _psids.forEach(function(sid){ _ss+=storeScoreOf(cfg,sid); }); spPct=Math.round(_ss/_psids.length); } else { spPct=100; }
+  var spf=spCoef(spPct,cfg);
+  return {grade:g, base:base, coef:coef, csPct:pct, csCoef:csf, spPct:spPct, spCoef:spf, profitStore:(_psids[0]||e.store), profitStores:_psids, amount:Math.round(base*coef*csf*spf), hasCS:!!(sum&&sum.hasData)};
 }
 function bonusPool(cfg){ return Math.round((cfg.profit||0)*(cfg.poolRate||0)); }
 function bonusTotals(cfg){
@@ -27009,17 +27011,44 @@ function renderKarteConfig(cfg, tot){
   return h;
 }
 
-/* 個人ごとの利益係数 適用店舗（手動割当・既定は配属店） */
-function karteEmpStore(cfg, e){ if(!e) return null; return (cfg && cfg.empStore && cfg.empStore[e.id]) ? cfg.empStore[e.id] : e.store; }
-function bonusSetEmpStore(empId, sid){ var c=kbCfg(); c.empStore=c.empStore||{}; if(!sid){ delete c.empStore[empId]; } else { c.empStore[empId]=sid; } kbSave(c); kbRefresh(); }
-function _karteStoreSel(cfg,e,b){
-  var eff=(b&&b.profitStore)?b.profitStore:((typeof karteEmpStore==='function')?karteEmpStore(cfg,e):e.store);
+/* 個人ごとの利益係数 適用店舗（複数選択可・手動割当・既定は配属店 / v548） */
+function karteEmpStores(cfg, e){
+  if(!e) return [];
+  var v=(cfg && cfg.empStore) ? cfg.empStore[e.id] : null;
+  if(Array.isArray(v)){ var a=v.filter(Boolean); if(a.length) return a; }
+  else if(typeof v==='string' && v) return [v];
+  return e.store ? [e.store] : [];
+}
+/* 後方互換（先頭店を返す） */
+function karteEmpStore(cfg, e){ var a=karteEmpStores(cfg,e); return a.length?a[0]:(e?e.store:null); }
+function bonusSetEmpStores(empId, sids){
+  var c=kbCfg(); c.empStore=c.empStore||{}; sids=(sids||[]).filter(Boolean);
+  if(!sids.length){ delete c.empStore[empId]; } else { c.empStore[empId]=sids; }
+  kbSave(c); kbRefresh();
+}
+function bonusSetEmpStore(empId, sid){ bonusSetEmpStores(empId, sid?[sid]:[]); } /* 旧API互換 */
+function openKarteStoreModal(empId){
+  var cfg=kbCfg(); var e=getEmployees().find(function(x){return x.id===empId;}); if(!e) return;
+  var sel=karteEmpStores(cfg,e);
   var opts=(typeof karteScopeStores==='function'?karteScopeStores():[]).slice();
   if(e.store && !opts.some(function(s){return s.id===e.store;})){ var as=(typeof STORES!=='undefined')?STORES.find(function(s){return s.id===e.store;}):null; if(as) opts.unshift(as); }
+  var rows=opts.map(function(s){ var ck=sel.indexOf(s.id)>=0?' checked':''; return '<label style="display:flex;align-items:center;gap:9px;padding:9px 4px;border-top:1px solid var(--border);cursor:pointer"><input type="checkbox" class="kstore-ck" value="'+s.id+'"'+ck+' style="width:17px;height:17px"><span style="font-weight:600">'+escapeHtml(s.name)+'</span>'+(s.id===e.store?'<span style="font-size:10px;color:var(--muted)">（配属店）</span>':'')+'</label>'; }).join('');
+  openModal('<div class="modal-title"><i class="ti ti-building-store"></i> 利益係数の対象店舗 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><b>'+escapeHtml(e.name||'')+'</b> の店舗利益係数を、選択した店舗の<b>達成率の平均</b>で算出します（複数選択可）。未選択の場合は配属店を使用します。</div>'
+    +'<div style="max-height:52vh;overflow-y:auto;margin-bottom:12px">'+(rows||'<div style="color:var(--muted);padding:10px 4px">対象店舗がありません</div>')+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveKarteStore(\''+empId+'\')"><i class="ti ti-device-floppy"></i> 保存</button></div>');
+}
+function saveKarteStore(empId){
+  var sids=Array.prototype.slice.call(document.querySelectorAll('.kstore-ck:checked')).map(function(x){return x.value;});
+  bonusSetEmpStores(empId, sids); closeModalDirect();
+}
+function _karteStoreSel(cfg,e,b){
+  var sids=karteEmpStores(cfg,e);
+  var scope=(typeof karteScopeStores==='function'?karteScopeStores():[]);
+  var nm=sids.map(function(sid){ var s=scope.find(function(x){return x.id===sid;}) || ((typeof STORES!=='undefined')?STORES.find(function(x){return x.id===sid;}):null); return s?s.name:sid; });
   var over=!!(cfg.empStore&&cfg.empStore[e.id]);
-  return '<select onclick="event.stopPropagation()" onchange="bonusSetEmpStore(\''+e.id+'\',this.value)" style="font-size:11px;max-width:134px;padding:3px 5px;border:1px solid '+(over?'var(--accent)':'var(--border)')+';border-radius:6px;background:var(--surface);color:var(--tm)">'
-    + opts.map(function(s){ return '<option value="'+s.id+'"'+(s.id===eff?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('')
-    + '</select>';
+  var label=(nm.length===0)?'未設定':(nm.length===1?nm[0]:(nm[0]+' +'+(nm.length-1)));
+  return '<button onclick="event.stopPropagation();openKarteStoreModal(\''+e.id+'\')" title="'+escapeHtml(nm.join(' / '))+'" style="font-size:11px;max-width:140px;padding:3px 8px;border:1px solid '+(over?'var(--accent)':'var(--border)')+';border-radius:6px;background:var(--surface);color:var(--tm);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-flex;align-items:center;gap:4px"><i class="ti ti-building-store" style="font-size:11px;flex-shrink:0"></i><span style="overflow:hidden;text-overflow:ellipsis">'+escapeHtml(label)+'</span></button>';
 }
 
 function kbResultHtml(){
@@ -27096,7 +27125,8 @@ function karteBonusExplain(e, b){
   }
   if(b.spCoef!=null){
     var spDir = b.spCoef>1.0?'目標超過':(b.spCoef<1.0?'目標未達':'目標どおり');
-    out.push('所属店の利益達成率 <b>'+b.spPct+'%</b>（'+spDir+'）により、店舗係数 <b>×'+b.spCoef.toFixed(2)+'</b> が反映されています。チームの成果が個人の評価にも連動します。');
+    var _spLbl=(b.profitStores&&b.profitStores.length>1)?('対象'+b.profitStores.length+'店の平均利益達成率'):'所属店の利益達成率';
+    out.push(_spLbl+' <b>'+b.spPct+'%</b>（'+spDir+'）により、店舗係数 <b>×'+b.spCoef.toFixed(2)+'</b> が反映されています。チームの成果が個人の評価にも連動します。');
   }
   out.push('個人の評価係数（Tip Rate評価）<b>×'+b.coef.toFixed(2)+'</b> を反映しています。');
   out.push('以上を総合し、今期の査定額は <b>'+_money(b.amount)+'</b> です。');
