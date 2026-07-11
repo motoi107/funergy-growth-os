@@ -3328,11 +3328,11 @@ function calcTipDistribution(storeId, date) {
       var h = labor && labor[e.name] ? (labor[e.name][slot]||0) : 0;
       var excluded = isTipExcluded(storeId, date, e.name, slot);
       return { name:e.name, role:e.role, coef:(e.coef!=null?e.coef:1), hours:h,
-        pt:h*(e.coef!=null?e.coef:1), total:0, excluded:excluded };
+        pt:h*(e.coef!=null?e.coef:1), total:0, excluded:excluded, noTip:(typeof effectiveTipRate==='function'&&effectiveTipRate(e.name)===0) };
     }).filter(r=>r.hours>0);
     if (!rows.length || tipTotal<=0) return rows;
     // 対象外の人を除いて按分（外した分は残りに自動再配分）。除外者はtotal=0で行は残す（表示用）
-    var active = rows.filter(r=>!r.excluded);
+    var active = rows.filter(r=>!r.excluded && !r.noTip);
     var ptSum = active.reduce((a,r)=>a+r.pt,0);
     if (ptSum>0) active.forEach(r=>{ r.total = tipTotal * (r.pt/ptSum); });
     return rows;
@@ -3341,7 +3341,7 @@ function calcTipDistribution(storeId, date) {
   var dinnerRows = distSlot('dinner', tip.dinnerTotal);
   // 統合（名前単位でlunch+dinner合算）
   var byName = {};
-  function merge(rows, slot){ rows.forEach(r=>{ if(!byName[r.name]) byName[r.name]={name:r.name,role:r.role,coef:r.coef,lunch:0,dinner:0,lunchHours:0,dinnerHours:0,lunchExcl:false,dinnerExcl:false,total:0}; byName[r.name][slot]=r.total; byName[r.name][slot+'Hours']=r.hours; byName[r.name][slot+'Excl']=r.excluded; byName[r.name].total+=r.total; }); }
+  function merge(rows, slot){ rows.forEach(r=>{ if(!byName[r.name]) byName[r.name]={name:r.name,role:r.role,coef:r.coef,lunch:0,dinner:0,lunchHours:0,dinnerHours:0,lunchExcl:false,dinnerExcl:false,lunchNoTip:false,dinnerNoTip:false,total:0}; byName[r.name][slot]=r.total; byName[r.name][slot+'Hours']=r.hours; byName[r.name][slot+'Excl']=r.excluded; byName[r.name][slot+'NoTip']=r.noTip; byName[r.name].total+=r.total; }); }
   merge(lunchRows,'lunch'); merge(dinnerRows,'dinner');
   var list = Object.values(byName).sort((a,b)=>b.total-a.total);
   var distSum = list.reduce((a,r)=>a+r.total,0);
@@ -6527,7 +6527,7 @@ function renderStoreCmd() {
   if (reqIncomplete.length) {
     html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
       <p style="font-size:12px;font-weight:600">${t('必須未完了','Required incomplete')} ${reqIncomplete.length}${t('件','')} — ${t('Daily完了できません','cannot complete Daily')}</p>
-      <div style="font-size:11px;margin-top:2px">${reqIncomplete.map(t=>t.phase+': '+t.text).join(' / ')}</div></div></div>`;
+      <div style="font-size:11px;margin-top:2px">${reqIncomplete.map(t=>t.phase+': '+dailyOpsText(t)).join(' / ')}</div></div></div>`;
   } else if (dailyComplete) {
     html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>${t('本日のDaily Operationsは全て完了しています','All Daily Operations completed')}</div>`;
   }
@@ -6626,7 +6626,7 @@ function openPhaseModal(storeId, phase) {
     html += `<div onclick="togglePhaseItem('${storeId}','${t.id}','${phase}')" style="display:flex;align-items:center;gap:12px;padding:14px 10px;border-bottom:1px solid var(--border);cursor:pointer">
       <div style="width:30px;height:30px;border-radius:9px;flex-shrink:0;border:2px solid ${t.done?'var(--green)':'var(--border)'};background:${t.done?'var(--green)':'transparent'};display:flex;align-items:center;justify-content:center">${t.done?'<i class="ti ti-check" style="font-size:18px;color:#fff"></i>':''}</div>
       <div style="flex:1">
-        <div style="font-size:15px;font-weight:${t.done?'400':'600'};color:${t.done?'var(--muted)':'var(--tm)'};text-decoration:${t.done?'line-through':'none'}">${t.text}</div>
+        <div style="font-size:15px;font-weight:${t.done?'400':'600'};color:${t.done?'var(--muted)':'var(--tm)'};text-decoration:${t.done?'line-through':'none'}">${dailyOpsText(t)}</div>
         <div style="display:flex;gap:6px;margin-top:3px">
           ${t.required?'<span class="tag tag-red" style="font-size:9px">'+(curLang==='en'?'Req':'必須')+'</span>':''}
           ${t.photo?'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)"><i class="ti ti-camera" style="font-size:10px"></i> '+(curLang==='en'?'Photo':'写真')+'</span>':''}
@@ -6724,7 +6724,7 @@ function scrollToReport() {
 function completeDailyOps(storeId) {
   var ops = getDailyOps(storeId);
   var reqIncomplete = ops.filter(t=>t.required && !t.done);
-  if (reqIncomplete.length) { alert('Required未完了があります'); return; }
+  if (reqIncomplete.length) { alert(t('Required未完了があります','Required items are incomplete')); return; }
   var hist = ls('dailyops_complete_'+storeId, []);
   hist.push({date:nowJP(), by:ROLE_CONFIG[curRole].name, count:ops.length});
   lsSet('dailyops_complete_'+storeId, hist);
@@ -13462,11 +13462,11 @@ function openTipDayDetail(storeId, date) {
       }
       var anyExcl = r.lunchExcl || r.dinnerExcl;
       html += `<tr${anyExcl?' style="background:rgba(229,72,77,0.06)"':''}>
-        <td>${r.name}${r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:''}${anyExcl?' <span class="tag tag-red" style="font-size:9px">一部除外</span>':''}</td>
+        <td>${r.name}${r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:''}${(r.lunchNoTip||r.dinnerNoTip)?' <span class="tag tag-gray" style="font-size:9px">No Tip</span>':''}${anyExcl?' <span class="tag tag-red" style="font-size:9px">'+(curLang==='en'?'Partly excl':'一部除外')+'</span>':''}</td>
         ${slotCell('lunch')}
-        <td style="text-align:right">${r.lunchExcl?'<span style="color:var(--red);font-size:10px">除外</span>':((r.lunch||0)>0?'$'+r.lunch.toFixed(2):'—')}</td>
+        <td style="text-align:right">${r.lunchNoTip?'<span style="color:var(--muted);font-size:10px">No Tip</span>':r.lunchExcl?'<span style="color:var(--red);font-size:10px">'+(curLang==='en'?'Excluded':'除外')+'</span>':((r.lunch||0)>0?'$'+r.lunch.toFixed(2):'—')}</td>
         ${slotCell('dinner')}
-        <td style="text-align:right">${r.dinnerExcl?'<span style="color:var(--red);font-size:10px">除外</span>':((r.dinner||0)>0?'$'+r.dinner.toFixed(2):'—')}</td>
+        <td style="text-align:right">${r.dinnerNoTip?'<span style="color:var(--muted);font-size:10px">No Tip</span>':r.dinnerExcl?'<span style="color:var(--red);font-size:10px">'+(curLang==='en'?'Excluded':'除外')+'</span>':((r.dinner||0)>0?'$'+r.dinner.toFixed(2):'—')}</td>
         <td style="text-align:right;font-weight:700;color:var(--green)">$${r.total.toFixed(2)}</td>
       </tr>`;
     });
@@ -15123,7 +15123,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '532';
+const APP_VERSION = '540';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -28740,6 +28740,7 @@ function renderApproval() {
         var isMgr = (curRole==='gm'||curRole==='ceo');
         html += '<div class="approval-item"><div class="approval-header"><div><div class="approval-title"><i class="ti '+(typeIcon[a.type]||'ti-circle')+'" style="font-size:12px;color:var(--muted)"></i> '+escapeHtml(a.title||'')+'</div>'
           +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+'</div></div></div>';
+        if (a.type==='スキル') { var _sr = a.ref ? getSkillRequests().find(function(x){return x.id===a.ref;}) : null; if(_sr){ var _sst=_sr.store||((getEmployees().find(function(x){return x.name===_sr.name;})||{}).store)||''; var _fromLv=((getEmpSkillsStore(_sr.name,_sst)||{})[_sr.position]||{}).level||0; html += '<div style="font-size:13px;font-weight:700;margin:2px 0 4px"><span style="color:var(--muted)">'+t('現在','Current')+' Lv'+_fromLv+'</span> <i class="ti ti-arrow-right" style="font-size:12px;color:var(--accent2)"></i> <span style="color:var(--accent2)">'+t('申請','Requested')+' Lv'+(_sr.level)+'</span></div>'; } }
         html += _approvalChainHtml(a);
         if (isBudget) {
           var _rb = (getBudgets().find(function(x){return x.storeId===a.ref;})||{}).rationale;
@@ -29051,13 +29052,13 @@ function mySkillCardHtml(name, storeId){
       if(!positions.length) return '';
       var psk = (typeof prepSkillsOf==='function') ? prepSkillsOf(_emp, storeId) : {};
       vals = positions.map(function(p){ return Number(psk[p])||0; });
-      maxLv = 5; titleLabel = t('あなたのPrepスキルレベル','Your Prep Skill Levels'); legendLabel = 'Lv0〜5';
+      maxLv = 5; titleLabel = t('あなたのPrepスキルレベル','Your Prep Skill Levels'); legendLabel = t('Lv0〜5','Lv0–5');
     } else {
       positions = getStorePositions(storeId).filter(function(p){return p!=='Energy'&&p!=='Leadership';});
       if(!positions.length) return '';
       var sk = getEmpSkills(name)||{};
       vals = positions.map(function(p){ var x=sk[p]; return (x&&x.status==='承認')?(x.level||0):0; });
-      maxLv = 3; titleLabel = t('あなたのスキルレベル','Your Skill Levels'); legendLabel = 'Lv0〜3（承認済みのみ）';
+      maxLv = 3; titleLabel = t('あなたのスキルレベル','Your Skill Levels'); legendLabel = t('Lv0〜3（承認済みのみ）','Lv0–3 (approved only)');
     }
     var n = positions.length, W=280, H=210, cx=W/2, cy=H/2+4, R=76;
     function pt(i, r){ var a=-Math.PI/2 + i*2*Math.PI/n; return [cx+r*Math.cos(a), cy+r*Math.sin(a)]; }
@@ -29070,7 +29071,7 @@ function mySkillCardHtml(name, storeId){
       var e=pt(i,R); var l=pt(i,R+16);
       var anchor = Math.abs(l[0]-cx)<10?'middle':(l[0]>cx?'start':'end');
       return '<line x1="'+cx+'" y1="'+cy+'" x2="'+Math.round(e[0])+'" y2="'+Math.round(e[1])+'" stroke="var(--border)" stroke-width="1"/>'
-        +'<text x="'+Math.round(l[0])+'" y="'+Math.round(l[1])+'" font-size="9" fill="var(--muted)" text-anchor="'+anchor+'" dominant-baseline="middle">'+escapeHtml(p)+'</text>';
+        +'<text x="'+Math.round(l[0])+'" y="'+Math.round(l[1])+'" font-size="9" fill="var(--muted)" text-anchor="'+anchor+'" dominant-baseline="middle">'+escapeHtml(posLabel(p))+'</text>';
     }).join('');
     var poly = positions.map(function(_,i){ return pt(i, R*Math.max(0.04,vals[i]/maxLv)).map(Math.round).join(','); }).join(' ');
     var dots = positions.map(function(_,i){ var c=pt(i, R*Math.max(0.04,vals[i]/maxLv)); return '<circle cx="'+Math.round(c[0])+'" cy="'+Math.round(c[1])+'" r="2.5" fill="var(--accent)"/>'; }).join('');
@@ -29527,7 +29528,7 @@ function renderMypage() {
   if (myPosts.length) {
     myPosts.forEach(p => {
       var st=p.status||'未対応'; var stc=st==='解決'?'tag-green':st==='対応中'?'tag-yellow':'tag-red';
-      html += `<div class="approval-item" onclick="go('growthhub')" style="cursor:pointer"><div class="approval-header"><div class="approval-title">${p.title}</div><span class="tag ${stc}">${st}</span></div>
+      html += `<div class="approval-item" onclick="go('growthhub')" style="cursor:pointer"><div class="approval-header"><div class="approval-title">${p.title}</div><span class="tag ${stc}">${tStatus(st)}</span></div>
         ${(p.replies||[]).some(r=>r.byMgr)?`<div style="font-size:11px;color:var(--green);margin-top:4px"><i class="ti ti-message"></i> ${t('管理者から返信あり','Manager replied')}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('確認待ち','Awaiting reply')+'</div>'}</div>`;
     });
   } else { html += `<p style="color:var(--muted);font-size:13px">${t('相談はまだありません。困ったことがあれば気軽に','No posts yet')}</p>`; }
@@ -30723,13 +30724,14 @@ function onNotifIncoming(arr){
 
 /* ===== 承認ルーティング（タイプ別の承認者）＋ 店舗スコープ宛先の補助 ===== */
 var APPROVAL_TYPES = ['予算','シフト変更','採用','Leadership','TipRate','スキル','退職','休暇','ガソリン代','経費'];
-function _aprDefaultRoles(t){ return ({'休暇':['am'],'ガソリン代':['am'],'経費':['gm'],'予算':['gm']})[t] || ['office','gm','am']; }
+function _aprDefaultRoles(t){ return ({'休暇':['am'],'ガソリン代':['am'],'経費':['gm'],'予算':['gm'],'スキル':['gm','am','sm','sl']})[t] || ['office','gm','am']; }
 var APPROVER_ROLE_OPTS = [['office','経理'],['gm','GM'],['am','AM'],['sm','SM'],['sl','SL'],['ceo','CEO']];
 function defaultApprovalRouting(){ var d={}; APPROVAL_TYPES.forEach(function(t){ d[t]=_aprDefaultRoles(t); }); return d; }
 function getApprovalRouting(){
   var r = ls('approval_routing', null);
   if(!r || typeof r!=='object') r = defaultApprovalRouting();
   APPROVAL_TYPES.forEach(function(t){ if(!Array.isArray(r[t])) r[t]=_aprDefaultRoles(t); });
+  if(Array.isArray(r['スキル'])){ var _osk=r['スキル']; if((_osk.length===3 && _osk.indexOf('office')>=0 && _osk.indexOf('gm')>=0 && _osk.indexOf('am')>=0) || (_osk.length===1 && _osk[0]==='sl')) r['スキル']=['gm','am','sm','sl']; }
   return r;
 }
 function setApprovalRouting(r){ lsSet('approval_routing', r); }
@@ -32154,6 +32156,8 @@ const DEFAULT_DAILYOPS = [
   {id:'d11',phase:'Closing',     text:'レジ締め・売上報告', required:true},
   {id:'d12',phase:'Closing',     text:'火元・施錠・警備セット', required:true},
 ];
+var DAILYOPS_EN = {d1:'Open register / check float',d2:'Lights / BGM / A-C setup',d3:'Check floor & restroom cleaning',d4:'Check soup / sauce prep',d5:'Ingredient temperature check',d6:'Stock count entry (key items)',d7:'Create shortage list',d8:'Check items to order',d9:'Clean seats & counter',d10:'Kitchen floor / grease trap',d11:'Close register / report sales',d12:'Gas off / lock up / set alarm'};
+function dailyOpsText(it){ if(!it) return ''; if(curLang!=='en') return it.text; try{ var d=DEFAULT_DAILYOPS.find(function(x){return x.id===it.id;}); if(d && d.text===it.text && DAILYOPS_EN[it.id]) return DAILYOPS_EN[it.id]; }catch(e){} return it.text; }
 /* 店舗ごとの「毎日使うテンプレート」（恒久保存・翌日も残る）
    未設定の店舗は DEFAULT_DAILYOPS を初期テンプレートとして使う */
 function getDailyOpsTemplate(storeId) {
@@ -32226,7 +32230,7 @@ function renderDailyOps() {
     html += `<div class="task-item">
       <div class="task-check${t.done?' done':''}" onclick="toggleDailyOp('${storeId}','${t.id}')">${t.done?'<i class="ti ti-check" style="font-size:11px;color:#fff"></i>':''}</div>
       <div style="flex:1">
-        <div class="task-text${t.done?' done':''}">${t.text} ${t.required?'<span class="tag tag-red" style="font-size:9px;padding:1px 5px">必須</span>':''}</div>
+        <div class="task-text${t.done?' done':''}">${dailyOpsText(t)} ${t.required?'<span class="tag tag-red" style="font-size:9px;padding:1px 5px">'+(curLang==='en'?'Req':'必須')+'</span>':''}</div>
         ${t.done&&t.by?`<div class="task-phase">完了: ${t.by}</div>`:''}
       </div>
     </div>`;
@@ -33082,7 +33086,7 @@ function renderRequired() {
   if (incomplete.length) {
     html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
       <p style="font-size:12px;font-weight:600">未完了の必須タスク</p>
-      <div style="font-size:11px;margin-top:2px">${incomplete.map(t=>`${t.phase}: ${t.text}`).join(' / ')}</div></div></div>
+      <div style="font-size:11px;margin-top:2px">${incomplete.map(t=>`${t.phase}: ${dailyOpsText(t)}`).join(' / ')}</div></div></div>
       ${ROLE_CONFIG[curRole].canApprove?`<button class="btn btn-danger btn-sm" style="margin-bottom:12px" onclick="logWarning('${storeId}')"><i class="ti ti-flag"></i> 注意ログを記録（警告+1）</button>`:''}`;
   } else {
     html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>本日の必須タスクは全て完了しています</div>`;
@@ -33093,7 +33097,7 @@ function renderRequired() {
     <p style="font-size:11px;color:var(--muted);margin-bottom:8px">Daily Opsの各タスクの必須/任意を切り替えられます（ハードコードではなく設定式）</p>`;
   items.forEach(t => {
     html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
-      <div style="font-size:13px">${t.text}<span style="color:var(--muted);font-size:11px"> · ${t.phase}</span></div>
+      <div style="font-size:13px">${dailyOpsText(t)}<span style="color:var(--muted);font-size:11px"> · ${t.phase}</span></div>
       <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
         <input type="checkbox" ${t.required?'checked':''} onchange="toggleRequired('${storeId}','${t.id}')"> 必須
       </label>
@@ -33292,7 +33296,8 @@ function updateGoalProgress(gId) {
 ============================================================ */
 const TIP_OPTIONS = [80, 90, 100];
 const DEFAULT_TIP_POLICY = '【Tip Rate Policy】\n・初回勤務後、店舗ごとのNo Tip期間（ToriTon/Tenkichi=3シフト、Totoya/Marujuu/Waikiki=2シフト）。\n・No Tip期間終了後は80%スタート。\n・90%/100%は条件を満たし承認されると昇格。\n・【初回勤務日から3ヶ月経過すると、承認を待たず自動的に100%になります】\n・90%：Responsibility/Skill/Quality/Teamwork/Passion の条件＋Store Manager承認。\n・100%：主要Lv3＋教育力等＋Store Manager＋Area Manager承認。';
-function getTipPolicy() { return ls('tip_policy', DEFAULT_TIP_POLICY); }
+const DEFAULT_TIP_POLICY_EN = '[Tip Rate Policy]\n- After your first shift, a No-Tip period applies per store (ToriTon/Tenkichi = 3 shifts; Totoya/Marujuu/Waikiki = 2 shifts).\n- After the No-Tip period, everyone starts at 80%.\n- 90% / 100% are reached by meeting the criteria and being approved.\n- [3 months after your first shift, the rate automatically becomes 100% without approval.]\n- 90%: Responsibility / Skill / Quality / Teamwork / Passion criteria + Store Manager approval.\n- 100%: key Lv3 + coaching ability etc. + Store Manager + Area Manager approval.';
+function getTipPolicy() { var _s=ls('tip_policy', null); if(_s && _s!==DEFAULT_TIP_POLICY) return _s; return (curLang==='en' && typeof DEFAULT_TIP_POLICY_EN!=='undefined') ? DEFAULT_TIP_POLICY_EN : DEFAULT_TIP_POLICY; }
 
 /* 店舗別No Tip期間（初回勤務からのシフト数）— 業態/店舗別に設定可能 */
 function defaultNoTipConfig(){
@@ -33912,7 +33917,7 @@ function renderTipRate() {
         <td style="color:var(--muted);font-size:11px">${firstWorkDate(e)?firstWorkDate(e).toLocaleDateString(langDateLocale()):'—'}</td>
         <td style="font-weight:700;color:${col}">${rate===0?'No Tip':rate+'%'}${auto?' <span class="tag tag-green" style="font-size:9px">'+t('自動','Auto')+'</span>':''}</td></tr>`;
     });
-    html += `</tbody></table></div></div>`;
+    html += `</tbody></table></div>${canApprove?`<button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="openTipRaiseModal()"><i class="ti ti-arrow-up"></i> ${t('スタッフのTip Rateを引き上げる','Raise a staff Tip Rate')}</button>`:''}</div>`;
   }
 
   if (curRole === 'crew' || curRole === 'sl') {
@@ -34031,6 +34036,35 @@ function approveTip(id, status) {
     showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
     renderPage(curPage);
   }
+}
+function openTipRaiseModal(){
+  if(!(ROLE_CONFIG[curRole]||{}).canApprove){ alert(t('権限がありません','No permission')); return; }
+  var storeId2 = curStore==='ALL'?null:curStore;
+  var staff = getEmployees().filter(function(e){ return (e.role==='crew'||e.role==='sl') && e.status!=='退職' && (!storeId2 || e.store===storeId2 || (e.support||[]).indexOf(storeId2)>=0); });
+  staff.sort(function(a,b){ return effectiveTipRate(a.name)-effectiveTipRate(b.name); });
+  var opts = staff.map(function(e){ var rt=effectiveTipRate(e.name); var st=(STORES.find(function(s){return s.id===e.store;})||{}).name||e.store; return '<option value="'+escapeHtml(e.name)+'">'+escapeHtml(e.name)+' ('+escapeHtml(st)+' · '+(rt===0?'No Tip':rt+'%')+')</option>'; }).join('');
+  openModal('<div class="modal-title">'+t('Tip Rate 引き上げ','Raise Tip Rate')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px">'+t('管理者が直接 Tip Rate を引き上げます（承認済みとして即反映）。','Managers can raise the Tip Rate directly (applied immediately as approved).')+'</div>'
+    +'<div class="form-group"><label class="form-label">'+t('スタッフ','Staff')+'</label><select class="form-select" id="tipraise-name">'+opts+'</select></div>'
+    +'<div class="form-group"><label class="form-label">'+t('新しい Tip Rate','New Tip Rate')+'</label><select class="form-select" id="tipraise-rate"><option value="80">80%</option><option value="90">90%</option><option value="100">100%</option></select></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
+    +'<button class="btn btn-primary" onclick="applyTipRaise()"><i class="ti ti-arrow-up"></i> '+t('引き上げる','Raise')+'</button></div>');
+}
+function applyTipRaise(){
+  var name=(document.getElementById('tipraise-name')||{}).value;
+  var rate=parseInt((document.getElementById('tipraise-rate')||{}).value,10);
+  if(!name||!rate) return;
+  var emp=getEmployees().find(function(e){return e.name===name;});
+  var storeId=emp?emp.store:'';
+  var by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
+  var requests=ls('tip_requests',[]);
+  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP()});
+  lsSet('tip_requests',requests);
+  var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual'}); lsSet('tip_history',h);
+  try{ addNotif({ type:'approved', title:t('Tip Rateが引き上げられました','Your Tip Rate was raised'), text:rate+'%', toUser:name, page:'tiprate' }); }catch(e){}
+  closeModalDirect();
+  showToast(name+' → Tip Rate '+rate+'%','success');
+  renderPage(curPage);
 }
 /* スキル条件達成からTip申請（店舗・根拠つき） */
 function openTipApplyFromSkill(storeId, rate) {
@@ -34250,11 +34284,11 @@ function ghPostCard(p, mgr){
     <div class="approval-header"><div>
       <div class="approval-title">${p.title}</div>
       <div class="approval-meta">${mgr?p.author+' · ':''}${store?store.name+' · ':''}${p.date}</div></div>
-      <span class="tag ${stCol}">${st}</span></div>
+      <span class="tag ${stCol}">${tStatus(st)}</span></div>
     ${mgr?`<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px">
-      <i class="ti ti-user-shield" style="color:var(--accent)"></i>担当: ${p.assignee?`<b>${escapeHtml(p.assignee)}</b>`:'<span style="color:var(--red)">未定</span>'}
-      ${!p.assignee?`<button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:10px" onclick="ghAssignMe('${p.id}')"><i class="ti ti-hand-stop"></i> 担当する</button>`
-        :(p.assignee===(curUserName||(ROLE_CONFIG[curRole]||{}).name)?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="ghAssignMe('${p.id}', true)">担当を外れる</button>`:'')}
+      <i class="ti ti-user-shield" style="color:var(--accent)"></i>${t('担当','Assigned')}: ${p.assignee?`<b>${escapeHtml(p.assignee)}</b>`:'<span style="color:var(--red)">'+t('未定','Unassigned')+'</span>'}
+      ${!p.assignee?`<button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:10px" onclick="ghAssignMe('${p.id}')"><i class="ti ti-hand-stop"></i> ${t('担当する','Take it')}</button>`
+        :(p.assignee===(curUserName||(ROLE_CONFIG[curRole]||{}).name)?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="ghAssignMe('${p.id}', true)">${t('担当を外れる','Unassign')}</button>`:'')}
     </div>`:''}
     <div style="font-size:13px;margin-top:8px;white-space:pre-wrap">${p.body}</div>`;
   // スレッド（往復）
@@ -34268,14 +34302,14 @@ function ghPostCard(p, mgr){
   // 操作
   if (mgr) {
     html += `<div class="approval-actions" style="margin-top:10px">
-      <button class="btn btn-primary btn-sm" onclick="openGHReply('${p.id}')"><i class="ti ti-message"></i> 返信</button>
-      ${st!=='対応中'?`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','対応中')">対応中にする</button>`:''}
-      ${st!=='解決'?`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','解決')"><i class="ti ti-check"></i> 解決</button>`:`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','対応中')">解決を取消</button>`}
+      <button class="btn btn-primary btn-sm" onclick="openGHReply('${p.id}')"><i class="ti ti-message"></i> ${t('返信','Reply')}</button>
+      ${st!=='対応中'?`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','対応中')">${t('対応中にする','Mark in progress')}</button>`:''}
+      ${st!=='解決'?`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','解決')"><i class="ti ti-check"></i> ${t('解決','Resolve')}</button>`:`<button class="btn btn-secondary btn-sm" onclick="ghSetStatus('${p.id}','対応中')">${t('解決を取消','Reopen')}</button>`}
     </div>`;
   } else {
     // 本人は返信（追記）できる
     html += `<div class="approval-actions" style="margin-top:10px">
-      <button class="btn btn-secondary btn-sm" onclick="openGHReply('${p.id}')"><i class="ti ti-message"></i> 追記・返信</button>
+      <button class="btn btn-secondary btn-sm" onclick="openGHReply('${p.id}')"><i class="ti ti-message"></i> ${t('追記・返信','Add / reply')}</button>
     </div>`;
   }
   html += `</div>`;
@@ -34283,17 +34317,17 @@ function ghPostCard(p, mgr){
 }
 function setGHFilter(f) { ghFilter = f; renderPage('growthhub'); }
 function openGHModal() {
-  openModal(`<div class="modal-title">相談する <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-lock"></i> この相談は管理者だけが見ます。同僚には表示されません。</div>
-    <div class="form-group"><label class="form-label">タイトル</label><input class="form-input" id="gh-title" placeholder="例: シフトの相談、仕事の悩みなど"></div>
-    <div class="form-group"><label class="form-label">内容</label><textarea class="form-textarea" id="gh-body" style="min-height:120px" placeholder="困っていること、気になっていることを自由に書いてください"></textarea></div>
-    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveGHPost()">送信</button></div>`);
+  openModal(`<div class="modal-title">${t('相談する','Ask')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-lock"></i> ${t('この相談は管理者だけが見ます。同僚には表示されません。','Only managers can see this. It is not shown to coworkers.')}</div>
+    <div class="form-group"><label class="form-label">${t('タイトル','Title')}</label><input class="form-input" id="gh-title" placeholder="${t('例: シフトの相談、仕事の悩みなど','e.g. shift questions, work concerns')}"></div>
+    <div class="form-group"><label class="form-label">${t('内容','Details')}</label><textarea class="form-textarea" id="gh-body" style="min-height:120px" placeholder="${t('困っていること、気になっていることを自由に書いてください','Write freely about what is troubling or concerning you')}"></textarea></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">${t('キャンセル','Cancel')}</button>
+    <button class="btn btn-primary" onclick="saveGHPost()">${t('送信','Send')}</button></div>`);
 }
 function saveGHPost() {
   var title = document.getElementById('gh-title').value.trim();
   var body = document.getElementById('gh-body').value.trim();
-  if (!title || !body) { alert('タイトルと内容を入力してください'); return; }
+  if (!title || !body) { alert(t('タイトルと内容を入力してください','Please enter a title and details')); return; }
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var emp = getEmployees().find(e=>e.name===me);
   var posts = ls('growthhub', []);
@@ -34306,22 +34340,22 @@ function saveGHPost() {
     var _p2=posts[posts.length-1];
     var _tk=getTasks();
     _tk.push({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), refId:'gh_'+_p2.id, auto:'consult',
-      title:'【相談】内容確認と担当決め: '+String(_p2.title||'').slice(0,40),
-      desc:'お悩み相談室に新しい相談が届きました。内容を確認し、「担当する」で対応者を決めてください。',
+      title:t('【相談】内容確認と担当決め: ','[Consultation] Review and assign: ')+String(_p2.title||'').slice(0,40),
+      desc:t('お悩み相談室に新しい相談が届きました。内容を確認し、「担当する」で対応者を決めてください。','A new consultation arrived in the Support Room. Review it and use "Take it" to assign an owner.'),
       assignee:'', store:_p2.store||'ALL', priority:'高', due:todayISO(), progress:0, status:'進行中', created:todayJP() });
     lsSet('tasks_all', _tk);
   }catch(e){}
-  try{ var _gp=posts[posts.length-1]; if(_gp.store){ addNotif({ type:'consult', title:'新しい相談が届きました', text:(_gp.title||'').slice(0,140), toStore:_gp.store, toRoles:['sl','am','gm'], page:'growthhub', refId:_gp.id }); } else { addNotif({ type:'consult', title:'新しい相談が届きました', text:(_gp.title||'').slice(0,140), toRoles:['gm','am'], page:'growthhub', refId:_gp.id }); } }catch(e){}
+  try{ var _gp=posts[posts.length-1]; if(_gp.store){ addNotif({ type:'consult', title:t('新しい相談が届きました','New consultation received'), text:(_gp.title||'').slice(0,140), toStore:_gp.store, toRoles:['sl','am','gm'], page:'growthhub', refId:_gp.id }); } else { addNotif({ type:'consult', title:t('新しい相談が届きました','New consultation received'), text:(_gp.title||'').slice(0,140), toRoles:['gm','am'], page:'growthhub', refId:_gp.id }); } }catch(e){}
   closeModalDirect();
-  showToast('相談を送信しました。管理者が確認します', 'success');
+  showToast(t('相談を送信しました。管理者が確認します','Sent. A manager will review it'), 'success');
   renderPage('growthhub');
 }
 function openGHReply(pId) {
   var mgr = ghIsManager();
-  openModal(`<div class="modal-title">${mgr?'返信':'追記・返信'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">メッセージ</label><textarea class="form-textarea" id="gh-reply" style="min-height:100px" placeholder="${mgr?'スタッフへの返信':'追記や返信'}"></textarea></div>
-    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveGHReply('${pId}')">送信</button></div>`);
+  openModal(`<div class="modal-title">${mgr?t('返信','Reply'):t('追記・返信','Add / reply')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">${t('メッセージ','Message')}</label><textarea class="form-textarea" id="gh-reply" style="min-height:100px" placeholder="${mgr?t('スタッフへの返信','Reply to staff'):t('追記や返信','Add or reply')}"></textarea></div>
+    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">${t('キャンセル','Cancel')}</button>
+    <button class="btn btn-primary" onclick="saveGHReply('${pId}')">${t('送信','Send')}</button></div>`);
 }
 function saveGHReply(pId) {
   var text = document.getElementById('gh-reply').value.trim();
@@ -34337,19 +34371,19 @@ function saveGHReply(pId) {
     if (mgr && (p.status||'未対応')==='未対応') p.status='対応中';
     lsSet('growthhub', posts);
     try{
-      if(mgr){ addNotif({ type:'consult', title:'相談に回答がありました', text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); }
-      else if(p.store){ addNotif({ type:'consult', title:'相談に返信がありました', text:(p.title||'').slice(0,140), toStore:p.store, toRoles:['sl','am','gm'], page:'growthhub', refId:p.id }); }
+      if(mgr){ addNotif({ type:'consult', title:t('相談に回答がありました','Your consultation got a reply'), text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); }
+      else if(p.store){ addNotif({ type:'consult', title:t('相談に返信がありました','A consultation got a reply'), text:(p.title||'').slice(0,140), toStore:p.store, toRoles:['sl','am','gm'], page:'growthhub', refId:p.id }); }
     }catch(e){}
   }
   closeModalDirect();
-  showToast('送信しました', 'success');
+  showToast(t('送信しました','Sent'), 'success');
   renderPage('growthhub');
 }
 function ghSetStatus(pId, status){
   var posts = ls('growthhub', []);
   var p = posts.find(x=>x.id===pId);
-  if (p){ p.status=status; lsSet('growthhub', posts); try{ if(status==='解決'){ addNotif({ type:'consult', title:'相談が解決済みになりました', text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); } }catch(e){} }
-  showToast(status+'にしました', status==='解決'?'success':'info');
+  if (p){ p.status=status; lsSet('growthhub', posts); try{ if(status==='解決'){ addNotif({ type:'consult', title:t('相談が解決済みになりました','A consultation was marked resolved'), text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); } }catch(e){} }
+  showToast(curLang==='en'?tStatus(status):status+'にしました', status==='解決'?'success':'info');
   renderPage('growthhub');
 }
 
@@ -34727,7 +34761,7 @@ function skillLevelGaugeHtml(name, storeId){
   var c0=items.filter(function(x){return x.lv===0;}).length;
   var chips=items.filter(function(x){return x.lv>=1;}).map(function(it){
     var c=lvColor(it.lv);
-    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:2px 7px;border-radius:11px;background:'+c+'1f;color:'+c+';border:1px solid '+c+'4d;margin:0 4px 4px 0">'+escapeHtml(it.p)+' <b>Lv'+it.lv+'</b></span>';
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:2px 7px;border-radius:11px;background:'+c+'1f;color:'+c+';border:1px solid '+c+'4d;margin:0 4px 4px 0">'+escapeHtml(posLabel(it.p))+' <b>Lv'+it.lv+'</b></span>';
   }).join('');
   if(c0) chips+='<span style="font-size:10px;padding:2px 7px;border-radius:11px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);margin:0 4px 4px 0">'+t('未習得','Unlearned')+' '+c0+'</span>';
   return '<div style="margin-top:5px"><div style="display:flex;flex-wrap:wrap;align-items:center">'+chips+'</div>'
@@ -35284,7 +35318,7 @@ function skillRadarSvg(labels, values, max, opts){
   var size = opts.size || 260;
   var n = labels.length;
   if(n < 3){
-    return '<div style="font-size:12px;color:var(--muted);text-align:center;padding:18px">レーダー表示にはポジションが3つ以上必要です</div>';
+    return '<div style="font-size:12px;color:var(--muted);text-align:center;padding:18px">'+t('レーダー表示にはポジションが3つ以上必要です','A radar needs at least 3 positions')+'</div>';
   }
   max = max || 3;
   var cx = size/2, cy = size/2;
@@ -35296,7 +35330,7 @@ function skillRadarSvg(labels, values, max, opts){
     var r = R * (val/max);
     return [cx + r*Math.cos(ang), cy + r*Math.sin(ang)];
   }
-  var svg = '<svg viewBox="0 0 '+size+' '+size+'" width="100%" style="max-width:'+size+'px;display:block;margin:0 auto" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="スキルレーダー">';
+  var svg = '<svg viewBox="0 0 '+size+' '+size+'" width="100%" style="max-width:'+size+'px;display:block;margin:0 auto" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Skill radar">';
   // グリッドリング
   for(var ring=1; ring<=max; ring++){
     var rp=[];
@@ -35694,9 +35728,9 @@ function skillLevelListHtml(name, sid){
     var s = sk[p]||{}; var lv=(s.status==='承認')?(s.level||0):0;
     var col = lv>=3?'var(--accent)':lv===2?'var(--green)':lv===1?'var(--yellow)':'var(--muted)';
     var bars=[1,2,3].map(function(n){return '<span style="width:13px;height:5px;border-radius:2px;display:inline-block;background:'+((lv>0&&n<=lv)?col:'var(--border)')+'"></span>';}).join('');
-    var pend=(s.status&&s.status!=='承認'&&s.status!=='未取得')?' <span class="tag tag-yellow" style="font-size:9px">'+escapeHtml(s.status)+'</span>':'';
+    var pend=(s.status&&s.status!=='承認'&&s.status!=='未取得')?' <span class="tag tag-yellow" style="font-size:9px">'+escapeHtml(tStatus(s.status))+'</span>':'';
     return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:1.5px 0">'
-      +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(p)+pend+'</span>'
+      +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(posLabel(p))+pend+'</span>'
       +'<span style="display:flex;gap:2px">'+bars+'</span>'
       +'<span style="width:28px;text-align:right;color:'+col+';font-weight:700">Lv'+lv+'</span></div>';
   }).join('')+'</div>';
