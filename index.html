@@ -4141,6 +4141,7 @@ async function syncMasterToSupabase(key, val){
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
+    if (OP_MERGE[key]) { await opMergePush(key, val); return; }
     var _outVal = (key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val;
     await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
   }
@@ -4292,6 +4293,120 @@ async function pushOpKeyNow(key){
     await supaUpsert('app_state', [{ key:key, value:out, updated_at:new Date().toISOString() }]);
     return true;
   }catch(e){ console.warn('pushOpKeyNow failed', key, e); return false; }
+}
+/* ============================================================
+   P0-1: 運用キーの「読み→マージ→書き」（更新消失対策 / v549）
+   - app_state はキー単位のまるごと上書き。共有コレクションで同時編集すると
+     他ユーザーの追加が消える。対象キーはクラウド最新とマージしてから書く。
+   - 段階導入：まず物理削除の無い notifications のみ（安全）。他キーは
+     各キーの削除挙動を精査してから OP_MERGE へ追加する。
+   - localStorageへの反映は setItem 直書き（lsSetを使うと再push無限ループ）。
+============================================================ */
+var OP_MERGE = {
+  notifications: { merge: mergeNotifs,    covers: _coversNotifs,   after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); var p=document.getElementById('notif-panel'); if(p&&p.style.display==='block'&&typeof renderNotifPanel==='function') renderNotifPanel(); }catch(e){} } },
+  approvals:     { merge: mergeApprovals, covers: _coversApprovals, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } }
+};
+/* approvals マージ：idで和集合／signoffs(複数承認者)は和集合／決定済み(status!=='pending')はpendingに勝つ／両方決定なら新しい方→local優先 */
+function _apDecided(a){ return !!(a && a.status!=null && a.status!=='pending'); }
+function _apTs(a){ return String((a&&(a.approvedAt||a.decidedAt||a.updatedAt||a.date))||''); }
+function _apUnionSignoffs(x,y){ var out=[], seen={}; (x||[]).concat(y||[]).forEach(function(s){ if(!s||s.role==null) return; if(!seen[s.role]){ seen[s.role]=1; out.push(s); } }); return out; }
+function mergeApprovals(cloudArr, localArr){
+  var by={}, order=[];
+  function put(item, isLocal){
+    if(!item || item.id==null) return;
+    var id=item.id;
+    if(!by[id]){ by[id]=item; order.push(id); return; }
+    var cur=by[id], win;
+    if(_apDecided(cur)!==_apDecided(item)) win = _apDecided(cur)?cur:item;
+    else if(_apDecided(cur) && _apDecided(item)) win = (_apTs(item)>_apTs(cur))?item:((_apTs(cur)>_apTs(item))?cur:(isLocal?item:cur));
+    else win = isLocal?item:cur;
+    win = Object.assign({}, win, { signoffs: _apUnionSignoffs(cur.signoffs, item.signoffs) });
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+function _coversApprovals(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x&&x.id!=null) have[x.id]=x; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(!w||w.id==null) continue;
+    var h=have[w.id]; if(!h) return false;
+    if(w.status && w.status!=='pending' && (h.status==null || h.status==='pending')) return false;
+    var hr={}; (h.signoffs||[]).forEach(function(s){ if(s&&s.role!=null) hr[s.role]=1; });
+    var ws=w.signoffs||[]; for(var j=0;j<ws.length;j++){ if(ws[j]&&ws[j].role!=null && !hr[ws[j].role]) return false; }
+  }
+  return true;
+}
+var _opMergeChain = {}; // キー別に直列化（自クライアント内の連続書き込みが互いを潰さないように）
+
+function _fetchOpValue(key){
+  return fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(rows){ return (rows && rows.length) ? rows[0].value : null; })
+    .catch(function(){ return undefined; }); // undefined=取得失敗（マージせず素通し）
+}
+
+/* 通知配列マージ：idで和集合、readByは和集合、at昇順で newest500 に整理 */
+function mergeNotifs(cloudArr, localArr){
+  var by={}, order=[];
+  function put(item, preferLocal){
+    if(!item || item.id==null) return;
+    var id=item.id;
+    if(by[id]){
+      var set={}; (by[id].readBy||[]).concat(item.readBy||[]).forEach(function(x){ if(x!=null) set[x]=1; });
+      var merged = preferLocal ? Object.assign({}, by[id], item) : Object.assign({}, item, by[id]);
+      merged.readBy = Object.keys(set);
+      by[id]=merged;
+    } else { by[id]=item; order.push(id); }
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); }); // localの新規/編集を優先
+  var out=order.map(function(id){ return by[id]; });
+  out.sort(function(a,b){ return String(a.at||'').localeCompare(String(b.at||'')); });
+  if(out.length>500) out=out.slice(out.length-500);
+  return out;
+}
+
+/* check が want を包含しているか（id存在 かつ readBy を取りこぼしていない） */
+function _coversNotifs(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x&&x.id!=null) have[x.id]=x; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(!w||w.id==null) continue;
+    var h=have[w.id]; if(!h) return false;
+    var hb=h.readBy||[], wb=w.readBy||[];
+    for(var j=0;j<wb.length;j++){ if(hb.indexOf(wb[j])<0) return false; }
+  }
+  return true;
+}
+
+/* mergeableキーの書き込み：クラウド最新とマージ→ローカル収束→クラウド反映（最大3回で自己修復） */
+function opMergePush(key, localVal){
+  var def = OP_MERGE[key]; if(!def) return Promise.resolve();
+  var run=function(){ return (async function(){
+    try{
+      var desired = localVal;
+      for(var attempt=0; attempt<3; attempt++){
+        var cloud = await _fetchOpValue(key);
+        if(cloud===undefined){ // 取得失敗→マージせず素通し（durabilityはP0-2で別途対応）
+          await supaUpsert('app_state', [{ key:key, value:desired, updated_at:new Date().toISOString() }]);
+          try{ localStorage.setItem(key, JSON.stringify(desired)); }catch(e){}
+          break;
+        }
+        var merged = def.merge(cloud, desired);
+        try{ localStorage.setItem(key, JSON.stringify(merged)); }catch(e){}
+        await supaUpsert('app_state', [{ key:key, value:merged, updated_at:new Date().toISOString() }]);
+        var check = await _fetchOpValue(key);
+        if(check===undefined || def.covers(check, merged)){ desired=merged; break; }
+        desired = def.merge(check, merged); // 誰かに上書きされた→取り込んで再試行
+      }
+      try{ if(def.after) def.after(); }catch(e){}
+    }catch(e){ console.warn('opMergePush', key, e); }
+  })(); };
+  var prev = _opMergeChain[key] || Promise.resolve();
+  var next = prev.then(run, run);
+  _opMergeChain[key] = next;
+  return next;
 }
 async function pullOpKey(key){
   try{
@@ -15123,7 +15238,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '548';
+const APP_VERSION = '550';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
