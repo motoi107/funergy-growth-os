@@ -15123,7 +15123,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '540';
+const APP_VERSION = '542';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -17520,16 +17520,16 @@ function getWeekStr() {
 function shiftWeekRangeLabel(off){
   var sun=new Date(getWeekSundayISO(off)+'T00:00:00');
   var sat=new Date(sun); sat.setDate(sun.getDate()+6);
-  return (sun.getMonth()+1)+'/'+sun.getDate()+'(日)〜'+(sat.getMonth()+1)+'/'+sat.getDate()+'(土)';
+  return curLang==='en'?((sun.getMonth()+1)+'/'+sun.getDate()+' (Sun) – '+(sat.getMonth()+1)+'/'+sat.getDate()+' (Sat)'):((sun.getMonth()+1)+'/'+sun.getDate()+'(日)〜'+(sat.getMonth()+1)+'/'+sat.getDate()+'(土)');
 }
 /* 週の相対名（今週/来週/翌々週…） */
 function shiftWeekRelLabel(off){
   var o=(off===undefined)?_shiftWeekOff:off;
-  if(o===0) return '今週';
-  if(o===1) return '来週';
-  if(o===2) return '翌々週';
-  if(o===-1) return '先週';
-  return (o>0?'+'+o:o)+'週';
+  if(o===0) return curLang==='en'?'This week':'今週';
+  if(o===1) return curLang==='en'?'Next week':'来週';
+  if(o===2) return curLang==='en'?'In 2 weeks':'翌々週';
+  if(o===-1) return curLang==='en'?'Last week':'先週';
+  return curLang==='en'?((o>0?'+'+o:o)+' weeks'):((o>0?'+'+o:o)+'週');
 }
 /* 週選択ナビ（◀ 前週 / 相対名+範囲 / 翌週 ▶ ＋ 今週へ） */
 function shiftWeekNavHtml(){
@@ -27535,11 +27535,11 @@ function checkLevelUpEligibility(name, storeId) {
   var sc = skillScoreStore(name, storeId);
   var sk = getEmpSkillsStore(name, storeId);
   var checks = [];
-  if (rule.minTotal>0) checks.push({label:`合計${rule.minTotal}点以上`, ok: sc.total>=rule.minTotal, detail:`${sc.total}/${rule.minTotal}点`});
-  if (rule.minLv3>0)   checks.push({label:`Lv3を${rule.minLv3}項目以上`, ok: sc.lv3>=rule.minLv3, detail:`${sc.lv3}/${rule.minLv3}項目`});
+  if (rule.minTotal>0) checks.push({label:(curLang==='en'?`Total ${rule.minTotal}+ pts`:`合計${rule.minTotal}点以上`), ok: sc.total>=rule.minTotal, detail:(curLang==='en'?`${sc.total}/${rule.minTotal} pts`:`${sc.total}/${rule.minTotal}点`)});
+  if (rule.minLv3>0)   checks.push({label:(curLang==='en'?`Lv3 in ${rule.minLv3}+ items`:`Lv3を${rule.minLv3}項目以上`), ok: sc.lv3>=rule.minLv3, detail:(curLang==='en'?`${sc.lv3}/${rule.minLv3} items`:`${sc.lv3}/${rule.minLv3}項目`)});
   (rule.mustLv3||[]).forEach(pos=>{
     var ok = sk[pos] && sk[pos].status==='承認' && sk[pos].level>=3;
-    checks.push({label:`${pos} がLv3`, ok:!!ok, detail: ok?'達成':'未'});
+    checks.push({label:(curLang==='en'?`${posLabel(pos)} at Lv3`:`${posLabel(pos)} がLv3`), ok:!!ok, detail:(ok?(curLang==='en'?'Done':'達成'):(curLang==='en'?'Not yet':'未'))});
   });
   // SM承認は申請後のマネージャー承認で満たすため、ここでは「申請可否」には含めず注記
   var mgrPending = !!rule.needMgr;
@@ -37080,6 +37080,7 @@ function renderHandbook(){
   chs.forEach(function(c){ var st=hbStatus(c, mine[c.id]); if(st==='read') readN++; else if(st==='stale') staleN++; });
   var pct=chs.length?Math.round(readN/chs.length*100):0;
   var allDone=(readN===chs.length && chs.length>0);
+  h+='<div style="display:flex;gap:6px;margin:2px 0 10px">'+'<button class="btn '+(_hbLang!=='en'?'btn-primary':'btn-secondary')+' btn-sm" style="flex:1" onclick="hbSetLang(\'ja\')"><i class="ti ti-language" style="font-size:13px"></i> 日本語</button>'+'<button class="btn '+(_hbLang==='en'?'btn-primary':'btn-secondary')+' btn-sm" style="flex:1" onclick="hbSetLang(\'en\')"><i class="ti ti-language" style="font-size:13px"></i> English</button>'+'</div>';
   h+='<div class="card" style="border:1.5px solid '+(allDone?'var(--green)':'var(--accent)')+'">'
     +'<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px"><b style="font-size:14px">'+(allDone?'<i class="ti ti-circle-check" style="color:var(--green)"></i> 全章読了済み！':'あなたの読了状況')+'</b><span style="font-weight:800;color:'+(allDone?'var(--green)':'var(--accent)')+'">'+readN+' / '+chs.length+'章（'+pct+'%）</span></div>'
     +''+'<div style="margin-top:8px">'+progBar(pct,{h:10,color:allDone?'var(--green)':'var(--accent)'})+'</div>'+''
@@ -37098,7 +37099,7 @@ function renderHandbook(){
       +(canEdit?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="event.stopPropagation();openHbEdit(\''+c.id+'\')"><i class="ti ti-pencil"></i></button>':'')
       +'<i class="ti ti-chevron-right" style="color:var(--muted)"></i></div>';
   });
-  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px">言語は章を開いてから切り替えできます。章が更新されると自動的に「要再確認」に戻ります。</div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px">言語はこのページ上部（または各章内）で切り替えできます。章が更新されると自動的に「要再確認」に戻ります。</div>';
   return h;
 }
 function hbRenderReader(chs, mine){
