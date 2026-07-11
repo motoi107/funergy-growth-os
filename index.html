@@ -15123,7 +15123,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '546';
+const APP_VERSION = '547';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -27031,6 +27031,12 @@ function kbResultHtml(){
   h+='<div><div style="font-size:10px;color:var(--muted)">原資（'+(Math.round((cfg.poolRate||0)*1000)/10)+'%）</div><div style="font-size:18px;font-weight:800">'+_money(tot.pool)+'</div></div>';
   h+='<div><div style="font-size:10px;color:var(--muted)">'+(tot.over?'超過':'余剰')+'</div><div style="font-size:18px;font-weight:800;color:'+(tot.over?'var(--red)':'var(--green)')+'">'+(tot.diff>=0?'+':'')+_money(tot.diff)+'</div></div>';
   if(tot.over){ h+='<div style="background:#e23b3b14;border-radius:8px;padding:6px 11px;font-size:11px;color:var(--red);line-height:1.5"><b>原資超過</b>。原資調整係数 ×'+tot.factor.toFixed(3)+' を適用すると合計が原資に収まります（下表「調整後」）。</div>'; }
+  h+='<div style="flex-basis:100%;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:6px;padding-top:10px">';
+  h+='<button class="btn btn-primary btn-sm" onclick="bonusConfirmQuarter()"><i class="ti ti-check"></i> この四半期を確定して履歴に記録</button>';
+  var _cq=String(cfg.quarter||'').trim(); var _cst=(cfg.confirmedLog&&cfg.confirmedLog[_cq])||null;
+  if(_cst){ h+='<span style="font-size:11px;color:var(--green)"><i class="ti ti-circle-check"></i> 記録済み '+escapeHtml(_cq)+'：'+_cst.n+'名'+(_cst.at?'（'+new Date(_cst.at).toLocaleString('ja')+'）':'')+'</span>'; }
+  else { h+='<span style="font-size:11px;color:var(--muted)">確定すると各人の給与・ボーナス履歴に自動追加されます（'+escapeHtml(_cq||'四半期未設定')+'）</span>'; }
+  h+='</div>';
   h+='</div></div>';
 
   /* ボーナス一覧 */
@@ -27194,15 +27200,33 @@ function renderKarteDetailPage(empId){
   if(b.spCoef!=null) h+=_kFactor('店舗利益係数', '×'+b.spCoef.toFixed(2), 'var(--green)');
   h+='</div>';
   h+='<div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border-radius:10px;padding:10px 14px"><span style="font-weight:800">査定ボーナス</span><span style="font-weight:800;font-size:20px;color:'+gcol+'">'+_money(b.amount)+'</span></div>';
+  var _q1=String(cfg.quarter||'').trim(); var _rec1=(k.payLog||[]).some(function(p){return p.src==='auto'&&p.quarter===_q1;});
+  h+='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">';
+  h+='<button class="btn '+(_rec1?'btn-secondary':'btn-primary')+' btn-sm" onclick="bonusConfirmOne(\''+empId+'\')"><i class="ti ti-check"></i> '+(_rec1?'この四半期を再記録':'この四半期を履歴に記録')+'</button>';
+  if(_rec1){ h+='<span style="font-size:10.5px;color:var(--green)"><i class="ti ti-circle-check"></i> '+escapeHtml(_q1||'')+' 記録済み</span>'; }
+  h+='</div>';
   h+='<div style="margin-top:8px;font-size:11.5px;line-height:1.7;color:var(--tm)"><div style="font-weight:700;color:var(--muted);margin-bottom:2px"><i class="ti ti-info-circle"></i> この金額になった理由（説明用）</div><ul style="margin:0;padding-left:18px">'+karteBonusExplain(e,b).map(function(s){return '<li>'+s+'</li>';}).join('')+'</ul></div>';
   h+='<div style="font-size:11px;color:var(--muted);margin:10px 0 4px">給与・ボーナス履歴</div>';
   var pl=(k.payLog||[]).slice().reverse();
-  if(pl.length){ pl.forEach(function(p){ h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px">'
-    +'<input type="date" class="form-input" style="width:150px" value="'+escapeHtml(p.date||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'date\',this.value)">'
-    +'<select class="form-select" style="width:112px" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'type\',this.value)">'+['ボーナス','昇給','給与改定'].map(function(o){return '<option'+(p.type===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select>'
-    +'<input class="form-input" style="width:110px;text-align:right" placeholder="金額$" value="'+escapeHtml(p.amount||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'amount\',this.value)">'
-    +'<input class="form-input" style="flex:1;min-width:120px" placeholder="メモ" value="'+escapeHtml(p.note||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'note\',this.value)">'
-    +'<button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="kartePayDel(\''+empId+'\',\''+p.id+'\')">×</button></div>'; }); }
+  if(pl.length){ pl.forEach(function(p){
+    if(p.src==='auto'){ var sn=p.snap||{};
+      h+='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:5px;background:var(--surface2);border-radius:8px;padding:6px 10px">'
+      +'<span style="color:var(--muted);font-size:11px;width:84px;flex-shrink:0">'+escapeHtml(String(p.date||'').slice(0,10))+'</span>'
+      +'<span style="background:var(--accent);color:#fff;font-size:9.5px;font-weight:800;border-radius:5px;padding:2px 6px">自動</span>'
+      +'<span style="font-size:11.5px;font-weight:700">ボーナス'+(p.quarter?' <span style="color:var(--muted);font-weight:500">('+escapeHtml(p.quarter)+')</span>':'')+'</span>'
+      +'<span style="font-weight:800;margin-left:auto">'+_money(Number(p.amount)||0)+'</span>'
+      +'<button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="kartePayDel(\''+empId+'\',\''+p.id+'\')">×</button>';
+      if(sn.grade){ h+='<div style="flex-basis:100%;font-size:10px;color:var(--muted);padding-left:2px">'+escapeHtml(sn.grade)+' 基準'+_money(sn.base||0)+' ・個人×'+(sn.coef!=null?Number(sn.coef).toFixed(2):'—')+' ・CS×'+(sn.csCoef!=null?Number(sn.csCoef).toFixed(2):'—')+(sn.spCoef!=null?' ・利益×'+Number(sn.spCoef).toFixed(2):'')+((sn.adj!=null&&sn.adj<1)?' ・原資調整×'+Number(sn.adj).toFixed(3):'')+'</div>'; }
+      h+='</div>';
+    } else {
+      h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px">'
+      +'<input type="date" class="form-input" style="width:150px" value="'+escapeHtml(p.date||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'date\',this.value)">'
+      +'<select class="form-select" style="width:112px" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'type\',this.value)">'+['ボーナス','昇給','給与改定'].map(function(o){return '<option'+(p.type===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select>'
+      +'<input class="form-input" style="width:110px;text-align:right" placeholder="金額$" value="'+escapeHtml(p.amount||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'amount\',this.value)">'
+      +'<input class="form-input" style="flex:1;min-width:120px" placeholder="メモ" value="'+escapeHtml(p.note||'')+'" onchange="kartePaySet(\''+empId+'\',\''+p.id+'\',\'note\',this.value)">'
+      +'<button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="kartePayDel(\''+empId+'\',\''+p.id+'\')">×</button></div>';
+    }
+  }); }
   else { h+='<div style="font-size:11px;color:var(--muted)">履歴なし（支給の都度、記録すると推移が残ります）</div>'; }
   h+='<button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="kartePayAdd(\''+empId+'\')"><i class="ti ti-plus"></i> 履歴を追加</button>';
   h+='</div>';
@@ -27278,6 +27302,35 @@ function karteDelMeeting(empId,mid){ var k=getKarte(empId); k.meetings=(k.meetin
 function kartePayAdd(empId){ var k=getKarte(empId); k.payLog=k.payLog||[]; k.payLog.push({id:'p'+Date.now().toString(36), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:'', note:''}); saveKarte(empId,k); openKarteDetail(empId); }
 function kartePaySet(empId,pid,field,val){ var k=getKarte(empId); (k.payLog||[]).forEach(function(p){ if(p.id===pid) p[field]=val; }); saveKarte(empId,k); }
 function kartePayDel(empId,pid){ var k=getKarte(empId); k.payLog=(k.payLog||[]).filter(function(p){return p.id!==pid;}); saveKarte(empId,k); openKarteDetail(empId); }
+/* ===== ボーナス査定の自動記録（給与・ボーナス履歴への連携 / v547） ===== */
+function _bonusWritePay(e,b,q,payAmt,adj){
+  var all=getKarteAll(); var now=new Date().toISOString(); var by=(typeof myName==='function'?myName():(curUserName||''));
+  var k=all[e.id]||{}; k.payLog=k.payLog||[];
+  var snap={grade:b.grade, base:b.base, coef:b.coef, csPct:b.csPct, csCoef:b.csCoef, spPct:b.spPct, spCoef:b.spCoef, hasCS:b.hasCS, raw:b.amount, adj:adj};
+  var ex=null; for(var i=0;i<k.payLog.length;i++){ if(k.payLog[i].src==='auto' && k.payLog[i].quarter===q){ ex=k.payLog[i]; break; } }
+  if(ex){ ex.amount=String(payAmt); ex.date=(typeof todayISO==='function'?todayISO():ex.date); ex.snap=snap; ex.by=by; ex.at=now; }
+  else { k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:String(payAmt), note:'四半期査定（自動記録）', src:'auto', quarter:q, snap:snap, by:by, at:now}); }
+  k.updatedAt=now; all[e.id]=k; lsSet('growth_karte', all);
+}
+function bonusConfirmQuarter(){
+  var cfg=kbCfg(); var tot=bonusTotals(cfg); var q=String(cfg.quarter||'').trim();
+  if(!q){ alert('四半期が未設定です。設定タブで四半期を入力してください。'); return; }
+  if(!tot.rows.length){ alert('対象者（G2以上・在籍）がいません。'); return; }
+  var payTotal=tot.over?Math.round(tot.total*tot.factor):tot.total;
+  if(!confirm('四半期「'+q+'」の査定ボーナスを、対象 '+tot.rows.length+' 名の給与・ボーナス履歴に記録します。\n合計 '+_money(payTotal)+(tot.over?'（原資調整後）':'')+'\n※同じ四半期の自動記録は上書き更新されます。\nよろしいですか？')) return;
+  var adj=tot.over?tot.factor:1; var n=0;
+  tot.rows.forEach(function(r){ var e=r.e, b=r.b; var payAmt=tot.over?Math.round(b.amount*tot.factor):b.amount; _bonusWritePay(e,b,q,payAmt,adj); n++; });
+  var c=kbCfg(); c.confirmedLog=c.confirmedLog||{}; c.confirmedLog[q]={at:new Date().toISOString(), n:n, by:(typeof myName==='function'?myName():(curUserName||'')), total:payTotal, over:!!tot.over}; kbSave(c);
+  showToast(q+' の査定を '+n+' 名分、履歴に記録しました','success'); kbRefresh();
+}
+function bonusConfirmOne(empId){
+  var cfg=kbCfg(); var e=getEmployees().find(function(x){return x.id===empId;}); if(!e) return;
+  var q=String(cfg.quarter||'').trim(); if(!q){ alert('四半期が未設定です（設定タブで入力）。'); return; }
+  var tot=bonusTotals(cfg); var b=bonusForEmp(e,cfg); var payAmt=tot.over?Math.round(b.amount*tot.factor):b.amount;
+  if(!confirm(e.name+' の '+q+' 査定ボーナス '+_money(payAmt)+(tot.over?'（原資調整後）':'')+' を給与・ボーナス履歴に記録します。よろしいですか？')) return;
+  _bonusWritePay(e,b,q,payAmt,tot.over?tot.factor:1);
+  showToast(q+' の査定を記録しました','success'); openKarteDetail(empId);
+}
 function renderTrainee(){
   var css='<style>'
     +'.tr-wrap{max-width:760px}'
