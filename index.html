@@ -9087,6 +9087,62 @@ function _meetInputBlock(storeId, ym, it, missed){
   return h;
 }
 /* 1店舗の会議カード */
+/* 目標vs実績の1行: 実績を主役（大・色）、目標は併記、あと◯◯は小さく */
+function _meetRow(storeId, ym, itKey, label, act, tgt, opts){
+  opts=opts||{};
+  var money=opts.money, lower=opts.lower, unit=opts.unit||'';
+  var fmtV=function(v){ if(money) return (typeof fmtUSD2==='function')?fmtUSD2(v):('$'+(Math.round(v*100)/100)); return Math.round(v*10)/10; };
+  var hasT=(tgt>0), hasA=(act>0);
+  var ok=null;
+  if(hasT && hasA) ok = lower ? (act<=tgt) : (act>=tgt*0.995);
+  var actCol = ok===null?'var(--tm)':(ok?'var(--green)':'var(--red)');
+  var gap='';
+  if(hasT && hasA){
+    if(ok) gap='<span style="color:var(--green);font-weight:700">✓ '+t('達成','met')+'</span>';
+    else if(lower) gap=t('超過','over')+' +'+(Math.round((act-tgt)*10)/10)+unit;
+    else gap=t('あと','need')+' '+fmtV(Math.max(0,tgt-act))+unit;
+  }
+  var h='<div style="display:flex;align-items:center;gap:8px;padding:7px 2px;border-top:1px solid var(--border)">'
+    +'<span style="font-size:12.5px;font-weight:600;flex:1;min-width:0">'+label+'</span>'
+    +'<div style="text-align:right;white-space:nowrap;line-height:1.15">'
+      +'<div><span style="font-size:17px;font-weight:800;color:'+actCol+'">'+(hasA?fmtV(act)+unit:'—')+'</span>'
+      +'<span style="font-size:10.5px;color:var(--muted)"> / '+t('目標','Tgt')+' '+(hasT?fmtV(tgt)+unit:'—')+'</span></div>'
+      +(gap?'<div style="font-size:9px;color:var(--muted)">'+gap+'</div>':'')
+    +'</div></div>';
+  if(ok===false){ h+=_meetInputBlock(storeId, ym, {key:itKey}, true); }
+  return h;
+}
+/* 月初レビュー用: 今年の月別 目標/実績/達成率 一覧（議事録ライク） */
+function _meetYearTrend(storeId, y){
+  var yT=0, yA=0, rows='';
+  var curOff=0;
+  for(var m=1;m<=12;m++){
+    var ym=y+'-'+String(m).padStart(2,'0');
+    var off=(typeof _ymToOffset==='function')?_ymToOffset(ym):0;
+    var tgt=(typeof minutesMonthlySales==='function')?(minutesMonthlySales(storeId,m)||0):0;
+    var act=0; if(off<=0){ var ms=monthStats(storeId, off)||{}; act=ms.sales||0; }
+    yT+=tgt; if(off<=0) yA+=act;
+    var rate=(tgt>0 && act>0)?Math.round(act/tgt*100):null;
+    var future=(off>0);
+    var rc = future?'var(--muted)':(rate==null?'var(--muted)':(rate>=100?'var(--green)':rate>=90?'var(--yellow)':'var(--red)'));
+    var chip = future?'—':(rate==null?'—':rate+'%');
+    rows+='<div style="display:flex;align-items:center;gap:6px;padding:5px 2px;border-top:1px solid var(--border);font-size:11.5px'+(off===0?';background:rgba(43,121,208,.06)':'')+'">'
+      +'<span style="width:30px;font-weight:700;color:'+(off===0?'var(--accent)':'var(--muted)')+'">'+m+t('月','')+'</span>'
+      +'<span style="flex:1;text-align:right;color:var(--muted)">'+(tgt>0?fmtK(tgt):'—')+'</span>'
+      +'<span style="flex:1;text-align:right;font-weight:700;color:'+(future?'var(--muted)':'var(--tm)')+'">'+(off<=0&&act>0?fmtK(act):(future?'':'—'))+'</span>'
+      +'<span style="width:52px;text-align:right;font-weight:800;color:'+rc+'">'+chip+'</span></div>';
+  }
+  var yr=(yT>0&&yA>0)?Math.round(yA/yT*100):null;
+  var header='<div style="display:flex;align-items:center;gap:6px;padding:4px 2px;font-size:10px;color:var(--muted);font-weight:700">'
+    +'<span style="width:30px"></span><span style="flex:1;text-align:right">'+t('目標','Target')+'</span><span style="flex:1;text-align:right">'+t('実績','Actual')+'</span><span style="width:52px;text-align:right">'+t('達成率','Rate')+'</span></div>';
+  var total='<div style="display:flex;align-items:center;gap:6px;padding:6px 2px;border-top:2px solid var(--border);font-size:12px;font-weight:800">'
+    +'<span style="width:30px">'+t('年計','YTD')+'</span>'
+    +'<span style="flex:1;text-align:right;color:var(--muted)">'+fmtK(yT)+'</span>'
+    +'<span style="flex:1;text-align:right">'+fmtK(yA)+'</span>'
+    +'<span style="width:52px;text-align:right;color:'+(yr==null?'var(--muted)':(yr>=100?'var(--green)':yr>=90?'var(--yellow)':'var(--red)'))+'">'+(yr==null?'—':yr+'%')+'</span></div>';
+  return '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:11.5px;font-weight:700;color:var(--accent2);padding:4px 0"><i class="ti ti-timeline"></i> '+t('今年の推移（月別 売上 目標／実績／達成率）',"This year's trend (monthly sales target/actual/rate)")+'</summary>'
+    +'<div style="margin-top:4px">'+header+rows+total+'</div></details>';
+}
 function _meetStoreCard(store, k, ym, isCurrent, mode){
   var rows=_meetKpiRows(k);
   var monthDays=k.monthDaysN||0;
@@ -9096,45 +9152,41 @@ function _meetStoreCard(store, k, ym, isCurrent, mode){
     daysPassed=Math.max(1, d.getDate()-1); if(daysPassed>monthDays&&monthDays>0) daysPassed=monthDays;
     landing = daysPassed>0 ? Math.round((k.sales||0)/daysPassed*monthDays) : (k.sales||0);
     remDays=Math.max(0, monthDays-daysPassed);
-    var remBud=Math.max(0,(k.budget||0)-(k.sales||0));
-    reqPerDay = remDays>0 ? Math.round(remBud/remDays) : 0;
+    reqPerDay = remDays>0 ? Math.round(Math.max(0,(k.budget||0)-(k.sales||0))/remDays) : 0;
     landPct = (k.budget>0) ? Math.round(landing/k.budget*1000)/10 : null;
   }
-  var salesIt=rows[0];
   var paceFrac = (isCurrent && mode==='mid' && monthDays>0) ? Math.min(1, daysPassed/monthDays) : 1;
   if(paceFrac<1){ rows.forEach(function(it){ if(it.key==='guests' && it.tgt>0){ it.tgt=Math.round(it.tgt*paceFrac); it.label=it.label+t('（前日まで）','(to date)'); } }); }
-  var landingForJudge = (isCurrent&&mode==='mid') ? landing : null;
-  // 未達件数
-  var missCount=0, total=0;
-  rows.forEach(function(it){ var j=_meetJudge(it, it.isSales?landingForJudge:null); if(j!=null){ total++; if(j===false) missCount++; } });
-  var hCol = missCount===0?'var(--green)':(missCount<=1?'var(--yellow)':'var(--red)');
+  var salesIt=rows[0];
+  var landingForJudge=(isCurrent&&mode==='mid')?landing:null;
+  var missCount=0;
+  rows.forEach(function(it){ var j=_meetJudge(it, it.isSales?landingForJudge:null); if(j===false) missCount++; });
   var h='<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)
     +'<span class="tag '+(missCount===0?'tag-green':(missCount<=1?'tag-yellow':'tag-red'))+'" style="margin-left:auto">'+(missCount===0?t('全KPI達成','All met'):(missCount+t('件 未達',' missed')))+'</span></div>';
-  // 売上ブロック（中間＝着地予測＋後半必要日商 / 月初＝最終達成）
-  var achv = k.budget>0 ? Math.round((k.sales||0)/k.budget*1000)/10 : 0;
+  // 売上（主役）: 実績 大 / 予算。中間は着地・後半必要を小さく添える
+  var salesOk=_meetJudge(salesIt, landingForJudge);
+  var salesCol = salesOk===null?'var(--tm)':(salesOk?'var(--green)':'var(--red)');
+  h+='<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+    +'<div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.03em">'+t('売上','SALES')+(isCurrent&&mode==='mid'?t('（前日まで）',' (to date)'):'')+'</div>'
+    +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:2px">'
+    +'<span style="font-size:26px;font-weight:800;color:'+salesCol+'">'+fmtK(k.sales||0)+'</span>'
+    +'<span style="font-size:12px;color:var(--muted)">/ '+t('予算','Budget')+' '+fmtK(k.budget||0)+'</span>'
+    +(salesOk!=null?'<span style="margin-left:auto;font-size:12px;font-weight:800;color:'+salesCol+'">'+(salesOk?('✓ '+t('達成','met')):(isCurrent&&mode==='mid'?t('未達ペース','off pace'):t('未達','missed')))+'</span>':'')
+    +'</div>';
   if(isCurrent && mode==='mid'){
     var landCol = landPct==null?'var(--muted)':(landPct>=100?'var(--green)':landPct>=97?'var(--yellow)':'var(--red)');
-    h+='<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
-      +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap"><span style="font-size:22px;font-weight:800;color:'+landCol+'">'+fmtK(k.sales||0)+'</span>'
-      +'<span style="font-size:11px;color:var(--muted)">/ '+t('月予算','Budget')+' '+fmtK(k.budget||0)+'</span>'
-      +'<span style="margin-left:auto;font-size:12px;color:var(--muted)">'+t('前日まで','through yest')+' '+daysPassed+'/'+monthDays+t('日','d')+'</span></div>'
-      +'<div style="margin:8px 0 4px">'+progBar(achv,{h:10,color:landCol})+'</div>'
-      +'<div style="display:flex;justify-content:space-between;font-size:11px;flex-wrap:wrap;gap:8px">'
-      +'<span><i class="ti ti-plane-arrival" style="color:'+landCol+'"></i> '+t('着地予測','Projected')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(1)+'%）':'')+'</span>'
-      +'<span style="color:var(--tm)"><i class="ti ti-target"></i> '+t('後半 必要日商','Req/day (rest)')+' <b>'+fmtK(reqPerDay)+'</b> ×'+remDays+t('日','d')+'</span>'
-      +'</div></div>';
-  } else {
-    h+='<div style="margin-bottom:6px">'+_qbProgLine(t('売上','Sales'), k.sales||0, k.budget||0, {money:true})+'</div>';
+    h+='<div style="font-size:9.5px;color:var(--muted);margin-top:5px;line-height:1.5">'
+      +'<i class="ti ti-plane-arrival"></i> '+t('着地予測','Proj')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(0)+'%）':'')
+      +'　·　'+t('後半 必要','Rest need')+' <b>'+fmtK(reqPerDay)+t('/日','/d')+'</b>×'+remDays+t('日','d')+'</div>';
   }
-  if(_meetJudge(salesIt, landingForJudge)===false){ h+=_meetInputBlock(store.id, ym, salesIt, true); }
-  // その他KPI行
-  h+='<div style="margin-top:4px">';
+  h+='</div>';
+  if(salesOk===false){ h+=_meetInputBlock(store.id, ym, salesIt, true); }
+  // その他KPI（目標vs実績・主役=実績）
   rows.slice(1).forEach(function(it){
-    var j=_meetJudge(it, null);
-    h+=_qbProgLine(it.label, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower});
-    if(j===false){ h+=_meetInputBlock(store.id, ym, it, true); }
+    h+=_meetRow(store.id, ym, it.key, it.label, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower});
   });
-  h+='</div></div>';
+  // 月初は今年の推移も
+  if(mode==='start'){ h+=_meetYearTrend(store.id, (ym.split('-')[0])|0); }
   return h;
 }
 function renderMeetingReview(){
@@ -9143,6 +9195,12 @@ function renderMeetingReview(){
   var mode=meetMode;
   var stores=budgetScopeStores();
   var html='';
+  var _mdays=(new Date(ym0.y, ym0.m, 0)).getDate();
+  var _dp=0; if(isCurrent){ var _dn=(typeof bizNow==='function')?bizNow():new Date(); _dp=Math.max(1,_dn.getDate()-1); if(_dp>_mdays)_dp=_mdays; }
+  html+='<div style="background:var(--accent);color:#fff;border-radius:12px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px">'
+    +'<div><div style="font-size:22px;font-weight:800;line-height:1.1">'+ym0.y+t('年','')+ym0.m+t('月','')+'</div>'
+    +'<div style="font-size:11px;opacity:.9;margin-top:2px">'+(mode==='mid'?(t('中間MTG','Mid-month MTG')+(isCurrent?('・'+t('前日まで','through')+' '+_dp+'/'+_mdays+t('日','d')):'・'+t('確定','final'))):(t('月初MTG','Month-start MTG')+'・'+t('月次レビュー','monthly review')))+'</div></div>'
+    +'<i class="ti '+(mode==='mid'?'ti-run':'ti-calendar-check')+'" style="font-size:30px;margin-left:auto;opacity:.85"></i></div>';
   // モード切替
   var btn=function(m,label,sub){ var on=(mode===m); return '<button onclick="setMeetMode(\''+m+'\')" style="flex:1;border:1px solid '+(on?'var(--accent)':'var(--border)')+';background:'+(on?'var(--accent)':'var(--surface)')+';color:'+(on?'#fff':'var(--tm)')+';border-radius:10px;padding:8px 10px;cursor:pointer;text-align:center">'
     +'<div style="font-size:13px;font-weight:800">'+label+'</div><div style="font-size:9.5px;opacity:.85;margin-top:1px">'+sub+'</div></button>'; };
@@ -15801,7 +15859,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '568';
+const APP_VERSION = '569';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
