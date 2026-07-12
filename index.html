@@ -4778,7 +4778,7 @@ function plComputeStore(sid, ym, off){
   var cfg=getPlConfig(), ovr=getPlOverrides();
   var sales = Math.round((monthStats(sid, off)||{}).sales||0);
   var fc = getFcMonthly(sid, ym);
-  var purchOrder = monthOrderTotalYm(sid, ym), purchBuy = monthPurchaseTotalYm(sid, ym);
+  var purchOrder = monthInvoiceTotalYm(sid, ym), purchBuy = monthPurchaseTotalYm(sid, ym);
   var purch = purchOrder + purchBuy;
   var _tnet = (typeof monthTransferNetYm==='function') ? monthTransferNetYm(sid, ym) : {inAmt:0,outAmt:0,net:0};
   var cogs = Math.round((parseFloat(fc.beginInv)||0) + purch + _tnet.net - (parseFloat(fc.endInv)||0));
@@ -5250,7 +5250,7 @@ function openPlDetailModal(sid, key){
     ]);
   } else if(key==='cogs'){
     title='原価の内訳（'+c.cogsSrc+'）';
-    var _cr=[['期首棚卸', m(c.beginInv)],['＋ 仕入（発注）', m(c.purchOrder)],['＋ 仕入（買い出し・Invoice）', m(c.purchBuy)]];
+    var _cr=[['期首棚卸', m(c.beginInv)],['＋ 仕入（Invoice）', m(c.purchOrder)],['＋ 仕入（買い出し）', m(c.purchBuy)]];
     if(c.transferIn>0) _cr.push(['＋ 食材移動（借入）', m(c.transferIn)]);
     if(c.transferOut>0) _cr.push(['− 食材移動（貸出）', m(c.transferOut)]);
     _cr.push(['− 期末棚卸', m(c.endInv)]);
@@ -7444,7 +7444,7 @@ function fcBreakdownSub(scopeStores, days){
   (scopeStores||[]).forEach(function(s){
     var fc=(typeof getFcMonthly==='function')?getFcMonthly(s.id,ym):{};
     beg+=parseFloat(fc.beginInv)||0; endv+=parseFloat(fc.endInv)||0;
-    purch+=(monthOrderTotalYm(s.id,ym)||0)+(monthPurchaseTotalYm(s.id,ym)||0);
+    purch+=(monthInvoiceTotalYm(s.id,ym)||0)+(monthPurchaseTotalYm(s.id,ym)||0);
     var tn=(typeof monthTransferNetYm==='function')?monthTransferNetYm(s.id,ym):{inAmt:0,outAmt:0};
     tin+=tn.inAmt||0; tout+=tn.outAmt||0;
   });
@@ -7728,6 +7728,7 @@ function _invDayCostMap(){
   if (window._idcN===inv.length && window._idc) return window._idc;
   var m = {};
   inv.forEach(function(v){
+    if(v.docType==='Receipt' || v.docType==='Reimburse') return;
     var d = parseJaDate(v.date); if(!d) return;
     var iso = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     var sids = (v.splitStores&&v.splitStores.length)?v.splitStores:(v.storeId?[v.storeId]:[]);
@@ -11207,7 +11208,7 @@ function keyKpiStats(scopeStores, days){
         var cnt = metric==='bowls' ? ((Number(ov.bowls)||0)+(Number(ov.takeoutBowls)||0)) : (Number(ov.guests)||0);
         guests+=cnt;
         if(ov.actual>0){
-          food += (ov.foodCost!=null) ? ov.foodCost : dayCostReal(s.id, d.date);
+          /* 原価は月次 Invoice＋買い出し＋食材移動 で後段集計（棚卸は月末のみ）*/
           if(typeof toastLaborHoursForDate==='function') laborHours+=toastLaborHoursForDate(s.id,d.date);
           lunchS+=Number(ov.lunchSales)||0; lunchG+=Number(ov.lunchGuests)||0;
           dinnerS+=Number(ov.dinnerSales)||0; dinnerG+=Number(ov.dinnerGuests)||0;
@@ -11217,6 +11218,8 @@ function keyKpiStats(scopeStores, days){
         }
       }
     });
+    // 原価（当月進捗）＝ Invoice＋買い出し＋食材移動（棚卸なし）
+    try{ food += (monthInvoiceTotalYm(s.id, ym)||0) + (monthPurchaseTotalYm(s.id, ym)||0) + ((monthTransferNetYm(s.id, ym)||{}).net||0); }catch(e){}
     // 予算側（目標）
     salesBud += segmentsTotal(segs);
     segSales$ += segmentsTotal(segs);
@@ -11817,6 +11820,73 @@ function monthOrderTotalYm(storeId, ym){
   return orders.filter(function(o){ return ['発注確定','送信済','電話確認済','納品完了'].includes(o.status) && (dateInYm(o.date, ym) || (!o.date && ym===curYm())); })
     .reduce(function(a,o){ return a+(o.amount||0); },0);
 }
+/* ===== 当月Invoice集計（業者別可視化＋原価計算用） ===== */
+/* Invoiceの店舗トークンをID配列へ解決（名前で保存された古いInvoiceも取りこぼさない） */
+function _invStoreIds(v){
+  var raw=(v.splitStores&&v.splitStores.length)?v.splitStores:(v.storeId?[v.storeId]:[]);
+  return raw.map(function(x){ if(!x) return x; if(typeof STORES!=='undefined' && STORES.some(function(s){return s.id===x;})) return x; var bn=(typeof STORES!=='undefined')?STORES.find(function(s){return s.name===x;}):null; return bn?bn.id:x; });
+}
+/* 業者Invoice合計（docType='Invoice'のみ／Receiptは買い出しに計上済のため除外）。店舗按分後。 */
+function monthInvoiceTotalYm(storeId, ym){
+  var inv=ls('invoices',[])||[]; var sum=0;
+  inv.forEach(function(v){
+    if(v.docType==='Receipt' || v.docType==='Reimburse') return;
+    var d=parseJaDate(v.date); if(!d) return;
+    if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
+    var sids=_invStoreIds(v);
+    if(!sids.length || sids.indexOf(storeId)<0) return;
+    sum += (Number(v.total)||0)/sids.length;
+  });
+  return sum;
+}
+/* 当月の業者Invoice 合計・枚数 */
+function monthInvoiceStatsYm(storeId, ym){
+  var inv=ls('invoices',[])||[]; var total=0,count=0;
+  inv.forEach(function(v){
+    if(v.docType==='Receipt' || v.docType==='Reimburse') return;
+    var d=parseJaDate(v.date); if(!d) return;
+    if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
+    var sids=_invStoreIds(v);
+    if(!sids.length || sids.indexOf(storeId)<0) return;
+    total+=(Number(v.total)||0)/sids.length; count++;
+  });
+  return {total:total, count:count};
+}
+/* 業者別 当月仕入（Invoice＋レシート、Reimburse除外）: [{vendor,total,count,invoice,receipt,lastDate}] 降順 */
+function monthInvoiceByVendor(storeId, ym){
+  var inv=ls('invoices',[])||[]; var map={};
+  inv.forEach(function(v){
+    if(v.docType==='Reimburse') return;
+    var d=parseJaDate(v.date); if(!d) return;
+    if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
+    var sids=_invStoreIds(v);
+    if(!sids.length) return;
+    if(storeId && storeId!=='ALL' && sids.indexOf(storeId)<0) return;
+    var share=(Number(v.total)||0)/sids.length;
+    var amt=(storeId && storeId!=='ALL')?share:(Number(v.total)||0);
+    var vn=(v.vendor||'業者未設定'); var m=map[vn]||(map[vn]={vendor:vn,total:0,count:0,invoice:0,receipt:0,lastDate:'',lastDt:0});
+    m.total+=amt; m.count++; if(v.docType==='Receipt') m.receipt++; else m.invoice++;
+    var dt=d.getTime(); if(dt>m.lastDt){ m.lastDt=dt; m.lastDate=v.date; }
+  });
+  return Object.keys(map).map(function(k){return map[k];}).sort(function(a,b){return b.total-a.total;});
+}
+/* 業者別 当月仕入カード（読取ごとに加算） */
+function _fcVendorCard(storeId, ym){
+  var rows=monthInvoiceByVendor(storeId, ym);
+  var grand=rows.reduce(function(a,r){return a+r.total;},0);
+  var gcount=rows.reduce(function(a,r){return a+r.count;},0);
+  var ymL=ym.replace('-','年')+'月';
+  var h='<div class="card"><div class="card-title"><i class="ti ti-building-warehouse" style="color:var(--accent)"></i>業者別 当月仕入 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+ymL+' · '+gcount+'枚 / '+fmtUSD2(grand)+'</span></div>';
+  if(!rows.length){ h+='<div style="font-size:12px;color:var(--muted);padding:6px 2px"><i class="ti ti-info-circle"></i> この月に読み取ったInvoice/レシートはまだありません。読み取るごとにここへ業者別に加算されます。</div></div>'; return h; }
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:380px;font-size:12px"><thead><tr><th style="text-align:left">業者</th><th style="text-align:right">仕入額</th><th style="text-align:right">枚数</th><th style="text-align:right">最新日</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    var tag=(r.receipt&&r.invoice)?(' <span style="font-size:9px;color:var(--muted)">Inv'+r.invoice+'/Rcpt'+r.receipt+'</span>'):(r.receipt&&!r.invoice?' <span class="tag" style="font-size:8px;padding:0 5px;background:var(--surface2)">レシート</span>':'');
+    h+='<tr><td>'+escapeHtml(r.vendor)+tag+'</td><td style="text-align:right;font-weight:700">'+fmtUSD2(r.total)+'</td><td style="text-align:right">'+r.count+'</td><td style="text-align:right;color:var(--muted);font-size:11px">'+escapeHtml(r.lastDate||'—')+'</td></tr>';
+  });
+  h+='<tr style="border-top:2px solid var(--border);font-weight:800"><td>合計</td><td style="text-align:right">'+fmtUSD2(grand)+'</td><td style="text-align:right">'+gcount+'</td><td></td></tr>';
+  h+='</tbody></table></div><div style="font-size:9px;color:var(--muted);margin-top:6px">Invoice/レシートを読み取るごとに加算。金額は複数店按分Invoiceを頭割りした後の当店按分額です。</div></div>';
+  return h;
+}
 function monthPurchaseTotalYm(storeId, ym){
   return getPurchases(storeId).filter(function(p){ return dateInYm(p.date, ym) || (!p.date && ym===curYm()); })
     .reduce(function(a,p){ return a+(parseFloat(p.amount)||0); },0);
@@ -11883,7 +11953,7 @@ function renderFcAllStores(){
   vis.forEach(function(s){
     var fc = getFcMonthly(s.id, ym);
     var stats = monthStats(s.id, fcMonthOffset);
-    var purchases = monthOrderTotalYm(s.id, ym) + monthPurchaseTotalYm(s.id, ym);
+    var purchases = monthInvoiceTotalYm(s.id, ym) + monthPurchaseTotalYm(s.id, ym);
     var used = (parseFloat(fc.beginInv)||0) + purchases - (parseFloat(fc.endInv)||0);
     var sales = parseFloat(fc.sales)||stats.sales||0;
     var rate = sales ? Math.round(used/sales*1000)/10 : 0;
@@ -11891,6 +11961,7 @@ function renderFcAllStores(){
     html += `<tr><td style="cursor:pointer" onclick="setFcStore('${s.id}')">${s.name}</td><td style="text-align:right">${fmtUSD2(used)}</td><td style="text-align:right">${fmtUSD2(sales)}</td><td style="text-align:right;color:${col};font-weight:600">${rate?rate.toFixed(1)+'%':'—'}</td></tr>`;
   });
   html += `</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:6px">店舗名タップで各店の詳細（日次/月次/理論原価/買い出し/メニュー別）を表示。棚卸額が未入力の店は売上ベースのみ。</div></div>`;
+  html += _fcVendorCard('ALL', ym);
   return html;
 }
 
@@ -11924,9 +11995,11 @@ function renderFcDaily(storeId, store) {
   // 当月累計の実質原価率 ＝（当月Invoice合計＋当月買い出し合計）÷ 当月売上合計
   var _fcYm = curYm();
   var _mInv=0, _mSales=0;
-  daysOfYm(_fcYm).forEach(function(d){ _mInv += dayCostReal(storeId, d.date); var _o=actuals[d.date]||{}; _mSales += Number(_o.actual)||0; });
+  daysOfYm(_fcYm).forEach(function(d){ var _o=actuals[d.date]||{}; _mSales += Number(_o.actual)||0; });
+  _mInv = monthInvoiceTotalYm(storeId, _fcYm);
   var _mShop = monthPurchaseTotalYm(storeId, _fcYm);
-  var _mCost = _mInv + _mShop;
+  var _mTrans = ((typeof monthTransferNetYm==='function')?monthTransferNetYm(storeId,_fcYm):{net:0}).net||0;
+  var _mCost = _mInv + _mShop + _mTrans;
   var _mRate = _mSales>0 ? Math.round(_mCost/_mSales*1000)/10 : null;
   var _mLabel = (+_fcYm.split('-')[1])+'月';
   var head = (_mSales>0)
@@ -11952,7 +12025,8 @@ function renderFcMonthly(storeId, store) {
   var frozen = isFrozenMonth(ym);
   var stats = monthStats(storeId, fcMonthOffset);
   var fc = getFcMonthly(storeId, ym);
-  var orderTotal = monthOrderTotalYm(storeId, ym);
+  var invStat = monthInvoiceStatsYm(storeId, ym);
+  var orderTotal = invStat.total;
   var purchaseTotal = monthPurchaseTotalYm(storeId, ym);
   var purchases = orderTotal + purchaseTotal;
   var _fcTnet = (typeof monthTransferNetYm==='function') ? monthTransferNetYm(storeId, ym) : {inAmt:0,outAmt:0,net:0};
@@ -11968,7 +12042,7 @@ function renderFcMonthly(storeId, store) {
     <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openFcMonthlyModal('${storeId}','${ym}')"><i class="ti ti-edit"></i> 棚卸額入力</button></div>
     <table class="inv-table"><tbody>
       <tr><td>期首棚卸額 ${fc.beginAuto?'<span class="tag tag-blue" style="font-size:9px">前月末から自動</span>':''}</td><td style="text-align:right">$${(parseFloat(fc.beginInv)||0).toLocaleString()}</td></tr>
-      <tr><td>月間仕入れ（発注確定分）</td><td style="text-align:right">$${orderTotal.toLocaleString()}</td></tr>
+      <tr><td>当月Invoice合計 <span style="font-size:9px;color:var(--muted)">（${invStat.count}枚）</span></td><td style="text-align:right">$${Math.round(orderTotal).toLocaleString()}</td></tr>
       <tr><td>買い出し合計</td><td style="text-align:right">$${purchaseTotal.toLocaleString()}</td></tr>
       ${_fcTnet.inAmt>0?`<tr><td>＋ 食材移動（借入）</td><td style="text-align:right">${fmtUSD2(_fcTnet.inAmt)}</td></tr>`:''}
       ${_fcTnet.outAmt>0?`<tr><td>− 食材移動（貸出）</td><td style="text-align:right">− ${fmtUSD2(_fcTnet.outAmt)}</td></tr>`:''}
@@ -11983,6 +12057,7 @@ function renderFcMonthly(storeId, store) {
     </div>
     ${(fc._virtual&&frozen)?'<div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-pencil"></i> この月の棚卸記録はまだありません。「棚卸額入力」から過去分を手入力できます。</div>':''}
   </div>`;
+  html += _fcVendorCard(storeId, ym);
   return html;
 }
 function openFcMonthlyModal(storeId, ym) {
@@ -16009,7 +16084,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '576';
+const APP_VERSION = '578';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32501,8 +32576,11 @@ async function runInvoiceOCR(file){
       // 商品名は請求書の記載どおり（曖昧一致で別商品名に置き換えない）。確実な一致のみ参照コードを付与。
       var ing = (r.score>=INV_MATCH_AUTO) ? r.ing : null;
       var _qty = (parseFloat(l.qty)||1);
+      var _ltotRaw = (l.lineTotal!=null) ? (parseFloat(l.lineTotal)||0) : null;
       var _unit = (parseFloat(l.unitPrice)||0);
-      var _ltot = (l.lineTotal!=null) ? (parseFloat(l.lineTotal)||0) : (_unit*_qty);
+      // 1商品あたりの単価へ正規化：単価が無い／単価が明細合計と同値（合計を単価欄に誤読）→ 合計÷数量
+      if(_qty>0 && _ltotRaw!=null && (!(_unit>0) || (_qty>1 && Math.abs(_unit-_ltotRaw)<0.01))) _unit = Math.round((_ltotRaw/_qty)*10000)/10000;
+      var _ltot = (_ltotRaw!=null) ? _ltotRaw : (_unit*_qty);
       return { code: ing?ing.code:null, name: (l.name||'(不明)'),
         rawName: (l.name||''), oldPrice: ing?ing.price:null,
         newPrice: _unit, qty: _qty, lineTotal: _ltot, mismatch: !!l.mismatch,
