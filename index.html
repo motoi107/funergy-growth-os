@@ -11877,7 +11877,23 @@ function _fcVendorCard(storeId, ym){
   var gcount=rows.reduce(function(a,r){return a+r.count;},0);
   var ymL=ym.replace('-','年')+'月';
   var h='<div class="card"><div class="card-title"><i class="ti ti-building-warehouse" style="color:var(--accent)"></i>業者別 当月仕入 <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+ymL+' · '+gcount+'枚 / '+fmtUSD2(grand)+'</span></div>';
-  if(!rows.length){ h+='<div style="font-size:12px;color:var(--muted);padding:6px 2px"><i class="ti ti-info-circle"></i> この月に読み取ったInvoice/レシートはまだありません。読み取るごとにここへ業者別に加算されます。</div></div>'; return h; }
+  if(!rows.length){
+    var _all=ls('invoices',[])||[]; var _nr=_all.filter(function(v){return v.docType!=='Reimburse';});
+    var _pd=_nr.filter(function(v){return !!parseJaDate(v.date);});
+    var _tm=_pd.filter(function(v){var dd=parseJaDate(v.date);return (dd.getFullYear()+'-'+String(dd.getMonth()+1).padStart(2,'0'))===ym;});
+    var _fs=_tm.filter(function(v){var s=_invStoreIds(v);return storeId==='ALL'||s.indexOf(storeId)>=0;});
+    var _recent=_nr.slice().sort(function(a,b){var da=parseJaDate(a.date),db=parseJaDate(b.date);return (db?db.getTime():0)-(da?da.getTime():0);}).slice(0,6);
+    h+='<div style="font-size:12px;color:var(--muted);padding:4px 2px"><i class="ti ti-info-circle"></i> '+(storeId==='ALL'?'全店':'この店舗')+' × '+ymL+' に該当するInvoice/レシートがありません。下の診断で原因を確認できます。</div>';
+    h+='<div style="font-size:10.5px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:6px;line-height:1.9"><b>診断</b>　保存済み総数 <b>'+_all.length+'</b>件 → 日付読取OK <b>'+_pd.length+'</b> → '+ymL+' <b>'+_tm.length+'</b> → '+(storeId==='ALL'?'全店':'当店')+' <b>'+_fs.length+'</b></div>';
+    if(_all.length && !_pd.length){ h+='<div style="font-size:10px;color:var(--yellow);margin-top:4px">日付が読み取れないInvoiceが多いようです（date欄の形式）。</div>'; }
+    else if(_pd.length && !_tm.length){ h+='<div style="font-size:10px;color:var(--yellow);margin-top:4px">この月に該当するInvoiceがありません（Invoiceの日付は別の月です／アップロード日で計上）。</div>'; }
+    else if(_tm.length && !_fs.length){ h+='<div style="font-size:10px;color:var(--yellow);margin-top:4px">当月Invoiceはありますが、この店舗に紐づいていません（保存時の店舗を確認）。</div>'; }
+    else if(!_all.length){ h+='<div style="font-size:10px;color:var(--yellow);margin-top:4px">Invoiceがまだ保存されていません（読取→保存まで完了しているか確認）。</div>'; }
+    if(_recent.length){ h+='<div style="font-size:10px;color:var(--muted);margin-top:8px">保存済みInvoice（新しい順・最大6件）:</div><div style="overflow-x:auto"><table class="inv-table" style="font-size:11px;min-width:360px"><thead><tr><th style="text-align:left">日付</th><th style="text-align:left">店舗</th><th style="text-align:left">業者</th><th style="text-align:right">金額</th><th>種別</th></tr></thead><tbody>';
+      _recent.forEach(function(v){ var sn=_invStoreIds(v).map(function(id){return (STORES.find(function(x){return x.id===id;})||{}).name||id;}).join('・')||'—'; h+='<tr><td>'+escapeHtml(v.date||'（日付なし）')+'</td><td>'+escapeHtml(sn)+'</td><td>'+escapeHtml(v.vendor||'—')+'</td><td style="text-align:right">'+fmtUSD2(Number(v.total)||0)+'</td><td>'+escapeHtml(v.docType||'—')+'</td></tr>'; });
+      h+='</tbody></table></div>'; }
+    return h+'</div>';
+  }
   h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:380px;font-size:12px"><thead><tr><th style="text-align:left">業者</th><th style="text-align:right">仕入額</th><th style="text-align:right">枚数</th><th style="text-align:right">最新日</th></tr></thead><tbody>';
   rows.forEach(function(r){
     var tag=(r.receipt&&r.invoice)?(' <span style="font-size:9px;color:var(--muted)">Inv'+r.invoice+'/Rcpt'+r.receipt+'</span>'):(r.receipt&&!r.invoice?' <span class="tag" style="font-size:8px;padding:0 5px;background:var(--surface2)">レシート</span>':'');
@@ -16084,7 +16100,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '578';
+const APP_VERSION = '579';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
