@@ -8668,7 +8668,8 @@ function renderBudget() {
   if (budgetTab==='minutes') return html + renderMeetingMinutes(); // 議事録は独自のシート選択あり
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
   if (budgetTab==='annual') return html + renderAnnualPlan(); // 年間計画は独自の店舗スコープあり
-  html += bStoreChips(_budgetStore, 'setBudgetStore');
+  if (budgetTab==='setup' && (_budgetStore==='ALL' || !_budgetStore)) { var _vsb=getVisibleStores(); if(_vsb.length) _budgetStore=_vsb[0].id; }
+  html += bStoreChips(_budgetStore, 'setBudgetStore', {showAll: budgetTab!=='setup'});
   if (budgetTab==='setup') return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup());
   return html + renderBudgetSummary();
 }
@@ -9063,6 +9064,33 @@ function setBudgetStore(v){ _budgetStore = v; renderPage('budget'); }
 function budgetScopeStores(){ var vis=getVisibleStores(); return (_budgetStore && _budgetStore!=='ALL') ? vis.filter(function(s){return s.id===_budgetStore;}) : vis; }
 
 /* ===== 予算設定タブ（ランチ/ディナー/テイクアウト 3区分） ===== */
+/* 区分カード（ランチ/ディナー/テイクアウト）の表示値。
+   日別調整があるときは、各日の調整後合計を曜日別の区分比率で按分して合算する。
+   これにより 3区分カードの合計＝月間売上予算（日別一覧の合計）に一致する。 */
+function budgetSegShown(b){
+  var dowMode = usesDowMode(b);
+  if(!dowMode){
+    var segs=getSegments(b);
+    return {lunch:segSales(segs.lunch,'lunch'), dinner:segSales(segs.dinner,'dinner'), takeout:segSales(segs.takeout,'takeout')};
+  }
+  var dow=getDow(b);
+  if(!hasDayBudget(b)){
+    var bd=dowSegBreakdown(dow);
+    return {lunch:bd.lunch, dinner:bd.dinner, takeout:bd.takeout};
+  }
+  var out={lunch:0,dinner:0,takeout:0};
+  daysOfYm(curYm()).forEach(function(dd){
+    var idx=(new Date(dd.date+'T00:00:00').getDay()+6)%7;
+    var L=(parseFloat((dow.lunch[idx]||{}).guests)||0)*(parseFloat((dow.lunch[idx]||{}).spend)||0);
+    var D=(parseFloat((dow.dinner[idx]||{}).guests)||0)*(parseFloat((dow.dinner[idx]||{}).spend)||0);
+    var T=(parseFloat((dow.takeout[idx]||{}).orders)||0)*(parseFloat((dow.takeout[idx]||{}).spend)||0);
+    var base=L+D+T;
+    var dtot=dayBudgetFor(b, dd.date);
+    if(base>0){ out.lunch+=dtot*L/base; out.dinner+=dtot*D/base; out.takeout+=dtot*T/base; }
+    else { out.dinner+=dtot; }
+  });
+  return out;
+}
 function renderBudgetSetup() {
   if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">'+t('予算の閲覧権限がありません','No permission to view budgets')+'</div>';
   var budgets = getBudgets();
@@ -9086,6 +9114,7 @@ function renderBudgetSetup() {
     var total = dowMode ? (dowBd.lunch+dowBd.dinner+dowBd.takeout) : segmentsTotal(segs);
     var dayOv = hasDayBudget(b);
     if (dayOv) { total = daysOfYm(curYm()).reduce(function(a,dd){ return a + dayBudgetFor(b, dd.date); }, 0); }
+    var segShown = budgetSegShown(b);
     var laborB = segmentsLaborBudget(segs);
     var fcB = segmentsFcBudget(segs);
     var profit = total - laborB - fcB;
@@ -9112,9 +9141,9 @@ function renderBudgetSetup() {
     }
 
     html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:8px 0">
-      ${segCard(t('ランチ','Lunch'), dowMode?dowBd.lunch:segSales(segs.lunch,'lunch'), 'var(--yellow)')}
-      ${segCard(t('ディナー','Dinner'), dowMode?dowBd.dinner:segSales(segs.dinner,'dinner'), 'var(--accent)')}
-      ${segCard(t('テイクアウト','Takeout'), dowMode?dowBd.takeout:segSales(segs.takeout,'takeout'), 'var(--accent2)')}
+      ${segCard(t('ランチ','Lunch'), segShown.lunch, 'var(--yellow)')}
+      ${segCard(t('ディナー','Dinner'), segShown.dinner, 'var(--accent)')}
+      ${segCard(t('テイクアウト','Takeout'), segShown.takeout, 'var(--accent2)')}
     </div>
     ${dowMode?`<div style="font-size:11px;color:var(--accent2);margin:-2px 0 8px"><i class="ti ti-calendar-stats"></i> ${t('曜日別で作成（','By weekday (')}${dailyMonthLabel()}${t('の曜日数で自動計算）',' weekday counts, auto)')}</div>`:''}
     ${dayOv?`<div style="font-size:11px;color:var(--accent);margin:-2px 0 8px"><i class="ti ti-calendar-dollar"></i> <b>${t('日別調整あり','Per-day adjustments')}</b>（${escapeHtml(b.daysBy||'')} ${escapeHtml(b.daysAt||'')}）${t('— 月間予算は日別一覧の合計です','— Monthly budget = sum of daily list')}</div>`:''}
@@ -15417,7 +15446,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '560';
+const APP_VERSION = '561';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
