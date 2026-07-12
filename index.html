@@ -9112,6 +9112,14 @@ function _meetStatus(key, act, tgt, lower){
 function _meetStatColor(st){ return st==='ok'?'var(--green)':st==='warn'?'var(--yellow)':st==='miss'?'var(--red)':'var(--muted)'; }
 function _meetStatTint(st){ return st==='ok'?'rgba(93,181,84,.10)':st==='warn'?'rgba(217,167,59,.13)':st==='miss'?'rgba(224,80,80,.11)':'var(--surface2)'; }
 function _meetStatLabel(st){ return st==='ok'?t('達成','MET'):st==='warn'?t('注意','WATCH'):st==='miss'?t('未達','MISS'):'—'; }
+function _meetDiffStr(key, act, tgt, lower, unit, money){
+  if(!(tgt>0)||!(act>0)) return '';
+  var raw=act-tgt, sign=(raw>=0?'+':'−'), mag=Math.abs(raw), s;
+  if(money){ s=(key==='ppa')?('$'+(Math.round(mag*100)/100)):fmtK(mag); }
+  else if(unit==='%'){ s=(Math.round(mag*10)/10)+'pt'; }
+  else { s=Math.round(mag)+(unit||''); }
+  return sign+s;
+}
 function openMeetThresholdModal(){
   var body='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">'+t('各KPIの「達成」「注意」しきい値を目標に対する%で設定。原価率・人件費率は低い程良いため、大きい%ほど緩い判定です。','Set MET / WATCH thresholds as % of target for each KPI. Food cost & labor are lower-is-better, so larger % = looser.')+'</div><div style="display:grid;gap:6px">';
   MEET_KPI_DEF.forEach(function(d){ var th=getMeetThreshold(d.key);
@@ -9136,12 +9144,12 @@ function _meetKpiTile(storeId, ym, key, act, tgt, opts){
   var st=opts.forceStatus||_meetStatus(key, act, tgt, lower);
   var col=_meetStatColor(st), tint=_meetStatTint(st);
   var fmtV=function(v){ if(money) return (typeof fmtUSD2==='function')?fmtUSD2(v):('$'+(Math.round(v*100)/100)); return (Math.round(v*10)/10)+unit; };
-  var rate=(tgt>0&&act>0)?Math.round(act/tgt*100):null;
-  var pill='<span style="font-size:11px;font-weight:800;color:#fff;background:'+col+';border-radius:20px;padding:3px 11px;white-space:nowrap">'+_meetStatLabel(st)+(rate!=null?' '+rate+'%':'')+'</span>';
-  var h='<div style="display:flex;align-items:center;gap:10px;background:'+tint+';border:1px solid '+(st==='miss'?'var(--red)':(st==='warn'?'var(--yellow)':'var(--border)'))+';border-radius:10px;padding:9px 11px;margin-top:6px">'
-    +'<div style="width:32px;height:32px;border-radius:9px;background:'+col+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti '+def.icon+'" style="color:#fff;font-size:17px"></i></div>'
-    +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;color:var(--tm)">'+label+'</div>'
-    +'<div style="line-height:1.15"><span style="font-size:17px;font-weight:800;color:'+col+'">'+(act>0?fmtV(act):'—')+'</span><span style="font-size:10.5px;color:var(--muted)"> / '+t('目標','Tgt')+' '+(tgt>0?fmtV(tgt):'—')+'</span></div></div>'
+  var diff=_meetDiffStr(key, act, tgt, lower, unit, money);
+  var pill='<span style="font-size:11.5px;font-weight:800;color:#fff;background:'+col+';border-radius:20px;padding:3px 12px;white-space:nowrap">'+_meetStatLabel(st)+(diff?' '+diff:'')+'</span>';
+  var h='<div style="display:flex;align-items:center;gap:11px;background:'+tint+';border:1.5px solid '+(st==='miss'?'var(--red)':(st==='warn'?'var(--yellow)':'var(--border)'))+';border-radius:11px;padding:10px 12px;margin-top:7px">'
+    +'<div style="width:34px;height:34px;border-radius:9px;background:'+col+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti '+def.icon+'" style="color:#fff;font-size:18px"></i></div>'
+    +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:800;color:var(--tm)">'+label+'</div>'
+    +'<div style="line-height:1.15;margin-top:1px"><span style="font-size:19px;font-weight:800;color:'+col+'">'+(act>0?fmtV(act):'—')+'</span><span style="font-size:11px;color:var(--muted)"> / '+t('目標','Tgt')+' '+(tgt>0?fmtV(tgt):'—')+'</span></div></div>'
     +pill+'</div>';
   if(st==='miss') h+=_meetInputBlock(storeId, ym, {key:key}, true);
   return h;
@@ -9171,7 +9179,7 @@ function _meetStoreCard(store, k, ym, isCurrent){
   // 売上ヒーロー
   h+='<div style="background:'+_meetStatTint(salesSt)+';border:1px solid '+(salesSt==='miss'?'var(--red)':'var(--border)')+';border-radius:11px;padding:11px 13px;margin-bottom:2px">'
     +'<div style="display:flex;align-items:center;gap:8px"><i class="ti ti-trending-up" style="color:'+salesCol+';font-size:16px"></i><span style="font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.03em">'+t('売上','SALES')+(isCurrent?t('（前日まで）',' (to date)'):'')+'</span>'
-    +'<span style="margin-left:auto;font-size:12px;font-weight:800;color:#fff;background:'+salesCol+';border-radius:20px;padding:3px 12px">'+_meetStatLabel(salesSt)+(landPct!=null&&isCurrent?'':'')+'</span></div>'
+    +'<span style="margin-left:auto;font-size:12px;font-weight:800;color:#fff;background:'+salesCol+';border-radius:20px;padding:3px 12px">'+_meetStatLabel(salesSt)+(_meetDiffStr('sales', salesBase, k.budget, false, '', true)?' '+_meetDiffStr('sales', salesBase, k.budget, false, '', true):'')+'</span></div>'
     +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:6px"><span style="font-size:27px;font-weight:800;color:'+salesCol+'">'+fmtK(k.sales||0)+'</span><span style="font-size:12px;color:var(--muted)">/ '+t('予算','Budget')+' '+fmtK(k.budget||0)+'</span></div>';
   if(isCurrent){
     var landCol=_meetStatColor(_meetStatus('sales', landing, k.budget, false));
@@ -9182,51 +9190,50 @@ function _meetStoreCard(store, k, ym, isCurrent){
   rows.slice(1).forEach(function(it){ h+=_meetKpiTile(store.id, ym, it.key, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
   return h;
 }
-/* 月初MTG: 縦=月 × 横=KPI の年間マトリクス（確定値・目標/実績/達成率） */
+/* 月初MTG: 縦=KPI × 横=月。KPIごとに「目標」行と「実績」行を並置。差異(実績−目標)と色で強調 */
 function _meetYearMatrix(store, y){
   var isB=(typeof guestCountType==='function' && guestCountType(store.id)==='bowls');
   var isToto=(typeof isTotoyaStore==='function' && isTotoyaStore(store.id));
   var isDrink=(typeof isDrinkRateStore==='function' && isDrinkRateStore(store.id));
-  var COLS=[
-    {key:'sales',  a:function(m){return m.sales;},  tg:function(m){return m.budget;},       f:function(v){return fmtK(v);}, lower:false},
-    {key:'guests', a:function(m){return m.guests;}, tg:function(m){return m.guestBudget;},  f:function(v){return Math.round(v)+(isB?'':'');}, lower:false},
-    {key:'ppa',    a:function(m){return m.ppa;},    tg:function(m){return m.ppaBudget;},     f:function(v){return '$'+(Math.round(v*100)/100);}, lower:false},
-    {key:'repeat', a:function(m){return m.repeatRate;}, tg:function(m){return m.repeatTgt;},  f:function(v){return (Math.round(v*10)/10)+'%';}, lower:false},
-    {key:'fc',     a:function(m){return m.fcRate;}, tg:function(m){return m.fcBudgetRate;},   f:function(v){return (Math.round(v*10)/10)+'%';}, lower:true},
-    {key:'labor',  a:function(m){return m.laborRate;}, tg:function(m){return m.laborBudgetRate;}, f:function(v){return (Math.round(v*10)/10)+'%';}, lower:true}
+  var pct=function(v){return (Math.round(v*10)/10)+'%';};
+  var KR=[
+    {key:'sales',  get:function(m){return {a:m.sales,t:m.budget};},        f:function(v){return fmtK(v);},                 unit:'',           money:true,  lower:false},
+    {key:'guests', get:function(m){return {a:m.guests,t:m.guestBudget};},   f:function(v){return Math.round(v)+(isB?t('丼','B'):t('名',''));}, unit:(isB?t('丼','B'):t('名','')), money:false, lower:false},
+    {key:'ppa',    get:function(m){return {a:m.ppa,t:m.ppaBudget};},        f:function(v){return '$'+(Math.round(v*100)/100);}, unit:'',        money:true,  lower:false},
+    {key:'repeat', get:function(m){return {a:m.repeatRate,t:m.repeatTgt};}, f:pct, unit:'%', money:false, lower:false},
+    {key:'fc',     get:function(m){return {a:m.fcRate,t:m.fcBudgetRate};},  f:pct, unit:'%', money:false, lower:true},
+    {key:'labor',  get:function(m){return {a:m.laborRate,t:m.laborBudgetRate};}, f:pct, unit:'%', money:false, lower:true}
   ];
-  if(isToto){ COLS.push({key:'miso', a:function(m){return m.misoRate;}, tg:function(m){return m.misoTgt;}, f:function(v){return (Math.round(v*10)/10)+'%';}, lower:false});
-              COLS.push({key:'ikura', a:function(m){return m.ikuraRate;}, tg:function(m){return m.ikuraTgt;}, f:function(v){return (Math.round(v*10)/10)+'%';}, lower:false}); }
-  if(isDrink){ COLS.push({key:'drink', a:function(m){return m.drinkRate;}, tg:function(m){return m.drinkTgt;}, f:function(v){return (Math.round(v*10)/10)+'%';}, lower:false}); }
-  var stickyTd='position:sticky;left:0;background:var(--surface);z-index:1;box-shadow:2px 0 0 var(--border)';
-  var th='<th style="'+stickyTd+';padding:6px 8px;text-align:left;font-size:10px;color:var(--muted)">'+t('月','Mo')+'</th>';
-  COLS.forEach(function(c){ var d=_meetKpiDef(c.key); th+='<th style="padding:6px 8px;text-align:center;font-size:10px;color:var(--muted);white-space:nowrap"><i class="ti '+d.icon+'"></i> '+t(d.label,d.labelEn)+'</th>'; });
+  if(isToto){ KR.push({key:'miso', get:function(m){return {a:m.misoRate,t:m.misoTgt};}, f:pct, unit:'%', money:false, lower:false});
+              KR.push({key:'ikura',get:function(m){return {a:m.ikuraRate,t:m.ikuraTgt};}, f:pct, unit:'%', money:false, lower:false}); }
+  if(isDrink){ KR.push({key:'drink',get:function(m){return {a:m.drinkRate,t:m.drinkTgt};}, f:pct, unit:'%', money:false, lower:false}); }
+  var MOS=[]; for(var mo=1;mo<=12;mo++){ var ym=y+'-'+String(mo).padStart(2,'0'); var off=(typeof _ymToOffset==='function')?_ymToOffset(ym):0; var km=null; if(off<=0){ try{ km=keyKpiStats([store], daysOfYm(ym)); }catch(e){ km=null; } } MOS.push({mo:mo,off:off,km:km,cur:(off===0)}); }
+  var sticky='position:sticky;left:0;z-index:1;box-shadow:2px 0 0 var(--border)';
+  var curBg='rgba(43,121,208,.07)';
+  var th='<th style="'+sticky+';background:var(--surface);padding:6px 8px;text-align:left;font-size:10px;color:var(--muted);min-width:104px">'+t('KPI','KPI')+'</th>';
+  MOS.forEach(function(M){ th+='<th style="padding:6px 6px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap;color:'+(M.cur?'var(--accent)':'var(--tm)')+(M.cur?';background:'+curBg:'')+'">'+M.mo+t('月','')+(M.cur?' <span style="font-size:7.5px;font-weight:700">'+t('進行','WIP')+'</span>':'')+'</th>'; });
   var body='';
-  for(var mo=1;mo<=12;mo++){
-    var ym=y+'-'+String(mo).padStart(2,'0');
-    var off=(typeof _ymToOffset==='function')?_ymToOffset(ym):0;
-    var km=null; if(off<=0){ try{ km=keyKpiStats([store], daysOfYm(ym)); }catch(e){ km=null; } }
-    var isCurRow=(off===0);
-    body+='<tr>'+'<td style="'+stickyTd+(isCurRow?';border-left:3px solid var(--accent)':'')+';padding:6px 8px;font-weight:700;font-size:11.5px;color:'+(isCurRow?'var(--accent)':'var(--tm)')+'">'+mo+t('月','')+(isCurRow?' <span style="font-size:8px">'+t('進行中','WIP')+'</span>':'')+'</td>';
-    COLS.forEach(function(c){
-      if(!km){ body+='<td style="padding:6px 8px;text-align:center;color:var(--border)">—</td>'; return; }
-      var a=c.a(km)||0, tg=c.tg(km)||0; var st=_meetStatus(c.key, a, tg, c.lower); var col=_meetStatColor(st);
-      var rate=(tg>0&&a>0)?Math.round(a/tg*100):null;
-      body+='<td style="padding:5px 8px;text-align:center;background:'+_meetStatTint(st)+';white-space:nowrap">'
-        +'<div style="font-size:12px;font-weight:800;color:'+col+'">'+(a>0?c.f(a):'—')+'</div>'
-        +'<div style="font-size:8.5px;color:var(--muted)">'+(rate!=null?rate+'%':'')+'</div></td>';
-    });
+  KR.forEach(function(kr){ var def=_meetKpiDef(kr.key);
+    body+='<tr><td style="'+sticky+';background:var(--surface);border-top:2px solid var(--tm);padding:7px 8px 2px;white-space:nowrap">'
+      +'<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:22px;height:22px;border-radius:6px;background:var(--surface2);display:inline-flex;align-items:center;justify-content:center"><i class="ti '+def.icon+'" style="font-size:13px;color:var(--accent2)"></i></span><b style="font-size:12.5px;color:var(--tm)">'+t(def.label,def.labelEn)+'</b></span>'
+      +'<div style="font-size:9px;color:var(--muted);margin-left:28px">'+t('目標','Target')+'</div></td>';
+    MOS.forEach(function(M){ var bg=M.cur?(';background:'+curBg):''; if(!M.km){ body+='<td style="border-top:2px solid var(--tm);text-align:center;color:var(--border)'+bg+'">—</td>'; return; } var v=kr.get(M.km); body+='<td style="border-top:2px solid var(--tm);text-align:center;font-size:11px;color:var(--muted);white-space:nowrap'+bg+'">'+(v.t>0?kr.f(v.t):'—')+'</td>'; });
     body+='</tr>';
-  }
+    body+='<tr><td style="'+sticky+';background:var(--surface);padding:2px 8px 7px 36px;font-size:11px;font-weight:700;color:var(--muted)">'+t('実績','Actual')+'</td>';
+    MOS.forEach(function(M){ var bg=M.cur?(';background:'+curBg):''; if(!M.km){ body+='<td style="text-align:center;color:var(--border)'+bg+'">—</td>'; return; } var v=kr.get(M.km); var st=_meetStatus(kr.key, v.a, v.t, kr.lower); var col=_meetStatColor(st); var diff=_meetDiffStr(kr.key, v.a, v.t, kr.lower, kr.unit, kr.money);
+      body+='<td style="text-align:center;white-space:nowrap;background:'+(st==='none'?(M.cur?curBg:''):_meetStatTint(st))+'"><div style="font-size:13px;font-weight:800;color:'+col+'">'+(v.a>0?kr.f(v.a):'—')+'</div>'+(diff?'<div style="font-size:9px;font-weight:800;color:'+col+'">'+diff+'</div>':'')+'</td>'; });
+    body+='</tr>';
+  });
   return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">'+y+t('年 KPI推移','KPI trend')+'</span></div>'
     +'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="border-collapse:collapse;min-width:100%"><thead><tr>'+th+'</tr></thead><tbody>'+body+'</tbody></table></div>'
-    +'<div style="font-size:9px;color:var(--muted);margin-top:6px">'+t('セル＝実績（下段＝達成率）。緑=達成 / 黄=注意 / 赤=未達（しきい値設定に基づく）。横スクロールで全KPI。','Cell = actual (rate below). Green=met / Yellow=watch / Red=miss (per thresholds). Scroll right for all KPIs.')+'</div></div>';
+    +'<div style="font-size:9px;color:var(--muted);margin-top:6px">'+t('各KPIは「目標」行と「実績」行。実績の下段＝差異（実績−目標）。緑=達成/黄=注意/赤=未達（しきい値設定に基づく）。横スクロールで全月。','Each KPI shows Target and Actual rows; below actual = difference (actual−target). Green=met / Yellow=watch / Red=miss. Scroll right for all months.')+'</div></div>';
 }
 function renderMeetingReview(){
   var ym0=budgetYM(); var ym=ym0.y+'-'+String(ym0.m).padStart(2,'0');
   var isCurrent=(typeof bizYm==='function') ? (ym===bizYm()) : true;
   var mode=meetMode;
   var stores=budgetScopeStores();
+  var scopeName=(stores.length>1)?t('全社','Company'):((stores[0]&&stores[0].name)||t('全社','Company'));
   var html='';
   var _mdays=(new Date(ym0.y, ym0.m, 0)).getDate();
   var _dp=0; if(isCurrent){ var _dn=(typeof bizNow==='function')?bizNow():new Date(); _dp=Math.max(1,_dn.getDate()-1); if(_dp>_mdays)_dp=_mdays; }
@@ -9265,9 +9272,9 @@ function renderMeetingReview(){
   var achvAll = totBud>0?Math.round(totSales/totBud*1000)/10:0;
   var sumCol = totMiss===0?'var(--green)':(storeMiss<=1?'var(--yellow)':'var(--red)');
   html+='<div class="card" style="border:1.5px solid '+sumCol+'"><div class="card-title"><i class="ti ti-clipboard-check" style="color:'+sumCol+'"></i>'
-    +(mode==='mid'?t('全社 当月サマリー','Company — this month'):t('全社サマリー','Company summary'))+'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+ym+'</span></div>'
+    +scopeName+(mode==='mid'?t(' 当月サマリー',' — this month'):t(' サマリー',' — summary'))+'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+ym+'</span></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:8px">'
-    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('売上 実績/予算','Sales act/bud')+'</div><div style="font-size:16px;font-weight:800;color:'+_meetStatColor(_meetStatus('sales',totSales,totBud,false))+'">'+fmtK(totSales)+'</div><div style="font-size:9px;color:var(--muted)">/ '+fmtK(totBud)+'（'+achvAll.toFixed(1)+'%）</div></div>'
+    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('売上 実績/予算','Sales act/bud')+'</div><div style="font-size:16px;font-weight:800;color:'+_meetStatColor(_meetStatus('sales',totSales,totBud,false))+'">'+fmtK(totSales)+'</div><div style="font-size:9px;color:var(--muted)">/ '+fmtK(totBud)+'（'+(_meetDiffStr('sales',totSales,totBud,false,'',true)||('±0'))+'）</div></div>'
     +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達 KPI','Missed KPIs')+'</div><div style="font-size:16px;font-weight:800;color:'+(totMiss===0?'var(--green)':'var(--red)')+'">'+totMiss+' / '+totKpi+'</div><div style="font-size:9px;color:var(--muted)">'+t('要対策','need action')+'</div></div>'
     +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達のある店','Stores w/ miss')+'</div><div style="font-size:16px;font-weight:800;color:'+(storeMiss===0?'var(--green)':'var(--yellow)')+'">'+storeMiss+' / '+ks.length+'</div><div style="font-size:9px;color:var(--muted)">'+t('店舗','stores')+'</div></div>'
     +'</div></div>';
@@ -15894,7 +15901,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '570';
+const APP_VERSION = '571';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
