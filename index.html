@@ -7458,6 +7458,18 @@ function fcBreakdownSub(scopeStores, days){
     +_kpiMiniChip(t('当月棚(期末)','End inv'), m(endv), endv>0?'':t('未入力','not entered'), true)
     +'</div>';
 }
+/* KPIタイル → タップで内訳ポップアップ（v567） */
+function openKpiDetail(kid){
+  var d=(window._kpiDetails||{})[kid]; if(!d) return;
+  if(typeof haptic==='function'){ try{ haptic('tap'); }catch(e){} }
+  openModal('<div class="modal-title">'+d.title+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="padding:2px 2px 4px">'+d.body+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>');
+}
+function _kpiDetailWrap(desc, chips){
+  return '<div style="font-size:12px;color:var(--tm);margin-bottom:10px;line-height:1.6">'+desc+'</div>'
+    +((chips&&chips!=='')? chips : '<div style="color:var(--muted);font-size:12px;padding:8px 0">'+t('データがまだありません（同期・入力後に表示）','No data yet (shows after sync/entry)')+'</div>');
+}
 function budgetGuestsMonthly(storeId, seg, offset){
   var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
   var ym = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
@@ -9892,13 +9904,22 @@ function renderBudgetSummary() {
 
   // ===== ② KPI（目標 vs 実績 ＋ 前週比） =====
   var k = keyKpiStats(stores, days);
-  var kpiTile = function(icon, label, valStr, tgtStr, col, badge, sub){
-    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px">
+  window._kpiDetails={}; var _kpiDetSeq=0;
+  var kpiTile = function(icon, label, valStr, tgtStr, col, badge, sub, detail){
+    var kid='', foot='';
+    if(detail && detail.body){
+      kid='kpid'+(++_kpiDetSeq);
+      window._kpiDetails[kid]={title:detail.title||label, body:detail.body};
+      foot='<div style="font-size:9px;color:var(--accent2);margin-top:5px;display:flex;align-items:center;gap:3px;font-weight:600"><i class="ti ti-hand-finger"></i>'+t('タップで内訳','Tap for details')+'</div>';
+    }
+    var clickAttr = kid?(' onclick="openKpiDetail(\''+kid+'\')"'):'';
+    return `<div${clickAttr} style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px${kid?';cursor:pointer':''}">
       <div style="font-size:10.5px;color:var(--muted);display:flex;align-items:center;gap:4px"><i class="ti ${icon}"></i><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</span>${tgtStr?`<span style="margin-left:auto;white-space:nowrap">${t('目標','Target')} ${tgtStr}</span>`:''}</div>
       <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px;flex-wrap:wrap">
         <span style="font-size:19px;font-weight:800;color:${col}">${valStr}</span>${badge||''}
       </div>
       ${sub?`<div style="font-size:10px;color:var(--muted);margin-top:3px">${sub}</div>`:''}
+      ${foot}
     </div>`;
   };
   var fcTgt = k.fcBudgetRate!=null?k.fcBudgetRate:31;
@@ -9916,12 +9937,12 @@ function renderBudgetSummary() {
   var _spCol = pctColor(_sp);
   html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>${t('KPI 目標との差・前週比','KPI vs Target · WoW')} <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${t('目標＝KPI管理／承認予算','Target = KPI mgmt / approved budget')}</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">`;
-  html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):'')+salesSplitSub(stores,days));
-  if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString()+repeatCompareSub(stores,days));
-  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), guestAvgSub(k));
-  html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days));
-  html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better')+fcBreakdownSub(stores,days));
-  html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)')+laborGradeSub(stores,days));
+  html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''), {title:t('売上進捗','Sales progress'), body:_kpiDetailWrap(t('平日（月〜木）と週末（金土日）の1日あたり平均売上。','Avg daily sales: weekday (Mon–Thu) vs weekend (Fri–Sun).'), salesSplitSub(stores,days))});
+  if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString(), {title:t('リピート率','Repeat rate'), body:_kpiDetailWrap(t('前々月・前月・当月のリピート率推移。','Repeat trend: 2 mo ago / last mo / this mo.'), repeatCompareSub(stores,days))});
+  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null, {title:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), body:_kpiDetailWrap(t('区分別（ランチ／ディナー／テイクアウト）の1日あたり実績／予算。','Per-day actual/budget by segment (L/D/TO).'), guestAvgSub(k))});
+  html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価と、実績のある日の最低〜最高（日別レンジ）。','Check by segment, plus lowest–highest daily.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days))});
+  html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。','COGS: begin inv + purchases + transfer − end inv.'), fcBreakdownSub(stores,days))});
+  html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。','Payroll split: G2+ / G1. Excludes tax/insurance.'), laborGradeSub(stores,days))});
   if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('味噌汁UP率 ★','Miso upsell % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null);
   if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null);
   if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-cocktail',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null);
@@ -15615,7 +15636,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '566';
+const APP_VERSION = '567';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
