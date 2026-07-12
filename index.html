@@ -4310,7 +4310,11 @@ var OP_MERGE = {
   lss_history:    { merge: mergeAppendLog, covers: _coversLog },
   tip_history:    { merge: mergeAppendLog, covers: _coversLog },
   career_history: { merge: mergeAppendLog, covers: _coversLog },
-  eval_history:   { merge: mergeAppendLog, covers: _coversLog }
+  eval_history:   { merge: mergeAppendLog, covers: _coversLog },
+  lss_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
+  tip_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
+  mileage_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
+  expense_requests:{ merge: mergeReqTomb, covers: _coversReqTomb }
 };
 /* approvals マージ：idで和集合／signoffs(複数承認者)は和集合／決定済み(status!=='pending')はpendingに勝つ／両方決定なら新しい方→local優先 */
 function _apDecided(a){ return !!(a && a.status!=null && a.status!=='pending'); }
@@ -4429,6 +4433,36 @@ function _coversLog(check, want){
   if(!Array.isArray(check)) return false;
   var have={}; check.forEach(function(x){ if(x!=null) have[_logSig(x)]=1; });
   for(var i=0;i<want.length;i++){ var w=want[i]; if(w==null) continue; if(!have[_logSig(w)]) return false; }
+  return true;
+}
+/* tombstone対応マージ（物理削除を論理削除_deletedにしたキー用：mileage_requests/expense_requests）
+   idで和集合／_deleted は最優先で残す(復活防止)／レビュー済み(status!=='申請中')は申請中に勝つ／それ以外はlocal優先 */
+function _rtDel(a){ return !!(a && a._deleted); }
+function _rtPend(a){ return !a || a.status==null || a.status==='申請中'; }
+function mergeReqTomb(cloudArr, localArr){
+  var by={}, order=[];
+  function put(item, isLocal){
+    if(!item || item.id==null) return;
+    var id=item.id;
+    if(!by[id]){ by[id]=item; order.push(id); return; }
+    var cur=by[id], win;
+    if(_rtDel(cur)!==_rtDel(item)) win = _rtDel(cur)?cur:item;          // 削除が最優先（復活防止）
+    else if(_rtPend(cur)!==_rtPend(item)) win = _rtPend(cur)?item:cur;  // レビュー済み優先
+    else win = isLocal?item:cur;
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+function _coversReqTomb(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x&&x.id!=null) have[x.id]=x; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(!w||w.id==null) continue;
+    var h=have[w.id]; if(!h) return false;
+    if(w._deleted && !h._deleted) return false; // 削除が反映されているか
+    if(!w._deleted && w.status && w.status!=='申請中' && (h.status==null||h.status==='申請中')) return false; // 決定リグレッション
+  }
   return true;
 }
 function opMergePush(key, localVal){
@@ -8490,7 +8524,8 @@ function budgetHasRealData(b){
   }catch(e){}
   return false;
 }
-function budgetIsRegistered(b){ return !!budgetAuthorLabel(b); } // 登録者（提出/承認/編集/作成）がある予算のみ有効。データだけ＝デモは未登録扱い
+function budgetHasData(b){ if(!b) return false; if(Array.isArray(b.bases)&&b.bases.length) return true; if(b.dow) return true; if(b.segments) return true; if(b.rationale && (((b.rationale.basis||'').trim())||((b.rationale.focus||'').trim()))) return true; return false; }
+function budgetIsRegistered(b){ return !!budgetAuthorLabel(b) || budgetHasData(b); } // 登録者がある、または店長が実データ(基準値/曜日/区分/考え方)を入力済みの予算は有効。空(デモ)のみ未登録扱い
 /* デモ/空予算（作成者なし・実データなし）を「未登録（0・下書き）」に正規化 */
 function normalizeBudgetsDemo(){
   try{
@@ -11040,6 +11075,8 @@ function saveBasis(storeId) {
   var b = budgets.find(x=>x.storeId===storeId);
   var idx = b.bases.findIndex(x=>x.id===basisTmp.id);
   if (idx>=0) b.bases[idx] = basisTmp; else b.bases.push(basisTmp);
+  if(!b.status) b.status='下書き';
+  b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
   saveBudgets(budgets);
   showToast('根拠を保存しました', 'success');
   openBudgetEditor(storeId);
@@ -11049,6 +11086,7 @@ function deleteBasis(storeId, basisId) {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId);
   b.bases = b.bases.filter(x=>x.id!==basisId);
+  b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
   saveBudgets(budgets);
   openBudgetEditor(storeId);
 }
@@ -15288,7 +15326,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '552';
+const APP_VERSION = '555';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -17915,8 +17953,8 @@ function saveClosures(storeId){
    VACATION
 ============================================================ */
 /* ===== 事前立替経費 承認申請（Pre-Approval for Reimbursable Expense） ===== */
-function getExpenseRequests(){ return ls('expense_requests', [])||[]; }
-function saveExpenseReqs(v){ lsSet('expense_requests', v); }
+function getExpenseRequests(){ return (ls('expense_requests', [])||[]).filter(function(x){return x && !x._deleted;}); }
+function saveExpenseReqs(v){ v=v||[]; try{ var _raw=ls('expense_requests',[])||[]; var _h={}; v.forEach(function(x){ if(x&&x.id!=null) _h[x.id]=1; }); _raw.forEach(function(x){ if(x&&x._deleted&&x.id!=null&&!_h[x.id]) v.push(x); }); }catch(e){} lsSet('expense_requests', v); }
 function expenseMyName(){ return curUserName||(ROLE_CONFIG[curRole]||{}).name; }
 function canApproveExpense(r){ return curRole==='gm'||curRole==='ceo'; } /* フォーム規定：承認者はGM/CEO */
 function canSubmitExpense(){ return (typeof myGradeNum==='function'?myGradeNum():1) >= 4; }
@@ -17982,7 +18020,7 @@ function deleteMyExpense(id){
   if(r.employee!==me){ alert('自分の申請のみ取消できます'); return; }
   if(r.status!=='申請中'){ alert('承認待ちの申請のみ取消できます'); return; }
   if(!confirm('この経費申請を取り消しますか？')) return;
-  var idx=arr.findIndex(function(x){return x.id===id;}); arr.splice(idx,1); saveExpenseReqs(arr);
+  r._deleted=true; r._deletedAt=(typeof nowJP==='function'?nowJP():new Date().toISOString()); saveExpenseReqs(arr);
   showToast('申請を取り消しました','info'); renderPage('expense');
 }
 function _expRow(r, withActions){
@@ -18033,8 +18071,8 @@ function renderExpense(){
 /* ===== ガソリン代（マイレージ）精算：自動距離計算(Google Maps)＋マイル×単価 ===== */
 function getMileageConfig(){ var c=ls('mileage_config', {})||{}; return { gmapsKey:c.gmapsKey||'', ratePerMile:(c.ratePerMile!=null?Number(c.ratePerMile):0.70), roundTripDefault:(c.roundTripDefault!==false) }; }
 function setMileageConfig(c){ lsSet('mileage_config', c); }
-function getMileageRequests(){ return ls('mileage_requests', [])||[]; }
-function saveMileageReqs(v){ lsSet('mileage_requests', v); }
+function getMileageRequests(){ return (ls('mileage_requests', [])||[]).filter(function(x){return x && !x._deleted;}); }
+function saveMileageReqs(v){ v=v||[]; try{ var _raw=ls('mileage_requests',[])||[]; var _h={}; v.forEach(function(x){ if(x&&x.id!=null) _h[x.id]=1; }); _raw.forEach(function(x){ if(x&&x._deleted&&x.id!=null&&!_h[x.id]) v.push(x); }); }catch(e){} lsSet('mileage_requests', v); }
 function mileMyName(){ return curUserName||(ROLE_CONFIG[curRole]||{}).name; }
 function canApproveMileage(r){
   if(curRole==='gm'||curRole==='ceo'||curRole==='office') return true;
@@ -18170,7 +18208,7 @@ function deleteMyMileage(id){
   if(r.employee!==me){ alert('自分の申請のみ取消できます'); return; }
   if(r.status!=='申請中'){ alert('承認待ちの申請のみ取消できます'); return; }
   if(!confirm('この申請を取り消しますか？')) return;
-  var idx=arr.findIndex(function(x){return x.id===id;}); arr.splice(idx,1); saveMileageReqs(arr);
+  r._deleted=true; r._deletedAt=(typeof nowJP==='function'?nowJP():new Date().toISOString()); saveMileageReqs(arr);
   showToast('申請を取り消しました','info'); renderPage('mileage');
 }
 function _mileRow(r, withActions){
