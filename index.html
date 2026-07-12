@@ -4081,7 +4081,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','meeting_minutes','ingredient_transfers','q_budgets'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','q_budgets'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -8835,10 +8835,12 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
     <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
+    <div class="phase-tab${budgetTab==='meeting'?' active':''}" onclick="setBudgetTab('meeting')">${t('会議','Meeting')}</div>
     <div class="phase-tab${budgetTab==='minutes'?' active':''}" onclick="setBudgetTab('minutes')">${t('議事録','Minutes')}</div>
   </div>`;
   if (budgetTab==='monthly') budgetTab='summary'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
+  if (budgetTab==='meeting') return html + renderMeetingReview(); // 会議ビュー（中間/月初MTG）
   if (budgetTab==='minutes') return html + renderMeetingMinutes(); // 議事録は独自のシート選択あり
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
   if (budgetTab==='annual') return html + renderAnnualPlan(); // 年間計画は独自の店舗スコープあり
@@ -9016,6 +9018,169 @@ function minutesMonthlySales(storeId, m){
     var n=parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,''));
     return isNaN(n)?0:n;
   }catch(e){ return 0; }
+}
+/* ============================================================
+   会議ビュー（予実内・別タブ）: 中間MTG=当月進捗＋後半対策 / 月初MTG=前月レビュー＋PDCA
+   数値は月次進捗と同じ keyKpiStats、達成/未達は既存の色分けを流用（見え方を統一）
+   店長は未達KPIに「理由・対策・担当・期限」を入力（会議のアウトプット＝次回検証）
+============================================================ */
+var meetMode = 'mid'; // 'mid'=中間MTG / 'start'=月初MTG
+function setMeetMode(m){ meetMode=m; renderPage('budget'); }
+function getMeetReview(storeId, ym){ var all=ls('meeting_reviews',{})||{}; return (all[storeId] && all[storeId][ym]) || {}; }
+function saveMeetReview(storeId, ym, key, field, val){
+  var all=ls('meeting_reviews',{})||{};
+  if(!all[storeId]) all[storeId]={};
+  if(!all[storeId][ym]) all[storeId][ym]={};
+  if(!all[storeId][ym][key]) all[storeId][ym][key]={};
+  all[storeId][ym][key][field]=val;
+  all[storeId][ym][key].by=(typeof myName==='function')?myName():curRole;
+  all[storeId][ym][key].at=(typeof nowJP==='function')?nowJP():'';
+  lsSet('meeting_reviews', all);
+  if(typeof showToast==='function') showToast(t('保存しました','Saved'),'success');
+}
+/* keyKpiStats(k)から会議用KPI行の配列を作る */
+function _meetKpiRows(k){
+  var rows=[];
+  rows.push({key:'sales', label:t('売上','Sales'), act:k.sales, tgt:k.budget, money:true, lower:false, isSales:true});
+  rows.push({key:'guests', label:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), act:k.guests, tgt:k.guestBudget, unit:(k.unit==='丼'?t('丼','B'):t('名','')), lower:false});
+  rows.push({key:'ppa', label:t('客単価','Avg check'), act:k.ppa, tgt:k.ppaBudget, money:true, lower:false});
+  if(k.repeatHas || k.repeatTgt!=null) rows.push({key:'repeat', label:t('リピート率','Repeat'), act:k.repeatRate, tgt:k.repeatTgt, unit:'%', lower:false});
+  rows.push({key:'fc', label:t('原価率','Food cost'), act:k.fcRate, tgt:k.fcBudgetRate, unit:'%', lower:true});
+  rows.push({key:'labor', label:t('人件費率','Labor'), act:k.laborRate, tgt:k.laborBudgetRate, unit:'%', lower:true});
+  if(k.totoyaScope && k.misoRate!=null) rows.push({key:'miso', label:t('味噌汁UP率','Miso upsell'), act:k.misoRate, tgt:k.misoTgt, unit:'%', lower:false});
+  if(k.totoyaScope && k.ikuraRate!=null) rows.push({key:'ikura', label:t('いくらシャワー率','Ikura shower'), act:k.ikuraRate, tgt:k.ikuraTgt, unit:'%', lower:false});
+  if(k.drinkScope && k.drinkRate!=null) rows.push({key:'drink', label:t('ドリンク比率','Drink ratio'), act:k.drinkRate, tgt:k.drinkTgt, unit:'%', lower:false});
+  return rows;
+}
+/* 達成判定: true=達成 / false=未達 / null=判定不能（目標or実績なし） */
+function _meetJudge(it, landing){
+  if(it.isSales){ if(!(it.tgt>0)) return null; var base=(landing!=null?landing:it.act); if(!(base>0)) return null; return base>=it.tgt*0.995; }
+  if(it.tgt==null || !(it.tgt>0)) return null;
+  if(!(it.act>0)) return null;
+  if(it.lower) return it.act<=it.tgt;
+  return it.act>=it.tgt*0.995;
+}
+/* 未達KPIの「理由・対策・担当・期限」入力（＋前月対策のPDCA表示） */
+function _meetInputBlock(storeId, ym, it, missed){
+  var rv=getMeetReview(storeId, ym)[it.key]||{};
+  var pv=getMeetReview(storeId, ymShift(ym,-1))[it.key]||{};
+  var canEd=(typeof qbCanEdit==='function')?qbCanEdit():true;
+  var q=function(s){ return String(s).replace(/'/g,"\\'"); };
+  var oc=function(f){ return 'onchange="saveMeetReview(\''+q(storeId)+'\',\''+q(ym)+'\',\''+q(it.key)+'\',\''+f+'\',this.value)"'; };
+  var col=missed?'var(--red)':'var(--border)';
+  var bg=missed?'rgba(224,80,80,.08)':'var(--surface2)';
+  var h='<div style="margin-top:6px;padding:8px 10px;background:'+bg+';border-radius:8px;border-left:3px solid '+col+'">';
+  if(pv.action){ h+='<div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5"><i class="ti ti-history"></i> '+t('前回対策','Prev action')+'：'+escapeHtml(pv.action)+(pv.result?('　→ <b style="color:var(--tm)">'+escapeHtml(pv.result)+'</b>'):'')+'</div>'; }
+  if(canEd){
+    h+='<div style="display:grid;gap:5px">'
+      +'<input class="form-input" style="font-size:12px;padding:6px 8px" placeholder="'+t('未達の理由','Reason for miss')+'" value="'+escapeHtml(rv.reason||'')+'" '+oc('reason')+'>'
+      +'<input class="form-input" style="font-size:12px;padding:6px 8px" placeholder="'+t('対策（次の一手）','Action / next step')+'" value="'+escapeHtml(rv.action||'')+'" '+oc('action')+'>'
+      +'<div style="display:flex;gap:5px">'
+        +'<input class="form-input" style="font-size:12px;padding:6px 8px;flex:1" placeholder="'+t('担当','Owner')+'" value="'+escapeHtml(rv.owner||'')+'" '+oc('owner')+'>'
+        +'<input class="form-input" style="font-size:12px;padding:6px 8px;flex:1" placeholder="'+t('期限','Due')+'" value="'+escapeHtml(rv.due||'')+'" '+oc('due')+'>'
+      +'</div></div>';
+  } else {
+    if(rv.reason||rv.action){ h+='<div style="font-size:11px;line-height:1.6">'+(rv.reason?('<div><b>'+t('理由','Reason')+'：</b>'+escapeHtml(rv.reason)+'</div>'):'')+(rv.action?('<div><b>'+t('対策','Action')+'：</b>'+escapeHtml(rv.action)+(rv.owner?('　/ '+escapeHtml(rv.owner)):'')+(rv.due?('　'+escapeHtml(rv.due)):'')+'</div>'):'')+'</div>'; }
+    else { h+='<div style="font-size:11px;color:var(--muted)">'+t('店長が理由・対策を入力します','Store manager fills reason/action')+'</div>'; }
+  }
+  h+='</div>';
+  return h;
+}
+/* 1店舗の会議カード */
+function _meetStoreCard(store, k, ym, isCurrent, mode){
+  var rows=_meetKpiRows(k);
+  var monthDays=k.monthDaysN||0;
+  var landing=null, daysPassed=0, remDays=0, reqPerDay=0, landPct=null;
+  if(isCurrent){
+    var d=(typeof bizNow==='function')?bizNow():new Date();
+    daysPassed=Math.max(1, d.getDate()-1); if(daysPassed>monthDays&&monthDays>0) daysPassed=monthDays;
+    landing = daysPassed>0 ? Math.round((k.sales||0)/daysPassed*monthDays) : (k.sales||0);
+    remDays=Math.max(0, monthDays-daysPassed);
+    var remBud=Math.max(0,(k.budget||0)-(k.sales||0));
+    reqPerDay = remDays>0 ? Math.round(remBud/remDays) : 0;
+    landPct = (k.budget>0) ? Math.round(landing/k.budget*1000)/10 : null;
+  }
+  var salesIt=rows[0];
+  var paceFrac = (isCurrent && mode==='mid' && monthDays>0) ? Math.min(1, daysPassed/monthDays) : 1;
+  if(paceFrac<1){ rows.forEach(function(it){ if(it.key==='guests' && it.tgt>0){ it.tgt=Math.round(it.tgt*paceFrac); it.label=it.label+t('（前日まで）','(to date)'); } }); }
+  var landingForJudge = (isCurrent&&mode==='mid') ? landing : null;
+  // 未達件数
+  var missCount=0, total=0;
+  rows.forEach(function(it){ var j=_meetJudge(it, it.isSales?landingForJudge:null); if(j!=null){ total++; if(j===false) missCount++; } });
+  var hCol = missCount===0?'var(--green)':(missCount<=1?'var(--yellow)':'var(--red)');
+  var h='<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)
+    +'<span class="tag '+(missCount===0?'tag-green':(missCount<=1?'tag-yellow':'tag-red'))+'" style="margin-left:auto">'+(missCount===0?t('全KPI達成','All met'):(missCount+t('件 未達',' missed')))+'</span></div>';
+  // 売上ブロック（中間＝着地予測＋後半必要日商 / 月初＝最終達成）
+  var achv = k.budget>0 ? Math.round((k.sales||0)/k.budget*1000)/10 : 0;
+  if(isCurrent && mode==='mid'){
+    var landCol = landPct==null?'var(--muted)':(landPct>=100?'var(--green)':landPct>=97?'var(--yellow)':'var(--red)');
+    h+='<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+      +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap"><span style="font-size:22px;font-weight:800;color:'+landCol+'">'+fmtK(k.sales||0)+'</span>'
+      +'<span style="font-size:11px;color:var(--muted)">/ '+t('月予算','Budget')+' '+fmtK(k.budget||0)+'</span>'
+      +'<span style="margin-left:auto;font-size:12px;color:var(--muted)">'+t('前日まで','through yest')+' '+daysPassed+'/'+monthDays+t('日','d')+'</span></div>'
+      +'<div style="margin:8px 0 4px">'+progBar(achv,{h:10,color:landCol})+'</div>'
+      +'<div style="display:flex;justify-content:space-between;font-size:11px;flex-wrap:wrap;gap:8px">'
+      +'<span><i class="ti ti-plane-arrival" style="color:'+landCol+'"></i> '+t('着地予測','Projected')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(1)+'%）':'')+'</span>'
+      +'<span style="color:var(--tm)"><i class="ti ti-target"></i> '+t('後半 必要日商','Req/day (rest)')+' <b>'+fmtK(reqPerDay)+'</b> ×'+remDays+t('日','d')+'</span>'
+      +'</div></div>';
+  } else {
+    h+='<div style="margin-bottom:6px">'+_qbProgLine(t('売上','Sales'), k.sales||0, k.budget||0, {money:true})+'</div>';
+  }
+  if(_meetJudge(salesIt, landingForJudge)===false){ h+=_meetInputBlock(store.id, ym, salesIt, true); }
+  // その他KPI行
+  h+='<div style="margin-top:4px">';
+  rows.slice(1).forEach(function(it){
+    var j=_meetJudge(it, null);
+    h+=_qbProgLine(it.label, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower});
+    if(j===false){ h+=_meetInputBlock(store.id, ym, it, true); }
+  });
+  h+='</div></div>';
+  return h;
+}
+function renderMeetingReview(){
+  var ym0=budgetYM(); var ym=ym0.y+'-'+String(ym0.m).padStart(2,'0');
+  var isCurrent=(typeof bizYm==='function') ? (ym===bizYm()) : true;
+  var mode=meetMode;
+  var stores=budgetScopeStores();
+  var html='';
+  // モード切替
+  var btn=function(m,label,sub){ var on=(mode===m); return '<button onclick="setMeetMode(\''+m+'\')" style="flex:1;border:1px solid '+(on?'var(--accent)':'var(--border)')+';background:'+(on?'var(--accent)':'var(--surface)')+';color:'+(on?'#fff':'var(--tm)')+';border-radius:10px;padding:8px 10px;cursor:pointer;text-align:center">'
+    +'<div style="font-size:13px;font-weight:800">'+label+'</div><div style="font-size:9.5px;opacity:.85;margin-top:1px">'+sub+'</div></button>'; };
+  html+='<div style="display:flex;gap:8px;margin-bottom:10px">'
+    +btn('mid', t('中間MTG','Mid-month'), t('当月進捗＋後半対策','Progress + 2nd-half plan'))
+    +btn('start', t('月初MTG','Month-start'), t('前月レビュー＋PDCA','Review + PDCA'))
+    +'</div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin:0 2px 8px;line-height:1.7"><i class="ti ti-info-circle"></i> '
+    +(mode==='mid'
+      ? t('当月の前日までの実績（＝月次進捗と同じ数値）。着地予測と「後半で達成に必要な日商」を提示。未達KPIに店長が理由・対策を入力します。','Current-month actuals through yesterday (same as Monthly). Shows landing projection and required daily sales for the rest of the month. Managers fill reason/action on missed KPIs.')
+      : t('選択した月の確定実績で目標との差を振り返り。未達KPIに理由・対策を入力＝翌月の「前回対策」に自動表示（PDCA）。','Review the selected month vs targets. Reason/action on misses carries into next month as "Prev action" (PDCA).'))
+    +'　'+t('数値・色は月次進捗／Qコミットと共通。','Figures and colors match Monthly / Q Commit.')
+    +'</div>';
+  html+=bStoreChips(_budgetStore, 'setBudgetStore');
+  html+='<div style="display:flex;justify-content:flex-end;margin:2px 0 8px"><button class="btn btn-secondary btn-sm" onclick="setBudgetTab(\'quarter\')"><i class="ti ti-flag"></i> '+t('Qコミットビューへ','Open Q Commit')+'</button></div>';
+  // 各店のkeyKpiStatsを1回だけ計算
+  var days=daysOfYm(ym);
+  var ks=stores.map(function(s){ var k; try{ k=keyKpiStats([s], days); }catch(e){ k=null; } return {s:s, k:k}; }).filter(function(x){return x.k;});
+  // 全社サマリー
+  var totSales=0, totBud=0, totMiss=0, totKpi=0, storeMiss=0;
+  ks.forEach(function(x){ var k=x.k; totSales+=k.sales||0; totBud+=k.budget||0;
+    var rows=_meetKpiRows(k); var lj=null; if(isCurrent&&mode==='mid'){ var mdn=k.monthDaysN||0; var dp=Math.max(1,((typeof bizNow==='function')?bizNow():new Date()).getDate()-1); if(dp>mdn&&mdn>0)dp=mdn; lj=dp>0?Math.round((k.sales||0)/dp*mdn):(k.sales||0); }
+    var sm=0; rows.forEach(function(it){ var j=_meetJudge(it, it.isSales?lj:null); if(j!=null){ totKpi++; if(j===false){ totMiss++; sm++; } } });
+    if(sm>0) storeMiss++;
+  });
+  var achvAll = totBud>0?Math.round(totSales/totBud*1000)/10:0;
+  var sumCol = totMiss===0?'var(--green)':(storeMiss<=1?'var(--yellow)':'var(--red)');
+  html+='<div class="card" style="border:1.5px solid '+sumCol+'"><div class="card-title"><i class="ti ti-clipboard-check" style="color:'+sumCol+'"></i>'
+    +(mode==='mid'?t('全社 当月サマリー','Company — this month'):t('全社 レビューサマリー','Company — review'))
+    +'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+ym+'</span></div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">'
+    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('売上 実績/予算','Sales act/bud')+'</div><div style="font-size:16px;font-weight:800;color:'+(achvAll>=100?'var(--green)':achvAll>=95?'var(--yellow)':'var(--red)')+'">'+fmtK(totSales)+'</div><div style="font-size:9px;color:var(--muted)">/ '+fmtK(totBud)+'（'+achvAll.toFixed(1)+'%）</div></div>'
+    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達 KPI','Missed KPIs')+'</div><div style="font-size:16px;font-weight:800;color:'+(totMiss===0?'var(--green)':'var(--red)')+'">'+totMiss+' / '+totKpi+'</div><div style="font-size:9px;color:var(--muted)">'+t('要対策','need action')+'</div></div>'
+    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達のある店','Stores w/ miss')+'</div><div style="font-size:16px;font-weight:800;color:'+(storeMiss===0?'var(--green)':'var(--yellow)')+'">'+storeMiss+' / '+ks.length+'</div><div style="font-size:9px;color:var(--muted)">'+t('店舗','stores')+'</div></div>'
+    +'</div></div>';
+  if(!ks.length){ html+='<div class="card" style="text-align:center;padding:18px;color:var(--muted)">'+t('対象店舗がありません','No stores in scope')+'</div>'; return html; }
+  ks.forEach(function(x){ html+=_meetStoreCard(x.s, x.k, ym, isCurrent, mode); });
+  return html;
 }
 function renderAnnualPlan(){
   var y = budgetYM().y;
@@ -15636,7 +15801,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '567';
+const APP_VERSION = '568';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
