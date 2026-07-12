@@ -9084,8 +9084,37 @@ function _meetInputBlock(storeId, ym, it, missed){
     if(rv.reason||rv.action){ h+='<div style="font-size:11px;line-height:1.6">'+(rv.reason?('<div><b>'+t('理由','Reason')+'：</b>'+escapeHtml(rv.reason)+'</div>'):'')+(rv.action?('<div><b>'+t('対策','Action')+'：</b>'+escapeHtml(rv.action)+(rv.owner?('　/ '+escapeHtml(rv.owner)):'')+(rv.due?('　'+escapeHtml(rv.due)):'')+'</div>'):'')+'</div>'; }
     else { h+='<div style="font-size:11px;color:var(--muted)">'+t('店長が理由・対策を入力します','Store manager fills reason/action')+'</div>'; }
   }
+  if(canEd){ var _lk=rv.taskId; h+='<div style="display:flex;justify-content:flex-end;margin-top:6px">'+(_lk?('<span style="font-size:10.5px;color:var(--green);font-weight:700"><i class="ti ti-check"></i> '+t('タスク化済','Task created')+'</span><button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="go(\'tasks\')">'+t('タスクを見る','View')+'</button>'):('<button class="btn btn-secondary btn-sm" onclick="meetActionToTask(\''+q(storeId)+'\',\''+q(ym)+'\',\''+q(it.key)+'\')"><i class="ti ti-subtask"></i> '+t('この対策をタスク化','Make a task')+'</button>'))+'</div>'; }
   h+='</div>';
   return h;
+}
+function meetActionToTask(storeId, ym, kpiKey){
+  var all=ls('meeting_reviews',{})||{}; var rv=(all[storeId]&&all[storeId][ym]&&all[storeId][ym][kpiKey])||{};
+  var action=(rv.action||'').trim();
+  if(!action){ if(typeof showToast==='function') showToast(t('先に対策を入力してください','Enter an action first'),'warning'); return; }
+  var def=_meetKpiDef(kpiKey);
+  var title=('【'+t(def.label,def.labelEn)+'】'+action).slice(0,120);
+  var tk=normalizeTask({id:'tk'+Date.now(), title:title, desc:(rv.reason?(t('未達理由','Reason')+': '+rv.reason):''), type:'店舗', store:storeId, assignee:(rv.owner||''), priority:'中', due:(rv.due||''), place:'', status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[]});
+  addTaskLog(tk, t('MTGで作成','Created in MTG')+'（'+ym+' '+t(def.label,def.labelEn)+'）');
+  saveTaskObj(tk); if(tk.assignee) notifyTaskAssigned(tk);
+  if(all[storeId]&&all[storeId][ym]&&all[storeId][ym][kpiKey]){ all[storeId][ym][kpiKey].taskId=tk.id; lsSet('meeting_reviews',all); }
+  if(typeof showToast==='function') showToast(t('タスク化しました','Task created')+(tk.assignee?('（'+tk.assignee+t('へ通知','notified')+'）'):''),'success');
+  renderPage('budget');
+}
+function _meetTaskSection(store){
+  var tasks=[]; try{ tasks=getTasksN().filter(function(t){ return t.store===store.id && t.status!=='完了'; }); }catch(e){}
+  tasks.sort(function(a,b){ var da=a.due||'9999', db=b.due||'9999'; return da<db?-1:da>db?1:0; });
+  var h='<div class="card" style="border-left:3px solid var(--accent2)"><div class="card-title" style="display:flex;align-items:center"><i class="ti ti-list-check" style="color:var(--accent2)"></i>'+t('取り組み中のタスク','Active tasks')+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+escapeHtml(store.name)+'</span>'
+    +'<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openTaskModal(\'店舗\',\''+store.id+'\')"><i class="ti ti-plus"></i> '+t('MTGタスク追加','Add task')+'</button></div>';
+  if(!tasks.length){ h+='<div style="font-size:12px;color:var(--muted);padding:6px 2px">'+t('未完了のタスクはありません。MTGで決めた対策を「追加」して担当に割り当てましょう。','No open tasks. Add actions decided in the MTG and assign an owner.')+'</div>'; }
+  else { tasks.forEach(function(tk){ var di=taskDueInfo(tk.due); var sc=taskStatusColor(tk.status);
+    h+='<div onclick="openTaskDetail(\''+tk.id+'\')" style="display:flex;align-items:center;gap:8px;padding:8px 2px;border-top:1px solid var(--border);cursor:pointer">'
+      +'<span style="width:8px;height:8px;border-radius:50%;background:'+sc+';flex-shrink:0"></span>'
+      +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--tm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(tk.title)+'</div>'
+      +'<div style="font-size:10px;color:var(--muted)"><i class="ti ti-user"></i> '+(tk.assignee?escapeHtml(tk.assignee):('<span style="color:var(--red)">'+t('未割当','Unassigned')+'</span>'))+'　<span class="tag" style="background:'+sc+';color:#fff;font-size:8.5px;padding:1px 6px">'+tk.status+'</span>'+(di.label?('　<span style="color:'+di.color+'">'+di.label+'</span>'):'')+'</div></div>'
+      +'<i class="ti ti-chevron-right" style="color:var(--muted)"></i></div>'; });
+  }
+  h+='</div>'; return h;
 }
 /* 1店舗の会議カード */
 /* 目標vs実績の1行: 実績を主役（大・色）、目標は併記、あと◯◯は小さく */
@@ -9149,10 +9178,14 @@ function _meetKpiTile(storeId, ym, key, act, tgt, opts){
   var fmtV=function(v){ if(money) return (typeof fmtUSD2==='function')?fmtUSD2(v):('$'+(Math.round(v*100)/100)); return (Math.round(v*10)/10)+unit; };
   var diff=_meetDiffStr(key, act, tgt, lower, unit, money);
   var pill='<span style="font-size:11.5px;font-weight:800;color:#fff;background:'+col+';border-radius:20px;padding:3px 12px;white-space:nowrap">'+_meetStatLabel(st)+(diff?' '+diff:'')+'</span>';
+  var extra=opts.extra||'';
   var h='<div style="display:flex;align-items:center;gap:11px;background:'+tint+';border:1.5px solid '+(st==='miss'?'var(--red)':(st==='warn'?'var(--yellow)':'var(--border)'))+';border-radius:11px;padding:10px 12px;margin-top:7px">'
     +'<div style="width:34px;height:34px;border-radius:9px;background:'+col+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti '+def.icon+'" style="color:#fff;font-size:18px"></i></div>'
     +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:800;color:var(--tm)">'+label+'</div>'
-    +'<div style="line-height:1.15;margin-top:1px"><span style="font-size:19px;font-weight:800;color:'+col+'">'+(act>0?fmtV(act):'—')+'</span><span style="font-size:11px;color:var(--muted)"> / '+t('目標','Tgt')+' '+(tgt>0?fmtV(tgt):'—')+'</span></div></div>'
+    +'<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-top:2px">'
+      +'<span style="white-space:nowrap"><span style="font-size:9.5px;color:var(--muted);font-weight:700">'+t('実績','ACT')+'</span> <span style="font-size:19px;font-weight:800;color:'+col+'">'+(act>0?fmtV(act):'—')+'</span></span>'
+      +'<span style="white-space:nowrap"><span style="font-size:9.5px;color:var(--muted);font-weight:700">'+t('目標','TGT')+'</span> <span style="font-size:17px;font-weight:800;color:var(--tm)">'+(tgt>0?fmtV(tgt):'—')+'</span></span>'
+    +'</div>'+(extra?'<div style="font-size:10px;color:var(--muted);margin-top:1px">'+extra+'</div>':'')+'</div>'
     +pill+'</div>';
   if(st==='miss') h+=_meetInputBlock(storeId, ym, {key:key}, true);
   return h;
@@ -9183,14 +9216,16 @@ function _meetStoreCard(store, k, ym, isCurrent){
   h+='<div style="background:'+_meetStatTint(salesSt)+';border:1px solid '+(salesSt==='miss'?'var(--red)':'var(--border)')+';border-radius:11px;padding:11px 13px;margin-bottom:2px">'
     +'<div style="display:flex;align-items:center;gap:8px"><i class="ti ti-trending-up" style="color:'+salesCol+';font-size:16px"></i><span style="font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.03em">'+t('売上','SALES')+(isCurrent?t('（前日まで）',' (to date)'):'')+'</span>'
     +'<span style="margin-left:auto;font-size:12px;font-weight:800;color:#fff;background:'+salesCol+';border-radius:20px;padding:3px 12px">'+_meetStatLabel(salesSt)+(_meetDiffStr('sales', salesBase, k.budget, false, '', true)?' '+_meetDiffStr('sales', salesBase, k.budget, false, '', true):'')+'</span></div>'
-    +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:6px"><span style="font-size:27px;font-weight:800;color:'+salesCol+'">'+fmtK(k.sales||0)+'</span><span style="font-size:12px;color:var(--muted)">/ '+t('予算','Budget')+' '+fmtK(k.budget||0)+'</span></div>';
+    +'<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-top:6px"><span style="white-space:nowrap"><span style="font-size:10px;color:var(--muted);font-weight:700">'+t('実績','ACT')+'</span> <span style="font-size:27px;font-weight:800;color:'+salesCol+'">'+fmtK(k.sales||0)+'</span></span><span style="white-space:nowrap"><span style="font-size:10.5px;color:var(--muted);font-weight:700">'+t('予算','BUD')+'</span> <span style="font-size:20px;font-weight:800;color:var(--tm)">'+fmtK(k.budget||0)+'</span></span></div>';
   if(isCurrent){
     var landCol=_meetStatColor(_meetStatus('sales', landing, k.budget, false));
     h+='<div style="font-size:9.5px;color:var(--muted);margin-top:5px;line-height:1.5"><i class="ti ti-plane-arrival"></i> '+t('着地予測','Proj')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(0)+'%）':'')+'　·　'+t('後半 必要','Rest need')+' <b>'+fmtK(reqPerDay)+t('/日','/d')+'</b>×'+remDays+t('日','d')+'</div>';
   }
   h+='</div>';
   if(salesSt==='miss') h+=_meetInputBlock(store.id, ym, {key:'sales'}, true);
-  rows.slice(1).forEach(function(it){ h+=_meetKpiTile(store.id, ym, it.key, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
+  rows.slice(1).forEach(function(it){ var ex='';
+    if(it.key==='guests'){ var od=k.opDays||daysPassed||0; if(od>0 && k.guests>0){ var av=Math.round(k.guests/od*10)/10; ex=t('平均集客','Avg')+' '+av+(it.unit||'')+t('/日','/d'); } }
+    h+=_meetKpiTile(store.id, ym, it.key, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, extra:ex, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
   return h;
 }
 /* 月初KGI: 1〜6月=Excel取込値, 7月〜=ライブ数値, 手編集オーバーレイ(タップ編集・同期) */
@@ -9244,7 +9279,7 @@ function _meetYearMatrix(store, y){
   var sticky='position:sticky;left:0;z-index:1;box-shadow:2px 0 0 var(--border)';
   var curBg='rgba(43,121,208,.07)';
   var th='<th style="'+sticky+';background:var(--surface);padding:6px 8px;text-align:left;font-size:10px;color:var(--muted);min-width:112px">'+t('KPI','KPI')+'</th>';
-  MOS.forEach(function(M){ th+='<th style="padding:6px 6px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap;color:'+(M.cur?'var(--accent)':'var(--tm)')+(M.cur?';background:'+curBg:'')+'">'+M.m+t('月','')+(M.cur?' <span style="font-size:7.5px">'+t('進行','WIP')+'</span>':'')+'</th>'; });
+  MOS.forEach(function(M){ th+='<th style="padding:8px 16px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap;color:'+(M.cur?'var(--accent)':'var(--tm)')+(M.cur?';background:'+curBg:'')+'">'+M.m+t('月','')+(M.cur?' <span style="font-size:7.5px">'+t('進行','WIP')+'</span>':'')+'</th>'; });
   var body='';
   KEYS.forEach(function(kk){ var def=_meetKpiDef(kk); var meta=META[kk]; var label=meta.label||t(def.label,def.labelEn);
     // 目標 行
@@ -9253,7 +9288,7 @@ function _meetYearMatrix(store, y){
       +'<div style="font-size:9px;color:var(--muted);margin-left:28px">'+t('目標','Target')+'</div></td>';
     MOS.forEach(function(M){ var bg=M.cur?(';background:'+curBg):''; var tv=cellV(kk,'t',M.m,M.off,M.ym); var ed=isEdited(kk,'t',M.m);
       var disp=(tv!=null)?meta.f(tv):'—'; var inner=canEd?('<span onclick="openMeetKgiEdit(\''+sid+'\',\''+kk+'\',\'t\','+M.m+')" style="cursor:pointer;border-bottom:1px dashed var(--muted)">'+disp+'</span>'):disp;
-      body+='<td style="border-top:2px solid var(--tm);text-align:center;font-size:11px;color:'+(ed?'var(--accent2)':'var(--muted)')+';white-space:nowrap'+bg+'">'+inner+'</td>'; });
+      body+='<td style="border-top:2px solid var(--tm);text-align:center;padding:7px 16px;font-size:11px;color:'+(ed?'var(--accent2)':'var(--muted)')+';white-space:nowrap'+bg+'">'+inner+'</td>'; });
     body+='</tr>';
     // 実績 行
     body+='<tr><td style="'+sticky+';background:var(--surface);padding:2px 8px 7px 36px;font-size:11px;font-weight:700;color:var(--muted)">'+t('実績','Actual')+'</td>';
@@ -9261,7 +9296,7 @@ function _meetYearMatrix(store, y){
       if(av==null){ var inner0=canEd?('<span onclick="openMeetKgiEdit(\''+sid+'\',\''+kk+'\',\'a\','+M.m+')" style="cursor:pointer;color:var(--border)">—</span>'):'—'; body+='<td style="text-align:center;color:var(--border)'+bg+'">'+inner0+'</td>'; return; }
       var st=_meetStatus(kk, av, tv, meta.lower); var col=_meetStatColor(st); var diff=_meetDiffStr(kk, av, tv, meta.lower, meta.unit, meta.money);
       var disp=meta.f(av); var inner=canEd?('<span onclick="openMeetKgiEdit(\''+sid+'\',\''+kk+'\',\'a\','+M.m+')" style="cursor:pointer;border-bottom:1px dashed '+col+'">'+disp+'</span>'):disp;
-      body+='<td style="text-align:center;white-space:nowrap;background:'+(st==='none'?(M.cur?curBg:''):_meetStatTint(st))+'"><div style="font-size:13px;font-weight:800;color:'+col+'">'+inner+(ed?'<sup style="font-size:7px;color:var(--accent2)">✎</sup>':'')+'</div>'+(diff?'<div style="font-size:9px;font-weight:800;color:'+col+'">'+diff+'</div>':'')+'</td>'; });
+      body+='<td style="text-align:center;padding:6px 16px;white-space:nowrap;background:'+(st==='none'?(M.cur?curBg:''):_meetStatTint(st))+'"><div style="font-size:13px;font-weight:800;color:'+col+'">'+inner+(ed?'<sup style="font-size:7px;color:var(--accent2)">✎</sup>':'')+'</div>'+(diff?'<div style="font-size:9px;font-weight:800;color:'+col+'">'+diff+'</div>':'')+'</td>'; });
     body+='</tr>';
   });
   return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">'+y+t('年 KPI推移','KPI trend')+'</span></div>'
@@ -9318,8 +9353,8 @@ function renderMeetingReview(){
     +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達 KPI','Missed KPIs')+'</div><div style="font-size:16px;font-weight:800;color:'+(totMiss===0?'var(--green)':'var(--red)')+'">'+totMiss+' / '+totKpi+'</div><div style="font-size:9px;color:var(--muted)">'+t('要対策','need action')+'</div></div>'
     +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達のある店','Stores w/ miss')+'</div><div style="font-size:16px;font-weight:800;color:'+(storeMiss===0?'var(--green)':'var(--yellow)')+'">'+storeMiss+' / '+ks.length+'</div><div style="font-size:9px;color:var(--muted)">'+t('店舗','stores')+'</div></div>'
     +'</div></div>';
-  if(mode==='start'){ ks.forEach(function(x){ html+=_meetYearMatrix(x.s, ym0.y); }); }
-  else { ks.forEach(function(x){ html+=_meetStoreCard(x.s, x.k, ym, isCurrent); }); }
+  if(mode==='start'){ ks.forEach(function(x){ html+=_meetYearMatrix(x.s, ym0.y)+_meetTaskSection(x.s); }); }
+  else { ks.forEach(function(x){ html+=_meetStoreCard(x.s, x.k, ym, isCurrent)+_meetTaskSection(x.s); }); }
   return html;
 }
 function renderAnnualPlan(){
@@ -15941,7 +15976,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '572';
+const APP_VERSION = '573';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
