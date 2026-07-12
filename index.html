@@ -9062,6 +9062,14 @@ function _meetJudge(it, landing){
   return it.act>=it.tgt*0.995;
 }
 /* 未達KPIの「理由・対策・担当・期限」入力（＋前月対策のPDCA表示） */
+function _meetG2Options(selected, storeId){
+  var emps=[]; try{ emps=getEmployees().filter(function(e){ return e && e.status!=='退職' && empGradeNum(e)>=2; }); }catch(e){}
+  emps.sort(function(a,b){ var as=(a.store===storeId)?0:1, bs=(b.store===storeId)?0:1; if(as!==bs) return as-bs; var gd=(empGradeNum(b)-empGradeNum(a)); if(gd) return gd; return String(a.name||'').localeCompare(String(b.name||'')); });
+  var opts='<option value="">'+t('担当を選択（G2以上）','Owner (G2+)')+'</option>'; var seen={};
+  emps.forEach(function(e){ if(seen[e.name]) return; seen[e.name]=1; var g=(typeof empGrade==='function'?empGrade(e):'')||''; opts+='<option value="'+escapeHtml(e.name)+'"'+(e.name===selected?' selected':'')+'>'+escapeHtml(e.name)+(g?('（'+g+'）'):'')+'</option>'; });
+  if(selected && !seen[selected]){ opts+='<option value="'+escapeHtml(selected)+'" selected>'+escapeHtml(selected)+'</option>'; }
+  return opts;
+}
 function _meetInputBlock(storeId, ym, it, missed){
   var rv=getMeetReview(storeId, ym)[it.key]||{};
   var pv=getMeetReview(storeId, ymShift(ym,-1))[it.key]||{};
@@ -9077,8 +9085,8 @@ function _meetInputBlock(storeId, ym, it, missed){
       +'<input class="form-input" style="font-size:12px;padding:6px 8px" placeholder="'+t('未達の理由','Reason for miss')+'" value="'+escapeHtml(rv.reason||'')+'" '+oc('reason')+'>'
       +'<input class="form-input" style="font-size:12px;padding:6px 8px" placeholder="'+t('対策（次の一手）','Action / next step')+'" value="'+escapeHtml(rv.action||'')+'" '+oc('action')+'>'
       +'<div style="display:flex;gap:5px">'
-        +'<input class="form-input" style="font-size:12px;padding:6px 8px;flex:1" placeholder="'+t('担当','Owner')+'" value="'+escapeHtml(rv.owner||'')+'" '+oc('owner')+'>'
-        +'<input class="form-input" style="font-size:12px;padding:6px 8px;flex:1" placeholder="'+t('期限','Due')+'" value="'+escapeHtml(rv.due||'')+'" '+oc('due')+'>'
+        +'<select class="form-select" style="font-size:12px;padding:6px 8px;flex:1" '+oc('owner')+'>'+_meetG2Options(rv.owner, storeId)+'</select>'
+        +'<input class="form-input" type="date" style="font-size:12px;padding:6px 8px;flex:1" value="'+escapeHtml(rv.due||'')+'" '+oc('due')+'>'
       +'</div></div>';
   } else {
     if(rv.reason||rv.action){ h+='<div style="font-size:11px;line-height:1.6">'+(rv.reason?('<div><b>'+t('理由','Reason')+'：</b>'+escapeHtml(rv.reason)+'</div>'):'')+(rv.action?('<div><b>'+t('対策','Action')+'：</b>'+escapeHtml(rv.action)+(rv.owner?('　/ '+escapeHtml(rv.owner)):'')+(rv.due?('　'+escapeHtml(rv.due)):'')+'</div>'):'')+'</div>'; }
@@ -9190,6 +9198,28 @@ function _meetKpiTile(storeId, ym, key, act, tgt, opts){
   if(st==='miss') h+=_meetInputBlock(storeId, ym, {key:key}, true);
   return h;
 }
+/* 中間MTG: 区分別内訳（客数L/D/TO・客単価L/D/TO・ドリンク酒/ソフト）を目標差リンクで表示 */
+function _meetSegExtra(k, key, storeId, ym, paceFrac, unit){
+  var seg=function(lbl, act, tgt, money, u){ if(!(act>0) && !(tgt>0)) return '';
+    var st=(tgt>0&&act>0)?(act>=tgt*0.995):null; var col=st==null?'var(--muted)':(st?'var(--green)':'var(--red)');
+    var fa=money?('$'+(Math.round((act||0)*100)/100)):((Math.round((act||0)*10)/10)+(u||''));
+    var ft=(tgt>0)?(money?('$'+(Math.round(tgt*100)/100)):((Math.round(tgt*10)/10)+(u||''))):'—';
+    var diff=''; if(tgt>0&&act>0){ var raw=act-tgt; diff=(raw>=0?'+':'−')+(money?('$'+(Math.round(Math.abs(raw)*100)/100)):((Math.round(Math.abs(raw)*10)/10)+(u||''))); }
+    return '<span style="white-space:nowrap">'+lbl+' <b style="color:'+col+'">'+fa+'</b><span style="color:var(--muted)">/'+ft+'</span>'+(diff?' <span style="color:'+col+';font-weight:700">'+diff+'</span>':'')+'</span>'; };
+  var wrap=function(parts){ parts=parts.filter(Boolean); if(!parts.length) return ''; return '<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:9.5px;margin-top:3px">'+parts.join('')+'</div>'; };
+  if(key==='guests'){ var pf=paceFrac||1;
+    return wrap([ seg(t('ランチ','L'), k.lunchGuests, (k.lunchGuestBud!=null?Math.round(k.lunchGuestBud*pf):null), false, unit),
+      seg(t('ディナー','D'), k.dinnerGuests, (k.dinnerGuestBud!=null?Math.round(k.dinnerGuestBud*pf):null), false, unit),
+      seg(t('テイクアウト','TO'), k.toCount, (k.takeoutBud!=null?Math.round(k.takeoutBud*pf):null), false, unit) ]); }
+  if(key==='ppa'){ var segs={}; try{ var b=getBudgetForMonth(storeId, ym); segs=(typeof getSegments==='function')?getSegments(b):{}; }catch(e){}
+    var tl=(segs.lunch?parseFloat(segs.lunch.spend):0)||null, td=(segs.dinner?parseFloat(segs.dinner.spend):0)||null, tt=(segs.takeout?parseFloat(segs.takeout.spend):0)||null;
+    return wrap([ seg(t('ランチ','L'), k.ppaLunch, tl, true), seg(t('ディナー','D'), k.ppaDinner, td, true), seg(t('テイクアウト','TO'), k.ppaTO, tt, true) ]); }
+  if(key==='drink'){ var mix=null; try{ var tp=ym.split('-')[0]+'.'+parseInt(ym.split('-')[1],10); mix=(typeof salesMixForScope==='function')?salesMixForScope([storeId], tp, ym):null; }catch(e){}
+    if(!mix || !mix.drink){ return '<div style="font-size:9.5px;color:var(--muted);margin-top:3px">'+t('酒/ソフト内訳はメニュー出数の同期後に表示','Alcohol/soft split shows after menu-mix sync')+'</div>'; }
+    var aP=Math.round(mix.alcohol/mix.drink*100), sP=Math.round(mix.soft/mix.drink*100);
+    return '<div style="font-size:9.5px;margin-top:3px"><span style="color:#9b59b6;font-weight:700">'+t('酒','Alc')+' '+aP+'%</span>（$'+Math.round(mix.alcohol).toLocaleString()+'） ・ <span style="color:#4a90e8;font-weight:700">'+t('ソフト','Soft')+' '+sP+'%</span>（$'+Math.round(mix.soft).toLocaleString()+'）</div>'; }
+  return '';
+}
 /* 中間MTGカード（当月・前日まで） */
 function _meetStoreCard(store, k, ym, isCurrent){
   var rows=_meetKpiRows(k);
@@ -9225,7 +9255,9 @@ function _meetStoreCard(store, k, ym, isCurrent){
   h+='<div style="display:flex;justify-content:flex-end;margin:3px 0 2px"><button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+store.id+'\')"><i class="ti ti-bulb"></i> '+t('当月 予算の考え方','Budget rationale')+'</button></div>';
   if(salesSt==='miss') h+=_meetInputBlock(store.id, ym, {key:'sales'}, true);
   rows.slice(1).forEach(function(it){ var ex='';
-    if(it.key==='guests'){ var od=k.opDays||daysPassed||0; if(od>0 && k.guests>0){ var av=Math.round(k.guests/od*10)/10; ex=t('平均集客','Avg')+' '+av+(it.unit||'')+t('/日','/d'); } }
+    if(it.key==='guests'){ var od=k.opDays||daysPassed||0; var avg=(od>0&&k.guests>0)?('<div>'+t('平均集客','Avg')+' '+(Math.round(k.guests/od*10)/10)+(it.unit||'')+t('/日','/d')+'</div>'):''; ex=avg+_meetSegExtra(k,'guests',store.id,ym,paceFrac,it.unit||''); }
+    else if(it.key==='ppa'){ ex=_meetSegExtra(k,'ppa',store.id,ym,1,''); }
+    else if(it.key==='drink'){ ex=_meetSegExtra(k,'drink',store.id,ym,1,''); }
     h+=_meetKpiTile(store.id, ym, it.key, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, extra:ex, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
   return h;
 }
@@ -15977,7 +16009,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '574';
+const APP_VERSION = '576';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
