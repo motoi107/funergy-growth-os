@@ -1218,7 +1218,7 @@ function migrateStoreGuids() {
    業態でデフォルトKPI → 店舗ごとに上書き可（ハイブリッド） */
 const STORE_FORMATS = [
   {key:'dining',  name:'食事業態',   en:'Dining',  icon:'ti-bowl',          color:'#15a66a', desc:'ランチ中心・回転重視'},
-  {key:'izakaya', name:'居酒屋業態', en:'Izakaya', icon:'ti-glass-cocktail', color:'#8b5cf6', desc:'ディナー中心・滞在型'},
+  {key:'izakaya', name:'居酒屋業態', en:'Izakaya', icon:'ti-glass-full', color:'#8b5cf6', desc:'ディナー中心・滞在型'},
 ];
 function formatMeta(key){ return STORE_FORMATS.find(f=>f.key===key) || STORE_FORMATS[0]; }
 
@@ -9175,7 +9175,7 @@ var MEET_KPI_DEF=[
  {key:'labor',  label:'人件費率',     labelEn:'Labor',      icon:'ti-users-group',   lower:true,  defG:100, defY:108},
  {key:'miso',   label:'味噌汁UP率',   labelEn:'Miso',       icon:'ti-soup',          lower:false, defG:100, defY:90},
  {key:'ikura',  label:'いくらシャワー率',labelEn:'Ikura',    icon:'ti-fish',          lower:false, defG:100, defY:90},
- {key:'drink',  label:'ドリンク比率', labelEn:'Drink',      icon:'ti-glass-cocktail',lower:false, defG:100, defY:90},
+ {key:'drink',  label:'ドリンク比率', labelEn:'Drink',      icon:'ti-glass-full',lower:false, defG:100, defY:90},
  {key:'google', label:'Googleレビュー',labelEn:'Google review', icon:'ti-star',          lower:false, defG:100, defY:95}
 ];
 function _meetKpiDef(key){ return MEET_KPI_DEF.find(function(x){return x.key===key;})||{lower:false,defG:100,defY:90,icon:'ti-target',label:key,labelEn:key}; }
@@ -10364,7 +10364,7 @@ function renderBudgetSummary() {
   html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。','Payroll split: G2+ / G1. Excludes tax/insurance.'), laborGradeSub(stores,days))});
   if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('味噌汁UP率 ★','Miso upsell % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null);
   if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null);
-  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-cocktail',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null);
+  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null);
   html += `</div>
     <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
 
@@ -16152,7 +16152,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '582';
+const APP_VERSION = '583';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -36763,6 +36763,20 @@ function setSkillStaffStore(sid){ window._skillStaffStore = sid; renderPage('ski
 
 /* ---- Crew本人ビュー ---- */
 var _skillStorePulled = {};
+var _skillAllPulled = false;
+/* マネージャービュー用：全店舗のスキルバケット(skills_st_<店舗>)＋レガシーをクラウドからマージpull（保存内容は壊さない＝和集合マージ） */
+function maybePullAllSkillStores(){
+  if(_skillAllPulled) return;
+  if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ _skillAllPulled=true; return; }
+  _skillAllPulled=true;
+  try{
+    var stores=(typeof getVisibleStores==='function')?getVisibleStores().slice():STORES.slice();
+    var ids={}; stores.forEach(function(s){ if(s&&s.id) ids[s.id]=1; }); ids['OFFICE']=1;
+    var jobs=[pullOpKey('skills_v2'), pullOpKey('skills')];
+    Object.keys(ids).forEach(function(id){ jobs.push(pullOpKey(SKILL_STORE_PREFIX+id)); });
+    Promise.all(jobs).then(function(){ if(curPage==='skill') renderPage('skill'); }).catch(function(){});
+  }catch(e){}
+}
 function maybePullSkillStore(storeId){
   if(!storeId || storeId==='ALL' || _skillStorePulled[storeId]) return;
   _skillStorePulled[storeId]=true;
@@ -36976,6 +36990,7 @@ function submitSkillRequest(position) {
 
 /* ---- 管理者ビュー ---- */
 function renderSkillManager() {
+  maybePullAllSkillStores();
   var reqs = getSkillRequests();
   var scope = visibleStaffForManager().map(e=>e.name);
   var pending = reqs.filter(r=>['申請中','確認中','再評価待ち'].includes(r.status) && scope.includes(r.name));
@@ -37713,7 +37728,7 @@ function renderKpiManualTab(){
   var allCats = {}; (typeof getRecipes==='function'?getRecipes():[]).forEach(r=>{ if(r.category) allCats[r.category]=1; });
   var catList = Object.keys(allCats).sort();
   var dcOvHint = (!isCfgGlobal && cfgStore.storeOverride) ? `<button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="clearKpiCfgStore('${sid}','drinkCats')">全店共通に戻す</button>` : '';
-  html += `<div class="card"><div class="card-title"><i class="ti ti-glass-cocktail"></i>ドリンク比率の対象カテゴリ <span style="font-size:10px;font-weight:400;color:var(--accent)">（${cfgScopeLabel}）</span></div>
+  html += `<div class="card"><div class="card-title"><i class="ti ti-glass-full"></i>ドリンク比率の対象カテゴリ <span style="font-size:10px;font-weight:400;color:var(--accent)">（${cfgScopeLabel}）</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">「ドリンク」とみなすメニューカテゴリを選択（複数可）。${isCfgGlobal?'<b>全店に適用されます。</b>':'<b>'+store.name+'のみ</b>に適用（未設定なら全店共通を使用）。'}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px">`;
   if (catList.length){
