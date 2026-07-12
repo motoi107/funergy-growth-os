@@ -1623,7 +1623,7 @@ const ROLE_CONFIG = {
 const NAV_ITEMS = [
   {id:'dashboard',   label:'ダッシュボード',   icon:'ti-layout-dashboard', roles:['ceo','gm','office','am']},
   {id:'store_cmd',   label:'店舗オペレーション', icon:'ti-building-store',   roles:['ceo','gm','am','sl','crew']},
-  {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl','office_crew']},
+  {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl','g4','office_crew']},
   {id:'foodcost',    label:'原価率(FC)',   icon:'ti-receipt',          roles:['ceo','gm','office','am','sl']},
   {id:'menu',        label:'メニュー',    icon:'ti-tools-kitchen-2',  roles:['ceo','gm','office','am','sl']},
   {id:'recipe',      label:'原価登録',    icon:'ti-receipt-2',        roles:['ceo','gm','office','am','sl']},
@@ -4317,7 +4317,9 @@ var OP_MERGE = {
   mileage_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
   expense_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
   m_store_kpi:    { merge: mergeMapByKey, covers: _coversMapByKey },
-  m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey }
+  m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey },
+  invoices:       { merge: mergeInvoices, covers: _coversInvoices },
+  reimbursements: { merge: mergeInvoices, covers: _coversInvoices }
 };
 /* プレフィックス一致のマージ定義（動的キー用：skills_st_<store>） */
 var OP_MERGE_PREFIX = { 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore } };
@@ -4521,6 +4523,35 @@ function _coversReqTomb(check, want){
   }
   return true;
 }
+/* Invoice/立替のマージ: id単位で和集合（全端末のアップロードを統合）。衝突は削除優先→レビュー時刻→レビュー済み→local */
+function _invMut(x){ return Number(x && x.reviewedAt ? (Date.parse(x.reviewedAt)||0) : 0)||0; }
+function mergeInvoices(cloudArr, localArr){
+  var by={}, order=[];
+  function put(item, isLocal){
+    if(!item || item.id==null) return; var id=item.id;
+    if(!by[id]){ by[id]=item; order.push(id); return; }
+    var cur=by[id], win;
+    if(!!cur._deleted !== !!item._deleted){ win = cur._deleted?cur:item; } // 削除優先（復活防止）
+    else { var mc=_invMut(cur), mi=_invMut(item);
+      if(mi!==mc){ win=(mi>mc)?item:cur; }
+      else { var cd=(cur.reviewStatus&&cur.reviewStatus!=='未確認'), idd=(item.reviewStatus&&item.reviewStatus!=='未確認');
+        win=(cd!==idd)?(idd?item:cur):(isLocal?item:cur); } }
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+function _coversInvoices(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x&&x.id!=null) have[x.id]=x; });
+  for(var i=0;i<(want||[]).length;i++){ var w=want[i]; if(!w||w.id==null) continue;
+    var h=have[w.id]; if(!h) return false;
+    if(w._deleted && !h._deleted) return false;
+    if(_invMut(w)>_invMut(h)) return false;
+  }
+  return true;
+}
 /* 汎用マップマージ（トップレベルキーで和集合。キー衝突は _at(書込時刻の新しい方)→local）。
    {storeId:設定} や {format:設定} のような「キー別に独立した設定マップ」用（m_store_kpi / m_format_kpi） */
 function _mapPick(cv, lv){
@@ -4578,7 +4609,7 @@ async function pullOpKey(key){
     var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
     if(!res.ok) return false;
     var rows=await res.json();
-    if(rows && rows.length){ try{ localStorage.setItem(key, JSON.stringify(rows[0].value)); }catch(e){} return true; }
+    if(rows && rows.length){ var _cloud=rows[0].value; var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(key)||'null'); _out=_def.merge(_cloud, _loc); }catch(e){ _out=_cloud; } } try{ localStorage.setItem(key, JSON.stringify(_out)); }catch(e){} try{ if(_def&&_def.after) _def.after(); }catch(e){} return true; }
   }catch(e){}
   return false;
 }
@@ -7206,7 +7237,14 @@ function getBudgetForMonth(storeId, ym){
     var dow = { lunch: rec.l?expG(rec.l):z(), dinner: rec.d?expG(rec.d):z(), takeout: z() };
     return { storeId:storeId, period:ym, dow:dow, status:'承認済', _fromFile:true };
   }
-  return getBudgets().find(function(x){ return x.storeId===storeId; });
+  var _b = getBudgets().find(function(x){ return x.storeId===storeId; });
+  if(_b && _b.months && _b.months[ym]){
+    var _mo=_b.months[ym]; var _bv=Object.assign({}, _b);
+    _bv.dow = _mo.dow || _b.dow; _bv.days = (_mo.days!=null?_mo.days:null);
+    _bv.daysBy = _mo.daysBy||null; _bv.daysAt = _mo.daysAt||null; _bv._ym = ym;
+    return _bv;
+  }
+  return _b;
 }
 
 function getBudgets() {
@@ -8923,7 +8961,7 @@ function quarterTargets(storeId,y,q){
   var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId)||{}):{};
   return { sales:salesT, guests:guestsT, salesEl:salesEl, guestsEl:guestsEl, ppa:guestsT?Math.round(salesT/guestsT*100)/100:0, fcRate:kpi.foodCost||0, laborRate:kpi.laborPct||0, repeat:kpi.repeatRate||0, byMonth:byMonth };
 }
-function qbCanEdit(){ return ['ceo','gm','office','am','sl'].indexOf(curRole)>=0; }
+function qbCanEdit(){ return ['ceo','gm','office','am','sl','g4'].indexOf(curRole)>=0; }
 function saveQBudget(storeId, commit){
   _qEnsure();
   var g=function(id){ var el=document.getElementById('qb-'+storeId+'-'+id); return el?el.value:''; };
@@ -9647,6 +9685,7 @@ function renderBudgetSetup() {
 
   var html = '';
   var _bsYm=budgetYM();
+  var _bsYmStr=_bsYm.y+'-'+String(_bsYm.m).padStart(2,'0');
   html += '<div class="card" style="padding:12px 14px;margin-bottom:10px;border-left:4px solid var(--accent);display:flex;align-items:center;gap:10px">'
     +'<i class="ti ti-calendar-event" style="font-size:22px;color:var(--accent)"></i>'
     +'<div><div style="font-size:10px;color:var(--muted)">'+t('この画面で設定する対象月','Target month set on this screen')+'</div><div style="font-size:19px;font-weight:800">'+(curLang==='en'?(_bsYm.y+'-'+String(_bsYm.m).padStart(2,'0')):(_bsYm.y+'年 '+_bsYm.m+'月'))+'</div></div>'
@@ -9655,13 +9694,14 @@ function renderBudgetSetup() {
 
   visible.forEach(b => {
     var s = STORES.find(x=>x.id===b.storeId) || {name:b.storeId, color:'#888'};
-    var segs = getSegments(b);
-    var dowMode = usesDowMode(b);
-    var dow = getDow(b);
+    var bM=(typeof getBudgetForMonth==='function')?getBudgetForMonth(b.storeId,_bsYmStr):b;
+    var segs = getSegments(bM);
+    var dowMode = usesDowMode(bM);
+    var dow = getDow(bM);
     var dowBd = dowMode ? dowSegBreakdown(dow) : null;
     var total = dowMode ? (dowBd.lunch+dowBd.dinner+dowBd.takeout) : segmentsTotal(segs);
-    var dayOv = hasDayBudget(b);
-    if (dayOv) { total = daysOfYm(curYm()).reduce(function(a,dd){ return a + dayBudgetFor(b, dd.date); }, 0); }
+    var dayOv = hasDayBudget(bM);
+    if (dayOv) { total = daysOfYm(_bsYmStr).reduce(function(a,dd){ return a + dayBudgetFor(bM, dd.date); }, 0); }
     var segShown = budgetSegShown(b);
     var laborB = segmentsLaborBudget(segs);
     var fcB = segmentsFcBudget(segs);
@@ -9779,31 +9819,33 @@ function renderPrevMonthCompare(storeId, budTotal, laborB, fcB) {
     </div></details>`;
 }
 /* ===== 予算ビルダー（ページ内）: 上部＝曜日設定（L/D/TO 客数×客単価）→反映→下部＝日別一覧（日毎手動修正可） ===== */
-var _bbStore=null, _bbDow=null, _bbDirty=false;
+var _bbStore=null, _bbDow=null, _bbDirty=false, _bbYmLoaded=null;
 function bbMarkDirty(){ _bbDirty=true; var el=document.getElementById('bb-dirty'); if(el){ el.style.display='inline-block'; el.style.color='var(--red)'; el.style.borderColor='var(--red)'; el.textContent='未保存の変更'; } }
 function bbOpen(storeId){
   var b=getBudgets().find(function(x){return x.storeId===storeId;});
   if(!b){ showToast('この店舗の予算がまだありません','warning'); return; }
   _bbStore=storeId;
-  _bbDow=JSON.parse(JSON.stringify(getDow(b)));
+  _bbDow=null; _bbYmLoaded=null;
   budgetTab='setup';
   renderPage('budget'); window.scrollTo(0,0);
   setTimeout(function(){ bbRecalcDow(); bbDayTotal(); }, 80);
 }
-function bbClose(){ _bbStore=null; _bbDow=null; _bbDirty=false; renderPage('budget'); }
+function bbClose(){ _bbStore=null; _bbDow=null; _bbDirty=false; _bbYmLoaded=null; renderPage('budget'); }
 function bbCloseGuarded(){ if(_bbDirty && !confirm('保存していない変更があります。保存せずに閉じますか？\\n（「キャンセル」を押してから「保存」ボタンを押すと保存できます）')) return; bbClose(); }
 function renderBudgetBuilder(storeId){
   var b=getBudgets().find(function(x){return x.storeId===storeId;});
   if(!b){ _bbStore=null; return renderBudgetSetup(); }
-  if(!_bbDow) _bbDow=JSON.parse(JSON.stringify(getDow(b)));
+  var ym=budgetYM(); var ymStr=ym.y+'-'+String(ym.m).padStart(2,'0'); var counts=weekdayCountsForMonth(ym.y, ym.m);
+  var _mo=(b.months&&b.months[ymStr])||null;
+  if(!_bbDow || _bbYmLoaded!==ymStr){ _bbDow=JSON.parse(JSON.stringify((_mo&&_mo.dow)||getDow(b))); _bbYmLoaded=ymStr; _bbDirty=false; }
+  var _monDays=(_mo&&_mo.days!=null)?_mo.days:(b.days||{});
   var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
   var editable=canEditBudget(b);
-  var ym=budgetYM(); var counts=weekdayCountsForMonth(ym.y, ym.m);
   var h='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:0;z-index:20;box-shadow:0 2px 8px rgba(0,0,0,0.06)">'
     +'<button class="btn btn-secondary btn-sm" onclick="bbCloseGuarded()"><i class="ti ti-arrow-left"></i> '+t('店舗一覧へ','Store list')+'</button>'
     +'<b style="flex:1;font-size:13px;min-width:120px">'+escapeHtml(st.name)+(curLang==='en'?(' — Budget editor ('+ym.y+'-'+String(ym.m).padStart(2,'0')+')</b>'):(' — 予算エディタ（'+ym.y+'年'+ym.m+'月）</b>'))
     +'<span id="bb-dirty" style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted);display:none">'+t('未保存','Unsaved')+'</span>'
-    +(editable?'<button id="bb-save-top" class="btn btn-primary btn-sm" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t('保存','Save')+'</button>':'')
+    +(editable?'<button id="bb-save-top" class="btn btn-primary btn-sm" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t(ym.m+'月を保存','Save '+ym.m+'月')+'</button>':'')
     +'<span style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted)">'+escapeHtml(tStatus(b.status||'下書き'))+'</span></div>';
   if(!editable) h+='<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-lock"></i> '+t('この予算は現在編集できません（ステータス: ','Not editable (status: ')+escapeHtml(tStatus(b.status||'下書き'))+t('）。閲覧のみ可能です。','). View only.')+'</div>';
   var dis=editable?'':' disabled';
@@ -9833,8 +9875,8 @@ function renderBudgetBuilder(storeId){
     +'<span style="margin-left:auto;font-size:11px;color:var(--muted);align-self:center">'+t('曜日設定の月間合計: ','Weekday setup monthly total: ')+'<b id="bb-dowtotal" style="color:var(--accent);font-size:14px">—</b></span></div>'
     +(editable?'<button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="bbApplyDow()"><i class="ti ti-arrow-big-down-lines"></i> '+t('↓ 日別一覧へ反映（全日を曜日設定の値で上書き）','↓ Apply to daily list (overwrite all days)')+'</button><div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">'+t('※これは下の一覧へ流し込むだけです。','※ This only fills the list below. ')+'<b style="color:var(--accent)">'+t('最後に「保存」を押すまで確定しません。','Nothing is committed until you press Save.')+'</b></div>':'')
     +'</div>';
-  // ===== ② 日別一覧 =====
-  var days=daysOfYm(curYm());
+  // ===== ② 日別一覧（選択中の月） =====
+  var days=daysOfYm(ymStr);
   h+='<div class="card"><div class="card-title"><i class="ti ti-calendar-dollar" style="color:var(--accent)"></i>'+t('② 日別一覧（日毎に手動修正可）','② Daily list (edit any day)')+''
     +(editable?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 8px;font-size:10px" onclick="bbClearDays()"><i class="ti ti-eraser"></i> '+t('全て空欄（自動）に戻す','Clear all (auto)')+'</button>':'')+'</div>'
     +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">'+t('空欄＝自動（曜日設定から算出）。店休日は ','Blank = auto (from weekday setup). Closed days = ')+'<b>0</b>'+t('、イベント日は任意の額に修正。',', event days = set any amount.')+'</div>'
@@ -9844,9 +9886,8 @@ function renderBudgetBuilder(storeId){
     var dt=new Date(dd.date+'T00:00:00');
     var dowJ=(curLang==='en'?['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getDay()]:['日','月','火','水','木','金','土'][dt.getDay()]);
     var isWk=(dt.getDay()===0||dt.getDay()===6);
-    var auto=Math.round(bbDowDayVal((dt.getDay()+6)%7));
-    var autoBase=Math.round(dayBudgetAuto(b, dd.date));
-    var cur=(b.days&&b.days[dd.date]!=null&&b.days[dd.date]!=='')?b.days[dd.date]:'';
+    var autoBase=Math.round(bbDowDayVal((dt.getDay()+6)%7));
+    var cur=(_monDays&&_monDays[dd.date]!=null&&_monDays[dd.date]!=='')?_monDays[dd.date]:'';
     var ev=(typeof dayEventFor==='function')?dayEventFor(dd.date):'';
     h+='<tr><td style="text-align:left;white-space:nowrap;'+(isWk?'color:var(--accent);font-weight:600':'')+'">'+parseInt(dd.date.slice(8),10)+(curLang==='en'?' (':'日(')+dowJ+')'+(ev?'<div style="font-size:9px;color:var(--accent2);font-weight:400">'+escapeHtml(ev)+'</div>':'')+'</td>'
       +'<td style="text-align:right;color:var(--muted);font-size:11px;white-space:nowrap" class="bb-auto" data-dow="'+((dt.getDay()+6)%7)+'">$'+autoBase.toLocaleString()+'</td>'
@@ -9855,7 +9896,7 @@ function renderBudgetBuilder(storeId){
   h+='</tbody></table></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 2px 0"><span style="font-size:12px;color:var(--muted)">'+t('月間予算 合計','Monthly budget total')+'</span><b id="bb-total" style="font-size:18px;color:var(--accent)">—</b></div>'
     +(b.daysBy?'<div style="font-size:10px;color:var(--muted)"><i class="ti ti-user-check"></i> '+t('前回の日別調整: ','Last per-day adj: ')+escapeHtml(b.daysBy)+' '+escapeHtml(b.daysAt||'')+'</div>':'')
-    +(editable?'<button id="bb-save-bottom" class="btn btn-primary" style="width:100%;margin-top:10px;font-size:15px;padding:12px" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t('保存する（曜日設定＋日別一覧）','Save (weekday + daily list)')+'</button><div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">'+t('このボタンを押さないと入力は保存されません。','Your input is not saved until you press this button.')+'</div>':'')
+    +(editable?'<button id="bb-save-bottom" class="btn btn-primary" style="width:100%;margin-top:10px;font-size:15px;padding:12px" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t(ym.y+'年'+ym.m+'月の予算を保存','Save '+ym.y+'-'+ym.m+' budget')+'</button><div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">'+t('上部の「'+ym.m+'月を保存」ボタンと同じ動作です（表示中の'+ym.m+'月を保存）。押すまで入力は保存されません。','Same as the top Save button — saves the shown month ('+ym.m+'). Nothing is saved until pressed.')+'</div>':'')
     +'</div>';
   return h;
 }
@@ -9924,20 +9965,24 @@ function bbSave(){
   var budgets=getBudgets();
   var b=budgets.find(function(x){return x.storeId===_bbStore;}); if(!b) return;
   if(!canEditBudget(b)){ alert('この予算は現在編集できません（ステータス: '+(b.status||'下書き')+'）'); return; }
-  b.dow=_bbDow;
+  var _ymStr=(function(){ var y=budgetYM(); return y.y+'-'+String(y.m).padStart(2,'0'); })();
+  b.dow=_bbDow; // 直近の曜日設定を既定テンプレートとして更新
   var days={}; var any=false;
   document.querySelectorAll('.bb-day').forEach(function(inp){
     var v=inp.value;
     if(v!==''&&!isNaN(parseFloat(v))&&parseFloat(v)>=0){ days[inp.getAttribute('data-date')]=parseFloat(v); any=true; }
   });
-  b.days=any?days:null;
-  if(any){ b.daysBy=myName(); b.daysAt=nowJP(); } else { b.daysBy=null; b.daysAt=null; }
+  b.months=b.months||{};
+  b.months[_ymStr]={ dow:JSON.parse(JSON.stringify(_bbDow)), days:(any?days:null), daysBy:(any?myName():null), daysAt:(any?nowJP():null) };
+  b.daysBy=(any?myName():null); b.daysAt=(any?nowJP():null);
   if(b.status==='差し戻し') b.status='再提出済み';
   if(!b.status) b.status='下書き';
   b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
   saveBudgets(budgets);
   _bbDirty=false;
-  showToast(any?('予算を保存しました（月間 $'+Math.round(daysOfYm(curYm()).reduce(function(a,dd){return a+dayBudgetFor(b,dd.date);},0)).toLocaleString()+'）'):'予算を保存しました','success');
+  var _bv=(typeof getBudgetForMonth==='function')?getBudgetForMonth(_bbStore,_ymStr):b;
+  var _mtot=Math.round(daysOfYm(_ymStr).reduce(function(a,dd){return a+dayBudgetFor(_bv,dd.date);},0));
+  showToast(_ymStr.replace('-','年')+'月の予算を保存しました（月間 $'+_mtot.toLocaleString()+'）','success');
   renderPage('budget'); setTimeout(function(){ bbRecalcDow(); bbDayTotal(); }, 60);
 }
 /* ===== 曜日別予算エディタ ===== */
@@ -11935,6 +11980,13 @@ function dailyOrderTotal(storeId, dateStr) {
 var _fcStore = null;
 function renderFoodcost() {
   if (!ROLE_CONFIG[curRole].financial && curRole !== 'sl') return financialBlocked();
+  if(!window._invSyncFC && typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED){ window._invSyncFC=1;
+    Promise.resolve()
+      .then(function(){ return (typeof opMergePush==='function') ? opMergePush('invoices', ls('invoices',[])||[]) : null; })
+      .then(function(){ return (typeof pullOpKey==='function') ? pullOpKey('invoices') : null; })
+      .then(function(){ try{ if(typeof opMergePush==='function') opMergePush('reimbursements', ls('reimbursements',[])||[]); if(typeof pullOpKey==='function') pullOpKey('reimbursements'); }catch(e){} try{ if(typeof _invDayCostMap==='function'){ window._idc=null; window._idcN=-1; } }catch(e){} if(typeof renderPage==='function') renderPage('foodcost'); })
+      .catch(function(){});
+  }
   if (!_fcStore) _fcStore = (curStore && curStore!=='ALL') ? curStore : 'ALL';
   var allStore = _fcStore==='ALL';
   var store = allStore ? null : (STORES.find(function(s){return s.id===_fcStore;})||STORES[0]);
@@ -16100,7 +16152,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '579';
+const APP_VERSION = '582';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
