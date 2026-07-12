@@ -9222,6 +9222,7 @@ function _meetStoreCard(store, k, ym, isCurrent){
     h+='<div style="font-size:9.5px;color:var(--muted);margin-top:5px;line-height:1.5"><i class="ti ti-plane-arrival"></i> '+t('着地予測','Proj')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(0)+'%）':'')+'　·　'+t('後半 必要','Rest need')+' <b>'+fmtK(reqPerDay)+t('/日','/d')+'</b>×'+remDays+t('日','d')+'</div>';
   }
   h+='</div>';
+  h+='<div style="display:flex;justify-content:flex-end;margin:3px 0 2px"><button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+store.id+'\')"><i class="ti ti-bulb"></i> '+t('当月 予算の考え方','Budget rationale')+'</button></div>';
   if(salesSt==='miss') h+=_meetInputBlock(store.id, ym, {key:'sales'}, true);
   rows.slice(1).forEach(function(it){ var ex='';
     if(it.key==='guests'){ var od=k.opDays||daysPassed||0; if(od>0 && k.guests>0){ var av=Math.round(k.guests/od*10)/10; ex=t('平均集客','Avg')+' '+av+(it.unit||'')+t('/日','/d'); } }
@@ -9279,7 +9280,7 @@ function _meetYearMatrix(store, y){
   var sticky='position:sticky;left:0;z-index:1;box-shadow:2px 0 0 var(--border)';
   var curBg='rgba(43,121,208,.07)';
   var th='<th style="'+sticky+';background:var(--surface);padding:6px 8px;text-align:left;font-size:10px;color:var(--muted);min-width:112px">'+t('KPI','KPI')+'</th>';
-  MOS.forEach(function(M){ th+='<th style="padding:8px 16px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap;color:'+(M.cur?'var(--accent)':'var(--tm)')+(M.cur?';background:'+curBg:'')+'">'+M.m+t('月','')+(M.cur?' <span style="font-size:7.5px">'+t('進行','WIP')+'</span>':'')+'</th>'; });
+  MOS.forEach(function(M){ th+='<th onclick="openBudgetReview(\''+sid+'\',false,\''+M.ym+'\')" title="'+t('予算の考え方','Budget rationale')+'" style="padding:8px 16px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap;cursor:pointer;color:'+(M.cur?'var(--accent)':'var(--tm)')+(M.cur?';background:'+curBg:'')+'">'+M.m+t('月','')+' <i class="ti ti-bulb" style="font-size:9px;opacity:.55"></i>'+(M.cur?' <span style="font-size:7.5px">'+t('進行','WIP')+'</span>':'')+'</th>'; });
   var body='';
   KEYS.forEach(function(kk){ var def=_meetKpiDef(kk); var meta=META[kk]; var label=meta.label||t(def.label,def.labelEn);
     // 目標 行
@@ -15976,7 +15977,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '573';
+const APP_VERSION = '574';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -29779,14 +29780,14 @@ function reopenApproval(id){
   showToast(t('承認を取り消し、承認待ちに戻しました','Approval undone; back to pending'),'info'); renderPage('approval');
 }
 /* ===== 予算レビュー: 考え方（客数×単価 L/D/TO）＋日別一覧を一目で。読み取り専用＝保存に影響なし ===== */
-function openBudgetReview(storeId, submitMode){
-  var b=getBudgets().find(function(x){return x.storeId===storeId;});
+function openBudgetReview(storeId, submitMode, ymArg){
+  var b=ymArg?getBudgetForMonth(storeId,ymArg):getBudgets().find(function(x){return x.storeId===storeId;});
   if(!b){ showToast('予算が見つかりません','info'); return; }
   var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
-  var ym=curYm(); var yp=ym.split('-'); var yy=parseInt(yp[0],10), mm=parseInt(yp[1],10);
+  var ym=ymArg||curYm(); var yp=ym.split('-'); var yy=parseInt(yp[0],10), mm=parseInt(yp[1],10);
   var days=daysOfYm(ym);
   var total=Math.round(days.reduce(function(a,dd){return a+dayBudgetFor(b,dd.date);},0));
-  var prev=Math.round((monthStats(storeId,-1)||{}).sales||0);
+  var prev=Math.round((monthStats(storeId, ymArg?(((typeof _ymToOffset==='function')?_ymToOffset(ym):0)-1):-1)||{}).sales||0);
   var vs=prev?Math.round(total/prev*1000)/10:null;
   var dowMode=usesDowMode(b);
   var method=[dowMode?'曜日別（客数×単価）':(hasSegments(b)?'区分（客数×単価）':'—'), hasDayBudget(b)?'日別調整あり':''].filter(Boolean).join(' + ');
@@ -29849,7 +29850,7 @@ function openBudgetReview(storeId, submitMode){
   var _foot = submitMode
     ? '<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="submitBudget(\''+storeId+'\')"><i class="ti ti-arrow-left"></i> 考え方を直す</button><button class="btn btn-primary" onclick="_doSubmitBudget(\''+storeId+'\')"><i class="ti ti-send"></i> この内容でGM提出</button></div>'
     : '<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
-  openModal('<div class="modal-title">'+(submitMode?'提出前の最終確認':'予算の考え方')+' — '+escapeHtml(st.name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+  openModal('<div class="modal-title">'+(submitMode?'提出前の最終確認':('予算の考え方'+(ymArg?('（'+mm+'月）'):'')))+' — '+escapeHtml(st.name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +(submitMode?'<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.6"><i class="ti ti-eye-check" style="color:var(--accent)"></i> この内容がそのままGMへ提出されます。客数×単価・日別・考え方をご確認のうえ提出してください。</div>':'')
     +'<div style="max-height:'+(submitMode?'62vh':'72vh')+';overflow-y:auto;padding-right:4px">'+h+'</div>'
     +_foot);
