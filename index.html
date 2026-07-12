@@ -4081,7 +4081,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','q_budgets'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','q_budgets'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
@@ -9088,65 +9088,68 @@ function _meetInputBlock(storeId, ym, it, missed){
 }
 /* 1店舗の会議カード */
 /* 目標vs実績の1行: 実績を主役（大・色）、目標は併記、あと◯◯は小さく */
-function _meetRow(storeId, ym, itKey, label, act, tgt, opts){
-  opts=opts||{};
-  var money=opts.money, lower=opts.lower, unit=opts.unit||'';
-  var fmtV=function(v){ if(money) return (typeof fmtUSD2==='function')?fmtUSD2(v):('$'+(Math.round(v*100)/100)); return Math.round(v*10)/10; };
-  var hasT=(tgt>0), hasA=(act>0);
-  var ok=null;
-  if(hasT && hasA) ok = lower ? (act<=tgt) : (act>=tgt*0.995);
-  var actCol = ok===null?'var(--tm)':(ok?'var(--green)':'var(--red)');
-  var gap='';
-  if(hasT && hasA){
-    if(ok) gap='<span style="color:var(--green);font-weight:700">✓ '+t('達成','met')+'</span>';
-    else if(lower) gap=t('超過','over')+' +'+(Math.round((act-tgt)*10)/10)+unit;
-    else gap=t('あと','need')+' '+fmtV(Math.max(0,tgt-act))+unit;
-  }
-  var h='<div style="display:flex;align-items:center;gap:8px;padding:7px 2px;border-top:1px solid var(--border)">'
-    +'<span style="font-size:12.5px;font-weight:600;flex:1;min-width:0">'+label+'</span>'
-    +'<div style="text-align:right;white-space:nowrap;line-height:1.15">'
-      +'<div><span style="font-size:17px;font-weight:800;color:'+actCol+'">'+(hasA?fmtV(act)+unit:'—')+'</span>'
-      +'<span style="font-size:10.5px;color:var(--muted)"> / '+t('目標','Tgt')+' '+(hasT?fmtV(tgt)+unit:'—')+'</span></div>'
-      +(gap?'<div style="font-size:9px;color:var(--muted)">'+gap+'</div>':'')
-    +'</div></div>';
-  if(ok===false){ h+=_meetInputBlock(storeId, ym, {key:itKey}, true); }
+/* ===== KPIしきい値（店舗共通・GMが設定）: 目標に対する% ===== */
+var MEET_KPI_DEF=[
+ {key:'sales',  label:'売上',        labelEn:'Sales',      icon:'ti-trending-up',   lower:false, defG:100, defY:95},
+ {key:'guests', label:'客数/丼数',    labelEn:'Guests/Bowls',icon:'ti-friends',      lower:false, defG:100, defY:95},
+ {key:'ppa',    label:'客単価',       labelEn:'Avg check',  icon:'ti-coin',          lower:false, defG:100, defY:95},
+ {key:'repeat', label:'リピート率',   labelEn:'Repeat',     icon:'ti-repeat',        lower:false, defG:100, defY:90},
+ {key:'fc',     label:'原価率',       labelEn:'Food cost',  icon:'ti-percentage',    lower:true,  defG:100, defY:108},
+ {key:'labor',  label:'人件費率',     labelEn:'Labor',      icon:'ti-users-group',   lower:true,  defG:100, defY:108},
+ {key:'miso',   label:'味噌汁UP率',   labelEn:'Miso',       icon:'ti-soup',          lower:false, defG:100, defY:90},
+ {key:'ikura',  label:'いくらシャワー率',labelEn:'Ikura',    icon:'ti-fish',          lower:false, defG:100, defY:90},
+ {key:'drink',  label:'ドリンク比率', labelEn:'Drink',      icon:'ti-glass-cocktail',lower:false, defG:100, defY:90}
+];
+function _meetKpiDef(key){ return MEET_KPI_DEF.find(function(x){return x.key===key;})||{lower:false,defG:100,defY:90,icon:'ti-target',label:key,labelEn:key}; }
+function getMeetThreshold(key){ var all=ls('meeting_kpi_thresholds',{})||{}; var d=_meetKpiDef(key); var o=all[key]||{}; return {green:(o.green!=null?o.green:d.defG), yellow:(o.yellow!=null?o.yellow:d.defY)}; }
+function setMeetThreshold(key, green, yellow){ var all=ls('meeting_kpi_thresholds',{})||{}; all[key]={green:Number(green), yellow:Number(yellow)}; lsSet('meeting_kpi_thresholds', all); }
+function _meetStatus(key, act, tgt, lower){
+  if(!(tgt>0) || !(act>0)) return 'none';
+  var th=getMeetThreshold(key); var r=act/tgt*100;
+  if(lower){ if(r<=th.green) return 'ok'; if(r<=th.yellow) return 'warn'; return 'miss'; }
+  if(r>=th.green) return 'ok'; if(r>=th.yellow) return 'warn'; return 'miss';
+}
+function _meetStatColor(st){ return st==='ok'?'var(--green)':st==='warn'?'var(--yellow)':st==='miss'?'var(--red)':'var(--muted)'; }
+function _meetStatTint(st){ return st==='ok'?'rgba(93,181,84,.10)':st==='warn'?'rgba(217,167,59,.13)':st==='miss'?'rgba(224,80,80,.11)':'var(--surface2)'; }
+function _meetStatLabel(st){ return st==='ok'?t('達成','MET'):st==='warn'?t('注意','WATCH'):st==='miss'?t('未達','MISS'):'—'; }
+function openMeetThresholdModal(){
+  var body='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">'+t('各KPIの「達成」「注意」しきい値を目標に対する%で設定。原価率・人件費率は低い程良いため、大きい%ほど緩い判定です。','Set MET / WATCH thresholds as % of target for each KPI. Food cost & labor are lower-is-better, so larger % = looser.')+'</div><div style="display:grid;gap:6px">';
+  MEET_KPI_DEF.forEach(function(d){ var th=getMeetThreshold(d.key);
+    body+='<div style="display:flex;align-items:center;gap:6px"><i class="ti '+d.icon+'" style="width:18px;color:var(--muted);text-align:center"></i>'
+      +'<span style="flex:1;font-size:12px">'+t(d.label,d.labelEn)+(d.lower?' <span style="color:var(--muted);font-size:9px">'+t('低い程良い','lower better')+'</span>':'')+'</span>'
+      +'<span style="font-size:9.5px;color:var(--green);font-weight:700">'+t('達成','MET')+'</span><input id="mth-g-'+d.key+'" class="form-input" style="width:54px;font-size:12px;padding:5px" value="'+th.green+'">'
+      +'<span style="font-size:9.5px;color:var(--yellow);font-weight:700">'+t('注意','WATCH')+'</span><input id="mth-y-'+d.key+'" class="form-input" style="width:54px;font-size:12px;padding:5px" value="'+th.yellow+'">'
+      +'<span style="font-size:10px;color:var(--muted)">%</span></div>';
+  });
+  body+='</div>';
+  openModal('<div class="modal-title">'+t('KPIしきい値設定','KPI thresholds')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'+body
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="saveMeetThresholds()">'+t('保存','Save')+'</button></div>');
+}
+function saveMeetThresholds(){
+  MEET_KPI_DEF.forEach(function(d){ var g=parseFloat((document.getElementById('mth-g-'+d.key)||{}).value); var y=parseFloat((document.getElementById('mth-y-'+d.key)||{}).value); if(!isNaN(g)&&!isNaN(y)) setMeetThreshold(d.key, g, y); });
+  closeModalDirect(); if(typeof showToast==='function') showToast(t('しきい値を保存しました','Thresholds saved'),'success'); renderPage('budget');
+}
+/* 中間MTG: KPIをアイコン＋達成/未達バッジで強調表示 */
+function _meetKpiTile(storeId, ym, key, act, tgt, opts){
+  opts=opts||{}; var def=_meetKpiDef(key); var lower=(opts.lower!=null)?opts.lower:def.lower; var unit=opts.unit||''; var money=opts.money;
+  var label=opts.label||t(def.label,def.labelEn);
+  var st=opts.forceStatus||_meetStatus(key, act, tgt, lower);
+  var col=_meetStatColor(st), tint=_meetStatTint(st);
+  var fmtV=function(v){ if(money) return (typeof fmtUSD2==='function')?fmtUSD2(v):('$'+(Math.round(v*100)/100)); return (Math.round(v*10)/10)+unit; };
+  var rate=(tgt>0&&act>0)?Math.round(act/tgt*100):null;
+  var pill='<span style="font-size:11px;font-weight:800;color:#fff;background:'+col+';border-radius:20px;padding:3px 11px;white-space:nowrap">'+_meetStatLabel(st)+(rate!=null?' '+rate+'%':'')+'</span>';
+  var h='<div style="display:flex;align-items:center;gap:10px;background:'+tint+';border:1px solid '+(st==='miss'?'var(--red)':(st==='warn'?'var(--yellow)':'var(--border)'))+';border-radius:10px;padding:9px 11px;margin-top:6px">'
+    +'<div style="width:32px;height:32px;border-radius:9px;background:'+col+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti '+def.icon+'" style="color:#fff;font-size:17px"></i></div>'
+    +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;color:var(--tm)">'+label+'</div>'
+    +'<div style="line-height:1.15"><span style="font-size:17px;font-weight:800;color:'+col+'">'+(act>0?fmtV(act):'—')+'</span><span style="font-size:10.5px;color:var(--muted)"> / '+t('目標','Tgt')+' '+(tgt>0?fmtV(tgt):'—')+'</span></div></div>'
+    +pill+'</div>';
+  if(st==='miss') h+=_meetInputBlock(storeId, ym, {key:key}, true);
   return h;
 }
-/* 月初レビュー用: 今年の月別 目標/実績/達成率 一覧（議事録ライク） */
-function _meetYearTrend(storeId, y){
-  var yT=0, yA=0, rows='';
-  var curOff=0;
-  for(var m=1;m<=12;m++){
-    var ym=y+'-'+String(m).padStart(2,'0');
-    var off=(typeof _ymToOffset==='function')?_ymToOffset(ym):0;
-    var tgt=(typeof minutesMonthlySales==='function')?(minutesMonthlySales(storeId,m)||0):0;
-    var act=0; if(off<=0){ var ms=monthStats(storeId, off)||{}; act=ms.sales||0; }
-    yT+=tgt; if(off<=0) yA+=act;
-    var rate=(tgt>0 && act>0)?Math.round(act/tgt*100):null;
-    var future=(off>0);
-    var rc = future?'var(--muted)':(rate==null?'var(--muted)':(rate>=100?'var(--green)':rate>=90?'var(--yellow)':'var(--red)'));
-    var chip = future?'—':(rate==null?'—':rate+'%');
-    rows+='<div style="display:flex;align-items:center;gap:6px;padding:5px 2px;border-top:1px solid var(--border);font-size:11.5px'+(off===0?';background:rgba(43,121,208,.06)':'')+'">'
-      +'<span style="width:30px;font-weight:700;color:'+(off===0?'var(--accent)':'var(--muted)')+'">'+m+t('月','')+'</span>'
-      +'<span style="flex:1;text-align:right;color:var(--muted)">'+(tgt>0?fmtK(tgt):'—')+'</span>'
-      +'<span style="flex:1;text-align:right;font-weight:700;color:'+(future?'var(--muted)':'var(--tm)')+'">'+(off<=0&&act>0?fmtK(act):(future?'':'—'))+'</span>'
-      +'<span style="width:52px;text-align:right;font-weight:800;color:'+rc+'">'+chip+'</span></div>';
-  }
-  var yr=(yT>0&&yA>0)?Math.round(yA/yT*100):null;
-  var header='<div style="display:flex;align-items:center;gap:6px;padding:4px 2px;font-size:10px;color:var(--muted);font-weight:700">'
-    +'<span style="width:30px"></span><span style="flex:1;text-align:right">'+t('目標','Target')+'</span><span style="flex:1;text-align:right">'+t('実績','Actual')+'</span><span style="width:52px;text-align:right">'+t('達成率','Rate')+'</span></div>';
-  var total='<div style="display:flex;align-items:center;gap:6px;padding:6px 2px;border-top:2px solid var(--border);font-size:12px;font-weight:800">'
-    +'<span style="width:30px">'+t('年計','YTD')+'</span>'
-    +'<span style="flex:1;text-align:right;color:var(--muted)">'+fmtK(yT)+'</span>'
-    +'<span style="flex:1;text-align:right">'+fmtK(yA)+'</span>'
-    +'<span style="width:52px;text-align:right;color:'+(yr==null?'var(--muted)':(yr>=100?'var(--green)':yr>=90?'var(--yellow)':'var(--red)'))+'">'+(yr==null?'—':yr+'%')+'</span></div>';
-  return '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:11.5px;font-weight:700;color:var(--accent2);padding:4px 0"><i class="ti ti-timeline"></i> '+t('今年の推移（月別 売上 目標／実績／達成率）',"This year's trend (monthly sales target/actual/rate)")+'</summary>'
-    +'<div style="margin-top:4px">'+header+rows+total+'</div></details>';
-}
-function _meetStoreCard(store, k, ym, isCurrent, mode){
+/* 中間MTGカード（当月・前日まで） */
+function _meetStoreCard(store, k, ym, isCurrent){
   var rows=_meetKpiRows(k);
-  var monthDays=k.monthDaysN||0;
-  var landing=null, daysPassed=0, remDays=0, reqPerDay=0, landPct=null;
+  var monthDays=k.monthDaysN||0, landing=null, daysPassed=0, remDays=0, reqPerDay=0, landPct=null;
   if(isCurrent){
     var d=(typeof bizNow==='function')?bizNow():new Date();
     daysPassed=Math.max(1, d.getDate()-1); if(daysPassed>monthDays&&monthDays>0) daysPassed=monthDays;
@@ -9155,39 +9158,69 @@ function _meetStoreCard(store, k, ym, isCurrent, mode){
     reqPerDay = remDays>0 ? Math.round(Math.max(0,(k.budget||0)-(k.sales||0))/remDays) : 0;
     landPct = (k.budget>0) ? Math.round(landing/k.budget*1000)/10 : null;
   }
-  var paceFrac = (isCurrent && mode==='mid' && monthDays>0) ? Math.min(1, daysPassed/monthDays) : 1;
-  if(paceFrac<1){ rows.forEach(function(it){ if(it.key==='guests' && it.tgt>0){ it.tgt=Math.round(it.tgt*paceFrac); it.label=it.label+t('（前日まで）','(to date)'); } }); }
-  var salesIt=rows[0];
-  var landingForJudge=(isCurrent&&mode==='mid')?landing:null;
+  var paceFrac = (isCurrent && monthDays>0) ? Math.min(1, daysPassed/monthDays) : 1;
+  if(paceFrac<1){ rows.forEach(function(it){ if(it.key==='guests' && it.tgt>0){ it.tgt=Math.round(it.tgt*paceFrac); it._paced=true; } }); }
+  var salesBase = isCurrent ? landing : (k.sales||0);
+  var salesSt=_meetStatus('sales', salesBase, k.budget, false);
   var missCount=0;
-  rows.forEach(function(it){ var j=_meetJudge(it, it.isSales?landingForJudge:null); if(j===false) missCount++; });
+  var _sts=[salesSt]; rows.slice(1).forEach(function(it){ _sts.push(_meetStatus(it.key, it.act, it.tgt, it.lower)); });
+  _sts.forEach(function(s){ if(s==='miss') missCount++; });
+  var salesCol=_meetStatColor(salesSt);
   var h='<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)
     +'<span class="tag '+(missCount===0?'tag-green':(missCount<=1?'tag-yellow':'tag-red'))+'" style="margin-left:auto">'+(missCount===0?t('全KPI達成','All met'):(missCount+t('件 未達',' missed')))+'</span></div>';
-  // 売上（主役）: 実績 大 / 予算。中間は着地・後半必要を小さく添える
-  var salesOk=_meetJudge(salesIt, landingForJudge);
-  var salesCol = salesOk===null?'var(--tm)':(salesOk?'var(--green)':'var(--red)');
-  h+='<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
-    +'<div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.03em">'+t('売上','SALES')+(isCurrent&&mode==='mid'?t('（前日まで）',' (to date)'):'')+'</div>'
-    +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:2px">'
-    +'<span style="font-size:26px;font-weight:800;color:'+salesCol+'">'+fmtK(k.sales||0)+'</span>'
-    +'<span style="font-size:12px;color:var(--muted)">/ '+t('予算','Budget')+' '+fmtK(k.budget||0)+'</span>'
-    +(salesOk!=null?'<span style="margin-left:auto;font-size:12px;font-weight:800;color:'+salesCol+'">'+(salesOk?('✓ '+t('達成','met')):(isCurrent&&mode==='mid'?t('未達ペース','off pace'):t('未達','missed')))+'</span>':'')
-    +'</div>';
-  if(isCurrent && mode==='mid'){
-    var landCol = landPct==null?'var(--muted)':(landPct>=100?'var(--green)':landPct>=97?'var(--yellow)':'var(--red)');
-    h+='<div style="font-size:9.5px;color:var(--muted);margin-top:5px;line-height:1.5">'
-      +'<i class="ti ti-plane-arrival"></i> '+t('着地予測','Proj')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(0)+'%）':'')
-      +'　·　'+t('後半 必要','Rest need')+' <b>'+fmtK(reqPerDay)+t('/日','/d')+'</b>×'+remDays+t('日','d')+'</div>';
+  // 売上ヒーロー
+  h+='<div style="background:'+_meetStatTint(salesSt)+';border:1px solid '+(salesSt==='miss'?'var(--red)':'var(--border)')+';border-radius:11px;padding:11px 13px;margin-bottom:2px">'
+    +'<div style="display:flex;align-items:center;gap:8px"><i class="ti ti-trending-up" style="color:'+salesCol+';font-size:16px"></i><span style="font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.03em">'+t('売上','SALES')+(isCurrent?t('（前日まで）',' (to date)'):'')+'</span>'
+    +'<span style="margin-left:auto;font-size:12px;font-weight:800;color:#fff;background:'+salesCol+';border-radius:20px;padding:3px 12px">'+_meetStatLabel(salesSt)+(landPct!=null&&isCurrent?'':'')+'</span></div>'
+    +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:6px"><span style="font-size:27px;font-weight:800;color:'+salesCol+'">'+fmtK(k.sales||0)+'</span><span style="font-size:12px;color:var(--muted)">/ '+t('予算','Budget')+' '+fmtK(k.budget||0)+'</span></div>';
+  if(isCurrent){
+    var landCol=_meetStatColor(_meetStatus('sales', landing, k.budget, false));
+    h+='<div style="font-size:9.5px;color:var(--muted);margin-top:5px;line-height:1.5"><i class="ti ti-plane-arrival"></i> '+t('着地予測','Proj')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(0)+'%）':'')+'　·　'+t('後半 必要','Rest need')+' <b>'+fmtK(reqPerDay)+t('/日','/d')+'</b>×'+remDays+t('日','d')+'</div>';
   }
   h+='</div>';
-  if(salesOk===false){ h+=_meetInputBlock(store.id, ym, salesIt, true); }
-  // その他KPI（目標vs実績・主役=実績）
-  rows.slice(1).forEach(function(it){
-    h+=_meetRow(store.id, ym, it.key, it.label, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower});
-  });
-  // 月初は今年の推移も
-  if(mode==='start'){ h+=_meetYearTrend(store.id, (ym.split('-')[0])|0); }
+  if(salesSt==='miss') h+=_meetInputBlock(store.id, ym, {key:'sales'}, true);
+  rows.slice(1).forEach(function(it){ h+=_meetKpiTile(store.id, ym, it.key, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
   return h;
+}
+/* 月初MTG: 縦=月 × 横=KPI の年間マトリクス（確定値・目標/実績/達成率） */
+function _meetYearMatrix(store, y){
+  var isB=(typeof guestCountType==='function' && guestCountType(store.id)==='bowls');
+  var isToto=(typeof isTotoyaStore==='function' && isTotoyaStore(store.id));
+  var isDrink=(typeof isDrinkRateStore==='function' && isDrinkRateStore(store.id));
+  var COLS=[
+    {key:'sales',  a:function(m){return m.sales;},  tg:function(m){return m.budget;},       f:function(v){return fmtK(v);}, lower:false},
+    {key:'guests', a:function(m){return m.guests;}, tg:function(m){return m.guestBudget;},  f:function(v){return Math.round(v)+(isB?'':'');}, lower:false},
+    {key:'ppa',    a:function(m){return m.ppa;},    tg:function(m){return m.ppaBudget;},     f:function(v){return '$'+(Math.round(v*100)/100);}, lower:false},
+    {key:'repeat', a:function(m){return m.repeatRate;}, tg:function(m){return m.repeatTgt;},  f:function(v){return (Math.round(v*10)/10)+'%';}, lower:false},
+    {key:'fc',     a:function(m){return m.fcRate;}, tg:function(m){return m.fcBudgetRate;},   f:function(v){return (Math.round(v*10)/10)+'%';}, lower:true},
+    {key:'labor',  a:function(m){return m.laborRate;}, tg:function(m){return m.laborBudgetRate;}, f:function(v){return (Math.round(v*10)/10)+'%';}, lower:true}
+  ];
+  if(isToto){ COLS.push({key:'miso', a:function(m){return m.misoRate;}, tg:function(m){return m.misoTgt;}, f:function(v){return (Math.round(v*10)/10)+'%';}, lower:false});
+              COLS.push({key:'ikura', a:function(m){return m.ikuraRate;}, tg:function(m){return m.ikuraTgt;}, f:function(v){return (Math.round(v*10)/10)+'%';}, lower:false}); }
+  if(isDrink){ COLS.push({key:'drink', a:function(m){return m.drinkRate;}, tg:function(m){return m.drinkTgt;}, f:function(v){return (Math.round(v*10)/10)+'%';}, lower:false}); }
+  var stickyTd='position:sticky;left:0;background:var(--surface);z-index:1;box-shadow:2px 0 0 var(--border)';
+  var th='<th style="'+stickyTd+';padding:6px 8px;text-align:left;font-size:10px;color:var(--muted)">'+t('月','Mo')+'</th>';
+  COLS.forEach(function(c){ var d=_meetKpiDef(c.key); th+='<th style="padding:6px 8px;text-align:center;font-size:10px;color:var(--muted);white-space:nowrap"><i class="ti '+d.icon+'"></i> '+t(d.label,d.labelEn)+'</th>'; });
+  var body='';
+  for(var mo=1;mo<=12;mo++){
+    var ym=y+'-'+String(mo).padStart(2,'0');
+    var off=(typeof _ymToOffset==='function')?_ymToOffset(ym):0;
+    var km=null; if(off<=0){ try{ km=keyKpiStats([store], daysOfYm(ym)); }catch(e){ km=null; } }
+    var isCurRow=(off===0);
+    body+='<tr>'+'<td style="'+stickyTd+(isCurRow?';border-left:3px solid var(--accent)':'')+';padding:6px 8px;font-weight:700;font-size:11.5px;color:'+(isCurRow?'var(--accent)':'var(--tm)')+'">'+mo+t('月','')+(isCurRow?' <span style="font-size:8px">'+t('進行中','WIP')+'</span>':'')+'</td>';
+    COLS.forEach(function(c){
+      if(!km){ body+='<td style="padding:6px 8px;text-align:center;color:var(--border)">—</td>'; return; }
+      var a=c.a(km)||0, tg=c.tg(km)||0; var st=_meetStatus(c.key, a, tg, c.lower); var col=_meetStatColor(st);
+      var rate=(tg>0&&a>0)?Math.round(a/tg*100):null;
+      body+='<td style="padding:5px 8px;text-align:center;background:'+_meetStatTint(st)+';white-space:nowrap">'
+        +'<div style="font-size:12px;font-weight:800;color:'+col+'">'+(a>0?c.f(a):'—')+'</div>'
+        +'<div style="font-size:8.5px;color:var(--muted)">'+(rate!=null?rate+'%':'')+'</div></td>';
+    });
+    body+='</tr>';
+  }
+  return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">'+y+t('年 KPI推移','KPI trend')+'</span></div>'
+    +'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="border-collapse:collapse;min-width:100%"><thead><tr>'+th+'</tr></thead><tbody>'+body+'</tbody></table></div>'
+    +'<div style="font-size:9px;color:var(--muted);margin-top:6px">'+t('セル＝実績（下段＝達成率）。緑=達成 / 黄=注意 / 赤=未達（しきい値設定に基づく）。横スクロールで全KPI。','Cell = actual (rate below). Green=met / Yellow=watch / Red=miss (per thresholds). Scroll right for all KPIs.')+'</div></div>';
 }
 function renderMeetingReview(){
   var ym0=budgetYM(); var ym=ym0.y+'-'+String(ym0.m).padStart(2,'0');
@@ -9197,47 +9230,49 @@ function renderMeetingReview(){
   var html='';
   var _mdays=(new Date(ym0.y, ym0.m, 0)).getDate();
   var _dp=0; if(isCurrent){ var _dn=(typeof bizNow==='function')?bizNow():new Date(); _dp=Math.max(1,_dn.getDate()-1); if(_dp>_mdays)_dp=_mdays; }
+  // 月バナー
   html+='<div style="background:var(--accent);color:#fff;border-radius:12px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px">'
     +'<div><div style="font-size:22px;font-weight:800;line-height:1.1">'+ym0.y+t('年','')+ym0.m+t('月','')+'</div>'
-    +'<div style="font-size:11px;opacity:.9;margin-top:2px">'+(mode==='mid'?(t('中間MTG','Mid-month MTG')+(isCurrent?('・'+t('前日まで','through')+' '+_dp+'/'+_mdays+t('日','d')):'・'+t('確定','final'))):(t('月初MTG','Month-start MTG')+'・'+t('月次レビュー','monthly review')))+'</div></div>'
+    +'<div style="font-size:11px;opacity:.9;margin-top:2px">'+(mode==='mid'?(t('中間MTG','Mid-month')+(isCurrent?('・'+t('前日まで','through')+' '+_dp+'/'+_mdays+t('日','d')):'・'+t('確定','final'))):(t('月初MTG','Month-start')+'・'+t('年間レビュー','year review')))+'</div></div>'
     +'<i class="ti '+(mode==='mid'?'ti-run':'ti-calendar-check')+'" style="font-size:30px;margin-left:auto;opacity:.85"></i></div>';
   // モード切替
   var btn=function(m,label,sub){ var on=(mode===m); return '<button onclick="setMeetMode(\''+m+'\')" style="flex:1;border:1px solid '+(on?'var(--accent)':'var(--border)')+';background:'+(on?'var(--accent)':'var(--surface)')+';color:'+(on?'#fff':'var(--tm)')+';border-radius:10px;padding:8px 10px;cursor:pointer;text-align:center">'
     +'<div style="font-size:13px;font-weight:800">'+label+'</div><div style="font-size:9.5px;opacity:.85;margin-top:1px">'+sub+'</div></button>'; };
-  html+='<div style="display:flex;gap:8px;margin-bottom:10px">'
-    +btn('mid', t('中間MTG','Mid-month'), t('当月進捗＋後半対策','Progress + 2nd-half plan'))
-    +btn('start', t('月初MTG','Month-start'), t('前月レビュー＋PDCA','Review + PDCA'))
+  html+='<div style="display:flex;gap:8px;margin-bottom:8px">'
+    +btn('mid', t('中間MTG','Mid-month'), t('当月進捗＋後半対策','Progress + plan'))
+    +btn('start', t('月初MTG','Month-start'), t('年間KPI推移レビュー','Yearly KPI review'))
     +'</div>';
-  html+='<div style="font-size:11px;color:var(--muted);margin:0 2px 8px;line-height:1.7"><i class="ti ti-info-circle"></i> '
-    +(mode==='mid'
-      ? t('当月の前日までの実績（＝月次進捗と同じ数値）。着地予測と「後半で達成に必要な日商」を提示。未達KPIに店長が理由・対策を入力します。','Current-month actuals through yesterday (same as Monthly). Shows landing projection and required daily sales for the rest of the month. Managers fill reason/action on missed KPIs.')
-      : t('選択した月の確定実績で目標との差を振り返り。未達KPIに理由・対策を入力＝翌月の「前回対策」に自動表示（PDCA）。','Review the selected month vs targets. Reason/action on misses carries into next month as "Prev action" (PDCA).'))
-    +'　'+t('数値・色は月次進捗／Qコミットと共通。','Figures and colors match Monthly / Q Commit.')
-    +'</div>';
-  html+=bStoreChips(_budgetStore, 'setBudgetStore');
-  html+='<div style="display:flex;justify-content:flex-end;margin:2px 0 8px"><button class="btn btn-secondary btn-sm" onclick="setBudgetTab(\'quarter\')"><i class="ti ti-flag"></i> '+t('Qコミットビューへ','Open Q Commit')+'</button></div>';
-  // 各店のkeyKpiStatsを1回だけ計算
+  html+='<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">'+bStoreChips(_budgetStore, 'setBudgetStore')+'</div>';
+  html+='<div style="display:flex;justify-content:flex-end;gap:6px;margin:0 0 8px">'
+    +((typeof qbCanEdit==='function'&&qbCanEdit())?'<button class="btn btn-secondary btn-sm" onclick="openMeetThresholdModal()"><i class="ti ti-adjustments"></i> '+t('しきい値設定','Thresholds')+'</button>':'')
+    +'<button class="btn btn-secondary btn-sm" onclick="setBudgetTab(\'quarter\')"><i class="ti ti-flag"></i> '+t('Qコミットへ','Q Commit')+'</button></div>';
   var days=daysOfYm(ym);
   var ks=stores.map(function(s){ var k; try{ k=keyKpiStats([s], days); }catch(e){ k=null; } return {s:s, k:k}; }).filter(function(x){return x.k;});
-  // 全社サマリー
+  if(!ks.length){ html+='<div class="card" style="text-align:center;padding:18px;color:var(--muted)">'+t('対象店舗がありません','No stores in scope')+'</div>'; return html; }
+  // 全社サマリー（未達件数＝しきい値ベース）
   var totSales=0, totBud=0, totMiss=0, totKpi=0, storeMiss=0;
   ks.forEach(function(x){ var k=x.k; totSales+=k.sales||0; totBud+=k.budget||0;
-    var rows=_meetKpiRows(k); var lj=null; if(isCurrent&&mode==='mid'){ var mdn=k.monthDaysN||0; var dp=Math.max(1,((typeof bizNow==='function')?bizNow():new Date()).getDate()-1); if(dp>mdn&&mdn>0)dp=mdn; lj=dp>0?Math.round((k.sales||0)/dp*mdn):(k.sales||0); }
-    var sm=0; rows.forEach(function(it){ var j=_meetJudge(it, it.isSales?lj:null); if(j!=null){ totKpi++; if(j===false){ totMiss++; sm++; } } });
+    var rows=_meetKpiRows(k); var mdn=k.monthDaysN||0; var dp=Math.max(1,((typeof bizNow==='function')?bizNow():new Date()).getDate()-1); if(dp>mdn&&mdn>0)dp=mdn;
+    var lj=(isCurrent&&mode==='mid'&&dp>0)?Math.round((k.sales||0)/dp*mdn):(k.sales||0);
+    var sm=0;
+    rows.forEach(function(it){ var st;
+      if(it.isSales){ st=_meetStatus('sales', lj, k.budget, false); }
+      else { var tgt=it.tgt; if(it.key==='guests' && isCurrent && mode==='mid' && mdn>0 && tgt>0) tgt=Math.round(tgt*Math.min(1,dp/mdn)); st=_meetStatus(it.key, it.act, tgt, it.lower); }
+      if(st!=='none'){ totKpi++; if(st==='miss'){ totMiss++; sm++; } }
+    });
     if(sm>0) storeMiss++;
   });
   var achvAll = totBud>0?Math.round(totSales/totBud*1000)/10:0;
   var sumCol = totMiss===0?'var(--green)':(storeMiss<=1?'var(--yellow)':'var(--red)');
   html+='<div class="card" style="border:1.5px solid '+sumCol+'"><div class="card-title"><i class="ti ti-clipboard-check" style="color:'+sumCol+'"></i>'
-    +(mode==='mid'?t('全社 当月サマリー','Company — this month'):t('全社 レビューサマリー','Company — review'))
-    +'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+ym+'</span></div>'
-    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">'
-    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('売上 実績/予算','Sales act/bud')+'</div><div style="font-size:16px;font-weight:800;color:'+(achvAll>=100?'var(--green)':achvAll>=95?'var(--yellow)':'var(--red)')+'">'+fmtK(totSales)+'</div><div style="font-size:9px;color:var(--muted)">/ '+fmtK(totBud)+'（'+achvAll.toFixed(1)+'%）</div></div>'
+    +(mode==='mid'?t('全社 当月サマリー','Company — this month'):t('全社サマリー','Company summary'))+'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+ym+'</span></div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:8px">'
+    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('売上 実績/予算','Sales act/bud')+'</div><div style="font-size:16px;font-weight:800;color:'+_meetStatColor(_meetStatus('sales',totSales,totBud,false))+'">'+fmtK(totSales)+'</div><div style="font-size:9px;color:var(--muted)">/ '+fmtK(totBud)+'（'+achvAll.toFixed(1)+'%）</div></div>'
     +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達 KPI','Missed KPIs')+'</div><div style="font-size:16px;font-weight:800;color:'+(totMiss===0?'var(--green)':'var(--red)')+'">'+totMiss+' / '+totKpi+'</div><div style="font-size:9px;color:var(--muted)">'+t('要対策','need action')+'</div></div>'
     +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達のある店','Stores w/ miss')+'</div><div style="font-size:16px;font-weight:800;color:'+(storeMiss===0?'var(--green)':'var(--yellow)')+'">'+storeMiss+' / '+ks.length+'</div><div style="font-size:9px;color:var(--muted)">'+t('店舗','stores')+'</div></div>'
     +'</div></div>';
-  if(!ks.length){ html+='<div class="card" style="text-align:center;padding:18px;color:var(--muted)">'+t('対象店舗がありません','No stores in scope')+'</div>'; return html; }
-  ks.forEach(function(x){ html+=_meetStoreCard(x.s, x.k, ym, isCurrent, mode); });
+  if(mode==='start'){ ks.forEach(function(x){ html+=_meetYearMatrix(x.s, ym0.y); }); }
+  else { ks.forEach(function(x){ html+=_meetStoreCard(x.s, x.k, ym, isCurrent); }); }
   return html;
 }
 function renderAnnualPlan(){
@@ -15859,7 +15894,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '569';
+const APP_VERSION = '570';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
