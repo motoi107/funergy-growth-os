@@ -4304,7 +4304,13 @@ async function pushOpKeyNow(key){
 ============================================================ */
 var OP_MERGE = {
   notifications: { merge: mergeNotifs,    covers: _coversNotifs,   after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); var p=document.getElementById('notif-panel'); if(p&&p.style.display==='block'&&typeof renderNotifPanel==='function') renderNotifPanel(); }catch(e){} } },
-  approvals:     { merge: mergeApprovals, covers: _coversApprovals, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } }
+  approvals:     { merge: mergeApprovals, covers: _coversApprovals, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } },
+  skill_requests:{ merge: mergeSkillReq,  covers: _coversSkillReq, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } },
+  skill_history:  { merge: mergeAppendLog, covers: _coversLog },
+  lss_history:    { merge: mergeAppendLog, covers: _coversLog },
+  tip_history:    { merge: mergeAppendLog, covers: _coversLog },
+  career_history: { merge: mergeAppendLog, covers: _coversLog },
+  eval_history:   { merge: mergeAppendLog, covers: _coversLog }
 };
 /* approvals マージ：idで和集合／signoffs(複数承認者)は和集合／決定済み(status!=='pending')はpendingに勝つ／両方決定なら新しい方→local優先 */
 function _apDecided(a){ return !!(a && a.status!=null && a.status!=='pending'); }
@@ -4381,6 +4387,50 @@ function _coversNotifs(check, want){
 }
 
 /* mergeableキーの書き込み：クラウド最新とマージ→ローカル収束→クラウド反映（最大3回で自己修復） */
+/* skill_requests マージ：idで和集合／レビュー済み(status!=='申請中')は申請中に勝つ／両レビュー済みはlocal優先。物理削除なしのためtombstone不要 */
+function _srPending(a){ return !a || a.status==null || a.status==='申請中'; }
+function mergeSkillReq(cloudArr, localArr){
+  var by={}, order=[];
+  function put(item, isLocal){
+    if(!item || item.id==null) return;
+    var id=item.id;
+    if(!by[id]){ by[id]=item; order.push(id); return; }
+    var cur=by[id], win;
+    if(_srPending(cur)!==_srPending(item)) win = _srPending(cur)?item:cur; // レビュー済みを優先
+    else win = isLocal?item:cur;
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+function _coversSkillReq(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x&&x.id!=null) have[x.id]=x; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(!w||w.id==null) continue;
+    var h=have[w.id]; if(!h) return false;
+    if(w.status && w.status!=='申請中' && (h.status==null || h.status==='申請中')) return false;
+  }
+  return true;
+}
+/* 追記専用ログの汎用マージ：全項目署名(JSON)で和集合。別イベントは必ず残り、完全同一のみ統合。
+   id を持たない履歴系(skill_history/lss_history/tip_history/career_history/eval_history)向け。
+   物理削除・上限slice・レコード改変が無いキーにのみ使うこと。 */
+function _logSig(x){ try{ return JSON.stringify(x); }catch(e){ return String(x); } }
+function mergeAppendLog(cloudArr, localArr){
+  var seen={}, out=[];
+  function add(x){ if(x==null) return; var k=_logSig(x); if(!seen[k]){ seen[k]=1; out.push(x); } }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(add);
+  (Array.isArray(localArr)?localArr:[]).forEach(add);
+  if(out.length && out.every(function(x){return x&&x.ts!=null;})) out.sort(function(a,b){ return a.ts-b.ts; });
+  return out;
+}
+function _coversLog(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x!=null) have[_logSig(x)]=1; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(w==null) continue; if(!have[_logSig(w)]) return false; }
+  return true;
+}
 function opMergePush(key, localVal){
   var def = OP_MERGE[key]; if(!def) return Promise.resolve();
   var run=function(){ return (async function(){
@@ -15238,7 +15288,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '550';
+const APP_VERSION = '552';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
