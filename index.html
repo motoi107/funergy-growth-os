@@ -15410,7 +15410,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '558';
+const APP_VERSION = '559';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -29167,8 +29167,9 @@ function overrideApproveAll(id){
   approveItem(id,'approved');
 }
 function rejectApprovalItem(id){
-  if(!confirm('この申請を却下しますか？')) return;
-  approveItem(id,'rejected'); /* 申請者へ却下通知（approveItem内） */
+  openInputModal({title:t('申請の却下','Reject request'), label:t('却下理由（申請者に通知されます）','Rejection reason (sent to applicant)'), required:true, placeholder:t('例: 現時点では基準に達していません。練習してから再申請してください。','e.g. Criteria not yet met; please practice and re-apply.'), okLabel:t('却下する','Reject'), okClass:'btn-danger'}, function(reason){
+    approveItem(id,'rejected', reason);
+  });
 }
 /* ===== 予算レビュー: 考え方（客数×単価 L/D/TO）＋日別一覧を一目で。読み取り専用＝保存に影響なし ===== */
 function openBudgetReview(storeId, submitMode){
@@ -29280,7 +29281,17 @@ function renderApproval() {
         var isMgr = (curRole==='gm'||curRole==='ceo');
         html += '<div class="approval-item"><div class="approval-header"><div><div class="approval-title"><i class="ti '+(typeIcon[a.type]||'ti-circle')+'" style="font-size:12px;color:var(--muted)"></i> '+escapeHtml(a.title||'')+'</div>'
           +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+'</div></div></div>';
-        if (a.type==='スキル') { var _sr = a.ref ? getSkillRequests().find(function(x){return x.id===a.ref;}) : null; if(_sr){ var _sst=_sr.store||((getEmployees().find(function(x){return x.name===_sr.name;})||{}).store)||''; var _fromLv=((getEmpSkillsStore(_sr.name,_sst)||{})[_sr.position]||{}).level||0; html += '<div style="font-size:13px;font-weight:700;margin:2px 0 4px"><span style="color:var(--muted)">'+t('現在','Current')+' Lv'+_fromLv+'</span> <i class="ti ti-arrow-right" style="font-size:12px;color:var(--accent2)"></i> <span style="color:var(--accent2)">'+t('申請','Requested')+' Lv'+(_sr.level)+'</span></div>'; } }
+        if (a.type==='スキル') {
+          var _srs=getSkillRequests();
+          var _sr = a.ref ? _srs.find(function(x){return x.id===a.ref;}) : null;
+          if(!_sr){ var _pm=String(a.title||'').match(/\(([^)]+)\)\s*$/); var _pos=_pm?_pm[1]:null; var _cs=_srs.filter(function(x){return x.name===a.from && x.status==='申請中' && (!_pos||x.position===_pos);}); if(_cs.length===1) _sr=_cs[0]; }
+          if(_sr){
+            var _sst=_sr.store||((getEmployees().find(function(x){return x.name===_sr.name;})||{}).store)||STORES[0].id;
+            var _fromLv=((getEmpSkillsStore(_sr.name,_sst)||{})[_sr.position]||{}).level||0;
+            html += '<div style="font-size:13px;font-weight:700;margin:2px 0 4px">'+(_sr.position?'<span style="color:var(--muted);font-weight:600">'+escapeHtml(_sr.position)+'</span>　':'')+'<span style="color:var(--muted)">'+t('現在','Current')+' Lv'+_fromLv+'</span> <i class="ti ti-arrow-right" style="font-size:12px;color:var(--accent2)"></i> <span style="color:var(--accent2)">'+t('申請','Requested')+' Lv'+(_sr.level)+'</span></div>';
+            if(_sr.selfComment) html += '<div style="font-size:11px;color:var(--muted);margin:0 0 4px;line-height:1.6"><b>'+t('自己評価','Self-assessment')+'：</b>'+escapeHtml(_sr.selfComment)+'</div>';
+          }
+        }
         html += _approvalChainHtml(a);
         if (isBudget) {
           var _rb = (getBudgets().find(function(x){return x.storeId===a.ref;})||{}).rationale;
@@ -29332,10 +29343,11 @@ function renderApproval() {
   return html;
 }
 
-function approveItem(id, status) {
+function approveItem(id, status, reason) {
   var approvals = ls('approvals', []);
   var a = approvals.find(a=>a.id===id);
   if (a) {
+    if(status==='rejected' && reason) a.rejectReason=reason;
     a.status = status; lsSet('approvals', approvals);
     if (a.type==='退職' && a.ref) {
       try {
@@ -29373,16 +29385,18 @@ function approveItem(id, status) {
             setEmpSkillStore(_sr.name, _sid, _sr.position, {level:_lv, status:'承認', selfComment:_sr.selfComment, mgrComment:_sr.mgrComment||'', nextTask:_sr.nextTask||'', date:_sr.date, evaluator:_by});
             if ((_prev.status==='承認'?_prev.level:0)!==_lv) addSkillHistory(_sr.name, _sid, _sr.position, (_prev.status==='承認'?_prev.level:0), _lv, _by);
           } else {
-            _sr.status='差戻し'; _sr.reviewer=_by; setSkillRequests(_sreqs);
+            _sr.status='差戻し'; _sr.reviewer=_by; if(reason) _sr.mgrComment=reason; setSkillRequests(_sreqs);
+            var _prevR = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {};
+            setEmpSkillStore(_sr.name, _sid, _sr.position, Object.assign({}, _prevR, {status:'差戻し', mgrComment:(reason||_sr.mgrComment||'')}));
           }
         }
       } catch(_e){}
     }
-    if (a.type==='休暇' && a.ref) { try{ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status=(status==='approved'?'承認':'却下'); _v.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _v.approvedAt=nowJP(); saveVacations(_vs); } }catch(_e){} }
-    if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(status==='approved'?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=nowJP(); saveMileageReqs(_ms); } }catch(_e){} }
-    if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(status==='approved'?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=nowJP(); saveExpenseReqs(_es); } }catch(_e){} }
-    if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(status==='approved'?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=nowJP(); saveReimbursements(_rbs); } }catch(_e){} }
-    try{ addNotif({ type:(status==='approved'?'approved':'reject'), title:(a.type||'申請')+(status==='approved'?' が承認されました':' が却下されました'), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
+    if (a.type==='休暇' && a.ref) { try{ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status=(status==='approved'?'承認':'却下'); _v.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _v.approvedAt=nowJP(); if(status!=='approved'&&reason) _v.rejectReason=reason; saveVacations(_vs); } }catch(_e){} }
+    if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(status==='approved'?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=nowJP(); if(status!=='approved'&&reason) _m.rejectReason=reason; saveMileageReqs(_ms); } }catch(_e){} }
+    if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(status==='approved'?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=nowJP(); if(status!=='approved'&&reason) _ex.rejectReason=reason; saveExpenseReqs(_es); } }catch(_e){} }
+    if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(status==='approved'?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=nowJP(); if(status!=='approved'&&reason) _rb.rejectReason=reason; saveReimbursements(_rbs); } }catch(_e){} }
+    try{ addNotif({ type:(status==='approved'?'approved':'reject'), title:(a.type||'申請')+(status==='approved'?' が承認されました':' が却下されました'), text:((a.title||'')+((status!=='approved'&&reason)?('　'+t('理由','Reason')+'：'+reason):'')).slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
     renderPage('approval'); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
   }
 }
