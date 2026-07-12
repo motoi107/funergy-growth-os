@@ -7313,7 +7313,7 @@ function guestAvgSub(k){
   if(op<=0 && md<=0) return null;
   function av(v,d){ return (v!=null && d>0) ? Math.round(v/d*10)/10 : null; }
   function num(x){ return x==null?'—':String(x).replace(/\.0$/,''); }
-  function pair(a,b){ return num(a)+'/'+num(b); }
+  function segCol(a,b){ if(a==null) return 'var(--muted)'; if(b==null||b<=0) return 'var(--tm)'; return a>=b?'var(--green)':(a>=b*0.9?'var(--yellow)':'var(--red)'); }
   var La=av(k.lunchGuests,op), Lb=av(k.lunchGuestBud,md);
   var Da=av(k.dinnerGuests,op), Db=av(k.dinnerGuestBud,md);
   var Ta=av(k.toCount,op), Tb=av(k.takeoutBud,md);
@@ -7323,12 +7323,21 @@ function guestAvgSub(k){
   if(k.lunchGuestBud!=null||k.dinnerGuestBud!=null||k.takeoutBud!=null) totBud=(k.lunchGuestBud||0)+(k.dinnerGuestBud||0)+(k.takeoutBud||0);
   else if(k.guestBudget!=null) totBud=k.guestBudget;
   var Cb=av(totBud,md);
-  var parts=[];
-  if((k.lunchGuests||0)>0 || k.lunchGuestBud!=null) parts.push('L '+pair(La,Lb));
-  if((k.dinnerGuests||0)>0 || k.dinnerGuestBud!=null) parts.push('D '+pair(Da,Db));
-  if((k.toCount||0)>0 || k.takeoutBud!=null) parts.push('TO '+pair(Ta,Tb));
-  parts.push(t('計','Tot')+' '+pair(combA,Cb));
-  return '<span style="color:var(--muted)">'+t('日割 実/予','Per-day A/B')+'</span> '+parts.join('・');
+  function chip(lab,a,b,accent){
+    var col=segCol(a,b);
+    return '<div style="flex:1 1 0;min-width:46px;background:var(--surface2);border:'+(accent?'1px solid var(--accent2)':'1px solid transparent')+';border-radius:7px;padding:4px 3px 5px;text-align:center">'
+      +'<div style="font-size:8.5px;font-weight:800;letter-spacing:.04em;color:'+(accent?'var(--accent2)':'var(--muted)')+'">'+lab+'</div>'
+      +'<div style="font-size:15px;font-weight:800;line-height:1.1;color:'+col+'">'+num(a)+'</div>'
+      +'<div style="font-size:9px;color:var(--muted);line-height:1.15">'+t('予','B')+' '+num(b)+'</div></div>';
+  }
+  var chips=[];
+  if((k.lunchGuests||0)>0 || k.lunchGuestBud!=null) chips.push(chip('L',La,Lb,false));
+  if((k.dinnerGuests||0)>0 || k.dinnerGuestBud!=null) chips.push(chip('D',Da,Db,false));
+  if((k.toCount||0)>0 || k.takeoutBud!=null) chips.push(chip('TO',Ta,Tb,false));
+  chips.push(chip(t('計','Tot'),combA,Cb,true));
+  return '<div style="margin-top:5px">'
+    +'<div style="font-size:9px;color:var(--muted);letter-spacing:.03em;margin-bottom:3px"><i class="ti ti-calendar-stats" style="font-size:10px"></i> '+t('日割平均（実績値／予算値）','Per-day avg (act / bud)')+'</div>'
+    +'<div style="display:flex;gap:4px">'+chips.join('')+'</div></div>';
 }
 function budgetGuestsMonthly(storeId, seg, offset){
   var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
@@ -15487,7 +15496,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '563';
+const APP_VERSION = '564';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -29369,6 +29378,7 @@ function renderApproval() {
   var approvals = ls('approvals', []);
   var pending = approvals.filter(function(a){return a.status==='pending';});
   var done = approvals.filter(function(a){return a.status!=='pending';});
+  var _skDirty=false;
   // スコープ: G3/G4=自店, G5(AM)=管轄店, GM/CEO/経理=全店（本部案件含む）
   if (['gm','ceo','office'].indexOf(curRole)<0) {
     var _vis = getVisibleStores(); var _vId=_vis.map(function(x){return x.id;}), _vNm=_vis.map(function(x){return x.name;});
@@ -29404,22 +29414,38 @@ function renderApproval() {
           var _reqLv = (a.reqLevel!=null) ? a.reqLevel : null;
           var _fromLv = (a.fromLevel!=null) ? a.fromLevel : null;
           var _self = a.selfComment || '';
-          if(_reqLv==null || !_self || _fromLv==null){
+          // 埋め込みが無い旧データは skill_request / skill_history から解決し、案件へ焼き直して安定化（次回以降・同期先でも確実に表示）
+          if(_reqLv==null || _fromLv==null || !_pos || !_self){
             var _srs=getSkillRequests();
             var _sr = a.ref ? _srs.find(function(x){return x.id===a.ref;}) : null;
             if(!_sr){ var _cs=_srs.filter(function(x){return x.name===a.from && (!_pos||x.position===_pos);}); if(_cs.length){ _cs.sort(function(p,q){return String(q.date||'').localeCompare(String(p.date||''));}); _sr=_cs[0]; } }
             if(_sr){
-              if(_reqLv==null) _reqLv=_sr.level;
+              if(_reqLv==null && _sr.level!=null) _reqLv=parseInt(_sr.level);
               if(!_pos) _pos=_sr.position||'';
               if(!_self) _self=_sr.selfComment||'';
-              if(_fromLv==null){ var _sst=_sr.store||((getEmployees().find(function(x){return x.name===_sr.name;})||{}).store)||STORES[0].id; _fromLv=((getEmpSkillsStore(_sr.name,_sst)||{})[_sr.position]||{}).level||0; }
+              if(_fromLv==null){
+                var _sst=_sr.store||((getEmployees().find(function(x){return x.name===_sr.name;})||{}).store)||STORES[0].id;
+                var _curSk=((getEmpSkillsStore(_sr.name,_sst)||{})[_sr.position]||{});
+                _fromLv=(_curSk.level!=null?_curSk.level:0);
+              }
             }
+            if(_fromLv==null){ var _hh=ls('skill_history',[]).filter(function(x){return x.name===a.from && (!_pos||x.position===_pos);}); if(_hh.length) _fromLv=_hh[_hh.length-1].fromLv; }
+            // 解決値を案件へ焼き直し（同期は last-write-wins のため _mut は更新しない＝表示補完のみ）
+            if(_reqLv!=null && a.reqLevel==null){ a.reqLevel=_reqLv; _skDirty=true; }
+            if(_fromLv!=null && a.fromLevel==null){ a.fromLevel=_fromLv; _skDirty=true; }
+            if(_pos && !a.position){ a.position=_pos; _skDirty=true; }
+            if(_self && !a.selfComment){ a.selfComment=_self; _skDirty=true; }
           }
           if(_fromLv==null) _fromLv=0;
-          if(_reqLv!=null){
-            html += '<div style="font-size:13px;font-weight:700;margin:2px 0 4px">'+(_pos?'<span style="color:var(--muted);font-weight:600">'+escapeHtml(_pos)+'</span>　':'')+'<span style="color:var(--muted)">'+t('現在','Current')+' Lv'+_fromLv+'</span> <i class="ti ti-arrow-right" style="font-size:12px;color:var(--accent2)"></i> <span style="color:var(--accent2)">'+t('申請','Requested')+' Lv'+_reqLv+'</span></div>';
-            if(_self) html += '<div style="font-size:11px;color:var(--muted);margin:0 0 4px;line-height:1.6"><b>'+t('自己評価','Self-assessment')+'：</b>'+escapeHtml(_self)+'</div>';
-          }
+          // スキル案件では常にLv行を表示（申請Lv不明時のみ「—」）
+          html += '<div style="display:flex;align-items:center;gap:8px;background:var(--surface2);border-radius:8px;padding:6px 10px;margin:4px 0 5px;flex-wrap:wrap">'
+            +(_pos?'<span style="font-size:11px;font-weight:700;color:var(--tm)">'+escapeHtml(_pos)+'</span>':'')
+            +'<span style="display:flex;align-items:center;gap:6px;margin-left:auto">'
+            +'<span style="font-size:10.5px;color:var(--muted)">'+t('現在','Now')+'</span><span style="font-size:16px;font-weight:800;color:var(--tm)">Lv'+_fromLv+'</span>'
+            +'<i class="ti ti-arrow-right" style="font-size:15px;color:var(--accent2)"></i>'
+            +'<span style="font-size:10.5px;color:var(--accent2);font-weight:700">'+t('申請','Req')+'</span><span style="font-size:16px;font-weight:800;color:var(--accent2)">Lv'+(_reqLv!=null?_reqLv:'—')+'</span>'
+            +'</span></div>';
+          if(_self) html += '<div style="font-size:11px;color:var(--muted);margin:0 0 4px;line-height:1.6"><b>'+t('自己評価','Self-assessment')+'：</b>'+escapeHtml(_self)+'</div>';
         }
         html += _approvalChainHtml(a);
         if (isBudget) {
@@ -29473,6 +29499,7 @@ function renderApproval() {
     });
     html += '</div>';
   }
+  if(_skDirty){ try{ lsSet('approvals', approvals); }catch(e){} }
   return html;
 }
 
