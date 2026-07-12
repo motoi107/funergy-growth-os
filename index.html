@@ -9709,17 +9709,17 @@ function renderBudgetSummary() {
   var lbCol = k.laborRate>0?(k.laborRate<=lbTgt?'var(--green)':k.laborRate<=lbTgt+3?'var(--yellow)':'var(--red)'):'var(--muted)';
   var ppaCol = (k.ppaBudget!=null&&k.ppa>0)?(k.ppa>=k.ppaBudget?'var(--green)':k.ppa>=k.ppaBudget*0.95?'var(--yellow)':'var(--red)'):'var(--tm)';
   var gCol = (k.guestBudget!=null&&k.guests>0)?(k.guests>=k.guestBudget?'var(--green)':k.guests>=k.guestBudget*0.9?'var(--yellow)':'var(--red)'):'var(--tm)';
-  var rCol = k.repeatRate==null?'var(--muted)':(k.repeatRate>=50?'var(--green)':k.repeatRate>=30?'var(--yellow)':'var(--red)');
+  var rCol = k.repeatRate==null?'var(--muted)':(k.repeatTgt!=null?(k.repeatRate>=k.repeatTgt?'var(--green)':k.repeatRate>=k.repeatTgt*0.9?'var(--yellow)':'var(--red)'):(k.repeatRate>=50?'var(--green)':k.repeatRate>=30?'var(--yellow)':'var(--red)'));
   var rateCol = function(v,tgt){ return tgt!=null?(v>=tgt?'var(--green)':v>=tgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)'; };
   // 売上進捗（実績÷予算・前日まで／過去月は確定値）
   var _spAct = isCur ? agg.actToToday : agg.actMonth;
   var _spBud = agg.budToToday>0 ? agg.budToToday : agg.budMonth;
   var _sp = _spBud>0 ? Math.round(_spAct/_spBud*1000)/10 : null;
   var _spCol = pctColor(_sp);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>${t('KPI 目標との差・前週比','KPI vs Target · WoW')} <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${t('目標＝承認予算から算出','Target = from approved budget')}</span></div>
+  html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>${t('KPI 目標との差・前週比','KPI vs Target · WoW')} <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${t('目標＝KPI管理／承認予算','Target = KPI mgmt / approved budget')}</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">`;
   html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''));
-  if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', '', rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString()+(k.repeatPrev!=null?'　'+t('前月','prev')+' '+k.repeatPrev.toFixed(1)+'%':''));
+  if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString()+(k.repeatPrev!=null?'　'+t('前月','prev')+' '+k.repeatPrev.toFixed(1)+'%':''));
   html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null);
   html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''));
   html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'));
@@ -10654,6 +10654,15 @@ function keyKpiStats(scopeStores, days){
   var drinkRateV = (drinkScope && tperiod) ? drinkRateForScope(scopeStores.map(function(s){return s.id;}), tperiod) : null;
   var drinkTgt=null;
   if(drinkScope){ var _dt=0,_dc=0; scopeStores.forEach(function(s){ var tg=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(s.id, ofst)||{}):{}; if(tg.drinkRate!=null){_dt+=tg.drinkRate;_dc++;} }); if(_dc) drinkTgt=Math.round(_dt/_dc*10)/10; }
+  // KPI管理で店舗別に設定した目標（明示上書きのみ）があれば、原価率/人件費率/リピート率の目標に優先採用（scope平均）
+  var _kpiFc=0,_kpiFcC=0,_kpiLb=0,_kpiLbC=0,_kpiRp=0,_kpiRpC=0;
+  scopeStores.forEach(function(s){ var ov=(typeof getStoreKpiOverride==='function')?(getStoreKpiOverride(s.id)||{}):{};
+    if(ov.foodCost!=null){ _kpiFc+=ov.foodCost; _kpiFcC++; }
+    if(ov.laborPct!=null){ _kpiLb+=ov.laborPct; _kpiLbC++; }
+    if(ov.repeatRate!=null){ _kpiRp+=ov.repeatRate; _kpiRpC++; } });
+  var kpiFcTgt=_kpiFcC?Math.round(_kpiFc/_kpiFcC*10)/10:null;
+  var kpiLbTgt=_kpiLbC?Math.round(_kpiLb/_kpiLbC*10)/10:null;
+  var kpiRpTgt=_kpiRpC?Math.round(_kpiRp/_kpiRpC*10)/10:null;
   return {
     sales:sales, budget:budget, guests:guests, food:food, labor:labor, unit: allBowls?'丼':'名',
     achieve: budget?Math.round(sales/budget*1000)/10:0,
@@ -10667,9 +10676,10 @@ function keyKpiStats(scopeStores, days){
     repeatHas: rs.has&&rs.total>0, repeat:rs.repeat, first:rs.first, sr:rs.sr, rTotal:rs.total,
     guestBudget: hasGuestBud&&guestBud>0?guestBud:null,
     ppaBudget: (hasGuestBud&&guestBud>0)?Math.round((salesBud||budget)/guestBud*100)/100:null,
-    fcBudgetRate: segSales$?Math.round(fcBud$/segSales$*1000)/10:null,
-    laborBudgetRate: segSales$?Math.round(laborBud$/segSales$*1000)/10:null,
+    fcBudgetRate: (kpiFcTgt!=null?kpiFcTgt:(segSales$?Math.round(fcBud$/segSales$*1000)/10:null)),
+    laborBudgetRate: (kpiLbTgt!=null?kpiLbTgt:(segSales$?Math.round(laborBud$/segSales$*1000)/10:null)),
     repeatPrev: (rsPrev.has&&rsPrev.total>0)?Math.round(rsPrev.repeat/rsPrev.total*1000)/10:null,
+    repeatTgt: kpiRpTgt,
     totoyaScope: totoyaScope,
     misoRate: tr.misoRate, ikuraRate: tr.ikuraRate,
     misoUp: tr.misoUp, misoAll: tr.misoAll, ikura: tr.ikura, ikuraBowls: tr.bowls,
@@ -15400,7 +15410,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '557';
+const APP_VERSION = '558';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
