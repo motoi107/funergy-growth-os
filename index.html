@@ -7296,6 +7296,40 @@ function dowSegBreakdown(dow, ym) {
 }
 /* 予実の客数予算（月合計）。区分別に客数×曜日回数を合算。
    集客数KPIの目標として使う（予実連動）。offset=0今月/-1先月 */
+function budgetTakeoutMonthly(storeId, offset){
+  var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
+  var ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  var b=getBudgetForMonth(storeId, ym); if(!b) return null;
+  var dow=getDow(b); if(!dow||!dow.takeout) return null;
+  var counts=weekdayCountsForMonth(d.getFullYear(), d.getMonth()+1);
+  var total=0, has=false;
+  for(var i=0;i<7;i++){ var cell=dow.takeout[i]||{}; var o=parseFloat(cell.orders)||0; if(o>0) has=true; total+=o*(counts[i]||0); }
+  return has?Math.round(total):null;
+}
+/* 客数/丼数の日割り平均（実績＝営業日数、予算＝当月日数）を区分別に小さく表示 */
+function guestAvgSub(k){
+  if(!k) return null;
+  var op=k.opDays||0, md=k.monthDaysN||0;
+  if(op<=0 && md<=0) return null;
+  function av(v,d){ return (v!=null && d>0) ? Math.round(v/d*10)/10 : null; }
+  function num(x){ return x==null?'—':String(x).replace(/\.0$/,''); }
+  function pair(a,b){ return num(a)+'/'+num(b); }
+  var La=av(k.lunchGuests,op), Lb=av(k.lunchGuestBud,md);
+  var Da=av(k.dinnerGuests,op), Db=av(k.dinnerGuestBud,md);
+  var Ta=av(k.toCount,op), Tb=av(k.takeoutBud,md);
+  var segActSum=(k.lunchGuests||0)+(k.dinnerGuests||0)+(k.toCount||0);
+  var combA=av(segActSum>0?segActSum:(k.guests||0), op);
+  var totBud=null;
+  if(k.lunchGuestBud!=null||k.dinnerGuestBud!=null||k.takeoutBud!=null) totBud=(k.lunchGuestBud||0)+(k.dinnerGuestBud||0)+(k.takeoutBud||0);
+  else if(k.guestBudget!=null) totBud=k.guestBudget;
+  var Cb=av(totBud,md);
+  var parts=[];
+  if((k.lunchGuests||0)>0 || k.lunchGuestBud!=null) parts.push('L '+pair(La,Lb));
+  if((k.dinnerGuests||0)>0 || k.dinnerGuestBud!=null) parts.push('D '+pair(Da,Db));
+  if((k.toCount||0)>0 || k.takeoutBud!=null) parts.push('TO '+pair(Ta,Tb));
+  parts.push(t('計','Tot')+' '+pair(combA,Cb));
+  return '<span style="color:var(--muted)">'+t('日割 実/予','Per-day A/B')+'</span> '+parts.join('・');
+}
 function budgetGuestsMonthly(storeId, seg, offset){
   var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
   var ym = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
@@ -8914,20 +8948,20 @@ function renderQuarterBudget(){
   if(_qbStore==='ALL'){
     // 集計（全店合計の項目別）
     var T={sales:0,guests:0,salesEl:0,guestsEl:0,food:0,labor:0}, A={sales:0,guests:0,food:0,labor:0}, wFc=0,wLb=0;
-    stores.forEach(function(st){ var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q); T.sales+=t.sales;T.guests+=t.guests;T.salesEl+=t.salesEl;T.guestsEl+=t.guestsEl; A.sales+=a.sales;A.guests+=a.guests;A.food+=a.food;A.labor+=a.labor; });
+    stores.forEach(function(st){ var qt=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q); T.sales+=qt.sales;T.guests+=qt.guests;T.salesEl+=qt.salesEl;T.guestsEl+=qt.guestsEl; A.sales+=a.sales;A.guests+=a.guests;A.food+=a.food;A.labor+=a.labor; });
     var aPpa=A.guests?Math.round(A.sales/A.guests*100)/100:0, tPpa=T.guests?Math.round(T.sales/T.guests*100)/100:0;
     var aFc=A.sales?Math.round(A.food/A.sales*1000)/10:0, aLb=A.sales?Math.round(A.labor/A.sales*1000)/10:0;
     // 率目標は各店KPI目標の売上加重平均（近似で単純平均）
-    var fcTs=[],lbTs=[]; stores.forEach(function(st){ var t=quarterTargets(st.id,y,q); if(t.fcRate)fcTs.push(t.fcRate); if(t.laborRate)lbTs.push(t.laborRate); });
+    var fcTs=[],lbTs=[]; stores.forEach(function(st){ var qt=quarterTargets(st.id,y,q); if(qt.fcRate)fcTs.push(qt.fcRate); if(qt.laborRate)lbTs.push(qt.laborRate); });
     var tFc=fcTs.length?Math.round(fcTs.reduce(function(a,b){return a+b;},0)/fcTs.length*10)/10:0;
     var tLb=lbTs.length?Math.round(lbTs.reduce(function(a,b){return a+b;},0)/lbTs.length*10)/10:0;
     // 店舗別 Q進捗カード（合算ではなく店舗毎に）
     var _qItems = stores.map(function(st){
-      var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q);
+      var qt=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q);
       var _pc = (a.elapsed!=null)?Math.round(a.elapsed/3*100):null;
       return { id:st.id, name:st.name, color:_bStoreCol(st.id),
-        actual:a.sales||0, budget:t.sales||0, pace:_pc,
-        actStr:fmtUSD2(a.sales||0), budStr:fmtUSD2(t.sales||0),
+        actual:a.sales||0, budget:qt.sales||0, pace:_pc,
+        actStr:fmtUSD2(a.sales||0), budStr:fmtUSD2(qt.sales||0),
         sub:t('原価率','FC')+' '+(a.fcRate?a.fcRate+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(a.laborRate?a.laborRate+'%':'—')+' ・ '+t('経過','Elapsed')+' '+(a.elapsed||0)+'/'+t('3ヶ月','3mo') };
     });
     html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> '+t('店舗別 Q進捗','By Store · Q')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('四半期売上 実/目標・達成率（縦線＝想定ペース）','Q sales Act/Target · achievement (line = expected pace)')+'</span></div>';
@@ -8937,15 +8971,15 @@ function renderQuarterBudget(){
     html+='<div class="card" style="overflow-x:auto"><div class="card-title" style="font-size:13px"><i class="ti ti-building-store" style="color:var(--accent)"></i> '+t('店舗別サマリー','By-store summary')+'</div>'
       +'<table style="border-collapse:collapse;width:100%;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">'+t('店舗','Store')+'</th><th style="text-align:right;padding:4px">'+t('売上 実/目標','Sales A/T')+'</th><th style="text-align:center;padding:4px">'+t('達成','Hit')+'</th><th style="text-align:center;padding:4px">'+t('原価率','FC')+'</th><th style="text-align:center;padding:4px">'+t('人件費率','Labor')+'</th><th style="text-align:center;padding:4px">'+t('方針','Plan')+'</th></tr></thead><tbody>';
     stores.forEach(function(st){
-      var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
-      var okS=(t.salesEl>0)?(a.sales>=t.salesEl*0.995):null;
-      var fcCol=(t.fcRate&&a.fcRate)?(a.fcRate<=t.fcRate?'var(--green)':'var(--red)'):'var(--muted)';
-      var lbCol=(t.laborRate&&a.laborRate)?(a.laborRate<=t.laborRate?'var(--green)':'var(--red)'):'var(--muted)';
+      var qt=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
+      var okS=(qt.salesEl>0)?(a.sales>=qt.salesEl*0.995):null;
+      var fcCol=(qt.fcRate&&a.fcRate)?(a.fcRate<=qt.fcRate?'var(--green)':'var(--red)'):'var(--muted)';
+      var lbCol=(qt.laborRate&&a.laborRate)?(a.laborRate<=qt.laborRate?'var(--green)':'var(--red)'):'var(--muted)';
       html+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 4px;font-weight:600"><a onclick="setQbStore(\''+st.id+'\')" style="cursor:pointer;color:var(--accent)">'+escapeHtml(st.name)+'</a></td>'
-        +'<td style="text-align:right;padding:5px 4px;white-space:nowrap">$'+Math.round(a.sales).toLocaleString()+'<span style="color:var(--muted)">/'+(t.sales?(fmtUSD2(t.sales)):'—')+'</span></td>'
+        +'<td style="text-align:right;padding:5px 4px;white-space:nowrap">$'+Math.round(a.sales).toLocaleString()+'<span style="color:var(--muted)">/'+(qt.sales?(fmtUSD2(qt.sales)):'—')+'</span></td>'
         +'<td style="text-align:center;padding:5px 4px">'+(okS===null?'—':(okS?'<span style="color:var(--green);font-weight:700">✓</span>':'<span style="color:var(--red);font-weight:700">✗</span>'))+'</td>'
-        +'<td style="text-align:center;padding:5px 4px;color:'+fcCol+'">'+(a.fcRate||'—')+(t.fcRate?'<span style="font-size:9px;color:var(--muted)">/'+t.fcRate+'</span>':'')+'</td>'
-        +'<td style="text-align:center;padding:5px 4px;color:'+lbCol+'">'+(a.laborRate||'—')+(t.laborRate?'<span style="font-size:9px;color:var(--muted)">/'+t.laborRate+'</span>':'')+'</td>'
+        +'<td style="text-align:center;padding:5px 4px;color:'+fcCol+'">'+(a.fcRate||'—')+(qt.fcRate?'<span style="font-size:9px;color:var(--muted)">/'+qt.fcRate+'</span>':'')+'</td>'
+        +'<td style="text-align:center;padding:5px 4px;color:'+lbCol+'">'+(a.laborRate||'—')+(qt.laborRate?'<span style="font-size:9px;color:var(--muted)">/'+qt.laborRate+'</span>':'')+'</td>'
         +'<td style="text-align:center;padding:5px 4px">'+(qb.status==='committed'?'<span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':(qb.basis?'<span class="tag tag-yellow" style="font-size:9px">'+t('下書き','Draft')+'</span>':'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)">'+t('未','—')+'</span>'))+'</td></tr>';
     });
     html+='</tbody></table></div>';
@@ -8954,12 +8988,12 @@ function renderQuarterBudget(){
 
   // ===== 各店タブ =====
   var st=stores.find(function(x){return x.id===_qbStore;})||stores[0]; if(!st) return html+'<div class="card">'+t('店舗がありません','No stores')+'</div>';
-  var t=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
+  var qt=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
   var mds=months.map(function(ym){ return _qbMonthData(st.id, ym); });
   // 四半期サマリー（合計）
-  var pct=t.sales?Math.round(a.sales/t.sales*100):0, pace=Math.round(a.elapsed/3*100), onPace=t.salesEl?a.sales>=t.salesEl*0.995:false;
+  var pct=qt.sales?Math.round(a.sales/qt.sales*100):0, pace=Math.round(a.elapsed/3*100), onPace=qt.salesEl?a.sales>=qt.salesEl*0.995:false;
   html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-target" style="color:var(--accent)"></i> '+escapeHtml(st.name)+' Q'+q+' '+t('合計進捗','Total progress')+'</div>';
-  html+='<div style="margin:2px 0 6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>'+t('四半期売上','Quarter sales')+'</span><span style="font-weight:800;color:'+(onPace?'var(--green)':'var(--red)')+'">$'+Math.round(a.sales).toLocaleString()+' <span style="color:var(--muted);font-weight:400">/ $'+Math.round(t.sales).toLocaleString()+' ('+pct+'%)</span></span></div>'
+  html+='<div style="margin:2px 0 6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>'+t('四半期売上','Quarter sales')+'</span><span style="font-weight:800;color:'+(onPace?'var(--green)':'var(--red)')+'">$'+Math.round(a.sales).toLocaleString()+' <span style="color:var(--muted);font-weight:400">/ $'+Math.round(qt.sales).toLocaleString()+' ('+pct+'%)</span></span></div>'
     +''+'<div style="margin-top:3px">'+progBar(pct,{h:9,color:onPace?'var(--green)':'var(--accent)',pace:pace})+'</div>'+''
     +'<div style="font-size:9px;color:var(--muted)">'+t('経過','Elapsed')+' '+a.elapsed+t('/3ヶ月 ・ 赤線=想定ペース','/3mo · red = expected pace')+'('+pace+'%)</div></div></div>';
   // 月別 進捗カード（不足の見える化）
@@ -9756,7 +9790,7 @@ function renderBudgetSummary() {
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">`;
   html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''));
   if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString()+(k.repeatPrev!=null?'　'+t('前月','prev')+' '+k.repeatPrev.toFixed(1)+'%':''));
-  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null);
+  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), guestAvgSub(k));
   html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''));
   html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'));
   html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'));
@@ -10623,6 +10657,7 @@ function keyKpiStats(scopeStores, days){
   var sales=0,budget=0,guests=0,food=0,labor=0,laborHours=0,dayHasActual={};
   var lunchS=0,lunchG=0,dinnerS=0,dinnerG=0,toLS=0,toDS=0,toLC=0,toDC=0;
   var salesBud=0,guestBud=0,fcBud$=0,laborBud$=0,segSales$=0,hasGuestBud=false;
+  var lunchGuestBud=0,dinnerGuestBud=0,takeoutBud=0,hasLGB=false,hasDGB=false,hasTGB=false;
   var todayStr=todayISO();
   var ym=(days&&days[0])?days[0].date.slice(0,7):'';
   var gct=function(id){return (typeof guestCountType==='function')?guestCountType(id):'guest';};
@@ -10667,6 +10702,9 @@ function keyKpiStats(scopeStores, days){
     laborBud$ += segmentsLaborBudget(segs);
     var gb=monthGuestBudget(s.id, ofst);
     if(gb!=null){ guestBud+=gb; hasGuestBud=true; }
+    var _glb=budgetGuestsMonthly(s.id,'lunch',ofst); if(_glb!=null){ lunchGuestBud+=_glb; hasLGB=true; }
+    var _gdb=budgetGuestsMonthly(s.id,'dinner',ofst); if(_gdb!=null){ dinnerGuestBud+=_gdb; hasDGB=true; }
+    var _gtb=budgetTakeoutMonthly(s.id,ofst); if(_gtb!=null){ takeoutBud+=_gtb; hasTGB=true; }
   });
   var rs=repeatStats(scopeStores,days);
   var rsPrev=repeatStats(scopeStores, prevMonthDaysList(ym));
@@ -10721,6 +10759,9 @@ function keyKpiStats(scopeStores, days){
     misoUp: tr.misoUp, misoAll: tr.misoAll, ikura: tr.ikura, ikuraBowls: tr.bowls,
     misoTgt: misoTgt, ikuraTgt: ikuraTgt,
     opDays: Object.keys(dayHasActual).length,
+    toCount:(toLC+toDC),
+    lunchGuestBud: hasLGB?lunchGuestBud:null, dinnerGuestBud: hasDGB?dinnerGuestBud:null, takeoutBud: hasTGB?takeoutBud:null,
+    monthDaysN: (function(){ if(!ym) return 0; var _p=ym.split('-'); return new Date(parseInt(_p[0],10), parseInt(_p[1],10), 0).getDate(); })(),
     laborHoursTotal: laborHours,
     avgFirstPerDay: (Object.keys(dayHasActual).length&&rs.has)?Math.round(rs.first/Object.keys(dayHasActual).length*10)/10:null,
     avgRepeatPerDay: (Object.keys(dayHasActual).length&&rs.has)?Math.round(rs.repeat/Object.keys(dayHasActual).length*10)/10:null,
@@ -15446,7 +15487,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '561';
+const APP_VERSION = '563';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
