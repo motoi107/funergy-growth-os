@@ -1292,7 +1292,7 @@ function getFormatKpi(fmt){
   return Object.assign({}, FORMAT_KPI_DEFAULTS[fmt]||{}, saved[fmt]||{});
 }
 function setFormatKpi(fmt, vals){
-  var saved = ls('m_format_kpi', {}); saved[fmt]=vals; lsSet('m_format_kpi', saved);
+  var saved = ls('m_format_kpi', {}); try{ if(vals && typeof vals==='object') vals._at=Date.now(); }catch(e){} saved[fmt]=vals; lsSet('m_format_kpi', saved);
 }
 /* 店舗の実効KPI目標 = 業態デフォルト ← 店舗上書き(kpiOverride) */
 function getStoreKpiTargets(storeId, offset){
@@ -1303,7 +1303,7 @@ function getStoreKpiTargets(storeId, offset){
 }
 function getStoreKpiOverride(storeId){ return (ls('m_store_kpi', {})[storeId])||{}; }
 function setStoreKpiOverride(storeId, ov){
-  var all = ls('m_store_kpi', {}); all[storeId]=ov; lsSet('m_store_kpi', all);
+  var all = ls('m_store_kpi', {}); try{ if(ov && typeof ov==='object') ov._at=Date.now(); }catch(e){} all[storeId]=ov; lsSet('m_store_kpi', all);
 }
 
 /* ===== KPI実績 =====
@@ -4136,12 +4136,13 @@ async function syncMasterToSupabase(key, val){
   // app_settings 行き
   var isSetting = SUPA_SETTING_KEYS.includes(key) || SUPA_SETTING_PREFIX.some(p=>key.indexOf(p)===0);
   if (isSetting) {
+    if (_opMergeDef(key)) { await opMergePush(key, val, 'app_settings'); return; }
     await supaUpsert('app_settings', [{ key:key, value:val, category:supaSettingCategory(key) }]);
     return;
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
-    if (OP_MERGE[key]) { await opMergePush(key, val); return; }
+    if (_opMergeDef(key)) { await opMergePush(key, val); return; }
     var _outVal = (key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val;
     await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
   }
@@ -4314,8 +4315,50 @@ var OP_MERGE = {
   lss_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
   tip_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
   mileage_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
-  expense_requests:{ merge: mergeReqTomb, covers: _coversReqTomb }
+  expense_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
+  m_store_kpi:    { merge: mergeMapByKey, covers: _coversMapByKey },
+  m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey }
 };
+/* プレフィックス一致のマージ定義（動的キー用：skills_st_<store>） */
+var OP_MERGE_PREFIX = { 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore } };
+function _opMergeDef(key){ if(OP_MERGE[key]) return OP_MERGE[key]; for(var p in OP_MERGE_PREFIX){ if(OP_MERGE_PREFIX.hasOwnProperty(p) && String(key).indexOf(p)===0) return OP_MERGE_PREFIX[p]; } return null; }
+/* スキル店舗バケット {name:{position:{level,status,_at,...}}} のマージ。name→positionで深くマージ。
+   position衝突は _at(書込時刻の新しい方)→level(高い方)→local の順で解決（昇格/降格/申請中→承認すべて正しく） */
+function _skillPick(cv, lv){
+  var ca=Number(cv&&cv._at)||0, la=Number(lv&&lv._at)||0;
+  if(ca||la){ if(la!==ca) return (la>ca)?lv:cv; }
+  var cl=Number(cv&&cv.level)||0, ll=Number(lv&&lv.level)||0;
+  if(cl!==ll) return (ll>cl)?lv:cv;
+  return lv;
+}
+function mergeSkillStore(cloudMap, localMap){
+  cloudMap=(cloudMap&&typeof cloudMap==='object')?cloudMap:{};
+  localMap=(localMap&&typeof localMap==='object')?localMap:{};
+  var out={}, names={};
+  Object.keys(cloudMap).forEach(function(n){names[n]=1;}); Object.keys(localMap).forEach(function(n){names[n]=1;});
+  Object.keys(names).forEach(function(name){
+    var c=cloudMap[name]||{}, l=localMap[name]||{}, m={}, pos={};
+    Object.keys(c).forEach(function(p){pos[p]=1;}); Object.keys(l).forEach(function(p){pos[p]=1;});
+    Object.keys(pos).forEach(function(p){
+      var cv=c[p], lv=l[p];
+      m[p] = (cv==null)?lv : (lv==null)?cv : _skillPick(cv,lv);
+    });
+    out[name]=m;
+  });
+  return out;
+}
+function _coversSkillStore(check, want){
+  if(!check||typeof check!=='object') return false;
+  for(var n in want){ if(!want.hasOwnProperty(n)) continue; var wp=want[n]||{}, hp=check[n]||{};
+    for(var p in wp){ if(!wp.hasOwnProperty(p)) continue; var w=wp[p], h=hp[p];
+      if(!h) return false;
+      var wa=Number(w&&w._at)||0, ha=Number(h&&h._at)||0;
+      if(wa&&ha){ if(ha<wa) return false; }
+      else if((Number(w&&w.level)||0)>(Number(h&&h.level)||0)) return false;
+    }
+  }
+  return true;
+}
 /* approvals マージ：idで和集合／signoffs(複数承認者)は和集合／決定済み(status!=='pending')はpendingに勝つ／両方決定なら新しい方→local優先 */
 function _apDecided(a){ return !!(a && a.status!=null && a.status!=='pending'); }
 function _apTs(a){ return String((a&&(a.approvedAt||a.decidedAt||a.updatedAt||a.date))||''); }
@@ -4350,11 +4393,17 @@ function _coversApprovals(check, want){
 }
 var _opMergeChain = {}; // キー別に直列化（自クライアント内の連続書き込みが互いを潰さないように）
 
-function _fetchOpValue(key){
-  return fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() })
+function _fetchOpValue(key, table){
+  table = table || 'app_state';
+  return fetch(SUPABASE_URL+'/rest/v1/'+table+'?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() })
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(rows){ return (rows && rows.length) ? rows[0].value : null; })
     .catch(function(){ return undefined; }); // undefined=取得失敗（マージせず素通し）
+}
+function _opUpsertRow(key, value, table){
+  return (table==='app_settings')
+    ? { key:key, value:value, category:(typeof supaSettingCategory==='function'?supaSettingCategory(key):null) }
+    : { key:key, value:value, updated_at:new Date().toISOString() };
 }
 
 /* 通知配列マージ：idで和集合、readByは和集合、at昇順で newest500 に整理 */
@@ -4465,22 +4514,47 @@ function _coversReqTomb(check, want){
   }
   return true;
 }
-function opMergePush(key, localVal){
-  var def = OP_MERGE[key]; if(!def) return Promise.resolve();
+/* 汎用マップマージ（トップレベルキーで和集合。キー衝突は _at(書込時刻の新しい方)→local）。
+   {storeId:設定} や {format:設定} のような「キー別に独立した設定マップ」用（m_store_kpi / m_format_kpi） */
+function _mapPick(cv, lv){
+  var ca=Number(cv&&cv._at)||0, la=Number(lv&&lv._at)||0;
+  if(ca||la){ if(la!==ca) return (la>ca)?lv:cv; }
+  return lv;
+}
+function mergeMapByKey(cloudMap, localMap){
+  cloudMap=(cloudMap&&typeof cloudMap==='object')?cloudMap:{};
+  localMap=(localMap&&typeof localMap==='object')?localMap:{};
+  var out={}, keys={};
+  Object.keys(cloudMap).forEach(function(k){keys[k]=1;}); Object.keys(localMap).forEach(function(k){keys[k]=1;});
+  Object.keys(keys).forEach(function(k){ var cv=cloudMap[k], lv=localMap[k]; out[k]=(cv==null)?lv:(lv==null)?cv:_mapPick(cv,lv); });
+  return out;
+}
+function _coversMapByKey(check, want){
+  if(!check||typeof check!=='object') return false;
+  for(var k in want){ if(!want.hasOwnProperty(k)) continue; var w=want[k], h=check[k];
+    if(h==null && w!=null) return false;
+    var wa=Number(w&&w._at)||0, ha=Number(h&&h._at)||0;
+    if(wa&&ha){ if(ha<wa) return false; }
+  }
+  return true;
+}
+function opMergePush(key, localVal, table){
+  table = table || 'app_state';
+  var def = _opMergeDef(key); if(!def) return Promise.resolve();
   var run=function(){ return (async function(){
     try{
       var desired = localVal;
       for(var attempt=0; attempt<3; attempt++){
-        var cloud = await _fetchOpValue(key);
+        var cloud = await _fetchOpValue(key, table);
         if(cloud===undefined){ // 取得失敗→マージせず素通し（durabilityはP0-2で別途対応）
-          await supaUpsert('app_state', [{ key:key, value:desired, updated_at:new Date().toISOString() }]);
+          await supaUpsert(table, [_opUpsertRow(key, desired, table)]);
           try{ localStorage.setItem(key, JSON.stringify(desired)); }catch(e){}
           break;
         }
         var merged = def.merge(cloud, desired);
         try{ localStorage.setItem(key, JSON.stringify(merged)); }catch(e){}
-        await supaUpsert('app_state', [{ key:key, value:merged, updated_at:new Date().toISOString() }]);
-        var check = await _fetchOpValue(key);
+        await supaUpsert(table, [_opUpsertRow(key, merged, table)]);
+        var check = await _fetchOpValue(key, table);
         if(check===undefined || def.covers(check, merged)){ desired=merged; break; }
         desired = def.merge(check, merged); // 誰かに上書きされた→取り込んで再試行
       }
@@ -15326,7 +15400,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '555';
+const APP_VERSION = '557';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -25322,6 +25396,7 @@ function getEmpSkillsStore(name, storeId){ var m=getStoreSkillsMap(storeId); ret
 function setEmpSkillStore(name, storeId, position, data){
   var map = getStoreSkillsMap(storeId);
   if (!map[name]) map[name] = {};
+  try{ if(data && typeof data==='object') data._at=Date.now(); }catch(e){}
   map[name][position] = data;
   setStoreSkills(storeId, map);
 }
