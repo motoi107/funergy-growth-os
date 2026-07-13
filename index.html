@@ -16200,7 +16200,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '589';
+const APP_VERSION = '590';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -17180,12 +17180,33 @@ function shiftBoardReflect(storeId, week){
   renderPage('shift_admin');
 }
 
-/* ===== 盤面（曜日カラム） ===== */
+/* マトリクス用データ: セクションごとに {sec, order:[name], byStaff:{name:{day:{...}}}, open:{day:[{label,pos}]}} */
+function shiftBoardMatrix(storeId, week){
+  var secs=_shiftActiveSecs(storeId);
+  var plan=getShiftPlan(storeId, week)||{cells:{}, meta:{}};
+  var meta=plan.meta||{};
+  var out=[];
+  secs.forEach(function(sec){
+    var byStaff={}, order=[], open={};
+    DOW_SHIFT.forEach(function(day){
+      var dateISO=weekDateForDow(day);
+      if(sectionClosedForDay(storeId, sec.key, dateISO, day)) return;
+      var slots=sectionEffectiveSlots(storeId, sec).filter(function(sl){ return slotActiveForDay(storeId, sec, sl, day); });
+      Object.keys(plan.cells).forEach(function(k){ if(k.indexOf(day+'_'+sec.key+'_')===0){ var lb=k.substring((day+'_'+sec.key+'_').length); if(!slots.some(function(sl){return sl.label===lb;})) slots.push({pos:lb.split('#')[0], label:lb}); } });
+      slots.forEach(function(sl){
+        var key=shiftCellKey(day, sec.key, sl.label); var nm=plan.cells[key];
+        if(nm){ if(!byStaff[nm]){ byStaff[nm]={}; order.push(nm); } var m=meta[key]||{}; byStaff[nm][day]={label:sl.label, pos:sl.pos, start:m.start||'', end:m.end||'', fixed:!!m.fixed}; }
+        else { (open[day]=open[day]||[]).push({label:sl.label, pos:sl.pos}); }
+      });
+    });
+    order.sort(function(a,b){ var fa=DOW_SHIFT.some(function(d){return byStaff[a][d]&&byStaff[a][d].fixed;})?0:1; var fb=DOW_SHIFT.some(function(d){return byStaff[b][d]&&byStaff[b][d].fixed;})?0:1; return (fa-fb) || String(a).localeCompare(b); });
+    if(order.length || Object.keys(open).length) out.push({sec:sec, order:order, byStaff:byStaff, open:open});
+  });
+  return out;
+}
 function renderShiftBoard(storeId, week){
   var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
   var plan=getShiftPlan(storeId, week)||{cells:{}, meta:{}};
-  var meta=plan.meta||{};
-  var secs=_shiftActiveSecs(storeId);
   var fixedCount=Object.keys(getShiftFixed(storeId)).length;
   var availCount=(getAvailability(storeId, week)||[]).length;
 
@@ -17199,56 +17220,64 @@ function renderShiftBoard(storeId, week){
     +(plan.status==='公開'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> '+t('公開済','Published')+'</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> '+t('公開','Publish')+'</button>')
     +'</div>'
     +'<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:8px;flex-wrap:wrap">'
-    +'<span><i class="ti ti-lock" style="color:var(--accent)"></i> '+t('固定（毎週自動）','Fixed (weekly)')+'</span>'
+    +'<span><i class="ti ti-lock" style="color:var(--accent)"></i> '+t('固定（毎週自動）','Fixed')+'</span>'
     +'<span><i class="ti ti-check" style="color:var(--green)"></i> '+t('提出から反映','From submissions')+'</span>'
     +'<span><i class="ti ti-plus" style="color:var(--muted)"></i> '+t('空き枠','Open')+'</span>'
     +'</div></div>';
 
-  var anyCell=Object.keys(plan.cells||{}).length>0;
-  if(!anyCell){
-    html+='<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-calendar-plus" style="font-size:26px"></i>'
+  if(!Object.keys(plan.cells||{}).length){
+    return html+'<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-calendar-plus" style="font-size:26px"></i>'
       +'<div style="margin-top:8px;font-size:13px">'+t('まだ下書きがありません。','No draft yet.')+'</div>'
-      +'<div style="font-size:11px;margin-top:4px">'+t('①固定シフトを設定 → ②「提出シフトを反映」で自動作成','① Set fixed shifts → ② “Reflect submissions” to auto-build')+'</div>'
-      +'<div style="font-size:11px;margin-top:2px;color:var(--muted)">'+t('提出者','Submitters')+': '+availCount+t('名／固定','／fixed')+': '+fixedCount+t('名','')+'</div></div>';
-    return html;
+      +'<div style="font-size:11px;margin-top:4px">'+t('①固定シフトを設定 → ②「提出シフトを反映」で自動作成','① Set fixed shifts → ② “Reflect submissions”')+'</div>'
+      +'<div style="font-size:11px;margin-top:2px">'+t('提出者','Submitters')+': '+availCount+t('名／固定','／fixed')+': '+fixedCount+'</div></div>';
   }
 
-  html+='<div style="overflow-x:auto;padding-bottom:6px"><div style="display:flex;gap:10px;min-width:100%">';
-  DOW_SHIFT.forEach(function(day){
-    var dateISO=weekDateForDow(day); var ds=dateISO?dateISO.slice(5).replace('-','/'):'';
-    var closed=false; try{ closed=(typeof dayClosureMode==='function') && dayClosureMode(storeId, dateISO, day)==='closed'; }catch(e){}
-    var col='<div style="flex:1;min-width:150px;background:var(--surface2);border-radius:12px;padding:9px">'
-      +'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px"><span style="font-size:13px;font-weight:800">'+day+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+ds+'</span></span>'+(closed?'<span class="tag tag-red" style="font-size:8px">'+t('定休','Closed')+'</span>':'')+'</div>';
-    if(closed){ col+='<div style="text-align:center;color:var(--muted);font-size:11px;padding:16px 0;border:1px dashed var(--border);border-radius:8px">'+t('店休日','Closed')+'</div></div>'; html+=col; return; }
-    var dayCount=0;
-    secs.forEach(function(sec){
-      if(sectionClosedForDay(storeId, sec.key, dateISO, day)) return;
-      var slots=sectionEffectiveSlots(storeId, sec).filter(function(sl){ return slotActiveForDay(storeId, sec, sl, day); });
-      // 固定で追加された#nameスロットも拾う
-      Object.keys(plan.cells).forEach(function(k){ if(k.indexOf(day+'_'+sec.key+'_')===0){ var lb=k.substring((day+'_'+sec.key+'_').length); if(!slots.some(function(sl){return sl.label===lb;})){ slots.push({pos:(lb.split('#')[0]), label:lb, extra:true}); } } });
-      if(!slots.length) return;
-      col+='<div style="font-size:9px;color:var(--muted);margin:6px 0 3px;text-transform:uppercase;letter-spacing:.5px">'+escapeHtml(sec.label)+'</div>';
-      slots.forEach(function(sl){
-        var key=shiftCellKey(day, sec.key, sl.label);
-        var name=plan.cells[key]; var m=meta[key]||{};
-        var cellArg="'"+storeId+"','"+week+"','"+day+"','"+sec.key+"','"+sl.label.replace(/'/g,"\\'")+"','"+sl.pos.replace(/'/g,"\\'")+"'";
-        if(name){
-          dayCount++;
-          var fx=m.fixed; var bg=fx?'var(--accent)':'var(--green)'; var tint=fx?'accent':'green';
-          var tm=(m.start||m.end)?((m.start||'?')+'–'+(m.end||'?')):t('時刻未設定','no time');
-          col+='<div onclick="openShiftCellEditor('+cellArg+')" style="cursor:pointer;border-left:3px solid '+bg+';background:var(--surface);border-radius:0 8px 8px 0;padding:6px 8px;margin-bottom:4px">'
-            +'<div style="font-size:12px;font-weight:700;display:flex;align-items:center;gap:4px"><i class="ti ti-'+(fx?'lock':'check')+'" style="font-size:12px;color:'+bg+'"></i>'+escapeHtml(name)+'</div>'
-            +'<div style="font-size:10px;color:var(--muted)">'+escapeHtml(sl.label)+' · '+tm+'</div></div>';
+  var mat=shiftBoardMatrix(storeId, week);
+  var dates=DOW_SHIFT.map(weekDateForDow);
+  function dayHeadCells(){ return DOW_SHIFT.map(function(dw,i){ var ds=dates[i]?dates[i].slice(5).replace('-','/'):''; var dateISO=dates[i]; var closed=false; try{ closed=(typeof dayClosureMode==='function')&&dayClosureMode(storeId,dateISO,dw)==='closed'; }catch(e){} return '<th style="min-width:96px;font-size:11px;padding:5px 4px;border-left:1px solid var(--border)'+(closed?';color:var(--muted)':'')+'">'+dw+'<div style="font-size:9px;color:var(--muted);font-weight:400">'+ds+(closed?' '+t('休','off'):'')+'</div></th>'; }).join(''); }
+
+  mat.forEach(function(block){
+    var sec=block.sec;
+    html+='<div class="card" style="overflow-x:auto;padding:8px;margin-bottom:10px">';
+    html+='<div style="font-size:12px;font-weight:800;margin-bottom:6px"><i class="ti '+(sec.key.indexOf('Prep')>=0||sec.key==='LPrep'?'ti-tools-kitchen-2':'ti-tools')+'" style="color:var(--accent)"></i> '+escapeHtml(sec.label)+(sec.key.indexOf('Prep')>=0?' <span style="font-size:10px;color:var(--muted);font-weight:400">'+t('（別枠・入り時間バラバラOK）','(separate · per-person times)')+'</span>':'')+'</div>';
+    html+='<table class="inv-table" style="border-collapse:collapse;font-size:11px"><thead><tr>'
+      +'<th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:96px">'+t('スタッフ','Staff')+'</th>'+dayHeadCells()+'</tr></thead><tbody>';
+
+    block.order.forEach(function(name){
+      var isFixed=DOW_SHIFT.some(function(d){ return block.byStaff[name][d]&&block.byStaff[name][d].fixed; });
+      html+='<tr style="border-top:1px solid var(--border)"><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface);z-index:1;white-space:nowrap">'+(isFixed?'<i class="ti ti-lock" style="color:var(--accent);font-size:11px"></i> ':'')+escapeHtml(name)+'</td>';
+      DOW_SHIFT.forEach(function(day){
+        var c=block.byStaff[name][day];
+        if(c){
+          var tm=(c.start||c.end)?((c.start||'?')+'–'+(c.end||'?')):t('時刻?','?');
+          var col=c.fixed?'var(--accent)':'var(--green)';
+          var arg="'"+storeId+"','"+week+"','"+day+"','"+sec.key+"','"+String(c.label).replace(/'/g,"\\'")+"','"+String(c.pos).replace(/'/g,"\\'")+"'";
+          html+='<td onclick="openShiftCellEditor('+arg+')" style="cursor:pointer;border-left:1px solid var(--border);text-align:center;padding:4px 3px;border-top:2px solid '+col+'">'
+            +'<div style="font-weight:700;color:'+col+'">'+escapeHtml(c.label)+'</div>'
+            +'<div style="font-size:10px;color:var(--muted);white-space:nowrap">'+tm+'</div></td>';
         } else {
-          col+='<div onclick="openShiftCellEditor('+cellArg+')" style="cursor:pointer;border:1px dashed var(--border);border-radius:8px;padding:6px 8px;margin-bottom:4px;color:var(--muted);font-size:11px"><i class="ti ti-plus" style="font-size:12px"></i> '+escapeHtml(sl.label)+t('（空き）','（open）')+'</div>';
+          html+='<td style="border-left:1px solid var(--border);text-align:center;color:var(--border)">·</td>';
         }
       });
+      html+='</tr>';
     });
-    col+='<div style="text-align:right;font-size:10px;color:var(--muted);margin-top:4px">'+dayCount+t('名','')+'</div></div>';
-    html+=col;
+
+    // 空き枠 行
+    var hasOpen=Object.keys(block.open).length>0;
+    if(hasOpen){
+      html+='<tr style="border-top:2px solid var(--border)"><td style="text-align:left;font-size:10px;color:var(--muted);position:sticky;left:0;background:var(--surface2);z-index:1">'+t('空き枠','Open')+'</td>';
+      DOW_SHIFT.forEach(function(day){
+        var op=block.open[day]||[];
+        if(!op.length){ html+='<td style="border-left:1px solid var(--border);background:var(--surface2)"></td>'; return; }
+        var chips=op.map(function(o){ var arg="'"+storeId+"','"+week+"','"+day+"','"+sec.key+"','"+String(o.label).replace(/'/g,"\\'")+"','"+String(o.pos).replace(/'/g,"\\'")+"'"; return '<div onclick="openShiftCellEditor('+arg+')" style="cursor:pointer;border:1px dashed var(--border-strong);border-radius:6px;padding:1px 4px;margin:1px;font-size:9.5px;color:var(--muted);display:inline-block"><i class="ti ti-plus" style="font-size:9px"></i>'+escapeHtml(o.label)+'</div>'; }).join('');
+        html+='<td style="border-left:1px solid var(--border);text-align:center;background:var(--surface2)">'+chips+'</td>';
+      });
+      html+='</tr>';
+    }
+    html+='</tbody></table></div>';
   });
-  html+='</div></div>';
-  html+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"><i class="ti ti-info-circle"></i> '+t('チップをタップ＝人・時刻の変更／削除。点線＝空き枠をタップで人を追加。固定シフトは「固定シフト」ボタンから設定（毎週自動で入ります）。','Tap a chip to change person/time or remove. Tap a dashed slot to add someone. Set recurring staff via “Fixed shifts” (auto every week).')+'</div>';
+
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:2px;line-height:1.6"><i class="ti ti-info-circle"></i> '+t('左＝スタッフ／横＝曜日。各セルはポジションと時間。青ロック＝固定（毎週自動）。セルをタップで人・時刻の変更／削除、点線＝空き枠をタップで追加。Prepは別枠。','Left = staff, across = days. Each cell shows position + time. Blue lock = fixed (weekly). Tap a cell to change person/time or remove; tap a dashed slot to add. Prep is a separate section.')+'</div>';
   return html;
 }
 
