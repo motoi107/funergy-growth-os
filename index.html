@@ -4072,7 +4072,7 @@ var SUPA_MASTER_MAP = {
 var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
-  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4'];
+  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','skill_lv_desc'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
@@ -14109,7 +14109,8 @@ async function runTipDateDebug(sid){
   }catch(e){ if(box) box.innerHTML='<div style="color:var(--red);font-size:12px">通信エラー: '+escapeHtml(String(e))+'</div>'; }
 }
 var _cashTipAllPulled=false;
-/* Tip管理を開いたら全店の cash_tips_ をクラウドからマージ取得（端末間の登録を統合表示・保存内容は和集合で保持） */
+/* Tip管理を開いたら全店の cash_tips_ をクラウドからマージ取得（pull）し、続けてこの端末に残る分をクラウドへマージ押し上げ（push）する。
+   端末固有の過去分を全体へ反映＝自己修復。物理削除は一切しない（和集合マージのみ）。各スタッフが自分の端末でTip管理を一度開くだけで復旧が進む。 */
 function maybePullAllCashTips(){
   if(_cashTipAllPulled) return;
   if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ _cashTipAllPulled=true; return; }
@@ -14117,8 +14118,23 @@ function maybePullAllCashTips(){
   try{
     var stores=(typeof getVisibleStores==='function')?getVisibleStores().slice():STORES.slice();
     var ids={}; stores.forEach(function(s){ if(s&&s.id) ids[s.id]=1; });
-    var jobs=[]; Object.keys(ids).forEach(function(id){ jobs.push(pullOpKey('cash_tips_'+id)); });
-    if(jobs.length) Promise.all(jobs).then(function(){ if(curPage==='tip') renderPage('tip'); }).catch(function(){});
+    var idList=Object.keys(ids);
+    var jobs=idList.map(function(id){ return pullOpKey('cash_tips_'+id); });
+    if(jobs.length) Promise.all(jobs).then(function(){
+      if(curPage==='tip') renderPage('tip');
+      // pull完了後、この端末に残る入力済み分をクラウドへマージ押し上げ（端末にしか無い過去分を全体へ反映）。opMergePushはマージ＋衝突再試行で削除なし。
+      var pushes=[];
+      if(typeof opMergePush==='function'){
+        idList.forEach(function(id){
+          try{
+            var m=getCashTips(id); var has=false;
+            if(m && typeof m==='object'){ for(var dd in m){ if(m.hasOwnProperty(dd) && m[dd] && (m[dd].entered||m[dd].lunchEntered||m[dd].dinnerEntered)){ has=true; break; } } }
+            if(has) pushes.push(opMergePush('cash_tips_'+id, m));
+          }catch(e){}
+        });
+      }
+      if(pushes.length) Promise.all(pushes).then(function(){ if(curPage==='tip') renderPage('tip'); }).catch(function(){});
+    }).catch(function(){});
   }catch(e){}
 }
 function renderTipMgmt() {
@@ -16205,7 +16221,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '591';
+const APP_VERSION = '593';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30898,6 +30914,98 @@ function renderBadges(name, emp) {
 }
 
 /* Crew本人のスキルカード: レーダーチャート＋ポジション別Lv */
+/* ===== スキルレーダー: 軸タップで「現在Lv＋内容／次Lv＋内容」ポップアップ =====
+   内容は「ポジ別×レベル別の説明文（GM入力・日英）」を優先し、無ければ共通ルーブリック(Lv0-3)/Prepレジェンド(Lv0-5)にフォールバック。
+   説明文マスターは skill_lv_desc = { storeId:{ position:{ level:{ja,en} } } }。SUPA_SETTING_KEYS で全端末同期。 */
+function getSkillLvDesc(){ var m=ls('skill_lv_desc',{}); return (m&&typeof m==='object')?m:{}; }
+function setSkillLvDesc(m){ lsSet('skill_lv_desc', m||{}); }
+function skillLvDescCell(storeId, pos, lv){
+  var m=getSkillLvDesc(); var c=m&&m[storeId]&&m[storeId][pos]&&m[storeId][pos][lv];
+  return (c&&typeof c==='object')?c:null;
+}
+function setSkillLvDescCell(storeId, pos, lv, ja, en){
+  var m=getSkillLvDesc(); if(!m[storeId])m[storeId]={}; if(!m[storeId][pos])m[storeId][pos]={};
+  m[storeId][pos][lv]={ja:(ja||'').trim(), en:(en||'').trim()}; setSkillLvDesc(m);
+}
+/* Prep(0〜5)共通レジェンド（英）。日本語は既存 PREP_SKILL_LEGEND を使用 */
+var PREP_SKILL_LEGEND_EN = ['','Cannot do yet','Can do with help','Can do independently','Fast & accurate, stable','Can coach & improve'];
+/* あるポジ・レベルの表示内容 {label,desc,hasPos} を返す（日英・フォールバック込み） */
+function skillLvContent(storeId, pos, lv, isPrep){
+  lv=Number(lv)||0; var en=(curLang==='en'); var label='';
+  if(isPrep){ label = en ? (PREP_SKILL_LEGEND_EN[lv]||('Lv'+lv)) : ((typeof PREP_SKILL_LEGEND!=='undefined'&&PREP_SKILL_LEGEND[lv])||('Lv'+lv)); }
+  else { var rb=getEvalRubric(); var r=rb[lv]; label = r?(r.label||''):''; }
+  var cell=skillLvDescCell(storeId,pos,lv); var desc='';
+  var hasPos=false;
+  if(cell){ desc = en ? (cell.en||cell.ja||'') : (cell.ja||cell.en||''); hasPos=!!desc; }
+  if(!desc && !isPrep){ var rb2=getEvalRubric(); var r2=rb2[lv]; desc = r2?(r2.desc||''):''; }
+  return { label:label, desc:desc, hasPos:hasPos };
+}
+/* マイページのレーダー軸タップ → ポップアップ */
+function openMySkillLvPopup(idx){
+  try{
+    var ctx=window._mySkillCtx; if(!ctx) return;
+    var pos=ctx.positions[idx]; if(pos==null) return;
+    var lv=Number(ctx.vals[idx])||0, maxLv=ctx.maxLv, storeId=ctx.storeId, isPrep=ctx.isPrep;
+    var lab=posLabel(pos);
+    function block(level, isNext){
+      var c=skillLvContent(storeId,pos,level,isPrep);
+      var head='<div style="font-size:15px;font-weight:700;margin-bottom:3px">'+escapeHtml(lab)
+        +' <span style="color:'+(isNext?'var(--accent2)':'var(--accent)')+'">Lv'+level+'</span>'
+        +(isNext?'':' <span style="font-size:12px;font-weight:600;color:var(--muted)">（'+t('現在','current')+'）</span>')
+        +(c.label?' <span style="font-size:11px;font-weight:600;color:var(--muted)">'+escapeHtml(c.label)+'</span>':'')
+        +'</div>';
+      var body=c.desc ? '<div style="font-size:13px;line-height:1.65">'+escapeHtml(c.desc)+'</div>'
+                      : '<div style="font-size:12px;color:var(--muted)">'+t('説明は未登録です','No description yet')+'</div>';
+      return head+body;
+    }
+    var html='<div class="modal-title">'+escapeHtml(lab)+' — '+t('スキルレベル','Skill level')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+    html+='<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface)">'+block(lv,false)+'</div>';
+    if(lv<maxLv){
+      html+='<div style="text-align:center;color:var(--accent2);font-size:12px;font-weight:600;margin:8px 0"><i class="ti ti-arrow-down"></i> '+t('次のレベル','Next level')+'</div>';
+      html+='<div style="border:1px dashed var(--accent2);border-radius:10px;padding:10px 12px;background:var(--surface2)">'+block(lv+1,true)+'</div>';
+    } else {
+      html+='<div style="margin-top:10px;text-align:center;font-size:12px;color:var(--green);font-weight:600"><i class="ti ti-award"></i> '+t('最高レベルに到達しています','Highest level reached')+'</div>';
+    }
+    html+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>';
+    openModal(html);
+  }catch(e){}
+}
+/* ===== GM/CEO: ポジ別×レベル別 説明文エディタ（日英） ===== */
+function openSkillLvDescEditor(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast(t('権限がありません','No permission'),'warning'); return; }
+  var stores=getVisibleStores();
+  var sid=window._sldStore || window._skillMatrixStore || (curStore!=='ALL'?curStore:(stores[0]?stores[0].id:'F01'));
+  if(!stores.find(function(s){return s.id===sid;}) && sid!=='OFFICE'){ sid=stores[0]?stores[0].id:'F01'; }
+  window._sldStore=sid;
+  var positions=getStorePositions(sid).filter(function(p){return p!=='Energy'&&p!=='Leadership';});
+  window._sldPositions=positions;
+  if(!window._sldPos || positions.indexOf(window._sldPos)<0) window._sldPos=positions[0]||'';
+  var pos=window._sldPos;
+  var storeChips=stores.map(function(s){ return '<span class="tag '+(s.id===sid?'tag-blue':'tag-gray')+'" style="cursor:pointer" onclick="_sldSetStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</span>'; }).join(' ');
+  var posChips=positions.map(function(p,i){ return '<span class="tag '+(p===pos?'tag-blue':'tag-gray')+'" style="cursor:pointer" onclick="_sldSetPosIdx('+i+')">'+escapeHtml(posLabel(p))+'</span>'; }).join(' ');
+  var rb=getEvalRubric(); var rows='';
+  [0,1,2,3].forEach(function(lv){
+    var cell=skillLvDescCell(sid,pos,lv)||{}; var rbl=rb[lv]?rb[lv].label:'';
+    rows+='<div style="border-top:1px solid var(--border);padding:8px 0">'
+      +'<div style="font-size:13px;font-weight:700;margin-bottom:4px"><span style="color:var(--accent)">Lv'+lv+'</span> <span style="font-size:11px;color:var(--muted);font-weight:600">'+escapeHtml(rbl)+'</span></div>'
+      +'<label class="form-label" style="font-size:11px">日本語</label><textarea class="form-input" id="sld-ja-'+lv+'" rows="2" style="margin-bottom:4px">'+escapeHtml(cell.ja||'')+'</textarea>'
+      +'<label class="form-label" style="font-size:11px">English</label><textarea class="form-input" id="sld-en-'+lv+'" rows="2">'+escapeHtml(cell.en||'')+'</textarea>'
+    +'</div>';
+  });
+  var html='<div class="modal-title">'+t('レベル説明の編集','Edit level descriptions')+'（'+escapeHtml(posLabel(pos))+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('店舗とポジションを選び、各レベルの内容を日英で入力。空欄は共通ルーブリックが表示されます。','Pick store & position, then enter each level in JA/EN. Blank falls back to the shared rubric.')+'</div>'
+    +'<div style="margin-bottom:6px">'+storeChips+'</div>'
+    +'<div style="margin-bottom:8px;display:flex;gap:4px;flex-wrap:wrap">'+posChips+'</div>'
+    +'<div style="max-height:44vh;overflow-y:auto">'+rows+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button>'
+    +'<button class="btn btn-primary" onclick="_sldSave()">'+t('保存','Save')+'</button></div>';
+  openModal(html);
+}
+function _sldCollect(){ var out={}; [0,1,2,3].forEach(function(lv){ var ja=document.getElementById('sld-ja-'+lv), en=document.getElementById('sld-en-'+lv); if(ja&&en) out[lv]={ja:ja.value,en:en.value}; }); return out; }
+function _sldSaveSilent(){ try{ var sid=window._sldStore,pos=window._sldPos; if(!sid||!pos)return; var c=_sldCollect(); [0,1,2,3].forEach(function(lv){ if(c[lv]) setSkillLvDescCell(sid,pos,lv,c[lv].ja,c[lv].en); }); }catch(e){} }
+function _sldSetStore(id){ _sldSaveSilent(); window._sldStore=id; window._sldPos=null; openSkillLvDescEditor(); }
+function _sldSetPosIdx(i){ _sldSaveSilent(); window._sldPos=(window._sldPositions||[])[i]; openSkillLvDescEditor(); }
+function _sldSave(){ _sldSaveSilent(); closeModalDirect(); showToast(t('保存しました','Saved'),'success'); if(curPage==='skill') renderPage('skill'); }
 function mySkillCardHtml(name, storeId){
   try{
     var _emp = getEmployees().find(function(x){return x.name===name;});
@@ -30916,6 +31024,7 @@ function mySkillCardHtml(name, storeId){
       vals = positions.map(function(p){ var x=sk[p]; return (x&&x.status==='承認')?(x.level||0):0; });
       maxLv = 3; titleLabel = t('あなたのスキルレベル','Your Skill Levels'); legendLabel = t('Lv0〜3（承認済みのみ）','Lv0–3 (approved only)');
     }
+    window._mySkillCtx = { name:name, storeId:storeId, isPrep:_isPrep, maxLv:maxLv, positions:positions, vals:vals };
     var n = positions.length, W=280, H=210, cx=W/2, cy=H/2+4, R=76;
     function pt(i, r){ var a=-Math.PI/2 + i*2*Math.PI/n; return [cx+r*Math.cos(a), cy+r*Math.sin(a)]; }
     var rings='';
@@ -30927,7 +31036,9 @@ function mySkillCardHtml(name, storeId){
       var e=pt(i,R); var l=pt(i,R+16);
       var anchor = Math.abs(l[0]-cx)<10?'middle':(l[0]>cx?'start':'end');
       return '<line x1="'+cx+'" y1="'+cy+'" x2="'+Math.round(e[0])+'" y2="'+Math.round(e[1])+'" stroke="var(--border)" stroke-width="1"/>'
-        +'<text x="'+Math.round(l[0])+'" y="'+Math.round(l[1])+'" font-size="9" fill="var(--muted)" text-anchor="'+anchor+'" dominant-baseline="middle">'+escapeHtml(posLabel(p))+'</text>';
+        +'<text x="'+Math.round(l[0])+'" y="'+Math.round(l[1])+'" font-size="9" fill="var(--muted)" text-anchor="'+anchor+'" dominant-baseline="middle" style="cursor:pointer" onclick="openMySkillLvPopup('+i+')">'+escapeHtml(posLabel(p))+'</text>'
+        +'<circle cx="'+Math.round(l[0])+'" cy="'+Math.round(l[1])+'" r="16" fill="transparent" style="cursor:pointer" onclick="openMySkillLvPopup('+i+')"/>'
+        +'<circle cx="'+Math.round(e[0])+'" cy="'+Math.round(e[1])+'" r="14" fill="transparent" style="cursor:pointer" onclick="openMySkillLvPopup('+i+')"/>';
     }).join('');
     var poly = positions.map(function(_,i){ return pt(i, R*Math.max(0.04,vals[i]/maxLv)).map(Math.round).join(','); }).join(' ');
     var dots = positions.map(function(_,i){ var c=pt(i, R*Math.max(0.04,vals[i]/maxLv)); return '<circle cx="'+Math.round(c[0])+'" cy="'+Math.round(c[1])+'" r="2.5" fill="var(--accent)"/>'; }).join('');
@@ -30936,7 +31047,7 @@ function mySkillCardHtml(name, storeId){
     return '<div class="card"><div class="card-title"><i class="ti ti-radar-2" style="color:var(--accent)"></i>'+titleLabel+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+legendLabel+'</span></div>'
       +svg
       +(_isPrep ? '' : (typeof skillLevelGaugeHtml==='function'?skillLevelGaugeHtml(name, storeId):''))
-      +'<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '+(_isPrep?t('Prepポジション別のスキルレベルです。','Your prep skill levels by position.'):t('レベルは管理者承認後に反映されます。Lvが上がるとチップ配分・昇格に近づきます。','Levels reflect approved skills.'))+'</div></div>';
+      +'<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '+t('軸をタップすると各レベルの内容を表示します。','Tap an axis to see level details.')+' '+(_isPrep?t('Prepポジション別のスキルレベルです。','Your prep skill levels by position.'):t('レベルは管理者承認後に反映されます。Lvが上がるとチップ配分・昇格に近づきます。','Levels reflect approved skills.'))+'</div></div>';
   }catch(e){ return ''; }
 }
 function renderMypage() {
@@ -37514,6 +37625,7 @@ function renderSkillManager() {
       ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openLevelRuleModal()"><i class="ti ti-adjustments"></i> ${t('昇格条件','Level-up rules')}</button>`:''}
       ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openPositionConfigModal()"><i class="ti ti-settings"></i> ${t('ポジション設定','Positions')}</button>`:''}
       ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openSkillRecovery()"><i class="ti ti-history"></i> ${t('履歴から復旧','Recover from history')}</button>`:''}
+      ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openSkillLvDescEditor()"><i class="ti ti-file-text"></i> ${t('レベル説明','Level info')}</button>`:''}
     </div>
   </div>`;
   html += evalRubricLegendHtml();
