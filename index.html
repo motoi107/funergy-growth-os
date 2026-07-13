@@ -16221,7 +16221,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '594';
+const APP_VERSION = '595';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34780,33 +34780,8 @@ function _assigneeScopeLabel(){
   return '自店のスタッフから選べます（G4以下）';
 }
 /* Grade別グルーピング＋名前絞り込みのピッカー */
-function openAssigneePicker(){ window._apQuery=window._apQuery||''; _renderAssigneePicker(); }
+function openAssigneePicker(){ window._apQuery=window._apQuery||''; window._apStore=(document.getElementById('tc-store')||{}).value||''; _renderAssigneePicker(); }
 function apSearch(v){ window._apQuery=v; _renderAssigneePicker(); var el=document.getElementById('ap-search'); if(el){ try{ el.focus(); el.setSelectionRange(el.value.length,el.value.length); }catch(e){} } }
-function _renderAssigneePicker(){
-  var q=(window._apQuery||'').toLowerCase();
-  var staff=assignableStaff();
-  var byGrade={}; staff.forEach(function(e){ var g=(typeof empGrade==='function'?empGrade(e):'')||'—'; (byGrade[g]=byGrade[g]||[]).push(e); });
-  var order=['G6','G5','G4','G3','G2','G1-P','G1'];
-  var grades=Object.keys(byGrade).sort(function(a,b){ var ia=order.indexOf(a),ib=order.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib); });
-  window._apList=[]; var body='';
-  grades.forEach(function(g){
-    var list=byGrade[g].filter(function(e){ return !q || String(e.name).toLowerCase().indexOf(q)>=0; });
-    if(!list.length) return;
-    body+='<div style="margin:8px 0 4px;font-size:11px;font-weight:700;color:var(--muted)">'+escapeHtml(g)+' <span style="font-weight:400">('+list.length+')</span></div>';
-    body+='<div style="display:flex;gap:6px;flex-wrap:wrap">'+list.map(function(e){
-      var idx=window._apList.length; window._apList.push(e.name);
-      var st=STORES.find(function(s){return s.id===e.store;});
-      return '<span class="tag tag-gray" style="cursor:pointer;font-size:12px" onclick="pickAssigneeIdx('+idx+')">'+escapeHtml(e.name)+(st?' <span style="color:var(--muted);font-size:9px">'+escapeHtml(st.name)+'</span>':'')+'</span>';
-    }).join('')+'</div>';
-  });
-  if(!body) body='<div style="color:var(--muted);font-size:13px;padding:10px">該当なし</div>';
-  var html='<div class="modal-title">担当者を選ぶ <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><i class="ti ti-shield-lock"></i> '+_assigneeScopeLabel()+'</div>'
-    +'<input class="form-input" id="ap-search" value="'+escapeHtml(window._apQuery||'')+'" placeholder="名前で絞り込み…" oninput="apSearch(this.value)" style="margin-bottom:6px">'
-    +'<div style="max-height:52vh;overflow-y:auto">'+body+'</div>'
-    +'<div class="btn-row"><button class="btn btn-secondary" onclick="_setCreateAssignee(\'\');closeModalDirect()">未割当にする</button><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
-  openModal(html);
-}
 function pickAssigneeIdx(i){ _setCreateAssignee((window._apList||[])[i]||''); closeModalDirect(); }
 function _setCreateAssignee(name){ var inp=document.getElementById('tc-assignee'); var lab=document.getElementById('tc-assignee-label'); if(inp)inp.value=name; if(lab)lab.textContent=name||'未選択'; }
 /* 期限クイックボタン */
@@ -34840,7 +34815,7 @@ function renderTaskCreate(){
       +'<input class="form-input" id="tc-due" type="date"></div>'
     +'<div class="form-row">'
       +'<div class="form-group"><label class="form-label">区分</label><select class="form-select" id="tc-type"><option>店舗</option><option>個人</option></select></div>'
-      +'<div class="form-group"><label class="form-label">店舗</label><select class="form-select" id="tc-store">'+storeOpts.map(function(s){return '<option value="'+s.id+'"'+(s.id===defStore?' selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('')+'</select></div>'
+      +'<div class="form-group"><label class="form-label">店舗</label><select class="form-select" id="tc-store" onchange="_setCreateAssignee(\'\')">'+storeOpts.map(function(s){return '<option value="'+s.id+'"'+(s.id===defStore?' selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('')+'</select></div>'
     +'</div>'
     +'<div class="form-row">'
       +'<div class="form-group"><label class="form-label">重要度</label><select class="form-select" id="tc-priority"><option>低</option><option selected>中</option><option>高</option></select></div>'
@@ -34886,6 +34861,75 @@ function taskTopTabsHtml(){
     +'<div class="phase-tab'+(v==='list'?' active':'')+'" onclick="setTaskView(\'list\')"><i class="ti ti-list-check" style="font-size:12px"></i> 一覧</div>'
     +'</div>';
 }
+/* この店を管轄するAM（G5+）か */
+function _apAmManages(e, storeId){
+  if((typeof empGradeNum==='function'?empGradeNum(e):0)<5) return false;
+  if(typeof amStoresOf==='function'){ var mine=amStoresOf(e.name)||[]; return mine.indexOf(storeId)>=0; }
+  return true;
+}
+/* 担当者ピッカー本体：店舗が選ばれていれば「その店のスタッフ＋上位Grade（管理者）」、ALLはGrade別 */
+function _renderAssigneePicker(){
+  var q=(window._apQuery||'').toLowerCase();
+  var sid=window._apStore||'';
+  var groups=[];
+  if(sid && sid!=='ALL'){
+    var emps=getEmployees().filter(function(e){return e.status!=='退職';});
+    var base=emps.filter(function(e){ return e.store===sid; });
+    var higher=emps.filter(function(e){ return e.store!==sid && (['gm','ceo','office'].indexOf(e.role)>=0 || _apAmManages(e,sid)); });
+    var stObj=STORES.find(function(s){return s.id===sid;});
+    groups.push({label:'この店舗（'+(stObj?stObj.name:sid)+'）', list:base});
+    groups.push({label:'上位Grade（管理者）', list:higher});
+  } else {
+    var staff=assignableStaff();
+    var byGrade={}; staff.forEach(function(e){ var g=(typeof empGrade==='function'?empGrade(e):'')||'—'; (byGrade[g]=byGrade[g]||[]).push(e); });
+    var order=['G6','G5','G4','G3','G2','G1-P','G1'];
+    Object.keys(byGrade).sort(function(a,b){ var ia=order.indexOf(a),ib=order.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib); }).forEach(function(g){ groups.push({label:g, list:byGrade[g]}); });
+  }
+  window._apList=[]; var body='';
+  groups.forEach(function(grp){
+    var list=(grp.list||[]).filter(function(e){ return !q || String(e.name).toLowerCase().indexOf(q)>=0; });
+    if(!list.length) return;
+    body+='<div style="margin:8px 0 4px;font-size:11px;font-weight:700;color:var(--muted)">'+escapeHtml(grp.label)+' <span style="font-weight:400">('+list.length+')</span></div>';
+    body+='<div style="display:flex;gap:6px;flex-wrap:wrap">'+list.map(function(e){
+      var idx=window._apList.length; window._apList.push(e.name);
+      var st=STORES.find(function(s){return s.id===e.store;});
+      var gd=(typeof empGrade==='function'?empGrade(e):'');
+      return '<span class="tag tag-gray" style="cursor:pointer;font-size:12px" onclick="pickAssigneeIdx('+idx+')">'+escapeHtml(e.name)+' <span style="color:var(--muted);font-size:9px">'+escapeHtml(gd)+(st?'·'+escapeHtml(st.name):'')+'</span></span>';
+    }).join('')+'</div>';
+  });
+  if(!body) body='<div style="color:var(--muted);font-size:13px;padding:10px">該当なし</div>';
+  var scopeLine=(sid&&sid!=='ALL') ? '<i class="ti ti-building-store"></i> 選択中の店舗のスタッフ＋上位Grade（管理者）' : ('<i class="ti ti-shield-lock"></i> '+_assigneeScopeLabel());
+  var html='<div class="modal-title">担当者を選ぶ <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+scopeLine+'</div>'
+    +'<input class="form-input" id="ap-search" value="'+escapeHtml(window._apQuery||'')+'" placeholder="名前で絞り込み…" oninput="apSearch(this.value)" style="margin-bottom:6px">'
+    +'<div style="max-height:52vh;overflow-y:auto">'+body+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="_setCreateAssignee(\'\');closeModalDirect()">未割当にする</button><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(html);
+}
+/* 自分が他の人に出したタスク（担当者別・一目で把握） */
+function renderTaskAssignedByMe(){
+  var me=myName();
+  var all=getTasksN().filter(function(t){ return t.createdBy===me && t.assignee && t.assignee!==me; });
+  var active=all.filter(function(t){ return t.status!=='完了'; });
+  var byP={}; active.forEach(function(t){ (byP[t.assignee]=byP[t.assignee]||[]).push(t); });
+  var html='<div class="card" style="padding:10px 12px"><div style="font-size:12px;color:var(--muted)"><i class="ti ti-send" style="color:var(--accent)"></i> 自分が出した未完了タスク: <b style="color:var(--text)">'+active.length+'</b>件 / '+Object.keys(byP).length+'名</div></div>';
+  if(!active.length){ html+='<div class="card" style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-send" style="font-size:26px;display:block;margin-bottom:6px"></i>他の人に出した未完了タスクはありません</div>'; }
+  Object.keys(byP).sort().forEach(function(n){
+    var list=byP[n];
+    var od=list.filter(function(t){ return taskDueInfo(t.due).overdue; }).length;
+    html+='<div class="card"><div class="card-title"><span style="width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;display:inline-flex;align-items:center;justify-content:center;margin-right:6px">'+escapeHtml(n[0]||'?')+'</span>'+escapeHtml(n)+' <span style="color:var(--muted);font-weight:400;font-size:12px">('+list.length+')</span>'+(od?' <span class="tag" style="background:var(--eval-low);color:#fff;font-size:9px;margin-left:6px">期限超過 '+od+'</span>':'')+'</div>';
+    list.sort(function(a,b){ return (a.due||'9999')<(b.due||'9999')?-1:1; });
+    list.forEach(function(t){ var di=taskDueInfo(t.due); html+='<div style="display:flex;gap:8px;align-items:center;font-size:13px;padding:7px 0;border-top:1px solid var(--border);cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><span class="tag" style="background:'+taskStatusColor(t.status)+';color:#fff;font-size:9px">'+t.status+'</span><span style="flex:1">'+escapeHtml(t.title)+(t.recur&&t.recur.type&&t.recur.type!=='none'?' <i class="ti ti-repeat" style="color:var(--accent2);font-size:11px"></i>':'')+'</span>'+(di.label?'<span style="color:'+di.color+';font-size:12px;white-space:nowrap">'+di.label+'</span>':'')+'</div>'; });
+    html+='</div>';
+  });
+  var done=all.filter(function(t){ return t.status==='完了'; });
+  if(done.length){
+    html+='<details style="margin-top:6px"><summary style="font-size:13px;font-weight:600;cursor:pointer;color:var(--green)"><i class="ti ti-history"></i> 完了 ('+done.length+')</summary>';
+    done.slice().reverse().slice(0,30).forEach(function(t){ html+='<div class="approval-item" style="cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">'+escapeHtml(t.title)+'</div><span class="tag tag-green">完了</span></div><div class="approval-meta">'+escapeHtml(t.assignee||'')+' · '+(t.completedDate||'')+'</div></div>'; });
+    html+='</details>';
+  }
+  return html;
+}
 function renderTasks(){
   try{ ensureRecurringTasks(); taskDeadlineReminders(); checkCashTipTasks(); }catch(e){}
   var canManage = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
@@ -34896,12 +34940,14 @@ function renderTasks(){
   html += '<div class="phase-tabs">'
     +'<div class="phase-tab'+(taskTab==='store'?' active':'')+'" onclick="setTaskTab(\'store\')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗タスク</div>'
     +'<div class="phase-tab'+(taskTab==='mine'?' active':'')+'" onclick="setTaskTab(\'mine\')"><i class="ti ti-user" style="font-size:12px"></i> 個人タスク</div>'
+    +'<div class="phase-tab'+(taskTab==='byme'?' active':'')+'" onclick="setTaskTab(\'byme\')"><i class="ti ti-send" style="font-size:12px"></i> 出したタスク</div>'
     +(canManage?'<div class="phase-tab'+(taskTab==='admin'?' active':'')+'" onclick="setTaskTab(\'admin\')"><i class="ti ti-eye" style="font-size:12px"></i> 管理ビュー</div>':'')
     +'</div>';
   html += taskAssigneeDatalistHtml();
   html += '<div class="card" style="padding:8px 12px;margin-bottom:8px"><div style="display:flex;gap:6px;align-items:center"><i class="ti ti-search" style="color:var(--muted)"></i>'
     +'<input class="form-input" id="task-search" list="dl-task-assignees" value="'+escapeHtml(taskSearch)+'" placeholder="担当者名で検索（タスク名も可）…" style="flex:1;font-size:13px" oninput="taskSearchSet(this.value)">'
     +(taskSearch?'<button class="btn btn-secondary btn-sm" onclick="taskSearchSet(\'\')">クリア</button>':'')+'</div></div>';
+  if(taskTab==='byme') return html + renderTaskAssignedByMe();
   if(taskTab==='mine') return html + renderTaskMine();
   if(taskTab==='admin' && canManage) return html + renderTaskAdmin();
   return html + renderTaskStore();
