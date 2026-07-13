@@ -10761,6 +10761,9 @@ function renderBudgetDaily() {
   // 日次テーブル
   var canEdit = ROLE_CONFIG[curRole].canCreate;
   var guestLabel = (!isAgg && scopeStores[0]) ? guestCountLabel(scopeStores[0].id) : t('客数','Guests');
+  // 日毎リピート率（bowls: repeat/(first+repeat)）を表示するか — FSP/WGS以外＆当月にfirst/repeatデータがある場合のみ
+  var showRR = false;
+  try{ showRR = scopeStores.length && scopeStores.every(function(s){return s.id!=='F03'&&s.id!=='F03-G';}) && days.some(function(dd){ return scopeStores.some(function(s){ var ov=(getDailyActuals(s.id)[dd.date]||{}); return ov.firstTimeBowls!=null||ov.repeatBowls!=null; }); }); }catch(e){}
   html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>${t('日次一覧','Daily list')}
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>
@@ -10768,7 +10771,7 @@ function renderBudgetDaily() {
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div></div>
     <table class="inv-table" style="min-width:${isAgg?'620':'1080'}px;font-size:12px"><thead><tr>
-      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'</th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
+      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'</th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'</th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
   var cumB=0, cumA=0;
@@ -10795,6 +10798,7 @@ function renderBudgetDaily() {
       if(_tl>0){ var _ex=_storeExtra[s.id]||{sal:0,ins:0}; dayLaborCost += _tl*(1+PAYROLL_TAX_RATE)+_ex.sal*(1+PAYROLL_TAX_RATE)+_ex.ins; }
     });
     var dayRT = (dayFirst+dayRepeat)>0 ? Math.round(dayRepeat/(dayFirst+dayRepeat)*1000)/10 : null;
+    var rtCellTd = showRR ? ('<td style="text-align:center;font-size:11px">'+(dayRT!=null?('<span title="first '+dayFirst+' / repeat '+dayRepeat+'" style="font-weight:600;color:var(--accent2)">'+dayRT+'%</span>'):'<span style="color:var(--muted)">—</span>')+'</td>') : '';
     var dayHol = !isAgg ? dayEventFor(d.date) : '';
     if (!isAgg) { try{ var _bd=(STORES.find(function(x){return x.id===scopeStores[0].id;})||{}).bizDays; var _bv=_bd?_bd[d.dow]:null; if(_bv){ dayHol=(dayHol?dayHol+' ':'')+(_bv==='closed'?t('定休','Closed'):_bv==='lclose'?t('L休','L off'):t('D休','D off')); } }catch(e){} }
     var dayMemo = (!isAgg && event && !eventAuto) ? event : '';
@@ -10817,6 +10821,7 @@ function renderBudgetDaily() {
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="'+t('Toast実績','Toast actual')+'"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="${t('手入力','Manual')}: ${escapeHtml(_manBy)}"></i>`:''}</td>
       ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="${t('テイクアウト丼数','Takeout bowls')}"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
+      ${rtCellTd}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${pctColor(cumRate)};font-size:11px">${cumRate}%</span></td>
       ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="${t('チップ総額','Tip total')} $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
@@ -16200,7 +16205,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '590';
+const APP_VERSION = '591';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
