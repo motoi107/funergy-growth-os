@@ -16200,7 +16200,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '587';
+const APP_VERSION = '588';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -16775,6 +16775,7 @@ function renderShiftAdmin() {
   <div class="phase-tabs" style="flex-wrap:wrap;gap:4px">
     <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')"><i class="ti ti-clipboard-check" style="font-size:12px"></i> 提出状況</div>
     <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')"><i class="ti ti-calendar-plus" style="font-size:12px"></i> シフト作成</div>
+    <div class="phase-tab${shiftAdminTab==='table'?' active':''}" onclick="setShiftAdminTab('table')"><i class="ti ti-table" style="font-size:12px"></i> シフト表</div>
     <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')"><i class="ti ti-users-group" style="font-size:12px"></i> カバー候補</div>
     <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')"><i class="ti ti-coin" style="font-size:12px"></i> Labor Cost</div>
@@ -16785,6 +16786,7 @@ function renderShiftAdmin() {
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
   else if (shiftAdminTab==='build') html += renderShiftBuild(storeId, week);
+  else if (shiftAdminTab==='table') html += renderShiftTable(storeId, week);
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
   else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
@@ -17089,6 +17091,130 @@ function renderAieaBuild(storeId, week, plan, warnings){
     h+='<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i> No warnings</div>';
   }
   return h;
+}
+
+/* ============================================================
+   シフト表（スプレッドシート形式の表示）
+   自動振り分け結果(plan.cells[曜日_区分_ポジション]=氏名)を、
+   従業員×曜日（各日 L=開始 / D=終了 / 時間）＋ポジション行 で表示。
+   時刻は getShiftPosTimes(区分,ポジション)、時間=終了-開始。
+   まずは ToriTon(F01) / Tenkichi(F02) 用（他店でも動作）。
+============================================================ */
+function _stTimeToMin(hhmm){ if(!hhmm) return null; var p=String(hhmm).split(':'); if(p.length<2) return null; var h=parseInt(p[0],10), m=parseInt(p[1],10); if(isNaN(h)||isNaN(m)) return null; return h*60+m; }
+function _stFmtHM(min){ if(min==null) return ''; var h=Math.floor(min/60), m=min%60; return h+':'+String(m).padStart(2,'0'); }
+function _stPosTime(storeId, period, pos){ var m=getShiftPosTimes(storeId); return m[_stKey(period,pos)] || m[_stKey('',pos)] || m[pos] || {}; }
+function shiftTableData(storeId, week){
+  var plan=getShiftPlan(storeId, week)||{cells:{}};
+  var cells=plan.cells||{};
+  var byEmp={};
+  Object.keys(cells).forEach(function(k){
+    var name=cells[k]; if(!name) return;
+    var parts=String(k).split('_'); if(parts.length<3) return;
+    var day=parts[0], period=parts[1], pos=parts.slice(2).join('_');
+    if(DOW_SHIFT.indexOf(day)<0) return;
+    var tt=_stPosTime(storeId, period, pos);
+    var e=byEmp[name]=byEmp[name]||{days:{}, total:0};
+    var d=e.days[day]=e.days[day]||{segs:[]};
+    d.segs.push({period:period, pos:pos, start:tt.start||'', end:tt.end||''});
+  });
+  Object.keys(byEmp).forEach(function(name){
+    var e=byEmp[name]; e.total=0;
+    Object.keys(e.days).forEach(function(day){
+      var d=e.days[day];
+      var order={Lunch:0, Prep:-1, Dinner:1};
+      d.segs.sort(function(a,b){ return (order[a.period]!=null?order[a.period]:0)-(order[b.period]!=null?order[b.period]:0); });
+      var starts=d.segs.map(function(s){return _stTimeToMin(s.start);}).filter(function(x){return x!=null;});
+      var ends=d.segs.map(function(s){return _stTimeToMin(s.end);}).filter(function(x){return x!=null;});
+      d.startMin = starts.length? Math.min.apply(null,starts):null;
+      d.endMin = ends.length? Math.max.apply(null,ends):null;
+      d.hours = (d.startMin!=null && d.endMin!=null && d.endMin>d.startMin)? Math.round((d.endMin-d.startMin)/6)/10 : null;
+      // 重複ポジションを除いた並び
+      var seen={}, pl=[]; d.segs.forEach(function(s){ if(s.pos && !seen[s.pos]){ seen[s.pos]=1; pl.push(s.pos); } });
+      d.posList = pl;
+      if(d.hours) e.total += d.hours;
+    });
+  });
+  return byEmp;
+}
+function renderShiftTable(storeId, week){
+  var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
+  var data=shiftTableData(storeId, week);
+  var names=Object.keys(data).sort(function(a,b){ return data[b].total-data[a].total; });
+  var dates=DOW_SHIFT.map(weekDateForDow);
+  var timeSet=false; try{ timeSet = Object.keys(getShiftPosTimes(storeId)||{}).length>0; }catch(e){}
+
+  var html='<div class="card" style="padding:10px 12px;margin-bottom:10px">'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +'<button class="btn btn-primary btn-sm" onclick="autoGenShift(\''+storeId+'\',\''+week+'\')"><i class="ti ti-wand"></i> '+t('自動振り分け','Auto-assign')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor(\''+storeId+'\')"><i class="ti ti-clock"></i> '+t('時刻設定','Set times')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="setShiftAdminTab(\'build\')"><i class="ti ti-adjustments"></i> '+t('本数設定・編集','Counts / edit')+'</button>'
+    +'<div style="flex:1"></div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> '+t('画像','Image')+'</button>'
+    +'</div>'
+    +(!timeSet?'<div style="font-size:11px;color:var(--red);margin-top:8px"><i class="ti ti-info-circle"></i> '+t('各ポジションの開始・終了時刻が未設定です。「時刻設定」で入力すると、L（開始）/D（終了）/時間が表示されます。','Position start/end times are not set. Use “Set times” so L (start) / D (end) / Hours appear.')+'</div>':'')
+    +'</div>';
+
+  if(!names.length){
+    return html+'<div class="card" style="text-align:center;padding:26px;color:var(--muted)"><i class="ti ti-calendar-off" style="font-size:26px"></i><div style="margin-top:8px;font-size:13px">'+t('この週の自動振り分け結果がまだありません。','No auto-assigned shift for this week yet.')+'</div><div style="font-size:11px;margin-top:4px">'+t('「自動振り分け」を押すと、ここに表示されます。','Press “Auto-assign” to populate this table.')+'</div></div>';
+  }
+
+  // 曜日ヘッダ（日付つき）
+  var dayHead='';
+  DOW_SHIFT.forEach(function(dw,i){
+    var ds=dates[i]?dates[i].slice(5).replace('-','/'):'';
+    dayHead+='<th colspan="3" style="text-align:center;border-left:2px solid var(--border);font-size:10px;padding:4px 2px">'+dw+'<div style="font-size:9px;color:var(--muted);font-weight:400">'+ds+'</div></th>';
+  });
+  var subHead=DOW_SHIFT.map(function(){ return '<th style="border-left:2px solid var(--border);font-size:9px;padding:2px 3px">L</th><th style="font-size:9px;padding:2px 3px">D</th><th style="font-size:9px;padding:2px 3px;color:var(--accent)">'+t('時間','Hrs')+'</th>'; }).join('');
+
+  html+='<div class="card" style="overflow-x:auto;padding:8px"><div style="font-size:12px;font-weight:800;margin-bottom:6px"><i class="ti ti-table" style="color:var(--accent)"></i> '+escapeHtml(store.name)+' '+t('シフト表','Shift Table')+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+t('（自動振り分け結果／L=開始・D=終了・時間・下段=ポジション）','(auto-assign result / L=start, D=end, Hrs; lower row = position)')+'</span></div>';
+  html+='<table class="inv-table" style="min-width:920px;font-size:11px;border-collapse:collapse"><thead>'
+    +'<tr><th rowspan="2" style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:120px">'+t('スタッフ','Staff')+'</th>'+dayHead+'<th rowspan="2" style="border-left:2px solid var(--accent);color:var(--accent);font-size:10px">'+t('週計','Week')+'</th></tr>'
+    +'<tr>'+subHead+'</tr></thead><tbody>';
+
+  var dayCount={}, dayHours={};
+  DOW_SHIFT.forEach(function(dw){ dayCount[dw]=0; dayHours[dw]=0; });
+
+  names.forEach(function(name){
+    var e=data[name];
+    // 時間行
+    html+='<tr style="border-top:2px solid var(--border)"><td rowspan="2" style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface);z-index:1;vertical-align:middle">'+escapeHtml(name)+'</td>';
+    DOW_SHIFT.forEach(function(dw){
+      var d=e.days[dw];
+      if(d && (d.startMin!=null || d.endMin!=null)){
+        dayCount[dw]++; if(d.hours) dayHours[dw]+=d.hours;
+        html+='<td style="text-align:center;border-left:2px solid var(--border);white-space:nowrap">'+(d.startMin!=null?_stFmtHM(d.startMin):'')+'</td>'
+          +'<td style="text-align:center;white-space:nowrap">'+(d.endMin!=null?_stFmtHM(d.endMin):'')+'</td>'
+          +'<td style="text-align:center;font-weight:700;color:var(--accent)">'+(d.hours!=null?d.hours:'')+'</td>';
+      } else if(d){ // 割当あるが時刻未設定
+        dayCount[dw]++;
+        html+='<td colspan="3" style="text-align:center;border-left:2px solid var(--border);color:var(--muted);font-size:10px">'+t('割当','ON')+'</td>';
+      } else {
+        html+='<td colspan="3" style="border-left:2px solid var(--border);text-align:center;color:var(--border)">·</td>';
+      }
+    });
+    html+='<td style="border-left:2px solid var(--accent);text-align:center;font-weight:800;color:var(--accent)">'+(e.total?Math.round(e.total*10)/10:'')+'</td></tr>';
+    // ポジション行
+    html+='<tr>';
+    DOW_SHIFT.forEach(function(dw){
+      var d=e.days[dw];
+      var pos=(d&&d.posList&&d.posList.length)? d.posList.join(' / '):'';
+      html+='<td colspan="3" style="text-align:center;border-left:2px solid var(--border);font-size:9.5px;color:var(--accent2);padding-bottom:4px">'+escapeHtml(pos)+'</td>';
+    });
+    html+='<td style="border-left:2px solid var(--accent)"></td></tr>';
+  });
+
+  // フッタ: 人数・合計時間
+  html+='</tbody><tfoot>';
+  html+='<tr style="border-top:2px solid var(--accent)"><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface2)">'+t('人数','People')+'</td>';
+  DOW_SHIFT.forEach(function(dw){ html+='<td colspan="3" style="text-align:center;border-left:2px solid var(--border);font-weight:700;background:var(--surface2)">'+(dayCount[dw]||'')+'</td>'; });
+  html+='<td style="border-left:2px solid var(--accent);background:var(--surface2)"></td></tr>';
+  var grand=0;
+  html+='<tr><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface2)">'+t('合計時間','Total hrs')+'</td>';
+  DOW_SHIFT.forEach(function(dw){ var hh=Math.round((dayHours[dw]||0)*10)/10; grand+=hh; html+='<td colspan="3" style="text-align:center;border-left:2px solid var(--border);font-weight:700;background:var(--surface2)">'+(hh||'')+'</td>'; });
+  html+='<td style="border-left:2px solid var(--accent);text-align:center;font-weight:800;color:var(--accent);background:var(--surface2)">'+(Math.round(grand*10)/10||'')+'</td></tr>';
+  html+='</tfoot></table>';
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"><i class="ti ti-info-circle"></i> '+t('L=開始時刻・D=終了時刻・時間=D−L。下段はその日のポジション。時刻は「時刻設定」で各区分×ポジションに設定した値です。本数・警告・公開は「本数設定・編集」タブから。','L=start, D=end, Hrs=D−L. Lower row = that day’s position. Times come from “Set times” per section × position. Counts, warnings, and publishing are in the “Counts / edit” tab.')+'</div></div>';
+  return html;
 }
 
 function renderShiftBuild(storeId, week) {
