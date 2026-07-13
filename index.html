@@ -16221,7 +16221,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '595';
+const APP_VERSION = '596';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34909,23 +34909,31 @@ function _renderAssigneePicker(){
 /* 自分が他の人に出したタスク（担当者別・一目で把握） */
 function renderTaskAssignedByMe(){
   var me=myName();
-  var all=getTasksN().filter(function(t){ return t.createdBy===me && t.assignee && t.assignee!==me; });
-  var active=all.filter(function(t){ return t.status!=='完了'; });
-  var byP={}; active.forEach(function(t){ (byP[t.assignee]=byP[t.assignee]||[]).push(t); });
-  var html='<div class="card" style="padding:10px 12px"><div style="font-size:12px;color:var(--muted)"><i class="ti ti-send" style="color:var(--accent)"></i> 自分が出した未完了タスク: <b style="color:var(--text)">'+active.length+'</b>件 / '+Object.keys(byP).length+'名</div></div>';
-  if(!active.length){ html+='<div class="card" style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-send" style="font-size:26px;display:block;margin-bottom:6px"></i>他の人に出した未完了タスクはありません</div>'; }
+  var mine=getTasksN().filter(function(t){ return t.createdBy===me && t.assignee!==me; });
+  var active=mine.filter(function(t){ return t.status!=='完了'; });
+  var un=active.filter(function(t){ return !t.assignee; });
+  var byP={}; active.filter(function(t){ return !!t.assignee; }).forEach(function(t){ (byP[t.assignee]=byP[t.assignee]||[]).push(t); });
+  var nPeople=Object.keys(byP).length;
+  function row(t){ var di=taskDueInfo(t.due); return '<div style="display:flex;gap:8px;align-items:center;font-size:13px;padding:7px 0;border-top:1px solid var(--border);cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><span class="tag" style="background:'+taskStatusColor(t.status)+';color:#fff;font-size:9px">'+t.status+'</span><span style="flex:1">'+escapeHtml(t.title)+(t.recur&&t.recur.type&&t.recur.type!=='none'?' <i class="ti ti-repeat" style="color:var(--accent2);font-size:11px"></i>':'')+'</span>'+(di.label?'<span style="color:'+di.color+';font-size:12px;white-space:nowrap">'+di.label+'</span>':'')+'</div>'; }
+  var html='<div class="card" style="padding:10px 12px"><div style="font-size:12px;color:var(--muted)"><i class="ti ti-send" style="color:var(--accent)"></i> 自分が出した未完了タスク: <b style="color:var(--text)">'+active.length+'</b>件（'+nPeople+'名'+(un.length?' ＋ 未割当'+un.length:'')+'）</div></div>';
+  if(!active.length){ html+='<div class="card" style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-send" style="font-size:26px;display:block;margin-bottom:6px"></i>自分が出した未完了タスクはありません</div>'; }
+  if(un.length){
+    html+='<div class="card" style="border-left:3px solid var(--eval-mid)"><div class="card-title"><i class="ti ti-inbox" style="color:var(--eval-mid)"></i>未割当 <span style="color:var(--muted);font-weight:400;font-size:12px">('+un.length+') — 担当を決めましょう</span></div>';
+    un.sort(function(a,b){ return (a.due||'9999')<(b.due||'9999')?-1:1; });
+    un.forEach(function(t){ html+=row(t); });
+    html+='</div>';
+  }
   Object.keys(byP).sort().forEach(function(n){
-    var list=byP[n];
-    var od=list.filter(function(t){ return taskDueInfo(t.due).overdue; }).length;
+    var list=byP[n]; var od=list.filter(function(t){ return taskDueInfo(t.due).overdue; }).length;
     html+='<div class="card"><div class="card-title"><span style="width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;display:inline-flex;align-items:center;justify-content:center;margin-right:6px">'+escapeHtml(n[0]||'?')+'</span>'+escapeHtml(n)+' <span style="color:var(--muted);font-weight:400;font-size:12px">('+list.length+')</span>'+(od?' <span class="tag" style="background:var(--eval-low);color:#fff;font-size:9px;margin-left:6px">期限超過 '+od+'</span>':'')+'</div>';
     list.sort(function(a,b){ return (a.due||'9999')<(b.due||'9999')?-1:1; });
-    list.forEach(function(t){ var di=taskDueInfo(t.due); html+='<div style="display:flex;gap:8px;align-items:center;font-size:13px;padding:7px 0;border-top:1px solid var(--border);cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><span class="tag" style="background:'+taskStatusColor(t.status)+';color:#fff;font-size:9px">'+t.status+'</span><span style="flex:1">'+escapeHtml(t.title)+(t.recur&&t.recur.type&&t.recur.type!=='none'?' <i class="ti ti-repeat" style="color:var(--accent2);font-size:11px"></i>':'')+'</span>'+(di.label?'<span style="color:'+di.color+';font-size:12px;white-space:nowrap">'+di.label+'</span>':'')+'</div>'; });
+    list.forEach(function(t){ html+=row(t); });
     html+='</div>';
   });
-  var done=all.filter(function(t){ return t.status==='完了'; });
+  var done=mine.filter(function(t){ return t.status==='完了'; });
   if(done.length){
     html+='<details style="margin-top:6px"><summary style="font-size:13px;font-weight:600;cursor:pointer;color:var(--green)"><i class="ti ti-history"></i> 完了 ('+done.length+')</summary>';
-    done.slice().reverse().slice(0,30).forEach(function(t){ html+='<div class="approval-item" style="cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">'+escapeHtml(t.title)+'</div><span class="tag tag-green">完了</span></div><div class="approval-meta">'+escapeHtml(t.assignee||'')+' · '+(t.completedDate||'')+'</div></div>'; });
+    done.slice().reverse().slice(0,30).forEach(function(t){ html+='<div class="approval-item" style="cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">'+escapeHtml(t.title)+'</div><span class="tag tag-green">完了</span></div><div class="approval-meta">'+escapeHtml(t.assignee||'未割当')+' · '+(t.completedDate||'')+'</div></div>'; });
     html+='</details>';
   }
   return html;
