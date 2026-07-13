@@ -4319,8 +4319,50 @@ var OP_MERGE = {
   m_store_kpi:    { merge: mergeMapByKey, covers: _coversMapByKey },
   m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey },
   invoices:       { merge: mergeInvoices, covers: _coversInvoices },
-  reimbursements: { merge: mergeInvoices, covers: _coversInvoices }
+  reimbursements: { merge: mergeInvoices, covers: _coversInvoices },
+  tasks_all:      { merge: mergeTasks, covers: _coversTasks, after: function(){ try{ if(curPage==='tasks') renderPage('tasks'); }catch(e){} } }
 };
+/* tasks_all を和集合マージ（id単位・新しい方優先・_deleted優先で復活防止）＝端末間で新規タスクが消えないように */
+function _tkTs(t){ return Number(t && (t.updatedTs || (t.created?Date.parse(t.created):0) || 0)) || 0; }
+function mergeTasks(cloudArr, localArr){
+  var by={}, order=[];
+  function put(item, isLocal){
+    if(!item || item.id==null) return;
+    var id=item.id;
+    if(!by[id]){ by[id]=item; order.push(id); return; }
+    var cur=by[id], win;
+    if(_rtDel(cur)!==_rtDel(item)){ win=_rtDel(cur)?cur:item; }        // 削除優先（復活防止）
+    else if(_tkTs(item)!==_tkTs(cur)){ win=_tkTs(item)>_tkTs(cur)?item:cur; }  // 新しい方
+    else { win=isLocal?item:cur; }
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+function _coversTasks(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x&&x.id!=null) have[x.id]=x; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(!w||w.id==null) continue;
+    var h=have[w.id]; if(!h) return false;
+    if(w._deleted && !h._deleted) return false;
+    if(_tkTs(w) && _tkTs(h) && _tkTs(h)<_tkTs(w)) return false;
+  }
+  return true;
+}
+/* タスク画面を開いたら1回、クラウドとマージ取得＋この端末の分を押し上げ（消失防止・端末間復旧） */
+var _tasksSynced=false;
+function maybeSyncTasks(){
+  if(_tasksSynced) return;
+  if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ _tasksSynced=true; return; }
+  _tasksSynced=true;
+  try{
+    pullOpKey('tasks_all').then(function(){
+      if(curPage==='tasks') renderPage('tasks');
+      if(typeof opMergePush==='function'){ opMergePush('tasks_all', getTasks()).then(function(){ if(curPage==='tasks') renderPage('tasks'); }).catch(function(){}); }
+    }).catch(function(){});
+  }catch(e){}
+}
 /* プレフィックス一致のマージ定義（動的キー用：skills_st_<store>） */
 /* キャッシュチップの店舗マップ {date:{lunch,dinner,lunchEntered,dinnerEntered,entered,by,at,editedBy,editedAt}} のマージ。
    日付で和集合／同一日付はL/D側ごとに保持（片方入力の取りこぼし防止）、値の衝突は editedAt||at の新しい方を優先。物理削除なし＝tombstone不要 */
@@ -16221,7 +16263,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '596';
+const APP_VERSION = '597';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34280,7 +34322,7 @@ function normalizeTask(t){
   if(!t.updatedTs) t.updatedTs = t.created ? Date.parse(t.created)||Date.now() : Date.now();
   return t;
 }
-function getTasksN(){ return getTasks().map(normalizeTask); }
+function getTasksN(){ return getTasks().filter(function(t){ return t && !t._deleted; }).map(normalizeTask); }
 function taskById(id){ return getTasksN().find(function(t){return t.id===id;}); }
 function saveTaskObj(t){ var arr=getTasks(); var i=arr.findIndex(function(x){return x.id===t.id;}); if(i>=0)arr[i]=t; else arr.push(t); setTasks(arr); }
 function addTaskLog(t, action){ t.log.push({date:tsNow(), by:myName(), action:action}); t.updatedTs=Date.now(); }
@@ -34315,7 +34357,7 @@ function nextRecurDue(recur, fromDue){
 function ensureRecurringTasks(){
   var arr=getTasks(); var changed=false; var todayISO=isoDateStr(new Date());
   var series={};
-  arr.forEach(function(t){ if(t.recur && t.recur.type && t.recur.type!=='none' && t.due){ var sid=t.seriesId||t.id; (series[sid]=series[sid]||[]).push(t); } });
+  arr.forEach(function(t){ if(t.recur && t.recur.type && t.recur.type!=='none' && t.due && !t._deleted){ var sid=t.seriesId||t.id; (series[sid]=series[sid]||[]).push(t); } });
   Object.keys(series).forEach(function(sid){
     var list=series[sid].slice().sort(function(a,b){return (a.due||'')<(b.due||'')?-1:1;});
     var latest=normalizeTask(Object.assign({}, list[list.length-1]));
@@ -34939,6 +34981,7 @@ function renderTaskAssignedByMe(){
   return html;
 }
 function renderTasks(){
+  try{ maybeSyncTasks(); }catch(e){}
   try{ ensureRecurringTasks(); taskDeadlineReminders(); checkCashTipTasks(); }catch(e){}
   var canManage = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
   if(!window._taskView) window._taskView='list';
@@ -35232,7 +35275,9 @@ function taskFollowUp(name){
 }
 function deleteTask(id){
   if(!confirm('このタスクを削除しますか？')) return;
-  setTasks(getTasks().filter(function(x){return x.id!==id;}));
+  var arr=getTasks(); var t=arr.find(function(x){return x.id===id;});
+  if(t){ t._deleted=true; t.updatedTs=Date.now(); } else { arr=arr.filter(function(x){return x.id!==id;}); }
+  setTasks(arr);
   closeModalDirect();
   showToast('削除しました','success');
   renderPage('tasks');
