@@ -4082,7 +4082,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets'];
-var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_',
+var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_'];
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
@@ -16200,7 +16200,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '588';
+const APP_VERSION = '589';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -16775,7 +16775,7 @@ function renderShiftAdmin() {
   <div class="phase-tabs" style="flex-wrap:wrap;gap:4px">
     <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')"><i class="ti ti-clipboard-check" style="font-size:12px"></i> 提出状況</div>
     <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')"><i class="ti ti-calendar-plus" style="font-size:12px"></i> シフト作成</div>
-    <div class="phase-tab${shiftAdminTab==='table'?' active':''}" onclick="setShiftAdminTab('table')"><i class="ti ti-table" style="font-size:12px"></i> シフト表</div>
+    <div class="phase-tab${shiftAdminTab==='table'?' active':''}" onclick="setShiftAdminTab('table')"><i class="ti ti-layout-board" style="font-size:12px"></i> ${storeId==='F01'?'シフト盤面':'シフト表'}</div>
     <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')"><i class="ti ti-users-group" style="font-size:12px"></i> カバー候補</div>
     <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')"><i class="ti ti-coin" style="font-size:12px"></i> Labor Cost</div>
@@ -16786,7 +16786,7 @@ function renderShiftAdmin() {
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
   else if (shiftAdminTab==='build') html += renderShiftBuild(storeId, week);
-  else if (shiftAdminTab==='table') html += renderShiftTable(storeId, week);
+  else if (shiftAdminTab==='table') html += (storeId==='F01' ? renderShiftBoard(storeId, week) : renderShiftTable(storeId, week));
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
   else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
@@ -17091,6 +17091,253 @@ function renderAieaBuild(storeId, week, plan, warnings){
     h+='<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i> No warnings</div>';
   }
   return h;
+}
+
+/* ============================================================
+   ToriTon 再設計シフト作成（v1）
+   - 固定シフト(shift_fixed_<store>) = { name: { 曜日: {sec,pos,start,end} } } … 毎週自動
+   - ワンタッチ反映: 固定を配置 → 空き枠を提出者で自動充足（時刻つき）→ 下書き
+   - 盤面: 曜日カラム。固定=ロック・提出反映=緑・空き=点線。チップtapで人/時刻編集
+   - plan.meta[cellKey]={start,end,fixed} で時刻・固定フラグを保持（cellsは従来互換）
+============================================================ */
+function getShiftFixed(storeId){ try{ return ls('shift_fixed_'+storeId, {})||{}; }catch(e){ return {}; } }
+function setShiftFixed(storeId, map){ lsSet('shift_fixed_'+storeId, map); }
+/* 店舗の全スロット定義（固定枠＋fillポジション＋Prep等）を [{sec,pos,label,fill}] で返す */
+function shiftAllSlotDefs(storeId){
+  var lay=SHIFT_LAYOUTS[storeId]; if(!lay) return [];
+  var out=[], seen={};
+  lay.sections.forEach(function(sec){
+    (sec.slots||[]).forEach(function(sl){ var lb=sec.label+' / '+sl.label; if(!seen[sec.key+sl.pos+sl.label]){ seen[sec.key+sl.pos+sl.label]=1; out.push({sec:sec.key, secLabel:sec.label, pos:sl.pos, label:sl.label, disp:lb}); } });
+    if(sec.headcount){ var fp=sec.headcount.fillPos; var k=sec.key+fp+'#fill'; if(!seen[k]){ seen[k]=1; out.push({sec:sec.key, secLabel:sec.label, pos:fp, label:sec.headcount.fillLabel, fill:true, disp:sec.label+' / '+sec.headcount.fillLabel}); } }
+  });
+  return out;
+}
+/* 反映で参照するセクション（有効 or 固定に登場するもの） */
+function _shiftActiveSecs(storeId){
+  var lay=SHIFT_LAYOUTS[storeId]; if(!lay) return [];
+  var fixed=getShiftFixed(storeId); var usedSec={};
+  Object.keys(fixed).forEach(function(n){ Object.keys(fixed[n]||{}).forEach(function(d){ var f=fixed[n][d]; if(f&&f.sec) usedSec[f.sec]=1; }); });
+  return lay.sections.filter(function(sec){ return !sec.optional || shiftSectionEnabled(storeId, sec.key) || usedSec[sec.key]; });
+}
+function _shiftPosTimeDef(storeId, secKey, pos){ var m=getShiftPosTimes(storeId); return m[_stKey(secKey,pos)] || m[_stKey('',pos)] || m[pos] || {}; }
+
+/* ワンタッチ反映：固定＋提出者で下書きを生成 */
+function reflectShiftDraft(storeId, week){
+  var secs=_shiftActiveSecs(storeId);
+  var avail=getAvailability(storeId, week)||[];
+  var fixed=getShiftFixed(storeId);
+  var plan={status:'下書き', cells:{}, meta:{}, reflectedAt:(typeof nowJP==='function'?nowJP():'')};
+  var placed={};
+  function place(day, secKey, slotLabel, name, start, end, isFixed){
+    var key=shiftCellKey(day, secKey, slotLabel);
+    plan.cells[key]=name; plan.meta[key]={start:start||'', end:end||'', fixed:!!isFixed};
+    (placed[day]=placed[day]||{})[name]=true;
+  }
+  // 1) 固定シフト
+  DOW_SHIFT.forEach(function(day){
+    var dateISO=weekDateForDow(day);
+    Object.keys(fixed).forEach(function(name){
+      var f=(fixed[name]||{})[day]; if(!f||!f.pos) return;
+      if(sectionClosedForDay(storeId, f.sec, dateISO, day)) return;
+      if((placed[day]||{})[name]) return;
+      var sec=secs.find(function(s){return s.key===f.sec;}); if(!sec) return;
+      var slots=sectionEffectiveSlots(storeId, sec).filter(function(sl){ return slotActiveForDay(storeId, sec, sl, day); });
+      var sl=slots.find(function(sl){ return sl.pos===f.pos && !plan.cells[shiftCellKey(day, sec.key, sl.label)]; });
+      if(!sl){ // fill枠が足りない場合でもPrep等は追加スロットとして許容（ラベルに#固定）
+        if(sec.headcount || (sec.slots||[]).every(function(x){return x.pos!==f.pos;})){ sl={pos:f.pos, label:f.pos+'#'+name}; }
+      }
+      if(sl) place(day, sec.key, sl.label, name, f.start, f.end, true);
+    });
+  });
+  // 2) 空き枠を提出者で自動充足
+  DOW_SHIFT.forEach(function(day){
+    var dateISO=weekDateForDow(day);
+    secs.forEach(function(sec){
+      if(sectionClosedForDay(storeId, sec.key, dateISO, day)) return;
+      var slots=sectionEffectiveSlots(storeId, sec).filter(function(sl){ return slotActiveForDay(storeId, sec, sl, day); });
+      slots.forEach(function(sl){
+        var key=shiftCellKey(day, sec.key, sl.label);
+        if(plan.cells[key]) return;
+        var cands=avail.filter(function(a){ return a.slots && a.slots.some(function(s){return s.day===day;}) && !(placed[day]||{})[a.name]; }).map(function(a){return a.name;});
+        cands.sort(function(a,b){ return (positionLevelStore(b,sl.pos,storeId)||0)-(positionLevelStore(a,sl.pos,storeId)||0); });
+        var pick=cands[0]; if(!pick) return;
+        var tt=_shiftPosTimeDef(storeId, sec.key, sl.pos);
+        place(day, sec.key, sl.label, pick, tt.start, tt.end, false);
+      });
+    });
+  });
+  return plan;
+}
+function shiftBoardReflect(storeId, week){
+  var av=getAvailability(storeId, week)||[]; var fx=getShiftFixed(storeId);
+  if(!av.length && !Object.keys(fx).length){ showToast(t('提出シフトも固定シフトもまだありません','No submissions or fixed shifts yet'),'warning'); return; }
+  if(!confirm(t('提出シフトを反映して下書きを作り直します（固定＋提出者を空き枠に自動配置）。よろしいですか？','Rebuild the draft from submissions (fixed staff + auto-fill open slots). Continue?'))) return;
+  var plan=reflectShiftDraft(storeId, week);
+  var cur=getShiftPlan(storeId, week);
+  if(cur && cur.status==='公開') plan.status='下書き';
+  setShiftPlan(storeId, week, plan);
+  showToast(t('反映しました。空き枠だけ調整してください','Reflected. Adjust the open slots only'),'success');
+  renderPage('shift_admin');
+}
+
+/* ===== 盤面（曜日カラム） ===== */
+function renderShiftBoard(storeId, week){
+  var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
+  var plan=getShiftPlan(storeId, week)||{cells:{}, meta:{}};
+  var meta=plan.meta||{};
+  var secs=_shiftActiveSecs(storeId);
+  var fixedCount=Object.keys(getShiftFixed(storeId)).length;
+  var availCount=(getAvailability(storeId, week)||[]).length;
+
+  var html='<div class="card" style="padding:10px 12px;margin-bottom:10px">'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +'<button class="btn btn-primary btn-sm" onclick="shiftBoardReflect(\''+storeId+'\',\''+week+'\')"><i class="ti ti-wand"></i> '+t('提出シフトを反映','Reflect submissions')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openShiftFixedEditor(\''+storeId+'\')"><i class="ti ti-lock"></i> '+t('固定シフト','Fixed shifts')+(fixedCount?' <span class="tag tag-blue" style="font-size:8px">'+fixedCount+'</span>':'')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor(\''+storeId+'\')"><i class="ti ti-clock"></i> '+t('時刻設定','Times')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="setShiftAdminTab(\'build\')"><i class="ti ti-adjustments"></i> '+t('本数設定','Counts')+'</button>'
+    +'<div style="flex:1"></div>'
+    +(plan.status==='公開'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> '+t('公開済','Published')+'</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> '+t('公開','Publish')+'</button>')
+    +'</div>'
+    +'<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:8px;flex-wrap:wrap">'
+    +'<span><i class="ti ti-lock" style="color:var(--accent)"></i> '+t('固定（毎週自動）','Fixed (weekly)')+'</span>'
+    +'<span><i class="ti ti-check" style="color:var(--green)"></i> '+t('提出から反映','From submissions')+'</span>'
+    +'<span><i class="ti ti-plus" style="color:var(--muted)"></i> '+t('空き枠','Open')+'</span>'
+    +'</div></div>';
+
+  var anyCell=Object.keys(plan.cells||{}).length>0;
+  if(!anyCell){
+    html+='<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-calendar-plus" style="font-size:26px"></i>'
+      +'<div style="margin-top:8px;font-size:13px">'+t('まだ下書きがありません。','No draft yet.')+'</div>'
+      +'<div style="font-size:11px;margin-top:4px">'+t('①固定シフトを設定 → ②「提出シフトを反映」で自動作成','① Set fixed shifts → ② “Reflect submissions” to auto-build')+'</div>'
+      +'<div style="font-size:11px;margin-top:2px;color:var(--muted)">'+t('提出者','Submitters')+': '+availCount+t('名／固定','／fixed')+': '+fixedCount+t('名','')+'</div></div>';
+    return html;
+  }
+
+  html+='<div style="overflow-x:auto;padding-bottom:6px"><div style="display:flex;gap:10px;min-width:100%">';
+  DOW_SHIFT.forEach(function(day){
+    var dateISO=weekDateForDow(day); var ds=dateISO?dateISO.slice(5).replace('-','/'):'';
+    var closed=false; try{ closed=(typeof dayClosureMode==='function') && dayClosureMode(storeId, dateISO, day)==='closed'; }catch(e){}
+    var col='<div style="flex:1;min-width:150px;background:var(--surface2);border-radius:12px;padding:9px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px"><span style="font-size:13px;font-weight:800">'+day+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+ds+'</span></span>'+(closed?'<span class="tag tag-red" style="font-size:8px">'+t('定休','Closed')+'</span>':'')+'</div>';
+    if(closed){ col+='<div style="text-align:center;color:var(--muted);font-size:11px;padding:16px 0;border:1px dashed var(--border);border-radius:8px">'+t('店休日','Closed')+'</div></div>'; html+=col; return; }
+    var dayCount=0;
+    secs.forEach(function(sec){
+      if(sectionClosedForDay(storeId, sec.key, dateISO, day)) return;
+      var slots=sectionEffectiveSlots(storeId, sec).filter(function(sl){ return slotActiveForDay(storeId, sec, sl, day); });
+      // 固定で追加された#nameスロットも拾う
+      Object.keys(plan.cells).forEach(function(k){ if(k.indexOf(day+'_'+sec.key+'_')===0){ var lb=k.substring((day+'_'+sec.key+'_').length); if(!slots.some(function(sl){return sl.label===lb;})){ slots.push({pos:(lb.split('#')[0]), label:lb, extra:true}); } } });
+      if(!slots.length) return;
+      col+='<div style="font-size:9px;color:var(--muted);margin:6px 0 3px;text-transform:uppercase;letter-spacing:.5px">'+escapeHtml(sec.label)+'</div>';
+      slots.forEach(function(sl){
+        var key=shiftCellKey(day, sec.key, sl.label);
+        var name=plan.cells[key]; var m=meta[key]||{};
+        var cellArg="'"+storeId+"','"+week+"','"+day+"','"+sec.key+"','"+sl.label.replace(/'/g,"\\'")+"','"+sl.pos.replace(/'/g,"\\'")+"'";
+        if(name){
+          dayCount++;
+          var fx=m.fixed; var bg=fx?'var(--accent)':'var(--green)'; var tint=fx?'accent':'green';
+          var tm=(m.start||m.end)?((m.start||'?')+'–'+(m.end||'?')):t('時刻未設定','no time');
+          col+='<div onclick="openShiftCellEditor('+cellArg+')" style="cursor:pointer;border-left:3px solid '+bg+';background:var(--surface);border-radius:0 8px 8px 0;padding:6px 8px;margin-bottom:4px">'
+            +'<div style="font-size:12px;font-weight:700;display:flex;align-items:center;gap:4px"><i class="ti ti-'+(fx?'lock':'check')+'" style="font-size:12px;color:'+bg+'"></i>'+escapeHtml(name)+'</div>'
+            +'<div style="font-size:10px;color:var(--muted)">'+escapeHtml(sl.label)+' · '+tm+'</div></div>';
+        } else {
+          col+='<div onclick="openShiftCellEditor('+cellArg+')" style="cursor:pointer;border:1px dashed var(--border);border-radius:8px;padding:6px 8px;margin-bottom:4px;color:var(--muted);font-size:11px"><i class="ti ti-plus" style="font-size:12px"></i> '+escapeHtml(sl.label)+t('（空き）','（open）')+'</div>';
+        }
+      });
+    });
+    col+='<div style="text-align:right;font-size:10px;color:var(--muted);margin-top:4px">'+dayCount+t('名','')+'</div></div>';
+    html+=col;
+  });
+  html+='</div></div>';
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"><i class="ti ti-info-circle"></i> '+t('チップをタップ＝人・時刻の変更／削除。点線＝空き枠をタップで人を追加。固定シフトは「固定シフト」ボタンから設定（毎週自動で入ります）。','Tap a chip to change person/time or remove. Tap a dashed slot to add someone. Set recurring staff via “Fixed shifts” (auto every week).')+'</div>';
+  return html;
+}
+
+/* セル編集モーダル（人・時刻の設定／削除、空き枠の充足） */
+function openShiftCellEditor(storeId, week, day, secKey, slotLabel, pos){
+  var plan=getShiftPlan(storeId, week)||{cells:{}, meta:{}};
+  var key=shiftCellKey(day, secKey, slotLabel);
+  var cur=plan.cells[key]||''; var m=(plan.meta&&plan.meta[key])||{};
+  var avail=getAvailability(storeId, week)||[];
+  var submitters=avail.filter(function(a){ return a.slots && a.slots.some(function(s){return s.day===day;}); }).map(function(a){return a.name;});
+  var all=staffForStore(storeId).map(function(e){return e.name;});
+  var others=all.filter(function(n){ return submitters.indexOf(n)<0; });
+  var def=_shiftPosTimeDef(storeId, secKey, pos);
+  var st=m.start||def.start||''; var en=m.end||def.end||'';
+  function opts(list, label){ if(!list.length) return ''; return '<optgroup label="'+label+'">'+list.map(function(n){ return '<option value="'+escapeHtml(n)+'"'+(n===cur?' selected':'')+'>'+escapeHtml(n)+(positionLevelStore(n,pos,storeId)?' (Lv'+positionLevelStore(n,pos,storeId)+')':'')+'</option>'; }).join('')+'</optgroup>'; }
+  openModal('<div class="modal-title">'+escapeHtml(day)+t('曜 ・ ','  ')+escapeHtml(slotLabel)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="form-group"><label class="form-label">'+t('担当','Person')+'</label>'
+    +'<select class="form-select" id="sce-name"><option value="">'+t('（空きにする）','(leave open)')+'</option>'+opts(submitters, t('提出者（この曜日）','Submitted (this day)'))+opts(others, t('その他スタッフ','Other staff'))+'</select></div>'
+    +'<div style="display:flex;gap:8px"><div class="form-group" style="flex:1"><label class="form-label">'+t('開始','Start')+'</label><input class="form-input" id="sce-start" type="time" value="'+st+'"></div>'
+    +'<div class="form-group" style="flex:1"><label class="form-label">'+t('終了','End')+'</label><input class="form-input" id="sce-end" type="time" value="'+en+'"></div></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><i class="ti ti-info-circle"></i> '+t('Prep等で入り時間が人により違う場合はここで調整。空欄は「時刻設定」の既定を使用。','For prep etc. with per-person start times, adjust here. Blank uses the default from “Times”.')+'</div>'
+    +'<div class="btn-row">'+(cur?'<button class="btn btn-danger" onclick="removeShiftCell(\''+storeId+'\',\''+week+'\',\''+day+'\',\''+secKey+'\',\''+slotLabel.replace(/'/g,"\\'")+'\')"><i class="ti ti-trash"></i> '+t('削除','Remove')+'</button>':'')+'<div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="saveShiftCell(\''+storeId+'\',\''+week+'\',\''+day+'\',\''+secKey+'\',\''+slotLabel.replace(/'/g,"\\'")+'\')">'+t('保存','Save')+'</button></div>');
+}
+function saveShiftCell(storeId, week, day, secKey, slotLabel){
+  var plan=getShiftPlan(storeId, week)||{cells:{}, meta:{}}; if(!plan.meta)plan.meta={};
+  var key=shiftCellKey(day, secKey, slotLabel);
+  var name=(document.getElementById('sce-name')||{}).value||'';
+  var st=(document.getElementById('sce-start')||{}).value||''; var en=(document.getElementById('sce-end')||{}).value||'';
+  if(!name){ delete plan.cells[key]; delete plan.meta[key]; }
+  else { plan.cells[key]=name; var wasFixed=(plan.meta[key]||{}).fixed; plan.meta[key]={start:st, end:en, fixed:!!wasFixed}; }
+  setShiftPlan(storeId, week, plan); closeModalDirect(); renderPage('shift_admin');
+}
+function removeShiftCell(storeId, week, day, secKey, slotLabel){
+  var plan=getShiftPlan(storeId, week)||{cells:{}, meta:{}}; var key=shiftCellKey(day, secKey, slotLabel);
+  delete plan.cells[key]; if(plan.meta) delete plan.meta[key];
+  setShiftPlan(storeId, week, plan); closeModalDirect(); renderPage('shift_admin');
+}
+
+/* ===== 固定シフト設定 ===== */
+function openShiftFixedEditor(storeId){
+  var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
+  var staff=staffForStore(storeId);
+  var fixed=getShiftFixed(storeId);
+  var slotDefs=shiftAllSlotDefs(storeId);
+  var body='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+t('固定シフトのスタッフを設定します（毎週自動で入ります）。人を選び、曜日ごとにポジションと時間を設定。空欄＝その曜日は固定なし。','Set recurring staff (auto every week). Pick a person, then set position + time per day. Blank = no fixed shift that day.')+'</div>';
+  body+='<div class="form-group"><label class="form-label">'+t('スタッフを選択','Select staff')+'</label><select class="form-select" id="sfe-emp" onchange="_sfeRenderDays(\''+storeId+'\')"><option value="">'+t('— 選択 —','— select —')+'</option>'+staff.map(function(e){ var has=fixed[e.name]&&Object.keys(fixed[e.name]).length; return '<option value="'+escapeHtml(e.name)+'">'+escapeHtml(e.name)+(has?' ●':'')+'</option>'; }).join('')+'</select></div>';
+  body+='<div id="sfe-days"></div>';
+  var slotJson=JSON.stringify(slotDefs).replace(/"/g,'&quot;');
+  openModal('<div class="modal-title">'+escapeHtml(store.name)+' — '+t('固定シフト設定','Fixed shifts')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div id="sfe-slotdefs" data-defs="'+slotJson+'" style="display:none"></div>'
+    +'<div style="max-height:60vh;overflow-y:auto">'+body+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>');
+}
+function _sfeSlotDefs(){ try{ return JSON.parse((document.getElementById('sfe-slotdefs')||{}).getAttribute('data-defs')); }catch(e){ return []; } }
+function _sfeRenderDays(storeId){
+  var name=(document.getElementById('sfe-emp')||{}).value||''; var box=document.getElementById('sfe-days'); if(!box) return;
+  if(!name){ box.innerHTML=''; return; }
+  var fixed=getShiftFixed(storeId); var mine=fixed[name]||{};
+  var defs=_sfeSlotDefs();
+  var posDef=_shiftPosTimeDef; // for defaults
+  var rows=DOW_SHIFT.map(function(day){
+    var f=mine[day]||{};
+    var sel='<select class="form-select sfe-pos" data-day="'+day+'" style="padding:5px;font-size:12px"><option value="">'+t('休/なし','off')+'</option>'
+      +defs.map(function(d){ var v=d.sec+'||'+d.pos+'||'+d.label; var cur=(f.sec===d.sec&&f.pos===d.pos&&(f.slotLabel?f.slotLabel===d.label:true)); return '<option value="'+v.replace(/"/g,'')+'"'+(cur?' selected':'')+'>'+escapeHtml(d.disp)+'</option>'; }).join('')+'</select>';
+    return '<tr><td style="font-weight:700;font-size:12px;padding:3px 6px;white-space:nowrap">'+day+'</td>'
+      +'<td style="padding:2px">'+sel+'</td>'
+      +'<td style="padding:2px"><input class="form-input sfe-start" data-day="'+day+'" type="time" value="'+(f.start||'')+'" style="padding:5px;font-size:12px;width:92px"></td>'
+      +'<td style="padding:2px"><input class="form-input sfe-end" data-day="'+day+'" type="time" value="'+(f.end||'')+'" style="padding:5px;font-size:12px;width:92px"></td></tr>';
+  }).join('');
+  box.innerHTML='<table class="inv-table" style="width:100%;margin-top:4px"><thead><tr><th>'+t('曜日','Day')+'</th><th style="text-align:left">'+t('ポジション','Position')+'</th><th>'+t('開始','Start')+'</th><th>'+t('終了','End')+'</th></tr></thead><tbody>'+rows+'</tbody></table>'
+    +'<div class="btn-row" style="margin-top:8px"><button class="btn btn-danger btn-sm" onclick="_sfeClear(\''+storeId+'\')"><i class="ti ti-trash"></i> '+t('この人の固定を全消去','Clear all')+'</button><div style="flex:1"></div><button class="btn btn-primary" onclick="_sfeSave(\''+storeId+'\')"><i class="ti ti-check"></i> '+t('この人を保存','Save person')+'</button></div>';
+}
+function _sfeSave(storeId){
+  var name=(document.getElementById('sfe-emp')||{}).value||''; if(!name) return;
+  var fixed=getShiftFixed(storeId); var mine={};
+  DOW_SHIFT.forEach(function(day){
+    var sel=document.querySelector('.sfe-pos[data-day="'+day+'"]'); var v=sel?sel.value:''; if(!v) return;
+    var p=v.split('||'); var st=document.querySelector('.sfe-start[data-day="'+day+'"]'); var en=document.querySelector('.sfe-end[data-day="'+day+'"]');
+    mine[day]={sec:p[0], pos:p[1], slotLabel:p[2]||'', start:(st?st.value:''), end:(en?en.value:'')};
+  });
+  if(Object.keys(mine).length) fixed[name]=mine; else delete fixed[name];
+  setShiftFixed(storeId, fixed); showToast(t('固定シフトを保存しました','Fixed shift saved'),'success');
+  var s=document.getElementById('sfe-emp'); if(s){ var o=s.querySelector('option[value="'+name.replace(/"/g,'')+'"]'); if(o && !/●/.test(o.textContent)) o.textContent=o.textContent+' ●'; }
+}
+function _sfeClear(storeId){
+  var name=(document.getElementById('sfe-emp')||{}).value||''; if(!name) return;
+  if(!confirm(t('この人の固定シフトを全消去しますか？','Clear all fixed shifts for this person?'))) return;
+  var fixed=getShiftFixed(storeId); delete fixed[name]; setShiftFixed(storeId, fixed);
+  showToast(t('消去しました','Cleared'),'success'); _sfeRenderDays(storeId);
 }
 
 /* ============================================================
