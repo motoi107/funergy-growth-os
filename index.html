@@ -931,6 +931,8 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
       _put('takeoutBowls', r.takeout_bowls);
       _put('lunchTakeoutBowls', r.lunch_takeout_bowls); _put('dinnerTakeoutBowls', r.dinner_takeout_bowls);
       _put('firstTimeBowls', r.first_time_count); _put('repeatBowls', r.repeat_count);
+      _put('firstTimeBowlsLunch', r.lunch_first_time_count!=null?r.lunch_first_time_count:r.first_time_lunch_count); _put('repeatBowlsLunch', r.lunch_repeat_count!=null?r.lunch_repeat_count:r.repeat_lunch_count);
+      _put('firstTimeBowlsDinner', r.dinner_first_time_count!=null?r.dinner_first_time_count:r.first_time_dinner_count); _put('repeatBowlsDinner', r.dinner_repeat_count!=null?r.dinner_repeat_count:r.repeat_dinner_count);
       _put('superRegular', r.super_regular_count);
       _put('misoTotal', r.miso_total_count); _put('misoUpgrade', r.miso_upgrade_count);
       _put('ikuraShower', r.ikura_shower_count); _put('ikuraBowls', r.ikura_bowls_count);
@@ -8872,7 +8874,9 @@ function renderMsRepeat(){
   } else {
     html+='<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center">リピートデータ（新規/リピート杯数）がありません。日次実績の入力・同期後に表示されます。</div>';
   }
-  return html+'</div>';
+  html+='</div>';
+  html+=_msRepeatLD();
+  return html;
 }
 function renderMsDeepAnalysis(){ return renderMsGuestDecomp()+renderMsRepeat(); }
 /* 複数系列の折れ線（率%・目標帯対応） */
@@ -9042,6 +9046,41 @@ function renderMsStoreRank(){
   var best=rows[0], worst=rows[rows.length-1];
   h+='<div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.7">🏆 達成率トップは <b style="color:var(--tm)">'+escapeHtml(best.store.name)+'</b>（'+(best.a.achieve||0)+'%）。'+(rows.length>2?'⚠ 最下位は <b style="color:var(--tm)">'+escapeHtml(worst.store.name)+'</b>（'+(worst.a.achieve||0)+'%）— 予算・原価・人件費のどこで差がついているか、上の色（緑=良/赤=要改善）で確認できます。':'')+'</div></div>';
   return h;
+}
+/* L/D別 新規/リピートの集計（日次actualsの firstTimeBowlsLunch 等から） */
+function repeatStatsLD(scopeStores, days){
+  var lF=0,lR=0,dF=0,dR=0,has=false;
+  (scopeStores||[]).forEach(function(s){ var da=getDailyActuals(s.id); (days||[]).forEach(function(d){ var ov=da[d.date]||{};
+    if(ov.firstTimeBowlsLunch!=null){ lF+=Number(ov.firstTimeBowlsLunch)||0; has=true; }
+    if(ov.repeatBowlsLunch!=null){ lR+=Number(ov.repeatBowlsLunch)||0; has=true; }
+    if(ov.firstTimeBowlsDinner!=null){ dF+=Number(ov.firstTimeBowlsDinner)||0; has=true; }
+    if(ov.repeatBowlsDinner!=null){ dR+=Number(ov.repeatBowlsDinner)||0; has=true; }
+  }); });
+  return {lunch:{first:lF,repeat:lR,total:lF+lR}, dinner:{first:dF,repeat:dR,total:dF+dR}, has:has};
+}
+/* ランチ/ディナー別 リピート率カード（データがあれば表示・無ければ案内） */
+function _msRepeatLD(){
+  var pm=_anaMonths(), months=pm.months;
+  var ldMonths=months.map(function(mo){ var mi=msMonthInfo(_msOffsetFor(mo.y,mo.m)); return {label:(mi.m+1)+'月', mi:mi, ld:repeatStatsLD(msScopeStores(), mi.days)}; });
+  var anyLD=ldMonths.some(function(m){ return m.ld.has && (m.ld.lunch.total>0||m.ld.dinner.total>0); });
+  var html='<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--accent)"></i>ランチ／ディナー別 リピート率<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+'</span></div>';
+  if(anyLD){
+    var labels=ldMonths.map(function(m){return m.label;});
+    var lRate=ldMonths.map(function(m){ var t=m.ld.lunch.total; return t>0?Math.round(m.ld.lunch.repeat/t*1000)/10:0; });
+    var dRate=ldMonths.map(function(m){ var t=m.ld.dinner.total; return t>0?Math.round(m.ld.dinner.repeat/t*1000)/10:0; });
+    html+=_msMultiLine(labels, [{label:'ランチ',color:'var(--yellow)',values:lRate},{label:'ディナー',color:'var(--accent)',values:dRate}], {});
+    html+=msLegend([{color:'var(--yellow)',label:'ランチ リピート率'},{color:'var(--accent)',label:'ディナー リピート率'}]);
+    var LF=0,LR=0,DF=0,DR=0; ldMonths.forEach(function(m){ LF+=m.ld.lunch.first;LR+=m.ld.lunch.repeat;DF+=m.ld.dinner.first;DR+=m.ld.dinner.repeat; });
+    var lRt=(LF+LR)>0?Math.round(LR/(LF+LR)*1000)/10:null, dRt=(DF+DR)>0?Math.round(DR/(DF+DR)*1000)/10:null;
+    html+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
+      +'<div style="flex:1;min-width:150px;border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;padding:9px 11px"><div style="font-size:12px;font-weight:700"><i class="ti ti-sun"></i> ランチ</div><div style="font-size:19px;font-weight:800;color:var(--tm)">'+(lRt!=null?lRt+'%':'—')+'</div><div style="font-size:10px;color:var(--muted)">新規 '+LF.toLocaleString()+' / リピート '+LR.toLocaleString()+'</div></div>'
+      +'<div style="flex:1;min-width:150px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;padding:9px 11px"><div style="font-size:12px;font-weight:700"><i class="ti ti-moon"></i> ディナー</div><div style="font-size:19px;font-weight:800;color:var(--tm)">'+(dRt!=null?dRt+'%':'—')+'</div><div style="font-size:10px;color:var(--muted)">新規 '+DF.toLocaleString()+' / リピート '+DR.toLocaleString()+'</div></div>'
+      +'</div>';
+    if(lRt!=null&&dRt!=null){ var diff=lRt-dRt; html+='<div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.7">'+(Math.abs(diff)<3?'ランチ・ディナーのリピート率はほぼ同水準です。':(diff>0?'ランチの方がリピート率が高い（+'+diff.toFixed(1)+'pt）＝常連はランチ利用が中心。ディナー新規の再来店設計が伸びしろ。':'ディナーの方がリピート率が高い（+'+Math.abs(diff).toFixed(1)+'pt）＝夜の常連基盤が強い。ランチ新規の取り込みが課題。'))+'</div>'; }
+  } else {
+    html+='<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center;line-height:1.7">ランチ/ディナー別の新規・リピートデータがまだありません。<br>ToastのDay Part別（時間帯別）の新規/リピートが <code>toast_sales</code> に入り、同期されると自動で表示されます。</div>';
+  }
+  return html+'</div>';
 }
 function renderMonthlySummary(){
   if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
@@ -16613,7 +16652,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '604';
+const APP_VERSION = '605';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
