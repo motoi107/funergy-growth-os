@@ -16652,7 +16652,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '605';
+const APP_VERSION = '606';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -17227,7 +17227,7 @@ function renderShiftAdmin() {
   <div class="phase-tabs" style="flex-wrap:wrap;gap:4px">
     <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')"><i class="ti ti-clipboard-check" style="font-size:12px"></i> 提出状況</div>
     <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')"><i class="ti ti-calendar-plus" style="font-size:12px"></i> シフト作成</div>
-    <div class="phase-tab${shiftAdminTab==='table'?' active':''}" onclick="setShiftAdminTab('table')"><i class="ti ti-layout-board" style="font-size:12px"></i> ${storeId==='F01'?'シフト盤面':'シフト表'}</div>
+    ${storeId==='F02'?'':`<div class="phase-tab${shiftAdminTab==='table'?' active':''}" onclick="setShiftAdminTab('table')"><i class="ti ti-layout-board" style="font-size:12px"></i> ${storeId==='F01'?'シフト盤面':'シフト表'}</div>`}
     <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')"><i class="ti ti-users-group" style="font-size:12px"></i> カバー候補</div>
     <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')"><i class="ti ti-coin" style="font-size:12px"></i> Labor Cost</div>
@@ -17237,8 +17237,8 @@ function renderShiftAdmin() {
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
-  else if (shiftAdminTab==='build') html += renderShiftBuild(storeId, week);
-  else if (shiftAdminTab==='table') html += (storeId==='F01' ? renderShiftBoard(storeId, week) : renderShiftTable(storeId, week));
+  else if (shiftAdminTab==='build') html += (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : renderShiftBuild(storeId, week));
+  else if (shiftAdminTab==='table') html += (storeId==='F01' ? renderShiftBoard(storeId, week) : (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : renderShiftTable(storeId, week)));
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
   else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
@@ -17655,6 +17655,170 @@ function shiftBoardMatrix(storeId, week){
     if(order.length || Object.keys(open).length) out.push({sec:sec, order:order, byStaff:byStaff, open:open});
   });
   return out;
+}
+/* ============================================================
+   Tenkichi(F02) シフト作成 — 「シフト表」表示に統合した編集版
+   ・提出を反映＝出勤可能を曜日ごとに全員ON配置（ポジションはこの後手動）
+   ・スタッフ×曜日のセルをタップ→区分・ポジション・時刻の割当／カット
+   ・本数（曜日別 営業本数）は目安パネルとして維持
+   保存先は既存の plan（cells[曜日_区分_ポジション]=氏名 / meta）。公開・画像・時刻設定・固定シフトは既存を流用。
+============================================================ */
+function reflectF02(storeId, week){
+  var avail=getAvailability(storeId, week)||[];
+  var fixed=getShiftFixed(storeId);
+  var plan={status:'下書き', cells:{}, meta:{}, reflectedAt:(typeof nowJP==='function'?nowJP():'')};
+  DOW_SHIFT.forEach(function(day){
+    var dateISO=weekDateForDow(day);
+    var people={};
+    avail.forEach(function(a){ if((a.slots||[]).some(function(s){return s.day===day;})) people[a.name]=1; });
+    Object.keys(fixed).forEach(function(n){ if((fixed[n]||{})[day]) people[n]=1; });
+    Object.keys(people).forEach(function(name){
+      var f=(fixed[name]||{})[day];
+      var sec, pos, base, st, en, isFixed=false;
+      if(f && f.pos){ sec=f.sec; pos=f.pos; base=f.slotLabel||f.pos; st=f.start||''; en=f.end||''; isFixed=true; }
+      else {
+        sec='Dinner';
+        if(sectionClosedForDay(storeId, 'Dinner', dateISO, day)) sec='Lunch';
+        pos='Server'; base='Server';
+        var d=_shiftPosTimeDef(storeId, sec, pos)||{}; st=d.start||''; en=d.end||'';
+      }
+      if(sectionClosedForDay(storeId, sec, dateISO, day)) return;
+      var label=base+'#'+name;
+      var key=shiftCellKey(day, sec, label);
+      plan.cells[key]=name; plan.meta[key]={start:st, end:en, fixed:isFixed};
+    });
+  });
+  return plan;
+}
+function shiftF02Reflect(storeId, week){
+  var av=getAvailability(storeId, week)||[]; var fx=getShiftFixed(storeId);
+  if(!av.length && !Object.keys(fx).length){ showToast(t('提出も固定もまだありません','No submissions or fixed shifts yet'),'warning'); return; }
+  if(!confirm(t('提出を曜日ごとに配置して下書きを作り直します（全員をその曜日にON）。ポジション割当・カットはこの後この表で行います。よろしいですか？','Place submissions by weekday (everyone ON). Assign positions / cut afterward in this table. Continue?'))) return;
+  var plan=reflectF02(storeId, week);
+  setShiftPlan(storeId, week, plan);
+  showToast(t('配置しました。表でポジション割当とカットを行ってください','Placed. Assign positions and cut in the table'),'success');
+  renderPage('shift_admin');
+}
+/* plan.cells → {name:{day:{sec,label,pos,start,end,fixed,key}}} */
+function _f02Assigned(plan){
+  var asg={};
+  Object.keys((plan&&plan.cells)||{}).forEach(function(k){
+    var name=plan.cells[k]; if(!name) return;
+    var u1=k.indexOf('_'); if(u1<0) return; var day=k.substring(0,u1); var rest=k.substring(u1+1);
+    var u2=rest.indexOf('_'); if(u2<0) return; var sec=rest.substring(0,u2); var label=rest.substring(u2+1);
+    var m=((plan.meta)||{})[k]||{};
+    if(!asg[name]) asg[name]={};
+    if(!asg[name][day]) asg[name][day]={sec:sec,label:label,pos:label.split('#')[0],start:m.start||'',end:m.end||'',fixed:!!m.fixed,key:k};
+  });
+  return asg;
+}
+/* 曜日別 営業本数（目安）パネル */
+function _f02HeadPanel(storeId){
+  var lay=SHIFT_LAYOUTS[storeId]; if(!lay) return '';
+  var secs=(lay.sections||[]).filter(function(s){return s.headcount;});
+  if(!secs.length) return '';
+  var h='<details class="card" style="overflow-x:auto"><summary style="font-size:12px;font-weight:700;cursor:pointer;list-style:none"><i class="ti ti-users" style="color:var(--accent)"></i> '+t('曜日別 営業本数（目安）','Daily headcount (target)')+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+t('— 固定枠＋Serverの合計目安','— target total (fixed + Server)')+'</span></summary><div style="margin-top:8px"><table class="inv-table" style="width:100%;font-size:11px;border-collapse:collapse"><thead><tr><th style="text-align:left">'+t('営業','Section')+'</th>'+DOW_SHIFT.map(function(d){return '<th style="text-align:center">'+d+'</th>';}).join('')+'</tr></thead><tbody>';
+  secs.forEach(function(sec){
+    h+='<tr style="border-top:1px solid var(--border)"><td style="text-align:left;font-weight:700">'+escapeHtml(sec.label)+'</td>'+DOW_SHIFT.map(function(day){
+      var n=shiftHeadcount(storeId, sec.key, day);
+      return '<td style="text-align:center;white-space:nowrap"><button class="btn btn-secondary btn-sm" style="padding:0 6px;min-width:0" onclick="shiftHeadStep(\''+storeId+'\',\''+sec.key+'\',\''+day+'\',-1)">−</button> <b>'+n+'</b> <button class="btn btn-secondary btn-sm" style="padding:0 6px;min-width:0" onclick="shiftHeadStep(\''+storeId+'\',\''+sec.key+'\',\''+day+'\',1)">＋</button></td>';
+    }).join('')+'</tr>';
+  });
+  h+='</tbody></table><div style="font-size:10px;color:var(--muted);margin-top:4px">'+t('目安の合計人数です。この表では自動では埋めません（手動で割当）。','Target totals only. This view does not auto-fill — assign manually.')+'</div></div></details>';
+  return h;
+}
+function renderShiftBuilderF02(storeId, week){
+  var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var avail=getAvailability(storeId, week)||[];
+  var asg=_f02Assigned(plan);
+  var availByDay={}; avail.forEach(function(a){ (a.slots||[]).forEach(function(s){ if(!availByDay[a.name])availByDay[a.name]={}; availByDay[a.name][s.day]=true; }); });
+  var nameSet={}; avail.forEach(function(a){nameSet[a.name]=1;}); Object.keys(asg).forEach(function(n){nameSet[n]=1;});
+  var names=Object.keys(nameSet).sort(function(a,b){ var ca=Object.keys(asg[a]||{}).length, cb=Object.keys(asg[b]||{}).length; return cb-ca || String(a).localeCompare(b); });
+  var dates=DOW_SHIFT.map(weekDateForDow);
+
+  var html='<div class="card" style="padding:10px 12px;margin-bottom:10px"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +'<button class="btn btn-primary btn-sm" onclick="shiftF02Reflect(\''+storeId+'\',\''+week+'\')"><i class="ti ti-wand"></i> '+t('提出を反映','Reflect')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openShiftFixedEditor(\''+storeId+'\')"><i class="ti ti-lock"></i> '+t('固定シフト','Fixed')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor(\''+storeId+'\')"><i class="ti ti-clock"></i> '+t('時刻設定','Times')+'</button>'
+    +'<div style="flex:1"></div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> '+t('画像','Image')+'</button>'
+    +(plan.status==='公開'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> '+t('公開済','Published')+'</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> '+t('公開','Publish')+'</button>')
+    +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> '+t('「提出を反映」で出勤可能を曜日ごとに全員ON配置。あとはセルをタップしてポジション割当・時刻・カット。緑=固定シフト。','“Reflect” places everyone ON for their available days. Tap a cell to assign a position / time or cut. Green = fixed shift.')+'</div></div>';
+
+  html+=_f02HeadPanel(storeId);
+
+  var dayHead=DOW_SHIFT.map(function(dw,i){ var ds=dates[i]?dates[i].slice(5).replace('-','/'):''; return '<th style="text-align:center;border-left:2px solid var(--border);font-size:10px;padding:4px 3px;min-width:80px">'+dw+'<div style="font-size:9px;color:var(--muted);font-weight:400">'+ds+'</div></th>'; }).join('');
+  html+='<div class="card" style="overflow-x:auto;padding:8px"><div style="font-size:12px;font-weight:800;margin-bottom:6px"><i class="ti ti-table" style="color:var(--accent)"></i> '+escapeHtml(store.name)+' '+t('シフト作成','Shift Builder')+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+t('（スタッフ×曜日・タップで割当）','(staff × day · tap to assign)')+'</span></div>';
+  html+='<table class="inv-table" style="min-width:720px;font-size:11px;border-collapse:collapse"><thead><tr><th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:110px">'+t('スタッフ','Staff')+'</th>'+dayHead+'<th style="border-left:2px solid var(--accent);color:var(--accent);font-size:10px">'+t('週','Wk')+'</th></tr></thead><tbody>';
+
+  var dayCount={}; DOW_SHIFT.forEach(function(d){dayCount[d]=0;});
+  if(!names.length){
+    html+='<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:22px"><i class="ti ti-calendar-off" style="font-size:22px"></i><div style="margin-top:6px">'+t('提出がまだありません。','No submissions yet.')+'</div></td></tr>';
+  }
+  names.forEach(function(name){
+    var esc=name.replace(/'/g,"\\'");
+    var wk=0;
+    html+='<tr style="border-top:1px solid var(--border)"><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface);z-index:1">'+escapeHtml(name)+'</td>';
+    DOW_SHIFT.forEach(function(day){
+      var a=(asg[name]||{})[day];
+      var availHere=(availByDay[name]||{})[day];
+      if(a){
+        dayCount[day]++;
+        var hrs=''; var sm=_stTimeToMin(a.start), em=_stTimeToMin(a.end);
+        if(sm!=null && em!=null){ var hh=Math.round((em-sm)/60*10)/10; if(hh>0){ hrs=hh; wk+=hh; } }
+        var bg=a.fixed?'rgba(34,197,94,.12)':'transparent';
+        var tm=(a.start&&a.end)?(a.start+'–'+a.end):t('ON','ON');
+        html+='<td onclick="openShiftF02Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')" style="cursor:pointer;text-align:center;border-left:2px solid var(--border);padding:3px;background:'+bg+'">'
+          +'<div style="font-size:10px;font-weight:700;color:var(--tm)">'+escapeHtml(a.pos)+(a.fixed?' <i class="ti ti-lock" style="font-size:9px"></i>':'')+'</div>'
+          +'<div style="font-size:9px;color:var(--muted)">'+escapeHtml(tm)+(hrs!==''?' ('+hrs+'h)':'')+'</div></td>';
+      } else if(availHere){
+        html+='<td onclick="openShiftF02Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')" style="cursor:pointer;text-align:center;border-left:2px solid var(--border);padding:3px;color:var(--accent2);font-size:10px"><i class="ti ti-plus" style="font-size:10px"></i> '+t('ON','ON')+'</td>';
+      } else {
+        html+='<td style="border-left:2px solid var(--border);text-align:center;color:var(--border)">·</td>';
+      }
+    });
+    html+='<td style="border-left:2px solid var(--accent);text-align:center;font-weight:800;color:var(--accent)">'+(wk?Math.round(wk*10)/10:'')+'</td></tr>';
+  });
+  html+='</tbody><tfoot><tr style="border-top:2px solid var(--accent)"><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface2)">'+t('人数','People')+'</td>'+DOW_SHIFT.map(function(d){return '<td style="text-align:center;font-weight:700;border-left:2px solid var(--border);background:var(--surface2)">'+(dayCount[d]||'')+'</td>';}).join('')+'<td style="border-left:2px solid var(--accent);background:var(--surface2)"></td></tr></tfoot></table>';
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"><i class="ti ti-info-circle"></i> '+t('セルをタップ→区分・ポジション・時刻を設定、または「カット（外す）」。＋ON＝提出はあるが未配置。緑=固定。','Tap a cell to set section/position/time, or “Cut”. +ON = available but not placed. Green = fixed.')+'</div></div>';
+  return html;
+}
+/* スタッフ×曜日 セル編集（区分・ポジション・時刻／カット） */
+function openShiftF02Cell(storeId, week, name, day){
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var asg=_f02Assigned(plan); var cur=(asg[name]||{})[day]||null;
+  var defs=shiftAllSlotDefs(storeId);
+  var optsHtml=defs.map(function(d){ var v=d.sec+'||'+d.pos+'||'+d.label; var sel=(cur && d.sec===cur.sec && d.label===cur.pos); return '<option value="'+v.replace(/"/g,'')+'"'+(sel?' selected':'')+'>'+escapeHtml(d.disp)+'</option>'; }).join('');
+  var st=cur?cur.start:''; var en=cur?cur.end:'';
+  var esc=name.replace(/'/g,"\\'");
+  openModal('<div class="modal-title">'+escapeHtml(name)+' — '+escapeHtml(day)+t('曜','')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="form-group"><label class="form-label">'+t('区分・ポジション','Section / Position')+'</label><select class="form-select" id="f02-slot" onchange="_f02SlotChange(\''+storeId+'\')"><option value="">'+t('— 選択 —','— select —')+'</option>'+optsHtml+'</select></div>'
+    +'<div style="display:flex;gap:8px"><div class="form-group" style="flex:1"><label class="form-label">'+t('開始','Start')+'</label><input class="form-input" id="f02-start" type="time" value="'+st+'"></div><div class="form-group" style="flex:1"><label class="form-label">'+t('終了','End')+'</label><input class="form-input" id="f02-end" type="time" value="'+en+'"></div></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><i class="ti ti-info-circle"></i> '+t('区分を選ぶと既定の時刻が入ります（個別に調整可）。','Choosing a section fills default times (adjustable).')+'</div>'
+    +'<div class="btn-row">'+(cur?'<button class="btn btn-danger" onclick="cutShiftF02Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')"><i class="ti ti-scissors"></i> '+t('カット（外す）','Cut')+'</button>':'')+'<div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="saveShiftF02Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')">'+t('保存','Save')+'</button></div>');
+}
+function _f02SlotChange(storeId){
+  var v=(document.getElementById('f02-slot')||{}).value||''; if(!v) return;
+  var p=v.split('||'); var def=_shiftPosTimeDef(storeId, p[0], p[1])||{};
+  var s=document.getElementById('f02-start'), e=document.getElementById('f02-end');
+  if(s && def.start) s.value=def.start; if(e && def.end) e.value=def.end;
+}
+function saveShiftF02Cell(storeId, week, name, day){
+  var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}}; if(!plan.meta)plan.meta={};
+  Object.keys(plan.cells).forEach(function(k){ if(plan.cells[k]===name && k.indexOf(day+'_')===0){ delete plan.cells[k]; delete plan.meta[k]; } });
+  var v=(document.getElementById('f02-slot')||{}).value||'';
+  if(!v){ setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin'); return; }
+  var p=v.split('||'); var sec=p[0], pos=p[1], base=p[2];
+  var st=(document.getElementById('f02-start')||{}).value||''; var en=(document.getElementById('f02-end')||{}).value||'';
+  var label=base+'#'+name; var key=shiftCellKey(day, sec, label);
+  plan.cells[key]=name; plan.meta[key]={start:st, end:en, fixed:false};
+  setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
+}
+function cutShiftF02Cell(storeId, week, name, day){
+  var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}};
+  Object.keys(plan.cells).forEach(function(k){ if(plan.cells[k]===name && k.indexOf(day+'_')===0){ delete plan.cells[k]; if(plan.meta) delete plan.meta[k]; } });
+  setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
 }
 function renderShiftBoard(storeId, week){
   var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
