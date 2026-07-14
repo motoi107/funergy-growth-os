@@ -8688,6 +8688,114 @@ function renderSalesAnalysis(){
   return html;
 }
 
+/* ===== 統合分析 Step1: 期間モデル（月/四半期/半期/年・既存四半期エンジンに整合）＋スコアカード＋売上/予算トレンド ===== */
+var msPeriod='month'; // 'month'|'quarter'|'half'|'year'
+var _anaY=null,_anaQ=null;
+function _anaEnsure(){ if(_anaY==null){ var n=(typeof _bizQNow==='function')?_bizQNow():{y:new Date().getFullYear(),q:Math.floor(new Date().getMonth()/3)+1}; _anaY=n.y; _anaQ=n.q; } }
+function msSetPeriod(p){ msPeriod=p; if(p!=='month') _anaEnsure(); renderPage('budget'); }
+function msPeriodShift(dir){
+  if(msPeriod==='month'){ msShift(dir); return; }
+  _anaEnsure();
+  if(msPeriod==='year'){ _anaY+=dir; renderPage('budget'); return; }
+  var step=(msPeriod==='half')?2:1;
+  var q=_anaQ+dir*step, y=_anaY; while(q<1){q+=4;y--;} while(q>4){q-=4;y++;} _anaY=y; _anaQ=q;
+  renderPage('budget');
+}
+function _msOffsetFor(y,m){ var now=(typeof bizNow==='function')?bizNow():new Date(); return (y-now.getFullYear())*12 + (m-now.getMonth()); }
+function _ymToYM(ymStr){ var p=String(ymStr).split('-'); return {y:+p[0], m:(+p[1])-1}; }
+function _shiftMonths(months, back){ return months.map(function(mo){ var d=new Date(mo.y, mo.m-back, 1); return {y:d.getFullYear(), m:d.getMonth()}; }); }
+function _anaMonths(){
+  if(msPeriod==='month'){ var mi=msMonthInfo(msOffset); return {months:[{y:mi.y,m:mi.m}], label:mi.label, unit:'month'}; }
+  _anaEnsure();
+  if(msPeriod==='quarter'){ return {months:_quarterMonths(_anaY,_anaQ).map(_ymToYM), label:_anaY+' Q'+_anaQ, unit:'quarter'}; }
+  if(msPeriod==='half'){ var hs=(_anaQ<=2)?1:3; return {months:_quarterMonths(_anaY,hs).concat(_quarterMonths(_anaY,hs+1)).map(_ymToYM), label:_anaY+' '+(hs===1?'上期':'下期')+'（Q'+hs+'-Q'+(hs+1)+'）', unit:'half'}; }
+  var mm=[]; for(var q=1;q<=4;q++) mm=mm.concat(_quarterMonths(_anaY,q)); return {months:mm.map(_ymToYM), label:_anaY+'年（通年）', unit:'year'};
+}
+function _anaLabel(){ return _anaMonths().label; }
+function _anaCanNext(){
+  if(msPeriod==='month') return msOffset<0;
+  var mm=_anaMonths().months, last=mm[mm.length-1];
+  return _msOffsetFor(last.y,last.m) < 0;
+}
+function analysisPeriodAgg(months){
+  var out={sales:0,budget:0,guests:0,food:0,labor:0,months:[]};
+  months.forEach(function(mo){
+    var mi=msMonthInfo(_msOffsetFor(mo.y,mo.m));
+    var a=msScopeAgg(mi);
+    out.sales+=a.sales;out.budget+=a.budget;out.guests+=a.guests;out.food+=a.food;out.labor+=a.labor;
+    out.months.push({ym:mi.ym, mlabel:(mo.m+1)+'月', agg:a, mi:mi});
+  });
+  out.fcRate=out.sales?Math.round(out.food/out.sales*1000)/10:0;
+  out.laborRate=out.sales?Math.round(out.labor/out.sales*1000)/10:0;
+  out.primeRate=out.sales?Math.round((out.food+out.labor)/out.sales*1000)/10:0;
+  out.achieve=out.budget?Math.round(out.sales/out.budget*1000)/10:0;
+  out.avgSpend=out.guests?Math.round(out.sales/out.guests*100)/100:0;
+  out.grossProfit=out.sales-out.food-out.labor;
+  out.gpRate=out.sales?Math.round(out.grossProfit/out.sales*1000)/10:0;
+  return out;
+}
+function _anaRepeat(monthsAgg){ var days=[]; monthsAgg.forEach(function(m){ days=days.concat(m.mi.days); }); return repeatStats(msScopeStores(), days); }
+function _absK(d){ return fmtK(Math.abs(Math.round(d))); }
+function _anaDelta(cur, prev, isRate, invert){
+  if(prev==null||!isFinite(prev)) return '<span style="color:var(--muted)">—</span>';
+  var d=(cur||0)-(prev||0);
+  if((isRate&&Math.abs(d)<0.05)||(!isRate&&Math.abs(d)<1)) return '<span style="color:var(--muted)">±0</span>';
+  var good = invert ? (d<0) : (d>0);
+  var col=good?'var(--green)':'var(--red)', arw=d>0?'▲':'▼';
+  return '<span style="color:'+col+'">'+arw+' '+(isRate?(Math.abs(d).toFixed(1)+'pt'):_absK(d))+'</span>';
+}
+/* エグゼクティブ・スコアカード＋売上/予算トレンド（四半期/半期/年） */
+function renderMsScorecardTrend(){
+  var pm=_anaMonths(), months=pm.months;
+  var agg=analysisPeriodAgg(months);
+  var prev=analysisPeriodAgg(_shiftMonths(months, months.length));
+  var yoy=analysisPeriodAgg(_shiftMonths(months, 12));
+  var rs=_anaRepeat(agg.months);
+  var rRate=(rs.has&&rs.total>0)?Math.round(rs.repeat/rs.total*1000)/10:null;
+  var pRs=_anaRepeatPrev(months);
+  var pRate=(pRs&&pRs.has&&pRs.total>0)?Math.round(pRs.repeat/pRs.total*1000)/10:null;
+  var fcCol=agg.fcRate>0?(agg.fcRate<=31?'var(--green)':agg.fcRate<=34?'var(--yellow)':'var(--red)'):'var(--muted)';
+  var lCol=agg.laborRate>0?(agg.laborRate<=28?'var(--green)':agg.laborRate<=31?'var(--yellow)':'var(--red)'):'var(--muted)';
+  var pcCol=agg.primeRate>0?(agg.primeRate<=60?'var(--green)':agg.primeRate<=65?'var(--yellow)':'var(--red)'):'var(--muted)';
+  var acCol=(typeof pctColor==='function')?pctColor(agg.achieve):'var(--tm)';
+  var rCol=rRate==null?'var(--muted)':(rRate>=50?'var(--green)':rRate>=30?'var(--yellow)':'var(--red)');
+  function tile(label,val,sub,col){
+    return '<div style="flex:1;min-width:150px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px">'
+      +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+label+'</div>'
+      +'<div style="font-size:21px;font-weight:800;color:'+(col||'var(--tm)')+'">'+val+'</div>'
+      +(sub?'<div style="font-size:10.5px;color:var(--muted);margin-top:5px;line-height:1.5">'+sub+'</div>':'')+'</div>';
+  }
+  var html='<div class="card" style="padding:12px 14px"><div style="font-size:11px;color:var(--muted)"><i class="ti ti-chart-arcs" style="color:var(--accent)"></i> '+escapeHtml(pm.label)+' の実績 <span style="margin-left:4px">（前期比＝直前の同じ期間 / YoY＝前年同期）</span></div></div>';
+  html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
+    +tile('売上', fmtK(agg.sales), '予算 '+fmtK(agg.budget)+'　前期 '+_anaDelta(agg.sales,prev.sales)+'　YoY '+_anaDelta(agg.sales,yoy.sales))
+    +tile('予算達成', (agg.achieve||0)+'%', escapeHtml(pm.label), acCol)
+    +tile('客数 / 客単価', (agg.guests||0).toLocaleString()+' / $'+(agg.avgSpend||0).toFixed(2), '客単価 前期'+_anaDelta(agg.avgSpend,prev.avgSpend)+'　YoY'+_anaDelta(agg.avgSpend,yoy.avgSpend))
+    +tile('原価率(FC)', agg.fcRate>0?agg.fcRate+'%':'—', '前期 '+_anaDelta(agg.fcRate,prev.fcRate,true,true)+'　YoY '+_anaDelta(agg.fcRate,yoy.fcRate,true,true), fcCol)
+    +tile('人件費率', agg.laborRate>0?agg.laborRate+'%':'—', '前期 '+_anaDelta(agg.laborRate,prev.laborRate,true,true)+'　YoY '+_anaDelta(agg.laborRate,yoy.laborRate,true,true), lCol)
+    +tile('プライムコスト', agg.primeRate>0?agg.primeRate+'%':'—', 'FC＋人件費　前期 '+_anaDelta(agg.primeRate,prev.primeRate,true,true), pcCol)
+    +tile('粗利', fmtK(agg.grossProfit), '粗利率 '+(agg.gpRate||0)+'%　前期 '+_anaDelta(agg.grossProfit,prev.grossProfit))
+    +tile('リピート率', rRate==null?'—':rRate+'%', rRate==null?'同期後に表示':('Repeat '+rs.repeat.toLocaleString()+' / 計'+rs.total.toLocaleString()+'　前期 '+_anaDelta(rRate,pRate,true)), rCol)
+    +'</div>';
+  // 売上 vs 予算トレンド（月次バー＋予算ライン）
+  var chartData=agg.months.map(function(m){ return { label:m.mlabel, value:Math.round(m.agg.sales), lineVal:Math.round(m.agg.budget), topLabel:(m.agg.achieve||0)+'%', topColor:(typeof pctColor==='function')?pctColor(m.agg.achieve):'var(--muted)', color:'var(--accent)' }; });
+  html+='<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>売上 vs 予算（月次推移）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">上の数字＝予算達成率</span></div>'
+    + msBarsWithLine(chartData, {money:true, lineColor:'var(--muted)', lineDash:true, lineScale:'same'})
+    + msLegend([{color:'var(--accent)',label:'売上(実績)'},{color:'var(--muted)',label:'予算'}])
+    + '</div>';
+  // 予算立て導線（既存Qコミットビューへ）
+  if(msPeriod==='quarter' && typeof setBudgetTab==='function'){
+    html+='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:11px;color:var(--muted);flex:1"><i class="ti ti-target-arrow"></i> この四半期の実績を、次期の予算立てに活用できます。</div>'
+      +'<button class="btn btn-secondary btn-sm" onclick="setBudgetTab(\'quarter\')"><i class="ti ti-adjustments-check"></i> Qコミットビューへ</button></div>';
+  }
+  return html;
+}
+function _anaRepeatPrev(months){ try{ var pmn=_shiftMonths(months, months.length); var days=[]; pmn.forEach(function(mo){ days=days.concat(msMonthInfo(_msOffsetFor(mo.y,mo.m)).days); }); return repeatStats(msScopeStores(), days); }catch(e){ return null; } }
+/* 期間トグル（月/四半期/半期/年） */
+function msPeriodTabsHtml(){
+  return '<div class="phase-tabs" style="margin-bottom:8px">'
+    +[['month','月'],['quarter','四半期'],['half','半期'],['year','年']].map(function(pp){ return '<div class="phase-tab'+(msPeriod===pp[0]?' active':'')+'" onclick="msSetPeriod(\''+pp[0]+'\')"><i class="ti ti-calendar-stats" style="font-size:11px"></i> '+pp[1]+'</div>'; }).join('')
+    +'</div>';
+}
 function renderMonthlySummary(){
   if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
   var mi=msMonthInfo(msOffset);
@@ -8704,17 +8812,19 @@ function renderMonthlySummary(){
     +'<div class="phase-tab'+(msView==='trend'?' active':'')+'" onclick="msSetView(\'trend\')"><i class="ti ti-table" style="font-size:12px"></i> KPI推移一覧</div>'
     +'<div class="phase-tab'+(msView==='analysis'?' active':'')+'" onclick="msSetView(\'analysis\')"><i class="ti ti-chart-histogram" style="font-size:12px"></i> 売上分析</div>'
     +'</div>';
+  if(msView==='summary') html += msPeriodTabsHtml();
 
   html+='<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-    +'<button class="btn btn-secondary btn-sm" onclick="msShift(-1)"><i class="ti ti-chevron-left"></i></button>'
-    +'<div style="font-size:16px;font-weight:800;min-width:104px;text-align:center">'+mi.label+'</div>'
-    +'<button class="btn btn-secondary btn-sm" onclick="msShift(1)" '+(canNext?'':'disabled style="opacity:.35"')+'><i class="ti ti-chevron-right"></i></button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="msPeriodShift(-1)"><i class="ti ti-chevron-left"></i></button>'
+    +'<div style="font-size:16px;font-weight:800;min-width:104px;text-align:center">'+(msPeriod==='month'?mi.label:_anaLabel())+'</div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="msPeriodShift(1)" '+((msPeriod==='month'?canNext:_anaCanNext())?'':'disabled style="opacity:.35"')+'><i class="ti ti-chevron-right"></i></button>'
     +'<span id="ms-load-ind" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--muted)"><i class="ti ti-loader"></i><span class="ms-load-txt">取得中…</span></span>'
     +'<select onchange="msSetScope(this.value)" style="margin-left:auto;padding:8px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--tm);font-size:13px">'
     +'<option value="ALL"'+(msScope==='ALL'?' selected':'')+'>全店合算</option>'
     +stores.map(function(s){return '<option value="'+s.id+'"'+(msScope===s.id?' selected':'')+'>'+s.name+'</option>';}).join('')
     +'</select></div>';
 
+  if(msView==='summary' && msPeriod!=='month'){ return html + renderMsScorecardTrend(); }
   if(msView==='trend'){ return html + renderKpiTrendMatrix(); }
   if(msView==='analysis'){ return html + renderSalesAnalysis(); }
 
@@ -16263,7 +16373,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '597';
+const APP_VERSION = '598';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
