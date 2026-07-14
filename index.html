@@ -8787,6 +8787,7 @@ function renderMsScorecardTrend(){
     html+='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:11px;color:var(--muted);flex:1"><i class="ti ti-target-arrow"></i> この四半期の実績を、次期の予算立てに活用できます。</div>'
       +'<button class="btn btn-secondary btn-sm" onclick="setBudgetTab(\'quarter\')"><i class="ti ti-adjustments-check"></i> Qコミットビューへ</button></div>';
   }
+  html += renderMsDeepAnalysis();
   return html;
 }
 function _anaRepeatPrev(months){ try{ var pmn=_shiftMonths(months, months.length); var days=[]; pmn.forEach(function(mo){ days=days.concat(msMonthInfo(_msOffsetFor(mo.y,mo.m)).days); }); return repeatStats(msScopeStores(), days); }catch(e){ return null; } }
@@ -8802,6 +8803,67 @@ function msConsolidatedSections(){
   h+='<details style="margin-top:10px" open><summary style="cursor:pointer;font-weight:700;font-size:14px;padding:11px 13px;background:var(--surface);border:1px solid var(--border);border-radius:12px;list-style:none"><i class="ti ti-chart-histogram" style="color:var(--accent)"></i> 売上分析（月別・曜日別・シフト別）</summary><div style="margin-top:8px">'+renderSalesAnalysis()+'</div></details>';
   h+='<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;font-size:14px;padding:11px 13px;background:var(--surface);border:1px solid var(--border);border-radius:12px;list-style:none"><i class="ti ti-table" style="color:var(--accent)"></i> KPI推移一覧（全数値・直近12ヶ月）</summary><div style="margin-top:8px">'+renderKpiTrendMatrix()+'</div></details>';
   return h;
+}
+/* ウォーターフォール（前期→客数寄与→客単価寄与→今期） */
+function _msWaterfall(steps){
+  var run=0, maxV=0, bars=[];
+  steps.forEach(function(st){
+    if(st.type==='total'){ bars.push({label:st.label, from:0, to:st.value, val:st.value, isTot:true, color:'var(--accent)'}); run=st.value; maxV=Math.max(maxV, st.value); }
+    else { var f=run, tt=run+st.value; bars.push({label:st.label, from:Math.min(f,tt), to:Math.max(f,tt), val:st.value, isTot:false, color:(st.value>=0?'var(--green)':'var(--red)')}); run=tt; maxV=Math.max(maxV, f, tt); }
+  });
+  if(maxV<=0) return _msEmpty();
+  var n=bars.length, W=Math.max(300, n*72+44), ax=_msX(W,n), bw=Math.min(42, ax.slot-14);
+  var g=_msGrid(W,maxV,true);
+  bars.forEach(function(b,i){
+    var y1=ax.y1-Math.round((b.to/maxV)*(ax.y1-ax.top));
+    var y2=ax.y1-Math.round((b.from/maxV)*(ax.y1-ax.top));
+    var x=ax.x0+i*ax.slot+(ax.slot-bw)/2;
+    g+='<rect x="'+x.toFixed(1)+'" y="'+y1.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(1,(y2-y1)).toFixed(1)+'" rx="2.5" fill="'+b.color+'"></rect>';
+    var top=b.isTot?msMoneyShort(b.val):((b.val>=0?'+':'−')+msMoneyShort(Math.abs(b.val)));
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(y1-3).toFixed(1)+'" text-anchor="middle" font-size="7.5" fill="var(--muted)">'+top+'</text>';
+    g+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="8.5" fill="var(--tm)">'+escapeHtml(String(b.label))+'</text>';
+  });
+  return _msSvg(W,g);
+}
+/* Step2: 客数×客単価 要因分解 ＋ リピーター分析（期間連動） */
+function renderMsDeepAnalysis(){
+  var pm=_anaMonths(), months=pm.months;
+  var agg=analysisPeriodAgg(months);
+  var prev=analysisPeriodAgg(_shiftMonths(months, months.length));
+  var html='';
+  // --- 客数×客単価 要因分解（ウォーターフォール） ---
+  var g1=agg.guests,a1=agg.avgSpend,s1=agg.sales, g0=prev.guests,a0=prev.avgSpend,s0=prev.sales;
+  html+='<div class="card"><div class="card-title"><i class="ti ti-arrows-split-2" style="color:var(--accent)"></i>売上増減の要因分解（客数×客単価）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">前期比</span></div>';
+  if(s0>0 && g0>0 && g1>0){
+    var traffic=(g1-g0)*a0, ticket=g1*(a1-a0), dSales=s1-s0;
+    html+=_msWaterfall([{label:'前期',type:'total',value:s0},{label:'客数寄与',type:'delta',value:traffic},{label:'客単価寄与',type:'delta',value:ticket},{label:'今期',type:'total',value:s1}]);
+    var main=Math.abs(traffic)>=Math.abs(ticket)?'客数':'客単価';
+    html+='<div style="font-size:12px;line-height:1.7;margin-top:6px">売上は前期比 <b style="color:'+(dSales>=0?'var(--green)':'var(--red)')+'">'+(dSales>=0?'+':'−')+fmtK(Math.abs(dSales))+'</b>（'+(dSales>=0?'増加':'減少')+'）。'
+      +'内訳＝<span style="color:'+(traffic>=0?'var(--green)':'var(--red)')+'">客数 '+(traffic>=0?'+':'−')+fmtK(Math.abs(traffic))+'</span> ／ <span style="color:'+(ticket>=0?'var(--green)':'var(--red)')+'">客単価 '+(ticket>=0?'+':'−')+fmtK(Math.abs(ticket))+'</span>。'
+      +'主因は <b>'+main+'</b>。'+(main==='客数'?'集客が売上を動かしています（来客の維持・獲得が鍵）。':'単価・アップセルが効いています（客数も伸ばせれば上積み余地）。')+'</div>';
+    html+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">客数 '+(g0||0).toLocaleString()+' → '+(g1||0).toLocaleString()+'　／　客単価 $'+(a0||0).toFixed(2)+' → $'+(a1||0).toFixed(2)+'</div>';
+  } else {
+    html+='<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center">前期のデータが不足しているため分解できません（同期後に表示）。</div>';
+  }
+  html+='</div>';
+  // --- リピーター分析（新規 vs リピート） ---
+  var repMonths=agg.months.map(function(m){ var rs=repeatStats(msScopeStores(), m.mi.days); return {label:m.mlabel, first:rs.first||0, repeat:rs.repeat||0, sr:rs.sr||0, total:rs.total||0, rate:(rs.total>0?Math.round(rs.repeat/rs.total*1000)/10:null)}; });
+  var anyRep=repMonths.some(function(m){return m.total>0;});
+  html+='<div class="card"><div class="card-title"><i class="ti ti-users-group" style="color:var(--accent)"></i>リピーター分析（新規 vs リピート）</div>';
+  if(anyRep){
+    var repData=repMonths.map(function(m){ return {label:m.label, sub:(m.rate!=null?'Rep '+m.rate+'%':'—'), segs:[{v:m.first,color:'var(--muted)'},{v:m.repeat,color:'var(--accent)'}]}; });
+    html+=msStackedBar(repData, {})+msLegend([{color:'var(--muted)',label:'新規'},{color:'var(--accent)',label:'リピート'}]);
+    var tF=repMonths.reduce(function(a,m){return a+m.first;},0), tR=repMonths.reduce(function(a,m){return a+m.repeat;},0), tT=tF+tR;
+    var pRate=tT>0?Math.round(tR/tT*1000)/10:null;
+    var rated=repMonths.filter(function(m){return m.rate!=null;});
+    var trendTxt=''; if(rated.length>=2){ var dd=rated[rated.length-1].rate-rated[0].rate; trendTxt=' 期間内のリピート率は '+(dd>=0?'▲':'▼')+Math.abs(dd).toFixed(1)+'pt。'; }
+    html+='<div style="font-size:12px;line-height:1.7;margin-top:8px">期間計＝新規 <b>'+tF.toLocaleString()+'</b> ／ リピート <b>'+tR.toLocaleString()+'</b>（リピート率 <b>'+(pRate!=null?pRate+'%':'—')+'</b>）。'+trendTxt
+      +(pRate!=null?(pRate<30?'新規は取れているがリピートが弱め＝再来店の仕組み（記憶に残る接客・次回来店動機）が課題。':pRate>=50?'高いリピート率で常連基盤が強い＝新規獲得を足せば伸びます。':'標準的なリピート率。上位常連への引き上げが次の一手。'):'')+'</div>';
+  } else {
+    html+='<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center">リピートデータ（新規/リピート杯数）がありません。日次実績の入力・同期後に表示されます。</div>';
+  }
+  html+='</div>';
+  return html;
 }
 function renderMonthlySummary(){
   if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
@@ -8898,6 +8960,7 @@ function renderMonthlySummary(){
 
   html+='<div class="card" style="background:var(--surface2)"><div style="font-size:12px;color:var(--muted)">このページはv1プレビューです。売上・原価率・レイバー・達成率・トレンド・店舗別・前月比は実データ（前日まで／過去月は全日）。売上構成はメニュー出数（同期後）から実データ算出。</div></div>';
 
+  html += renderMsDeepAnalysis();
   html += msConsolidatedSections();
   setTimeout(function(){ try{ msLoadMonth(false); }catch(e){} }, 60);
   return html;
@@ -9061,6 +9124,7 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
     <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
+    <div class="phase-tab${budgetTab==='analysis'?' active':''}" onclick="setBudgetTab('analysis')">${t('経営分析','Analytics')}</div>
     <div class="phase-tab${budgetTab==='meeting'?' active':''}" onclick="setBudgetTab('meeting')">${t('会議','Meeting')}</div>
     <div class="phase-tab${budgetTab==='minutes'?' active':''}" onclick="setBudgetTab('minutes')">${t('議事録','Minutes')}</div>
   </div>`;
@@ -9073,6 +9137,7 @@ function renderBudget() {
   if (budgetTab==='setup' && (_budgetStore==='ALL' || !_budgetStore)) { var _vsb=getVisibleStores(); if(_vsb.length) _budgetStore=_vsb[0].id; }
   html += bStoreChips(_budgetStore, 'setBudgetStore', {showAll: budgetTab!=='setup'});
   if (budgetTab==='setup') return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup());
+  if (budgetTab==='analysis') return html + renderMonthlySummary();
   return html + renderBudgetSummary();
 }
 function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
@@ -10445,11 +10510,6 @@ function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
   var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+t('店舗別 月次進捗','By Store · Monthly')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('実績／月間予算・達成率','Actual / Monthly budget · Achievement')+(isCur?t('（縦線＝今日の暦日ペース）',' (line = today\'s pace)'):'')+'</span></div>';
   h += _bStoreProgCards(items, 'setBudgetStore');
   h += '</div>';
-  h += '<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px;flex-wrap:wrap">'
-    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoMonthlyReview()"><i class="ti ti-calendar-stats"></i> '+t('月次振り返り','Monthly Review')+'</button>'
-    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> '+t('KPI推移一覧','KPI Trend')+'</button>'
-    +'<button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoSalesAnalysis()"><i class="ti ti-chart-histogram"></i> '+t('売上分析','Sales Analysis')+'</button>'
-    +'</div></div>';
   try{
     var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && b.status==='GM承認待ち'; });
     if (pendB.length) h += '<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab(\'setup\')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">'+t('GM承認待ちの予算が','Budgets pending GM approval:')+' <b>'+pendB.length+t('店',' stores')+'</b> '+t('あります — タップで予算設定へ','— tap to open Budget Setup')+'</div></div>';
@@ -10555,12 +10615,6 @@ function renderBudgetSummary() {
   html += `</div>
     <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
 
-  // ===== ②b 分析へのショートカット（旧・月次サマリー機能へ） =====
-  html += `<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px;flex-wrap:wrap">
-    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoMonthlyReview()"><i class="ti ti-calendar-stats"></i> ${t('月次振り返り','Monthly Review')}</button>
-    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> ${t('KPI推移一覧','KPI Trend')}</button>
-    <button class="btn btn-secondary btn-sm" style="flex:1;min-width:104px" onclick="gotoSalesAnalysis()"><i class="ti ti-chart-histogram"></i> ${t('売上分析','Sales Analysis')}</button>
-  </div></div>`;
 
   // ===== ③ 店舗別ワンライン（複数店スコープ時のみ） =====
   if (stores.length > 1){
@@ -11572,7 +11626,7 @@ function keyKpiCard(scopeStores, days, title){
   // ドリンク比率（ToriTon/Tenkichi/Marujuu）
   var drinkCol = k.drinkRate==null?'var(--muted)':(k.drinkTgt!=null?(k.drinkRate>=k.drinkTgt?'var(--green)':k.drinkRate>=k.drinkTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
   var drinkSub = k.drinkRate!=null?(t('ドリンク売上÷総売上','Drink sales ÷ total')+(k.drinkTgt!=null?'　'+t('目標','tgt')+k.drinkTgt+'%':'')):t('メニュー出数待ち','Awaiting menu mix');
-  return `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>${t('重要KPI','Key KPIs')}${title?'・'+title:''}　<span style="font-size:10px;color:var(--muted);font-weight:400">${t('実績／予算比較','Actual / Budget')}</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:3px 10px" onclick="gotoKpiTrend()"><i class="ti ti-table"></i> ${t('KPI推移一覧','KPI Trend')}</button></div>
+  return `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>${t('重要KPI','Key KPIs')}${title?'・'+title:''}　<span style="font-size:10px;color:var(--muted);font-weight:400">${t('実績／予算比較','Actual / Budget')}</span></div>
     <div class="kpi-grid">
       ${kpi(t('売上','Sales'), fmtUSD2(k.sales), t('予算','Bud')+' '+fmtK(k.budget)+' / '+t('達成','ach ')+k.achieve+'%', acCol)}
       ${kpi(k.unit==='丼'?t('集客(丼数)','Guests (bowls)'):t('集客','Guests'), (k.guests||0).toLocaleString(), guestSub, guestCol)}
@@ -16374,7 +16428,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '599';
+const APP_VERSION = '601';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
