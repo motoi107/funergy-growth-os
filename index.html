@@ -8830,7 +8830,7 @@ var msSubTab='summary';
 function msSetSubTab(v){ msSubTab=v; renderPage((typeof curPage!=='undefined'&&curPage==='monthly')?'monthly':'budget'); }
 function msSubTabsHtml(){
   var v=msSubTab||'summary';
-  var tabs=[['summary','サマリー','ti-layout-dashboard'],['decomp','要因分解','ti-arrows-split-2'],['repeat','リピーター','ti-users-group'],['sales','売上分析','ti-chart-histogram'],['kpi','KPI推移','ti-table']];
+  var tabs=[['summary','サマリー','ti-layout-dashboard'],['decomp','要因分解','ti-arrows-split-2'],['repeat','リピーター','ti-users-group'],['cost','コスト','ti-coins'],['menu','メニュー','ti-tools-kitchen-2'],['stores','店舗比較','ti-trophy'],['sales','売上分析','ti-chart-histogram'],['kpi','KPI推移','ti-table']];
   return '<div class="phase-tabs" style="margin-bottom:8px;flex-wrap:wrap">'+tabs.map(function(tt){ return '<div class="phase-tab'+(v===tt[0]?' active':'')+'" onclick="msSetSubTab(\''+tt[0]+'\')"><i class="ti '+tt[2]+'" style="font-size:11px"></i> '+tt[1]+'</div>'; }).join('')+'</div>';
 }
 /* 要因分解（客数×客単価 ウォーターフォール） */
@@ -8875,6 +8875,174 @@ function renderMsRepeat(){
   return html+'</div>';
 }
 function renderMsDeepAnalysis(){ return renderMsGuestDecomp()+renderMsRepeat(); }
+/* 複数系列の折れ線（率%・目標帯対応） */
+function _msMultiLine(labels, series, opts){
+  opts=opts||{};
+  var all=[]; series.forEach(function(s){ (s.values||[]).forEach(function(v){ all.push(v||0); }); });
+  if(!labels.length || all.every(function(v){return !v;})) return _msEmpty();
+  var n=labels.length, W=Math.max(300, n*48+44);
+  var maxV=Math.max.apply(null, all.concat(opts.band?[opts.band.to]:[])) || 1;
+  var yMax=Math.max(40, Math.ceil(maxV*1.12/10)*10);
+  var ax=_msX(W,n), g='';
+  if(opts.band){ var by1=ax.y1-Math.round((opts.band.to/yMax)*(ax.y1-ax.top)); var by2=ax.y1-Math.round((opts.band.from/yMax)*(ax.y1-ax.top)); g+='<rect x="'+ax.x0+'" y="'+by1+'" width="'+(W-ax.x0-8)+'" height="'+Math.max(1,(by2-by1))+'" fill="'+opts.band.color+'" opacity="0.13"></rect>'; }
+  [0, Math.round(yMax/2), yMax].forEach(function(yv){ var yy=ax.y1-Math.round((yv/yMax)*(ax.y1-ax.top)); g+='<line x1="'+ax.x0+'" y1="'+yy+'" x2="'+(W-8)+'" y2="'+yy+'" stroke="var(--border)" stroke-width="0.7" opacity="0.5"></line><text x="'+(ax.x0-2)+'" y="'+(yy+3)+'" text-anchor="end" font-size="7.5" fill="var(--muted)">'+yv+'%</text>'; });
+  labels.forEach(function(lb,i){ var x=ax.x0+i*ax.slot+ax.slot/2; g+='<text x="'+x.toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="9" fill="var(--tm)">'+escapeHtml(String(lb))+'</text>'; });
+  series.forEach(function(s){
+    var pts=[]; (s.values||[]).forEach(function(v,i){ var x=ax.x0+i*ax.slot+ax.slot/2; var y=ax.y1-Math.round(((v||0)/yMax)*(ax.y1-ax.top)); pts.push([x,y]); });
+    if(pts.length>1) g+='<polyline points="'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+s.color+'" stroke-width="1.8"'+(s.dash?' stroke-dasharray="4 3"':'')+'></polyline>';
+    g+=pts.map(function(p){return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.2" fill="'+s.color+'"></circle>';}).join('');
+  });
+  return _msSvg(W,g);
+}
+/* Step3: 収益性・コスト（原価率/人件費率/プライムの推移 ＋ 売上構成） */
+function renderMsCostProfit(){
+  var pm=_anaMonths(), months=pm.months;
+  var agg=analysisPeriodAgg(months);
+  var html='';
+  // A) コスト率の推移
+  var mlabels=agg.months.map(function(m){return m.mlabel;});
+  var fcS=agg.months.map(function(m){return m.agg.fcRate||0;});
+  var lbS=agg.months.map(function(m){return m.agg.laborRate||0;});
+  var pmS=agg.months.map(function(m){var s=m.agg.sales; return s?Math.round((m.agg.food+m.agg.labor)/s*1000)/10:0;});
+  html+='<div class="card"><div class="card-title"><i class="ti ti-coins" style="color:var(--accent)"></i>コスト率の推移（原価率・人件費率・プライム）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+'</span></div>';
+  if(fcS.some(function(v){return v>0;})||lbS.some(function(v){return v>0;})){
+    html+=_msMultiLine(mlabels, [
+      {label:'原価率', color:'var(--accent)', values:fcS},
+      {label:'人件費率', color:'var(--purple)', values:lbS},
+      {label:'プライム', color:'var(--red)', values:pmS}
+    ], { band:{from:55,to:65,color:'var(--green)'} });
+    html+=msLegend([{color:'var(--accent)',label:'原価率(FC)'},{color:'var(--purple)',label:'人件費率'},{color:'var(--red)',label:'プライム'},{color:'var(--green)',label:'健全域55–65%'}]);
+    var pcCol=agg.primeRate<=60?'var(--green)':agg.primeRate<=65?'var(--yellow)':'var(--red)';
+    html+='<div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.7">期間平均：原価率 <b style="color:var(--tm)">'+(agg.fcRate||0)+'%</b> ／ 人件費率 <b style="color:var(--tm)">'+(agg.laborRate||0)+'%</b> ／ プライム <b style="color:'+pcCol+'">'+(agg.primeRate||0)+'%</b>。緑帯＝プライム健全域(55–65%)。帯を超えると利益が出にくくなります。</div>';
+  } else {
+    html+='<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center">コストデータが不足しています（同期後に表示）。</div>';
+  }
+  html+='</div>';
+  // B) 売上構成
+  var storeIds=msScopeStores().map(function(s){return s.id;});
+  var mixMonths=agg.months.map(function(m){ return {label:m.mlabel, mix:salesMixForScope(storeIds, m.mi.y+'.'+(m.mi.m+1), m.mi.ym)}; });
+  var totF=0,totA=0,totS=0, hasMenu=false, takeout=0, hasTk=false;
+  mixMonths.forEach(function(m){ totF+=m.mix.food; totA+=m.mix.alcohol; totS+=m.mix.soft; if(m.mix.hasMenu) hasMenu=true; if(m.mix.hasTakeout){ takeout+=m.mix.takeoutCount; hasTk=true; } });
+  var totAll=totF+totA+totS;
+  html+='<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>売上構成（フード／アルコール／ソフト）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+'</span></div>';
+  if(hasMenu && totAll>0){
+    function seg(v,c){ return '<div style="height:100%;width:'+(v/totAll*100).toFixed(1)+'%;background:'+c+'"></div>'; }
+    html+='<div style="display:flex;height:22px;border-radius:6px;overflow:hidden;margin-bottom:6px">'+seg(totF,'var(--accent)')+seg(totA,'var(--red)')+seg(totS,'var(--purple)')+'</div>';
+    html+=msLegend([{color:'var(--accent)',label:'フード '+Math.round(totF/totAll*100)+'%'},{color:'var(--red)',label:'アルコール '+Math.round(totA/totAll*100)+'%'},{color:'var(--purple)',label:'ソフト '+Math.round(totS/totAll*100)+'%'}]);
+    var stData=mixMonths.map(function(m){ var t2=m.mix.food+m.mix.alcohol+m.mix.soft; return {label:m.label, sub:(t2>0?'D'+Math.round((m.mix.alcohol+m.mix.soft)/t2*100)+'%':'—'), segs:[{v:m.mix.food,color:'var(--accent)'},{v:m.mix.alcohol,color:'var(--red)'},{v:m.mix.soft,color:'var(--purple)'}]}; });
+    html+='<div style="margin-top:8px">'+msStackedBar(stData, {money:true})+'</div>';
+    var drinkPct=Math.round((totA+totS)/totAll*100), alcPct=Math.round(totA/totAll*100);
+    html+='<div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.7">ドリンク比率 <b style="color:var(--tm)">'+drinkPct+'%</b>（うちアルコール '+alcPct+'%）。'+(hasTk?'テイクアウト計 '+takeout.toLocaleString()+'件。':'')+'<br>ドリンク（特にアルコール）は高粗利。比率アップが利益改善の近道です。</div>';
+  } else {
+    html+='<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center">メニュー出数データがありません（日次のメニュー出数入力・同期後に表示）。</div>';
+  }
+  html+='</div>';
+  return html;
+}
+/* 期間×スコープのメニュー出数を集計し、1品粗利まで付与 */
+function _menuAgg(storeIds, months){
+  var recipes=(typeof activeRecipes==='function'?activeRecipes():(typeof getRecipes==='function'?getRecipes():[]));
+  var byId={};
+  months.forEach(function(mo){ var mi=msMonthInfo(_msOffsetFor(mo.y,mo.m)); var mp=mi.y+'.'+(mi.m+1);
+    (storeIds||[]).forEach(function(sid){ var mix=getMenuMix(sid, mp)||{}; var it=mix.items||{}; Object.keys(it).forEach(function(rid){ var q=parseFloat(it[rid])||0; if(!q)return; byId[rid]=(byId[rid]||0)+q; }); });
+  });
+  var items=[];
+  Object.keys(byId).forEach(function(rid){ var r=recipes.find(function(x){return x.id===rid;}); if(!r)return;
+    var qty=byId[rid], price=parseFloat(r.price)||0, cr=(typeof recipeCostRate==='function')?recipeCostRate(r):0;
+    var marginPer=price*(100-cr)/100;
+    items.push({id:rid,name:r.name||rid,category:r.category||'',qty:qty,price:price,costRate:cr,marginPer:marginPer,sales:qty*price,marginTotal:qty*marginPer});
+  });
+  return items;
+}
+function _menuRankRows(list, maxQ, col){
+  return list.map(function(i){ var w=maxQ>0?Math.round(i.qty/maxQ*100):0;
+    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--border)"><div style="flex:1;min-width:0"><div style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(i.name)+'</div><div style="height:5px;background:var(--surface2);border-radius:3px;margin-top:3px"><div style="height:100%;width:'+w+'%;background:'+col+';border-radius:3px"></div></div></div><div style="text-align:right;font-size:11px;min-width:78px"><b>'+i.qty.toLocaleString()+'</b>食<div style="color:var(--muted);font-size:9px">粗利'+Math.round(100-i.costRate)+'% ・ '+fmtK(i.sales)+'</div></div></div>';
+  }).join('');
+}
+/* メニューエンジニアリング散布図（人気×利益・4象限） */
+function _msScatter(items, avgX, avgY, maxX, maxY){
+  var W=340,H=210,padL=28,padR=12,padT=14,padB=24, plotW=W-padL-padR, plotH=H-padT-padB;
+  var color={star:'var(--green)',plow:'var(--yellow)',puzzle:'var(--accent2)',dog:'var(--red)'};
+  function px(x){ return padL + (maxX>0? x/maxX*plotW : 0); }
+  function py(y){ return padT + plotH - (maxY>0? y/maxY*plotH : 0); }
+  var ax=px(avgX), ay=py(avgY), g='';
+  g+='<line x1="'+ax.toFixed(1)+'" y1="'+padT+'" x2="'+ax.toFixed(1)+'" y2="'+(padT+plotH)+'" stroke="var(--border)" stroke-dasharray="3 3"></line>';
+  g+='<line x1="'+padL+'" y1="'+ay.toFixed(1)+'" x2="'+(padL+plotW)+'" y2="'+ay.toFixed(1)+'" stroke="var(--border)" stroke-dasharray="3 3"></line>';
+  g+='<text x="'+(padL+plotW-2)+'" y="'+(padT+9)+'" text-anchor="end" font-size="8" fill="var(--green)">★Star</text>';
+  g+='<text x="'+(padL+2)+'" y="'+(padT+9)+'" text-anchor="start" font-size="8" fill="var(--accent2)">Puzzle</text>';
+  g+='<text x="'+(padL+plotW-2)+'" y="'+(padT+plotH-3)+'" text-anchor="end" font-size="8" fill="var(--yellow)">Plowhorse</text>';
+  g+='<text x="'+(padL+2)+'" y="'+(padT+plotH-3)+'" text-anchor="start" font-size="8" fill="var(--red)">Dog</text>';
+  g+='<text x="'+(padL+plotW/2)+'" y="'+(H-3)+'" text-anchor="middle" font-size="8" fill="var(--muted)">人気（出数）→</text>';
+  items.forEach(function(it){ g+='<circle cx="'+px(it.qty).toFixed(1)+'" cy="'+py(it.marginPer).toFixed(1)+'" r="3.2" fill="'+color[it.quad]+'" opacity="0.85"></circle>'; });
+  return '<div style="overflow-x:auto"><svg viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+'" style="max-width:'+W+'px;display:block">'+g+'</svg></div><div style="font-size:8px;color:var(--muted);margin-top:-6px">縦軸＝1品あたり粗利</div>';
+}
+function renderMsMenu(){
+  var pm=_anaMonths(), months=pm.months;
+  var items=_menuAgg(msScopeStores().map(function(s){return s.id;}), months);
+  if(!items.length){ return '<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2" style="color:var(--accent)"></i>メニュー分析</div><div style="color:var(--muted);font-size:13px;padding:14px;text-align:center">メニュー出数データがありません（日次のメニュー出数入力・同期後に表示）。</div></div>'; }
+  var avgQ=items.reduce(function(a,i){return a+i.qty;},0)/items.length;
+  var avgM=items.reduce(function(a,i){return a+i.marginPer;},0)/items.length;
+  items.forEach(function(i){ i.pop=i.qty>=avgQ; i.prof=i.marginPer>=avgM; i.quad=i.pop&&i.prof?'star':(i.pop&&!i.prof?'plow':(!i.pop&&i.prof?'puzzle':'dog')); });
+  var maxQ=Math.max.apply(null,items.map(function(i){return i.qty;}))||1;
+  var maxM=Math.max.apply(null,items.map(function(i){return i.marginPer;}))||1;
+  var byQty=items.slice().sort(function(a,b){return b.qty-a.qty;});
+  var html='<div class="card"><div class="card-title"><i class="ti ti-flame" style="color:var(--accent)"></i>ベストセラー（出数）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+' ・ '+items.length+'品</span></div>'+_menuRankRows(byQty.slice(0,8), maxQ, 'var(--accent)')+'</div>';
+  html+='<div class="card"><div class="card-title"><i class="ti ti-arrow-down-circle" style="color:var(--red)"></i>ワーストセラー（出数）</div>'+_menuRankRows(byQty.slice(-5).reverse(), maxQ, 'var(--red)')+'</div>';
+  var q={star:[],plow:[],puzzle:[],dog:[]}; items.forEach(function(i){ q[i.quad].push(i); });
+  function qc(k,label,col,advice){ return '<div style="flex:1;min-width:150px;border:1px solid var(--border);border-left:3px solid '+col+';border-radius:8px;padding:8px 10px"><div style="font-size:12px;font-weight:700;color:'+col+'">'+label+' <span style="color:var(--muted);font-weight:400">('+q[k].length+')</span></div><div style="font-size:10px;color:var(--muted);margin-top:2px">'+advice+'</div><div style="font-size:10.5px;margin-top:4px;line-height:1.5">'+(q[k].slice(0,4).map(function(i){return escapeHtml(i.name);}).join('、')||'—')+(q[k].length>4?' 他':'')+'</div></div>'; }
+  html+='<div class="card"><div class="card-title"><i class="ti ti-grid-dots" style="color:var(--accent)"></i>メニューエンジニアリング（人気×利益）</div>'+_msScatter(items, avgQ, avgM, maxQ, maxM)
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
+    +qc('star','★スター','var(--green)','人気×高利益。看板として維持・目立たせる')
+    +qc('plow','稼ぎ頭(薄利)','var(--yellow)','人気だが薄利。値上げ/原価見直しで利益化')
+    +qc('puzzle','磨けば光る','var(--accent2)','高利益だが不人気。見せ方/推しで販売増')
+    +qc('dog','負け犬','var(--red)','不人気×薄利。改廃を検討')
+    +'</div><div style="font-size:10px;color:var(--muted);margin-top:6px">基準：人気＝出数が平均以上／利益＝1品粗利が平均以上（原価はレシピ原価から算出）。</div></div>';
+  return html;
+}
+/* 店舗ごとの期間集計 */
+function _storePeriodAgg(storeId, months){
+  var o={sales:0,budget:0,guests:0,food:0,labor:0};
+  months.forEach(function(mo){ var mi=msMonthInfo(_msOffsetFor(mo.y,mo.m)); var a=msAgg(storeId, mi); o.sales+=a.sales;o.budget+=a.budget;o.guests+=a.guests;o.food+=a.food;o.labor+=a.labor; });
+  o.fcRate=o.sales?Math.round(o.food/o.sales*1000)/10:0;
+  o.laborRate=o.sales?Math.round(o.labor/o.sales*1000)/10:0;
+  o.primeRate=o.sales?Math.round((o.food+o.labor)/o.sales*1000)/10:0;
+  o.achieve=o.budget?Math.round(o.sales/o.budget*1000)/10:0;
+  o.avgSpend=o.guests?Math.round(o.sales/o.guests*100)/100:0;
+  o.gpRate=o.sales?Math.round((o.sales-o.food-o.labor)/o.sales*1000)/10:0;
+  return o;
+}
+function renderMsStoreRank(){
+  var pm=_anaMonths(), months=pm.months;
+  var stores=getVisibleStores();
+  if(!stores || stores.length<=1){ return '<div class="card"><div class="card-title"><i class="ti ti-trophy" style="color:var(--accent)"></i>店舗比較</div><div style="color:var(--muted);font-size:13px;padding:14px;text-align:center">複数店舗のスコープで表示されます（上のセレクタで「全店合算」を選ぶか、複数店舗の権限が必要）。</div></div>'; }
+  var days=[]; months.forEach(function(mo){ days=days.concat(msMonthInfo(_msOffsetFor(mo.y,mo.m)).days); });
+  var rows=stores.map(function(s){ var a=_storePeriodAgg(s.id, months); var rs=repeatStats([{id:s.id}], days); a.repeat=(rs.total>0?Math.round(rs.repeat/rs.total*1000)/10:null); return {store:s, a:a}; });
+  rows.sort(function(x,y){ return (y.a.achieve||0)-(x.a.achieve||0); });
+  function fcCol(v){ return v<=0?'var(--muted)':v<=31?'var(--green)':v<=34?'var(--yellow)':'var(--red)'; }
+  function lbCol(v){ return v<=0?'var(--muted)':v<=28?'var(--green)':v<=31?'var(--yellow)':'var(--red)'; }
+  function pmCol(v){ return v<=0?'var(--muted)':v<=60?'var(--green)':v<=65?'var(--yellow)':'var(--red)'; }
+  function gpCol(v){ return v>=40?'var(--green)':v>=30?'var(--yellow)':'var(--red)'; }
+  function acCol(v){ return (typeof pctColor==='function')?pctColor(v):'var(--tm)'; }
+  function cell(v,col,suf){ return '<td style="text-align:right;padding:6px 5px;color:'+col+';font-weight:600">'+(v!=null&&v!==0?v+(suf||''):'—')+'</td>'; }
+  var h='<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-trophy" style="color:var(--accent)"></i>店舗比較ランキング（達成率順）<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+'</span></div>';
+  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:6px 5px">店舗</th><th style="text-align:right;padding:6px 5px">売上</th><th style="text-align:right;padding:6px 5px">達成</th><th style="text-align:right;padding:6px 5px">原価</th><th style="text-align:right;padding:6px 5px">人件費</th><th style="text-align:right;padding:6px 5px">プライム</th><th style="text-align:right;padding:6px 5px">粗利率</th><th style="text-align:right;padding:6px 5px">客単価</th><th style="text-align:right;padding:6px 5px">リピート</th></tr></thead><tbody>';
+  rows.forEach(function(r,idx){ var a=r.a; var badge=idx===0?'🏆':(idx===rows.length-1&&rows.length>2?'⚠':'');
+    h+='<tr style="border-top:1px solid var(--border)"><td style="text-align:left;padding:6px 5px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(r.store.color||'#888')+';margin-right:5px"></span>'+escapeHtml(r.store.name)+(badge?' '+badge:'')+'</td>'
+      +'<td style="text-align:right;padding:6px 5px"><b>'+fmtK(a.sales)+'</b></td>'
+      +cell(a.achieve,acCol(a.achieve),'%')
+      +cell(a.fcRate,fcCol(a.fcRate),'%')
+      +cell(a.laborRate,lbCol(a.laborRate),'%')
+      +cell(a.primeRate,pmCol(a.primeRate),'%')
+      +cell(a.gpRate,gpCol(a.gpRate),'%')
+      +'<td style="text-align:right;padding:6px 5px">'+(a.avgSpend?'$'+a.avgSpend.toFixed(2):'—')+'</td>'
+      +cell(a.repeat, a.repeat==null?'var(--muted)':(a.repeat>=50?'var(--green)':a.repeat>=30?'var(--yellow)':'var(--red)'),'%')
+      +'</tr>';
+  });
+  h+='</tbody></table>';
+  var best=rows[0], worst=rows[rows.length-1];
+  h+='<div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.7">🏆 達成率トップは <b style="color:var(--tm)">'+escapeHtml(best.store.name)+'</b>（'+(best.a.achieve||0)+'%）。'+(rows.length>2?'⚠ 最下位は <b style="color:var(--tm)">'+escapeHtml(worst.store.name)+'</b>（'+(worst.a.achieve||0)+'%）— 予算・原価・人件費のどこで差がついているか、上の色（緑=良/赤=要改善）で確認できます。':'')+'</div></div>';
+  return h;
+}
 function renderMonthlySummary(){
   if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
   var mi=msMonthInfo(msOffset);
@@ -8902,6 +9070,9 @@ function renderMonthlySummary(){
   var _sub=msSubTab||'summary';
   if(_sub==='decomp') return html + renderMsGuestDecomp();
   if(_sub==='repeat') return html + renderMsRepeat();
+  if(_sub==='cost')   return html + renderMsCostProfit();
+  if(_sub==='menu')   return html + renderMsMenu();
+  if(_sub==='stores') return html + renderMsStoreRank();
   if(_sub==='sales')  return html + renderSalesAnalysis();
   if(_sub==='kpi')    return html + renderKpiTrendMatrix();
   if(msPeriod!=='month'){ return html + renderMsScorecardTrend(); }
@@ -16442,7 +16613,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '602';
+const APP_VERSION = '604';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
