@@ -8796,6 +8796,13 @@ function msPeriodTabsHtml(){
     +[['month','月'],['quarter','四半期'],['half','半期'],['year','年']].map(function(pp){ return '<div class="phase-tab'+(msPeriod===pp[0]?' active':'')+'" onclick="msSetPeriod(\''+pp[0]+'\')"><i class="ti ti-calendar-stats" style="font-size:11px"></i> '+pp[1]+'</div>'; }).join('')
     +'</div>';
 }
+/* 旧タブ（売上分析・KPI推移一覧）を1画面に統合＝折りたたみセクション化 */
+function msConsolidatedSections(){
+  var h='';
+  h+='<details style="margin-top:10px" open><summary style="cursor:pointer;font-weight:700;font-size:14px;padding:11px 13px;background:var(--surface);border:1px solid var(--border);border-radius:12px;list-style:none"><i class="ti ti-chart-histogram" style="color:var(--accent)"></i> 売上分析（月別・曜日別・シフト別）</summary><div style="margin-top:8px">'+renderSalesAnalysis()+'</div></details>';
+  h+='<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;font-size:14px;padding:11px 13px;background:var(--surface);border:1px solid var(--border);border-radius:12px;list-style:none"><i class="ti ti-table" style="color:var(--accent)"></i> KPI推移一覧（全数値・直近12ヶ月）</summary><div style="margin-top:8px">'+renderKpiTrendMatrix()+'</div></details>';
+  return h;
+}
 function renderMonthlySummary(){
   if(curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">閲覧権限がありません</div>';
   var mi=msMonthInfo(msOffset);
@@ -8807,12 +8814,7 @@ function renderMonthlySummary(){
 
   var html='';
 
-  html+='<div class="phase-tabs" style="margin-bottom:8px">'
-    +'<div class="phase-tab'+(msView==='summary'?' active':'')+'" onclick="msSetView(\'summary\')"><i class="ti ti-layout-dashboard" style="font-size:12px"></i> サマリー</div>'
-    +'<div class="phase-tab'+(msView==='trend'?' active':'')+'" onclick="msSetView(\'trend\')"><i class="ti ti-table" style="font-size:12px"></i> KPI推移一覧</div>'
-    +'<div class="phase-tab'+(msView==='analysis'?' active':'')+'" onclick="msSetView(\'analysis\')"><i class="ti ti-chart-histogram" style="font-size:12px"></i> 売上分析</div>'
-    +'</div>';
-  if(msView==='summary') html += msPeriodTabsHtml();
+  html += msPeriodTabsHtml();
 
   html+='<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
     +'<button class="btn btn-secondary btn-sm" onclick="msPeriodShift(-1)"><i class="ti ti-chevron-left"></i></button>'
@@ -8824,9 +8826,7 @@ function renderMonthlySummary(){
     +stores.map(function(s){return '<option value="'+s.id+'"'+(msScope===s.id?' selected':'')+'>'+s.name+'</option>';}).join('')
     +'</select></div>';
 
-  if(msView==='summary' && msPeriod!=='month'){ return html + renderMsScorecardTrend(); }
-  if(msView==='trend'){ return html + renderKpiTrendMatrix(); }
-  if(msView==='analysis'){ return html + renderSalesAnalysis(); }
+  if(msPeriod!=='month'){ return html + renderMsScorecardTrend() + msConsolidatedSections(); }
 
   function tile(label,val,sub,col){
     return '<div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px">'
@@ -8898,6 +8898,7 @@ function renderMonthlySummary(){
 
   html+='<div class="card" style="background:var(--surface2)"><div style="font-size:12px;color:var(--muted)">このページはv1プレビューです。売上・原価率・レイバー・達成率・トレンド・店舗別・前月比は実データ（前日まで／過去月は全日）。売上構成はメニュー出数（同期後）から実データ算出。</div></div>';
 
+  html += msConsolidatedSections();
   setTimeout(function(){ try{ msLoadMonth(false); }catch(e){} }, 60);
   return html;
 }
@@ -16373,7 +16374,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '598';
+const APP_VERSION = '599';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
