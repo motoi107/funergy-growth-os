@@ -716,6 +716,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
       <i class="ti ti-chevron-down" style="font-size:12px;"></i>
     </div>
     <div class="topbar-right">
+      <button id="topbar-fav" class="topbar-icon-btn" onclick="toggleFavCurrent()" title="このタブをお気に入りに追加"><i class="ti ti-star"></i></button>
       <button id="topbar-notif" class="topbar-icon-btn" onclick="toggleNotifPanel(event)" title="通知"><i class="ti ti-bell"></i><span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;border-radius:9px;font-size:9px;font-weight:700;min-width:15px;height:15px;line-height:15px;text-align:center;padding:0 2px"></span></button>
       <button id="topbar-sync" class="topbar-icon-btn" onclick="refreshNow()" title="最新に更新"><i class="ti ti-refresh"></i></button>
       <div class="topbar-role-badge" id="topbar-role"></div>
@@ -4087,7 +4088,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets'];
 var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
-  'daily_actuals_','menu_mix_','labor_hours_'];
+  'daily_actuals_','menu_mix_','labor_hours_','fav_'];   /* fav_<user>: お気に入り（個人別・クラウド保存） */
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
 function authObPriv(payload){
   return fetch(SUPABASE_URL+'/functions/v1/ob-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(payload) }).then(function(r){ return r.json(); });
@@ -4401,7 +4402,7 @@ function _coversCashTips(check, want){
   }
   return true;
 }
-var OP_MERGE_PREFIX = { 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips } };
+var OP_MERGE_PREFIX = { 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs } };
 function _opMergeDef(key){ if(OP_MERGE[key]) return OP_MERGE[key]; for(var p in OP_MERGE_PREFIX){ if(OP_MERGE_PREFIX.hasOwnProperty(p) && String(key).indexOf(p)===0) return OP_MERGE_PREFIX[p]; } return null; }
 /* スキル店舗バケット {name:{position:{level,status,_at,...}}} のマージ。name→positionで深くマージ。
    position衝突は _at(書込時刻の新しい方)→level(高い方)→local の順で解決（昇格/降格/申請中→承認すべて正しく） */
@@ -6150,7 +6151,7 @@ function renderPage(page) {
   var el = document.getElementById('main-content');
   if (curStore === 'OFFICE' && OFFICE_OK_PAGES.indexOf(page) < 0) { el.innerHTML = renderOfficeMgr(); window.scrollTo(0,0); return; }
   switch(page) {
-    case 'dashboard':    el.innerHTML = renderDashboard(); break;
+    case 'dashboard':    el.innerHTML = renderFavCard() + renderDashboard(); break;
     case 'store_cmd':    el.innerHTML = renderStoreCmd(); break;
     case 'store_ops_settings': el.innerHTML = renderStoreOpsSettings(); break;
     case 'budget':       el.innerHTML = renderBudget(); break;
@@ -6198,7 +6199,7 @@ function renderPage(page) {
     case 'growth_mgr':   el.innerHTML = renderGrowthManager(); break;
     case 'ojt_admin':    el.innerHTML = renderOjtAdmin(); break;
     case 'approval':     workTab='approval'; el.innerHTML = renderWorkCenter(); break;
-    case 'mypage':       el.innerHTML = renderMypage(); break;
+    case 'mypage':       el.innerHTML = renderFavCard() + renderMypage(); break;
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
     case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
@@ -6210,6 +6211,7 @@ function renderPage(page) {
   }
   attachPageEvents();
   try{ renderNotifBell(); }catch(e){}
+  try{ updateFavStar(); }catch(e){}
 }
 
 function attachPageEvents() {
@@ -6528,6 +6530,179 @@ function dashToggle(id){
   else { b.style.display='none'; window._dashOpen[id]=false; if(head) head.classList.remove('open'); }
 }
 function dashCollapsed(id){ return window._dashOpen[id] !== true; } // 既定は閉じる
+/* ============================================================
+   v612: お気に入り（スタッフ個別・小タブ単位で登録／ダッシュボードから即ジャンプ）
+   ・保存先: fav_<ユーザー名>（個人別キー）→ OP_SYNC_PREFIX でクラウド自動保存
+   ・OP_MERGE_PREFIX に登録して「和集合マージ（新しい方優先・削除はtombstone）」
+     ＝端末間の上書きで消えない（tasks_all と同じ方式）
+   ・_LS_PRUNABLE に入れない＝キャッシュ整理でも消えない
+============================================================ */
+var FAV_MAX = 12;
+var _favEdit = false;
+/* 各ページの「小タブ状態」の取得/復元 定義 */
+var FAV_TABS = {
+  budget:            [{k:'budgetTab', g:function(){return budgetTab;}, s:function(v){budgetTab=v;}},
+                      {k:'msSubTab',  g:function(){return (typeof budgetTab!=='undefined'&&budgetTab==='analysis')?msSubTab:null;}, s:function(v){msSubTab=v;}},
+                      {k:'msPeriod',  g:function(){return (typeof budgetTab!=='undefined'&&budgetTab==='analysis')?msPeriod:null;}, s:function(v){msPeriod=v;}}],
+  monthly:           [{k:'msSubTab', g:function(){return msSubTab;}, s:function(v){msSubTab=v;}},
+                      {k:'msPeriod', g:function(){return msPeriod;}, s:function(v){msPeriod=v;}}],
+  foodcost:          [{k:'fcTab', g:function(){return fcTab;}, s:function(v){fcTab=v;}}],
+  order:             [{k:'orderTab', g:function(){return orderTab;}, s:function(v){orderTab=v;}}],
+  labor:             [{k:'laborTab', g:function(){return laborTab;}, s:function(v){laborTab=v;}}],
+  shift_admin:       [{k:'shiftAdminTab', g:function(){return shiftAdminTab;}, s:function(v){shiftAdminTab=v;}}],
+  hiring:            [{k:'hiringTab', g:function(){return hiringTab;}, s:function(v){hiringTab=v;}}],
+  ingredient_master: [{k:'_ingTab', g:function(){return window._ingTab;}, s:function(v){window._ingTab=v;}}],
+  office_mgr:        [{k:'officeMgrTab', g:function(){return officeMgrTab;}, s:function(v){officeMgrTab=v;}}],
+  supply_order:      [{k:'_soTab', g:function(){return window._soTab;}, s:function(v){window._soTab=v;}}],
+  tasks:             [{k:'workTab', g:function(){return workTab;}, s:function(v){workTab=v;}},
+                      {k:'taskTab', g:function(){return taskTab;}, s:function(v){taskTab=v;}}],
+  biz_guide:         [{k:'bizTab', g:function(){return bizTab;}, s:function(v){bizTab=v;}}],
+  ojt_admin:         [{k:'bizTab', g:function(){return bizTab;}, s:function(v){bizTab=v;}}],
+  growth_mgr:        [{k:'growthMgrTab', g:function(){return growthMgrTab;}, s:function(v){growthMgrTab=v;}}]
+};
+function _favKey(){ var n=(typeof myName==='function'?myName():'')||'unknown'; return 'fav_'+String(n).trim().replace(/\s+/g,'_'); }
+function getFavsRaw(){ var a=ls(_favKey(), []); return Array.isArray(a)?a:[]; }
+function setFavsRaw(arr){ lsSet(_favKey(), arr); }
+function getFavs(){
+  return getFavsRaw().filter(function(f){ return f && !f._deleted && f.id; })
+    .sort(function(x,y){ return (Number(x.order)||0)-(Number(y.order)||0) || _favTs(x)-_favTs(y); });
+}
+function _favTs(f){ return Number(f && f.ts) || 0; }
+/* 和集合マージ（id単位・削除優先・新しい方優先）＝端末間で消えない */
+function mergeFavs(cloudArr, localArr){
+  var by={}, order=[];
+  function put(item, isLocal){
+    if(!item || !item.id) return;
+    var id=item.id;
+    if(!by[id]){ by[id]=item; order.push(id); return; }
+    var cur=by[id], win;
+    if(!!cur._deleted !== !!item._deleted){ win = cur._deleted ? (_favTs(item)>_favTs(cur)?item:cur) : (_favTs(item)>_favTs(cur)?item:cur); }
+    else if(_favTs(item)!==_favTs(cur)){ win=_favTs(item)>_favTs(cur)?item:cur; }
+    else { win=isLocal?item:cur; }
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+function _coversFavs(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x&&x.id) have[x.id]=x; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(!w||!w.id) continue;
+    var h=have[w.id]; if(!h) return false;
+    if(_favTs(h) < _favTs(w)) return false;
+  }
+  return true;
+}
+/* 現在地（ページ＋小タブ）の取得・復元 */
+function _favGetState(page){ var defs=FAV_TABS[page]||[]; var st={}; defs.forEach(function(d){ try{ var v=d.g(); if(v!=null && v!=='') st[d.k]=v; }catch(e){} }); return st; }
+function _favApplyState(page, st){ var defs=FAV_TABS[page]||[]; defs.forEach(function(d){ try{ if(st && st[d.k]!=null) d.s(st[d.k]); }catch(e){} }); }
+function _favId(page, st){ var ks=Object.keys(st||{}).sort(); return page+'|'+ks.map(function(k){return k+'='+st[k];}).join('&'); }
+/* いま開いている小タブの表示名をDOMから取得（ラベル自動生成用） */
+function _favActiveTabText(){
+  try{
+    var el=document.querySelector('#main-content .phase-tab.active, #main-content .mm-tab.active');
+    if(!el) return '';
+    var s=(el.textContent||'').trim().replace(/\s+/g,' ');
+    return s.length>16 ? s.slice(0,16) : s;
+  }catch(e){ return ''; }
+}
+function _favPageMeta(page){
+  var it=(typeof navItemById==='function')?navItemById(page):null;
+  return { label:(it&&it.label)||page, icon:(it&&it.icon)||'ti-star' };
+}
+function favCurrent(){ var st=_favGetState(curPage); return { id:_favId(curPage,st), page:curPage, state:st }; }
+function isFavCurrent(){ var c=favCurrent(); return getFavs().some(function(f){ return f.id===c.id; }); }
+/* ★トグル（登録／解除） */
+function toggleFavCurrent(){
+  var c=favCurrent(), raw=getFavsRaw(), now=Date.now();
+  var i=raw.findIndex(function(f){ return f && f.id===c.id; });
+  if(i>=0 && !raw[i]._deleted){
+    raw[i]._deleted=true; raw[i].ts=now;            // tombstone（復活防止）
+    setFavsRaw(raw); updateFavStar();
+    showToast('お気に入りから外しました','success');
+    if(curPage==='dashboard'||curPage==='mypage') renderPage(curPage);
+    return;
+  }
+  if(getFavs().length>=FAV_MAX){ showToast('お気に入りは'+FAV_MAX+'件までです。ダッシュボードの「編集」で整理してください','warning'); return; }
+  var meta=_favPageMeta(c.page), tabTxt=_favActiveTabText();
+  var item={ id:c.id, page:c.page, state:c.state, label:(tabTxt?(meta.label+' › '+tabTxt):meta.label),
+             icon:meta.icon, ts:now, order:getFavs().length };
+  if(i>=0) raw[i]=item; else raw.push(item);
+  setFavsRaw(raw); updateFavStar();
+  showToast('お気に入りに追加: '+item.label+'（もう一度★で解除）','success');
+  if(curPage==='dashboard'||curPage==='mypage') renderPage(curPage);
+}
+/* ★アイコンの状態更新（塗り＝登録済み） */
+function updateFavStar(){
+  try{
+    var b=document.getElementById('topbar-fav'); if(!b) return;
+    var on=isFavCurrent();
+    b.innerHTML='<i class="ti '+(on?'ti-star-filled':'ti-star')+'" style="'+(on?'color:var(--yellow,#f5b301)':'')+'"></i>';
+    b.title=on?'お気に入りから外す':'このタブをお気に入りに追加';
+  }catch(e){}
+}
+/* ダッシュボード上部のお気に入りカード */
+function renderFavCard(){
+  var favs=getFavs();
+  var h='<div class="card" style="margin-bottom:10px"><div class="card-title" style="display:flex;align-items:center;gap:6px">'
+    +'<i class="ti ti-star-filled" style="color:var(--yellow,#f5b301)"></i>お気に入り'
+    +'<span style="font-size:10px;color:var(--muted);font-weight:400">'+(favs.length?favs.length+'件':'')+'</span>'
+    +'<div style="flex:1"></div>'
+    +(favs.length?'<button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px" onclick="favToggleEdit()">'+(_favEdit?'<i class="ti ti-check"></i> 完了':'<i class="ti ti-pencil"></i> 編集')+'</button>':'')
+    +'</div>';
+  if(!favs.length){
+    h+='<div style="font-size:12px;color:var(--muted);line-height:1.8;padding:6px 2px">'
+      +'よく使うタブを開いて、右上の <i class="ti ti-star" style="color:var(--yellow,#f5b301)"></i> を押すとここに追加されます（小タブも登録できます）。<br>'
+      +'例：予算 › 経営分析 › リピーター／シフト作成／発注 など。ここから1タップで移動できます。</div></div>';
+    return h;
+  }
+  if(!_favEdit){
+    h+='<div style="display:flex;flex-wrap:wrap;gap:7px">'+favs.map(function(f){
+      return '<button class="btn btn-secondary" style="font-size:12px;padding:8px 11px;display:inline-flex;align-items:center;gap:6px;max-width:100%" onclick="favGo(\''+String(f.id).replace(/'/g,"\\'")+'\')">'
+        +'<i class="ti '+escapeHtml(f.icon||'ti-star')+'" style="color:var(--accent)"></i>'
+        +'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(f.label)+'</span></button>';
+    }).join('')+'</div>';
+  } else {
+    h+='<div style="display:flex;flex-direction:column;gap:5px">'+favs.map(function(f,i){
+      var eid=String(f.id).replace(/'/g,"\\'");
+      return '<div style="display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:8px;padding:5px 7px">'
+        +'<i class="ti '+escapeHtml(f.icon||'ti-star')+'" style="color:var(--accent)"></i>'
+        +'<span style="flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(f.label)+'</span>'
+        +'<button class="btn btn-secondary btn-sm" style="padding:1px 6px" '+(i===0?'disabled':'')+' onclick="favMove(\''+eid+'\',-1)"><i class="ti ti-chevron-up"></i></button>'
+        +'<button class="btn btn-secondary btn-sm" style="padding:1px 6px" '+(i===favs.length-1?'disabled':'')+' onclick="favMove(\''+eid+'\',1)"><i class="ti ti-chevron-down"></i></button>'
+        +'<button class="btn btn-secondary btn-sm" style="padding:1px 6px" onclick="favRename(\''+eid+'\')"><i class="ti ti-pencil"></i></button>'
+        +'<button class="btn btn-danger btn-sm" style="padding:1px 6px" onclick="favRemove(\''+eid+'\')"><i class="ti ti-trash"></i></button>'
+        +'</div>';
+    }).join('')+'</div><div style="font-size:10px;color:var(--muted);margin-top:6px">並べ替え・名前変更・削除ができます。登録はタブを開いて右上の★から。</div>';
+  }
+  return h+'</div>';
+}
+function favToggleEdit(){ _favEdit=!_favEdit; renderPage(curPage); }
+function favGo(id){
+  var f=getFavs().find(function(x){ return x.id===id; }); if(!f) return;
+  _favApplyState(f.page, f.state);
+  if(typeof go==='function') go(f.page); else renderPage(f.page);
+}
+function favMove(id, dir){
+  var favs=getFavs(), i=favs.findIndex(function(f){return f.id===id;});
+  if(i<0) return; var j=i+dir; if(j<0||j>=favs.length) return;
+  var tmp=favs[i]; favs[i]=favs[j]; favs[j]=tmp;
+  var raw=getFavsRaw(), now=Date.now();
+  favs.forEach(function(f,idx){ var r=raw.find(function(x){return x.id===f.id;}); if(r){ r.order=idx; r.ts=now; } });
+  setFavsRaw(raw); renderPage(curPage);
+}
+function favRename(id){
+  var raw=getFavsRaw(), r=raw.find(function(x){return x.id===id;}); if(!r) return;
+  var v=prompt('お気に入りの名前', r.label||''); if(v==null) return;
+  v=String(v).trim(); if(!v) return;
+  r.label=v.slice(0,40); r.ts=Date.now(); setFavsRaw(raw); renderPage(curPage);
+}
+function favRemove(id){
+  var raw=getFavsRaw(), r=raw.find(function(x){return x.id===id;}); if(!r) return;
+  if(!confirm('「'+(r.label||'')+'」をお気に入りから削除しますか？')) return;
+  r._deleted=true; r.ts=Date.now(); setFavsRaw(raw); updateFavStar(); renderPage(curPage);
+}
 function renderDashboard() {
   var rc = ROLE_CONFIG[curRole];
   if (!rc.financial) return canSeeDashboard() ? renderSlFunergyNow() : renderMypage();
@@ -16737,7 +16912,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '610';
+const APP_VERSION = '612';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -33708,7 +33883,7 @@ function openInvoiceModal() {
     </div>
     <div class="form-group"><label class="form-label">業者 / 購入先</label>
       <input class="form-input" id="inv-vendor" list="inv-vendor-list" placeholder="業者名を入力or選択" oninput="checkVendorRegistered()">
-      <datalist id="inv-vendor-list">${vendors.map(v=>`<option value="${v.name}">`).join('')}</datalist>
+      <datalist id="inv-vendor-list">${vendorsSorted().map(v=>`<option value="${v.name}">`).join('')}</datalist>
       <div id="inv-vendor-warn"></div>
     </div>
     ${invoiceDocType==='Receipt' ? `<div class="form-group" style="border:1px solid var(--accent2);border-radius:8px;padding:10px;background:#f4f8ff">
@@ -33805,14 +33980,78 @@ async function viewInvoiceImage(path){
   }catch(e){ showToast('画像を開けませんでした','danger'); }
 }
 
+/* ============================================================
+   v611: 業者名の自動一致（OCR結果 → 登録業者へ寄せる）
+   OCRは "JFC INTERNATIONAL INC." のように法人格や支店名付きで返るため、
+   登録名 "JFC" と完全一致せず「未登録」となり選び直しが必要だった。
+   正規化（法人格・記号・空白除去）＋段階マッチで、確実な場合は登録名へ自動で合わせる。
+============================================================ */
+function _vnNorm(s){
+  s=String(s||'').toLowerCase();
+  s=s.replace(/[\u3000]/g,' ');
+  // 法人格・一般語を除去（英日）
+  s=s.replace(/\b(inc|incorporated|llc|l\.l\.c|ltd|limited|co|corp|corporation|company|group|holdings|intl|international|usa|hawaii|honolulu|dba)\b/g,' ');
+  s=s.replace(/株式会社|有限会社|合同会社|\(株\)|（株）|\(有\)|（有）/g,' ');
+  s=s.replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]/g,'');
+  return s;
+}
+function _vnTokens(s){
+  return String(s||'').toLowerCase()
+    .replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]+/g,' ')
+    .split(/\s+/).filter(function(w){ return w && w.length>=2 && !/^(inc|llc|ltd|co|corp|company|the|of|and|intl|international|usa|hawaii|honolulu|dba)$/.test(w); });
+}
+/* 登録業者の中から最も確からしいものを返す: {vendor, score(0-1), reason} / 無ければ null */
+function matchVendorBest(raw){
+  var q=String(raw||'').trim(); if(!q) return null;
+  var vendors=(typeof getVendors==='function')?getVendors():[];
+  if(!vendors.length) return null;
+  var qn=_vnNorm(q), qt=_vnTokens(q);
+  var best=null;
+  vendors.forEach(function(v){
+    var vn=_vnNorm(v.name), vt=_vnTokens(v.name);
+    if(!vn) return;
+    var score=0, reason='';
+    if(String(v.name).trim().toLowerCase()===q.toLowerCase()){ score=1; reason='完全一致'; }
+    else if(vn===qn){ score=0.97; reason='表記ゆれ一致'; }
+    else if(qn && vn && (qn.indexOf(vn)===0 || vn.indexOf(qn)===0)){ score=0.9; reason='前方一致'; }
+    else if(qn && vn && vn.length>=3 && qn.indexOf(vn)>=0){ score=0.85; reason='登録名を含む'; }
+    else if(qn && vn && qn.length>=3 && vn.indexOf(qn)>=0){ score=0.8; reason='読取名を含む'; }
+    else if(qt.length && vt.length){
+      var hit=vt.filter(function(w){ return qt.indexOf(w)>=0; }).length;
+      if(hit){ var r=hit/Math.max(vt.length, 1); if(r>=0.5) { score=0.5+r*0.28; reason='語一致 '+hit+'/'+vt.length; } }
+    }
+    // 別名(alias)にも対応（業者マスターにaliasがあれば）
+    var aliases=[].concat(v.alias||v.aliases||[]);
+    aliases.forEach(function(a){ var an=_vnNorm(a); if(an && qn && (an===qn || qn.indexOf(an)===0)) { if(score<0.95){ score=0.95; reason='別名一致'; } } });
+    if(score>0 && (!best || score>best.score)) best={vendor:v, score:score, reason:reason};
+  });
+  return best;
+}
+/* アルファベット順（日本語は五十音/文字順）に並べた業者リスト */
+function vendorsSorted(){
+  var vs=(typeof getVendors==='function')?getVendors().slice():[];
+  return vs.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||''), 'ja', {sensitivity:'base', numeric:true}); });
+}
+/* 候補を提示して1タップで確定（自動一致が中確度のとき用） */
+function applyVendorSuggest(name){
+  var el=document.getElementById('inv-vendor'); if(!el) return;
+  el.value=name; checkVendorRegistered();
+  showToast('業者を「'+name+'」に設定しました','success');
+}
 function checkVendorRegistered() {
   var name = document.getElementById('inv-vendor').value.trim();
   var warn = document.getElementById('inv-vendor-warn');
   if (!name) { warn.innerHTML=''; return; }
   var exists = getVendors().find(v=>v.name===name);
-  if (!exists) {
-    warn.innerHTML = `<div class="alert alert-warning" style="margin-top:6px;padding:7px 10px"><i class="ti ti-alert-triangle"></i><div style="font-size:11px">未登録の業者です。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="gotoVendorRegister('${name.replace(/'/g,'')}')">業者登録へ</button></div></div>`;
-  } else { warn.innerHTML = `<div style="font-size:11px;color:var(--green);margin-top:4px">✓ 登録済み業者</div>`; }
+  if (exists) { warn.innerHTML = `<div style="font-size:11px;color:var(--green);margin-top:4px">✓ 登録済み業者</div>`; return; }
+  /* v611: 完全一致でなくても登録業者へ自動照合（"JFC INTERNATIONAL INC." → "JFC" 等） */
+  var _m = (typeof matchVendorBest==='function') ? matchVendorBest(name) : null;
+  if (_m && _m.score>=0.8) {
+    warn.innerHTML = `<div style="font-size:11px;color:var(--green);margin-top:4px">✓ 登録業者と一致: <b>${escapeHtml(_m.vendor.name)}</b>（${escapeHtml(_m.reason)}）<button class="btn btn-secondary btn-sm" style="margin-left:6px;font-size:10px;padding:1px 7px" onclick="applyVendorSuggest('${String(_m.vendor.name).replace(/'/g,"\\'")}')">この名前に統一</button></div>`;
+    return;
+  }
+  var _sug = (_m && _m.score>=0.5) ? `<div style="font-size:11px;margin-top:5px">もしかして: <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:1px 7px" onclick="applyVendorSuggest('${String(_m.vendor.name).replace(/'/g,"\\'")}')">${escapeHtml(_m.vendor.name)}</button></div>` : '';
+  warn.innerHTML = `<div class="alert alert-warning" style="margin-top:6px;padding:7px 10px"><i class="ti ti-alert-triangle"></i><div style="font-size:11px">未登録の業者です。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="gotoVendorRegister('${name.replace(/'/g,'')}')">業者登録へ</button></div>${_sug}</div>`;
 }
 function gotoVendorRegister(prefillName) {
   closeModalDirect();
@@ -33955,7 +34194,17 @@ async function runInvoiceOCR(file){
       showToast('画像が不鮮明なため差し戻しました。撮り直してください','warning');
       return;
     }
-    if(data && data.vendor){ var vEl=document.getElementById('inv-vendor'); if(vEl && !vEl.value){ vEl.value=data.vendor; if(typeof checkVendorRegistered==='function') checkVendorRegistered(); } }
+    if(data && data.vendor){
+      var vEl=document.getElementById('inv-vendor');
+      if(vEl && !vEl.value){
+        window._invVendorRaw=String(data.vendor||'');
+        /* v611: 読取名（法人格・支店名付き）を登録業者へ自動で寄せる。確度が低い時のみ読取名のまま。 */
+        var _vm=(typeof matchVendorBest==='function')?matchVendorBest(data.vendor):null;
+        if(_vm && _vm.score>=0.8){ vEl.value=_vm.vendor.name; showToast('業者を自動判定: '+_vm.vendor.name,'success'); }
+        else { vEl.value=data.vendor; }
+        if(typeof checkVendorRegistered==='function') checkVendorRegistered();
+      }
+    }
     // 店舗名の自動判定（OCR応答に storeName / shipTo 等があれば対象店舗を自動選択）
     try{
       var _stTxt = data && (data.storeName || data.store || data.shipTo || data.customer || '');
@@ -34187,6 +34436,11 @@ async function saveInvoice() {
   if (!invoiceTmpLines.length) { alert('品目がありません。写真読取か「手入力で品目追加」で追加してください'); return; }
   var vendor = document.getElementById('inv-vendor').value.trim();
   if (!vendor) { alert('業者・購入先を入力してください'); return; }
+  /* v611: 保存時も登録業者名へ統一（表記ゆれで別業者として増殖するのを防ぐ） */
+  if (!getVendors().find(function(v){return v.name===vendor;})) {
+    var _vmS=(typeof matchVendorBest==='function')?matchVendorBest(vendor):null;
+    if(_vmS && _vmS.score>=0.9) vendor=_vmS.vendor.name;
+  }
   var total = invoiceTmpLines.reduce((a,l)=>a+(l.lineTotal!=null?l.lineTotal:(l.newPrice||0)*(l.qty||0)),0);
   var selEl = document.getElementById('invoice-store');
   var invStoreId = selEl ? selEl.value : (window._invoiceStore || (curStore==='ALL'?STORES[0].id:curStore));
@@ -34346,6 +34600,11 @@ async function saveReimbursement(){
   var storeObj=STORES.find(function(x){return x.id===storeId;});
   var purpose=(docVal('inv-purpose')||''); var pmemo=(docVal('inv-purpose-memo')||'').trim();
   var vendor=(docVal('inv-vendor')||'').trim();
+  /* v611: 建て替え/Receiptでも登録業者名へ統一 */
+  if (vendor && typeof getVendors==='function' && !getVendors().find(function(v){return v.name===vendor;})) {
+    var _vmR=(typeof matchVendorBest==='function')?matchVendorBest(vendor):null;
+    if(_vmR && _vmR.score>=0.9) vendor=_vmR.vendor.name;
+  }
   var empMatch=getEmployees().find(function(e){return e.name===payer;});
   var imagePath=null;
   if(window._invoicePhotoFile){
@@ -35004,8 +35263,16 @@ function setTaskTab(t){ taskTab=t; renderPage('tasks'); }
 function getTasks() { return ls('tasks_all', []); }
 function setTasks(arr){ lsSet('tasks_all', arr); }
 function tsNow(){ return nowJP(); }
+/* v611: タスクのリンク先を正規化（スキーム省略はhttps://を補完・javascript:等は拒否） */
+function _taskNormLink(v){
+  v=String(v||'').trim(); if(!v) return '';
+  if(/^(javascript|data|vbscript):/i.test(v)) return '';
+  if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v='https://'+v.replace(/^\/+/,'');
+  return v;
+}
 function normalizeTask(t){
   if(!t.type) t.type='店舗';
+  if(t.link==null) t.link='';   /* v611: 任意のリンク先 */
   if(t.progress==null) t.progress=0;
   if(!t.status) t.status = t.progress>=100?'完了':(t.progress>0?'進行中':'未着手');
   if(!t.priority) t.priority='中';
@@ -35842,6 +36109,7 @@ function openTaskModal(type, storeId){
   openModal('<div class="modal-title">'+(type==='個人'?'個人タスク作成':'店舗タスク作成')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div class="form-group"><label class="form-label">タスク名</label><input class="form-input" id="t-title" placeholder="タスク内容"></div>'
     +'<div class="form-group"><label class="form-label">詳細（任意）</label><textarea class="form-input" id="t-desc" rows="2" placeholder="補足・手順など"></textarea></div>'
+    +'<div class="form-group"><label class="form-label">リンク先（任意）</label><input class="form-input" id="t-link" type="url" inputmode="url" placeholder="https://… （資料・フォーム・動画など）"><div style="font-size:10px;color:var(--muted);margin-top:3px">タスク詳細から開けます</div></div>'
     +'<div class="form-row">'
     +'<div class="form-group"><label class="form-label">区分</label><select class="form-select" id="t-type"><option'+(type==='店舗'?' selected':'')+'>店舗</option><option'+(type==='個人'?' selected':'')+'>個人</option></select></div>'
     +'<div class="form-group"><label class="form-label">店舗</label><select class="form-select" id="t-store">'+storeOpts.map(function(s){return '<option value="'+s.id+'"'+((storeId&&s.id===storeId)?' selected':'')+'>'+s.name+'</option>';}).join('')+'</select></div>'
@@ -35862,6 +36130,7 @@ function saveTask(){
   if(!title){ alert('タスク名を入力してください'); return; }
   var t=normalizeTask({id:'tk'+Date.now(), title:title,
     desc:document.getElementById('t-desc').value.trim(),
+    link:_taskNormLink((document.getElementById('t-link')||{}).value||''),
     type:document.getElementById('t-type').value,
     store:document.getElementById('t-store').value,
     assignee:document.getElementById('t-assignee').value,
@@ -35897,6 +36166,7 @@ function openTaskDetail(id){
     +(di.label?'<span class="tag" style="background:'+di.color+';color:#fff;font-size:10px">'+di.label+'</span>':'')
     +'</div>';
   if(t.desc) h+='<div style="font-size:13px;color:var(--muted);margin-bottom:8px;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
+  if(t.link) h+='<div style="margin-bottom:8px"><a href="'+escapeHtml(t.link)+'" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="font-size:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><i class="ti ti-external-link"></i> リンクを開く</a><div style="font-size:10px;color:var(--muted);margin-top:3px;word-break:break-all">'+escapeHtml(t.link)+'</div></div>';
   // 編集フィールド
   if(canEdit){
     h+='<div class="form-row">'
@@ -35907,6 +36177,7 @@ function openTaskDetail(id){
       +'<div class="form-group"><label class="form-label">重要度</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'priority\',this.value)">'+['低','中','高'].map(function(p){return '<option'+(p===t.priority?' selected':'')+'>'+p+'</option>';}).join('')+'</select></div>'
       +'<div class="form-group"><label class="form-label">場所</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'place\',this.value)"><option value="">—</option>'+['店舗内','店舗外'].map(function(p){return '<option'+(p===t.place?' selected':'')+'>'+p+'</option>';}).join('')+'</select></div>'
       +'</div>';
+    h+='<div class="form-group"><label class="form-label">リンク先（任意）</label><input class="form-input" type="url" inputmode="url" value="'+escapeHtml(t.link||'')+'" placeholder="https://…" onchange="taskField(\''+t.id+'\',\'link\',_taskNormLink(this.value))"></div>';
     h+='<div class="form-group"><label class="form-label">繰り返し（期限日基準で自動生成）</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'recur\',this.value)">'+['none','daily','weekly','monthly','monthend'].map(function(r){return '<option value="'+r+'"'+((t.recur&&t.recur.type===r)?' selected':'')+'>'+TASK_RECUR_LABELS[r]+'</option>';}).join('')+'</select></div>';
     // ステータス & 進捗
     h+='<div class="form-group"><label class="form-label">ステータス</label><div style="display:flex;gap:6px;flex-wrap:wrap">'
