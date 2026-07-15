@@ -3985,6 +3985,149 @@ function _splitWrite(key, sp, val){
     if(JSON.stringify(curById[id])!==JSON.stringify(byId[id])) lsSet(pre+id, byId[id]);
   });
 }
+/* ============================================================
+   v617: 棚卸履歴を「月ごと」に分割保存＋消失防止
+   【問題】inv_hist_<店舗> に全月・全品目を1行で詰め込んでいたため、
+     ・行が巨大化 → クラウド保存(app_state upsert)が失敗しても警告のみで握り潰され、
+       自分の端末には見えるが他端末には一生出ない
+     ・キャッシュ整理の削除対象('inv_')に入っていて、消える恐れがあった
+   【対策】既存の分割保存(spl_)の仕組みに載せ、1ヶ月＝1行にする（小さいので確実に保存できる）。
+     読み書きの呼び出し側は変更不要（ls/lsSetが内部で分割・統合する）。
+============================================================ */
+function _invHistYm(r){
+  if(!r) return '_';
+  if(r.ym) return String(r.ym);
+  try{ var d=(typeof parseJaDate==='function')?parseJaDate(r.date):null; if(d) return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }catch(e){}
+  return '_';
+}
+(function _registerInvHistSplit(){
+  try{
+    var ids={};
+    if(typeof DEFAULT_STORES!=='undefined' && Array.isArray(DEFAULT_STORES)) DEFAULT_STORES.forEach(function(s){ if(s&&s.id) ids[s.id]=1; });
+    var ms=_lsRaw('m_stores', null); if(Array.isArray(ms)) ms.forEach(function(s){ if(s&&s.id) ids[s.id]=1; });
+    Object.keys(ids).forEach(function(id){
+      if(!_SPLIT_KEYS['inv_hist_'+id]) _SPLIT_KEYS['inv_hist_'+id]={type:'arr', by:_invHistYm};
+    });
+  }catch(e){}
+})();
+/* 既存の巨大な1行を、月ごとの行へ一度だけ移行（＋クラウドへ押し上げ） */
+function migrateInvHistSplit(){
+  try{
+    if(localStorage.getItem('_inv_hist_split_done')==='1') return;
+    var ids=Object.keys(_SPLIT_KEYS).filter(function(k){ return k.indexOf('inv_hist_')===0; });
+    var moved=0;
+    ids.forEach(function(key){
+      var legacy=_lsRaw(key, null);
+      if(!Array.isArray(legacy) || !legacy.length) return;
+      var merged=ls(key, []);              // legacy + 既存パーティション
+      try{ localStorage.removeItem(key); }catch(e){}   // legacy行を外してから
+      lsSet(key, merged);                  // → 月ごとの行として書き直し（各行がクラウドへ）
+      moved++;
+    });
+    localStorage.setItem('_inv_hist_split_done','1');
+    if(moved) console.log('[v617] inv_hist split migrated for', moved, 'stores');
+  }catch(e){ console.warn('migrateInvHistSplit', e); }
+}
+/* ============================================================
+   棚卸データの同期診断／再アップロード／バックアップ
+============================================================ */
+function _invStoresForDiag(){
+  var vs=(typeof getVisibleStores==='function')?getVisibleStores():((typeof STORES!=='undefined')?STORES:[]);
+  return (vs||[]).filter(function(s){ return s && s.id; });
+}
+/* ローカルの棚卸月 {storeId:[ym,...]} */
+function _invLocalMonths(){
+  var out={};
+  _invStoresForDiag().forEach(function(s){
+    var h=ls('inv_hist_'+s.id, [])||[];
+    out[s.id]=h.map(_invHistYm).filter(function(y){ return y && y!=='_'; }).sort();
+  });
+  return out;
+}
+/* クラウド(app_state)にある棚卸の行キー一覧 */
+async function _invCloudKeys(){
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key&or=(key.like.inv_hist_*,key.like.spl_inv_hist_*)', { headers: supaHeaders() });
+    if(!res.ok) return null;
+    var rows=await res.json();
+    return (rows||[]).map(function(r){ return r.key; });
+  }catch(e){ return null; }
+}
+async function diagInvSync(){
+  var box=document.getElementById('sync-center-result');
+  if(box) box.innerHTML='<i class="ti ti-loader"></i> 棚卸データの同期状況を確認中…';
+  var local=_invLocalMonths();
+  var keys=await _invCloudKeys();
+  if(keys===null){ if(box) box.innerHTML='<div style="color:var(--red);font-size:12px">クラウドに接続できませんでした（通信状況を確認してください）</div>'; return; }
+  var cloudSet={}; keys.forEach(function(k){ cloudSet[k]=1; });
+  var rows=[], missing=[];
+  _invStoresForDiag().forEach(function(s){
+    var months=local[s.id]||[];
+    var lackList=months.filter(function(ym){ return !cloudSet['spl_inv_hist_'+s.id+'_'+ym]; });
+    // 旧形式(1行)がクラウドにあれば、それも保険として存在扱い
+    var legacyOnCloud=!!cloudSet['inv_hist_'+s.id];
+    rows.push({store:s, months:months.length, lack:lackList.length, legacy:legacyOnCloud});
+    lackList.forEach(function(ym){ missing.push({store:s.id, ym:ym}); });
+  });
+  var h='<div style="font-size:12px;line-height:1.8;background:var(--surface2);border-radius:8px;padding:10px">'
+    +'<b>棚卸データ クラウド保存の状況</b><br>'
+    +rows.map(function(r){
+      return escapeHtml(r.store.name)+'： ローカル '+r.months+'ヶ月 / '
+        +(r.lack? '<span style="color:var(--red)">クラウド未保存 '+r.lack+'ヶ月</span>' : '<span style="color:var(--green)">全てクラウド保存済</span>')
+        +(r.legacy?' <span style="font-size:10px;color:var(--muted)">(旧形式のバックアップ行あり)</span>':'');
+    }).join('<br>');
+  if(missing.length){
+    h+='<div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="repairInvSync()"><i class="ti ti-cloud-upload"></i> '+missing.length+'ヶ月分をクラウドへ保存</button></div>'
+      +'<div style="font-size:10px;color:var(--muted);margin-top:4px">※ 保存後、他の端末は「取り込む」または再ログインで見られます</div>';
+  } else {
+    h+='<div style="margin-top:6px;color:var(--green)"><i class="ti ti-check"></i> 未保存はありません。他の端末で見えない場合は、その端末で「取り込む」を実行してください。</div>';
+  }
+  h+='</div>';
+  if(box) box.innerHTML=h;
+}
+async function repairInvSync(){
+  var box=document.getElementById('sync-center-result');
+  if(box) box.innerHTML='<i class="ti ti-loader"></i> クラウドへ保存中…';
+  var local=_invLocalMonths(), okN=0, ngN=0;
+  var stores=_invStoresForDiag();
+  for(var i=0;i<stores.length;i++){
+    var sid=stores[i].id;
+    var hist=ls('inv_hist_'+sid, [])||[];
+    var byYm={}; hist.forEach(function(r){ var y=_invHistYm(r); if(y&&y!=='_'){ (byYm[y]=byYm[y]||[]).push(r); } });
+    var yms=Object.keys(byYm);
+    for(var j=0;j<yms.length;j++){
+      var key='spl_inv_hist_'+sid+'_'+yms[j];
+      try{
+        var ok=await supaUpsert('app_state', [{ key:key, value:byYm[yms[j]], updated_at:new Date().toISOString() }]);
+        if(ok) okN++; else ngN++;
+      }catch(e){ ngN++; }
+    }
+  }
+  if(box) box.innerHTML='<div style="font-size:12px;background:var(--surface2);border-radius:8px;padding:10px">'
+    +'<b>クラウド保存 結果</b><br>成功: '+okN+'ヶ月 / <span style="color:'+(ngN?'var(--red)':'var(--muted)')+'">失敗: '+ngN+'ヶ月</span>'
+    +(ngN?'<br><span style="color:var(--red);font-size:11px">失敗分はデータが大きすぎる可能性があります。ご連絡ください。</span>':'<br><span style="color:var(--green)">他の端末で「取り込む」を押すと表示されます</span>')
+    +'</div>';
+  showToast(ngN?('保存失敗 '+ngN+'件'):'クラウドへ保存しました', ngN?'warning':'success');
+}
+/* 棚卸データのバックアップ書き出し（端末に保存＝クラウドとは別の保険） */
+function backupInvHistory(){
+  try{
+    var out={ app:'Funergy Growth OS', type:'inventory_history_backup', version:(typeof APP_VERSION!=='undefined'?APP_VERSION:''), at:(typeof nowJP==='function'?nowJP():new Date().toISOString()), stores:{} };
+    var n=0;
+    _invStoresForDiag().forEach(function(s){
+      var h=ls('inv_hist_'+s.id, [])||[];
+      if(h.length){ out.stores[s.id]={ name:s.name, history:h }; n+=h.length; }
+    });
+    if(!n){ showToast('棚卸データがありません','warning'); return; }
+    var blob=new Blob([JSON.stringify(out,null,2)], {type:'application/json'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url; a.download='inventory_backup_'+(new Date().toISOString().slice(0,10))+'.json';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ try{ document.body.removeChild(a); URL.revokeObjectURL(url); }catch(e){} }, 500);
+    showToast(n+'件の棚卸履歴を書き出しました','success');
+  }catch(e){ showToast('書き出しに失敗しました','danger'); console.warn('backupInvHistory', e); }
+}
 function ls(key, def) {
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp) return _splitRead(key, sp);
   try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
@@ -3998,7 +4141,11 @@ var _lsQuotaWarned=false;
    再ログイン(自動同期)または設定＞クラウドから取り込むで復元される。 */
 var _LS_PRUNABLE = ['cash_tips_','dailyops_','orders_','purchases_','att_day_approve_','att_approve_','office_attend_','tip_exclude_','warnings_','shiftopt_','spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','reminded_','inv_'];
 function lsBytesTotal(){ var tt=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; } }catch(e){} return tt; }
-function lsIsPrunable(k){ return _LS_PRUNABLE.some(function(pf){ return k.indexOf(pf)===0; }); }
+/* v617: 棚卸履歴（inv_hist_* / spl_inv_hist_*）は絶対に自動削除しない（復旧不能なデータのため） */
+function lsIsPrunable(k){
+  if(String(k).indexOf('inv_hist_')>=0) return false;
+  return _LS_PRUNABLE.some(function(pf){ return k.indexOf(pf)===0; });
+}
 function lsPrunableInfo(){ var tt=0,n=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)){ var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; n++; } } }catch(e){} return {bytes:tt,count:n}; }
 function _lsPrunableKeys(){ var a=[]; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)) a.push(k); } }catch(e){} return a; }
 function autoPruneIfCritical(){ try{ if(lsBytesTotal() > 4.3*1024*1024){ _lsPrunableKeys().forEach(function(k){ try{localStorage.removeItem(k);}catch(e){} }); } }catch(e){} }
@@ -6054,6 +6201,7 @@ function setStorePin(storeId, pin) { var p=getStorePins(); p[storeId]=pin; lsSet
 ============================================================ */
 function initApp() {
   try{ autoPruneIfCritical(); }catch(e){}
+  try{ migrateInvHistSplit(); }catch(e){}   /* v617: 棚卸履歴を月ごとの行へ移行（巨大1行だとクラウド保存が失敗するため） */
   var rc = ROLE_CONFIG[curRole];
   try { migrateMenuStore(); } catch(e){}
   // Topbar
@@ -11751,6 +11899,8 @@ function openSyncCenter() {
     <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="syncCenterMenuAll()"><i class="ti ti-tools-kitchen-2"></i> メニュー・出数を同期</button>
     ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="repairApprovedSkills(true)"><i class="ti ti-shield-check"></i> 承認済みスキルの未反映をチェック／修復</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagInvSync()"><i class="ti ti-clipboard-check"></i> 棚卸データの同期診断／クラウド保存</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupInvHistory()"><i class="ti ti-download"></i> 棚卸データをバックアップ書き出し</button>`:''}
     <div id="sync-center-result" style="font-size:12px;margin-top:10px"></div>
     <div style="font-weight:700;font-size:13px;margin:14px 0 4px">Toast 店舗別</div>
     ${rows||'<div style="font-size:12px;color:var(--muted)">対象店舗がありません</div>'}
@@ -17004,7 +17154,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '616';
+const APP_VERSION = '617';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
