@@ -9060,24 +9060,86 @@ function repeatStatsLD(scopeStores, days){
   return {lunch:{first:lF,repeat:lR,total:lF+lR}, dinner:{first:dF,repeat:dR,total:dF+dR}, has:has};
 }
 /* ランチ/ディナー別 リピート率カード（データがあれば表示・無ければ案内） */
+/* L/D別 リピート率チャート（日次は点数が多いので横スクロール・1:1表示） */
+function _msLDLine(labels, series){
+  var all=[]; series.forEach(function(s){ (s.values||[]).forEach(function(v){ all.push(v||0); }); });
+  if(!labels.length || all.every(function(v){return !v;})) return _msEmpty();
+  var n=labels.length;
+  var slotW=(n>14)?30:48;                       // 日次は詰めて表示
+  var W=Math.max(300, n*slotW+44);
+  var maxV=Math.max.apply(null, all)||1;
+  var yMax=Math.max(40, Math.ceil(maxV*1.12/10)*10);
+  var ax=_msX(W,n), g='';
+  [0, Math.round(yMax/2), yMax].forEach(function(yv){ var yy=ax.y1-Math.round((yv/yMax)*(ax.y1-ax.top)); g+='<line x1="'+ax.x0+'" y1="'+yy+'" x2="'+(W-8)+'" y2="'+yy+'" stroke="var(--border)" stroke-width="0.7" opacity="0.5"></line><text x="'+(ax.x0-2)+'" y="'+(yy+3)+'" text-anchor="end" font-size="7.5" fill="var(--muted)">'+yv+'%</text>'; });
+  var step=(n>20)?5:(n>14?2:1);                 // ラベル間引き（潰れ防止）
+  labels.forEach(function(lb,i){ if(n>14 && i%step!==0 && i!==n-1) return; var x=ax.x0+i*ax.slot+ax.slot/2; g+='<text x="'+x.toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="9" fill="var(--tm)">'+escapeHtml(String(lb))+'</text>'; });
+  series.forEach(function(s){
+    var pts=[]; (s.values||[]).forEach(function(v,i){ var x=ax.x0+i*ax.slot+ax.slot/2; var y=ax.y1-Math.round(((v||0)/yMax)*(ax.y1-ax.top)); pts.push([x,y]); });
+    if(pts.length>1) g+='<polyline points="'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+s.color+'" stroke-width="1.8"></polyline>';
+    g+=pts.map(function(p){return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="'+((n>20)?1.8:2.2)+'" fill="'+s.color+'"></circle>';}).join('');
+  });
+  // 日次は横スクロールで1:1表示（縮小して文字が潰れないように）
+  var wide=(n>14);
+  var style=wide ? ('width:'+W+'px;height:auto;display:block') : ('width:100%;max-width:'+Math.min(W+30,560)+'px;min-width:'+Math.min(W,300)+'px;height:auto;display:block');
+  return '<div style="overflow-x:auto;margin:2px -4px 0"><svg viewBox="0 0 '+W+' '+CH.H+'" style="'+style+'">'+g+'</svg></div>';
+}
 function _msRepeatLD(){
-  var pm=_anaMonths(), months=pm.months;
-  var ldMonths=months.map(function(mo){ var mi=msMonthInfo(_msOffsetFor(mo.y,mo.m)); return {label:(mi.m+1)+'月', mi:mi, ld:repeatStatsLD(msScopeStores(), mi.days)}; });
-  var anyLD=ldMonths.some(function(m){ return m.ld.has && (m.ld.lunch.total>0||m.ld.dinner.total>0); });
-  var html='<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--accent)"></i>ランチ／ディナー別 リピート率<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+'</span></div>';
+  var pm=_anaMonths();
+  var isDaily=(msPeriod==='month');   // 月＝日毎 / 四半期・半期・年＝月毎
+  var scope=msScopeStores();
+  var pts=[];
+  if(isDaily){
+    var mi=msMonthInfo(msOffset), today=bizToday();
+    mi.days.forEach(function(d){
+      if(d.date>today) return;
+      pts.push({ label:String(Number(d.date.slice(8,10))), date:d.date, ld:repeatStatsLD(scope, [d]) });
+    });
+  } else {
+    pm.months.forEach(function(mo){ var m2=msMonthInfo(_msOffsetFor(mo.y,mo.m)); pts.push({ label:(m2.m+1)+'月', ld:repeatStatsLD(scope, m2.days) }); });
+  }
+  // データのある点だけ（休業日・未同期日で0に落ちて誤読するのを防ぐ）
+  var withData=pts.filter(function(p){ return p.ld.has && (p.ld.lunch.total>0 || p.ld.dinner.total>0); });
+  var anyLD=withData.length>0;
+  var unitLabel=isDaily?'日別':'月別';
+  var html='<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--accent)"></i>ランチ／ディナー別 リピート率<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+' ・ '+unitLabel+'</span></div>';
   if(anyLD){
-    var labels=ldMonths.map(function(m){return m.label;});
-    var lRate=ldMonths.map(function(m){ var t=m.ld.lunch.total; return t>0?Math.round(m.ld.lunch.repeat/t*1000)/10:0; });
-    var dRate=ldMonths.map(function(m){ var t=m.ld.dinner.total; return t>0?Math.round(m.ld.dinner.repeat/t*1000)/10:0; });
-    html+=_msMultiLine(labels, [{label:'ランチ',color:'var(--yellow)',values:lRate},{label:'ディナー',color:'var(--accent)',values:dRate}], {});
+    var labels=withData.map(function(p){return p.label;});
+    var lRate=withData.map(function(p){ var t=p.ld.lunch.total; return t>0?Math.round(p.ld.lunch.repeat/t*1000)/10:0; });
+    var dRate=withData.map(function(p){ var t=p.ld.dinner.total; return t>0?Math.round(p.ld.dinner.repeat/t*1000)/10:0; });
+    html+=_msLDLine(labels, [{label:'ランチ',color:'var(--yellow)',values:lRate},{label:'ディナー',color:'var(--accent)',values:dRate}]);
     html+=msLegend([{color:'var(--yellow)',label:'ランチ リピート率'},{color:'var(--accent)',label:'ディナー リピート率'}]);
-    var LF=0,LR=0,DF=0,DR=0; ldMonths.forEach(function(m){ LF+=m.ld.lunch.first;LR+=m.ld.lunch.repeat;DF+=m.ld.dinner.first;DR+=m.ld.dinner.repeat; });
+    if(isDaily) html+='<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(pm.label)+'の各営業日（横スクロールできます）。データのない日は表示しません。</div>';
+    var LF=0,LR=0,DF=0,DR=0; withData.forEach(function(p){ LF+=p.ld.lunch.first;LR+=p.ld.lunch.repeat;DF+=p.ld.dinner.first;DR+=p.ld.dinner.repeat; });
     var lRt=(LF+LR)>0?Math.round(LR/(LF+LR)*1000)/10:null, dRt=(DF+DR)>0?Math.round(DR/(DF+DR)*1000)/10:null;
+    var nDays=withData.length;
+    var lAvg=nDays?Math.round(LR/nDays*10)/10:0, dAvg=nDays?Math.round(DR/nDays*10)/10:0;
     html+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
-      +'<div style="flex:1;min-width:150px;border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;padding:9px 11px"><div style="font-size:12px;font-weight:700"><i class="ti ti-sun"></i> ランチ</div><div style="font-size:19px;font-weight:800;color:var(--tm)">'+(lRt!=null?lRt+'%':'—')+'</div><div style="font-size:10px;color:var(--muted)">新規 '+LF.toLocaleString()+' / リピート '+LR.toLocaleString()+'</div></div>'
-      +'<div style="flex:1;min-width:150px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;padding:9px 11px"><div style="font-size:12px;font-weight:700"><i class="ti ti-moon"></i> ディナー</div><div style="font-size:19px;font-weight:800;color:var(--tm)">'+(dRt!=null?dRt+'%':'—')+'</div><div style="font-size:10px;color:var(--muted)">新規 '+DF.toLocaleString()+' / リピート '+DR.toLocaleString()+'</div></div>'
+      +'<div style="flex:1;min-width:150px;border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;padding:9px 11px"><div style="font-size:12px;font-weight:700"><i class="ti ti-sun"></i> ランチ</div><div style="font-size:19px;font-weight:800;color:var(--tm)">'+(lRt!=null?lRt+'%':'—')+'</div><div style="font-size:10px;color:var(--muted)">新規 '+LF.toLocaleString()+' / リピート '+LR.toLocaleString()+'</div>'+(isDaily?'<div style="font-size:10px;color:var(--muted)">1日平均 リピート '+lAvg+'人</div>':'')+'</div>'
+      +'<div style="flex:1;min-width:150px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;padding:9px 11px"><div style="font-size:12px;font-weight:700"><i class="ti ti-moon"></i> ディナー</div><div style="font-size:19px;font-weight:800;color:var(--tm)">'+(dRt!=null?dRt+'%':'—')+'</div><div style="font-size:10px;color:var(--muted)">新規 '+DF.toLocaleString()+' / リピート '+DR.toLocaleString()+'</div>'+(isDaily?'<div style="font-size:10px;color:var(--muted)">1日平均 リピート '+dAvg+'人</div>':'')+'</div>'
       +'</div>';
     if(lRt!=null&&dRt!=null){ var diff=lRt-dRt; html+='<div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.7">'+(Math.abs(diff)<3?'ランチ・ディナーのリピート率はほぼ同水準です。':(diff>0?'ランチの方がリピート率が高い（+'+diff.toFixed(1)+'pt）＝常連はランチ利用が中心。ディナー新規の再来店設計が伸びしろ。':'ディナーの方がリピート率が高い（+'+Math.abs(diff).toFixed(1)+'pt）＝夜の常連基盤が強い。ランチ新規の取り込みが課題。'))+'</div>'; }
+    // 日次は「何人リピーターが来たか」を日ごとに見られる明細を添付
+    if(isDaily){
+      var rows=withData.map(function(p){
+        var l=p.ld.lunch, d=p.ld.dinner;
+        var lr=l.total>0?Math.round(l.repeat/l.total*1000)/10:null, dr=d.total>0?Math.round(d.repeat/d.total*1000)/10:null;
+        var wd=['日','月','火','水','木','金','土'][new Date(p.date+'T00:00:00').getDay()];
+        return '<tr style="border-top:1px solid var(--border)"><td style="padding:3px 4px;font-weight:700">'+p.label+'<span style="font-size:9px;color:var(--muted)">('+wd+')</span></td>'
+          +'<td style="text-align:right;padding:3px 4px;color:var(--muted)">'+l.first.toLocaleString()+'</td>'
+          +'<td style="text-align:right;padding:3px 4px;font-weight:700">'+l.repeat.toLocaleString()+'</td>'
+          +'<td style="text-align:right;padding:3px 4px;color:var(--yellow);font-weight:700">'+(lr!=null?lr+'%':'—')+'</td>'
+          +'<td style="text-align:right;padding:3px 4px;color:var(--muted);border-left:1px solid var(--border)">'+d.first.toLocaleString()+'</td>'
+          +'<td style="text-align:right;padding:3px 4px;font-weight:700">'+d.repeat.toLocaleString()+'</td>'
+          +'<td style="text-align:right;padding:3px 4px;color:var(--accent);font-weight:700">'+(dr!=null?dr+'%':'—')+'</td></tr>';
+      }).join('');
+      html+='<details style="margin-top:10px"><summary style="font-size:12px;font-weight:700;cursor:pointer;list-style:none"><i class="ti ti-table" style="color:var(--accent)"></i> 日別の内訳（新規／リピート人数）</summary>'
+        +'<div style="overflow-x:auto;margin-top:6px"><table class="inv-table" style="width:100%;font-size:11px;border-collapse:collapse;min-width:340px">'
+        +'<thead><tr><th style="text-align:left;padding:3px 4px">日</th><th colspan="3" style="text-align:center;padding:3px 4px;color:var(--yellow)">ランチ</th><th colspan="3" style="text-align:center;padding:3px 4px;color:var(--accent);border-left:1px solid var(--border)">ディナー</th></tr>'
+        +'<tr style="font-size:9px;color:var(--muted)"><th></th><th style="text-align:right;padding:2px 4px">新規</th><th style="text-align:right;padding:2px 4px">リピート</th><th style="text-align:right;padding:2px 4px">率</th><th style="text-align:right;padding:2px 4px;border-left:1px solid var(--border)">新規</th><th style="text-align:right;padding:2px 4px">リピート</th><th style="text-align:right;padding:2px 4px">率</th></tr></thead>'
+        +'<tbody>'+rows+'</tbody>'
+        +'<tfoot><tr style="border-top:2px solid var(--accent);font-weight:800"><td style="padding:3px 4px">計</td><td style="text-align:right;padding:3px 4px">'+LF.toLocaleString()+'</td><td style="text-align:right;padding:3px 4px">'+LR.toLocaleString()+'</td><td style="text-align:right;padding:3px 4px;color:var(--yellow)">'+(lRt!=null?lRt+'%':'—')+'</td><td style="text-align:right;padding:3px 4px;border-left:1px solid var(--border)">'+DF.toLocaleString()+'</td><td style="text-align:right;padding:3px 4px">'+DR.toLocaleString()+'</td><td style="text-align:right;padding:3px 4px;color:var(--accent)">'+(dRt!=null?dRt+'%':'—')+'</td></tr></tfoot>'
+        +'</table></div></details>';
+    }
   } else {
     html+='<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center;line-height:1.7">ランチ/ディナー別の新規・リピートデータがまだありません。<br>ToastのDay Part別（時間帯別）の新規/リピートが <code>toast_sales</code> に入り、同期されると自動で表示されます。</div>';
   }
@@ -16675,7 +16737,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '609';
+const APP_VERSION = '610';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
