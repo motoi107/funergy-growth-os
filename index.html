@@ -16912,7 +16912,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '613';
+const APP_VERSION = '614';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -35375,51 +35375,78 @@ function addTaskMemoInline(id){
   t.memos.push({date:tsNow(), by:myName(), text:txt}); t.updatedTs=Date.now();
   addTaskLog(t,'メモ追加'); saveTaskObj(t); renderPage('tasks');
 }
+/* v614: タスクカード刷新
+   ・「何のタスクか」を最優先で読めるように：タスク名 → 担当/期限 → 詳細 → リンク
+   ・作成者・作成日時を明示（誰がいつ出したタスクか分かる）
+   ・詳細は枠付きで本文として読ませる／リンクはボタンで1タップ
+   ・編集系（担当・期限・重要度・進捗）は下部にまとめ、情報と操作を分離 */
 function taskCardHtml(t){
   var pr=taskPriColor(t.priority);
   var di=taskDueInfo(t.due);
   var canEdit = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0 || t.assignee===myName() || t.createdBy===myName();
+  var st=taskStatusColor(t.status);
   var h='<div class="card" style="border-left:4px solid '+pr+';border-radius:0 12px 12px 0">';
+  /* 1) 見出し：タスク名＋状態＋重要度 */
   h+='<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">'
-    +'<div style="font-size:14px;font-weight:700">'+escapeHtml(t.title)+'</div>'
-    +'<div style="display:flex;gap:4px;flex-shrink:0;align-items:center"><span class="tag" style="background:'+pr+';color:#fff;font-size:10px">'+t.priority+'</span>'
+    +'<div style="font-size:15px;font-weight:700;line-height:1.4;min-width:0">'+escapeHtml(t.title)+'</div>'
+    +'<div style="display:flex;gap:4px;flex-shrink:0;align-items:center">'
+    +'<span class="tag" style="background:'+st+';color:#fff;font-size:10px">'+t.status+'</span>'
+    +'<span class="tag" style="background:'+pr+';color:#fff;font-size:10px">'+t.priority+'</span>'
     +(canEdit?'<button class="btn btn-secondary btn-sm" style="padding:1px 7px" onclick="deleteTask(\''+t.id+'\')"><i class="ti ti-trash" style="font-size:12px"></i></button>':'')
     +'</div></div>';
-  if(t.desc) h+='<div style="font-size:12px;color:var(--muted);margin-top:4px;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
-  // ステータス（常時表示・変更可）
-  h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">'
+  /* 2) 担当・期限（誰が・いつまで） */
+  h+='<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:12px;margin-top:6px">'
+    +'<span'+(t.assignee?'':' style="color:var(--red)"')+'><i class="ti ti-user" style="color:var(--muted)"></i> '+(t.assignee?escapeHtml(t.assignee):'未割当')+'</span>'
+    +(di.label?'<span style="color:'+di.color+'"><i class="ti ti-clock"></i> '+di.label+'</span>':'<span style="color:var(--muted)"><i class="ti ti-clock"></i> 期限なし</span>')
+    +(t.recur&&t.recur.type&&t.recur.type!=='none'?'<span class="tag tag-blue" style="font-size:9px"><i class="ti ti-repeat"></i> '+(TASK_RECUR_LABELS[t.recur.type]||'')+'</span>':'')
+    +(taskStalled(t)?'<span class="tag tag-red" style="font-size:9px">停滞</span>':'')
+    +'</div>';
+  /* 3) 作成者・作成日時（誰がいつ出したタスクか） */
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:3px"><i class="ti ti-pencil-plus"></i> '+escapeHtml(t.createdBy||'—')+' が作成'+(t.created?' · '+escapeHtml(String(t.created)):'')+'</div>';
+  /* 4) 詳細（本文として読ませる） */
+  if(t.desc) h+='<div style="margin-top:8px;background:var(--surface2);border-radius:8px;padding:7px 9px;font-size:12.5px;line-height:1.7;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
+  /* 5) リンク（1タップで開く） */
+  if(t.link) h+='<div style="margin-top:8px"><a href="'+escapeHtml(t.link)+'" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="font-size:11px;display:inline-flex;align-items:center;gap:5px;max-width:100%"><i class="ti ti-link" style="color:var(--accent2)"></i><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(_taskLinkLabel(t.link))+'</span><i class="ti ti-external-link" style="font-size:11px;color:var(--muted)"></i></a></div>';
+  /* 6) ステータス変更 */
+  h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:9px">'
     +TASK_STATUSES.map(function(sname){return '<button class="btn btn-sm '+(sname===t.status?'btn-primary':'btn-secondary')+'" style="font-size:10px;padding:2px 9px" '+(canEdit?'onclick="taskSetStatus(\''+t.id+'\',\''+sname+'\')"':'disabled')+'>'+sname+'</button>';}).join('')
     +'</div>';
-  // 担当者（名前検索）・期限・重要度
-  if(canEdit){
-    h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">'
-      +'<input class="form-input" list="dl-task-assignees" value="'+escapeHtml(t.assignee||'')+'" placeholder="担当者（名前で検索）" style="flex:1;min-width:130px;font-size:12px;padding:5px 8px" onchange="taskField(\''+t.id+'\',\'assignee\',this.value)">'
-      +'<input class="form-input" type="date" value="'+(t.due||'')+'" style="font-size:12px;padding:5px 8px;width:148px'+(di.overdue?';border:1.5px solid var(--red)':'')+'" onchange="taskField(\''+t.id+'\',\'due\',this.value)">'
-      +'<select class="form-select" style="font-size:12px;padding:5px 8px;width:auto" onchange="taskField(\''+t.id+'\',\'priority\',this.value)">'+['低','中','高'].map(function(p){return '<option'+(p===t.priority?' selected':'')+'>'+p+'</option>';}).join('')+'</select>'
-      +'</div>';
-  } else {
-    h+='<div style="font-size:12px;color:var(--muted);margin-top:6px">'+(t.assignee?'<i class="ti ti-user"></i> '+escapeHtml(t.assignee):'<span style="color:var(--red)">未割当</span>')+(di.label?' · <span style="color:'+di.color+'"><i class="ti ti-clock"></i> '+di.label+'</span>':'')+'</div>';
-  }
-  // 進捗
-  h+='<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:'+taskStatusColor(t.status)+';width:'+(t.progress||0)+'%"></div></div>';
+  /* 7) 進捗 */
+  h+='<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:'+st+';width:'+(t.progress||0)+'%"></div></div>';
   if(canEdit){
     h+='<div style="display:flex;gap:4px;margin-top:6px;align-items:center;flex-wrap:wrap"><span style="font-size:10px;color:var(--muted)">進捗 '+(t.progress||0)+'%</span>'
       +[0,25,50,75,100].map(function(p){return '<button class="btn btn-secondary btn-sm" style="font-size:10px;padding:1px 7px'+(((t.progress||0)===p)?';background:var(--accent2);color:#fff':'')+'" onclick="taskField(\''+t.id+'\',\'progress\','+p+')">'+p+'</button>';}).join('')
       +'</div>';
   }
-  // メモ（インライン）
-  h+='<details style="margin-top:8px"'+(t.memos.length?' open':'')+'><summary style="font-size:11px;color:var(--muted);cursor:pointer"><i class="ti ti-message-2"></i> メモ ('+t.memos.length+')</summary>';
+  /* 8) 編集（担当・期限・重要度・リンク）＝情報表示と分けて下部にまとめる */
+  if(canEdit){
+    h+='<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer"><i class="ti ti-adjustments"></i> 編集（担当・期限・重要度・リンク）</summary>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center">'
+      +'<input class="form-input" list="dl-task-assignees" value="'+escapeHtml(t.assignee||'')+'" placeholder="担当者（名前で検索）" style="flex:1;min-width:130px;font-size:12px;padding:5px 8px" onchange="taskField(\''+t.id+'\',\'assignee\',this.value)">'
+      +'<input class="form-input" type="date" value="'+(t.due||'')+'" style="font-size:12px;padding:5px 8px;width:148px'+(di.overdue?';border:1.5px solid var(--red)':'')+'" onchange="taskField(\''+t.id+'\',\'due\',this.value)">'
+      +'<select class="form-select" style="font-size:12px;padding:5px 8px;width:auto" onchange="taskField(\''+t.id+'\',\'priority\',this.value)">'+['低','中','高'].map(function(p){return '<option'+(p===t.priority?' selected':'')+'>'+p+'</option>';}).join('')+'</select>'
+      +'</div>'
+      +'<input class="form-input" type="url" inputmode="url" value="'+escapeHtml(t.link||'')+'" placeholder="リンク先 https://…" style="font-size:12px;padding:5px 8px;margin-top:6px;width:100%" onchange="taskField(\''+t.id+'\',\'link\',_taskNormLink(this.value))">'
+      +'</details>';
+  }
+  /* 9) メモ */
+  h+='<details style="margin-top:6px"'+(t.memos.length?' open':'')+'><summary style="font-size:11px;color:var(--muted);cursor:pointer"><i class="ti ti-message-2"></i> メモ ('+t.memos.length+')</summary>';
   t.memos.slice().reverse().slice(0,5).forEach(function(m){ h+='<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);font-size:9px">'+m.date+' · '+escapeHtml(m.by)+'</span><div style="white-space:pre-line">'+escapeHtml(m.text)+'</div></div>'; });
   if(canEdit) h+='<div style="display:flex;gap:4px;margin-top:6px"><input class="form-input" id="tmemo-'+t.id+'" placeholder="メモ追加…" style="flex:1;font-size:11px;padding:4px 8px"><button class="btn btn-secondary btn-sm" style="font-size:10px" onclick="addTaskMemoInline(\''+t.id+'\')">追加</button></div>';
   h+='</details>';
-  // メタ
-  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-    +'<span>作成: '+escapeHtml(t.createdBy||'')+'</span>'
-    +(t.recur&&t.recur.type&&t.recur.type!=='none'?'<span class="tag tag-blue" style="font-size:9px"><i class="ti ti-repeat"></i> '+(TASK_RECUR_LABELS[t.recur.type]||'')+'</span>':'')
-    +(taskStalled(t)?'<span class="tag tag-red" style="font-size:9px">停滞</span>':'')
-    +'</div>';
   h+='</div>';
   return h;
+}
+/* リンクの表示名（ドメイン＋短縮パス。長いURLでも潰れない） */
+function _taskLinkLabel(u){
+  var s=String(u||'');
+  try{
+    var m=s.match(/^[a-z]+:\/\/([^\/]+)(\/[^?#]*)?/i);
+    if(!m) return s.length>34?s.slice(0,34)+'…':s;
+    var host=m[1].replace(/^www\./,''), path=(m[2]||'');
+    var lab=host+(path&&path!=='/'?path:'');
+    return lab.length>34?lab.slice(0,34)+'…':lab;
+  }catch(e){ return s.slice(0,34); }
 }
 
 /* ============================================================
@@ -36167,8 +36194,9 @@ function openTaskDetail(id){
     +(t.place?'<span class="tag tag-gray" style="font-size:10px">'+t.place+'</span>':'')
     +(di.label?'<span class="tag" style="background:'+di.color+';color:#fff;font-size:10px">'+di.label+'</span>':'')
     +'</div>';
-  if(t.desc) h+='<div style="font-size:13px;color:var(--muted);margin-bottom:8px;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
-  if(t.link) h+='<div style="margin-bottom:8px"><a href="'+escapeHtml(t.link)+'" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="font-size:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><i class="ti ti-external-link"></i> リンクを開く</a><div style="font-size:10px;color:var(--muted);margin-top:3px;word-break:break-all">'+escapeHtml(t.link)+'</div></div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-pencil-plus"></i> '+escapeHtml(t.createdBy||'—')+' が作成'+(t.created?' · '+escapeHtml(String(t.created)):'')+(t.assignee?' ／ <i class="ti ti-user"></i> 担当 '+escapeHtml(t.assignee):'')+'</div>';
+  if(t.desc) h+='<div style="background:var(--surface2);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.7;margin-bottom:8px;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
+  if(t.link) h+='<div style="margin-bottom:8px"><a href="'+escapeHtml(t.link)+'" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="font-size:11px;display:inline-flex;align-items:center;gap:5px;max-width:100%"><i class="ti ti-link" style="color:var(--accent2)"></i><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(_taskLinkLabel(t.link))+'</span><i class="ti ti-external-link" style="font-size:11px;color:var(--muted)"></i></a></div>';
   // 編集フィールド
   if(canEdit){
     h+='<div class="form-row">'
