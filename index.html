@@ -1011,42 +1011,43 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
   var dates = [];
   for (var d=new Date(start); d<=end; d.setDate(d.getDate()+1)) dates.push(new Date(d));
   total = dates.length;
+  var ldMissing = 0, dbErrLast = null;
   for (var i=0; i<dates.length; i++) {
     var dt = dates[i];
-    var ymd = dt.toISOString().slice(0,10).replace(/-/g,'');
-    var iso = dt.toISOString().slice(0,10);
+    // ★ 端末TZに依存しないローカル日付（toISOStringはUTC変換で日付がズレる端末があるため使わない）
+    var iso = dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+    var ymd = iso.replace(/-/g,'');
     try {
       var r = await syncToastDay(guid, ymd);
+      // ★ Edge FunctionがDB保存に失敗した場合（列不足など）は必ず可視化する
+      if (r && r.dbError) dbErrLast = String(r.dbError);
+      if (r && r.ldSaved === false) ldMissing++;
       if (r && r.ok) {
         ok++; sumSales += Number(r.net_sales)||0;
         var actuals = getDailyActuals(storeId);
         var prev = actuals[iso] || {};
-        actuals[iso] = Object.assign({}, prev, {
-          actual: Number(r.net_sales)||0,
-          guests: r.guests!=null?Number(r.guests):prev.guests,
-          lunchSales: r.lunchSales!=null?Number(r.lunchSales):undefined,
-          dinnerSales: r.dinnerSales!=null?Number(r.dinnerSales):undefined,
-          lunchGuests: r.lunchGuests!=null?Number(r.lunchGuests):undefined,
-          dinnerGuests: r.dinnerGuests!=null?Number(r.dinnerGuests):undefined,
-          bowls: r.bowls!=null?Number(r.bowls):undefined,
-          lunchBowls: r.lunchBowls!=null?Number(r.lunchBowls):undefined,
-          dinnerBowls: r.dinnerBowls!=null?Number(r.dinnerBowls):undefined,
-          takeout: r.takeoutCount!=null?Number(r.takeoutCount):undefined,
-          takeoutBowls: r.takeoutBowls!=null?Number(r.takeoutBowls):undefined,
-          lunchTakeoutBowls: r.lunchTakeoutBowls!=null?Number(r.lunchTakeoutBowls):undefined,
-          dinnerTakeoutBowls: r.dinnerTakeoutBowls!=null?Number(r.dinnerTakeoutBowls):undefined,
-          firstTimeBowls: r.firstTimeBowls!=null?Number(r.firstTimeBowls):undefined,
-          repeatBowls: r.repeatBowls!=null?Number(r.repeatBowls):undefined,
-          superRegular: r.superRegular!=null?Number(r.superRegular):undefined,
-          misoTotal: r.misoTotal!=null?Number(r.misoTotal):undefined,
-          misoUpgrade: r.misoUpgrade!=null?Number(r.misoUpgrade):undefined,
-          ikuraShower: r.ikuraShower!=null?Number(r.ikuraShower):undefined,
-          ikuraBowls: r.ikuraBowls!=null?Number(r.ikuraBowls):undefined,
-          creditTip: r.creditTip!=null?Number(r.creditTip):undefined,
-          lunchCreditTip: r.lunchCreditTip!=null?Number(r.lunchCreditTip):undefined,
-          dinnerCreditTip: r.dinnerCreditTip!=null?Number(r.dinnerCreditTip):undefined,
-          toastSrc:true,
-        });
+        // ★ 値があるフィールドだけ反映（undefinedで既存値を消さない）
+        var _patch = { actual: Number(r.net_sales)||0, toastSrc:true };
+        function _rput(key, raw){ if(raw!=null) _patch[key] = Number(raw); }
+        _rput('guests', r.guests);
+        _rput('lunchSales', r.lunchSales); _rput('dinnerSales', r.dinnerSales);
+        _rput('lunchGuests', r.lunchGuests); _rput('dinnerGuests', r.dinnerGuests);
+        _rput('bowls', r.bowls); _rput('lunchBowls', r.lunchBowls); _rput('dinnerBowls', r.dinnerBowls);
+        _rput('takeout', r.takeoutCount); _rput('takeoutBowls', r.takeoutBowls);
+        _rput('lunchTakeoutBowls', r.lunchTakeoutBowls); _rput('dinnerTakeoutBowls', r.dinnerTakeoutBowls);
+        _rput('toLunchSales', r.toLunchSales); _rput('toDinnerSales', r.toDinnerSales);
+        _rput('toLunchCount', r.toLunchCount); _rput('toDinnerCount', r.toDinnerCount);
+        _rput('firstTimeBowls', r.firstTimeBowls); _rput('repeatBowls', r.repeatBowls);
+        _rput('superRegular', r.superRegular);
+        // ★ L/D別 新規/リピート（経営分析→リピーターのL/Dリピート率用）
+        _rput('firstTimeBowlsLunch', r.firstTimeBowlsLunch); _rput('firstTimeBowlsDinner', r.firstTimeBowlsDinner);
+        _rput('repeatBowlsLunch', r.repeatBowlsLunch); _rput('repeatBowlsDinner', r.repeatBowlsDinner);
+        _rput('misoTotal', r.misoTotal); _rput('misoUpgrade', r.misoUpgrade);
+        _rput('ikuraShower', r.ikuraShower); _rput('ikuraBowls', r.ikuraBowls);
+        _rput('creditTip', r.creditTip); _rput('cashTip', r.cashTip);
+        _rput('lunchCreditTip', r.lunchCreditTip); _rput('dinnerCreditTip', r.dinnerCreditTip);
+        _rput('lunchCashTip', r.lunchCashTip); _rput('dinnerCashTip', r.dinnerCashTip);
+        actuals[iso] = Object.assign({}, prev, _patch);
         setDailyActuals(storeId, actuals);
       } else { fail++; }
     } catch(e) { fail++; }
@@ -1058,7 +1059,7 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId);
   if (b) { b.actual = Object.values(getDailyActuals(storeId)).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
-  return { ok, fail, total, sumSales };
+  return { ok, fail, total, sumSales, ldMissing: ldMissing, dbError: dbErrLast };
 }
 
 /* ============================================================
@@ -11508,12 +11509,16 @@ function openRangeModal(storeId, guid) {
   var s = STORES.find(x=>x.id===storeId) || {};
   var today = todayISO();
   var jan1 = new Date().getFullYear() + '-01-01';
+  var allStores = getVisibleStores().filter(function(x){ return x.toastGuid; });
   openModal(`<div class="modal-title">期間一括取り込み — ${s.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">指定期間の各日をToastから取得します。日数が多いと数分かかります（1日あたり約0.3秒）。</p>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">指定期間の各日をToastから取得し、サーバ(toast_sales)に保存します。サーバに保存されるので<b>他の端末にも反映</b>されます。日数が多いと数分かかります（1日あたり約0.3秒）。</p>
     <div class="form-row">
       <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="rg-from" type="date" value="${jan1}"></div>
       <div class="form-group"><label class="form-label">終了日</label><input class="form-input" id="rg-to" type="date" value="${today}"></div>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px;cursor:pointer">
+      <input type="checkbox" id="rg-all" style="width:16px;height:16px"> <span>全店に適用（GUID設定済み ${allStores.length}店舗）— 1店舗ずつ順に処理します</span>
+    </label>
     <div class="alert alert-warning" style="padding:8px 10px;font-size:11px"><i class="ti ti-info-circle"></i> 取り込み中はこの画面を閉じないでください。進捗が表示されます。</div>
     <div id="rg-progress" style="font-size:12px;margin:8px 0"></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
@@ -11523,17 +11528,35 @@ async function doRangeImport(storeId, guid) {
   var from = document.getElementById('rg-from').value;
   var to = document.getElementById('rg-to').value;
   if (!from || !to) { alert('期間を指定してください'); return; }
+  if (from > to) { alert('開始日が終了日より後になっています'); return; }
+  var useAll = !!(document.getElementById('rg-all')||{}).checked;
+  var targets = useAll ? getVisibleStores().filter(function(x){ return x.toastGuid; })
+                       : [ (getStoresAll().find(function(x){return x.id===storeId;})||{id:storeId, name:storeId, toastGuid:guid}) ];
+  if (!targets.length) { alert('対象店舗がありません'); return; }
   var btn = document.getElementById('rg-start');
   if (btn) { btn.disabled = true; btn.innerHTML = '取り込み中...'; }
   var prog = document.getElementById('rg-progress');
-  var res = await fetchToastRange(storeId, guid, from, to, function(done, total, ok, fail){
-    if (prog) prog.innerHTML = `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/total*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）`;
-  });
-  if (res.error) { if(prog) prog.textContent='エラー: '+res.error; if(btn){btn.disabled=false;btn.innerHTML='取り込み開始';} return; }
-  if (prog) prog.innerHTML = `<div style="color:var(--green)"><i class="ti ti-check"></i> 完了: ${res.ok}日取得（失敗${res.fail}）。合計売上 ${fmtUSD2(res.sumSales)}</div>`;
-  showToast(`期間取り込み完了: ${res.ok}日分`, 'success');
+  var sumOk=0, sumFail=0, sumSales=0, ldMissing=0, dbError=null, lines=[];
+  for (var si=0; si<targets.length; si++) {
+    var st = targets[si];
+    var head = targets.length>1 ? ('['+(si+1)+'/'+targets.length+'] '+escapeHtml(st.name)+'<br>') : '';
+    var res = await fetchToastRange(st.id, st.toastGuid, from, to, function(done, total, ok, fail){
+      if (prog) prog.innerHTML = lines.join('') + head + `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/total*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）`;
+    });
+    if (res && res.error) { lines.push('<div style="color:var(--red)">'+escapeHtml(st.name)+': '+escapeHtml(res.error)+'</div>'); continue; }
+    sumOk += (res.ok||0); sumFail += (res.fail||0); sumSales += (res.sumSales||0);
+    ldMissing += (res.ldMissing||0); if (res.dbError) dbError = res.dbError;
+    lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': '+(res.ok||0)+'日取得'+((res.fail||0)?(' / 失敗'+res.fail):'')+'</div>');
+  }
+  var html = lines.join('') + `<div style="color:${sumFail?'var(--yellow)':'var(--green)'};margin-top:4px"><i class="ti ti-check"></i> 完了: 合計${sumOk}日取得（失敗${sumFail}）・合計売上 ${fmtUSD2(sumSales)}</div>`;
+  // ★ DB保存の問題を必ず表に出す（以前サイレント失敗で売上が消えたため）
+  if (dbError) html += `<div style="color:var(--red);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> DB保存エラー: ${escapeHtml(dbError)}</div>`;
+  else if (ldMissing) html += `<div style="color:var(--yellow);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> L/D列が未作成のため、売上のみ保存しました（${ldMissing}日）。Supabase の SQL Editor で L/D列を追加すると、ランチ/ディナー別リピート率が使えます。</div>`;
+  if (prog) prog.innerHTML = html;
+  showToast(`期間取り込み完了: ${sumOk}日分`, sumFail?'warning':'success');
   if (btn) { btn.disabled=false; btn.innerHTML='取り込み開始'; }
-  setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1500);
+  if (!dbError && !ldMissing) setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1800);
+  else renderPage('budget');
 }
 
 function openGuidModal(storeId) {
@@ -16652,7 +16675,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '608';
+const APP_VERSION = '609';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
