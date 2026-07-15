@@ -4265,7 +4265,15 @@ async function supaPullAllMasters(){
   if (Array.isArray(opst) && opst.length){
     var c2=0;
     opst.forEach(function(row){
-      if (row && row.key){ try { localStorage.setItem(row.key, JSON.stringify(row.value)); c2++; } catch(e){} }
+      if (!row || !row.key) return;
+      try {
+        /* v615: マージ定義のあるキー（tasks_all / fav_ 等）は上書きせず和集合マージ。
+           以前は丸ごと上書きしていたため、未プッシュのローカル変更が消える恐れがあった。 */
+        var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
+        var _val=row.value;
+        if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(row.key)||'null'); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }
+        localStorage.setItem(row.key, JSON.stringify(_val)); c2++;
+      } catch(e){}
     });
     results.push('app_state: '+c2+'件 取込');
   } else {
@@ -4355,18 +4363,43 @@ function _coversTasks(check, want){
   return true;
 }
 /* タスク画面を開いたら1回、クラウドとマージ取得＋この端末の分を押し上げ（消失防止・端末間復旧） */
-var _tasksSynced=false;
-function maybeSyncTasks(){
-  if(_tasksSynced) return;
-  if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ _tasksSynced=true; return; }
-  _tasksSynced=true;
+var _tasksSynced=false;      /* 互換のため残置（未使用） */
+var _tasksPulledAt=0;        /* v615: 最終取り込み時刻 */
+var _tasksPulling=false;
+/* v615: 以前は「セッション中1回だけ」しか取り込まず、アプリを開きっぱなしの端末に
+   他端末の新規タスクが永久に出なかった。→ 一定間隔で毎回取り込む方式に変更。 */
+function maybeSyncTasks(force){
+  if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return;
+  if(_tasksPulling) return;
+  var now=Date.now();
+  if(!force && (now-_tasksPulledAt) < 20000) return;   // 20秒スロットル（連打・再描画で叩きすぎない）
+  _tasksPulling=true; _tasksPulledAt=now; _tasksSynced=true;
   try{
     pullOpKey('tasks_all').then(function(){
+      _tasksPulledAt=Date.now();
       if(curPage==='tasks') renderPage('tasks');
-      if(typeof opMergePush==='function'){ opMergePush('tasks_all', getTasks()).then(function(){ if(curPage==='tasks') renderPage('tasks'); }).catch(function(){}); }
-    }).catch(function(){});
-  }catch(e){}
+      if(typeof opMergePush==='function'){ return opMergePush('tasks_all', getTasks()); }
+    }).then(function(){
+      _tasksPulling=false; _tasksPulledAt=Date.now();
+      if(curPage==='tasks') renderPage('tasks');
+    }).catch(function(){ _tasksPulling=false; });
+  }catch(e){ _tasksPulling=false; }
 }
+/* 手動更新（タスク画面の「更新」ボタン） */
+function tasksSyncNow(){
+  if(typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ showToast('自動同期がOFFです（同期センターでON）','warning'); return; }
+  showToast('タスクを同期中…','info');
+  maybeSyncTasks(true);
+}
+/* v615: アプリが前面に戻った時／再フォーカス時にタスクを取り込む（他端末の追加を拾う） */
+try{
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden && typeof curPage!=='undefined' && curPage==='tasks'){ try{ maybeSyncTasks(); }catch(e){} }
+  });
+  window.addEventListener('focus', function(){
+    if(typeof curPage!=='undefined' && curPage==='tasks'){ try{ maybeSyncTasks(); }catch(e){} }
+  });
+}catch(e){}
 /* プレフィックス一致のマージ定義（動的キー用：skills_st_<store>） */
 /* キャッシュチップの店舗マップ {date:{lunch,dinner,lunchEntered,dinnerEntered,entered,by,at,editedBy,editedAt}} のマージ。
    日付で和集合／同一日付はL/D側ごとに保持（片方入力の取りこぼし防止）、値の衝突は editedAt||at の新しい方を優先。物理削除なし＝tombstone不要 */
@@ -11593,6 +11626,64 @@ async function scDetail(kind){
   if(kind==='weather'){ var el=document.getElementById('toast-sync-status'); if(el) el.textContent='天気・祝日を取得中…'; var r=await doWeatherSyncSilent(sid); if(el) el.textContent=r&&r.error?r.error:('天気・祝日を反映しました（'+st.name+'）'); showToast('天気・祝日を反映しました','success'); return; }
 }
 /* 同期センター モーダル */
+/* ============================================================
+   v616: 「承認済みなのにスキルLvに反映されていない」申請の修復
+   原因（旧実装）: 承認センターでの承認時に
+     ・申請がこの端末に無い／候補が2件以上だと特定できず、黙って反映をスキップ
+     ・店舗が特定できないと STORES[0](ToriTon) へ書き込み＝別店舗の本人には出ない
+   すでに承認済みで未反映のものを洗い出して、正しい店舗へ反映し直す。
+============================================================ */
+async function repairApprovedSkills(dryRun){
+  var box=document.getElementById('sync-center-result');
+  if(box) box.innerHTML='<i class="ti ti-loader"></i> 承認済みスキルの未反映を確認中…';
+  try{
+    if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED && typeof pullOpKey==='function'){
+      await pullOpKey('skill_requests');
+      var _sts={}; getSkillRequests().forEach(function(r){ var s=r.store||((getEmployees().find(function(e){return e.name===r.name;})||{}).store)||''; if(s) _sts[s]=1; });
+      for(var s in _sts){ if(_sts.hasOwnProperty(s)){ try{ await pullOpKey(SKILL_STORE_PREFIX+s); }catch(e){} } }
+    }
+  }catch(e){}
+  var reqs=getSkillRequests().filter(function(r){ return r && r.status==='承認'; });
+  var fixed=[], skipped=[], ok=0;
+  reqs.forEach(function(r){
+    var sid=r.store || ((getEmployees().find(function(e){return e.name===r.name;})||{}).store) || '';
+    if(!sid){ skipped.push(r.name+'・'+r.position+'（店舗不明）'); return; }
+    var cur=getEmpSkillsStore(r.name, sid)[r.position] || {};
+    var lv=parseInt(r.level)||0;
+    // 反映済み（承認済みで、申請Lv以上）ならOK
+    if(cur.status==='承認' && Number(cur.level)>=lv){ ok++; return; }
+    fixed.push({name:r.name, store:sid, pos:r.position, from:(cur.status==='承認'?(Number(cur.level)||0):0), to:lv, req:r});
+  });
+  if(!dryRun){
+    fixed.forEach(function(f){
+      var prev=getEmpSkillsStore(f.name, f.store)[f.pos] || {};
+      setEmpSkillStore(f.name, f.store, f.pos, Object.assign({}, prev, {
+        level:f.to, status:'承認', selfComment:f.req.selfComment||prev.selfComment||'',
+        mgrComment:f.req.mgrComment||prev.mgrComment||'', nextTask:f.req.nextTask||prev.nextTask||'',
+        date:f.req.date||prev.date||'', evaluator:(f.req.reviewer||prev.evaluator||'修復')
+      }));
+      try{ if(typeof addSkillHistory==='function') addSkillHistory(f.name, f.store, f.pos, f.from, f.to, (f.req.reviewer||'修復'), '承認済み未反映を修復'); }catch(e){}
+    });
+  }
+  var storeName=function(id){ var s=(typeof getStoresAll==='function')?getStoresAll().find(function(x){return x.id===id;}):null; return s?s.name:id; };
+  var h='<div style="font-size:12px;line-height:1.8;background:var(--surface2);border-radius:8px;padding:10px">'
+    +'<b>承認済みスキルの反映チェック</b><br>'
+    +'承認済み申請: '+reqs.length+'件 ／ 反映済み: '+ok+'件 ／ <span style="color:'+(fixed.length?'var(--red)':'var(--green)')+'">未反映: '+fixed.length+'件</span>'
+    +(skipped.length?('<br><span style="color:var(--yellow)">店舗不明でスキップ: '+skipped.length+'件（'+escapeHtml(skipped.join('、'))+'）</span>'):'');
+  if(fixed.length){
+    h+='<div style="margin-top:6px">'+fixed.map(function(f){
+      return '・'+escapeHtml(f.name)+'（'+escapeHtml(storeName(f.store))+'）'+escapeHtml(f.pos)+'： Lv'+f.from+' → <b>Lv'+f.to+'</b>';
+    }).join('<br>')+'</div>';
+    h+= dryRun
+      ? '<div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="repairApprovedSkills(false)"><i class="ti ti-wand"></i> '+fixed.length+'件を反映する</button></div>'
+      : '<div style="margin-top:8px;color:var(--green)"><i class="ti ti-check"></i> '+fixed.length+'件を反映しました（本人の画面にも同期されます）</div>';
+  } else {
+    h+='<div style="margin-top:6px;color:var(--green)"><i class="ti ti-check"></i> 未反映はありません</div>';
+  }
+  h+='</div>';
+  if(box) box.innerHTML=h;
+  if(!dryRun && fixed.length){ showToast(fixed.length+'件のスキルLvを反映しました','success'); try{ if(curPage==='skill') renderPage('skill'); }catch(e){} }
+}
 async function runCustDebug(){
   var stores=getVisibleStores().filter(function(s){return s.toastGuid;});
   if(!stores.length){ showToast('対象店舗がありません','warning'); return; }
@@ -11659,6 +11750,7 @@ function openSyncCenter() {
     <button class="btn btn-primary" style="width:100%" onclick="syncCenterRunAll()"><i class="ti ti-bolt"></i> すべて同期（売上・客数・Tip・Labor・天気）</button>
     <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="syncCenterMenuAll()"><i class="ti ti-tools-kitchen-2"></i> メニュー・出数を同期</button>
     ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="repairApprovedSkills(true)"><i class="ti ti-shield-check"></i> 承認済みスキルの未反映をチェック／修復</button>`:''}
     <div id="sync-center-result" style="font-size:12px;margin-top:10px"></div>
     <div style="font-weight:700;font-size:13px;margin:14px 0 4px">Toast 店舗別</div>
     ${rows||'<div style="font-size:12px;color:var(--muted)">対象店舗がありません</div>'}
@@ -16912,7 +17004,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '614';
+const APP_VERSION = '616';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -31571,10 +31663,15 @@ function renderApproval() {
   return html;
 }
 
-function approveItem(id, status, reason) {
+async function approveItem(id, status, reason) {
   var approvals = ls('approvals', []);
   var a = approvals.find(a=>a.id===id);
   if (a) {
+    /* v616: スキルは「承認したのにLvが上がらない」事故を防ぐため、判定前に最新の申請を取り込む。
+       （他端末で出された申請がこの端末の skill_requests に無いと、以前は黙って反映をスキップしていた） */
+    if (a.type==='スキル' && status==='approved') {
+      try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED && typeof pullOpKey==='function'){ await pullOpKey('skill_requests'); } }catch(e){}
+    }
     if(status==='rejected' && reason) a.rejectReason=reason;
     a.status = status; a._mut=Date.now(); lsSet('approvals', approvals);
     if (a.type==='退職' && a.ref) {
@@ -31600,17 +31697,41 @@ function approveItem(id, status, reason) {
         if (!_sr) {
           var _pm = String(a.title||'').match(/\(([^)]+)\)\s*$/);
           var _pos = _pm ? _pm[1] : null;
-          var _cands = _sreqs.filter(function(x){ return x.name===a.from && x.status==='申請中' && (!_pos || x.position===_pos); });
-          if (_cands.length===1) _sr = _cands[0];
+          /* v616: 以前は「候補がちょうど1件」でないと特定できず黙って反映されなかった。
+             → 申請中を優先し、複数あれば最新日付を採用。 */
+          var _cands = _sreqs.filter(function(x){ return x.name===a.from && (!_pos || x.position===_pos); });
+          var _pend = _cands.filter(function(x){ return x.status==='申請中'; });
+          var _pick = (_pend.length?_pend:_cands).slice().sort(function(p,q){ return String(q.date||'').localeCompare(String(p.date||'')); });
+          if (_pick.length) _sr = _pick[0];
         }
-        if (_sr && _sr.status==='申請中') {
+        /* v616: 反映できない時は黙って通さない（承認済みなのにLv未反映を作らない） */
+        if (status==='approved' && !_sr) {
+          a.status='pending'; a._mut=Date.now(); lsSet('approvals', approvals);
+          showToast('申請データが見つからないため承認を保留しました。スキル画面から承認してください','warning');
+          renderPage('approval'); return;
+        }
+        if (_sr && (_sr.status==='申請中' || status==='approved')) {
           var _by = (ROLE_CONFIG[curRole]||{}).name || curUserName;
-          var _sid = _sr.store || ((getEmployees().find(function(e){return e.name===_sr.name;})||{}).store) || STORES[0].id;
+          /* v616: 店舗が特定できない時にSTORES[0](ToriTon)へ書くと、別店舗のスタッフには一生反映されない。
+             → 推測書き込みをやめ、保留にして知らせる。 */
+          var _sid = _sr.store || ((getEmployees().find(function(e){return e.name===_sr.name;})||{}).store) || '';
+          if (status==='approved' && !_sid) {
+            a.status='pending'; a._mut=Date.now(); lsSet('approvals', approvals);
+            showToast(_sr.name+' の対象店舗が特定できないため承認を保留しました（従業員マスターの店舗を確認）','warning');
+            renderPage('approval'); return;
+          }
           if (status==='approved') {
+            try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED && typeof pullOpKey==='function'){ await pullOpKey(SKILL_STORE_PREFIX+_sid); } }catch(e){}
             var _prev = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {level:0};
             var _lv = parseInt(_sr.level)||0;
             _sr.status='承認'; _sr.reviewer=_by; setSkillRequests(_sreqs);
             setEmpSkillStore(_sr.name, _sid, _sr.position, {level:_lv, status:'承認', selfComment:_sr.selfComment, mgrComment:_sr.mgrComment||'', nextTask:_sr.nextTask||'', date:_sr.date, evaluator:_by});
+            /* v616: 書き込み後に読み戻して検証（反映されていなければ承認者に知らせる） */
+            try{
+              var _chk = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {};
+              if (Number(_chk.level)!==_lv || _chk.status!=='承認') showToast('スキルLvの反映に失敗しました。スキル画面から再度承認してください','danger');
+              else showToast(_sr.name+' の '+_sr.position+' を Lv'+_lv+' に反映しました', 'success');
+            }catch(e){}
             if ((_prev.status==='承認'?_prev.level:0)!==_lv) addSkillHistory(_sr.name, _sid, _sr.position, (_prev.status==='承認'?_prev.level:0), _lv, _by);
             try{ addNotif({ type:'approved', title:t('スキルが承認されました','Skill approved'), text:(_sr.name+'・'+((typeof posLabel==='function')?posLabel(_sr.position):_sr.position)+' Lv'+_lv+'（'+t('承認','by')+'：'+_by+'）'), toUser:_sr.name, page:'skill', refId:a.id }); }catch(_e2){}
           } else {
@@ -35976,7 +36097,9 @@ function renderTasks(){
   try{ ensureRecurringTasks(); taskDeadlineReminders(); checkCashTipTasks(); }catch(e){}
   var canManage = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
   if(!window._taskView) window._taskView='list';
-  var html = '<div class="section-header"><div><div class="section-title">タスク</div><div class="section-sub">ワークセンター — 作成と一覧</div></div></div>';
+  var html = '<div class="section-header"><div><div class="section-title">タスク</div><div class="section-sub">ワークセンター — 作成と一覧</div></div>'
+    +'<button class="btn btn-secondary btn-sm" style="margin-left:auto;align-self:center" onclick="tasksSyncNow()"><i class="ti ti-refresh"></i> 更新</button></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin:-6px 0 8px">'+(_tasksPulledAt?('最終同期 '+new Date(_tasksPulledAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})+'（他端末で作成されたタスクはここで取り込まれます）'):'他端末のタスクを取り込むには「更新」を押してください')+'</div>';
   html += taskTopTabsHtml();
   if(window._taskView==='create') return html + renderTaskCreate();
   html += '<div class="phase-tabs">'
