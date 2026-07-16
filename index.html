@@ -13987,7 +13987,8 @@ function setInvTop(storeId, field, val){
   var o=getInvTop(storeId,_ym); var v=parseFloat(val);
   o[field]=(val===''||isNaN(v))?'':v; lsSet('inv_top_'+storeId+'_'+_ym, o);
   var t=invComputeTotals(storeId), prev=invPrevStockYm(storeId,_ym);
-  var purchase=parseFloat(o.purchase)||0, moves=parseFloat(o.moves)||0;
+  var purchase=parseFloat(o.purchase)||0;
+  var moves=(typeof invMovesFor==='function')?invMovesFor(storeId,_ym).net:(parseFloat(o.moves)||0);  /* v618 */
   var sales=(o.sales!=null&&o.sales!=='')?parseFloat(o.sales):Math.round((monthStats(storeId, invMonthOffset)||{}).sales||0);
   var cogs=prev+purchase+moves-t.grand; var rate=sales>0?(cogs/sales*100):null;
   var rc=document.getElementById('inv-costrate'); if(rc) rc.textContent=(rate!=null?rate.toFixed(1)+'%':'—');
@@ -14034,11 +14035,66 @@ function invRefreshInputSection(storeId){
   codes.forEach(function(code){ var el=document.getElementById('inv-amt-'+code); if(el) el.textContent=(counts[code]!=null)?invFmtMoney(t.perItem[code]||0):'—'; });
   _invVendorList(storeId).forEach(function(v,idx){ var el=document.getElementById('inv-vsub-'+idx); if(el) el.textContent=invFmtMoney(t.perVendor[v]||0); });
 }
+/* v618: 棚卸「表紙」の食材移動を、食材移動ページの記録から自動反映（タップで明細） */
+function invMovesFor(storeId, ym){
+  var tn=(typeof monthTransferNetYm==='function')?monthTransferNetYm(storeId, ym):{inAmt:0,outAmt:0,net:0,inCount:0,outCount:0};
+  var hasRec=((tn.inCount||0)+(tn.outCount||0))>0;
+  if(hasRec) return { net:tn.net, inAmt:tn.inAmt, outAmt:tn.outAmt, count:(tn.inCount||0)+(tn.outCount||0), src:'auto' };
+  var top=getInvTop(storeId, ym);
+  var manual=parseFloat(top.moves);
+  if(!isNaN(manual) && manual!==0) return { net:manual, inAmt:0, outAmt:0, count:0, src:'manual' };
+  return { net:0, inAmt:0, outAmt:0, count:0, src:'none' };
+}
+/* 当月・当店に関係する移動明細（借入＝＋／貸出＝−） */
+function invTransferRows(storeId, ym){
+  var rows=(typeof getIngTransfers==='function'?getIngTransfers():[]).filter(function(t){
+    return String(t.date).slice(0,7)===ym && (t.to===storeId || t.from===storeId);
+  });
+  return rows.sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+}
+function openInvTransferDetail(storeId, ym){
+  var rows=invTransferRows(storeId, ym);
+  var mv=invMovesFor(storeId, ym);
+  var sn=function(id){ var s=(typeof getStoresAll==='function'?getStoresAll():STORES).find(function(x){return x.id===id;}); return s?s.name:id; };
+  var _p=String(ym).split('-');
+  var label=parseInt(_p[0],10)+'年'+parseInt(_p[1],10)+'月';
+  var h='<div class="modal-title"><i class="ti ti-arrows-exchange" style="color:var(--accent)"></i> 食材移動の明細 — '+escapeHtml(sn(storeId))+' '+label+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  if(!rows.length){
+    h+='<div style="font-size:12px;color:var(--muted);line-height:1.8;padding:10px 2px">'+label+'の食材移動の記録はありません。'
+      +(mv.src==='manual'?'<br><span style="color:var(--yellow)">※表紙には手入力の金額 '+fmtUSD2(mv.net)+' が入っています（記録が登録されると自動計算に切り替わります）。</span>':'')
+      +'<br>食材移動ページで記録すると、ここに明細が出て表紙の金額へ自動反映されます。</div>'
+      +'<div class="btn-row"><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button><button class="btn btn-primary" onclick="closeModalDirect();go(\'ing_transfer\')"><i class="ti ti-arrow-right"></i> 食材移動へ</button></div>';
+    openModal(h); return;
+  }
+  h+='<div style="display:flex;gap:8px;margin-bottom:8px">'
+    +'<div style="flex:1;background:var(--surface2);border-radius:8px;padding:7px 9px"><div style="font-size:10px;color:var(--muted)">＋ 借入（原価プラス）</div><div style="font-size:15px;font-weight:800;color:var(--red)">'+fmtUSD2(mv.inAmt)+'</div></div>'
+    +'<div style="flex:1;background:var(--surface2);border-radius:8px;padding:7px 9px"><div style="font-size:10px;color:var(--muted)">− 貸出（原価マイナス）</div><div style="font-size:15px;font-weight:800;color:var(--green)">'+fmtUSD2(mv.outAmt)+'</div></div>'
+    +'<div style="flex:1;background:var(--surface2);border-radius:8px;padding:7px 9px"><div style="font-size:10px;color:var(--muted)">純額（表紙の金額）</div><div style="font-size:15px;font-weight:800;color:var(--accent)">'+(mv.net<0?'− ':'')+fmtUSD2(Math.abs(mv.net))+'</div></div>'
+    +'</div>';
+  h+='<div style="overflow-x:auto;max-height:52vh"><table class="inv-table" style="width:100%;font-size:11.5px;border-collapse:collapse">'
+    +'<thead><tr><th style="text-align:left">日付</th><th style="text-align:left">食材</th><th style="text-align:right">数量</th><th style="text-align:left">相手</th><th style="text-align:right">金額</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    var isIn=(r.to===storeId);
+    var other=isIn?('← '+sn(r.from)):('→ '+sn(r.to));
+    var amt=Number(r.amount)||0;
+    h+='<tr style="border-top:1px solid var(--border)">'
+      +'<td style="text-align:left;white-space:nowrap">'+escapeHtml(String(r.date||'').slice(5))+'</td>'
+      +'<td style="text-align:left">'+escapeHtml(r.name||'')+(r.by?'<div style="font-size:9px;color:var(--muted)">'+escapeHtml(r.by)+'</div>':'')+'</td>'
+      +'<td style="text-align:right;white-space:nowrap">'+(Number(r.qty)||0)+' '+escapeHtml(r.unit||'')+'</td>'
+      +'<td style="text-align:left;white-space:nowrap"><span class="tag '+(isIn?'tag-red':'tag-green')+'" style="font-size:9px">'+(isIn?'借入':'貸出')+'</span> '+escapeHtml(other)+'</td>'
+      +'<td style="text-align:right;white-space:nowrap;font-weight:700;color:'+(isIn?'var(--red)':'var(--green)')+'">'+(isIn?'＋':'−')+fmtUSD2(amt)+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">借入＝原価プラス／貸出＝原価マイナス。表紙の「食材移動」はこの純額が自動で入ります（原価＝前月棚＋仕入＋移動−当月棚）。</div>';
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect();go(\'ing_transfer\')"><i class="ti ti-arrows-exchange"></i> 食材移動を編集</button><div style="flex:1"></div><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(h);
+}
 function renderInvToppageInner(storeId){
   var _ym=invYm();
   var t=invComputeTotals(storeId), top=getInvTop(storeId,_ym);
   var prev=invPrevStockYm(storeId,_ym), cur=t.grand;
-  var purchase=parseFloat(top.purchase)||0, moves=parseFloat(top.moves)||0;
+  var purchase=parseFloat(top.purchase)||0;
+  var _mv=invMovesFor(storeId,_ym), moves=_mv.net;      /* v618: 食材移動の記録から自動反映 */
   var sales=(top.sales!=null&&top.sales!=='')?parseFloat(top.sales):Math.round((monthStats(storeId, invMonthOffset)||{}).sales||0);
   var cogs=prev+purchase+moves-cur, rate=sales>0?(cogs/sales*100):null;
   var m=invComputeMatrix(storeId);
@@ -14048,7 +14104,10 @@ function renderInvToppageInner(storeId){
   h+='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">';
   h+= box('前月の棚', '<div style="font-size:16px;font-weight:800">'+invFmtMoney(prev)+'</div>','自動（前回確定）');
   h+= box('当月の仕入れ', moneyInput('purchase', top.purchase),'入力');
-  h+= box('食材移動', moneyInput('moves', top.moves),'入力（±）');
+  h+= '<div onclick="openInvTransferDetail(\''+storeId+'\',\''+_ym+'\')" style="background:var(--surface2);border-radius:10px;padding:9px 10px;cursor:pointer">'
+    +'<div style="font-size:10px;color:var(--muted)">食材移動 <i class="ti ti-chevron-right" style="font-size:10px"></i></div>'
+    +'<div style="font-size:16px;font-weight:800;color:'+(moves>0?'var(--red)':(moves<0?'var(--green)':'var(--tm)'))+'">'+(moves<0?'− ':(moves>0?'＋ ':''))+invFmtMoney(Math.abs(moves))+'</div>'
+    +'<div style="font-size:9px;color:var(--muted)">'+(_mv.src==='auto'?(_mv.count+'件 · タップで明細'):(_mv.src==='manual'?'手入力（記録なし）':'記録なし · タップで確認'))+'</div></div>';
   h+= box('当月の棚', '<div id="inv-cur" style="font-size:16px;font-weight:800;color:var(--green)">'+invFmtMoney(cur)+'</div>','棚卸合計');
   h+= box('売上', moneyInput('sales', top.sales),'未入力時は自動');
   h+= box('原価率', '<div style="font-size:16px;font-weight:800">原価 <span id="inv-cogs">'+invFmtMoney(cogs)+'</span></div><div style="font-size:13px;font-weight:700;color:var(--accent)">率 <span id="inv-costrate">'+(rate!=null?rate.toFixed(1)+'%':'—')+'</span></div>','前月棚＋仕入＋移動−当月棚');
@@ -17154,7 +17213,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '617';
+const APP_VERSION = '618';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
