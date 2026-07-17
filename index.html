@@ -3054,6 +3054,17 @@ function saveCashTip(storeId, date, lunch, dinner) {
    クレジットチップのシェア（配分）は通常どおり。未入力アラート・エラーセンター・自動タスクからも除外。 */
 var NO_CASHTIP_STORES = ['F03','F03-G'];
 function isNoCashTipStore(storeId){ return NO_CASHTIP_STORES.indexOf(storeId)>=0; }
+/* v626: キャッシュチップの入力権限。
+   責任分担表の「キャッシュチップの入力＝入力は誰でもOK（0でも0）。確定はG3」に実装を合わせる。
+   従来は店舗オペレーションの canEdit（＝ROLE_CONFIG[curRole].canCreate）で塞いでいたため G1(crew) が
+   入力できず、実際に締めて現金を数えたクルーが入れられないまま、未入力タスクがG3へ溜まっていた。
+   canEdit は表示設定・目標管理のボタンでも使い回しているので、そちらを開けないよう判定を分ける。
+   誰がこの画面に来られるかは MENU の store_cmd.roles（ceo/gm/am/sl/crew ＋店舗共有ログイン）が決めている。
+   ※Waikiki 2店（FSP / WGS）は登録対象外なので従来どおり不可。 */
+function cashTipCanEnter(storeId){
+  if (isNoCashTipStore(storeId)) return false;
+  return true;
+}
 /* キャッシュチップが未入力か（クレジットはあるのにキャッシュ未確定＝要入力） */
 function cashTipMissing(storeId, date) {
   if (isNoCashTipStore(storeId)) return false; // 対象外店舗は常に未入力扱いしない
@@ -7777,6 +7788,9 @@ function completeDailyOps(storeId) {
 
 /* Store CMD チップ管理セクション */
 function renderStoreCmdTip(storeId, store, canEdit) {
+  /* v626: キャッシュチップの入力だけは canEdit ではなく専用判定を使う（G1に解放）。
+     canEdit は呼び出し元(renderStoreCmd)で表示設定・目標管理のボタンにも使われているため、そのまま流用しない。 */
+  var canCash = cashTipCanEnter(storeId);
   var today = todayISO();
   var sel = window._cmdTipDate || today;
   var tip = tipForDay(storeId, sel);
@@ -7803,14 +7817,14 @@ function renderStoreCmdTip(storeId, store, canEdit) {
     html += `<table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Dinner</td></tr>
     <tr><td>${t('クレジット','Credit')}</td><td style="text-align:right">$${tip.dinnerCredit.toFixed(2)}</td></tr>
     <tr style="color:var(--muted);font-size:11px"><td>${t('手数料控除後(×0.965)','After fee (×0.965)')}</td><td style="text-align:right">$${(tip.dinnerCredit*0.965).toFixed(2)}</td></tr>
-    <tr><td>${t('キャッシュ','Cash')}${canEdit&&!_isFuture?' <button class="btn '+(_isToday&&!(_cash&&_cash.entered)?'btn-primary':'btn-secondary')+' btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(_isToday?((_cash&&_cash.entered)?t('修正','Edit'):t('入力','Enter')):t('修正','Edit'))+'</button>':''}${_isFuture?' <span style="font-size:9px;color:var(--muted)">'+t('未来日は入力不可','No entry for future dates')+'</span>':''}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td></tr>
+    <tr><td>${t('キャッシュ','Cash')}${canCash&&!_isFuture?' <button class="btn '+(_isToday&&!(_cash&&_cash.entered)?'btn-primary':'btn-secondary')+' btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(_isToday?((_cash&&_cash.entered)?t('修正','Edit'):t('入力','Enter')):t('修正','Edit'))+'</button>':''}${_isFuture?' <span style="font-size:9px;color:var(--muted)">'+t('未来日は入力不可','No entry for future dates')+'</span>':''}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td></tr>
     <tr style="font-weight:700;border-top:1px solid var(--border)"><td>${t('チップ総額','Total tips')}</td><td style="text-align:right;color:var(--green)">$${tip.total.toFixed(2)}</td></tr>
     </table>`;
   } else {
   html += `<table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Lunch</td><td style="text-align:right">Dinner</td><td style="text-align:right">${t('計','Total')}</td></tr>
     <tr><td>${t('クレジット','Credit')}</td><td style="text-align:right">$${tip.lunchCredit.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCredit.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCredit+tip.dinnerCredit).toFixed(2)}</td></tr>
     <tr style="color:var(--muted);font-size:11px"><td>${t('手数料控除後(×0.965)','After fee (×0.965)')}</td><td style="text-align:right">$${(tip.lunchCredit*0.965).toFixed(2)}</td><td style="text-align:right">$${(tip.dinnerCredit*0.965).toFixed(2)}</td><td style="text-align:right">$${((tip.lunchCredit+tip.dinnerCredit)*0.965).toFixed(2)}</td></tr>
-    <tr><td>${t('キャッシュ','Cash')}${canEdit&&!_isFuture?' <button class="btn '+(_isToday&&!(_cash&&_cash.entered)?'btn-primary':'btn-secondary')+' btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(_isToday?((_cash&&_cash.entered)?t('修正','Edit'):t('入力','Enter')):t('修正','Edit'))+'</button>':''}${_isFuture?' <span style="font-size:9px;color:var(--muted)">'+t('未来日は入力不可','No entry for future dates')+'</span>':''}</td><td style="text-align:right">$${tip.lunchCash.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCash+tip.dinnerCash).toFixed(2)}</td></tr>
+    <tr><td>${t('キャッシュ','Cash')}${canCash&&!_isFuture?' <button class="btn '+(_isToday&&!(_cash&&_cash.entered)?'btn-primary':'btn-secondary')+' btn-sm" style="padding:0 6px;font-size:10px" onclick="openCashTipModal(\''+storeId+'\',\''+sel+'\')">'+(_isToday?((_cash&&_cash.entered)?t('修正','Edit'):t('入力','Enter')):t('修正','Edit'))+'</button>':''}${_isFuture?' <span style="font-size:9px;color:var(--muted)">'+t('未来日は入力不可','No entry for future dates')+'</span>':''}</td><td style="text-align:right">$${tip.lunchCash.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerCash.toFixed(2)}</td><td style="text-align:right">$${(tip.lunchCash+tip.dinnerCash).toFixed(2)}</td></tr>
     <tr style="font-weight:700;border-top:1px solid var(--border)"><td>${t('チップ総額','Total tips')}</td><td style="text-align:right">$${tip.lunchTotal.toFixed(2)}</td><td style="text-align:right">$${tip.dinnerTotal.toFixed(2)}</td><td style="text-align:right;color:var(--green)">$${tip.total.toFixed(2)}</td></tr>
     </table>`;
   }
@@ -17759,7 +17773,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '625';
+const APP_VERSION = '626';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
