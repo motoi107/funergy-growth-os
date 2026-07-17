@@ -4462,7 +4462,167 @@ async function pushOpKeyNow(key){
      各キーの削除挙動を精査してから OP_MERGE へ追加する。
    - localStorageへの反映は setItem 直書き（lsSetを使うと再push無限ループ）。
 ============================================================ */
+/* ============================================================
+   v620: 予算(budgets_v2)のマージ同期＋バックアップ
+   【事故の原因】budgets_v2 は「全店・全月」を1キーに詰めた塊なのに、マージ定義が無く
+     last-write-wins（最後に保存した端末がクラウドを丸ごと上書き）だった。
+     → 古い予算配列を持った端末が1店舗の予算を保存しただけで、他店の予算が全消滅する。
+   【対策】店舗ごと・月ごとに和集合マージ（新しい方＝データのある方を優先）。
+     tasks_all / cash_tips_ と同じ方式に揃える。
+============================================================ */
+function _budTs(x){ return Number(x && (x._ts||x.updatedTs)) || 0; }
+/* 予算エントリの「中身の濃さ」＝データ喪失を防ぐための保険（_tsが無い旧データ用） */
+function _budWeight(b){
+  if(!b) return -1;
+  var w=0;
+  try{
+    if(b.months) w += Object.keys(b.months).length*10;
+    if(Array.isArray(b.bases)) w += b.bases.length;
+    if(b.dow) w += 5;
+    if(b.segments) w += 5;
+    if(b.rationale && ((b.rationale.basis||'').trim() || (b.rationale.focus||'').trim())) w += 2;
+    if(b.status && b.status!=='下書き') w += 1;
+    if(b.actual) w += 1;
+  }catch(e){}
+  return w;
+}
+/* 月データ(b.months)の和集合。同じ月は _ts が新しい方、無ければ中身のある方 */
+function _mergeBudMonths(cm, lm){
+  if(!cm && !lm) return undefined;
+  if(!cm) return lm;
+  if(!lm) return cm;
+  var out={};
+  Object.keys(cm).forEach(function(ym){ out[ym]=cm[ym]; });
+  Object.keys(lm).forEach(function(ym){
+    var c=out[ym], l=lm[ym];
+    if(!c){ out[ym]=l; return; }
+    var ct=_budTs(c), lt=_budTs(l);
+    if(ct!==lt){ out[ym]=(lt>ct)?l:c; return; }
+    var cw=(c&&c.dow?1:0)+((c&&c.days)?1:0), lw=(l&&l.dow?1:0)+((l&&l.days)?1:0);
+    out[ym]=(lw>=cw)?l:c;
+  });
+  return out;
+}
+/* budgets_v2 のマージ：店舗単位の和集合（消えた店を復活させる） */
+function mergeBudgets(cloudArr, localArr){
+  var by={}, order=[];
+  function put(b, isLocal){
+    if(!b || !b.storeId) return;
+    var id=b.storeId;
+    if(!by[id]){ by[id]=b; order.push(id); return; }
+    var cur=by[id];
+    var merged = Object.assign({}, cur, {});
+    var ct=_budTs(cur), lt=_budTs(b);
+    var win;
+    if(ct!==lt) win = (lt>ct)?b:cur;                       // 新しい方を採用
+    else win = (_budWeight(b) > _budWeight(cur)) ? b : cur; // _ts同値/無しは中身の濃い方
+    merged = Object.assign({}, win);
+    /* 月データだけは必ず両方の和集合にする（片方にしか無い月を絶対に落とさない） */
+    var mm=_mergeBudMonths(cur.months, b.months);
+    if(mm) merged.months=mm; else delete merged.months;
+    by[id]=merged;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+function _coversBudgets(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(b){ if(b&&b.storeId) have[b.storeId]=b; });
+  for(var i=0;i<(want||[]).length;i++){
+    var w=want[i]; if(!w||!w.storeId) continue;
+    var h=have[w.storeId]; if(!h) return false;
+    if(_budTs(h) < _budTs(w)) return false;
+    var wm=w.months?Object.keys(w.months):[];
+    for(var j=0;j<wm.length;j++){ if(!h.months || !h.months[wm[j]]) return false; }
+  }
+  return true;
+}
+/* ---- 予算のバックアップ／診断 ---- */
+function backupBudgets(){
+  try{
+    var arr=ls('budgets_v2', null);
+    if(!arr || !arr.length){ showToast('予算データがありません','warning'); return; }
+    var out={ app:'Funergy Growth OS', type:'budgets_backup', version:(typeof APP_VERSION!=='undefined'?APP_VERSION:''), at:(typeof nowJP==='function'?nowJP():''), budgets:arr };
+    var blob=new Blob([JSON.stringify(out,null,2)], {type:'application/json'});
+    var url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download='budgets_backup_'+(new Date().toISOString().slice(0,10))+'.json';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ try{ document.body.removeChild(a); URL.revokeObjectURL(url); }catch(e){} },500);
+    showToast(arr.length+'店舗の予算を書き出しました','success');
+  }catch(e){ showToast('書き出しに失敗しました','danger'); }
+}
+function restoreBudgetsFromFile(){
+  var inp=document.createElement('input'); inp.type='file'; inp.accept='application/json,.json';
+  inp.onchange=function(){
+    var f=inp.files&&inp.files[0]; if(!f) return;
+    var r=new FileReader();
+    r.onload=function(){
+      try{
+        var j=JSON.parse(r.result);
+        var arr=j.budgets||j;
+        if(!Array.isArray(arr)) throw new Error('形式が違います');
+        var cur=ls('budgets_v2', [])||[];
+        var merged=mergeBudgets(cur, arr);      /* 現在の内容と和集合（消さない） */
+        if(!confirm('バックアップから予算を復元します。\n復元後の店舗数: '+merged.length+'（現在: '+cur.length+'）\n※現在のデータは消さず、足りない分を復活させます。よろしいですか？')) return;
+        saveBudgets(merged);
+        showToast('予算を復元しました（'+merged.length+'店舗）','success');
+        renderPage('budget');
+      }catch(e){ showToast('読み込みに失敗しました: '+e.message,'danger'); }
+    };
+    r.readAsText(f);
+  };
+  inp.click();
+}
+async function diagBudgets(){
+  var box=document.getElementById('sync-center-result');
+  if(box) box.innerHTML='<i class="ti ti-loader"></i> 予算の状況を確認中…';
+  var local=ls('budgets_v2', [])||[];
+  var cloud=null;
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=value&key=eq.budgets_v2', { headers: supaHeaders() });
+    if(res.ok){ var rows=await res.json(); cloud=(rows&&rows[0])?rows[0].value:null; }
+  }catch(e){}
+  var sn=function(id){ var s=(typeof getStoresAll==='function'?getStoresAll():STORES).find(function(x){return x.id===id;}); return s?s.name:id; };
+  var row=function(b){
+    var ms=b&&b.months?Object.keys(b.months).sort():[];
+    return escapeHtml(sn(b.storeId))+'： '+(ms.length?('月次 '+ms.length+'ヶ月（'+escapeHtml(ms.join(', '))+'）'):'<span style="color:var(--red)">月次データなし</span>');
+  };
+  var h='<div style="font-size:12px;line-height:1.8;background:var(--surface2);border-radius:8px;padding:10px">'
+    +'<b>予算データの状況</b><br><u>この端末</u><br>'
+    +(local.length?local.map(row).join('<br>'):'<span style="color:var(--red)">予算がありません</span>')
+    +'<br><br><u>クラウド</u><br>'
+    +(cloud===null?'<span style="color:var(--yellow)">取得できませんでした</span>':(Array.isArray(cloud)&&cloud.length?cloud.map(row).join('<br>'):'<span style="color:var(--red)">クラウドにも予算がありません</span>'));
+  var lackOnCloud=[];
+  if(Array.isArray(cloud)){
+    local.forEach(function(b){
+      var c=cloud.find(function(x){return x.storeId===b.storeId;});
+      var lm=b.months?Object.keys(b.months):[];
+      var cm=(c&&c.months)?Object.keys(c.months):[];
+      var lack=lm.filter(function(m){ return cm.indexOf(m)<0; });
+      if(!c || lack.length) lackOnCloud.push(sn(b.storeId)+(lack.length?('（'+lack.join(', ')+'）'):''));
+    });
+  }
+  if(lackOnCloud.length){
+    h+='<div style="margin-top:8px;color:var(--red)"><i class="ti ti-alert-triangle"></i> この端末にしか無い予算: '+escapeHtml(lackOnCloud.join(' / '))+'</div>'
+      +'<div style="margin-top:6px"><button class="btn btn-primary btn-sm" onclick="pushBudgetsNow()"><i class="ti ti-cloud-upload"></i> この端末の予算をクラウドへ反映（マージ）</button></div>';
+  } else if(Array.isArray(cloud)){
+    h+='<div style="margin-top:6px;color:var(--green)"><i class="ti ti-check"></i> この端末の予算はすべてクラウドにあります</div>';
+  }
+  h+='</div>';
+  if(box) box.innerHTML=h;
+}
+async function pushBudgetsNow(){
+  var box=document.getElementById('sync-center-result');
+  if(box) box.innerHTML='<i class="ti ti-loader"></i> クラウドへ反映中…';
+  try{
+    var ok=await opMergePush('budgets_v2', ls('budgets_v2', [])||[]);
+    showToast(ok?'予算をクラウドへ反映しました':'反映に失敗しました', ok?'success':'warning');
+  }catch(e){ showToast('反映に失敗しました','danger'); }
+  diagBudgets();
+}
 var OP_MERGE = {
+  budgets_v2:    { merge: mergeBudgets,   covers: _coversBudgets },   /* v620: 予算の上書き消失を防ぐ（店舗・月の和集合） */
   notifications: { merge: mergeNotifs,    covers: _coversNotifs,   after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); var p=document.getElementById('notif-panel'); if(p&&p.style.display==='block'&&typeof renderNotifPanel==='function') renderNotifPanel(); }catch(e){} } },
   approvals:     { merge: mergeApprovals, covers: _coversApprovals, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } },
   skill_requests:{ merge: mergeSkillReq,  covers: _coversSkillReq, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } },
@@ -7697,7 +7857,24 @@ function getBudgets() {
   });
   return arr;
 }
-function saveBudgets(b) { lsSet('budgets_v2', b); }
+/* v620: 保存時に更新時刻を刻む（マージで新旧を正しく判定するため） */
+function saveBudgets(b) {
+  try{
+    var now=Date.now();
+    (Array.isArray(b)?b:[]).forEach(function(x){
+      if(!x || !x.storeId) return;
+      var prev=(_budSnapshot[x.storeId]||null);
+      if(!prev || JSON.stringify(prev)!==JSON.stringify(x)){ x._ts=now; }
+      if(x.months){ Object.keys(x.months).forEach(function(ym){
+        var pm=prev&&prev.months?prev.months[ym]:null;
+        if(!pm || JSON.stringify(pm)!==JSON.stringify(x.months[ym])){ try{ x.months[ym]._ts=now; }catch(e){} }
+      }); }
+    });
+    _budSnapshot={}; (Array.isArray(b)?b:[]).forEach(function(x){ if(x&&x.storeId) _budSnapshot[x.storeId]=JSON.parse(JSON.stringify(x)); });
+  }catch(e){}
+  lsSet('budgets_v2', b);
+}
+var _budSnapshot={};
 
 /* ===== 曜日別予算（店舗×曜日×区分） =====
    b.dow = {
@@ -11900,6 +12077,9 @@ function openSyncCenter() {
     ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="repairApprovedSkills(true)"><i class="ti ti-shield-check"></i> 承認済みスキルの未反映をチェック／修復</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagInvSync()"><i class="ti ti-clipboard-check"></i> 棚卸データの同期診断／クラウド保存</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagBudgets()"><i class="ti ti-report-money"></i> 予算の同期診断／クラウド反映</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupBudgets()"><i class="ti ti-download"></i> 予算をバックアップ書き出し</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="restoreBudgetsFromFile()"><i class="ti ti-upload"></i> 予算をバックアップから復元</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupInvHistory()"><i class="ti ti-download"></i> 棚卸データをバックアップ書き出し</button>`:''}
     <div id="sync-center-result" style="font-size:12px;margin-top:10px"></div>
     <div style="font-weight:700;font-size:13px;margin:14px 0 4px">Toast 店舗別</div>
@@ -17254,7 +17434,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '619';
+const APP_VERSION = '620';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
