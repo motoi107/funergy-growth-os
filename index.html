@@ -7557,7 +7557,7 @@ function saveCashTipModal(storeId, date) {
   var rec = getCashTips(storeId)[date]||{};
   closeModalDirect();
   showToast(rec.entered?t('キャッシュチップを保存しました（L/D確定）','Cash tips saved (L/D confirmed)'):t('保存しました（もう片方は後から入力できます）','Saved (you can enter the other side later)'), 'success');
-  renderPage('store_cmd');
+  renderPage(typeof curPage!=='undefined'?curPage:'store_cmd');   /* v619: 開いた画面に戻る（Tip管理から開いても飛ばない） */
 }
 
 /* 日報 */
@@ -15348,10 +15348,45 @@ function tipCellHtml(storeId, date, name, slot, r, bl){
   return '<td style="text-align:right;'+bl+';cursor:pointer" onclick="tipMatrixToggleExcl(\''+storeId+'\',\''+date+'\',\''+safe+'\',\''+slot+'\')" title="'+(excl?'除外中（タップで戻す）':'タップでこのシフトをTip対象外にする')+'">'+inner+'</td>';
 }
 /* 配分表（常設）: ペイロール期間の日次ランチ/ディナー配分マトリクス（行=従業員・列=各日L/D） */
+/* v619: 配分表の「③ キャッシュ」行から直接入力できるようにする
+   （従来は日別画面/店舗コマンドのモーダルからしか入れられず、配分表は表示専用だった） */
+function _tipCashCanEdit(storeId){
+  if (typeof isNoCashTipStore==='function' && isNoCashTipStore(storeId)) return false;
+  return ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
+}
+/* 1セル分の入力欄（L or D）。未入力は空欄＝「0」と区別する */
+function tipCashCellHtml(storeId, date, side, bl){
+  var rec=(typeof getCashTip==='function')?getCashTip(storeId,date):{};
+  var entered = side==='l' ? (rec.lunchEntered||rec.entered) : (rec.dinnerEntered||rec.entered);
+  var val = side==='l' ? rec.lunch : rec.dinner;
+  var future = date > todayISO();
+  var style='text-align:right;'+(bl||'');
+  if(!_tipCashCanEdit(storeId) || future){
+    var shown = entered ? (Number(val)||0).toFixed(2) : '—';
+    return '<td style="'+style+';color:var(--accent2)">'+shown+'</td>';
+  }
+  var v = entered ? (Number(val)||0) : '';
+  return '<td style="'+style+';padding:1px 2px">'
+    +'<input type="number" inputmode="decimal" step="0.01" min="0" value="'+v+'" placeholder="—" '
+    +'onchange="saveTipCashCell(\''+storeId+'\',\''+date+'\',\''+side+'\',this.value)" '
+    +'style="width:100%;min-width:44px;border:1px solid '+(entered?'transparent':'var(--border)')+';border-radius:5px;background:'+(entered?'rgba(139,92,246,.10)':'transparent')+';color:var(--accent2);font-size:10.5px;font-weight:700;text-align:right;padding:2px 3px">'
+    +'</td>';
+}
+function saveTipCashCell(storeId, date, side, value){
+  if (date > todayISO()){ showToast(t('未来日のキャッシュチップは入力できません','Cannot enter cash tips for future dates'),'warning'); renderPage('tip'); return; }
+  var v = String(value).trim();
+  if (v===''){ renderPage('tip'); return; }   // 空欄は「未入力」のまま（消す操作は日別画面から）
+  var n = parseFloat(v);
+  if (isNaN(n) || n<0){ showToast(t('金額が正しくありません','Invalid amount'),'warning'); renderPage('tip'); return; }
+  saveCashTipSides(storeId, date, side==='l'?n:null, side==='l'?null:n);
+  var rec = getCashTips(storeId)[date]||{};
+  showToast((side==='l'?'Lunch':'Dinner')+' '+fmtUSD2(n)+' '+t('を保存しました','saved')+(rec.entered?t('（L/D確定）','(L/D confirmed)'):t('（もう片方は後から）','(other side later)')), 'success');
+  renderPage('tip');
+}
 function renderTipPeriodMatrix(storeId, store, info){
   var M = tipPeriodMatrix(storeId, info);
   var md = function(d){ return d.slice(5).replace('-','/'); };
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-table"></i>${t('配分表（日次 L/D）','Distribution (daily L/D)')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px"><i class="ti ti-hand-finger"></i> ${t('各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。','Tap a staff cell to exclude that shift from tips (the excluded amount is auto-redistributed to others).')}</div>`;
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-table"></i>${t('配分表（日次 L/D）','Distribution (daily L/D)')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px"><i class="ti ti-hand-finger"></i> ${t('各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。','Tap a staff cell to exclude that shift from tips (the excluded amount is auto-redistributed to others).')}${_tipCashCanEdit(storeId)?t('　<b>「③ キャッシュ」の欄は直接入力できます</b>（0の場合も「0」）。','　<b>You can type cash tips directly in the “③ Cash” row</b> (enter 0 if zero).'):''}</div>`;
   if (!M.names.length){
     html += `<div style="text-align:center;color:var(--muted);padding:18px">${t('この期間の配分データがありません。「日別」で各日のTip・勤怠を確認してください。','No distribution data for this period. Check each day\'s tips/labor in the Daily tab.')}</div></div>`;
     return html;
@@ -15375,7 +15410,13 @@ function renderTipPeriodMatrix(storeId, store, info){
   }
   html += tipBreakRow(t('① クレジット','① Credit'),'var(--muted)', function(t,k){return k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0);}, false);
   html += tipBreakRow(t('② -3.5%手数料','② -3.5% fee'),'var(--red)', function(t,k){return (k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0))*TIP_CC_FEE;}, true);
-  html += tipBreakRow(t('③ キャッシュ','③ Cash'),'var(--accent2)', function(t,k){return k==='l'?(t.lunchCash||0):(t.dinnerCash||0);}, false);
+  /* ③ キャッシュ：この行から直接入力できる（v619） */
+  var _cashG=0, _cashCells='';
+  M.dists.forEach(function(x){
+    var _tt=x.dist.tip||{}; _cashG+=(_tt.lunchCash||0)+(_tt.dinnerCash||0);
+    _cashCells+=tipCashCellHtml(storeId, x.date, 'l', bl)+tipCashCellHtml(storeId, x.date, 'd', '');
+  });
+  html += '<tr style="font-size:10px"><td style="'+stick+';font-size:10px;color:var(--accent2)">'+t('③ キャッシュ','③ Cash')+(_tipCashCanEdit(storeId)?' <i class="ti ti-pencil" style="font-size:9px"></i>':'')+'</td>'+_cashCells+'<td style="text-align:right;color:var(--accent2);font-size:10px">'+(_cashG?'$'+_cashG.toFixed(2):'')+'</td></tr>';
   // ④ 実チップ額（= ①×(1-3.5%) + ③）
   var tipGrand=0, tipCells='';
   M.dists.forEach(function(x){ var t=x.dist.tip||{}; tipGrand+=(t.lunchTotal||0)+(t.dinnerTotal||0);
@@ -17213,7 +17254,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '618';
+const APP_VERSION = '619';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
