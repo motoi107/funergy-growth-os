@@ -4242,7 +4242,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets'];
-var OP_SYNC_PREFIX = ['spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
+var OP_SYNC_PREFIX = ['spl_','budget_approved_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_','fav_'];   /* fav_<user>: お気に入り（個人別・クラウド保存） */
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
@@ -4876,7 +4876,9 @@ function _coversCashTips(check, want){
 var OP_MERGE_PREFIX = { 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs },
   /* v622: 分割後の予算パーティション(spl_budgets_v2_<店>)も店舗内でマージ。同じ店を2端末が同時に触っても行ごと上書きにならない。
      値は「その店1件だけの配列」なので mergeBudgets / _coversBudgets がそのまま使える。 */
-  'spl_budgets_v2_': { merge: mergeBudgets, covers: _coversBudgets } };
+  'spl_budgets_v2_': { merge: mergeBudgets, covers: _coversBudgets },
+  /* v624: GM承認済みの不変コピー。承認が新しい方を採用し、空は絶対に勝たせない。 */
+  'budget_approved_': { merge: mergeApprovedBudget, covers: _coversApprovedBudget } };
 function _opMergeDef(key){ if(OP_MERGE[key]) return OP_MERGE[key]; for(var p in OP_MERGE_PREFIX){ if(OP_MERGE_PREFIX.hasOwnProperty(p) && String(key).indexOf(p)===0) return OP_MERGE_PREFIX[p]; } return null; }
 /* スキル店舗バケット {name:{position:{level,status,_at,...}}} のマージ。name→positionで深くマージ。
    position衝突は _at(書込時刻の新しい方)→level(高い方)→local の順で解決（昇格/降格/申請中→承認すべて正しく） */
@@ -8053,6 +8055,95 @@ function migrateBudgetsSplit(){
     console.log('[v622] budgets split migrated:', merged.length, 'stores');
   }catch(e){ console.warn('migrateBudgetsSplit', e); }
 }
+/* ============================================================
+   v624: GM承認済み予算の不変コピー（Motoの要件②「GMが承認した予算は必ず残る」）
+   ・承認の瞬間に budget_approved_<店>_<月> という【別の行】へ丸ごとコピーする
+   ・予算本体(spl_budgets_v2_<店>)とは別キーなので、本体で何が起きても道連れにならない
+   ・再オープン(reopenBudget)でも消さない。上書きするのは「GMがもう一度承認した時」だけ
+   ・lsIsPrunable で整理対象から除外済み(v622)／OP_SYNC_PREFIX でクラウドへ同期(v624)
+============================================================ */
+function approvedBudgetKey(storeId, ym){ return 'budget_approved_'+storeId+'_'+ym; }
+function _budApproveYm(b){
+  try{
+    if(typeof ymFromOffset==='function'){
+      var off=(typeof dailyMonthOffset!=='undefined' && dailyMonthOffset!=null)?dailyMonthOffset:0;
+      var ym=ymFromOffset(off); if(ym) return ym;
+    }
+  }catch(e){}
+  return (b && b.period) || ((typeof getPeriod==='function')?getPeriod():'');
+}
+function snapshotApprovedBudget(b, ym){
+  try{
+    if(!b || !b.storeId || !ym) return;
+    lsSet(approvedBudgetKey(b.storeId, ym), {
+      storeId: b.storeId, ym: ym,
+      by: b.approvedBy || (((typeof ROLE_CONFIG!=='undefined'&&ROLE_CONFIG[curRole])||{}).name||curRole||''),
+      at: b.approvedAt || ((typeof nowJP==='function')?nowJP():new Date().toISOString()),
+      ts: Date.now(),
+      budget: JSON.parse(JSON.stringify(b))     /* 承認したその瞬間の丸ごとコピー */
+    });
+  }catch(e){ console.warn('snapshotApprovedBudget', e); }
+}
+function approvedBudgetList(){
+  var out=[];
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i); if(!k || k.indexOf('budget_approved_')!==0) continue;
+      var v=ls(k, null); if(!v || !v.budget) continue;
+      out.push({ key:k, storeId:v.storeId||'', ym:v.ym||'', by:v.by||'', at:v.at||'', ts:Number(v.ts)||0 });
+    }
+  }catch(e){}
+  out.sort(function(x,y){ return (x.ym===y.ym) ? (x.storeId<y.storeId?-1:1) : (x.ym<y.ym?1:-1); });
+  return out;
+}
+/* 承認時点で【上書き】する。GMの明示操作なので _ts を今にして必ず勝たせる。触るのはその店の行だけ。 */
+function restoreApprovedBudget(k){
+  try{
+    var v=ls(k, null);
+    if(!v || !v.budget || !v.storeId){ showToast('承認コピーが読めません','danger'); return; }
+    var snm=((typeof STORES!=='undefined'?STORES.find(function(s){return s.id===v.storeId;}):null)||{}).name||v.storeId;
+    if(!confirm(snm+'（'+(v.ym||'')+'）の予算を、GMが承認した時点の内容で【上書き】します。\n承認: '+(v.by||'')+' / '+(v.at||'')+'\n\n※この店舗の今の予算は置き換わります。他店には触れません。よろしいですか？')) return;
+    var cur=ls('budgets_v2', [])||[];
+    var out=cur.filter(function(x){ return !x || x.storeId!==v.storeId; });
+    var snap=JSON.parse(JSON.stringify(v.budget));
+    snap._ts=Date.now();                      /* GMの明示操作＝最新として確定 */
+    out.push(snap);
+    saveBudgets(out);
+    showToast(snm+' の承認済み予算を復元しました','success');
+    try{ closeModalDirect(); }catch(e){}
+    renderPage('budget');
+  }catch(e){ showToast('復元に失敗しました','danger'); }
+}
+/* 不変コピーのマージ：空が本物を消さない・古い端末が新しい承認を消さない */
+function mergeApprovedBudget(cloudVal, localVal){
+  function ok(v){ return !!(v && v.budget); }
+  if(!ok(cloudVal) && !ok(localVal)) return cloudVal || localVal || null;
+  if(!ok(cloudVal)) return localVal;
+  if(!ok(localVal)) return cloudVal;
+  return ((Number(localVal.ts)||0) > (Number(cloudVal.ts)||0)) ? localVal : cloudVal;
+}
+function _coversApprovedBudget(check, want){
+  if(!want || !want.budget) return true;
+  return !!(check && check.budget && (Number(check.ts)||0) >= (Number(want.ts)||0));
+}
+function openApprovedBudgetModal(){
+  var list=approvedBudgetList();
+  var h='<div class="modal-title"><i class="ti ti-shield-check"></i> GM承認済み予算の復元 <button class="modal-close" onclick="closeModalDirect()">\u00d7</button></div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">GMが承認した瞬間の予算を、予算本体とは<b>別の行</b>に不変コピーとして保存しています。本体で何が起きても、ここから承認時点に戻せます。</div>';
+  if(!list.length){
+    h+='<div style="text-align:center;color:var(--muted);padding:18px;font-size:12px">承認済みの保存コピーはまだありません。<br>GMが予算を承認すると、その瞬間のコピーがここに残ります。</div>';
+  } else {
+    h+='<div style="overflow-x:auto"><table class="inv-table" style="font-size:11px"><thead><tr><th>店舗</th><th>対象月</th><th>承認</th><th></th></tr></thead><tbody>';
+    list.forEach(function(a){
+      var snm=((typeof STORES!=='undefined'?STORES.find(function(s){return s.id===a.storeId;}):null)||{}).name||a.storeId;
+      h+='<tr><td>'+escapeHtml(snm)+'</td><td>'+escapeHtml(a.ym)+'</td>'
+       +'<td style="font-size:10px;color:var(--muted)">'+escapeHtml(a.by)+'<br>'+escapeHtml(a.at)+'</td>'
+       +'<td><button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="restoreApprovedBudget(\''+a.key+'\')">戻す</button></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  openModal(h);
+}
 function saveBudgets(b) {
   try{
     var now=Date.now();
@@ -8468,6 +8559,8 @@ function approveBudgetSeg(storeId) {
   b.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole;
   b.approvedAt=nowJP();
   saveBudgets(budgets);
+  /* v624: 承認の瞬間に不変コピーを別行へ。以後どんな上書きが起きても承認時点に戻せる（要件②） */
+  try{ snapshotApprovedBudget(b, _budApproveYm(b)); }catch(e){}
   // 承認待ちタスクを消化
   resolveApprovalByRef('予算', storeId, 'approved');
   showToast('予算を承認しました。予実・ダッシュボードに反映されます','success');
@@ -12287,6 +12380,7 @@ function openSyncCenter() {
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagBudgets()"><i class="ti ti-report-money"></i> 予算の同期診断／クラウド反映</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupBudgets()"><i class="ti ti-download"></i> 予算をバックアップ書き出し</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="restoreBudgetsFromFile()"><i class="ti ti-upload"></i> 予算をバックアップから復元</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openApprovedBudgetModal()"><i class="ti ti-shield-check"></i> GM承認済み予算の復元</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupInvHistory()"><i class="ti ti-download"></i> 棚卸データをバックアップ書き出し</button>`:''}
     <div id="sync-center-result" style="font-size:12px;margin-top:10px"></div>
     <div style="font-weight:700;font-size:13px;margin:14px 0 4px">Toast 店舗別</div>
@@ -15689,14 +15783,22 @@ function exportTipPeriodCsv(){
   var r2 = function(v){ return Math.round((v||0)*100)/100; };
   var md = function(d){ return d.slice(5).replace('-','/'); };
   var M = tipPeriodMatrix(storeId, info), dists=M.dists, names=M.names;
+  /* v625: Tip Rate 列（B列）を名前の隣に追加。日付の列はC列から始まる。
+     表示は画面の配分表と同じ tipRateLabel()（No Tip / 80% / 90% / 100%）＝二重管理にしない。
+     ①〜④・配分合計の行は従業員行ではないので空欄。 */
+  var _rcCsv={};
+  var _rateLbl=function(nm){
+    if(!(nm in _rcCsv)){ try{ _rcCsv[nm]=(typeof tipRateLabel==='function')?tipRateLabel(nm):''; }catch(e){ _rcCsv[nm]=''; } }
+    return _rcCsv[nm];
+  };
   // ヘッダ
-  var header=['項目・従業員＼日付'];
+  var header=['項目・従業員＼日付','Tip Rate'];
   dists.forEach(function(x){ header.push(md(x.date)+' ランチ'); header.push(md(x.date)+' ディナー'); });
   header.push('期間合計');
   var rows=[header];
   // 配分表通り: ①クレジット ②-3.5%手数料 ③キャッシュチップ ④実チップ額
   function _tipBreakRow(label, fn){
-    var row=[label], g=0;
+    var row=[label,''], g=0;
     dists.forEach(function(x){ var t=x.dist.tip||{}; var l=fn(t,'l'), d=fn(t,'d'); row.push(r2(l)); row.push(r2(d)); g+=l+d; });
     row.push(r2(g)); return row;
   }
@@ -15706,7 +15808,7 @@ function exportTipPeriodCsv(){
   rows.push(_tipBreakRow('④ 実チップ額', function(t,k){ return k==='l'?(t.lunchTotal||0):(t.dinnerTotal||0); }));
   // 従業員ごとの日次配分
   names.forEach(function(nm){
-    var row=[nm], ptot=0;
+    var row=[nm, _rateLbl(nm)], ptot=0;
     dists.forEach(function(x){
       var r=(x.dist.list||[]).find(function(z){return z.name===nm;});
       var l=r?(r.lunch||0):0, dd=r?(r.dinner||0):0;
@@ -15715,11 +15817,11 @@ function exportTipPeriodCsv(){
     row.push(r2(ptot)); rows.push(row);
   });
   // 配分合計
-  var sumRow=['配分合計'], grand=0;
+  var sumRow=['配分合計',''], grand=0;
   dists.forEach(function(x){ var l=0,dd=0; (x.dist.list||[]).forEach(function(r){l+=r.lunch||0; dd+=r.dinner||0;}); sumRow.push(r2(l)); sumRow.push(r2(dd)); grand+=l+dd; });
   sumRow.push(r2(grand)); rows.push(sumRow);
   downloadCSV(rows, `Tip配分_${(store.name||storeId)}_${info.from}_${info.to}.csv`);
-  showToast('配分表（①〜④＋各スタッフ／セント単位）をCSV出力しました','success');
+  showToast('配分表（①〜④＋各スタッフ／Tip Rate付き／セント単位）をCSV出力しました','success');
 }
 function tipMatrixToggleExcl(storeId, date, name, slot){ toggleTipExclude(storeId, date, name, slot); if(typeof renderPage==='function') renderPage('tip'); }
 /* 配分表のセル1つ（タップでTip対象外の切替） */
@@ -15809,6 +15911,22 @@ function renderTipPeriodMatrix(storeId, store, info){
   M.dists.forEach(function(x){ var t=x.dist.tip||{}; tipGrand+=(t.lunchTotal||0)+(t.dinnerTotal||0);
     tipCells+=`<td style="text-align:right;${bl}">${t.lunchTotal?t.lunchTotal.toFixed(2):'—'}</td><td style="text-align:right">${t.dinnerTotal?t.dinnerTotal.toFixed(2):'—'}</td>`; });
   html += `<tr style="background:var(--surface2)"><td style="${stick};background:var(--surface2);font-weight:700">${t('④ 実チップ額','④ Actual tips')}</td>${tipCells}<td style="text-align:right;font-weight:700">$${tipGrand.toFixed(2)}</td></tr>`;
+  /* v623: 名前の横に Tip Rate（No Tip / 80% / 90% / 100%）を表示。配分表を見たまま誰が何%かを判断できるようにする。
+     色は tipRateColor() ＝マイページ・チップ率ページと同じ配色。
+     effectiveTipRate() は毎回 getEmployees()/ls('tip_requests') を読むため、この表の中でキャッシュする。 */
+  var _rateCache={};
+  function _rateOf(nm){
+    if(!(nm in _rateCache)){
+      try{ _rateCache[nm]=(typeof effectiveTipRate==='function')?effectiveTipRate(nm):null; }catch(e){ _rateCache[nm]=null; }
+    }
+    return _rateCache[nm];
+  }
+  function _rateBadge(nm){
+    var rt=_rateOf(nm); if(rt==null) return '';
+    var rc=(typeof tipRateColor==='function')?tipRateColor(rt):'var(--muted)';
+    var lb=(rt===0)?'No Tip':(rt+'%');
+    return ' <span title="Tip Rate" style="font-size:9px;font-weight:700;color:'+rc+';border:1px solid '+rc+';border-radius:3px;padding:0 3px;margin-left:2px;white-space:nowrap;vertical-align:middle">'+lb+'</span>';
+  }
   // 従業員ごと
   M.names.forEach(function(nm){
     var ptot=0, cells='';
@@ -15817,7 +15935,7 @@ function renderTipPeriodMatrix(storeId, store, info){
       var l=r?(r.lunch||0):0, dd=r?(r.dinner||0):0; ptot+=l+dd;
       cells+=tipCellHtml(storeId, x.date, nm, 'lunch', r, bl)+tipCellHtml(storeId, x.date, nm, 'dinner', r, '');
     });
-    html+=`<tr><td style="${stick};font-size:11px">${nm}</td>${cells}<td style="text-align:right;font-weight:700;color:var(--green)">$${ptot.toFixed(2)}</td></tr>`;
+    html+=`<tr><td style="${stick};font-size:11px;white-space:nowrap">${escapeHtml(nm)}${_rateBadge(nm)}</td>${cells}<td style="text-align:right;font-weight:700;color:var(--green)">$${ptot.toFixed(2)}</td></tr>`;
   });
   // No Tip（Tip Rate 0%）スタッフの勤務時間 — 配分対象外シフトの消化確認用（管理者・本人向け）
   try{
@@ -17641,7 +17759,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '622';
+const APP_VERSION = '625';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
