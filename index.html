@@ -3948,7 +3948,11 @@ var _SPLIT_KEYS = {
   order_catalog:    {type:'arr', by:function(r){return r&&r.store;}},
   dev_nominations:  {type:'arr', by:function(r){return r&&r.name;}},
   company_message_stores:{type:'obj'},
-  skill_eval_log:   {type:'obj'}
+  skill_eval_log:   {type:'obj'},
+  /* v622: 予算を店舗ごとの行(spl_budgets_v2_<店>)へ分割。自分の店を保存しても他店の行に一切触らない。
+     保存先が app_state の別行になるため、app_settings.budgets_v2 しか知らない旧版の端末からは構造的に隔離される。
+     noDelete: 配列から消えた店のパーティションを空にしない（予算は店が消えることが無く、空クリアは事故にしかならない）。 */
+  budgets_v2:       {type:'arr', by:function(r){return r&&r.storeId;}, noDelete:true}
 };
 function _splitPrefix(key){ return 'spl_'+key+'_'; }
 function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
@@ -3980,7 +3984,7 @@ function _splitWrite(key, sp, val){
   var byId={}; val.forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (byId[id]=byId[id]||[]).push(r); });
   var curById={}; (curMerged||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (curById[id]=curById[id]||[]).push(r); });
   // 全エントリが削除されたパーティションは空配列でクリア（ローカル＆クラウド行を空に → 他端末で復活しない）
-  Object.keys(curById).forEach(function(id){ if(!byId[id] && (curById[id]||[]).length){ lsSet(pre+id, []); } });
+  if(!sp.noDelete) Object.keys(curById).forEach(function(id){ if(!byId[id] && (curById[id]||[]).length){ lsSet(pre+id, []); } });
   Object.keys(byId).forEach(function(id){
     if(JSON.stringify(curById[id])!==JSON.stringify(byId[id])) lsSet(pre+id, byId[id]);
   });
@@ -4144,6 +4148,11 @@ function lsBytesTotal(){ var tt=0; try{ for(var i=0;i<localStorage.length;i++){ 
 /* v617: 棚卸履歴（inv_hist_* / spl_inv_hist_*）は絶対に自動削除しない（復旧不能なデータのため） */
 function lsIsPrunable(k){
   if(String(k).indexOf('inv_hist_')>=0) return false;
+  /* v622: 予算は復旧不能な手入力データ。分割で 'spl_' 接頭辞になるため、この除外が無いと
+     キャッシュ整理・autoPruneIfCritical(4.3MB超で prunable を一括削除)で予算が消える。
+     budgets_v2 / spl_budgets_v2_* / budgets_v2_bak* をまとめて対象外にする。 */
+  if(String(k).indexOf('budgets_v2')>=0) return false;
+  if(String(k).indexOf('budget_approved_')===0) return false;   /* v623の承認コピー用に先に除外しておく */
   return _LS_PRUNABLE.some(function(pf){ return k.indexOf(pf)===0; });
 }
 function lsPrunableInfo(){ var tt=0,n=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)){ var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; n++; } } }catch(e){} return {bytes:tt,count:n}; }
@@ -4401,7 +4410,15 @@ async function supaPullAllMasters(){
   if (Array.isArray(settings) && settings.length){
     var cnt=0;
     settings.forEach(function(row){
-      if (row && row.key){ try { localStorage.setItem(row.key, JSON.stringify(row.value)); cnt++; } catch(e){} }
+      if (!row || !row.key) return;
+      try {
+        /* v622: マージ定義のあるキーは上書きせずマージ（app_state 側(v615)と挙動を揃える）。
+           未プッシュのローカル変更が「クラウドから取り込む」で消えるのを防ぐ。 */
+        var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
+        var _val=row.value;
+        if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(row.key)||'null'); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }
+        localStorage.setItem(row.key, JSON.stringify(_val)); cnt++;
+      } catch(e){}
     });
     results.push('app_settings: '+cnt+'件 取込');
   } else {
@@ -4486,6 +4503,38 @@ function _budWeight(b){
   }catch(e){}
   return w;
 }
+/* ============================================================
+   v622: 「空の殻」と「実データ」を区別する判定軸。
+   getBudgets() は STORES に無い店を {storeId,period,segments:null,bases:[],actual:0,status:'下書き'}
+   の空の器で自動補完する。この器が _ts の新しさだけで本物に勝ってしまうのが 2026-07-16 の事故の核心。
+   dow は「存在するか」ではなく「非ゼロの数字が1つでもあるか」で見る（全0の dow は実質空）。
+============================================================ */
+function _dowHasReal(dow){
+  if(!dow || typeof dow!=='object') return false;
+  try{
+    var ks=Object.keys(dow);
+    for(var i=0;i<ks.length;i++){
+      var a=dow[ks[i]]; if(!Array.isArray(a)) continue;
+      for(var j=0;j<a.length;j++){ var x=a[j]; if(x && ((+x.guests)||(+x.spend)||(+x.orders))) return true; }
+    }
+  }catch(e){}
+  return false;
+}
+function _budHasReal(b){
+  if(!b) return false;
+  try{
+    if(b.months && Object.keys(b.months).length) return true;
+    if(Array.isArray(b.bases) && b.bases.length) return true;
+    if(b.segments) return true;
+    if(_dowHasReal(b.dow)) return true;
+  }catch(e){}
+  return false;
+}
+function _monHasReal(m){
+  if(!m) return false;
+  try{ if(m.days!=null) return true; if(_dowHasReal(m.dow)) return true; }catch(e){}
+  return false;
+}
 /* 月データ(b.months)の和集合。同じ月は _ts が新しい方、無ければ中身のある方 */
 function _mergeBudMonths(cm, lm){
   if(!cm && !lm) return undefined;
@@ -4496,6 +4545,8 @@ function _mergeBudMonths(cm, lm){
   Object.keys(lm).forEach(function(ym){
     var c=out[ym], l=lm[ym];
     if(!c){ out[ym]=l; return; }
+    var chh=_monHasReal(c), lhh=_monHasReal(l);
+    if(chh!==lhh){ out[ym]= chh?c:l; return; }   /* v622: 中身のある月が無条件で勝つ */
     var ct=_budTs(c), lt=_budTs(l);
     if(ct!==lt){ out[ym]=(lt>ct)?l:c; return; }
     var cw=(c&&c.dow?1:0)+((c&&c.days)?1:0), lw=(l&&l.dow?1:0)+((l&&l.days)?1:0);
@@ -4511,11 +4562,17 @@ function mergeBudgets(cloudArr, localArr){
     var id=b.storeId;
     if(!by[id]){ by[id]=b; order.push(id); return; }
     var cur=by[id];
-    var merged = Object.assign({}, cur, {});
-    var ct=_budTs(cur), lt=_budTs(b);
-    var win;
-    if(ct!==lt) win = (lt>ct)?b:cur;                       // 新しい方を採用
-    else win = (_budWeight(b) > _budWeight(cur)) ? b : cur; // _ts同値/無しは中身の濃い方
+    var merged, win;
+    /* v622【事故の核心1】旧実装は「_ts が新しい方が勝つ」だけだったため、空の殻でも _ts が新しければ本物を消した。
+       核心2(saveBudgets が全店に _ts=now を刻む)と組み合わさり、v620でマージを入れても全消失は止まらなかった。
+       → まず実データの有無で決め、両方が実データの時だけ _ts を見る。 */
+    var ch=_budHasReal(cur), bh=_budHasReal(b);
+    if(ch!==bh){ win = ch?cur:b; }
+    else {
+      var ct=_budTs(cur), lt=_budTs(b);
+      if(ct!==lt) win = (lt>ct)?b:cur;                       // 新しい方を採用
+      else win = (_budWeight(b) > _budWeight(cur)) ? b : cur; // _ts同値/無しは中身の濃い方
+    }
     merged = Object.assign({}, win);
     /* 月データだけは必ず両方の和集合にする（片方にしか無い月を絶対に落とさない） */
     var mm=_mergeBudMonths(cur.months, b.months);
@@ -4574,50 +4631,124 @@ function restoreBudgetsFromFile(){
   };
   inp.click();
 }
+/* v621: 予算診断の修正
+   ・予算の本体は b.dow（曜日別）/ b.bases / b.segments。months は「月ごとの上書き」だけ。
+     旧診断は months しか見ておらず、全店「月次データなし」と誤表示していた。
+   ・クラウドは「取得失敗」と「行が無い」を区別する。 */
+function _budContent(b){
+  if(!b) return {has:false, txt:'<span style="color:var(--red)">データなし</span>', w:-1};
+  var parts=[];
+  var dowN=0;
+  try{
+    if(b.dow){ ['lunch','dinner','takeout'].forEach(function(seg){
+      (b.dow[seg]||[]).forEach(function(c){ if((parseFloat(c.guests)||0)>0||(parseFloat(c.spend)||0)>0||(parseFloat(c.orders)||0)>0) dowN++; });
+    }); }
+  }catch(e){}
+  if(dowN) parts.push('曜日別 '+dowN+'枠');
+  if(Array.isArray(b.bases)&&b.bases.length) parts.push('基準値 '+b.bases.length+'件');
+  if(b.segments) parts.push('区分あり');
+  var ms=b.months?Object.keys(b.months).sort():[];
+  if(ms.length) parts.push('月次上書き '+ms.length+'ヶ月('+ms.join(', ')+')');
+  if(b.rationale && ((b.rationale.basis||'').trim()||(b.rationale.focus||'').trim())) parts.push('考え方あり');
+  var author=(typeof budgetAuthorLabel==='function')?budgetAuthorLabel(b):'';
+  if(author) parts.push('登録者 '+author);
+  if(b.status) parts.push(b.status);
+  var has=parts.length>0 && (dowN>0 || (Array.isArray(b.bases)&&b.bases.length) || b.segments || ms.length);
+  return { has:has, w:_budWeight(b),
+    txt: has? escapeHtml(parts.join(' / ')) : '<span style="color:var(--red)">予算データなし</span>'+(parts.length?'<span style="color:var(--muted)"> ('+escapeHtml(parts.join(' / '))+')</span>':'') };
+}
 async function diagBudgets(){
   var box=document.getElementById('sync-center-result');
   if(box) box.innerHTML='<i class="ti ti-loader"></i> 予算の状況を確認中…';
   var local=ls('budgets_v2', [])||[];
-  var cloud=null;
+  var cloud=null, cloudState='ok';
   try{
-    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=value&key=eq.budgets_v2', { headers: supaHeaders() });
-    if(res.ok){ var rows=await res.json(); cloud=(rows&&rows[0])?rows[0].value:null; }
-  }catch(e){}
+    /* v622【テーブル違いの修正】予算の本体は v622 以降 app_state の spl_budgets_v2_<店> 行。
+       v620/v621 は app_state の budgets_v2 という存在しない行を見ていた（実体は app_settings 側だった）ため、
+       クラウドにデータがあっても常に「クラウドに予算の行がありません」と誤表示していた。 */
+    var acc=[], got=false;
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.spl_budgets_v2_*', { headers: supaHeaders() });
+    if(!res.ok){ cloudState='error'; }
+    else { got=true; var rows=await res.json(); (rows||[]).forEach(function(r){ if(r && Array.isArray(r.value)) acc=acc.concat(r.value); }); }
+    if(got && !acc.length){   /* まだ誰も移行していない場合は旧保存先(app_settings)を見る */
+      var res2=await fetch(SUPABASE_URL+'/rest/v1/app_settings?select=value&key=eq.budgets_v2', { headers: supaHeaders() });
+      if(res2.ok){ var r2=await res2.json(); if(r2 && r2.length && Array.isArray(r2[0].value)) acc=r2[0].value; }
+    }
+    if(got){ if(!acc.length) cloudState='missing'; else cloud=acc; }
+  }catch(e){ cloudState='error'; }
   var sn=function(id){ var s=(typeof getStoresAll==='function'?getStoresAll():STORES).find(function(x){return x.id===id;}); return s?s.name:id; };
-  var row=function(b){
-    var ms=b&&b.months?Object.keys(b.months).sort():[];
-    return escapeHtml(sn(b.storeId))+'： '+(ms.length?('月次 '+ms.length+'ヶ月（'+escapeHtml(ms.join(', '))+'）'):'<span style="color:var(--red)">月次データなし</span>');
-  };
-  var h='<div style="font-size:12px;line-height:1.8;background:var(--surface2);border-radius:8px;padding:10px">'
-    +'<b>予算データの状況</b><br><u>この端末</u><br>'
-    +(local.length?local.map(row).join('<br>'):'<span style="color:var(--red)">予算がありません</span>')
-    +'<br><br><u>クラウド</u><br>'
-    +(cloud===null?'<span style="color:var(--yellow)">取得できませんでした</span>':(Array.isArray(cloud)&&cloud.length?cloud.map(row).join('<br>'):'<span style="color:var(--red)">クラウドにも予算がありません</span>'));
+  var line=function(b){ var c=_budContent(b); return '<div style="margin:2px 0"><b>'+escapeHtml(sn(b.storeId))+'</b>： '+c.txt+'</div>'; };
+  var h='<div style="font-size:12px;line-height:1.7;background:var(--surface2);border-radius:8px;padding:10px">'
+    +'<b>予算データの状況</b>'
+    +'<div style="margin-top:6px"><u>この端末</u>'
+    +(local.length?local.map(line).join(''):'<div style="color:var(--red)">予算がありません</div>')+'</div>';
+  h+='<div style="margin-top:8px"><u>クラウド</u>';
+  if(cloudState==='error') h+='<div style="color:var(--yellow)">取得できませんでした（通信エラー）</div>';
+  else if(cloudState==='missing') h+='<div style="color:var(--red)">クラウドに予算の行がありません（未保存）</div>';
+  else if(!Array.isArray(cloud)||!cloud.length) h+='<div style="color:var(--red)">クラウドの予算が空です</div>';
+  else h+=cloud.map(line).join('');
+  h+='</div>';
+  /* この端末にしか無い予算（中身の濃さで判定） */
   var lackOnCloud=[];
   if(Array.isArray(cloud)){
     local.forEach(function(b){
+      var lc=_budContent(b); if(!lc.has) return;
       var c=cloud.find(function(x){return x.storeId===b.storeId;});
-      var lm=b.months?Object.keys(b.months):[];
-      var cm=(c&&c.months)?Object.keys(c.months):[];
-      var lack=lm.filter(function(m){ return cm.indexOf(m)<0; });
-      if(!c || lack.length) lackOnCloud.push(sn(b.storeId)+(lack.length?('（'+lack.join(', ')+'）'):''));
+      var cc=_budContent(c);
+      if(!c || !cc.has || lc.w>cc.w) lackOnCloud.push(sn(b.storeId));
+    });
+  }
+  var onlyCloud=[];
+  if(Array.isArray(cloud)){
+    cloud.forEach(function(b){
+      var cc=_budContent(b); if(!cc.has) return;
+      var l=local.find(function(x){return x.storeId===b.storeId;});
+      if(!l || !_budContent(l).has) onlyCloud.push(sn(b.storeId));
     });
   }
   if(lackOnCloud.length){
-    h+='<div style="margin-top:8px;color:var(--red)"><i class="ti ti-alert-triangle"></i> この端末にしか無い予算: '+escapeHtml(lackOnCloud.join(' / '))+'</div>'
+    h+='<div style="margin-top:8px;color:var(--red)"><i class="ti ti-alert-triangle"></i> この端末にしか無い（または新しい）予算: '+escapeHtml(lackOnCloud.join(' / '))+'</div>'
       +'<div style="margin-top:6px"><button class="btn btn-primary btn-sm" onclick="pushBudgetsNow()"><i class="ti ti-cloud-upload"></i> この端末の予算をクラウドへ反映（マージ）</button></div>';
-  } else if(Array.isArray(cloud)){
-    h+='<div style="margin-top:6px;color:var(--green)"><i class="ti ti-check"></i> この端末の予算はすべてクラウドにあります</div>';
   }
+  if(onlyCloud.length){
+    h+='<div style="margin-top:8px;color:var(--accent2)"><i class="ti ti-cloud-down"></i> クラウドにあってこの端末に無い予算: '+escapeHtml(onlyCloud.join(' / '))
+      +' <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="pullBudgetsNow()">取り込む（マージ）</button></div>';
+  }
+  if(!lackOnCloud.length && !onlyCloud.length && cloudState==='ok'){
+    h+='<div style="margin-top:8px;color:var(--green)"><i class="ti ti-check"></i> この端末とクラウドは一致しています</div>';
+  }
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:8px">※「曜日別」＝予算の本体（曜日ごとの客数×単価）。「月次上書き」＝その月だけの調整。どちらも無い店は予算未登録です。</div>';
   h+='</div>';
   if(box) box.innerHTML=h;
+}
+async function pullBudgetsNow(){
+  var box=document.getElementById('sync-center-result');
+  if(box) box.innerHTML='<i class="ti ti-loader"></i> クラウドから取り込み中…';
+  try{
+    /* v622: 分割後の本体(spl_budgets_v2_*)を全部引いてマージ。旧保存先(app_settings)も拾う。
+       v620/v621 は pullOpKey('budgets_v2')＝app_state を見ていたため常に空振りしていた。 */
+    var acc=[];
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.spl_budgets_v2_*', { headers: supaHeaders() });
+    if(res.ok){ var rows=await res.json(); (rows||[]).forEach(function(r){ if(r && Array.isArray(r.value)) acc=acc.concat(r.value); }); }
+    var res2=await fetch(SUPABASE_URL+'/rest/v1/app_settings?select=value&key=eq.budgets_v2', { headers: supaHeaders() });
+    if(res2.ok){ var r2=await res2.json(); if(r2 && r2.length && Array.isArray(r2[0].value)) acc=acc.concat(r2[0].value); }
+    saveBudgets(mergeBudgets(acc, ls('budgets_v2', [])||[]));
+    showToast('予算を取り込みました（マージ）','success');
+  }
+  catch(e){ showToast('取り込みに失敗しました','danger'); }
+  diagBudgets();
 }
 async function pushBudgetsNow(){
   var box=document.getElementById('sync-center-result');
   if(box) box.innerHTML='<i class="ti ti-loader"></i> クラウドへ反映中…';
   try{
-    var ok=await opMergePush('budgets_v2', ls('budgets_v2', [])||[]);
-    showToast(ok?'予算をクラウドへ反映しました':'反映に失敗しました', ok?'success':'warning');
+    /* v622: 店舗ごとのパーティション行として押し上げる（他店の行には一切触らない）。
+       v620/v621 は app_state の budgets_v2＝誰も読まない行に書いていた。 */
+    var arr=ls('budgets_v2', [])||[];
+    var byId={}; arr.forEach(function(x){ if(x && x.storeId){ (byId[x.storeId]=byId[x.storeId]||[]).push(x); } });
+    var ids=Object.keys(byId);
+    for(var i=0;i<ids.length;i++){ await opMergePush('spl_budgets_v2_'+ids[i], byId[ids[i]]); }
+    showToast(ids.length+'店舗の予算をクラウドへ反映しました','success');
   }catch(e){ showToast('反映に失敗しました','danger'); }
   diagBudgets();
 }
@@ -4742,7 +4873,10 @@ function _coversCashTips(check, want){
   }
   return true;
 }
-var OP_MERGE_PREFIX = { 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs } };
+var OP_MERGE_PREFIX = { 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs },
+  /* v622: 分割後の予算パーティション(spl_budgets_v2_<店>)も店舗内でマージ。同じ店を2端末が同時に触っても行ごと上書きにならない。
+     値は「その店1件だけの配列」なので mergeBudgets / _coversBudgets がそのまま使える。 */
+  'spl_budgets_v2_': { merge: mergeBudgets, covers: _coversBudgets } };
 function _opMergeDef(key){ if(OP_MERGE[key]) return OP_MERGE[key]; for(var p in OP_MERGE_PREFIX){ if(OP_MERGE_PREFIX.hasOwnProperty(p) && String(key).indexOf(p)===0) return OP_MERGE_PREFIX[p]; } return null; }
 /* スキル店舗バケット {name:{position:{level,status,_at,...}}} のマージ。name→positionで深くマージ。
    position衝突は _at(書込時刻の新しい方)→level(高い方)→local の順で解決（昇格/降格/申請中→承認すべて正しく） */
@@ -6391,6 +6525,7 @@ function initApp() {
   _supaBooting = false; // ここから先（ユーザー操作）の保存はクラウドへ即時反映（F1）
   setTimeout(function(){ try{ uploadAllLocalShifts(); }catch(e){} }, 1500); // F2-a: 既存ローカルシフトを一度だけクラウドへ移行
   setTimeout(function(){ try{ migrateUploadLocalOps(); }catch(e){} }, 2500); // F2-b: 既存ローカル運用データを一度だけクラウドへ移行
+  setTimeout(function(){ try{ migrateBudgetsSplit(); }catch(e){} }, 3500);   // v622: 予算を店舗ごとの行へ移行（旧版の端末から構造的に隔離）
 }
 
 var _GROUP_COLOR = {
@@ -7857,24 +7992,96 @@ function getBudgets() {
   });
   return arr;
 }
-/* v620: 保存時に更新時刻を刻む（マージで新旧を正しく判定するため） */
+/* ============================================================
+   v622【事故の核心2】_ts の刻み方を修正。
+   旧実装は _budSnapshot（セッション内メモリ）と比較していたため、セッション初回の保存では prev=null になり
+   【全店に _ts=now を刻んでいた】。予実タブを開くだけで renderBudget → normalizeBudgetsDemo → saveBudgets
+   が走るので、予算を持っていない端末が全店に「最新」印を付け、mergeBudgets(新しい方が勝つ)でクラウドを
+   丸ごと上書きしていた。＝2026-07-16 に ToriTon 以外の全店の予算が消えた直接原因。
+   → セッションメモリではなく「現に保存されている値(ls)」と比較し、実際に中身が変わった店にだけ刻む。
+============================================================ */
+function _budStripTs(o){
+  try{
+    var c=JSON.parse(JSON.stringify(o)); delete c._ts; delete c.updatedTs;
+    if(c.months) Object.keys(c.months).forEach(function(ym){ if(c.months[ym]) delete c.months[ym]._ts; });
+    return JSON.stringify(c);
+  }catch(e){ return ''; }
+}
+/* v622: 保存前スナップショット（この端末に3世代・クラウドへは送らない・prune対象外）。事故っても穴埋め復元できる。 */
+function snapshotBudgetsLocal(){
+  try{
+    var cur=ls('budgets_v2', null);
+    if(!Array.isArray(cur) || !cur.some(_budHasReal)) return;     /* 空の状態で世代を潰さない */
+    var body=JSON.stringify(cur);
+    try{ var l1=JSON.parse(localStorage.getItem('budgets_v2_bak1')||'null'); if(l1 && JSON.stringify(l1.budgets)===body) return; }catch(e){}
+    try{ var s2=localStorage.getItem('budgets_v2_bak2'); if(s2) localStorage.setItem('budgets_v2_bak3', s2); }catch(e){}
+    try{ var s1=localStorage.getItem('budgets_v2_bak1'); if(s1) localStorage.setItem('budgets_v2_bak2', s1); }catch(e){}
+    localStorage.setItem('budgets_v2_bak1', JSON.stringify({ at:(typeof nowJP==='function'?nowJP():new Date().toISOString()), n:cur.length, budgets:cur }));
+  }catch(e){}
+}
+function budgetSnapshotList(){
+  var out=[];
+  ['budgets_v2_bak1','budgets_v2_bak2','budgets_v2_bak3'].forEach(function(k){
+    try{ var v=JSON.parse(localStorage.getItem(k)||'null'); if(v && Array.isArray(v.budgets)) out.push({key:k, at:v.at||'', n:v.budgets.length}); }catch(e){}
+  });
+  return out;
+}
+/* 穴埋め復元：スナップショットにあって今は空になっている店だけ戻す（今ある実データは壊さない） */
+function restoreBudgetSnapshot(k){
+  try{
+    var v=JSON.parse(localStorage.getItem(k)||'null');
+    if(!v || !Array.isArray(v.budgets)){ showToast('スナップショットが読めません','danger'); return; }
+    if(!confirm('保存前スナップショット（'+(v.at||'')+' / '+v.budgets.length+'店）から、今は空になっている店の予算を戻します。今入っている予算は上書きしません。よろしいですか？')) return;
+    saveBudgets(mergeBudgets(v.budgets, ls('budgets_v2', [])||[]));
+    showToast('スナップショットから復元しました','success');
+    if(typeof diagBudgets==='function') diagBudgets();
+  }catch(e){ showToast('復元に失敗しました','danger'); }
+}
+/* v622: 予算を店舗ごとの行へ一度だけ移行（＋クラウドへ押し上げ）。v617の棚卸と同じ手順。
+   legacy行を外してから lsSet することで _splitWrite が全店を「変更あり」と判定して書き出す。
+   空(未取込)の状態では移行しない＝欠けた状態を「正」として固定しないためのガード。 */
+function migrateBudgetsSplit(){
+  try{
+    if(localStorage.getItem('_bud_split_done')==='1') return;
+    var legacy=_lsRaw('budgets_v2', null);
+    if(!Array.isArray(legacy) || !legacy.length) return;          /* 何も無い→移行しない（フラグも立てず次回再試行） */
+    var merged=ls('budgets_v2', []);                              /* legacy + 既存パーティション */
+    if(!Array.isArray(merged) || !merged.length) return;
+    try{ localStorage.removeItem('budgets_v2'); }catch(e){}       /* legacy行を外してから */
+    lsSet('budgets_v2', merged);                                  /* → 店舗ごとの行として書き直し（各行がクラウドへ） */
+    localStorage.setItem('_bud_split_done','1');
+    console.log('[v622] budgets split migrated:', merged.length, 'stores');
+  }catch(e){ console.warn('migrateBudgetsSplit', e); }
+}
 function saveBudgets(b) {
   try{
     var now=Date.now();
+    var cur={}; (ls('budgets_v2', null)||[]).forEach(function(x){ if(x&&x.storeId) cur[x.storeId]=x; });
     (Array.isArray(b)?b:[]).forEach(function(x){
       if(!x || !x.storeId) return;
-      var prev=(_budSnapshot[x.storeId]||null);
-      if(!prev || JSON.stringify(prev)!==JSON.stringify(x)){ x._ts=now; }
+      var prev=cur[x.storeId]||null;
+      if(!prev){
+        if(_budHasReal(x) && !x._ts) x._ts=now;          /* 新規＝実データがある時だけ。空の自動補完には刻まない */
+      } else if(_budStripTs(prev)!==_budStripTs(x)){
+        x._ts=now;                                       /* 実際に中身が変わった店だけ */
+      } else if(prev._ts && !x._ts){
+        x._ts=prev._ts;                                  /* 変更なし→前の _ts を維持 */
+      }
       if(x.months){ Object.keys(x.months).forEach(function(ym){
-        var pm=prev&&prev.months?prev.months[ym]:null;
-        if(!pm || JSON.stringify(pm)!==JSON.stringify(x.months[ym])){ try{ x.months[ym]._ts=now; }catch(e){} }
+        try{
+          var xm=x.months[ym]; if(!xm) return;
+          var pm=(prev&&prev.months)?prev.months[ym]:null;
+          if(!pm){ if(_monHasReal(xm) && !xm._ts) xm._ts=now; }
+          else if(JSON.stringify(Object.assign({},pm,{_ts:0}))!==JSON.stringify(Object.assign({},xm,{_ts:0}))){ xm._ts=now; }
+          else if(pm._ts && !xm._ts){ xm._ts=pm._ts; }
+        }catch(e){}
       }); }
     });
-    _budSnapshot={}; (Array.isArray(b)?b:[]).forEach(function(x){ if(x&&x.storeId) _budSnapshot[x.storeId]=JSON.parse(JSON.stringify(x)); });
   }catch(e){}
+  try{ snapshotBudgetsLocal(); }catch(e){}   /* 保存前に直近3世代をこの端末へ退避 */
   lsSet('budgets_v2', b);
 }
-var _budSnapshot={};
+var _budSnapshot={};   /* v622: 未使用（旧 _ts 判定の名残。互換のため残置） */
 
 /* ===== 曜日別予算（店舗×曜日×区分） =====
    b.dow = {
@@ -17434,7 +17641,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '620';
+const APP_VERSION = '622';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
