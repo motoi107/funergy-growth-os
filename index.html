@@ -17883,7 +17883,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '630';
+const APP_VERSION = '631';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41212,12 +41212,77 @@ function hapticDiagHtml(){
     }, true);
   }catch(e){}
   try{ window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); window._deferredPWA=e; }); }catch(e){}
+  /* v631: Service Worker の更新検知＋バナー。
+     これまで sw.js は register するだけで、CACHE 名が 'funergy-os-v1' 固定・更新反映トリガも無かったため、
+     新版をデプロイしても端末に古い index.html が居座り続けた（＝現場で「直っていない」の主因、予算事故の温床）。
+     新方式:
+       ・新しい SW が waiting になったら「新しいバージョンがあります [更新]」バナーを出す（自動リロードしない＝入力中データを守る）
+       ・「更新」を押したら waiting SW に SKIP_WAITING を送り、controllerchange で一度だけリロード
+       ・起動時とタブ復帰時に registration.update() を叩き、能動的に確認しなくても新版を拾う */
   try{
     if('serviceWorker' in navigator){
-      window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); });
+      window.addEventListener('load', function(){
+        navigator.serviceWorker.register('sw.js').then(function(reg){
+          // 既に waiting がいる（前回開いたときに落ちてきていた）
+          if(reg.waiting && navigator.serviceWorker.controller){ showUpdateBanner(reg.waiting); }
+          // 新しい SW を検出
+          reg.addEventListener('updatefound', function(){
+            var nw = reg.installing; if(!nw) return;
+            nw.addEventListener('statechange', function(){
+              // installed かつ既存 controller あり＝更新（初回インストールではない）
+              if(nw.state==='installed' && navigator.serviceWorker.controller){ showUpdateBanner(nw); }
+            });
+          });
+          // 起動直後に一度チェック
+          try{ reg.update(); }catch(e){}
+          // タブに戻ってきたら再チェック（現場が開きっぱなしでも新版を拾う）
+          document.addEventListener('visibilitychange', function(){
+            if(document.visibilityState==='visible'){ try{ reg.update(); }catch(e){} }
+          });
+        }).catch(function(){});
+        // 「更新」押下後、新 SW が制御を取ったら一度だけリロード
+        var _swReloaded=false;
+        navigator.serviceWorker.addEventListener('controllerchange', function(){
+          if(_swReloaded) return; _swReloaded=true; location.reload();
+        });
+      });
     }
   }catch(e){}
 })();
+
+/* v631: 更新バナー（画面下・入力を妨げない・「後で」で消せる） */
+function showUpdateBanner(worker){
+  try{
+    if(document.getElementById('sw-update-banner')) return;   // 二重表示しない
+    var isEn = (typeof curLang!=='undefined' && curLang==='en');
+    var bar=document.createElement('div');
+    bar.id='sw-update-banner';
+    bar.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:99999;'
+      +'background:var(--surface,#1e1e1e);color:var(--text,#eee);border:1px solid var(--accent,#e8863c);'
+      +'border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:12px;'
+      +'box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:13px;max-width:92vw';
+    var msg=document.createElement('span');
+    msg.innerHTML='<i class="ti ti-refresh" style="color:var(--accent,#e8863c)"></i> '
+      +(isEn?'A new version is available.':'新しいバージョンがあります。');
+    var btn=document.createElement('button');
+    btn.className='btn btn-primary btn-sm';
+    btn.style.cssText='padding:4px 14px;font-size:12px;white-space:nowrap';
+    btn.textContent=isEn?'Update':'更新';
+    btn.onclick=function(){
+      btn.disabled=true; btn.textContent=isEn?'Updating…':'更新中…';
+      try{ worker.postMessage({type:'SKIP_WAITING'}); }catch(e){}
+      // 念のためのフォールバック（controllerchange が来ない環境向け）
+      setTimeout(function(){ if(!window._swReloaded){ location.reload(); } }, 2500);
+    };
+    var later=document.createElement('button');
+    later.className='btn btn-secondary btn-sm';
+    later.style.cssText='padding:4px 10px;font-size:12px;white-space:nowrap';
+    later.textContent=isEn?'Later':'後で';
+    later.onclick=function(){ try{ bar.remove(); }catch(e){} };
+    bar.appendChild(msg); bar.appendChild(btn); bar.appendChild(later);
+    document.body.appendChild(bar);
+  }catch(e){}
+}
 
 function showToast(msg, type) {
   type = type || 'info';
