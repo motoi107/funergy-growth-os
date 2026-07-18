@@ -3513,7 +3513,11 @@ async function fetchTipLabor(storeId, guid, date) {
     labor[key] = { lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name };
   });
   setTipLabor(storeId, date, labor);
-  return { count: Object.keys(labor).length };
+  // v633: 取得結果をDB(tip_labor)へもupsert。従来はlocalStorageのみで、次ログインのsyncTipLaborFromDBが
+  //       古いDB値で上書きし直す（取り直しても戻る）問題があった。生のemployees配列（バッチと同形）を保存。
+  var _dbSaved = false;
+  try { _dbSaved = await supaUpsert('tip_labor', [{ restaurant_guid: guid, business_date: date, data: j.employees, fetched_at: new Date().toISOString() }]); } catch(e){ console.warn('fetchTipLabor tip_labor upsert', e); }
+  return { count: Object.keys(labor).length, dbSaved: _dbSaved };
 }
 
 function getTipHoursBasis(storeId) {
@@ -16647,7 +16651,8 @@ async function refetchLaborFromToast(storeId, date){
       } else if(n===0){
         showToast(t(date+' はToast側に勤怠がありませんでした','No time entries in Toast for '+date),'warning');
       } else {
-        showToast(t(date+' の勤怠をToastから取り直しました（'+n+'名）','Re-fetched '+n+' staff from Toast for '+date),'success');
+        var _dbMsg = (r&&r.dbSaved) ? t('（DB保存済・再ログインでも保持）','(saved to DB, persists across re-login)') : t('（※DB保存失敗・再ログインで戻る可能性）','(⚠ DB save failed; may revert)');
+        showToast(t(date+' の勤怠をToastから取り直しました（'+n+'名）','Re-fetched '+n+' staff from Toast for '+date)+_dbMsg, (r&&r.dbSaved)?'success':'warning');
       }
       renderPage((typeof curPage!=='undefined')?curPage:'labor');
       return;
@@ -17959,7 +17964,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '632';
+const APP_VERSION = '633';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
