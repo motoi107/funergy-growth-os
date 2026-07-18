@@ -369,6 +369,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 }
 .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
 .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; }
+#fypass-overlay{ position:fixed; inset:0; z-index:300; background:linear-gradient(160deg,#f0661f 0%,#f0902b 55%,#e85d15 100%); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:28px 22px; overflow:hidden; -webkit-tap-highlight-color:transparent; }
+#fypass-overlay .fypass-shine{ position:absolute; top:0; left:0; height:100%; width:32%; background:linear-gradient(100deg,transparent,rgba(255,255,255,.22),transparent); animation:fypassShine 3.4s linear infinite; pointer-events:none; }
+@keyframes fypassShine{ 0%{ transform:translateX(-160%); } 100%{ transform:translateX(430%); } }
+.fypass-chip{ font-size:13px; font-weight:700; color:#fff; background:rgba(255,255,255,.20); border:1px solid rgba(255,255,255,.4); border-radius:9px; padding:5px 11px; }
+.fypass-close{ position:absolute; top:16px; right:16px; z-index:2; width:40px; height:40px; border-radius:50%; background:rgba(0,0,0,.18); border:none; color:#fff; font-size:22px; line-height:1; cursor:pointer; }
 .form-group { margin-bottom: 14px; }
 .form-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; display: block; }
 .form-input, .form-select, .form-textarea {
@@ -5338,6 +5343,77 @@ async function saveMyPin(){
   if (!j || !j.ok) { alert(j&&j.error==='oldpin' ? t('現在のPINが違います','Current PIN is wrong') : t('更新できませんでした','Update failed')); return; }
   closeModalDirect();
   showToast(t('PINを更新しました','PIN updated'),'success');
+}
+
+/* ===== 従業員証明（ディスカウント提示用・全スタッフ・レジで見せる全画面パス） ===== */
+function empStatusLabel(st){
+  var m = { '在籍':['在籍中','Active','var(--green)'], '研修中':['研修中','Training','var(--green)'], '休職':['休職','On leave','var(--yellow)'], '退職':['退職','Resigned','var(--red)'] };
+  return m[st] || m['在籍'];
+}
+function openStaffPass(){
+  var rc = (typeof ROLE_CONFIG!=='undefined' && ROLE_CONFIG[curRole]) ? ROLE_CONFIG[curRole] : {};
+  var me = curUserName || rc.name || '';
+  var meEmp = (typeof getEmployees==='function') ? getEmployees().find(function(e){ return e.name===me; }) : null;
+  var storeId = (curStore==='ALL') ? ((STORES[0]||{}).id) : curStore;
+  if (meEmp && meEmp.store && meEmp.store!=='ALL') storeId = meEmp.store;
+  var store = STORES.find(function(s){ return s.id===storeId; }) || STORES[0] || {name:''};
+  var grade = meEmp ? empGrade(meEmp) : empGrade({role:curRole});
+  var title = (meEmp && meEmp.title) ? meEmp.title : roleLabelI18n(curRole);
+  var initial = me ? me.trim().charAt(0) : '?';
+  var st = meEmp ? (meEmp.status||'在籍') : '';
+  var si = st ? empStatusLabel(st) : null;
+
+  var chips = '<span class="fypass-chip">'+escapeHtml(store.name||storeId||'')+'</span>';
+  if (grade) chips += '<span class="fypass-chip">'+escapeHtml(grade)+'</span>';
+  if (title) chips += '<span class="fypass-chip">'+escapeHtml(title)+'</span>';
+  var statusBadge = si ? ('<span style="font-size:12px;font-weight:800;color:'+(st==='退職'?'#fff':'#f0661f')+';background:'+(st==='退職'?'var(--red)':'#fff')+';border-radius:7px;padding:3px 10px">'+t(si[0],si[1])+'</span>') : '';
+
+  closeStaffPass();
+  var ov = document.createElement('div');
+  ov.id = 'fypass-overlay';
+  ov.onclick = function(e){ if (e.target===ov) closeStaffPass(); };
+  ov.innerHTML =
+    '<div class="fypass-shine"></div>'
+   +'<button class="fypass-close" aria-label="'+t('閉じる','Close')+'" onclick="closeStaffPass()">&times;</button>'
+   +'<div style="position:relative;z-index:1;width:100%;max-width:340px;text-align:center">'
+     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:26px">'
+       +'<div style="font-size:13px;font-weight:800;color:#fff;letter-spacing:.16em">FUNERGY</div>'
+       +'<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.92);letter-spacing:.08em;border:1px solid rgba(255,255,255,.5);border-radius:20px;padding:3px 11px">'+t('従業員証明','Staff ID')+'</div>'
+     +'</div>'
+     +'<div style="width:88px;height:88px;border-radius:24px;background:rgba(255,255,255,.22);border:2px solid rgba(255,255,255,.45);display:flex;align-items:center;justify-content:center;font-size:40px;font-weight:800;color:#fff;margin:0 auto 16px">'+escapeHtml(initial)+'</div>'
+     +'<div style="font-size:28px;font-weight:800;color:#fff;letter-spacing:-.01em;line-height:1.15">'+escapeHtml(me)+'</div>'
+     +(statusBadge ? ('<div style="margin-top:8px">'+statusBadge+'</div>') : '')
+     +'<div style="display:flex;gap:7px;flex-wrap:wrap;justify-content:center;margin:16px 0 22px">'+chips+'</div>'
+     +'<div style="background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);border-radius:16px;padding:16px 18px">'
+       +'<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.85);letter-spacing:.05em;margin-bottom:3px">'+t('現在時刻（ライブ）','Current time (live)')+'</div>'
+       +'<div id="fypass-clk" style="font-size:44px;font-weight:800;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:.02em;line-height:1">--:--:--</div>'
+       +'<div id="fypass-date" style="font-size:13px;font-weight:700;color:#fff;margin-top:8px">—</div>'
+       +'<div style="font-size:11px;color:rgba(255,255,255,.82);margin-top:5px"><i class="ti ti-refresh" aria-hidden="true" style="font-size:12px"></i> '+t('秒が動く＝本物のアプリ画面です','Seconds tick — this is a live screen')+'</div>'
+     +'</div>'
+     +'<div style="font-size:11px;color:rgba(255,255,255,.8);margin-top:18px;line-height:1.5">'+t('この画面をレジで提示してください','Show this screen at checkout')+'</div>'
+   +'</div>';
+  document.body.appendChild(ov);
+
+  function _p2(n){ return (n<10?'0':'')+n; }
+  function _tick(){
+    var n = new Date();
+    var c = document.getElementById('fypass-clk');
+    if (c) c.textContent = _p2(n.getHours())+':'+_p2(n.getMinutes())+':'+_p2(n.getSeconds());
+  }
+  var _dt = document.getElementById('fypass-date');
+  if (_dt) {
+    var now = new Date();
+    try { _dt.textContent = now.toLocaleDateString(langDateLocale(), {year:'numeric',month:'long',day:'numeric',weekday:'short'}); }
+    catch(e){ _dt.textContent = now.getFullYear()+'/'+(now.getMonth()+1)+'/'+now.getDate(); }
+  }
+  _tick();
+  if (window._fypassTimer) clearInterval(window._fypassTimer);
+  window._fypassTimer = setInterval(_tick, 1000);
+}
+function closeStaffPass(){
+  if (window._fypassTimer) { clearInterval(window._fypassTimer); window._fypassTimer = null; }
+  var ov = document.getElementById('fypass-overlay');
+  if (ov && ov.parentNode) ov.parentNode.removeChild(ov);
 }
 
 /* ログイン画面初期化（所属選択の店舗グリッドを描画） */
@@ -17883,7 +17959,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '631';
+const APP_VERSION = '632';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32996,6 +33072,16 @@ function renderMypage() {
       ${isCrewView?`<div style="display:flex;align-items:baseline;gap:8px;margin-top:9px"><span style="font-size:13px;font-weight:700;color:#fff">${heroLevel}</span><span style="font-size:11px;color:rgba(255,255,255,.85)">${heroNext}</span></div>
       <div class="fy-levelbar"><i style="width:${heroPct}%"></i></div>`:''}
     </div>
+  </div>`;
+
+  // ===== 従業員証明（食事割引の提示用・全スタッフ共通） =====
+  html += `<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px;cursor:pointer" onclick="openStaffPass()">
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-id-badge-2" style="font-size:18px"></i></div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:13px">${t('従業員証明','Staff ID')}</div>
+      <div style="font-size:11px;color:var(--muted)">${t('食事割引のときにレジで提示','Show at checkout for meal discount')}</div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openStaffPass()"><i class="ti ti-eye"></i> ${t('表示','Show')}</button>
   </div>`;
 
   // ===== スキルレベル（全Crew: レーダー＋各Lv）=====
