@@ -1,9 +1,14 @@
-/* Funergy Growth OS — Service Worker
-   - ナビゲーションは「ネットワーク優先」: 最新のindex.htmlを取得（更新が必ず反映される）。
-     オフライン時のみキャッシュした画面を表示。
+/* Funergy Growth OS — Service Worker (v2)
+   方針:
+   - ナビゲーション（index.html）は「ネットワーク優先」。最新を取得し、オフライン時のみキャッシュを表示。
    - アイコン等の静的ファイルは「キャッシュ優先」。
-   - 更新時は CACHE のバージョン名（v1→v2…）を上げてください。 */
-const CACHE = 'funergy-os-v1';
+   - CACHE 名にビルド番号を含める。index.html 側から postMessage で受け取り、activate 時に
+     古い版のキャッシュを必ず捨てる。これにより「新版を配ったのに端末が古いまま」を防ぐ。
+   - waiting 状態の SW は、index.html から SKIP_WAITING を受けたときだけ有効化する（勝手に切り替えて
+     入力中データを飛ばさない。ユーザーがバナーで「更新」を押したときだけ切り替わる）。
+   SW を差し替えるときは SW_BUILD を上げること。 */
+const SW_BUILD = '631';                     // ← index.html の APP_VERSION と揃える
+const CACHE = 'funergy-os-' + SW_BUILD;
 const CORE = [
   './',
   'index.html',
@@ -16,11 +21,10 @@ const CORE = [
 ];
 
 self.addEventListener('install', (e) => {
-  self.skipWaiting();
+  // 注意: ここでは skipWaiting しない。waiting のまま待機し、ユーザーが「更新」を押したら切り替える。
   e.waitUntil(
     caches.open(CACHE).then((c) =>
-      // 一部が無くても install を失敗させない
-      Promise.allSettled(CORE.map((u) => c.add(u)))
+      Promise.allSettled(CORE.map((u) => c.add(u)))   // 一部が無くても install を失敗させない
     )
   );
 });
@@ -31,6 +35,11 @@ self.addEventListener('activate', (e) => {
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
+});
+
+// index.html からのメッセージ: 「更新」ボタンで SKIP_WAITING を受けたら有効化を進める
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('fetch', (e) => {
@@ -72,7 +81,7 @@ self.addEventListener('fetch', (e) => {
   );
 });
 
-/* 将来のPush通知用フック（フェーズ③で使用）。今は無害なプレースホルダ。 */
+/* Push通知用フック（将来用・無害なプレースホルダ） */
 self.addEventListener('push', (e) => {
   let data = {};
   try { data = e.data ? e.data.json() : {}; } catch (_) {}
