@@ -3360,7 +3360,35 @@ function calcTipDistribution(storeId, date) {
   merge(lunchRows,'lunch'); merge(dinnerRows,'dinner');
   var list = Object.values(byName).sort((a,b)=>b.total-a.total);
   var distSum = list.reduce((a,r)=>a+r.total,0);
-  return { tip, list, distSum, hasLabor: !!labor, leaderSplit };
+  /* v629: 「Toast勤怠に時間があるのに配分に出てこない人」を検出して返す。
+     配分の staff は emps を inStore/role/在籍/役職除外 でフィルタした集合。labor(Toast勤怠)のキー名と
+     staff の名前が一致しない人（マスター未登録・氏名表記ゆれ・別店所属・退職扱い・役職除外）は、
+     hours=0 になり list から静かに落ちていた。＝出勤したのに配分表に出ない人。
+     Order Only は正規に除外なので対象外。理由も添える。 */
+  var _unmatched=[];
+  try{
+    if(labor && typeof labor==='object'){
+      var staffNames={}; staff.forEach(function(e){ staffNames[e.name]=1; });
+      Object.keys(labor).forEach(function(k){
+        var e=labor[k]||{};
+        var hrs=(+e.lunch||0)+(+e.dinner||0);
+        if(hrs<=0) return;                       // その日実際に勤怠がある人だけ
+        if(isOrderOnlyAccount(k) || isOrderOnlyAccount(e.toastName)) return;
+        if(staffNames[k]) return;                // 配分に出ている＝正常
+        // なぜ落ちたのか理由を推定
+        var emp=emps.find(function(x){return x.name===k;});
+        var reason;
+        if(!emp) reason='master';                          // マスター未登録／氏名不一致
+        else if(emp.status==='退職') reason='resigned';    // 退職扱い
+        else if(emp.role!=='sl' && emp.role!=='crew') reason='role';   // 役職が対象外
+        else if(!(emp.store===storeId || (emp.support||[]).includes(storeId))) reason='store'; // 別店所属・応援未設定
+        else if(isTipExcludedTitle(emp.title)) reason='title';         // 役職名で除外
+        else reason='other';
+        _unmatched.push({ name:k, hours:hrs, reason:reason });
+      });
+    }
+  }catch(e){}
+  return { tip, list, distSum, hasLabor: !!labor, leaderSplit, unmatched:_unmatched };
 }
 
 /* 半月精算: Store Leaderの日次取り分合計の50%をプール→SL以外の半月総労働時間で再分配 */
@@ -15788,7 +15816,13 @@ function tipPeriodMatrix(storeId, info){
   var dists = info.dates.map(function(d){ return {date:d, dist:calcTipDistribution(storeId, d)}; });
   var names=[], seen={};
   dists.forEach(function(x){ (x.dist.list||[]).forEach(function(r){ if(!seen[r.name]){seen[r.name]=1; names.push(r.name);} }); });
-  return { dists:dists, names:names };
+  /* v629: 期間内で「勤怠はあるのに配分に出なかった人」を名前単位で集約（出た日数と理由も保持） */
+  var unmatched={};
+  dists.forEach(function(x){ (x.dist.unmatched||[]).forEach(function(u){
+    if(!unmatched[u.name]) unmatched[u.name]={ name:u.name, days:0, reason:u.reason };
+    unmatched[u.name].days++;
+  }); });
+  return { dists:dists, names:names, unmatched:Object.values(unmatched) };
 }
 function exportTipPeriodCsv(){
   var storeId = (curStore==='ALL'||curStore==='OFFICE')?STORES[0].id:curStore;
@@ -15897,6 +15931,30 @@ function renderTipPeriodMatrix(storeId, store, info){
   var bl = 'border-left:1px solid var(--border)';
   var stick = 'position:sticky;left:0;background:var(--surface);z-index:2';
   // ヘッダ2段（日付 / L・D）
+  /* v629: 勤怠はあるのに配分に出なかった出勤者を、配分表の上に警告として必ず出す。
+     これまでは静かに消えていたため「出勤者全員が反映されない」原因が分からなかった。 */
+  if (M.unmatched && M.unmatched.length){
+    var _rlbl={ master:t('スタッフ未登録／氏名がToastと不一致','Not in staff master / name mismatch with Toast'),
+               store:t('この店の所属でない（応援設定が必要）','Not assigned to this store (needs support setting)'),
+               resigned:t('退職ステータス','Marked as resigned'),
+               role:t('役職が配分対象外','Role not eligible'),
+               title:t('役職名で除外設定','Excluded by title'),
+               other:t('要確認','Needs check') };
+    html += '<div class="card" style="border-left:3px solid var(--yellow);padding:10px 12px;margin-bottom:10px">'
+      + '<div style="font-size:12px;font-weight:700;color:var(--yellow)"><i class="ti ti-user-exclamation"></i> '
+      + t('勤怠はあるのに配分に出ていない出勤者','On the clock but missing from the distribution') + '（' + M.unmatched.length + t('名','') + '）</div>'
+      + '<div style="font-size:10px;color:var(--muted);margin:3px 0 6px;line-height:1.5">'
+      + t('この人たちはToastに勤務記録がありますが、配分計算の対象に入っていません。下の理由を直すと配分表に反映されます。',
+          'These people have Toast time records but are not included in the distribution. Fix the reason below to include them.') + '</div>';
+    M.unmatched.sort(function(a,b){ return b.days-a.days; }).forEach(function(u){
+      html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding:5px 0">'
+        + '<b style="font-size:12px;flex:1;min-width:100px">' + escapeHtml(u.name) + '</b>'
+        + '<span class="tag tag-gray" style="font-size:9px">' + u.days + t('日 勤務','d worked') + '</span>'
+        + '<span class="tag tag-yellow" style="font-size:9px">' + (_rlbl[u.reason]||_rlbl.other) + '</span>'
+        + '</div>';
+    });
+    html += '</div>';
+  }
   var dayTh = M.dists.map(function(x){ return `<th colspan="2" style="text-align:center;${bl}">${md(x.date)}</th>`; }).join('');
   var ldTh = M.dists.map(function(){ return `<th style="text-align:right;font-size:9px;color:#d98908;${bl}">L</th><th style="text-align:right;font-size:9px;color:#8b5cf6">D</th>`; }).join('');
   html += `<div style="overflow-x:auto"><table class="inv-table" style="font-size:11px;min-width:${150+M.dists.length*78}px">
@@ -17812,7 +17870,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '628';
+const APP_VERSION = '629';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
