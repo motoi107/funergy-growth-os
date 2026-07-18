@@ -3323,6 +3323,19 @@ function setTipLeaderSplit(v) { lsSet('tip_leader_split', !!v); }
    ※権限ロールでは Store Manager=sl のため、roleだけでは除外できない */
 var TIP_EXCLUDED_TITLES = ['Prep','Prep Specialist','Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
 function isTipExcludedTitle(title){ return !!title && TIP_EXCLUDED_TITLES.indexOf(title) >= 0; }
+/* v630: Tip配分の対象ロール判定を1箇所に集約。
+   従業員マスターの e.role には crew / sl のほかに g2(Crew Leader) / g4(Store Manager) が入る。
+   ROLE_ALIAS = { g2:'sl', g4:'am' } は「権限上の相当ロール」なので、これで正規化すると
+   g2→sl（Tip対象）、g4→am（対象外）に正しく振り分けられる。
+   従来 calcTipDistribution 等は e.role==='sl'||'crew' 直書きで、g2 が配分から静かに落ちていた。 */
+function tipBaseRole(e){
+  var r = e && e.role;
+  return (r && typeof ROLE_ALIAS!=='undefined' && ROLE_ALIAS[r]) ? ROLE_ALIAS[r] : r;
+}
+function isTipEligibleRole(e){
+  var b = tipBaseRole(e);
+  return b==='sl' || b==='crew';   /* g2 は sl に正規化されて対象、g4 は am で対象外 */
+}
 
 /* チップ配分計算（Tip Sheetロジック）
    - Store Manager以上(ceo/gm/office/am)は対象外
@@ -3336,7 +3349,7 @@ function calcTipDistribution(storeId, date) {
   var emps = getEmployees();
   // 対象スタッフ: その店のsl/crew（manager以上除外）
   function inStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
-  var staff = emps.filter(e=>inStore(e) && (e.role==='sl'||e.role==='crew') && e.status!=='退職' && !isTipExcludedTitle(e.title));
+  var staff = emps.filter(e=>inStore(e) && isTipEligibleRole(e) && e.status!=='退職' && !isTipExcludedTitle(e.title)); /* v630: g2(Crew Leader)も対象 */
 
   function distSlot(slot, tipTotal) { // slot='lunch'|'dinner'
     var rows = staff.map(e=>{
@@ -3380,7 +3393,7 @@ function calcTipDistribution(storeId, date) {
         var reason;
         if(!emp) reason='master';                          // マスター未登録／氏名不一致
         else if(emp.status==='退職') reason='resigned';    // 退職扱い
-        else if(emp.role!=='sl' && emp.role!=='crew') reason='role';   // 役職が対象外
+        else if(!isTipEligibleRole(emp)) reason='role';   // 役職が対象外（g2/g4正規化後で判定）
         else if(!(emp.store===storeId || (emp.support||[]).includes(storeId))) reason='store'; // 別店所属・応援未設定
         else if(isTipExcludedTitle(emp.title)) reason='title';         // 役職名で除外
         else reason='other';
@@ -15730,7 +15743,7 @@ function renderTipPeriodSummary(storeId, store, info) {
   var settle = calcHalfMonthSettlement(storeId, info.anyDate);
   var confirm = getTipConfirm(storeId, info);
   // Tip Rate内訳
-  var staff = getEmployees().filter(e=>(e.store===storeId||(e.support||[]).includes(storeId))&&(e.role==='crew'||e.role==='sl')&&e.status!=='退職');
+  var staff = getEmployees().filter(e=>(e.store===storeId||(e.support||[]).includes(storeId))&&isTipEligibleRole(e)&&e.status!=='退職'); /* v630: g2も対象 */
   var workedNames={}; settle.rows.forEach(r=>workedNames[r.name]=true);
   var rateBuckets={noTip:0, r80:0, r90:0, r100:0};
   Object.keys(workedNames).forEach(name=>{
@@ -17870,7 +17883,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '629';
+const APP_VERSION = '630';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -38062,7 +38075,7 @@ function saveOjtPhaseMap(){
 
 function renderTipRateMgmt(){
   // 対象：crew/sl・在籍・現Tip率が100%未満。配属店ごとにスキルと並べて評価適正を確認。
-  var emps = getEmployees().filter(function(e){ return (e.role==='crew'||e.role==='sl') && e.status!=='退職'; });
+  var emps = getEmployees().filter(function(e){ return isTipEligibleRole(e) && e.status!=='退職'; }); /* v630: g2も対象 */
   var below = emps.filter(function(e){ return effectiveTipRate(e.name) < 100; });
   var byStore={};
   below.forEach(function(e){ var s=e.store||'—'; (byStore[s]=byStore[s]||[]).push(e); });
@@ -38128,7 +38141,7 @@ function renderTipRate() {
 
   if (canApprove || canEditPolicy) {
     var storeId2 = curStore==='ALL'?null:curStore;
-    var staffList = getEmployees().filter(e=>(e.role==='crew'||e.role==='sl') && e.status!=='退職' && (!storeId2 || e.store===storeId2 || (e.support||[]).includes(storeId2)));
+    var staffList = getEmployees().filter(e=>isTipEligibleRole(e) && e.status!=='退職' && (!storeId2 || e.store===storeId2 || (e.support||[]).includes(storeId2))); /* v630: g2も対象 */
     html += `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>${t('スタッフ別 現在のTip Rate','Current Tip Rate by Staff')}</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${t('初回勤務から3ヶ月経過で自動100%。それ以前は承認・No Tip期間で決定。','Auto 100% after 3 months from first shift. Before that, set by approval and No-Tip period.')}</div>
       <div style="overflow-x:auto"><table class="inv-table" style="min-width:400px;font-size:12px"><thead><tr><th>${t('スタッフ','Staff')}</th><th>${t('店舗','Store')}</th><th>${t('初回勤務','First shift')}</th><th>Tip Rate</th></tr></thead><tbody>`;
@@ -38263,7 +38276,7 @@ function approveTip(id, status) {
 function openTipRaiseModal(){
   if(!(ROLE_CONFIG[curRole]||{}).canApprove){ alert(t('権限がありません','No permission')); return; }
   var storeId2 = curStore==='ALL'?null:curStore;
-  var staff = getEmployees().filter(function(e){ return (e.role==='crew'||e.role==='sl') && e.status!=='退職' && (!storeId2 || e.store===storeId2 || (e.support||[]).indexOf(storeId2)>=0); });
+  var staff = getEmployees().filter(function(e){ return isTipEligibleRole(e) && e.status!=='退職' && (!storeId2 || e.store===storeId2 || (e.support||[]).indexOf(storeId2)>=0); }); /* v630: g2も対象 */
   staff.sort(function(a,b){ return effectiveTipRate(a.name)-effectiveTipRate(b.name); });
   var opts = staff.map(function(e){ var rt=effectiveTipRate(e.name); var st=(STORES.find(function(s){return s.id===e.store;})||{}).name||e.store; return '<option value="'+escapeHtml(e.name)+'">'+escapeHtml(e.name)+' ('+escapeHtml(st)+' · '+(rt===0?'No Tip':rt+'%')+')</option>'; }).join('');
   openModal('<div class="modal-title">'+t('Tip Rate 引き上げ','Raise Tip Rate')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
