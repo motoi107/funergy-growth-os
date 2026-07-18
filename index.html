@@ -16470,6 +16470,44 @@ function saveAttFix(){
   showToast(st.date+' の勤怠を修正しました（Labor・Tipに反映）','success');
   renderPage(curPage);
 }
+/* v627: 指定日の勤怠をToastから【強制的に】取り直す。
+   これまで、Toast側で勤怠を修正しても取り込む手段が1つも無かった：
+     ・loadStoreLabor(16987) / backfillRecentLabor(11884) は「既にデータあり→スキップ」。
+       修正された日は必ずデータがあるので、定義上いつまでも取り直されない
+     ・「期間一括取込」は syncToastDay（mode指定なし＝売上モード）なので勤怠を触らない
+     ・同期センターは端末⇔クラウド(app_state)で、Toastも tip_labor テーブルも見ない
+     ・唯一の導線だった renderTipDaily の「この日を取得」は、Tip管理の再設計（tipPeriodView は
+       matrix|rate のみ）で画面ごと廃止され、デッドコードとして残っていた
+   → ガード無しで mode:'tipLabor' を叩き、その日だけ取り直す。 */
+async function refetchLaborFromToast(storeId, date){
+  var store=((typeof STORES!=='undefined')?STORES.find(function(s){return s.id===storeId;}):null)||{};
+  if(!date){ showToast(t('日付を選択してください','Select a date'),'warning'); return; }
+  if(!store.toastGuid){ showToast(t('この店舗はToast GUID未設定です','This store has no Toast GUID'),'warning'); return; }
+  if(date>todayISO()){ showToast(t('未来日は取得できません','Cannot fetch future dates'),'warning'); return; }
+  var btn=document.getElementById('att-refetch-btn'), _t0=btn?btn.innerHTML:'';
+  if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader"></i> '+t('取得中…','Fetching…'); }
+  try{
+    var r=await fetchTipLabor(storeId, store.toastGuid, date);
+    if(r && r.error){
+      showToast(t('取得失敗: ','Fetch failed: ')+String(r.error).slice(0,80),'danger');
+    } else {
+      var n=(r&&r.count)||0;
+      var ovr=(typeof getAttOverride==='function')?getAttOverride(storeId, date):null;
+      if(ovr && ovr.data){
+        /* 手動修正が入っている日は getTipLabor が override を優先するので、取り直しても画面は変わらない */
+        showToast(t(date+' をToastから取得しました（'+n+'名）が、この日は手動修正が優先されています。「Toast値に戻す」で解除してください。',
+                    'Fetched '+n+' staff for '+date+', but a manual override is active for this day. Use "Revert to Toast" to clear it.'),'warning');
+      } else if(n===0){
+        showToast(t(date+' はToast側に勤怠がありませんでした','No time entries in Toast for '+date),'warning');
+      } else {
+        showToast(t(date+' の勤怠をToastから取り直しました（'+n+'名）','Re-fetched '+n+' staff from Toast for '+date),'success');
+      }
+      renderPage((typeof curPage!=='undefined')?curPage:'labor');
+      return;
+    }
+  }catch(e){ showToast(t('取得に失敗しました','Fetch failed'),'danger'); }
+  if(btn){ btn.disabled=false; btn.innerHTML=_t0; }
+}
 
 function renderAttMonthData(storeId, store) {
   var days = attMonthDays();
@@ -16510,10 +16548,11 @@ function renderAttMonthData(storeId, store) {
   var canApprove = attDayCanApprove();
   if (['office','gm','ceo'].indexOf(curRole)>=0) {
     html += `<div class="card" style="padding:10px 14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-      <div style="font-size:12px;font-weight:600"><i class="ti ti-calendar-plus" style="color:var(--accent)"></i> データの無い日を手入力で追加</div>
+      <div style="font-size:12px;font-weight:600"><i class="ti ti-calendar-plus" style="color:var(--accent)"></i> ${t('日付を指定して 手入力 / Toast再取得','Fix or re-fetch a specific date')}</div>
       <input type="date" id="att-fix-date" max="${todayISO()}" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:12px">
-      <button class="btn btn-secondary btn-sm" onclick="(function(){var d=document.getElementById('att-fix-date').value; if(!d){showToast('日付を選択してください','warning');return;} openAttFixModal('${storeId}', d);})()"><i class="ti ti-pencil-plus"></i> 開く</button>
-    </div><div style="font-size:10px;color:var(--muted);margin-top:4px">経理・GMのみ。修正・追加した勤怠は「修正済」として記録され、Labor計算・Tip配分に反映されます。</div></div>`;
+      <button class="btn btn-secondary btn-sm" onclick="(function(){var d=document.getElementById('att-fix-date').value; if(!d){showToast(t('日付を選択してください','Select a date'),'warning');return;} openAttFixModal('${storeId}', d);})()"><i class="ti ti-pencil-plus"></i> ${t('手入力','Enter')}</button>
+      <button class="btn btn-secondary btn-sm" id="att-refetch-btn" onclick="refetchLaborFromToast('${storeId}', (document.getElementById('att-fix-date')||{}).value)"><i class="ti ti-cloud-download"></i> ${t('Toastから取り直す','Re-fetch from Toast')}</button>
+    </div><div style="font-size:10px;color:var(--muted);margin-top:4px">${t('経理・GMのみ。手入力した勤怠は「修正済」として記録され、Labor計算・Tip配分に反映されます。','Office/GM only. Manually entered hours are marked as corrected and flow into Labor and Tip calculations.')}<br>${t('※Toast側で勤怠を修正した場合は「Toastから取り直す」を押してください。通常の同期は「既にデータがある日」を取り直さないため、Toastの修正は自動では反映されません。','If you corrected a time entry in Toast, press "Re-fetch from Toast" — the normal sync skips dates that already have data, so Toast corrections never arrive on their own.')}</div></div>`;
   }
   rows.forEach(r=>{
     var appr = r.appr;
@@ -17773,7 +17812,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '626';
+const APP_VERSION = '628';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -37973,10 +38012,25 @@ function renderTipRateMgmt(){
     +'<div style="font-size:11px;color:var(--muted);line-height:1.6">'+t('現在のTip率と保有スキル（ポジション別Lv）を並べています。Tip率（評価）が保有スキルに見合っているか、あと何が足りないかを確認できます。','Shows current Tip rate alongside held skills (level by position) so you can check whether the Tip rate matches skills and what is still missing.')+'<br>'+t('No Tip → 80% → 90% → 100%（3ヶ月経過で自動100%）','No Tip → 80% → 90% → 100% (auto 100% after 3 months)')+'</div>'
     + skillLegendHtml() + '</div>';
   if(!below.length){ html += '<div class="card"><p style="text-align:center;color:var(--muted);padding:16px;font-size:13px">'+t('全員100%に到達しています 🎉','Everyone has reached 100% 🎉')+'</p></div>'; return html; }
-  STORES.map(function(s){return s.id;}).filter(function(sid){return byStore[sid];}).forEach(function(sid){
-    var stName=(STORES.find(function(s){return s.id===sid;})||{name:sid}).name;
+  /* v628: 所属が店舗マスターに無い人を一覧から落とさない。
+     従来は STORES の id だけをループしていたため、e.store が「未設定 / 'ALL' / 旧店舗ID / 削除済み店」の人は
+     byStore['—'] 等に入ったまま【一度も描画されなかった】。ヘッダーの人数は below.length（＝全員）なので、
+     ヘッダーの「N名」と各店カードの合計が食い違う状態だった。
+     → STORES の順で描画したあと、残りを「要修正」グループとして必ず出す。 */
+  var _order = STORES.map(function(s){return s.id;}).filter(function(sid){return byStore[sid];});
+  var _orphan = Object.keys(byStore).filter(function(k){ return _order.indexOf(k)<0; }).sort();
+  _order.concat(_orphan).forEach(function(sid){
+    var _known = _order.indexOf(sid)>=0;
+    var stName = _known ? ((STORES.find(function(s){return s.id===sid;})||{name:sid}).name)
+                        : (sid==='—' ? t('所属 未設定','No store assigned')
+                                     : t('店舗マスターに無い所属','Store not in master')+': '+sid);
     var list=byStore[sid].sort(function(a,b){ return effectiveTipRate(b.name)-effectiveTipRate(a.name) || skillScoreStore(b.name,sid)-skillScoreStore(a.name,sid); });
-    html+='<div class="card"><div class="card-title">'+storeBadge(sid)+'<span style="font-weight:700">'+escapeHtml(stName)+'</span><span class="tag tag-gray" style="margin-left:auto">'+list.length+t('名','')+'</span></div>';
+    html+='<div class="card"><div class="card-title">'
+      +(_known?storeBadge(sid):'<i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> ')
+      +'<span style="font-weight:700">'+escapeHtml(stName)+'</span>'
+      +(_known?'':'<span class="tag tag-yellow" style="font-size:9px;margin-left:6px">'+t('要修正','Fix needed')+'</span>')
+      +'<span class="tag tag-gray" style="margin-left:auto">'+list.length+t('名','')+'</span></div>'
+      +(_known?'':'<div style="font-size:10px;color:var(--yellow);padding:2px 0 0;line-height:1.5">'+t('スタッフマスターで所属店舗を設定してください。この人たちは今まで一覧に出ていませんでした。','Set the store in the staff master. Until now these people were not shown in this list at all.')+'</div>');
     list.forEach(function(e){
       var rate=effectiveTipRate(e.name); var rc=(typeof tipRateColor==='function')?tipRateColor(rate):'var(--tm)';
       var next=rate===0?80:(rate<80?80:(rate<90?90:100));
