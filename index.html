@@ -16508,8 +16508,8 @@ function renderAttendanceBody(storeId, store) {
 
   // データ反映ボタン（実勤怠のみ。シフト連携なし）
   html += `<div class="card" style="padding:10px;margin-bottom:10px">
-    <button class="btn btn-secondary" id="att-backfill-btn" style="width:100%" onclick="attBackfillMonth('${storeId}','${store.toastGuid||''}')"><i class="ti ti-cloud-download"></i> Toastから月を直接取込</button>
-    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'「同期DB」で取れない日は「直接取込」でToastから補完できます。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
+    <button class="btn btn-secondary" id="att-backfill-btn" style="width:100%" onclick="attBackfillMonth('${storeId}','${store.toastGuid||''}')"><i class="ti ti-cloud-download"></i> この月を最新化（売上＋勤怠）</button>
+    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'売上・勤怠をToastの最新にするには「この月を最新化（売上＋勤怠）」を押してください。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
 
   return html + renderAttMonthData(storeId, store);
 }
@@ -16537,20 +16537,28 @@ async function attBackfillMonth(storeId, guid) {
   // 未来日は除外
   var todayStr = todayISO();
   var target = days.filter(d=>d.date<=todayStr);
+  // v634: 売上も最新化（fetchToastRange で toast_sales(DB) ＋ ローカル daily_actuals を更新）。勤怠より先に実行。
+  var salesOk=0, salesFail=0;
+  if (target.length) {
+    try {
+      var _sres = await fetchToastRange(storeId, guid, target[0].date, target[target.length-1].date, function(done,total){ if(el) el.textContent='売上を取得中… '+done+'/'+total+'日'; });
+      salesOk=(_sres&&_sres.ok)||0; salesFail=(_sres&&_sres.fail)||0;
+    } catch(e){ /* 売上失敗でも勤怠は続行 */ }
+  }
   var ok=0, withData=0, fail=0;
   for (var i=0;i<target.length;i++){
     var d=target[i];
-    if (el) el.textContent=`Toastから取得中… ${i+1}/${target.length}日 (${d.date.slice(5)})`;
+    if (el) el.textContent=`勤怠を取得中… ${i+1}/${target.length}日 (${d.date.slice(5)})`;
     try {
       var r = await fetchTipLabor(storeId, guid, d.date);
       if (r && r.error) { fail++; }
       else { ok++; if (r && r.count>0) withData++; }
     } catch(e){ fail++; }
   }
-  if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> Toastから月を直接取込'; }
-  if (el) el.innerHTML=`<span style="color:var(--green)">取込完了: ${ok}日成功（うち勤怠あり${withData}日）${fail?' / 失敗'+fail+'日':''}</span>`;
-  showToast(`Toastから ${withData}日分の勤怠を取り込みました`, 'success');
-  renderPage('attendance');
+  if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> この月を最新化（売上＋勤怠）'; }
+  if (el) el.innerHTML=`<span style="color:var(--green)">最新化完了: 売上${salesOk}日 / 勤怠${ok}日（うち勤怠あり${withData}日）${(fail||salesFail)?' / 失敗 売上'+salesFail+'・勤怠'+fail+'日':''}</span>`;
+  showToast(`この月をToastから最新化しました（売上${salesOk}日 / 勤怠${withData}日）`, 'success');
+  renderPage((typeof curPage!=='undefined')?curPage:'attendance');
 }
 
 /* 月単位の実勤怠データ一覧（Toast取得結果の確認用・シフト照合なし） */
@@ -17964,7 +17972,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '633';
+const APP_VERSION = '634';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
