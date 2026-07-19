@@ -403,19 +403,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
   transition: opacity .15s;
 }
 .btn:hover { opacity: .85; }
-.btn:active { opacity: .8; transform: scale(.97); }
-.btn { transition: opacity .15s, transform .1s ease; }
-/* ===== v649 マイクロインタラクション（控えめ＋確実な手応え。reduced-motionは既存の全体無効化でOFF） ===== */
-.phase-tab, .subnav-chip, .nav-btn, .seg-btn, .card { transition: transform .1s ease, background .18s ease, color .18s ease, border-color .18s ease, box-shadow .18s ease; }
-.phase-tab:active, .subnav-chip:active, .seg-btn:active { transform: scale(.95); }
-.nav-btn:active { transform: scale(.94); }
-.card[onclick]:active, .card[role="button"]:active { transform: scale(.99); box-shadow: 0 1px 5px rgba(0,0,0,.10); }
-.nav-btn.active { border-bottom-width: 3px; background: color-mix(in srgb, var(--gc, var(--accent)) 9%, transparent); }
-.nav-btn.active i { transform: scale(1.08); }
-.phase-tab.active, .subnav-chip.active { animation: fxPop .18s ease; }
-@keyframes fxPop { 0% { transform: scale(.9); } 100% { transform: scale(1); } }
-.fx-ripple { position: absolute; border-radius: 50%; transform: scale(0); background: currentColor; opacity: .22; pointer-events: none; animation: fxRipple .5s ease-out forwards; }
-@keyframes fxRipple { to { transform: scale(2.3); opacity: 0; } }
+.btn:active { opacity: .6; }
+/* ===== v650: 手応えは「色・不透明度」のみで表現。タップ位置がズレる transform/リップルは廃止（確実にタップできる） ===== */
+.phase-tab, .subnav-chip, .nav-btn, .seg-btn, .card, .btn { transition: background .16s ease, color .16s ease, border-color .16s ease, box-shadow .16s ease, opacity .12s ease; }
+.phase-tab:active, .subnav-chip:active, .seg-btn:active, .nav-btn:active { opacity: .55; }
+.nav-btn.active { border-bottom-width: 3px; background: color-mix(in srgb, var(--gc, var(--accent)) 10%, transparent); }
 * { -webkit-tap-highlight-color: transparent; }
 @media (pointer: coarse) {
   .btn { min-height: 40px; }
@@ -18209,7 +18201,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '649';
+const APP_VERSION = '650';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41628,24 +41620,6 @@ function hapticDiagHtml(){
     document.addEventListener('click', function(ev){
       var el=ev.target; if(!el||!el.closest) return;
       if(el.closest('button, .nav-item, .tab, .seg-btn, [data-haptic]')) haptic('tap');
-    }, true);
-    /* v649: タップ点からのリップル（押した瞬間の手応え）。overflow/positionは押下時のみ付与。 */
-    document.addEventListener('pointerdown', function(ev){
-      try{
-        var el = ev.target && ev.target.closest ? ev.target.closest('button, .phase-tab, .subnav-chip, .seg-btn') : null;
-        if(!el || el.disabled) return;
-        var cs = getComputedStyle(el); if(cs.position==='static') el.style.position='relative';
-        if(cs.overflow!=='hidden') el.style.overflow='hidden';
-        var r = el.getBoundingClientRect(); var size = Math.max(r.width, r.height);
-        var cx = (ev.clientX!=null?ev.clientX:(r.left+r.width/2));
-        var cy = (ev.clientY!=null?ev.clientY:(r.top+r.height/2));
-        var sp = document.createElement('span'); sp.className='fx-ripple';
-        sp.style.width = sp.style.height = size+'px';
-        sp.style.left = (cx - r.left - size/2)+'px';
-        sp.style.top  = (cy - r.top  - size/2)+'px';
-        el.appendChild(sp);
-        setTimeout(function(){ if(sp && sp.parentNode) sp.parentNode.removeChild(sp); }, 520);
-      }catch(e){}
     }, true);
   }catch(e){}
   try{ window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); window._deferredPWA=e; }); }catch(e){}
