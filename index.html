@@ -972,6 +972,17 @@ async function syncTipLaborFromDB(storeId, guid, days) {
   var rawDates = rows.map(r=>r.business_date);
   rows.forEach(row=>{
     var list = row.data || [];
+    // v635: クレジットTip調整額を取り込み（data空でも保持）。DBがクリアされたらローカルもクリア。
+    {
+      var _bdA = normalizeBusinessDate(row.business_date);
+      var _hasA = (+row.lunch_credit_tip_adj||0)!==0 || (+row.dinner_credit_tip_adj||0)!==0 || row.lunch_credit_tip_adj_reason || row.dinner_credit_tip_adj_reason;
+      setCreditTipAdjLocal(storeId, _bdA, _hasA ? {
+        lAdj:+row.lunch_credit_tip_adj||0, dAdj:+row.dinner_credit_tip_adj||0,
+        lReason:row.lunch_credit_tip_adj_reason||'', dReason:row.dinner_credit_tip_adj_reason||'',
+        lBy:row.lunch_credit_tip_adj_by||'', dBy:row.dinner_credit_tip_adj_by||'',
+        lAt:row.lunch_credit_tip_adj_at||'', dAt:row.dinner_credit_tip_adj_at||''
+      } : null);
+    }
     if (!Array.isArray(list) || !list.length) { emptyData++; return; }
     var labor = {};
     list.forEach(emp=>{
@@ -3088,22 +3099,75 @@ function cashTipMissing(storeId, date) {
   var dinnerOK = _dinnerOff || (cash && cash.dinnerEntered);
   return !(lunchOK && dinnerOK);
 }
+/* ===== クレジットTip 調整額（L/D別・理由/by/at）v635 =====
+   直接編集でなく調整額(±)。表示 = Toast取込値 + 調整額（生値は不変・再取込で消えない）。
+   保存先: tip_labor の *_credit_tip_adj 列（data列は触らないのでToast再取込で消えない）。
+   ローカルは m_credit_tip_adj_<store> にキャッシュ（syncTipLaborFromDB が DB から充填）。 */
+function _ctAdjKey(storeId){ return 'm_credit_tip_adj_' + storeId; }
+function getCreditTipAdjMap(storeId){ return ls(_ctAdjKey(storeId), {}) || {}; }
+function getCreditTipAdj(storeId, date){ var m = getCreditTipAdjMap(storeId); return m[date] || null; }
+function setCreditTipAdjLocal(storeId, date, obj){
+  var m = getCreditTipAdjMap(storeId);
+  if (obj) m[date] = obj; else delete m[date];
+  lsSet(_ctAdjKey(storeId), m);
+}
+function _fmtCtAdjAt(iso){ try{ var d=new Date(iso); return '('+d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate()+')'; }catch(e){ return ''; } }
+/* 権限: 経理(office)・事務Crew(office_crew) ＋ CEO/GM のみ。グレード(G1-G6)と独立の role 値で判定。 */
+function creditTipAdjCanEdit(){ return ['ceo','gm','office','office_crew'].indexOf(curRole) >= 0; }
+
+/* 調整額を tip_labor に保存（supaUpsert。data列を送らない＝既存の勤怠dataは merge で保持）。 */
+async function saveCreditTipAdj(storeId, date){
+  if (!creditTipAdjCanEdit()) { showToast(t('この操作は経理・事務Crew・GM/CEOのみです','Only Accounting / Office Crew / GM / CEO can do this'),'warning'); return; }
+  var store = STORES.find(function(s){return s.id===storeId;}) || {};
+  var guid = store.toastGuid;
+  if (!guid) { showToast(t('この店舗はToast GUID未設定のため保存できません','No Toast GUID for this store'),'danger'); return; }
+  var lA = parseFloat((document.getElementById('ctadj-l')||{}).value); if (isNaN(lA)) lA = 0;
+  var dA = parseFloat((document.getElementById('ctadj-d')||{}).value); if (isNaN(dA)) dA = 0;
+  var lR = (((document.getElementById('ctadj-lr')||{}).value)||'').trim();
+  var dR = (((document.getElementById('ctadj-dr')||{}).value)||'').trim();
+  var who = (typeof curUserName!=='undefined' && curUserName) ? curUserName : ((ROLE_CONFIG[curRole]&&ROLE_CONFIG[curRole].name)||curRole);
+  var nowIso = new Date().toISOString();
+  var prev = getCreditTipAdj(storeId, date) || {};
+  var lChanged = (lA !== (+prev.lAdj||0)) || (lR !== (prev.lReason||''));
+  var dChanged = (dA !== (+prev.dAdj||0)) || (dR !== (prev.dReason||''));
+  var lBy = lChanged ? who : (prev.lBy||''); var lAt = lChanged ? nowIso : (prev.lAt||'');
+  var dBy = dChanged ? who : (prev.dBy||''); var dAt = dChanged ? nowIso : (prev.dAt||'');
+  var row = { restaurant_guid: guid, business_date: date,
+    lunch_credit_tip_adj: lA, dinner_credit_tip_adj: dA,
+    lunch_credit_tip_adj_reason: lR||null, dinner_credit_tip_adj_reason: dR||null,
+    lunch_credit_tip_adj_by: lBy||null, dinner_credit_tip_adj_by: dBy||null,
+    lunch_credit_tip_adj_at: lAt||null, dinner_credit_tip_adj_at: dAt||null };
+  var ok = false;
+  try { ok = await supaUpsert('tip_labor', [row]); } catch(e){ ok = false; }
+  if (!ok) { showToast(t('調整の保存に失敗しました（DB書込エラー）','Failed to save adjustment (DB write error)'),'danger'); return; }
+  var hasAdj = (lA!==0)||(dA!==0)||lR||dR;
+  setCreditTipAdjLocal(storeId, date, hasAdj ? {lAdj:lA,dAdj:dA,lReason:lR,dReason:dR,lBy:lBy,dBy:dBy,lAt:lAt,dAt:dAt} : null);
+  showToast(t('クレジットTip調整を保存しました（再取込でも保持）','Saved credit tip adjustment (persists across re-fetch)'),'success');
+  closeModalDirect();
+  renderPage((typeof curPage!=='undefined')?curPage:'tip');
+}
+
 function tipForDay(storeId, date) {
   var av = getDailyActuals(storeId)[date] || {};
   var cash = getCashTip(storeId, date);
-  var lCredit = av.lunchCreditTip||0, dCredit = av.dinnerCreditTip||0;
+  var _adj = (typeof getCreditTipAdj==='function' ? getCreditTipAdj(storeId, date) : null) || {};
+  var lAdj = +(_adj.lAdj)||0, dAdj = +(_adj.dAdj)||0;
+  var lCreditRaw = av.lunchCreditTip||0, dCreditRaw = av.dinnerCreditTip||0;
+  var lCredit = lCreditRaw + lAdj, dCredit = dCreditRaw + dAdj;
   var _wkk = (storeId==='F03' || storeId==='F03-G'); // Waikikiはクレジットチップのみシェア（現金は対象外）
   var lTotal = lCredit*(1-TIP_CC_FEE) + (_wkk ? 0 : (cash.lunch||0));
   var dTotal = dCredit*(1-TIP_CC_FEE) + (_wkk ? 0 : (cash.dinner||0));
   // その日ランチOFF（曜日別設定でLオフ＝ディナーのみ営業）の店は、ランチTipを全てディナーに合算しランチ項目を消す。
   // 例: ToriTonのランチ時間帯に打った事前注文のTipがランチに計上されても、ディナーのシェア対象になる。
   if (tipDayLunchOff(storeId, date)) {
-    dTotal += lTotal; dCredit += lCredit;
+    dTotal += lTotal; dCredit += lCredit; dCreditRaw += lCreditRaw; dAdj += lAdj;
     var _lc = cash.lunch||0; cash = { dinner:(cash.dinner||0)+_lc, lunch:0 };
-    lTotal = 0; lCredit = 0;
+    lTotal = 0; lCredit = 0; lCreditRaw = 0; lAdj = 0;
   }
   return {
     lunchCredit:lCredit, dinnerCredit:dCredit,
+    lunchCreditRaw:lCreditRaw, dinnerCreditRaw:dCreditRaw,
+    lunchCreditAdj:lAdj, dinnerCreditAdj:dAdj,
     lunchCash:cash.lunch||0, dinnerCash:cash.dinner||0,
     lunchTotal:lTotal, dinnerTotal:dTotal, total:lTotal+dTotal,
     lunchOff: tipDayLunchOff(storeId, date),
@@ -16222,7 +16286,9 @@ function openTipDayDetail(storeId, date) {
       <th style="text-align:right;padding:5px 8px"><i class="ti ti-moon" style="color:#8b5cf6"></i> ディナー</th>
       <th style="text-align:right;padding:5px 8px">合計</th>
     </tr></thead><tbody>
-    ${sumRow('クレジットTip（Toast照合）', tip.lunchCredit, tip.dinnerCredit, {color:'var(--accent2)'})}
+    ${sumRow('クレジットTip（Toast照合）', tip.lunchCreditRaw, tip.dinnerCreditRaw, {color:'var(--accent2)'})}
+    ${(tip.lunchCreditAdj||tip.dinnerCreditAdj) ? sumRow('＋調整額', tip.lunchCreditAdj, tip.dinnerCreditAdj, {color:'var(--accent)'}) : ''}
+    ${(tip.lunchCreditAdj||tip.dinnerCreditAdj) ? sumRow('＝実クレジットTip', tip.lunchCredit, tip.dinnerCredit, {bold:true}) : ''}
     ${sumRow('手数料 (3.5%)', -lFeeAmt, -dFeeAmt, {color:'var(--muted)'})}
     ${sumRow('キャッシュTip', tip.lunchCash, tip.dinnerCash)}
     ${sumRow('実Tip額（配分）', tip.lunchTotal, tip.dinnerTotal, {bold:true, color:'var(--green)', top:true})}
@@ -16240,6 +16306,35 @@ function openTipDayDetail(storeId, date) {
     </tbody></table>
     <div style="font-size:10.5px;color:var(--muted);margin:-4px 0 10px;line-height:1.7"><i class="ti ti-info-circle"></i> <b>「クレジットTip（Toast照合）」がToast/Tip診断と一致する生の額</b>です（L+D＝Toastのクレジットチップ）。<b>「実Tip額（配分）」＝クレジット −手数料3.5% ＋キャッシュTip</b> なので、Toastのクレジット額とは一致しません（＝差の正体）。日別一覧のL/D列はこの「実Tip額」です。</div>`;
 
+  // ===== クレジットTip 調整額（経理/事務Crew/CEO/GM のみ編集可） =====
+  {
+    var _a = getCreditTipAdj(storeId, date) || {};
+    var _canAdj = (typeof creditTipAdjCanEdit==='function') && creditTipAdjCanEdit();
+    var _esc = function(s){ return (s||'').replace(/"/g,'&quot;'); };
+    html += `<div class="card" style="padding:10px;margin-bottom:10px;border:1px solid var(--border)">
+      <div style="font-weight:700;font-size:12px;margin-bottom:6px"><i class="ti ti-adjustments-dollar"></i> ${t('クレジットTip 調整額','Credit tip adjustment')}</div>
+      <div style="font-size:10.5px;color:var(--muted);margin-bottom:8px">${t('Toast取込値に加算する調整(±)。生値は変えず、再取込でも消えません。実クレジットTip = Toast + 調整。','Adjustment (±) added to the Toast value. Raw value is untouched and survives re-fetch. Real credit tip = Toast + adj.')}</div>`;
+    if (_canAdj) {
+      html += `<div style="display:flex;gap:8px;margin-bottom:6px">
+        <label style="flex:1;font-size:11px;color:var(--muted)">${t('ランチ調整','Lunch adj')}($)<input id="ctadj-l" type="number" step="0.01" value="${_a.lAdj!=null?_a.lAdj:''}" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box"></label>
+        <label style="flex:1;font-size:11px;color:var(--muted)">${t('ディナー調整','Dinner adj')}($)<input id="ctadj-d" type="number" step="0.01" value="${_a.dAdj!=null?_a.dAdj:''}" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box"></label>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <label style="flex:1;font-size:11px;color:var(--muted)">${t('ランチ理由','Lunch reason')}<input id="ctadj-lr" value="${_esc(_a.lReason)}" placeholder="refund" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box"></label>
+        <label style="flex:1;font-size:11px;color:var(--muted)">${t('ディナー理由','Dinner reason')}<input id="ctadj-dr" value="${_esc(_a.dReason)}" placeholder="refund" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box"></label>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="saveCreditTipAdj('${storeId}','${date}')"><i class="ti ti-device-floppy"></i> ${t('調整を保存','Save adjustment')}</button>`;
+    }
+    if ((_a.lAdj||_a.dAdj||_a.lReason||_a.dReason)) {
+      html += `<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.7">`;
+      if (_a.lAdj||_a.lReason) html += `L: ${(+_a.lAdj||0)>=0?'+':''}$${(+_a.lAdj||0).toFixed(2)} ${_a.lReason?'（'+_a.lReason+'）':''} ${_a.lBy?'— '+_a.lBy:''} ${_a.lAt?_fmtCtAdjAt(_a.lAt):''}<br>`;
+      if (_a.dAdj||_a.dReason) html += `D: ${(+_a.dAdj||0)>=0?'+':''}$${(+_a.dAdj||0).toFixed(2)} ${_a.dReason?'（'+_a.dReason+'）':''} ${_a.dBy?'— '+_a.dBy:''} ${_a.dAt?_fmtCtAdjAt(_a.dAt):''}`;
+      html += `</div>`;
+    } else if (!_canAdj) {
+      html += `<div style="font-size:11px;color:var(--muted)">${t('調整なし','No adjustment')}</div>`;
+    }
+    html += `</div>`;
+  }
   if (!diffOK) {
     html += `<div class="alert alert-danger" style="padding:7px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i> <span style="font-size:12px">実Tip額と配分合計に差があります。クレジット/キャッシュTipの入力漏れ、または勤怠の取得漏れの可能性があります。</span></div>`;
   }
@@ -17972,7 +18067,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '634';
+const APP_VERSION = '635';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
