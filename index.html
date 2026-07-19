@@ -6484,7 +6484,7 @@ async function loginToastAutoSync(){
   if (!stores.length) return;
   lsSet('_toastSyncDay', today);
   var ok=0, ng=0;
-  var _win = recentDays(31); // 直近31日（1か月分の修正取り込みに対応）
+  var _win = recentDays(14); // 直近14日（自動は軽く、全期間の取得は配分表の「この期間を最新化」ボタンで手動）
   for (var i=0;i<stores.length;i++){
     try{ var r = await syncCenterRunStore(stores[i].id, _win); if(r && r.err) ng++; else ok++; }
     catch(e){ ng++; }
@@ -15821,6 +15821,47 @@ function maybePullAllCashTips(){
     }).catch(function(){});
   }catch(e){}
 }
+/* 配分表の「この期間を最新化」：表示中の期間(info.from〜to)を店舗ぶんToastから取得（売上=fetchToastRange, 勤怠=fetchTipLabor→DB保存）。
+   自動同期を軽くした代わりに、必要な時だけ手動で・進捗を見ながら取得できるようにする（v640）。 */
+async function tipRefreshPeriodFromToast(storeId, fromISO, toISO){
+  var btn = document.getElementById('tip-refresh-btn');
+  var stEl = document.getElementById('tip-refresh-status');
+  var setS = function(m){ if(stEl) stEl.textContent = m; };
+  // 対象店舗（全店舗なら表示可能な全店、個店ならその1店）
+  var stores;
+  if (storeId==='ALL' || storeId==='all') stores = (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){return s.toastGuid;});
+  else { var s0 = STORES.find(function(x){return x.id===storeId;}); stores = (s0 && s0.toastGuid) ? [s0] : []; }
+  if (!stores.length){ showToast(t('Toast GUID設定済みの店舗がありません','No stores with a Toast GUID'),'warning'); return; }
+  // 期間の日付（未来日は除外）
+  var todayI = todayISO();
+  var days=[]; var dcur=new Date(fromISO+'T00:00:00'); var dend=new Date(toISO+'T00:00:00');
+  for (var dt=dcur; dt<=dend; dt.setDate(dt.getDate()+1)){
+    var iso = dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+    if (iso > todayI) break;
+    days.push(iso);
+  }
+  if (!days.length){ showToast(t('取得対象の日がありません','No days to fetch'),'warning'); return; }
+  if (btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader"></i> '+t('取得中…','Fetching…'); }
+  var okS=0, okL=0, fail=0;
+  for (var si=0; si<stores.length; si++){
+    var s = stores[si], guid = s.toastGuid;
+    var pfx = (stores.length>1 ? (s.name+' ') : '');
+    // 売上（fetchToastRange: toast_sales(DB)＋ローカル daily_actuals＋予実 実績も更新）
+    try { await fetchToastRange(s.id, guid, days[0], days[days.length-1], function(dn,tot){ setS(pfx+t('売上','Sales')+' '+dn+'/'+tot); }); okS++; }
+    catch(e){ fail++; }
+    // 勤怠（fetchTipLabor: tip_labor(DB)にも保存＝v633）
+    for (var di=0; di<days.length; di++){
+      setS(pfx+t('勤怠','Labor')+' '+(di+1)+'/'+days.length);
+      try { var r = await fetchTipLabor(s.id, guid, days[di]); if (r && !r.error) okL++; else fail++; }
+      catch(e){ fail++; }
+    }
+  }
+  if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> '+t('この期間を最新化','Refresh this period'); }
+  setS(t('最新化しました','Refreshed')+(fail?(' / '+t('失敗','failed')+' '+fail):''));
+  showToast(t('Toastから最新化しました','Refreshed from Toast')+(fail?(' / '+t('一部失敗','some failed')+' '+fail):''), (fail?'warning':'success'));
+  renderPage((typeof curPage!=='undefined')?curPage:'tip');
+}
+
 function renderTipMgmt() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl' && curRole!=='office_crew') return financialBlocked();
   maybePullAllCashTips();
@@ -15859,7 +15900,7 @@ function renderTipMgmt() {
     ${_tipG2?`<div class="phase-tab${tipPeriodView==='ratemgmt'?' active':''}" onclick="setTipPeriodView('ratemgmt')"><i class="ti ti-adjustments-check" style="font-size:12px"></i> ${t('Tip Rate管理','Tip Rate Admin')}</div>`:''}
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
-  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px"><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button></div>`;
+  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を最新化','Refresh this period')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
 
   if (tipPeriodView==='ratemgmt') return html + renderTipRateMgmt();
   if (tipPeriodView==='rate')   return html + renderTipRate();
@@ -18085,7 +18126,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '639';
+const APP_VERSION = '640';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
