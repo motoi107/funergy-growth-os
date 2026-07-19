@@ -102,3 +102,4 @@ self.addEventListener('notificationclick', (e) => {
     if (clients.openWindow) return clients.openWindow(target);
   }));
 });
+alter table tip_labor alter column data set default '[]'::jsonb;
