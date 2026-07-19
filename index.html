@@ -16089,6 +16089,10 @@ function saveTipCashCell(storeId, date, side, value){
   showToast((side==='l'?'Lunch':'Dinner')+' '+fmtUSD2(n)+' '+t('を保存しました','saved')+(rec.entered?t('（L/D確定）','(L/D confirmed)'):t('（もう片方は後から）','(other side later)')), 'success');
   renderPage('tip');
 }
+function _tipCreditCellClick(storeId, date){
+  if (storeId==='ALL' || storeId==='all') { showToast(t('特定の店舗を選択すると、その日のクレジットTip調整を入力できます','Pick a specific store to adjust its credit tip for that day'),'warning'); return; }
+  if (typeof openTipDayDetail==='function') openTipDayDetail(storeId, date);
+}
 function renderTipPeriodMatrix(storeId, store, info){
   var M = tipPeriodMatrix(storeId, info);
   var md = function(d){ return d.slice(5).replace('-','/'); };
@@ -16132,13 +16136,15 @@ function renderTipPeriodMatrix(storeId, store, info){
       <tr><th style="${stick}"></th>${ldTh}<th></th></tr>
     </thead><tbody>`;
   // 実チップ額の計算内訳：① クレジット ② -3.5%手数料 ③ キャッシュ ④ 実チップ額
-  function tipBreakRow(label, color, val, neg){
+  function tipBreakRow(label, color, val, neg, clickable){
     var cells='', g=0;
     M.dists.forEach(function(x){ var t=x.dist.tip||{}; var l=val(t,'l'), d=val(t,'d'); g+=l+d;
-      cells+=`<td style="text-align:right;${bl};color:${color}">${l?(neg?'-':'')+l.toFixed(2):'—'}</td><td style="text-align:right;color:${color}">${d?(neg?'-':'')+d.toFixed(2):'—'}</td>`; });
+      var _oc = clickable ? `onclick="_tipCreditCellClick('${storeId}','${x.date}')"` : '';
+      var _cs = clickable ? 'cursor:pointer;' : '';
+      cells+=`<td ${_oc} style="text-align:right;${bl};color:${color};${_cs}">${l?(neg?'-':'')+l.toFixed(2):'—'}</td><td ${_oc} style="text-align:right;color:${color};${_cs}">${d?(neg?'-':'')+d.toFixed(2):'—'}</td>`; });
     return `<tr style="font-size:10px"><td style="${stick};font-size:10px;color:${color}">${label}</td>${cells}<td style="text-align:right;color:${color};font-size:10px">${g?(neg?'-':'')+'$'+g.toFixed(2):''}</td></tr>`;
   }
-  html += tipBreakRow(t('① クレジット','① Credit'),'var(--muted)', function(t,k){return k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0);}, false);
+  html += tipBreakRow(t('① クレジット','① Credit')+((typeof creditTipAdjCanEdit==='function'&&creditTipAdjCanEdit()&&storeId!=='ALL')?' <i class="ti ti-pencil" style="font-size:9px"></i>':''),'var(--muted)', function(t,k){return k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0);}, false, true);
   html += tipBreakRow(t('② -3.5%手数料','② -3.5% fee'),'var(--red)', function(t,k){return (k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0))*TIP_CC_FEE;}, true);
   /* ③ キャッシュ：この行から直接入力できる（v619） */
   var _cashG=0, _cashCells='';
@@ -18079,7 +18085,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '637';
+const APP_VERSION = '638';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
