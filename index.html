@@ -4515,6 +4515,22 @@ async function supaFetchAll(table, select){
   } catch(e){ console.warn('supaFetchAll error', table, e); return all.length?all:null; }
 }
 /* クラウド→この端末: 全マスターをSupabaseから取り込みlocalStorageへ反映（クラウドにデータがある分のみ上書き） */
+/* v646: app_settings / app_state の key/value 行をローカルへ適用（マージ定義があれば和集合マージ・無ければ上書き）。
+   起動直後の重い app_state を裏取得する際にも再利用する。処理は従来のインラインと同一。 */
+function _applyKvRows(rows){
+  var cnt=0;
+  if(Array.isArray(rows)) rows.forEach(function(row){
+    if(!row || !row.key) return;
+    try{
+      var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
+      var _val=row.value;
+      if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(row.key)||'null'); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }
+      localStorage.setItem(row.key, JSON.stringify(_val)); cnt++;
+    }catch(e){}
+  });
+  return cnt;
+}
+
 async function supaPullAllMasters(){
   var results = [];
   /* v643: 全fetchを先に発火して並列化（直列awaitで約9秒かかっていたのを短縮）。処理ロジックは不変。 */
@@ -4523,6 +4539,7 @@ async function supaPullAllMasters(){
   var _opstP = supaFetchAll('app_state', 'key,value');
   for (var key in SUPA_MASTER_MAP){
     var def = SUPA_MASTER_MAP[key];
+    if (def.table === 'ingredients') continue; // v646: ingredientsは後で裏取得
     var rows = await _mp[key];
     if (Array.isArray(rows) && rows.length){
       var arr = rows.map(function(r){ return r.data; }).filter(function(x){ return x!=null; });
@@ -4554,24 +4571,14 @@ async function supaPullAllMasters(){
     results.push('app_settings: クラウドに無し(スキップ)');
   }
   // app_state（運用データ key/value）→ 各キーへ復元
-  var opst = await _opstP;
-  if (Array.isArray(opst) && opst.length){
-    var c2=0;
-    opst.forEach(function(row){
-      if (!row || !row.key) return;
-      try {
-        /* v615: マージ定義のあるキー（tasks_all / fav_ 等）は上書きせず和集合マージ。
-           以前は丸ごと上書きしていたため、未プッシュのローカル変更が消える恐れがあった。 */
-        var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
-        var _val=row.value;
-        if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(row.key)||'null'); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }
-        localStorage.setItem(row.key, JSON.stringify(_val)); c2++;
-      } catch(e){}
-    });
-    results.push('app_state: '+c2+'件 取込');
-  } else {
-    results.push('app_state: クラウドに無し(スキップ)');
-  }
+  // v646: ingredients(約1.6秒) と app_state(約2.8秒) は重く、起動直後の画面には不要（キャッシュで表示できる）。
+  //       これらは待たずに裏で取得し、完了後に現在ページを再描画する。→ ログイン体感を大幅短縮（正しさは不変）。
+  Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
+    try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ localStorage.setItem('m_ingredients', JSON.stringify(_ia)); } } } catch(e){}
+    try { _applyKvRows(_dres[1]); } catch(e){}
+    try { if(typeof curPage!=='undefined' && curPage && typeof renderPage==='function') renderPage(curPage); } catch(e){}
+  }).catch(function(e){ console.warn('deferred pull(ingredients/app_state)', e); });
+  results.push('ingredients/app_state: 裏で取得中（完了後に再描画）');
   return results;
 }
 /* 既存のローカル運用データを一度だけクラウドへ移行（クラウドに無いキーのみ） */
@@ -6463,6 +6470,7 @@ async function loginSyncOps(){
       try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('loginSyncOps mix', s.id, e); }
       done++; setSyncSplash('売上・客数・勤怠・出数を同期中… ('+done+'/'+total+')');
     }));
+    markSynced('ops');
   } catch(e){ console.warn('loginSyncOps', e); }
 }
 
@@ -10477,12 +10485,32 @@ function bStoreChips(current, setter, opts){
   h+='</div>';
   return h;
 }
+/* ===== 鮮度バッジ（v644）: 売上・勤怠の最終同期時刻を表示。タップで最新化できる。 =====
+   売上・勤怠は自動同期を維持しているので通常は「◯分前」で緑。3時間以上更新が無ければ黄色で注意喚起。 */
+function markSynced(scope){ try{ lsSet('synced_at_'+(scope||'ops'), new Date().toISOString()); }catch(e){} }
+function getSyncedAt(scope){ return ls('synced_at_'+(scope||'ops'), '') || ''; }
+function syncFreshBadge(){
+  var iso = getSyncedAt('ops');
+  var ago='', stale=true;
+  if(iso){ try{ var ms=Date.now()-new Date(iso).getTime(); ago=(typeof notifAgo==='function')?notifAgo(iso):''; stale=ms>3*3600*1000; }catch(e){} }
+  var col = (iso && !stale) ? 'var(--green)' : 'var(--yellow)';
+  return '<button id="fresh-badge" onclick="_freshRefresh()" title="'+t('タップで最新化','Tap to refresh')+'" style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;color:'+col+';background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:3px 10px;cursor:pointer">'
+    +'<i class="ti ti-clock-hour-4"></i>'+t('最終同期','Synced')+' '+(iso?ago:t('未取得','—'))+' <i class="ti ti-refresh" style="font-size:10px;opacity:.65"></i></button>';
+}
+async function _freshRefresh(){
+  var el=document.getElementById('fresh-badge'); if(el){ el.innerHTML='<i class="ti ti-loader"></i> '+t('取得中…','Syncing…'); el.disabled=true; }
+  try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){}
+  markSynced('ops');
+  renderPage((typeof curPage!=='undefined')?curPage:'budget');
+}
+
 function renderBudget() {
   normalizeBudgetsDemo();
   var html = `<div class="section-header">
     <div><div class="section-title">${t('予実管理','Budget vs Actual')}</div><div class="section-sub">${t('対象月を選択（前月実績の確認・来月の予算設定）',"Select a month (review last month, set next month's budget)")}</div></div>
     <select class="form-select" style="width:auto;min-width:150px;font-size:13px" onchange="setBudgetMonthSel(this.value)">${budgetMonthOptions()}</select>
   </div>
+  <div style="margin:0 0 8px">${syncFreshBadge()}</div>
   <div class="phase-tabs">
     <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">${t('日次進捗','Daily')}</div>
     <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">${t('月次進捗','Monthly')}</div>
@@ -12141,6 +12169,7 @@ async function ensureMonthDataLoaded(ym){
   })();
   _ensureMonthInflight[ym] = p;
   try { await p; } finally { delete _ensureMonthInflight[ym]; }
+  markSynced('ops');
 }
 /* 月ナビ操作後：表示中の月をDBから読み込んでから再描画（過去月は初回だけ取得） */
 function loadMonthAndRerender(ym, page){
@@ -15893,6 +15922,7 @@ async function tipRefreshPeriodFromToast(storeId, fromISO, toISO){
   if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> '+t('この期間を最新化','Refresh this period'); }
   setS(t('最新化しました','Refreshed')+(fail?(' / '+t('失敗','failed')+' '+fail):''));
   showToast(t('Toastから最新化しました','Refreshed from Toast')+(fail?(' / '+t('一部失敗','some failed')+' '+fail):''), (fail?'warning':'success'));
+  markSynced('ops');
   renderPage((typeof curPage!=='undefined')?curPage:'tip');
 }
 
@@ -15934,7 +15964,7 @@ function renderTipMgmt() {
     ${_tipG2?`<div class="phase-tab${tipPeriodView==='ratemgmt'?' active':''}" onclick="setTipPeriodView('ratemgmt')"><i class="ti ti-adjustments-check" style="font-size:12px"></i> ${t('Tip Rate管理','Tip Rate Admin')}</div>`:''}
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
-  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を最新化','Refresh this period')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
+  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">${syncFreshBadge()}<button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を最新化','Refresh this period')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
 
   if (tipPeriodView==='ratemgmt') return html + renderTipRateMgmt();
   if (tipPeriodView==='rate')   return html + renderTipRate();
@@ -18160,7 +18190,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '643';
+const APP_VERSION = '646';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
