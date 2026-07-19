@@ -16125,6 +16125,8 @@ function exportTipPeriodCsv(){
     row.push(r2(g)); return row;
   }
   rows.push(_tipBreakRow('① クレジット', function(t,k){ return k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0); }));
+  rows.push(_tipBreakRow('　Toast値(生)', function(t,k){ return k==='l'?(t.lunchCreditRaw||0):(t.dinnerCreditRaw||0); }));
+  rows.push(_tipBreakRow('　調整(±)', function(t,k){ return k==='l'?(t.lunchCreditAdj||0):(t.dinnerCreditAdj||0); }));
   rows.push(_tipBreakRow('② -3.5%手数料', function(t,k){ return -((k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0))*TIP_CC_FEE); }));
   rows.push(_tipBreakRow('③ キャッシュチップ', function(t,k){ return k==='l'?(t.lunchCash||0):(t.dinnerCash||0); }));
   rows.push(_tipBreakRow('④ 実チップ額', function(t,k){ return k==='l'?(t.lunchTotal||0):(t.dinnerTotal||0); }));
@@ -16246,7 +16248,10 @@ function renderTipPeriodMatrix(storeId, store, info){
     M.dists.forEach(function(x){ var t=x.dist.tip||{}; var l=val(t,'l'), d=val(t,'d'); g+=l+d;
       var _oc = clickable ? `onclick="_tipCreditCellClick('${storeId}','${x.date}')"` : '';
       var _cs = clickable ? 'cursor:pointer;' : '';
-      cells+=`<td ${_oc} style="text-align:right;${bl};color:${color};${_cs}">${l?(neg?'-':'')+l.toFixed(2):'—'}</td><td ${_oc} style="text-align:right;color:${color};${_cs}">${d?(neg?'-':'')+d.toFixed(2):'—'}</td>`; });
+      var _adj = (clickable && storeId!=='ALL' && typeof getCreditTipAdj==='function') ? (getCreditTipAdj(storeId, x.date)||{}) : {};
+      var _lM = (+_adj.lAdj) ? '<span title="調整あり" style="color:var(--accent);font-weight:800"> *</span>' : '';
+      var _dM = (+_adj.dAdj) ? '<span title="調整あり" style="color:var(--accent);font-weight:800"> *</span>' : '';
+      cells+=`<td ${_oc} style="text-align:right;${bl};color:${color};${_cs}">${l?(neg?'-':'')+l.toFixed(2):'—'}${_lM}</td><td ${_oc} style="text-align:right;color:${color};${_cs}">${d?(neg?'-':'')+d.toFixed(2):'—'}${_dM}</td>`; });
     return `<tr style="font-size:10px"><td style="${stick};font-size:10px;color:${color}">${label}</td>${cells}<td style="text-align:right;color:${color};font-size:10px">${g?(neg?'-':'')+'$'+g.toFixed(2):''}</td></tr>`;
   }
   html += tipBreakRow(t('① クレジット','① Credit')+((typeof creditTipAdjCanEdit==='function'&&creditTipAdjCanEdit()&&storeId!=='ALL')?' <i class="ti ti-pencil" style="font-size:9px"></i>':''),'var(--muted)', function(t,k){return k==='l'?(t.lunchCredit||0):(t.dinnerCredit||0);}, false, true);
@@ -18190,7 +18195,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '646';
+const APP_VERSION = '648';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -27511,7 +27516,7 @@ function tipCSVRows(storeId, anyDate) {
   // ===== 日別 ランチ/ディナー 内訳（差額チェック）=====
   rows.push([]);
   rows.push(['【日別 ランチ/ディナー内訳】']);
-  rows.push(['日付','区分','クレジットTip($)','手数料3.5%($)','キャッシュTip($)','実Tip額($)','配分合計($)','差額($)','人数','時間']);
+  rows.push(['日付','区分','クレジットTip($)','Toast値($)','調整($)','手数料3.5%($)','キャッシュTip($)','実Tip額($)','配分合計($)','差額($)','人数','時間']);
   var dates = halfMonthDates(anyDate);
   var sumActualL=0,sumActualD=0,sumDistL=0,sumDistD=0;
   dates.forEach(date=>{
@@ -27522,14 +27527,14 @@ function tipCSVRows(storeId, anyDate) {
     dist.list.forEach(r=>{ lD+=r.lunch||0; dD+=r.dinner||0;
       if((r.lunchHours||0)>0){lPpl++;lHrs+=r.lunchHours;} if((r.dinnerHours||0)>0){dPpl++;dHrs+=r.dinnerHours;} });
     var md = date.slice(5);
-    rows.push([md,'ランチ', tip.lunchCredit.toFixed(2), (tip.lunchCredit*TIP_CC_FEE).toFixed(2), tip.lunchCash.toFixed(2),
+    rows.push([md,'ランチ', tip.lunchCredit.toFixed(2), (tip.lunchCreditRaw||0).toFixed(2), (tip.lunchCreditAdj||0).toFixed(2), (tip.lunchCredit*TIP_CC_FEE).toFixed(2), tip.lunchCash.toFixed(2),
       tip.lunchTotal.toFixed(2), lD.toFixed(2), (tip.lunchTotal-lD).toFixed(2), lPpl, lHrs.toFixed(1)]);
-    rows.push([md,'ディナー', tip.dinnerCredit.toFixed(2), (tip.dinnerCredit*TIP_CC_FEE).toFixed(2), tip.dinnerCash.toFixed(2),
+    rows.push([md,'ディナー', tip.dinnerCredit.toFixed(2), (tip.dinnerCreditRaw||0).toFixed(2), (tip.dinnerCreditAdj||0).toFixed(2), (tip.dinnerCredit*TIP_CC_FEE).toFixed(2), tip.dinnerCash.toFixed(2),
       tip.dinnerTotal.toFixed(2), dD.toFixed(2), (tip.dinnerTotal-dD).toFixed(2), dPpl, dHrs.toFixed(1)]);
     sumActualL+=tip.lunchTotal; sumActualD+=tip.dinnerTotal; sumDistL+=lD; sumDistD+=dD;
   });
-  rows.push(['期間計','ランチ','','','', sumActualL.toFixed(2), sumDistL.toFixed(2), (sumActualL-sumDistL).toFixed(2),'','']);
-  rows.push(['期間計','ディナー','','','', sumActualD.toFixed(2), sumDistD.toFixed(2), (sumActualD-sumDistD).toFixed(2),'','']);
+  rows.push(['期間計','ランチ','','','','','', sumActualL.toFixed(2), sumDistL.toFixed(2), (sumActualL-sumDistL).toFixed(2),'','']);
+  rows.push(['期間計','ディナー','','','','','', sumActualD.toFixed(2), sumDistD.toFixed(2), (sumActualD-sumDistD).toFixed(2),'','']);
 
   // ===== スタッフ別 最終受取（半月精算）=====
   rows.push([]);
@@ -33787,8 +33792,43 @@ function renderMypage() {
 /* ============================================================
    SETTINGS
 ============================================================ */
+/* ===== 店舗別 手動Toast同期（v646）: 設定画面から選んだ1店の直近31日を取り込む。
+   Edgeの cronSync(1店モード) を叩き、DBへ保存 → 当月をローカルに再取込して反映。夜間バッチを待たず即反映用。 */
+function _toastSyncStoreOptions(){
+  try{ return (typeof STORES!=='undefined'?STORES:[]).filter(function(s){return s.toastGuid;}).map(function(s){ return '<option value="'+s.toastGuid+'">'+s.id+' '+escapeHtml(s.name)+'</option>'; }).join(''); }catch(e){ return ''; }
+}
+async function toastSyncStore(){
+  if(['ceo','gm','office'].indexOf(curRole)<0){ showToast(t('この操作はGM・経理・CEOのみです','Only GM / Accounting / CEO'),'warning'); return; }
+  var sel=document.getElementById('toastsync-store'); var guid=sel?sel.value:'';
+  if(!guid){ showToast(t('店舗を選んでください','Select a store'),'warning'); return; }
+  var st=(typeof STORES!=='undefined')?STORES.find(function(s){return s.toastGuid===guid;}):null;
+  var name=st?(st.id+' '+st.name):guid;
+  var btn=document.getElementById('toastsync-btn'); var stEl=document.getElementById('toastsync-status');
+  if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader"></i> '+t('取り込み中…','Syncing…'); }
+  if(stEl){ stEl.style.color='var(--muted)'; stEl.textContent=t('Toastから31日取得中…（30〜60秒かかります）','Fetching 31 days from Toast… (30–60s)'); }
+  var ok=false, msg='';
+  try{
+    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON}, body: JSON.stringify({ mode:'cronSync', days:31, restaurantGuid:guid }) });
+    var j=await res.json();
+    if(j && j.ok){ ok=true; var r0=(j.results&&j.results[0])||{}; msg=(r0.daysOk||0)+t('日 取込','d')+((r0.daysFail)?(' / '+t('失敗','fail')+r0.daysFail+t('日','d')):''); }
+    else { msg=(JSON.stringify(j)||'').slice(0,140); }
+  }catch(e){ msg=String(e).slice(0,140); }
+  if(ok){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} try{ markSynced('ops'); }catch(e){} }
+  if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> '+t('31日取り込み','Sync 31 days'); }
+  if(stEl){ stEl.style.color=ok?'var(--green)':'var(--red)'; stEl.textContent=(ok?('\u2713 '+name+' '+msg):('\u2717 '+msg)); }
+  showToast(ok?(name+t(' 取り込み完了','synced')+' — '+msg):(t('取り込み失敗','Sync failed')+': '+msg), ok?'success':'danger');
+}
+
 function renderSettings() {
   var html = `<div class="section-header"><div class="section-title">設定</div></div>
+  ${(['ceo','gm','office'].indexOf(curRole)>=0)?`<div class="card"><div class="card-title"><i class="ti ti-cloud-download" style="color:var(--accent)"></i> Toast同期（店舗別・31日）</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">選んだ店舗の直近31日の売上・勤怠をToastから取り込み、DBへ保存します（夜間バッチと同じ処理・30〜60秒）。夜間を待たず即反映したい時に。</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="toastsync-store" class="form-select" style="width:auto;min-width:160px">${_toastSyncStoreOptions()}</select>
+      <button id="toastsync-btn" class="btn btn-primary btn-sm" onclick="toastSyncStore()"><i class="ti ti-cloud-download"></i> 31日取り込み</button>
+      <span id="toastsync-status" style="font-size:11px;color:var(--muted)"></span>
+    </div>
+  </div>`:''}
   ${(curRole==='gm'||curRole==='ceo')?`<div class="card"><div class="card-title"><i class="ti ti-shield-lock" style="color:var(--accent)"></i> セキュリティ：オンボ機密情報</div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">既存オンボのSSN・身分証・個人情報を、匿名キーから触れない保護領域へ移します（最初に1回だけ）。</div>
     <button class="btn btn-primary btn-sm" onclick="runObMigrate()"><i class="ti ti-database-export"></i> 保護領域へ移行する</button>
