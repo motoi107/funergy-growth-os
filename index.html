@@ -18156,7 +18156,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '641';
+const APP_VERSION = '642';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -26633,24 +26633,72 @@ function officeEmpByName(n){ return getEmployees().find(function(e){return e.nam
 /* 現在開いている勤務（出勤済・未退勤）を日付に依存せず取得。日跨ぎ・海外(端末ローカル時刻)対応 */
 function officeOpenRec(arr){ if(!arr) return null; for(var i=arr.length-1;i>=0;i--){ if(arr[i].in && !arr[i].out) return arr[i]; } return null; }
 
+/* ===== 退勤打刻もれの是正（v642） =====
+   前日以前に「未退勤（in有・out無）」の勤務が残っていると、従来は次の出勤がブロックされ、
+   間の日が打刻できず記録が欠落＋その勤務の時間が膨張していた。
+   → ブロックの代わりにこのモーダルで実退勤時刻を入力して締める（休憩開始のままなら休憩も締める）。 */
+function openOfficeStaleShiftModal(name, open, intent){
+  var onBreak = !!open.breakStart;
+  var defOut = onBreak ? open.breakStart : '';
+  var html = '<div class="modal-title">⚠ 退勤打刻もれ — '+escapeHtml(name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:13px;line-height:1.7;margin-bottom:10px">'
+      +'<b>'+open.date+'</b> の勤務が<b>退勤打刻されていません</b>（出勤 '+open.in+(onBreak?(' ・休憩開始 '+open.breakStart+' のまま'):'')+'）。<br>'
+      +'このままだと次の出勤ができず、間の日も記録できません。<br>'
+      +'<span style="color:var(--muted);font-size:12px">その日の<b>実際の退勤時刻</b>を入力して締めてください（後で管理者が修正も可能です）。</span>'
+    +'</div>'
+    +'<label style="display:block;font-size:12px;color:var(--muted);margin-bottom:12px">退勤時刻（'+open.date+'）<br>'
+      +'<input id="stale-out" type="time" value="'+defOut+'" style="font-size:18px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--tm);width:150px;margin-top:4px"></label>'
+    +'<div class="btn-row" style="margin-top:4px">'
+      +'<button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+      +'<button class="btn btn-primary" onclick="officeCloseStaleShift(\''+name.replace(/'/g,"\\'")+'\','+(intent==='in'?'true':'false')+')"><i class="ti ti-check"></i> 締める'+(intent==='in'?'＆今日の出勤':'')+'</button>'
+    +'</div>';
+  openModal(html);
+}
+function officeCloseStaleShift(name, thenClockIn){
+  var arr=getOfficeAttend(name);
+  var open=officeOpenRec(arr);
+  if(!open){ closeModalDirect(); if(thenClockIn) officeClockIn(); return; }
+  var outEl=document.getElementById('stale-out'); var outv=((outEl&&outEl.value)||'').trim();
+  if(!/^\d{1,2}:\d{2}$/.test(outv)){ showToast('退勤時刻を入力してください','warning'); return; }
+  if(open.breakStart){
+    var bm=Math.max(0,hmDiffMin(open.breakStart, outv));
+    open.breaks=open.breaks||[]; var closed=false;
+    for(var bi=open.breaks.length-1;bi>=0;bi--){ if(!open.breaks[bi].end){ open.breaks[bi].end=outv; open.breaks[bi].min=bm; closed=true; break; } }
+    if(!closed) open.breaks.push({start:open.breakStart, end:outv, min:bm});
+    delete open.breakStart; open.breakMin=officeSumBreaks(open);
+    open.log=open.log||[]; open.log.push({at:tsNow(), by:myName(), action:'休憩締め（+'+bm+'分・打刻もれ是正）'});
+  }
+  open.out=outv; open.hours=officeCalcHours(open); open.status='記録済'; open._ts=Date.now();
+  open.log=open.log||[]; open.log.push({at:tsNow(), by:myName(), action:'退勤（打刻もれ是正）'+outv});
+  setOfficeAttend(name, arr);
+  showToast(open.date+' の勤務を締めました（'+open.hours+'h）','success');
+  closeModalDirect();
+  if(thenClockIn){ setTimeout(function(){ officeClockIn(); }, 60); }
+  else renderPage('office_mgr');
+}
+
 function officeClockIn(){
   var name=myName(); var arr=getOfficeAttend(name);
   var open=officeOpenRec(arr);
-  if(open){ showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); return; }
+  if(open){
+    if(open.date < isoDateStr(new Date())){ openOfficeStaleShiftModal(name, open, 'in'); return; }
+    showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); return;
+  }
   var date=isoDateStr(new Date()); var rec=arr.find(function(r){return r.date===date;});
   if(rec && rec.in && rec.out){ showToast('本日は出勤打刻済みです','info'); return; }
   if(!rec){ rec={date:date, in:'', out:'', breakMin:0, status:'勤務中', log:[]}; arr.push(rec); }
-  rec.in=nowHM(); rec.status='勤務中'; rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'出勤 '+rec.in});
+  rec.in=nowHM(); rec.status='勤務中'; rec._ts=Date.now(); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'出勤 '+rec.in});
   setOfficeAttend(name, arr); showToast('出勤を記録しました','success'); renderPage('office_mgr');
 }
 function officeClockOut(){
   var name=myName(); var arr=getOfficeAttend(name);
   var rec=officeOpenRec(arr);
+  if(rec && rec.date < isoDateStr(new Date())){ openOfficeStaleShiftModal(name, rec, 'out'); return; }
   if(!rec){ var date=isoDateStr(new Date()); rec=arr.find(function(r){return r.date===date;}); }
   if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
   if(rec.out){ showToast('退勤打刻済みです','info'); return; }
   if(rec.breakStart){ var bm=Math.max(0,hmDiffMin(rec.breakStart, nowHM())); var endm=nowHM(); rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=endm; rec.breaks[bi].min=bm; break; } } delete rec.breakStart; rec.breakMin=officeSumBreaks(rec); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩自動終了（+'+bm+'分）'}); }
-  rec.out=nowHM(); rec.hours=officeCalcHours(rec); rec.status='記録済';
+  rec.out=nowHM(); rec.hours=officeCalcHours(rec); rec.status='記録済'; rec._ts=Date.now();
   rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'退勤 '+rec.out});
   setOfficeAttend(name, arr); showToast('退勤を記録しました（'+rec.hours+'h）','success'); renderPage('office_mgr');
 }
