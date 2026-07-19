@@ -4268,7 +4268,7 @@ var _lsQuotaWarned=false;
    キャッシュ整理・自動整理の対象から除外。削除すると予実/財務が0表示になり、
    getDailyActuals 等が描画時に即pullしないため。これらはクラウド(app_state)保持のため、
    再ログイン(自動同期)または設定＞クラウドから取り込むで復元される。 */
-var _LS_PRUNABLE = ['tip_labor_','dailyops_','orders_','purchases_','att_day_approve_','att_approve_','office_attend_','tip_exclude_','warnings_','shiftopt_','spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','reminded_','inv_']; /* v636: cash_tips_(財務)を保護対象へ／tip_labor_(大・再取得可)を追加 */
+var _LS_PRUNABLE = ['tip_labor_','dailyops_','orders_','purchases_','att_day_approve_','att_approve_','tip_exclude_','warnings_','shiftopt_','spl_','skills_st_','lss_emp_','help_requests_','ot_approvals_','reminded_','inv_']; /* v636: cash_tips_(財務)を保護対象へ／tip_labor_(大・再取得可)を追加 */
 function lsBytesTotal(){ var tt=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; } }catch(e){} return tt; }
 /* v617: 棚卸履歴（inv_hist_* / spl_inv_hist_*）は絶対に自動削除しない（復旧不能なデータのため） */
 function lsIsPrunable(k){
@@ -4998,7 +4998,37 @@ function _coversCashTips(check, want){
   }
   return true;
 }
-var OP_MERGE_PREFIX = { 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs },
+/* ===== オフィス勤怠 office_attend_<名前> の和集合マージ（v641） =====
+   値は日別レコードの配列 [{date, in, out, breaks:[...], breakMin, hours, approved, _ts?}]。
+   従来は last-write-wins で、①複数端末の古いコピー ②ローカル間引き後の空配列 がクラウドの全履歴を上書きし消失していた。
+   → 日付ごとに和集合マージ。同一日付は _ts(あれば新しい方) → 完全性(out>休憩>in) → local の順で解決。空はクラウドを消さない。 */
+function _oaScore(r){ var s=0; if(r&&r.out)s+=1000; if(r&&r.breaks&&r.breaks.length)s+=r.breaks.length*10; if(r&&r.breakMin)s+=2; if(r&&r.in)s+=1; if(r&&r.approved)s+=5; return s; }
+function _oaArrToMap(a){ var m={}; (Array.isArray(a)?a:[]).forEach(function(r){ if(r&&r.date) m[r.date]=r; }); return m; }
+function mergeOfficeAttend(cloudArr, localArr){
+  var c=_oaArrToMap(cloudArr), l=_oaArrToMap(localArr), out={}, dates={};
+  Object.keys(c).forEach(function(x){dates[x]=1;}); Object.keys(l).forEach(function(x){dates[x]=1;});
+  Object.keys(dates).forEach(function(d){
+    var cv=c[d], lv=l[d];
+    if(cv==null){ out[d]=lv; return; }
+    if(lv==null){ out[d]=cv; return; }
+    var ct=Number(cv._ts)||0, lt=Number(lv._ts)||0;
+    if(ct||lt){ out[d]=(lt>=ct)?lv:cv; }
+    else { out[d]=(_oaScore(lv)>=_oaScore(cv))?lv:cv; }
+  });
+  return Object.keys(out).sort().map(function(d){ return out[d]; });
+}
+function _coversOfficeAttend(checkArr, wantArr){
+  var c=_oaArrToMap(checkArr), w=_oaArrToMap(wantArr);
+  for(var d in w){ if(!w.hasOwnProperty(d)) continue;
+    var wv=w[d], hv=c[d]; if(!hv) return false;
+    var wt=Number(wv._ts)||0, ht=Number(hv._ts)||0;
+    if(wt&&ht){ if(ht<wt) return false; }
+    else if(_oaScore(hv)<_oaScore(wv)) return false;
+  }
+  return true;
+}
+
+var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _coversOfficeAttend }, 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs },
   /* v622: 分割後の予算パーティション(spl_budgets_v2_<店>)も店舗内でマージ。同じ店を2端末が同時に触っても行ごと上書きにならない。
      値は「その店1件だけの配列」なので mergeBudgets / _coversBudgets がそのまま使える。 */
   'spl_budgets_v2_': { merge: mergeBudgets, covers: _coversBudgets },
@@ -18126,7 +18156,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '640';
+const APP_VERSION = '641';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
