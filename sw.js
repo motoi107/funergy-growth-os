@@ -7,7 +7,7 @@
    - waiting 状態の SW は、index.html から SKIP_WAITING を受けたときだけ有効化する（勝手に切り替えて
      入力中データを飛ばさない。ユーザーがバナーで「更新」を押したときだけ切り替わる）。
    SW を差し替えるときは SW_BUILD を上げること。 */
-const SW_BUILD = '635';                     // ← index.html の APP_VERSION と揃える
+const SW_BUILD = '636';                     // ← index.html の APP_VERSION と揃える
 const CACHE = 'funergy-os-' + SW_BUILD;
 const CORE = [
   './',
@@ -102,4 +102,3 @@ self.addEventListener('notificationclick', (e) => {
     if (clients.openWindow) return clients.openWindow(target);
   }));
 });
-alter table tip_labor alter column data set default '[]'::jsonb;
