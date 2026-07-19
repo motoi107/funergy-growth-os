@@ -4517,9 +4517,13 @@ async function supaFetchAll(table, select){
 /* クラウド→この端末: 全マスターをSupabaseから取り込みlocalStorageへ反映（クラウドにデータがある分のみ上書き） */
 async function supaPullAllMasters(){
   var results = [];
+  /* v643: 全fetchを先に発火して並列化（直列awaitで約9秒かかっていたのを短縮）。処理ロジックは不変。 */
+  var _mp = {}; for (var _k in SUPA_MASTER_MAP){ _mp[_k] = supaFetchAll(SUPA_MASTER_MAP[_k].table, 'data'); }
+  var _settingsP = supaFetchAll('app_settings', 'key,value');
+  var _opstP = supaFetchAll('app_state', 'key,value');
   for (var key in SUPA_MASTER_MAP){
     var def = SUPA_MASTER_MAP[key];
-    var rows = await supaFetchAll(def.table, 'data');
+    var rows = await _mp[key];
     if (Array.isArray(rows) && rows.length){
       var arr = rows.map(function(r){ return r.data; }).filter(function(x){ return x!=null; });
       if (arr.length){
@@ -4531,7 +4535,7 @@ async function supaPullAllMasters(){
     }
   }
   // app_settings（key/value）→ 各設定キーへ復元
-  var settings = await supaFetchAll('app_settings', 'key,value');
+  var settings = await _settingsP;
   if (Array.isArray(settings) && settings.length){
     var cnt=0;
     settings.forEach(function(row){
@@ -4550,7 +4554,7 @@ async function supaPullAllMasters(){
     results.push('app_settings: クラウドに無し(スキップ)');
   }
   // app_state（運用データ key/value）→ 各キーへ復元
-  var opst = await supaFetchAll('app_state', 'key,value');
+  var opst = await _opstP;
   if (Array.isArray(opst) && opst.length){
     var c2=0;
     opst.forEach(function(row){
@@ -6455,7 +6459,7 @@ async function loginSyncOps(){
     await Promise.all(stores.map(async function(s){
       try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); }
       try { await syncTipLaborFromDB(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps labor', s.id, e); }
-      try { await backfillRecentLabor(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps laborTail', s.id, e); } // 直近Laborをライブ補完（cron遅延対策）
+      try { backfillRecentLabor(s.id, s.toastGuid, days).catch(function(e){ console.warn('loginSyncOps laborTail', s.id, e); }); } catch(e){} // v643: 直近Laborのライブ補完はToast往復を待たず裏で実行（ログイン高速化）
       try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('loginSyncOps mix', s.id, e); }
       done++; setSyncSplash('売上・客数・勤怠・出数を同期中… ('+done+'/'+total+')');
     }));
@@ -18156,7 +18160,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '642';
+const APP_VERSION = '643';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
