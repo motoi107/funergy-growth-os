@@ -371,6 +371,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; }
 #fypass-overlay{ position:fixed; inset:0; z-index:300; background:linear-gradient(160deg,#f0661f 0%,#f0902b 55%,#e85d15 100%); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:28px 22px; overflow:hidden; -webkit-tap-highlight-color:transparent; }
 #fypass-overlay .fypass-shine{ position:absolute; top:0; left:0; height:100%; width:32%; background:linear-gradient(100deg,transparent,rgba(255,255,255,.22),transparent); animation:fypassShine 3.4s linear infinite; pointer-events:none; }
+@keyframes toastRingDraw { from { stroke-dashoffset: 57; } to { stroke-dashoffset: 0; } }
+@keyframes toastCheckDraw { from { stroke-dashoffset: 16; } to { stroke-dashoffset: 0; } }
 @keyframes fypassShine{ 0%{ transform:translateX(-160%); } 100%{ transform:translateX(430%); } }
 .fypass-chip{ font-size:13px; font-weight:700; color:#fff; background:rgba(255,255,255,.20); border:1px solid rgba(255,255,255,.4); border-radius:9px; padding:5px 11px; }
 .fypass-close{ position:absolute; top:16px; right:16px; z-index:2; width:40px; height:40px; border-radius:50%; background:rgba(0,0,0,.18); border:none; color:#fff; font-size:22px; line-height:1; cursor:pointer; }
@@ -18201,7 +18203,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '650';
+const APP_VERSION = '651';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41706,6 +41708,13 @@ function showToast(msg, type) {
     info:    { color:'var(--accent2)',bg:'#e9f0fd', icon:'ti-info-circle' },
     warning: { color:'var(--amber)',  bg:'#fbf1de', icon:'ti-alert-triangle' },
   }[type] || { color:'var(--accent2)', bg:'#e9f0fd', icon:'ti-info-circle' };
+  // success は円→チェックを線で描くSVG（アイコン枠30x30は不変・動くのは線の描画のみ）。他はフォントアイコン。
+  var iconInner = (type==='success')
+    ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+      + '<circle cx="12" cy="12" r="9" style="stroke-dasharray:57;stroke-dashoffset:0;animation:toastRingDraw .38s ease both"></circle>'
+      + '<path d="M7.6 12.4l3 3L16.4 9" style="stroke-dasharray:16;stroke-dashoffset:0;animation:toastCheckDraw .3s ease .18s both"></path>'
+      + '</svg>'
+    : '<i class="ti '+conf.icon+'" style="font-size:17px"></i>';
   var el = document.createElement('div');
   el.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(8px);opacity:0;'
     + 'display:flex;align-items:center;gap:11px;padding:12px 16px;border-radius:12px;z-index:9999;'
@@ -41713,7 +41722,7 @@ function showToast(msg, type) {
     + 'box-shadow:0 4px 14px rgba(33,27,21,.10),0 12px 32px rgba(33,27,21,.10);'
     + 'transition:opacity .25s ease, transform .25s ease;max-width:90vw';
   el.innerHTML = '<span style="width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;'
-    + 'background:'+conf.bg+';color:'+conf.color+'"><i class="ti '+conf.icon+'" style="font-size:17px"></i></span>'
+    + 'background:'+conf.bg+';color:'+conf.color+'">'+iconInner+'</span>'
     + '<span style="font-size:13px;font-weight:600;color:var(--tm);line-height:1.4">'+clean+'</span>';
   document.body.appendChild(el);
   requestAnimationFrame(()=>{ el.style.opacity='1'; el.style.transform='translateX(-50%) translateY(0)'; });
