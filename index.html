@@ -373,6 +373,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 #fypass-overlay .fypass-shine{ position:absolute; top:0; left:0; height:100%; width:32%; background:linear-gradient(100deg,transparent,rgba(255,255,255,.22),transparent); animation:fypassShine 3.4s linear infinite; pointer-events:none; }
 @keyframes toastRingDraw { from { stroke-dashoffset: 57; } to { stroke-dashoffset: 0; } }
 @keyframes toastCheckDraw { from { stroke-dashoffset: 16; } to { stroke-dashoffset: 0; } }
+.skel{ position:relative; overflow:hidden; background:var(--surface2); border-radius:8px; }
+.skel::after{ content:''; position:absolute; inset:0; transform:translateX(-100%); background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent); animation:skelShine 1.25s ease-in-out infinite; }
+@keyframes skelShine{ 100%{ transform:translateX(100%); } }
 @keyframes fypassShine{ 0%{ transform:translateX(-160%); } 100%{ transform:translateX(430%); } }
 .fypass-chip{ font-size:13px; font-weight:700; color:#fff; background:rgba(255,255,255,.20); border:1px solid rgba(255,255,255,.4); border-radius:9px; padding:5px 11px; }
 .fypass-close{ position:absolute; top:16px; right:16px; z-index:2; width:40px; height:40px; border-radius:50%; background:rgba(0,0,0,.18); border:none; color:#fff; font-size:22px; line-height:1; cursor:pointer; }
@@ -4579,11 +4582,21 @@ async function supaPullAllMasters(){
   // app_state（運用データ key/value）→ 各キーへ復元
   // v646: ingredients(約1.6秒) と app_state(約2.8秒) は重く、起動直後の画面には不要（キャッシュで表示できる）。
   //       これらは待たずに裏で取得し、完了後に現在ページを再描画する。→ ログイン体感を大幅短縮（正しさは不変）。
+  // v652: 重いデータ(app_state/ingredients)の裏取得。開始時に _heavyPending を立て、完了/失敗/8秒で解除→本物再描画（コールド時のスケルトン制御用）。
+  try { window._heavyPending = true; } catch(e){}
+  var _heavyDone = function(){
+    if(!window._heavyPending) return;
+    window._heavyPending = false;
+    try{ localStorage.setItem('heavy_ready','1'); }catch(e){}
+    try{ if(typeof curPage!=='undefined' && curPage && typeof renderPage==='function') renderPage(curPage); }catch(e){}
+  };
+  var _heavyTimer = setTimeout(_heavyDone, 8000);
   Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ localStorage.setItem('m_ingredients', JSON.stringify(_ia)); } } } catch(e){}
     try { _applyKvRows(_dres[1]); } catch(e){}
-    try { if(typeof curPage!=='undefined' && curPage && typeof renderPage==='function') renderPage(curPage); } catch(e){}
-  }).catch(function(e){ console.warn('deferred pull(ingredients/app_state)', e); });
+    try{ clearTimeout(_heavyTimer); }catch(e){}
+    _heavyDone();
+  }).catch(function(e){ console.warn('deferred pull(ingredients/app_state)', e); try{ clearTimeout(_heavyTimer); }catch(_e){} _heavyDone(); });
   results.push('ingredients/app_state: 裏で取得中（完了後に再描画）');
   return results;
 }
@@ -6882,9 +6895,25 @@ var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export',
 /* ============================================================
    ROUTER
 ============================================================ */
+var SKEL_LIGHT_PAGES = { settings:1, mypage:1, crew_handbook:1, notifications:1, biz_guide:1, required:1, goals:1 };
+function skeletonMain(){
+  function ln(w,h,mt){ return '<div class="skel" style="height:'+(h||12)+'px;width:'+w+';border-radius:6px;'+(mt?'margin-top:'+mt+'px;':'')+'"></div>'; }
+  function card(){ return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px">'+ln('45%',14)+ln('82%',12,10)+ln('66%',12,8)+ln('90%',12,8)+'</div>'; }
+  var head='<div style="display:flex;align-items:center;gap:10px;margin:6px 0 14px"><div class="skel" style="width:30px;height:30px;border-radius:9px"></div><div style="flex:1">'+ln('42%',15)+ln('62%',10,7)+'</div></div>';
+  var tiles='<div style="display:flex;gap:10px;margin-bottom:12px"><div class="skel" style="flex:1;height:64px;border-radius:12px"></div><div class="skel" style="flex:1;height:64px;border-radius:12px"></div><div class="skel" style="flex:1;height:64px;border-radius:12px"></div></div>';
+  return '<div style="padding:2px" aria-busy="true">'+head+tiles+card()+card()+'</div>';
+}
 function renderPage(page) {
   if (typeof isPageHiddenForMe==='function' && isPageHiddenForMe(page)) { var _ga=groupsForRole()[0]; page = (_ga && _ga.children && _ga.children[0]) || 'mypage'; }
   var el = document.getElementById('main-content');
+  // v652: コールドスタート時のみ、重いデータ裏取得中はスケルトン表示。完了後の再描画で本物へ差し替え。ウォームは即表示。
+  if (window._heavyPending && localStorage.getItem('heavy_ready')!=='1' && !SKEL_LIGHT_PAGES[page]) {
+    if(el){ el.innerHTML = skeletonMain(); }
+    try{ renderNotifBell(); }catch(e){}
+    try{ updateFavStar(); }catch(e){}
+    window.scrollTo(0,0);
+    return;
+  }
   if (curStore === 'OFFICE' && OFFICE_OK_PAGES.indexOf(page) < 0) { el.innerHTML = renderOfficeMgr(); window.scrollTo(0,0); return; }
   switch(page) {
     case 'dashboard':    el.innerHTML = renderFavCard() + renderDashboard(); break;
@@ -18203,7 +18232,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '651';
+const APP_VERSION = '652';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
