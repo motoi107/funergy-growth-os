@@ -18232,7 +18232,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '654';
+const APP_VERSION = '655';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -19614,13 +19614,16 @@ function renderShiftBuilderF01(storeId, week){
     +'<button class="btn btn-secondary btn-sm" onclick="openShiftFixedEditor(\''+storeId+'\')"><i class="ti ti-lock"></i> Fixed</button>'
     +'<button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor(\''+storeId+'\')"><i class="ti ti-clock"></i> Times</button>'
     +'<button class="btn btn-secondary btn-sm" onclick="syncF01Times(\''+storeId+'\',\''+week+'\')"><i class="ti ti-refresh"></i> Apply times</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openShiftSecRoleEditor(\''+storeId+'\')"><i class="ti ti-users-group"></i> 出勤区分</button>'
     +'<div style="flex:1"></div>'
     +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> Image</button>'
     +(plan.status==='\u516c\u958b'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
     +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> \u30c7\u30a3\u30ca\u30fc\u55b6\u696d\uff08\u4e0a\uff09\u3068\u30d7\u30ec\u30c3\u30d7\uff08\u4e0b\uff09\u3092\u5206\u3051\u3066\u4f5c\u6210\u3002\u30c7\u30a3\u30ca\u30fc\u306f\u30bf\u30c3\u30d7\u3067\u5f79\u8077\u30fb\u6642\u9593\u30fb\u300c\u8a2d\u55b6\u300d\u62c5\u5f53\u3092\u8a2d\u5b9a\u3002\u30d7\u30ec\u30c3\u30d7\u306f\u30bf\u30c3\u30d7\u3067\u8907\u6570\u9078\u629e\u53ef\uff08\u4f8b Pork+Kitchen\uff09\u3002\u9031\u5408\u8a08h\u306f<b>\u30c7\u30a3\u30ca\u30fc\uff0b\u30d7\u30ec\u30c3\u30d7\u306e\u5408\u7b97</b>\u306740h\u8d85\u3092\u8b66\u544a\u3002</div></div>';
   html+='<div style="font-size:12px;font-weight:800;margin:2px 0 4px"><i class="ti ti-table" style="color:var(--accent)"></i> '+escapeHtml(store.name)+' Shift Builder</div>';
-  html+=_f01SectionMatrix(storeId, week, 'Dinner', '\u30c7\u30a3\u30ca\u30fc\u55b6\u696d', names, asg, availByDay, dates, dowEn, wkAll, true);
-  html+=_f01SectionMatrix(storeId, week, 'Prep', '\u30d7\u30ec\u30c3\u30d7\uff08\u4ed5\u8fbc\u307f\uff09', names, asg, availByDay, dates, dowEn, wkPrep, false);
+  var dinnerNames=names.filter(function(n){ return getShiftSecRole(storeId,n).dinner || _f01HasSec(asg,n,'dinner'); });
+  var prepNames=names.filter(function(n){ return getShiftSecRole(storeId,n).prep || _f01HasSec(asg,n,'prep'); });
+  html+=_f01SectionMatrix(storeId, week, 'Dinner', '\u30c7\u30a3\u30ca\u30fc\u55b6\u696d', dinnerNames, asg, availByDay, dates, dowEn, wkAll, true);
+  html+=_f01SectionMatrix(storeId, week, 'Prep', '\u30d7\u30ec\u30c3\u30d7\uff08\u4ed5\u8fbc\u307f\uff09', prepNames, asg, availByDay, dates, dowEn, wkPrep, false);
   return html;
 }
 /* ディナー セル編集（役職＋時間＋設営チェック） */
@@ -19724,6 +19727,56 @@ function syncF01Times(storeId, week){
     plan.meta[k]=nm;
   });
   setShiftPlan(storeId,week,plan); showToast('\u65e2\u5b9a\u306e\u6642\u9593\u3092\u9069\u7528\u3057\u307e\u3057\u305f','success'); renderPage('shift_admin');
+}
+
+/* ===== F01 出勤区分（営業 / プレップ）=====
+   shift_secrole[storeId][name] = {dinner:bool, prep:bool}。未設定は両方ON（安全）。
+   営業表=dinner ON の人、プレップ表=prep ON の人。割当がある人は設定に関わらず必ず表示。 */
+function getShiftSecRole(storeId, name){
+  try{ var cfg=ls('shift_secrole',{})||{}; var m=(cfg[storeId]||{})[name]; if(m) return {dinner:m.dinner!==false, prep:m.prep!==false}; }catch(e){}
+  return {dinner:true, prep:true};
+}
+function _f01HasSec(asg, name, which){
+  var d=asg[name]||{}; return Object.keys(d).some(function(day){ return !!d[day][which]; });
+}
+/* スキル/役職から出勤区分のたたき台を算出（プレップKitchenとディナーKitchenが同名のため安全側で両方） */
+function _shiftSecRoleAuto1(storeId, name){
+  var emp=(typeof getEmployees==='function'?getEmployees():[]).find(function(e){return e.name===name;})||{};
+  var dinPos=['Host','Server','Bar','Drink','Yakitori'];
+  var hasDin=dinPos.some(function(p){ return (positionLevelStore(name,p,storeId)||0)>0; });
+  var hasKit=(positionLevelStore(name,'Kitchen',storeId)||0)>0;
+  var prepTitle=/prep/i.test(emp.title||'');
+  var dinner=hasDin || (hasKit && !prepTitle);
+  var prep=prepTitle || hasKit;
+  if(!dinner && !prep){ dinner=true; prep=true; }
+  return {dinner:dinner, prep:prep};
+}
+function _secRoleFillAuto(storeId){
+  Array.prototype.forEach.call(document.querySelectorAll('.secrole-d'), function(b){ b.checked=_shiftSecRoleAuto1(storeId, b.getAttribute('data-name')).dinner; });
+  Array.prototype.forEach.call(document.querySelectorAll('.secrole-p'), function(b){ b.checked=_shiftSecRoleAuto1(storeId, b.getAttribute('data-name')).prep; });
+}
+function saveShiftSecRole(storeId){
+  var cfg=ls('shift_secrole',{})||{}; if(!cfg[storeId])cfg[storeId]={};
+  var acc={};
+  Array.prototype.forEach.call(document.querySelectorAll('.secrole-d'), function(b){ var n=b.getAttribute('data-name'); if(!acc[n])acc[n]={}; acc[n].dinner=b.checked; });
+  Array.prototype.forEach.call(document.querySelectorAll('.secrole-p'), function(b){ var n=b.getAttribute('data-name'); if(!acc[n])acc[n]={}; acc[n].prep=b.checked; });
+  Object.keys(acc).forEach(function(n){ cfg[storeId][n]={dinner:!!acc[n].dinner, prep:!!acc[n].prep}; });
+  lsSet('shift_secrole', cfg);
+  closeModalDirect(); showToast('\u51fa\u52e4\u533a\u5206\u3092\u4fdd\u5b58\u3057\u307e\u3057\u305f', 'success'); renderPage('shift_admin');
+}
+function openShiftSecRoleEditor(storeId){
+  var staff=(typeof staffForStore==='function'?staffForStore(storeId):[]).slice().sort(function(a,b){ return String(a.name).localeCompare(b.name); });
+  var rows=staff.map(function(e){
+    var r=getShiftSecRole(storeId, e.name); var dn=escapeHtml(e.name); var nm=dn.replace(/"/g,'');
+    return '<tr style="border-top:1px solid var(--border)"><td style="text-align:left;font-weight:600;font-size:12px;padding:4px 2px">'+dn+(e.title?' <span style="font-size:9px;color:var(--muted)">'+escapeHtml(e.title)+'</span>':'')+'</td>'
+      +'<td style="text-align:center"><input type="checkbox" class="secrole-d" data-name="'+nm+'"'+(r.dinner?' checked':'')+' style="width:18px;height:18px"></td>'
+      +'<td style="text-align:center"><input type="checkbox" class="secrole-p" data-name="'+nm+'"'+(r.prep?' checked':'')+' style="width:18px;height:18px"></td></tr>';
+  }).join('');
+  openModal('<div class="modal-title"><i class="ti ti-users-group"></i> \u51fa\u52e4\u533a\u5206\uff08\u55b6\u696d / \u30d7\u30ec\u30c3\u30d7\uff09 <button class="modal-close" onclick="closeModalDirect()">\u00d7</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> \u5404\u30b9\u30bf\u30c3\u30d5\u304c\u300c\u55b6\u696d\u8868\u300d\u300c\u30d7\u30ec\u30c3\u30d7\u8868\u300d\u306e\u3069\u3061\u3089\u306b\u51fa\u308b\u304b\u3092\u8a2d\u5b9a\u3002\u4e21\u65b9ON\u306f\u4e21\u65b9\u306b\u8868\u793a\u3002\u672a\u8a2d\u5b9a\u306f\u4e21\u65b9\u3002<b>\u81ea\u52d5\u8a2d\u5b9a</b>\u3067\u30b9\u30ad\u30eb/\u5f79\u8077\u304b\u3089\u305f\u305f\u304d\u53f0\u3092\u5165\u308c\u3066\u5fae\u8abf\u6574\u3067\u304d\u307e\u3059\u3002</div>'
+    +'<div style="margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="_secRoleFillAuto(\''+storeId+'\')"><i class="ti ti-wand"></i> \u81ea\u52d5\u8a2d\u5b9a\uff08\u30b9\u30ad\u30eb\u304b\u3089\uff09</button></div>'
+    +'<div style="max-height:52vh;overflow:auto"><table class="inv-table" style="width:100%;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left">\u30b9\u30bf\u30c3\u30d5</th><th style="text-align:center;width:52px">\u55b6\u696d</th><th style="text-align:center;width:60px">\u30d7\u30ec\u30c3\u30d7</th></tr></thead><tbody>'+(rows||'<tr><td colspan="3" style="color:var(--muted);text-align:center;padding:16px">\u30b9\u30bf\u30c3\u30d5\u304c\u3044\u307e\u305b\u3093</td></tr>')+'</tbody></table></div>'
+    +'<div class="btn-row" style="margin-top:10px"><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">Cancel</button><button class="btn btn-primary" onclick="saveShiftSecRole(\''+storeId+'\')">Save</button></div>');
 }
 
 function renderShiftBoard(storeId, week){
