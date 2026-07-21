@@ -18232,7 +18232,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '653';
+const APP_VERSION = '654';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -18246,7 +18246,7 @@ var SHIFT_LAYOUTS = {
         slots:[
         {label:'Host', pos:'Host'}, {label:'Bar', pos:'Bar'}, {label:'Drink', pos:'Drink'},
         {label:'Yakitori', pos:'Yakitori'}, {label:'Kitchen', pos:'Kitchen'} ] },
-      { key:'Prep', label:'Prep（仕込み）', hours:4, optional:true, slots:[
+      { key:'Prep', label:'Prep（仕込み）', hours:4, optional:true, headcount:{ fillPos:'Prep', fillLabel:'Prep', min:0, max:6, default:1 }, slots:[
         {label:'Pork', pos:'Kitchen'}, {label:'Chicken', pos:'Kitchen'}, {label:'Kitchen', pos:'Kitchen'} ] }
     ]
   },
@@ -18817,7 +18817,7 @@ function renderShiftAdmin() {
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
-  else if (shiftAdminTab==='build') html += ((storeId==='F02'||storeId==='F01') ? renderShiftBuilderF02(storeId, week) : renderShiftBuild(storeId, week));
+  else if (shiftAdminTab==='build') html += (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : (storeId==='F01' ? renderShiftBuilderF01(storeId, week) : renderShiftBuild(storeId, week)));
   else if (shiftAdminTab==='table') html += (storeId==='F01' ? renderShiftBoard(storeId, week) : (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : renderShiftTable(storeId, week)));
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
@@ -19473,6 +19473,259 @@ function cutShiftF02Cell(storeId, week, name, day, part){
   _f02ClearPart(plan, name, day, part, storeId);
   setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
 }
+/* ===== F01(ToriTon) 専用シフトビルダー：ディナー営業(上)＋プレップ(下)を上下2表に分離 =====
+   ・ディナー: Host/Server/Bar/Drink/Yakitori/Kitchen ＋「設営」マーク(meta.setting)
+   ・プレップ: Pork/Chicken/Kitchen を複数選択（1人1日=1セル＝1シフト・meta.preps[]、時間は1回だけ算入）
+   ・本数は Dinner/Prep それぞれ。週合計h＋40h超OTは Dinner+Prep 合算で判定。F02は不変。 */
+function _f01Assigned(plan){
+  var asg={};
+  Object.keys((plan&&plan.cells)||{}).forEach(function(k){
+    var name=plan.cells[k]; if(!name) return;
+    var u1=k.indexOf('_'); if(u1<0) return; var day=k.substring(0,u1); var rest=k.substring(u1+1);
+    var u2=rest.indexOf('_'); if(u2<0) return; var sec=rest.substring(0,u2); var label=rest.substring(u2+1);
+    var m=((plan.meta)||{})[k]||{};
+    if(!asg[name]) asg[name]={}; if(!asg[name][day]) asg[name][day]={};
+    var slot=asg[name][day];
+    if(sec==='Prep'){
+      if(!slot.prep) slot.prep={ preps:[], start:m.start||'', end:m.end||'', fixed:!!m.fixed, key:k };
+      var ps=(m.preps&&m.preps.length)?m.preps:[label.split('#')[0]];
+      ps.forEach(function(p){ if(p && slot.prep.preps.indexOf(p)<0) slot.prep.preps.push(p); });
+      if(!slot.prep.start && m.start) slot.prep.start=m.start;
+      if(!slot.prep.end && m.end) slot.prep.end=m.end;
+    } else {
+      if(!slot.dinner) slot.dinner={ pos:label.split('#')[0], start:m.start||'', end:m.end||'', fixed:!!m.fixed, setting:!!m.setting, key:k };
+    }
+  });
+  return asg;
+}
+function _f01PrepTime(storeId, pr){
+  var st=pr.start, en=pr.end;
+  if(!st||!en){ var d=_shiftPosTimeDef(storeId,'Prep','Kitchen')||{}; if(!st)st=d.start||''; if(!en)en=d.end||''; }
+  var sm=_stTimeToMin(st), em=_stTimeToMin(en); var hrs=0;
+  if(sm!=null&&em!=null){ var h=Math.round((em-sm)/60*10)/10; if(h>0)hrs=h; }
+  return {start:st,end:en,hrs:hrs};
+}
+function _f01PrepOptions(storeId){
+  var lay=SHIFT_LAYOUTS[storeId]; var sec=(lay&&lay.sections||[]).find(function(s){return s.key==='Prep';});
+  var out=[]; if(sec){ (sec.slots||[]).forEach(function(sl){ if(out.indexOf(sl.label)<0) out.push(sl.label); }); }
+  return out.length?out:['Pork','Chicken','Kitchen'];
+}
+function _f01DinnerCell(storeId, week, name, day, dn, availHere){
+  var esc=name.replace(/'/g,"\\'");
+  var click='onclick="openShiftF01Dinner(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')"';
+  if(dn){
+    var tt=_f02Time(storeId,{sec:'Dinner',pos:dn.pos,start:dn.start,end:dn.end}); var lv=positionLevelStore(name, dn.pos, storeId);
+    var bg=dn.fixed?'rgba(34,197,94,.12)':'transparent';
+    var tm=(tt.start&&tt.end)?(tt.start+'\u2013'+tt.end):'ON';
+    return { on:true, html:'<div '+click+' style="cursor:pointer;padding:3px 4px;background:'+bg+'">'
+      +'<div style="font-size:10px;font-weight:700;color:var(--tm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(dn.pos)+(lv?' <span style="font-size:8px;color:var(--accent);font-weight:800">Lv'+lv+'</span>':'')+(dn.fixed?' <i class="ti ti-lock" style="font-size:8px"></i>':'')+'</div>'
+      +'<div style="font-size:8px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(tm)+(tt.hrs?' ('+tt.hrs+'h)':'')+'</div>'
+      +(dn.setting?'<div style="margin-top:1px"><span style="background:var(--amber);color:#fff;padding:0 4px;border-radius:4px;font-size:8px;font-weight:700">\u8a2d\u55b6</span></div>':'')
+      +'</div>' };
+  } else if(availHere){
+    return { on:false, html:'<div '+click+' style="cursor:pointer;padding:4px;color:var(--accent2);font-size:9px;text-align:center"><i class="ti ti-plus" style="font-size:8px"></i></div>' };
+  }
+  return { on:false, html:'<div '+click+' style="cursor:pointer;padding:4px;color:var(--border);font-size:9px;text-align:center">\u00b7</div>' };
+}
+function _f01PrepCell(storeId, week, name, day, pr, availHere){
+  var esc=name.replace(/'/g,"\\'");
+  var click='onclick="openShiftF01Prep(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')"';
+  if(pr && pr.preps && pr.preps.length){
+    var tt=_f01PrepTime(storeId, pr);
+    var bg=pr.fixed?'rgba(34,197,94,.12)':'transparent';
+    var tm=(tt.start&&tt.end)?(tt.start+'\u2013'+tt.end):'ON';
+    return { on:true, html:'<div '+click+' style="cursor:pointer;padding:3px 4px;background:'+bg+'">'
+      +'<div style="font-size:10px;font-weight:700;color:var(--tm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(pr.preps.join('+'))+(pr.fixed?' <i class="ti ti-lock" style="font-size:8px"></i>':'')+'</div>'
+      +'<div style="font-size:8px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(tm)+(tt.hrs?' ('+tt.hrs+'h)':'')+'</div>'
+      +'</div>' };
+  } else if(availHere){
+    return { on:false, html:'<div '+click+' style="cursor:pointer;padding:4px;color:var(--accent2);font-size:9px;text-align:center"><i class="ti ti-plus" style="font-size:8px"></i></div>' };
+  }
+  return { on:false, html:'<div '+click+' style="cursor:pointer;padding:4px;color:var(--border);font-size:9px;text-align:center">\u00b7</div>' };
+}
+function _f01SectionMatrix(storeId, week, secKey, secLabel, names, asg, availByDay, dates, dowEn, wkMap, isDinner){
+  var icon=isDinner?'ti-moon':'ti-tools';
+  var accent=isDinner?'var(--accent)':'var(--accent2)';
+  var hc='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px"><span style="font-weight:700;font-size:10px;color:var(--muted)"><i class="ti ti-users"></i> \u66dc\u65e5\u5225\u672c\u6570</span>';
+  hc+='<table style="border-collapse:collapse;font-size:10px"><tr>'+DOW_SHIFT.map(function(day,i){
+    var n=shiftHeadcount(storeId, secKey, day);
+    return '<td style="text-align:center;padding:0 2px"><div style="font-weight:700;color:var(--tm);font-size:9px">'+dowEn[i]+'</div>'
+      +'<div style="white-space:nowrap"><button class="btn btn-secondary btn-sm" style="padding:0 5px;min-width:0" onclick="shiftHeadStep(\''+storeId+'\',\''+secKey+'\',\''+day+'\',-1)">\u2212</button> <b style="color:var(--tm)">'+n+'</b> <button class="btn btn-secondary btn-sm" style="padding:0 5px;min-width:0" onclick="shiftHeadStep(\''+storeId+'\',\''+secKey+'\',\''+day+'\',1)">\uff0b</button></div></td>';
+  }).join('')+'</tr></table></div>';
+  var dayHead=dowEn.map(function(dw,i){ var ds=dates[i]?dates[i].slice(5).replace('-','/'):''; return '<th style="text-align:center;border-left:1px solid var(--border);font-size:10px;padding:4px 3px;min-width:96px">'+dw+'<div style="font-size:9px;color:var(--muted);font-weight:400">'+ds+'</div></th>'; }).join('');
+  var wkHeadLabel=isDinner?'Weekly<div style="font-size:8px;color:var(--muted);font-weight:400">D+Prep \u00b7 max40h</div>':'Prep h';
+  var html='<div class="card" style="overflow-x:auto;padding:8px;margin-bottom:12px">'
+    +'<div style="font-size:12px;font-weight:800;margin-bottom:2px"><i class="ti '+icon+'" style="color:'+accent+'"></i> '+secLabel+'</div>'
+    +hc
+    +'<table class="inv-table" style="min-width:820px;font-size:11px;border-collapse:collapse"><thead><tr><th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:104px">Staff</th>'+dayHead+'<th style="border-left:2px solid '+accent+';color:'+accent+';font-size:10px;min-width:58px">'+wkHeadLabel+'</th></tr></thead><tbody>';
+  var dayCount={}; DOW_SHIFT.forEach(function(d){dayCount[d]=0;});
+  if(!names.length){
+    html+='<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:20px"><i class="ti ti-calendar-off" style="font-size:20px"></i><div style="margin-top:6px">\u307e\u3060\u63d0\u51fa\u304c\u3042\u308a\u307e\u305b\u3093</div></td></tr>';
+  }
+  names.forEach(function(name){
+    html+='<tr style="border-top:1px solid var(--border)"><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface);z-index:1">'+escapeHtml(name)+'</td>';
+    DOW_SHIFT.forEach(function(day){
+      var dd=(asg[name]||{})[day]||{};
+      var availHere=(availByDay[name]||{})[day];
+      var cell = isDinner ? _f01DinnerCell(storeId, week, name, day, dd.dinner, availHere)
+                          : _f01PrepCell(storeId, week, name, day, dd.prep, availHere);
+      if(cell.on) dayCount[day]++;
+      html+='<td style="border-left:1px solid var(--border);padding:0">'+cell.html+'</td>';
+    });
+    var wk=wkMap[name]||0; var wkCell;
+    if(isDinner){
+      if(wk>40){ var ot=Math.round((wk-40)*10)/10; wkCell='<span style="color:var(--red);font-weight:800">'+wk+'h</span><div style="font-size:8px;color:var(--red);font-weight:700">\u26a0 OT +'+ot+'h</div>'; }
+      else if(wk>=38){ wkCell='<span style="color:var(--yellow,#d97706);font-weight:800">'+wk+'h</span>'; }
+      else { wkCell=wk?('<span style="font-weight:800;color:'+accent+'">'+wk+'h</span>'):''; }
+    } else { wkCell=wk?('<span style="font-weight:800;color:'+accent+'">'+wk+'h</span>'):''; }
+    html+='<td style="border-left:2px solid '+accent+';text-align:center">'+wkCell+'</td></tr>';
+  });
+  html+='</tbody><tfoot><tr style="border-top:2px solid '+accent+'"><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface2)">\u4eba\u6570</td>'
+    +DOW_SHIFT.map(function(d){ var n=dayCount[d]||0; var tgt=shiftHeadcount(storeId, secKey, d); var col=(tgt&&n<tgt)?'var(--red)':((tgt&&n>=tgt)?'var(--green)':'var(--tm)'); return '<td style="text-align:center;font-weight:700;border-left:1px solid var(--border);background:var(--surface2);color:'+col+'">'+(n||'')+(tgt?'<span style="font-size:8px;color:var(--muted)">/'+tgt+'</span>':'')+'</td>'; }).join('')
+    +'<td style="border-left:2px solid '+accent+';background:var(--surface2)"></td></tr></tfoot></table>';
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"><i class="ti ti-info-circle"></i> '
+    +(isDinner?'\u30bf\u30c3\u30d7\u3067\u5f79\u8077\u30fb\u6642\u9593\u30fb\u300c\u8a2d\u55b6\u300d\u62c5\u5f53\u3092\u8a2d\u5b9a\u3002<span style="background:var(--amber);color:#fff;padding:0 4px;border-radius:4px;font-size:9px">\u8a2d\u55b6</span>\uff1d\u30bb\u30c3\u30c6\u30a3\u30f3\u30b0\u62c5\u5f53\u3002\u9031\u5408\u8a08\u306f\u30d7\u30ec\u30c3\u30d7\u8fbc\u307f\u3002'
+             :'\u30bf\u30c3\u30d7\u3067\u4ed5\u8fbc\u307f\u3092\u8907\u6570\u9078\u629e\uff08\u4f8b Pork+Kitchen\uff09\u30021\u4eba1\u65e5\uff1d1\u30b7\u30d5\u30c8\u306a\u306e\u3067\u6642\u9593\u306e\u4e8c\u91cd\u8a08\u4e0a\u306a\u3057\u3002')
+    +'</div></div>';
+  return html;
+}
+function renderShiftBuilderF01(storeId, week){
+  var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var avail=getAvailability(storeId, week)||[];
+  var asg=_f01Assigned(plan);
+  var availByDay={}; avail.forEach(function(a){ (a.slots||[]).forEach(function(s){ if(!availByDay[a.name])availByDay[a.name]={}; availByDay[a.name][s.day]=true; }); });
+  var nameSet={}; avail.forEach(function(a){nameSet[a.name]=1;}); Object.keys(asg).forEach(function(n){nameSet[n]=1;});
+  var names=Object.keys(nameSet).sort(function(a,b){ var ca=Object.keys(asg[a]||{}).length, cb=Object.keys(asg[b]||{}).length; return cb-ca || String(a).localeCompare(b); });
+  var dates=DOW_SHIFT.map(weekDateForDow);
+  var dowEn=DOW_SHIFT_EN();
+  var wkAll={}, wkPrep={};
+  names.forEach(function(name){
+    var tot=0, pt=0;
+    DOW_SHIFT.forEach(function(day){
+      var dd=(asg[name]||{})[day]||{};
+      if(dd.dinner){ tot+=_f02Time(storeId,{sec:'Dinner',pos:dd.dinner.pos,start:dd.dinner.start,end:dd.dinner.end}).hrs; }
+      if(dd.prep){ var ph=_f01PrepTime(storeId,dd.prep).hrs; tot+=ph; pt+=ph; }
+    });
+    wkAll[name]=Math.round(tot*10)/10; wkPrep[name]=Math.round(pt*10)/10;
+  });
+  var html='<div class="card" style="padding:10px 12px;margin-bottom:10px"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +'<button class="btn btn-primary btn-sm" onclick="shiftF02Reflect(\''+storeId+'\',\''+week+'\')"><i class="ti ti-wand"></i> Reflect</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openShiftFixedEditor(\''+storeId+'\')"><i class="ti ti-lock"></i> Fixed</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor(\''+storeId+'\')"><i class="ti ti-clock"></i> Times</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="syncF01Times(\''+storeId+'\',\''+week+'\')"><i class="ti ti-refresh"></i> Apply times</button>'
+    +'<div style="flex:1"></div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> Image</button>'
+    +(plan.status==='\u516c\u958b'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
+    +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> \u30c7\u30a3\u30ca\u30fc\u55b6\u696d\uff08\u4e0a\uff09\u3068\u30d7\u30ec\u30c3\u30d7\uff08\u4e0b\uff09\u3092\u5206\u3051\u3066\u4f5c\u6210\u3002\u30c7\u30a3\u30ca\u30fc\u306f\u30bf\u30c3\u30d7\u3067\u5f79\u8077\u30fb\u6642\u9593\u30fb\u300c\u8a2d\u55b6\u300d\u62c5\u5f53\u3092\u8a2d\u5b9a\u3002\u30d7\u30ec\u30c3\u30d7\u306f\u30bf\u30c3\u30d7\u3067\u8907\u6570\u9078\u629e\u53ef\uff08\u4f8b Pork+Kitchen\uff09\u3002\u9031\u5408\u8a08h\u306f<b>\u30c7\u30a3\u30ca\u30fc\uff0b\u30d7\u30ec\u30c3\u30d7\u306e\u5408\u7b97</b>\u306740h\u8d85\u3092\u8b66\u544a\u3002</div></div>';
+  html+='<div style="font-size:12px;font-weight:800;margin:2px 0 4px"><i class="ti ti-table" style="color:var(--accent)"></i> '+escapeHtml(store.name)+' Shift Builder</div>';
+  html+=_f01SectionMatrix(storeId, week, 'Dinner', '\u30c7\u30a3\u30ca\u30fc\u55b6\u696d', names, asg, availByDay, dates, dowEn, wkAll, true);
+  html+=_f01SectionMatrix(storeId, week, 'Prep', '\u30d7\u30ec\u30c3\u30d7\uff08\u4ed5\u8fbc\u307f\uff09', names, asg, availByDay, dates, dowEn, wkPrep, false);
+  return html;
+}
+/* ディナー セル編集（役職＋時間＋設営チェック） */
+function openShiftF01Dinner(storeId, week, name, day){
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var asg=_f01Assigned(plan); var cur=((asg[name]||{})[day]||{}).dinner||null;
+  var defs=shiftAllSlotDefs(storeId).filter(function(d){ return d.sec==='Dinner'; });
+  var optsHtml=defs.map(function(d){ var lv=positionLevelStore(name, d.pos, storeId); var v=d.pos+'||'+d.label; var sel=(cur && d.label===cur.pos); return '<option value="'+v.replace(/"/g,'')+'"'+(sel?' selected':'')+'>'+escapeHtml(d.disp)+(lv?' (Lv'+lv+')':'')+'</option>'; }).join('');
+  var st='', en=''; if(cur){ var tt=_f02Time(storeId,{sec:'Dinner',pos:cur.pos,start:cur.start,end:cur.end}); st=tt.start; en=tt.end; }
+  var esc=name.replace(/'/g,"\\'");
+  openModal('<div class="modal-title">'+escapeHtml(name)+' \u2014 '+escapeHtml(DOW_SHIFT_EN()[DOW_SHIFT.indexOf(day)]||day)+' \u00b7 <span style="color:var(--accent)">\u30c7\u30a3\u30ca\u30fc</span> <button class="modal-close" onclick="closeModalDirect()">\u00d7</button></div>'
+    +'<div class="form-group"><label class="form-label">\u30dd\u30b8\u30b7\u30e7\u30f3</label><select class="form-select" id="f01d-slot" onchange="_f01DSlotChange(\''+storeId+'\')"><option value="">\u2014 \u9078\u629e \u2014</option>'+optsHtml+'</select></div>'
+    +'<div style="display:flex;gap:8px"><div class="form-group" style="flex:1"><label class="form-label">Start</label><input class="form-input" id="f01d-start" type="time" value="'+st+'"></div><div class="form-group" style="flex:1"><label class="form-label">End</label><input class="form-input" id="f01d-end" type="time" value="'+en+'"></div></div>'
+    +'<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:2px 0 10px;cursor:pointer"><input type="checkbox" id="f01d-setting"'+(cur&&cur.setting?' checked':'')+' style="width:18px;height:18px"> <span><b>\u8a2d\u55b6</b>\uff08\u30bb\u30c3\u30c6\u30a3\u30f3\u30b0\u62c5\u5f53\uff09\u306b\u3059\u308b</span></label>'
+    +'<div class="btn-row">'+(cur?'<button class="btn btn-danger" onclick="cutShiftF01Dinner(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')"><i class="ti ti-scissors"></i> Cut</button>':'')+'<div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">Cancel</button><button class="btn btn-primary" onclick="saveShiftF01Dinner(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')">Save</button></div>');
+}
+function _f01DSlotChange(storeId){
+  var v=(document.getElementById('f01d-slot')||{}).value||''; if(!v) return;
+  var p=v.split('||'); var def=_shiftPosTimeDef(storeId,'Dinner',p[0])||{};
+  var s=document.getElementById('f01d-start'), e=document.getElementById('f01d-end');
+  if(s && def.start) s.value=def.start; if(e && def.end) e.value=def.end;
+}
+function _f01ClearDinner(plan, name, day){
+  Object.keys(plan.cells).forEach(function(k){
+    if(plan.cells[k]!==name || k.indexOf(day+'_')!==0) return;
+    var rest=k.substring(day.length+1); var u=rest.indexOf('_'); if(u<0) return; var sec=rest.substring(0,u);
+    if(sec!=='Prep'){ delete plan.cells[k]; if(plan.meta) delete plan.meta[k]; }
+  });
+}
+function saveShiftF01Dinner(storeId, week, name, day){
+  var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}}; if(!plan.meta)plan.meta={};
+  _f01ClearDinner(plan, name, day);
+  var v=(document.getElementById('f01d-slot')||{}).value||'';
+  if(!v){ setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin'); return; }
+  var p=v.split('||'); var pos=p[0], base=p[1];
+  var st=(document.getElementById('f01d-start')||{}).value||''; var en=(document.getElementById('f01d-end')||{}).value||'';
+  if(!st||!en){ var d=_shiftPosTimeDef(storeId,'Dinner',pos)||{}; if(!st)st=d.start||''; if(!en)en=d.end||''; }
+  var setting=!!((document.getElementById('f01d-setting')||{}).checked);
+  var label=base+'#'+name; var key=shiftCellKey(day, 'Dinner', label);
+  plan.cells[key]=name; plan.meta[key]={start:st, end:en, fixed:false, setting:setting};
+  setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
+}
+function cutShiftF01Dinner(storeId, week, name, day){
+  var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}};
+  _f01ClearDinner(plan, name, day);
+  setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
+}
+/* プレップ セル編集（Pork/Chicken/Kitchen 複数選択＝1セル1シフト） */
+function openShiftF01Prep(storeId, week, name, day){
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var asg=_f01Assigned(plan); var cur=((asg[name]||{})[day]||{}).prep||null;
+  var opts=_f01PrepOptions(storeId); var chosen=(cur&&cur.preps)?cur.preps:[];
+  var boxes=opts.map(function(o){ var ck=chosen.indexOf(o)>=0; return '<label style="display:flex;align-items:center;gap:8px;font-size:14px;padding:7px 2px;cursor:pointer"><input type="checkbox" class="f01p-box" value="'+o.replace(/"/g,'')+'"'+(ck?' checked':'')+' style="width:18px;height:18px"> '+escapeHtml(o)+'</label>'; }).join('');
+  var st=cur?cur.start:'', en=cur?cur.end:'';
+  if(!st||!en){ var d=_shiftPosTimeDef(storeId,'Prep','Kitchen')||{}; if(!st)st=d.start||''; if(!en)en=d.end||''; }
+  var esc=name.replace(/'/g,"\\'");
+  openModal('<div class="modal-title">'+escapeHtml(name)+' \u2014 '+escapeHtml(DOW_SHIFT_EN()[DOW_SHIFT.indexOf(day)]||day)+' \u00b7 <span style="color:var(--accent2)">\u30d7\u30ec\u30c3\u30d7</span> <button class="modal-close" onclick="closeModalDirect()">\u00d7</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><i class="ti ti-info-circle"></i> \u4ed5\u8fbc\u307f\u3092\u8907\u6570\u9078\u3079\u307e\u3059\uff08\u4f8b Pork\uff0bKitchen\uff09\u30021\u30b7\u30d5\u30c8\uff1d1\u56de\u306e\u52e4\u52d9\u3068\u3057\u3066\u30ab\u30a6\u30f3\u30c8\u3002</div>'
+    +'<div class="form-group"><label class="form-label">\u4ed5\u8fbc\u307f\u5185\u5bb9</label><div style="border:1px solid var(--border);border-radius:8px;padding:2px 10px">'+boxes+'</div></div>'
+    +'<div style="display:flex;gap:8px"><div class="form-group" style="flex:1"><label class="form-label">Start</label><input class="form-input" id="f01p-start" type="time" value="'+st+'"></div><div class="form-group" style="flex:1"><label class="form-label">End</label><input class="form-input" id="f01p-end" type="time" value="'+en+'"></div></div>'
+    +'<div class="btn-row">'+(cur?'<button class="btn btn-danger" onclick="cutShiftF01Prep(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')"><i class="ti ti-scissors"></i> Cut</button>':'')+'<div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">Cancel</button><button class="btn btn-primary" onclick="saveShiftF01Prep(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\')">Save</button></div>');
+}
+function _f01ClearPrep(plan, name, day){
+  Object.keys(plan.cells).forEach(function(k){
+    if(plan.cells[k]!==name || k.indexOf(day+'_')!==0) return;
+    var rest=k.substring(day.length+1); var u=rest.indexOf('_'); if(u<0) return; var sec=rest.substring(0,u);
+    if(sec==='Prep'){ delete plan.cells[k]; if(plan.meta) delete plan.meta[k]; }
+  });
+}
+function saveShiftF01Prep(storeId, week, name, day){
+  var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}}; if(!plan.meta)plan.meta={};
+  _f01ClearPrep(plan, name, day);
+  var chosen=[]; Array.prototype.forEach.call(document.querySelectorAll('.f01p-box'), function(b){ if(b.checked) chosen.push(b.value); });
+  if(!chosen.length){ setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin'); return; }
+  var st=(document.getElementById('f01p-start')||{}).value||''; var en=(document.getElementById('f01p-end')||{}).value||'';
+  if(!st||!en){ var d=_shiftPosTimeDef(storeId,'Prep','Kitchen')||{}; if(!st)st=d.start||''; if(!en)en=d.end||''; }
+  var label='Prep#'+name; var key=shiftCellKey(day, 'Prep', label);
+  plan.cells[key]=name; plan.meta[key]={start:st, end:en, fixed:false, preps:chosen};
+  setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
+}
+function cutShiftF01Prep(storeId, week, name, day){
+  var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}};
+  _f01ClearPrep(plan, name, day);
+  setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
+}
+/* Apply times（F01専用：preps と setting を保持したまま既定時刻を再適用） */
+function syncF01Times(storeId, week){
+  var plan=getShiftPlan(storeId, week); if(!plan||!plan.cells){ showToast('No shifts to update','warning'); return; }
+  if(!confirm('\u65e2\u5b9a\u306e\u6642\u9593\u3092\u56fa\u5b9a\u4ee5\u5916\u306e\u5168\u30b7\u30d5\u30c8\u306b\u518d\u9069\u7528\u3057\u307e\u3059\uff08\u624b\u52d5\u7de8\u96c6\u306f\u4e0a\u66f8\u304d\uff09\u3002\u3088\u308d\u3057\u3044\u3067\u3059\u304b\uff1f')) return;
+  if(!plan.meta) plan.meta={};
+  Object.keys(plan.cells).forEach(function(k){
+    if(!plan.cells[k]) return;
+    var u1=k.indexOf('_'); if(u1<0) return; var rest=k.substring(u1+1); var u2=rest.indexOf('_'); if(u2<0) return;
+    var sec=rest.substring(0,u2); var label=rest.substring(u2+1);
+    var m=plan.meta[k]||{}; if(m.fixed) return;
+    var pos=(sec==='Prep')?'Kitchen':label.split('#')[0];
+    var d=_shiftPosTimeDef(storeId, sec, pos)||{};
+    var nm={start:d.start||'', end:d.end||'', fixed:false};
+    if(sec==='Prep' && m.preps) nm.preps=m.preps;
+    if(sec!=='Prep' && m.setting) nm.setting=m.setting;
+    plan.meta[k]=nm;
+  });
+  setShiftPlan(storeId,week,plan); showToast('\u65e2\u5b9a\u306e\u6642\u9593\u3092\u9069\u7528\u3057\u307e\u3057\u305f','success'); renderPage('shift_admin');
+}
+
 function renderShiftBoard(storeId, week){
   var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
   var plan=getShiftPlan(storeId, week)||{cells:{}, meta:{}};
