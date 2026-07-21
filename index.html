@@ -18232,7 +18232,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '652';
+const APP_VERSION = '653';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -18817,7 +18817,7 @@ function renderShiftAdmin() {
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
-  else if (shiftAdminTab==='build') html += (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : renderShiftBuild(storeId, week));
+  else if (shiftAdminTab==='build') html += ((storeId==='F02'||storeId==='F01') ? renderShiftBuilderF02(storeId, week) : renderShiftBuild(storeId, week));
   else if (shiftAdminTab==='table') html += (storeId==='F01' ? renderShiftBoard(storeId, week) : (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : renderShiftTable(storeId, week)));
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
@@ -19261,7 +19261,7 @@ function reflectF02(storeId, week){
         st=f.start||df.start||''; en=f.end||df.end||'';
       } else {
         sec='Dinner';
-        if(sectionClosedForDay(storeId, 'Dinner', dateISO, day)) sec='Lunch';
+        if(sectionClosedForDay(storeId, 'Dinner', dateISO, day) && SHIFT_LAYOUTS[storeId] && (SHIFT_LAYOUTS[storeId].sections||[]).some(function(s){return s.key==='Lunch';})) sec='Lunch';
         pos='Server'; base='Server';
         var d=_shiftPosTimeDef(storeId, sec, pos)||{}; st=d.start||''; en=d.end||'';
       }
@@ -19276,22 +19276,31 @@ function reflectF02(storeId, week){
 function shiftF02Reflect(storeId, week){
   var av=getAvailability(storeId, week)||[]; var fx=getShiftFixed(storeId);
   if(!av.length && !Object.keys(fx).length){ showToast('No submissions or fixed shifts yet','warning'); return; }
-  if(!confirm('Rebuild the draft by placing every available person ON for their submitted days (default times per position). Assign Lunch (L) / Dinner (D) and cut afterward in this table. Continue?')) return;
+  if(!confirm('Rebuild the draft by placing every available person ON for their submitted days (default times per position). Assign positions and cut afterward in this table. Continue?')) return;
   var plan=reflectF02(storeId, week);
   setShiftPlan(storeId, week, plan);
-  showToast('Placed. Assign L / D positions and cut in the table.','success');
+  showToast('Placed. Assign positions and cut in the table.','success');
   renderPage('shift_admin');
 }
 /* 区分 → daypart（Lunch/LPrep/LWork=L, Dinner/DSetting=D） */
-function _f02Daypart(secKey){ return (String(secKey).charAt(0)==='L') ? 'L' : 'D'; }
+function shiftBuilderParts(storeId){
+  if(storeId==='F01') return [ {key:'D', name:'Dinner'}, {key:'P', name:'Prep'} ];
+  return [ {key:'L', name:'Lunch'}, {key:'D', name:'Dinner'} ];
+}
+function _f02PartKeys(storeId){ return shiftBuilderParts(storeId).map(function(p){return p.key;}); }
+function _f02PartName(storeId, part){ var p=shiftBuilderParts(storeId).find(function(x){return x.key===part;}); return p?p.name:part; }
+function _f02Daypart(storeId, secKey){
+  if(storeId==='F01'){ return (secKey==='Prep' || String(secKey).charAt(0)==='P') ? 'P' : 'D'; }
+  return (String(secKey).charAt(0)==='L') ? 'L' : 'D';
+}
 /* plan.cells → {name:{day:{L:{...},D:{...}}}}（L/D別） */
-function _f02Assigned(plan){
+function _f02Assigned(plan, storeId){
   var asg={};
   Object.keys((plan&&plan.cells)||{}).forEach(function(k){
     var name=plan.cells[k]; if(!name) return;
     var u1=k.indexOf('_'); if(u1<0) return; var day=k.substring(0,u1); var rest=k.substring(u1+1);
     var u2=rest.indexOf('_'); if(u2<0) return; var sec=rest.substring(0,u2); var label=rest.substring(u2+1);
-    var part=_f02Daypart(sec);
+    var part=_f02Daypart(storeId, sec);
     var m=((plan.meta)||{})[k]||{};
     if(!asg[name]) asg[name]={};
     if(!asg[name][day]) asg[name][day]={};
@@ -19312,8 +19321,8 @@ function syncF02Times(storeId, week){
   var plan=getShiftPlan(storeId, week); if(!plan||!plan.cells){ showToast('No shifts to update','warning'); return; }
   if(!confirm('Apply the default times from “Times” to all non-fixed shifts? (Manually edited times will be overwritten.)')) return;
   if(!plan.meta) plan.meta={};
-  var asg=_f02Assigned(plan);
-  Object.keys(asg).forEach(function(name){ Object.keys(asg[name]).forEach(function(day){ ['L','D'].forEach(function(part){ var a=asg[name][day][part]; if(!a||a.fixed) return; var d=_shiftPosTimeDef(storeId, a.sec, a.pos)||{}; plan.meta[a.key]={start:d.start||'', end:d.end||'', fixed:false}; }); }); });
+  var asg=_f02Assigned(plan, storeId);
+  Object.keys(asg).forEach(function(name){ Object.keys(asg[name]).forEach(function(day){ _f02PartKeys(storeId).forEach(function(part){ var a=asg[name][day][part]; if(!a||a.fixed) return; var d=_shiftPosTimeDef(storeId, a.sec, a.pos)||{}; plan.meta[a.key]={start:d.start||'', end:d.end||'', fixed:false}; }); }); });
   setShiftPlan(storeId, week, plan); showToast('Default times applied','success'); renderPage('shift_admin');
 }
 /* Daily headcount (target) panel */
@@ -19353,12 +19362,16 @@ function renderShiftBuilderF02(storeId, week){
   var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
   var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
   var avail=getAvailability(storeId, week)||[];
-  var asg=_f02Assigned(plan);
+  var asg=_f02Assigned(plan, storeId);
   var availByDay={}; avail.forEach(function(a){ (a.slots||[]).forEach(function(s){ if(!availByDay[a.name])availByDay[a.name]={}; availByDay[a.name][s.day]=true; }); });
   var nameSet={}; avail.forEach(function(a){nameSet[a.name]=1;}); Object.keys(asg).forEach(function(n){nameSet[n]=1;});
   var names=Object.keys(nameSet).sort(function(a,b){ var ca=Object.keys(asg[a]||{}).length, cb=Object.keys(asg[b]||{}).length; return cb-ca || String(a).localeCompare(b); });
   var dates=DOW_SHIFT.map(weekDateForDow);
   var dowEn=DOW_SHIFT_EN();
+  var parts=shiftBuilderParts(storeId);
+  var partCount={}; parts.forEach(function(p){ partCount[p.key]={}; DOW_SHIFT.forEach(function(dd){ partCount[p.key][dd]=0; }); });
+  var splitDesc=parts.map(function(p){ return '<b>'+p.key+'</b> ('+p.name+')'; }).join(' | ');
+  var partHead=parts.map(function(p){ return '<div style="flex:1">'+p.key+'</div>'; }).join('<div style="width:1px"></div>');
 
   var html='<div class="card" style="padding:10px 12px;margin-bottom:10px"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
     +'<button class="btn btn-primary btn-sm" onclick="shiftF02Reflect(\''+storeId+'\',\''+week+'\')"><i class="ti ti-wand"></i> Reflect</button>'
@@ -19368,15 +19381,14 @@ function renderShiftBuilderF02(storeId, week){
     +'<div style="flex:1"></div>'
     +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> Image</button>'
     +(plan.status==='公開'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
-    +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> Each day cell is split <b>L</b> (Lunch, left) | <b>D</b> (Dinner, right). Tap a side to assign its position / time or cut. Staff working both shifts get both L and D. Green = fixed. Lv = skill level.</div></div>';
+    +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> Each day cell is split '+splitDesc+'. Tap a side to assign its position / time or cut. Green = fixed. Lv = skill level.</div></div>';
 
   html+=_f02HeadPanel(storeId);
 
-  var dayHead=dowEn.map(function(dw,i){ var ds=dates[i]?dates[i].slice(5).replace('-','/'):''; return '<th style="text-align:center;border-left:2px solid var(--border);font-size:10px;padding:4px 3px;min-width:132px">'+dw+'<div style="font-size:9px;color:var(--muted);font-weight:400">'+ds+'</div><div style="display:flex;font-size:8px;color:var(--muted);font-weight:700;margin-top:1px"><div style="flex:1">L</div><div style="width:1px"></div><div style="flex:1">D</div></div></th>'; }).join('');
-  html+='<div class="card" style="overflow-x:auto;padding:8px"><div style="font-size:12px;font-weight:800;margin-bottom:6px"><i class="ti ti-table" style="color:var(--accent)"></i> '+escapeHtml(store.name)+' Shift Builder <span style="font-size:10px;color:var(--muted);font-weight:400">(staff × day · L | D · tap to assign)</span></div>';
+  var dayHead=dowEn.map(function(dw,i){ var ds=dates[i]?dates[i].slice(5).replace('-','/'):''; return '<th style="text-align:center;border-left:2px solid var(--border);font-size:10px;padding:4px 3px;min-width:132px">'+dw+'<div style="font-size:9px;color:var(--muted);font-weight:400">'+ds+'</div><div style="display:flex;font-size:8px;color:var(--muted);font-weight:700;margin-top:1px">'+partHead+'</div></th>'; }).join('');
+  html+='<div class="card" style="overflow-x:auto;padding:8px"><div style="font-size:12px;font-weight:800;margin-bottom:6px"><i class="ti ti-table" style="color:var(--accent)"></i> '+escapeHtml(store.name)+' Shift Builder <span style="font-size:10px;color:var(--muted);font-weight:400">(staff × day · '+parts.map(function(p){return p.key;}).join(' | ')+' · tap to assign)</span></div>';
   html+='<table class="inv-table" style="min-width:1000px;font-size:11px;border-collapse:collapse"><thead><tr><th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:104px">Staff</th>'+dayHead+'<th style="border-left:2px solid var(--accent);color:var(--accent);font-size:10px;min-width:62px">Weekly<div style="font-size:8px;color:var(--muted);font-weight:400">max 40h</div></th></tr></thead><tbody>';
 
-  var lCount={}, dCount={}; DOW_SHIFT.forEach(function(d){lCount[d]=0;dCount[d]=0;});
   var otPeople=0;
   if(!names.length){
     html+='<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:22px"><i class="ti ti-calendar-off" style="font-size:22px"></i><div style="margin-top:6px">No submissions yet.</div></td></tr>';
@@ -19387,10 +19399,14 @@ function renderShiftBuilderF02(storeId, week){
     DOW_SHIFT.forEach(function(day){
       var dayA=(asg[name]||{})[day]||{};
       var availHere=(availByDay[name]||{})[day];
-      var hL=_f02Half(storeId, week, name, day, 'L', dayA.L, availHere);
-      var hD=_f02Half(storeId, week, name, day, 'D', dayA.D, availHere);
-      wk+=hL.hrs+hD.hrs; if(hL.on) lCount[day]++; if(hD.on) dCount[day]++;
-      html+='<td style="border-left:2px solid var(--border);padding:0"><div style="display:flex;align-items:stretch">'+hL.html+'<div style="width:1px;background:var(--border)"></div>'+hD.html+'</div></td>';
+      var cellHtml='';
+      parts.forEach(function(p, pi){
+        var h=_f02Half(storeId, week, name, day, p.key, dayA[p.key], availHere);
+        wk+=h.hrs; if(h.on) partCount[p.key][day]++;
+        if(pi>0) cellHtml+='<div style="width:1px;background:var(--border)"></div>';
+        cellHtml+=h.html;
+      });
+      html+='<td style="border-left:2px solid var(--border);padding:0"><div style="display:flex;align-items:stretch">'+cellHtml+'</div></td>';
     });
     var wkR=Math.round(wk*10)/10; var wkCell;
     if(wk>40){ otPeople++; var ot=Math.round((wk-40)*10)/10; wkCell='<span style="color:var(--red);font-weight:800">'+wkR+'h</span><div style="font-size:8px;color:var(--red);font-weight:700">⚠ OT +'+ot+'h</div>'; }
@@ -19398,25 +19414,25 @@ function renderShiftBuilderF02(storeId, week){
     else { wkCell=wk?('<span style="font-weight:800;color:var(--accent)">'+wkR+'h</span>'):''; }
     html+='<td style="border-left:2px solid var(--accent);text-align:center">'+wkCell+'</td></tr>';
   });
-  html+='</tbody><tfoot>'
-    +'<tr style="border-top:2px solid var(--accent)"><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface2)">Lunch</td>'+DOW_SHIFT.map(function(d){return '<td style="text-align:center;font-weight:700;border-left:2px solid var(--border);background:var(--surface2)">'+(lCount[d]||'')+'</td>';}).join('')+'<td style="border-left:2px solid var(--accent);background:var(--surface2)"></td></tr>'
-    +'<tr><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface2)">Dinner</td>'+DOW_SHIFT.map(function(d){return '<td style="text-align:center;font-weight:700;border-left:2px solid var(--border);background:var(--surface2)">'+(dCount[d]||'')+'</td>';}).join('')+'<td style="border-left:2px solid var(--accent);background:var(--surface2)"></td></tr>'
-    +'</tfoot></table>';
-  html+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"><i class="ti ti-info-circle"></i> L = Lunch (left) · D = Dinner (right). Tap a side to set position / time or “Cut”. +L / +D = available but not placed. Green = fixed. Lv = approved skill level.'
+  var footRows=parts.map(function(p, pi){
+    return '<tr'+(pi===0?' style="border-top:2px solid var(--accent)"':'')+'><td style="text-align:left;font-weight:700;position:sticky;left:0;background:var(--surface2)">'+escapeHtml(p.name)+'</td>'+DOW_SHIFT.map(function(dd){return '<td style="text-align:center;font-weight:700;border-left:2px solid var(--border);background:var(--surface2)">'+(partCount[p.key][dd]||'')+'</td>';}).join('')+'<td style="border-left:2px solid var(--accent);background:var(--surface2)"></td></tr>';
+  }).join('');
+  html+='</tbody><tfoot>'+footRows+'</tfoot></table>';
+  html+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"><i class="ti ti-info-circle"></i> Each day is split '+splitDesc+'. Tap a side to set position / time or Cut. Green = fixed. Lv = approved skill level.'
     +(otPeople?' <span style="color:var(--red);font-weight:700">⚠ '+otPeople+' staff over 40h/week (OT).</span>':'')+'</div></div>';
   return html;
 }
 /* Staff × day × part(L/D) cell editor */
 function openShiftF02Cell(storeId, week, name, day, part){
-  part=(part==='L')?'L':'D';
+  if(_f02PartKeys(storeId).indexOf(part)<0) part=_f02PartKeys(storeId)[0];
   var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
-  var asg=_f02Assigned(plan); var cur=((asg[name]||{})[day]||{})[part]||null;
-  var defs=shiftAllSlotDefs(storeId).filter(function(d){ return _f02Daypart(d.sec)===part; });
+  var asg=_f02Assigned(plan, storeId); var cur=((asg[name]||{})[day]||{})[part]||null;
+  var defs=shiftAllSlotDefs(storeId).filter(function(d){ return _f02Daypart(storeId, d.sec)===part; });
   var optsHtml=defs.map(function(d){ var lv=positionLevelStore(name, d.pos, storeId); var v=d.sec+'||'+d.pos+'||'+d.label; var sel=(cur && d.sec===cur.sec && d.label===cur.pos); return '<option value="'+v.replace(/"/g,'')+'"'+(sel?' selected':'')+'>'+escapeHtml(d.disp)+(lv?' (Lv'+lv+')':'')+'</option>'; }).join('');
   var st='', en=''; if(cur){ var tt=_f02Time(storeId, cur); st=tt.start; en=tt.end; }
   var esc=name.replace(/'/g,"\\'");
   var curLv=cur?positionLevelStore(name, cur.pos, storeId):0;
-  var partName=(part==='L')?'Lunch':'Dinner';
+  var partName=_f02PartName(storeId, part);
   openModal('<div class="modal-title">'+escapeHtml(name)+' — '+escapeHtml(DOW_SHIFT_EN()[DOW_SHIFT.indexOf(day)]||day)+' · <span style="color:var(--accent)">'+partName+'</span> <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +(cur?'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Current: <b>'+escapeHtml(cur.pos)+'</b>'+(curLv?' · Skill Lv'+curLv:' · no approved skill')+(cur.fixed?' · <span style="color:var(--green)">fixed</span>':'')+'</div>':'')
     +'<div class="form-group"><label class="form-label">'+partName+' Position</label><select class="form-select" id="f02-slot" onchange="_f02SlotChange(\''+storeId+'\')"><option value="">— select —</option>'+optsHtml+'</select></div>'
@@ -19431,17 +19447,17 @@ function _f02SlotChange(storeId){
   if(s && def.start) s.value=def.start; if(e && def.end) e.value=def.end;
 }
 /* その人・その日・その daypart のセルだけ入れ替え（反対側は保持） */
-function _f02ClearPart(plan, name, day, part){
+function _f02ClearPart(plan, name, day, part, storeId){
   Object.keys(plan.cells).forEach(function(k){
     if(plan.cells[k]!==name || k.indexOf(day+'_')!==0) return;
     var rest=k.substring(day.length+1); var u=rest.indexOf('_'); if(u<0) return; var sec=rest.substring(0,u);
-    if(_f02Daypart(sec)===part){ delete plan.cells[k]; if(plan.meta) delete plan.meta[k]; }
+    if(_f02Daypart(storeId, sec)===part){ delete plan.cells[k]; if(plan.meta) delete plan.meta[k]; }
   });
 }
 function saveShiftF02Cell(storeId, week, name, day, part){
-  part=(part==='L')?'L':'D';
+  if(_f02PartKeys(storeId).indexOf(part)<0) part=_f02PartKeys(storeId)[0];
   var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}}; if(!plan.meta)plan.meta={};
-  _f02ClearPart(plan, name, day, part);
+  _f02ClearPart(plan, name, day, part, storeId);
   var v=(document.getElementById('f02-slot')||{}).value||'';
   if(!v){ setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin'); return; }
   var p=v.split('||'); var sec=p[0], pos=p[1], base=p[2];
@@ -19452,9 +19468,9 @@ function saveShiftF02Cell(storeId, week, name, day, part){
   setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
 }
 function cutShiftF02Cell(storeId, week, name, day, part){
-  part=(part==='L')?'L':'D';
+  if(_f02PartKeys(storeId).indexOf(part)<0) part=_f02PartKeys(storeId)[0];
   var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}};
-  _f02ClearPart(plan, name, day, part);
+  _f02ClearPart(plan, name, day, part, storeId);
   setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
 }
 function renderShiftBoard(storeId, week){
