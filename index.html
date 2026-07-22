@@ -18234,7 +18234,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '658';
+const APP_VERSION = '659';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30814,6 +30814,29 @@ function removePrepEmp(empId){
   e.prep=false; lsSet('m_employees', emps); renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
 }
 
+function setPrepMatrixStore(id){ window._prepMatrixStore=id; renderPage('skill'); }
+function renderPrepRadars(storeId){
+  if(typeof canViewWages==='function' && !canViewWages()) return '';
+  var emps=getEmployees();
+  function atStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
+  var preps=emps.filter(function(e){ return e.prep===true && e.status!=='退職' && atStore(e); });
+  var positions=getPrepPositions(storeId);
+  if(!preps.length || positions.length<3) return '';
+  var h='<div class="card"><div class="card-title"><i class="ti ti-chart-radar"></i>Prep スキルレーダー</div>';
+  h+='<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">';
+  preps.forEach(function(e){
+    var sk=prepSkillsOf(e, storeId);
+    var vals=positions.map(function(p){ return Number(sk[p]||0); });
+    var lv=prepOverallLevel(e, storeId);
+    h+='<div style="text-align:center;width:210px;margin-bottom:6px">'
+      +'<div style="font-weight:800;font-size:12px;color:var(--tm);margin-bottom:2px">'+escapeHtml(e.name)+' <span style="font-size:10px;color:var(--accent)">Lv'+lv+'</span></div>'
+      +skillRadarSvg(positions, vals, 5, {size:200})
+      +'</div>';
+  });
+  h+='</div><div style="font-size:10.5px;color:var(--muted);margin-top:4px">軸＝評価項目 ／ 外周＝Lv5。マトリクスのセルをタップで評価するとレーダーも更新されます。</div></div>';
+  return h;
+}
+
 function renderPrepLevel(){
   var css='<style>'
     +'.pl-wrap{max-width:760px}'
@@ -30853,6 +30876,15 @@ function renderPrepLevel(){
   h+='<table class="pl-ladder"><thead><tr><th>Lv</th><th>時給</th><th>到達基準</th></tr></thead><tbody>';
   levels.forEach(function(l){ h+='<tr><td class="lv">Lv'+l.lv+'</td><td class="wg">$'+l.wage+'</td><td>'+_t(l)+'</td></tr>'; });
   h+='</tbody></table>';
+
+  // ポジション別評価（店舗選択＋マトリクス＋レーダー） v659
+  var _pvis=(typeof getVisibleStores==='function')?getVisibleStores():[];
+  if(!window._prepMatrixStore || !_pvis.find(function(s){return s.id===window._prepMatrixStore;})){ window._prepMatrixStore=(curStore!=='ALL'?curStore:(_pvis[0]?_pvis[0].id:'F01')); }
+  var _pmStore=window._prepMatrixStore;
+  h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin:16px 0 4px"><i class="ti ti-tools-kitchen-2"></i> ポジション別評価（店舗を選択してタップ評価）</div>';
+  h+=bStoreChips(_pmStore,'setPrepMatrixStore',{stores:_pvis,showAll:false});
+  h+=renderStorePrepPanel(_pmStore);
+  h+=renderPrepRadars(_pmStore);
 
   // roster
   h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin-bottom:6px">プレップ専門職 一覧（'+preps.length+'名）</div>';
