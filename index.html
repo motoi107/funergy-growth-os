@@ -4362,7 +4362,7 @@ function lsSet(key, val) {
     console.warn('lsSet failed', key, e);
   }
   // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
-  try { if (SUPA_SYNC_ENABLED) syncMasterToSupabase(key, val); } catch(e){ console.warn('supa sync skip', e); }
+  try { if (SUPA_SYNC_ENABLED) _pushWithOutbox(key, val); } catch(e){ console.warn('supa sync skip', e); }
 }
 
 /* ============================================================
@@ -4455,6 +4455,82 @@ function supaHeaders(extra){
   return Object.assign({ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':'application/json' }, extra||{});
 }
 /* マスターをSupabaseへ同期（非同期・失敗してもlocalStorageは無事） */
+/* ===== クラウド書き込みの確実化：outbox（未送信キュー）＋自動再送／v674 =====
+   lsSet の write-through が失敗したキーを記録し、オンライン復帰・起動・手動で再送する。
+   保存スナップショットではなく「キー」を保持し、再送時は最新のローカル値を押し上げる
+   （＝last-write-wins。古い値で新しい値を上書きしない）。outbox自体は端末ローカル（同期しない）。 */
+function _outboxGet(){ try{ var a=JSON.parse(localStorage.getItem('op_outbox')||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+function _outboxSet(a){ try{ localStorage.setItem('op_outbox', JSON.stringify(a||[])); }catch(e){} }
+function _outboxAdd(key, err){
+  if(!key || key==='op_outbox') return;
+  var a=_outboxGet(); var e=a.filter(function(x){return x.key===key;})[0];
+  if(e){ e.attempts=(e.attempts||0)+1; e.lastErr=String(err||''); e.ts=Date.now(); }
+  else { a.push({key:key, attempts:1, lastErr:String(err||''), ts:Date.now()}); }
+  _outboxSet(a);
+}
+function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); }
+function outboxCount(){ return _outboxGet().length; }
+
+/* lsSet から呼ばれる：push を試み、失敗ならoutboxへ、成功ならoutboxから除去（fire-and-forget） */
+function _pushWithOutbox(key, val){
+  if(typeof _supaBooting!=='undefined' && _supaBooting) return; // 起動/プル中は押し上げも記録もしない
+  Promise.resolve().then(function(){ return syncMasterToSupabase(key, val); })
+    .then(function(r){ if(r===false) _outboxAdd(key,'push failed'); else if(r===true) _outboxRemove(key); /* undefined=対象外→何もしない */ })
+    .catch(function(e){ _outboxAdd(key, (e&&e.message)||e); });
+}
+
+/* 未送信キューを再送。値は都度ローカルから読み直す（stale上書き防止）。 */
+var _outboxFlushing=false;
+async function flushOutbox(){
+  if(_outboxFlushing) return;
+  if(typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return;
+  if(typeof _supaBooting!=='undefined' && _supaBooting) return;
+  _outboxFlushing=true;
+  try{
+    var q=_outboxGet();
+    for(var i=0;i<q.length;i++){
+      var key=q[i].key;
+      try{
+        var cur=ls(key, null);
+        if(cur===null || typeof cur==='undefined'){ _outboxRemove(key); continue; } // ローカルに無い→送るものが無い
+        var r=await syncMasterToSupabase(key, cur);
+        if(r!==false){ _outboxRemove(key); }                 // 成功 or 対象外 → 除去
+        else { var a=_outboxGet(); var e=a.filter(function(x){return x.key===key;})[0]; if(e){ e.attempts=(e.attempts||0)+1; e.ts=Date.now(); _outboxSet(a); } }
+      }catch(e){ /* 次回へ持ち越し */ }
+    }
+  } finally { _outboxFlushing=false; }
+}
+
+/* 書き戻し診断：保存したデータがクラウドに入ったか（未送信の有無）を確認 */
+function openOutboxDiag(){
+  var q=_outboxGet();
+  var ageMin=function(ts){ var m=Math.max(0, Math.round((Date.now()-(ts||0))/60000)); return m<1?'たった今':(m+'分前'); };
+  var body;
+  if(!q.length){
+    body='<div class="alert alert-success" style="margin:0"><i class="ti ti-cloud-check"></i><div>'
+      +'<p style="font-size:13px;font-weight:700">すべてクラウド反映済み</p>'
+      +'<p style="font-size:12px;margin-top:2px">この端末で保存したデータは、クラウドへの書き込みが完了しています。</p></div></div>';
+  } else {
+    var listRows=q.map(function(x){
+      return '<div style="border-top:1px solid var(--border);padding:6px 0;font-size:12px">'
+        +'<div style="font-weight:700">'+escapeHtml(x.key)+'</div>'
+        +'<div style="font-size:11px;color:var(--muted)">試行 '+(x.attempts||1)+'回 · '+ageMin(x.ts)+(x.lastErr?' · '+escapeHtml(String(x.lastErr).slice(0,60)):'')+'</div></div>';
+    }).join('');
+    body='<div class="alert alert-warning" style="margin:0 0 8px"><i class="ti ti-cloud-off"></i><div>'
+      +'<p style="font-size:13px;font-weight:700">未送信 '+q.length+'件（クラウド未反映）</p>'
+      +'<p style="font-size:12px;margin-top:2px">下記は保存済みだがクラウドへの書き込みが未完了です。オンライン時に「今すぐ再送」してください。ローカルには保存されているのでデータは失われません。</p></div></div>'
+      +'<div class="card" style="margin:0">'+listRows+'</div>';
+  }
+  openModal('<div class="modal-title"><i class="ti ti-cloud-check"></i> 書き戻し確認（未送信データ） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +body
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +(q.length?'<button class="btn btn-primary" onclick="flushOutbox().then(function(){ if(typeof showToast===\'function\') showToast(outboxCount()?(\'再送しました（残り\'+outboxCount()+\'件）\'):\'すべて再送しました\', outboxCount()?\'warning\':\'success\'); openOutboxDiag(); });"><i class="ti ti-refresh"></i> 今すぐ再送</button>':'')
+    +'</div>');
+}
+
+/* オンライン復帰・起動後に自動で未送信を再送 */
+try{ if(typeof window!=='undefined' && window.addEventListener){ window.addEventListener('online', function(){ try{ flushOutbox(); }catch(e){} }); } }catch(e){}
+try{ setTimeout(function(){ try{ flushOutbox(); }catch(e){} }, 8000); }catch(e){}
 async function syncMasterToSupabase(key, val){
   if (_supaBooting) return; // 起動/シード/プル中は押し上げない（プル後のユーザー編集のみクラウド反映）
   var def = SUPA_MASTER_MAP[key];
@@ -4462,21 +4538,19 @@ async function syncMasterToSupabase(key, val){
     if (!Array.isArray(val)) return;
     var rows = val.map(def.map);
     if (!rows.length) return;
-    await supaUpsert(def.table, rows);
-    return;
+    return await supaUpsert(def.table, rows);
   }
   // app_settings 行き
   var isSetting = SUPA_SETTING_KEYS.includes(key) || SUPA_SETTING_PREFIX.some(p=>key.indexOf(p)===0);
   if (isSetting) {
     if (_opMergeDef(key)) { await opMergePush(key, val, 'app_settings'); return; }
-    await supaUpsert('app_settings', [{ key:key, value:val, category:supaSettingCategory(key) }]);
-    return;
+    return await supaUpsert('app_settings', [{ key:key, value:val, category:supaSettingCategory(key) }]);
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
     if (_opMergeDef(key)) { await opMergePush(key, val); return; }
     var _outVal = (key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val;
-    await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
+    return await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
   }
 }
 function supaSettingCategory(key){
@@ -10569,6 +10643,21 @@ function bStoreChips(current, setter, opts){
    売上・勤怠は自動同期を維持しているので通常は「◯分前」で緑。3時間以上更新が無ければ黄色で注意喚起。 */
 function markSynced(scope){ try{ lsSet('synced_at_'+(scope||'ops'), new Date().toISOString()); }catch(e){} }
 function getSyncedAt(scope){ return ls('synced_at_'+(scope||'ops'), '') || ''; }
+/* ===== ページ共通の同期バー：固定の「最新情報を取得」＋任意「診断」＋鮮度バッジ／v675 =====
+   散在していた各ページの取得/診断ボタンを、この1部品に統一する。
+   opts: { onRefresh:JSコール文字列, onDiag:JSコール文字列|'', freshScope:鮮度スコープ } */
+function pageSyncBar(opts){
+  opts=opts||{};
+  var iso = (typeof getSyncedAt==='function') ? getSyncedAt(opts.freshScope||'ops') : '';
+  var ago = iso ? ((typeof notifAgo==='function')?notifAgo(iso):'') : '';
+  var fresh = iso ? (t('最終取得','Synced')+' '+ago) : t('未取得','—');
+  var col = iso ? 'var(--muted)' : 'var(--yellow)';
+  var diag = opts.onDiag ? '<button class="btn btn-secondary btn-sm" onclick="'+opts.onDiag+'"><i class="ti ti-stethoscope"></i> '+t('診断','Diagnose')+'</button>' : '';
+  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">'
+    +'<span style="font-size:10.5px;font-weight:600;color:'+col+';display:inline-flex;align-items:center;gap:4px"><i class="ti ti-clock-hour-4"></i>'+fresh+'</span>'
+    +'<button class="btn btn-secondary btn-sm" onclick="'+(opts.onRefresh||'')+'"><i class="ti ti-cloud-download"></i> '+t('最新情報を取得','Get latest')+'</button>'
+    +diag+'</div>';
+}
 function syncFreshBadge(){
   var iso = getSyncedAt('ops');
   var ago='', stale=true;
@@ -12718,28 +12807,42 @@ function openSyncCenter() {
       <span style="width:9px;height:9px;border-radius:50%;background:${s.color};flex-shrink:0"></span>
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;font-weight:600">${escapeHtml(s.name)}${s.toastGuid?'':' <span style="font-size:10px;color:var(--muted)">(GUID未設定)</span>'}</div>
-        <div style="font-size:10px;color:var(--muted)">最終同期: ${escapeHtml(last)}${st.detail?' · '+escapeHtml(st.detail):''}</div>
+        <div style="font-size:10px;color:var(--muted)">最終取り込み: ${escapeHtml(last)}${st.detail?' · '+escapeHtml(st.detail):''}</div>
       </div>
       <span style="width:8px;height:8px;border-radius:50%;background:${dot};flex-shrink:0" title="${st.status||'未同期'}"></span>
       <button class="btn btn-secondary btn-sm" onclick="syncCenterOne('${s.id}')"><i class="ti ti-refresh"></i></button>
     </div>`;
   }).join('');
+  var secHead = function(color, title, desc){
+    return '<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px">'
+      + '<div style="font-size:14px;font-weight:800;color:'+color+'">'+title+'</div>'
+      + (desc?'<div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4">'+desc+'</div>':'')
+      + '</div>';
+  };
   openModal(`<div class="modal-title"><i class="ti ti-refresh"></i> 同期センター <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">対象: <b>${escapeHtml(scopeLabel)}</b> <span style="font-size:11px">（上部の店舗切替で変更）</span></div>
-    <button class="btn btn-primary" style="width:100%" onclick="syncCenterRunAll()"><i class="ti ti-bolt"></i> すべて同期（売上・客数・Tip・Labor・天気）</button>
-    <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="syncCenterMenuAll()"><i class="ti ti-tools-kitchen-2"></i> メニュー・出数を同期</button>
-    ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断</button>`:''}
-    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="repairApprovedSkills(true)"><i class="ti ti-shield-check"></i> 承認済みスキルの未反映をチェック／修復</button>`:''}
-    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagInvSync()"><i class="ti ti-clipboard-check"></i> 棚卸データの同期診断／クラウド保存</button>`:''}
-    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagBudgets()"><i class="ti ti-report-money"></i> 予算の同期診断／クラウド反映</button>`:''}
-    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupBudgets()"><i class="ti ti-download"></i> 予算をバックアップ書き出し</button>`:''}
-    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="restoreBudgetsFromFile()"><i class="ti ti-upload"></i> 予算をバックアップから復元</button>`:''}
-    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openApprovedBudgetModal()"><i class="ti ti-shield-check"></i> GM承認済み予算の復元</button>`:''}
-    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupInvHistory()"><i class="ti ti-download"></i> 棚卸データをバックアップ書き出し</button>`:''}
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px">対象: <b>${escapeHtml(scopeLabel)}</b> <span style="font-size:11px">（上部の店舗切替で変更）</span></div>
+    <div style="font-size:11px;color:var(--tm);background:var(--bg);border-radius:8px;padding:8px 10px;line-height:1.5">
+      <b style="color:var(--accent)">① クラウド同期</b>＝アプリで入力・保存した自社データ（承認・通知・シフト・評価・予算など）を端末⇔クラウドで同期。通常は保存時に自動反映。<br>
+      <b style="color:var(--accent2,#d97706)">② Toast取り込み</b>＝外部POS(Toast)から売上・客数などを取り込み。外部データのため即時ではなく、取り込み時か夜間バッチで更新。</div>
+
+    ${scG3?secHead('var(--accent)','① クラウド同期（自社データ・双方向）','アプリで保存したデータの端末⇔クラウド反映。通常は自動（即時）。手動で今すぐ反映したいときに使います。')
+      +`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> クラウドから取り込む</button>
+        <button class="btn btn-secondary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> この端末からアップロード</button>
+        <button class="btn ${SUPA_SYNC_ENABLED?'btn-success':'btn-secondary'} btn-sm" onclick="toggleSupaSync();openSyncCenter()">${SUPA_SYNC_ENABLED?'<i class="ti ti-check"></i> 自動同期 ON':'自動同期 OFF'}</button>
+        <button class="btn ${ls('login_autosync',true)!==false?'btn-success':'btn-secondary'} btn-sm" onclick="toggleLoginAutosync();openSyncCenter()">${ls('login_autosync',true)!==false?'<i class="ti ti-check"></i> ログイン時同期 ON':'ログイン時同期 OFF'}</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">「自動同期 ON」：保存のたびにクラウドへ即時反映。「ログイン時同期 ON」：ログインごとに最新マスター（店舗・従業員・予算・KPI等）を取り込み。端末でマスターを編集したら「アップロード」で反映してください。</div>`:''}
+
+    ${secHead('var(--accent2,#d97706)','② Toast取り込み（外部POS・一方向）','Toastから売上・客数・Tip・Labor・出数・天気を取り込みます。即時ではありません（取り込み実行時／夜間バッチ）。')}
+    <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="syncCenterRunAll()"><i class="ti ti-bolt"></i> すべて取り込み（売上・客数・Tip・Labor・天気）</button>
+    <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="syncCenterMenuAll()"><i class="ti ti-tools-kitchen-2"></i> メニュー・出数を取り込み</button>
+    ${scG3?`<button class="btn ${ls('login_toast_sync',true)!==false?'btn-success':'btn-secondary'} btn-sm" style="width:100%;margin-top:8px" onclick="toggleLoginToastSync();openSyncCenter()">${ls('login_toast_sync',true)!==false?'<i class="ti ti-check"></i> ログイン時に売上取り込み ON':'ログイン時に売上取り込み OFF'}</button>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">ON：全店のToast売上・客数・Tip・Laborを1日1回バックグラウンドで取り込み。</div>`:''}
     <div id="sync-center-result" style="font-size:12px;margin-top:10px"></div>
-    <div style="font-weight:700;font-size:13px;margin:14px 0 4px">Toast 店舗別</div>
+    <div style="font-weight:700;font-size:12px;margin:12px 0 4px;color:var(--muted)">Toast 店舗別</div>
     ${rows||'<div style="font-size:12px;color:var(--muted)">対象店舗がありません</div>'}
-    ${scDetailAllowed?`<div style="font-weight:700;font-size:13px;margin:16px 0 6px;border-top:1px solid var(--border);padding-top:12px">店舗別 詳細オプション</div>
+    ${scDetailAllowed?`<div style="font-weight:700;font-size:12px;margin:12px 0 6px;color:var(--muted)">店舗別 詳細オプション</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
         <select class="form-select" id="sc-store" style="width:auto;flex:1;min-width:140px;padding:6px 10px;font-size:12px">${stores.map(function(x){return '<option value="'+x.id+'">'+escapeHtml(x.name)+'</option>';}).join('')}</select>
       </div>
@@ -12750,17 +12853,19 @@ function openSyncCenter() {
         <button class="btn btn-secondary btn-sm" onclick="scDetail('guid')"><i class="ti ti-settings"></i> GUID設定</button>
       </div>
       <div id="toast-sync-status" style="font-size:11px;color:var(--muted);margin-top:6px"></div>`:''}
-    ${scG3?`<div style="font-weight:700;font-size:13px;margin:16px 0 6px;border-top:1px solid var(--border);padding-top:12px">クラウド（マスター）</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-secondary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> アップロード</button>
-        <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> 取り込む</button>
-        <button class="btn ${SUPA_SYNC_ENABLED?'btn-success':'btn-secondary'} btn-sm" onclick="toggleSupaSync();openSyncCenter()">${SUPA_SYNC_ENABLED?'<i class=\"ti ti-check\"></i> 自動同期 ON':'自動同期 OFF'}</button>
-        <button class="btn ${ls('login_autosync',true)!==false?'btn-success':'btn-secondary'} btn-sm" onclick="toggleLoginAutosync();openSyncCenter()">${ls('login_autosync',true)!==false?'<i class=\"ti ti-check\"></i> ログイン時同期 ON':'ログイン時同期 OFF'}</button>
-        <button class="btn ${ls('login_toast_sync',true)!==false?'btn-success':'btn-secondary'} btn-sm" onclick="toggleLoginToastSync();openSyncCenter()">${ls('login_toast_sync',true)!==false?'<i class=\\"ti ti-check\\"></i> ログイン時に売上同期 ON':'ログイン時に売上同期 OFF'}</button>
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px">「ログイン時に売上同期」ON: 全店のToast売上・客数・Tip・Laborを1日1回バックグラウンド取り込み。</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px">「ログイン時同期」ON: ログインのたびにクラウドの最新マスター（店舗・従業員・予算・KPI・会社メッセージ等）を取り込みます。端末でマスターを編集したら「アップロード」でクラウドへ反映してください。</div>`:''}
-    <div style="font-size:11px;color:var(--muted);margin-top:12px"><i class="ti ti-info-circle"></i> 各ページの同期ボタンも今まで通り使えます。ここから一括／個別どちらも実行できます。</div>`);
+
+    ${(isGM||scG3)?secHead('var(--tm)','点検・診断／バックアップ','データが正しく取り込まれ・クラウド保存されているかの点検と、バックアップ／復元。'):''}
+    ${(isGM||scG3)?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openOutboxDiag()"><i class="ti ti-cloud-check"></i> 未送信データ（クラウド書き戻し）を確認${outboxCount()>0?' <span style="background:var(--red);color:#fff;border-radius:8px;padding:0 6px;font-size:10px">'+outboxCount()+'</span>':''}</button>`:''}
+    ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="repairApprovedSkills(true)"><i class="ti ti-shield-check"></i> 承認済みスキルの未反映をチェック／修復</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagInvSync()"><i class="ti ti-clipboard-check"></i> 棚卸データの同期診断／クラウド保存</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagBudgets()"><i class="ti ti-report-money"></i> 予算の同期診断／クラウド反映</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupBudgets()"><i class="ti ti-download"></i> 予算をバックアップ書き出し</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="restoreBudgetsFromFile()"><i class="ti ti-upload"></i> 予算をバックアップから復元</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openApprovedBudgetModal()"><i class="ti ti-shield-check"></i> GM承認済み予算の復元</button>`:''}
+    ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupInvHistory()"><i class="ti ti-download"></i> 棚卸データをバックアップ書き出し</button>`:''}
+
+    <div style="font-size:11px;color:var(--muted);margin-top:14px"><i class="ti ti-info-circle"></i> 各ページの「最新情報を取得」ボタンでも同じ取得ができます。ここでは一括／個別のどちらも実行できます。</div>`);
 }
 async function syncAllData(storeId, guid) {
   var btn = document.getElementById('sync-all-btn');
@@ -18275,7 +18380,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '671';
+const APP_VERSION = '675';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -18551,20 +18656,68 @@ async function pullAvailability(storeId, week){
 var _shiftPulled={};
 function maybePullShift(storeId, week, force){
   var k=storeId+'_'+week;
-  if(!force && _shiftPulled[k]) return;
-  _shiftPulled[k]=true;
+  var _pn=Date.now();
+  if(!force && _shiftPulled[k] && (_pn-_shiftPulled[k] < 30000)) return; // 入場時pull（30s throttle）
+  _shiftPulled[k]=_pn;
   try{ retryAvailPending(); }catch(e){}
   Promise.all([
     pullShiftPlan(storeId, week).then(function(ok){ if(!ok){ var l=getShiftPlan(storeId,week); if(l&&l.cells&&Object.keys(l.cells).length) pushShiftPlan(storeId,week,l); } }),
     pullAvailability(storeId, week).then(function(ok){ if(!ok){ var a=getAvailability(storeId,week); if(a&&a.length) pushAvailability(storeId,week,a); } })
-  ]).then(function(){ if(curPage==='shift_admin') renderPage('shift_admin'); });
+  ]).then(function(){ try{ markSynced('shift'); }catch(e){} if(curPage==='shift_admin') renderPage('shift_admin'); });
+}
+/* ===== Availability 診断（週・店舗キーの実データ照合。read-only／v672） =====
+   ヘッダ「最新取得」の隣。クラウド返却件数とローカル件数、前後週の提出分布を出し、
+   「週・店舗一致でも空」の原因（週ズレ/通信）を切り分ける。データは一切変更しない。 */
+function _weekStrOff(off){ var sun=new Date(getWeekSundayISO(off)+'T00:00:00'); return (sun.getMonth()+1)+'/'+sun.getDate(); }
+async function availDiag(storeId, week){
+  try{ showToast('診断中…','info'); }catch(e){}
+  var store=(STORES.find(function(s){return s.id===storeId;})||{name:storeId});
+  var local=getAvailability(storeId, week)||[];
+  var localNames=local.map(function(a){return a&&a.name;}).filter(Boolean);
+  var cloudNames=[]; var cloudOk=false; var cloudMsg='';
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/shift_availability?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=name,submitted_date', { headers: supaHeaders() });
+    if(res.ok){ var rows=await res.json(); if(Array.isArray(rows)){ cloudOk=true; cloudNames=rows.map(function(r){return r&&r.name;}).filter(Boolean); } else { cloudMsg='応答が配列でない'; } }
+    else { cloudMsg='HTTP '+res.status; }
+  }catch(e){ cloudMsg=String((e&&e.message)||e); }
+  var onlyCloud=cloudNames.filter(function(n){return localNames.indexOf(n)<0;});
+  var onlyLocal=localNames.filter(function(n){return cloudNames.indexOf(n)<0;});
+  var offs=[-1,0,1,2]; var scan=[];
+  for(var i=0;i<offs.length;i++){
+    var wk=_weekStrOff(offs[i]); var c2='×';
+    try{ var r2=await fetch(SUPABASE_URL+'/rest/v1/shift_availability?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(wk)+'&select=name', { headers: supaHeaders() });
+      if(r2.ok){ var j2=await r2.json(); c2=Array.isArray(j2)?j2.length:0; } }catch(e){ c2='×'; }
+    scan.push({off:offs[i], wk:wk, n:c2});
+  }
+  var relName=function(o){ return o===0?'今週':o===1?'来週':o===2?'翌々週':o===-1?'先週':(o+'週'); };
+  var scanRows=scan.map(function(s){
+    var hit=(s.wk===week);
+    return '<tr'+(hit?' style="background:rgba(240,120,32,.10)"':'')+'><td style="padding:3px 8px;font-weight:'+(hit?'800':'600')+'">'+relName(s.off)+'</td><td style="padding:3px 8px;color:var(--muted)">'+s.wk+(hit?' ◀ 表示中':'')+'</td><td style="padding:3px 8px;text-align:right;font-weight:700;color:'+((typeof s.n==='number'&&s.n>0)?'var(--green)':'var(--muted)')+'">'+s.n+'</td></tr>';
+  }).join('');
+  var namesHtml=function(arr){ return arr.length?arr.map(escapeHtml).join('、'):'<span style="color:var(--muted)">なし</span>'; };
+  var html='<div class="modal-title">Availability 診断 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="card" style="margin-bottom:8px"><div style="font-size:11px;color:var(--muted)">照会キー</div>'
+    +'<div style="font-size:13px;font-weight:700">'+escapeHtml(store.name)+'（store_id='+escapeHtml(storeId)+'） / week='+escapeHtml(week)+'</div></div>'
+    +'<div class="card" style="margin-bottom:8px"><div style="display:flex;gap:18px">'
+    +'<div><div style="font-size:10px;color:var(--muted)">クラウド</div><div style="font-size:20px;font-weight:800;color:'+(cloudOk?'var(--green)':'var(--red)')+'">'+(cloudOk?cloudNames.length:'—')+'</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">この端末(ローカル)</div><div style="font-size:20px;font-weight:800">'+localNames.length+'</div></div></div>'
+    +(cloudOk?'':'<div class="alert alert-warning" style="margin:6px 0 0;padding:6px 10px;font-size:12px"><i class="ti ti-alert-triangle"></i> クラウド取得失敗：'+escapeHtml(cloudMsg)+'（ネットワーク/権限を確認）</div>')
+    +((cloudOk&&onlyCloud.length)?'<div style="font-size:11px;margin-top:6px"><span style="color:var(--accent);font-weight:700">クラウドのみ（未取得）</span>：'+namesHtml(onlyCloud)+'<div style="font-size:10px;color:var(--muted)">→「最新取得」で反映されます</div></div>':'')
+    +(onlyLocal.length?'<div style="font-size:11px;margin-top:6px"><span style="color:var(--amber,#d97706);font-weight:700">ローカルのみ（未送信の可能性）</span>：'+namesHtml(onlyLocal)+'</div>':'')
+    +'</div>'
+    +'<div class="card" style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;margin-bottom:4px"><i class="ti ti-list-search"></i> 前後週の提出分布（同店・クラウド）</div>'
+    +'<table style="width:100%;font-size:12px;border-collapse:collapse"><tbody>'+scanRows+'</tbody></table>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:5px">別の週に多く提出されている場合、スタッフが違う週（既定は今週）に出している可能性。</div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="closeModalDirect();refreshAvailNow(\''+String(storeId).replace(/'/g,"\\'")+'\',\''+String(week).replace(/'/g,"\\'")+'\')"><i class="ti ti-cloud-download"></i> 最新取得</button></div>';
+  openModal(html);
 }
 async function refreshAvailNow(storeId, week){
   try{ showToast('取得中…','info'); }catch(e){}
   var ok=false;
   try{ ok=await pullAvailability(storeId, week); }catch(e){}
   try{ await pullShiftPlan(storeId, week); }catch(e){}
-  try{ _shiftPulled[storeId+'_'+week]=true; }catch(e){}
+  try{ _shiftPulled[storeId+'_'+week]=Date.now(); markSynced('shift'); }catch(e){}
   var n=(getAvailability(storeId,week)||[]).length;
   try{ if(ok) showToast('提出を取得しました（この端末 '+n+'名）','success'); else showToast('クラウド取得に失敗（ローカル '+n+'名）。ネットワーク/権限を確認','warning'); }catch(e){}
   try{ renderPage((typeof curPage!=='undefined'&&curPage)?curPage:'shift_admin'); }catch(e){}
@@ -18856,7 +19009,7 @@ function renderShiftAdmin() {
 
   var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${shiftWeekRangeLabel()}</div></div>
-    <button class="btn btn-secondary btn-sm" onclick="refreshAvailNow('${storeId}','${week}')"><i class="ti ti-cloud-download"></i> 最新取得</button>
+    ${pageSyncBar({onRefresh:"refreshAvailNow('"+storeId+"','"+week+"')", onDiag:"availDiag('"+storeId+"','"+week+"')", freshScope:'shift'})}
   </div>
   ${shiftWeekNavHtml()}
   <div class="phase-tabs" style="flex-wrap:wrap;gap:4px">
