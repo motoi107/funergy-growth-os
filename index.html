@@ -18234,7 +18234,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '666';
+const APP_VERSION = '667';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -19907,14 +19907,14 @@ function autoAssignP4(storeId, week){
         var nm=newCells[k]; var lbl=k.substring((day+'_'+period+'_').length);
         filledPos[lbl.split('#')[0]]=true; usedName[nm]=true;
       });
-      // 候補ペア（この day+period に available・Lv>=1 のみ）
+      // 候補ペア（この day+period に available な全員。Lv高い順→同Lvは総合点順で配置、Lv2未満は警告、Lv0も最後の手段）
       var pairs=[];
       availNames.forEach(function(name){
         if(!(availLD[name][day] && availLD[name][day][period])) return;
         var isFix=fixSet[name];
         poss.forEach(function(pos){
           var lv=positionLevelStore(name, pos, storeId);
-          if(isFix || lv>=1) pairs.push({name:name, pos:pos, lv:lv, score:score(name), fx:isFix?1:0});
+          pairs.push({name:name, pos:pos, lv:lv, score:score(name), fx:isFix?1:0});
         });
       });
       // Lv高い順 → 同Lvは総合点高い順
@@ -19931,7 +19931,8 @@ function autoAssignP4(storeId, week){
   });
   plan.cells=newCells; plan.meta=newMeta; if(!plan.status) plan.status='下書き';
   setShiftPlan(storeId, week, plan);
-  showToast('自動で振り分けました（'+placed+'枠'+(warnCount?(' / Lv2未満 '+warnCount+'件 ⚠'):'')+'）','success');
+  if(placed===0){ var why=(availNames.length===0)?'この端末にAvailabilityがありません（ヘッダの「最新取得」で取得してください）':'対象の曜日/L・DにAvailability提出が無いか、本数が0です'; showToast('振り分けできませんでした：'+why,'warning'); }
+  else showToast('自動で振り分けました（'+placed+'枠'+(warnCount?(' / Lv2未満 '+warnCount+'件 ⚠'):'')+'）','success');
   renderPage('shift_admin');
 }
 
