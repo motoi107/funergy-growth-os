@@ -7091,6 +7091,7 @@ function renderPage(page) {
     case 'settings':     el.innerHTML = renderSettings(); break;
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
+  try{ var _psc=pageSyncScope(page); if(_psc){ el.innerHTML = pageSyncStrip(_psc) + el.innerHTML; } }catch(e){}
   attachPageEvents();
   try{ renderNotifBell(); }catch(e){}
   try{ updateFavStar(); }catch(e){}
@@ -10657,6 +10658,64 @@ function pageSyncBar(opts){
     +'<span style="font-size:10.5px;font-weight:600;color:'+col+';display:inline-flex;align-items:center;gap:4px"><i class="ti ti-clock-hour-4"></i>'+fresh+'</span>'
     +'<button class="btn btn-secondary btn-sm" onclick="'+(opts.onRefresh||'')+'"><i class="ti ti-cloud-download"></i> '+t('最新情報を取得','Get latest')+'</button>'
     +diag+'</div>';
+}
+/* ===== 全大タブ共通の同期/診断ストリップ（renderPageに1点注入）／v676 パイロット=予実 =====
+   最重要: 「同期」は必ず「①未送信をクラウドへ押し上げ(flushOutbox) → ②マージ取得」の順。
+   取得(pull)は既存のマージ方式を使い、ローカルの未保存を上書きしない。 */
+var SYNC_SCOPE_META = {
+  budget: { label:'予実', toast:true, pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } }
+};
+var PAGE_SYNC_SCOPE = { budget:'budget', labor:'budget', foodcost:'budget', kpi_master:'budget', dailyops:'budget', monthly:'budget' };
+function pageSyncScope(page){ return PAGE_SYNC_SCOPE[page] || null; }
+function _syncMeta(scope){ return SYNC_SCOPE_META[scope] || {label:scope, toast:false, pull:null}; }
+
+/* 同期本体：push-first → merge-pull（上書きしない） */
+async function pageSync(scope){
+  var m=_syncMeta(scope);
+  try{ showToast(t('同期中…','Syncing…'),'info'); }catch(e){}
+  try{ await flushOutbox(); }catch(e){}          // ① 未送信を先に押し上げ（保存を確実にクラウド化）
+  try{ if(m.pull) await m.pull(); }catch(e){}     // ② マージ取得（既存pull=マージ方式・上書きなし）
+  try{ markSynced(scope); }catch(e){}
+  try{ var n=(typeof outboxCount==='function')?outboxCount():0; showToast(n?('同期しました（未送信'+n+'件）'):t('最新に同期しました','Synced'), n?'warning':'success'); }catch(e){}
+  try{ renderPage((typeof curPage!=='undefined')?curPage:'budget'); }catch(e){}
+}
+
+/* ページ上部に出す共通ストリップ（鮮度＋同期＋診断） */
+function pageSyncStrip(scope){
+  var iso=(typeof getSyncedAt==='function')?getSyncedAt(scope):'';
+  var ago=iso?((typeof notifAgo==='function')?notifAgo(iso):''):'';
+  var ob=(typeof outboxCount==='function')?outboxCount():0;
+  var col = ob>0?'var(--red)':(iso?'var(--muted)':'var(--yellow)');
+  var txt = ob>0?('未送信'+ob):(iso?(t('同期','Synced')+' '+ago):t('未同期','—'));
+  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin:0 0 8px">'
+    +'<span style="font-size:10.5px;font-weight:600;color:'+col+';display:inline-flex;align-items:center;gap:4px"><i class="ti ti-cloud"></i>'+txt+'</span>'
+    +'<button class="btn btn-secondary btn-sm" onclick="pageSync(\''+scope+'\')"><i class="ti ti-cloud-download"></i> '+t('同期','Sync')+'</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openDiag(\''+scope+'\')"><i class="ti ti-stethoscope"></i> '+t('診断','Diagnose')+'</button>'
+    +'</div>';
+}
+
+/* 診断：Cloud（保存データが入っているか）＋Toast（外部取込）を明示 */
+function openDiag(scope){
+  var m=_syncMeta(scope);
+  var ob=(typeof outboxCount==='function')?outboxCount():0;
+  var cIso=(typeof getSyncedAt==='function')?getSyncedAt(scope):'';
+  var cAgo=cIso?((typeof notifAgo==='function')?notifAgo(cIso):''):'';
+  var tIso=(typeof getSyncedAt==='function')?getSyncedAt('ops'):'';
+  var tAgo=tIso?((typeof notifAgo==='function')?notifAgo(tIso):''):'';
+  var cloudCard='<div class="card" style="margin:0 0 8px"><div style="font-weight:700;font-size:13px"><i class="ti ti-cloud"></i> Cloud（保存データ）</div>'
+    +'<div style="font-size:12px;margin-top:4px">未送信（クラウド未反映）：<b style="color:'+(ob>0?'var(--red)':'var(--green)')+'">'+ob+'件</b>'
+    +(ob>0?' <button class="btn btn-primary btn-sm" style="padding:2px 8px" onclick="flushOutbox().then(function(){openDiag(\''+scope+'\');})">今すぐ再送</button>':'')+'</div>'
+    +'<div style="font-size:12px;margin-top:2px">最終同期：'+(cIso?cAgo:'—')+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+(ob>0?'保存はローカルに残っています（データは失われません）。オンライン時に再送で反映。':'保存したデータはクラウドに反映済みです。')+'</div></div>';
+  var toastCard = m.toast
+    ? '<div class="card" style="margin:0"><div style="font-weight:700;font-size:13px"><i class="ti ti-cloud-download"></i> Toast（外部POS取込）</div>'
+      +'<div style="font-size:12px;margin-top:4px">最終取込：'+(tIso?tAgo:'—')+'</div>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:2px">売上・客数・勤怠・出数はToastから取り込み（即時ではありません）。</div></div>'
+    : '<div class="card" style="margin:0"><div style="font-weight:700;font-size:13px"><i class="ti ti-cloud-off"></i> Toast</div><div style="font-size:12px;margin-top:4px;color:var(--muted)">このタブはToastデータを使いません。</div></div>';
+  openModal('<div class="modal-title"><i class="ti ti-stethoscope"></i> 同期診断（'+escapeHtml(m.label)+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +cloudCard+toastCard
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="closeModalDirect();pageSync(\''+scope+'\')"><i class="ti ti-cloud-download"></i> '+t('同期','Sync')+'</button></div>');
 }
 function syncFreshBadge(){
   var iso = getSyncedAt('ops');
@@ -18380,7 +18439,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '675';
+const APP_VERSION = '676';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
