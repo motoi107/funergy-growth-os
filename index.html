@@ -1767,14 +1767,52 @@ function groupsForRole() {
   else if (curRole==='office_crew') groups = OFFICE_CREW_GROUPS;
   else if (curStore==='OFFICE' && ['ceo','gm','office'].includes(curRole)) groups = OFFICE_GROUPS.filter(g=>!g.roles||g.roles.includes(curRole));
   else groups = MENU_GROUPS.filter(g=>g.roles.includes(curRole));
-  if (curRealRole==='g2' || curRealRole==='g4') {
-    var hide = getRoleHide(curRealRole);
-    if (hide.length) groups = groups.map(function(g){ return Object.assign({}, g, {children: g.children.filter(function(c){ return hide.indexOf(c)<0; })}); }).filter(function(g){ return g.children && g.children.length>0; });
+  if (_gradeHideApplies()) {
+    var _gh = gradeHideFor(myGradeKey());
+    if (_gh && _gh.length) groups = groups.map(function(g){ return Object.assign({}, g, {children: g.children.filter(function(c){ return _gh.indexOf(c)<0; })}); }).filter(function(g){ return g.children && g.children.length>0; });
   }
   return groups;
 }
 function _pagesForBaseRole(base){ var ids=[]; MENU_GROUPS.filter(function(g){return g.roles.includes(base);}).forEach(function(g){ g.children.forEach(function(c){ if(ids.indexOf(c)<0) ids.push(c); }); }); return ids; }
 function togglePageHide(sub, pid){ var arr=getRoleHide(sub); var i=arr.indexOf(pid); if(i>=0) arr.splice(i,1); else arr.push(pid); setRoleHide(sub, arr); renderPage('settings'); }
+/* ===== Grade基準の表示管理（G1〜G5：ページ表示/非表示）。財務可否は現状維持。gm/ceo/officeは常に全表示。 ===== */
+function myGradeKey(){
+  var e=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===curUserName;}):null;
+  var gt = e ? ((typeof gradeNum==='function'&&typeof gradeOf==='function')?(gradeNum(gradeOf(e.title))||0):0) : 0;
+  var rr = curRealRole || (e&&e.role) || curRole;
+  var gr = ({gm:6,ceo:6,am:5,g4:4,sl:3,g2:2,crew:1,office_crew:1})[rr] || 0;
+  var n = Math.max(gt, gr) || 1; if(n>6) n=6;
+  return 'G'+n;
+}
+function _baseRoleForGrade(gk){ return {G1:'crew',G2:'sl',G3:'sl',G4:'am',G5:'am',G6:'gm'}[gk]||'crew'; }
+function getGradeHide(){
+  var m=ls('grade_hide', null);
+  if(!m||typeof m!=='object'){ m={ G1:[], G2:(getRoleHide('g2')||[]), G3:[], G4:(getRoleHide('g4')||[]), G5:[], G6:[] }; }
+  ['G1','G2','G3','G4','G5','G6'].forEach(function(k){ if(!Array.isArray(m[k])) m[k]=[]; });
+  return m;
+}
+function gradeHideFor(gk){ var m=getGradeHide(); return m[gk]||[]; }
+function setGradeHide(m){ lsSet('grade_hide', m); }
+function toggleGradeHide(gk, pid){ var m=getGradeHide(); if(!m[gk])m[gk]=[]; var i=m[gk].indexOf(pid); if(i>=0)m[gk].splice(i,1); else m[gk].push(pid); setGradeHide(m); renderPage('settings'); }
+/* 表示側で Grade非表示を適用してよい役職か（gm/ceo/office/office_crew は常に全表示） */
+function _gradeHideApplies(){ var rr=curRealRole||curRole; return ['crew','g2','sl','g4','am'].indexOf(rr)>=0; }
+function renderGradeHideConfig(){
+  var m=getGradeHide(); var html='';
+  html+='<div style="font-size:11px;color:var(--muted);margin:0 0 6px"><i class="ti ti-info-circle"></i> Grade（G1〜G5）ごとに表示しない画面を設定します。財務(売上)可否は別途（Grade下限ロジック）で管理。G6/CEO/経理は常に全表示です。</div>';
+  ['G1','G2','G3','G4','G5'].forEach(function(gk){
+    var base=_baseRoleForGrade(gk); var ids=_pagesForBaseRole(base); var hide=m[gk]||[];
+    var titles=((typeof GRADE_TITLES!=='undefined'&&GRADE_TITLES[gk])||[]).join(' / ');
+    html+='<div class="card"><div class="card-title"><i class="ti ti-eye-off" style="color:var(--accent)"></i> '+gk+' の非表示ページ'+(titles?'<span style="font-size:10px;color:var(--muted);font-weight:400"> ('+escapeHtml(titles)+')</span>':'')+'</div>';
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:4px">チェックした画面は '+gk+' には表示されません。<span style="color:var(--yellow)">'+hide.length+'件 非表示中</span></div>';
+    if(!ids.length){ html+='<div style="font-size:11px;color:var(--muted)">このGradeの対象ページはありません</div>'; }
+    ids.forEach(function(pid){ var it=(typeof NAV_ITEMS!=='undefined')?NAV_ITEMS.find(function(x){return x.id===pid;}):null; if(!it) return; var on=hide.indexOf(pid)>=0;
+      html+='<label style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-top:1px solid var(--border);cursor:pointer"><span style="font-size:12.5px'+(on?';color:var(--muted);text-decoration:line-through':'')+'"><i class="ti '+it.icon+'" style="font-size:12px;margin-right:5px"></i>'+escapeHtml(navLabelEn(it.label))+'</span><input type="checkbox" '+(on?'checked':'')+' onchange="toggleGradeHide(\''+gk+'\',\''+pid+'\')" style="width:18px;height:18px;flex:0 0 auto"></label>';
+    });
+    html+='</div>';
+  });
+  return html;
+}
+
 function renderRoleHideConfig(){
   var html='';
   [['g2','G2','sl','G3'],['g4','G4','am','G5']].forEach(function(r){
@@ -4003,7 +4041,7 @@ var ROLE_ALIAS = { g2:'sl', g4:'am' };
 function _applyRole(raw){ curRealRole = raw || null; curRole = (raw && ROLE_ALIAS[raw]) ? ROLE_ALIAS[raw] : raw; }
 function getRoleHide(sub){ return ls('role_hide_'+sub, [])||[]; }
 function setRoleHide(sub, arr){ lsSet('role_hide_'+sub, arr||[]); }
-function isPageHiddenForMe(pid){ return (curRealRole==='g2'||curRealRole==='g4') ? (getRoleHide(curRealRole).indexOf(pid)>=0) : false; }
+function isPageHiddenForMe(pid){ return (typeof _gradeHideApplies==='function' && _gradeHideApplies()) ? (gradeHideFor(myGradeKey()).indexOf(pid)>=0) : false; }
 var curSLName = 'Store Leader';
 var curStoreLogin = false;
 var curUserName = null;
@@ -4366,7 +4404,7 @@ var SUPA_MASTER_MAP = {
 var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
-  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','skill_lv_desc'];
+  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
@@ -18234,7 +18272,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '667';
+const APP_VERSION = '669';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -22798,6 +22836,10 @@ function myGradeNum(){
   var e=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===curUserName;}):null;
   var g=e?gradeNum(empGrade(e)):0;
   if(!g){ if(curRole==='gm')g=6; else if(curRole==='am')g=5; else if(curRole==='sl')g=3; else if(curRole==='ceo')g=7; else g=1; }
+  // 権限role(curRole/curRealRole)の相当グレードを下限に（Grade表示とroleのズレで権限が下振れしないように）
+  var _rg=(curRole==='ceo')?7:(curRole==='gm')?6:(curRole==='am')?5:(curRole==='sl')?3:0;
+  var _rrg=(curRealRole==='g4')?4:(curRealRole==='g2')?2:0;
+  g=Math.max(g,_rg,_rrg)||1;
   return g;
 }
 /* 付与日数の個別調整（繰越・特別付与）: benefit_adjust[year][empName][key] = ±日数 */
@@ -34535,7 +34577,7 @@ function renderSettings() {
     </label>
     ${!salaryDisplayOn()?'<div style="font-size:11.5px;color:var(--yellow);font-weight:700"><i class="ti ti-alert-triangle"></i> 現在オフ：給与情報は全員に非表示です</div>':''}
   </div>` : ''}
-  ${(curRole==='gm'||curRole==='ceo')?renderRoleHideConfig():''}
+  ${(curRole==='gm'||curRole==='ceo')?renderGradeHideConfig():''}
   ${renderStorageCard()}
   <div class="card"><div class="card-title"><i class="ti ti-device-mobile-vibration" style="color:var(--accent)"></i>触感・アプリ</div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
