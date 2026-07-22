@@ -5202,8 +5202,9 @@ function mergeNotifs(cloudArr, localArr){
     var id=item.id;
     if(by[id]){
       var set={}; (by[id].readBy||[]).concat(item.readBy||[]).forEach(function(x){ if(x!=null) set[x]=1; });
+      var aset={}; (by[id].ackBy||[]).concat(item.ackBy||[]).forEach(function(x){ if(x!=null) aset[x]=1; });
       var merged = preferLocal ? Object.assign({}, by[id], item) : Object.assign({}, item, by[id]);
-      merged.readBy = Object.keys(set);
+      merged.readBy = Object.keys(set); merged.ackBy = Object.keys(aset);
       by[id]=merged;
     } else { by[id]=item; order.push(id); }
   }
@@ -5223,6 +5224,8 @@ function _coversNotifs(check, want){
     var h=have[w.id]; if(!h) return false;
     var hb=h.readBy||[], wb=w.readBy||[];
     for(var j=0;j<wb.length;j++){ if(hb.indexOf(wb[j])<0) return false; }
+    var ha=h.ackBy||[], wa=w.ackBy||[];
+    for(var k=0;k<wa.length;k++){ if(ha.indexOf(wa[k])<0) return false; }
   }
   return true;
 }
@@ -18272,7 +18275,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '669';
+const APP_VERSION = '671';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -33308,8 +33311,9 @@ function addApproval(obj) {
   try{
     var _sid=null;
     if(rec.store && rec.store!=='---'){ var _s=STORES.find(function(x){return x.id===rec.store || x.name===rec.store;}); if(_s) _sid=_s.id; }
-    var _n={ type:'approval', title:'承認待ち：'+(rec.type||'申請'), text:(rec.title||'').slice(0,140), toRoles:approversForType(rec.type), page:'approval', refId:rec.id };
+    var _n={ type:'approval', title:'承認待ち：'+(rec.type||'申請'), text:(rec.title||'').slice(0,140), toRoles:(_apGradeChainTypes(rec.type)?['sl','am','gm','sm']:approversForType(rec.type)), page:'approval', refId:rec.id };
     if(_sid) _n.toStore=_sid; // 店舗が特定できれば、その店舗の上長＋HQ承認者に絞る
+    if(_apGradeChainTypes(rec.type)) _n.ack=true;
     addNotif(_n);
   }catch(e){}
 }
@@ -33321,8 +33325,20 @@ function resolveApprovalByRef(type, ref, status) {
 }
 
 /* ===== 承認センター（店舗別・複数承認者の可視化） ===== */
-function _approvalRoleLabel(role){ return ({ceo:'CEO', gm:'GM', office:'本部', am:'AM/店長', sl:'SL/リーダー', sm:'店長', crew:'クルー'})[role] || role; }
-function approvalRequiredRoles(a){ var r=approversForType(a&&a.type); return (r&&r.length)?r:['gm']; }
+function _approvalRoleLabel(role){ return ({first:'一次(直上)', ceo:'CEO', gm:'GM', office:'本部', am:'AM/店長', sl:'SL/リーダー', sm:'店長', crew:'クルー'})[role] || role; }
+/* v670: スキル/Career Score(Leadership) は「Grade起点の2段階承認」＝一次(申請者より上位・配属店スコープ) ＋ GM最終ゲート。
+   通知は配属店の上位Grade全員へ／AMは管轄店のみ／CEOは閲覧のみ。 */
+function _apGradeChainTypes(t){ return t==='スキル' || t==='Leadership'; }
+function _apApplicantGrade(a){ var e=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===(a&&a.from);}):null; return e?(empGradeNum(e)||1):1; }
+function _apUserInScope(a){
+  if(curRole==='gm'||curRole==='ceo') return true;
+  var sid=_approvalStoreId(a);
+  if(curRole==='am') return (typeof myAmStores==='function')?(myAmStores().indexOf(sid)>=0):false;
+  var e=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===curUserName;}):null;
+  if(!e) return false;
+  return e.store===sid || (e.support||[]).indexOf(sid)>=0;
+}
+function approvalRequiredRoles(a){ if(a && _apGradeChainTypes(a.type)){ var _g=_apApplicantGrade(a); return (_g>=5)?['gm']:['first','gm']; } var r=approversForType(a&&a.type); return (r&&r.length)?r:['gm']; }
 function _approvalStore(a){
   var v=a&&a.store;
   if(!v || v==='---' || v==='本部' || v==='office' || v==='OFFICE' || v==='HQ') return {id:'OFFICE', name:'本部 / Office'};
@@ -33338,7 +33354,9 @@ function _approvalMyRoles(a){
   var out=[];
   req.forEach(function(role){
     if(signed.indexOf(role)>=0) return;
-    var match = (role===curRole) || (role==='gm'&&curRole==='ceo') || (role==='sm'&&typeof isStoreManager==='function'&&isStoreManager());
+    var match;
+    if(role==='first'){ var _ag=_apApplicantGrade(a); var _mg=(typeof myGradeNum==='function')?myGradeNum():0; match=(_mg>_ag) && _apUserInScope(a) && (a.from!==curUserName); }
+    else match = (role===curRole) || (role==='gm'&&curRole==='ceo') || (role==='sm'&&typeof isStoreManager==='function'&&isStoreManager());
     if(!match) return;
     if(role==='am' && curRole==='am'){ var sid=_approvalStoreId(a); if(sid==='OFFICE' || !sid || (typeof myAmStores==='function' && myAmStores().indexOf(sid)<0)) return; } /* AMは管轄店のみ */
     out.push(role);
@@ -33367,8 +33385,8 @@ function signoffApproval(id){
   var nm=(ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
   roles.forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm, at:nowJP()}); });
   a._mut=Date.now(); lsSet('approvals', approvals);
-  if(a.type==='スキル' || _approvalAllDone(a)){
-    approveItem(id,'approved'); /* スキルは単一承認で即確定 / その他は全承認で確定（approveItem内で反映＋通知） */
+  if(_approvalAllDone(a)){
+    approveItem(id,'approved'); /* 全承認(直上＋GM等)で確定。approveItem内で反映＋通知 */
   } else {
     var req=approvalRequiredRoles(a); var m=_approvalSignedMap(a);
     var remain=req.filter(function(r){return !m[r];});
@@ -33649,6 +33667,7 @@ async function approveItem(id, status, reason) {
     }
     if(status==='rejected' && reason) a.rejectReason=reason;
     a.status = status; a._mut=Date.now(); lsSet('approvals', approvals);
+    if(status==='approved' && _apGradeChainTypes(a.type)){ try{ addNotif({ type:'approval', title:'承認完了：'+(a.type||''), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:'approval', refId:a.id, ack:true }); }catch(_e){} try{ var _csid=_approvalStoreId(a); addNotif({ type:'approval', title:'承認完了：'+(a.type||''), text:(a.title||'').slice(0,140), toStore:((_csid&&_csid!=='OFFICE')?_csid:undefined), toRoles:['sl','am','gm','sm'], page:'approval', refId:a.id, ack:true }); }catch(_e){} }
     if (a.type==='退職' && a.ref) {
       try {
         var _obs=getOffboardings(); var _ob=_obs.find(function(x){return x.id===a.ref;});
@@ -35604,6 +35623,46 @@ function onNotifClickPage(id){
   renderNotifBell();
   if(n && n.page){ go(n.page); } else { renderPage('notifications'); }
 }
+/* v670+: 通知の「確認しました」ack。承認申請/完了の通知に確認ボタン＋確認済み/未確認を表示。 */
+function _notifAudience(n){
+  var out=[];
+  if(n && n.toUser && out.indexOf(n.toUser)<0) out.push(n.toUser);
+  if(n && n.toRoles && n.toRoles.length){
+    (typeof getEmployees==='function'?getEmployees():[]).forEach(function(e){
+      if(!e || e.status==='退職') return;
+      var rr=e.role||''; var alias=(rr==='g2'?'sl':(rr==='g4'?'am':rr));
+      var isSM=(typeof gradeOf==='function' && gradeOf(e.title)==='G4');
+      var match = n.toRoles.indexOf(rr)>=0 || n.toRoles.indexOf(alias)>=0 || (n.toRoles.indexOf('sm')>=0 && isSM);
+      if(!match) return;
+      if(n.toStore && !(e.store===n.toStore || (e.support||[]).indexOf(n.toStore)>=0)) return;
+      if(out.indexOf(e.name)<0) out.push(e.name);
+    });
+  }
+  return out;
+}
+function ackNotif(id){
+  var arr=getNotifs(); var n=arr.find(function(x){return x.id===id;}); if(!n) return;
+  if(!n.ackBy) n.ackBy=[];
+  if(n.ackBy.indexOf(curUserName)<0){ n.ackBy.push(curUserName); if(!n.readBy)n.readBy=[]; if(n.readBy.indexOf(curUserName)<0)n.readBy.push(curUserName); lsSet('notifications', arr); }
+  try{ if(typeof curPage!=='undefined' && curPage==='notifications') renderPage('notifications'); }catch(e){}
+  try{ renderNotifBell(); }catch(e){}
+  try{ renderNotifPanel(); }catch(e){}
+}
+function _notifAckHtml(n){
+  var ackBy=(n&&n.ackBy)||[]; var aud=_notifAudience(n);
+  var pending=aud.filter(function(x){ return ackBy.indexOf(x)<0; });
+  var mine=ackBy.indexOf(curUserName)>=0;
+  var h='<div onclick="event.stopPropagation()" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
+  h += mine
+    ? '<span class="tag tag-green" style="font-size:10px"><i class="ti ti-check"></i> \u78ba\u8a8d\u6e08\u307f</span>'
+    : '<button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:11px" onclick="event.stopPropagation();ackNotif(\''+n.id+'\')"><i class="ti ti-check"></i> \u78ba\u8a8d\u3057\u307e\u3057\u305f</button>';
+  h += '<span style="font-size:10px;color:var(--muted)">\u78ba\u8a8d '+ackBy.length+(aud.length?('/'+aud.length):'')+'\u540d</span>';
+  if(ackBy.length) h += '<span style="font-size:10px;color:var(--green);word-break:break-word">\u2713 '+escapeHtml(ackBy.join('\u3001'))+'</span>';
+  if(pending.length) h += '<span style="font-size:10px;color:var(--muted);word-break:break-word">\u672a: '+escapeHtml(pending.join('\u3001'))+'</span>';
+  h += '</div>';
+  return h;
+}
+
 function renderNotifications(){
   var all=myNotifs();
   var unreadN=all.filter(function(n){ return (n.readBy||[]).indexOf(curUserName)<0; }).length;
@@ -35629,6 +35688,7 @@ function renderNotifications(){
         +'<div style="font-size:13.5px;font-weight:'+(unread?'700':'500')+';color:var(--tm)">'+escapeHtml(n.title||'')+'</div>'
         +(n.text?('<div style="font-size:12px;color:var(--muted);margin-top:2px;word-break:break-word">'+escapeHtml(n.text)+'</div>'):'')
         +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+escapeHtml(n.by||'')+' · '+notifAgo(n.at)+(n.page?' · <i class="ti ti-arrow-right"></i> 開く':'')+'</div>'
+        +(n.ack?_notifAckHtml(n):'')
       +'</div>'
       +(unread?'<div style="flex-shrink:0;width:9px;height:9px;border-radius:50%;background:var(--accent2);margin-top:6px"></div>':'')
       +'</div>';
@@ -35676,6 +35736,7 @@ function renderNotifPanel(){
         +'<div style="font-size:13px;font-weight:'+(unread?'700':'500')+';color:var(--tm)">'+escapeHtml(n.title||'')+'</div>'
         +(n.text?'<div style="font-size:12px;color:var(--muted);margin-top:2px;word-break:break-word">'+escapeHtml(n.text)+'</div>':'')
         +'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+escapeHtml(n.by||'')+' · '+notifAgo(n.at)+'</div>'
+        +(n.ack?_notifAckHtml(n):'')
       +'</div>'
       +(unread?'<div style="flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--accent2);margin-top:6px"></div>':'')
       +'</div>';
@@ -37775,8 +37836,7 @@ function renderRespMatrix(){
     +[['ti-heart-handshake',_respL('理念を守る','Live the philosophy')],['ti-mood-smile',_respL('全員接客','Everyone serves guests')],['ti-speakerphone',_respL('声出し・返事の徹底','Speak up & respond')],['ti-clock-check',_respL('自己勤怠の管理','Manage your own attendance')+'<br><span style="font-size:10px;color:var(--muted)">'+_respL('打刻・シフト希望の提出','Clock in/out & submit availability')+'</span>']].map(function(x){
       return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 10px;display:flex;align-items:center;gap:8px"><i class="ti '+x[0]+'" style="color:var(--accent);font-size:16px"></i><b>'+x[1]+'</b></div>';
     }).join('')+'</div></div>';
-  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">'+(en?'●=<b>Final responsibility</b> (owns the result / fixes on error) / ◎=<b>Execution responsibility</b> (make it happen) / ○=Task/assist (no responsibility) / △=Aware/report. <b>Anyone may do store tasks</b> — but responsibility stays exactly as this table shows.':'●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助（責任なし）／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。')
-
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">'+(en?'●=<b>Final responsibility</b> (owns the result / fixes on error) / ◎=<b>Execution responsibility</b> (make it happen) / ○=Task/assist (no responsibility) / △=Aware/report. <b>Anyone may do store tasks</b> — but responsibility stays exactly as this table shows.':'●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助（責任なし）／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。')
 
     +(editing?'<br><b style="color:var(--accent)">編集モード（GM/CEO）:</b> セルのプルダウンで責任を変更→<b>即保存・全端末に同期</b>。業務名・備考も直接編集、カテゴリごとの行追加・行削除も可能。確定したら「表示モードで見る」で仕上がりを確認。':'')
     +(mx.at?'<br><span style="font-size:10px">最終更新: '+escapeHtml(mx.at)+(mx.by?'（'+escapeHtml(mx.by)+'）':'')+'</span>':'')+'</div>'
