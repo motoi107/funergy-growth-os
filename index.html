@@ -4375,7 +4375,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets'];
 var OP_SYNC_PREFIX = ['spl_','budget_approved_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_','fav_'];   /* fav_<user>: お気に入り（個人別・クラウド保存） */
@@ -18234,7 +18234,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '659';
+const APP_VERSION = '664';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -18819,7 +18819,7 @@ function renderShiftAdmin() {
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
-  else if (shiftAdminTab==='build') html += (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : (storeId==='F01' ? renderShiftBuilderF01(storeId, week) : renderShiftBuild(storeId, week)));
+  else if (shiftAdminTab==='build') html += (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : (storeId==='F01' ? renderShiftBuilderF01(storeId, week) : (storeId==='F04-P' ? renderShiftBuilderF04P(storeId, week) : renderShiftBuild(storeId, week))));
   else if (shiftAdminTab==='table') html += (storeId==='F01' ? renderShiftBoard(storeId, week) : (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : renderShiftTable(storeId, week)));
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
@@ -19382,7 +19382,7 @@ function renderShiftBuilderF02(storeId, week){
     +'<button class="btn btn-secondary btn-sm" onclick="syncF02Times(\''+storeId+'\',\''+week+'\')"><i class="ti ti-refresh"></i> Apply times</button>'
     +'<div style="flex:1"></div>'
     +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> Image</button>'
-    +(plan.status==='公開'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
+    +((plan.status==='公開済'||plan.status==='公開')?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
     +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> Each day cell is split '+splitDesc+'. Tap a side to assign its position / time or cut. Green = fixed. Lv = skill level.</div></div>';
 
   html+=_f02HeadPanel(storeId);
@@ -19619,7 +19619,7 @@ function renderShiftBuilderF01(storeId, week){
     +'<button class="btn btn-secondary btn-sm" onclick="openShiftSecRoleEditor(\''+storeId+'\')"><i class="ti ti-users-group"></i> 出勤区分</button>'
     +'<div style="flex:1"></div>'
     +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> Image</button>'
-    +(plan.status==='\u516c\u958b'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
+    +((plan.status==='\u516c\u958b\u6e08'||plan.status==='\u516c\u958b')?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
     +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> \u30c7\u30a3\u30ca\u30fc\u55b6\u696d\uff08\u4e0a\uff09\u3068\u30d7\u30ec\u30c3\u30d7\uff08\u4e0b\uff09\u3092\u5206\u3051\u3066\u4f5c\u6210\u3002\u30c7\u30a3\u30ca\u30fc\u306f\u30bf\u30c3\u30d7\u3067\u5f79\u8077\u30fb\u6642\u9593\u30fb\u300c\u8a2d\u55b6\u300d\u62c5\u5f53\u3092\u8a2d\u5b9a\u3002\u30d7\u30ec\u30c3\u30d7\u306f\u30bf\u30c3\u30d7\u3067\u8907\u6570\u9078\u629e\u53ef\uff08\u4f8b Pork+Kitchen\uff09\u3002\u9031\u5408\u8a08h\u306f<b>\u30c7\u30a3\u30ca\u30fc\uff0b\u30d7\u30ec\u30c3\u30d7\u306e\u5408\u7b97</b>\u306740h\u8d85\u3092\u8b66\u544a\u3002</div></div>';
   html+='<div style="font-size:12px;font-weight:800;margin:2px 0 4px"><i class="ti ti-table" style="color:var(--accent)"></i> '+escapeHtml(store.name)+' Shift Builder</div>';
   var dinnerNames=names.filter(function(n){ return getShiftSecRole(storeId,n).dinner || _f01HasSec(asg,n,'dinner'); });
@@ -19781,6 +19781,285 @@ function openShiftSecRoleEditor(storeId){
     +'<div class="btn-row" style="margin-top:10px"><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">Cancel</button><button class="btn btn-primary" onclick="saveShiftSecRole(\''+storeId+'\')">Save</button></div>');
 }
 
+/* ===== F04-P (Totoya Piikoi) 専用シフトビルダー Phase1 =====
+   L/D別グリッド＋曜日別本数(L/D別)＋手動アサイン。行=総合点降順(Grade)、列=日付/曜日/祝日、各日 L｜D、右端に週労働時間。
+   自動振り分け/Shift Leader/クロージング等は Phase2/3 で追加。plan は shiftplan_ を流用(cells: day_<Lunch|Dinner>_<pos>#name)。 */
+var P4_POS_ALL=['Host','Main Plater','Miso','Supporter'];
+function p4Positions(n){ n=Math.max(0,Math.min(4,Number(n)||0)); return P4_POS_ALL.slice(0,n); }
+function getLDHeadMap(storeId){ try{ var c=ls('shift_ld_head',{})||{}; return c[storeId]||{}; }catch(e){ return {}; } }
+function ldHead(storeId, day, period){ var m=getLDHeadMap(storeId); var d=m[day]||{}; var v=d[period]; return (v==null?3:Number(v)); }
+function setLDHead(storeId, day, period, n){ var c=ls('shift_ld_head',{})||{}; if(!c[storeId])c[storeId]={}; if(!c[storeId][day])c[storeId][day]={}; c[storeId][day][period]=Math.max(0,Math.min(6,Number(n))); lsSet('shift_ld_head', c); }
+function ldHeadStep(storeId, day, period, d){ setLDHead(storeId, day, period, ldHead(storeId,day,period)+d); renderPage('shift_admin'); }
+function _p4Def(storeId, period, pos){
+  var d=(typeof _shiftPosTimeDef==='function')?(_shiftPosTimeDef(storeId, period, pos)||{}):{};
+  if(d.start&&d.end) return {start:d.start,end:d.end};
+  return period==='Lunch'?{start:'10:30',end:'15:00'}:{start:'16:30',end:'22:00'};
+}
+function _p4Time(storeId, period, pos, a){
+  var st=(a&&a.start)||'', en=(a&&a.end)||'';
+  if(!st||!en){ var d=_p4Def(storeId, period, pos); if(!st)st=d.start; if(!en)en=d.end; }
+  var sm=_stTimeToMin(st), em=_stTimeToMin(en); var hrs=0;
+  if(sm!=null&&em!=null){ var h=Math.round((em-sm)/60*10)/10; if(h>0)hrs=h; }
+  return {start:st,end:en,hrs:hrs};
+}
+function _p4Assigned(plan){
+  var asg={};
+  Object.keys((plan&&plan.cells)||{}).forEach(function(k){
+    var name=plan.cells[k]; if(!name) return;
+    var u1=k.indexOf('_'); if(u1<0) return; var day=k.substring(0,u1); var rest=k.substring(u1+1);
+    var u2=rest.indexOf('_'); if(u2<0) return; var period=rest.substring(0,u2); var label=rest.substring(u2+1);
+    if(period!=='Lunch'&&period!=='Dinner') return;
+    var m=((plan.meta)||{})[k]||{};
+    if(!asg[name]) asg[name]={}; if(!asg[name][day]) asg[name][day]={};
+    if(!asg[name][day][period]) asg[name][day][period]={ pos:label.split('#')[0], start:m.start||'', end:m.end||'', fixed:!!m.fixed, key:k };
+  });
+  return asg;
+}
+function _p4Cell(storeId, week, name, day, period, a, avail){
+  var esc=name.replace(/'/g,"\\'");
+  var click='onclick="openShiftP4Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\',\''+period+'\')"';
+  if(a){
+    var tt=_p4Time(storeId, period, a.pos, a);
+    var lv=positionLevelStore(name, a.pos, storeId);
+    var warn=(lv>0&&lv<2);
+    var bg=a.fixed?'rgba(34,197,94,.12)':(warn?'rgba(220,38,38,.12)':'transparent');
+    return { on:true, hrs:tt.hrs, html:'<div '+click+' style="cursor:pointer;padding:2px 3px;background:'+bg+'">'
+      +'<div style="font-size:9.5px;font-weight:700;color:var(--tm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(a.pos)+(lv?' <span style="font-size:8px;color:'+(warn?'var(--red)':'var(--accent)')+';font-weight:800">Lv'+lv+'</span>':'')+(a.fixed?' <i class="ti ti-lock" style="font-size:8px"></i>':'')+'</div>'
+      +'<div style="font-size:8px;color:var(--muted);white-space:nowrap">'+escapeHtml((tt.start&&tt.end)?(tt.start+'\u2013'+tt.end):'')+'</div>'
+      +'</div>' };
+  }
+  if(avail){
+    return { on:false, hrs:0, html:'<div '+click+' style="cursor:pointer;padding:3px 2px;text-align:center;color:var(--muted);opacity:.45;font-size:8.5px"><i class="ti ti-check" style="font-size:9px"></i></div>' };
+  }
+  return { on:false, hrs:0, html:'<div '+click+' style="cursor:pointer;padding:3px 2px;text-align:center;color:var(--border);font-size:9px">\u00b7</div>' };
+}
+/* ===== F04-P Phase3: Shift Leader / クロージング / オーダー（1日1名・動的算出） =====
+   その日に稼働する(L or D)スタッフから、総合点(skillScoreStore.total)最上位=Shift Leader(18点以上・未満は警告)、
+   Shift Leader以外の最下位=クロージング、2番目に低い=オーダー。 */
+function p4DayMarks(storeId, asg){
+  var out={};
+  function sc(n){ return (skillScoreStore(n, storeId)||{}).total||0; }
+  DOW_SHIFT.forEach(function(day){
+    var working=[];
+    Object.keys(asg).forEach(function(name){ var d=asg[name][day]; if(d && (d.Lunch||d.Dinner)) working.push(name); });
+    if(!working.length){ out[day]={}; return; }
+    var byHigh=working.slice().sort(function(a,b){ return sc(b)-sc(a) || String(a).localeCompare(b); });
+    var leader=byHigh[0];
+    var nonL=working.filter(function(n){ return n!==leader; });
+    var byLow=nonL.sort(function(a,b){ return sc(a)-sc(b) || String(a).localeCompare(b); });
+    out[day]={ leader:leader, leaderScore:sc(leader), leaderWarn:sc(leader)<18, closing:(byLow[0]||null), order:(byLow[1]||null) };
+  });
+  return out;
+}
+/* 特別ルール：Availability固定反映（自動振り分けで削られず優先配置） */
+function getP4FixAvail(storeId){ try{ var c=ls('p4_fixavail',{})||{}; return c[storeId]||[]; }catch(e){ return []; } }
+function setP4FixAvail(storeId, arr){ var c=ls('p4_fixavail',{})||{}; c[storeId]=arr; lsSet('p4_fixavail', c); }
+function openP4FixAvailModal(storeId, week){
+  var avail=getAvailability(storeId, week)||[];
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var nameSet={}; avail.forEach(function(a){nameSet[a.name]=1;}); Object.keys(_p4Assigned(plan)).forEach(function(n){nameSet[n]=1;});
+  var staff=(typeof staffForStore==='function'?staffForStore(storeId):[]); staff.forEach(function(e){nameSet[e.name]=1;});
+  var names=Object.keys(nameSet).sort(function(a,b){return String(a).localeCompare(b);});
+  var cur=getP4FixAvail(storeId);
+  var rows=names.map(function(n){ var esc=escapeHtml(n); var nm=esc.replace(/"/g,''); var ck=cur.indexOf(n)>=0; return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:6px 2px;cursor:pointer;border-bottom:1px solid var(--border)"><input type="checkbox" class="p4fx" value="'+nm+'"'+(ck?' checked':'')+' style="width:18px;height:18px"> '+esc+'</label>'; }).join('');
+  openModal('<div class="modal-title"><i class="ti ti-pin"></i> \u7279\u5225\u30eb\u30fc\u30eb\uff1aAvailability\u56fa\u5b9a\u53cd\u6620 <button class="modal-close" onclick="closeModalDirect()">\u00d7</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> \u30c1\u30a7\u30c3\u30af\u3057\u305f\u30b9\u30bf\u30c3\u30d5\u306f\u3001\u81ea\u52d5\u632f\u308a\u5206\u3051\u3067<b>Availability\u304c\u524a\u3089\u308c\u305a\u512a\u5148\u3067\u914d\u7f6e</b>\u3055\u308c\u307e\u3059\uff08\u63d0\u51fa\u3057\u305f\u52e4\u52d9\u53ef\u80fd\u67a0\u304c\u305d\u306e\u307e\u307e\u53cd\u6620\uff09\u3002</div>'
+    +'<div style="max-height:50vh;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:2px 10px">'+(rows||'<div style="color:var(--muted);padding:10px">\u30b9\u30bf\u30c3\u30d5\u304c\u3044\u307e\u305b\u3093</div>')+'</div>'
+    +'<div class="btn-row" style="margin-top:10px"><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">Cancel</button><button class="btn btn-primary" onclick="saveP4FixAvail(\''+storeId+'\')">Save</button></div>');
+}
+function saveP4FixAvail(storeId){
+  var arr=[]; Array.prototype.forEach.call(document.querySelectorAll('.p4fx'), function(b){ if(b.checked) arr.push(b.value); });
+  setP4FixAvail(storeId, arr);
+  closeModalDirect(); showToast('\u56fa\u5b9a\u53cd\u6620\u30b9\u30bf\u30c3\u30d5\u3092\u4fdd\u5b58\u3057\u307e\u3057\u305f\uff08'+arr.length+'\u540d\uff09','success'); renderPage('shift_admin');
+}
+
+function autoAssignP4(storeId, week){
+  if(!confirm('Availability・本数設定・スキルLvから自動で振り分けます。固定(ロック)以外の既存アサインは上書きされます。よろしいですか？')) return;
+  var avail=getAvailability(storeId, week)||[];
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var newCells={}, newMeta={};
+  // 固定(手動ロック)セルは保持
+  Object.keys(plan.cells||{}).forEach(function(k){ var m=(plan.meta||{})[k]||{}; if(m.fixed){ newCells[k]=plan.cells[k]; newMeta[k]=m; } });
+  var availLD={}; avail.forEach(function(a){ (a.slots||[]).forEach(function(s){ if(!availLD[a.name])availLD[a.name]={}; if(!availLD[a.name][s.day])availLD[a.name][s.day]={}; availLD[a.name][s.day][s.period]=true; }); });
+  var availNames=Object.keys(availLD);
+  function score(n){ return (skillScoreStore(n, storeId)||{}).total||0; }
+  var fixSet={}; (getP4FixAvail(storeId)||[]).forEach(function(n){fixSet[n]=1;});
+  var warnCount=0, placed=0;
+  DOW_SHIFT.forEach(function(day){
+    ['Lunch','Dinner'].forEach(function(period){
+      var poss=p4Positions(ldHead(storeId, day, period));
+      var filledPos={}, usedName={};
+      // 固定セルの使用状況を反映（この day+period）
+      Object.keys(newCells).forEach(function(k){
+        if(k.indexOf(day+'_'+period+'_')!==0) return;
+        var nm=newCells[k]; var lbl=k.substring((day+'_'+period+'_').length);
+        filledPos[lbl.split('#')[0]]=true; usedName[nm]=true;
+      });
+      // 候補ペア（この day+period に available・Lv>=1 のみ）
+      var pairs=[];
+      availNames.forEach(function(name){
+        if(!(availLD[name][day] && availLD[name][day][period])) return;
+        var isFix=fixSet[name];
+        poss.forEach(function(pos){
+          var lv=positionLevelStore(name, pos, storeId);
+          if(isFix || lv>=1) pairs.push({name:name, pos:pos, lv:lv, score:score(name), fx:isFix?1:0});
+        });
+      });
+      // Lv高い順 → 同Lvは総合点高い順
+      pairs.sort(function(a,b){ return (b.fx||0)-(a.fx||0) || b.lv-a.lv || b.score-a.score || String(a.name).localeCompare(b.name); });
+      pairs.forEach(function(pr){
+        if(usedName[pr.name] || filledPos[pr.pos]) return;
+        var d=_p4Def(storeId, period, pr.pos);
+        var key=shiftCellKey(day, period, pr.pos+'#'+pr.name);
+        newCells[key]=pr.name; newMeta[key]={start:d.start, end:d.end, fixed:false};
+        usedName[pr.name]=true; filledPos[pr.pos]=true; placed++;
+        if(pr.lv<2) warnCount++;
+      });
+    });
+  });
+  plan.cells=newCells; plan.meta=newMeta; if(!plan.status) plan.status='下書き';
+  setShiftPlan(storeId, week, plan);
+  showToast('自動で振り分けました（'+placed+'枠'+(warnCount?(' / Lv2未満 '+warnCount+'件 ⚠'):'')+'）','success');
+  renderPage('shift_admin');
+}
+
+/* ===== F04-P Phase4: 給与期間(前期/後期)判定＋Shift Leader 回数集計 ===== */
+function _p4Period(iso){
+  var d=new Date(iso+'T00:00:00'); var y=d.getFullYear(), m=d.getMonth(), day=d.getDate();
+  var half=day<=15?'first':'second';
+  function is2(x){return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');}
+  var from,to;
+  if(half==='first'){ from=new Date(y,m,1); to=new Date(y,m,15); } else { from=new Date(y,m,16); to=new Date(y,m+1,0); }
+  return {y:y,m:m,half:half,from:is2(from),to:is2(to),label:(m+1)+'\u6708'+(half==='first'?'\u524d\u671f':'\u5f8c\u671f')};
+}
+function p4LeaderCount(storeId, fromISO, toISO){
+  var cnt={}, planCache={}, markCache={};
+  function is2(x){return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');}
+  var d=new Date(fromISO+'T00:00:00'), end=new Date(toISO+'T00:00:00');
+  for(; d<=end; d.setDate(d.getDate()+1)){
+    var sun=new Date(d); sun.setDate(d.getDate()-d.getDay()); var wk=is2(sun);
+    if(!(wk in planCache)){ var p=getShiftPlan(storeId, wk)||{cells:{},meta:{}}; planCache[wk]=p; markCache[wk]=p4DayMarks(storeId, _p4Assigned(p)); }
+    var mk=(markCache[wk]||{})[DOW_SHIFT[d.getDay()]]||{};
+    if(mk.leader) cnt[mk.leader]=(cnt[mk.leader]||0)+1;
+  }
+  return cnt;
+}
+
+function renderShiftBuilderF04P(storeId, week){
+  var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var avail=getAvailability(storeId, week)||[];
+  var asg=_p4Assigned(plan);
+  var marks=p4DayMarks(storeId, asg);
+  var availLD={}; avail.forEach(function(a){ (a.slots||[]).forEach(function(s){ if(!availLD[a.name])availLD[a.name]={}; if(!availLD[a.name][s.day])availLD[a.name][s.day]={}; availLD[a.name][s.day][s.period]=true; }); });
+  var nameSet={}; avail.forEach(function(a){nameSet[a.name]=1;}); Object.keys(asg).forEach(function(n){nameSet[n]=1;});
+  var emps=getEmployees();
+  function scoreOf(n){ return (skillScoreStore(n, storeId)||{}).total||0; }
+  function empOf(n){ return emps.find(function(e){return e.name===n;})||{}; }
+  var names=Object.keys(nameSet).sort(function(a,b){ return scoreOf(b)-scoreOf(a) || String(a).localeCompare(b); });
+  var dates=DOW_SHIFT.map(weekDateForDow);
+  var dowEn=DOW_SHIFT_EN();
+  var holCache={};
+  function holOf(iso){ if(!iso) return ''; var y=Number(iso.slice(0,4)); if(!holCache[y]){ try{ holCache[y]=usHolidays(y)||{}; }catch(e){ holCache[y]={}; } } return holCache[y][iso]||''; }
+
+  var html='<div class="card" style="padding:10px 12px;margin-bottom:10px"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +'<span style="font-weight:800;font-size:13px"><i class="ti ti-layout-grid" style="color:var(--accent)"></i> '+escapeHtml(store.name)+' シフト作成</span>'
+    +'<button class="btn btn-primary btn-sm" onclick="autoAssignP4(\''+storeId+'\',\''+week+'\')"><i class="ti ti-wand"></i> 自動振り分け</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="openP4FixAvailModal(\''+storeId+'\',\''+week+'\')"><i class="ti ti-pin"></i> 特別ルール</button>'
+    +'<div style="flex:1"></div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> Image</button>'
+    +((plan.status==='\u516c\u958b\u6e08'||plan.status==='\u516c\u958b')?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
+    +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 行＝総合スキル点の高い順（Grade表示）。各日は <b>L｜D</b>。曜日別に L/D の本数を設定（3本＝Host/Main Plater/Miso、4本＝＋Supporter）。セルをタップで手動アサイン。<b>自動振り分け</b>でLv順に割当（Lv2未満⚠）。<b>★SL</b>=Shift Leader(総合18点以上・未満⚠)・<b>Close</b>=クロージング(最下位)・<b>Order</b>=オーダー(2番目)。</div></div>';
+
+  html+='<div class="card" style="overflow-x:auto;padding:8px;margin-bottom:10px"><div style="font-size:12px;font-weight:800;margin-bottom:4px"><i class="ti ti-users"></i> 曜日別 本数（L/D別）</div>';
+  html+='<table style="border-collapse:collapse;font-size:11px;min-width:560px"><thead><tr><th style="text-align:left;padding:2px 6px"></th>'+dowEn.map(function(dw,i){ var iso=dates[i]; var hol=holOf(iso); return '<th style="text-align:center;padding:2px 4px;font-size:10px">'+dw+'<div style="font-size:8px;color:'+(hol?'var(--red)':'var(--muted)')+';font-weight:400">'+(iso?(Number(iso.slice(5,7))+'/'+Number(iso.slice(8,10))):'')+(hol?' 祝':'')+'</div></th>'; }).join('')+'</tr></thead><tbody>';
+  ['Lunch','Dinner'].forEach(function(period){
+    html+='<tr><td style="text-align:left;font-weight:700;padding:2px 6px;color:'+(period==='Lunch'?'var(--accent2)':'var(--accent)')+'">'+(period==='Lunch'?'L ランチ':'D ディナー')+'</td>';
+    DOW_SHIFT.forEach(function(day){ var n=ldHead(storeId, day, period); html+='<td style="text-align:center;padding:1px 2px;white-space:nowrap"><button class="btn btn-secondary btn-sm" style="padding:0 5px;min-width:0" onclick="ldHeadStep(\''+storeId+'\',\''+day+'\',\''+period+'\',-1)">\u2212</button> <b>'+n+'</b> <button class="btn btn-secondary btn-sm" style="padding:0 5px;min-width:0" onclick="ldHeadStep(\''+storeId+'\',\''+day+'\',\''+period+'\',1)">\uff0b</button></td>'; });
+    html+='</tr>';
+  });
+  html+='</tbody></table></div>';
+
+  html+='<div class="card" style="overflow-x:auto;padding:8px"><table class="inv-table" style="min-width:900px;font-size:11px;border-collapse:collapse"><thead><tr>'
+    +'<th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:120px">Staff</th>'
+    +dowEn.map(function(dw,i){ var iso=dates[i]; var hol=holOf(iso); return '<th style="text-align:center;border-left:2px solid var(--border);font-size:10px;padding:3px 2px;min-width:104px">'+dw+'<div style="font-size:8px;color:var(--muted);font-weight:400">'+(iso?(Number(iso.slice(5,7))+'/'+Number(iso.slice(8,10))):'')+'</div>'+(hol?'<div style="font-size:8px;color:var(--red);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100px">'+escapeHtml(hol)+'</div>':'')+'<div style="display:flex;font-size:8px;color:var(--muted);font-weight:700;margin-top:1px"><div style="flex:1;color:var(--accent2)">L</div><div style="width:1px"></div><div style="flex:1;color:var(--accent)">D</div></div></th>'; }).join('')
+    +'<th style="border-left:2px solid var(--accent);color:var(--accent);font-size:10px;min-width:48px">\u9031h</th></tr></thead><tbody>';
+  if(!names.length){ html+='<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:20px"><i class="ti ti-calendar-off" style="font-size:20px"></i><div style="margin-top:6px">まだAvailabilityの提出がありません</div></td></tr>'; }
+  names.forEach(function(name){
+    var e=empOf(name); var sc=scoreOf(name); var gr=(typeof empGrade==='function')?empGrade(e):'';
+    var wk=0;
+    html+='<tr style="border-top:1px solid var(--border)"><td style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:1"><div style="font-weight:700;font-size:11.5px">'+escapeHtml(name)+'</div><div style="font-size:9px;color:var(--muted)">'+(gr?('<span style="font-weight:700;color:var(--accent)">'+escapeHtml(gr)+'</span> \u00b7 '):'')+sc+'点</div></td>';
+    DOW_SHIFT.forEach(function(day){
+      var dA=(asg[name]||{})[day]||{};
+      var avA=(availLD[name]||{})[day]||{};
+      var cL=_p4Cell(storeId, week, name, day, 'Lunch', dA.Lunch, avA.Lunch);
+      var cD=_p4Cell(storeId, week, name, day, 'Dinner', dA.Dinner, avA.Dinner);
+      wk+=cL.hrs+cD.hrs;
+      var mk=marks[day]||{}; var badge='';
+      if(mk.leader===name) badge='<div style="font-size:7.5px;font-weight:800;text-align:center;color:#fff;background:'+(mk.leaderWarn?'var(--red)':'var(--accent)')+';line-height:1.5">★SL'+(mk.leaderWarn?' ⚠':'')+'</div>';
+      else if(mk.closing===name) badge='<div style="font-size:7.5px;font-weight:800;text-align:center;color:#fff;background:var(--accent2);line-height:1.5">Close</div>';
+      else if(mk.order===name) badge='<div style="font-size:7.5px;font-weight:800;text-align:center;color:#fff;background:#15a66a;line-height:1.5">Order</div>';
+      html+='<td style="border-left:2px solid var(--border);padding:0"><div>'+badge+'<div style="display:flex;align-items:stretch">'+cL.html+'<div style="width:1px;background:var(--border)"></div>'+cD.html+'</div></div></td>';
+    });
+    wk=Math.round(wk*10)/10;
+    html+='<td style="border-left:2px solid var(--accent);text-align:center;font-weight:800;color:var(--accent)">'+(wk?wk+'h':'')+'</td></tr>';
+  });
+  html+='</tbody></table></div>';
+  // Shift Leader 回数（当該給与期間）
+  var _per=_p4Period(dates[3]||dates[0]);
+  var _slc=p4LeaderCount(storeId, _per.from, _per.to);
+  var _slN=Object.keys(_slc).sort(function(a,b){return _slc[b]-_slc[a] || String(a).localeCompare(b);});
+  html+='<div class="card" style="padding:10px 12px;margin-top:10px"><div style="font-size:12px;font-weight:800;margin-bottom:4px"><i class="ti ti-crown" style="color:var(--accent)"></i> Shift Leader 回数（'+escapeHtml(_per.label)+'　'+_per.from+'〜'+_per.to+'）</div>';
+  if(_slN.length){ html+='<div style="display:flex;flex-wrap:wrap;gap:6px">'+_slN.map(function(n){return '<span style="font-size:11px;background:var(--surface2);border-radius:8px;padding:3px 9px"><b>'+escapeHtml(n)+'</b> <span style="color:var(--accent);font-weight:800">'+_slc[n]+'</span>回</span>';}).join('')+'</div>'; }
+  else{ html+='<div style="font-size:11px;color:var(--muted)">この期間のShift Leader記録はまだありません（各週のシフトを作成・公開すると集計されます）。</div>'; }
+  html+='</div>';
+  return html;
+}
+function openShiftP4Cell(storeId, week, name, day, period){
+  var plan=getShiftPlan(storeId, week)||{cells:{},meta:{}};
+  var asg=_p4Assigned(plan); var cur=(((asg[name]||{})[day]||{})[period])||null;
+  var headN=ldHead(storeId, day, period);
+  var poss=p4Positions(headN);
+  var lvLine=poss.map(function(p){ return p+':Lv'+positionLevelStore(name,p,storeId); }).join(' / ');
+  var opts=poss.map(function(p){ var lv=positionLevelStore(name,p,storeId); var sel=(cur&&cur.pos===p); return '<option value="'+p.replace(/"/g,'')+'"'+(sel?' selected':'')+'>'+escapeHtml(p)+' (Lv'+lv+')'+(lv>0&&lv<2?' \u26a0':'')+'</option>'; }).join('');
+  var st=cur?cur.start:'', en=cur?cur.end:'';
+  if(!st||!en){ var d=_p4Def(storeId, period, cur?cur.pos:poss[0]); if(!st)st=d.start; if(!en)en=d.end; }
+  var esc=name.replace(/'/g,"\\'");
+  openModal('<div class="modal-title">'+escapeHtml(name)+' \u2014 '+escapeHtml(DOW_SHIFT_EN()[DOW_SHIFT.indexOf(day)]||day)+' \u00b7 <span style="color:'+(period==='Lunch'?'var(--accent2)':'var(--accent)')+'">'+(period==='Lunch'?'\u30e9\u30f3\u30c1':'\u30c7\u30a3\u30ca\u30fc')+'</span> <button class="modal-close" onclick="closeModalDirect()">\u00d7</button></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">\u672c\u6570 '+headN+'\u672c \u2192 '+escapeHtml(poss.join(' / '))+'\u3000\uff5c\u3000\u3053\u306e\u4eba\u306eLv: '+escapeHtml(lvLine)+'</div>'
+    +'<div class="form-group"><label class="form-label">\u30dd\u30b8\u30b7\u30e7\u30f3</label><select class="form-select" id="p4-pos" onchange="_p4SlotChange(\''+storeId+'\',\''+period+'\')"><option value="">\u2014 \u9078\u629e \u2014</option>'+opts+'</select></div>'
+    +'<div style="display:flex;gap:8px"><div class="form-group" style="flex:1"><label class="form-label">Start</label><input class="form-input" id="p4-start" type="time" value="'+st+'"></div><div class="form-group" style="flex:1"><label class="form-label">End</label><input class="form-input" id="p4-end" type="time" value="'+en+'"></div></div>'
+    +'<div class="btn-row">'+(cur?'<button class="btn btn-danger" onclick="cutShiftP4Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\',\''+period+'\')"><i class="ti ti-scissors"></i> Cut</button>':'')+'<div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">Cancel</button><button class="btn btn-primary" onclick="saveShiftP4Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\',\''+period+'\')">Save</button></div>');
+}
+function _p4SlotChange(storeId, period){
+  var pos=(document.getElementById('p4-pos')||{}).value||''; if(!pos) return;
+  var d=_p4Def(storeId, period, pos);
+  var s=document.getElementById('p4-start'), e=document.getElementById('p4-end');
+  if(s&&!s.value) s.value=d.start; if(e&&!e.value) e.value=d.end;
+}
+function _p4Clear(plan, name, day, period){
+  Object.keys(plan.cells).forEach(function(k){
+    if(plan.cells[k]!==name || k.indexOf(day+'_'+period+'_')!==0) return;
+    delete plan.cells[k]; if(plan.meta) delete plan.meta[k];
+  });
+}
+function saveShiftP4Cell(storeId, week, name, day, period){
+  var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}}; if(!plan.meta)plan.meta={};
+  _p4Clear(plan, name, day, period);
+  var pos=(document.getElementById('p4-pos')||{}).value||'';
+  if(!pos){ setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin'); return; }
+  var st=(document.getElementById('p4-start')||{}).value||''; var en=(document.getElementById('p4-end')||{}).value||'';
+  if(!st||!en){ var d=_p4Def(storeId, period, pos); if(!st)st=d.start; if(!en)en=d.end; }
+  var key=shiftCellKey(day, period, pos+'#'+name);
+  plan.cells[key]=name; plan.meta[key]={start:st, end:en, fixed:false};
+  setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
+}
+function cutShiftP4Cell(storeId, week, name, day, period){
+  var plan=getShiftPlan(storeId,week)||{cells:{},meta:{}};
+  _p4Clear(plan, name, day, period);
+  setShiftPlan(storeId,week,plan); closeModalDirect(); renderPage('shift_admin');
+}
+
 function renderShiftBoard(storeId, week){
   var store=STORES.find(function(s){return s.id===storeId;})||{name:storeId};
   var plan=getShiftPlan(storeId, week)||{cells:{}, meta:{}};
@@ -19794,7 +20073,7 @@ function renderShiftBoard(storeId, week){
     +'<button class="btn btn-secondary btn-sm" onclick="openShiftTimeEditor(\''+storeId+'\')"><i class="ti ti-clock"></i> '+t('時刻設定','Times')+'</button>'
     +'<button class="btn btn-secondary btn-sm" onclick="setShiftAdminTab(\'build\')"><i class="ti ti-adjustments"></i> '+t('本数設定','Counts')+'</button>'
     +'<div style="flex:1"></div>'
-    +(plan.status==='公開'?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> '+t('公開済','Published')+'</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> '+t('公開','Publish')+'</button>')
+    +((plan.status==='公開済'||plan.status==='公開')?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> '+t('公開済','Published')+'</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> '+t('公開','Publish')+'</button>')
     +'</div>'
     +'<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:8px;flex-wrap:wrap">'
     +'<span><i class="ti ti-lock" style="color:var(--accent)"></i> '+t('固定（毎週自動）','Fixed')+'</span>'
@@ -21479,10 +21758,12 @@ function renderShiftStaff() {
     var myCells = Object.keys(plan.cells).filter(k=>plan.cells[k]===me);
     html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check"></i>${t('公開シフト','Published Shift')}</div>`;
     if (myCells.length) {
+      var _p4mk = (storeId==='F04-P' && typeof p4DayMarks==='function' && typeof _p4Assigned==='function') ? p4DayMarks(storeId, _p4Assigned(plan)) : {};
       myCells.forEach(k => {
         var parts = k.split('_');
+        var _mkr=_p4mk[parts[0]]||{}; var _slb=_mkr.leader===me?'<span style="font-size:9px;font-weight:800;color:#fff;background:'+(_mkr.leaderWarn?'var(--red)':'var(--accent)')+';border-radius:5px;padding:1px 6px;margin-left:6px">★SL</span>':(_mkr.closing===me?'<span style="font-size:9px;font-weight:800;color:#fff;background:var(--accent2);border-radius:5px;padding:1px 6px;margin-left:6px">Close</span>':(_mkr.order===me?'<span style="font-size:9px;font-weight:800;color:#fff;background:#15a66a;border-radius:5px;padding:1px 6px;margin-left:6px">Order</span>':''));
         html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
-          <div><div style="font-size:13px;font-weight:600">${tWday(parts[0])}${curLang==='en'?'':'曜'} ${parts[1]}</div><div style="font-size:11px;color:var(--muted)">${parts[2]}</div></div>
+          <div><div style="font-size:13px;font-weight:600">${tWday(parts[0])}${curLang==='en'?'':'曜'} ${parts[1]}${_slb}</div><div style="font-size:11px;color:var(--muted)">${parts[2].split('#')[0]}</div></div>
           <button class="btn btn-secondary btn-sm" onclick="openShiftChangeModal('${storeId}','${week}','${k}')">${t('変更申請','Request change')}</button>
         </div>`;
       });
@@ -40845,7 +41126,6 @@ function renderSkillStaffView() {
   var selStore = window._skillStaffStore || 'ALL';
   var tabs = bStoreChips(selStore,'setSkillStaffStore',{stores:skillStoreListUI()});
   var staff = visibleStaffForManager().filter(function(e){
-    if(e.prep) return false; // プレップ専門職は一般スキル評価から除外（プレップLvで評価）
     if(selStore==='OFFICE') return ['office','office_crew'].includes(e.role);
     if(!['sl','crew'].includes(e.role)) return false;
     if(selStore!=='ALL' && !(e.store===selStore || (e.support||[]).includes(selStore))) return false;
@@ -40859,6 +41139,25 @@ function renderSkillStaffView() {
     var rate = effectiveTipRate(e.name);
     html += `<div class="card"><div class="card-title"><i class="ti ti-user"></i>${e.name}
       <span class="tag ${rate===100?'tag-green':'tag-gray'}" style="margin-left:auto">Tip ${rate===0?'No':rate+'%'}</span></div>`;
+      if(e.prep){
+        var pStores=[e.store].concat(e.support||[]).filter(function(v,i,a){return v&&a.indexOf(v)===i;});
+        if(selStore!=='ALL') pStores=pStores.filter(function(sid){return sid===selStore;});
+        if(!pStores.length) pStores=[e.store||'F01'];
+        pStores.forEach(function(sid){
+          var sObj=STORES.find(function(s){return s.id===sid;})||{name:sid,color:'#7d9b4e'};
+          var positions=(typeof getPrepPositions==='function')?getPrepPositions(sid):[];
+          var sk=(typeof prepSkillsOf==='function')?prepSkillsOf(e,sid):{};
+          var lv=(typeof prepOverallLevel==='function')?prepOverallLevel(e,sid):(e.prepLv||1);
+          var vals=positions.map(function(p){return Number(sk[p]||0);});
+          html+='<div style="padding:6px 0;border-bottom:1px solid var(--border)">'
+            +'<div style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:'+sObj.color+'"></span><b>'+escapeHtml(sObj.name)+'</b><span style="color:var(--muted)">プレップ Lv'+lv+'</span></div>'
+            +'<div style="margin-top:6px">'+(positions.length>=3?skillRadarSvg(positions,vals,5,{size:210}):'<span style="font-size:11px;color:var(--muted)">評価項目が3つ未満のためレーダー非表示</span>')+'</div>'
+            +'</div>';
+        });
+        html+=skillEvalSectionHtml(e.name);
+        html+='<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="setSkillView(\'prep\')"><i class="ti ti-tools-kitchen-2"></i> プレップ評価（プレップLv）へ</button></div>';
+        return;
+      }
     stores.forEach(sid=>{
       var sObj = STORES.find(s=>s.id===sid)||{name:(sid==='OFFICE'?'Office':sid),color:'#6b7280'};
       var sc = skillScoreStore(e.name, sid);
