@@ -10663,9 +10663,23 @@ function pageSyncBar(opts){
    最重要: 「同期」は必ず「①未送信をクラウドへ押し上げ(flushOutbox) → ②マージ取得」の順。
    取得(pull)は既存のマージ方式を使い、ローカルの未保存を上書きしない。 */
 var SYNC_SCOPE_META = {
-  budget: { label:'予実', toast:true, pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } }
+  dash:    { label:'ダッシュボード', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
+  budget:  { label:'予実', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
+  tasks:   { label:'ワークセンター', toast:false, pull: async function(){ try{ await maybeSyncTasks(true); }catch(e){} } },
+  hr:      { label:'人材管理', toast:false, pull: async function(){ try{ await maybePullVacations(true); }catch(e){} try{ await maybePullOnboardings(true); }catch(e){} try{ await refreshStaffPinsFromCloud(); }catch(e){} } },
+  growth:  { label:'育成・評価', toast:false, pull: async function(){ try{ _skillAllPulled=false; }catch(e){} try{ maybePullAllSkillStores(); }catch(e){} } },
+  food:    { label:'食材管理', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
+  settings:{ label:'設定', toast:false, pull:null }
 };
-var PAGE_SYNC_SCOPE = { budget:'budget', labor:'budget', foodcost:'budget', kpi_master:'budget', dailyops:'budget', monthly:'budget' };
+var PAGE_SYNC_SCOPE = {
+  dashboard:'dash', store_cmd:'dash',
+  budget:'budget', labor:'budget', foodcost:'budget', kpi_master:'budget', dailyops:'budget', monthly:'budget',
+  tasks:'tasks', biz_guide:'tasks',
+  staff_master:'hr', hiring:'hr', onboarding:'hr', tip:'hr', hr:'hr', vacation:'hr', mileage:'hr', expense:'hr', attendance:'hr', crew_handbook:'hr',
+  skill:'growth', ojt_admin:'growth', growth_mgr:'growth', leadership:'growth', growthhub:'growth', tiprate:'growth',
+  menu:'food', recipe:'food', ingredient_master:'food', ing_transfer:'food', vendor_master:'food', inventory:'food', order:'food', supply_order:'food', invoice:'food', acct_review:'food',
+  store_master:'settings', required:'settings', settings:'settings'
+};  /* shift_admin は専用バー(availDiag)を持つため意図的に除外 */
 function pageSyncScope(page){ return PAGE_SYNC_SCOPE[page] || null; }
 function _syncMeta(scope){ return SYNC_SCOPE_META[scope] || {label:scope, toast:false, pull:null}; }
 
@@ -10674,6 +10688,7 @@ async function pageSync(scope){
   var m=_syncMeta(scope);
   try{ showToast(t('同期中…','Syncing…'),'info'); }catch(e){}
   try{ await flushOutbox(); }catch(e){}          // ① 未送信を先に押し上げ（保存を確実にクラウド化）
+  try{ await new Promise(function(res){ setTimeout(res, 350); }); }catch(e){}  // 送信中の書き込みがクラウドへ着地するのを待つ（取得で上書きしないため）
   try{ if(m.pull) await m.pull(); }catch(e){}     // ② マージ取得（既存pull=マージ方式・上書きなし）
   try{ markSynced(scope); }catch(e){}
   try{ var n=(typeof outboxCount==='function')?outboxCount():0; showToast(n?('同期しました（未送信'+n+'件）'):t('最新に同期しました','Synced'), n?'warning':'success'); }catch(e){}
@@ -10715,6 +10730,7 @@ function openDiag(scope){
   openModal('<div class="modal-title"><i class="ti ti-stethoscope"></i> 同期診断（'+escapeHtml(m.label)+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +cloudCard+toastCard
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-secondary" onclick="closeModalDirect();openSyncCenter()"><i class="ti ti-refresh"></i> まとめて</button>'
     +'<button class="btn btn-primary" onclick="closeModalDirect();pageSync(\''+scope+'\')"><i class="ti ti-cloud-download"></i> '+t('同期','Sync')+'</button></div>');
 }
 function syncFreshBadge(){
@@ -12547,7 +12563,7 @@ function renderBudgetDaily() {
     var statusText = ss.last ? `${syncDotHtml}${t('最終更新','Updated')}: ${ss.last}` : `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);vertical-align:middle;margin-right:4px"></span>${t('未連携','Not linked')}`;
     html += `<div class="card" style="padding:10px 14px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <div style="flex:1;min-width:180px;font-size:11px;color:var(--muted)"><i class="ti ti-plug-connected" style="color:var(--accent2)"></i> ${statusText}${ss.detail?` · ${ss.detail}`:''}${hasGuid?'':' · <span style="color:var(--yellow)">'+t('GUID未設定','GUID not set')+'</span>'}</div>
-      <button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> ${t('同期センター','Sync Center')}</button>
+      
     </div>
     <div id="toast-sync-status" style="font-size:11px;color:var(--muted)"></div></div>`;
   }
@@ -16179,7 +16195,7 @@ function renderTipMgmt() {
 
   var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header"><div><div class="section-title">${t('チップ管理','Tip Management')}</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-      ${syncFreshBadge()}<button class="btn btn-secondary btn-sm" onclick="openSyncCenter()"><i class="ti ti-refresh"></i> ${t('同期センター','Sync Center')}</button>
+      ${syncFreshBadge()}
       <button class="btn btn-secondary btn-sm" onclick="openTipDateDebug()"><i class="ti ti-stethoscope"></i> ${t('Tip診断','Tip diagnostics')}</button>
       ${['gm','ceo','office','am'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openTipHoursModal()"><i class="ti ti-clock-cog"></i> ${t('対象時間設定','Hours settings')}</button>`:''}
     </div>
@@ -18439,7 +18455,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '676';
+const APP_VERSION = '678';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -38390,7 +38406,7 @@ function renderTasks(){
   var canManage = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
   if(!window._taskView) window._taskView='list';
   var html = '<div class="section-header"><div><div class="section-title">タスク</div><div class="section-sub">ワークセンター — 作成と一覧</div></div>'
-    +'<button class="btn btn-secondary btn-sm" style="margin-left:auto;align-self:center" onclick="tasksSyncNow()"><i class="ti ti-refresh"></i> 更新</button></div>'
+    +'</div>'
     +'<div style="font-size:10px;color:var(--muted);margin:-6px 0 8px">'+(_tasksPulledAt?('最終同期 '+new Date(_tasksPulledAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})+'（他端末で作成されたタスクはここで取り込まれます）'):'他端末のタスクを取り込むには「更新」を押してください')+'</div>';
   html += taskTopTabsHtml();
   if(window._taskView==='create') return html + renderTaskCreate();
