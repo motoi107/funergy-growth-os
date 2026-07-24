@@ -4339,6 +4339,17 @@ function lsBytesTotal(){ var tt=0; try{ for(var i=0;i<localStorage.length;i++){ 
 /* v617: 棚卸履歴（inv_hist_* / spl_inv_hist_*）は絶対に自動削除しない（復旧不能なデータのため） */
 function lsIsPrunable(k){
   if(String(k).indexOf('inv_hist_')>=0) return false;
+  /* v696: 'spl_' は分割保存の接頭辞で、中身は請求書・休暇・タスク・発注などの「手入力データ」。
+     これを一括prunable扱いにしていたため、容量4.3MB超で autoPruneIfCritical() が
+     spl_invoices_* などを丸ごと削除し、登録した請求書が端末から消えていた
+     （v622で予算だけ個別に除外されていたが、他は無防備だった）。
+     再取得可能なもの（Toastから引き直せる tip_labor）だけ削除を許可する。 */
+  if(String(k).indexOf('spl_')===0){
+    var _rest=String(k).slice(4);
+    return ['tip_labor_','dailyops_','att_day_approve_','att_approve_','warnings_','reminded_','shiftopt_'].some(function(pf){ return _rest.indexOf(pf)===0; });
+  }
+  /* 買い出し(purchases_)は原価に直結する手入力データ。自動削除の対象外にする。 */
+  if(String(k).indexOf('purchases_')===0) return false;
   /* v622: 予算は復旧不能な手入力データ。分割で 'spl_' 接頭辞になるため、この除外が無いと
      キャッシュ整理・autoPruneIfCritical(4.3MB超で prunable を一括削除)で予算が消える。
      budgets_v2 / spl_budgets_v2_* / budgets_v2_bak* をまとめて対象外にする。 */
@@ -12413,6 +12424,86 @@ function daysOfYm(ym){
   return arr;
 }
 /* クラウドの toast_item_sales から出数を読み menu_mix(ローカル)へ反映（ライブToast取得はしない＝読み取り専用） */
+/* ===== v698: 出数（メニューミックス）の対象期間・取りこぼし診断 =====
+   「出数が少ない」原因は主に次の3つ。実データを見て切り分ける。
+    ① 取得対象は business_month（＝その月の1日〜月末）。当月は月途中まで。
+    ② レシピに toastGuid が未登録／storeId 不一致の商品は捨てられる（＝集計に出ない）
+    ③ 同一商品が複数行（日別など）で返る場合、現行コードは合計せず上書きしていた */
+async function openMenuMixDiag(storeId, period){
+  storeId = storeId || (curStore!=='ALL'?curStore:(STORES[0]||{}).id);
+  period  = period  || (typeof getPeriod==='function'?getPeriod():'');
+  var store=(getStoresAll().find(function(s){return s.id===storeId;})||{});
+  var guid=store.toastGuid||'';
+  var p=String(period).split('.'); var ym=p[0]+'-'+String(p[1]).padStart(2,'0');
+  try{ showToast('出数データを照会中…','info'); }catch(e){}
+  if(!guid){
+    openModal('<div class="modal-title">出数の診断 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      +'<div class="alert alert-warning" style="margin:0"><i class="ti ti-alert-triangle"></i><div><p style="font-size:13px;font-weight:700">'+escapeHtml(store.name||storeId)+' はToast GUIDが未設定です</p>'
+      +'<p style="font-size:12px;margin-top:2px">店舗マスターでGUIDを設定すると出数を取得できます。</p></div></div>'
+      +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
+    return;
+  }
+  var rows=[], err='';
+  try{
+    var url=SUPABASE_URL+'/rest/v1/toast_item_sales?restaurant_guid=eq.'+encodeURIComponent(guid)+'&business_month=eq.'+ym+'&limit=10000';
+    var res=await fetch(url, { headers: { apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON } });
+    if(res.ok){ var j=await res.json(); if(Array.isArray(j)) rows=j; } else err='HTTP '+res.status;
+  }catch(e){ err=String((e&&e.message)||e); }
+
+  /* 日付範囲（business_date列がある場合のみ） */
+  var dates=[], dayQty={};
+  rows.forEach(function(r){
+    var d=r.business_date||r.date||null;
+    if(d){ var ds=String(d).slice(0,10); dates.push(ds); dayQty[ds]=(dayQty[ds]||0)+(Number(r.qty)||0); }
+  });
+  dates.sort();
+  var dMin=dates.length?dates[0]:'', dMax=dates.length?dates[dates.length-1]:'';
+  var uniqDays=Object.keys(dayQty).length;
+
+  /* 商品ごとの行数（重複＝日別行の可能性） */
+  var byItem={}, totalQty=0;
+  rows.forEach(function(r){
+    var g=r.item_guid||r.guid||'(no-guid)';
+    byItem[g]=byItem[g]||{n:0,qty:0,name:r.item_name||r.name||''};
+    byItem[g].n++; byItem[g].qty+=(Number(r.qty)||0); totalQty+=(Number(r.qty)||0);
+  });
+  var itemKeys=Object.keys(byItem);
+  var dupItems=itemKeys.filter(function(g){ return byItem[g].n>1; });
+
+  /* レシピ照合（storeId一致＋toastGuid登録が必須） */
+  var byGuid={}; try{ getRecipes().forEach(function(r){ if(r.toastGuid && r.storeId===storeId) byGuid[r.toastGuid]=r.id; }); }catch(e){}
+  var matched=[], unmatched=[];
+  itemKeys.forEach(function(g){ (byGuid[g]?matched:unmatched).push(g); });
+  var matchedQty=matched.reduce(function(a,g){ return a+byItem[g].qty; },0);
+  var lostQty=unmatched.reduce(function(a,g){ return a+byItem[g].qty; },0);
+
+  var topLost=unmatched.sort(function(a,b){ return byItem[b].qty-byItem[a].qty; }).slice(0,8)
+    .map(function(g){ return '<div style="display:flex;justify-content:space-between;font-size:11.5px;padding:1px 0"><span style="color:var(--tm)">'+escapeHtml(byItem[g].name||g)+'</span><b>'+byItem[g].qty+'</b></div>'; }).join('');
+
+  openModal('<div class="modal-title"><i class="ti ti-stethoscope"></i> 出数の診断（'+escapeHtml(store.name||storeId)+' / '+escapeHtml(ym)+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +(err?('<div class="alert alert-warning" style="margin:0 0 8px;padding:6px 10px;font-size:12px"><i class="ti ti-alert-triangle"></i> 取得エラー: '+escapeHtml(err)+'</div>'):'')
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:4px">対象期間</div>'
+    +'<div style="font-size:13px">business_month = <b>'+escapeHtml(ym)+'</b>（その月の1日〜月末）</div>'
+    +(dMin?('<div style="font-size:13px;margin-top:3px">実データの範囲: <b>'+escapeHtml(dMin)+'</b> 〜 <b>'+escapeHtml(dMax)+'</b>（'+uniqDays+'日分）</div>')
+          :'<div style="font-size:12px;color:var(--muted);margin-top:3px">※ 日付列が無いため月次集計行と判断（日別内訳なし）</div>')
+    +'</div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="display:flex;gap:16px">'
+    +'<div><div style="font-size:10px;color:var(--muted)">取得行数</div><div style="font-size:20px;font-weight:800">'+rows.length+'</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">商品数</div><div style="font-size:20px;font-weight:800">'+itemKeys.length+'</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">出数合計</div><div style="font-size:20px;font-weight:800">'+totalQty+'</div></div>'
+    +'</div></div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">レシピ照合</div>'
+    +'<div style="font-size:12.5px">画面に出る（レシピ登録済み）: <b style="color:var(--green)">'+matched.length+'品 / 出数 '+matchedQty+'</b></div>'
+    +'<div style="font-size:12.5px;margin-top:2px">出ない（未登録・店舗不一致）: <b style="color:'+(unmatched.length?'var(--red)':'var(--muted)')+'">'+unmatched.length+'品 / 出数 '+lostQty+'</b></div>'
+    +(topLost?('<div style="margin-top:5px;border-top:1px solid var(--border);padding-top:4px">'+topLost+'</div>'
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">→ 同期センターの「メニュー・出数を取り込み」でレシピを取り込むと反映されます。</div>'):'')
+    +'</div>'
+    +(dupItems.length?('<div class="alert alert-warning" style="margin:0 0 8px"><i class="ti ti-alert-triangle"></i><div>'
+        +'<p style="font-size:13px;font-weight:700">同一商品が複数行で返っています（'+dupItems.length+'品）</p>'
+        +'<p style="font-size:12px;margin-top:2px">日別などで分かれています。v698で合計して取り込むよう修正済みです（以前は最後の1行だけが反映され、出数が少なく出ていました）。</p></div></div>'):'')
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="closeModalDirect();syncCenterMenuAll()"><i class="ti ti-refresh"></i> 取り込み直す</button></div>');
+}
 async function loadMenuMixFromDB(storeId, guid, ym){
   if (!guid) return;
   var p=ym.split('-'); var period=p[0]+'.'+String(parseInt(p[1],10));
@@ -12420,7 +12511,10 @@ async function loadMenuMixFromDB(storeId, guid, ym){
   if (!sales || !sales.length) return;
   var byGuid={}; getRecipes().forEach(function(r){ if(r.toastGuid && r.storeId===storeId) byGuid[r.toastGuid]=r.id; });
   var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
-  sales.forEach(function(s){ var g=s.item_guid||s.guid; var rid=byGuid[g]; if(rid && s.qty!=null) mix.items[rid]=Number(s.qty); });
+  /* v698: 同一商品が複数行（日別など）で返る場合、代入だと最後の1行しか残らず出数が少なく出ていた。合計する。 */
+  var _acc={};
+  sales.forEach(function(s){ var g=s.item_guid||s.guid; var rid=byGuid[g]; if(rid && s.qty!=null) _acc[rid]=(_acc[rid]||0)+Number(s.qty); });
+  Object.keys(_acc).forEach(function(rid){ mix.items[rid]=_acc[rid]; });
   var total=0; getRecipes().filter(function(r){return recipeInStore(r, storeId);}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
   mix.sales=total; mix.savedAt=nowJP(); mix.toastSrc=true;
   setMenuMix(storeId, period, mix);
@@ -18679,7 +18773,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '695';
+const APP_VERSION = '698';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -35288,7 +35382,7 @@ function renderMenu() {
   html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     ${visStores.length>1?`<select class="form-select" style="width:auto;padding:6px" onchange="onMenuStoreChange(this.value)">${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>`:`<b style="font-size:13px">${storeObj.name}</b>`}
     <select class="form-select" style="width:auto;padding:6px" onchange="onMenuPeriodChange(this.value)">${periodOptions(period)}</select>
-    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> ${t('出数を入力','Enter sales qty')}</button>`:''}
+    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> ${t('出数を入力','Enter sales qty')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="openMenuMixDiag('${storeId}','${period}')"><i class="ti ti-stethoscope"></i> ${t('出数の診断','Diagnose')}</button>
     <button class="btn btn-primary btn-sm" onclick="openMenuRangeModal('${storeId}')"><i class="ti ti-table-export"></i> ${t('期間集計・出力','Period summary / export')}</button>
     ${mix.toastSrc?`<span class="tag tag-green" style="font-size:9px">${t('Toast同期済','Toast synced')}</span>`:''}
   </div></div>`;
@@ -36487,6 +36581,64 @@ async function pushInvoicesAll(){
 /* ===== v695: 端末内 請求書データの内訳（表示されない原因の特定用） =====
    件数はあるのに画面に出ない場合、原因は「日付が解析できない」「店舗IDが一致しない」
    「別の月」「種別が集計対象外」のいずれか。全件を分類して提示する。 */
+/* ===== v697: Storage の伝票画像から未登録分を検出（記録が消えても画像から辿る） =====
+   画像は登録時に Supabase Storage の invoices バケットへ
+   「<店舗>/<YYYY-MM>/inv_<時刻>.jpg」で保存され、その後 Google Drive へ転送される。
+   端末やクラウドの「記録(明細)」が失われても、画像は残っているので一覧して確認・再登録できる。
+   ※ Drive 側の一覧は drive-sync に list アクションが無いため未対応（同じ画像がStorageにある）。 */
+async function openStorageImages(ym){
+  ym = ym || (typeof curYm==='function'?curYm():'');
+  try{ showToast('保存済み画像を照会中…','info'); }catch(e){}
+  var stores=(typeof getVisibleStores==='function')?getVisibleStores():(typeof STORES!=='undefined'?STORES:[]);
+  /* 端末が持つ記録の imagePath 一覧（照合用） */
+  var known={};
+  try{ (ls('invoices',[])||[]).forEach(function(v){ if(v && v.imagePath) known[String(v.imagePath)]=v; }); }catch(e){}
+  var groups=[], errs=[];
+  for(var i=0;i<stores.length;i++){
+    var s=stores[i];
+    var prefix=saniStore(s.name)+'/'+ym+'/';
+    var items=[];
+    try{
+      var r=await fetch(SUPABASE_URL+'/storage/v1/object/list/invoices', {
+        method:'POST', headers: Object.assign({'Content-Type':'application/json'}, supaHeaders()),
+        body: JSON.stringify({ prefix:prefix, limit:200, offset:0, sortBy:{column:'name',order:'asc'} })
+      });
+      if(r.ok){ var j=await r.json(); if(Array.isArray(j)) items=j; }
+      else errs.push(s.name+': HTTP '+r.status);
+    }catch(e){ errs.push(s.name+': '+String((e&&e.message)||e)); }
+    if(items.length) groups.push({store:s, prefix:prefix, items:items});
+  }
+  var totalImg=0, totalMissing=0;
+  var body=groups.map(function(g){
+    var rows=g.items.map(function(it){
+      var path=g.prefix+it.name;
+      totalImg++;
+      var rec=known[path];
+      if(!rec) totalMissing++;
+      var ts=(function(){ var m=String(it.name).match(/inv_(\d{10,})/); if(!m) return ''; var d=new Date(Number(m[1])); return isNaN(d)?'':((d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')); })();
+      return '<div style="display:flex;align-items:center;gap:8px;border-top:1px solid var(--border);padding:6px 0">'
+        +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:12px;font-weight:'+(rec?'600':'800')+';color:'+(rec?'var(--tm)':'var(--red)')+'">'+(rec?(escapeHtml(rec.vendor||'業者未設定')+' · $'+(Number(rec.total)||0).toFixed(2)):'未登録（記録なし）')+'</div>'
+        +'<div style="font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(it.name)+(ts?(' · 撮影/登録 '+ts):'')+'</div></div>'
+        +'<button class="btn btn-secondary btn-sm" onclick="viewInvoiceImage(\''+path.replace(/'/g,"\\'")+'\')"><i class="ti ti-photo"></i></button>'
+        +'</div>';
+    }).join('');
+    return '<div class="card" style="margin:0 0 8px"><div style="font-size:13px;font-weight:800">'+escapeHtml(g.store.name)
+      +' <span style="font-size:11px;font-weight:600;color:var(--muted)">'+g.items.length+'枚</span></div>'+rows+'</div>';
+  }).join('');
+
+  openModal('<div class="modal-title"><i class="ti ti-photo"></i> 保存済みの伝票画像（'+escapeHtml(ym)+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="card" style="margin:0 0 8px;display:flex;gap:16px;align-items:center">'
+    +'<div><div style="font-size:10px;color:var(--muted)">画像</div><div style="font-size:20px;font-weight:800">'+totalImg+'</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">未登録</div><div style="font-size:20px;font-weight:800;color:'+(totalMissing?'var(--red)':'var(--green)')+'">'+totalMissing+'</div></div>'
+    +'<div style="margin-left:auto;font-size:10.5px;color:var(--muted);text-align:right;max-width:150px">画像はStorageに残っています。Driveにも同じものが転送されています。</div></div>'
+    +(errs.length?('<div class="alert alert-warning" style="margin:0 0 8px;padding:6px 10px;font-size:11.5px"><i class="ti ti-alert-triangle"></i> 一部照会できませんでした: '+escapeHtml(errs.join(' / '))+'</div>'):'')
+    +(totalMissing?('<div class="alert alert-warning" style="margin:0 0 8px"><i class="ti ti-file-alert"></i><div>'
+        +'<p style="font-size:13px;font-weight:700">記録が無い画像が '+totalMissing+' 枚あります</p>'
+        +'<p style="font-size:12px;margin-top:2px">画像は残っているので内容を確認できます。金額を反映するには、画像を見ながらInvoice登録し直してください。</p></div></div>'):'')
+    +(body||'<div class="card"><p style="font-size:13px;color:var(--muted)">この月の画像は見つかりませんでした。</p></div>')
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
+}
 function openInvoiceInventory(){
   var all=[]; try{ all=ls('invoices',[])||[]; }catch(e){}
   var byType={}, byMonth={}, byStore={}, badDate=[], badStore=[];
@@ -36685,7 +36837,8 @@ async function openInvoiceDiag(ym){
     +'<button class="btn btn-secondary" onclick="pullInvoicesAll().then(function(n){ showToast(\'クラウドから取得しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-download"></i> 取得</button>'
     +'<button class="btn btn-primary" onclick="pushInvoicesAll().then(function(n){ showToast(\'クラウドへ復旧しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-upload"></i> クラウドへ復旧</button></div>'
     +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();rebuildInvoicesFromCloud()"><i class="ti ti-refresh"></i> クラウドから過去分を復元（端末を再構築）</button>'
-    +'<button class="btn btn-secondary" style="width:100%;margin-top:6px" onclick="closeModalDirect();openInvoiceInventory()"><i class="ti ti-list-search"></i> 端末内データの内訳を見る（表示されない原因）</button>';
+    +'<button class="btn btn-secondary" style="width:100%;margin-top:6px" onclick="closeModalDirect();openInvoiceInventory()"><i class="ti ti-list-search"></i> 端末内データの内訳を見る（表示されない原因）</button>'
+    +'<button class="btn btn-secondary" style="width:100%;margin-top:6px" onclick="closeModalDirect();openStorageImages(\''+ym+'\')"><i class="ti ti-photo"></i> 保存済みの伝票画像から探す（記録が無くても見られます）</button>';
   openModal(html);
 }
 /* ===== v690: 仕入明細タブ（店舗別・日付別の納品明細＋Invoice画像） =====
