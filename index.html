@@ -4338,24 +4338,20 @@ var _LS_PRUNABLE = ['tip_labor_','dailyops_','orders_','purchases_','att_day_app
 function lsBytesTotal(){ var tt=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; } }catch(e){} return tt; }
 /* v617: 棚卸履歴（inv_hist_* / spl_inv_hist_*）は絶対に自動削除しない（復旧不能なデータのため） */
 function lsIsPrunable(k){
-  if(String(k).indexOf('inv_hist_')>=0) return false;
-  /* v696: 'spl_' は分割保存の接頭辞で、中身は請求書・休暇・タスク・発注などの「手入力データ」。
-     これを一括prunable扱いにしていたため、容量4.3MB超で autoPruneIfCritical() が
-     spl_invoices_* などを丸ごと削除し、登録した請求書が端末から消えていた
-     （v622で予算だけ個別に除外されていたが、他は無防備だった）。
-     再取得可能なもの（Toastから引き直せる tip_labor）だけ削除を許可する。 */
-  if(String(k).indexOf('spl_')===0){
-    var _rest=String(k).slice(4);
-    return ['tip_labor_','dailyops_','att_day_approve_','att_approve_','warnings_','reminded_','shiftopt_'].some(function(pf){ return _rest.indexOf(pf)===0; });
-  }
-  /* 買い出し(purchases_)は原価に直結する手入力データ。自動削除の対象外にする。 */
-  if(String(k).indexOf('purchases_')===0) return false;
-  /* v622: 予算は復旧不能な手入力データ。分割で 'spl_' 接頭辞になるため、この除外が無いと
-     キャッシュ整理・autoPruneIfCritical(4.3MB超で prunable を一括削除)で予算が消える。
-     budgets_v2 / spl_budgets_v2_* / budgets_v2_bak* をまとめて対象外にする。 */
-  if(String(k).indexOf('budgets_v2')>=0) return false;
-  if(String(k).indexOf('budget_approved_')===0) return false;   /* v623の承認コピー用に先に除外しておく */
-  return _LS_PRUNABLE.some(function(pf){ return k.indexOf(pf)===0; });
+  /* v702: 自動削除してよいのは「消えても再生成・再取得できるキャッシュ」だけに限定する（ホワイトリスト方式）。
+     従来は _LS_PRUNABLE に手入力データの接頭辞が含まれており、容量4.3MB超で autoPruneIfCritical() が
+     skills_st_（スキル承認）/ orders_（発注）/ inv_（棚卸）/ att_approve_（勤怠承認）/ tip_exclude_ /
+     ot_approvals_ / help_requests_ / lss_emp_ / dailyops_ / shiftopt_ を丸ごと削除していた。
+     v696で spl_ と purchases_ だけ保護したが、それ以外が残っていた（スキルが消える原因）。
+     ここに挙げたもの以外はすべて保護する。 */
+  var _s=String(k||'');
+  var _REGENERABLE=[
+    'tip_labor_',   /* Toastから再取得できる（サイズ大） */
+    'warnings_',    /* 実データから再計算される */
+    'reminded_'     /* 通知済みフラグ */
+  ];
+  var _body=(_s.indexOf('spl_')===0)?_s.slice(4):_s;
+  return _REGENERABLE.some(function(pf){ return _body.indexOf(pf)===0; });
 }
 function lsPrunableInfo(){ var tt=0,n=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)){ var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; n++; } } }catch(e){} return {bytes:tt,count:n}; }
 function _lsPrunableKeys(){ var a=[]; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)) a.push(k); } }catch(e){} return a; }
@@ -18807,7 +18803,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '701';
+const APP_VERSION = '702';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34642,6 +34638,95 @@ function _sldSaveSilent(){ try{ var sid=window._sldStore,pos=window._sldPos; if(
 function _sldSetStore(id){ _sldSaveSilent(); window._sldStore=id; window._sldPos=null; openSkillLvDescEditor(); }
 function _sldSetPosIdx(i){ _sldSaveSilent(); window._sldPos=(window._sldPositions||[])[i]; openSkillLvDescEditor(); }
 function _sldSave(){ _sldSaveSilent(); closeModalDirect(); showToast(t('保存しました','Saved'),'success'); if(curPage==='skill') renderPage('skill'); }
+/* ===== v702: スキルが反映されない原因の特定用の診断 =====
+   レーダーと「Your Skill Progress」はどちらも getEmpSkillsStore(me, storeId)
+   ＝ skills_st_<店舗> を見ている。0になる原因は次の3つしかない。
+     ① 端末にデータが無い（自動削除で消えた／まだ取得していない）
+     ② クラウドにも無い（承認した端末から押し上がっていない）
+     ③ 名前が一致していない（ログイン名とスキル登録名の表記違い）
+   これを実データで切り分ける。 */
+function _skNameNorm(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+async function openMySkillDiag(name, storeId){
+  name = name || (typeof myName==='function'?myName():(curUserName||''));
+  storeId = storeId || (curStore==='ALL'?(STORES[0]||{}).id:curStore);
+  var esc=function(x){ return escapeHtml(String(x==null?'':x)); };
+
+  /* ① 端末側 */
+  var localMap={}; try{ localMap=getStoreSkillsMap(storeId)||{}; }catch(e){}
+  var localNames=Object.keys(localMap);
+  var meKey=localNames.find(function(n){ return n===name; });
+  var nearKey=meKey?null:localNames.find(function(n){ return _skNameNorm(n)===_skNameNorm(name); });
+  var mySk=(meKey?localMap[meKey]:(nearKey?localMap[nearKey]:{}))||{};
+  var apr=Object.keys(mySk).filter(function(p){ return mySk[p] && mySk[p].status==='承認'; });
+  var pend=Object.keys(mySk).filter(function(p){ return mySk[p] && mySk[p].status && mySk[p].status!=='承認'; });
+  var rawKey=null; try{ rawKey=localStorage.getItem(SKILL_STORE_PREFIX+storeId); }catch(e){}
+
+  /* ② レガシー側 */
+  var legacyHas=false, legacyApr=0;
+  try{
+    var v2=(typeof getSkillsV2==='function')?(getSkillsV2()[name]||{}):{};
+    Object.keys(v2).forEach(function(sid){ var pm=v2[sid]||{}; Object.keys(pm).forEach(function(p){ if(pm[p]&&pm[p].status==='承認'){ legacyHas=true; legacyApr++; } }); });
+  }catch(e){}
+
+  /* ③ クラウド側 */
+  var cloudNames=null, cloudMine=null, cloudErr='';
+  try{
+    var r=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=value&key=eq.'+encodeURIComponent(SKILL_STORE_PREFIX+storeId), { headers: supaHeaders() });
+    if(r.ok){
+      var j=await r.json();
+      var val=(Array.isArray(j)&&j[0])?j[0].value:null;
+      if(val && typeof val==='object'){
+        cloudNames=Object.keys(val);
+        var ck=cloudNames.find(function(n){ return n===name; }) || cloudNames.find(function(n){ return _skNameNorm(n)===_skNameNorm(name); });
+        if(ck){ var cm=val[ck]||{}; cloudMine=Object.keys(cm).filter(function(p){ return cm[p]&&cm[p].status==='承認'; }).length; }
+      }
+    } else cloudErr='HTTP '+r.status;
+  }catch(e){ cloudErr=String((e&&e.message)||e); }
+
+  /* 判定 */
+  var verdict='', action='';
+  if(apr.length){ verdict='<b style="color:var(--green)">端末に承認済みスキルがあります</b>（表示側の問題の可能性）'; }
+  else if(!meKey && nearKey){ verdict='<b style="color:var(--red)">名前の表記が一致していません</b>：ログイン「'+esc(name)+'」／登録「'+esc(nearKey)+'」'; action='従業員マスターの氏名を統一してください。'; }
+  else if(!rawKey && cloudNames && cloudMine){ verdict='<b style="color:var(--red)">端末にデータがありません（クラウドにはあります）</b>'; action='下の「クラウドから取得」で復元できます。'; }
+  else if(cloudNames && !cloudMine){ verdict='<b style="color:var(--red)">クラウドにもこの人の承認済みスキルがありません</b>'; action='承認した端末で 同期センター →「承認済みスキルの未反映を修復」を実行してください。'; }
+  else if(!cloudNames){ verdict='<b style="color:var(--red)">クラウドに '+esc(SKILL_STORE_PREFIX+storeId)+' がありません</b>'; action='承認した端末から押し上げが必要です。'; }
+  else { verdict='<b style="color:var(--yellow)">承認済みスキルが登録されていません</b>'; action='スキルはSL/AM/GMの承認後に反映されます（申請中は0のままです）。'; }
+
+  var row=function(l,v){ return '<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:2px 0"><span style="color:var(--muted)">'+l+'</span><span style="text-align:right">'+v+'</span></div>'; };
+  openModal('<div class="modal-title"><i class="ti ti-stethoscope"></i> スキル表示の診断 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="alert '+(apr.length?'alert-success':'alert-warning')+'" style="margin:0 0 8px"><div><p style="font-size:13px">'+verdict+'</p>'
+    +(action?('<p style="font-size:12px;margin-top:3px">'+esc(action)+'</p>'):'')+'</div></div>'
+    +'<div class="card" style="margin:0 0 8px">'
+    +row('ログイン名', esc(name))
+    +row('参照している店舗', esc(storeId))
+    +row('保存キー', esc(SKILL_STORE_PREFIX+storeId)+(rawKey?'':' <span style="color:var(--red)">（端末に無し）</span>'))
+    +row('端末の登録人数', localNames.length+'人')
+    +row('この人の登録', meKey?'あり':(nearKey?('表記違いで一致：'+esc(nearKey)):'<span style="color:var(--red)">なし</span>'))
+    +row('承認済み', '<b>'+apr.length+'</b>件'+(apr.length?('（'+esc(apr.join('、'))+'）'):''))
+    +row('申請中など', pend.length+'件'+(pend.length?('（'+esc(pend.join('、'))+'）'):''))
+    +row('旧形式(skills_v2)', legacyHas?(legacyApr+'件の承認あり'):'なし')
+    +'</div>'
+    +'<div class="card" style="margin:0 0 8px">'
+    +row('クラウドの登録人数', cloudNames?(cloudNames.length+'人'):('<span style="color:var(--red)">取得できず'+(cloudErr?('（'+esc(cloudErr)+'）'):'')+'</span>'))
+    +row('クラウドの承認済み', (cloudMine==null?'—':('<b>'+cloudMine+'</b>件'))) 
+    +'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="skillDiagPull(\'' + String(storeId).replace(/'/g,"\\'") + '\')"><i class="ti ti-cloud-download"></i> クラウドから取得</button></div>');
+}
+async function skillDiagPull(storeId){
+  try{
+    showToast('取得中…','info');
+    if(typeof pullOpKey==='function'){
+      await pullOpKey(SKILL_STORE_PREFIX+storeId);
+      try{ await pullOpKey('skills_v2'); }catch(e){}
+      try{ await pullOpKey('skills'); }catch(e){}
+    }
+    try{ _skillStorePulled[storeId]=false; }catch(e){}
+    closeModalDirect();
+    showToast('取得しました','success');
+    try{ renderPage(curPage); }catch(e){}
+  }catch(e){ showToast('取得に失敗しました','warning'); }
+}
 function mySkillCardHtml(name, storeId){
   try{
     var _emp = getEmployees().find(function(x){return x.name===name;});
@@ -34682,7 +34767,8 @@ function mySkillCardHtml(name, storeId){
     var dots = positions.map(function(_,i){ var c=pt(i, R*Math.max(0.04,vals[i]/maxLv)); return '<circle cx="'+Math.round(c[0])+'" cy="'+Math.round(c[1])+'" r="2.5" fill="var(--accent)"/>'; }).join('');
     var svg = '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:340px;height:auto;display:block;margin:0 auto">'
       +rings+axes+'<polygon points="'+poly+'" fill="var(--accent)" fill-opacity="0.22" stroke="var(--accent)" stroke-width="2"/>'+dots+'</svg>';
-    return '<div class="card"><div class="card-title"><i class="ti ti-radar-2" style="color:var(--accent)"></i>'+titleLabel+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+legendLabel+'</span></div>'
+    return '<div class="card"><div class="card-title"><i class="ti ti-radar-2" style="color:var(--accent)"></i>'+titleLabel+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+legendLabel+'</span>'
+      +'<button class="btn btn-secondary btn-sm" style="margin-left:6px;padding:2px 8px;font-size:10px" onclick="openMySkillDiag(&quot;'+name+'&quot;,&quot;'+storeId+'&quot;)">'+t('診断','Check')+'</button></div>'
       +svg
       +(_isPrep ? '' : (typeof skillLevelGaugeHtml==='function'?skillLevelGaugeHtml(name, storeId):''))
       +'<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '+t('軸をタップすると各レベルの内容を表示します。','Tap an axis to see level details.')+' '+(_isPrep?t('Prepポジション別のスキルレベルです。','Your prep skill levels by position.'):t('レベルは管理者承認後に反映されます。Lvが上がるとチップ配分・昇格に近づきます。','Levels reflect approved skills.'))+'</div></div>';
