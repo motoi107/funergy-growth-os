@@ -18807,7 +18807,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '700';
+const APP_VERSION = '701';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34657,7 +34657,9 @@ function mySkillCardHtml(name, storeId){
       positions = getStorePositions(storeId).filter(function(p){return p!=='Energy'&&p!=='Leadership';});
       if(!positions.length) return '';
       var sk = getEmpSkills(name)||{};
-      vals = positions.map(function(p){ var x=sk[p]; return (x&&x.status==='承認')?(x.level||0):0; });
+      /* v701: getEmpSkills は全店マージ済み。念のため店舗別マップもフォールバックに使い取りこぼしを防ぐ。 */
+      var skStore = (typeof getEmpSkillsStore==='function') ? (getEmpSkillsStore(name, storeId)||{}) : {};
+      vals = positions.map(function(p){ var x=sk[p]; if(x&&x.status==='承認') return (x.level||0); var y=skStore[p]; if(y&&y.status==='承認') return (y.level||0); return 0; });
       maxLv = 3; titleLabel = t('あなたのスキルレベル','Your Skill Levels'); legendLabel = t('Lv0〜3（承認済みのみ）','Lv0–3 (approved only)');
     }
     window._mySkillCtx = { name:name, storeId:storeId, isPrep:_isPrep, maxLv:maxLv, positions:positions, vals:vals };
@@ -34734,7 +34736,19 @@ function renderMypage() {
 
   // ===== スキルレベル（全Crew: レーダー＋各Lv）=====
   // Crewビューでは給与の直前に配置するため、ここでは変数に退避。管理者ビューはそのまま先頭表示。
-  var _skillRadarHtml = isCrewView ? mySkillCardHtml(me, storeId) : '';
+  /* v701: マイページのスキルレーダーは表示中店舗(curStore)ではなく本人の所属店で解決する。
+     全店表示(ALL)だと storeId が先頭店になり、別店所属スタッフは軸も値もズレて“反映されない”ように見えていた。 */
+  var _mySkillStore = (function(){
+    try{
+      var _e=getEmployees().find(function(x){return x.name===me;});
+      if(_e && _e.store && _e.store!=='ALL') return _e.store;
+      var _sv=getSkillsV2()[me]||{};
+      var _cand=Object.keys(_sv).filter(function(sid){ var pm=_sv[sid]||{}; return Object.keys(pm).some(function(p){ return pm[p] && pm[p].status==='承認'; }); });
+      if(_cand.length) return _cand[0];
+    }catch(e){}
+    return storeId;
+  })();
+  var _skillRadarHtml = isCrewView ? mySkillCardHtml(me, _mySkillStore) : '';
   if (isCrewView && curRole!=='crew') { /* SL等はここでは出さず後段の給与前へ */ }
   if (!isCrewView) { /* 管理者は下でPGDへ */ }
 
