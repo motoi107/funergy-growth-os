@@ -4099,13 +4099,13 @@ var _SPLIT_KEYS = {
   lss_history:      {type:'arr', by:function(r){return r&&r.name;}},
   career_history:   {type:'arr', by:function(r){return r&&r.name;}},
   tasks_all:        {type:'arr', by:function(r){return r&&r.store;}},
-  supply_orders:    {type:'arr', by:function(r){return r&&r.store;}},
-  invoices:         {type:'arr', by:function(r){return r&&r.storeId;}},
-  reimbursements:   {type:'arr', by:function(r){return r&&r.storeId;}},
+  supply_orders:    {type:'arr', by:function(r){return r&&r.store;}, readFilter:function(r){return !(r&&r._deleted);}},
+  invoices:         {type:'arr', by:function(r){return r&&r.storeId;}, readFilter:function(r){return !(r&&r._deleted);}},
+  reimbursements:   {type:'arr', by:function(r){return r&&r.storeId;}, readFilter:function(r){return !(r&&r._deleted);}},
   tip_requests:     {type:'arr', by:function(r){return r&&r.name;}},
   tip_history:      {type:'arr', by:function(r){return r&&r.name;}},
   ot_requests:      {type:'arr', by:function(r){return r&&r.name;}},
-  my_vacations:     {type:'arr', by:function(r){return r&&r.employee;}},
+  my_vacations:     {type:'arr', by:function(r){return r&&r.employee;}, readFilter:function(r){return !(r&&r._deleted);}},
   mileage_requests: {type:'arr', by:function(r){return r&&r.employee;}},
   expense_requests: {type:'arr', by:function(r){return r&&r.employee;}},
   crew_education:   {type:'obj'},
@@ -4114,9 +4114,9 @@ var _SPLIT_KEYS = {
   inv_templates:    {type:'obj'},
   order_templates:  {type:'obj'},
   order_lists:      {type:'obj'},
-  shift_changes:    {type:'arr', by:function(r){return r&&r.name;}},
-  onboardings:      {type:'arr', by:function(r){return r&&r.name;}},
-  offboardings:     {type:'arr', by:function(r){return r&&r.name;}},
+  shift_changes:    {type:'arr', by:function(r){return r&&r.name;}, readFilter:function(r){return !(r&&r._deleted);}},
+  onboardings:      {type:'arr', by:function(r){return r&&r.name;}, readFilter:function(r){return !(r&&r._deleted);}},
+  offboardings:     {type:'arr', by:function(r){return r&&r.name;}, readFilter:function(r){return !(r&&r._deleted);}},
   order_catalog:    {type:'arr', by:function(r){return r&&r.store;}},
   dev_nominations:  {type:'arr', by:function(r){return r&&r.name;}},
   company_message_stores:{type:'obj'},
@@ -4128,7 +4128,7 @@ var _SPLIT_KEYS = {
 };
 function _splitPrefix(key){ return 'spl_'+key+'_'; }
 function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
-function _splitRead(key, sp){
+function _splitRead(key, sp, rawMode){
   var pre=_splitPrefix(key);
   if(sp.type==='obj'){
     var out={}; var legacy=_lsRaw(key,{})||{};
@@ -4140,11 +4140,13 @@ function _splitRead(key, sp){
   (_lsRaw(key,[])||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); if(!byId[id]){byId[id]=[];order.push(id);} byId[id].push(r); });
   try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){ var id=k.slice(pre.length); byId[id]=_lsRaw(k,[])||[]; if(order.indexOf(id)<0) order.push(id); } } }catch(e){}
   var out=[]; order.forEach(function(id){ out=out.concat(byId[id]); });
+  /* v679: 論理削除(tombstone)は読み取りから除外。rawMode時は素のまま返す（書き戻し用） */
+  if(sp.readFilter && !rawMode){ try{ out=out.filter(sp.readFilter); }catch(e){} }
   return out;
 }
 function _splitWrite(key, sp, val){
   var pre=_splitPrefix(key);
-  var curMerged=_splitRead(key, sp);   // 現在のマージ後の値と比較（実際に変更したエンティティだけ書く）
+  var curMerged=_splitRead(key, sp, true);   /* v679: tombstone込みの生データと比較 */   // 現在のマージ後の値と比較（実際に変更したエンティティだけ書く）
   if(sp.type==='obj'){
     val=val||{};
     Object.keys(val).forEach(function(id){
@@ -4154,6 +4156,12 @@ function _splitWrite(key, sp, val){
   }
   val=val||[];
   var byId={}; val.forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (byId[id]=byId[id]||[]).push(r); });
+  /* v679: readFilter で読み取り除外される行(tombstone)は val に含まれないため、生データから戻す */
+  if(sp.readFilter){ try{
+    var _seen={}; (val||[]).forEach(function(r){ if(r&&r.id!=null) _seen[r.id]=1; });
+    (curMerged||[]).forEach(function(r){ if(!r||r.id==null||_seen[r.id]) return; if(sp.readFilter(r)) return;
+      var _id=String(sp.by(r)==null?'_':sp.by(r)); (byId[_id]=byId[_id]||[]).push(r); _seen[r.id]=1; });
+  }catch(e){} }
   var curById={}; (curMerged||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (curById[id]=curById[id]||[]).push(r); });
   // 全エントリが削除されたパーティションは空配列でクリア（ローカル＆クラウド行を空に → 他端末で復活しない）
   if(!sp.noDelete) Object.keys(curById).forEach(function(id){ if(!byId[id] && (curById[id]||[]).length){ lsSet(pre+id, []); } });
@@ -5032,6 +5040,13 @@ var OP_MERGE = {
   lss_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
   tip_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
   mileage_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
+  /* v687: 承認フロー系。申請者端末と承認者端末が同じパーティションを書くため、上書きだと申請が消える。
+     id和集合＋_deleted優先＋レビュー済み優先の汎用マージを適用（物理削除は論理削除へ変更済み）。 */
+  my_vacations:    { merge: mergeReqTomb, covers: _coversReqTomb },
+  shift_changes:   { merge: mergeReqTomb, covers: _coversReqTomb },
+  onboardings:     { merge: mergeReqTomb, covers: _coversReqTomb },
+  offboardings:    { merge: mergeReqTomb, covers: _coversReqTomb },
+  supply_orders:   { merge: mergeReqTomb, covers: _coversReqTomb },
   expense_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
   m_store_kpi:    { merge: mergeMapByKey, covers: _coversMapByKey },
   m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey },
@@ -5176,6 +5191,33 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
   'spl_budgets_v2_': { merge: mergeBudgets, covers: _coversBudgets },
   /* v624: GM承認済みの不変コピー。承認が新しい方を採用し、空は絶対に勝たせない。 */
   'budget_approved_': { merge: mergeApprovedBudget, covers: _coversApprovedBudget } };
+/* ===== v679: 分割保存パーティション(spl_<key>_<id>)にも親キーのマージ定義を適用 =====
+   【問題】lsSet('invoices', …) は内部で spl_invoices_<店舗> に分割保存され、その行がクラウドへ送られる。
+     ところが app_state 書き込みは「マージ定義があればマージ／無ければ丸ごと上書き」。
+     spl_ 側には定義が無かったため、同じ店舗を2端末が触ると後勝ちになり、
+     先に読み込んだ請求書がクラウドから消えて月合計が積み上がらなかった。
+     （予算だけは v622 で spl_budgets_v2_ を個別登録して対策済みだった）
+   【対策】親キーが OP_MERGE を持つ分割キーのうち、削除の扱いが安全なものを spl_<key>_ として登録する。
+     ・追記のみ（履歴系）＝削除が無いので無条件に安全
+     ・すでに論理削除(_deleted)を使うもの（tasks_all / mileage_requests / expense_requests）
+     ・invoices / reimbursements は本版で論理削除へ変更（下記 _SPLIT_KEYS.readFilter と対で運用）
+   ※ 物理削除のままのキーをここに足すと「削除した行がマージで復活」するため、必ず論理削除とセットで追加すること。 */
+var SPLIT_MERGE_SAFE_KEYS = ['invoices','reimbursements','tasks_all','mileage_requests','expense_requests',
+  'skill_history','lss_history','tip_history','career_history',
+  /* v686: 申請系。物理削除は無く status 更新のみ（mergeSkillReq はレビュー済みを優先）。
+     端末間で申請が消えるのを防ぐ。 */
+  'skill_requests','lss_requests','tip_requests',
+  /* v687 */ 'my_vacations','shift_changes','onboardings','offboardings','supply_orders'];
+(function _registerSplitMergeDefs(){
+  try{
+    SPLIT_MERGE_SAFE_KEYS.forEach(function(k){
+      if(!_SPLIT_KEYS || !_SPLIT_KEYS[k]) return;      // 分割対象でないキーは対象外
+      var def = OP_MERGE[k]; if(!def) return;          // 親のマージ定義が無ければ何もしない
+      var pre = 'spl_'+k+'_';
+      if(!OP_MERGE_PREFIX[pre]) OP_MERGE_PREFIX[pre] = def;
+    });
+  }catch(e){ console.warn('split merge def register', e); }
+})();
 function _opMergeDef(key){ if(OP_MERGE[key]) return OP_MERGE[key]; for(var p in OP_MERGE_PREFIX){ if(OP_MERGE_PREFIX.hasOwnProperty(p) && String(key).indexOf(p)===0) return OP_MERGE_PREFIX[p]; } return null; }
 /* スキル店舗バケット {name:{position:{level,status,_at,...}}} のマージ。name→positionで深くマージ。
    position衝突は _at(書込時刻の新しい方)→level(高い方)→local の順で解決（昇格/降格/申請中→承認すべて正しく） */
@@ -10664,11 +10706,11 @@ function pageSyncBar(opts){
    取得(pull)は既存のマージ方式を使い、ローカルの未保存を上書きしない。 */
 var SYNC_SCOPE_META = {
   dash:    { label:'ダッシュボード', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
-  budget:  { label:'予実', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
+  budget:  { label:'予実', toast:true,  pull: async function(){ try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
   tasks:   { label:'ワークセンター', toast:false, pull: async function(){ try{ await maybeSyncTasks(true); }catch(e){} } },
   hr:      { label:'人材管理', toast:false, pull: async function(){ try{ await maybePullVacations(true); }catch(e){} try{ await maybePullOnboardings(true); }catch(e){} try{ await refreshStaffPinsFromCloud(); }catch(e){} } },
   growth:  { label:'育成・評価', toast:false, pull: async function(){ try{ _skillAllPulled=false; }catch(e){} try{ maybePullAllSkillStores(); }catch(e){} } },
-  food:    { label:'食材管理', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
+  food:    { label:'食材管理', toast:true,  pull: async function(){ try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
   settings:{ label:'設定', toast:false, pull:null }
 };
 var PAGE_SYNC_SCOPE = {
@@ -13854,6 +13896,8 @@ function monthOrderTotalYm(storeId, ym){
 }
 /* ===== 当月Invoice集計（業者別可視化＋原価計算用） ===== */
 /* Invoiceの店舗トークンをID配列へ解決（名前で保存された古いInvoiceも取りこぼさない） */
+/* v681: 計上日＝伝票日付(docDate)優先、無ければ従来のdate（スキャン日）。既存データは挙動不変 */
+function _invDate(v){ try{ var d=(v&&v.docDate)?parseJaDate(v.docDate):null; if(d) return d; }catch(e){} return parseJaDate(v&&v.date); }
 function _invStoreIds(v){
   var raw=(v.splitStores&&v.splitStores.length)?v.splitStores:(v.storeId?[v.storeId]:[]);
   return raw.map(function(x){ if(!x) return x; if(typeof STORES!=='undefined' && STORES.some(function(s){return s.id===x;})) return x; var bn=(typeof STORES!=='undefined')?STORES.find(function(s){return s.name===x;}):null; return bn?bn.id:x; });
@@ -13863,7 +13907,7 @@ function monthInvoiceTotalYm(storeId, ym){
   var inv=ls('invoices',[])||[]; var sum=0;
   inv.forEach(function(v){
     if(v.docType==='Receipt' || v.docType==='Reimburse') return;
-    var d=parseJaDate(v.date); if(!d) return;
+    var d=_invDate(v); if(!d) return;
     if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
     var sids=_invStoreIds(v);
     if(!sids.length || sids.indexOf(storeId)<0) return;
@@ -13876,7 +13920,7 @@ function monthInvoiceStatsYm(storeId, ym){
   var inv=ls('invoices',[])||[]; var total=0,count=0;
   inv.forEach(function(v){
     if(v.docType==='Receipt' || v.docType==='Reimburse') return;
-    var d=parseJaDate(v.date); if(!d) return;
+    var d=_invDate(v); if(!d) return;
     if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
     var sids=_invStoreIds(v);
     if(!sids.length || sids.indexOf(storeId)<0) return;
@@ -13889,7 +13933,7 @@ function monthInvoiceByVendor(storeId, ym){
   var inv=ls('invoices',[])||[]; var map={};
   inv.forEach(function(v){
     if(v.docType==='Reimburse') return;
-    var d=parseJaDate(v.date); if(!d) return;
+    var d=_invDate(v); if(!d) return;
     if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
     var sids=_invStoreIds(v);
     if(!sids.length) return;
@@ -18455,7 +18499,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '678';
+const APP_VERSION = '687';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -21981,7 +22025,13 @@ function renderShiftStaff() {
   if(!window._myShiftStore || _myStores.indexOf(window._myShiftStore)<0) window._myShiftStore=_mainStore;
   var storeId = window._myShiftStore;
   var week = getWeekStr();
-  var myAvail = getAvailability(storeId, week).find(a=>a.name===me);
+  /* v685: Availabilityの提出先は「翌週以降」に固定。My Shiftの表示は今週のままで良いが、
+     提出だけ今週キーに入ると、翌週を既定で開くシフト作成画面に出てこない（週ズレで“未提出”に見えた）。 */
+  var _availOff = Math.max((typeof _shiftWeekOff!=='undefined'?_shiftWeekOff:0), 1);
+  /* getWeekStr() は引数を取らずグローバル _shiftWeekOff を見るため、オフセット指定は getWeekSundayISO(off) から組む */
+  var availWeek = (function(){ var _s=new Date(getWeekSundayISO(_availOff)+'T00:00:00'); return (_s.getMonth()+1)+'/'+_s.getDate(); })();
+  var availRange = (function(){ try{ return shiftWeekRangeLabel(_availOff)||''; }catch(e){ return ''; } })();
+  var myAvail = getAvailability(storeId, availWeek).find(a=>a.name===me);
   var plan = getShiftPlan(storeId, week);
   var reminded = ls('reminded_'+storeId+'_'+week, []);
   var isReminded = !myAvail && Array.isArray(reminded) && reminded.indexOf(me)>=0;
@@ -22010,7 +22060,7 @@ function renderShiftStaff() {
   if (isReminded) {
     html += `<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-bell" style="font-size:18px"></i><div>
       <p style="font-size:13px;font-weight:700">${t('シフト希望の提出をお願いします','Please submit your availability')}</p>
-      <p style="font-size:12px;margin-top:2px">${curLang==='en'?('You have not submitted for '+week+' yet. Use the "Submit Availability" button below.'):(week+'週の提出がまだです。下の「Submit Availability」から提出してください。')}</p></div></div>`;
+      <p style="font-size:12px;margin-top:2px">${curLang==='en'?('You have not submitted for '+availWeek+' yet. Use the "Submit Availability" button below.'):(availWeek+'週の提出がまだです。下の「Submit Availability」から提出してください。')}</p></div></div>`;
   }
 
   setTimeout(function(){ try{ maybePullStaffShift(storeId, week); }catch(e){} }, 60);
@@ -22025,14 +22075,14 @@ function renderShiftStaff() {
 
   if (myAvail) {
     html += `<div class="card"><div class="alert alert-success" style="margin:0"><i class="ti ti-circle-check"></i><div>
-      <p style="font-size:13px;font-weight:600">Availability Submitted</p>
+      <p style="font-size:13px;font-weight:600">Availability Submitted <span style="font-size:11px;font-weight:600;color:var(--muted)">(${availWeek})</span></p>
       <p style="font-size:12px;margin-top:2px">${t('提出枠','Slots submitted')}: ${myAvail.slots.length}${curLang==='en'?' · Thank you!':' · ありがとうございます！'}</p></div></div>
-      <button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="openAvailModal('${storeId}','${week}')"><i class="ti ti-edit"></i> Edit Submission</button>
+      <button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="openAvailModal('${storeId}','${availWeek}')"><i class="ti ti-edit"></i> Edit Submission</button>
     </div>`;
   } else {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-plus"></i>${t('Availability提出','Submit Availability')}</div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${curLang==='en'?('Please submit your available slots for '+week):(week+'週の勤務可能枠を提出してください')}</p>
-      <button class="btn btn-primary" style="width:100%" onclick="openAvailModal('${storeId}','${week}')"><i class="ti ti-send"></i> Submit Availability</button>
+    html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-plus"></i>${t('Availability提出','Submit Availability')} <span style="font-size:11px;font-weight:600;color:var(--accent);margin-left:4px">${availWeek}${availRange?(' · '+availRange):''}</span></div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${curLang==='en'?('Please submit your available slots for '+availWeek):(availWeek+'週の勤務可能枠を提出してください')}</p>
+      <button class="btn btn-primary" style="width:100%" onclick="openAvailModal('${storeId}','${availWeek}')"><i class="ti ti-send"></i> Submit Availability</button>
     </div>`;
   }
 
@@ -22928,7 +22978,8 @@ function deleteMyVacation(id){
   if(v.status!=='申請中'){ alert('承認待ちの申請のみ取消できます。承認済みの取消は管理者に依頼してください。'); return; }
   if(!confirm('この休暇申請（'+v.startDate+'〜'+v.endDate+'）を取り消しますか？')) return;
   var idx=vacs.findIndex(function(x){return x.id===id;});
-  vacs.splice(idx,1);
+  /* v687: 物理削除→論理削除。端末間マージで復活しないようtombstoneを残す（読み取りでは除外） */
+  vacs[idx]._deleted=true; vacs[idx]._deletedAt=(typeof nowJP==='function'?nowJP():'');
   saveVacations(vacs);
   showToast('申請を取り消しました','info');
   renderPage('vacation');
@@ -23235,7 +23286,8 @@ function migrateClearSampleOB(){
     var apps = ls('applicants', null);
     if (Array.isArray(apps)) { var c1=apps.filter(function(a){return !(a && a.name && names[a.name]);}); if(c1.length!==apps.length) lsSet('applicants', c1); }
     var obs = ls('onboardings', null);
-    if (Array.isArray(obs)) { var c2=obs.filter(function(o){return !(o && o.name && names[o.name]);}); if(c2.length!==obs.length) lsSet('onboardings', c2); }
+    /* v687: onboardings は論理削除運用になったため、物理除去ではなく tombstone を立てる（削除が他端末へ伝播する） */
+    if (Array.isArray(obs)) { var _ch=false; obs.forEach(function(o){ if(o && o.name && names[o.name] && !o._deleted){ o._deleted=true; o._deletedAt=(typeof nowJP==='function'?nowJP():''); _ch=true; } }); if(_ch) lsSet('onboardings', obs); }
     lsSet('_sampleOBCleared_v1', true);
   }catch(e){ console.warn('migrateClearSampleOB', e); }
 }
@@ -33102,6 +33154,9 @@ function renderTalentPipeline(){
   return html;
 }
 
+/* v684: Career Score 本人申請の解放フラグ。true にすると「申請」ボタンが有効になる。
+   現状は準備中表示（押下不可）＝運用が定着してから解放する。 */
+var LSS_SELFAPPLY_LIVE = false;
 function renderLeadership() {
   // 対象＝リーダー以上
   var leaders = visibleStaffForManager().filter(e=>(isLeaderPlus(e) || gradeNum(empGrade(e))>=2) && e.status!=='退職' && e.role!=='ceo');
@@ -33123,6 +33178,9 @@ function renderLeadership() {
     ${['ceo','gm','am'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openLssRulesModal()"><i class="ti ti-adjustments"></i> ${t('申請条件','Requirements')}</button>`:''}
     ${['ceo','gm'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openEvalLevelsModal()"><i class="ti ti-stairs-up"></i> ${t('Level基準','Level criteria')}</button>`:''}
     ${['ceo','gm'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openGradeAxisModal()"><i class="ti ti-sitemap"></i> ${t('担当軸','Axes')}</button>`:''}
+    ${LSS_SELFAPPLY_LIVE
+      ? `<button class="btn btn-primary btn-sm" onclick="openLssApply(getEmployees().find(function(e){return e.name===(curUserName||'');}),'promo')"><i class="ti ti-send"></i> ${t('申請','Apply')}</button>`
+      : `<button class="btn btn-secondary btn-sm" disabled style="opacity:.55;cursor:not-allowed" title="${t('Career Scoreの運用が定着してから解放します','Opens once Career Score is established')}"><i class="ti ti-send"></i> ${t('申請','Apply')} <span style="font-size:10px;background:var(--bg2);border-radius:8px;padding:0 5px;margin-left:2px">${t('準備中','Coming soon')}</span></button>`}
   </div>`;
   if(['ceo','gm','am'].includes(curRole)){
     var _isGmCeo=['ceo','gm'].includes(curRole);
@@ -33506,7 +33564,10 @@ function submitLssApply(name, kind) {
   var reason = (document.getElementById('lss-ap-reason')||{}).value||'';
   var wantTitle = (document.getElementById('lss-ap-title')||{}).value||'';
   addLssRequest({id:'lss'+Date.now(), name:name, kind:kind, pct:sum.totalPct, wantTitle:wantTitle, reason:reason, status:'申請中', date:todayJP(), by:(ROLE_CONFIG[curRole]||{}).name||curUserName});
-  addApproval({title:`${name} ${kind==='promo'?'昇格':'Tip Rate'}申請（Leadership ${sum.totalPct}%）`, type:'Leadership', from:name});
+  /* v684: 配属店を渡す。store が無いと _approvalStore() が OFFICE 扱いになり、
+     一次承認(配属店の上位Grade)が誰も満たせず実質GM単独承認に潰れていた。 */
+  var _apE=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===name;}):null;
+  addApproval({title:`${name} ${kind==='promo'?'昇格':'Tip Rate'}申請（Leadership ${sum.totalPct}%）`, type:'Leadership', from:name, store:(_apE&&_apE.store)?_apE.store:''});
   closeModalDirect();
   showToast('申請しました（承認待ち）','success');
   renderPage('leadership');
@@ -33566,7 +33627,19 @@ function _apUserInScope(a){
   if(!e) return false;
   return e.store===sid || (e.support||[]).indexOf(sid)>=0;
 }
-function approvalRequiredRoles(a){ if(a && _apGradeChainTypes(a.type)){ var _g=_apApplicantGrade(a); return (_g>=5)?['gm']:['first','gm']; } var r=approversForType(a&&a.type); return (r&&r.length)?r:['gm']; }
+/* v684: 案件の店舗にAMが割り当たっていない（本部案件・AM不在店）場合、'am' は誰も埋められず永久pendingになる。
+   その店舗に限って 'am' を必要ロールから外す。全部外れてしまう場合は 'gm' を残す（空配列＝無承認で完了を防ぐ）。 */
+function _apStoreHasAm(a){
+  try{ var sid=_approvalStoreId(a); if(!sid || sid==='OFFICE') return false;
+    var st=(typeof getStoresAll==='function')?getStoresAll().find(function(x){return x.id===sid;}):null;
+    return !!(st && st.am); }catch(e){ return true; }   /* 判定不能時は従来どおり 'am' を残す */
+}
+function approvalRequiredRoles(a){
+  if(a && _apGradeChainTypes(a.type)){ var _g=_apApplicantGrade(a); return (_g>=5)?['gm']:['first','gm']; }
+  var r=approversForType(a&&a.type); r=(r&&r.length)?r.slice():['gm'];
+  if(r.indexOf('am')>=0 && !_apStoreHasAm(a)) r=r.filter(function(x){return x!=='am';});
+  return r.length?r:['gm'];
+}
 function _approvalStore(a){
   var v=a&&a.store;
   if(!v || v==='---' || v==='本部' || v==='office' || v==='OFFICE' || v==='HQ') return {id:'OFFICE', name:'本部 / Office'};
@@ -36188,6 +36261,95 @@ function renderCardUsage(){
   html+='<div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn btn-secondary" style="flex:1" onclick="exportCardReceiptSummaryCSV('+y+','+m+')"><i class="ti ti-file-text"></i> 用途集計CSV</button><button class="btn btn-secondary" style="flex:1" onclick="exportCardReceiptCSV('+y+','+m+')"><i class="ti ti-list"></i> 明細CSV</button></div>';
   return html;
 }
+/* ===== v680: 請求書のクラウド一括取得＋突合診断（対策③⑤） =====
+   ⑤ spl_invoices_<店舗> は従来ログイン時の全体同期でしか降りてこなかった。
+      予算の pullBudgetsNow と同じ方式で、全店パーティションを like 一括取得する。
+   ③ 端末ローカルとクラウドの件数・合計を店舗別に突合し、未反映（＝押し上げれば復旧する分）を可視化する。 */
+async function pullInvoicesAll(){
+  var n=0;
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.spl_invoices_*', { headers: supaHeaders() });
+    if(!res.ok) return 0;
+    var rows=await res.json();
+    if(!Array.isArray(rows)) return 0;
+    rows.forEach(function(r){
+      if(!r || !r.key) return;
+      try{
+        var cloudVal=r.value;
+        var loc=null; try{ loc=JSON.parse(localStorage.getItem(r.key)||'null'); }catch(e){}
+        var out=(typeof mergeInvoices==='function') ? mergeInvoices(cloudVal, loc) : cloudVal;   /* 上書きせずマージ */
+        localStorage.setItem(r.key, JSON.stringify(out));
+        n+=(Array.isArray(cloudVal)?cloudVal.length:0);
+      }catch(e){}
+    });
+  }catch(e){}
+  return n;
+}
+/* 未反映（ローカルにしか無い）請求書をクラウドへ押し上げる＝欠落分の復旧 */
+async function pushInvoicesAll(){
+  var pushed=0;
+  try{
+    var all=ls('invoices',[])||[];
+    var byStore={};
+    all.forEach(function(v){ var sid=(v&&v.storeId)?String(v.storeId):'_'; (byStore[sid]=byStore[sid]||[]).push(v); });
+    var ids=Object.keys(byStore);
+    for(var i=0;i<ids.length;i++){
+      try{ await opMergePush('spl_invoices_'+ids[i], byStore[ids[i]]); pushed+=byStore[ids[i]].length; }catch(e){}
+    }
+  }catch(e){}
+  return pushed;
+}
+/* 請求書の突合診断：店舗別に「この端末 / クラウド」の件数・合計を並べる */
+async function openInvoiceDiag(ym){
+  ym = ym || (typeof curYm==='function'?curYm():'');
+  try{ showToast('請求書を照合中…','info'); }catch(e){}
+  var cloudRows={};
+  var okCloud=false, errMsg='';
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.spl_invoices_*', { headers: supaHeaders() });
+    if(res.ok){ var rows=await res.json();
+      if(Array.isArray(rows)){ okCloud=true; rows.forEach(function(r){ if(r&&r.key) cloudRows[r.key.replace('spl_invoices_','')]=Array.isArray(r.value)?r.value:[]; }); }
+    } else { errMsg='HTTP '+res.status; }
+  }catch(e){ errMsg=String((e&&e.message)||e); }
+
+  var inMonth=function(v){
+    if(!v || v._deleted) return false;
+    if(v.docType==='Receipt' || v.docType==='Reimburse') return false;
+    var d=(typeof parseJaDate==='function')?parseJaDate(v.date):null; if(!d) return false;
+    return (d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))===ym;
+  };
+  var localAll=ls('invoices',[])||[];
+  var stores=(typeof getVisibleStores==='function')?getVisibleStores():(typeof STORES!=='undefined'?STORES:[]);
+  var rowsHtml='', totL=0, totC=0, gap=0;
+  stores.forEach(function(s){
+    var lArr=localAll.filter(function(v){ return _invStoreIds(v).indexOf(s.id)>=0 && inMonth(v); });   /* v683: 集計と同じ店舗解決（名称保存の旧データも拾う） */
+    var cArr=(cloudRows[s.id]||[]).filter(inMonth);
+    var lSum=lArr.reduce(function(a,v){return a+(Number(v.total)||0);},0);
+    var cSum=cArr.reduce(function(a,v){return a+(Number(v.total)||0);},0);
+    var lIds={}; lArr.forEach(function(v){ lIds[v.id]=1; });
+    var onlyLocal=lArr.filter(function(v){ return !(cloudRows[s.id]||[]).some(function(x){return x&&x.id===v.id;}); }).length;
+    var onlyCloud=cArr.filter(function(v){ return !lIds[v.id]; }).length;
+    totL+=lSum; totC+=cSum; gap+=onlyLocal;
+    var warn=(onlyLocal>0);
+    rowsHtml+='<tr style="border-top:1px solid var(--border)'+(warn?';background:rgba(220,38,38,.07)':'')+'">'
+      +'<td style="padding:4px 6px;font-weight:600">'+escapeHtml(s.name)+'</td>'
+      +'<td style="padding:4px 6px;text-align:right">'+lArr.length+'件 / $'+lSum.toFixed(2)+'</td>'
+      +'<td style="padding:4px 6px;text-align:right">'+(okCloud?(cArr.length+'件 / $'+cSum.toFixed(2)):'—')+'</td>'
+      +'<td style="padding:4px 6px;text-align:right;font-weight:700;color:'+(warn?'var(--red)':'var(--muted)')+'">'+(onlyLocal?('未反映'+onlyLocal):(onlyCloud?('要取得'+onlyCloud):'一致'))+'</td></tr>';
+  });
+  var html='<div class="modal-title"><i class="ti ti-stethoscope"></i> 請求書の突合診断（'+escapeHtml(ym)+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +(okCloud?'':'<div class="alert alert-warning" style="margin:0 0 8px;padding:6px 10px;font-size:12px"><i class="ti ti-alert-triangle"></i> クラウド照会に失敗：'+escapeHtml(errMsg)+'</div>')
+    +'<div class="card" style="margin:0 0 8px;padding:8px"><table style="width:100%;font-size:11.5px;border-collapse:collapse">'
+    +'<thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:2px 6px">店舗</th><th style="text-align:right;padding:2px 6px">この端末</th><th style="text-align:right;padding:2px 6px">クラウド</th><th style="text-align:right;padding:2px 6px">差分</th></tr></thead>'
+    +'<tbody>'+rowsHtml+'</tbody></table>'
+    +'<div style="margin-top:6px;font-size:12px;font-weight:700">合計：この端末 $'+totL.toFixed(2)+(okCloud?(' / クラウド $'+totC.toFixed(2)):'')+'</div></div>'
+    +(gap>0?'<div class="alert alert-warning" style="margin:0 0 8px;padding:8px 10px;font-size:12px"><i class="ti ti-cloud-off"></i><div><b>未反映 '+gap+'件</b><br>この端末にしか無い請求書です。「クラウドへ復旧」で押し上げると全端末の月合計に反映されます。</div></div>':'')
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">※ 各店の端末でこの診断を実行し「クラウドへ復旧」すると、過去に上書きで欠けた分も戻ります。</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-secondary" onclick="pullInvoicesAll().then(function(n){ showToast(\'クラウドから取得しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-download"></i> 取得</button>'
+    +'<button class="btn btn-primary" onclick="pushInvoicesAll().then(function(n){ showToast(\'クラウドへ復旧しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-upload"></i> クラウドへ復旧</button></div>';
+  openModal(html);
+}
 function renderInvoice() {
   ensureIngV2Backfill();
   var allInv = ls('invoices', []);
@@ -36195,7 +36357,7 @@ function renderInvoice() {
   var candIds = invoiceStoreCandidates().map(s=>s.id);
   var invoices = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
   var html = `<div class="section-header"><div><div class="section-title">${t('Invoice管理','Invoice management')}</div><div class="section-sub">${t('アップロード→照合→価格更新','Upload → match → update prices')}</div></div>
-    <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button>`:''}<button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> ${t('Invoice登録','Add invoice')}</button></div></div>`;
+    <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> ${t('Invoice登録','Add invoice')}</button></div></div>`;
   var _canCard = ['ceo','gm','office','office_crew'].includes(curRole);
   html += `<div class="mm-tabs" style="margin-bottom:10px"><button class="mm-tab${(window._invMainView||'list')!=='cardusage'?' active':''}" onclick="setInvMainView('list')"><i class="ti ti-file-invoice"></i> ${t('Invoice一覧','Invoice list')}</button>${_canCard?`<button class="mm-tab${(window._invMainView||'list')==='cardusage'?' active':''}" onclick="setInvMainView('cardusage')"><i class="ti ti-credit-card"></i> ${t('カード使用管理','Card usage')}</button>`:''}</div>`;
   if ((window._invMainView||'list')==='cardusage' && _canCard) return html + renderCardUsage();
@@ -36310,6 +36472,9 @@ function openInvoiceModal() {
         <button class="btn ${invoiceDocType==='Receipt'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Receipt')">Receipt読み取り</button>
         <button class="btn ${invoiceDocType==='Reimburse'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Reimburse')">建て替え経費</button>
       </div>
+    </div>
+    <div class="form-group"><label class="form-label">伝票日付 <span style="font-weight:400;color:var(--muted);font-size:11px">（請求書に記載の日付。月次集計はこの日付で計上）</span></label>
+      <input class="form-input" type="date" id="inv-docdate" value="${(new Date()).toISOString().slice(0,10)}">
     </div>
     <div class="form-group"><label class="form-label">業者 / 購入先</label>
       <input class="form-input" id="inv-vendor" list="inv-vendor-list" placeholder="業者名を入力or選択" oninput="checkVendorRegistered()">
@@ -36944,7 +37109,9 @@ async function saveInvoice() {
   var _rcptEmpId = (invoiceDocType==='Receipt') ? (docVal('inv-emp')||null) : null;
   var _rcptEmp = _rcptEmpId ? (getEmployees().find(function(e){return e.id===_rcptEmpId;})||{}) : {};
   var _rcptCard = (invoiceDocType==='Receipt') ? (docVal('inv-card4')||'').replace(/[^0-9]/g,'') : '';
-  var _newInv = {id:_invIdPre, vendor, storeId:invStoreId, docType:invoiceDocType, date:todayJP(),
+  /* v681: 伝票日付。集計は docDate 優先（無ければ従来の date＝スキャン日） */
+  var _docDate=(function(){ try{ var v=docVal('inv-docdate'); if(v && /^\d{4}-\d{2}-\d{2}$/.test(v)) return v.replace(/-/g,'/'); }catch(e){} return ''; })();
+  var _newInv = {id:_invIdPre, vendor, storeId:invStoreId, docType:invoiceDocType, date:todayJP(), docDate:_docDate, scannedAt:todayJP(),
     lines:invoiceTmpLines, total, applied:true, v2Only:_mig, by:ROLE_CONFIG[curRole].name,
     byUser:(curUserName||''), byEmail:(function(){var _e=getEmployees().find(function(x){return x.name===curUserName;});return (_e&&_e.email)?_e.email:'';})(),
     imagePath:imagePath||null,
@@ -37486,7 +37653,9 @@ async function deleteInvoiceDo(id){
     catch(e){ storageOk=false; }
   }
   // 3) 一覧から削除（同期にも反映）
-  invoices.splice(idx,1);
+  /* v679: 物理削除→論理削除。端末間マージで復活しないようtombstoneを残す（読み取りでは除外される） */
+  invoices[idx]._deleted=true;
+  invoices[idx]._deletedAt=(typeof nowJP==='function'?nowJP():'');
   lsSet('invoices', invoices);
   closeModalDirect();
   // 4) 結果に応じて正確に通知
