@@ -5790,12 +5790,13 @@ function plComputeStore(sid, ym, off){
   var cfg=getPlConfig(), ovr=getPlOverrides();
   var sales = Math.round((monthStats(sid, off)||{}).sales||0);
   var fc = getFcMonthly(sid, ym);
-  var purchOrder = monthInvoiceTotalYm(sid, ym), purchBuy = monthPurchaseTotalYm(sid, ym);
+  /* v688: 原価は foodCostOf() に一元化（用途フィルタ／確定・暫定判定を含む） */
+  var _fcr = foodCostOf(sid, ym, sales);
+  var purchOrder = _fcr.invoice, purchBuy = _fcr.buy;
   var purch = purchOrder + purchBuy;
   var _tnet = (typeof monthTransferNetYm==='function') ? monthTransferNetYm(sid, ym) : {inAmt:0,outAmt:0,net:0};
-  var cogs = Math.round((parseFloat(fc.beginInv)||0) + purch + _tnet.net - (parseFloat(fc.endInv)||0));
-  var cogsSrc = ((parseFloat(fc.beginInv)||0)>0 || (parseFloat(fc.endInv)||0)>0) ? '棚卸法' : '仕入合計';
-  if (cogs<0) cogs=Math.round(purch);
+  var cogs = Math.round(_fcr.cost);
+  var cogsSrc = _fcr.hasEnd ? '棚卸法（確定）' : '仕入合計（暫定・期末棚卸待ち）';
   var labor = 0; try{ labor = Math.round(laborCoreForYm(sid, ym).total); }catch(e){}
   var vc = {}; var vcT=0;
   PL_VC_CATS.forEach(function(c){ var v=Math.round(plVcVal(cfg, ovr, sid, ym, c[0])); vc[c[0]]=v; vcT+=v; });
@@ -13293,7 +13294,7 @@ function keyKpiStats(scopeStores, days){
       }
     });
     // 原価（当月進捗）＝ Invoice＋買い出し＋食材移動（棚卸なし）
-    try{ food += (monthInvoiceTotalYm(s.id, ym)||0) + (monthPurchaseTotalYm(s.id, ym)||0) + ((monthTransferNetYm(s.id, ym)||{}).net||0); }catch(e){}
+    try{ var _kr=foodCostOf(s.id, ym); food += (_kr.invoice + _kr.buy + _kr.transfer); }catch(e){}   /* v688: 用途フィルタ適用（棚卸は使わない当月進捗） */
     // 予算側（目標）
     salesBud += segmentsTotal(segs);
     segSales$ += segmentsTotal(segs);
@@ -13903,6 +13904,98 @@ function _invStoreIds(v){
   return raw.map(function(x){ if(!x) return x; if(typeof STORES!=='undefined' && STORES.some(function(s){return s.id===x;})) return x; var bn=(typeof STORES!=='undefined')?STORES.find(function(s){return s.name===x;}):null; return bn?bn.id:x; });
 }
 /* 業者Invoice合計（docType='Invoice'のみ／Receiptは買い出しに計上済のため除外）。店舗按分後。 */
+/* ===== v688: 食材原価の一元化（用途フィルタ＋確定/暫定） =====
+   【背景】原価率が画面ごとに違っていた（棚卸の有無・食材移動の有無・売上の出所がバラバラ）。
+     さらに買い出し(Receipt)は用途を問わず全額が食材原価に入っていたため、
+     備品・消耗品や賄い・差し入れまで原価を押し上げていた。
+   【方針】Moto確定の定義に統一：原価 = 期首棚卸 + 仕入(原価対象) + 食材移動 − 期末棚卸
+     ・仕入に含めるのは「原価対象の用途」だけ（既定＝仕入れ・仕込みのみ／GM設定で変更可）
+     ・用途が未設定の伝票は従来どおり原価に含める（後方互換。過去データの数字を変えない）
+     ・期末棚卸が入っていれば【確定】、無ければ【暫定】＝Invoice積み上げを目安として見せる */
+var FC_PURPOSE_ALL = ['仕入れ・仕込み','賄い','差し入れ','面談','イベント・販促','備品・消耗品','その他'];
+function fcCostPurposes(){ var v=ls('fc_cost_purposes', null); return (Array.isArray(v)&&v.length)?v:['仕入れ・仕込み']; }
+function setFcCostPurposes(a){ lsSet('fc_cost_purposes', Array.isArray(a)?a:['仕入れ・仕込み']); }
+function _fcInCost(purpose){
+  var p=String(purpose||'').trim();
+  if(!p) return true;                       /* 未設定＝原価に含める（既存データ互換） */
+  return fcCostPurposes().indexOf(p)>=0;
+}
+/* 原価対象のInvoice合計（店舗按分後・削除済み除外・Receipt/Reimburse除外） */
+function monthInvoiceCostYm(storeId, ym){
+  var inv=ls('invoices',[])||[]; var sum=0;
+  inv.forEach(function(v){
+    if(!v || v.docType==='Receipt' || v.docType==='Reimburse') return;
+    if(!_fcInCost(v.purpose)) return;
+    var d=_invDate(v); if(!d) return;
+    if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
+    var sids=_invStoreIds(v);
+    if(!sids.length || sids.indexOf(storeId)<0) return;
+    sum += (Number(v.total)||0)/sids.length;
+  });
+  return sum;
+}
+/* 原価対象の買い出し合計 */
+function monthPurchaseCostYm(storeId, ym){
+  try{
+    return getPurchases(storeId).filter(function(p){
+      return (dateInYm(p.date, ym) || (!p.date && ym===curYm())) && _fcInCost(p.purpose);
+    }).reduce(function(a,p){ return a+(parseFloat(p.amount)||0); },0);
+  }catch(e){ return 0; }
+}
+/* 原価外に振り分けられた金額（用途別内訳。可視化用） */
+function monthNonCostYm(storeId, ym){
+  var out={total:0, byPurpose:{}};
+  try{
+    (ls('invoices',[])||[]).forEach(function(v){
+      if(!v || v.docType==='Receipt' || v.docType==='Reimburse') return;
+      if(_fcInCost(v.purpose)) return;
+      var d=_invDate(v); if(!d) return;
+      if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
+      var sids=_invStoreIds(v); if(!sids.length || sids.indexOf(storeId)<0) return;
+      var amt=(Number(v.total)||0)/sids.length; out.total+=amt;
+      var k=v.purpose||'未設定'; out.byPurpose[k]=(out.byPurpose[k]||0)+amt;
+    });
+    getPurchases(storeId).forEach(function(p){
+      if(!(dateInYm(p.date, ym) || (!p.date && ym===curYm()))) return;
+      if(_fcInCost(p.purpose)) return;
+      var amt=parseFloat(p.amount)||0; out.total+=amt;
+      var k=p.purpose||'未設定'; out.byPurpose[k]=(out.byPurpose[k]||0)+amt;
+    });
+  }catch(e){}
+  return out;
+}
+/* ===== 原価の単一計算口。全画面はこれを使う =====
+   salesOverride を渡すと分母に使う（各画面の売上の出所は既存踏襲）。
+   戻り値: invoice/buy/transfer/begin/end/hasEnd/cost/rate/provisionalPurch/provisionalRate/mode */
+function foodCostOf(storeId, ym, salesOverride){
+  var fc=(typeof getFcMonthly==='function')?(getFcMonthly(storeId, ym)||{}):{};
+  var invoice=monthInvoiceCostYm(storeId, ym);
+  var buy=monthPurchaseCostYm(storeId, ym);
+  var tnet=(typeof monthTransferNetYm==='function')?(monthTransferNetYm(storeId, ym)||{net:0}):{net:0};
+  var begin=parseFloat(fc.beginInv)||0, end=parseFloat(fc.endInv)||0;
+  var hasEnd = end>0;                                  /* 期末棚卸の入力＝確定条件 */
+  var purch=invoice+buy+(Number(tnet.net)||0);
+  var cost = begin + purch - end;
+  if(cost<0) cost=purch;                               /* 異常値ガード（従来踏襲） */
+  var sales=(salesOverride!=null)?(Number(salesOverride)||0):(parseFloat(fc.sales)||0);
+  return {
+    invoice:invoice, buy:buy, transfer:(Number(tnet.net)||0),
+    begin:begin, end:end, hasEnd:hasEnd,
+    purch:purch,
+    cost: hasEnd ? cost : purch,                        /* 暫定時は棚卸を使わず仕入ベース */
+    rate: (hasEnd && sales) ? Math.round((cost/sales)*1000)/10 : 0,
+    provisionalRate: (!hasEnd && sales) ? Math.round((purch/sales)*1000)/10 : 0,
+    sales:sales,
+    mode: hasEnd ? 'confirmed' : 'provisional'
+  };
+}
+/* 確定/暫定バッジ（全画面共通表示） */
+function fcModeBadge(r){
+  if(!r) return '';
+  return r.hasEnd
+    ? '<span class="tag tag-green" style="font-size:10px">確定</span>'
+    : '<span class="tag tag-yellow" style="font-size:10px">暫定 · 期末棚卸待ち</span>';
+}
 function monthInvoiceTotalYm(storeId, ym){
   var inv=ls('invoices',[])||[]; var sum=0;
   inv.forEach(function(v){
@@ -14052,10 +14145,11 @@ function renderFcAllStores(){
   vis.forEach(function(s){
     var fc = getFcMonthly(s.id, ym);
     var stats = monthStats(s.id, fcMonthOffset);
-    var purchases = monthInvoiceTotalYm(s.id, ym) + monthPurchaseTotalYm(s.id, ym);
-    var used = (parseFloat(fc.beginInv)||0) + purchases - (parseFloat(fc.endInv)||0);
-    var sales = parseFloat(fc.sales)||stats.sales||0;
-    var rate = sales ? Math.round(used/sales*1000)/10 : 0;
+    var _r = foodCostOf(s.id, ym, (parseFloat(fc.sales)||stats.sales||0));   /* v688: 一元化（食材移動・用途フィルタを反映） */
+    var purchases = _r.invoice + _r.buy;
+    var used = _r.cost;
+    var sales = _r.sales;
+    var rate = _r.hasEnd ? _r.rate : _r.provisionalRate;
     var col = !rate ? 'var(--muted)' : (rate<=31?'var(--green)':rate<=34?'var(--yellow)':'var(--red)');
     html += `<tr><td style="cursor:pointer" onclick="setFcStore('${s.id}')">${s.name}</td><td style="text-align:right">${fmtUSD2(used)}</td><td style="text-align:right">${fmtUSD2(sales)}</td><td style="text-align:right;color:${col};font-weight:600">${rate?rate.toFixed(1)+'%':'—'}</td></tr>`;
   });
@@ -14125,19 +14219,23 @@ function renderFcMonthly(storeId, store) {
   var stats = monthStats(storeId, fcMonthOffset);
   var fc = getFcMonthly(storeId, ym);
   var invStat = monthInvoiceStatsYm(storeId, ym);
-  var orderTotal = invStat.total;
-  var purchaseTotal = monthPurchaseTotalYm(storeId, ym);
+  /* v688: 原価は foodCostOf() に一元化 */
+  var _fcR = foodCostOf(storeId, ym, (parseFloat(fc.sales)||stats.sales||0));
+  var orderTotal = _fcR.invoice;
+  var purchaseTotal = _fcR.buy;
   var purchases = orderTotal + purchaseTotal;
   var _fcTnet = (typeof monthTransferNetYm==='function') ? monthTransferNetYm(storeId, ym) : {inAmt:0,outAmt:0,net:0};
-  var usedCost = (parseFloat(fc.beginInv)||0) + purchases + _fcTnet.net - (parseFloat(fc.endInv)||0);
-  var sales = parseFloat(fc.sales)||stats.sales||0;
-  var rate = sales ? Math.round(usedCost/sales*1000)/10 : 0;
+  var usedCost = _fcR.cost;
+  var sales = _fcR.sales;
+  var rate = _fcR.hasEnd ? _fcR.rate : _fcR.provisionalRate;
   var target = 30;
   var color = rate<=31?'var(--green)':rate<=33?'var(--yellow)':'var(--red)';
 
   var html = fcMonthBar();
   html += `<div class="alert alert-warning" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">月次は<strong>期首棚卸 + 仕入 − 期末棚卸 = 使用原価</strong>で精度の高い実績原価率を算出${frozen?'。<b>確定月</b>：数字は固定表示（修正時は履歴に残ります）':''}</div></div>
   <div class="card"><div class="card-title"><i class="ti ti-calculator"></i>${frozen?ym.replace('-','年')+'月 実績原価率（確定）':'月次実績原価率'}
+    ${fcModeBadge(_fcR)}
+    ${['gm','ceo'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openFcPurposeConfig()"><i class="ti ti-adjustments"></i> 原価対象</button>`:''}
     <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openFcMonthlyModal('${storeId}','${ym}')"><i class="ti ti-edit"></i> 棚卸額入力</button></div>
     <table class="inv-table"><tbody>
       <tr><td>期首棚卸額 ${fc.beginAuto?'<span class="tag tag-blue" style="font-size:9px">前月末から自動</span>':''}</td><td style="text-align:right">$${(parseFloat(fc.beginInv)||0).toLocaleString()}</td></tr>
@@ -14159,6 +14257,75 @@ function renderFcMonthly(storeId, store) {
   html += _fcVendorCard(storeId, ym);
   return html;
 }
+/* ===== v689: 原価対象用途のGM設定＋経理PL照合 ===== */
+function openFcPurposeConfig(){
+  if(!['gm','ceo'].includes(curRole)){ showToast('GM/CEOのみ設定できます','warning'); return; }
+  var cur=fcCostPurposes();
+  var rows=FC_PURPOSE_ALL.map(function(p){
+    var on=cur.indexOf(p)>=0;
+    return '<label style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-top:1px solid var(--border);font-size:13px">'
+      +'<input type="checkbox" class="fcpp" value="'+escapeHtml(p)+'"'+(on?' checked':'')+' style="width:18px;height:18px">'
+      +'<span'+(on?' style="font-weight:700"':'')+'>'+escapeHtml(p)+'</span>'
+      +'<span style="margin-left:auto;font-size:10px;color:'+(on?'var(--green)':'var(--muted)')+'">'+(on?'原価に含む':'原価外')+'</span></label>';
+  }).join('');
+  openModal('<div class="modal-title"><i class="ti ti-adjustments"></i> 食材原価に含める用途 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<p style="font-size:12px;color:var(--muted);margin-bottom:4px">チェックした用途のInvoice・買い出しだけを食材原価に計上します。外した分は「原価外」として別集計されます。</p>'
+    +'<div class="card" style="margin:0 0 8px;padding:4px 10px">'+rows+'</div>'
+    +'<p style="font-size:11px;color:var(--muted)">※ 用途が未設定の伝票は従来どおり原価に含めます（過去データの数字を変えないため）。</p>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="saveFcPurposeConfig()">保存</button></div>');
+}
+function saveFcPurposeConfig(){
+  var sel=Array.prototype.slice.call(document.querySelectorAll('.fcpp:checked')).map(function(c){return c.value;});
+  if(!sel.length){ alert('最低1つは選択してください'); return; }
+  setFcCostPurposes(sel);
+  closeModalDirect();
+  showToast('原価対象の用途を保存しました','success');
+  try{ renderPage(curPage); }catch(e){}
+}
+/* 経理PL（別ファイル）の原価額を保存し、アプリ算出と突き合わせる */
+function plActualKey(storeId, ym){ return 'pl_actual_'+storeId+'_'+ym; }
+function getPlActual(storeId, ym){ var v=ls(plActualKey(storeId, ym), null); return (v&&typeof v==='object')?v:{}; }
+function savePlActualCost(storeId, ym){
+  var v=parseFloat((docVal('pl-actual-cost')||'').replace(/[^0-9.\-]/g,''));
+  var cur=getPlActual(storeId, ym);
+  cur.cost = isNaN(v)?null:v;
+  cur.by=(curUserName||''); cur.at=(typeof nowJP==='function'?nowJP():'');
+  lsSet(plActualKey(storeId, ym), cur);
+  closeModalDirect();
+  showToast('経理PLの原価額を保存しました','success');
+  try{ renderPage(curPage); }catch(e){}
+}
+function openPlReconcile(storeId, ym){
+  var r=foodCostOf(storeId, ym);
+  var pa=getPlActual(storeId, ym);
+  var nc=monthNonCostYm(storeId, ym);
+  var m=function(n){ return '$'+(Number(n)||0).toFixed(2); };
+  var diff=(pa.cost!=null)?(Number(pa.cost)-r.cost):null;
+  var ncRows=Object.keys(nc.byPurpose||{}).map(function(k){
+    return '<div style="display:flex;justify-content:space-between;font-size:11.5px;padding:2px 0"><span style="color:var(--muted)">'+escapeHtml(k)+'</span><span>'+m(nc.byPurpose[k])+'</span></div>';
+  }).join('') || '<div style="font-size:11px;color:var(--muted)">なし</div>';
+  var line=function(l,v,b){ return '<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0'+(b?';border-top:1px solid var(--border);font-weight:800':'')+'"><span>'+l+'</span><span>'+v+'</span></div>'; };
+  openModal('<div class="modal-title"><i class="ti ti-scale"></i> 経理PLとの照合（'+escapeHtml(ym)+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">アプリ算出 '+fcModeBadge(r)+'</div>'
+    +line('期首棚卸', m(r.begin))
+    +line('＋ Invoice（原価対象）', m(r.invoice))
+    +line('＋ 買い出し（原価対象）', m(r.buy))
+    +line('＋ 食材移動（純）', m(r.transfer))
+    +line('− 期末棚卸', r.hasEnd?m(r.end):'<span style="color:var(--yellow)">未入力</span>')
+    +line('＝ 原価'+(r.hasEnd?'':'（暫定・仕入ベース）'), m(r.cost), true)
+    +'</div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:4px">経理PL（別ファイル）の原価額</div>'
+    +'<input class="form-input" id="pl-actual-cost" type="number" inputmode="decimal" placeholder="経理PLの食材原価額を入力" value="'+(pa.cost!=null?pa.cost:'')+'">'
+    +(pa.at?'<div style="font-size:10px;color:var(--muted);margin-top:3px">最終入力: '+escapeHtml(pa.at)+(pa.by?(' · '+escapeHtml(pa.by)):'')+'</div>':'')
+    +(diff!=null?('<div style="margin-top:8px;font-size:13px;font-weight:800;color:'+(Math.abs(diff)<1?'var(--green)':'var(--red)')+'">差分: '+m(diff)+(Math.abs(diff)<1?' · 一致':'')+'</div>'
+       +'<div style="font-size:11px;color:var(--muted);margin-top:2px">差分がある場合、未登録のInvoice・用途の振り分け・棚卸額のいずれかを確認してください。</div>'):'')
+    +'</div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">原価外に振り分けた分（参考）</div>'+ncRows
+    +'<div style="display:flex;justify-content:space-between;font-size:12px;font-weight:800;border-top:1px solid var(--border);padding-top:3px;margin-top:3px"><span>合計</span><span>'+m(nc.total)+'</span></div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="savePlActualCost(\''+storeId+'\',\''+ym+'\')">保存</button></div>');
+}
 function openFcMonthlyModal(storeId, ym) {
   ym = ym || fcYm();
   var frozen = isFrozenMonth(ym);
@@ -14169,7 +14336,8 @@ function openFcMonthlyModal(storeId, ym) {
     <div class="form-group"><label class="form-label">期首棚卸額 ($) ${fc.beginAuto?'※前月末（期末）から自動。修正は前月の期末で':''}</label><input class="form-input" id="fc-begin" type="number" inputmode="decimal" value="${fc.beginInv||0}"${fc.beginAuto?' readonly style="background:var(--bg2);opacity:.75"':''}></div>
     <div class="form-group"><label class="form-label">期末棚卸額 ($)（月次棚卸確定で自動更新）</label><input class="form-input" id="fc-end" type="number" inputmode="decimal" value="${fc.endInv||0}"></div>
     <div class="form-group"><label class="form-label">売上 ($)（空欄なら日次実績から自動: ${fmtUSD2(stats.sales||0)}）</label><input class="form-input" id="fc-sales" type="number" inputmode="decimal" value="${fc.sales||''}"></div>
-    <p style="font-size:11px;color:var(--muted)">仕入れ・買い出しはこの月の発注/買い出しデータから自動集計されます。</p>
+    <p style="font-size:11px;color:var(--muted)">仕入れ・買い出しはこの月の発注/買い出しデータから自動集計されます（原価対象の用途のみ）。</p>
+    <button class="btn btn-secondary btn-sm" style="width:100%;margin-bottom:6px" onclick="closeModalDirect();openPlReconcile('${storeId}','${ym}')"><i class="ti ti-scale"></i> 経理PLと照合</button>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveFcMonthly('${storeId}','${ym}')">保存</button></div>`);
 }
@@ -18499,7 +18667,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '687';
+const APP_VERSION = '689';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
