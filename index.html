@@ -18679,7 +18679,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '694';
+const APP_VERSION = '695';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -36484,6 +36484,80 @@ async function pushInvoicesAll(){
    端末に無くても、クラウド側の①旧キー行(app_state key='invoices')と②店舗別パーティション
    (spl_invoices_<店舗>)の両方から全件を集め、統合して端末に書き戻す。
    保存容量が原因で書けないケースがあるため、事前にキャッシュを整理し、書き戻し後に必ず検証する。 */
+/* ===== v695: 端末内 請求書データの内訳（表示されない原因の特定用） =====
+   件数はあるのに画面に出ない場合、原因は「日付が解析できない」「店舗IDが一致しない」
+   「別の月」「種別が集計対象外」のいずれか。全件を分類して提示する。 */
+function openInvoiceInventory(){
+  var all=[]; try{ all=ls('invoices',[])||[]; }catch(e){}
+  var byType={}, byMonth={}, byStore={}, badDate=[], badStore=[];
+  var sIds=(typeof STORES!=='undefined')?STORES.map(function(s){return s.id;}):[];
+  all.forEach(function(v){
+    var ty=(v&&v.docType)||'(未設定)'; byType[ty]=(byType[ty]||0)+1;
+    var d=null; try{ d=(typeof _invDate==='function')?_invDate(v):parseJaDate(v&&v.date); }catch(e){}
+    if(!d){ badDate.push(v); }
+    else { var k=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); byMonth[k]=(byMonth[k]||0)+1; }
+    var sids=[]; try{ sids=(typeof _invStoreIds==='function')?_invStoreIds(v):[]; }catch(e){}
+    if(!sids.length){ badStore.push(v); }
+    else sids.forEach(function(id){ byStore[id]=(byStore[id]||0)+1; });
+  });
+  var rowsOf=function(o, fmt){
+    var ks=Object.keys(o).sort(function(a,b){ return o[b]-o[a]; });
+    if(!ks.length) return '<div style="font-size:11px;color:var(--muted)">なし</div>';
+    return ks.slice(0,14).map(function(k){
+      return '<div style="display:flex;justify-content:space-between;font-size:11.5px;padding:1px 0"><span style="color:var(--tm)">'+escapeHtml(fmt?fmt(k):k)+'</span><b>'+o[k]+'</b></div>';
+    }).join('');
+  };
+  var storeName=function(id){ var s=(typeof STORES!=='undefined')?STORES.find(function(x){return x.id===id;}):null; return s?(s.name+'（'+id+'）'):(id+' ← 未登録の店舗ID'); };
+  var sample=function(arr, f){ return arr.slice(0,5).map(function(v){ return '<div style="font-size:10.5px;color:var(--muted)">・'+escapeHtml(f(v))+'</div>'; }).join(''); };
+
+  var html='<div class="modal-title"><i class="ti ti-list-search"></i> 端末内データの内訳（'+all.length+'件） <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  if(badDate.length){
+    html+='<div class="alert alert-warning" style="margin:0 0 8px"><i class="ti ti-alert-triangle"></i><div>'
+      +'<p style="font-size:13px;font-weight:700">日付を読み取れない伝票が '+badDate.length+' 件</p>'
+      +'<p style="font-size:12px;margin-top:2px">この伝票はどの月の集計にも入りません（画面に出ません）。日付の書式が想定外です。</p>'
+      +sample(badDate, function(v){ return '日付="'+(v.docDate||v.date||'(空)')+'" / '+(v.vendor||'業者未設定')+' / $'+(Number(v.total)||0); })
+      +'<button class="btn btn-primary btn-sm" style="margin-top:6px" onclick="fixInvoiceDates()"><i class="ti ti-wand"></i> 日付を自動修復する</button>'
+      +'</div></div>';
+  }
+  if(badStore.length){
+    html+='<div class="alert alert-warning" style="margin:0 0 8px"><i class="ti ti-alert-triangle"></i><div>'
+      +'<p style="font-size:13px;font-weight:700">店舗を特定できない伝票が '+badStore.length+' 件</p>'
+      +'<p style="font-size:12px;margin-top:2px">店舗別の集計に入りません。</p>'
+      +sample(badStore, function(v){ return 'storeId="'+(v.storeId==null?'(空)':v.storeId)+'" / '+(v.vendor||'業者未設定'); })
+      +'</div></div>';
+  }
+  html+='<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">月別</div>'+rowsOf(byMonth)+'</div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">店舗別</div>'+rowsOf(byStore, storeName)+'</div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">種別</div>'+rowsOf(byType)
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">※ 月次の仕入合計に入るのは Invoice のみ（Receipt は買い出し、Reimburse は対象外）</div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(html);
+}
+/* 日付書式が想定外の伝票を救済（US式 MM/DD/YYYY 等を YYYY/MM/DD へ正規化） */
+function fixInvoiceDates(){
+  var all=[]; try{ all=ls('invoices',[])||[]; }catch(e){}
+  var fixed=0, still=0;
+  var norm=function(raw){
+    var t=String(raw||'').trim(); if(!t) return '';
+    var m;
+    if((m=t.match(/^(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/))) return m[1]+'/'+String(m[2]).padStart(2,'0')+'/'+String(m[3]).padStart(2,'0');
+    if((m=t.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/))) return m[3]+'/'+String(m[1]).padStart(2,'0')+'/'+String(m[2]).padStart(2,'0');  /* MM/DD/YYYY */
+    if((m=t.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/))) return '20'+m[3]+'/'+String(m[1]).padStart(2,'0')+'/'+String(m[2]).padStart(2,'0'); /* MM/DD/YY */
+    var d=new Date(t);
+    if(!isNaN(d)) return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0');
+    return '';
+  };
+  all.forEach(function(v){
+    var ok=null; try{ ok=_invDate(v); }catch(e){}
+    if(ok) return;
+    var cand=norm(v.docDate)||norm(v.date)||norm(v.scannedAt)||'';
+    if(cand){ v.docDate=cand; fixed++; } else { still++; }
+  });
+  if(fixed){ try{ lsSet('invoices', all); }catch(e){} }
+  showToast(fixed?('日付を修復しました（'+fixed+'件'+(still?('／未解決 '+still+'件'):'')+'）'):'修復できる伝票はありませんでした', fixed?'success':'warning');
+  closeModalDirect();
+  try{ renderPage(curPage); }catch(e){}
+}
 async function rebuildInvoicesFromCloud(){
   var before=0; try{ before=(ls('invoices',[])||[]).length; }catch(e){}
   try{ showToast('クラウドから復元中…','info'); }catch(e){}
@@ -36610,7 +36684,8 @@ async function openInvoiceDiag(ym){
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
     +'<button class="btn btn-secondary" onclick="pullInvoicesAll().then(function(n){ showToast(\'クラウドから取得しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-download"></i> 取得</button>'
     +'<button class="btn btn-primary" onclick="pushInvoicesAll().then(function(n){ showToast(\'クラウドへ復旧しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-upload"></i> クラウドへ復旧</button></div>'
-    +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();rebuildInvoicesFromCloud()"><i class="ti ti-refresh"></i> クラウドから過去分を復元（端末を再構築）</button>';
+    +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();rebuildInvoicesFromCloud()"><i class="ti ti-refresh"></i> クラウドから過去分を復元（端末を再構築）</button>'
+    +'<button class="btn btn-secondary" style="width:100%;margin-top:6px" onclick="closeModalDirect();openInvoiceInventory()"><i class="ti ti-list-search"></i> 端末内データの内訳を見る（表示されない原因）</button>';
   openModal(html);
 }
 /* ===== v690: 仕入明細タブ（店舗別・日付別の納品明細＋Invoice画像） =====
