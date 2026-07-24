@@ -18679,7 +18679,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '692';
+const APP_VERSION = '694';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -36480,6 +36480,68 @@ async function pushInvoicesAll(){
   return pushed;
 }
 /* 請求書の突合診断：店舗別に「この端末 / クラウド」の件数・合計を並べる */
+/* ===== v694: 請求書をクラウドから再構築（過去分の復元） =====
+   端末に無くても、クラウド側の①旧キー行(app_state key='invoices')と②店舗別パーティション
+   (spl_invoices_<店舗>)の両方から全件を集め、統合して端末に書き戻す。
+   保存容量が原因で書けないケースがあるため、事前にキャッシュを整理し、書き戻し後に必ず検証する。 */
+async function rebuildInvoicesFromCloud(){
+  var before=0; try{ before=(ls('invoices',[])||[]).length; }catch(e){}
+  try{ showToast('クラウドから復元中…','info'); }catch(e){}
+  var all=[], srcLegacy=0, srcPart=0, err='';
+  /* ① 旧キー行 */
+  try{
+    var r1=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=value&key=eq.invoices', { headers: supaHeaders() });
+    if(r1.ok){ var j1=await r1.json();
+      if(Array.isArray(j1) && j1[0] && Array.isArray(j1[0].value)){ srcLegacy=j1[0].value.length; all=all.concat(j1[0].value); } }
+    else err='旧キー HTTP '+r1.status;
+  }catch(e){ err=String((e&&e.message)||e); }
+  /* ② 店舗別パーティション */
+  try{
+    var r2=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.spl_invoices_*', { headers: supaHeaders() });
+    if(r2.ok){ var j2=await r2.json();
+      if(Array.isArray(j2)) j2.forEach(function(row){ if(row && Array.isArray(row.value)){ srcPart+=row.value.length; all=all.concat(row.value); } }); }
+    else if(!err) err='パーティション HTTP '+r2.status;
+  }catch(e){ if(!err) err=String((e&&e.message)||e); }
+
+  if(!all.length){
+    openModal('<div class="modal-title">請求書の復元 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      +'<div class="alert alert-warning" style="margin:0"><i class="ti ti-alert-triangle"></i><div>'
+      +'<p style="font-size:13px;font-weight:700">クラウドにも請求書が見つかりませんでした</p>'
+      +'<p style="font-size:12px;margin-top:3px">'+(err?('取得エラー: '+escapeHtml(err)):'該当データが0件でした。')+'</p>'
+      +'<p style="font-size:12px;margin-top:6px">別の端末（登録に使った端末）でこの復元を実行するか、その端末の「突合診断」→「クラウドへ復旧」で先に押し上げてください。</p></div></div>'
+      +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
+    return;
+  }
+
+  /* ③ 統合（id和集合。tombstone/レビュー済みは mergeInvoices の規則に従う） */
+  var merged=(typeof mergeInvoices==='function') ? mergeInvoices(all, (function(){ try{ return _splitRead('invoices', _SPLIT_KEYS['invoices'], true)||[]; }catch(e){ return []; } })()) : all;
+
+  /* ④ 書き戻し（容量を確保してから店舗別に保存） */
+  try{ autoPruneIfCritical(); }catch(e){}
+  var byStore={}, failed=[];
+  merged.forEach(function(v){ var id=String((v&&v.storeId)==null?'_':v.storeId); (byStore[id]=byStore[id]||[]).push(v); });
+  Object.keys(byStore).forEach(function(id){
+    try{ localStorage.setItem('spl_invoices_'+id, JSON.stringify(byStore[id])); }
+    catch(e){ failed.push(id); }
+  });
+  /* 旧キーは統合済みなので端末上は空にして容量を空ける（クラウド側は変更しない） */
+  if(!failed.length){ try{ localStorage.setItem('invoices','[]'); }catch(e){} }
+
+  var after=0; try{ after=(ls('invoices',[])||[]).length; }catch(e){}
+  var mb='?'; try{ mb=(lsBytesTotal()/1024/1024).toFixed(1); }catch(e){}
+  openModal('<div class="modal-title">請求書の復元 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="card" style="margin:0 0 8px">'
+    +'<div style="font-size:12px">クラウドから取得: <b>'+all.length+'件</b>'
+    +'<span style="font-size:11px;color:var(--muted)">（旧キー '+srcLegacy+' / 店舗別 '+srcPart+'）</span></div>'
+    +'<div style="font-size:12px;margin-top:3px">統合後: <b>'+merged.length+'件</b></div>'
+    +'<div style="font-size:14px;font-weight:800;margin-top:6px">端末の件数: '+before+'件 → <span style="color:var(--green)">'+after+'件</span></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:3px">保存使用量: '+mb+'MB</div></div>'
+    +(failed.length?('<div class="alert alert-warning" style="margin:0 0 8px"><i class="ti ti-alert-triangle"></i><div>'
+        +'<p style="font-size:13px;font-weight:700">保存容量が足りず '+failed.length+'店舗分を書き込めませんでした</p>'
+        +'<p style="font-size:12px;margin-top:3px">設定＞保存容量で「キャッシュを整理」してから、もう一度この復元を実行してください。</p></div></div>'):'')
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="closeModalDirect();renderPage(curPage);">画面を更新</button></div>');
+}
 async function openInvoiceDiag(ym){
   ym = ym || (typeof curYm==='function'?curYm():'');
   try{ showToast('請求書を照合中…','info'); }catch(e){}
@@ -36524,7 +36586,20 @@ async function openInvoiceDiag(ym){
     +'<div style="display:flex;align-items:center;gap:6px"><i class="ti ti-cloud"></i><b>この端末の同期状態</b></div>'
     +'<div style="margin-top:4px">自動同期: <b style="color:'+(_autoOn?'var(--green)':'var(--red)')+'">'+(_autoOn?'ON':'OFF')+'</b>'
     +(_autoOn?'':' <span style="color:var(--red)">← OFFの間に登録した分はクラウドへ送られていません。ONにして下の「クラウドへ復旧」を実行してください。</span>')+'</div>'
-    +'<div style="margin-top:2px">未送信キュー: <b style="color:'+(_ob>0?'var(--red)':'var(--green)')+'">'+_ob+'件</b></div></div>'
+    +'<div style="margin-top:2px">未送信キュー: <b style="color:'+(_ob>0?'var(--red)':'var(--green)')+'">'+_ob+'件</b></div>'
+    +(function(){
+        var mb='?', legacyN=0, parts=[];
+        try{ mb=(lsBytesTotal()/1024/1024).toFixed(1); }catch(e){}
+        try{ var lg=JSON.parse(localStorage.getItem('invoices')||'[]'); legacyN=Array.isArray(lg)?lg.length:0; }catch(e){}
+        try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i);
+          if(k && k.indexOf('spl_invoices_')===0){ var a=[]; try{ a=JSON.parse(localStorage.getItem(k)||'[]'); }catch(e){}
+            parts.push(k.replace('spl_invoices_','')+':'+(Array.isArray(a)?a.length:0)); } } }catch(e){}
+        var full=(parseFloat(mb)>=4.3);
+        return '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:5px;font-size:11.5px">'
+          +'<div>端末の保存使用量: <b style="color:'+(full?'var(--red)':'var(--muted)')+'">'+mb+'MB</b>'+(full?' <span style="color:var(--red)">← 上限間近。設定＞保存容量で整理してください</span>':'')+'</div>'
+          +'<div style="color:var(--muted);margin-top:2px">端末内の請求書: 旧キー '+legacyN+'件 / 店舗別 '+(parts.length?escapeHtml(parts.join('、')):'なし')+'</div></div>';
+      })()
+    +'</div>'
     +(okCloud?'':'<div class="alert alert-warning" style="margin:0 0 8px;padding:6px 10px;font-size:12px"><i class="ti ti-alert-triangle"></i> クラウド照会に失敗：'+escapeHtml(errMsg)+'</div>')
     +'<div class="card" style="margin:0 0 8px;padding:8px"><table style="width:100%;font-size:11.5px;border-collapse:collapse">'
     +'<thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:2px 6px">店舗</th><th style="text-align:right;padding:2px 6px">この端末</th><th style="text-align:right;padding:2px 6px">クラウド</th><th style="text-align:right;padding:2px 6px">差分</th></tr></thead>'
@@ -36534,7 +36609,8 @@ async function openInvoiceDiag(ym){
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">※ 各店の端末でこの診断を実行し「クラウドへ復旧」すると、過去に上書きで欠けた分も戻ります。</div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
     +'<button class="btn btn-secondary" onclick="pullInvoicesAll().then(function(n){ showToast(\'クラウドから取得しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-download"></i> 取得</button>'
-    +'<button class="btn btn-primary" onclick="pushInvoicesAll().then(function(n){ showToast(\'クラウドへ復旧しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-upload"></i> クラウドへ復旧</button></div>';
+    +'<button class="btn btn-primary" onclick="pushInvoicesAll().then(function(n){ showToast(\'クラウドへ復旧しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-upload"></i> クラウドへ復旧</button></div>'
+    +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();rebuildInvoicesFromCloud()"><i class="ti ti-refresh"></i> クラウドから過去分を復元（端末を再構築）</button>';
   openModal(html);
 }
 /* ===== v690: 仕入明細タブ（店舗別・日付別の納品明細＋Invoice画像） =====
@@ -37446,6 +37522,16 @@ async function saveInvoice() {
     reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', driveFileId:'', driveUrl:'', driveMoved:false, reviewThread:[]};
   invoices.push(_newInv);
   lsSet('invoices', invoices);
+  /* v693: lsSet は保存容量オーバーを握り潰して続行するため、保存できたかを必ず検証する。
+     （端末に保存されていないのに成功したように見える状態を防ぐ） */
+  try{
+    var _savedOk = (ls('invoices',[])||[]).some(function(x){ return x && x.id===_invIdPre; });
+    if(!_savedOk){
+      var _mb=(function(){ try{ return (lsBytesTotal()/1024/1024).toFixed(1); }catch(e){ return '?'; } })();
+      try{ showToast('端末に保存できませんでした（容量不足の可能性）','error'); }catch(e){}
+      alert('この端末に保存できませんでした。\n保存容量が上限に達している可能性があります（現在の使用量: '+_mb+'MB）。\n\nクラウドへは送信されている場合があります。\n設定＞保存容量で「キャッシュを整理」してから、Invoice管理の「突合診断」で件数をご確認ください。');
+    }
+  }catch(e){}
   // 経理へ通知（保存先＝Google Drive。経理レビューで確認）
   try{
     var _stN=(storeObj?storeObj.name:invStoreId);
