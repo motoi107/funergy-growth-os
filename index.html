@@ -4139,7 +4139,17 @@ function _splitRead(key, sp, rawMode){
   }
   var byId={}, order=[];
   (_lsRaw(key,[])||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); if(!byId[id]){byId[id]=[];order.push(id);} byId[id].push(r); });
-  try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){ var id=k.slice(pre.length); byId[id]=_lsRaw(k,[])||[]; if(order.indexOf(id)<0) order.push(id); } } }catch(e){}
+  /* v692: パーティションで「置換」すると、レガシーキー側(クラウドのlegacy行から取り込んだ分)が丸ごと消え、
+     この端末が保存した数件しか見えなくなっていた（=請求書が積み上がらない／突合診断で数件しか出ない）。
+     置換ではなく和集合にする（同一idはパーティション側を採用＝tombstoneも正しく効く）。 */
+  try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){
+    var id=k.slice(pre.length); var part=_lsRaw(k,[])||[]; if(!Array.isArray(part)) part=[];
+    var base=byId[id]||[]; var seen={}, merged=[];
+    var _mk=function(r){ return (r && r.id!=null) ? ('id:'+r.id) : ('j:'+JSON.stringify(r)); };
+    part.forEach(function(r){ seen[_mk(r)]=1; merged.push(r); });
+    base.forEach(function(r){ if(seen[_mk(r)]) return; merged.push(r); });
+    byId[id]=merged; if(order.indexOf(id)<0) order.push(id);
+  } } }catch(e){}
   var out=[]; order.forEach(function(id){ out=out.concat(byId[id]); });
   /* v679: 論理削除(tombstone)は読み取りから除外。rawMode時は素のまま返す（書き戻し用） */
   if(sp.readFilter && !rawMode){ try{ out=out.filter(sp.readFilter); }catch(e){} }
@@ -18669,7 +18679,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '691';
+const APP_VERSION = '692';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
