@@ -5520,12 +5520,27 @@ function opMergePush(key, localVal, table){
   _opMergeChain[key] = next;
   return next;
 }
+function _lsSetVerified(key, json){
+  try{ localStorage.setItem(key, json); }catch(e){ return false; }
+  try{ return localStorage.getItem(key)!=null; }catch(e){ return false; }
+}
 async function pullOpKey(key){
   try{
     var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
     if(!res.ok) return false;
     var rows=await res.json();
-    if(rows && rows.length){ var _cloud=rows[0].value; var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(key)||'null'); _out=_def.merge(_cloud, _loc); }catch(e){ _out=_cloud; } } try{ localStorage.setItem(key, JSON.stringify(_out)); }catch(e){} try{ if(_def&&_def.after) _def.after(); }catch(e){} return true; }
+    if(rows && rows.length){ var _cloud=rows[0].value; var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(key)||'null'); _out=_def.merge(_cloud, _loc); }catch(e){ _out=_cloud; } } var _json=JSON.stringify(_out);
+      /* v703: 従来は setItem を try/catch で握り潰し、保存できなくても true を返していた。
+         そのため容量不足の端末では「取得成功なのに端末に無い」状態になり、
+         スキル等がいつまでも反映されなかった。保存を検証し、ダメなら空けて再試行する。 */
+      if(!_lsSetVerified(key,_json)){
+        try{ _lsPrunableKeys().forEach(function(pk){ try{ localStorage.removeItem(pk); }catch(e){} }); }catch(e){}
+        if(!_lsSetVerified(key,_json)){
+          try{ window._pullSaveFailed=(window._pullSaveFailed||{}); window._pullSaveFailed[key]=Date.now(); }catch(e){}
+          return false;
+        }
+      }
+      try{ if(_def&&_def.after) _def.after(); }catch(e){} return true; }
   }catch(e){}
   return false;
 }
@@ -18803,7 +18818,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '702';
+const APP_VERSION = '705';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30140,13 +30155,35 @@ var SKILL_STORE_PREFIX = 'skills_st_';
 var LSS_EMP_PREFIX = 'lss_emp_';
 function legacySkillsV2(){ var v = ls('skills_v2', null); if (v) return v; return migrateSkillsV2(); }
 /* 1店舗ぶん {name:{position:{...}}}（per-store優先・レガシー補完） */
+/* v705: 端末の保存容量が一杯だと skills_st_<店舗> を保存できず、承認済みスキルが表示できなくなる。
+   表示に localStorage は必須ではないので、クラウドから取得した内容をメモリにも保持して使う。
+   （管理者の「従業員別」レーダーと同じ関数を通るので、本人側も同じ表示になる） */
+var _skMemCache = {};
 function getStoreSkillsMap(storeId){
   var out = {};
   var legacy = legacySkillsV2();
   Object.keys(legacy).forEach(function(name){ if (legacy[name] && legacy[name][storeId]) out[name] = Object.assign({}, legacy[name][storeId]); });
+  try{ var _mem=_skMemCache[storeId]; if(_mem) Object.keys(_mem).forEach(function(name){ out[name] = _mem[name]; }); }catch(e){}
   var per = ls(SKILL_STORE_PREFIX+storeId, null);
   if (per) Object.keys(per).forEach(function(name){ out[name] = per[name]; });
   return out;
+}
+/* クラウドから直接読んでメモリへ。保存できない端末でも表示できる。 */
+async function ensureSkillsForView(storeId, force){
+  if(!storeId || storeId==='ALL') return false;
+  if(!force && _skMemCache[storeId]) return true;
+  try{
+    var r=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=value&key=eq.'+encodeURIComponent(SKILL_STORE_PREFIX+storeId), { headers: supaHeaders() });
+    if(!r.ok) return false;
+    var j=await r.json();
+    var val=(Array.isArray(j)&&j[0])?j[0].value:null;
+    if(val && typeof val==='object'){
+      _skMemCache[storeId]=val;
+      try{ localStorage.setItem(SKILL_STORE_PREFIX+storeId, JSON.stringify(val)); }catch(e){}   /* 保存できればする。できなくても表示は続く */
+      return true;
+    }
+  }catch(e){}
+  return false;
 }
 function setStoreSkills(storeId, map){ lsSet(SKILL_STORE_PREFIX+storeId, map); }
 function getSkillsV2(){
@@ -34700,6 +34737,7 @@ async function openMySkillDiag(name, storeId){
     +row('ログイン名', esc(name))
     +row('参照している店舗', esc(storeId))
     +row('保存キー', esc(SKILL_STORE_PREFIX+storeId)+(rawKey?'':' <span style="color:var(--red)">（端末に無し）</span>'))
+    +row('端末の保存使用量', (function(){ try{ var mb=(lsBytesTotal()/1024/1024); return (mb>=4.3?'<b style="color:var(--red)">':'')+mb.toFixed(1)+'MB'+(mb>=4.3?'（上限間近＝保存できない可能性）</b>':''); }catch(e){ return '—'; } })())
     +row('端末の登録人数', localNames.length+'人')
     +row('この人の登録', meKey?'あり':(nearKey?('表記違いで一致：'+esc(nearKey)):'<span style="color:var(--red)">なし</span>'))
     +row('承認済み', '<b>'+apr.length+'</b>件'+(apr.length?('（'+esc(apr.join('、'))+'）'):''))
@@ -34711,21 +34749,75 @@ async function openMySkillDiag(name, storeId){
     +row('クラウドの承認済み', (cloudMine==null?'—':('<b>'+cloudMine+'</b>件'))) 
     +'</div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
-    +'<button class="btn btn-primary" onclick="skillDiagPull(\'' + String(storeId).replace(/'/g,"\\'") + '\')"><i class="ti ti-cloud-download"></i> クラウドから取得</button></div>');
+    +'<button class="btn btn-primary" onclick="skillDiagPull(&quot;'+storeId+'&quot;,&quot;'+name+'&quot;)"><i class="ti ti-cloud-download"></i> クラウドから取得</button></div>');
 }
-async function skillDiagPull(storeId){
+/* v704: 取得の成否を「実際に端末へ入ったか」で判定する。
+   以前は pullOpKey の結果を見ずに必ず「取得しました」と表示していたため、
+   保存できていなくても成功に見えていた。 */
+function _lsTopKeysHtml(n){
+  var arr=[];
+  try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); var v=localStorage.getItem(k)||''; arr.push({k:k,b:(k.length+v.length)*2}); } }catch(e){}
+  arr.sort(function(a,b){ return b.b-a.b; });
+  if(!arr.length) return '<div style="font-size:11px;color:var(--muted)">取得できません</div>';
+  return arr.slice(0,n||8).map(function(x){
+    var canFree=false; try{ canFree=lsIsPrunable(x.k); }catch(e){}
+    return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:1px 0">'
+      +'<span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:62%">'+escapeHtml(x.k)+'</span>'
+      +'<span>'+(x.b/1024).toFixed(0)+'KB'+(canFree?' <span style="color:var(--green)">整理可</span>':'')+'</span></div>';
+  }).join('');
+}
+function _skApprovedCount(name, storeId){
   try{
-    showToast('取得中…','info');
+    var m=getStoreSkillsMap(storeId)||{};
+    var key=Object.keys(m).find(function(n){ return n===name; }) || Object.keys(m).find(function(n){ return _skNameNorm(n)===_skNameNorm(name); });
+    if(!key) return 0;
+    var sk=m[key]||{};
+    return Object.keys(sk).filter(function(p){ return sk[p] && sk[p].status==='承認'; }).length;
+  }catch(e){ return 0; }
+}
+async function skillDiagPull(storeId, name){
+  name = name || (typeof myName==='function'?myName():(curUserName||''));
+  showToast('取得中…','info');
+  try{
+    /* v705: まずクラウドから直接読み込んでメモリへ（端末に保存できなくても表示できる） */
+    if(typeof ensureSkillsForView==='function') await ensureSkillsForView(storeId, true);
     if(typeof pullOpKey==='function'){
-      await pullOpKey(SKILL_STORE_PREFIX+storeId);
       try{ await pullOpKey('skills_v2'); }catch(e){}
       try{ await pullOpKey('skills'); }catch(e){}
     }
-    try{ _skillStorePulled[storeId]=false; }catch(e){}
+  }catch(e){}
+  try{ _skillStorePulled[storeId]=false; }catch(e){}
+
+  /* 実際に端末へ入ったかを読み直して確認 */
+  var raw=null; try{ raw=localStorage.getItem(SKILL_STORE_PREFIX+storeId); }catch(e){}
+  var after=_skApprovedCount(name, storeId);
+  if(raw && after>0){
     closeModalDirect();
-    showToast('取得しました','success');
+    showToast('反映しました（承認済み '+after+'件）','success');
     try{ renderPage(curPage); }catch(e){}
-  }catch(e){ showToast('取得に失敗しました','warning'); }
+    return;
+  }
+  var mb='?'; try{ mb=(lsBytesTotal()/1024/1024).toFixed(1); }catch(e){}
+  var savedButNoMe = !!raw;
+  openModal('<div class="modal-title"><i class="ti ti-alert-triangle"></i> 反映できませんでした <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="alert alert-warning" style="margin:0 0 8px"><div>'
+    +'<p style="font-size:13px;font-weight:700">'+(savedButNoMe
+        ? '取得はできましたが、この人の承認済みスキルが含まれていません'
+        : '端末に保存できませんでした')+'</p>'
+    +'<p style="font-size:12px;margin-top:3px">'+(savedButNoMe
+        ? '名前の表記違い、または承認が別店舗で登録されている可能性があります。診断の「この人の登録」欄をご確認ください。'
+        : '保存容量が上限に達している可能性があります（使用量 '+mb+'MB）。下の内訳で大きいものを整理してください。')+'</p></div></div>'
+    +(savedButNoMe?'':'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">保存容量の内訳（上位）</div>'
+        +_lsTopKeysHtml(8)
+        +'<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="freeCacheAndRetrySkill(&quot;'+storeId+'&quot;,&quot;'+name+'&quot;)"><i class="ti ti-trash"></i> 再取得できるキャッシュを削除して再試行</button></div>')
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
+}
+async function freeCacheAndRetrySkill(storeId, name){
+  var freed=0;
+  try{ _lsPrunableKeys().forEach(function(k){ try{ var v=localStorage.getItem(k)||''; freed+=(k.length+v.length)*2; localStorage.removeItem(k); }catch(e){} }); }catch(e){}
+  showToast('キャッシュを '+(freed/1024/1024).toFixed(1)+'MB 削除しました','info');
+  closeModalDirect();
+  await skillDiagPull(storeId, name);
 }
 function mySkillCardHtml(name, storeId){
   try{
@@ -34785,6 +34877,14 @@ function renderMypage() {
   var meEmp = getEmployees().find(e=>e.name===me);
   if (meEmp && meEmp.store && meEmp.store!=='ALL') { storeId = meEmp.store; store = STORES.find(s=>s.id===storeId)||store; }
   try{ if(typeof maybePullSkillStore==='function') maybePullSkillStore(storeId); }catch(e){}
+  /* v705: 端末に保存できない場合でも表示できるよう、クラウドから直接読み込む（保存には依存しない） */
+  try{
+    if(typeof ensureSkillsForView==='function' && !_skMemCache[storeId]){
+      var _needSk=true;
+      try{ _needSk = !(localStorage.getItem(SKILL_STORE_PREFIX+storeId)); }catch(e){}
+      if(_needSk) ensureSkillsForView(storeId).then(function(ok){ if(ok && (curPage==='mypage'||curPage==='skill')) renderPage(curPage); });
+    }
+  }catch(e){}
 
   // 成長レベル（承認スキルから簡易算出）— Crew用
   var heroLevel = '', heroNext = '', heroPct = 0;
@@ -42117,6 +42217,7 @@ function maybePullAllSkillStores(){
 }
 function maybePullSkillStore(storeId){
   if(!storeId || storeId==='ALL' || _skillStorePulled[storeId]) return;
+  /* v703: 取得に失敗した場合は再試行できるようにする（従来は失敗しても済み扱いで、その回のセッション中は二度と取りに行かなかった） */
   _skillStorePulled[storeId]=true;
   if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return;
   try{
@@ -42125,7 +42226,8 @@ function maybePullSkillStore(storeId){
       pullOpKey(SKILL_STORE_PREFIX+storeId),
       pullOpKey('skills_v2'),
       pullOpKey('skills')
-    ]).then(function(){ if(curPage==='skill'||curPage==='mypage') renderPage(curPage); });
+    ]).then(function(_r){ try{ if(!(_r&&_r[0])) _skillStorePulled[storeId]=false; }catch(e){}
+      if(curPage==='skill'||curPage==='mypage') renderPage(curPage); });
   }catch(e){}
 }
 function tSkStatus(st){ if(curLang!=='en') return st; var m={'未取得':'Not started','承認':'Approved','申請中':'Pending','確認中':'In review','差戻し':'Returned'}; return m[st]||st; }
@@ -42136,6 +42238,7 @@ function renderSkillSelf() {
   var storeId = emp ? emp.store : (curStore==='ALL'?STORES[0].id:curStore);
   if (storeId==='ALL') storeId = STORES[0].id;
   maybePullSkillStore(storeId);
+  try{ if(typeof ensureSkillsForView==='function' && !_skMemCache[storeId]) ensureSkillsForView(storeId).then(function(ok){ if(ok && curPage==='skill') renderPage('skill'); }); }catch(e){}
   var positions = getStorePositions(storeId);
   var sk = getEmpSkillsStore(me, storeId);
   var reqs = getSkillRequests().filter(r=>r.name===me);
