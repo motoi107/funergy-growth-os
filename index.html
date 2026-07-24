@@ -12429,6 +12429,27 @@ function daysOfYm(ym){
     ① 取得対象は business_month（＝その月の1日〜月末）。当月は月途中まで。
     ② レシピに toastGuid が未登録／storeId 不一致の商品は捨てられる（＝集計に出ない）
     ③ 同一商品が複数行（日別など）で返る場合、現行コードは合計せず上書きしていた */
+/* v699: 出数が実績客数に対して少ない場合の再取り込み（Toastから31日分を取り直す） */
+async function resyncItemSales31(storeId){
+  if(['ceo','gm','office'].indexOf(curRole)<0){ showToast('この操作はGM・経理・CEOのみです','warning'); return; }
+  var st=(getStoresAll().find(function(x){return x.id===storeId;})||{});
+  if(!st.toastGuid){ showToast('Toast GUIDが未設定です','warning'); return; }
+  showToast('Toastから31日分を取得中…（30〜60秒）','info');
+  var ok=false, msg='';
+  try{
+    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
+      body: JSON.stringify({ mode:'cronSync', days:31, restaurantGuid:st.toastGuid }) });
+    var j=await res.json();
+    if(j && j.ok){ ok=true; var r0=(j.results&&j.results[0])||{}; msg=(r0.daysOk||0)+'日 取込'+((r0.daysFail)?(' / 失敗'+r0.daysFail+'日'):''); }
+    else msg=(JSON.stringify(j)||'').slice(0,140);
+  }catch(e){ msg=String(e).slice(0,140); }
+  if(ok){
+    try{ await syncMenuFromToast(storeId, st.toastGuid, (typeof getPeriod==='function'?getPeriod():'')); }catch(e){}
+    try{ await loadMenuMixFromDB(storeId, st.toastGuid, (typeof curYm==='function'?curYm():'')); }catch(e){}
+  }
+  showToast(ok?('再取り込み完了 — '+msg):('再取り込み失敗: '+msg), ok?'success':'warning');
+  try{ renderPage(curPage); }catch(e){}
+}
 async function openMenuMixDiag(storeId, period){
   storeId = storeId || (curStore!=='ALL'?curStore:(STORES[0]||{}).id);
   period  = period  || (typeof getPeriod==='function'?getPeriod():'');
@@ -12492,6 +12513,18 @@ async function openMenuMixDiag(storeId, period){
     +'<div><div style="font-size:10px;color:var(--muted)">商品数</div><div style="font-size:20px;font-weight:800">'+itemKeys.length+'</div></div>'
     +'<div><div style="font-size:10px;color:var(--muted)">出数合計</div><div style="font-size:20px;font-weight:800">'+totalQty+'</div></div>'
     +'</div></div>'
+    +(function(){
+        var g=0; try{ var _st=monthStats(storeId, 0); g=Number(_st&&_st.guests)||0; }catch(e){}
+        if(!g) return '';
+        var ratio=g?(totalQty/g):0;
+        var bad=(ratio<1);
+        return '<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">実績との突き合わせ</div>'
+          +'<div style="font-size:12.5px">同月の客数/丼数: <b>'+Math.round(g).toLocaleString()+'</b> ／ 出数合計: <b>'+totalQty.toLocaleString()+'</b></div>'
+          +'<div style="font-size:12.5px;margin-top:2px">1客あたり出数: <b style="color:'+(bad?'var(--red)':'var(--green)')+'">'+ratio.toFixed(2)+'</b></div>'
+          +(bad?'<div style="font-size:11.5px;color:var(--red);margin-top:4px">1客あたり1品を下回っています＝<b>取り込み不足の可能性が高い</b>です。下の「31日分を再取り込み」を実行してください。</div>'
+               :'<div style="font-size:11px;color:var(--muted);margin-top:3px">妥当な範囲です。</div>')
+          +'</div>';
+      })()
     +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">レシピ照合</div>'
     +'<div style="font-size:12.5px">画面に出る（レシピ登録済み）: <b style="color:var(--green)">'+matched.length+'品 / 出数 '+matchedQty+'</b></div>'
     +'<div style="font-size:12.5px;margin-top:2px">出ない（未登録・店舗不一致）: <b style="color:'+(unmatched.length?'var(--red)':'var(--muted)')+'">'+unmatched.length+'品 / 出数 '+lostQty+'</b></div>'
@@ -12502,7 +12535,8 @@ async function openMenuMixDiag(storeId, period){
         +'<p style="font-size:13px;font-weight:700">同一商品が複数行で返っています（'+dupItems.length+'品）</p>'
         +'<p style="font-size:12px;margin-top:2px">日別などで分かれています。v698で合計して取り込むよう修正済みです（以前は最後の1行だけが反映され、出数が少なく出ていました）。</p></div></div>'):'')
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
-    +'<button class="btn btn-primary" onclick="closeModalDirect();syncCenterMenuAll()"><i class="ti ti-refresh"></i> 取り込み直す</button></div>');
+    +'<button class="btn btn-primary" onclick="closeModalDirect();syncCenterMenuAll()"><i class="ti ti-refresh"></i> 取り込み直す</button></div>'
+    +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();resyncItemSales31(\''+storeId+'\')"><i class="ti ti-cloud-download"></i> 31日分を再取り込み（Toastから取り直す）</button>');
 }
 async function loadMenuMixFromDB(storeId, guid, ym){
   if (!guid) return;
@@ -18773,7 +18807,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '698';
+const APP_VERSION = '699';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
