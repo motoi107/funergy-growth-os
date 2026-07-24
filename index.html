@@ -1656,6 +1656,7 @@ const NAV_ITEMS = [
   {id:'foodcost',    label:'原価率(FC)',   icon:'ti-receipt',          roles:['ceo','gm','office','am','sl']},
   {id:'menu',        label:'メニュー',    icon:'ti-tools-kitchen-2',  roles:['ceo','gm','office','am','sl']},
   {id:'recipe',      label:'原価登録',    icon:'ti-receipt-2',        roles:['ceo','gm','office','am','sl']},
+  {id:'purchase_detail', label:'仕入明細',    icon:'ti-truck-delivery',   roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'invoice',     label:'Invoice管理',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office','office_crew']},
   {id:'office_mgr',  label:'Office管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office','office_crew']},
@@ -1714,7 +1715,7 @@ const MENU_GROUPS = [
   {id:'g_growth', label:'育成・評価', icon:'ti-school', roles:['ceo','gm','office','am','sl'],
     children:['skill','ojt_admin','growth_mgr','leadership','growthhub']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
-    children:['menu','recipe','ingredient_master','ing_transfer','vendor_master','inventory','order','supply_order','invoice','acct_review']},
+    children:['menu','recipe','ingredient_master','ing_transfer','vendor_master','inventory','order','supply_order','purchase_detail','invoice','acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','required','settings']},
 ];
@@ -7086,6 +7087,7 @@ function renderPage(page) {
     case 'menu':         el.innerHTML = renderMenu(); break;
     case 'recipe':       el.innerHTML = renderRecipe(); break;
     case 'costsheet':    el.innerHTML = renderCostSheet(); break;
+    case 'purchase_detail': el.innerHTML = renderPurchaseDetail(); break;
     case 'invoice':      el.innerHTML = renderInvoice(); break;
     case 'crew_handbook': el.innerHTML = renderHandbook(); break;
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
@@ -10720,7 +10722,7 @@ var PAGE_SYNC_SCOPE = {
   tasks:'tasks', biz_guide:'tasks',
   staff_master:'hr', hiring:'hr', onboarding:'hr', tip:'hr', hr:'hr', vacation:'hr', mileage:'hr', expense:'hr', attendance:'hr', crew_handbook:'hr',
   skill:'growth', ojt_admin:'growth', growth_mgr:'growth', leadership:'growth', growthhub:'growth', tiprate:'growth',
-  menu:'food', recipe:'food', ingredient_master:'food', ing_transfer:'food', vendor_master:'food', inventory:'food', order:'food', supply_order:'food', invoice:'food', acct_review:'food',
+  menu:'food', recipe:'food', ingredient_master:'food', ing_transfer:'food', vendor_master:'food', inventory:'food', order:'food', supply_order:'food', purchase_detail:'food', invoice:'food', acct_review:'food',
   store_master:'settings', required:'settings', settings:'settings'
 };  /* shift_admin は専用バー(availDiag)を持つため意図的に除外 */
 function pageSyncScope(page){ return PAGE_SYNC_SCOPE[page] || null; }
@@ -18667,7 +18669,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '689';
+const APP_VERSION = '690';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -36517,6 +36519,146 @@ async function openInvoiceDiag(ym){
     +'<button class="btn btn-secondary" onclick="pullInvoicesAll().then(function(n){ showToast(\'クラウドから取得しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-download"></i> 取得</button>'
     +'<button class="btn btn-primary" onclick="pushInvoicesAll().then(function(n){ showToast(\'クラウドへ復旧しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-upload"></i> クラウドへ復旧</button></div>';
   openModal(html);
+}
+/* ===== v690: 仕入明細タブ（店舗別・日付別の納品明細＋Invoice画像） =====
+   どの業者から・いつ・何が納品されたかを日付順に確認する。過去分も全て対象（invoices全件）。 */
+var _pdMonthOff = 0;      /* 0=今月, -1=先月 … */
+var _pdStore = null;
+var _pdVendor = '';
+var _pdType = 'all';      /* all | invoice | receipt */
+var _pdOpen = {};         /* 日付ごとの開閉 */
+function pdYm(){
+  var d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+_pdMonthOff);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function pdNavMonth(n){ _pdMonthOff+=n; if(_pdMonthOff>0) _pdMonthOff=0; _pdOpen={}; renderPage('purchase_detail'); }
+function pdSetStore(id){ _pdStore=id; _pdOpen={}; renderPage('purchase_detail'); }
+function pdSetVendor(v){ _pdVendor=v||''; _pdOpen={}; renderPage('purchase_detail'); }
+function pdSetType(t){ _pdType=t; _pdOpen={}; renderPage('purchase_detail'); }
+function pdToggle(k){ _pdOpen[k]=!_pdOpen[k]; renderPage('purchase_detail'); }
+/* 対象期間・店舗・業者で絞った伝票（日付降順） */
+function pdRows(storeId, ym){
+  var out=[];
+  (ls('invoices',[])||[]).forEach(function(v){
+    if(!v || v.docType==='Reimburse') return;
+    if(_pdType==='invoice' && v.docType==='Receipt') return;
+    if(_pdType==='receipt' && v.docType!=='Receipt') return;
+    var d=(typeof _invDate==='function')?_invDate(v):null; if(!d) return;
+    if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
+    var sids=(typeof _invStoreIds==='function')?_invStoreIds(v):[v.storeId];
+    if(storeId && storeId!=='ALL' && sids.indexOf(storeId)<0) return;
+    if(_pdVendor && (v.vendor||'')!==_pdVendor) return;
+    var share=(Number(v.total)||0)/(sids.length||1);
+    out.push({v:v, d:d, sids:sids, amount:(storeId&&storeId!=='ALL')?share:(Number(v.total)||0),
+      iso:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')});
+  });
+  out.sort(function(a,b){ return b.d-a.d || String(a.v.vendor||'').localeCompare(String(b.v.vendor||'')); });
+  return out;
+}
+function renderPurchaseDetail(){
+  var stores=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
+  if(!_pdStore) _pdStore=(curStore && curStore!=='ALL')?curStore:'ALL';
+  var ym=pdYm();
+  var rows=pdRows(_pdStore, ym);
+  var m=function(n){ return '$'+(Number(n)||0).toFixed(2); };
+  var total=rows.reduce(function(a,r){ return a+r.amount; },0);
+
+  /* 業者候補（当月・当店） */
+  var vend={}; pdRows(_pdStore, ym).forEach(function(r){ if(r.v.vendor) vend[r.v.vendor]=(vend[r.v.vendor]||0)+r.amount; });
+  var vendList=Object.keys(vend).sort(function(a,b){ return vend[b]-vend[a]; });
+
+  var html='<div class="section-header"><div><div class="section-title"><i class="ti ti-truck-delivery" style="color:var(--accent)"></i> '+t('仕入明細','Purchase details')+'</div>'
+    +'<div class="section-sub">'+t('店舗ごとに、どの業者からいつ何が納品されたかを確認','Deliveries by store, vendor and date')+'</div></div></div>';
+
+  /* 月ナビ */
+  html+='<div class="card" style="padding:8px 10px;display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="pdNavMonth(-1)"><i class="ti ti-chevron-left"></i></button>'
+    +'<div style="flex:1;text-align:center;font-weight:700;font-size:14px">'+ym.split('-')[0]+'年'+parseInt(ym.split('-')[1],10)+'月</div>'
+    +'<button class="btn btn-secondary btn-sm" '+(_pdMonthOff>=0?'disabled style="opacity:.4"':'')+' onclick="pdNavMonth(1)"><i class="ti ti-chevron-right"></i></button>'
+    +(_pdMonthOff<0?'<button class="btn btn-secondary btn-sm" onclick="_pdMonthOff=0;renderPage(\'purchase_detail\')">'+t('今月','This')+'</button>':'')
+    +'</div>';
+
+  /* 店舗チップ */
+  html+='<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:6px">'
+    +'<button class="btn '+(_pdStore==='ALL'?'btn-primary':'btn-secondary')+' btn-sm" onclick="pdSetStore(\'ALL\')">'+t('全店','All')+'</button>'
+    +stores.map(function(s){ return '<button class="btn '+(_pdStore===s.id?'btn-primary':'btn-secondary')+' btn-sm" style="white-space:nowrap" onclick="pdSetStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</button>'; }).join('')
+    +'</div>';
+
+  /* 種別・業者フィルタ */
+  html+='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
+    +['all','invoice','receipt'].map(function(k){
+      var lb=k==='all'?t('すべて','All'):(k==='invoice'?'業者Invoice':t('買い出し','Receipt'));
+      return '<button class="btn '+(_pdType===k?'btn-primary':'btn-secondary')+' btn-sm" onclick="pdSetType(\''+k+'\')">'+lb+'</button>';
+    }).join('')
+    +'<select class="form-select" style="margin-left:auto;width:auto;min-width:140px;padding:5px 8px;font-size:12px" onchange="pdSetVendor(this.value)">'
+    +'<option value="">'+t('業者すべて','All vendors')+'</option>'
+    +vendList.map(function(v){ return '<option value="'+escapeHtml(v)+'"'+(_pdVendor===v?' selected':'')+'>'+escapeHtml(v)+'</option>'; }).join('')
+    +'</select></div>';
+
+  /* サマリー */
+  html+='<div class="card" style="margin-bottom:8px;display:flex;gap:16px;align-items:center">'
+    +'<div><div style="font-size:10px;color:var(--muted)">'+t('件数','Documents')+'</div><div style="font-size:20px;font-weight:800">'+rows.length+'</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">'+t('合計','Total')+'</div><div style="font-size:20px;font-weight:800">'+m(total)+'</div></div>'
+    +'<div style="margin-left:auto;font-size:10.5px;color:var(--muted);text-align:right">'+t('複数店舗の伝票は按分後の金額','Split docs show allocated amount')+'</div></div>';
+
+  if(!rows.length){
+    html+='<div class="card"><p style="font-size:13px;color:var(--muted)">'+t('この条件の仕入はありません。','No purchases for this filter.')+'</p>'
+      +'<p style="font-size:11px;color:var(--muted);margin-top:4px">'+t('他端末で登録した分は上部の「同期」で取得できます。','Use Sync above to fetch other devices.')+'</p></div>';
+    return html;
+  }
+
+  /* 日付ごとにグループ化 */
+  var byDate={}, order=[];
+  rows.forEach(function(r){ if(!byDate[r.iso]){ byDate[r.iso]=[]; order.push(r.iso); } byDate[r.iso].push(r); });
+
+  order.forEach(function(iso){
+    var list=byDate[iso];
+    var dsum=list.reduce(function(a,r){ return a+r.amount; },0);
+    var dt=new Date(iso+'T00:00:00');
+    var wd=['日','月','火','水','木','金','土'][dt.getDay()];
+    var open=_pdOpen[iso]!==false;   /* 既定で開く */
+    html+='<div class="card" style="margin-bottom:8px;padding:0;overflow:hidden">'
+      +'<div style="display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--bg2,rgba(0,0,0,.03));cursor:pointer" onclick="pdToggle(\''+iso+'\')">'
+      +'<div style="font-size:14px;font-weight:800">'+(dt.getMonth()+1)+'/'+dt.getDate()+'<span style="font-size:11px;font-weight:600;color:var(--muted)">('+wd+')</span></div>'
+      +'<div style="font-size:11px;color:var(--muted)">'+list.length+t('件','')+'</div>'
+      +'<div style="margin-left:auto;font-size:14px;font-weight:800">'+m(dsum)+'</div>'
+      +'<i class="ti ti-chevron-'+(open?'up':'down')+'" style="color:var(--muted)"></i></div>';
+    if(open){
+      list.forEach(function(r){
+        var v=r.v;
+        var isRcpt=(v.docType==='Receipt');
+        var snames=r.sids.map(function(id){ return ((STORES.find(function(s){return s.id===id;})||{}).name)||id; });
+        var lines=Array.isArray(v.lines)?v.lines:[];
+        html+='<div style="border-top:1px solid var(--border);padding:9px 12px">'
+          +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+          +'<span style="font-size:13px;font-weight:700">'+escapeHtml(v.vendor||t('業者未設定','No vendor'))+'</span>'
+          +(isRcpt?'<span class="tag tag-blue" style="font-size:10px">'+t('買い出し','Receipt')+'</span>':'')
+          +(v.purpose?'<span class="tag tag-gray" style="font-size:10px">'+escapeHtml(v.purpose)+'</span>':'')
+          +(r.sids.length>1?'<span class="tag tag-yellow" style="font-size:10px">'+t('按分','Split')+' '+r.sids.length+'</span>':'')
+          +'<span style="margin-left:auto;font-size:14px;font-weight:800">'+m(r.amount)+'</span></div>'
+          +'<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+escapeHtml(snames.join('・'))
+          +(v.docDate?(' · '+t('伝票日付','Doc date')+' '+escapeHtml(v.docDate)):'')
+          +(v.byUser?(' · '+t('登録','By')+' '+escapeHtml(v.byUser)):'')+'</div>';
+        if(lines.length){
+          html+='<table style="width:100%;font-size:11.5px;border-collapse:collapse;margin-top:6px"><tbody>'
+            +lines.map(function(l){
+              var lt=(l.lineTotal!=null)?l.lineTotal:((Number(l.newPrice)||0)*(Number(l.qty)||0));
+              return '<tr><td style="padding:2px 0;color:var(--tm)">'+escapeHtml(l.name||'')+'</td>'
+                +'<td style="padding:2px 6px;text-align:right;color:var(--muted);white-space:nowrap">'+(l.qty!=null?('×'+l.qty):'')+'</td>'
+                +'<td style="padding:2px 0;text-align:right;white-space:nowrap">'+m(lt)+'</td></tr>';
+            }).join('')+'</tbody></table>';
+        } else {
+          html+='<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('品目明細なし','No line items')+'</div>';
+        }
+        html+='<div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">'
+          +(v.imagePath?'<button class="btn btn-secondary btn-sm" onclick="viewInvoiceImage(\''+String(v.imagePath).replace(/'/g,"\\'")+'\')"><i class="ti ti-photo"></i> '+t('画像を見る','View image')+'</button>':'<span style="font-size:10.5px;color:var(--muted);align-self:center"><i class="ti ti-photo-off"></i> '+t('画像なし','No image')+'</span>')
+          +(v.driveUrl?'<button class="btn btn-secondary btn-sm" onclick="window.open(\''+String(v.driveUrl).replace(/'/g,"\\'")+'\',\'_blank\')"><i class="ti ti-brand-google-drive"></i> Drive</button>':'')
+          +'</div></div>';
+      });
+    }
+    html+='</div>';
+  });
+  return html;
 }
 function renderInvoice() {
   ensureIngV2Backfill();
