@@ -18807,7 +18807,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '699';
+const APP_VERSION = '700';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -36620,6 +36620,106 @@ async function pushInvoicesAll(){
    「<店舗>/<YYYY-MM>/inv_<時刻>.jpg」で保存され、その後 Google Drive へ転送される。
    端末やクラウドの「記録(明細)」が失われても、画像は残っているので一覧して確認・再登録できる。
    ※ Drive 側の一覧は drive-sync に list アクションが無いため未対応（同じ画像がStorageにある）。 */
+/* ===== v700: 未登録の伝票画像を一括OCR復旧（今月分） =====
+   v696の自動削除で消えた明細を、Storageに残る画像から再生成する。
+   既存の invoice_ocr / matchLineBest / _invStoreIds と同じ経路を使い、
+   1枚ずつOCR→invoiceレコード化→lsSet('invoices')。画像パスで重複登録を防ぐ。 */
+var _bulkOcrAbort=false;
+function _ocrLineNorm(l){
+  var r=(typeof matchLineBest==='function')?matchLineBest(l.name):{score:0,ing:null};
+  var ing=(r.score>=(typeof INV_MATCH_AUTO!=='undefined'?INV_MATCH_AUTO:0.92))?r.ing:null;
+  var _qty=(parseFloat(l.qty)||1);
+  var _ltotRaw=(l.lineTotal!=null)?(parseFloat(l.lineTotal)||0):null;
+  var _unit=(parseFloat(l.unitPrice)||0);
+  if(_qty>0 && _ltotRaw!=null && (!(_unit>0) || (_qty>1 && Math.abs(_unit-_ltotRaw)<0.01))) _unit=Math.round((_ltotRaw/_qty)*10000)/10000;
+  var _ltot=(_ltotRaw!=null)?_ltotRaw:(_unit*_qty);
+  return { code:ing?ing.code:null, name:(l.name||'(不明)'), rawName:(l.name||''),
+           oldPrice:ing?ing.price:null, newPrice:_unit, qty:_qty, lineTotal:_ltot, mismatch:!!l.mismatch };
+}
+async function bulkOcrRecover(ym){
+  ym = ym || (typeof curYm==='function'?curYm():'');
+  if(['ceo','gm','office','office_crew'].indexOf(curRole)<0){ showToast('この操作は権限がありません','warning'); return; }
+  _bulkOcrAbort=false;
+  var stores=(typeof getVisibleStores==='function')?getVisibleStores():(typeof STORES!=='undefined'?STORES:[]);
+  /* 既存記録の imagePath 集合（重複登録防止） */
+  var known={}; try{ (ls('invoices',[])||[]).forEach(function(v){ if(v&&v.imagePath) known[String(v.imagePath)]=1; }); }catch(e){}
+  /* 対象画像を収集 */
+  var targets=[];
+  for(var i=0;i<stores.length;i++){
+    var s=stores[i]; var prefix=saniStore(s.name)+'/'+ym+'/';
+    try{
+      var r=await fetch(SUPABASE_URL+'/storage/v1/object/list/invoices', { method:'POST',
+        headers: Object.assign({'Content-Type':'application/json'}, supaHeaders()),
+        body: JSON.stringify({ prefix:prefix, limit:500, offset:0, sortBy:{column:'name',order:'asc'} }) });
+      if(r.ok){ var j=await r.json(); if(Array.isArray(j)) j.forEach(function(it){ var path=prefix+it.name; if(!known[path]) targets.push({store:s, path:path, name:it.name}); }); }
+    }catch(e){}
+  }
+  if(!targets.length){ showToast('復旧対象の未登録画像はありませんでした','info'); return; }
+
+  var done=0, ok=0, fail=0, failList=[];
+  var render=function(cur){
+    var pct=Math.round(done/targets.length*100);
+    openModal('<div class="modal-title">画像から一括復旧（'+escapeHtml(ym)+'） <button class="modal-close" onclick="_bulkOcrAbort=true;closeModalDirect()">×</button></div>'
+      +'<div style="font-size:13px;margin-bottom:6px">対象 '+targets.length+' 枚 / 完了 '+done+'（成功 '+ok+' · 失敗 '+fail+'）</div>'
+      +'<div style="height:10px;background:var(--border);border-radius:6px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:var(--accent);transition:width .2s"></div></div>'
+      +(cur?'<div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-loader"></i> '+escapeHtml(cur)+'</div>':'')
+      +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="_bulkOcrAbort=true">中断</button></div>');
+  };
+  render(targets[0].store.name+' / '+targets[0].name);
+
+  for(var k=0;k<targets.length;k++){
+    if(_bulkOcrAbort) break;
+    var tg=targets[k];
+    render(tg.store.name+' / '+tg.name);
+    try{
+      /* 署名URLで画像取得 → base64化 → OCR */
+      var sg=await fetch(SUPABASE_URL+'/storage/v1/object/sign/invoices/'+encodeURI(tg.path), { method:'POST', headers:supaHeaders(), body:JSON.stringify({expiresIn:600}) });
+      if(!sg.ok) throw new Error('sign HTTP '+sg.status);
+      var sj=await sg.json(); var url=SUPABASE_URL+'/storage/v1'+(sj.signedURL||sj.signedUrl||'');
+      var imgRes=await fetch(url); if(!imgRes.ok) throw new Error('img HTTP '+imgRes.status);
+      var blob=await imgRes.blob();
+      var b64=await new Promise(function(res,rej){ var fr=new FileReader(); fr.onload=function(){ res(String(fr.result).split(',')[1]); }; fr.onerror=rej; fr.readAsDataURL(blob); });
+      var hint=(typeof getIngredients==='function')?getIngredients().slice(0,200).map(function(x){return x.name;}).join(', '):'';
+      var res=await fetch(SUPABASE_URL+'/functions/v1/invoice_ocr', { method:'POST', headers:supaHeaders(),
+        body: JSON.stringify({ image:b64, mediaType:(blob.type||'image/jpeg'), hint:hint }) });
+      if(!res.ok) throw new Error('ocr HTTP '+res.status);
+      var data=await res.json();
+      if(data && (data.blurry===true || data.readable===false || String(data.quality||'').toLowerCase()==='unreadable')) throw new Error('unreadable');
+
+      var ols=((data&&data.lines)||[]).map(_ocrLineNorm);
+      var total=(data && data.invoiceTotal!=null)?(Number(data.invoiceTotal)||0):ols.reduce(function(a,l){return a+(l.lineTotal||0);},0);
+      /* 伝票日付：OCRのdate優先→無ければファイル名のinv_<epoch>→当日 */
+      var docDate='';
+      var dn=(data&&data.date)?String(data.date):''; var m;
+      if((m=dn.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/))) docDate=m[1]+'/'+String(m[2]).padStart(2,'0')+'/'+String(m[3]).padStart(2,'0');
+      else if((m=dn.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/))) docDate=m[3]+'/'+String(m[1]).padStart(2,'0')+'/'+String(m[2]).padStart(2,'0');
+      var fnEpoch=(tg.name.match(/inv_(\d{10,})/)||[])[1];
+      if(!docDate && fnEpoch){ var fd=new Date(Number(fnEpoch)); if(!isNaN(fd)) docDate=fd.getFullYear()+'/'+String(fd.getMonth()+1).padStart(2,'0')+'/'+String(fd.getDate()).padStart(2,'0'); }
+
+      var vendorRaw=(data&&data.vendor)?String(data.vendor):'';
+      var vm=(vendorRaw && typeof matchVendorBest==='function')?matchVendorBest(vendorRaw):null;
+      var vendor=(vm && vm.score>=0.8)?vm.vendor.name:(vendorRaw||'（要確認）');
+
+      var rec={ id:'inv'+Date.now()+'_'+k, vendor:vendor, storeId:tg.store.id, docType:'Invoice',
+        date:(typeof todayJP==='function'?todayJP():''), docDate:docDate, lines:ols, total:total,
+        imagePath:tg.path, recovered:true, ocrAuto:true, needsReview:true,
+        by:(typeof ROLE_CONFIG!=='undefined'&&ROLE_CONFIG[curRole]?ROLE_CONFIG[curRole].name:'') };
+      var arr=ls('invoices',[])||[]; arr.push(rec); lsSet('invoices', arr);
+      /* 保存検証（容量オーバー等の握り潰し対策） */
+      var saved=(ls('invoices',[])||[]).some(function(x){return x&&x.id===rec.id;});
+      if(!saved) throw new Error('save_failed(容量?)');
+      known[tg.path]=1; ok++;
+    }catch(e){ fail++; failList.push(tg.store.name+'/'+tg.name+'：'+String((e&&e.message)||e)); }
+    done++;
+  }
+
+  openModal('<div class="modal-title"><i class="ti ti-checkbox"></i> 一括復旧が完了しました <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:14px;font-weight:800">成功 '+ok+' 件 / 失敗 '+fail+' 件'+(_bulkOcrAbort?'（中断）':'')+'</div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-top:3px">復旧した伝票は「要確認」です。金額・日付・業者をInvoice管理で確認してください。</div></div>'
+    +(failList.length?('<div class="card" style="margin:0 0 8px;max-height:180px;overflow:auto"><div style="font-size:12px;font-weight:700;margin-bottom:3px">失敗一覧</div>'
+       +failList.slice(0,40).map(function(x){return '<div style="font-size:10.5px;color:var(--muted)">・'+escapeHtml(x)+'</div>';}).join('')+'</div>'):'')
+    +'<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect();renderPage(\'invoice\')">Invoice管理で確認</button></div>');
+}
 async function openStorageImages(ym){
   ym = ym || (typeof curYm==='function'?curYm():'');
   try{ showToast('保存済み画像を照会中…','info'); }catch(e){}
@@ -36669,7 +36769,9 @@ async function openStorageImages(ym){
     +(errs.length?('<div class="alert alert-warning" style="margin:0 0 8px;padding:6px 10px;font-size:11.5px"><i class="ti ti-alert-triangle"></i> 一部照会できませんでした: '+escapeHtml(errs.join(' / '))+'</div>'):'')
     +(totalMissing?('<div class="alert alert-warning" style="margin:0 0 8px"><i class="ti ti-file-alert"></i><div>'
         +'<p style="font-size:13px;font-weight:700">記録が無い画像が '+totalMissing+' 枚あります</p>'
-        +'<p style="font-size:12px;margin-top:2px">画像は残っているので内容を確認できます。金額を反映するには、画像を見ながらInvoice登録し直してください。</p></div></div>'):'')
+        +'<p style="font-size:12px;margin-top:2px">画像は残っているので内容を確認できます。下のボタンで画像からOCR自動登録できます（要確認扱い）。</p>'
+        +(['ceo','gm','office','office_crew'].indexOf(curRole)>=0?'<button class="btn btn-primary btn-sm" style="margin-top:6px" onclick="closeModalDirect();bulkOcrRecover(\''+ym+'\')"><i class="ti ti-wand"></i> 画像から一括OCR復旧（'+ym+'）</button>':'')
+        +'</div></div>'):'')
     +(body||'<div class="card"><p style="font-size:13px;color:var(--muted)">この月の画像は見つかりませんでした。</p></div>')
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
 }
