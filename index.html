@@ -4439,7 +4439,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets'];
 var OP_SYNC_PREFIX = ['spl_','budget_approved_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_','fav_'];   /* fav_<user>: お気に入り（個人別・クラウド保存） */
@@ -18818,7 +18818,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '707';
+const APP_VERSION = '708';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -23845,6 +23845,47 @@ var TOTOYA_G2_MX = [
 /* ===== v707: G2（Totoya）を責任マトリクスと同じ表UIに統一 =====
    出典: 役割分担表.xlsx（全38項目・全Grade）。G2列を強調表示する。
    記号は元表の4区分に対応: ●結果責任 / ◎実行責任 / ○管理責任 / △把握 / － 対象外 */
+/* ===== v708: G2（Totoya）を責任マトリクスと同じく編集可能に =====
+   編集できる内容も同一: セルの責任区分／業務名（日英）／備考（日英）／行追加・行削除／既定に戻す。
+   保存はGM・CEOのみ。lsSet で即保存＝全端末に同期（キー: totoya_g2_matrix）。
+   行の形: [icon, カテゴリJA, カテゴリEN, 業務JA, 業務EN, G1, SL, G2, G3, G4, G5, GM, 経理, 備考JA, 備考EN] */
+var TYG2_LEVEL_OPTS = ['－','結果責任','実行責任','管理責任','把握'];
+function totoyaG2DefaultRows(){ return JSON.parse(JSON.stringify(TOTOYA_G2_MX)); }
+function getTotoyaG2Matrix(){
+  var v = ls('totoya_g2_matrix', null);
+  if (v && v.rows && v.rows.length) return v;
+  return { rows: totoyaG2DefaultRows(), v:1 };
+}
+function saveTotoyaG2Matrix(mx){
+  if(curRole!=='gm' && curRole!=='ceo'){ if(typeof showToast==='function') showToast('この表の編集はGM以上に限定されています','warning'); return; }
+  mx.at=(typeof nowJP==='function')?nowJP():'';
+  mx.by=(typeof myName==='function')?myName():'';
+  lsSet('totoya_g2_matrix', mx);
+}
+function _tyg2Rerender(){ try{ renderPage(typeof curPage!=='undefined'?curPage:'hiring'); }catch(e){} }
+function tyg2SetCell(ri, ci, val){ var mx=getTotoyaG2Matrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][ci]=val; saveTotoyaG2Matrix(mx); }
+function tyg2SetName(ri, val){ var mx=getTotoyaG2Matrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][3]=val; saveTotoyaG2Matrix(mx); }
+function tyg2SetNameEn(ri, val){ var mx=getTotoyaG2Matrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][4]=val; saveTotoyaG2Matrix(mx); }
+function tyg2SetNote(ri, val){ var mx=getTotoyaG2Matrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][13]=val; saveTotoyaG2Matrix(mx); }
+function tyg2SetNoteEn(ri, val){ var mx=getTotoyaG2Matrix(); if(!Array.isArray(mx.rows[ri])) return; mx.rows[ri][14]=val; saveTotoyaG2Matrix(mx); }
+function tyg2AddRow(ri){
+  var mx=getTotoyaG2Matrix(); var rows=mx.rows; var r=rows[ri]; if(!r) return;
+  var ins=ri; while(ins<rows.length && rows[ins][1]===r[1]) ins++;
+  rows.splice(ins, 0, [r[0], r[1], r[2], '新しい業務', 'New task', '－','－','－','－','－','－','－','－', '', '']);
+  saveTotoyaG2Matrix(mx); _tyg2Rerender();
+}
+function tyg2DelRow(ri){
+  var mx=getTotoyaG2Matrix(); if(!Array.isArray(mx.rows[ri])) return;
+  if(!confirm('「'+(mx.rows[ri][3]||'')+'」の行を削除しますか？')) return;
+  mx.rows.splice(ri,1); saveTotoyaG2Matrix(mx); _tyg2Rerender();
+}
+function tyg2ToggleEdit(){ window._tyg2Edit=(window._tyg2Edit===false); _tyg2Rerender(); }
+function tyg2Reset(){
+  if(curRole!=='gm' && curRole!=='ceo'){ showToast('この表の編集はGM以上に限定されています','warning'); return; }
+  if(!confirm('G2（Totoya）の表を既定（役割分担表の内容）に戻します。編集内容は失われます。よろしいですか？')) return;
+  lsSet('totoya_g2_matrix', {rows: totoyaG2DefaultRows(), v:1});
+  showToast('既定に戻しました','success'); _tyg2Rerender();
+}
 function _g2Sym(v){
   var s=String(v||'').trim();
   if(s.indexOf('結果')>=0) return {sym:'●', col:'var(--red)',    ja:'結果責任', en:'Final'};
@@ -23855,18 +23896,22 @@ function _g2Sym(v){
 }
 function renderTotoyaG2(){
   var L=_respL, en=(window._rmLang==='en');
-  var rows=TOTOYA_G2_MX;
-  /* G2の責任分布 */
+  var mx=getTotoyaG2Matrix(), rows=mx.rows;
+  var canEdit=(['gm','ceo'].indexOf(curRole)>=0);
+  var editing=canEdit && (window._tyg2Edit!==false);
   var n={'結果':0,'実行':0,'管理':0,'把握':0};
-  rows.forEach(function(r){ var v=r[7];
-    if(String(v).indexOf('結果')>=0) n['結果']++; else if(String(v).indexOf('実行')>=0) n['実行']++;
-    else if(String(v).indexOf('管理')>=0) n['管理']++; else if(String(v).indexOf('把握')>=0) n['把握']++; });
+  rows.forEach(function(r){ var v=String(r[7]||'');
+    if(v.indexOf('結果')>=0) n['結果']++; else if(v.indexOf('実行')>=0) n['実行']++;
+    else if(v.indexOf('管理')>=0) n['管理']++; else if(v.indexOf('把握')>=0) n['把握']++; });
 
   var h=_tyLangBar();
-  /* 見出し＋G2サマリー */
   h+='<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-user-check" style="color:var(--accent)"></i>'
     +L('G2（Totoya）の責任範囲','G2 (Totoya) scope of responsibility')
-    +'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+rows.length+' '+L('項目','items')+'</span></div>'
+    +(canEdit?'<span style="margin-left:auto;display:flex;gap:6px">'
+      +'<button class="btn btn-secondary btn-sm" style="padding:3px 10px;font-size:10px" onclick="tyg2ToggleEdit()"><i class="ti ti-'+(editing?'eye':'pencil')+'"></i> '+(editing?'表示モードで見る':'編集モードへ')+'</button>'
+      +'<button class="btn btn-secondary btn-sm" style="padding:3px 10px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="tyg2Reset()"><i class="ti ti-restore"></i> 既定に戻す</button>'
+      +'</span>':'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+rows.length+' '+L('項目','items')+'</span>')
+    +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;font-size:12px">'
     +[['実行','◎'],['管理','○'],['把握','△']].map(function(k){
         var m=_g2Sym(k[0]+'責任');
@@ -23875,34 +23920,54 @@ function renderTotoyaG2(){
           +'<div><div style="font-size:10.5px;color:var(--muted)">'+L(m.ja,m.en)+'</div>'
           +'<b style="font-size:16px">'+(n[k[0]]||0)+'</b></div></div>'; }).join('')
     +'</div></div>';
-  /* 凡例（責任マトリクスと同じ位置・同じ書式） */
   h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">'
     +(en
       ? '●=<b>Final responsibility</b> (owns the result / fixes on error) / ◎=<b>Execution responsibility</b> (make it happen) / ○=<b>Oversight</b> (supervise, approve, recommend) / △=Aware / report. When the same level spans several grades, the higher grade coaches the lower one and works alongside them.'
       : '●=<b>結果責任</b>（その項目の最終結果を負う）／◎=<b>実行責任</b>（実際に手を動かして遂行する）／○=<b>管理責任</b>（監督・承認・推薦などマネジメントとして関与）／△=把握（報告を受ける・状況を認識する）。同レベルの責任が複数Gradeに跨る場合は、上位Gradeが下位Gradeを教育し、伴走しながら進めます。')
-    +'<br><span style="color:var(--accent);font-weight:700">'+L('G2列を強調しています。','The G2 column is highlighted.')+'</span></div>';
-  /* 表（責任マトリクスと同じ inv-table） */
-  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:760px;font-size:11px"><thead><tr>'
+    +'<br><span style="color:var(--accent);font-weight:700">'+L('G2列を強調しています。','The G2 column is highlighted.')+'</span>'
+    +(editing?'<br><b style="color:var(--accent)">編集モード（GM/CEO）:</b> セルのプルダウンで責任を変更→<b>即保存・全端末に同期</b>。業務名・備考は日英とも直接編集、カテゴリごとの行追加・行削除も可能。確定したら「表示モードで見る」で仕上がりを確認。':'')
+    +(mx.at?'<br><span style="font-size:10px">最終更新: '+escapeHtml(mx.at)+(mx.by?'（'+escapeHtml(mx.by)+'）':'')+'</span>':'')
+    +'</div>';
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:'+(editing?'1080':'760')+'px;font-size:11px"><thead><tr>'
     +'<th style="text-align:left">'+L('業務','Task')+'</th>'
     +'<th>G1</th><th style="white-space:nowrap">G1<br><span style="font-size:9px">SL</span></th>'
     +'<th style="background:var(--accent);color:#fff">G2</th>'
     +'<th>G3</th><th>G4</th><th>G5</th><th>G6<br><span style="font-size:9px">GM</span></th><th>'+L('経理','Acct')+'</th>'
-    +'<th style="text-align:left">'+L('備考','Notes')+'</th></tr></thead><tbody>';
+    +'<th style="text-align:left">'+L('備考','Notes')+'</th>'+(editing?'<th></th>':'')+'</tr></thead><tbody>';
+  var selCell=function(ri, ci, cur){
+    return '<select onchange="tyg2SetCell('+ri+','+ci+',this.value)" style="width:100%;min-width:74px;padding:3px 2px;font-size:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)">'
+      +TYG2_LEVEL_OPTS.map(function(o){ return '<option value="'+o+'"'+(o===String(cur||'－')?' selected':'')+'>'+o+'</option>'; }).join('')+'</select>';
+  };
   var curCat=null;
-  rows.forEach(function(r){
-    var catKey=r[1];
-    if(catKey!==curCat){
-      curCat=catKey;
-      h+='<tr><td colspan="10" style="text-align:left;background:var(--surface2);font-weight:800;font-size:11px;padding:6px 8px;color:var(--accent)">'
-        +'<i class="ti '+r[0]+'"></i> '+escapeHtml(en?r[2]:r[1])+'</td></tr>';
+  rows.forEach(function(r, ri){
+    if(!Array.isArray(r)) return;
+    if(r[1]!==curCat){
+      curCat=r[1];
+      h+='<tr><td colspan="'+(editing?'11':'10')+'" style="text-align:left;background:var(--surface2);font-weight:800;font-size:11px;padding:6px 8px;color:var(--accent)">'
+        +'<i class="ti '+r[0]+'"></i> '+escapeHtml(en?r[2]:r[1])
+        +(editing?' <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:9px;margin-left:8px" onclick="tyg2AddRow('+ri+')"><i class="ti ti-plus"></i> 行追加</button>':'')
+        +'</td></tr>';
     }
-    h+='<tr><td style="text-align:left;font-weight:600">'+escapeHtml(en?r[4]:r[3])+'</td>';
+    h+='<tr><td style="text-align:left;font-weight:600">'
+      +(editing
+        ? '<input value="'+escapeHtml(r[3]||'')+'" onchange="tyg2SetName('+ri+',this.value)" placeholder="JA" style="width:100%;min-width:130px;padding:3px 6px;font-size:11px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)">'
+          +'<input value="'+escapeHtml(r[4]||'')+'" onchange="tyg2SetNameEn('+ri+',this.value)" placeholder="EN（英語版も必ず更新）" style="width:100%;min-width:130px;margin-top:3px;padding:3px 6px;font-size:10px;border:1px solid var(--accent);border-radius:6px;background:var(--surface);color:var(--tm)">'
+        : escapeHtml(en?(r[4]||r[3]):r[3]))+'</td>';
     for(var ci=5; ci<=12; ci++){
-      var m=_g2Sym(r[ci]);
       var isG2=(ci===7);
-      h+='<td style="text-align:center;font-weight:700;color:'+m.col+(isG2?';background:var(--surface2)':'')+'" title="'+escapeHtml(L(m.ja,m.en))+'">'+m.sym+'</td>';
+      if(editing){ h+='<td style="text-align:center;padding:3px 2px'+(isG2?';background:var(--surface2)':'')+'">'+selCell(ri, ci, r[ci])+'</td>'; }
+      else {
+        var m=_g2Sym(r[ci]);
+        h+='<td style="text-align:center;font-weight:700;color:'+m.col+(isG2?';background:var(--surface2)':'')+'" title="'+escapeHtml(L(m.ja,m.en))+'">'+m.sym+'</td>';
+      }
     }
-    h+='<td style="text-align:left;font-size:10px;color:var(--muted)">'+escapeHtml(en?(r[14]||r[13]):r[13])+'</td></tr>';
+    h+='<td style="text-align:left;font-size:10px;color:var(--muted)">'
+      +(editing
+        ? '<input value="'+escapeHtml(r[13]||'')+'" onchange="tyg2SetNote('+ri+',this.value)" placeholder="JA" style="width:100%;min-width:180px;padding:3px 6px;font-size:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)">'
+          +'<input value="'+escapeHtml(r[14]||'')+'" onchange="tyg2SetNoteEn('+ri+',this.value)" placeholder="EN（英語版も必ず更新）" style="width:100%;min-width:180px;margin-top:3px;padding:3px 6px;font-size:10px;border:1px solid var(--accent);border-radius:6px;background:var(--surface);color:var(--tm)">'
+        : escapeHtml(en?(r[14]||r[13]):r[13]))+'</td>';
+    if(editing) h+='<td style="text-align:center"><button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px;color:var(--red);border-color:var(--red)" onclick="tyg2DelRow('+ri+')">×</button></td>';
+    h+='</tr>';
   });
   h+='</tbody></table></div>';
   h+='<div class="alert alert-info" style="margin-top:8px"><i class="ti ti-info-circle"></i><div style="font-size:12px;line-height:1.6">'
