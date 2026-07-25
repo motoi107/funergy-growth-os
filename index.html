@@ -18818,7 +18818,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '705';
+const APP_VERSION = '706';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -23716,6 +23716,194 @@ function _ceMarkerShow(o){
     +`<div style="font-size:10px;color:var(--muted);line-height:1.5;margin-top:1px">修了／昇格条件：${escapeHtml(o.gate)}</div></div></div>`;
 }
 
+/* ===== v706: キャリア説明に「Totoya Shift Leader」「G2（Totoya）」タブを新設 =====
+   出典: Shift Leader = Shift_Leader_Program_EN_JA_final.pdf / G2 = 役割分担表.xlsx のG2列
+   言語切替は既存の _rmLang / setRmLang / _respL を流用（役割マップ・責任マトリクスと同じ操作感） */
+function _tyLangBar(){
+  var en=(window._rmLang==='en');
+  return '<div class="rm-langbar" style="display:flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;width:fit-content;margin-bottom:12px">'
+    +'<button onclick="setRmLang(\'ja\')" style="font-size:12px;font-weight:800;padding:6px 16px;border:none;cursor:pointer;background:'+(en?'var(--surface)':'var(--accent)')+';color:'+(en?'var(--muted)':'#fff')+'">日本語</button>'
+    +'<button onclick="setRmLang(\'en\')" style="font-size:12px;font-weight:800;padding:6px 16px;border:none;cursor:pointer;background:'+(en?'var(--accent)':'var(--surface)')+';color:'+(en?'#fff':'var(--muted)')+'">English</button>'
+    +'</div>';
+}
+/* ---------- Totoya Shift Leader ---------- */
+var TOTOYA_SL_DUTIES = [
+  ['営業開始の10分前までに、すべての仕込みが完了しているようにする（仕込みの担当割り振り）',
+   'Ensure all prep is done at least 10 minutes before opening (prep assignment)'],
+  ['プレシフトミーティングを実施する（ポジション割り、重要事項の共有、その日の目標設定）',
+   'Run the pre-shift meeting (assign positions, share key notes, and daily goals)'],
+  ['営業中のフロア運営を統括する。姿勢とエネルギーで模範を示し、明確で積極的なコミュニケーションを行う',
+   'Coordinate floor operations during service, leading by example in attitude and energy, with clear, active communication'],
+  ['お客様対応をサポートし、必要に応じてマネージャーへ報告・相談する',
+   'Assist with guest concerns and communicate with the manager when necessary'],
+  ['食材に異常がないか確認し、違和感があればすぐに G4 へ報告する',
+   'Check ingredients for any abnormalities; report to G4 immediately if anything seems off'],
+  ['新人スタッフのサポート・指導を行う',
+   'Support and guide new staff'],
+  ['在庫管理（発注）業務をやり切り、最終確認する',
+   'Complete and verify inventory management (ordering) tasks'],
+  ['Prep チェックリストの全項目をやり切り、最終確認する',
+   'Complete and verify all Prep checklist items'],
+  ['クロージングチェックリストの全項目をやり切り、最終確認する',
+   'Complete and verify all closing checklist items'],
+  ['キャッシュチップと売上が正しく入力・処理されているか最終確認する',
+   'Do a final check that cash tips and sales have been entered and processed correctly'],
+  ['営業状況に応じて人員配置の調整を提案する（マネージャーの方針に従う）',
+   'Recommend labor adjustments based on business needs, following manager guidelines']
+];
+var TOTOYA_SL_QUAL = [
+  ['シフト内で合計スキルレベルが最も高いスタッフ', 'The person with the highest total skill level in the shift'],
+  ['2シフト連続での担当は不可', 'Cannot be assigned for two consecutive shifts'],
+  ['2つ以上のポジションでスキルレベル3を取得していること', 'Must have skill level 3 in at least 2 positions'],
+  ['遅刻がないこと', 'No tardiness']
+];
+function renderTotoyaSL(){
+  var L=_respL;
+  var h=_tyLangBar();
+  /* ヒーロー */
+  h+='<div class="card" style="border:1.5px solid var(--accent);background:linear-gradient(135deg,var(--surface),var(--surface2))">'
+    +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+    +'<div style="width:38px;height:38px;border-radius:11px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-star" style="font-size:20px"></i></div>'
+    +'<div style="flex:1;min-width:180px"><div style="font-size:16px;font-weight:800">Totoya Shift Leader</div>'
+    +'<div style="font-size:11.5px;color:var(--muted)">'+L('シフトリーダー 業務内容','Shift Leader — daily duties')+'</div></div>'
+    +'<div style="text-align:right"><div style="font-size:22px;font-weight:800;color:var(--green)">$10</div>'
+    +'<div style="font-size:10px;color:var(--muted)">'+L('1シフトにつき','per shift')+'</div></div></div>'
+    +'<div style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px">'
+    +'<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 11px">'
+    +'<div style="font-size:10.5px;font-weight:800;color:var(--accent);letter-spacing:.04em">QUALIFICATION</div>'
+    +'<div style="font-size:12.5px;margin-top:3px;line-height:1.6">'+L('シフト内で合計スキルスコアが最も高いスタッフがシフトリーダーになります。','Highest total skill score in the shift becomes Shift Leader.')+'</div></div>'
+    +'<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 11px">'
+    +'<div style="font-size:10.5px;font-weight:800;color:var(--green);letter-spacing:.04em">BENEFIT</div>'
+    +'<div style="font-size:12.5px;margin-top:3px;line-height:1.6">'+L('シフトリーダーとして勤務した1シフトにつき $10 を支給。','$10 per shift worked as Shift Leader.')+'</div>'
+    +'<div style="font-size:11px;margin-top:4px;color:var(--red);line-height:1.55">※ '+L('G2 スタッフがシフトリーダーを兼任する場合、この手当は発生しません。','Does not apply if a G2 staff member is concurrently serving as Shift Leader.')+'</div></div>'
+    +'</div></div>';
+  /* 業務内容 */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-list-check" style="color:var(--accent)"></i>'
+    +L('シフトリーダーの業務','Shift Leader responsibilities')
+    +'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+TOTOYA_SL_DUTIES.length+' '+L('項目','items')+'</span></div>';
+  h+=TOTOYA_SL_DUTIES.map(function(d,i){
+    return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:'+(i?'1px solid var(--border)':'none')+'">'
+      +'<div style="width:24px;height:24px;border-radius:8px;background:var(--surface2);color:var(--accent);font-size:11.5px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(i+1)+'</div>'
+      +'<div style="flex:1;font-size:12.5px;line-height:1.65">'+escapeHtml(L(d[0],d[1]))+'</div></div>';
+  }).join('');
+  h+='</div>';
+  /* 条件 */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--green)"></i>'+L('担当できる条件','Qualification requirements')+'</div>';
+  h+=TOTOYA_SL_QUAL.map(function(q,i){
+    return '<div style="display:flex;gap:9px;align-items:flex-start;padding:7px 0;border-top:'+(i?'1px solid var(--border)':'none')+'">'
+      +'<i class="ti ti-circle-check" style="color:var(--green);font-size:17px;flex-shrink:0"></i>'
+      +'<div style="flex:1;font-size:12.5px;line-height:1.6">'+escapeHtml(L(q[0],q[1]))+'</div></div>';
+  }).join('');
+  h+='</div>';
+  h+='<div class="alert alert-info" style="margin-top:8px"><i class="ti ti-info-circle"></i><div style="font-size:12px;line-height:1.6">'
+    +L('上記について不明な点があれば、マネジメントチーム（G4/G5）へ連絡してください。','If you have any questions about the above, please contact the management team (G4/G5).')
+    +'</div></div>';
+  return h;
+}
+/* ---------- G2（Totoya） ---------- */
+/* 役割分担表のG2列。resp: 実行=hands-on / 管理=oversight / 把握=awareness */
+var TOTOYA_G2_ROWS = [
+  ['店舗オペレーション','Store operations','管理','ポジションワークの遂行','Executing position work',
+   'G1は指示どおりに実行。現場でやり切らせるのはG2/G3、店としての結果はG4。','G1 executes as instructed. G2/G3 make sure it gets done on the floor; G4 owns the store-level result.'],
+  ['店舗オペレーション','Store operations','管理','在庫少の報告・必要仕込の記入','Reporting low stock and logging required prep',
+   '少ない材料は即報告・必要仕込を記入（G1）。発注への反映まで完遂するのはG3、店の結果はG4。','Report low ingredients immediately and log required prep (G1). G3 carries it through to ordering; G4 owns the store result.'],
+  ['店舗オペレーション','Store operations','実行','売上・日報の入力','Entering sales and the daily report',
+   '入力・日報確認の実行はG3、数字の正はG4。G5は管轄店を横断チェック、GMは全社を把握。','G3 executes entry and daily-report checks; G4 owns accuracy. G5 checks across the area; GM tracks company-wide.'],
+  ['店舗オペレーション','Store operations','管理','キャッシュチップの入力','Entering cash tips',
+   '入力は誰でもOK（0でも0と入力）。確定はG3、店の結果はG4、G5は管轄店の入力徹底に義務。※Waikiki2店（FSP/WGS）は対象外。','Anyone may enter (enter 0 if zero). G3 finalizes, G4 owns the store result, G5 must ensure entry across the area. The two Waikiki stores (FSP/WGS) are excluded.'],
+  ['店舗オペレーション','Store operations','管理','日々の発注数量の管理・確定','Managing and confirming daily order quantities',
+   '発注をやり切るのはG2/G3、発注ミス・欠品の結果責任はG4。G5は管轄視点で補助。','G2/G3 carry ordering through; G4 owns errors and shortages. G5 supports from the area view.'],
+  ['店舗オペレーション','Store operations','実行','食材管理（鮮度チェック・廃棄報告）','Ingredient control (freshness checks, waste reporting)',
+   '日々のチェックはG2/G3、管理上発生したロスなどの結果責任はG4。','G2/G3 do the daily checks; G4 owns losses arising from management.'],
+  ['店舗オペレーション','Store operations','管理','消耗品の発注','Ordering supplies',
+   '実務は誰でもOK。確定はG3、店の結果はG4、G5は補助。','Anyone can do the task. G3 confirms, G4 owns the store result, G5 supports.'],
+  ['店舗オペレーション','Store operations','実行','オーバーポーション管理','Over-portion control',
+   '盛り付け基準の徹底はG2/G3がやり切る。原価率への影響はG4、G5が横断監督、GMは把握。','G2/G3 enforce plating standards. G4 owns the impact on cost ratio; G5 supervises across stores; GM tracks.'],
+  ['店舗オペレーション','Store operations','実行','店舗修繕の報告・対応','Repair reporting and handling',
+   '気づいたら即報告（G1）。実務はG2、部分責任G3、最終はG4。G5が管轄監督、GMは把握。','Report immediately when noticed (G1). G2 handles the work, G3 partial, G4 final. G5 supervises the area; GM tracks.'],
+  ['店舗オペレーション','Store operations','管理','POS各デバイス管理','Managing POS devices',
+   '端末・プリンタ・KDS等の日常管理。不具合は即報告（G1）、実務G2、部分責任G3、最終はG4。','Day-to-day care of terminals, printers, KDS and so on. Report faults immediately (G1); G2 handles, G3 partial, G4 final.'],
+  ['シフト・勤怠','Scheduling and attendance','管理','シフト運用・OT管理','Schedule operation and overtime control',
+   '週40h超・ワーキングスケジュールはG4の全責任。他Gradeは把握と即報告。','G4 has full ownership of over-40h weeks and working schedules. Other grades stay aware and report immediately.'],
+  ['シフト・勤怠','Scheduling and attendance','管理','勤怠の正確性','Attendance accuracy',
+   '打刻は全員が正しく。日々のチェックはG2/G3がやり切り、確認義務はG4/G5。修正実務は経理。','Everyone clocks in and out correctly. G2/G3 carry out the daily checks; G4/G5 must verify. Accounting makes corrections.'],
+  ['お金・数字','Money and numbers','把握','Tip管理（配分・確定）','Tip management (distribution and finalizing)',
+   '店のTip配分・確定の全責任はG4。G5/GMが監督、G3は把握。','G4 has full ownership of store tip distribution and finalizing. G5/GM supervise; G3 stays informed.'],
+  ['お金・数字','Money and numbers','実行','棚卸の実施・記入','Doing and entering inventory counts',
+   'カウント・入力は誰でもOK。数えて確定するのはG3、数字の正はG4、G5が監督。','Anyone can count and enter. G3 counts and finalizes, G4 owns accuracy, G5 supervises.'],
+  ['お金・数字','Money and numbers','把握','棚卸エラーの最終責任','Final ownership of inventory errors',
+   'エラー時はG3/G4/G5が中間棚卸で修正・再確定まで共同責任。GMは把握。','On errors, G3/G4/G5 share responsibility through a mid-month recount and re-finalizing. GM tracks.'],
+  ['お金・数字','Money and numbers','把握','原価の数字すべて（自店）','All cost figures (own store)',
+   '自店原価（理論原価・月次原価）の整合はG4。G5に確認義務、会社としての正はGM。','G4 owns consistency of own-store cost (theoretical and monthly). G5 must verify; GM owns company accuracy.'],
+  ['お金・数字','Money and numbers','実行','Invoice読取（請求書の取り込み）','Invoice capture',
+   '読取は全員が実行（G1〜G3）。完了責任はG4、G5監督、GM承認。経理は確認・補助。','Everyone captures invoices (G1–G3). G4 owns completion, G5 supervises, GM approves. Accounting checks and supports.'],
+  ['人・育成','People and development','実行','トレーニング経過の報告','Reporting training progress',
+   'G2が経過を報告、G3が集約してやり切る。確認義務はG4。G5/GMは把握。','G2 reports progress; G3 consolidates and carries it through. G4 must verify. G5/GM track.'],
+  ['人・育成','People and development','実行','担当分野のチームビルド・育成','Team building and development in your area',
+   '専門分野のチーム作りはG3の義務、店の育成結果はG4。G5/GMは把握。','G3 is responsible for building the team in their specialty; G4 owns the store development results. G5/GM track.'],
+  ['人・育成','People and development','実行','人材育成・スキル承認','Development and skill approval',
+   '本人は申請・報告、日々のOJTはG2。承認・育成はG3の義務、結果はG4、G5が監督。','Staff apply and report; G2 handles day-to-day OJT. G3 is responsible for approval and development, G4 owns results, G5 supervises.'],
+  ['人・育成','People and development','把握','相談対応（お悩み）','Handling concerns',
+   '相談は誰からでも。初動24hはG3、店の解決責任G4、管轄はG5、最終はGM。','Anyone may raise a concern. G3 responds within 24h, G4 owns resolution at the store, G5 at the area, GM finally.'],
+  ['制度・マスター（GM管轄）','Systems and masters (GM domain)','把握','OJT管理（カリキュラム・基準）','OJT management (curriculum and criteria)',
+   'カリキュラム・ゲート基準の最終はGM。現場からの推薦はG4/G5、G2/G3は内容を把握。','GM has the final say on curriculum and gate criteria. G4/G5 recommend from the floor; G2/G3 stay familiar with the content.'],
+  ['制度・マスター（GM管轄）','Systems and masters (GM domain)','把握','Grade管理（昇格の最終判断）','Grade management (final promotion decision)',
+   '推薦はG4/G5、昇格の最終判断はGM。現場は基準を把握して育成に反映。','G4/G5 recommend; GM makes the final promotion decision. The floor knows the criteria and reflects them in development.'],
+  ['制度・マスター（GM管轄）','Systems and masters (GM domain)','把握','時給管理・Career Score','Wage management and Career Score',
+   '時給とCareer ScoreはGMの全責任。推薦はG4/G5、基準は現場も把握。','GM has full ownership of wages and Career Score. G4/G5 recommend; the floor also knows the criteria.']
+];
+function _g2RespMeta(k){
+  if(k==='実行') return {ja:'実行責任', en:'Execution', col:'var(--accent)', ic:'ti-hand-click'};
+  if(k==='管理') return {ja:'管理責任', en:'Oversight', col:'var(--yellow)', ic:'ti-eye-check'};
+  return {ja:'把握', en:'Awareness', col:'var(--muted)', ic:'ti-info-circle'};
+}
+function renderTotoyaG2(){
+  var L=_respL;
+  var n={'実行':0,'管理':0,'把握':0};
+  TOTOYA_G2_ROWS.forEach(function(r){ n[r[2]]=(n[r[2]]||0)+1; });
+  var h=_tyLangBar();
+  h+='<div class="card" style="border:1.5px solid var(--accent)">'
+    +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+    +'<div style="width:38px;height:38px;border-radius:11px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:15px;font-weight:800">G2</div>'
+    +'<div style="flex:1;min-width:170px"><div style="font-size:16px;font-weight:800">G2（Totoya）</div>'
+    +'<div style="font-size:11.5px;color:var(--muted)">'+L('役割分担表からG2の担当範囲を抜き出したものです','G2 scope, taken from the role assignment matrix')+'</div></div></div>'
+    +'<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'
+    +['実行','管理','把握'].map(function(k){ var m=_g2RespMeta(k);
+        return '<div style="flex:1;min-width:96px;background:var(--surface2);border-radius:10px;padding:7px 10px">'
+          +'<div style="font-size:10.5px;color:var(--muted)">'+L(m.ja,m.en)+'</div>'
+          +'<div style="font-size:19px;font-weight:800;color:'+m.col+'">'+(n[k]||0)+'</div></div>'; }).join('')
+    +'</div></div>';
+  /* 凡例 */
+  h+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-help-circle" style="color:var(--accent)"></i>'+L('責任区分の見かた','How to read the levels')+'</div>'
+    +'<div style="font-size:11.5px;line-height:1.75;color:var(--tm)">'
+    +'<div><b style="color:var(--accent)">'+L('実行責任','Execution')+'</b> … '+L('実際に手を動かして遂行する','You do the work hands-on')+'</div>'
+    +'<div><b style="color:var(--yellow)">'+L('管理責任','Oversight')+'</b> … '+L('監督・承認・推薦などマネジメントとして関与する','You supervise, approve or recommend as management')+'</div>'
+    +'<div><b style="color:var(--muted)">'+L('把握','Awareness')+'</b> … '+L('報告を受ける・状況を認識するレベル','You receive reports and stay aware of the situation')+'</div>'
+    +'<div style="margin-top:6px;color:var(--muted)">'+L('同じレベルの責任が複数Gradeに跨る場合は、上位Gradeが下位Gradeを教育し、伴走しながら進めます。','When the same level spans several grades, the higher grade coaches and works alongside the lower one.')+'</div>'
+    +'</div></div>';
+  /* カテゴリごと */
+  var seen={};
+  TOTOYA_G2_ROWS.forEach(function(r){ if(!seen[r[0]]) seen[r[0]]=[]; seen[r[0]].push(r); });
+  Object.keys(seen).forEach(function(cat){
+    var rows=seen[cat];
+    h+='<div class="card"><div class="card-title" style="font-size:13.5px"><i class="ti ti-folder" style="color:var(--accent)"></i>'+escapeHtml(L(cat, rows[0][1]))
+      +'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+rows.length+'</span></div>';
+    h+=rows.map(function(r,i){
+      var m=_g2RespMeta(r[2]);
+      return '<div style="padding:9px 0;border-top:'+(i?'1px solid var(--border)':'none')+'">'
+        +'<div style="display:flex;gap:8px;align-items:flex-start">'
+        +'<span style="flex-shrink:0;font-size:10px;font-weight:800;color:#fff;background:'+m.col+';border-radius:7px;padding:2px 7px;white-space:nowrap">'+L(m.ja,m.en)+'</span>'
+        +'<div style="flex:1;font-size:12.5px;font-weight:700;line-height:1.5">'+escapeHtml(L(r[3],r[4]))+'</div></div>'
+        +'<div style="font-size:11px;color:var(--muted);line-height:1.65;margin-top:4px;padding-left:2px">'+escapeHtml(L(r[5],r[6]))+'</div>'
+        +'</div>';
+    }).join('');
+    h+='</div>';
+  });
+  h+='<div class="alert alert-info" style="margin-top:8px"><i class="ti ti-info-circle"></i><div style="font-size:12px;line-height:1.6">'
+    +L('全Gradeの一覧は「責任マトリクス」タブで確認できます。','The full grade-by-grade view is in the Responsibility matrix tab.')
+    +'</div></div>';
+  return h;
+}
 function renderCareerExplain(){
   if(!window._ceMode) window._ceMode='internal';
   var mode=window._ceMode;
@@ -23724,7 +23912,11 @@ function renderCareerExplain(){
     <button class="phase-tab${mode==='show'?' active':''}" onclick="setCeMode('show')"><i class="ti ti-eye"></i> 候補者向け（面接で見せる）</button>
     <button class="phase-tab${mode==='rolemap'?' active':''}" onclick="setCeMode('rolemap')"><i class="ti ti-map-2"></i> 役割と責任マップ</button>
     <button class="phase-tab${mode==='respmatrix'?' active':''}" onclick="setCeMode('respmatrix')"><i class="ti ti-shield-check"></i> 責任マトリクス</button>
+    <button class="phase-tab${mode==='totoya_sl'?' active':''}" onclick="setCeMode('totoya_sl')"><i class="ti ti-star"></i> Totoya Shift Leader</button>
+    <button class="phase-tab${mode==='totoya_g2'?' active':''}" onclick="setCeMode('totoya_g2')"><i class="ti ti-user-check"></i> G2（Totoya）</button>
   </div>`;
+  if(mode==='totoya_sl') return h + renderTotoyaSL();
+  if(mode==='totoya_g2') return h + renderTotoyaG2();
   if(mode==='rolemap' || mode==='respmatrix'){
     return h + (mode==='rolemap' ? renderResponsibilityMap() : renderRespMatrix());
   }
