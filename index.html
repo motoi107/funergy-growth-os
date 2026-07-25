@@ -18820,7 +18820,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '710';
+const APP_VERSION = '711';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -29998,21 +29998,145 @@ function deleteVendor(vId) {
 /* ============================================================
    ポジション & スキルレベル モデル（店舗別ポジション + 承認フロー）
 ============================================================ */
-const ALL_POSITIONS = ['Host','Server','Bar','Drink','Yakitori','Kitchen','Tempura','Sushi','Cold','Main Plater','Miso','Supporter','Prep','Front','Back','Food Runner','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'];
+/* ===== v711: Totoya（Kaimuki / Piikoi）のスキル基準を刷新 =====
+   ・7軸 × Lv0〜4（満点28点）。Aiea(F04-A)と他店は従来どおり Lv0〜3 のまま。
+   ・理念 → Team Standards / サービスクオリティ → Hospitality に改称（既存レベルは引き継ぐ）
+   ・Energy / Leadership は Kaimuki・Piikoi の評価軸から外す
+   ・基準文は既存の skill_lv_desc（店舗×ポジ×レベルの日英マスター）へ投入するので、
+     GMは「スキル基準の編集」からそのまま修正できる。 */
+var STORE_SKILL_MAX = { 'F04-K':4, 'F04-P':4 };
+function storeSkillMax(storeId){ return STORE_SKILL_MAX[storeId] || 3; }
+function skillLvList(storeId){ var m=storeSkillMax(storeId), a=[]; for(var i=0;i<=m;i++) a.push(i); return a; }
+var TOTOYA_POSITIONS_V2 = ['Team Standards','Main Plater','Miso','Host','Supporter','Prep','Hospitality'];
+/* [レベル0..4] = [日本語, English] */
+var TOTOYA_SKILL_CRITERIA_V2 = {
+  'Team Standards':[
+    ['基本ルールを継続して守れる。（遅刻・無断欠勤・身だしなみ・シフト遵守などに継続的な問題がない）','Follows all basic store rules consistently. (No ongoing issues with tardiness, attendance, appearance, or schedule commitment.)'],
+    ['周囲と協力し、明るいコミュニケーションを取りながら業務に取り組める。','Works cooperatively with others and maintains positive communication.'],
+    ['自ら考えて行動し、周囲への声掛けやサポートを通じて、チームへ良い影響を与えられる。','Takes initiative and positively supports team members.'],
+    ['会社の理念・Totoyaのストアコンセプトを理解し、それを基準に判断・行動できる。','Understands company philosophy and store concept, and applies them in daily decisions and actions.'],
+    ['会社の理念・Totoyaのストアコンセプトを周囲へ浸透させ、お店の雰囲気づくりに貢献できる。','Promotes company philosophy and store concept to others, helping build a positive store culture.']
+  ],
+  'Main Plater':[
+    ['未経験','Not experienced'],
+    ['丼ごとのご飯の盛り方の違いを理解し、常に再現できる（山・平）','Consistently plates rice correctly for each bowl type (mounded or flat).'],
+    ['全レシピ（分量・盛り付け）を再現できる。セットアップ・クロージングを店舗が求める基準通りに完了できる。','Can consistently prepare all recipes to standard (portioning and presentation). Can complete setup and closing according to the store\u2019s standards.'],
+    ['全丼を60秒/杯ペースで安定提供','Can consistently maintain a 60 sec/bowl pace throughout service.'],
+    ['炊飯ペースを適切に管理。エリアの清潔を維持するとともに、使用前・提供中の食材の品質確認と異常報告ができる。','Manages rice production, maintains a clean workstation, performs quality checks before use and during service, and reports any concerns.']
+  ],
+  'Miso':[
+    ['未経験','Not experienced'],
+    ['味噌・トッピング・配置（丼/味噌/スプーン）を正確に再現。セットアップ・クロージングを店舗が求める基準通りに完了できる。','Can accurately execute miso, toppings, and proper placement (bowl/miso/spoon). Can complete setup and closing according to the store\u2019s standards.'],
+    ['50オーダー以上を安定対応（遅れなし）','Can handle 50+ orders consistently without delays.'],
+    ['70オーダー＋皿洗い/フロア補助','Can handle 70+ orders while supporting dishwashing/floor without slowing miso.'],
+    ['全ポジを把握し、遅れ・問題を自発的に潰せる','Can monitor all positions and proactively resolve delays/issues.']
+  ],
+  'Host':[
+    ['未経験','Not experienced'],
+    ['注文・会計を正確に1人で対応。セットアップ・クロージングを店舗が求める基準通りに完了できる。','Can handle order taking and payments independently. Can complete setup and closing according to the store\u2019s standards.'],
+    ['50オーダー以上＋店内対応しながら外オーダーも適切に処理','Can handle 50+ orders while managing inside customers and outside orders.'],
+    ['70オーダー以上＋全客に必要な説明/提案/確認ができる','Can handle 70+ orders while consistently communicating with all customers (menu recommendations, guidance, checks).'],
+    ['接客を最優先に維持しながら、他ポジも適切にサポート','Maintains top priority on customer service while supporting other positions at the right timing.']
+  ],
+  'Supporter':[
+    ['未経験','Not experienced'],
+    ['70オーダー営業でも皿を切らさない','Can keep up with dishwashing during 70+ order shifts without running out of dishes.'],
+    ['注文・会計・バッシング・セットアップをサポート可能','Can support order taking, payments, bussing, and setup.'],
+    ['皿洗い・フロアサポート・仕込み（ネギトロ・卵黄・味噌など）に対応できる','Can handle dishwashing, floor support, and prep tasks (e.g., negitoro, egg yolk, miso).'],
+    ['全ポジションを把握し、遅れや問題にリアルタイムで対応できる','Can monitor all positions and take action to resolve delays/issues in real time.']
+  ],
+  'Prep':[
+    ['仕込み項目を5品目以上、品質を維持しながら目標タイム内で完了できる。','Can complete 5+ key prep items within the target time while maintaining quality.'],
+    ['仕込み項目を10品目以上、品質を維持しながら目標タイム内で完了できる。','Can complete 10+ prep items within the target time while maintaining quality.'],
+    ['仕込み項目を15品目以上、品質を維持しながら目標タイム内で完了できる。','Can complete 15+ prep items within the target time while maintaining quality.'],
+    ['すべての仕込み項目を、品質を維持しながら目標タイム内で完了できる。','Can complete all prep items within the target time while maintaining quality.'],
+    ['仕込み全体の時間管理を行い、基本的に営業時間10分前までにすべての仕込みを完了させられる。','Manages the overall prep schedule and consistently ensures all prep is completed at least 10 minutes before service.']
+  ],
+  'Hospitality':[
+    ['「いらっしゃいませ」「ありがとうございました」の挨拶ができる','Greets every customer with "Irasshaimase" and "Arigatogozaimashita".'],
+    ['すべてのお客様に対し、目を見て笑顔で挨拶を徹底できる。','Greets every customer with eye contact and a smile.'],
+    ['ポジションを問わず、お客様を気に掛け、自発的にケア・サポートできる。','Proactively looks after customers and offers support regardless of position.'],
+    ['周囲のメンバーへ適切な声掛け・指示ができ、シフト全体のホスピタリティ向上に貢献できる。','Guides and supports teammates to improve the team\u2019s overall hospitality.'],
+    ['3を率先して実践し、お店全体へホスピタリティの文化・雰囲気を波及させられる。','Leads by example and creates a culture of hospitality throughout the store.']
+  ]
+};
+/* Kaimuki/Piikoi 向けチップ率条件（28点満点に合わせて比率を維持: 12/24→14/28、20/24→23/28） */
+var TOTOYA_SKILL_RULES_V2 = {
+  toRate90:  { minTotal:14, minLv3:3, mustLv3:[], needMgr:true },
+  toRate100: { minTotal:23, minLv3:5, mustLv3:[], needMgr:true }
+};
+function migrateTotoyaSkillV2(){
+  try{
+    if(ls('_totoyaSkillV2_done', false)) return;
+    var TG=['F04-K','F04-P'];
+    var REN={'理念':'Team Standards','サービスクオリティ':'Hospitality'};
+    /* ① ポジション構成（7軸・Energy/Leadershipは外す） */
+    var sp=ls('store_positions', null);
+    if(!sp || typeof sp!=='object') sp=JSON.parse(JSON.stringify(DEFAULT_STORE_POSITIONS));
+    TG.forEach(function(sid){ sp[sid]=TOTOYA_POSITIONS_V2.slice(); });
+    lsSet('store_positions', sp);
+    /* ② 既存の承認済みレベルを新名称へ引き継ぐ */
+    TG.forEach(function(sid){
+      var m=ls(SKILL_STORE_PREFIX+sid, null);
+      if(m && typeof m==='object'){
+        var ch=false;
+        Object.keys(m).forEach(function(nm){
+          var pm=m[nm]; if(!pm||typeof pm!=='object') return;
+          Object.keys(REN).forEach(function(o){ if(pm[o] && !pm[REN[o]]){ pm[REN[o]]=pm[o]; delete pm[o]; ch=true; } });
+        });
+        if(ch) lsSet(SKILL_STORE_PREFIX+sid, m);
+      }
+    });
+    var v2=ls('skills_v2', null);
+    if(v2 && typeof v2==='object'){
+      var ch2=false;
+      Object.keys(v2).forEach(function(nm){
+        TG.forEach(function(sid){
+          var pm=v2[nm]&&v2[nm][sid]; if(!pm||typeof pm!=='object') return;
+          Object.keys(REN).forEach(function(o){ if(pm[o] && !pm[REN[o]]){ pm[REN[o]]=pm[o]; delete pm[o]; ch2=true; } });
+        });
+      });
+      if(ch2) lsSet('skills_v2', v2);
+    }
+    /* ③ 基準文（日英）を skill_lv_desc へ投入。既に手入力がある箇所は上書きしない */
+    var d=ls('skill_lv_desc', {}); if(!d||typeof d!=='object') d={};
+    TG.forEach(function(sid){
+      if(!d[sid]) d[sid]={};
+      Object.keys(TOTOYA_SKILL_CRITERIA_V2).forEach(function(pos){
+        if(!d[sid][pos]) d[sid][pos]={};
+        TOTOYA_SKILL_CRITERIA_V2[pos].forEach(function(pair, lv){
+          var cur=d[sid][pos][lv];
+          if(cur && (cur.ja||cur.en)) return;
+          d[sid][pos][lv]={ja:pair[0], en:pair[1]};
+        });
+      });
+    });
+    lsSet('skill_lv_desc', d);
+    /* ④ チップ率の昇格条件（28点満点） */
+    var sr=ls('skill_rules', {}); if(!sr||typeof sr!=='object') sr={};
+    TG.forEach(function(sid){
+      sr[sid]=Object.assign({}, sr[sid]||{}, JSON.parse(JSON.stringify(TOTOYA_SKILL_RULES_V2)));
+    });
+    lsSet('skill_rules', sr);
+    lsSet('_totoyaSkillV2_done', true);
+    try{ console.log('migrateTotoyaSkillV2: done'); }catch(e){}
+  }catch(e){ try{ console.warn('migrateTotoyaSkillV2', e); }catch(_){} }
+}
+const ALL_POSITIONS = ['Host','Server','Bar','Drink','Yakitori','Kitchen','Tempura','Sushi','Cold','Main Plater','Miso','Supporter','Prep','Front','Back','Food Runner','FSP Kitchen','FSP Cashier','WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念','Team Standards','Hospitality'];
 const DEFAULT_STORE_POSITIONS = {
   'F01':['Host','Bar','Drink','Yakitori','Kitchen','Energy','Leadership','サービスクオリティ','理念'],
   'F02':['Host','Tempura','Sushi','Cold','Drink','Energy','Leadership','サービスクオリティ','理念'],
   'F03':['FSP Kitchen','FSP Cashier','Energy','Leadership','サービスクオリティ','理念'],
   'F03-G':['WGS Kitchen','WGS Cashier','Energy','Leadership','サービスクオリティ','理念'],
-  'F04-K':['Host','Main Plater','Miso','Supporter','Energy','Leadership','サービスクオリティ','理念'],
-  'F04-P':['Host','Main Plater','Miso','Supporter','Energy','Leadership','サービスクオリティ','理念'],
+  'F04-K':['Team Standards','Main Plater','Miso','Host','Supporter','Prep','Hospitality'],   /* v711 */
+  'F04-P':['Team Standards','Main Plater','Miso','Host','Supporter','Prep','Hospitality'],   /* v711 */
   'F04-A':['Host','Main Plater','Miso','Supporter','Energy','Leadership','サービスクオリティ','理念'],
   'F05':['Host','Front','Back','Food Runner','Supporter','Energy','Leadership','サービスクオリティ','理念'],
   'OFFICE':['請求書処理','月次締め','カード明細照合','給与計算','売上・入出金管理','税務・DOH対応','データ入力','書類管理','採用事務','電話・メール対応','理念'],
 };
 /* シフト割当ポジションから常に除外する「スキルレベル判定専用の軸」。
    これらはスキル評価には使うが、実ポジションではないためシフト作成の枠には出さない。 */
-const SHIFT_NON_POSITIONS = ['Energy','Leadership','サービスクオリティ','理念','Server','Prep'];
+const SHIFT_NON_POSITIONS = ['Energy','Leadership','サービスクオリティ','理念','Server','Prep','Team Standards','Hospitality'];
 /* Totoyaの標準シフトポジション（4枠）。Trainee は別枠で任意追加。TOTOYA_STORE_IDS は上方で定義済み。 */
 const TOTOYA_SHIFT_POSITIONS = ['Host','Main Plater','Miso','Supporter'];
 /* スキルレベル基準（Lv0-3の達成基準）。Totoyaは実基準、他は汎用 */
@@ -30605,7 +30729,10 @@ function approvedPositionsStore(name, storeId) {
 function skillScoreStore(name, storeId) {
   var sk = getEmpSkillsStore(name, storeId);
   var total=0, lv3=0, approved=0;
-  Object.keys(sk).forEach(p=>{
+  /* v711: その店舗の評価軸に含まれるものだけを集計する（軸から外した記録が点数に残らないように） */
+  var _pos=(typeof getStorePositions==='function')?(getStorePositions(storeId)||[]):[];
+  var _inPos=function(p){ return !_pos.length || _pos.indexOf(p)>=0; };
+  Object.keys(sk).filter(_inPos).forEach(p=>{
     var s=sk[p];
     if (s.status==='承認') { total += (s.level||0); if((s.level||0)>=3) lv3++; approved++; }
   });
@@ -34988,7 +35115,8 @@ function openSkillLvDescEditor(){
   var storeChips=stores.map(function(s){ return '<span class="tag '+(s.id===sid?'tag-blue':'tag-gray')+'" style="cursor:pointer" onclick="_sldSetStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</span>'; }).join(' ');
   var posChips=positions.map(function(p,i){ return '<span class="tag '+(p===pos?'tag-blue':'tag-gray')+'" style="cursor:pointer" onclick="_sldSetPosIdx('+i+')">'+escapeHtml(posLabel(p))+'</span>'; }).join(' ');
   var rb=getEvalRubric(); var rows='';
-  [0,1,2,3].forEach(function(lv){
+  var _sldMax=(typeof storeSkillMax==='function')?storeSkillMax(sid):3;   /* v711: 店舗ごとの最大レベル */
+  (function(){ var a=[]; for(var i=0;i<=_sldMax;i++)a.push(i); return a; })().forEach(function(lv){
     var cell=skillLvDescCell(sid,pos,lv)||{}; var rbl=rb[lv]?rb[lv].label:'';
     rows+='<div style="border-top:1px solid var(--border);padding:8px 0">'
       +'<div style="font-size:13px;font-weight:700;margin-bottom:4px"><span style="color:var(--accent)">Lv'+lv+'</span> <span style="font-size:11px;color:var(--muted);font-weight:600">'+escapeHtml(rbl)+'</span></div>'
@@ -35005,8 +35133,8 @@ function openSkillLvDescEditor(){
     +'<button class="btn btn-primary" onclick="_sldSave()">'+t('保存','Save')+'</button></div>';
   openModal(html);
 }
-function _sldCollect(){ var out={}; [0,1,2,3].forEach(function(lv){ var ja=document.getElementById('sld-ja-'+lv), en=document.getElementById('sld-en-'+lv); if(ja&&en) out[lv]={ja:ja.value,en:en.value}; }); return out; }
-function _sldSaveSilent(){ try{ var sid=window._sldStore,pos=window._sldPos; if(!sid||!pos)return; var c=_sldCollect(); [0,1,2,3].forEach(function(lv){ if(c[lv]) setSkillLvDescCell(sid,pos,lv,c[lv].ja,c[lv].en); }); }catch(e){} }
+function _sldCollect(){ var out={}; var _m=(typeof storeSkillMax==='function')?storeSkillMax(window._sldStore):3; var _a=[]; for(var _i=0;_i<=_m;_i++)_a.push(_i); _a.forEach(function(lv){ var ja=document.getElementById('sld-ja-'+lv), en=document.getElementById('sld-en-'+lv); if(ja&&en) out[lv]={ja:ja.value,en:en.value}; }); return out; }
+function _sldSaveSilent(){ try{ var sid=window._sldStore,pos=window._sldPos; if(!sid||!pos)return; var c=_sldCollect(); (function(){ var _m=(typeof storeSkillMax==='function')?storeSkillMax(sid):3; var _a=[]; for(var _i=0;_i<=_m;_i++)_a.push(_i); return _a; })().forEach(function(lv){ if(c[lv]) setSkillLvDescCell(sid,pos,lv,c[lv].ja,c[lv].en); }); }catch(e){} }
 function _sldSetStore(id){ _sldSaveSilent(); window._sldStore=id; window._sldPos=null; openSkillLvDescEditor(); }
 function _sldSetPosIdx(i){ _sldSaveSilent(); window._sldPos=(window._sldPositions||[])[i]; openSkillLvDescEditor(); }
 function _sldSave(){ _sldSaveSilent(); closeModalDirect(); showToast(t('保存しました','Saved'),'success'); if(curPage==='skill') renderPage('skill'); }
@@ -35172,13 +35300,15 @@ function mySkillCardHtml(name, storeId){
       /* v701: getEmpSkills は全店マージ済み。念のため店舗別マップもフォールバックに使い取りこぼしを防ぐ。 */
       var skStore = (typeof getEmpSkillsStore==='function') ? (getEmpSkillsStore(name, storeId)||{}) : {};
       vals = positions.map(function(p){ var x=sk[p]; if(x&&x.status==='承認') return (x.level||0); var y=skStore[p]; if(y&&y.status==='承認') return (y.level||0); return 0; });
-      maxLv = 3; titleLabel = t('あなたのスキルレベル','Your Skill Levels'); legendLabel = t('Lv0〜3（承認済みのみ）','Lv0–3 (approved only)');
+      maxLv = (typeof storeSkillMax==='function')?storeSkillMax(storeId):3;   /* v711: 店舗ごとの最大レベル */
+      titleLabel = t('あなたのスキルレベル','Your Skill Levels');
+      legendLabel = t('Lv0〜'+maxLv+'（承認済みのみ）','Lv0–'+maxLv+' (approved only)');
     }
     window._mySkillCtx = { name:name, storeId:storeId, isPrep:_isPrep, maxLv:maxLv, positions:positions, vals:vals };
     var n = positions.length, W=280, H=210, cx=W/2, cy=H/2+4, R=76;
     function pt(i, r){ var a=-Math.PI/2 + i*2*Math.PI/n; return [cx+r*Math.cos(a), cy+r*Math.sin(a)]; }
     var rings='';
-    (maxLv===5?[1,2,3,4,5]:[1,2,3]).forEach(function(lv){
+    (function(){ var _r=[]; for(var _i=1;_i<=maxLv;_i++)_r.push(_i); return _r; })().forEach(function(lv){   /* v711 */
       var pts=positions.map(function(_,i){ return pt(i, R*lv/maxLv).map(Math.round).join(','); }).join(' ');
       rings += '<polygon points="'+pts+'" fill="none" stroke="var(--border)" stroke-width="1"/>';
     });
@@ -42653,12 +42783,13 @@ function renderSkillSelf() {
   return html;
 }
 
-function showCriteria(position) {
+function showCriteria(position, storeId) {
   var crit = skillCriteria(position);
+  var _max=(typeof storeSkillMax==='function')?storeSkillMax(storeId || (curStore!=='ALL'?curStore:null)):3;   /* v711 */
   var html = `<div class="modal-title">${posLabel(position)} ${t('スキル基準','Skill criteria')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:13px">`;
-  [0,1,2,3].forEach(lv=>{
-    var col = evalColorLv(lv,3);
+  (function(){ var a=[]; for(var i=0;i<=_max;i++)a.push(i); return a; })().forEach(lv=>{
+    var col = evalColorLv(lv,_max);
     html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
       <span class="tag ${lv===3?'tag-orange':'tag-gray'}" style="font-size:10px">Lv${lv}</span>
       <span style="color:${col};margin-left:6px">${crit[lv]||'—'}</span></div>`;
@@ -42674,13 +42805,16 @@ function openSkillCriteriaOverlay(position, opts){
   var canPick=!!opts.targetSelectId;
   var minLv=opts.minLv!=null?opts.minLv:0;
   var cur=opts.current!=null?opts.current:null;
+  /* v711: 店舗ごとの最大レベル（Kaimuki/PiikoiはLv4まで）。店舗が渡らない場合は表示中の店舗で判定。 */
+  var _sid=opts.storeId || (window._mySkillCtx&&window._mySkillCtx.storeId) || (curStore!=='ALL'?curStore:null);
+  var _max=(typeof storeSkillMax==='function')?storeSkillMax(_sid):3;
   window._skillCritCtx = {position:position, targetSelectId:opts.targetSelectId, chipId:opts.chipId};
-  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)',4:'var(--accent2, var(--accent))'};
   closeSkillCritOverlay();
   var ov=document.createElement('div'); ov.id='skill-crit-ov';
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100001;display:flex;align-items:flex-end;justify-content:center';
   ov.onclick=function(e){ if(e.target===ov) closeSkillCritOverlay(); };
-  var cards=[0,1,2,3].map(function(lv){
+  var cards=(function(){ var a=[]; for(var i=0;i<=_max;i++)a.push(i); return a; })().map(function(lv){
     var pickable = canPick && lv>=minLv;
     var sel=(cur===lv);
     return '<div '+(pickable?'onclick="skillCritPick(\''+opts.targetSelectId+'\','+lv+')"':'')+' style="display:flex;gap:10px;align-items:flex-start;border:1.5px solid '+(sel?cols[lv]:'var(--border)')+';border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:'+(pickable?'pointer':'default')+';opacity:'+(canPick&&!pickable?'.5':'1')+'">'
@@ -44658,6 +44792,7 @@ async function checkDriveOAuthReturn(){
 try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
 try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePositionsSplitC', e); }
 try { migrateOfficePositions(); } catch(e) { console.error('migrateOfficePositions', e); }
+    try { migrateTotoyaSkillV2(); } catch(e) { console.error('migrateTotoyaSkillV2', e); }
 try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
 try { migrateStoreManagers(); } catch(e) { console.error('migrateStoreManagers', e); }
 (async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) { try { await loginBootstrapPull(); } catch(_){} bootLogin(); } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
