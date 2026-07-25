@@ -18108,6 +18108,96 @@ async function loadStoreLabor(sid, guid, days, liveFill){
    fetchTipLaborFromDB は失敗時も空配列を返すため、
    「DBに無い」「権限で読めない」「端末に保存できない」が全部同じ見え方になっていた。
    ここでは HTTP ステータスと本文まで出して、どれなのかを確定させる。 */
+/* ===== v715: 端末の保存容量を安全に空ける =====
+   診断の結果、クラウドには勤怠があるのに端末が5.1MBで上限に達し、保存できていなかった。
+   クラウドへ同期されているキーは「消しても再取得できるキャッシュ」なので、
+   大きいものから順に解放して空きを作る。同期されていないキーは絶対に消さない。 */
+/* 同期されていても「消してはいけない」もの。棚卸履歴・予算・請求書・承認記録などは
+   復旧不能／再入力が重いため、容量整理の対象から必ず除外する。 */
+var LS_NEVER_FREE = ['inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
+  'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
+  'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_'];
+function _lsProtectedKey(k){
+  var s=String(k||'');
+  return LS_NEVER_FREE.some(function(p){ return s===p || s.indexOf(p)===0 || s.indexOf(p)>=0 && p.indexOf('_')>=0 && s.indexOf(p)===(s.indexOf('spl_')===0?4:0); });
+}
+function _lsKeyRecoverable(k){
+  var s=String(k||'');
+  if(!s || s.indexOf('_')===0) return false;                 /* 内部フラグは触らない */
+  if(_lsProtectedKey(s)) return false;                       /* v715: 復旧不能・再入力が重いものは対象外 */
+  if(s.indexOf('tip_labor_')===0) return true;               /* DBのtip_laborから再取得可 */
+  try{
+    if(typeof OP_SYNC_KEYS!=='undefined' && OP_SYNC_KEYS.indexOf(s)>=0) return true;
+    if(typeof SUPA_SETTING_KEYS!=='undefined' && SUPA_SETTING_KEYS.indexOf(s)>=0) return true;
+    if(typeof OP_SYNC_PREFIX!=='undefined' && OP_SYNC_PREFIX.some(function(p){ return s.indexOf(p)===0; })) return true;
+    if(typeof SUPA_SETTING_PREFIX!=='undefined' && SUPA_SETTING_PREFIX.some(function(p){ return s.indexOf(p)===0; })) return true;
+  }catch(e){}
+  return false;
+}
+function _lsAllKeysBySize(){
+  var a=[];
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i); if(!k) continue;
+      var v=localStorage.getItem(k)||'';
+      a.push({k:k, bytes:(k.length+v.length)*2, rec:_lsKeyRecoverable(k)});
+    }
+  }catch(e){}
+  a.sort(function(x,y){ return y.bytes-x.bytes; });
+  return a;
+}
+/* 目標容量(MB)を下回るまで、再取得できるキャッシュを大きい順に解放する */
+function freeRecoverableSpace(targetMb){
+  targetMb = targetMb || 3.4;
+  var limit = targetMb*1024*1024;
+  var freed=0, removed=[];
+  try{
+    /* ① まず古い月の勤怠キャッシュ */
+    freed += (typeof _lsFreeOldLaborKeys==='function') ? _lsFreeOldLaborKeys(2) : 0;
+    /* ② それでも足りなければ、再取得できるキャッシュを大きい順に */
+    /* v715: 勤怠キャッシュは①で古い月だけ処理済み。直近の勤怠は復元したいデータ本体なので掃除対象から外す */
+    var list=_lsAllKeysBySize().filter(function(x){ return x.rec && String(x.k).indexOf('tip_labor_')!==0; });
+    for(var i=0;i<list.length && lsBytesTotal()>limit;i++){
+      try{ localStorage.removeItem(list[i].k); freed+=list[i].bytes; removed.push(list[i].k); }catch(e){}
+    }
+  }catch(e){}
+  return {freed:freed, removed:removed, nowMb:(function(){ try{ return lsBytesTotal()/1024/1024; }catch(e){ return 0; } })()};
+}
+async function openStorageManager(){
+  var mb=0; try{ mb=lsBytesTotal()/1024/1024; }catch(e){}
+  var list=_lsAllKeysBySize();
+  var recMb=list.filter(function(x){return x.rec;}).reduce(function(a,x){return a+x.bytes;},0)/1024/1024;
+  var rows=list.slice(0,15).map(function(x){
+    return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0">'
+      +'<span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%">'+escapeHtml(x.k)+'</span>'
+      +'<span>'+(x.bytes/1024).toFixed(0)+'KB '+(x.rec?'<span style="color:var(--green)">再取得可</span>':'<span style="color:var(--red)">端末のみ</span>')+'</span></div>';
+  }).join('');
+  openModal('<div class="modal-title"><i class="ti ti-database"></i> 端末の保存容量 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="display:flex;gap:16px;align-items:center">'
+    +'<div><div style="font-size:10px;color:var(--muted)">使用量</div><div style="font-size:22px;font-weight:800;color:'+(mb>=4.3?'var(--red)':'var(--tm)')+'">'+mb.toFixed(1)+'MB</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">うち再取得可</div><div style="font-size:22px;font-weight:800;color:var(--green)">'+recMb.toFixed(1)+'MB</div></div>'
+    +'<div style="margin-left:auto;font-size:10.5px;color:var(--muted);text-align:right;max-width:130px">上限に近いと勤怠などが保存できません</div>'
+    +'</div></div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">大きい順（上位15）</div>'+rows
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:5px">「再取得可」＝クラウドにも保存されており、消しても次回の同期で戻ります。「端末のみ」は消しません。</div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="runFreeSpace()"><i class="ti ti-trash"></i> 空き容量を作る</button></div>');
+}
+async function runFreeSpace(){
+  var before=0; try{ before=lsBytesTotal()/1024/1024; }catch(e){}
+  var r=freeRecoverableSpace(3.4);
+  showToast((r.freed/1024/1024).toFixed(1)+'MB 解放しました（'+before.toFixed(1)+'MB → '+r.nowMb.toFixed(1)+'MB）','success');
+  /* 勤怠をその場で取り直す */
+  try{
+    var stores=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
+    for(var i=0;i<stores.length;i++){
+      var s=stores[i]; if(!s.toastGuid) continue;
+      try{ await syncTipLaborFromDB(s.id, s.toastGuid, (typeof attMonthDays==='function')?attMonthDays():monthDays()); }catch(e){}
+    }
+  }catch(e){}
+  try{ closeModalDirect(); }catch(e){}
+  try{ await openLaborRootCause(); }catch(e){}
+}
 async function openLaborRootCause(){
   var stores=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
   var to=(function(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
@@ -18174,6 +18264,7 @@ async function openLaborRootCause(){
       +tbl
       +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px">期間: '+from+' 〜 '+to+' ／ 端末の保存使用量: '+mb+'MB</div>'
       +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+      +'<button class="btn btn-secondary" onclick="closeModalDirect();openStorageManager()"><i class="ti ti-database"></i> 容量を整理</button>'
       +(['ceo','gm','office'].indexOf(curRole)>=0?'<button class="btn btn-primary" onclick="laborResync7()"><i class="ti ti-cloud-download"></i> Toastから直近7日を取り直す</button>':'')
       +'</div>';
   }
@@ -18979,7 +19070,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '714';
+const APP_VERSION = '715';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
