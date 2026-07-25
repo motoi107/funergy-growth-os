@@ -1686,6 +1686,7 @@ const NAV_ITEMS = [
   {id:'leadership',  label:'Career Score', icon:'ti-trending-up',       roles:['ceo','gm','am','sl']},
   {id:'tiprate',     label:'チップ率',    icon:'ti-percentage',             roles:['ceo','gm','am','sl','crew']},
   {id:'ojtmap',      label:'OJTマップ',   icon:'ti-route',        roles:['ceo','gm','office','am','sl','crew']},
+  {id:'totoya_docs', label:'Totoya資料',  icon:'ti-book-2',       roles:['ceo','gm','office','am','sl','crew']},
   {id:'growthhub',   label:'お悩み相談室',  icon:'ti-mood-heart',   roles:['ceo','gm','office','am','sl']},
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl']},
   {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am','sl']},
@@ -1711,7 +1712,7 @@ const MENU_GROUPS = [
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
     children:['tasks']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','hiring','shift_admin','tip','hr','vacation','crew_handbook']},
+    children:['staff_master','hiring','shift_admin','tip','hr','vacation','totoya_docs','crew_handbook']},
   {id:'g_growth', label:'育成・評価', icon:'ti-school', roles:['ceo','gm','office','am','sl'],
     children:['skill','ojt_admin','growth_mgr','leadership','growthhub']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
@@ -1749,7 +1750,7 @@ const CREW_GROUPS = [
   {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage']},
   {id:'g_handbook', label:'Handbook', icon:'ti-book', children:['crew_handbook']},
   {id:'g_myshift', label:'シフト', icon:'ti-calendar-event', children:['shift_staff']},
-  {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['skill','ojtmap']},
+  {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['skill','ojtmap','totoya_docs']},
   {id:'g_tip', label:'チップ', icon:'ti-coin', children:['tiprate']},
   {id:'g_store', label:'店舗オペレーション', icon:'ti-building-store', children:['store_cmd']},
 ];
@@ -7154,6 +7155,7 @@ function renderPage(page) {
     case 'skill':        el.innerHTML = renderSkill(); break;
     case 'tiprate':      el.innerHTML = renderTipRate(); break;
     case 'ojtmap':       el.innerHTML = renderOjtMap(); break;
+    case 'totoya_docs':  el.innerHTML = renderTotoyaDocs(); break;
     case 'growthhub':    el.innerHTML = renderGrowthHub(); break;
     case 'growth_mgr':   el.innerHTML = renderGrowthManager(); break;
     case 'ojt_admin':    el.innerHTML = renderOjtAdmin(); break;
@@ -18818,7 +18820,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '709';
+const APP_VERSION = '710';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -23719,6 +23721,66 @@ function _ceMarkerShow(o){
 /* ===== v706: キャリア説明に「Totoya Shift Leader」「G2（Totoya）」タブを新設 =====
    出典: Shift Leader = Shift_Leader_Program_EN_JA_final.pdf / G2 = 役割分担表.xlsx のG2列
    言語切替は既存の _rmLang / setRmLang / _respL を流用（役割マップ・責任マトリクスと同じ操作感） */
+/* ===== v710: Totoya資料ページ（人材管理＋スタッフメニューの両方から見られる） =====
+   ・Shift Leader … Totoya所属のG1以上（＝Totoyaの全スタッフ）
+   ・G2責任マトリクス … Totoya所属のG2以上
+   ・GM/CEO/経理/AMは管理のため常に閲覧可（編集は既存どおりGM・CEOのみ）
+   G1(crew)は専用メニュー(CREW_GROUPS)を使うため、人材管理だけでは届かない。
+   そのためスキルグループにも同じページを登録している。 */
+var _tyDocTab = 'sl';
+function setTyDocTab(t){ _tyDocTab=t; renderPage('totoya_docs'); }
+function _tyDocCtx(){
+  var me=(typeof myName==='function')?myName():(curUserName||'');
+  var emp=(typeof getEmployees==='function')?(getEmployees().find(function(e){return e.name===me;})||{}):{};
+  var g=(typeof empGradeNum==='function')?(empGradeNum(emp)||0):0;
+  if(!g && curRole==='crew') g=1;
+  var st=(typeof STORES!=='undefined')?(STORES.find(function(s){return s.id===emp.store;})||{}):{};
+  var isTotoya=(st.brand==='Totoya');
+  var isAdmin=(['ceo','gm','office','am'].indexOf(curRole)>=0);
+  return { me:me, emp:emp, grade:g, store:st, isTotoya:isTotoya, isAdmin:isAdmin,
+           showSL:(isAdmin||isTotoya), showG2:(isAdmin||(isTotoya&&g>=2)) };
+}
+function renderTotoyaDocs(){
+  var c=_tyDocCtx();
+  var h='<div class="section-header"><div><div class="section-title"><i class="ti ti-book-2" style="color:var(--accent)"></i> '
+    +t('Totoya 業務資料','Totoya guides')+'</div>'
+    +'<div class="section-sub">'+t('シフトリーダーの業務と、Gradeごとの責任範囲','Shift Leader duties and responsibility by grade')+'</div></div></div>';
+
+  if(!c.showSL && !c.showG2){
+    return h+'<div class="card"><div style="display:flex;gap:10px;align-items:flex-start">'
+      +'<i class="ti ti-lock" style="color:var(--muted);font-size:20px"></i>'
+      +'<div><p style="font-size:13px;font-weight:700">'+t('この資料はTotoya所属のスタッフ向けです','These guides are for Totoya staff')+'</p>'
+      +'<p style="font-size:12px;color:var(--muted);margin-top:3px">'
+      +t('所属店舗が Totoya（Kaimuki / Piikoi / Aiea）に設定されると表示されます。','They appear once your store is set to Totoya (Kaimuki / Piikoi / Aiea).')
+      +'</p></div></div></div>';
+  }
+  /* 見られるタブへ自動補正 */
+  if(_tyDocTab==='g2' && !c.showG2) _tyDocTab='sl';
+  if(_tyDocTab==='sl' && !c.showSL) _tyDocTab='g2';
+
+  /* 自分の状態 */
+  h+='<div class="card" style="padding:9px 12px;display:flex;align-items:center;gap:9px;flex-wrap:wrap">'
+    +'<i class="ti ti-user-check" style="color:var(--accent)"></i>'
+    +'<span style="font-size:12px;font-weight:700">'+escapeHtml(c.me||'-')+'</span>'
+    +(c.grade?'<span class="tag tag-blue" style="font-size:10px">G'+c.grade+'</span>':'')
+    +(c.store&&c.store.name?'<span style="font-size:11px;color:var(--muted)">'+escapeHtml(c.store.name)+'</span>':'')
+    +'<span style="margin-left:auto;font-size:10.5px;color:var(--muted)">'
+    +(c.showG2? t('G2以上：両方の資料を閲覧できます','G2+: both guides available') : t('G1：シフトリーダーの資料を閲覧できます','G1: Shift Leader guide available'))
+    +'</span></div>';
+
+  /* タブ */
+  var tabs=[];
+  if(c.showSL) tabs.push(['sl','ti-star','Shift Leader']);
+  if(c.showG2) tabs.push(['g2','ti-user-check','G2'+t('（責任マトリクス）',' responsibilities')]);
+  if(tabs.length>1){
+    h+='<div class="phase-tabs" style="margin-bottom:10px">'
+      +tabs.map(function(tb){
+        return '<div class="phase-tab'+(_tyDocTab===tb[0]?' active':'')+'" onclick="setTyDocTab(\''+tb[0]+'\')"><i class="ti '+tb[1]+'"></i> '+tb[2]+'</div>';
+      }).join('')+'</div>';
+  }
+  h+=(_tyDocTab==='g2') ? renderTotoyaG2() : renderTotoyaSL();
+  return h;
+}
 function _tyLangBar(){
   var en=(window._rmLang==='en');
   return '<div class="rm-langbar" style="display:flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;width:fit-content;margin-bottom:12px">'
