@@ -18104,6 +18104,98 @@ async function loadStoreLabor(sid, guid, days, liveFill){
   }
 }
 /* Labor診断: 端末で「DBに実データがあるか／ローカルにあるか／集計時間・賃金」を可視化。CEO/GMで比較して原因を確定 */
+/* ===== v714: 勤怠が「ゼロ」になる原因を切り分ける診断 =====
+   fetchTipLaborFromDB は失敗時も空配列を返すため、
+   「DBに無い」「権限で読めない」「端末に保存できない」が全部同じ見え方になっていた。
+   ここでは HTTP ステータスと本文まで出して、どれなのかを確定させる。 */
+async function openLaborRootCause(){
+  var stores=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
+  var to=(function(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+  var from=(function(){ var d=new Date(); d.setDate(d.getDate()-45); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+  openModal('<div class="modal-title"><i class="ti ti-stethoscope"></i> 勤怠の原因診断 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div id="lrc-body" style="font-size:12px"><i class="ti ti-loader"></i> 確認中…（直近45日）</div>');
+  var rows=[];
+  for(var i=0;i<stores.length;i++){
+    var s=stores[i], guid=s.toastGuid||'';
+    var r={name:s.name, id:s.id, guid:!!guid, status:'-', total:0, withData:0, latest:'', err:'', local:0};
+    if(guid){
+      try{
+        var url=SUPABASE_URL+'/rest/v1/tip_labor?restaurant_guid=eq.'+encodeURIComponent(guid)
+          +'&business_date=gte.'+from+'&business_date=lte.'+to+'&order=business_date.asc';
+        var res=await fetch(url, { headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON } });
+        r.status=res.status;
+        if(res.ok){
+          var j=await res.json();
+          if(Array.isArray(j)){
+            r.total=j.length;
+            j.forEach(function(x){
+              var d=x.data; var n=d?(Array.isArray(d)?d.length:Object.keys(d).length):0;
+              if(n>0){ r.withData++; r.latest=String(x.business_date||'').slice(0,10); }
+            });
+          }
+        } else { r.err=(await res.text().catch(function(){return '';})).slice(0,120); }
+      }catch(e){ r.err=String((e&&e.message)||e).slice(0,120); }
+    }
+    try{
+      for(var k=0;k<localStorage.length;k++){
+        var kk=localStorage.key(k);
+        if(kk && kk.indexOf('tip_labor_'+s.id+'_')===0){
+          var v=localStorage.getItem(kk)||'';
+          if(v && v!=='{}' && v!=='null') r.local++;
+        }
+      }
+    }catch(e){}
+    rows.push(r);
+  }
+  var mb='?'; try{ mb=(lsBytesTotal()/1024/1024).toFixed(1); }catch(e){}
+  var anyDb=rows.some(function(r){ return r.withData>0; });
+  var anyErr=rows.some(function(r){ return r.err || (r.status!==200 && r.status!=='-'); });
+  var verdict, action;
+  if(anyErr){ verdict='<b style="color:var(--red)">クラウドから読み取れていません</b>'; action='HTTPステータスと内容を下の表で確認してください（401/403ならDBの権限設定、その他は通信）。'; }
+  else if(!anyDb){ verdict='<b style="color:var(--red)">クラウドに勤怠データがありません</b>'; action='Toastからの取り込み（夜間の自動同期）が動いていない可能性が高いです。下のボタンで直近7日を取り直してください。'; }
+  else if(rows.some(function(r){ return r.withData>0 && r.local===0; })){ verdict='<b style="color:var(--red)">クラウドにはあるが端末に保存できていません</b>'; action='保存容量が上限の可能性があります（使用量 '+mb+'MB）。設定＞保存容量で整理してから、勤怠画面の取得を再実行してください。'; }
+  else { verdict='<b style="color:var(--green)">クラウド・端末とも勤怠データがあります</b>'; action='表示側の条件（月の選択・店舗の選択）をご確認ください。'; }
+  var tbl='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
+    +'<thead><tr style="color:var(--muted)"><th style="text-align:left;padding:4px">店舗</th><th style="padding:4px">HTTP</th><th style="padding:4px">DB行</th><th style="padding:4px">実データ</th><th style="padding:4px">最新日</th><th style="padding:4px">端末</th></tr></thead><tbody>'
+    +rows.map(function(r){
+      return '<tr style="border-top:1px solid var(--border)">'
+        +'<td style="padding:4px;text-align:left">'+escapeHtml(r.name)+(r.guid?'':'<span style="color:var(--red)"> GUID無</span>')+'</td>'
+        +'<td style="padding:4px;text-align:center;color:'+((r.status===200)?'var(--muted)':'var(--red)')+'">'+r.status+'</td>'
+        +'<td style="padding:4px;text-align:center">'+r.total+'</td>'
+        +'<td style="padding:4px;text-align:center;font-weight:700;color:'+(r.withData?'var(--green)':'var(--red)')+'">'+r.withData+'</td>'
+        +'<td style="padding:4px;text-align:center">'+escapeHtml(r.latest||'—')+'</td>'
+        +'<td style="padding:4px;text-align:center;color:'+(r.local?'var(--muted)':'var(--red)')+'">'+r.local+'</td></tr>'
+        +(r.err?'<tr><td colspan="6" style="padding:2px 6px;font-size:10px;color:var(--red)">'+escapeHtml(r.err)+'</td></tr>':'');
+    }).join('')+'</tbody></table></div>';
+  var body=document.getElementById('lrc-body');
+  if(body){
+    body.innerHTML='<div class="alert '+(anyDb&&!anyErr?'alert-info':'alert-warning')+'" style="margin:0 0 8px"><div>'
+      +'<p style="font-size:13px">'+verdict+'</p><p style="font-size:12px;margin-top:3px">'+escapeHtml(action)+'</p></div></div>'
+      +tbl
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px">期間: '+from+' 〜 '+to+' ／ 端末の保存使用量: '+mb+'MB</div>'
+      +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+      +(['ceo','gm','office'].indexOf(curRole)>=0?'<button class="btn btn-primary" onclick="laborResync7()"><i class="ti ti-cloud-download"></i> Toastから直近7日を取り直す</button>':'')
+      +'</div>';
+  }
+}
+async function laborResync7(){
+  if(['ceo','gm','office'].indexOf(curRole)<0){ showToast('この操作はGM・経理・CEOのみです','warning'); return; }
+  showToast('Toastから取得中…（30〜90秒）','info');
+  var ok=0, ng=[];
+  var stores=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
+  for(var i=0;i<stores.length;i++){
+    var s=stores[i]; if(!s.toastGuid) continue;
+    try{
+      var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
+        body: JSON.stringify({ mode:'cronSync', days:7, restaurantGuid:s.toastGuid }) });
+      var j=await res.json();
+      if(j && j.ok) ok++; else ng.push(s.name+': '+String(JSON.stringify(j)).slice(0,60));
+    }catch(e){ ng.push(s.name+': '+String(e).slice(0,60)); }
+  }
+  showToast(ok?('取り込み完了 '+ok+'店'+(ng.length?('／失敗 '+ng.length+'店'):'')):'取り込みに失敗しました', ok?'success':'warning');
+  try{ closeModalDirect(); }catch(e){}
+  try{ await openLaborRootCause(); }catch(e){}
+}
 async function runLaborDiag(){
   var ym=ymOf(attMonthRef()); var days=daysOfYm(ym); var d0=days[0].date, d1=days[days.length-1].date;
   var stores=(typeof getVisibleStores==='function'?getVisibleStores():[]);
@@ -18161,7 +18253,7 @@ function renderLabor() {
   var storeId = allStore ? null : store.id;
   var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${allStore?'全店集計':store.name} · 勤怠×時給</div></div></div>`;
   html += laborStoreChips(_laborStore);
-  if(['ceo','gm','office'].indexOf(curRole)>=0) html += '<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="labor-refresh-btn" onclick="refreshLaborFromCloud()"><i class="ti ti-refresh"></i> 取得（Toast補完込み）</button><button class="btn btn-secondary btn-sm" onclick="runLaborDiag()"><i class="ti ti-stethoscope"></i> 診断</button></div>';
+  if(['ceo','gm','office'].indexOf(curRole)>=0) html += '<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="labor-refresh-btn" onclick="refreshLaborFromCloud()"><i class="ti ti-refresh"></i> 取得（Toast補完込み）</button><button class="btn btn-secondary btn-sm" onclick="runLaborDiag()"><i class="ti ti-stethoscope"></i> 診断</button><button class="btn btn-primary btn-sm" onclick="openLaborRootCause()"><i class="ti ti-alert-circle"></i> 原因診断</button></div>';
   if (_laborLoading()) html += '<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> 勤怠データをクラウドから同期中…（全店・前日まで）。数値は同期完了後に確定します。</div>';
   if (allStore) return html + renderLaborOverview();
   if (perStoreTabs.indexOf(laborTab)<0) laborTab = 'hours';
@@ -18887,7 +18979,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '713';
+const APP_VERSION = '714';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
