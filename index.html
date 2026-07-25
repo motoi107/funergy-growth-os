@@ -3415,7 +3415,19 @@ function getTipLabor(storeId, date) {
   }
   return d;
 }
-function setTipLabor(storeId, date, data) { lsSet('tip_labor_'+storeId+'_'+date, data); }
+function setTipLabor(storeId, date, data) {
+  var _k='tip_labor_'+storeId+'_'+date;
+  lsSet(_k, data);
+  /* v713: lsSet は容量オーバーを握り潰すため、保存できたかを必ず確認する。
+     失敗時は古い月の勤怠キャッシュを解放して1回だけ再試行し、それでも駄目なら明示的に知らせる。 */
+  try{
+    if(localStorage.getItem(_k)==null){
+      _lsFreeOldLaborKeys(2);
+      lsSet(_k, data);
+      if(localStorage.getItem(_k)==null) _laborSaveWarn();
+    }
+  }catch(e){}
+}
 
 /* チップ配分の対象外（日別・人別・帯別）。{empName:{lunch:bool, dinner:bool}}
    勤怠時間はそのまま残し、チップ配分からだけ外す。外した分はその帯の残りで再按分。 */
@@ -4356,7 +4368,7 @@ function lsIsPrunable(k){
 }
 function lsPrunableInfo(){ var tt=0,n=0; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)){ var v=localStorage.getItem(k)||''; tt+=(k.length+v.length)*2; n++; } } }catch(e){} return {bytes:tt,count:n}; }
 function _lsPrunableKeys(){ var a=[]; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(lsIsPrunable(k)) a.push(k); } }catch(e){} return a; }
-function autoPruneIfCritical(){ try{ if(lsBytesTotal() > 4.3*1024*1024){ _lsPrunableKeys().forEach(function(k){ try{localStorage.removeItem(k);}catch(e){} }); } }catch(e){} }
+function autoPruneIfCritical(){ try{ if(lsBytesTotal() > 4.3*1024*1024){ /* v713: 全削除はやめ、古い月の勤怠キャッシュから解放 */ _lsFreeOldLaborKeys(2); if(lsBytesTotal() > 4.3*1024*1024){ _lsPrunableKeys().forEach(function(k){ try{localStorage.removeItem(k);}catch(e){} }); } } }catch(e){} }
 function runStorageCleanup(){
   var keys=_lsPrunableKeys();
   if(!keys.length){ if(typeof showToast==='function') showToast(t('整理できるキャッシュはありません','No cache to clean'),'info'); return; }
@@ -5521,6 +5533,59 @@ function opMergePush(key, localVal, table){
   _opMergeChain[key] = next;
   return next;
 }
+/* ===== v713: 勤怠キャッシュ(tip_labor_)の一括削除をやめる =====
+   【原因】v703で pullOpKey に「保存できなければ再生成可能キャッシュを全削除して再試行」を入れた。
+     v702で保護対象を広げた結果、_lsPrunableKeys() が返すのは実質 tip_labor_（＝勤怠キャッシュ）
+     だけになっており、容量が逼迫するたびに勤怠が全期間まとめて消えていた。
+     さらに lsSet は容量オーバーを握り潰すため、DBから取り直しても保存できず戻らない。
+   【対策】削除は「古い月の勤怠キャッシュ」に限定し、保存は必ず検証して、失敗時は明示的に知らせる。 */
+function _lsLaborKeys(){
+  var a=[];
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i); if(!k) continue;
+      var body=(k.indexOf('spl_')===0)?k.slice(4):k;
+      if(body.indexOf('tip_labor_')!==0) continue;
+      var m=k.match(/(\d{4})-(\d{2})-(\d{2})$/);
+      a.push({k:k, ym:m?(m[1]+'-'+m[2]):'', bytes:((localStorage.getItem(k)||'').length+k.length)*2});
+    }
+  }catch(e){}
+  return a;
+}
+/* 直近 keepMonths か月分を残し、古い勤怠キャッシュだけを解放する。戻り値=解放バイト */
+function _lsFreeOldLaborKeys(keepMonths){
+  keepMonths = keepMonths || 2;
+  var keep={};
+  var d=new Date();
+  for(var i=0;i<keepMonths;i++){
+    keep[d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')]=1;
+    d.setMonth(d.getMonth()-1);
+  }
+  var freed=0;
+  _lsLaborKeys().filter(function(x){ return x.ym && !keep[x.ym]; })
+    .sort(function(a,b){ return a.ym<b.ym?-1:1; })
+    .forEach(function(x){ try{ localStorage.removeItem(x.k); freed+=x.bytes; }catch(e){} });
+  /* それでも足りない場合に備え、再計算できる軽量キャッシュも解放 */
+  if(freed===0){
+    try{
+      for(var j=localStorage.length-1;j>=0;j--){
+        var k2=localStorage.key(j); if(!k2) continue;
+        var b2=(k2.indexOf('spl_')===0)?k2.slice(4):k2;
+        if(b2.indexOf('warnings_')===0 || b2.indexOf('reminded_')===0){
+          freed+=((localStorage.getItem(k2)||'').length+k2.length)*2;
+          localStorage.removeItem(k2);
+        }
+      }
+    }catch(e){}
+  }
+  return freed;
+}
+var _laborSaveWarned=false;
+function _laborSaveWarn(){
+  if(_laborSaveWarned) return; _laborSaveWarned=true;
+  var mb='?'; try{ mb=(lsBytesTotal()/1024/1024).toFixed(1); }catch(e){}
+  try{ showToast('勤怠を端末に保存できません（使用量 '+mb+'MB）。設定＞保存容量で整理してください','error'); }catch(e){}
+}
 function _lsSetVerified(key, json){
   try{ localStorage.setItem(key, json); }catch(e){ return false; }
   try{ return localStorage.getItem(key)!=null; }catch(e){ return false; }
@@ -5535,7 +5600,9 @@ async function pullOpKey(key){
          そのため容量不足の端末では「取得成功なのに端末に無い」状態になり、
          スキル等がいつまでも反映されなかった。保存を検証し、ダメなら空けて再試行する。 */
       if(!_lsSetVerified(key,_json)){
-        try{ _lsPrunableKeys().forEach(function(pk){ try{ localStorage.removeItem(pk); }catch(e){} }); }catch(e){}
+        /* v713: 以前はここで再生成可能キャッシュを全削除していたが、実質 tip_labor_（勤怠）だけが対象となり、
+           容量が逼迫するたびに勤怠が全期間消えていた。古い月の勤怠キャッシュのみを解放する。 */
+        try{ _lsFreeOldLaborKeys(2); }catch(e){}
         if(!_lsSetVerified(key,_json)){
           try{ window._pullSaveFailed=(window._pullSaveFailed||{}); window._pullSaveFailed[key]=Date.now(); }catch(e){}
           return false;
@@ -18820,7 +18887,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '712';
+const APP_VERSION = '713';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
