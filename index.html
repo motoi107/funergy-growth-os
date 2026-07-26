@@ -4171,12 +4171,13 @@ function _splitRead(key, sp, rawMode){
 function _splitWrite(key, sp, val){
   var pre=_splitPrefix(key);
   var curMerged=_splitRead(key, sp, true);   /* v679: tombstone込みの生データと比較 */   // 現在のマージ後の値と比較（実際に変更したエンティティだけ書く）
+  var _wOk=true;   /* v719: パーティションごとの保存結果を集計して呼び出し元へ返す */
   if(sp.type==='obj'){
     val=val||{};
     Object.keys(val).forEach(function(id){
-      if(JSON.stringify(curMerged[id])!==JSON.stringify(val[id])) lsSet(pre+id, val[id]);
+      if(JSON.stringify(curMerged[id])!==JSON.stringify(val[id])){ if(lsSet(pre+id, val[id])===false) _wOk=false; }
     });
-    return;
+    return _wOk;
   }
   val=val||[];
   var byId={}; val.forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (byId[id]=byId[id]||[]).push(r); });
@@ -4188,10 +4189,11 @@ function _splitWrite(key, sp, val){
   }catch(e){} }
   var curById={}; (curMerged||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (curById[id]=curById[id]||[]).push(r); });
   // 全エントリが削除されたパーティションは空配列でクリア（ローカル＆クラウド行を空に → 他端末で復活しない）
-  if(!sp.noDelete) Object.keys(curById).forEach(function(id){ if(!byId[id] && (curById[id]||[]).length){ lsSet(pre+id, []); } });
+  if(!sp.noDelete) Object.keys(curById).forEach(function(id){ if(!byId[id] && (curById[id]||[]).length){ if(lsSet(pre+id, [])===false) _wOk=false; } });
   Object.keys(byId).forEach(function(id){
-    if(JSON.stringify(curById[id])!==JSON.stringify(byId[id])) lsSet(pre+id, byId[id]);
+    if(JSON.stringify(curById[id])!==JSON.stringify(byId[id])){ if(lsSet(pre+id, byId[id])===false) _wOk=false; }
   });
+  return _wOk;
 }
 /* ============================================================
    v617: 棚卸履歴を「月ごと」に分割保存＋消失防止
@@ -4390,18 +4392,90 @@ function renderStorageCard(){
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+t('整理可能なキャッシュ','Re-fetchable cache')+': '+(pr.bytes/1048576).toFixed(1)+'MB ('+pr.count+'). '+t('データはクラウドに保存済みです。上限に近づいたら整理してください。','Your data is stored in the cloud. Clean up if you approach the limit.')+'</div>'
     +'<button class="btn btn-secondary btn-sm" onclick="runStorageCleanup()"><i class="ti ti-eraser"></i> '+t('キャッシュを整理して空ける','Clean cache & free space')+'</button></div>';
 }
-function lsSet(key, val) {
-  var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ _splitWrite(key, sp, val); return; }
-  try { localStorage.setItem(key, JSON.stringify(val)); }
-  catch(e){
-    if(e && (e.name==='QuotaExceededError' || e.code===22 || e.code===1014)){
-      try{ autoPruneIfCritical(); }catch(_){}
-      if(!_lsQuotaWarned){ _lsQuotaWarned=true; try{ if(typeof showToast==='function') showToast(t('保存容量が上限に達しました。設定＞保存容量の「キャッシュを整理」で空けてください（データはクラウドに保存済みです）','Device storage is full. Use Settings ▸ Device Storage ▸ Clean cache to free space. Your data is safe in the cloud.'),'error'); }catch(_){} }
+/* ============================================================
+   v719: 「保存できていないのに成功に見える」を無くす
+   【背景】localStorage が上限(約5MB)に達すると setItem は例外を投げるが、
+     従来はそれを握り潰し、トーストを1回出すだけで処理を続けていた。
+     その結果、
+       ・入力した内容が端末に残らない（画面を戻すと古い値のまま）
+       ・クラウドには push されるため、他端末では新しい値が見える
+     という「同期が反映されない」ように見える状態が発生していた。
+   【対策】書き込み後に必ず読み直して一致を確認し、失敗したキーを記録して
+     画面に出し続ける。黙って先に進まない。
+============================================================ */
+
+/* 書いた内容と一致するかまで確認する保存。
+   注意: setItem が例外を投げた場合、そのキーには「古い値」が残る。
+   getItem(key)!=null だけでは成功と誤判定するため、内容の一致まで見る。 */
+function _lsWriteVerified(key, json){
+  try{ localStorage.setItem(key, json); }catch(e){ /* 下の検証で失敗と判定させる */ }
+  try{ return localStorage.getItem(key)===json; }catch(e){ return false; }
+}
+
+/* 保存に失敗したキーの記録。クラウドと端末で食い違っている可能性がある項目。 */
+var _LS_SAVE_FAIL = {};
+function lsSaveFailKeys(){ try{ return Object.keys(_LS_SAVE_FAIL); }catch(e){ return []; } }
+function lsSaveFailCount(){ return lsSaveFailKeys().length; }
+function _lsNoteSaveFailure(key){
+  try{
+    if(_LS_SAVE_FAIL[key]) return;            /* 既知なら再描画しない */
+    _LS_SAVE_FAIL[key]=Date.now();
+    console.warn('lsSet failed (quota?)', key);
+    _lsRenderSaveFailBanner();
+  }catch(e){}
+}
+function _lsClearSaveFailure(key){
+  try{ if(_LS_SAVE_FAIL[key]){ delete _LS_SAVE_FAIL[key]; _lsRenderSaveFailBanner(); } }catch(e){}
+}
+
+/* 常設バナー: 1回きりのトーストでは見逃されるため、解消するまで出し続ける。
+   位置は更新バナー(bottom:16px)と重ならないよう bottom:76px。 */
+function _lsRenderSaveFailBanner(){
+  try{
+    if(typeof document==='undefined' || !document.body) return;
+    var n=lsSaveFailCount();
+    var bar=document.getElementById('ls-savefail-banner');
+    if(!n){ if(bar){ try{ bar.remove(); }catch(e){} } return; }
+    var isEn = (typeof curLang!=='undefined' && curLang==='en');
+    if(!bar){
+      bar=document.createElement('div');
+      bar.id='ls-savefail-banner';
+      bar.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:76px;z-index:99999;'
+        +'background:var(--surface,#1e1e1e);color:var(--text,#eee);border:1px solid var(--red,#e5484d);'
+        +'border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:10px;'
+        +'box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:12.5px;max-width:92vw';
+      document.body.appendChild(bar);
     }
-    console.warn('lsSet failed', key, e);
+    var msg=isEn
+      ? ('<b>'+n+'</b> item(s) could not be saved on this device.')
+      : ('この端末に保存できていない項目が <b>'+n+'</b> 件あります。');
+    bar.innerHTML='<i class="ti ti-alert-triangle" style="color:var(--red,#e5484d)"></i>'
+      +'<span style="flex:1;line-height:1.35">'+msg+'</span>'
+      +'<button class="btn btn-primary btn-sm" style="padding:4px 12px;font-size:12px;white-space:nowrap" '
+      +'onclick="openStorageManager()">'+(isEn?'Free space':'容量を整理')+'</button>';
+  }catch(e){}
+}
+
+function lsSet(key, val) {
+  var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
+  var _json;
+  try{ _json=JSON.stringify(val); }
+  catch(e){ console.warn('lsSet stringify failed', key, e); return false; }
+
+  var _ok=_lsWriteVerified(key, _json);
+  if(!_ok){
+    /* 容量オーバー: 古い月の勤怠キャッシュだけを解放して1回だけ再試行する。
+       v713 と同じ方針。ここで再取得可能キャッシュを一括削除すると、
+       容量が逼迫するたびに勤怠が全期間消える事故に戻るため行わない。 */
+    try{ _lsFreeOldLaborKeys(2); }catch(_){}
+    _ok=_lsWriteVerified(key, _json);
   }
+  if(_ok) _lsClearSaveFailure(key); else _lsNoteSaveFailure(key);
+
   // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
+  // 端末に保存できなかった場合でも push は行う。ここで送っておかないと入力内容がどこにも残らない。
   try { if (SUPA_SYNC_ENABLED) _pushWithOutbox(key, val); } catch(e){ console.warn('supa sync skip', e); }
+  return _ok;
 }
 
 /* ============================================================
@@ -4531,7 +4605,12 @@ async function flushOutbox(){
       var key=q[i].key;
       try{
         var cur=ls(key, null);
-        if(cur===null || typeof cur==='undefined'){ _outboxRemove(key); continue; } // ローカルに無い→送るものが無い
+        /* v719: 端末に保存できなかったキー（容量オーバー）を「送るものが無い」として捨てると、
+           入力内容が端末にもクラウドにも残らず完全に失われる。保存失敗中のキーはキューに残す。 */
+        if(cur===null || typeof cur==='undefined'){
+          if(_LS_SAVE_FAIL && _LS_SAVE_FAIL[key]) continue;   // 保存失敗中 → 次回に持ち越す
+          _outboxRemove(key); continue;                        // 本当に存在しない → 送るものが無い
+        }
         var r=await syncMasterToSupabase(key, cur);
         if(r!==false){ _outboxRemove(key); }                 // 成功 or 対象外 → 除去
         else { var a=_outboxGet(); var e=a.filter(function(x){return x.key===key;})[0]; if(e){ e.attempts=(e.attempts||0)+1; e.ts=Date.now(); _outboxSet(a); } }
@@ -5587,8 +5666,9 @@ function _laborSaveWarn(){
   try{ showToast('勤怠を端末に保存できません（使用量 '+mb+'MB）。設定＞保存容量で整理してください','error'); }catch(e){}
 }
 function _lsSetVerified(key, json){
-  try{ localStorage.setItem(key, json); }catch(e){ return false; }
-  try{ return localStorage.getItem(key)!=null; }catch(e){ return false; }
+  /* v719: 旧実装は setItem が例外を投げても「古い値が残っている」だけで成功と判定していた
+     （getItem(key)!=null が true になる）。書いた内容と一致するかまで確認する。 */
+  return _lsWriteVerified(key, json);
 }
 async function pullOpKey(key){
   try{
@@ -5618,7 +5698,22 @@ async function pullSettingKey(key){
     var res=await fetch(SUPABASE_URL+'/rest/v1/app_settings?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
     if(!res.ok) return false;
     var rows=await res.json();
-    if(rows && rows.length){ try{ localStorage.setItem(key, JSON.stringify(rows[0].value)); }catch(e){} return true; }
+    if(rows && rows.length){
+      /* v719: 従来は setItem を握り潰して常に true を返していた。容量不足の端末では
+         「取得成功なのに端末に無い」状態になり、設定（スキル基準・店舗設定・マトリクス等）が
+         いつまでも反映されなかった。保存を検証し、空けて再試行し、それでも駄目なら false。 */
+      var _sjson=JSON.stringify(rows[0].value);
+      if(!_lsWriteVerified(key,_sjson)){
+        try{ _lsFreeOldLaborKeys(2); }catch(e){}
+        if(!_lsWriteVerified(key,_sjson)){
+          try{ window._pullSaveFailed=(window._pullSaveFailed||{}); window._pullSaveFailed[key]=Date.now(); }catch(e){}
+          _lsNoteSaveFailure(key);
+          return false;
+        }
+      }
+      _lsClearSaveFailure(key);
+      return true;
+    }
   }catch(e){}
   return false;
 }
@@ -18163,6 +18258,20 @@ function freeRecoverableSpace(targetMb){
   }catch(e){}
   return {freed:freed, removed:removed, nowMb:(function(){ try{ return lsBytesTotal()/1024/1024; }catch(e){ return 0; } })()};
 }
+/* v719: 保存できていない項目を容量マネージャにも出す（何が反映されていないかを特定できるように） */
+function _lsSaveFailCardHtml(){
+  try{
+    var ks=lsSaveFailKeys();
+    if(!ks.length) return '';
+    var li=ks.slice(0,10).map(function(k){
+      return '<div style="font-size:11px;color:var(--red);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(k)+'</div>';
+    }).join('');
+    return '<div class="card" style="margin:0 0 8px;border-color:var(--red)">'
+      +'<div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:3px">'
+      +'<i class="ti ti-alert-triangle"></i> この端末に保存できていない項目（'+ks.length+'）</div>'+li
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:5px">空き容量を作ってから、該当画面で入力し直すか再同期してください。</div></div>';
+  }catch(e){ return ''; }
+}
 async function openStorageManager(){
   var mb=0; try{ mb=lsBytesTotal()/1024/1024; }catch(e){}
   var list=_lsAllKeysBySize();
@@ -18178,6 +18287,7 @@ async function openStorageManager(){
     +'<div><div style="font-size:10px;color:var(--muted)">うち再取得可</div><div style="font-size:22px;font-weight:800;color:var(--green)">'+recMb.toFixed(1)+'MB</div></div>'
     +'<div style="margin-left:auto;font-size:10.5px;color:var(--muted);text-align:right;max-width:130px">上限に近いと勤怠などが保存できません</div>'
     +'</div></div>'
+    +_lsSaveFailCardHtml()
     +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">大きい順（上位15）</div>'+rows
     +'<div style="font-size:10.5px;color:var(--muted);margin-top:5px">「再取得可」＝クラウドにも保存されており、消しても次回の同期で戻ります。「端末のみ」は消しません。</div></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
@@ -19070,7 +19180,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '718';
+const APP_VERSION = '719';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
