@@ -4196,6 +4196,97 @@ function _splitWrite(key, sp, val){
   return _wOk;
 }
 /* ============================================================
+   v720: 分割保存へ移行済みのキーは「旧・統合行」を端末に置かない
+   【背景】_applyKvRows() は app_state の全行を無条件に端末へ書き戻していた。
+     invoices は _SPLIT_KEYS により spl_invoices_<店> へ分割保存されるため、
+     lsSet('invoices', …) が bare キーを書くことはもう無い。
+     ところが移行前の統合行がクラウドに残っており、ログインのたびに再ダウンロードされ、
+     さらに mergeInvoices でマージされて増え続けていた。
+     実機(GM端末)では bare invoices = 724KB、これとは別に spl_invoices_* が存在し、
+     同じ請求書を端末に2セット持っていた。これが容量逼迫の主因。
+   【対策】統合行にしか無いレコードだけをパーティションへ畳み込み、統合キーを端末から解放する。
+     ・追加のみ。パーティションから消すことは一切しない
+     ・クラウドの旧行には触らない（GMが明示実行するまで残す＝落とし穴①の教訓）
+     ・畳み込みに失敗したら統合キーは残す（データを先に消さない）
+   【安全弁】レコードに id が無いキー（budgets_v2 等）は対象外。
+     id が無いと同一判定が JSON 一致になり、1項目でも違うと別レコードとして
+     二重登録されるため。判定できないものは触らない。
+============================================================ */
+function _splitRecKey(r){ return (r && r.id!=null) ? ('id:'+r.id) : ('j:'+JSON.stringify(r)); }
+
+/* パーティションのみを読む（bare の統合キーは含めない）。
+   _splitRead は統合キーも和集合に含めるため、被覆判定には使えない。 */
+function _splitPartitionsRaw(key, sp){
+  var pre=_splitPrefix(key), out={};
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i); if(!k || k.indexOf(pre)!==0) continue;
+      out[k.slice(pre.length)] = _lsRaw(k, (sp.type==='obj')?null:[]);
+    }
+  }catch(e){}
+  return out;
+}
+
+/* 全レコードが id を持つか（arr型のみ判定）。持たなければ畳み込みを行わない。 */
+function _splitFoldable(sp, cloudVal, parts){
+  if(sp.type==='obj') return true;
+  var ok=true;
+  try{
+    (Array.isArray(cloudVal)?cloudVal:[]).forEach(function(r){ if(!r || r.id==null) ok=false; });
+    Object.keys(parts).forEach(function(id){
+      var a=parts[id]; if(!Array.isArray(a)) return;
+      a.forEach(function(r){ if(!r || r.id==null) ok=false; });
+    });
+  }catch(e){ return false; }
+  return ok;
+}
+
+/* 統合行にしか無いレコードをパーティションへ畳み込む。追加のみ。 */
+function _foldLegacyIntoPartitions(key, cloudVal){
+  var sp=_SPLIT_KEYS && _SPLIT_KEYS[key];
+  if(!sp) return {ok:false, added:0, skipped:'not-split'};
+  var pre=_splitPrefix(key);
+  var parts=_splitPartitionsRaw(key, sp);
+  if(!_splitFoldable(sp, cloudVal, parts)) return {ok:false, added:0, skipped:'no-id'};
+
+  var pend={}, added=0;
+  if(sp.type==='obj'){
+    var v=cloudVal||{};
+    Object.keys(v).forEach(function(id){
+      if(Object.prototype.hasOwnProperty.call(parts, id)) return;   // 既にパーティションにある
+      pend[id]=v[id]; added++;
+    });
+  } else {
+    var seen={};
+    Object.keys(parts).forEach(function(id){
+      var a=parts[id]; if(!Array.isArray(a)) return;
+      a.forEach(function(r){ seen[_splitRecKey(r)]=1; });
+    });
+    (Array.isArray(cloudVal)?cloudVal:[]).forEach(function(r){
+      var mk=_splitRecKey(r); if(seen[mk]) return;                  // 既にパーティションにある
+      var id=String(sp.by(r)==null?'_':sp.by(r));
+      if(!pend[id]) pend[id]=(Array.isArray(parts[id])?parts[id].slice():[]);
+      pend[id].push(r); seen[mk]=1; added++;
+    });
+  }
+  var ok=true;
+  Object.keys(pend).forEach(function(id){ if(lsSet(pre+id, pend[id])===false) ok=false; });
+  return {ok:ok, added:added};
+}
+
+/* クラウドから分割済みキーの統合行を受け取ったときの共通処理。
+   true を返したら呼び出し元は「bare キーを端末に書かない」。 */
+function _handleLegacySplitRow(key, cloudVal){
+  if(!(_SPLIT_KEYS && _SPLIT_KEYS[key])) return false;
+  try{
+    var r=_foldLegacyIntoPartitions(key, cloudVal);
+    /* 畳み込めた場合のみ端末の統合キーを解放する。
+       畳み込めない(id無し等)場合は従来どおり残す＝データを先に消さない。 */
+    if(r.ok){ try{ localStorage.removeItem(key); }catch(e){} }
+  }catch(e){ console.warn('fold legacy split row', key, e); }
+  return true;
+}
+/* ============================================================
    v617: 棚卸履歴を「月ごと」に分割保存＋消失防止
    【問題】inv_hist_<店舗> に全月・全品目を1行で詰め込んでいたため、
      ・行が巨大化 → クラウド保存(app_state upsert)が失敗しても警告のみで握り潰され、
@@ -4414,6 +4505,7 @@ function _lsWriteVerified(key, json){
 
 /* 保存に失敗したキーの記録。クラウドと端末で食い違っている可能性がある項目。 */
 var _LS_SAVE_FAIL = {};
+var _lsEscalatedAt = 0;   /* v720: 自動解放の実行時刻（連続実行を抑止） */
 function lsSaveFailKeys(){ try{ return Object.keys(_LS_SAVE_FAIL); }catch(e){ return []; } }
 function lsSaveFailCount(){ return lsSaveFailKeys().length; }
 function _lsNoteSaveFailure(key){
@@ -4468,6 +4560,14 @@ function lsSet(key, val) {
        v713 と同じ方針。ここで再取得可能キャッシュを一括削除すると、
        容量が逼迫するたびに勤怠が全期間消える事故に戻るため行わない。 */
     try{ _lsFreeOldLaborKeys(2); }catch(_){}
+    _ok=_lsWriteVerified(key, _json);
+  }
+  if(!_ok && (Date.now()-_lsEscalatedAt) > 60000){
+    /* v720: それでも駄目なら、再取得できるキャッシュを解放して自動回復を試みる。
+       LS_NEVER_FREE（棚卸・予算・請求書・スキル・チップ等の手入力）とマスターには触らない。
+       1分に1回までに制限（保存のたびに全キー走査しないため）。 */
+    _lsEscalatedAt=Date.now();
+    try{ if(typeof freeRecoverableSpace==='function') freeRecoverableSpace(3.4, false); }catch(_){}
     _ok=_lsWriteVerified(key, _json);
   }
   if(_ok) _lsClearSaveFailure(key); else _lsNoteSaveFailure(key);
@@ -4761,10 +4861,14 @@ function _applyKvRows(rows){
   if(Array.isArray(rows)) rows.forEach(function(row){
     if(!row || !row.key) return;
     try{
+      /* v720: 分割保存へ移行済みのキーは、旧・統合行を端末に置かない（請求書の二重保存を解消）。 */
+      if(_handleLegacySplitRow(row.key, row.value)){ cnt++; return; }
       var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
       var _val=row.value;
       if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(row.key)||'null'); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }
-      localStorage.setItem(row.key, JSON.stringify(_val)); cnt++;
+      /* v719: 保存できたかを検証し、失敗は記録する（黙って握り潰さない） */
+      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsClearSaveFailure(row.key); cnt++; }
+      else { _lsNoteSaveFailure(row.key); }
     }catch(e){}
   });
   return cnt;
@@ -5675,7 +5779,10 @@ async function pullOpKey(key){
     var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
     if(!res.ok) return false;
     var rows=await res.json();
-    if(rows && rows.length){ var _cloud=rows[0].value; var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(key)||'null'); _out=_def.merge(_cloud, _loc); }catch(e){ _out=_cloud; } } var _json=JSON.stringify(_out);
+    if(rows && rows.length){ var _cloud=rows[0].value;
+      /* v720: 分割保存へ移行済みのキーは統合行を端末に置かない（_applyKvRows と同じ扱い） */
+      if(_handleLegacySplitRow(key, _cloud)) return true;
+      var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(key)||'null'); _out=_def.merge(_cloud, _loc); }catch(e){ _out=_cloud; } } var _json=JSON.stringify(_out);
       /* v703: 従来は setItem を try/catch で握り潰し、保存できなくても true を返していた。
          そのため容量不足の端末では「取得成功なのに端末に無い」状態になり、
          スキル等がいつまでも反映されなかった。保存を検証し、ダメなら空けて再試行する。 */
@@ -18209,7 +18316,10 @@ async function loadStoreLabor(sid, guid, days, liveFill){
    大きいものから順に解放して空きを作る。同期されていないキーは絶対に消さない。 */
 /* 同期されていても「消してはいけない」もの。棚卸履歴・予算・請求書・承認記録などは
    復旧不能／再入力が重いため、容量整理の対象から必ず除外する。 */
-var LS_NEVER_FREE = ['inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
+/* v720: 'inv_' を追加。inv_<店> は棚卸のカウント/PAR/日次フラグ＝手入力データなのに
+   OP_SYNC_PREFIX の 'inv_' により「再取得可」と判定され、空き容量作成で削除され得た。
+   クラウド未送信の状態で消すと入力が失われるため保護する（'inv_hist_' も内包される）。 */
+var LS_NEVER_FREE = ['inv_','inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_'];
 function _lsProtectedKey(k){
@@ -18221,6 +18331,10 @@ function _lsKeyRecoverable(k){
   if(!s || s.indexOf('_')===0) return false;                 /* 内部フラグは触らない */
   if(_lsProtectedKey(s)) return false;                       /* v715: 復旧不能・再入力が重いものは対象外 */
   if(s.indexOf('tip_labor_')===0) return true;               /* DBのtip_laborから再取得可 */
+  /* v720: m_ingredients / m_recipes / m_employees 等のマスターは SUPA_MASTER_MAP にあり
+     supaPullAllMasters() で復元できる。従来は判定に入っておらず「端末のみ」と誤表示され、
+     実機で 1.5MB 近くが解放候補から外れていた。 */
+  try{ if(typeof SUPA_MASTER_MAP!=='undefined' && SUPA_MASTER_MAP[s]) return true; }catch(e){}
   try{
     if(typeof OP_SYNC_KEYS!=='undefined' && OP_SYNC_KEYS.indexOf(s)>=0) return true;
     if(typeof SUPA_SETTING_KEYS!=='undefined' && SUPA_SETTING_KEYS.indexOf(s)>=0) return true;
@@ -18242,21 +18356,42 @@ function _lsAllKeysBySize(){
   return a;
 }
 /* 目標容量(MB)を下回るまで、再取得できるキャッシュを大きい順に解放する */
-function freeRecoverableSpace(targetMb){
+function _lsIsMasterKey(k){
+  try{ return !!(typeof SUPA_MASTER_MAP!=='undefined' && SUPA_MASTER_MAP[String(k||'')]); }catch(e){ return false; }
+}
+/* allowMasters: マスター(食材・レシピ・従業員等)まで解放してよいか。
+   既定 false。自動解放では触らない（オフラインだと即座に復元できず画面が空になるため）。
+   手動の「空き容量を作る」だけ true にし、解放後に必ず再取得する。 */
+function freeRecoverableSpace(targetMb, allowMasters){
   targetMb = targetMb || 3.4;
   var limit = targetMb*1024*1024;
-  var freed=0, removed=[];
+  var freed=0, removed=[], masters=[];
   try{
     /* ① まず古い月の勤怠キャッシュ */
     freed += (typeof _lsFreeOldLaborKeys==='function') ? _lsFreeOldLaborKeys(2) : 0;
     /* ② それでも足りなければ、再取得できるキャッシュを大きい順に */
     /* v715: 勤怠キャッシュは①で古い月だけ処理済み。直近の勤怠は復元したいデータ本体なので掃除対象から外す */
-    var list=_lsAllKeysBySize().filter(function(x){ return x.rec && String(x.k).indexOf('tip_labor_')!==0; });
+    var list=_lsAllKeysBySize().filter(function(x){
+      if(!x.rec) return false;
+      if(String(x.k).indexOf('tip_labor_')===0) return false;
+      if(!allowMasters && _lsIsMasterKey(x.k)) return false;   /* v720: 自動解放ではマスターに触らない */
+      return true;
+    });
+    /* v720: マスターは最後に回す（大きいが、消すと再取得までアプリが空になる） */
+    list.sort(function(a,b){
+      var am=_lsIsMasterKey(a.k)?1:0, bm=_lsIsMasterKey(b.k)?1:0;
+      if(am!==bm) return am-bm;
+      return b.bytes-a.bytes;
+    });
     for(var i=0;i<list.length && lsBytesTotal()>limit;i++){
-      try{ localStorage.removeItem(list[i].k); freed+=list[i].bytes; removed.push(list[i].k); }catch(e){}
+      try{
+        localStorage.removeItem(list[i].k); freed+=list[i].bytes; removed.push(list[i].k);
+        if(_lsIsMasterKey(list[i].k)) masters.push(list[i].k);
+      }catch(e){}
     }
   }catch(e){}
-  return {freed:freed, removed:removed, nowMb:(function(){ try{ return lsBytesTotal()/1024/1024; }catch(e){ return 0; } })()};
+  return {freed:freed, removed:removed, masters:masters,
+          nowMb:(function(){ try{ return lsBytesTotal()/1024/1024; }catch(e){ return 0; } })()};
 }
 /* v719: 保存できていない項目を容量マネージャにも出す（何が反映されていないかを特定できるように） */
 function _lsSaveFailCardHtml(){
@@ -18295,8 +18430,12 @@ async function openStorageManager(){
 }
 async function runFreeSpace(){
   var before=0; try{ before=lsBytesTotal()/1024/1024; }catch(e){}
-  var r=freeRecoverableSpace(3.4);
+  var r=freeRecoverableSpace(3.4, true);   /* v720: 手動時のみマスターも対象（下で再取得する） */
   showToast((r.freed/1024/1024).toFixed(1)+'MB 解放しました（'+before.toFixed(1)+'MB → '+r.nowMb.toFixed(1)+'MB）','success');
+  /* v720: マスターを解放したら、その場でクラウドから取り直す（画面が空にならないように） */
+  if(r.masters && r.masters.length){
+    try{ showToast('マスターを取り直しています…','info'); await supaPullAllMasters(); }catch(e){ console.warn('master repull', e); }
+  }
   /* 勤怠をその場で取り直す */
   try{
     var stores=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
@@ -19180,7 +19319,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '719';
+const APP_VERSION = '720';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -37659,7 +37798,7 @@ function checkShiftReminders(){
         toStore:sid, toRoles:['sl','am','gm'], page:'shift_admin', refId:refId });
       added=true;
     });
-    if(added){ if(arr.length>500) arr=arr.slice(arr.length-500); lsSet('notifications', arr); renderNotifBell(); }
+    if(added){ if(arr.length>150) arr=arr.slice(arr.length-150);   /* v720: 保持上限を圧縮（実機で254KB） */ lsSet('notifications', arr); renderNotifBell(); }
   }catch(e){}
 }
 
@@ -37690,7 +37829,7 @@ function checkTipPromotions(){
       addedN=true;
     });
     if(stateChanged) lsSet('tip_notify_state', state);
-    if(addedN){ if(arr.length>500) arr=arr.slice(arr.length-500); lsSet('notifications', arr); renderNotifBell(); }
+    if(addedN){ if(arr.length>150) arr=arr.slice(arr.length-150);   /* v720: 保持上限を圧縮（実機で254KB） */ lsSet('notifications', arr); renderNotifBell(); }
   }catch(e){}
 }
 
