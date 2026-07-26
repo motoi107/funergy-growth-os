@@ -19070,7 +19070,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '715';
+const APP_VERSION = '718';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30541,7 +30541,23 @@ const SKILL_CRITERIA_EN = {
   'サービスクオリティ':["Has not yet mastered service basics (greeting, smile, cleanliness, attentiveness)","Handles basic manners when told; meets requests inconsistently","Always bright and polite, notices guests and acts proactively; can calmly handle first-line complaints","Wins fans with hospitality beyond expectations, coaches and lifts others' service, and resolves difficult complaints responsibly"],
   '理念':["Does not yet understand Funergy's philosophy (credo, mission, values), and it does not show in their actions","Understands the philosophy; mindful behavior is seen at times","Consistently embodies the philosophy as the basis for daily decisions and actions","A role model who embodies the philosophy, spreads it through the team, and guides members"],
 };
-function skillCriteria(pos) {
+/* v718: 店舗別の基準文（skill_lv_desc）を最優先で使う。
+   これが無いと Team Standards / Hospitality など新設の軸が汎用文になり、投入した基準が表示されなかった。 */
+function skillCriteria(pos, storeId) {
+  try{
+    var _sid = storeId || (window._mySkillCtx && window._mySkillCtx.storeId) || (typeof curStore!=='undefined' && curStore!=='ALL' ? curStore : null);
+    if(_sid && typeof skillLvDescCell==='function'){
+      var _max = (typeof storeSkillMax==='function') ? storeSkillMax(_sid) : 3;
+      var _arr=[], _hit=false;
+      for(var _lv=0; _lv<=_max; _lv++){
+        var _c = skillLvDescCell(_sid, pos, _lv) || {};
+        var _t = (curLang==='en') ? (_c.en || _c.ja || '') : (_c.ja || _c.en || '');
+        if(_t) _hit=true;
+        _arr.push(_t);
+      }
+      if(_hit) return _arr;
+    }
+  }catch(e){}
   if (curLang==='en') return (typeof SKILL_CRITERIA_EN!=='undefined' && SKILL_CRITERIA_EN[pos]) || (typeof OFFICE_SKILL_CRITERIA_EN!=='undefined' && OFFICE_SKILL_CRITERIA_EN[pos]) || ["No experience","Can do with support","Can do alone","Can teach / act as a leader"];
   return SKILL_CRITERIA[pos] || (typeof OFFICE_SKILL_CRITERIA!=='undefined' && OFFICE_SKILL_CRITERIA[pos]) || ['未経験','サポートがあればできる','一人でできる','教えられる・リーダーとして行動できる'];
 }
@@ -43164,7 +43180,8 @@ function renderSkillSelf() {
 
 function showCriteria(position, storeId) {
   var crit = skillCriteria(position);
-  var _max=(typeof storeSkillMax==='function')?storeSkillMax(storeId || (curStore!=='ALL'?curStore:null)):3;   /* v711 */
+  var _sid2 = storeId || (window._mySkillCtx&&window._mySkillCtx.storeId) || (curStore!=='ALL'?curStore:null);   /* v718 */
+  var _max=(typeof storeSkillMax==='function')?storeSkillMax(_sid2):3;   /* v711 */
   var html = `<div class="modal-title">${posLabel(position)} ${t('スキル基準','Skill criteria')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:13px">`;
   (function(){ var a=[]; for(var i=0;i<=_max;i++)a.push(i); return a; })().forEach(lv=>{
@@ -43178,9 +43195,19 @@ function showCriteria(position, storeId) {
 }
 /* スキル基準オーバーレイ（モーダルの上に重ねる・編集時ポップアップ）。
    opts.targetSelectId を渡すとLvタップで そのselect を更新して採点できる。 */
+/* v718: 店舗ごとに設定した基準文（skill_lv_desc）を最優先で表示する。
+   従来は全社共通の SKILL_CRITERIA だけを見ていたため、Kaimuki/Piikoi に設定した
+   新しいLv0〜4の基準が画面に出ず、旧い共通文言が表示されていた。 */
+function _critTextFor(storeId, pos, lv, fallbackArr){
+  try{
+    var c=(typeof skillLvDescCell==='function')?skillLvDescCell(storeId,pos,lv):null;
+    if(c){ var en=(curLang==='en'); var t2=en?(c.en||c.ja||''):(c.ja||c.en||''); if(t2) return t2; }
+  }catch(e){}
+  return (fallbackArr&&fallbackArr[lv])||'';
+}
 function openSkillCriteriaOverlay(position, opts){
   opts=opts||{};
-  var crit=skillCriteria(position);
+  var crit=skillCriteria(position, opts.storeId);   /* v718 */
   var canPick=!!opts.targetSelectId;
   var minLv=opts.minLv!=null?opts.minLv:0;
   var cur=opts.current!=null?opts.current:null;
@@ -43198,7 +43225,7 @@ function openSkillCriteriaOverlay(position, opts){
     var sel=(cur===lv);
     return '<div '+(pickable?'onclick="skillCritPick(\''+opts.targetSelectId+'\','+lv+')"':'')+' style="display:flex;gap:10px;align-items:flex-start;border:1.5px solid '+(sel?cols[lv]:'var(--border)')+';border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:'+(pickable?'pointer':'default')+';opacity:'+(canPick&&!pickable?'.5':'1')+'">'
       +'<span style="flex-shrink:0;min-width:30px;height:26px;border-radius:7px;background:'+cols[lv]+';color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:11px">Lv'+lv+'</span>'
-      +'<div style="flex:1;font-size:12px;line-height:1.5">'+escapeHtml(crit[lv]||'—')+'</div>'
+      +'<div style="flex:1;font-size:12px;line-height:1.5">'+escapeHtml(_critTextFor(_sid, position, lv, crit)||'—')+'</div>'
       +(sel?'<i class="ti ti-circle-check" style="color:'+cols[lv]+';font-size:20px"></i>':'')
     +'</div>';
   }).join('');
@@ -43218,12 +43245,12 @@ function skillLevelChipInner(position, lv){
     +'<span style="flex:1;font-size:12px;color:var(--tm);line-height:1.4;text-align:left">'+escapeHtml(crit[lv]||'—')+'</span>'
     +'<i class="ti ti-chevron-right" style="color:var(--muted);flex-shrink:0"></i>';
 }
-function skillLevelChipHtml(position, lv, selectId, chipId, minLv){
+function skillLevelChipHtml(position, lv, selectId, chipId, minLv, storeId){   /* v718 */
   var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
   var col=cols[lv]||'var(--accent)';
   var p=String(position||'').replace(/'/g,"\\'");
   return '<input type="hidden" id="'+selectId+'" value="'+lv+'">'
-    +'<button type="button" id="'+chipId+'" onclick="openSkillCriteriaOverlay(\''+p+'\',{targetSelectId:\''+selectId+'\',chipId:\''+chipId+'\',minLv:'+(minLv!=null?minLv:1)+',current:parseInt((document.getElementById(\''+selectId+'\')||{}).value)})" '
+    +'<button type="button" id="'+chipId+'" onclick="openSkillCriteriaOverlay(\''+p+'\',{storeId:\''+String(storeId||'')+'\',targetSelectId:\''+selectId+'\',chipId:\''+chipId+'\',minLv:'+(minLv!=null?minLv:1)+',current:parseInt((document.getElementById(\''+selectId+'\')||{}).value)})" '
     +'style="display:flex;align-items:center;gap:8px;width:100%;border:1px solid '+col+';border-radius:8px;padding:8px 10px;background:var(--surface);cursor:pointer">'
     + skillLevelChipInner(position, lv) +'</button>';
 }
@@ -43570,7 +43597,7 @@ async function openStaffSkillEdit(name, storeId, focusPos) {
     var safe = skillPosId(p);
     return `<div style="padding:8px 0;border-bottom:1px solid var(--border)${focusPos===p?';background:var(--surface2)':''}">
       <div style="font-size:13px;margin-bottom:5px">${p}${s.status&&s.status!=='未取得'&&s.status!=='承認'?` <span class="tag tag-yellow" style="font-size:9px">${s.status}</span>`:''}</div>
-      ${skillLevelChipHtml(p, lvl, 'ssk-'+safe, 'sskc-'+safe, 0)}
+      ${skillLevelChipHtml(p, lvl, 'ssk-'+safe, 'sskc-'+safe, 0, storeId)}
     </div>`;
   }).join('');
   openModal(`<div class="modal-title">${name} のスキル <span style="font-size:12px;color:var(--muted)">@${storeObj.name}</span> <button class="modal-close" onclick="closeModalDirect()">×</button></div>
