@@ -4430,8 +4430,19 @@ function backupInvHistory(){
   }catch(e){ showToast('書き出しに失敗しました','danger'); console.warn('backupInvHistory', e); }
 }
 function ls(key, def) {
-  var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp) return _splitRead(key, sp);
-  try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
+  var sp = _SPLIT_KEYS && _SPLIT_KEYS[key];
+  if(sp){
+    /* v721: 人別履歴など「必要時だけ取得」の分割キーは、読まれた時点でまとめて取りに行く。
+       画面ごとに取得処理を書き足す必要がないので、書き忘れで画面が空になることがない。 */
+    try{ var _pre=_lsSplitOnDemandPrefix(key); if(_pre) _lsRequestDeferredPrefix(_pre); }catch(e){}
+    return _splitRead(key, sp);
+  }
+  try {
+    var v = localStorage.getItem(key);
+    /* v721: 端末に無く、かつ必要時取得の対象なら、裏で取得して取れたら再描画する */
+    if(v==null){ try{ if(_lsOnDemand(key)) _lsRequestDeferred(key); }catch(e){} }
+    return v ? JSON.parse(v) : def;
+  }
   catch(e) { return def; }
 }
 var _lsQuotaWarned=false;
@@ -4482,6 +4493,126 @@ function renderStorageCard(){
     +'<div style="height:10px;background:var(--surface2);border-radius:6px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:'+pct+'%;background:'+col+'"></div></div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+t('整理可能なキャッシュ','Re-fetchable cache')+': '+(pr.bytes/1048576).toFixed(1)+'MB ('+pr.count+'). '+t('データはクラウドに保存済みです。上限に近づいたら整理してください。','Your data is stored in the cloud. Clean up if you approach the limit.')+'</div>'
     +'<button class="btn btn-secondary btn-sm" onclick="runStorageCleanup()"><i class="ti ti-eraser"></i> '+t('キャッシュを整理して空ける','Clean cache & free space')+'</button></div>';
+}
+/* ============================================================
+   v721: 「必要なものを必要な時に」取得する
+   【大前提】クラウドのデータは一切削除しない。端末に置く量だけを減らす。
+   【必須データは例外なく常駐】売上 / 予実 / 勤怠 / チップ
+     daily_actuals_ / budgets_v2 / budget_approved_(当月・前月) / tip_labor_ /
+     cash_tips_ / tip_exclude_ / att_approve_ / att_day_approve_
+   【背景】_applyKvRows は app_state の全行を毎回端末へ書いていた。
+     app_state は「人別 × 15種」「店 × 日」「店 × 月」で行が増えるため数千行になり、
+     GM端末(5MB)には構造的に入りきらない。実機では
+     spl_skill_history_<人名> / fc_monthly_<店>_<過去月> などが保存失敗していた。
+   【安全弁1: クラウドを壊さない】
+     syncMasterToSupabase は、マージ定義の無いキーを「丸ごと上書き」する。
+     未取得のキーに lsSet が走ると、部分データでクラウドを上書きして消してしまう。
+     そこで「このセッションで取得済み(_LS_FETCHED)」でない必要時取得キーは
+     押し上げを行わず、未送信キューへ回す（取得後に正しい全量が送られる）。
+   【安全弁2: 入れ漏れを起こさない】
+     ls() が未取得のキーを読んだら、裏で取得して取れたら再描画する。
+     画面ごとに取得処理を書き足す必要がなく、書き忘れで画面が空になることがない。
+============================================================ */
+
+/* 開いたときだけ取得するキー（ログ・議事録。閲覧頻度が低く、溜まり続ける） */
+var _LS_ONDEMAND_KEYS = ['ec_log','menu_log','reject_log','handbook_log','prep_history','meeting_minutes'];
+/* 開いたときだけ取得する分割パーティション（人別の履歴。人数ぶん行が増える） */
+var _LS_ONDEMAND_PREFIX = ['spl_skill_history_','spl_lss_history_','spl_tip_history_'];
+
+function _ymOf(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function _lsYmNow(){ return _ymOf(new Date()); }
+function _lsYmPrev(){ var d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); return _ymOf(d); }
+function _pdOf(d){ return d.getFullYear()+'.'+(d.getMonth()+1); }
+function _lsPdNow(){ return _pdOf(new Date()); }
+function _lsPdPrev(){ var d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); return _pdOf(d); }
+
+/* このキーは「必要時だけ取得」か。true でも、読まれれば自動で取得される。 */
+function _lsOnDemand(key){
+  var s=String(key||''); if(!s) return false;
+
+  /* --- 業務必須データは無条件で常駐（ここは絶対に外さない） --- */
+  if(s.indexOf('tip_labor_')===0) return false;        /* 勤怠 */
+  if(s.indexOf('daily_actuals_')===0) return false;    /* 売上 */
+  if(s.indexOf('cash_tips_')===0) return false;        /* チップ（現金） */
+  if(s.indexOf('tip_exclude_')===0) return false;      /* チップ配分の除外 */
+  if(s==='budgets_v2' || s.indexOf('spl_budgets_v2_')===0) return false;   /* 予実 */
+  if(s.indexOf('att_approve_')===0 || s.indexOf('att_day_approve_')===0) return false;
+
+  /* --- ログ・議事録 --- */
+  if(_LS_ONDEMAND_KEYS.indexOf(s)>=0) return true;
+
+  /* --- 人別の履歴 --- */
+  for(var i=0;i<_LS_ONDEMAND_PREFIX.length;i++){ if(s.indexOf(_LS_ONDEMAND_PREFIX[i])===0) return true; }
+
+  /* --- 月別: 当月・前月だけ常駐、それ以前は必要時 --- */
+  var m=s.match(/^(?:fc_monthly_|budget_approved_).+_(\d{4}-\d{2})$/);
+  if(m){ return !(m[1]===_lsYmNow() || m[1]===_lsYmPrev()); }
+  var p=s.match(/^menu_mix_.+_(\d{4}\.\d{1,2})$/);
+  if(p){ return !(p[1]===_lsPdNow() || p[1]===_lsPdPrev()); }
+
+  return false;
+}
+
+/* 取得済み（＝完全なデータを端末に持っている）キー。押し上げの可否判定に使う。 */
+var _LS_FETCHED = {};
+function _lsMarkFetched(key){ try{ _LS_FETCHED[key]=1; }catch(e){} }
+
+/* 押し上げてよいか。未取得の必要時キーは押し上げない（クラウドを部分データで上書きしない）。 */
+function _lsPushBlocked(key){
+  try{
+    if(!_lsOnDemand(key)) return false;   /* 常駐キーは常に押し上げ可（従来どおり） */
+    return !_LS_FETCHED[key];
+  }catch(e){ return false; }
+}
+
+/* --- 未取得キーの自動取得（読まれたら裏で取りに行く） --- */
+var _lsDeferReq = {};
+function _lsRerenderSoon(){
+  try{
+    if(_lsRerenderSoon._t) return;
+    _lsRerenderSoon._t=setTimeout(function(){
+      _lsRerenderSoon._t=null;
+      try{ if(typeof renderPage==='function' && typeof curPage!=='undefined' && curPage) renderPage(curPage); }catch(e){}
+    }, 400);
+  }catch(e){}
+}
+function _lsRequestDeferred(key){
+  try{
+    if(_lsDeferReq[key]) return; _lsDeferReq[key]=1;
+    if(typeof pullOpKey!=='function') return;
+    Promise.resolve().then(function(){ return pullOpKey(key); })
+      .then(function(ok){ if(ok){ _lsMarkFetched(key); _lsRerenderSoon(); } })
+      .catch(function(e){ console.warn('deferred pull', key, e); });
+  }catch(e){}
+}
+/* 分割パーティションはまとめて1クエリで取得する（pullInvoicesAll と同じ流儀） */
+function _lsRequestDeferredPrefix(pre){
+  try{
+    if(_lsDeferReq['#'+pre]) return; _lsDeferReq['#'+pre]=1;
+    fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.'+encodeURIComponent(pre)+'*', { headers: supaHeaders() })
+      .then(function(res){ return res.ok ? res.json() : []; })
+      .then(function(rows){
+        if(!Array.isArray(rows) || !rows.length) return;
+        var n=0;
+        rows.forEach(function(r){
+          if(!r || !r.key) return;
+          try{
+            var _def=(typeof _opMergeDef==='function')?_opMergeDef(r.key):null;
+            var _val=r.value;
+            if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(r.key)||'null'); _val=_def.merge(r.value, _loc); }catch(e){ _val=r.value; } }
+            if(_lsWriteVerified(r.key, JSON.stringify(_val))){ _lsMarkFetched(r.key); _lsClearSaveFailure(r.key); n++; }
+            else { _lsNoteSaveFailure(r.key); }
+          }catch(e){}
+        });
+        if(n) _lsRerenderSoon();
+      })
+      .catch(function(e){ console.warn('deferred pull prefix', pre, e); });
+  }catch(e){}
+}
+/* 分割の親キー(skill_history 等)が読まれたら、その配下を必要時取得の対象として扱う */
+function _lsSplitOnDemandPrefix(key){
+  var pre='spl_'+String(key||'')+'_';
+  return (_LS_ONDEMAND_PREFIX.indexOf(pre)>=0) ? pre : null;
 }
 /* ============================================================
    v719: 「保存できていないのに成功に見える」を無くす
@@ -4687,6 +4818,16 @@ function outboxCount(){ return _outboxGet().length; }
 /* lsSet から呼ばれる：push を試み、失敗ならoutboxへ、成功ならoutboxから除去（fire-and-forget） */
 function _pushWithOutbox(key, val){
   if(typeof _supaBooting!=='undefined' && _supaBooting) return; // 起動/プル中は押し上げも記録もしない
+  /* v721【クラウド保護】まだ取得していない「必要時取得」キーは押し上げない。
+     syncMasterToSupabase はマージ定義の無いキーを丸ごと上書きするため、
+     部分データを送るとクラウド側の履歴・ログが消える。未送信キューに積み、
+     取得後（＝完全なデータを持ってから）に送る。 */
+  try{
+    if(_lsPushBlocked(key)){
+      try{ _outboxAdd(key, 'deferred: not fetched yet'); }catch(e){}
+      return;
+    }
+  }catch(e){}
   Promise.resolve().then(function(){ return syncMasterToSupabase(key, val); })
     .then(function(r){ if(r===false) _outboxAdd(key,'push failed'); else if(r===true) _outboxRemove(key); /* undefined=対象外→何もしない */ })
     .catch(function(e){ _outboxAdd(key, (e&&e.message)||e); });
@@ -4705,6 +4846,9 @@ async function flushOutbox(){
       var key=q[i].key;
       try{
         var cur=ls(key, null);
+        /* v721: まだ取得していない必要時キーは送らない（部分データでクラウドを上書きしない）。
+           キューには残し、取得できてから送る。 */
+        if(_lsPushBlocked(key)) continue;
         /* v719: 端末に保存できなかったキー（容量オーバー）を「送るものが無い」として捨てると、
            入力内容が端末にもクラウドにも残らず完全に失われる。保存失敗中のキーはキューに残す。 */
         if(cur===null || typeof cur==='undefined'){
@@ -4863,11 +5007,14 @@ function _applyKvRows(rows){
     try{
       /* v720: 分割保存へ移行済みのキーは、旧・統合行を端末に置かない（請求書の二重保存を解消）。 */
       if(_handleLegacySplitRow(row.key, row.value)){ cnt++; return; }
+      /* v721: 必要時だけ取得する行は端末に書かない（クラウドの行はそのまま残る）。
+         読まれた時点で ls() が自動取得するため、データが見えなくなることはない。 */
+      if(_lsOnDemand(row.key)) return;
       var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
       var _val=row.value;
       if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(row.key)||'null'); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }
       /* v719: 保存できたかを検証し、失敗は記録する（黙って握り潰さない） */
-      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsClearSaveFailure(row.key); cnt++; }
+      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsMarkFetched(row.key); _lsClearSaveFailure(row.key); cnt++; }
       else { _lsNoteSaveFailure(row.key); }
     }catch(e){}
   });
@@ -5795,6 +5942,7 @@ async function pullOpKey(key){
           return false;
         }
       }
+      _lsMarkFetched(key);   /* v721: 完全なデータを持ったので押し上げを許可する */
       try{ if(_def&&_def.after) _def.after(); }catch(e){} return true; }
   }catch(e){}
   return false;
@@ -7260,6 +7408,7 @@ function initApp() {
   setTimeout(function(){ try{ uploadAllLocalShifts(); }catch(e){} }, 1500); // F2-a: 既存ローカルシフトを一度だけクラウドへ移行
   setTimeout(function(){ try{ migrateUploadLocalOps(); }catch(e){} }, 2500); // F2-b: 既存ローカル運用データを一度だけクラウドへ移行
   setTimeout(function(){ try{ migrateBudgetsSplit(); }catch(e){} }, 3500);   // v622: 予算を店舗ごとの行へ移行（旧版の端末から構造的に隔離）
+  setTimeout(function(){ try{ trimNotificationsOnce(); }catch(e){} }, 4500);  // v721: 通知の保持を150件へ揃える（既存の500件が縮まなかったため）
 }
 
 var _GROUP_COLOR = {
@@ -19319,7 +19468,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '720';
+const APP_VERSION = '721';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -37616,6 +37765,14 @@ function renderNotifications(){
   return html;
 }
 
+/* v721: 保持上限は「新着があったとき」しか効かず、既存の500件が縮まなかった（実機で254KB）。
+   起動時に一度だけ、150件へ揃える。クラウドはマージ定義があるため消えない。 */
+function trimNotificationsOnce(){
+  try{
+    var arr=ls('notifications', []); if(!Array.isArray(arr) || arr.length<=150) return;
+    lsSet('notifications', arr.slice(arr.length-150));
+  }catch(e){}
+}
 function renderNotifBell(){
   var b=document.getElementById('notif-badge'); if(!b) return;
   var n=myUnreadCount();
