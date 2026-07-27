@@ -5384,6 +5384,7 @@ async function openBudgetSaveDiag(){
       +(ymNow?(' ／ 今月('+esc(ymNow)+'): '+(hasThis?'あり':'<span style="color:var(--yellow)">なし</span>')):'')
       +(_mm&&_mm.submittedAt?(' ／ 提出: '+esc(_mm.submittedAt)+' '+esc(_mm.submittedBy||'')):'')
       +(_mm&&_mm.approvedAt?(' ／ 承認: '+esc(_mm.approvedAt)+' '+esc(_mm.approvedBy||'')):'')
+      +((b&&b._statusYm&&!(b.months&&b.months[b._statusYm]))?(' ／ <span style="color:var(--muted)">旧データの状態は '+esc(b._statusYm)+' に紐づけ</span>'):'')
       +'</div></div>';
   });
   var ob=0; try{ ob=(typeof outboxCount==='function')?outboxCount():0; }catch(e){}
@@ -9688,7 +9689,7 @@ function budPinLegacyMonth(b, curYm){
     b.months=b.months||{};
     if(b.months[lg]) return false;                       /* すでにその月のデータがある */
     if(!b.dow && !b.days) return false;                  /* 固定するものが無い */
-    var m={ _ts:Date.now() };
+    var m={ _ts:Date.now(), _pinned:true };   /* v732: 自動で固定した月＝後から月をやり直せる印 */
     if(b.dow)  m.dow=JSON.parse(JSON.stringify(b.dow));
     if(b.days) m.days=JSON.parse(JSON.stringify(b.days));
     if(b.daysBy) m.daysBy=b.daysBy;
@@ -9708,13 +9709,41 @@ function budYmStr(){
   var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
 }
 function budMon(b, ym){ return (b && b.months && b.months[ym]) ? b.months[ym] : null; }
-/* 旧データの status がどの月のものかを一度だけ確定する（推測はここだけに閉じ込める） */
+/* 'YYYY/MM/DD HH:MM' または ISO から 'YYYY-MM' を取り出す */
+function _ymFromStamp(v){
+  if(!v) return '';
+  var s=String(v);
+  var m=s.match(/^(\d{4})[\/-](\d{1,2})/);
+  return m ? (m[1]+'-'+String(m[2]).padStart(2,'0')) : '';
+}
+/* 旧データの status がどの月のものかを確定する（推測はここだけに閉じ込める）
+   v731: period は「レコードを作った時点の月」で、承認した月とは限らない。
+     実機で Aiea/Piikoi の7/5承認が period='2026.6' のせいで6月に紐づいていた。
+     → 実際に記録されている承認日・提出日を優先する。 */
 function _budLegacyYm(b){
   if(!b) return '';
   if(b._statusYm) return b._statusYm;
+  return _budGuessStatusYm(b);
+}
+function _budGuessStatusYm(b){
+  if(!b) return '';
   try{
-    var ms=b.months?Object.keys(b.months).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort():[];
-    if(ms.length) return ms[ms.length-1];                 /* 月データがあれば一番新しい月 */
+    /* ① 実際に記録されている承認日・提出日を最優先にする。
+       v732: 月キーを先に見ていたため、8月の月データができた後に判定すると
+       「一番新しい月＝8月」となり、7月の承認を8月と誤認していた。
+       いつ承認・提出したかは記録された日付が唯一の確かな根拠。 */
+    var st=b.status||'';
+    var byDate = (st==='承認済み') ? (_ymFromStamp(b.approvedAt) || _ymFromStamp(b.submittedAt))
+               : (st==='GM承認待ち'||st==='再提出済み') ? (_ymFromStamp(b.submittedAt) || _ymFromStamp(b.approvedAt))
+               : (st==='差し戻し') ? (_ymFromStamp(b.rejectedAt) || _ymFromStamp(b.submittedAt))
+               : (_ymFromStamp(b.approvedAt) || _ymFromStamp(b.submittedAt));
+    if(byDate) return byDate;
+    /* ② 日付が無ければ、手入力の月データのうち一番新しい月（自動固定は根拠にしない） */
+    var ms=b.months?Object.keys(b.months).filter(function(k){
+      return /^\d{4}-\d{2}$/.test(k) && !(b.months[k]&&b.months[k]._pinned);
+    }).sort():[];
+    if(ms.length) return ms[ms.length-1];
+    /* ③ 最後に period（レコードを作った月。使い始めが遅いとズレるため最後） */
     if(b.period){ var p=String(b.period).split('.'); if(p.length===2) return p[0]+'-'+String(p[1]).padStart(2,'0'); }
   }catch(e){}
   return '';
@@ -9753,6 +9782,36 @@ function budMonMeta(b, ym){
     rejectReason:m.rejectReason|| legacy.rejectReason|| '',
     rejectedAt:  m.rejectedAt  || legacy.rejectedAt  || ''
   };
+}
+/* v731: v729で period から誤った月に紐づけたものを補正する。
+   ・補正するのは「その月に月データが無い」場合だけ（＝ラベルを動かすだけで、数字は動かさない）
+   ・移動先にも月データが無いことを確認してから動かす */
+function migrateBudgetStatusYmFix(){
+  try{
+    if(localStorage.getItem('_bud_status_ym_fix_v731')==='1') return;
+    var budgets=ls('budgets_v2', null);
+    if(!Array.isArray(budgets) || !budgets.length) return;   /* 未取得なら次回に回す */
+    var changed=false;
+    budgets.forEach(function(b){
+      if(!b || !b._statusYm) return;
+      var cur=(b.months||{})[b._statusYm];
+      /* v732: 自動固定(_pinned)された月は「本来どの月か」を後から直せる。
+         手入力された月データ(_pinnedなし)は絶対に動かさない。 */
+      if(cur && !cur._pinned) return;
+      var want=_budGuessStatusYm(b);
+      if(!want || want===b._statusYm) return;
+      if(b.months && b.months[want]) return;                  /* 移動先に実データがあるなら触らない */
+      if(cur){
+        b.months[want]=cur; delete b.months[b._statusYm];      /* 自動固定した月ごと正しい月へ移す */
+        console.log('[v732] pinned month moved:', b.storeId, b._statusYm, '->', want);
+      } else {
+        console.log('[v731] status month fix:', b.storeId, b._statusYm, '->', want);
+      }
+      b._statusYm=want; changed=true;
+    });
+    if(changed) saveBudgets(budgets);
+    localStorage.setItem('_bud_status_ym_fix_v731','1');
+  }catch(e){ console.warn('migrateBudgetStatusYmFix', e); }
 }
 /* 旧データの補完（一度だけ・非破壊）: status がどの月のものかを記録する */
 function migrateBudgetStatusYm(){
@@ -19768,7 +19827,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '730';
+const APP_VERSION = '732';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -47109,6 +47168,7 @@ try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoya
 try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
 /* v728: 予算の重複（統合キーとパーティションの二重持ち）を一度だけ畳む。内容は失わない。 */
 try { migrateBudgetStatusYm(); } catch(e) { console.error('migrateBudgetStatusYm', e); }
+try { migrateBudgetStatusYmFix(); } catch(e) { console.error('migrateBudgetStatusYmFix', e); }
 try { if(localStorage.getItem('_bud_dupfix_v728')!=='1'){ var _bdf=repairBudgetDupes(true); localStorage.setItem('_bud_dupfix_v728','1'); if(_bdf.fixed) console.log('[v728] budget dupes fixed:', _bdf.fixed); } } catch(e) { console.error('repairBudgetDupes', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateClearSampleOB(); } catch(e) { console.error('migrateClearSampleOB', e); }
