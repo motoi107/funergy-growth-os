@@ -1631,7 +1631,7 @@ function safeMonthStats(storeId, offset){
   } catch(e){ return null; }
 }
 var STORES = getStoresAll();
-function refreshStores() { STORES = getStoresAll(); }
+function refreshStores() { STORES = getStoresAll(); try{ if(typeof registerInvMergeKeys==='function') registerInvMergeKeys(); }catch(e){} }
 const AM_STORES = ['F03','F04-K','F04-P','F04-A','F05']; // 後方互換（旧Yuki管轄）。新ロジックはmyAmStores()
 /* ログイン中のAMが管轄する店舗ID配列（店舗マスターのam欄＝AMの名前で照合）。
    20店舗・複数AM対応：各店のam欄に担当AM名を入れれば自動で管轄が決まる。 */
@@ -3450,7 +3450,11 @@ function setTipLabor(storeId, date, data) {
 /* チップ配分の対象外（日別・人別・帯別）。{empName:{lunch:bool, dinner:bool}}
    勤怠時間はそのまま残し、チップ配分からだけ外す。外した分はその帯の残りで再按分。 */
 function getTipExclude(storeId, date) { return ls('tip_exclude_'+storeId+'_'+date, {}); }
-function setTipExclude(storeId, date, data) { lsSet('tip_exclude_'+storeId+'_'+date, data); }
+/* v754: チップ配分の除外。金額に関わるため、古い端末の保存で消えないようにする。 */
+function setTipExclude(storeId, date, data) {
+  try{ if(data && typeof data==='object') data._at=_bumpAt(ls('tip_exclude_'+storeId+'_'+date, null)); }catch(e){}
+  lsSet('tip_exclude_'+storeId+'_'+date, data);
+}
 function isTipExcluded(storeId, date, name, slot) {
   var ex = getTipExclude(storeId, date);
   return !!(ex[name] && ex[name][slot]);
@@ -4149,7 +4153,7 @@ var _SPLIT_KEYS = {
   shift_changes:    {type:'arr', by:function(r){return r&&r.name;}, readFilter:function(r){return !(r&&r._deleted);}},
   onboardings:      {type:'arr', by:function(r){return r&&r.name;}, readFilter:function(r){return !(r&&r._deleted);}},
   offboardings:     {type:'arr', by:function(r){return r&&r.name;}, readFilter:function(r){return !(r&&r._deleted);}},
-  order_catalog:    {type:'arr', by:function(r){return r&&r.store;}},
+  order_catalog:    {type:'arr', by:function(r){return r&&r.store;}, readFilter:function(r){return !(r&&r._deleted);}},   /* v753: 論理削除 */
   dev_nominations:  {type:'arr', by:function(r){return r&&r.name;}},
   company_message_stores:{type:'obj'},
   skill_eval_log:   {type:'obj'},
@@ -4169,6 +4173,130 @@ function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON
      これで「古いデータが新しいデータを上書きする」ことが起きなくなり、
      同時に「誰が最後に保存したか」を画面へ出せるようになる。
    【互換】印の無い既存データ・他端末の旧データはそのまま読める（時刻0として扱う）。 */
+/* ===== v753: id付きリストに「いつ更新したか」を持たせる =====
+   育成推薦・備品カタログは id を持ち、状態や内容を後から書き換える。
+   時刻が無いと、どちらの変更が新しいか判断できず丸ごと上書きになる。
+   保存の出口で、中身が変わったレコードにだけ更新時刻を付ける
+   （呼び出し元ごとに書くと v751 と同じ書き忘れが起きるため）。 */
+var _STAMP_LIST_KEYS = { dev_nominations:1, order_catalog:1 };
+function _mutBare(o){
+  if(o==null) return '';
+  var x={}; Object.keys(o).forEach(function(k){ if(k!=='_mut') x[k]=o[k]; });
+  return JSON.stringify(x);
+}
+/* 合流: id ごとに新しい更新が勝つ。削除は最優先（復活を防ぐ）。中身の大小では決めない。 */
+/* ===== v754: 手入力データの合流部品（すべて時刻で判定。値の大小では決めない） ===== */
+function _recAt(x){ return Number(x && x._at) || 0; }
+/* レコード全体を1件として扱う（勤怠承認・チップ除外） */
+function mergeByTime(cloud, local){
+  var ca=_recAt(cloud), la=_recAt(local);
+  if(la!==ca) return (la>ca)?local:cloud;
+  return (local!=null)?local:cloud;
+}
+function _coversByTime(check, want){
+  var ha=_recAt(check), wa=_recAt(want);
+  if(wa&&ha) return ha>=wa;
+  return check!=null;
+}
+/* 項目ごとに新しい保存が勝つマップ（日別の勤怠承認）。削除は最優先。 */
+function mergeMapByTime(cloud, local){
+  var out={}, c=(cloud&&typeof cloud==='object')?cloud:{}, l=(local&&typeof local==='object')?local:{};
+  Object.keys(c).forEach(function(k){ out[k]=c[k]; });
+  Object.keys(l).forEach(function(k){
+    if(!(k in out)){ out[k]=l[k]; return; }
+    var a=out[k], b=l[k];
+    var ad=!!(a&&a._deleted), bd=!!(b&&b._deleted);
+    if(ad!==bd){ out[k]= ad?a:b; return; }
+    out[k] = (_recAt(b)>=_recAt(a)) ? b : a;
+  });
+  return out;
+}
+function _coversMapByTime(check, want){
+  if(!check||typeof check!=='object') return false;
+  for(var k in want){ if(!want.hasOwnProperty(k)) continue;
+    var w=want[k], h=check[k];
+    if(h===undefined) return false;
+    if(w&&w._deleted && !(h&&h._deleted)) return false;
+    if(_recAt(w) && _recAt(h)<_recAt(w)) return false;
+  }
+  return true;
+}
+/* code をキーにした配列（棚卸）。項目ごとに新しい保存が勝つ。 */
+function mergeListByCode(cloudArr, localArr){
+  var by={}, order=[];
+  function put(r){
+    if(!r || r.code==null) return;
+    var k=String(r.code);
+    if(!(k in by)){ by[k]=r; order.push(k); return; }
+    var cur=by[k];
+    by[k] = (_recAt(r)>=_recAt(cur)) ? r : cur;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(put);
+  (Array.isArray(localArr)?localArr:[]).forEach(put);
+  return order.map(function(k){ return by[k]; });
+}
+function _coversListByCode(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x&&x.code!=null) have[String(x.code)]=x; });
+  for(var i=0;i<(want||[]).length;i++){
+    var w=want[i]; if(!w||w.code==null) continue;
+    var h=have[String(w.code)]; if(!h) return false;
+    if(_recAt(w) && _recAt(h)<_recAt(w)) return false;
+  }
+  return true;
+}
+/* 保存時刻を必ず前より進める（同じミリ秒に続けて保存しても同点にしない） */
+function _bumpAt(prev){ return Math.max(Date.now(), (Number(prev&&prev._at)||0)+1); }
+/* v755: 識別子は id が基本だが、棚卸履歴のように月(ym)で1件が決まるものもある。 */
+function _slId(x){
+  if(!x) return null;
+  if(x.id!=null) return 'id:'+x.id;
+  if(x.ym!=null) return 'ym:'+x.ym;
+  return null;
+}
+/* 変わったレコードにだけ更新時刻を付ける（保存の出口で使う共通処理） */
+function _stampListBy(arr, prevArr, idOf){
+  try{
+    var prev={}, now=Date.now();
+    (Array.isArray(prevArr)?prevArr:[]).forEach(function(r){ var k=idOf(r); if(k!=null) prev[k]=r; });
+    (Array.isArray(arr)?arr:[]).forEach(function(r){
+      var k=idOf(r); if(k==null) return;
+      var p=prev[k];
+      if(_mutBare(r)!==_mutBare(p)) r._mut=Math.max(now, (Number(p&&p._mut)||0)+1);
+      else if(p && p._mut!=null) r._mut=p._mut;
+    });
+  }catch(e){ console.warn('_stampListBy', e); }
+  return arr;
+}
+function mergeStampedList(cloudArr, localArr){
+  var by={}, order=[];
+  function put(x){
+    var id=_slId(x);
+    if(id==null) return;
+    if(!by[id]){ by[id]=x; order.push(id); return; }
+    var cur=by[id];
+    var cd=!!(cur&&cur._deleted), xd=!!(x&&x._deleted);
+    if(cd!==xd){ by[id]= cd?cur:x; return; }
+    var cm=Number(cur&&cur._mut)||0, xm=Number(x&&x._mut)||0;
+    if(xm!==cm){ by[id]=(xm>cm)?x:cur; return; }
+    by[id]=x;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(put);
+  (Array.isArray(localArr)?localArr:[]).forEach(put);
+  return order.map(function(id){ return by[id]; });
+}
+function _coversStampedList(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ var k=_slId(x); if(k!=null) have[k]=x; });
+  for(var i=0;i<want.length;i++){
+    var w=want[i]; var wk=_slId(w); if(wk==null) continue;
+    var h=have[wk]; if(!h) return false;
+    if(w._deleted && !h._deleted) return false;
+    var wm=Number(w._mut)||0, hm=Number(h._mut)||0;
+    if(wm && hm<wm) return false;
+  }
+  return true;
+}
 function _stIsWrapped(x){ return !!(x && typeof x==='object' && !Array.isArray(x) && x.__st===1); }
 function _stUnwrap(x){ return _stIsWrapped(x) ? x.v : x; }
 function _stAt(x){ return _stIsWrapped(x) ? (Number(x._at)||0) : 0; }
@@ -4272,6 +4400,22 @@ function _splitWrite(key, sp, val){
   var curById={}; (curMerged||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); (curById[id]=curById[id]||[]).push(r); });
   // 全エントリが削除されたパーティションは空配列でクリア（ローカル＆クラウド行を空に → 他端末で復活しない）
   if(!sp.noDelete) Object.keys(curById).forEach(function(id){ if(!byId[id] && (curById[id]||[]).length){ if(lsSet(pre+id, [])===false) _wOk=false; } });
+  /* v753: id付きリストは、中身が変わったレコードだけ更新時刻を進める。
+     変わっていないものは元の時刻を保つので、無用な保存も勝敗の入れ替えも起きない。 */
+  if(_STAMP_LIST_KEYS[key]){
+    try{
+      var _now=Date.now();
+      Object.keys(byId).forEach(function(id){
+        var prevById={}; (curById[id]||[]).forEach(function(r){ if(r&&r.id!=null) prevById[r.id]=r; });
+        (byId[id]||[]).forEach(function(r){
+          if(!r || r.id==null) return;
+          var p=prevById[r.id];
+          if(_mutBare(r)!==_mutBare(p)) r._mut=Math.max(_now, (Number(p&&p._mut)||0)+1);
+          else if(p && p._mut!=null) r._mut=p._mut;
+        });
+      });
+    }catch(e){ console.warn('stamp list', key, e); }
+  }
   Object.keys(byId).forEach(function(id){
     if(JSON.stringify(curById[id])!==JSON.stringify(byId[id])){ if(lsSet(pre+id, byId[id])===false) _wOk=false; }
   });
@@ -4377,6 +4521,11 @@ function _handleLegacySplitRow(key, cloudVal){
    【対策】既存の分割保存(spl_)の仕組みに載せ、1ヶ月＝1行にする（小さいので確実に保存できる）。
      読み書きの呼び出し側は変更不要（ls/lsSetが内部で分割・統合する）。
 ============================================================ */
+/* v755: 棚卸履歴の保存の出口。月(ym)ごとに1件が決まるため、月単位で更新時刻を付ける。 */
+function setInvHist(storeId, arr){
+  _stampListBy(arr, ls('inv_hist_'+storeId, []), function(r){ return r?_invHistYm(r):null; });
+  return lsSet('inv_hist_'+storeId, arr);
+}
 function _invHistYm(r){
   if(!r) return '_';
   if(r.ym) return String(r.ym);
@@ -5687,7 +5836,13 @@ var OP_MERGE = {
   ec_log:         { merge: mergeEcLog,     covers: _coversEcLog },
   menu_log:       { merge: mergeAppendLog, covers: _coversLog },
   reject_log:     { merge: mergeAppendLog, covers: _coversLog },
-  handbook_log:   { merge: mergeAppendLog, covers: _coversLog }
+  handbook_log:   { merge: mergeAppendLog, covers: _coversLog },
+  /* v753: リスト型3画面。性質が違うので別々のルールを当てる。
+     残業申請は追加のみ（更新・削除なし）なので足し算でよい。
+     育成推薦・備品カタログは id ごとに新しい更新が勝つ（削除は最優先）。 */
+  ot_requests:     { merge: mergeAppendLog,   covers: _coversLog },
+  dev_nominations: { merge: mergeStampedList, covers: _coversStampedList },
+  order_catalog:   { merge: mergeStampedList, covers: _coversStampedList }
 };
 /* tasks_all を和集合マージ（id単位・新しい方優先・_deleted優先で復活防止）＝端末間で新規タスクが消えないように */
 function _tkTs(t){ return Number(t && (t.updatedTs || (t.created?Date.parse(t.created):0) || 0)) || 0; }
@@ -5822,7 +5977,17 @@ function _coversOfficeAttend(checkArr, wantArr){
 
 var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _coversOfficeAttend },
   /* v752: Career Score。丸ごと上書きだったため他端末の評価が消えていた。 */
-  'lss_emp_': { merge: mergeLssRec, covers: _coversLssRec }, 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs },
+  'lss_emp_': { merge: mergeLssRec, covers: _coversLssRec },
+  /* v754: 手入力データ。すべて時刻で判定し、値の大小では決めない。 */
+  'att_day_approve_': { merge: mergeMapByTime, covers: _coversMapByTime },
+  'att_approve_': { merge: mergeByTime, covers: _coversByTime },
+  'tip_exclude_': { merge: mergeByTime, covers: _coversByTime },
+  /* v755: 買い出し・棚卸履歴・スキル説明文 */
+  'purchases_':     { merge: mergeStampedList, covers: _coversStampedList },
+  'inv_hist_':      { merge: mergeStampedList, covers: _coversStampedList },
+  'spl_inv_hist_':  { merge: mergeStampedList, covers: _coversStampedList },
+  'skill_lv_desc':  { merge: mergeByTime,      covers: _coversByTime },
+  'skills_v2':      { merge: mergeSkillsV2,    covers: _coversSkillsV2 }, 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs },
   /* v622: 分割後の予算パーティション(spl_budgets_v2_<店>)も店舗内でマージ。同じ店を2端末が同時に触っても行ごと上書きにならない。
      値は「その店1件だけの配列」なので mergeBudgets / _coversBudgets がそのまま使える。 */
   'spl_budgets_v2_': { merge: mergeBudgets, covers: _coversBudgets },
@@ -5832,6 +5997,20 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
   'fv_count_': { merge: mergeFvCellMap, covers: _coversFvCellMap },
   'fv_review_': { merge: mergeFvCellMap, covers: _coversFvCellMap },
   'fv_moves_': { merge: mergeFvMoves, covers: _coversFvMoves } };
+/* v754: 棚卸(inv_<店舗>)の合流ルールを店舗ごとの完全キーで登録する。
+   'inv_' の前方一致だと inv_hist_ や inv_templates まで拾ってしまうため、店舗IDまで含めて登録する。
+   店舗が追加されたときのために refreshStores からも呼べるようにしておく。 */
+function registerInvMergeKeys(){
+  try{
+    var ids={};
+    if(typeof DEFAULT_STORES!=='undefined' && Array.isArray(DEFAULT_STORES)) DEFAULT_STORES.forEach(function(x){ if(x&&x.id) ids[x.id]=1; });
+    var ms=_lsRaw('m_stores', null); if(Array.isArray(ms)) ms.forEach(function(x){ if(x&&x.id) ids[x.id]=1; });
+    Object.keys(ids).forEach(function(id){
+      if(!OP_MERGE_PREFIX['inv_'+id]) OP_MERGE_PREFIX['inv_'+id]={ merge: mergeListByCode, covers: _coversListByCode };
+    });
+  }catch(e){ console.warn('registerInvMergeKeys', e); }
+}
+registerInvMergeKeys();
 /* ===== v679: 分割保存パーティション(spl_<key>_<id>)にも親キーのマージ定義を適用 =====
    【問題】lsSet('invoices', …) は内部で spl_invoices_<店舗> に分割保存され、その行がクラウドへ送られる。
      ところが app_state 書き込みは「マージ定義があればマージ／無ければ丸ごと上書き」。
@@ -5907,6 +6086,34 @@ function _skillPick(cv, lv){
   var cl=Number(cv&&cv.level)||0, ll=Number(lv&&lv.level)||0;
   if(cl!==ll) return (ll>cl)?lv:cv;
   return lv;
+}
+/* v755: 旧・統合キー skills_v2（{人: {店: {ポジション: …}}}）。
+   現在は skills_st_<店舗> が本流だが、読み取りの補完に使われ続けているため保護する。
+   位置ごとの勝敗は mergeSkillStore（保存時刻で判定）をそのまま使う。 */
+function mergeSkillsV2(cloud, local){
+  var out={}, names={};
+  Object.keys((cloud&&typeof cloud==='object')?cloud:{}).forEach(function(n){ names[n]=1; });
+  Object.keys((local&&typeof local==='object')?local:{}).forEach(function(n){ names[n]=1; });
+  Object.keys(names).forEach(function(name){
+    var c=(cloud&&cloud[name])||{}, l=(local&&local[name])||{}, stores={}, m={};
+    Object.keys(c).forEach(function(st){ stores[st]=1; });
+    Object.keys(l).forEach(function(st){ stores[st]=1; });
+    Object.keys(stores).forEach(function(st){
+      m[st]=mergeSkillStore({ _:c[st]||{} }, { _:l[st]||{} })._;
+    });
+    out[name]=m;
+  });
+  return out;
+}
+function _coversSkillsV2(check, want){
+  if(!check||typeof check!=='object') return false;
+  for(var n in want){ if(!want.hasOwnProperty(n)) continue;
+    var wn=want[n]||{}, hn=check[n]||{};
+    for(var st in wn){ if(!wn.hasOwnProperty(st)) continue;
+      if(!_coversSkillStore({ _:hn[st]||{} }, { _:wn[st]||{} })) return false;
+    }
+  }
+  return true;
 }
 function mergeSkillStore(cloudMap, localMap){
   cloudMap=(cloudMap&&typeof cloudMap==='object')?cloudMap:{};
@@ -15422,6 +15629,12 @@ function deleteBasis(storeId, basisId) {
 ============================================================ */
 var fcTab = 'daily';
 function getPurchases(storeId) { return ls('purchases_'+storeId, []); }   // 買い出し
+/* v755: 買い出しは追加のみ（削除の経路が無い）。レコード(id)ごとに更新時刻を付け、
+   2端末が別々に登録しても消し合わないようにする。 */
+function setPurchases(storeId, arr) {
+  _stampListBy(arr, ls('purchases_'+storeId, []), function(r){ return r&&r.id!=null?('id:'+r.id):null; });
+  return lsSet('purchases_'+storeId, arr);
+}
 /* ===== 原価 月次（月キー化: fc_monthly_<store>_<YYYY-MM>） ===== */
 var fcMonthOffset = 0;
 function fcYm(){ return ymFromOffset(fcMonthOffset); }
@@ -16086,7 +16299,7 @@ function savePurchase(storeId) {
     kind:document.getElementById('pc-kind').value, category:document.getElementById('pc-category').value.trim(),
     memo:document.getElementById('pc-memo').value.trim(), receipt:document.getElementById('pc-receipt-status').textContent?true:false,
     by:ROLE_CONFIG[curRole].name});
-  lsSet('purchases_'+storeId, purchases);
+  setPurchases(storeId, purchases);
   closeModalDirect();
   showToast('買い出しを登録しました（Food Costに反映）', 'success');
   renderPage('foodcost');
@@ -16214,7 +16427,22 @@ function getInvItems(storeId) {
     };
   });
 }
-function setInvItems(storeId, items) { lsSet('inv_'+storeId, items); }
+/* v754: 棚卸は複数人が入力する。項目(code)ごとに保存時刻を持たせ、
+   合流時は新しい入力を採用する（数値の大小では決めない）。 */
+function setInvItems(storeId, items) {
+  try{
+    var prev={}; var cur=ls('inv_'+storeId, null);
+    if(Array.isArray(cur)) cur.forEach(function(r){ if(r&&r.code!=null) prev[String(r.code)]=r; });
+    var bare=function(o){ if(o==null) return ''; var x={}; Object.keys(o).forEach(function(k){ if(k!=='_at') x[k]=o[k]; }); return JSON.stringify(x); };
+    (Array.isArray(items)?items:[]).forEach(function(r){
+      if(!r || r.code==null) return;
+      var p=prev[String(r.code)];
+      if(bare(r)!==bare(p)) r._at=_bumpAt(p);
+      else if(p && p._at!=null) r._at=p._at;
+    });
+  }catch(e){ console.warn('setInvItems stamp', e); }
+  lsSet('inv_'+storeId, items);
+}
 /* 棚卸アイテムの業者名（食材マスターから引く） */
 function invItemVendor(code) {
   var ing = getIngredients().find(x=>x.code===code);
@@ -16868,7 +17096,7 @@ function _invMigrateToJune(storeId){
     if (changed){
       var seen={}; var out=[];
       for(var k=hist.length-1;k>=0;k--){ var ym=hist[k].ym||''; if(ym===JUN){ if(seen[JUN]) continue; seen[JUN]=1; } out.unshift(hist[k]); }
-      lsSet('inv_hist_'+storeId, out);
+      setInvHist(storeId, out);
     }
     if (moved){
       var g=Math.round(moved.grand||0);
@@ -17255,7 +17483,7 @@ function saveInventory(storeId){
     if(!snap.origBy) snap.origBy = _old.origBy || _old.by;
     hist[ridx]=snap;
   } else hist.push(snap);
-  lsSet('inv_hist_'+storeId, hist);
+  setInvHist(storeId, hist);
   window._invEditYm = null;
   // Food Cost連携: 棚卸月の月次レコードへ期末を書き込み（期首は既存値 or 前月末を継承）
   var fc=getFcMonthly(storeId, ym);
@@ -18810,7 +19038,11 @@ function attendanceForDate(storeId, dateISO) {
 }
 /* 勤怠承認データ {storeId_date_name: {status, by, at, memo}} */
 function getAttApprovals(storeId, info) { return ls('att_approve_'+storeId+'_'+info.from, {}); }
-function setAttApprovals(storeId, info, d) { lsSet('att_approve_'+storeId+'_'+info.from, d); }
+/* v754: 勤怠承認は SL/AM/GM が触る。保存時刻を持たせて新しい承認を採用する。 */
+function setAttApprovals(storeId, info, d) {
+  try{ if(d && typeof d==='object') d._at=_bumpAt(ls('att_approve_'+storeId+'_'+info.from, null)); }catch(e){}
+  lsSet('att_approve_'+storeId+'_'+info.from, d);
+}
 function attRowKey(date, name){ return date+'__'+name; }
 
 /* 期間の勤怠ステータス: 未確認/確認中/エラーあり/修正待ち/承認済み */
@@ -19147,8 +19379,18 @@ function renderAttMonthData(storeId, store) {
   return html;
 }
 /* 日次勤怠の承認データ {storeId_date: {status, by, at, memo}} */
-function getDayApproval(storeId, date) { var all=ls('att_day_approve_'+storeId, {}); return all[date]||null; }
-function setDayApproval(storeId, date, data) { var all=ls('att_day_approve_'+storeId, {}); if(data) all[date]=data; else delete all[date]; lsSet('att_day_approve_'+storeId, all); }
+function getDayApproval(storeId, date) { var all=ls('att_day_approve_'+storeId, {}); var v=all[date];
+  if(v && v._deleted) return null;   /* v754: 取り消し済みは無いものとして扱う */
+  return v||null; }
+/* v754: 日別の勤怠承認。日ごとに保存時刻を持たせ、別々の日を触っても消し合わない。
+   取り消しは物理削除だと他端末との合流で復活するため、論理削除にする。 */
+function setDayApproval(storeId, date, data) {
+  var all=ls('att_day_approve_'+storeId, {});
+  var prev=all[date];
+  if(data){ if(typeof data==='object'){ data._at=_bumpAt(prev); data._deleted=false; } all[date]=data; }
+  else { all[date]={ _deleted:true, _at:_bumpAt(prev) }; }
+  lsSet('att_day_approve_'+storeId, all);
+}
 /* 承認権限: Store Manager以上（gm/ceo/am/office）、SLは確認のみ。店舗ログインは可 */
 function attDayCanApprove() { return ['gm','ceo','am','office'].includes(curRole) || curStoreLogin; }
 function dayHasError(storeId, date) {
@@ -20575,7 +20817,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '752';
+const APP_VERSION = '755';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32798,7 +33040,10 @@ function reorderFromCatalog(catalogId){
 function deleteCatalogItem(id){
   if(['ceo','gm','office','am'].indexOf(curRole)<0){ showToast('権限がありません','warning'); return; }
   if(!confirm('このカタログ品を削除しますか？')) return;
-  var cat=getOrderCatalog().filter(function(c){return c.id!==id;}); lsSet('order_catalog', cat);
+  /* v753: 物理削除だと、他端末のクラウド値と合流したときに削除した品が復活する。
+     論理削除に変え、読み取り時に除外する（readFilter）。 */
+  var cat=getOrderCatalog().map(function(c){ return (c && c.id===id) ? Object.assign({}, c, {_deleted:true}) : c; });
+  lsSet('order_catalog', cat);
   showToast('削除しました','info'); renderPage('supply_order');
 }
 function setOrderThreshold(){
@@ -38348,7 +38593,12 @@ function renderBadges(name, emp) {
    内容は「ポジ別×レベル別の説明文（GM入力・日英）」を優先し、無ければ共通ルーブリック(Lv0-3)/Prepレジェンド(Lv0-5)にフォールバック。
    説明文マスターは skill_lv_desc = { storeId:{ position:{ level:{ja,en} } } }。SUPA_SETTING_KEYS で全端末同期。 */
 function getSkillLvDesc(){ var m=ls('skill_lv_desc',{}); return (m&&typeof m==='object')?m:{}; }
-function setSkillLvDesc(m){ lsSet('skill_lv_desc', m||{}); }
+/* v755: スキルレベルの説明文。GMが編集する設定なので、古い端末の保存で消えないようにする。 */
+function setSkillLvDesc(m){
+  var d=m||{};
+  try{ d._at=_bumpAt(ls('skill_lv_desc', null)); }catch(e){}
+  lsSet('skill_lv_desc', d);
+}
 function skillLvDescCell(storeId, pos, lv){
   var m=getSkillLvDesc(); var c=m&&m[storeId]&&m[storeId][pos]&&m[storeId][pos][lv];
   return (c&&typeof c==='object')?c:null;
@@ -42034,7 +42284,7 @@ async function saveInvoice() {
       var _ps=getPurchases(_sid);
       _ps.push({id:'pc'+Date.now()+'_'+_sid, date:todayJP(), vendor:vendor, item:_itemTxt,
         amount:_per, kind:'Food', category:'買い出し', purpose:_purpose, memo:(_purpTxt||'Receiptから登録')+_splitNote, receipt:true, by:ROLE_CONFIG[curRole].name});
-      lsSet('purchases_'+_sid, _ps);
+      setPurchases(_sid, _ps);
     });
   }
   // Google Driveへ保管（Unregistered）。imagePath（invoicesバケット）を転送し、Driveリンクを記録
