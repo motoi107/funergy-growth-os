@@ -19478,7 +19478,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '726';
+const APP_VERSION = '727';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -28154,7 +28154,7 @@ function ingTransferDelete(id){
   showToast(t('食材移動を取り消しました','Transfer canceled'),'success'); renderPage('ing_transfer');
 }
 /* ============================================================
-   v726: Totoya 日次食材差異 (Daily Food Variance) — 丼ごと設定版
+   v727: Totoya 日次食材差異 (Daily Food Variance) — 丼ごと設定版（3店舗まとめ）
    - 設定は「丼を選ぶ→6食材のgを入力」。理論使用量 = 出数(商品GUID) × ここのg
    - 食材選択は単位で絞らず、業者・名前・コードで検索（1仕入単位=何g を入力して$/g換算）
    - トッピング(Extra/No)はモディファイア名で照合。名前はToastの実データから選ぶ
@@ -29142,19 +29142,36 @@ function fvIngsSubmit(){
   if(!fvSaveConfig(cfg)){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
   showToast(t('食材設定を保存しました','Saved'),'success'); renderPage('fv_variance');
 }
-/* ---- ② 丼ごとの使用量 ---- */
+/* ---- ② 丼ごとの使用量（3店舗まとめて設定・出数は各店のものを使用） ----
+   Toast商品GUIDは店舗ごとに別物なので、同じ「Ahi Bowl」でも3店で3つのGUIDがある。
+   ここでは商品名でまとめて表示し、保存時は各店のGUIDそれぞれに行を作る。
+   → 各店の理論使用量は「その店の出数 × その店のGUIDに紐づくg」で計算される。
+   → 店舗ごとに量を変えたい場合も、GUIDが別なので g を店別に持てる（storeG不要）。 */
 var _fvBowlQ='';
+var _fvGroups=[];
 function fvSetBowlQ(v){ _fvBowlQ=v; var box=document.getElementById('fv-bowl-list'); if(box) box.innerHTML=fvBowlListHtml(); }
-function fvBowlMenu(){
-  var sid=fvCurStore();
-  var menu=(typeof getRecipes==='function')?getRecipes().filter(function(x){
-    return x.toastGuid && !x.archived && (x.storeId==='TOTOYA' || TOTOYA_STORE_IDS.indexOf(x.storeId)>=0 || (sid&&x.storeId===sid));
-  }):[];
-  var seen={}; menu=menu.filter(function(x){ if(seen[x.toastGuid]) return false; seen[x.toastGuid]=1; return true; });
-  menu.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
-  return menu;
+function fvStoreShort(sid){
+  if(sid==='TOTOYA') return t('共通','All');
+  var s=(typeof getStoresAll==='function'?getStoresAll():[]).find(function(x){ return x.id===sid; });
+  return s?s.name:sid;
 }
-/* 商品GUIDごとの現在有効な設定 { fvId: g } */
+/* 商品名でまとめる。1グループ = { name, items:[{guid, storeId}] } */
+function fvBowlGroups(){
+  var recs=(typeof getRecipes==='function')?getRecipes().filter(function(x){
+    return x.toastGuid && !x.archived && (x.storeId==='TOTOYA' || TOTOYA_STORE_IDS.indexOf(x.storeId)>=0);
+  }):[];
+  var by={}, keys=[];
+  recs.forEach(function(r){
+    var key=String(r.name||'').trim() || r.toastGuid;
+    if(!by[key]){ by[key]={ name:key, items:[] }; keys.push(key); }
+    if(!by[key].items.some(function(x){ return x.guid===r.toastGuid; })){
+      by[key].items.push({ guid:r.toastGuid, storeId:r.storeId||'TOTOYA' });
+    }
+  });
+  keys.sort(function(a,b){ return a.localeCompare(b); });
+  return keys.map(function(k){ return by[k]; });
+}
+/* 1つのGUIDに対する現在有効な設定 { fvId: g } */
 function fvBowlSet(guid, cfg, date){
   cfg=cfg||fvGetConfig(); date=date||(typeof bizToday==='function'?bizToday():fvCurDate());
   var out={};
@@ -29166,103 +29183,179 @@ function fvBowlSet(guid, cfg, date){
   });
   return out;
 }
+/* グループ全体の設定状況
+   { fvId: { byGuid:{guid:g|null}, common:g|null, same:bool, anySet:bool } } */
+function fvGroupSet(group, cfg, date){
+  cfg=cfg||fvGetConfig();
+  var perGuid={};
+  (group.items||[]).forEach(function(it){ perGuid[it.guid]=fvBowlSet(it.guid, cfg, date); });
+  var out={};
+  FV_INGS.forEach(function(m){
+    var byGuid={}, vals=[], anySet=false;
+    (group.items||[]).forEach(function(it){
+      var v=perGuid[it.guid][m.fvId];
+      var vv=(v==null||!isFinite(v))?null:Number(v);
+      byGuid[it.guid]=vv; vals.push(vv);
+      if(vv!=null) anySet=true;
+    });
+    var same=vals.every(function(v){ return v===vals[0]; });
+    out[m.fvId]={ byGuid:byGuid, common:(same?vals[0]:null), same:same, anySet:anySet };
+  });
+  return out;
+}
 function fvBowlListHtml(){
   var cfg=fvGetConfig();
   var q=String(_fvBowlQ||'').toLowerCase().trim();
-  var menu=fvBowlMenu().filter(function(x){ return !q || String(x.name||'').toLowerCase().indexOf(q)>=0; });
-  if(!menu.length) return '<div style="font-size:12px;color:var(--muted);padding:8px 0">'+t('該当する商品がありません。メニュー同期でToast商品を取り込んでください。','No matching items.')+'</div>';
+  _fvGroups=fvBowlGroups().filter(function(g){ return !q || g.name.toLowerCase().indexOf(q)>=0; });
+  if(!_fvGroups.length){
+    return '<div style="font-size:12px;color:var(--muted);padding:8px 0">'
+      +t('該当する商品がありません。設定センターの「メニュー同期」でToast商品を取り込んでください。','No matching items — run menu sync first.')+'</div>';
+  }
   var h='';
-  menu.slice(0,60).forEach(function(x){
-    var set=fvBowlSet(x.toastGuid, cfg);
-    var keys=Object.keys(set);
-    var sum=keys.map(function(k){ return fvIngLabel(k)+' '+set[k]+'g'; }).join(' ／ ');
+  _fvGroups.slice(0,60).forEach(function(g, i){
+    var gs=fvGroupSet(g, cfg);
+    var parts=[], mixed=false;
+    FV_INGS.forEach(function(m){
+      var e=gs[m.fvId];
+      if(!e.anySet) return;
+      if(e.same) parts.push(fvIngLabel(m.fvId)+' '+e.common+'g');
+      else { mixed=true; parts.push(fvIngLabel(m.fvId)+' '+t('店舗別','per store')); }
+    });
+    var stores=(g.items||[]).map(function(it){ return fvStoreShort(it.storeId); });
     h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;padding:6px 0;border-bottom:1px solid var(--border)">'
-      +'<span style="flex:1"><b>'+escapeHtml(x.name||x.toastGuid)+'</b>'
-      +'<div style="font-size:10.5px;color:'+(keys.length?'var(--muted)':'var(--yellow)')+'">'+(keys.length?escapeHtml(sum):t('未設定','not set'))+'</div></span>'
-      +'<button class="btn '+(keys.length?'btn-secondary':'btn-primary')+' btn-sm" style="padding:3px 12px;white-space:nowrap" onclick="fvOpenBowl(\''+escapeHtml(x.toastGuid)+'\')">'+(keys.length?t('編集','Edit'):t('設定','Set'))+'</button></div>';
+      +'<span style="flex:1"><b>'+escapeHtml(g.name)+'</b>'
+      +'<div style="font-size:9.5px;color:var(--muted);margin-top:1px">'+escapeHtml(stores.join(' / '))+'</div>'
+      +'<div style="font-size:10.5px;color:'+(parts.length?'var(--muted)':'var(--yellow)')+'">'+(parts.length?escapeHtml(parts.join(' ／ ')):t('未設定','not set'))+(mixed?'':'')+'</div></span>'
+      +'<button class="btn '+(parts.length?'btn-secondary':'btn-primary')+' btn-sm" style="padding:3px 12px;white-space:nowrap" onclick="fvOpenBowl('+i+')">'+(parts.length?t('編集','Edit'):t('設定','Set'))+'</button></div>';
   });
-  if(menu.length>60) h+='<div style="font-size:11px;color:var(--muted);padding:6px 0">'+t('…他','…more ')+(menu.length-60)+t('件。検索で絞ってください。',' — refine search.')+'</div>';
+  if(_fvGroups.length>60) h+='<div style="font-size:11px;color:var(--muted);padding:6px 0">'+t('…他','…more ')+(_fvGroups.length-60)+t('件。検索で絞ってください。',' — refine search.')+'</div>';
   return h;
 }
 function fvCfgBowls(){
+  var nStores=fvGetConfig().stores.length;
   var h='<div class="card"><div class="card-title" style="font-size:13px">'+t('丼ごとの使用量','Usage per bowl')+'</div>'
     +'<div style="font-size:10.5px;color:var(--muted);background:var(--surface2);border-radius:6px;padding:6px 8px;margin-bottom:8px"><i class="ti ti-info-circle"></i> '
-    +t('商品を選ぶと6食材が並びます。使わない食材は空欄のままでOK。出数（商品GUID）×ここのg で理論使用量を計算します。','Pick an item, then set g for each of the 6 ingredients. Usage = Toast qty × these grams.')+'</div>'
+    +t('商品を選ぶと6食材が並びます。使わない食材は空欄のままでOK。<b>1回の入力で'+nStores+'店舗ぶん登録され</b>、理論使用量は<b>各店の出数</b>で別々に計算されます（店舗ごとに量を変えることもできます）。','Set once for all stores; usage is computed from each store\'s own sales.')+'</div>'
     +'<input class="form-input" placeholder="'+t('商品名で検索（例：Ahi）','search item name')+'" value="'+escapeHtml(_fvBowlQ)+'" oninput="fvSetBowlQ(this.value)" style="margin-bottom:8px">'
     +'<div id="fv-bowl-list">'+fvBowlListHtml()+'</div></div>';
   return h;
 }
-function fvOpenBowl(guid){
+function fvToggleBowlPerStore(){
+  var on=(document.getElementById('fvb-perstore')||{}).checked;
+  var c=document.getElementById('fvb-common-box'), p=document.getElementById('fvb-store-box');
+  if(c) c.style.display=on?'none':'block';
+  if(p) p.style.display=on?'block':'none';
+}
+function fvOpenBowl(idx){
   if(!fvCanManage()){ showToast(t('使用量の編集はG4以上です','Usage edit: G4+'),'warning'); return; }
+  var g=_fvGroups[idx]; if(!g) return;
   var cfg=fvGetConfig();
-  var item=fvBowlMenu().find(function(x){ return x.toastGuid===guid; })||{ name:guid, toastGuid:guid };
-  var set=fvBowlSet(guid, cfg);
-  var h='<div class="modal-title"><i class="ti ti-tools-kitchen-2"></i> '+escapeHtml(item.name||guid)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+t('1商品あたりの使用量(g)。使わない食材は空欄。','Grams per item; leave blank if unused.')+'</div>';
+  var gs=fvGroupSet(g, cfg);
+  var needPerStore=FV_INGS.some(function(m){ return !gs[m.fvId].same; });   /* 既に店舗別なら自動で店舗別モード */
+  var h='<div class="modal-title"><i class="ti ti-tools-kitchen-2"></i> '+escapeHtml(g.name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'
+    +t('1商品あたりの使用量(g)。使わない食材は空欄。','Grams per item; blank if unused.')+'<br>'
+    +t('登録先','Applies to')+': '+escapeHtml((g.items||[]).map(function(it){ return fvStoreShort(it.storeId); }).join(' / '))+'</div>'
+    +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:8px">'
+    +'<input type="checkbox" id="fvb-perstore"'+(needPerStore?' checked':'')+' onchange="fvToggleBowlPerStore()"> '+t('店舗ごとに量を変える','Different per store')+'</label>';
+  /* 共通入力 */
+  h+='<div id="fvb-common-box" style="display:'+(needPerStore?'none':'block')+'">';
   FV_INGS.forEach(function(m){
+    var e=gs[m.fvId];
     h+='<div class="form-row" style="margin-bottom:4px;align-items:center">'
       +'<span style="font-size:12.5px;min-width:88px;font-weight:600">'+escapeHtml(fvIngLabel(m.fvId))+'</span>'
-      +'<input class="form-input fvb-g" data-id="'+m.fvId+'" type="number" inputmode="decimal" step="0.1" placeholder="g" value="'+(set[m.fvId]!=null?set[m.fvId]:'')+'"></div>';
+      +'<input class="form-input fvb-g" data-id="'+m.fvId+'" type="number" inputmode="decimal" step="0.1" placeholder="g" value="'+(e.common!=null?e.common:'')+'"></div>';
   });
+  h+='</div>';
+  /* 店舗別入力 */
+  h+='<div id="fvb-store-box" style="display:'+(needPerStore?'block':'none')+'">';
+  FV_INGS.forEach(function(m){
+    h+='<div style="border-bottom:1px solid var(--border);padding:5px 0">'
+      +'<div style="font-size:12.5px;font-weight:600;margin-bottom:3px">'+escapeHtml(fvIngLabel(m.fvId))+'</div>';
+    (g.items||[]).forEach(function(it){
+      var v=gs[m.fvId].byGuid[it.guid];
+      h+='<div class="form-row" style="margin-bottom:3px;align-items:center">'
+        +'<span style="font-size:11.5px;min-width:78px;color:var(--muted)">'+escapeHtml(fvStoreShort(it.storeId))+'</span>'
+        +'<input class="form-input fvb-sg" data-id="'+m.fvId+'" data-guid="'+escapeHtml(it.guid)+'" type="number" inputmode="decimal" step="0.1" placeholder="g" value="'+(v!=null?v:'')+'"></div>';
+    });
+    h+='</div>';
+  });
+  h+='</div>';
   h+='<div style="background:var(--surface2);border-radius:8px;padding:8px;margin:8px 0">'
     +'<label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="radio" name="fvb-mode" value="today" checked> '+t('今日から変更（前日までの判定はそのまま）','From today (past unchanged)')+'</label>'
     +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:4px"><input type="radio" name="fvb-mode" value="fix"> '+t('入力ミスの修正（過去の判定もやり直す）','Fix a typo (recalc past)')+'</label></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
-    +'<button class="btn btn-primary" onclick="fvBowlSubmit(\''+escapeHtml(guid)+'\')">'+t('保存','Save')+'</button></div>';
+    +'<button class="btn btn-primary" onclick="fvBowlSubmit('+idx+')">'+t('保存','Save')+'</button></div>';
   openModal(h);
 }
-/* 保存: 変更のあった食材だけ処理。
-   today モード = 旧行に終了日(前日)を入れ、新行を今日開始で作る（過去日の計算は変わらない）
-   fix モード   = 現在有効な行の g を直接直す（過去も再計算される） */
-function fvBowlSubmit(guid){
+/* 1つのGUID×食材について、有効日を保ちながら値を更新する。戻り値: 変更したら1 */
+function fvApplyBowlRow(cfg, guid, itemName, fvId, val, mode, today, yest, now){
+  var cur=fvBowlSet(guid, cfg, today);
+  var old=(cur[fvId]!=null)?cur[fvId]:null;
+  if(val===old) return 0;
+  var actRow=null;
+  Object.keys(cfg.recipes).forEach(function(id){
+    var r=cfg.recipes[id];
+    if(r && !r._deleted && r.src!=='mod' && r.guid===guid && r.fvId===fvId && fvRecipeEffective(r, today)) actRow=r;
+  });
+  function _newRow(from){
+    var nid='fvr_'+Date.now()+'_'+Math.floor(Math.random()*100000)+fvId;
+    cfg.recipes[nid]={ id:nid, src:'item', guid:guid, modName:'', name:itemName||'', fvId:fvId,
+      g:val, kind:'base', storeG:{}, from:from||'', to:'', active:true, editedAt:now };
+  }
+  if(mode==='fix' || !actRow){
+    /* 修正モード、または初回登録。
+       初回は from を空（＝期間の制限なし）にする。これをしないと登録した当日は
+       前日ぶんの使用量が出せず、いつまでも「使用量未設定」で判定できない。 */
+    if(val==null){ if(actRow){ actRow._deleted=true; actRow.editedAt=now; } }
+    else if(actRow){ actRow.g=val; actRow.name=itemName||actRow.name; actRow.editedAt=now; }
+    else _newRow('');
+  } else if(actRow.from===today){
+    /* 今日始まりの行を同じ日に直した場合。終了日を入れると from>to の無効な行が残るので
+       その場で直す（前日以前は、その前の行が引き続き有効なまま）。 */
+    if(val==null){ actRow._deleted=true; actRow.editedAt=now; }
+    else { actRow.g=val; actRow.name=itemName||actRow.name; actRow.editedAt=now; }
+  } else {
+    actRow.to=yest; actRow.editedAt=now;                              /* 旧設定は前日で終了＝過去は不変 */
+    if(val!=null) _newRow(today);
+  }
+  return 1;
+}
+function fvBowlSubmit(idx){
+  var g=_fvGroups[idx]; if(!g) return;
   var cfg=fvGetConfig();
-  var item=fvBowlMenu().find(function(x){ return x.toastGuid===guid; })||{ name:guid };
   var mode=(document.querySelector('input[name="fvb-mode"]:checked')||{}).value||'today';
+  var perStore=!!(document.getElementById('fvb-perstore')||{}).checked;
   var today=(typeof bizToday==='function')?bizToday():fvCurDate();
   var yest=fvPrevDate(today);
   var now=new Date().toISOString();
-  var cur=fvBowlSet(guid, cfg, today);
-  var changed=0;
+  var num=function(raw){
+    if(raw===''||raw==null) return null;
+    var n=Number(raw);
+    return (isFinite(n) && n>=0) ? n : null;
+  };
+  var changed=0, stores={};
   FV_INGS.forEach(function(m){
-    var el=document.querySelector('.fvb-g[data-id="'+m.fvId+'"]');
-    var raw=el?el.value:'';
-    var val=(raw===''||raw==null)?null:Number(raw);
-    if(val!=null && (!isFinite(val)||val<0)){ val=null; }
-    var old=(cur[m.fvId]!=null)?cur[m.fvId]:null;
-    if(val===old) return;                                   /* 変更なし */
-    changed++;
-    /* 現在有効な行を探す */
-    var actRow=null;
-    Object.keys(cfg.recipes).forEach(function(id){
-      var r=cfg.recipes[id];
-      if(r && !r._deleted && r.src!=='mod' && r.guid===guid && r.fvId===m.fvId && fvRecipeEffective(r, today))actRow=r;
-    });
-    function _newRow(from){
-      var nid='fvr_'+Date.now()+'_'+Math.floor(Math.random()*10000)+m.fvId;
-      cfg.recipes[nid]={ id:nid, src:'item', guid:guid, modName:'', name:item.name||'', fvId:m.fvId,
-        g:val, kind:'base', storeG:{}, from:from||'', to:'', active:true, editedAt:now };
-    }
-    if(mode==='fix' || !actRow){
-      /* 修正モード、または初回登録。
-         初回は from を空（＝期間の制限なし）にする。これをしないと登録した当日は
-         前日ぶんの使用量が出せず、いつまでも「使用量未設定」で判定できない。 */
-      if(val==null){ if(actRow){ actRow._deleted=true; actRow.editedAt=now; } }
-      else if(actRow){ actRow.g=val; actRow.name=item.name||actRow.name; actRow.editedAt=now; }
-      else _newRow('');
-    } else if(actRow.from===today){
-      /* 今日始まりの行を同じ日に直した場合。終了日を入れると from>to の無効な行が残るので
-         その場で直す（前日以前は、その前の行が引き続き有効なまま）。 */
-      if(val==null){ actRow._deleted=true; actRow.editedAt=now; }
-      else { actRow.g=val; actRow.name=item.name||actRow.name; actRow.editedAt=now; }
+    if(perStore){
+      (g.items||[]).forEach(function(it){
+        var el=document.querySelector('.fvb-sg[data-id="'+m.fvId+'"][data-guid="'+it.guid+'"]');
+        var val=num(el?el.value:'');
+        var c=fvApplyBowlRow(cfg, it.guid, g.name, m.fvId, val, mode, today, yest, now);
+        if(c){ changed+=c; stores[it.storeId]=1; }
+      });
     } else {
-      actRow.to=yest; actRow.editedAt=now;                              /* 旧設定は前日で終了＝過去は不変 */
-      if(val!=null) _newRow(today);
+      var el2=document.querySelector('.fvb-g[data-id="'+m.fvId+'"]');
+      var v2=num(el2?el2.value:'');
+      (g.items||[]).forEach(function(it){
+        var c=fvApplyBowlRow(cfg, it.guid, g.name, m.fvId, v2, mode, today, yest, now);
+        if(c){ changed+=c; stores[it.storeId]=1; }
+      });
     }
   });
   if(!changed){ closeModalDirect(); return; }
   if(!fvSaveConfig(cfg)){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
   closeModalDirect();
-  showToast(t('保存しました（','Saved (')+changed+t('件変更）',' changed)'),'success');
+  showToast(g.name+' — '+Object.keys(stores).map(fvStoreShort).join('/')+' '+t('に保存しました','saved'),'success');
   renderPage('fv_variance');
 }
 /* ---- ③ トッピング（モディファイア） ---- */
