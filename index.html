@@ -13300,6 +13300,66 @@ function daysOfYm(ym){
     ② レシピに toastGuid が未登録／storeId 不一致の商品は捨てられる（＝集計に出ない）
     ③ 同一商品が複数行（日別など）で返る場合、現行コードは合計せず上書きしていた */
 /* v699: 出数が実績客数に対して少ない場合の再取り込み（Toastから31日分を取り直す） */
+/* v739: 全店の出数の取り込み状況を一覧する（どの店が足りていないか一目で分かるように） */
+async function openItemSalesOverview(period){
+  period = period || (typeof getPeriod==='function'?getPeriod():'');
+  var p=String(period).split('.'); var ym=p[0]+'-'+String(p[1]).padStart(2,'0');
+  var stores=(typeof getStoresAll==='function'?getStoresAll():STORES).filter(function(s){ return s && s.active!==false && s.toastGuid; });
+  openModal('<div class="modal-title"><i class="ti ti-cloud-search"></i> 出数の取り込み状況（'+escapeHtml(ym)+'） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div id="iso-body" style="font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> 全店を照会中…</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
+  var out='', need=[];
+  for(var i=0;i<stores.length;i++){
+    var st=stores[i];
+    var rows=[];
+    try{ rows=await fetchToastItemSales(st.toastGuid, period)||[]; }catch(e){}
+    var daily=rows.filter(function(x){ return x && (x.business_date||x.date); });
+    var days={}; daily.forEach(function(x){ days[String(x.business_date||x.date).slice(0,10)]=1; });
+    var nDays=Object.keys(days).length;
+    var qty=0; (daily.length?daily:rows).forEach(function(x){ qty+=Number(x.qty)||0; });
+    var g=0; try{ var _s=monthStats(st.id, (typeof _ymToOffset==='function')?_ymToOffset(ym):0); g=Number(_s&&_s.guests)||0; }catch(e){}
+    var ratio=g?(qty/g):null;
+    var mode=daily.length?('日別 '+nDays+'日分'):(rows.length?'月次集計':'データなし');
+    var bad=(!rows.length) || (ratio!=null && ratio<1);
+    if(bad) need.push(st.id);
+    out+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="flex:1"><b>'+escapeHtml(st.name)+'</b><div style="font-size:10.5px;color:'+(bad?'var(--red)':'var(--muted)')+'">'+escapeHtml(mode)
+      +'／出数 '+qty.toLocaleString()+(g?('／'+escapeHtml((typeof guestCountLabel==="function")?guestCountLabel(st.id):"客数")+' '+Math.round(g).toLocaleString()):'')
+      +(ratio!=null?('／1件あたり '+ratio.toFixed(2)):'')+'</div></span>'
+      +(bad?('<button class="btn btn-secondary btn-sm" style="padding:2px 8px;white-space:nowrap" onclick="closeModalDirect();resyncItemSales31(\''+st.id+'\',\''+period+'\')">取り直す</button>'):'<span style="color:var(--green);font-size:11px">OK</span>')
+      +'</div>';
+  }
+  var box=document.getElementById('iso-body'); if(!box) return;
+  box.innerHTML=out
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6">'
+    +'・<b>日別 N日分</b>＝business_date のある行。日次食材差異はこの行だけを使います。<br>'
+    +'・<b>月次集計</b>＝日付のない1行。メニューの出数には使えますが、<b>日次食材差異には使えません</b>。<br>'
+    +'・1件あたりが1を大きく下回る店は取り込み不足です。「取り直す」でToastから31日分を入れ直します。</div>'
+    +(need.length>1?('<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="resyncItemSalesAll(\''+period+'\')"><i class="ti ti-cloud-download"></i> 不足している'+need.length+'店をまとめて取り直す</button>'):'');
+}
+/* 不足店をまとめて再取り込み（1店ずつ順番に。負荷を考えて同時実行しない） */
+async function resyncItemSalesAll(period){
+  if(['ceo','gm','office'].indexOf(curRole)<0){ showToast('この操作はGM・経理・CEOのみです','warning'); return; }
+  period = period || (typeof getPeriod==='function'?getPeriod():'');
+  var stores=(typeof getStoresAll==='function'?getStoresAll():STORES).filter(function(s){ return s && s.active!==false && s.toastGuid; });
+  if(!confirm(stores.length+'店ぶんをToastから取り直します。数分かかります。実行しますか？')) return;
+  closeModalDirect();
+  var ok=0, ng=0;
+  for(var i=0;i<stores.length;i++){
+    var st=stores[i];
+    showToast('('+(i+1)+'/'+stores.length+') '+st.name+' を取り込み中…','info');
+    try{
+      var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
+        body: JSON.stringify({ mode:'cronSync', days:31, restaurantGuid:st.toastGuid }) });
+      var j=await res.json();
+      if(j && j.ok){ ok++; try{ await loadMenuMixFromDB(st.id, st.toastGuid, (String(period).split('.')[0]+'-'+String(String(period).split('.')[1]).padStart(2,'0'))); }catch(e){} }
+      else ng++;
+    }catch(e){ ng++; }
+  }
+  showToast('まとめて取り直し完了 — 成功'+ok+'店'+(ng?('／失敗'+ng+'店'):''), ng?'warning':'success');
+  try{ renderPage(curPage); }catch(e){}
+  try{ setTimeout(function(){ openItemSalesOverview(period); }, 600); }catch(e){}
+}
 async function resyncItemSales31(storeId, period){
   if(['ceo','gm','office'].indexOf(curRole)<0){ showToast('この操作はGM・経理・CEOのみです','warning'); return; }
   var st=(getStoresAll().find(function(x){return x.id===storeId;})||{});
@@ -13445,9 +13505,14 @@ async function loadMenuMixFromDB(storeId, guid, ym, opt){
     if(recipeInStore(r, storeId)) byGuid[r.toastGuid]=r.id;
   });
   var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
+  /* v739【二重計上の防止】同じ月に「日別行(business_date あり)」と「月次集計行(なし)」が
+     混在することがある（日別移行の途中や、再取り込みで日別を足した直後）。
+     両方を足すと出数が倍になるため、日別行が1件でもあれば日別だけを使う。 */
+  var _hasDaily = sales.some(function(x){ return x && (x.business_date||x.date); });
+  var _rows = _hasDaily ? sales.filter(function(x){ return x && (x.business_date||x.date); }) : sales;
   /* v698: 同一商品が複数行（日別など）で返る場合、代入だと最後の1行しか残らず出数が少なく出ていた。合計する。 */
   var _acc={};
-  sales.forEach(function(s){ var g=s.item_guid||s.guid; var rid=byGuid[g]; if(rid && s.qty!=null) _acc[rid]=(_acc[rid]||0)+Number(s.qty); });
+  _rows.forEach(function(s){ var g=s.item_guid||s.guid; var rid=byGuid[g]; if(rid && s.qty!=null) _acc[rid]=(_acc[rid]||0)+Number(s.qty); });
   Object.keys(_acc).forEach(function(rid){ mix.items[rid]=_acc[rid]; });
   var total=0; getRecipes().filter(function(r){return recipeInStore(r, storeId);}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
   mix.sales=total; mix.savedAt=nowJP(); mix.toastSrc=true;
@@ -13455,8 +13520,12 @@ async function loadMenuMixFromDB(storeId, guid, ym, opt){
   /* v737: どれだけ反映できたかを返す（黙って何も起きない状態をなくす） */
   var matched=Object.keys(_acc).length;
   var unmatched={};
-  sales.forEach(function(x){ var g=x.item_guid||x.guid; if(g && !byGuid[g]) unmatched[g]=(x.item_name||g); });
-  return { ok:true, rows:sales.length, matched:matched, unmatchedCount:Object.keys(unmatched).length,
+  _rows.forEach(function(x){ var g=x.item_guid||x.guid; if(g && !byGuid[g]) unmatched[g]=(x.item_name||g); });
+  var _days={}; _rows.forEach(function(x){ var d=x&&(x.business_date||x.date); if(d) _days[String(d).slice(0,10)]=1; });
+  return { ok:true, rows:_rows.length, allRows:sales.length, matched:matched,
+    mode:(_hasDaily?'daily':'monthly'), days:Object.keys(_days).length,
+    skippedMonthly:(_hasDaily?(sales.length-_rows.length):0),
+    unmatchedCount:Object.keys(unmatched).length,
     unmatchedNames:Object.keys(unmatched).map(function(g){ return unmatched[g]; }).slice(0,5) };
 }
 /* Labor(tip_labor)の夜間cron保存は売上(toast_sales)より遅れることがある。
@@ -20058,7 +20127,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '738';
+const APP_VERSION = '739';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -38799,7 +38868,7 @@ function renderMenu() {
   html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     ${visStores.length>1?`<select class="form-select" style="width:auto;padding:6px" onchange="onMenuStoreChange(this.value)">${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>`:`<b style="font-size:13px">${storeObj.name}</b>`}
     <select class="form-select" style="width:auto;padding:6px" onchange="onMenuPeriodChange(this.value)">${periodOptions(period)}</select>
-    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> ${t('出数を入力','Enter sales qty')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="ensureMenuMixLoaded('${storeId}','${period}',{notify:true})"><i class="ti ti-cloud-download"></i> ${t('出数を同期','Sync sales qty')}</button><button class="btn btn-secondary btn-sm" onclick="openMenuMixDiag('${storeId}','${period}')"><i class="ti ti-stethoscope"></i> ${t('出数の診断','Diagnose')}</button>
+    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> ${t('出数を入力','Enter sales qty')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="ensureMenuMixLoaded('${storeId}','${period}',{notify:true})"><i class="ti ti-cloud-download"></i> ${t('出数を同期','Sync sales qty')}</button>${['ceo','gm','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openItemSalesOverview('${period}')"><i class="ti ti-cloud-search"></i> ${t('全店の状況','All stores')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="openMenuMixDiag('${storeId}','${period}')"><i class="ti ti-stethoscope"></i> ${t('出数の診断','Diagnose')}</button>
     <button class="btn btn-primary btn-sm" onclick="openMenuRangeModal('${storeId}')"><i class="ti ti-table-export"></i> ${t('期間集計・出力','Period summary / export')}</button>
     ${mix.toastSrc?`<span class="tag tag-green" style="font-size:9px">${t('Toast同期済','Toast synced')}</span>`:''}
   </div></div>`;
@@ -38996,7 +39065,9 @@ async function ensureMenuMixLoaded(storeId, period, opt){
     if (opt && opt.notify && typeof showToast==='function'){
       if (!_r || !_r.ok) showToast((_r&&_r.reason)||'出数を取得できませんでした','warning');
       else if (!_r.matched) showToast('クラウドに'+_r.rows+'件ありましたが、メニューと紐づく商品がありませんでした（メニュー同期をお試しください）','warning');
-      else showToast(_r.matched+'商品の出数を反映しました'+(_r.unmatchedCount?('／未紐づけ '+_r.unmatchedCount+'件'):''),'success');
+      else showToast(_r.matched+'商品の出数を反映しました'
+        +(_r.mode==='daily'?('（日別 '+_r.days+'日分'+(_r.skippedMonthly?'／月次集計行 '+_r.skippedMonthly+'件は二重計上を避けるため除外':'')+'）'):'（月次集計）')
+        +(_r.unmatchedCount?('／未紐づけ '+_r.unmatchedCount+'件'):''),'success');
     }
   } catch(e){ console.warn('ensureMenuMixLoaded', e); if(opt&&opt.notify&&typeof showToast==='function') showToast('出数の取得に失敗しました','warning'); }
   if (curPage==='menu') renderPage('menu');
