@@ -4574,11 +4574,21 @@ function _lsOnDemand(key){
   /* --- 人別の履歴 --- */
   for(var i=0;i<_LS_ONDEMAND_PREFIX.length;i++){ if(s.indexOf(_LS_ONDEMAND_PREFIX[i])===0) return true; }
 
-  /* --- 月別: 当月・前月だけ常駐、それ以前は必要時 --- */
+  /* --- 月別: 前月より古いものだけ必要時取得。当月・翌月以降は常駐 ---
+     v743【翌月がクラウドへ送られない問題の修正】
+     以前は「当月・前月だけ常駐」で、翌月(例: 7月時点の 2026-08)を古い月と同じ扱いにしていた。
+     そのため未取得と見なされ、_lsPushBlocked が押し上げを止め、
+     8月の承認済み予算が「deferred: not fetched yet」のままクラウドへ上がらなかった。
+     翌月の予算を前もって作って承認するのは通常の運用なので、未来の月は常駐にする。 */
   var m=s.match(/^(?:fc_monthly_|budget_approved_).+_(\d{4}-\d{2})$/);
-  if(m){ return !(m[1]===_lsYmNow() || m[1]===_lsYmPrev()); }
-  var p=s.match(/^menu_mix_.+_(\d{4}\.\d{1,2})$/);
-  if(p){ return !(p[1]===_lsPdNow() || p[1]===_lsPdPrev()); }
+  if(m){ return m[1] < _lsYmPrev(); }          /* 'YYYY-MM' は文字列比較で日付順になる */
+  var p=s.match(/^menu_mix_.+_(\d{4})\.(\d{1,2})$/);
+  if(p){
+    var _r  = parseInt(p[1],10)*12 + parseInt(p[2],10);
+    var _pv = String(_lsPdPrev()).split('.');
+    var _rp = parseInt(_pv[0],10)*12 + parseInt(_pv[1],10);
+    return _r < _rp;                            /* '2026.9' > '2026.10' の文字列比較を避けるため数値で比較 */
+  }
 
   return false;
 }
@@ -20183,7 +20193,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '742';
+const APP_VERSION = '743';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
