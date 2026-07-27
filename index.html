@@ -5922,7 +5922,18 @@ function _coversReqTomb(check, want){
   return true;
 }
 /* Invoice/立替のマージ: id単位で和集合（全端末のアップロードを統合）。衝突は削除優先→レビュー時刻→レビュー済み→local */
-function _invMut(x){ return Number(x && x.reviewedAt ? (Date.parse(x.reviewedAt)||0) : 0)||0; }
+/* v736: これまで「確認日時(reviewedAt)」しか見ていなかったため、用途の変更などは
+   時刻0のまま＝端末間で同点になり、受け取り側の古いレコードが残っていた。
+   どの編集でも押される _mut を含めて、いちばん新しい時刻で比較する。 */
+function _invMut(x){
+  if(!x) return 0;
+  var a=Number(x._mut)||0;
+  var b=x.reviewedAt ? (Date.parse(x.reviewedAt)||0) : 0;
+  var c=x.purposeAt ? (Date.parse(String(x.purposeAt).replace(/\//g,'-'))||0) : 0;
+  return Math.max(a,b,c)||0;
+}
+/* 請求書を編集したら必ずこれを通す（端末間で「新しい方」が確実に勝つようにする） */
+function invTouch(v){ if(v && typeof v==='object'){ v._mut=Date.now(); } return v; }
 function mergeInvoices(cloudArr, localArr){
   var by={}, order=[];
   function put(item, isLocal){
@@ -20011,7 +20022,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '735';
+const APP_VERSION = '736';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -40518,7 +40529,7 @@ function invClassifySubmit(){
     var id=sel.getAttribute('data-id');
     var v=invoices.find(function(x){ return x && String(x.id)===String(id); });
     if(!v) return;
-    v.purpose=p; v.purposeBy=myName(); v.purposeAt=nowJP(); n++;
+    v.purpose=p; v.purposeBy=myName(); v.purposeAt=nowJP(); invTouch(v); n++;   /* v736: 端末間で確実に反映させる */
     if(remember && v.vendor) vend[v.vendor]=(p==='仕入れ・仕込み')?'food':'nonfood';
   });
   if(!n){ showToast('変更はありません','info'); return; }
@@ -41738,7 +41749,7 @@ function renderAcctReview(){
 /* 確認中など、Drive移動を伴わない状態更新 */
 function arSetStatus(id, status){
   var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
-  inv.reviewStatus=status;
+  inv.reviewStatus=status; invTouch(inv);
   inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
   inv.reviewedAt = nowJP();
   lsSet('invoices', invoices);
@@ -41756,7 +41767,7 @@ async function arApprove(id){
     showToast('Driveでファイルを整理中…','info');
     var res=await driveSync('move', { fileId:inv.driveFileId, kind:kind, store:storeName, employee:(inv.empName||''), ym:ym });
     if(res && res.ok){
-      inv.driveMoved=true;
+      inv.driveMoved=true; invTouch(inv);
       if(res.webViewLink) inv.driveUrl=res.webViewLink;
     } else if(res && res.error==='not_configured'){
       showToast('Drive未連携のため移動はスキップ（状態のみ更新）','warning');
@@ -41764,7 +41775,7 @@ async function arApprove(id){
       showToast('Drive移動に失敗：'+(res&&res.error||'不明')+'（状態は更新します）','warning');
     }
   }
-  inv.reviewStatus='確認済み';
+  inv.reviewStatus='確認済み'; invTouch(inv);
   inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
   inv.reviewedAt = nowJP();
   lsSet('invoices', invoices);
@@ -41791,7 +41802,7 @@ async function arRejectConfirm(id){
   var reason=(docVal('ar-reason')||'').trim();
   if(!reason){ showToast('差し戻し理由を入力してください','warning'); return; }
   var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
-  inv.reviewStatus='差し戻し';
+  inv.reviewStatus='差し戻し'; invTouch(inv);
   inv.reviewNote=reason;
   inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
   inv.reviewedAt = nowJP();
@@ -41857,7 +41868,7 @@ async function submitRejectReply(id){
     var so=STORES.find(function(x){return x.id===inv.storeId;});
     var newPath=await uploadInvoiceImage(window._rejReplyFile, so?so.name:(inv.storeId||''));
     if(newPath){
-      inv.imagePath=newPath; inv.driveFileId=''; inv.driveUrl=''; inv.driveMoved=false;
+      inv.imagePath=newPath; inv.driveFileId=''; inv.driveUrl=''; inv.driveMoved=false; invTouch(inv);
       try{
         var _iso=todayISO();
         var _ext=(String(newPath).split('.').pop()||'jpg');
@@ -41871,7 +41882,7 @@ async function submitRejectReply(id){
       }catch(e){}
     }
   }
-  inv.reviewStatus='未確認';
+  inv.reviewStatus='未確認'; invTouch(inv);
   addReviewThread(inv, '再提出', reply);
   try{ var _so2=STORES.find(function(x){return x.id===inv.storeId;}); var _stN2=_so2?_so2.name:(inv.storeId||''); addNotif({ type:'resubmit', title:'差し戻しに再提出がありました', text:(_stN2+' / '+inv.vendor+' $'+(inv.total||0).toFixed(2)).slice(0,140), toRoles:['office','gm'], page:'acct_review', refId:inv.id }); }catch(e){}
   lsSet('invoices', invoices);
@@ -41915,7 +41926,7 @@ async function deleteInvoiceDo(id){
   }
   // 3) 一覧から削除（同期にも反映）
   /* v679: 物理削除→論理削除。端末間マージで復活しないようtombstoneを残す（読み取りでは除外される） */
-  invoices[idx]._deleted=true;
+  invoices[idx]._deleted=true; invTouch(invoices[idx]);   /* v736 */
   invoices[idx]._deletedAt=(typeof nowJP==='function'?nowJP():'');
   lsSet('invoices', invoices);
   closeModalDirect();
