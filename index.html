@@ -19478,7 +19478,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '723';
+const APP_VERSION = '724';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -28154,7 +28154,12 @@ function ingTransferDelete(id){
   showToast(t('食材移動を取り消しました','Transfer canceled'),'success'); renderPage('ing_transfer');
 }
 /* ============================================================
-   v723: Totoya 日次食材差異 (Daily Food Variance) — 簡素版
+   v724: Totoya 日次食材差異 (Daily Food Variance) — 1画面版
+   - タブを廃止。1画面で「前日カウント(自動) → 使用量 → 当日カウント → 判定」。
+     予定残 = 前日カウント + 入出庫 − 理論使用量 − 登録済(廃棄等)
+     原因不明差異 = 予定残 − 当日カウント  （※従来式と数学的に同一）
+   - 食材選択は業者で絞り込み＋名前検索（食材マスタが大きく探しにくいため）。
+   - v723: Totoya 日次食材差異 (Daily Food Variance) — 簡素版
    - v722の不具合修正: 出数キャッシュ取得→再描画→再取得の無限ループで
      画面が固まっていた。取得は「1セッション1回・成功時のみ再描画」に変更。
    - 簡素化: タブは 差異/棚卸/入出庫/設定 の4つ。分析タブと連続日数の
@@ -28434,11 +28439,16 @@ function fvVarianceDay(sid, date, fvId, theoEntry, cfg){
   if(cost==null) incomplete.push(t('単価未設定','Unit cost not set'));
   var r={ startDg:start, endDg:endDg, flowDg:agg.flowDg, knownDg:agg.knownDg, byType:agg.byType,
     theoDg:(theoEntry&&!theoEntry.noToast)?theoEntry.dg:null, cost:cost, incomplete:incomplete,
-    actDg:null, totalDiffDg:null, unexplainedDg:null, pct:null, lossCents:null, level:'incomplete' };
+    actDg:null, totalDiffDg:null, unexplainedDg:null, pct:null, lossCents:null, level:'incomplete', expectedDg:null };
+  /* 予定残(こうなっているはずの残り) = 前日 + 入出庫 - 理論使用 - 登録済(廃棄等)
+     Toastと開始在庫が揃えば、当日カウント未入力でも先に表示できる(現場が照合しやすい) */
+  if(start!=null && theoEntry && !theoEntry.noToast && theoEntry.set){
+    r.expectedDg = start + agg.flowDg - theoEntry.dg - agg.knownDg;
+  }
   if(incomplete.length) return r;                     /* データ未完成→差異を確定しない(誤アラート防止) */
   r.actDg = start + agg.flowDg - endDg;
   r.totalDiffDg = r.actDg - r.theoDg;
-  r.unexplainedDg = r.totalDiffDg - agg.knownDg;
+  r.unexplainedDg = r.totalDiffDg - agg.knownDg;      /* = 予定残 - 当日カウント */
   r.pct = (r.theoDg>0) ? (r.unexplainedDg/r.theoDg*100) : null;
   r.lossCents = fvLossCents(r.unexplainedDg, cost);
   r.level = fvJudge(sid, fvId, r, cfg);
@@ -28568,9 +28578,10 @@ function _coversFvConfig(check, want){
 }
 
 /* ============================================================
-   画面 (簡素版): 差異 / 棚卸 / 入出庫 / 設定
+   画面 (1画面版)
+   食材ごとに 前日カウント(自動) → 入出庫 → 使用量 → 予定残 → 当日カウント → 判定
 ============================================================ */
-var _fvTab='list';
+var _fvView='main';         /* main | config */
 var _fvStore=null;
 var _fvDate=null;
 function fvCurStore(){
@@ -28583,16 +28594,14 @@ function fvCurDate(){
   var d=(typeof bizNow==='function')?bizNow():new Date(); d.setDate(d.getDate()-1);   /* 既定=HST前営業日 */
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
-function setFvTab(x){ _fvTab=x; renderPage('fv_variance'); }
+function setFvView(x){ _fvView=x; renderPage('fv_variance'); }
 function setFvStore(x){ _fvStore=x; renderPage('fv_variance'); }
 function setFvDate(x){ _fvDate=x; renderPage('fv_variance'); }
-function _fvLvBadge(level){
-  if(level==='red') return '<span style="padding:2px 8px;border-radius:999px;background:rgba(220,60,60,.15);color:var(--red);font-weight:800;font-size:11px">'+t('赤','RED')+'</span>';
-  if(level==='yellow') return '<span style="padding:2px 8px;border-radius:999px;background:rgba(230,180,40,.15);color:var(--yellow);font-weight:800;font-size:11px">'+t('黄','YEL')+'</span>';
-  if(level==='incomplete') return '<span style="padding:2px 8px;border-radius:999px;background:var(--surface2);color:var(--muted);font-weight:700;font-size:11px">'+t('未完成','N/A')+'</span>';
-  return '<span style="padding:2px 8px;border-radius:999px;background:rgba(60,180,90,.12);color:var(--green);font-weight:800;font-size:11px">OK</span>';
-}
 function _fvSign(dg){ return (dg>0?'+':'')+fvFmtG(dg); }
+function _fvChip(label, val, color){
+  return '<div style="flex:1;min-width:72px"><div style="font-size:9.5px;color:var(--muted)">'+label+'</div>'
+    +'<div style="font-size:13px;font-weight:700'+(color?(';color:'+color):'')+'">'+val+'</div></div>';
+}
 function renderFvVariance(){
   if(!fvCanView()){
     return '<div class="card"><p style="font-size:13px;font-weight:700"><i class="ti ti-lock"></i> '+t('この画面はG2以上のスタッフ向けです','This screen is for G2 and above')+'</p></div>';
@@ -28604,65 +28613,212 @@ function renderFvVariance(){
   }
   var sid=fvCurStore(), date=fvCurDate(), ym=String(date).slice(0,7);
   fvEnsureSales(sid, ym);                              /* 取得は非同期・成功時のみ1度だけ再描画 */
+  if(_fvView==='config' && fvCanConfig()){
+    return '<div class="section-header"><div><div class="section-title"><i class="ti ti-settings" style="color:var(--accent)"></i> '+t('日次食材差異 の設定','Daily Food Variance settings')+'</div></div></div>'
+      +'<button class="btn btn-secondary btn-sm" style="margin-bottom:8px" onclick="setFvView(\'main\')"><i class="ti ti-arrow-left"></i> '+t('戻る','Back')+'</button>'
+      +fvRenderConfig();
+  }
   var h='<div class="section-header"><div><div class="section-title"><i class="ti ti-scale" style="color:var(--accent)"></i> '+t('日次食材差異','Daily Food Variance')+'</div>'
-    +'<div class="section-sub">'+t('理論(Toast出数×標準g) vs 実(棚卸)','Theoretical vs actual per ingredient')+'</div></div></div>';
+    +'<div class="section-sub">'+t('前日カウント → 使用量 → 当日カウントで確認','Prev count → usage → today count')+'</div></div></div>';
   h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center">'
-    +'<select class="form-select" style="max-width:140px;padding:6px" onchange="setFvStore(this.value)">'
+    +'<select class="form-select" style="max-width:130px;padding:6px" onchange="setFvStore(this.value)">'
     +vis.map(function(s){ return '<option value="'+s.id+'"'+(s.id===sid?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('')
     +'</select>'
     +'<input type="date" class="form-input" style="max-width:150px;padding:6px" value="'+date+'" onchange="setFvDate(this.value)">'
-    +'<button class="btn btn-secondary btn-sm" onclick="fvRefreshSales(\''+sid+'\',\''+ym+'\')"><i class="ti ti-refresh"></i></button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="fvRefreshSales(\''+sid+'\',\''+ym+'\')" title="'+t('出数を再取得','Refetch sales')+'"><i class="ti ti-refresh"></i></button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="fvOpenSummary(\''+sid+'\',\''+date+'\')"><i class="ti ti-chart-bar"></i> '+t('7日','7d')+'</button>'
+    +(fvCanConfig()?('<button class="btn btn-secondary btn-sm" onclick="setFvView(\'config\')"><i class="ti ti-settings"></i></button>'):'')
     +'</div>';
-  var tabs=[['list',t('差異','Variance')],['count',t('棚卸','Count')],['moves',t('入出庫','Moves')]];
-  if(fvCanConfig()) tabs.push(['config',t('設定','Settings')]);
-  h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px">'
-    +tabs.map(function(x){ return '<button class="btn '+(_fvTab===x[0]?'btn-primary':'btn-secondary')+' btn-sm" onclick="setFvTab(\''+x[0]+'\')">'+x[1]+'</button>'; }).join('')+'</div>';
-  if(_fvTab==='count') h+=fvRenderCount(sid, date);
-  else if(_fvTab==='moves') h+=fvRenderMoves(sid, date);
-  else if(_fvTab==='config') h+=fvRenderConfig();
-  else h+=fvRenderList(sid, date);
+  h+=fvRenderMain(sid, date);
   return h;
 }
-/* ---- 差異(カード表示・軽量) ---- */
-function fvRenderList(sid, date){
+/* ---- 本体: 食材ごとに1カード ---- */
+function fvRenderMain(sid, date){
   var cfg=fvGetConfig();
   var day=fvSalesFor(sid, date);
   var theoAll=day?fvTheoreticalDay(sid, date, day, cfg):null;
+  var canIn=fvCanInput();
   var h='';
   if(day==null){
     h+='<div class="alert alert-warning" style="margin:0 0 8px;padding:6px 10px;font-size:12px"><i class="ti ti-alert-triangle"></i> '
-      +t('Toast日次データが未取得です(取得中/未取込)。右上の更新ボタンで再取得できます。','No Toast daily data yet — use refresh button.')+'</div>';
+      +t('Toastの出数が未取得です（取得中／未取込）。使用量が出るまで判定は保留になります。','No Toast sales yet — judgment on hold until usage is available.')+'</div>';
   }
   FV_INGS.forEach(function(m){
     var theo=theoAll?theoAll[m.fvId]:{ dg:0, rows:[], set:fvRecipesSetFor(m.fvId, date, cfg), noToast:true };
     if(day==null) theo.noToast=true;
     var v=fvVarianceDay(sid, date, m.fvId, theo, cfg);
+    var e=fvCountFor(sid, date, m.fvId);
+    var entered=!!(e&&e.editedAt);
     var rev=fvGetReview(sid, date, m.fvId);
-    var pctTxt=(v.pct==null)?'':(' ('+(v.pct>0?'+':'')+(Math.round(v.pct*10)/10)+'%)');
-    h+='<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center">'
-      +'<div style="font-weight:800;font-size:13.5px">'+escapeHtml(fvIngLabel(m.fvId))+'</div>'+_fvLvBadge(v.level)+'</div>';
-    if(v.level==='incomplete'){
-      h+='<div style="font-size:11px;color:var(--muted);margin-top:4px">'+escapeHtml(v.incomplete.join(' / '))+'</div>';
-    } else {
-      h+='<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;margin-top:6px">'
-        +'<span>'+t('理論','Theo')+' <b>'+fvFmtG(v.theoDg)+'</b></span>'
-        +'<span>'+t('実','Act')+' <b>'+fvFmtG(v.actDg)+'</b></span>'
-        +'<span>'+t('登録済','Known')+' <b>'+(v.knownDg?_fvSign(v.knownDg):'0g')+'</b></span></div>'
-        +'<div style="font-size:13px;margin-top:4px">'+t('原因不明','Unexplained')+' <b style="color:'+(v.unexplainedDg>0?'var(--red)':(v.unexplainedDg<0?'var(--yellow)':'var(--green)'))+'">'+_fvSign(v.unexplainedDg)+'</b>'+pctTxt
-        +(v.lossCents!=null?(' ／ '+t('推定損失','Loss')+' <b>'+(v.lossCents<0?'-':'')+fvFmtCents(v.lossCents)+'</b>'):'')+'</div>'
-        +(v.unexplainedDg>0?'<div style="font-size:10px;color:var(--muted)">'+t('理論より多く使用','Used more than theoretical')+'</div>'
-          :(v.unexplainedDg<0?'<div style="font-size:10px;color:var(--muted)">'+t('棚卸し・入荷・レシピ設定の確認が必要','Check count / deliveries / recipe setup')+'</div>':''));
+    var prev=fvStartDg(sid, date);
+    var ic=cfg.ings[m.fvId]||{};
+    var ingName='';
+    if(ic.code!=null && typeof getIngredients==='function'){
+      var mi=getIngredients().find(function(x){ return x.code===ic.code; });
+      if(mi) ingName=(mi.vendor?(mi.vendor+' / '):'')+mi.name;
+    }
+    /* ヘッダ色: 判定 */
+    var barCol=(v.level==='red')?'var(--red)':(v.level==='yellow')?'var(--yellow)':(v.level==='ok')?'var(--green)':'var(--border)';
+    h+='<div class="card" style="margin-bottom:10px;border-left:3px solid '+barCol+'">';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+      +'<div><b style="font-size:13.5px">'+escapeHtml(fvIngLabel(m.fvId))+'</b>'
+      +(ingName?('<div style="font-size:9.5px;color:var(--muted)">'+escapeHtml(ingName)+'</div>'):('<div style="font-size:9.5px;color:var(--yellow)">'+t('食材マスタ未紐付け','Not linked to master')+'</div>'))+'</div>'
+      +'<div style="text-align:right">'+fvJudgeLabel(v, entered)+'</div></div>';
+    /* 流れ: 前日 → 入出庫 → 使用量 → 予定残 */
+    h+='<div style="display:flex;gap:8px;flex-wrap:wrap;padding:6px 8px;background:var(--surface2);border-radius:8px;margin-bottom:6px">'
+      +_fvChip(t('前日カウント(自動)','Prev (auto)'), (v.startDg!=null?fvFmtG(v.startDg):('<span style="color:var(--yellow);font-size:11px">'+t('未入力','none')+'</span>')), '')
+      +_fvChip(t('入出庫','In/Out'), (v.flowDg?_fvSign(v.flowDg):'0g'), '')
+      +_fvChip(t('使用量(理論)','Usage'), (v.theoDg!=null?fvFmtG(v.theoDg):('<span style="color:var(--muted);font-size:11px">'+(theo.set?t('待ち','—'):t('レシピ未設定','no recipe'))+'</span>')), '')
+      +(v.knownDg?_fvChip(t('廃棄等','Waste etc'), _fvSign(v.knownDg), ''):'')
+      +_fvChip(t('予定残','Expected'), (v.expectedDg!=null?('<b>'+fvFmtG(v.expectedDg)+'</b>'):'—'), 'var(--accent)')
+      +'</div>';
+    if(v.startDg==null){
+      h+='<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">'+t('前日('+prev.date+')のカウントが無いため予定残を出せません。日付を前日に切り替えて入力できます。','No count for previous day.')+'</div>';
+    }
+    /* 当日カウント入力 */
+    if(canIn){
+      var packG=(e&&e.packG!=null)?e.packG:(ic.packG!=null?ic.packG:'');
+      var tareG=(e&&e.tareG!=null)?e.tareG:(ic.tareG||'');
+      h+='<div style="font-size:10.5px;color:var(--muted);margin-bottom:3px">'+t('当日カウント（パック数×内容量 ＋ 量り − 風袋）','Today count (packs×g + weighed − tare)')+'</div>'
+        +'<div class="form-row" style="margin-bottom:4px">'
+        +'<input class="form-input" id="fvc-packs-'+m.fvId+'" type="number" inputmode="decimal" step="1" placeholder="'+t('パック数','packs')+'" value="'+((e&&e.packs)?e.packs:'')+'" oninput="fvCountRow(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')">'
+        +'<input class="form-input" id="fvc-packg-'+m.fvId+'" type="number" inputmode="decimal" step="0.1" placeholder="'+t('内容量g','g/pack')+'" value="'+packG+'" oninput="fvCountRow(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')"></div>'
+        +'<div class="form-row" style="margin-bottom:4px">'
+        +'<input class="form-input" id="fvc-open-'+m.fvId+'" type="number" inputmode="decimal" step="0.1" placeholder="'+t('量り(g)','weighed g')+'" value="'+((e&&e.openG)?e.openG:'')+'" oninput="fvCountRow(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')">'
+        +'<input class="form-input" id="fvc-tare-'+m.fvId+'" type="number" inputmode="decimal" step="0.1" placeholder="'+t('風袋g','tare g')+'" value="'+tareG+'" oninput="fvCountRow(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')"></div>'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+        +'<span id="fvc-sum-'+m.fvId+'" style="font-size:12px">'+fvCountLine(sid, date, m.fvId, v, e)+'</span>'
+        +'<span style="white-space:nowrap">'
+        +'<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="fvOpenMove(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')" title="'+t('入出庫','In/Out')+'"><i class="ti ti-arrows-exchange"></i></button> '
+        +'<button class="btn btn-primary btn-sm" style="padding:3px 14px" onclick="fvCountSave(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')">'+t('保存','Save')+'</button></span></div>';
+    } else if(entered){
+      h+='<div style="font-size:12.5px">'+t('当日カウント','Today count')+': <b>'+fvFmtG(fvCountTotalDg(e))+'</b></div>';
+    }
+    /* 判定の内訳 */
+    if(v.level!=='incomplete'){
+      h+='<div style="font-size:12.5px;margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">'
+        +t('予定残','Expected')+' '+fvFmtG(v.expectedDg)+' − '+t('当日','Today')+' '+fvFmtG(v.endDg)+' = '
+        +'<b style="color:'+(v.unexplainedDg>0?'var(--red)':(v.unexplainedDg<0?'var(--yellow)':'var(--green)'))+'">'+_fvSign(v.unexplainedDg)+'</b>'
+        +(v.pct!=null?(' ('+(v.pct>0?'+':'')+(Math.round(v.pct*10)/10)+'%)'):'')
+        +(v.lossCents!=null?(' ／ '+(v.lossCents<0?'-':'')+fvFmtCents(v.lossCents)):'')
+        +'</div>'
+        +'<div style="font-size:10px;color:var(--muted)">'
+        +(v.unexplainedDg>0?t('在庫が予定より少ない＝理論より多く使用','Stock lower than expected — used more than theoretical')
+          :(v.unexplainedDg<0?t('在庫が予定より多い＝棚卸し・入荷・レシピ設定の確認が必要','Stock higher than expected — check count / deliveries / recipe'):t('予定どおり','As expected')))+'</div>';
+    } else if(entered && v.incomplete.length){
+      h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+t('判定保留','On hold')+': '+escapeHtml(v.incomplete.join(' / '))+'</div>';
     }
     if(rev) h+='<div style="font-size:11px;margin-top:4px;color:var(--muted)"><i class="ti ti-clipboard-check"></i> '+escapeHtml(rev.cause||'')+(rev.action?(' — '+escapeHtml(rev.action)):'')+' ('+escapeHtml(rev.by||'')+')</div>';
-    h+='<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" style="padding:2px 10px" onclick="fvOpenDetail(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')">'+t('内訳','Detail')+'</button>'
+    h+='<div style="margin-top:6px">'
+      +'<button class="btn btn-secondary btn-sm" style="padding:2px 10px" onclick="fvOpenDetail(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')">'+t('内訳','Detail')+'</button>'
       +((v.level==='red'&&fvCanManage())?(' <button class="btn btn-primary btn-sm" style="padding:2px 10px" onclick="fvOpenReview(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')">'+t('原因を登録','Cause')+'</button>'):'')
+      +((e&&e.hist&&e.hist.length>1)?(' <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="fvOpenHist(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')"><i class="ti ti-history"></i></button>'):'')
       +'</div></div>';
   });
-  h+='<button class="btn btn-secondary btn-sm" onclick="fvOpenSummary(\''+sid+'\',\''+date+'\')"><i class="ti ti-chart-bar"></i> '+t('7日集計を見る','7-day summary')+'</button>';
-  h+='<div style="font-size:10px;color:var(--muted);margin-top:8px">'+t('チャネル別(店内/持帰り/配達)は現行Toast取込に区分が無いため未対応。内訳は「販売由来の理論値」で、実使用の発生元断定はできません。','Channel split unavailable; breakdown is theoretical attribution.')+'</div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'+t('使用量はToast出数×標準使用量の理論値です。チャネル別(店内/持帰り/配達)は現行のToast取込に区分が無いため未対応で、実使用の発生元断定はできません。','Usage is theoretical (Toast qty × std g). Channel split unavailable.')+'</div>';
   return h;
 }
-/* 7日集計(押した時だけ計算) */
+/* 判定ラベル(当日カウント未入力なら「未入力」) */
+function fvJudgeLabel(v, entered){
+  if(!entered) return '<span style="padding:2px 8px;border-radius:999px;background:var(--surface2);color:var(--muted);font-weight:700;font-size:11px">'+t('カウント待ち','Awaiting count')+'</span>';
+  if(v.level==='red') return '<span style="padding:2px 8px;border-radius:999px;background:rgba(220,60,60,.15);color:var(--red);font-weight:800;font-size:11px">'+t('要確認','CHECK')+'</span>';
+  if(v.level==='yellow') return '<span style="padding:2px 8px;border-radius:999px;background:rgba(230,180,40,.15);color:var(--yellow);font-weight:800;font-size:11px">'+t('注意','WATCH')+'</span>';
+  if(v.level==='ok') return '<span style="padding:2px 8px;border-radius:999px;background:rgba(60,180,90,.12);color:var(--green);font-weight:800;font-size:11px">'+t('正常','OK')+'</span>';
+  return '<span style="padding:2px 8px;border-radius:999px;background:var(--surface2);color:var(--muted);font-weight:700;font-size:11px">'+t('判定保留','On hold')+'</span>';
+}
+/* 入力行の合計＋予定残との差をその場で表示 */
+function _fvCountReadRow(fvId){
+  var g=function(id){ var el=document.getElementById(id+'-'+fvId); return el?el.value:''; };
+  return { packs:Number(g('fvc-packs'))||0, packG:Number(g('fvc-packg'))||0,
+    openG:Number(g('fvc-open'))||0, locs:[], tareG:Number(g('fvc-tare'))||0 };
+}
+function fvCountLine(sid, date, fvId, v, saved){
+  var e=saved||null;
+  var dg=e?fvCountTotalDg(e):null;
+  if(dg==null) return '<span style="color:var(--muted)">'+t('合計','Total')+': —</span>';
+  var s=t('合計','Total')+': <b>'+fvFmtG(dg)+'</b>';
+  if(v && v.expectedDg!=null){
+    var diff=v.expectedDg-dg;                     /* + = 在庫が予定より少ない(使いすぎ) */
+    var col=(Math.abs(diff)<1)?'var(--green)':(diff>0?'var(--red)':'var(--yellow)');
+    s+=' <span style="color:'+col+'">'+t('予定残との差','vs expected')+' '+_fvSign(diff)+'</span>';
+  }
+  return s;
+}
+function fvCountRow(sid, date, fvId){
+  var el=document.getElementById('fvc-sum-'+fvId); if(!el) return;
+  var e=_fvCountReadRow(fvId);
+  var dg=fvCountTotalDg(e);
+  var cfg=fvGetConfig();
+  var day=fvSalesFor(sid, date);
+  var theo=day?fvTheoreticalDay(sid, date, day, cfg)[fvId]:{ dg:0, set:fvRecipesSetFor(fvId, date, cfg), noToast:true };
+  if(day==null) theo.noToast=true;
+  var v=fvVarianceDay(sid, date, fvId, theo, cfg);
+  var s=t('合計','Total')+': <b>'+fvFmtG(dg)+'</b>';
+  if(v.expectedDg!=null){
+    var diff=v.expectedDg-dg;                     /* + = 在庫が予定より少ない(使いすぎ) */
+    var col=(Math.abs(diff)<1)?'var(--green)':(diff>0?'var(--red)':'var(--yellow)');
+    s+=' <span style="color:'+col+'">'+t('予定残との差','vs expected')+' '+_fvSign(diff)+'</span>';
+  }
+  el.innerHTML=s;
+}
+function fvCountSave(sid, date, fvId){
+  var e=_fvCountReadRow(fvId);
+  if(fvCountTotalDg(e)<0){ showToast(t('合計がマイナスです。風袋を確認してください','Negative total — check tare'),'warning'); return; }
+  if(!fvSaveCount(sid, date, fvId, e)){ showToast(t('保存に失敗しました(容量を確認)','Save failed'),'warning'); return; }
+  showToast(fvIngLabel(fvId)+' '+t('を保存しました','saved'),'success');
+  renderPage('fv_variance');
+}
+function fvOpenHist(sid, date, fvId){
+  var e=fvCountFor(sid, date, fvId)||{};
+  var h='<div class="modal-title"><i class="ti ti-history"></i> '+t('修正履歴','History')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  (e.hist||[]).slice().reverse().forEach(function(x){
+    h+='<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-bottom:1px solid var(--border)"><span>'+escapeHtml(x.at||'')+' / '+escapeHtml(x.by||'')+'</span><b>'+fvFmtG(x.totalDg)+'</b></div>';
+  });
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>';
+  openModal(h);
+}
+/* ---- 入出庫（食材ごとのモーダル） ---- */
+function fvOpenMove(sid, date, fvId){
+  if(!fvCanInput()){ showToast(t('入出庫登録はG2以上です','Movements: G2+'),'warning'); return; }
+  var cfg=fvGetConfig();
+  var rows=fvMovesFor(sid, date, fvId, cfg);
+  var h='<div class="modal-title"><i class="ti ti-arrows-exchange"></i> '+escapeHtml(fvIngLabel(fvId))+' '+t('入出庫','In/Out')+' / '+escapeHtml(date)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="form-row" style="margin-bottom:4px"><select class="form-select" id="fvm-type">'
+    +FV_MOVE_TYPES.map(function(tp){ return '<option value="'+tp.k+'">'+escapeHtml(t(tp.ja,tp.en))+'</option>'; }).join('')+'</select>'
+    +'<input class="form-input" id="fvm-g" type="number" inputmode="decimal" step="0.1" placeholder="g"></div>'
+    +'<input class="form-input" id="fvm-note" placeholder="'+t('メモ(任意)','note')+'" style="margin-bottom:6px">'
+    +'<button class="btn btn-primary" style="width:100%" onclick="fvMoveSubmit(\''+sid+'\',\''+date+'\',\''+fvId+'\')"><i class="ti ti-check"></i> '+t('登録','Add')+'</button>';
+  h+='<div style="margin-top:10px">';
+  if(rows.length){
+    rows.forEach(function(r){
+      var tp=_fvMoveType(r.type)||{};
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">'
+        +'<span>'+escapeHtml(t(tp.ja||r.type,tp.en||r.type))+(r.auto?' <span style="font-size:9px;color:var(--accent)">'+t('自動','auto')+'</span>':'')+(r.note?('<span style="color:var(--muted)"> — '+escapeHtml(r.note)+'</span>'):'')+'</span>'
+        +'<span><b>'+fvFmtG(r.dg)+'</b>'+(r.auto?'':(' <button class="btn btn-secondary btn-sm" style="padding:1px 6px" onclick="fvMoveDel(\''+sid+'\',\''+date+'\',\''+r.id+'\',\''+fvId+'\')"><i class="ti ti-trash"></i></button>'))+'</span></div>';
+    });
+  } else {
+    h+='<div style="font-size:12px;color:var(--muted)">'+t('この日の登録はありません','No movements')+'</div>';
+  }
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px">'+t('「自動」＝既存の食材移動(店舗間・g単位・コード一致)から取込。再登録は不要です。','"auto" = imported from store transfers.')+'</div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>';
+  openModal(h);
+}
+function fvMoveSubmit(sid, date, fvId){
+  var type=(document.getElementById('fvm-type')||{}).value;
+  var g=Number((document.getElementById('fvm-g')||{}).value);
+  var note=(document.getElementById('fvm-note')||{}).value||'';
+  if(!type) return;
+  if(!isFinite(g)||g===0){ showToast(t('重量(g)を入力してください','Enter weight (g)'),'warning'); return; }
+  if(!fvAddMove(sid, date, fvId, type, g, note)){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
+  showToast(t('登録しました','Added'),'success');
+  renderPage('fv_variance'); fvOpenMove(sid, date, fvId);
+}
+function fvMoveDel(sid, date, id, fvId){
+  if(!confirm(t('この登録を削除しますか?','Delete this entry?'))) return;
+  fvDeleteMove(sid, date, id);
+  renderPage('fv_variance'); fvOpenMove(sid, date, fvId);
+}
+/* ---- 7日集計（押した時だけ計算） ---- */
 function fvOpenSummary(sid, endDate){
   var cfg=fvGetConfig();
   var per={}, causes={};
@@ -28680,7 +28836,7 @@ function fvOpenSummary(sid, endDate){
       if(v.unexplainedDg!=null){ p.dg+=v.unexplainedDg; p.days++; if(v.lossCents!=null) p.loss+=v.lossCents; }
       var isAlert=(v.level==='red'||v.level==='yellow');
       if(isAlert) p.alerts++;
-      if(p.run){ if(isAlert) p.streak++; else p.run=false; }   /* endDateから連続 */
+      if(p.run){ if(isAlert) p.streak++; else p.run=false; }
       var rev=fvGetReview(sid, ds, m.fvId);
       if(rev&&rev.cause) causes[rev.cause]=(causes[rev.cause]||0)+1;
     });
@@ -28698,6 +28854,7 @@ function fvOpenSummary(sid, endDate){
   h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>';
   openModal(h);
 }
+/* ---- 内訳・原因 ---- */
 function fvOpenDetail(sid, date, fvId){
   var cfg=fvGetConfig();
   var day=fvSalesFor(sid, date);
@@ -28705,7 +28862,7 @@ function fvOpenDetail(sid, date, fvId){
   if(day==null) theo.noToast=true;
   var v=fvVarianceDay(sid, date, fvId, theo, cfg);
   var h='<div class="modal-title"><i class="ti ti-scale"></i> '+escapeHtml(fvIngLabel(fvId))+' / '+escapeHtml(date)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
-  h+='<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:4px">'+t('理論内訳(販売由来)','Theoretical breakdown')+'</div>';
+  h+='<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:4px">'+t('使用量の内訳(販売由来)','Usage breakdown')+'</div>';
   if(theo.rows&&theo.rows.length){
     theo.rows.forEach(function(r){
       h+='<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0;border-bottom:1px solid var(--border)">'
@@ -28714,17 +28871,17 @@ function fvOpenDetail(sid, date, fvId){
     });
     h+='<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:4px 0;font-weight:800"><span>'+t('合計','Total')+'</span><span>'+fvFmtG(theo.dg)+'</span></div>';
   } else {
-    h+='<div style="font-size:12px;color:var(--muted)">'+(theo.set?t('該当商品の販売なし(またはToast未取込)。','No matching sales (or not imported).'):t('レシピ未設定。設定タブで登録してください。','Recipe not set.'))+'</div>';
+    h+='<div style="font-size:12px;color:var(--muted)">'+(theo.set?t('該当商品の販売なし(またはToast未取込)。','No matching sales (or not imported).'):t('レシピ未設定。設定から登録してください。','Recipe not set.'))+'</div>';
   }
   h+='<div style="font-size:10px;color:var(--yellow);margin-top:4px">'+t('※理論内訳です。実使用の発生元断定はできません。','Theoretical only.')+'</div></div>';
   h+='<div class="card" style="margin:0 0 8px"><div style="font-size:12px;line-height:1.9">'
-    +t('開始(前日終了)','Open')+': <b>'+(v.startDg!=null?fvFmtG(v.startDg):'—')+'</b> ／ '
-    +t('入出庫計','Flow')+': <b>'+_fvSign(v.flowDg)+'</b> ／ '
-    +t('終了(棚卸)','Close')+': <b>'+(v.endDg!=null?fvFmtG(v.endDg):'—')+'</b><br>'
-    +t('実消費','Actual')+': <b>'+(v.actDg!=null?fvFmtG(v.actDg):'—')+'</b> ／ '
-    +t('総差異','Diff')+': <b>'+(v.totalDiffDg!=null?_fvSign(v.totalDiffDg):'—')+'</b> ／ '
-    +t('登録済','Known')+': <b>'+(v.knownDg?_fvSign(v.knownDg):'0g')+'</b><br>'
-    +t('原因不明','Unexplained')+': <b style="color:'+(v.unexplainedDg>0?'var(--red)':'inherit')+'">'+(v.unexplainedDg!=null?_fvSign(v.unexplainedDg):'—')+'</b>'
+    +t('前日カウント','Prev')+': <b>'+(v.startDg!=null?fvFmtG(v.startDg):'—')+'</b> ／ '
+    +t('入出庫','Flow')+': <b>'+_fvSign(v.flowDg)+'</b> ／ '
+    +t('廃棄等','Known')+': <b>'+(v.knownDg?_fvSign(v.knownDg):'0g')+'</b><br>'
+    +t('使用量(理論)','Usage')+': <b>'+(v.theoDg!=null?fvFmtG(v.theoDg):'—')+'</b> ／ '
+    +t('予定残','Expected')+': <b>'+(v.expectedDg!=null?fvFmtG(v.expectedDg):'—')+'</b> ／ '
+    +t('当日カウント','Today')+': <b>'+(v.endDg!=null?fvFmtG(v.endDg):'—')+'</b><br>'
+    +t('差(原因不明)','Unexplained')+': <b style="color:'+(v.unexplainedDg>0?'var(--red)':'inherit')+'">'+(v.unexplainedDg!=null?_fvSign(v.unexplainedDg):'—')+'</b>'
     +(v.lossCents!=null?(' ／ '+t('推定損失','Loss')+': <b>'+(v.lossCents<0?'-':'')+fvFmtCents(v.lossCents)+'</b>'):'')
     +'</div>'
     +(v.incomplete.length?('<div style="font-size:11px;color:var(--yellow);margin-top:4px">'+t('データ未完成','Incomplete')+': '+escapeHtml(v.incomplete.join(' / '))+'</div>'):'')
@@ -28751,126 +28908,96 @@ function fvReviewSubmit(sid, date, fvId){
   if(!fvSaveReview(sid, date, fvId, cause, action)){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
   closeModalDirect(); showToast(t('登録しました','Saved'),'success'); renderPage('fv_variance');
 }
-/* ---- 棚卸(1画面直接入力・シンプル) ---- */
-function fvRenderCount(sid, date){
-  if(!fvCanInput()) return '<div class="card"><p style="font-size:12px;color:var(--muted)">'+t('棚卸入力はG2以上です','Count entry: G2+')+'</p></div>';
-  var cfg=fvGetConfig();
-  var h='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+t('パック数×内容量＋量り(g)−風袋＝終了在庫。翌日の開始在庫に自動反映。','packs×g/pack + weighed g − tare = closing; auto-carried to next day.')+'</div>';
-  FV_INGS.forEach(function(m){
-    var e=fvCountFor(sid, date, m.fvId)||{};
-    var packG=(e.packG!=null)?e.packG:((cfg.ings[m.fvId]||{}).packG!=null?cfg.ings[m.fvId].packG:'');
-    var tareG=(e.tareG!=null)?e.tareG:((cfg.ings[m.fvId]||{}).tareG||0);
-    var total=(e.editedAt)?fvCountTotalDg(e):null;
-    h+='<div class="card" style="margin-bottom:8px">'
-      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b style="font-size:13px">'+escapeHtml(fvIngLabel(m.fvId))+'</b>'
-      +'<span style="font-size:12.5px">'+(total!=null?('<b>'+fvFmtG(total)+'</b>'):('<span style="color:var(--muted)">'+t('未入力','—')+'</span>'))+'</span></div>'
-      +'<div class="form-row" style="margin-bottom:4px">'
-      +'<input class="form-input" id="fvc-packs-'+m.fvId+'" type="number" inputmode="decimal" step="1" placeholder="'+t('パック数','packs')+'" value="'+(e.packs!=null?e.packs:'')+'" oninput="fvCountRow(\''+m.fvId+'\')">'
-      +'<input class="form-input" id="fvc-packg-'+m.fvId+'" type="number" inputmode="decimal" step="0.1" placeholder="'+t('内容量g/パック','g/pack')+'" value="'+packG+'" oninput="fvCountRow(\''+m.fvId+'\')"></div>'
-      +'<div class="form-row" style="margin-bottom:4px">'
-      +'<input class="form-input" id="fvc-open-'+m.fvId+'" type="number" inputmode="decimal" step="0.1" placeholder="'+t('開封分・量り(g)','opened g')+'" value="'+(e.openG!=null&&e.openG!==0?e.openG:'')+'" oninput="fvCountRow(\''+m.fvId+'\')">'
-      +'<input class="form-input" id="fvc-tare-'+m.fvId+'" type="number" inputmode="decimal" step="0.1" placeholder="'+t('風袋g','tare g')+'" value="'+(tareG||'')+'" oninput="fvCountRow(\''+m.fvId+'\')"></div>'
-      +'<div style="display:flex;justify-content:space-between;align-items:center">'
-      +'<span id="fvc-sum-'+m.fvId+'" style="font-size:12px;color:var(--muted)"></span>'
-      +'<span>'+(e.hist&&e.hist.length>1?('<button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="fvOpenHist(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')"><i class="ti ti-history"></i></button> '):'')
-      +'<button class="btn btn-primary btn-sm" style="padding:3px 14px" onclick="fvCountSave(\''+sid+'\',\''+date+'\',\''+m.fvId+'\')">'+t('保存','Save')+'</button></span></div>'
-      +(e.by?('<div style="font-size:10px;color:var(--muted);margin-top:3px">'+escapeHtml(e.by)+' / '+escapeHtml(e.at||'')+'</div>'):'')
-      +'</div>';
+
+/* ============================================================
+   設定（G5+/財務）— 食材は「業者で絞り込み＋名前検索」から選ぶ
+============================================================ */
+/* g単位の食材だけを対象に、業者名の一覧を作る（食材マスタの vendor をそのまま利用） */
+function fvGIngList(){
+  var all=(typeof getIngredients==='function')?getIngredients():[];
+  return all.filter(function(x){ return String(x.unit||'')==='g'; });
+}
+function fvVendorList(){
+  var vs={}, out=[];
+  fvGIngList().forEach(function(x){ var v=String(x.vendor||'').trim(); if(v && !vs[v]){ vs[v]=1; out.push(v); } });
+  out.sort(function(a,b){ return a.localeCompare(b); });
+  return out;
+}
+/* 業者＋検索語で食材の option を作る（選択中のコードは必ず含める） */
+function fvIngOptionsHtml(vendor, q, selCode){
+  var qq=String(q||'').toLowerCase().trim();
+  var list=fvGIngList().filter(function(x){
+    if(x.code===selCode) return true;                                   /* 選択中は常に残す */
+    if(vendor && String(x.vendor||'')!==vendor) return false;
+    if(qq){
+      var hay=(String(x.name||'')+' '+String(x.nameEN||'')+' '+String(x.code||'')).toLowerCase();
+      if(hay.indexOf(qq)<0) return false;
+    }
+    return true;
   });
+  list.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  var h='<option value="">'+t('未設定','Not set')+'</option>';
+  list.slice(0,200).forEach(function(x){
+    h+='<option value="'+x.code+'"'+(selCode===x.code?' selected':'')+'>'+escapeHtml(x.name)+(x.vendor?(' ｜ '+escapeHtml(x.vendor)):'')+' ('+x.code+')</option>';
+  });
+  if(list.length>200) h+='<option value="" disabled>'+t('…他','…more ')+(list.length-200)+t('件（検索で絞ってください）',' (refine search)')+'</option>';
   return h;
 }
-function _fvCountReadRow(fvId){
-  var g=function(id){ var el=document.getElementById(id+'-'+fvId); return el?el.value:''; };
-  return { packs:Number(g('fvc-packs'))||0, packG:Number(g('fvc-packg'))||0,
-    openG:Number(g('fvc-open'))||0, locs:[], tareG:Number(g('fvc-tare'))||0 };
+/* 業者/検索語が変わったら該当食材のセレクトを作り直す */
+function fvFilterIng(fvId){
+  var ven=(document.getElementById('fv-ven-'+fvId)||{}).value||'';
+  var q=(document.getElementById('fv-q-'+fvId)||{}).value||'';
+  var sel=document.querySelector('.fv-cfg-code[data-id="'+fvId+'"]');
+  if(!sel) return;
+  var cur=sel.value===''?null:parseInt(sel.value,10);
+  sel.innerHTML=fvIngOptionsHtml(ven, q, cur);
+  fvCostHint(fvId);
 }
-function fvCountRow(fvId){
-  var el=document.getElementById('fvc-sum-'+fvId); if(!el) return;
-  el.textContent=t('合計','Total')+': '+fvFmtG(fvCountTotalDg(_fvCountReadRow(fvId)));
+/* 選択中の食材の $/g をその場で表示 */
+function fvCostHint(fvId){
+  var el=document.getElementById('fv-cost-'+fvId); if(!el) return;
+  var sel=document.querySelector('.fv-cfg-code[data-id="'+fvId+'"]');
+  var ovr=document.querySelector('.fv-cfg-gcost[data-id="'+fvId+'"]');
+  if(ovr && ovr.value!=='' && Number(ovr.value)>0){ el.innerHTML='$'+(Math.round(Number(ovr.value)*10000)/10000)+'/g '+t('(上書き)','(override)'); return; }
+  var code=(sel&&sel.value!=='')?parseInt(sel.value,10):null;
+  if(code==null){ el.innerHTML='<span style="color:var(--yellow)">'+t('単価未設定','No cost')+'</span>'; return; }
+  var ing=fvGIngList().find(function(x){ return x.code===code; });
+  var uc=ing?((typeof ingUnitCost==='function')?ingUnitCost(ing):null):null;
+  el.innerHTML=(uc!=null&&isFinite(uc)&&uc>0)?('$'+(Math.round(uc*10000)/10000)+'/g'):('<span style="color:var(--yellow)">'+t('単価未設定','No cost')+'</span>');
 }
-function fvCountSave(sid, date, fvId){
-  var e=_fvCountReadRow(fvId);
-  if(fvCountTotalDg(e)<0){ showToast(t('合計がマイナスです。風袋を確認してください','Negative total — check tare'),'warning'); return; }
-  if(!fvSaveCount(sid, date, fvId, e)){ showToast(t('保存に失敗しました(容量を確認)','Save failed'),'warning'); return; }
-  showToast(escapeHtml(fvIngLabel(fvId))+' '+t('を保存しました','saved'),'success');
-  renderPage('fv_variance');
-}
-function fvOpenHist(sid, date, fvId){
-  var e=fvCountFor(sid, date, fvId)||{};
-  var h='<div class="modal-title"><i class="ti ti-history"></i> '+t('修正履歴','History')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
-  (e.hist||[]).slice().reverse().forEach(function(x){
-    h+='<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-bottom:1px solid var(--border)"><span>'+escapeHtml(x.at||'')+' / '+escapeHtml(x.by||'')+'</span><b>'+fvFmtG(x.totalDg)+'</b></div>';
-  });
-  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>';
-  openModal(h);
-}
-/* ---- 入出庫 ---- */
-function fvRenderMoves(sid, date){
-  if(!fvCanInput()) return '<div class="card"><p style="font-size:12px;color:var(--muted)">'+t('入出庫登録はG2以上です','Movements: G2+')+'</p></div>';
-  var cfg=fvGetConfig();
-  var h='<div class="card" style="margin-bottom:8px">'
-    +'<div class="form-row" style="margin-bottom:4px"><select class="form-select" id="fvm-ing">'
-    +FV_INGS.map(function(m){ return '<option value="'+m.fvId+'">'+escapeHtml(fvIngLabel(m.fvId))+'</option>'; }).join('')+'</select>'
-    +'<select class="form-select" id="fvm-type">'
-    +FV_MOVE_TYPES.map(function(tp){ return '<option value="'+tp.k+'">'+escapeHtml(t(tp.ja,tp.en))+'</option>'; }).join('')+'</select></div>'
-    +'<div class="form-row" style="margin-bottom:6px"><input class="form-input" id="fvm-g" type="number" inputmode="decimal" step="0.1" placeholder="g">'
-    +'<input class="form-input" id="fvm-note" placeholder="'+t('メモ(任意)','note')+'"></div>'
-    +'<button class="btn btn-primary" style="width:100%" onclick="fvMoveSubmit(\''+sid+'\',\''+date+'\')"><i class="ti ti-check"></i> '+t('登録','Add')+'</button></div>';
-  h+='<div class="card">';
-  var any=false;
-  FV_INGS.forEach(function(m){
-    fvMovesFor(sid, date, m.fvId, cfg).forEach(function(r){
-      any=true;
-      var tp=_fvMoveType(r.type)||{};
-      h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">'
-        +'<span><b>'+escapeHtml(fvIngLabel(m.fvId))+'</b> '+escapeHtml(t(tp.ja||r.type,tp.en||r.type))+(r.auto?' <span style="font-size:9px;color:var(--accent)">'+t('自動','auto')+'</span>':'')+(r.note?('<span style="color:var(--muted)"> — '+escapeHtml(r.note)+'</span>'):'')+'</span>'
-        +'<span><b>'+fvFmtG(r.dg)+'</b>'+(r.auto?'':(' <button class="btn btn-secondary btn-sm" style="padding:1px 6px" onclick="fvMoveDel(\''+sid+'\',\''+date+'\',\''+r.id+'\')"><i class="ti ti-trash"></i></button>'))+'</span></div>';
-    });
-  });
-  if(!any) h+='<div style="font-size:12px;color:var(--muted)">'+t('この日の登録はありません','No movements')+'</div>';
-  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px">'+t('「自動」=既存の食材移動(店舗間・g単位・コード一致)を取込。再登録不要。','"auto" = imported from store transfers.')+'</div></div>';
-  return h;
-}
-function fvMoveSubmit(sid, date){
-  var fvId=(document.getElementById('fvm-ing')||{}).value;
-  var type=(document.getElementById('fvm-type')||{}).value;
-  var g=Number((document.getElementById('fvm-g')||{}).value);
-  var note=(document.getElementById('fvm-note')||{}).value||'';
-  if(!fvId||!type) return;
-  if(!isFinite(g)||g===0){ showToast(t('重量(g)を入力してください','Enter weight (g)'),'warning'); return; }
-  if(!fvAddMove(sid, date, fvId, type, g, note)){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
-  showToast(t('登録しました','Added'),'success'); renderPage('fv_variance');
-}
-function fvMoveDel(sid, date, id){
-  if(!confirm(t('この登録を削除しますか?','Delete this entry?'))) return;
-  fvDeleteMove(sid, date, id);
-  renderPage('fv_variance');
-}
-/* ---- 設定 (G5+/財務) ---- */
 function fvRenderConfig(){
   if(!fvCanConfig()) return '<div class="card"><p style="font-size:12px;color:var(--muted)">'+t('設定はAM/GMのみです','Settings: AM/GM only')+'</p></div>';
   var cfg=fvGetConfig();
-  var ings=(typeof getIngredients==='function')?getIngredients():[];
-  var h='<div class="card" style="margin-bottom:8px"><div class="card-title" style="font-size:13px">'+t('食材設定','Ingredients')+'</div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('単価は食材マスタ(g単位)の実効原価。上書き可。未設定は「単価未設定」となり差異は確定しません。','Cost from master unless overridden.')+'</div>';
+  var vendors=fvVendorList();
+  var h='<div class="card" style="margin-bottom:8px"><div class="card-title" style="font-size:13px">'+t('食材の紐付け','Ingredient link')+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('業者を選ぶと候補が絞られます。名前・コードでも検索できます（g単位の食材のみ）。','Pick a vendor to narrow the list; you can also search by name or code (g-based only).')+'</div>';
   FV_INGS.forEach(function(m){
     var ic=cfg.ings[m.fvId]||{};
-    var opts='<option value="">'+t('未設定','Not set')+'</option>'+ings.filter(function(x){ return String(x.unit||'')==='g'; }).map(function(x){
-      return '<option value="'+x.code+'"'+(ic.code===x.code?' selected':'')+'>'+escapeHtml(x.name)+' ('+x.code+')</option>'; }).join('');
-    var cur=fvCostPerG(m.fvId, cfg);
-    h+='<div style="border-bottom:1px solid var(--border);padding:6px 0">'
-      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><b style="font-size:12.5px">'+escapeHtml(fvIngLabel(m.fvId))+'</b>'
-      +'<span style="font-size:11.5px">'+(cur!=null?('$'+(Math.round(cur*10000)/10000)+'/g'):'<span style="color:var(--yellow)">'+t('単価未設定','No cost')+'</span>')+'</span></div>'
-      +'<select class="form-select fv-cfg-code" data-id="'+m.fvId+'" style="width:100%;padding:4px;margin-bottom:4px">'+opts+'</select>'
-      +'<div class="form-row"><input class="form-input fv-cfg-packg" data-id="'+m.fvId+'" type="number" step="0.1" placeholder="'+t('1パックg','g/pack')+'" value="'+(ic.packG!=null?ic.packG:'')+'">'
+    var cur=(ic.code!=null)?ic.code:null;
+    var curIng=cur!=null?fvGIngList().find(function(x){ return x.code===cur; }):null;
+    var curVen=curIng?String(curIng.vendor||''):'';
+    h+='<div style="border-bottom:1px solid var(--border);padding:8px 0">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+      +'<b style="font-size:12.5px">'+escapeHtml(fvIngLabel(m.fvId))+'</b>'
+      +'<span id="fv-cost-'+m.fvId+'" style="font-size:11.5px">'+(fvCostPerG(m.fvId,cfg)!=null?('$'+(Math.round(fvCostPerG(m.fvId,cfg)*10000)/10000)+'/g'):('<span style="color:var(--yellow)">'+t('単価未設定','No cost')+'</span>'))+'</span></div>'
+      +'<div class="form-row" style="margin-bottom:4px">'
+      +'<select class="form-select" id="fv-ven-'+m.fvId+'" style="padding:4px" onchange="fvFilterIng(\''+m.fvId+'\')">'
+      +'<option value="">'+t('業者：すべて','Vendor: all')+'</option>'
+      +vendors.map(function(v){ return '<option value="'+escapeHtml(v)+'"'+(curVen===v?' selected':'')+'>'+escapeHtml(v)+'</option>'; }).join('')
+      +'</select>'
+      +'<input class="form-input" id="fv-q-'+m.fvId+'" placeholder="'+t('名前・コードで検索','search name/code')+'" oninput="fvFilterIng(\''+m.fvId+'\')" style="padding:4px"></div>'
+      +'<select class="form-select fv-cfg-code" data-id="'+m.fvId+'" style="width:100%;padding:4px;margin-bottom:4px" onchange="fvCostHint(\''+m.fvId+'\')">'
+      +fvIngOptionsHtml(curVen, '', cur)+'</select>'
+      +'<div class="form-row">'
+      +'<input class="form-input fv-cfg-packg" data-id="'+m.fvId+'" type="number" step="0.1" placeholder="'+t('1パックg','g/pack')+'" value="'+(ic.packG!=null?ic.packG:'')+'">'
       +'<input class="form-input fv-cfg-tare" data-id="'+m.fvId+'" type="number" step="0.1" placeholder="'+t('風袋g','tare g')+'" value="'+(ic.tareG!=null&&ic.tareG!==0?ic.tareG:'')+'">'
-      +'<input class="form-input fv-cfg-gcost" data-id="'+m.fvId+'" type="number" step="0.0001" placeholder="'+t('$/g上書き','$/g ovr')+'" value="'+(ic.gCost!=null?ic.gCost:'')+'"></div>'
+      +'<input class="form-input fv-cfg-gcost" data-id="'+m.fvId+'" type="number" step="0.0001" placeholder="'+t('$/g上書き','$/g ovr')+'" value="'+(ic.gCost!=null?ic.gCost:'')+'" oninput="fvCostHint(\''+m.fvId+'\')"></div>'
       +'</div>';
   });
   h+='</div>';
   /* レシピ */
   var rows=fvRecipeRows(cfg);
-  h+='<div class="card" style="margin-bottom:8px"><div class="card-title" style="font-size:13px">'+t('レシピ(商品×標準使用量)','Recipe map')+'</div>'
+  h+='<div class="card" style="margin-bottom:8px"><div class="card-title" style="font-size:13px">'+t('使用量(商品×標準g)','Usage map')+'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('Toast商品GUIDで照合。No=減算・置換=差分±g。有効日付きで過去日は変わりません。','Matched by GUID; date-effective.')+'</div>';
   rows.sort(function(a,b){ return String(a.fvId).localeCompare(String(b.fvId)); }).forEach(function(r){
     h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">'
@@ -28882,7 +29009,7 @@ function fvRenderConfig(){
   /* アラート */
   var a=cfg.alerts.def||{};
   h+='<div class="card" style="margin-bottom:8px"><div class="card-title" style="font-size:13px">'+t('アラート基準','Alert thresholds')+'</div>'
-    +'<div class="form-row" style="margin-bottom:4px"><input class="form-input" id="fv-al-y" type="number" step="0.1" placeholder="'+t('黄%','Y%')+'" value="'+a.yPct+'"><input class="form-input" id="fv-al-r" type="number" step="0.1" placeholder="'+t('赤%','R%')+'" value="'+a.rPct+'"></div>'
+    +'<div class="form-row" style="margin-bottom:4px"><input class="form-input" id="fv-al-y" type="number" step="0.1" placeholder="'+t('注意%','Y%')+'" value="'+a.yPct+'"><input class="form-input" id="fv-al-r" type="number" step="0.1" placeholder="'+t('要確認%','R%')+'" value="'+a.rPct+'"></div>'
     +'<div class="form-row" style="margin-bottom:4px"><input class="form-input" id="fv-al-g" type="number" step="1" placeholder="'+t('最小g','min g')+'" value="'+a.minG+'"><input class="form-input" id="fv-al-l" type="number" step="0.5" placeholder="'+t('最小$','min $')+'" value="'+a.minLoss+'"></div>'
     +'<div style="font-size:10px;color:var(--muted)">'+t('率が基準超でも、量と額が最小未満なら判定しません(少量販売対策)。','Rate alone never triggers.')+'</div></div>';
   /* 対象店舗 */
@@ -28924,7 +29051,8 @@ function fvOpenRecipe(id){
   var sid=fvCurStore();
   var menu=(typeof getRecipes==='function')?getRecipes().filter(function(x){ return x.toastGuid && (x.storeId==='TOTOYA' || TOTOYA_STORE_IDS.indexOf(x.storeId)>=0 || (sid&&x.storeId===sid)); }):[];
   var seen={}; menu=menu.filter(function(x){ if(seen[x.toastGuid]) return false; seen[x.toastGuid]=1; return true; });
-  var h='<div class="modal-title"><i class="ti ti-receipt-2"></i> '+t('レシピ行','Recipe row')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+  menu.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  var h='<div class="modal-title"><i class="ti ti-receipt-2"></i> '+t('使用量の登録','Usage row')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div class="form-group"><label class="form-label">'+t('Toast商品','Toast item')+'</label><select class="form-select" id="fvr-guid">'
     +'<option value="">'+t('選択','Select')+'</option>'
     +menu.map(function(x){ return '<option value="'+escapeHtml(x.toastGuid)+'"'+(r.guid===x.toastGuid?' selected':'')+' data-name="'+escapeHtml(x.name||'')+'">'+escapeHtml(x.name||x.toastGuid)+'</option>'; }).join('')
@@ -28963,7 +29091,7 @@ function fvRecipeSubmit(id){
   closeModalDirect(); showToast(t('保存しました','Saved'),'success'); renderPage('fv_variance');
 }
 function fvRecipeDelete(id){
-  if(!confirm(t('このレシピ行を削除しますか?(過去を保つには有効終了日の設定を推奨)','Delete? (prefer end date to keep history)'))) return;
+  if(!confirm(t('この行を削除しますか?(過去を保つには有効終了日の設定を推奨)','Delete? (prefer end date to keep history)'))) return;
   var cfg=fvGetConfig();
   if(cfg.recipes[id]){ cfg.recipes[id]._deleted=true; cfg.recipes[id].editedAt=new Date().toISOString(); }
   fvSaveConfig(cfg);
