@@ -808,21 +808,38 @@ async function syncToastMenuFetch(guid, period) {
 /* DBからメニュー商品を読む（カテゴリ・商品名・売価・GUID）。全件取得（上限引き上げ） */
 async function fetchToastMenuItems(guid) {
   try {
-    var url = SUPABASE_URL + '/rest/v1/toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(guid) + '&order=category.asc&limit=10000';
-    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON, 'Range-Unit':'items', 'Prefer':'count=none' } });
-    if (!res.ok) return [];
-    return await res.json();
+    /* v742: こちらも1000行上限に当たるため、ページングして全件取る */
+    return await supaFetchAllRows('toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(guid) + '&order=id.asc');
   } catch (e) { console.error('fetchToastMenuItems', e); return []; }
+}
+/* v742: Supabase(PostgREST)は1リクエストの返却行数に上限（既定1000行）がある。
+   limit=10000 と書いても1000行で打ち切られ、出数が過小に出ていた。
+   （ToriTon: 1000行 ÷ 約103商品/日 ＝ 約10日分しか読めていなかった）
+   id順に offset をずらして全件そろうまで読む。 */
+async function supaFetchAllRows(path, opt){
+  opt = opt || {};
+  var page = opt.page || 1000, max = opt.max || 100000;
+  var out = [];
+  for (var off = 0; off < max; off += page) {
+    var url = SUPABASE_URL + '/rest/v1/' + path
+      + (path.indexOf('?') >= 0 ? '&' : '?') + 'limit=' + page + '&offset=' + off;
+    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    if (!res.ok) break;
+    var rows = await res.json();
+    if (!Array.isArray(rows) || !rows.length) break;
+    out = out.concat(rows);
+    if (rows.length < page) break;      /* 最後のページ */
+  }
+  return out;
 }
 /* DBから商品別出数を読む（月別） period 例 '2026.6' → business_month '2026-06' */
 async function fetchToastItemSales(guid, period) {
   try {
     var parts = String(period).split('.');
     var ym = parts[0] + '-' + String(parts[1]).padStart(2,'0');
-    var url = SUPABASE_URL + '/rest/v1/toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_month=eq.' + ym + '&limit=10000';
-    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
-    if (!res.ok) return [];
-    return await res.json();
+    /* order=id.asc を付けないと offset のページ境界で行が重複・欠落する */
+    return await supaFetchAllRows('toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(guid)
+      + '&business_month=eq.' + ym + '&order=id.asc');
   } catch (e) { console.error('fetchToastItemSales', e); return []; }
 }
 /* ===== 本日のリアルタイム全店集計（ダッシュボード用）=====
@@ -13443,9 +13460,8 @@ async function openMenuMixDiag(storeId, period){
   }
   var rows=[], err='';
   try{
-    var url=SUPABASE_URL+'/rest/v1/toast_item_sales?restaurant_guid=eq.'+encodeURIComponent(guid)+'&business_month=eq.'+ym+'&limit=10000';
-    var res=await fetch(url, { headers: { apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON } });
-    if(res.ok){ var j=await res.json(); if(Array.isArray(j)) rows=j; } else err='HTTP '+res.status;
+    /* v742: 診断も1000行で切られ、実際より少なく見えていた。ページングして全件読む。 */
+    rows = await supaFetchAllRows('toast_item_sales?restaurant_guid=eq.'+encodeURIComponent(guid)+'&business_month=eq.'+ym+'&order=id.asc');
   }catch(e){ err=String((e&&e.message)||e); }
 
   /* 日付範囲（business_date列がある場合のみ） */
@@ -20167,7 +20183,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '741';
+const APP_VERSION = '742';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
