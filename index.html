@@ -13362,7 +13362,13 @@ async function openMenuMixDiag(storeId, period){
   var dupItems=itemKeys.filter(function(g){ return byItem[g].n>1; });
 
   /* レシピ照合（storeId一致＋toastGuid登録が必須） */
-  var byGuid={}; try{ getRecipes().forEach(function(r){ if(r.toastGuid && r.storeId===storeId) byGuid[r.toastGuid]=r.id; }); }catch(e){}
+  /* v737: 反映処理と同じ判定にする（診断だけ厳しくて「未紐づけ」と出るのを防ぐ）。
+     店舗専用を優先し、共通レシピ(TOTOYA/全店)は同じGUIDが未使用のときだけ拾う。 */
+  var byGuid={}; try{
+    var _own={};
+    getRecipes().forEach(function(r){ if(r&&r.toastGuid&&r.storeId===storeId){ byGuid[r.toastGuid]=r.id; _own[r.toastGuid]=1; } });
+    getRecipes().forEach(function(r){ if(r&&r.toastGuid&&!_own[r.toastGuid]&&recipeInStore(r,storeId)) byGuid[r.toastGuid]=r.id; });
+  }catch(e){}
   var matched=[], unmatched=[];
   itemKeys.forEach(function(g){ (byGuid[g]?matched:unmatched).push(g); });
   var matchedQty=matched.reduce(function(a,g){ return a+byItem[g].qty; },0);
@@ -13408,12 +13414,24 @@ async function openMenuMixDiag(storeId, period){
     +'<button class="btn btn-primary" onclick="closeModalDirect();syncCenterMenuAll()"><i class="ti ti-refresh"></i> 取り込み直す</button></div>'
     +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();resyncItemSales31(\''+storeId+'\')"><i class="ti ti-cloud-download"></i> 31日分を再取り込み（Toastから取り直す）</button>');
 }
-async function loadMenuMixFromDB(storeId, guid, ym){
-  if (!guid) return;
+async function loadMenuMixFromDB(storeId, guid, ym, opt){
+  if (!guid) return { ok:false, reason:'この店舗のToast GUIDが未設定です' };
   var p=ym.split('-'); var period=p[0]+'.'+String(parseInt(p[1],10));
   var sales = await fetchToastItemSales(guid, period);
-  if (!sales || !sales.length) return;
-  var byGuid={}; getRecipes().forEach(function(r){ if(r.toastGuid && r.storeId===storeId) byGuid[r.toastGuid]=r.id; });
+  if (!sales || !sales.length) return { ok:false, reason:'クラウドにこの月の出数がありません（夜間同期または店舗別のToast同期が必要）', rows:0 };
+  /* v737【出数が反映されない原因】以前は r.storeId===storeId の完全一致だけを見ていたため、
+     Totoya共通(storeId='TOTOYA')や全店共通(storeId=null)のレシピに出数が付かなかった。
+     すぐ下の売上合計は recipeInStore() を使っており、判定が食い違っていた。
+     店舗専用を優先し、共通レシピは同じGUIDが未使用のときだけ拾う。 */
+  var byGuid={}, ownGuid={};
+  getRecipes().forEach(function(r){
+    if(!r || !r.toastGuid) return;
+    if(r.storeId===storeId){ byGuid[r.toastGuid]=r.id; ownGuid[r.toastGuid]=1; }
+  });
+  getRecipes().forEach(function(r){
+    if(!r || !r.toastGuid || ownGuid[r.toastGuid]) return;
+    if(recipeInStore(r, storeId)) byGuid[r.toastGuid]=r.id;
+  });
   var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
   /* v698: 同一商品が複数行（日別など）で返る場合、代入だと最後の1行しか残らず出数が少なく出ていた。合計する。 */
   var _acc={};
@@ -13422,6 +13440,12 @@ async function loadMenuMixFromDB(storeId, guid, ym){
   var total=0; getRecipes().filter(function(r){return recipeInStore(r, storeId);}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
   mix.sales=total; mix.savedAt=nowJP(); mix.toastSrc=true;
   setMenuMix(storeId, period, mix);
+  /* v737: どれだけ反映できたかを返す（黙って何も起きない状態をなくす） */
+  var matched=Object.keys(_acc).length;
+  var unmatched={};
+  sales.forEach(function(x){ var g=x.item_guid||x.guid; if(g && !byGuid[g]) unmatched[g]=(x.item_name||g); });
+  return { ok:true, rows:sales.length, matched:matched, unmatchedCount:Object.keys(unmatched).length,
+    unmatchedNames:Object.keys(unmatched).map(function(g){ return unmatched[g]; }).slice(0,5) };
 }
 /* Labor(tip_labor)の夜間cron保存は売上(toast_sales)より遅れることがある。
    直近3日（今日・昨日・一昨日）がローカルに無ければToastからライブ取得して補完し、
@@ -20022,7 +20046,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '736';
+const APP_VERSION = '737';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -38763,7 +38787,7 @@ function renderMenu() {
   html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     ${visStores.length>1?`<select class="form-select" style="width:auto;padding:6px" onchange="onMenuStoreChange(this.value)">${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>`:`<b style="font-size:13px">${storeObj.name}</b>`}
     <select class="form-select" style="width:auto;padding:6px" onchange="onMenuPeriodChange(this.value)">${periodOptions(period)}</select>
-    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> ${t('出数を入力','Enter sales qty')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="openMenuMixDiag('${storeId}','${period}')"><i class="ti ti-stethoscope"></i> ${t('出数の診断','Diagnose')}</button>
+    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> ${t('出数を入力','Enter sales qty')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="ensureMenuMixLoaded('${storeId}','${period}',{notify:true})"><i class="ti ti-cloud-download"></i> ${t('出数を同期','Sync sales qty')}</button><button class="btn btn-secondary btn-sm" onclick="openMenuMixDiag('${storeId}','${period}')"><i class="ti ti-stethoscope"></i> ${t('出数の診断','Diagnose')}</button>
     <button class="btn btn-primary btn-sm" onclick="openMenuRangeModal('${storeId}')"><i class="ti ti-table-export"></i> ${t('期間集計・出力','Period summary / export')}</button>
     ${mix.toastSrc?`<span class="tag tag-green" style="font-size:9px">${t('Toast同期済','Toast synced')}</span>`:''}
   </div></div>`;
@@ -38948,15 +38972,21 @@ function exportMenuRangeCsv(storeId){
 /* menu画面: 店舗/期間の切替時に、その月の出数をクラウドDBから遅延ロード（過去月は一度だけ＝固定）。 */
 function onMenuStoreChange(val){ window._menuStore = val; renderPage('menu'); ensureMenuMixLoaded(val, window._menuPeriod); }
 function onMenuPeriodChange(val){ window._menuPeriod = val; renderPage('menu'); ensureMenuMixLoaded(window._menuStore, val); }
-async function ensureMenuMixLoaded(storeId, period){
+async function ensureMenuMixLoaded(storeId, period, opt){
   var s = STORES.find(x=>x.id===storeId); if(!s || !s.toastGuid) return;
   var pp = String(period).split('.'); var ym = pp[0]+'-'+String(parseInt(pp[1],10)).padStart(2,'0');
   var fkey = 'menumixloaded_'+storeId+'_'+period;
   if (isFrozenMonth(ym) && ls(fkey, false)) return;     // 凍結済みは取り直さない
   try {
-    await loadMenuMixFromDB(storeId, s.toastGuid, ym);
+    var _r = await loadMenuMixFromDB(storeId, s.toastGuid, ym);
     if (isFrozenMonth(ym)) lsSet(fkey, true);            // 過去月のみ凍結
-  } catch(e){ console.warn('ensureMenuMixLoaded', e); }
+    /* v737: 手動で押したときは結果を必ず知らせる（黙って終わらない） */
+    if (opt && opt.notify && typeof showToast==='function'){
+      if (!_r || !_r.ok) showToast((_r&&_r.reason)||'出数を取得できませんでした','warning');
+      else if (!_r.matched) showToast('クラウドに'+_r.rows+'件ありましたが、メニューと紐づく商品がありませんでした（メニュー同期をお試しください）','warning');
+      else showToast(_r.matched+'商品の出数を反映しました'+(_r.unmatchedCount?('／未紐づけ '+_r.unmatchedCount+'件'):''),'success');
+    }
+  } catch(e){ console.warn('ensureMenuMixLoaded', e); if(opt&&opt.notify&&typeof showToast==='function') showToast('出数の取得に失敗しました','warning'); }
   if (curPage==='menu') renderPage('menu');
 }
 function openMenuMixModal(storeId, period) {
