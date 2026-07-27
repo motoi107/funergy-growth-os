@@ -14912,6 +14912,120 @@ function _invStoreIds(v){
      ・用途が未設定の伝票は従来どおり原価に含める（後方互換。過去データの数字を変えない）
      ・期末棚卸が入っていれば【確定】、無ければ【暫定】＝Invoice積み上げを目安として見せる */
 var FC_PURPOSE_ALL = ['仕入れ・仕込み','賄い','差し入れ','面談','イベント・販促','備品・消耗品','その他'];
+/* ============================================================
+   v735: Invoice の「食材 / 食材以外」自動判定
+   判定の根拠は次の順で見る（上ほど確か）。推測はこの関数に閉じ込める。
+     ① 業者マスタの区分（一度答えたら以後は自動）
+     ② 同じ業者の過去のInvoiceで実際に選ばれた用途（2件以上一致で確定）
+     ③ 明細の食材一致率（OCRが食材マスタに紐付けた行の金額比率）
+     ④ 業者名・明細名のキーワード
+   どれでも決まらなければ kind='' を返し、登録画面でその場で聞く。
+============================================================ */
+var INV_NONFOOD_PURPOSES = ['修繕・設備','備品・消耗品','その他'];
+var INV_FOOD_PURPOSE = '仕入れ・仕込み';
+/* 食材以外を強く示す語（業者名・明細名の両方に使う） */
+var INV_NONFOOD_WORDS = [
+  'repair','repairs','service call','labor','maintenance','maintain','install','installation',
+  'rental','rent','lease','plumb','electric','refrigerat','mechanical','hvac','a/c ','air cond',
+  'pest','exterminat','linen','uniform','laundry','waste','disposal','rubbish','trash','recycl',
+  'cleaning','janitor','equipment','parts','filter','compressor','ice machine','freight','delivery fee',
+  'permit','license','subscription','software','internet','phone','insurance','pos ','terminal',
+  '修繕','修理','点検','工事','設置','保守','部品','リース','レンタル','清掃','廃棄','備品','消耗品','送料','手数料'
+];
+/* 食材を強く示す語（保険。基本は食材マスタ一致で判定する） */
+var INV_FOOD_WORDS = ['produce','seafood','fish','meat','poultry','beef','pork','chicken','rice','noodle',
+  'sauce','oil','flour','sugar','vegetable','frozen food','grocery','食材','鮮魚','精肉','青果','米','麺'];
+function _invHas(text, words){
+  var t=String(text||'').toLowerCase();
+  for(var i=0;i<words.length;i++){ if(t.indexOf(String(words[i]).toLowerCase())>=0) return words[i]; }
+  return '';
+}
+function invVendorKind(vendorName){
+  if(!vendorName) return '';
+  try{
+    var v=(getVendors()||[]).find(function(x){ return x && String(x.name||'').toLowerCase()===String(vendorName).toLowerCase(); });
+    return (v && (v.kind==='food'||v.kind==='nonfood')) ? v.kind : '';
+  }catch(e){ return ''; }
+}
+function invSetVendorKind(vendorName, kind){
+  if(!vendorName || (kind!=='food' && kind!=='nonfood')) return false;
+  try{
+    var vendors=getVendors()||[];
+    var v=vendors.find(function(x){ return x && String(x.name||'').toLowerCase()===String(vendorName).toLowerCase(); });
+    if(v){ v.kind=kind; v.kindBy=myName(); v.kindAt=nowJP(); }
+    else vendors.push({ id:'v'+Date.now(), name:vendorName, kind:kind, kindBy:myName(), kindAt:nowJP(),
+      contact:'', phone:'', sms:'', email:'', line:'', method:'', cutoff:'', leadtime:1, minOrder:0,
+      delivery:'', terms:'', rating:3, webform:'', storeMethods:{} });
+    return lsSet('m_vendors', vendors);
+  }catch(e){ console.warn('invSetVendorKind', e); return false; }
+}
+/* 同じ業者の過去Invoiceで選ばれた用途の多数決 */
+function _invPastPurpose(vendorName){
+  try{
+    if(!vendorName) return null;
+    var cnt={}, tot=0;
+    (ls('invoices',[])||[]).forEach(function(v){
+      if(!v || v.deleted) return;
+      if(String(v.vendor||'').toLowerCase()!==String(vendorName).toLowerCase()) return;
+      var p=String(v.purpose||'').trim(); if(!p) return;
+      cnt[p]=(cnt[p]||0)+1; tot++;
+    });
+    if(tot<2) return null;
+    var best=null;
+    Object.keys(cnt).forEach(function(p){ if(!best || cnt[p]>cnt[best]) best=p; });
+    return best ? { purpose:best, n:cnt[best], tot:tot } : null;
+  }catch(e){ return null; }
+}
+/* 明細のうち、食材マスタに紐付いた行が金額の何割を占めるか */
+function invFoodLineRatio(lines){
+  var all=0, food=0;
+  (lines||[]).forEach(function(l){
+    if(!l) return;
+    var amt=Math.abs(Number(l.lineTotal!=null?l.lineTotal:(Number(l.newPrice)||0)*(Number(l.qty)||0))||0);
+    if(!amt) return;
+    all+=amt;
+    if(l.code!=null) food+=amt;
+  });
+  return all>0 ? (food/all) : null;
+}
+/* 総合判定。戻り: { kind:'food'|'nonfood'|'', purpose, conf:'high'|'mid'|'', reason } */
+function invGuessKind(vendorName, lines){
+  /* ① 業者マスタ */
+  var vk=invVendorKind(vendorName);
+  if(vk) return { kind:vk, purpose:(vk==='food'?INV_FOOD_PURPOSE:''), conf:'high',
+    reason:'業者マスタの区分（'+(vk==='food'?'食材':'食材以外')+'）' };
+  /* ② 過去の実績 */
+  var past=_invPastPurpose(vendorName);
+  if(past){
+    var isFood=(past.purpose===INV_FOOD_PURPOSE);
+    return { kind:isFood?'food':'nonfood', purpose:past.purpose, conf:'high',
+      reason:'この業者の過去'+past.tot+'件中'+past.n+'件が「'+past.purpose+'」' };
+  }
+  /* ③ 明細の食材一致率 */
+  var ratio=invFoodLineRatio(lines);
+  if(ratio!=null){
+    if(ratio>=0.6) return { kind:'food', purpose:INV_FOOD_PURPOSE, conf:'mid',
+      reason:'明細の'+Math.round(ratio*100)+'%が食材マスタと一致' };
+    if(ratio<=0.1){
+      var w=_invHas((lines||[]).map(function(l){return l&&(l.name||l.rawName)||'';}).join(' ')+' '+vendorName, INV_NONFOOD_WORDS);
+      if(w) return { kind:'nonfood', purpose:(_invPurposeForWord(w)||'その他'), conf:'mid',
+        reason:'食材の明細が'+Math.round(ratio*100)+'%・「'+w+'」を検出' };
+    }
+  }
+  /* ④ キーワードのみ */
+  var text=String(vendorName||'')+' '+((lines||[]).map(function(l){return l&&(l.name||l.rawName)||'';}).join(' '));
+  var nw=_invHas(text, INV_NONFOOD_WORDS);
+  if(nw) return { kind:'nonfood', purpose:(_invPurposeForWord(nw)||'その他'), conf:'mid', reason:'「'+nw+'」を検出' };
+  var fw=_invHas(text, INV_FOOD_WORDS);
+  if(fw) return { kind:'food', purpose:INV_FOOD_PURPOSE, conf:'mid', reason:'「'+fw+'」を検出' };
+  return { kind:'', purpose:'', conf:'', reason:'' };
+}
+function _invPurposeForWord(w){
+  var t=String(w||'').toLowerCase();
+  if(/repair|maintenance|maintain|install|plumb|electric|refrigerat|mechanical|hvac|air cond|compressor|ice machine|parts|filter|工事|修繕|修理|点検|設置|保守|部品/.test(t)) return '修繕・設備';
+  if(/equipment|linen|uniform|cleaning|janitor|備品|消耗品|清掃/.test(t)) return '備品・消耗品';
+  return 'その他';
+}
 function fcCostPurposes(){ var v=ls('fc_cost_purposes', null); return (Array.isArray(v)&&v.length)?v:['仕入れ・仕込み']; }
 function setFcCostPurposes(a){ lsSet('fc_cost_purposes', Array.isArray(a)?a:['仕入れ・仕込み']); }
 function _fcInCost(purpose){
@@ -19897,7 +20011,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '734';
+const APP_VERSION = '735';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -28347,6 +28461,7 @@ function renderPurchaseAnalysis(){
     var t=0;
     (ls('invoices',[])||[]).forEach(function(inv){
       if (inv.docType==='Reimburse') return;
+      if (!_fcInCost(inv.purpose)) return;   /* v735: 食材以外（修繕・備品等）は仕入額に入れない */
       if (!dateInYm(inv.date, ym)) return;
       (inv.lines||[]).forEach(function(l){ t += (l.lineTotal!=null?Number(l.lineTotal):(Number(l.newPrice)||0)*(Number(l.qty)||0)); });
     });
@@ -40346,6 +40461,73 @@ function renderPurchaseDetail(){
   });
   return html;
 }
+/* v735: 用途が未設定のInvoice（＝これまで自動的に原価へ入っていたもの）をまとめて分類する */
+function invUnclassified(){
+  try{
+    return (ls('invoices',[])||[]).filter(function(v){
+      if(!v || v.deleted) return false;
+      if(v.docType==='Reimburse') return false;
+      return !String(v.purpose||'').trim();
+    });
+  }catch(e){ return []; }
+}
+function openInvClassify(){
+  var list=invUnclassified();
+  if(!list.length){ showToast('未分類の請求書はありません','success'); return; }
+  list.sort(function(a,b){ return String(b.docDate||b.date||'').localeCompare(String(a.docDate||a.date||'')); });
+  var h='<div class="modal-title"><i class="ti ti-tag"></i> 用途の一括分類（'+list.length+'件） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px"><i class="ti ti-info-circle"></i> '
+    +'用途が未設定の請求書は、これまで<b>すべてFood Costに入っていました</b>。食材以外に付け替えると原価から外れます。'
+    +'自動判定の候補をあらかじめ選んであります。確認して保存してください。</div>';
+  h+='<div style="display:flex;gap:6px;margin-bottom:8px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="invClassifyAll(\'food\')">すべて食材</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="invClassifyAll(\'nonfood\')">すべて食材以外</button></div>';
+  h+='<div style="max-height:52vh;overflow:auto">';
+  list.slice(0,200).forEach(function(v){
+    var g=invGuessKind(v.vendor, v.lines);
+    var amt=Number(v.total)||0;
+    var sel=(g.kind==='nonfood')?(g.purpose||'その他'):(g.kind==='food'?'仕入れ・仕込み':'');
+    h+='<div style="border-bottom:1px solid var(--border);padding:6px 0">'
+      +'<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px">'
+      +'<span><b>'+escapeHtml(v.vendor||'(業者なし)')+'</b> <span style="color:var(--muted)">'+escapeHtml(v.docDate||v.date||'')+'</span></span>'
+      +'<span style="white-space:nowrap">$'+amt.toLocaleString()+'</span></div>'
+      +(g.reason?('<div style="font-size:10px;color:'+(g.conf==='high'?'var(--green)':'var(--accent)')+'"><i class="ti ti-wand"></i> '+escapeHtml(g.reason)+'</div>'):'<div style="font-size:10px;color:var(--yellow)">自動判定できません</div>')
+      +'<select class="form-select inv-cls" data-id="'+escapeHtml(v.id||'')+'" style="padding:4px;margin-top:3px;font-size:12px">'
+      +['','仕入れ・仕込み','修繕・設備','備品・消耗品','賄い','差し入れ','面談','イベント・販促','その他']
+        .map(function(p){ return '<option value="'+escapeHtml(p)+'"'+(p===sel?' selected':'')+'>'+(p||'（未設定のまま）')+'</option>'; }).join('')
+      +'</select></div>';
+  });
+  h+='</div>';
+  if(list.length>200) h+='<div style="font-size:11px;color:var(--muted);margin-top:6px">…他'+(list.length-200)+'件（保存後にもう一度開いてください）</div>';
+  h+='<label style="display:flex;align-items:center;gap:6px;font-size:11.5px;margin-top:8px;color:var(--muted)"><input type="checkbox" id="inv-cls-remember" checked> 業者の区分としても記憶する（次回から自動）</label>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="invClassifySubmit()"><i class="ti ti-check"></i> 保存</button></div>';
+  openModal(h);
+}
+function invClassifyAll(kind){
+  var p=(kind==='food')?'仕入れ・仕込み':'修繕・設備';
+  Array.prototype.slice.call(document.querySelectorAll('.inv-cls')).forEach(function(sel){ sel.value=p; });
+}
+function invClassifySubmit(){
+  var sels=Array.prototype.slice.call(document.querySelectorAll('.inv-cls'));
+  var remember=!!(document.getElementById('inv-cls-remember')||{}).checked;
+  var invoices=ls('invoices',[])||[];
+  var n=0, vend={};
+  sels.forEach(function(sel){
+    var p=sel.value; if(!p) return;
+    var id=sel.getAttribute('data-id');
+    var v=invoices.find(function(x){ return x && String(x.id)===String(id); });
+    if(!v) return;
+    v.purpose=p; v.purposeBy=myName(); v.purposeAt=nowJP(); n++;
+    if(remember && v.vendor) vend[v.vendor]=(p==='仕入れ・仕込み')?'food':'nonfood';
+  });
+  if(!n){ showToast('変更はありません','info'); return; }
+  if(!lsSet('invoices', invoices)){ showToast('保存に失敗しました（容量を確認）','warning'); return; }
+  Object.keys(vend).forEach(function(name){ invSetVendorKind(name, vend[name]); });
+  closeModalDirect();
+  showToast(n+'件を分類しました。原価に反映されます','success');
+  try{ renderPage('invoice'); }catch(e){}
+}
 function renderInvoice() {
   ensureIngV2Backfill();
   var allInv = ls('invoices', []);
@@ -40353,7 +40535,7 @@ function renderInvoice() {
   var candIds = invoiceStoreCandidates().map(s=>s.id);
   var invoices = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
   var html = `<div class="section-header"><div><div class="section-title">${t('Invoice管理','Invoice management')}</div><div class="section-sub">${t('アップロード→照合→価格更新','Upload → match → update prices')}</div></div>
-    <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> ${t('Invoice登録','Add invoice')}</button></div></div>`;
+    <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button>`:''}${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> ${t('Invoice登録','Add invoice')}</button></div></div>`;
   var _canCard = ['ceo','gm','office','office_crew'].includes(curRole);
   html += `<div class="mm-tabs" style="margin-bottom:10px"><button class="mm-tab${(window._invMainView||'list')!=='cardusage'?' active':''}" onclick="setInvMainView('list')"><i class="ti ti-file-invoice"></i> ${t('Invoice一覧','Invoice list')}</button>${_canCard?`<button class="mm-tab${(window._invMainView||'list')==='cardusage'?' active':''}" onclick="setInvMainView('cardusage')"><i class="ti ti-credit-card"></i> ${t('カード使用管理','Card usage')}</button>`:''}</div>`;
   if ((window._invMainView||'list')==='cardusage' && _canCard) return html + renderCardUsage();
@@ -40441,6 +40623,53 @@ function invoiceStoreCandidates() {
   if (curRole === 'sl' || curRole === 'crew') { var ids = [myStoreId()].concat(mySupportStores()); return activeStores().filter(s=>ids.includes(s.id)); }
   return activeStores().concat([OFFICE_STORE]); // ceo/gm/office ＋ Office
 }
+/* v735: 登録画面での自動判定・表示・選択 */
+function invKindRefresh(){
+  var box=document.getElementById('inv-kind-auto'); if(!box) return;
+  var vend=(docVal('inv-vendor')||'').trim();
+  var g=invGuessKind(vend, invoiceTmpLines);
+  window._invKindGuess=g;
+  if(!g.kind){
+    box.innerHTML='<span style="color:var(--yellow)"><i class="ti ti-help-circle"></i> 自動判定できませんでした。どちらか選んでください。</span>';
+    return;
+  }
+  var label=(g.kind==='food')?'食材':'食材以外';
+  var col=(g.conf==='high')?'var(--green)':'var(--accent)';
+  box.innerHTML='<span style="color:'+col+'"><i class="ti ti-wand"></i> 自動判定: <b>'+label+'</b>'
+    +(g.purpose?('（'+escapeHtml(g.purpose)+'）'):'')+'</span> <span style="color:var(--muted)">— '+escapeHtml(g.reason)+'</span>'
+    +(g.conf==='mid'?' <span style="color:var(--yellow)">要確認</span>':'');
+  /* まだ人が選んでいなければ自動判定を初期選択にする */
+  if(!window._invKindPicked){
+    var r=document.querySelector('input[name="inv-kind"][value="'+g.kind+'"]');
+    if(r){ r.checked=true; _invKindApply(g.kind, g.purpose); }
+  }
+}
+function invKindPick(kind){ window._invKindPicked=true; _invKindApply(kind, ''); }
+function _invKindApply(kind, purpose){
+  var wrap=document.getElementById('inv-purpose-wrap');
+  var sel=document.getElementById('inv-purpose');
+  if(!wrap||!sel) return;
+  if(kind==='food'){
+    wrap.style.display='none';
+    sel.value=INV_FOOD_PURPOSE;
+  } else {
+    wrap.style.display='block';
+    var g=window._invKindGuess||{};
+    var want=purpose||((g.kind==='nonfood'&&g.purpose)?g.purpose:'');
+    if(want && INV_NONFOOD_PURPOSES.indexOf(want)<0 && want!==INV_FOOD_PURPOSE) want='その他';
+    sel.value=(want&&want!==INV_FOOD_PURPOSE)?want:'修繕・設備';
+  }
+}
+/* 保存前チェック: Invoice は区分の指定を必須にする（未設定のまま原価へ入れない） */
+function invKindValidate(){
+  if(invoiceDocType!=='Invoice') return { ok:true };
+  var el=document.querySelector('input[name="inv-kind"]:checked');
+  if(!el) return { ok:false, msg:'「食材 / 食材以外」を選んでください（原価に入れるかの判断に使います）' };
+  var kind=el.value;
+  var purpose=(kind==='food')?INV_FOOD_PURPOSE:((docVal('inv-purpose')||'').trim());
+  if(kind==='nonfood' && !purpose) return { ok:false, msg:'食材以外の用途を選んでください' };
+  return { ok:true, kind:kind, purpose:purpose };
+}
 function openInvoiceModal() {
   invoiceTmpLines = [];
   window._invoicePhotoFile = null;
@@ -40473,10 +40702,24 @@ function openInvoiceModal() {
       <input class="form-input" type="date" id="inv-docdate" value="${(function(){var _d=new Date();return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})()}">
     </div>
     <div class="form-group"><label class="form-label">業者 / 購入先</label>
-      <input class="form-input" id="inv-vendor" list="inv-vendor-list" placeholder="業者名を入力or選択" oninput="checkVendorRegistered()">
+      <input class="form-input" id="inv-vendor" list="inv-vendor-list" placeholder="業者名を入力or選択" oninput="checkVendorRegistered();invKindRefresh()">
       <datalist id="inv-vendor-list">${vendorsSorted().map(v=>`<option value="${v.name}">`).join('')}</datalist>
       <div id="inv-vendor-warn"></div>
     </div>
+    ${invoiceDocType==='Invoice' ? `<div class="form-group" style="border:1px solid var(--accent);border-radius:8px;padding:10px;background:rgba(124,58,237,0.04)">
+      <label class="form-label" style="color:var(--accent)"><i class="ti ti-scale-outline"></i> 食材 / 食材以外 <span style="color:var(--accent2)">*</span></label>
+      <div id="inv-kind-auto" style="font-size:11px;color:var(--muted);margin-bottom:6px">業者名と明細から自動判定します。</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <label style="flex:1;min-width:120px;display:inline-flex;align-items:center;gap:6px;font-size:13px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:pointer"><input type="radio" name="inv-kind" value="food" onchange="invKindPick('food')"> 食材（原価に入れる）</label>
+        <label style="flex:1;min-width:120px;display:inline-flex;align-items:center;gap:6px;font-size:13px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:pointer"><input type="radio" name="inv-kind" value="nonfood" onchange="invKindPick('nonfood')"> 食材以外（原価に入れない）</label>
+      </div>
+      <div id="inv-purpose-wrap" style="margin-top:8px;display:none">
+        <label class="form-label">用途</label>
+        <select class="form-select" id="inv-purpose"><option value="">（選択）</option><option>仕入れ・仕込み</option><option>修繕・設備</option><option>備品・消耗品</option><option>賄い</option><option>差し入れ</option><option>面談</option><option>イベント・販促</option><option>その他</option></select>
+        <input class="form-input" id="inv-purpose-memo" placeholder="用途の補足（例: 製氷機の修理）" style="margin-top:6px">
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;margin-top:8px;color:var(--muted)"><input type="checkbox" id="inv-kind-remember" checked> この業者の区分として記憶する（次回から自動）</label>
+    </div>` : ''}
     ${invoiceDocType==='Receipt' ? `<div class="form-group" style="border:1px solid var(--accent2);border-radius:8px;padding:10px;background:#f4f8ff">
       <label class="form-label" style="color:var(--accent2)"><i class="ti ti-credit-card"></i> カード下4桁 → 社員自動特定（G3以上）</label>
       <input class="form-input" id="inv-card4" inputmode="numeric" maxlength="4" placeholder="例: 1234（OCR/手入力）" oninput="invMatchEmp()">
@@ -40812,6 +41055,7 @@ async function runInvoiceOCR(file){
         }
       }
     }catch(e){}
+    window._invKindPicked=false;   /* v735: 読み取り直しのたびに自動判定をやり直す */
     var lines=(data&&data.lines)||[];
     invoiceTmpLines = lines.map(function(l){
       var r=matchLineBest(l.name);
@@ -41038,6 +41282,17 @@ async function saveInvoice() {
   var rcptStores=[]; if(invoiceDocType==='Receipt'){ rcptStores=Array.prototype.slice.call(document.querySelectorAll('.inv-mstore:checked')).map(function(c){return c.value;}); }
   if(!rcptStores.length) rcptStores=[invStoreId];
   var _purpose=(docVal('inv-purpose')||''); var _pmemo=(docVal('inv-purpose-memo')||'').trim();
+  /* v735: Invoice は「食材 / 食材以外」を必須にし、食材以外は原価から外す。
+     以前は Invoice に用途欄が無く、purpose='' → _fcInCost('')=true で必ず原価に入っていた。 */
+  var _kv=invKindValidate();
+  if(!_kv.ok){ showToast(_kv.msg,'warning'); return; }
+  if(invoiceDocType==='Invoice'){
+    _purpose=_kv.purpose;
+    try{
+      var _rem=document.getElementById('inv-kind-remember');
+      if(_rem && _rem.checked) invSetVendorKind((docVal('inv-vendor')||'').trim(), _kv.kind);
+    }catch(e){}
+  }
   if(invoiceDocType==='Receipt' && !_purpose){ alert('用途を選択してください（必須）'); return; }
   var priceStores = (invoiceDocType==='Receipt') ? rcptStores : [invStoreId];
   ensureIngV2Backfill();
