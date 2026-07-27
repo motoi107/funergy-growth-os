@@ -4162,6 +4162,18 @@ function _splitRead(key, sp, rawMode){
     var _mk=function(r){ return (r && r.id!=null) ? ('id:'+r.id) : ('j:'+JSON.stringify(r)); };
     part.forEach(function(r){ seen[_mk(r)]=1; merged.push(r); });
     base.forEach(function(r){ if(seen[_mk(r)]) return; merged.push(r); });
+    /* v728【予算が保存されない原因】id を持たないレコード(budgets_v2 は storeId が主キー)は
+       上の和集合が JSON 一致でしか同一判定できず、統合キーとパーティションに同じ店舗があると
+       【同じ店舗が2件】返っていた。その配列がそのまま保存され、_ts の比較相手や
+       covers 判定が別レコードになるため、保存・提出が正しく反映されないことがあった。
+       → マージ定義を持つキーは、その定義で正しく1件に畳む（内容の濃い方・新しい方が残る）。 */
+    try{
+      var _hasId = part.some(function(r){ return r && r.id!=null; }) || base.some(function(r){ return r && r.id!=null; });
+      if(!_hasId && typeof _opMergeDef==='function'){
+        var _def=_opMergeDef(key);
+        if(_def && typeof _def.merge==='function') merged=_def.merge(base, part);
+      }
+    }catch(e){ console.warn('_splitRead dedupe', key, e); }
     byId[id]=merged; if(order.indexOf(id)<0) order.push(id);
   } } }catch(e){}
   var out=[]; order.forEach(function(id){ out=out.concat(byId[id]); });
@@ -5294,6 +5306,111 @@ function _budContent(b){
   var has=parts.length>0 && (dowN>0 || (Array.isArray(b.bases)&&b.bases.length) || b.segments || ms.length);
   return { has:has, w:_budWeight(b),
     txt: has? escapeHtml(parts.join(' / ')) : '<span style="color:var(--red)">予算データなし</span>'+(parts.length?'<span style="color:var(--muted)"> ('+escapeHtml(parts.join(' / '))+')</span>':'') };
+}
+/* ============================================================
+   v728: 予算の重複修復 ＋ 保存状況の確認
+   【背景】統合キー(budgets_v2)とパーティション(spl_budgets_v2_<店>)の両方に同じ店舗があると、
+     レコードに id が無いため和集合で重複していた（修正①で読み取り時は畳めるようにした）。
+     すでに端末・クラウドに書き込まれてしまった重複を、内容を失わずに1件へ畳む。
+   【安全性】mergeBudgets を通すだけ＝内容の濃い方・新しい方が残り、月データは和集合。削除はしない。
+============================================================ */
+function repairBudgetDupes(silent){
+  var fixed=0, checked=0;
+  try{
+    var keys=[];
+    for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf('spl_budgets_v2_')===0) keys.push(k); }
+    keys.forEach(function(k){
+      var arr=_lsRaw(k, null); if(!Array.isArray(arr) || arr.length<2) return;
+      checked++;
+      var ids={}; arr.forEach(function(b){ if(b&&b.storeId) ids[b.storeId]=(ids[b.storeId]||0)+1; });
+      var dup=Object.keys(ids).some(function(id){ return ids[id]>1; });
+      if(!dup) return;
+      var merged=mergeBudgets([], arr);          /* 店舗単位に畳む（内容は失わない） */
+      if(Array.isArray(merged) && merged.length && merged.length<arr.length){
+        lsSet(k, merged); fixed++;
+      }
+    });
+  }catch(e){ console.warn('repairBudgetDupes', e); }
+  if(!silent){
+    if(fixed) showToast('予算の重複を'+fixed+'件修復しました','success');
+    else showToast('重複はありませんでした（確認 '+checked+' 件）','info');
+  }
+  return { fixed:fixed, checked:checked };
+}
+/* 予算の保存状況を確認（店舗端末・GM端末のどちらでも実行できる） */
+async function openBudgetSaveDiag(){
+  var sn=function(id){ var st=(typeof getStoresAll==='function'?getStoresAll():STORES).find(function(x){return x.id===id;}); return st?st.name:id; };
+  var esc=function(v){ return escapeHtml(String(v==null?'':v)); };
+  /* --- この端末 --- */
+  var legacy=_lsRaw('budgets_v2', null);
+  var parts={};
+  try{
+    for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i);
+      if(k && k.indexOf('spl_budgets_v2_')===0) parts[k.slice('spl_budgets_v2_'.length)]=_lsRaw(k,[])||[];
+    }
+  }catch(e){}
+  var localArr=ls('budgets_v2', [])||[];
+  var ymNow=(typeof curYm==='function')?curYm():'';
+  var rows='';
+  var ids={};
+  Object.keys(parts).forEach(function(id){ ids[id]=1; });
+  (Array.isArray(legacy)?legacy:[]).forEach(function(b){ if(b&&b.storeId) ids[b.storeId]=1; });
+  localArr.forEach(function(b){ if(b&&b.storeId) ids[b.storeId]=1; });
+  Object.keys(ids).sort().forEach(function(id){
+    var hit=localArr.filter(function(b){ return b && b.storeId===id; });
+    var b=hit[0]||null;
+    var months=(b&&b.months)?Object.keys(b.months):[];
+    var hasThis=months.indexOf(ymNow)>=0;
+    var pn=(parts[id]||[]).length, ln=(Array.isArray(legacy)?legacy.filter(function(x){return x&&x.storeId===id;}).length:0);
+    rows+='<div style="border-bottom:1px solid var(--border);padding:5px 0">'
+      +'<div style="display:flex;justify-content:space-between"><b>'+esc(sn(id))+'</b>'
+      +'<span>'+(b?esc(b.status||'下書き'):'<span style="color:var(--red)">予算なし</span>')+'</span></div>'
+      +'<div style="font-size:10.5px;color:var(--muted)">'
+      +'この端末の保存: '+pn+'件'+(ln?(' ／ 旧キー: '+ln+'件'):'')
+      +(hit.length>1?(' <b style="color:var(--red)">／ 重複 '+hit.length+'件</b>'):'')
+      +' ／ 月データ: '+(months.length?esc(months.join(', ')):'なし')
+      +(ymNow?(' ／ 今月('+esc(ymNow)+'): '+(hasThis?'あり':'<span style="color:var(--yellow)">なし</span>')):'')
+      +(b&&b.submittedAt?(' ／ 提出: '+esc(b.submittedAt)+' '+esc(b.submittedBy||'')):'')
+      +'</div></div>';
+  });
+  var ob=0; try{ ob=(typeof outboxCount==='function')?outboxCount():0; }catch(e){}
+  var h='<div class="modal-title"><i class="ti ti-stethoscope"></i> 予算の保存状況 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:4px">この端末</div>'
+    +(rows||'<div style="color:var(--red);font-size:12px">予算データがありません</div>')
+    +'<div style="font-size:11.5px;margin-top:6px">未送信（クラウド未反映）: <b style="color:'+(ob>0?'var(--red)':'var(--green)')+'">'+ob+'件</b>'
+    +(ob>0?' <button class="btn btn-primary btn-sm" style="padding:2px 8px" onclick="flushOutbox().then(function(){openBudgetSaveDiag();})">今すぐ送信</button>':'')+'</div>'
+    +'</div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700">クラウド</div>'
+    +'<div id="bsd-cloud" style="font-size:12px;color:var(--muted);margin-top:4px"><i class="ti ti-loader"></i> 確認中…</div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="repairBudgetDupes();openBudgetSaveDiag()"><i class="ti ti-wand"></i> 重複を修復</button>'
+    +'<button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(h);
+  /* --- クラウド --- */
+  try{
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.spl_budgets_v2_*', { headers: supaHeaders() });
+    var box=document.getElementById('bsd-cloud'); if(!box) return;
+    if(!res.ok){ box.innerHTML='<span style="color:var(--yellow)">取得できませんでした（HTTP '+res.status+'）</span>'; return; }
+    var rws=await res.json();
+    if(!rws || !rws.length){ box.innerHTML='<span style="color:var(--red)">クラウドに予算の行がありません（未送信の可能性）</span>'; return; }
+    var out='';
+    rws.forEach(function(r){
+      var arr=Array.isArray(r.value)?r.value:[];
+      arr.forEach(function(b){
+        if(!b||!b.storeId) return;
+        var ms=(b.months?Object.keys(b.months):[]);
+        out+='<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--border)">'
+          +'<span>'+esc(sn(b.storeId))+'</span><span>'+esc(b.status||'下書き')+' ／ 月: '+(ms.length?esc(ms.join(', ')):'なし')+'</span></div>';
+      });
+      if(arr.length>1){
+        var c={}; arr.forEach(function(b){ if(b&&b.storeId) c[b.storeId]=(c[b.storeId]||0)+1; });
+        Object.keys(c).forEach(function(id){ if(c[id]>1) out+='<div style="color:var(--red);font-size:11px">'+esc(sn(id))+'：クラウドにも重複 '+c[id]+'件（「重複を修復」で解消できます）</div>'; });
+      }
+    });
+    box.innerHTML=out||'<span style="color:var(--red)">クラウドの予算が空です</span>';
+  }catch(e){
+    var box2=document.getElementById('bsd-cloud');
+    if(box2) box2.innerHTML='<span style="color:var(--yellow)">取得できませんでした（'+escapeHtml(String((e&&e.message)||e))+'）</span>';
+  }
 }
 async function diagBudgets(){
   var box=document.getElementById('sync-center-result');
@@ -9084,7 +9201,19 @@ function saveBudgets(b) {
     });
   }catch(e){}
   try{ snapshotBudgetsLocal(); }catch(e){}   /* 保存前に直近3世代をこの端末へ退避 */
-  lsSet('budgets_v2', b);
+  /* v728: 保存できたかを呼び出し元へ返す。false のときに「保存しました」と表示していたため、
+     端末の容量オーバー等で保存されていないのに成功と誤認していた。 */
+  return lsSet('budgets_v2', b);
+}
+/* v728: 保存が実際に反映されたかを読み直して確認する（表示と実体のズレを防ぐ） */
+function verifyBudgetSaved(storeId, check){
+  try{
+    var arr=ls('budgets_v2', [])||[];
+    var hit=arr.filter(function(x){ return x && x.storeId===storeId; });
+    if(hit.length!==1) return { ok:false, reason:(hit.length?('同じ店舗の予算が'+hit.length+'件あります'):'保存された予算が見つかりません') };
+    if(typeof check==='function' && !check(hit[0])) return { ok:false, reason:'保存した内容が読み直しで一致しません' };
+    return { ok:true, budget:hit[0] };
+  }catch(e){ return { ok:false, reason:String((e&&e.message)||e) }; }
 }
 var _budSnapshot={};   /* v622: 未使用（旧 _ts 判定の名残。互換のため残置） */
 
@@ -9457,12 +9586,32 @@ function _doSubmitBudget(storeId){
   b.status = 'GM承認待ち';
   b.submittedBy = (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
   b.submittedAt = nowJP();
-  saveBudgets(budgets);
+  /* v728: 提出は「保存できたこと」を確認してから完了表示する。
+     従来は保存結果を見ずに『送信しました』と出していたため、端末に保存できていない場合でも
+     提出したつもりになり、GM側に何も届かないことがあった。 */
+  var _sv=saveBudgets(budgets);
+  var _vf=verifyBudgetSaved(storeId, function(x){ return x && x.status==='GM承認待ち'; });
+  if(_sv===false || !_vf.ok){
+    showToast('提出できませんでした（'+(_vf.reason||'保存に失敗')+'）。入力内容は残っています。設定＞保存状況の確認をご覧ください。','danger');
+    return;
+  }
   var sName = (STORES.find(s=>s.id===storeId)||{}).name || storeId;
   addApproval({title:`予算承認依頼 — ${sName}（${b.period||getPeriod()}）`, type:'予算', from:b.submittedBy, store:sName, ref:storeId});
   closeModalDirect();
-  showToast('GMへ承認申請を送信しました（考え方を添付）','success');
-  renderPage('budget');
+  /* クラウドへ確実に送る。未送信が残る場合はその旨を伝える（黙って失敗させない）。 */
+  showToast('提出しました。GMへ送信中…','info');
+  (function(){
+    var done=function(){
+      var n=0; try{ n=(typeof outboxCount==='function')?outboxCount():0; }catch(e){}
+      if(n>0) showToast('提出は保存しましたが、未送信が'+n+'件あります。通信状況を確認し「同期」を押してください。','warning');
+      else showToast('GMへ承認申請を送信しました（考え方を添付）','success');
+      try{ renderPage('budget'); }catch(e){}
+    };
+    try{
+      if(typeof flushOutbox==='function'){ Promise.resolve(flushOutbox()).then(done, done); }
+      else done();
+    }catch(e){ done(); }
+  })();
 }
 /* GM承認 */
 function approveBudgetSeg(storeId) {
@@ -12085,6 +12234,9 @@ function renderBudgetSetup() {
     +'<i class="ti ti-calendar-event" style="font-size:22px;color:var(--accent)"></i>'
     +'<div><div style="font-size:10px;color:var(--muted)">'+t('この画面で設定する対象月','Target month set on this screen')+'</div><div style="font-size:19px;font-weight:800">'+(curLang==='en'?(_bsYm.y+'-'+String(_bsYm.m).padStart(2,'0')):(_bsYm.y+'年 '+_bsYm.m+'月'))+'</div></div>'
     +'<span style="margin-left:auto;font-size:10px;color:var(--muted);text-align:right">'+t('月を変える→<br>上部の月セレクタ','Change month →<br>use the top month selector')+'</span></div>';
+  /* v728: 保存されたか不安なときに、店舗端末からも自分で確認できる入口 */
+  html += '<div style="display:flex;justify-content:flex-end;margin:-4px 0 8px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="openBudgetSaveDiag()"><i class="ti ti-stethoscope"></i> '+t('保存状況の確認','Check save status')+'</button></div>';
   var statusCol = {'下書き':'tag-gray','GM承認待ち':'tag-yellow','承認済み':'tag-green','差し戻し':'tag-red','再提出済み':'tag-blue'};
 
   visible.forEach(b => {
@@ -12373,7 +12525,16 @@ function bbSave(){
   if(b.status==='差し戻し') b.status='再提出済み';
   if(!b.status) b.status='下書き';
   b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
-  saveBudgets(budgets);
+  /* v728: 保存結果を必ず確認する。失敗しているのに「保存しました」と出していたため、
+     入力した予算が消えたように見えていた（未保存フラグも落ちてしまっていた）。 */
+  var _sv=saveBudgets(budgets);
+  var _vf=verifyBudgetSaved(_bbStore, function(x){ return x && x.months && x.months[_ymStr]; });
+  if(_sv===false || !_vf.ok){
+    _bbDirty=true;
+    try{ if(typeof _lsNoteSaveFailure==='function') _lsNoteSaveFailure('budgets_v2'); }catch(e){}
+    showToast('保存できませんでした（'+(_vf.reason||'端末の空き容量不足の可能性')+'）。画面はそのままです。設定＞保存状況の確認をご覧ください。','danger');
+    return;
+  }
   _bbDirty=false;
   var _bv=(typeof getBudgetForMonth==='function')?getBudgetForMonth(_bbStore,_ymStr):b;
   var _mtot=Math.round(daysOfYm(_ymStr).reduce(function(a,dd){return a+dayBudgetFor(_bv,dd.date);},0));
@@ -19478,7 +19639,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '727';
+const APP_VERSION = '728';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -46817,6 +46978,8 @@ try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMa
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
 try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
 try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
+/* v728: 予算の重複（統合キーとパーティションの二重持ち）を一度だけ畳む。内容は失わない。 */
+try { if(localStorage.getItem('_bud_dupfix_v728')!=='1'){ var _bdf=repairBudgetDupes(true); localStorage.setItem('_bud_dupfix_v728','1'); if(_bdf.fixed) console.log('[v728] budget dupes fixed:', _bdf.fixed); } } catch(e) { console.error('repairBudgetDupes', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateClearSampleOB(); } catch(e) { console.error('migrateClearSampleOB', e); }
 try { _v2VendorNormOnce(); } catch(e) { console.error('_v2VendorNormOnce', e); }
