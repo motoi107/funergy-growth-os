@@ -11902,11 +11902,24 @@ function _qbMonthData(storeId, ym){
     aSales:aS, aGuests:aG, aPpa:aG?Math.round(aS/aG*100)/100:0, aFc:aFc, aLb:aLb, aRep:_rep.rate, cogsSrc:cogsSrc, hasData:!!ms.hasData, elapsed:off<=0, registered:registered,
     rationale:_qbMonthRationale(b, ym) };
 }
-/* その月“専用”の予算に紐づく考え方のみ返す。現行予算(budgets_v2)は全月に返るため、予算のperiod月と一致する月だけ表示（未入力の月は空）。 */
+/* その月の予算が登録されているか。
+   v745【Qコミットビューに翌月の予算が出ない問題の修正】
+   以前は「現行予算は当月の予算とみなす」という判定で、月別データ(months[ym])が
+   導入された後も更新されていなかった。そのため7月時点で作って承認した8月の予算が
+   registered=false となり、売上0として扱われていた。
+   月別データが実際に入っていれば、その月の予算として扱う。 */
 function _qbBudgetIsForMonth(b, ym){
   if(!b) return false;
   if(b._fromFile) return true; // BUDGET_MONTHLY(月別ファイル)はその月専用
-  // 現行予算(budgets_v2)は「当月」の予算とみなす（保存periodは当月とズレるため使わない）
+  try{
+    var sid = b.storeId;
+    if(sid && typeof getBudgets==='function'){
+      var raw = getBudgets().find(function(x){ return x && x.storeId===sid; });
+      var mo  = (raw && raw.months) ? raw.months[ym] : null;
+      if(mo && (typeof _monHasReal==='function' ? _monHasReal(mo) : !!mo)) return true;
+    }
+  }catch(e){}
+  // 月別データが無い場合のみ、従来どおり当月の予算とみなす（旧データ互換）
   return ym === (typeof bizYm==='function' ? bizYm() : '');
 }
 function _qbMonthRationale(b, ym){
@@ -20236,7 +20249,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '744';
+const APP_VERSION = '745';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
