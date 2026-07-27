@@ -13300,7 +13300,7 @@ function daysOfYm(ym){
     ② レシピに toastGuid が未登録／storeId 不一致の商品は捨てられる（＝集計に出ない）
     ③ 同一商品が複数行（日別など）で返る場合、現行コードは合計せず上書きしていた */
 /* v699: 出数が実績客数に対して少ない場合の再取り込み（Toastから31日分を取り直す） */
-async function resyncItemSales31(storeId){
+async function resyncItemSales31(storeId, period){
   if(['ceo','gm','office'].indexOf(curRole)<0){ showToast('この操作はGM・経理・CEOのみです','warning'); return; }
   var st=(getStoresAll().find(function(x){return x.id===storeId;})||{});
   if(!st.toastGuid){ showToast('Toast GUIDが未設定です','warning'); return; }
@@ -13314,11 +13314,18 @@ async function resyncItemSales31(storeId){
     else msg=(JSON.stringify(j)||'').slice(0,140);
   }catch(e){ msg=String(e).slice(0,140); }
   if(ok){
-    try{ await syncMenuFromToast(storeId, st.toastGuid, (typeof getPeriod==='function'?getPeriod():'')); }catch(e){}
-    try{ await loadMenuMixFromDB(storeId, st.toastGuid, (typeof curYm==='function'?curYm():'')); }catch(e){}
+    /* v738: 表示している月を読み直す（以前は常に今月を読んでいた） */
+    var _pd = period || (typeof getPeriod==='function'?getPeriod():'');
+    var _pp = String(_pd).split('.');
+    var _ym = (_pp.length===2) ? (_pp[0]+'-'+String(parseInt(_pp[1],10)).padStart(2,'0'))
+                               : ((typeof curYm==='function')?curYm():'');
+    try{ await syncMenuFromToast(storeId, st.toastGuid, _pd); }catch(e){}
+    try{ await loadMenuMixFromDB(storeId, st.toastGuid, _ym); }catch(e){}
   }
   showToast(ok?('再取り込み完了 — '+msg):('再取り込み失敗: '+msg), ok?'success':'warning');
   try{ renderPage(curPage); }catch(e){}
+  /* v738: 結果をその場で確認できるよう診断を開き直す */
+  if(ok){ try{ setTimeout(function(){ openMenuMixDiag(storeId, period); }, 400); }catch(e){} }
 }
 async function openMenuMixDiag(storeId, period){
   storeId = storeId || (curStore!=='ALL'?curStore:(STORES[0]||{}).id);
@@ -13395,9 +13402,10 @@ async function openMenuMixDiag(storeId, period){
         var ratio=g?(totalQty/g):0;
         var bad=(ratio<1);
         return '<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">実績との突き合わせ</div>'
-          +'<div style="font-size:12.5px">同月の客数/丼数: <b>'+Math.round(g).toLocaleString()+'</b> ／ 出数合計: <b>'+totalQty.toLocaleString()+'</b></div>'
-          +'<div style="font-size:12.5px;margin-top:2px">1客あたり出数: <b style="color:'+(bad?'var(--red)':'var(--green)')+'">'+ratio.toFixed(2)+'</b></div>'
-          +(bad?'<div style="font-size:11.5px;color:var(--red);margin-top:4px">1客あたり1品を下回っています＝<b>取り込み不足の可能性が高い</b>です。下の「31日分を再取り込み」を実行してください。</div>'
+          /* v738: 店舗ごとの呼び方にする（ToriTonなのに「丼数」と出ていた）。判定は guestCountLabel に統一。 */
+          +'<div style="font-size:12.5px">同月の'+escapeHtml((typeof guestCountLabel==='function')?guestCountLabel(storeId):'客数')+': <b>'+Math.round(g).toLocaleString()+'</b> ／ 出数合計: <b>'+totalQty.toLocaleString()+'</b></div>'
+          +'<div style="font-size:12.5px;margin-top:2px">1'+escapeHtml(((typeof guestCountType==='function')&&guestCountType(storeId)==='bowls')?'丼':(((typeof guestCountType==='function')&&guestCountType(storeId)==='plate')?'皿':'客'))+'あたり出数: <b style="color:'+(bad?'var(--red)':'var(--green)')+'">'+ratio.toFixed(2)+'</b></div>'
+          +(bad?'<div style="font-size:11.5px;color:var(--red);margin-top:4px">1件あたり1品を下回っています＝<b>取り込み不足の可能性が高い</b>です。下の「31日分を再取り込み（Toastから取り直す）」を実行してください。</div>'
                :'<div style="font-size:11px;color:var(--muted);margin-top:3px">妥当な範囲です。</div>')
           +'</div>';
       })()
@@ -13412,7 +13420,11 @@ async function openMenuMixDiag(storeId, period){
         +'<p style="font-size:12px;margin-top:2px">日別などで分かれています。v698で合計して取り込むよう修正済みです（以前は最後の1行だけが反映され、出数が少なく出ていました）。</p></div></div>'):'')
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
     +'<button class="btn btn-primary" onclick="closeModalDirect();syncCenterMenuAll()"><i class="ti ti-refresh"></i> 取り込み直す</button></div>'
-    +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();resyncItemSales31(\''+storeId+'\')"><i class="ti ti-cloud-download"></i> 31日分を再取り込み（Toastから取り直す）</button>');
+    +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();resyncItemSales31(\''+storeId+'\',\''+period+'\')"><i class="ti ti-cloud-download"></i> 31日分を再取り込み（Toastから取り直す）</button>'
+    /* v738: 端末の「同期」はクラウドを読むだけ。クラウドに無い日は増えないことを明記する。 */
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.6">'
+    +'・<b>取り込み直す</b>＝クラウドに入っている分をこの端末へ読み直します（Toastには接続しません）。<br>'
+    +'・<b>31日分を再取り込み</b>＝Toastから取得してクラウドへ入れ直します。<b>実データの範囲が短いときはこちら</b>を実行してください。</div>');
 }
 async function loadMenuMixFromDB(storeId, guid, ym, opt){
   if (!guid) return { ok:false, reason:'この店舗のToast GUIDが未設定です' };
@@ -20046,7 +20058,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '737';
+const APP_VERSION = '738';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
