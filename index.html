@@ -4856,6 +4856,35 @@ function _outboxAdd(key, err){
 function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); }
 function outboxCount(){ return _outboxGet().length; }
 /* v741: 未送信キーを人が読める名前にする（何が送れていないか分かるように） */
+/* v744: 未送信を1件だけ送って結果をその場に出す（原因が分からないまま残るのを防ぐ） */
+async function outboxRetryOne(key){
+  try{
+    if(typeof _lsPushBlocked==='function' && _lsPushBlocked(key)){
+      showToast('まだクラウドから取得していないため送れません（'+key+'）。同期を実行してからお試しください。','warning');
+      return;
+    }
+    var cur=ls(key, null);
+    if(cur===null || typeof cur==='undefined'){
+      showToast('端末にデータがありません。キューから外します（'+key+'）','info');
+      _outboxRemove(key); if(typeof openDiag==='function' && window._diagScope) openDiag(window._diagScope);
+      return;
+    }
+    showToast('送信中…','info');
+    var r=await syncMasterToSupabase(key, cur);
+    if(r===false){
+      var why=(_opLastPushErr&&_opLastPushErr[key])||'クラウドへの書き込みに失敗しました';
+      _outboxAdd(key, why);
+      showToast('送れませんでした：'+why,'warning');
+    } else {
+      _outboxRemove(key);
+      showToast('送信しました','success');
+    }
+  }catch(e){
+    _outboxAdd(key, String((e&&e.message)||e));
+    showToast('送れませんでした：'+String((e&&e.message)||e),'warning');
+  }
+  try{ if(typeof openDiag==='function' && window._diagScope) openDiag(window._diagScope); }catch(e){}
+}
 function outboxLabel(key){
   var k=String(key||'');
   var map=[['spl_invoices_','請求書'],['invoices','請求書'],['spl_budgets_v2_','予算'],['budgets_v2','予算'],
@@ -4957,12 +4986,12 @@ async function syncMasterToSupabase(key, val){
   // app_settings 行き
   var isSetting = SUPA_SETTING_KEYS.includes(key) || SUPA_SETTING_PREFIX.some(p=>key.indexOf(p)===0);
   if (isSetting) {
-    if (_opMergeDef(key)) { await opMergePush(key, val, 'app_settings'); return; }
+    if (_opMergeDef(key)) { return await opMergePush(key, val, 'app_settings'); }   /* v744: 結果を返す */
     return await supaUpsert('app_settings', [{ key:key, value:val, category:supaSettingCategory(key) }]);
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
-    if (_opMergeDef(key)) { await opMergePush(key, val); return; }
+    if (_opMergeDef(key)) { return await opMergePush(key, val); }                    /* v744: 結果を返す */
     var _outVal = (key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val;
     return await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
   }
@@ -6023,28 +6052,40 @@ function _coversMapByKey(check, want){
   }
   return true;
 }
+var _opLastPushErr = {};   /* v744: キーごとの最後の失敗理由（未送信の原因表示に使う） */
 function opMergePush(key, localVal, table){
   table = table || 'app_state';
   var def = _opMergeDef(key); if(!def) return Promise.resolve();
+  /* v744: 成功/失敗を返す。以前は常に undefined を返しており、_pushWithOutbox が
+     「対象外」とみなして未送信キューから消さなかった。そのためマージ定義のあるキー
+     （承認済み予算・予算・請求書・日次食材差異など）は、押し上げに成功しても
+     ずっと未送信のまま残っていた。 */
   var run=function(){ return (async function(){
+    var _ok=false, _err='';
     try{
       var desired = localVal;
       for(var attempt=0; attempt<3; attempt++){
         var cloud = await _fetchOpValue(key, table);
-        if(cloud===undefined){ // 取得失敗→マージせず素通し（durabilityはP0-2で別途対応）
-          await supaUpsert(table, [_opUpsertRow(key, desired, table)]);
+        if(cloud===undefined){ // 取得失敗→マージせず素通し
+          var _u0 = await supaUpsert(table, [_opUpsertRow(key, desired, table)]);
           try{ localStorage.setItem(key, JSON.stringify(desired)); }catch(e){}
+          _ok = (_u0!==false);
+          if(!_ok) _err='クラウドへの書き込みに失敗しました';
           break;
         }
         var merged = def.merge(cloud, desired);
         try{ localStorage.setItem(key, JSON.stringify(merged)); }catch(e){}
-        await supaUpsert(table, [_opUpsertRow(key, merged, table)]);
+        var _u1 = await supaUpsert(table, [_opUpsertRow(key, merged, table)]);
+        if(_u1===false){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
         var check = await _fetchOpValue(key, table);
-        if(check===undefined || def.covers(check, merged)){ desired=merged; break; }
+        if(check===undefined || def.covers(check, merged)){ desired=merged; _ok=true; break; }
         desired = def.merge(check, merged); // 誰かに上書きされた→取り込んで再試行
+        _err='他の端末の更新と競合し、3回試しても確認できませんでした';
       }
       try{ if(def.after) def.after(); }catch(e){}
-    }catch(e){ console.warn('opMergePush', key, e); }
+    }catch(e){ console.warn('opMergePush', key, e); _ok=false; _err=String((e&&e.message)||e); }
+    _opLastPushErr[key] = _ok ? '' : (_err||'原因不明');
+    return _ok;
   })(); };
   var prev = _opMergeChain[key] || Promise.resolve();
   var next = prev.then(run, run);
@@ -11659,6 +11700,7 @@ function openDiag(scope){
   var cAgo=cIso?((typeof notifAgo==='function')?notifAgo(cIso):''):'';
   var tIso=(typeof getSyncedAt==='function')?getSyncedAt('ops'):'';
   var tAgo=tIso?((typeof notifAgo==='function')?notifAgo(tIso):''):'';
+  try{ window._diagScope=scope; }catch(e){}   /* v744: 再送後に同じ診断を開き直すため */
   var cloudCard='<div class="card" style="margin:0 0 8px"><div style="font-weight:700;font-size:13px"><i class="ti ti-cloud"></i> Cloud（保存データ）</div>'
     +'<div style="font-size:12px;margin-top:4px">未送信（クラウド未反映）：<b style="color:'+(ob>0?'var(--red)':'var(--green)')+'">'+ob+'件</b>'
     +(ob>0?' <button class="btn btn-primary btn-sm" style="padding:2px 8px" onclick="flushOutbox().then(function(){openDiag(\''+scope+'\');})">今すぐ再送</button>':'')+'</div>'
@@ -11669,6 +11711,7 @@ function openDiag(scope){
           +'<div><b>'+escapeHtml(outboxLabel(x.key))+'</b> <span style="color:var(--muted)">'+escapeHtml(x.key)+'</span></div>'
           +'<div style="color:var(--muted)">試行 '+(x.attempts||1)+'回'+(x.ts?(' / '+escapeHtml((typeof notifAgo==='function')?notifAgo(new Date(x.ts).toISOString()):'')):'')+'</div>'
           +(x.lastErr?('<div style="color:var(--red)">'+escapeHtml(String(x.lastErr).slice(0,160))+'</div>'):'')
+          +'<button class="btn btn-secondary btn-sm" style="padding:1px 8px;margin-top:2px" onclick="outboxRetryOne(\''+escapeHtml(x.key)+'\')">この1件を送る</button>'
           +'</div>';
       }).join('')+'</div>'):'')
     +'<div style="font-size:12px;margin-top:2px">最終同期：'+(cIso?cAgo:'—')+'</div>'
@@ -20193,7 +20236,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '743';
+const APP_VERSION = '744';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
