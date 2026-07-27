@@ -12383,6 +12383,223 @@ function renderAnnualPlan(){
   return html;
 }
 function planGoMonth(ym){ try{ dailyMonthOffset=_ymToOffset(ym); }catch(e){} if(typeof setBudgetTab==='function') setBudgetTab('setup'); }
+/* ============================================================
+   v746: Qコミットビュー 四半期サマリー
+   「四半期トータルで達成率はどうか／何が足りないか」を1画面で判断できるようにする。
+   ・当月はまだ終わっていないため、経過日数で按分した「ペース目標」と比較する
+     （満了していない月の予算と丸ごと比べると、常に未達に見えてしまうため）
+   ・売上のギャップは客数要因と客単価要因に分解し、打ち手の方向を示す
+   ・率（原価・人件費）の差は金額に換算し、利益への影響として見せる
+============================================================ */
+/* その月が「どれだけ経過したか」0〜1。実績は前日までなので当月は (日-1)/月日数 とする。 */
+function qcPaceRatio(ym){
+  var off=_ymToOffset(ym);
+  if(off<0) return 1;                       /* 過去月＝満了 */
+  if(off>0) return 0;                       /* 未来月＝未着手 */
+  var d=(typeof bizNow==='function')?bizNow():new Date();
+  var dim=new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+  return Math.min(1, Math.max(0, (d.getDate()-1)/dim));
+}
+/* 四半期の残日数（今日を含む。過去のQなら0） */
+function qcDaysLeft(y,q){
+  var months=_quarterMonths(y,q);
+  var d=(typeof bizNow==='function')?bizNow():new Date();
+  var end=new Date(y, (q*3), 0);            /* Q最終月の月末 */
+  var start=new Date(y, (q-1)*3, 1);
+  if(d>end) return 0;
+  var from=(d<start)?start:d;
+  return Math.max(0, Math.round((end-from)/86400000)+1);
+}
+/* 四半期の経過日数（実績が積み上がっている日数。当月は前日まで） */
+function qcDaysElapsed(y,q){
+  var d=(typeof bizNow==='function')?bizNow():new Date();
+  var start=new Date(y, (q-1)*3, 1);
+  var end=new Date(y, (q*3), 0);
+  if(d<start) return 0;
+  var last=(d>end)?end:new Date(d.getFullYear(), d.getMonth(), d.getDate()-1);
+  if(last<start) return 0;
+  return Math.max(0, Math.round((last-start)/86400000)+1);
+}
+/* 四半期の集計。scope='ALL' なら表示中の全店を合算 */
+function qcCompute(scope, y, q){
+  var stores=(scope==='ALL')
+    ? ((typeof getVisibleStores==='function')?getVisibleStores():STORES)
+    : [{id:scope}];
+  var R={ y:y, q:q, months:_quarterMonths(y,q),
+    tSales:0, tGuests:0, paceSales:0, paceGuests:0,
+    aSales:0, aGuests:0, aFood:0, aLabor:0,
+    tFcW:0, tLbW:0, wBase:0, unreg:[], byMonth:{} };
+  R.months.forEach(function(ym){ R.byMonth[ym]={ ym:ym, t:0, a:0, tg:0, ag:0, reg:0, tot:0 }; });
+  stores.forEach(function(st){
+    var qt=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q);
+    R.tSales+=qt.sales||0; R.tGuests+=qt.guests||0;
+    R.aSales+=a.sales||0;  R.aGuests+=a.guests||0;
+    R.aFood+=a.food||0;    R.aLabor+=a.labor||0;
+    /* 率の目標は各店の売上目標で加重（単純平均だと小さい店に引っ張られる） */
+    var w=qt.sales||0; R.wBase+=w;
+    R.tFcW+=(qt.fcRate||0)*w; R.tLbW+=(qt.laborRate||0)*w;
+    (qt.byMonth||[]).forEach(function(m){
+      var r=qcPaceRatio(m.ym);
+      R.paceSales+=(m.sales||0)*r; R.paceGuests+=(m.guests||0)*r;
+      var bm=R.byMonth[m.ym]; if(bm){ bm.t+=(m.sales||0); bm.tg+=(m.guests||0); bm.tot++; if(m.registered) bm.reg++; }
+      if(!m.registered) R.unreg.push({ store:st.name||st.id, ym:m.ym });
+    });
+    /* 月別の実績 */
+    R.months.forEach(function(ym){
+      var off=_ymToOffset(ym); if(off>0) return;
+      var ms=(typeof monthStats==='function')?(monthStats(st.id, off)||{}):{};
+      R.byMonth[ym].a+=(ms.sales||0); R.byMonth[ym].ag+=(ms.guests||0);
+    });
+  });
+  R.tFc=R.wBase?Math.round(R.tFcW/R.wBase*10)/10:0;
+  R.tLb=R.wBase?Math.round(R.tLbW/R.wBase*10)/10:0;
+  R.aFc=R.aSales?Math.round(R.aFood/R.aSales*1000)/10:0;
+  R.aLb=R.aSales?Math.round(R.aLabor/R.aSales*1000)/10:0;
+  /* 進捗・ペース */
+  R.progress = R.tSales? (R.aSales/R.tSales) : null;             /* Q全体に対する進捗 */
+  R.pacePct  = R.paceSales? (R.aSales/R.paceSales) : null;       /* 経過ぶんに対する達成率 */
+  R.paceGap  = R.aSales - R.paceSales;                            /* 経過ぶんの過不足 */
+  R.short    = Math.max(0, R.tSales - R.aSales);                  /* Q目標までの不足 */
+  R.daysLeft = qcDaysLeft(y,q);
+  R.daysDone = qcDaysElapsed(y,q);
+  R.perDayNeed = R.daysLeft? (R.short/R.daysLeft) : 0;
+  R.perDayNow  = R.daysDone? (R.aSales/R.daysDone) : 0;
+  R.needRatio  = R.perDayNow? (R.perDayNeed/R.perDayNow) : null;
+  R.forecastPace = R.aSales + R.perDayNow*R.daysLeft;             /* このままのペースなら */
+  R.forecastPlan = R.aSales + Math.max(0, R.tSales - R.paceSales);/* 残りを予算どおりやれば */
+  /* ギャップの要因分解（経過ぶん）: 客数要因 ＋ 客単価要因 ＝ 売上ギャップ */
+  var tPpa=R.paceGuests? (R.paceSales/R.paceGuests) : 0;
+  var aPpa=R.aGuests? (R.aSales/R.aGuests) : 0;
+  R.tPpa=tPpa; R.aPpa=aPpa;
+  R.gapGuest = (R.aGuests - R.paceGuests) * tPpa;
+  R.gapPpa   = R.aGuests * (aPpa - tPpa);
+  /* 率の差を金額に換算（実績売上ベース） */
+  R.fcImpact = R.aSales * ((R.aFc - R.tFc)/100);
+  R.lbImpact = R.aSales * ((R.aLb - R.tLb)/100);
+  R.primeImpact = R.fcImpact + R.lbImpact;
+  /* 判定 */
+  R.level = (R.pacePct==null) ? 'none'
+          : (R.pacePct>=1.0) ? 'good'
+          : (R.pacePct>=0.95) ? 'watch' : 'behind';
+  return R;
+}
+function _qcPct(v){ return (v==null)?'—':(Math.round(v*1000)/10)+'%'; }
+function _qcSign(v){ return (v>=0?'+':'−')+fmtK(Math.abs(v)).slice(1); }
+function renderQCommitSummary(scope, y, q){
+  var R=qcCompute(scope, y, q);
+  if(!R.tSales && !R.aSales){
+    return '<div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">'
+      +t('この四半期の予算が登録されていません。予算設定から各月を登録してください。','No budget registered for this quarter.')+'</div></div>';
+  }
+  var col = (R.level==='good')?'var(--green)':(R.level==='watch')?'var(--yellow)':'var(--red)';
+  var badge = (R.level==='good')?t('達成ペース','On pace')
+            : (R.level==='watch')?t('やや遅れ','Slightly behind')
+            : (R.level==='behind')?t('要挽回','Behind') : '—';
+  var progW = Math.max(0, Math.min(100, (R.progress||0)*100));
+  var paceW = Math.max(0, Math.min(100, R.tSales? (R.paceSales/R.tSales*100) : 0));
+
+  /* ① 達成サマリー */
+  var h='<div class="card" style="margin-bottom:10px;border-left:3px solid '+col+'">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+    +'<div style="font-size:13px;font-weight:800"><i class="ti ti-target-arrow" style="color:'+col+'"></i> '+t('Q達成サマリー','Q summary')+'</div>'
+    +'<span style="padding:2px 10px;border-radius:999px;background:var(--surface2);color:'+col+';font-weight:800;font-size:11px">'+badge+'</span></div>'
+    +'<div style="font-size:22px;font-weight:800;line-height:1.2">'+fmtK(R.aSales)
+    +' <span style="font-size:12px;color:var(--muted);font-weight:400">/ '+fmtK(R.tSales)+'</span>'
+    +' <span style="font-size:14px;color:'+col+'">'+_qcPct(R.progress)+'</span></div>'
+    /* 進捗バー（縦線＝今日時点であるべき位置） */
+    +'<div style="position:relative;height:10px;background:var(--surface2);border-radius:6px;margin:8px 0 4px">'
+    +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+progW+'%;background:'+col+';border-radius:6px"></div>'
+    +'<div style="position:absolute;left:'+paceW+'%;top:-3px;bottom:-3px;width:2px;background:var(--fg);opacity:.55"></div>'
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--muted)">'+t('縦線＝今日時点であるべき位置（経過ペース）','Line = expected position today')+'</div>'
+    +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px">'
+    +'<div><div style="font-size:9.5px;color:var(--muted)">'+t('ペース比','vs pace')+'</div>'
+      +'<div style="font-size:15px;font-weight:800;color:'+col+'">'+_qcPct(R.pacePct)+'</div>'
+      +'<div style="font-size:10px;color:'+(R.paceGap>=0?'var(--green)':'var(--red)')+'">'+_qcSign(R.paceGap)+'</div></div>'
+    +'<div><div style="font-size:9.5px;color:var(--muted)">'+t('着地見込み（現ペース）','Forecast (current pace)')+'</div>'
+      +'<div style="font-size:15px;font-weight:800">'+fmtK(R.forecastPace)+'</div>'
+      +'<div style="font-size:10px;color:var(--muted)">'+t('達成率','vs target')+' '+_qcPct(R.tSales?R.forecastPace/R.tSales:null)+'</div></div>'
+    +'<div><div style="font-size:9.5px;color:var(--muted)">'+t('残りを予算どおりなら','If plan is met')+'</div>'
+      +'<div style="font-size:15px;font-weight:800">'+fmtK(R.forecastPlan)+'</div>'
+      +'<div style="font-size:10px;color:var(--muted)">'+t('達成率','vs target')+' '+_qcPct(R.tSales?R.forecastPlan/R.tSales:null)+'</div></div>'
+    +'</div></div>';
+
+  /* ② 必要ペース */
+  if(R.daysLeft>0){
+    var ratioTxt = (R.needRatio==null)?'—':(Math.round(R.needRatio*100)/100)+t('倍','x');
+    var rCol = (R.needRatio==null)?'var(--muted)':(R.needRatio<=1?'var(--green)':(R.needRatio<=1.15?'var(--yellow)':'var(--red)'));
+    h+='<div class="card" style="margin-bottom:10px"><div style="font-size:12.5px;font-weight:700;margin-bottom:4px">'
+      +'<i class="ti ti-run" style="color:var(--accent)"></i> '+t('目標達成に必要なペース','Pace needed')+'</div>'
+      +'<div style="font-size:12.5px;line-height:1.9">'
+      +t('目標まで','To target')+' <b>'+fmtK(R.short)+'</b> ／ '+t('残り','Left')+' <b>'+R.daysLeft+t('日','d')+'</b><br>'
+      +t('1日あたり必要','Needed per day')+' <b style="color:'+rCol+'">'+fmtK(R.perDayNeed)+'</b>'
+      +' ／ '+t('直近の1日平均','Current per day')+' <b>'+fmtK(R.perDayNow)+'</b>'
+      +' <span style="color:'+rCol+';font-weight:800">('+ratioTxt+')</span></div>'
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'
+      +((R.needRatio!=null && R.needRatio<=1)
+        ? t('現在のペースを維持すれば届きます。','Maintaining the current pace reaches the target.')
+        : t('現在のペースのままでは届きません。上の倍率ぶん引き上げが必要です。','The current pace will not reach the target.'))+'</div></div>';
+  }
+
+  /* ③ 何が足りないか（要因分解） */
+  var gTotal=R.gapGuest+R.gapPpa;
+  var mainCause = (Math.abs(R.gapGuest)>=Math.abs(R.gapPpa))?t('客数','Guests'):t('客単価','Spend/guest');
+  h+='<div class="card" style="margin-bottom:10px"><div style="font-size:12.5px;font-weight:700;margin-bottom:4px">'
+    +'<i class="ti ti-arrows-split-2" style="color:var(--accent)"></i> '+t('何が足りないか（経過ぶん）','Gap breakdown (elapsed)')+'</div>'
+    +'<div style="font-size:13px;margin-bottom:6px">'+t('売上ギャップ','Sales gap')+' <b style="color:'+(gTotal>=0?'var(--green)':'var(--red)')+'">'+_qcSign(gTotal)+'</b></div>'
+    +'<div style="font-size:12px;line-height:1.9">'
+    +t('客数','Guests')+'：'+Math.round(R.aGuests).toLocaleString()+' / '+Math.round(R.paceGuests).toLocaleString()
+      +' → <b style="color:'+(R.gapGuest>=0?'var(--green)':'var(--red)')+'">'+_qcSign(R.gapGuest)+'</b><br>'
+    +t('客単価','Spend/guest')+'：$'+(Math.round(R.aPpa*100)/100)+' / $'+(Math.round(R.tPpa*100)/100)
+      +' → <b style="color:'+(R.gapPpa>=0?'var(--green)':'var(--red)')+'">'+_qcSign(R.gapPpa)+'</b></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('主因は','Main driver: ')+'<b>'+mainCause+'</b>'
+    +t('。客数なら集客・回転、客単価ならメニュー構成・単価施策が打ち手です。',' — guests → traffic; spend → menu mix / pricing.')+'</div></div>';
+
+  /* ④ 利益への影響 */
+  function rateRow(label, a, tg, impact){
+    var d=Math.round((a-tg)*10)/10;
+    var c=(d<=0)?'var(--green)':'var(--red)';
+    return '<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-bottom:1px solid var(--border)">'
+      +'<span>'+label+'</span>'
+      +'<span>'+a+'% <span style="color:var(--muted)">/ '+tg+'%</span> '
+      +'<b style="color:'+c+'">'+(d>=0?'+':'')+d+'pt</b> '
+      +'<b style="color:'+c+'">'+(impact>0?'−':'+')+fmtK(Math.abs(impact)).slice(1)+'</b></span></div>';
+  }
+  h+='<div class="card" style="margin-bottom:10px"><div style="font-size:12.5px;font-weight:700;margin-bottom:4px">'
+    +'<i class="ti ti-coins" style="color:var(--accent)"></i> '+t('利益への影響（率の差を金額換算）','Profit impact')+'</div>'
+    +rateRow(t('原価率','Food cost'), R.aFc, R.tFc, R.fcImpact)
+    +rateRow(t('人件費率','Labor'), R.aLb, R.tLb, R.lbImpact)
+    +'<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;font-weight:800">'
+    +'<span>Prime</span><span>'+(Math.round((R.aFc+R.aLb)*10)/10)+'% <span style="color:var(--muted);font-weight:400">/ '+(Math.round((R.tFc+R.tLb)*10)/10)+'%</span> '
+    +'<span style="color:'+(R.primeImpact>0?'var(--red)':'var(--green)')+'">'+(R.primeImpact>0?'−':'+')+fmtK(Math.abs(R.primeImpact)).slice(1)+'</span></span></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+t('実績売上に対して、率の差がいくらの損益になっているかを示します。','Rate gaps converted to dollars on actual sales.')+'</div></div>';
+
+  /* ⑤ 月別内訳 */
+  h+='<div class="card" style="margin-bottom:10px"><div style="font-size:12.5px;font-weight:700;margin-bottom:4px">'
+    +'<i class="ti ti-calendar-stats" style="color:var(--accent)"></i> '+t('月別','By month')+'</div>';
+  R.months.forEach(function(ym){
+    var m=R.byMonth[ym], off=_ymToOffset(ym);
+    var mm=(+ym.split('-')[1])+t('月','');
+    var pct=(m.t)?(m.a/m.t):null;
+    var pc=(pct==null)?'var(--muted)':(pct>=1?'var(--green)':(pct>=0.95?'var(--yellow)':'var(--red)'));
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">'
+      +'<span style="font-weight:700;min-width:44px">'+mm+'</span>'
+      +'<span style="flex:1;text-align:right">'
+      +((off>0)?('<span style="color:var(--muted)">'+t('これから','Upcoming')+'</span> '):(fmtK(m.a)+' '))
+      +'<span style="color:var(--muted)">/ '+fmtK(m.t)+'</span>'
+      +((off<=0 && pct!=null)?(' <b style="color:'+pc+'">'+_qcPct(pct)+'</b>'):'')
+      +((m.reg<m.tot)?(' <span style="color:var(--yellow);font-size:10px">'+t('予算未登録あり','budget missing')+'</span>'):'')
+      +'</span></div>';
+  });
+  if(R.unreg.length){
+    var names=R.unreg.slice(0,6).map(function(u){ return u.store+' '+u.ym; }).join('、');
+    h+='<div style="font-size:10.5px;color:var(--yellow);margin-top:6px"><i class="ti ti-alert-triangle"></i> '
+      +t('予算が未登録の月があります（目標が過小に出ます）：','Some months have no budget (target understated): ')+escapeHtml(names)
+      +(R.unreg.length>6?('　'+t('ほか','and ')+(R.unreg.length-6)+t('件','')):'')+'</div>';
+  }
+  h+='</div>';
+  return h;
+}
 function renderQuarterBudget(){
   _qEnsure();
   var y=_qbY, q=_qbQ; var months=_quarterMonths(y,q);
@@ -12396,6 +12613,9 @@ function renderQuarterBudget(){
     +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.7"><i class="ti ti-target"></i> '+t('目標は','Target = ')+'<b>'+t('単月予算(月次)を自動合算','auto-sum of monthly budgets')+'</b>'+t('。実績は当四半期の経過月累計。達成/未達を項目別に表示します。','. Actual = MTD cumulative for the quarter. Hit/miss shown by item.')+'</div></div>';
   // store tabs
   html+=bStoreChips(_qbStore,'setQbStore'); // 略称チップで統一
+
+  /* v746: 四半期トータルの達成サマリー（全店・単店どちらでも先頭に出す） */
+  try{ html+=renderQCommitSummary(_qbStore, y, q); }catch(e){ console.warn('renderQCommitSummary', e); }
 
   if(_qbStore==='ALL'){
     // 集計（全店合計の項目別）
@@ -20249,7 +20469,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '745';
+const APP_VERSION = '746';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
