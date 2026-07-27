@@ -4828,6 +4828,17 @@ function _outboxAdd(key, err){
 }
 function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); }
 function outboxCount(){ return _outboxGet().length; }
+/* v741: 未送信キーを人が読める名前にする（何が送れていないか分かるように） */
+function outboxLabel(key){
+  var k=String(key||'');
+  var map=[['spl_invoices_','請求書'],['invoices','請求書'],['spl_budgets_v2_','予算'],['budgets_v2','予算'],
+    ['budget_approved_','承認済み予算'],['approvals','承認申請'],['tasks_all','タスク'],['fv_count_','日次食材差異(棚卸)'],
+    ['fv_moves_','日次食材差異(入出庫)'],['fv_review_','日次食材差異(原因)'],['fv_config','日次食材差異(設定)'],
+    ['cash_tips_','現金チップ'],['skills_st_','スキル'],['m_ingredients','食材マスタ'],['m_vendors','業者マスタ'],
+    ['m_recipes','レシピ'],['inv_','棚卸'],['purchases_','買い出し'],['reimbursements','立替']];
+  for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return map[i][1]; }
+  return k;
+}
 
 /* lsSet から呼ばれる：push を試み、失敗ならoutboxへ、成功ならoutboxから除去（fire-and-forget） */
 function _pushWithOutbox(key, val){
@@ -11624,6 +11635,15 @@ function openDiag(scope){
   var cloudCard='<div class="card" style="margin:0 0 8px"><div style="font-weight:700;font-size:13px"><i class="ti ti-cloud"></i> Cloud（保存データ）</div>'
     +'<div style="font-size:12px;margin-top:4px">未送信（クラウド未反映）：<b style="color:'+(ob>0?'var(--red)':'var(--green)')+'">'+ob+'件</b>'
     +(ob>0?' <button class="btn btn-primary btn-sm" style="padding:2px 8px" onclick="flushOutbox().then(function(){openDiag(\''+scope+'\');})">今すぐ再送</button>':'')+'</div>'
+    /* v741: 件数だけでは何が送れていないのか分からなかった。中身と最後のエラーを出す。 */
+    +(ob>0?('<div style="font-size:10.5px;margin-top:4px;max-height:26vh;overflow:auto">'
+      +(_outboxGet()||[]).map(function(x){
+        return '<div style="padding:4px 0;border-bottom:1px solid var(--border)">'
+          +'<div><b>'+escapeHtml(outboxLabel(x.key))+'</b> <span style="color:var(--muted)">'+escapeHtml(x.key)+'</span></div>'
+          +'<div style="color:var(--muted)">試行 '+(x.attempts||1)+'回'+(x.ts?(' / '+escapeHtml((typeof notifAgo==='function')?notifAgo(new Date(x.ts).toISOString()):'')):'')+'</div>'
+          +(x.lastErr?('<div style="color:var(--red)">'+escapeHtml(String(x.lastErr).slice(0,160))+'</div>'):'')
+          +'</div>';
+      }).join('')+'</div>'):'')
     +'<div style="font-size:12px;margin-top:2px">最終同期：'+(cIso?cAgo:'—')+'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+(ob>0?'保存はローカルに残っています（データは失われません）。オンライン時に再送で反映。':'保存したデータはクラウドに反映済みです。')+'</div></div>';
   var toastCard = m.toast
@@ -13344,35 +13364,55 @@ async function resyncItemSalesAll(period){
   var stores=(typeof getStoresAll==='function'?getStoresAll():STORES).filter(function(s){ return s && s.active!==false && s.toastGuid; });
   if(!confirm(stores.length+'店ぶんをToastから取り直します。数分かかります。実行しますか？')) return;
   closeModalDirect();
-  var ok=0, ng=0;
+  var ok=0, ng=0, detail=[];
   for(var i=0;i<stores.length;i++){
     var st=stores[i];
-    showToast('('+(i+1)+'/'+stores.length+') '+st.name+' を取り込み中…','info');
-    try{
-      var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
-        body: JSON.stringify({ mode:'cronSync', days:31, restaurantGuid:st.toastGuid }) });
-      var j=await res.json();
-      if(j && j.ok){ ok++; try{ await loadMenuMixFromDB(st.id, st.toastGuid, (String(period).split('.')[0]+'-'+String(String(period).split('.')[1]).padStart(2,'0'))); }catch(e){} }
-      else ng++;
-    }catch(e){ ng++; }
+    /* v741: 1店ずつ、さらに7日ずつに分けて実行する。1回の呼び出しを軽くしないと
+       Edge Function の実行時間に収まらず、10〜12日で切れてしまう。 */
+    var r=await fvResyncItemSalesChunked(st.toastGuid, { chunk:7, total:35, onStep:function(k,n){
+      showToast('('+(i+1)+'/'+stores.length+') '+st.name+' … '+k+'/'+n,'info');
+    }});
+    if(r.okDays>0){ ok++; try{ await loadMenuMixFromDB(st.id, st.toastGuid, (String(period).split('.')[0]+'-'+String(String(period).split('.')[1]).padStart(2,'0'))); }catch(e){} }
+    else ng++;
+    detail.push(st.name+' '+r.okDays+'日'+(r.failDays?('/失敗'+r.failDays):''));
   }
-  showToast('まとめて取り直し完了 — 成功'+ok+'店'+(ng?('／失敗'+ng+'店'):''), ng?'warning':'success');
+  showToast('まとめて取り直し完了 — '+detail.join('、'), ng?'warning':'success');
   try{ renderPage(curPage); }catch(e){}
   try{ setTimeout(function(){ openItemSalesOverview(period); }, 600); }catch(e){}
+}
+/* v741: 31日を1回で投げると Edge Function の実行時間に収まらず、10〜12日で切れていた。
+   7日ずつ5回に分けて呼ぶ（offsetDays で開始位置をずらす）。1回が軽いので確実に最後まで届く。 */
+async function fvResyncItemSalesChunked(guid, opt){
+  opt = opt || {};
+  var chunk = opt.chunk || 7, total = opt.total || 35;
+  var okDays = 0, failDays = 0, lastErr = '', calls = 0;
+  for(var off=0; off<total; off+=chunk){
+    calls++;
+    if(opt.onStep) opt.onStep(calls, Math.ceil(total/chunk));
+    try{
+      var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
+        body: JSON.stringify({ mode:'cronSync', days:chunk, offsetDays:off, only:'items', restaurantGuid:guid }) });
+      var j=await res.json();
+      var r0=(j&&j.results&&j.results[0])||{};
+      var isales=r0.itemSales||{};
+      okDays += Number(isales.daysOk)||0;
+      failDays += Number(isales.daysFail)||0;
+      if(isales.error && !lastErr) lastErr=String(isales.error).slice(0,140);
+      if(!j || j.ok!==true){ if(!lastErr) lastErr=(JSON.stringify(j)||'').slice(0,140); }
+    }catch(e){ if(!lastErr) lastErr=String(e).slice(0,140); failDays+=chunk; }
+  }
+  return { okDays:okDays, failDays:failDays, lastErr:lastErr, calls:calls };
 }
 async function resyncItemSales31(storeId, period){
   if(['ceo','gm','office'].indexOf(curRole)<0){ showToast('この操作はGM・経理・CEOのみです','warning'); return; }
   var st=(getStoresAll().find(function(x){return x.id===storeId;})||{});
   if(!st.toastGuid){ showToast('Toast GUIDが未設定です','warning'); return; }
-  showToast('Toastから31日分を取得中…（30〜60秒）','info');
   var ok=false, msg='';
-  try{
-    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
-      body: JSON.stringify({ mode:'cronSync', days:31, restaurantGuid:st.toastGuid }) });
-    var j=await res.json();
-    if(j && j.ok){ ok=true; var r0=(j.results&&j.results[0])||{}; msg=(r0.daysOk||0)+'日 取込'+((r0.daysFail)?(' / 失敗'+r0.daysFail+'日'):''); }
-    else msg=(JSON.stringify(j)||'').slice(0,140);
-  }catch(e){ msg=String(e).slice(0,140); }
+  var r=await fvResyncItemSalesChunked(st.toastGuid, { chunk:7, total:35, onStep:function(i,n){
+    showToast('Toastから取得中… ('+i+'/'+n+')','info');
+  }});
+  ok = (r.okDays>0);
+  msg = r.okDays+'日 取込'+(r.failDays?(' / 失敗'+r.failDays+'日'):'')+(r.lastErr?(' — '+r.lastErr):'');
   if(ok){
     /* v738: 表示している月を読み直す（以前は常に今月を読んでいた） */
     var _pd = period || (typeof getPeriod==='function'?getPeriod():'');
@@ -20127,7 +20167,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '739';
+const APP_VERSION = '741';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
