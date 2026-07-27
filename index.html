@@ -5350,7 +5350,7 @@ async function openBudgetSaveDiag(){
     }
   }catch(e){}
   var localArr=ls('budgets_v2', [])||[];
-  var ymNow=(typeof curYm==='function')?curYm():'';
+  var ymNow=(typeof budYmStr==='function')?budYmStr():((typeof curYm==='function')?curYm():'');
   var rows='';
   var ids={};
   Object.keys(parts).forEach(function(id){ ids[id]=1; });
@@ -5361,16 +5361,19 @@ async function openBudgetSaveDiag(){
     var b=hit[0]||null;
     var months=(b&&b.months)?Object.keys(b.months):[];
     var hasThis=months.indexOf(ymNow)>=0;
+    var _mm=b?budMonMeta(b, ymNow):{};
     var pn=(parts[id]||[]).length, ln=(Array.isArray(legacy)?legacy.filter(function(x){return x&&x.storeId===id;}).length:0);
     rows+='<div style="border-bottom:1px solid var(--border);padding:5px 0">'
       +'<div style="display:flex;justify-content:space-between"><b>'+esc(sn(id))+'</b>'
-      +'<span>'+(b?esc(b.status||'下書き'):'<span style="color:var(--red)">予算なし</span>')+'</span></div>'
+      +'<span>'+(b?(esc(ymNow)+'：'+esc(budStatusFor(b, ymNow))):'<span style="color:var(--red)">予算なし</span>')+'</span></div>'
+      +(b&&b.months?('<div style="font-size:10.5px;color:var(--muted)">月別: '+Object.keys(b.months).sort().map(function(k){ return esc(k)+'='+esc(budStatusFor(b,k)); }).join(' ／ ')+'</div>'):'')
       +'<div style="font-size:10.5px;color:var(--muted)">'
       +'この端末の保存: '+pn+'件'+(ln?(' ／ 旧キー: '+ln+'件'):'')
       +(hit.length>1?(' <b style="color:var(--red)">／ 重複 '+hit.length+'件</b>'):'')
       +' ／ 月データ: '+(months.length?esc(months.join(', ')):'なし')
       +(ymNow?(' ／ 今月('+esc(ymNow)+'): '+(hasThis?'あり':'<span style="color:var(--yellow)">なし</span>')):'')
-      +(b&&b.submittedAt?(' ／ 提出: '+esc(b.submittedAt)+' '+esc(b.submittedBy||'')):'')
+      +(_mm&&_mm.submittedAt?(' ／ 提出: '+esc(_mm.submittedAt)+' '+esc(_mm.submittedBy||'')):'')
+      +(_mm&&_mm.approvedAt?(' ／ 承認: '+esc(_mm.approvedAt)+' '+esc(_mm.approvedBy||'')):'')
       +'</div></div>';
   });
   var ob=0; try{ ob=(typeof outboxCount==='function')?outboxCount():0; }catch(e){}
@@ -9583,20 +9586,21 @@ function _doSubmitBudget(storeId){
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
   if(!(b.rationale && (b.rationale.basis||'').trim() && (b.rationale.focus||'').trim())){ showToast('提出には考え方（根拠・重点）の記入が必要です','warning'); return; }
-  b.status = 'GM承認待ち';
+  var _symYm = budYmStr();
   b.submittedBy = (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
   b.submittedAt = nowJP();
+  budSetStatus(b, _symYm, 'GM承認待ち', { submittedBy:b.submittedBy, submittedAt:b.submittedAt });
   /* v728: 提出は「保存できたこと」を確認してから完了表示する。
      従来は保存結果を見ずに『送信しました』と出していたため、端末に保存できていない場合でも
      提出したつもりになり、GM側に何も届かないことがあった。 */
   var _sv=saveBudgets(budgets);
-  var _vf=verifyBudgetSaved(storeId, function(x){ return x && x.status==='GM承認待ち'; });
+  var _vf=verifyBudgetSaved(storeId, function(x){ return budStatusFor(x, _symYm)==='GM承認待ち'; });
   if(_sv===false || !_vf.ok){
     showToast('提出できませんでした（'+(_vf.reason||'保存に失敗')+'）。入力内容は残っています。設定＞保存状況の確認をご覧ください。','danger');
     return;
   }
   var sName = (STORES.find(s=>s.id===storeId)||{}).name || storeId;
-  addApproval({title:`予算承認依頼 — ${sName}（${b.period||getPeriod()}）`, type:'予算', from:b.submittedBy, store:sName, ref:storeId});
+  addApproval({title:`予算承認依頼 — ${sName}（${_symYm}）`, type:'予算', from:b.submittedBy, store:sName, ref:storeId});
   closeModalDirect();
   /* クラウドへ確実に送る。未送信が残る場合はその旨を伝える（黙って失敗させない）。 */
   showToast('提出しました。GMへ送信中…','info');
@@ -9618,12 +9622,13 @@ function approveBudgetSeg(storeId) {
   if (!['gm','ceo'].includes(curRole)) { alert('承認はGM/CEOのみ可能です'); return; }
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  b.status='承認済み';
+  var _apYm = budYmStr();
   b.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole;
   b.approvedAt=nowJP();
+  budSetStatus(b, _apYm, '承認済み', { approvedBy:b.approvedBy, approvedAt:b.approvedAt });
   saveBudgets(budgets);
   /* v624: 承認の瞬間に不変コピーを別行へ。以後どんな上書きが起きても承認時点に戻せる（要件②） */
-  try{ snapshotApprovedBudget(b, _budApproveYm(b)); }catch(e){}
+  try{ snapshotApprovedBudget(b, _apYm); }catch(e){}
   // 承認待ちタスクを消化
   resolveApprovalByRef('予算', storeId, 'approved');
   showToast('予算を承認しました。予実・ダッシュボードに反映されます','success');
@@ -9635,7 +9640,8 @@ function rejectBudgetSeg(storeId) {
   openInputModal({title:'予算の差し戻し', label:'差し戻し理由', required:true, placeholder:'例: 売上予算の根拠が弱い / 客数予測が高すぎる / Labor目標の見直しが必要', okLabel:'差し戻す', okClass:'btn-danger'}, function(reason){
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  b.status='差し戻し'; b.rejectReason=reason; b.rejectedAt=nowJP();
+  b.rejectReason=reason; b.rejectedAt=nowJP();
+  budSetStatus(b, budYmStr(), '差し戻し', { rejectReason:reason, rejectedAt:b.rejectedAt });
   saveBudgets(budgets);
   resolveApprovalByRef('予算', storeId, 'rejected');
   showToast('予算を差し戻しました','info');
@@ -9648,15 +9654,100 @@ function reopenBudget(storeId) {
   if (!confirm('承認済み予算を再オープンして編集可能にしますか？')) return;
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  b.status='下書き'; saveBudgets(budgets);
-  showToast('予算を再オープンしました','info'); renderPage('budget');
+  budSetStatus(b, budYmStr(), '下書き'); saveBudgets(budgets);
+  showToast(budYmStr()+' の予算を再オープンしました','info'); renderPage('budget');
+}
+/* ============================================================
+   v729【月別ステータス】予算の提出・承認は月ごとに持つ
+   【これまでの問題】status は予算レコードに1つ（＝店舗に1つ）しか無く、月の区別が無かった。
+     7月を承認した店舗は、8月の画面でも「承認済み」と表示され、canEditBudget が false になり
+     8月の予算を保存も提出もできなかった（保存ボタンを押しても弾かれる）。
+   【対応】status / 提出者 / 承認者 / 差し戻し理由 を b.months[<年月>] 側へ持たせる。
+     旧データは _statusYm（その status が属する月）を一度だけ補完し、その月にだけ適用する。
+============================================================ */
+function budYmStr(){
+  try{ if(typeof budgetYM==='function'){ var y=budgetYM(); return y.y+'-'+String(y.m).padStart(2,'0'); } }catch(e){}
+  try{ if(typeof curYm==='function') return curYm(); }catch(e){}
+  var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function budMon(b, ym){ return (b && b.months && b.months[ym]) ? b.months[ym] : null; }
+/* 旧データの status がどの月のものかを一度だけ確定する（推測はここだけに閉じ込める） */
+function _budLegacyYm(b){
+  if(!b) return '';
+  if(b._statusYm) return b._statusYm;
+  try{
+    var ms=b.months?Object.keys(b.months).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort():[];
+    if(ms.length) return ms[ms.length-1];                 /* 月データがあれば一番新しい月 */
+    if(b.period){ var p=String(b.period).split('.'); if(p.length===2) return p[0]+'-'+String(p[1]).padStart(2,'0'); }
+  }catch(e){}
+  return '';
+}
+function budStatusFor(b, ym){
+  if(!b) return '下書き';
+  ym = ym || budYmStr();
+  var m=budMon(b, ym);
+  if(m && m.status) return m.status;
+  if(b.status && _budLegacyYm(b)===ym) return b.status;    /* 旧データはその月にだけ適用 */
+  return '下書き';
+}
+function budSetStatus(b, ym, st, extra){
+  if(!b) return null;
+  ym = ym || budYmStr();
+  b.months = b.months || {};
+  b.months[ym] = b.months[ym] || {};
+  var m=b.months[ym];
+  m.status = st;
+  if(extra) Object.keys(extra).forEach(function(k){ m[k]=extra[k]; });
+  m._ts = Date.now();
+  /* 互換: 旧UI・集計が見る店舗単位の値も同じ月のものとして保つ */
+  b.status = st; b._statusYm = ym;
+  return m;
+}
+/* 月別の提出者・承認者など（表示用） */
+function budMonMeta(b, ym){
+  ym = ym || budYmStr();
+  var m=budMon(b, ym) || {};
+  var legacy=(b && _budLegacyYm(b)===ym) ? b : {};
+  return {
+    submittedBy: m.submittedBy || legacy.submittedBy || '',
+    submittedAt: m.submittedAt || legacy.submittedAt || '',
+    approvedBy:  m.approvedBy  || legacy.approvedBy  || '',
+    approvedAt:  m.approvedAt  || legacy.approvedAt  || '',
+    rejectReason:m.rejectReason|| legacy.rejectReason|| '',
+    rejectedAt:  m.rejectedAt  || legacy.rejectedAt  || ''
+  };
+}
+/* 旧データの補完（一度だけ・非破壊）: status がどの月のものかを記録する */
+function migrateBudgetStatusYm(){
+  try{
+    if(localStorage.getItem('_bud_status_ym_v729')==='1') return;
+    var budgets=ls('budgets_v2', null);
+    if(!Array.isArray(budgets) || !budgets.length) return;   /* 未取得なら次回に回す（フラグも立てない） */
+    var changed=false;
+    budgets.forEach(function(b){
+      if(!b || b._statusYm) return;
+      if(!b.status || b.status==='下書き') return;
+      var ym=_budLegacyYm(b); if(!ym) return;
+      b._statusYm=ym;
+      if(b.months && b.months[ym] && !b.months[ym].status){
+        b.months[ym].status=b.status;
+        if(b.submittedBy) b.months[ym].submittedBy=b.submittedBy;
+        if(b.submittedAt) b.months[ym].submittedAt=b.submittedAt;
+        if(b.approvedBy)  b.months[ym].approvedBy=b.approvedBy;
+        if(b.approvedAt)  b.months[ym].approvedAt=b.approvedAt;
+      }
+      changed=true;
+    });
+    if(changed) saveBudgets(budgets);
+    localStorage.setItem('_bud_status_ym_v729','1');
+  }catch(e){ console.warn('migrateBudgetStatusYm', e); }
 }
 /* 承認ステータスからの編集可否 */
-function canEditBudget(b) {
+function canEditBudget(b, ym) {
   if (!b) return false;
   var role = curRole;
   if (role==='crew') return false;
-  var st = b.status||'下書き';
+  var st = budStatusFor(b, ym);   /* v729: 月ごとの状態で判定（7月の承認で8月が編集不可にならない） */
   if (st==='GM承認待ち') return false; // 提出後は提出者編集不可
   if (st==='承認済み') return ['gm','ceo'].includes(role); // 承認済みはGM以上のみ
   // 下書き・差し戻し・再提出済み: SL以上編集可
@@ -12255,8 +12346,8 @@ function renderBudgetSetup() {
     var profit = total - laborB - fcB;
     var _author = budgetAuthorLabel(b);
     var _registered = !!_author;
-    var st = _registered ? (b.status || '下書き') : '未登録';
-    var editable = canEditBudget(b);
+    var st = _registered ? budStatusFor(b, _bsYmStr) : '未登録';
+    var editable = canEditBudget(b, _bsYmStr);
 
     html += `<div class="card">
       <div class="approval-header">
@@ -12387,14 +12478,14 @@ function renderBudgetBuilder(storeId){
   if(!_bbDow || _bbYmLoaded!==ymStr){ _bbDow=JSON.parse(JSON.stringify((_mo&&_mo.dow)||getDow(b))); _bbYmLoaded=ymStr; _bbDirty=false; }
   var _monDays=(_mo&&_mo.days!=null)?_mo.days:(b.days||{});
   var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
-  var editable=canEditBudget(b);
+  var editable=canEditBudget(b, ymStr);
   var h='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:0;z-index:20;box-shadow:0 2px 8px rgba(0,0,0,0.06)">'
     +'<button class="btn btn-secondary btn-sm" onclick="bbCloseGuarded()"><i class="ti ti-arrow-left"></i> '+t('店舗一覧へ','Store list')+'</button>'
     +'<b style="flex:1;font-size:13px;min-width:120px">'+escapeHtml(st.name)+(curLang==='en'?(' — Budget editor ('+ym.y+'-'+String(ym.m).padStart(2,'0')+')</b>'):(' — 予算エディタ（'+ym.y+'年'+ym.m+'月）</b>'))
     +'<span id="bb-dirty" style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted);display:none">'+t('未保存','Unsaved')+'</span>'
     +(editable?'<button id="bb-save-top" class="btn btn-primary btn-sm" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t(ym.m+'月を保存','Save '+ym.m+'月')+'</button>':'')
-    +'<span style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted)">'+escapeHtml(tStatus(b.status||'下書き'))+'</span></div>';
-  if(!editable) h+='<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-lock"></i> '+t('この予算は現在編集できません（ステータス: ','Not editable (status: ')+escapeHtml(tStatus(b.status||'下書き'))+t('）。閲覧のみ可能です。','). View only.')+'</div>';
+    +'<span style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted)">'+escapeHtml(tStatus(budStatusFor(b, ymStr)))+'</span></div>';
+  if(!editable) h+='<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-lock"></i> '+t('この月の予算は現在編集できません（','Not editable this month (')+escapeHtml(ymStr)+' / '+escapeHtml(tStatus(budStatusFor(b, ymStr)))+t('）。閲覧のみ可能です。','). View only.')+'</div>';
   var dis=editable?'':' disabled';
   // ===== ① 曜日設定パネル =====
   var segs=[['lunch','ランチ','客数','Lunch','Guests'],['dinner','ディナー','客数','Dinner','Guests'],['takeout','TO','注文数','TO','Orders']];
@@ -12511,8 +12602,8 @@ function bbDayTotal(){
 function bbSave(){
   var budgets=getBudgets();
   var b=budgets.find(function(x){return x.storeId===_bbStore;}); if(!b) return;
-  if(!canEditBudget(b)){ alert('この予算は現在編集できません（ステータス: '+(b.status||'下書き')+'）'); return; }
   var _ymStr=(function(){ var y=budgetYM(); return y.y+'-'+String(y.m).padStart(2,'0'); })();
+  if(!canEditBudget(b, _ymStr)){ alert(_ymStr+' の予算は現在編集できません（ステータス: '+budStatusFor(b, _ymStr)+'）'); return; }
   b.dow=_bbDow; // 直近の曜日設定を既定テンプレートとして更新
   var days={}; var any=false;
   document.querySelectorAll('.bb-day').forEach(function(inp){
@@ -12522,8 +12613,7 @@ function bbSave(){
   b.months=b.months||{};
   b.months[_ymStr]={ dow:JSON.parse(JSON.stringify(_bbDow)), days:(any?days:null), daysBy:(any?myName():null), daysAt:(any?nowJP():null) };
   b.daysBy=(any?myName():null); b.daysAt=(any?nowJP():null);
-  if(b.status==='差し戻し') b.status='再提出済み';
-  if(!b.status) b.status='下書き';
+  if(budStatusFor(b, _ymStr)==='差し戻し') budSetStatus(b, _ymStr, '再提出済み');
   b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
   /* v728: 保存結果を必ず確認する。失敗しているのに「保存しました」と出していたため、
      入力した予算が消えたように見えていた（未保存フラグも落ちてしまっていた）。 */
@@ -12546,7 +12636,7 @@ var dowEditState = null; // {storeId, dow, seg}
 function openDowEditor(storeId, seg) {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  if (!canEditBudget(b)) { alert('この予算は現在編集できません（ステータス: '+(b.status||'下書き')+'）'); return; }
+  if (!canEditBudget(b, budYmStr())) { alert(budYmStr()+' の予算は現在編集できません（ステータス: '+budStatusFor(b, budYmStr())+'）'); return; }
   // 既存dowをディープコピーして編集用に保持
   var src = getDow(b);
   dowEditState = { storeId: storeId, seg: seg||'lunch',
@@ -12666,8 +12756,8 @@ function saveDow() {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===st.storeId); if(!b) { closeDowEditor(); return; }
   b.dow = st.dow;
-  if (b.status==='差し戻し') b.status='再提出済み';
-  if (!b.status) b.status='下書き';
+  var _dwYm=budYmStr();
+  if (budStatusFor(b, _dwYm)==='差し戻し') budSetStatus(b, _dwYm, '再提出済み');
   b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
   saveBudgets(budgets);
   dowEditState=null;
@@ -12679,7 +12769,7 @@ function saveDow() {
 function openSegEditor(storeId, seg) {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  if (!canEditBudget(b)) { alert('この予算は現在編集できません（ステータス: '+(b.status||'下書き')+'）'); return; }
+  if (!canEditBudget(b, budYmStr())) { alert(budYmStr()+' の予算は現在編集できません（ステータス: '+budStatusFor(b, budYmStr())+'）'); return; }
   if (!b.segments) b.segments = emptySegments();
   var sg = b.segments[seg] || {};
   var sName = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
@@ -12732,8 +12822,8 @@ function saveSeg(storeId, seg) {
   } else {
     b.segments[seg] = {days:parseFloat(g('sg-days'))||0, guests:parseFloat(g('sg-guests'))||0, spend:parseFloat(g('sg-spend'))||0, laborPct:parseFloat(g('sg-labor'))||0, fcPct:parseFloat(g('sg-fc'))||0, memo:g('sg-memo')};
   }
-  if (b.status==='差し戻し') b.status='再提出済み';
-  if (!b.status) b.status='下書き';
+  var _sgYm=budYmStr();
+  if (budStatusFor(b, _sgYm)==='差し戻し') budSetStatus(b, _sgYm, '再提出済み');
   b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
   saveBudgets(budgets);
   closeModalDirect();
@@ -12815,7 +12905,7 @@ function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
   h += _bStoreProgCards(items, 'setBudgetStore');
   h += '</div>';
   try{
-    var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && b.status==='GM承認待ち'; });
+    var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && budStatusFor(b, budYmStr())==='GM承認待ち'; });
     if (pendB.length) h += '<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab(\'setup\')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">'+t('GM承認待ちの予算が','Budgets pending GM approval:')+' <b>'+pendB.length+t('店',' stores')+'</b> '+t('あります — タップで予算設定へ','— tap to open Budget Setup')+'</div></div>';
   }catch(e){}
   return h;
@@ -12945,7 +13035,7 @@ function renderBudgetSummary() {
 
   // ===== 承認待ちの控えめな通知 =====
   try{
-    var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && b.status==='GM承認待ち'; });
+    var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && budStatusFor(b, budYmStr())==='GM承認待ち'; });
     if (pendB.length) html += `<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab('setup')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">${t('GM承認待ちの予算が','Budgets pending GM approval:')} <b>${pendB.length}${t('店',' stores')}</b> ${t('あります — タップで予算設定へ','— tap to open Budget Setup')}</div></div>`;
   }catch(e){}
 
@@ -19639,7 +19729,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '728';
+const APP_VERSION = '729';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -46979,6 +47069,7 @@ try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores
 try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
 try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
 /* v728: 予算の重複（統合キーとパーティションの二重持ち）を一度だけ畳む。内容は失わない。 */
+try { migrateBudgetStatusYm(); } catch(e) { console.error('migrateBudgetStatusYm', e); }
 try { if(localStorage.getItem('_bud_dupfix_v728')!=='1'){ var _bdf=repairBudgetDupes(true); localStorage.setItem('_bud_dupfix_v728','1'); if(_bdf.fixed) console.log('[v728] budget dupes fixed:', _bdf.fixed); } } catch(e) { console.error('repairBudgetDupes', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateClearSampleOB(); } catch(e) { console.error('migrateClearSampleOB', e); }
