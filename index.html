@@ -4160,12 +4160,62 @@ var _SPLIT_KEYS = {
 };
 function _splitPrefix(key){ return 'spl_'+key+'_'; }
 function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
+/* ===== v750: 設定型データに「誰が・いつ保存したか」を記録する =====
+   【背景】テンプレート・固定費・OJTチェックのような設定型(type:'obj')は、
+     履歴や申請のように足し算で合流できない。合流の基準が無いため、これまでは
+     マージ定義を付けられず、パーティション行が丸ごと上書きされていた。
+     その結果、古いデータを持った端末が、新しい保存を消してしまうことがあった。
+   【対策】保存するたびに保存者と時刻を一緒に記録し、合流時は新しい方を採用する。
+     これで「古いデータが新しいデータを上書きする」ことが起きなくなり、
+     同時に「誰が最後に保存したか」を画面へ出せるようになる。
+   【互換】印の無い既存データ・他端末の旧データはそのまま読める（時刻0として扱う）。 */
+function _stIsWrapped(x){ return !!(x && typeof x==='object' && !Array.isArray(x) && x.__st===1); }
+function _stUnwrap(x){ return _stIsWrapped(x) ? x.v : x; }
+function _stAt(x){ return _stIsWrapped(x) ? (Number(x._at)||0) : 0; }
+function _stBy(x){ return _stIsWrapped(x) ? String(x._by||'') : ''; }
+function _stWrap(v, by, at){
+  var _by = by;
+  if(_by==null){ try{ _by = (typeof myName==='function') ? myName() : ''; }catch(e){ _by=''; } }
+  return { __st:1, v:v, _at:(Number(at)||Date.now()), _by:String(_by||'') };
+}
+/* 合流: 新しく保存された方を採用する。印の無い側は時刻0なので、印のある保存が必ず勝つ。 */
+function mergeStamped(cloud, local){
+  var ca=_stAt(cloud), la=_stAt(local);
+  if(la>=ca) return _stIsWrapped(local) ? local : _stWrap(_stUnwrap(local), '', la);
+  return _stIsWrapped(cloud) ? cloud : _stWrap(_stUnwrap(cloud), '', ca);
+}
+function _coversStamped(check, want){ return _stAt(check) >= _stAt(want); }
+var _ST_MERGE_DEF = null;
+function _stDef(){ if(!_ST_MERGE_DEF) _ST_MERGE_DEF={ merge:mergeStamped, covers:_coversStamped }; return _ST_MERGE_DEF; }
+/* 画面表示用: 最終更新の情報を取り出す */
+function stampInfo(baseKey, id){
+  try{
+    var x=_lsRaw('spl_'+baseKey+'_'+id, null);
+    if(!_stIsWrapped(x)) return null;
+    return { by:_stBy(x), at:_stAt(x) };
+  }catch(e){ return null; }
+}
+function lastEditLabel(baseKey, id){
+  var si=stampInfo(baseKey, id);
+  if(!si || !si.at) return '';
+  var d=new Date(si.at);
+  var hh=String(d.getHours()); if(hh.length<2) hh='0'+hh;
+  var mi=String(d.getMinutes()); if(mi.length<2) mi='0'+mi;
+  return t('最終更新：','Last edited: ')+(si.by||t('不明','unknown'))+' '+(d.getMonth()+1)+'/'+d.getDate()+' '+hh+':'+mi;
+}
+/* 画面へそのまま差し込める小さな表示（右寄せの淡色1行） */
+function lastEditNote(baseKey, id){
+  var lb=lastEditLabel(baseKey, id);
+  if(!lb) return '';
+  return '<div style="font-size:10px;color:var(--muted);text-align:right;margin-top:4px"><i class="ti ti-user-check" style="font-size:10px"></i> '+escapeHtml(lb)+'</div>';
+}
 function _splitRead(key, sp, rawMode){
   var pre=_splitPrefix(key);
   if(sp.type==='obj'){
     var out={}; var legacy=_lsRaw(key,{})||{};
-    Object.keys(legacy).forEach(function(id){ out[id]=legacy[id]; });
-    try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){ out[k.slice(pre.length)]=_lsRaw(k,null); } } }catch(e){}
+    /* v750: 保存者・時刻の印を外して返す。画面側のコードは今までどおりの形を受け取る。 */
+    Object.keys(legacy).forEach(function(id){ out[id]=_stUnwrap(legacy[id]); });
+    try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){ out[k.slice(pre.length)]=_stUnwrap(_lsRaw(k,null)); } } }catch(e){}
     return out;
   }
   var byId={}, order=[];
@@ -4205,7 +4255,9 @@ function _splitWrite(key, sp, val){
   if(sp.type==='obj'){
     val=val||{};
     Object.keys(val).forEach(function(id){
-      if(JSON.stringify(curMerged[id])!==JSON.stringify(val[id])){ if(lsSet(pre+id, val[id])===false) _wOk=false; }
+      /* v750: 変更されたものだけに、保存者と時刻を付けて保存する。
+         curMerged は印を外した形なので、比較はこれまでどおり中身どうしで行える。 */
+      if(JSON.stringify(curMerged[id])!==JSON.stringify(val[id])){ if(lsSet(pre+id, _stWrap(val[id]))===false) _wOk=false; }
     });
     return _wOk;
   }
@@ -4471,6 +4523,10 @@ function ls(key, def) {
     var v = localStorage.getItem(key);
     /* v721: 端末に無く、かつ必要時取得の対象なら、裏で取得して取れたら再描画する */
     if(v==null){ try{ if(_lsOnDemand(key)) _lsRequestDeferred(key); }catch(e){} }
+    /* v748: 従来は v==null の時しか取得を発火しなかった。ec_log のように端末に値が
+       存在し続けるキーは _LS_FETCHED が立つ経路が1つも無く、押し上げが永久に止まっていた。
+       取得でローカルを失わないよう、マージ定義があるキーに限定して発火する。 */
+    else { try{ if(_lsOnDemand(key) && !_LS_FETCHED[key] && typeof _opMergeDef==='function' && _opMergeDef(key)) _lsRequestDeferred(key); }catch(e){} }
     return v ? JSON.parse(v) : def;
   }
   catch(e) { return def; }
@@ -4601,6 +4657,9 @@ function _lsMarkFetched(key){ try{ _LS_FETCHED[key]=1; }catch(e){} }
 function _lsPushBlocked(key){
   try{
     if(!_lsOnDemand(key)) return false;   /* 常駐キーは常に押し上げ可（従来どおり） */
+    /* v748: マージ定義があるキーは丸ごと上書きにならないため、未取得でも押し上げてよい。
+       これが無いと、画面を開かなくても自動で書かれるキー(ec_log)が永久に未送信のまま残る。 */
+    try{ if(typeof _opMergeDef==='function' && _opMergeDef(key)) return false; }catch(_e){}
     return !_LS_FETCHED[key];
   }catch(e){ return false; }
 }
@@ -4621,7 +4680,9 @@ function _lsRequestDeferred(key){
     if(_lsDeferReq[key]) return; _lsDeferReq[key]=1;
     if(typeof pullOpKey!=='function') return;
     Promise.resolve().then(function(){ return pullOpKey(key); })
-      .then(function(ok){ if(ok){ _lsMarkFetched(key); _lsRerenderSoon(); } })
+      .then(function(ok){ if(ok){ _lsMarkFetched(key); _lsRerenderSoon();
+        /* v748: 取得できた＝押し上げ可になった。8秒タイマーやオンライン復帰を待たずに送る。 */
+        try{ if(typeof flushOutbox==='function') flushOutbox(); }catch(_e){} } })
       .catch(function(e){ console.warn('deferred pull', key, e); });
   }catch(e){}
 }
@@ -4891,7 +4952,9 @@ function outboxLabel(key){
     ['budget_approved_','承認済み予算'],['approvals','承認申請'],['tasks_all','タスク'],['fv_count_','日次食材差異(棚卸)'],
     ['fv_moves_','日次食材差異(入出庫)'],['fv_review_','日次食材差異(原因)'],['fv_config','日次食材差異(設定)'],
     ['cash_tips_','現金チップ'],['skills_st_','スキル'],['m_ingredients','食材マスタ'],['m_vendors','業者マスタ'],
-    ['m_recipes','レシピ'],['inv_','棚卸'],['purchases_','買い出し'],['reimbursements','立替']];
+    ['m_recipes','レシピ'],['inv_','棚卸'],['purchases_','買い出し'],['reimbursements','立替'],
+    ['ec_log','エラーセンター記録'],['menu_log','メニュー変更ログ'],['reject_log','不採用ログ'],
+    ['handbook_log','ハンドブック更新ログ'],['prep_history','仕込みレベル履歴'],['meeting_minutes','議事録']];
   for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return map[i][1]; }
   return k;
 }
@@ -5615,7 +5678,16 @@ var OP_MERGE = {
   reimbursements: { merge: mergeInvoices, covers: _coversInvoices },
   tasks_all:      { merge: mergeTasks, covers: _coversTasks, after: function(){ try{ if(curPage==='tasks') renderPage('tasks'); }catch(e){} } },
   /* v722: 日次食材差異の設定。ings/recipes はエントリ単位で新しい方が勝つ(端末間で消えない) */
-  fv_config:      { merge: mergeFvConfig, covers: _coversFvConfig }
+  fv_config:      { merge: mergeFvConfig, covers: _coversFvConfig },
+  /* v748: ログ系。マージ定義が無いキーは syncMasterToSupabase が丸ごと上書きするため
+     _lsPushBlocked が押し上げを止めており、未送信のまま解消できないデッドロックになっていた。
+     マージ定義を与えれば部分データを送ってもクラウドが壊れないので、ブロック自体が不要になる。
+     prep_history は unshift(新しい順)で ts を持たず並びが壊れるため対象外。
+     meeting_minutes は追記ログではなく丸ごと保存のため対象外。 */
+  ec_log:         { merge: mergeEcLog,     covers: _coversEcLog },
+  menu_log:       { merge: mergeAppendLog, covers: _coversLog },
+  reject_log:     { merge: mergeAppendLog, covers: _coversLog },
+  handbook_log:   { merge: mergeAppendLog, covers: _coversLog }
 };
 /* tasks_all を和集合マージ（id単位・新しい方優先・_deleted優先で復活防止）＝端末間で新規タスクが消えないように */
 function _tkTs(t){ return Number(t && (t.updatedTs || (t.created?Date.parse(t.created):0) || 0)) || 0; }
@@ -5748,7 +5820,9 @@ function _coversOfficeAttend(checkArr, wantArr){
   return true;
 }
 
-var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _coversOfficeAttend }, 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs },
+var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _coversOfficeAttend },
+  /* v752: Career Score。丸ごと上書きだったため他端末の評価が消えていた。 */
+  'lss_emp_': { merge: mergeLssRec, covers: _coversLssRec }, 'skills_st_': { merge: mergeSkillStore, covers: _coversSkillStore }, 'cash_tips_': { merge: mergeCashTips, covers: _coversCashTips }, 'fav_': { merge: mergeFavs, covers: _coversFavs },
   /* v622: 分割後の予算パーティション(spl_budgets_v2_<店>)も店舗内でマージ。同じ店を2端末が同時に触っても行ごと上書きにならない。
      値は「その店1件だけの配列」なので mergeBudgets / _coversBudgets がそのまま使える。 */
   'spl_budgets_v2_': { merge: mergeBudgets, covers: _coversBudgets },
@@ -5785,7 +5859,46 @@ var SPLIT_MERGE_SAFE_KEYS = ['invoices','reimbursements','tasks_all','mileage_re
     });
   }catch(e){ console.warn('split merge def register', e); }
 })();
-function _opMergeDef(key){ if(OP_MERGE[key]) return OP_MERGE[key]; for(var p in OP_MERGE_PREFIX){ if(OP_MERGE_PREFIX.hasOwnProperty(p) && String(key).indexOf(p)===0) return OP_MERGE_PREFIX[p]; } return null; }
+/* ===== v749【分割保存後にマージ保護が効いていなかった問題の修正】 =====
+   _splitWrite が実際にクラウドへ書くのは 'spl_<基底キー>_<人名/店舗>' だが、
+   _opMergeDef は基底キー名しか見ていなかったため定義が見つからず、
+   syncMasterToSupabase がそのパーティション行を丸ごと上書きしていた。
+   申請者の端末と承認者の端末が同じ人のパーティションを書くと、後に書いた方が前を消す。
+   これは v687 が「申請者端末と承認者端末が同じパーティションを書くため、上書きだと申請が消える」
+   として基底キーへマージ定義を入れた、まさにその状況。定義が効いていなかった。
+   v622 で budgets_v2 だけ OP_MERGE_PREFIX へ手書き追加して回避していたが、
+   スキル履歴・キャリア履歴・各種申請・請求書・タスク等の17キーは未対応のままだった。
+   ここで 'spl_' を基底キーへ解決し、以後キーを分割しても自動で保護がかかるようにする。
+   パーティションの値は「その人/その店だけの部分配列」なので既存のマージ関数がそのまま使える
+   （v622 が budgets_v2 について書いている理屈と同じ）。 */
+function _opMergeDef(key){
+  if(OP_MERGE[key]) return OP_MERGE[key];
+  for(var p in OP_MERGE_PREFIX){ if(OP_MERGE_PREFIX.hasOwnProperty(p) && String(key).indexOf(p)===0) return OP_MERGE_PREFIX[p]; }
+  try{
+    var s=String(key||'');
+    if(s.indexOf('spl_')===0 && typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS){
+      var best='', bestDef=null;
+      for(var b in _SPLIT_KEYS){
+        if(!_SPLIT_KEYS.hasOwnProperty(b)) continue;
+        var sp=_SPLIT_KEYS[b];
+        if(!sp) continue;
+        if(s.indexOf('spl_'+b+'_')!==0) continue;
+        if(b.length<=best.length) continue;
+        if(sp.type==='arr'){
+          if(!OP_MERGE[b]) continue;
+          best=b; bestDef=OP_MERGE[b];
+        } else {
+          /* v750: 設定型(obj)は足し算で合流できないため、保存者・時刻の印で
+             「新しい方を採用する」ルールを使う。これが無いと丸ごと上書きになり、
+             古いデータを持った端末が新しい保存を消してしまう。 */
+          best=b; bestDef=_stDef();
+        }
+      }
+      if(bestDef) return bestDef;
+    }
+  }catch(e){}
+  return null;
+}
 /* スキル店舗バケット {name:{position:{level,status,_at,...}}} のマージ。name→positionで深くマージ。
    position衝突は _at(書込時刻の新しい方)→level(高い方)→local の順で解決（昇格/降格/申請中→承認すべて正しく） */
 function _skillPick(cv, lv){
@@ -5951,6 +6064,33 @@ function mergeAppendLog(cloudArr, localArr){
   (Array.isArray(localArr)?localArr:[]).forEach(add);
   if(out.length && out.every(function(x){return x&&x.ts!=null;})) out.sort(function(a,b){ return a.ts-b.ts; });
   return out;
+}
+/* ===== v748: エラーセンター過去ログ(ec_log)の追記マージ =====
+   ecSnapshot は「日付 x タイトル で1件」を前提に重複排除している。
+   一方 id は 'ec'+時刻+乱数 で端末ごとに異なるため、全文一致のマージだと
+   2端末が同じ日に記録した同じ検知が2件に増えてしまう。署名を日付+タイトルにする。 */
+function _ecLogSig(x){ return String((x&&x.date)||'')+'|'+String((x&&x.title)||''); }
+function mergeEcLog(cloudArr, localArr){
+  var by={}, order=[];
+  function add(x){
+    if(x==null) return;
+    var k=_ecLogSig(x);
+    if(!by[k]){ by[k]=x; order.push(k); return; }
+    var at=(by[k]&&by[k].ts)||0, bt=(x&&x.ts)||0;
+    if(bt&&bt<at) by[k]=x;   /* 先に検知した方を残す */
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(add);
+  (Array.isArray(localArr)?localArr:[]).forEach(add);
+  var out=order.map(function(k){ return by[k]; });
+  out.sort(function(a,b){ return (((a&&a.ts)||0)-((b&&b.ts)||0)); });
+  if(out.length>4000) out=out.slice(out.length-4000);   /* ecSnapshot と同じ上限 */
+  return out;
+}
+function _coversEcLog(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x!=null) have[_ecLogSig(x)]=1; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(w==null) continue; if(!have[_ecLogSig(w)]) return false; }
+  return true;
 }
 function _coversLog(check, want){
   if(!Array.isArray(check)) return false;
@@ -6155,6 +6295,9 @@ async function pullOpKey(key){
     var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
     if(!res.ok) return false;
     var rows=await res.json();
+    /* v748: 行が無い＝まだ誰もクラウドへ保存していない（端末側が正しい）。
+       従来は false を返して永久に未取得扱いとなり、押し上げが止まったままだった。 */
+    if(Array.isArray(rows) && !rows.length){ _lsMarkFetched(key); return true; }
     if(rows && rows.length){ var _cloud=rows[0].value;
       /* v720: 分割保存へ移行済みのキーは統合行を端末に置かない（_applyKvRows と同じ扱い） */
       if(_handleLegacySplitRow(key, _cloud)) return true;
@@ -20432,7 +20575,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '747';
+const APP_VERSION = '752';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -33061,7 +33204,7 @@ async function runTotoyaSkillV2(){
       if(mode==='reset'){ m[nm]={}; cleared++; return; }
       Object.keys(REN).forEach(function(o){ if(pm[o] && !pm[REN[o]]){ pm[REN[o]]=pm[o]; delete pm[o]; moved++; } });
     });
-    lsSet(SKILL_STORE_PREFIX+sid, m);
+    setStoreSkills(sid, m);   /* v752: 保存の出口を通し、移行後のスキルにも時刻を付ける */
   });
   var v2=ls('skills_v2', null);
   if(v2 && typeof v2==='object'){
@@ -33142,7 +33285,7 @@ function _migrateTotoyaSkillV2_disabled(){
           var pm=m[nm]; if(!pm||typeof pm!=='object') return;
           Object.keys(REN).forEach(function(o){ if(pm[o] && !pm[REN[o]]){ pm[REN[o]]=pm[o]; delete pm[o]; ch=true; } });
         });
-        if(ch) lsSet(SKILL_STORE_PREFIX+sid, m);
+        if(ch) setStoreSkills(sid, m);   /* v752: 同上 */
       }
     });
     var v2=ls('skills_v2', null);
@@ -33718,7 +33861,44 @@ async function ensureSkillsForView(storeId, force){
   }catch(e){}
   return false;
 }
-function setStoreSkills(storeId, map){ lsSet(SKILL_STORE_PREFIX+storeId, map); }
+/* ===== v751: スキル保存時に保存時刻(_at)を必ず付ける =====
+   【症状】Totoya Kaimuki でスキルレベルを上げると保存できるが、下げると元に戻る。
+   【原因】合流の判定 _skillPick は
+       ① _at がある  -> 新しい方が勝つ（正しい）
+       ② _at が無い  -> レベルの高い方が勝つ
+     の2段構えになっている。スタッフのスキル編集画面 saveStaffSkillEdit は
+     編集したポジションを新しいオブジェクトで作り直しており _at を入れていないため、
+     保存のたびに時刻が消えて②へ落ち、レベルを下げる変更がクラウドの高い値に戻されていた。
+     承認フローの setEmpSkillStore は _at を入れていたので、経路によって挙動が違っていた。
+   【対策】呼び出し元ごとに直すと同じ書き忘れが再発するため、保存の出口である
+     ここ1箇所で、中身が変わったスキルにだけ保存時刻を付ける。
+     中身が変わっていないものは元の時刻を保ち、無用な勝敗の入れ替えを起こさない。 */
+function setStoreSkills(storeId, map){
+  try{
+    var cur = getStoreSkillsMap(storeId) || {};
+    var now = Date.now();
+    var bare = function(o){
+      var x = {};
+      Object.keys(o||{}).forEach(function(k){ if(k!=='_at') x[k]=o[k]; });
+      return JSON.stringify(x);
+    };
+    Object.keys(map||{}).forEach(function(name){
+      var ent = map[name];
+      if(!ent || typeof ent!=='object') return;
+      var cent = cur[name] || {};
+      Object.keys(ent).forEach(function(pos){
+        var nv = ent[pos];
+        if(!nv || typeof nv!=='object' || Array.isArray(nv)) return;
+        var ov = cent[pos];
+        /* v751: 同じミリ秒内に続けて保存すると時刻が同点になり、_skillPick が
+           「レベルの高い方が勝つ」判定へ落ちてしまう。必ず前より進む値にする。 */
+        if(bare(nv)!==bare(ov)){ nv._at = Math.max(now, (Number(ov&&ov._at)||0)+1); }   /* 変更あり */
+        else if(ov && ov._at!=null){ nv._at = ov._at; }                           /* 変更なし: 元の時刻を保つ */
+      });
+    });
+  }catch(e){ console.warn('setStoreSkills stamp', e); }
+  lsSet(SKILL_STORE_PREFIX+storeId, map);
+}
 function getSkillsV2(){
   var combined = {};
   var legacy = legacySkillsV2();
@@ -33743,7 +33923,9 @@ function setSkillsV2(s){
   Object.keys(s).forEach(function(name){ Object.keys(s[name]||{}).forEach(function(st){ byStore[st]=byStore[st]||{}; byStore[st][name]=s[name][st]; }); });
   Object.keys(byStore).forEach(function(st){
     var cur = ls(SKILL_STORE_PREFIX+st, null);
-    if (JSON.stringify(cur)!==JSON.stringify(byStore[st])) lsSet(SKILL_STORE_PREFIX+st, byStore[st]);
+    /* v751: ここは lsSet を直接呼んでおり setStoreSkills を通っていなかったため、
+       スキル編集画面からの保存に時刻が付かなかった。保存の出口を1本にする。 */
+    if (JSON.stringify(cur)!==JSON.stringify(byStore[st])) setStoreSkills(st, byStore[st]);
   });
 }
 /* 店舗別スキル取得 { position: {...} } */
@@ -33906,7 +34088,32 @@ function lssAllItems() {
   var out=[]; LSS_CATEGORIES.forEach(c=>c.items.forEach((label,i)=>out.push({id:lssItemId(c.key,i), cat:c.key, label:label}))); return out;
 }
 function getLssScores(name){ var per = ls(LSS_EMP_PREFIX+name, null); if (per!==null) return per; var all = ls('lss_scores', {}); return all[name]||null; }
-function setLssScores(name, data){ lsSet(LSS_EMP_PREFIX+name, data); }
+/* ===== v752: Career Score にも保存時刻と保存者を付ける =====
+   lss_emp_<社員> には合流ルールが無く、丸ごと上書きだった。保存自体は上下とも通るが、
+   2端末が同じ人を評価すると後から届いた方が前を消し、古い端末が新しい評価を消すこともあった。
+   時刻を持たせて「新しい保存が勝つ」で合流させる。点数の大小では絶対に決めない
+   （スキルで起きた「下げると保存できない」を繰り返さないため）。 */
+function setLssScores(name, data){
+  try{
+    if(data && typeof data==='object'){
+      var cur = ls(LSS_EMP_PREFIX+name, null);
+      data._at = Math.max(Date.now(), (Number(cur&&cur._at)||0)+1);   /* 必ず前より進める */
+      if(!data._by){ try{ data._by = (typeof myName==='function')?myName():''; }catch(e){ data._by=''; } }
+    }
+  }catch(e){ console.warn('setLssScores stamp', e); }
+  lsSet(LSS_EMP_PREFIX+name, data);
+}
+/* 合流: 新しく保存された方を採用する。点数は見ない。 */
+function mergeLssRec(cloud, local){
+  var ca=Number(cloud&&cloud._at)||0, la=Number(local&&local._at)||0;
+  if(la!==ca) return (la>ca)?local:cloud;
+  return (local!=null)?local:cloud;
+}
+function _coversLssRec(check, want){
+  var ha=Number(check&&check._at)||0, wa=Number(want&&want._at)||0;
+  if(wa&&ha) return ha>=wa;
+  return !!check;
+}
 /* 変更理由の閲覧可否：評価できるAM以上（ceo/gm/am）のみ。SL・評価対象本人には非表示 */
 function canViewLssChangeReason() { return ['ceo','gm','am'].includes(curRole); }
 /* LSSロールの上下関係（評価対象の階層比較用） */
