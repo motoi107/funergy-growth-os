@@ -9559,7 +9559,7 @@ function submitBudget(storeId) {
   var prevSales = Math.round((monthStats(storeId,-1)||{}).sales||0);
   var vsPrev = prevSales ? Math.round(total/prevSales*1000)/10 : null;
   var method = [usesDowMode(b)?'曜日別':'区分（単価×客数）', hasDayBudget(b)?'日別調整あり':''].filter(Boolean).join(' + ');
-  var r = b.rationale||{};
+  var r = budRationale(b, budYmStr())||{};   /* v734: 表示中の月の考え方を読む */
   openModal(`<div class="modal-title">予算の考え方（提出前・必須） <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:9px 11px;margin-bottom:10px;line-height:1.8">
       <b>月間予算 ${fmtUSD2(total)}</b>（${method}）<br>
@@ -9580,8 +9580,7 @@ function _reviewBeforeSubmit(storeId){
   if(!basis){ showToast('① 予算の根拠を入力してください','warning'); return; }
   if(!focus){ showToast('② 今月の重点・変化点を入力してください','warning'); return; }
   var budgets=getBudgets(); var b=budgets.find(function(x){return x.storeId===storeId;}); if(!b) return;
-  if (b.rationale && b.rationale.basis) { b.rationaleHistory = (b.rationaleHistory||[]).concat([b.rationale]).slice(-6); }
-  b.rationale = { basis:basis, focus:focus, by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:nowJP() };
+  budSetRationale(b, budYmStr(), basis, focus);   /* v734: 表示中の月に紐づけて保存 */
   saveBudgets(budgets);
   openBudgetReview(storeId, true); // 本人の最終確認画面（GMと同じ内容）→ ここから提出
 }
@@ -9589,16 +9588,17 @@ function _saveRationaleDraft(storeId){
   var basis=((document.getElementById('bs-basis')||{}).value||'').trim();
   var focus=((document.getElementById('bs-focus')||{}).value||'').trim();
   var budgets=getBudgets(); var b=budgets.find(function(x){return x.storeId===storeId;}); if(!b) return;
-  b.rationale = { basis:basis, focus:focus, by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:nowJP() };
+  budSetRationale(b, budYmStr(), basis, focus);   /* v734: 表示中の月に紐づけて保存 */
   saveBudgets(budgets);
-  closeModalDirect(); showToast('考え方を下書き保存しました（提出は確認画面から）','success');
+  closeModalDirect(); showToast(budYmStr()+' の考え方を下書き保存しました（提出は確認画面から）','success');
 }
 function _doSubmitBudget(storeId){
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  if(!(b.rationale && (b.rationale.basis||'').trim() && (b.rationale.focus||'').trim())){ showToast('提出には考え方（根拠・重点）の記入が必要です','warning'); return; }
   var _symYm = budYmStr();
-  b.submittedBy = (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
+  var _rt = budRationale(b, _symYm);
+  if(!(_rt && (_rt.basis||'').trim() && (_rt.focus||'').trim())){ showToast(_symYm+' の考え方（根拠・重点）を記入してください','warning'); return; }
+  b.submittedBy = myName();   /* v734: ロール既定名(G5='Yuki')ではなく本人の名前 */
   b.submittedAt = nowJP();
   budSetStatus(b, _symYm, 'GM承認待ち', { submittedBy:b.submittedBy, submittedAt:b.submittedAt });
   /* v728: 提出は「保存できたこと」を確認してから完了表示する。
@@ -9611,7 +9611,19 @@ function _doSubmitBudget(storeId){
     return;
   }
   var sName = (STORES.find(s=>s.id===storeId)||{}).name || storeId;
-  addApproval({title:`予算承認依頼 — ${sName}（${_symYm}）`, type:'予算', from:b.submittedBy, store:sName, ref:storeId});
+  /* v734: 依頼に対象月を持たせる。承認センターはこの月に対して承認・差し戻しする。
+     同じ店舗・同じ月の未処理依頼があれば作り直さず更新する（同じ依頼が並ばないように）。 */
+  (function(){
+    var aps=ls('approvals', [])||[];
+    var dup=aps.filter(function(a){ return a && a.type==='予算' && a.ref===storeId && a.status==='pending' && (a.ym||'')===_symYm; });
+    if(dup.length){
+      dup.forEach(function(a){ a.from=b.submittedBy; a.date=todayJP(); a._mut=Date.now(); a.title='予算承認依頼 — '+sName+'（'+_symYm+'）'; });
+      lsSet('approvals', aps);
+      showToast(_symYm+' の承認依頼を更新しました','info');
+    } else {
+      addApproval({title:'予算承認依頼 — '+sName+'（'+_symYm+'）', type:'予算', from:b.submittedBy, store:sName, ref:storeId, ym:_symYm});
+    }
+  })();
   closeModalDirect();
   /* クラウドへ確実に送る。未送信が残る場合はその旨を伝える（黙って失敗させない）。 */
   showToast('提出しました。GMへ送信中…','info');
@@ -9629,33 +9641,36 @@ function _doSubmitBudget(storeId){
   })();
 }
 /* GM承認 */
-function approveBudgetSeg(storeId) {
+function approveBudgetSeg(storeId, ym) {
   if (!['gm','ceo'].includes(curRole)) { alert('承認はGM/CEOのみ可能です'); return; }
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  var _apYm = budYmStr();
-  b.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole;
+  /* v734: 承認センターから渡された「依頼の月」を承認する。
+     以前は画面で選んでいる月を承認していたため、9月の依頼を押しても8月が承認されていた。 */
+  var _apYm = ym || budYmStr();
+  b.approvedBy=myName();      /* v734 */
   b.approvedAt=nowJP();
   budSetStatus(b, _apYm, '承認済み', { approvedBy:b.approvedBy, approvedAt:b.approvedAt });
   saveBudgets(budgets);
   /* v624: 承認の瞬間に不変コピーを別行へ。以後どんな上書きが起きても承認時点に戻せる（要件②） */
   try{ snapshotApprovedBudget(b, _apYm); }catch(e){}
   // 承認待ちタスクを消化
-  resolveApprovalByRef('予算', storeId, 'approved');
-  showToast('予算を承認しました。予実・ダッシュボードに反映されます','success');
+  resolveApprovalByRef('予算', storeId, 'approved', _apYm);
+  showToast(_apYm+' の予算を承認しました。予実・ダッシュボードに反映されます','success');
   renderPage('budget');
 }
 /* GM差し戻し */
-function rejectBudgetSeg(storeId) {
+function rejectBudgetSeg(storeId, ym) {
   if (!['gm','ceo'].includes(curRole)) { alert('差し戻しはGM/CEOのみ可能です'); return; }
-  openInputModal({title:'予算の差し戻し', label:'差し戻し理由', required:true, placeholder:'例: 売上予算の根拠が弱い / 客数予測が高すぎる / Labor目標の見直しが必要', okLabel:'差し戻す', okClass:'btn-danger'}, function(reason){
+  var _rjYm = ym || budYmStr();   /* v734: 依頼の月に対して差し戻す */
+  openInputModal({title:_rjYm+' の予算を差し戻し', label:'差し戻し理由', required:true, placeholder:'例: 売上予算の根拠が弱い / 客数予測が高すぎる / Labor目標の見直しが必要', okLabel:'差し戻す', okClass:'btn-danger'}, function(reason){
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
   b.rejectReason=reason; b.rejectedAt=nowJP();
-  budSetStatus(b, budYmStr(), '差し戻し', { rejectReason:reason, rejectedAt:b.rejectedAt });
+  budSetStatus(b, _rjYm, '差し戻し', { rejectReason:reason, rejectedAt:b.rejectedAt, rejectedBy:myName() });
   saveBudgets(budgets);
-  resolveApprovalByRef('予算', storeId, 'rejected');
-  showToast('予算を差し戻しました','info');
+  resolveApprovalByRef('予算', storeId, 'rejected', _rjYm);
+  showToast(_rjYm+' の予算を差し戻しました','info');
   renderPage('budget');
   });
 }
@@ -9770,6 +9785,31 @@ function budSetStatus(b, ym, st, extra){
   return m;
 }
 /* 月別の提出者・承認者など（表示用） */
+/* v734: 考え方（根拠・重点）は月ごとに持つ。
+   これまでは b.rationale に店舗で1つしか無く、8月に書いた内容を9月に書き換えると
+   8月の分が消え、さらに period 月と一致しない月では表示すらされなかった。 */
+function budRationale(b, ym){
+  if(!b) return null;
+  ym = ym || budYmStr();
+  var m=budMon(b, ym);
+  if(m && m.rationale && ((m.rationale.basis||'').trim() || (m.rationale.focus||'').trim())) return m.rationale;
+  if(b.rationale && _budLegacyYm(b)===ym) return b.rationale;   /* 旧データはその月にだけ */
+  return null;
+}
+function budSetRationale(b, ym, basis, focus){
+  if(!b) return null;
+  ym = ym || budYmStr();
+  b.months = b.months || {};
+  b.months[ym] = b.months[ym] || {};
+  var m=b.months[ym];
+  var prev=m.rationale;
+  if(prev && (prev.basis||'').trim()) m.rationaleHistory=(m.rationaleHistory||[]).concat([prev]).slice(-6);
+  m.rationale = { basis:basis, focus:focus, by:myName(), at:nowJP() };
+  m._ts = Date.now();
+  /* 互換: 旧UIが見る店舗単位の値も、その月のものとして保つ */
+  b.rationale = m.rationale; b._statusYm = b._statusYm || ym;
+  return m.rationale;
+}
 function budMonMeta(b, ym){
   ym = ym || budYmStr();
   var m=budMon(b, ym) || {};
@@ -10017,7 +10057,18 @@ function monthStats(storeId, offset) {
     hasData: daysWithData>0,
   };
 }
-function prevMonthStats(storeId) { return monthStats(storeId, -1); }
+function prevMonthStats(storeId, ymStr) {
+  /* ymStr（'YYYY-MM'）が渡された場合は、その月の前月を見る。無ければ従来どおり今日の前月。 */
+  var off = -1;
+  try{
+    if(ymStr && /^\d{4}-\d{2}$/.test(ymStr)){
+      var now=bizNow();
+      var y=parseInt(ymStr.slice(0,4),10), m=parseInt(ymStr.slice(5,7),10);
+      off = (y-now.getFullYear())*12 + (m-1-now.getMonth()) - 1;
+    }
+  }catch(e){}
+  return monthStats(storeId, off);
+}
 
 /* ===================== 月次サマリー（振り返り）v1 ===================== */
 var msOffset = 0;     // 0=今月, -1=先月 ...
@@ -11758,7 +11809,11 @@ function _qbBudgetIsForMonth(b, ym){
   return ym === (typeof bizYm==='function' ? bizYm() : '');
 }
 function _qbMonthRationale(b, ym){
-  if(!b || !b.rationale) return null;
+  /* v734: 月別に保存された考え方をそのまま返す（period 月に縛られない） */
+  if(!b) return null;
+  var r=(typeof budRationale==='function')?budRationale(b, ym):null;
+  if(r) return r;
+  if(!b.rationale) return null;
   return _qbBudgetIsForMonth(b, ym) ? b.rationale : null;
 }
 /* 進捗1行: バー＋達成%＋不足(あと○○) */
@@ -12484,7 +12539,7 @@ function renderBudgetSetup() {
     </div>`;
 
     // 前月比較（予算根拠の参考）
-    html += renderPrevMonthCompare(b.storeId, total, laborB, fcB);
+    html += renderPrevMonthCompare(b.storeId, total, laborB, fcB, _bsYmStr);
 
     html += `<div class="approval-actions">`;
     html += `<button class="btn btn-secondary btn-sm" onclick="openBudgetReview('${b.storeId}')"><i class="ti ti-clipboard-list"></i> ${t('考え方','Rationale')}</button>`;
@@ -12511,8 +12566,11 @@ function segCard(label, amount, color) {
     <div style="font-size:14px;font-weight:700;color:${color}">${fmtK(Math.round(amount))}</div></div>`;
 }
 /* 前月比較カード（予算根拠の参考。前月実績 vs 今月予算） */
-function renderPrevMonthCompare(storeId, budTotal, laborB, fcB) {
-  var pm = prevMonthStats(storeId);
+/* v733: 比較対象は「今日の前月」ではなく「表示している予算月の前月」。
+   例）8月の予算を作るときは7月の実績と比べる。
+   以前は常に bizNow の前月（＝6月）を見ていたため、どの月を開いても 2026/6 が出ていた。 */
+function renderPrevMonthCompare(storeId, budTotal, laborB, fcB, ymStr) {
+  var pm = prevMonthStats(storeId, ymStr);
   if (!pm.hasData) {
     return `<details style="margin:6px 0"><summary style="font-size:12px;color:var(--muted);cursor:pointer"><i class="ti ti-history"></i> 前月比較（${pm.label}）</summary>
       <div style="font-size:11px;color:var(--muted);padding:8px">前月（${pm.label}）の実績データがありません。日次進捗で実績を入力するか、データ連携で取り込むと比較が表示されます。</div></details>`;
@@ -12579,7 +12637,7 @@ function renderBudgetBuilder(storeId){
     +'<button class="btn btn-secondary btn-sm" onclick="bbCloseGuarded()"><i class="ti ti-arrow-left"></i> '+t('店舗一覧へ','Store list')+'</button>'
     +'<b style="flex:1;font-size:13px;min-width:120px">'+escapeHtml(st.name)+(curLang==='en'?(' — Budget editor ('+ym.y+'-'+String(ym.m).padStart(2,'0')+')</b>'):(' — 予算エディタ（'+ym.y+'年'+ym.m+'月）</b>'))
     +'<span id="bb-dirty" style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted);display:none">'+t('未保存','Unsaved')+'</span>'
-    +(editable?'<button id="bb-save-top" class="btn btn-primary btn-sm" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t(ym.m+'月を保存','Save '+ym.m+'月')+'</button>':'')
+    /* v733: 保存ボタンは下部の固定バー1つに統一（同じ動作のボタンが2つあり分かりにくかった） */
     +'<span style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--border);color:var(--muted)">'+escapeHtml(tStatus(budStatusFor(b, ymStr)))+'</span></div>';
   if(!editable) h+='<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-lock"></i> '+t('この月の予算は現在編集できません（','Not editable this month (')+escapeHtml(ymStr)+' / '+escapeHtml(tStatus(budStatusFor(b, ymStr)))+t('）。閲覧のみ可能です。','). View only.')+'</div>';
   var dis=editable?'':' disabled';
@@ -12625,12 +12683,14 @@ function renderBudgetBuilder(storeId){
     var ev=(typeof dayEventFor==='function')?dayEventFor(dd.date):'';
     h+='<tr><td style="text-align:left;white-space:nowrap;'+(isWk?'color:var(--accent);font-weight:600':'')+'">'+parseInt(dd.date.slice(8),10)+(curLang==='en'?' (':'日(')+dowJ+')'+(ev?'<div style="font-size:9px;color:var(--accent2);font-weight:400">'+escapeHtml(ev)+'</div>':'')+'</td>'
       +'<td style="text-align:right;color:var(--muted);font-size:11px;white-space:nowrap" class="bb-auto" data-dow="'+((dt.getDay()+6)%7)+'">$'+autoBase.toLocaleString()+'</td>'
-      +'<td><input class="form-input bb-day" style="padding:5px 6px;font-size:12px;text-align:right" type="number" inputmode="decimal" min="0" data-date="'+dd.date+'" data-auto="'+autoBase+'" value="'+cur+'" placeholder="'+t('自動','Auto')+'"'+dis+' oninput="bbDayTotal()"></td></tr>';
+      +'<td><input class="form-input bb-day" style="padding:5px 6px;font-size:12px;text-align:right" type="number" inputmode="decimal" min="0" data-date="'+dd.date+'" data-auto="'+autoBase+'" value="'+cur+'" placeholder="'+t('自動','Auto')+'"'+dis+' oninput="bbDayInput()"></td></tr>';
   });
   h+='</tbody></table></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 2px 0"><span style="font-size:12px;color:var(--muted)">'+t('月間予算 合計','Monthly budget total')+'</span><b id="bb-total" style="font-size:18px;color:var(--accent)">—</b></div>'
     +(b.daysBy?'<div style="font-size:10px;color:var(--muted)"><i class="ti ti-user-check"></i> '+t('前回の日別調整: ','Last per-day adj: ')+escapeHtml(b.daysBy)+' '+escapeHtml(b.daysAt||'')+'</div>':'')
-    +(editable?'<button id="bb-save-bottom" class="btn btn-primary" style="width:100%;margin-top:10px;font-size:15px;padding:12px" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t(ym.y+'年'+ym.m+'月の予算を保存','Save '+ym.y+'-'+ym.m+' budget')+'</button><div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">'+t('上部の「'+ym.m+'月を保存」ボタンと同じ動作です（表示中の'+ym.m+'月を保存）。押すまで入力は保存されません。','Same as the top Save button — saves the shown month ('+ym.m+'). Nothing is saved until pressed.')+'</div>':'')
+    +(editable?('<div style="position:sticky;bottom:0;z-index:20;background:var(--surface);padding:10px 0 6px;margin-top:10px;box-shadow:0 -2px 8px rgba(0,0,0,0.06)">'
+      +'<button id="bb-save-bottom" class="btn btn-primary" style="width:100%;font-size:15px;padding:12px" onclick="bbSave()"><i class="ti ti-device-floppy"></i> '+t(ym.y+'年'+ym.m+'月の予算を保存','Save '+ym.y+'-'+ym.m+' budget')+'</button>'
+      +'<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">'+t('押すまで入力は保存されません。','Nothing is saved until pressed.')+'</div></div>'):'')
     +'</div>';
   return h;
 }
@@ -12684,8 +12744,11 @@ function bbApplyDow(){
 }
 function bbClearDays(){
   document.querySelectorAll('.bb-day').forEach(function(inp){ inp.value=''; });
-  bbDayTotal();
+  bbDayTotal(); bbMarkDirty();   /* v733: これは実際の変更なので未保存にする */
 }
+/* v733: 合計の再計算だけを行う（未保存フラグは立てない）。
+   この関数は「画面を開いた直後」「月を切り替えた直後」「保存した直後」にも呼ばれるため、
+   ここで未保存にしていると、何も触っていないのに警告が出てしまっていた。 */
 function bbDayTotal(){
   var t=0;
   document.querySelectorAll('.bb-day').forEach(function(inp){
@@ -12693,7 +12756,14 @@ function bbDayTotal(){
     t+=v;
   });
   var el=document.getElementById('bb-total'); if(el) el.textContent=fmtUSD2(t);
-  bbMarkDirty();
+}
+/* 日別欄を実際に編集したときだけ未保存にする */
+function bbDayInput(){ bbDayTotal(); bbMarkDirty(); }
+/* 未保存バッジを消す（保存直後・月切替時） */
+function bbClearDirty(){
+  _bbDirty=false;
+  var el=document.getElementById('bb-dirty');
+  if(el){ el.style.display='none'; el.style.color='var(--muted)'; el.style.borderColor='var(--border)'; el.textContent=t('未保存','Unsaved'); }
 }
 function bbSave(){
   var budgets=getBudgets();
@@ -12722,7 +12792,7 @@ function bbSave(){
     showToast('保存できませんでした（'+(_vf.reason||'端末の空き容量不足の可能性')+'）。画面はそのままです。設定＞保存状況の確認をご覧ください。','danger');
     return;
   }
-  _bbDirty=false;
+  bbClearDirty();               /* v733: フラグとバッジの両方を確実に消す */
   var _bv=(typeof getBudgetForMonth==='function')?getBudgetForMonth(_bbStore,_ymStr):b;
   var _mtot=Math.round(daysOfYm(_ymStr).reduce(function(a,dd){return a+dayBudgetFor(_bv,dd.date);},0));
   showToast(_ymStr.replace('-','年')+'月の予算を保存しました（月間 $'+_mtot.toLocaleString()+'）','success');
@@ -19827,7 +19897,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '732';
+const APP_VERSION = '734';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -36878,9 +36948,16 @@ function addApproval(obj) {
   }catch(e){}
 }
 /* type+refで承認待ちを解決（予算承認フロー連携用） */
-function resolveApprovalByRef(type, ref, status) {
+function resolveApprovalByRef(type, ref, status, ym) {
   var approvals = ls('approvals', []);
-  approvals.filter(a=>a.type===type && a.ref===ref && a.status==='pending').forEach(a=>a.status=status);
+  /* v734: ym を指定した場合はその月の依頼だけを消化する。
+     指定しないと、8月を承認したときに9月の依頼まで消えてしまう。
+     月を持たない古い依頼は、月指定があっても一緒に消化する（積み残さないため）。 */
+  approvals.filter(function(a){
+    if(!(a && a.type===type && a.ref===ref && a.status==='pending')) return false;
+    if(!ym) return true;
+    return !a.ym || a.ym===ym;
+  }).forEach(function(a){ a.status=status; a._mut=Date.now(); });
   lsSet('approvals', approvals);
 }
 
@@ -37025,22 +37102,29 @@ function reopenApproval(id){
 }
 /* ===== 予算レビュー: 考え方（客数×単価 L/D/TO）＋日別一覧を一目で。読み取り専用＝保存に影響なし ===== */
 function openBudgetReview(storeId, submitMode, ymArg){
-  var b=ymArg?getBudgetForMonth(storeId,ymArg):getBudgets().find(function(x){return x.storeId===storeId;});
+  /* v734: 既定の対象月は「今日の月」ではなく「予算画面で選んでいる月」。
+     以前は curYm()（＝今月）だったため、8月・9月の予算を開いても7月の内容が出ていた。 */
+  var ym=ymArg||((typeof budYmStr==='function')?budYmStr():curYm());
+  var b=getBudgetForMonth(storeId, ym) || getBudgets().find(function(x){return x.storeId===storeId;});
   if(!b){ showToast('予算が見つかりません','info'); return; }
   var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
-  var ym=ymArg||curYm(); var yp=ym.split('-'); var yy=parseInt(yp[0],10), mm=parseInt(yp[1],10);
+  var yp=ym.split('-'); var yy=parseInt(yp[0],10), mm=parseInt(yp[1],10);
   var days=daysOfYm(ym);
   var total=Math.round(days.reduce(function(a,dd){return a+dayBudgetFor(b,dd.date);},0));
-  var prev=Math.round((monthStats(storeId, ymArg?(((typeof _ymToOffset==='function')?_ymToOffset(ym):0)-1):-1)||{}).sales||0);
+  var prev=Math.round((prevMonthStats(storeId, ym)||{}).sales||0);   /* v734: 表示中の月の前月 */
   var vs=prev?Math.round(total/prev*1000)/10:null;
   var dowMode=usesDowMode(b);
   var method=[dowMode?'曜日別（客数×単価）':(hasSegments(b)?'区分（客数×単価）':'—'), hasDayBudget(b)?'日別調整あり':''].filter(Boolean).join(' + ');
-  var r=b.rationale||{};
+  var _rawB=getBudgets().find(function(x){return x.storeId===storeId;});
+  var r=((typeof budRationale==='function')?budRationale(_rawB, ym):null)||{};   /* v734: その月の考え方 */
+  var _meta=(typeof budMonMeta==='function')?budMonMeta(_rawB, ym):{};
   var h='<div style="font-size:12px;background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:10px;line-height:1.9">'
     +'<div style="font-size:20px;font-weight:800;color:var(--accent)">$'+total.toLocaleString()+' <span style="font-size:11px;color:var(--muted);font-weight:400">月間予算</span></div>'
     +'<div>組み方: <b>'+escapeHtml(method)+'</b></div>'
     +'<div>前月実績: '+(prev?('$'+prev.toLocaleString()+' <b style="color:'+(vs>=100?'var(--red)':'var(--green)')+'">対比 '+vs+'%</b>'):'—')+'</div>'
-    +'<div style="font-size:10px;color:var(--muted)">ステータス '+escapeHtml(b.status||'下書き')+(b.submittedBy?(' ・ 提出 '+escapeHtml(b.submittedBy)+' '+escapeHtml(b.submittedAt||'')):'')+'</div></div>';
+    +'<div style="font-size:10px;color:var(--muted)">'+escapeHtml(ym)+' ／ ステータス '+escapeHtml((typeof budStatusFor==='function')?budStatusFor(_rawB, ym):(b.status||'下書き'))
+      +(_meta.submittedAt?(' ・ 提出 '+escapeHtml(_meta.submittedBy||'')+' '+escapeHtml(_meta.submittedAt)):'')
+      +(_meta.approvedAt?(' ・ 承認 '+escapeHtml(_meta.approvedBy||'')+' '+escapeHtml(_meta.approvedAt)):'')+'</div></div>';
   if(r.basis||r.focus){
     h+='<div style="font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:10px;line-height:1.7">'
       +'<div><b><i class="ti ti-bulb" style="color:var(--accent)"></i> 根拠：</b>'+escapeHtml(r.basis||'—')+'</div>'
@@ -37174,7 +37258,10 @@ function renderApproval() {
         }
         html += _approvalChainHtml(a);
         if (isBudget) {
-          var _rb = (getBudgets().find(function(x){return x.storeId===a.ref;})||{}).rationale;
+          var _bb = getBudgets().find(function(x){return x.storeId===a.ref;});
+          var _aYm = a.ym || (typeof _budLegacyYm==='function' ? _budLegacyYm(_bb) : '');
+          var _rb = (typeof budRationale==='function') ? budRationale(_bb, _aYm) : ((_bb||{}).rationale);
+          if (_aYm) html += '<div style="font-size:11px;color:var(--muted);margin:2px 0"><i class="ti ti-calendar"></i> '+t('対象月','Month')+'：<b>'+escapeHtml(_aYm)+'</b></div>';
           if (_rb && _rb.basis) {
             html += '<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin:6px 0;line-height:1.7">'
               +'<div><b><i class="ti ti-bulb" style="color:var(--accent)"></i> '+t('予算の根拠','Budget basis')+'：</b>'+escapeHtml(_rb.basis)+'</div>'
@@ -37184,9 +37271,10 @@ function renderApproval() {
         }
         html += '<div class="approval-actions">';
         if (isBudget) {
-          html += '<button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+a.ref+'\')"><i class="ti ti-clipboard-list"></i> '+t('考え方・日別','Rationale / daily')+'</button>'
-            +'<button class="btn btn-success btn-sm" onclick="approveBudgetSeg(\''+a.ref+'\')"><i class="ti ti-check"></i> '+t('承認','Approve')+'</button>'
-            +'<button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg(\''+a.ref+'\')"><i class="ti ti-arrow-back"></i> '+t('差し戻し','Return')+'</button>';
+          var _ymArg = _aYm ? ("','"+_aYm) : '';
+          html += '<button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+a.ref+'\',false'+(_aYm?(",'"+_aYm+"'"):'')+')"><i class="ti ti-clipboard-list"></i> '+t('考え方・日別','Rationale / daily')+'</button>'
+            +'<button class="btn btn-success btn-sm" onclick="approveBudgetSeg(\''+a.ref+_ymArg+'\')"><i class="ti ti-check"></i> '+t('承認','Approve')+'</button>'
+            +'<button class="btn btn-danger btn-sm" onclick="rejectBudgetSeg(\''+a.ref+_ymArg+'\')"><i class="ti ti-arrow-back"></i> '+t('差し戻し','Return')+'</button>';
         } else {
           if (canSign) {
             html += '<button class="btn btn-success btn-sm" onclick="signoffApproval(\''+a.id+'\')"><i class="ti ti-check"></i> '+t('承認する','Approve')+'</button>';
