@@ -5366,7 +5366,17 @@ async function openBudgetSaveDiag(){
     rows+='<div style="border-bottom:1px solid var(--border);padding:5px 0">'
       +'<div style="display:flex;justify-content:space-between"><b>'+esc(sn(id))+'</b>'
       +'<span>'+(b?(esc(ymNow)+'：'+esc(budStatusFor(b, ymNow))):'<span style="color:var(--red)">予算なし</span>')+'</span></div>'
-      +(b&&b.months?('<div style="font-size:10.5px;color:var(--muted)">月別: '+Object.keys(b.months).sort().map(function(k){ return esc(k)+'='+esc(budStatusFor(b,k)); }).join(' ／ ')+'</div>'):'')
+      +(function(){
+          if(!b) return '';
+          var ks=(b.months?Object.keys(b.months):[]);
+          var lg=(typeof _budLegacyYm==='function')?_budLegacyYm(b):'';
+          if(lg && ks.indexOf(lg)<0) ks.push(lg);        /* v730: 月データが無くても紐づく月を出す */
+          if(ks.indexOf(ymNow)<0) ks.push(ymNow);
+          ks=ks.filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort();
+          if(!ks.length) return '';
+          return '<div style="font-size:10.5px;color:var(--muted)">月別: '
+            +ks.map(function(k){ return esc(k)+'='+esc(budStatusFor(b,k))+((b.months&&b.months[k])?'':'<span style="color:var(--yellow)">(月データなし)</span>'); }).join(' ／ ')+'</div>';
+        })()
       +'<div style="font-size:10.5px;color:var(--muted)">'
       +'この端末の保存: '+pn+'件'+(ln?(' ／ 旧キー: '+ln+'件'):'')
       +(hit.length>1?(' <b style="color:var(--red)">／ 重複 '+hit.length+'件</b>'):'')
@@ -9665,6 +9675,33 @@ function reopenBudget(storeId) {
    【対応】status / 提出者 / 承認者 / 差し戻し理由 を b.months[<年月>] 側へ持たせる。
      旧データは _statusYm（その status が属する月）を一度だけ補完し、その月にだけ適用する。
 ============================================================ */
+/* v730【過去月の保護】b.dow（店舗共通の曜日設定）は、月データを持たない月の表示元でもある。
+   別の月を保存すると b.dow が上書きされ、その月の予算まで変わってしまう。
+   そこで上書きの直前に、月データを持っていない旧い月を「その月の月データ」として固定する。
+   ・追加のみ。すでに月データがある月には触れない
+   ・保存されていた状態（承認済み等）も一緒にその月へ移す */
+function budPinLegacyMonth(b, curYm){
+  try{
+    if(!b) return false;
+    var lg=(typeof _budLegacyYm==='function')?_budLegacyYm(b):'';
+    if(!lg || lg===curYm) return false;
+    b.months=b.months||{};
+    if(b.months[lg]) return false;                       /* すでにその月のデータがある */
+    if(!b.dow && !b.days) return false;                  /* 固定するものが無い */
+    var m={ _ts:Date.now() };
+    if(b.dow)  m.dow=JSON.parse(JSON.stringify(b.dow));
+    if(b.days) m.days=JSON.parse(JSON.stringify(b.days));
+    if(b.daysBy) m.daysBy=b.daysBy;
+    if(b.daysAt) m.daysAt=b.daysAt;
+    if(b.status) m.status=b.status;
+    if(b.submittedBy) m.submittedBy=b.submittedBy;
+    if(b.submittedAt) m.submittedAt=b.submittedAt;
+    if(b.approvedBy) m.approvedBy=b.approvedBy;
+    if(b.approvedAt) m.approvedAt=b.approvedAt;
+    b.months[lg]=m;
+    return true;
+  }catch(e){ console.warn('budPinLegacyMonth', e); return false; }
+}
 function budYmStr(){
   try{ if(typeof budgetYM==='function'){ var y=budgetYM(); return y.y+'-'+String(y.m).padStart(2,'0'); } }catch(e){}
   try{ if(typeof curYm==='function') return curYm(); }catch(e){}
@@ -12604,6 +12641,7 @@ function bbSave(){
   var b=budgets.find(function(x){return x.storeId===_bbStore;}); if(!b) return;
   var _ymStr=(function(){ var y=budgetYM(); return y.y+'-'+String(y.m).padStart(2,'0'); })();
   if(!canEditBudget(b, _ymStr)){ alert(_ymStr+' の予算は現在編集できません（ステータス: '+budStatusFor(b, _ymStr)+'）'); return; }
+  budPinLegacyMonth(b, _ymStr);   /* v730: 月データを持たない過去月を、上書き前にその月へ固定 */
   b.dow=_bbDow; // 直近の曜日設定を既定テンプレートとして更新
   var days={}; var any=false;
   document.querySelectorAll('.bb-day').forEach(function(inp){
@@ -12755,8 +12793,9 @@ function saveDow() {
   var st = dowEditState; if(!st) return;
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===st.storeId); if(!b) { closeDowEditor(); return; }
-  b.dow = st.dow;
   var _dwYm=budYmStr();
+  budPinLegacyMonth(b, _dwYm);    /* v730: 過去月を守ってから共通設定を更新 */
+  b.dow = st.dow;
   if (budStatusFor(b, _dwYm)==='差し戻し') budSetStatus(b, _dwYm, '再提出済み');
   b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
   saveBudgets(budgets);
@@ -19729,7 +19768,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '729';
+const APP_VERSION = '730';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
