@@ -6263,7 +6263,33 @@ function _coversSkillReq(check, want){
 /* 追記専用ログの汎用マージ：全項目署名(JSON)で和集合。別イベントは必ず残り、完全同一のみ統合。
    id を持たない履歴系(skill_history/lss_history/tip_history/career_history/eval_history)向け。
    物理削除・上限slice・レコード改変が無いキーにのみ使うこと。 */
-function _logSig(x){ try{ return JSON.stringify(x); }catch(e){ return String(x); } }
+/* ===== v758: 署名をキーの順序に依存させない =====
+   【症状】spl_tip_history_<氏名> が「他の端末の更新と競合し、3回試しても確認できませんでした」
+     で送信できない。Tip Rate の変更履歴がクラウドへ上がらない。
+   【原因】Postgres の jsonb はオブジェクトのキー順を保存しない。
+     押し上げた直後に読み直すと、同じレコードでもキーの並びが変わって返ってくるため、
+     JSON.stringify そのままの署名では別レコードと判定される。
+     その結果 _coversLog の確認が永久に通らず、3回やり直して失敗扱いになっていた。
+     さらに mergeAppendLog の重複排除も効かず、同じ履歴が増え続ける状態だった。
+     v749 で分割パーティションにも合流ルールが効くようになり、この経路が初めて使われて表面化した。
+   【対策】キーを並べ替えてから署名する。入れ子のオブジェクト・配列も同じように正規化する。
+     既にクラウドで重複しているぶんは、次の合流で1件に統合される。 */
+function _canonForSig(v){
+  if(v===null || typeof v!=='object') return v;
+  if(Array.isArray(v)) return v.map(_canonForSig);
+  var o={};
+  Object.keys(v).sort().forEach(function(k){ o[k]=_canonForSig(v[k]); });
+  return o;
+}
+/* 署名に失敗しても String(x) には落とさない。オブジェクトが全て '[object Object]' になり、
+   別々の履歴が1件に統合されてしまうため（検証中に判明）。 */
+function _logSig(x){
+  try{ return JSON.stringify(_canonForSig(x)); }
+  catch(e){
+    try{ return JSON.stringify(x); }
+    catch(e2){ try{ return 'sig:'+Object.keys(x||{}).sort().join(',')+':'+String(x); }catch(e3){ return String(x); } }
+  }
+}
 function mergeAppendLog(cloudArr, localArr){
   var seen={}, out=[];
   function add(x){ if(x==null) return; var k=_logSig(x); if(!seen[k]){ seen[k]=1; out.push(x); } }
@@ -10158,6 +10184,29 @@ function budPinLegacyMonth(b, curYm){
     return true;
   }catch(e){ console.warn('budPinLegacyMonth', e); return false; }
 }
+/* ===== v759: b.dow を上書きする前に、当月の表示値を必ずその月へ退避する =====
+   b.dow は「自分の月データを持たない月」の表示元でもある。
+   別の月を保存すると b.dow が変わり、その月の予算表示まで変わってしまう。
+   budPinLegacyMonth は承認日・提出日から「どの月のものか」を推定するため、
+   7月の予算を6月中に承認していると6月へ固定してしまい、7月を守れない。
+   推定に頼らず、実際に b.dow を見ている当月を確実に退避する。
+   ・追加のみ。すでにその月の曜日設定がある場合は触らない
+   ・既存の月データ（承認状態・日別・提出者など）は保持したまま dow だけ足す */
+function budPinCurrentMonth(b, savingYm){
+  try{
+    if(!b || !b.dow) return false;
+    var cy=(typeof bizYm==='function')?bizYm():'';
+    if(!cy || cy===savingYm) return false;      /* 保存する月は、このあと自分で書かれる */
+    b.months=b.months||{};
+    var m=b.months[cy];
+    if(m && m.dow) return false;                /* すでにその月の曜日設定がある＝退避不要 */
+    var nm=Object.assign({}, m||{});
+    nm.dow=JSON.parse(JSON.stringify(b.dow));
+    nm._ts=Date.now(); nm._pinned=true;         /* 自動退避の印。あとで本保存すれば外れる */
+    b.months[cy]=nm;
+    return true;
+  }catch(e){ console.warn('budPinCurrentMonth', e); return false; }
+}
 function budYmStr(){
   try{ if(typeof budgetYM==='function'){ var y=budgetYM(); return y.y+'-'+String(y.m).padStart(2,'0'); } }catch(e){}
   try{ if(typeof curYm==='function') return curYm(); }catch(e){}
@@ -13418,6 +13467,7 @@ function bbSave(){
   var _ymStr=(function(){ var y=budgetYM(); return y.y+'-'+String(y.m).padStart(2,'0'); })();
   if(!canEditBudget(b, _ymStr)){ alert(_ymStr+' の予算は現在編集できません（ステータス: '+budStatusFor(b, _ymStr)+'）'); return; }
   budPinLegacyMonth(b, _ymStr);   /* v730: 月データを持たない過去月を、上書き前にその月へ固定 */
+  budPinCurrentMonth(b, _ymStr);  /* v759: 当月の表示値を確実に退避 */
   b.dow=_bbDow; // 直近の曜日設定を既定テンプレートとして更新
   var days={}; var any=false;
   document.querySelectorAll('.bb-day').forEach(function(inp){
@@ -13425,7 +13475,16 @@ function bbSave(){
     if(v!==''&&!isNaN(parseFloat(v))&&parseFloat(v)>=0){ days[inp.getAttribute('data-date')]=parseFloat(v); any=true; }
   });
   b.months=b.months||{};
-  b.months[_ymStr]={ dow:JSON.parse(JSON.stringify(_bbDow)), days:(any?days:null), daysBy:(any?myName():null), daysAt:(any?nowJP():null) };
+  /* v759: これまで月データを丸ごと置き換えていたため、その月に入っていた
+     承認状態・提出者・承認者・差し戻し理由が保存のたびに消えていた。
+     必要な項目だけ差し替え、他はそのまま残す。 */
+  var _bbM = Object.assign({}, b.months[_ymStr]||{});
+  _bbM.dow = JSON.parse(JSON.stringify(_bbDow));
+  _bbM.days = (any?days:null);
+  _bbM.daysBy = (any?myName():null);
+  _bbM.daysAt = (any?nowJP():null);
+  delete _bbM._pinned;            /* 本保存したので自動退避の印を外す */
+  b.months[_ymStr] = _bbM;
   b.daysBy=(any?myName():null); b.daysAt=(any?nowJP():null);
   if(budStatusFor(b, _ymStr)==='差し戻し') budSetStatus(b, _ymStr, '再提出済み');
   b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
@@ -13571,6 +13630,15 @@ function saveDow() {
   var b = budgets.find(x=>x.storeId===st.storeId); if(!b) { closeDowEditor(); return; }
   var _dwYm=budYmStr();
   budPinLegacyMonth(b, _dwYm);    /* v730: 過去月を守ってから共通設定を更新 */
+  budPinCurrentMonth(b, _dwYm);   /* v759: 当月の表示値を確実に退避 */
+  /* v759: ここが月別に保存していなかったため、共通の b.dow を書き換えるだけになっていた。
+     その結果、自分の月データを持たない月（当月など）の表示まで変わっていた。
+     既存の月データ（承認状態・日別・提出者など）は保持し、dow だけ差し替える。 */
+  b.months = b.months || {};
+  var _dwM = Object.assign({}, b.months[_dwYm]||{});
+  _dwM.dow = JSON.parse(JSON.stringify(st.dow));
+  delete _dwM._pinned;            /* 本保存したので自動退避の印を外す */
+  b.months[_dwYm] = _dwM;
   b.dow = st.dow;
   if (budStatusFor(b, _dwYm)==='差し戻し') budSetStatus(b, _dwYm, '再提出済み');
   b.editedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; b.editedAt=nowJP();
@@ -20817,7 +20885,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '757';
+const APP_VERSION = '759';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
