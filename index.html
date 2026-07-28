@@ -4162,7 +4162,7 @@ var _SPLIT_KEYS = {
   budgets_v2:       {type:'arr', by:function(r){return r&&r.storeId;}, noDelete:true}
 };
 function _splitPrefix(key){ return 'spl_'+key+'_'; }
-function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
+function _lsRaw(key, def){ try{ var v=_lsStoreGet(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }   /* v765 */
 /* ===== v763: 生の読み書きの出口を保存層へ揃える =====
    【背景】v762 で列挙を lsKeys() に一本化したが、書き込みと単発の読み取りには
      まだ localStorage を直接叩いている箇所が残っていた。保存先を差し替える
@@ -4176,7 +4176,18 @@ function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON
      ls() / _lsRaw()   … 通常の読み取り／解析済みの生読み
      _lsRawStr()       … 文字列のまま読む（存在確認・バックアップの世代送りなど）
      _lsRawDel()       … 端末から消す */
-function _lsRawStr(key){ try{ return localStorage.getItem(key); }catch(e){ return null; } }
+/* ===== v765: 読み元を1本にする =====
+   【背景】v764 で IndexedDB への複製はできたが、読み取りは localStorage のままだった。
+     端末が約5MBで一杯になると、保存は弾かれ、prune で消えたものも戻らない。
+   【方針】IndexedDB に値があればそれを使い、無ければ従来どおり localStorage を読む。
+     置き換えではなく上乗せなので、IndexedDB が使えない端末は完全に従来どおり動く。
+   【なぜ IndexedDB を優先するか】localStorage が容量オーバーで書けなかった値は
+     IndexedDB にだけ入っている。localStorage を優先すると、その古い値が勝ってしまう。 */
+function _lsStoreGet(key){
+  try{ if(_idbState==='ready' && _IDB_MEM && _IDB_MEM.has(key)) return _IDB_MEM.get(key); }catch(e){}
+  try{ return localStorage.getItem(key); }catch(e){ return null; }
+}
+function _lsRawStr(key){ return _lsStoreGet(key); }
 function _lsRawDel(key){
   /* v764: 意図的な削除は IndexedDB にも伝える。
      自動prune（autoPruneIfCritical 等）は localStorage の容量対策なので伝播させない。
@@ -4274,21 +4285,44 @@ function _idbFlush() {
       _idbStat.wrote += n;
       _idbStat.at = (typeof nowJP === 'function' ? nowJP() : new Date().toISOString());
     };
-    tx.onerror = function () { _idbStat.failed += n; };
-    tx.onabort = function () { _idbStat.failed += n; };
-  } catch (e) { _idbStat.failed += n; }
+    tx.onerror = function () { _idbStat.failed += n; _idbRequeue(batch); };
+    tx.onabort = function () { _idbStat.failed += n; _idbRequeue(batch); };
+  } catch (e) { _idbStat.failed += n; _idbRequeue(batch); }
+}
+
+/* v765: IndexedDB への書き込みが失敗したら積み直して再試行する。
+   localStorage 側にも無いものは本当に端末のどこにも無いので、既存の
+   「この端末に保存できていない項目」に載せる（黙って握り潰さない）。
+   積み直しでは、その後に入った新しい値を古い値で潰さない。 */
+function _idbRequeue(batch) {
+  try {
+    batch.forEach(function (v, k) { if (!_idbQ.has(k)) _idbQ.set(k, v); });
+    batch.forEach(function (v, k) {
+      try {
+        if (v === null) return;
+        if (localStorage.getItem(k) === v) return;
+        if (typeof _lsNoteSaveFailure === 'function') _lsNoteSaveFailure(k);
+      } catch (e) { }
+    });
+    if (_idbTimer) clearTimeout(_idbTimer);
+    _idbTimer = setTimeout(function () { _idbTimer = null; _idbFlush(); }, 5000);
+  } catch (e) { }
 }
 
 /* 保存のたびに書くと重いので、少しまとめてから書く。
    端末ローカルのキー（言語・触覚設定・移行済みマーカー）は移さない。 */
 function _idbQueue(key, json) {
-  if (_idbState === 'unavailable') return;
+  if (_idbState !== 'ready') return false;
   try {
-    if (typeof lsIsDeviceLocal === 'function' && lsIsDeviceLocal(key)) return;
+    if (typeof lsIsDeviceLocal === 'function' && lsIsDeviceLocal(key)) return false;
+    /* v765: メモリ側を同期で更新する。保存した直後の読み取りが
+       書き込み完了(非同期)を待たずに新しい値を見られるようにするため。 */
+    if (_IDB_MEM) { if (json === null) _IDB_MEM.delete(key); else _IDB_MEM.set(key, json); }
     _idbQ.set(key, json);
     if (_idbTimer) clearTimeout(_idbTimer);
     _idbTimer = setTimeout(function () { _idbTimer = null; _idbFlush(); }, 300);
-  } catch (e) { }
+    return true;
+  } catch (e) { return false; }
 }
 
 function _idbClearAll() {
@@ -4307,9 +4341,12 @@ function _idbBackfill() {
   try {
     lsKeys().forEach(function (k) {
       if (lsIsDeviceLocal(k)) return;
+      /* v765: 既に IndexedDB にあるキーは上書きしない。
+         localStorage が容量オーバーで古い値のまま残っている場合、上書きすると
+         IndexedDB にだけ入っていた新しい値を、起動のたびに古い値で潰してしまう。 */
+      if (_IDB_MEM.has(k)) return;
       var v = _lsRawStr(k);
       if (v == null) return;
-      if (_IDB_MEM.get(k) === v) return;
       _idbQ.set(k, v); n++;
     });
   } catch (e) { }
@@ -4366,14 +4403,24 @@ function idbDiag() {
    【注意】列挙結果を先に配列へ確定させるため、ループ中にキーを消しても添字がずれない
      （従来の直接走査では削除するたびに次のキーを飛ばしていた）。 */
 function lsKeys(prefix){
-  var out=[];
+  var out=[], seen={};
   try{
     var p=(prefix==null?'':String(prefix));
     for(var i=0;i<localStorage.length;i++){
       var k=localStorage.key(i);
       if(!k) continue;
       if(p && k.indexOf(p)!==0) continue;
-      out.push(k);
+      if(seen[k]) continue;
+      seen[k]=1; out.push(k);
+    }
+    /* v765: IndexedDB にしか無いキーも列挙する。
+       自動prune で localStorage から消えたもの、容量オーバーで入らなかったものが該当する。 */
+    if(_idbState==='ready' && _IDB_MEM){
+      _IDB_MEM.forEach(function(v,k){
+        if(!k || seen[k]) return;
+        if(p && k.indexOf(p)!==0) return;
+        seen[k]=1; out.push(k);
+      });
     }
   }catch(e){}
   return out;
@@ -4557,7 +4604,7 @@ function _splitRead(key, sp, rawMode){
     var out={}; var legacy=_lsRaw(key,{})||{};
     /* v750: 保存者・時刻の印を外して返す。画面側のコードは今までどおりの形を受け取る。 */
     Object.keys(legacy).forEach(function(id){ out[id]=_stUnwrap(legacy[id]); });
-    try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){ out[k.slice(pre.length)]=_stUnwrap(_lsRaw(k,null)); } } }catch(e){}
+    try{ lsKeys(pre).forEach(function(k){ out[k.slice(pre.length)]=_stUnwrap(_lsRaw(k,null)); }); }catch(e){}   /* v765 */
     return out;
   }
   var byId={}, order=[];
@@ -4565,7 +4612,7 @@ function _splitRead(key, sp, rawMode){
   /* v692: パーティションで「置換」すると、レガシーキー側(クラウドのlegacy行から取り込んだ分)が丸ごと消え、
      この端末が保存した数件しか見えなくなっていた（=請求書が積み上がらない／突合診断で数件しか出ない）。
      置換ではなく和集合にする（同一idはパーティション側を採用＝tombstoneも正しく効く）。 */
-  try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf(pre)===0){
+  try{ lsKeys(pre).forEach(function(k){                            /* v765 */
     var id=k.slice(pre.length); var part=_lsRaw(k,[])||[]; if(!Array.isArray(part)) part=[];
     var base=byId[id]||[]; var seen={}, merged=[];
     var _mk=function(r){ return (r && r.id!=null) ? ('id:'+r.id) : ('j:'+JSON.stringify(r)); };
@@ -4584,7 +4631,7 @@ function _splitRead(key, sp, rawMode){
       }
     }catch(e){ console.warn('_splitRead dedupe', key, e); }
     byId[id]=merged; if(order.indexOf(id)<0) order.push(id);
-  } } }catch(e){}
+  }); }catch(e){}                                                 /* v765 */
   var out=[]; order.forEach(function(id){ out=out.concat(byId[id]); });
   /* v679: 論理削除(tombstone)は読み取りから除外。rawMode時は素のまま返す（書き戻し用） */
   if(sp.readFilter && !rawMode){ try{ out=out.filter(sp.readFilter); }catch(e){} }
@@ -4659,10 +4706,9 @@ function _splitRecKey(r){ return (r && r.id!=null) ? ('id:'+r.id) : ('j:'+JSON.s
 function _splitPartitionsRaw(key, sp){
   var pre=_splitPrefix(key), out={};
   try{
-    for(var i=0;i<localStorage.length;i++){
-      var k=localStorage.key(i); if(!k || k.indexOf(pre)!==0) continue;
+    lsKeys(pre).forEach(function(k){                              /* v765 */
       out[k.slice(pre.length)] = _lsRaw(k, (sp.type==='obj')?null:[]);
-    }
+    });
   }catch(e){}
   return out;
 }
@@ -4883,7 +4929,7 @@ function ls(key, def) {
     return _splitRead(key, sp);
   }
   try {
-    var v = localStorage.getItem(key);
+    var v = _lsStoreGet(key);                                     /* v765 */
     /* v721: 端末に無く、かつ必要時取得の対象なら、裏で取得して取れたら再描画する */
     if(v==null){ try{ if(_lsOnDemand(key)) _lsRequestDeferred(key); }catch(e){} }
     /* v748: 従来は v==null の時しか取得を発火しなかった。ec_log のように端末に値が
@@ -4951,7 +4997,8 @@ function renderStorageCard(){
         return '<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px;font-size:11px;color:var(--muted)">'
           +'IndexedDB: <b style="color:'+col+'">'+lbl+'</b>'
           +(d.state==='ready' ? ' · '+d.idbKeys+t('件','keys')+' / '+(d.bytes/1048576).toFixed(1)+'MB'
-              +' · '+t('未複製','not mirrored')+' <b style="color:'+(gap?'var(--yellow)':'var(--green)')+'">'+gap+'</b>' : '')
+              +' · '+t('未複製','not mirrored')+' <b style="color:'+(gap?'var(--yellow)':'var(--green)')+'">'+gap+'</b>'
+              +(gap ? '<div style="margin-top:2px;word-break:break-all">'+escapeHtml(d.missing.concat(d.differ).slice(0,5).join('、'))+'</div>' : '') : '')
           +'</div>';
       }catch(e){ return ''; }
     })()+'</div>';
@@ -5107,13 +5154,16 @@ function _lsSplitOnDemandPrefix(key){
    注意: setItem が例外を投げた場合、そのキーには「古い値」が残る。
    getItem(key)!=null だけでは成功と誤判定するため、内容の一致まで見る。 */
 function _lsWriteVerified(key, json){
+  var _lsOk=false;
   try{ localStorage.setItem(key, json); }catch(e){ /* 下の検証で失敗と判定させる */ }
-  /* v764: IndexedDB にも複製する（第1段階の二重書き）。
-     戻り値は従来どおり localStorage の結果で決める。読み取りがまだ localStorage を
-     見ているため、ここで IndexedDB の成否を混ぜると『保存できた』と表示して
-     実際には画面に出ない、という食い違いが起きる。 */
-  try{ _idbQueue(key, json); }catch(e){}
-  try{ return localStorage.getItem(key)===json; }catch(e){ return false; }
+  try{ _lsOk = (localStorage.getItem(key)===json); }catch(e){ _lsOk=false; }
+  /* v765: IndexedDB へ受け付けられたなら、localStorage が満杯でも保存成功とする。
+     _idbQueue は _IDB_MEM を同期で更新するので、この直後の読み取りにも間に合う。
+     v764 では localStorage の結果だけで判定していたため、端末が一杯になると
+     『保存できませんでした』が出続けていた。 */
+  var _idbOk=false;
+  try{ _idbOk = _idbQueue(key, json); }catch(e){}
+  return _lsOk || _idbOk;
 }
 
 /* 保存に失敗したキーの記録。クラウドと端末で食い違っている可能性がある項目。 */
@@ -21146,7 +21196,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '764';
+const APP_VERSION = '765';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

@@ -113,7 +113,7 @@ function makeIDB(opt) {
 }
 
 function build(map, idb) {
-  const prims = ['lsKeys', '_lsRaw', '_lsRawStr', '_lsRawDel', '_lsWriteVerified', 'lsIsDeviceLocal']
+  const prims = ['lsKeys', '_lsStoreGet', '_lsRaw', '_lsRawStr', '_lsRawDel', '_lsWriteVerified', 'lsIsDeviceLocal']
     .map(n => grab(SRC, n)).join('\n');
   const consts = "var LS_DEVICE_LOCAL = ['funergy_lang','supa_sync','heavy_ready','haptics_on'];";
   const listeners = { window: {}, document: {} };
@@ -279,11 +279,12 @@ const check = (label, cond, extra) => {
      ======================================================== */
   console.log('\n=== テスト8: 読み取り経路が無傷であること ===');
   {
-    const lsFn = grab(SRC, 'ls');
-    check('ls() が _IDB_MEM を参照していない', lsFn.indexOf('_IDB_MEM') < 0);
-    check('_lsRaw() が _IDB_MEM を参照していない', grab(SRC, '_lsRaw').indexOf('_IDB_MEM') < 0);
-    check('_splitRead() が _IDB_MEM を参照していない', grab(SRC, '_splitRead').indexOf('_IDB_MEM') < 0);
-    console.log('    → この版では読み取りは完全に従来どおり。IndexedDB は書き込みの複製のみ。');
+    /* v765 で読み元を切り替えたため、確認内容を「1本になっているか」へ更新 */
+    check('ls() が _lsStoreGet を経由', grab(SRC, 'ls').indexOf('_lsStoreGet') >= 0);
+    check('_lsRaw() が _lsStoreGet を経由', grab(SRC, '_lsRaw').indexOf('_lsStoreGet') >= 0);
+    check('読み元の分岐は _lsStoreGet の中だけ',
+      grab(SRC, '_lsStoreGet').indexOf('_IDB_MEM') >= 0 && grab(SRC, 'ls').indexOf('_IDB_MEM') < 0);
+    console.log('    → 読み元の判断は _lsStoreGet 1箇所に閉じている。');
   }
 
   console.log('\n' + (fail === 0 ? '===== 全テスト PASS =====' : `===== ${fail} 件 FAIL =====`));

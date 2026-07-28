@@ -50,8 +50,10 @@ function makeBlindLS(map) {
 }
 
 function build(src, ls, override) {
-  const names = ['lsKeys', '_lsRaw'];
-  let layer = '';
+  const names = ['lsKeys', '_lsRaw', '_lsStoreGet'];
+  /* v765: 保存層が _idbState/_IDB_MEM を参照するようになったのでスタブする。
+     ここでは IndexedDB 無効時＝従来どおりの経路を検証する。 */
+  let layer = "var _idbState='unavailable', _IDB_MEM=null;\n";
   for (const n of names) { try { layer += grab(src, n) + '\n'; } catch (e) { } }
   const bodies = TARGETS.map(n => grab(src, n)).join('\n');
   const fn = new Function(

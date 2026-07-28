@@ -49,12 +49,13 @@ function makeBlindLS() {
 
 /* 対象：予算バックアップの世代送り（Marujuu 7月の件と同じ、消えては困るデータ） */
 function build(src, ls, budgets, override) {
-  const layer = ['_lsRaw', '_lsRawStr', '_lsWriteVerified'].map(n => {
+  const layer = ['_lsStoreGet', '_lsRaw', '_lsRawStr', '_lsWriteVerified'].map(n => {
     try { return grab(src, n); } catch (e) { return ''; }
   }).join('\n');
+  const stub = "var _idbState='unavailable', _IDB_MEM=null;\nfunction _idbQueue(){ return false; }\n";
   const bodies = [grab(src, 'snapshotBudgetsLocal'), grab(src, 'budgetSnapshotList')].join('\n');
   const fn = new Function('localStorage', 'ls', '_budHasReal', 'nowJP', '__ovr',
-    layer + '\n' +
+    stub + layer + '\n' +
     'if(__ovr){ if(__ovr._lsRaw) _lsRaw=__ovr._lsRaw; if(__ovr._lsRawStr) _lsRawStr=__ovr._lsRawStr;' +
     ' if(__ovr._lsWriteVerified) _lsWriteVerified=__ovr._lsWriteVerified; }\n' +
     bodies + '\nreturn { snap: snapshotBudgetsLocal, list: budgetSnapshotList };'
@@ -128,7 +129,9 @@ console.log('\n=== テスト3: 残った localStorage 直接アクセスの棚�
     '_splitRead', '_splitWrite', '_splitPartitionsRaw', '_outboxGet', '_outboxSet', 'autoPruneIfCritical',
     '_lsPrunableKeys', 'lsPrunableInfo', 'lsBytesTotal', '_lsAllKeysBySize', '_lsTopKeysHtml',
     'freeRecoverableSpace', 'runStorageCleanup', '_lsFreeOldLaborKeys', '_lsLaborKeys',
-    '_lsRequestDeferredPrefix', 'clearAllData', 'freeCacheAndRetrySkill', 'lsKeys'];
+    '_lsRequestDeferredPrefix', 'clearAllData', 'freeCacheAndRetrySkill', 'lsKeys',
+    '_lsStoreGet', '_idbQueue', '_idbFlush', '_idbRequeue', '_idbBackfill', '_idbBoot',
+    '_idbClearAll', '_idbOpen', '_idbLoadAll', '_idbAvailable', 'idbDiag'];
   const DEVICE = ['funergy_lang', 'supa_sync', 'heavy_ready', 'haptics_on', 'HAPTIC_KEY'];
 
   const lines = V763.split('\r\n');
