@@ -20817,7 +20817,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '756';
+const APP_VERSION = '757';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34222,9 +34222,17 @@ function setSkills(s) {
 function getEmpSkills(name) { return getSkills()[name] || {}; }
 function approvedPositions(name) { var sk=getEmpSkills(name); return Object.keys(sk).filter(p=>sk[p].status==='承認'&&sk[p].level>=1); }
 /* 店舗別の承認済みポジション（シフト配置で使用） */
+/* v757: その店舗の評価軸に含まれるものだけを返す。
+   合流(mergeSkillStore)は記録を消さないため、軸から外した旧ポジション
+   （理念・サービスクオリティ・Energy 等）が記録として残り続ける。
+   点数計算(skillScoreStore)は v711 で既に軸で絞っていたが、こちらは絞っておらず、
+   レーダー上部の一覧に旧ポジションが混ざっていた。表示順も軸の順に揃える。 */
 function approvedPositionsStore(name, storeId) {
   var sk=getEmpSkillsStore(name, storeId);
-  return Object.keys(sk).filter(p=>sk[p].status==='承認'&&sk[p].level>=1);
+  var pos=(typeof getStorePositions==='function')?(getStorePositions(storeId)||[]):[];
+  var okp=function(p){ var s=sk[p]; return !!(s && s.status==='承認' && (s.level||0)>=1); };
+  if(pos.length) return pos.filter(okp);            /* 軸の順に並べる */
+  return Object.keys(sk).filter(okp);               /* 軸が未設定の店舗は従来どおり */
 }
 /* 店舗別スキルの集計（合計点・Lv3数） */
 function skillScoreStore(name, storeId) {
@@ -46710,7 +46718,7 @@ function renderSkillManager() {
     html += `<tr><td style="font-weight:600;font-size:12px;cursor:pointer" onclick="openStaffSkillEdit('${e.name.replace(/'/g,"\\'")}','${mgrStoreId}')">${e.name}${eligible?' <span class="tag tag-green" style="font-size:9px">'+elig.target.label+t('可',' OK')+'</span>':''}</td>${matrixPos.map(p=>{
       var s=sk[p]; var v=s&&s.status==='承認'?s.level:0;
       var pend = s&&['申請中','確認中','再評価待ち'].includes(s.status);
-      var bg=v>=3?'var(--accent)':v===2?'var(--green)':v===1?'var(--yellow)':'transparent';
+      var bg=(v>=1)?skillLvColor(v):'transparent';   /* v757: Lv4は青 */
       return `<td onclick="openStaffSkillEdit('${e.name.replace(/'/g,"\\'")}','${mgrStoreId}','${p.replace(/'/g,"")}')" style="text-align:center;cursor:pointer;color:${v?'#fff':'var(--muted)'};background:${bg};border-radius:4px">${v||(pend?'<span style=color:var(--yellow)>•</span>':'-')}</td>`;
     }).join('')}<td style="text-align:center;font-size:11px;color:var(--muted)">${sc.total}/${sc.lv3}</td></tr>`;
   });
@@ -46739,6 +46747,19 @@ function setSkillMatrixStore(storeId) { window._skillMatrixStore = storeId; rend
 function setSkillView(v) { window._skillView = v; renderPage('skill'); }
 
 /* 従業員別ビュー */
+/* ===== v757: スキルレベルの色を1か所にまとめる =====
+   Lv選択モーダル(openSkillCriteriaOverlay)は Lv4 を青(--accent2)で表示していたが、
+   スキルマトリクスとレベル一覧は Lv3以上をまとめて橙にしており、Lv4 が Lv3 と同じ色に見えていた。
+   Lv4 は最大レベルが4の店舗(Kaimuki / Piikoi)でしか付かないため、
+   レベルの値だけで判定すれば店舗を取り違えることはない。 */
+function skillLvColor(lv){
+  var n=Number(lv)||0;
+  if(n>=4) return 'var(--accent2)';
+  if(n===3) return 'var(--accent)';
+  if(n===2) return 'var(--green)';
+  if(n===1) return 'var(--yellow)';
+  return 'var(--muted)';
+}
 /* 各スキルのレベル一覧（店舗別・コンパクト） */
 function skillLevelListHtml(name, sid){
   var positions = getStorePositions(sid);
@@ -46746,8 +46767,11 @@ function skillLevelListHtml(name, sid){
   if(!positions.length) return '';
   return '<div style="margin-top:6px">'+positions.map(function(p){
     var s = sk[p]||{}; var lv=(s.status==='承認')?(s.level||0):0;
-    var col = lv>=3?'var(--accent)':lv===2?'var(--green)':lv===1?'var(--yellow)':'var(--muted)';
-    var bars=[1,2,3].map(function(n){return '<span style="width:13px;height:5px;border-radius:2px;display:inline-block;background:'+((lv>0&&n<=lv)?col:'var(--border)')+'"></span>';}).join('');
+    var col = skillLvColor(lv);   /* v757: Lv4は青 */
+    /* v757: バーの本数は店舗の最大レベルに合わせる（Kaimuki/PiikoiはLv4まで） */
+    var _mx=(typeof storeSkillMax==='function')?(storeSkillMax(sid)||3):3;
+    var _bn=[]; for(var _i=1;_i<=_mx;_i++) _bn.push(_i);
+    var bars=_bn.map(function(n){return '<span style="width:'+(_mx>=4?'10px':'13px')+';height:5px;border-radius:2px;display:inline-block;background:'+((lv>0&&n<=lv)?col:'var(--border)')+'"></span>';}).join('');
     var pend=(s.status&&s.status!=='承認'&&s.status!=='未取得')?' <span class="tag tag-yellow" style="font-size:9px">'+escapeHtml(tStatus(s.status))+'</span>':'';
     return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:1.5px 0">'
       +'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(posLabel(p))+pend+'</span>'
