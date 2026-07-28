@@ -20817,7 +20817,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '755';
+const APP_VERSION = '756';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -46489,7 +46489,7 @@ function renderSkillSelf() {
 }
 
 function showCriteria(position, storeId) {
-  var crit = skillCriteria(position);
+  var crit = skillCriteria(position, storeId);   /* v756: 受け取っているのに使っていなかった */
   var _sid2 = storeId || (window._mySkillCtx&&window._mySkillCtx.storeId) || (curStore!=='ALL'?curStore:null);   /* v718 */
   var _max=(typeof storeSkillMax==='function')?storeSkillMax(_sid2):3;   /* v711 */
   var html = `<div class="modal-title">${posLabel(position)} ${t('スキル基準','Skill criteria')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
@@ -46524,7 +46524,7 @@ function openSkillCriteriaOverlay(position, opts){
   /* v711: 店舗ごとの最大レベル（Kaimuki/PiikoiはLv4まで）。店舗が渡らない場合は表示中の店舗で判定。 */
   var _sid=opts.storeId || (window._mySkillCtx&&window._mySkillCtx.storeId) || (curStore!=='ALL'?curStore:null);
   var _max=(typeof storeSkillMax==='function')?storeSkillMax(_sid):3;
-  window._skillCritCtx = {position:position, targetSelectId:opts.targetSelectId, chipId:opts.chipId};
+  window._skillCritCtx = {position:position, targetSelectId:opts.targetSelectId, chipId:opts.chipId, storeId:_sid};   /* v756: 店舗を引き継ぐ */
   var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)',4:'var(--accent2, var(--accent))'};
   closeSkillCritOverlay();
   var ov=document.createElement('div'); ov.id='skill-crit-ov';
@@ -46547,22 +46547,26 @@ function openSkillCriteriaOverlay(position, opts){
 }
 function closeSkillCritOverlay(){ var o=document.getElementById('skill-crit-ov'); if(o){ try{document.body.removeChild(o);}catch(e){} } }
 /* スキルLv採点チップ（Career Score方式：タップで基準ポップアップ→選択） */
-function skillLevelChipInner(position, lv){
-  var crit=skillCriteria(position);
-  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+/* v756: 店舗(storeId)を受け取っていなかったため、ヘッダーが「全店舗」のときに
+   店舗別の基準を引けず、古い共通基準(SKILL_CRITERIA)の文言が表示されていた。
+   基準モーダル側(openSkillCriteriaOverlay)は v718 で店舗を渡すようになっており、
+   選択画面と行の文言が食い違う原因になっていた。 */
+function skillLevelChipInner(position, lv, storeId){
+  var crit=skillCriteria(position, storeId);
+  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)',4:'var(--accent2, var(--accent))'};
   var col=cols[lv]||'var(--accent)';
   return '<span style="min-width:30px;height:24px;border-radius:6px;background:'+col+';color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0">Lv'+lv+'</span>'
     +'<span style="flex:1;font-size:12px;color:var(--tm);line-height:1.4;text-align:left">'+escapeHtml(crit[lv]||'—')+'</span>'
     +'<i class="ti ti-chevron-right" style="color:var(--muted);flex-shrink:0"></i>';
 }
 function skillLevelChipHtml(position, lv, selectId, chipId, minLv, storeId){   /* v718 */
-  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+  var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)',4:'var(--accent2, var(--accent))'};   /* v756: Lv4 */
   var col=cols[lv]||'var(--accent)';
   var p=String(position||'').replace(/'/g,"\\'");
   return '<input type="hidden" id="'+selectId+'" value="'+lv+'">'
     +'<button type="button" id="'+chipId+'" onclick="openSkillCriteriaOverlay(\''+p+'\',{storeId:\''+String(storeId||'')+'\',targetSelectId:\''+selectId+'\',chipId:\''+chipId+'\',minLv:'+(minLv!=null?minLv:1)+',current:parseInt((document.getElementById(\''+selectId+'\')||{}).value)})" '
     +'style="display:flex;align-items:center;gap:8px;width:100%;border:1px solid '+col+';border-radius:8px;padding:8px 10px;background:var(--surface);cursor:pointer">'
-    + skillLevelChipInner(position, lv) +'</button>';
+    + skillLevelChipInner(position, lv, storeId) +'</button>';   /* v756 */
 }
 function skillCritPick(selectId, lv){
   haptic('tap');
@@ -46572,9 +46576,10 @@ function skillCritPick(selectId, lv){
   if(ctx.chipId){
     var chip=document.getElementById(ctx.chipId);
     if(chip && ctx.position){
-      var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
+      var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)',4:'var(--accent2, var(--accent))'};
       chip.style.borderColor = cols[lv]||'var(--accent)';
-      chip.innerHTML = skillLevelChipInner(ctx.position, lv);
+      /* v756: 店舗を渡さないと、選び直した瞬間に古い共通基準の文言へ戻ってしまう */
+      chip.innerHTML = skillLevelChipInner(ctx.position, lv, ctx.storeId);
     }
   }
   closeSkillCritOverlay();
