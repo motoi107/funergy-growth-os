@@ -10017,14 +10017,22 @@ function hasSegments(b) {
 function submitBudget(storeId) {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
-  if (!hasSegments(b) && !usesDowMode(b) && !hasDayBudget(b)) { alert('予算エディタで予算を入力してから提出してください'); return; }
+  if (!hasSegments(b) && !usesDowMode(b) && !hasDayBudget(b)
+      && !((typeof getBudgetForMonth==='function') && hasDayBudget(getBudgetForMonth(storeId, (typeof budYmStr==='function')?budYmStr():curYm())))) { alert('予算エディタで予算を入力してから提出してください'); return; }
   // 提出前に「予算の考え方」（根拠・重点）を必須入力
-  var dow = usesDowMode(b) ? getDow(b) : null;
-  var total = dow ? (function(){ var bd=dowSegBreakdown(dow); return bd.lunch+bd.dinner+bd.takeout; })() : segmentsTotal(getSegments(b));
-  if (hasDayBudget(b)) total = daysOfYm(curYm()).reduce(function(a,dd){ return a + dayBudgetFor(b, dd.date); }, 0);
+  /* v760: これまで getBudgets() の生データを見ていた。日別調整は months[対象月].days に
+     入っているため検知できず、予算設定画面が日別合計を出しているのにこのモーダルだけ
+     曜日別の額を出して食い違っていた。対象月の予算を見る。 */
+  var _rmYm = (typeof budYmStr==='function') ? budYmStr() : curYm();
+  var _rmP = String(_rmYm).split('-');
+  var _rmMo = (_rmP.length===2 && _rmP[0] && _rmP[1]) ? {y:+_rmP[0], m:+_rmP[1]} : null;
+  var bM = (typeof getBudgetForMonth==='function') ? getBudgetForMonth(storeId, _rmYm) : b;
+  var dow = usesDowMode(bM) ? getDow(bM) : null;
+  var total = dow ? (function(){ var bd=dowSegBreakdown(dow, _rmMo); return bd.lunch+bd.dinner+bd.takeout; })() : segmentsTotal(getSegments(bM));
+  if (hasDayBudget(bM)) total = daysOfYm(_rmYm).reduce(function(a,dd){ return a + dayBudgetFor(bM, dd.date); }, 0);
   var prevSales = Math.round((monthStats(storeId,-1)||{}).sales||0);
   var vsPrev = prevSales ? Math.round(total/prevSales*1000)/10 : null;
-  var method = [usesDowMode(b)?'曜日別':'区分（単価×客数）', hasDayBudget(b)?'日別調整あり':''].filter(Boolean).join(' + ');
+  var method = [usesDowMode(bM)?'曜日別':'区分（単価×客数）', hasDayBudget(bM)?'日別調整あり':''].filter(Boolean).join(' + ');
   var r = budRationale(b, budYmStr())||{};   /* v734: 表示中の月の考え方を読む */
   openModal(`<div class="modal-title">予算の考え方（提出前・必須） <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:9px 11px;margin-bottom:10px;line-height:1.8">
@@ -13135,7 +13143,12 @@ function budgetScopeStores(){ var vis=getVisibleStores(); return (_budgetStore &
 /* 区分カード（ランチ/ディナー/テイクアウト）の表示値。
    日別調整があるときは、各日の調整後合計を曜日別の区分比率で按分して合算する。
    これにより 3区分カードの合計＝月間売上予算（日別一覧の合計）に一致する。 */
-function budgetSegShown(b){
+/* v760: 対象月を受け取る。以前は curYm()（当月）で固定していたため、
+   別の月を表示していると区分カードだけ当月の暦で計算されていた。 */
+function budgetSegShown(b, ym){
+  var _sgYm = ym || ((typeof curYm==='function')?curYm():'');
+  var _sgP = String(_sgYm).split('-');
+  var _sgMo = (_sgP.length===2 && _sgP[0] && _sgP[1]) ? {y:+_sgP[0], m:+_sgP[1]} : null;
   var dowMode = usesDowMode(b);
   if(!dowMode){
     var segs=getSegments(b);
@@ -13143,11 +13156,11 @@ function budgetSegShown(b){
   }
   var dow=getDow(b);
   if(!hasDayBudget(b)){
-    var bd=dowSegBreakdown(dow);
+    var bd=dowSegBreakdown(dow, _sgMo);
     return {lunch:bd.lunch, dinner:bd.dinner, takeout:bd.takeout};
   }
   var out={lunch:0,dinner:0,takeout:0};
-  daysOfYm(curYm()).forEach(function(dd){
+  daysOfYm(_sgYm).forEach(function(dd){
     var idx=(new Date(dd.date+'T00:00:00').getDay()+6)%7;
     var L=(parseFloat((dow.lunch[idx]||{}).guests)||0)*(parseFloat((dow.lunch[idx]||{}).spend)||0);
     var D=(parseFloat((dow.dinner[idx]||{}).guests)||0)*(parseFloat((dow.dinner[idx]||{}).spend)||0);
@@ -13187,7 +13200,9 @@ function renderBudgetSetup() {
     var total = dowMode ? (dowBd.lunch+dowBd.dinner+dowBd.takeout) : segmentsTotal(segs);
     var dayOv = hasDayBudget(bM);
     if (dayOv) { total = daysOfYm(_bsYmStr).reduce(function(a,dd){ return a + dayBudgetFor(bM, dd.date); }, 0); }
-    var segShown = budgetSegShown(b);
+    /* v760: bM（対象月の予算）を渡す。b（生データ）だと日別調整を検知できず、
+       区分カードの合計だけ「月間売上予算」と食い違っていた。 */
+    var segShown = budgetSegShown(bM, _bsYmStr);
     var laborB = segmentsLaborBudget(segs);
     var fcB = segmentsFcBudget(segs);
     var profit = total - laborB - fcB;
@@ -13228,7 +13243,7 @@ function renderBudgetSetup() {
     })()}
     ${(b.rationale&&b.rationale.basis)?`<details style="margin:-2px 0 8px"><summary style="font-size:11px;color:var(--tm);cursor:pointer"><i class="ti ti-bulb"></i> ${t('提出時の考え方','Rationale at submission')}（${escapeHtml(b.rationale.by||'')} ${escapeHtml(b.rationale.at||'')}）</summary><div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:4px;line-height:1.7"><b>${t('根拠','Basis')}：</b>${escapeHtml(b.rationale.basis)}<br><b>${t('重点・変化点','Focus / changes')}：</b>${escapeHtml(b.rationale.focus||'')}</div></details>`:''}
     <div class="kpi-grid" style="margin:8px 0">
-      ${kpi(t('月間売上予算','Monthly sales budget'), fmtK(Math.round(total)), t('3区分合計','Sum of 3 segments'), 'var(--tm)')}
+      ${kpi(t('月間売上予算','Monthly sales budget'), fmtK(Math.round(total)), dayOv?t('日別一覧の合計','Sum of daily list'):t('3区分合計','Sum of 3 segments'), 'var(--tm)')}
       ${kpi(t('Labor予算','Labor budget'), fmtK(Math.round(laborB)), total?Math.round(laborB/total*100)+'%':'—', 'var(--muted)')}
       ${kpi(t('Food Cost予算','Food cost budget'), fmtK(Math.round(fcB)), total?Math.round(fcB/total*100)+'%':'—', 'var(--muted)')}
       ${kpi(t('利益予測','Profit forecast'), fmtK(Math.round(profit)), total?Math.round(profit/total*100)+'%':'—', profit>0?'var(--green)':'var(--red)')}
@@ -13510,8 +13525,12 @@ function openDowEditor(storeId, seg) {
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId); if(!b) return;
   if (!canEditBudget(b, budYmStr())) { alert(budYmStr()+' の予算は現在編集できません（ステータス: '+budStatusFor(b, budYmStr())+'）'); return; }
+  /* v761: その月の曜日設定を読み込む。
+     共有の b.dow を読んでいたため、自分の月データを持つ月を開くと共有値が表示され、
+     そのまま保存するとその月の数字が共有値で上書きされていた。 */
+  var _dwB = ((typeof getBudgetForMonth==='function') ? getBudgetForMonth(storeId, budYmStr()) : null) || b;
   // 既存dowをディープコピーして編集用に保持
-  var src = getDow(b);
+  var src = getDow(_dwB);
   dowEditState = { storeId: storeId, seg: seg||'lunch',
     dow: JSON.parse(JSON.stringify(src)) };
   renderDowModal();
@@ -14403,6 +14422,17 @@ function renderBudgetDaily() {
   var scopeStores = dailyScopeStores();
   var days = monthDays();
   var budgets = getBudgets();
+  /* v761: 日別予算は months[対象月].days に入っている。生の予算を渡すと旧データ(b.days)しか
+     見ないため、予算設定画面と日次進捗で日別予算が食い違っていた。表示中の月で解決する。 */
+  var _dlYm = String(((days[0]||{}).date)||'').slice(0,7);
+  var _dlCache = {};
+  var _dlBud = function(sid){
+    if(!(sid in _dlCache)){
+      _dlCache[sid] = ((typeof getBudgetForMonth==='function' && _dlYm) ? getBudgetForMonth(sid, _dlYm) : null)
+        || budgets.find(function(x){ return x.storeId===sid; }) || null;
+    }
+    return _dlCache[sid];
+  };
 
   var html = '';
   // 店舗スコープ切替（管轄が複数店ある場合）
@@ -14454,7 +14484,7 @@ function renderBudgetDaily() {
   var sumBudget=0, sumActual=0, sumBudgetToToday=0;
   days.forEach(d => {
     scopeStores.forEach(s => {
-      var b = budgets.find(x=>x.storeId===s.id);
+      var b = _dlBud(s.id);   /* v761 */
       var override = (getDailyActuals(s.id)[d.date]||{});
       var dayBud = override.budget!=null ? override.budget : (b?dayBudgetFor(b,d.date,d.dow):0);
       sumBudget += dayBud;
@@ -14508,7 +14538,7 @@ function renderBudgetDaily() {
     var dayLunch=0, dayDinner=0, hasLD=false, gv={total:null,lunch:null,dinner:null};
     var dayFirst=0, dayRepeat=0, dayLaborH=0, dayLaborCost=0;
     scopeStores.forEach(s => {
-      var b = budgets.find(x=>x.storeId===s.id);
+      var b = _dlBud(s.id);   /* v761 */
       var ov = (getDailyActuals(s.id)[d.date]||{});
       var bd = ov.budget!=null ? ov.budget : (b?dayBudgetFor(b,d.date,d.dow):0);
       dayBud += bd;
@@ -20885,7 +20915,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '759';
+const APP_VERSION = '761';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
