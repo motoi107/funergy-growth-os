@@ -3439,10 +3439,10 @@ function setTipLabor(storeId, date, data) {
   /* v713: lsSet は容量オーバーを握り潰すため、保存できたかを必ず確認する。
      失敗時は古い月の勤怠キャッシュを解放して1回だけ再試行し、それでも駄目なら明示的に知らせる。 */
   try{
-    if(localStorage.getItem(_k)==null){
+    if(_lsRawStr(_k)==null){                                      /* v763 */
       _lsFreeOldLaborKeys(2);
       lsSet(_k, data);
-      if(localStorage.getItem(_k)==null) _laborSaveWarn();
+      if(_lsRawStr(_k)==null) _laborSaveWarn();                   /* v763 */
     }
   }catch(e){}
 }
@@ -3737,11 +3737,10 @@ function breakHoursFromShifts(shifts){
 function recomputeTipLabor(storeId) {
   var prefix = 'tip_labor_'+storeId+'_';
   var changed = 0;
-  for (var i=0;i<localStorage.length;i++) {
-    var k = localStorage.key(i);
-    if (!k || k.indexOf(prefix)!==0) continue;
-    var labor = null;
-    try { labor = JSON.parse(localStorage.getItem(k)); } catch(e){}
+  var _rtlKeys = lsKeys(prefix);                    /* v762 */
+  for (var i=0;i<_rtlKeys.length;i++) {
+    var k = _rtlKeys[i];
+    var labor = _lsRaw(k, null);
     if (!labor) continue;
     Object.keys(labor).forEach(name=>{
       var e = labor[name];
@@ -3750,7 +3749,7 @@ function recomputeTipLabor(storeId) {
         e.lunch = hrs.lunch; e.dinner = hrs.dinner;
       }
     });
-    localStorage.setItem(k, JSON.stringify(labor));
+    _lsWriteVerified(k, JSON.stringify(labor));                   /* v763 */
     changed++;
   }
   return changed;
@@ -4164,6 +4163,221 @@ var _SPLIT_KEYS = {
 };
 function _splitPrefix(key){ return 'spl_'+key+'_'; }
 function _lsRaw(key, def){ try{ var v=localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
+/* ===== v763: 生の読み書きの出口を保存層へ揃える =====
+   【背景】v762 で列挙を lsKeys() に一本化したが、書き込みと単発の読み取りには
+     まだ localStorage を直接叩いている箇所が残っていた。保存先を差し替える
+     （v764予定のIndexedDB移行）と、これらは書いても ls() から見えず、
+     読んでも常に空になる。例外は出ないので、やはり静かに壊れる。
+   【方針】新しい仕組みは足さない。書き込みは既存の _lsWriteVerified（検証付き）を
+     正式な出口とし、足りていなかった「文字列のまま読む」「消す」だけを補う。
+   【使い分け】
+     lsSet()           … 通常の保存。分割・容量再試行・クラウド押し上げまで行う
+     _lsWriteVerified()… 押し上げを起こしたくない保存（クラウドから取り込んだ値など）
+     ls() / _lsRaw()   … 通常の読み取り／解析済みの生読み
+     _lsRawStr()       … 文字列のまま読む（存在確認・バックアップの世代送りなど）
+     _lsRawDel()       … 端末から消す */
+function _lsRawStr(key){ try{ return localStorage.getItem(key); }catch(e){ return null; } }
+function _lsRawDel(key){
+  /* v764: 意図的な削除は IndexedDB にも伝える。
+     自動prune（autoPruneIfCritical 等）は localStorage の容量対策なので伝播させない。
+     IndexedDB を上位集合として保つことが、移行後にデータが戻る根拠になる。 */
+  try{ _idbQueue(key, null); }catch(e){}
+  try{ localStorage.removeItem(key); return true; }catch(e){ return false; }
+}
+/* ===== v763: IndexedDB へ移さず端末ローカルに置き続けるキー =====
+   起動直後（IDBの読み込みが終わる前）に同期で読む必要があるもの、および
+   端末ごとに異なるべきもの。移行漏れではなく意図的な据え置きであることを明示する。
+   ここに載っていないキーが localStorage を直接触っていたら、それは漏れ。 */
+var LS_DEVICE_LOCAL = ['funergy_lang','supa_sync','heavy_ready','haptics_on'];
+function lsIsDeviceLocal(key){
+  if(!key) return false;
+  if(LS_DEVICE_LOCAL.indexOf(key)>=0) return true;
+  return String(key).charAt(0)==='_';   /* 一度きりの移行済みマーカー（_f1_autosync 等） */
+}
+/* ===== v764: IndexedDB 基盤（第1段階）=====
+   【目的】端末の localStorage は約5MBで頭打ちになる。IndexedDB へ移せばこの制約が外れ、
+     自動prune（古い勤怠キャッシュの削除）も容量警告も不要になる。
+   【この版でやること】書き込みを IndexedDB にも複製するだけ。
+     **読み取りは一切変更しない。** ls() も _lsRaw() も従来どおり localStorage を見る。
+     したがってこの版でアプリの挙動は変わらない。IndexedDB が使えない端末でも同じ。
+   【次の段階（v765以降）】_IDB_MEM を ls() の読み元に切り替える → 自動prune・容量警告の撤去
+     → 二重書きの停止。読み元を切り替えるのは、下の idbDiag() で「差分0」を実機で
+     確認してから。
+   【原則】
+     ・移行は「コピー」であって「移動」ではない。localStorage からは消さない
+     ・読めなければ使わない（fail-closed）。IndexedDB が開けない・読めない場合は
+       _idbState='unavailable' にして、以降まったく手を出さない
+     ・空を勝たせない。バックフィルは put のみで、IndexedDB 側の削除は行わない
+     ・自動prune は localStorage の容量対策なので IndexedDB へは伝播させない。
+       結果として IndexedDB が上位集合になる（これが移行後にデータが戻る根拠） */
+var IDB_NAME = 'funergy_os_kv', IDB_STORE = 'kv', IDB_VER = 1;
+var _idbDB = null;
+var _idbState = 'init';        /* init | ready | unavailable */
+var _IDB_MEM = null;           /* IndexedDB から読み込んだ全キー。v765 で ls() の読み元にする */
+var _idbQ = new Map();         /* key -> json文字列、または null（削除） */
+var _idbTimer = null;
+var _idbStat = { loaded: 0, wrote: 0, failed: 0, backfilled: 0, at: '' };
+
+function _idbAvailable() {
+  try { return typeof indexedDB !== 'undefined' && !!indexedDB; } catch (e) { return false; }
+}
+
+function _idbOpen() {
+  return new Promise(function (res) {
+    if (!_idbAvailable()) { _idbState = 'unavailable'; return res(null); }
+    var rq;
+    try { rq = indexedDB.open(IDB_NAME, IDB_VER); }
+    catch (e) { _idbState = 'unavailable'; return res(null); }
+    rq.onupgradeneeded = function () {
+      try { var db = rq.result; if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE); } catch (e) { }
+    };
+    rq.onsuccess = function () { _idbDB = rq.result; res(_idbDB); };
+    rq.onerror = function () { _idbState = 'unavailable'; res(null); };
+    rq.onblocked = function () { _idbState = 'unavailable'; res(null); };
+    /* プライベートモード等で open が永久に返らない端末がある。待ち続けない */
+    setTimeout(function () { if (!_idbDB) { _idbState = 'unavailable'; res(null); } }, 4000);
+  });
+}
+
+function _idbLoadAll() {
+  return new Promise(function (res) {
+    if (!_idbDB) return res(null);
+    var out = new Map();
+    try {
+      var tx = _idbDB.transaction(IDB_STORE, 'readonly');
+      var cur = tx.objectStore(IDB_STORE).openCursor();
+      cur.onsuccess = function () {
+        var c = cur.result;
+        if (c) { out.set(c.key, c.value); c.continue(); } else res(out);
+      };
+      cur.onerror = function () { res(null); };
+      tx.onerror = function () { res(null); };
+      tx.onabort = function () { res(null); };
+    } catch (e) { res(null); }
+  });
+}
+
+function _idbFlush() {
+  if (!_idbDB || !_idbQ.size) return;
+  var batch = _idbQ; _idbQ = new Map();
+  var n = batch.size;
+  try {
+    var tx = _idbDB.transaction(IDB_STORE, 'readwrite');
+    var st = tx.objectStore(IDB_STORE);
+    batch.forEach(function (v, k) {
+      try {
+        if (v === null) { st.delete(k); if (_IDB_MEM) _IDB_MEM.delete(k); }
+        else { st.put(v, k); if (_IDB_MEM) _IDB_MEM.set(k, v); }
+      } catch (e) { }
+    });
+    tx.oncomplete = function () {
+      _idbStat.wrote += n;
+      _idbStat.at = (typeof nowJP === 'function' ? nowJP() : new Date().toISOString());
+    };
+    tx.onerror = function () { _idbStat.failed += n; };
+    tx.onabort = function () { _idbStat.failed += n; };
+  } catch (e) { _idbStat.failed += n; }
+}
+
+/* 保存のたびに書くと重いので、少しまとめてから書く。
+   端末ローカルのキー（言語・触覚設定・移行済みマーカー）は移さない。 */
+function _idbQueue(key, json) {
+  if (_idbState === 'unavailable') return;
+  try {
+    if (typeof lsIsDeviceLocal === 'function' && lsIsDeviceLocal(key)) return;
+    _idbQ.set(key, json);
+    if (_idbTimer) clearTimeout(_idbTimer);
+    _idbTimer = setTimeout(function () { _idbTimer = null; _idbFlush(); }, 300);
+  } catch (e) { }
+}
+
+function _idbClearAll() {
+  try {
+    if (_IDB_MEM) _IDB_MEM.clear();
+    _idbQ = new Map();
+    if (!_idbDB) return;
+    _idbDB.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).clear();
+  } catch (e) { }
+}
+
+/* localStorage にあって IndexedDB に無い（または内容が違う）ものを写す。put のみ。 */
+function _idbBackfill() {
+  if (!_idbDB || !_IDB_MEM) return 0;
+  var n = 0;
+  try {
+    lsKeys().forEach(function (k) {
+      if (lsIsDeviceLocal(k)) return;
+      var v = _lsRawStr(k);
+      if (v == null) return;
+      if (_IDB_MEM.get(k) === v) return;
+      _idbQ.set(k, v); n++;
+    });
+  } catch (e) { }
+  if (n) _idbFlush();
+  return n;
+}
+
+async function _idbBoot() {
+  try {
+    await _idbOpen();
+    if (!_idbDB) { _idbState = 'unavailable'; return; }
+    var m = await _idbLoadAll();
+    if (m === null) { _idbState = 'unavailable'; _idbDB = null; return; }  /* 読めなければ使わない */
+    _IDB_MEM = m; _idbStat.loaded = m.size;
+    _idbState = 'ready';
+    _idbFlush();                              /* 起動中に溜まった分を書く */
+    _idbStat.backfilled = _idbBackfill();
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
+  } catch (e) { _idbState = 'unavailable'; _idbDB = null; }
+}
+
+/* 画面が閉じられる直前に取りこぼさない（iOSは予告なくページを破棄する） */
+try {
+  window.addEventListener('pagehide', function () { try { _idbFlush(); } catch (e) { } });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') { try { _idbFlush(); } catch (e) { } }
+  });
+} catch (e) { }
+
+/* 読み元を切り替えてよいかの判定材料。localStorage と IndexedDB の差分を出す。 */
+function idbDiag() {
+  var out = { state: _idbState, loaded: _idbStat.loaded, wrote: _idbStat.wrote,
+              failed: _idbStat.failed, backfilled: _idbStat.backfilled, at: _idbStat.at,
+              lsKeys: 0, idbKeys: (_IDB_MEM ? _IDB_MEM.size : 0), missing: [], differ: [], bytes: 0 };
+  try {
+    var ks = lsKeys().filter(function (k) { return !lsIsDeviceLocal(k); });
+    out.lsKeys = ks.length;
+    ks.forEach(function (k) {
+      var v = _lsRawStr(k); if (v == null) return;
+      if (!_IDB_MEM || !_IDB_MEM.has(k)) { out.missing.push(k); return; }
+      if (_IDB_MEM.get(k) !== v) out.differ.push(k);
+    });
+    if (_IDB_MEM) _IDB_MEM.forEach(function (v) { out.bytes += (v ? v.length : 0); });
+  } catch (e) { out.err = String((e && e.message) || e); }
+  return out;
+}
+/* ===== v762: 端末に保存されている「キーの列挙」の出口を1本にする =====
+   【背景】これまで localStorage.length + localStorage.key(i) で直接走査している箇所が
+     12関数あった。保存先を差し替える（v764予定のIndexedDB移行）と、これらは例外を出さず
+     「0件」として静かに通り抜ける。集計・検出系が黙って件数を減らすため、チップ・出勤回数・
+     承認済み予算・スキルが、気付かないうちに欠けた数字になる。
+   【方針】列挙の出口を lsKeys() 1本にしておき、裏側の差し替えはこの関数の中だけで済ませる。
+   【互換】中身は従来と同じ localStorage の走査。この版では挙動は一切変わらない。
+   【注意】列挙結果を先に配列へ確定させるため、ループ中にキーを消しても添字がずれない
+     （従来の直接走査では削除するたびに次のキーを飛ばしていた）。 */
+function lsKeys(prefix){
+  var out=[];
+  try{
+    var p=(prefix==null?'':String(prefix));
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(!k) continue;
+      if(p && k.indexOf(p)!==0) continue;
+      out.push(k);
+    }
+  }catch(e){}
+  return out;
+}
 /* ===== v750: 設定型データに「誰が・いつ保存したか」を記録する =====
    【背景】テンプレート・固定費・OJTチェックのような設定型(type:'obj')は、
      履歴や申請のように足し算で合流できない。合流の基準が無いため、これまでは
@@ -4508,7 +4722,7 @@ function _handleLegacySplitRow(key, cloudVal){
     var r=_foldLegacyIntoPartitions(key, cloudVal);
     /* 畳み込めた場合のみ端末の統合キーを解放する。
        畳み込めない(id無し等)場合は従来どおり残す＝データを先に消さない。 */
-    if(r.ok){ try{ localStorage.removeItem(key); }catch(e){} }
+    if(r.ok){ _lsRawDel(key); }                                   /* v763 */
   }catch(e){ console.warn('fold legacy split row', key, e); }
   return true;
 }
@@ -4727,7 +4941,20 @@ function renderStorageCard(){
     +'<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><b style="color:'+col+'">'+(used/1048576).toFixed(1)+' MB</b> / ~5 MB '+t('使用中','used')+' ('+pct+'%)</div>'
     +'<div style="height:10px;background:var(--surface2);border-radius:6px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:'+pct+'%;background:'+col+'"></div></div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+t('整理可能なキャッシュ','Re-fetchable cache')+': '+(pr.bytes/1048576).toFixed(1)+'MB ('+pr.count+'). '+t('データはクラウドに保存済みです。上限に近づいたら整理してください。','Your data is stored in the cloud. Clean up if you approach the limit.')+'</div>'
-    +'<button class="btn btn-secondary btn-sm" onclick="runStorageCleanup()"><i class="ti ti-eraser"></i> '+t('キャッシュを整理して空ける','Clean cache & free space')+'</button></div>';
+    +'<button class="btn btn-secondary btn-sm" onclick="runStorageCleanup()"><i class="ti ti-eraser"></i> '+t('キャッシュを整理して空ける','Clean cache & free space')+'</button>'
+    +(function(){                                               /* v764: IndexedDB 複製の状況 */
+      try{
+        var d=idbDiag();
+        var lbl = d.state==='ready' ? t('複製あり','mirrored') : (d.state==='unavailable' ? t('この端末では使えません','unavailable') : t('準備中','preparing'));
+        var col = d.state==='ready' ? 'var(--green)' : (d.state==='unavailable' ? 'var(--muted)' : 'var(--yellow)');
+        var gap = d.missing.length + d.differ.length;
+        return '<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px;font-size:11px;color:var(--muted)">'
+          +'IndexedDB: <b style="color:'+col+'">'+lbl+'</b>'
+          +(d.state==='ready' ? ' · '+d.idbKeys+t('件','keys')+' / '+(d.bytes/1048576).toFixed(1)+'MB'
+              +' · '+t('未複製','not mirrored')+' <b style="color:'+(gap?'var(--yellow)':'var(--green)')+'">'+gap+'</b>' : '')
+          +'</div>';
+      }catch(e){ return ''; }
+    })()+'</div>';
 }
 /* ============================================================
    v721: 「必要なものを必要な時に」取得する
@@ -4881,6 +5108,11 @@ function _lsSplitOnDemandPrefix(key){
    getItem(key)!=null だけでは成功と誤判定するため、内容の一致まで見る。 */
 function _lsWriteVerified(key, json){
   try{ localStorage.setItem(key, json); }catch(e){ /* 下の検証で失敗と判定させる */ }
+  /* v764: IndexedDB にも複製する（第1段階の二重書き）。
+     戻り値は従来どおり localStorage の結果で決める。読み取りがまだ localStorage を
+     見ているため、ここで IndexedDB の成否を混ぜると『保存できた』と表示して
+     実際には画面に出ない、という食い違いが起きる。 */
+  try{ _idbQueue(key, json); }catch(e){}
   try{ return localStorage.getItem(key)===json; }catch(e){ return false; }
 }
 
@@ -5262,8 +5494,9 @@ async function supaPushAllMasters(){
   }
   // dailyops_template_* も拾う
   try {
-    for (var s=0;s<localStorage.length;s++){
-      var lk=localStorage.key(s);
+    var _dopKeys=lsKeys('dailyops_template_');      /* v762 */
+    for (var s=0;s<_dopKeys.length;s++){
+      var lk=_dopKeys[s];
       if (lk && lk.indexOf('dailyops_template_')===0){ var lv=ls(lk,null); if(lv!=null){ await supaUpsert('app_settings',[{key:lk,value:lv,category:'dailyops'}]); results.push(lk+': OK'); } }
     }
   } catch(e){}
@@ -5305,7 +5538,7 @@ function _applyKvRows(rows){
       if(_lsOnDemand(row.key)) return;
       var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
       var _val=row.value;
-      if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(row.key)||'null'); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }
+      if(_def){ try{ var _loc=_lsRaw(row.key, null); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }   /* v763 */
       /* v719: 保存できたかを検証し、失敗は記録する（黙って握り潰さない） */
       if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsMarkFetched(row.key); _lsClearSaveFailure(row.key); cnt++; }
       else { _lsNoteSaveFailure(row.key); }
@@ -5327,7 +5560,7 @@ async function supaPullAllMasters(){
     if (Array.isArray(rows) && rows.length){
       var arr = rows.map(function(r){ return r.data; }).filter(function(x){ return x!=null; });
       if (arr.length){
-        try { localStorage.setItem(key, JSON.stringify(arr)); } catch(e){}
+        _lsWriteVerified(key, JSON.stringify(arr));               /* v763 */
         results.push(def.table+': '+arr.length+'件 取込');
       } else { results.push(def.table+': データなし(スキップ)'); }
     } else {
@@ -5345,8 +5578,8 @@ async function supaPullAllMasters(){
            未プッシュのローカル変更が「クラウドから取り込む」で消えるのを防ぐ。 */
         var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
         var _val=row.value;
-        if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(row.key)||'null'); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }
-        localStorage.setItem(row.key, JSON.stringify(_val)); cnt++;
+        if(_def){ try{ var _loc=_lsRaw(row.key, null); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }   /* v763 */
+        _lsWriteVerified(row.key, JSON.stringify(_val)); cnt++;   /* v763 */
       } catch(e){}
     });
     results.push('app_settings: '+cnt+'件 取込');
@@ -5366,7 +5599,7 @@ async function supaPullAllMasters(){
   };
   var _heavyTimer = setTimeout(_heavyDone, 8000);
   Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
-    try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ localStorage.setItem('m_ingredients', JSON.stringify(_ia)); } } } catch(e){}
+    try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
     try { _applyKvRows(_dres[1]); } catch(e){}
     try{ clearTimeout(_heavyTimer); }catch(e){}
     _heavyDone();
@@ -5597,7 +5830,7 @@ function repairBudgetDupes(silent){
   var fixed=0, checked=0;
   try{
     var keys=[];
-    for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k && k.indexOf('spl_budgets_v2_')===0) keys.push(k); }
+    keys=lsKeys('spl_budgets_v2_');                  /* v762 */
     keys.forEach(function(k){
       var arr=_lsRaw(k, null); if(!Array.isArray(arr) || arr.length<2) return;
       checked++;
@@ -5624,9 +5857,9 @@ async function openBudgetSaveDiag(){
   var legacy=_lsRaw('budgets_v2', null);
   var parts={};
   try{
-    for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i);
-      if(k && k.indexOf('spl_budgets_v2_')===0) parts[k.slice('spl_budgets_v2_'.length)]=_lsRaw(k,[])||[];
-    }
+    lsKeys('spl_budgets_v2_').forEach(function(k){    /* v762 */
+      parts[k.slice('spl_budgets_v2_'.length)]=_lsRaw(k,[])||[];
+    });
   }catch(e){}
   var localArr=ls('budgets_v2', [])||[];
   var ymNow=(typeof budYmStr==='function')?budYmStr():((typeof curYm==='function')?curYm():'');
@@ -6441,13 +6674,13 @@ function opMergePush(key, localVal, table){
         var cloud = await _fetchOpValue(key, table);
         if(cloud===undefined){ // 取得失敗→マージせず素通し
           var _u0 = await supaUpsert(table, [_opUpsertRow(key, desired, table)]);
-          try{ localStorage.setItem(key, JSON.stringify(desired)); }catch(e){}
+          _lsWriteVerified(key, JSON.stringify(desired));         /* v763 */
           _ok = (_u0!==false);
           if(!_ok) _err='クラウドへの書き込みに失敗しました';
           break;
         }
         var merged = def.merge(cloud, desired);
-        try{ localStorage.setItem(key, JSON.stringify(merged)); }catch(e){}
+        _lsWriteVerified(key, JSON.stringify(merged));            /* v763 */
         var _u1 = await supaUpsert(table, [_opUpsertRow(key, merged, table)]);
         if(_u1===false){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
         var check = await _fetchOpValue(key, table);
@@ -6534,7 +6767,7 @@ async function pullOpKey(key){
     if(rows && rows.length){ var _cloud=rows[0].value;
       /* v720: 分割保存へ移行済みのキーは統合行を端末に置かない（_applyKvRows と同じ扱い） */
       if(_handleLegacySplitRow(key, _cloud)) return true;
-      var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(key)||'null'); _out=_def.merge(_cloud, _loc); }catch(e){ _out=_cloud; } } var _json=JSON.stringify(_out);
+      var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=_lsRaw(key, null); _out=_def.merge(_cloud, _loc); }   /* v763 */catch(e){ _out=_cloud; } } var _json=JSON.stringify(_out);
       /* v703: 従来は setItem を try/catch で握り潰し、保存できなくても true を返していた。
          そのため容量不足の端末では「取得成功なのに端末に無い」状態になり、
          スキル等がいつまでも反映されなかった。保存を検証し、ダメなら空けて再試行する。 */
@@ -7605,7 +7838,7 @@ async function refreshStaffPinsFromCloud(){
     var rows = await res.json();
     if (rows && rows.length && rows[0].value && typeof rows[0].value==='object') {
       // クラウドを正として、ローカルのstaff_pinsを更新（同期OFFでも書き込みループしないようdirect set）
-      try { localStorage.setItem('staff_pins', JSON.stringify(rows[0].value)); } catch(e){}
+      _lsWriteVerified('staff_pins', JSON.stringify(rows[0].value));   /* v763 */
       return true;
     }
     return false;
@@ -7800,9 +8033,9 @@ async function loginBootstrapPull(){
     showSyncSplash('スタッフ情報を読み込み中…');
     var work = (async function(){
       var emps = await supaFetchAll('employees','data');
-      if (Array.isArray(emps) && emps.length){ var a=emps.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(a.length) localStorage.setItem('m_employees', JSON.stringify(a)); }
+      if (Array.isArray(emps) && emps.length){ var a=emps.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(a.length) _lsWriteVerified('m_employees', JSON.stringify(a)); }   /* v763 */
       var sts = await supaFetchAll('stores','data');
-      if (Array.isArray(sts) && sts.length){ var b=sts.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(b.length) localStorage.setItem('m_stores', JSON.stringify(b)); }
+      if (Array.isArray(sts) && sts.length){ var b=sts.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(b.length) _lsWriteVerified('m_stores', JSON.stringify(b)); }   /* v763 */
       try { await refreshStaffPinsFromCloud(); } catch(e){}
       try { refreshStores(); } catch(e){}
     })();
@@ -9526,23 +9759,23 @@ function snapshotBudgetsLocal(){
     var cur=ls('budgets_v2', null);
     if(!Array.isArray(cur) || !cur.some(_budHasReal)) return;     /* 空の状態で世代を潰さない */
     var body=JSON.stringify(cur);
-    try{ var l1=JSON.parse(localStorage.getItem('budgets_v2_bak1')||'null'); if(l1 && JSON.stringify(l1.budgets)===body) return; }catch(e){}
-    try{ var s2=localStorage.getItem('budgets_v2_bak2'); if(s2) localStorage.setItem('budgets_v2_bak3', s2); }catch(e){}
-    try{ var s1=localStorage.getItem('budgets_v2_bak1'); if(s1) localStorage.setItem('budgets_v2_bak2', s1); }catch(e){}
-    localStorage.setItem('budgets_v2_bak1', JSON.stringify({ at:(typeof nowJP==='function'?nowJP():new Date().toISOString()), n:cur.length, budgets:cur }));
+    try{ var l1=_lsRaw('budgets_v2_bak1', null); if(l1 && JSON.stringify(l1.budgets)===body) return; }catch(e){}   /* v763 */
+    try{ var s2=_lsRawStr('budgets_v2_bak2'); if(s2) _lsWriteVerified('budgets_v2_bak3', s2); }catch(e){}   /* v763 */
+    try{ var s1=_lsRawStr('budgets_v2_bak1'); if(s1) _lsWriteVerified('budgets_v2_bak2', s1); }catch(e){}   /* v763 */
+    _lsWriteVerified('budgets_v2_bak1', JSON.stringify({ at:(typeof nowJP==='function'?nowJP():new Date().toISOString()), n:cur.length, budgets:cur }));
   }catch(e){}
 }
 function budgetSnapshotList(){
   var out=[];
   ['budgets_v2_bak1','budgets_v2_bak2','budgets_v2_bak3'].forEach(function(k){
-    try{ var v=JSON.parse(localStorage.getItem(k)||'null'); if(v && Array.isArray(v.budgets)) out.push({key:k, at:v.at||'', n:v.budgets.length}); }catch(e){}
+    try{ var v=_lsRaw(k, null); if(v && Array.isArray(v.budgets)) out.push({key:k, at:v.at||'', n:v.budgets.length}); }catch(e){}   /* v763 */
   });
   return out;
 }
 /* 穴埋め復元：スナップショットにあって今は空になっている店だけ戻す（今ある実データは壊さない） */
 function restoreBudgetSnapshot(k){
   try{
-    var v=JSON.parse(localStorage.getItem(k)||'null');
+    var v=_lsRaw(k, null);                                        /* v763 */
     if(!v || !Array.isArray(v.budgets)){ showToast('スナップショットが読めません','danger'); return; }
     if(!confirm('保存前スナップショット（'+(v.at||'')+' / '+v.budgets.length+'店）から、今は空になっている店の予算を戻します。今入っている予算は上書きしません。よろしいですか？')) return;
     saveBudgets(mergeBudgets(v.budgets, ls('budgets_v2', [])||[]));
@@ -9598,8 +9831,9 @@ function snapshotApprovedBudget(b, ym){
 function approvedBudgetList(){
   var out=[];
   try{
-    for(var i=0;i<localStorage.length;i++){
-      var k=localStorage.key(i); if(!k || k.indexOf('budget_approved_')!==0) continue;
+    var _abKeys=lsKeys('budget_approved_');           /* v762 */
+    for(var i=0;i<_abKeys.length;i++){
+      var k=_abKeys[i];
       var v=ls(k, null); if(!v || !v.budget) continue;
       out.push({ key:k, storeId:v.storeId||'', ym:v.ym||'', by:v.by||'', at:v.at||'', ts:Number(v.ts)||0 });
     }
@@ -20072,13 +20306,10 @@ async function openLaborRootCause(){
       }catch(e){ r.err=String((e&&e.message)||e).slice(0,120); }
     }
     try{
-      for(var k=0;k<localStorage.length;k++){
-        var kk=localStorage.key(k);
-        if(kk && kk.indexOf('tip_labor_'+s.id+'_')===0){
-          var v=localStorage.getItem(kk)||'';
-          if(v && v!=='{}' && v!=='null') r.local++;
-        }
-      }
+      lsKeys('tip_labor_'+s.id+'_').forEach(function(kk){   /* v762 */
+        var v=_lsRaw(kk, null);
+        if(v && (typeof v!=='object' || Object.keys(v).length)) r.local++;
+      });
     }catch(e){}
     rows.push(r);
   }
@@ -20915,7 +21146,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '761';
+const APP_VERSION = '764';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -21144,7 +21375,7 @@ async function pullShiftPlan(storeId, week){
     var rows=await res.json();
     if(rows && rows.length){
       var p={ status:rows[0].status||'下書き', cells:rows[0].cells||{} };
-      try{ localStorage.setItem('shiftplan_'+storeId+'_'+week, JSON.stringify(p)); }catch(e){} // 直接setItem=押し上げ抑止
+      _lsWriteVerified('shiftplan_'+storeId+'_'+week, JSON.stringify(p));   /* v763: 押し上げを起こさない保存 */
       return true;
     }
   }catch(e){ console.warn('pullShiftPlan', e); }
@@ -21177,12 +21408,12 @@ async function pullAvailability(storeId, week){
     if(Array.isArray(rows)){
       var cloud=rows.map(function(r){ return { name:r.name, slots:r.slots||[], notes:r.notes||'', date:r.submitted_date||'' }; });
       // ★ 上書きではなく名前でマージ（クラウド優先）。片方の欠落で提出が消えるのを防止（5/10問題対策）
-      var local=(function(){ try{ return JSON.parse(localStorage.getItem('avail_'+storeId+'_'+week))||[]; }catch(e){ return []; } })();
+      var local=(function(){ try{ return _lsRaw('avail_'+storeId+'_'+week, [])||[]; }catch(e){ return []; } })();   /* v763 */
       var byName={};
       (Array.isArray(local)?local:[]).forEach(function(e){ if(e&&e.name) byName[e.name]=e; });
       cloud.forEach(function(e){ if(e&&e.name) byName[e.name]=e; });
       var merged=Object.keys(byName).map(function(n){ return byName[n]; });
-      try{ localStorage.setItem('avail_'+storeId+'_'+week, JSON.stringify(merged)); }catch(e){}
+      _lsWriteVerified('avail_'+storeId+'_'+week, JSON.stringify(merged));   /* v763 */
       return true;
     }
   }catch(e){ console.warn('pullAvailability', e); }
@@ -21362,7 +21593,7 @@ async function uploadAllLocalShifts(){
   try{
     if(localStorage.getItem('_f2a_shiftup2')==='1') return;
     var planKeys=[], availKeys=[];
-    for(var i=0;i<localStorage.length;i++){ var key=localStorage.key(i); if(!key) continue; if(key.indexOf('shiftplan_')===0) planKeys.push(key); else if(key.indexOf('avail_')===0) availKeys.push(key); }
+    lsKeys().forEach(function(key){ if(key.indexOf('shiftplan_')===0) planKeys.push(key); else if(key.indexOf('avail_')===0) availKeys.push(key); });   /* v762 */
     for(var j=0;j<planKeys.length;j++){
       var m=planKeys[j].slice('shiftplan_'.length); var us=m.lastIndexOf('_'); if(us<1) continue;
       var sid=m.slice(0,us), wk=m.slice(us+1); var plan=ls(planKeys[j],null);
@@ -28017,13 +28248,13 @@ function inactiveStaff(thresholdDays){
   var lw = {}, storeHasData = {};
   var cutoffStr = isoOf(new Date(Date.now()-th*86400000));
   try{
-    for(var i=0;i<localStorage.length;i++){
-      var k=localStorage.key(i);
-      if(!k || k.indexOf('tip_labor_')!==0) continue;
+    var _isKeys=lsKeys('tip_labor_');                 /* v762 */
+    for(var i=0;i<_isKeys.length;i++){
+      var k=_isKeys[i];
       var date=k.slice(k.lastIndexOf('_')+1);
       if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       var storeId=k.slice(10, k.lastIndexOf('_'));
-      var data; try{ data=JSON.parse(localStorage.getItem(k)); }catch(_){ continue; }
+      var data=_lsRaw(k, null);
       if(!data || typeof data!=='object') continue;
       if(date>=cutoffStr) storeHasData[storeId]=true;
       Object.keys(data).forEach(function(name){ if(!lw[name] || date>lw[name]) lw[name]=date; });
@@ -28057,14 +28288,14 @@ function unregisteredClockIns(days){
   var cutoffStr=isoOf(new Date(Date.now()-th*86400000));
   var map={};
   try{
-    for(var i=0;i<localStorage.length;i++){
-      var k=localStorage.key(i);
-      if(!k || k.indexOf('tip_labor_')!==0) continue;
+    var _ucKeys=lsKeys('tip_labor_');                 /* v762 */
+    for(var i=0;i<_ucKeys.length;i++){
+      var k=_ucKeys[i];
       var date=k.slice(k.lastIndexOf('_')+1);
       if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       if(date<cutoffStr) continue;
       var storeId=k.slice(10, k.lastIndexOf('_'));
-      var data; try{ data=JSON.parse(localStorage.getItem(k)); }catch(_){ continue; }
+      var data=_lsRaw(k, null);
       if(!data || typeof data!=='object') continue;
       Object.keys(data).forEach(function(name){
         if(typeof isOrderOnlyAccount==='function' && isOrderOnlyAccount(name)) return;
@@ -34198,7 +34429,7 @@ async function ensureSkillsForView(storeId, force){
     var val=(Array.isArray(j)&&j[0])?j[0].value:null;
     if(val && typeof val==='object'){
       _skMemCache[storeId]=val;
-      try{ localStorage.setItem(SKILL_STORE_PREFIX+storeId, JSON.stringify(val)); }catch(e){}   /* 保存できればする。できなくても表示は続く */
+      _lsWriteVerified(SKILL_STORE_PREFIX+storeId, JSON.stringify(val));   /* v763: 保存できればする。できなくても表示は続く */
       return true;
     }
   }catch(e){}
@@ -34250,14 +34481,15 @@ function getSkillsV2(){
     Object.keys(legacy[name]||{}).forEach(function(st){ combined[name][st] = Object.assign({}, legacy[name][st]); });
   });
   try{
-    for (var i=0;i<localStorage.length;i++){
-      var k = localStorage.key(i);
-      if (k && k.indexOf(SKILL_STORE_PREFIX)===0){
+    lsKeys(SKILL_STORE_PREFIX).forEach(function(k){   /* v762 */
+      {
+      {
         var st = k.slice(SKILL_STORE_PREFIX.length);
         var per = ls(k, {});
         Object.keys(per).forEach(function(name){ combined[name] = combined[name]||{}; combined[name][st] = per[name]; });
       }
-    }
+      }
+    });
   }catch(e){}
   return combined;
 }
@@ -38814,7 +39046,7 @@ async function openMySkillDiag(name, storeId){
   var mySk=(meKey?localMap[meKey]:(nearKey?localMap[nearKey]:{}))||{};
   var apr=Object.keys(mySk).filter(function(p){ return mySk[p] && mySk[p].status==='承認'; });
   var pend=Object.keys(mySk).filter(function(p){ return mySk[p] && mySk[p].status && mySk[p].status!=='承認'; });
-  var rawKey=null; try{ rawKey=localStorage.getItem(SKILL_STORE_PREFIX+storeId); }catch(e){}
+  var rawKey=_lsRawStr(SKILL_STORE_PREFIX+storeId);               /* v763 */
 
   /* ② レガシー側 */
   var legacyHas=false, legacyApr=0;
@@ -38907,7 +39139,7 @@ async function skillDiagPull(storeId, name){
   try{ _skillStorePulled[storeId]=false; }catch(e){}
 
   /* 実際に端末へ入ったかを読み直して確認 */
-  var raw=null; try{ raw=localStorage.getItem(SKILL_STORE_PREFIX+storeId); }catch(e){}
+  var raw=_lsRawStr(SKILL_STORE_PREFIX+storeId);                  /* v763 */
   var after=_skApprovedCount(name, storeId);
   if(raw && after>0){
     closeModalDirect();
@@ -39001,7 +39233,7 @@ function renderMypage() {
   try{
     if(typeof ensureSkillsForView==='function' && !_skMemCache[storeId]){
       var _needSk=true;
-      try{ _needSk = !(localStorage.getItem(SKILL_STORE_PREFIX+storeId)); }catch(e){}
+      _needSk = !(_lsRawStr(SKILL_STORE_PREFIX+storeId));         /* v763 */
       if(_needSk) ensureSkillsForView(storeId).then(function(ok){ if(ok && (curPage==='mypage'||curPage==='skill')) renderPage(curPage); });
     }
   }catch(e){}
@@ -39692,6 +39924,7 @@ async function runSupaPushAll(){
 function clearAllData() {
   if (!confirm('全データをリセットしますか？この操作は取り消せません。')) return;
   localStorage.clear();
+  try{ _idbClearAll(); }catch(e){}                              /* v764 */
   showToast('データをリセットしました', 'success');
   renderPage('settings');
 }
@@ -40739,7 +40972,7 @@ function onNotifIncoming(arr){
   try{
     if(!Array.isArray(arr)) return;
     var before = myUnreadCount();
-    localStorage.setItem('notifications', JSON.stringify(arr));
+    _lsWriteVerified('notifications', JSON.stringify(arr));       /* v763 */
     var after = myUnreadCount();
     renderNotifBell();
     var p=document.getElementById('notif-panel');
@@ -40920,9 +41153,9 @@ async function pullInvoicesAll(){
       if(!r || !r.key) return;
       try{
         var cloudVal=r.value;
-        var loc=null; try{ loc=JSON.parse(localStorage.getItem(r.key)||'null'); }catch(e){}
+        var loc=_lsRaw(r.key, null);                              /* v763 */
         var out=(typeof mergeInvoices==='function') ? mergeInvoices(cloudVal, loc) : cloudVal;   /* 上書きせずマージ */
-        localStorage.setItem(r.key, JSON.stringify(out));
+        _lsWriteVerified(r.key, JSON.stringify(out));             /* v763 */
         n+=(Array.isArray(cloudVal)?cloudVal.length:0);
       }catch(e){}
     });
@@ -41219,11 +41452,13 @@ async function rebuildInvoicesFromCloud(){
   var byStore={}, failed=[];
   merged.forEach(function(v){ var id=String((v&&v.storeId)==null?'_':v.storeId); (byStore[id]=byStore[id]||[]).push(v); });
   Object.keys(byStore).forEach(function(id){
-    try{ localStorage.setItem('spl_invoices_'+id, JSON.stringify(byStore[id])); }
-    catch(e){ failed.push(id); }
+    /* v763: _lsWriteVerified は例外を内部で処理して真偽値を返す。try/catch のままだと
+       catch が発火せず failed が常に空になり、保存に失敗しても下で旧キーを空にしてしまう。
+       戻り値で判定する（setItem が例外を投げずに保存できていない場合も検出できる）。 */
+    if(!_lsWriteVerified('spl_invoices_'+id, JSON.stringify(byStore[id]))) failed.push(id);
   });
   /* 旧キーは統合済みなので端末上は空にして容量を空ける（クラウド側は変更しない） */
-  if(!failed.length){ try{ localStorage.setItem('invoices','[]'); }catch(e){} }
+  if(!failed.length){ _lsWriteVerified('invoices','[]'); }        /* v763 */
 
   var after=0; try{ after=(ls('invoices',[])||[]).length; }catch(e){}
   var mb='?'; try{ mb=(lsBytesTotal()/1024/1024).toFixed(1); }catch(e){}
@@ -41288,10 +41523,10 @@ async function openInvoiceDiag(ym){
     +(function(){
         var mb='?', legacyN=0, parts=[];
         try{ mb=(lsBytesTotal()/1024/1024).toFixed(1); }catch(e){}
-        try{ var lg=JSON.parse(localStorage.getItem('invoices')||'[]'); legacyN=Array.isArray(lg)?lg.length:0; }catch(e){}
-        try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i);
-          if(k && k.indexOf('spl_invoices_')===0){ var a=[]; try{ a=JSON.parse(localStorage.getItem(k)||'[]'); }catch(e){}
-            parts.push(k.replace('spl_invoices_','')+':'+(Array.isArray(a)?a.length:0)); } } }catch(e){}
+        try{ var lg=_lsRaw('invoices', []); legacyN=Array.isArray(lg)?lg.length:0; }catch(e){}   /* v763 */
+        try{ lsKeys('spl_invoices_').forEach(function(k){                     /* v762 */
+          { var a=_lsRaw(k,[])||[];
+            parts.push(k.replace('spl_invoices_','')+':'+(Array.isArray(a)?a.length:0)); } }); }catch(e){}
         var full=(parseFloat(mb)>=4.3);
         return '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:5px;font-size:11.5px">'
           +'<div>端末の保存使用量: <b style="color:'+(full?'var(--red)':'var(--muted)')+'">'+mb+'MB</b>'+(full?' <span style="color:var(--red)">← 上限間近。設定＞保存容量で整理してください</span>':'')+'</div>'
@@ -44403,13 +44638,13 @@ function workedShiftCount(emp){
   var fw=firstWorkDate(emp); var fwStr=fw?fw.toISOString().slice(0,10):null;
   var name=emp.name, count=0, prefix='tip_labor_'+emp.store+'_';
   try{
-    for(var i=0;i<localStorage.length;i++){
-      var k=localStorage.key(i);
-      if(!k || k.indexOf(prefix)!==0) continue;
+    var _wscKeys=lsKeys(prefix);                      /* v762 */
+    for(var i=0;i<_wscKeys.length;i++){
+      var k=_wscKeys[i];
       var date=k.slice(prefix.length);
       if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       if(fwStr && date<fwStr) continue;
-      var data; try{ data=JSON.parse(localStorage.getItem(k)); }catch(_){ continue; }
+      var data=_lsRaw(k, null);
       var e=data && data[name]; if(!e) continue;
       if((e.lunch||0)>0) count++;
       if((e.dinner||0)>0) count++;
@@ -48489,7 +48724,7 @@ async function checkOnboardToken(){
       if (_sec && _sec.ok && _sec.secret) {
         var _s=_sec.secret; ob.personal = Object.assign({}, ob.personal, { address:_s.address, phone:_s.phone, email:_s.email, dob:_s.dob, ssn:_s.ssn, visa:_s.visa, visaDetail:_s.visaDetail });
         if (_s.docs && _s.docs.length) ob.docs = _s.docs;
-        try { var _obs=ls('onboardings',[]); var _i=_obs.findIndex(function(o){return o.id===ob.id;}); if(_i>=0){ _obs[_i]=ob; localStorage.setItem('onboardings', JSON.stringify(_obs)); } } catch(e){}
+        try { var _obs=ls('onboardings',[]); var _i=_obs.findIndex(function(o){return o.id===ob.id;}); if(_i>=0){ _obs[_i]=ob; _lsWriteVerified('onboardings', JSON.stringify(_obs)); } }   /* v763 */ catch(e){}
       }
     } catch(e){}
     // 教材マスター＋Tipポリシーを最新化（受信者端末にはローカルが無いため）
@@ -48641,6 +48876,9 @@ try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePos
 try { migrateOfficePositions(); } catch(e) { console.error('migrateOfficePositions', e); }
 try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
 try { migrateStoreManagers(); } catch(e) { console.error('migrateStoreManagers', e); }
+/* v764: IndexedDB の起動。既存の起動処理とは独立に走らせる（描画を待たせない）。
+   失敗しても _idbState='unavailable' になるだけで、アプリの動作は変わらない。 */
+setTimeout(function(){ try{ _idbBoot(); }catch(e){} }, 0);
 (async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) { try { await loginBootstrapPull(); } catch(_){} bootLogin(); } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }, 1200);
 </script>
