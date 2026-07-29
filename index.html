@@ -1690,6 +1690,7 @@ const NAV_ITEMS = [
   {id:'tasks',       label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl']},
   {id:'biz_guide',   label:'業務ガイド',    icon:'ti-book-2',           roles:['ceo','gm','office','am','sl']},
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','office','am','sl']},
+  {id:'cc_plan',     label:'月間行動計画', icon:'ti-clipboard-check',  roles:['ceo','gm','chef']},   /* v767 */
   {id:'goals',       label:'目標',        icon:'ti-target',           roles:['ceo','gm','office','am','sl']},
   {id:'labor',       label:'人件費・勤怠',       icon:'ti-clock',            roles:['ceo','gm','office','am','sl']},
   {id:'tip',         label:'チップ管理',   icon:'ti-coin',             roles:['ceo','gm','office','am','sl','office_crew']},
@@ -1755,6 +1756,9 @@ const OFFICE_GROUPS = [
     children:['tasks','biz_guide']},
   {id:'go_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office'],
     children:['menu','recipe','fv_variance','ingredient_master','ing_transfer','vendor_master','inventory']},
+  /* v767: 本部のキッチン側。経理(office)には見せないため roles を CEO/GM に限定する。 */
+  {id:'go_kitchen', label:'Kitchen Management', icon:'ti-tools-kitchen-2', roles:['ceo','gm'],
+    children:['cc_plan']},
   {id:'go_acct', label:'経理', icon:'ti-calculator', roles:['ceo','gm','office'],
     children:['invoice','acct_review','acct_export','monthly']},
   {id:'go_order', label:'発注', icon:'ti-package', roles:['ceo','gm','office'],
@@ -1774,7 +1778,7 @@ const OFFICE_CREW_GROUPS = [
    CEO / GM は従来どおり OFFICE_GROUPS で両方すべて見える。
    ここに経理の画面（invoice / acct_review / acct_export / monthly）は入れない。 */
 const CHEF_GROUPS = [
-  {id:'gc_home', label:'本部', icon:'ti-building-skyscraper', children:['notifications','approval']},
+  {id:'gc_home', label:'本部', icon:'ti-building-skyscraper', children:['cc_plan','notifications','approval']},   /* v767 */
   {id:'gc_food', label:'食材管理', icon:'ti-tools-kitchen-2',
     children:['menu','recipe','fv_variance','ingredient_master','ing_transfer','vendor_master','inventory']},
   {id:'gc_cost', label:'原価', icon:'ti-receipt', children:['foodcost']},
@@ -4161,6 +4165,11 @@ var _SPLIT_KEYS = {
   my_vacations:     {type:'arr', by:function(r){return r&&r.employee;}, readFilter:function(r){return !(r&&r._deleted);}},
   mileage_requests: {type:'arr', by:function(r){return r&&r.employee;}},
   expense_requests: {type:'arr', by:function(r){return r&&r.employee;}},
+  /* v767: Corporate Chef 月間行動計画。対象月ごとに行を分けるので、
+     今月を編集しても先月の行に一切触らない（予算で起きた月またぎの事故を防ぐ）。 */
+  cc_plans:         {type:'obj'},
+  hq_goals:         {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},
+  cc_actions:       {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},
   crew_education:   {type:'obj'},
   benefit_adjust:   {type:'obj'},
   store_ingredients:{type:'obj'},
@@ -6102,6 +6111,10 @@ async function pushBudgetsNow(){
   diagBudgets();
 }
 var OP_MERGE = {
+  /* v767: 本部目標と行動計画。id単位の和集合で、勝敗は必ず _mut（時刻）で決める。
+     ここが無いと、部分データを持つ端末の保存がクラウドを丸ごと上書きする。 */
+  hq_goals:      { merge: mergeCcList,    covers: _coversCcList },
+  cc_actions:    { merge: mergeCcList,    covers: _coversCcList },
   budgets_v2:    { merge: mergeBudgets,   covers: _coversBudgets },   /* v620: 予算の上書き消失を防ぐ（店舗・月の和集合） */
   notifications: { merge: mergeNotifs,    covers: _coversNotifs,   after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); var p=document.getElementById('notif-panel'); if(p&&p.style.display==='block'&&typeof renderNotifPanel==='function') renderNotifPanel(); }catch(e){} } },
   approvals:     { merge: mergeApprovals, covers: _coversApprovals, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } },
@@ -8411,7 +8424,8 @@ function switchStore(id) {
 var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory',
   /* v766: 食材管理メニューに出ているのに OFFICE から開けなかった2画面を追加。
      本部ログインだと Office管理へ弾かれていた（chef 以前からの不具合）。 */
-  'fv_variance','ing_transfer'];
+  'fv_variance','ing_transfer',
+  'cc_plan'];   /* v767 */
 
 /* ============================================================
    ROUTER
@@ -8461,6 +8475,7 @@ function renderPage(page) {
     case 'tasks':        el.innerHTML = renderWorkCenter(); break;
     case 'biz_guide':    el.innerHTML = renderBizGuide(); break;
     case 'required':     el.innerHTML = renderRequired(); break;
+    case 'cc_plan':      el.innerHTML = renderCcPlan(); break;   /* v767 */
     case 'goals':        el.innerHTML = renderGoals(); break;
     case 'announce':     workTab='announce'; el.innerHTML = renderWorkCenter(); break;
     case 'labor':        el.innerHTML = renderLabor(); break;
@@ -20219,7 +20234,8 @@ async function loadStoreLabor(sid, guid, days, liveFill){
 /* v720: 'inv_' を追加。inv_<店> は棚卸のカウント/PAR/日次フラグ＝手入力データなのに
    OP_SYNC_PREFIX の 'inv_' により「再取得可」と判定され、空き容量作成で削除され得た。
    クラウド未送信の状態で消すと入力が失われるため保護する（'inv_hist_' も内包される）。 */
-var LS_NEVER_FREE = ['inv_','inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
+var LS_NEVER_FREE = ['spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','spl_cc_actions_',   /* v767 */
+  'inv_','inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
   'fv_count_','fv_moves_','fv_review_','fv_config'];   /* v722: 日次食材差異(手入力・設定) */
@@ -21217,7 +21233,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '766';
+const APP_VERSION = '767';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -44576,6 +44592,445 @@ function renderAnnounce(){
   });
   html+='</div>';
   return html;
+}
+/* ===== v767: Corporate Chef 月間行動計画 =====
+   【目的】本部(GM)が出す今月の目標と、Corporate Chef の具体的な行動を突き合わせ、
+     双方が同じ目標を理解した状態で月を進める。
+   【設計の要点】
+     ・この画面は「入力する場所」ではなく「束ねる場所」。原価・人員・育成・応援要請の
+       実データは既存画面が持っている。ここで持つのは目標・行動・状態・期限だけ。
+     ・保存は対象月ごとに行を分ける（spl_cc_actions_<YYYY-MM>）。今月を編集しても
+       先月の行に触らない。予算で起きた「別の月を保存したら他の月が変わる」を構造的に防ぐ。
+     ・削除は論理削除。合流は必ず時刻(_mut)で判定し、値の大小では決めない。 */
+
+var CC_SUBMIT_DAY = 25;    /* 前月25日までに提出 */
+var CC_APPROVE_DAY = 28;   /* 前月28日までに承認 */
+
+var CC_CATS = [
+  {id:'store',   label:'店舗改善',        icon:'ti-building-store'},
+  {id:'cost',    label:'原価目標',        icon:'ti-receipt'},
+  {id:'hygiene', label:'衛生基準の策定',  icon:'ti-shield-check'},
+  {id:'quality', label:'クオリティ管理',  icon:'ti-star'},
+  {id:'staff',   label:'キッチン人員',    icon:'ti-users'},
+  {id:'leader',  label:'Leader育成',      icon:'ti-user-star'},
+  {id:'support', label:'応援要請',        icon:'ti-hand-stop'},
+  {id:'product', label:'商品開発',        icon:'ti-tools-kitchen-2'},
+  {id:'other',   label:'その他',          icon:'ti-dots'}
+];
+var CC_STATUS = ['未着手','進行中','確認待ち','完了','繰越','中止'];
+var CC_PROGRESS = {'未着手':0,'進行中':50,'確認待ち':80,'完了':100,'繰越':0,'中止':0};
+
+/* ---------- 合流ルール（id単位・時刻で判定・論理削除に対応） ---------- */
+function _ccMut(x){ return Number(x && x._mut) || 0; }
+function mergeCcList(cloudArr, localArr){
+  var by = {}, order = [];
+  function put(item){
+    if(!item || item.id == null) return;
+    var id = item.id;
+    if(!by[id]){ by[id] = item; order.push(id); return; }
+    /* 新しい方が勝つ。内容の多さや値の大小では決めない */
+    if(_ccMut(item) > _ccMut(by[id])) by[id] = item;
+  }
+  (cloudArr || []).forEach(put);
+  (localArr || []).forEach(put);
+  return order.map(function(id){ return by[id]; });
+}
+function _coversCcList(check, want){
+  if(!Array.isArray(check)) return false;
+  var have = {};
+  check.forEach(function(x){ if(x && x.id != null) have[x.id] = x; });
+  for(var i=0; i<(want||[]).length; i++){
+    var w = want[i]; if(!w || w.id == null) continue;
+    var h = have[w.id]; if(!h) return false;
+    if(_ccMut(h) < _ccMut(w)) return false;
+  }
+  return true;
+}
+
+/* ---------- 対象月 ---------- */
+var ccYmShown = null;
+function _ccPad(n){ return String(n).length < 2 ? '0'+n : String(n); }
+function ccYmDefault(){
+  /* 20日を過ぎたら翌月の計画を作る時期とみなす */
+  var d = new Date();
+  if(d.getDate() >= 20) d.setMonth(d.getMonth() + 1);
+  return d.getFullYear() + '-' + _ccPad(d.getMonth() + 1);
+}
+function ccYm(){ if(!ccYmShown) ccYmShown = ccYmDefault(); return ccYmShown; }
+function ccShiftYm(delta){
+  var p = ccYm().split('-');
+  var d = new Date(Number(p[0]), Number(p[1]) - 1 + delta, 1);
+  ccYmShown = d.getFullYear() + '-' + _ccPad(d.getMonth() + 1);
+  renderPage('cc_plan');
+}
+function ccDeadlines(ym){
+  var p = String(ym).split('-');
+  var d = new Date(Number(p[0]), Number(p[1]) - 1, 1);
+  d.setMonth(d.getMonth() - 1);                       /* 前月 */
+  var base = d.getFullYear() + '-' + _ccPad(d.getMonth() + 1) + '-';
+  return { submit: base + _ccPad(CC_SUBMIT_DAY), approve: base + _ccPad(CC_APPROVE_DAY) };
+}
+function _ccToday(){ var d = new Date(); return d.getFullYear()+'-'+_ccPad(d.getMonth()+1)+'-'+_ccPad(d.getDate()); }
+function _ccDaysLeft(dateStr){
+  try{
+    var a = new Date(_ccToday()+'T00:00:00'), b = new Date(dateStr+'T00:00:00');
+    return Math.round((b - a) / 86400000);
+  }catch(e){ return null; }
+}
+
+/* ---------- 権限 ---------- */
+function ccIsHQ(){ return curRole === 'gm' || curRole === 'ceo'; }          /* 本部側（目標を出す・承認する） */
+function ccIsChef(){ return curRole === 'chef'; }                           /* キッチン側（計画を出す） */
+function ccCanSeePlan(){ return ccIsHQ() || ccIsChef(); }
+function ccCanEditActions(ym){
+  var st = ccPlan(ym).status;
+  if(st === 'ロック') return false;
+  return ccIsChef() || ccIsHQ();
+}
+function ccCanEditGoals(ym){ return ccIsHQ() && ccPlan(ym).status !== 'ロック'; }
+
+/* ---------- 読み書き ---------- */
+function ccAllPlans(){ return ls('cc_plans', {}) || {}; }
+function ccPlan(ym){
+  var p = ccAllPlans()[ym];
+  return p ? p : { ym: ym, status: '下書き', focus: ['','',''] };
+}
+function ccSavePlan(ym, patch){
+  var all = ccAllPlans();
+  var cur = all[ym] || { ym: ym, status: '下書き', focus: ['','',''] };
+  all[ym] = Object.assign({}, cur, patch || {}, { ym: ym });
+  var ok = lsSet('cc_plans', all);
+  if(ok === false) showToast('保存できませんでした。設定＞保存容量をご確認ください', 'danger');
+  return ok !== false;
+}
+function ccGoals(ym){
+  return (ls('hq_goals', []) || []).filter(function(g){ return g && g.ym === ym && !g._deleted; });
+}
+function ccActions(ym){
+  return (ls('cc_actions', []) || []).filter(function(a){ return a && a.ym === ym && !a._deleted; });
+}
+function _ccPutGoal(rec){
+  var arr = ls('hq_goals', []) || [];
+  var i = -1;
+  arr.forEach(function(x, k){ if(x && x.id === rec.id) i = k; });
+  if(i >= 0) arr[i] = rec; else arr.push(rec);
+  return lsSet('hq_goals', arr) !== false;
+}
+function _ccPutAction(rec){
+  var arr = ls('cc_actions', []) || [];
+  var i = -1;
+  arr.forEach(function(x, k){ if(x && x.id === rec.id) i = k; });
+  if(i >= 0) arr[i] = rec; else arr.push(rec);
+  return lsSet('cc_actions', arr) !== false;
+}
+
+/* ---------- カバー率 ---------- */
+function ccCoverage(ym){
+  var goals = ccGoals(ym), acts = ccActions(ym);
+  var linked = {};
+  acts.forEach(function(a){ if(a.goalId) linked[a.goalId] = (linked[a.goalId] || 0) + 1; });
+  var covered = goals.filter(function(g){ return linked[g.id]; }).length;
+  return { total: goals.length, covered: covered, linked: linked,
+           pct: goals.length ? Math.round(covered / goals.length * 100) : 0 };
+}
+
+/* ---------- 本部目標 ---------- */
+function openCcGoalModal(ym, id){
+  var g = ccGoals(ym).filter(function(x){ return x.id === id; })[0] || { title:'', detail:'', priority:'中' };
+  openModal('<div class="modal-title">' + (id ? '本部目標を編集' : '本部目標を追加') +
+    ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
+    '<div class="form-group"><label class="form-label">目標</label>' +
+    '<input class="form-input" id="cg-title" placeholder="例: 全店の原価率を28%以下に" value="' + escapeHtml(g.title || '') + '"></div>' +
+    '<div class="form-group"><label class="form-label">背景・意図（Chefへ伝えたいこと）</label>' +
+    '<textarea class="form-input" id="cg-detail" rows="3">' + escapeHtml(g.detail || '') + '</textarea></div>' +
+    '<div class="form-group"><label class="form-label">優先度</label><select class="form-select" id="cg-pri">' +
+    ['高','中','低'].map(function(p){ return '<option' + (g.priority === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') +
+    '</select></div>' +
+    '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
+    (id ? '<button class="btn btn-secondary" onclick="delCcGoal(\'' + ym + '\',\'' + id + '\')"><i class="ti ti-trash"></i> 削除</button>' : '') +
+    '<button class="btn btn-primary" onclick="saveCcGoal(\'' + ym + '\',\'' + (id || '') + '\')">保存</button></div>');
+}
+function saveCcGoal(ym, id){
+  var title = (document.getElementById('cg-title').value || '').trim();
+  if(!title){ alert('目標を入力してください'); return; }
+  var old = ccGoals(ym).filter(function(x){ return x.id === id; })[0] || {};
+  var rec = Object.assign({}, old, {
+    id: id || ('hg' + Date.now()), ym: ym, title: title,
+    detail: (document.getElementById('cg-detail').value || '').trim(),
+    priority: document.getElementById('cg-pri').value,
+    by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false
+  });
+  if(!_ccPutGoal(rec)){ showToast('保存できませんでした', 'danger'); return; }
+  closeModalDirect(); showToast('本部目標を保存しました', 'success'); renderPage('cc_plan');
+}
+function delCcGoal(ym, id){
+  var acts = ccActions(ym).filter(function(a){ return a.goalId === id; });
+  if(acts.length && !confirm('この目標には行動が' + acts.length + '件紐づいています。削除しますか？（行動は残り、紐づけだけ外れます）')) return;
+  var g = ccGoals(ym).filter(function(x){ return x.id === id; })[0];
+  if(!g) return;
+  /* 物理削除にしない。合流で復活するため論理削除にする */
+  _ccPutGoal(Object.assign({}, g, { _deleted: true, _mut: Date.now(), by: myName(), at: nowJP() }));
+  closeModalDirect(); showToast('削除しました', 'info'); renderPage('cc_plan');
+}
+
+/* ---------- 行動アクション ---------- */
+function openCcActionModal(ym, id){
+  var a = ccActions(ym).filter(function(x){ return x.id === id; })[0] ||
+          { goalId:'', cat:'store', storeId:'ALL', what:'', how:'', due:'', status:'未着手', note:'' };
+  var goals = ccGoals(ym);
+  var stores = (typeof STORES !== 'undefined' ? STORES : []);
+  openModal('<div class="modal-title">' + (id ? '行動を編集' : '行動を追加') +
+    ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
+    '<div class="form-group"><label class="form-label">どの本部目標のための行動か</label><select class="form-select" id="ca-goal">' +
+    '<option value=""' + (a.goalId ? '' : ' selected') + '>（自主提案・本部目標なし）</option>' +
+    goals.map(function(g){ return '<option value="' + g.id + '"' + (a.goalId === g.id ? ' selected' : '') + '>' + escapeHtml(g.title) + '</option>'; }).join('') +
+    '</select></div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label class="form-label">カテゴリー</label><select class="form-select" id="ca-cat">' +
+    CC_CATS.map(function(c){ return '<option value="' + c.id + '"' + (a.cat === c.id ? ' selected' : '') + '>' + c.label + '</option>'; }).join('') +
+    '</select></div>' +
+    '<div class="form-group"><label class="form-label">対象店舗</label><select class="form-select" id="ca-store">' +
+    '<option value="ALL"' + (a.storeId === 'ALL' ? ' selected' : '') + '>全店舗</option>' +
+    stores.map(function(s){ return '<option value="' + s.id + '"' + (a.storeId === s.id ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>'; }).join('') +
+    '</select></div></div>' +
+    '<div class="form-group"><label class="form-label">今月やること</label>' +
+    '<input class="form-input" id="ca-what" placeholder="例: Piikoiの仕込みロス調査と手順見直し" value="' + escapeHtml(a.what || '') + '"></div>' +
+    '<div class="form-group"><label class="form-label">具体的な進め方</label>' +
+    '<textarea class="form-input" id="ca-how" rows="3">' + escapeHtml(a.how || '') + '</textarea></div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label class="form-label">期限</label>' +
+    '<input class="form-input" id="ca-due" type="date" value="' + escapeHtml(a.due || '') + '"></div>' +
+    '<div class="form-group"><label class="form-label">状態</label><select class="form-select" id="ca-status">' +
+    CC_STATUS.map(function(s){ return '<option' + (a.status === s ? ' selected' : '') + '>' + s + '</option>'; }).join('') +
+    '</select></div></div>' +
+    '<div class="form-group"><label class="form-label">GMへの相談・メモ</label>' +
+    '<textarea class="form-input" id="ca-note" rows="2">' + escapeHtml(a.note || '') + '</textarea></div>' +
+    '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
+    (id ? '<button class="btn btn-secondary" onclick="delCcAction(\'' + ym + '\',\'' + id + '\')"><i class="ti ti-trash"></i> 削除</button>' : '') +
+    '<button class="btn btn-primary" onclick="saveCcAction(\'' + ym + '\',\'' + (id || '') + '\')">保存</button></div>');
+}
+function saveCcAction(ym, id){
+  var what = (document.getElementById('ca-what').value || '').trim();
+  if(!what){ alert('今月やることを入力してください'); return; }
+  var old = ccActions(ym).filter(function(x){ return x.id === id; })[0] || {};
+  var rec = Object.assign({}, old, {
+    id: id || ('ca' + Date.now()), ym: ym,
+    goalId: document.getElementById('ca-goal').value,
+    cat: document.getElementById('ca-cat').value,
+    storeId: document.getElementById('ca-store').value,
+    what: what,
+    how: (document.getElementById('ca-how').value || '').trim(),
+    due: document.getElementById('ca-due').value,
+    status: document.getElementById('ca-status').value,
+    note: (document.getElementById('ca-note').value || '').trim(),
+    by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false
+  });
+  if(!_ccPutAction(rec)){ showToast('保存できませんでした', 'danger'); return; }
+  closeModalDirect(); showToast('行動を保存しました', 'success'); renderPage('cc_plan');
+}
+function delCcAction(ym, id){
+  if(!confirm('この行動を削除しますか？')) return;
+  var a = ccActions(ym).filter(function(x){ return x.id === id; })[0];
+  if(!a) return;
+  _ccPutAction(Object.assign({}, a, { _deleted: true, _mut: Date.now(), by: myName(), at: nowJP() }));
+  closeModalDirect(); showToast('削除しました', 'info'); renderPage('cc_plan');
+}
+
+/* ---------- 重点行動3項目 ---------- */
+function saveCcFocus(ym){
+  var f = [];
+  for(var i=0; i<3; i++){
+    var el = document.getElementById('cf-' + i);
+    f.push(el ? (el.value || '').trim() : '');
+  }
+  if(ccSavePlan(ym, { focus: f, editedBy: myName(), editedAt: nowJP() })) showToast('重点行動を保存しました', 'success');
+}
+
+/* ---------- 提出・承認 ---------- */
+function ccSubmit(ym){
+  var acts = ccActions(ym);
+  if(!acts.length){ alert('行動が1件もありません。先に行動計画を登録してください。'); return; }
+  if(!confirm(ym + ' の行動計画をGMへ提出しますか？')) return;
+  var name = myName();
+  if(!ccSavePlan(ym, { status: '提出済', submittedBy: name, submittedAt: nowJP(), returnReason: '' })) return;
+  try{
+    addApproval({ title: '月間行動計画 — Corporate Chef（' + ym + '）', type: '月間行動計画',
+                  from: name, store: '---', ref: ym, ym: ym });
+  }catch(e){}
+  showToast('提出しました。GMへ通知しました', 'success');
+  renderPage('cc_plan');
+}
+function ccApprove(ym){
+  var cov = ccCoverage(ym);
+  if(cov.total && cov.covered < cov.total){
+    alert('行動が紐づいていない本部目標が' + (cov.total - cov.covered) + '件あります。\n紐づけてから承認してください。');
+    return;
+  }
+  if(!confirm(ym + ' の行動計画を承認しますか？')) return;
+  if(!ccSavePlan(ym, { status: '承認済', approvedBy: myName(), approvedAt: nowJP(), returnReason: '' })) return;
+  try{ addNotif({ type:'plan', title:'月間行動計画が承認されました', text: ym + ' の行動計画',
+                  toRoles:['chef'], page:'cc_plan' }); }catch(e){}
+  showToast('承認しました', 'success'); renderPage('cc_plan');
+}
+function ccReturn(ym){
+  var r = prompt('差し戻しの理由を入力してください（必須）');
+  if(r == null) return;
+  r = String(r).trim();
+  if(!r){ alert('理由は必須です'); return; }
+  if(!ccSavePlan(ym, { status: '差し戻し', returnReason: r, returnedBy: myName(), returnedAt: nowJP() })) return;
+  try{ addNotif({ type:'plan', title:'月間行動計画が差し戻されました', text: ym + '：' + r.slice(0,120),
+                  toRoles:['chef'], page:'cc_plan' }); }catch(e){}
+  showToast('差し戻しました', 'info'); renderPage('cc_plan');
+}
+function ccLock(ym){
+  if(!confirm(ym + ' の行動計画をロックしますか？\nロック後は目標・行動を編集できなくなります。')) return;
+  if(!ccSavePlan(ym, { status: 'ロック', lockedBy: myName(), lockedAt: nowJP() })) return;
+  showToast('ロックしました', 'success'); renderPage('cc_plan');
+}
+function ccUnlock(ym){
+  if(!confirm('ロックを解除しますか？')) return;
+  if(!ccSavePlan(ym, { status: '承認済', lockedBy: '', lockedAt: '' })) return;
+  showToast('ロックを解除しました', 'info'); renderPage('cc_plan');
+}
+
+/* ---------- 画面 ---------- */
+function _ccStatusChip(st){
+  var col = st === 'ロック' ? 'var(--muted)' : st === '承認済' ? 'var(--green)' :
+            st === '提出済' ? 'var(--accent)' : st === '差し戻し' ? 'var(--red)' : 'var(--yellow)';
+  return '<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700;color:#fff;background:' + col + '">' + st + '</span>';
+}
+function renderCcPlan(){
+  if(!ccCanSeePlan()) return '<div class="card">この画面を表示する権限がありません。</div>';
+  var ym = ccYm(), plan = ccPlan(ym), goals = ccGoals(ym), acts = ccActions(ym);
+  var cov = ccCoverage(ym), dl = ccDeadlines(ym);
+  var locked = plan.status === 'ロック';
+  var h = '';
+
+  /* 月セレクタ */
+  h += '<div class="section-header"><div>' +
+       '<div class="section-title">月間行動計画</div>' +
+       '<div class="section-sub">Corporate Chef ' + _ccStatusChip(plan.status) + '</div></div>' +
+       '<div style="display:flex;align-items:center;gap:6px">' +
+       '<button class="btn btn-secondary btn-sm" onclick="ccShiftYm(-1)"><i class="ti ti-chevron-left"></i></button>' +
+       '<b style="font-size:15px">' + ym + '</b>' +
+       '<button class="btn btn-secondary btn-sm" onclick="ccShiftYm(1)"><i class="ti ti-chevron-right"></i></button>' +
+       '</div></div>';
+
+  /* 期限 */
+  var dsub = _ccDaysLeft(dl.submit), dapp = _ccDaysLeft(dl.approve);
+  var dcol = (plan.status === '下書き' || plan.status === '差し戻し') && dsub !== null && dsub < 0 ? 'var(--red)' : 'var(--muted)';
+  h += '<div class="card" style="padding:10px 12px;font-size:12px;color:' + dcol + '">' +
+       '提出期限 <b>' + dl.submit + '</b>' + (dsub !== null ? '（' + (dsub >= 0 ? 'あと' + dsub + '日' : Math.abs(dsub) + '日超過') + '）' : '') +
+       ' ／ 承認期限 <b>' + dl.approve + '</b></div>';
+
+  /* 差し戻し理由 */
+  if(plan.status === '差し戻し' && plan.returnReason){
+    h += '<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-alert-triangle"></i>' +
+         '<div><b>差し戻し</b>：' + escapeHtml(plan.returnReason) +
+         '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(plan.returnedBy || '') + ' ' + escapeHtml(plan.returnedAt || '') + '</div></div></div>';
+  }
+
+  /* 本部目標 */
+  h += '<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>本部目標（GM）' +
+       (ccCanEditGoals(ym) ? '<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openCcGoalModal(\'' + ym + '\',\'\')"><i class="ti ti-plus"></i> 追加</button>' : '') +
+       '</div>';
+  if(!goals.length){
+    h += '<div style="font-size:12px;color:var(--muted)">' +
+         (ccIsHQ() ? '今月の本部目標をまだ登録していません。' : 'GMが今月の目標をまだ登録していません。') + '</div>';
+  } else {
+    var cpct = cov.pct;
+    h += '<div style="font-size:12px;margin-bottom:6px">行動が紐づいた目標 <b style="color:' + (cpct === 100 ? 'var(--green)' : 'var(--yellow)') + '">' +
+         cov.covered + ' / ' + cov.total + '（' + cpct + '%）</b></div>' +
+         '<div style="height:8px;background:var(--surface2);border-radius:5px;overflow:hidden;margin-bottom:10px">' +
+         '<div style="height:100%;width:' + cpct + '%;background:' + (cpct === 100 ? 'var(--green)' : 'var(--yellow)') + '"></div></div>';
+    goals.forEach(function(g){
+      var n = cov.linked[g.id] || 0;
+      h += '<div style="border:1px solid ' + (n ? 'var(--border)' : 'var(--red)') + ';border-radius:8px;padding:9px;margin-bottom:7px">' +
+           '<div style="display:flex;gap:6px;align-items:flex-start">' +
+           '<div style="flex:1"><b style="font-size:13px">' + escapeHtml(g.title) + '</b>' +
+           '<span style="font-size:10px;color:var(--muted);margin-left:6px">優先度 ' + escapeHtml(g.priority || '中') + '</span>' +
+           (g.detail ? '<div style="font-size:11.5px;color:var(--muted);margin-top:3px;white-space:pre-wrap">' + escapeHtml(g.detail) + '</div>' : '') +
+           '<div style="font-size:11px;margin-top:5px;color:' + (n ? 'var(--green)' : 'var(--red)') + '">' +
+           (n ? '行動 ' + n + '件' : '⚠ 行動が紐づいていません') + '</div></div>' +
+           (ccCanEditGoals(ym) ? '<button class="btn btn-secondary btn-sm" onclick="openCcGoalModal(\'' + ym + '\',\'' + g.id + '\')"><i class="ti ti-pencil"></i></button>' : '') +
+           '</div></div>';
+    });
+  }
+  h += '</div>';
+
+  /* 重点行動3項目 */
+  h += '<div class="card"><div class="card-title"><i class="ti ti-flag" style="color:var(--accent)"></i>今月の重点行動（Chef）</div>';
+  var f = plan.focus || ['','',''];
+  if(ccIsChef() && !locked){
+    for(var i=0; i<3; i++){
+      h += '<div class="form-group" style="margin-bottom:6px"><input class="form-input" id="cf-' + i + '" placeholder="重点 ' + (i+1) + '" value="' + escapeHtml(f[i] || '') + '"></div>';
+    }
+    h += '<button class="btn btn-secondary btn-sm" onclick="saveCcFocus(\'' + ym + '\')"><i class="ti ti-device-floppy"></i> 保存</button>';
+  } else {
+    var any = f.filter(function(x){ return x; });
+    h += any.length ? '<ol style="margin:0;padding-left:18px;font-size:13px">' + any.map(function(x){ return '<li>' + escapeHtml(x) + '</li>'; }).join('') + '</ol>'
+                    : '<div style="font-size:12px;color:var(--muted)">未記入</div>';
+  }
+  h += '</div>';
+
+  /* 行動計画 */
+  h += '<div class="card"><div class="card-title"><i class="ti ti-list-check" style="color:var(--accent)"></i>行動計画（' + acts.length + '件）' +
+       (ccCanEditActions(ym) ? '<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openCcActionModal(\'' + ym + '\',\'\')"><i class="ti ti-plus"></i> 追加</button>' : '') +
+       '</div>';
+  if(!acts.length){
+    h += '<div style="font-size:12px;color:var(--muted)">まだ行動が登録されていません。</div>';
+  } else {
+    var goalTitle = {};
+    goals.forEach(function(g){ goalTitle[g.id] = g.title; });
+    CC_CATS.forEach(function(c){
+      var list = acts.filter(function(a){ return a.cat === c.id; });
+      if(!list.length) return;
+      h += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:9px 0 4px"><i class="ti ' + c.icon + '"></i> ' + c.label + '</div>';
+      list.forEach(function(a){
+        var over = a.due && a.status !== '完了' && a.due < _ccToday();
+        var sc = a.status === '完了' ? 'var(--green)' : over ? 'var(--red)' : 'var(--muted)';
+        var st = (typeof STORES !== 'undefined' ? STORES : []).filter(function(s){ return s.id === a.storeId; })[0];
+        h += '<div style="border:1px solid var(--border);border-radius:8px;padding:9px;margin-bottom:6px"' +
+             (ccCanEditActions(ym) ? ' onclick="openCcActionModal(\'' + ym + '\',\'' + a.id + '\')" style="cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:9px;margin-bottom:6px"' : '') + '>' +
+             '<div style="font-size:13px;font-weight:600">' + escapeHtml(a.what) + '</div>' +
+             '<div style="font-size:11px;color:var(--muted);margin-top:3px">' +
+             (a.storeId === 'ALL' ? '全店舗' : escapeHtml((st || {}).name || a.storeId)) +
+             (a.goalId ? ' ／ ' + escapeHtml(goalTitle[a.goalId] || '（削除された目標）') : ' ／ <span style="color:var(--yellow)">自主提案</span>') +
+             '</div>' +
+             '<div style="font-size:11px;margin-top:4px;color:' + sc + '">' +
+             escapeHtml(a.status) + '（' + (CC_PROGRESS[a.status] || 0) + '%）' +
+             (a.due ? ' ・ 期限 ' + escapeHtml(a.due) + (over ? ' ⚠超過' : '') : '') + '</div>' +
+             '</div>';
+      });
+    });
+  }
+  h += '</div>';
+
+  /* 操作 */
+  h += '<div class="card"><div class="btn-row" style="flex-wrap:wrap">';
+  if(ccIsChef() && (plan.status === '下書き' || plan.status === '差し戻し')){
+    h += '<button class="btn btn-primary" onclick="ccSubmit(\'' + ym + '\')"><i class="ti ti-send"></i> GMへ提出</button>';
+  }
+  if(ccIsHQ() && plan.status === '提出済'){
+    h += '<button class="btn btn-secondary" onclick="ccReturn(\'' + ym + '\')"><i class="ti ti-arrow-back-up"></i> 差し戻し</button>' +
+         '<button class="btn btn-primary" onclick="ccApprove(\'' + ym + '\')"><i class="ti ti-check"></i> 承認</button>';
+  }
+  if(ccIsHQ() && plan.status === '承認済'){
+    h += '<button class="btn btn-primary" onclick="ccLock(\'' + ym + '\')"><i class="ti ti-lock"></i> ロック</button>';
+  }
+  if(ccIsHQ() && locked){
+    h += '<button class="btn btn-secondary" onclick="ccUnlock(\'' + ym + '\')"><i class="ti ti-lock-open"></i> ロック解除</button>';
+  }
+  h += '</div>';
+  var meta = [];
+  if(plan.submittedBy) meta.push('提出：' + escapeHtml(plan.submittedBy) + ' ' + escapeHtml(plan.submittedAt || ''));
+  if(plan.approvedBy) meta.push('承認：' + escapeHtml(plan.approvedBy) + ' ' + escapeHtml(plan.approvedAt || ''));
+  if(plan.lockedBy) meta.push('ロック：' + escapeHtml(plan.lockedBy) + ' ' + escapeHtml(plan.lockedAt || ''));
+  if(meta.length) h += '<div style="font-size:11px;color:var(--muted);margin-top:8px">' + meta.join('　') + '</div>';
+  try{ h += lastEditNote('cc_plans', ym); }catch(e){}
+  h += '</div>';
+
+  return h;
 }
 function renderGoals() {
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;

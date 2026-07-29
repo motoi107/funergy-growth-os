@@ -40,6 +40,11 @@ const api = new Function(`
   var DEFAULT_STORES=[{id:'F01'},{id:'F02'},{id:'F03'},{id:'F03-G'},{id:'F04-K'},{id:'F04-P'},{id:'F04-A'},{id:'F05'}];
   function _lsRaw(){ return null; }
   function mergeListByCode(){} function _coversListByCode(){}
+  /* v767: v750 で設定型(obj)の分割キーは _stDef() へ自動で解決されるようになった。
+     このスタブが無いと _opMergeDef 内で例外になり、保護済みのキーが MISS と誤判定される。 */
+  function mergeStamped(){} function _coversStamped(){}
+  var _ST_MERGE_DEF=null;
+  function _stDef(){ if(!_ST_MERGE_DEF) _ST_MERGE_DEF={ merge:mergeStamped, covers:_coversStamped }; return _ST_MERGE_DEF; }
   var console={warn:function(){}};
   ${stubs}
   ${merges}
