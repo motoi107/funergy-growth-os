@@ -1131,11 +1131,11 @@ function getStoresAll() {
     if(x.dinnerHours===undefined) x.dinnerHours = '17:00-22:00';
     if(x.takeout===undefined) x.takeout = true;
   });
-  return sortByLoginOrder(s); // 全画面共通の店舗並び順（ToriTon→Tenkichi→Kaimuki→Piikoi→Aiea→Marujuu→FSP→WGS）
+  return sortByLoginOrder(s); // 全画面共通の店舗並び順（ToriTon→Tenkichi→Kaimuki→Piikoi→Aiea→Marujuu→LaLa→FSP→WGS）
 }
 function setStoresAll(s) { lsSet('m_stores', s); refreshStores(); }
 /* ログイン画面と同じ店舗並び順（全画面共通） */
-const LOGIN_STORE_ORDER = ['F01','F02','F04-K','F04-P','F04-A','F05','F03','F03-G'];
+const LOGIN_STORE_ORDER = ['F01','F02','F04-K','F04-P','F04-A','F05','F06','F03','F03-G'];   /* v786: LaLa(F06)をMarujuuの次へ */
 function sortByLoginOrder(stores){
   return (stores||[]).slice().sort(function(a,b){
     var ia = LOGIN_STORE_ORDER.indexOf(a.id); if (ia<0) ia = 999;
@@ -3915,6 +3915,12 @@ function archivedRecipes() { return getRecipes().filter(r=>r.archived); }
    - 既存の店舗別レシピ(F04-K等)もTotoyaビューにまとめて表示（非破壊）。
 ============================================================ */
 var TOTOYA_STORE_IDS = ['F04-K','F04-P','F04-A'];
+/* v784: ToriTon と同じシフト運用（専用ビルダー＋シフト盤面）にする店舗。
+   LaLa(F06) は ToriTon とほぼ同じ業態のため同じ扱いにする。
+   店舗IDは店舗マスターのカードに表示している。効いていれば「ToriTon型シフト」の印が出る。
+   同じ業態の店がこれ以上増えるようなら、この配列ではなく店舗マスターの項目にすること。 */
+var TORITON_SHIFT_STORES = ['F01','F06'];
+function isToritonShift(storeId){ return TORITON_SHIFT_STORES.indexOf(storeId)>=0; }
 function isTotoyaStore(storeId){ return TOTOYA_STORE_IDS.indexOf(storeId)>=0; }
 /* ダッシュボード(Funergy Now)の閲覧可否: 財務ロール、またはG3以上。 */
 function canSeeDashboard(){
@@ -21425,7 +21431,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '783';
+const APP_VERSION = '786';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -22060,7 +22066,7 @@ function renderShiftAdmin() {
   <div class="phase-tabs" style="flex-wrap:wrap;gap:4px">
     <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')"><i class="ti ti-clipboard-check" style="font-size:12px"></i> 提出状況</div>
     <div class="phase-tab${shiftAdminTab==='build'?' active':''}" onclick="setShiftAdminTab('build')"><i class="ti ti-calendar-plus" style="font-size:12px"></i> シフト作成</div>
-    ${storeId==='F02'?'':`<div class="phase-tab${shiftAdminTab==='table'?' active':''}" onclick="setShiftAdminTab('table')"><i class="ti ti-layout-board" style="font-size:12px"></i> ${storeId==='F01'?'シフト盤面':'シフト表'}</div>`}
+    ${storeId==='F02'?'':`<div class="phase-tab${shiftAdminTab==='table'?' active':''}" onclick="setShiftAdminTab('table')"><i class="ti ti-layout-board" style="font-size:12px"></i> ${isToritonShift(storeId)?'シフト盤面':'シフト表'}</div>`}
     <div class="phase-tab${shiftAdminTab==='cover'?' active':''}" onclick="setShiftAdminTab('cover')"><i class="ti ti-users-group" style="font-size:12px"></i> カバー候補</div>
     <div class="phase-tab${shiftAdminTab==='help'?' active':''}" onclick="setShiftAdminTab('help')"><i class="ti ti-urgent" style="font-size:12px"></i> ヘルプ募集${(function(){var n=getHelpRequests(storeId).filter(h=>h.status==='募集中').length;return n?` <span style="background:var(--accent);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${n}</span>`:'';})()}</div>
     <div class="phase-tab${shiftAdminTab==='labor'?' active':''}" onclick="setShiftAdminTab('labor')"><i class="ti ti-coin" style="font-size:12px"></i> Labor Cost</div>
@@ -22070,8 +22076,8 @@ function renderShiftAdmin() {
   </div>`;
 
   if (shiftAdminTab==='status') html += renderShiftStatus(storeId, week);
-  else if (shiftAdminTab==='build') html += (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : (storeId==='F01' ? renderShiftBuilderF01(storeId, week) : (storeId==='F04-P' ? renderShiftBuilderF04P(storeId, week) : renderShiftBuild(storeId, week))));
-  else if (shiftAdminTab==='table') html += (storeId==='F01' ? renderShiftBoard(storeId, week) : (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : renderShiftTable(storeId, week)));
+  else if (shiftAdminTab==='build') html += (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : (isToritonShift(storeId) ? renderShiftBuilderF01(storeId, week) : (storeId==='F04-P' ? renderShiftBuilderF04P(storeId, week) : renderShiftBuild(storeId, week))));
+  else if (shiftAdminTab==='table') html += (isToritonShift(storeId) ? renderShiftBoard(storeId, week) : (storeId==='F02' ? renderShiftBuilderF02(storeId, week) : renderShiftTable(storeId, week)));
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
   else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
@@ -26183,7 +26189,27 @@ function saveBenefitAdjust(name){
                interviewDate,interviewer,evalMemo,decision}
    応募ステータス: 新規応募/要確認/面接調整中/面接予定/面接完了/採用/不採用/辞退
 ============================================================ */
-const APPLICANT_STORES = ['ToriTon','Tenkichi','Totoya','Marujuu','Waikiki','未分類'];
+const APPLICANT_STORES_BASE = ['ToriTon','Tenkichi','Totoya','Marujuu','Waikiki'];
+/* v785: 応募者の店舗一覧を「既定 ∪ 店舗マスター ∪ 実データにある値」にする。
+   【従来の問題】直書きの6件だけだったため、新しく登録した店舗（LaLa）を選べなかった。
+   また一覧の描画は この配列を回しているので、ここに無い値を持つ応募者は
+   件数には数えられるのに一覧に出ない。実データの値も必ず含める。
+   【activeStores ではなく getStoresAll を使う理由】採用は開店前から始まる。
+   稼働中に切り替える前の店舗でも応募者を受け付けられる必要がある。
+   ※「未分類」は常に最後に置く（要確認の受け皿のため）。 */
+function applicantStores(){
+  var out=[], seen={};
+  function add(v){
+    v = String(v==null?'':v).trim();
+    if(!v || v==='未分類' || seen[v]) return;
+    seen[v]=1; out.push(v);
+  }
+  APPLICANT_STORES_BASE.forEach(add);
+  try{ (typeof getStoresAll==='function'?getStoresAll():[]).forEach(function(s){ add(s.brand||s.name); }); }catch(e){}
+  try{ (typeof getApplicants==='function'?getApplicants():[]).forEach(function(a){ add(a&&a.store); }); }catch(e){}
+  out.push('未分類');
+  return out;
+}
 function getApplicants() {
   return ls('applicants', []);
 }
@@ -27059,7 +27085,7 @@ function renderRejectedList(){
 /* 採用（応募者）タブ */
 function renderHiringInner(apps) {
   var byStore = {};
-  APPLICANT_STORES.forEach(s=>byStore[s]=[]);
+  applicantStores().forEach(s=>byStore[s]=[]);
   apps.forEach(a=>{ (byStore[a.store]=byStore[a.store]||[]).push(a); });
 
   var html = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
@@ -27080,7 +27106,7 @@ function renderHiringInner(apps) {
   }
 
   // 店舗別タブ表示
-  APPLICANT_STORES.forEach(store => {
+  applicantStores().forEach(store => {
     var list = byStore[store] || [];
     if (!list.length) return;
     var color = (STORES.find(s=>s.brand===store||s.name===store)||{}).color || 'var(--muted)';
@@ -27127,7 +27153,7 @@ function openApplicantModal(id) {
     <div class="form-group"><label class="form-label">氏名 *</label><input class="form-input" id="ap-name" value="${a.name||''}" oninput="apCheckRehire()"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">応募店舗 *</label>
-        <select class="form-select" id="ap-store">${APPLICANT_STORES.map(s=>`<option ${a.store===s?'selected':''}>${s}</option>`).join('')}</select></div>
+        <select class="form-select" id="ap-store">${applicantStores().map(s=>`<option ${a.store===s?'selected':''}>${s}</option>`).join('')}</select></div>
       <div class="form-group"><label class="form-label">希望ポジション</label><input class="form-input" id="ap-pos" value="${a.pos||''}" placeholder="例: Server"></div>
     </div>
     <div class="form-row">
@@ -49775,6 +49801,8 @@ function renderStoreMaster() {
       <div class="approval-header">
         <div class="card-title" style="color:${s.color};margin:0"><span class="store-dot" style="background:${s.color}"></span>${s.name}
           <span class="tag tag-gray" style="font-size:9px">${s.brand}</span>
+          <span class="tag tag-gray" style="font-size:9px;font-family:monospace">${s.id}</span>
+          ${isToritonShift(s.id)?`<span class="tag" style="font-size:9px;background:#F0782022;color:#F07820;border:1px solid #F07820"><i class="ti ti-calendar-week" style="font-size:10px"></i> ToriTon型シフト</span>`:''}
           <span class="tag" style="font-size:9px;background:${fm.color}1a;color:${fm.color}"><i class="ti ${fm.icon}" style="font-size:10px"></i> ${fm.name}</span></div>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
           <input type="checkbox" ${s.active?'checked':''} onchange="toggleStoreActive('${s.id}')"> ${s.active?'<span style="color:var(--green)">稼働中</span>':'<span style="color:var(--muted)">準備中</span>'}
@@ -49795,6 +49823,7 @@ function renderStoreMaster() {
       <div class="approval-actions">
         <button class="btn btn-secondary btn-sm" onclick="openStoreModal('${s.id}')"><i class="ti ti-edit"></i> 編集</button>
         <button class="btn btn-secondary btn-sm" onclick="go('kpi_master');setTimeout(()=>{window._kpiStore='${s.id}';renderPage('kpi_master');},10)"><i class="ti ti-target"></i> KPI</button>
+        <button class="btn btn-secondary btn-sm" onclick="openStoreCopyModal('${s.id}')"><i class="ti ti-copy"></i> 設定をコピー</button>
       </div>
     </div>`;
   });
@@ -49911,6 +49940,72 @@ function openStoreModal(storeId) {
     </div>`);
 }
 
+/* ============================================================
+   v784: 他店舗から設定をコピーする（店舗マスター）
+   対象は「日次オペのテンプレート」と「食材の自店登録」の2つだけ。
+   ・食材マスター(m_ingredients)には一切書かない（凍結の維持）。
+     コピーするのは store_ingredients＝「その店がどの食材を使うか」の登録だけ。
+   ・上書きではなく追加（和集合）。すでに登録済みのものは消さない。
+   ・Totoya3店は recipeOwnerKey() で食材を共有しているため、
+     同じオーナーキー同士のコピーは意味が無い。その場合は食材だけ飛ばす。
+============================================================ */
+function canCopyStoreSetup(){ return ['ceo','gm','office'].indexOf(curRole)>=0; }
+function openStoreCopyModal(toId){
+  if(!canCopyStoreSetup()){ showToast('この操作はCEO・GM・Officeのみです','warning'); return; }
+  var all=getStoresAll();
+  var to=all.find(function(x){return x.id===toId;})||{id:toId,name:toId};
+  var from=all.filter(function(x){return x.id!==toId;});
+  if(!from.length){ showToast('コピー元にできる店舗がありません','warning'); return; }
+  var ck='display:flex;align-items:center;gap:8px;font-size:13px;padding:7px 2px';
+  openModal('<div class="modal-title">設定をコピー — '+escapeHtml(to.name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">'
+    +'コピー元の設定を <b>'+escapeHtml(to.name)+'</b> に取り込みます。'
+    +'追加のみで、いま入っているものは消えません。<b>食材マスターそのものは変更しません。</b></div>'
+    +'<div class="form-group"><label class="form-label">コピー元の店舗</label>'
+    +'<select class="form-select" id="sc-from">'
+    +from.map(function(s){ return '<option value="'+s.id+'">'+escapeHtml(s.name)+'</option>'; }).join('')
+    +'</select></div>'
+    +'<label style="'+ck+'"><input type="checkbox" id="sc-ops" checked> 日次オペのテンプレート</label>'
+    +'<label style="'+ck+'"><input type="checkbox" id="sc-ing" checked> 食材の自店登録（どの食材を使うか）</label>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">やめる</button>'
+    +'<button class="btn btn-primary" onclick="runStoreCopy(\'' + toId + '\')"><i class="ti ti-copy"></i> コピーする</button></div>');
+}
+function runStoreCopy(toId){
+  if(!canCopyStoreSetup()){ showToast('この操作はCEO・GM・Officeのみです','warning'); return; }
+  var fromEl=document.getElementById('sc-from');
+  var fromId=fromEl?fromEl.value:'';
+  if(!fromId || fromId===toId){ showToast('コピー元の店舗を選んでください','warning'); return; }
+  var doOps=!!(document.getElementById('sc-ops')||{}).checked;
+  var doIng=!!(document.getElementById('sc-ing')||{}).checked;
+  var res=copyStoreSetup(fromId, toId, {dailyops:doOps, ingredients:doIng});
+  closeModalDirect();
+  showToast(res.msg.length?('コピーしました（'+res.msg.join(' / ')+'）'):'コピーする項目が選ばれていません',
+            res.msg.length?'success':'warning');
+  renderPage('store_master');
+}
+/* 実処理。画面から切り離してあるので、そのまま検証できる。 */
+function copyStoreSetup(fromId, toId, opts){
+  opts=opts||{};
+  var msg=[], skipped=[];
+  if(opts.dailyops){
+    var tpl=getDailyOpsTemplate(fromId)||[];
+    setDailyOpsTemplate(toId, tpl.map(function(t){ return Object.assign({}, t); }));
+    msg.push('日次オペ '+tpl.length+'件');
+  }
+  if(opts.ingredients){
+    var fk=recipeOwnerKey(fromId), tk=recipeOwnerKey(toId);
+    if(fk===tk){
+      skipped.push('食材（同じ食材を共有している店舗同士）');
+    } else {
+      var all=ls('store_ingredients',{})||{};
+      var src=all[fk]||[], dst=(all[tk]||[]).slice(), added=0;
+      src.forEach(function(c){ if(dst.indexOf(c)<0){ dst.push(c); added++; } });
+      all[tk]=dst; lsSet('store_ingredients', all);
+      msg.push('食材 '+added+'品目を追加');
+    }
+  }
+  return {msg:msg, skipped:skipped};
+}
 function saveStore(storeId) {
   var name = document.getElementById('st-name').value.trim();
   if (!name) { alert('店舗名を入力してください'); return; }
