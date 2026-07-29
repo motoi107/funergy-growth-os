@@ -1747,24 +1747,45 @@ const MENU_GROUPS = [
 ];
 
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
+/* ===== v766〜v768: 本部のメニューは「経理側」と「キッチン側」に分ける =====
+   CEO / GM は両方すべて見える。経理(office)は ACCT_GROUPS、
+   Corporate Chef は CHEF_GROUPS を見るので、混在しない。 */
 const OFFICE_GROUPS = [
   {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
-    children:['office_mgr','acct_review','tip','hr','growthhub','hiring','office_export','vacation','mileage','notifications','crew_handbook']},
-  {id:'go_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office'],
-    children:['budget','labor','foodcost','kpi_master']},
-  {id:'go_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office'],
-    children:['tasks','biz_guide']},
-  {id:'go_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office'],
-    children:['menu','recipe','fv_variance','ingredient_master','ing_transfer','vendor_master','inventory']},
-  /* v767: 本部のキッチン側。経理(office)には見せないため roles を CEO/GM に限定する。 */
-  {id:'go_kitchen', label:'Kitchen Management', icon:'ti-tools-kitchen-2', roles:['ceo','gm'],
+    children:['office_mgr','notifications','tasks','biz_guide']},
+
+  /* ---- キッチン側 ---- */
+  {id:'go_kitchen', label:'Kitchen 管理', icon:'ti-tools-kitchen-2', roles:['ceo','gm'],
     children:['cc_plan']},
-  {id:'go_acct', label:'経理', icon:'ti-calculator', roles:['ceo','gm','office'],
-    children:['invoice','acct_review','acct_export','monthly']},
-  {id:'go_order', label:'発注', icon:'ti-package', roles:['ceo','gm','office'],
+  {id:'go_food', label:'Kitchen 食材・原価', icon:'ti-salad', roles:['ceo','gm'],
+    children:['menu','recipe','foodcost','fv_variance','ingredient_master','ing_transfer','inventory']},
+
+  /* ---- 経理側 ---- */
+  {id:'go_acct', label:'経理 請求・仕訳', icon:'ti-calculator', roles:['ceo','gm','office'],
+    children:['invoice','acct_review','acct_export','monthly','purchase_detail','vendor_master']},
+  {id:'go_budget', label:'経理 予実・労務', icon:'ti-chart-bar', roles:['ceo','gm','office'],
+    children:['budget','labor','kpi_master','tip']},
+  {id:'go_order', label:'経理 発注', icon:'ti-package', roles:['ceo','gm','office'],
     children:['supply_order','order']},
+  {id:'go_req', label:'経理 申請', icon:'ti-file-check', roles:['ceo','gm','office'],
+    children:['vacation','mileage','office_export']},
+
+  /* ---- 人材 ---- */
+  {id:'go_hr', label:'人材', icon:'ti-users', roles:['ceo','gm','office'],
+    children:['hr','growthhub','hiring','crew_handbook']},
+
   {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
     children:['settings','profile']},
+];
+/* 経理(office)専用：キッチン側を含まない */
+const ACCT_GROUPS = [
+  {id:'ga_home', label:'本部', icon:'ti-building-skyscraper', children:['office_mgr','notifications','tasks','biz_guide']},
+  {id:'ga_acct', label:'経理 請求・仕訳', icon:'ti-calculator', children:['invoice','acct_review','acct_export','monthly','purchase_detail','vendor_master','ingredient_master']},
+  {id:'ga_budget', label:'経理 予実・労務', icon:'ti-chart-bar', children:['budget','labor','foodcost','kpi_master','tip']},
+  {id:'ga_order', label:'経理 発注', icon:'ti-package', children:['supply_order','order']},
+  {id:'ga_req', label:'経理 申請', icon:'ti-file-check', children:['vacation','mileage','office_export']},
+  {id:'ga_hr', label:'人材', icon:'ti-users', children:['hr','growthhub','hiring','crew_handbook']},
+  {id:'ga_set', label:'設定', icon:'ti-settings', children:['settings','profile']},
 ];
 /* 事務Crew（office_crew）専用：各店の予実・Tip */
 const OFFICE_CREW_GROUPS = [
@@ -1807,6 +1828,7 @@ function groupsForRole() {
   else if (curRole==='crew') groups = CREW_GROUPS;
   else if (curRole==='office_crew') groups = OFFICE_CREW_GROUPS;
   else if (curRole==='chef') groups = CHEF_GROUPS;   /* v766: 本部のキッチン側 */
+  else if (curStore==='OFFICE' && curRole==='office') groups = ACCT_GROUPS;   /* v768: 本部の経理側 */
   else if (curStore==='OFFICE' && ['ceo','gm','office'].includes(curRole)) groups = OFFICE_GROUPS.filter(g=>!g.roles||g.roles.includes(curRole));
   else groups = MENU_GROUPS.filter(g=>g.roles.includes(curRole));
   if (_gradeHideApplies()) {
@@ -4170,6 +4192,10 @@ var _SPLIT_KEYS = {
   cc_plans:         {type:'obj'},
   hq_goals:         {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},
   cc_actions:       {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},
+  /* v768: 店舗別の共通目標。指標の定義は月に依存しないので設定型、
+     数値は対象月ごとに行を分ける。 */
+  cc_metrics:       {type:'obj'},
+  cc_scores:        {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},
   crew_education:   {type:'obj'},
   benefit_adjust:   {type:'obj'},
   store_ingredients:{type:'obj'},
@@ -6115,6 +6141,7 @@ var OP_MERGE = {
      ここが無いと、部分データを持つ端末の保存がクラウドを丸ごと上書きする。 */
   hq_goals:      { merge: mergeCcList,    covers: _coversCcList },
   cc_actions:    { merge: mergeCcList,    covers: _coversCcList },
+  cc_scores:     { merge: mergeCcList,    covers: _coversCcList },   /* v768 */
   budgets_v2:    { merge: mergeBudgets,   covers: _coversBudgets },   /* v620: 予算の上書き消失を防ぐ（店舗・月の和集合） */
   notifications: { merge: mergeNotifs,    covers: _coversNotifs,   after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); var p=document.getElementById('notif-panel'); if(p&&p.style.display==='block'&&typeof renderNotifPanel==='function') renderNotifPanel(); }catch(e){} } },
   approvals:     { merge: mergeApprovals, covers: _coversApprovals, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } },
@@ -8425,7 +8452,7 @@ var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export',
   /* v766: 食材管理メニューに出ているのに OFFICE から開けなかった2画面を追加。
      本部ログインだと Office管理へ弾かれていた（chef 以前からの不具合）。 */
   'fv_variance','ing_transfer',
-  'cc_plan'];   /* v767 */
+  'cc_plan','purchase_detail'];   /* v767-768 */
 
 /* ============================================================
    ROUTER
@@ -20235,6 +20262,7 @@ async function loadStoreLabor(sid, guid, days, liveFill){
    OP_SYNC_PREFIX の 'inv_' により「再取得可」と判定され、空き容量作成で削除され得た。
    クラウド未送信の状態で消すと入力が失われるため保護する（'inv_hist_' も内包される）。 */
 var LS_NEVER_FREE = ['spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','spl_cc_actions_',   /* v767 */
+  'spl_cc_metrics_','cc_scores','spl_cc_scores_',   /* v768 */
   'inv_','inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
@@ -21233,7 +21261,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '767';
+const APP_VERSION = '768';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -44603,6 +44631,255 @@ function renderAnnounce(){
        先月の行に触らない。予算で起きた「別の月を保存したら他の月が変わる」を構造的に防ぐ。
      ・削除は論理削除。合流は必ず時刻(_mut)で判定し、値の大小では決めない。 */
 
+/* ===== v768: 店舗別の共通目標を数値で管理する =====
+   【目的】行動計画に「今どうなっているか」の数字を並べ、本部とChefが同じ絵を見る。
+   【設計】指標の定義(cc_metrics)と、月×店舗×指標の数値(cc_scores)を分ける。
+     指標は追加・編集できる。店舗の絞り込みで業態別の指標（居酒屋のシーズナル、
+     Totoyaの新メニュー）も同じ仕組みで扱う。
+   【役割分担】目標値は本部(GM)が入れる。実績はCorporate Chefが入れる。
+     どちらの数字も両者に見えることが「相互に理解する」の中身。 */
+
+var CC_DEFAULT_METRICS = [
+  {id:'m_cost',    label:'原価率',              unit:'%',  dir:'lower',  stores:'ALL', order:1},
+  {id:'m_theo',    label:'理論原価との差異',    unit:'pt', dir:'lower',  stores:'ALL', order:2},
+  {id:'m_hyg',     label:'衛生',                unit:'点', dir:'higher', stores:'ALL', order:3},
+  {id:'m_fh',      label:'フードハンドラー保持', unit:'%',  dir:'higher', stores:'ALL', order:4},
+  {id:'m_g3',      label:'G3キッチンリーダー',  unit:'人', dir:'higher', stores:'ALL', order:5, needPlace:true},
+  {id:'m_season',  label:'シーズナル進捗',      unit:'%',  dir:'higher', stores:['F01','F02'], order:6},
+  {id:'m_newmenu', label:'新メニュー開発',      unit:'件', dir:'higher', stores:['F04-K','F04-P','F04-A'], order:7}
+];
+var ccGridView = 'metric';   /* metric = 指標ごと / store = 店舗ごと */
+
+function ccMetrics(){
+  var m = ls('cc_metrics', null);
+  var arr = (m && typeof m === 'object') ? Object.keys(m).map(function(k){ return m[k]; }) : [];
+  arr = arr.filter(function(x){ return x && !x._deleted; });
+  if(!arr.length) arr = CC_DEFAULT_METRICS.slice();   /* 未設定なら既定を表示（保存はしない） */
+  return arr.sort(function(a,b){ return (a.order||99) - (b.order||99); });
+}
+function _ccMetricsMap(){
+  var m = ls('cc_metrics', null);
+  if(m && typeof m === 'object' && Object.keys(m).length) return m;
+  var o = {};                                        /* 初回の編集時に既定を実体化する */
+  CC_DEFAULT_METRICS.forEach(function(x){ o[x.id] = Object.assign({}, x); });
+  return o;
+}
+function ccPutMetric(rec){
+  var m = _ccMetricsMap();
+  m[rec.id] = rec;
+  var ok = lsSet('cc_metrics', m);
+  if(ok === false) showToast('保存できませんでした', 'danger');
+  return ok !== false;
+}
+function ccMetricStores(mt){
+  var all = (typeof STORES !== 'undefined' ? STORES : []);
+  if(!mt || mt.stores === 'ALL' || !Array.isArray(mt.stores)) return all;
+  return all.filter(function(s){ return mt.stores.indexOf(s.id) >= 0; });
+}
+
+/* ---------- 数値（月×店舗×指標） ---------- */
+function _ccScoreId(ym, storeId, mid){ return ym + '|' + storeId + '|' + mid; }
+function ccScores(ym){
+  return (ls('cc_scores', []) || []).filter(function(s){ return s && s.ym === ym && !s._deleted; });
+}
+function ccScore(ym, storeId, mid){
+  var id = _ccScoreId(ym, storeId, mid);
+  return ccScores(ym).filter(function(s){ return s.id === id; })[0] || null;
+}
+function ccPutScore(rec){
+  var arr = ls('cc_scores', []) || [];
+  var i = -1;
+  arr.forEach(function(x, k){ if(x && x.id === rec.id) i = k; });
+  if(i >= 0) arr[i] = rec; else arr.push(rec);
+  var ok = lsSet('cc_scores', arr);
+  if(ok === false) showToast('保存できませんでした', 'danger');
+  return ok !== false;
+}
+function ccScoreOk(mt, sc){
+  if(!sc || sc.actual == null || sc.actual === '' || sc.target == null || sc.target === '') return null;
+  var a = Number(sc.actual), t = Number(sc.target);
+  if(isNaN(a) || isNaN(t)) return null;
+  return (mt.dir === 'lower') ? (a <= t) : (a >= t);
+}
+function _ccNum(v){ return (v == null || v === '') ? '—' : String(v); }
+
+/* ---------- 指標の編集 ---------- */
+function openCcMetricModal(id){
+  var mt = ccMetrics().filter(function(x){ return x.id === id; })[0] ||
+           { label:'', unit:'', dir:'higher', stores:'ALL', order:99 };
+  var stores = (typeof STORES !== 'undefined' ? STORES : []);
+  var sel = (mt.stores === 'ALL' || !Array.isArray(mt.stores)) ? [] : mt.stores;
+  openModal('<div class="modal-title">' + (id ? '指標を編集' : '指標を追加') +
+    ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
+    '<div class="form-group"><label class="form-label">指標名</label>' +
+    '<input class="form-input" id="cm-label" placeholder="例: 廃棄率" value="' + escapeHtml(mt.label || '') + '"></div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label class="form-label">単位</label>' +
+    '<input class="form-input" id="cm-unit" placeholder="% / 件 / 人 / 点" value="' + escapeHtml(mt.unit || '') + '"></div>' +
+    '<div class="form-group"><label class="form-label">良い方向</label><select class="form-select" id="cm-dir">' +
+    '<option value="higher"' + (mt.dir === 'higher' ? ' selected' : '') + '>高いほど良い</option>' +
+    '<option value="lower"' + (mt.dir === 'lower' ? ' selected' : '') + '>低いほど良い</option>' +
+    '</select></div></div>' +
+    '<div class="form-group"><label class="form-label">対象店舗（何も選ばなければ全店）</label>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
+    stores.map(function(s){
+      return '<label style="font-size:12px;display:flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:6px;padding:3px 7px">' +
+        '<input type="checkbox" class="cm-st" value="' + s.id + '"' + (sel.indexOf(s.id) >= 0 ? ' checked' : '') + '>' + escapeHtml(s.name) + '</label>';
+    }).join('') + '</div></div>' +
+    '<div class="form-group"><label class="form-label">表示順</label>' +
+    '<input class="form-input" id="cm-order" type="number" value="' + (mt.order || 99) + '"></div>' +
+    '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
+    (id ? '<button class="btn btn-secondary" onclick="delCcMetric(\'' + id + '\')"><i class="ti ti-trash"></i> 削除</button>' : '') +
+    '<button class="btn btn-primary" onclick="saveCcMetric(\'' + (id || '') + '\')">保存</button></div>');
+}
+function saveCcMetric(id){
+  var label = (document.getElementById('cm-label').value || '').trim();
+  if(!label){ alert('指標名を入力してください'); return; }
+  var picked = [];
+  Array.prototype.forEach.call(document.querySelectorAll('.cm-st'), function(c){ if(c.checked) picked.push(c.value); });
+  var old = ccMetrics().filter(function(x){ return x.id === id; })[0] || {};
+  var rec = Object.assign({}, old, {
+    id: id || ('m_' + Date.now()), label: label,
+    unit: (document.getElementById('cm-unit').value || '').trim(),
+    dir: document.getElementById('cm-dir').value,
+    stores: picked.length ? picked : 'ALL',
+    order: Number(document.getElementById('cm-order').value) || 99,
+    by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false
+  });
+  if(!ccPutMetric(rec)) return;
+  closeModalDirect(); showToast('指標を保存しました', 'success'); renderPage('cc_plan');
+}
+function delCcMetric(id){
+  if(!confirm('この指標を削除しますか？（入力済みの数値は残ります）')) return;
+  var mt = ccMetrics().filter(function(x){ return x.id === id; })[0];
+  if(!mt) return;
+  ccPutMetric(Object.assign({}, mt, { _deleted: true, _mut: Date.now(), by: myName(), at: nowJP() }));
+  closeModalDirect(); showToast('削除しました', 'info'); renderPage('cc_plan');
+}
+
+/* ---------- 数値の入力 ---------- */
+function openCcScoreModal(ym, storeId, mid){
+  var mt = ccMetrics().filter(function(x){ return x.id === mid; })[0]; if(!mt) return;
+  var st = (typeof STORES !== 'undefined' ? STORES : []).filter(function(s){ return s.id === storeId; })[0] || { name: storeId };
+  var sc = ccScore(ym, storeId, mid) || { target:'', actual:'', note:'', place:'' };
+  var hq = ccIsHQ(), locked = ccPlan(ym).status === 'ロック';
+  openModal('<div class="modal-title">' + escapeHtml(st.name) + ' ／ ' + escapeHtml(mt.label) +
+    ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
+    '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">' + ym +
+    '　' + (mt.dir === 'lower' ? '低いほど良い' : '高いほど良い') + (mt.unit ? '（単位: ' + escapeHtml(mt.unit) + '）' : '') + '</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label class="form-label">目標（本部）</label>' +
+    '<input class="form-input" id="cs-target" type="number" step="any" value="' + escapeHtml(String(sc.target == null ? '' : sc.target)) + '"' +
+    ((hq && !locked) ? '' : ' disabled') + '></div>' +
+    '<div class="form-group"><label class="form-label">実績（Chef）</label>' +
+    '<input class="form-input" id="cs-actual" type="number" step="any" value="' + escapeHtml(String(sc.actual == null ? '' : sc.actual)) + '"' +
+    (locked ? ' disabled' : '') + '></div></div>' +
+    (mt.needPlace ? '<div class="form-group"><label class="form-label">配置の必要性</label>' +
+      '<select class="form-select" id="cs-place"' + (locked ? ' disabled' : '') + '>' +
+      ['','必要','検討中','不要'].map(function(p){ return '<option' + (sc.place === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') +
+      '</select></div>' : '') +
+    '<div class="form-group"><label class="form-label">メモ・要因</label>' +
+    '<textarea class="form-input" id="cs-note" rows="2"' + (locked ? ' disabled' : '') + '>' + escapeHtml(sc.note || '') + '</textarea></div>' +
+    (locked ? '<div style="font-size:11.5px;color:var(--muted)">この月はロックされています。</div>' :
+    '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
+    '<button class="btn btn-primary" onclick="saveCcScore(\'' + ym + '\',\'' + storeId + '\',\'' + mid + '\')">保存</button></div>'));
+}
+function saveCcScore(ym, storeId, mid){
+  var old = ccScore(ym, storeId, mid) || {};
+  var tEl = document.getElementById('cs-target'), aEl = document.getElementById('cs-actual');
+  var pEl = document.getElementById('cs-place');
+  var rec = Object.assign({}, old, {
+    id: _ccScoreId(ym, storeId, mid), ym: ym, storeId: storeId, metricId: mid,
+    target: (tEl && !tEl.disabled) ? tEl.value : (old.target == null ? '' : old.target),
+    actual: (aEl && !aEl.disabled) ? aEl.value : (old.actual == null ? '' : old.actual),
+    place: pEl ? pEl.value : (old.place || ''),
+    note: (document.getElementById('cs-note').value || '').trim(),
+    by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false
+  });
+  if(!ccPutScore(rec)) return;
+  closeModalDirect(); showToast('保存しました', 'success'); renderPage('cc_plan');
+}
+function setCcGridView(v){ ccGridView = v; renderPage('cc_plan'); }
+
+/* ---------- 表示 ---------- */
+function _ccCell(ym, mt, s){
+  var sc = ccScore(ym, s.id, mt.id);
+  var ok = ccScoreOk(mt, sc);
+  var col = ok === null ? 'var(--muted)' : ok ? 'var(--green)' : 'var(--red)';
+  var bg  = ok === null ? 'transparent'  : ok ? 'rgba(64,160,80,.10)' : 'rgba(200,60,60,.10)';
+  var av = sc ? _ccNum(sc.actual) : '—', tv = sc ? _ccNum(sc.target) : '—';
+  return '<div onclick="openCcScoreModal(\'' + ym + '\',\'' + s.id + '\',\'' + mt.id + '\')" ' +
+    'style="cursor:pointer;border:1px solid var(--border);border-left:3px solid ' + (s.color || 'var(--border)') + ';' +
+    'border-radius:7px;padding:7px 9px;margin-bottom:5px;background:' + bg + '">' +
+    '<div style="display:flex;align-items:baseline;gap:8px">' +
+    '<div style="flex:1;font-size:12px;font-weight:600">' + escapeHtml(s.name) + '</div>' +
+    '<div style="font-size:15px;font-weight:800;color:' + col + '">' + av + '</div>' +
+    '<div style="font-size:11px;color:var(--muted)">/ ' + tv + (mt.unit ? ' ' + escapeHtml(mt.unit) : '') + '</div>' +
+    '</div>' +
+    ((sc && sc.place) ? '<div style="font-size:10.5px;color:var(--yellow);margin-top:2px">配置: ' + escapeHtml(sc.place) + '</div>' : '') +
+    ((sc && sc.note) ? '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">' + escapeHtml(sc.note) + '</div>' : '') +
+    '</div>';
+}
+function renderCcGrid(ym){
+  var mets = ccMetrics(), stores = (typeof STORES !== 'undefined' ? STORES : []);
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>店舗別の共通目標' +
+    (ccIsHQ() ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openCcMetricModal(\'\')"><i class="ti ti-plus"></i> 指標</button>' : '') +
+    '</div>' +
+    '<div class="phase-tabs" style="margin-bottom:8px">' +
+    '<div class="phase-tab' + (ccGridView === 'metric' ? ' active' : '') + '" onclick="setCcGridView(\'metric\')">指標ごと</div>' +
+    '<div class="phase-tab' + (ccGridView === 'store' ? ' active' : '') + '" onclick="setCcGridView(\'store\')">店舗ごと</div>' +
+    '</div>';
+
+  if(ccGridView === 'metric'){
+    /* 指標ごと：本部が全店の状況を横並びで見る用 */
+    mets.forEach(function(mt){
+      var ss = ccMetricStores(mt);
+      if(!ss.length) return;
+      var done = 0, filled = 0;
+      ss.forEach(function(s){ var ok = ccScoreOk(mt, ccScore(ym, s.id, mt.id)); if(ok !== null){ filled++; if(ok) done++; } });
+      h += '<div style="margin:12px 0 5px;display:flex;align-items:center;gap:7px">' +
+        '<b style="font-size:13px">' + escapeHtml(mt.label) + '</b>' +
+        '<span style="font-size:10.5px;color:var(--muted)">' + (mt.dir === 'lower' ? '低いほど良い' : '高いほど良い') +
+        (mt.unit ? ' ・ ' + escapeHtml(mt.unit) : '') + '</span>' +
+        '<span style="margin-left:auto;font-size:11px;color:' + (filled && done === filled ? 'var(--green)' : 'var(--muted)') + '">' +
+        '達成 ' + done + '/' + ss.length + '</span>' +
+        (ccIsHQ() ? '<button class="btn btn-secondary btn-sm" onclick="openCcMetricModal(\'' + mt.id + '\')"><i class="ti ti-pencil"></i></button>' : '') +
+        '</div>';
+      ss.forEach(function(s){ h += _ccCell(ym, mt, s); });
+    });
+  } else {
+    /* 店舗ごと：Chefが1店ずつ詰める用 */
+    stores.forEach(function(s){
+      var ms = mets.filter(function(mt){ return ccMetricStores(mt).some(function(x){ return x.id === s.id; }); });
+      if(!ms.length) return;
+      var done = 0, filled = 0;
+      ms.forEach(function(mt){ var ok = ccScoreOk(mt, ccScore(ym, s.id, mt.id)); if(ok !== null){ filled++; if(ok) done++; } });
+      h += '<div style="margin:12px 0 5px;display:flex;align-items:center;gap:7px">' +
+        '<span style="width:9px;height:9px;border-radius:3px;background:' + (s.color || 'var(--border)') + '"></span>' +
+        '<b style="font-size:13px">' + escapeHtml(s.name) + '</b>' +
+        '<span style="margin-left:auto;font-size:11px;color:' + (filled && done === filled ? 'var(--green)' : 'var(--muted)') + '">' +
+        '達成 ' + done + '/' + ms.length + '</span></div>';
+      ms.forEach(function(mt){
+        var sc = ccScore(ym, s.id, mt.id), ok = ccScoreOk(mt, sc);
+        var col = ok === null ? 'var(--muted)' : ok ? 'var(--green)' : 'var(--red)';
+        var bg  = ok === null ? 'transparent'  : ok ? 'rgba(64,160,80,.10)' : 'rgba(200,60,60,.10)';
+        h += '<div onclick="openCcScoreModal(\'' + ym + '\',\'' + s.id + '\',\'' + mt.id + '\')" ' +
+          'style="cursor:pointer;border:1px solid var(--border);border-radius:7px;padding:7px 9px;margin-bottom:5px;background:' + bg + '">' +
+          '<div style="display:flex;align-items:baseline;gap:8px">' +
+          '<div style="flex:1;font-size:12px;font-weight:600">' + escapeHtml(mt.label) + '</div>' +
+          '<div style="font-size:15px;font-weight:800;color:' + col + '">' + (sc ? _ccNum(sc.actual) : '—') + '</div>' +
+          '<div style="font-size:11px;color:var(--muted)">/ ' + (sc ? _ccNum(sc.target) : '—') +
+          (mt.unit ? ' ' + escapeHtml(mt.unit) : '') + '</div></div>' +
+          ((sc && sc.place) ? '<div style="font-size:10.5px;color:var(--yellow);margin-top:2px">配置: ' + escapeHtml(sc.place) + '</div>' : '') +
+          ((sc && sc.note) ? '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">' + escapeHtml(sc.note) + '</div>' : '') +
+          '</div>';
+      });
+    });
+  }
+  h += '<div style="font-size:10.5px;color:var(--muted);margin-top:10px">数字をタップすると目標・実績・メモを入力できます。目標は本部、実績はCorporate Chefが入力します。</div>';
+  h += '</div>';
+  return h;
+}
 var CC_SUBMIT_DAY = 25;    /* 前月25日までに提出 */
 var CC_APPROVE_DAY = 28;   /* 前月28日までに承認 */
 
@@ -44957,6 +45234,9 @@ function renderCcPlan(){
     });
   }
   h += '</div>';
+
+  /* 店舗別の共通目標（数値） */
+  try{ h += renderCcGrid(ym); }catch(e){}                          /* v768 */
 
   /* 重点行動3項目 */
   h += '<div class="card"><div class="card-title"><i class="ti ti-flag" style="color:var(--accent)"></i>今月の重点行動（Chef）</div>';
