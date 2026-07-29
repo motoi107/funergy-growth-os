@@ -1664,6 +1664,12 @@ const ROLE_CONFIG = {
   crew:   { label:'G1',name:'スタッフ', financial:false, allStores:false, canApprove:false, canCreate:false },
   g2:     { label:'G2', name:'Crew Leader',  financial:false, allStores:false, canApprove:false, canCreate:true },
   g4:     { label:'G4', name:'Store Manager', financial:true,  allStores:false, canApprove:true,  canCreate:true },
+  /* v766: Corporate Chef。本部の「キッチン側」。グレードは G4。
+     allStores:true … 全店舗の食材・原価を見るため（店長と違い担当店を持たない）
+     financial:true … 原価率(FC)の画面が financialBlocked() で塞がれないようにするため。
+                      経理の画面（invoice/acct_review/acct_export/monthly）は
+                      CHEF_GROUPS に含めないことで見えないようにしている。 */
+  chef:   { label:'Corporate Chef', name:'Corporate Chef', financial:true, allStores:true, canApprove:true, canCreate:true },
 };
 
 const NAV_ITEMS = [
@@ -1763,6 +1769,17 @@ const OFFICE_CREW_GROUPS = [
   {id:'goc_mng', label:'店舗管理', icon:'ti-building-store', children:['budget','tip']},
   {id:'goc_my',  label:'マイページ', icon:'ti-user', children:['mypage','crew_handbook']},
 ];
+/* ===== v766: Corporate Chef（本部のキッチン側）専用メニュー =====
+   本部は「経理側（office）」と「キッチン側（chef）」の2つに分かれる。
+   CEO / GM は従来どおり OFFICE_GROUPS で両方すべて見える。
+   ここに経理の画面（invoice / acct_review / acct_export / monthly）は入れない。 */
+const CHEF_GROUPS = [
+  {id:'gc_home', label:'本部', icon:'ti-building-skyscraper', children:['notifications','approval']},
+  {id:'gc_food', label:'食材管理', icon:'ti-tools-kitchen-2',
+    children:['menu','recipe','fv_variance','ingredient_master','ing_transfer','vendor_master','inventory']},
+  {id:'gc_cost', label:'原価', icon:'ti-receipt', children:['foodcost']},
+  {id:'gc_my',   label:'マイページ', icon:'ti-user', children:['mypage','crew_handbook','profile','settings']},
+];
 /* Crew専用のシンプルメニュー（マイページ中心） */
 const CREW_GROUPS = [
   {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage']},
@@ -1785,6 +1802,7 @@ function groupsForRole() {
   if (curStoreLogin) groups = STORE_GROUPS;
   else if (curRole==='crew') groups = CREW_GROUPS;
   else if (curRole==='office_crew') groups = OFFICE_CREW_GROUPS;
+  else if (curRole==='chef') groups = CHEF_GROUPS;   /* v766: 本部のキッチン側 */
   else if (curStore==='OFFICE' && ['ceo','gm','office'].includes(curRole)) groups = OFFICE_GROUPS.filter(g=>!g.roles||g.roles.includes(curRole));
   else groups = MENU_GROUPS.filter(g=>g.roles.includes(curRole));
   if (_gradeHideApplies()) {
@@ -7738,7 +7756,7 @@ function bootLogin() {
   var grid = document.getElementById('login-store-grid');
   if (!grid) return;
   // Officeを店舗と同列・同サイズで先頭に表示
-  var officeCard = `<div class="store-btn" style="border-left:3px solid var(--accent)" onclick="loginPickLocation('OFFICE',this)"><i class="ti ti-building-skyscraper" style="font-size:13px;margin-right:3px"></i>${t('Office','Office')}</div>`;
+  var officeCard = `<div class="store-btn" style="border-left:3px solid var(--accent)" onclick="loginPickLocation('OFFICE',this)"><i class="ti ti-building-skyscraper" style="font-size:13px;margin-right:3px"></i>${t('本部','Head Office')}</div>`;
   // ②に空欄（レイアウト用の非表示セル）
   var blankCard = `<div class="store-btn" style="visibility:hidden;pointer-events:none"></div>`;
   // ログイン画面の並び順（共通の sortByLoginOrder を使用）。ログインは誰もロックアウトしないよう全店表示。
@@ -7792,11 +7810,11 @@ function loginPickLocation(loc, el) {
   loginLocation = loc;
   var people;
   if (loc==='OFFICE') {
-    people = getEmployees().filter(e=>['ceo','gm','am','office','office_crew'].includes(e.role) && e.status!=='退職' && !e.osDisabled);
+    people = getEmployees().filter(e=>['ceo','gm','am','office','chef','office_crew'].includes(e.role) && e.status!=='退職' && !e.osDisabled);   /* v766: chef */
   } else {
     people = getEmployees().filter(e=>e.status!=='退職' && !e.osDisabled && ['g4','sl','g2','crew'].includes(e.role) && (e.store===loc || (e.support||[]).includes(loc)));
   }
-  var locLabel = loc==='OFFICE' ? t('Office','Office') : (STORES.find(s=>s.id===loc)||{name:loc}).name;
+  var locLabel = loc==='OFFICE' ? t('本部','Head Office') : (STORES.find(s=>s.id===loc)||{name:loc}).name;
   document.getElementById('login-name-loclabel').textContent = locLabel + t(' のスタッフを選択',' — select staff');
   var ng = document.getElementById('login-name-grid');
   var storeLoginBtn = '';
@@ -7808,7 +7826,7 @@ function loginPickLocation(loc, el) {
   if (!people.length) {
     ng.innerHTML = storeLoginBtn + `<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:16px;font-size:13px">${t('この所属に登録スタッフがいません','No staff registered for this location')}</div>`;
   } else {
-    var order={ceo:0,gm:1,office:2,office_crew:3,am:4,g4:5,sl:6,g2:7,crew:8};
+    var order={ceo:0,gm:1,office:2,chef:3,office_crew:4,am:5,g4:6,sl:7,g2:8,crew:9};   /* v766: chef */
     if (loc==='OFFICE') people.sort((a,b)=>(order[a.role]-order[b.role])||a.name.localeCompare(b.name));
     else people.sort((a,b)=>(empGradeNum(b)-empGradeNum(a))||a.name.localeCompare(b.name)); // 店舗は実Grade降順
     ng.innerHTML = storeLoginBtn + people.map(p=>{
@@ -8390,7 +8408,10 @@ function switchStore(id) {
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory'];
+var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory',
+  /* v766: 食材管理メニューに出ているのに OFFICE から開けなかった2画面を追加。
+     本部ログインだと Office管理へ弾かれていた（chef 以前からの不具合）。 */
+  'fv_variance','ing_transfer'];
 
 /* ============================================================
    ROUTER
@@ -21196,7 +21217,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '765';
+const APP_VERSION = '766';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34130,7 +34151,7 @@ function empGrade(e){
   var g=gradeOf(e&&e.title);
   if(g) return g;
   var r=e&&e.role;
-  if(r==='gm') return 'G6'; if(r==='am') return 'G5'; if(r==='g4') return 'G4'; if(r==='sl') return 'G3'; if(r==='g2') return 'G2';
+  if(r==='gm') return 'G6'; if(r==='am') return 'G5'; if(r==='g4'||r==='chef') return 'G4'; if(r==='sl') return 'G3'; if(r==='g2') return 'G2';   /* v766: chef=G4 */
   if(r==='crew'||r==='office_crew') return 'G1';
   return '';
 }
