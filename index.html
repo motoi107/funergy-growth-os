@@ -1131,17 +1131,31 @@ function getStoresAll() {
     if(x.dinnerHours===undefined) x.dinnerHours = '17:00-22:00';
     if(x.takeout===undefined) x.takeout = true;
   });
-  return sortByLoginOrder(s); // 全画面共通の店舗並び順（ToriTon→Tenkichi→Kaimuki→Piikoi→Aiea→Marujuu→LaLa→FSP→WGS）
+  return sortByLoginOrder(s); // 全画面共通の店舗並び順（ToriTon→Tenkichi→Kaimuki→Piikoi→Aiea→Kapolei→Marujuu→LaLa→FSP→WGS）
 }
 function setStoresAll(s) { lsSet('m_stores', s); refreshStores(); }
 /* ログイン画面と同じ店舗並び順（全画面共通） */
-const LOGIN_STORE_ORDER = ['F01','F02','F04-K','F04-P','F04-A','F05','F06','F03','F03-G'];   /* v786: LaLa(F06)をMarujuuの次へ */
+const LOGIN_STORE_ORDER = ['F01','F02','F04-K','F04-P','F04-A','Kapolei','F05','F06','F03','F03-G'];
+/* v787: 照合を「店舗ID → 店名/ブランド」の2段にする。
+   新しく登録した店舗はIDが分からないことが多く、IDだけで指定していると
+   並びに入れられず末尾に回ってしまう。店名でも位置を指定できるようにした。
+   'F..' 形式の項目は従来どおりIDでのみ照合するため、既存店の並びは1つも変わらない。
+   店名の項目は部分一致も見る（'Totoya Kapolei' のような登録名でも拾えるようにするため）。 */
+function _storeOrderIdx(s){
+  if(!s) return 999;
+  var i = LOGIN_STORE_ORDER.indexOf(s.id);
+  if(i>=0) return i;
+  var nm=String(s.name||'').toLowerCase(), br=String(s.brand||'').toLowerCase();
+  for(var k=0;k<LOGIN_STORE_ORDER.length;k++){
+    var e=String(LOGIN_STORE_ORDER[k]||'');
+    if(/^F\d/.test(e)) continue;
+    var le=e.toLowerCase(); if(!le) continue;
+    if(nm===le||br===le||nm.indexOf(le)>=0||br.indexOf(le)>=0) return k;
+  }
+  return 999;
+}
 function sortByLoginOrder(stores){
-  return (stores||[]).slice().sort(function(a,b){
-    var ia = LOGIN_STORE_ORDER.indexOf(a.id); if (ia<0) ia = 999;
-    var ib = LOGIN_STORE_ORDER.indexOf(b.id); if (ib<0) ib = 999;
-    return ia - ib;
-  });
+  return (stores||[]).slice().sort(function(a,b){ return _storeOrderIdx(a)-_storeOrderIdx(b); });
 }
 /* 一度だけ: 事務Crew Akane Yoshizawa の勤務形態を時給に（勤怠サイクルは他スタッフと同じ半月管理） */
 function migrateAkaneHourly(){
@@ -2943,7 +2957,7 @@ function getStoreIngredients(storeId){ var all=ls('store_ingredients',{}); retur
 function addStoreIngredient(storeId, code){ if(!storeId||storeId==='ALL')return; var k=recipeOwnerKey(storeId); var all=ls('store_ingredients',{}); var arr=all[k]||[]; code=parseInt(code); if(arr.indexOf(code)<0){ arr.push(code); all[k]=arr; lsSet('store_ingredients', all); } }
 function removeStoreIngredient(storeId, code){ if(!storeId||storeId==='ALL')return; var k=recipeOwnerKey(storeId); var all=ls('store_ingredients',{}); code=parseInt(code); all[k]=(all[k]||[]).filter(function(c){return c!==code;}); lsSet('store_ingredients', all); }
 function isInStoreMaster(storeId, code){ return getStoreIngredients(storeId).indexOf(parseInt(code))>=0; }
-function storesUsingIngredient(code){ var all=ls('store_ingredients',{}); code=parseInt(code); var out=[]; Object.keys(all).forEach(function(k){ if((all[k]||[]).indexOf(code)>=0){ if(k==='TOTOYA'){ TOTOYA_STORE_IDS.forEach(function(sid){ if(out.indexOf(sid)<0) out.push(sid); }); } else if(out.indexOf(k)<0){ out.push(k); } } }); return out; }
+function storesUsingIngredient(code){ var all=ls('store_ingredients',{}); code=parseInt(code); var out=[]; Object.keys(all).forEach(function(k){ if((all[k]||[]).indexOf(code)>=0){ if(k==='TOTOYA'){ totoyaStoreIds().forEach(function(sid){ if(out.indexOf(sid)<0) out.push(sid); }); }   /* v788 */ else if(out.indexOf(k)<0){ out.push(k); } } }); return out; }
 /* 一度だけ: 既存のTotoya 3店舗別(store_ingredients[F04-K/P/A])を 'TOTOYA' に統合（和集合） */
 var EXCEL_ORDER_UNITS = {'ahi':'lb','ahi mince':'pack','aosa':'pack','avocado oil':'bottle','awase miso (yamajirushi)':'tub','coke':'can','crispy noodle':'pack','dashi bonito pack(yamaki)':'bag','dashi konbu sheet':'lb','dashi miyako':'bottle','fish cake':'pack','ginger':'pack','green breeze':'pack','herring roe':'pack','hondashi (ajinomoto)':'bag','ikura':'pack','mayonnaise':'bottle','mirin':'bottle','negitoro':'pack','ocean salad':'box','red shrimp':'box','salmon':'lb','scallop 4s':'box','snow crab':'pack','soy sauce amakuchi':'bottle','soy sauce koikuchi':'bottle','sushi vinegar（mtkn)':'tub','sweet shrimp':'box','swimming crab':'box','tenkasu':'bag','tobiko':'pack','udon noodle':'bag','uni':'pack','utage':'bag','wasabi':'pack','white gari':'pack','white sesame':'bag','yakinori half size':'pack','yuzu kajyu(yamajirushi)':'bottle','yuzu miso dressing':'bottle','yuzu shichimi':'pack'};
 function _normIngNm(s){ return String(s||'').toLowerCase().replace(/\s+/g,' ').trim(); }
@@ -3914,14 +3928,37 @@ function archivedRecipes() { return getRecipes().filter(r=>r.archived); }
    - レシピは r.storeId に「オーナーキー」を持つ：実店舗ID / 'TOTOYA' / null(=全店共通)。
    - 既存の店舗別レシピ(F04-K等)もTotoyaビューにまとめて表示（非破壊）。
 ============================================================ */
-var TOTOYA_STORE_IDS = ['F04-K','F04-P','F04-A'];
+var TOTOYA_STORE_IDS = ['F04-K','F04-P','F04-A'];   /* 既定。店舗マスターが読めないときの保険 */
+/* v788: Totoya判定を「店舗マスターのブランド」で行う。
+   【なぜ】Totoyaの新店が増えるたびにこの配列を直さないと、その店だけが
+     レシピ・食材の共有、丼数系KPI、シフトポジション、仕入価格の手入力から
+     静かに外れる。ブランドは店舗マスターが持っている情報なので、そこを正にする。
+     客数の数え方(guestCountType)は以前からブランドで判定しており、考え方を揃える。
+   【IDの直書きを残す理由】起動直後など STORES が組み上がる前でも、
+     既存3店だけは正しく判定できるようにするため。 */
+function totoyaStoreIds(){
+  var out = TOTOYA_STORE_IDS.slice();
+  try{
+    (typeof STORES!=='undefined'?STORES:[]).forEach(function(s){
+      if(s && String(s.brand||'').trim().toLowerCase()==='totoya' && out.indexOf(s.id)<0) out.push(s.id);
+    });
+  }catch(e){}
+  return out;
+}
 /* v784: ToriTon と同じシフト運用（専用ビルダー＋シフト盤面）にする店舗。
    LaLa(F06) は ToriTon とほぼ同じ業態のため同じ扱いにする。
    店舗IDは店舗マスターのカードに表示している。効いていれば「ToriTon型シフト」の印が出る。
    同じ業態の店がこれ以上増えるようなら、この配列ではなく店舗マスターの項目にすること。 */
 var TORITON_SHIFT_STORES = ['F01','F06'];
 function isToritonShift(storeId){ return TORITON_SHIFT_STORES.indexOf(storeId)>=0; }
-function isTotoyaStore(storeId){ return TOTOYA_STORE_IDS.indexOf(storeId)>=0; }
+function isTotoyaStore(storeId){
+  if(!storeId) return false;
+  if(TOTOYA_STORE_IDS.indexOf(storeId)>=0) return true;
+  try{
+    var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){ return x && x.id===storeId; });
+    return !!(s && String(s.brand||'').trim().toLowerCase()==='totoya');
+  }catch(e){ return false; }
+}
 /* ダッシュボード(Funergy Now)の閲覧可否: 財務ロール、またはG3以上。 */
 function canSeeDashboard(){
   if ((ROLE_CONFIG[curRole]||{}).financial) return true;
@@ -21431,7 +21468,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '786';
+const APP_VERSION = '788';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30180,7 +30217,7 @@ function fvFmtCents(c){ if(c==null) return '—'; var v=Math.abs(c)/100; return 
 function fvDefaultConfig(){
   var ings={};
   FV_INGS.forEach(function(x){ ings[x.fvId]={ code:x.defCode, packG:null, tareG:0, yield:null, gCost:null, from:'', to:'', editedAt:'' }; });
-  return { stores: TOTOYA_STORE_IDS.slice(), ings:ings, recipes:{},
+  return { stores: totoyaStoreIds(), ings:ings, recipes:{},
     alerts:{ def:{ yPct:10, rPct:20, minG:100, minLoss:5, streak:2 }, store:{}, ing:{} }, editedAt:'' };
 }
 function fvGetConfig(){
@@ -31132,7 +31169,7 @@ function fvStoreShort(sid){
 /* 商品名でまとめる。1グループ = { name, items:[{guid, storeId}] } */
 function fvBowlGroups(){
   var recs=(typeof getRecipes==='function')?getRecipes().filter(function(x){
-    return x.toastGuid && !x.archived && (x.storeId==='TOTOYA' || TOTOYA_STORE_IDS.indexOf(x.storeId)>=0);
+    return x.toastGuid && !x.archived && (x.storeId==='TOTOYA' || totoyaStoreIds().indexOf(x.storeId)>=0);
   }):[];
   var by={}, keys=[];
   recs.forEach(function(r){
