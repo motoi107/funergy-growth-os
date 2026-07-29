@@ -6387,7 +6387,10 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
   /* v722: 日次食材差異(手入力)。棚卸/原因=日付×食材セル単位・入出庫=id和集合＋論理削除 */
   'fv_count_': { merge: mergeFvCellMap, covers: _coversFvCellMap },
   'fv_review_': { merge: mergeFvCellMap, covers: _coversFvCellMap },
-  'fv_moves_': { merge: mergeFvMoves, covers: _coversFvMoves } };
+  'fv_moves_': { merge: mergeFvMoves, covers: _coversFvMoves },
+  /* v783: 棚卸の仕入価格の手入力。品目ごとに新しい方が勝つ。
+     「戻す」は行を消さず p:null として残すため、削除の復活も取り消しの巻き戻りも起きない。 */
+  'inv_price_': { merge: mergeMapByTime, covers: _coversMapByTime } };
 /* v754: 棚卸(inv_<店舗>)の合流ルールを店舗ごとの完全キーで登録する。
    'inv_' の前方一致だと inv_hist_ や inv_templates まで拾ってしまうため、店舗IDまで含めて登録する。
    店舗が追加されたときのために refreshStores からも呼べるようにしておく。 */
@@ -17788,10 +17791,86 @@ function setInvCount(storeId, code, val){
   var st=document.getElementById('inv-autosave');
   if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
 }
-function invUnitValue(i, storeId){
+/* ============================================================
+   v783: 棚卸の仕入価格を手入力できるようにする（当月のみ・Totoya3店）
+   【背景】食材マスター(m_ingredients)は凍結中のため、そこへは一切書かない。
+   【保存先】inv_price_<店舗>_<YYYY-MM> = { <食材コード>: {p:価格, _at:時刻, by:入力者} }
+     ・'inv_' 接頭辞なので、クラウド同期(OP_SYNC_PREFIX)・削除保護(LS_NEVER_FREE)・
+       自動pruneの対象外が、いずれも既存の仕組みのまま効く。新しい保存経路は作らない。
+     ・「戻す」は行を消さず {p:null} として残す。行ごと消すと合流(mergeMapByTime)で
+       他端末の古い価格が復活する。かといって {_deleted:1} の印にすると、mergeMapByTime は
+       削除を時刻より優先するため「戻したあとに入れ直した価格」が消える。
+       値を null で残せば時刻だけで決まり、どちらも起きない。
+   【月をまたいだら】翌月は再びマスター値から始まる（その月だけの上書き）。
+     読み出しは常に「表示中の月」のキーを見るため、過去月へ移動しても混ざらない。
+   【確定したら】saveInventory() が単価を明細へ焼き付けるので、
+     あとから価格を変えても確定済みの月は動かない（従来どおりの性質）。
+============================================================ */
+function invPriceOverrides(storeId, ym){ ym=ym||invYm(); return ls('inv_price_'+storeId+'_'+ym, null) || {}; }
+/* その月・その品目の手入力価格。無ければ null（＝マスターを使う） */
+function invPriceOf(storeId, code, ym){
+  var r = invPriceOverrides(storeId, ym)[code];
+  if(!r || r.p==null) return null;   /* p:null = 手入力なし（マスターを使う） */
+  var v = Number(r.p);
+  return isNaN(v) ? null : v;
+}
+/* 編集できるのは Totoya3店の「当月」だけ。
+   読み出し(invBasePrice)は店舗で絞っていない。他店へ広げるときはここだけを緩めればよく、
+   保存済みの手入力が黙って無視される状態を作らないため。 */
+function invPriceEditable(storeId){
+  return (typeof isTotoyaStore==='function' && isTotoyaStore(storeId)) && invMonthOffset===0;
+}
+/* 仕入価格（内容量で割る前）。手入力があればそれが勝つ。 */
+function invBasePrice(i, storeId, ym){
   if(!i) return 0;
+  var ov = invPriceOf(storeId, i.code, ym);
+  if(ov!=null) return ov;
   var sp = i.storePrices && i.storePrices[storeId];
-  var price = (sp && sp.price!=null) ? sp.price : (i.price||0);
+  return (sp && sp.price!=null) ? (Number(sp.price)||0) : (Number(i.price)||0);
+}
+function setInvPrice(storeId, code, val){
+  if(!invPriceEditable(storeId)){ if(typeof showToast==='function') showToast('仕入価格は当月のみ編集できます','warning'); return; }
+  var _ym=invYm(), key='inv_price_'+storeId+'_'+_ym;
+  var m=ls(key,null)||{}, s=String(val==null?'':val).trim(), v=parseFloat(s);
+  if(s===''||isNaN(v)||v<0) m[code]={p:null,_at:Date.now()};
+  else m[code]={p:v,_at:Date.now(),by:((ROLE_CONFIG[curRole]||{}).name||'')};
+  lsSet(key, m);
+  _invPriceRowSync(storeId, code);
+}
+function invResetPrice(storeId, code){
+  if(!invPriceEditable(storeId)) return;
+  var _ym=invYm(), key='inv_price_'+storeId+'_'+_ym, m=ls(key,null)||{};
+  m[code]={p:null,_at:Date.now()};
+  lsSet(key, m);
+  var i=getIngredients().find(function(x){return x.code===code;});
+  var inp=document.getElementById('inv-price-'+code);
+  if(inp&&i) inp.value=invBasePrice(i,storeId,_ym);
+  _invPriceRowSync(storeId, code);
+}
+/* 価格を変えた行まわりだけを描き直す。全体を renderPage すると
+   長い一覧でスクロール位置が飛ぶため、DOMを直接触る。 */
+function _invPriceRowSync(storeId, code){
+  var tag=document.getElementById('inv-ptag-'+code);
+  if(tag){ var i=getIngredients().find(function(x){return x.code===code;}); if(i) tag.innerHTML=_invPriceTagHtml(i, storeId); }
+  if(typeof invRefreshInputSection==='function') invRefreshInputSection(storeId);
+  var tp=document.getElementById('inv-toppage'); if(tp) tp.innerHTML=renderInvToppageInner(storeId);
+  var st=document.getElementById('inv-autosave');
+  if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
+}
+/* 価格欄の下の小さな注記。手入力なら印と「戻す」、内容量があれば割り算後の単価も出す。 */
+function _invPriceTagHtml(i, storeId, ym){
+  if(!i) return '';
+  var manual = invPriceOf(storeId, i.code, ym)!=null;
+  var u = escapeHtml(i.unit||'');
+  var h = manual
+    ? '<span style="color:var(--yellow)"><i class="ti ti-pencil"></i> 手入力</span> <a href="javascript:void(0)" onclick="invResetPrice(\'' + storeId + '\',' + i.code + ')" style="color:var(--muted);text-decoration:underline">戻す</a>'
+    : (u ? '/'+u : '&nbsp;');
+  if(i.qty && i.qty>0){ var uv=invUnitValue(i, storeId, ym); h += '<div>単価 $'+uv.toFixed(uv<1?4:2)+(u?'/'+u:'')+'</div>'; }
+  return h;
+}
+function invUnitValue(i, storeId, ym){
+  if(!i) return 0;
+  var price = invBasePrice(i, storeId, ym);
   return (i.qty && i.qty>0) ? price/i.qty : price;
 }
 function invComputeTotals(storeId){
@@ -17875,17 +17954,20 @@ function renderInventory(){
     <table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">${curLang==='en'?'Ingredient':'食材'}</th><th>${curLang==='en'?'Unit price':'単価'}</th><th>${curLang==='en'?'Qty':'数量'}</th><th>${curLang==='en'?'Amount':'金額'}</th></tr></thead><tbody>`;
     vItems.forEach(function(i){
       var uv=invUnitValue(i,storeId), cnt=counts[i.code];
+      var _pe=invPriceEditable(storeId), _bp=invBasePrice(i,storeId);   /* v783 */
       var clsMeta=CLASSES.find(function(c){return c.id===(i.cls||catClass(i.cat));})||{};
       html += `<tr>
         <td style="text-align:left"><div style="font-weight:600">${escapeHtml(i.name)}</div><div style="font-size:9px;color:var(--muted)"><span style="color:${clsMeta.color||'var(--muted)'}">${clsMeta.name||''}</span> · ${escapeHtml(i.unit||'')}</div></td>
-        <td style="text-align:right;color:var(--muted)">$${uv.toFixed(uv<1?4:2)}<div style="font-size:9px">/${escapeHtml(i.unit||'')}</div></td>
+        <td style="text-align:right">${_pe
+          ? `<input id="inv-price-${i.code}" type="number" inputmode="decimal" step="0.01" min="0" value="${_bp}" onchange="setInvPrice('${storeId}',${i.code},this.value)" style="width:74px;padding:5px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:12px"><div id="inv-ptag-${i.code}" style="font-size:9px;color:var(--muted);margin-top:2px">${_invPriceTagHtml(i,storeId)}</div>`
+          : `<span style="color:var(--muted)">$${uv.toFixed(uv<1?4:2)}</span><div id="inv-ptag-${i.code}" style="font-size:9px;color:var(--muted)">${_invPriceTagHtml(i,storeId)}</div>`}</td>
         <td style="text-align:center"><input type="number" inputmode="decimal" step="0.01" inputmode="decimal" value="${cnt!=null?cnt:''}" oninput="setInvCount('${storeId}',${i.code},this.value)" style="width:62px;padding:6px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:13px"></td>
         <td id="inv-amt-${i.code}" style="text-align:right;font-weight:600">${cnt!=null?invFmtMoney(uv*cnt):'—'}</td>
       </tr>`;
     });
     html += `</tbody></table></div>`;
   });
-  html += `<div style="font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6"><i class="ti ti-info-circle"></i> ${curLang==='en'?'Entries auto-save. Finalize to record the monthly inventory and reflect it in Food Cost ending inventory. Unit price = price / pack size when pack size exists, else purchase price.':'入力すると自動保存されます。「確定」で当月の棚卸として記録し、Food Costの期末在庫額に反映します。単価は内容量があれば「価格÷内容量」、なければ仕入価格を使用します。'}</div>`;
+  html += `<div style="font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6"><i class="ti ti-info-circle"></i> ${curLang==='en'?'Entries auto-save. Finalize to record the monthly inventory and reflect it in Food Cost ending inventory. Unit price = price / pack size when pack size exists, else purchase price.':'入力すると自動保存されます。「確定」で当月の棚卸として記録し、Food Costの期末在庫額に反映します。単価は内容量があれば「価格÷内容量」、なければ仕入価格を使用します。<b>仕入価格は当月のみ手入力で直せます（食材マスターは変更されません）。</b>'}</div>`;
   return html;
 }
 
@@ -17916,7 +17998,7 @@ function invRenderConfirmedView(storeId, snap, ym){
       <div style="text-align:right"><div style="font-size:9px;color:var(--muted)">小計</div><div style="font-size:14px;font-weight:700">${invFmtMoney(sub)}</div></div>
     </div>
     <table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">食材</th><th>単価</th><th>数量</th><th>金額</th></tr></thead><tbody>
-    ${lines.map(function(l){ return `<tr><td style="text-align:left"><div style="font-weight:600">${escapeHtml(l.name)}</div><div style="font-size:9px;color:var(--muted)">${escapeHtml(l.unit||'')}</div></td><td style="text-align:right;color:var(--muted)">$${(l.unitVal||0).toFixed((l.unitVal||0)<1?4:2)}</td><td style="text-align:center;font-weight:600">${l.actual}</td><td style="text-align:right;font-weight:600">${invFmtMoney(l.value||0)}</td></tr>`; }).join('')}
+    ${lines.map(function(l){ return `<tr><td style="text-align:left"><div style="font-weight:600">${escapeHtml(l.name)}</div><div style="font-size:9px;color:var(--muted)">${escapeHtml(l.unit||'')}</div></td><td style="text-align:right;color:var(--muted)">$${(l.unitVal||0).toFixed((l.unitVal||0)<1?4:2)}${l.manual?'<div style="font-size:9px;color:var(--yellow)"><i class="ti ti-pencil"></i> 手入力</div>':''}</td><td style="text-align:center;font-weight:600">${l.actual}</td><td style="text-align:right;font-weight:600">${invFmtMoney(l.value||0)}</td></tr>`; }).join('')}
     </tbody></table></div>`;
   });
   return h;
@@ -17974,7 +18056,9 @@ function saveInventory(storeId){
     var i=ings.find(function(x){return x.code===code;}); if(!i) return;
     var cnt=counts[code]; if(cnt==null) return;
     var uv=invUnitValue(i,storeId);
-    lines.push({code:code, name:i.name, cls:(i.cls||catClass(i.cat)), vendor:i.vendor||'未設定', unit:i.unit||'', actual:cnt, unitVal:uv, value:cnt*uv});
+    var _L={code:code, name:i.name, cls:(i.cls||catClass(i.cat)), vendor:i.vendor||'未設定', unit:i.unit||'', actual:cnt, unitVal:uv, value:cnt*uv};
+    if(invPriceOf(storeId, code)!=null) _L.manual=1;   /* v783: 仕入価格を手入力した行 */
+    lines.push(_L);
   });
   if(!lines.length){ alert('棚卸数が入力されていません'); return; }
   var ym = invYm();
@@ -21341,7 +21425,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '782';
+const APP_VERSION = '783';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
