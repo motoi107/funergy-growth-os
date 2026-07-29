@@ -1131,11 +1131,11 @@ function getStoresAll() {
     if(x.dinnerHours===undefined) x.dinnerHours = '17:00-22:00';
     if(x.takeout===undefined) x.takeout = true;
   });
-  return sortByLoginOrder(s); // 全画面共通の店舗並び順（ToriTon→Tenkichi→Kaimuki→Piikoi→Aiea→Kapolei→Marujuu→LaLa→FSP→WGS）
+  return sortByLoginOrder(s); // 全画面共通の店舗並び順（ToriTon→Tenkichi→Totoya各店→Marujuu→LaLa→FSP→WGS）
 }
 function setStoresAll(s) { lsSet('m_stores', s); refreshStores(); }
 /* ログイン画面と同じ店舗並び順（全画面共通） */
-const LOGIN_STORE_ORDER = ['F01','F02','F04-K','F04-P','F04-A','Kapolei','F05','F06','F03','F03-G'];
+const LOGIN_STORE_ORDER = ['F01','F02','F04-K','F04-P','F04-A','@Totoya','Kapolei','F05','F06','F03','F03-G'];
 /* v787: 照合を「店舗ID → 店名/ブランド」の2段にする。
    新しく登録した店舗はIDが分からないことが多く、IDだけで指定していると
    並びに入れられず末尾に回ってしまう。店名でも位置を指定できるようにした。
@@ -1143,14 +1143,23 @@ const LOGIN_STORE_ORDER = ['F01','F02','F04-K','F04-P','F04-A','Kapolei','F05','
    店名の項目は部分一致も見る（'Totoya Kapolei' のような登録名でも拾えるようにするため）。 */
 function _storeOrderIdx(s){
   if(!s) return 999;
+  /* ① 店舗ID（完全一致） */
   var i = LOGIN_STORE_ORDER.indexOf(s.id);
   if(i>=0) return i;
-  var nm=String(s.name||'').toLowerCase(), br=String(s.brand||'').toLowerCase();
+  var nm=String(s.name||'').trim().toLowerCase(), br=String(s.brand||'').trim().toLowerCase();
+  /* ② '@<ブランド>' … 並びに明示していない同ブランドの店舗をここへまとめる。
+     v789: Totoyaの新店が増えても、並びを直さずに Totoya の位置へ入るようにするため。 */
   for(var k=0;k<LOGIN_STORE_ORDER.length;k++){
     var e=String(LOGIN_STORE_ORDER[k]||'');
-    if(/^F\d/.test(e)) continue;
-    var le=e.toLowerCase(); if(!le) continue;
-    if(nm===le||br===le||nm.indexOf(le)>=0||br.indexOf(le)>=0) return k;
+    if(e.charAt(0)!=='@') continue;
+    if(br && br===e.slice(1).trim().toLowerCase()) return k;
+  }
+  /* ③ 店名・ブランドの部分一致（店舗IDが分からない店舗向け） */
+  for(var k2=0;k2<LOGIN_STORE_ORDER.length;k2++){
+    var e2=String(LOGIN_STORE_ORDER[k2]||'');
+    if(/^F\d/.test(e2) || e2.charAt(0)==='@') continue;
+    var le=e2.toLowerCase(); if(!le) continue;
+    if(nm===le||br===le||nm.indexOf(le)>=0||br.indexOf(le)>=0) return k2;
   }
   return 999;
 }
@@ -21468,7 +21477,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '788';
+const APP_VERSION = '789';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
