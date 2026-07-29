@@ -64,7 +64,8 @@ const check = (l, c, e) => { console.log((c ? '  ✅ ' : '  ❌ ') + l + (e ? ' 
 console.log('\n=== テスト1: グループ構成 ===');
 {
   const a = env({});
-  check('グループが5つ', a.GROUPS.length === 5, a.GROUPS.map(g => g.label).join(' / '));
+  /* v782: 品質管理(g_qc)を追加したため 5 → 6。 */
+  check('グループが6つ', a.GROUPS.length === 6, a.GROUPS.map(g => g.label).join(' / '));
   const cost = a.ccGroupMetrics('g_cost').map(m => m.label);
   check('原価管理に原価率と理論原価差異が入っている',
     cost.indexOf('原価率') >= 0 && cost.indexOf('理論原価との差異') >= 0, cost.join(' + '));
@@ -128,13 +129,16 @@ console.log('\n=== テスト3: 行動のグループ振り分け ===');
   ];
   check('原価管理に1件', a.ccGroupActions(ym, 'g_cost').length === 1);
   check('衛生管理に1件', a.ccGroupActions(ym, 'g_hyg').length === 1);
-  check('メニュー開発に2件（商品開発＋品質）', a.ccGroupActions(ym, 'g_dev').length === 2,
+  /* v782: quality カテゴリーを品質管理へ移したので、メニュー開発は商品開発の1件だけになる。 */
+  check('メニュー開発に1件（商品開発）', a.ccGroupActions(ym, 'g_dev').length === 1,
     a.ccGroupActions(ym, 'g_dev').map(x => x.id).join(','));
+  check('品質管理に1件（クオリティ管理）', a.ccGroupActions(ym, 'g_qc').length === 1,
+    a.ccGroupActions(ym, 'g_qc').map(x => x.id).join(','));
   check('人材・育成に1件（旧staffも解決）', a.ccGroupActions(ym, 'g_ppl').length === 1);
   check('未知のカテゴリーはその他に落ちる（行動が消えない）',
     a.ccGroupActions(ym, 'g_other').map(x => x.id).sort().join(',') === 'a6,a7',
     a.ccGroupActions(ym, 'g_other').map(x => x.id).join(','));
-  const total = ['g_cost', 'g_hyg', 'g_dev', 'g_ppl', 'g_other']
+  const total = ['g_cost', 'g_hyg', 'g_qc', 'g_dev', 'g_ppl', 'g_other']   /* v782: g_qc を集計に追加 */
     .reduce((n, g) => n + a.ccGroupActions(ym, g).length, 0);
   check('どのグループにも入らない行動が無い', total === 7, total + '/7');
 }
