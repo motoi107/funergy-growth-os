@@ -21477,7 +21477,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '789';
+const APP_VERSION = '790';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -34041,7 +34041,7 @@ var TOTOYA_SKILL_CRITERIA_V2 = {
   'Miso':[
     ['未経験','Not experienced'],
     ['味噌・トッピング・配置（海苔/丼/味噌/スプーン）を正確に再現。セットアップ・クロージングを店舗が求める基準通りに完了できる。','Can accurately execute miso, toppings, and proper placement (seaweed/bowl/miso/spoon). Can complete setup and closing according to the store\u2019s standards.'],
-    ['エリアの清潔を維持しながら、50オーダー以上を遅れなく安定して対応できる。いくらシャワーもためらうことなく行える。','Can maintain a clean station while consistently handling 50+ orders without delays. Can perform Ikura shower confidently whenever needed.'],
+    ['50オーダー＋洗い場を回すことが可能。いくらシャワーもためらうことなく行える。','Can maintain a clean station while consistently handling 50+ orders without delays. Can perform Ikura shower confidently whenever needed.'],
     ['70オーダー以上を回しながら、洗い場・フロアサポートにも対応できる','Can handle 70+ orders while supporting the dishwashing station.'],
     ['どんなに忙しい時でもエリアの清潔を維持しつつ、全ポジションをサポートする余裕がある。','Can maintain a clean work area and still have the capacity to support all positions, even during the busiest periods.']
   ],
@@ -34049,7 +34049,7 @@ var TOTOYA_SKILL_CRITERIA_V2 = {
     ['未経験','Not experienced'],
     ['注文・会計を正確に1人で対応。セットアップ・クロージングを店舗が求める基準通りに完了できる。','Can handle order taking and payments independently. Can complete setup and closing according to the store\u2019s standards.'],
     ['50オーダー以上＋店内対応しながら外オーダーも適切に処理','Can handle 50+ orders while managing inside customers and outside orders.'],
-    ['70オーダー以上＋全客に必要な説明/提案/確認ができる','Can handle 70+ orders while consistently communicating with all customers (menu, recommendations, guidance, checks).'],
+    ['70オーダー以上＋全客に必要な説明/提案/確認ができる','Can handle 70+ orders while consistently communicating with all customers (menu recommendations, guidance, checks).'],
     ['接客を最優先に維持しながら、他ポジも適切にサポート','Maintains top priority on customer service while supporting other positions at the right timing.']
   ],
   'Supporter':[
@@ -34169,7 +34169,7 @@ async function runTotoyaSkillV2(){
       TOTOYA_SKILL_CRITERIA_V2[pos].forEach(function(pair, lv){ d[sid][pos][lv]={ja:pair[0], en:pair[1]}; });
     });
   });
-  lsSet('skill_lv_desc', d);
+  setSkillLvDesc(d);   /* v790: _at を進める出口を通す。lsSet だと合流で旧基準に負け、他端末へ届かなかった */
   _tv2Log('　基準文（日英 35項目）を設定');
 
   var sr=ls('skill_rules', {}); if(!sr||typeof sr!=='object') sr={};
@@ -34205,6 +34205,87 @@ async function runTotoyaSkillV2(){
     +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">全店舗の評価軸（確認用）</div>'+rows+'</div>'
     +(pushNg.length?('<div class="alert alert-warning" style="margin:0 0 8px;padding:8px 10px;font-size:11.5px"><i class="ti ti-alert-triangle"></i> クラウド反映に失敗したものがあります: '+escapeHtml(pushNg.join(', '))+'。通信を確認して、もう一度実行してください。</div>'):'')
     +'<div style="font-size:11.5px;color:var(--muted);line-height:1.6">スタッフ端末では、次回アプリを開いたときに反映されます。反映されない場合は、スタッフのマイページの「診断 → クラウドから取得」をお試しください。</div>'
+    +'<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect();renderPage(curPage)">閉じる</button></div>');
+}
+/* ===== v790: 基準文だけを最新へ更新する（Kaimuki / Piikoi） =====
+   【v789までの症状】GMが「Totoya新基準」を実行しても、スタッフ端末の基準文が旧いまま残っていた。
+     skill_lv_desc は _at が新しい方を丸ごと採用する合流（mergeByTime）だが、
+     runTotoyaSkillV2 は lsSet('skill_lv_desc', d) で書いていたため _at が進まなかった。
+     ・同じ _at → ローカルが勝つ → 他端末は旧基準のまま
+     ・他端末が後から基準文を編集していた → GM端末でも次のプルで旧基準へ戻る
+     v790 で runTotoyaSkillV2 側も setSkillLvDesc（_at を進める出口）へ変更した。
+   【この処理】基準文を直すだけなら、評価軸の入れ替えやスキルの移行まで流す必要がない。
+     ①クラウドから取得 → ②対象2店の基準文だけ上書き → ③setSkillLvDesc で _at を進める
+     → ④クラウドへ押し上げ → ⑤読み直して残差を表示。他店・他キーには一切触らない。 */
+function _tv2CritDiff(){
+  var d=getSkillLvDesc(), out=[];
+  TOTOYA_V2_STORES.forEach(function(sid){
+    Object.keys(TOTOYA_SKILL_CRITERIA_V2).forEach(function(pos){
+      TOTOYA_SKILL_CRITERIA_V2[pos].forEach(function(pair, lv){
+        var c=(d[sid]&&d[sid][pos]&&d[sid][pos][lv])||{};
+        if((c.ja||'')!==pair[0] || (c.en||'')!==pair[1])
+          out.push({sid:sid,pos:pos,lv:lv,ja:(c.ja||''),nja:pair[0]});
+      });
+    });
+  });
+  return out;
+}
+function _tv2CritTotal(){ return TOTOYA_V2_STORES.length*Object.keys(TOTOYA_SKILL_CRITERIA_V2).length*5; }
+function openTotoyaCritRefresh(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('この操作はGM・CEOのみです','warning'); return; }
+  var diff=_tv2CritDiff();
+  var rows = diff.length ? diff.map(function(x){
+    var st=(STORES.find(function(s){return s.id===x.sid;})||{});
+    return '<div style="font-size:11px;padding:5px 0;border-top:1px solid var(--border)">'
+      +'<b>'+escapeHtml(st.name||x.sid)+' / '+escapeHtml(x.pos)+' Lv'+x.lv+'</b>'
+      +'<div style="color:var(--muted);margin-top:2px">現在：'+escapeHtml(x.ja||'（空）')+'</div>'
+      +'<div style="color:var(--green)">更新後：'+escapeHtml(x.nja)+'</div>'
+    +'</div>';
+  }).join('') : '<div style="font-size:11.5px;color:var(--muted)">本文の差はありません。実行すると更新時刻だけを進めて、全端末へ配り直します。</div>';
+  openModal('<div class="modal-title"><i class="ti ti-file-text"></i> 基準文を最新へ更新 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="alert alert-info" style="margin:0 0 8px;padding:8px 10px"><i class="ti ti-info-circle"></i><div style="font-size:11.5px">'
+    +'更新するのは <b>Kaimuki / Piikoi の基準文（日英）だけ</b>です。評価軸・承認済みスキル・チップ率条件は変更しません。</div></div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:12px;font-weight:700;margin-bottom:3px">変更される項目：'+diff.length+' / '+_tv2CritTotal()+'</div>'
+    +'<div style="max-height:210px;overflow:auto">'+rows+'</div></div>'
+    +'<div id="tv2-log" style="font-size:11px;color:var(--muted);max-height:130px;overflow:auto"></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" id="tv2c-go" onclick="runTotoyaCritRefresh()"><i class="ti ti-player-play"></i> 実行する</button></div>');
+}
+async function runTotoyaCritRefresh(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('この操作はGM・CEOのみです','warning'); return; }
+  try{ var b=document.getElementById('tv2c-go'); if(b){ b.disabled=true; b.innerHTML='<i class="ti ti-loader"></i> 実行中…'; } }catch(e){}
+  _tv2Log('① クラウドから基準文を取得中…');
+  try{ if(typeof pullOpKey==='function') await pullOpKey('skill_lv_desc'); }catch(e){}
+  var atBefore=0; try{ atBefore=Number((ls('skill_lv_desc',null)||{})._at)||0; }catch(e){}
+  var d=ls('skill_lv_desc', {}); if(!d||typeof d!=='object') d={};
+  var wrote=0;
+  TOTOYA_V2_STORES.forEach(function(sid){
+    d[sid]=d[sid]||{};
+    Object.keys(TOTOYA_SKILL_CRITERIA_V2).forEach(function(pos){
+      d[sid][pos]=d[sid][pos]||{};
+      TOTOYA_SKILL_CRITERIA_V2[pos].forEach(function(pair, lv){ d[sid][pos][lv]={ja:pair[0], en:pair[1]}; wrote++; });
+    });
+  });
+  setSkillLvDesc(d);   /* _at を進める出口を通す。lsSet だと他端末へ届かない */
+  var atAfter=0; try{ atAfter=Number((ls('skill_lv_desc',null)||{})._at)||0; }catch(e){}
+  _tv2Log('② 基準文を書き込み（'+wrote+'項目）');
+  _tv2Log('　更新時刻 '+atBefore+' → '+atAfter+(atAfter>atBefore?'（進みました）':'（⚠ 進んでいません）'));
+  _tv2Log('③ クラウドへ反映中…');
+  var pushNg='';
+  try{ await syncMasterToSupabase('skill_lv_desc', ls('skill_lv_desc',{})); }catch(e){ pushNg=String((e&&e.message)||e); }
+  _tv2Log(pushNg?('　失敗：'+pushNg):'　反映しました');
+  var left=_tv2CritDiff();
+  var others=Object.keys(getSkillLvDesc()).filter(function(k){ return k!=='_at' && TOTOYA_V2_STORES.indexOf(k)<0; });
+  openModal('<div class="modal-title"><i class="ti ti-checkbox"></i> 基準文を更新しました <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="card" style="margin:0 0 8px"><div style="font-size:11.5px;line-height:1.7">'
+    +'書き込み：<b>'+wrote+'</b> 項目（'+escapeHtml(TOTOYA_V2_STORES.join(' / '))+'）<br>'
+    +'残っている差：<b>'+left.length+'</b> 項目<br>'
+    +'更新時刻：'+atBefore+' → '+atAfter+(atAfter>atBefore?'':'　⚠ 進んでいません')
+    +'</div></div>'
+    +(left.length?('<div class="alert alert-warning" style="margin:0 0 8px;padding:8px 10px;font-size:11.5px"><i class="ti ti-alert-triangle"></i> 差が残っています。もう一度実行してください。</div>'):'')
+    +(pushNg?('<div class="alert alert-warning" style="margin:0 0 8px;padding:8px 10px;font-size:11.5px"><i class="ti ti-alert-triangle"></i> クラウド反映に失敗しました（'+escapeHtml(pushNg)+'）。通信を確認して、もう一度実行してください。</div>'):'')
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.6">触っていない店舗の基準文：'+escapeHtml(others.join('、')||'（なし）')+'<br>'
+    +'スタッフ端末では次回アプリを開いたときに反映されます。</div>'
     +'<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect();renderPage(curPage)">閉じる</button></div>');
 }
 function migrateTotoyaSkillV2(){ return; }
@@ -48810,7 +48891,7 @@ function renderSkillManager() {
       ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openLevelRuleModal()"><i class="ti ti-adjustments"></i> ${t('昇格条件','Level-up rules')}</button>`:''}
       ${curRole==='gm'||curRole==='ceo'||curRole==='am'||curRole==='sl'?`<button class="btn btn-secondary btn-sm" onclick="openPositionConfigModal()"><i class="ti ti-settings"></i> ${t('ポジション設定','Positions')}</button>`:''}
       ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openSkillRecovery()"><i class="ti ti-history"></i> ${t('履歴から復旧','Recover from history')}</button>`:''}
-      ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openSkillLvDescEditor()"><i class="ti ti-file-text"></i> ${t('レベル説明','Level info')}</button>`:''}${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openTotoyaSkillV2()"><i class="ti ti-refresh"></i> Totoya新基準</button>`:''}
+      ${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openSkillLvDescEditor()"><i class="ti ti-file-text"></i> ${t('レベル説明','Level info')}</button>`:''}${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openTotoyaSkillV2()"><i class="ti ti-refresh"></i> Totoya新基準</button>`:''}${curRole==='gm'||curRole==='ceo'?`<button class="btn btn-secondary btn-sm" onclick="openTotoyaCritRefresh()"><i class="ti ti-file-text"></i> ${t('基準文を更新','Refresh criteria')}</button>`:''}
     </div>
   </div>`;
   html += evalRubricLegendHtml();
