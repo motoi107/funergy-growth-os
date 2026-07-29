@@ -21261,7 +21261,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '768';
+const APP_VERSION = '769';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -44631,42 +44631,87 @@ function renderAnnounce(){
        先月の行に触らない。予算で起きた「別の月を保存したら他の月が変わる」を構造的に防ぐ。
      ・削除は論理削除。合流は必ず時刻(_mut)で判定し、値の大小では決めない。 */
 
-/* ===== v768: 店舗別の共通目標を数値で管理する =====
-   【目的】行動計画に「今どうなっているか」の数字を並べ、本部とChefが同じ絵を見る。
-   【設計】指標の定義(cc_metrics)と、月×店舗×指標の数値(cc_scores)を分ける。
-     指標は追加・編集できる。店舗の絞り込みで業態別の指標（居酒屋のシーズナル、
-     Totoyaの新メニュー）も同じ仕組みで扱う。
-   【役割分担】目標値は本部(GM)が入れる。実績はCorporate Chefが入れる。
-     どちらの数字も両者に見えることが「相互に理解する」の中身。 */
+/* ===== v769: 店舗別の共通目標（グループ化・折りたたみ・行動と一体表示） =====
+   【設計】
+     ・指標をグループにまとめ、既定は畳んでおく。開くとその中身が出る。
+     ・1グループ = 1テーブル。店舗を行、指標を列にして「統合した1枚」で見る。
+     ・グループの下に、そのカテゴリーの今月の行動を状態つきで並べる。
+       数値（結果）と行動（何をやったか）が同じ場所に並ぶことが要点。
+   【衛生管理】ハワイDOHはプラカード制（緑＝重大違反1件以下で是正済／黄＝2件以上または未是正／
+     赤＝閉鎖）。プラカード色・直近検査日・チェックリスト適合率・フードハンドラー保持率を1つにまとめる。
+     チェック項目は既定値。実際の検査票に合わせて追加・修正できる。 */
+
+var CC_GROUPS = [
+  {id:'g_cost', label:'原価管理',        icon:'ti-receipt'},
+  {id:'g_hyg',  label:'衛生管理（DOH）', icon:'ti-shield-check'},
+  {id:'g_dev',  label:'メニュー開発',    icon:'ti-tools-kitchen-2'},
+  {id:'g_ppl',  label:'人材・育成',      icon:'ti-user-star'},
+  {id:'g_other',label:'その他',          icon:'ti-dots'}
+];
+/* 行動のカテゴリーをグループへ対応させる（旧カテゴリーidもそのまま解決できる） */
+var CC_CAT_GROUP = { cost:'g_cost', hygiene:'g_hyg', product:'g_dev', quality:'g_dev',
+                     leader:'g_ppl', staff:'g_ppl', store:'g_other', support:'g_other', other:'g_other' };
 
 var CC_DEFAULT_METRICS = [
-  {id:'m_cost',    label:'原価率',              unit:'%',  dir:'lower',  stores:'ALL', order:1},
-  {id:'m_theo',    label:'理論原価との差異',    unit:'pt', dir:'lower',  stores:'ALL', order:2},
-  {id:'m_hyg',     label:'衛生',                unit:'点', dir:'higher', stores:'ALL', order:3},
-  {id:'m_fh',      label:'フードハンドラー保持', unit:'%',  dir:'higher', stores:'ALL', order:4},
-  {id:'m_g3',      label:'G3キッチンリーダー',  unit:'人', dir:'higher', stores:'ALL', order:5, needPlace:true},
-  {id:'m_season',  label:'シーズナル進捗',      unit:'%',  dir:'higher', stores:['F01','F02'], order:6},
-  {id:'m_newmenu', label:'新メニュー開発',      unit:'件', dir:'higher', stores:['F04-K','F04-P','F04-A'], order:7}
+  {id:'m_cost',    grp:'g_cost', label:'原価率',          unit:'%',  dir:'lower',  stores:'ALL', order:1},
+  {id:'m_theo',    grp:'g_cost', label:'理論原価との差異', unit:'pt', dir:'lower',  stores:'ALL', order:2},
+  {id:'m_doh',     grp:'g_hyg',  label:'DOH適合',         unit:'%',  dir:'higher', stores:'ALL', order:1, type:'check'},
+  {id:'m_fh',      grp:'g_hyg',  label:'フードハンドラー保持', unit:'%', dir:'higher', stores:'ALL', order:2},
+  {id:'m_dev',     grp:'g_dev',  label:'新メニュー・シーズナル進捗', unit:'%', dir:'higher', stores:'ALL', order:1},
+  {id:'m_g3',      grp:'g_ppl',  label:'G3キッチンリーダー', unit:'人', dir:'higher', stores:'ALL', order:1, needPlace:true}
 ];
-var ccGridView = 'metric';   /* metric = 指標ごと / store = 店舗ごと */
 
+/* ---- DOH チェック項目（既定値。実際の検査票に合わせて増減できる） ---- */
+var CC_DOH_ITEMS = [
+  {id:'d01', sec:'管理体制',   label:'責任者(PIC)が在店している'},
+  {id:'d02', sec:'管理体制',   label:'Food Safety Manager 認証者がいる'},
+  {id:'d03', sec:'管理体制',   label:'体調不良時の報告・就業制限が周知されている'},
+  {id:'d04', sec:'手指衛生',   label:'手洗いシンクが使える（石鹸・ペーパー・温水）'},
+  {id:'d05', sec:'手指衛生',   label:'手洗いシンクの前に物が置かれていない'},
+  {id:'d06', sec:'手指衛生',   label:'手洗いの手順・タイミングが守られている'},
+  {id:'d07', sec:'手指衛生',   label:'手袋の交換が適切に行われている'},
+  {id:'d08', sec:'手指衛生',   label:'そのまま食べる食品に素手で触れていない'},
+  {id:'d09', sec:'手指衛生',   label:'帽子・毛髪の押さえ、爪・アクセサリー'},
+  {id:'d10', sec:'温度管理',   label:'冷蔵 41°F(5°C)以下'},
+  {id:'d11', sec:'温度管理',   label:'温蔵 135°F(57°C)以上'},
+  {id:'d12', sec:'温度管理',   label:'加熱の中心温度が基準に達している'},
+  {id:'d13', sec:'温度管理',   label:'再加熱 165°F(74°C)'},
+  {id:'d14', sec:'温度管理',   label:'冷却手順（2時間→70°F、計6時間→41°F）'},
+  {id:'d15', sec:'温度管理',   label:'温度計が使える状態・校正済み'},
+  {id:'d16', sec:'交差汚染',   label:'生食材と加熱済みが分けて保管されている'},
+  {id:'d17', sec:'交差汚染',   label:'まな板・器具が使い分けられている'},
+  {id:'d18', sec:'交差汚染',   label:'サニタイザー濃度が基準内・試験紙がある'},
+  {id:'d19', sec:'交差汚染',   label:'食品接触面が清潔に保たれている'},
+  {id:'d20', sec:'表示・保管', label:'日付ラベル（date marking）がある'},
+  {id:'d21', sec:'表示・保管', label:'先入れ先出し（FIFO）ができている'},
+  {id:'d22', sec:'表示・保管', label:'開封後の保存期限が守られている'},
+  {id:'d23', sec:'表示・保管', label:'貝類のタグが保管されている'},
+  {id:'d24', sec:'施設',       label:'害虫の形跡がない'},
+  {id:'d25', sec:'施設',       label:'化学薬品の保管・ラベルが適切'},
+  {id:'d26', sec:'施設',       label:'ゴミ・排水の管理ができている'}
+];
+var CC_PLACARD = ['','緑','黄','赤'];
+
+var ccGridOpen = {};                    /* グループの開閉状態 */
+function toggleCcGroup(gid){ ccGridOpen[gid] = !ccGridOpen[gid]; renderPage('cc_plan'); }
+
+/* ---------- 指標 ---------- */
 function ccMetrics(){
   var m = ls('cc_metrics', null);
   var arr = (m && typeof m === 'object') ? Object.keys(m).map(function(k){ return m[k]; }) : [];
   arr = arr.filter(function(x){ return x && !x._deleted; });
-  if(!arr.length) arr = CC_DEFAULT_METRICS.slice();   /* 未設定なら既定を表示（保存はしない） */
+  if(!arr.length) arr = CC_DEFAULT_METRICS.slice();
   return arr.sort(function(a,b){ return (a.order||99) - (b.order||99); });
 }
 function _ccMetricsMap(){
   var m = ls('cc_metrics', null);
   if(m && typeof m === 'object' && Object.keys(m).length) return m;
-  var o = {};                                        /* 初回の編集時に既定を実体化する */
+  var o = {};
   CC_DEFAULT_METRICS.forEach(function(x){ o[x.id] = Object.assign({}, x); });
   return o;
 }
 function ccPutMetric(rec){
-  var m = _ccMetricsMap();
-  m[rec.id] = rec;
+  var m = _ccMetricsMap(); m[rec.id] = rec;
   var ok = lsSet('cc_metrics', m);
   if(ok === false) showToast('保存できませんでした', 'danger');
   return ok !== false;
@@ -44676,51 +44721,164 @@ function ccMetricStores(mt){
   if(!mt || mt.stores === 'ALL' || !Array.isArray(mt.stores)) return all;
   return all.filter(function(s){ return mt.stores.indexOf(s.id) >= 0; });
 }
-
-/* ---------- 数値（月×店舗×指標） ---------- */
-function _ccScoreId(ym, storeId, mid){ return ym + '|' + storeId + '|' + mid; }
-function ccScores(ym){
-  return (ls('cc_scores', []) || []).filter(function(s){ return s && s.ym === ym && !s._deleted; });
+function ccGroupMetrics(gid){
+  return ccMetrics().filter(function(m){ return (m.grp || 'g_other') === gid; });
 }
+
+/* ---------- 数値 ---------- */
+function _ccScoreId(ym, storeId, mid){ return ym + '|' + storeId + '|' + mid; }
+function ccScores(ym){ return (ls('cc_scores', []) || []).filter(function(s){ return s && s.ym === ym && !s._deleted; }); }
 function ccScore(ym, storeId, mid){
   var id = _ccScoreId(ym, storeId, mid);
   return ccScores(ym).filter(function(s){ return s.id === id; })[0] || null;
 }
 function ccPutScore(rec){
   var arr = ls('cc_scores', []) || [];
-  var i = -1;
-  arr.forEach(function(x, k){ if(x && x.id === rec.id) i = k; });
+  var i = -1; arr.forEach(function(x, k){ if(x && x.id === rec.id) i = k; });
   if(i >= 0) arr[i] = rec; else arr.push(rec);
   var ok = lsSet('cc_scores', arr);
   if(ok === false) showToast('保存できませんでした', 'danger');
   return ok !== false;
 }
+/* チェック型は適合率を実績とみなす */
+function ccCheckRate(sc){
+  if(!sc || !sc.checks) return null;
+  var ok = 0, ng = 0;
+  Object.keys(sc.checks).forEach(function(k){ if(sc.checks[k] === 'ok') ok++; else if(sc.checks[k] === 'ng') ng++; });
+  if(!(ok + ng)) return null;
+  return { ok: ok, ng: ng, pct: Math.round(ok / (ok + ng) * 100) };
+}
+function ccActualOf(mt, sc){
+  if(mt.type === 'check'){ var r = ccCheckRate(sc); return r ? r.pct : ''; }
+  return sc ? sc.actual : '';
+}
 function ccScoreOk(mt, sc){
-  if(!sc || sc.actual == null || sc.actual === '' || sc.target == null || sc.target === '') return null;
-  var a = Number(sc.actual), t = Number(sc.target);
+  var a = ccActualOf(mt, sc);
+  var t = sc ? sc.target : '';
+  if(a == null || a === '' || t == null || t === '') return null;
+  a = Number(a); t = Number(t);
   if(isNaN(a) || isNaN(t)) return null;
   return (mt.dir === 'lower') ? (a <= t) : (a >= t);
 }
 function _ccNum(v){ return (v == null || v === '') ? '—' : String(v); }
 
-/* ---------- 指標の編集 ---------- */
+/* ---------- 入力（数値） ---------- */
+function openCcScoreModal(ym, storeId, mid){
+  var mt = ccMetrics().filter(function(x){ return x.id === mid; })[0]; if(!mt) return;
+  if(mt.type === 'check') return openCcDohModal(ym, storeId, mid);
+  var st = (typeof STORES !== 'undefined' ? STORES : []).filter(function(s){ return s.id === storeId; })[0] || { name: storeId };
+  var sc = ccScore(ym, storeId, mid) || { target:'', actual:'', note:'', place:'' };
+  var hq = ccIsHQ(), locked = ccPlan(ym).status === 'ロック';
+  openModal('<div class="modal-title">' + escapeHtml(st.name) + ' ／ ' + escapeHtml(mt.label) +
+    ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
+    '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">' + ym + '　' +
+    (mt.dir === 'lower' ? '低いほど良い' : '高いほど良い') + (mt.unit ? '（' + escapeHtml(mt.unit) + '）' : '') + '</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label class="form-label">目標（本部）</label>' +
+    '<input class="form-input" id="cs-target" type="number" step="any" value="' + escapeHtml(String(sc.target == null ? '' : sc.target)) + '"' + ((hq && !locked) ? '' : ' disabled') + '></div>' +
+    '<div class="form-group"><label class="form-label">実績（Chef）</label>' +
+    '<input class="form-input" id="cs-actual" type="number" step="any" value="' + escapeHtml(String(sc.actual == null ? '' : sc.actual)) + '"' + (locked ? ' disabled' : '') + '></div></div>' +
+    (mt.needPlace ? '<div class="form-group"><label class="form-label">配置の必要性</label>' +
+      '<select class="form-select" id="cs-place"' + (locked ? ' disabled' : '') + '>' +
+      ['','必要','検討中','不要'].map(function(p){ return '<option' + (sc.place === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') + '</select></div>' : '') +
+    '<div class="form-group"><label class="form-label">メモ・要因</label>' +
+    '<textarea class="form-input" id="cs-note" rows="2"' + (locked ? ' disabled' : '') + '>' + escapeHtml(sc.note || '') + '</textarea></div>' +
+    (locked ? '<div style="font-size:11.5px;color:var(--muted)">この月はロックされています。</div>' :
+    '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
+    '<button class="btn btn-primary" onclick="saveCcScore(\'' + ym + '\',\'' + storeId + '\',\'' + mid + '\')">保存</button></div>'));
+}
+function saveCcScore(ym, storeId, mid){
+  var old = ccScore(ym, storeId, mid) || {};
+  var tEl = document.getElementById('cs-target'), aEl = document.getElementById('cs-actual'), pEl = document.getElementById('cs-place');
+  var rec = Object.assign({}, old, {
+    id: _ccScoreId(ym, storeId, mid), ym: ym, storeId: storeId, metricId: mid,
+    target: (tEl && !tEl.disabled) ? tEl.value : (old.target == null ? '' : old.target),
+    actual: (aEl && !aEl.disabled) ? aEl.value : (old.actual == null ? '' : old.actual),
+    place: pEl ? pEl.value : (old.place || ''),
+    note: (document.getElementById('cs-note').value || '').trim(),
+    by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false
+  });
+  if(!ccPutScore(rec)) return;
+  closeModalDirect(); showToast('保存しました', 'success'); renderPage('cc_plan');
+}
+
+/* ---------- 入力（DOHチェックリスト） ---------- */
+function openCcDohModal(ym, storeId, mid){
+  var st = (typeof STORES !== 'undefined' ? STORES : []).filter(function(s){ return s.id === storeId; })[0] || { name: storeId };
+  var sc = ccScore(ym, storeId, mid) || { target:'', checks:{}, note:'', placard:'', inspectedAt:'' };
+  var locked = ccPlan(ym).status === 'ロック', hq = ccIsHQ();
+  var secs = [], seen = {};
+  CC_DOH_ITEMS.forEach(function(it){ if(!seen[it.sec]){ seen[it.sec] = 1; secs.push(it.sec); } });
+  var body = secs.map(function(sec){
+    return '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:10px 0 4px">' + escapeHtml(sec) + '</div>' +
+      CC_DOH_ITEMS.filter(function(x){ return x.sec === sec; }).map(function(it){
+        var v = (sc.checks || {})[it.id] || '';
+        return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border)">' +
+          '<div style="flex:1;font-size:12px">' + escapeHtml(it.label) + '</div>' +
+          '<select class="form-select doh-i" data-id="' + it.id + '" style="width:74px;padding:3px"' + (locked ? ' disabled' : '') + '>' +
+          '<option value=""' + (v === '' ? ' selected' : '') + '>—</option>' +
+          '<option value="ok"' + (v === 'ok' ? ' selected' : '') + '>適合</option>' +
+          '<option value="ng"' + (v === 'ng' ? ' selected' : '') + '>不適合</option>' +
+          '</select></div>';
+      }).join('');
+  }).join('');
+  openModal('<div class="modal-title">' + escapeHtml(st.name) + ' ／ 衛生管理（DOH）' +
+    ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label class="form-label">プラカード</label><select class="form-select" id="cd-placard"' + (locked ? ' disabled' : '') + '>' +
+    CC_PLACARD.map(function(p){ return '<option' + (sc.placard === p ? ' selected' : '') + '>' + (p || '—') + '</option>'; }).join('') + '</select></div>' +
+    '<div class="form-group"><label class="form-label">直近の検査日</label>' +
+    '<input class="form-input" id="cd-date" type="date" value="' + escapeHtml(sc.inspectedAt || '') + '"' + (locked ? ' disabled' : '') + '></div></div>' +
+    '<div class="form-group"><label class="form-label">適合率の目標（%・本部）</label>' +
+    '<input class="form-input" id="cd-target" type="number" value="' + escapeHtml(String(sc.target == null ? '' : sc.target)) + '"' + ((hq && !locked) ? '' : ' disabled') + '></div>' +
+    '<div style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">' + body + '</div>' +
+    '<div class="form-group" style="margin-top:8px"><label class="form-label">是正内容・メモ</label>' +
+    '<textarea class="form-input" id="cd-note" rows="2"' + (locked ? ' disabled' : '') + '>' + escapeHtml(sc.note || '') + '</textarea></div>' +
+    (locked ? '<div style="font-size:11.5px;color:var(--muted)">この月はロックされています。</div>' :
+    '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
+    '<button class="btn btn-primary" onclick="saveCcDoh(\'' + ym + '\',\'' + storeId + '\',\'' + mid + '\')">保存</button></div>'));
+}
+function saveCcDoh(ym, storeId, mid){
+  var old = ccScore(ym, storeId, mid) || {};
+  var checks = {};
+  Array.prototype.forEach.call(document.querySelectorAll('.doh-i'), function(el){
+    if(el.value) checks[el.getAttribute('data-id')] = el.value;
+  });
+  var tEl = document.getElementById('cd-target');
+  var pv = document.getElementById('cd-placard').value;
+  var rec = Object.assign({}, old, {
+    id: _ccScoreId(ym, storeId, mid), ym: ym, storeId: storeId, metricId: mid,
+    checks: checks,
+    placard: (pv === '—' ? '' : pv),
+    inspectedAt: document.getElementById('cd-date').value,
+    target: (tEl && !tEl.disabled) ? tEl.value : (old.target == null ? '' : old.target),
+    note: (document.getElementById('cd-note').value || '').trim(),
+    by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false
+  });
+  if(!ccPutScore(rec)) return;
+  closeModalDirect(); showToast('保存しました', 'success'); renderPage('cc_plan');
+}
+
+/* ---------- 指標の追加・編集 ---------- */
 function openCcMetricModal(id){
   var mt = ccMetrics().filter(function(x){ return x.id === id; })[0] ||
-           { label:'', unit:'', dir:'higher', stores:'ALL', order:99 };
+           { label:'', unit:'', dir:'higher', stores:'ALL', order:99, grp:'g_other' };
   var stores = (typeof STORES !== 'undefined' ? STORES : []);
   var sel = (mt.stores === 'ALL' || !Array.isArray(mt.stores)) ? [] : mt.stores;
   openModal('<div class="modal-title">' + (id ? '指標を編集' : '指標を追加') +
     ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
     '<div class="form-group"><label class="form-label">指標名</label>' +
     '<input class="form-input" id="cm-label" placeholder="例: 廃棄率" value="' + escapeHtml(mt.label || '') + '"></div>' +
+    '<div class="form-group"><label class="form-label">グループ</label><select class="form-select" id="cm-grp">' +
+    CC_GROUPS.map(function(g){ return '<option value="' + g.id + '"' + ((mt.grp || 'g_other') === g.id ? ' selected' : '') + '>' + g.label + '</option>'; }).join('') +
+    '</select></div>' +
     '<div class="form-row">' +
     '<div class="form-group"><label class="form-label">単位</label>' +
-    '<input class="form-input" id="cm-unit" placeholder="% / 件 / 人 / 点" value="' + escapeHtml(mt.unit || '') + '"></div>' +
+    '<input class="form-input" id="cm-unit" placeholder="% / 件 / 人" value="' + escapeHtml(mt.unit || '') + '"></div>' +
     '<div class="form-group"><label class="form-label">良い方向</label><select class="form-select" id="cm-dir">' +
     '<option value="higher"' + (mt.dir === 'higher' ? ' selected' : '') + '>高いほど良い</option>' +
-    '<option value="lower"' + (mt.dir === 'lower' ? ' selected' : '') + '>低いほど良い</option>' +
-    '</select></div></div>' +
-    '<div class="form-group"><label class="form-label">対象店舗（何も選ばなければ全店）</label>' +
+    '<option value="lower"' + (mt.dir === 'lower' ? ' selected' : '') + '>低いほど良い</option></select></div></div>' +
+    '<div class="form-group"><label class="form-label">対象店舗（未選択なら全店）</label>' +
     '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
     stores.map(function(s){
       return '<label style="font-size:12px;display:flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:6px;padding:3px 7px">' +
@@ -44740,6 +44898,7 @@ function saveCcMetric(id){
   var old = ccMetrics().filter(function(x){ return x.id === id; })[0] || {};
   var rec = Object.assign({}, old, {
     id: id || ('m_' + Date.now()), label: label,
+    grp: document.getElementById('cm-grp').value,
     unit: (document.getElementById('cm-unit').value || '').trim(),
     dir: document.getElementById('cm-dir').value,
     stores: picked.length ? picked : 'ALL',
@@ -44751,135 +44910,133 @@ function saveCcMetric(id){
 }
 function delCcMetric(id){
   if(!confirm('この指標を削除しますか？（入力済みの数値は残ります）')) return;
-  var mt = ccMetrics().filter(function(x){ return x.id === id; })[0];
-  if(!mt) return;
+  var mt = ccMetrics().filter(function(x){ return x.id === id; })[0]; if(!mt) return;
   ccPutMetric(Object.assign({}, mt, { _deleted: true, _mut: Date.now(), by: myName(), at: nowJP() }));
   closeModalDirect(); showToast('削除しました', 'info'); renderPage('cc_plan');
 }
 
-/* ---------- 数値の入力 ---------- */
-function openCcScoreModal(ym, storeId, mid){
-  var mt = ccMetrics().filter(function(x){ return x.id === mid; })[0]; if(!mt) return;
-  var st = (typeof STORES !== 'undefined' ? STORES : []).filter(function(s){ return s.id === storeId; })[0] || { name: storeId };
-  var sc = ccScore(ym, storeId, mid) || { target:'', actual:'', note:'', place:'' };
-  var hq = ccIsHQ(), locked = ccPlan(ym).status === 'ロック';
-  openModal('<div class="modal-title">' + escapeHtml(st.name) + ' ／ ' + escapeHtml(mt.label) +
-    ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
-    '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">' + ym +
-    '　' + (mt.dir === 'lower' ? '低いほど良い' : '高いほど良い') + (mt.unit ? '（単位: ' + escapeHtml(mt.unit) + '）' : '') + '</div>' +
-    '<div class="form-row">' +
-    '<div class="form-group"><label class="form-label">目標（本部）</label>' +
-    '<input class="form-input" id="cs-target" type="number" step="any" value="' + escapeHtml(String(sc.target == null ? '' : sc.target)) + '"' +
-    ((hq && !locked) ? '' : ' disabled') + '></div>' +
-    '<div class="form-group"><label class="form-label">実績（Chef）</label>' +
-    '<input class="form-input" id="cs-actual" type="number" step="any" value="' + escapeHtml(String(sc.actual == null ? '' : sc.actual)) + '"' +
-    (locked ? ' disabled' : '') + '></div></div>' +
-    (mt.needPlace ? '<div class="form-group"><label class="form-label">配置の必要性</label>' +
-      '<select class="form-select" id="cs-place"' + (locked ? ' disabled' : '') + '>' +
-      ['','必要','検討中','不要'].map(function(p){ return '<option' + (sc.place === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') +
-      '</select></div>' : '') +
-    '<div class="form-group"><label class="form-label">メモ・要因</label>' +
-    '<textarea class="form-input" id="cs-note" rows="2"' + (locked ? ' disabled' : '') + '>' + escapeHtml(sc.note || '') + '</textarea></div>' +
-    (locked ? '<div style="font-size:11.5px;color:var(--muted)">この月はロックされています。</div>' :
-    '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
-    '<button class="btn btn-primary" onclick="saveCcScore(\'' + ym + '\',\'' + storeId + '\',\'' + mid + '\')">保存</button></div>'));
-}
-function saveCcScore(ym, storeId, mid){
-  var old = ccScore(ym, storeId, mid) || {};
-  var tEl = document.getElementById('cs-target'), aEl = document.getElementById('cs-actual');
-  var pEl = document.getElementById('cs-place');
-  var rec = Object.assign({}, old, {
-    id: _ccScoreId(ym, storeId, mid), ym: ym, storeId: storeId, metricId: mid,
-    target: (tEl && !tEl.disabled) ? tEl.value : (old.target == null ? '' : old.target),
-    actual: (aEl && !aEl.disabled) ? aEl.value : (old.actual == null ? '' : old.actual),
-    place: pEl ? pEl.value : (old.place || ''),
-    note: (document.getElementById('cs-note').value || '').trim(),
-    by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false
+/* ---------- 集計 ---------- */
+function ccGroupSummary(ym, gid){
+  var mets = ccGroupMetrics(gid), done = 0, total = 0, blank = 0;
+  mets.forEach(function(mt){
+    ccMetricStores(mt).forEach(function(s){
+      total++;
+      var ok = ccScoreOk(mt, ccScore(ym, s.id, mt.id));
+      if(ok === null) blank++; else if(ok) done++;
+    });
   });
-  if(!ccPutScore(rec)) return;
-  closeModalDirect(); showToast('保存しました', 'success'); renderPage('cc_plan');
+  return { done: done, total: total, blank: blank, filled: total - blank };
 }
-function setCcGridView(v){ ccGridView = v; renderPage('cc_plan'); }
+function ccGroupActions(ym, gid){
+  return ccActions(ym).filter(function(a){ return (CC_CAT_GROUP[a.cat] || 'g_other') === gid; });
+}
 
 /* ---------- 表示 ---------- */
-function _ccCell(ym, mt, s){
-  var sc = ccScore(ym, s.id, mt.id);
-  var ok = ccScoreOk(mt, sc);
-  var col = ok === null ? 'var(--muted)' : ok ? 'var(--green)' : 'var(--red)';
-  var bg  = ok === null ? 'transparent'  : ok ? 'rgba(64,160,80,.10)' : 'rgba(200,60,60,.10)';
-  var av = sc ? _ccNum(sc.actual) : '—', tv = sc ? _ccNum(sc.target) : '—';
-  return '<div onclick="openCcScoreModal(\'' + ym + '\',\'' + s.id + '\',\'' + mt.id + '\')" ' +
-    'style="cursor:pointer;border:1px solid var(--border);border-left:3px solid ' + (s.color || 'var(--border)') + ';' +
-    'border-radius:7px;padding:7px 9px;margin-bottom:5px;background:' + bg + '">' +
-    '<div style="display:flex;align-items:baseline;gap:8px">' +
-    '<div style="flex:1;font-size:12px;font-weight:600">' + escapeHtml(s.name) + '</div>' +
-    '<div style="font-size:15px;font-weight:800;color:' + col + '">' + av + '</div>' +
-    '<div style="font-size:11px;color:var(--muted)">/ ' + tv + (mt.unit ? ' ' + escapeHtml(mt.unit) : '') + '</div>' +
-    '</div>' +
-    ((sc && sc.place) ? '<div style="font-size:10.5px;color:var(--yellow);margin-top:2px">配置: ' + escapeHtml(sc.place) + '</div>' : '') +
-    ((sc && sc.note) ? '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">' + escapeHtml(sc.note) + '</div>' : '') +
+function _ccBadge(txt, col){
+  return '<span style="display:inline-block;padding:1px 7px;border-radius:9px;font-size:10px;font-weight:700;color:#fff;background:' + col + '">' + txt + '</span>';
+}
+function _ccActionRow(ym, a){
+  var col = a.status === '完了' ? 'var(--green)' : a.status === '進行中' ? 'var(--accent)' :
+            a.status === '確認待ち' ? 'var(--yellow)' : a.status === '中止' ? 'var(--muted)' : 'var(--muted)';
+  var over = a.due && a.status !== '完了' && a.status !== '中止' && a.due < _ccToday();
+  var st = (typeof STORES !== 'undefined' ? STORES : []).filter(function(s){ return s.id === a.storeId; })[0];
+  var pct = CC_PROGRESS[a.status] || 0;
+  return '<div onclick="openCcActionModal(\'' + ym + '\',\'' + a.id + '\')" ' +
+    'style="cursor:pointer;border:1px solid var(--border);border-radius:7px;padding:8px;margin-bottom:5px">' +
+    '<div style="display:flex;gap:6px;align-items:flex-start">' +
+    '<div style="flex:1"><div style="font-size:12.5px;font-weight:600">' + escapeHtml(a.what) + '</div>' +
+    '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">' +
+    (a.storeId === 'ALL' ? '全店舗' : escapeHtml((st || {}).name || a.storeId)) +
+    (a.due ? '　期限 ' + escapeHtml(a.due) : '') + (over ? ' <span style="color:var(--red)">超過</span>' : '') + '</div></div>' +
+    _ccBadge(a.status, col) + '</div>' +
+    '<div style="height:4px;background:var(--surface2);border-radius:3px;margin-top:6px;overflow:hidden">' +
+    '<div style="height:100%;width:' + pct + '%;background:' + col + '"></div></div>' +
     '</div>';
 }
 function renderCcGrid(ym){
-  var mets = ccMetrics(), stores = (typeof STORES !== 'undefined' ? STORES : []);
-  var h = '<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>店舗別の共通目標' +
+  var stores = (typeof STORES !== 'undefined' ? STORES : []);
+  var locked = ccPlan(ym).status === 'ロック';
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-layout-list" style="color:var(--accent)"></i>共通目標と今月の行動' +
     (ccIsHQ() ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openCcMetricModal(\'\')"><i class="ti ti-plus"></i> 指標</button>' : '') +
-    '</div>' +
-    '<div class="phase-tabs" style="margin-bottom:8px">' +
-    '<div class="phase-tab' + (ccGridView === 'metric' ? ' active' : '') + '" onclick="setCcGridView(\'metric\')">指標ごと</div>' +
-    '<div class="phase-tab' + (ccGridView === 'store' ? ' active' : '') + '" onclick="setCcGridView(\'store\')">店舗ごと</div>' +
     '</div>';
 
-  if(ccGridView === 'metric'){
-    /* 指標ごと：本部が全店の状況を横並びで見る用 */
-    mets.forEach(function(mt){
-      var ss = ccMetricStores(mt);
-      if(!ss.length) return;
-      var done = 0, filled = 0;
-      ss.forEach(function(s){ var ok = ccScoreOk(mt, ccScore(ym, s.id, mt.id)); if(ok !== null){ filled++; if(ok) done++; } });
-      h += '<div style="margin:12px 0 5px;display:flex;align-items:center;gap:7px">' +
-        '<b style="font-size:13px">' + escapeHtml(mt.label) + '</b>' +
-        '<span style="font-size:10.5px;color:var(--muted)">' + (mt.dir === 'lower' ? '低いほど良い' : '高いほど良い') +
-        (mt.unit ? ' ・ ' + escapeHtml(mt.unit) : '') + '</span>' +
-        '<span style="margin-left:auto;font-size:11px;color:' + (filled && done === filled ? 'var(--green)' : 'var(--muted)') + '">' +
-        '達成 ' + done + '/' + ss.length + '</span>' +
-        (ccIsHQ() ? '<button class="btn btn-secondary btn-sm" onclick="openCcMetricModal(\'' + mt.id + '\')"><i class="ti ti-pencil"></i></button>' : '') +
-        '</div>';
-      ss.forEach(function(s){ h += _ccCell(ym, mt, s); });
-    });
-  } else {
-    /* 店舗ごと：Chefが1店ずつ詰める用 */
-    stores.forEach(function(s){
-      var ms = mets.filter(function(mt){ return ccMetricStores(mt).some(function(x){ return x.id === s.id; }); });
-      if(!ms.length) return;
-      var done = 0, filled = 0;
-      ms.forEach(function(mt){ var ok = ccScoreOk(mt, ccScore(ym, s.id, mt.id)); if(ok !== null){ filled++; if(ok) done++; } });
-      h += '<div style="margin:12px 0 5px;display:flex;align-items:center;gap:7px">' +
-        '<span style="width:9px;height:9px;border-radius:3px;background:' + (s.color || 'var(--border)') + '"></span>' +
-        '<b style="font-size:13px">' + escapeHtml(s.name) + '</b>' +
-        '<span style="margin-left:auto;font-size:11px;color:' + (filled && done === filled ? 'var(--green)' : 'var(--muted)') + '">' +
-        '達成 ' + done + '/' + ms.length + '</span></div>';
-      ms.forEach(function(mt){
-        var sc = ccScore(ym, s.id, mt.id), ok = ccScoreOk(mt, sc);
-        var col = ok === null ? 'var(--muted)' : ok ? 'var(--green)' : 'var(--red)';
-        var bg  = ok === null ? 'transparent'  : ok ? 'rgba(64,160,80,.10)' : 'rgba(200,60,60,.10)';
-        h += '<div onclick="openCcScoreModal(\'' + ym + '\',\'' + s.id + '\',\'' + mt.id + '\')" ' +
-          'style="cursor:pointer;border:1px solid var(--border);border-radius:7px;padding:7px 9px;margin-bottom:5px;background:' + bg + '">' +
-          '<div style="display:flex;align-items:baseline;gap:8px">' +
-          '<div style="flex:1;font-size:12px;font-weight:600">' + escapeHtml(mt.label) + '</div>' +
-          '<div style="font-size:15px;font-weight:800;color:' + col + '">' + (sc ? _ccNum(sc.actual) : '—') + '</div>' +
-          '<div style="font-size:11px;color:var(--muted)">/ ' + (sc ? _ccNum(sc.target) : '—') +
-          (mt.unit ? ' ' + escapeHtml(mt.unit) : '') + '</div></div>' +
-          ((sc && sc.place) ? '<div style="font-size:10.5px;color:var(--yellow);margin-top:2px">配置: ' + escapeHtml(sc.place) + '</div>' : '') +
-          ((sc && sc.note) ? '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">' + escapeHtml(sc.note) + '</div>' : '') +
-          '</div>';
+  CC_GROUPS.forEach(function(g){
+    var mets = ccGroupMetrics(g.id), acts = ccGroupActions(ym, g.id);
+    if(!mets.length && !acts.length && g.id !== 'g_other') return;
+    var sm = ccGroupSummary(ym, g.id);
+    var open = !!ccGridOpen[g.id];
+    var rate = sm.filled ? Math.round(sm.done / sm.filled * 100) : null;
+    var acol = rate === null ? 'var(--muted)' : rate === 100 ? 'var(--green)' : rate >= 50 ? 'var(--yellow)' : 'var(--red)';
+    var doneAct = acts.filter(function(a){ return a.status === '完了'; }).length;
+
+    /* 折りたたみヘッダ */
+    h += '<div onclick="toggleCcGroup(\'' + g.id + '\')" style="cursor:pointer;display:flex;align-items:center;gap:8px;' +
+      'border:1px solid var(--border);border-radius:9px;padding:10px 11px;margin-top:8px;background:var(--surface2)">' +
+      '<i class="ti ' + (open ? 'ti-chevron-down' : 'ti-chevron-right') + '"></i>' +
+      '<i class="ti ' + g.icon + '" style="color:var(--accent)"></i>' +
+      '<b style="font-size:13.5px;flex:1">' + g.label + '</b>' +
+      (sm.total ? '<span style="font-size:11px;color:' + acol + '">達成 ' + sm.done + '/' + sm.filled + (sm.blank ? '　未入力 ' + sm.blank : '') + '</span>' : '') +
+      '<span style="font-size:11px;color:var(--muted)">行動 ' + doneAct + '/' + acts.length + '</span>' +
+      '</div>';
+    if(!open) return;
+
+    /* 数値テーブル（店舗＝行、指標＝列） */
+    if(mets.length){
+      var cols = mets.filter(function(mt){ return ccMetricStores(mt).length; });
+      var rows = stores.filter(function(s){ return cols.some(function(mt){ return ccMetricStores(mt).some(function(x){ return x.id === s.id; }); }); });
+      h += '<div style="overflow-x:auto;margin-top:6px"><table style="width:100%;border-collapse:collapse;font-size:11.5px">' +
+        '<tr><th style="text-align:left;padding:5px 6px;color:var(--muted);font-weight:600">店舗</th>' +
+        cols.map(function(mt){
+          return '<th style="text-align:right;padding:5px 6px;color:var(--muted);font-weight:600;white-space:nowrap">' +
+            escapeHtml(mt.label) + '<div style="font-size:9.5px;font-weight:400">' +
+            (mt.dir === 'lower' ? '低い方が良' : '高い方が良') + (mt.unit ? ' ' + escapeHtml(mt.unit) : '') + '</div></th>';
+        }).join('') + '</tr>';
+      rows.forEach(function(s){
+        h += '<tr style="border-top:1px solid var(--border)">' +
+          '<td style="padding:6px;white-space:nowrap"><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:' + (s.color || 'var(--border)') + ';margin-right:5px"></span>' + escapeHtml(s.name) + '</td>';
+        cols.forEach(function(mt){
+          if(!ccMetricStores(mt).some(function(x){ return x.id === s.id; })){ h += '<td style="padding:6px;text-align:right;color:var(--muted)">·</td>'; return; }
+          var sc = ccScore(ym, s.id, mt.id), ok = ccScoreOk(mt, sc);
+          var col = ok === null ? 'var(--muted)' : ok ? 'var(--green)' : 'var(--red)';
+          var av = ccActualOf(mt, sc);
+          var extra = '';
+          if(mt.type === 'check'){
+            var pc = sc && sc.placard;
+            if(pc) extra = '<div style="font-size:9.5px">' + _ccBadge(pc, pc === '緑' ? 'var(--green)' : pc === '黄' ? 'var(--yellow)' : 'var(--red)') + '</div>';
+            var r = ccCheckRate(sc);
+            if(r && r.ng) extra += '<div style="font-size:9.5px;color:var(--red)">不適合 ' + r.ng + '</div>';
+          }
+          if(mt.needPlace && sc && sc.place) extra += '<div style="font-size:9.5px;color:var(--yellow)">配置:' + escapeHtml(sc.place) + '</div>';
+          h += '<td onclick="openCcScoreModal(\'' + ym + '\',\'' + s.id + '\',\'' + mt.id + '\')" ' +
+            'style="cursor:pointer;padding:6px;text-align:right;white-space:nowrap">' +
+            '<span style="font-weight:800;font-size:13px;color:' + col + '">' + _ccNum(av) + '</span>' +
+            '<span style="color:var(--muted)"> / ' + _ccNum(sc ? sc.target : '') + '</span>' + extra + '</td>';
+        });
+        h += '</tr>';
       });
-    });
-  }
-  h += '<div style="font-size:10.5px;color:var(--muted);margin-top:10px">数字をタップすると目標・実績・メモを入力できます。目標は本部、実績はCorporate Chefが入力します。</div>';
-  h += '</div>';
+      h += '</table></div>';
+    }
+
+    /* このグループの今月の行動 */
+    h += '<div style="display:flex;align-items:center;gap:6px;margin:10px 0 5px">' +
+      '<b style="font-size:11.5px;color:var(--muted)">今月の行動</b>' +
+      (acts.length ? '<span style="font-size:10.5px;color:var(--muted)">完了 ' + doneAct + ' / ' + acts.length + '</span>' : '') +
+      (ccCanEditActions(ym) ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openCcActionModal(\'' + ym + '\',\'\')"><i class="ti ti-plus"></i> 行動</button>' : '') +
+      '</div>';
+    if(!acts.length){
+      h += '<div style="font-size:11.5px;color:var(--muted);padding:6px 0">' +
+        (locked ? '行動はありません。' : 'まだ行動がありません。上の「行動」から追加してください。') + '</div>';
+    } else {
+      acts.forEach(function(a){ h += _ccActionRow(ym, a); });
+    }
+  });
+
+  h += '<div style="font-size:10.5px;color:var(--muted);margin-top:12px">' +
+    '見出しをタップで開閉。数字をタップで目標・実績を入力（目標＝本部／実績＝Corporate Chef）。' +
+    '衛生管理はDOHのチェック項目・プラカード・検査日を記録します。</div></div>';
   return h;
 }
+
 var CC_SUBMIT_DAY = 25;    /* 前月25日までに提出 */
 var CC_APPROVE_DAY = 28;   /* 前月28日までに承認 */
 
