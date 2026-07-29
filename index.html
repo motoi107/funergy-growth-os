@@ -4196,6 +4196,7 @@ var _SPLIT_KEYS = {
      数値は対象月ごとに行を分ける。 */
   cc_metrics:       {type:'obj'},
   cc_scores:        {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},
+  cc_logs:          {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},   /* v772: 週次更新 */
   crew_education:   {type:'obj'},
   benefit_adjust:   {type:'obj'},
   store_ingredients:{type:'obj'},
@@ -6142,6 +6143,7 @@ var OP_MERGE = {
   hq_goals:      { merge: mergeCcList,    covers: _coversCcList },
   cc_actions:    { merge: mergeCcList,    covers: _coversCcList },
   cc_scores:     { merge: mergeCcList,    covers: _coversCcList },   /* v768 */
+  cc_logs:       { merge: mergeCcList,    covers: _coversCcList },   /* v772 */
   budgets_v2:    { merge: mergeBudgets,   covers: _coversBudgets },   /* v620: 予算の上書き消失を防ぐ（店舗・月の和集合） */
   notifications: { merge: mergeNotifs,    covers: _coversNotifs,   after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); var p=document.getElementById('notif-panel'); if(p&&p.style.display==='block'&&typeof renderNotifPanel==='function') renderNotifPanel(); }catch(e){} } },
   approvals:     { merge: mergeApprovals, covers: _coversApprovals, after: function(){ try{ if(typeof renderNotifBell==='function') renderNotifBell(); }catch(e){} } },
@@ -20263,6 +20265,7 @@ async function loadStoreLabor(sid, guid, days, liveFill){
    クラウド未送信の状態で消すと入力が失われるため保護する（'inv_hist_' も内包される）。 */
 var LS_NEVER_FREE = ['spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','spl_cc_actions_',   /* v767 */
   'spl_cc_metrics_','cc_scores','spl_cc_scores_',   /* v768 */
+  'cc_logs','spl_cc_logs_',   /* v772 */
   'inv_','inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
@@ -21261,7 +21264,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '770';
+const APP_VERSION = '772';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -44955,6 +44958,475 @@ function _ccActionRow(ym, a){
     '<div style="height:100%;width:' + pct + '%;background:' + col + '"></div></div>' +
     '</div>';
 }
+/* ===== v772: 週次更新（実行の記録） =====
+   【目的】計画→実行→結果報告のうち「実行」が状態プルダウンだけでは記録が残らない。
+     毎週「やったこと・詰まっていること・来週やること」を積むことで、
+     月末の結果報告を記憶で書かなくて済むようにする。
+   【設計】週は月曜始まりの日付(YYYY-MM-DD)で表す。
+     idを ym|行動id|週 で決めるので、2端末が同じ週を書いても時刻の新しい方に合流する。
+   【タブごとの操作】
+     行動計画タブ … 行動をタップ＝編集（承認前のみ）
+     実績タブ     … 行動をタップ＝週次更新
+     結果報告タブ … 行動をタップ＝結果の記録 */
+
+function _ccWeekStart(d){
+  var dt = d ? new Date(d + 'T00:00:00') : new Date();
+  var w = dt.getDay();                       /* 0=日 */
+  var diff = (w === 0 ? -6 : 1 - w);         /* 月曜へ寄せる */
+  dt.setDate(dt.getDate() + diff);
+  return dt.getFullYear() + '-' + _ccPad(dt.getMonth() + 1) + '-' + _ccPad(dt.getDate());
+}
+function ccThisWeek(){ return _ccWeekStart(null); }
+function _ccWeekLabel(w){
+  if(!w) return '';
+  var p = String(w).split('-');
+  return Number(p[1]) + '/' + Number(p[2]) + 'の週';
+}
+function _ccLogId(ym, actionId, week){ return ym + '|' + actionId + '|' + week; }
+function ccLogs(ym){
+  return (ls('cc_logs', []) || []).filter(function(x){ return x && x.ym === ym && !x._deleted; });
+}
+function ccLogsFor(ym, actionId){
+  return ccLogs(ym).filter(function(x){ return x.actionId === actionId; })
+    .sort(function(a, b){ return (b.week || '').localeCompare(a.week || ''); });
+}
+function ccLatestLog(ym, actionId){ return ccLogsFor(ym, actionId)[0] || null; }
+function _ccPutLog(rec){
+  var arr = ls('cc_logs', []) || [];
+  var i = -1; arr.forEach(function(x, k){ if(x && x.id === rec.id) i = k; });
+  if(i >= 0) arr[i] = rec; else arr.push(rec);
+  var ok = lsSet('cc_logs', arr);
+  if(ok === false) showToast('保存できませんでした', 'danger');
+  return ok !== false;
+}
+/* 今週まだ更新していない行動（完了・中止は除く） */
+function ccWeekPending(ym){
+  var w = ccThisWeek();
+  return ccActions(ym).filter(function(a){
+    if(a.status === '完了' || a.status === '中止') return false;
+    return !ccLogs(ym).some(function(x){ return x.actionId === a.id && x.week === w; });
+  });
+}
+
+function openCcWeekModal(ym, actionId){
+  var a = ccActions(ym).filter(function(x){ return x.id === actionId; })[0]; if(!a) return;
+  var w = ccThisWeek();
+  var lg = ccLogs(ym).filter(function(x){ return x.actionId === actionId && x.week === w; })[0] ||
+           { did:'', issue:'', next:'', ask:'' };
+  var hist = ccLogsFor(ym, actionId).filter(function(x){ return x.week !== w; });
+  var can = (ccIsChef() || ccIsHQ());
+  openModal('<div class="modal-title">今週の更新 <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
+    '<div style="font-size:13px;font-weight:600">' + escapeHtml(a.what) + '</div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:9px">' + _ccWeekLabel(w) +
+    (a.due ? '　期限 ' + escapeHtml(a.due) : '') + '</div>' +
+    '<div class="form-group"><label class="form-label">今の状態</label><select class="form-select" id="cw-status"' + (can ? '' : ' disabled') + '>' +
+    CC_STATUS.map(function(s){ return '<option' + (a.status === s ? ' selected' : '') + '>' + s + '</option>'; }).join('') +
+    '</select></div>' +
+    '<div class="form-group"><label class="form-label">今週やったこと</label>' +
+    '<textarea class="form-input" id="cw-did" rows="2"' + (can ? '' : ' disabled') + '>' + escapeHtml(lg.did || '') + '</textarea></div>' +
+    '<div class="form-group"><label class="form-label">詰まっていること</label>' +
+    '<textarea class="form-input" id="cw-issue" rows="2"' + (can ? '' : ' disabled') + '>' + escapeHtml(lg.issue || '') + '</textarea></div>' +
+    '<div class="form-group"><label class="form-label">来週やること</label>' +
+    '<textarea class="form-input" id="cw-next" rows="2"' + (can ? '' : ' disabled') + '>' + escapeHtml(lg.next || '') + '</textarea></div>' +
+    '<div class="form-group"><label class="form-label">GMへの相談</label>' +
+    '<textarea class="form-input" id="cw-ask" rows="2"' + (can ? '' : ' disabled') + '>' + escapeHtml(lg.ask || '') + '</textarea></div>' +
+    (hist.length ? '<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px">' +
+      '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px">これまでの更新</div>' +
+      hist.map(function(x){
+        return '<div style="font-size:11.5px;border-left:2px solid var(--border);padding:3px 0 3px 8px;margin-bottom:6px">' +
+          '<b>' + _ccWeekLabel(x.week) + '</b>' +
+          (x.did ? '<div>' + escapeHtml(x.did) + '</div>' : '') +
+          (x.issue ? '<div style="color:var(--red)">詰まり: ' + escapeHtml(x.issue) + '</div>' : '') +
+          '<div style="font-size:10px;color:var(--muted)">' + escapeHtml(x.by || '') + ' ' + escapeHtml(x.at || '') + '</div></div>';
+      }).join('') + '</div>' : '') +
+    (can ? '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
+      '<button class="btn btn-primary" onclick="saveCcWeek(\'' + ym + '\',\'' + actionId + '\')">保存</button></div>' : ''));
+}
+function saveCcWeek(ym, actionId){
+  var a = ccActions(ym).filter(function(x){ return x.id === actionId; })[0]; if(!a) return;
+  var g = function(id){ var e = document.getElementById(id); return e ? (e.value || '').trim() : ''; };
+  var w = ccThisWeek();
+  var did = g('cw-did'), issue = g('cw-issue'), nxt = g('cw-next'), ask = g('cw-ask');
+  if(!did && !issue && !nxt && !ask){ alert('今週の内容を1つ以上入力してください'); return; }
+  var id = _ccLogId(ym, actionId, w);
+  var old = ccLogs(ym).filter(function(x){ return x.id === id; })[0] || {};
+  var rec = Object.assign({}, old, { id: id, ym: ym, actionId: actionId, week: w,
+    did: did, issue: issue, next: nxt, ask: ask,
+    by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false });
+  if(!_ccPutLog(rec)) return;
+  /* 状態は行動側に反映する（進捗バーの元になるため） */
+  var st = document.getElementById('cw-status').value;
+  if(st && st !== a.status){
+    _ccPutAction(Object.assign({}, a, { status: st, _mut: Date.now(), by: myName(), at: nowJP() }));
+  }
+  closeModalDirect(); showToast('今週の更新を保存しました', 'success'); renderPage('cc_plan');
+}
+/* ===== v771: 行動計画 → 実行 → 結果報告 → 行動計画 のループ =====
+   【流れ】
+     ① 行動計画タブ … 本部目標・重点行動・行動・目標値を決めて提出する
+     ② 承認されると計画は固定される（予算と同じ）。以後は実績だけが動く
+     ③ 実績タブ    … 承認された目標に対して、いま出ている数字と行動の進捗を見る
+     ④ 結果報告タブ … 月末に行動ごとの結果を選び、振り返りを書く
+     ⑤ 翌月の計画を提出するとき、前月の結果報告が終わっていないと出せない
+   これで「出しっぱなし」「やりっぱなし」が構造的に起きなくなる。 */
+
+var CC_RESULTS = ['完了', '継続', '結果待ち', '未着手', '中止'];
+var CC_RESULT_COLOR = { '完了':'var(--green)', '継続':'var(--accent)', '結果待ち':'var(--yellow)',
+                        '未着手':'var(--red)', '中止':'var(--muted)' };
+var ccTab = 'plan';
+function setCcTab(t){ ccTab = t; renderPage('cc_plan'); }
+
+function ccNextYm(ym){
+  var p = String(ym).split('-');
+  var d = new Date(Number(p[0]), Number(p[1]) - 1, 1);
+  d.setMonth(d.getMonth() + 1);
+  return d.getFullYear() + '-' + _ccPad(d.getMonth() + 1);
+}
+/* 計画の中身（目標・行動・目標値）を編集してよいか。承認後は予算と同じで固定する */
+function ccPlanEditable(ym){
+  var st = ccPlan(ym).status;
+  return st === '下書き' || st === '差し戻し';
+}
+/* 実績・進捗はいつでも入れられる（ロック中も結果は追える） */
+function ccActualEditable(ym){ return true; }
+/* 結果報告は承認された月だけ */
+function ccReviewEditable(ym){
+  var st = ccPlan(ym).status;
+  return st === '承認済' || st === 'ロック';
+}
+function ccCanEditActions(ym){ return (ccIsChef() || ccIsHQ()) && ccPlanEditable(ym); }
+function ccCanEditGoals(ym){ return ccIsHQ() && ccPlanEditable(ym); }
+
+/* 前月の結果報告が終わっているか（翌月を提出する条件） */
+function ccReviewReady(ym){
+  var p = ccPlan(ym);
+  if(p.status !== '承認済' && p.status !== 'ロック') return { need: false, ok: true, left: [] };
+  var acts = ccActions(ym);
+  var left = acts.filter(function(a){ return !a.result; });
+  var rv = p.review || {};
+  var wrote = !!((rv.done || '').trim() || (rv.reason || '').trim());
+  return { need: true, ok: (left.length === 0 && wrote), left: left, wrote: wrote };
+}
+
+/* ---------- 行動ごとの結果 ---------- */
+function openCcResultModal(ym, id){
+  var a = ccActions(ym).filter(function(x){ return x.id === id; })[0]; if(!a) return;
+  var can = ccReviewEditable(ym);
+  openModal('<div class="modal-title">結果報告 <button class="modal-close" onclick="closeModalDirect()">×</button></div>' +
+    '<div style="font-size:13px;font-weight:600;margin-bottom:2px">' + escapeHtml(a.what) + '</div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' + ym +
+    (a.due ? '　期限 ' + escapeHtml(a.due) : '') + '</div>' +
+    '<div class="form-group"><label class="form-label">結果</label><select class="form-select" id="cr-result"' + (can ? '' : ' disabled') + '>' +
+    ['<option value="">選択してください</option>'].concat(CC_RESULTS.map(function(r){
+      return '<option' + (a.result === r ? ' selected' : '') + '>' + r + '</option>'; })).join('') +
+    '</select></div>' +
+    '<div class="form-group"><label class="form-label">理由・状況（未達の場合は必須）</label>' +
+    '<textarea class="form-input" id="cr-note" rows="3"' + (can ? '' : ' disabled') + '>' + escapeHtml(a.resultNote || '') + '</textarea></div>' +
+    '<div style="font-size:10.5px;color:var(--muted);margin-bottom:8px">「継続」を選ぶと、翌月の計画へ引き継げます。</div>' +
+    (can ? '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>' +
+      '<button class="btn btn-primary" onclick="saveCcResult(\'' + ym + '\',\'' + a.id + '\')">保存</button></div>' :
+      '<div style="font-size:11.5px;color:var(--muted)">承認された月のみ入力できます。</div>'));
+}
+function saveCcResult(ym, id){
+  var a = ccActions(ym).filter(function(x){ return x.id === id; })[0]; if(!a) return;
+  var r = document.getElementById('cr-result').value;
+  var note = (document.getElementById('cr-note').value || '').trim();
+  if(!r){ alert('結果を選択してください'); return; }
+  if(r !== '完了' && !note){ alert('完了以外は理由・状況の記入が必要です'); return; }
+  var rec = Object.assign({}, a, { result: r, resultNote: note,
+    resultBy: myName(), resultAt: nowJP(), _mut: Date.now() });
+  if(!_ccPutAction(rec)) return;
+  closeModalDirect(); showToast('結果を記録しました', 'success'); renderPage('cc_plan');
+}
+
+/* ---------- 月全体の振り返り ---------- */
+function saveCcReview(ym){
+  var g = function(id){ var e = document.getElementById(id); return e ? (e.value || '').trim() : ''; };
+  var rv = { done: g('rv-done'), reason: g('rv-reason'), next: g('rv-next'),
+             by: myName(), at: nowJP() };
+  if(ccSavePlan(ym, { review: rv })) showToast('振り返りを保存しました', 'success');
+  renderPage('cc_plan');
+}
+
+/* ---------- 「継続」を翌月へ引き継ぐ ---------- */
+function ccCarryOver(ym){
+  var nx = ccNextYm(ym);
+  if(ccPlan(nx).status !== '下書き' && ccPlan(nx).status !== '差し戻し'){
+    alert(nx + ' の計画は既に提出・承認されているため引き継げません。'); return;
+  }
+  var src = ccActions(ym).filter(function(a){ return a.result === '継続'; });
+  if(!src.length){ alert('「継続」の行動がありません。'); return; }
+  var already = {};
+  ccActions(nx).forEach(function(a){ if(a.fromId) already[a.fromId] = 1; });
+  var todo = src.filter(function(a){ return !already[a.id]; });
+  if(!todo.length){ alert('すべて引き継ぎ済みです。'); return; }
+  if(!confirm(todo.length + '件の行動を ' + nx + ' へ引き継ぎますか？')) return;
+  var n = 0;
+  todo.forEach(function(a){
+    var rec = { id: 'ca' + Date.now() + '_' + (n++), ym: nx, fromId: a.id, fromYm: ym,
+      goalId: '', cat: a.cat, storeId: a.storeId, what: a.what, how: a.how,
+      due: '', status: '未着手', note: a.note || '', result: '', resultNote: '',
+      by: myName(), at: nowJP(), _mut: Date.now(), _deleted: false };
+    _ccPutAction(rec);
+  });
+  showToast(n + '件を ' + nx + ' へ引き継ぎました', 'success');
+  ccYmShown = nx; ccTab = 'plan'; renderPage('cc_plan');
+}
+
+/* ---------- 提出（前月の結果報告を条件にする） ---------- */
+function ccSubmit(ym){
+  var acts = ccActions(ym);
+  if(!acts.length){ alert('行動が1件もありません。先に行動計画を登録してください。'); return; }
+  var pv = ccPrevYm(ym), rr = ccReviewReady(pv);
+  if(rr.need && !rr.ok){
+    var msg = pv + ' の結果報告が終わっていません。\n';
+    if(rr.left.length) msg += '・結果が未入力の行動：' + rr.left.length + '件\n';
+    if(!rr.wrote) msg += '・月全体の振り返りが未記入\n';
+    msg += '\n結果報告タブで入力してから提出してください。';
+    alert(msg);
+    ccYmShown = pv; ccTab = 'review'; renderPage('cc_plan');
+    return;
+  }
+  if(!confirm(ym + ' の行動計画をGMへ提出しますか？')) return;
+  var name = myName();
+  if(!ccSavePlan(ym, { status: '提出済', submittedBy: name, submittedAt: nowJP(), returnReason: '' })) return;
+  try{
+    addApproval({ title: '月間行動計画 — Corporate Chef（' + ym + '）', type: '月間行動計画',
+                  from: name, store: '---', ref: ym, ym: ym });
+  }catch(e){}
+  showToast('提出しました。GMへ通知しました', 'success');
+  renderPage('cc_plan');
+}
+
+/* ---------- 画面 ---------- */
+function renderCcPlan(){
+  if(!ccCanSeePlan()) return '<div class="card">この画面を表示する権限がありません。</div>';
+  var ym = ccYm(), plan = ccPlan(ym), dl = ccDeadlines(ym);
+  var goals = ccGoals(ym), acts = ccActions(ym), cov = ccCoverage(ym);
+  var h = '';
+
+  /* 見出し・月セレクタ */
+  h += '<div class="section-header"><div>' +
+       '<div class="section-title">月間行動計画</div>' +
+       '<div class="section-sub">Corporate Chef ' + _ccStatusChip(plan.status) + '</div></div>' +
+       '<div style="display:flex;align-items:center;gap:6px">' +
+       '<button class="btn btn-secondary btn-sm" onclick="ccShiftYm(-1)"><i class="ti ti-chevron-left"></i></button>' +
+       '<b style="font-size:15px">' + ym + '</b>' +
+       '<button class="btn btn-secondary btn-sm" onclick="ccShiftYm(1)"><i class="ti ti-chevron-right"></i></button>' +
+       '</div></div>';
+
+  /* 流れの案内 */
+  var stepOf = { '下書き':0, '差し戻し':0, '提出済':1, '承認済':2, 'ロック':2 };
+  var cur = stepOf[plan.status] || 0;
+  var steps = ['行動計画', '承認待ち', '実行・結果報告'];
+  h += '<div class="card" style="padding:9px 11px"><div style="display:flex;align-items:center;gap:4px">' +
+    steps.map(function(s, i){
+      var on = i <= cur;
+      return '<span style="font-size:10.5px;padding:3px 8px;border-radius:9px;white-space:nowrap;' +
+        'background:' + (on ? 'var(--accent)' : 'var(--surface2)') + ';color:' + (on ? '#fff' : 'var(--muted)') + '">' + s + '</span>' +
+        (i < steps.length - 1 ? '<i class="ti ti-chevron-right" style="font-size:11px;color:var(--muted)"></i>' : '');
+    }).join('') + '</div>' +
+    '<div style="font-size:10.5px;color:var(--muted);margin-top:5px">提出期限 ' + dl.submit + '　承認期限 ' + dl.approve + '</div>' +
+    '</div>';
+
+  /* 前月の結果報告が残っていれば警告 */
+  var pv = ccPrevYm(ym), rr = ccReviewReady(pv);
+  if(rr.need && !rr.ok && (plan.status === '下書き' || plan.status === '差し戻し')){
+    h += '<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-alert-triangle"></i><div>' +
+      '<b>' + pv + ' の結果報告が未完了です</b>' +
+      '<div style="font-size:11.5px;margin-top:2px">' +
+      (rr.left.length ? '結果が未入力の行動 ' + rr.left.length + '件　' : '') +
+      (!rr.wrote ? '月全体の振り返りが未記入' : '') + '</div>' +
+      '<button class="btn btn-secondary btn-sm" style="margin-top:5px" onclick="ccYmShown=\'' + pv + '\';setCcTab(\'review\')">' +
+      pv + ' の結果報告へ</button></div></div>';
+  }
+
+  /* 差し戻し理由 */
+  if(plan.status === '差し戻し' && plan.returnReason){
+    h += '<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-arrow-back-up"></i><div>' +
+      '<b>差し戻し</b>：' + escapeHtml(plan.returnReason) +
+      '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(plan.returnedBy || '') + ' ' + escapeHtml(plan.returnedAt || '') + '</div></div></div>';
+  }
+
+  /* タブ */
+  var tabs = [['plan', '行動計画'], ['actual', '実績'], ['review', '結果報告']];
+  h += '<div class="phase-tabs">' + tabs.map(function(t){
+    var badge = '';
+    if(t[0] === 'review' && (plan.status === '承認済' || plan.status === 'ロック')){
+      var left = acts.filter(function(a){ return !a.result; }).length;
+      if(left) badge = ' <span style="background:var(--red);color:#fff;border-radius:8px;padding:0 5px;font-size:9.5px">' + left + '</span>';
+    }
+    return '<div class="phase-tab' + (ccTab === t[0] ? ' active' : '') + '" onclick="setCcTab(\'' + t[0] + '\')">' + t[1] + badge + '</div>';
+  }).join('') + '</div>';
+
+  /* ===== 行動計画タブ ===== */
+  if(ccTab === 'plan'){
+    var editable = ccPlanEditable(ym);
+    if(!editable){
+      h += '<div class="card" style="padding:9px 11px;font-size:11.5px;color:var(--muted)">' +
+        '<i class="ti ti-lock"></i> 承認後の計画は固定されます。実績と結果は他のタブで入力してください。</div>';
+    }
+    /* 本部目標 */
+    h += '<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>本部目標（GM）' +
+      (ccCanEditGoals(ym) ? '<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openCcGoalModal(\'' + ym + '\',\'\')"><i class="ti ti-plus"></i> 追加</button>' : '') + '</div>';
+    if(!goals.length){
+      h += '<div style="font-size:12px;color:var(--muted)">' + (ccIsHQ() ? '今月の本部目標をまだ登録していません。' : 'GMが今月の目標をまだ登録していません。') + '</div>';
+    } else {
+      h += '<div style="font-size:12px;margin-bottom:6px">行動が紐づいた目標 <b style="color:' + (cov.pct === 100 ? 'var(--green)' : 'var(--yellow)') + '">' +
+        cov.covered + ' / ' + cov.total + '（' + cov.pct + '%）</b></div>' +
+        '<div style="height:8px;background:var(--surface2);border-radius:5px;overflow:hidden;margin-bottom:10px">' +
+        '<div style="height:100%;width:' + cov.pct + '%;background:' + (cov.pct === 100 ? 'var(--green)' : 'var(--yellow)') + '"></div></div>';
+      goals.forEach(function(g){
+        var n = cov.linked[g.id] || 0;
+        h += '<div style="border:1px solid ' + (n ? 'var(--border)' : 'var(--red)') + ';border-radius:8px;padding:9px;margin-bottom:7px">' +
+          '<div style="display:flex;gap:6px;align-items:flex-start"><div style="flex:1">' +
+          '<b style="font-size:13px">' + escapeHtml(g.title) + '</b>' +
+          '<span style="font-size:10px;color:var(--muted);margin-left:6px">優先度 ' + escapeHtml(g.priority || '中') + '</span>' +
+          (g.detail ? '<div style="font-size:11.5px;color:var(--muted);margin-top:3px;white-space:pre-wrap">' + escapeHtml(g.detail) + '</div>' : '') +
+          '<div style="font-size:11px;margin-top:5px;color:' + (n ? 'var(--green)' : 'var(--red)') + '">' +
+          (n ? '行動 ' + n + '件' : '⚠ 行動が紐づいていません') + '</div></div>' +
+          (ccCanEditGoals(ym) ? '<button class="btn btn-secondary btn-sm" onclick="openCcGoalModal(\'' + ym + '\',\'' + g.id + '\')"><i class="ti ti-pencil"></i></button>' : '') +
+          '</div></div>';
+      });
+    }
+    h += '</div>';
+
+    /* 重点行動 */
+    h += '<div class="card"><div class="card-title"><i class="ti ti-flag" style="color:var(--accent)"></i>今月の重点行動（Chef）</div>';
+    var f = plan.focus || ['', '', ''];
+    if(ccIsChef() && editable){
+      for(var i = 0; i < 3; i++){
+        h += '<div class="form-group" style="margin-bottom:6px"><input class="form-input" id="cf-' + i + '" placeholder="重点 ' + (i + 1) + '" value="' + escapeHtml(f[i] || '') + '"></div>';
+      }
+      h += '<button class="btn btn-secondary btn-sm" onclick="saveCcFocus(\'' + ym + '\')"><i class="ti ti-device-floppy"></i> 保存</button>';
+    } else {
+      var any = f.filter(function(x){ return x; });
+      h += any.length ? '<ol style="margin:0;padding-left:18px;font-size:13px">' + any.map(function(x){ return '<li>' + escapeHtml(x) + '</li>'; }).join('') + '</ol>'
+                      : '<div style="font-size:12px;color:var(--muted)">未記入</div>';
+    }
+    h += '</div>';
+
+    /* 行動一覧（グループ別・数値つき） */
+    h += renderCcGrid(ym);
+
+  /* ===== 実績タブ ===== */
+  } else if(ccTab === 'actual'){
+    if(plan.status === '下書き' || plan.status === '差し戻し'){
+      h += '<div class="card" style="padding:11px;font-size:12px;color:var(--muted)">' +
+        'この月の計画はまだ承認されていません。承認されると、決めた目標に対して実績を追えるようになります。</div>';
+    } else {
+      /* v772: 今週の更新状況。GMが「止まっている行動」をすぐ見つけられるようにする。 */
+      var _pend = ccWeekPending(ym);
+      var _live = acts.filter(function(a){ return a.status !== '完了' && a.status !== '中止'; });
+      h += '<div class="card" style="padding:10px 11px">' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+        '<i class="ti ti-calendar-week" style="color:var(--accent)"></i>' +
+        '<b style="font-size:12.5px;flex:1">' + _ccWeekLabel(ccThisWeek()) + 'の更新</b>' +
+        '<span style="font-size:12px;color:' + (_pend.length ? 'var(--yellow)' : 'var(--green)') + '">' +
+        (_live.length - _pend.length) + ' / ' + _live.length + '</span></div>' +
+        (_pend.length ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">未更新：' +
+          _pend.slice(0,4).map(function(a){ return escapeHtml(a.what); }).join('、') +
+          (_pend.length > 4 ? ' ほか' + (_pend.length - 4) + '件' : '') + '</div>' :
+          '<div style="font-size:11px;color:var(--muted);margin-top:4px">今週の更新はすべて入っています。</div>') +
+        '</div>';
+    }
+    h += renderCcGrid(ym);
+
+  /* ===== 結果報告タブ ===== */
+  } else {
+    var canRv = ccReviewEditable(ym);
+    if(!canRv){
+      h += '<div class="card" style="padding:11px;font-size:12px;color:var(--muted)">' +
+        '結果報告は承認された月に入力できます（現在：' + plan.status + '）。</div>';
+    }
+    /* 行動ごとの結果 */
+    var left = acts.filter(function(a){ return !a.result; }).length;
+    h += '<div class="card"><div class="card-title"><i class="ti ti-checkup-list" style="color:var(--accent)"></i>行動の結果（' +
+      (acts.length - left) + '/' + acts.length + '）</div>';
+    if(!acts.length){
+      h += '<div style="font-size:12px;color:var(--muted)">行動がありません。</div>';
+    } else {
+      CC_GROUPS.forEach(function(g){
+        var list = ccGroupActions(ym, g.id);
+        if(!list.length) return;
+        h += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:9px 0 4px"><i class="ti ' + g.icon + '"></i> ' + g.label + '</div>';
+        list.forEach(function(a){
+          var col = a.result ? (CC_RESULT_COLOR[a.result] || 'var(--muted)') : 'var(--surface2)';
+          var st = (typeof STORES !== 'undefined' ? STORES : []).filter(function(s){ return s.id === a.storeId; })[0];
+          h += '<div onclick="openCcResultModal(\'' + ym + '\',\'' + a.id + '\')" ' +
+            'style="cursor:pointer;border:1px solid ' + (a.result ? 'var(--border)' : 'var(--red)') + ';border-radius:8px;padding:8px;margin-bottom:6px">' +
+            '<div style="display:flex;gap:6px;align-items:flex-start">' +
+            '<div style="flex:1"><div style="font-size:12.5px;font-weight:600">' + escapeHtml(a.what) + '</div>' +
+            '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">' +
+            (a.storeId === 'ALL' ? '全店舗' : escapeHtml((st || {}).name || a.storeId)) +
+            (a.fromId ? '　<span style="color:var(--accent)">前月からの継続</span>' : '') + '</div></div>' +
+            (a.result ? _ccBadge(a.result, col) : '<span style="font-size:10px;color:var(--red);font-weight:700">未入力</span>') +
+            '</div>' +
+            (a.resultNote ? '<div style="font-size:10.5px;color:var(--muted);margin-top:4px;white-space:pre-wrap">' + escapeHtml(a.resultNote) + '</div>' : '') +
+            '</div>';
+        });
+      });
+    }
+    h += '</div>';
+
+    /* 月全体の振り返り */
+    var rv = plan.review || {};
+    h += '<div class="card"><div class="card-title"><i class="ti ti-notes" style="color:var(--accent)"></i>今月の振り返り</div>';
+    if(canRv && (ccIsChef() || ccIsHQ())){
+      h += '<div class="form-group"><label class="form-label">達成できたこと</label>' +
+        '<textarea class="form-input" id="rv-done" rows="3">' + escapeHtml(rv.done || '') + '</textarea></div>' +
+        '<div class="form-group"><label class="form-label">未達だったこととその理由</label>' +
+        '<textarea class="form-input" id="rv-reason" rows="3">' + escapeHtml(rv.reason || '') + '</textarea></div>' +
+        '<div class="form-group"><label class="form-label">翌月への申し送り</label>' +
+        '<textarea class="form-input" id="rv-next" rows="2">' + escapeHtml(rv.next || '') + '</textarea></div>' +
+        '<button class="btn btn-primary btn-sm" onclick="saveCcReview(\'' + ym + '\')"><i class="ti ti-device-floppy"></i> 保存</button>';
+    } else {
+      h += ['done', 'reason', 'next'].map(function(k, i){
+        var lbl = ['達成できたこと', '未達だったこととその理由', '翌月への申し送り'][i];
+        return '<div style="margin-bottom:7px"><div style="font-size:11px;color:var(--muted)">' + lbl + '</div>' +
+          '<div style="font-size:12.5px;white-space:pre-wrap">' + (escapeHtml(rv[k] || '') || '—') + '</div></div>';
+      }).join('');
+    }
+    if(rv.by) h += '<div style="font-size:10.5px;color:var(--muted);margin-top:6px">記入：' + escapeHtml(rv.by) + ' ' + escapeHtml(rv.at || '') + '</div>';
+    h += '</div>';
+
+    /* 翌月への引き継ぎ */
+    var cont = acts.filter(function(a){ return a.result === '継続'; });
+    if(cont.length){
+      var nx = ccNextYm(ym);
+      h += '<div class="card"><div class="card-title"><i class="ti ti-arrow-forward-up" style="color:var(--accent)"></i>翌月への引き継ぎ</div>' +
+        '<div style="font-size:12px;margin-bottom:7px">「継続」の行動が <b>' + cont.length + '件</b> あります。' + nx + ' の計画へ引き継げます。</div>' +
+        cont.map(function(a){ return '<div style="font-size:11.5px;padding:3px 0">・' + escapeHtml(a.what) + '</div>'; }).join('') +
+        '<button class="btn btn-primary btn-sm" style="margin-top:7px" onclick="ccCarryOver(\'' + ym + '\')">' +
+        '<i class="ti ti-arrow-forward-up"></i> ' + nx + ' へ引き継ぐ</button></div>';
+    }
+  }
+
+  /* 操作 */
+  h += '<div class="card"><div class="btn-row" style="flex-wrap:wrap">';
+  if(ccIsChef() && (plan.status === '下書き' || plan.status === '差し戻し')){
+    h += '<button class="btn btn-primary" onclick="ccSubmit(\'' + ym + '\')"><i class="ti ti-send"></i> GMへ提出</button>';
+  }
+  if(ccIsHQ() && plan.status === '提出済'){
+    h += '<button class="btn btn-secondary" onclick="ccReturn(\'' + ym + '\')"><i class="ti ti-arrow-back-up"></i> 差し戻し</button>' +
+      '<button class="btn btn-primary" onclick="ccApprove(\'' + ym + '\')"><i class="ti ti-check"></i> 承認</button>';
+  }
+  if(ccIsHQ() && plan.status === '承認済'){
+    h += '<button class="btn btn-primary" onclick="ccLock(\'' + ym + '\')"><i class="ti ti-lock"></i> ロック</button>';
+  }
+  if(ccIsHQ() && plan.status === 'ロック'){
+    h += '<button class="btn btn-secondary" onclick="ccUnlock(\'' + ym + '\')"><i class="ti ti-lock-open"></i> ロック解除</button>';
+  }
+  h += '</div>';
+  var meta = [];
+  if(plan.submittedBy) meta.push('提出：' + escapeHtml(plan.submittedBy) + ' ' + escapeHtml(plan.submittedAt || ''));
+  if(plan.approvedBy) meta.push('承認：' + escapeHtml(plan.approvedBy) + ' ' + escapeHtml(plan.approvedAt || ''));
+  if(plan.lockedBy) meta.push('ロック：' + escapeHtml(plan.lockedBy) + ' ' + escapeHtml(plan.lockedAt || ''));
+  if(meta.length) h += '<div style="font-size:11px;color:var(--muted);margin-top:8px">' + meta.join('　') + '</div>';
+  try{ h += lastEditNote('cc_plans', ym); }catch(e){}
+  h += '</div>';
+  return h;
+}
 /* ===== v770: 事実 → 改善目標 → 行動 → 進捗 を1枚に並べる =====
    【考え方】数字だけの表と、行動だけのリストが別々だと「どの数字を良くするための行動か」が
      繋がらない。単位を「グループ×店舗」にして、1枚のカードの中に
@@ -45116,13 +45588,21 @@ function renderCcGrid(ym){
           var col = a.status === '完了' ? 'var(--green)' : a.status === '進行中' ? 'var(--accent)' :
                     a.status === '確認待ち' ? 'var(--yellow)' : 'var(--muted)';
           var over = a.due && a.status !== '完了' && a.status !== '中止' && a.due < _ccToday();
-          h += '<div onclick="openCcActionModal(\'' + ym + '\',\'' + a.id + '\')" ' +
+          /* v772: 実績タブでは週次更新、計画タブでは編集を開く */
+          var _open = (ccTab === 'actual') ? 'openCcWeekModal' : 'openCcActionModal';
+          var _lg = ccLatestLog(ym, a.id);
+          var _noWk = (ccTab === 'actual') && a.status !== '完了' && a.status !== '中止' &&
+                      !(_lg && _lg.week === ccThisWeek());
+          h += '<div onclick="' + _open + '(\'' + ym + '\',\'' + a.id + '\')" ' +
             'style="cursor:pointer;display:flex;align-items:center;gap:6px;padding:4px 0">' +
             '<span style="width:6px;height:6px;border-radius:3px;background:' + col + ';flex:none"></span>' +
             '<span style="flex:1;font-size:11.5px">' + escapeHtml(a.what) +
             (a.storeId === 'ALL' ? '<span style="font-size:9.5px;color:var(--muted)"> (全店)</span>' : '') + '</span>' +
             (a.due ? '<span style="font-size:9.5px;color:' + (over ? 'var(--red)' : 'var(--muted)') + '">' + escapeHtml(a.due.slice(5)) + '</span>' : '') +
-            _ccBadge(a.status, col) + '</div>';
+            (_noWk ? '<span style="font-size:9px;color:var(--yellow);white-space:nowrap">今週未更新</span>' : '') +
+            _ccBadge(a.status, col) + '</div>' +
+            ((ccTab === 'actual' && _lg && _lg.did) ? '<div style="font-size:10px;color:var(--muted);padding:0 0 4px 12px">' +
+              _ccWeekLabel(_lg.week) + '：' + escapeHtml(_lg.did) + '</div>' : '');
         });
       } else {
         h += '<div style="font-size:10.5px;color:var(--muted)">この店の行動はまだありません。</div>';
@@ -45224,12 +45704,8 @@ function _ccDaysLeft(dateStr){
 function ccIsHQ(){ return curRole === 'gm' || curRole === 'ceo'; }          /* 本部側（目標を出す・承認する） */
 function ccIsChef(){ return curRole === 'chef'; }                           /* キッチン側（計画を出す） */
 function ccCanSeePlan(){ return ccIsHQ() || ccIsChef(); }
-function ccCanEditActions(ym){
-  var st = ccPlan(ym).status;
-  if(st === 'ロック') return false;
-  return ccIsChef() || ccIsHQ();
-}
-function ccCanEditGoals(ym){ return ccIsHQ() && ccPlan(ym).status !== 'ロック'; }
+
+
 
 /* ---------- 読み書き ---------- */
 function ccAllPlans(){ return ls('cc_plans', {}) || {}; }
@@ -45293,6 +45769,7 @@ function openCcGoalModal(ym, id){
     '<button class="btn btn-primary" onclick="saveCcGoal(\'' + ym + '\',\'' + (id || '') + '\')">保存</button></div>');
 }
 function saveCcGoal(ym, id){
+  if(!ccPlanEditable(ym)){ alert('承認後の計画は変更できません。'); return; }   /* v772 */
   var title = (document.getElementById('cg-title').value || '').trim();
   if(!title){ alert('目標を入力してください'); return; }
   var old = ccGoals(ym).filter(function(x){ return x.id === id; })[0] || {};
@@ -45355,6 +45832,8 @@ function openCcActionModal(ym, id, presetGrp, presetStore){
     '<button class="btn btn-primary" onclick="saveCcAction(\'' + ym + '\',\'' + (id || '') + '\')">保存</button></div>');
 }
 function saveCcAction(ym, id){
+  /* v772: 承認後は計画の中身を変えられない。画面側の分岐だけに頼らず保存側でも止める。 */
+  if(!ccPlanEditable(ym)){ alert('承認後の計画は変更できません。実績タブから週次更新を行ってください。'); return; }
   var what = (document.getElementById('ca-what').value || '').trim();
   if(!what){ alert('今月やることを入力してください'); return; }
   var old = ccActions(ym).filter(function(x){ return x.id === id; })[0] || {};
@@ -45392,19 +45871,7 @@ function saveCcFocus(ym){
 }
 
 /* ---------- 提出・承認 ---------- */
-function ccSubmit(ym){
-  var acts = ccActions(ym);
-  if(!acts.length){ alert('行動が1件もありません。先に行動計画を登録してください。'); return; }
-  if(!confirm(ym + ' の行動計画をGMへ提出しますか？')) return;
-  var name = myName();
-  if(!ccSavePlan(ym, { status: '提出済', submittedBy: name, submittedAt: nowJP(), returnReason: '' })) return;
-  try{
-    addApproval({ title: '月間行動計画 — Corporate Chef（' + ym + '）', type: '月間行動計画',
-                  from: name, store: '---', ref: ym, ym: ym });
-  }catch(e){}
-  showToast('提出しました。GMへ通知しました', 'success');
-  renderPage('cc_plan');
-}
+
 function ccApprove(ym){
   var cov = ccCoverage(ym);
   if(cov.total && cov.covered < cov.total){
@@ -45444,142 +45911,7 @@ function _ccStatusChip(st){
             st === '提出済' ? 'var(--accent)' : st === '差し戻し' ? 'var(--red)' : 'var(--yellow)';
   return '<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700;color:#fff;background:' + col + '">' + st + '</span>';
 }
-function renderCcPlan(){
-  if(!ccCanSeePlan()) return '<div class="card">この画面を表示する権限がありません。</div>';
-  var ym = ccYm(), plan = ccPlan(ym), goals = ccGoals(ym), acts = ccActions(ym);
-  var cov = ccCoverage(ym), dl = ccDeadlines(ym);
-  var locked = plan.status === 'ロック';
-  var h = '';
 
-  /* 月セレクタ */
-  h += '<div class="section-header"><div>' +
-       '<div class="section-title">月間行動計画</div>' +
-       '<div class="section-sub">Corporate Chef ' + _ccStatusChip(plan.status) + '</div></div>' +
-       '<div style="display:flex;align-items:center;gap:6px">' +
-       '<button class="btn btn-secondary btn-sm" onclick="ccShiftYm(-1)"><i class="ti ti-chevron-left"></i></button>' +
-       '<b style="font-size:15px">' + ym + '</b>' +
-       '<button class="btn btn-secondary btn-sm" onclick="ccShiftYm(1)"><i class="ti ti-chevron-right"></i></button>' +
-       '</div></div>';
-
-  /* 期限 */
-  var dsub = _ccDaysLeft(dl.submit), dapp = _ccDaysLeft(dl.approve);
-  var dcol = (plan.status === '下書き' || plan.status === '差し戻し') && dsub !== null && dsub < 0 ? 'var(--red)' : 'var(--muted)';
-  h += '<div class="card" style="padding:10px 12px;font-size:12px;color:' + dcol + '">' +
-       '提出期限 <b>' + dl.submit + '</b>' + (dsub !== null ? '（' + (dsub >= 0 ? 'あと' + dsub + '日' : Math.abs(dsub) + '日超過') + '）' : '') +
-       ' ／ 承認期限 <b>' + dl.approve + '</b></div>';
-
-  /* 差し戻し理由 */
-  if(plan.status === '差し戻し' && plan.returnReason){
-    h += '<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-alert-triangle"></i>' +
-         '<div><b>差し戻し</b>：' + escapeHtml(plan.returnReason) +
-         '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(plan.returnedBy || '') + ' ' + escapeHtml(plan.returnedAt || '') + '</div></div></div>';
-  }
-
-  /* 本部目標 */
-  h += '<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>本部目標（GM）' +
-       (ccCanEditGoals(ym) ? '<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openCcGoalModal(\'' + ym + '\',\'\')"><i class="ti ti-plus"></i> 追加</button>' : '') +
-       '</div>';
-  if(!goals.length){
-    h += '<div style="font-size:12px;color:var(--muted)">' +
-         (ccIsHQ() ? '今月の本部目標をまだ登録していません。' : 'GMが今月の目標をまだ登録していません。') + '</div>';
-  } else {
-    var cpct = cov.pct;
-    h += '<div style="font-size:12px;margin-bottom:6px">行動が紐づいた目標 <b style="color:' + (cpct === 100 ? 'var(--green)' : 'var(--yellow)') + '">' +
-         cov.covered + ' / ' + cov.total + '（' + cpct + '%）</b></div>' +
-         '<div style="height:8px;background:var(--surface2);border-radius:5px;overflow:hidden;margin-bottom:10px">' +
-         '<div style="height:100%;width:' + cpct + '%;background:' + (cpct === 100 ? 'var(--green)' : 'var(--yellow)') + '"></div></div>';
-    goals.forEach(function(g){
-      var n = cov.linked[g.id] || 0;
-      h += '<div style="border:1px solid ' + (n ? 'var(--border)' : 'var(--red)') + ';border-radius:8px;padding:9px;margin-bottom:7px">' +
-           '<div style="display:flex;gap:6px;align-items:flex-start">' +
-           '<div style="flex:1"><b style="font-size:13px">' + escapeHtml(g.title) + '</b>' +
-           '<span style="font-size:10px;color:var(--muted);margin-left:6px">優先度 ' + escapeHtml(g.priority || '中') + '</span>' +
-           (g.detail ? '<div style="font-size:11.5px;color:var(--muted);margin-top:3px;white-space:pre-wrap">' + escapeHtml(g.detail) + '</div>' : '') +
-           '<div style="font-size:11px;margin-top:5px;color:' + (n ? 'var(--green)' : 'var(--red)') + '">' +
-           (n ? '行動 ' + n + '件' : '⚠ 行動が紐づいていません') + '</div></div>' +
-           (ccCanEditGoals(ym) ? '<button class="btn btn-secondary btn-sm" onclick="openCcGoalModal(\'' + ym + '\',\'' + g.id + '\')"><i class="ti ti-pencil"></i></button>' : '') +
-           '</div></div>';
-    });
-  }
-  h += '</div>';
-
-  /* 店舗別の共通目標（数値） */
-  try{ h += renderCcGrid(ym); }catch(e){}                          /* v768 */
-
-  /* 重点行動3項目 */
-  h += '<div class="card"><div class="card-title"><i class="ti ti-flag" style="color:var(--accent)"></i>今月の重点行動（Chef）</div>';
-  var f = plan.focus || ['','',''];
-  if(ccIsChef() && !locked){
-    for(var i=0; i<3; i++){
-      h += '<div class="form-group" style="margin-bottom:6px"><input class="form-input" id="cf-' + i + '" placeholder="重点 ' + (i+1) + '" value="' + escapeHtml(f[i] || '') + '"></div>';
-    }
-    h += '<button class="btn btn-secondary btn-sm" onclick="saveCcFocus(\'' + ym + '\')"><i class="ti ti-device-floppy"></i> 保存</button>';
-  } else {
-    var any = f.filter(function(x){ return x; });
-    h += any.length ? '<ol style="margin:0;padding-left:18px;font-size:13px">' + any.map(function(x){ return '<li>' + escapeHtml(x) + '</li>'; }).join('') + '</ol>'
-                    : '<div style="font-size:12px;color:var(--muted)">未記入</div>';
-  }
-  h += '</div>';
-
-  /* 行動計画 */
-  h += '<div class="card"><div class="card-title"><i class="ti ti-list-check" style="color:var(--accent)"></i>行動計画（' + acts.length + '件）' +
-       (ccCanEditActions(ym) ? '<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openCcActionModal(\'' + ym + '\',\'\')"><i class="ti ti-plus"></i> 追加</button>' : '') +
-       '</div>';
-  if(!acts.length){
-    h += '<div style="font-size:12px;color:var(--muted)">まだ行動が登録されていません。</div>';
-  } else {
-    var goalTitle = {};
-    goals.forEach(function(g){ goalTitle[g.id] = g.title; });
-    CC_CATS.forEach(function(c){
-      var list = acts.filter(function(a){ return a.cat === c.id; });
-      if(!list.length) return;
-      h += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:9px 0 4px"><i class="ti ' + c.icon + '"></i> ' + c.label + '</div>';
-      list.forEach(function(a){
-        var over = a.due && a.status !== '完了' && a.due < _ccToday();
-        var sc = a.status === '完了' ? 'var(--green)' : over ? 'var(--red)' : 'var(--muted)';
-        var st = (typeof STORES !== 'undefined' ? STORES : []).filter(function(s){ return s.id === a.storeId; })[0];
-        h += '<div style="border:1px solid var(--border);border-radius:8px;padding:9px;margin-bottom:6px"' +
-             (ccCanEditActions(ym) ? ' onclick="openCcActionModal(\'' + ym + '\',\'' + a.id + '\')" style="cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:9px;margin-bottom:6px"' : '') + '>' +
-             '<div style="font-size:13px;font-weight:600">' + escapeHtml(a.what) + '</div>' +
-             '<div style="font-size:11px;color:var(--muted);margin-top:3px">' +
-             (a.storeId === 'ALL' ? '全店舗' : escapeHtml((st || {}).name || a.storeId)) +
-             (a.goalId ? ' ／ ' + escapeHtml(goalTitle[a.goalId] || '（削除された目標）') : ' ／ <span style="color:var(--yellow)">自主提案</span>') +
-             '</div>' +
-             '<div style="font-size:11px;margin-top:4px;color:' + sc + '">' +
-             escapeHtml(a.status) + '（' + (CC_PROGRESS[a.status] || 0) + '%）' +
-             (a.due ? ' ・ 期限 ' + escapeHtml(a.due) + (over ? ' ⚠超過' : '') : '') + '</div>' +
-             '</div>';
-      });
-    });
-  }
-  h += '</div>';
-
-  /* 操作 */
-  h += '<div class="card"><div class="btn-row" style="flex-wrap:wrap">';
-  if(ccIsChef() && (plan.status === '下書き' || plan.status === '差し戻し')){
-    h += '<button class="btn btn-primary" onclick="ccSubmit(\'' + ym + '\')"><i class="ti ti-send"></i> GMへ提出</button>';
-  }
-  if(ccIsHQ() && plan.status === '提出済'){
-    h += '<button class="btn btn-secondary" onclick="ccReturn(\'' + ym + '\')"><i class="ti ti-arrow-back-up"></i> 差し戻し</button>' +
-         '<button class="btn btn-primary" onclick="ccApprove(\'' + ym + '\')"><i class="ti ti-check"></i> 承認</button>';
-  }
-  if(ccIsHQ() && plan.status === '承認済'){
-    h += '<button class="btn btn-primary" onclick="ccLock(\'' + ym + '\')"><i class="ti ti-lock"></i> ロック</button>';
-  }
-  if(ccIsHQ() && locked){
-    h += '<button class="btn btn-secondary" onclick="ccUnlock(\'' + ym + '\')"><i class="ti ti-lock-open"></i> ロック解除</button>';
-  }
-  h += '</div>';
-  var meta = [];
-  if(plan.submittedBy) meta.push('提出：' + escapeHtml(plan.submittedBy) + ' ' + escapeHtml(plan.submittedAt || ''));
-  if(plan.approvedBy) meta.push('承認：' + escapeHtml(plan.approvedBy) + ' ' + escapeHtml(plan.approvedAt || ''));
-  if(plan.lockedBy) meta.push('ロック：' + escapeHtml(plan.lockedBy) + ' ' + escapeHtml(plan.lockedAt || ''));
-  if(meta.length) h += '<div style="font-size:11px;color:var(--muted);margin-top:8px">' + meta.join('　') + '</div>';
-  try{ h += lastEditNote('cc_plans', ym); }catch(e){}
-  h += '</div>';
-
-  return h;
-}
 function renderGoals() {
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
