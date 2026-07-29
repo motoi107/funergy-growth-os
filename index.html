@@ -1896,6 +1896,8 @@ function renderGradeHideConfig(){
     if(!ids.length){ html+='<div style="font-size:11px;color:var(--muted)">このGradeの対象ページはありません</div>'; }
     ids.forEach(function(pid){ var it=(typeof NAV_ITEMS!=='undefined')?NAV_ITEMS.find(function(x){return x.id===pid;}):null; if(!it) return; var on=hide.indexOf(pid)>=0;
       html+='<label style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-top:1px solid var(--border);cursor:pointer"><span style="font-size:12.5px'+(on?';color:var(--muted);text-decoration:line-through':'')+'"><i class="ti '+it.icon+'" style="font-size:12px;margin-right:5px"></i>'+escapeHtml(navLabelEn(it.label))+'</span><input type="checkbox" '+(on?'checked':'')+' onchange="toggleGradeHide(\''+gk+'\',\''+pid+'\')" style="width:18px;height:18px;flex:0 0 auto"></label>';
+      /* v792: 非表示にすると現金チップを入力できなくなることを、切り替える場所で知らせる */
+      if(pid==='store_cmd' && on) html+='<div style="font-size:10.5px;color:var(--yellow);margin:0 0 4px 22px"><i class="ti ti-alert-triangle"></i> '+gk+' は現金チップを入力できません（未入力がG3へ溜まります）</div>';
     });
     html+='</div>';
   });
@@ -18830,6 +18832,107 @@ function getTipConfirm(storeId, info){ return ls(tipConfirmKey(storeId,info), nu
 function setTipConfirm(storeId, info, data){ lsSet(tipConfirmKey(storeId,info), data); }
 
 /* Tip診断: クレジットチップを営業日別/決済日別で集計しToast Payment Summaryと照合（Edge tipDateDebug） */
+/* ===== v792: 現金チップの入力権限を診断する =====
+   【なぜ必要か】v626 で入力を G1 へ解放し、v630 で g2 を正規化したのに
+     「入力できないスタッフが存在する」状態が v789 まで残っていた。
+     原因を追うと、関門が2層に分かれていて片方しか見えていなかった。
+       ① ページ権限 … NAV_ITEMS['store_cmd'].roles（ceo/gm/am/sl/crew。g2→sl・g4→am で通る）
+       ② メニューのグループ … groupsForRole() が返す一覧に store_cmd が含まれるか
+     ②は grade_hide（等級別の非表示）で消える。しかも grade_hide が未設定のときの
+     G2 の既定値は旧 role_hide_g2 を引き継ぐため、昔の設定が今も効き続ける。
+     このとき①は「許可」と言っているのに②で画面ごと消えるので、
+     権限一覧をいくら見ても原因が分からない。実際に締めたクルーが入力できず、
+     未入力タスクが G3 へ溜まる（v626 が解こうとした問題そのもの）。
+   【この処理は読み取りだけ】設定は一切変更しない。誰が入力できないか、
+     どの関門で止まっているかを名指しするだけ。直すのは設定画面で行う。 */
+function _cashTipGateGlobals(){
+  return { role:curRole, realRole:curRealRole, name:curUserName, store:curStore, storeLogin:curStoreLogin };
+}
+function _cashTipGateRestore(g){
+  curRole=g.role; curRealRole=g.realRole; curUserName=g.name; curStore=g.store; curStoreLogin=g.storeLogin;
+}
+/* その人が現金チップを入力できるか。実際の groupsForRole() をそのまま使うため、
+   一時的に現在ユーザーを差し替えて必ず finally で戻す（写しを持つと本体と食い違う）。 */
+function cashTipEntryGate(emp, storeId){
+  var out = { name:(emp&&emp.name)||'', role:(emp&&emp.role)||'', grade:'', inGroup:false, roleOk:false, storeOk:false, ok:false, blockedBy:'' };
+  var saved = _cashTipGateGlobals();
+  try{
+    if(typeof _applyRole==='function') _applyRole(out.role); else { curRealRole=out.role; curRole=out.role; }
+    curUserName = out.name;
+    curStore = storeId;
+    curStoreLogin = false;
+    out.grade = (typeof myGradeKey==='function') ? myGradeKey() : '';
+    var groups = (typeof groupsForRole==='function') ? (groupsForRole()||[]) : [];
+    out.inGroup = groups.some(function(g){ return g && (g.children||[]).indexOf('store_cmd')>=0; });
+    var it = (typeof NAV_ITEMS!=='undefined') ? NAV_ITEMS.find(function(n){ return n.id==='store_cmd'; }) : null;
+    out.roleOk = !it || !it.roles || it.roles.indexOf(curRole)>=0;
+    out.storeOk = (typeof cashTipCanEnter==='function') ? !!cashTipCanEnter(storeId) : true;
+  }catch(e){ out.blockedBy='判定できませんでした'; }
+  finally{ _cashTipGateRestore(saved); }
+  out.ok = out.inGroup && out.roleOk && out.storeOk;
+  if(!out.storeOk)      out.blockedBy = '対象外店舗（この店舗は現金チップを登録しない）';
+  else if(!out.inGroup) out.blockedBy = 'メニューから非表示（設定＞Grade表示管理の '+out.grade+'）';
+  else if(!out.roleOk)  out.blockedBy = 'ページ権限（店舗オペレーションの対象役職に入っていない）';
+  return out;
+}
+/* 等級ごとに store_cmd が隠されているか（原因の早見） */
+function cashTipHiddenGrades(){
+  var out=[];
+  try{
+    var m=(typeof getGradeHide==='function')?getGradeHide():null;
+    if(m) ['G1','G2','G3','G4','G5','G6'].forEach(function(g){
+      if((m[g]||[]).indexOf('store_cmd')>=0) out.push(g);
+    });
+  }catch(e){}
+  return out;
+}
+function openCashTipPermCheck(){
+  if(['gm','ceo','office','am'].indexOf(curRole)<0){ showToast('この診断は GM・CEO・経理・AM が使えます','warning'); return; }
+  var sid = (curStore && curStore!=='ALL') ? curStore : (STORES[0]&&STORES[0].id);
+  var st = STORES.find(function(s){ return s.id===sid; }) || {};
+  var emps = [];
+  try{
+    emps = (getEmployees()||[]).filter(function(e){
+      if(!e || !e.name) return false;
+      if(e.retired || e._deleted) return false;
+      return e.store===sid || (e.stores && e.stores.indexOf && e.stores.indexOf(sid)>=0);
+    });
+  }catch(e){}
+  var rows = emps.map(function(e){ return cashTipEntryGate(e, sid); });
+  rows.sort(function(a,b){ return (a.ok?1:0)-(b.ok?1:0) || String(a.name).localeCompare(String(b.name)); });
+  var ng = rows.filter(function(r){ return !r.ok; });
+  var hidden = cashTipHiddenGrades();
+
+  var h = '<div class="modal-title"><i class="ti ti-lock-open"></i> 現金チップの入力権限 <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  h += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+escapeHtml(st.name||sid||'')
+     + ' のスタッフが「店舗オペレーション」に到達して現金チップを入力できるかを調べます。設定は変更しません。</div>';
+  if(hidden.length){
+    h += '<div class="alert alert-warning" style="margin:0 0 8px;padding:8px 10px"><i class="ti ti-alert-triangle"></i><div style="font-size:11.5px">'
+       + '<b>'+escapeHtml(hidden.join(' / '))+'</b> では「店舗オペレーション」がメニューから非表示になっています。'
+       + 'この等級のスタッフは現金チップを入力できず、未入力のまま G3 へ溜まります。'
+       + '<div style="margin-top:3px">設定 ＞ Grade表示管理 で、その等級の「店舗オペレーション」のチェックを外してください。</div>'
+       + '<div style="margin-top:3px;color:var(--muted)">※ G2 は grade_hide が未設定のとき、旧 role_hide_g2 の内容を引き継ぎます。</div></div></div>';
+  }
+  h += '<div class="card" style="margin:0 0 8px;padding:9px 11px"><div style="font-size:12px;font-weight:700">'
+     + '入力できる '+(rows.length-ng.length)+' 名 ／ できない <span style="color:'+(ng.length?'var(--red)':'var(--muted)')+'">'+ng.length+'</span> 名</div></div>';
+  if(!rows.length){
+    h += '<div class="card" style="font-size:12px;color:var(--muted)">この店舗に在籍スタッフが登録されていません。</div>';
+  } else {
+    h += '<div style="max-height:300px;overflow:auto">';
+    rows.forEach(function(r){
+      h += '<div style="display:flex;gap:8px;align-items:flex-start;font-size:11.5px;padding:6px 0;border-top:1px solid var(--border)">'
+         + '<span style="flex:1"><b>'+escapeHtml(r.name)+'</b>'
+         + '<span style="color:var(--muted);font-size:10.5px"> '+escapeHtml(r.role||'-')+' / '+escapeHtml(r.grade||'-')+'</span>'
+         + (r.ok?'':'<div style="color:var(--red);font-size:10.5px;margin-top:2px">'+escapeHtml(r.blockedBy)+'</div>')
+         + '</span>'
+         + '<span style="font-size:10.5px;font-weight:700;color:'+(r.ok?'var(--green)':'var(--red)')+'">'+(r.ok?'入力できる':'できない')+'</span>'
+       + '</div>';
+    });
+    h += '</div>';
+  }
+  h += '<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(h);
+}
 function openTipDateDebug(){
   var sid = (curStore && curStore!=='ALL') ? curStore : (STORES[0]&&STORES[0].id);
   var st = STORES.find(function(s){return s.id===sid;})||{};
@@ -18964,6 +19067,7 @@ function renderTipMgmt() {
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
       ${syncFreshBadge()}
       <button class="btn btn-secondary btn-sm" onclick="openTipDateDebug()"><i class="ti ti-stethoscope"></i> ${t('Tip診断','Tip diagnostics')}</button>
+      ${['gm','ceo','office','am'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openCashTipPermCheck()"><i class="ti ti-lock-open"></i> ${t('入力権限','Entry rights')}</button>`:''}
       ${['gm','ceo','office','am'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openTipHoursModal()"><i class="ti ti-clock-cog"></i> ${t('対象時間設定','Hours settings')}</button>`:''}
     </div>
   </div>`;
@@ -21477,7 +21581,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '790';
+const APP_VERSION = '792';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -39031,6 +39135,8 @@ function renderApproval() {
             +'</span></div>';
           if(_self) html += '<div style="font-size:11px;color:var(--muted);margin:0 0 4px;line-height:1.6"><b>'+t('自己評価','Self-assessment')+'：</b>'+escapeHtml(_self)+'</div>';
         }
+        /* v791: 月間行動計画は中身が見えないと承認できない（読み取りのみ） */
+        if (a.type==='月間行動計画') { try{ html += ccApprovalDetailHtml(a); }catch(e){} }
         html += _approvalChainHtml(a);
         if (isBudget) {
           var _bb = getBudgets().find(function(x){return x.storeId===a.ref;});
@@ -45702,9 +45808,94 @@ function ccSubmit(ym){
   renderPage('cc_plan');
 }
 
+/* ===== v791: 月間行動計画の申請内容を承認画面で読めるようにする =====
+   【症状】Head Chef が提出した月間行動計画が、承認センターではタイトルだけで
+     中身が1行も出ず、承認の判断ができなかった。スキル申請には申請Lvと自己評価、
+     予算申請には根拠と「考え方・日別」ボタンがあるが、月間行動計画には
+     詳細表示も内容へのリンクも用意されていなかった。
+   【この対応は読み取りだけ】cc_plans / hq_goals / cc_actions へは一切書かない。
+     提出済みの内容が書き換わる経路を新しく作らないため、承認画面からできるのは
+     「表示」と「計画を開く」だけにしてある。
+   【データの取り寄せ】これらは spl_<キー>_<対象月> に分割保存されている。
+     合流は mergeCcList（id単位の和集合・_mut の新しい方が勝つ）なので、
+     取り寄せても提出済みの行が消えることはない。 */
+var CC_SPLIT_PREFIXES = ['spl_cc_plans_','spl_hq_goals_','spl_cc_actions_','spl_cc_scores_','spl_cc_logs_','spl_cc_metrics_'];
+function ccPullShared(){
+  try{
+    if(typeof _lsRequestDeferredPrefix!=='function') return;
+    CC_SPLIT_PREFIXES.forEach(function(p){ _lsRequestDeferredPrefix(p); });
+  }catch(e){}
+}
+/* 一度取りに行った印を消してから引き直す（承認カードの「再取得」） */
+function ccRefetchNow(){
+  try{ CC_SPLIT_PREFIXES.forEach(function(p){ try{ delete _lsDeferReq['#'+p]; }catch(e){} }); }catch(e){}
+  try{ showToast('クラウドから取り寄せています…','info'); }catch(e){}
+  ccPullShared();
+}
+/* 提出された対象月の計画を開く */
+function ccOpenYm(ym){
+  if(ym) ccYmShown = ym;
+  ccTab = 'plan';
+  if(typeof go==='function') go('cc_plan'); else renderPage('cc_plan');
+}
+/* 承認カードに出す読み取り専用の中身 */
+function ccApprovalDetailHtml(a){
+  var ym = (a && (a.ym || a.ref)) || '';
+  if(!ym) return '';
+  ccPullShared();
+  var plan = ccPlan(ym) || {}, acts = ccActions(ym) || [], goals = ccGoals(ym) || [];
+  var gname = {}; goals.forEach(function(g){ if(g) gname[g.id] = g.title; });
+  var esc = function(x){ return escapeHtml(x == null ? '' : String(x)); };
+  var h = '<div style="background:var(--surface2);border-radius:8px;padding:8px 10px;margin:4px 0 5px;font-size:11.5px;line-height:1.7">';
+  h += '<div><b><i class="ti ti-calendar"></i> 対象月：</b>' + esc(ym)
+     + '　<b>行動：</b>' + acts.length + '件　<b>本部目標：</b>' + goals.length + '件</div>';
+  if(plan.submittedBy) h += '<div style="color:var(--muted);font-size:10.5px">提出：' + esc(plan.submittedBy) + ' ' + esc(plan.submittedAt) + '</div>';
+  var f = (plan.focus || []).filter(function(x){ return x; });
+  if(f.length) h += '<div style="margin-top:5px"><b><i class="ti ti-flag" style="color:var(--accent)"></i> 今月の重点行動</b>'
+     + '<ol style="margin:2px 0 0;padding-left:18px">' + f.map(function(x){ return '<li>' + esc(x) + '</li>'; }).join('') + '</ol></div>';
+  if(!acts.length){
+    h += '<div style="color:var(--yellow);margin-top:6px"><i class="ti ti-alert-triangle"></i> '
+       + 'この端末に ' + esc(ym) + ' の行動が届いていません。「再取得」を押してから開いてください。</div>';
+  } else {
+    var shown = {};
+    CC_GROUPS.forEach(function(g){
+      var list = acts.filter(function(x){ return x && x.cat === g.id; });
+      if(!list.length) return;
+      h += '<div style="margin-top:6px"><b><i class="ti ' + g.icon + '" style="color:var(--muted)"></i> ' + esc(g.label) + '</b>';
+      list.forEach(function(x){
+        shown[x.id] = 1;
+        var meta = (gname[x.goalId] ? '目標：' + esc(gname[x.goalId]) + '　' : '')
+                 + (x.due ? '期限：' + esc(x.due) + '　' : '')
+                 + (x.status ? '状況：' + esc(x.status) : '');
+        h += '<div style="border-left:2px solid var(--border);padding:2px 0 2px 7px;margin-top:3px">' + esc(x.what)
+           + (x.how ? '<div style="color:var(--muted);font-size:10.5px">やり方：' + esc(x.how) + '</div>' : '')
+           + (meta ? '<div style="color:var(--muted);font-size:10.5px">' + meta + '</div>' : '')
+           + (x.note ? '<div style="color:var(--muted);font-size:10.5px">補足：' + esc(x.note) + '</div>' : '')
+           + '</div>';
+      });
+      h += '</div>';
+    });
+    /* 区分が既定の一覧に無い行動も必ず出す（画面から消えないようにする） */
+    var rest = acts.filter(function(x){ return x && !shown[x.id]; });
+    if(rest.length){
+      h += '<div style="margin-top:6px"><b><i class="ti ti-dots" style="color:var(--muted)"></i> その他の区分</b>';
+      rest.forEach(function(x){
+        h += '<div style="border-left:2px solid var(--border);padding:2px 0 2px 7px;margin-top:3px">' + esc(x.what)
+           + (x.cat ? '<div style="color:var(--muted);font-size:10.5px">区分：' + esc(x.cat) + '</div>' : '') + '</div>';
+      });
+      h += '</div>';
+    }
+  }
+  h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">'
+     + '<button class="btn btn-secondary btn-sm" onclick="ccOpenYm(\'' + esc(ym) + '\')"><i class="ti ti-external-link"></i> 計画を開く</button>'
+     + '<button class="btn btn-secondary btn-sm" onclick="ccRefetchNow()"><i class="ti ti-refresh"></i> 再取得</button>'
+     + '</div>';
+  return h + '</div>';
+}
 /* ---------- 画面 ---------- */
 function renderCcPlan(){
   if(!ccCanSeePlan()) return '<div class="card">この画面を表示する権限がありません。</div>';
+  try{ ccPullShared(); }catch(e){}   /* v791: 分割保存された計画を取り寄せる（和集合なので消えない） */
   var ym = ccYm(), plan = ccPlan(ym), dl = ccDeadlines(ym);
   var goals = ccGoals(ym), acts = ccActions(ym), cov = ccCoverage(ym);
   var h = '';
