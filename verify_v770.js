@@ -39,7 +39,8 @@ function env(store) {
   const FNS = ['ccMetrics', '_ccMetricsMap', 'ccPutMetric', 'ccMetricStores', 'ccGroupMetrics',
     '_ccScoreId', 'ccScores', 'ccScore', 'ccPutScore', 'ccCheckRate', 'ccActualOf', 'ccScoreOk',
     'ccGroupSummary', 'ccGroupActions', 'ccActions', '_ccPad', 'ccPrevYm', 'ccGap',
-    'ccStoreActions', 'ccProgressOf', 'ccGroupAgg', '_ccNum'];
+    'ccStoreActions', 'ccProgressOf', 'ccGroupAgg', '_ccNum',
+    'ccScoreView', 'ccDefTarget'];   /* v774: ccGroupAgg が目標の解決を経由するため */
   const consts = [grabVar('var CC_GROUPS = ['), grabVar('var CC_GROUP_CAT = {'),
     grabVar('var CC_CAT_GROUP = {'), grabVar('var CC_DEFAULT_METRICS = ['),
     grabVar('var CC_DOH_ITEMS = ['), grabVar('var CC_PROGRESS = {'),

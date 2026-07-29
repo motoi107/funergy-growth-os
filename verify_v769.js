@@ -39,7 +39,8 @@ function grabVar(decl) {
 function env(store) {
   const FNS = ['ccMetrics', '_ccMetricsMap', 'ccPutMetric', 'ccMetricStores', 'ccGroupMetrics',
     '_ccScoreId', 'ccScores', 'ccScore', 'ccPutScore', 'ccCheckRate', 'ccActualOf', 'ccScoreOk',
-    'ccGroupSummary', 'ccGroupActions', 'ccActions', 'toggleCcGroup', '_ccNum'];
+    'ccGroupSummary', 'ccGroupActions', 'ccActions', 'toggleCcGroup', '_ccNum',
+    'ccScoreView', 'ccDefTarget'];   /* v774: 達成判定・集計が目標の解決を経由するため */
   const consts = [grabVar('var CC_GROUPS = ['), grabVar('var CC_CAT_GROUP = {'),
     grabVar('var CC_DEFAULT_METRICS = ['), grabVar('var CC_DOH_ITEMS = ['),
     grabVar('var CC_PLACARD = ['), 'var ccGridOpen = {};',
@@ -68,11 +69,17 @@ console.log('\n=== テスト1: グループ構成 ===');
   check('原価管理に原価率と理論原価差異が入っている',
     cost.indexOf('原価率') >= 0 && cost.indexOf('理論原価との差異') >= 0, cost.join(' + '));
   const hyg = a.ccGroupMetrics('g_hyg').map(m => m.label);
-  check('衛生管理にDOHとフードハンドラーが入っている',
-    hyg.indexOf('DOH適合') >= 0 && hyg.indexOf('フードハンドラー保持') >= 0, hyg.join(' + '));
+  /* v770: フードハンドラーはDOHチェックリストの項目へ統合した */
+  check('衛生管理はDOHに集約されている',
+    hyg.length === 1 && hyg[0] === 'DOH適合', hyg.join(' + '));
   const dev = a.ccGroupMetrics('g_dev');
-  check('メニュー開発は1指標に統合されている', dev.length === 1, dev.map(m => m.label).join(','));
-  check('メニュー開発は全店対象', a.ccMetricStores(dev[0]).length === a.STORES.length);
+  /* v774: 設計変更。グランド更新（ToriTon/Tenkichi/Marujuu）とシーズナル（全店）に分けた。
+     v769 の「1指標に統合」はこの版で上書きされたので、新しい構成を検査する。 */
+  check('メニュー開発はグランドとシーズナルの2指標', dev.length === 2, dev.map(m => m.label).join(','));
+  const grand = dev.filter(m => m.id === 'm_grand')[0];
+  const seas = dev.filter(m => m.id === 'm_seasonal')[0];
+  check('グランド更新は3店のみ', !!grand && a.ccMetricStores(grand).length === 3);
+  check('シーズナルは全店対象', !!seas && a.ccMetricStores(seas).length === a.STORES.length);
   const ppl = a.ccGroupMetrics('g_ppl').map(m => m.label);
   check('人材・育成にG3キッチンリーダー', ppl.indexOf('G3キッチンリーダー') >= 0, ppl.join(','));
 }
