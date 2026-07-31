@@ -5436,7 +5436,7 @@ var SUPA_MASTER_MAP = {
 var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
-  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc'];
+  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc','ow_limits'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
@@ -21345,6 +21345,272 @@ function laborCoreForYm(storeId, ym, opts){
     periodDays:periodDays, dim:dim, daysWithActual:daysWithActual, cutoff:cutoff, frozen:isFrozenMonth(ym) };
 }
 
+/* ===== v793: Grade別の労働時間管理（週 日〜土 で判定） =====
+   【なぜ週なのか】OT は法定どおり週40h超で計算しており（laborCoreForYm も同じ）、
+     月合計では「45hの週」と「30hの週」が打ち消し合って超過が見えない。
+     Grade の枠も週の枠として運用するので、判定単位は週(日〜土)に揃える。
+   【月をまたぐ週】1週として丸ごと数える。月で切ると、月末に始まる週が
+     常に「不足」に見えてしまい、実態と合わない。
+   【途中の週】土曜が来ていない週は「不足」の判定をしない（まだ働く日が残っている）。
+     一方「超過」は途中でも出す。週が終わる前に気づけることに意味があるため。
+   【複数店で働く人】店ごとではなく合算で判定する。25h+25h=50h を見逃さないため。
+   【時間の出どころ】_laborHrs（Toast打刻の素の実働）。勤怠明細・労働時間タブ・
+     予実と同じ数字を使うので、画面によって違う値が出ることはない。 */
+var OW_DEFAULT_LIMITS = {
+  G1:{min:null, max:40},
+  G2:{min:30,   max:40},
+  G3:{min:null, max:40},
+  G4:{min:null, max:null},   /* 月給制が基本のため既定では監視しない（必要なら設定） */
+  G5:{min:null, max:null},
+  G6:{min:null, max:null}
+};
+var OW_GRADES = ['G1','G2','G3','G4','G5','G6'];
+function getOwLimits(){
+  var m = ls('ow_limits', null);
+  var out = {};
+  OW_GRADES.forEach(function(g){
+    var s = (m && m[g]) ? m[g] : (OW_DEFAULT_LIMITS[g]||{});
+    var mn = s.min, mx = s.max;
+    out[g] = { min:(mn==null||mn===''||!(Number(mn)>0))?null:Number(mn),
+               max:(mx==null||mx===''||!(Number(mx)>0))?null:Number(mx) };
+  });
+  return out;
+}
+function setOwLimits(m){ return lsSet('ow_limits', m); }
+function owGradeOfName(name){
+  try{
+    var e=(getEmployees()||[]).find(function(x){ return x && x.name===name; });
+    return e ? ((typeof empGrade==='function' ? empGrade(e) : '')||'') : '';
+  }catch(e){ return ''; }
+}
+/* 週(日〜土)が終わっているか */
+function owWeekComplete(sunISO){
+  try{
+    var sat = laborWeekDays(sunISO)[6];
+    var today = (typeof bizToday==='function') ? bizToday() : new Date().toISOString().slice(0,10);
+    return sat < today;
+  }catch(e){ return false; }
+}
+/* 1店舗・1週の実働時間（勤怠明細と同じ出どころ） */
+function owWeekHours(storeId, sunISO){
+  var out={};
+  try{
+    laborWeekDays(sunISO).forEach(function(dt){
+      var labor = getTipLabor(storeId, dt); if(!labor) return;
+      Object.keys(labor).forEach(function(n){
+        var h = _laborHrs(labor[n]); if(h>0) out[n] = (out[n]||0) + h;
+      });
+    });
+  }catch(e){}
+  Object.keys(out).forEach(function(n){ out[n]=Math.round(out[n]*100)/100; });
+  return out;
+}
+/* 1週を全店（または指定店）で走査し、人ごとに合算して枠と突き合わせる */
+function owScanWeek(sunISO, storeIds){
+  var ids = (storeIds && storeIds.length) ? storeIds : ((typeof STORES!=='undefined'?STORES:[])||[]).map(function(s){ return s.id; });
+  var lim = getOwLimits();
+  var done = owWeekComplete(sunISO);
+  var byName = {};
+  ids.forEach(function(sid){
+    var h = owWeekHours(sid, sunISO);
+    Object.keys(h).forEach(function(n){
+      if(!byName[n]) byName[n] = { name:n, byStore:{}, total:0 };
+      byName[n].byStore[sid] = Math.round(((byName[n].byStore[sid]||0) + h[n])*100)/100;
+      byName[n].total += h[n];
+    });
+  });
+  return Object.keys(byName).map(function(n){
+    var r = byName[n];
+    r.total = Math.round(r.total*100)/100;
+    r.sun = sunISO;
+    r.weekDone = done;
+    r.grade = owGradeOfName(n);
+    var L = lim[r.grade] || { min:null, max:null };
+    r.min = L.min; r.max = L.max;
+    r.over  = (L.max!=null && r.total > L.max) ? Math.round((r.total - L.max)*100)/100 : 0;
+    r.under = (done && L.min!=null && r.total < L.min) ? Math.round((L.min - r.total)*100)/100 : 0;
+    r.state = r.over>0 ? 'over' : (r.under>0 ? 'under' : 'ok');
+    return r;
+  });
+}
+/* 直近n週の日曜（今週を含む・新しい順） */
+function owRecentSundays(n){
+  var out=[];
+  try{
+    var t = (typeof bizToday==='function') ? bizToday() : new Date().toISOString().slice(0,10);
+    var d = new Date(t+'T00:00:00');
+    d.setDate(d.getDate() - d.getDay());
+    for(var i=0;i<n;i++){ out.push(isoLocalDate(d)); d.setDate(d.getDate()-7); }
+  }catch(e){}
+  return out;
+}
+/* 勤怠明細の表示期間ぶんをまとめて評価する */
+function owForPeriod(storeId, weeks, selWeek){
+  var sunList = selWeek ? [selWeek] : (weeks||[]).map(function(w){ return w.sun; });
+  var rows = [], byName = {};
+  sunList.forEach(function(sun){
+    owScanWeek(sun, null).forEach(function(r){
+      if(r.byStore[storeId]==null) return;      /* この店で勤務が無い人は出さない */
+      rows.push(r);
+      var b = byName[r.name] || (byName[r.name] = { grade:r.grade, over:0, under:0, maxWeek:0, weeks:0 });
+      b.grade = r.grade; b.weeks++;
+      if(r.over>0)  b.over++;
+      if(r.under>0) b.under++;
+      if(r.total > b.maxWeek) b.maxWeek = r.total;
+    });
+  });
+  rows.sort(function(a,b){
+    var rank = function(x){ return x.state==='over'?0:(x.state==='under'?1:2); };
+    return rank(a)-rank(b) || (b.over-a.over) || String(b.sun).localeCompare(String(a.sun)) || String(a.name).localeCompare(String(b.name));
+  });
+  var byGrade = {};
+  OW_GRADES.forEach(function(g){ byGrade[g] = { people:{}, sum:0, weeks:0, over:0, under:0 }; });
+  rows.forEach(function(r){
+    var g = byGrade[r.grade]; if(!g) return;
+    g.people[r.name]=1; g.sum += r.total; g.weeks++;
+    if(r.over>0) g.over++;
+    if(r.under>0) g.under++;
+  });
+  return { rows:rows, byName:byName, byGrade:byGrade, sunList:sunList,
+           over: rows.filter(function(r){ return r.over>0; }),
+           under: rows.filter(function(r){ return r.under>0; }) };
+}
+function _owStoreName(sid){
+  try{ var s=(STORES||[]).find(function(x){ return x.id===sid; }); return (s&&s.name)||sid; }catch(e){ return sid; }
+}
+/* 勤怠明細テーブルの氏名セルに出す小さな印 */
+function owRowBadge(b){
+  if(!b) return '';
+  if(b.over>0)  return '<span class="tag tag-red" style="font-size:9px;margin-left:3px">超過'+(b.over>1?(' '+b.over+'週'):'')+'</span>';
+  if(b.under>0) return '<span class="tag tag-yellow" style="font-size:9px;margin-left:3px">不足'+(b.under>1?(' '+b.under+'週'):'')+'</span>';
+  return '';
+}
+/* 勤怠明細に出すカード */
+function renderLaborOverwork(storeId, ow, periodLabel){
+  var lim = getOwLimits();
+  var canCfg = ['gm','ceo'].indexOf(curRole)>=0;
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-clock-exclamation" style="color:var(--accent)"></i>Grade別 労働時間（週 日〜土）'
+    + (canCfg ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openOwLimitsModal()"><i class="ti ti-adjustments"></i> 枠の設定</button>' : '')
+    + '</div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+    + '<span class="tag ' + (ow.over.length?'tag-red':'tag-green') + '" style="font-size:11px">超過 ' + ow.over.length + '件</span>'
+    + '<span class="tag ' + (ow.under.length?'tag-yellow':'tag-gray') + '" style="font-size:11px">不足 ' + ow.under.length + '件</span>'
+    + '<span class="tag tag-gray" style="font-size:11px">対象 ' + Object.keys(ow.byName).length + '名 / ' + ow.sunList.length + '週</span>'
+    + '</div>';
+
+  if(!ow.over.length && !ow.under.length){
+    h += '<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> '
+       + escapeHtml(periodLabel) + ' に枠を外れた人はいません。</div>';
+  } else {
+    h += '<div style="max-height:280px;overflow:auto">';
+    ow.rows.filter(function(r){ return r.state!=='ok'; }).forEach(function(r){
+      var rg = laborWeekRange(r.sun);
+      var isOver = r.over>0;
+      var col = isOver ? 'var(--red)' : 'var(--yellow)';
+      var others = Object.keys(r.byStore).filter(function(sid){ return sid!==storeId; });
+      h += '<div style="border-top:1px solid var(--border);padding:6px 0;font-size:11.5px">'
+        + '<div style="display:flex;gap:8px;align-items:baseline">'
+        + '<b style="flex:1">' + escapeHtml(r.name) + ' <span style="font-size:10px;color:var(--muted)">' + escapeHtml(r.grade||'等級未設定') + '</span></b>'
+        + '<span style="font-weight:800;color:' + col + '">' + r.total + 'h</span>'
+        + '<span style="font-size:10px;color:var(--muted)">' + (isOver ? ('上限' + r.max + 'h') : ('下限' + r.min + 'h')) + '</span>'
+        + '<span class="tag" style="font-size:9.5px;border:1px solid ' + col + ';color:' + col + ';background:transparent">'
+        + (isOver ? ('+' + r.over + 'h') : ('−' + r.under + 'h')) + '</span></div>'
+        + '<div style="color:var(--muted);font-size:10.5px;margin-top:2px">' + escapeHtml(rg.label)
+        + (r.weekDone ? '' : '（進行中）')
+        + (others.length ? '　合算：' + Object.keys(r.byStore).map(function(sid){ return escapeHtml(_owStoreName(sid)) + ' ' + r.byStore[sid] + 'h'; }).join(' + ') : '')
+        + (r.grade ? '' : '　※等級が判定できないため枠を適用していません')
+        + '</div></div>';
+    });
+    h += '</div>';
+  }
+
+  /* Grade別の平均 */
+  var gRows = OW_GRADES.filter(function(g){ return ow.byGrade[g] && ow.byGrade[g].weeks>0; });
+  if(gRows.length){
+    h += '<table class="inv-table" style="width:100%;font-size:11.5px;margin-top:8px"><thead><tr>'
+      + '<th>Grade</th><th>枠</th><th>人数</th><th>平均/週</th><th>超過</th><th>不足</th></tr></thead><tbody>';
+    gRows.forEach(function(g){
+      var a = ow.byGrade[g], L = lim[g]||{};
+      var avg = a.weeks ? Math.round(a.sum/a.weeks*10)/10 : 0;
+      var range = (L.min!=null?L.min:'—') + '〜' + (L.max!=null?L.max:'—') + 'h';
+      h += '<tr><td><b>' + g + '</b></td><td style="color:var(--muted)">' + range + '</td>'
+        + '<td>' + Object.keys(a.people).length + '</td>'
+        + '<td>' + avg + 'h</td>'
+        + '<td' + (a.over?' style="color:var(--red);font-weight:700"':'') + '>' + (a.over||'—') + '</td>'
+        + '<td' + (a.under?' style="color:var(--yellow);font-weight:700"':'') + '>' + (a.under||'—') + '</td></tr>';
+    });
+    h += '</tbody></table>';
+  }
+  h += '<div style="font-size:10.5px;color:var(--muted);margin-top:7px"><i class="ti ti-info-circle"></i> '
+    + '判定は週(日〜土)の合算。月をまたぐ週も1週として数えます。複数店で働く人は全店の合計で判定します。'
+    + '進行中の週は「超過」だけ先に出し、「不足」は週が終わってから判定します。</div>';
+  return h + '</div>';
+}
+function openOwLimitsModal(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('枠の設定は GM・CEO のみです','warning'); return; }
+  var lim = getOwLimits();
+  var rows = OW_GRADES.map(function(g){
+    var L = lim[g]||{};
+    return '<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid var(--border)">'
+      + '<b style="width:34px;font-size:12px">' + g + '</b>'
+      + '<input class="form-input" id="ow-min-' + g + '" type="number" min="0" step="0.5" placeholder="下限なし" value="' + (L.min!=null?L.min:'') + '" style="flex:1">'
+      + '<span style="font-size:11px;color:var(--muted)">〜</span>'
+      + '<input class="form-input" id="ow-max-' + g + '" type="number" min="0" step="0.5" placeholder="上限なし" value="' + (L.max!=null?L.max:'') + '" style="flex:1">'
+      + '<span style="font-size:11px;color:var(--muted)">h/週</span></div>';
+  }).join('');
+  openModal('<div class="modal-title"><i class="ti ti-adjustments"></i> Grade別 労働時間の枠 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">週(日〜土)あたりの時間です。空欄はその側を見ません。'
+    + '上限を超えた人は勤怠明細とエラーセンターに出ます。</div>'
+    + rows
+    + '<div style="font-size:10.5px;color:var(--muted);margin-top:7px">既定：G1 〜40h／G2 30〜40h／G3 〜40h。G4以上は月給制が基本のため未設定です。</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    + '<button class="btn btn-primary" onclick="saveOwLimits()"><i class="ti ti-device-floppy"></i> 保存</button></div>');
+}
+function saveOwLimits(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('枠の設定は GM・CEO のみです','warning'); return; }
+  var m = {}, bad = [];
+  OW_GRADES.forEach(function(g){
+    var mnEl=document.getElementById('ow-min-'+g), mxEl=document.getElementById('ow-max-'+g);
+    var mn = mnEl && mnEl.value!=='' ? Number(mnEl.value) : null;
+    var mx = mxEl && mxEl.value!=='' ? Number(mxEl.value) : null;
+    if(mn!=null && !(mn>=0)) { bad.push(g+' の下限'); mn=null; }
+    if(mx!=null && !(mx>=0)) { bad.push(g+' の上限'); mx=null; }
+    if(mn!=null && mx!=null && mn>mx) bad.push(g+'（下限が上限を超えています）');
+    m[g] = { min:mn, max:mx };
+  });
+  if(bad.length){ alert('入力を確認してください：\n・' + bad.join('\n・')); return; }
+  if(setOwLimits(m)===false){ showToast('保存できませんでした','danger'); return; }
+  closeModalDirect(); showToast('枠を保存しました','success'); renderPage('labor');
+}
+/* — オーバーワーク（直近4週・全店） — */
+function ecDetOverwork(){
+  var issues=[];
+  try{
+    var lim = getOwLimits();
+    var watching = OW_GRADES.some(function(g){ return lim[g] && lim[g].max!=null; });
+    if(!watching) return issues;
+    owRecentSundays(4).forEach(function(sun){
+      var rg = laborWeekRange(sun);
+      if(typeof EC_MIN_DATE!=='undefined' && rg.to < EC_MIN_DATE) return;
+      owScanWeek(sun, null).forEach(function(r){
+        if(r.over<=0) return;
+        var stores = Object.keys(r.byStore);
+        var stName = stores.map(_owStoreName).join('・');
+        /* 題名に実績時間を入れない：進行中の週で時間が伸びるたびに別件として溜まるのを防ぐ */
+        issues.push({
+          sev: (r.over>=8 ? 'high' : 'mid'),
+          cat: '勤怠',
+          title: r.name + '：' + stName + ' ' + rg.label + ' 上限' + r.max + 'h超過（' + (r.grade||'等級未設定') + '）',
+          detail: '週(日〜土)の労働時間が ' + r.total + 'h で、上限を ' + r.over + 'h 超えています。'
+                + (stores.length>1 ? '（' + stores.map(function(sid){ return _owStoreName(sid)+' '+r.byStore[sid]+'h'; }).join(' + ') + ' の合算）' : '')
+                + (r.weekDone ? '' : ' ※この週はまだ進行中です。'),
+          fix: { label:'勤怠明細', action:"go('labor')" }
+        });
+      });
+    });
+  }catch(e){}
+  return issues;
+}
 function renderLaborDetail(storeId, store) {
   var canWage = canViewIndividualWage();
   var ym = ymOf(attMonthRef());
@@ -21357,6 +21623,7 @@ function renderLaborDetail(storeId, store) {
   var agg = _core.byName;
   var staff = staffForStore(storeId);
   var staffNames = staff.map(function(s){return s.name;});
+  var _ow = owForPeriod(storeId, weeks, selWeek);   /* v793: Grade別の労働時間（週判定） */
 
   var html = `<div class="card"><div class="card-title"><i class="ti ti-clock-hour-8"></i>勤怠明細（通常 / OT）
     <span style="margin-left:auto;font-size:11px;color:var(--muted)">${canWage?'時給表示中':'時給は非開示'}</span></div>`;
@@ -21378,6 +21645,8 @@ function renderLaborDetail(storeId, store) {
     <div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 表示: ${periodLabel}${_core.cutoff?'（本日分は明日反映）':''}。OTは日曜起算の週ごとに40h超×1.5で自動算出（月跨ぎ週はこの月の分のみ）。更新は右上の「最新に更新」から。</div>
   </div>`;
 
+  html += renderLaborOverwork(storeId, _ow, periodLabel);   /* v793 */
+
   var totalCost=0, totalReg=0, totalOt=0, shownCount=0;
   var _tbody='';
   // マスター在籍スタッフ
@@ -21388,7 +21657,7 @@ function renderLaborDetail(storeId, store) {
     var calc = laborForEmployee(e.name, {regular:a.reg, ot:a.ot});
     totalCost+=calc.total; totalReg+=calc.reg; totalOt+=calc.ot; shownCount++;
     _tbody += `<tr>
-      <td>${escapeHtml(e.name)}<div style="font-size:9px;color:var(--muted)">${(ROLE_CONFIG[e.role]||{}).label||''}</div></td>
+      <td>${escapeHtml(e.name)}${owRowBadge(_ow.byName[e.name])}<div style="font-size:9px;color:var(--muted)">${escapeHtml(owGradeOfName(e.name)||(ROLE_CONFIG[e.role]||{}).label||'')}</div></td>
       <td>${calc.reg>0?calc.reg+'h':'—'}</td>
       <td>${calc.ot>0?`<span class="tag tag-yellow" style="font-size:9px">${calc.ot}h</span>`:'—'}</td>
       ${canWage?`<td style="font-weight:600">${fmtUSD2(calc.total)}<div style="font-size:9px;color:var(--muted)">通${fmtUSD2(calc.regPay)}+OT${fmtUSD2(calc.otPay)}</div></td>`:''}
@@ -21405,7 +21674,7 @@ function renderLaborDetail(storeId, store) {
     var a = agg[e.name]||{reg:0,ot:0};
     totalCost += _amt; totalReg += (a.reg||0); totalOt += (a.ot||0); shownCount++;
     _tbody += `<tr>
-      <td>${escapeHtml(e.name)} <span class="tag tag-gray" style="font-size:9px">月給</span><div style="font-size:9px;color:var(--muted)">${(ROLE_CONFIG[e.role]||{}).label||''}</div></td>
+      <td>${escapeHtml(e.name)} <span class="tag tag-gray" style="font-size:9px">月給</span>${owRowBadge(_ow.byName[e.name])}<div style="font-size:9px;color:var(--muted)">${escapeHtml(owGradeOfName(e.name)||(ROLE_CONFIG[e.role]||{}).label||'')}</div></td>
       <td>${a.reg>0?a.reg+'h':'<span style="color:var(--muted)">—</span>'}</td>
       <td>${a.ot>0?`<span class="tag tag-yellow" style="font-size:9px">${a.ot}h</span>`:'—'}</td>
       ${canWage?`<td style="font-weight:600">${fmtUSD2(_amt)}<div style="font-size:9px;color:var(--muted)">固定給 日割 ${_periodDaysM}/${_dimM}日</div></td>`:''}
@@ -21581,7 +21850,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '792';
+const APP_VERSION = '793';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -31912,7 +32181,7 @@ function ecDetInventory(){
   return issues;
 }
 
-var EC_DETECTORS=[ecDetCashTip, ecDetClock, ecDetEmpMaster, ecDetOnboard, ecDetApproval, ecDetClose, ecDetInventory];
+var EC_DETECTORS=[ecDetCashTip, ecDetClock, ecDetOverwork, ecDetEmpMaster, ecDetOnboard, ecDetApproval, ecDetClose, ecDetInventory];   /* v793: オーバーワーク */
 function ecCollect(){
   var all=[];
   EC_DETECTORS.forEach(function(fn){ try{ var r=fn(); if(r&&r.length) all=all.concat(r); }catch(e){ /* detector失敗は無視 */ } });
