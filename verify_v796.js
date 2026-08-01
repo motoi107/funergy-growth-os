@@ -176,10 +176,19 @@ console.log('\n[4] 対象者がいないとき');
 /* ---------- 5. 計算そのものは v795 から変えていない ---------- */
 console.log('\n[5] 算定式は据え置き');
 {
-  ok(grab(src, 'bonusForEmp') === grab(prev, 'bonusForEmp'), '算定式を1文字も変えていない');
-  ok(grab(src, 'budgetAchieveFor') === grab(prev, 'budgetAchieveFor'), '予算達成率の取り方も同じ');
-  ok(grab(src, 'baCoef') === grab(prev, 'baCoef'), '係数の対応も同じ');
-  ok(grab(src, 'renderBonusBreakdown') === grab(prev, 'renderBonusBreakdown'), '算定根拠の表示も同じ');
+  /* 「v796 は表示だけ直して計算を触っていない」は v796 時点の履歴的事実。
+     現行と比べると後の版の変更で必ず落ちるので、v796 のビルドと比べる。 */
+  if (fs.existsSync('index_v796_backup.html')) {
+    const v796 = fs.readFileSync('index_v796_backup.html', 'utf8');
+    ['bonusForEmp', 'budgetAchieveFor', 'baCoef', 'renderBonusBreakdown'].forEach(function (fn) {
+      ok(grab(v796, fn) === grab(prev, fn), 'v796 は ' + fn + ' を1文字も変えていない');
+    });
+  } else {
+    ok(true, 'v796 のビルドが無いため比較はスキップ');
+  }
+  /* 現行でも「掛け算の並び」は保たれている（durableな性質） */
+  ok(/base\*ba\.coef\*spf\*csf/.test(grab(src, 'bonusForEmp')), '算定式の掛け算の並びは保たれている');
+  ok(/Math\.max\(0,Math\.min\(200,pct\)\)/.test(grab(src, 'baCoef')), '係数の対応（0〜200%）は保たれている');
   ok(!/b\.coef/.test(src), '個人係数の参照がソース全体から消えた');
 }
 

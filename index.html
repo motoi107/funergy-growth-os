@@ -4251,6 +4251,8 @@ var _SPLIT_KEYS = {
   expense_requests: {type:'arr', by:function(r){return r&&r.employee;}},
   /* v767: Corporate Chef 月間行動計画。対象月ごとに行を分けるので、
      今月を編集しても先月の行に一切触らない（予算で起きた月またぎの事故を防ぐ）。 */
+  /* v797: 査定は四半期ごとに独立した行へ。Q2の編集がQ3を消さないようにする。 */
+  bonus_q:          {type:'obj'},
   cc_plans:         {type:'obj'},
   hq_goals:         {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},
   cc_actions:       {type:'arr', by:function(r){return r&&r.ym;}, readFilter:function(r){return !(r&&r._deleted);}},
@@ -6246,6 +6248,13 @@ async function pushBudgetsNow(){
   diagBudgets();
 }
 var OP_MERGE = {
+  /* v798: 査定まわり。ここが無いと部分データを持つ端末の保存が
+     クラウドを丸ごと上書きし、別の人が入れた四半期・別の従業員の
+     カルテが消える。査定は手入力で再生できないため、必ず件ごとに合流する。 */
+  bonus_q:            { merge: mergeMapByTime, covers: _coversMapByTime },
+  growth_karte:       { merge: mergeMapByTime, covers: _coversMapByTime },
+  q_budgets:          { merge: mergeMapByTime, covers: _coversMapByTime },
+  karte_bonus_config: { merge: mergeStamped,   covers: _coversStamped },
   /* v767: 本部目標と行動計画。id単位の和集合で、勝敗は必ず _mut（時刻）で決める。
      ここが無いと、部分データを持つ端末の保存がクラウドを丸ごと上書きする。 */
   hq_goals:      { merge: mergeCcList,    covers: _coversCcList },
@@ -12702,7 +12711,8 @@ function setQbStore(id){ _qbStore=id; renderPage('budget'); }
 function _quarterMonths(y,q){ var m0=(q-1)*3; return [0,1,2].map(function(i){ return y+'-'+String(m0+i+1).padStart(2,'0'); }); }
 function _ymToOffset(ym){ var d=(typeof bizNow==='function')?bizNow():new Date(); var cy=d.getFullYear(), cm=d.getMonth(); var pp=ym.split('-'); return ((+pp[0])*12+(+pp[1]-1))-(cy*12+cm); }
 function getQBudget(storeId,y,q){ var all=ls('q_budgets',{})||{}; return all[storeId+'_'+y+'Q'+q]||null; }
-function setQBudgetObj(storeId,y,q,obj){ var all=ls('q_budgets',{})||{}; all[storeId+'_'+y+'Q'+q]=obj; lsSet('q_budgets', all); }
+function setQBudgetObj(storeId,y,q,obj){ var all=ls('q_budgets',{})||{}; if(obj&&typeof obj==='object') obj._at=Date.now();   /* v798 */
+  all[storeId+'_'+y+'Q'+q]=obj; lsSet('q_budgets', all); }
 function quarterActuals(storeId,y,q){
   var months=_quarterMonths(y,q); var st={sales:0,guests:0,labor:0,food:0,elapsed:0,dataMonths:0,ftB:0,rpB:0};
   months.forEach(function(ym){ var off=_ymToOffset(ym); if(off>0) return; var ms=monthStats(storeId, off)||{}; st.sales+=ms.sales||0; st.guests+=ms.guests||0; st.elapsed++; if(ms.hasData)st.dataMonths++;
@@ -20582,7 +20592,8 @@ var LS_NEVER_FREE = ['spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','sp
   'inv_','inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
-  'fv_count_','fv_moves_','fv_review_','fv_config'];   /* v722: 日次食材差異(手入力・設定) */
+  'fv_count_','fv_moves_','fv_review_','fv_config',
+  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','q_budgets'];   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
 function _lsProtectedKey(k){
   var s=String(k||'');
   return LS_NEVER_FREE.some(function(p){ return s===p || s.indexOf(p)===0 || s.indexOf(p)>=0 && p.indexOf('_')>=0 && s.indexOf(p)===(s.indexOf('spl_')===0?4:0); });
@@ -21856,7 +21867,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '796';
+const APP_VERSION = '798';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -37180,7 +37191,7 @@ function kbCfg(){
 function kbSave(c){ lsSet('karte_bonus_config', c); }
 function getKarteAll(){ return ls('growth_karte',{}); }
 function getKarte(empId){ var m=getKarteAll(); return m[empId]||{}; }
-function saveKarte(empId, k){ var m=getKarteAll(); k.updatedAt=new Date().toISOString(); k.evaluator=(typeof myName==='function'?myName():(curUserName||'')); m[empId]=k; lsSet('growth_karte', m); }
+function saveKarte(empId, k){ var m=getKarteAll(); k.updatedAt=new Date().toISOString(); k._at=Date.now();   /* v798: 合流で勝敗を決めるための印 */ k.evaluator=(typeof myName==='function'?myName():(curUserName||'')); m[empId]=k; lsSet('growth_karte', m); }
 
 function karteEligibleEmps(){
   var cfg=kbCfg();
@@ -37190,7 +37201,20 @@ function karteEligibleEmps(){
   }).sort(function(a,b){ return empGradeNum(b)-empGradeNum(a) || String(a.name||'').localeCompare(String(b.name||'')); });
 }
 function csCoef(pct, cfg){ var mn=cfg.csMin, mx=cfg.csMax; var f=mn+(mx-mn)*(Math.max(0,Math.min(100,pct))/100); return Math.round(f*100)/100; }
-function storeProfitOf(cfg, sid){ var m=(cfg.storeProfit&&cfg.storeProfit[sid])||{}; var actual=Number(m.actual)||0, target=Number(m.target)||0; var pct = target>0 ? Math.round(actual/target*100) : 100; return {actual:actual, target:target, pct:pct}; }
+function storeProfitOf(cfg, sid){
+  /* v797: 四半期ごとの月別入力を先に見る。無ければ旧データ（store単位）へ落とす。
+     どちらも無い場合は 100%（係数1.00）＝中立。0%扱いにすると全員が下限まで下がる。 */
+  try{
+    var q=String((cfg&&cfg.quarter)||'').trim();
+    if(q && typeof bqProfitOf==='function'){
+      var p=bqProfitOf(q, sid);
+      if(p && p.hasData) return {actual:p.actual, target:p.target, pct:p.pct, src:'q'};
+    }
+  }catch(e){}
+  var m=(cfg.storeProfit&&cfg.storeProfit[sid])||{}; var actual=Number(m.actual)||0, target=Number(m.target)||0;
+  var pct = target>0 ? Math.round(actual/target*100) : 100;
+  return {actual:actual, target:target, pct:pct, src:(target>0?'old':'none')};
+}
 function storeScoreOf(cfg, sid){ return storeProfitOf(cfg, sid).pct; }
 function karteScopeStores(){ var all=(typeof sortByLoginOrder==='function'?sortByLoginOrder(getStoresAll()):getStoresAll()).filter(function(s){ return s && s.id!=='OFFICE' && s.active!==false; }); if(curRole==='gm'||curRole==='ceo'||curRole==='office') return all; if(curRole==='am'){ var mine=(typeof myAmStores==='function')?myAmStores():((typeof amStoresOf==='function')?amStoresOf((typeof myName==='function'?myName():curUserName)):[]); return all.filter(function(s){ return (mine||[]).indexOf(s.id)>=0; }); } var me=(typeof myName==='function')?myName():curUserName; var emp=getEmployees().find(function(e){return e.name===me;}); var sid=emp?emp.store:(curStore!=='ALL'?curStore:null); return all.filter(function(s){ return s.id===sid; }); }
 function spCoef(pct, cfg){ var mn=(cfg.spMin!=null?cfg.spMin:0.8), mx=(cfg.spMax!=null?cfg.spMax:1.2); var p=Math.max(0,Math.min(200,(pct==null?100:pct))); var f=mn+(mx-mn)*(p/200); return Math.round(f*100)/100; }
@@ -37208,6 +37232,206 @@ function spCoef(pct, cfg){ var mn=(cfg.spMin!=null?cfg.spMin:0.8), mx=(cfg.spMax
    【予算が未登録のとき】0%として扱うと全員のボーナスが自動的に下限まで
      下がってしまう。データが無い場合は係数1.00（中立）とし、
      「予算未登録のため中立」と明示する。CS未評価と同じ扱い。 */
+/* ===== v797: 四半期ごとの査定を段階で管理・保存する =====
+   【なぜ必要か】v796 まで、利益の実績は karte_bonus_config.storeProfit に
+     「店舗ごと1組」だけ持っていた。四半期を切り替えても同じ値を見にいくため、
+     Q3の利益を入れるとQ2の利益が消える。過去の四半期を開き直しても
+     当時の数字は再現できない。査定の根拠が残らない状態だった。
+     さらに karte_bonus_config は合流ルールが無く（丸ごと新しい方が勝つ）、
+     2人が別の四半期を編集すると片方が消える。
+   【この版の保存の形】四半期ごとに独立した行に分ける。
+     spl_bonus_q_<2026-Q2> ＝ その四半期の査定データ一式。
+     obj型の分割なので、Q2を編集してもQ3の行には一切触らない。
+     合流は保存者・時刻の印つき（_stDef）で、端末間で消し合わない。
+   【段階】① 予算コミット → ② 実績 → ③ 利益入力 → ④ Career Score 凍結 → ⑤ 査定確定
+     ・予算達成率は常に最新を出す（途中経過も見える）
+     ・利益は各月を手入力し、四半期合計から係数を出して確定する
+     ・Career Score は確定するまで最新を反映し、確定した時点の点数で凍結する
+     ・確定後は入力を締める（過去の査定根拠が後から動かないようにする） */
+var BQ_STAGES = [
+  {key:'budget',  label:'予算コミット', icon:'ti-flag'},
+  {key:'actual',  label:'実績',        icon:'ti-chart-line'},
+  {key:'profit',  label:'利益入力',     icon:'ti-coin'},
+  {key:'cs',      label:'Career Score', icon:'ti-star'},
+  {key:'confirm', label:'査定確定',     icon:'ti-lock-check'}
+];
+function bqAll(){ var m=ls('bonus_q', {}); return (m && typeof m==='object')?m:{}; }
+function bqGet(q){
+  var d=bqAll()[q]||{};
+  return { profit:(d.profit&&typeof d.profit==='object')?d.profit:{},
+           profitLocked:!!d.profitLocked, profitLockedAt:d.profitLockedAt||'', profitLockedBy:d.profitLockedBy||'',
+           csFreeze:(d.csFreeze&&typeof d.csFreeze==='object')?d.csFreeze:{},
+           locked:!!d.locked, lockedAt:d.lockedAt||'', lockedBy:d.lockedBy||'' };
+}
+function bqSet(q, d){
+  if(!q) return false;
+  var m=bqAll();
+  d._at=Date.now();   /* v798: 合流で勝敗を決めるための印 */
+  d._by=_bqWho();
+  m[q]=d;
+  return lsSet('bonus_q', m);
+}
+function _bqNow(){ return (typeof nowJP==='function')?nowJP():new Date().toISOString(); }
+function _bqWho(){ return (typeof myName==='function')?myName():(curUserName||''); }
+/* 対象四半期に関係する店舗（査定対象者の所属店をすべて集める） */
+function bqStores(cfg){
+  var out={}, list=[];
+  try{
+    karteEligibleEmps().forEach(function(e){
+      (karteEmpStores(cfg,e)||[]).forEach(function(sid){ if(sid && !out[sid]){ out[sid]=1; list.push(sid); } });
+    });
+  }catch(e){}
+  if(!list.length) try{ list=(karteScopeStores()||[]).map(function(s){return s.id;}); }catch(e){}
+  return list;
+}
+/* ---- 利益（各月を手入力 → 四半期合計 → 達成率 → 係数） ---- */
+function bqProfitMonths(q){
+  var qq=_bonusQParse(q); return qq ? _quarterMonths(qq.y, qq.q) : [];
+}
+function bqProfitOf(q, sid){
+  var d=bqGet(q), p=(d.profit&&d.profit[sid])||{};
+  var months=bqProfitMonths(q);
+  var actual=0, target=0, filled=0;
+  months.forEach(function(ym){
+    var r=p[ym]||{};
+    var a=Number(r.a), t=Number(r.t);
+    if(!isNaN(a)&&r.a!=='' &&r.a!=null){ actual+=a; }
+    if(!isNaN(t)&&r.t!=='' &&r.t!=null){ target+=t; }
+    if(r.a!=null && r.a!=='' ) filled++;
+  });
+  var has = target>0;
+  return { actual:actual, target:target, months:months, filled:filled,
+           pct: has?Math.round(actual/target*100):null, hasData:has,
+           byMonth:months.map(function(ym){ var r=p[ym]||{}; return {ym:ym, a:(r.a==null?'':r.a), t:(r.t==null?'':r.t)}; }) };
+}
+function bqSetProfit(q, sid, ym, field, v){
+  var d=bqGet(q);
+  if(d.locked || d.profitLocked){ showToast('この四半期の利益は確定済みです','warning'); return; }
+  d.profit[sid]=d.profit[sid]||{};
+  d.profit[sid][ym]=d.profit[sid][ym]||{};
+  var n=parseFloat(String(v).replace(/[$, ]/g,''));
+  d.profit[sid][ym][field]= (String(v).trim()==='' || isNaN(n)) ? '' : n;
+  if(bqSet(q,d)===false){ showToast('保存できませんでした','danger'); return; }
+  bqRefresh();
+}
+function bqLockProfit(q){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('確定は GM・CEO のみです','warning'); return; }
+  var cfg=kbCfg(), sids=bqStores(cfg);
+  var miss=sids.filter(function(sid){ return !bqProfitOf(q,sid).hasData; });
+  if(miss.length && !confirm('利益基準額が未入力の店舗が '+miss.length+' 件あります（'+miss.map(_owStoreName).join('・')+'）。\nその店舗は利益係数 1.00（中立）で確定されます。続けますか？')) return;
+  if(!confirm(q+' の利益を確定します。確定後は入力できなくなります。よろしいですか？')) return;
+  var d=bqGet(q); d.profitLocked=true; d.profitLockedAt=_bqNow(); d.profitLockedBy=_bqWho();
+  if(bqSet(q,d)===false){ showToast('保存できませんでした','danger'); return; }
+  showToast(q+' の利益を確定しました','success'); bqRefresh();
+}
+function bqUnlockProfit(q){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
+  var d=bqGet(q);
+  if(d.locked){ showToast('査定が確定しています。先に査定確定を解除してください','warning'); return; }
+  if(!confirm(q+' の利益の確定を解除して、入力できる状態に戻します。よろしいですか？')) return;
+  d.profitLocked=false; bqSet(q,d); showToast('解除しました','info'); bqRefresh();
+}
+/* ---- Career Score（確定するまで最新／確定でその時点を凍結） ---- */
+function bqCsFreezeOne(q, empId, silent){
+  var e=getEmployees().find(function(x){ return x.id===empId; }); if(!e) return false;
+  var sum=(typeof lssSummary==='function')?lssSummary(e.name):null;
+  if(!sum||!sum.hasData) return false;
+  var d=bqGet(q);
+  d.csFreeze[empId]={ at:_bqNow(), by:_bqWho(), totalPct:sum.totalPct, totalScore:sum.totalScore,
+    totalMax:sum.totalMax, cats:(sum.cats||[]).map(function(c){ return {key:c.key, name:c.name, score:c.score, max:c.max, pct:c.pct}; }) };
+  var okSave=bqSet(q,d)!==false;
+  if(!silent){
+    if(okSave) showToast(e.name+' の Career Score を '+q+' 時点で確定しました','success');
+    else showToast('保存できませんでした','danger');
+    bqRefresh();
+  }
+  return okSave;
+}
+function bqCsFreezeAll(q){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('確定は GM・CEO のみです','warning'); return; }
+  var emps=karteEligibleEmps();
+  var noData=emps.filter(function(e){ var s=lssSummary(e.name); return !(s&&s.hasData); });
+  if(!confirm(q+' 時点の Career Score で '+(emps.length-noData.length)+' 名を確定します。\n'
+    +(noData.length?('未評価 '+noData.length+' 名（'+noData.slice(0,5).map(function(e){return e.name;}).join('・')+(noData.length>5?' 他':'')+'）は確定できません。\n'):'')
+    +'確定後にCareer Scoreが変わっても、この四半期の査定には影響しません。よろしいですか？')) return;
+  var d=bqGet(q), n=0;
+  emps.forEach(function(e){
+    var sum=lssSummary(e.name); if(!sum||!sum.hasData) return;
+    d.csFreeze[e.id]={ at:_bqNow(), by:_bqWho(), totalPct:sum.totalPct, totalScore:sum.totalScore,
+      totalMax:sum.totalMax, cats:(sum.cats||[]).map(function(c){ return {key:c.key,name:c.name,score:c.score,max:c.max,pct:c.pct}; }) };
+    n++;
+  });
+  if(bqSet(q,d)===false){ showToast('保存できませんでした','danger'); return; }
+  showToast(n+' 名の Career Score を確定しました','success'); bqRefresh();
+}
+function bqCsUnfreeze(q, empId){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
+  var d=bqGet(q);
+  if(d.locked){ showToast('査定が確定しています。先に査定確定を解除してください','warning'); return; }
+  delete d.csFreeze[empId]; bqSet(q,d);
+  showToast('確定を解除しました（最新の評価に戻ります）','info'); bqRefresh();
+}
+/* ---- 段階の状態 ---- */
+function bqStageState(q, cfg){
+  cfg=cfg||kbCfg();
+  var qq=_bonusQParse(q), d=bqGet(q), sids=bqStores(cfg);
+  var st={};
+  /* ① 予算コミット */
+  var cm=0, tot=sids.length;
+  sids.forEach(function(sid){ try{ var b=getQBudget(sid,qq&&qq.y,qq&&qq.q); if(b&&b.status==='committed') cm++; }catch(e){} });
+  st.budget={ done:tot>0&&cm===tot, n:cm, tot:tot,
+    msg: tot? (cm+' / '+tot+' 店がコミット済み') : '対象店舗がありません' };
+  /* ② 実績（四半期の月が経過しているか） */
+  var months=qq?_quarterMonths(qq.y,qq.q):[];
+  var past=months.filter(function(ym){ return _ymToOffset(ym)<0; }).length;
+  st.actual={ done:past===3, n:past, tot:3,
+    msg: past===3?'3ヶ月とも締まっています':(past+' / 3ヶ月が経過（進行中）') };
+  /* ③ 利益入力 */
+  var withData=sids.filter(function(sid){ return bqProfitOf(q,sid).hasData; }).length;
+  st.profit={ done:d.profitLocked, n:withData, tot:sids.length, locked:d.profitLocked,
+    msg: d.profitLocked ? ('確定済み（'+escapeHtml(d.profitLockedBy||'')+' '+escapeHtml(String(d.profitLockedAt||'').slice(0,16))+'）')
+                        : (withData+' / '+sids.length+' 店が入力済み') };
+  /* ④ Career Score */
+  var emps=karteEligibleEmps();
+  var fz=emps.filter(function(e){ return !!d.csFreeze[e.id]; }).length;
+  st.cs={ done:emps.length>0&&fz===emps.length, n:fz, tot:emps.length,
+    msg: fz===emps.length&&emps.length ? '全員の評価を確定済み' : (fz+' / '+emps.length+' 名を確定済み（未確定は最新の評価を反映）') };
+  /* ⑤ 査定確定 */
+  st.confirm={ done:d.locked, locked:d.locked,
+    msg: d.locked ? ('確定済み（'+escapeHtml(d.lockedBy||'')+' '+escapeHtml(String(d.lockedAt||'').slice(0,16))+'）') : '未確定' };
+  st.ready = st.actual.done && st.profit.done && !d.locked;
+  return st;
+}
+function bqLockQuarter(q){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('確定は GM・CEO のみです','warning'); return; }
+  var cfg=kbCfg(), st=bqStageState(q,cfg), d=bqGet(q);
+  if(d.locked){ showToast('すでに確定しています','info'); return; }
+  var warn=[];
+  if(!st.actual.done) warn.push('・この四半期はまだ進行中です（'+st.actual.n+'/3ヶ月）');
+  if(!st.profit.done) warn.push('・利益が未確定です');
+  if(!st.budget.done) warn.push('・予算コミットが '+st.budget.n+'/'+st.budget.tot+' 店です');
+  if(!st.cs.done)     warn.push('・Career Score 未確定が '+(st.cs.tot-st.cs.n)+' 名います（確定時点の最新値で固定されます）');
+  if(!confirm(q+' の査定を確定します。\n'+(warn.length?(warn.join('\n')+'\n'):'')
+    +'\n確定すると利益・評価の入力が締まり、この四半期の査定根拠が固定されます。よろしいですか？')) return;
+  /* 未凍結の人は、この時点の Career Score で確定する */
+  karteEligibleEmps().forEach(function(e){
+    if(d.csFreeze[e.id]) return;
+    var sum=lssSummary(e.name); if(!sum||!sum.hasData) return;
+    d.csFreeze[e.id]={ at:_bqNow(), by:_bqWho(), totalPct:sum.totalPct, totalScore:sum.totalScore,
+      totalMax:sum.totalMax, cats:(sum.cats||[]).map(function(c){ return {key:c.key,name:c.name,score:c.score,max:c.max,pct:c.pct}; }) };
+  });
+  d.profitLocked=true; if(!d.profitLockedAt){ d.profitLockedAt=_bqNow(); d.profitLockedBy=_bqWho(); }
+  d.locked=true; d.lockedAt=_bqNow(); d.lockedBy=_bqWho();
+  if(bqSet(q,d)===false){ showToast('保存できませんでした','danger'); return; }
+  showToast(q+' の査定を確定しました','success'); bqRefresh();
+}
+function bqUnlockQuarter(q){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
+  if(!confirm(q+' の査定確定を解除します。\n利益と評価が再び編集できるようになり、査定額が変わる可能性があります。\n給与・ボーナス履歴に記録済みの金額は自動では変わりません。よろしいですか？')) return;
+  var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy='';
+  bqSet(q,d); showToast('解除しました','info'); bqRefresh();
+}
+function bqRefresh(){ if(typeof kbRefresh==='function') kbRefresh(); else if(typeof renderPage==='function') renderPage(curPage); }
 function baCoef(pct, cfg){
   var mn=(cfg&&cfg.baMin!=null?cfg.baMin:0.8), mx=(cfg&&cfg.baMax!=null?cfg.baMax:1.2);
   if(pct==null) return 1;                       /* データ無し＝中立 */
@@ -37249,7 +37473,10 @@ function budgetAchieveFor(cfg, e){
   return out;
 }
 /* Career Score のカテゴリー内訳（説明表示用） */
-function bonusCsDetail(e){
+function bonusCsDetail(e, b){
+  /* v797: 確定済みならその時点の内訳を出す（後から評価が変わっても査定は動かない） */
+  if(b && b.csFrozen && b.csCats && b.csCats.length)
+    return {hasData:true, cats:b.csCats, totalScore:b.csPct!=null?0:0, totalMax:0, totalPct:b.csPct, frozen:true, at:b.csFrozenAt};
   var sum=(typeof lssSummary==='function')?lssSummary(e&&e.name):null;
   if(!sum||!sum.hasData) return {hasData:false, cats:[], totalScore:0, totalMax:0, totalPct:0};
   return {hasData:true, cats:sum.cats||[], totalScore:sum.totalScore, totalMax:sum.totalMax, totalPct:sum.totalPct};
@@ -37268,8 +37495,101 @@ function _baStepRow(no, label, dataHtml, coefTxt, runAmt, col, warn){
     + (warn?('<div style="font-size:10.5px;color:var(--yellow);margin-top:2px"><i class="ti ti-alert-triangle"></i> '+warn+'</div>'):'')
     + '</div></div>';
 }
+/* ===== v797（画面）：四半期の進み具合と、利益の月別入力 ===== */
+function _bqDot(s){
+  var col = s.done ? 'var(--green)' : (s.n>0 ? 'var(--accent)' : 'var(--muted)');
+  var ic  = s.done ? 'ti-circle-check' : (s.n>0 ? 'ti-progress' : 'ti-circle');
+  return '<i class="ti '+ic+'" style="color:'+col+';font-size:15px"></i>';
+}
+function renderBqPipeline(q, cfg){
+  var st=bqStageState(q,cfg), d=bqGet(q);
+  var canLock=['gm','ceo'].indexOf(curRole)>=0;
+  var h='<div class="card"><div class="card-title"><i class="ti ti-route" style="color:var(--accent)"></i>'
+    + escapeHtml(q||'')+' の査定の進み具合'
+    + (d.locked?'<span class="tag tag-green" style="margin-left:6px;font-size:10px">確定済み</span>':'')
+    + '</div>';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:0">';
+  BQ_STAGES.forEach(function(sg,i){
+    var s=st[sg.key]||{};
+    h+='<div style="flex:1 1 150px;min-width:150px;display:flex;gap:7px;align-items:flex-start;padding:7px 8px;'
+      +(i?'border-left:1px solid var(--border)':'')+'">'
+      +'<div style="flex:0 0 auto;margin-top:1px">'+_bqDot(s)+'</div>'
+      +'<div style="min-width:0"><div style="font-size:11.5px;font-weight:700">'
+      +'<i class="ti '+sg.icon+'" style="font-size:11px;color:var(--muted);margin-right:3px"></i>'+sg.label+'</div>'
+      +'<div style="font-size:10px;color:var(--muted);line-height:1.5">'+(s.msg||'')+'</div></div></div>';
+  });
+  h+='</div>';
+  if(!st.actual.done && !d.locked){
+    h+='<div style="font-size:10.5px;color:var(--yellow);margin-top:6px"><i class="ti ti-alert-triangle"></i> '
+      +'この四半期は進行中です。予算達成率は経過ぶんの予算と比べた「途中経過」を表示しています。確定は四半期終了後に行ってください。</div>';
+  }
+  if(canLock){
+    h+='<div class="btn-row" style="margin-top:8px">';
+    if(d.locked){
+      h+='<button class="btn btn-secondary btn-sm" onclick="bqUnlockQuarter(\''+escapeHtml(q)+'\')"><i class="ti ti-lock-open"></i> 確定を解除</button>';
+    } else {
+      h+='<button class="btn btn-secondary btn-sm" onclick="bqCsFreezeAll(\''+escapeHtml(q)+'\')"><i class="ti ti-star"></i> Career Score を今の評価で確定</button>';
+      h+='<button class="btn '+(st.ready?'btn-primary':'btn-secondary')+' btn-sm" onclick="bqLockQuarter(\''+escapeHtml(q)+'\')"><i class="ti ti-lock-check"></i> この四半期の査定を確定</button>';
+    }
+    h+='</div>';
+  }
+  return h+'</div>';
+}
+function renderBqProfit(q, cfg){
+  var d=bqGet(q), sids=bqStores(cfg), months=bqProfitMonths(q);
+  var locked = d.locked || d.profitLocked;
+  var canEdit = ['gm','ceo','office'].indexOf(curRole)>=0 && !locked;
+  var h='<div class="card"><div class="card-title"><i class="ti ti-coin" style="color:var(--green)"></i>利益の入力（各月・店舗別）'
+    + (locked?'<span class="tag tag-green" style="margin-left:6px;font-size:10px">確定済み</span>':'')
+    + '</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">'
+    +'各月の利益（実績と基準額）を手入力します。四半期の合計から達成率を出し、店舗利益係数に反映します。'
+    +(locked?'':'　入力するとその場で保存されます。')+'</div>';
+  if(!sids.length){ return h+'<div style="font-size:12px;color:var(--muted)">対象店舗がありません。</div></div>'; }
+  h+='<div style="overflow:auto"><table style="border-collapse:collapse;font-size:11.5px;min-width:520px">';
+  h+='<thead><tr style="background:var(--surface2);text-align:left">'
+    +'<th style="padding:6px 8px;font-size:10px;color:var(--muted);white-space:nowrap">店舗</th>'
+    +months.map(function(ym){ return '<th style="padding:6px 8px;font-size:10px;color:var(--muted);white-space:nowrap">'+escapeHtml(ym.slice(5))+'月</th>'; }).join('')
+    +'<th style="padding:6px 8px;font-size:10px;color:var(--muted);white-space:nowrap">Q合計</th>'
+    +'<th style="padding:6px 8px;font-size:10px;color:var(--muted);white-space:nowrap">達成率</th>'
+    +'<th style="padding:6px 8px;font-size:10px;color:var(--muted);white-space:nowrap">係数</th></tr></thead><tbody>';
+  sids.forEach(function(sid){
+    var p=bqProfitOf(q,sid);
+    var cf=p.hasData?spCoef(p.pct,cfg):1;
+    h+='<tr style="border-top:1px solid var(--border)">'
+      +'<td style="padding:5px 8px;font-weight:700;white-space:nowrap">'+escapeHtml(_owStoreName(sid))+'</td>';
+    p.byMonth.forEach(function(m){
+      if(canEdit){
+        h+='<td style="padding:3px 4px">'
+          +'<input class="form-input" style="width:78px;text-align:right;font-size:11px;padding:3px 5px" placeholder="実績" value="'+escapeHtml(String(m.a))+'" onchange="bqSetProfit(\''+escapeHtml(q)+'\',\''+escapeHtml(sid)+'\',\''+escapeHtml(m.ym)+'\',\'a\',this.value)">'
+          +'<input class="form-input" style="width:78px;text-align:right;font-size:11px;padding:3px 5px;margin-top:2px;color:var(--muted)" placeholder="基準額" value="'+escapeHtml(String(m.t))+'" onchange="bqSetProfit(\''+escapeHtml(q)+'\',\''+escapeHtml(sid)+'\',\''+escapeHtml(m.ym)+'\',\'t\',this.value)">'
+          +'</td>';
+      } else {
+        h+='<td style="padding:5px 8px;text-align:right;white-space:nowrap">'
+          +(m.a===''?'<span style="color:var(--muted)">—</span>':_money(m.a))
+          +'<div style="font-size:9.5px;color:var(--muted)">'+(m.t===''?'—':_money(m.t))+'</div></td>';
+      }
+    });
+    h+='<td style="padding:5px 8px;text-align:right;white-space:nowrap"><b>'+_money(p.actual)+'</b>'
+      +'<div style="font-size:9.5px;color:var(--muted)">'+_money(p.target)+'</div></td>'
+      +'<td style="padding:5px 8px;text-align:right;font-weight:700;color:'+(p.pct==null?'var(--muted)':(p.pct>=100?'var(--green)':'var(--red)'))+'">'
+      +(p.pct==null?'—':(p.pct+'%'))+'</td>'
+      +'<td style="padding:5px 8px;text-align:right;font-weight:800">×'+cf.toFixed(2)+(p.hasData?'':'<div style="font-size:9px;color:var(--muted);font-weight:400">基準額未入力</div>')+'</td>'
+      +'</tr>';
+  });
+  h+='</tbody></table></div>';
+  if(['gm','ceo'].indexOf(curRole)>=0){
+    h+='<div class="btn-row" style="margin-top:8px">';
+    if(locked && !d.locked) h+='<button class="btn btn-secondary btn-sm" onclick="bqUnlockProfit(\''+escapeHtml(q)+'\')"><i class="ti ti-lock-open"></i> 利益の確定を解除</button>';
+    else if(!locked) h+='<button class="btn btn-primary btn-sm" onclick="bqLockProfit(\''+escapeHtml(q)+'\')"><i class="ti ti-check"></i> 利益を確定</button>';
+    h+='</div>';
+  }
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px">'
+    +'上段＝利益実績、下段＝利益基準額。基準額が未入力の店舗は係数1.00（中立）として扱います。</div>';
+  return h+'</div>';
+}
 function renderBonusBreakdown(e, b, cfg){
-  var ba=b.ba||{}, cs=bonusCsDetail(e);
+  var ba=b.ba||{}, cs=bonusCsDetail(e,b);
   var h='<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-top:8px">';
   h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:2px">'
     +'<i class="ti ti-math-symbols"></i> どう計算したか</div>';
@@ -37346,7 +37666,10 @@ function renderBonusBreakdown(e, b, cfg){
 }
 function bonusForEmp(e, cfg){
   var g=empGrade(e); var base=(cfg.gradeBase[g]!=null?cfg.gradeBase[g]:0);
-  var sum=(typeof lssSummary==='function')?lssSummary(e.name):null;
+  /* v797: この四半期で確定済みならその時点の点数を使う。未確定なら常に最新を反映する。 */
+  var _fz=null; try{ var _q=String((cfg&&cfg.quarter)||'').trim(); if(_q && typeof bqGet==='function') _fz=bqGet(_q).csFreeze[e.id]||null; }catch(err){}
+  var sum=_fz ? {hasData:true, totalPct:_fz.totalPct, totalScore:_fz.totalScore, totalMax:_fz.totalMax, cats:_fz.cats||[]}
+              : ((typeof lssSummary==='function')?lssSummary(e.name):null);
   /* v795: CS未評価は0%扱いだと下限まで下がるため中立(1.00)にする */
   var pct=(sum&&sum.hasData)?sum.totalPct:0; var csf=(sum&&sum.hasData)?csCoef(pct,cfg):1;
   var _psids=(typeof karteEmpStores==='function')?karteEmpStores(cfg,e):(e.store?[e.store]:[]);
@@ -37356,7 +37679,8 @@ function bonusForEmp(e, cfg){
   return {grade:g, base:base, csPct:pct, csCoef:csf, spPct:spPct, spCoef:spf,
     baPct:ba.pct, baCoef:ba.coef, ba:ba,
     profitStore:(_psids[0]||e.store), profitStores:_psids,
-    amount:Math.round(base*ba.coef*spf*csf), hasCS:!!(sum&&sum.hasData)};
+    amount:Math.round(base*ba.coef*spf*csf), hasCS:!!(sum&&sum.hasData),
+    csFrozen:!!_fz, csFrozenAt:(_fz&&_fz.at)||'', csCats:(sum&&sum.cats)||[]};
 }
 function bonusPool(cfg){ return Math.round((cfg.profit||0)*(cfg.poolRate||0)); }
 function bonusTotals(cfg){
@@ -37447,7 +37771,9 @@ function renderKarteConfig(cfg, tot){
   var ks=(typeof karteScopeStores==='function')?karteScopeStores():[];
   if(!ks.length){ h+='<div style="font-size:11px;color:var(--muted)">対象店舗なし</div>'; }
   else {
-    h+='<div style="overflow:auto"><table style="border-collapse:collapse;font-size:12px;min-width:520px"><thead><tr style="text-align:left;color:var(--muted);font-size:10.5px"><th style="padding:4px 8px">店舗</th><th style="padding:4px 8px">利益実績（$）</th><th style="padding:4px 8px">利益基準額（$）</th><th style="padding:4px 8px;text-align:right">達成率</th><th style="padding:4px 8px;text-align:right">係数</th></tr></thead><tbody>';
+    h+=renderBqPipeline(cfg.quarter, cfg);   /* v797 */
+  h+=renderBqProfit(cfg.quarter, cfg);     /* v797 */
+  h+='<div style="overflow:auto"><table style="border-collapse:collapse;font-size:12px;min-width:520px"><thead><tr style="text-align:left;color:var(--muted);font-size:10.5px"><th style="padding:4px 8px">店舗</th><th style="padding:4px 8px">利益実績（$）</th><th style="padding:4px 8px">利益基準額（$）</th><th style="padding:4px 8px;text-align:right">達成率</th><th style="padding:4px 8px;text-align:right">係数</th></tr></thead><tbody>';
     ks.forEach(function(s){ var sp=storeProfitOf(cfg,s.id); var cf=spCoef(sp.pct,cfg); h+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 8px;font-weight:700;white-space:nowrap">'+escapeHtml(s.name)+'</td><td style="padding:5px 8px"><input class="form-input" style="width:118px;text-align:right" value="'+(sp.actual||0)+'" onchange="bonusSetStoreProfit(\''+s.id+'\',\'actual\',this.value)"></td><td style="padding:5px 8px"><input class="form-input" style="width:118px;text-align:right" value="'+(sp.target||0)+'" onchange="bonusSetStoreProfit(\''+s.id+'\',\'target\',this.value)"></td><td style="padding:5px 8px;text-align:right;font-weight:700;color:'+(sp.pct>=100?'var(--green)':'var(--accent2)')+'">'+sp.pct+'%</td><td style="padding:5px 8px;text-align:right;font-weight:800;color:var(--accent)">×'+cf.toFixed(2)+'</td></tr>'; });
     h+='</tbody></table></div>';
   }
