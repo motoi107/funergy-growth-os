@@ -21867,7 +21867,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '798';
+const APP_VERSION = '800';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -37613,7 +37613,8 @@ function renderBonusBreakdown(e, b, cfg){
     baData='売上実績 <b>'+_money(ba.actual)+'</b> ÷ '+lbl+' <b>'+_money(ba.basis==='pace'?ba.paceTarget:ba.target)+'</b>'
          + ' ＝ <b style="color:var(--tm)">'+ba.pct+'%</b>'
          + (ba.stores.length?('<br>対象店：'+escapeHtml(ba.stores.map(_owStoreName).join('・'))
-             +(ba.stores.length>1?'（売上を合算して算出）':'')):'');
+             +(ba.stores.length>1?'（売上を合算して算出）':'')
+             +((typeof karteEmpStoreBasis==='function')?('　<span style="color:var(--muted)">'+escapeHtml(karteEmpStoreBasis(cfg,e).label)+'</span>'):'')):'');
     if(ba.inProgress) baWarn='この四半期はまだ進行中です。経過日数ぶんの予算と比べています。確定は四半期終了後に行ってください。';
     else if(ba.unregMonths.length) baWarn='予算が未登録の月があります（'+escapeHtml(ba.unregMonths.filter(Boolean).join('・'))+'）。その月は予算0として計算されています。';
   }
@@ -37783,12 +37784,67 @@ function renderKarteConfig(cfg, tot){
 }
 
 /* 個人ごとの利益係数 適用店舗（複数選択可・手動割当・既定は配属店 / v548） */
+/* v799: 査定の対象店舗を役職から決める。
+   v798 までは配属店（e.store）1つだけを見ていたため、
+   ・GM は自分の配属店1店の予算・利益だけで査定されていた（全店の責任を負うのに）
+   ・AM は管轄3店を見ているのに、配属店1店だけで査定されていた
+   手動指定（cfg.empStore）があればそれを最優先する。自動判定より人の指定が上。 */
+function karteEmpStoresAuto(e){
+  if(!e) return [];
+  var g=(typeof empGrade==='function')?empGrade(e):'';
+  var role=String(e.role||'');
+  /* 休止中の店・OFFICE は査定の対象外。GM と AM で判定を変えないよう1か所にまとめる
+     （AM 側だけ amStoresOf をそのまま使うと、閉めた店の予算未達を背負うことになる） */
+  var liveIds=function(){
+    try{ return (getStoresAll()||[]).filter(function(s){ return s && s.id!=='OFFICE' && s.active!==false; }).map(function(s){ return s.id; }); }
+    catch(err){ return []; }
+  };
+  var all=liveIds;
+  var onlyLive=function(ids){ var live=liveIds(); return (ids||[]).filter(function(x){ return live.indexOf(x)>=0; }); };
+  /* GM・CEO は全店の合算 */
+  if(role==='gm'||role==='ceo'||g==='G6') return all();
+  /* v800: 管轄の割り当て（店舗マスターの am / chef）があればそれが対象。
+     役職で分岐せず割り当てを見るので、AM でも Head Chef でも同じ扱いになる。 */
+  var assigned=onlyLive(scAssignedStores(e&&e.name));
+  if(assigned.length) return assigned;
+  return e.store ? [e.store] : [];   /* 未割当なら配属店に落とす（空にすると係数が中立になり査定が甘くなる） */
+}
+/* 店舗マスターで本人が担当になっている店（AM・Head Chef の両方を見る） */
+function scAssignedStores(name){
+  if(!name) return [];
+  var out=[], seen={};
+  try{
+    (getStoresAll()||[]).forEach(function(s){
+      if(!s || s.id==='OFFICE') return;
+      if((s.am===name || s.chef===name) && !seen[s.id]){ seen[s.id]=1; out.push(s.id); }
+    });
+  }catch(e){}
+  return out;
+}
 function karteEmpStores(cfg, e){
   if(!e) return [];
   var v=(cfg && cfg.empStore) ? cfg.empStore[e.id] : null;
   if(Array.isArray(v)){ var a=v.filter(Boolean); if(a.length) return a; }
   else if(typeof v==='string' && v) return [v];
-  return e.store ? [e.store] : [];
+  return karteEmpStoresAuto(e);
+}
+/* その人の対象店舗が、手動指定か自動判定か・なぜその範囲かを説明する */
+function karteEmpStoreBasis(cfg, e){
+  var v=(cfg && cfg.empStore) ? cfg.empStore[e.id] : null;
+  var manual=Array.isArray(v)?v.filter(Boolean).length>0:(typeof v==='string'&&!!v);
+  if(manual) return {kind:'manual', label:'手動指定'};
+  var g=(typeof empGrade==='function')?empGrade(e):'';
+  var role=String((e&&e.role)||'');
+  if(role==='gm'||role==='ceo'||g==='G6') return {kind:'all', label:'全店合算（GM）'};
+  var assigned=[]; try{ assigned=scAssignedStores(e&&e.name); }catch(err){}
+  if(assigned.length){
+    var mine=[]; try{ mine=karteEmpStoresAuto(e); }catch(err){}
+    var isChef=false;
+    try{ isChef=(getStoresAll()||[]).some(function(s){ return s && s.chef===e.name; }); }catch(err){}
+    return {kind:isChef?'chef':'am', label:'管轄'+mine.length+'店（'+(isChef?'Chef':'AM')+'）'};
+  }
+  if(role==='am'||role==='chef'||g==='G5') return {kind:'none', label:'管轄未設定→配属店'};
+  return {kind:'own', label:'配属店'};
 }
 /* 後方互換（先頭店を返す） */
 function karteEmpStore(cfg, e){ var a=karteEmpStores(cfg,e); return a.length?a[0]:(e?e.store:null); }
@@ -37818,7 +37874,9 @@ function _karteStoreSel(cfg,e,b){
   var scope=(typeof karteScopeStores==='function'?karteScopeStores():[]);
   var nm=sids.map(function(sid){ var s=scope.find(function(x){return x.id===sid;}) || ((typeof STORES!=='undefined')?STORES.find(function(x){return x.id===sid;}):null); return s?s.name:sid; });
   var over=!!(cfg.empStore&&cfg.empStore[e.id]);
+  var _bs=(typeof karteEmpStoreBasis==='function')?karteEmpStoreBasis(cfg,e):{label:''};   /* v799 */
   var label=(nm.length===0)?'未設定':(nm.length===1?nm[0]:(nm[0]+' +'+(nm.length-1)));
+  label+='<div style="font-size:9px;color:var(--muted);font-weight:400">'+escapeHtml(_bs.label||'')+'</div>';
   return '<button onclick="event.stopPropagation();openKarteStoreModal(\''+e.id+'\')" title="'+escapeHtml(nm.join(' / '))+'" style="font-size:11px;max-width:140px;padding:3px 8px;border:1px solid '+(over?'var(--accent)':'var(--border)')+';border-radius:6px;background:var(--surface);color:var(--tm);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-flex;align-items:center;gap:4px"><i class="ti ti-building-store" style="font-size:11px;flex-shrink:0"></i><span style="overflow:hidden;text-overflow:ellipsis">'+escapeHtml(label)+'</span></button>';
 }
 
@@ -50870,12 +50928,139 @@ function saveTotoyaKpiCfg(){
   renderPage('kpi_master');
 }
 
+/* ===== v800: 管轄店舗の割り当て画面 =====
+   【なぜ店舗マスターを正にするか】管轄は既に店舗マスターの am フィールドが正で、
+     権限の見える範囲（myAmStores / amStoresOf）もそこを見ている。
+     従業員マスターに別の管轄リストを作ると正が2つになり、
+     「査定では対象なのに画面では見えない店」のような食い違いが生まれる。
+     また 1店舗=1AM という決まりは、店舗側に1つ持つ形なら自然に守られる。
+     従業員側に配列で持つと、同じ店を2人が管轄に入れても気づけない。
+   【ただし入力は人ベース】1人の管轄を決めるのに8店舗を開いて回るのは現実的でない。
+     この画面は「人 × 店舗」の表で操作し、書き込み先は店舗マスターの
+     am / chef フィールドにする。正は1つのまま、操作だけ人ベースにする。
+   【Head Chef】店舗マスターに chef を追加。am と同じ扱い（1店舗=1人）。 */
+function scStoreList(){
+  try{ return (getStoresAll()||[]).filter(function(s){ return s && s.id!=='OFFICE'; }); }catch(e){ return []; }
+}
+/* 割り当ての対象になる人（AM と Head Chef 系） */
+function scPeople(){
+  var out=[];
+  try{
+    (getEmployees()||[]).forEach(function(e){
+      if(!e||!e.name) return;
+      if(e.status==='退職'||e.retired||e._deleted) return;
+      var role=String(e.role||''), title=String(e.title||'');
+      var isAm   = (role==='am');
+      var isChef = (role==='chef') || /Chef/i.test(title);
+      if(isAm||isChef) out.push({id:e.id, name:e.name, kind:(isAm?'am':'chef'), title:title, role:role});
+    });
+  }catch(e){}
+  /* 店舗に名前が入っているのに従業員マスターに居ない人も出す（取りこぼさない） */
+  var seen={}; out.forEach(function(p){ seen[p.name]=1; });
+  scStoreList().forEach(function(s){
+    ['am','chef'].forEach(function(f){
+      var n=s[f]; if(n && !seen[n]){ seen[n]=1; out.push({id:'_'+n, name:n, kind:f, title:'', role:'', orphan:true}); }
+    });
+  });
+  return out.sort(function(a,b){ return (a.kind===b.kind?0:(a.kind==='am'?-1:1)) || String(a.name).localeCompare(String(b.name)); });
+}
+function scStoresOfPerson(name, field){
+  return scStoreList().filter(function(s){ return s[field]===name; }).map(function(s){ return s.id; });
+}
+/* 割り当ての付け外し。1店舗=1人なので、付けると前の担当は自動的に外れる */
+function scToggle(name, field, sid){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('管轄の割り当ては GM・CEO のみです','warning'); return; }
+  if(field!=='am' && field!=='chef'){ return; }
+  var all=getStoresAll()||[];
+  var st=all.find(function(s){ return s.id===sid; }); if(!st) return;
+  var prev=st[field]||'';
+  if(prev===name){ st[field]=''; }
+  else { st[field]=name; }
+  if(typeof setStoresAll!=='function'){ showToast('保存先が見つかりません','danger'); return; }
+  setStoresAll(all);
+  if(prev && prev!==name) showToast(_owStoreName(sid)+' の担当を '+prev+' から '+name+' に変更しました','info');
+  scRefresh();
+}
+function scRefresh(){ if(typeof renderPage==='function') renderPage(curPage); }
+function scFieldLabel(f){ return f==='am' ? 'エリアマネージャー' : 'Head Chef'; }
+/* 割り当ての穴（誰も担当していない店・2重管轄）を出す */
+function scIssues(){
+  var out=[];
+  scStoreList().forEach(function(s){
+    if(s.active===false) return;
+    if(!s.am)   out.push({sid:s.id, msg:'AM が未割当'});
+    if(!s.chef) out.push({sid:s.id, msg:'Head Chef が未割当'});
+  });
+  return out;
+}
+function openScopeAssign(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('管轄の割り当ては GM・CEO のみです','warning'); return; }
+  var stores=scStoreList(), people=scPeople(), issues=scIssues();
+  var h='<div class="modal-title"><i class="ti ti-sitemap"></i> 管轄店舗の割り当て <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  h+='<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">'
+    +'マスを押すと担当を付け外しします。<b>1店舗の担当は1人</b>なので、付けると前の担当は自動的に外れます。'
+    +'ここで決めた範囲が、査定の予算達成率・店舗利益係数の対象店になります。</div>';
+  if(issues.length){
+    h+='<div class="alert alert-warning" style="margin:0 0 8px;padding:8px 10px"><i class="ti ti-alert-triangle"></i><div style="font-size:11px;line-height:1.6">'
+      +'担当が決まっていない枠があります：'
+      +issues.slice(0,8).map(function(x){ return escapeHtml(_owStoreName(x.sid))+'（'+x.msg+'）'; }).join('　')
+      +(issues.length>8?(' 他'+(issues.length-8)+'件'):'')
+      +'<div style="margin-top:3px;color:var(--muted)">未割当のままだと、その人は配属店だけで査定されます。</div></div></div>';
+  }
+  ['am','chef'].forEach(function(field){
+    var list=people.filter(function(p){ return p.kind===field; });
+    h+='<div style="font-size:12px;font-weight:700;margin:10px 0 4px">'
+      +'<i class="ti '+(field==='am'?'ti-user-star':'ti-tools-kitchen-2')+'" style="color:var(--accent)"></i> '+scFieldLabel(field)+'</div>';
+    if(!list.length){
+      h+='<div style="font-size:11.5px;color:var(--muted);padding:6px 0">'
+        +(field==='am'?'AM 権限の従業員がいません。従業員マスターで「権限ロール＝AM」を設定してください。'
+                     :'Head Chef がいません。従業員マスターで役職に Chef を含む肩書きを設定してください。')+'</div>';
+      return;
+    }
+    h+='<div style="overflow:auto"><table style="border-collapse:collapse;font-size:11.5px">';
+    h+='<thead><tr><th style="padding:5px 8px;text-align:left;font-size:10px;color:var(--muted);position:sticky;left:0;background:var(--surface)">氏名</th>'
+      +stores.map(function(s){
+        return '<th style="padding:5px 6px;font-size:9.5px;color:'+(s.active===false?'var(--muted)':'var(--tm)')+';white-space:nowrap">'
+          +escapeHtml(s.name)+(s.active===false?'<div style="font-size:8.5px;color:var(--muted)">休止</div>':'')+'</th>';
+      }).join('')
+      +'<th style="padding:5px 8px;font-size:10px;color:var(--muted)">計</th></tr></thead><tbody>';
+    list.forEach(function(p){
+      var mine=scStoresOfPerson(p.name, field);
+      var liveN=mine.filter(function(sid){ var s=stores.find(function(x){return x.id===sid;}); return s&&s.active!==false; }).length;
+      h+='<tr style="border-top:1px solid var(--border)">'
+        +'<td style="padding:5px 8px;font-weight:700;white-space:nowrap;position:sticky;left:0;background:var(--surface)">'+escapeHtml(p.name)
+        +(p.orphan?'<div style="font-size:9px;color:var(--yellow)">従業員マスターに未登録</div>':(p.title?('<div style="font-size:9px;color:var(--muted)">'+escapeHtml(p.title)+'</div>'):''))
+        +'</td>';
+      stores.forEach(function(s){
+        var on = s[field]===p.name;
+        var takenBy = (!on && s[field]) ? s[field] : '';
+        h+='<td style="padding:3px 4px;text-align:center">'
+          +'<button onclick="scToggle('+JSON.stringify(p.name).replace(/"/g,'&quot;')+',\''+field+'\',\''+escapeHtml(s.id)+'\')" '
+          +'title="'+escapeHtml(takenBy?('現在の担当：'+takenBy):(on?'担当を外す':'担当にする'))+'" '
+          +'style="width:26px;height:26px;border-radius:7px;cursor:pointer;border:1px solid '+(on?'var(--accent)':'var(--border)')+';'
+          +'background:'+(on?'var(--accent)':'transparent')+';color:'+(on?'#fff':'var(--muted)')+';font-size:12px;opacity:'+(s.active===false?'0.5':'1')+'">'
+          +(on?'<i class="ti ti-check"></i>':(takenBy?'<span style="font-size:8.5px">'+escapeHtml(takenBy.slice(0,2))+'</span>':''))
+          +'</button></td>';
+      });
+      h+='<td style="padding:5px 8px;text-align:center;font-weight:700">'+liveN+'</td></tr>';
+    });
+    h+='</tbody></table></div>';
+  });
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:10px;line-height:1.6">'
+    +'保存先は店舗マスターです（AM は既存の割り当てと同じ場所）。権限で見える店舗の範囲もこれに連動します。<br>'
+    +'GM・CEO は全店合算のため、この表には出ません。休止中の店は査定の対象外です。</div>';
+  h+='<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(h);
+}
 function renderStoreMaster() {
   var stores = getStoresAll();
   var activeCount = stores.filter(s=>s.active).length;
   var html = `<div class="section-header">
     <div><div class="section-title">店舗マスター</div><div class="section-sub">稼働中 ${activeCount} / 全 ${stores.length}店舗</div></div>
-    <button class="btn btn-primary btn-sm" onclick="openStoreModal()"><i class="ti ti-plus"></i> 店舗追加</button>
+    <div style="display:flex;gap:6px">
+      ${['gm','ceo'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openScopeAssign()"><i class="ti ti-sitemap"></i> 管轄の割り当て</button>`:''}
+      <button class="btn btn-primary btn-sm" onclick="openStoreModal()"><i class="ti ti-plus"></i> 店舗追加</button>
+    </div>
   </div>
   <div class="alert ${activeCount<=2?'alert-success':'alert-warning'}" style="padding:8px 12px">
     <i class="ti ti-info-circle"></i><div style="font-size:12px">プロトタイプは稼働中店舗のみ操作対象になります。activeを切り替えて段階展開できます。</div></div>`;
@@ -51013,6 +51198,18 @@ function openStoreModal(storeId) {
       })()}
       <div style="font-size:11px;color:var(--muted);margin-top:4px">従業員マスターでAM権限を持つ人が選べます。割り当てると、そのAMの管轄店舗になります</div>
     </div>
+    <div class="form-group"><label class="form-label">Head Chef</label>
+      ${(function(){
+        var chefs = getEmployees().filter(function(e){ return (e.role==='chef' || /Chef/i.test(String(e.title||''))) && e.status!=='退職'; });
+        if (!chefs.length) return `<div style="font-size:12px;color:var(--muted);padding:8px;background:var(--surface2);border-radius:8px"><i class="ti ti-info-circle"></i> Chef の従業員がいません。従業員マスターで役職に Chef を含む肩書きを設定してください。</div><input type="hidden" id="st-chef" value="${s.chef||''}">`;
+        return `<select class="form-select" id="st-chef">
+          <option value="">（未割当）</option>
+          ${chefs.map(function(e){ return `<option value="${e.name}"${s.chef===e.name?' selected':''}>${e.name}</option>`; }).join('')}
+          ${s.chef && !chefs.find(function(e){return e.name===s.chef;}) ? `<option value="${s.chef}" selected>${s.chef}（Chef権限なし）</option>` : ''}
+        </select>`;
+      })()}
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">v800: 割り当てると、その Head Chef の管轄店舗になります（査定の対象店）</div>
+    </div>
     <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="st-takeout" ${s.takeout?'checked':''}> テイクアウトあり</label></div>
     <div class="form-group"><label class="form-label">Google Review ページURL</label><input class="form-input" id="st-gurl" value="${s.googleUrl||''}" placeholder="https://g.page/... または Google Mapsの店舗URL"></div>
     <div class="form-group"><label class="form-label">Yelp ページURL</label><input class="form-input" id="st-yurl" value="${s.yelpUrl||''}" placeholder="https://www.yelp.com/biz/..."></div>
@@ -51109,6 +51306,7 @@ function saveStore(storeId) {
     days: document.getElementById('st-days').value.trim(),
     bizDays: (function(){ var o={}; ['月','火','水','木','金','土','日'].forEach(function(dw){ var el=document.getElementById('st-bd-'+dw); if(el&&el.value!=='open') o[dw]=el.value; }); return o; })(),
     am: (document.getElementById('st-am')||{}).value ? document.getElementById('st-am').value.trim() : '',
+    chef: (document.getElementById('st-chef')||{}).value ? document.getElementById('st-chef').value.trim() : '',   /* v800 */
     color: document.getElementById('st-color').value,
     active: document.getElementById('st-active').checked,
   };

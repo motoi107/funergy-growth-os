@@ -32,6 +32,13 @@ function arrDecl(text, name) {
   return 'var ' + name + ' = ' + text.slice(i, end + 1) + ';';
 }
 
+/* 依存が増えても検査が止まらないよう、あるものだけ取り込む。
+   v799/v800 で karteEmpStores の依存が2度増え、そのたびに ReferenceError で
+   検査ごと停止した（FAIL より危険。0件通過に見えて何も守っていない）。 */
+function grabIf(text, name) {
+  return text.indexOf('function ' + name + '(') >= 0 ? grab(text, name) : '';
+}
+
 console.log('\n=== v797: 四半期ごとの査定管理 ===\n');
 
 const QC = {
@@ -68,6 +75,7 @@ function build(today) {
     function qcCompute(sid,y,q){ return QC[sid+':'+y+'Q'+q] || null; }
     function lssSummary(n){ return GETLSS()[n] || {hasData:false,cats:[],totalScore:0,totalMax:0,totalPct:0}; }
     function getEmployees(){ return EMPS; }
+    function getStoresAll(){ return STORES; }
     function empGrade(e){ return (e&&e.grade)||'G3'; }
     function empGradeNum(e){ return Number(String(empGrade(e)).replace('G',''))||0; }
     function getQBudget(sid,y,q){ return QBUD[sid+'_'+y+'Q'+q]||null; }
@@ -77,6 +85,11 @@ function build(today) {
     ${grab(src, '_quarterMonths')}
     ${grab(src, '_ymToOffset')}
     ${grab(src, '_curQuarter')}
+    /* v799 で karteEmpStores が karteEmpStoresAuto に分かれた。
+       依存を取り込まないと ReferenceError で検査ごと止まる（0件通過より危険）。 */
+    ${grabIf(src,'scAssignedStores')}
+    ${grabIf(src,'karteEmpStoresAuto')}
+    ${grabIf(src,'amStoresOf')}
     ${grab(src, 'karteEmpStores')}
     ${grab(src, 'karteEligibleEmps')}
     ${grab(src, 'kbCfg')}

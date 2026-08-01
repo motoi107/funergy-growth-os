@@ -22,6 +22,13 @@ function grab(text, name) {
   return text.slice(i, j);
 }
 
+/* 依存が増えても検査が止まらないよう、あるものだけ取り込む。
+   v799/v800 で karteEmpStores の依存が2度増え、そのたびに ReferenceError で
+   検査ごと停止した（FAIL より危険。0件通過に見えて何も守っていない）。 */
+function grabIf(text, name) {
+  return text.indexOf('function ' + name + '(') >= 0 ? grab(text, name) : '';
+}
+
 console.log('\n=== v795: ボーナス算定式（Grade基準額 × 予算達成率 × 店舗利益 × Career Score） ===\n');
 
 /* 実関数を持ち込み、qcCompute だけ差し替え可能なモックにする */
@@ -40,9 +47,15 @@ function build(opts) {
     function lssSummary(name){ return LSS[name] || {hasData:false, cats:[], totalScore:0, totalMax:0, totalPct:0}; }
     function empGrade(e){ return (e&&e.grade)||'G3'; }
     function getEmployees(){ return []; }
+    function getStoresAll(){ return STORES; }
     ${grab(src, '_quarterMonths')}
     ${grab(src, '_ymToOffset')}
     ${grab(src, '_curQuarter')}
+    /* v799 で karteEmpStores が karteEmpStoresAuto に分かれた。
+       依存を取り込まないと ReferenceError で検査ごと止まる（0件通過より危険）。 */
+    ${grabIf(src,'scAssignedStores')}
+    ${grabIf(src,'karteEmpStoresAuto')}
+    ${grabIf(src,'amStoresOf')}
     ${grab(src, 'karteEmpStores')}
     ${grab(src, 'kbCfg')}
     ${grab(src, 'kbSave')}
