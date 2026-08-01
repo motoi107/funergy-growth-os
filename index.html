@@ -21856,7 +21856,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '794';
+const APP_VERSION = '795';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -37172,9 +37172,9 @@ function karteLockHtml(){
 
 
 function kbCfg(){
-  var d={ poolRate:0.12, profit:0, quarter:_curQuarter(), gradeBase:{G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, csMin:0.7, csMax:1.3, storeScore:{}, storeProfit:{}, empStore:{}, spMin:0.8, spMax:1.2 };
+  var d={ poolRate:0.12, profit:0, quarter:_curQuarter(), gradeBase:{G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, csMin:0.7, csMax:1.3, storeScore:{}, storeProfit:{}, empStore:{}, spMin:0.8, spMax:1.2, baMin:0.8, baMax:1.2 };
   var r=ls('karte_bonus_config',null);
-  if(r && typeof r==='object'){ d=Object.assign(d,r); d.gradeBase=Object.assign({G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, r.gradeBase||{}); d.storeScore=Object.assign({}, r.storeScore||{}); d.storeProfit=Object.assign({}, r.storeProfit||{}); d.empStore=Object.assign({}, r.empStore||{}); if(d.spMin==null)d.spMin=0.8; if(d.spMax==null)d.spMax=1.2; }
+  if(r && typeof r==='object'){ d=Object.assign(d,r); d.gradeBase=Object.assign({G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, r.gradeBase||{}); d.storeScore=Object.assign({}, r.storeScore||{}); d.storeProfit=Object.assign({}, r.storeProfit||{}); d.empStore=Object.assign({}, r.empStore||{}); if(d.spMin==null)d.spMin=0.8; if(d.spMax==null)d.spMax=1.2; if(d.baMin==null)d.baMin=0.8; if(d.baMax==null)d.baMax=1.2; }
   return d;
 }
 function kbSave(c){ lsSet('karte_bonus_config', c); }
@@ -37194,14 +37194,169 @@ function storeProfitOf(cfg, sid){ var m=(cfg.storeProfit&&cfg.storeProfit[sid])|
 function storeScoreOf(cfg, sid){ return storeProfitOf(cfg, sid).pct; }
 function karteScopeStores(){ var all=(typeof sortByLoginOrder==='function'?sortByLoginOrder(getStoresAll()):getStoresAll()).filter(function(s){ return s && s.id!=='OFFICE' && s.active!==false; }); if(curRole==='gm'||curRole==='ceo'||curRole==='office') return all; if(curRole==='am'){ var mine=(typeof myAmStores==='function')?myAmStores():((typeof amStoresOf==='function')?amStoresOf((typeof myName==='function'?myName():curUserName)):[]); return all.filter(function(s){ return (mine||[]).indexOf(s.id)>=0; }); } var me=(typeof myName==='function')?myName():curUserName; var emp=getEmployees().find(function(e){return e.name===me;}); var sid=emp?emp.store:(curStore!=='ALL'?curStore:null); return all.filter(function(s){ return s.id===sid; }); }
 function spCoef(pct, cfg){ var mn=(cfg.spMin!=null?cfg.spMin:0.8), mx=(cfg.spMax!=null?cfg.spMax:1.2); var p=Math.max(0,Math.min(200,(pct==null?100:pct))); var f=mn+(mx-mn)*(p/200); return Math.round(f*100)/100; }
+/* ===== v795: ボーナス算定式の変更と、算定根拠の見える化 =====
+   【新しい式】Grade基準額 × 予算達成率係数 × 店舗利益係数 × Career Score係数
+     v794まで：Grade基準額 × 個人係数 × CS係数 × 店舗利益係数
+     ・個人係数（e.coef／Tip Rate由来）を廃止
+     ・対象クォーターの「予算達成率」を新しい係数として追加
+   【予算達成率の取り方】対象者の所属店（複数可）について、
+     売上実績の合計 ÷ 売上予算の合計。店ごとの％を平均すると小さい店に
+     引っ張られるため、金額を足してから割る。
+   【進行中の四半期】まだ終わっていないQで「四半期まるごとの予算」と
+     比べると必ず未達に見える。そのため経過日数で按分した予算（ペース予算）と
+     比べ、画面にもその旨を出す。四半期が終われば両者は一致する。
+   【予算が未登録のとき】0%として扱うと全員のボーナスが自動的に下限まで
+     下がってしまう。データが無い場合は係数1.00（中立）とし、
+     「予算未登録のため中立」と明示する。CS未評価と同じ扱い。 */
+function baCoef(pct, cfg){
+  var mn=(cfg&&cfg.baMin!=null?cfg.baMin:0.8), mx=(cfg&&cfg.baMax!=null?cfg.baMax:1.2);
+  if(pct==null) return 1;                       /* データ無し＝中立 */
+  var p=Math.max(0,Math.min(200,pct));
+  return Math.round((mn+(mx-mn)*(p/200))*100)/100;
+}
+function _bonusQParse(q){
+  var m=String(q||'').match(/(\d{4})\D*Q?([1-4])/);
+  return m ? {y:+m[1], q:+m[2]} : null;
+}
+/* 対象者の所属店について、対象Qの予算達成率を出す */
+function budgetAchieveFor(cfg, e){
+  var out={ pct:null, coef:1, actual:0, target:0, paceTarget:0, inProgress:false,
+            basis:'', stores:[], noData:true, unregMonths:[] };
+  var qq=_bonusQParse(cfg&&cfg.quarter); if(!qq) return out;
+  var sids=(typeof karteEmpStores==='function')?karteEmpStores(cfg,e):(e&&e.store?[e.store]:[]);
+  out.stores=sids;
+  if(!sids.length) return out;
+  var anyTarget=false;
+  sids.forEach(function(sid){
+    var R=null; try{ R=qcCompute(sid, qq.y, qq.q); }catch(err){ return; }
+    if(!R) return;
+    out.actual     += R.aSales||0;
+    out.target     += R.tSales||0;
+    out.paceTarget += R.paceSales||0;
+    if((R.tSales||0)>0) anyTarget=true;
+    (R.unreg||[]).forEach(function(u){ out.unregMonths.push((u&&u.ym)||''); });
+  });
+  /* 四半期が終わっているか（最終月が過去なら完了） */
+  var months=_quarterMonths(qq.y, qq.q);
+  out.inProgress = (typeof _ymToOffset==='function') ? (_ymToOffset(months[2])>=0) : false;
+  if(!anyTarget || out.target<=0) return out;    /* 予算未登録 → 中立のまま返す */
+  out.noData=false;
+  var base = out.inProgress ? out.paceTarget : out.target;
+  out.basis = out.inProgress ? 'pace' : 'full';
+  if(!(base>0)) return out;                      /* 進行中で経過0 → 中立 */
+  out.pct  = Math.round(out.actual/base*100);
+  out.coef = baCoef(out.pct, cfg);
+  return out;
+}
+/* Career Score のカテゴリー内訳（説明表示用） */
+function bonusCsDetail(e){
+  var sum=(typeof lssSummary==='function')?lssSummary(e&&e.name):null;
+  if(!sum||!sum.hasData) return {hasData:false, cats:[], totalScore:0, totalMax:0, totalPct:0};
+  return {hasData:true, cats:sum.cats||[], totalScore:sum.totalScore, totalMax:sum.totalMax, totalPct:sum.totalPct};
+}
+/* — 算定根拠のカード。1段ごとに「元データ → 係数 → その時点の金額」を出す — */
+function _baStepRow(no, label, dataHtml, coefTxt, runAmt, col, warn){
+  return '<div style="display:flex;gap:9px;padding:9px 0;border-top:1px solid var(--border)">'
+    + '<div style="flex:0 0 20px;height:20px;border-radius:50%;background:'+(col||'var(--muted)')+';color:#fff;'
+    + 'font-size:10.5px;font-weight:800;display:flex;align-items:center;justify-content:center">'+no+'</div>'
+    + '<div style="flex:1;min-width:0">'
+    + '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">'
+    + '<b style="font-size:12px">'+label+'</b>'
+    + '<span style="font-size:13px;font-weight:800;color:'+(col||'var(--tm)')+'">'+coefTxt+'</span>'
+    + '<span style="margin-left:auto;font-size:12px;font-weight:700;color:var(--muted)">→ '+_money(runAmt)+'</span></div>'
+    + '<div style="font-size:10.5px;color:var(--muted);line-height:1.65;margin-top:2px">'+dataHtml+'</div>'
+    + (warn?('<div style="font-size:10.5px;color:var(--yellow);margin-top:2px"><i class="ti ti-alert-triangle"></i> '+warn+'</div>'):'')
+    + '</div></div>';
+}
+function renderBonusBreakdown(e, b, cfg){
+  var ba=b.ba||{}, cs=bonusCsDetail(e);
+  var h='<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-top:8px">';
+  h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:2px">'
+    +'<i class="ti ti-math-symbols"></i> どう計算したか</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-bottom:4px">'
+    +'Grade基準額 × 予算達成率 × 店舗利益係数 × Career Score係数</div>';
+
+  /* ① 基準額 */
+  var run=b.base;
+  h+=_baStepRow('1','Grade基準額',
+      'Grade <b>'+escapeHtml(b.grade||'—')+'</b> の四半期基準額。ここが出発点です。',
+      _money(b.base), run, 'var(--tm)', '');
+
+  /* ② 予算達成率 */
+  run=Math.round(run*b.baCoef);
+  var baData, baWarn='';
+  if(ba.noData){
+    baData='対象店の売上予算が登録されていないため、この項目は中立（×1.00）として扱っています。';
+    baWarn='予算を登録すると、ここに達成率が反映されます。';
+  } else {
+    var lbl=(ba.basis==='pace')?'経過ぶんの予算':'四半期の予算';
+    baData='売上実績 <b>'+_money(ba.actual)+'</b> ÷ '+lbl+' <b>'+_money(ba.basis==='pace'?ba.paceTarget:ba.target)+'</b>'
+         + ' ＝ <b style="color:var(--tm)">'+ba.pct+'%</b>'
+         + (ba.stores.length?('<br>対象店：'+escapeHtml(ba.stores.map(_owStoreName).join('・'))
+             +(ba.stores.length>1?'（売上を合算して算出）':'')):'');
+    if(ba.inProgress) baWarn='この四半期はまだ進行中です。経過日数ぶんの予算と比べています。確定は四半期終了後に行ってください。';
+    else if(ba.unregMonths.length) baWarn='予算が未登録の月があります（'+escapeHtml(ba.unregMonths.filter(Boolean).join('・'))+'）。その月は予算0として計算されています。';
+  }
+  h+=_baStepRow('2','予算達成率', baData, '×'+b.baCoef.toFixed(2), run,
+      (b.baCoef>1?'var(--green)':(b.baCoef<1?'var(--red)':'var(--muted)')), baWarn);
+
+  /* ③ 店舗利益係数 */
+  run=Math.round(run*b.spCoef);
+  var spStores=(b.profitStores&&b.profitStores.length)?b.profitStores:[b.profitStore].filter(Boolean);
+  var spData='利益実績 ÷ 利益基準額 ＝ <b style="color:var(--tm)">'+b.spPct+'%</b>';
+  if(spStores.length){
+    spData+='<br>'+spStores.map(function(sid){
+      var sp=storeProfitOf(cfg,sid);
+      return escapeHtml(_owStoreName(sid))+'：'+_money(sp.actual)+' ÷ '+_money(sp.target)+' ＝ '+sp.pct+'%';
+    }).join('<br>');
+    if(spStores.length>1) spData+='<br><span style="color:var(--muted)">複数店のため達成率の平均</span>';
+  }
+  h+=_baStepRow('3','店舗利益係数', spData, '×'+b.spCoef.toFixed(2), run,
+      (b.spCoef>1?'var(--green)':(b.spCoef<1?'var(--red)':'var(--muted)')), '');
+
+  /* ④ Career Score（カテゴリー別の点数を全部出す） */
+  run=Math.round(run*b.csCoef);
+  var csData;
+  if(!cs.hasData){
+    csData='Career Score が未評価のため、中立（×1.00相当）で扱っています。評価を登録するとここに反映されます。';
+  } else {
+    csData='合計 <b>'+cs.totalScore+' / '+cs.totalMax+'点</b> ＝ <b style="color:var(--tm)">'+cs.totalPct+'%</b>';
+    csData+='<table style="width:100%;border-collapse:collapse;margin-top:4px;font-size:10.5px">';
+    cs.cats.forEach(function(c){
+      var bar=Math.max(0,Math.min(100,c.pct));
+      csData+='<tr><td style="padding:1.5px 0;white-space:nowrap">'+escapeHtml(c.name||c.key||'')+'</td>'
+        +'<td style="padding:1.5px 6px;width:100%">'
+        +'<div style="background:var(--border);border-radius:3px;height:5px;overflow:hidden">'
+        +'<div style="width:'+bar+'%;height:5px;background:'+(bar>=75?'var(--green)':(bar>=50?'var(--accent)':'var(--red)'))+'"></div></div></td>'
+        +'<td style="padding:1.5px 0;text-align:right;white-space:nowrap">'+c.score+'/'+c.max+'（'+c.pct+'%）</td></tr>';
+    });
+    csData+='</table>';
+  }
+  h+=_baStepRow('4','Career Score係数', csData, '×'+b.csCoef.toFixed(2), run,
+      (b.csCoef>1?'var(--green)':(b.csCoef<1?'var(--red)':'var(--muted)')),
+      cs.hasData?'':'未評価のため中立で計算しています。');
+
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;border-top:2px solid var(--border);margin-top:6px;padding-top:8px">'
+    +'<span style="font-size:12px;font-weight:800">査定額</span>'
+    +'<span style="font-size:18px;font-weight:800;color:var(--accent)">'+_money(b.amount)+'</span></div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'
+    +'各段の金額は端数処理の途中経過です。最終額は '+_money(b.base)+' ×'+b.baCoef.toFixed(2)
+    +' ×'+b.spCoef.toFixed(2)+' ×'+b.csCoef.toFixed(2)+' を一度に計算しています。</div>';
+  return h+'</div>';
+}
 function bonusForEmp(e, cfg){
-  var g=empGrade(e); var base=(cfg.gradeBase[g]!=null?cfg.gradeBase[g]:0); var coef=(e.coef!=null?e.coef:1);
+  var g=empGrade(e); var base=(cfg.gradeBase[g]!=null?cfg.gradeBase[g]:0);
   var sum=(typeof lssSummary==='function')?lssSummary(e.name):null;
-  var pct=(sum&&sum.hasData)?sum.totalPct:0; var csf=csCoef(pct,cfg);
+  /* v795: CS未評価は0%扱いだと下限まで下がるため中立(1.00)にする */
+  var pct=(sum&&sum.hasData)?sum.totalPct:0; var csf=(sum&&sum.hasData)?csCoef(pct,cfg):1;
   var _psids=(typeof karteEmpStores==='function')?karteEmpStores(cfg,e):(e.store?[e.store]:[]);
   var spPct; if(_psids.length){ var _ss=0; _psids.forEach(function(sid){ _ss+=storeScoreOf(cfg,sid); }); spPct=Math.round(_ss/_psids.length); } else { spPct=100; }
   var spf=spCoef(spPct,cfg);
-  return {grade:g, base:base, coef:coef, csPct:pct, csCoef:csf, spPct:spPct, spCoef:spf, profitStore:(_psids[0]||e.store), profitStores:_psids, amount:Math.round(base*coef*csf*spf), hasCS:!!(sum&&sum.hasData)};
+  var ba=budgetAchieveFor(cfg,e);   /* v795: 対象クォーターの予算達成率 */
+  return {grade:g, base:base, csPct:pct, csCoef:csf, spPct:spPct, spCoef:spf,
+    baPct:ba.pct, baCoef:ba.coef, ba:ba,
+    profitStore:(_psids[0]||e.store), profitStores:_psids,
+    amount:Math.round(base*ba.coef*spf*csf), hasCS:!!(sum&&sum.hasData)};
 }
 function bonusPool(cfg){ return Math.round((cfg.profit||0)*(cfg.poolRate||0)); }
 function bonusTotals(cfg){
@@ -37219,6 +37374,7 @@ function bonusSetGradeBase(g,v){ var c=kbCfg(); c.gradeBase[g]=Math.max(0,parseF
 function bonusSetCs(which,v){ var c=kbCfg(); c[which]=parseFloat(v)||0; kbSave(c); kbRefresh(); }
 function bonusSetStoreScore(sid,v){ var c=kbCfg(); c.storeScore=c.storeScore||{}; var n=parseFloat(String(v).replace(/[%, ]/g,'')); if(isNaN(n)){ delete c.storeScore[sid]; } else { c.storeScore[sid]=Math.max(0,n); } kbSave(c); kbRefresh(); }
 function bonusSetSp(which,v){ var c=kbCfg(); c[which]=parseFloat(v)||0; kbSave(c); kbRefresh(); }
+function bonusSetBa(which,v){ var c=kbCfg(); c[which]=parseFloat(v)||0; kbSave(c); kbRefresh(); }
 function bonusSetStoreProfit(sid, field, v){ var c=kbCfg(); c.storeProfit=c.storeProfit||{}; c.storeProfit[sid]=c.storeProfit[sid]||{}; var n=parseFloat(String(v).replace(/[$, ]/g,'')); c.storeProfit[sid][field]=isNaN(n)?0:Math.max(0,n); kbSave(c); kbRefresh(); }
 
 /* --- karte 編集 --- */
@@ -37278,10 +37434,12 @@ function renderKarteConfig(cfg, tot){
   h+='<div><label class="form-label">CS係数 下限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.csMin+'" onchange="bonusSetCs(\'csMin\',this.value)"></div>';
   h+='<div><label class="form-label">CS係数 上限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.csMax+'" onchange="bonusSetCs(\'csMax\',this.value)"></div>';
   h+='<div style="width:1px;height:34px;background:var(--border);margin:0 4px"></div>';
+  h+='<div><label class="form-label">予算達成率係数 下限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.baMin+'" onchange="bonusSetBa(\'baMin\',this.value)"></div>';
+  h+='<div><label class="form-label">予算達成率係数 上限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.baMax+'" onchange="bonusSetBa(\'baMax\',this.value)"></div>';
   h+='<div><label class="form-label">利益係数 下限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.spMin+'" onchange="bonusSetSp(\'spMin\',this.value)"></div>';
   h+='<div><label class="form-label">利益係数 上限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.spMax+'" onchange="bonusSetSp(\'spMax\',this.value)"></div>';
   h+='</div>';
-  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 個人額＝<b>Grade基準額 × 個人係数 × CS係数 × 店舗利益係数</b>。CS係数＝Career Score%、店舗利益係数＝利益達成率% を各下限〜上限に線形マップ（100%＝中央）。</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 個人額＝<b>Grade基準額 × 予算達成率 × 店舗利益係数 × CS係数 × 店舗利益係数</b>。CS係数＝Career Score%、店舗利益係数＝利益達成率% を各下限〜上限に線形マップ（100%＝中央）。</div>';
   h+='</div>';
   /* 店舗別利益スコア */
   h+='<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別 利益スコア</div>';
@@ -37415,7 +37573,13 @@ function karteBonusExplain(e, b){
     var _spLbl=(b.profitStores&&b.profitStores.length>1)?('対象'+b.profitStores.length+'店の平均利益達成率'):'所属店の利益達成率';
     out.push(_spLbl+' <b>'+b.spPct+'%</b>（'+spDir+'）により、店舗係数 <b>×'+b.spCoef.toFixed(2)+'</b> が反映されています。チームの成果が個人の評価にも連動します。');
   }
-  out.push('個人の評価係数（Tip Rate評価）<b>×'+b.coef.toFixed(2)+'</b> を反映しています。');
+  if(b.ba && !b.ba.noData){
+    var baDir = b.baCoef>1.0?'予算超過':(b.baCoef<1.0?'予算未達':'予算どおり');
+    out.push('対象クォーターの予算達成率 <b>'+b.ba.pct+'%</b>（'+baDir+'）により、予算係数 <b>×'+b.baCoef.toFixed(2)+'</b> が反映されています。'
+      +(b.ba.inProgress?'※この四半期は進行中のため、経過ぶんの予算と比較しています。':''));
+  } else {
+    out.push('対象クォーターの売上予算が未登録のため、予算係数は中立（×1.00）で扱っています。');
+  }
   out.push('以上を総合し、今期の査定額は <b>'+_money(b.amount)+'</b> です。');
   return out;
 }
@@ -37512,7 +37676,7 @@ function renderKarteDetailPage(empId){
   h+='<div style="font-size:12px;margin-bottom:8px"><span style="color:var(--muted)">現在給与：</span><b>'+(e.wage?('$'+e.wage):'—')+'</b></div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">';
   h+=_kFactor('Grade基準額', _money(b.base), gcol);
-  h+=_kFactor('個人係数', '×'+b.coef.toFixed(2), 'var(--accent2)');
+  h+=_kFactor('予算達成率', '×'+b.baCoef.toFixed(2)+(b.ba&&b.ba.noData?' (未)':''), 'var(--accent2)');
   h+=_kFactor('Career Score係数', '×'+b.csCoef.toFixed(2)+(b.hasCS?'':' (未)'), lv.color);
   if(b.spCoef!=null) h+=_kFactor('店舗利益係数', '×'+b.spCoef.toFixed(2), 'var(--green)');
   h+='</div>';
@@ -37522,6 +37686,7 @@ function renderKarteDetailPage(empId){
   h+='<button class="btn '+(_rec1?'btn-secondary':'btn-primary')+' btn-sm" onclick="bonusConfirmOne(\''+empId+'\')"><i class="ti ti-check"></i> '+(_rec1?'この四半期を再記録':'この四半期を履歴に記録')+'</button>';
   if(_rec1){ h+='<span style="font-size:10.5px;color:var(--green)"><i class="ti ti-circle-check"></i> '+escapeHtml(_q1||'')+' 記録済み</span>'; }
   h+='</div>';
+  h+=renderBonusBreakdown(e,b,cfg);   /* v795: 算定根拠 */
   h+='<div style="margin-top:8px;font-size:11.5px;line-height:1.7;color:var(--tm)"><div style="font-weight:700;color:var(--muted);margin-bottom:2px"><i class="ti ti-info-circle"></i> この金額になった理由（説明用）</div><ul style="margin:0;padding-left:18px">'+karteBonusExplain(e,b).map(function(s){return '<li>'+s+'</li>';}).join('')+'</ul></div>';
   h+='<div style="font-size:11px;color:var(--muted);margin:10px 0 4px">給与・ボーナス履歴</div>';
   var pl=(k.payLog||[]).slice().reverse();
@@ -37533,7 +37698,7 @@ function renderKarteDetailPage(empId){
       +'<span style="font-size:11.5px;font-weight:700">ボーナス'+(p.quarter?' <span style="color:var(--muted);font-weight:500">('+escapeHtml(p.quarter)+')</span>':'')+'</span>'
       +'<span style="font-weight:800;margin-left:auto">'+_money(Number(p.amount)||0)+'</span>'
       +'<button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="kartePayDel(\''+empId+'\',\''+p.id+'\')">×</button>';
-      if(sn.grade){ h+='<div style="flex-basis:100%;font-size:10px;color:var(--muted);padding-left:2px">'+escapeHtml(sn.grade)+' 基準'+_money(sn.base||0)+' ・個人×'+(sn.coef!=null?Number(sn.coef).toFixed(2):'—')+' ・CS×'+(sn.csCoef!=null?Number(sn.csCoef).toFixed(2):'—')+(sn.spCoef!=null?' ・利益×'+Number(sn.spCoef).toFixed(2):'')+((sn.adj!=null&&sn.adj<1)?' ・原資調整×'+Number(sn.adj).toFixed(3):'')+'</div>'; }
+      if(sn.grade){ h+='<div style="flex-basis:100%;font-size:10px;color:var(--muted);padding-left:2px">'+escapeHtml(sn.grade)+' 基準'+_money(sn.base||0)+(sn.baCoef!=null?' ・予算×'+Number(sn.baCoef).toFixed(2):'')+(sn.coef!=null?' ・個人×'+Number(sn.coef).toFixed(2)+'(旧式)':'')+' ・CS×'+(sn.csCoef!=null?Number(sn.csCoef).toFixed(2):'—')+(sn.spCoef!=null?' ・利益×'+Number(sn.spCoef).toFixed(2):'')+((sn.adj!=null&&sn.adj<1)?' ・原資調整×'+Number(sn.adj).toFixed(3):'')+'</div>'; }
       h+='</div>';
     } else {
       h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px">'
@@ -37623,7 +37788,7 @@ function kartePayDel(empId,pid){ var k=getKarte(empId); k.payLog=(k.payLog||[]).
 function _bonusWritePay(e,b,q,payAmt,adj){
   var all=getKarteAll(); var now=new Date().toISOString(); var by=(typeof myName==='function'?myName():(curUserName||''));
   var k=all[e.id]||{}; k.payLog=k.payLog||[];
-  var snap={grade:b.grade, base:b.base, coef:b.coef, csPct:b.csPct, csCoef:b.csCoef, spPct:b.spPct, spCoef:b.spCoef, hasCS:b.hasCS, raw:b.amount, adj:adj};
+  var snap={grade:b.grade, base:b.base, baPct:b.baPct, baCoef:b.baCoef, csPct:b.csPct, csCoef:b.csCoef, spPct:b.spPct, spCoef:b.spCoef, hasCS:b.hasCS, raw:b.amount, adj:adj};
   var ex=null; for(var i=0;i<k.payLog.length;i++){ if(k.payLog[i].src==='auto' && k.payLog[i].quarter===q){ ex=k.payLog[i]; break; } }
   if(ex){ ex.amount=String(payAmt); ex.date=(typeof todayISO==='function'?todayISO():ex.date); ex.snap=snap; ex.by=by; ex.at=now; }
   else { k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:String(payAmt), note:'四半期査定（自動記録）', src:'auto', quarter:q, snap:snap, by:by, at:now}); }
@@ -38764,7 +38929,7 @@ function renderLeadership() {
       <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('制度が本決まりになってから設定します。現状はOS上で金額・計算を行いません。','To be configured once the program is finalized. No amounts/calculations are done in the OS for now.')}</div>
       <div style="font-size:11px;color:var(--tm);background:var(--bg);border-radius:8px;padding:8px 10px;line-height:1.7">
         <div style="font-weight:700;margin-bottom:2px">${t('予定の枠組み（給与設計書）','Planned framework (comp design)')}</div>
-        ${t('四半期ボーナス＝基準額 × 予実達成率 × Level係数','Quarterly bonus = base × budget achievement × Level factor')}<br>
+        ${t('四半期ボーナス＝Grade基準額 × 予算達成率 × 店舗利益係数 × Career Score係数','Quarterly bonus = grade base × budget achievement × store profit × Career Score')}<br>
         ${t('Level係数：L2×0.8／L3×1.0／L4×1.2／L5×1.4','Level factor: L2×0.8 / L3×1.0 / L4×1.2 / L5×1.4')}<br>
         ${t('基準額（四半期・仮）：','Base (quarterly, tentative): ')}G2 $500／G3 $1,500／G4 $1,800／G5 $2,000／G6 $3,000／G7 $4,000<br>
         G1：${t('月次MVP（店舗ごと1名・$100〜200／選出者は後設定）','Monthly MVP (1 per store · $100–200 / selection TBD)')}

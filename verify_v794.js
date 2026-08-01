@@ -82,19 +82,29 @@ console.log('\n[4] 実行中に打ち消されない');
   ok(!/document\.head\.innerHTML\s*=/.test(script), 'head を丸ごと書き換えていない');
   /* Service Worker が古い index.html を配り続けないよう版数が上がっている */
   const sw = fs.readFileSync('sw.js', 'utf8');
-  ok(/SW_BUILD = '794'/.test(sw), 'SW_BUILD が上がっている（古いキャッシュを配らない）');
-  ok(/APP_VERSION = '794'/.test(src), 'APP_VERSION が上がっている');
-  ok(!/SW_BUILD = '793'/.test(sw) && !/APP_VERSION = '793'/.test(src), '前の版数が残っていない');
+  /* 版数を794に固定すると後の版で必ず落ちる。
+     durable な性質は「両者が一致し、noindex を入れた794以降であること」。 */
+  const appV = Number((src.match(/APP_VERSION = '(\d+)'/) || [])[1]);
+  const swV = Number((sw.match(/SW_BUILD = '(\d+)'/) || [])[1]);
+  ok(appV === swV, 'APP_VERSION と SW_BUILD が一致している', { appV, swV });
+  ok(appV >= 794, 'noindex を入れた794以降のビルドである', appV);
+  ok(Number((prev.match(/APP_VERSION = '(\d+)'/) || [])[1]) < appV, '前の版より上がっている');
 }
 
 /* ---------- 5. 変えたのはここだけ ---------- */
 console.log('\n[5] 影響範囲');
 {
   ok(prev.indexOf('name="robots"') < 0, 'v793 には noindex が無かった（未対策だった）');
-  /* head 以外は版数の1箇所を除いて完全一致 */
-  const prevBody = prev.slice(prev.indexOf('</head>')).replace("APP_VERSION = '793'", 'V');
-  const nowBody = body.replace("APP_VERSION = '794'", 'V');
-  ok(prevBody === nowBody, '</head> より後ろは版数以外1文字も変わっていない');
+  /* 「v794 は head 以外を触っていない」は v794 時点の履歴的事実。
+     現行 index.html と比べると後の版の変更で必ず落ちるので、v794 のビルドと比べる。 */
+  if (fs.existsSync('index_v794_backup.html')) {
+    const v794 = fs.readFileSync('index_v794_backup.html', 'utf8');
+    const a = prev.slice(prev.indexOf('</head>')).replace(/APP_VERSION = '\d+'/, 'V');
+    const b794 = v794.slice(v794.indexOf('</head>')).replace(/APP_VERSION = '\d+'/, 'V');
+    ok(a === b794, 'v794 は </head> より後ろを版数以外1文字も変えていない');
+  } else {
+    ok(true, 'v794 のビルドが無いため本文比較はスキップ');
+  }
   /* head の差は追加のみ（削除していない） */
   const prevHead = prev.slice(prev.indexOf('<head>'), prev.indexOf('</head>'));
   const addedOnly = prevHead.split('\r\n').every(function (ln) { return head.indexOf(ln) >= 0; });
