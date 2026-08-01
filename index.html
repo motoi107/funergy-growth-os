@@ -14301,6 +14301,92 @@ function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
   }catch(e){}
   return h;
 }
+/* ===== v802: 月次進捗の「全店合算」カード =====
+   【v801までの状態】renderBudgetSummary は全店ぶんの合算（agg）を計算しているのに、
+     複数店を選ぶと 14336行目で店舗別カードへ早期 return しており、
+     計算した合算を捨てていた。全店の予算合計も人件費率も画面に出ていなかった。
+   【この版】店舗別カードの前に合算カードを1枚足す。数字は既存の agg をそのまま使う。
+     店舗別の集計方法・表示は一切変えない。
+   【率の分母】店舗別カードと同じ考え方に揃える。
+     当月＝前日まで、過去月＝月間確定。人件費率も原価率も同じ分母を使うので、
+     店舗別カードの数字を足し合わせた見え方と食い違わない。
+   【予算未登録の店】合算に混ぜると予算だけ小さく出て達成率が実態より高く見える。
+     何店が未登録かを必ず表示し、達成率の下に理由を出す。 */
+function _bAggLaborPct(agg, refAct){
+  return refAct>0 ? Math.round((agg.laborToToday||0)/refAct*1000)/10 : null;
+}
+function _bAggFcPct(agg, refAct){
+  return refAct>0 ? Math.round((agg.costToToday||0)/refAct*1000)/10 : null;
+}
+function renderBudgetAllStoreAgg(stores, cumByStore, agg, isCur, mdays, monLabel){
+  var refAct = isCur ? (agg.actToToday||0) : (agg.actMonth||0);
+  var achv   = agg.budMonth>0 ? Math.round(refAct/agg.budMonth*1000)/10 : null;
+  var paceRef= isCur ? (mdays>0?Math.round(agg.daysPassed/mdays*1000)/10:0) : 100;
+  var paceDiff = achv!=null ? Math.round((achv-paceRef)*10)/10 : null;
+  var col = achv==null?'var(--muted)':(paceDiff>=0?'var(--green)':paceDiff>=-3?'var(--yellow)':'var(--red)');
+  var landing = (isCur && agg.daysPassed>0) ? refAct/agg.daysPassed*mdays : refAct;
+  var landPct = agg.budMonth>0 ? Math.round(landing/agg.budMonth*1000)/10 : null;
+  var labPct = _bAggLaborPct(agg, refAct);
+  var fcPct  = _bAggFcPct(agg, refAct);
+  var primePct = (labPct!=null && fcPct!=null) ? Math.round((labPct+fcPct)*10)/10 : null;
+
+  /* 予算が入っていない店を数える（合算の達成率が実態より高く出るため必ず出す） */
+  var noBud = stores.filter(function(st){ return !((cumByStore[st.id]||{}).budMonth>0); });
+
+  var h = '<div class="card" style="border:1.5px solid '+col+'">';
+  h += '<div class="card-title"><i class="ti ti-building-community" style="color:'+col+'"></i>'
+     + t('全店合算','All stores')+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+stores.length+t('店',' stores')+'</span>'
+     + '<span style="margin-left:auto;font-size:10px;color:var(--muted);font-weight:400">'
+     + escapeHtml(monLabel)+' ・ '+(isCur?(t('前日まで','through')+' '+agg.daysPassed+'/'+mdays+t('日','d')):t('月間確定','Month final'))
+     + '</span></div>';
+
+  /* 売上：実績 / 予算合計 */
+  h += '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'
+     + '<div style="font-size:26px;font-weight:800">'+fmtK(refAct)+'</div>'
+     + '<div style="font-size:12px;color:var(--muted)">'+t('／ 全店 月間予算','/ All-store monthly budget')+' '+fmtK(agg.budMonth)+'</div></div>';
+  h += '<div style="margin:10px 0 6px">'+progBar(achv,{h:12,color:col,pace:isCur?paceRef:null})+'</div>';
+  h += '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11.5px">'
+     + '<span style="color:'+col+';font-weight:700">'+t('達成','Achieved')+' '+(achv!=null?achv.toFixed(1)+'%':'—')+'</span>'
+     + (isCur
+        ? '<span style="color:var(--tm)">'+t('今日のペース',"Today's pace")+' '+paceRef.toFixed(1)+'% → <b style="color:'+col+'">'
+          +(paceDiff!=null?((paceDiff>=0?'+':'')+paceDiff.toFixed(1)+'pt '+(paceDiff>=0?t('先行','ahead'):t('ビハインド','behind'))):'—')+'</b></span>'
+        : '<span style="color:var(--muted)">'+t('月間実績','Month actual')+' '+fmtK(agg.actMonth)+'</span>')
+     + '</div>';
+  if(isCur){
+    h += '<div style="font-size:11px;color:var(--tm);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">'
+       + '<i class="ti ti-plane-arrival" style="color:'+(landPct==null?'var(--muted)':(landPct>=100?'var(--green)':'var(--red)'))+'"></i> '
+       + t('着地予測','Projected')+' <b>'+fmtK(landing)+'</b>'
+       + (landPct!=null?('（'+t('予算比','vs budget')+' <b style="color:'+(landPct>=100?'var(--green)':'var(--red)')+'">'+landPct.toFixed(1)+'%</b>）'):'')
+       + '</div>';
+  }
+
+  /* 全店の人件費率・原価率 */
+  var tile = function(label, pct, amt, icon, c){
+    return '<div style="flex:1 1 120px;min-width:120px;background:var(--surface2);border-radius:8px;padding:7px 9px">'
+      + '<div style="font-size:10px;color:var(--muted)"><i class="ti '+icon+'" style="font-size:11px"></i> '+label+'</div>'
+      + '<div style="font-size:19px;font-weight:800;color:'+(c||'var(--tm)')+'">'+(pct!=null?pct.toFixed(1)+'%':'—')+'</div>'
+      + '<div style="font-size:10px;color:var(--muted)">'+(amt!=null?fmtK(amt):'—')+'</div></div>';
+  };
+  h += '<div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px;padding-top:9px;border-top:1px solid var(--border)">'
+     + tile(t('全店 人件費率','All-store labor'), labPct, agg.laborToToday, 'ti-users', 'var(--accent)')
+     + tile(t('全店 原価率','All-store FC'), fcPct, agg.costToToday, 'ti-meat', 'var(--accent2)')
+     + tile(t('合計（人件費＋原価）','Prime cost'), primePct, (agg.laborToToday||0)+(agg.costToToday||0), 'ti-sum', 'var(--tm)')
+     + '</div>';
+  h += '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">'
+     + t('率の分母は売上 ','Ratios are over sales ')+fmtK(refAct)
+     + (isCur?t('（当月は前日まで）','(current month: through yesterday)'):t('（月間確定）','(month final)'))
+     + t('。店舗別カードと同じ数え方です。','. Same basis as the per-store cards below.')+'</div>';
+
+  if(noBud.length){
+    h += '<div class="alert alert-warning" style="margin:8px 0 0;padding:7px 10px"><i class="ti ti-alert-triangle"></i>'
+       + '<div style="font-size:11px;line-height:1.6">'
+       + t('予算が未登録の店舗が','Stores without a budget:')+' <b>'+noBud.length+'</b>'+t('店あります',' ')
+       + '（'+escapeHtml(noBud.map(function(s){return s.name;}).join('・'))+'）。'
+       + t('その店舗の予算は0として合算しているため、達成率が実際より高く出ます。','Their budget counts as 0, so the achievement rate reads higher than reality.')
+       + '</div></div>';
+  }
+  return h + '</div>';
+}
 function renderBudgetSummary() {
   var stores = budgetScopeStores();
   var _selOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
@@ -14332,8 +14418,12 @@ function renderBudgetSummary() {
 
   var html = '';
 
-  // 全店/複数店：合算ではなく店舗別の月次進捗カードを表示（1画面で店舗毎に把握）
-  if (stores.length > 1) { return html + renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef); }
+  // 全店/複数店：v802 で合算カードを先頭に追加し、その下に従来の店舗別カードを出す
+  if (stores.length > 1) {
+    return html
+      + renderBudgetAllStoreAgg(stores, cumByStore, agg, isCur, mdays, _monLabel)
+      + renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef);
+  }
 
   // ===== ① 今月の現在地（実績／月間予算＋暦日ペースライン＋前週比） =====
   html += `<div class="card" style="border:1.5px solid ${heroCol}">
@@ -22159,7 +22249,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '801';
+const APP_VERSION = '802';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
