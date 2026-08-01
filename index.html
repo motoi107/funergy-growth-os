@@ -5444,7 +5444,7 @@ var SUPA_MASTER_MAP = {
 var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
-  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc','ow_limits'];
+  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc','ow_limits','sl_config'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
@@ -5454,7 +5454,7 @@ var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evalu
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
-var OP_SYNC_PREFIX = ['spl_','budget_approved_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
+var OP_SYNC_PREFIX = ['sl_manual_','spl_','budget_approved_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','labor_hours_','fav_',
   'fv_count_','fv_moves_','fv_review_'];   /* fav_<user>: お気に入り（個人別・クラウド保存）／ v722: 日次食材差異(手入力)。fv_sales_ は端末ローカルのみ＝同期しない */
@@ -19072,6 +19072,294 @@ async function tipRefreshPeriodFromToast(storeId, fromISO, toISO){
   renderPage((typeof curPage!=='undefined')?curPage:'tip');
 }
 
+/* ===== v801: Shift Leader カウント（Totoya 3店） =====
+   【制度】Shift Leader は Toast で Job を選んでクロックインし、
+     該当シフト1回につき $10 を支給する。対象は G1 のみ。G2 以上は対象外。
+   【Toast の Job について（重要）】
+     現在この端末に届いている勤怠データは shifts:[{inDate,outDate}] だけで、
+     Job 名が入っていない。Job は Toast API → Edge Function → Supabase の
+     取り込み側に追加が必要で、index.html だけでは完結しない。
+     そのためこの実装は次の2本立てにしてある。
+       ① Job が届き次第そのまま効く（jobTitle / job / jobName /
+          jobReference.name のいずれでも拾う。取り込み側の命名に合わせなくてよい）
+       ② 届くまでは手入力で運用できる（日付・L/D を登録すれば同じ集計に乗る）
+     取り込みが始まったら手入力を消す必要はない。同じ日・同じ人・同じL/Dは
+     二重に数えない（Toast 側を正として1件に寄せる）。
+   【L/D の決め方】1シフト＝1回。ランチ帯とディナー帯にまたがる場合は、
+     重なりが長い方の区分にする（チップの時間帯判定と同じ窓を使う）。 */
+var SL_DEFAULT_STORES = ['F04-K','F04-P','F04-A'];
+var SL_DEFAULT_JOBS = ['Shift Leader','ShiftLeader','SL'];
+function slCfg(){
+  var c=ls('sl_config', null)||{};
+  return {
+    stores: Array.isArray(c.stores)&&c.stores.length ? c.stores : SL_DEFAULT_STORES.slice(),
+    jobs:   Array.isArray(c.jobs)&&c.jobs.length ? c.jobs : SL_DEFAULT_JOBS.slice(),
+    amount: (Number(c.amount)>0) ? Number(c.amount) : 10
+  };
+}
+function slSaveCfg(c){ return lsSet('sl_config', c); }
+function slStoreEnabled(storeId){ return slCfg().stores.indexOf(storeId)>=0; }
+/* 取り込み側の命名が決まっていないので、ありそうな置き場所を順に見る */
+function slJobOf(sh){
+  if(!sh || typeof sh!=='object') return '';
+  var v = sh.jobTitle || sh.job || sh.jobName || sh.jobRef ||
+          (sh.jobReference && (sh.jobReference.name || sh.jobReference.title)) || '';
+  return String(v||'').trim();
+}
+function slIsLeaderJob(job, cfg){
+  if(!job) return false;
+  cfg=cfg||slCfg();
+  var j=String(job).toLowerCase().replace(/[\s_-]/g,'');
+  return cfg.jobs.some(function(x){ return String(x).toLowerCase().replace(/[\s_-]/g,'')===j; });
+}
+/* 1シフトが L か D か。重なりが長い方に寄せる */
+function slPeriodOfShift(storeId, sh){
+  try{
+    var win=getTipWindow(storeId);
+    var l=overlapHours(sh.inDate, sh.outDate, win.lunchStart, win.lunchEnd);
+    var d=overlapHours(sh.inDate, sh.outDate, win.dinnerStart, win.dinnerEnd);
+    if(l===0 && d===0){
+      var l2=overlapHours(sh.inDate, sh.outDate, 0, 16), d2=overlapHours(sh.inDate, sh.outDate, 16, 24);
+      return (d2>l2)?'D':'L';
+    }
+    return (d>l)?'D':'L';
+  }catch(e){ return 'L'; }
+}
+function slManualAll(storeId){ var m=ls('sl_manual_'+storeId, {}); return (m&&typeof m==='object')?m:{}; }
+function slManualSet(storeId, dateISO, name, period, on){
+  if(['gm','ceo','am','sl'].indexOf(curRole)<0){ showToast('この操作の権限がありません','warning'); return false; }
+  var m=slManualAll(storeId);
+  m[dateISO]=m[dateISO]||{};
+  m[dateISO][name]=m[dateISO][name]||{};
+  if(on) m[dateISO][name][period]={ at:(typeof nowJP==='function'?nowJP():''), by:(typeof myName==='function'?myName():(curUserName||'')) };
+  else delete m[dateISO][name][period];
+  if(!Object.keys(m[dateISO][name]).length) delete m[dateISO][name];
+  if(!Object.keys(m[dateISO]).length) delete m[dateISO];
+  return lsSet('sl_manual_'+storeId, m)!==false;
+}
+function _slGrade(name){
+  try{
+    var e=(getEmployees()||[]).find(function(x){ return x && x.name===name; });
+    return e ? ((typeof empGrade==='function'?empGrade(e):'')||'') : '';
+  }catch(e){ return ''; }
+}
+/* その日の Shift Leader（Toast + 手入力）。G1 以外は理由つきで除外側に入れる */
+function slDayRecords(storeId, dateISO){
+  var cfg=slCfg(), ok=[], ng=[], seen={};
+  function push(name, period, src, job){
+    var k=name+'|'+period;
+    if(seen[k]) return;             /* 同じ日・同じ人・同じL/Dは1回だけ */
+    seen[k]=1;
+    var g=_slGrade(name);
+    var rec={ date:dateISO, name:name, period:period, src:src, job:job||'', grade:g };
+    if(g==='G1') ok.push(rec);
+    else ng.push(Object.assign({reason:(g?('Grade '+g+' は対象外'):'従業員マスターに未登録')}, rec));
+  }
+  /* ① Toast の Job */
+  try{
+    var labor=getTipLabor(storeId, dateISO)||{};
+    Object.keys(labor).forEach(function(name){
+      var shifts=(labor[name]&&labor[name].shifts)||[];
+      shifts.forEach(function(sh){
+        var job=slJobOf(sh);
+        if(!slIsLeaderJob(job, cfg)) return;
+        push(name, slPeriodOfShift(storeId, sh), 'toast', job);
+      });
+    });
+  }catch(e){}
+  /* ② 手入力 */
+  try{
+    var man=slManualAll(storeId)[dateISO]||{};
+    Object.keys(man).forEach(function(name){
+      Object.keys(man[name]||{}).forEach(function(p){ push(name, p, 'manual', ''); });
+    });
+  }catch(e){}
+  return { ok:ok, ng:ng };
+}
+/* Toast から Job が1件でも届いているか（運用開始の判定に使う） */
+function slToastHasJob(storeId, fromISO, toISO){
+  var found=false;
+  try{
+    _slEachDate(fromISO, toISO, function(dt){
+      if(found) return;
+      var labor=getTipLabor(storeId, dt)||{};
+      Object.keys(labor).forEach(function(n){
+        ((labor[n]&&labor[n].shifts)||[]).forEach(function(sh){ if(slJobOf(sh)) found=true; });
+      });
+    });
+  }catch(e){}
+  return found;
+}
+function _slEachDate(fromISO, toISO, fn){
+  var d=new Date(fromISO+'T00:00:00'), end=new Date(toISO+'T00:00:00');
+  for(; d<=end; d.setDate(d.getDate()+1)) fn(isoLocalDate(d));
+}
+/* 給与期間の集計 */
+function slPeriodSummary(storeId, fromISO, toISO){
+  var cfg=slCfg(), byName={}, excluded=[], total=0, days=0;
+  _slEachDate(fromISO, toISO, function(dt){
+    var r=slDayRecords(storeId, dt);
+    if(r.ok.length) days++;
+    r.ok.forEach(function(x){
+      var b=byName[x.name] || (byName[x.name]={ name:x.name, recs:[], count:0, amount:0, L:0, D:0 });
+      b.recs.push(x); b.count++; b[x.period]++;
+      b.amount=b.count*cfg.amount; total+=cfg.amount;
+    });
+    r.ng.forEach(function(x){ excluded.push(x); });
+  });
+  var rows=Object.keys(byName).map(function(n){ return byName[n]; })
+    .sort(function(a,b){ return b.count-a.count || String(a.name).localeCompare(String(b.name)); });
+  return { rows:rows, excluded:excluded, total:total, days:days, amount:cfg.amount, from:fromISO, to:toISO };
+}
+/* ---- 画面 ---- */
+function renderTipShiftLeader(){
+  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var cfg=slCfg();
+  var h='';
+  if(!slStoreEnabled(storeId)){
+    return '<div class="card"><div style="font-size:12px;color:var(--muted)"><i class="ti ti-info-circle"></i> '
+      +escapeHtml(_owStoreName(storeId))+' は Shift Leader 制度の対象外です。'
+      +'対象は '+escapeHtml(cfg.stores.map(_owStoreName).join('・'))+' です。</div></div>';
+  }
+  var info=(typeof tipPeriodInfo==='function')?tipPeriodInfo():null;
+  var base=(info && info.y!=null) ? (info.y+'-'+String(info.m+1).padStart(2,'0')+'-'+(slHalf==='second'?'16':'01')) : (typeof bizToday==='function'?bizToday():'');
+  var per=_p4Period(base);
+  var sum=slPeriodSummary(storeId, per.from, per.to);
+  var hasJob=slToastHasJob(storeId, per.from, per.to);
+  var canEdit=['gm','ceo','am','sl'].indexOf(curRole)>=0;
+
+  h+='<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<span style="font-size:13px;font-weight:800"><i class="ti ti-crown" style="color:var(--accent)"></i> Shift Leader</span>'
+    +'<div style="display:flex;gap:4px">'
+    +['first','second'].map(function(x){
+      return '<button class="btn '+(slHalf===x?'btn-primary':'btn-secondary')+' btn-sm" onclick="setSlHalf(\''+x+'\')">'+(x==='first'?'前期(1-15)':'後期(16-末)')+'</button>';
+    }).join('')
+    +'</div>'
+    +'<span style="font-size:11px;color:var(--muted)">'+escapeHtml(per.from)+' 〜 '+escapeHtml(per.to)+'</span>'
+    +'<div style="flex:1"></div>'
+    +(['gm','ceo'].indexOf(curRole)>=0?'<button class="btn btn-secondary btn-sm" onclick="openSlConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
+    +'</div>';
+  h+='<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
+    +'<div><div style="font-size:10px;color:var(--muted)">対象人数</div><div style="font-size:17px;font-weight:800">'+sum.rows.length+'</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">回数</div><div style="font-size:17px;font-weight:800">'+sum.rows.reduce(function(a,b){return a+b.count;},0)+'</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">支給合計</div><div style="font-size:17px;font-weight:800;color:var(--green)">'+_money(sum.total)+'</div></div>'
+    +'<div><div style="font-size:10px;color:var(--muted)">単価</div><div style="font-size:17px;font-weight:800">'+_money(sum.amount)+'</div></div>'
+    +'</div>';
+  if(!hasJob){
+    h+='<div class="alert alert-warning" style="margin:8px 0 0;padding:8px 10px"><i class="ti ti-alert-triangle"></i><div style="font-size:11px;line-height:1.6">'
+      +'Toast の勤怠データに Job 名がまだ含まれていません（取り込み側の対応が必要です）。'
+      +'それまでは下の「手入力で追加」で登録してください。Job が届き始めたら自動で拾い、手入力と二重には数えません。</div></div>';
+  }
+  h+='</div>';
+
+  if(!sum.rows.length){
+    h+='<div class="card" style="font-size:12px;color:var(--muted)"><i class="ti ti-info-circle"></i> この期間の Shift Leader 記録はまだありません。</div>';
+  } else {
+    h+='<div class="card" style="padding:8px"><div style="overflow:auto"><table style="border-collapse:collapse;font-size:11.5px;width:100%">'
+      +'<thead><tr style="text-align:left;color:var(--muted);font-size:10px">'
+      +'<th style="padding:5px 8px">氏名</th><th style="padding:5px 8px;text-align:center">L</th>'
+      +'<th style="padding:5px 8px;text-align:center">D</th><th style="padding:5px 8px;text-align:center">回数</th>'
+      +'<th style="padding:5px 8px;text-align:right">支給額</th><th style="padding:5px 8px">該当日</th></tr></thead><tbody>';
+    sum.rows.forEach(function(r){
+      h+='<tr style="border-top:1px solid var(--border)">'
+        +'<td style="padding:6px 8px;font-weight:700;white-space:nowrap">'+escapeHtml(r.name)+'</td>'
+        +'<td style="padding:6px 8px;text-align:center;color:var(--accent2)">'+(r.L||'—')+'</td>'
+        +'<td style="padding:6px 8px;text-align:center;color:var(--accent)">'+(r.D||'—')+'</td>'
+        +'<td style="padding:6px 8px;text-align:center;font-weight:800">'+r.count+'</td>'
+        +'<td style="padding:6px 8px;text-align:right;font-weight:800;color:var(--green)">'+_money(r.amount)+'</td>'
+        +'<td style="padding:6px 8px;font-size:10.5px;color:var(--muted);line-height:1.7">'
+        +r.recs.map(function(x){
+          return '<span style="white-space:nowrap;margin-right:6px">'+escapeHtml(x.date.slice(5))
+            +'<b style="color:'+(x.period==='D'?'var(--accent)':'var(--accent2)')+'">'+x.period+'</b>'
+            +(x.src==='manual'?'<i class="ti ti-hand-finger" style="font-size:9px;color:var(--muted)" title="手入力"></i>':'')
+            +'</span>';
+        }).join('')
+        +'</td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+  }
+  if(sum.excluded.length){
+    var uniq={}; sum.excluded.forEach(function(x){ uniq[x.name]=x.reason; });
+    h+='<div class="card" style="padding:9px 11px"><div style="font-size:11.5px;font-weight:700;color:var(--yellow)">'
+      +'<i class="ti ti-alert-triangle"></i> 対象外（'+Object.keys(uniq).length+'名）</div>'
+      +'<div style="font-size:10.5px;color:var(--muted);line-height:1.7;margin-top:3px">'
+      +Object.keys(uniq).map(function(n){ return escapeHtml(n)+'（'+escapeHtml(uniq[n])+'）'; }).join('　')
+      +'<div style="margin-top:3px">Shift Leader の手当は G1 のみが対象です。上記の記録は集計・支給額に含めていません。</div></div></div>';
+  }
+  if(canEdit){
+    h+='<div class="card" style="padding:9px 11px"><div style="font-size:11.5px;font-weight:700;margin-bottom:5px">'
+      +'<i class="ti ti-hand-finger"></i> 手入力で追加</div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+      +'<input class="form-input" id="sl-date" type="date" min="'+per.from+'" max="'+per.to+'" value="'+per.to+'" style="width:150px">'
+      +'<select class="form-select" id="sl-name" style="width:170px">'
+      +(getEmployees()||[]).filter(function(e){
+          return e && e.name && e.status!=='退職' && !e.retired
+            && (e.store===storeId || (e.stores&&e.stores.indexOf&&e.stores.indexOf(storeId)>=0))
+            && _slGrade(e.name)==='G1';
+        }).map(function(e){ return '<option value="'+escapeHtml(e.name)+'">'+escapeHtml(e.name)+'</option>'; }).join('')
+      +'</select>'
+      +'<select class="form-select" id="sl-period" style="width:110px"><option value="L">L ランチ</option><option value="D">D ディナー</option></select>'
+      +'<button class="btn btn-primary btn-sm" onclick="slAddManual(\''+escapeHtml(storeId)+'\')"><i class="ti ti-plus"></i> 追加</button>'
+      +'</div>'
+      +'<div style="font-size:10px;color:var(--muted);margin-top:5px">G1 のスタッフだけが選べます。同じ日・同じ人・同じ区分は重複して登録されません。</div>';
+    var man=slManualAll(storeId), mdates=Object.keys(man).filter(function(d){ return d>=per.from && d<=per.to; }).sort();
+    if(mdates.length){
+      h+='<div style="margin-top:7px;font-size:10.5px;line-height:1.9">';
+      mdates.forEach(function(dt){
+        Object.keys(man[dt]).forEach(function(n){
+          Object.keys(man[dt][n]).forEach(function(p){
+            h+='<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:6px;padding:1px 6px;margin:0 4px 4px 0">'
+              +escapeHtml(dt.slice(5))+' '+escapeHtml(n)+' <b>'+p+'</b>'
+              +'<button onclick="slDelManual(\''+escapeHtml(storeId)+'\',\''+escapeHtml(dt)+'\','+JSON.stringify(n).replace(/"/g,'&quot;')+',\''+p+'\')" '
+              +'style="border:0;background:transparent;color:var(--red);cursor:pointer;font-size:12px;padding:0 2px">×</button></span>';
+          });
+        });
+      });
+      h+='</div>';
+    }
+    h+='</div>';
+  }
+  return h;
+}
+var slHalf='first';
+function setSlHalf(v){ slHalf=v; renderPage('tip'); }
+function slAddManual(storeId){
+  var dt=(document.getElementById('sl-date')||{}).value||'';
+  var nm=(document.getElementById('sl-name')||{}).value||'';
+  var p =(document.getElementById('sl-period')||{}).value||'L';
+  if(!dt||!nm){ showToast('日付と氏名を選んでください','warning'); return; }
+  if(_slGrade(nm)!=='G1'){ showToast(nm+' は G1 ではないため対象外です','warning'); return; }
+  if(slManualSet(storeId, dt, nm, p, true)){ showToast(nm+' を追加しました','success'); renderPage('tip'); }
+  else showToast('保存できませんでした','danger');
+}
+function slDelManual(storeId, dt, name, p){
+  if(slManualSet(storeId, dt, name, p, false)){ showToast('削除しました','info'); renderPage('tip'); }
+}
+function openSlConfig(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('設定は GM・CEO のみです','warning'); return; }
+  var c=slCfg();
+  openModal('<div class="modal-title"><i class="ti ti-settings"></i> Shift Leader の設定 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="form-group"><label class="form-label">1回あたりの支給額</label>'
+    +'<input class="form-input" id="slc-amt" type="number" min="0" step="1" value="'+c.amount+'"></div>'
+    +'<div class="form-group"><label class="form-label">対象店舗（カンマ区切りの店舗ID）</label>'
+    +'<input class="form-input" id="slc-st" value="'+escapeHtml(c.stores.join(','))+'"></div>'
+    +'<div class="form-group"><label class="form-label">Shift Leader とみなす Job 名（カンマ区切り）</label>'
+    +'<input class="form-input" id="slc-job" value="'+escapeHtml(c.jobs.join(','))+'">'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">Toast の Job 名と一致させてください。大文字小文字・空白・ハイフンの違いは無視して照合します。</div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="saveSlConfig()">保存</button></div>');
+}
+function saveSlConfig(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('設定は GM・CEO のみです','warning'); return; }
+  var amt=parseFloat((document.getElementById('slc-amt')||{}).value);
+  var st=String((document.getElementById('slc-st')||{}).value||'').split(',').map(function(x){return x.trim();}).filter(Boolean);
+  var jb=String((document.getElementById('slc-job')||{}).value||'').split(',').map(function(x){return x.trim();}).filter(Boolean);
+  if(!(amt>0)){ alert('支給額は0より大きい数字を入れてください'); return; }
+  if(!st.length){ alert('対象店舗を1つ以上指定してください'); return; }
+  if(!jb.length){ alert('Job 名を1つ以上指定してください'); return; }
+  if(slSaveCfg({amount:amt, stores:st, jobs:jb})===false){ showToast('保存できませんでした','danger'); return; }
+  closeModalDirect(); showToast('設定を保存しました','success'); renderPage('tip');
+}
 function renderTipMgmt() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl' && curRole!=='office_crew') return financialBlocked();
   maybePullAllCashTips();
@@ -19104,15 +19392,18 @@ function renderTipMgmt() {
 
   // 表示切替（配分表・チップ率のみ）
   var _tipG2 = (['gm','ceo','office','am'].indexOf(curRole)>=0) || (function(){ var me=getEmployees().find(function(x){return x.name===(typeof myName==='function'?myName():'');}); return me?empGradeNum(me)>=2:false; })();
-  if (['rate','matrix'].concat(_tipG2?['ratemgmt']:[]).indexOf(tipPeriodView)<0) tipPeriodView='matrix';
+  var _slOn = (typeof slStoreEnabled==='function') && slStoreEnabled(storeId);   /* v801 */
+  if (['rate','matrix'].concat(_tipG2?['ratemgmt']:[]).concat(_slOn?['sl']:[]).indexOf(tipPeriodView)<0) tipPeriodView='matrix';
   html += `<div class="phase-tabs">
     <div class="phase-tab${tipPeriodView==='matrix'?' active':''}" onclick="setTipPeriodView('matrix')">${t('配分表','Distribution')}</div>
     <div class="phase-tab${tipPeriodView==='rate'?' active':''}" onclick="setTipPeriodView('rate')"><i class="ti ti-percentage" style="font-size:12px"></i> ${t('チップ率','Tip Rate')}</div>
+    ${_slOn?`<div class="phase-tab${tipPeriodView==='sl'?' active':''}" onclick="setTipPeriodView('sl')"><i class="ti ti-crown" style="font-size:12px"></i> ${t('Shift Leader','Shift Leader')}</div>`:''}
     ${_tipG2?`<div class="phase-tab${tipPeriodView==='ratemgmt'?' active':''}" onclick="setTipPeriodView('ratemgmt')"><i class="ti ti-adjustments-check" style="font-size:12px"></i> ${t('Tip Rate管理','Tip Rate Admin')}</div>`:''}
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
   if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を最新化','Refresh this period')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
 
+  if (tipPeriodView==='sl')       return html + renderTipShiftLeader();   /* v801 */
   if (tipPeriodView==='ratemgmt') return html + renderTipRateMgmt();
   if (tipPeriodView==='rate')   return html + renderTipRate();
   return html + renderTipPeriodMatrix(storeId, store, info);
@@ -20593,7 +20884,8 @@ var LS_NEVER_FREE = ['spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','sp
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
   'fv_count_','fv_moves_','fv_review_','fv_config',
-  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','q_budgets'];   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
+  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','q_budgets',
+  'sl_config','sl_manual_'];   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
 function _lsProtectedKey(k){
   var s=String(k||'');
   return LS_NEVER_FREE.some(function(p){ return s===p || s.indexOf(p)===0 || s.indexOf(p)>=0 && p.indexOf('_')>=0 && s.indexOf(p)===(s.indexOf('spl_')===0?4:0); });
@@ -21867,7 +22159,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '800';
+const APP_VERSION = '801';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
