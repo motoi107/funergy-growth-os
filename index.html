@@ -1918,6 +1918,32 @@ var mcState = {
       ここを緊急に戻したい場合は MC_EC_SEV を直す。
 ============================================================ */
 
+/* v821: 「現在値／目標値」という見出しが、ルールによって中身と合っていなかった。
+   例：仕入単価の上昇で「現在値 24.8%」→ 単価ではなく上昇率。
+       月末売上未達で「現在値 $4,189.90 / 目標値 $105,420.00」
+       → ここまでの売上と月間予算で、そもそも比べるものが違う。
+   ルールごとに見出しを持たせる。空文字にした行は表示しない。 */
+var MC_VAL_LABELS = {
+  budget_pace_behind:   { cur: 'ここまでの売上', tgt: 'ここまでの予算', fc: '' },
+  budget_forecast_miss: { cur: 'ここまでの売上', tgt: '月間予算', fc: '月末予測' },
+  sales_not_synced:     { cur: 'ここまでの売上', tgt: 'ここまでの予算', fc: '' },
+  labor_rate_over:      { cur: '人件費率', tgt: '目標', fc: '' },
+  cost_rate_over:       { cur: '原価率', tgt: '目標', fc: '' },
+  purchase_spike:       { cur: '今月の仕入', tgt: 'いつもなら', fc: '' },
+  price_up:             { cur: '上昇率（最大）', tgt: '注意の基準', fc: '' },
+  case_size_changed:    { cur: '変動率（最大）', tgt: '注意の基準', fc: '' },
+  new_ingredient:       { cur: '件数', tgt: '', fc: '' },
+  skill_stale:          { cur: '対象人数', tgt: '', fc: '' },
+  guests_short:         { cur: '客数', tgt: '進捗ぶんの予算', fc: '' },
+  spend_short:          { cur: '客単価', tgt: '予算', fc: '' },
+};
+function mcValLabels(code) {
+  if (code && String(code).indexOf('ec_') === 0) return { cur: '件数', tgt: '', fc: '' };
+  var d = MC_VAL_LABELS[code];
+  if (d) return d;
+  return { cur: '現在値', tgt: '目標値', fc: '月末予測' };
+}
+
 /* ルールごとの単位。ec_ で始まるものは件数。載っていないものは金額 */
 var MC_RULE_UNIT = {
   budget_missing:       'none',
@@ -1958,11 +1984,13 @@ function mcFmtVal(v, unit) {
 /* アラート1件ぶんの表示用の値をまとめて返す */
 function mcVals(a) {
   var u = mcUnitOf(a && a.rule_code);
+  var L = mcValLabels(a && a.rule_code);   /* v821 */
   return {
-    unit: u,
-    cur: mcFmtVal(a && a.current_value, u),
-    tgt: mcFmtVal(a && a.target_value, u),
-    fc: mcFmtVal(a && a.forecast_value, u),
+    unit: u, labels: L,
+    curL: L.cur, tgtL: L.tgt, fcL: L.fc,
+    cur: L.cur ? mcFmtVal(a && a.current_value, u) : '',
+    tgt: L.tgt ? mcFmtVal(a && a.target_value, u) : '',
+    fc: L.fc ? mcFmtVal(a && a.forecast_value, u) : '',
   };
 }
 
@@ -2179,9 +2207,9 @@ function mcAlertCard(a) {
     + '</div>';
   h += '<div style="font-size:13.5px;font-weight:700;line-height:1.5;margin-bottom:6px">' + escapeHtml(a.title || '') + '</div>';
   var _v = (typeof mcVals === 'function') ? mcVals(a) : { cur: n(a.current_value), tgt: n(a.target_value), fc: n(a.forecast_value) };   /* v818 */
-  h += row('現在値', _v.cur);
-  h += row('目標値', _v.tgt);
-  h += row('月末予測', _v.fc);
+  h += row(_v.curL || '現在値', _v.cur);
+  h += row(_v.tgtL || '目標値', _v.tgt);
+  h += row(_v.fcL || '月末予測', _v.fc);
   h += row('影響額', a.estimated_impact != null ? '<b style="color:' + sev.color + '">' + fmtMoney(a.estimated_impact) + '</b>' : '');
   h += row('想定原因', a.cause_summary ? escapeHtml(a.cause_summary) : '');
   h += row('推奨対応', a.recommended_action ? escapeHtml(a.recommended_action) : '');
@@ -2591,9 +2619,9 @@ function mcDetailHtml() {
     return '<div style="display:flex;gap:8px;font-size:12px;line-height:1.8"><span style="flex:0 0 82px;color:var(--muted)">' + l + '</span><span style="flex:1;min-width:0;word-break:break-word">' + v + '</span></div>';
   }
   var _dv = (typeof mcVals === 'function') ? mcVals(a) : { cur: '', tgt: '', fc: '' };   /* v818 */
-  h += row('現在値', _dv.cur);
-  h += row('目標値', _dv.tgt);
-  h += row('月末予測', _dv.fc);
+  h += row(_dv.curL || '現在値', _dv.cur);
+  h += row(_dv.tgtL || '目標値', _dv.tgt);
+  h += row(_dv.fcL || '月末予測', _dv.fc);
   h += row('影響額', a.estimated_impact != null ? '<b style="color:' + sev.color + '">' + fmtMoney(a.estimated_impact) + '</b>' : '');
   if (canAct && typeof mcEditField === 'function') {   /* v813: 自動保存 */
     h += mcEditField(MC_TBL.alert, a.id, 'cause_summary', '想定原因', a.cause_summary, '例：平日夜の客数が不足');
@@ -3077,9 +3105,9 @@ function renderMcRequests() {
       function row(l, v) { return (v === null || v === undefined || v === '') ? '' : '<div style="display:flex;gap:8px;font-size:11.5px;line-height:1.7"><span style="flex:0 0 76px;color:var(--muted)">' + l + '</span><span style="flex:1;min-width:0;word-break:break-word">' + v + '</span></div>'; }
       x += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">';
       var _rv = (typeof mcVals === 'function') ? mcVals(a) : { cur: '', tgt: '', fc: '' };   /* v818 */
-      x += row('現在値', _rv.cur);
-      x += row('目標値', _rv.tgt);
-      x += row('月末予測', _rv.fc);
+      x += row(_rv.curL || '現在値', _rv.cur);
+      x += row(_rv.tgtL || '目標値', _rv.tgt);
+      x += row(_rv.fcL || '月末予測', _rv.fc);
       x += row('影響額', a.estimated_impact != null ? fmtMoney(a.estimated_impact) : '');
       x += row('想定原因', a.cause_summary ? escapeHtml(a.cause_summary) : '');
       x += row('推奨対応', a.recommended_action ? escapeHtml(a.recommended_action) : '');
@@ -25057,7 +25085,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '820';
+const APP_VERSION = '821';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
