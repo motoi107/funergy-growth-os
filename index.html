@@ -18131,6 +18131,121 @@ function renderInventory(){
   return html;
 }
 
+/* ===== v803: 棚卸確定月の原価内訳（前月棚 → 仕入 → 移動 → 今月棚 → 原価率） =====
+   【これは読み取り専用】棚卸のスナップショット（snap）にも fc_monthly にも
+     invoices にも一切書かない。既に確定した数字を並べ替えて見せるだけ。
+     棚卸は過去に自動削除でデータを失った経緯がある領域なので、
+     この機能から保存経路を新たに作らない。
+   【数字の出どころ】原価の単一計算口 foodCostOf() をそのまま使う。
+     この画面だけ別の計算をすると、月次進捗・原価管理の数字と食い違う。
+       原価 = 期首棚卸 + 仕入(原価対象) + 食材移動 − 期末棚卸
+   【期末棚卸との関係】確定した棚卸総額（snap.grand）と、原価計算に使われている
+     期末棚卸額（fc.endInv）は本来一致するはずだが、fc 側を手で直すとずれる。
+     ずれていたら必ず出す。黙って片方だけ見せると、原価率が合わない原因が
+     分からなくなる。 */
+function _fcMoney(n){ return (typeof invFmtMoney==='function') ? invFmtMoney(n||0) : ('$'+Math.round(Number(n)||0).toLocaleString('en-US')); }
+function _fcPrevYm(ym){
+  var p=String(ym||'').split('-'); var y=parseInt(p[0],10), m=parseInt(p[1],10);
+  if(!y||!m) return '';
+  if(m===1) return (y-1)+'-12';
+  return y+'-'+String(m-1).padStart(2,'0');
+}
+/* 表示に必要な数字を1か所で集める（画面側で計算しない） */
+function invCogsBreakdown(storeId, ym, snap){
+  var r=(typeof foodCostOf==='function') ? foodCostOf(storeId, ym) : null;
+  if(!r) return null;
+  var tnet=(typeof monthTransferNetYm==='function') ? (monthTransferNetYm(storeId, ym)||{}) : {};
+  var nonCost=(typeof monthNonCostYm==='function') ? (monthNonCostYm(storeId, ym)||{total:0,byPurpose:{}}) : {total:0,byPurpose:{}};
+  var invTotal=(typeof monthInvoiceTotalYm==='function') ? monthInvoiceTotalYm(storeId, ym) : r.invoice;
+  var grand=Number(snap && snap.grand)||0;
+  /* 確定した棚卸総額と、原価計算に使われている期末棚卸額のずれ */
+  var gap = (grand>0 && r.end>0) ? Math.round((grand-r.end)*100)/100 : 0;
+  return {
+    ym:ym, prevYm:_fcPrevYm(ym),
+    begin:r.begin, end:r.end, invoice:r.invoice, buy:r.buy,
+    transfer:r.transfer, tIn:Number(tnet.inAmt)||0, tOut:Number(tnet.outAmt)||0,
+    tInCount:Number(tnet.inCount)||0, tOutCount:Number(tnet.outCount)||0,
+    purch:r.purch, cost:r.cost, sales:r.sales, rate:r.rate, hasEnd:r.hasEnd, mode:r.mode,
+    invoiceTotal:invTotal, nonCost:nonCost.total, nonCostBy:nonCost.byPurpose,
+    snapGrand:grand, endGap:gap
+  };
+}
+function renderInvCogsCard(storeId, ym, snap){
+  var d=invCogsBreakdown(storeId, ym, snap);
+  if(!d) return '';
+  var col = d.rate>0 ? (d.rate<=30?'var(--green)':d.rate<=35?'var(--yellow)':'var(--red)') : 'var(--muted)';
+  var pm=String(d.prevYm||'').split('-'), pmLabel=pm[1]?(parseInt(pm[1],10)+'月'):'前月';
+  var cm=String(ym||'').split('-'), cmLabel=cm[1]?(parseInt(cm[1],10)+'月'):'今月';
+
+  /* 1行＝1要素。符号と役割が目で追えるように色と記号を付ける */
+  var row=function(sign, label, amt, note, c){
+    return '<div style="display:flex;align-items:baseline;gap:8px;padding:7px 0;border-top:1px solid var(--border)">'
+      + '<span style="flex:0 0 16px;text-align:center;font-weight:800;color:'+(c||'var(--muted)')+';font-size:13px">'+sign+'</span>'
+      + '<span style="flex:1;min-width:0;font-size:12px">'+label
+      + (note?('<div style="font-size:10px;color:var(--muted);line-height:1.5">'+note+'</div>'):'')+'</span>'
+      + '<span style="font-size:13.5px;font-weight:700;white-space:nowrap;color:'+(c||'var(--tm)')+'">'+_fcMoney(amt)+'</span></div>';
+  };
+
+  var h='<div class="card" style="border:1.5px solid '+col+'">';
+  h+='<div class="card-title"><i class="ti ti-calculator" style="color:'+col+'"></i>原価の内訳'
+    + (typeof fcModeBadge==='function' ? ' '+fcModeBadge(d) : '')
+    + '<span style="margin-left:auto;font-size:10px;color:var(--muted);font-weight:400">棚卸法</span></div>';
+
+  /* 結論：原価率 */
+  h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">'
+    + '<div style="font-size:28px;font-weight:800;color:'+col+'">'+(d.rate>0?d.rate.toFixed(1)+'%':'—')+'</div>'
+    + '<div style="font-size:11.5px;color:var(--muted)">原価 <b style="color:var(--tm)">'+_fcMoney(d.cost)+'</b>'
+    + ' ／ 売上 '+(d.sales>0?_fcMoney(d.sales):'<span style="color:var(--yellow)">未入力</span>')+'</div></div>';
+  if(!(d.sales>0)){
+    h+='<div style="font-size:10.5px;color:var(--yellow);margin-bottom:4px"><i class="ti ti-alert-triangle"></i> '
+      +'この月の売上が入っていないため原価率は出せません（原価金額は確定しています）。</div>';
+  }
+
+  /* 計算の流れ */
+  h+='<div style="margin-top:6px">';
+  h+=row('', pmLabel+'末の棚（期首）', d.begin,
+        d.begin>0?'前月の棚卸から引き継いだ金額':'<span style="color:var(--yellow)">未設定。前月の棚卸を確定すると入ります</span>', 'var(--tm)');
+  h+=row('＋', cmLabel+'の仕入（Invoice）', d.invoice,
+        (d.nonCost>0?('原価対象のみ。原価外 '+_fcMoney(d.nonCost)+' は含めていません'):'原価対象の伝票の合計'), 'var(--accent2)');
+  if(d.buy>0) h+=row('＋', cmLabel+'の買い出し', d.buy, '現金購入など', 'var(--accent2)');
+  h+=row(d.transfer>=0?'＋':'−', '食材移動', Math.abs(d.transfer),
+        (d.tInCount||d.tOutCount)
+          ? ('受入 '+_fcMoney(d.tIn)+'（'+d.tInCount+'件） ／ 払出 '+_fcMoney(d.tOut)+'（'+d.tOutCount+'件）')
+          : 'この月の移動はありません',
+        d.transfer>=0?'var(--accent2)':'var(--green)');
+  h+=row('−', cmLabel+'末の棚（期末）', d.end,
+        d.hasEnd?'今回確定した棚卸':'<span style="color:var(--yellow)">未確定</span>', 'var(--green)');
+  h+='<div style="display:flex;align-items:baseline;gap:8px;padding:9px 0 2px;border-top:2px solid var(--border)">'
+    + '<span style="flex:0 0 16px;text-align:center;font-weight:800;font-size:13px">＝</span>'
+    + '<span style="flex:1;font-size:12.5px;font-weight:800">原価</span>'
+    + '<span style="font-size:16px;font-weight:800">'+_fcMoney(d.cost)+'</span></div>';
+  h+='</div>';
+
+  /* 棚卸総額と期末棚卸額のずれ。黙って隠さない */
+  if(d.endGap!==0){
+    h+='<div class="alert alert-warning" style="margin:8px 0 0;padding:7px 10px"><i class="ti ti-alert-triangle"></i>'
+      +'<div style="font-size:11px;line-height:1.6">確定した棚卸総額 <b>'+_fcMoney(d.snapGrand)+'</b> と、'
+      +'原価計算に使われている期末棚卸額 <b>'+_fcMoney(d.end)+'</b> が '+_fcMoney(Math.abs(d.endGap))+' ずれています。'
+      +'<div style="margin-top:2px;color:var(--muted)">原価管理タブの期末棚卸額が手で書き換えられている可能性があります。上の原価率は期末棚卸額のほうで計算しています。</div></div></div>';
+  }
+
+  /* 小さく詳細 */
+  h+='<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">詳細</summary>'
+    +'<div style="font-size:11px;line-height:1.9;margin-top:5px">'
+    +'<div>計算式：<span style="color:var(--muted)">期首棚卸 ＋ 仕入 ＋ 食材移動 − 期末棚卸</span></div>'
+    +'<div>'+_fcMoney(d.begin)+' ＋ '+_fcMoney(d.invoice+d.buy)+' '+(d.transfer>=0?'＋':'−')+' '+_fcMoney(Math.abs(d.transfer))
+    +' − '+_fcMoney(d.end)+' ＝ <b>'+_fcMoney(d.cost)+'</b></div>'
+    +'<div style="margin-top:4px">Invoice 合計（原価外を含む全伝票）：'+_fcMoney(d.invoiceTotal)+'</div>';
+  if(d.nonCost>0){
+    h+='<div style="color:var(--muted)">うち原価に含めない分：'+_fcMoney(d.nonCost)+'　'
+      + Object.keys(d.nonCostBy).map(function(k){ return escapeHtml(k)+' '+_fcMoney(d.nonCostBy[k]); }).join('・')
+      + '</div>';
+  }
+  h+='<div style="margin-top:4px">棚卸の確定総額：'+_fcMoney(d.snapGrand)+'（'+((snap&&snap.lines||[]).length)+'品目）</div>'
+    +'<div style="color:var(--muted);margin-top:4px">売上・期首/期末棚卸の金額は「原価管理」タブで確認・修正できます。この画面は表示のみです。</div>'
+    +'</div></details>';
+  return h+'</div>';
+}
 /* 確定済み月の読み取り専用ビュー */
 function invRenderConfirmedView(storeId, snap, ym){
   var p=ym.split('-'); var mLabel=parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月';
@@ -18147,6 +18262,8 @@ function invRenderConfirmedView(storeId, snap, ym){
     ${(snap.edits&&snap.edits.length)?`<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">修正履歴（${snap.edits.length}件）</summary>${snap.edits.map(function(e){return '<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><i class="ti ti-pencil" style="color:var(--yellow)"></i> '+escapeHtml(e.by||'')+' '+escapeHtml(e.at||'')+(e.prevGrand!=null?' <span style="color:var(--muted)">（修正前総額 '+invFmtMoney(e.prevGrand)+'）</span>':'')+'</div>';}).join('')}</details>`:''}
     <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-lock"></i> 確定済みのため表示のみ。数量の修正・追加入力は右上の「修正」ボタンから行えます（修正履歴が残ります）。</div>
   </div>`;
+  /* v803: 前月棚 → 仕入 → 食材移動 → 今月棚 → 原価率。表示のみで何も保存しない */
+  try{ h += renderInvCogsCard(storeId, ym, snap); }catch(e){}
   // 明細（業者別）
   var byVendor={};
   (snap.lines||[]).forEach(function(l){ var v=l.vendor||'未設定'; (byVendor[v]=byVendor[v]||[]).push(l); });
@@ -22249,7 +22366,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '802';
+const APP_VERSION = '803';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
