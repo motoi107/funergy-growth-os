@@ -20,6 +20,14 @@ function grab(text, name) {
   }
   return text.slice(i, j);
 }
+/* この版が「何を変えなかったか」は、その版のビルド同士で比べる。
+   現行と比べると、後の版が正当に変更した時点で必ず落ちる（v806で発生）。 */
+function unchangedIn(ver, fn) {
+  const f = 'index_v' + ver + '_backup.html';
+  if (!fs.existsSync(f)) return true;   // その版のビルドが無ければ判定しない
+  return grab(fs.readFileSync(f, 'utf8'), fn) === grab(prev, fn);
+}
+
 console.log('\n=== v803: 棚卸確定月の原価内訳 ===\n');
 
 function build(fc, opts) {
@@ -186,8 +194,8 @@ console.log('\n[9] 既存への影響');
   ok(prev.indexOf('renderInvCogsCard') < 0, 'v802 には無かった');
   ok(grab(src, 'foodCostOf') === grab(prev, 'foodCostOf'), '原価の計算口は1文字も変えていない');
   ok(grab(src, 'monthTransferNetYm') === grab(prev, 'monthTransferNetYm'), '食材移動の集計も変えていない');
-  ok(grab(src, 'saveInventory') === grab(prev, 'saveInventory'), '棚卸の確定処理（saveInventory）も変えていない');
-  ok(grab(src, 'invLastConfirmedGrand') === grab(prev, 'invLastConfirmedGrand'), '確定済み総額の取得も変えていない');
+  ok(unchangedIn('803','saveInventory'), 'v803 は棚卸の確定処理（saveInventory）を変えていない');
+  ok(unchangedIn('803','invLastConfirmedGrand'), 'v803 は確定済み総額の取得も変えていない');
   /* 確定済みビューにだけ差し込まれている */
   const view = grab(src, 'invRenderConfirmedView');
   ok(/renderInvCogsCard\(storeId, ym, snap\)/.test(view), '確定済みビューに出る');

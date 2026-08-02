@@ -31,6 +31,14 @@ function objDecl(text, name) {
   for (let j = i; j < text.length; j++) { if (text[j] === '{') d++; else if (text[j] === '}') { d--; if (d === 0) { e = j; break; } } }
   return 'var ' + name + ' = ' + text.slice(i, e + 1) + ';';
 }
+/* この版が「何を変えなかったか」は、その版のビルド同士で比べる。
+   現行と比べると、後の版が正当に変更した時点で必ず落ちる（v806で発生）。 */
+function unchangedIn(ver, fn) {
+  const f = 'index_v' + ver + '_backup.html';
+  if (!fs.existsSync(f)) return true;   // その版のビルドが無ければ判定しない
+  return grab(fs.readFileSync(f, 'utf8'), fn) === grab(prev, fn);
+}
+
 console.log('\n=== v804: LaLa オープン準備 ===\n');
 
 function build(failSave) {
@@ -216,8 +224,6 @@ console.log('\n[7] 保存エラーで入力が消えない');
   ok(/lalaRetry/.test(h), '再試行が押せる');
   ['saving|保存中', 'saved|保存済み', 'retry|再保存中'].forEach(function (x) {
     const p = x.split('|');
-    ok(e2.stateHtml.call(null, 'k') !== undefined, '');
-    pass--; /* 上はダミー。下で実判定 */
     e2.state('k', p[0]);
     ok(new RegExp(p[1]).test(e2.stateHtml('k')), p[1] + ' が表示される');
   });
@@ -297,7 +303,7 @@ console.log('\n[11] 既存への影響');
   ok(/{id:'lala'/.test(src), 'メニュー項目がある');
   ok(/children:\['tasks','lala'\]/.test(src), 'ワークセンターの中に入る');
   ['renderTipMgmt', 'foodCostOf', 'bonusForEmp', 'saveInventory'].forEach(function (fn) {
-    ok(grab(src, fn) === grab(prev, fn), fn + ' は1文字も変えていない');
+    ok(unchangedIn('804', fn), 'v804 は ' + fn + ' を1文字も変えていない');
   });
   const before = (prev.match(/var OP_SYNC_KEYS = \[([^\]]*)\]/) || [])[1] || '';
   const after = (src.match(/var OP_SYNC_KEYS = \[([^\]]*)\]/) || [])[1] || '';

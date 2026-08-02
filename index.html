@@ -6252,6 +6252,10 @@ var OP_MERGE = {
   /* v798: 査定まわり。ここが無いと部分データを持つ端末の保存が
      クラウドを丸ごと上書きし、別の人が入れた四半期・別の従業員の
      カルテが消える。査定は手入力で再生できないため、必ず件ごとに合流する。 */
+  /* v807: Shift Leader。v801 で保護対象にしたのに合流ルールが無く、
+     2人が別の日を登録すると片方が消える状態だった（$10/回の支給根拠なので実害がある）。
+     手入力は日付ごとに独立しているので、日付単位で合流する。 */
+  sl_config:          { merge: mergeStamped,   covers: _coversStamped },
   /* v804: LaLa はタスク単位で合流。別々のタスクを直しても消し合わない */
   lala_tasks:         { merge: mergeMapByTime, covers: _coversMapByTime },
   bonus_q:            { merge: mergeMapByTime, covers: _coversMapByTime },
@@ -6517,6 +6521,8 @@ var SPLIT_MERGE_SAFE_KEYS = ['invoices','reimbursements','tasks_all','mileage_re
    パーティションの値は「その人/その店だけの部分配列」なので既存のマージ関数がそのまま使える
    （v622 が budgets_v2 について書いている理屈と同じ）。 */
 function _opMergeDef(key){
+  /* v807: sl_manual_<店> は日付をキーにした入れ物。日付単位で合流する */
+  if(String(key).indexOf('sl_manual_')===0) return { merge: mergeMapByTime, covers: _coversMapByTime };
   if(OP_MERGE[key]) return OP_MERGE[key];
   for(var p in OP_MERGE_PREFIX){ if(OP_MERGE_PREFIX.hasOwnProperty(p) && String(key).indexOf(p)===0) return OP_MERGE_PREFIX[p]; }
   try{
@@ -18065,6 +18071,78 @@ function invRecalcTotals(storeId){
   var g=document.getElementById('inv-grand'); if(g) g.textContent=invFmtMoney(t.grand);
 }
 
+/* ===== v806: 棚卸が「何月分」かを取り違えないようにする =====
+   【なぜ必要か】棚卸は月末〜翌月初に実施するため、画面を開いた時点の月と
+     入力したい月がずれやすい。v805 までは月ナビの中に 14px で出るだけで、
+     入力欄より目立たなかった。8月分のつもりで7月分に入れても気づけない。
+   【この版】月ナビを「その月の作業をしている」と分かる帯に作り替える。
+     ・対象月を大きく出す（当月／先月／◯ヶ月前 の関係も併記）
+     ・入力できる状態か（未確定／確定済み／修正中）を同じ帯に出す
+     ・今月以外を開いているときは色を変えて、戻る導線を近くに置く
+   【表示のみ】棚卸データにも確定状態にも一切書き込まない。 */
+function _invMonthRel(off){
+  off = Number(off)||0;
+  if(off===0)  return {label:'当月',   warn:false};
+  if(off===-1) return {label:'先月',   warn:true};
+  if(off<-1)   return {label:(-off)+'ヶ月前', warn:true};
+  return {label:(off)+'ヶ月後', warn:true};
+}
+function renderInvMonthBanner(storeId, ym, snap, editing, mLabel, hasCounts){
+  var rel=_invMonthRel(typeof invMonthOffset!=='undefined'?invMonthOffset:0);
+  var en=(typeof curLang!=='undefined' && curLang==='en');
+  /* 状態は「いま何ができるか」で分ける。色は状態、太字は月。 */
+  var state, stCol, stIcon;
+  if(editing){        state=en?'Editing (finalized)':'確定済みを修正中'; stCol='var(--yellow)'; stIcon='ti-pencil'; }
+  else if(snap){      state=en?'Finalized':'確定済み';                   stCol='var(--green)';  stIcon='ti-lock'; }
+  else if(hasCounts){ state=en?'In progress':'入力中（未確定）';           stCol='var(--accent)'; stIcon='ti-edit'; }
+  else {              state=en?'Not entered':'未入力';                    stCol='var(--muted)';  stIcon='ti-circle'; }
+  /* 当月以外は帯の色を変える。ここが取り違えの入口なので目立たせる */
+  var edge = rel.warn ? 'var(--yellow)' : stCol;
+
+  var h='<div class="card" style="padding:0;overflow:hidden;margin-bottom:10px;border:1.5px solid '+edge+'">';
+  h+='<div style="display:flex;align-items:stretch">';
+  /* 左：前の月へ */
+  h+='<button onclick="invNavMonth(-1)" aria-label="前の月" '
+    +'style="flex:0 0 44px;border:0;border-right:1px solid var(--border);background:transparent;color:var(--tm);cursor:pointer;font-size:17px">'
+    +'<i class="ti ti-chevron-left"></i></button>';
+  /* 中央：対象月を主役に */
+  h+='<div style="flex:1;min-width:0;text-align:center;padding:9px 6px">'
+    +'<div style="font-size:10px;color:var(--muted);letter-spacing:.04em">'
+    +(en?'INVENTORY FOR':'この画面で入力・表示しているのは')+'</div>'
+    +'<div style="font-size:21px;font-weight:800;line-height:1.25;color:'+edge+'">'+escapeHtml(mLabel)
+    +'<span style="font-size:12px;font-weight:700;color:var(--muted);margin-left:6px">'+escapeHtml(rel.label)+'</span></div>'
+    +'<div style="font-size:11px;font-weight:700;color:'+stCol+';margin-top:2px">'
+    +'<i class="ti '+stIcon+'" style="font-size:11px"></i> '+escapeHtml(state)+'</div>'
+    +'</div>';
+  /* 右：次の月へ */
+  var atNow=(typeof invMonthOffset==='undefined')||invMonthOffset>=0;
+  h+='<button onclick="invNavMonth(1)" aria-label="次の月" '+(atNow?'disabled':'')+' '
+    +'style="flex:0 0 44px;border:0;border-left:1px solid var(--border);background:transparent;'
+    +'color:var(--tm);cursor:'+(atNow?'default':'pointer')+';opacity:'+(atNow?'.3':'1')+';font-size:17px">'
+    +'<i class="ti ti-chevron-right"></i></button>';
+  h+='</div>';
+  /* 当月以外を見ているときだけ、戻る導線を帯の中に出す */
+  if(rel.warn){
+    h+='<div style="background:var(--surface2);border-top:1px solid var(--border);padding:6px 10px;'
+      +'display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+      +'<span style="font-size:11px;color:var(--yellow);flex:1;min-width:0">'
+      +'<i class="ti ti-alert-triangle"></i> '
+      +(en?('You are viewing '+mLabel+', not this month.')
+          :(escapeHtml(mLabel)+'（'+escapeHtml(rel.label)+'）を開いています。今月ではありません。'))
+      +'</span>'
+      +'<button class="btn btn-secondary btn-sm" onclick="invMonthOffset=0;window._invEditYm=null;renderPage(\'inventory\')">'
+      +(en?'This month':'今月へ戻る')+'</button></div>';
+  }
+  return h+'</div>';
+}
+/* 確定ボタンを押す前の最終確認に、対象月をはっきり出す */
+function invConfirmMonthText(ym){
+  var p=String(ym||'').split('-');
+  var y=parseInt(p[0],10), m=parseInt(p[1],10);
+  if(!y||!m) return '';
+  var rel=_invMonthRel(typeof invMonthOffset!=='undefined'?invMonthOffset:0);
+  return y+'年'+m+'月分（'+rel.label+'）';
+}
 function renderInventory(){
   var storeId = (curStore==='ALL' || curStore==='OFFICE' || !STORES.find(function(s){return s.id===curStore;})) ? STORES[0].id : curStore;
   var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
@@ -18089,13 +18167,8 @@ function renderInventory(){
         :`<button class="btn btn-success btn-sm" onclick="saveInventory('${storeId}')"><i class="ti ti-circle-check"></i> ${_snap?(curLang==='en'?'Re-finalize (logged)':'再確定（修正記録）'):(curLang==='en'?('Finalize (month '+parseInt(_p[1],10)+')'):(parseInt(_p[1],10)+'月分として確定'))}</button>`}
     </div>
   </div>`;
-  // 月ナビ
-  html += `<div class="card" style="padding:8px 10px;display:flex;align-items:center;gap:8px;margin-bottom:10px">
-    <button class="btn btn-secondary btn-sm" onclick="invNavMonth(-1)"><i class="ti ti-chevron-left"></i></button>
-    <div style="flex:1;text-align:center;font-weight:700;font-size:14px">${_mLabel} ${_snap?`<span class="tag tag-green" style="font-size:10px">✓ ${curLang==='en'?'Finalized':'確定済み'}</span>`:(Object.keys(counts).length?`<span class="tag tag-yellow" style="font-size:10px">${curLang==='en'?'In progress':'入力中'}</span>`:`<span class="tag tag-gray" style="font-size:10px">${curLang==='en'?'Not entered':'未入力'}</span>`)}</div>
-    <button class="btn btn-secondary btn-sm" ${invMonthOffset>=0?'disabled style="opacity:.4"':''} onclick="invNavMonth(1)"><i class="ti ti-chevron-right"></i></button>
-    ${invMonthOffset<0?`<button class="btn btn-secondary btn-sm" onclick="invMonthOffset=0;window._invEditYm=null;renderPage('inventory')">${curLang==='en'?'This month':'今月へ'}</button>`:''}
-  </div>`;
+  // 月ナビ（v806: 何月分かを取り違えないよう、対象月を主役にした帯にする）
+  html += renderInvMonthBanner(storeId, _ym, _snap, _editing, _mLabel, Object.keys(counts).length>0);
   if (_editing && _snap) {
     html += `<div class="alert alert-warning" style="padding:8px 12px;margin-bottom:10px"><i class="ti ti-pencil"></i><div style="font-size:12px;flex:1"><b>${_mLabel}${curLang==='en'?' (finalized) — editing':'分（確定済み）を修正中'}</b> — ${curLang==='en'?'Re-finalize overwrites; editor and timestamp are logged.':'「再確定」で上書きされ、修正者・日時が記録されます。'}</div><button class="btn btn-secondary btn-sm" onclick="invCancelEdit()">${curLang==='en'?'Cancel edit':'修正をやめる'}</button></div>`;
   }
@@ -18381,7 +18454,8 @@ function saveInventory(storeId){
   if(!lines.length){ alert('棚卸数が入力されていません'); return; }
   var ym = invYm();
   var _p = ym.split('-');
-  if(!confirm(parseInt(_p[0],10)+'年'+parseInt(_p[1],10)+'月分の棚卸として確定しますか？')) return;
+  /* v806: 対象月の取り違えを最後に止める。当月か先月かも出す */
+  if(!confirm(invConfirmMonthText(_ym)+'の棚卸として確定します。\n\nよろしいですか？')) return;
   var now=new Date();
   var snap={date:nowJP(), ym:ym, by:ROLE_CONFIG[curRole].name, mode:'monthly', grand:t.grand, perClass:t.perClass, perVendor:t.perVendor, lines:lines};
   var hist=ls('inv_hist_'+storeId,[])||[];
@@ -19382,7 +19456,11 @@ function slManualSet(storeId, dateISO, name, period, on){
   if(on) m[dateISO][name][period]={ at:(typeof nowJP==='function'?nowJP():''), by:(typeof myName==='function'?myName():(curUserName||'')) };
   else delete m[dateISO][name][period];
   if(!Object.keys(m[dateISO][name]).length) delete m[dateISO][name];
-  if(!Object.keys(m[dateISO]).length) delete m[dateISO];
+  /* v807: 空かどうかは氏名の数で見る。_at（合流用の印）を数えると、
+     最後の1件を消しても「印だけの空の日付」が残り、集計にも合流にも残り続ける。 */
+  var _names=Object.keys(m[dateISO]).filter(function(k){ return k!=='_at'; });
+  if(!_names.length) delete m[dateISO];
+  else m[dateISO]._at = Date.now();   /* 合流で勝敗を決めるための印 */
   return lsSet('sl_manual_'+storeId, m)!==false;
 }
 function _slGrade(name){
@@ -19419,6 +19497,7 @@ function slDayRecords(storeId, dateISO){
   try{
     var man=slManualAll(storeId)[dateISO]||{};
     Object.keys(man).forEach(function(name){
+      if(name==='_at') return;   /* v807: 合流用の印。氏名ではない */
       Object.keys(man[name]||{}).forEach(function(p){ push(name, p, 'manual', ''); });
     });
   }catch(e){}
@@ -19555,6 +19634,7 @@ function renderTipShiftLeader(){
       h+='<div style="margin-top:7px;font-size:10.5px;line-height:1.9">';
       mdates.forEach(function(dt){
         Object.keys(man[dt]).forEach(function(n){
+          if(n==='_at') return;   /* v807 */
           Object.keys(man[dt][n]).forEach(function(p){
             h+='<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:6px;padding:1px 6px;margin:0 4px 4px 0">'
               +escapeHtml(dt.slice(5))+' '+escapeHtml(n)+' <b>'+p+'</b>'
@@ -22408,7 +22488,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '805';
+const APP_VERSION = '807';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
