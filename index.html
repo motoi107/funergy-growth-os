@@ -3166,6 +3166,25 @@ var MC_RULE_DEFAULTS = {
 /* v817: 1回の検知で個別通知を出す上限。緊急はこの上限を越えても通知する。
    上限を超えた分は画面には出るので見落としにはならない。 */
 var MC_NOTIFY_MAX_PER_RUN = 10;
+/* v820: 月初は予測を出さない。
+   8/2 に 1日分の実績から月末を予測して緊急にしていたため。
+   実績のある日数がこれ未満の間は、予実・客数・客単価・
+   人件費率・原価率（暂定）の判定を行わない。
+   データ不足自体は sales_not_synced が別に見ているので見落としにはならない。 */
+MC_RULE_DEFAULTS.forecast_min_days = {
+  cat: 'budget', catLabel: '共通', label: '予測を出すのに必要な実績日数', warning: 3, critical: null, unit: '日',
+};
+/* 店長・AM 未設定のラベル（内訳で rule_code のまま出ていた） */
+MC_RULE_DEFAULTS.no_store_manager = { cat: 'growth', label: '店長が登録されていない', warning: 0, critical: null, unit: '' };
+MC_RULE_DEFAULTS.no_area_manager  = { cat: 'growth', label: '管轄AMが設定されていない', warning: 0, critical: null, unit: '' };
+
+/* 予測を出してよいだけの実績があるか */
+function mcEnoughDays(c, storeId) {
+  var t = mcThr('forecast_min_days', storeId);
+  var need = (t && t.warning > 0) ? t.warning : 3;
+  return !!(c && (c.daysWithActual || 0) >= need);
+}
+
 /* 育成：この時間以上働いた人だけを対象にする（休職・短時間の誤検知を避ける／仕様§8） */
 var MC_SKILL_MIN_HOURS = 20;
 
@@ -3253,8 +3272,9 @@ function mcDetectBudget(storeId, ym) {
       recommended_action: '同期を実行するか、日次実績を入力してください。予測の精度が落ちています',
     }));
   }
-  /* 実績が1日も無ければ、進捗・予測は判定しない（0%と読み違えるため） */
-  if (!(c.daysWithActual > 0)) return out;
+  /* 実績が少ないうちは進捗・予測を判定しない。
+     0%と読み違えるのと、月初の1日分から月末を予測してしまうのを防ぐ（v820） */
+  if (!mcEnoughDays(c, storeId)) return out;
 
   var pace = Number(c.paceRate) || 0;
   var t2 = mcThr('budget_pace_behind', storeId);
@@ -3295,6 +3315,7 @@ function mcDetectLabor(storeId, ym) {
   var c, kpi;
   try { c = cumulativeToToday(storeId, ym); kpi = getStoreKpiTargets(storeId) || {}; } catch (e) { return out; }
   if (!c || !(c.actToToday > 0)) return out;
+  if (!mcEnoughDays(c, storeId)) return out;   /* v820: 月初は人件費率が必ずブレる */
   var target = Number(kpi.laborPct);
   if (!(target > 0)) return out;              /* 目標が無ければ判定しない */
   var t = mcThr('labor_rate_over', storeId);
@@ -3333,7 +3354,7 @@ function mcDetectCost(storeId, ym) {
   var target = Number(kpi.foodCost);
   var rate = r.hasEnd ? Number(r.rate) : Number(r.provisionalRate);
   var t = mcThr('cost_rate_over', storeId);
-  if (t.enabled && target > 0 && rate > 0) {
+  if (t.enabled && target > 0 && rate > 0 && (r.hasEnd || mcEnoughDays(c, storeId))) {   /* v820 */
     var over = mcRound(rate - target);
     var sev = mcSevBy(over, t);
     if (sev) out.push({
@@ -3482,11 +3503,15 @@ function mcDetectFromErrorCenter(storeIds, ym) {
        fv_variance の対象店が広がってから。
 ============================================================ */
 
+/* v820: どちらも緊急（=2時間でAM、4時間でGMへエスカレーション）にする話ではない。
+   新規材料はマスター整備の事務作業。新店だと 93件など普通に出る。
+   単価の上昇は 1品目でも率が大きく出るので、緊急にすると鳴り続ける。
+   必要なら GM が「基準」タブで緊急値を入れれば戻せる。 */
 MC_RULE_DEFAULTS.new_ingredient = {
-  cat: 'cost', label: '未確認の新規材料', warning: 1, critical: 10, unit: '件',
+  cat: 'cost', label: '未確認の新規材料', warning: 1, critical: null, unit: '件',
 };
 MC_RULE_DEFAULTS.price_up = {
-  cat: 'cost', label: '仕入単価の上昇', warning: 10, critical: 20, unit: '%',
+  cat: 'cost', label: '仕入単価の上昇', warning: 10, critical: null, unit: '%',
 };
 MC_RULE_DEFAULTS.case_size_changed = {
   cat: 'cost', label: '内容量が変わった可能性', warning: 40, critical: null, unit: '%',
@@ -3648,6 +3673,7 @@ function mcDetectGuests(storeId, ym) {
   if (!c || !ms) return out;
   if (!(c.budMonth > 0) || !(c.budToToday > 0)) return out;
   if (!(budG > 0)) return out;                    /* 予算に客数が入っていなければ判定しない */
+  if (!mcEnoughDays(c, storeId)) return out;      /* v820: 月初は客数・客単価もブレる */
   if (!(ms.daysWithData > 0) || !(ms.guests > 0)) return out;
 
   var name = mcStoreLabel(storeId);
@@ -25031,7 +25057,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '819';
+const APP_VERSION = '820';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
