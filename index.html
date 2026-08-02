@@ -1757,6 +1757,11 @@ function mcRole() {
   return '';
 }
 
+/* v823: ワークセンターを持っている役職か。MENU_GROUPS の g_tasks の roles と揃える。
+   Crew と Head Chef は持っていないので、その場合は単体の画面を出す。 */
+function mcHasWorkCenter() {
+  return ['ceo', 'gm', 'office', 'am', 'sl'].indexOf(curRole) >= 0;
+}
 /* 「管理」タブを出してよいか。AM以上のみ（店長・それ以下は通知から入る） */
 function mcCanOpen() {
   var r = mcRole();
@@ -1847,14 +1852,31 @@ function mcGmNames() {
   return out;
 }
 
+/* v824: 店舗にいる Head Chef。原価・仕入の担当として通知を受け取る。
+   店長（Store Manager）とは別の枠。店長判定には入れない。 */
+function mcStoreChefsOf(storeId) {
+  if (!storeId) return [];
+  try {
+    return getEmployees().filter(function (e) {
+      return mcEmpActive(e) && e.store === storeId && e.title === 'Head Chef';
+    });
+  } catch (e) { return []; }
+}
+
 /* 通知先の決定。通知を破棄しない（仕様§9）。
-   店長不在 → issues に 'no_sm'。AM未設定 → 'no_am'。GM は常に入る。 */
-function mcNotifyTargets(storeId) {
-  var out = { store: storeId || '', sm: [], am: [], gm: mcGmNames(), issues: [] };
+   店長不在 → issues に 'no_sm'。AM未設定 → 'no_am'。GM は常に入る。
+   v824: 分野を受け取る。原価・仕入のときだけ Head Chef を宛先に加える。
+   店長は分野に関係なく入る（店の責任者のため）。 */
+function mcNotifyTargets(storeId, category) {
+  var out = { store: storeId || '', sm: [], chef: [], am: [], gm: mcGmNames(), issues: [] };
   out.sm = mcStoreManagersOf(storeId).map(function (e) { return e.name; });
+  if (category === 'cost') {
+    out.chef = mcStoreChefsOf(storeId).map(function (e) { return e.name; });
+  }
   var am = mcAmNameOf(storeId);
   if (am) out.am = [am];
-  if (!out.sm.length) out.issues.push('no_sm');
+  /* その分野を受ける店舗側の人が一人もいないときだけ不備とする */
+  if (!out.sm.length && !out.chef.length) out.issues.push('no_sm');
   if (!out.am.length) out.issues.push('no_am');
   return out;
 }
@@ -2226,7 +2248,21 @@ function mcAlertCard(a) {
   return h + '</div>';
 }
 
-function renderMgmtControl() {
+/* v823: 管理統括はまだ未完成なので、上部に大きく出す。
+   完成したらこの関数と、renderMgmtControl 内の呼び出し1行を消す。
+   ここを消し忘れないよう、検証で「まだ出ている」ことを確認している。 */
+function mcUnderConstructionHtml() {
+  return '<div style="background:linear-gradient(135deg,#e0a020,#d98324);color:#fff;'
+    + 'border-radius:14px;padding:16px 16px;margin-bottom:12px;text-align:center">'
+    + '<div style="font-size:11px;letter-spacing:.14em;opacity:.9;margin-bottom:3px">UNDER CONSTRUCTION</div>'
+    + '<div style="font-size:22px;font-weight:800;line-height:1.3">整 備 中</div>'
+    + '<div style="font-size:11.5px;line-height:1.7;margin-top:7px;opacity:.95">'
+    + 'この画面はまだ調整中です。件数・金額・重要度は変わることがあります。<br>'
+    + '数字をそのまま判断に使う前に、元の画面（予実・食材管理・エラーセンター）で確認してください。</div>'
+    + '</div>';
+}
+
+function renderMgmtControl(embedded) {
   if (!mcCanOpen()) {
     return '<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:20px">'
       + 'この画面は AM 以上が対象です。<br>店舗の対応依頼は通知から開けます。</p></div>';
@@ -2235,9 +2271,12 @@ function renderMgmtControl() {
 
   var role = mcRole();
   var roleLabel = { gm: 'GM（全店）', am: 'AM（管轄店舗）', chef: 'Head Chef（原価・仕入）' }[role] || role;
-  var h = '<div class="section-header"><div><div class="section-title">'
+  var h = embedded ? '' : ('<div class="section-header"><div><div class="section-title">'
     + '<i class="ti ti-shield-check"></i> 管理統括</div>'
-    + '<div class="section-sub">4分野の異常を検知し、店長への依頼から解決確認まで管理します</div></div></div>';
+    + '<div class="section-sub">4分野の異常を検知し、店長への依頼から解決確認まで管理します</div></div></div>');
+  /* v823: まだ未完成なので、上部に大きく出す。
+     完成したらこのブロックを削除する。 */
+  h += mcUnderConstructionHtml();
 
   if (mcState.schemaMissing) {
     h += mcBanner('ti-database-off', MC_SEV.warning.color, 'データベースがまだ用意されていません',
@@ -2662,6 +2701,7 @@ function mcDetailHtml() {
       + '</div>';
   } else if (mcSheet.mode === 'assign') {
     var sms = mcStoreManagersOf(a.store_id);
+    if (a.category === 'cost') sms = mcStoreChefsOf(a.store_id).concat(sms);   /* v824 */
     h += '<div style="font-size:11.5px;color:var(--muted);margin-bottom:5px">担当者</div>';
     if (!sms.length) {
       h += '<div style="font-size:11.5px;color:' + MC_SEV.warning.color + ';line-height:1.6;margin-bottom:7px">'
@@ -2675,7 +2715,9 @@ function mcDetailHtml() {
   } else if (mcSheet.mode === 'request') {   /* v811 */
     var tg = mcNotifyTargets(a.store_id);
     h += '<div style="font-size:11.5px;color:var(--muted);margin-bottom:5px">依頼先：'
-      + (tg.sm.length ? escapeHtml(tg.sm.join('、')) + '（店長）' : '<span style="color:' + MC_SEV.warning.color + '">店長未登録のため AM と GM へ</span>')
+      + ((a.category === 'cost' && tg.chef.length) ? escapeHtml(tg.chef.join('、')) + '（Head Chef）'
+         : tg.sm.length ? escapeHtml(tg.sm.join('、')) + '（店長）'
+         : '<span style="color:' + MC_SEV.warning.color + '">担当者未登録のため AM と GM へ</span>')
       + '</div>'
       + '<input id="mc-req" type="text" placeholder="例：今週中に原因と対策を入力してください" style="width:100%;box-sizing:border-box;font-size:13px;padding:9px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
       + '<div style="display:flex;gap:7px;margin-top:8px">'
@@ -2778,7 +2820,7 @@ function mcNotifItem(alert, kind, name, role, title, body, gen) {
 async function mcNotifyAlert(alert, kind, opts) {
   opts = opts || {};
   if (!alert || !alert.id) return { ok: false, err: 'アラートがありません' };
-  var t = mcNotifyTargets(alert.store_id);
+  var t = mcNotifyTargets(alert.store_id, alert.category);   /* v824: 分野を渡す */
   var only = opts.only || null;
   var kindLabel = (MC_NOTIF_KIND[kind] || {}).label || kind;
   var title = kindLabel + '：' + (alert.title || '');
@@ -2792,6 +2834,7 @@ async function mcNotifyAlert(alert, kind, opts) {
     });
   }
   push(t.sm, 'sm');
+  push(t.chef, 'chef');   /* v824: 原価・仕入のときだけ中身が入る */
   push(t.am, 'am');
   push(t.gm, 'gm');
 
@@ -2845,10 +2888,11 @@ async function mcRequestToSm(alertId, message) {
   if (!mcCanAct(a)) { showToast('依頼する権限がありません', 'warning'); return; }
   mcSheet.busy = true; mcSheet.msg = ''; mcRenderSheetNow();
 
-  var t = mcNotifyTargets(a.store_id);
-  var to = t.sm[0] || t.am[0] || t.gm[0] || '';
+  var t = mcNotifyTargets(a.store_id, a.category);
+  /* v824: 原価・仕入は Head Chef が担当。いなければ店長 → AM → GM */
+  var to = (a.category === 'cost' ? t.chef[0] : '') || t.sm[0] || t.am[0] || t.gm[0] || '';
   var ins = await mcApi('POST', MC_TBL.action, '', [{
-    alert_id: a.id, action_type: t.sm.length ? 'request_sm' : 'request_am',
+    alert_id: a.id, action_type: (t.sm.length || t.chef.length) ? 'request_sm' : 'request_am',
     status: 'requested', assigned_to: to, requested_by: mcMyName(),
     request_message: message || '',
   }]);
@@ -2868,7 +2912,7 @@ async function mcRequestToSm(alertId, message) {
     if (up.ok) mcReplaceAlert(up.row);
   }
   mcSheet.busy = false; mcSheet.mode = '';
-  if (!t.sm.length) mcSheet.msg = 'この店舗に店長が登録されていないため、AM と GM に通知しました。';
+  if (!t.sm.length && !t.chef.length) mcSheet.msg = 'この店舗に担当者が登録されていないため、AM と GM に通知しました。';
   showToast(to ? (to + ' に依頼しました') : '通知しました', 'success');
   await mcLoadDetailExtras(a.id);
   renderPage(curPage);
@@ -2944,7 +2988,7 @@ function mcNotifPanelHtml() {
   if (!mcExtra.notifs.length) return '<div style="font-size:11.5px;color:var(--muted);padding:6px 0">まだ通知していません</div>';
   return mcExtra.notifs.map(function (n) {
     var s = mcNotifStatusLabel(n);
-    var role = { sm: '店長', am: 'AM', gm: 'GM' }[n.recipient_role] || n.recipient_role || '';
+    var role = { sm: '店長', chef: 'Head Chef', am: 'AM', gm: 'GM' }[n.recipient_role] || n.recipient_role || '';
     return '<div style="display:flex;gap:8px;align-items:center;font-size:11.5px;padding:4px 0;border-top:1px solid var(--border)">'
       + '<span style="flex:1;min-width:0;word-break:break-word">' + escapeHtml(n.recipient_user_id || '') + ' <span style="color:var(--muted)">(' + role + ')</span></span>'
       + '<span style="flex:0 0 auto;color:var(--muted)">' + mcElapsed(n.created_at) + '前</span>'
@@ -3057,12 +3101,12 @@ function mcAlertStoreOf(alertId) { var a = mcReqFindAlert(alertId) || mcFindAler
 
 function mcReqToggle(id) { mcReq.openId = (mcReq.openId === id) ? '' : id; renderPage('mc_requests'); }
 
-function renderMcRequests() {
+function renderMcRequests(embedded) {
   if (!mcReq.loaded && !mcReq.loading) { try { mcLoadMyRequests(); } catch (e) { } }
   try { if (typeof mcRealtimeStart === 'function' && !mcRt.on) mcRealtimeStart(); } catch (e) { }   /* v813 */
-  var h = '<div class="section-header"><div><div class="section-title">'
+  var h = embedded ? '' : ('<div class="section-header"><div><div class="section-title">'
     + '<i class="ti ti-inbox"></i> 対応依頼</div>'
-    + '<div class="section-sub">自分あての通知と、依頼された対応をここで確認します</div></div></div>';
+    + '<div class="section-sub">自分あての通知と、依頼された対応をここで確認します</div></div></div>');
 
   if (mcReq.schemaMissing) {
     return h + mcBanner('ti-database-off', MC_SEV.warning.color, 'まだ準備中です',
@@ -4392,8 +4436,6 @@ const NAV_ITEMS = [
 const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
     children:['dashboard','store_cmd','mc_requests','mypage']},
-  {id:'g_mgmt', label:'管理', icon:'ti-shield-check', roles:['ceo','gm','am'],
-    children:['mgmt_ctrl']},   /* v809 */
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','labor','foodcost','kpi_master']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
@@ -11287,8 +11329,10 @@ function renderPage(page) {
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
     case 'office_mgr':   el.innerHTML = renderOfficeMgr(); break;
     case 'office_export': el.innerHTML = '<div class="section-header"><div><div class="section-title"><i class="ti ti-file-export"></i> 出力センター</div><div class="section-sub">全ての帳票・CSV出力</div></div></div>' + renderOfficeExport(); break;
-    case 'mgmt_ctrl':    el.innerHTML = renderMgmtControl(); break;   /* v809 */
-    case 'mc_requests':  el.innerHTML = renderMcRequests(); break;   /* v811 */
+    case 'mgmt_ctrl':    if (mcHasWorkCenter()) { workTab='mgmt';     el.innerHTML = renderWorkCenter(); }
+                         else el.innerHTML = renderMgmtControl(); break;   /* v823 */
+    case 'mc_requests':  if (mcHasWorkCenter()) { workTab='requests'; el.innerHTML = renderWorkCenter(); }
+                         else el.innerHTML = renderMcRequests(); break;   /* v823 */
     case 'error_center': workTab='error'; el.innerHTML = renderWorkCenter(); break;
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'order':        el.innerHTML = renderOrder(); break;
@@ -25132,7 +25176,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '822';
+const APP_VERSION = '824';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -48432,6 +48476,7 @@ function setWorkTab(t){ workTab = t; renderPage('tasks'); }
 function renderWorkCenter(){
   try{ checkCashTipTasks(); }catch(e){}
   var canErr = true;  // G3以上（＋事務）はワークセンターの全項目を閲覧可
+  var canMc = (typeof mcCanOpen==='function') ? mcCanOpen() : false;   /* v823: 管理統括は AM 以上だけ */
   var canAnn = true;
   var pend = ls('approvals',[]).filter(function(a){return a.status==='pending';});
   if (['gm','ceo','office'].indexOf(curRole)<0) {
@@ -48451,10 +48496,14 @@ function renderWorkCenter(){
     <div class="phase-tab${workTab==='tasks'?' active':''}" onclick="setWorkTab('tasks')"><i class="ti ti-list-check" style="font-size:12px"></i> タスク${openT.length?' <span class="tag tag-yellow" style="font-size:8px">'+openT.length+'</span>':''}</div>
     <div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>
     ${canErr?`<div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> エラー${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>`:''}
+    ${canMc?`<div class="phase-tab${workTab==='mgmt'?' active':''}" onclick="setWorkTab('mgmt')"><i class="ti ti-shield-check" style="font-size:12px"></i> 管理統括</div>`:''}
+    <div class="phase-tab${workTab==='requests'?' active':''}" onclick="setWorkTab('requests')"><i class="ti ti-inbox" style="font-size:12px"></i> 対応依頼</div>
     ${canAnn?`<div class="phase-tab${workTab==='announce'?' active':''}" onclick="setWorkTab('announce')"><i class="ti ti-speakerphone" style="font-size:12px"></i> アナウンス</div>`:''}
   </div>`;
   if (workTab==='tasks')    return bar + renderTasks();
   if (workTab==='approval') return bar + renderApproval();
+  if (workTab==='mgmt')     { if(!canMc){ workTab='today'; } else return bar + renderMgmtControl(true); }   /* v823 */
+  if (workTab==='requests') return bar + renderMcRequests(true);   /* v823 */
   if (workTab==='error')    return bar + renderErrorCenter(true);
   if (workTab==='announce') return bar + renderAnnounce();
   // ===== 今日タブ =====
