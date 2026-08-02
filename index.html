@@ -1999,6 +1999,7 @@ function mcBreakdownHtml() {
   var cats = mcCategoryIds(), scope = mcScopeStores();
   var by = {};
   mcState.alerts.forEach(function (a) {
+    if (typeof mcInPeriod === 'function' && !mcInPeriod(a, mcState.period)) return;   /* v822 */
     if (scope.indexOf(a.store_id) < 0) return;
     if (cats.indexOf(a.category) < 0) return;
     if (a.status !== 'open' && a.status !== 'in_progress') return;
@@ -2088,8 +2089,9 @@ function mcVisibleAlerts() {
     if (mcState.sev !== 'ALL' && a.severity !== mcState.sev) return false;
     if (mcState.status === 'ACTIVE') { if (a.status !== 'open' && a.status !== 'in_progress') return false; }
     else if (mcState.status !== 'ALL' && a.status !== mcState.status) return false;
-    var t = Date.parse(a.last_detected_at || a.created_at || '') || 0;
-    if (t && (t < st || t >= en)) return false;
+    if (typeof mcInPeriod === 'function') { if (!mcInPeriod(a, mcState.period)) return false; }   /* v822 */
+    else { var t = Date.parse(a.last_detected_at || a.created_at || '') || 0;
+           if (t && (t < st || t >= en)) return false; }
     return true;
   }).sort(function (x, y) {
     var rx = (MC_SEV[x.severity] || {}).rank, ry = (MC_SEV[y.severity] || {}).rank;
@@ -2102,6 +2104,7 @@ function mcVisibleAlerts() {
 function mcSummary() {
   var cats = mcCategoryIds(), scope = mcScopeStores();
   var base = mcState.alerts.filter(function (a) {
+    if (typeof mcInPeriod === 'function' && !mcInPeriod(a, mcState.period)) return false;   /* v822 */
     return scope.indexOf(a.store_id) >= 0 && cats.indexOf(a.category) >= 0
       && (a.status === 'open' || a.status === 'in_progress');
   });
@@ -3216,6 +3219,40 @@ function mcEnoughDays(c, storeId) {
 /* 育成：この時間以上働いた人だけを対象にする（休職・短時間の誤検知を避ける／仕様§8） */
 var MC_SKILL_MIN_HOURS = 20;
 
+/* v822: エラーセンター由来の説明。
+   これまで「勤怠の不備です」としか書いておらず、同じ言葉を繰り返すだけで
+   何が起きているのか分からなかった。分野ごとに中身を書く。 */
+var MC_EC_WHAT = {
+  '勤怠':     { name: '勤怠の不備',   what: '打刻漏れ・退勤漏れ・勤務時間の上限超過など、勤怠データの不備です' },
+  'チップ':   { name: 'チップの不備', what: 'チップの入力漏れ、または配分と実績が合っていません' },
+  '従業員':   { name: '従業員情報の不備', what: '従業員マスターの未設定です（役職・時給・在籍状態など）' },
+  'OB':       { name: '入社手続きの未完了', what: '入社手続き・初回評価が終わっていない人がいます' },
+  '承認':     { name: '承認待ちの滞留', what: '申請が承認されないまま止まっています' },
+  '月次締め': { name: '月次締めの未完了', what: '月次の締め処理が終わっていません' },
+  '棚卸':     { name: '棚卸の不備',   what: '棚卸の未入力、または数量が通常と大きく違います' },
+};
+
+/* アラートの対象月。dedupe_key の最後が YYYY-MM ならそれ。
+   月に紐づかないもの（店長未設定など）は空＝いつでも表示する。 */
+function mcAlertYm(a) {
+  var k = String((a && a.dedupe_key) || '');
+  var last = k.split('|').pop();
+  return /^\d{4}-\d{2}$/.test(last) ? last : '';
+}
+/* 選んでいる期間に入るか。「検知した日」ではなく「対象月」で見る（v822） */
+function mcInPeriod(a, period) {
+  var ym = mcAlertYm(a);
+  if (!ym) return true;                       /* 月に紐づかないものは常に出す */
+  var cur = mcYm();
+  if (period === 'prev') return ym === mcYmAdd(cur, -1);
+  if (period === 'week') {
+    if (ym !== cur) return false;
+    var t = Date.parse(a.last_detected_at || a.created_at || '') || 0;
+    return t >= mcPeriodStart('week').getTime();
+  }
+  return ym === cur;
+}
+
 /* エラーセンターの分類 → 管理統括の分野 */
 var MC_EC_CAT = {
   'チップ': 'labor', '勤怠': 'labor', '従業員': 'growth', 'OB': 'growth',
@@ -3465,7 +3502,10 @@ function mcDetectFromErrorCenter(storeIds, ym) {
     if (!at.store || storeIds.indexOf(at.store) < 0) return;   /* 店舗不明は扱わない */
     var cat = MC_EC_CAT[x.cat];
     if (!cat) return;
-    var key = ['ec', cat, at.store, ym].join('|');   /* v817: 人ごとに増やさない */
+    /* v822: x.cat（勤怠／チップ／棚卸…）も鍵に入れる。
+       これまで勤怠とチップが同じ 'labor' で1件に混ざり、
+       タイトルは先に見つかったほうの名前になっていた。 */
+    var key = ['ec', cat, x.cat, at.store, ym].join('|');
     if (seen[key]) {
       var p = seen[key];
       p._n++;
@@ -3488,14 +3528,15 @@ function mcDetectFromErrorCenter(storeIds, ym) {
   /* v817: まとめた結果を文章にする。店舗名は先頭に1回だけ */
   out.forEach(function (a) {
     var sn = mcStoreLabel(a.store_id);
-    a.title = sn + '：' + a._cat + 'の不備 ' + a._n + ' 件'
+    var W = MC_EC_WHAT[a._cat] || { name: a._cat + 'の不備', what: a._cat + 'に関する不備です' };
+    a.title = sn + '：' + W.name + ' ' + a._n + ' 件'
       + (a._who.length ? '（' + a._who.length + ' 名）' : '');
     a.current_value = a._n;
     var body = a._list.map(function (s) {
       return s.indexOf(sn + '：') === 0 ? s.slice(sn.length + 1) : s;
     });
     a.description = body.join(' / ') + (a._n > body.length ? ' ほか' + (a._n - body.length) + '件' : '');
-    a.cause_summary = a._cat + 'の不備です'
+    a.cause_summary = W.what
       + (a._who.length ? '。対象：' + a._who.slice(0, 8).join('、') + (a._who.length > 8 ? ' ほか' : '') : '');
     delete a._cat; delete a._n; delete a._who; delete a._list;
   });
@@ -3643,7 +3684,7 @@ function mcDetectPurchase(storeId, ym) {
   }
   if (big.length) {
     big.sort(function (a, b) { return b.pct - a.pct; });
-    out.push(mk('case_size_changed', 'warning', '内容量が変わった可能性のある品目が ' + big.length + ' 件あります', {
+    out.push(mk('case_size_changed', 'warning', '単価が極端に動いた品目が ' + big.length + ' 件あります（内容量の変更かもしれません）', {
       current_value: big[0].pct, target_value: t3.warning,
       description: big.slice(0, 8).map(itemLine).join('　／　') + (big.length > 8 ? ' ほか' : ''),
       cause_summary: '単価の動きが大きすぎます。値上げではなく、ケースの入り数や規格が変わった可能性があります',
@@ -3765,12 +3806,15 @@ function mcCollectCandidates(storeIds, ym) {
 
 /* 検知して保存する。ここだけが書き込む。
    source: 'manual' / 'auto' / 'sync' */
-async function mcRunDetection(source) {
+/* v822: ym を指定できるようにした。前月を選んで再検知すれば7月を見られる。
+   過去月の検知では通知しない（今さら店長に鳴らす話ではないため）。 */
+async function mcRunDetection(source, ymOpt) {
   if (mcRun.running) return;
   var stores = mcScopeStores();
   if (!stores.length) return;
   mcRun.running = true;
-  var ym = mcYm();
+  var ym = ymOpt || mcYm();
+  var past = (ym !== mcYm());
   var started = mcNowIso();
   var stat = { target: 0, created: 0, updated: 0, notified: 0, error: 0, detail: [] };
   try {
@@ -3797,6 +3841,7 @@ async function mcRunDetection(source) {
          ・確認(info)は個別に通知しない（画面には出る）
          ・1回の検知で通知する上限を設ける。超えた分は緊急だけに絞る
          （初回の検知で300通近く作ってしまったため） */
+      if (kind && past) kind = '';   /* v822: 過去月の検知では通知しない */
       if (kind && r.row && r.row.severity === 'info') kind = '';
       if (kind && r.row && stat.notified >= MC_NOTIFY_MAX_PER_RUN && r.row.severity !== 'critical') {
         stat.muted = (stat.muted || 0) + 1; kind = '';
@@ -3838,8 +3883,10 @@ async function mcRunDetection(source) {
 
 async function mcRecalcNow() {
   if (!mcCanOpen()) return;
-  showToast('検知しています…', 'info');
-  var s = await mcRunDetection('manual');
+  /* v822: 選んでいる期間を検知する */
+  var ym = (mcState.period === 'prev') ? mcYmAdd(mcYm(), -1) : mcYm();
+  showToast(ym + ' を検知しています…', 'info');
+  var s = await mcRunDetection('manual', ym);
   if (!s) return;
   if (s.error && mcState.schemaMissing) { showToast('先に SQL を適用してください', 'warning'); return; }
   showToast('検知 ' + s.target + ' 件（新規 ' + s.created + ' / 更新 ' + s.updated + '）', 'success');
@@ -25085,7 +25132,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '821';
+const APP_VERSION = '822';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
