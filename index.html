@@ -2058,7 +2058,9 @@ function mcRenderSummary() {
     + tile(s.critical, '緊急アラート', s.critical > 0 ? MC_SEV.critical.color : 'var(--muted)')
     + tile(s.open, '未対応', s.open > 0 ? MC_SEV.warning.color : 'var(--muted)')
     + tile(fmtMoney(s.impact), '月末までの<br>予測影響額', s.impact > 0 ? MC_SEV.critical.color : 'var(--muted)')
-    + '</div>';
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin:-6px 2px 12px;line-height:1.6">'
+    + '影響額は「売上不足・人件費超過・原価超過」の合計です。客数・客単価・進捗の遅れはその内訳なので二重に数えていません。</div>';
 }
 
 function mcRenderTabs() {
@@ -3002,6 +3004,9 @@ var MC_RULE_DEFAULTS = {
   /* 育成 */
   skill_stale:         { cat: 'growth', label: 'スキル評価が長期間未更新', warning: 30, critical: 60, unit: '日' },
 };
+/* v817: 1回の検知で個別通知を出す上限。緊急はこの上限を越えても通知する。
+   上限を超えた分は画面には出るので見落としにはならない。 */
+var MC_NOTIFY_MAX_PER_RUN = 10;
 /* 育成：この時間以上働いた人だけを対象にする（休職・短時間の誤検知を避ける／仕様§8） */
 var MC_SKILL_MIN_HOURS = 20;
 
@@ -3095,8 +3100,10 @@ function mcDetectBudget(storeId, ym) {
     var s2 = mcSevBy(behind, t2);
     if (s2) out.push(base('budget_pace_behind', s2, '売上進捗が予算より ' + behind + 'pt 遅れています', {
       current_value: c.actToToday, target_value: c.budToToday,
-      estimated_impact: mcRound(c.budToToday - c.actToToday),
-      description: '前日までの実績 ' + fmtMoney(c.actToToday) + ' / 予算 ' + fmtMoney(c.budToToday) + '（達成率 ' + pace + '%）',
+      /* v817: 金額は入れない。この不足は budget_forecast_miss に含まれるため、
+         両方に入れると「月末までの予測影響額」が二重になる */
+      description: '前日までの実績 ' + fmtMoney(c.actToToday) + ' / 予算 ' + fmtMoney(c.budToToday)
+        + '（達成率 ' + pace + '%、不足 ' + fmtMoney(c.budToToday - c.actToToday) + '）',
       cause_summary: '客数不足・客単価不足・営業日数のいずれか。日次で確認が必要です',
       recommended_action: '遅れている曜日・時間帯を特定し、対策を入力してください',
     }));
@@ -3246,26 +3253,40 @@ function mcDetectFromErrorCenter(storeIds, ym) {
     if (!at.store || storeIds.indexOf(at.store) < 0) return;   /* 店舗不明は扱わない */
     var cat = MC_EC_CAT[x.cat];
     if (!cat) return;
-    var key = ['ec', cat, at.store, at.emp || '-', ym].join('|');
+    var key = ['ec', cat, at.store, ym].join('|');   /* v817: 人ごとに増やさない */
     if (seen[key]) {
       var p = seen[key];
       p._n++;
+      if (at.emp && p._who.indexOf(at.emp) < 0) p._who.push(at.emp);
+      if (p._list.length < 12) p._list.push(String(x.title || '').slice(0, 90));
       if ((MC_SEV[MC_EC_SEV[x.sev]] || {}).rank < (MC_SEV[p.severity] || {}).rank) p.severity = MC_EC_SEV[x.sev];
-      p.description = p._n + ' 件：' + p._first;
       return;
     }
     var a = {
       rule_code: 'ec_' + cat, dedupe_key: key, store_id: at.store, category: cat,
       severity: MC_EC_SEV[x.sev] || 'info',
-      title: mcStoreLabel(at.store) + '：' + String(x.title || '').slice(0, 120),
-      description: String(x.detail || '').slice(0, 300),
-      cause_summary: x.cat + 'の不備として検知されました',
+      title: '', description: '',
+      cause_summary: '',
       recommended_action: 'エラーセンターで内容を確認してください',
-      _n: 1, _first: String(x.detail || '').slice(0, 200),
+      _cat: x.cat, _n: 1, _who: at.emp ? [at.emp] : [],
+      _list: [String(x.title || '').slice(0, 90)],
     };
     seen[key] = a; out.push(a);
   });
-  out.forEach(function (a) { delete a._n; delete a._first; });
+  /* v817: まとめた結果を文章にする。店舗名は先頭に1回だけ */
+  out.forEach(function (a) {
+    var sn = mcStoreLabel(a.store_id);
+    a.title = sn + '：' + a._cat + 'の不備 ' + a._n + ' 件'
+      + (a._who.length ? '（' + a._who.length + ' 名）' : '');
+    a.current_value = a._n;
+    var body = a._list.map(function (s) {
+      return s.indexOf(sn + '：') === 0 ? s.slice(sn.length + 1) : s;
+    });
+    a.description = body.join(' / ') + (a._n > body.length ? ' ほか' + (a._n - body.length) + '件' : '');
+    a.cause_summary = a._cat + 'の不備です'
+      + (a._who.length ? '。対象：' + a._who.slice(0, 8).join('、') + (a._who.length > 8 ? ' ほか' : '') : '');
+    delete a._cat; delete a._n; delete a._who; delete a._list;
+  });
   return out;
 }
 
@@ -3435,8 +3456,9 @@ function mcDetectPurchase(storeId, ym) {
           var s4 = mcSevBy(over, t4);
           if (s4) out.push(mk('purchase_spike', s4, '仕入額が普段より ' + over + '% 多くなっています', {
             current_value: mcRound(cur), target_value: mcRound(expected),
-            estimated_impact: mcRound(cur - expected),
-            description: '今月ここまで ' + fmtMoney(cur) + '。過去' + hist.length + 'か月の同じ進捗なら ' + fmtMoney(expected) + ' です。',
+            /* v817: 原価率超過と重なるため合算からは外す */
+            description: '今月ここまで ' + fmtMoney(cur) + '。過去' + hist.length + 'か月の同じ進捗なら '
+              + fmtMoney(expected) + '（超過 ' + fmtMoney(cur - expected) + '）です。',
             cause_summary: '前倒しの発注、在庫の積み増し、または単価の上昇が考えられます',
             recommended_action: '仕入明細で品目を確認し、必要なら発注量を調整してください',
           }));
@@ -3480,8 +3502,9 @@ function mcDetectGuests(storeId, ym) {
       store_id: storeId, category: 'budget', severity: s1,
       title: name + '：客数が予算を ' + gShort + '% 下回っています',
       current_value: ms.guests, target_value: Math.round(expG),
-      estimated_impact: mcRound((expG - ms.guests) * budSpend),
-      description: '実績 ' + ms.guests + ' 人 / 進捗ぶんの予算 ' + Math.round(expG) + ' 人（月間予算 ' + budG + ' 人）',
+      /* v817: 売上未達の内訳なので合算からは外す（二重計上を避ける） */
+      description: '実績 ' + ms.guests + ' 人 / 進捗ぶんの予算 ' + Math.round(expG) + ' 人（月間予算 ' + budG
+        + ' 人、売上換算 ' + fmtMoney((expG - ms.guests) * budSpend) + '）',
       cause_summary: '来店数そのものが足りていません。客単価ではなく集客の問題です',
       recommended_action: '曜日・時間帯別に落ちている枠を特定してください',
     });
@@ -3496,8 +3519,9 @@ function mcDetectGuests(storeId, ym) {
       store_id: storeId, category: 'budget', severity: s2,
       title: name + '：客単価が予算を ' + sShort + '% 下回っています',
       current_value: actSpend, target_value: budSpend,
-      estimated_impact: mcRound((budSpend - actSpend) * ms.guests),
-      description: '実績 ' + fmtMoney(actSpend) + ' / 予算 ' + fmtMoney(budSpend) + '（客数 ' + ms.guests + ' 人）',
+      /* v817: こちらも売上未達の内訳 */
+      description: '実績 ' + fmtMoney(actSpend) + ' / 予算 ' + fmtMoney(budSpend) + '（客数 ' + ms.guests
+        + ' 人、売上換算 ' + fmtMoney((budSpend - actSpend) * ms.guests) + '）',
       cause_summary: '来店はあるが、1人あたりの注文が予算に届いていません',
       recommended_action: 'ドリンク・アラカルトの提案とメニュー構成を確認してください',
     });
@@ -3548,6 +3572,14 @@ async function mcRunDetection(source) {
       if (r.mode === 'created') stat.created++; else stat.updated++;
       /* 通知するのは「新規」「重要度が上がった」「再発」だけ（仕様§9・鳴り続けさせない） */
       var kind = (r.mode === 'created') ? 'new_alert' : (r.mode === 'reopened' ? 'reopened' : (r.severityRaised ? 'sev_up' : ''));
+      /* v817: 鳴りすぎを止める。仕様§9の通知優先度に合わせる。
+         ・確認(info)は個別に通知しない（画面には出る）
+         ・1回の検知で通知する上限を設ける。超えた分は緊急だけに絞る
+         （初回の検知で300通近く作ってしまったため） */
+      if (kind && r.row && r.row.severity === 'info') kind = '';
+      if (kind && r.row && stat.notified >= MC_NOTIFY_MAX_PER_RUN && r.row.severity !== 'critical') {
+        stat.muted = (stat.muted || 0) + 1; kind = '';
+      }
       if (kind && r.row) {
         var gen = (kind === 'sev_up' || kind === 'reopened') ? (r.row.severity + '-' + (r.row.reopen_count || 0)) : null;
         var n = await mcNotifyAlert(r.row, kind, { gen: gen });
@@ -3565,7 +3597,7 @@ async function mcRunDetection(source) {
       started_at: started, finished_at: mcNowIso(),
       target_count: stat.target, created_count: stat.created, updated_count: stat.updated,
       notified_count: stat.notified, error_count: stat.error,
-      error_detail: stat.detail.join(' / ') || null,
+      error_detail: ((stat.muted ? ('通知を押さえた件数: ' + stat.muted + '  ') : '') + stat.detail.join(' / ')) || null,
     }], 'return=minimal');
   } catch (e) { }
   /* v814: 未確認のまま時間が経ったものを上へ上げる */
@@ -24830,7 +24862,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '816';
+const APP_VERSION = '817';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
