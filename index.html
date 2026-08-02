@@ -1902,6 +1902,92 @@ var mcState = {
   alerts: [], fetchedAt: '',
 };
 
+/* ============================================================
+   v818 Management Control — 数値の単位／エラーセンター由来の重要度
+   ------------------------------------------------------------
+   ① v809 で「現在値・目標値・月末予測」をすべて fmtMoney() に通していた。
+      そのため件数9件が「$9.00」、人件費率34%が「$34.00」、
+      客数700人が「$700.00」と表示されていた。
+      アラートには rule_code が入っているので、そこから単位を引く。
+      DB に列を足さずに済み、既存の行もそのまま正しく表示される。
+
+   ② エラーセンター由来（打刻漏れ・チップ不備など）を緊急にすると、
+      2時間で AM、4時間で GM へエスカレーションする。
+      勤怠の不備にその速度は要らない。注意どまりにする。
+      元の重要度はエラーセンター側にそのまま残る。
+      ここを緊急に戻したい場合は MC_EC_SEV を直す。
+============================================================ */
+
+/* ルールごとの単位。ec_ で始まるものは件数。載っていないものは金額 */
+var MC_RULE_UNIT = {
+  budget_missing:       'none',
+  budget_pace_behind:   'money',
+  budget_forecast_miss: 'money',
+  sales_not_synced:     'money',
+  labor_rate_over:      'pct',
+  cost_rate_over:       'pct',
+  inventory_not_closed: 'none',
+  skill_stale:          'people',
+  new_ingredient:       'count',
+  price_up:             'pct',
+  case_size_changed:    'pct',
+  purchase_spike:       'money',
+  guests_short:         'people',
+  spend_short:          'money',
+  no_store_manager:     'none',
+  no_area_manager:      'none',
+  selftest:             'none',
+};
+function mcUnitOf(code) {
+  if (!code) return 'money';
+  if (String(code).indexOf('ec_') === 0) return 'count';
+  return MC_RULE_UNIT[code] || 'money';
+}
+/* 単位に合わせて表示する。影響額だけは常に金額（合算するため） */
+function mcFmtVal(v, unit) {
+  if (v === null || v === undefined || v === '') return '';
+  var n = Number(v);
+  if (isNaN(n)) return escapeHtml(String(v));
+  if (unit === 'none') return '';
+  if (unit === 'pct') return (Math.round(n * 10) / 10) + '%';
+  if (unit === 'count') return Math.round(n) + ' 件';
+  if (unit === 'people') return Math.round(n) + ' 人';
+  if (unit === 'days') return Math.round(n) + ' 日';
+  return fmtMoney(n);
+}
+/* アラート1件ぶんの表示用の値をまとめて返す */
+function mcVals(a) {
+  var u = mcUnitOf(a && a.rule_code);
+  return {
+    unit: u,
+    cur: mcFmtVal(a && a.current_value, u),
+    tgt: mcFmtVal(a && a.target_value, u),
+    fc: mcFmtVal(a && a.forecast_value, u),
+  };
+}
+
+/* 件数の内訳。何が件数を押し上げているかを画面で見えるようにする */
+function mcBreakdownHtml() {
+  var cats = mcCategoryIds(), scope = mcScopeStores();
+  var by = {};
+  mcState.alerts.forEach(function (a) {
+    if (scope.indexOf(a.store_id) < 0) return;
+    if (cats.indexOf(a.category) < 0) return;
+    if (a.status !== 'open' && a.status !== 'in_progress') return;
+    var k = a.rule_code || '(不明)';
+    by[k] = (by[k] || 0) + 1;
+  });
+  var keys = Object.keys(by).sort(function (x, y) { return by[y] - by[x]; });
+  if (!keys.length) return '';
+  return '<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.8">'
+    + '内訳：' + keys.slice(0, 8).map(function (k) {
+      var d = MC_RULE_DEFAULTS[k];
+      var label = d ? d.label : (String(k).indexOf('ec_') === 0 ? 'エラーセンター（' + mcCatLabel(k.slice(3)) + '）' : k);
+      return escapeHtml(label) + ' ' + by[k];
+    }).join('　') + (keys.length > 8 ? '　ほか' : '')
+    + '</div>';
+}
+
 function mcCatLabel(id) {
   var c = MC_CATEGORIES.find(function (x) { return x.id === id; });
   return c ? c.label : id;
@@ -2092,9 +2178,10 @@ function mcAlertCard(a) {
     + '<span style="margin-left:auto;font-size:10.5px;font-weight:700;color:' + stt.color + '">' + stt.label + '</span>'
     + '</div>';
   h += '<div style="font-size:13.5px;font-weight:700;line-height:1.5;margin-bottom:6px">' + escapeHtml(a.title || '') + '</div>';
-  h += row('現在値', n(a.current_value));
-  h += row('目標値', n(a.target_value));
-  h += row('月末予測', n(a.forecast_value));
+  var _v = (typeof mcVals === 'function') ? mcVals(a) : { cur: n(a.current_value), tgt: n(a.target_value), fc: n(a.forecast_value) };   /* v818 */
+  h += row('現在値', _v.cur);
+  h += row('目標値', _v.tgt);
+  h += row('月末予測', _v.fc);
   h += row('影響額', a.estimated_impact != null ? '<b style="color:' + sev.color + '">' + fmtMoney(a.estimated_impact) + '</b>' : '');
   h += row('想定原因', a.cause_summary ? escapeHtml(a.cause_summary) : '');
   h += row('推奨対応', a.recommended_action ? escapeHtml(a.recommended_action) : '');
@@ -2166,6 +2253,7 @@ function renderMgmtControl() {
       + '</div>';
   } else {
     h += '<div style="font-size:11px;color:var(--muted);margin:0 2px 7px">' + list.length + ' 件</div>';
+    try { if (typeof mcBreakdownHtml === 'function') h += mcBreakdownHtml(); } catch (e) { }   /* v818 */
     h += list.map(mcAlertCard).join('');
   }
   try { if (typeof mcRenderFreshness === 'function') h += mcRenderFreshness(); } catch (e) { }   /* v814 */
@@ -2267,27 +2355,81 @@ async function mcUpdateLocked(table, id, version, fields) {
 
 /* ---------- 検知側から呼ぶ入口（v812 が使う） ----------
    同じ dedupe_key があれば増やさずに更新する。解決済みなら再オープンする。 */
+/* v819: 毎回の再検知で 43件ぶんの書き込みと監査ログが出ていたので作り直した。
+
+   ① 手元（mcState.alerts）に同じ dedupe_key があれば、POST を試さない。
+      これまでは POST →409 →GET →PATCH の3往復。1回の検知で約130リクエストだった。
+   ② 中身が変わっていなければ書き込まない。
+      last_detected_at だけのために毎回 PATCH すると、検知の意味が薄い割に
+      version が進み続け、他端末の編集と競合しやすくなる。
+      最終検知が古くなったときだけ触る（MC_TOUCH_MIN 分）。
+   ③ 監査ログは「変わったとき」だけ書く。
+      毎回 redetected を残すと、本当の操作履歴（誰が解決した・依頼した）が埋もれる。 */
+var MC_TOUCH_MIN = 180;   /* 最終検知をこの分数より長く放置したときだけ触る */
+
+/* 検知した中身が、保存済みの行と実質的に違うか */
+function mcAlertChanged(cur, a) {
+  if (!cur) return true;
+  if ((a.severity || cur.severity) !== cur.severity) return true;
+  if ((a.title || '') && a.title !== cur.title) return true;
+  var keys = ['current_value', 'target_value', 'forecast_value', 'estimated_impact'];
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (a[k] === undefined) continue;
+    var x = (a[k] === null) ? null : Number(a[k]);
+    var y = (cur[k] === null || cur[k] === undefined) ? null : Number(cur[k]);
+    if (x === null && y === null) continue;
+    if (x === null || y === null) return true;
+    if (Math.abs(x - y) >= 0.005) return true;
+  }
+  var texts = ['description', 'cause_summary', 'recommended_action'];
+  for (var j = 0; j < texts.length; j++) {
+    var t = texts[j];
+    if (a[t] === undefined) continue;
+    if (String(a[t] || '') !== String(cur[t] || '')) return true;
+  }
+  return false;
+}
+
+/* 検知側から呼ぶ入口（v812 が使う）。
+   同じ dedupe_key があれば増やさずに更新する。解決済みなら再オープンする。 */
 async function mcUpsertAlert(a) {
   if (!a || !a.dedupe_key || !a.store_id || !a.category) return { ok: false, err: 'dedupe_key / store_id / category が必要です' };
-  var row = Object.assign({}, a, {
-    status: a.status || 'open',
-    last_detected_at: mcNowIso(),
-    created_by: a.created_by || mcMyName(),
-    updated_by: mcMyName(),
-  });
-  var ins = await mcApi('POST', MC_TBL.alert, '', [row]);
-  if (ins.ok && ins.rows.length) {
-    await mcLogEvent(ins.rows[0].id, 'created', null, ins.rows[0], null);
-    return { ok: true, mode: 'created', row: ins.rows[0] };
-  }
-  if (!ins.duplicate) return ins;
 
-  /* すでにある → 現在値を読んでから更新する */
-  var got = await mcApi('GET', MC_TBL.alert, 'select=*&dedupe_key=eq.' + encodeURIComponent(a.dedupe_key) + '&limit=1');
-  if (!got.ok || !got.rows.length) return { ok: false, err: '既存アラートを読めませんでした' };
-  var cur = got.rows[0];
+  /* ① 手元にあるものを先に使う。無ければ作りにいく */
+  var cur = null;
+  try {
+    cur = mcState.alerts.find(function (x) { return x.dedupe_key === a.dedupe_key; }) || null;
+  } catch (e) { cur = null; }
+
+  if (!cur) {
+    var row = Object.assign({}, a, {
+      status: a.status || 'open',
+      last_detected_at: mcNowIso(),
+      created_by: a.created_by || mcMyName(),
+      updated_by: mcMyName(),
+    });
+    var ins = await mcApi('POST', MC_TBL.alert, '', [row]);
+    if (ins.ok && ins.rows.length) {
+      mcReplaceAlert(ins.rows[0]);
+      await mcLogEvent(ins.rows[0].id, 'created', null, ins.rows[0], null);
+      return { ok: true, mode: 'created', row: ins.rows[0] };
+    }
+    if (!ins.duplicate) return ins;
+    var got = await mcApi('GET', MC_TBL.alert, 'select=*&dedupe_key=eq.' + encodeURIComponent(a.dedupe_key) + '&limit=1');
+    if (!got.ok || !got.rows.length) return { ok: false, err: '既存アラートを読めませんでした' };
+    cur = got.rows[0];
+  }
+
   var wasResolved = (cur.status === 'resolved');
   var sevUp = (MC_SEV[a.severity] || {}).rank < (MC_SEV[cur.severity] || {}).rank;
+  var changed = mcAlertChanged(cur, a) || wasResolved;
+
+  /* ② 変わっていなければ書き込まない。最終検知が古いときだけ触る */
+  var age = Date.now() - (Date.parse(cur.last_detected_at || '') || 0);
+  var stale = age > MC_TOUCH_MIN * 60000;
+  if (!changed && !stale) return { ok: true, mode: 'unchanged', row: cur };
+
   var fields = {
     severity: a.severity || cur.severity,
     title: a.title || cur.title,
@@ -2308,9 +2450,24 @@ async function mcUpsertAlert(a) {
     fields.reopen_count = (cur.reopen_count || 0) + 1;
   }
   var up = await mcUpdateLocked(MC_TBL.alert, cur.id, cur.version, fields);
+  if (up.conflict) {
+    /* 他端末が先に更新していた。最新を読んで1回だけやり直す */
+    var re = await mcApi('GET', MC_TBL.alert, 'select=*&id=eq.' + encodeURIComponent(cur.id) + '&limit=1');
+    if (!re.ok || !re.rows.length) return up;
+    mcReplaceAlert(re.rows[0]);
+    up = await mcUpdateLocked(MC_TBL.alert, re.rows[0].id, re.rows[0].version, fields);
+  }
   if (!up.ok) return up;
-  await mcLogEvent(cur.id, wasResolved ? 'reopened_by_detect' : 'redetected', cur, up.row, null);
-  return { ok: true, mode: wasResolved ? 'reopened' : 'updated', row: up.row, severityRaised: sevUp, wasResolved: wasResolved };
+  mcReplaceAlert(up.row);
+
+  /* ③ 監査ログは変わったときだけ。最終検知を触っただけでは残さない */
+  if (changed) {
+    await mcLogEvent(cur.id, wasResolved ? 'reopened_by_detect' : 'redetected', cur, up.row, null);
+  }
+  return {
+    ok: true, mode: wasResolved ? 'reopened' : (changed ? 'updated' : 'touched'),
+    row: up.row, severityRaised: sevUp, wasResolved: wasResolved
+  };
 }
 
 /* ---------- 権限（v808 の判定を組み合わせるだけ） ---------- */
@@ -2433,9 +2590,10 @@ function mcDetailHtml() {
     if (v === null || v === undefined || v === '') return '';
     return '<div style="display:flex;gap:8px;font-size:12px;line-height:1.8"><span style="flex:0 0 82px;color:var(--muted)">' + l + '</span><span style="flex:1;min-width:0;word-break:break-word">' + v + '</span></div>';
   }
-  h += row('現在値', a.current_value != null ? fmtMoney(a.current_value) : '');
-  h += row('目標値', a.target_value != null ? fmtMoney(a.target_value) : '');
-  h += row('月末予測', a.forecast_value != null ? fmtMoney(a.forecast_value) : '');
+  var _dv = (typeof mcVals === 'function') ? mcVals(a) : { cur: '', tgt: '', fc: '' };   /* v818 */
+  h += row('現在値', _dv.cur);
+  h += row('目標値', _dv.tgt);
+  h += row('月末予測', _dv.fc);
   h += row('影響額', a.estimated_impact != null ? '<b style="color:' + sev.color + '">' + fmtMoney(a.estimated_impact) + '</b>' : '');
   if (canAct && typeof mcEditField === 'function') {   /* v813: 自動保存 */
     h += mcEditField(MC_TBL.alert, a.id, 'cause_summary', '想定原因', a.cause_summary, '例：平日夜の客数が不足');
@@ -2918,9 +3076,10 @@ function renderMcRequests() {
     if (open && a) {
       function row(l, v) { return (v === null || v === undefined || v === '') ? '' : '<div style="display:flex;gap:8px;font-size:11.5px;line-height:1.7"><span style="flex:0 0 76px;color:var(--muted)">' + l + '</span><span style="flex:1;min-width:0;word-break:break-word">' + v + '</span></div>'; }
       x += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">';
-      x += row('現在値', a.current_value != null ? fmtMoney(a.current_value) : '');
-      x += row('目標値', a.target_value != null ? fmtMoney(a.target_value) : '');
-      x += row('月末予測', a.forecast_value != null ? fmtMoney(a.forecast_value) : '');
+      var _rv = (typeof mcVals === 'function') ? mcVals(a) : { cur: '', tgt: '', fc: '' };   /* v818 */
+      x += row('現在値', _rv.cur);
+      x += row('目標値', _rv.tgt);
+      x += row('月末予測', _rv.fc);
       x += row('影響額', a.estimated_impact != null ? fmtMoney(a.estimated_impact) : '');
       x += row('想定原因', a.cause_summary ? escapeHtml(a.cause_summary) : '');
       x += row('推奨対応', a.recommended_action ? escapeHtml(a.recommended_action) : '');
@@ -3015,7 +3174,11 @@ var MC_EC_CAT = {
   'チップ': 'labor', '勤怠': 'labor', '従業員': 'growth', 'OB': 'growth',
   '承認': 'budget', '月次締め': 'budget', '棚卸': 'cost',
 };
-var MC_EC_SEV = { high: 'critical', mid: 'warning', low: 'info' };
+/* v818: エラーセンター由来は注意どまりにする。
+   緊急にすると 2時間で AM、4時間で GM へエスカレーションするため。
+   打刻漏れやチップの不備にその速度は要らない。
+   元の重要度はエラーセンター側にそのまま残る。 */
+var MC_EC_SEV = { high: 'warning', mid: 'warning', low: 'info' };
 
 /* ---------- 判定基準 ---------- */
 var mcThresholds = { loaded: false, rows: [] };
@@ -3569,7 +3732,11 @@ async function mcRunDetection(source) {
         if (r.missing) break;
         continue;
       }
-      if (r.mode === 'created') stat.created++; else stat.updated++;
+      /* v819: 何も変わらなかったものを「更新」と数えない。
+         毎回 43件更新と出ていたが、実際には何も変わっていなかった */
+      if (r.mode === 'created') stat.created++;
+      else if (r.mode === 'unchanged') stat.same = (stat.same || 0) + 1;
+      else stat.updated++;
       /* 通知するのは「新規」「重要度が上がった」「再発」だけ（仕様§9・鳴り続けさせない） */
       var kind = (r.mode === 'created') ? 'new_alert' : (r.mode === 'reopened' ? 'reopened' : (r.severityRaised ? 'sev_up' : ''));
       /* v817: 鳴りすぎを止める。仕様§9の通知優先度に合わせる。
@@ -3597,7 +3764,9 @@ async function mcRunDetection(source) {
       started_at: started, finished_at: mcNowIso(),
       target_count: stat.target, created_count: stat.created, updated_count: stat.updated,
       notified_count: stat.notified, error_count: stat.error,
-      error_detail: ((stat.muted ? ('通知を押さえた件数: ' + stat.muted + '  ') : '') + stat.detail.join(' / ')) || null,
+      error_detail: ((stat.same ? ('変化なし: ' + stat.same + '件  ') : '')
+        + (stat.muted ? ('通知を押さえた件数: ' + stat.muted + '  ') : '')
+        + stat.detail.join(' / ')) || null,
     }], 'return=minimal');
   } catch (e) { }
   /* v814: 未確認のまま時間が経ったものを上へ上げる */
@@ -24862,7 +25031,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '817';
+const APP_VERSION = '819';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
