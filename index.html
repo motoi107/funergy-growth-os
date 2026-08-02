@@ -3269,6 +3269,242 @@ function mcDetectFromErrorCenter(storeIds, ym) {
   return out;
 }
 
+/* ============================================================
+   v816 Management Control — 検知の追加（仕入・客数・客単価）
+   ------------------------------------------------------------
+   v812 で「データ構造を確認していないので作らない」と保留した分。
+   構造を確認したうえで、既存の関数だけを使って組んでいる。
+
+   使う既存関数（新しい計算は作らない）
+     仕入単価の変動 … priceChangesRecent()      ← 既にある抽出口
+     食材マスター   … getIngV2()                ← Invoice取込で作られる V2
+     仕入額         … monthInvoiceCostYm() / monthPurchaseCostYm()
+     予算の客数     … budgetGuestsMonthly()
+     実績の客数・客単価 … monthStats()
+     進捗           … cumulativeToToday()
+
+   確認した実データの形
+     invoice.lines[] = { code, rawName, name, oldPrice, newPrice, qty, lineTotal }
+     getIngV2()[]    = { id, name, rawNames[], cls, spec, specDone,
+                         vendor, price, priceHistory[], stores[], srcInv[] }
+     取込時に作られる新品目は cls:null / specDone:false。
+     つまり「未確定のまま入っている＝確認が必要な材料」。
+     ここで確定登録はしない（仕様§7）。画面へ誘導するだけ。
+
+   まだ作らないもの（理由つき）
+     理論消費と実消費の差 … 既存の「日次食材差異(fv_variance)」が Totoya 専用で
+       動いている。レシピの網羅率が店舗ごとに違うため、全店に広げると
+       レシピ未登録の店で必ず差異が出て誤検知になる。
+       fv_variance の対象店が広がってから。
+============================================================ */
+
+MC_RULE_DEFAULTS.new_ingredient = {
+  cat: 'cost', label: '未確認の新規材料', warning: 1, critical: 10, unit: '件',
+};
+MC_RULE_DEFAULTS.price_up = {
+  cat: 'cost', label: '仕入単価の上昇', warning: 10, critical: 20, unit: '%',
+};
+MC_RULE_DEFAULTS.case_size_changed = {
+  cat: 'cost', label: '内容量が変わった可能性', warning: 40, critical: null, unit: '%',
+};
+MC_RULE_DEFAULTS.purchase_spike = {
+  cat: 'cost', label: '仕入額が普段より多い', warning: 15, critical: 30, unit: '%',
+};
+MC_RULE_DEFAULTS.guests_short = {
+  cat: 'budget', label: '客数が予算を下回る', warning: 5, critical: 12, unit: '%',
+};
+MC_RULE_DEFAULTS.spend_short = {
+  cat: 'budget', label: '客単価が予算を下回る', warning: 3, critical: 8, unit: '%',
+};
+
+/* 単価の変動をさかのぼる日数。月をまたいだ値上げも拾えるようにする */
+var MC_PRICE_DAYS = 45;
+/* 新規材料をさかのぼる日数 */
+var MC_NEWING_DAYS = 30;
+
+function mcYmAdd(ym, n) {
+  var p = String(ym || '').split('-');
+  var d = new Date(Number(p[0]), Number(p[1]) - 1 + n, 1);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+}
+function mcYmOffset(ym) {
+  var cur = mcYm();
+  var a = String(cur).split('-'), b = String(ym).split('-');
+  return (Number(b[0]) * 12 + Number(b[1])) - (Number(a[0]) * 12 + Number(a[1]));
+}
+
+/* ---------- 仕入まわり ---------- */
+function mcDetectPurchase(storeId, ym) {
+  var out = [];
+  var name = mcStoreLabel(storeId);
+  function mk(code, sev, title, extra) {
+    return Object.assign({
+      rule_code: code, dedupe_key: [code, storeId, ym].join('|'),
+      store_id: storeId, category: 'cost', severity: sev,
+      title: name + '：' + title,
+    }, extra || {});
+  }
+
+  /* ① 未確認の新規材料（取込で入ったが分類・規格が未確定のもの） */
+  var t1 = mcThr('new_ingredient', storeId);
+  if (t1.enabled) {
+    var pend = [];
+    try {
+      var cut = Date.now() - MC_NEWING_DAYS * 86400000;
+      (getIngV2() || []).forEach(function (it) {
+        if (!it || (it.stores || []).indexOf(storeId) < 0) return;
+        if (it.specDone === true) return;
+        if (it.cls) return;                       /* 分類済みなら確認済みとみなす */
+        var last = 0;
+        (it.priceHistory || []).forEach(function (h) {
+          var d = (typeof parseJaDate === 'function') ? parseJaDate(h.date) : null;
+          var tt = d ? d.getTime() : 0;
+          if (tt > last) last = tt;
+        });
+        if (last && last < cut) return;           /* 古いものは今さら鳴らさない */
+        pend.push(it.name || '(名称なし)');
+      });
+    } catch (e) { pend = []; }
+    if (pend.length >= Math.max(1, t1.warning)) {
+      var s1 = mcSevBy(pend.length, t1) || 'warning';
+      out.push(mk('new_ingredient', s1, '確認が必要な材料が ' + pend.length + ' 件あります', {
+        current_value: pend.length,
+        description: pend.slice(0, 10).map(escapeHtml).join('、') + (pend.length > 10 ? ' ほか' : ''),
+        cause_summary: 'Invoice に商品マスターへ未登録の品目が入りました。表記違いで別品目になっている可能性もあります',
+        recommended_action: '食材マスターで「登録」「既存と統合」「名称修正」「対象外」のいずれかを選んでください',
+      }));
+    }
+  }
+
+  /* ②③ 仕入単価の上昇／内容量が変わった可能性 */
+  var t2 = mcThr('price_up', storeId), t3 = mcThr('case_size_changed', storeId);
+  var ups = [], big = [];
+  try {
+    (priceChangesRecent(MC_PRICE_DAYS) || []).forEach(function (c) {
+      var st = c.stores || (c.storeId ? [c.storeId] : []);
+      if (st.length && st.indexOf(storeId) < 0) return;
+      if (!st.length && c.storeId && c.storeId !== storeId) return;
+      var pct = Number(c.pct);
+      if (!(pct > 0)) return;
+      if (t3.enabled && t3.warning != null && pct >= t3.warning) big.push(c);
+      else if (t2.enabled && pct >= t2.warning) ups.push(c);
+    });
+  } catch (e) { ups = []; big = []; }
+
+  function itemLine(c) {
+    return escapeHtml(c.name || '') + ' ' + fmtMoney(c.from) + '→' + fmtMoney(c.to) + '（+' + c.pct + '%）';
+  }
+  if (ups.length) {
+    ups.sort(function (a, b) { return b.pct - a.pct; });
+    var s2 = mcSevBy(ups[0].pct, t2) || 'warning';
+    out.push(mk('price_up', s2, '仕入単価が上がった品目が ' + ups.length + ' 件あります', {
+      current_value: ups[0].pct, target_value: t2.warning,
+      description: ups.slice(0, 8).map(itemLine).join('　／　') + (ups.length > 8 ? ' ほか' : ''),
+      cause_summary: '直近 ' + MC_PRICE_DAYS + ' 日の Invoice 読み取りで、前回より単価が上がっています',
+      recommended_action: '業者に確認するか、レシピの原価を見直してください',
+    }));
+  }
+  if (big.length) {
+    big.sort(function (a, b) { return b.pct - a.pct; });
+    out.push(mk('case_size_changed', 'warning', '内容量が変わった可能性のある品目が ' + big.length + ' 件あります', {
+      current_value: big[0].pct, target_value: t3.warning,
+      description: big.slice(0, 8).map(itemLine).join('　／　') + (big.length > 8 ? ' ほか' : ''),
+      cause_summary: '単価の動きが大きすぎます。値上げではなく、ケースの入り数や規格が変わった可能性があります',
+      recommended_action: '納品書の内容量を確認し、食材マスターの規格を直してください',
+    }));
+  }
+
+  /* ④ 仕入額が普段より多い（過去3か月の同進捗と比べる） */
+  var t4 = mcThr('purchase_spike', storeId);
+  if (t4.enabled) {
+    try {
+      var c = cumulativeToToday(storeId, ym);
+      var cur = (monthInvoiceCostYm(storeId, ym) || 0) + (monthPurchaseCostYm(storeId, ym) || 0);
+      var hist = [], i;
+      for (i = 1; i <= 3; i++) {
+        var pym = mcYmAdd(ym, -i);
+        var v = (monthInvoiceCostYm(storeId, pym) || 0) + (monthPurchaseCostYm(storeId, pym) || 0);
+        if (v > 0) hist.push(v);
+      }
+      if (hist.length >= 2 && cur > 0 && c && c.budMonth > 0 && c.budToToday > 0) {
+        var avg = hist.reduce(function (a, b) { return a + b; }, 0) / hist.length;
+        var pace = c.budToToday / c.budMonth;          /* 月のどのくらいまで進んだか */
+        var expected = avg * pace;
+        if (expected > 0) {
+          var over = mcRound((cur - expected) / expected * 100);
+          var s4 = mcSevBy(over, t4);
+          if (s4) out.push(mk('purchase_spike', s4, '仕入額が普段より ' + over + '% 多くなっています', {
+            current_value: mcRound(cur), target_value: mcRound(expected),
+            estimated_impact: mcRound(cur - expected),
+            description: '今月ここまで ' + fmtMoney(cur) + '。過去' + hist.length + 'か月の同じ進捗なら ' + fmtMoney(expected) + ' です。',
+            cause_summary: '前倒しの発注、在庫の積み増し、または単価の上昇が考えられます',
+            recommended_action: '仕入明細で品目を確認し、必要なら発注量を調整してください',
+          }));
+        }
+      }
+    } catch (e) { }
+  }
+  return out;
+}
+
+/* ---------- 客数・客単価の予実 ---------- */
+function mcDetectGuests(storeId, ym) {
+  var out = [];
+  var c, ms, budG = 0;
+  try {
+    c = cumulativeToToday(storeId, ym);
+    var off = mcYmOffset(ym);
+    ['lunch', 'dinner', 'takeout'].forEach(function (seg) {
+      var g = budgetGuestsMonthly(storeId, seg, off);
+      if (g) budG += g;
+    });
+    ms = monthStats(storeId, off);
+  } catch (e) { return out; }
+  if (!c || !ms) return out;
+  if (!(c.budMonth > 0) || !(c.budToToday > 0)) return out;
+  if (!(budG > 0)) return out;                    /* 予算に客数が入っていなければ判定しない */
+  if (!(ms.daysWithData > 0) || !(ms.guests > 0)) return out;
+
+  var name = mcStoreLabel(storeId);
+  var pace = c.budToToday / c.budMonth;
+  var expG = budG * pace;
+  var budSpend = mcRound(c.budMonth / budG);
+  var actSpend = Number(ms.avgSpend) || 0;
+
+  var t1 = mcThr('guests_short', storeId);
+  if (t1.enabled && expG > 0) {
+    var gShort = mcRound((expG - ms.guests) / expG * 100);
+    var s1 = mcSevBy(gShort, t1);
+    if (s1) out.push({
+      rule_code: 'guests_short', dedupe_key: ['guests_short', storeId, ym].join('|'),
+      store_id: storeId, category: 'budget', severity: s1,
+      title: name + '：客数が予算を ' + gShort + '% 下回っています',
+      current_value: ms.guests, target_value: Math.round(expG),
+      estimated_impact: mcRound((expG - ms.guests) * budSpend),
+      description: '実績 ' + ms.guests + ' 人 / 進捗ぶんの予算 ' + Math.round(expG) + ' 人（月間予算 ' + budG + ' 人）',
+      cause_summary: '来店数そのものが足りていません。客単価ではなく集客の問題です',
+      recommended_action: '曜日・時間帯別に落ちている枠を特定してください',
+    });
+  }
+
+  var t2 = mcThr('spend_short', storeId);
+  if (t2.enabled && budSpend > 0 && actSpend > 0) {
+    var sShort = mcRound((budSpend - actSpend) / budSpend * 100);
+    var s2 = mcSevBy(sShort, t2);
+    if (s2) out.push({
+      rule_code: 'spend_short', dedupe_key: ['spend_short', storeId, ym].join('|'),
+      store_id: storeId, category: 'budget', severity: s2,
+      title: name + '：客単価が予算を ' + sShort + '% 下回っています',
+      current_value: actSpend, target_value: budSpend,
+      estimated_impact: mcRound((budSpend - actSpend) * ms.guests),
+      description: '実績 ' + fmtMoney(actSpend) + ' / 予算 ' + fmtMoney(budSpend) + '（客数 ' + ms.guests + ' 人）',
+      cause_summary: '来店はあるが、1人あたりの注文が予算に届いていません',
+      recommended_action: 'ドリンク・アラカルトの提案とメニュー構成を確認してください',
+    });
+  }
+  return out;
+}
+
 /* ---------- 実行 ---------- */
 var mcRun = { running: false, at: '', last: null };
 
@@ -3279,6 +3515,8 @@ function mcCollectCandidates(storeIds, ym) {
     try { all = all.concat(mcDetectLabor(sid, ym)); } catch (e) { }
     try { all = all.concat(mcDetectCost(sid, ym)); } catch (e) { }
     try { all = all.concat(mcDetectGrowth(sid, ym)); } catch (e) { }
+    try { all = all.concat(mcDetectPurchase(sid, ym)); } catch (e) { }   /* v816 */
+    try { all = all.concat(mcDetectGuests(sid, ym)); } catch (e) { }     /* v816 */
   });
   try { all = all.concat(mcDetectFromErrorCenter(storeIds || [], ym)); } catch (e) { }
   return all;
@@ -3570,77 +3808,20 @@ MC_RULE_DEFAULTS.renotify_info = {
   warning: 1440, critical: null, unit: '分',
 };
 
-function mcMinutesSince(iso) {
-  var t = Date.parse(iso || ''); if (!t) return 0;
-  return Math.floor((Date.now() - t) / 60000);
-}
-
-/* 未確認の通知を拾って、必要なぶんだけ上へ上げる */
+/* v815: 判定は DB の mc_escalate() に1本化した。
+   ここに同じ判定を書き戻さないこと（実装が2つになる）。
+   pg_cron が15分ごとに同じ関数を呼ぶので、誰もアプリを開いていなくても進む。
+   ここからの呼び出しは「開いたときにも追いつく」ための保険。 */
 async function mcRunEscalation() {
   var stat = { toAm: 0, toGm: 0, renotify: 0 };
-  var stores = mcScopeStores();
-  if (!stores.length) return stat;
-  var inl = '(' + stores.map(function (s) { return '"' + s + '"'; }).join(',') + ')';
-  var r = await mcApi('GET', MC_TBL.notif,
-    'select=*&acknowledged_at=is.null&status=in.(sent,read)&store_id=in.' + encodeURIComponent(inl)
-    + '&order=created_at.asc&limit=300');
-  if (!r.ok) return stat;
-
-  /* アラートごとに、いちばん古い未確認の通知を代表にする */
-  var first = {};
-  r.rows.forEach(function (n) {
-    if (!n.alert_id) return;
-    if (!first[n.alert_id]) first[n.alert_id] = n;
-  });
-
-  var ids = Object.keys(first);
-  for (var i = 0; i < ids.length; i++) {
-    var n = first[ids[i]];
-    var a = mcFindAlert(n.alert_id);
-    if (!a) {
-      var g = await mcApi('GET', MC_TBL.alert, 'select=*&id=eq.' + encodeURIComponent(n.alert_id) + '&limit=1');
-      a = (g.ok && g.rows.length) ? g.rows[0] : null;
-    }
-    if (!a) continue;
-    if (a.status === 'resolved' || a.status === 'excluded') continue;   /* 片付いたものは上げない */
-
-    var mins = mcMinutesSince(n.created_at);
-    var sev = a.severity;
-
-    if (sev === 'critical') {
-      var t = mcThr('escalate_critical', a.store_id);
-      if (!t.enabled) continue;
-      if (t.critical != null && mins >= t.critical) {
-        var g2 = await mcNotifyAlert(a, 'renotify', {
-          only: ['gm'], gen: 'esc-gm',
-          message: '緊急のアラートが ' + Math.floor(mins / 60) + ' 時間、確認されていません。',
-        });
-        if (g2.ok && (g2.rows || []).length) stat.toGm++;
-        await mcLogEvent(a.id, 'escalated_gm', null, { minutes: mins, store_id: a.store_id }, null);
-      } else if (mins >= t.warning) {
-        var g1 = await mcNotifyAlert(a, 'renotify', {
-          only: ['am'], gen: 'esc-am',
-          message: '緊急のアラートが ' + mins + ' 分、確認されていません。',
-        });
-        if (g1.ok && (g1.rows || []).length) stat.toAm++;
-        await mcLogEvent(a.id, 'escalated_am', null, { minutes: mins, store_id: a.store_id }, null);
-      }
-    } else {
-      var code = (sev === 'warning') ? 'renotify_warning' : 'renotify_info';
-      var tw = mcThr(code, a.store_id);
-      if (!tw.enabled || !(tw.warning > 0)) continue;
-      if (mins < tw.warning) continue;
-      /* 間隔ごとに1回だけ。世代に回数を入れて重複を防ぐ */
-      var round = Math.floor(mins / tw.warning);
-      var rr = await mcNotifyAlert(a, 'renotify', {
-        only: (sev === 'warning') ? ['sm', 'am'] : ['sm'],
-        gen: 'auto-' + round,
-        message: '未確認のままです（' + mins + '分経過）。',
-      });
-      if (rr.ok && (rr.rows || []).length) stat.renotify++;
-      await mcLogEvent(a.id, 'renotified', null, { minutes: mins, round: round, store_id: a.store_id }, null);
-    }
-  }
+  if (!mcScopeStores().length) return stat;
+  var r = await mcApi('POST', 'rpc/mc_escalate', '', {});
+  if (!r.ok) { mcRun.escErr = r.err || ''; return stat; }
+  var v = (r.rows && r.rows[0]) || {};
+  stat.toAm = Number(v.toAm) || 0;
+  stat.toGm = Number(v.toGm) || 0;
+  stat.renotify = Number(v.renotify) || 0;
+  mcRun.escErr = '';
   return stat;
 }
 
@@ -24649,7 +24830,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '814';
+const APP_VERSION = '816';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
