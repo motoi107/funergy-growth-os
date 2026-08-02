@@ -9145,7 +9145,14 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
   'fv_moves_': { merge: mergeFvMoves, covers: _coversFvMoves },
   /* v783: 棚卸の仕入価格の手入力。品目ごとに新しい方が勝つ。
      「戻す」は行を消さず p:null として残すため、削除の復活も取り消しの巻き戻りも起きない。 */
-  'inv_price_': { merge: mergeMapByTime, covers: _coversMapByTime } };
+  'inv_price_': { merge: mergeMapByTime, covers: _coversMapByTime },
+  /* v825: 日次売上。合流ルールが無く「丸ごと上書き」だったため、
+     直近14日ぶんしか持っていない端末が押し上げると、
+     クラウドの7月前半が消えて全端末に伝播した（Tenkichi 7/1〜7/18）。
+     日付キーの和集合にして、範囲外の日が消えないようにする。
+     日ごとの勝敗は _at で判定するが、既存データに _at は無いので
+     同点＝ローカルが勝つ。これは今までと同じ挙動で、退行しない。 */
+  'daily_actuals_': { merge: mergeMapByTime, covers: _coversMapByTime } };
 /* v754: 棚卸(inv_<店舗>)の合流ルールを店舗ごとの完全キーで登録する。
    'inv_' の前方一致だと inv_hist_ や inv_templates まで拾ってしまうため、店舗IDまで含めて登録する。
    店舗が追加されたときのために refreshStores からも呼べるようにしておく。 */
@@ -17683,7 +17690,21 @@ function dayBudgetFromBases(b, dow) {
   return 0;
 }
 function getDailyActuals(storeId) { return ls('daily_actuals_'+storeId, {}); }
-function setDailyActuals(storeId, data) { lsSet('daily_actuals_'+storeId, data); }
+/* v825: 中身のある日次売上を、空で上書きしない。
+   合流ルールでクラウド側は守られるが、手元まで空にすると画面が0表示になる。 */
+function setDailyActuals(storeId, data) {
+  try {
+    var next = (data && typeof data === 'object') ? data : {};
+    if (!Object.keys(next).length) {
+      var cur = getDailyActuals(storeId);
+      if (cur && Object.keys(cur).length) {
+        console.warn('[daily_actuals] 空での上書きを止めました:', storeId, Object.keys(cur).length + '日ぶん');
+        return;
+      }
+    }
+  } catch (e) { }
+  lsSet('daily_actuals_' + storeId, data);
+}
 
 function dailyScopeStores() {
   // 管轄店舗（getVisibleStores）に応じて対象店舗を返す
@@ -25176,7 +25197,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '824';
+const APP_VERSION = '825';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
