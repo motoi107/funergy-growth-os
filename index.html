@@ -1717,6 +1717,7 @@ const NAV_ITEMS = [
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','office','am','sl']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl']},
   {id:'tasks',       label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl']},
+  {id:'lala',        label:'LaLa オープン準備', icon:'ti-sparkles',      roles:['ceo','gm','office','am','sl','chef','office_crew']},
   {id:'biz_guide',   label:'業務ガイド',    icon:'ti-book-2',           roles:['ceo','gm','office','am','sl']},
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','office','am','sl']},
   {id:'cc_plan',     label:'月間行動計画', icon:'ti-clipboard-check',  roles:['ceo','gm','chef']},   /* v767 */
@@ -1764,7 +1765,7 @@ const MENU_GROUPS = [
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','labor','foodcost','kpi_master']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
-    children:['tasks']},
+    children:['tasks','lala']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     children:['staff_master','hiring','shift_admin','tip','hr','vacation','totoya_docs','crew_handbook']},
   {id:'g_growth', label:'育成・評価', icon:'ti-school', roles:['ceo','gm','office','am','sl'],
@@ -5448,7 +5449,7 @@ var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config'
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
-var OP_SYNC_KEYS = ['office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
+var OP_SYNC_KEYS = ['lala_tasks','office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
@@ -6251,6 +6252,8 @@ var OP_MERGE = {
   /* v798: 査定まわり。ここが無いと部分データを持つ端末の保存が
      クラウドを丸ごと上書きし、別の人が入れた四半期・別の従業員の
      カルテが消える。査定は手入力で再生できないため、必ず件ごとに合流する。 */
+  /* v804: LaLa はタスク単位で合流。別々のタスクを直しても消し合わない */
+  lala_tasks:         { merge: mergeMapByTime, covers: _coversMapByTime },
   bonus_q:            { merge: mergeMapByTime, covers: _coversMapByTime },
   growth_karte:       { merge: mergeMapByTime, covers: _coversMapByTime },
   q_budgets:          { merge: mergeMapByTime, covers: _coversMapByTime },
@@ -8551,6 +8554,7 @@ function goGroup(groupId) {
 }
 
 function go(page) {
+  try{ if(curPage==='lala' && page!=='lala' && typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v804 */
   // 全店: シフト作成(shift_admin)は既定を翌週に。離れたら今週に戻す（スタッフ閲覧側は今週基準を保つ）。
   try { if (page==='shift_admin' && curPage!=='shift_admin') { _shiftWeekOff = 1; } else if (page!=='shift_admin' && curPage==='shift_admin') { _shiftWeekOff = 0; } } catch(e){}
   curPage = page;
@@ -8647,6 +8651,7 @@ function renderPage(page) {
     case 'goals':        el.innerHTML = renderGoals(); break;
     case 'announce':     workTab='announce'; el.innerHTML = renderWorkCenter(); break;
     case 'labor':        el.innerHTML = renderLabor(); break;
+    case 'lala':         el.innerHTML = renderLala(); try{ lalaRealtimeStart(); }catch(e){} break;   /* v804 */
     case 'tip':          el.innerHTML = renderTipMgmt(); break;
     case 'attendance':   laborTab='attendance'; el.innerHTML = renderLabor(); break;
     case 'shift_admin':  el.innerHTML = renderShiftAdmin(); break;
@@ -21092,7 +21097,8 @@ var LS_NEVER_FREE = ['spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','sp
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
   'fv_count_','fv_moves_','fv_review_','fv_config',
   'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','q_budgets',
-  'sl_config','sl_manual_'];   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
+  'sl_config','sl_manual_',
+  'lala_tasks'];   /* v804: LaLa（手入力・再生不可） */   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
 function _lsProtectedKey(k){
   var s=String(k||'');
   return LS_NEVER_FREE.some(function(p){ return s===p || s.indexOf(p)===0 || s.indexOf(p)>=0 && p.indexOf('_')>=0 && s.indexOf(p)===(s.indexOf('spl_')===0?4:0); });
@@ -22366,7 +22372,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '803';
+const APP_VERSION = '804';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -47215,6 +47221,441 @@ function ccApprovalDetailHtml(a){
      + '<button class="btn btn-secondary btn-sm" onclick="ccRefetchNow()"><i class="ti ti-refresh"></i> 再取得</button>'
      + '</div>';
   return h + '</div>';
+}
+/* ===== v804: LaLa オープン準備 =====
+   【保存先】既存アプリの保存方式に合わせる。lala_tasks を app_state（Supabase）へ同期する。
+     localStorage は「手元の作業コピー」で、正はクラウド側。OP_SYNC_KEYS に載せるので
+     保存すると _pushWithOutbox 経由でクラウドへ上がり、失敗時は送信箱に残って再送される。
+     専用テーブルを新設しなかった理由：この app の全機能が app_state のキー/値で動いており、
+     取得・合流・再送・削除保護・オフラインの仕組みが既にそこに揃っている。
+     1機能だけ別テーブルにすると、その全部を作り直すことになる。
+     （専用テーブルにしたい場合の SQL は lala_opening_tasks.sql として別途用意）
+   【競合】タスク単位で合流する（mergeMapByTime）。別の人が別のタスクを直しても消し合わない。
+     同じタスクを同時に直した場合は version を見て、古い版で上書きしようとしたら
+     保存を止めて最新を出す。黙って上書きしない。
+   【即時反映】通知で使っている Realtime（app_state の購読）と同じ仕組みを使う。
+     未設定の環境でも 60秒のフォールバック取得で追いつく。 */
+var LALA_ASSIGNEES = ['Moto','Chika','Aya'];
+var LALA_ORDER_STATUS = ['対象外','検討中','発注予定','発注済み','発送済み','納品済み'];
+var LALA_STATUS_COLOR = {
+  '対象外':  {c:'var(--muted)',   bg:'transparent'},
+  '検討中':  {c:'var(--yellow)',  bg:'transparent'},
+  '発注予定':{c:'var(--orange)',  bg:'transparent'},
+  '発注済み':{c:'var(--blue)',    bg:'transparent'},
+  '発送済み':{c:'var(--purple)',  bg:'transparent'},
+  '納品済み':{c:'var(--green)',   bg:'transparent'}
+};
+function lalaStatusColor(s){
+  var v=LALA_STATUS_COLOR[s];
+  if(v) return v.c;
+  return 'var(--muted)';
+}
+function lalaAll(){ var m=ls('lala_tasks', {}); return (m && typeof m==='object' && !Array.isArray(m)) ? m : {}; }
+/* 削除済みは通常画面に出さない（ソフトデリート） */
+function lalaTasks(){
+  var m=lalaAll(), out=[];
+  Object.keys(m).forEach(function(id){
+    var t=m[id];
+    if(!t || typeof t!=='object') return;
+    if(t.deleted_at) return;
+    out.push(t);
+  });
+  /* 未完了が先。同じ状態の中は sort_order。将来の並べ替えに備えて番号で持つ */
+  out.sort(function(a,b){
+    var ac=a.is_completed?1:0, bc=b.is_completed?1:0;
+    if(ac!==bc) return ac-bc;
+    var ao=Number(a.sort_order)||0, bo=Number(b.sort_order)||0;
+    if(ao!==bo) return ao-bo;
+    return String(a.created_at||'').localeCompare(String(b.created_at||''));
+  });
+  return out;
+}
+function lalaGet(id){ return lalaAll()[id] || null; }
+function _lalaNowIso(){ return new Date().toISOString(); }
+function _lalaWho(){ return (typeof myName==='function' ? myName() : (curUserName||'')) || ''; }
+function _lalaNextOrder(){
+  var m=lalaAll(), max=0;
+  Object.keys(m).forEach(function(id){ var o=Number(m[id]&&m[id].sort_order)||0; if(o>max) max=o; });
+  return max+10;   /* 隙間を空けておくと、あとで間に差し込める */
+}
+function _lalaId(){
+  return 'lala_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7);
+}
+/* 書き込みはすべてここを通す。version を上げ、更新者と時刻を必ず残す。
+   expectVersion を渡すと、その版でなければ書かずに競合として返す。 */
+function lalaWrite(id, patch, expectVersion){
+  var m=lalaAll();
+  var cur=m[id];
+  if(!cur) return {ok:false, reason:'notfound'};
+  if(expectVersion!=null && Number(cur.version||0)!==Number(expectVersion)){
+    return {ok:false, reason:'conflict', current:cur};
+  }
+  var next=Object.assign({}, cur, patch, {
+    version: (Number(cur.version)||0)+1,
+    updated_by: _lalaWho(),
+    updated_at: _lalaNowIso(),
+    _at: Date.now()                      /* 端末間の合流で勝敗を決めるための印 */
+  });
+  m[id]=next;
+  if(lsSet('lala_tasks', m)===false) return {ok:false, reason:'save'};
+  return {ok:true, task:next};
+}
+function lalaCreate(fields){
+  var id=_lalaId();
+  var now=_lalaNowIso(), who=_lalaWho();
+  var t={
+    id:id,
+    title:String((fields&&fields.title)||'').trim(),
+    assignee: (LALA_ASSIGNEES.indexOf((fields&&fields.assignee))>=0) ? fields.assignee : LALA_ASSIGNEES[0],
+    is_completed:false,
+    order_status: (LALA_ORDER_STATUS.indexOf((fields&&fields.order_status))>=0) ? fields.order_status : '対象外',
+    notes:String((fields&&fields.notes)||''),
+    sort_order:_lalaNextOrder(),
+    created_by:who, created_at:now,
+    updated_by:who, updated_at:now,
+    deleted_at:null, deleted_by:null,
+    version:1, _at:Date.now()
+  };
+  if(!t.title) return {ok:false, reason:'title'};
+  var m=lalaAll(); m[id]=t;
+  if(lsSet('lala_tasks', m)===false) return {ok:false, reason:'save'};
+  return {ok:true, task:t};
+}
+/* ソフトデリート。行は残し、通常画面から隠すだけ */
+function lalaDelete(id){
+  return lalaWrite(id, { deleted_at:_lalaNowIso(), deleted_by:_lalaWho() });
+}
+function lalaRestore(id){
+  return lalaWrite(id, { deleted_at:null, deleted_by:null });
+}
+/* 進捗の集計。0件でも落ちない */
+function lalaStats(list){
+  var all=(list||lalaTasks());
+  var done=all.filter(function(t){ return !!t.is_completed; }).length;
+  var total=all.length;
+  return { done:done, total:total, open:total-done,
+           pct: total>0 ? Math.round(done/total*1000)/10 : 0 };
+}
+function lalaStatsBy(assignee){
+  var all=lalaTasks().filter(function(t){ return !assignee || t.assignee===assignee; });
+  return lalaStats(all);
+}
+/* 絞り込み。元データは変えない */
+function lalaFilter(opt){
+  opt=opt||{};
+  return lalaTasks().filter(function(t){
+    if(opt.assignee && t.assignee!==opt.assignee) return false;
+    if(opt.done==='open' && t.is_completed) return false;
+    if(opt.done==='done' && !t.is_completed) return false;
+    if(opt.status && opt.status!=='ALL' && t.order_status!==opt.status) return false;
+    return true;
+  });
+}
+/* ===== v804（画面）：LaLa オープン準備 ===== */
+var lalaTab='ALL', lalaDone='all', lalaStatusF='ALL';
+var _lalaSaveState={};      /* id+field → 'saving'|'saved'|'error'|'retry' */
+var _lalaTimers={};         /* デバウンス用 */
+var _lalaDraft={};          /* 未保存の入力内容。保存に失敗しても消さない */
+var _lalaOpenNote={};       /* 備考を展開しているか */
+
+function setLalaTab(v){ lalaTab=v; renderPage('lala'); }
+function setLalaDone(v){ lalaDone=v; renderPage('lala'); }
+function setLalaStatusF(v){ lalaStatusF=v; renderPage('lala'); }
+
+function _lalaMark(key, state){
+  _lalaSaveState[key]=state;
+  var el=document.getElementById('lala-st-'+key);
+  if(el) el.innerHTML=_lalaStateHtml(key);
+  if(state==='saved') setTimeout(function(){
+    if(_lalaSaveState[key]==='saved'){ delete _lalaSaveState[key];
+      var e2=document.getElementById('lala-st-'+key); if(e2) e2.innerHTML=''; }
+  }, 1800);
+}
+function _lalaStateHtml(key){
+  var s=_lalaSaveState[key];
+  if(!s) return '';
+  if(s==='saving') return '<span style="font-size:9.5px;color:var(--muted)"><i class="ti ti-loader"></i> 保存中</span>';
+  if(s==='saved')  return '<span style="font-size:9.5px;color:var(--green)"><i class="ti ti-check"></i> 保存済み</span>';
+  if(s==='retry')  return '<span style="font-size:9.5px;color:var(--yellow)"><i class="ti ti-refresh"></i> 再保存中</span>';
+  return '<span style="font-size:9.5px;color:var(--red)"><i class="ti ti-alert-triangle"></i> 保存エラー'
+       + ' <button onclick="lalaRetry(\''+key+'\')" style="border:0;background:transparent;color:var(--accent);cursor:pointer;font-size:9.5px;text-decoration:underline">再試行</button></span>';
+}
+/* 保存の実体。競合したら上書きせず知らせる */
+function _lalaCommit(id, field, value, key, isRetry){
+  _lalaMark(key, isRetry?'retry':'saving');
+  var before=lalaGet(id);
+  if(!before){ _lalaMark(key,'error'); return; }
+  var patch={}; patch[field]=value;
+  var r=lalaWrite(id, patch, before.version);
+  if(r.ok){
+    delete _lalaDraft[key];
+    _lalaMark(key,'saved');
+    try{ lalaPushNow(); }catch(e){}
+    if(field==='is_completed'||field==='assignee'){ renderPage('lala'); }
+    else { _lalaRefreshHeader(); }
+    return;
+  }
+  if(r.reason==='conflict'){
+    _lalaMark(key,'error');
+    showToast('このタスクは他の人が更新しました。最新の内容を読み込みます','warning');
+    setTimeout(function(){ renderPage('lala'); }, 400);
+    return;
+  }
+  _lalaMark(key,'error');   /* 入力内容は _lalaDraft に残したまま */
+}
+function lalaRetry(key){
+  var d=_lalaDraft[key];
+  if(!d){ _lalaMark(key,'saved'); return; }
+  _lalaCommit(d.id, d.field, d.value, key, true);
+}
+/* すぐ保存（チェック・担当・発注状況） */
+function lalaSetNow(id, field, value){
+  var key=id+'_'+field;
+  if(field==='is_completed') value=!!value;
+  _lalaDraft[key]={id:id, field:field, value:value};
+  _lalaCommit(id, field, value, key);
+}
+/* 入力が止まってから保存（タスク名・備考） */
+function lalaSetDebounced(id, field, value){
+  var key=id+'_'+field;
+  _lalaDraft[key]={id:id, field:field, value:value};
+  if(_lalaTimers[key]) clearTimeout(_lalaTimers[key]);
+  _lalaTimers[key]=setTimeout(function(){
+    delete _lalaTimers[key];
+    _lalaCommit(id, field, value, key);
+  }, 700);
+}
+/* 入力欄から離れたら、待たずに保存 */
+function lalaFlush(id, field, value){
+  var key=id+'_'+field;
+  if(_lalaTimers[key]){ clearTimeout(_lalaTimers[key]); delete _lalaTimers[key]; }
+  var cur=lalaGet(id);
+  if(cur && String(cur[field]||'')===String(value||'')){ return; }   /* 変わっていなければ何もしない */
+  _lalaDraft[key]={id:id, field:field, value:value};
+  _lalaCommit(id, field, value, key);
+}
+function _lalaRefreshHeader(){
+  var el=document.getElementById('lala-head');
+  if(el) el.innerHTML=_lalaHeadHtml();
+  var tb=document.getElementById('lala-tabs');
+  if(tb) tb.innerHTML=_lalaTabsHtml();
+}
+function _lalaHeadHtml(){
+  var s=lalaStats();
+  var col = s.pct>=100?'var(--green)':(s.pct>=50?'var(--accent)':'var(--muted)');
+  return '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">'
+    + '<div style="font-size:26px;font-weight:800;color:'+col+'">'+s.pct.toFixed(s.pct%1?1:0)+'%</div>'
+    + '<div style="font-size:12px;color:var(--muted)">完了 <b style="color:var(--tm)">'+s.done+'</b> / 全 <b style="color:var(--tm)">'+s.total+'</b>'
+    + '　未完了 <b style="color:'+(s.open?'var(--accent)':'var(--muted)')+'">'+s.open+'</b></div></div>'
+    + '<div style="margin-top:7px;background:var(--border);border-radius:999px;height:9px;overflow:hidden">'
+    + '<div style="width:'+Math.max(0,Math.min(100,s.pct))+'%;height:9px;background:'+col+';border-radius:999px;transition:width .25s"></div></div>';
+}
+function _lalaTabsHtml(){
+  var mk=function(key,label){
+    var st=lalaStatsBy(key==='ALL'?null:key);
+    var on=lalaTab===key;
+    return '<button onclick="setLalaTab(\''+key+'\')" style="flex:1 1 0;min-width:0;padding:6px 2px;border-radius:9px;cursor:pointer;'
+      +'border:1px solid '+(on?'var(--accent)':'var(--border)')+';background:'+(on?'var(--accent)':'transparent')+';color:'+(on?'#fff':'var(--tm)')+'">'
+      +'<div style="font-size:11.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(label)+'</div>'
+      +'<div style="font-size:10px;opacity:.85">'+st.done+'/'+st.total+'</div></button>';
+  };
+  return '<div style="display:flex;gap:5px">'+mk('ALL','全員')+LALA_ASSIGNEES.map(function(a){ return mk(a,a); }).join('')+'</div>';
+}
+function _lalaWhenLabel(iso){
+  if(!iso) return '';
+  try{
+    var d=new Date(iso);
+    return d.toLocaleString('en-US',{ timeZone:'Pacific/Honolulu', month:'numeric', day:'numeric',
+      hour:'numeric', minute:'2-digit', hour12:true });
+  }catch(e){ return String(iso).slice(0,16); }
+}
+function _lalaCard(t){
+  var key=function(f){ return t.id+'_'+f; };
+  var sc=lalaStatusColor(t.order_status);
+  var noteOpen=!!_lalaOpenNote[t.id];
+  var noteVal=(_lalaDraft[key('notes')] ? _lalaDraft[key('notes')].value : (t.notes||''));
+  var titleVal=(_lalaDraft[key('title')] ? _lalaDraft[key('title')].value : (t.title||''));
+  var h='<div class="card" style="padding:10px 11px;'+(t.is_completed?'opacity:.72;':'')+'">';
+  /* 1行目：チェック + タスク名 + … */
+  h+='<div style="display:flex;gap:9px;align-items:flex-start">'
+    +'<input type="checkbox" '+(t.is_completed?'checked':'')+' onchange="lalaSetNow(\''+t.id+'\',\'is_completed\',this.checked)" '
+    +'style="width:24px;height:24px;flex:0 0 auto;margin-top:1px;cursor:pointer">'
+    +'<div style="flex:1;min-width:0">'
+    +'<textarea rows="1" oninput="this.style.height=\'auto\';this.style.height=this.scrollHeight+\'px\';lalaSetDebounced(\''+t.id+'\',\'title\',this.value)" '
+    +'onblur="lalaFlush(\''+t.id+'\',\'title\',this.value)" '
+    +'style="width:100%;border:0;background:transparent;resize:none;font-size:14px;font-weight:700;line-height:1.4;padding:0;color:var(--tm);'
+    +(t.is_completed?'text-decoration:line-through;text-decoration-thickness:1px;':'')+'">'+escapeHtml(titleVal)+'</textarea>'
+    +'<div id="lala-st-'+key('title')+'">'+_lalaStateHtml(key('title'))+'</div>'
+    +'</div>'
+    +'<button onclick="openLalaMenu(\''+t.id+'\')" style="flex:0 0 auto;border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:17px;padding:0 2px" aria-label="メニュー">…</button>'
+    +'</div>';
+  /* 2行目：担当 + 発注状況 */
+  h+='<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+    +'<select onchange="lalaSetNow(\''+t.id+'\',\'assignee\',this.value)" class="form-select" style="flex:1 1 110px;min-width:100px;font-size:12.5px;padding:7px 8px">'
+    + LALA_ASSIGNEES.map(function(a){ return '<option value="'+escapeHtml(a)+'"'+(t.assignee===a?' selected':'')+'>'+escapeHtml(a)+'</option>'; }).join('')
+    +'</select>'
+    +'<select onchange="lalaSetNow(\''+t.id+'\',\'order_status\',this.value)" class="form-select" '
+    +'style="flex:1 1 130px;min-width:118px;font-size:12.5px;padding:7px 8px;border-color:'+sc+';color:'+sc+';font-weight:700">'
+    + LALA_ORDER_STATUS.map(function(s){ return '<option value="'+escapeHtml(s)+'"'+(t.order_status===s?' selected':'')+'>'+escapeHtml(s)+'</option>'; }).join('')
+    +'</select></div>'
+    +'<div style="display:flex;gap:8px"><div id="lala-st-'+key('assignee')+'">'+_lalaStateHtml(key('assignee'))+'</div>'
+    +'<div id="lala-st-'+key('order_status')+'">'+_lalaStateHtml(key('order_status'))+'</div></div>';
+  /* 3行目：備考。閉じているときは省略、押すとその場で編集 */
+  if(noteOpen || noteVal.length<=60){
+    h+='<textarea rows="'+(noteOpen?3:2)+'" placeholder="備考（発注予定・見積・確認事項・申し送りなど）" '
+      +'oninput="lalaSetDebounced(\''+t.id+'\',\'notes\',this.value)" onblur="lalaFlush(\''+t.id+'\',\'notes\',this.value)" '
+      +'class="form-input" style="width:100%;margin-top:7px;font-size:12.5px;line-height:1.6;resize:vertical;min-height:52px">'
+      +escapeHtml(noteVal)+'</textarea>';
+  } else {
+    h+='<div onclick="lalaOpenNote(\''+t.id+'\')" style="margin-top:7px;font-size:12px;color:var(--muted);line-height:1.6;cursor:pointer;'
+      +'background:var(--surface2);border-radius:8px;padding:7px 9px">'
+      +escapeHtml(noteVal.slice(0,60))+'… <span style="color:var(--accent);font-size:11px">全文</span></div>';
+  }
+  h+='<div id="lala-st-'+key('notes')+'">'+_lalaStateHtml(key('notes'))+'</div>';
+  /* 4行目：更新者 */
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px">'
+    + (t.updated_by?escapeHtml(t.updated_by)+'が ':'')+_lalaWhenLabel(t.updated_at)+' に更新</div>';
+  return h+'</div>';
+}
+function lalaOpenNote(id){ _lalaOpenNote[id]=true; renderPage('lala'); }
+
+function renderLala(){
+  var list=lalaFilter({ assignee:(lalaTab==='ALL'?null:lalaTab), done:lalaDone, status:lalaStatusF });
+  var total=lalaTasks().length;
+  var h='<div class="section-header"><div><div class="section-title">LaLa オープン準備</div>'
+    +'<div class="section-sub">LaLa Opening Preparation</div></div>'
+    +'<button class="btn btn-primary btn-sm" onclick="openLalaAdd()"><i class="ti ti-plus"></i> タスク追加</button></div>';
+
+  h+='<div class="card" style="padding:11px 12px"><div id="lala-head">'+_lalaHeadHtml()+'</div>'
+    +'<div id="lala-tabs" style="margin-top:10px">'+_lalaTabsHtml()+'</div>'
+    +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+    +'<select class="form-select" onchange="setLalaDone(this.value)" style="flex:1 1 120px;min-width:110px;font-size:12px;padding:6px 8px">'
+    +['all|すべて','open|未完了のみ','done|完了のみ'].map(function(x){ var p=x.split('|');
+        return '<option value="'+p[0]+'"'+(lalaDone===p[0]?' selected':'')+'>'+p[1]+'</option>'; }).join('')
+    +'</select>'
+    +'<select class="form-select" onchange="setLalaStatusF(this.value)" style="flex:1 1 130px;min-width:118px;font-size:12px;padding:6px 8px">'
+    +'<option value="ALL"'+(lalaStatusF==='ALL'?' selected':'')+'>発注状況：すべて</option>'
+    +LALA_ORDER_STATUS.map(function(s){ return '<option value="'+escapeHtml(s)+'"'+(lalaStatusF===s?' selected':'')+'>'+escapeHtml(s)+'</option>'; }).join('')
+    +'</select></div>'
+    +'<div id="lala-sync" style="font-size:10px;color:var(--muted);margin-top:6px"></div>'
+    +'</div>';
+
+  if(!total){
+    h+='<div class="card" style="text-align:center;padding:34px 16px">'
+      +'<i class="ti ti-clipboard-list" style="font-size:30px;color:var(--muted);display:block;margin-bottom:8px"></i>'
+      +'<div style="font-size:13px;color:var(--muted);margin-bottom:12px">タスクはまだ登録されていません</div>'
+      +'<button class="btn btn-primary" onclick="openLalaAdd()"><i class="ti ti-plus"></i> 最初のタスクを追加</button></div>';
+    return h;
+  }
+  if(!list.length){
+    h+='<div class="card" style="text-align:center;padding:24px;color:var(--muted);font-size:12.5px">'
+      +'この条件に合うタスクはありません（全'+total+'件）</div>';
+  } else {
+    list.forEach(function(t){ h+=_lalaCard(t); });
+  }
+  h+='<div style="margin:10px 0 4px"><button class="btn btn-secondary" style="width:100%" onclick="openLalaAdd()">'
+    +'<i class="ti ti-plus"></i> タスク追加</button></div>';
+  return h;
+}
+function openLalaAdd(){
+  openModal('<div class="modal-title"><i class="ti ti-plus"></i> タスク追加 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="form-group"><label class="form-label">タスク名</label>'
+    +'<textarea class="form-input" id="lala-n-title" rows="2" placeholder="例：食器の発注" style="resize:vertical"></textarea></div>'
+    +'<div class="form-group"><label class="form-label">担当者</label><select class="form-select" id="lala-n-as">'
+    +LALA_ASSIGNEES.map(function(a){ return '<option value="'+escapeHtml(a)+'">'+escapeHtml(a)+'</option>'; }).join('')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">発注状況</label><select class="form-select" id="lala-n-st">'
+    +LALA_ORDER_STATUS.map(function(s){ return '<option value="'+escapeHtml(s)+'">'+escapeHtml(s)+'</option>'; }).join('')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">備考</label>'
+    +'<textarea class="form-input" id="lala-n-note" rows="3" placeholder="発注予定・見積・確認事項など" style="resize:vertical"></textarea></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="lalaAddSubmit()"><i class="ti ti-check"></i> 追加</button></div>');
+}
+function lalaAddSubmit(){
+  var title=(document.getElementById('lala-n-title')||{}).value||'';
+  if(!String(title).trim()){ alert('タスク名を入れてください'); return; }
+  var r=lalaCreate({
+    title:title,
+    assignee:(document.getElementById('lala-n-as')||{}).value,
+    order_status:(document.getElementById('lala-n-st')||{}).value,
+    notes:(document.getElementById('lala-n-note')||{}).value||''
+  });
+  if(!r.ok){ showToast('保存できませんでした','danger'); return; }
+  closeModalDirect(); showToast('タスクを追加しました','success');
+  try{ lalaPushNow(); }catch(e){}
+  renderPage('lala');
+}
+function openLalaMenu(id){
+  var t=lalaGet(id); if(!t) return;
+  openModal('<div class="modal-title"><i class="ti ti-dots"></i> '+escapeHtml(String(t.title||'').slice(0,30))
+    +' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="btn-row" style="flex-direction:column;gap:7px">'
+    +'<button class="btn btn-secondary" style="width:100%" onclick="openLalaEditTitle(\''+id+'\')"><i class="ti ti-pencil"></i> タスク名を編集</button>'
+    +'<button class="btn btn-secondary" style="width:100%;color:var(--red);border-color:var(--red)" onclick="lalaConfirmDelete(\''+id+'\')"><i class="ti ti-trash"></i> タスクを削除</button>'
+    +'</div>');
+}
+function openLalaEditTitle(id){
+  var t=lalaGet(id); if(!t) return;
+  openModal('<div class="modal-title"><i class="ti ti-pencil"></i> タスク名を編集 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="form-group"><textarea class="form-input" id="lala-e-title" rows="3" style="resize:vertical">'+escapeHtml(t.title||'')+'</textarea></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    +'<button class="btn btn-primary" onclick="lalaEditTitleSubmit(\''+id+'\')">保存</button></div>');
+}
+function lalaEditTitleSubmit(id){
+  var v=(document.getElementById('lala-e-title')||{}).value||'';
+  if(!String(v).trim()){ alert('タスク名を入れてください'); return; }
+  var cur=lalaGet(id);
+  var r=lalaWrite(id, {title:v}, cur?cur.version:null);
+  if(!r.ok){
+    if(r.reason==='conflict'){ showToast('このタスクは他の人が更新しました。最新を読み込みます','warning'); }
+    else showToast('保存できませんでした','danger');
+  }
+  closeModalDirect(); try{ lalaPushNow(); }catch(e){} renderPage('lala');
+}
+function lalaConfirmDelete(id){
+  if(!confirm('このタスクを削除しますか？')) return;
+  var r=lalaDelete(id);
+  if(!r.ok){ showToast('削除できませんでした','danger'); return; }
+  closeModalDirect(); showToast('削除しました','info');
+  try{ lalaPushNow(); }catch(e){} renderPage('lala');
+}
+/* ---- 同期（通知と同じ仕組み） ---- */
+var _lalaRtChannel=null, _lalaPollTimer=null;
+async function lalaPullNow(){
+  try{
+    if(typeof pullOpKey==='function'){ await pullOpKey('lala_tasks'); }
+    if(curPage==='lala') renderPage('lala');
+  }catch(e){}
+}
+async function lalaPushNow(){
+  try{ if(typeof syncMasterToSupabase==='function') await syncMasterToSupabase('lala_tasks', ls('lala_tasks',{})); }
+  catch(e){
+    var el=document.getElementById('lala-sync');
+    if(el) el.innerHTML='<span style="color:var(--yellow)"><i class="ti ti-cloud-off"></i> 同期できていません（送信箱に残しています。通信が戻ると自動で送られます）</span>';
+  }
+}
+function lalaRealtimeStart(){
+  lalaRealtimeStop();
+  try{
+    if(window.supabase && window.supabase.createClient){
+      var cl=window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+      _lalaRtChannel=cl.channel('rt-lala')
+        .on('postgres_changes', { event:'*', schema:'public', table:'app_state', filter:'key=eq.lala_tasks' }, function(){ lalaPullNow(); })
+        .subscribe();
+    }
+  }catch(e){}
+  if(_lalaPollTimer) clearInterval(_lalaPollTimer);
+  _lalaPollTimer=setInterval(function(){
+    if(document.hidden) return;
+    if(curPage!=='lala') return;
+    if(_lalaRtChannel && _lalaRtChannel.state==='joined') return;
+    lalaPullNow();
+  }, 30000);
+  lalaPullNow();
+}
+function lalaRealtimeStop(){
+  try{ if(_lalaRtChannel && _lalaRtChannel.unsubscribe) _lalaRtChannel.unsubscribe(); }catch(e){}
+  _lalaRtChannel=null;
+  if(_lalaPollTimer){ clearInterval(_lalaPollTimer); _lalaPollTimer=null; }
 }
 /* ---------- 画面 ---------- */
 function renderCcPlan(){
