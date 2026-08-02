@@ -1676,6 +1676,2151 @@ function myAmStores(){
 function amStoresOf(amName){
   return getStoresAll().filter(s=>s.am===amName).map(s=>s.id);
 }
+
+/* ============================================================
+   v808 Management Control（管理統括）— 基盤① 管轄・権限の解決
+   ------------------------------------------------------------
+   ここには画面を作らない。v809 以降の画面はこの判定「だけ」を使う。
+   同じ判定を画面側に書き写さないこと（原価の foodCostOf() と同じ考え方）。
+
+   v808 で確定した設計（次回、勝手に変えないこと）:
+
+   ① 権限はアプリ層で判定する。Supabase は anon キーのままで、RLS は
+      anon 許可のポリシー1本を置くだけ。＝バックエンド側では防いでいない。
+      これは既存の全画面と同じ水準（Motoさん確認済み・案A）。
+      将来 Supabase Auth へ寄せるときは management_control_v808.sql の
+      ポリシーだけを差し替えれば、この JS は変えずに済む。
+
+   ② 管轄店舗は「店舗マスターの am 欄」が正（v799 の決定を踏襲）。
+      従業員マスターに管轄を持たせない（正が2つになるため）。
+
+   ③ 店長(Store Manager) は role では決まらない。実データに
+      role='g4' の人と role='sl' + title='Store Manager' の人が両方いる。
+      さらに GRADE_TITLES の G4 には Accountant / Office Manager /
+      Head Chef も含まれるため、Grade だけで判定すると経理が店長になる。
+      → mcIsStoreManagerEmp() が唯一の判定口。empGrade() は使わない。
+
+   ④ Head Chef / Corporate Chef は「原価・仕入」分野のみ（Motoさん確認済み）。
+      解決の権限は持たない（対応・コメントまで）。解決は GM / 管轄AM が行う。
+
+   ⑤ AM は管轄店舗内なら解決まで実行できる（Motoさん確認済み）。
+      店長の「完了報告」だけではアラートは解決しない（v810 で実装）。
+============================================================ */
+
+/* 管理する4分野。id は DB の management_alerts.category と同じ値を使う */
+var MC_CATEGORIES = [
+  { id:'budget', label:'予実',         icon:'ti-chart-bar' },
+  { id:'labor',  label:'勤怠・人件費', icon:'ti-clock' },
+  { id:'cost',   label:'原価・仕入',   icon:'ti-receipt' },
+  { id:'growth', label:'育成',         icon:'ti-school' },
+];
+
+/* G4 だが店長ではない肩書き。ここに載っている人を店長として扱わない */
+var MC_NON_SM_G4_TITLES = ['Head Chef', 'Accountant', 'Office Manager'];
+
+/* 在籍中で、アプリが有効な従業員か */
+function mcEmpActive(e) {
+  if (!e) return false;
+  if (e.status === '退職') return false;
+  if (e.retired || e._deleted || e.osDisabled) return false;
+  return true;
+}
+
+/* ログイン中ユーザーの従業員レコード（無ければ null） */
+function mcMe() {
+  try {
+    var nm = curUserName || (ROLE_CONFIG[curRole] || {}).name;
+    if (!nm) return null;
+    return getEmployees().find(function (x) { return x.name === nm; }) || null;
+  } catch (e) { return null; }
+}
+
+/* 店長かどうかの唯一の判定口。role→title の順に見る（設計③） */
+function mcIsStoreManagerEmp(e) {
+  if (!e) return false;
+  if (e.role === 'chef' || e.role === 'office' || e.role === 'office_crew') return false;
+  if (e.title === 'Store Manager') return true;
+  if (e.role === 'g4') return MC_NON_SM_G4_TITLES.indexOf(e.title || '') < 0;
+  return false;
+}
+
+/* Management Control 上の役割。'gm' / 'am' / 'chef' / 'sm' / ''（対象外） */
+function mcRole() {
+  if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return '';   /* 店舗共有アカウントは対象外 */
+  var r = (typeof curRealRole !== 'undefined' && curRealRole) ? curRealRole : curRole;
+  if (r === 'ceo' || r === 'gm') return 'gm';
+  if (r === 'chef') return 'chef';
+  if (r === 'office' || r === 'office_crew') return '';   /* 経理は対象外。G4肩書きを持つため先に落とす */
+  if (r === 'am') return 'am';
+  if (mcIsStoreManagerEmp(mcMe())) return 'sm';
+  if (r === 'g4') return 'sm';   /* 従業員レコードが引けない場合の保険 */
+  return '';
+}
+
+/* 「管理」タブを出してよいか。AM以上のみ（店長・それ以下は通知から入る） */
+function mcCanOpen() {
+  var r = mcRole();
+  return r === 'gm' || r === 'am' || r === 'chef';
+}
+
+/* 閲覧・操作できる店舗ID配列。全画面がここを通る */
+function mcScopeStores() {
+  var role = mcRole();
+  if (!role) return [];
+  var act = [];
+  try { act = activeStores().map(function (s) { return s.id; }); } catch (e) { return []; }
+  if (role === 'gm' || role === 'chef') return act;
+  if (role === 'am') {
+    var mine = [];
+    try { mine = myAmStores() || []; } catch (e) { mine = []; }
+    return act.filter(function (id) { return mine.indexOf(id) >= 0; });
+  }
+  if (role === 'sm') {
+    var me = mcMe();
+    var sid = (me && me.store) || '';
+    if (!sid) { try { sid = myStoreId(); } catch (e) { sid = ''; } }
+    return (sid && act.indexOf(sid) >= 0) ? [sid] : [];
+  }
+  return [];
+}
+
+function mcCanSeeStore(storeId) {
+  if (!storeId) return false;
+  return mcScopeStores().indexOf(storeId) >= 0;
+}
+
+/* 見える分野。Head Chef は原価・仕入のみ（設計④） */
+function mcCategoryIds() {
+  var role = mcRole();
+  if (!role) return [];
+  if (role === 'chef') return ['cost'];
+  return MC_CATEGORIES.map(function (c) { return c.id; });
+}
+
+function mcCanSeeCategory(cat) {
+  return mcCategoryIds().indexOf(cat) >= 0;
+}
+
+/* アラートを「解決」に変えられるか。GM=全店 / AM=管轄内 / それ以外=不可（設計④⑤） */
+function mcCanResolve(storeId) {
+  var role = mcRole();
+  if (role === 'gm') return true;
+  if (role === 'am') return mcCanSeeStore(storeId);
+  return false;
+}
+
+/* アラート基準・評価スコア・管轄割り当ての変更。GMのみ */
+function mcCanConfigure() {
+  return mcRole() === 'gm';
+}
+
+/* その店舗の有効な店長（複数可）。通知先の決定に使う。名前を固定しない（仕様§9） */
+function mcStoreManagersOf(storeId) {
+  if (!storeId) return [];
+  try {
+    return getEmployees().filter(function (e) {
+      return mcEmpActive(e) && e.store === storeId && mcIsStoreManagerEmp(e);
+    });
+  } catch (e) { return []; }
+}
+
+/* その店舗の管轄AM名（店舗マスターの am 欄が正・設計②） */
+function mcAmNameOf(storeId) {
+  try {
+    var st = getStoresAll().find(function (s) { return s.id === storeId; });
+    return (st && st.am) ? st.am : '';
+  } catch (e) { return ''; }
+}
+
+/* GM の名前（通知は必ず GM にも届く） */
+function mcGmNames() {
+  var out = [];
+  try {
+    getEmployees().forEach(function (e) {
+      if (mcEmpActive(e) && (e.role === 'gm' || e.title === 'General Manager')) out.push(e.name);
+    });
+  } catch (e) { }
+  if (!out.length) {
+    var fb = (ROLE_CONFIG['gm'] || {}).name;
+    if (fb) out.push(fb);
+  }
+  return out;
+}
+
+/* 通知先の決定。通知を破棄しない（仕様§9）。
+   店長不在 → issues に 'no_sm'。AM未設定 → 'no_am'。GM は常に入る。 */
+function mcNotifyTargets(storeId) {
+  var out = { store: storeId || '', sm: [], am: [], gm: mcGmNames(), issues: [] };
+  out.sm = mcStoreManagersOf(storeId).map(function (e) { return e.name; });
+  var am = mcAmNameOf(storeId);
+  if (am) out.am = [am];
+  if (!out.sm.length) out.issues.push('no_sm');
+  if (!out.am.length) out.issues.push('no_am');
+  return out;
+}
+
+/* 診断用。v809 の画面と verify から呼ぶ（v792 の診断画面と同じ考え方） */
+function mcWhoAmI() {
+  var role = mcRole();
+  var stores = mcScopeStores();
+  return {
+    role: role,
+    canOpen: mcCanOpen(),
+    canConfigure: mcCanConfigure(),
+    stores: stores,
+    categories: mcCategoryIds(),
+    resolvable: stores.filter(function (id) { return mcCanResolve(id); }),
+  };
+}
+
+/* ============================================================
+   v809 Management Control（管理統括）— 基盤② 画面の骨格
+   ------------------------------------------------------------
+   この版で作るのは「見るところ」まで。書き込みは一切しない。
+   状態変更・コメント・通知は v810 以降。
+
+   ・表示範囲の判定は v808 の mc*() だけを使う。ここで書き写さない
+   ・テーブル未適用でも画面は壊れない（理由を名指しして出す）
+   ・スマホ優先。横スクロールを出さない（幅は 100% と flex-wrap のみ）
+============================================================ */
+
+var MC_SEV = {
+  critical: { label: '緊急', color: '#e23b3b', rank: 0 },
+  warning:  { label: '注意', color: '#e0a020', rank: 1 },
+  info:     { label: '確認', color: '#8a8f98', rank: 2 },
+};
+var MC_STATUS = {
+  open:        { label: '未対応', color: '#e23b3b' },
+  in_progress: { label: '対応中', color: '#e0a020' },
+  resolved:    { label: '解決',   color: '#2f9e44' },
+  excluded:    { label: '対象外', color: '#8a8f98' },
+};
+
+var mcState = {
+  tab: 'priority', store: 'ALL', period: 'month', sev: 'ALL', status: 'ACTIVE',
+  loading: false, loaded: false, err: '', schemaMissing: false,
+  alerts: [], fetchedAt: '',
+};
+
+function mcCatLabel(id) {
+  var c = MC_CATEGORIES.find(function (x) { return x.id === id; });
+  return c ? c.label : id;
+}
+function mcStoreLabel(id) {
+  try {
+    var s = getStoresAll().find(function (x) { return x.id === id; });
+    return (s && s.name) ? s.name : id;
+  } catch (e) { return id; }
+}
+
+/* ---------- 取得（読み取りのみ） ---------- */
+async function mcLoadAlerts() {
+  if (mcState.loading) return;
+  var scope = mcScopeStores();
+  if (!scope.length) { mcState.loaded = true; mcState.alerts = []; return; }
+  mcState.loading = true; mcState.err = ''; mcState.schemaMissing = false;
+  try {
+    var inList = '(' + scope.map(function (s) { return '"' + s + '"'; }).join(',') + ')';
+    var url = SUPABASE_URL + '/rest/v1/management_alerts'
+      + '?select=*&store_id=in.' + encodeURIComponent(inList)
+      + '&order=last_detected_at.desc&limit=500';
+    var res = await fetch(url, { headers: supaHeaders() });
+    if (res.status === 404) { mcState.schemaMissing = true; mcState.alerts = []; }
+    else if (!res.ok) {
+      var body = '';
+      try { body = JSON.stringify(await res.json()); } catch (e2) { body = String(res.status); }
+      /* 42P01 = テーブルが無い。PGRST205 も同じ意味を返すことがある */
+      if (/42P01|PGRST205|does not exist|Could not find the table/i.test(body)) {
+        mcState.schemaMissing = true; mcState.alerts = [];
+      } else { mcState.err = body.slice(0, 300); }
+    } else {
+      var rows = await res.json();
+      mcState.alerts = Array.isArray(rows) ? rows : [];
+      mcState.fetchedAt = new Date().toISOString();
+    }
+  } catch (e) {
+    mcState.err = String((e && e.message) || e);
+  }
+  mcState.loading = false; mcState.loaded = true;
+  try { if (curPage === 'mgmt_ctrl') renderPage('mgmt_ctrl'); } catch (e) { }
+}
+function mcReload() { mcState.loaded = false; mcLoadAlerts(); renderPage('mgmt_ctrl'); }
+
+/* ---------- 絞り込み ---------- */
+function mcPeriodStart(period) {
+  var d = (typeof bizNow === 'function') ? bizNow() : new Date();
+  var y = d.getFullYear(), m = d.getMonth();
+  if (period === 'week') { var w = new Date(d); w.setDate(d.getDate() - ((d.getDay() + 6) % 7)); w.setHours(0, 0, 0, 0); return w; }
+  if (period === 'prev') return new Date(y, m - 1, 1);
+  return new Date(y, m, 1);
+}
+function mcPeriodEnd(period) {
+  var d = (typeof bizNow === 'function') ? bizNow() : new Date();
+  if (period === 'prev') return new Date(d.getFullYear(), d.getMonth(), 1);
+  return new Date(d.getFullYear() + 1, 0, 1);
+}
+
+/* 画面に出すアラート。範囲の判定は必ずここを通す（画面側で条件を書かない） */
+function mcVisibleAlerts() {
+  var cats = mcCategoryIds();
+  var scope = mcScopeStores();
+  var st = mcPeriodStart(mcState.period).getTime();
+  var en = mcPeriodEnd(mcState.period).getTime();
+  return mcState.alerts.filter(function (a) {
+    if (scope.indexOf(a.store_id) < 0) return false;          /* 取得後にも管轄で絞る */
+    if (cats.indexOf(a.category) < 0) return false;
+    if (mcState.tab !== 'priority' && a.category !== mcState.tab) return false;
+    if (mcState.store !== 'ALL' && a.store_id !== mcState.store) return false;
+    if (mcState.sev !== 'ALL' && a.severity !== mcState.sev) return false;
+    if (mcState.status === 'ACTIVE') { if (a.status !== 'open' && a.status !== 'in_progress') return false; }
+    else if (mcState.status !== 'ALL' && a.status !== mcState.status) return false;
+    var t = Date.parse(a.last_detected_at || a.created_at || '') || 0;
+    if (t && (t < st || t >= en)) return false;
+    return true;
+  }).sort(function (x, y) {
+    var rx = (MC_SEV[x.severity] || {}).rank, ry = (MC_SEV[y.severity] || {}).rank;
+    if (rx !== ry) return (rx == null ? 9 : rx) - (ry == null ? 9 : ry);
+    return String(y.last_detected_at || '').localeCompare(String(x.last_detected_at || ''));
+  });
+}
+
+/* サマリーは絞り込みではなく「管轄すべて」を母数にする（見落としを作らない） */
+function mcSummary() {
+  var cats = mcCategoryIds(), scope = mcScopeStores();
+  var base = mcState.alerts.filter(function (a) {
+    return scope.indexOf(a.store_id) >= 0 && cats.indexOf(a.category) >= 0
+      && (a.status === 'open' || a.status === 'in_progress');
+  });
+  return {
+    critical: base.filter(function (a) { return a.severity === 'critical'; }).length,
+    open: base.filter(function (a) { return a.status === 'open'; }).length,
+    impact: base.reduce(function (s, a) { return s + (parseFloat(a.estimated_impact) || 0); }, 0),
+  };
+}
+
+/* ---------- 操作（表示の切り替えのみ） ---------- */
+function mcSetTab(t) { mcState.tab = t; renderPage('mgmt_ctrl'); }
+function mcSetFilter(k, v) { mcState[k] = v; renderPage('mgmt_ctrl'); }
+
+/* ---------- 描画 ---------- */
+function mcBanner(icon, color, title, body) {
+  return '<div class="card" style="border-left:3px solid ' + color + '">'
+    + '<div style="display:flex;gap:9px;align-items:flex-start">'
+    + '<i class="ti ' + icon + '" style="font-size:18px;color:' + color + ';flex:0 0 auto;margin-top:1px"></i>'
+    + '<div style="min-width:0"><div style="font-size:13px;font-weight:700">' + title + '</div>'
+    + '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin-top:3px">' + body + '</div></div></div></div>';
+}
+
+function mcRenderFilters() {
+  var scope = mcScopeStores();
+  var h = '<div class="card" style="padding:11px">';
+  /* 店舗：管轄外は選択肢にも出さない */
+  h += '<div style="display:flex;flex-wrap:wrap;gap:7px;align-items:center">';
+  h += '<select onchange="mcSetFilter(\'store\',this.value)" style="flex:1 1 140px;min-width:0;font-size:12.5px;padding:7px 8px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
+    + '<option value="ALL"' + (mcState.store === 'ALL' ? ' selected' : '') + '>'
+    + (mcRole() === 'am' ? '管轄店舗すべて' : '全店舗') + '（' + scope.length + '）</option>'
+    + scope.map(function (id) {
+      return '<option value="' + id + '"' + (mcState.store === id ? ' selected' : '') + '>' + escapeHtml(mcStoreLabel(id)) + '</option>';
+    }).join('') + '</select>';
+  h += '<select onchange="mcSetFilter(\'sev\',this.value)" style="flex:1 1 100px;min-width:0;font-size:12.5px;padding:7px 8px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
+    + '<option value="ALL"' + (mcState.sev === 'ALL' ? ' selected' : '') + '>重要度すべて</option>'
+    + Object.keys(MC_SEV).map(function (k) {
+      return '<option value="' + k + '"' + (mcState.sev === k ? ' selected' : '') + '>' + MC_SEV[k].label + '</option>';
+    }).join('') + '</select>';
+  h += '<select onchange="mcSetFilter(\'status\',this.value)" style="flex:1 1 100px;min-width:0;font-size:12.5px;padding:7px 8px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
+    + '<option value="ACTIVE"' + (mcState.status === 'ACTIVE' ? ' selected' : '') + '>未解決のみ</option>'
+    + '<option value="ALL"' + (mcState.status === 'ALL' ? ' selected' : '') + '>すべて</option>'
+    + Object.keys(MC_STATUS).map(function (k) {
+      return '<option value="' + k + '"' + (mcState.status === k ? ' selected' : '') + '>' + MC_STATUS[k].label + '</option>';
+    }).join('') + '</select>';
+  h += '</div>';
+  /* 期間 */
+  var per = [['month', '今月'], ['week', '今週'], ['prev', '前月']];
+  h += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+    + per.map(function (p) {
+      var on = mcState.period === p[0];
+      return '<button class="btn ' + (on ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="mcSetFilter(\'period\',\'' + p[0] + '\')" style="flex:1 1 auto;padding:5px 10px;font-size:11.5px">' + p[1] + '</button>';
+    }).join('')
+    + '<button class="btn btn-secondary btn-sm" onclick="mcReload()" style="flex:0 0 auto;padding:5px 10px;font-size:11.5px"><i class="ti ti-refresh"></i></button>'
+    + '<button class="btn btn-secondary btn-sm" onclick="mcRecalcNow()" style="flex:0 0 auto;padding:5px 10px;font-size:11.5px"><i class="ti ti-radar"></i> 再検知</button>'   /* v812 */
+    + '</div>';
+  return h + '</div>';
+}
+
+function mcRenderSummary() {
+  var s = mcSummary();
+  function tile(v, label, col) {
+    return '<div style="flex:1 1 96px;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px 8px;text-align:center">'
+      + '<div style="font-size:23px;font-weight:800;color:' + col + ';word-break:break-all">' + v + '</div>'
+      + '<div style="font-size:10.5px;color:var(--muted);margin-top:3px;line-height:1.4">' + label + '</div></div>';
+  }
+  return '<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:12px">'
+    + tile(s.critical, '緊急アラート', s.critical > 0 ? MC_SEV.critical.color : 'var(--muted)')
+    + tile(s.open, '未対応', s.open > 0 ? MC_SEV.warning.color : 'var(--muted)')
+    + tile(fmtMoney(s.impact), '月末までの<br>予測影響額', s.impact > 0 ? MC_SEV.critical.color : 'var(--muted)')
+    + '</div>';
+}
+
+function mcRenderTabs() {
+  var ids = mcCategoryIds();
+  var tabs = [['priority', '優先アラート', 'ti-alert-hexagon']];
+  MC_CATEGORIES.forEach(function (c) { if (ids.indexOf(c.id) >= 0) tabs.push([c.id, c.label, c.icon]); });
+  if (typeof mcCanConfigure === 'function' && mcCanConfigure()) tabs.push(['config', '基準', 'ti-adjustments']);   /* v812 */
+  if (!tabs.some(function (t) { return t[0] === mcState.tab; })) mcState.tab = 'priority';
+  return '<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:10px">'
+    + tabs.map(function (t) {
+      return '<div class="phase-tab' + (mcState.tab === t[0] ? ' active' : '') + '" onclick="mcSetTab(\'' + t[0] + '\')">'
+        + '<i class="ti ' + t[2] + '" style="font-size:11px"></i> ' + t[1] + '</div>';
+    }).join('') + '</div>';
+}
+
+function mcAlertCard(a) {
+  var sev = MC_SEV[a.severity] || { label: a.severity, color: 'var(--muted)' };
+  var stt = MC_STATUS[a.status] || { label: a.status, color: 'var(--muted)' };
+  function row(label, val) {
+    if (val === null || val === undefined || val === '') return '';
+    return '<div style="display:flex;gap:8px;font-size:11.5px;line-height:1.7"><span style="flex:0 0 76px;color:var(--muted)">' + label + '</span><span style="flex:1;min-width:0;word-break:break-word">' + val + '</span></div>';
+  }
+  function n(v) { return (v === null || v === undefined || v === '') ? '' : fmtMoney(v); }
+  var h = '<div class="card" style="padding:12px;border-left:3px solid ' + sev.color + '">';
+  h += '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:5px">'
+    + '<span style="font-size:10.5px;font-weight:700;color:#fff;background:' + sev.color + ';padding:2px 7px;border-radius:6px">' + sev.label + '</span>'
+    + '<span style="font-size:10.5px;color:var(--muted)">' + escapeHtml(mcStoreLabel(a.store_id)) + '</span>'
+    + '<span style="font-size:10.5px;color:var(--muted)">・' + escapeHtml(mcCatLabel(a.category)) + '</span>'
+    + '<span style="margin-left:auto;font-size:10.5px;font-weight:700;color:' + stt.color + '">' + stt.label + '</span>'
+    + '</div>';
+  h += '<div style="font-size:13.5px;font-weight:700;line-height:1.5;margin-bottom:6px">' + escapeHtml(a.title || '') + '</div>';
+  h += row('現在値', n(a.current_value));
+  h += row('目標値', n(a.target_value));
+  h += row('月末予測', n(a.forecast_value));
+  h += row('影響額', a.estimated_impact != null ? '<b style="color:' + sev.color + '">' + fmtMoney(a.estimated_impact) + '</b>' : '');
+  h += row('想定原因', a.cause_summary ? escapeHtml(a.cause_summary) : '');
+  h += row('推奨対応', a.recommended_action ? escapeHtml(a.recommended_action) : '');
+  h += row('担当', a.assigned_user_id ? escapeHtml(a.assigned_user_id) : '未割当');
+  h += '<div style="font-size:10.5px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">'
+    + '最終検知 ' + escapeHtml(String(a.last_detected_at || '').slice(0, 16).replace('T', ' '))
+    + (a.updated_by ? '　更新 ' + escapeHtml(a.updated_by) : '')
+    + (a.reopen_count > 0 ? '　<span style="color:' + MC_SEV.warning.color + '">再発 ' + a.reopen_count + '回</span>' : '')
+    + '</div>';
+  h += '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" style="width:100%" onclick="mcOpenDetail(\'' + a.id + '\')">詳細・対応</button></div>';   /* v810 */
+  return h + '</div>';
+}
+
+function renderMgmtControl() {
+  if (!mcCanOpen()) {
+    return '<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:20px">'
+      + 'この画面は AM 以上が対象です。<br>店舗の対応依頼は通知から開けます。</p></div>';
+  }
+  if (!mcState.loaded && !mcState.loading) { try { mcLoadAlerts(); } catch (e) { } }
+
+  var role = mcRole();
+  var roleLabel = { gm: 'GM（全店）', am: 'AM（管轄店舗）', chef: 'Head Chef（原価・仕入）' }[role] || role;
+  var h = '<div class="section-header"><div><div class="section-title">'
+    + '<i class="ti ti-shield-check"></i> 管理統括</div>'
+    + '<div class="section-sub">4分野の異常を検知し、店長への依頼から解決確認まで管理します</div></div></div>';
+
+  if (mcState.schemaMissing) {
+    h += mcBanner('ti-database-off', MC_SEV.warning.color, 'データベースがまだ用意されていません',
+      'Supabase に management_control_v808.sql を適用すると、この画面にアラートが出るようになります。適用までは表示だけの状態です。');
+  } else if (mcState.err) {
+    h += mcBanner('ti-plug-connected-x', MC_SEV.critical.color, '取得できませんでした',
+      escapeHtml(mcState.err));
+  }
+  var scope = mcScopeStores();
+  if (!scope.length) {
+    h += mcBanner('ti-building-off', MC_SEV.warning.color, '管轄店舗がありません',
+      '店舗マスターの「AM」欄にご自身の名前が入っていない可能性があります。GM に確認してください。');
+    return h;
+  }
+
+  /* v812: このセッションで一度だけ自動で検知する（仕様§14の定期チェックの代わり） */
+  try {
+    if (!mcState.schemaMissing && mcState.loaded && !mcRun.at && !mcRun.running && typeof mcRunDetection === 'function') {
+      mcRun.at = 'starting'; mcRunDetection('auto').then(function(){ if (curPage==='mgmt_ctrl') renderPage('mgmt_ctrl'); });
+    }
+  } catch (e) { }
+  try { if (typeof mcRealtimeStart === 'function' && !mcRt.on) mcRealtimeStart(); } catch (e) { }   /* v813 */
+  h += mcRenderFilters();
+  try { if (typeof mcForecastDegraded === 'function' && mcForecastDegraded()) {
+    h += mcBanner('ti-clock-exclamation', MC_SEV.warning.color, '月末予測の精度が落ちています',
+      '売上実績が最新ではありません。下の「データの新しさ」を確認してから予測値を見てください。');
+  } } catch (e) { }   /* v814 */
+  h += mcRenderSummary();
+  h += mcRenderTabs();
+  if (mcState.tab === 'config') return h + mcRenderConfig() + mcRenderFooter(roleLabel, scope);   /* v812 */
+
+  if (mcState.loading && !mcState.alerts.length) {
+    h += '<div class="card" style="text-align:center;padding:24px;font-size:12.5px;color:var(--muted)">読み込み中…</div>';
+    return h + mcRenderFooter(roleLabel, scope);
+  }
+  var list = mcVisibleAlerts();
+  if (!list.length) {
+    h += '<div class="card" style="text-align:center;padding:26px">'
+      + '<i class="ti ti-circle-check" style="font-size:34px;color:var(--green)"></i>'
+      + '<div style="font-size:13.5px;font-weight:600;margin-top:8px">この条件のアラートはありません</div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">期間・重要度・対応状況の絞り込みを変えると増えることがあります</div>'
+      + ((mcRole()==='gm' && !mcState.schemaMissing && typeof mcSelfTestAlert==='function')
+          ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="mcSelfTestAlert()">保存の動作を確かめる（GMのみ）</button>' : '')   /* v810 */
+      + '</div>';
+  } else {
+    h += '<div style="font-size:11px;color:var(--muted);margin:0 2px 7px">' + list.length + ' 件</div>';
+    h += list.map(mcAlertCard).join('');
+  }
+  try { if (typeof mcRenderFreshness === 'function') h += mcRenderFreshness(); } catch (e) { }   /* v814 */
+  return h + mcRenderFooter(roleLabel, scope);
+}
+
+/* 表示範囲を本人が確認できるようにする（v792 の診断画面と同じ考え方） */
+function mcRenderFooter(roleLabel, scope) {
+  var cats = mcCategoryIds().map(mcCatLabel).join('・');
+  return '<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.7;padding:0 2px">'
+    + '<i class="ti ti-info-circle"></i> 表示範囲：' + escapeHtml(roleLabel)
+    + '　対象店舗 ' + scope.length + '店　分野：' + escapeHtml(cats)
+    + (mcCanResolve(scope[0]) ? '　解決の操作ができます' : '　解決は GM / 管轄AM が行います')
+    + '</div>';
+}
+
+/* ============================================================
+   v810 Management Control — 基盤③ 保存と状態の管理
+   ------------------------------------------------------------
+   この版で初めて書き込む。守るのは次の4つ。
+
+   ① 書き込み口はここだけ。画面から直接 fetch を書かない
+   ② 更新は必ず version を条件に入れる。0件が返れば競合＝上書きしない
+      （v807 の「端末間で消し合う」を、合流ではなく行ロックで防ぐ）
+   ③ 状態を変えたら必ず監査ログを1件残す。理由も残す
+   ④ 権限は v808 の mc*() を通す。ここで条件を書き写さない
+
+   店長の「完了報告」ではアラートを解決しない（v811 で実装）。
+   解決できるのは GM と管轄内の AM だけ。
+============================================================ */
+
+var MC_TBL = {
+  alert: 'management_alerts',
+  action: 'management_alert_actions',
+  comment: 'management_alert_comments',
+  event: 'management_alert_events',
+  notif: 'management_notifications',
+  outbox: 'notification_outbox',
+  threshold: 'management_thresholds',
+  run: 'management_detect_runs',
+};
+
+/* 再送しても二重にならない鍵（仕様§10） */
+function mcIdemKey(kind, parts) {
+  return [kind].concat(parts || []).join('|') + '|' + Date.now() + '|' + Math.random().toString(36).slice(2, 8);
+}
+function mcNowIso() { return new Date().toISOString(); }
+function mcMyName() { return curUserName || (ROLE_CONFIG[curRole] || {}).name || ''; }
+
+/* ---------- 唯一の通信口 ---------- */
+async function mcApi(method, table, query, body, prefer) {
+  var url = SUPABASE_URL + '/rest/v1/' + table + (query ? '?' + query : '');
+  var h = supaHeaders({ 'Prefer': prefer || 'return=representation' });
+  var opt = { method: method, headers: h };
+  if (body !== undefined && body !== null) opt.body = JSON.stringify(body);
+  var res = await fetch(url, opt);
+  var txt = '';
+  try { txt = await res.text(); } catch (e) { txt = ''; }
+  var json = null;
+  try { json = txt ? JSON.parse(txt) : null; } catch (e) { json = null; }
+  if (!res.ok) {
+    if (res.status === 404 || /42P01|PGRST205|Could not find the table/i.test(txt)) {
+      mcState.schemaMissing = true;
+      return { ok: false, missing: true, status: res.status, err: 'テーブルがまだ作られていません' };
+    }
+    if (res.status === 409 || /23505/.test(txt)) {
+      return { ok: false, duplicate: true, status: res.status, err: txt.slice(0, 300) };
+    }
+    return { ok: false, status: res.status, err: (txt || String(res.status)).slice(0, 300) };
+  }
+  return { ok: true, rows: Array.isArray(json) ? json : (json ? [json] : []) };
+}
+
+/* ---------- 監査ログ（失敗しても本体の処理は止めない） ---------- */
+async function mcLogEvent(alertId, type, before, after, reason) {
+  try {
+    await mcApi('POST', MC_TBL.event, '', [{
+      alert_id: alertId || null,
+      event_type: type,
+      before_data: before || null,
+      after_data: after || null,
+      performed_by: mcMyName(),
+      performed_role: mcRole(),
+      store_id: (after && after.store_id) || (before && before.store_id) || null,
+      reason: reason || null,
+      session_info: (typeof navigator !== 'undefined' && navigator.userAgent) ? String(navigator.userAgent).slice(0, 180) : '',
+    }], 'return=minimal');
+  } catch (e) { /* 監査の失敗で操作を止めない。次回の監査で拾う */ }
+}
+
+/* ---------- version を条件にした更新（唯一の更新口） ---------- */
+async function mcUpdateLocked(table, id, version, fields) {
+  var q = 'id=eq.' + encodeURIComponent(id) + '&version=eq.' + encodeURIComponent(version);
+  var r = await mcApi('PATCH', table, q, fields);
+  if (!r.ok) return r;
+  if (!r.rows.length) return { ok: false, conflict: true, err: '他の端末が先に更新しました' };
+  return { ok: true, row: r.rows[0] };
+}
+
+/* ---------- 検知側から呼ぶ入口（v812 が使う） ----------
+   同じ dedupe_key があれば増やさずに更新する。解決済みなら再オープンする。 */
+async function mcUpsertAlert(a) {
+  if (!a || !a.dedupe_key || !a.store_id || !a.category) return { ok: false, err: 'dedupe_key / store_id / category が必要です' };
+  var row = Object.assign({}, a, {
+    status: a.status || 'open',
+    last_detected_at: mcNowIso(),
+    created_by: a.created_by || mcMyName(),
+    updated_by: mcMyName(),
+  });
+  var ins = await mcApi('POST', MC_TBL.alert, '', [row]);
+  if (ins.ok && ins.rows.length) {
+    await mcLogEvent(ins.rows[0].id, 'created', null, ins.rows[0], null);
+    return { ok: true, mode: 'created', row: ins.rows[0] };
+  }
+  if (!ins.duplicate) return ins;
+
+  /* すでにある → 現在値を読んでから更新する */
+  var got = await mcApi('GET', MC_TBL.alert, 'select=*&dedupe_key=eq.' + encodeURIComponent(a.dedupe_key) + '&limit=1');
+  if (!got.ok || !got.rows.length) return { ok: false, err: '既存アラートを読めませんでした' };
+  var cur = got.rows[0];
+  var wasResolved = (cur.status === 'resolved');
+  var sevUp = (MC_SEV[a.severity] || {}).rank < (MC_SEV[cur.severity] || {}).rank;
+  var fields = {
+    severity: a.severity || cur.severity,
+    title: a.title || cur.title,
+    description: a.description !== undefined ? a.description : cur.description,
+    current_value: a.current_value !== undefined ? a.current_value : cur.current_value,
+    target_value: a.target_value !== undefined ? a.target_value : cur.target_value,
+    forecast_value: a.forecast_value !== undefined ? a.forecast_value : cur.forecast_value,
+    estimated_impact: a.estimated_impact !== undefined ? a.estimated_impact : cur.estimated_impact,
+    cause_summary: a.cause_summary !== undefined ? a.cause_summary : cur.cause_summary,
+    recommended_action: a.recommended_action !== undefined ? a.recommended_action : cur.recommended_action,
+    last_detected_at: mcNowIso(),
+    updated_by: mcMyName(),
+  };
+  if (wasResolved) {
+    fields.status = 'open';
+    fields.resolved_at = null;
+    fields.resolved_by = null;
+    fields.reopen_count = (cur.reopen_count || 0) + 1;
+  }
+  var up = await mcUpdateLocked(MC_TBL.alert, cur.id, cur.version, fields);
+  if (!up.ok) return up;
+  await mcLogEvent(cur.id, wasResolved ? 'reopened_by_detect' : 'redetected', cur, up.row, null);
+  return { ok: true, mode: wasResolved ? 'reopened' : 'updated', row: up.row, severityRaised: sevUp, wasResolved: wasResolved };
+}
+
+/* ---------- 権限（v808 の判定を組み合わせるだけ） ---------- */
+/* 対応（開始・担当）ができるか。Head Chef は原価・仕入だけ */
+function mcCanAct(a) {
+  if (!a) return false;
+  var r = mcRole();
+  if (r === 'gm') return true;
+  if (r === 'am') return mcCanSeeStore(a.store_id);
+  if (r === 'chef') return a.category === 'cost';
+  return false;
+}
+/* 解決・再オープン・対象外ができるか。GM と管轄内の AM のみ */
+function mcCanResolveAlert(a) {
+  return !!a && mcCanResolve(a.store_id);
+}
+
+/* ---------- 状態の変更 ---------- */
+var MC_TRANSITION = {
+  start:   { to: 'in_progress', label: '対応開始',   need: 'act' },
+  resolve: { to: 'resolved',    label: '解決',       need: 'resolve' },
+  reopen:  { to: 'open',        label: '再オープン', need: 'resolve' },
+  exclude: { to: 'excluded',    label: '対象外',     need: 'resolve' },
+};
+
+function mcFindAlert(id) { return mcState.alerts.find(function (x) { return x.id === id; }) || null; }
+function mcReplaceAlert(row) {
+  if (!row) return;
+  var i = mcState.alerts.findIndex(function (x) { return x.id === row.id; });
+  if (i >= 0) mcState.alerts[i] = row; else mcState.alerts.push(row);
+}
+
+async function mcDoTransition(id, kind, reason) {
+  var t = MC_TRANSITION[kind];
+  var a = mcFindAlert(id);
+  if (!t || !a) return;
+  var allowed = (t.need === 'resolve') ? mcCanResolveAlert(a) : mcCanAct(a);
+  if (!allowed) { showToast('この操作の権限がありません', 'warning'); return; }
+  if (t.to === 'excluded' && !reason) { showToast('対象外にする理由を入力してください', 'warning'); return; }
+
+  mcSheet.busy = true; mcSheet.msg = ''; mcRenderSheetNow();
+  var fields = { status: t.to, updated_by: mcMyName() };
+  if (t.to === 'resolved') { fields.resolved_at = mcNowIso(); fields.resolved_by = mcMyName(); }
+  if (t.to === 'open') { fields.resolved_at = null; fields.resolved_by = null; }
+  if (t.to === 'excluded') { fields.excluded_reason = reason; }
+  if (t.to === 'in_progress' && !a.assigned_user_id) {
+    fields.assigned_user_id = mcMyName(); fields.assigned_role = mcRole();
+  }
+
+  var r = await mcUpdateLocked(MC_TBL.alert, a.id, a.version, fields);
+  mcSheet.busy = false;
+  if (r.conflict) { await mcHandleConflict(a.id); return; }
+  if (!r.ok) { mcSheet.msg = '保存できませんでした：' + (r.err || ''); mcRenderSheetNow(); return; }
+
+  await mcLogEvent(a.id, 'status_' + t.to, { status: a.status, assigned_user_id: a.assigned_user_id, store_id: a.store_id }, r.row, reason || null);
+  mcReplaceAlert(r.row);
+  showToast(t.label + 'にしました', 'success');
+  mcRenderSheetNow();
+  renderPage('mgmt_ctrl');
+}
+
+async function mcAssign(id, name) {
+  var a = mcFindAlert(id);
+  if (!a) return;
+  if (!mcCanResolveAlert(a)) { showToast('担当者を変更する権限がありません', 'warning'); return; }
+  mcSheet.busy = true; mcSheet.msg = ''; mcRenderSheetNow();
+  var r = await mcUpdateLocked(MC_TBL.alert, a.id, a.version,
+    { assigned_user_id: name || null, assigned_role: name ? 'sm' : null, updated_by: mcMyName() });
+  mcSheet.busy = false;
+  if (r.conflict) { await mcHandleConflict(a.id); return; }
+  if (!r.ok) { mcSheet.msg = '保存できませんでした：' + (r.err || ''); mcRenderSheetNow(); return; }
+  await mcLogEvent(a.id, 'assigned', { assigned_user_id: a.assigned_user_id, store_id: a.store_id }, r.row, null);
+  mcReplaceAlert(r.row);
+  showToast(name ? (name + ' を担当にしました') : '担当を外しました', 'success');
+  mcRenderSheetNow();
+  renderPage('mgmt_ctrl');
+}
+
+/* 競合したら、勝手に上書きせず最新を取り直して知らせる（仕様§10） */
+async function mcHandleConflict(id) {
+  var g = await mcApi('GET', MC_TBL.alert, 'select=*&id=eq.' + encodeURIComponent(id) + '&limit=1');
+  if (g.ok && g.rows.length) mcReplaceAlert(g.rows[0]);
+  mcSheet.conflict = true;
+  mcSheet.msg = '他の端末が先に更新していました。最新の内容に切り替えたので、もう一度確認してください。';
+  mcRenderSheetNow();
+  renderPage('mgmt_ctrl');
+}
+
+/* ---------- 詳細シート（既存の modal-overlay を使う） ---------- */
+var mcSheet = { id: '', busy: false, msg: '', conflict: false, mode: '' };
+
+function mcOpenDetail(id) {
+  mcSheet = { id: id, busy: false, msg: '', conflict: false, mode: '' };
+  openModal(mcDetailHtml());
+  try { if (typeof mcLoadDetailExtras === 'function') mcLoadDetailExtras(id); } catch (e) { }   /* v811 */
+}
+function mcCloseDetail() { mcSheet.id = ''; closeModalDirect(); }
+function mcRenderSheetNow() {
+  if (!mcSheet.id) return;
+  var el = document.getElementById('modal-body');
+  if (el) el.innerHTML = mcDetailHtml();
+}
+function mcSheetMode(m) { mcSheet.mode = m; mcSheet.msg = ''; mcRenderSheetNow(); }
+
+function mcDetailHtml() {
+  var a = mcFindAlert(mcSheet.id);
+  if (!a) return '<div style="padding:16px;font-size:13px">アラートが見つかりません</div>';
+  var sev = MC_SEV[a.severity] || { label: a.severity, color: 'var(--muted)' };
+  var stt = MC_STATUS[a.status] || { label: a.status, color: 'var(--muted)' };
+  var canAct = mcCanAct(a), canRes = mcCanResolveAlert(a);
+
+  var h = '<div style="max-height:78vh;overflow-y:auto;overflow-x:hidden">';
+  h += '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:6px">'
+    + '<span style="font-size:10.5px;font-weight:700;color:#fff;background:' + sev.color + ';padding:2px 7px;border-radius:6px">' + sev.label + '</span>'
+    + '<span style="font-size:11px;color:var(--muted)">' + escapeHtml(mcStoreLabel(a.store_id)) + '・' + escapeHtml(mcCatLabel(a.category)) + '</span>'
+    + '<span style="margin-left:auto;font-size:11px;font-weight:700;color:' + stt.color + '">' + stt.label + '</span></div>';
+  h += '<div style="font-size:15px;font-weight:700;line-height:1.5;margin-bottom:8px">' + escapeHtml(a.title || '') + '</div>';
+
+  function row(l, v) {
+    if (v === null || v === undefined || v === '') return '';
+    return '<div style="display:flex;gap:8px;font-size:12px;line-height:1.8"><span style="flex:0 0 82px;color:var(--muted)">' + l + '</span><span style="flex:1;min-width:0;word-break:break-word">' + v + '</span></div>';
+  }
+  h += row('現在値', a.current_value != null ? fmtMoney(a.current_value) : '');
+  h += row('目標値', a.target_value != null ? fmtMoney(a.target_value) : '');
+  h += row('月末予測', a.forecast_value != null ? fmtMoney(a.forecast_value) : '');
+  h += row('影響額', a.estimated_impact != null ? '<b style="color:' + sev.color + '">' + fmtMoney(a.estimated_impact) + '</b>' : '');
+  if (canAct && typeof mcEditField === 'function') {   /* v813: 自動保存 */
+    h += mcEditField(MC_TBL.alert, a.id, 'cause_summary', '想定原因', a.cause_summary, '例：平日夜の客数が不足');
+    h += mcEditField(MC_TBL.alert, a.id, 'recommended_action', '対応内容', a.recommended_action, '例：来週から平日の人員を見直す');
+  } else {
+    h += row('想定原因', a.cause_summary ? escapeHtml(a.cause_summary) : '');
+    h += row('対応内容', a.recommended_action ? escapeHtml(a.recommended_action) : '');
+  }
+  h += row('担当', a.assigned_user_id ? escapeHtml(a.assigned_user_id) : '<span style="color:var(--muted)">未割当</span>');
+  h += row('初回検知', String(a.first_detected_at || '').slice(0, 16).replace('T', ' '));
+  h += row('最終検知', String(a.last_detected_at || '').slice(0, 16).replace('T', ' '));
+  if (a.reopen_count > 0) h += row('再発', a.reopen_count + ' 回');
+  if (a.excluded_reason) h += row('対象外の理由', escapeHtml(a.excluded_reason));
+  if (a.resolved_by) h += row('解決者', escapeHtml(a.resolved_by));
+  if (a.updated_by) h += row('最終更新', escapeHtml(a.updated_by) + '（' + (typeof mcElapsed === 'function' ? mcElapsed(a.updated_at) + '前' : '') + '）');   /* v813 */
+
+  if (mcSheet.msg) {
+    h += '<div style="margin-top:10px;padding:9px 10px;border-radius:9px;font-size:11.5px;line-height:1.6;background:'
+      + (mcSheet.conflict ? 'rgba(224,160,32,.12)' : 'rgba(226,59,59,.10)') + ';color:'
+      + (mcSheet.conflict ? MC_SEV.warning.color : MC_SEV.critical.color) + '">' + escapeHtml(mcSheet.msg) + '</div>';
+  }
+
+  /* 操作 */
+  h += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">';
+  if (!canAct && !canRes) {
+    h += '<div style="font-size:11.5px;color:var(--muted);line-height:1.6">閲覧のみです。対応は担当の AM または GM が行います。</div>';
+  } else if (mcSheet.busy) {
+    h += '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">保存中…</div>';
+  } else if (mcSheet.mode === 'exclude') {
+    h += '<div style="font-size:11.5px;color:var(--muted);margin-bottom:5px">対象外にする理由（履歴に残ります）</div>'
+      + '<input id="mc-reason" type="text" placeholder="例：季節要因のため対象外" style="width:100%;box-sizing:border-box;font-size:13px;padding:9px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
+      + '<div style="display:flex;gap:7px;margin-top:8px">'
+      + '<button class="btn btn-secondary btn-sm" style="flex:1" onclick="mcSheetMode(\'\')">やめる</button>'
+      + '<button class="btn btn-primary btn-sm" style="flex:1" onclick="mcDoTransition(\'' + a.id + '\',\'exclude\',(document.getElementById(\'mc-reason\')||{}).value)">対象外にする</button>'
+      + '</div>';
+  } else if (mcSheet.mode === 'assign') {
+    var sms = mcStoreManagersOf(a.store_id);
+    h += '<div style="font-size:11.5px;color:var(--muted);margin-bottom:5px">担当者</div>';
+    if (!sms.length) {
+      h += '<div style="font-size:11.5px;color:' + MC_SEV.warning.color + ';line-height:1.6;margin-bottom:7px">'
+        + 'この店舗に有効な店長が登録されていません。従業員マスターをご確認ください。</div>';
+    }
+    h += sms.map(function (e) {
+      return '<button class="btn btn-secondary btn-sm" style="width:100%;margin-bottom:6px" onclick="mcAssign(\'' + a.id + '\',\'' + escapeHtml(e.name).replace(/'/g, "\\'") + '\')">' + escapeHtml(e.name) + ' に任せる</button>';
+    }).join('');
+    h += '<button class="btn btn-secondary btn-sm" style="width:100%;margin-bottom:6px" onclick="mcAssign(\'' + a.id + '\',\'' + escapeHtml(mcMyName()).replace(/'/g, "\\'") + '\')">自分が担当する</button>';
+    h += '<button class="btn btn-secondary btn-sm" style="width:100%" onclick="mcSheetMode(\'\')">やめる</button>';
+  } else if (mcSheet.mode === 'request') {   /* v811 */
+    var tg = mcNotifyTargets(a.store_id);
+    h += '<div style="font-size:11.5px;color:var(--muted);margin-bottom:5px">依頼先：'
+      + (tg.sm.length ? escapeHtml(tg.sm.join('、')) + '（店長）' : '<span style="color:' + MC_SEV.warning.color + '">店長未登録のため AM と GM へ</span>')
+      + '</div>'
+      + '<input id="mc-req" type="text" placeholder="例：今週中に原因と対策を入力してください" style="width:100%;box-sizing:border-box;font-size:13px;padding:9px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
+      + '<div style="display:flex;gap:7px;margin-top:8px">'
+      + '<button class="btn btn-secondary btn-sm" style="flex:1" onclick="mcSheetMode(\'\')">やめる</button>'
+      + '<button class="btn btn-primary btn-sm" style="flex:1" onclick="mcRequestToSm(\'' + a.id + '\',(document.getElementById(\'mc-req\')||{}).value)">依頼する</button>'
+      + '</div>';
+  } else {
+    var btn = [];
+    if (canAct && a.status === 'open') btn.push(['start', '対応開始', 'btn-primary']);
+    if (canRes && (a.status === 'open' || a.status === 'in_progress')) btn.push(['resolve', '解決', 'btn-primary']);
+    if (canRes && (a.status === 'resolved' || a.status === 'excluded')) btn.push(['reopen', '再オープン', 'btn-secondary']);
+    if (canRes && a.status !== 'excluded') btn.push(['__exclude', '対象外', 'btn-secondary']);
+    h += '<div style="display:flex;gap:7px;flex-wrap:wrap">'
+      + btn.map(function (b) {
+        var call = b[0] === '__exclude' ? "mcSheetMode('exclude')" : ("mcDoTransition('" + a.id + "','" + b[0] + "')");
+        return '<button class="btn ' + b[2] + ' btn-sm" style="flex:1 1 90px" onclick="' + call + '">' + b[1] + '</button>';
+      }).join('') + '</div>';
+    if (canAct) h += '<div style="display:flex;gap:7px;margin-top:7px">'
+      + '<button class="btn btn-secondary btn-sm" style="flex:1" onclick="mcSheetMode(\'request\')">店長へ依頼</button>'
+      + (mcExtra.id === a.id && mcExtra.notifs.length ? '<button class="btn btn-secondary btn-sm" style="flex:1" onclick="mcRenotify(\'' + a.id + '\')">再通知</button>' : '')
+      + '</div>';   /* v811 */
+    if (canRes) h += '<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:7px" onclick="mcSheetMode(\'assign\')">担当者を決める</button>';
+    if (!canRes && canAct) h += '<div style="font-size:11px;color:var(--muted);margin-top:7px;line-height:1.6">解決・対象外は GM / 管轄AM が行います。</div>';
+  }
+  h += '</div>';
+  /* v811: 通知の状況とやり取り */
+  h += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'
+    + '<div style="font-size:11.5px;font-weight:700;margin-bottom:2px">通知の状況</div>'
+    + mcNotifPanelHtml() + '</div>';
+  h += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'
+    + '<div style="font-size:11.5px;font-weight:700;margin-bottom:2px">やり取り</div>'
+    + mcCommentPanelHtml(a.id) + '</div>';
+  h += '<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:10px" onclick="mcCloseDetail()">閉じる</button>';
+  return h + '</div>';
+}
+
+/* ---------- 動作確認用（GMのみ・v812 の検知ができたら外す） ---------- */
+async function mcSelfTestAlert() {
+  if (mcRole() !== 'gm') return;
+  var sid = mcScopeStores()[0];
+  if (!sid) return;
+  var r = await mcUpsertAlert({
+    rule_code: 'selftest', dedupe_key: 'selftest|' + sid, store_id: sid,
+    category: 'budget', severity: 'warning',
+    title: '動作確認用のアラート', description: '保存・状態変更・監査ログの確認用です。対象外にして消してください。',
+    current_value: 0, target_value: 0, forecast_value: 0, estimated_impact: 0,
+    cause_summary: '検知ルールはまだ入っていません', recommended_action: '確認できたら対象外にしてください',
+  });
+  if (r.ok) { showToast('作成しました（' + r.mode + '）', 'success'); mcReplaceAlert(r.row); renderPage('mgmt_ctrl'); }
+  else if (r.missing) { showToast('先に SQL を適用してください', 'warning'); renderPage('mgmt_ctrl'); }
+  else showToast('作成できませんでした：' + (r.err || ''), 'danger');
+}
+
+/* ============================================================
+   v811 Management Control — 基盤④ 店長通知・対応依頼・コメント
+   ------------------------------------------------------------
+   仕様§9の要点をそのまま実装する。
+
+   ① 店長名をコードに固定しない。通知の時点で従業員マスターから引く
+      （v808 の mcNotifyTargets() が唯一の解決口）
+   ② 通知を破棄しない。店長が居なければ AM と GM に送り、
+      「店長未設定」を別のアラートとして立てる
+   ③ 同じ通知を重複して作らない。idempotency_key で弾く
+   ④ 通知本体と Outbox は1トランザクション（RPC mc_notify）
+   ⑤ 店長の「完了報告」でアラートは解決しない。
+      GM / 管轄AM が確認して初めて解決できる
+============================================================ */
+
+/* 通知の種類。key は idempotency_key の先頭に入る */
+var MC_NOTIF_KIND = {
+  new_alert:   { label: '新しいアラート' },
+  sev_up:      { label: '重要度が上がりました' },
+  request:     { label: '対応依頼' },
+  renotify:    { label: '再通知' },
+  comment:     { label: 'コメント' },
+  reported:    { label: '完了報告' },
+  reopened:    { label: '再発' },
+  no_manager:  { label: '店長未設定' },
+};
+
+function mcSevPriority(sev) { return MC_SEV[sev] ? sev : 'warning'; }
+
+/* 宛先1件ぶんの通知データ。鍵は「種類＋アラート＋宛先＋世代」で一意にする。
+   世代を入れないと、重要度が上がっても2度目が作られない。 */
+function mcNotifItem(alert, kind, name, role, title, body, gen) {
+  return {
+    recipient_user_id: name,
+    recipient_role: role,
+    store_id: alert.store_id,
+    channel: 'inapp',
+    priority: mcSevPriority(alert.severity),
+    title: title,
+    body: body,
+    idempotency_key: [kind, alert.id, name, (gen === undefined || gen === null) ? '0' : String(gen)].join('|'),
+  };
+}
+
+/* 通知を作る。戻り値 {ok, rows, targets}
+   opts: { message, gen, only:['sm'|'am'|'gm'] } */
+async function mcNotifyAlert(alert, kind, opts) {
+  opts = opts || {};
+  if (!alert || !alert.id) return { ok: false, err: 'アラートがありません' };
+  var t = mcNotifyTargets(alert.store_id);
+  var only = opts.only || null;
+  var kindLabel = (MC_NOTIF_KIND[kind] || {}).label || kind;
+  var title = kindLabel + '：' + (alert.title || '');
+  var body = opts.message || alert.recommended_action || alert.description || '';
+  var items = [];
+  function push(names, role) {
+    if (only && only.indexOf(role) < 0) return;
+    (names || []).forEach(function (n) {
+      if (!n) return;
+      items.push(mcNotifItem(alert, kind, n, role, title, body, opts.gen));
+    });
+  }
+  push(t.sm, 'sm');
+  push(t.am, 'am');
+  push(t.gm, 'gm');
+
+  /* 重複する宛先（AM が GM を兼ねる等）はここで1件にまとめる */
+  var seen = {};
+  items = items.filter(function (x) {
+    if (seen[x.idempotency_key]) return false;
+    seen[x.idempotency_key] = 1; return true;
+  });
+  if (!items.length) return { ok: true, rows: [], targets: t };
+
+  var r = await mcApi('POST', 'rpc/mc_notify', '', { p_alert_id: alert.id, p_items: items });
+  if (!r.ok) return { ok: false, err: r.err, missing: r.missing, targets: t };
+  await mcLogEvent(alert.id, 'notified', null,
+    { kind: kind, to: items.map(function (x) { return x.recipient_user_id; }), store_id: alert.store_id }, null);
+  return { ok: true, rows: r.rows, targets: t };
+}
+
+/* 店長が居ない／AM が居ないときの扱い（仕様§9）。
+   通知は AM・GM へ届いたうえで、設定の不備そのものをアラートにする。 */
+async function mcRaiseTargetIssues(alert, targets) {
+  if (!targets || !targets.issues || !targets.issues.length) return;
+  if (targets.issues.indexOf('no_sm') >= 0) {
+    await mcUpsertAlert({
+      rule_code: 'no_store_manager',
+      dedupe_key: 'no_store_manager|' + alert.store_id,
+      store_id: alert.store_id, category: 'growth', severity: 'warning',
+      title: mcStoreLabel(alert.store_id) + '：店長が登録されていません',
+      description: '通知の宛先を決められないため、AM と GM に転送しています。',
+      cause_summary: '従業員マスターに、この店舗の有効な Store Manager がいません',
+      recommended_action: '従業員マスターで店長を登録してください',
+    });
+  }
+  if (targets.issues.indexOf('no_am') >= 0) {
+    await mcUpsertAlert({
+      rule_code: 'no_area_manager',
+      dedupe_key: 'no_area_manager|' + alert.store_id,
+      store_id: alert.store_id, category: 'growth', severity: 'warning',
+      title: mcStoreLabel(alert.store_id) + '：管轄AMが設定されていません',
+      description: 'GM へ直接エスカレーションしています。',
+      cause_summary: '店舗マスターの AM 欄が空です',
+      recommended_action: '店舗マスターで管轄AMを設定してください',
+    });
+  }
+}
+
+/* ---------- 対応依頼（GM / AM → 店長） ---------- */
+async function mcRequestToSm(alertId, message) {
+  var a = mcFindAlert(alertId);
+  if (!a) return;
+  if (!mcCanAct(a)) { showToast('依頼する権限がありません', 'warning'); return; }
+  mcSheet.busy = true; mcSheet.msg = ''; mcRenderSheetNow();
+
+  var t = mcNotifyTargets(a.store_id);
+  var to = t.sm[0] || t.am[0] || t.gm[0] || '';
+  var ins = await mcApi('POST', MC_TBL.action, '', [{
+    alert_id: a.id, action_type: t.sm.length ? 'request_sm' : 'request_am',
+    status: 'requested', assigned_to: to, requested_by: mcMyName(),
+    request_message: message || '',
+  }]);
+  if (!ins.ok) {
+    mcSheet.busy = false;
+    mcSheet.msg = '依頼を保存できませんでした：' + (ins.err || '');
+    mcRenderSheetNow(); return;
+  }
+  var n = await mcNotifyAlert(a, 'request', { message: message, gen: (ins.rows[0] || {}).id });
+  await mcRaiseTargetIssues(a, n.targets || t);
+  await mcLogEvent(a.id, 'requested', null, { assigned_to: to, message: message, store_id: a.store_id }, null);
+
+  /* 担当が未設定なら、依頼先を担当にしておく */
+  if (!a.assigned_user_id && to) {
+    var up = await mcUpdateLocked(MC_TBL.alert, a.id, a.version,
+      { assigned_user_id: to, assigned_role: t.sm.length ? 'sm' : 'am', updated_by: mcMyName() });
+    if (up.ok) mcReplaceAlert(up.row);
+  }
+  mcSheet.busy = false; mcSheet.mode = '';
+  if (!t.sm.length) mcSheet.msg = 'この店舗に店長が登録されていないため、AM と GM に通知しました。';
+  showToast(to ? (to + ' に依頼しました') : '通知しました', 'success');
+  await mcLoadDetailExtras(a.id);
+  renderPage(curPage);
+}
+
+/* 再通知（仕様§9：重要度上昇・悪化・未確認・手動・再発のときだけ） */
+async function mcRenotify(alertId) {
+  var a = mcFindAlert(alertId);
+  if (!a || !mcCanAct(a)) { showToast('権限がありません', 'warning'); return; }
+  mcSheet.busy = true; mcRenderSheetNow();
+  var gen = 'manual-' + Date.now();
+  var r = await mcNotifyAlert(a, 'renotify', { gen: gen, only: ['sm', 'am'] });
+  mcSheet.busy = false;
+  if (!r.ok) { mcSheet.msg = '再通知できませんでした：' + (r.err || ''); mcRenderSheetNow(); return; }
+  showToast('再通知しました', 'success');
+  await mcLoadDetailExtras(alertId);
+}
+
+/* ---------- コメント ---------- */
+async function mcPostComment(alertId, text) {
+  var a = mcFindAlert(alertId) || mcReqFindAlert(alertId);
+  if (!a) return;
+  text = String(text || '').trim();
+  if (!text) { showToast('コメントを入力してください', 'warning'); return; }
+  var key = mcIdemKey('cmt', [alertId, mcMyName()]);
+  var r = await mcApi('POST', MC_TBL.comment, '', [{
+    alert_id: alertId, user_id: mcMyName(), user_role: mcRole(),
+    comment: text, idempotency_key: key,
+  }]);
+  if (!r.ok) { showToast('コメントを保存できませんでした', 'danger'); return; }
+  await mcNotifyAlert(a, 'comment', { message: text.slice(0, 120), gen: key });
+  await mcLogEvent(alertId, 'comment', null, { by: mcMyName(), store_id: a.store_id }, null);
+  showToast('コメントを追加しました', 'success');
+  await mcLoadDetailExtras(alertId);
+  if (curPage === 'mc_requests') mcLoadMyRequests(true);
+}
+
+/* ---------- 詳細シートの追加データ（コメント・通知状況・依頼） ---------- */
+var mcExtra = { id: '', comments: [], notifs: [], actions: [], loading: false };
+
+async function mcLoadDetailExtras(alertId) {
+  if (!alertId) return;
+  mcExtra.id = alertId; mcExtra.loading = true; mcRenderSheetNow();
+  var q = 'select=*&alert_id=eq.' + encodeURIComponent(alertId);
+  var c = await mcApi('GET', MC_TBL.comment, q + '&order=created_at.asc&limit=100');
+  var n = await mcApi('GET', MC_TBL.notif, q + '&order=created_at.desc&limit=100');
+  var ac = await mcApi('GET', MC_TBL.action, q + '&order=created_at.desc&limit=50');
+  mcExtra.comments = c.ok ? c.rows : [];
+  mcExtra.notifs = n.ok ? n.rows : [];
+  mcExtra.actions = ac.ok ? ac.rows : [];
+  mcExtra.loading = false;
+  mcRenderSheetNow();
+}
+
+function mcNotifStatusLabel(n) {
+  if (n.acknowledged_at) return { t: '確認済み', c: '#2f9e44' };
+  if (n.read_at) return { t: '既読', c: '#e0a020' };
+  if (n.status === 'failed') return { t: '送信失敗', c: '#e23b3b' };
+  if (n.status === 'sent') return { t: '未読', c: 'var(--muted)' };
+  return { t: '送信待ち', c: 'var(--muted)' };
+}
+function mcElapsed(iso) {
+  var t = Date.parse(iso || ''); if (!t) return '';
+  var m = Math.floor((Date.now() - t) / 60000);
+  if (m < 60) return m + '分';
+  if (m < 1440) return Math.floor(m / 60) + '時間';
+  return Math.floor(m / 1440) + '日';
+}
+
+/* 通知の状況（GM が見る欄・仕様§9） */
+function mcNotifPanelHtml() {
+  if (mcExtra.loading) return '<div style="font-size:11.5px;color:var(--muted);padding:6px 0">読み込み中…</div>';
+  if (!mcExtra.notifs.length) return '<div style="font-size:11.5px;color:var(--muted);padding:6px 0">まだ通知していません</div>';
+  return mcExtra.notifs.map(function (n) {
+    var s = mcNotifStatusLabel(n);
+    var role = { sm: '店長', am: 'AM', gm: 'GM' }[n.recipient_role] || n.recipient_role || '';
+    return '<div style="display:flex;gap:8px;align-items:center;font-size:11.5px;padding:4px 0;border-top:1px solid var(--border)">'
+      + '<span style="flex:1;min-width:0;word-break:break-word">' + escapeHtml(n.recipient_user_id || '') + ' <span style="color:var(--muted)">(' + role + ')</span></span>'
+      + '<span style="flex:0 0 auto;color:var(--muted)">' + mcElapsed(n.created_at) + '前</span>'
+      + '<span style="flex:0 0 auto;font-weight:700;color:' + s.c + '">' + s.t + '</span>'
+      + '</div>';
+  }).join('');
+}
+
+function mcCommentPanelHtml(alertId) {
+  var h = '';
+  if (mcExtra.comments.length) {
+    h += mcExtra.comments.map(function (c) {
+      return '<div style="padding:6px 0;border-top:1px solid var(--border)">'
+        + '<div style="font-size:10.5px;color:var(--muted)">' + escapeHtml(c.user_id || '') + '　' + String(c.created_at || '').slice(0, 16).replace('T', ' ') + '</div>'
+        + '<div style="font-size:12.5px;line-height:1.6;word-break:break-word">' + escapeHtml(c.comment || '') + '</div></div>';
+    }).join('');
+  } else {
+    h += '<div style="font-size:11.5px;color:var(--muted);padding:6px 0">コメントはありません</div>';
+  }
+  h += '<div style="display:flex;gap:6px;margin-top:7px">'
+    + '<input id="mc-cmt" type="text" placeholder="コメントを書く" style="flex:1;min-width:0;box-sizing:border-box;font-size:13px;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
+    + '<button class="btn btn-secondary btn-sm" style="flex:0 0 auto" onclick="mcPostComment(\'' + alertId + '\',(document.getElementById(\'mc-cmt\')||{}).value)">送信</button>'
+    + '</div>';
+  return h;
+}
+
+/* ---------- 店長側：対応依頼の画面 ---------- */
+var mcReq = { loading: false, loaded: false, err: '', schemaMissing: false, notifs: [], alerts: [], actions: [], openId: '' };
+
+function mcReqFindAlert(id) { return mcReq.alerts.find(function (x) { return x.id === id; }) || null; }
+
+async function mcLoadMyRequests(force) {
+  if (mcReq.loading) return;
+  if (mcReq.loaded && !force) return;
+  var me = mcMyName();
+  if (!me) { mcReq.loaded = true; return; }
+  mcReq.loading = true; mcReq.err = ''; mcReq.schemaMissing = false;
+  var n = await mcApi('GET', MC_TBL.notif,
+    'select=*&recipient_user_id=eq.' + encodeURIComponent(me) + '&order=created_at.desc&limit=100');
+  if (!n.ok) {
+    mcReq.loading = false; mcReq.loaded = true;
+    if (n.missing) mcReq.schemaMissing = true; else mcReq.err = n.err || '';
+    try { if (curPage === 'mc_requests') renderPage('mc_requests'); } catch (e) { }
+    return;
+  }
+  mcReq.notifs = n.rows;
+  var ids = [];
+  n.rows.forEach(function (x) { if (x.alert_id && ids.indexOf(x.alert_id) < 0) ids.push(x.alert_id); });
+  if (ids.length) {
+    var inl = '(' + ids.map(function (i) { return '"' + i + '"'; }).join(',') + ')';
+    var a = await mcApi('GET', MC_TBL.alert, 'select=*&id=in.' + encodeURIComponent(inl) + '&limit=200');
+    mcReq.alerts = a.ok ? a.rows : [];
+    var ac = await mcApi('GET', MC_TBL.action,
+      'select=*&assigned_to=eq.' + encodeURIComponent(me) + '&order=created_at.desc&limit=100');
+    mcReq.actions = ac.ok ? ac.rows : [];
+  } else { mcReq.alerts = []; mcReq.actions = []; }
+  mcReq.loading = false; mcReq.loaded = true;
+  try { if (curPage === 'mc_requests') renderPage('mc_requests'); } catch (e) { }
+}
+
+function mcMyUnread() {
+  return mcReq.notifs.filter(function (n) { return !n.read_at && !n.acknowledged_at; }).length;
+}
+
+async function mcMarkNotif(id, kind) {
+  var n = mcReq.notifs.find(function (x) { return x.id === id; });
+  if (!n) return;
+  var fields = {};
+  if (kind === 'read') { if (n.read_at) return; fields = { read_at: mcNowIso(), status: 'read' }; }
+  else { fields = { acknowledged_at: mcNowIso(), status: 'acknowledged', read_at: n.read_at || mcNowIso() }; }
+  var r = await mcUpdateLocked(MC_TBL.notif, id, n.version, fields);
+  if (r.conflict) { await mcLoadMyRequests(true); return; }
+  if (!r.ok) { showToast('保存できませんでした', 'danger'); return; }
+  var i = mcReq.notifs.findIndex(function (x) { return x.id === id; });
+  if (i >= 0) mcReq.notifs[i] = r.row;
+  if (kind === 'ack') {
+    await mcLogEvent(n.alert_id, 'acknowledged', null, { by: mcMyName(), store_id: n.store_id }, null);
+    showToast('確認しました', 'success');
+  }
+  renderPage('mc_requests');
+}
+
+/* 店長の操作。完了報告してもアラートは解決しない（設計⑤） */
+async function mcActionUpdate(actionId, kind, text) {
+  var ac = mcReq.actions.find(function (x) { return x.id === actionId; });
+  if (!ac) return;
+  if (ac.assigned_to !== mcMyName() && !mcCanResolve(mcAlertStoreOf(ac.alert_id))) {
+    showToast('この依頼の担当ではありません', 'warning'); return;
+  }
+  var fields = { };
+  if (kind === 'start') { fields.status = 'in_progress'; fields.started_at = mcNowIso(); }
+  else if (kind === 'report') {
+    if (!String(text || '').trim()) { showToast('対応内容を入力してください', 'warning'); return; }
+    fields.status = 'reported'; fields.completed_at = mcNowIso(); fields.response_message = text;
+  } else return;
+  var r = await mcUpdateLocked(MC_TBL.action, actionId, ac.version, fields);
+  if (r.conflict) { await mcLoadMyRequests(true); showToast('他の人が先に更新していました', 'warning'); return; }
+  if (!r.ok) { showToast('保存できませんでした', 'danger'); return; }
+  var i = mcReq.actions.findIndex(function (x) { return x.id === actionId; });
+  if (i >= 0) mcReq.actions[i] = r.row;
+  await mcLogEvent(ac.alert_id, 'action_' + kind, { status: ac.status }, r.row, null);
+  if (kind === 'report') {
+    var al = mcReqFindAlert(ac.alert_id);
+    if (al) await mcNotifyAlert(al, 'reported', { message: text, gen: actionId + '-report', only: ['am', 'gm'] });
+    showToast('完了報告を送りました。GM / AM の確認をお待ちください', 'success');
+  } else showToast('対応を開始しました', 'success');
+  renderPage('mc_requests');
+}
+function mcAlertStoreOf(alertId) { var a = mcReqFindAlert(alertId) || mcFindAlert(alertId); return a ? a.store_id : ''; }
+
+function mcReqToggle(id) { mcReq.openId = (mcReq.openId === id) ? '' : id; renderPage('mc_requests'); }
+
+function renderMcRequests() {
+  if (!mcReq.loaded && !mcReq.loading) { try { mcLoadMyRequests(); } catch (e) { } }
+  try { if (typeof mcRealtimeStart === 'function' && !mcRt.on) mcRealtimeStart(); } catch (e) { }   /* v813 */
+  var h = '<div class="section-header"><div><div class="section-title">'
+    + '<i class="ti ti-inbox"></i> 対応依頼</div>'
+    + '<div class="section-sub">自分あての通知と、依頼された対応をここで確認します</div></div></div>';
+
+  if (mcReq.schemaMissing) {
+    return h + mcBanner('ti-database-off', MC_SEV.warning.color, 'まだ準備中です',
+      '管理統括のデータベースが適用されていません。GM に確認してください。');
+  }
+  if (mcReq.err) return h + mcBanner('ti-plug-connected-x', MC_SEV.critical.color, '取得できませんでした', escapeHtml(mcReq.err));
+  if (mcReq.loading && !mcReq.notifs.length) {
+    return h + '<div class="card" style="text-align:center;padding:24px;font-size:12.5px;color:var(--muted)">読み込み中…</div>';
+  }
+  var unread = mcMyUnread();
+  h += '<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:12px">'
+    + '<div style="flex:1 1 96px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px 8px;text-align:center">'
+    + '<div style="font-size:23px;font-weight:800;color:' + (unread ? MC_SEV.critical.color : 'var(--muted)') + '">' + unread + '</div>'
+    + '<div style="font-size:10.5px;color:var(--muted);margin-top:3px">未読</div></div>'
+    + '<div style="flex:1 1 96px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px 8px;text-align:center">'
+    + '<div style="font-size:23px;font-weight:800">' + mcReq.actions.filter(function (a) { return a.status !== 'verified' && a.status !== 'rejected'; }).length + '</div>'
+    + '<div style="font-size:10.5px;color:var(--muted);margin-top:3px">対応中の依頼</div></div>'
+    + '<button class="btn btn-secondary btn-sm" style="flex:0 0 auto;align-self:center" onclick="mcLoadMyRequests(true)"><i class="ti ti-refresh"></i></button>'
+    + '</div>';
+
+  if (!mcReq.notifs.length) {
+    return h + '<div class="card" style="text-align:center;padding:26px">'
+      + '<i class="ti ti-circle-check" style="font-size:34px;color:var(--green)"></i>'
+      + '<div style="font-size:13.5px;font-weight:600;margin-top:8px">対応依頼はありません</div></div>';
+  }
+
+  h += mcReq.notifs.map(function (n) {
+    var a = mcReqFindAlert(n.alert_id);
+    var sev = MC_SEV[n.priority] || MC_SEV.warning;
+    var st = mcNotifStatusLabel(n);
+    var open = mcReq.openId === n.id;
+    var act = mcReq.actions.filter(function (x) { return x.alert_id === n.alert_id; })[0];
+    var x = '<div class="card" style="padding:12px;border-left:3px solid ' + sev.color + '">';
+    x += '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:4px">'
+      + '<span style="font-size:10.5px;font-weight:700;color:#fff;background:' + sev.color + ';padding:2px 7px;border-radius:6px">' + sev.label + '</span>'
+      + '<span style="font-size:10.5px;color:var(--muted)">' + escapeHtml(mcStoreLabel(n.store_id)) + '</span>'
+      + '<span style="margin-left:auto;font-size:10.5px;font-weight:700;color:' + st.c + '">' + st.t + '</span></div>';
+    x += '<div style="font-size:13.5px;font-weight:700;line-height:1.5">' + escapeHtml(n.title || '') + '</div>';
+    if (n.body) x += '<div style="font-size:12px;color:var(--muted);line-height:1.6;margin-top:3px;word-break:break-word">' + escapeHtml(n.body) + '</div>';
+    x += '<div style="font-size:10.5px;color:var(--muted);margin-top:5px">' + mcElapsed(n.created_at) + '前</div>';
+
+    if (open && a) {
+      function row(l, v) { return (v === null || v === undefined || v === '') ? '' : '<div style="display:flex;gap:8px;font-size:11.5px;line-height:1.7"><span style="flex:0 0 76px;color:var(--muted)">' + l + '</span><span style="flex:1;min-width:0;word-break:break-word">' + v + '</span></div>'; }
+      x += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">';
+      x += row('現在値', a.current_value != null ? fmtMoney(a.current_value) : '');
+      x += row('目標値', a.target_value != null ? fmtMoney(a.target_value) : '');
+      x += row('月末予測', a.forecast_value != null ? fmtMoney(a.forecast_value) : '');
+      x += row('影響額', a.estimated_impact != null ? fmtMoney(a.estimated_impact) : '');
+      x += row('想定原因', a.cause_summary ? escapeHtml(a.cause_summary) : '');
+      x += row('推奨対応', a.recommended_action ? escapeHtml(a.recommended_action) : '');
+      x += row('状況', (MC_STATUS[a.status] || {}).label || a.status);
+      if (act) x += row('依頼', escapeHtml(act.request_message || '') + '<span style="color:var(--muted)"> / ' + escapeHtml(act.requested_by || '') + '</span>');
+      if (act && act.assigned_to === mcMyName() && act.status !== 'verified' && typeof mcEditField === 'function') {
+        x += mcEditField(MC_TBL.action, act.id, 'response_message', '対応内容（自動保存）', act.response_message, 'やったことを書いてください');   /* v813 */
+      } else if (act && act.response_message) x += row('対応内容', escapeHtml(act.response_message));
+      x += '</div>';
+
+      x += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">'
+        + '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">やり取り</div>'
+        + ((mcExtra.id === a.id) ? mcCommentPanelHtml(a.id)
+          : '<button class="btn btn-secondary btn-sm" style="width:100%" onclick="mcLoadDetailExtras(\'' + a.id + '\')">コメントを読み込む</button>')
+        + '</div>';
+
+      var btn = [];
+      if (!n.acknowledged_at) btn.push('<button class="btn btn-primary btn-sm" style="flex:1 1 100px" onclick="mcMarkNotif(\'' + n.id + '\',\'ack\')">確認しました</button>');
+      if (act && act.status === 'requested') btn.push('<button class="btn btn-secondary btn-sm" style="flex:1 1 100px" onclick="mcActionUpdate(\'' + act.id + '\',\'start\')">対応開始</button>');
+      if (act && (act.status === 'in_progress' || act.status === 'acknowledged' || act.status === 'requested')) {
+        btn.push('<button class="btn btn-secondary btn-sm" style="flex:1 1 100px" onclick="mcReportPrompt(\'' + act.id + '\')">完了報告</button>');
+      }
+      if (btn.length) x += '<div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px">' + btn.join('') + '</div>';
+      if (act && act.status === 'reported') {
+        x += '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">'
+          + '完了報告を送りました。GM / 管轄AM が内容を確認すると解決になります。</div>';
+      }
+    }
+    x += '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" style="width:100%" onclick="mcReqOpen(\'' + n.id + '\')">'
+      + (open ? '閉じる' : '内容を見る') + '</button></div>';
+    return x + '</div>';
+  }).join('');
+  return h;
+}
+
+/* 開いた時点で既読にする（確認済みは本人の操作でのみ） */
+function mcReqOpen(id) {
+  var was = mcReq.openId;
+  mcReqToggle(id);
+  if (was !== id) { try { mcMarkNotif(id, 'read'); } catch (e) { } }
+}
+function mcReportPrompt(actionId) {
+  var t = prompt('対応した内容を書いてください（GM / AM が確認します）');
+  if (t === null) return;
+  mcActionUpdate(actionId, 'report', t);
+}
+
+/* ============================================================
+   v812 Management Control — 基盤⑤ 検知ルール
+   ------------------------------------------------------------
+   方針（勝手に変えないこと）
+
+   ① 数字の計算をここで新しく作らない。
+      売上・予実 = cumulativeToToday() / 原価 = foodCostOf()
+      人件費・勤務時間 = laborCoreForYm() / 目標 = getStoreKpiTargets()
+      既存の不備検知 = ecCollect()
+      画面や他タブと数字が食い違うのを防ぐため、計算口は1つに保つ。
+
+   ② 判定基準をコードに固定しない（仕様§5）。
+      management_thresholds から読み、無ければ MC_RULE_DEFAULTS。GM が変更できる。
+
+   ③ 検知は「候補を作る」ところまで純粋な関数にする。
+      保存も通知もしない。mcRunDetection() だけが書き込む。
+      こうしないと、検知を試すたびに通知が飛ぶ。
+
+   ④ 検知しなくなっても自動で解決にしない。
+      「見えなくなった＝直った」ではないため。人が解決を押す。
+============================================================ */
+
+var MC_RULE_DEFAULTS = {
+  /* 予実 */
+  budget_missing:      { cat: 'budget', label: '予算が未登録',           warning: 0,  critical: null, unit: '' },
+  budget_pace_behind:  { cat: 'budget', label: '売上進捗の遅れ',         warning: 5,  critical: 10,   unit: 'pt' },
+  budget_forecast_miss:{ cat: 'budget', label: '月末売上予測が予算未達', warning: 3,  critical: 8,    unit: '%' },
+  sales_not_synced:    { cat: 'budget', label: '売上実績が入っていない', warning: 2,  critical: 5,    unit: '日' },
+  /* 勤怠・人件費 */
+  labor_rate_over:     { cat: 'labor',  label: '人件費率が目標超',       warning: 2,  critical: 5,    unit: 'pt' },
+  /* 原価・仕入 */
+  cost_rate_over:      { cat: 'cost',   label: '原価率が目標超',         warning: 2,  critical: 5,    unit: 'pt' },
+  inventory_not_closed:{ cat: 'cost',   label: '期末棚卸が未入力',       warning: 0,  critical: null, unit: '' },
+  /* 育成 */
+  skill_stale:         { cat: 'growth', label: 'スキル評価が長期間未更新', warning: 30, critical: 60, unit: '日' },
+};
+/* 育成：この時間以上働いた人だけを対象にする（休職・短時間の誤検知を避ける／仕様§8） */
+var MC_SKILL_MIN_HOURS = 20;
+
+/* エラーセンターの分類 → 管理統括の分野 */
+var MC_EC_CAT = {
+  'チップ': 'labor', '勤怠': 'labor', '従業員': 'growth', 'OB': 'growth',
+  '承認': 'budget', '月次締め': 'budget', '棚卸': 'cost',
+};
+var MC_EC_SEV = { high: 'critical', mid: 'warning', low: 'info' };
+
+/* ---------- 判定基準 ---------- */
+var mcThresholds = { loaded: false, rows: [] };
+
+async function mcThresholdsLoad(force) {
+  if (mcThresholds.loaded && !force) return;
+  var r = await mcApi('GET', MC_TBL.threshold, 'select=*&limit=500');
+  mcThresholds.rows = r.ok ? r.rows : [];
+  mcThresholds.loaded = true;
+}
+/* 店舗行 → 全社行 → 既定 の順で効く */
+function mcThr(code, storeId) {
+  var d = MC_RULE_DEFAULTS[code] || {};
+  var out = { warning: d.warning, critical: d.critical, enabled: true, cat: d.cat, label: d.label, unit: d.unit };
+  var pick = null;
+  (mcThresholds.rows || []).forEach(function (r) {
+    if (r.rule_code !== code) return;
+    if (r.store_id === storeId) pick = r;
+    else if (!r.store_id && !pick) pick = r;
+  });
+  if (pick) {
+    if (pick.warning_value !== null && pick.warning_value !== undefined) out.warning = Number(pick.warning_value);
+    if (pick.critical_value !== null && pick.critical_value !== undefined) out.critical = Number(pick.critical_value);
+    out.enabled = pick.enabled !== false;
+  }
+  return out;
+}
+/* 超過幅から重要度を決める。critical が無いルールは warning 止まり */
+function mcSevBy(over, t) {
+  if (t.critical !== null && t.critical !== undefined && over >= t.critical) return 'critical';
+  if (over >= t.warning) return 'warning';
+  return null;
+}
+
+function mcYm() { return (typeof curYm === 'function') ? curYm() : new Date().toISOString().slice(0, 7); }
+function mcRound(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+/* ---------- 予実 ---------- */
+function mcDetectBudget(storeId, ym) {
+  var out = [];
+  var c;
+  try { c = cumulativeToToday(storeId, ym); } catch (e) { return out; }
+  if (!c) return out;
+  var name = mcStoreLabel(storeId);
+  function base(code, sev, title, extra) {
+    var d = MC_RULE_DEFAULTS[code];
+    return Object.assign({
+      rule_code: code, dedupe_key: [code, storeId, ym].join('|'),
+      store_id: storeId, category: d.cat, severity: sev,
+      title: name + '：' + title,
+    }, extra || {});
+  }
+
+  var t1 = mcThr('budget_missing', storeId);
+  if (t1.enabled && !(c.budMonth > 0)) {
+    out.push(base('budget_missing', 'warning', '今月の予算が登録されていません', {
+      description: '予算が無いため、予測も達成率も出せません。',
+      cause_summary: '予算設定タブに ' + ym + ' の予算がありません',
+      recommended_action: '予実管理 → 予算設定で登録してください',
+    }));
+    return out;   /* 予算が無ければ、以降の予実判定は意味がない */
+  }
+
+  var t4 = mcThr('sales_not_synced', storeId);
+  var missing = Math.max(0, (c.daysPassed || 0) - (c.daysWithActual || 0));
+  if (t4.enabled) {
+    var s4 = mcSevBy(missing, t4);
+    if (s4) out.push(base('sales_not_synced', s4, '売上実績が ' + missing + ' 日ぶん入っていません', {
+      current_value: c.actToToday, target_value: c.budToToday,
+      description: '経過 ' + c.daysPassed + ' 日のうち実績があるのは ' + c.daysWithActual + ' 日です。',
+      cause_summary: 'Toast の同期漏れ、または日次実績の未入力',
+      recommended_action: '同期を実行するか、日次実績を入力してください。予測の精度が落ちています',
+    }));
+  }
+  /* 実績が1日も無ければ、進捗・予測は判定しない（0%と読み違えるため） */
+  if (!(c.daysWithActual > 0)) return out;
+
+  var pace = Number(c.paceRate) || 0;
+  var t2 = mcThr('budget_pace_behind', storeId);
+  if (t2.enabled) {
+    var behind = mcRound(100 - pace);
+    var s2 = mcSevBy(behind, t2);
+    if (s2) out.push(base('budget_pace_behind', s2, '売上進捗が予算より ' + behind + 'pt 遅れています', {
+      current_value: c.actToToday, target_value: c.budToToday,
+      estimated_impact: mcRound(c.budToToday - c.actToToday),
+      description: '前日までの実績 ' + fmtMoney(c.actToToday) + ' / 予算 ' + fmtMoney(c.budToToday) + '（達成率 ' + pace + '%）',
+      cause_summary: '客数不足・客単価不足・営業日数のいずれか。日次で確認が必要です',
+      recommended_action: '遅れている曜日・時間帯を特定し、対策を入力してください',
+    }));
+  }
+
+  var forecast = mcRound(c.budMonth * pace / 100);
+  var t3 = mcThr('budget_forecast_miss', storeId);
+  if (t3.enabled && c.budMonth > 0) {
+    var short = mcRound(c.budMonth - forecast);
+    var pct = mcRound(short / c.budMonth * 100);
+    var s3 = mcSevBy(pct, t3);
+    if (s3 && short > 0) out.push(base('budget_forecast_miss', s3, '月末予測が予算を ' + fmtMoney(short) + ' 下回る見込みです', {
+      current_value: c.actToToday, target_value: c.budMonth, forecast_value: forecast,
+      estimated_impact: short,
+      description: '現在の進捗（' + pace + '%）がこのまま続いた場合の見込みです。',
+      cause_summary: '前日までの達成率をもとにした予測です',
+      recommended_action: '残り日数での挽回策を決め、対応内容に入力してください',
+    }));
+  }
+  return out;
+}
+
+/* ---------- 勤怠・人件費 ---------- */
+function mcDetectLabor(storeId, ym) {
+  var out = [];
+  var c, kpi;
+  try { c = cumulativeToToday(storeId, ym); kpi = getStoreKpiTargets(storeId) || {}; } catch (e) { return out; }
+  if (!c || !(c.actToToday > 0)) return out;
+  var target = Number(kpi.laborPct);
+  if (!(target > 0)) return out;              /* 目標が無ければ判定しない */
+  var t = mcThr('labor_rate_over', storeId);
+  if (!t.enabled) return out;
+  var rate = Number(c.laborRate) || 0;
+  var over = mcRound(rate - target);
+  var sev = mcSevBy(over, t);
+  if (!sev) return out;
+  var pace = Number(c.paceRate) || 0;
+  var forecastSales = mcRound(c.budMonth * pace / 100) || c.actToToday;
+  out.push({
+    rule_code: 'labor_rate_over', dedupe_key: ['labor_rate_over', storeId, ym].join('|'),
+    store_id: storeId, category: 'labor', severity: sev,
+    title: mcStoreLabel(storeId) + '：人件費率が目標を ' + over + 'pt 超えています',
+    current_value: rate, target_value: target, forecast_value: rate,
+    estimated_impact: mcRound(over / 100 * forecastSales),
+    description: '前日までの人件費 ' + fmtMoney(c.laborToToday) + ' / 売上 ' + fmtMoney(c.actToToday) + '（' + rate + '%）',
+    cause_summary: '売上に対して勤務時間が多いか、売上そのものが不足しています',
+    recommended_action: 'ワースケの見直しと、売上未達の要因の確認をしてください',
+  });
+  return out;
+}
+
+/* ---------- 原価・仕入 ---------- */
+function mcDetectCost(storeId, ym) {
+  var out = [];
+  var c, r, kpi;
+  try {
+    c = cumulativeToToday(storeId, ym);
+    r = foodCostOf(storeId, ym, (c && c.actMonth > 0) ? c.actMonth : null);
+    kpi = getStoreKpiTargets(storeId) || {};
+  } catch (e) { return out; }
+  if (!r) return out;
+  var name = mcStoreLabel(storeId);
+
+  var target = Number(kpi.foodCost);
+  var rate = r.hasEnd ? Number(r.rate) : Number(r.provisionalRate);
+  var t = mcThr('cost_rate_over', storeId);
+  if (t.enabled && target > 0 && rate > 0) {
+    var over = mcRound(rate - target);
+    var sev = mcSevBy(over, t);
+    if (sev) out.push({
+      rule_code: 'cost_rate_over', dedupe_key: ['cost_rate_over', storeId, ym].join('|'),
+      store_id: storeId, category: 'cost', severity: sev,
+      title: name + '：原価率が目標を ' + over + 'pt 超えています' + (r.hasEnd ? '' : '（暫定）'),
+      current_value: rate, target_value: target, forecast_value: rate,
+      estimated_impact: mcRound(over / 100 * (r.sales || 0)),
+      description: (r.hasEnd ? '棚卸で確定した原価率です。' : '期末棚卸が未入力のため、仕入ベースの暫定値です。')
+        + ' 仕入 ' + fmtMoney(r.purch) + ' / 売上 ' + fmtMoney(r.sales),
+      cause_summary: r.hasEnd ? '仕入過多・ロス・レシピ差異のいずれか' : '暫定値のため、棚卸を入れると変わります',
+      recommended_action: r.hasEnd ? '仕入明細と食材移動を確認してください' : '期末棚卸を入力してください',
+    });
+  }
+
+  /* 前月なのに期末棚卸が入っていない＝原価が確定できない */
+  var t2 = mcThr('inventory_not_closed', storeId);
+  if (t2.enabled && !r.hasEnd && ym < mcYm()) {
+    out.push({
+      rule_code: 'inventory_not_closed', dedupe_key: ['inventory_not_closed', storeId, ym].join('|'),
+      store_id: storeId, category: 'cost', severity: 'warning',
+      title: name + '：' + ym + ' の期末棚卸が入っていません',
+      description: '原価が確定できず、暫定値のままです。',
+      cause_summary: '棚卸しタブに期末在庫が未入力です',
+      recommended_action: '棚卸しを入力して月を確定してください',
+    });
+  }
+  return out;
+}
+
+/* ---------- 育成 ---------- */
+function mcDetectGrowth(storeId, ym) {
+  var out = [];
+  var emps, skills, core;
+  try {
+    emps = getEmployees().filter(function (e) { return mcEmpActive(e) && e.store === storeId; });
+    skills = getSkillsV2() || {};
+    core = laborCoreForYm(storeId, ym) || { byName: {} };
+  } catch (e) { return out; }
+  var t = mcThr('skill_stale', storeId);
+  if (!t.enabled) return out;
+  var now = Date.now(), stale = [];
+  emps.forEach(function (e) {
+    var h = ((core.byName || {})[e.name] || {}).hours || 0;
+    if (h < MC_SKILL_MIN_HOURS) return;          /* 休職・短時間は対象外（仕様§8） */
+    var per = (skills[e.name] || {})[storeId] || {};
+    var last = 0;
+    Object.keys(per).forEach(function (p) { var a = Number(per[p] && per[p]._at) || 0; if (a > last) last = a; });
+    var days = last ? Math.floor((now - last) / 86400000) : 9999;
+    if (days >= t.warning) stale.push({ name: e.name, days: days, never: !last });
+  });
+  if (!stale.length) return out;
+  stale.sort(function (a, b) { return b.days - a.days; });
+  var worst = stale[0].days;
+  var sev = mcSevBy(worst, t) || 'warning';
+  out.push({
+    rule_code: 'skill_stale', dedupe_key: ['skill_stale', storeId, ym].join('|'),
+    store_id: storeId, category: 'growth', severity: sev,
+    title: mcStoreLabel(storeId) + '：' + stale.length + ' 名のスキル評価が更新されていません',
+    current_value: stale.length,
+    description: stale.slice(0, 8).map(function (s) {
+      return s.name + '（' + (s.never ? '未実施' : s.days + '日') + '）';
+    }).join('、') + (stale.length > 8 ? ' ほか' : ''),
+    cause_summary: '直近1か月に ' + MC_SKILL_MIN_HOURS + ' 時間以上勤務している人のうち、評価が止まっている人です',
+    recommended_action: 'スキルレベルの画面で評価を実施してください',
+  });
+  return out;
+}
+
+/* ---------- 既存のエラーセンターを橋渡し ----------
+   検知の中身は作り直さない。店舗が特定できないものは捨てる（推測しない）。
+   同じ人・同じ分野・同じ月は1件にまとめる（毎回増やさないため）。 */
+function mcDetectFromErrorCenter(storeIds, ym) {
+  var out = [], seen = {};
+  var issues = [];
+  try { issues = ecCollect() || []; } catch (e) { return out; }
+  issues.forEach(function (x) {
+    var at = {};
+    try { at = _ecAttribute(x) || {}; } catch (e) { at = {}; }
+    if (!at.store || storeIds.indexOf(at.store) < 0) return;   /* 店舗不明は扱わない */
+    var cat = MC_EC_CAT[x.cat];
+    if (!cat) return;
+    var key = ['ec', cat, at.store, at.emp || '-', ym].join('|');
+    if (seen[key]) {
+      var p = seen[key];
+      p._n++;
+      if ((MC_SEV[MC_EC_SEV[x.sev]] || {}).rank < (MC_SEV[p.severity] || {}).rank) p.severity = MC_EC_SEV[x.sev];
+      p.description = p._n + ' 件：' + p._first;
+      return;
+    }
+    var a = {
+      rule_code: 'ec_' + cat, dedupe_key: key, store_id: at.store, category: cat,
+      severity: MC_EC_SEV[x.sev] || 'info',
+      title: mcStoreLabel(at.store) + '：' + String(x.title || '').slice(0, 120),
+      description: String(x.detail || '').slice(0, 300),
+      cause_summary: x.cat + 'の不備として検知されました',
+      recommended_action: 'エラーセンターで内容を確認してください',
+      _n: 1, _first: String(x.detail || '').slice(0, 200),
+    };
+    seen[key] = a; out.push(a);
+  });
+  out.forEach(function (a) { delete a._n; delete a._first; });
+  return out;
+}
+
+/* ---------- 実行 ---------- */
+var mcRun = { running: false, at: '', last: null };
+
+function mcCollectCandidates(storeIds, ym) {
+  var all = [];
+  (storeIds || []).forEach(function (sid) {
+    try { all = all.concat(mcDetectBudget(sid, ym)); } catch (e) { }
+    try { all = all.concat(mcDetectLabor(sid, ym)); } catch (e) { }
+    try { all = all.concat(mcDetectCost(sid, ym)); } catch (e) { }
+    try { all = all.concat(mcDetectGrowth(sid, ym)); } catch (e) { }
+  });
+  try { all = all.concat(mcDetectFromErrorCenter(storeIds || [], ym)); } catch (e) { }
+  return all;
+}
+
+/* 検知して保存する。ここだけが書き込む。
+   source: 'manual' / 'auto' / 'sync' */
+async function mcRunDetection(source) {
+  if (mcRun.running) return;
+  var stores = mcScopeStores();
+  if (!stores.length) return;
+  mcRun.running = true;
+  var ym = mcYm();
+  var started = mcNowIso();
+  var stat = { target: 0, created: 0, updated: 0, notified: 0, error: 0, detail: [] };
+  try {
+    await mcThresholdsLoad();
+    var cand = mcCollectCandidates(stores, ym);
+    stat.target = cand.length;
+    for (var i = 0; i < cand.length; i++) {
+      var a = cand[i];
+      var r = await mcUpsertAlert(a);
+      if (!r.ok) {
+        stat.error++;
+        if (stat.detail.length < 5) stat.detail.push(String(r.err || '').slice(0, 120));
+        if (r.missing) break;
+        continue;
+      }
+      if (r.mode === 'created') stat.created++; else stat.updated++;
+      /* 通知するのは「新規」「重要度が上がった」「再発」だけ（仕様§9・鳴り続けさせない） */
+      var kind = (r.mode === 'created') ? 'new_alert' : (r.mode === 'reopened' ? 'reopened' : (r.severityRaised ? 'sev_up' : ''));
+      if (kind && r.row) {
+        var gen = (kind === 'sev_up' || kind === 'reopened') ? (r.row.severity + '-' + (r.row.reopen_count || 0)) : null;
+        var n = await mcNotifyAlert(r.row, kind, { gen: gen });
+        if (n.ok) { stat.notified += (n.rows || []).length ? 1 : 0; }
+        try { await mcRaiseTargetIssues(r.row, n.targets); } catch (e) { }
+      }
+    }
+  } catch (e) {
+    stat.error++; stat.detail.push(String((e && e.message) || e).slice(0, 160));
+  }
+  try {
+    await mcApi('POST', MC_TBL.run, '', [{
+      trigger_source: source || 'manual',
+      store_id: stores.length === 1 ? stores[0] : null,
+      started_at: started, finished_at: mcNowIso(),
+      target_count: stat.target, created_count: stat.created, updated_count: stat.updated,
+      notified_count: stat.notified, error_count: stat.error,
+      error_detail: stat.detail.join(' / ') || null,
+    }], 'return=minimal');
+  } catch (e) { }
+  /* v814: 未確認のまま時間が経ったものを上へ上げる */
+  try {
+    if (typeof mcRunEscalation === 'function' && !mcState.schemaMissing) {
+      var es = await mcRunEscalation();
+      if (es) stat.notified += (es.toAm + es.toGm + es.renotify);
+    }
+  } catch (e) { }
+  mcRun.running = false; mcRun.at = mcNowIso(); mcRun.last = stat;
+  mcState.loaded = false;
+  await mcLoadAlerts();
+  return stat;
+}
+
+async function mcRecalcNow() {
+  if (!mcCanOpen()) return;
+  showToast('検知しています…', 'info');
+  var s = await mcRunDetection('manual');
+  if (!s) return;
+  if (s.error && mcState.schemaMissing) { showToast('先に SQL を適用してください', 'warning'); return; }
+  showToast('検知 ' + s.target + ' 件（新規 ' + s.created + ' / 更新 ' + s.updated + '）', 'success');
+  renderPage('mgmt_ctrl');
+}
+
+/* ---------- 判定基準の設定（GMのみ・仕様§5） ---------- */
+async function mcSaveThreshold(code) {
+  if (!mcCanConfigure()) { showToast('GM のみ変更できます', 'warning'); return; }
+  var w = (document.getElementById('mcth-w-' + code) || {}).value;
+  var c = (document.getElementById('mcth-c-' + code) || {}).value;
+  var body = {
+    rule_code: code, store_id: null,
+    warning_value: (w === '' || w === undefined) ? null : Number(w),
+    critical_value: (c === '' || c === undefined) ? null : Number(c),
+    enabled: true, updated_by: mcMyName(),
+  };
+  var ex = (mcThresholds.rows || []).filter(function (r) { return r.rule_code === code && !r.store_id; })[0];
+  var r;
+  if (ex) r = await mcUpdateLocked(MC_TBL.threshold, ex.id, ex.version, body);
+  else {
+    var ins = await mcApi('POST', MC_TBL.threshold, '', [body]);
+    r = ins.ok ? { ok: true, row: ins.rows[0] } : ins;
+  }
+  if (r.conflict) { await mcThresholdsLoad(true); showToast('他の端末が先に変更していました', 'warning'); renderPage('mgmt_ctrl'); return; }
+  if (!r.ok) { showToast('保存できませんでした：' + (r.err || ''), 'danger'); return; }
+  await mcLogEvent(null, 'threshold_changed', ex || null, r.row, code);
+  await mcThresholdsLoad(true);
+  showToast('基準を保存しました', 'success');
+  renderPage('mgmt_ctrl');
+}
+
+/* ============================================================
+   v813 Management Control — 基盤⑥ 自動保存・保存状態・複数端末同期
+   ------------------------------------------------------------
+   仕様§10の要点。
+
+   ① 「保存済み」はサーバーが成功を返したあとにだけ出す。
+      画面だけ更新して実は保存されていない状態を作らない。
+   ② 失敗しても入力内容を消さない。自動で再試行し、手動の再保存も出す。
+      通信が戻ったら送り直す。
+   ③ 他の端末が先に更新していたら、上書きせずに知らせる。
+      入力中の文字は消さない（消すと書き直しになる）。
+   ④ 入力のたびに画面を作り直さない。作り直すと入力欄から
+      カーソルが外れる。状態表示だけを直接書き換える。
+============================================================ */
+
+var MC_SAVE_DEBOUNCE = 700;      /* 入力が止まってから保存するまで（仕様は600〜800ms） */
+var MC_SAVE_RETRY = [3000, 8000, 20000];
+
+var mcSave = {};                 /* key -> {table,id,field,value,state,err,tries,timer,rtTimer} */
+
+function mcSaveKey(table, id, field) { return [table, id, field].join('~'); }
+
+function mcSaveLabel(st) {
+  return {
+    saving: { t: '保存中…', c: 'var(--muted)' },
+    saved: { t: '保存済み', c: '#2f9e44' },
+    error: { t: '保存できません', c: '#e23b3b' },
+    retry: { t: '再保存中…', c: '#e0a020' },
+    stale: { t: '他の端末が更新しました', c: '#e0a020' },
+    dirty: { t: '未保存', c: 'var(--muted)' },
+  }[st] || { t: '', c: 'var(--muted)' };
+}
+
+/* 状態表示だけを書き換える（画面を作り直さない＝入力中でも外れない） */
+function mcSaveBadgeHtml(key) {
+  var s = mcSave[key];
+  var st = s ? s.state : '';
+  var m = mcSaveLabel(st);
+  var h = '<span style="font-size:10.5px;color:' + m.c + '">' + m.t + '</span>';
+  if (st === 'error') h += ' <button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px" onclick="mcRetrySave(\'' + key + '\')">再保存</button>';
+  if (st === 'stale') h += ' <button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px" onclick="mcRetrySave(\'' + key + '\')">上書きして保存</button>';
+  return h;
+}
+function mcSetSaveState(key, state, err) {
+  var s = mcSave[key]; if (!s) return;
+  s.state = state; s.err = err || '';
+  try {
+    var el = document.getElementById('mcsv-' + key);
+    if (el) el.innerHTML = mcSaveBadgeHtml(key);
+  } catch (e) { }
+}
+
+/* 入力のたびに呼ばれる。止まってから保存する */
+function mcFieldEdit(table, id, field, value) {
+  var key = mcSaveKey(table, id, field);
+  var s = mcSave[key] || (mcSave[key] = { table: table, id: id, field: field, tries: 0 });
+  s.value = value;
+  if (s.timer) clearTimeout(s.timer);
+  mcSetSaveState(key, 'dirty');
+  s.timer = setTimeout(function () { mcFieldFlush(key); }, MC_SAVE_DEBOUNCE);
+}
+/* 入力欄から離れたら待たずに保存する（仕様§10） */
+function mcFieldBlur(table, id, field) {
+  var key = mcSaveKey(table, id, field);
+  var s = mcSave[key];
+  if (!s || s.state === 'saving' || s.state === 'saved') return;
+  if (s.timer) { clearTimeout(s.timer); s.timer = null; }
+  mcFieldFlush(key);
+}
+
+function mcRowFor(table, id) {
+  if (table === MC_TBL.alert) return mcFindAlert(id) || mcReqFindAlert(id);
+  if (table === MC_TBL.action) return (mcReq.actions || []).find(function (x) { return x.id === id; });
+  return null;
+}
+
+async function mcFieldFlush(key, forced) {
+  var s = mcSave[key];
+  if (!s || s.state === 'saving') return;
+  var row = mcRowFor(s.table, s.id);
+  if (!row) { mcSetSaveState(key, 'error', 'データが見つかりません'); return; }
+  if (!forced && String(row[s.field] || '') === String(s.value || '')) { mcSetSaveState(key, 'saved'); return; }
+
+  mcSetSaveState(key, s.tries ? 'retry' : 'saving');
+  var fields = {}; fields[s.field] = s.value;
+  if (s.table === MC_TBL.alert) fields.updated_by = mcMyName();
+  var r = await mcUpdateLocked(s.table, s.id, row.version, fields);
+
+  if (r.ok) {
+    s.tries = 0;
+    if (s.table === MC_TBL.alert) mcReplaceAlert(r.row);
+    else {
+      var i = (mcReq.actions || []).findIndex(function (x) { return x.id === s.id; });
+      if (i >= 0) mcReq.actions[i] = r.row;
+    }
+    mcSetSaveState(key, 'saved');
+    return;
+  }
+  if (r.conflict) {
+    /* 上書きしない。最新を読み直して知らせる。入力中の文字はそのまま残す */
+    var g = await mcApi('GET', s.table, 'select=*&id=eq.' + encodeURIComponent(s.id) + '&limit=1');
+    if (g.ok && g.rows.length) {
+      if (s.table === MC_TBL.alert) mcReplaceAlert(g.rows[0]);
+      else {
+        var j = (mcReq.actions || []).findIndex(function (x) { return x.id === s.id; });
+        if (j >= 0) mcReq.actions[j] = g.rows[0];
+      }
+    }
+    mcSetSaveState(key, 'stale');
+    return;
+  }
+  /* 失敗：入力は消さない。自動で再試行し、手動の再保存も出す */
+  mcSetSaveState(key, 'error', r.err || '');
+  var wait = MC_SAVE_RETRY[Math.min(s.tries, MC_SAVE_RETRY.length - 1)];
+  s.tries++;
+  if (s.tries <= MC_SAVE_RETRY.length) {
+    if (s.rtTimer) clearTimeout(s.rtTimer);
+    s.rtTimer = setTimeout(function () { mcFieldFlush(key); }, wait);
+  }
+}
+function mcRetrySave(key) {
+  var s = mcSave[key]; if (!s) return;
+  s.tries = 0;
+  mcFieldFlush(key, true);   /* 競合後の「上書きして保存」もここを通る */
+}
+/* 通信が戻ったら、未保存のものを送り直す（仕様§10） */
+function mcFlushPending() {
+  Object.keys(mcSave).forEach(function (k) {
+    var s = mcSave[k];
+    if (s && (s.state === 'error' || s.state === 'dirty')) { s.tries = 0; mcFieldFlush(k); }
+  });
+}
+function mcHasPending() {
+  return Object.keys(mcSave).some(function (k) {
+    var s = mcSave[k]; return s && (s.state === 'error' || s.state === 'dirty' || s.state === 'saving' || s.state === 'retry');
+  });
+}
+
+/* 入力欄1つぶんの HTML。状態表示の id は key と対応させる */
+function mcEditField(table, id, field, label, value, placeholder) {
+  var key = mcSaveKey(table, id, field);
+  if (!mcSave[key]) mcSave[key] = { table: table, id: id, field: field, value: value || '', tries: 0, state: '' };
+  var esc = function (s) { return String(s || '').replace(/'/g, "\\'"); };
+  return '<div style="margin-top:8px">'
+    + '<div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">'
+    + '<span style="font-size:11px;color:var(--muted)">' + label + '</span>'
+    + '<span id="mcsv-' + key + '" style="margin-left:auto">' + mcSaveBadgeHtml(key) + '</span></div>'
+    + '<textarea rows="2" placeholder="' + escapeHtml(placeholder || '') + '"'
+    + ' oninput="mcFieldEdit(\'' + esc(table) + '\',\'' + esc(id) + '\',\'' + esc(field) + '\',this.value)"'
+    + ' onblur="mcFieldBlur(\'' + esc(table) + '\',\'' + esc(id) + '\',\'' + esc(field) + '\')"'
+    + ' style="width:100%;box-sizing:border-box;font-size:13px;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit;resize:vertical">'
+    + escapeHtml(value || '') + '</textarea></div>';
+}
+
+/* ---------- 複数端末同期 ---------- */
+var mcRt = { client: null, channel: null, timer: null, on: false, lastPull: 0 };
+
+/* ============================================================
+   v814 Management Control — 基盤⑦ エスカレーション・データの新しさ
+   ------------------------------------------------------------
+   ① 未確認のまま時間が経ったら、上へ上げる（仕様§9）。
+      緊急：既定 120分で AM へ、240分で GM へ。
+      注意：既定 1440分（24時間）ごとに再通知。
+      確認：1日1回までに抑える。
+      時間は GM が「基準」タブで変更できる。コードに固定しない。
+
+   ② 同じ段階のエスカレーションは1度だけ。
+      idempotency_key の世代に段階を入れて重複を防ぐ。
+
+   ③ データが古いときは、予測値をそのままの顔で出さない（仕様§13）。
+      何がいつまでのデータかを画面に出し、精度が落ちていることを書く。
+
+   注意：時間で自動起動する仕組み（cron）はまだ無い。
+   このエスカレーションは、誰かが管理統括を開いたとき／再検知したときに走る。
+   サーバー側の定期実行は hyper-worker のデプロイ後に接続する。
+============================================================ */
+
+/* 「基準」タブに出す。単位は分 */
+MC_RULE_DEFAULTS.escalate_critical = {
+  cat: 'notify', catLabel: '通知', label: '緊急：未確認のとき上へ上げる',
+  warning: 120, critical: 240, unit: '分',
+};
+MC_RULE_DEFAULTS.renotify_warning = {
+  cat: 'notify', catLabel: '通知', label: '注意：未確認のとき再通知する',
+  warning: 1440, critical: null, unit: '分',
+};
+MC_RULE_DEFAULTS.renotify_info = {
+  cat: 'notify', catLabel: '通知', label: '確認：再通知の間隔',
+  warning: 1440, critical: null, unit: '分',
+};
+
+function mcMinutesSince(iso) {
+  var t = Date.parse(iso || ''); if (!t) return 0;
+  return Math.floor((Date.now() - t) / 60000);
+}
+
+/* 未確認の通知を拾って、必要なぶんだけ上へ上げる */
+async function mcRunEscalation() {
+  var stat = { toAm: 0, toGm: 0, renotify: 0 };
+  var stores = mcScopeStores();
+  if (!stores.length) return stat;
+  var inl = '(' + stores.map(function (s) { return '"' + s + '"'; }).join(',') + ')';
+  var r = await mcApi('GET', MC_TBL.notif,
+    'select=*&acknowledged_at=is.null&status=in.(sent,read)&store_id=in.' + encodeURIComponent(inl)
+    + '&order=created_at.asc&limit=300');
+  if (!r.ok) return stat;
+
+  /* アラートごとに、いちばん古い未確認の通知を代表にする */
+  var first = {};
+  r.rows.forEach(function (n) {
+    if (!n.alert_id) return;
+    if (!first[n.alert_id]) first[n.alert_id] = n;
+  });
+
+  var ids = Object.keys(first);
+  for (var i = 0; i < ids.length; i++) {
+    var n = first[ids[i]];
+    var a = mcFindAlert(n.alert_id);
+    if (!a) {
+      var g = await mcApi('GET', MC_TBL.alert, 'select=*&id=eq.' + encodeURIComponent(n.alert_id) + '&limit=1');
+      a = (g.ok && g.rows.length) ? g.rows[0] : null;
+    }
+    if (!a) continue;
+    if (a.status === 'resolved' || a.status === 'excluded') continue;   /* 片付いたものは上げない */
+
+    var mins = mcMinutesSince(n.created_at);
+    var sev = a.severity;
+
+    if (sev === 'critical') {
+      var t = mcThr('escalate_critical', a.store_id);
+      if (!t.enabled) continue;
+      if (t.critical != null && mins >= t.critical) {
+        var g2 = await mcNotifyAlert(a, 'renotify', {
+          only: ['gm'], gen: 'esc-gm',
+          message: '緊急のアラートが ' + Math.floor(mins / 60) + ' 時間、確認されていません。',
+        });
+        if (g2.ok && (g2.rows || []).length) stat.toGm++;
+        await mcLogEvent(a.id, 'escalated_gm', null, { minutes: mins, store_id: a.store_id }, null);
+      } else if (mins >= t.warning) {
+        var g1 = await mcNotifyAlert(a, 'renotify', {
+          only: ['am'], gen: 'esc-am',
+          message: '緊急のアラートが ' + mins + ' 分、確認されていません。',
+        });
+        if (g1.ok && (g1.rows || []).length) stat.toAm++;
+        await mcLogEvent(a.id, 'escalated_am', null, { minutes: mins, store_id: a.store_id }, null);
+      }
+    } else {
+      var code = (sev === 'warning') ? 'renotify_warning' : 'renotify_info';
+      var tw = mcThr(code, a.store_id);
+      if (!tw.enabled || !(tw.warning > 0)) continue;
+      if (mins < tw.warning) continue;
+      /* 間隔ごとに1回だけ。世代に回数を入れて重複を防ぐ */
+      var round = Math.floor(mins / tw.warning);
+      var rr = await mcNotifyAlert(a, 'renotify', {
+        only: (sev === 'warning') ? ['sm', 'am'] : ['sm'],
+        gen: 'auto-' + round,
+        message: '未確認のままです（' + mins + '分経過）。',
+      });
+      if (rr.ok && (rr.rows || []).length) stat.renotify++;
+      await mcLogEvent(a.id, 'renotified', null, { minutes: mins, round: round, store_id: a.store_id }, null);
+    }
+  }
+  return stat;
+}
+
+/* ---------- データの新しさ（仕様§13） ---------- */
+function mcLastActualDate(storeId) {
+  try {
+    var m = getDailyActuals(storeId) || {}, last = '';
+    Object.keys(m).forEach(function (d) {
+      var v = m[d] || {};
+      if (v.actual != null && v.actual > 0 && d > last) last = d;
+    });
+    return last;
+  } catch (e) { return ''; }
+}
+function mcLastLaborDate(storeId, days) {
+  try {
+    var d = (typeof bizNow === 'function') ? bizNow() : new Date();
+    for (var i = 0; i < (days || 21); i++) {
+      var x = new Date(d.getTime() - i * 86400000).toISOString().slice(0, 10);
+      if (getTipLabor(storeId, x)) return x;
+    }
+  } catch (e) { }
+  return '';
+}
+function mcLastSkillAt(storeId) {
+  try {
+    var sk = getSkillsV2() || {}, last = 0;
+    Object.keys(sk).forEach(function (nm) {
+      var per = (sk[nm] || {})[storeId] || {};
+      Object.keys(per).forEach(function (p) { var a = Number(per[p] && per[p]._at) || 0; if (a > last) last = a; });
+    });
+    return last ? new Date(last).toISOString().slice(0, 10) : '';
+  } catch (e) { return ''; }
+}
+function mcDaysAgo(dateStr) {
+  if (!dateStr) return null;
+  var t = Date.parse(dateStr + 'T00:00:00');
+  if (!t) return null;
+  return Math.floor((Date.now() - t) / 86400000);
+}
+
+/* 対象店舗ぶんをまとめた「いちばん古い」状態を返す */
+function mcFreshness() {
+  var stores = mcScopeStores();
+  var ym = mcYm();
+  function worst(fn) {
+    var w = null, wd = -1;
+    stores.forEach(function (sid) {
+      var v = fn(sid);
+      var d = mcDaysAgo(v);
+      var dd = (d === null) ? 9999 : d;
+      if (dd > wd) { wd = dd; w = { store: sid, date: v, days: d }; }
+    });
+    return w || { store: '', date: '', days: null };
+  }
+  var inv = { ok: 0, ng: [] };
+  stores.forEach(function (sid) {
+    try {
+      var r = foodCostOf(sid, ym, null);
+      if (r && r.hasEnd) inv.ok++; else inv.ng.push(sid);
+    } catch (e) { inv.ng.push(sid); }
+  });
+  return {
+    sales: worst(mcLastActualDate),
+    labor: worst(function (sid) { return mcLastLaborDate(sid, 21); }),
+    skill: worst(mcLastSkillAt),
+    inventory: inv,
+    stores: stores.length,
+    syncBudget: (typeof getSyncedAt === 'function') ? getSyncedAt('budget') : '',
+    syncFood: (typeof getSyncedAt === 'function') ? getSyncedAt('food') : '',
+    syncHr: (typeof getSyncedAt === 'function') ? getSyncedAt('hr') : '',
+  };
+}
+
+/* 予測の精度が落ちているか（売上が2日以上入っていない） */
+function mcForecastDegraded() {
+  try {
+    var f = mcFreshness();
+    return (f.sales.days === null) || (f.sales.days >= 2);
+  } catch (e) { return false; }
+}
+
+function mcRenderFreshness() {
+  var f = mcFreshness();
+  function line(label, w, warnDays) {
+    var d = w.days;
+    var col = (d === null) ? MC_SEV.warning.color : (d >= (warnDays * 2) ? MC_SEV.critical.color : (d >= warnDays ? MC_SEV.warning.color : 'var(--muted)'));
+    var txt = (d === null) ? 'データなし' : (d === 0 ? '今日' : d + '日前');
+    var who = (w.store && f.stores > 1) ? '（' + escapeHtml(mcStoreLabel(w.store)) + '）' : '';
+    return '<div style="display:flex;gap:8px;font-size:11.5px;line-height:1.9;align-items:center">'
+      + '<span style="flex:1;min-width:0;color:var(--muted)">' + label + '</span>'
+      + '<span style="flex:0 0 auto;font-weight:700;color:' + col + '">' + txt + '</span>'
+      + '<span style="flex:0 0 auto;font-size:10px;color:var(--muted)">' + who + '</span></div>';
+  }
+  var h = '<div class="card" style="padding:12px">'
+    + '<div style="font-size:12.5px;font-weight:700;margin-bottom:4px"><i class="ti ti-database" style="margin-right:5px"></i>データの新しさ</div>'
+    + '<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">'
+    + (f.stores > 1 ? '対象店舗のうち、いちばん古いものを出しています。' : '') + '</div>';
+  h += line('売上実績', f.sales, 2);
+  h += line('勤怠データ', f.labor, 3);
+  h += line('スキル評価', f.skill, 30);
+  var invCol = f.inventory.ng.length ? MC_SEV.warning.color : 'var(--muted)';
+  h += '<div style="display:flex;gap:8px;font-size:11.5px;line-height:1.9;align-items:center">'
+    + '<span style="flex:1;min-width:0;color:var(--muted)">今月の期末棚卸</span>'
+    + '<span style="flex:0 0 auto;font-weight:700;color:' + invCol + '">'
+    + (f.inventory.ng.length ? (f.inventory.ng.length + '店 未入力') : '入力済み') + '</span></div>';
+  var sy = f.syncBudget || f.syncFood || f.syncHr;
+  h += '<div style="font-size:10.5px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border);line-height:1.6">'
+    + '最終同期：' + (sy ? String(sy).slice(0, 16).replace('T', ' ') : '未取得')
+    + '　データが古いときは、月末予測の精度が落ちます。</div>';
+  return h + '</div>';
+}
+
+function mcRealtimeStart() {
+  mcRealtimeStop();
+  try {
+    if (window.supabase && window.supabase.createClient) {
+      if (!mcRt.client) mcRt.client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+      mcRt.channel = mcRt.client.channel('rt-mgmt-control')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'management_alerts' }, function () { mcPullNow('rt'); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'management_notifications' }, function () { mcPullNow('rt'); })
+        .subscribe();
+    }
+  } catch (e) { }
+  /* Realtime が未設定でも追いつくようにする保険 */
+  if (mcRt.timer) clearInterval(mcRt.timer);
+  mcRt.timer = setInterval(function () {
+    if (document.hidden) return;
+    if (mcRt.channel && mcRt.channel.state === 'joined') return;
+    mcPullNow('poll');
+  }, 45000);
+  document.addEventListener('visibilitychange', mcOnVisible);
+  window.addEventListener('online', mcFlushPending);
+  mcRt.on = true;
+}
+function mcRealtimeStop() {
+  try { if (mcRt.channel && mcRt.client) mcRt.client.removeChannel(mcRt.channel); } catch (e) { }
+  mcRt.channel = null;
+  if (mcRt.timer) { clearInterval(mcRt.timer); mcRt.timer = null; }
+  document.removeEventListener('visibilitychange', mcOnVisible);
+  window.removeEventListener('online', mcFlushPending);
+  mcRt.on = false;
+}
+function mcOnVisible() { if (!document.hidden) { mcPullNow('visible'); mcFlushPending(); } }
+
+/* 他の端末の変更を取り込む。入力中の内容は上書きしない（保存待ちがあれば見送る） */
+async function mcPullNow(why) {
+  if (Date.now() - mcRt.lastPull < 3000) return;      /* 連続イベントでの取り直しを抑える */
+  mcRt.lastPull = Date.now();
+  if (mcHasPending()) return;                          /* 保存待ちがあるときは取り込まない */
+  if (curPage === 'mgmt_ctrl') {
+    mcState.loaded = false;
+    await mcLoadAlerts();
+    if (mcSheet.id) { try { await mcLoadDetailExtras(mcSheet.id); } catch (e) { } }
+  } else if (curPage === 'mc_requests') {
+    await mcLoadMyRequests(true);
+  }
+}
+
+function mcRenderConfig() {
+  if (!mcCanConfigure()) {
+    return '<div class="card"><p style="font-size:12.5px;color:var(--muted);text-align:center;padding:18px">判定基準は GM のみ変更できます。</p></div>';
+  }
+  if (!mcThresholds.loaded) { try { mcThresholdsLoad().then(function () { renderPage('mgmt_ctrl'); }); } catch (e) { } }
+  var h = '<div style="font-size:11.5px;color:var(--muted);line-height:1.7;margin:0 2px 8px">'
+    + '注意になる値と、緊急になる値を決めます。空欄にするとその段階は使いません。全店共通の設定です。</div>';
+  Object.keys(MC_RULE_DEFAULTS).forEach(function (code) {
+    var d = MC_RULE_DEFAULTS[code];
+    var t = mcThr(code, null);
+    h += '<div class="card" style="padding:11px">'
+      + '<div style="font-size:12.5px;font-weight:700;margin-bottom:2px">' + d.label + '</div>'
+      + '<div style="font-size:10.5px;color:var(--muted);margin-bottom:7px">' + (d.catLabel || mcCatLabel(d.cat)) + '　既定 ' + d.warning + (d.critical != null ? ' / ' + d.critical : '') + ' ' + (d.unit || '') + '</div>'
+      + '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">'
+      + '<label style="flex:1 1 100px;min-width:0;font-size:11px;color:var(--muted)">注意<input id="mcth-w-' + code + '" type="number" step="0.1" value="' + (t.warning == null ? '' : t.warning) + '" style="width:100%;box-sizing:border-box;font-size:13px;padding:7px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:inherit"></label>'
+      + '<label style="flex:1 1 100px;min-width:0;font-size:11px;color:var(--muted)">緊急<input id="mcth-c-' + code + '" type="number" step="0.1" value="' + (t.critical == null ? '' : t.critical) + '" style="width:100%;box-sizing:border-box;font-size:13px;padding:7px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:inherit"></label>'
+      + '<button class="btn btn-secondary btn-sm" style="flex:0 0 auto;align-self:flex-end" onclick="mcSaveThreshold(\'' + code + '\')">保存</button>'
+      + '</div></div>';
+  });
+  return h;
+}
 const SL_STORES = {
   'Uruma':    ['F01'],
   'Masamitsu':['F02'],
@@ -1704,6 +3849,8 @@ const ROLE_CONFIG = {
 const NAV_ITEMS = [
   {id:'dashboard',   label:'ダッシュボード',   icon:'ti-layout-dashboard', roles:['ceo','gm','office','am']},
   {id:'store_cmd',   label:'店舗オペレーション', icon:'ti-building-store',   roles:['ceo','gm','am','sl','crew']},
+  {id:'mgmt_ctrl',   label:'管理統括',    icon:'ti-shield-check',     roles:['ceo','gm','am','chef']},   /* v809: 表示可否は mcCanOpen() が最終判定 */
+  {id:'mc_requests', label:'対応依頼',    icon:'ti-inbox',            roles:['ceo','gm','am','sl','crew','chef','office_crew']},   /* v811: 自分宛ての通知だけが出る */
   {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl','g4','office_crew']},
   {id:'foodcost',    label:'原価率(FC)',   icon:'ti-receipt',          roles:['ceo','gm','office','am','sl']},
   {id:'menu',        label:'メニュー',    icon:'ti-tools-kitchen-2',  roles:['ceo','gm','office','am','sl']},
@@ -1761,7 +3908,9 @@ const NAV_ITEMS = [
 /* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
 const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
-    children:['dashboard','store_cmd','mypage']},
+    children:['dashboard','store_cmd','mc_requests','mypage']},
+  {id:'g_mgmt', label:'管理', icon:'ti-shield-check', roles:['ceo','gm','am'],
+    children:['mgmt_ctrl']},   /* v809 */
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','labor','foodcost','kpi_master']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
@@ -1782,7 +3931,7 @@ const MENU_GROUPS = [
    Corporate Chef は CHEF_GROUPS を見るので、混在しない。 */
 const OFFICE_GROUPS = [
   {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
-    children:['office_mgr','notifications','tasks','biz_guide']},
+    children:['office_mgr','mgmt_ctrl','notifications','tasks','biz_guide']},   /* v809 */
 
   /* ---- キッチン側 ---- */
   {id:'go_kitchen', label:'Kitchen 管理', icon:'ti-tools-kitchen-2', roles:['ceo','gm'],
@@ -1822,22 +3971,22 @@ const OFFICE_CREW_GROUPS = [
   {id:'go_home', label:'本部', icon:'ti-building-skyscraper', children:['office_mgr','notifications']},
   {id:'goc_acct', label:'経理', icon:'ti-calculator', children:['invoice','acct_review']},
   {id:'goc_mng', label:'店舗管理', icon:'ti-building-store', children:['budget','tip']},
-  {id:'goc_my',  label:'マイページ', icon:'ti-user', children:['mypage','crew_handbook']},
+  {id:'goc_my',  label:'マイページ', icon:'ti-user', children:['mypage','mc_requests','crew_handbook']},
 ];
 /* ===== v766: Corporate Chef（本部のキッチン側）専用メニュー =====
    本部は「経理側（office）」と「キッチン側（chef）」の2つに分かれる。
    CEO / GM は従来どおり OFFICE_GROUPS で両方すべて見える。
    ここに経理の画面（invoice / acct_review / acct_export / monthly）は入れない。 */
 const CHEF_GROUPS = [
-  {id:'gc_home', label:'本部', icon:'ti-building-skyscraper', children:['cc_plan','notifications','approval']},   /* v767 */
+  {id:'gc_home', label:'本部', icon:'ti-building-skyscraper', children:['cc_plan','mgmt_ctrl','notifications','approval']},   /* v809 */
   {id:'gc_food', label:'食材管理', icon:'ti-tools-kitchen-2',
     children:['menu','recipe','fv_variance','ingredient_master','ing_transfer','vendor_master','inventory']},
   {id:'gc_cost', label:'原価', icon:'ti-receipt', children:['foodcost']},
-  {id:'gc_my',   label:'マイページ', icon:'ti-user', children:['mypage','crew_handbook','profile','settings']},
+  {id:'gc_my',   label:'マイページ', icon:'ti-user', children:['mypage','mc_requests','crew_handbook','profile','settings']},
 ];
 /* Crew専用のシンプルメニュー（マイページ中心） */
 const CREW_GROUPS = [
-  {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage']},
+  {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage','mc_requests']},
   {id:'g_handbook', label:'Handbook', icon:'ti-book', children:['crew_handbook']},
   {id:'g_myshift', label:'シフト', icon:'ti-calendar-event', children:['shift_staff']},
   {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['skill','ojtmap','totoya_docs']},
@@ -1861,6 +4010,10 @@ function groupsForRole() {
   else if (curStore==='OFFICE' && curRole==='office') groups = ACCT_GROUPS;   /* v768: 本部の経理側 */
   else if (curStore==='OFFICE' && ['ceo','gm','office'].includes(curRole)) groups = OFFICE_GROUPS.filter(g=>!g.roles||g.roles.includes(curRole));
   else groups = MENU_GROUPS.filter(g=>g.roles.includes(curRole));
+  /* v809: 管理統括は mcCanOpen() が最終判定。ROLE_ALIAS で g4→am になるため roles だけでは足りない */
+  try { if (typeof mcCanOpen==='function' && !mcCanOpen()) groups = groups.filter(function(g){ return (g.children||[]).indexOf('mgmt_ctrl')<0 || g.children.length>1; })
+        .map(function(g){ return (g.children||[]).indexOf('mgmt_ctrl')>=0 ? Object.assign({}, g, {children:g.children.filter(function(c){return c!=='mgmt_ctrl';})}) : g; })
+        .filter(function(g){ return g.children && g.children.length>0; }); } catch(e){}
   if (_gradeHideApplies()) {
     var _gh = gradeHideFor(myGradeKey());
     if (_gh && _gh.length) groups = groups.map(function(g){ return Object.assign({}, g, {children: g.children.filter(function(c){ return _gh.indexOf(c)<0; })}); }).filter(function(g){ return g.children && g.children.length>0; });
@@ -1935,6 +4088,7 @@ function firstAllowedChild(group) {
     if (pid==='staff_master' && typeof canAccessStaffMaster==='function' && !canAccessStaffMaster()) return false;
     if (pid==='kpi_master' && typeof canAccessKpiMaster==='function' && !canAccessKpiMaster()) return false;
     if (pid==='dashboard') return (typeof canSeeDashboard==='function') ? canSeeDashboard() : true; // Totoya店長にも開放
+    if (pid==='mgmt_ctrl') return (typeof mcCanOpen==='function') ? mcCanOpen() : false;   /* v809 */
     var it = (typeof NAV_ITEMS!=='undefined') ? NAV_ITEMS.find(function(n){return n.id===pid;}) : null;
     return !it || !it.roles || it.roles.includes(curRole);
   });
@@ -8528,7 +10682,7 @@ function buildNav() {
   if (group && group.children.length > 1) {
     var children = group.children.filter(pid => (pid!=='staff_master' || canAccessStaffMaster()) && (pid!=='kpi_master' || canAccessKpiMaster()));
     // 役職制限のある項目を除外（NAV_ITEMSにroles指定があるもの）。dashboardはTotoya店長にも開放
-    children = children.filter(pid => { if(pid==='dashboard') return (typeof canSeeDashboard==='function')?canSeeDashboard():true; var it=NAV_ITEMS.find(n=>n.id===pid); return !it || !it.roles || it.roles.includes(curRole); });
+    children = children.filter(pid => { if(pid==='dashboard') return (typeof canSeeDashboard==='function')?canSeeDashboard():true; if(pid==='mgmt_ctrl') return (typeof mcCanOpen==='function')?mcCanOpen():false; var it=NAV_ITEMS.find(n=>n.id===pid); return !it || !it.roles || it.roles.includes(curRole); });
     var pendingApprovals = ls('approvals', []).filter(a=>a.status==='pending').length;
     var pendingVacNav = getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
     var _invAll = ls('invoices', []);
@@ -8561,6 +10715,10 @@ function goGroup(groupId) {
 
 function go(page) {
   try{ if(curPage==='lala' && page!=='lala' && typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v804 */
+  try{ if(['mgmt_ctrl','mc_requests'].indexOf(curPage)>=0 && ['mgmt_ctrl','mc_requests'].indexOf(page)<0){
+    if(typeof mcFlushPending==='function') mcFlushPending();
+    if(typeof mcRealtimeStop==='function') mcRealtimeStop();
+  } }catch(e){}   /* v813 */
   // 全店: シフト作成(shift_admin)は既定を翌週に。離れたら今週に戻す（スタッフ閲覧側は今週基準を保つ）。
   try { if (page==='shift_admin' && curPage!=='shift_admin') { _shiftWeekOff = 1; } else if (page!=='shift_admin' && curPage==='shift_admin') { _shiftWeekOff = 0; } } catch(e){}
   curPage = page;
@@ -8603,7 +10761,8 @@ var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export',
   /* v766: 食材管理メニューに出ているのに OFFICE から開けなかった2画面を追加。
      本部ログインだと Office管理へ弾かれていた（chef 以前からの不具合）。 */
   'fv_variance','ing_transfer',
-  'cc_plan','purchase_detail'];   /* v767-768 */
+  'cc_plan','purchase_detail',
+  'mgmt_ctrl','mc_requests'];   /* v809-811 */   /* v767-768 */
 
 /* ============================================================
    ROUTER
@@ -8645,6 +10804,8 @@ function renderPage(page) {
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
     case 'office_mgr':   el.innerHTML = renderOfficeMgr(); break;
     case 'office_export': el.innerHTML = '<div class="section-header"><div><div class="section-title"><i class="ti ti-file-export"></i> 出力センター</div><div class="section-sub">全ての帳票・CSV出力</div></div></div>' + renderOfficeExport(); break;
+    case 'mgmt_ctrl':    el.innerHTML = renderMgmtControl(); break;   /* v809 */
+    case 'mc_requests':  el.innerHTML = renderMcRequests(); break;   /* v811 */
     case 'error_center': workTab='error'; el.innerHTML = renderWorkCenter(); break;
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'order':        el.innerHTML = renderOrder(); break;
@@ -22488,7 +24649,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '807';
+const APP_VERSION = '814';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
