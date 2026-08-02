@@ -18148,6 +18148,22 @@ function renderInventory(){
      期末棚卸額（fc.endInv）は本来一致するはずだが、fc 側を手で直すとずれる。
      ずれていたら必ず出す。黙って片方だけ見せると、原価率が合わない原因が
      分からなくなる。 */
+/* v805: 対象月の実績売上（日次実績の合計）。monthStats はオフセット指定のため、
+   棚卸画面のように ym を持っている側から使えるよう ym 版を用意する。
+   数え方は monthStats と同じ（getDailyActuals の actual を足す）ので、
+   予実・原価管理と同じ数字になる。 */
+function monthSalesOfYm(storeId, ym){
+  var sum=0, days=0;
+  try{
+    var actuals=(typeof getDailyActuals==='function') ? (getDailyActuals(storeId)||{}) : {};
+    Object.keys(actuals).forEach(function(date){
+      if(String(date).slice(0,7)!==ym) return;
+      var v=actuals[date]||{};
+      if(v.actual!=null){ sum+=Number(v.actual)||0; days++; }
+    });
+  }catch(e){}
+  return { sales:sum, days:days };
+}
 function _fcMoney(n){ return (typeof invFmtMoney==='function') ? invFmtMoney(n||0) : ('$'+Math.round(Number(n)||0).toLocaleString('en-US')); }
 function _fcPrevYm(ym){
   var p=String(ym||'').split('-'); var y=parseInt(p[0],10), m=parseInt(p[1],10);
@@ -18157,7 +18173,14 @@ function _fcPrevYm(ym){
 }
 /* 表示に必要な数字を1か所で集める（画面側で計算しない） */
 function invCogsBreakdown(storeId, ym, snap){
-  var r=(typeof foodCostOf==='function') ? foodCostOf(storeId, ym) : null;
+  /* v805: 売上はその月の実績を自動で使う。
+     原価管理タブと同じ優先順（手入力 fc.sales があればそれ、無ければ実績）に揃える。
+     ここだけ別の優先順にすると、同じ月なのに画面ごとに原価率が変わってしまう。 */
+  var _fcm=(typeof getFcMonthly==='function') ? (getFcMonthly(storeId, ym)||{}) : {};
+  var _manual=parseFloat(_fcm.sales)||0;
+  var _actual=(typeof monthSalesOfYm==='function') ? monthSalesOfYm(storeId, ym) : {sales:0, days:0};
+  var _sales=_manual || _actual.sales || 0;
+  var r=(typeof foodCostOf==='function') ? foodCostOf(storeId, ym, _sales) : null;
   if(!r) return null;
   var tnet=(typeof monthTransferNetYm==='function') ? (monthTransferNetYm(storeId, ym)||{}) : {};
   var nonCost=(typeof monthNonCostYm==='function') ? (monthNonCostYm(storeId, ym)||{total:0,byPurpose:{}}) : {total:0,byPurpose:{}};
@@ -18172,7 +18195,9 @@ function invCogsBreakdown(storeId, ym, snap){
     tInCount:Number(tnet.inCount)||0, tOutCount:Number(tnet.outCount)||0,
     purch:r.purch, cost:r.cost, sales:r.sales, rate:r.rate, hasEnd:r.hasEnd, mode:r.mode,
     invoiceTotal:invTotal, nonCost:nonCost.total, nonCostBy:nonCost.byPurpose,
-    snapGrand:grand, endGap:gap
+    snapGrand:grand, endGap:gap,
+    salesSrc: _manual ? 'manual' : (_actual.sales>0 ? 'actual' : 'none'),
+    salesDays: _actual.days, salesActual: _actual.sales, salesManual: _manual
   };
 }
 function renderInvCogsCard(storeId, ym, snap){
@@ -18200,10 +18225,21 @@ function renderInvCogsCard(storeId, ym, snap){
   h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">'
     + '<div style="font-size:28px;font-weight:800;color:'+col+'">'+(d.rate>0?d.rate.toFixed(1)+'%':'—')+'</div>'
     + '<div style="font-size:11.5px;color:var(--muted)">原価 <b style="color:var(--tm)">'+_fcMoney(d.cost)+'</b>'
-    + ' ／ 売上 '+(d.sales>0?_fcMoney(d.sales):'<span style="color:var(--yellow)">未入力</span>')+'</div></div>';
+    + ' ／ 売上 '+(d.sales>0?_fcMoney(d.sales):'<span style="color:var(--yellow)">未入力</span>')
+    + (d.salesSrc==='actual'?'<span style="font-size:10px;color:var(--muted)">（日次実績 '+d.salesDays+'日ぶんを自動反映）</span>':'')
+    + (d.salesSrc==='manual'?'<span style="font-size:10px;color:var(--muted)">（原価管理タブの手入力）</span>':'')
+    + '</div></div>';
+  /* 手入力と実績がずれている場合は必ず出す。どちらで計算したか分からないと原価率を追えない */
+  if(d.salesSrc==='manual' && d.salesActual>0 && Math.abs(d.salesManual-d.salesActual)>=1){
+    h+='<div style="font-size:10.5px;color:var(--yellow);margin-bottom:4px"><i class="ti ti-alert-triangle"></i> '
+      +'日次実績の合計は '+_fcMoney(d.salesActual)+'（'+d.salesDays+'日）ですが、原価管理タブの手入力 '
+      +_fcMoney(d.salesManual)+' を使っています。'
+      +'<span style="color:var(--muted)">手入力を空にすると実績が自動で入ります。</span></div>';
+  }
   if(!(d.sales>0)){
     h+='<div style="font-size:10.5px;color:var(--yellow);margin-bottom:4px"><i class="ti ti-alert-triangle"></i> '
-      +'この月の売上が入っていないため原価率は出せません（原価金額は確定しています）。</div>';
+      +'この月の売上が見つからないため原価率は出せません（原価金額は確定しています）。'
+      +'日次実績を入力するか、原価管理タブで売上を入れると自動で反映されます。</div>';
   }
 
   /* 計算の流れ */
@@ -22372,7 +22408,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '804';
+const APP_VERSION = '805';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
