@@ -687,6 +687,21 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .md-bar > i { display:block; height:100%; border-radius:99px; }
 .md-bar::after { content:''; position:absolute; top:-2px; bottom:-2px; left:71.4%;
                  width:2px; background:var(--tm); opacity:.5; }
+.md-krow { display:grid; gap:10px; align-items:center; padding:9px 6px; cursor:pointer;
+            border-bottom:1px solid var(--border);
+            grid-template-columns:104px minmax(0,1.05fr) minmax(0,.85fr) minmax(0,1.35fr) 13px; }
+.md-krow:hover, .md-krow.on { background:var(--surface2); }
+.md-klab { font-size:11.5px; font-weight:700; display:flex; align-items:center; gap:5px; min-width:0; flex-wrap:wrap; }
+.md-kval { font-size:16px; font-weight:800; letter-spacing:-.02em; min-width:0; line-height:1.2; }
+.md-kdiff { font-size:14px; font-weight:800; min-width:0; line-height:1.2; }
+.md-kbar { min-width:0; }
+.md-ksub { display:block; font-size:9.5px; font-weight:400; color:var(--muted); margin-top:2px; line-height:1.4; }
+.md-kchev { color:var(--muted); font-size:13px; }
+@media (max-width:900px) {
+  .md-krow { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  .md-krow > .md-kbar { grid-column:1 / -1; }
+  .md-kchev { display:none; }
+}
 .md-chart { display:flex; flex-direction:column; }
 .md-crow { display:flex; align-items:center; gap:9px; padding:8px 6px; border-radius:8px;
            cursor:pointer; border-bottom:1px solid var(--border); }
@@ -2722,55 +2737,99 @@ function mdKpiRoll(stores, ym, code) {
   o.state = o.miss ? 'miss' : (o.unknown ? 'unknown' : (o.total ? 'ok' : 'unknown'));
   return o;
 }
-function mdKpiChartHtml(stores, ym, codes) {
-  var single = stores.length === 1;
-  var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-target" style="color:var(--accent)"></i>'
-    + '重要KPI（今月）<span class="md-sub">'
-    + (single ? '実績 / 目標' : '達成 / 未達 / 判定不可 の店舗数') + '</span></div>';
-  if (single) {
-    h += '<div class="md-kpis">';
-    codes.forEach(function (code) {
-      var v = mdVerdict(stores[0], code, ym), m = mdStateMeta(v.state);
-      h += '<div class="md-kpi" style="border-left-color:' + m.color + ';cursor:pointer" onclick="mdSetKpi(\'' + code + '\')">'
-        + '<div class="md-kpi-h"><i class="ti ' + m.icon + '" style="color:' + m.color + '"></i>' + v.label
-        + '<span style="margin-left:auto;font-weight:800;color:' + m.color + '">' + m.label + '</span></div>'
-        + '<div class="md-kpi-v" style="color:' + (v.state === 'unknown' ? 'var(--muted)' : m.color) + '">'
-        + (v.state === 'unknown' ? (v.ref !== null ? mdFmt(v.ref, v.unit) : '—') : mdFmt(v.actual, v.unit))
-        + (v.state === 'unknown' && v.ref !== null ? '<span style="font-size:10px"> 参考</span>' : '') + '</div>'
-        + '<div class="md-kpi-s" style="color:var(--muted)">'
-        + (v.state === 'unknown' ? escapeHtml(v.reason)
-          : '目標 ' + mdFmt(v.target, v.unit) + ' ・ 差 <b style="color:' + m.color + '">' + mdSigned(v.diff, v.unit) + '</b>')
-        + '</div>' + (v.state === 'unknown' ? '' : mdBar(v.rate, m.color)) + '</div>';
-    });
-    h += '</div>';
-  } else {
-    h += '<div class="md-chart">';
-    codes.forEach(function (code) {
-      var r = mdKpiRoll(stores, ym, code), m = mdStateMeta(r.state);
-      var w = function (n) { return r.total ? (n / r.total * 100) : 0; };
-      var sel = mdState.kpi === code;
-      h += '<div class="md-crow' + (sel ? ' on' : '') + '" onclick="mdSetKpi(\'' + code + '\')">'
-        + '<div class="md-clab"><i class="ti ' + m.icon + '" style="color:' + m.color + '"></i>'
-        + ((MD_KPI[code] || {}).label || code) + '</div>'
-        + '<div class="md-cbar">'
-        + (r.ok ? '<i style="width:' + w(r.ok) + '%;background:var(--green)" title="達成"></i>' : '')
-        + (r.miss ? '<i style="width:' + w(r.miss) + '%;background:var(--red)" title="未達"></i>' : '')
-        + (r.unknown ? '<i style="width:' + w(r.unknown) + '%;background:var(--border)" title="判定不可"></i>' : '')
-        + '</div>'
-        + '<div class="md-cnum"><b style="color:var(--green)">' + r.ok + '</b>'
-        + ' / <b style="color:var(--red)">' + r.miss + '</b>'
-        + ' / <b style="color:var(--muted)">' + r.unknown + '</b></div>'
-        + '<i class="ti ti-chevron-' + (sel ? 'up' : 'down') + '" style="color:var(--muted);font-size:13px"></i>'
-        + '</div>';
-      if (sel) h += mdKpiDetailHtml(stores, ym, code, r);
-    });
-    h += '</div>'
-      + '<div style="display:flex;gap:12px;font-size:10px;color:var(--muted);margin-top:9px;flex-wrap:wrap">'
-      + '<span><i class="ti ti-square-filled" style="color:var(--green)"></i> 達成</span>'
-      + '<span><i class="ti ti-square-filled" style="color:var(--red)"></i> 未達</span>'
-      + '<span><i class="ti ti-square-filled" style="color:var(--border)"></i> 判定不可</span>'
-      + '<span style="margin-left:auto">行を選ぶと店舗別の内訳が出ます</span></div>';
+
+/* v843: 表示範囲ぶんの 実績・目標・差 を出す。
+   判定できている店舗だけで集計する（目標が無い店を混ぜると目標側が歪むため）。
+   何店を対象にしたかは必ず一緒に返して、画面に出す。 */
+function mdAggWeight(storeId, ym, code) {
+  try {
+    if (code === 'ppa') {
+      var ms = monthStats(storeId, mcYmOffset(ym));
+      return (ms && Number(ms.guests)) || 0;
+    }
+    var c = cumulativeToToday(storeId, ym);
+    return (c && Number(c.actToToday)) || 0;
+  } catch (e) { return 0; }
+}
+function mdKpiScopeRoll(stores, ym, code) {
+  var def = MD_KPI[code] || {};
+  var r = mdKpiRoll(stores, ym, code);
+  var o = {
+    code: code, label: def.label || code, unit: def.unit || '', dir: def.dir || 'up',
+    ok: r.ok, miss: r.miss, unknown: r.unknown, total: r.total,
+    items: r.items, reasons: r.reasons, missNames: r.missNames,
+    judged: 0, actual: null, target: null, diff: null, rate: null,
+    state: 'unknown', reasonCode: '', reason: '',
+  };
+  var judged = r.items.filter(function (v) { return v.state !== 'unknown'; });
+  o.judged = judged.length;
+  if (!judged.length) {
+    /* いちばん多い理由を代表として持つ */
+    var top = Object.keys(r.reasons).sort(function (a, b) { return r.reasons[b] - r.reasons[a]; })[0];
+    o.reasonCode = top || 'calc_error';
+    o.reason = MD_UNKNOWN[o.reasonCode] || o.reasonCode;
+    return o;
   }
+  if (def.agg === 'sum' || judged.length === 1) {
+    var sa = 0, st = 0;
+    judged.forEach(function (v) { sa += Number(v.actual) || 0; st += Number(v.target) || 0; });
+    o.actual = mcRound(sa); o.target = mcRound(st);
+  } else {
+    var wa = 0, wt = 0, w = 0;
+    judged.forEach(function (v) {
+      var x = mdAggWeight(v.storeId, ym, code);
+      w += x; wa += x * (Number(v.actual) || 0); wt += x * (Number(v.target) || 0);
+    });
+    if (!(w > 0)) {   /* 重みが取れないときは単純平均に落とす（黙って0にしない） */
+      judged.forEach(function (v) { wa += Number(v.actual) || 0; wt += Number(v.target) || 0; });
+      w = judged.length;
+    }
+    o.actual = mcRound(wa / w); o.target = mcRound(wt / w);
+  }
+  o.diff = mcRound(o.actual - o.target);
+  o.rate = o.target > 0 ? mcRound(o.actual / o.target * 100) : null;
+  o.state = (o.dir === 'down') ? (o.actual <= o.target ? 'ok' : 'miss')
+                               : (o.actual >= o.target ? 'ok' : 'miss');
+  return o;
+}
+function mdKpiChartHtml(stores, ym, codes) {
+  var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-target" style="color:var(--accent)"></i>'
+    + '重要KPI（今月の進捗と目標との差）<span class="md-sub">'
+    + (stores.length === 1 ? mcStoreLabel(stores[0]) : '対象 ' + stores.length + '店') + '</span></div>';
+  codes.forEach(function (code) {
+    var r = mdKpiScopeRoll(stores, ym, code);
+    var m = mdStateMeta(r.state);
+    var sel = mdState.kpi === code;
+    var unk = r.state === 'unknown';
+    h += '<div class="md-krow' + (sel ? ' on' : '') + '" onclick="mdSetKpi(\'' + code + '\')">'
+      + '<div class="md-klab"><i class="ti ' + m.icon + '" style="color:' + m.color + '"></i>'
+      + escapeHtml(r.label)
+      + '<span class="md-ksub" style="margin-top:0">' + m.label + '</span></div>';
+    if (unk) {
+      var f = MD_FIX[r.reasonCode] || { label: r.reason, how: '' };
+      h += '<div class="md-kval" style="color:var(--muted);font-size:13px">' + escapeHtml(f.label)
+        + '<span class="md-ksub">' + escapeHtml(f.how) + '</span></div>'
+        + '<div class="md-kdiff" style="color:var(--muted);font-size:12px">—</div>'
+        + '<div class="md-kbar"><span class="md-ksub" style="margin-top:0">'
+        + r.total + '店すべて判定不可</span></div>';
+    } else {
+      h += '<div class="md-kval" style="color:' + m.color + '">' + mdFmt(r.actual, r.unit)
+        + '<span class="md-ksub">目標 ' + mdFmt(r.target, r.unit)
+        + (r.judged < r.total ? '（' + r.judged + '/' + r.total + '店ぶん）' : '') + '</span></div>'
+        + '<div class="md-kdiff" style="color:' + m.color + '">' + mdSigned(r.diff, r.unit)
+        + '<span class="md-ksub">' + (r.rate !== null ? r.rate + '%' : '') + '</span></div>'
+        + '<div class="md-kbar">' + mdBar(r.rate, m.color)
+        + '<span class="md-ksub">達成 ' + r.ok + '店'
+        + (r.miss ? '・未達 ' + r.miss + '店' : '')
+        + (r.unknown ? '・判定不可 ' + r.unknown + '店' : '') + '</span></div>';
+    }
+    h += '<i class="ti ti-chevron-' + (sel ? 'up' : 'down') + ' md-kchev"></i></div>';
+    if (sel) h += mdKpiDetailHtml(stores, ym, code, r);
+  });
+  h += '<div style="font-size:10px;color:var(--muted);margin-top:9px;line-height:1.7">'
+    + '<i class="ti ti-info-circle"></i> 売上は本日時点の進捗予算と比べています。'
+    + '人件費率・原価率は売上で重みを付けた全体値（総額 ÷ 総売上）です。<br>'
+    + '目標が入っていない店舗は集計に入れていません。行を選ぶと店舗別の内訳が出ます。</div>';
   return h + '</div>';
 }
 
@@ -4723,12 +4782,17 @@ async function mcSaveThreshold(code) {
 /* dir: up   = 実績が目標以上で達成（売上・客数・客単価・利益）
    dir: down = 実績が目標以下で達成（人件費率・原価率） */
 var MD_KPI = {
-  sales:      { label: '売上',     dir: 'up',   unit: 'money', cat: 'budget' },
-  guests:     { label: '客数',     dir: 'up',   unit: 'count', cat: 'budget' },
-  ppa:        { label: '客単価',   dir: 'up',   unit: 'money', cat: 'budget' },
-  labor_rate: { label: '人件費率', dir: 'down', unit: 'pct',   cat: 'labor'  },
-  cost_rate:  { label: '原価率',   dir: 'down', unit: 'pct',   cat: 'cost'   },
-  profit:     { label: '営業利益', dir: 'up',   unit: 'money', cat: 'budget' },
+  /* agg = 複数店舗をまとめるときの数え方
+       sum  … 足す（金額・人数）
+       rate … 売上で重みを付けた平均。Σ(売上×率)/Σ売上 は 総額/総売上 と同じ値になるので、
+              新しい定義を作っていることにはならない。既存ダッシュボードの wFC/wL と同じ式。
+       avg  … 客数で重みを付けた平均（客単価＝総売上/総客数） */
+  sales:      { label: '売上',     dir: 'up',   unit: 'money', cat: 'budget', agg: 'sum'  },
+  guests:     { label: '客数',     dir: 'up',   unit: 'count', cat: 'budget', agg: 'sum'  },
+  ppa:        { label: '客単価',   dir: 'up',   unit: 'money', cat: 'budget', agg: 'avg'  },
+  labor_rate: { label: '人件費率', dir: 'down', unit: 'pct',   cat: 'labor',  agg: 'rate' },
+  cost_rate:  { label: '原価率',   dir: 'down', unit: 'pct',   cat: 'cost',   agg: 'rate' },
+  profit:     { label: '営業利益', dir: 'up',   unit: 'money', cat: 'budget', agg: 'sum'  },
   /* 昨対は枠だけ。アプリに2026年より前のデータが1件も無いため常に判定不可を返す。
      2025年を取り込んだら mdVerdict の yoy_sales 分岐だけを直せば出る。 */
   yoy_sales:  { label: '昨対',     dir: 'up',   unit: 'pct',   cat: 'budget', pending: true },
@@ -26500,7 +26564,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '842';
+const APP_VERSION = '843';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
