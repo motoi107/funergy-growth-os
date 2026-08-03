@@ -91,7 +91,7 @@ const a1 = audit('audit_merge_coverage.js', /マージ定義なし\s*:\s*(\d+)/,
 /* v825監査修正: クラウド同期の対象すべて（OP_SYNC_PREFIX）も基準値で見る。
    従来は手入力データ（LS_NEVER_FREE）だけを見ており、daily_actuals_ が視界の外だった。
    塞ぐたびにこの基準値を1つずつ下げていく。増えたら新しい穴が空いたということ。 */
-const a3 = audit('audit_merge_coverage.js', /同期対象で未保護\s*:\s*(\d+)/, '11',
+const a3 = audit('audit_merge_coverage.js', /同期対象で未保護\s*:\s*(\d+)/, '1',
   '同期対象で未保護（形を確認しながら1つずつ塞ぐ）');
 const a2 = audit('audit_budget_month.js', /要確認\s*(\d+)\s*\/\s*解決済み\s*(\d+)/, '3 / 7',
   '予算の対象月（要確認3件は確認済みの偽陽性）');

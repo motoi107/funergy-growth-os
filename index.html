@@ -6752,7 +6752,95 @@ function recipeCostRate(recipe) {
 ============================================================ */
 function theoMixKey(storeId, period) { return 'menu_mix_'+storeId+'_'+(period||getPeriod()); }
 function getMenuMix(storeId, period) { return ls(theoMixKey(storeId, period), {items:{}, sales:0}); }
-function setMenuMix(storeId, period, data) { lsSet(theoMixKey(storeId, period), data); }
+/* ===== v834: 出数（menu_mix_<店>_<期>）=====
+   記録は1か月ぶんの単一オブジェクト { items:{レシピID:出数}, sales, savedAt, toastSrc }。
+   書き込み口は3つあり、どれも同じ月の同じ入れ物を触る。
+     ・Toast同期（doMenuSync / syncMenuFromToast）… 一致したメニューだけ出数を書き換える
+     ・DBからの取り込み（loadMenuMixFromDB）
+     ・手入力（saveMenuMix）… 画面に出ている全メニューを保存し、0にした分は項目ごと消す
+   合流ルールが無く「丸ごと上書き」だったため、
+   Toast同期の直後に、同期前の写しを持った端末が手入力を保存すると、
+   取り込んだ出数がまとめて元に戻る。理論原価と原価差異がずれる。
+
+   【粒度】メニュー1品ごと。月まるごとで新しい方を採ると、
+   同じ月を2人が触ったときに片方の入力が丸ごと消える（v831 と同じ考え方）。
+   出数は「無い＝0」なので、0 にした操作も 1品ごとの時刻(_im)として残す。
+   これが無いと、0 にしたはずの出数が古い写しから戻ってくる。 */
+function _mmItems(m){ return (m && m.items && typeof m.items==='object') ? m.items : {}; }
+function _mmStamps(m){ return (m && m._im && typeof m._im==='object') ? m._im : {}; }
+function _mmAt(m){ return Number(m && m._at) || 0; }
+function _mmEmpty(m){
+  return !m || typeof m!=='object' ||
+    (Object.keys(_mmItems(m)).length===0 && Object.keys(_mmStamps(m)).length===0);
+}
+function mergeMenuMix(cloud, local){
+  if(_mmEmpty(local)) return _mmEmpty(cloud) ? (local||cloud) : cloud;
+  if(_mmEmpty(cloud)) return local;
+  var ci=_mmItems(cloud), li=_mmItems(local);
+  var cs=_mmStamps(cloud), lsm=_mmStamps(local);
+  var rids={};
+  [ci, li, cs, lsm].forEach(function(o){ Object.keys(o).forEach(function(k){ rids[k]=1; }); });
+  var items={}, im={};
+  Object.keys(rids).forEach(function(rid){
+    var ca=Number(cs[rid])||0, la=Number(lsm[rid])||0;
+    var win;
+    if(!ca && !la){
+      /* どちらにも印が無い＝v833 以前の記録。いつ変わったのかも、
+         消したのかどうかも分からない。入っているほうを残す（勝手に消さない）。
+         両方に入っていればローカル＝これまでと同じ挙動。 */
+      win = (parseFloat(li[rid])||0) ? local : ((parseFloat(ci[rid])||0) ? cloud : local);
+    } else {
+      win = (la>=ca) ? local : cloud;        /* 同点はローカル＝これまでと同じ挙動 */
+    }
+    var q = parseFloat(_mmItems(win)[rid]);
+    if(q) items[rid]=q;                      /* 0 と未入力は同じ扱い。持たない */
+    var mx=Math.max(ca, la); if(mx) im[rid]=mx;
+  });
+  /* items 以外（sales / savedAt / toastSrc）は、あとから保存されたほうを採る。
+     sales は出数×価格の計算結果で、次の保存か同期で作り直される。 */
+  var base=(_mmAt(local)>=_mmAt(cloud)) ? local : cloud;
+  var out=Object.assign({}, base);
+  out.items=items;
+  if(Object.keys(im).length) out._im=im; else delete out._im;
+  var mxAt=Math.max(_mmAt(cloud), _mmAt(local)); if(mxAt) out._at=mxAt;
+  return out;
+}
+function _coversMenuMix(check, want){
+  if(_mmEmpty(want)) return true;
+  if(_mmEmpty(check)) return false;
+  var ws=_mmStamps(want), hs=_mmStamps(check);
+  var wi=_mmItems(want), hi=_mmItems(check);
+  for(var rid in ws){ if(!ws.hasOwnProperty(rid)) continue;
+    if((Number(hs[rid])||0) < (Number(ws[rid])||0)) return false;
+  }
+  for(var r2 in wi){ if(!wi.hasOwnProperty(r2)) continue;
+    if(!(Number(ws[r2])||0) && hi[r2]===undefined) return false;   /* 印の無い古い記録を落とさない */
+  }
+  return _mmAt(check) >= _mmAt(want);
+}
+function setMenuMix(storeId, period, data) {
+  /* v834: メニュー1品ごとに「変わった時刻」を残す。0 にした操作も残す（無い＝0 のため）。
+     中身が変わっていなければ印を進めない（無駄な競合を作らない）。 */
+  var key = theoMixKey(storeId, period);
+  var prev = ls(key, null) || {};
+  var pi = _mmItems(prev), ni = _mmItems(data);
+  var im = Object.assign({}, _mmStamps(prev));
+  var rids = {}, now = Date.now(), changed = false;
+  Object.keys(pi).forEach(function(k){ rids[k]=1; });
+  Object.keys(ni).forEach(function(k){ rids[k]=1; });
+  Object.keys(rids).forEach(function(rid){
+    if((parseFloat(pi[rid])||0) !== (parseFloat(ni[rid])||0)){ im[rid]=now; changed=true; }
+  });
+  if(Object.keys(im).length) data._im = im;
+  if(changed){
+    data._at = now;
+    try{ data._by = (typeof myName==='function') ? myName() : ''; }catch(e){ data._by=''; }
+  } else {
+    if(prev._at != null) data._at = prev._at;
+    if(prev._by != null) data._by = prev._by;
+  }
+  return lsSet(key, data) !== false;
+}
 
 /* 出数×レシピ → 食材ごとの理論使用量 {code:{qty, name, unit}} */
 function theoreticalUsageByIngredient(storeId, period) {
@@ -7286,6 +7374,79 @@ function _coversMapByTime(check, want){
   }
   return true;
 }
+/* ===== v826: 原価 月次（fc_monthly_<店>_<月>）の合流ルール =====
+   【なぜ要るか】
+     クラウド同期の対象なのに合流ルールが無く「丸ごと上書き」だった。
+     書き込み口は setFcMonthly() の1本で、記録は1か月ぶんの単一オブジェクト
+     { beginInv, endInv, sales, beginAuto, invMonth?, history[] }。
+     Head Chef が棚卸を確定して endInv が入った直後に、
+     別端末が同じ月の売上を入力すると、その端末の写しは棚卸前（endInv=0）なので
+     押し上げで期末棚卸が消え、原価率が「確定」から「暫定」へ戻る。
+     期首修正の履歴(history)も同じオブジェクトの中なので一緒に消える。
+   【なぜ _stDef() を使わないか】
+     _stDef()/mergeStamped は「印で包まれた値」({__st:1,v:…}) を前提にしており、
+     包むのは _splitWrite の obj 型分割キーだけ。fc_monthly_ は分割キーではないので
+     誰も包まず、両側とも _stAt()=0 → 常にローカルが勝つ＝丸ごと上書きのまま。
+     監査だけが通って実態は変わらないため、記録そのものに _at を持たせて項目ごとに合流する。
+   【0 の扱い】
+     数値の 0 は「未入力」とみなし、非0 に負ける。値の大小で決めているのではない。
+     foodCostOf() の hasEnd = end>0 が「期末棚卸が入力された＝確定」の定義（v688）。 */
+function _fcAt(x){ return Number(x && x._at) || 0; }
+function _fcNum(v){ return parseFloat(v) || 0; }
+function _fcEmpty(x){
+  if(!x || typeof x!=='object') return true;
+  return !_fcNum(x.beginInv) && !_fcNum(x.endInv) && !_fcNum(x.sales) && !((x.history||[]).length);
+}
+/* 履歴は追記ログ。同じ内容は1件に畳む */
+function _fcHistKey(h){
+  return [h&&h.date, h&&h.edit, h&&h.note, h&&h.by, h&&h.from, h&&h.to, h&&h.endInv].join('|');
+}
+function _fcMergeHist(a, b){
+  var out=[], seen={};
+  (a||[]).concat(b||[]).forEach(function(h){ var k=_fcHistKey(h); if(seen[k]) return; seen[k]=1; out.push(h); });
+  return out;
+}
+/* 項目ごとの勝敗。'c'=クラウド / 'l'=ローカル
+   ① 片方だけ入っていれば入っている方
+   ② 両方入っていれば _at の新しい方
+   ③ _at が同点／両方無い（＝既存データ）ならローカル＝これまでと同じ挙動で退行しない */
+function _fcPick(cv, lv, ca, la){
+  var c=_fcNum(cv), l=_fcNum(lv);
+  if(c && !l) return 'c';
+  if(l && !c) return 'l';
+  return (la>=ca) ? 'l' : 'c';
+}
+function mergeFcMonthly(cloud, local){
+  /* 中身のある記録を空で消さない */
+  if(_fcEmpty(local)) return _fcEmpty(cloud) ? (local||cloud) : cloud;
+  if(_fcEmpty(cloud)) return local;
+  var ca=_fcAt(cloud), la=_fcAt(local);
+  var side={ c:cloud, l:local };
+  var out=Object.assign({}, (la>=ca)?local:cloud);
+  var wBeg=_fcPick(cloud.beginInv, local.beginInv, ca, la);
+  var wEnd=_fcPick(cloud.endInv, local.endInv, ca, la);
+  var wSal=_fcPick(cloud.sales, local.sales, ca, la);
+  out.beginInv=_fcNum(side[wBeg].beginInv);
+  out.endInv=_fcNum(side[wEnd].endInv);
+  out.sales=_fcNum(side[wSal].sales);
+  /* 付随する印は、その値を採った側に合わせる（値と印がちぐはぐにならないように） */
+  out.beginAuto=side[wBeg].beginAuto;
+  if(side[wEnd].invMonth!=null) out.invMonth=side[wEnd].invMonth;
+  out.history=_fcMergeHist(cloud.history, local.history);
+  var mx=Math.max(ca, la); if(mx) out._at=mx;
+  return out;
+}
+function _coversFcMonthly(check, want){
+  if(_fcEmpty(want)) return true;
+  if(_fcEmpty(check)) return false;
+  var f=['beginInv','endInv','sales'];
+  for(var i=0;i<f.length;i++){ if(_fcNum(want[f[i]]) && !_fcNum(check[f[i]])) return false; }
+  var have={};
+  (check.history||[]).forEach(function(h){ have[_fcHistKey(h)]=1; });
+  var miss=(want.history||[]).some(function(h){ return !have[_fcHistKey(h)]; });
+  if(miss) return false;
+  return _fcAt(check) >= _fcAt(want);
+}
 /* code をキーにした配列（棚卸）。項目ごとに新しい保存が勝つ。 */
 function mergeListByCode(cloudArr, localArr){
   var by={}, order=[];
@@ -7362,6 +7523,80 @@ function _coversStampedList(check, want){
   }
   return true;
 }
+/* ===== v831: ヘルプ募集（help_requests_）の合流 =====
+   募集そのものは id ごとに保存時刻(_mut)で判定すればよいが、
+   **志願者は複数の人が同時に手を挙げる**。募集1件を丸ごと新しい保存で上書きすると、
+   同じ頃に別の端末で手を挙げた人が消える（当日シフトの穴になる）。
+   そこで志願は「人ごとに時刻で判定」する。取り下げも記録として残し、
+   取り下げ前の写しを持った端末から復活させない。
+   確定者(filledBy)は取り消しの口が無いので和集合でよい。
+   画面へ渡す volunteers は配列のまま作り直すので、表示側のコードは変えなくてよい。 */
+function _hrVolMap(h){
+  if(h && h._vol && typeof h._vol==='object' && !Array.isArray(h._vol)) return h._vol;
+  var out={};
+  if(h && Array.isArray(h.volunteers)) h.volunteers.forEach(function(n){ out[n]={ at:0, by:'' }; });
+  return out;   /* v830 以前の記録は時刻0として扱う（誰も消さない） */
+}
+function _hrApplyVol(h, vol){
+  h._vol = vol;
+  h.volunteers = Object.keys(vol).filter(function(n){ return !vol[n] || !vol[n].out; });
+  return h;
+}
+function _hrMergeVol(a, b){
+  var out={}, ma=_hrVolMap(a), mb=_hrVolMap(b);
+  Object.keys(ma).forEach(function(n){ out[n]=ma[n]; });
+  Object.keys(mb).forEach(function(n){
+    var cur=out[n];
+    if(!cur){ out[n]=mb[n]; return; }
+    out[n] = ((Number(mb[n]&&mb[n].at)||0) >= (Number(cur.at)||0)) ? mb[n] : cur;
+  });
+  return out;
+}
+function _hrUnionNames(a, b){
+  var out=[], seen={};
+  (Array.isArray(a)?a:[]).concat(Array.isArray(b)?b:[]).forEach(function(n){
+    if(n==null || seen[n]) return; seen[n]=1; out.push(n);
+  });
+  return out;
+}
+function mergeHelpRequests(cloudArr, localArr){
+  var by={}, order=[];
+  function put(x){
+    var id=_slId(x); if(id==null) return;
+    if(!by[id]){ by[id]=x; order.push(id); return; }
+    var cur=by[id];
+    var cd=!!(cur&&cur._deleted), xd=!!(x&&x._deleted);
+    if(cd!==xd){ by[id]= cd?cur:x; return; }
+    var cm=Number(cur&&cur._mut)||0, xm=Number(x&&x._mut)||0;
+    var win=Object.assign({}, (xm>=cm)?x:cur);
+    _hrApplyVol(win, _hrMergeVol(cur, x));                 /* 志願は人ごと */
+    win.filledBy=_hrUnionNames(cur.filledBy, x.filledBy);  /* 確定者は追記のみ */
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(put);
+  (Array.isArray(localArr)?localArr:[]).forEach(put);
+  return order.map(function(id){ return by[id]; });
+}
+function _coversHelpRequests(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; (check||[]).forEach(function(x){ var k=_slId(x); if(k!=null) have[k]=x; });
+  var list=Array.isArray(want)?want:[];
+  for(var i=0;i<list.length;i++){
+    var w=list[i], wk=_slId(w); if(wk==null) continue;
+    var h=have[wk]; if(!h) return false;
+    if(w._deleted && !h._deleted) return false;
+    var wm=Number(w._mut)||0, hm=Number(h._mut)||0;
+    if(wm && hm<wm) return false;
+    var wv=_hrVolMap(w), hv=_hrVolMap(h);
+    for(var n in wv){ if(!wv.hasOwnProperty(n)) continue;
+      var a=hv[n]; if(!a) return false;
+      if((Number(wv[n]&&wv[n].at)||0) > (Number(a.at)||0)) return false;
+    }
+    var hf={}; (h.filledBy||[]).forEach(function(x){ hf[x]=1; });
+    if((w.filledBy||[]).some(function(x){ return !hf[x]; })) return false;
+  }
+  return true;
+}
 function _stIsWrapped(x){ return !!(x && typeof x==='object' && !Array.isArray(x) && x.__st===1); }
 function _stUnwrap(x){ return _stIsWrapped(x) ? x.v : x; }
 function _stAt(x){ return _stIsWrapped(x) ? (Number(x._at)||0) : 0; }
@@ -7380,6 +7615,32 @@ function mergeStamped(cloud, local){
 function _coversStamped(check, want){ return _stAt(check) >= _stAt(want); }
 var _ST_MERGE_DEF = null;
 function _stDef(){ if(!_ST_MERGE_DEF) _ST_MERGE_DEF={ merge:mergeStamped, covers:_coversStamped }; return _ST_MERGE_DEF; }
+/* ===== v829: 保存時刻と保存者で判定する名前キーの合流 =====
+   複数の人が同じ入れ物へ別々の相手（従業員名など）を入力する画面のためのルール。
+   ・相手ごとに独立して保存する。他の人が入力した相手には触れない
+   ・同じ相手がぶつかったら、あとから保存されたほうが勝つ（_at で判定）
+   ・消去も1つの保存として記録する（_deleted）。消したことが他の端末へ伝わり、
+     かつ消したあとに入れ直せば、そちらが新しいので入れ直しが勝つ
+   ・印が無い既存データは時刻0＝同点になり、これまでどおりローカルが勝つ（退行しない）
+   値は _stWrap() で包む（{__st:1, v:中身, _at, _by}）。画面側は包みを外した形を受け取る。 */
+function mergeMapStamped(cloud, local){
+  var out={}, c=(cloud&&typeof cloud==='object')?cloud:{}, l=(local&&typeof local==='object')?local:{};
+  Object.keys(c).forEach(function(k){ out[k]=c[k]; });
+  Object.keys(l).forEach(function(k){
+    if(!(k in out)){ out[k]=l[k]; return; }
+    var a=out[k], b=l[k];
+    out[k] = (_stAt(b)>=_stAt(a)) ? b : a;
+  });
+  return out;
+}
+function _coversMapStamped(check, want){
+  if(!check||typeof check!=='object') return false;
+  for(var k in want){ if(!want.hasOwnProperty(k)) continue;
+    var h=check[k]; if(h===undefined) return false;
+    if(_stAt(h) < _stAt(want[k])) return false;
+  }
+  return true;
+}
 /* 画面表示用: 最終更新の情報を取り出す */
 function stampInfo(baseKey, id){
   try{
@@ -7763,7 +8024,9 @@ function lsIsPrunable(k){
   var _s=String(k||'');
   var _REGENERABLE=[
     'tip_labor_',   /* Toastから再取得できる（サイズ大） */
-    'warnings_',    /* 実データから再計算される */
+    /* v832: warnings_ をここから外した。注意ログは確認ダイアログを経た手入力の記録で、
+       実データから再計算できない。容量整理で消えると、そのあと1件記録しただけで
+       クラウド側の注意ログが全部その1件に置き換わっていた。 */
     'reminded_'     /* 通知済みフラグ */
   ];
   var _body=(_s.indexOf('spl_')===0)?_s.slice(4):_s;
@@ -9152,7 +9415,43 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
      日付キーの和集合にして、範囲外の日が消えないようにする。
      日ごとの勝敗は _at で判定するが、既存データに _at は無いので
      同点＝ローカルが勝つ。これは今までと同じ挙動で、退行しない。 */
-  'daily_actuals_': { merge: mergeMapByTime, covers: _coversMapByTime } };
+  'daily_actuals_': { merge: mergeMapByTime, covers: _coversMapByTime },
+  /* v826: 原価 月次。単一オブジェクトなので mergeMapByTime は使えない
+     （項目名を日付キーと誤解して壊れる）。項目ごとに合流する。 */
+  'fc_monthly_': { merge: mergeFcMonthly, covers: _coversFcMonthly },
+  /* v827: OT承認（{従業員名:{by,at}} の名前キー）。承認は追加しかされず削除の口が無いため、
+     名前の和集合で安全に合流できる。既存の mergeMapByTime をそのまま使う。
+     このキーは _LS_PRUNABLE に入っており、容量逼迫で端末から消えることがある。
+     合流ルールが無いと、消えた端末が次に1件承認しただけで
+     その週の承認がクラウドごと1件に置き換わる（日次売上と同じ形の事故）。 */
+  'ot_approvals_': { merge: mergeMapByTime, covers: _coversMapByTime },
+  /* v828: シフト最適化の店舗ルール(shiftopt_cfg_<店>)と個人の制約(shiftopt_mem_<店>)。
+     どちらも削除の口が無い（setShiftOptCfg / setShiftOptMember は足すか書き換えるだけ）。
+     mem は {従業員名:{minShifts,minDaysOff,allowConsecutive,leaderEligible}} の名前キーなので
+     名前の和集合になる。cfg は設定1件なので項目ごとの判定になり、
+     結果は「ローカルが勝つ・ローカルに無い項目はクラウドが残る」＝従来より安全な側にしか動かない。
+     このキーも _LS_PRUNABLE に入っており、容量逼迫で端末から消えることがある。 */
+  'shiftopt_': { merge: mergeMapByTime, covers: _coversMapByTime },
+  /* v829: 固定シフト。複数の人が別々の従業員を入力するため、人ごとに保存し
+     保存時刻で判定する。消去も記録として残す（_deleted）。 */
+  'shift_fixed_': { merge: mergeMapStamped, covers: _coversMapStamped },
+  /* v830: 発注。id ごとに保存時刻(_mut)で判定し、取消(_deleted)は復活させない。
+     買い出し・棚卸履歴と同じ既存の合流関数をそのまま使う。 */
+  'orders_': { merge: mergeStampedList, covers: _coversStampedList },
+  /* v831: ヘルプ募集。募集は id ごとに保存時刻で判定し、
+     志願者は人ごとに時刻で判定する（同時に手を挙げた人が消えないように）。 */
+  'help_requests_': { merge: mergeHelpRequests, covers: _coversHelpRequests },
+  /* v832: 注意ログ。追記だけなので和集合。id が無い古い記録は中身から鍵を作る。 */
+  'warnings_': { merge: mergeWarnings, covers: _coversWarnings },
+  /* v833: 日次オペレーション。テンプレート・当日のチェック状態・完了記録の3つを
+     同じルールで扱う。id ごと（無い記録は中身から作った鍵ごと）に新しい保存が勝つ。
+     テンプレートは app_settings 経由だが、そちらも _opMergeDef を見るので同じく効く。 */
+  'dailyops_': { merge: mergeDailyOps, covers: _coversDailyOps },
+  /* v834: 出数。メニュー1品ごとに、変わった時刻の新しいほうを採る。
+     0 にした操作も時刻として残すので、古い写しから出数が戻らない。 */
+  'menu_mix_': { merge: mergeMenuMix, covers: _coversMenuMix },
+  /* v835: Remind 済み。名前の和集合。取り消す操作が無いので復活の心配が無い。 */
+  'reminded_': { merge: mergeRemindedNames, covers: _coversRemindedNames } };
 /* v754: 棚卸(inv_<店舗>)の合流ルールを店舗ごとの完全キーで登録する。
    'inv_' の前方一致だと inv_hist_ や inv_templates まで拾ってしまうため、店舗IDまで含めて登録する。
    店舗が追加されたときのために refreshStores からも呼べるようにしておく。 */
@@ -9661,7 +9960,7 @@ function _lsFreeOldLaborKeys(keepMonths){
       for(var j=localStorage.length-1;j>=0;j--){
         var k2=localStorage.key(j); if(!k2) continue;
         var b2=(k2.indexOf('spl_')===0)?k2.slice(4):k2;
-        if(b2.indexOf('warnings_')===0 || b2.indexOf('reminded_')===0){
+        if(b2.indexOf('reminded_')===0){   /* v832: warnings_ は手入力の記録なので消さない */
           freed+=((localStorage.getItem(k2)||'').length+k2.length)*2;
           localStorage.removeItem(k2);
         }
@@ -12469,9 +12768,11 @@ function completeDailyOps(storeId) {
   var ops = getDailyOps(storeId);
   var reqIncomplete = ops.filter(t=>t.required && !t.done);
   if (reqIncomplete.length) { alert(t('Required未完了があります','Required items are incomplete')); return; }
-  var hist = ls('dailyops_complete_'+storeId, []);
+  var _ck='dailyops_complete_'+storeId;
+  var hist = ls(_ck, []); if(!Array.isArray(hist)) hist=[];
+  var _prevHist = hist.slice();
   hist.push({date:nowJP(), by:ROLE_CONFIG[curRole].name, count:ops.length});
-  lsSet('dailyops_complete_'+storeId, hist);
+  _doSave(_ck, hist, _prevHist);
   showToast('Daily Operations完了を記録しました', 'success');
   renderPage('store_cmd');
 }
@@ -19062,9 +19363,13 @@ function getFcMonthly(storeId, ym){
   var beg = pv ? (parseFloat(pv.endInv)||0) : 0;
   return { beginInv:beg, endInv:0, sales:0, beginAuto:beg>0, _virtual:true };
 }
-function setFcMonthly(storeId, ym, v){ delete v._virtual; lsSet(fcKey(storeId, ym), v); }
+function setFcMonthly(storeId, ym, v){ delete v._virtual;
+  /* v826: 合流の判定に使う。既存データには印が無く、その場合は同点＝ローカルが勝つ（従来どおり） */
+  v._at = Date.now();
+  try{ v._by = (typeof myName==='function') ? myName() : ''; }catch(e){ v._by=''; }
+  lsSet(fcKey(storeId, ym), v); }
 function monthOrderTotalYm(storeId, ym){
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrders(storeId);
   return orders.filter(function(o){ return ['発注確定','送信済','電話確認済','納品完了'].includes(o.status) && (dateInYm(o.date, ym) || (!o.date && ym===curYm())); })
     .reduce(function(a,o){ return a+(o.amount||0); },0);
 }
@@ -19375,7 +19680,7 @@ function fcMonthBar(){
 }
 function monthOrderTotal(storeId) {
   // 今月の発注確定〜送信済の合計（仕入れ）
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrders(storeId);
   return orders.filter(o=>['発注確定','送信済','電話確認済','納品完了'].includes(o.status))
     .reduce((a,o)=>a+(o.amount||0),0);
 }
@@ -19383,7 +19688,7 @@ function monthPurchaseTotal(storeId) {
   return getPurchases(storeId).reduce((a,p)=>a+(parseFloat(p.amount)||0),0);
 }
 function dailyOrderTotal(storeId, dateStr) {
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrders(storeId);
   var d = dateStr || todayJP();
   return orders.filter(o=>o.date===d).reduce((a,o)=>a+(o.amount||0),0);
 }
@@ -21396,9 +21701,8 @@ function computeAutoOrders(storeId, countedItems) {
       status:'自動作成', date:todayJP(), deliveryDate:'', auto:true});
   });
   if (drafts.length) {
-    var all = ls('orders_'+storeId, []);
-    all = all.concat(drafts);
-    lsSet('orders_'+storeId, all);
+    var all = getOrdersRaw(storeId).concat(drafts);
+    saveOrders(storeId, all);
   }
   return drafts;
 }
@@ -21471,10 +21775,39 @@ function orderListRemove(storeId, vendorName, code) {
   setOrderList(storeId, vendorName, codes);
   openOrderListEdit(storeId, vendorName);
 }
+/* v830: 発注は複数の人が同じ店の発注を触る（作成・数量修正・確定・送信・取消）。
+   これまでは配列を丸ごと書き戻していたため、あとに保存したほうの端末の内容で全部が置き換わり、
+   もう一方が作った発注や送信済みの記録が消えていた。クラウド同期でも同じ（合流ルールが無い）。
+   1件ごとに保存時刻(_mut)と保存者(_by)を付け、取消は記録として残す(_deleted)。
+   物理削除にすると、取り消す前の写しを持った端末から発注が復活する。
+   画面へ渡すのは getOrders()（取消済みを除いた一覧）。書き換えるときだけ getOrdersRaw()。 */
+function getOrdersRaw(storeId){ var a=ls('orders_'+storeId, []); return Array.isArray(a)?a:[]; }
+function getOrders(storeId){ return getOrdersRaw(storeId).filter(function(o){ return !(o&&o._deleted); }); }
+function _ordId(r){ return (r && r.id!=null) ? ('id:'+r.id) : null; }
+function saveOrders(storeId, arr){
+  var prev=getOrdersRaw(storeId), pm={};
+  prev.forEach(function(r){ var k=_ordId(r); if(k) pm[k]=Number(r._mut)||0; });
+  _stampListBy(arr, prev, _ordId);            /* 変わった発注にだけ保存時刻(_mut)を進める */
+  var by=''; try{ by=(typeof myName==='function')?myName():''; }catch(e){ by=''; }
+  arr.forEach(function(r){
+    var k=_ordId(r); if(!k) return;
+    if((Number(r._mut)||0)!==(pm[k]||0)) r._by=String(by||'');   /* 保存者を記録 */
+  });
+  return lsSet('orders_'+storeId, arr)!==false;
+}
+/* 取消・空になった下書きの削除。記録として残し、他端末へ伝える */
+function deleteOrder(storeId, orderId){
+  var arr=getOrdersRaw(storeId);
+  var o=null;
+  for(var i=0;i<arr.length;i++){ if(arr[i] && arr[i].id===orderId){ o=arr[i]; break; } }
+  if(!o) return false;
+  o._deleted=true;
+  return saveOrders(storeId, arr);
+}
 function renderOrder() {
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrders(storeId);
   var canConfig = ROLE_CONFIG[curRole].canCreate;
   var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">${store.name} · 発注管理</div><div class="section-sub">業者ごとの発注リストから発注</div></div>
@@ -21550,23 +21883,23 @@ function renderOrder() {
 }
 
 function updateDraftQty(storeId, orderId, idx, val) {
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrdersRaw(storeId);
   var o = orders.find(x=>x.id===orderId);
-  if (o) { o.lines[idx].qty = parseFloat(val)||0; o.amount = o.lines.reduce((a,l)=>a+l.price*l.qty,0); lsSet('orders_'+storeId, orders); }
+  if (o) { o.lines[idx].qty = parseFloat(val)||0; o.amount = o.lines.reduce((a,l)=>a+l.price*l.qty,0); saveOrders(storeId, orders); }
 }
 function removeDraftLine(storeId, orderId, idx) {
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrdersRaw(storeId);
   var o = orders.find(x=>x.id===orderId);
-  if (o) { o.lines.splice(idx,1); o.amount = o.lines.reduce((a,l)=>a+l.price*l.qty,0); if(!o.lines.length){orders=orders.filter(x=>x.id!==orderId);} lsSet('orders_'+storeId, orders); renderPage('order'); }
+  if (o) { o.lines.splice(idx,1); o.amount = o.lines.reduce((a,l)=>a+l.price*l.qty,0); saveOrders(storeId, orders); if(!o.lines.length) deleteOrder(storeId, orderId); renderPage('order'); }
 }
 function confirmOrder(storeId, orderId) {
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrdersRaw(storeId);
   var o = orders.find(x=>x.id===orderId);
-  if (o) { o.status='発注確定'; lsSet('orders_'+storeId, orders); showToast('発注を確定しました', 'success'); renderPage('order'); }
+  if (o) { o.status='発注確定'; saveOrders(storeId, orders); showToast('発注を確定しました', 'success'); renderPage('order'); }
 }
 function cancelOrder(storeId, orderId) {
   if (!confirm('この発注を削除しますか？')) return;
-  lsSet('orders_'+storeId, ls('orders_'+storeId,[]).filter(x=>x.id!==orderId));
+  deleteOrder(storeId, orderId);
   showToast('削除しました', 'danger');
   renderPage('order');
 }
@@ -21590,7 +21923,7 @@ function buildOrderText(o, vendor, storeId, method) {
 }
 
 function openSendModal(storeId, orderId) {
-  var o = ls('orders_'+storeId, []).find(x=>x.id===orderId);
+  var o = getOrders(storeId).find(x=>x.id===orderId);
   if (!o) return;
   var vendor = getVendors().find(v=>v.name===o.vendor)||{};
   var method = vendorMethod(vendor, storeId);
@@ -21615,9 +21948,9 @@ function openSendModal(storeId, orderId) {
     </div>`);
 }
 function updateDraftDelivery(storeId, orderId, val) {
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrdersRaw(storeId);
   var o = orders.find(x=>x.id===orderId);
-  if (o) { o.deliveryDate=val; lsSet('orders_'+storeId, orders);
+  if (o) { o.deliveryDate=val; saveOrders(storeId, orders);
     var vendor=getVendors().find(v=>v.name===o.vendor)||{}; var method=vendorMethod(vendor,storeId);
     var ta=document.getElementById('snd-text'); if(ta) ta.value=buildOrderText(o,vendor,storeId,method);
   }
@@ -21628,7 +21961,7 @@ function copyOrderText() {
   try { document.execCommand('copy'); showToast('コピーしました', 'success'); } catch(e){ showToast('手動でコピーしてください', 'info'); }
 }
 function markOrderSent(storeId, orderId, method) {
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrdersRaw(storeId);
   var o = orders.find(x=>x.id===orderId);
   if (!o) return;
   o.status = method==='電話'?'電話確認済':'送信済';
@@ -21637,7 +21970,7 @@ function markOrderSent(storeId, orderId, method) {
   o.sentBy = ROLE_CONFIG[curRole].name;
   if (method==='電話') { var c=document.getElementById('snd-contact'); o.phoneContact=c?c.value:''; }
   var m=document.getElementById('snd-memo'); o.memo = m?m.value:'';
-  lsSet('orders_'+storeId, orders);
+  saveOrders(storeId, orders);
   closeModalDirect();
   showToast(`${o.vendor}へ${method}で発注しました`, 'success');
   renderPage('order');
@@ -21654,7 +21987,7 @@ function getOrderTemplates(storeId) { var all=ls('order_templates', {}); return 
 function setOrderTemplates(storeId, tpls) { var all=ls('order_templates', {}); all[storeId]=tpls; lsSet('order_templates', all); }
 /* 前回の同業者発注を取得 */
 function lastOrderForVendor(storeId, vendorName) {
-  var orders = ls('orders_'+storeId, []).filter(o=>o.vendor===vendorName);
+  var orders = getOrders(storeId).filter(o=>o.vendor===vendorName);
   return orders.length ? orders[orders.length-1] : null;
 }
 
@@ -21795,16 +22128,16 @@ function saveOrder(storeId) {
   // 確認画面経由ではo-vendorが無い場合があるため、保持していた業者を使う
   if (!vendor) vendor = window._orderVendor || '';
   var amount = orderTmpLines.reduce((a,l)=>a+l.price*l.qty,0);
-  var orders = ls('orders_'+storeId, []);
+  var orders = getOrdersRaw(storeId);
   orders.push({id:'o'+Date.now(), vendor, lines:JSON.parse(JSON.stringify(orderTmpLines)), amount, status:'発注確定', date:todayJP(), deliveryDate:''});
-  lsSet('orders_'+storeId, orders);
+  saveOrders(storeId, orders);
   closeModalDirect();
   showToast('発注を確定しました', 'success');
   renderPage('order');
 }
 /* CSV出力 */
 function exportOrderCSV(storeId, orderId) {
-  var o = ls('orders_'+storeId, []).find(x=>x.id===orderId); if(!o) return;
+  var o = getOrders(storeId).find(x=>x.id===orderId); if(!o) return;
   var store = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
   var rows = [['発注書',''],['店舗',store],['業者',o.vendor],['発注日',o.date],['',''],['品目','数量','単位','単価','金額']];
   o.lines.forEach(l=> rows.push([l.name, l.qty, l.unit, l.price.toFixed(3), (l.price*l.qty).toFixed(2)]));
@@ -21818,7 +22151,7 @@ function exportOrderCSV(storeId, orderId) {
 }
 /* PDF（印刷ダイアログ経由）*/
 function exportOrderPrint(storeId, orderId) {
-  var o = ls('orders_'+storeId, []).find(x=>x.id===orderId); if(!o) return;
+  var o = getOrders(storeId).find(x=>x.id===orderId); if(!o) return;
   var vendor = getVendors().find(v=>v.name===o.vendor)||{};
   var store = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
   var rows = o.lines.map(l=>`<tr><td>${l.name}</td><td style="text-align:right">${l.qty} ${l.unit}</td><td style="text-align:right">$${l.price.toFixed(3)}</td><td style="text-align:right">$${(l.price*l.qty).toFixed(2)}</td></tr>`).join('');
@@ -23923,6 +24256,7 @@ var LS_NEVER_FREE = ['spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','sp
   'fv_count_','fv_moves_','fv_review_','fv_config',
   'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','q_budgets',
   'sl_config','sl_manual_',
+  'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'lala_tasks'];   /* v804: LaLa（手入力・再生不可） */   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
 function _lsProtectedKey(k){
   var s=String(k||'');
@@ -25197,7 +25531,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '825';
+const APP_VERSION = '835';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -25857,8 +26191,25 @@ function setShiftView(v) { shiftView = v; renderPage('shift_admin'); }
 
 /* ===== ヘルプ募集（穴の空いた枠を本人が手を挙げて埋める） =====
    help_requests_<storeId>: [{id, week, day, period, count, note, status, volunteers:[name], createdBy, date}] */
-function getHelpRequests(storeId) { return ls('help_requests_'+storeId, []); }
-function setHelpRequests(storeId, list) { lsSet('help_requests_'+storeId, list); }
+/* v831: 募集1件ごとに保存時刻(_mut)と保存者(_by)を付ける。
+   志願の増減は _vol（人ごとの時刻）に記録し、volunteers は表示用に作り直す。
+   書き換えるときは getHelpRequestsRaw()、画面へ出すときは getHelpRequests()。 */
+function getHelpRequestsRaw(storeId) { var a=ls('help_requests_'+storeId, []); return Array.isArray(a)?a:[]; }
+function getHelpRequests(storeId) { return getHelpRequestsRaw(storeId).filter(function(h){ return !(h&&h._deleted); }); }
+function _hrId(r){ return (r && r.id!=null) ? ('id:'+r.id) : null; }
+function saveHelpRequests(storeId, list){
+  var prev=getHelpRequestsRaw(storeId), pm={};
+  prev.forEach(function(r){ var k=_hrId(r); if(k) pm[k]=Number(r._mut)||0; });
+  _stampListBy(list, prev, _hrId);
+  var by=''; try{ by=(typeof myName==='function')?myName():''; }catch(e){ by=''; }
+  list.forEach(function(r){
+    var k=_hrId(r); if(!k) return;
+    if((Number(r._mut)||0)!==(pm[k]||0)) r._by=String(by||'');
+  });
+  return lsSet('help_requests_'+storeId, list)!==false;
+}
+/* 旧名。直接呼ばれても保護が効くように保存の出口へ寄せる。 */
+function setHelpRequests(storeId, list) { return saveHelpRequests(storeId, list); }
 /* 自分が応援可能な店舗の募集（配属＋応援店舗の募集を集約）。マイページ用 */
 function myHelpRequests() {
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
@@ -25888,7 +26239,7 @@ function openHelpReqModal(storeId, week) {
     <button class="btn btn-primary" onclick="createHelpReq('${storeId}','${week}')"><i class="ti ti-bell"></i> 募集する</button></div>`);
 }
 function createHelpReq(storeId, week){
-  var list = getHelpRequests(storeId);
+  var list = getHelpRequestsRaw(storeId);
   list.push({
     id:'hr'+Date.now(), week:week,
     day:document.getElementById('hr-day').value,
@@ -25899,7 +26250,7 @@ function createHelpReq(storeId, week){
     createdBy:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''),
     date:todayJP(),
   });
-  setHelpRequests(storeId, list);
+  saveHelpRequests(storeId, list);
   try{ var _hr=list[list.length-1]; var _hs=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'help', title:'ヘルプ募集', text:((_hs?_hs.name:storeId)+' '+_hr.day+' '+_hr.period+(_hr.note?'：'+_hr.note:'')).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'mypage', refId:_hr.id }); }catch(e){}
   closeModalDirect();
   showToast('ヘルプ募集を出しました','success');
@@ -25908,32 +26259,34 @@ function createHelpReq(storeId, week){
 /* 本人が手を挙げる/取り下げる */
 function toggleHelpVolunteer(storeId, hrId){
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
-  var list = getHelpRequests(storeId);
+  var list = getHelpRequestsRaw(storeId);
   var h = list.find(x=>x.id===hrId); if(!h) return;
   h.volunteers = h.volunteers||[];
   var i = h.volunteers.indexOf(me);
-  if (i>=0) h.volunteers.splice(i,1); else h.volunteers.push(me);
-  setHelpRequests(storeId, list);
+  /* v831: 配列から抜くと、取り下げ前の写しを持った端末から復活し、
+     別の人が同じ頃に手を挙げると片方が消える。人ごとに時刻と名前で記録する。 */
+  var _vol=_hrVolMap(h); _vol[me]={ at:Date.now(), by:me, out:(i>=0) }; _hrApplyVol(h, _vol);
+  saveHelpRequests(storeId, list);
   try{ if(i<0 && h.createdBy){ var _hs2=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'help', title:'ヘルプ募集に応募がありました', text:(me+' が応募：'+(_hs2?_hs2.name:storeId)+' '+h.day+' '+h.period).slice(0,140), toUser:h.createdBy, page:'shift_admin', refId:h.id }); } }catch(e){}
   showToast(i>=0?'取り下げました':'手を挙げました！','success');
   renderPage(curPage);
 }
 /* SL: 応募者を確定（シフトに反映）/募集を締める */
 function fillHelpReq(storeId, hrId, name){
-  var list = getHelpRequests(storeId);
+  var list = getHelpRequestsRaw(storeId);
   var h = list.find(x=>x.id===hrId); if(!h) return;
   h.filledBy = h.filledBy||[];
   h.filledBy.push(name);
   if (h.filledBy.length >= (h.count||1)) h.status='確定';
-  setHelpRequests(storeId, list);
+  saveHelpRequests(storeId, list);
   showToast(name+'さんを確定しました','success');
   renderPage('shift_admin');
 }
 function closeHelpReq(storeId, hrId){
-  var list = getHelpRequests(storeId);
+  var list = getHelpRequestsRaw(storeId);
   var h = list.find(x=>x.id===hrId); if(!h) return;
   h.status='終了';
-  setHelpRequests(storeId, list);
+  saveHelpRequests(storeId, list);
   renderPage('shift_admin');
 }
 /* ヘルプ募集タブ（SL/AM/GM） */
@@ -26002,7 +26355,7 @@ function renderShiftStatus(storeId, week) {
   var submitted = avail.map(a=>a.name);
   var pending = staff.filter(e=>!submitted.includes(e.name));
   var rate = staff.length ? Math.round(submitted.length/staff.length*100) : 0;
-  var reminded = ls('reminded_'+storeId+'_'+week, []);
+  var reminded = getReminded(storeId, week);
 
   var html = `<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
     <button class="btn btn-secondary btn-sm" onclick="refreshAvailNow('${storeId}','${week}')"><i class="ti ti-refresh"></i> 最新に更新</button>
@@ -26038,14 +26391,49 @@ function renderShiftStatus(storeId, week) {
   }
   return html;
 }
+/* ===== v835: Remind 済み（reminded_<店>_<週>）=====
+   その週のシフト提出をまだしていない人のうち、誰に催促を送ったかの名前一覧。
+   合流ルールが無く「丸ごと上書き」だった。
+   このキーは _LS_PRUNABLE に入っており、容量逼迫で端末から消える。
+   消えた端末が1人に催促を送ると、その1人だけの一覧がクラウドへ押し上がり、
+   他の人の「Remind済」表示が消える（また催促が飛ぶ）。
+
+   【粒度】名前の和集合でよい。
+   ・remindOne は名前を足すだけ
+   ・remindAll は「いま未提出の人」で置き換えるが、
+     表示は未提出の人にしか出ない（renderShiftStatus は pending だけを回す）ので、
+     提出済みの人の名前が残っていても画面には出ない。
+   ・催促を「取り消す」操作は無い。したがって消えることを心配すればよく、
+     復活を心配する必要が無い。 */
+function getReminded(storeId, week){
+  var a = ls('reminded_'+storeId+'_'+week, []);
+  return Array.isArray(a) ? a : [];
+}
+function mergeRemindedNames(cloudArr, localArr){
+  var out=[], seen={};
+  (Array.isArray(cloudArr)?cloudArr:[]).concat(Array.isArray(localArr)?localArr:[]).forEach(function(n){
+    if(n==null || n==='' || seen[n]) return; seen[n]=1; out.push(n);
+  });
+  return out;
+}
+function _coversRemindedNames(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(n){ have[n]=1; });
+  return (Array.isArray(want)?want:[]).every(function(n){ return n==null || n==='' || !!have[n]; });
+}
+/* 保存の出口。すでに送った人を落とさない（落とすとまた催促が飛ぶ）。 */
+function saveReminded(storeId, week, names){
+  var out = mergeRemindedNames(getReminded(storeId, week), names);
+  return lsSet('reminded_'+storeId+'_'+week, out)!==false;
+}
 function remindOne(storeId, week, name) {
-  var r = ls('reminded_'+storeId+'_'+week, []); if(!r.includes(name)) r.push(name); lsSet('reminded_'+storeId+'_'+week, r);
+  saveReminded(storeId, week, [name]);
   showToast(`${name}にRemindを送信しました`, 'success'); renderPage('shift_admin');
 }
 function remindAll(storeId, week) {
   var staff = staffForStore(storeId); var avail = getAvailability(storeId, week).map(a=>a.name);
   var pending = staff.filter(e=>!avail.includes(e.name)).map(e=>e.name);
-  lsSet('reminded_'+storeId+'_'+week, pending);
+  saveReminded(storeId, week, pending);
   showToast(`${pending.length}名にRemindを送信しました`, 'success'); renderPage('shift_admin');
 }
 
@@ -26157,8 +26545,36 @@ function renderAieaBuild(storeId, week, plan, warnings){
    - 盤面: 曜日カラム。固定=ロック・提出反映=緑・空き=点線。チップtapで人/時刻編集
    - plan.meta[cellKey]={start,end,fixed} で時刻・固定フラグを保持（cellsは従来互換）
 ============================================================ */
-function getShiftFixed(storeId){ try{ return ls('shift_fixed_'+storeId, {})||{}; }catch(e){ return {}; } }
+/* v829: 固定シフトは店長・AM など複数の人が同じ画面から入力する。
+   これまでは「全員ぶんの表を丸ごと保存」していたため、
+   2人が別の端末で別の従業員を設定すると、あとに保存したほうの表で全部が置き換わり、
+   もう一方が入れた人が消えていた（クラウド同期でも同じことが起きる）。
+   人ごとに保存時刻(_at)と保存者(_by)を付けて別々に保存し、合流も人単位で行う。
+   画面側が受け取る形は今までと同じ（包みは getShiftFixed が外す）。 */
+function getShiftFixedRaw(storeId){ try{ return ls('shift_fixed_'+storeId, {})||{}; }catch(e){ return {}; } }
+function getShiftFixed(storeId){
+  var raw=getShiftFixedRaw(storeId), out={};
+  Object.keys(raw).forEach(function(n){
+    var e=raw[n];
+    if(e && e._deleted) return;                 /* 消去済みは見せない */
+    var v=_stIsWrapped(e) ? e.v : e;            /* 印の無い既存データはそのまま */
+    if(v && typeof v==='object') out[n]=v;
+  });
+  return out;
+}
 function setShiftFixed(storeId, map){ lsSet('shift_fixed_'+storeId, map); }
+function setShiftFixedEntry(storeId, name, mine){
+  var raw=getShiftFixedRaw(storeId);
+  raw[name]=_stWrap(mine);                      /* {__st:1, v:mine, _at, _by} */
+  return lsSet('shift_fixed_'+storeId, raw)!==false;
+}
+function clearShiftFixedEntry(storeId, name){
+  var raw=getShiftFixedRaw(storeId);
+  var by=''; try{ by=(typeof myName==='function')?myName():''; }catch(e){ by=''; }
+  /* 物理削除にすると、その人を持ったままの端末から復活する。消したことを記録として残す。 */
+  raw[name]={ __st:1, v:null, _deleted:true, _at:Date.now(), _by:String(by||'') };
+  return lsSet('shift_fixed_'+storeId, raw)!==false;
+}
 /* 店舗の全スロット定義（固定枠＋fillポジション＋Prep等）を [{sec,pos,label,fill}] で返す */
 function shiftAllSlotDefs(storeId){
   var lay=SHIFT_LAYOUTS[storeId]; if(!lay) return [];
@@ -27232,20 +27648,21 @@ function _sfeRenderDays(storeId){
 }
 function _sfeSave(storeId){
   var name=(document.getElementById('sfe-emp')||{}).value||''; if(!name) return;
-  var fixed=getShiftFixed(storeId); var mine={};
+  var mine={};
   DOW_SHIFT.forEach(function(day){
     var sel=document.querySelector('.sfe-pos[data-day="'+day+'"]'); var v=sel?sel.value:''; if(!v) return;
     var p=v.split('||'); var st=document.querySelector('.sfe-start[data-day="'+day+'"]'); var en=document.querySelector('.sfe-end[data-day="'+day+'"]');
     mine[day]={sec:p[0], pos:p[1], slotLabel:p[2]||'', start:(st?st.value:''), end:(en?en.value:'')};
   });
-  if(Object.keys(mine).length) fixed[name]=mine; else delete fixed[name];
-  setShiftFixed(storeId, fixed); showToast(t('固定シフトを保存しました','Fixed shift saved'),'success');
+  /* v829: その人のぶんだけ保存する。他の人が入れた固定シフトには触れない。 */
+  if(Object.keys(mine).length) setShiftFixedEntry(storeId, name, mine); else clearShiftFixedEntry(storeId, name);
+  showToast(t('固定シフトを保存しました','Fixed shift saved'),'success');
   var s=document.getElementById('sfe-emp'); if(s){ var o=s.querySelector('option[value="'+name.replace(/"/g,'')+'"]'); if(o && !/●/.test(o.textContent)) o.textContent=o.textContent+' ●'; }
 }
 function _sfeClear(storeId){
   var name=(document.getElementById('sfe-emp')||{}).value||''; if(!name) return;
   if(!confirm(t('この人の固定シフトを全消去しますか？','Clear all fixed shifts for this person?'))) return;
-  var fixed=getShiftFixed(storeId); delete fixed[name]; setShiftFixed(storeId, fixed);
+  clearShiftFixedEntry(storeId, name);
   showToast(t('消去しました','Cleared'),'success'); _sfeRenderDays(storeId);
 }
 
@@ -28731,7 +29148,7 @@ function renderShiftStaff() {
   var availRange = (function(){ try{ return shiftWeekRangeLabel(_availOff)||''; }catch(e){ return ''; } })();
   var myAvail = getAvailability(storeId, availWeek).find(a=>a.name===me);
   var plan = getShiftPlan(storeId, week);
-  var reminded = ls('reminded_'+storeId+'_'+week, []);
+  var reminded = getReminded(storeId, week);
   var isReminded = !myAvail && Array.isArray(reminded) && reminded.indexOf(me)>=0;
 
   var html = `<div class="section-header"><div><div class="section-title">My Shift</div><div class="section-sub">${shiftWeekRelLabel()} · ${shiftWeekRangeLabel()}</div></div></div>`;
@@ -43463,7 +43880,7 @@ function renderPGD(empName, isManagerView) {
   var tipReqs = ls('tip_requests', []).filter(r=>r.name===empName);
   var curTip = tipReqs.filter(r=>r.status==='承認').slice(-1)[0];
   var evalHist = ls('eval_history', []).filter(h=>h.name===empName);
-  var warnings = []; STORES.forEach(s=>{ ls('warnings_'+s.id,[]).forEach(w=>{ if((w.reason||'').includes(empName)) warnings.push(w); }); });
+  var warnings = []; STORES.forEach(s=>{ getWarnings(s.id).forEach(w=>{ if((w.reason||'').includes(empName)) warnings.push(w); }); });
   var obs = ls('onboardings', []).filter(o=>o.name===empName);
   var promo = STEP_PROMO[emp.step] || STEP_PROMO[0];
 
@@ -47923,11 +48340,88 @@ var DAILYOPS_EN = {d1:'Open register / check float',d2:'Lights / BGM / A-C setup
 function dailyOpsText(it){ if(!it) return ''; if(curLang!=='en') return it.text; try{ var d=DEFAULT_DAILYOPS.find(function(x){return x.id===it.id;}); if(d && d.text===it.text && DAILYOPS_EN[it.id]) return DAILYOPS_EN[it.id]; }catch(e){} return it.text; }
 /* 店舗ごとの「毎日使うテンプレート」（恒久保存・翌日も残る）
    未設定の店舗は DEFAULT_DAILYOPS を初期テンプレートとして使う */
-function getDailyOpsTemplate(storeId) {
-  return ls('dailyops_template_'+storeId, DEFAULT_DAILYOPS.map(t=>Object.assign({},t)));
+/* ===== v833: 日次オペレーション（dailyops_）=====
+   同じ接頭辞で3つの入れ物がある。
+     dailyops_template_<店>  … 各店で作り込んだチェックリストの中身（手入力・再入力が重い）
+     dailyops_<店>_<日付>    … その日のチェック状態（テンプレートから毎回作り直す）
+     dailyops_complete_<店>  … 完了記録（追記のみ）
+   どれも合流ルールが無く「丸ごと上書き」だった。
+   さらにテンプレートの削除は配列から物理的に抜いていたため、
+   削除前の写しを持った端末から項目が復活していた。
+
+   【この版】
+   ・項目ごとに保存時刻(_mut)と保存者(_by)を付け、id ごとに新しい保存が勝つ
+   ・完了記録は id を持たないので、中身から必ず同じ鍵を作る（端末どうしで重複しない）
+   ・テンプレートの削除は記録として残す(_deleted)。読むときに除く
+   ・テンプレートを読むときは印を落として返すので、
+     その日のチェック状態へ印が紛れ込まない（画面が受け取る形も今までと同じ）
+   ・テンプレートは app_settings 経由で同期されるが、
+     そちら側も _opMergeDef() を見る（index.html 8502行）ので同じルールが効く */
+function _doKey(r){
+  if(r && r.id!=null) return 'id:'+String(r.id);
+  /* 完了記録 {date, by, count} は id を持たない。中身から同じ鍵を作る。 */
+  var s=String((r&&r.date)||'')+'|'+String((r&&r.by)||'')+'|'+String((r&&r.count)||'');
+  var h=5381; for(var i=0;i<s.length;i++){ h=((h*33)^s.charCodeAt(i))>>>0; }
+  return 'h:'+h.toString(36);
 }
+function mergeDailyOps(cloudArr, localArr){
+  var by={}, order=[];
+  function put(x){
+    if(!x) return;
+    var k=_doKey(x);
+    if(!(k in by)){ by[k]=x; order.push(k); return; }
+    var cur=by[k];
+    by[k] = ((Number(x._mut)||0) >= (Number(cur._mut)||0)) ? x : cur;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(put);
+  (Array.isArray(localArr)?localArr:[]).forEach(put);
+  return order.map(function(k){ return by[k]; });
+}
+function _coversDailyOps(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x) have[_doKey(x)]=x; });
+  var list=Array.isArray(want)?want:[];
+  for(var i=0;i<list.length;i++){
+    var w=list[i]; if(!w) continue;
+    var h=have[_doKey(w)]; if(!h) return false;
+    var wm=Number(w._mut)||0;
+    if(wm && (Number(h._mut)||0)<wm) return false;
+  }
+  return true;
+}
+/* 保存の出口。変わった項目にだけ保存時刻を進め、保存者を付ける。 */
+function _doSave(key, list, prev){
+  _stampListBy(list, prev, _doKey);
+  var by=''; try{ by=(typeof myName==='function')?myName():''; }catch(e){ by=''; }
+  var pm={}; (Array.isArray(prev)?prev:[]).forEach(function(r){ if(r) pm[_doKey(r)]=Number(r._mut)||0; });
+  list.forEach(function(r){
+    if(!r) return;
+    if((Number(r._mut)||0)!==(pm[_doKey(r)]||0)) r._by=String(by||'');
+  });
+  return lsSet(key, list)!==false;
+}
+/* v833: テンプレートは削除を記録として残し、読むときに除く。
+   印(_mut/_deleted/_by)は読むときに落とすので、画面もその日のチェック状態も今までと同じ形。 */
+function getDailyOpsTemplateRaw(storeId) {
+  var a = ls('dailyops_template_'+storeId, null);
+  if(!Array.isArray(a)) return DEFAULT_DAILYOPS.map(function(t){ return Object.assign({}, t); });
+  return a;
+}
+function getDailyOpsTemplate(storeId) {
+  return getDailyOpsTemplateRaw(storeId).filter(function(x){ return !(x&&x._deleted); })
+    .map(function(x){ var c=Object.assign({}, x); delete c._mut; delete c._deleted; delete c._by; return c; });
+}
+function saveDailyOpsTemplate(storeId, items) {
+  var prev = getDailyOpsTemplateRaw(storeId);
+  var live = {}; (Array.isArray(items)?items:[]).forEach(function(x){ if(x) live[_doKey(x)]=1; });
+  /* 消した記録は落とさずに持ち続ける。落とすと、持っている端末から復活する。 */
+  var out = (Array.isArray(items)?items.slice():[]);
+  prev.forEach(function(p){ if(p && p._deleted && !live[_doKey(p)]) out.push(p); });
+  return _doSave('dailyops_template_'+storeId, out, prev);
+}
+/* 旧名。直接呼ばれても保護が効くように保存の出口へ寄せる。 */
 function setDailyOpsTemplate(storeId, items) {
-  lsSet('dailyops_template_'+storeId, items);
+  return saveDailyOpsTemplate(storeId, items);
 }
 function getDailyOps(storeId) {
   var today = todayJP();
@@ -47949,12 +48443,20 @@ function getDailyOps(storeId) {
   var byId = {}; existing.forEach(e=>{ byId[e.id]=e; });
   var merged = template.map(t=>{
     var e = byId[t.id];
-    return Object.assign({}, t, { done: e?e.done:false, by: e?e.by:'' });
+    var o = Object.assign({}, t, { done: e?e.done:false, by: e?e.by:'' });
+    /* v833: 変わっていない項目の保存時刻を引き継ぐ。ここで落とすと、
+       保存のたびに全項目の時刻が進み、結局「あとに保存したほうが全部勝つ」に戻る。 */
+    if(e && e._mut!=null) o._mut = e._mut;
+    if(e && e._by!=null) o._by = e._by;
+    return o;
   });
   return merged;
 }
 function setDailyOps(storeId, items) {
-  lsSet('dailyops_'+storeId+'_'+todayJP(), items);
+  /* v833: 項目ごとに保存時刻を進める。2人が別の項目にチェックしても、どちらも残る。 */
+  var key='dailyops_'+storeId+'_'+todayJP();
+  var prev=ls(key, []); if(!Array.isArray(prev)) prev=[];
+  return _doSave(key, items, prev);
 }
 
 var dailyPhase = 'Opening';
@@ -48045,8 +48547,13 @@ function saveDailyOp(storeId, editId) {
 /* テンプレートから項目を削除 */
 function deleteDailyOpTemplate(storeId, id) {
   if (!confirm('この項目をテンプレートから削除しますか？')) return;
-  var tmpl = getDailyOpsTemplate(storeId).filter(x=>x.id!==id);
-  setDailyOpsTemplate(storeId, tmpl);
+  /* v833: 配列から抜くと、削除前の写しを持った端末から項目が復活する。記録として残す。 */
+  var raw = getDailyOpsTemplateRaw(storeId);
+  var hit = null;
+  for (var _i=0;_i<raw.length;_i++){ if(raw[_i] && raw[_i].id===id){ hit=raw[_i]; break; } }
+  if (!hit) return;
+  hit._deleted = true;
+  saveDailyOpsTemplate(storeId, raw);
   showToast('削除しました','info');
   renderPage(curPage==='store_ops_settings'?'store_ops_settings':'store_cmd');
 }
@@ -49093,7 +49600,7 @@ function renderRequired() {
   var items = getDailyOps(storeId);
   var required = items.filter(t=>t.required);
   var incomplete = required.filter(t=>!t.done);
-  var warnings = ls('warnings_'+storeId, []);
+  var warnings = getWarnings(storeId);
 
   var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Required管理</div><div class="section-sub">必須タスクの遵守状況</div></div>
@@ -49144,14 +49651,73 @@ function toggleRequired(storeId, tId) {
   var t = items.find(x=>x.id===tId);
   if (t) { t.required = !t.required; setDailyOps(storeId, items); renderPage('required'); }
 }
+/* ===== v832: 注意ログ（warnings_<店>）=====
+   記録は { date, by, reason }。必須タスクの未完了について、確認ダイアログを出したうえで
+   「誰が・いつ・何について」注意したかを残す**手入力の記録**で、
+   個人の記録（Growth Karte）に名前で拾われて出てくる。
+
+   【これまでの問題】
+   ① 合流ルールが無く「丸ごと上書き」だった
+   ② lsIsPrunable が warnings_ を「実データから再計算される」と分類していたが、**再計算できない**。
+      容量が足りなくなると端末から丸ごと削除され、そのあと1件でも記録すると
+      その1件だけの配列がクラウドへ押し上がり、その店の注意ログが全部消える。
+      daily_actuals_（v825）と同じ形。
+   ③ id が無いため、そのままでは1件ごとの合流ができなかった。
+
+   【この版】
+   ・記録ごとに id を持たせる。古い記録には**中身から必ず同じ id を作る**ので、
+     端末どうしで作った id が食い違って重複することがない
+   ・合流は id ごとに保存時刻(_mut)で判定。追記だけで削除の口が無いので和集合でよい
+   ・容量整理の対象から外す（LS_NEVER_FREE へ追加・再計算できる扱いをやめる）
+   ・「誰が」は記録そのものの by が持っているので、保存者を別に付けない */
+function _wnKey(w){
+  if(w && w.id!=null) return String(w.id);
+  var s=String((w&&w.date)||'')+'|'+String((w&&w.by)||'')+'|'+String((w&&w.reason)||'');
+  var h=5381; for(var i=0;i<s.length;i++){ h=((h*33)^s.charCodeAt(i))>>>0; }
+  return 'w'+h.toString(36);
+}
+function _wnId(r){ return r ? ('id:'+_wnKey(r)) : null; }
+function getWarnings(storeId){ var a=ls('warnings_'+storeId, []); return Array.isArray(a)?a:[]; }
+function saveWarnings(storeId, list){
+  var prev=getWarnings(storeId);
+  (Array.isArray(list)?list:[]).forEach(function(r){ if(r && r.id==null) r.id=_wnKey(r); });
+  _stampListBy(list, prev, _wnId);
+  return lsSet('warnings_'+storeId, list)!==false;
+}
+/* 追記だけの記録。id（無ければ中身から作った鍵）ごとに新しい保存が勝つ。 */
+function mergeWarnings(cloudArr, localArr){
+  var by={}, order=[];
+  function put(x){
+    if(!x) return;
+    var k=_wnKey(x);
+    if(!(k in by)){ by[k]=x; order.push(k); return; }
+    var cur=by[k];
+    by[k] = ((Number(x._mut)||0) >= (Number(cur._mut)||0)) ? x : cur;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(put);
+  (Array.isArray(localArr)?localArr:[]).forEach(put);
+  return order.map(function(k){ return by[k]; });
+}
+function _coversWarnings(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(x){ if(x) have[_wnKey(x)]=x; });
+  var list=Array.isArray(want)?want:[];
+  for(var i=0;i<list.length;i++){
+    var w=list[i]; if(!w) continue;
+    var h=have[_wnKey(w)]; if(!h) return false;
+    var wm=Number(w._mut)||0;
+    if(wm && (Number(h._mut)||0)<wm) return false;
+  }
+  return true;
+}
 function logWarning(storeId) {
   var items = getDailyOps(storeId);
   var incomplete = items.filter(t=>t.required && !t.done);
   if (!confirm('未完了の必須タスクについて注意ログを記録しますか？（警告カウント+1）')) return;
-  var warnings = ls('warnings_'+storeId, []);
+  var warnings = getWarnings(storeId);
   warnings.push({date:nowJP(), by:ROLE_CONFIG[curRole].name,
     reason:`必須タスク未完了 ${incomplete.length}件 (${incomplete.map(t=>t.text).join(', ')})`});
-  lsSet('warnings_'+storeId, warnings);
+  saveWarnings(storeId, warnings);
   showToast('注意ログを記録しました', 'danger');
   renderPage('required');
 }

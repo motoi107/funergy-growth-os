@@ -48,7 +48,7 @@ const SAMPLE = {
   'shiftopt_':         'shiftopt_cfg_F01',
   'office_attend_':    'office_attend_Taro',
   'daily_actuals_':    'daily_actuals_F02',
-  'menu_mix_':         'menu_mix_F01_2026-07',
+  'menu_mix_':         'menu_mix_F01_2026.8',   /* 期は getPeriod() の YYYY.M 形式 */
   'labor_hours_':      'labor_hours_F01_2026-W31',
   'fav_':              'fav_Taro',
   'fv_count_':         'fv_count_F04-K_2026-07',
