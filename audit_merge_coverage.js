@@ -1,110 +1,72 @@
-/* 手入力データ（消えては困るもの）が「丸ごと上書き」から守られているかを実コードで確認する。
+/* 「丸ごと上書き」から守られていないキーを、実コードの _opMergeDef に聞いて洗い出す。
    マージ定義があるキー = 和集合で合流するため、部分データを送ってもクラウドが壊れない。
-   マージ定義が無いキー = syncMasterToSupabase が丸ごと上書きする。 */
-const fs = require('fs');
-const src = fs.readFileSync('index.html', 'utf8');
+   マージ定義が無いキー = syncMasterToSupabase が丸ごと上書きする。
 
-function grab(n) {
-  let i = src.indexOf('async function ' + n + '(');
-  if (i < 0) i = src.indexOf('function ' + n + '(');
-  if (i < 0) throw new Error('not found: ' + n);
-  let d = 0, st = false, j = i;
-  for (; j < src.length; j++) {
-    const c = src[j];
-    if (c === '{') { d++; st = true; }
-    else if (c === '}') { d--; if (st && d === 0) { j++; break; } }
-  }
-  return src.slice(i, j);
-}
-function grabObj(decl) {
-  const i = src.indexOf(decl);
-  let d = 0, st = false, j = i;
-  for (; j < src.length; j++) {
-    const c = src[j];
-    if (c === '{') { d++; st = true; }
-    else if (c === '}') { d--; if (st && d === 0) { j++; break; } }
-  }
-  return src.slice(i, j) + ';';
-}
+   【この監査の対象範囲について】
+     第1部 LS_NEVER_FREE … 消えては困る手入力データ。従来からの対象。
+     第2部 OP_SYNC_PREFIX … クラウド同期の対象すべて。v825 で追加。
+       daily_actuals_ は「Toast から再生成できる」として LS_NEVER_FREE に入っておらず、
+       この監査の視界の外にあった。しかし再生成には人が期間一括取り込みを回す必要があり、
+       誰も気づかないまま全端末から7月前半が消えていた。
+       「再生成できる」と「自動で戻る」は別。同期する以上は全部見る。
+     第3部 分割パーティション … 実際に押し上げられる spl_<基底>_<人/店> の名前で判定。 */
+const P = require('./merge_probe.js');
+const probe = P.fromFile('index.html');
 
-const merges = grabObj('var OP_MERGE = {');
-const mergePre = grabObj('var OP_MERGE_PREFIX = {');
-const splitKeys = grabObj('var _SPLIT_KEYS = {');
-const neverFree = grabObj("var LS_NEVER_FREE = [").replace('var LS_NEVER_FREE = [', 'var LS_NEVER_FREE = [');
-
-const ref = new Set();
-(merges + mergePre).replace(/(?:merge|covers)\s*:\s*([A-Za-z_$][\w$]*)/g, (m, n) => { ref.add(n); return m; });
-const stubs = [...ref].map(n => 'function ' + n + '(){}').join('\n');
-
-const api = new Function(`
-  var DEFAULT_STORES=[{id:'F01'},{id:'F02'},{id:'F03'},{id:'F03-G'},{id:'F04-K'},{id:'F04-P'},{id:'F04-A'},{id:'F05'}];
-  function _lsRaw(){ return null; }
-  function mergeListByCode(){} function _coversListByCode(){}
-  /* v767: v750 で設定型(obj)の分割キーは _stDef() へ自動で解決されるようになった。
-     このスタブが無いと _opMergeDef 内で例外になり、保護済みのキーが MISS と誤判定される。 */
-  function mergeStamped(){} function _coversStamped(){}
-  var _ST_MERGE_DEF=null;
-  function _stDef(){ if(!_ST_MERGE_DEF) _ST_MERGE_DEF={ merge:mergeStamped, covers:_coversStamped }; return _ST_MERGE_DEF; }
-  var console={warn:function(){}};
-  ${stubs}
-  ${merges}
-  ${mergePre}
-  ${splitKeys}
-  ${src.indexOf('function registerInvMergeKeys(')>=0 ? grab('registerInvMergeKeys')+'\nregisterInvMergeKeys();' : ''}
-  ${grab('_opMergeDef')}
-  var LS_NEVER_FREE = ${JSON.stringify(
-    /var LS_NEVER_FREE = \[([\s\S]*?)\];/.exec(src)[1]
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean)
-  )};
-  return { def:_opMergeDef, never:LS_NEVER_FREE, split:_SPLIT_KEYS };
-`)();
-
-// 代表的な実キー名を作る（前方一致キーは実例に展開）
-const SAMPLE = {
-  'inv_': 'inv_F01',
-  'inv_hist_': 'inv_hist_F01',
-  'spl_inv_hist_': 'spl_inv_hist_F01',
-  'budget_approved_': 'budget_approved_F01_2026-07',
-  'spl_budgets_v2_': 'spl_budgets_v2_F01',
-  'spl_invoices_': 'spl_invoices_F01',
-  'purchases_': 'purchases_F01_2026-07',
-  'skills_st_': 'skills_st_F04-K',
-  'spl_skills_st_': 'spl_skills_st_F04-K',   // 実際には使われていない名残
-  'lss_emp_': 'lss_emp_Taro',
-  'att_approve_': 'att_approve_F01_2026-07',
-  'att_day_approve_': 'att_day_approve_F01_2026-07-01',
-  'cash_tips_': 'cash_tips_F01',
-  'tip_exclude_': 'tip_exclude_F01',
-  'spl_my_vacations_': 'spl_my_vacations_Taro',
-  'fv_count_': 'fv_count_F04-K',
-  'fv_moves_': 'fv_moves_F04-K',
-  'fv_review_': 'fv_review_F04-K'
-};
-
+/* ================= 第1部：手入力データ ================= */
 console.log('=== LS_NEVER_FREE（消えては困る手入力データ）のマージ定義カバー状況 ===\n');
-const uncovered = [], covered = [];
-api.never.forEach(p => {
-  const k = SAMPLE[p] || p;
-  const d = api.def(k);
-  const isSplit = !!api.split[p];
-  // 分割キーは書き込み時にパーティション名へ変換される
-  const line = (d ? '  OK  ' : ' MISS ') + p.padEnd(22) + ' (例: ' + k + ')' + (isSplit ? '  [分割キー]' : '');
-  (d ? covered : uncovered).push(line);
-});
-covered.forEach(l => console.log(l));
-console.log('');
-uncovered.forEach(l => console.log(l));
+{
+  const uncovered = [], covered = [];
+  probe.neverFree().forEach(p => {
+    const r = probe.ruleFor(p);
+    const isSplit = !!probe.split[p];
+    const line = (r.name ? '  OK  ' : ' MISS ') + p.padEnd(22) +
+      ' (例: ' + r.key + ')' + (isSplit ? '  [分割キー]' : '');
+    (r.name ? covered : uncovered).push(line);
+  });
+  covered.forEach(l => console.log(l));
+  console.log('');
+  uncovered.forEach(l => console.log(l));
 
-console.log('\n--- 集計 ---');
-console.log('マージ定義あり : ' + covered.length);
-console.log('マージ定義なし : ' + uncovered.length);
+  console.log('\n--- 集計 ---');
+  console.log('マージ定義あり : ' + covered.length);
+  console.log('マージ定義なし : ' + uncovered.length);
+}
 
-// 分割キーのパーティション名でも確認（実際に push されるのはこちら）
+/* ================= 第2部：クラウド同期の対象すべて ================= */
+console.log('\n=== OP_SYNC_PREFIX（クラウド同期の対象すべて）のカバー状況 ===\n');
+{
+  const uncovered = [], covered = [], aside = [];
+  probe.syncPrefixes().forEach(p => {
+    if (P.NOT_A_DATA_KEY.indexOf(p) >= 0) {
+      aside.push('  --  ' + p.padEnd(22) + ' 分割キーの入れ物。第3部で個別に判定する');
+      return;
+    }
+    const r = probe.ruleFor(p);
+    const line = (r.name ? '  OK  ' : ' MISS ') + p.padEnd(22) +
+      ' (例: ' + r.key + ')' + (r.name ? '  ' + r.name : '');
+    (r.name ? covered : uncovered).push(line);
+  });
+  covered.forEach(l => console.log(l));
+  console.log('');
+  uncovered.forEach(l => console.log(l));
+  if (aside.length) { console.log(''); aside.forEach(l => console.log(l)); }
+
+  console.log('\n--- 集計 ---');
+  console.log('保護あり : ' + covered.length);
+  console.log('同期対象で未保護 : ' + uncovered.length);
+  if (uncovered.length) {
+    console.log('  → ' + uncovered.map(l => l.slice(6).trim().split(' ')[0]).join('  '));
+    console.log('  ※ 形（配列／日付キー／名前キー／単一オブジェクト）を確認してから登録すること。');
+    console.log('     単一オブジェクトに mergeMapByTime を当てると項目名を日付と誤解して壊れる。');
+  }
+}
+
+/* ================= 第3部：分割パーティション ================= */
 console.log('\n=== 分割キーのパーティション名での判定 ===');
 ['spl_skill_history_Taro', 'spl_career_history_Taro', 'spl_lss_history_Taro',
  'spl_tip_history_Taro', 'spl_invoices_F01', 'spl_budgets_v2_F01',
  'spl_tasks_all_F01', 'spl_skill_requests_Taro', 'spl_my_vacations_Taro'
 ].forEach(k => {
-  console.log((api.def(k) ? '  OK  ' : ' MISS ') + k);
+  console.log((probe.def(k) ? '  OK  ' : ' MISS ') + k);
 });

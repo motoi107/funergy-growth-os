@@ -142,21 +142,24 @@ console.log('\n[5] 登録されているか');
 
 console.log('\n[6] 同じ穴が他に何個あるか（見えるようにしておく）');
 {
-  const pre = arrDecl(src, 'OP_SYNC_PREFIX');
-  const mp = objDecl(src, 'OP_MERGE_PREFIX');
-  const keys = (pre.match(/'([^']+)'/g) || []).map(function (s) { return s.slice(1, -1); });
-  const mk = (mp.match(/'([^']+)'\s*:\s*\{/g) || []).map(function (s) { return s.split("'")[1]; });
-  const missing = keys.filter(function (k) {
-    return !mk.some(function (m) { return k.indexOf(m) === 0 || m.indexOf(k) === 0; });
-  });
+  /* 【当初この節は OP_MERGE_PREFIX の宣言テキストを文字列一致で見ていた】
+     そのため v807 で _opMergeDef の先頭に直書きされた sl_manual_ の分岐を拾えず、
+     保護済みのキーを「未保護」として数え、12個と報告していた（実際は11個）。
+     判定は実コードに聞く。宣言テキストの一致で代用しない。 */
+  const MP = require('./merge_probe.js');
+  function uncoveredIn(text) {
+    const p = MP.buildProbe(text);
+    return p.syncPrefixes().filter(function (k) {
+      if (MP.NOT_A_DATA_KEY.indexOf(k) >= 0) return false;   // spl_ は分割キーの入れ物
+      return !p.ruleFor(k).name;
+    });
+  }
+  const missing = uncoveredIn(src);
   console.log('     合流ルールが無いキー（丸ごと上書きされる）: ' + missing.length + ' 個');
   console.log('     ' + missing.join('  '));
   ok(missing.indexOf('daily_actuals_') < 0, '売上は塞いだ');
-  const before = (arrDecl(prev, 'OP_SYNC_PREFIX').match(/'([^']+)'/g) || []).map(function (s) { return s.slice(1, -1); });
-  const mkB = (objDecl(prev, 'OP_MERGE_PREFIX').match(/'([^']+)'\s*:\s*\{/g) || []).map(function (s) { return s.split("'")[1]; });
-  const missB = before.filter(function (k) {
-    return !mkB.some(function (m) { return k.indexOf(m) === 0 || m.indexOf(k) === 0; });
-  });
+  ok(missing.indexOf('sl_manual_') < 0, '（v807で保護済みの sl_manual_ を未保護と誤報告しない）');
+  const missB = uncoveredIn(prev);
   ok(missing.length === missB.length - 1, '1つだけ減った（他は形を確認してから触る）',
     { v824: missB.length, v825: missing.length });
   ok(missing.length > 0, '残りがあることを毎回表に出す（隠さない）', missing.length);
