@@ -654,6 +654,26 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .md-verdict-state { font-size:26px; font-weight:800; line-height:1.2; letter-spacing:-.01em; }
 .md-ph { border:1px dashed var(--border); border-radius:12px; padding:18px 14px;
          text-align:center; color:var(--muted); font-size:11.5px; line-height:1.9; }
+.md-sec-t { font-size:12px; font-weight:800; color:var(--tm); display:flex; align-items:center;
+            gap:6px; margin:0 0 8px; }
+.md-sec-t .md-sub { font-size:10.5px; font-weight:400; color:var(--muted); margin-left:auto; }
+.md-kpis { display:grid; grid-template-columns:repeat(auto-fill,minmax(166px,1fr)); gap:8px; }
+.md-kpi { background:var(--surface2); border-radius:10px; padding:10px 11px; border-left:3px solid; min-width:0; }
+.md-kpi-h { display:flex; align-items:center; gap:5px; font-size:10.5px; color:var(--muted); }
+.md-kpi-v { font-size:19px; font-weight:800; line-height:1.25; margin-top:3px; }
+.md-kpi-s { font-size:10.5px; margin-top:3px; line-height:1.6; }
+.md-badge { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:800;
+            padding:2px 7px; border-radius:999px; white-space:nowrap; }
+.md-tbl { width:100%; border-collapse:collapse; font-size:12px; }
+.md-tbl th { font-size:10px; color:var(--muted); font-weight:700; text-align:right;
+             padding:5px 7px; border-bottom:1px solid var(--border); white-space:nowrap; }
+.md-tbl td { padding:9px 7px; border-bottom:1px solid var(--border); text-align:right; white-space:nowrap; }
+.md-tbl th:first-child, .md-tbl td:first-child { text-align:left; white-space:normal; }
+.md-tbl tbody tr { cursor:pointer; }
+.md-tbl tbody tr:hover { background:var(--surface2); }
+.md-mini { display:flex; align-items:center; justify-content:space-between; gap:8px;
+           padding:7px 0; border-bottom:1px solid var(--border); font-size:12px; }
+@media (max-width:760px) { .md-tbl .md-opt { display:none; } .md-kpi-v { font-size:17px; } }
 @media (min-width:1180px) {
   .md-shell { display:grid; grid-template-columns:minmax(0,1fr) 340px; align-items:start; gap:14px; }
   .md-shell > .md-full { grid-column:1 / -1; }
@@ -2297,7 +2317,7 @@ function mdCanOpen() {
   return (typeof mcRole === 'function') ? mcRole() !== '' : false;
 }
 
-var mdState = { period: 'month' };
+var mdState = { period: 'month', storeFilter: 'all' };
 function mdSetPeriod(p) { mdState.period = p; renderPage('mgmt_dash'); }
 function mdPeriodYm() {
   var ym = mcYm();
@@ -2398,10 +2418,201 @@ function mdPlaceholder(title, lines, ver) {
     + '<div class="md-ph">' + lines.map(escapeHtml).join('<br>') + '</div></div>';
 }
 
+function mdMoney(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  return (typeof fmtK === 'function') ? fmtK(n) : ('$' + Math.round(n).toLocaleString());
+}
+function mdSigned(n, unit) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  var s = n > 0 ? '+' : (n < 0 ? '−' : '±');
+  var v = Math.abs(n);
+  return s + (unit === 'money' ? mdMoney(v).replace('$', '$') : (Math.round(v * 10) / 10) + (unit === 'pct' ? 'pt' : ''));
+}
+function mdFmt(v, unit) {
+  if (v === null || v === undefined || isNaN(v)) return '—';
+  if (unit === 'money') return mdMoney(v);
+  if (unit === 'pct') return (Math.round(v * 10) / 10) + '%';
+  return Math.round(v).toLocaleString();
+}
+
+/* 表示範囲ぶんの合計。判定層と同じ cumulativeToToday しか使わない（自前で足し算の定義を作らない）。 */
+function mdScopeTotals(stores, ym) {
+  var o = { budToToday: 0, actToToday: 0, budMonth: 0, forecast: 0, missDays: 0, ok: 0 };
+  (stores || []).forEach(function (id) {
+    try {
+      var c = cumulativeToToday(id, ym); if (!c) return;
+      o.ok++;
+      o.budToToday += Number(c.budToToday) || 0;
+      o.actToToday += Number(c.actToToday) || 0;
+      o.budMonth += Number(c.budMonth) || 0;
+      o.forecast += mdForecastFrom(c);
+      o.missDays += Math.max(0, (Number(c.daysPassed) || 0) - (Number(c.daysWithActual) || 0));
+    } catch (e) { }
+  });
+  o.paceRate = o.budToToday > 0 ? Math.round(o.actToToday / o.budToToday * 1000) / 10 : null;
+  o.gap = o.budToToday > 0 ? (o.actToToday - o.budToToday) : null;
+  o.fcGap = o.budMonth > 0 ? (o.forecast - o.budMonth) : null;
+  return o;
+}
+
+/* ---------- 当日の状況 ---------- */
+function mdTodayHtml(stores, ym) {
+  var tt = mdScopeTotals(stores, ym);
+  var live = (mdState.period === 'month');
+  var m = mdStateMeta(tt.gap === null ? 'unknown' : (tt.gap >= 0 ? 'ok' : 'miss'));
+  var h = '<div class="card">'
+    + '<div class="md-sec-t"><i class="ti ti-bolt" style="color:var(--accent)"></i>当日の状況'
+    + '<span class="md-sub">' + mdPeriodLabel() + '</span></div>';
+  if (live) {
+    h += '<div id="rt-sales-card"><div id="rt-sales-body" style="text-align:center;padding:16px;color:var(--muted);font-size:12px">'
+      + '<i class="ti ti-loader"></i> Toastから取得中…</div></div>';
+  }
+  h += '<div class="md-kpis" style="margin-top:10px">'
+    + '<div class="md-kpi" style="border-left-color:' + m.color + '">'
+    + '<div class="md-kpi-h"><i class="ti ' + m.icon + '" style="color:' + m.color + '"></i>'
+    + '本日時点の進捗</div>'
+    + '<div class="md-kpi-v" style="color:' + m.color + '">' + m.label
+    + (tt.paceRate !== null ? ' <span style="font-size:13px;color:var(--muted)">' + tt.paceRate + '%</span>' : '')
+    + '</div>'
+    + '<div class="md-kpi-s" style="color:var(--muted)">実績 ' + mdMoney(tt.actToToday)
+    + ' / 進捗予算 ' + mdMoney(tt.budToToday) + '<br>差 <b style="color:' + m.color + '">'
+    + mdSigned(tt.gap, 'money') + '</b></div></div>';
+  var fm = mdStateMeta(tt.fcGap === null ? 'unknown' : (tt.fcGap >= 0 ? 'ok' : 'miss'));
+  h += '<div class="md-kpi" style="border-left-color:' + fm.color + '">'
+    + '<div class="md-kpi-h"><i class="ti ' + fm.icon + '" style="color:' + fm.color + '"></i>月末の着地予測</div>'
+    + '<div class="md-kpi-v" style="color:' + fm.color + '">' + mdMoney(tt.forecast) + '</div>'
+    + '<div class="md-kpi-s" style="color:var(--muted)">月間予算 ' + mdMoney(tt.budMonth)
+    + '<br>予測差 <b style="color:' + fm.color + '">' + mdSigned(tt.fcGap, 'money') + '</b></div></div>';
+  h += '<div class="md-kpi" style="border-left-color:' + (tt.missDays ? 'var(--yellow)' : 'var(--green)') + '">'
+    + '<div class="md-kpi-h"><i class="ti ti-database" style="color:var(--muted)"></i>データの入り</div>'
+    + '<div class="md-kpi-v">' + (tt.missDays ? tt.missDays + ' 日ぶん未入力' : 'そろっています') + '</div>'
+    + '<div class="md-kpi-s" style="color:var(--muted)">未入力があると判定不可になります</div></div>';
+  h += '</div></div>';
+  return h;
+}
+
+/* ---------- 月次KPIカード ----------
+   1店舗なら実績と目標をそのまま出す。複数店舗なら「達成 N / M 店舗」で数える。
+   率の全社平均をここで新しく定義しない（画面ごとに数字がズレる原因になるため）。 */
+function mdKpiCardsHtml(stores, ym) {
+  var codes = mdPrimaryKpis(stores[0]);
+  ['guests', 'ppa'].forEach(function (k) { if (codes.indexOf(k) < 0) codes.push(k); });
+  var single = stores.length === 1;
+  var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-target" style="color:var(--accent)"></i>'
+    + '月次KPI<span class="md-sub">' + (single ? '実績 / 目標' : '達成した店舗数') + '</span></div>'
+    + '<div class="md-kpis">';
+  codes.forEach(function (code) {
+    var def = MD_KPI[code] || {};
+    if (single) {
+      var v = mdVerdict(stores[0], code, ym), m = mdStateMeta(v.state);
+      h += '<div class="md-kpi" style="border-left-color:' + m.color + '">'
+        + '<div class="md-kpi-h"><i class="ti ' + m.icon + '" style="color:' + m.color + '"></i>' + v.label + '</div>'
+        + '<div class="md-kpi-v" style="color:' + m.color + '">' + mdFmt(v.actual, v.unit) + '</div>'
+        + '<div class="md-kpi-s" style="color:var(--muted)">' + m.label
+        + (v.state === 'unknown' ? '（' + v.reason + '）'
+          : ' ・ 目標 ' + mdFmt(v.target, v.unit) + '<br>差 <b style="color:' + m.color + '">'
+            + mdSigned(v.diff, v.unit) + '</b>')
+        + (v.note ? '<br>' + escapeHtml(v.note) : '') + '</div></div>';
+    } else {
+      var okN = 0, missN = 0, unkN = 0, names = [];
+      stores.forEach(function (id) {
+        var r = mdVerdict(id, code, ym);
+        if (r.state === 'ok') okN++;
+        else if (r.state === 'miss') { missN++; names.push(mcStoreLabel(id)); }
+        else unkN++;
+      });
+      var st = missN ? 'miss' : (unkN ? 'unknown' : 'ok'), mm = mdStateMeta(st);
+      h += '<div class="md-kpi" style="border-left-color:' + mm.color + '">'
+        + '<div class="md-kpi-h"><i class="ti ' + mm.icon + '" style="color:' + mm.color + '"></i>'
+        + (def.label || code) + '</div>'
+        + '<div class="md-kpi-v" style="color:' + mm.color + '">' + okN + ' / ' + stores.length
+        + ' <span style="font-size:12px;color:var(--muted)">店舗達成</span></div>'
+        + '<div class="md-kpi-s" style="color:var(--muted)">' + mm.label
+        + (missN ? '<br>未達：' + escapeHtml(names.slice(0, 3).join('・'))
+          + (names.length > 3 ? ' 他' + (names.length - 3) : '') : '')
+        + (unkN ? '<br>判定不可 ' + unkN + '店' : '') + '</div></div>';
+    }
+  });
+  h += '</div></div>';
+  return h;
+}
+
+/* ---------- 店舗別状況 ----------
+   ランキングは作らない。順位番号も付けない。未達を先に見せるだけの確認表。 */
+function mdSetStoreFilter(v) { mdState.storeFilter = v; renderPage('dashboard'); }
+function mdStoresHtml(stores, ym, sc) {
+  var only = mdState.storeFilter === 'miss';
+  var order = { miss: 0, unknown: 1, ok: 2 };
+  var rows = (sc.rows || []).slice().sort(function (a, b) { return order[a.state] - order[b.state]; });
+  var shown = only ? rows.filter(function (r) { return r.state !== 'ok'; }) : rows;
+  var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-building-store" style="color:var(--accent)"></i>'
+    + '店舗別の状況<span class="md-sub">未達を先に表示（順位ではありません）</span></div>'
+    + '<div class="btn-row" style="margin-bottom:8px">'
+    + '<button class="btn btn-' + (only ? 'secondary' : 'primary') + ' btn-sm" onclick="mdSetStoreFilter(\'all\')">全店 ' + rows.length + '</button>'
+    + '<button class="btn btn-' + (only ? 'primary' : 'secondary') + ' btn-sm" onclick="mdSetStoreFilter(\'miss\')">要確認 '
+    + rows.filter(function (r) { return r.state !== 'ok'; }).length + '</button></div>';
+  if (!shown.length) {
+    h += '<div style="text-align:center;color:var(--green);padding:16px;font-size:13px">'
+      + '<i class="ti ti-circle-check" style="font-size:20px"></i><div>要確認の店舗はありません</div></div></div>';
+    return h;
+  }
+  h += '<div style="overflow-x:auto"><table class="md-tbl"><thead><tr><th>店舗</th><th>判定</th>'
+    + '<th>売上</th><th class="md-opt">人件費率</th><th class="md-opt">原価率</th><th class="md-opt">営業利益</th></tr></thead><tbody>';
+  shown.forEach(function (r) {
+    var m = mdStateMeta(r.state);
+    function cell(code) {
+      var v = r.items.filter(function (x) { return x.code === code; })[0];
+      if (!v) { try { v = mdVerdict(r.storeId, code, ym); } catch (e) { return '<td class="md-opt">—</td>'; } }
+      var c = mdStateMeta(v.state);
+      return '<td class="' + (code === 'sales' ? '' : 'md-opt') + '" style="color:' + c.color + ';font-weight:700">'
+        + mdFmt(v.actual, v.unit) + '</td>';
+    }
+    h += '<tr onclick="mdOpenStore(\'' + r.storeId + '\')">'
+      + '<td><b>' + escapeHtml(mcStoreLabel(r.storeId)) + '</b></td>'
+      + '<td><span class="md-badge" style="background:' + m.color + '22;color:' + m.color + '">'
+      + '<i class="ti ' + m.icon + '"></i>' + m.label + ' ' + r.okCount + '/' + r.total + '</span></td>'
+      + cell('sales') + cell('labor_rate') + cell('cost_rate') + cell('profit') + '</tr>';
+  });
+  h += '</tbody></table></div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> '
+    + '店舗をタップすると予実管理へ移動します。</div></div>';
+  return h;
+}
+function mdOpenStore(sid) {
+  try { switchStore(sid); } catch (e) { }
+  try { go('budget'); } catch (e) { renderPage('budget'); }
+}
+
+/* ---------- 右カラム：要対応（管理統括と同じデータ） ---------- */
+function mdWorkHtml() {
+  var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-inbox" style="color:var(--accent)"></i>要対応'
+    + '<span class="md-sub">管理統括と同じデータ</span></div>';
+  var rows = null;
+  try { rows = (typeof mcVisibleAlerts === 'function') ? mcVisibleAlerts() : null; } catch (e) { rows = null; }
+  if (!rows) {
+    h += '<div style="font-size:11.5px;color:var(--muted);line-height:1.9">'
+      + 'まだ読み込んでいません。<br>管理統括を開くと検知結果が入ります。</div>';
+  } else if (!rows.length) {
+    h += '<div style="text-align:center;color:var(--green);padding:14px;font-size:13px">'
+      + '<i class="ti ti-circle-check" style="font-size:20px"></i><div>未対応はありません</div></div>';
+  } else {
+    var by = {};
+    rows.forEach(function (r) { var k = r.status || 'open'; by[k] = (by[k] || 0) + 1; });
+    Object.keys(by).forEach(function (k) {
+      var lab = (typeof mcStatusLabel === 'function') ? mcStatusLabel(k) : k;
+      h += '<div class="md-mini"><span>' + escapeHtml(lab) + '</span><b>' + by[k] + ' 件</b></div>';
+    });
+  }
+  h += '<div class="btn-row" style="margin-top:10px">'
+    + '<button class="btn btn-secondary btn-sm" onclick="renderPage(\'mgmt_ctrl\')">'
+    + '<i class="ti ti-shield-check"></i> 管理統括をひらく</button></div></div>';
+  return h;
+}
+
 function renderMgmtDash() {
   var head = '<div class="section-header"><div><div class="section-title">'
-    + '<i class="ti ti-gauge" style="color:var(--accent)"></i> Management Dashboard</div>'
-    + '<div class="section-sub">現状確認から解決確認までを1画面で</div></div></div>';
+    + '<i class="ti ti-gauge" style="color:var(--accent)"></i> Management Console</div>'
+    + '<div class="section-sub">当日の状況から対応・承認までを1画面で</div></div></div>';
   if (!mdCanOpen()) {
     return head + '<div class="card" style="text-align:center;padding:32px">'
       + '<i class="ti ti-lock" style="font-size:36px;color:var(--muted)"></i>'
@@ -2427,16 +2638,9 @@ function renderMgmtDash() {
   h += mdVerdictBannerHtml(sc, stores);
 
   h += '<div class="md-col-main">';
-  h += mdPlaceholder('上部KPI', [
-    '今日の売上（現在進捗と本日の着地予測を分けて表示）',
-    '今月の着地予測（月末予測・予測差額・利益予測）',
-    '要対応（緊急・店長未確認・長期間未対応・予測影響額）'], 'v840');
-  h += mdPlaceholder(mcRole() === 'sm' ? '自店舗のKPI詳細' : '店舗別の達成状況', [
-    mcRole() === 'sm'
-      ? '売上・客数・客単価・人件費率・原価率・営業利益を詳細表示'
-      : '店舗ごとの 判定／売上／人件費／原価／未対応件数の確認表',
-    'ランキングは作りません（順位ではなく未達の確認表）',
-    '初期表示は未達店舗・未達KPIを優先'], 'v841');
+  h += mdTodayHtml(stores, ym);
+  h += mdKpiCardsHtml(stores, ym);
+  h += mdStoresHtml(stores, ym, sc);
   h += mdPlaceholder('KPI詳細', [
     '実績・目標・差異・月末予測・推移',
     '想定原因／対応状況／担当者／店長確認状況',
@@ -2444,15 +2648,21 @@ function renderMgmtDash() {
   h += '</div>';
 
   h += '<div class="md-col-side">';
-  h += mdPlaceholder('Work Center', [
-    '要対応／対応中／定期管理／承認待ち',
-    '管理統括と同じ management_alerts を並べ直します',
-    '別のデータは作りません'], 'v844');
+  h += mdWorkHtml();
+  try { h += renderCompanyMessageCard(); } catch (e) { }
+  try { h += renderPriceAlertCard(); } catch (e) { }
   h += mdPlaceholder('店長への依頼', [
     '未達KPIから対象店舗の店長へ依頼',
     '通知先は従業員マスターから引きます',
     '完了報告では自動解決しません'], 'v845');
   h += '</div></div>';
+
+  /* Funergy Now（Toast の当日売上）は既存の読み込みをそのまま使う */
+  if (mdState.period === 'month') {
+    setTimeout(function () {
+      if (document.getElementById('rt-sales-body')) { try { loadRealtimeSales(); } catch (e) { } }
+    }, 100);
+  }
   return h;
 }
 
@@ -4776,9 +4986,8 @@ const ROLE_CONFIG = {
 };
 
 const NAV_ITEMS = [
-  {id:'dashboard',   label:'ダッシュボード',   icon:'ti-layout-dashboard', roles:['ceo','gm','office','am']},
+  {id:'dashboard',   label:'ダッシュボード',   icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','chef','sl','g4']},   /* v840: 管理ダッシュボードを統合。中身は mdCanOpen() で切替 */
   {id:'store_cmd',   label:'店舗オペレーション', icon:'ti-building-store',   roles:['ceo','gm','am','sl','crew']},
-  {id:'mgmt_dash',   label:'管理ダッシュボード', icon:'ti-gauge',      roles:['ceo','gm','am','chef','sl','g4']},   /* v839: 表示可否は mdCanOpen() が最終判定 */
   {id:'mgmt_ctrl',   label:'管理統括',    icon:'ti-shield-check',     roles:['ceo','gm','am','chef']},   /* v809: 表示可否は mcCanOpen() が最終判定 */
   {id:'mc_requests', label:'対応依頼',    icon:'ti-inbox',            roles:['ceo','gm','am','sl','crew','chef','office_crew']},   /* v811: 自分宛ての通知だけが出る */
   {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl','g4','office_crew']},
@@ -4838,7 +5047,7 @@ const NAV_ITEMS = [
 /* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
 const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
-    children:['mgmt_dash','dashboard','store_cmd','mc_requests','mypage']},   /* v839 */
+    children:['dashboard','store_cmd','mc_requests','mypage']},   /* v840 */
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','labor','foodcost','kpi_master']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
@@ -4942,7 +5151,7 @@ function groupsForRole() {
   try { if (typeof mcCanOpen==='function' && !mcCanOpen()) groups = groups.filter(function(g){ return (g.children||[]).indexOf('mgmt_ctrl')<0 || g.children.length>1; })
         .map(function(g){ return (g.children||[]).indexOf('mgmt_ctrl')>=0 ? Object.assign({}, g, {children:g.children.filter(function(c){return c!=='mgmt_ctrl';})}) : g; })
         .filter(function(g){ return g.children && g.children.length>0; }); } catch(e){}
-  /* v839: 管理ダッシュボードは mdCanOpen()（G4以上）が最終判定 */
+  /* v840: mgmt_dash はダッシュボードへ統合したので、専用の絞り込みは不要になった */
   try { if (typeof mdCanOpen==='function' && !mdCanOpen())
         groups = groups.map(function(g){ return (g.children||[]).indexOf('mgmt_dash')>=0 ? Object.assign({}, g, {children:g.children.filter(function(c){return c!=='mgmt_dash';})}) : g; })
         .filter(function(g){ return g.children && g.children.length>0; }); } catch(e){}
@@ -12036,7 +12245,10 @@ function renderPage(page) {
   }
   if (curStore === 'OFFICE' && OFFICE_OK_PAGES.indexOf(page) < 0) { el.innerHTML = renderOfficeMgr(); window.scrollTo(0,0); return; }
   switch(page) {
-    case 'dashboard':    el.innerHTML = renderFavCard() + renderDashboard(); break;
+    /* v840: ダッシュボードと管理ダッシュボードを統合。G4以上はコンソール、
+       それ以外（経理・G3・Crew）は従来のダッシュボードのまま。 */
+    case 'dashboard':    el.innerHTML = (typeof mdCanOpen==='function' && mdCanOpen())
+                           ? renderMgmtDash() : (renderFavCard() + renderDashboard()); break;
     case 'store_cmd':    el.innerHTML = renderStoreCmd(); break;
     case 'store_ops_settings': el.innerHTML = renderStoreOpsSettings(); break;
     case 'budget':       el.innerHTML = renderBudget(); break;
@@ -12052,7 +12264,7 @@ function renderPage(page) {
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
     case 'office_mgr':   el.innerHTML = renderOfficeMgr(); break;
     case 'office_export': el.innerHTML = '<div class="section-header"><div><div class="section-title"><i class="ti ti-file-export"></i> 出力センター</div><div class="section-sub">全ての帳票・CSV出力</div></div></div>' + renderOfficeExport(); break;
-    case 'mgmt_dash':    el.innerHTML = renderMgmtDash(); break;   /* v839 */
+    case 'mgmt_dash':    renderPage('dashboard'); return;   /* v840: 統合したので別名 */
     case 'mgmt_ctrl':    if (mcHasWorkCenter()) { workTab='mgmt';     el.innerHTML = renderWorkCenter(); }
                          else el.innerHTML = renderMgmtControl(); break;   /* v823 */
     case 'mc_requests':  if (mcHasWorkCenter()) { workTab='requests'; el.innerHTML = renderWorkCenter(); }
@@ -25953,7 +26165,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '839';
+const APP_VERSION = '840';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
