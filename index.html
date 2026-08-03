@@ -673,11 +673,48 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .md-tbl tbody tr:hover { background:var(--surface2); }
 .md-mini { display:flex; align-items:center; justify-content:space-between; gap:8px;
            padding:7px 0; border-bottom:1px solid var(--border); font-size:12px; }
-@media (max-width:760px) { .md-tbl .md-opt { display:none; } .md-kpi-v { font-size:17px; } }
+.md-a-hdr, .md-a-uc, .md-a-ver, .md-a-strip { min-width:0; }
+.md-col-mid { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.md-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:8px; }
+.md-t { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+        padding:9px 11px; border-top:3px solid; min-width:0; }
+.md-t-l { font-size:9.5px; color:var(--muted); font-weight:800; letter-spacing:.03em;
+          display:flex; align-items:center; gap:4px; }
+.md-t-v { font-size:22px; font-weight:800; line-height:1.15; margin-top:3px; letter-spacing:-.02em; }
+.md-t-s { font-size:10px; color:var(--muted); margin-top:2px; line-height:1.5; }
+.md-bar { position:relative; height:5px; border-radius:99px; background:var(--border);
+          margin-top:7px; overflow:visible; }
+.md-bar > i { display:block; height:100%; border-radius:99px; }
+.md-bar::after { content:''; position:absolute; top:-2px; bottom:-2px; left:71.4%;
+                 width:2px; background:var(--tm); opacity:.5; }
+.md-li { display:flex; align-items:flex-start; gap:7px; padding:6px 0;
+         border-bottom:1px solid var(--border); font-size:11.5px; line-height:1.5; }
+.md-li:last-child { border-bottom:0; }
+.md-li .md-li-t { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; }
+.md-pill { font-size:9px; font-weight:800; padding:1px 6px; border-radius:99px;
+           white-space:nowrap; flex:0 0 auto; margin-top:1px; }
+.md-cnt { margin-left:auto; font-size:11px; font-weight:800; flex:0 0 auto; }
+.md-more { font-size:10px; color:var(--muted); padding-top:6px; }
+.md-empty { text-align:center; color:var(--green); padding:10px 0; font-size:11.5px; }
+@media (max-width:760px) { .md-tbl .md-opt { display:none; } .md-kpi-v { font-size:17px; }
+  .md-t-v { font-size:19px; } }
 @media (min-width:1180px) {
-  .md-shell { display:grid; grid-template-columns:minmax(0,1fr) 340px; align-items:start; gap:14px; }
-  .md-shell > .md-full { grid-column:1 / -1; }
-  .md-verdict-state { font-size:32px; }
+  /* v841: フル幅。この画面のときだけ .main の 900px 制限を外す（body.md-wide） */
+  body.md-wide .main { max-width:1500px; }
+  .md-shell { display:grid; align-items:start; gap:12px;
+              grid-template-columns:minmax(0,1fr) 330px;
+              grid-template-areas:"hdr hdr" "uc uc" "ver ver" "strip strip" "main side" "mid side"; }
+  .md-a-hdr{grid-area:hdr} .md-a-uc{grid-area:uc} .md-a-ver{grid-area:ver}
+  .md-a-strip{grid-area:strip} .md-col-main{grid-area:main}
+  .md-col-mid{grid-area:mid} .md-col-side{grid-area:side}
+  .md-verdict-state { font-size:30px; }
+}
+@media (min-width:1560px) {
+  /* 3カラム。左＝当日と重要KPI、中＝店舗別、右＝承認・タスク・エラー */
+  body.md-wide .main { max-width:1880px; }
+  .md-shell { grid-template-columns:minmax(0,1.15fr) minmax(0,1fr) 340px;
+              grid-template-areas:"hdr hdr hdr" "uc uc uc" "ver ver ver"
+                                  "strip strip strip" "main mid side"; }
 }
 /* ===== PC（マウス操作の大画面）はUIが小さく見えるため全体を拡大表示。
    携帯・iPad（タッチ操作）は hover/pointer 条件に合致しないため対象外。 ===== */
@@ -2458,36 +2495,22 @@ function mdScopeTotals(stores, ym) {
 /* ---------- 当日の状況 ---------- */
 function mdTodayHtml(stores, ym) {
   var tt = mdScopeTotals(stores, ym);
-  var live = (mdState.period === 'month');
-  var m = mdStateMeta(tt.gap === null ? 'unknown' : (tt.gap >= 0 ? 'ok' : 'miss'));
-  var h = '<div class="card">'
-    + '<div class="md-sec-t"><i class="ti ti-bolt" style="color:var(--accent)"></i>当日の状況'
-    + '<span class="md-sub">' + mdPeriodLabel() + '</span></div>';
-  if (live) {
-    h += '<div id="rt-sales-card"><div id="rt-sales-body" style="text-align:center;padding:16px;color:var(--muted);font-size:12px">'
-      + '<i class="ti ti-loader"></i> Toastから取得中…</div></div>';
-  }
-  h += '<div class="md-kpis" style="margin-top:10px">'
-    + '<div class="md-kpi" style="border-left-color:' + m.color + '">'
-    + '<div class="md-kpi-h"><i class="ti ' + m.icon + '" style="color:' + m.color + '"></i>'
-    + '本日時点の進捗</div>'
-    + '<div class="md-kpi-v" style="color:' + m.color + '">' + m.label
-    + (tt.paceRate !== null ? ' <span style="font-size:13px;color:var(--muted)">' + tt.paceRate + '%</span>' : '')
-    + '</div>'
-    + '<div class="md-kpi-s" style="color:var(--muted)">実績 ' + mdMoney(tt.actToToday)
-    + ' / 進捗予算 ' + mdMoney(tt.budToToday) + '<br>差 <b style="color:' + m.color + '">'
-    + mdSigned(tt.gap, 'money') + '</b></div></div>';
-  var fm = mdStateMeta(tt.fcGap === null ? 'unknown' : (tt.fcGap >= 0 ? 'ok' : 'miss'));
-  h += '<div class="md-kpi" style="border-left-color:' + fm.color + '">'
-    + '<div class="md-kpi-h"><i class="ti ' + fm.icon + '" style="color:' + fm.color + '"></i>月末の着地予測</div>'
-    + '<div class="md-kpi-v" style="color:' + fm.color + '">' + mdMoney(tt.forecast) + '</div>'
-    + '<div class="md-kpi-s" style="color:var(--muted)">月間予算 ' + mdMoney(tt.budMonth)
-    + '<br>予測差 <b style="color:' + fm.color + '">' + mdSigned(tt.fcGap, 'money') + '</b></div></div>';
-  h += '<div class="md-kpi" style="border-left-color:' + (tt.missDays ? 'var(--yellow)' : 'var(--green)') + '">'
-    + '<div class="md-kpi-h"><i class="ti ti-database" style="color:var(--muted)"></i>データの入り</div>'
-    + '<div class="md-kpi-v">' + (tt.missDays ? tt.missDays + ' 日ぶん未入力' : 'そろっています') + '</div>'
-    + '<div class="md-kpi-s" style="color:var(--muted)">未入力があると判定不可になります</div></div>';
-  h += '</div></div>';
+  var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i>'
+    + '当日の状況<span class="md-sub">' + mdPeriodLabel() + '</span></div>';
+  var rows = [
+    ['本日時点の進捗予算', mdMoney(tt.budToToday)],
+    ['本日時点の実績', mdMoney(tt.actToToday)],
+    ['差', mdSigned(tt.gap, 'money')],
+    ['月間予算', mdMoney(tt.budMonth)],
+    ['月末の着地予測', mdMoney(tt.forecast)],
+    ['予測差', mdSigned(tt.fcGap, 'money')],
+    ['売上が未入力の日', tt.missDays ? tt.missDays + ' 日' : 'なし'],
+  ];
+  rows.forEach(function (r) {
+    h += '<div class="md-mini"><span style="color:var(--muted)">' + r[0] + '</span><b>' + r[1] + '</b></div>';
+  });
+  h += '<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> '
+    + '月中は月間予算の総額ではなく、本日時点までの進捗予算と比べています。</div></div>';
   return h;
 }
 
@@ -2499,20 +2522,22 @@ function mdKpiCardsHtml(stores, ym) {
   ['guests', 'ppa'].forEach(function (k) { if (codes.indexOf(k) < 0) codes.push(k); });
   var single = stores.length === 1;
   var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-target" style="color:var(--accent)"></i>'
-    + '月次KPI<span class="md-sub">' + (single ? '実績 / 目標' : '達成した店舗数') + '</span></div>'
+    + '重要KPI（今月）<span class="md-sub">' + (single ? '実績 / 目標' : '達成した店舗数') + '</span></div>'
     + '<div class="md-kpis">';
   codes.forEach(function (code) {
     var def = MD_KPI[code] || {};
     if (single) {
       var v = mdVerdict(stores[0], code, ym), m = mdStateMeta(v.state);
       h += '<div class="md-kpi" style="border-left-color:' + m.color + '">'
-        + '<div class="md-kpi-h"><i class="ti ' + m.icon + '" style="color:' + m.color + '"></i>' + v.label + '</div>'
+        + '<div class="md-kpi-h"><i class="ti ' + m.icon + '" style="color:' + m.color + '"></i>' + v.label
+        + '<span style="margin-left:auto;font-weight:800;color:' + m.color + '">' + m.label + '</span></div>'
         + '<div class="md-kpi-v" style="color:' + m.color + '">' + mdFmt(v.actual, v.unit) + '</div>'
-        + '<div class="md-kpi-s" style="color:var(--muted)">' + m.label
-        + (v.state === 'unknown' ? '（' + v.reason + '）'
-          : ' ・ 目標 ' + mdFmt(v.target, v.unit) + '<br>差 <b style="color:' + m.color + '">'
+        + '<div class="md-kpi-s" style="color:var(--muted)">'
+        + (v.state === 'unknown' ? v.reason
+          : '目標 ' + mdFmt(v.target, v.unit) + ' ・ 差 <b style="color:' + m.color + '">'
             + mdSigned(v.diff, v.unit) + '</b>')
-        + (v.note ? '<br>' + escapeHtml(v.note) : '') + '</div></div>';
+        + (v.note ? '<br>' + escapeHtml(v.note) : '') + '</div>'
+        + mdBar(v.rate, m.color) + '</div>';
     } else {
       var okN = 0, missN = 0, unkN = 0, names = [];
       stores.forEach(function (id) {
@@ -2524,13 +2549,15 @@ function mdKpiCardsHtml(stores, ym) {
       var st = missN ? 'miss' : (unkN ? 'unknown' : 'ok'), mm = mdStateMeta(st);
       h += '<div class="md-kpi" style="border-left-color:' + mm.color + '">'
         + '<div class="md-kpi-h"><i class="ti ' + mm.icon + '" style="color:' + mm.color + '"></i>'
-        + (def.label || code) + '</div>'
+        + (def.label || code)
+        + '<span style="margin-left:auto;font-weight:800;color:' + mm.color + '">' + mm.label + '</span></div>'
         + '<div class="md-kpi-v" style="color:' + mm.color + '">' + okN + ' / ' + stores.length
         + ' <span style="font-size:12px;color:var(--muted)">店舗達成</span></div>'
-        + '<div class="md-kpi-s" style="color:var(--muted)">' + mm.label
-        + (missN ? '<br>未達：' + escapeHtml(names.slice(0, 3).join('・'))
-          + (names.length > 3 ? ' 他' + (names.length - 3) : '') : '')
-        + (unkN ? '<br>判定不可 ' + unkN + '店' : '') + '</div></div>';
+        + '<div class="md-kpi-s" style="color:var(--muted)">'
+        + (missN ? '未達：' + escapeHtml(names.slice(0, 3).join('・'))
+          + (names.length > 3 ? ' 他' + (names.length - 3) : '') : '全店で達成')
+        + (unkN ? '<br>判定不可 ' + unkN + '店' : '') + '</div>'
+        + mdBar(stores.length ? Math.round(okN / stores.length * 1000) / 10 * 1.4 : null, mm.color) + '</div>';
     }
   });
   h += '</div></div>';
@@ -2545,37 +2572,47 @@ function mdStoresHtml(stores, ym, sc) {
   var order = { miss: 0, unknown: 1, ok: 2 };
   var rows = (sc.rows || []).slice().sort(function (a, b) { return order[a.state] - order[b.state]; });
   var shown = only ? rows.filter(function (r) { return r.state !== 'ok'; }) : rows;
+  var need = rows.filter(function (r) { return r.state !== 'ok'; }).length;
   var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-building-store" style="color:var(--accent)"></i>'
     + '店舗別の状況<span class="md-sub">未達を先に表示（順位ではありません）</span></div>'
     + '<div class="btn-row" style="margin-bottom:8px">'
     + '<button class="btn btn-' + (only ? 'secondary' : 'primary') + ' btn-sm" onclick="mdSetStoreFilter(\'all\')">全店 ' + rows.length + '</button>'
-    + '<button class="btn btn-' + (only ? 'primary' : 'secondary') + ' btn-sm" onclick="mdSetStoreFilter(\'miss\')">要確認 '
-    + rows.filter(function (r) { return r.state !== 'ok'; }).length + '</button></div>';
+    + '<button class="btn btn-' + (only ? 'primary' : 'secondary') + ' btn-sm" onclick="mdSetStoreFilter(\'miss\')">要確認 ' + need + '</button></div>';
   if (!shown.length) {
-    h += '<div style="text-align:center;color:var(--green);padding:16px;font-size:13px">'
-      + '<i class="ti ti-circle-check" style="font-size:20px"></i><div>要確認の店舗はありません</div></div></div>';
-    return h;
+    return h + '<div class="md-empty" style="padding:16px 0"><i class="ti ti-circle-check" style="font-size:20px"></i>'
+      + '<div>要確認の店舗はありません</div></div></div>';
   }
   h += '<div style="overflow-x:auto"><table class="md-tbl"><thead><tr><th>店舗</th><th>判定</th>'
-    + '<th>売上</th><th class="md-opt">人件費率</th><th class="md-opt">原価率</th><th class="md-opt">営業利益</th></tr></thead><tbody>';
+    + '<th>売上 / 進捗予算</th><th>人件費率</th><th>原価率</th><th class="md-opt">営業利益</th></tr></thead><tbody>';
   shown.forEach(function (r) {
     var m = mdStateMeta(r.state);
-    function cell(code) {
-      var v = r.items.filter(function (x) { return x.code === code; })[0];
-      if (!v) { try { v = mdVerdict(r.storeId, code, ym); } catch (e) { return '<td class="md-opt">—</td>'; } }
-      var c = mdStateMeta(v.state);
-      return '<td class="' + (code === 'sales' ? '' : 'md-opt') + '" style="color:' + c.color + ';font-weight:700">'
-        + mdFmt(v.actual, v.unit) + '</td>';
+    function v(code) {
+      var x = r.items.filter(function (y) { return y.code === code; })[0];
+      if (!x) { try { x = mdVerdict(r.storeId, code, ym); } catch (e) { x = null; } }
+      return x;
     }
+    function cell(code, opt) {
+      var x = v(code); if (!x) return '<td' + (opt ? ' class="md-opt"' : '') + '>—</td>';
+      var c = mdStateMeta(x.state);
+      return '<td' + (opt ? ' class="md-opt"' : '') + ' style="color:' + c.color + ';font-weight:700">'
+        + mdFmt(x.actual, x.unit)
+        + (x.state === 'unknown' ? '' : '<div style="font-size:9.5px;color:var(--muted);font-weight:400">'
+            + mdSigned(x.diff, x.unit) + '</div>') + '</td>';
+    }
+    var s = v('sales'), sm2 = s ? mdStateMeta(s.state) : mdStateMeta('unknown');
     h += '<tr onclick="mdOpenStore(\'' + r.storeId + '\')">'
       + '<td><b>' + escapeHtml(mcStoreLabel(r.storeId)) + '</b></td>'
       + '<td><span class="md-badge" style="background:' + m.color + '22;color:' + m.color + '">'
       + '<i class="ti ' + m.icon + '"></i>' + m.label + ' ' + r.okCount + '/' + r.total + '</span></td>'
-      + cell('sales') + cell('labor_rate') + cell('cost_rate') + cell('profit') + '</tr>';
+      + '<td style="min-width:132px;color:' + sm2.color + ';font-weight:700">'
+      + (s ? mdFmt(s.actual, 'money') + '<div style="font-size:9.5px;color:var(--muted);font-weight:400">'
+          + mdMoney(s.target) + ' ・ ' + mdSigned(s.diff, 'money') + '</div>'
+          + mdBar(s.rate, sm2.color) : '—') + '</td>'
+      + cell('labor_rate') + cell('cost_rate') + cell('profit', true) + '</tr>';
   });
   h += '</tbody></table></div>'
     + '<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> '
-    + '店舗をタップすると予実管理へ移動します。</div></div>';
+    + '店舗を選ぶと予実管理へ移動します。</div></div>';
   return h;
 }
 function mdOpenStore(sid) {
@@ -2609,6 +2646,141 @@ function mdWorkHtml() {
   return h;
 }
 
+/* 達成率の帯。目標線（100%）を 71.4% の位置に置き、140% で振り切る。 */
+function mdBar(rate, color) {
+  if (rate === null || rate === undefined || isNaN(rate)) return '';
+  var w = Math.max(0, Math.min(140, rate)) / 1.4;
+  return '<div class="md-bar"><i style="width:' + w + '%;background:' + color + '"></i></div>';
+}
+
+/* ---------- 上帯：今日・今月・重要な件数を1行で ---------- */
+function mdSummaryStripHtml(stores, ym, sc, counts) {
+  var tt = mdScopeTotals(stores, ym);
+  function tile(label, icon, color, value, sub, rate) {
+    return '<div class="md-t" style="border-top-color:' + color + '">'
+      + '<div class="md-t-l"><i class="ti ' + icon + '" style="color:' + color + '"></i>' + label + '</div>'
+      + '<div class="md-t-v" style="color:' + color + '">' + value + '</div>'
+      + '<div class="md-t-s">' + sub + '</div>' + mdBar(rate, color) + '</div>';
+  }
+  var pm = mdStateMeta(tt.gap === null ? 'unknown' : (tt.gap >= 0 ? 'ok' : 'miss'));
+  var fm = mdStateMeta(tt.fcGap === null ? 'unknown' : (tt.fcGap >= 0 ? 'ok' : 'miss'));
+  var vm = mdStateMeta(sc.state);
+  var h = '<div class="md-strip">';
+  h += tile('全体判定', vm.icon, vm.color, vm.label,
+        sc.okCount + ' / ' + sc.total + ' 店舗達成'
+        + (sc.unknownCount ? '・判定不可 ' + sc.unknownCount : ''), null);
+  h += '<div class="md-t" style="border-top-color:var(--accent)">'
+    + '<div class="md-t-l"><i class="ti ti-bolt" style="color:var(--accent)"></i>今日の売上</div>'
+    + '<div id="rt-sales-body" class="md-t-v" style="font-size:13px;color:var(--muted);font-weight:600">'
+    + '<i class="ti ti-loader"></i> 取得中…</div>'
+    + '<div class="md-t-s">Toast（当日）</div></div>';
+  h += tile('本日時点の進捗', pm.icon, pm.color,
+        (tt.paceRate !== null ? tt.paceRate + '%' : '—'),
+        mdMoney(tt.actToToday) + ' / 進捗予算 ' + mdMoney(tt.budToToday)
+        + '<br>差 ' + mdSigned(tt.gap, 'money'), tt.paceRate);
+  h += tile('月末の着地予測', fm.icon, fm.color, mdMoney(tt.forecast),
+        '月間予算 ' + mdMoney(tt.budMonth) + '<br>予測差 ' + mdSigned(tt.fcGap, 'money'),
+        tt.budMonth > 0 ? Math.round(tt.forecast / tt.budMonth * 1000) / 10 : null);
+  var wc = counts.work, wcol = wc.open ? 'var(--red)' : 'var(--green)';
+  h += tile('要対応', 'ti-alert-triangle', wcol, (wc.total === null ? '—' : wc.open + ' 件'),
+        (wc.total === null ? '管理統括を開くと入ります'
+          : '対応中 ' + wc.progress + '・全 ' + wc.total), null);
+  var ac = counts.approvals, tc = counts.tasks, ec = counts.errors;
+  h += tile('承認・タスク・エラー', 'ti-checklist',
+        (ac || ec.high) ? 'var(--yellow)' : 'var(--green)',
+        ac + ' / ' + tc + ' / ' + ec.total,
+        '承認待ち ' + ac + '・本日のタスク ' + tc + '<br>エラー ' + ec.total
+        + (ec.high ? '（要対応 ' + ec.high + '）' : ''), null);
+  var dm = counts.missDays ? 'var(--yellow)' : 'var(--green)';
+  h += tile('データの入り', 'ti-database', dm,
+        counts.missDays ? counts.missDays + ' 日' : 'OK',
+        counts.missDays ? '未入力があると判定不可になります' : '売上の未入力はありません', null);
+  h += '</div>';
+  return h;
+}
+
+/* ---------- 右レール：承認・タスク・エラー ---------- */
+function mdPendingApprovals(stores) {
+  var out = [];
+  try {
+    var names = {};
+    (stores || []).forEach(function (id) { names[id] = 1; names[mcStoreLabel(id)] = 1; });
+    out = (ls('approvals', []) || []).filter(function (a) {
+      if (!a || a.status !== 'pending') return false;
+      if (mcRole() === 'gm') return true;
+      if (!a.ref && !a.store) return true;
+      return !!(names[a.ref] || names[a.store]);
+    });
+  } catch (e) { out = []; }
+  return out;
+}
+function mdTodayTasks() {
+  try {
+    var today = todayISO();
+    return (getTasks() || []).filter(function (t) {
+      return t && t.status !== '完了' && (!t.due || t.due <= today);
+    });
+  } catch (e) { return []; }
+}
+function mdErrors() {
+  try { return (typeof ecCollect === 'function') ? (ecCollect() || []) : []; }
+  catch (e) { return []; }
+}
+function mdWorkCounts() {
+  var o = { open: 0, progress: 0, total: null };
+  try {
+    var rows = (typeof mcVisibleAlerts === 'function') ? mcVisibleAlerts() : null;
+    if (!rows) return o;
+    o.total = rows.length;
+    rows.forEach(function (r) {
+      if (r.status === 'in_progress') o.progress++;
+      else if (r.status !== 'resolved' && r.status !== 'closed') o.open++;
+    });
+  } catch (e) { }
+  return o;
+}
+function mdListCard(title, icon, items, empty, page, render) {
+  var h = '<div class="card"><div class="md-sec-t"><i class="ti ' + icon + '" style="color:var(--accent)"></i>'
+    + title + '<span class="md-sub">' + items.length + ' 件</span></div>';
+  if (!items.length) {
+    h += '<div class="md-empty"><i class="ti ti-circle-check"></i> ' + empty + '</div>';
+  } else {
+    items.slice(0, 6).forEach(function (it) { h += render(it); });
+    if (items.length > 6) h += '<div class="md-more">ほか ' + (items.length - 6) + ' 件</div>';
+  }
+  if (page) {
+    h += '<div class="btn-row" style="margin-top:9px"><button class="btn btn-secondary btn-sm" '
+      + 'onclick="renderPage(\'' + page + '\')">ひらく</button></div>';
+  }
+  return h + '</div>';
+}
+function mdRailHtml(stores, counts) {
+  var h = mdWorkHtml();
+  h += mdListCard('承認待ち', 'ti-clipboard-check', counts.approvalList, '承認待ちはありません', 'approval',
+    function (a) {
+      return '<div class="md-li"><span class="md-pill" style="background:var(--accent)22;color:var(--accent)">'
+        + escapeHtml(a.type || '申請') + '</span>'
+        + '<span class="md-li-t">' + escapeHtml(a.title || '') + '</span></div>';
+    });
+  h += mdListCard('本日のタスク', 'ti-checklist', counts.taskList, '未完了のタスクはありません', 'tasks',
+    function (t) {
+      var late = t.due && t.due < todayISO();
+      return '<div class="md-li">'
+        + '<span class="md-pill" style="background:' + (late ? 'var(--red)22;color:var(--red)' : 'var(--surface2);color:var(--muted)') + '">'
+        + (late ? '期限超過' : '本日') + '</span>'
+        + '<span class="md-li-t">' + escapeHtml(t.title || t.name || '') + '</span></div>';
+    });
+  h += mdListCard('エラーセンター', 'ti-alert-circle', counts.errorList, 'エラーはありません', 'error_center',
+    function (e) {
+      var m = (typeof ecSevMeta === 'function') ? ecSevMeta(e.sev) : { c: 'var(--muted)', l: '' };
+      return '<div class="md-li"><span class="md-pill" style="background:' + m.c + '22;color:' + m.c + '">'
+        + escapeHtml(m.l || e.sev || '') + '</span>'
+        + '<span class="md-li-t">' + escapeHtml(e.title || '') + '</span></div>';
+    });
+  try { h += renderCompanyMessageCard(); } catch (e) { }
+  try { h += renderPriceAlertCard(); } catch (e) { }
+  return h;
+}
 function renderMgmtDash() {
   var head = '<div class="section-header"><div><div class="section-title">'
     + '<i class="ti ti-gauge" style="color:var(--accent)"></i> Management Console</div>'
@@ -2631,33 +2803,33 @@ function renderMgmtDash() {
     sc = { state: 'unknown', stateLabel: '判定不可', okCount: 0, missCount: 0,
            unknownCount: stores.length, total: stores.length, rows: [], topMissLabels: [] };
   }
+  var errs = mdErrors();
+  var counts = {
+    work: mdWorkCounts(),
+    approvalList: mdPendingApprovals(stores),
+    taskList: mdTodayTasks(),
+    errorList: errs,
+    missDays: mdScopeTotals(stores, ym).missDays,
+  };
+  counts.approvals = counts.approvalList.length;
+  counts.tasks = counts.taskList.length;
+  counts.errors = { total: errs.length, high: errs.filter(function (e) { return e.sev === 'high'; }).length };
 
   var h = head + '<div class="md-shell">';
-  h += mdHeaderHtml(stores);
-  h += '<div class="md-full">' + mcUnderConstructionHtml() + '</div>';
-  h += mdVerdictBannerHtml(sc, stores);
+  h += '<div class="md-a-hdr">' + mdHeaderHtml(stores) + '</div>';
+  h += '<div class="md-a-uc">' + mcUnderConstructionHtml() + '</div>';
+  h += '<div class="md-a-ver">' + mdVerdictBannerHtml(sc, stores) + '</div>';
+  h += '<div class="md-a-strip">' + mdSummaryStripHtml(stores, ym, sc, counts) + '</div>';
 
-  h += '<div class="md-col-main">';
-  h += mdTodayHtml(stores, ym);
-  h += mdKpiCardsHtml(stores, ym);
-  h += mdStoresHtml(stores, ym, sc);
-  h += mdPlaceholder('KPI詳細', [
-    '実績・目標・差異・月末予測・推移',
-    '想定原因／対応状況／担当者／店長確認状況',
-    '売上分析・人件費分析・原価分析などへの入口'], 'v842');
+  h += '<div class="md-col-main">' + mdTodayHtml(stores, ym) + mdKpiCardsHtml(stores, ym) + '</div>';
+  h += '<div class="md-col-mid">' + mdStoresHtml(stores, ym, sc)
+    + mdPlaceholder('KPI詳細', [
+        '実績・目標・差異・月末予測・推移',
+        '想定原因／対応状況／担当者／店長確認状況',
+        '売上分析・人件費分析・原価分析などへの入口'], 'v842') + '</div>';
+  h += '<div class="md-col-side">' + mdRailHtml(stores, counts) + '</div>';
   h += '</div>';
 
-  h += '<div class="md-col-side">';
-  h += mdWorkHtml();
-  try { h += renderCompanyMessageCard(); } catch (e) { }
-  try { h += renderPriceAlertCard(); } catch (e) { }
-  h += mdPlaceholder('店長への依頼', [
-    '未達KPIから対象店舗の店長へ依頼',
-    '通知先は従業員マスターから引きます',
-    '完了報告では自動解決しません'], 'v845');
-  h += '</div></div>';
-
-  /* Funergy Now（Toast の当日売上）は既存の読み込みをそのまま使う */
   if (mdState.period === 'month') {
     setTimeout(function () {
       if (document.getElementById('rt-sales-body')) { try { loadRealtimeSales(); } catch (e) { } }
@@ -12235,6 +12407,9 @@ function skeletonMain(){
 function renderPage(page) {
   if (typeof isPageHiddenForMe==='function' && isPageHiddenForMe(page)) { var _ga=groupsForRole()[0]; page = (_ga && _ga.children && _ga.children[0]) || 'mypage'; }
   var el = document.getElementById('main-content');
+  /* v841: 統合コンソールのときだけ .main の幅制限を外す。他画面には影響しない。 */
+  try { document.body.classList.toggle('md-wide',
+    (page === 'dashboard' || page === 'mgmt_dash') && typeof mdCanOpen === 'function' && mdCanOpen()); } catch (e) { }
   // v652: コールドスタート時のみ、重いデータ裏取得中はスケルトン表示。完了後の再描画で本物へ差し替え。ウォームは即表示。
   if (window._heavyPending && localStorage.getItem('heavy_ready')!=='1' && !SKEL_LIGHT_PAGES[page]) {
     if(el){ el.innerHTML = skeletonMain(); }
@@ -26165,7 +26340,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '840';
+const APP_VERSION = '841';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
