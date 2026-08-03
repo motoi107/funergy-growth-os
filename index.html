@@ -642,6 +642,23 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .fy-sub { font-size:12px; color:rgba(255,255,255,.9); margin-top:2px; }
 .fy-levelbar { height:6px; border-radius:100px; background:rgba(255,255,255,.28); margin-top:9px; overflow:hidden; }
 .fy-levelbar i { display:block; height:100%; background:#fff; border-radius:100px; transition:width .5s ease; }
+/* ===== v839 Management Dashboard =====
+   PC優先。640px以下の既存ルールには一切触っていない。
+   ここは .md-* の中だけに効く（他画面のモバイル表示を壊さないため）。
+   PC は body{zoom:1.1} が掛かるので、実効幅は viewport の約 1/1.1。
+   2カラムに切り替えるのは 1180px から（実効 約1070px）。 ===== */
+.md-shell { display:flex; flex-direction:column; gap:10px; }
+.md-col-main, .md-col-side { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.md-hdr { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; }
+.md-verdict { border:2px solid; border-radius:14px; }
+.md-verdict-state { font-size:26px; font-weight:800; line-height:1.2; letter-spacing:-.01em; }
+.md-ph { border:1px dashed var(--border); border-radius:12px; padding:18px 14px;
+         text-align:center; color:var(--muted); font-size:11.5px; line-height:1.9; }
+@media (min-width:1180px) {
+  .md-shell { display:grid; grid-template-columns:minmax(0,1fr) 340px; align-items:start; gap:14px; }
+  .md-shell > .md-full { grid-column:1 / -1; }
+  .md-verdict-state { font-size:32px; }
+}
 /* ===== PC（マウス操作の大画面）はUIが小さく見えるため全体を拡大表示。
    携帯・iPad（タッチ操作）は hover/pointer 条件に合致しないため対象外。 ===== */
 @media (hover: hover) and (pointer: fine) {
@@ -2262,6 +2279,183 @@ function mcUnderConstructionHtml() {
     + '</div>';
 }
 
+/* ============================================================
+   v839 Management Dashboard（管理ダッシュボード）— 器
+   ------------------------------------------------------------
+   現状確認 → 達成/未達 → 原因 → 依頼 → 対応 → 承認 → 解決確認 を
+   1画面でつなげるための入れ物。この版で作るのは枠と全体判定まで。
+
+   ・数字をここで計算しない。判定は v837 の md*() を呼ぶだけ
+   ・権限は v808 の mc*() を使う。ここで書き写さない
+   ・達成／未達を色だけで表さない。必ず 文字＋アイコン＋色 の3つで出す
+   ・ランキングは作らない（順位ではなく「未達の確認表」にする）
+   ============================================================ */
+
+/* この画面を開けるのは G4 以上（店長・Head Chef・AM・GM・CEO）。
+   mcCanOpen() は AM 以上なので使えない。mcRole() が空でなければ対象。 */
+function mdCanOpen() {
+  return (typeof mcRole === 'function') ? mcRole() !== '' : false;
+}
+
+var mdState = { period: 'month' };
+function mdSetPeriod(p) { mdState.period = p; renderPage('mgmt_dash'); }
+function mdPeriodYm() {
+  var ym = mcYm();
+  return (mdState.period === 'prev') ? mcYmAdd(ym, -1) : ym;
+}
+function mdPeriodLabel() { return mdState.period === 'prev' ? '前月' : '今月・現時点'; }
+
+/* 達成／未達／判定不可の見せ方。色だけで判断させない（仕様§1） */
+function mdStateMeta(s) {
+  if (s === 'ok')   return { label: '達成',     color: 'var(--green)', icon: 'ti-circle-check' };
+  if (s === 'miss') return { label: '未達',     color: 'var(--red)',   icon: 'ti-alert-triangle' };
+  return              { label: '判定不可', color: 'var(--muted)', icon: 'ti-help-circle' };
+}
+
+function mdRoleLabel() {
+  var rc = (typeof ROLE_CONFIG !== 'undefined') ? (ROLE_CONFIG[curRole] || {}) : {};
+  return rc.label || rc.name || curRole || '';
+}
+function mdScopeLabel(stores) {
+  var r = mcRole(), n = (stores || []).length;
+  if (r === 'sm')   return n ? mcStoreLabel(stores[0]) : '自店舗';
+  if (r === 'am')   return '管轄店舗 ' + n + '店';
+  if (r === 'chef') return '全店 ' + n + '店（原価・仕入）';
+  return '全社 ' + n + '店';
+}
+
+/* 売上の最終同期日。古いデータのまま判定していないかを見せる（仕様§12） */
+function mdLastSalesDate(stores) {
+  var last = '';
+  (stores || []).forEach(function (id) {
+    try { var d = mcLastActualDate(id); if (d > last) last = d; } catch (e) { }
+  });
+  return last;
+}
+
+function mdHeaderHtml(stores) {
+  var last = mdLastSalesDate(stores);
+  var per = mdState.period;
+  function tab(id, label, live) {
+    if (!live) return '<div class="phase-tab" style="opacity:.42;cursor:default">' + label
+      + ' <span style="font-size:9px">準備中</span></div>';
+    return '<div class="phase-tab' + (per === id ? ' active' : '') + '" onclick="mdSetPeriod(\'' + id + '\')">'
+      + label + '</div>';
+  }
+  return '<div class="card md-full" style="padding:10px 12px">'
+    + '<div class="md-hdr">'
+    + '<div style="font-size:13px;font-weight:800"><i class="ti ti-gauge" style="color:var(--accent)"></i> Management Dashboard</div>'
+    + '<div style="font-size:11px;color:var(--muted)"><i class="ti ti-user"></i> '
+    + escapeHtml(curUserName || '') + '（' + escapeHtml(mdRoleLabel()) + '）</div>'
+    + '<div style="font-size:11px;color:var(--muted)"><i class="ti ti-building-store"></i> '
+    + escapeHtml(mdScopeLabel(stores)) + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-left:auto"><i class="ti ti-refresh"></i> 売上最終同期：'
+    + (last ? escapeHtml(last) : '<b style="color:var(--red)">なし</b>') + '</div>'
+    + '</div>'
+    + '<div class="phase-tabs" style="margin-top:8px">'
+    + tab('today', '今日', false) + tab('week', '今週', false)
+    + tab('month', '今月', true) + tab('prev', '前月', true)
+    + '</div></div>';
+}
+
+/* 全体判定。画面で最初に目に入る強い表示にする（仕様§3） */
+function mdVerdictBannerHtml(sc, stores) {
+  var m = mdStateMeta(sc.state);
+  var isSm = (mcRole() === 'sm' && sc.rows.length === 1);
+  /* 店長は自店舗しか見ないので、店舗数ではなく主要KPIの達成数を出す（仕様§3の表示例） */
+  var count = isSm
+    ? ('主要KPI ' + sc.rows[0].okCount + ' / ' + sc.rows[0].total + ' 達成')
+    : (sc.okCount + ' / ' + sc.total + ' 店舗達成');
+  var sub = '';
+  if (sc.state === 'miss') {
+    sub = isSm
+      ? ('未達：' + sc.rows[0].misses.map(function (v) { return v.label; }).join('・'))
+      : (sc.topMissLabels.length ? ('主な未達：' + sc.topMissLabels.slice(0, 4).join('・')) : '');
+  } else if (sc.state === 'unknown') {
+    sub = '判定に必要なデータがそろっていません（予算・目標・同期を確認してください）';
+  } else if (sc.state === 'ok') {
+    sub = '必須KPIはすべて達成しています';
+  }
+  return '<div class="card md-full md-verdict" style="border-color:' + m.color + '">'
+    + '<div style="font-size:11px;color:var(--muted);margin-bottom:5px">'
+    + escapeHtml(mdScopeLabel(stores)) + '・' + mdPeriodLabel() + '</div>'
+    + '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
+    + '<div class="md-verdict-state" style="color:' + m.color + '"><i class="ti ' + m.icon + '"></i> ' + m.label + '</div>'
+    + '<div style="font-size:15px;font-weight:700">' + count + '</div>'
+    + '</div>'
+    + (sub ? '<div style="font-size:12px;color:var(--muted);margin-top:7px">' + escapeHtml(sub) + '</div>' : '')
+    + (sc.unknownCount && !isSm
+      ? '<div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-help-circle"></i> 判定不可 '
+        + sc.unknownCount + '店（達成にも未達にも数えていません）</div>' : '')
+    + '</div>';
+}
+
+function mdPlaceholder(title, lines, ver) {
+  return '<div class="card"><div class="card-title">'
+    + '<i class="ti ti-layout-grid" style="color:var(--muted)"></i>' + escapeHtml(title)
+    + '<span class="tag" style="margin-left:auto;font-size:9px;background:var(--surface2);color:var(--muted)">'
+    + escapeHtml(ver) + '</span></div>'
+    + '<div class="md-ph">' + lines.map(escapeHtml).join('<br>') + '</div></div>';
+}
+
+function renderMgmtDash() {
+  var head = '<div class="section-header"><div><div class="section-title">'
+    + '<i class="ti ti-gauge" style="color:var(--accent)"></i> Management Dashboard</div>'
+    + '<div class="section-sub">現状確認から解決確認までを1画面で</div></div></div>';
+  if (!mdCanOpen()) {
+    return head + '<div class="card" style="text-align:center;padding:32px">'
+      + '<i class="ti ti-lock" style="font-size:36px;color:var(--muted)"></i>'
+      + '<div style="margin-top:12px;font-weight:600">アクセス権限がありません</div>'
+      + '<div style="font-size:13px;color:var(--muted);margin-top:6px">'
+      + 'この画面は Store Manager（G4）以上が対象です。</div></div>';
+  }
+  var stores = mcScopeStores();
+  if (!stores.length) {
+    return head + '<div class="card" style="text-align:center;padding:24px;color:var(--muted);font-size:13px">'
+      + '表示できる店舗がありません。<br>管轄店舗の割り当てを確認してください。</div>';
+  }
+  var ym = mdPeriodYm(), sc;
+  try { sc = mdScopeVerdict(stores, ym); }
+  catch (e) {
+    sc = { state: 'unknown', stateLabel: '判定不可', okCount: 0, missCount: 0,
+           unknownCount: stores.length, total: stores.length, rows: [], topMissLabels: [] };
+  }
+
+  var h = head + '<div class="md-shell">';
+  h += mdHeaderHtml(stores);
+  h += '<div class="md-full">' + mcUnderConstructionHtml() + '</div>';
+  h += mdVerdictBannerHtml(sc, stores);
+
+  h += '<div class="md-col-main">';
+  h += mdPlaceholder('上部KPI', [
+    '今日の売上（現在進捗と本日の着地予測を分けて表示）',
+    '今月の着地予測（月末予測・予測差額・利益予測）',
+    '要対応（緊急・店長未確認・長期間未対応・予測影響額）'], 'v840');
+  h += mdPlaceholder(mcRole() === 'sm' ? '自店舗のKPI詳細' : '店舗別の達成状況', [
+    mcRole() === 'sm'
+      ? '売上・客数・客単価・人件費率・原価率・営業利益を詳細表示'
+      : '店舗ごとの 判定／売上／人件費／原価／未対応件数の確認表',
+    'ランキングは作りません（順位ではなく未達の確認表）',
+    '初期表示は未達店舗・未達KPIを優先'], 'v841');
+  h += mdPlaceholder('KPI詳細', [
+    '実績・目標・差異・月末予測・推移',
+    '想定原因／対応状況／担当者／店長確認状況',
+    '売上分析・人件費分析・原価分析などへの入口'], 'v842');
+  h += '</div>';
+
+  h += '<div class="md-col-side">';
+  h += mdPlaceholder('Work Center', [
+    '要対応／対応中／定期管理／承認待ち',
+    '管理統括と同じ management_alerts を並べ直します',
+    '別のデータは作りません'], 'v844');
+  h += mdPlaceholder('店長への依頼', [
+    '未達KPIから対象店舗の店長へ依頼',
+    '通知先は従業員マスターから引きます',
+    '完了報告では自動解決しません'], 'v845');
+  h += '</div></div>';
+  return h;
+}
+
 function renderMgmtControl(embedded) {
   if (!mcCanOpen()) {
     return '<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:20px">'
@@ -3401,7 +3595,7 @@ function mcDetectBudget(storeId, ym) {
     }));
   }
 
-  var forecast = mcRound(c.budMonth * pace / 100);
+  var forecast = mdForecastFrom(c);
   var t3 = mcThr('budget_forecast_miss', storeId);
   if (t3.enabled && c.budMonth > 0) {
     var short = mcRound(c.budMonth - forecast);
@@ -3434,7 +3628,7 @@ function mcDetectLabor(storeId, ym) {
   var sev = mcSevBy(over, t);
   if (!sev) return out;
   var pace = Number(c.paceRate) || 0;
-  var forecastSales = mcRound(c.budMonth * pace / 100) || c.actToToday;
+  var forecastSales = mdForecastFrom(c) || c.actToToday;
   out.push({
     rule_code: 'labor_rate_over', dedupe_key: ['labor_rate_over', storeId, ym].join('|'),
     store_id: storeId, category: 'labor', severity: sev,
@@ -3978,6 +4172,214 @@ async function mcSaveThreshold(code) {
       カーソルが外れる。状態表示だけを直接書き換える。
 ============================================================ */
 
+/* ============================================================
+   v837 Management Dashboard — 判定層
+   ------------------------------------------------------------
+   管理統括（v808〜）は「しきい値を超えたらアラート」で、
+   重要度（緊急／注意／確認）しか持っていない。
+   Management Dashboard は「達成／未達／判定不可」の3値を必要とする。
+
+   ここはその3値を出すだけの層で、数字の計算は一切しない。
+   すべて既存の cumulativeToToday / foodCostOf / monthStats /
+   plComputeStore / hqPlanForYm / getStoreKpiTargets を呼ぶ。
+
+   ★ 新しい計算をここに書かないこと。書くと画面ごとに数字がズレる。
+   ============================================================ */
+
+/* dir: up   = 実績が目標以上で達成（売上・客数・客単価・利益）
+   dir: down = 実績が目標以下で達成（人件費率・原価率） */
+var MD_KPI = {
+  sales:      { label: '売上',     dir: 'up',   unit: 'money', cat: 'budget' },
+  guests:     { label: '客数',     dir: 'up',   unit: 'count', cat: 'budget' },
+  ppa:        { label: '客単価',   dir: 'up',   unit: 'money', cat: 'budget' },
+  labor_rate: { label: '人件費率', dir: 'down', unit: 'pct',   cat: 'labor'  },
+  cost_rate:  { label: '原価率',   dir: 'down', unit: 'pct',   cat: 'cost'   },
+  profit:     { label: '営業利益', dir: 'up',   unit: 'money', cat: 'budget' },
+  /* 昨対は枠だけ。アプリに2026年より前のデータが1件も無いため常に判定不可を返す。
+     2025年を取り込んだら mdVerdict の yoy_sales 分岐だけを直せば出る。 */
+  yoy_sales:  { label: '昨対',     dir: 'up',   unit: 'pct',   cat: 'budget', pending: true },
+};
+
+/* 判定不可の理由。仕様§5が挙げる6つに対応する。
+   「達成でも未達でもない」を黙って0%扱いにしないための札。 */
+var MD_UNKNOWN = {
+  no_budget:    '予算が未登録',
+  no_target:    '目標が未設定',
+  not_synced:   '売上が未同期',
+  too_few_days: '対象期間のデータ不足',
+  no_actual:    '実績が未入力',
+  no_prev_year: '前年のデータがありません',
+  calc_error:   '計算エラー',
+};
+
+/* 店舗全体の判定に使う必須KPI。GMが店舗ごとに変えられる（設定画面は v838）。
+   保存先は既存の m_store_kpi を使う。これは SUPA_SETTING_KEYS に入っており
+   合流ルール mergeMapByKey も既にある。新しい保存キーを作らない
+   ＝ 合流ルールの穴を増やさない（v832・v836 の教訓）。 */
+var MD_PRIMARY_DEFAULT = ['sales', 'labor_rate', 'cost_rate', 'profit'];
+function mdPrimaryKpis(storeId) {
+  var t = {};
+  try { t = getStoreKpiTargets(storeId) || {}; } catch (e) { }
+  var list = t.primaryKpis;
+  if (!Array.isArray(list)) return MD_PRIMARY_DEFAULT.slice();
+  /* v838: pending（データが揃っていないKPI）は保存されていても採用しない。
+     採用するとその店舗が永久に「判定不可」になり、達成／未達が出せなくなる。 */
+  var ok = list.filter(function (k) { return !!MD_KPI[k] && !MD_KPI[k].pending; });
+  return ok.length ? ok : MD_PRIMARY_DEFAULT.slice();
+}
+
+/* v838: 必須KPIの設定画面に出してよいKPI。
+   pending が付いたものは出さない（選んだ瞬間その店舗が永久に判定不可になるため）。 */
+function mdSelectableKpis() {
+  return Object.keys(MD_KPI).filter(function (k) { return !MD_KPI[k].pending; });
+}
+
+/* 月末売上予測。前日までの達成率がこのまま続く前提。
+   v837: mcDetectBudget と mcDetectLabor に同じ式が二重にあったのを1本化した。
+   予測の考え方を変えるときはここだけを直す。 */
+function mdForecastFrom(c) {
+  if (!c) return 0;
+  var pace = Number(c.paceRate) || 0;
+  return mcRound((Number(c.budMonth) || 0) * pace / 100);
+}
+
+function mdStateLabel(s) { return s === 'ok' ? '達成' : (s === 'miss' ? '未達' : '判定不可'); }
+
+/* 判定1件の形。画面はこの形だけを見る。 */
+function mdV(code, state, o) {
+  o = o || {};
+  var d = MD_KPI[code] || {};
+  var a = (o.actual === undefined) ? null : o.actual;
+  var t = (o.target === undefined) ? null : o.target;
+  var known = (state !== 'unknown' && a !== null && t !== null);
+  return {
+    code: code, label: d.label || code, dir: d.dir || 'up',
+    unit: d.unit || '', cat: d.cat || '',
+    state: state, stateLabel: mdStateLabel(state),
+    actual: a, target: t,
+    /* 差は必ず「実績 − 目標」の素の符号で持つ。良し悪しは dir で解釈する。 */
+    diff: known ? mcRound(a - t) : null,
+    rate: (known && t > 0) ? mcRound(a / t * 100) : null,
+    reasonCode: o.reason || '',
+    reason: o.reason ? (MD_UNKNOWN[o.reason] || o.reason) : '',
+    note: o.note || '',
+  };
+}
+function mdUnknown(code, reason, note) { return mdV(code, 'unknown', { reason: reason, note: note }); }
+function mdJudge(code, actual, target, note) {
+  var d = MD_KPI[code] || {};
+  /* 実績＝目標はどちらの型でも達成にする（仕様§5の >= と <=） */
+  var ok = (d.dir === 'down') ? (actual <= target) : (actual >= target);
+  return mdV(code, ok ? 'ok' : 'miss', { actual: actual, target: target, note: note });
+}
+
+/* KPI 1件の判定。ym を省略すると当月。 */
+function mdVerdict(storeId, code, ym) {
+  if (!MD_KPI[code]) return mdUnknown(code, 'calc_error');
+  ym = ym || mcYm();
+  try {
+    /* 昨対：2026年より前のデータがアプリに存在しないため常に判定不可 */
+    if (code === 'yoy_sales') return mdUnknown(code, 'no_prev_year');
+
+    var c = cumulativeToToday(storeId, ym);
+    if (!c) return mdUnknown(code, 'calc_error');
+
+    if (code === 'sales') {
+      if (!(c.budMonth > 0)) return mdUnknown(code, 'no_budget');
+      if (!(c.daysWithActual > 0)) return mdUnknown(code, 'not_synced');
+      /* 月間予算総額ではなく、本日時点までの進捗予算と比べる（仕様§5） */
+      if (!(c.budToToday > 0)) return mdUnknown(code, 'too_few_days');
+      var miss = Math.max(0, (c.daysPassed || 0) - (c.daysWithActual || 0));
+      return mdJudge(code, mcRound(c.actToToday), mcRound(c.budToToday),
+        miss > 0 ? ('実績が ' + miss + ' 日ぶん未入力') : '');
+    }
+
+    if (code === 'labor_rate') {
+      var kL = getStoreKpiTargets(storeId) || {};
+      var tL = Number(kL.laborPct);
+      if (!(tL > 0)) return mdUnknown(code, 'no_target');
+      if (!(c.actToToday > 0)) return mdUnknown(code, 'no_actual');
+      /* 月初は率が必ずブレるので判定しない（v820 と同じ扱い） */
+      if (!mcEnoughDays(c, storeId)) return mdUnknown(code, 'too_few_days');
+      return mdJudge(code, mcRound(c.laborRate), mcRound(tL));
+    }
+
+    if (code === 'cost_rate') {
+      var kC = getStoreKpiTargets(storeId) || {};
+      var tC = Number(kC.foodCost);
+      if (!(tC > 0)) return mdUnknown(code, 'no_target');
+      var r = foodCostOf(storeId, ym, (c.actMonth > 0) ? c.actMonth : null);
+      if (!r) return mdUnknown(code, 'calc_error');
+      var rate = r.hasEnd ? Number(r.rate) : Number(r.provisionalRate);
+      if (!(rate > 0)) return mdUnknown(code, 'no_actual');
+      if (!r.hasEnd && !mcEnoughDays(c, storeId)) return mdUnknown(code, 'too_few_days');
+      return mdJudge(code, mcRound(rate), mcRound(tC),
+        r.hasEnd ? '' : '暫定（期末棚卸が未入力）');
+    }
+
+    if (code === 'guests' || code === 'ppa') {
+      /* 客数・客単価の目標はKPI目標ではなく本部予算から来る（第1章の注記どおり） */
+      var pg = (typeof hqPlanForYm === 'function') ? hqPlanForYm(storeId, ym) : null;
+      var tg = pg ? Number(pg[code === 'guests' ? 'guests' : 'ppa']) : 0;
+      if (!(tg > 0)) return mdUnknown(code, 'no_target');
+      var ms = monthStats(storeId, mcYmOffset(ym));
+      if (!ms || !ms.hasData) return mdUnknown(code, 'not_synced');
+      var av = (code === 'guests') ? Number(ms.guests) : Number(ms.avgSpend);
+      if (!(av > 0)) return mdUnknown(code, 'no_actual');
+      return mdJudge(code, mcRound(av), mcRound(tg));
+    }
+
+    if (code === 'profit') {
+      var pp = (typeof hqPlanForYm === 'function') ? hqPlanForYm(storeId, ym) : null;
+      if (!pp || pp.profit === null || pp.profit === undefined) return mdUnknown(code, 'no_target');
+      if (!(c.daysWithActual > 0)) return mdUnknown(code, 'not_synced');
+      var pl = plComputeStore(storeId, ym, mcYmOffset(ym));
+      if (!pl) return mdUnknown(code, 'calc_error');
+      var rf = foodCostOf(storeId, ym, (c.actMonth > 0) ? c.actMonth : null);
+      return mdJudge(code, mcRound(pl.profit), mcRound(pp.profit),
+        (rf && !rf.hasEnd) ? '原価が暫定（期末棚卸が未入力）' : '');
+    }
+
+    return mdUnknown(code, 'calc_error');
+  } catch (e) { return mdUnknown(code, 'calc_error'); }
+}
+
+/* 店舗全体の判定。必須KPIに1つでも未達があれば未達（仕様§5）。
+   未達がゼロでも判定不可が残っている間は「達成」と言い切らない。
+   出せていない数字を達成に数えると、見た人が誤解するため。 */
+function mdStoreVerdict(storeId, ym) {
+  var items = mdPrimaryKpis(storeId).map(function (k) { return mdVerdict(storeId, k, ym); });
+  var miss = items.filter(function (v) { return v.state === 'miss'; });
+  var unk = items.filter(function (v) { return v.state === 'unknown'; });
+  var okc = items.filter(function (v) { return v.state === 'ok'; }).length;
+  var state = miss.length ? 'miss' : (unk.length ? 'unknown' : (items.length ? 'ok' : 'unknown'));
+  return {
+    storeId: storeId, state: state, stateLabel: mdStateLabel(state),
+    okCount: okc, total: items.length,
+    items: items, misses: miss, unknowns: unk,
+  };
+}
+
+/* 全社／管轄の判定。ヘッダーの「未達｜1 / 5店舗達成」と「主な未達：売上・人件費」用。 */
+function mdScopeVerdict(storeIds, ym) {
+  var rows = (storeIds || []).map(function (id) { return mdStoreVerdict(id, ym); });
+  var miss = rows.filter(function (r) { return r.state === 'miss'; });
+  var unk = rows.filter(function (r) { return r.state === 'unknown'; });
+  var okc = rows.filter(function (r) { return r.state === 'ok'; }).length;
+  var state = miss.length ? 'miss' : (unk.length ? 'unknown' : (rows.length ? 'ok' : 'unknown'));
+  var by = {};
+  miss.forEach(function (r) {
+    r.misses.forEach(function (v) { by[v.code] = (by[v.code] || 0) + 1; });
+  });
+  var top = Object.keys(by).sort(function (a, b) { return by[b] - by[a]; });
+  return {
+    state: state, stateLabel: mdStateLabel(state),
+    okCount: okc, missCount: miss.length, unknownCount: unk.length, total: rows.length,
+    rows: rows, missByKpi: by, topMissKpis: top,
+    topMissLabels: top.map(function (k) { return (MD_KPI[k] || {}).label || k; }),
+  };
+}
+
 var MC_SAVE_DEBOUNCE = 700;      /* 入力が止まってから保存するまで（仕様は600〜800ms） */
 var MC_SAVE_RETRY = [3000, 8000, 20000];
 
@@ -4376,6 +4778,7 @@ const ROLE_CONFIG = {
 const NAV_ITEMS = [
   {id:'dashboard',   label:'ダッシュボード',   icon:'ti-layout-dashboard', roles:['ceo','gm','office','am']},
   {id:'store_cmd',   label:'店舗オペレーション', icon:'ti-building-store',   roles:['ceo','gm','am','sl','crew']},
+  {id:'mgmt_dash',   label:'管理ダッシュボード', icon:'ti-gauge',      roles:['ceo','gm','am','chef','sl','g4']},   /* v839: 表示可否は mdCanOpen() が最終判定 */
   {id:'mgmt_ctrl',   label:'管理統括',    icon:'ti-shield-check',     roles:['ceo','gm','am','chef']},   /* v809: 表示可否は mcCanOpen() が最終判定 */
   {id:'mc_requests', label:'対応依頼',    icon:'ti-inbox',            roles:['ceo','gm','am','sl','crew','chef','office_crew']},   /* v811: 自分宛ての通知だけが出る */
   {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl','g4','office_crew']},
@@ -4435,7 +4838,7 @@ const NAV_ITEMS = [
 /* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
 const MENU_GROUPS = [
   {id:'g_dash', label:'ダッシュボード', icon:'ti-layout-dashboard', roles:['ceo','gm','office','am','sl'],
-    children:['dashboard','store_cmd','mc_requests','mypage']},
+    children:['mgmt_dash','dashboard','store_cmd','mc_requests','mypage']},   /* v839 */
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     children:['budget','labor','foodcost','kpi_master']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
@@ -4538,6 +4941,10 @@ function groupsForRole() {
   /* v809: 管理統括は mcCanOpen() が最終判定。ROLE_ALIAS で g4→am になるため roles だけでは足りない */
   try { if (typeof mcCanOpen==='function' && !mcCanOpen()) groups = groups.filter(function(g){ return (g.children||[]).indexOf('mgmt_ctrl')<0 || g.children.length>1; })
         .map(function(g){ return (g.children||[]).indexOf('mgmt_ctrl')>=0 ? Object.assign({}, g, {children:g.children.filter(function(c){return c!=='mgmt_ctrl';})}) : g; })
+        .filter(function(g){ return g.children && g.children.length>0; }); } catch(e){}
+  /* v839: 管理ダッシュボードは mdCanOpen()（G4以上）が最終判定 */
+  try { if (typeof mdCanOpen==='function' && !mdCanOpen())
+        groups = groups.map(function(g){ return (g.children||[]).indexOf('mgmt_dash')>=0 ? Object.assign({}, g, {children:g.children.filter(function(c){return c!=='mgmt_dash';})}) : g; })
         .filter(function(g){ return g.children && g.children.length>0; }); } catch(e){}
   if (_gradeHideApplies()) {
     var _gh = gradeHideFor(myGradeKey());
@@ -8397,9 +8804,19 @@ var OP_SYNC_KEYS = ['lala_tasks','office_close','applicants','onboardings','appr
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
+/* v836: labor_hours_ を同期対象から外した。
+   このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
+   唯一の入口 openLaborHourModal() に呼び出し元が無く（doToastLaborFetch も同じ）、
+   勤怠画面は laborCoreForYm()（getTipLabor 由来）で描いている。
+   同期対象に残しておくと合流ルールの監査が永久に「未保護1件」を出し続け、
+   本当の穴と見分けがつかなくなるため外した。
+   ・localStorage には残る＝端末の既存データは消えない
+   ・クラウド(app_state)の labor_hours_* の行は参照されなくなるだけ。害は無い
+   ・画面から使えるように戻すときは、合流ルール(OP_MERGE_PREFIX)と
+     LS_NEVER_FREE への追加がセットで要る（手入力データになるため） */
 var OP_SYNC_PREFIX = ['sl_manual_','spl_','budget_approved_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
-  'daily_actuals_','menu_mix_','labor_hours_','fav_',
+  'daily_actuals_','menu_mix_','fav_',
   'fv_count_','fv_moves_','fv_review_'];   /* fav_<user>: お気に入り（個人別・クラウド保存）／ v722: 日次食材差異(手入力)。fv_sales_ は端末ローカルのみ＝同期しない */
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
 function authObPriv(payload){
@@ -11635,6 +12052,7 @@ function renderPage(page) {
     case 'acct_review':  el.innerHTML = renderAcctReview(); break;
     case 'office_mgr':   el.innerHTML = renderOfficeMgr(); break;
     case 'office_export': el.innerHTML = '<div class="section-header"><div><div class="section-title"><i class="ti ti-file-export"></i> 出力センター</div><div class="section-sub">全ての帳票・CSV出力</div></div></div>' + renderOfficeExport(); break;
+    case 'mgmt_dash':    el.innerHTML = renderMgmtDash(); break;   /* v839 */
     case 'mgmt_ctrl':    if (mcHasWorkCenter()) { workTab='mgmt';     el.innerHTML = renderWorkCenter(); }
                          else el.innerHTML = renderMgmtControl(); break;   /* v823 */
     case 'mc_requests':  if (mcHasWorkCenter()) { workTab='requests'; el.innerHTML = renderWorkCenter(); }
@@ -24906,6 +25324,10 @@ function laborWeekRange(weekSunISO) {
   return { from: weekSunISO, to: isoOf(sat),
     label: `${sun.getMonth()+1}/${sun.getDate()}〜${sat.getMonth()+1}/${sat.getDate()}` };
 }
+/* v836: ここから doToastLaborFetch までの一区画は現在どこからも呼ばれていない。
+   openLaborHourModal() の呼び出し元がゼロで、saveLaborHour はその modal の
+   HTML からしか呼ばれないため到達できない。v836 で同期対象からも外した。
+   消すか復活させるかは未定。触る前にこの注記を読むこと。 */
 function getLaborHours(storeId, week) { return ls('labor_hours_'+storeId+'_'+week, {}); } // {empName:{regular,ot,wage,source}}
 function setLaborHours(storeId, week, data) { lsSet('labor_hours_'+storeId+'_'+week, data); }
 
@@ -25531,7 +25953,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '835';
+const APP_VERSION = '839';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -54932,12 +55354,98 @@ function renderKpiMaster() {
     ${canEditT?`<div class="btn-row" style="margin-top:12px">
       <button class="btn btn-primary" onclick="saveStoreKpiFromForm('${sid}')"><i class="ti ti-device-floppy"></i> ${store.name}のKPIを保存</button>
     </div>`:''}</div>`;
+  html += mdPrimaryKpiCard(sid, store);
   return html;
+}
+
+/* ============================================================
+   v838 必須KPI（店舗全体の達成／未達の判定に使うKPI）の設定
+   ------------------------------------------------------------
+   変更できるのは GM だけ（mcCanConfigure）。ほかの役職には現在の設定を見せるだけ。
+   保存先は既存の m_store_kpi[storeId].primaryKpis。
+   このキーは SUPA_SETTING_KEYS に入っていて合流ルール mergeMapByKey もあるため、
+   新しい同期キーを増やさずに済む。
+   ============================================================ */
+function mdPrimaryKpiCard(sid, store) {
+  var can = (typeof mcCanConfigure === 'function') ? mcCanConfigure() : false;
+  var cur = mdPrimaryKpis(sid);
+  var ov = (typeof getStoreKpiOverride === 'function') ? (getStoreKpiOverride(sid) || {}) : {};
+  var isDefault = !Array.isArray(ov.primaryKpis) || !ov.primaryKpis.length;
+  var h = `<div style="font-size:13px;font-weight:700;margin:14px 0 6px;color:var(--tm)">
+    <i class="ti ti-checkbox"></i> 必須KPI（店舗全体の判定）${can ? '' : '<span style="font-size:11px;font-weight:400;color:var(--muted)"> 表示のみ・設定はGM</span>'}</div>
+  <div class="card">
+    <div style="font-size:11px;color:var(--muted);line-height:1.7;margin-bottom:10px">
+      ここで選んだKPIに<b>1つでも未達があると、${escapeHtml(store.name)} 全体を「未達」</b>と表示します。<br>
+      達成数（例：3 / 4 達成）もこの並びで数えます。
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:6px">`;
+  mdSelectableKpis().forEach(function (code) {
+    var d = MD_KPI[code] || {};
+    var on = cur.indexOf(code) >= 0;
+    h += `<label style="display:flex;align-items:center;gap:7px;background:var(--surface2);border-radius:8px;padding:8px 10px;font-size:12px${can ? ';cursor:pointer' : ';opacity:.7'}">
+      <input type="checkbox" id="md-pk-${code}"${on ? ' checked' : ''}${can ? '' : ' disabled'}>
+      <span>${d.label || code}</span>
+      <span style="margin-left:auto;font-size:9px;color:var(--muted)">${d.dir === 'down' ? '上限' : '下限'}</span>
+    </label>`;
+  });
+  h += `</div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">現在：<b>${cur.map(function (c) { return (MD_KPI[c] || {}).label || c; }).join('・')}</b>${isDefault ? '（既定）' : '（この店舗の設定）'}</div>`;
+  if (can) {
+    h += `<div class="btn-row" style="margin-top:12px">
+      <button class="btn btn-primary" onclick="mdSavePrimaryKpis('${sid}')"><i class="ti ti-device-floppy"></i> 必須KPIを保存</button>
+      <button class="btn btn-secondary" onclick="mdResetPrimaryKpis('${sid}')"><i class="ti ti-rotate"></i> 既定に戻す</button>
+    </div>`;
+  }
+  h += `<div style="font-size:10px;color:var(--muted);margin-top:10px;line-height:1.7">
+    <i class="ti ti-info-circle"></i> 昨対はここに出していません。2026年より前のデータがアプリに無いため、
+    選ぶとこの店舗が常に「判定不可」になります。前年ぶんを取り込めば選べるようになります。
+  </div></div>`;
+  return h;
+}
+
+function mdSavePrimaryKpis(sid) {
+  if (typeof mcCanConfigure !== 'function' || !mcCanConfigure()) {
+    showToast('必須KPIを設定できるのはGMだけです', 'warning'); return;
+  }
+  var picked = mdSelectableKpis().filter(function (code) {
+    var el = document.getElementById('md-pk-' + code);
+    return !!(el && el.checked);
+  });
+  /* 全部外すと何を見て未達と言っているのか分からなくなるので止める */
+  if (!picked.length) { showToast('必須KPIを1つ以上選んでください', 'warning'); return; }
+  var ov = getStoreKpiOverride(sid) || {};
+  ov.primaryKpis = picked;
+  setStoreKpiOverride(sid, ov);
+  var store = getStoresAll().find(function (s) { return s.id === sid; }) || { name: sid };
+  showToast(store.name + 'の必須KPIを保存しました', 'success');
+  renderPage('kpi_master');
+}
+
+function mdResetPrimaryKpis(sid) {
+  if (typeof mcCanConfigure !== 'function' || !mcCanConfigure()) {
+    showToast('必須KPIを設定できるのはGMだけです', 'warning'); return;
+  }
+  if (!confirm('必須KPIを既定（売上・人件費率・原価率・営業利益）に戻しますか？')) return;
+  var ov = getStoreKpiOverride(sid) || {};
+  delete ov.primaryKpis;
+  setStoreKpiOverride(sid, ov);
+  showToast('既定に戻しました', 'info');
+  renderPage('kpi_master');
 }
 function saveStoreKpiFromForm(sid){
   if (!canSetKpiStore(sid)) { showToast('この店舗のKPIを編集する権限がありません','warning'); return; }
   var store = getStoresAll().find(s=>s.id===sid);
   var kpis = kpisForStore(store); var ov={};
+  /* v838: この画面が持たない項目（必須KPI設定など）を消さない。
+     以前はここで {} から作り直していたため、同じ店舗に他の機能が書いた値が
+     KPI目標を保存しただけで黙って消えていた。
+     目標値そのものは従来どおりフォームを正とする（空欄＝業態デフォルトに戻す）。 */
+  var _keep = (typeof getStoreKpiOverride==='function') ? (getStoreKpiOverride(sid)||{}) : {};
+  Object.keys(_keep).forEach(function(k){
+    if (k==='_at') return;
+    if (kpis.some(function(x){ return x.key===k; })) return;   /* 目標値はフォームが正 */
+    ov[k] = _keep[k];
+  });
   kpis.forEach(k=>{ if(k.key==='lunchGuests'||k.key==='dinnerGuests') return; var el=document.getElementById('sk-'+k.key); if(el&&el.value!=='') ov[k.key]=parseFloat(el.value); });
   setStoreKpiOverride(sid, ov);
   showToast(store.name+'のKPIを保存しました','success');
@@ -54945,8 +55453,11 @@ function saveStoreKpiFromForm(sid){
 }
 function clearStoreKpi(sid){
   if (!canSetKpiStore(sid)) { showToast('この店舗のKPIを編集する権限がありません','warning'); return; }
-  if(!confirm('この店舗の上書きをすべて消して、業態デフォルトに戻しますか？')) return;
-  setStoreKpiOverride(sid, {});
+  if(!confirm('この店舗の目標値の上書きを消して、業態デフォルトに戻しますか？（必須KPIの設定は残ります）')) return;
+  /* v838: 必須KPIは目標値ではないので残す。消すなら必須KPI側の「既定に戻す」を使う。 */
+  var _keep = (typeof getStoreKpiOverride==='function') ? (getStoreKpiOverride(sid)||{}) : {};
+  var _next = {}; if (Array.isArray(_keep.primaryKpis)) _next.primaryKpis = _keep.primaryKpis;
+  setStoreKpiOverride(sid, _next);
   showToast('業態デフォルトに戻しました','info');
   renderPage('kpi_master');
 }
