@@ -4943,11 +4943,30 @@ function mdVerdict(storeId, code, ym) {
       if (!ms || !ms.hasData) return mdUnknown(code, 'not_synced');
       var av = (code === 'guests') ? Number(ms.guests) : Number(ms.avgSpend);
       var gb = (typeof monthGuestBudget === 'function') ? Number(monthGuestBudget(storeId, _off) || 0) : 0;
-      var tg = (code === 'guests') ? gb
-             : ((gb > 0 && c.budMonth > 0) ? Math.round(c.budMonth / gb * 100) / 100 : 0);
-      if (!(tg > 0)) return mdUnknown(code, 'no_budget', '曜日別の客数が未入力', av);
+      if (!(gb > 0) || !(c.budMonth > 0)) return mdUnknown(code, 'no_budget', '曜日別の客数が未入力', av);
+
+      if (code === 'ppa') {
+        /* v858: 客単価は1人あたりの平均なので按分しない。
+           表示ラベルも spend_short = 「予算」となっている。
+           mcDetectBudget の budSpend と同じ式。 */
+        var tp = Math.round(c.budMonth / gb * 100) / 100;
+        if (!(tp > 0)) return mdUnknown(code, 'no_budget', '曜日別の客数が未入力', av);
+        if (!(av > 0)) return mdUnknown(code, 'no_actual');
+        return mdJudge(code, mcRound(av), mcRound(tp));
+      }
+
+      /* v858: 客数は累計なので、月間総額と比べると月末まで必ず未達になる。
+         売上と同じく「本日時点までの進捗ぶんの予算」と比べる。
+         進捗率は売上予算の進み具合（budToToday / budMonth）を使う。
+         ※ mcDetectBudget の expG とまったく同じ式。表示ラベルも
+           guests_short = 「進捗ぶんの予算」となっている。 */
+      if (!(c.budToToday > 0)) return mdUnknown(code, 'too_few_days', '', av);
+      var tg = gb * (c.budToToday / c.budMonth);
+      if (!(tg > 0)) return mdUnknown(code, 'too_few_days', '', av);
       if (!(av > 0)) return mdUnknown(code, 'no_actual');
-      return mdJudge(code, mcRound(av), mcRound(tg));
+      var _missG = Math.max(0, (c.daysPassed || 0) - (c.daysWithActual || 0));
+      return mdJudge(code, mcRound(av), mcRound(tg),
+        _missG > 0 ? ('実績が ' + _missG + ' 日ぶん未入力') : '');
     }
 
     if (code === 'profit') {
@@ -26719,7 +26738,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '857';
+const APP_VERSION = '858';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
