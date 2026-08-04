@@ -15,6 +15,24 @@
 
 ---
 
+## 0.5 現在地（ひと目で）
+
+| | 状態 |
+|---|---|
+| 現行版 | **v848**（`index.html` / `sw.js`）。**v836〜v848 は GitHub 未 push** |
+| 検証 | `PASS=4137 / FAIL=0 / 実行=72/87`。検証87本・バックアップ67件（v782〜v848） |
+| 直近の大きな仕事 | Management Console（v837〜v843）／経理まわり（v844・v846・v848）／シフトテスト用スタッフ（v847） |
+| **Motoさん待ち①** | **ガソリン代の単価を $0.76 に直す**（IRS 2026/7/1〜。現在 $0.70 のまま＝支給不足の可能性） |
+| **Motoさん待ち②** | **KPI管理で 人件費率・原価率の目標**＋**本部予算**を入れる（入るまで全8店が判定不可） |
+| **Motoさん待ち③** | `management_control_v815.sql` の流し直し（v824 の chef 追加ぶん） |
+| 確認待ち | チップ調整の保存（SQLは適用済み）／事務Crewの権限／レシート一覧／月次CSV |
+| 積み残し（大） | **公開URL／anonキー**（第0章）・管理統括の「整備中」・昨対の2025年データ |
+
+**Motoさんは実画面を見て的確に指摘する。**この数版の不具合は全部そこから見つかった。
+作り込む前にプレビューか実機を見てもらうこと。
+
+---
+
 ## 1. 最初にやること
 
 ```bash
@@ -201,12 +219,64 @@ IRS標準料率は2026年に2回変わった（1/1 $0.725、7/1 $0.76）。
 
 ---
 
-## 9. 次のセッションの入り方
+## 9. 作業のしかた（この環境でのメモ）
 
-1. **第0章のリマインドを伝える**
-2. `TZ=Pacific/Honolulu node run_verify.js` → 期待値と一致するか
-3. GitHub main を md5 で突き合わせる
-4. **設定のガソリン代単価を $0.76 に直してもらう**（現在のIRS料率）
-5. 実機確認（レシート一覧・月次CSV・チップ調整の保存）
+### ビルド
 
-**Motoさんは実画面を見て的確に指摘する。**
+1. `cp index.html index_v<今の版>_backup.html`（変更**前**に）
+2. Python の透過置換。**`rep()` は old / new とも CRLF に寄せてから使う**
+   （v842・v843 で片側だけ寄せて2回つまずいた）
+3. 新規の大きいブロックは LF で書いて `crlf()` を通す
+4. `APP_VERSION` と `SW_BUILD` を同時に上げる
+5. Node の `new Function()` で構文チェック
+6. **書き出し前に `assert lone LF == 0`**
+7. 前版と差分を取り、意図した範囲だけかを目で見る
+8. `TZ=Pacific/Honolulu node run_verify.js`
+9. 最後に `cp index.html index_v<新版>_backup.html`
+10. `/mnt/user-data/outputs/` へコピー → `present_files`
+
+### SQL は必ず実行してから渡す（v845 の反省）
+
+このコンテナに PostgreSQL を入れられる。**`apt-get update` を先に打つこと**
+（打たずに `install` すると 404 で落ちる）。
+
+```bash
+apt-get update -qq && apt-get install -y --no-install-recommends postgresql
+export PGBIN=/usr/lib/postgresql/16/bin
+mkdir -p /tmp/pgdata && chown -R postgres /tmp/pgdata
+su postgres -c "$PGBIN/initdb -D /tmp/pgdata -U postgres"
+su postgres -c "$PGBIN/pg_ctl -D /tmp/pgdata -l /tmp/pg.log -o '-k /tmp -p 5433' start"
+su postgres -c "$PGBIN/psql -h /tmp -p 5433 -U postgres -f your.sql"
+```
+
+**Supabase の SQL エディタは全体を1トランザクションで流す。**
+途中で落ちると成功していた `alter table` もロールバックされるので、
+`--single-transaction` を付けて同じ条件で試すこと。
+**診断用SQLは「壊れている状態」でも流して確かめる**（正常系だけでは意味がない）。
+
+### 画面を見てもらう
+
+```bash
+node make_preview.js      # → preview.html（Management Console のプレビュー）
+```
+
+### 気をつけること
+
+- 検証が落ちたら、**まず検証を疑う**（この数版はほぼ全部そうだった）
+- **定義を消す前に `grep -l '<名前>' verify_*.js` を打つ**（消すと PASS=0 で止まる）
+- 検証に**日付や時刻の「変化」を書かない**（日が変わると／同一ミリ秒だと落ちる）
+- **同じコンテナで並行作業が走っていたことがある**（v839。`HANDOFF_v840.md` 第3章）。
+  作業前に `index.html` の `APP_VERSION` と md5 を確認する
+
+---
+
+## 10. 次のセッションの入り方
+
+1. **第0章（公開URL／anonキー）のリマインドを伝える**
+2. `TZ=Pacific/Honolulu node run_verify.js` → 第1章の期待値と一致するか
+3. GitHub main を md5 で突き合わせる（**引き継ぎの記述を信じない**）
+4. 第0.5章の「Motoさん待ち」を確認する
+5. 続きへ
+
+**Motoさんの進め方**：「憶測で修正しない」。原因を確かめ、設計 → 確認 → 実装。
+分からないことは推測で埋めず聞く。
