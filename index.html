@@ -8402,6 +8402,40 @@ function mergeMapByTime(cloud, local){
   });
   return out;
 }
+/* ============================================================
+   v856 本部予算（hq_budget）の合流
+   ------------------------------------------------------------
+   形：{ '<年月>': { '<店舗>': { ..., by, at:'YYYY/MM/DD HH:mm' } } } の2段マップ。
+   合流ルールが無かったため、_applyKvRows がクラウドの値で丸ごと上書きしていた。
+   年月ごと・店舗ごとに、保存時刻の新しいほうを採る。
+   at は nowJP() の 'YYYY/MM/DD HH:mm'。桁が固定なので文字列のまま比べられる。 */
+function _hqAt(v){ try{ return (v && v.at) ? String(v.at) : ''; }catch(e){ return ''; } }
+function mergeHqBudget(cloud, local){
+  var out={}, c=(cloud&&typeof cloud==='object')?cloud:{}, l=(local&&typeof local==='object')?local:{};
+  Object.keys(c).forEach(function(ym){ if(c[ym]&&typeof c[ym]==='object') out[ym]=Object.assign({}, c[ym]); });
+  Object.keys(l).forEach(function(ym){
+    var lm=l[ym]; if(!lm||typeof lm!=='object') return;
+    if(!out[ym]){ out[ym]=Object.assign({}, lm); return; }
+    Object.keys(lm).forEach(function(sid){
+      var a=out[ym][sid], b=lm[sid];
+      if(a===undefined){ out[ym][sid]=b; return; }
+      out[ym][sid] = (_hqAt(b) >= _hqAt(a)) ? b : a;
+    });
+  });
+  return out;
+}
+function _coversHqBudget(check, want){
+  if(!check||typeof check!=='object') return false;
+  for(var ym in want){ if(!want.hasOwnProperty(ym)) continue;
+    var wm=want[ym]; if(!wm||typeof wm!=='object') continue;
+    var hm=check[ym]; if(!hm||typeof hm!=='object') return false;
+    for(var sid in wm){ if(!wm.hasOwnProperty(sid)) continue;
+      if(hm[sid]===undefined) return false;
+      if(_hqAt(wm[sid]) && _hqAt(hm[sid]) < _hqAt(wm[sid])) return false;
+    }
+  }
+  return true;
+}
 function _coversMapByTime(check, want){
   if(!check||typeof check!=='object') return false;
   for(var k in want){ if(!want.hasOwnProperty(k)) continue;
@@ -10301,6 +10335,9 @@ async function pushBudgetsNow(){
   diagBudgets();
 }
 var OP_MERGE = {
+  /* v856: 本部予算。合流ルールが無く、セキュアページを開くたびの
+     supaPullAllMasters() でクラウドの値に丸ごと上書きされていた。 */
+  hq_budget: { merge: mergeHqBudget, covers: _coversHqBudget },
   /* v798: 査定まわり。ここが無いと部分データを持つ端末の保存が
      クラウドを丸ごと上書きし、別の人が入れた四半期・別の従業員の
      カルテが消える。査定は手入力で再生できないため、必ず件ごとに合流する。 */
@@ -10542,6 +10579,7 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
      結果は「ローカルが勝つ・ローカルに無い項目はクラウドが残る」＝従来より安全な側にしか動かない。
      このキーも _LS_PRUNABLE に入っており、容量逼迫で端末から消えることがある。 */
   'shiftopt_': { merge: mergeMapByTime, covers: _coversMapByTime },
+  /* v856: 本部予算。接頭辞ではなく完全一致なので OP_MERGE 側へ入れる */
   /* v829: 固定シフト。複数の人が別々の従業員を入力するため、人ごとに保存し
      保存時刻で判定する。消去も記録として残す（_deleted）。 */
   'shift_fixed_': { merge: mergeMapStamped, covers: _coversMapStamped },
@@ -11445,6 +11483,13 @@ async function showManagerSecure(){
   if(body) body.innerHTML='<div class="card" style="padding:24px;text-align:center;color:var(--muted)"><i class="ti ti-loader"></i> 読み込み中…</div>';
   /* 最新データへ同期（成長カルテ・従業員マスター） */
   try{ await supaPullAllMasters(); }catch(e){ console.warn('secure sync', e); }
+  /* v856: ここに来る経路は initApp() を通らないため、_supaBooting が true のままだった。
+     syncMasterToSupabase の先頭に if(_supaBooting) return; があるので、
+     セキュアページでの保存（本部予算・簡易PL）が黙ってクラウドへ上がらなかった。
+     そこへ hq_budget の合流ルールが無かったので、次に開いたときの pull で
+     古いクラウドの値に戻され、「保存したのに消える」になっていた。
+     ★ pull が終わったあとに下げる。先に下げると pull 中の書き込みを押し上げてしまう。 */
+  _supaBooting = false;
   /* セキュアセッションのコンテキスト設定（カルテはGM/CEO判定を使う） */
   window._secureMode=true;
   window._karteUnlocked=true;
@@ -26652,7 +26697,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '855';
+const APP_VERSION = '856';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
