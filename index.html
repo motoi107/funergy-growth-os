@@ -6972,9 +6972,22 @@ async function saveCreditTipAdj(storeId, date){
     lunch_credit_tip_adj_reason: lR||null, dinner_credit_tip_adj_reason: dR||null,
     lunch_credit_tip_adj_by: lBy||null, dinner_credit_tip_adj_by: dBy||null,
     lunch_credit_tip_adj_at: lAt||null, dinner_credit_tip_adj_at: dAt||null };
+  /* v845: その日の勤怠行がまだ無いと、data 列が空のまま新規作成される。
+     data が NOT NULL の環境では insert が落ちるため、無いときだけ空配列を添える。
+     既存行のときは data を送らない（Toastの勤怠を絶対に上書きしないため）。 */
+  try {
+    var _exist = await fetchTipLaborFromDB(guid, date, date);
+    if (!_exist || !_exist.length) row.data = [];
+  } catch(e){ /* 確認できなくても保存は試みる */ }
   var ok = false;
   try { ok = await supaUpsert('tip_labor', [row]); } catch(e){ ok = false; }
-  if (!ok) { showToast(t('調整の保存に失敗しました（DB書込エラー）','Failed to save adjustment (DB write error)'),'danger'); return; }
+  if (!ok) {
+    /* v845: 「DB書込エラー」だけでは次の一手が分からないので、中身を出す。 */
+    var _d = (typeof supaErrorText==='function') ? supaErrorText() : '';
+    showToast(t('調整を保存できませんでした。','Could not save the adjustment. ') + (_d || t('原因不明です。','Unknown cause.')),'danger');
+    console.warn('saveCreditTipAdj failed', supaLastError(), row);
+    return;
+  }
   var hasAdj = (lA!==0)||(dA!==0)||lR||dR;
   setCreditTipAdjLocal(storeId, date, hasAdj ? {lAdj:lA,dAdj:dA,lReason:lR,dReason:dR,lBy:lBy,dBy:dBy,lAt:lAt,dAt:dAt} : null);
   showToast(t('クレジットTip調整を保存しました（再取込でも保持）','Saved credit tip adjustment (persists across re-fetch)'),'success');
@@ -9633,6 +9646,37 @@ function supaSettingCategory(key){
   return 'other';
 }
 /* PostgREST upsert（merge-duplicates） */
+/* v845: 失敗の中身を残す。console だけだとスマホから原因が分からず、
+   「DB書込エラー」としか出せなかった。直近1件を保持して画面に出せるようにする。 */
+var _lastSupaError = null;
+function supaLastError(){ return _lastSupaError; }
+/* PostgREST の代表的な失敗を、次の一手が分かる日本語にする。 */
+function supaErrorHint(err){
+  if (!err) return '';
+  var body = String(err.body || ''), st = err.status || 0;
+  if (/PGRST204/.test(body) || /Could not find the .* column/i.test(body)) {
+    var col = (body.match(/'([a-z_]+)' column/) || [])[1] || '';
+    return 'DBに列がありません' + (col ? '（' + col + '）' : '') + '。SQLの適用が済んでいません。';
+  }
+  if (/PGRST20[01]/.test(body) || /relation .* does not exist/i.test(body)) return 'DBにテーブルがありません。SQLの適用が済んでいません。';
+  if (/23502/.test(body) || /null value in column/i.test(body)) {
+    /* 応答は JSON なので、本文の中の " は \" として届く。両方に当てる。 */
+    var c2 = (body.match(/column\s+\\?"([a-z_]+)\\?"/) || [])[1] || '';
+    return '必須の列が空です' + (c2 ? '（' + c2 + '）' : '') + '。';
+  }
+  if (/42501/.test(body) || /row-level security/i.test(body) || st === 403) return '書き込み権限がありません（RLS）。';
+  if (/42P10/.test(body) || /ON CONFLICT/i.test(body) || st === 409) return '主キーの指定が合っていません（重複解決に失敗）。';
+  if (/23503/.test(body)) return '参照先のデータがありません（外部キー）。';
+  if (st === 401) return '認証が切れています。再読み込みしてください。';
+  if (st === 0) return '通信できませんでした。電波とオフライン状態を確認してください。';
+  return '';
+}
+function supaErrorText(){
+  var e = _lastSupaError; if (!e) return '';
+  var hint = supaErrorHint(e);
+  var raw = String(e.body || '').replace(/\s+/g, ' ').slice(0, 120);
+  return (hint ? hint + ' ' : '') + '[' + (e.status || '?') + (raw ? ' ' + raw : '') + ']';
+}
 async function supaUpsert(table, rows){
   try {
     var res = await fetch(SUPABASE_URL+'/rest/v1/'+table, {
@@ -9640,9 +9684,14 @@ async function supaUpsert(table, rows){
       headers: supaHeaders({ Prefer:'resolution=merge-duplicates,return=minimal' }),
       body: JSON.stringify(rows),
     });
-    if (!res.ok) { var txt=await res.text(); console.warn('supaUpsert '+table+' failed', res.status, txt); return false; }
+    if (!res.ok) { var txt=await res.text();
+      _lastSupaError = { table: table, status: res.status, body: txt, at: new Date().toISOString() };
+      console.warn('supaUpsert '+table+' failed', res.status, txt); return false; }
+    _lastSupaError = null;
     return true;
-  } catch(e){ console.warn('supaUpsert error', table, e); return false; }
+  } catch(e){
+    _lastSupaError = { table: table, status: 0, body: String(e && e.message || e), at: new Date().toISOString() };
+    console.warn('supaUpsert error', table, e); return false; }
 }
 /* 手動: 現在のlocalStorageマスターを一括Supabaseへ投入（設定画面から実行） */
 async function supaPushAllMasters(){
@@ -26563,7 +26612,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '844';
+const APP_VERSION = '847';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30703,6 +30752,16 @@ function canApproveMileage(r){
   }
   return false;
 }
+/* v846: 「見る」と「承認する」を分ける。
+   経理（office / 事務Crew）は精算をまとめるのが仕事なので全店の承認済みが見えないと困る。
+   ただし承認できるのは canApproveMileage の側だけ（事務Crew は false のまま）。 */
+function canViewMileageAll(){
+  return ['ceo','gm','office','office_crew'].includes(curRole) || canManageVacations();
+}
+function canViewMileageRec(r){
+  if(['ceo','gm','office','office_crew'].includes(curRole)) return true;
+  return canApproveMileage(r);
+}
 function canManageMileage(){ return ['ceo','gm','office'].includes(curRole) || canManageVacations(); }
 function canSubmitMileage(){ return (typeof myGradeNum==='function'?myGradeNum():1) >= 4; }
 
@@ -30913,21 +30972,27 @@ function renderMileagePerPerson(recs){
   return h;
 }
 function renderMileage(){
-  var all=getMileageRequests(); var me=mileMyName(); var isMgr=canManageMileage();
+  var all=getMileageRequests(); var me=mileMyName();
+  /* v846: 精算の一覧は「見られる人」で出す。設定・月末処理は従来どおり管理権限で出す。 */
+  var isMgr=canViewMileageAll(); var canCfg=canManageMileage();
   var c=getMileageConfig();
   var active=all.filter(function(r){return !r.archived;});
   var curMonth=curYm();
   var html='<div class="section-header"><div class="section-title">ガソリン代申請</div>'
-    +'<div style="display:flex;gap:6px">'+(isMgr?'<button class="btn btn-secondary btn-sm" onclick="openMileageConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
+    +'<div style="display:flex;gap:6px">'+(canCfg?'<button class="btn btn-secondary btn-sm" onclick="openMileageConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
     +(canSubmitMileage()?'<button class="btn btn-primary btn-sm" onclick="openMileageModal()"><i class="ti ti-plus"></i> 申請</button>':'')+'</div></div>';
   html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。「Google Mapsで距離を調べる」で出発地→目的地の距離を確認し、マイルで入力 → $'+c.ratePerMile+'/マイルで自動算定します。</div>';
   if(isMgr){
-    var pending=active.filter(function(r){ return r.status==='申請中' && canApproveMileage(r); });
+    /* v846: 承認できる人には承認待ちを、見るだけの人にも件数と中身を見せる。 */
+    var pending=active.filter(function(r){ return r.status==='申請中' && canViewMileageRec(r); });
     html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'">'+pending.length+'</span>'+(pending.length?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go(\'approval\')"><i class="ti ti-checklist"></i> 承認センターで承認</button>':'')+'</div>';
-    html+= pending.length ? pending.map(function(r){return _mileRow(r,null);}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
+    /* v846: ここは _mileRow(r,null) だったため、承認/却下のボタンが一度も描かれていなかった
+       （_mileRow の 'approve' 分岐がどこからも使われていない死んだコードになっていた）。
+       承認できる人にだけボタンを出す。事務Crew には出ない。 */
+    html+= pending.length ? pending.map(function(r){return _mileRow(r, canApproveMileage(r)?'approve':null);}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
     html+='</div>';
     // 今月の精算（スタッフ別・承認済み）
-    var moApproved=active.filter(function(r){ return r.status==='承認' && (r.date||'').slice(0,7)===curMonth && canApproveMileage(r); });
+    var moApproved=active.filter(function(r){ return r.status==='承認' && (r.date||'').slice(0,7)===curMonth && canViewMileageRec(r); });
     var byStaff={}; moApproved.forEach(function(r){ byStaff[r.employee]=(byStaff[r.employee]||0)+(r.amount||0); });
     var staffNames=Object.keys(byStaff).sort(function(a,b){return byStaff[b]-byStaff[a];});
     var moTotal=moApproved.reduce(function(a,r){return a+(r.amount||0);},0);
@@ -30948,21 +31013,28 @@ function renderMileage(){
     }
     html+='</div>';
     // 個人別 過去ログ（承認済み・全期間）＝承認後すぐ反映
-    var _apprAll=all.filter(function(r){ return r.status==='承認' && canApproveMileage(r); });
+    var _apprAll=all.filter(function(r){ return r.status==='承認' && canViewMileageRec(r); });
     html+='<div class="card"><div class="card-title"><i class="ti ti-users" style="color:var(--accent2)"></i>個人別 過去ログ（承認済み・全期間）<span class="tag tag-green" style="margin-left:auto">$'+_apprAll.reduce(function(a,r){return a+(r.amount||0);},0).toFixed(2)+'</span></div>';
     html+=renderMileagePerPerson(_apprAll);
     html+='</div>';
     // 過去ログ（月末処理済み）
-    var archived=all.filter(function(r){return r.archived && canApproveMileage(r);});
+    var archived=all.filter(function(r){return r.archived && canViewMileageRec(r);});
     if(archived.length){
       html+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--muted)"></i>過去ログ（月末処理済み）<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="mileagePastOpen=!mileagePastOpen;renderPage(\'mileage\')">'+(mileagePastOpen?'閉じる':'開く')+'</button></div>';
       if(mileagePastOpen){ html+=renderMileagePastLog(archived); }
       html+='</div>';
     }
   }
-  var mine=active.filter(function(r){return r.employee===me;});
-  html+='<div class="card"><div class="card-title"><i class="ti ti-gas-station"></i>自分の申請</div>';
-  html+= mine.length ? mine.slice().reverse().map(function(r){return _mileRow(r,'cancel');}).join('') : '<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">申請履歴なし</div>';
+  /* v846: active（未締め）だけを見ていたため、月末処理をすると申請者本人が
+     自分がいくら精算されたのかを追えなくなっていた。締めたぶんも残して出す。 */
+  var mine=all.filter(function(r){return r.employee===me;})
+    .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  var myAppr=mine.filter(function(r){ return r.status==='承認'; });
+  var myTotal=myAppr.reduce(function(s,r){ return s+(r.amount||0); },0);
+  html+='<div class="card"><div class="card-title"><i class="ti ti-gas-station"></i>自分の申請'
+    +(myAppr.length?'<span class="tag tag-green" style="margin-left:auto">承認済み '+myAppr.length+'件 $'+myTotal.toFixed(2)+'</span>':'')
+    +'</div>';
+  html+= mine.length ? mine.map(function(r){return _mileRow(r,'cancel');}).join('') : '<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">申請履歴なし</div>';
   html+='</div>';
   return html;
 }
@@ -44416,6 +44488,21 @@ function approveLssRequest(id, status) {
 /* ============================================================
    APPROVAL
 ============================================================ */
+/* ============================================================
+   v846 事務Crew（office_crew）は閲覧のみ
+   ------------------------------------------------------------
+   v844 で経理と同じメニューにしたぶん、承認・却下・差し戻しの画面まで開ける。
+   見えるのは正しいが、押せてはいけない。
+   「決める操作」＝承認 / 却下 / 差し戻し / 支払確定 / 削除 は全部ここで止める。
+   入力の仕事（Invoice登録・経理区分・チップ調整など）は今までどおりできる。
+   ============================================================ */
+function isViewOnlyRole(){ return curRole === 'office_crew'; }
+function denyViewOnly(what){
+  if (!isViewOnlyRole()) return false;
+  showToast(t('権限がありません。事務Crewは閲覧のみです','No permission. Office Crew is view-only')
+    + (what ? '（' + what + '）' : ''), 'warning');
+  return true;
+}
 function addApproval(obj) {
   var approvals = ls('approvals', []);
   var rec = Object.assign({id:'ap'+Date.now(), status:'pending', date:todayJP(), _mut:Date.now()}, obj);
@@ -44802,6 +44889,8 @@ function renderApproval() {
 }
 
 async function approveItem(id, status, reason) {
+  /* v846: 事務Crew は押しても通さない。ここを止めれば承認・却下・差し戻しの全種類が止まる。 */
+  if (denyViewOnly(t('承認・却下','approve / reject'))) return;
   var approvals = ls('approvals', []);
   var a = approvals.find(a=>a.id===id);
   if (a) {
@@ -45894,6 +45983,146 @@ async function toastSyncStore(){
   showToast(ok?(name+t(' 取り込み完了','synced')+' — '+msg):(t('取り込み失敗','Sync failed')+': '+msg), ok?'success':'danger');
 }
 
+/* ============================================================
+   v847 シフト作成テスト用スタッフ
+   ------------------------------------------------------------
+   シフトの組み方・調整を実データを汚さずに試すための15名。
+
+   ・全員 support に全店を入れてあるので、どの店舗のシフトにも入れられる
+     （シフト候補は atStore(e) = e.store===storeId || support.includes(storeId) で決まる）
+   ・名前は必ず TEST で始まる。どの画面で見ても本物と見分けがつく
+   ・isTest:true を持たせ、まとめて消せるようにしてある
+
+   ★ 注意：従業員マスターに入るので、シフト以外にも出ます。
+     チップ配分・人件費・スキル評価・スタッフ一覧など。
+     試し終わったら「まとめて削除」で消すこと。
+   ★ m_employees は手動 push のみでクラウドから自動で戻ってこないため、
+     ローカルで消せばそれで終わり。他端末へ反映したいときは
+     設定 → マスター一括投入 を実行する。
+   ============================================================ */
+var TEST_STAFF_PREFIX = 'tst_';
+/* 想定する働き方をひととおり並べてある。数字は時給の目安。
+
+   ★ リーダー職も role は 'crew' にしてある。理由：
+     シフト候補の絞り込みが (e.role==='crew'||e.role==='office_crew') なので、
+     role:'sl' にするとシフトに入れられなくなる。
+     等級は empGrade() が gradeOf(e.title) を先に見るため、
+     title だけで Server Leader=G3 / Crew Leader=G2 になる。
+     SL の数え方は isSL か title の Leader 判定なので、そちらは sl:true で立てる。 */
+var TEST_STAFF_DEFS = [
+  { n:'01 Fulltime',   title:'Crew',             role:'crew', emp:'正社員', wage:18,   prep:false, note:'週5フル・ランチもディナーも入れる' },
+  { n:'02 Lunch',      title:'Crew',             role:'crew', emp:'パート', wage:16,   prep:false, note:'ランチ専門・週3' },
+  { n:'03 Dinner',     title:'Crew',             role:'crew', emp:'パート', wage:16.5, prep:false, note:'ディナー専門・週4' },
+  { n:'04 Prep AM',    title:'Prep Specialist',  role:'crew', emp:'パート', wage:16,   prep:true,  note:'早朝Prep・週5・ホールに出ない' },
+  { n:'05 CrewLeader', title:'Crew Leader',      role:'crew', emp:'パート', wage:17,   prep:false, note:'週5・L/D両方・新人フォロー' },
+  { n:'06 ServerLead', title:'Server Leader',    role:'crew', sl:true, emp:'パート', wage:18.5, prep:false, note:'SL・ディナー中心・締め対応' },
+  { n:'07 KitchenLead',title:'Kitchen Leader',   role:'crew', sl:true, emp:'パート', wage:18.5, prep:false, note:'SL・キッチン専任' },
+  { n:'08 Weekend',    title:'Crew',             role:'crew', emp:'パート', wage:16,   prep:false, note:'土日のみ・終日' },
+  { n:'09 Weekday',    title:'Crew',             role:'crew', emp:'パート', wage:16,   prep:false, note:'平日のみ・夕方から' },
+  { n:'10 ShortTime',  title:'Crew',             role:'crew', emp:'パート', wage:16,   prep:false, note:'週2・1日4時間の短時間' },
+  { n:'11 OpenClose',  title:'Crew',             role:'crew', emp:'パート', wage:17,   prep:false, note:'開店/閉店どちらも対応' },
+  { n:'12 Prep PM',    title:'Prep Specialist',  role:'crew', emp:'パート', wage:16,   prep:true,  note:'午後Prep・週2' },
+  { n:'13 Helper',     title:'Crew',             role:'crew', emp:'パート', wage:16.5, prep:false, note:'複数店ヘルプ中心・曜日不定' },
+  { n:'14 Newbie',     title:'Crew',             role:'crew', emp:'パート', wage:16,   prep:false, note:'新人・スキル未評価・要フォロー' },
+  { n:'15 OpsLeader',  title:'Operation Leader', role:'crew', sl:true, emp:'パート', wage:20,   prep:false, note:'週5・全ポジション対応' },
+];
+function testStaffStoreIds(){
+  try {
+    var list = (typeof getStoresAll==='function') ? getStoresAll() : STORES;
+    return (list||[]).filter(function(s){ return s && s.active!==false; }).map(function(s){ return s.id; });
+  } catch(e){ return (typeof STORES!=='undefined' ? STORES : []).map(function(s){ return s.id; }); }
+}
+function getTestStaff(){
+  return (getEmployees()||[]).filter(function(e){
+    return e && (e.isTest === true || String(e.id||'').indexOf(TEST_STAFF_PREFIX) === 0);
+  });
+}
+function canManageTestStaff(){ return ['ceo','gm'].indexOf(curRole) >= 0; }
+
+function createTestStaff(){
+  if(!canManageTestStaff()){ showToast('テスト用スタッフの作成はGM/CEOのみです','warning'); return; }
+  var stores = testStaffStoreIds();
+  if(!stores.length){ showToast('店舗が取得できませんでした','danger'); return; }
+  var emps = getEmployees()||[];
+  var added = 0;
+  TEST_STAFF_DEFS.forEach(function(d, i){
+    var id = TEST_STAFF_PREFIX + String(i+1).padStart(2,'0');
+    if(emps.some(function(e){ return e && e.id === id; })) return;   /* 二重に作らない */
+    var jt = (typeof JOB_TITLES!=='undefined' ? JOB_TITLES : []).find(function(x){ return x.key===d.title; }) || {};
+    emps.push({
+      id: id,
+      name: 'TEST ' + d.n,
+      role: d.role,
+      store: stores[0],
+      support: stores.slice(),        /* 全店でシフトに入れる */
+      emp: d.emp,
+      step: 1,
+      status: '在籍',
+      perms: (typeof ROLE_TO_PERM!=='undefined' ? (ROLE_TO_PERM[d.role]||'crew') : 'crew'),
+      wage: d.wage,
+      coef: 1.0,
+      title: d.title,
+      isSL: !!d.sl,
+      email: '',
+      prep: !!d.prep,
+      isTest: true,
+      testNote: d.note,
+      hiredAt: (typeof todayISO==='function' ? todayISO() : ''),
+    });
+    added++;
+  });
+  lsSet('m_employees', emps);
+  showToast(added ? ('テスト用スタッフを ' + added + '名 作成しました') : 'すでに作成済みです',
+    added ? 'success' : 'info');
+  renderPage('settings');
+}
+
+function removeTestStaff(){
+  if(!canManageTestStaff()){ showToast('テスト用スタッフの削除はGM/CEOのみです','warning'); return; }
+  var cur = getTestStaff();
+  if(!cur.length){ showToast('テスト用スタッフはいません','info'); return; }
+  if(!confirm('テスト用スタッフ ' + cur.length + '名 をまとめて削除します。\n'
+    + '（このスタッフに割り当てたシフトは残ります。必要なら先にシフトから外してください）\nよろしいですか？')) return;
+  var ids = {}; cur.forEach(function(e){ ids[e.id] = 1; });
+  var emps = (getEmployees()||[]).filter(function(e){ return !(e && ids[e.id]); });
+  lsSet('m_employees', emps);
+  showToast(cur.length + '名 を削除しました','success');
+  renderPage('settings');
+}
+
+function renderTestStaffCard(){
+  if(!canManageTestStaff()) return '';
+  var cur = getTestStaff();
+  var stores = testStaffStoreIds();
+  var h = '<div class="card"><div class="card-title">'
+    + '<i class="ti ti-users-plus" style="color:var(--accent)"></i>シフト作成テスト用スタッフ'
+    + (cur.length ? '<span class="tag tag-yellow" style="margin-left:auto">' + cur.length + '名</span>' : '')
+    + '</div>'
+    + '<p style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:10px">'
+    + 'シフトの組み方・調整を試すための15名です。全員 <b>' + stores.length + '店すべて</b>でシフトに入れられます。'
+    + '働き方（ランチ専門／ディナー専門／Prep／週末のみ／短時間 など）をひととおり用意してあります。<br>'
+    + '<b style="color:var(--red)">従業員マスターに入るので、チップ配分・人件費・スキル評価・スタッフ一覧にも出ます。</b>'
+    + '試し終わったら削除してください。名前はすべて <b>TEST</b> で始まります。</p>';
+  if(cur.length){
+    h += '<div style="max-height:190px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px 9px;margin-bottom:10px">';
+    cur.forEach(function(e){
+      h += '<div style="font-size:11.5px;padding:4px 0;border-bottom:1px solid var(--border)">'
+        + '<b>' + escapeHtml(e.name) + '</b> <span style="color:var(--muted)">· '
+        + escapeHtml(e.title||'') + ' · $' + (e.wage||0) + '</span>'
+        + '<div style="font-size:10px;color:var(--muted)">' + escapeHtml(e.testNote||'') + '</div></div>';
+    });
+    h += '</div>';
+  }
+  h += '<div class="btn-row">'
+    + '<button class="btn btn-primary btn-sm" onclick="createTestStaff()"><i class="ti ti-user-plus"></i> '
+    + (cur.length ? '不足分を作成' : '15名を作成') + '</button>'
+    + (cur.length ? '<button class="btn btn-danger btn-sm" onclick="removeTestStaff()"><i class="ti ti-trash"></i> まとめて削除</button>' : '')
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> '
+    + '他の端末にも反映するには、この画面の「マスター一括投入」を実行してください。</div>'
+    + '</div>';
+  return h;
+}
 function renderSettings() {
   var html = `<div class="section-header"><div class="section-title">設定</div></div>
   ${(['ceo','gm','office'].indexOf(curRole)>=0)?`<div class="card"><div class="card-title"><i class="ti ti-cloud-download" style="color:var(--accent)"></i> Toast同期（店舗別・31日）</div>
@@ -45992,6 +46221,7 @@ function renderSettings() {
     </div>`;
   }
 
+  html += renderTestStaffCard();   /* v847 */
   html += `<div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>システム情報</div>
     <div style="font-size:13px;color:var(--muted)">
       <p>Version: 1.1.0</p>
@@ -48823,11 +49053,14 @@ function getReimbursements(){ return ls('reimbursements', [])||[]; }
 function saveReimbursements(v){ lsSet('reimbursements', v); }
 function canManageReimburse(){ return ['ceo','gm','office','office_crew','am'].indexOf(curRole)>=0; }
 function canApproveReimburse(r){
-  if(['ceo','gm','office','office_crew'].indexOf(curRole)>=0) return true;
+  /* v846: 事務Crew は閲覧のみ。承認・却下はできない。 */
+  if(isViewOnlyRole()) return false;
+  if(['ceo','gm','office'].indexOf(curRole)>=0) return true;
   if(curRole==='am') return (myAmStores().indexOf(r.storeId)>=0) || (mySupportStores().indexOf(r.storeId)>=0);
   return false;
 }
-function canMarkReimbursePaid(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
+/* v846: 支払確定はお金が動く操作。事務Crew は外す。 */
+function canMarkReimbursePaid(){ return !isViewOnlyRole() && ['ceo','gm','office'].indexOf(curRole)>=0; }
 function attachReimburseReceipt(input){
   var f=input&&input.files&&input.files[0]; if(!f) return;
   window._invoicePhotoFile=f;
@@ -49197,7 +49430,9 @@ function invIsMine(inv){
 }
 /* 削除権限：経理/GM/CEOは全件、AM/SLは自分のアップロードかつ確認済み以外 */
 function canDeleteInvoice(inv){
-  if(['ceo','gm','office','office_crew'].includes(curRole)) return true;
+  /* v846: 削除は取り消せない操作。事務Crew は外す（閲覧のみ）。 */
+  if(isViewOnlyRole()) return false;
+  if(['ceo','gm','office'].includes(curRole)) return true;
   return invIsMine(inv) && (inv.reviewStatus!=='確認済み');
 }
 /* やり取り1件追加 */
