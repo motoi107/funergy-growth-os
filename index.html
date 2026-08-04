@@ -26612,7 +26612,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '847';
+const APP_VERSION = '848';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30755,6 +30755,108 @@ function canApproveMileage(r){
 /* v846: 「見る」と「承認する」を分ける。
    経理（office / 事務Crew）は精算をまとめるのが仕事なので全店の承認済みが見えないと困る。
    ただし承認できるのは canApproveMileage の側だけ（事務Crew は false のまま）。 */
+/* ============================================================
+   v848 IRS 標準走行距離料率（business use）
+   ------------------------------------------------------------
+   2026年は年央で改定された。過去分は当時の料率で精算するのが正しいので、
+   実績には申請時に保存した r.rate をそのまま使う。ここは「今の正しい料率」を
+   設定値と突き合わせて知らせるためだけに使う。
+   ★ 料率が変わったらここに1行足すこと。
+   出典: IRS Notice 2026-10 / Announcement 2026-29
+   ============================================================ */
+var IRS_MILEAGE_RATES = [
+  { from: '2025-01-01', rate: 0.70  },
+  { from: '2026-01-01', rate: 0.725 },
+  { from: '2026-07-01', rate: 0.76  },
+];
+function irsMileageRate(dateISO){
+  var d = String(dateISO||'') || (typeof todayISO==='function' ? todayISO() : '');
+  var hit = null;
+  IRS_MILEAGE_RATES.forEach(function(x){ if(d >= x.from) hit = x; });
+  return hit ? hit.rate : null;
+}
+/* 設定の単価が今のIRS料率と違うときだけ知らせる。勝手に書き換えない。 */
+function mileageRateNoticeHtml(){
+  var cfg = getMileageConfig();
+  var now = irsMileageRate();
+  if(now === null || Number(cfg.ratePerMile) === now) return '';
+  var lower = Number(cfg.ratePerMile) < now;
+  return '<div style="background:var(--yellow)18;border-left:3px solid var(--yellow);border-radius:8px;'
+    + 'padding:8px 10px;margin-bottom:8px;font-size:11.5px;line-height:1.7">'
+    + '<i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> '
+    + '設定の単価は <b>$' + Number(cfg.ratePerMile).toFixed(3) + '</b>／マイルですが、'
+    + '現在のIRS標準料率は <b>$' + now.toFixed(3) + '</b> です。'
+    + (lower ? '<b style="color:var(--red)">支給額が不足している可能性があります。</b>' : '')
+    + '<br><span style="color:var(--muted)">2026年は 1/1 から $0.725、7/1 から $0.76 に改定。'
+    + '変更は「設定」から。過去の申請は当時の単価のまま残ります。</span></div>';
+}
+
+/* 月ごとのCSV出力。日付・行先・内容・距離・金額。
+   金額は申請時に確定した単価（r.rate）で計算済みの r.amount をそのまま使う。 */
+function exportMileageCsv(ym){
+  if(!canViewMileageAll()){ showToast('出力の権限がありません','warning'); return; }
+  ym = ym || curYm();
+  var all = getMileageRequests().filter(function(r){
+    return r.status==='承認' && String(r.date||'').slice(0,7)===ym && canViewMileageRec(r);
+  }).sort(function(a,b){
+    return String(a.date||'').localeCompare(String(b.date||'')) || String(a.employee||'').localeCompare(String(b.employee||''));
+  });
+  if(!all.length){ showToast(ym+' の承認済みガソリン代がありません','info'); return; }
+  var storeName = function(id){ return (STORES.find(function(s){return s.id===id;})||{name:id}).name; };
+  var rows = [['日付','スタッフ','店舗','行先','内容','距離(マイル)','単価($/マイル)','金額($)','往復','承認者','承認日時']];
+  all.forEach(function(r){
+    rows.push([
+      r.date||'',
+      r.employee||'',
+      storeName(r.storeId),
+      (r.origin||'') + ' → ' + (r.destination||''),
+      (r.purpose||'') + (r.memo ? '（'+r.memo+'）' : ''),
+      (r.miles!=null?r.miles:''),
+      (r.rate!=null?Number(r.rate).toFixed(3):''),
+      (r.amount!=null?Number(r.amount).toFixed(2):''),
+      r.roundTrip ? '往復' : '片道',
+      r.approvedBy||'',
+      r.approvedAt||'',
+    ]);
+  });
+  var totalMiles = all.reduce(function(a,r){ return a+(Number(r.miles)||0); },0);
+  var totalAmt   = all.reduce(function(a,r){ return a+(Number(r.amount)||0); },0);
+  rows.push([]);
+  rows.push(['合計','','','','', Math.round(totalMiles*10)/10, '', totalAmt.toFixed(2), '', '', '']);
+  /* スタッフ別の小計（精算に使う） */
+  var byEmp = {};
+  all.forEach(function(r){ byEmp[r.employee] = (byEmp[r.employee]||0) + (Number(r.amount)||0); });
+  rows.push([]);
+  rows.push(['スタッフ別 精算額','金額($)']);
+  Object.keys(byEmp).sort().forEach(function(n){ rows.push([n, byEmp[n].toFixed(2)]); });
+  var irs = irsMileageRate(ym + '-15');
+  rows.push([]);
+  rows.push(['対象月', ym]);
+  rows.push(['この月のIRS標準料率', irs!=null ? ('$'+irs.toFixed(3)+'/マイル') : '（不明）']);
+  rows.push(['注記','金額は申請時に確定した単価で計算しています。IRS料率は 2026/1/1 から $0.725、2026/7/1 から $0.76。']);
+
+  var csv = rows.map(function(r){
+    return r.map(function(c){ return '"'+String(c==null?'':c).replace(/"/g,'""')+'"'; }).join(',');
+  }).join('\r\n');
+  var blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'ガソリン代_'+ym+'.csv'; a.click();
+  URL.revokeObjectURL(url);
+  showToast(ym+' のガソリン代を出力しました（'+all.length+'件 / $'+totalAmt.toFixed(2)+'）','success');
+}
+function mileageExportMonths(){
+  var s = {};
+  getMileageRequests().forEach(function(r){
+    if(r.status!=='承認' || !canViewMileageRec(r)) return;
+    var m = String(r.date||'').slice(0,7); if(m) s[m]=1;
+  });
+  var out = Object.keys(s).sort().reverse();
+  if(!out.length) out = [curYm()];
+  return out;
+}
+var _miExportYm = '';
+function miSetExportYm(v){ _miExportYm = v; }
 function canViewMileageAll(){
   return ['ceo','gm','office','office_crew'].includes(curRole) || canManageVacations();
 }
@@ -30981,6 +31083,7 @@ function renderMileage(){
   var html='<div class="section-header"><div class="section-title">ガソリン代申請</div>'
     +'<div style="display:flex;gap:6px">'+(canCfg?'<button class="btn btn-secondary btn-sm" onclick="openMileageConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
     +(canSubmitMileage()?'<button class="btn btn-primary btn-sm" onclick="openMileageModal()"><i class="ti ti-plus"></i> 申請</button>':'')+'</div></div>';
+  if(isMgr) html+=mileageRateNoticeHtml();   /* v848: 設定の単価とIRS標準料率のズレを知らせる */
   html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。「Google Mapsで距離を調べる」で出発地→目的地の距離を確認し、マイルで入力 → $'+c.ratePerMile+'/マイルで自動算定します。</div>';
   if(isMgr){
     /* v846: 承認できる人には承認待ちを、見るだけの人にも件数と中身を見せる。 */
@@ -31007,6 +31110,16 @@ function renderMileage(){
     } else {
       html+='<div style="font-size:12px;color:var(--muted);padding:4px 0">今月の承認済み精算はまだありません</div>';
     }
+    /* v848: 月ごとにまとめて出力（日付・行先・内容・距離・金額）。
+       経理が精算に使うので、月末処理の権限が無くても出せる。 */
+    var _mons=mileageExportMonths(); var _sel=_miExportYm||_mons[0];
+    html+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">'
+      +'<span style="font-size:11px;color:var(--muted)">月次出力</span>'
+      +'<select id="mi-exp-ym" onchange="miSetExportYm(this.value)" style="font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface)">'
+      + _mons.map(function(m){ return '<option value="'+m+'"'+(m===_sel?' selected':'')+'>'+m+'</option>'; }).join('')
+      +'</select>'
+      +'<button class="btn btn-secondary btn-sm" onclick="exportMileageCsv((document.getElementById(\'mi-exp-ym\')||{}).value)"><i class="ti ti-download"></i> CSV</button>'
+      +'<span style="font-size:10px;color:var(--muted)">日付・行先・内容・距離・金額／スタッフ別小計つき</span></div>';
     if(canMileageMonthEnd()){
       html+='<button class="btn btn-primary btn-sm" style="width:100%;margin-top:10px" onclick="mileageMonthEndClose(\''+curMonth+'\')"><i class="ti ti-archive"></i> '+curMonth+' を月末処理（過去ログへ）</button>';
       html+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> 月末処理するとこの月の申請が過去ログへ移動し、当月の積み上げがリセットされます。</div>';
@@ -49168,7 +49281,9 @@ function _rbRow(r, mgr){
     +(r.status==='却下'&&r.rejectReason?'<div style="font-size:11px;color:var(--red)">却下理由: '+escapeHtml(r.rejectReason)+'</div>':'')
     +(r.status==='承認'?'<div style="font-size:11px;color:'+pc+';font-weight:600">'+(r.payStatus==='支払済'?('✓ 支払済 '+escapeHtml(r.paidAt||'')+(r.paidBy?'（'+escapeHtml(r.paidBy)+'）':'')+(r.payMethodNote?' / '+escapeHtml(r.payMethodNote):'')):'● 未払い')+'</div>':'')
     +'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
-    +(r.imagePath?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="viewInvoiceImage(\''+String(r.imagePath).replace(/'/g,"\\'")+'\')"><i class="ti ti-photo"></i></button>':'')
+    /* v848: アイコンだけでは気づけないので「レシート」と書く。無い申請はその旨を出す。 */
+    +(r.imagePath?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px;white-space:nowrap" onclick="viewInvoiceImage(\''+String(r.imagePath).replace(/'/g,"\\'")+'\')"><i class="ti ti-photo"></i> レシート</button>'
+      :'<span style="font-size:9.5px;color:var(--muted);white-space:nowrap">レシートなし</span>')
     +(r.driveUrl?'<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="'+r.driveUrl+'" target="_blank"><i class="ti ti-brand-google-drive"></i></a>':'')
     +'<span class="tag '+sc+'">'+r.status+'</span></div></div>';
   if(mgr){
@@ -49187,23 +49302,74 @@ function _rbRow(r, mgr){
   }
   return h+'</div>';
 }
+/* v848: 建て替え経費のレシートは Invoice と同じ扱いにする。
+   これまで「支払済ログ 直近10件」までしか出しておらず、
+   承認・支払が済んだ過去のレシートを経理が確認する手段が無かった。
+   月で絞り、件数と合計を出し、全件たどれるようにする。 */
+var _rbView = { ym: '', status: 'all' };
+function rbSetYm(v){ _rbView.ym = v; renderPage(curPage || 'invoice'); }
+function rbSetStatus(v){ _rbView.status = v; renderPage(curPage || 'invoice'); }
+function rbMonthsOf(list){
+  var s = {};
+  (list||[]).forEach(function(r){ var m = String(r.date||'').slice(0,7); if(m) s[m]=1; });
+  return Object.keys(s).sort().reverse();
+}
+function rbStatusOf(r){
+  if(r.status==='却下') return 'rejected';
+  if(r.status==='申請中') return 'pending';
+  return (r.payStatus==='支払済') ? 'paid' : 'unpaid';
+}
 function renderReimburseCard(){
-  if(['ceo','gm','office','am'].indexOf(curRole)<0 && !getReimbursements().some(function(r){return r.byUser===curUserName||r.payer===curUserName;})) return '';
+  if(['ceo','gm','office','office_crew','am'].indexOf(curRole)<0
+     && !getReimbursements().some(function(r){return r.byUser===curUserName||r.payer===curUserName;})) return '';
   var scoped=reimburseScoped();
   var mgr=canManageReimburse();
-  var pending=scoped.filter(function(r){return r.status==='申請中';});
-  var unpaid=scoped.filter(function(r){return r.status==='承認' && r.payStatus!=='支払済';});
-  var paid=scoped.filter(function(r){return r.status==='承認' && r.payStatus==='支払済';}).sort(function(a,b){return (b.paidAt||'').localeCompare(a.paidAt||'');}).slice(0,10);
-  var rej=scoped.filter(function(r){return r.status==='却下';}).slice(-5);
-  var unpaidSum=unpaid.reduce(function(a,r){return a+(r.amount||0);},0);
+  var months=rbMonthsOf(scoped);
+  var ym=_rbView.ym || (months[0]||'');
+  var st=_rbView.status||'all';
+  /* 月で絞る。「すべて」も選べる。 */
+  var inYm = (ym==='ALL') ? scoped : scoped.filter(function(r){ return String(r.date||'').slice(0,7)===ym; });
+  var counts={ all:inYm.length, pending:0, unpaid:0, paid:0, rejected:0 };
+  inYm.forEach(function(r){ counts[rbStatusOf(r)]++; });
+  var shown = (st==='all') ? inYm : inYm.filter(function(r){ return rbStatusOf(r)===st; });
+  shown = shown.slice().sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  var sum = shown.reduce(function(a,r){ return a+(r.amount||0); },0);
+  var unpaidSum = inYm.filter(function(r){ return rbStatusOf(r)==='unpaid'; })
+    .reduce(function(a,r){ return a+(r.amount||0); },0);
+  var withImg = shown.filter(function(r){ return !!r.imagePath; }).length;
+
   var h='<div class="card"><div class="card-title"><i class="ti ti-user-dollar" style="color:var(--accent)"></i>建て替え経費'
-    +(unpaid.length?'<span class="tag tag-yellow" style="margin-left:auto">未払い $'+unpaidSum.toFixed(2)+'</span>':'<span class="tag tag-gray" style="margin-left:auto">未払いなし</span>')+'</div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><i class="ti ti-info-circle"></i> 社員以外が立て替えた経費もここで管理。「Invoice登録」→種別「建て替え経費」から申請。承認＝管理者または経理の1名でOK。</div>';
-  if(pending.length){ h+='<div style="font-size:12px;font-weight:700;margin:6px 0 2px">承認待ち <span class="tag tag-yellow">'+pending.length+'</span></div>'+pending.map(function(r){return _rbRow(r,mgr);}).join(''); }
-  if(unpaid.length){ h+='<div style="font-size:12px;font-weight:700;margin:8px 0 2px">承認済み・未払い <span class="tag tag-yellow">'+unpaid.length+'</span></div>'+unpaid.map(function(r){return _rbRow(r,mgr);}).join(''); }
-  if(paid.length){ h+='<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--muted)">支払済ログ（直近'+paid.length+'件）</summary>'+paid.map(function(r){return _rbRow(r,mgr);}).join('')+'</details>'; }
-  if(rej.length){ h+='<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">却下（直近）</summary>'+rej.map(function(r){return _rbRow(r,false);}).join('')+'</details>'; }
-  if(!pending.length && !unpaid.length && !paid.length && !rej.length){ h+='<div style="font-size:12px;color:var(--muted);padding:6px 0">建て替え経費の申請はまだありません</div>'; }
+    +(unpaidSum>0?'<span class="tag tag-yellow" style="margin-left:auto">未払い $'+unpaidSum.toFixed(2)+'</span>'
+                 :'<span class="tag tag-gray" style="margin-left:auto">未払いなし</span>')+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> '
+    +'社員以外が立て替えた経費もここで管理。「Invoice登録」→種別「建て替え経費」から申請します。'
+    +'レシート画像は Invoice と同じ保管先です。</div>';
+
+  /* 月の切り替え */
+  if(months.length){
+    h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">'
+      +'<span style="font-size:11px;color:var(--muted)">月</span>'
+      +'<select onchange="rbSetYm(this.value)" style="font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface)">';
+    months.forEach(function(m){ h+='<option value="'+m+'"'+(m===ym?' selected':'')+'>'+m+'</option>'; });
+    h+='<option value="ALL"'+(ym==='ALL'?' selected':'')+'>すべて</option></select>'
+      +'<span style="font-size:11px;color:var(--muted);margin-left:auto">'+shown.length+'件 / $'+sum.toFixed(2)
+      +'（レシート '+withImg+'件）</span></div>';
+  }
+  /* 状態の切り替え */
+  var tabs=[['all','すべて'],['pending','承認待ち'],['unpaid','未払い'],['paid','支払済'],['rejected','却下']];
+  h+='<div class="btn-row" style="margin-bottom:8px;flex-wrap:wrap">';
+  tabs.forEach(function(t){
+    h+='<button class="btn btn-'+(st===t[0]?'primary':'secondary')+' btn-sm" onclick="rbSetStatus(\''+t[0]+'\')">'
+      +t[1]+' '+(counts[t[0]]||0)+'</button>';
+  });
+  h+='</div>';
+
+  if(shown.length){
+    h+=shown.map(function(r){ return _rbRow(r,mgr); }).join('');
+  } else {
+    h+='<div style="font-size:12px;color:var(--muted);padding:8px 0;text-align:center">'
+      +(scoped.length?'この条件に当てはまる申請はありません':'建て替え経費の申請はまだありません')+'</div>';
+  }
   h+='</div>';
   return h;
 }
