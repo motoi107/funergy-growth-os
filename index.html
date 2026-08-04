@@ -12803,6 +12803,7 @@ function skeletonMain(){
   return '<div style="padding:2px" aria-busy="true">'+head+tiles+card()+card()+'</div>';
 }
 function renderPage(page) {
+  try{ mdCacheClear(); }catch(e){}   /* v859: 描画のたびに集計キャッシュを捨てる */
   if (typeof isPageHiddenForMe==='function' && isPageHiddenForMe(page)) { var _ga=groupsForRole()[0]; page = (_ga && _ga.children && _ga.children[0]) || 'mypage'; }
   var el = document.getElementById('main-content');
   /* v841: 統合コンソールのときだけ .main の幅制限を外す。他画面には影響しない。 */
@@ -15174,7 +15175,44 @@ function _invDayCostMap(){
   window._idc=m; window._idcN=inv.length; return m;
 }
 function dayCostReal(sid, iso){ var m=_invDayCostMap(); return (m[sid]&&m[sid][iso])||0; }
+/* ============================================================
+   v859 同期処理1回ぶんの集計キャッシュ
+   ------------------------------------------------------------
+   管理コンソールは1回の描画で mdVerdict を 144回 呼んでおり
+   （判定バナー45 + 重要KPI45 + 理由45 + 展開9、実測値）、
+   そのたびに cumulativeToToday → laborCoreForYm が走っていた。
+   laborCoreForYm は1日1キーの getTipLabor を引くので、
+   9店の描画で 4,464回 の読み取りになっていた。
+   同じ店の同じ月を 16回ずつ 計算し直していたことになる。
+
+   ★ 生かすのは「今の同期処理1回ぶん」だけ。
+     最初に使った時点で setTimeout(0) を仕掛け、
+     呼び出しスタックが空になった瞬間に捨てる。
+     描画をまたがらないので、保存のあとに古い値が残ることが構造的に起きない。
+   ★ renderPage の先頭でも明示的に捨てる（二重の保険）。
+   ★ 3つの戻り値を呼び出し側が書き換えていないことを確認済み。
+     （書き換えるとキャッシュを汚すので、v859 の検証で見張る）
+   ★ 計算式は1行も変えない。元の関数は _Raw としてそのまま残す。
+   ============================================================ */
+var _mdCache = {}, _mdCacheArmed = false;
+function mdCacheClear(){ _mdCache = {}; _mdCacheArmed = false; }
+function _mdMemo(ns, key, make){
+  if(!_mdCacheArmed){
+    _mdCacheArmed = true;
+    /* 仕掛けられない環境ではキャッシュせずにそのまま計算する（古い値を残さないため） */
+    try{ setTimeout(mdCacheClear, 0); }catch(e){ _mdCacheArmed = false; return make(); }
+  }
+  var b = _mdCache[ns] || (_mdCache[ns] = {});
+  if(Object.prototype.hasOwnProperty.call(b, key)) return b[key];
+  b[key] = make();
+  return b[key];
+}
 function cumulativeToToday(storeId, ymOpt) {
+  /* ymOpt の有無で中の分岐（daysOfYm / monthDays）が変わるので、鍵にも入れる */
+  var _k = String(storeId) + '|' + (ymOpt || (typeof curYm==='function'?curYm():'')) + '|' + (ymOpt ? 'y' : 'c');
+  return _mdMemo('cum', _k, function(){ return _cumulativeToTodayRaw(storeId, ymOpt); });
+}
+function _cumulativeToTodayRaw(storeId, ymOpt) {
   var ym = ymOpt || curYm();
   var days = ymOpt ? daysOfYm(ymOpt) : monthDays();
   var _core = laborCoreForYm(storeId, ym); // Labor額は共通コア（労働時間/勤怠明細/予実で同一）
@@ -15230,6 +15268,9 @@ function cumulativeToToday(storeId, ymOpt) {
 /* 指定月の実績集計（offset: 0=今月, -1=先月）
    daily_actuals から該当月の日次を合算し、売上/客数/客単価/Labor/FC を返す */
 function monthStats(storeId, offset) {
+  return _mdMemo('ms', String(storeId) + '|' + (offset || 0), function(){ return _monthStatsRaw(storeId, offset); });
+}
+function _monthStatsRaw(storeId, offset) {
   var now = bizNow();
   var ref = new Date(now.getFullYear(), now.getMonth()+(offset||0), 1);
   var prefix = ref.getFullYear() + '-' + String(ref.getMonth()+1).padStart(2,'0'); // 'YYYY-MM'
@@ -26160,6 +26201,11 @@ function laborForEmployee(name, entry) {
    ランチOFFや深夜帯クリップ等で0になり得る（＝Tip用であってLabor用ではない）。安全のため大きい方を採用（現状より減らない）。 */
 function _laborHrs(e){ if(!e) return 0; var raw=(Number(e.rawLunch)||0)+(Number(e.rawDinner)||0); var win=(Number(e.lunch)||0)+(Number(e.dinner)||0); return Math.max(raw, win); }
 function laborCoreForYm(storeId, ym, opts){
+  /* opts 付き（期間を区切る / 週を絞る）は結果が変わるのでキャッシュしない */
+  if(opts && (opts.endBefore !== undefined || opts.weekSun)) return _laborCoreForYmRaw(storeId, ym, opts);
+  return _mdMemo('labor', String(storeId) + '|' + ym, function(){ return _laborCoreForYmRaw(storeId, ym, opts); });
+}
+function _laborCoreForYmRaw(storeId, ym, opts){
   opts = opts||{};
   var cutoff = (opts.endBefore!==undefined) ? opts.endBefore : (ym===curYm() ? bizToday() : null);
   var weeks = laborMonthWeeks(ym).filter(function(w){ return !opts.weekSun || w.sun===opts.weekSun; });
@@ -26738,7 +26784,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '858';
+const APP_VERSION = '859';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
