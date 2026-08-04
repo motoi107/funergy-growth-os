@@ -26612,7 +26612,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '848';
+const APP_VERSION = '849';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -29289,7 +29289,63 @@ function canDoPosition(name, pos, storeId) {
   return !!(s && s.status==='承認' && s.level>=1);
 }
 /* 店舗別スキルでのポジションレベル（0=不可） */
+/* ============================================================
+   v849 シフト振り分けの確認用スキルレベル（テスト用スタッフ専用）
+   ------------------------------------------------------------
+   振り分け（optimizeShift / 各店の自動割り当て）は等級を見ておらず、
+   positionLevelStore() が返すレベルだけで決まる。
+   テスト15名はスキルが1件も無く全員 Lv0 になるため、確認ができなかった。
+
+   ★ 本番の skills_v2 / skills_st_ には書かない。
+     この2つはクラウド同期の対象で、合流（mergeSkillStore）が名前の和集合なため
+     墓標（論理削除）が無く、消してもクラウドから復活する。
+   ★ 代わりに同期対象外の tst_skill_lv に「入れたかどうか」だけを持ち、
+     レベルは下の並び順から計算する。削除はこの1キーを消すだけ。
+   ★ 読み取りはシフト系が全部通る positionLevelStore() の1か所だけで分ける。
+     名前で先に弾くので、本物のスタッフは保存を読みにさえ行かない。
+   ============================================================ */
+var TEST_SKILL_KEY = 'tst_skill_lv';
+/* スキルの高い順（TESTスタッフの2桁）。等級とわざと逆順にしてある＝
+   振り分けが等級ではなくスキルで動いていることが結果で分かる。 */
+var TEST_SKILL_ORDER = ['14','10','02','09','05','13','03','07','11','01','06','08','04','12','15'];
+/* この1名だけメインポジションを Lv2 に落とす。
+   「Lv3は持っているのに mainCap が付かない」人を作り、メイン必須の判定を確かめる。 */
+var TEST_SKILL_MAIN_DOWN = '02';
+var _tstSkillOnCache = null;
+function _tstSkillNo(name){ var m=/^TEST\s+(\d{2})/.exec(String(name||'')); return m?m[1]:null; }
+function tstSkillOn(){
+  if(_tstSkillOnCache !== null) return _tstSkillOnCache;
+  try{ var v=ls(TEST_SKILL_KEY,null); _tstSkillOnCache = !!(v && v.on===true); }catch(e){ _tstSkillOnCache = false; }
+  return _tstSkillOnCache;
+}
+function setTstSkillOn(on){
+  try{ if(on) lsSet(TEST_SKILL_KEY,{on:true,at:Date.now()}); else _lsRawDel(TEST_SKILL_KEY); }catch(e){}
+  _tstSkillOnCache = null;
+}
+/* 店舗の上限（Kaimuki/Piikoi は 4、他は 3）に合わせて段を作る */
+function tstSkillBase(no, storeId){
+  var i = TEST_SKILL_ORDER.indexOf(String(no||''));
+  if(i < 0) return null;
+  var r = i + 1;
+  var mx = (typeof storeSkillMax==='function') ? storeSkillMax(storeId) : 3;
+  if(mx >= 4) return r<=3 ? 4 : r<=6 ? 3 : r<=9 ? 2 : r<=12 ? 1 : 0;
+  return r<=4 ? 3 : r<=8 ? 2 : r<=12 ? 1 : 0;
+}
+function testSkillLevel(name, pos, storeId){
+  var no = _tstSkillNo(name); if(no === null) return null;   /* 本物はここで必ず抜ける */
+  if(!tstSkillOn()) return null;
+  var lv = tstSkillBase(no, storeId); if(lv === null) return null;
+  if(no === TEST_SKILL_MAIN_DOWN && lv > 2){
+    var mp = []; try{ mp = (getShiftOptCfg(storeId)||{}).mainPositions || []; }catch(e){ mp = []; }
+    if(mp.indexOf(pos) >= 0) lv = 2;
+  }
+  return lv;
+}
 function positionLevelStore(name, pos, storeId) {
+  /* v849: テスト用スタッフのときだけ、同期しないテスト表を見る。
+     本番のスキルデータは読みも書きも一切変えていない。 */
+  var _t = testSkillLevel(name, pos, storeId);
+  if(_t !== null) return _t;
   var sk = getEmpSkillsStore(name, storeId);
   var s = sk[pos];
   return (s && s.status==='承認') ? (s.level||0) : 0;
@@ -46185,6 +46241,7 @@ function createTestStaff(){
     added++;
   });
   lsSet('m_employees', emps);
+  setTstSkillOn(true);                       /* v849: 振り分け確認用のレベルも入れる */
   showToast(added ? ('テスト用スタッフを ' + added + '名 作成しました') : 'すでに作成済みです',
     added ? 'success' : 'info');
   renderPage('settings');
@@ -46199,14 +46256,30 @@ function removeTestStaff(){
   var ids = {}; cur.forEach(function(e){ ids[e.id] = 1; });
   var emps = (getEmployees()||[]).filter(function(e){ return !(e && ids[e.id]); });
   lsSet('m_employees', emps);
+  setTstSkillOn(false);                      /* v849: テスト用のレベルも一緒に消す */
   showToast(cur.length + '名 を削除しました','success');
   renderPage('settings');
 }
 
+function setTestSkillLevels(on){
+  if(!canManageTestStaff()){ showToast('スキルレベルの設定はGM/CEOのみです','warning'); return; }
+  setTstSkillOn(on);
+  showToast(on ? '振り分け確認用のスキルレベルを入れました' : 'テスト用のスキルレベルを外しました','success');
+  renderPage('settings');
+}
 function renderTestStaffCard(){
   if(!canManageTestStaff()) return '';
   var cur = getTestStaff();
   var stores = testStaffStoreIds();
+  /* v849: レベルは店舗で上限が違うので、どの店の値かを明示する */
+  var skOn = tstSkillOn();
+  var lvStore = (typeof curStore!=='undefined' && curStore && curStore!=='ALL') ? curStore : (stores[0]||'');
+  var lvName = lvStore;
+  try{ var _s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===lvStore;}); if(_s) lvName=_s.name; }catch(e){}
+  if(skOn) cur = cur.slice().sort(function(a,b){
+    var ia=TEST_SKILL_ORDER.indexOf(_tstSkillNo(a.name)||''), ib=TEST_SKILL_ORDER.indexOf(_tstSkillNo(b.name)||'');
+    return (ia<0?99:ia)-(ib<0?99:ib);
+  });
   var h = '<div class="card"><div class="card-title">'
     + '<i class="ti ti-users-plus" style="color:var(--accent)"></i>シフト作成テスト用スタッフ'
     + (cur.length ? '<span class="tag tag-yellow" style="margin-left:auto">' + cur.length + '名</span>' : '')
@@ -46219,13 +46292,35 @@ function renderTestStaffCard(){
   if(cur.length){
     h += '<div style="max-height:190px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px 9px;margin-bottom:10px">';
     cur.forEach(function(e){
+      var _lv = skOn ? tstSkillBase(_tstSkillNo(e.name), lvStore) : null;   /* v849 */
       h += '<div style="font-size:11.5px;padding:4px 0;border-bottom:1px solid var(--border)">'
+        + (_lv!==null ? '<span class="tag ' + (_lv>=3?'tag-green':_lv>=2?'tag-yellow':'tag-gray')
+            + '" style="font-size:9px;margin-right:5px">Lv' + _lv + '</span>' : '')
         + '<b>' + escapeHtml(e.name) + '</b> <span style="color:var(--muted)">· '
         + escapeHtml(e.title||'') + ' · $' + (e.wage||0) + '</span>'
         + '<div style="font-size:10px;color:var(--muted)">' + escapeHtml(e.testNote||'') + '</div></div>';
     });
     h += '</div>';
   }
+  /* v849: 振り分け確認用のスキルレベル */
+  h += '<div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:10px">'
+    + '<div style="font-size:12px;font-weight:700;margin-bottom:4px">振り分け確認用のスキルレベル '
+    + (skOn ? '<span class="tag tag-green" style="font-size:9px">入っています</span>'
+            : '<span class="tag tag-gray" style="font-size:9px">入っていません</span>')
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);line-height:1.7">'
+    + '等級とわざと逆順に Lv を割り当てます。振り分けは等級を見ず、スキルだけで決まります。'
+    + '入れないと全員 Lv0 になり、Lv3・Lv2 の判定が確かめられません。<br>'
+    + '<b>本番のスキル（skills_v2 / skills_st_）には書きません。</b>同期もしないので、この端末だけに残ります。'
+    + (skOn ? '<br>上の Lv は <b>' + escapeHtml(lvName) + '</b> の値です（Kaimuki・Piikoi は上限4、他は上限3）。' : '')
+    + '</div>'
+    + '<div class="btn-row" style="margin-top:8px">'
+    + (skOn ? '<button class="btn btn-secondary btn-sm" onclick="setTestSkillLevels(false)"><i class="ti ti-eraser"></i> スキルレベルを外す</button>'
+            : '<button class="btn btn-primary btn-sm" onclick="setTestSkillLevels(true)"><i class="ti ti-stars"></i> スキルレベルを入れる</button>')
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '
+    + '振り分けを試すには Availability も必要です。空だと1人も選ばれません。</div>'
+    + '</div>';
   h += '<div class="btn-row">'
     + '<button class="btn btn-primary btn-sm" onclick="createTestStaff()"><i class="ti ti-user-plus"></i> '
     + (cur.length ? '不足分を作成' : '15名を作成') + '</button>'
