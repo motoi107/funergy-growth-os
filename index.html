@@ -2666,6 +2666,10 @@ function mdBar(rate, color) {
    画面に理由だけ出しても動けないので、行き先まで出す。 */
 var MD_FIX = {
   no_target:    { label: 'KPI目標が未設定',   page: 'kpi_master', how: 'KPI管理 → 店舗タブで 人件費率・原価率の目標を入れる' },
+  /* v853: 客数・客単価・営業利益の目標は KPI管理ではなく本部予算（hqPlanForYm）から来る。
+     この3つにも no_target を共用していたため、画面に「KPI管理へ」と出ていた。
+     指示どおり KPI管理に入れても変わらず、行き止まりになっていた。 */
+  no_hq_plan:   { label: '本部予算が未設定', page: 'growth_mgr', how: '成長管理 → 本部予算タブ → 店舗を選び、月ヘッダの✎ で 客数・客単価 を入れる' },
   no_budget:    { label: '予算が未登録',       page: 'budget',     how: '予実管理でその月の予算を登録する' },
   not_synced:   { label: '売上が未同期',       page: 'sync_center', how: '同期センターで対象月を取り込む' },
   no_actual:    { label: '実績が未入力',       page: 'budget',     how: '日次実績の入力・取り込みを確認する' },
@@ -4803,6 +4807,7 @@ var MD_KPI = {
 var MD_UNKNOWN = {
   no_budget:    '予算が未登録',
   no_target:    '目標が未設定',
+  no_hq_plan:   '本部予算が未設定',   /* v853 */
   not_synced:   '売上が未同期',
   too_few_days: '対象期間のデータ不足',
   no_actual:    '実績が未入力',
@@ -4923,13 +4928,14 @@ function mdVerdict(storeId, code, ym) {
     }
 
     if (code === 'guests' || code === 'ppa') {
-      /* 客数・客単価の目標はKPI目標ではなく本部予算から来る（第1章の注記どおり） */
+      /* 客数・客単価の目標はKPI目標ではなく本部予算から来る（第1章の注記どおり）。
+         v853: だから理由も no_hq_plan。no_target だと KPI管理へ案内してしまう。 */
       var pg = (typeof hqPlanForYm === 'function') ? hqPlanForYm(storeId, ym) : null;
       var tg = pg ? Number(pg[code === 'guests' ? 'guests' : 'ppa']) : 0;
       var ms = monthStats(storeId, mcYmOffset(ym));
       if (!ms || !ms.hasData) return mdUnknown(code, 'not_synced');
       var av = (code === 'guests') ? Number(ms.guests) : Number(ms.avgSpend);
-      if (!(tg > 0)) return mdUnknown(code, 'no_target', '', av);
+      if (!(tg > 0)) return mdUnknown(code, 'no_hq_plan', '', av);   /* v853 */
       if (!(av > 0)) return mdUnknown(code, 'no_actual');
       return mdJudge(code, mcRound(av), mcRound(tg));
     }
@@ -4940,7 +4946,7 @@ function mdVerdict(storeId, code, ym) {
       var pl = plComputeStore(storeId, ym, mcYmOffset(ym));
       if (!pl) return mdUnknown(code, 'calc_error');
       if (!pp || pp.profit === null || pp.profit === undefined)
-        return mdUnknown(code, 'no_target', '', pl.profit);
+        return mdUnknown(code, 'no_hq_plan', '', pl.profit);   /* v853 */
       var rf = foodCostOf(storeId, ym, (c.actMonth > 0) ? c.actMonth : null);
       return mdJudge(code, mcRound(pl.profit), mcRound(pp.profit),
         (rf && !rf.hasEnd) ? '原価が暫定（期末棚卸が未入力）' : '');
@@ -6880,7 +6886,11 @@ function saveCashTipSides(storeId, date, lunchVal, dinnerVal) {
   if (prev.by) { rec.editedBy = myName(); rec.editedAt = nowJP(); }
   else { rec.by = myName(); rec.at = nowJP(); }
   d[date] = rec; setCashTips(storeId, d);
-  if (rec.entered) { try{
+  /* v854: 自動完了の条件を、エラー側とまったく同じ判定にそろえる。
+     rec.entered は L/D 両方の入力を要求するため、ランチ休の日は
+     ディナーを入れても false のままで、エラーは消えるのにタスクだけ残っていた。 */
+  var _done = (typeof cashTipMissing==='function') ? !cashTipMissing(storeId, date) : rec.entered;
+  if (_done) { try{
     var _t = getTasks(); var _hit=false;
     _t.forEach(function(t){ if(t.refId==='ctip_'+storeId+'_'+date && t.status!=='完了'){ t.status='完了'; t.progress=100; t.doneAt=nowJP(); _hit=true; } });
     if(_hit) lsSet('tasks_all', _t);
@@ -26638,7 +26648,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '852';
+const APP_VERSION = '854';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -37166,6 +37176,20 @@ function officeLaunch(page, label){
 function _ecYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 var EC_MIN_DATE = '2026-07-01'; // エラー検知の開始日（前月まではログイン運用が無いため対象外）
 function _ecRecentDates(n){ var out=[],d=new Date(); for(var i=0;i<n;i++){ var ymd=_ecYmd(d); if(ymd>=EC_MIN_DATE) out.push(ymd); d.setDate(d.getDate()-1);} return out; }
+/* v854: 「その日の締めをしたか」を見る検知は、営業が終わってから出す。
+   _ecRecentDates は今日から数えるため、キャッシュチップ未入力と退勤打刻漏れが
+   まだ営業中の当日に出ていた。締め前に出しても直しようが無く、
+   当日分を入れて消しても翌日の昼にまた出るので、
+   「対応しても戻ってくる」ように見えていた。
+   タスク側（checkCashTipTasks）はもともと前日を見ているので、そちらに合わせる。
+   ※ 日付を選んで見る画面（Store CMD のチップ管理・日報・振り分け）は対象外。
+     あそこは「今日の締めで入れてください」と促す場所なので、当日を出すのが正しい。 */
+function _ecClosedDates(n){
+  var out=[], d=new Date();
+  d.setDate(d.getDate()-1);                 /* 当日を外す＝営業終了後（翌日）から出す */
+  for(var i=0;i<n;i++){ var ymd=_ecYmd(d); if(ymd>=EC_MIN_DATE) out.push(ymd); d.setDate(d.getDate()-1); }
+  return out;
+}
 function _ecEmpAlive(e){ return e && e.status!=='退職'; }
 function migrateEcResetPreJuly(){
   try{
@@ -37206,7 +37230,7 @@ function ecDetEmpMaster(){
 
 /* — キャッシュチップ未登録（直近14日×全店） — */
 function ecDetCashTip(){
-  var issues=[], dates=_ecRecentDates(14);
+  var issues=[], dates=_ecClosedDates(14);   /* v854: 当日は出さない */
   (typeof STORES!=='undefined'?STORES:[]).forEach(function(st){
     dates.forEach(function(dt){
       try{ if(cashTipMissing(st.id, dt)){ issues.push({sev:'high',cat:'チップ',title:st.name+'：'+dt+' キャッシュチップ未登録',detail:'クレジットチップの記録はありますが現金チップが未入力です。現金が無い場合も「0」で確定が必要です。',fix:{label:'入力',action:"openCashTipModal('"+st.id+"','"+dt+"')"}}); } }catch(e){}
@@ -37217,7 +37241,7 @@ function ecDetCashTip(){
 
 /* — 退勤打刻漏れ（直近7日×全店） — */
 function ecDetClock(){
-  var issues=[], dates=_ecRecentDates(7);
+  var issues=[], dates=_ecClosedDates(7);    /* v854: 勤務中の人を「打刻漏れ」にしない */
   (typeof STORES!=='undefined'?STORES:[]).forEach(function(st){
     dates.forEach(function(dt){
       var labor; try{ labor=getTipLabor(st.id, dt); }catch(e){ return; }
