@@ -4932,14 +4932,20 @@ function mdVerdict(storeId, code, ym) {
     }
 
     if (code === 'guests' || code === 'ppa') {
-      /* 客数・客単価の目標はKPI目標ではなく本部予算から来る（第1章の注記どおり）。
-         v853: だから理由も no_hq_plan。no_target だと KPI管理へ案内してしまう。 */
-      var pg = (typeof hqPlanForYm === 'function') ? hqPlanForYm(storeId, ym) : null;
-      var tg = pg ? Number(pg[code === 'guests' ? 'guests' : 'ppa']) : 0;
-      var ms = monthStats(storeId, mcYmOffset(ym));
+      /* v857: 客数・客単価の目標は「各月の予算設定」から来る。
+         根拠：1419行「集客数・客単価はKPI目標から削除（客数/客単価は各月の予算設定から反映）」
+               56623行「集客数の目標は予実（曜日別の客数予算×月の曜日回数）と連動」
+         予実の他の画面（KPIタイル・KPI推移一覧）はすべて monthGuestBudget を使っており、
+         ここだけが本部予算（hqPlanForYm）を見ていて食い違っていた。
+         客単価予算 = 売上予算 ÷ 客数予算（keyKpiStats の ppaBudget と同じ式）。 */
+      var _off = mcYmOffset(ym);
+      var ms = monthStats(storeId, _off);
       if (!ms || !ms.hasData) return mdUnknown(code, 'not_synced');
       var av = (code === 'guests') ? Number(ms.guests) : Number(ms.avgSpend);
-      if (!(tg > 0)) return mdUnknown(code, 'no_hq_plan', '', av);   /* v853 */
+      var gb = (typeof monthGuestBudget === 'function') ? Number(monthGuestBudget(storeId, _off) || 0) : 0;
+      var tg = (code === 'guests') ? gb
+             : ((gb > 0 && c.budMonth > 0) ? Math.round(c.budMonth / gb * 100) / 100 : 0);
+      if (!(tg > 0)) return mdUnknown(code, 'no_budget', '曜日別の客数が未入力', av);
       if (!(av > 0)) return mdUnknown(code, 'no_actual');
       return mdJudge(code, mcRound(av), mcRound(tg));
     }
@@ -11819,15 +11825,31 @@ function saveHqPlan(ym, sid){
   var fixOvr={}; document.querySelectorAll('.hqp-fix').forEach(function(i){ var v=parseFloat(i.value); if(v>0) fixOvr[i.getAttribute('data-cat')]=v; });
   var hq=getHqBudget(); hq[ym]=hq[ym]||{};
   var sales=(g>0&&pp>0)?Math.round(g*pp):((!isNaN(tt)&&tt>0)?Math.round(tt):null);
-  var hasDetail = note || Object.keys(vcOvr).length || Object.keys(fixOvr).length || (getv>0) || (fca>0) || (lba>0);
-  if(sales==null && !hasDetail){ delete hq[ym][sid]; }
-  else hq[ym][sid]={
+  /* v857: 客数と客単価が空だと sales が null になり、保存ではなく削除が走っていた。
+     それでも「保存しました」と出ていたので、消えたことに気づけない。
+     hasDetail に原価率・人件費率が入っていないため、率だけ入れて保存しても消えた。
+     → 保存の条件は「売上が出せること」。出せなければ理由を出して何もしない。
+       既にある月を消すときは確認を取る。 */
+  if(sales==null){
+    if(!(hq[ym]||{})[sid]){
+      showToast('客数と客単価（または売上直接入力）を入れてください。売上が決まらないと予算になりません','warning');
+      return;
+    }
+    if(!confirm('この月の本部予算を削除します。よろしいですか？\n（客数・客単価が空のままの保存は削除になります）')) return;
+    delete hq[ym][sid];
+    Object.keys(hq).forEach(function(k){ if(hq[k]&&typeof hq[k]==='object'&&!Object.keys(hq[k]).length) delete hq[k]; });
+    lsSet('hq_budget', hq);
+    closeModalDirect(); showToast('この月の本部予算を削除しました','info'); _secRerender(); return;
+  }
+  hq[ym][sid]={
     total:sales, guests:(g>0?g:null), ppa:(pp>0?Math.round(pp*100)/100:null),
     fcRate:(!isNaN(fc)&&fc>0?fc:null), laborRate:(!isNaN(lb)&&lb>0?lb:null),
     fcAmt:(!isNaN(fca)&&fca>0?Math.round(fca):null), laborAmt:(!isNaN(lba)&&lba>0?Math.round(lba):null),
     vcOvr:Object.keys(vcOvr).length?vcOvr:null, fixOvr:Object.keys(fixOvr).length?fixOvr:null,
     getOvr:(!isNaN(getv)&&getv>0?Math.round(getv):null),
     note:note, by:myName(), at:nowJP() };
+  /* v857: 空の年月の入れ物を残さない（削除の跡が 2026-08: {} として残っていた） */
+  Object.keys(hq).forEach(function(k){ if(hq[k]&&typeof hq[k]==='object'&&!Object.keys(hq[k]).length) delete hq[k]; });
   lsSet('hq_budget', hq);
   closeModalDirect(); showToast('本部予算を保存しました','success'); _secRerender();
 }
@@ -26697,7 +26719,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '856';
+const APP_VERSION = '857';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
