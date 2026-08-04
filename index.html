@@ -9609,12 +9609,37 @@ function openOutboxDiag(){
 /* オンライン復帰・起動後に自動で未送信を再送 */
 try{ if(typeof window!=='undefined' && window.addEventListener){ window.addEventListener('online', function(){ try{ flushOutbox(); }catch(e){} }); } }catch(e){}
 try{ setTimeout(function(){ try{ flushOutbox(); }catch(e){} }, 8000); }catch(e){}
+/* ============================================================
+   v850 テスト用スタッフをクラウドに出さない
+   ------------------------------------------------------------
+   m_employees は OP_SYNC_KEYS には入っていないが、
+   SUPA_MASTER_MAP 経由で lsSet() から自動 push される（SUPA_SYNC_ENABLED の既定は ON）。
+   つまり「15名を作成」を押した瞬間に employees テーブルへ入る。
+
+   そして supaUpsert は Prefer: resolution=merge-duplicates の POST。
+   追加と上書きしかできず、消せない。
+   一度上げると「まとめて削除」でもクラウドから消えず、
+   誰かが「クラウドから取り込む」（G3以上）を押すと全端末に復活する。
+   supaPullAllMasters は丸ごと上書きなので、ローカルもその内容になる。
+
+   ★ 消せない以上、「出さない」ことでしか防げない。
+   ★ push だけでなく pull でも落とす。すでにクラウドにある行が
+     他の人の端末に降ってこないようにするため。
+   ★ 本物の従業員IDは 'e'+Date.now() なので tst_ と衝突しない。
+   ============================================================ */
+function _stripTestRows(key, val){
+  if(key !== 'm_employees' || !Array.isArray(val)) return val;
+  var pre = (typeof TEST_STAFF_PREFIX !== 'undefined') ? TEST_STAFF_PREFIX : 'tst_';
+  return val.filter(function(e){
+    return !(e && (e.isTest === true || String(e.id||'').indexOf(pre) === 0));
+  });
+}
 async function syncMasterToSupabase(key, val){
   if (_supaBooting) return; // 起動/シード/プル中は押し上げない（プル後のユーザー編集のみクラウド反映）
   var def = SUPA_MASTER_MAP[key];
   if (def && def.type==='rows') {
     if (!Array.isArray(val)) return;
-    var rows = val.map(def.map);
+    var rows = _stripTestRows(key, val).map(def.map);   /* v850 */
     if (!rows.length) return;
     return await supaUpsert(def.table, rows);
   }
@@ -9707,7 +9732,7 @@ async function supaPushAllMasters(){
   };
   for (var key in SUPA_MASTER_MAP) {
     var def = SUPA_MASTER_MAP[key];
-    var val = sources[key] || [];
+    var val = _stripTestRows(key, sources[key] || []);   /* v850 */
     if (Array.isArray(val) && val.length) {
       var ok = await supaUpsert(def.table, val.map(def.map));
       results.push(def.table+': '+(ok?val.length+'件':'失敗'));
@@ -9786,6 +9811,7 @@ async function supaPullAllMasters(){
     var rows = await _mp[key];
     if (Array.isArray(rows) && rows.length){
       var arr = rows.map(function(r){ return r.data; }).filter(function(x){ return x!=null; });
+      arr = _stripTestRows(key, arr);                             /* v850 */
       if (arr.length){
         _lsWriteVerified(key, JSON.stringify(arr));               /* v763 */
         results.push(def.table+': '+arr.length+'件 取込');
@@ -26612,7 +26638,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '849';
+const APP_VERSION = '852';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -27262,7 +27288,7 @@ function renderShiftAdmin() {
   else if (shiftAdminTab==='cover') html += renderShiftCover(storeId, week);
   else if (shiftAdminTab==='help') html += renderShiftHelp(storeId, week);
   else if (shiftAdminTab==='rules') html += renderSpecialRules(storeId);
-  else if (shiftAdminTab==='opt') html += renderShiftOptConfig(storeId);
+  else if (shiftAdminTab==='opt') html += renderShiftOptConfig(storeId) + renderTestStaffCard(storeId);   /* v851 */
   else html += renderShiftLabor(storeId, week);
   setTimeout(function(){ try{ maybePullShift(storeId, week); }catch(e){} }, 60); // F2-a: クラウドから当週シフトを取込
   return html;
@@ -27632,7 +27658,62 @@ function renderAieaBuild(storeId, week, plan, warnings){
    もう一方が入れた人が消えていた（クラウド同期でも同じことが起きる）。
    人ごとに保存時刻(_at)と保存者(_by)を付けて別々に保存し、合流も人単位で行う。
    画面側が受け取る形は今までと同じ（包みは getShiftFixed が外す）。 */
-function getShiftFixedRaw(storeId){ try{ return ls('shift_fixed_'+storeId, {})||{}; }catch(e){ return {}; } }
+/* ============================================================
+   v852 名前をキーにした同期キーにテスト用スタッフを入れない
+   ------------------------------------------------------------
+   shiftopt_mem_<店> の合流は mergeMapByTime＝キーの和集合。
+     if(!(k in out)){ out[k]=l[k]; return; }   ← ローカルにしか無い名前は無条件に足し戻す
+   そして opMergePush は合流結果をローカルにも書き戻す。
+   つまりクラウド側を SQL で消しても、その名前を持ったままの端末が
+   次に保存した時点で復活する。実際に shiftopt_mem_F04-P に2件残っていた。
+
+   しかも従業員マスターから消えた TEST は renderShiftOptConfig の一覧に出ないので、
+   画面から消す手段が無い。
+
+   ★ v849（スキル）と同じやり方で、同期しないキーへ分ける。
+   ★ 保存のたびに同期キー側から TEST が落ちるので、既存の残骸も自然に消える。
+   ★ shift_fixed_ には墓標（_deleted）があるが、墓標にも名前が残るので同じく分ける。
+   ============================================================ */
+var TEST_NAMEKEY_STORE = 'tst_namekey';   /* 同期対象外。{ '<キー名>': { '<TESTの名前>': 値 } } */
+function _isTestName(n){ return /^TEST\s/.test(String(n||'')); }
+function _readNameKeyMap(fullKey){
+  var m = ls(fullKey, {}) || {};
+  var out = {};
+  /* 既存の残骸は見せない。ここでは書かない（読みで書くと押し上げが循環する） */
+  Object.keys(m).forEach(function(k){ if(!_isTestName(k)) out[k] = m[k]; });
+  var t = (ls(TEST_NAMEKEY_STORE, {}) || {})[fullKey] || {};
+  Object.keys(t).forEach(function(k){ out[k] = t[k]; });
+  return out;
+}
+function _writeNameKeyMap(fullKey, map){
+  map = map || {};
+  var real = {}, test = {};
+  Object.keys(map).forEach(function(k){ (_isTestName(k) ? test : real)[k] = map[k]; });
+  try{
+    var all = ls(TEST_NAMEKEY_STORE, {}) || {};
+    if(Object.keys(test).length) all[fullKey] = test; else delete all[fullKey];
+    lsSet(TEST_NAMEKEY_STORE, all);
+  }catch(e){}
+  return lsSet(fullKey, real);
+}
+/* テスト用スタッフを消したときの後始末。ここを掃除しないと、
+   従業員マスターから消えた後も名前だけが同期され続ける。 */
+function purgeTestFromNameKeys(){
+  var n = 0, ids = [];
+  try{ ids = (getStoresAll()||[]).map(function(s){ return s.id; }); }catch(e){}
+  ids.forEach(function(sid){
+    ['shiftopt_mem_', 'shift_fixed_'].forEach(function(pre){
+      var m = ls(pre + sid, null);
+      if(!m || typeof m !== 'object') return;
+      var out = {}, hit = false;
+      Object.keys(m).forEach(function(k){ if(_isTestName(k)) hit = true; else out[k] = m[k]; });
+      if(hit){ lsSet(pre + sid, out); n++; }
+    });
+  });
+  try{ _lsRawDel(TEST_NAMEKEY_STORE); }catch(e){}
+  return n;
+}
+function getShiftFixedRaw(storeId){ try{ return _readNameKeyMap('shift_fixed_'+storeId); }catch(e){ return {}; } }
 function getShiftFixed(storeId){
   var raw=getShiftFixedRaw(storeId), out={};
   Object.keys(raw).forEach(function(n){
@@ -27643,18 +27724,18 @@ function getShiftFixed(storeId){
   });
   return out;
 }
-function setShiftFixed(storeId, map){ lsSet('shift_fixed_'+storeId, map); }
+function setShiftFixed(storeId, map){ _writeNameKeyMap('shift_fixed_'+storeId, map); }   /* v852 */
 function setShiftFixedEntry(storeId, name, mine){
   var raw=getShiftFixedRaw(storeId);
   raw[name]=_stWrap(mine);                      /* {__st:1, v:mine, _at, _by} */
-  return lsSet('shift_fixed_'+storeId, raw)!==false;
+  return _writeNameKeyMap('shift_fixed_'+storeId, raw)!==false;   /* v852 */
 }
 function clearShiftFixedEntry(storeId, name){
   var raw=getShiftFixedRaw(storeId);
   var by=''; try{ by=(typeof myName==='function')?myName():''; }catch(e){ by=''; }
   /* 物理削除にすると、その人を持ったままの端末から復活する。消したことを記録として残す。 */
   raw[name]={ __st:1, v:null, _deleted:true, _at:Date.now(), _by:String(by||'') };
-  return lsSet('shift_fixed_'+storeId, raw)!==false;
+  return _writeNameKeyMap('shift_fixed_'+storeId, raw)!==false;   /* v852 */
 }
 /* 店舗の全スロット定義（固定枠＋fillポジション＋Prep等）を [{sec,pos,label,fill}] で返す */
 function shiftAllSlotDefs(storeId){
@@ -29383,8 +29464,8 @@ function getShiftOptCfg(storeId){
   }, d);
 }
 function setShiftOptCfg(storeId, cfg){ lsSet('shiftopt_cfg_'+storeId, cfg); }
-function getShiftOptMembers(storeId){ return ls('shiftopt_mem_'+storeId, {}) || {}; }
-function setShiftOptMembers(storeId, m){ lsSet('shiftopt_mem_'+storeId, m); }
+function getShiftOptMembers(storeId){ return _readNameKeyMap('shiftopt_mem_'+storeId); }        /* v852 */
+function setShiftOptMembers(storeId, m){ _writeNameKeyMap('shiftopt_mem_'+storeId, m); }        /* v852 */
 function getShiftOptMember(storeId, name){
   var m = getShiftOptMembers(storeId);
   return Object.assign({ minShifts:0, minDaysOff:0, allowConsecutive:true, leaderEligible:false }, m[name]||{});
@@ -46206,10 +46287,17 @@ function getTestStaff(){
     return e && (e.isTest === true || String(e.id||'').indexOf(TEST_STAFF_PREFIX) === 0);
   });
 }
-function canManageTestStaff(){ return ['ceo','gm'].indexOf(curRole) >= 0; }
+/* v851: G4以上（Head Chef / Corporate Chef / AM / GM / CEO）に開放する。
+   g4 と chef は ROLE_ALIAS で curRole が am になるため、ロール名だけでは区別できない。
+   実際の等級（empGrade → G4=4 / G5=5 / G6=6）で判定するので、SL（G3）以下は入らない。 */
+function canManageTestStaff(){
+  if(['ceo','gm'].indexOf(curRole) >= 0) return true;
+  var e = (typeof _curEmp==='function') ? _curEmp() : null;
+  return !!e && typeof empGradeNum==='function' && empGradeNum(e) >= 4;
+}
 
 function createTestStaff(){
-  if(!canManageTestStaff()){ showToast('テスト用スタッフの作成はGM/CEOのみです','warning'); return; }
+  if(!canManageTestStaff()){ showToast('テスト用スタッフの作成は G4以上（Head Chef・AM・GM・CEO）のみです','warning'); return; }
   var stores = testStaffStoreIds();
   if(!stores.length){ showToast('店舗が取得できませんでした','danger'); return; }
   var emps = getEmployees()||[];
@@ -46244,36 +46332,38 @@ function createTestStaff(){
   setTstSkillOn(true);                       /* v849: 振り分け確認用のレベルも入れる */
   showToast(added ? ('テスト用スタッフを ' + added + '名 作成しました') : 'すでに作成済みです',
     added ? 'success' : 'info');
-  renderPage('settings');
+  renderPage((typeof curPage!=='undefined' && curPage) ? curPage : 'shift_admin');   /* v852: シフト画面からも押せるので、今の画面を再描画する */
 }
 
 function removeTestStaff(){
-  if(!canManageTestStaff()){ showToast('テスト用スタッフの削除はGM/CEOのみです','warning'); return; }
+  if(!canManageTestStaff()){ showToast('テスト用スタッフの削除は G4以上（Head Chef・AM・GM・CEO）のみです','warning'); return; }
   var cur = getTestStaff();
   if(!cur.length){ showToast('テスト用スタッフはいません','info'); return; }
   if(!confirm('テスト用スタッフ ' + cur.length + '名 をまとめて削除します。\n'
-    + '（このスタッフに割り当てたシフトは残ります。必要なら先にシフトから外してください）\nよろしいですか？')) return;
+    + '（組んだ週のシフトは残ります。固定シフトと最適化の個人設定は一緒に消えます）\nよろしいですか？')) return;
   var ids = {}; cur.forEach(function(e){ ids[e.id] = 1; });
   var emps = (getEmployees()||[]).filter(function(e){ return !(e && ids[e.id]); });
   lsSet('m_employees', emps);
   setTstSkillOn(false);                      /* v849: テスト用のレベルも一緒に消す */
+  purgeTestFromNameKeys();                   /* v852: 固定シフト・最適化の個人設定に残る名前も消す */
   showToast(cur.length + '名 を削除しました','success');
-  renderPage('settings');
+  renderPage((typeof curPage!=='undefined' && curPage) ? curPage : 'shift_admin');   /* v852: シフト画面からも押せるので、今の画面を再描画する */
 }
 
 function setTestSkillLevels(on){
-  if(!canManageTestStaff()){ showToast('スキルレベルの設定はGM/CEOのみです','warning'); return; }
+  if(!canManageTestStaff()){ showToast('スキルレベルの設定は G4以上（Head Chef・AM・GM・CEO）のみです','warning'); return; }
   setTstSkillOn(on);
   showToast(on ? '振り分け確認用のスキルレベルを入れました' : 'テスト用のスキルレベルを外しました','success');
-  renderPage('settings');
+  renderPage((typeof curPage!=='undefined' && curPage) ? curPage : 'shift_admin');   /* v852: シフト画面からも押せるので、今の画面を再描画する */
 }
-function renderTestStaffCard(){
+function renderTestStaffCard(forStore){
   if(!canManageTestStaff()) return '';
   var cur = getTestStaff();
   var stores = testStaffStoreIds();
-  /* v849: レベルは店舗で上限が違うので、どの店の値かを明示する */
+  /* v849: レベルは店舗で上限が違うので、どの店の値かを明示する
+     v851: シフト作成画面は全店表示でも storeId を持っているので、それを優先する */
   var skOn = tstSkillOn();
-  var lvStore = (typeof curStore!=='undefined' && curStore && curStore!=='ALL') ? curStore : (stores[0]||'');
+  var lvStore = forStore || ((typeof curStore!=='undefined' && curStore && curStore!=='ALL') ? curStore : (stores[0]||''));
   var lvName = lvStore;
   try{ var _s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===lvStore;}); if(_s) lvName=_s.name; }catch(e){}
   if(skOn) cur = cur.slice().sort(function(a,b){
@@ -46326,8 +46416,9 @@ function renderTestStaffCard(){
     + (cur.length ? '不足分を作成' : '15名を作成') + '</button>'
     + (cur.length ? '<button class="btn btn-danger btn-sm" onclick="removeTestStaff()"><i class="ti ti-trash"></i> まとめて削除</button>' : '')
     + '</div>'
-    + '<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> '
-    + '他の端末にも反映するには、この画面の「マスター一括投入」を実行してください。</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-shield-check"></i> '
+    + '<b>この端末にだけ作られます。</b>クラウドには送られないので、'
+    + '他の人の端末には出ません（v850）。「マスター一括アップロード」を押しても上がりません。</div>'
     + '</div>';
   return h;
 }
@@ -46429,7 +46520,6 @@ function renderSettings() {
     </div>`;
   }
 
-  html += renderTestStaffCard();   /* v847 */
   html += `<div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>システム情報</div>
     <div style="font-size:13px;color:var(--muted)">
       <p>Version: 1.1.0</p>
