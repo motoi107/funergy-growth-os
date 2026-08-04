@@ -1135,6 +1135,57 @@ async function syncTipLaborFromDB(storeId, guid, days) {
   return { updated, rowCount: rows.length, emptyData, rawDates, savedDates,
     diag: `DB返却${rows.length}行 / 保存${updated}日 / data空${emptyData}行` };
 }
+/* ============================================================
+   v860 クレジットTip調整だけを引く軽い取り込み
+   ------------------------------------------------------------
+   調整額の保存先は tip_labor の *_credit_tip_adj 列。クラウドには入っている。
+   だが他端末が読むのは m_credit_tip_adj_<店> のローカルキャッシュで、
+   それを埋めるのは syncTipLaborFromDB だけ。
+
+   そして自動同期の経路はすべて monthDays()＝当月しか見ていない。
+     loginSyncOps / ensureMonthDataLoaded(curYm()) / doToastSync / doTipLaborDB / syncCenterRunStore
+   つまり「過去月の日付の調整」は、他の端末に届く経路が1つも無かった。
+   （Akane が直しても Marcia に反映されない、の原因）
+
+   ★ 勤怠(data列)は重いので触らない。調整の列だけを select で絞って引く。
+   ★ 取り込みの中身は syncTipLaborFromDB と同じ式。新しい計算は作らない。
+   ============================================================ */
+var CT_ADJ_COLS = 'business_date,lunch_credit_tip_adj,dinner_credit_tip_adj,'
+  + 'lunch_credit_tip_adj_reason,dinner_credit_tip_adj_reason,'
+  + 'lunch_credit_tip_adj_by,dinner_credit_tip_adj_by,'
+  + 'lunch_credit_tip_adj_at,dinner_credit_tip_adj_at';
+/* DBの1行をローカルの形へ。
+   syncTipLaborFromDB の中にも同じ式が直に書いてあるが、あちらは verify_v801 が
+   「Toast取り込みを1バイトも変えない」で守っている砦なので触らない。
+   代わりに verify_v860 で「両方の結果が一致すること」を実際に動かして見張る。 */
+function _ctAdjFromRow(row){
+  var has = (+row.lunch_credit_tip_adj||0)!==0 || (+row.dinner_credit_tip_adj||0)!==0
+         || row.lunch_credit_tip_adj_reason || row.dinner_credit_tip_adj_reason;
+  return has ? {
+    lAdj:+row.lunch_credit_tip_adj||0, dAdj:+row.dinner_credit_tip_adj||0,
+    lReason:row.lunch_credit_tip_adj_reason||'', dReason:row.dinner_credit_tip_adj_reason||'',
+    lBy:row.lunch_credit_tip_adj_by||'', dBy:row.dinner_credit_tip_adj_by||'',
+    lAt:row.lunch_credit_tip_adj_at||'', dAt:row.dinner_credit_tip_adj_at||''
+  } : null;
+}
+async function syncCreditTipAdjFromDB(storeId, guid, dateFrom, dateTo){
+  if(!guid || !dateFrom || !dateTo) return 0;
+  try{
+    var url = SUPABASE_URL + '/rest/v1/tip_labor?restaurant_guid=eq.' + encodeURIComponent(guid)
+      + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo
+      + '&select=' + encodeURIComponent(CT_ADJ_COLS) + '&order=business_date.asc';
+    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    if(!res.ok) return 0;
+    var rows = await res.json(), n = 0;
+    (rows||[]).forEach(function(row){
+      var bd = normalizeBusinessDate(row.business_date); if(!bd) return;
+      var o = _ctAdjFromRow(row);
+      setCreditTipAdjLocal(storeId, bd, o);
+      if(o) n++;
+    });
+    return n;
+  }catch(e){ console.warn('syncCreditTipAdjFromDB', storeId, e); return 0; }
+}
 /* business_date を YYYY-MM-DD に正規化 */
 function normalizeBusinessDate(bd) {
   if (bd==null) return '';
@@ -12373,6 +12424,14 @@ async function loginSyncOps(){
     await Promise.all(stores.map(async function(s){
       try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); }
       try { await syncTipLaborFromDB(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps labor', s.id, e); }
+      /* v860: クレジットTip調整は前月の日付を直すことが多い。
+         他の同期は当月しか見ないので、調整の列だけ前月も引く（軽い）。 */
+      try {
+        var _pm = new Date(); _pm.setDate(1); _pm.setMonth(_pm.getMonth()-1);
+        var _pfrom = _ymdLocal(new Date(_pm.getFullYear(), _pm.getMonth(), 1));
+        var _pto   = _ymdLocal(new Date(_pm.getFullYear(), _pm.getMonth()+1, 0));
+        await syncCreditTipAdjFromDB(s.id, s.toastGuid, _pfrom, _pto);
+      } catch(e){ console.warn('loginSyncOps ctadj', s.id, e); }
       try { backfillRecentLabor(s.id, s.toastGuid, days).catch(function(e){ console.warn('loginSyncOps laborTail', s.id, e); }); } catch(e){} // v643: 直近Laborのライブ補完はToast往復を待たず裏で実行（ログイン高速化）
       try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('loginSyncOps mix', s.id, e); }
       done++; setSyncSplash('売上・客数・勤怠・出数を同期中… ('+done+'/'+total+')');
@@ -24427,6 +24486,19 @@ function renderTipPeriodDaily(storeId, store, info) {
 }
 /* 日別詳細：Excel 5/16 と同じ「ランチ|ディナー」の振り分け内訳（差額チェック付き） */
 function openTipDayDetail(storeId, date) {
+  /* v860: 過去月だと自動同期が届かないので、開いたときにその1日だけ引き直す。
+     列を絞った1行の問い合わせなので軽い。変わっていたときだけ描き直す。 */
+  try{
+    var _st0 = STORES.find(function(s){return s.id===storeId;}) || {};
+    if(_st0.toastGuid && typeof syncCreditTipAdjFromDB==='function'){
+      var _before = JSON.stringify(getCreditTipAdj(storeId, date) || null);
+      syncCreditTipAdjFromDB(storeId, _st0.toastGuid, date, date).then(function(){
+        if(JSON.stringify(getCreditTipAdj(storeId, date) || null) !== _before){
+          try{ openTipDayDetail(storeId, date); }catch(e){}
+        }
+      });
+    }
+  }catch(e){}
   var store = STORES.find(s=>s.id===storeId)||{};
   var dist = calcTipDistribution(storeId, date);
   var tip = dist.tip;
@@ -26784,7 +26856,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '859';
+const APP_VERSION = '860';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
