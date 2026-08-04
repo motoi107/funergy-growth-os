@@ -723,6 +723,45 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 .md-cnt { margin-left:auto; font-size:11px; font-weight:800; flex:0 0 auto; }
 .md-more { font-size:10px; color:var(--muted); padding-top:6px; }
 .md-empty { text-align:center; color:var(--green); padding:10px 0; font-size:11.5px; }
+/* ===== v861 店舗カード ===== */
+.md-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(268px,1fr)); gap:10px; }
+.md-cards.solo { grid-template-columns:1fr; }
+.md-sc { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+         padding:11px 11px 9px; cursor:pointer; position:relative; overflow:hidden; transition:.12s; }
+.md-sc:hover { transform:translateY(-2px); box-shadow:0 4px 10px rgba(33,27,21,.09); }
+.md-sc::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; }
+.md-sc.ok::before{background:var(--green)} .md-sc.miss::before{background:var(--red)}
+.md-sc.unknown::before{background:#c9c1b6}
+.md-sc-h { display:flex; align-items:center; gap:7px; margin-bottom:8px; }
+.md-sc-nm { font-size:13.5px; font-weight:800; letter-spacing:-.01em; }
+.md-sc-hero { background:var(--surface2); border-radius:9px; padding:8px 9px; margin-bottom:8px; }
+.md-sc-l { font-size:9.5px; color:var(--muted); font-weight:700; }
+.md-sc-v { font-size:20px; font-weight:800; letter-spacing:-.02em; line-height:1.15; margin:1px 0 2px; }
+.md-sc-s { font-size:10px; color:var(--muted); }
+.md-wow { font-size:9px; font-weight:800; padding:2px 6px; border-radius:20px; margin-left:5px; white-space:nowrap; }
+.md-sc-kg { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.md-sc-k { background:var(--surface2); border-radius:8px; padding:6px 8px; min-width:0; }
+.md-sc-k.unk { background:#faf7f3; border:1px dashed var(--border); }
+.md-sc-kl { font-size:9.5px; color:var(--muted); font-weight:700; }
+.md-sc-kv { font-size:14.5px; font-weight:800; letter-spacing:-.01em; margin-top:1px; }
+.md-sc-k.unk .md-sc-kv { font-size:11px; color:var(--muted); }
+.md-sc-kd { font-size:9.5px; font-weight:600; }
+.md-sc-fix { font-size:9px; color:var(--accent); font-weight:700; margin-top:1px; line-height:1.4; }
+.md-chart { margin:0 0 8px; }
+.md-chart-t { font-size:9.5px; color:var(--muted); font-weight:700; display:flex; align-items:center;
+              gap:7px; margin-bottom:3px; flex-wrap:wrap; }
+.md-lg { display:inline-flex; align-items:center; gap:3px; font-weight:600; }
+.md-lg i { width:9px; height:2.5px; border-radius:2px; display:inline-block; }
+.md-hm { display:grid; gap:2.5px; font-size:8.5px; }
+.md-hm .hd { color:var(--muted); font-weight:700; text-align:center; }
+.md-hm .rl { color:var(--muted); font-weight:700; display:flex; align-items:center; white-space:nowrap; }
+.md-hm .cel { height:17px; border-radius:4px; display:flex; align-items:center; justify-content:center;
+              font-weight:800; color:#fff; }
+.md-hm .cel.na { background:#f0ebe4; color:#b5aa9d; }
+.md-cards.solo .md-sc-v { font-size:28px; }
+.md-cards.solo .md-sc-kv { font-size:17px; }
+.md-cards.solo .md-sc-kg { grid-template-columns:repeat(4,1fr); }
+@media (max-width:640px){ .md-cards.solo .md-sc-kg { grid-template-columns:1fr 1fr; } }
 @media (max-width:760px) { .md-tbl .md-opt { display:none; } .md-kpi-v { font-size:17px; }
   .md-t-v { font-size:19px; } }
 @media (min-width:1180px) {
@@ -2924,6 +2963,141 @@ function mdKpiDetailHtml(stores, ym, code, roll) {
   return h + '</div>';
 }
 
+/* ---------- v861 店舗カード（重要KPIの置き換え） ---------- */
+/* 売上の累計線。実績＝実線、進捗予算＝点線。SVGを文字列で作る（ライブラリなし）。 */
+function mdSalesSparkHtml(ser, color, h){
+  h = h || 46;
+  var pts = ser.line || [];
+  if (pts.length < 2) return '';
+  var w = 240, mx = 0;
+  pts.forEach(function(p){ if(p.act>mx) mx=p.act; if(p.bud>mx) mx=p.bud; });
+  mx = mx * 1.06 || 1;
+  var xy = function(key){
+    return pts.map(function(p,i){
+      return (i/(pts.length-1)*w).toFixed(1) + ',' + (h - p[key]/mx*h).toFixed(1);
+    }).join(' ');
+  };
+  var last = pts[pts.length-1];
+  return '<div class="md-chart"><div class="md-chart-t"><i class="ti ti-chart-line"></i>売上の累計'
+    + '<span class="md-lg"><i style="background:' + color + '"></i>実績</span>'
+    + '<span class="md-lg"><i style="background:repeating-linear-gradient(90deg,#a99e90 0 3px,transparent 3px 5px)"></i>進捗予算</span></div>'
+    + '<svg viewBox="0 0 ' + w + ' ' + (h+4) + '" preserveAspectRatio="none" style="width:100%;height:' + (h+4) + 'px">'
+    + '<polyline points="' + xy('bud') + '" fill="none" stroke="#a99e90" stroke-width="1.6" stroke-dasharray="3 3"/>'
+    + '<polyline points="' + xy('act') + '" fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linejoin="round"/>'
+    + '<circle cx="' + w + '" cy="' + (h - last.act/mx*h).toFixed(1) + '" r="2.6" fill="' + color + '"/>'
+    + '</svg></div>';
+}
+/* 週×KPI の達成率。100%＝目標。下げるKPIは反転済みなので、常に緑＝良い。 */
+var MD_HM_ROWS = [['sales','売上'],['guests','客数'],['ppa','客単価'],['labor_rate','人件費率'],['cost_rate','原価率']];
+function mdWeekHeatHtml(storeId, ym){
+  var rates = mdWeekRates(storeId, ym) || [];
+  if (!rates.length) return '';
+  var n = rates.length;
+  var col = function(v){ return v==null ? '' : (v>=100 ? 'var(--green)' : (v>=95 ? 'var(--amber)' : 'var(--red)')); };
+  var h = '<div class="md-chart"><div class="md-chart-t"><i class="ti ti-grid-dots"></i>週ごとの達成率（100%＝目標）'
+    + '<span class="md-lg"><i style="background:var(--green)"></i>100%↑</span>'
+    + '<span class="md-lg"><i style="background:var(--amber)"></i>95%↑</span>'
+    + '<span class="md-lg"><i style="background:var(--red)"></i>未達</span></div>'
+    + '<div class="md-hm" style="grid-template-columns:44px repeat(' + n + ',1fr)"><div></div>';
+  rates.forEach(function(r,i){ h += '<div class="hd">W' + (i+1) + '</div>'; });
+  MD_HM_ROWS.forEach(function(row){
+    h += '<div class="rl">' + row[1] + '</div>';
+    rates.forEach(function(r){
+      var v = r[row[0]];
+      h += (v==null) ? '<div class="cel na">—</div>'
+                     : '<div class="cel" style="background:' + col(v) + '">' + v + '</div>';
+    });
+  });
+  return h + '</div></div>';
+}
+/* 前週比（直近7日 vs その前7日）。当月のときだけ出す。 */
+function mdWowFor(storeId, ym){
+  if (ym !== curYm()) return {};
+  try { return wowStats([{ id: storeId }]) || {}; } catch(e){ return {}; }
+}
+function mdWowTag(v, goodWhenUp){
+  if (v == null) return '';
+  var good = goodWhenUp ? (v >= 0) : (v <= 0);
+  return '<span class="md-wow" style="background:' + (good ? '#15a66a1f' : '#e23b3b1f')
+    + ';color:' + (good ? 'var(--green)' : 'var(--red)') + '">前週比 ' + (v > 0 ? '+' : '') + v + '%</span>';
+}
+var MD_CARD_KPIS = [['guests','ti-friends'],['ppa','ti-coin'],['labor_rate','ti-users'],['cost_rate','ti-meat']];
+function mdStoreCardHtml(storeId, ym, solo){
+  var sv = mdStoreVerdict(storeId, ym);
+  var m = mdStateMeta(sv.state);
+  var sales = mdVerdict(storeId, 'sales', ym);
+  var sm = mdStateMeta(sales.state);
+  var ser = mdStoreSeries(storeId, ym);
+  var wow = mdWowFor(storeId, ym);
+  var unkS = sales.state === 'unknown';
+  var h = '<div class="md-sc ' + sv.state + '" onclick="mdOpenStore(\'' + storeId + '\')">'
+    + '<div class="md-sc-h"><span class="md-sc-nm">' + escapeHtml(mcStoreLabel(storeId)) + '</span>'
+    + '<span class="md-badge" style="background:' + m.color + '22;color:' + m.color + '">'
+    + '<i class="ti ' + m.icon + '"></i>' + m.label + '</span></div>';
+  /* 売上（大きく） */
+  h += '<div class="md-sc-hero"><div class="md-sc-l">売上 / 進捗予算</div>';
+  if (unkS) {
+    var f0 = MD_FIX[sales.reasonCode] || { label: sales.reason, how: '' };
+    h += '<div class="md-sc-v" style="font-size:13px;color:var(--muted)">' + escapeHtml(f0.label) + '</div>'
+      + '<div class="md-sc-fix">' + escapeHtml(f0.how) + '</div>';
+  } else {
+    h += '<div class="md-sc-v" style="color:' + sm.color + '">' + mdFmt(sales.actual, sales.unit)
+      + mdWowTag(wow.sales, true) + '</div>'
+      + '<div class="md-sc-s">進捗予算 ' + mdFmt(sales.target, sales.unit) + '　<b style="color:' + sm.color + '">'
+      + mdSigned(sales.diff, sales.unit) + '（' + (sales.target > 0 ? Math.round(sales.actual/sales.target*1000)/10 : 0) + '%）</b>'
+      + (sales.note ? '<div style="color:var(--red)">' + escapeHtml(sales.note) + '</div>' : '') + '</div>';
+  }
+  h += '</div>';
+  /* グラフ（案C：累計線＋週ヒートマップ） */
+  h += mdSalesSparkHtml(ser, unkS ? '#9b938a' : sm.color, solo ? 74 : 46);
+  h += mdWeekHeatHtml(storeId, ym);
+  /* KPI 2×2 */
+  h += '<div class="md-sc-kg">';
+  MD_CARD_KPIS.forEach(function(k){
+    var v = mdVerdict(storeId, k[0], ym), c = mdStateMeta(v.state);
+    if (v.state === 'unknown') {
+      var f = MD_FIX[v.reasonCode] || { label: v.reason, how: '' };
+      h += '<div class="md-sc-k unk"><div class="md-sc-kl"><i class="ti ' + k[1] + '"></i> ' + escapeHtml(v.label) + '</div>'
+        + '<div class="md-sc-kv">' + (v.ref !== null && v.ref !== undefined
+            ? mdFmt(v.ref, v.unit) + ' <span style="font-size:9px">参考</span>' : escapeHtml(f.label)) + '</div>'
+        + '<div class="md-sc-fix">' + escapeHtml(f.how) + '</div></div>';
+    } else {
+      var w = (k[0]==='guests') ? wow.guests : (k[0]==='ppa' ? wow.ppa : null);
+      h += '<div class="md-sc-k"><div class="md-sc-kl"><i class="ti ' + k[1] + '"></i> ' + escapeHtml(v.label) + '</div>'
+        + '<div class="md-sc-kv" style="color:' + c.color + '">' + mdFmt(v.actual, v.unit) + '</div>'
+        + '<div class="md-sc-kd" style="color:' + c.color + '">' + mdSigned(v.diff, v.unit)
+        + ' <span style="color:var(--muted);font-weight:500">/ 目標 ' + mdFmt(v.target, v.unit) + '</span></div>'
+        + (w != null ? '<div>' + mdWowTag(w, true) + '</div>' : '') + '</div>';
+    }
+  });
+  return h + '</div></div>';
+}
+function mdStoreCardsHtml(stores, ym){
+  var list = (stores || []);
+  var solo = list.length === 1;
+  var h = '<div class="card"><div class="md-sec-t"><i class="ti ti-building-store" style="color:var(--accent)"></i>'
+    + (solo ? '重要KPI' : '店舗別の重要KPI')
+    + '<span class="md-sub">' + (solo ? mcStoreLabel(list[0]) : '対象 ' + list.length + '店') + '</span></div>';
+  if (!list.length) return h + '<div class="md-ph">対象の店舗がありません</div></div>';
+  /* 未達を先に（順位ではない）。単店のときは並べ替えない。 */
+  var order = { miss:0, unknown:1, ok:2 };
+  var sorted = solo ? list : list.slice().sort(function(a,b){
+    var sa, sb;
+    try{ sa = mdStoreVerdict(a, ym).state; }catch(e){ sa = 'unknown'; }
+    try{ sb = mdStoreVerdict(b, ym).state; }catch(e){ sb = 'unknown'; }
+    /* order.miss は 0 なので || では拾えない（0||9 が 9 になり未達が最後に回る） */
+    return (order[sa]!=null?order[sa]:9) - (order[sb]!=null?order[sb]:9);
+  });
+  h += '<div class="md-cards' + (solo ? ' solo' : '') + '">'
+    + sorted.map(function(id){ try{ return mdStoreCardHtml(id, ym, solo); }catch(e){ return ''; } }).join('')
+    + '</div>';
+  h += '<div style="font-size:10px;color:var(--muted);margin-top:9px;line-height:1.7">'
+    + '<i class="ti ti-info-circle"></i> カードを押すとその店の予実へ。左端の色帯＝総合判定。'
+    + '売上・客数は本日時点の進捗予算と比べています。<br>'
+    + '週の区切りは日曜始まり（人件費のOT判定と同じ週）。'
+    + '人件費率・原価率は「目標÷実績」で反転しているので、<b>ヒートマップは常に緑＝良い</b>です。</div>';
+  return h + '</div>';
+}
 /* ---------- 今日の売上（Funergy Now）は独立カードに戻す ---------- */
 function mdFunergyNowHtml() {
   return '<div class="card" id="rt-sales-card">'
@@ -3094,9 +3268,12 @@ function renderMgmtDash() {
 
   var codes = mdPrimaryKpis(stores[0]);
   ['guests', 'ppa'].forEach(function (k) { if (codes.indexOf(k) < 0) codes.push(k); });
-  h += '<div class="md-col-main">' + mdKpiChartHtml(stores, ym, codes)
-    + mdReasonsHtml(stores, ym, codes) + mdFunergyNowHtml() + '</div>';
-  h += '<div class="md-col-mid">' + mdStoresHtml(stores, ym, sc) + '</div>';
+  /* v861: KPI別の行（mdKpiChartHtml）と店舗別の表（mdStoresHtml）を、店舗カードに置き換える。
+     1店の全体像が一目で見えることを優先した（Motoさん確認済み）。
+     判定できていない理由は残す。今日の売上は中央カラムへ移す。 */
+  h += '<div class="md-col-main">' + mdStoreCardsHtml(stores, ym)
+    + mdReasonsHtml(stores, ym, codes) + '</div>';
+  h += '<div class="md-col-mid">' + mdFunergyNowHtml() + '</div>';
   h += '<div class="md-col-side">' + mdRailHtml(stores, counts) + '</div>';
   h += '</div>';
 
@@ -4937,6 +5114,119 @@ function mdJudge(code, actual, target, note) {
   return mdV(code, ok ? 'ok' : 'miss', { actual: actual, target: target, note: note });
 }
 
+
+/* ============================================================
+   v861 店舗カード用の系列データ（日次の累計 ＋ 週次バケット）
+   ------------------------------------------------------------
+   ★ 新しい計算式は作らない。既にある関数の結果を、日と週に振り分けるだけ。
+   ★ 読み取りは v859 のキャッシュに乗せる（描画1回ぶん）。
+   ★ 週の区切りは laborMonthWeeks(ym)＝日曜始まり。人件費のOT判定と同じ週。
+
+   人件費の週次について：
+     laborCoreForYm(store, ym, {weekSun}) を週ごとに呼ぶ方法は使えない。
+     有給ぶん(leavePay)が weekSun で絞られず月全体で入るため、Σ週 ≠ 月 になる。
+     そこで「月の人件費（laborCoreForYm の total）を、週の労働時間比で割り付ける」。
+     割り算の分母は月の総時間なので、Σ週 = 月 が必ず成り立つ。
+   ============================================================ */
+function laborWeekHours(storeId, ym){
+  return _mdMemo('lwh', String(storeId) + '|' + ym, function(){
+    /* 期間の切り方は laborCoreForYm の inRange と同じにする */
+    var cutoff = (ym === curYm()) ? bizToday() : null;
+    var out = {}, tot = 0;
+    (laborMonthWeeks(ym) || []).forEach(function(w){
+      var h = 0;
+      laborWeekDays(w.sun).forEach(function(dt){
+        if (String(dt).slice(0,7) !== ym) return;
+        if (cutoff && !(dt < cutoff)) return;
+        var labor = null; try{ labor = getTipLabor(storeId, dt); }catch(e){ labor = null; }
+        if(!labor) return;
+        Object.keys(labor).forEach(function(n){ var x = _laborHrs(labor[n]); if(x > 0) h += x; });
+      });
+      out[w.sun] = Math.round(h * 100) / 100;
+      tot += h;
+    });
+    return { byWeek: out, total: Math.round(tot * 100) / 100 };
+  });
+}
+/* 客数の日次。丼数の店は丼＋テイクアウト丼（wowStats と同じ規約） */
+function _mdDayGuests(storeId, ov){
+  var metric = (typeof guestCountType === 'function') ? guestCountType(storeId) : 'guest';
+  return (metric === 'bowls')
+    ? ((Number(ov.bowls)||0) + (Number(ov.takeoutBowls)||0))
+    : (Number(ov.guests)||0);
+}
+function mdStoreSeries(storeId, ym){
+  return _mdMemo('series', String(storeId) + '|' + ym, function(){
+    var days = daysOfYm(ym) || [];
+    var acts = getDailyActuals(storeId) || {};
+    var b = getBudgetForMonth(storeId, ym);
+    var today = todayISO();
+    var weeks = (laborMonthWeeks(ym) || []).map(function(w){
+      return { sun:w.sun, sales:0, bud:0, guests:0, food:0, hasAct:false };
+    });
+    function weekOf(dt){
+      for (var i = weeks.length - 1; i >= 0; i--) if (dt >= weeks[i].sun) return weeks[i];
+      return null;
+    }
+    var line = [], aCum = 0, bCum = 0, budMonth = 0, salesMonth = 0, guestMonth = 0;
+    days.forEach(function(dd){
+      var ov = acts[dd.date] || {};
+      var dayBud = (ov.budget != null) ? ov.budget : (b ? dayBudgetFor(b, dd.date, dd.dow) : 0);
+      var dayAct = (ov.actual != null) ? ov.actual : 0;
+      budMonth += dayBud;
+      var w = weekOf(dd.date);
+      /* 実績は「前日まで」で見る（cumulativeToToday と同じ規約）。
+         v861: 週の予算も経過日だけ足す。月末まで7日分を立てると、
+         進行中の週が必ず未達に見える（v858 で月次を直したのと同じ理由）。 */
+      if (dd.date < today) {
+        if (w) { w.bud += dayBud; }
+        bCum += dayBud;
+        if (ov.actual != null) {
+          aCum += dayAct; salesMonth += dayAct;
+          var g = _mdDayGuests(storeId, ov); guestMonth += g;
+          if (w) {
+            w.sales += dayAct; w.guests += g; w.hasAct = true;
+            w.food += (ov.foodCost != null) ? (Number(ov.foodCost)||0) : dayCostReal(storeId, dd.date);
+          }
+        }
+        line.push({ date: dd.date, act: Math.round(aCum), bud: Math.round(bCum) });
+      }
+    });
+    /* 人件費：月の総額を週の労働時間比で割り付ける（Σ週 = 月） */
+    var mLabor = 0; try{ mLabor = Number(laborCoreForYm(storeId, ym).total) || 0; }catch(e){ mLabor = 0; }
+    var wh = laborWeekHours(storeId, ym);
+    weeks.forEach(function(w){
+      w.hours = wh.byWeek[w.sun] || 0;
+      w.labor = (wh.total > 0) ? (mLabor * w.hours / wh.total) : 0;
+    });
+    return { line:line, weeks:weeks, budMonth:budMonth, salesMonth:salesMonth,
+             guestMonth:guestMonth, labMonth:mLabor, labHours:wh.total };
+  });
+}
+/* 週ごとの達成率（100%＝目標）。下げるKPIは「目標÷実績」で反転し、常に100%超＝良いに揃える。 */
+function mdWeekRates(storeId, ym){
+  return _mdMemo('wrate', String(storeId) + '|' + ym, function(){
+    var s = mdStoreSeries(storeId, ym);
+    var k = {}; try{ k = getStoreKpiTargets(storeId) || {}; }catch(e){ k = {}; }
+    var gbM = 0; try{ gbM = Number(monthGuestBudget(storeId, mcYmOffset(ym))) || 0; }catch(e){ gbM = 0; }
+    var ppaT = (gbM > 0 && s.budMonth > 0) ? (s.budMonth / gbM) : 0;
+    var lT = Number(k.laborPct) || 0, fT = Number(k.foodCost) || 0;
+    var pct = function(a, t){ return (t > 0 && a != null) ? Math.round(a / t * 100) : null; };
+    var inv = function(a, t){ return (t > 0 && a > 0) ? Math.round(t / a * 100) : null; };
+    return s.weeks.map(function(w){
+      var gb = (gbM > 0 && s.budMonth > 0) ? (gbM * w.bud / s.budMonth) : 0;
+      var ppa = (w.guests > 0) ? (w.sales / w.guests) : null;
+      var lr = (w.sales > 0) ? (w.labor / w.sales * 100) : null;
+      var fr = (w.sales > 0) ? (w.food / w.sales * 100) : null;
+      return { sun:w.sun, has:w.hasAct,
+        sales: w.hasAct ? pct(w.sales, w.bud) : null,
+        guests: w.hasAct ? pct(w.guests, gb) : null,
+        ppa: w.hasAct ? pct(ppa, ppaT) : null,
+        labor_rate: w.hasAct ? inv(lr, lT) : null,
+        cost_rate: (w.hasAct && w.food > 0) ? inv(fr, fT) : null };
+    });
+  });
+}
 /* KPI 1件の判定。ym を省略すると当月。 */
 function mdVerdict(storeId, code, ym) {
   if (!MD_KPI[code]) return mdUnknown(code, 'calc_error');
@@ -26856,7 +27146,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '860';
+const APP_VERSION = '861';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
