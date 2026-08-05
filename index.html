@@ -27252,7 +27252,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '864';
+const APP_VERSION = '866';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -27867,6 +27867,41 @@ function exportShiftImage(storeId, week){
 }
 
 /* 配置可能スタッフ（所属 or 応援店舗） */
+/* v865: 店舗の現場に立つスタッフのロール。
+   従業員マスターで選べるのは
+     ['ceo','gm','office','chef','am','g4','sl','g2','office_crew','crew']
+   で、このうち店舗に立つのは g4 / sl / g2 / crew の4つ。
+   スキル画面が ['sl','crew'] を直書きしていたため、マスターで配属済みの
+   G2 と G4（ヘッドシェフ）が一覧から静かに落ちていた。
+   チップ配分でも同じ形の取りこぼしがあり tipBaseRole で直した経緯がある。
+   同じことを繰り返さないよう、判定はここ1か所に置く。
+   v866: Motoさん依頼で G1〜G6 すべてを対象にした。
+   G5(am) / G6(gm) / chef も配属店・応援先に出て、評価できる。
+   office / office_crew / ceo は店舗ではなく Office 側なので入れない
+   （OFFICE タブが今までどおり担当する）。 */
+var STORE_STAFF_ROLES = ['gm', 'am', 'g4', 'chef', 'sl', 'g2', 'crew'];
+function isStoreStaff(e) { return STORE_STAFF_ROLES.indexOf(e && e.role) >= 0; }
+/* v866: この人がスキル評価の対象になる店舗を並べる。
+     ・e.store       … 配属店
+     ・e.support[]   … 応援先
+     ・AM            … 店舗マスターの am 欄が正（v799 の決定）。amStoresOf を使う
+     ・store='ALL' / GM / コーポレートシェフ … 全店
+   「この人はこの店舗の人か」を画面ごとに書き写さないための1か所。
+   書き写すと、v865 で直したのと同じ取りこぼしがまた起きる。 */
+function empStoresOf(e) {
+  var out = [];
+  function add(id) { if (id && id !== 'ALL' && id !== 'OFFICE' && out.indexOf(id) < 0) out.push(id); }
+  if (!e) return out;
+  if (e.store === 'ALL' || e.role === 'gm' || e.role === 'chef') {
+    try { getStoresAll().filter(function (s) { return s.active !== false; })
+      .forEach(function (s) { add(s.id); }); } catch (err) { }
+  }
+  add(e.store);
+  (e.support || []).forEach(add);
+  if (e.role === 'am') { try { amStoresOf(e.name).forEach(add); } catch (err) { } }
+  return out;
+}
+function empWorksAt(e, storeId) { return empStoresOf(e).indexOf(storeId) >= 0; }
 function staffForStore(storeId) {
   return getEmployees().filter(e=>e.status!=='退職' && (e.store===storeId || (e.support||[]).includes(storeId)) && e.role!=='office' && e.role!=='ceo');
 }
@@ -45947,23 +45982,12 @@ function renderPGD(empName, isManagerView) {
   var emp = getEmployees().find(e=>e.name===empName);
   if (!emp) return '<div class="card"><p style="color:var(--muted)">'+t('従業員データが見つかりません','Employee data not found')+'</p></div>';
   var store = STORES.find(s=>s.id===emp.store) || {name:emp.store};
-  var evals = ls('evaluations', evalSeed());
-  var myEval = evals.find(e=>e.id===empName);
   var tipReqs = ls('tip_requests', []).filter(r=>r.name===empName);
   var curTip = tipReqs.filter(r=>r.status==='承認').slice(-1)[0];
   var evalHist = ls('eval_history', []).filter(h=>h.name===empName);
   var warnings = []; STORES.forEach(s=>{ getWarnings(s.id).forEach(w=>{ if((w.reason||'').includes(empName)) warnings.push(w); }); });
   var obs = ls('onboardings', []).filter(o=>o.name===empName);
   var promo = STEP_PROMO[emp.step] || STEP_PROMO[0];
-
-  // スキル達成率（評価のskill_*項目）
-  var skillRate = 0, skillItems = [];
-  if (myEval) {
-    var sk = EVAL_CRITERIA.filter(c=>c.group==='スキル');
-    var got = sk.reduce((a,c)=>a+(myEval.scores[c.key]||0),0);
-    skillRate = Math.round(got/(sk.length*2)*100);
-    skillItems = sk.map(c=>({label:c.label, score:myEval.scores[c.key]||0}));
-  }
 
   var html = '';
 
@@ -45978,45 +46002,50 @@ function renderPGD(empName, isManagerView) {
     <div style="font-size:12px;color:var(--muted);margin-top:8px">所属: ${store.name}${(emp.support||[]).length?' · 応援可: '+emp.support.map(id=>(STORES.find(s=>s.id===id)||{name:id}).name).join(','):''}</div>
   </div>`;
 
-  // ② スキル進捗
-  html += `<div class="card"><div class="card-title"><i class="ti ti-stairs-up"></i>スキル進捗
-    <span style="margin-left:auto;font-size:12px;color:var(--muted)">達成 ${skillRate}%</span></div>
-    <div class="progress-bar" style="margin-bottom:10px"><div class="progress-fill" style="background:var(--accent2);width:${skillRate}%"></div></div>`;
-  if (skillItems.length) {
-    skillItems.forEach(s => {
-      var label = s.score>=2?'習得済':s.score===1?'習得中':'未習得';
-      var col = s.score>=2?'tag-green':s.score===1?'tag-yellow':'tag-gray';
-      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
-        <span style="font-size:13px">${s.label}</span><span class="tag ${col}">${label} (${s.score}/2)</span></div>`;
-    });
-    var next = skillItems.filter(s=>s.score<2)[0];
-    if (next) html += `<div class="alert alert-warning" style="margin-top:10px;padding:8px 10px"><i class="ti ti-arrow-up-right"></i>次に習得すべき: <strong>${next.label}</strong></div>`;
-  } else {
-    html += `<p style="color:var(--muted);font-size:13px">行動評価は未入力です</p>`;
-  }
-  html += '</div>';
-
-  // ②-2 ポジションスキル（承認制）+ 教育候補
-  var empStoreId = emp.store==='ALL'?STORES[0].id:emp.store;
-  var positions = getStorePositions(empStoreId);
-  var psk = getEmpSkills(empName);
-  var apPos = positions.filter(p=>psk[p]&&psk[p].status==='承認'&&psk[p].level>=1);
-  var missing = positions.filter(p=>!apPos.includes(p));
-  html += `<div class="card"><div class="card-title"><i class="ti ti-checkbox"></i>対応可能ポジション (${apPos.length}/${positions.length})</div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${apPos.length?apPos.map(p=>{var lv=psk[p].level;return `<span class="tag tag-green">${p} Lv${lv}</span>`;}).join(''):'<span style="color:var(--muted);font-size:13px">承認済みなし</span>'}</div>`;
-  if (missing.length) {
-    var nextP = missing[0];
-    html += `<div class="alert alert-warning" style="padding:8px 10px;margin-bottom:6px"><i class="ti ti-arrow-up-right"></i>次に覚えるべき: <strong>${nextP}</strong></div>
-      <div style="font-size:12px;color:var(--accent2)"><i class="ti ti-school" style="font-size:13px"></i> 推奨教育: ${missing.slice(0,3).map(p=>SKILL_TRAINING[p]||p).filter((v,i,a)=>a.indexOf(v)===i).join(' / ')}</div>`;
-  } else {
-    html += `<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-trophy"></i>全ポジション習得済み！</div>`;
-  }
-  // 差戻し中の項目
-  var rejected = positions.filter(p=>psk[p]&&psk[p].status==='差戻し');
-  if (rejected.length) {
-    html += `<div style="font-size:12px;color:var(--red);margin-top:8px">差戻し中: ${rejected.map(p=>`${p}${psk[p].mgrComment?'('+psk[p].mgrComment+')':''}`).join(', ')}</div>`;
-  }
-  html += '</div>';
+  /* v866: 旧「スキル進捗」（8項目・evalSeed 由来）を撤去。
+     到達できない評価入力画面が唯一の書き込み元だったため、中身は step から
+     機械的に作った仮の数字でしかなく、実際の評価ではなかった。
+     スキルの実態は下の Skill Level（店舗別）が持っている。 */
+  // ② ポジションスキル（承認制）+ 教育候補
+  /* v866: 複数店舗で働く人は店舗ごとに出す。
+     今までは配属店1つぶんしか見えず、応援先のスキルは本人にも見えなかった。
+     店舗別の記録は getEmpSkillsStore が持っている。 */
+  var _pgStores = empStoresOf(emp);
+  if (!_pgStores.length) _pgStores = [STORES[0].id];
+  _pgStores.forEach(function (_sid) {
+    var _sObj = STORES.find(function (s) { return s.id === _sid; }) || { name: _sid };
+    var positions = getStorePositions(_sid);
+    var psk = getEmpSkillsStore(empName, _sid);
+    var apPos = positions.filter(function (p) { return psk[p] && psk[p].status === '承認' && psk[p].level >= 1; });
+    var missing = positions.filter(function (p) { return apPos.indexOf(p) < 0; });
+    html += '<div class="card"><div class="card-title"><i class="ti ti-checkbox"></i>'
+      + '<span style="width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;background:'
+      + (_sObj.color || 'var(--accent)') + '"></span>' + escapeHtml(_sObj.name)
+      + ' \u5bfe\u5fdc\u53ef\u80fd\u30dd\u30b8\u30b7\u30e7\u30f3 (' + apPos.length + '/' + positions.length + ')</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">'
+      + (apPos.length
+          ? apPos.map(function (p) { return '<span class="tag tag-green">' + posLabel(p) + ' Lv' + psk[p].level + '</span>'; }).join('')
+          : '<span style="font-size:12px;color:var(--muted)">' + t('\u627f\u8a8d\u6e08\u307f\u306a\u3057', 'None approved') + '</span>')
+      + '</div>';
+    if (missing.length) {
+      html += '<div class="alert alert-warning" style="padding:8px 10px;margin-bottom:6px">'
+        + '<i class="ti ti-arrow-up-right"></i>\u6b21\u306b\u899a\u3048\u308b\u3079\u304d: <strong>' + posLabel(missing[0]) + '</strong></div>';
+      var _tr = missing.slice(0, 3).map(function (p) { return SKILL_TRAINING[p] || p; })
+        .filter(function (v, i, a) { return a.indexOf(v) === i; }).join(' / ');
+      if (_tr) html += '<div style="font-size:12px;color:var(--accent2)">'
+        + '<i class="ti ti-school" style="font-size:13px"></i> \u63a8\u5968\u6559\u80b2: ' + _tr + '</div>';
+    } else {
+      html += '<div class="alert alert-success" style="padding:8px 10px">'
+        + '<i class="ti ti-trophy"></i>\u5168\u30dd\u30b8\u30b7\u30e7\u30f3\u7fd2\u5f97\u6e08\u307f\uff01</div>';
+    }
+    var rejected = positions.filter(function (p) { return psk[p] && psk[p].status === '差戻し'; });
+    if (rejected.length) {
+      html += '<div style="font-size:12px;color:var(--red);margin-top:8px">\u5dee\u623b\u3057\u4e2d: '
+        + rejected.map(function (p) { return posLabel(p) + (psk[p].mgrComment ? '(' + escapeHtml(psk[p].mgrComment) + ')' : ''); }).join(', ')
+        + '</div>';
+    }
+    html += '</div>';
+  });
 
   // ③ 教育進捗
   html += `<div class="card"><div class="card-title"><i class="ti ti-school"></i>教育進捗</div>`;
@@ -56622,7 +56651,7 @@ function renderSkillManager() {
   // この店舗で働くスタッフ（所属 or 勤務可能店舗）
   var staffHere = (mgrStoreId==='OFFICE')
     ? visibleStaffForManager().filter(e=>['office','office_crew'].includes(e.role) && e.status!=='退職')
-    : visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role) && !e.prep && (e.store===mgrStoreId || (e.support||[]).includes(mgrStoreId)));
+    : visibleStaffForManager().filter(e=>isStoreStaff(e) && !e.prep && empWorksAt(e, mgrStoreId));
   // 不足ポジション（Lv3が誰もいない）
   var shortPos = matrixPos.filter(p=>p!=='Energy'&&p!=='Leadership').filter(p=>!staffHere.some(e=>positionLevelStore(e.name,p,mgrStoreId)>=3));
   if (shortPos.length) {
@@ -56755,20 +56784,28 @@ function renderSkillStaffView() {
   var tabs = bStoreChips(selStore,'setSkillStaffStore',{stores:skillStoreListUI()});
   var staff = visibleStaffForManager().filter(function(e){
     if(selStore==='OFFICE') return ['office','office_crew'].includes(e.role);
-    if(!['sl','crew'].includes(e.role)) return false;
-    if(selStore!=='ALL' && !(e.store===selStore || (e.support||[]).includes(selStore))) return false;
+    if(!isStoreStaff(e)) return false;
+    if(selStore!=='ALL' && !empWorksAt(e, selStore)) return false;
     return true;
   });
   var html = tabs + `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">スタッフごとに、勤務する各店舗のスキル状況・現在のTip Rate・次の条件を表示します。</div>`;
   if (!staff.length) return html + '<div class="card" style="text-align:center;color:var(--muted);padding:20px">対象スタッフなし</div>';
-  staff.slice(0,40).forEach(e=>{
-    var stores = ['office','office_crew'].includes(e.role) ? ['OFFICE'] : [e.store].concat(e.support||[]).filter((v,i,a)=>v&&a.indexOf(v)===i);
+  /* v865: 40名で黙って切っていた。切ったこと自体が画面に出ないので、
+     全員いないように見える。上限を上げたうえで、切ったら必ず言う。 */
+  var _lim = 60, _cut = staff.length - _lim;
+  if (_cut > 0) html += '<div class="alert alert-warning" style="padding:6px 10px;margin-bottom:8px">'
+    + '<i class="ti ti-alert-triangle"></i><div style="font-size:12px">'
+    + '\u8a72\u5f53 ' + staff.length + ' \u540d\u306e\u3046\u3061 ' + _lim + ' \u540d\u307e\u3067\u3092\u8868\u793a\u3057\u3066\u3044\u307e\u3059'
+    + '\uff08\u6b8b\u308a ' + _cut + ' \u540d\uff09\u3002\u4e0a\u306e\u5e97\u8217\u30bf\u30d6\u3067\u5e97\u8217\u3092\u9078\u3076\u3068\u5168\u54e1\u8868\u793a\u3055\u308c\u307e\u3059\u3002'
+    + '</div></div>';
+  staff.slice(0, _lim).forEach(e=>{
+    var stores = ['office','office_crew'].includes(e.role) ? ['OFFICE'] : empStoresOf(e);
     if(selStore!=='ALL') stores = stores.filter(function(sid){return sid===selStore;});
     var rate = effectiveTipRate(e.name);
     html += `<div class="card"><div class="card-title"><i class="ti ti-user"></i>${e.name}
       <span class="tag ${rate===100?'tag-green':'tag-gray'}" style="margin-left:auto">Tip ${rate===0?'No':rate+'%'}</span></div>`;
       if(e.prep){
-        var pStores=[e.store].concat(e.support||[]).filter(function(v,i,a){return v&&a.indexOf(v)===i;});
+        var pStores=empStoresOf(e);
         if(selStore!=='ALL') pStores=pStores.filter(function(sid){return sid===selStore;});
         if(!pStores.length) pStores=[e.store||'F01'];
         pStores.forEach(function(sid){
@@ -56823,7 +56860,7 @@ function renderSkillPositionView(storeId, visStores) {
   var positions = getStorePositions(storeId).filter(p=>p!=='Energy'&&p!=='Leadership');
   var staffHere = (storeId==='OFFICE')
     ? visibleStaffForManager().filter(e=>['office','office_crew'].includes(e.role) && e.status!=='退職')
-    : visibleStaffForManager().filter(e=>['sl','crew'].includes(e.role) && !e.prep && (e.store===storeId || (e.support||[]).includes(storeId)));
+    : visibleStaffForManager().filter(e=>isStoreStaff(e) && !e.prep && empWorksAt(e, storeId));
   positions.forEach(pos=>{
     var lv3=[], lv2=[], lv1=[];
     staffHere.forEach(e=>{ var lv=positionLevelStore(e.name,pos,storeId); if(lv>=3)lv3.push(e.name); else if(lv===2)lv2.push(e.name); else if(lv===1)lv1.push(e.name); });
