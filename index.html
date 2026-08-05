@@ -7562,6 +7562,44 @@ function applyTipHoursClip(storeId, date, data){
   }catch(err){}
   return data;
 }
+/* ============================================================
+   v862 「勤怠時間すべて」のときに L/Dの境目（splitHour）を効かせる
+   ------------------------------------------------------------
+   画面（Tip対象時間の設定）は tip_hours_config に mode と splitHour を保存する。
+   ところが実際に L/D を割っている tipHoursFromShifts は
+     ・basis を別のキー tip_hours_basis から読む（画面とつながっていない）
+     ・basis が 'window' 以外のとき 0-16 / 16-24 を直に書いている
+   ため、画面で 15:30 に設定しても 16:00 で割られていた。
+
+   例：Kaimuki は 15:30 設定。15:52 出勤の人に 15:52〜16:00 の8分がランチとして付き、
+       ごく小さいランチ配分（$1.51 など）が出ていた。
+
+   ★ 読み取り時に効かせる。取り込み時に確定させると、設定を直しても過去日が変わらない。
+     「営業時間のみ」の applyTipHoursClip と同じ考え方。
+   ★ tipHoursFromShifts は verify_v801 が「チップの時間計算は変えていない」で
+     1バイト比較で守っている砦なので触らない。
+   ★ 手動修正した日は触らない（修正値が正）。
+   ============================================================ */
+function applyTipSplit(storeId, date, data){
+  try{
+    var cfg = getTipHoursCfg(storeId);
+    if(!cfg || cfg.mode === 'hours' || !data) return data;   /* 営業時間のみは clip 側が担当 */
+    var sp = tipSplitHourFor(storeId);
+    if(!(sp >= 0 && sp <= 24)) return data;
+    Object.keys(data).forEach(function(nm){
+      var e = data[nm] || {}; var sh = e.shifts;
+      if(!sh || !sh.length) return;
+      var L = 0, D = 0, ok = true;
+      sh.forEach(function(x){
+        if(!x.inDate || !x.outDate){ ok = false; return; }
+        L += overlapHours(x.inDate, x.outDate, 0, sp);
+        D += overlapHours(x.inDate, x.outDate, sp, 24);
+      });
+      if(ok){ e.lunch = Math.round(L*100)/100; e.dinner = Math.round(D*100)/100; }
+    });
+  }catch(err){}
+  return data;
+}
 /* 指定日のTip対象時間窓を曜日別設定から解決。曜日別が無ければ一律(l1/l2/d1/d2)にフォールバック。 */
 function tipHoursWindowFor(storeId, date){
   var cfg=getTipHoursCfg(storeId);
@@ -7589,7 +7627,10 @@ function getTipLabor(storeId, date) {
       out[k] = e;
     });
     var _res = removed ? out : d;
-    if (!_useOvr) _res = applyTipHoursClip(storeId, date, _res); // 手動修正日はクリップしない（修正値が正）
+    if (!_useOvr) {
+      _res = applyTipHoursClip(storeId, date, _res); // 手動修正日はクリップしない（修正値が正）
+      _res = applyTipSplit(storeId, date, _res);     /* v862: 勤怠時間すべてのときの L/D 境目 */
+    }
     return _res;
   }
   return d;
@@ -27146,7 +27187,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '861';
+const APP_VERSION = '862';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
