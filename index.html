@@ -18392,9 +18392,9 @@ function renderBudgetSetup() {
     var dowMode = usesDowMode(bM);
     var dow = getDow(bM);
     var dowBd = dowMode ? dowSegBreakdown(dow) : null;
-    var total = dowMode ? (dowBd.lunch+dowBd.dinner+dowBd.takeout) : segmentsTotal(segs);
     var dayOv = hasDayBudget(bM);
-    if (dayOv) { total = daysOfYm(_bsYmStr).reduce(function(a,dd){ return a + dayBudgetFor(bM, dd.date); }, 0); }
+    /* v867: 月間売上予算は monthSalesBudget() が正。会議タブも同じ関数を見る。 */
+    var total = monthSalesBudget(b.storeId, _bsYmStr);
     /* v760: bM（対象月の予算）を渡す。b（生データ）だと日別調整を検知できず、
        区分カードの合計だけ「月間売上予算」と食い違っていた。 */
     var segShown = budgetSegShown(bM, _bsYmStr);
@@ -19647,7 +19647,7 @@ function hasDayBudget(b){ return !!(b && b.days && Object.keys(b.days).some(func
 function dayBudgetFor(b, dateISO, dow){
   if (b && b.days && b.days[dateISO]!=null && b.days[dateISO]!=='') { var _v=parseFloat(b.days[dateISO]); if(!isNaN(_v)) return _v; }
   if (!dow){ try{ dow = ['日','月','火','水','木','金','土'][new Date(dateISO+'T00:00:00').getDay()]; }catch(e){} }
-  return dayBudgetFromBases(b, dow) * (b&&b.storeId?bizDayFactor(b.storeId, dow, b):1);
+  return dayBudgetFromBases(b, dow, String(dateISO||'').slice(0,7)) * (b&&b.storeId?bizDayFactor(b.storeId, dow, b):1);
 }
 /* 店舗マスターの定休設定係数: 終日休=0 / L休・D休=その部を除いた比率 */
 function bizDayFactor(storeId, dow, b){
@@ -19664,11 +19664,69 @@ function bizDayFactor(storeId, dow, b){
     return v==='lclose'||v==='dclose' ? 0.5 : 1;
   }catch(e){ return 1; }
 }
+/* v867: 月間の売上予算はこの1か所で出す。原価の foodCostOf() と同じ考え方で、
+   画面ごとに書き写さない。
+
+   これまで別々に計算していた：
+     予算設定 … 3区分の月合計をそのまま（定休日の係数なし）
+     会議タブ … 1日ぶんを月末まで積んだ合計（定休日の係数あり）
+   定休日のある店ほど会議タブが低く出ていた（月曜定休で −16%）。
+
+   Motoさん確認済み（A案）＝予算設定を正とする。定休日の係数は掛けない。
+   ただし日別の手入力（予算の日別調整 b.days／日次実績の予算欄）は残す。
+   これを落とすと、店長が手で直した予算が黙って消えるため。 */
+function monthSalesBudget(storeId, ym) {
+  var b = (typeof getBudgetForMonth === 'function') ? getBudgetForMonth(storeId, ym) : null;
+  if (!b) return 0;
+  /* 基準額（＝予算設定の「月間売上予算」と同じ出し方） */
+  var base = 0;
+  if (usesDowMode(b)) {
+    var p = String(ym || '').split('-');
+    var bd = dowSegBreakdown(getDow(b), { y: parseInt(p[0], 10), m: parseInt(p[1], 10) });
+    base = (bd.lunch || 0) + (bd.dinner || 0) + (bd.takeout || 0);
+  } else {
+    base = segmentsTotal(getSegments(b));
+  }
+  /* 日別の手入力を拾う。1日でもあれば日ごとに積み直す。 */
+  var ovs = {};
+  try { ovs = (typeof getDailyActuals === 'function') ? (getDailyActuals(storeId) || {}) : {}; } catch (e) { ovs = {}; }
+  var days = [];
+  try { days = daysOfYm(ym) || []; } catch (e) { days = []; }
+  if (!days.length) return base;
+  var manual = false;
+  days.forEach(function (dd) {
+    if (b.days && b.days[dd.date] != null && b.days[dd.date] !== '') manual = true;
+    if ((ovs[dd.date] || {}).budget != null) manual = true;
+  });
+  if (!manual) return base;
+  var per = base / days.length;
+  var sum = 0;
+  days.forEach(function (dd) {
+    var ov = (ovs[dd.date] || {}).budget;
+    if (ov != null) { sum += Number(ov) || 0; return; }
+    var dv = b.days ? b.days[dd.date] : null;
+    if (dv != null && dv !== '') { var _v = parseFloat(dv); if (!isNaN(_v)) { sum += _v; return; } }
+    sum += per;
+  });
+  return sum;
+}
 function dayBudgetAuto(b, dateISO){
   var dow = ['日','月','火','水','木','金','土'][new Date(dateISO+'T00:00:00').getDay()];
-  return dayBudgetFromBases(b, dow) * (b&&b.storeId?bizDayFactor(b.storeId, dow, b):1);
+  return dayBudgetFromBases(b, dow, String(dateISO||'').slice(0,7)) * (b&&b.storeId?bizDayFactor(b.storeId, dow, b):1);
 }
-function dayBudgetFromBases(b, dow) {
+/* v867: 日割りの分母は「その日付が属する月」の日数。
+   monthDays() は引数を取らず、日次タブのグローバル dailyMonthOffset を見ている。
+   そのため会議タブで8月を開いていても、日次タブで2月を見た後だと 28 で割られ、
+   8月の売上目標が 31/28＝10.7% 過大になっていた。
+   「日次タブでどの月を最後に見たか」で数字が変わるのは明確なバグ。 */
+function _ymDaysCount(ym) {
+  var p = String(ym || '').split('-');
+  if (p.length < 2) return 0;
+  var y = parseInt(p[0], 10), m = parseInt(p[1], 10);
+  if (!y || !m) return 0;
+  return new Date(y, m, 0).getDate();
+}
+function dayBudgetFromBases(b, dow, ym) {
   if (b && typeof budgetAuthorLabel==='function' && !budgetAuthorLabel(b)) return 0; // 登録者のない予算（デモ/未登録）は0
   // 曜日別モードが設定されていれば、その曜日の客数×客単価（3区分）を直接使う
   if (usesDowMode(b)) {
@@ -19683,7 +19741,7 @@ function dayBudgetFromBases(b, dow) {
   // セグメント方式（ランチ/ディナー/テイクアウト）が設定されていればそれを日割り
   if (b && hasSegments(b)) {
     var monthly = segmentsTotal(b.segments);
-    var days = (typeof monthDays==='function') ? monthDays().length : 30;
+    var days = _ymDaysCount(ym) || ((typeof monthDays==='function') ? monthDays().length : 30);
     return days ? monthly/days : 0;
   }
   // 旧bases（デモ均等割）は予算として扱わない＝未設定は0。segments/dowの実設定のみが予算。
@@ -20442,8 +20500,6 @@ function keyKpiStats(scopeStores, days){
     var metric=gct(s.id);
     (days||[]).forEach(function(d){
       var ov=actuals[d.date]||{};
-      var dayBud=ov.budget!=null?ov.budget:(b?dayBudgetFor(b,d.date,d.dow):0);
-      budget+=dayBud;
       var past=d.date<=todayStr;
       if(past && ov.actual!=null){
         sales+=ov.actual;
@@ -20463,7 +20519,11 @@ function keyKpiStats(scopeStores, days){
     // 原価（当月進捗）＝ Invoice＋買い出し＋食材移動（棚卸なし）
     try{ var _kr=foodCostOf(s.id, ym); food += (_kr.invoice + _kr.buy + _kr.transfer); }catch(e){}   /* v688: 用途フィルタ適用（棚卸は使わない当月進捗） */
     // 予算側（目標）
-    salesBud += segmentsTotal(segs);
+    /* v867: 売上予算は monthSalesBudget() の1か所から取る（予算設定と同じ値）。
+       以前は日ごとに積んでいたため、定休日の係数と monthDays() のズレが乗っていた。 */
+    var _msb = (typeof monthSalesBudget==='function') ? monthSalesBudget(s.id, ym) : segmentsTotal(segs);
+    budget += _msb;
+    salesBud += _msb;
     segSales$ += segmentsTotal(segs);
     fcBud$ += segmentsFcBudget(segs);
     laborBud$ += segmentsLaborBudget(segs);
@@ -27252,7 +27312,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '866';
+const APP_VERSION = '867';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
