@@ -249,6 +249,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 
 /* ====== MAIN ====== */
 .main { padding: 16px; max-width: 900px; margin: 0 auto; }
+/* v864: シフト作成だけ 900px の制限を外す（右端の週hまで一画面に入れる）。
+   幅の狭い端末では表側の min-width で今までどおり横スクロールになる。 */
+body.shift-wide .main { max-width:1900px; }
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -13259,6 +13262,8 @@ function renderPage(page) {
   /* v841: 統合コンソールのときだけ .main の幅制限を外す。他画面には影響しない。 */
   try { document.body.classList.toggle('md-wide',
     (page === 'dashboard' || page === 'mgmt_dash') && typeof mdCanOpen === 'function' && mdCanOpen()); } catch (e) { }
+  /* v864: シフト作成のときだけ .main の 900px 制限を外す。他画面には影響しない。 */
+  try { document.body.classList.toggle('shift-wide', page === 'shift_admin'); } catch (e) { }
   // v652: コールドスタート時のみ、重いデータ裏取得中はスケルトン表示。完了後の再描画で本物へ差し替え。ウォームは即表示。
   if (window._heavyPending && localStorage.getItem('heavy_ready')!=='1' && !SKEL_LIGHT_PAGES[page]) {
     if(el){ el.innerHTML = skeletonMain(); }
@@ -27247,7 +27252,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '863';
+const APP_VERSION = '864';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -28996,6 +29001,17 @@ function openShiftSecRoleEditor(storeId){
    自動振り分け/Shift Leader/クロージング等は Phase2/3 で追加。plan は shiftplan_ を流用(cells: day_<Lunch|Dinner>_<pos>#name)。 */
 var P4_POS_ALL=['Host','Main Plater','Miso','Supporter'];
 function p4Positions(n){ n=Math.max(0,Math.min(4,Number(n)||0)); return P4_POS_ALL.slice(0,n); }
+/* v864: 画面の表記だけ Plater に short にする。
+   データ側のキー 'Main Plater' はスキル軸・ポジション定義・過去のシフトと
+   つながっているので絶対に変えない。ここは表示専用。 */
+function p4PosLabel(p){ return p === 'Main Plater' ? 'Plater' : String(p || ''); }
+/* v864: ★SL / Close / Order を L と D に割って出す。
+   下のセルと同じ位置に仕切り線が入るので、線が常にちょうど真ん中を通る。 */
+function _p4Mark(txt, bg, on){
+  return '<div style="flex:1 1 0;min-width:0;font-size:7.5px;font-weight:800;text-align:center;'
+    + 'color:#fff;line-height:1.5;white-space:nowrap;overflow:hidden;background:' + (on ? bg : 'transparent') + '">'
+    + (on ? escapeHtml(txt) : '\u00a0') + '</div>';
+}
 function getLDHeadMap(storeId){ try{ var c=ls('shift_ld_head',{})||{}; return c[storeId]||{}; }catch(e){ return {}; } }
 function ldHead(storeId, day, period){ var m=getLDHeadMap(storeId); var d=m[day]||{}; var v=d[period]; return (v==null?3:Number(v)); }
 function setLDHead(storeId, day, period, n){ var c=ls('shift_ld_head',{})||{}; if(!c[storeId])c[storeId]={}; if(!c[storeId][day])c[storeId][day]={}; c[storeId][day][period]=Math.max(0,Math.min(6,Number(n))); lsSet('shift_ld_head', c); }
@@ -29033,15 +29049,15 @@ function _p4Cell(storeId, week, name, day, period, a, avail){
     var lv=positionLevelStore(name, a.pos, storeId);
     var warn=(lv>0&&lv<2);
     var bg=a.fixed?'rgba(34,197,94,.12)':(warn?'rgba(220,38,38,.12)':'transparent');
-    return { on:true, hrs:tt.hrs, html:'<div '+click+' style="cursor:pointer;padding:2px 3px;background:'+bg+'">'
-      +'<div style="font-size:9.5px;font-weight:700;color:var(--tm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(a.pos)+(lv?' <span style="font-size:8px;color:'+(warn?'var(--red)':'var(--accent)')+';font-weight:800">Lv'+lv+'</span>':'')+(a.fixed?' <i class="ti ti-lock" style="font-size:8px"></i>':'')+'</div>'
+    return { on:true, hrs:tt.hrs, html:'<div '+click+' style="flex:1 1 0;min-width:0;cursor:pointer;padding:2px 3px;background:'+bg+'">'
+      +'<div style="font-size:9.5px;font-weight:700;color:var(--tm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(p4PosLabel(a.pos))+(lv?' <span style="font-size:8px;color:'+(warn?'var(--red)':'var(--accent)')+';font-weight:800">Lv'+lv+'</span>':'')+(a.fixed?' <i class="ti ti-lock" style="font-size:8px"></i>':'')+'</div>'
       +'<div style="font-size:8px;color:var(--muted);white-space:nowrap">'+escapeHtml((tt.start&&tt.end)?(tt.start+'\u2013'+tt.end):'')+'</div>'
       +'</div>' };
   }
   if(avail){
-    return { on:false, hrs:0, html:'<div '+click+' style="cursor:pointer;padding:3px 2px;text-align:center;color:var(--muted);opacity:.45;font-size:8.5px"><i class="ti ti-check" style="font-size:9px"></i></div>' };
+    return { on:false, hrs:0, html:'<div '+click+' style="flex:1 1 0;min-width:0;cursor:pointer;padding:3px 2px;text-align:center;color:var(--muted);opacity:.45;font-size:8.5px"><i class="ti ti-check" style="font-size:9px"></i></div>' };
   }
-  return { on:false, hrs:0, html:'<div '+click+' style="cursor:pointer;padding:3px 2px;text-align:center;color:var(--border);font-size:9px">\u00b7</div>' };
+  return { on:false, hrs:0, html:'<div '+click+' style="flex:1 1 0;min-width:0;cursor:pointer;padding:3px 2px;text-align:center;color:var(--border);font-size:9px">\u00b7</div>' };
 }
 /* ===== F04-P Phase3: Shift Leader / クロージング / オーダー（1日1名・動的算出） =====
    その日に稼働する(L or D)スタッフから、総合点(skillScoreStore.total)最上位=Shift Leader(18点以上・未満は警告)、
@@ -29180,7 +29196,7 @@ function renderShiftBuilderF04P(storeId, week){
     +'<div style="flex:1"></div>'
     +'<button class="btn btn-secondary btn-sm" onclick="exportShiftImage(\''+storeId+'\',\''+week+'\')"><i class="ti ti-photo-down"></i> Image</button>'
     +((plan.status==='\u516c\u958b\u6e08'||plan.status==='\u516c\u958b')?'<span class="tag tag-green" style="align-self:center"><i class="ti ti-circle-check"></i> Published</span>':'<button class="btn btn-success btn-sm" onclick="publishShiftPlan(\''+storeId+'\',\''+week+'\')"><i class="ti ti-send"></i> Publish</button>')
-    +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 行＝総合スキル点の高い順（Grade表示）。各日は <b>L｜D</b>。曜日別に L/D の本数を設定（3本＝Host/Main Plater/Miso、4本＝＋Supporter）。セルをタップで手動アサイン。<b>自動振り分け</b>でLv順に割当（Lv2未満⚠）。<b>★SL</b>=Shift Leader(総合18点以上・未満⚠)・<b>Close</b>=クロージング(最下位)・<b>Order</b>=オーダー(2番目)。</div></div>';
+    +'</div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 行＝総合スキル点の高い順（Grade表示）。各日は <b>L｜D</b>。曜日別に L/D の本数を設定（3本＝Host/Plater/Miso、4本＝＋Supporter）。セルをタップで手動アサイン。<b>自動振り分け</b>でLv順に割当（Lv2未満⚠）。<b>★SL</b>=Shift Leader(総合18点以上・未満⚠)・<b>Close</b>=クロージング(最下位)・<b>Order</b>=オーダー(2番目)。</div></div>';
 
   html+='<div class="card" style="overflow-x:auto;padding:8px;margin-bottom:10px"><div style="font-size:12px;font-weight:800;margin-bottom:4px"><i class="ti ti-users"></i> 曜日別 本数（L/D別）</div>';
   html+='<table style="border-collapse:collapse;font-size:11px;min-width:560px"><thead><tr><th style="text-align:left;padding:2px 6px"></th>'+dowEn.map(function(dw,i){ var iso=dates[i]; var hol=holOf(iso); return '<th style="text-align:center;padding:2px 4px;font-size:10px">'+dw+'<div style="font-size:8px;color:'+(hol?'var(--red)':'var(--muted)')+';font-weight:400">'+(iso?(Number(iso.slice(5,7))+'/'+Number(iso.slice(8,10))):'')+(hol?' 祝':'')+'</div></th>'; }).join('')+'</tr></thead><tbody>';
@@ -29191,9 +29207,9 @@ function renderShiftBuilderF04P(storeId, week){
   });
   html+='</tbody></table></div>';
 
-  html+='<div class="card" style="overflow-x:auto;padding:8px"><table class="inv-table" style="min-width:900px;font-size:11px;border-collapse:collapse"><thead><tr>'
-    +'<th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:120px">Staff</th>'
-    +dowEn.map(function(dw,i){ var iso=dates[i]; var hol=holOf(iso); return '<th style="text-align:center;border-left:2px solid var(--border);font-size:10px;padding:3px 2px;min-width:104px">'+dw+'<div style="font-size:8px;color:var(--muted);font-weight:400">'+(iso?(Number(iso.slice(5,7))+'/'+Number(iso.slice(8,10))):'')+'</div>'+(hol?'<div style="font-size:8px;color:var(--red);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100px">'+escapeHtml(hol)+'</div>':'')+'<div style="display:flex;font-size:8px;color:var(--muted);font-weight:700;margin-top:1px"><div style="flex:1;color:var(--accent2)">L</div><div style="width:1px"></div><div style="flex:1;color:var(--accent)">D</div></div></th>'; }).join('')
+  html+='<div class="card" style="overflow-x:auto;padding:8px"><table class="inv-table" style="min-width:820px;width:100%;font-size:11px;border-collapse:collapse"><thead><tr>'
+    +'<th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:112px">Staff</th>'
+    +dowEn.map(function(dw,i){ var iso=dates[i]; var hol=holOf(iso); return '<th style="text-align:center;border-left:2px solid var(--border);font-size:10px;padding:3px 2px;min-width:92px">'+dw+'<div style="font-size:8px;color:var(--muted);font-weight:400">'+(iso?(Number(iso.slice(5,7))+'/'+Number(iso.slice(8,10))):'')+'</div>'+(hol?'<div style="font-size:8px;color:var(--red);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100px">'+escapeHtml(hol)+'</div>':'')+'<div style="display:flex;font-size:8px;color:var(--muted);font-weight:700;margin-top:1px"><div style="flex:1;color:var(--accent2)">L</div><div style="width:1px"></div><div style="flex:1;color:var(--accent)">D</div></div></th>'; }).join('')
     +'<th style="border-left:2px solid var(--accent);color:var(--accent);font-size:10px;min-width:48px">\u9031h</th></tr></thead><tbody>';
   if(!names.length){ html+='<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:20px"><i class="ti ti-calendar-off" style="font-size:20px"></i><div style="margin-top:6px">まだAvailabilityの提出がありません</div></td></tr>'; }
   names.forEach(function(name){
@@ -29206,10 +29222,12 @@ function renderShiftBuilderF04P(storeId, week){
       var cL=_p4Cell(storeId, week, name, day, 'Lunch', dA.Lunch, avA.Lunch);
       var cD=_p4Cell(storeId, week, name, day, 'Dinner', dA.Dinner, avA.Dinner);
       wk+=cL.hrs+cD.hrs;
-      var mk=marks[day]||{}; var badge='';
-      if(mk.leader===name) badge='<div style="font-size:7.5px;font-weight:800;text-align:center;color:#fff;background:'+(mk.leaderWarn?'var(--red)':'var(--accent)')+';line-height:1.5">★SL'+(mk.leaderWarn?' ⚠':'')+'</div>';
-      else if(mk.closing===name) badge='<div style="font-size:7.5px;font-weight:800;text-align:center;color:#fff;background:var(--accent2);line-height:1.5">Close</div>';
-      else if(mk.order===name) badge='<div style="font-size:7.5px;font-weight:800;text-align:center;color:#fff;background:#15a66a;line-height:1.5">Order</div>';
+      var mk=marks[day]||{}; var bTxt='', bBg='';
+      if(mk.leader===name){ bTxt='★SL'+(mk.leaderWarn?' ⚠':''); bBg=(mk.leaderWarn?'var(--red)':'var(--accent)'); }
+      else if(mk.closing===name){ bTxt='Close'; bBg='var(--accent2)'; }
+      else if(mk.order===name){ bTxt='Order'; bBg='#15a66a'; }
+      var badge = bTxt ? ('<div style="display:flex;align-items:stretch">' + _p4Mark(bTxt, bBg, !!dA.Lunch)
+        + '<div style="width:1px;background:var(--border)"></div>' + _p4Mark(bTxt, bBg, !!dA.Dinner) + '</div>') : '';
       html+='<td style="border-left:2px solid var(--border);padding:0"><div>'+badge+'<div style="display:flex;align-items:stretch">'+cL.html+'<div style="width:1px;background:var(--border)"></div>'+cD.html+'</div></div></td>';
     });
     wk=Math.round(wk*10)/10;
@@ -29231,13 +29249,13 @@ function openShiftP4Cell(storeId, week, name, day, period){
   var asg=_p4Assigned(plan); var cur=(((asg[name]||{})[day]||{})[period])||null;
   var headN=ldHead(storeId, day, period);
   var poss=p4Positions(headN);
-  var lvLine=poss.map(function(p){ return p+':Lv'+positionLevelStore(name,p,storeId); }).join(' / ');
-  var opts=poss.map(function(p){ var lv=positionLevelStore(name,p,storeId); var sel=(cur&&cur.pos===p); return '<option value="'+p.replace(/"/g,'')+'"'+(sel?' selected':'')+'>'+escapeHtml(p)+' (Lv'+lv+')'+(lv>0&&lv<2?' \u26a0':'')+'</option>'; }).join('');
+  var lvLine=poss.map(function(p){ return p4PosLabel(p)+':Lv'+positionLevelStore(name,p,storeId); }).join(' / ');
+  var opts=poss.map(function(p){ var lv=positionLevelStore(name,p,storeId); var sel=(cur&&cur.pos===p); return '<option value="'+p.replace(/"/g,'')+'"'+(sel?' selected':'')+'>'+escapeHtml(p4PosLabel(p))+' (Lv'+lv+')'+(lv>0&&lv<2?' \u26a0':'')+'</option>'; }).join('');
   var st=cur?cur.start:'', en=cur?cur.end:'';
   if(!st||!en){ var d=_p4Def(storeId, period, cur?cur.pos:poss[0]); if(!st)st=d.start; if(!en)en=d.end; }
   var esc=name.replace(/'/g,"\\'");
   openModal('<div class="modal-title">'+escapeHtml(name)+' \u2014 '+escapeHtml(DOW_SHIFT_EN()[DOW_SHIFT.indexOf(day)]||day)+' \u00b7 <span style="color:'+(period==='Lunch'?'var(--accent2)':'var(--accent)')+'">'+(period==='Lunch'?'\u30e9\u30f3\u30c1':'\u30c7\u30a3\u30ca\u30fc')+'</span> <button class="modal-close" onclick="closeModalDirect()">\u00d7</button></div>'
-    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">\u672c\u6570 '+headN+'\u672c \u2192 '+escapeHtml(poss.join(' / '))+'\u3000\uff5c\u3000\u3053\u306e\u4eba\u306eLv: '+escapeHtml(lvLine)+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">\u672c\u6570 '+headN+'\u672c \u2192 '+escapeHtml(poss.map(p4PosLabel).join(' / '))+'\u3000\uff5c\u3000\u3053\u306e\u4eba\u306eLv: '+escapeHtml(lvLine)+'</div>'
     +'<div class="form-group"><label class="form-label">\u30dd\u30b8\u30b7\u30e7\u30f3</label><select class="form-select" id="p4-pos" onchange="_p4SlotChange(\''+storeId+'\',\''+period+'\')"><option value="">\u2014 \u9078\u629e \u2014</option>'+opts+'</select></div>'
     +'<div style="display:flex;gap:8px"><div class="form-group" style="flex:1"><label class="form-label">Start</label><input class="form-input" id="p4-start" type="time" value="'+st+'"></div><div class="form-group" style="flex:1"><label class="form-label">End</label><input class="form-input" id="p4-end" type="time" value="'+en+'"></div></div>'
     +'<div class="btn-row">'+(cur?'<button class="btn btn-danger" onclick="cutShiftP4Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\',\''+period+'\')"><i class="ti ti-scissors"></i> Cut</button>':'')+'<div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModalDirect()">Cancel</button><button class="btn btn-primary" onclick="saveShiftP4Cell(\''+storeId+'\',\''+week+'\',\''+esc+'\',\''+day+'\',\''+period+'\')">Save</button></div>');
@@ -30959,6 +30977,64 @@ var availTmp = {};
 function myName(){ return curUserName || (ROLE_CONFIG[curRole]||{}).name; }
 function tWday(d){ if(curLang!=='en') return d; var m={'月':'Mon','火':'Tue','水':'Wed','木':'Thu','金':'Fri','土':'Sat','日':'Sun'}; return m[d]||d; }
 function setMyShiftStore(id){ window._myShiftStore=id; if(typeof renderPage==='function') renderPage('shift_staff'); }
+/* v864: 公開後にスタッフが自分の端末で見る週間表。シフト作成と同じ形
+   （行=スタッフ、列=曜日、各日 L｜D、★SL/Close/Order）の読み取り専用。
+   総合点と Grade は本人以外に見せてよい情報ではないので出さない。
+   同じ理由で並びも点数順にせず名前順にしている。 */
+function _p4Ro(storeId, period, a){
+  if(!a) return '<div style="flex:1 1 0;min-width:0;padding:3px 2px;text-align:center;color:var(--border);font-size:9px">\u00b7</div>';
+  var tt = _p4Time(storeId, period, a.pos, a);
+  return '<div style="flex:1 1 0;min-width:0;padding:2px 3px">'
+    + '<div style="font-size:9.5px;font-weight:700;color:var(--tm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+    + escapeHtml(p4PosLabel(a.pos)) + '</div>'
+    + '<div style="font-size:8px;color:var(--muted);white-space:nowrap">'
+    + escapeHtml((tt.start && tt.end) ? (tt.start + '\u2013' + tt.end) : '') + '</div></div>';
+}
+function p4StaffWeekHtml(storeId, week, me){
+  var plan = getShiftPlan(storeId, week) || { cells:{}, meta:{} };
+  if(!(plan.status === '\u516c\u958b\u6e08' || plan.status === '\u516c\u958b')) return '';
+  var asg = _p4Assigned(plan);
+  var names = Object.keys(asg).sort(function(a, b){ return String(a).localeCompare(b); });
+  if(!names.length) return '';
+  var marks = p4DayMarks(storeId, asg);
+  var dates = DOW_SHIFT.map(weekDateForDow);
+  var dowEn = DOW_SHIFT_EN();
+  var h = '<div class="card" style="padding:8px;margin-bottom:10px">'
+    + '<div style="font-size:12px;font-weight:800;margin-bottom:5px"><i class="ti ti-table" style="color:var(--accent)"></i> '
+    + t('\u4eca\u9031\u306e\u5168\u4f53\u30b7\u30d5\u30c8', 'This Week \u2014 Full Schedule') + '</div>'
+    + '<div style="overflow-x:auto"><table class="inv-table" style="min-width:700px;width:100%;font-size:11px;border-collapse:collapse"><thead><tr>'
+    + '<th style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;min-width:96px">Staff</th>'
+    + dowEn.map(function(dw, i){ var iso = dates[i];
+        return '<th style="text-align:center;border-left:2px solid var(--border);font-size:10px;padding:3px 2px;min-width:88px">' + dw
+          + '<div style="font-size:8px;color:var(--muted);font-weight:400">'
+          + (iso ? (Number(iso.slice(5,7)) + '/' + Number(iso.slice(8,10))) : '') + '</div>'
+          + '<div style="display:flex;font-size:8px;color:var(--muted);font-weight:700;margin-top:1px">'
+          + '<div style="flex:1 1 0;color:var(--accent2)">L</div><div style="width:1px"></div>'
+          + '<div style="flex:1 1 0;color:var(--accent)">D</div></div></th>';
+      }).join('')
+    + '</tr></thead><tbody>';
+  names.forEach(function(name){
+    var mine = (name === me);
+    h += '<tr style="border-top:1px solid var(--border)">'
+      + '<td style="text-align:left;position:sticky;left:0;z-index:1;background:' + (mine ? '#fdf1e8' : 'var(--surface)') + '">'
+      + '<div style="font-size:11.5px;font-weight:' + (mine ? '800' : '600') + ';color:' + (mine ? 'var(--accent)' : 'var(--tm)') + '">'
+      + escapeHtml(name) + '</div></td>';
+    DOW_SHIFT.forEach(function(day){
+      var dA = (asg[name] || {})[day] || {};
+      var mk = marks[day] || {}, bTxt = '', bBg = '';
+      if(mk.leader === name){ bTxt = '\u2605SL'; bBg = 'var(--accent)'; }
+      else if(mk.closing === name){ bTxt = 'Close'; bBg = 'var(--accent2)'; }
+      else if(mk.order === name){ bTxt = 'Order'; bBg = '#15a66a'; }
+      var badge = bTxt ? ('<div style="display:flex;align-items:stretch">' + _p4Mark(bTxt, bBg, !!dA.Lunch)
+        + '<div style="width:1px;background:var(--border)"></div>' + _p4Mark(bTxt, bBg, !!dA.Dinner) + '</div>') : '';
+      h += '<td style="border-left:2px solid var(--border);padding:0;background:' + (mine ? 'rgba(240,102,31,.06)' : 'transparent') + '"><div>' + badge
+        + '<div style="display:flex;align-items:stretch">' + _p4Ro(storeId, 'Lunch', dA.Lunch)
+        + '<div style="width:1px;background:var(--border)"></div>' + _p4Ro(storeId, 'Dinner', dA.Dinner) + '</div></div></td>';
+    });
+    h += '</tr>';
+  });
+  return h + '</tbody></table></div></div>';
+}
 function renderShiftStaff() {
   var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
@@ -31030,6 +31106,8 @@ function renderShiftStaff() {
 
   if (plan && plan.status==='公開済') {
     var myCells = Object.keys(plan.cells).filter(k=>plan.cells[k]===me);
+    /* v864: Piikoi は公開後にシフト作成と同じ週間表を出す（一覧の上） */
+    if (storeId === 'F04-P') { try { html += p4StaffWeekHtml(storeId, week, me); } catch (e) { } }
     html += `<div class="card"><div class="card-title"><i class="ti ti-calendar-check"></i>${t('公開シフト','Published Shift')}</div>`;
     if (myCells.length) {
       var _p4mk = (storeId==='F04-P' && typeof p4DayMarks==='function' && typeof _p4Assigned==='function') ? p4DayMarks(storeId, _p4Assigned(plan)) : {};
