@@ -17822,6 +17822,10 @@ function openMeetKgiEdit(sid,kk,ta,m){
     +'<button class="btn btn-primary" onclick="saveKgiCell(\''+sid+'\',\''+kk+'\',\''+ta+'\','+m+',document.getElementById(\'kgi-edit-in\').value)">'+t('保存','Save')+'</button></div>');
 }
 /* 月初MTG: 縦=KPI × 横=月。Excel(1-6月)＋ライブ(7月〜)＋手編集。目標/実績を並置し差異で強調 */
+/* v868: Excel取込のシード（MEETING_KGI_SEED）が有効な最終月。
+   これより後の月は、予算設定・KPI管理などシステムの数字を使う。
+   年をまたいでもシードが使い回されるのを防ぐため、年込みで持つ。 */
+var MEETING_KGI_SEED_UNTIL = '2026-06';
 function _meetYearMatrix(store, y){
   var sid=store.id; var seed=(MEETING_KGI_SEED[sid])||{};
   var isB=(typeof guestCountType==='function' && guestCountType(sid)==='bowls');
@@ -17845,7 +17849,22 @@ function _meetYearMatrix(store, y){
   var edits=getKgiEdits();
   function liveA(kk, ym, off){ if(off>0) return null; var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
     switch(kk){ case 'sales': return k.sales||null; case 'guests': return isB?((k.opDays>0)?Math.round((k.guests||0)/k.opDays):null):(k.guests||null); case 'ppa': return k.ppa||null; case 'repeat': return k.repeatRate; case 'fc': return k.fcRate||null; case 'labor': return k.laborRate||null; case 'miso': return k.misoRate; case 'ikura': return k.ikuraRate; case 'drink': return k.drinkRate; default: return null; } }
+  /* v868: 目標行がシステムの設定を一切見ておらず、Excel取込のシードを返し続けていた。
+     シードには12か月ぶん目標が入っているため、7月以降もExcelの数字が勝ち、
+     予算設定の売上目標も KPI管理のリピート率・ドリンク比率も画面に届いていなかった。
+     （実績行は liveA でライブを見ていたので、実績だけ本物・目標だけExcelの状態）
+     画面の説明どおり「6月までExcel／7月以降はシステムの数字」に切り替える。
+     Motoさん確認済み（A案）。1〜6月の会議記録の数字は動かさない。
+     ライブ値の無いKPI（Googleレビューなど）は今までどおりシードで埋める。
+     目標は中間MTGと同じ keyKpiStats の値を使う＝2つの会議で同じ数字になる。 */
+  function liveT(kk, ym){ var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
+    switch(kk){ case 'sales': return k.budget||null;
+      case 'guests': return isB?((k.opDays>0&&k.guestBudget)?Math.round(k.guestBudget/k.opDays):null):(k.guestBudget||null);
+      case 'ppa': return k.ppaBudget||null; case 'repeat': return k.repeatTgt; case 'drink': return k.drinkTgt;
+      case 'fc': return k.fcBudgetRate; case 'labor': return k.laborBudgetRate;
+      case 'miso': return k.misoTgt; case 'ikura': return k.ikuraTgt; default: return null; } }
   function cellV(kk,ta,m,off,ym){ var e=edits[sid]&&edits[sid][kk]&&edits[sid][kk][ta+m]; if(e!=null&&e!=='') return Number(e);
+    if(ym > MEETING_KGI_SEED_UNTIL){ var lv=(ta==='t')?liveT(kk,ym):liveA(kk,ym,off); if(lv!=null) return lv; }
     var sd=seed[kk]; var base=sd?((ta==='t')?sd.t[m-1]:sd.a[m-1]):null; if(base!=null) return base;
     if(ta==='a') return liveA(kk,ym,off); return null; }
   function isEdited(kk,ta,m){ return !!(edits[sid]&&edits[sid][kk]&&edits[sid][kk][ta+m]!=null); }
@@ -27312,7 +27331,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '867';
+const APP_VERSION = '868';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
