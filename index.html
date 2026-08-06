@@ -477,6 +477,11 @@ body.shift-wide .main { max-width:1900px; }
 
 /* ===== 議事録（予実内）: KGI＋店舗の経営計画書ビュー（全セル編集可） ===== */
 .mm-tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:10px;-webkit-overflow-scrolling:touch}
+/* v881: 経理センターの中タブは数が多く、overflow-x:auto だと右側が画面外に隠れ、
+   横スクロールできることが分からない。ここだけ折り返す。 */
+.mm-tabs.ac-subs{flex-wrap:wrap;overflow-x:visible}
+.mm-tabs.ac-subs .mm-tab{padding:6px 11px;font-size:11.5px}
+
 .mm-tab{flex:0 0 auto;padding:5px 10px;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;background:var(--surface2);border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 .mm-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .mm-scroll{overflow-x:auto;border:1px solid var(--border);border-radius:8px;-webkit-overflow-scrolling:touch}
@@ -27444,7 +27449,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '880';
+const APP_VERSION = '881';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32331,6 +32336,54 @@ function renderLostReceipt(){
    5つとも「店舗＋月＋第3軸」で形が同じなので、取り出し方だけ差し替えて共通化する。
    日付の書式が invoices（2026/08/06）と紛失届・ガソリン代（2026-08-06）で違うので
    ここで揃える。揃えないと月の絞り込みが片方だけ効かない。 */
+/* v881: 経理レビューの先頭に置く未処理サマリー。
+   どのタブに何件残っているかを1か所で見て、押せばそのタブへ飛ぶ。
+   件数が取れないものは黙って出さない（数え方をここで作り直さない）。 */
+function renderAcctErrors(){ return (typeof renderErrorCenter==='function') ? renderErrorCenter(true) : ''; }
+function _acPend(){
+  var out=[];
+  function add(sub, label, nfn){
+    var v=0; try{ v=nfn()||0; }catch(e){ return; }
+    if(v>0) out.push({ sub:sub, label:label, n:v });
+  }
+  add('invoice','未確認のInvoice', function(){
+    return (typeof pendingAcctReviewCount==='function') ? pendingAcctReviewCount() : 0; });
+  add('invoice','画像が付いていない伝票', function(){
+    return (ls('invoices',[])||[]).filter(function(v){ return v && !v._deleted && v.imageMissing && !v.imagePath; }).length; });
+  add('lost','承認待ちの紛失届', function(){
+    return (typeof getLostReceipts==='function')
+      ? getLostReceipts().filter(function(r){ return (r.status||'申請中')==='申請中'; }).length : 0; });
+  add('gas','承認待ちのガソリン代', function(){
+    return (typeof getMileageRequests==='function')
+      ? getMileageRequests().filter(function(r){ return (r.status||'申請中')==='申請中'; }).length : 0; });
+  add('exp','承認待ちの事前経費', function(){
+    return (ls('expense_requests',[])||[]).filter(function(r){
+      return r && !r._deleted && (r.status||'申請中')==='申請中'; }).length; });
+  add('vac','承認待ちの休暇申請', function(){
+    return (ls('my_vacations',[])||[]).filter(function(r){
+      return r && !r._deleted && (r.status||'申請中')==='申請中'; }).length; });
+  return out;
+}
+function _acPendHtml(){
+  var list=[]; try{ list=_acPend(); }catch(e){ return ''; }
+  if(!list.length){
+    return '<div class="alert alert-success" style="padding:9px 11px;margin-bottom:10px">'
+      + '<i class="ti ti-circle-check"></i><div style="font-size:12.5px">'
+      + t('未処理はありません','Nothing pending') + '</div></div>';
+  }
+  var tot=list.reduce(function(a,x){ return a+x.n; },0);
+  return '<div class="card" style="padding:10px;margin-bottom:10px">'
+    + '<div style="font-size:12.5px;font-weight:800;margin-bottom:7px">'
+    + '<i class="ti ti-inbox" style="color:var(--accent)"></i> ' + t('未処理','Pending')
+    + ' <span style="color:var(--accent)">' + tot + '</span></div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px">'
+    + list.map(function(x){
+        return '<button onclick="acSetSub(\''+x.sub+'\')" style="font:inherit;font-size:11.5px;font-weight:700;'
+          + 'padding:6px 10px;border-radius:99px;cursor:pointer;border:1px solid var(--border);background:var(--surface2);color:var(--tm)">'
+          + escapeHtml(x.label) + ' <span style="color:var(--accent);font-weight:800">' + x.n + '</span></button>';
+      }).join('')
+    + '</div></div>';
+}
 var _acF = { store:'', ym:'', third:'' };
 function acFilterSet(k, v){ _acF[k] = v||''; renderPage('acct_center'); }
 function _acYm(v){ var s=String(v||'').replace(/\//g,'-'); var m=s.match(/^(\d{4})-(\d{1,2})/); 
@@ -32458,7 +32511,11 @@ var AC_TABS = [
       { id:'exp',     label:'事前経費',    fn:'renderExpense' },
       { id:'pd',      label:'仕入明細',    fn:'renderPurchaseDetail' },
       { id:'vendor',  label:'業者マスター', fn:'renderVendorMaster' },
-      { id:'review',  label:'区分・承認',  fn:'renderAcctReview' }
+      { id:'review',  label:'区分・承認',  fn:'renderAcctReview' },
+      /* v881: Office管理から移設。承認と対応をこの中で完結させる。 */
+      { id:'errors',  label:'エラーセンター', fn:'renderAcctErrors' },
+      { id:'tasks',   label:'タスク',        fn:'renderOfficeTasks' },
+      { id:'report',  label:'報告・承認',    fn:'renderOfficeReport' }
   ]},
   { id:'tip', label:'Tip＆シフトリーダー', icon:'ti-coin', subs:[
       { id:'tipmgmt', label:'Tip管理', fn:'renderTipMgmt' }
@@ -32501,9 +32558,11 @@ function renderAcctCenter(){
           + 'background:'+(on?'var(--text)':'var(--surface)')+';color:'+(on?'#fff':'var(--muted)')+'">'
           + '<i class="ti '+c.icon+'"></i> ' + escapeHtml(c.label) + '</button>';
       }).join('') + '</div>';
+  /* v881: 経理レビューは未処理をまとめて見せ、押せばその中タブへ飛べるようにする。 */
+  if(cat.id==='review'){ try{ h += _acPendHtml(); }catch(e){} }
   /* 中タブ */
   if(cat.subs.length > 1){
-    h += '<div class="mm-tabs" style="margin-bottom:10px">'
+    h += '<div class="mm-tabs ac-subs" style="margin-bottom:10px">'
       + cat.subs.map(function(s){
           return '<button class="mm-tab'+(s.id===sub.id?' active':'')+'" onclick="acSetSub(\''+s.id+'\')">'
             + escapeHtml(s.label) + '</button>';
