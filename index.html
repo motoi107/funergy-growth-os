@@ -5913,40 +5913,16 @@ const MENU_GROUPS = [
 /* ===== v766〜v768: 本部のメニューは「経理側」と「キッチン側」に分ける =====
    CEO / GM は両方すべて見える。経理(office)は ACCT_GROUPS、
    Corporate Chef は CHEF_GROUPS を見るので、混在しない。 */
+/* v880: 本部のナビは3グループだけ。Motoさん確認済み。
+   経理まわりは経理センター1画面に集約し、キッチンと設定だけ独立で残す。 */
 const OFFICE_GROUPS = [
-  {id:'go_home', label:'本部', icon:'ti-building-skyscraper', roles:['ceo','gm','office'],
-    children:['office_mgr','mgmt_ctrl','notifications','tasks','biz_guide']},   /* v809 */
-
-  /* ---- キッチン側 ---- */
-  {id:'go_kitchen', label:'Kitchen 管理', icon:'ti-tools-kitchen-2', roles:['ceo','gm'],
-    children:['cc_plan']},
-  {id:'go_food', label:'Kitchen 食材・原価', icon:'ti-salad', roles:['ceo','gm'],
-    children:['menu','recipe','foodcost','fv_variance','ingredient_master','ing_transfer']},
-
-  /* ---- 経理側 ---- */
-  /* v879: 経理センターを経理側の先頭に置く。
-     v871〜878 は NAV_ITEMS に足しただけで children に入れておらず、
-     ナビはグループ経由で組まれるため一度も表示されていなかった。
-     Invoice・棚卸し・チップ管理は経理センターの中タブに入ったので children から外す。
-     ページ自体は残してあるので go('invoice') 等の既存リンクは動く。 */
   {id:'go_acct', label:'経理センター', icon:'ti-building-bank', roles:['ceo','gm','office'],
-    children:['acct_center','acct_review','monthly','purchase_detail','vendor_master']},
-  {id:'go_budget', label:'経理 予実・労務', icon:'ti-chart-bar', roles:['ceo','gm','office'],
-    children:['budget','labor','kpi_master']},
-  {id:'go_order', label:'経理 発注', icon:'ti-package', roles:['ceo','gm','office'],
-    children:['supply_order','order']},
-  /* v879: 本人が出す申請はここに残す（経理センター経由だと遠い）。紛失届もここへ。
-     出力センターは経理センターの③に入ったので外す。 */
-  {id:'go_req', label:'経理 申請', icon:'ti-file-check', roles:['ceo','gm','office'],
-    children:['vacation','mileage','lost_receipt','expense']},
-
-  /* ---- 人材 ---- */
-  {id:'go_hr', label:'人材', icon:'ti-users', roles:['ceo','gm','office'],
-    children:['hr','growthhub','hiring','crew_handbook']},
-
+    children:['acct_center']},
+  {id:'go_kitchen', label:'キッチン管理', icon:'ti-tools-kitchen-2', roles:['ceo','gm'],
+    children:['cc_plan','menu','recipe','foodcost','fv_variance','ingredient_master','ing_transfer']},
   {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
     children:['settings','profile']},
-];
+]
 /* 経理(office)専用：キッチン側を含まない */
 const ACCT_GROUPS = [
   {id:'ga_home', label:'本部', icon:'ti-building-skyscraper', children:['office_mgr','notifications','tasks','biz_guide']},
@@ -27468,7 +27444,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '879';
+const APP_VERSION = '880';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32463,13 +32439,26 @@ function acUploadList(kind){
   });
   return h + '</div>';
 }
+/* v880: Motoさん確認済みの構成に組み直し。
+     経理ダッシュボード（最初に開く）／経理レビュー／Tip＆シフトリーダー／出力センター／勤怠／人材
+   経理レビューには「アップロード全部＋申請＋仕入明細＋業者マスター＋区分承認」を集約。
+   予実・人件費・KPI管理・月次サマリー・管理統括・通知・ワークセンター・業務ガイド・発注は
+   経理から外した（ページは残してあるので店舗のナビと既存リンクからは使える）。 */
 var AC_TABS = [
-  { id:'upload', label:'アップロードセンター', icon:'ti-cloud-upload', subs:[
+  { id:'dash', label:'経理ダッシュボード', icon:'ti-layout-dashboard', subs:[
+      { id:'dash', label:'ダッシュボード', fn:'renderOfficeDash' }
+  ]},
+  { id:'review', label:'経理レビュー', icon:'ti-checklist', subs:[
       { id:'invoice', label:'Invoice',    list:'invoice', more:'renderInvoice' },
       { id:'receipt', label:'レシート',    list:'receipt', more:'renderCardUsage' },
       { id:'reimb',   label:'建て替え',    list:'reimb',   more:'renderReimburseCard' },
       { id:'lost',    label:'紛失届',      list:'lost',    more:'renderLostReceipt' },
-      { id:'gas',     label:'ガソリン代',  list:'gas',     more:'renderMileage' }
+      { id:'gas',     label:'ガソリン代',  list:'gas',     more:'renderMileage' },
+      { id:'vac',     label:'休暇申請',    fn:'renderVacation' },
+      { id:'exp',     label:'事前経費',    fn:'renderExpense' },
+      { id:'pd',      label:'仕入明細',    fn:'renderPurchaseDetail' },
+      { id:'vendor',  label:'業者マスター', fn:'renderVendorMaster' },
+      { id:'review',  label:'区分・承認',  fn:'renderAcctReview' }
   ]},
   { id:'tip', label:'Tip＆シフトリーダー', icon:'ti-coin', subs:[
       { id:'tipmgmt', label:'Tip管理', fn:'renderTipMgmt' }
@@ -32480,9 +32469,15 @@ var AC_TABS = [
   ]},
   { id:'attend', label:'勤怠', icon:'ti-clock-hour-4', subs:[
       { id:'hq', label:'本部勤怠管理', fn:'renderOfficeAttend' }
+  ]},
+  { id:'hr', label:'人材', icon:'ti-users', subs:[
+      { id:'hr',   label:'HR・福利厚生', fn:'renderHR' },
+      { id:'gh',   label:'お悩み相談室', fn:'renderGrowthHub' },
+      { id:'hire', label:'採用・オンボーディング', fn:'renderHiring' },
+      { id:'hb',   label:'Handbook', fn:'renderHandbook' }
   ]}
 ];
-var _acCat = 'upload', _acSub = 'invoice';
+var _acCat = 'dash', _acSub = 'dash';
 function acSetCat(id){
   _acF = { store:'', ym:'', third:'' };
   _acCat = id;
@@ -38807,11 +38802,15 @@ function renderErrorCenter(embedded){
   return html;
 }
 
-function renderOfficeMgr(){
-  var html = '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
+/* v880: 経理センターの「経理ダッシュボード」から帯なしで呼べるようにする。
+   bare=true のとき、見出しと内部タブ帯を出さない（大タブが上にあるので二重になる）。 */
+function renderOfficeDash(){ officeMgrTab='dash'; return renderOfficeMgr(true); }
+function renderOfficeMgr(bare){
+  var html = bare ? '' : '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
+
   var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['errors','エラーセンター','ti-alert-hexagon'],['attend','勤怠','ti-clock'],['tasks','タスク','ti-checklist'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];
   if(curRole==='office_crew'){ if(officeMgrTab==='export') officeMgrTab='dash'; tabs=tabs.filter(function(t){ return t[0]!=='export'; }); }
-  html += '<div class="phase-tabs" style="flex-wrap:wrap">'
+  if(!bare) html += '<div class="phase-tabs" style="flex-wrap:wrap">'
     + tabs.map(function(t){ return '<div class="phase-tab'+(officeMgrTab===t[0]?' active':'')+'" onclick="setOfficeMgrTab(\''+t[0]+'\')"><i class="ti '+t[2]+'" style="font-size:12px"></i> '+t[1]+'</div>'; }).join('')
     + '</div>';
   if(officeMgrTab==='export') return html + renderOfficeExport();
