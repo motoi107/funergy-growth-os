@@ -27482,7 +27482,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '884';
+const APP_VERSION = '885';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32417,7 +32417,7 @@ function _acPendHtml(){
       }).join('')
     + '</div></div>';
 }
-var _acF = { store:'', ym:'', third:'' };
+var _acF = { store:'', ym:'', third:'', st:'' };
 function acFilterSet(k, v){ _acF[k] = v||''; renderPage('acct_center'); }
 function _acYm(v){ var s=String(v||'').replace(/\//g,'-'); var m=s.match(/^(\d{4})-(\d{1,2})/); 
   return m ? (m[1]+'-'+String(m[2]).padStart(2,'0')) : ''; }
@@ -32462,8 +32462,32 @@ function _acRows(kind){
   }
   return { label:'', rows:[] };
 }
+/* v885: 経理レビューと同じ形に揃える。Motoさん指定。
+     ・ステータスは 未確認／確認中／確認済み／差し戻し の4段階に統一
+     ・紛失届とガソリン代は 申請中／承認／差戻し なので、上の4段階へ写す
+       （元データは書き換えない。表示のときだけ揃える）
+     ・絞り込みは 店舗／期間／ステータス＋第3軸
+     ・いま何月を見ているかを最上部に大きく出す */
+var AC_ST = ['未確認','確認中','確認済み','差し戻し'];
+function _acStatus(raw){
+  var v = String(raw||'').trim();
+  if(!v) return '未確認';
+  if(AC_ST.indexOf(v) >= 0) return v;
+  if(v==='申請中') return '未確認';
+  if(v==='承認' || v==='承認済' || v==='承認済み') return '確認済み';
+  if(v==='差戻し' || v==='却下') return '差し戻し';
+  return '未確認';
+}
+function _acStCol(s){
+  return (typeof arStatusColor==='function') ? arStatusColor(s)
+    : (s==='未確認'?'var(--red)':s==='確認中'?'var(--yellow)':s==='差し戻し'?'var(--accent2)':'var(--green)');
+}
+function _acStRank(s){ return s==='未確認'?0:s==='確認中'?1:s==='差し戻し'?2:3; }
 function acUploadList(kind){
-  var src = _acRows(kind), rows = src.rows || [];
+  var src = _acRows(kind), rows = (src.rows||[]).map(function(r){
+    r.st = _acStatus(r.status); return r;
+  });
+  var f=_acF;
   /* 選択肢は絞り込み前の全件から作る（選んだ途端に候補が消えないように） */
   var stores={}, yms={}, thirds={};
   rows.forEach(function(r){
@@ -32471,17 +32495,46 @@ function acUploadList(kind){
     var m=_acYm(r.date); if(m) yms[m]=1;
     if(r.third) thirds[r.third]=1;
   });
-  var f=_acF;
-  var view = rows.filter(function(r){
+  /* ステータスの件数は、ステータス以外の絞り込みを適用したうえで数える */
+  var baseRows = rows.filter(function(r){
     if(f.store && r.store!==f.store) return false;
     if(f.ym && _acYm(r.date)!==f.ym) return false;
     if(f.third && r.third!==f.third) return false;
     return true;
-  }).sort(function(a,b){ return String(b.date).localeCompare(String(a.date)); });
+  });
+  var cnt={}; AC_ST.forEach(function(x){ cnt[x]=0; });
+  baseRows.forEach(function(r){ cnt[r.st]++; });
+  var view = baseRows.filter(function(r){ return !f.st || r.st===f.st; })
+    .sort(function(a,b){
+      var d=_acStRank(a.st)-_acStRank(b.st); if(d) return d;
+      return String(b.date).localeCompare(String(a.date));
+    });
   var total = view.reduce(function(a,r){ return a+(r.amount||0); }, 0);
 
+  /* いま何月を見ているか */
+  var ymLabel = f.ym ? (f.ym.slice(0,4)+'年'+Number(f.ym.slice(5,7))+'月')
+                     : t('全期間','All periods');
+  var h = '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 2px 8px">'
+    + '<span style="font-size:10.5px;color:var(--muted);font-weight:700">'+t('作業中','Working on')+'</span>'
+    + '<span style="font-size:19px;font-weight:800;letter-spacing:-.02em">'+escapeHtml(ymLabel)+'</span>'
+    + (f.store?('<span style="font-size:12px;font-weight:700;color:var(--muted)">'+escapeHtml(_acStoreName(f.store))+'</span>'):'')
+    + '</div>';
+
+  /* ステータスの帯（押すと絞り込み） */
+  h += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px">'
+    + AC_ST.map(function(st){
+        var on=(f.st===st), col=_acStCol(st), n=cnt[st]||0;
+        return '<button onclick="acFilterSet(\'st\', \''+(on?'':st)+'\')" '
+          + 'style="font:inherit;cursor:pointer;text-align:left;padding:7px 9px;border-radius:10px;'
+          + 'border:1px solid '+(on?col:'var(--border)')+';background:'+(on?col+'14':'var(--surface)')+'">'
+          + '<div style="font-size:10px;color:var(--muted);font-weight:700;white-space:nowrap">'+st+'</div>'
+          + '<div style="font-size:17px;font-weight:800;color:'+(n?col:'var(--muted)')+'">'+n+'</div>'
+          + '</button>';
+      }).join('') + '</div>';
+
+  /* 絞り込み（経理レビューと同じ並び） */
   var sel=function(id,label,cur,opts,fmt){
-    return '<select class="form-select" style="font-size:12px;padding:6px 8px;min-width:0" '
+    return '<select class="form-select" style="flex:1;min-width:110px;font-size:12px" '
       + 'onchange="acFilterSet(\''+id+'\', this.value)">'
       + '<option value="">'+label+'（'+t('すべて','All')+'）</option>'
       + opts.map(function(o){
@@ -32489,93 +32542,60 @@ function acUploadList(kind){
             + escapeHtml(fmt?fmt(o):o)+'</option>';
         }).join('') + '</select>';
   };
-  var h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">'
+  h += '<div class="card" style="padding:9px"><div style="display:flex;gap:6px;flex-wrap:wrap">'
     + sel('store', t('店舗','Store'), f.store, Object.keys(stores).sort(), _acStoreName)
-    + sel('ym',    t('月','Month'),   f.ym,    Object.keys(yms).sort().reverse())
-    + sel('third', src.label,          f.third, Object.keys(thirds).sort())
-    + '</div>';
-  h += '<div style="display:flex;align-items:baseline;gap:10px;margin:0 2px 8px">'
+    + sel('ym',    t('期間','Period'), f.ym,    Object.keys(yms).sort().reverse())
+    + sel('st',    t('ステータス','Status'), f.st, AC_ST)
+    + sel('third', src.label,           f.third, Object.keys(thirds).sort())
+    + '</div></div>';
+
+  h += '<div style="display:flex;align-items:baseline;gap:10px;margin:8px 2px">'
     + '<span style="font-size:12px;color:var(--muted)">'+view.length+' '+t('件','items')+'</span>'
-    + '<span style="font-size:14px;font-weight:800">$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'
-    + ((f.store||f.ym||f.third)?('<button class="btn btn-secondary btn-sm" style="margin-left:auto" '
-        + 'onclick="_acF={store:\'\',ym:\'\',third:\'\'};renderPage(\'acct_center\')">'+t('絞り込みを解除','Clear')+'</button>'):'')
+    + '<span style="font-size:15px;font-weight:800">$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'
+    + ((f.store||f.ym||f.third||f.st)?('<button class="btn btn-secondary btn-sm" style="margin-left:auto" '
+        + 'onclick="_acF={store:\'\',ym:\'\',third:\'\',st:\'\'};renderPage(\'acct_center\')">'
+        + t('絞り込みを解除','Clear')+'</button>'):'')
     + '</div>';
+
   if(!view.length){
-    return h + '<div class="card" style="text-align:center;color:var(--muted);padding:26px">'
-      + t('該当がありません','Nothing matches')+'</div>';
+    return h + '<div class="card" style="text-align:center;color:var(--muted);padding:34px">'
+      + '<i class="ti ti-checklist" style="font-size:30px;display:block;margin-bottom:8px"></i>'
+      + t('該当する書類はありません','Nothing matches')+'</div>';
   }
+
   h += '<div class="card" style="padding:0;overflow:hidden">';
   view.forEach(function(r,i){
-    var click = (r.kind==='inv') ? (' onclick="openInvoiceViewer(\''+r.id+'\')" style="cursor:pointer"') : '';
-    h += '<div'+click+' style="padding:9px 11px'+(i?';border-top:1px solid var(--border)':'')+(click?';cursor:pointer':'')+'">'
+    var col=_acStCol(r.st);
+    var click = (r.kind==='inv') ? (' onclick="openInvoiceViewer(\''+r.id+'\')"') : '';
+    h += '<div'+click+' style="display:flex;gap:9px;padding:10px 11px'
+      + (i?';border-top:1px solid var(--border)':'')+(click?';cursor:pointer':'')+'">'
+      + '<span style="flex-shrink:0;width:4px;border-radius:3px;background:'+col+'"></span>'
+      + '<div style="flex:1;min-width:0">'
       + '<div style="display:flex;align-items:baseline;gap:8px">'
-      + '<span style="font-size:11px;color:var(--muted);white-space:nowrap">'+escapeHtml(r.date||'—')+'</span>'
-      + '<span style="font-size:12.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+      + '<span style="font-size:13px;font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
       + escapeHtml(r.third||'—')+'</span>'
-      + '<span style="margin-left:auto;font-size:13.5px;font-weight:800;white-space:nowrap">$'+r.amount.toFixed(2)+'</span>'
+      + '<span style="margin-left:auto;font-size:14px;font-weight:800;white-space:nowrap">$'+r.amount.toFixed(2)+'</span>'
       + '</div>'
-      + '<div style="display:flex;align-items:center;gap:7px;margin-top:3px;font-size:10.5px;color:var(--muted)">'
+      + '<div style="display:flex;align-items:center;gap:8px;margin-top:3px;font-size:10.5px;color:var(--muted);flex-wrap:wrap">'
+      + '<span>'+escapeHtml(r.date||'—')+'</span>'
       + '<span>'+escapeHtml(_acStoreName(r.store))+'</span>'
       + (r.sub?('<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(r.sub)+'</span>'):'')
-      + (r.status?('<span style="margin-left:auto;font-weight:700">'+escapeHtml(r.status)+'</span>'):'')
-      + (r.kind==='inv' && !r.img ? ('<span style="margin-left:auto;font-weight:700;color:'
+      + (r.kind==='inv' && !r.img ? ('<span style="font-weight:800;color:'
           + (r.pending?'var(--yellow)':'var(--red)')+'"><i class="ti ti-photo-off"></i> '
           + (r.pending?t('送信待ち','Queued'):t('画像なし','No image'))+'</span>') : '')
-      + '</div></div>';
+      + '<span style="margin-left:auto;font-weight:800;color:'+col+'">'+r.st+'</span>'
+      + '</div></div></div>';
   });
   return h + '</div>';
 }
-/* v880: Motoさん確認済みの構成に組み直し。
-     経理ダッシュボード（最初に開く）／経理レビュー／Tip＆シフトリーダー／出力センター／勤怠／人材
-   経理レビューには「アップロード全部＋申請＋仕入明細＋業者マスター＋区分承認」を集約。
-   予実・人件費・KPI管理・月次サマリー・管理統括・通知・ワークセンター・業務ガイド・発注は
-   経理から外した（ページは残してあるので店舗のナビと既存リンクからは使える）。 */
-var AC_TABS = [
-  { id:'dash', label:'経理ダッシュボード', icon:'ti-layout-dashboard', subs:[
-      { id:'dash', label:'ダッシュボード', fn:'renderOfficeDash' }
-  ]},
-  { id:'review', label:'経理レビュー', icon:'ti-checklist', subs:[
-      { id:'invoice', label:'Invoice',    list:'invoice', more:'renderInvoice' },
-      { id:'receipt', label:'レシート',    list:'receipt', more:'renderCardUsage' },
-      { id:'reimb',   label:'建て替え',    list:'reimb',   more:'renderReimburseCard' },
-      { id:'lost',    label:'紛失届',      list:'lost',    more:'renderLostReceipt' },
-      { id:'gas',     label:'ガソリン代',  list:'gas',     more:'renderMileage' },
-      { id:'vac',     label:'休暇申請',    fn:'renderVacation' },
-      { id:'exp',     label:'事前経費',    fn:'renderExpense' },
-      { id:'pd',      label:'仕入明細',    fn:'renderPurchaseDetail' },
-      { id:'vendor',  label:'業者マスター', fn:'renderVendorMaster' },
-      { id:'review',  label:'区分・承認',  fn:'renderAcctReview' },
-      /* v881: Office管理から移設。承認と対応をこの中で完結させる。 */
-      { id:'errors',  label:'エラーセンター', fn:'renderAcctErrors' },
-      { id:'tasks',   label:'タスク',        fn:'renderOfficeTasks' },
-      { id:'report',  label:'報告・承認',    fn:'renderOfficeReport' }
-  ]},
-  { id:'tip', label:'Tip＆シフトリーダー', icon:'ti-coin', subs:[
-      { id:'tipmgmt', label:'Tip管理', fn:'renderTipMgmt' }
-  ]},
-  { id:'export', label:'出力センター', icon:'ti-file-export', subs:[
-      { id:'stock', label:'棚卸', fn:'renderInventory' },
-      { id:'tipx',  label:'Tip',  fn:'renderAcctExport' }
-  ]},
-  { id:'attend', label:'勤怠', icon:'ti-clock-hour-4', subs:[
-      { id:'hq', label:'本部勤怠管理', fn:'renderOfficeAttend' }
-  ]},
-  { id:'hr', label:'人材', icon:'ti-users', subs:[
-      { id:'hr',   label:'HR・福利厚生', fn:'renderHR' },
-      { id:'gh',   label:'お悩み相談室', fn:'renderGrowthHub' },
-      { id:'hire', label:'採用・オンボーディング', fn:'renderHiring' },
-      { id:'hb',   label:'Handbook', fn:'renderHandbook' }
-  ]}
-];
-var _acCat = 'dash', _acSub = 'dash';
 function acSetCat(id){
-  _acF = { store:'', ym:'', third:'' };
+  _acF = { store:'', ym:'', third:'', st:'' };
   _acCat = id;
   var c = AC_TABS.find(function(x){ return x.id===id; });
   _acSub = (c && c.subs[0]) ? c.subs[0].id : '';
   renderPage('acct_center');
 }
-function acSetSub(id){ _acSub = id; _acF = { store:'', ym:'', third:'' }; renderPage('acct_center'); }
+function acSetSub(id){ _acSub = id; _acF = { store:'', ym:'', third:'', st:'' }; renderPage('acct_center'); }
 function renderAcctCenter(){
   var cat = AC_TABS.find(function(x){ return x.id===_acCat; }) || AC_TABS[0];
   var sub = cat.subs.find(function(x){ return x.id===_acSub; }) || cat.subs[0];
