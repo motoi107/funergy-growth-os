@@ -19209,9 +19209,9 @@ function renderBudgetSummary() {
   html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価と、実績のある日の最低〜最高（日別レンジ）。','Check by segment, plus lowest–highest daily.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days))});
   html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。','COGS: begin inv + purchases + transfer − end inv.'), fcBreakdownSub(stores,days))});
   html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。','Payroll split: G2+ / G1. Excludes tax/insurance.'), laborGradeSub(stores,days))});
-  if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('味噌汁UP率 ★','Miso upsell % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null);
-  if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null);
-  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null);
+  if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('味噌汁UP率 ★','Miso upsell % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null, {title:t('味噌汁UP率','Miso upsell %'), body:_kpiDetailWrap(t('味噌汁を付けた数 ÷ 対象の丼数。','Attached ÷ eligible bowls.'), misoSub(k))});
+  if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null, {title:t('いくらシャワー率','Ikura shower %'), body:_kpiDetailWrap(t('いくらシャワー数 ÷ 対象の丼数。','Ikura ÷ eligible bowls.'), ikuraSub(k))});
+  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上。お酒の対象カテゴリ設定に依存します。','Drink sales ÷ total, per store. Depends on alcohol category setting.'), drinkSubDetail(k))});
   html += `</div>
     <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
 
@@ -20613,8 +20613,72 @@ function keyKpiStats(scopeStores, days){
     avgRepeatPerDay: (Object.keys(dayHasActual).length&&rs.has)?Math.round(rs.repeat/Object.keys(dayHasActual).length*10)/10:null,
     avgLaborHoursPerDay: (Object.keys(dayHasActual).length&&laborHours>0)?Math.round(laborHours/Object.keys(dayHasActual).length*10)/10:null,
     avgLaborCostPerDay: (Object.keys(dayHasActual).length&&labor>0)?Math.round(labor/Object.keys(dayHasActual).length):null,
-    drinkScope: drinkScope, drinkRate: drinkRateV, drinkTgt: drinkTgt
+    drinkScope: drinkScope, drinkRate: drinkRateV, drinkTgt: drinkTgt,
+    /* v869: ドリンク比率の内訳をタップで見せるため、店舗ごとの内訳も返す。
+       比率そのものは drinkRateForScope が正（計算式は増やさない）。 */
+    drinkParts: (function(){ var out=[];
+      if(!(drinkScope&&tperiod)) return out;
+      (scopeStores||[]).forEach(function(s){
+        if(typeof isDrinkRateStore==='function' && !isDrinkRateStore(s.id)) return;
+        try{ var ds=storeDrinkSales(s.id, tperiod);
+          out.push({ id:s.id, name:s.name||s.id, drink:ds.drink, total:ds.total, hasCfg:!!ds.hasCfg });
+        }catch(e){}
+      });
+      return out; })()
   };
+}
+/* v869: 味噌汁UP率・いくらシャワー率・ドリンク比率の内訳。
+   この3つだけ kpiTile に detail を渡しておらず、タップできなかった。
+   店長の画面と数字が食い違ったとき、その場で原因を切り分けられるようにする。 */
+function _kpiRow2(label, val, sub){
+  return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;'
+    + 'padding:5px 0;border-bottom:1px solid var(--border)">'
+    + '<span style="font-size:12px;color:var(--muted)">' + label + '</span>'
+    + '<span style="font-size:13px;font-weight:700">' + val
+    + (sub ? '<span style="font-size:10px;color:var(--muted);font-weight:400"> ' + sub + '</span>' : '')
+    + '</span></div>';
+}
+function misoSub(k){
+  if(!k || k.misoRate==null) return '';
+  return _kpiRow2(t('味噌汁を付けた数','Miso attached'), (k.misoUp||0).toLocaleString())
+    + _kpiRow2(t('対象の丼数','Eligible bowls'), (k.misoAll||0).toLocaleString())
+    + _kpiRow2(t('UP率','Rate'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?(t('目標','tgt')+' '+k.misoTgt+'%'):'');
+}
+function ikuraSub(k){
+  if(!k || k.ikuraRate==null) return '';
+  return _kpiRow2(t('いくらシャワー数','Ikura shower'), (k.ikura||0).toLocaleString())
+    + _kpiRow2(t('対象の丼数','Eligible bowls'), (k.ikuraBowls||0).toLocaleString())
+    + _kpiRow2(t('実施率','Rate'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?(t('目標','tgt')+' '+k.ikuraTgt+'%'):'');
+}
+function drinkSubDetail(k){
+  if(!k) return '';
+  var parts=k.drinkParts||[]; var h='';
+  var noCfg=parts.filter(function(p){ return !p.hasCfg; });
+  if(noCfg.length){
+    h += '<div class="alert alert-warning" style="padding:7px 9px;margin:0 0 8px;font-size:11.5px">'
+      + '<i class="ti ti-alert-triangle"></i><div>'
+      + t('お酒の対象カテゴリが未設定の店舗があります：','Alcohol categories not set: ')
+      + noCfg.map(function(p){ return escapeHtml(p.name); }).join('、')
+      + '<br>' + t('未設定の間はドリンク売上が 0 として集計されます。KPI管理→「お酒の対象カテゴリ」で設定してください。',
+                   'Drink sales count as 0 until set. Set it in KPI Mgmt.')
+      + '</div></div>';
+  }
+  var dSum=0, tSum=0;
+  parts.forEach(function(p){
+    dSum+=p.drink; tSum+=p.total;
+    var r=(p.total>0)?Math.round(p.drink/p.total*1000)/10:null;
+    h += _kpiRow2(escapeHtml(p.name), (r==null?'—':r.toFixed(1)+'%'),
+      '$'+Math.round(p.drink).toLocaleString()+' / $'+Math.round(p.total).toLocaleString());
+  });
+  if(parts.length>1){
+    h += _kpiRow2('<b>'+t('合計','Total')+'</b>',
+      (tSum>0?(Math.round(dSum/tSum*1000)/10).toFixed(1)+'%':'—'),
+      '$'+Math.round(dSum).toLocaleString()+' / $'+Math.round(tSum).toLocaleString());
+  }
+  if(k.drinkTgt!=null) h += _kpiRow2(t('目標','Target'), k.drinkTgt+'%');
+  if(!parts.length) h += '<div style="font-size:12px;color:var(--muted)">'
+    + t('メニュー出数の取り込み待ちです。','Awaiting menu mix import.') + '</div>';
+  return h;
 }
 function sgn(n){ return (n>=0?'+':'')+n; }
 /* 重要KPIカード（6指標＋予実比較）。各予実画面で共通利用 */
@@ -27331,7 +27395,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '868';
+const APP_VERSION = '869';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -48971,7 +49035,14 @@ async function rebuildInvoicesFromCloud(){
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
     +'<button class="btn btn-primary" onclick="closeModalDirect();renderPage(curPage);">画面を更新</button></div>');
 }
+/* v869: この関数は自分自身の中からしか呼ばれておらず、最初に開く入口が無かった。
+   復旧ツール一式（クラウドから復元／内訳／保存済み画像から探す）が画面から到達できず、
+   明細が消えたレシートを経理が追えない状態だった。Invoice管理にボタンを置き、
+   引数なしでも今月で開けるようにする。 */
 async function openInvoiceDiag(ym){
+  if(!ym){ try{ ym=(typeof acctYm==='function')?acctYm():null; }catch(e){ ym=null; }
+    if(!ym){ var _d=(typeof bizNow==='function')?bizNow():new Date();
+      ym=_d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0'); } }
   ym = ym || (typeof curYm==='function'?curYm():'');
   try{ showToast('請求書を照合中…','info'); }catch(e){}
   var cloudRows={};
@@ -49258,7 +49329,7 @@ function renderInvoice() {
   var candIds = invoiceStoreCandidates().map(s=>s.id);
   var invoices = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
   var html = `<div class="section-header"><div><div class="section-title">${t('Invoice管理','Invoice management')}</div><div class="section-sub">${t('アップロード→照合→価格更新','Upload → match → update prices')}</div></div>
-    <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button>`:''}${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> ${t('Invoice登録','Add invoice')}</button></div></div>`;
+    <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button><button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('伝票診断・復旧','Diagnose / recover')}</button>`:''}${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> ${t('Invoice登録','Add invoice')}</button></div></div>`;
   var _canCard = ['ceo','gm','office','office_crew'].includes(curRole);
   html += `<div class="mm-tabs" style="margin-bottom:10px"><button class="mm-tab${(window._invMainView||'list')!=='cardusage'?' active':''}" onclick="setInvMainView('list')"><i class="ti ti-file-invoice"></i> ${t('Invoice一覧','Invoice list')}</button>${_canCard?`<button class="mm-tab${(window._invMainView||'list')==='cardusage'?' active':''}" onclick="setInvMainView('cardusage')"><i class="ti ti-credit-card"></i> ${t('カード使用管理','Card usage')}</button>`:''}</div>`;
   if ((window._invMainView||'list')==='cardusage' && _canCard) return html + renderCardUsage();
