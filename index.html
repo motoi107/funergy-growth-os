@@ -480,6 +480,21 @@ body.shift-wide .main { max-width:1900px; }
 /* v881: 経理センターの中タブは数が多く、overflow-x:auto だと右側が画面外に隠れ、
    横スクロールできることが分からない。ここだけ折り返す。 */
 .mm-tabs.ac-subs{flex-wrap:wrap;overflow-x:visible}
+/* v883: 経理センターのタブ帯。トップバー（52px）の直下に貼り付けて、
+   下にスクロールしても大タブ・中タブが常に見えるようにする。
+   ナビ自体は sticky ではないため、スクロールすると行き先が全部消えていた。 */
+.ac-nav{position:sticky;top:52px;z-index:60;background:var(--bg);
+  margin:0 -14px 10px;padding:4px 14px 0;border-bottom:1px solid var(--border);
+  box-shadow:0 6px 10px -8px rgba(33,27,21,.18)}
+.ac-main{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+.ac-main::-webkit-scrollbar{display:none}
+.ac-btn{white-space:nowrap;padding:9px 12px;font:inherit;font-size:12.5px;font-weight:700;
+  color:var(--muted);cursor:pointer;background:none;border:none;
+  border-bottom:2px solid transparent;display:flex;align-items:center;gap:6px}
+.ac-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.ac-btn .ac-n{background:var(--red);color:#fff;border-radius:9px;font-size:9px;padding:0 5px}
+.ac-nav .mm-tabs{margin:6px 0 8px}
+@media (max-width:700px){ .ac-nav{margin:0 -12px 10px;padding:4px 12px 0} }
 .mm-tabs.ac-subs .mm-tab{padding:6px 11px;font-size:11.5px}
 
 .mm-tab{flex:0 0 auto;padding:5px 10px;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;background:var(--surface2);border:1px solid var(--border);color:var(--muted);white-space:nowrap}
@@ -27458,7 +27473,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '882';
+const APP_VERSION = '883';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32555,28 +32570,36 @@ function acSetSub(id){ _acSub = id; _acF = { store:'', ym:'', third:'' }; render
 function renderAcctCenter(){
   var cat = AC_TABS.find(function(x){ return x.id===_acCat; }) || AC_TABS[0];
   var sub = cat.subs.find(function(x){ return x.id===_acSub; }) || cat.subs[0];
-  var h = '<div class="section-header"><div><div class="section-title">'
-    + t('経理センター','Accounting center') + '</div>'
-    + '<div class="section-sub">' + t('アップロード・Tip・出力・勤怠をここにまとめています','Uploads, tips, exports and attendance in one place') + '</div></div></div>';
-  /* 大タブ */
-  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+  /* v883: 帯を上に貼るので、見出しは高さを取らないよう1行にする。 */
+  var h = '';
+  /* v883: 大タブと中タブを1つの帯にまとめ、トップバーの直下に固定する。
+     どこにいて、どこへ行けるかが常に見えるようにするため。
+     大タブには未処理の件数を出し、押す前に残件が分かるようにする。 */
+  var _pendBy = {};
+  try{ (_acPend()||[]).forEach(function(x){ _pendBy[x.sub] = (_pendBy[x.sub]||0) + x.n; }); }catch(e){}
+  var _catN = function(c){
+    var n = 0; (c.subs||[]).forEach(function(s){ n += (_pendBy[s.id]||0); }); return n;
+  };
+  h += '<div class="ac-nav"><div class="ac-main">'
     + AC_TABS.map(function(c){
-        var on = (c.id===cat.id);
-        return '<button onclick="acSetCat(\''+c.id+'\')" style="font:inherit;font-size:12px;font-weight:800;'
-          + 'padding:8px 13px;border-radius:99px;cursor:pointer;border:1px solid '+(on?'var(--text)':'var(--border)')+';'
-          + 'background:'+(on?'var(--text)':'var(--surface)')+';color:'+(on?'#fff':'var(--muted)')+'">'
-          + '<i class="ti '+c.icon+'"></i> ' + escapeHtml(c.label) + '</button>';
+        var on = (c.id===cat.id), cn = _catN(c);
+        return '<button class="ac-btn'+(on?' active':'')+'" onclick="acSetCat(\''+c.id+'\')">'
+          + '<i class="ti '+c.icon+'"></i>' + escapeHtml(c.label)
+          + (cn ? '<span class="ac-n">'+cn+'</span>' : '') + '</button>';
       }).join('') + '</div>';
-  /* v881: 経理レビューは未処理をまとめて見せ、押せばその中タブへ飛べるようにする。 */
-  if(cat.id==='review'){ try{ h += _acPendHtml(); }catch(e){} }
-  /* 中タブ */
   if(cat.subs.length > 1){
-    h += '<div class="mm-tabs ac-subs" style="margin-bottom:10px">'
+    h += '<div class="mm-tabs ac-subs">'
       + cat.subs.map(function(s){
+          var sn = _pendBy[s.id]||0;
           return '<button class="mm-tab'+(s.id===sub.id?' active':'')+'" onclick="acSetSub(\''+s.id+'\')">'
-            + escapeHtml(s.label) + '</button>';
+            + escapeHtml(s.label)
+            + (sn ? ' <span style="color:var(--red);font-weight:800">'+sn+'</span>' : '')
+            + '</button>';
         }).join('') + '</div>';
   }
+  h += '</div>';
+  /* v881: 未処理の一覧は帯の下に置く（押せばその中タブへ飛ぶ）。 */
+  if(cat.id==='review'){ try{ h += _acPendHtml(); }catch(e){} }
   /* v875: 絞り込み一覧。従来の画面は下に畳んで残す（登録・承認はそちらで行う）。 */
   if(sub.list){
     var lst='';
