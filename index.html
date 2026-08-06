@@ -728,6 +728,8 @@ body.shift-wide .main { max-width:1900px; }
 .md-empty { text-align:center; color:var(--green); padding:10px 0; font-size:11.5px; }
 /* ===== v861 店舗カード ===== */
 .md-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(268px,1fr)); gap:10px; }
+/* v874: 伝票ビューア。狭い画面では画像とメモを縦に積む。 */
+@media (max-width:700px){ .iv-wrap { grid-template-columns:1fr !important; } }
 .md-cards.solo { grid-template-columns:1fr; }
 .md-sc { background:var(--surface); border:1px solid var(--border); border-radius:12px;
          padding:11px 11px 9px; cursor:pointer; position:relative; overflow:hidden; transition:.12s; }
@@ -5833,7 +5835,11 @@ const NAV_ITEMS = [
   {id:'invoice',     label:'Invoice管理',     icon:'ti-file-invoice',     roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office','office_crew']},
   {id:'office_mgr',  label:'Office管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office','office_crew']},
-  {id:'office_export', label:'出力センター', icon:'ti-file-export', roles:['ceo','gm','office','office_crew']},
+  {id:'acct_center',  label:'経理センター', icon:'ti-building-bank', roles:['ceo','gm','office','office_crew']},
+/* v871: 出力センターと経理出力は経理センターの③に入ったのでナビからは外す。
+   ページ自体は残してあるので、既存のリンク（go('acct_export') 等）は今までどおり動く。
+   店舗も使う Invoice管理・チップ管理・棚卸し・ガソリン代・紛失届はナビに残す
+   （ここを外すと店舗側が入口を失うため）。 */
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','office','am','sl']},
   {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'supply_order',label:'備品発注',   icon:'ti-package',          roles:['ceo','gm','office','am','sl','office_crew']},
@@ -5850,6 +5856,7 @@ const NAV_ITEMS = [
   {id:'shift_staff', label:'マイシフト',     icon:'ti-calendar-event',   roles:['sl','crew']},
   {id:'vacation',    label:'休暇申請',    icon:'ti-beach',            roles:['sl','am','office','office_crew']},
   {id:'mileage',     label:'ガソリン代',  icon:'ti-gas-station',      roles:['ceo','gm','office','am','sl','crew','office_crew']},
+{id:'lost_receipt',label:'レシート紛失届', icon:'ti-receipt-off',   roles:['ceo','gm','office','am','sl','g2','g4','crew','office_crew']},
   {id:'expense',     label:'事前経費申請',icon:'ti-cash',     roles:['ceo','gm','office','am','sl','crew','office_crew']},
   {id:'hr',          label:'HR・福利厚生', icon:'ti-heart-handshake',  roles:['ceo','gm','office','office_crew']},
   {id:'hiring',      label:'採用・オンボーディング', icon:'ti-user-plus',  roles:['ceo','gm','office','am','sl','office_crew']},
@@ -5873,8 +5880,7 @@ const NAV_ITEMS = [
   {id:'crew_handbook', label:'Handbook', icon:'ti-book',          roles:['ceo','gm','office','am','sl','crew','office_crew']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm','office']},
   {id:'kpi_master',  label:'KPI管理',      icon:'ti-chart-dots',           roles:['ceo','gm','office','am','sl','office_crew']},
-  {id:'acct_export', label:'経理出力',     icon:'ti-file-spreadsheet',      roles:['ceo','gm','office','office_crew']},
-  {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm','office']},
+    {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm','office']},
   {id:'announce',     label:'アナウンス',   icon:'ti-broadcast',     roles:['ceo','gm','office','am','sl']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm','office','office_crew']},
 ];
@@ -8524,6 +8530,8 @@ var _SPLIT_KEYS = {
   ot_requests:      {type:'arr', by:function(r){return r&&r.name;}},
   my_vacations:     {type:'arr', by:function(r){return r&&r.employee;}, readFilter:function(r){return !(r&&r._deleted);}},
   mileage_requests: {type:'arr', by:function(r){return r&&r.employee;}},
+/* v870: レシート紛失届。申請者ごとに行を分ける。物理削除はせず _deleted を立てる。 */
+lost_receipts:    {type:'arr', by:function(r){return r&&r.employee;}},
   expense_requests: {type:'arr', by:function(r){return r&&r.employee;}},
   /* v767: Corporate Chef 月間行動計画。対象月ごとに行を分けるので、
      今月を編集しても先月の行に一切触らない（予算で起きた月またぎの事故を防ぐ）。 */
@@ -9937,7 +9945,7 @@ var OP_SYNC_KEYS = ['lala_tasks','office_close','applicants','onboardings','appr
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
-  'my_vacations','mileage_requests','mileage_config','expense_requests','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
+  'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
@@ -10839,6 +10847,8 @@ var OP_MERGE = {
   lss_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
   tip_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
   mileage_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
+/* v870: 申請者端末とGM端末が同じ行を書くので、上書きだと申請か承認のどちらかが消える。 */
+lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   /* v687: 承認フロー系。申請者端末と承認者端末が同じパーティションを書くため、上書きだと申請が消える。
      id和集合＋_deleted優先＋レビュー済み優先の汎用マージを適用（物理削除は論理削除へ変更済み）。 */
   my_vacations:    { merge: mergeReqTomb, covers: _coversReqTomb },
@@ -11095,7 +11105,7 @@ registerInvMergeKeys();
      ・すでに論理削除(_deleted)を使うもの（tasks_all / mileage_requests / expense_requests）
      ・invoices / reimbursements は本版で論理削除へ変更（下記 _SPLIT_KEYS.readFilter と対で運用）
    ※ 物理削除のままのキーをここに足すと「削除した行がマージで復活」するため、必ず論理削除とセットで追加すること。 */
-var SPLIT_MERGE_SAFE_KEYS = ['invoices','reimbursements','tasks_all','mileage_requests','expense_requests',
+var SPLIT_MERGE_SAFE_KEYS = ['invoices','reimbursements','tasks_all','mileage_requests','expense_requests','lost_receipts',
   'skill_history','lss_history','tip_history','career_history',
   /* v686: 申請系。物理削除は無く status 更新のみ（mergeSkillReq はレビュー済みを優先）。
      端末間で申請が消えるのを防ぐ。 */
@@ -13317,6 +13327,8 @@ function renderPage(page) {
     case 'shift_staff':  el.innerHTML = renderShiftStaff(); break;
     case 'vacation':     el.innerHTML = renderVacation(); break;
     case 'mileage':      el.innerHTML = renderMileage(); break;
+case 'lost_receipt': el.innerHTML = renderLostReceipt(); break;
+case 'acct_center':  el.innerHTML = renderAcctCenter(); break;
     case 'expense':      el.innerHTML = renderExpense(); break;
     case 'hr':           el.innerHTML = renderHR(); break;
     case 'hiring':       el.innerHTML = renderHiring(); break;
@@ -24331,6 +24343,28 @@ function slPeriodOfShift(storeId, sh){
     return (d>l)?'D':'L';
   }catch(e){ return 'L'; }
 }
+/* ===== v876: 期間内のシフトリーダー回数 =====
+   Motoさん依頼「Tip管理の出力にシフトリーダーを含める」。
+   判定は slDayRecords() が正（Toast＋手入力、G1以外は除外側）。
+   ここは日ごとに呼んで数えるだけで、判定条件を作り直さない。
+   ※ Store Leader（SL拠出・再分配）とは別物。あちらは半月精算、
+     こちらはその日の Shift Leader を務めた回数。 */
+function slCountsInRange(storeId, fromISO, toISO){
+  var out = {};
+  if(typeof slDayRecords !== 'function' || typeof _slEachDate !== 'function') return out;
+  try{
+    _slEachDate(fromISO, toISO, function(dt){
+      var rec; try{ rec = slDayRecords(storeId, dt); }catch(e){ return; }
+      ((rec && rec.ok) || []).forEach(function(x){
+        if(!x || !x.name) return;
+        var o = out[x.name] || (out[x.name] = { L:0, D:0, total:0 });
+        if(x.period === 'D') o.D++; else o.L++;
+        o.total++;
+      });
+    });
+  }catch(e){ console.warn('slCountsInRange', e); }
+  return out;
+}
 function slManualAll(storeId){ var m=ls('sl_manual_'+storeId, {}); return (m&&typeof m==='object')?m:{}; }
 function slManualSet(storeId, dateISO, name, period, on){
   if(['gm','ceo','am','sl'].indexOf(curRole)<0){ showToast('この操作の権限がありません','warning'); return false; }
@@ -24794,8 +24828,34 @@ function exportTipPeriodCsv(){
   var sumRow=['配分合計',''], grand=0;
   dists.forEach(function(x){ var l=0,dd=0; (x.dist.list||[]).forEach(function(r){l+=r.lunch||0; dd+=r.dinner||0;}); sumRow.push(r2(l)); sumRow.push(r2(dd)); grand+=l+dd; });
   sumRow.push(r2(grand)); rows.push(sumRow);
+  /* v876: シフトリーダー。日付の列と同じ並びで、務めた日に SL を立てる。
+     判定は slDayRecords() が正。条件をここで作り直さない。
+     Store Leader（SL拠出・再分配）とは別物。 */
+  var _slc = (typeof slCountsInRange==='function') ? slCountsInRange(storeId, info.from, info.to) : {};
+  var _slNames = Object.keys(_slc).sort();
+  if(_slNames.length){
+    rows.push([]);
+    rows.push(['【シフトリーダー】']);
+    var _slHead=['従業員＼日付',''];
+    dists.forEach(function(x){ _slHead.push(md(x.date)+' ランチ'); _slHead.push(md(x.date)+' ディナー'); });
+    _slHead.push('期間合計(回)');
+    rows.push(_slHead);
+    var _slDay={};
+    dists.forEach(function(x){ try{ _slDay[x.date]=slDayRecords(storeId, x.date); }catch(e){ _slDay[x.date]={ok:[]}; } });
+    _slNames.forEach(function(nm){
+      var row=[nm,''], tot=0;
+      dists.forEach(function(x){
+        var ok=(_slDay[x.date]||{}).ok||[];
+        var hasL=ok.some(function(z){ return z.name===nm && z.period!=='D'; });
+        var hasD=ok.some(function(z){ return z.name===nm && z.period==='D'; });
+        row.push(hasL?'SL':''); row.push(hasD?'SL':'');
+        if(hasL) tot++; if(hasD) tot++;
+      });
+      row.push(tot); rows.push(row);
+    });
+  }
   downloadCSV(rows, `Tip配分_${(store.name||storeId)}_${info.from}_${info.to}.csv`);
-  showToast('配分表（①〜④＋各スタッフ／Tip Rate付き／セント単位）をCSV出力しました','success');
+  showToast('配分表（①〜④＋各スタッフ／Tip Rate／シフトリーダー付き）をCSV出力しました','success');
 }
 function tipMatrixToggleExcl(storeId, date, name, slot){ toggleTipExclude(storeId, date, name, slot); if(typeof renderPage==='function') renderPage('tip'); }
 /* 配分表のセル1つ（タップでTip対象外の切替） */
@@ -27395,7 +27455,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '869';
+const APP_VERSION = '877';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32074,6 +32134,426 @@ function renderMileagePerPerson(recs){
     h+='</details>';
   });
   return h;
+}
+/* ===== v870: レシート紛失届（Lost Receipt Affidavit）=====
+   会社カードのレシートを出せないときの届出。紙の様式と同じ項目を持つ。
+   Motoさん確認済み：手書き署名は不要、GM承認のみ。
+   申請＝本人が確定した記録、承認＝承認者と日時の記録、として署名欄を置き換える。
+   保存は mileage_requests と同じ形（申請者で分割・論理削除・mergeReqTomb）。 */
+function getLostReceipts(){ return (ls('lost_receipts', [])||[]).filter(function(x){ return x && !x._deleted; }); }
+function saveLostReceipts(v){
+  v = v || [];
+  /* 消えた行は _deleted で残す（物理削除すると合流で復活したり、他端末の分を巻き込む） */
+  try{
+    var raw = ls('lost_receipts', [])||[], keep = {};
+    v.forEach(function(x){ if(x && x.id!=null) keep[x.id]=1; });
+    raw.forEach(function(x){
+      if(x && x.id!=null && !keep[x.id]){ x._deleted = true; x._at = Date.now(); v.push(x); }
+    });
+  }catch(e){}
+  return lsSet('lost_receipts', v);
+}
+function lrCanApprove(){ return ['gm','ceo'].indexOf(curRole) >= 0; }
+function lrStatusMeta(s){
+  if(s==='承認')   return { color:'var(--green)', icon:'ti-circle-check' };
+  if(s==='差戻し') return { color:'var(--red)',   icon:'ti-arrow-back-up' };
+  return { color:'var(--yellow)', icon:'ti-clock' };
+}
+function _lrToday(){ try{ return bizToday(); }catch(e){ var d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); } }
+function _lrStores(){ try{ return getVisibleStores()||[]; }catch(e){ return (typeof STORES!=='undefined')?STORES:[]; } }
+function _lrStoreName(id){ var s=_lrStores().find(function(x){return x.id===id;}); return s?s.name:(id||''); }
+var _lrMonth = '';   /* '' = 全期間 */
+function lrSetMonth(v){ _lrMonth = v||''; renderPage('lost_receipt'); }
+
+function openLostReceiptForm(id){
+  var all = getLostReceipts();
+  var r = id ? all.find(function(x){ return x.id===id; }) : null;
+  var mine = r || { employee: curUserName, storeId: (function(){ try{ return myStoreId(); }catch(e){ return ''; } })(),
+                    purchaseDate: _lrToday(), vendor:'', amount:'', cardholder: curUserName, items:'' };
+  var opts = _lrStores().map(function(s){
+    return '<option value="'+escapeHtml(s.id)+'"'+(mine.storeId===s.id?' selected':'')+'>'+escapeHtml(s.name)+'</option>';
+  }).join('');
+  var h = '<div class="modal-title"><i class="ti ti-receipt-off" style="color:var(--accent)"></i> '
+    + t('レシート紛失届','Lost Receipt Affidavit') + '</div>'
+    + '<div style="font-size:11.5px;color:var(--muted);line-height:1.7;margin-bottom:10px">'
+    + t('会社カードのレシートを提出できない場合に使用します。すべて正確に記入してください。紛失が繰り返される場合、カード利用停止などの措置が取られることがあります。',
+        'Use when a receipt for a company card purchase cannot be provided. Repeated loss may result in loss of card privileges.')
+    + '</div>'
+    + '<div class="form-group"><label class="form-label">'+t('社員名','Employee')+'</label>'
+    + '<input class="form-input" id="lr-emp" value="'+escapeHtml(mine.employee||'')+'"></div>'
+    + '<div class="form-group"><label class="form-label">'+t('店舗','Store')+'</label>'
+    + '<select class="form-select" id="lr-store"><option value="">'+t('選択','Select')+'</option>'+opts+'</select></div>'
+    + '<div class="form-group"><label class="form-label">'+t('購入日','Purchase date')+'</label>'
+    + '<input type="date" class="form-input" id="lr-date" value="'+escapeHtml(mine.purchaseDate||'')+'"></div>'
+    + '<div class="form-group"><label class="form-label">'+t('店名','Vendor')+'</label>'
+    + '<input class="form-input" id="lr-vendor" value="'+escapeHtml(mine.vendor||'')+'"></div>'
+    + '<div class="form-group"><label class="form-label">'+t('金額','Total amount')+'</label>'
+    + '<input type="number" step="0.01" inputmode="decimal" class="form-input" id="lr-amt" value="'+escapeHtml(String(mine.amount||''))+'"></div>'
+    + '<div class="form-group"><label class="form-label">'+t('カード名義','Cardholder')+'</label>'
+    + '<input class="form-input" id="lr-card" value="'+escapeHtml(mine.cardholder||'')+'"></div>'
+    + '<div class="form-group"><label class="form-label">'+t('購入した物品・経費科目','Items purchased')+'</label>'
+    + '<textarea class="form-input" id="lr-items" rows="5" style="resize:vertical">'+escapeHtml(mine.items||'')+'</textarea></div>'
+    + '<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px"><i class="ti ti-alert-triangle"></i><div>'
+    + t('提出すると、上記の内容が事実である旨をあなたの名前で記録します。GMの承認が必要です。',
+        'Submitting records this as certified by you. GM approval is required.')
+    + '</div></div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
+    + '<button class="btn btn-primary" onclick="saveLostReceiptForm('+(r?('\''+r.id+'\''):'null')+')">'
+    + '<i class="ti ti-send"></i> '+t('提出する','Submit')+'</button></div>';
+  openModal(h);
+}
+
+function saveLostReceiptForm(id){
+  var v = function(i){ var el=document.getElementById(i); return el?String(el.value||'').trim():''; };
+  var emp=v('lr-emp'), st=v('lr-store'), dt=v('lr-date'), vd=v('lr-vendor'),
+      am=v('lr-amt'), cd=v('lr-card'), it=v('lr-items');
+  var miss=[];
+  if(!emp) miss.push(t('社員名','Employee'));
+  if(!st)  miss.push(t('店舗','Store'));
+  if(!dt)  miss.push(t('購入日','Purchase date'));
+  if(!vd)  miss.push(t('店名','Vendor'));
+  if(!(parseFloat(am)>0)) miss.push(t('金額','Amount'));
+  if(!cd)  miss.push(t('カード名義','Cardholder'));
+  if(!it)  miss.push(t('購入した物品','Items'));
+  if(miss.length){ showToast(t('未入力があります：','Missing: ')+miss.join('、'),'warning'); return; }
+  var all = ls('lost_receipts', [])||[];
+  var now = Date.now();
+  if(id){
+    var r = all.find(function(x){ return x && x.id===id; });
+    if(!r){ showToast(t('対象が見つかりません','Not found'),'warning'); return; }
+    if(r.status==='承認' && !lrCanApprove()){ showToast(t('承認済みは編集できません','Approved records are locked'),'warning'); return; }
+    r.employee=emp; r.storeId=st; r.purchaseDate=dt; r.vendor=vd;
+    r.amount=parseFloat(am); r.cardholder=cd; r.items=it;
+    r.status='申請中'; r.approvedBy=''; r.approvedAt=''; r.rejectReason='';
+    r._at=now;
+  } else {
+    all.push({ id:'lr'+now+'_'+Math.random().toString(36).slice(2,7), employee:emp, storeId:st,
+      purchaseDate:dt, vendor:vd, amount:parseFloat(am), cardholder:cd, items:it,
+      status:'申請中', createdBy:curUserName, createdAt:now, _at:now });
+  }
+  if(!saveLostReceipts(all)){ showToast(t('保存に失敗しました（容量を確認）','Save failed'),'warning'); return; }
+  closeModalDirect(); showToast(t('提出しました','Submitted'),'success'); renderPage('lost_receipt');
+}
+
+function lrApprove(id){
+  if(!lrCanApprove()){ showToast(t('GMのみ承認できます','GM only'),'warning'); return; }
+  var all = ls('lost_receipts', [])||[]; var r = all.find(function(x){ return x && x.id===id; });
+  if(!r) return;
+  r.status='承認'; r.approvedBy=curUserName; r.approvedAt=Date.now(); r.rejectReason=''; r._at=Date.now();
+  if(!saveLostReceipts(all)){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
+  showToast(t('承認しました','Approved'),'success'); renderPage('lost_receipt');
+}
+function lrReject(id){
+  if(!lrCanApprove()){ showToast(t('GMのみ差戻しできます','GM only'),'warning'); return; }
+  var why = prompt(t('差戻しの理由を入力してください','Reason for sending back'), '');
+  if(why==null) return;
+  var all = ls('lost_receipts', [])||[]; var r = all.find(function(x){ return x && x.id===id; });
+  if(!r) return;
+  r.status='差戻し'; r.rejectReason=String(why||'').trim(); r.approvedBy=curUserName; r.approvedAt=Date.now(); r._at=Date.now();
+  if(!saveLostReceipts(all)){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
+  showToast(t('差戻しました','Sent back'),'success'); renderPage('lost_receipt');
+}
+function lrDelete(id){
+  var all = getLostReceipts(); var r = all.find(function(x){ return x.id===id; });
+  if(!r) return;
+  if(r.status==='承認' && !lrCanApprove()){ showToast(t('承認済みは取り下げできません','Approved records are locked'),'warning'); return; }
+  if(!confirm(t('この届出を取り下げますか？','Withdraw this report?'))) return;
+  if(!saveLostReceipts(all.filter(function(x){ return x.id!==id; }))){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
+  showToast(t('取り下げました','Withdrawn'),'success'); renderPage('lost_receipt');
+}
+
+function renderLostReceipt(){
+  var canApp = lrCanApprove();
+  var seeAll = canApp || ['office','office_crew','am'].indexOf(curRole)>=0;
+  var all = getLostReceipts().filter(function(r){ return seeAll || r.employee===curUserName || r.createdBy===curUserName; });
+  if(_lrMonth) all = all.filter(function(r){ return String(r.purchaseDate||'').slice(0,7)===_lrMonth; });
+  all.sort(function(a,b){ return String(b.purchaseDate||'').localeCompare(String(a.purchaseDate||'')); });
+  var months = {}; getLostReceipts().forEach(function(r){ var m=String(r.purchaseDate||'').slice(0,7); if(m) months[m]=1; });
+  var mList = Object.keys(months).sort().reverse();
+  var pend = all.filter(function(r){ return (r.status||'申請中')==='申請中'; }).length;
+
+  var h = '<div class="section-header"><div><div class="section-title">'+t('レシート紛失届','Lost Receipt Affidavit')+'</div>'
+    + '<div class="section-sub">'+t('会社カードのレシートを出せないときの届出（GM承認）','Company card receipts that cannot be provided (GM approval)')+'</div></div>'
+    + '<button class="btn btn-primary btn-sm" onclick="openLostReceiptForm()"><i class="ti ti-plus"></i> '+t('新規','New')+'</button></div>';
+
+  if(canApp && pend>0){
+    h += '<div class="alert alert-warning" style="padding:8px 10px;margin-bottom:10px"><i class="ti ti-clock"></i>'
+      + '<div style="font-size:12.5px">'+t('承認待ち','Awaiting approval')+' '+pend+' '+t('件','')+'</div></div>';
+  }
+
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">'
+    + '<button class="mm-tab'+(_lrMonth?'':' active')+'" onclick="lrSetMonth(\'\')">'+t('全期間','All')+'</button>'
+    + mList.map(function(m){
+        return '<button class="mm-tab'+(_lrMonth===m?' active':'')+'" onclick="lrSetMonth(\''+m+'\')">'+m+'</button>';
+      }).join('') + '</div>';
+
+  if(!all.length){
+    return h + '<div class="card" style="text-align:center;color:var(--muted);padding:26px">'
+      + t('届出はありません','No reports')+'</div>';
+  }
+
+  all.forEach(function(r){
+    var m = lrStatusMeta(r.status||'申請中');
+    var own = (r.employee===curUserName || r.createdBy===curUserName);
+    h += '<div class="card" style="padding:11px;margin-bottom:8px">'
+      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+      + '<span style="font-size:13.5px;font-weight:800">'+escapeHtml(r.vendor||'')+'</span>'
+      + '<span style="font-size:15px;font-weight:800;color:var(--tm)">$'+Number(r.amount||0).toFixed(2)+'</span>'
+      + '<span style="margin-left:auto;font-size:10px;font-weight:800;color:'+m.color+'">'
+      + '<i class="ti '+m.icon+'"></i> '+escapeHtml(r.status||'申請中')+'</span></div>'
+      + '<div style="font-size:11.5px;color:var(--muted);line-height:1.8">'
+      + escapeHtml(r.purchaseDate||'')+'　'+escapeHtml(_lrStoreName(r.storeId))+'<br>'
+      + t('社員','Employee')+' '+escapeHtml(r.employee||'')
+      + (r.cardholder && r.cardholder!==r.employee ? ('　'+t('カード名義','Cardholder')+' '+escapeHtml(r.cardholder)) : '')
+      + '</div>'
+      + '<div style="font-size:11.5px;white-space:pre-wrap;margin-top:6px;padding:7px 9px;background:var(--surface2);border-radius:8px">'
+      + escapeHtml(r.items||'')+'</div>';
+    if(r.status==='差戻し' && r.rejectReason){
+      h += '<div style="font-size:11.5px;color:var(--red);margin-top:6px"><i class="ti ti-arrow-back-up"></i> '
+        + escapeHtml(r.rejectReason)+'</div>';
+    }
+    if(r.status==='承認' && r.approvedBy){
+      h += '<div style="font-size:10.5px;color:var(--green);margin-top:6px"><i class="ti ti-circle-check"></i> '
+        + t('承認','Approved')+': '+escapeHtml(r.approvedBy)
+        + (r.approvedAt?('　'+new Date(r.approvedAt).toLocaleString()):'')+'</div>';
+    }
+    h += '<div class="btn-row" style="margin-top:8px">';
+    if(canApp && (r.status||'申請中')!=='承認'){
+      h += '<button class="btn btn-secondary btn-sm" onclick="lrReject(\''+r.id+'\')">'+t('差戻し','Send back')+'</button>'
+        + '<button class="btn btn-primary btn-sm" onclick="lrApprove(\''+r.id+'\')"><i class="ti ti-check"></i> '+t('承認','Approve')+'</button>';
+    }
+    if(own && (r.status||'申請中')!=='承認'){
+      h += '<button class="btn btn-secondary btn-sm" onclick="openLostReceiptForm(\''+r.id+'\')">'+t('修正','Edit')+'</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="lrDelete(\''+r.id+'\')">'+t('取り下げ','Withdraw')+'</button>';
+    }
+    h += '</div></div>';
+  });
+  return h;
+}
+/* ===== v871: 経理センター（オフィスの経理画面の一新）=====
+   Motoさん指定の大タブ／中タブ構成。ここでは骨組みと導線だけを作り、
+   中身は既存の画面をそのまま差し込む。先に器を確認してから、
+   レシートのOCRメモ・絞り込み（店舗/月/業者・購入店・申請者）を順に足す。
+   店舗側のナビは触っていない。ここはオフィス用の入口。 */
+/* ===== v875: アップロードセンターの絞り込み一覧 =====
+   Motoさん指定：Invoice＝店舗/月/業者、レシート＝店舗/月/購入店、
+   建て替え・紛失届・ガソリン代＝店舗/月/申請者。
+   5つとも「店舗＋月＋第3軸」で形が同じなので、取り出し方だけ差し替えて共通化する。
+   日付の書式が invoices（2026/08/06）と紛失届・ガソリン代（2026-08-06）で違うので
+   ここで揃える。揃えないと月の絞り込みが片方だけ効かない。 */
+var _acF = { store:'', ym:'', third:'' };
+function acFilterSet(k, v){ _acF[k] = v||''; renderPage('acct_center'); }
+function _acYm(v){ var s=String(v||'').replace(/\//g,'-'); var m=s.match(/^(\d{4})-(\d{1,2})/); 
+  return m ? (m[1]+'-'+String(m[2]).padStart(2,'0')) : ''; }
+function _acDate(v){ return String(v||'').replace(/\//g,'-').slice(0,10); }
+function _acStoreName(id){
+  var s=(typeof STORES!=='undefined')?STORES.find(function(x){return x.id===id;}):null;
+  return s?s.name:(id||'—');
+}
+/* kind ごとの取り出し方。third は第3軸のラベルと値の取り方。 */
+function _acRows(kind){
+  var inv = function(f){
+    return (ls('invoices', [])||[]).filter(function(v){ return v && !v._deleted && f(v); })
+      .map(function(v){
+        return { id:v.id, kind:'inv', date:_acDate(v.docDate||v.date), store:v.storeId,
+                 third:(v.vendor||''), amount:Number(v.total||0),
+                 sub:(v.memoUse||''), who:(v.memoWho||v.empName||v.byUser||''),
+                 img:!!v.imagePath, pending:!!v.pendingImgId, status:(v.reviewStatus||'') };
+      });
+  };
+  if(kind==='invoice') return { label:'業者', rows: inv(function(v){ return v.docType!=='Receipt' && v.docType!=='Reimburse'; }) };
+  if(kind==='receipt') return { label:'購入店', rows: inv(function(v){ return v.docType==='Receipt'; }) };
+  if(kind==='reimb'){
+    var r = inv(function(v){ return v.docType==='Reimburse'; });
+    r.forEach(function(x){ x.third = x.who || x.third; });
+    return { label:'申請者', rows:r };
+  }
+  if(kind==='lost'){
+    return { label:'申請者', rows: (typeof getLostReceipts==='function'?getLostReceipts():[]).map(function(v){
+      return { id:v.id, kind:'lost', date:_acDate(v.purchaseDate), store:v.storeId,
+               third:(v.employee||''), amount:Number(v.amount||0),
+               sub:(v.vendor||''), who:(v.cardholder||''), img:false, pending:false,
+               status:(v.status||'申請中') };
+    }) };
+  }
+  if(kind==='gas'){
+    return { label:'申請者', rows: (typeof getMileageRequests==='function'?getMileageRequests():[]).map(function(v){
+      return { id:v.id, kind:'gas', date:_acDate(v.date), store:v.storeId,
+               third:(v.employee||''), amount:Number(v.amount||0),
+               sub:((v.origin||'')+(v.destination?(' → '+v.destination):'')), who:'',
+               img:false, pending:false, status:(v.status||'申請中') };
+    }) };
+  }
+  return { label:'', rows:[] };
+}
+function acUploadList(kind){
+  var src = _acRows(kind), rows = src.rows || [];
+  /* 選択肢は絞り込み前の全件から作る（選んだ途端に候補が消えないように） */
+  var stores={}, yms={}, thirds={};
+  rows.forEach(function(r){
+    if(r.store) stores[r.store]=1;
+    var m=_acYm(r.date); if(m) yms[m]=1;
+    if(r.third) thirds[r.third]=1;
+  });
+  var f=_acF;
+  var view = rows.filter(function(r){
+    if(f.store && r.store!==f.store) return false;
+    if(f.ym && _acYm(r.date)!==f.ym) return false;
+    if(f.third && r.third!==f.third) return false;
+    return true;
+  }).sort(function(a,b){ return String(b.date).localeCompare(String(a.date)); });
+  var total = view.reduce(function(a,r){ return a+(r.amount||0); }, 0);
+
+  var sel=function(id,label,cur,opts,fmt){
+    return '<select class="form-select" style="font-size:12px;padding:6px 8px;min-width:0" '
+      + 'onchange="acFilterSet(\''+id+'\', this.value)">'
+      + '<option value="">'+label+'（'+t('すべて','All')+'）</option>'
+      + opts.map(function(o){
+          return '<option value="'+escapeHtml(o)+'"'+(cur===o?' selected':'')+'>'
+            + escapeHtml(fmt?fmt(o):o)+'</option>';
+        }).join('') + '</select>';
+  };
+  var h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">'
+    + sel('store', t('店舗','Store'), f.store, Object.keys(stores).sort(), _acStoreName)
+    + sel('ym',    t('月','Month'),   f.ym,    Object.keys(yms).sort().reverse())
+    + sel('third', src.label,          f.third, Object.keys(thirds).sort())
+    + '</div>';
+  h += '<div style="display:flex;align-items:baseline;gap:10px;margin:0 2px 8px">'
+    + '<span style="font-size:12px;color:var(--muted)">'+view.length+' '+t('件','items')+'</span>'
+    + '<span style="font-size:14px;font-weight:800">$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'
+    + ((f.store||f.ym||f.third)?('<button class="btn btn-secondary btn-sm" style="margin-left:auto" '
+        + 'onclick="_acF={store:\'\',ym:\'\',third:\'\'};renderPage(\'acct_center\')">'+t('絞り込みを解除','Clear')+'</button>'):'')
+    + '</div>';
+  if(!view.length){
+    return h + '<div class="card" style="text-align:center;color:var(--muted);padding:26px">'
+      + t('該当がありません','Nothing matches')+'</div>';
+  }
+  h += '<div class="card" style="padding:0;overflow:hidden">';
+  view.forEach(function(r,i){
+    var click = (r.kind==='inv') ? (' onclick="openInvoiceViewer(\''+r.id+'\')" style="cursor:pointer"') : '';
+    h += '<div'+click+' style="padding:9px 11px'+(i?';border-top:1px solid var(--border)':'')+(click?';cursor:pointer':'')+'">'
+      + '<div style="display:flex;align-items:baseline;gap:8px">'
+      + '<span style="font-size:11px;color:var(--muted);white-space:nowrap">'+escapeHtml(r.date||'—')+'</span>'
+      + '<span style="font-size:12.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+      + escapeHtml(r.third||'—')+'</span>'
+      + '<span style="margin-left:auto;font-size:13.5px;font-weight:800;white-space:nowrap">$'+r.amount.toFixed(2)+'</span>'
+      + '</div>'
+      + '<div style="display:flex;align-items:center;gap:7px;margin-top:3px;font-size:10.5px;color:var(--muted)">'
+      + '<span>'+escapeHtml(_acStoreName(r.store))+'</span>'
+      + (r.sub?('<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(r.sub)+'</span>'):'')
+      + (r.status?('<span style="margin-left:auto;font-weight:700">'+escapeHtml(r.status)+'</span>'):'')
+      + (r.kind==='inv' && !r.img ? ('<span style="margin-left:auto;font-weight:700;color:'
+          + (r.pending?'var(--yellow)':'var(--red)')+'"><i class="ti ti-photo-off"></i> '
+          + (r.pending?t('送信待ち','Queued'):t('画像なし','No image'))+'</span>') : '')
+      + '</div></div>';
+  });
+  return h + '</div>';
+}
+var AC_TABS = [
+  { id:'upload', label:'アップロードセンター', icon:'ti-cloud-upload', subs:[
+      { id:'invoice', label:'Invoice',    list:'invoice', more:'renderInvoice' },
+      { id:'receipt', label:'レシート',    list:'receipt', more:'renderCardUsage' },
+      { id:'reimb',   label:'建て替え',    list:'reimb',   more:'renderReimburseCard' },
+      { id:'lost',    label:'紛失届',      list:'lost',    more:'renderLostReceipt' },
+      { id:'gas',     label:'ガソリン代',  list:'gas',     more:'renderMileage' }
+  ]},
+  { id:'tip', label:'Tip＆シフトリーダー', icon:'ti-coin', subs:[
+      { id:'tipmgmt', label:'Tip管理', fn:'renderTipMgmt' }
+  ]},
+  { id:'export', label:'出力センター', icon:'ti-file-export', subs:[
+      { id:'stock', label:'棚卸', fn:'renderInventory' },
+      { id:'tipx',  label:'Tip',  fn:'renderAcctExport' }
+  ]},
+  { id:'attend', label:'勤怠', icon:'ti-clock-hour-4', subs:[
+      { id:'hq', label:'本部勤怠管理', fn:'renderOfficeAttend' }
+  ]}
+];
+var _acCat = 'upload', _acSub = 'invoice';
+function acSetCat(id){
+  _acF = { store:'', ym:'', third:'' };
+  _acCat = id;
+  var c = AC_TABS.find(function(x){ return x.id===id; });
+  _acSub = (c && c.subs[0]) ? c.subs[0].id : '';
+  renderPage('acct_center');
+}
+function acSetSub(id){ _acSub = id; _acF = { store:'', ym:'', third:'' }; renderPage('acct_center'); }
+function renderAcctCenter(){
+  var cat = AC_TABS.find(function(x){ return x.id===_acCat; }) || AC_TABS[0];
+  var sub = cat.subs.find(function(x){ return x.id===_acSub; }) || cat.subs[0];
+  var h = '<div class="section-header"><div><div class="section-title">'
+    + t('経理センター','Accounting center') + '</div>'
+    + '<div class="section-sub">' + t('アップロード・Tip・出力・勤怠をここにまとめています','Uploads, tips, exports and attendance in one place') + '</div></div></div>';
+  /* 大タブ */
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+    + AC_TABS.map(function(c){
+        var on = (c.id===cat.id);
+        return '<button onclick="acSetCat(\''+c.id+'\')" style="font:inherit;font-size:12px;font-weight:800;'
+          + 'padding:8px 13px;border-radius:99px;cursor:pointer;border:1px solid '+(on?'var(--text)':'var(--border)')+';'
+          + 'background:'+(on?'var(--text)':'var(--surface)')+';color:'+(on?'#fff':'var(--muted)')+'">'
+          + '<i class="ti '+c.icon+'"></i> ' + escapeHtml(c.label) + '</button>';
+      }).join('') + '</div>';
+  /* 中タブ */
+  if(cat.subs.length > 1){
+    h += '<div class="mm-tabs" style="margin-bottom:10px">'
+      + cat.subs.map(function(s){
+          return '<button class="mm-tab'+(s.id===sub.id?' active':'')+'" onclick="acSetSub(\''+s.id+'\')">'
+            + escapeHtml(s.label) + '</button>';
+        }).join('') + '</div>';
+  }
+  /* v875: 絞り込み一覧。従来の画面は下に畳んで残す（登録・承認はそちらで行う）。 */
+  if(sub.list){
+    var lst='';
+    try{ lst = acUploadList(sub.list); }
+    catch(e){ lst = '<div class="alert alert-warning" style="padding:10px 12px">'
+      + '<i class="ti ti-alert-triangle"></i><div style="font-size:12.5px">'
+      + t('一覧の読み込みに失敗しました','Failed to load list') + '：'
+      + escapeHtml(String(e && e.message || e)) + '</div></div>'; }
+    h += lst;
+    if(sub.more){
+      var body2='';
+      try{ body2 = (typeof window[sub.more]==='function') ? window[sub.more]() : ''; }catch(e){ body2=''; }
+      if(body2){
+        h += '<details style="margin-top:12px"><summary style="cursor:pointer;font-size:12.5px;'
+          + 'font-weight:800;padding:9px 11px;background:var(--surface2);border-radius:9px">'
+          + '<i class="ti ti-plus"></i> ' + t('登録・承認の画面を開く','Open the entry / approval view')
+          + '</summary><div style="margin-top:10px">' + body2 + '</div></details>';
+      }
+    }
+    return h;
+  }
+  /* 中身：既存画面をそのまま差し込む */
+  /* v877: 本部勤怠は既存のタイムカード（renderOfficeAttend）をそのまま使う。
+     対象者は従業員マスターのロールで決まる（hqStaffMembers）。
+     ここに独自の名簿を作ると二重管理になり、片方に足し忘れた人が
+     勤怠や給与から静かに外れるので作らない。 */
+  if(_acCat==='attend' && sub.fn==='renderOfficeAttend'){
+    var _hq=[]; try{ _hq=(typeof hqStaffMembers==='function')?hqStaffMembers():[]; }catch(e){}
+    h += '<div style="font-size:11px;color:var(--muted);margin:0 2px 8px;line-height:1.7">'
+      + '<i class="ti ti-users"></i> ' + t('対象','Members') + '：'
+      + (_hq.length ? _hq.map(function(e){ return escapeHtml(e.name); }).join('、')
+                    : t('（本部所属の登録がありません）','(none registered)'))
+      + '<br>' + t('追加は従業員マスターでロールを「経理」「事務」「コーポレートシェフ」のいずれかにしてください。',
+                   'Add people by setting their role in the employee master.')
+      + '</div>';
+  }
+  if(!sub.fn){
+    return h + '<div class="alert alert-warning" style="padding:10px 12px;margin-bottom:10px">'
+      + '<i class="ti ti-tool"></i><div style="font-size:12.5px"><b>' + t('整備中','Under construction') + '</b></div></div>';
+  }
+  var body = '';
+  try {
+    body = (typeof window[sub.fn] === 'function') ? window[sub.fn]() : '';
+  } catch(e) {
+    body = '<div class="alert alert-warning" style="padding:10px 12px"><i class="ti ti-alert-triangle"></i>'
+      + '<div style="font-size:12.5px">' + t('この画面の読み込みに失敗しました','Failed to load this view')
+      + '：' + escapeHtml(String(e && e.message || e)) + '</div></div>';
+  }
+  if(!body){
+    body = '<div class="card" style="text-align:center;color:var(--muted);padding:24px">'
+      + t('表示できる内容がありません','Nothing to show') + '</div>';
+  }
+  return h + body;
 }
 function renderMileage(){
   var all=getMileageRequests(); var me=mileMyName();
@@ -39560,10 +40040,21 @@ function tipCSVRows(storeId, anyDate) {
   // ===== スタッフ別 最終受取（半月精算）=====
   rows.push([]);
   rows.push(['【スタッフ別 最終受取（半月精算）】']);
-  rows.push(['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)']);
+  /* v876: シフトリーダー回数を同じ表に並べる。区分欄の Store Leader とは別の列。 */
+  var _slc = (typeof slCountsInRange==='function') ? slCountsInRange(storeId, range.from, range.to) : {};
+  rows.push(['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)',
+    'シフトリーダー ランチ(回)','シフトリーダー ディナー(回)','シフトリーダー 計(回)']);
   settle.rows.forEach(r=>{
+    var _c=_slc[r.name]||{L:0,D:0,total:0};
     rows.push([r.name, r.isSL?'Store Leader':'スタッフ',
-      r.hours.toFixed(2), r.base.toFixed(2), r.contribution.toFixed(2), r.redistrib.toFixed(2), r.final.toFixed(2)]);
+      r.hours.toFixed(2), r.base.toFixed(2), r.contribution.toFixed(2), r.redistrib.toFixed(2), r.final.toFixed(2),
+      _c.L, _c.D, _c.total]);
+  });
+  /* 精算表に出てこない人（配分ゼロでもSLを務めた人）を落とさない */
+  Object.keys(_slc).forEach(function(nm){
+    if(settle.rows.some(function(r){ return r.name===nm; })) return;
+    var c=_slc[nm];
+    rows.push([nm,'スタッフ','0.00','0.00','0.00','0.00','0.00', c.L, c.D, c.total]);
   });
   var totalFinal = settle.rows.reduce((a,r)=>a+r.final,0);
   rows.push(['合計','','','','','', totalFinal.toFixed(2)]);
@@ -49358,7 +49849,7 @@ function renderInvoice() {
         <div class="approval-header">
           <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}${t('品目',' items')} · $${inv.total.toFixed(2)}${_empMeta}</div></div>
           <div style="display:flex;align-items:center;gap:6px">
-            ${inv.imagePath?`<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="viewInvoiceImage('${inv.imagePath.replace(/'/g,"\\'")}')"><i class="ti ti-photo"></i></button>`:''}
+            <button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="openInvoiceViewer('${inv.id}')" title="${t('画像とメモを確認','Image & memo')}"><i class="ti ti-photo"></i></button>
             ${inv.driveUrl?`<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="${inv.driveUrl}" target="_blank" title="${t('Driveで開く','Open in Drive')}"><i class="ti ti-brand-google-drive"></i></a>`:''}
             <span class="tag" style="font-size:10px;font-weight:700;color:${_rsCol};border:1px solid ${_rsCol};background:transparent">${t(_rs, ({'未確認':'Unreviewed','差し戻し':'Returned','確認済み':'Reviewed','確認中':'Reviewing'})[_rs]||_rs)}</span>
             <span class="tag ${inv.applied?(inv.v2Only?'tag-blue':'tag-green'):'tag-yellow'}">${inv.applied?(inv.v2Only?t('新マスター登録済','New master added'):t('価格更新済','Price updated')):t('未反映','Not applied')}</span>
@@ -49581,21 +50072,265 @@ function invMatchEmp(){
 }
 /* ===== 請求書画像：Supabase Storage（バケット invoices / 店舗名 × 年月） ===== */
 function saniStore(name){ return String(name||'store').replace(/[\/\\]/g,' ').trim().replace(/\s+/g,'_').replace(/[^\w\-]/g,'').replace(/_+/g,'_') || 'store'; }
-async function uploadInvoiceImage(file, storeName){
+/* ===== v873: 伝票画像の未送信キュー =====
+   Motoさん依頼「画像が必ず保存されるように」。
+   これまでは送信に失敗した時点で写真が失われていた（画面を閉じると消える）。
+   失敗したら端末の IndexedDB に退避し、通信が戻ったら自動で送り直す。
+   ★ 既存の IndexedDB（ls() の保存先）とはDBを分けている。
+     同じDBに store を足すと IDB_VER を上げることになり、
+     全キーの読み書き経路に影響が出るため触らない。 */
+var PIMG_DB='funergy_pending_images', PIMG_VER=1, PIMG_STORE='files';
+var _pimgDB=null, _pimgBusy=false;
+function _pimgOpen(){
+  return new Promise(function(res){
+    if(_pimgDB) return res(_pimgDB);
+    var rq; try{ rq=indexedDB.open(PIMG_DB, PIMG_VER); }catch(e){ return res(null); }
+    rq.onupgradeneeded=function(){ try{ var db=rq.result;
+      if(!db.objectStoreNames.contains(PIMG_STORE)) db.createObjectStore(PIMG_STORE, {keyPath:'id'});
+    }catch(e){} };
+    rq.onsuccess=function(){ _pimgDB=rq.result; res(_pimgDB); };
+    rq.onerror=function(){ res(null); };
+    rq.onblocked=function(){ res(null); };
+    setTimeout(function(){ if(!_pimgDB) res(null); }, 4000);
+  });
+}
+function _pimgTx(mode){
+  return _pimgOpen().then(function(db){
+    if(!db) return null;
+    try{ return db.transaction(PIMG_STORE, mode).objectStore(PIMG_STORE); }catch(e){ return null; }
+  });
+}
+function pimgPut(rec){
+  return _pimgTx('readwrite').then(function(st){
+    if(!st) return false;
+    return new Promise(function(res){
+      var r; try{ r=st.put(rec); }catch(e){ return res(false); }
+      r.onsuccess=function(){ res(true); }; r.onerror=function(){ res(false); };
+    });
+  });
+}
+function pimgAll(){
+  return _pimgTx('readonly').then(function(st){
+    if(!st) return [];
+    return new Promise(function(res){
+      var out=[], c; try{ c=st.openCursor(); }catch(e){ return res([]); }
+      c.onsuccess=function(){ var k=c.result; if(k){ out.push(k.value); k.continue(); } else res(out); };
+      c.onerror=function(){ res(out); };
+    });
+  });
+}
+function pimgDel(id){
+  return _pimgTx('readwrite').then(function(st){
+    if(!st) return false;
+    return new Promise(function(res){
+      var r; try{ r=st.delete(id); }catch(e){ return res(false); }
+      r.onsuccess=function(){ res(true); }; r.onerror=function(){ res(false); };
+    });
+  });
+}
+function pimgCount(){ return pimgAll().then(function(a){ return a.length; }); }
+
+/* 退避。パスは最初に決めたものを保持する（後で送っても元の年月フォルダに入る） */
+function pimgQueue(file, path, invId){
+  var rec = { id:'pi'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    path:path, mime:(file&&file.type)||'image/jpeg', blob:file,
+    invId:invId||null, at:Date.now(), tries:0, lastErr:'' };
+  return pimgPut(rec).then(function(ok){ return ok?rec.id:null; });
+}
+
+/* 送り直し。成功したら明細に imagePath を書き戻してキューから消す。 */
+async function pimgFlush(quiet){
+  if(_pimgBusy) return 0;
+  _pimgBusy = true;
+  var sent=0;
+  try{
+    var list = await pimgAll();
+    for(var i=0;i<list.length;i++){
+      var rec = list[i];
+      if(!rec || !rec.blob) { await pimgDel(rec && rec.id); continue; }
+      var ok=false, err='';
+      try{
+        var r = await fetch(SUPABASE_URL+'/storage/v1/object/invoices/'+encodeURI(rec.path), {
+          method:'POST',
+          headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON,
+                    'Content-Type':rec.mime||'image/jpeg', 'x-upsert':'true' },
+          body: rec.blob
+        });
+        ok = !!(r && r.ok);
+        if(!ok){ try{ err='HTTP '+r.status+' '+String(await r.text()).slice(0,120); }catch(e){ err='HTTP '+(r&&r.status); } }
+      }catch(e){ err = String((e&&e.message)||e||'network'); }
+      if(ok){
+        /* 明細に画像を結び直す。保存は lsSet を通すので合流ルールが効く。 */
+        try{
+          if(rec.invId){
+            var all = ls('invoices', [])||[];
+            var inv = all.find(function(x){ return x && x.id===rec.invId; });
+            if(inv){ inv.imagePath = rec.path; inv.imageMissing = undefined; inv.imageErr = undefined;
+              if(typeof invTouch==='function') invTouch(inv); else inv._at = Date.now();
+              lsSet('invoices', all); }
+          }
+        }catch(e){ console.warn('pimgFlush link', e); }
+        await pimgDel(rec.id); sent++;
+      } else {
+        rec.tries = (rec.tries||0)+1; rec.lastErr = err; await pimgPut(rec);
+      }
+    }
+  } finally { _pimgBusy = false; }
+  if(sent>0 && !quiet && typeof showToast==='function'){
+    showToast('未送信だった伝票画像 '+sent+' 件を送信しました','success');
+    try{ if(curPage==='invoice'||curPage==='acct_center') renderPage(curPage); }catch(e){}
+  }
+  return sent;
+}
+/* 起動時・通信復帰時・定期に流す。多重起動は _pimgBusy で防ぐ。 */
+try{
+  window.addEventListener('online', function(){ setTimeout(function(){ pimgFlush(); }, 1500); });
+  setTimeout(function(){ pimgFlush(true); }, 6000);
+  setInterval(function(){ if(navigator.onLine!==false) pimgFlush(true); }, 180000);
+}catch(e){}
+
+async function uploadInvoiceImage(file, storeName, invId){
   if(!file) return null;
+  window._invPendingImgId = null;
+  var path = '';
   try{
     var d=new Date(); var ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
     var ext=(file.type&&file.type.indexOf('png')>=0)?'png':'jpg';
-    var path=saniStore(storeName)+'/'+ym+'/inv_'+Date.now()+'.'+ext;
+    path=saniStore(storeName)+'/'+ym+'/inv_'+Date.now()+'.'+ext;
     var r=await fetch(SUPABASE_URL+'/storage/v1/object/invoices/'+encodeURI(path), {
       method:'POST',
       headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':file.type||'image/jpeg', 'x-upsert':'true' },
       body:file
     });
-    if(!r.ok){ console.warn('invoice image upload failed', r.status, await r.text()); showToast('画像の保存に失敗しました（Storage未設定の可能性）','warning'); return null; }
+    if(!r.ok){
+      var _msg=''; try{ _msg=await r.text(); }catch(e2){}
+      console.warn('invoice image upload failed', r.status, _msg);
+      window._invUploadErr = 'HTTP '+r.status+(_msg?(' '+String(_msg).slice(0,120)):'');
+      window._invPendingImgId = await pimgQueue(file, path, invId);
+      return null;
+    }
+    window._invUploadErr = '';
     return path;
-  }catch(e){ console.warn('invoice image upload error', e); return null; }
+  }catch(e){
+    /* v872: ここが無言だった。電波断・タイムアウト・オフラインはこの経路に落ちるため、
+       現場には成功したように見えて画像だけが上がっていなかった。必ず知らせる。 */
+    console.warn('invoice image upload error', e);
+    window._invUploadErr = String((e && e.message) || e || 'network');
+    /* v873: 捨てずに端末へ退避する。ここで返さないと写真が永久に失われる。 */
+    try{ window._invPendingImgId = await pimgQueue(file, path, invId); }catch(e2){ window._invPendingImgId = null; }
+    return null;
+  }
 }
+/* ===== v874: 伝票ビューア（画像＋メモを横並び）=====
+   Motoさん依頼：OCRで読み取った内容をメモのように画像の横に出し、
+   経理が画像を見ながら中身を照合できるようにする。
+   メモ（店舗・用途・誰が・自由記入）は明細に保存する。
+   これまでは viewInvoiceImage() が別タブに画像を開くだけで、
+   照合するには画面を行き来する必要があった。 */
+function _ivEsc(s){ return escapeHtml(String(s==null?'':s)); }
+async function openInvoiceViewer(id){
+  var all = ls('invoices', [])||[];
+  var inv = all.find(function(x){ return x && x.id===id; });
+  if(!inv){ showToast(t('明細が見つかりません','Record not found'),'warning'); return; }
+  var st = (typeof STORES!=='undefined') ? STORES.find(function(s){ return s.id===inv.storeId; }) : null;
+  var lines = Array.isArray(inv.lines)?inv.lines:[];
+  var ocr = lines.length
+    ? lines.map(function(l){
+        var q=(l.qty!=null&&l.qty!=='')?(' ×'+l.qty):'';
+        var p=(l.price!=null&&l.price!=='')?(' $'+Number(l.price).toFixed(2)):'';
+        return '<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid var(--border)">'
+          + '<span style="font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+_ivEsc(l.name||'')+q+'</span>'
+          + '<span style="font-size:11.5px;font-weight:700;white-space:nowrap">'+p+'</span></div>';
+      }).join('')
+    : '<div style="font-size:11.5px;color:var(--muted)">'+t('読み取り結果がありません','No OCR result')+'</div>';
+
+  var head = function(k,v){
+    return '<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0">'
+      + '<span style="font-size:11px;color:var(--muted)">'+k+'</span>'
+      + '<span style="font-size:12px;font-weight:700;text-align:right">'+v+'</span></div>';
+  };
+  var memo = '<div style="min-width:0">'
+    + '<div style="font-size:12.5px;font-weight:800;margin-bottom:5px">'
+    + '<i class="ti ti-notes" style="color:var(--accent)"></i> '+t('メモ','Memo')+'</div>'
+    + '<div style="background:var(--surface2);border-radius:9px;padding:8px 10px;margin-bottom:8px">'
+    + head(t('店舗','Store'), _ivEsc(st?st.name:(inv.storeId||'')))
+    + head(t('種別','Type'), _ivEsc(inv.docType||''))
+    + head(t('購入日','Date'), _ivEsc(inv.docDate||inv.date||''))
+    + head(t('業者・購入店','Vendor'), _ivEsc(inv.vendor||''))
+    + head(t('金額','Total'), '$'+Number(inv.total||0).toFixed(2))
+    + (inv.empName?head(t('カード名義','Cardholder'), _ivEsc(inv.empName)):'')
+    + head(t('登録者','Entered by'), _ivEsc(inv.byUser||inv.by||''))
+    + '</div>'
+    + '<div style="font-size:12px;font-weight:800;margin:0 0 4px">'+t('読み取り内容','OCR result')
+    + ' <span style="font-size:10px;color:var(--muted);font-weight:400">'+lines.length+t('行','')+'</span></div>'
+    + '<div style="max-height:150px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:6px 9px;margin-bottom:10px">'
+    + ocr + '</div>'
+    + '<div class="form-group" style="margin-bottom:6px"><label class="form-label">'+t('用途','Purpose')+'</label>'
+    + '<input class="form-input" id="iv-use" value="'+_ivEsc(inv.memoUse||'')+'" placeholder="'+t('例：仕込み用食材 / 備品補充','e.g. prep ingredients')+'"></div>'
+    + '<div class="form-group" style="margin-bottom:6px"><label class="form-label">'+t('誰が','Who')+'</label>'
+    + '<input class="form-input" id="iv-who" value="'+_ivEsc(inv.memoWho||inv.empName||inv.byUser||'')+'"></div>'
+    + '<div class="form-group" style="margin-bottom:6px"><label class="form-label">'+t('メモ','Note')+'</label>'
+    + '<textarea class="form-input" id="iv-note" rows="2" style="resize:vertical">'+_ivEsc(inv.memoNote||'')+'</textarea></div>'
+    + (inv.memoAt?('<div style="font-size:10px;color:var(--muted)">'+t('最終更新','Updated')+' '
+        + _ivEsc(inv.memoBy||'')+' '+new Date(inv.memoAt).toLocaleString()+'</div>'):'')
+    + '</div>';
+
+  var imgBox = inv.imagePath
+    ? '<div id="iv-img" style="min-width:0;display:flex;align-items:center;justify-content:center;'
+      + 'background:var(--surface2);border-radius:9px;min-height:200px">'
+      + '<span style="font-size:12px;color:var(--muted)">'+t('画像を読み込み中…','Loading image…')+'</span></div>'
+    : '<div style="min-width:0;display:flex;align-items:center;justify-content:center;background:var(--surface2);'
+      + 'border-radius:9px;min-height:150px;font-size:12px;color:var(--muted);text-align:center;padding:14px">'
+      + (inv.pendingImgId
+          ? t('画像はこの端末に退避中です。通信が戻ると自動で送信されます。','Image queued on this device.')
+          : t('画像が添付されていません','No image attached'))
+      + '</div>';
+
+  openModal('<div class="modal-title"><i class="ti ti-receipt" style="color:var(--accent)"></i> '
+    + t('伝票の確認','Receipt check')+'</div>'
+    + '<div class="iv-wrap" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">'
+    + imgBox + memo + '</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button>'
+    + (inv.imagePath?('<button class="btn btn-secondary" onclick="viewInvoiceImage(\''
+        + String(inv.imagePath).replace(/'/g,"\\'")+'\')"><i class="ti ti-external-link"></i> '+t('別タブで開く','Open')+'</button>'):'')
+    + '<button class="btn btn-primary" onclick="saveInvoiceMemo(\''+id+'\')"><i class="ti ti-device-floppy"></i> '
+    + t('メモを保存','Save memo')+'</button></div>');
+
+  /* 画像は署名URLを取ってから差し込む（バケットは非公開） */
+  if(inv.imagePath){
+    try{
+      var r=await fetch(SUPABASE_URL+'/storage/v1/object/sign/invoices/'+encodeURI(inv.imagePath), {
+        method:'POST', headers: supaHeaders(), body: JSON.stringify({expiresIn:3600}) });
+      var j=await r.json(); var box=document.getElementById('iv-img');
+      if(box){
+        if(j && j.signedURL){
+          box.innerHTML='<img src="'+SUPABASE_URL+'/storage/v1'+j.signedURL+'" '
+            + 'style="max-width:100%;max-height:60vh;border-radius:9px;display:block">';
+        } else {
+          box.innerHTML='<span style="font-size:12px;color:var(--red);padding:14px;text-align:center">'
+            + t('画像を開けませんでした','Could not load image')+'</span>';
+        }
+      }
+    }catch(e){
+      var b2=document.getElementById('iv-img');
+      if(b2) b2.innerHTML='<span style="font-size:12px;color:var(--red);padding:14px">'+_ivEsc(String(e&&e.message||e))+'</span>';
+    }
+  }
+}
+function saveInvoiceMemo(id){
+  var g=function(i){ var el=document.getElementById(i); return el?String(el.value||'').trim():''; };
+  var all = ls('invoices', [])||[];
+  var inv = all.find(function(x){ return x && x.id===id; });
+  if(!inv){ showToast(t('明細が見つかりません','Not found'),'warning'); return; }
+  inv.memoUse=g('iv-use'); inv.memoWho=g('iv-who'); inv.memoNote=g('iv-note');
+  inv.memoBy=curUserName||''; inv.memoAt=Date.now();
+  if(typeof invTouch==='function') invTouch(inv); else inv._at=Date.now();
+  if(!lsSet('invoices', all)){ showToast(t('保存に失敗しました（容量を確認）','Save failed'),'warning'); return; }
+  showToast(t('メモを保存しました','Memo saved'),'success');
+  closeModalDirect();
+  try{ renderPage(curPage); }catch(e){}
+}
+
 async function viewInvoiceImage(path){
   if(!path) return;
   try{
@@ -50147,8 +50882,19 @@ async function saveInvoice() {
   if (window._invoicePhotoFile) {
     var saveBtn = event && event.target ? event.target : null;
     if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '画像を保存中…'; }
+    window._invUploadErr = '';
     imagePath = await uploadInvoiceImage(window._invoicePhotoFile, storeObj?storeObj.name:invStoreId);
-  }
+    /* v872: 画像を選んだのに上がらなかったときは、黙って明細だけ登録しない。
+   ここを素通りさせていたため、現場は成功したと思って画面を閉じ、写真が失われていた。 */
+if (!imagePath) {
+  if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+  var _go = confirm('画像を保存できませんでした。'
+    + (window._invUploadErr ? ('\n理由: ' + window._invUploadErr) : '')
+    + '\n\n［キャンセル］写真を保持したまま、通信を確認してもう一度保存する（おすすめ）'
+    + '\n［OK］画像なしで明細だけ登録する');
+  if (!_go) return;
+}
+}
   // Invoice保存
   var invoices = ls('invoices', []);
   var _rcptEmpId = (invoiceDocType==='Receipt') ? (docVal('inv-emp')||null) : null;
@@ -50160,6 +50906,11 @@ async function saveInvoice() {
     lines:invoiceTmpLines, total, applied:true, v2Only:_mig, by:ROLE_CONFIG[curRole].name,
     byUser:(curUserName||''), byEmail:(function(){var _e=getEmployees().find(function(x){return x.name===curUserName;});return (_e&&_e.email)?_e.email:'';})(),
     imagePath:imagePath||null,
+/* v872: 画像が付かなかった明細に印を残す。経理が「画像未添付」で拾えるようにする。 */
+imageMissing: (!!window._invoicePhotoFile && !imagePath) || undefined,
+imageErr: ((!!window._invoicePhotoFile && !imagePath) ? (window._invUploadErr||'unknown') : undefined),
+/* v873: 端末に退避したものは、送信が通った時点で imagePath が入る */
+pendingImgId: ((!imagePath && window._invPendingImgId) ? window._invPendingImgId : undefined),
     empId:_rcptEmpId, empName:_rcptEmp.name||'', cardLast4:_rcptCard, splitStores:(invoiceDocType==='Receipt'?rcptStores:[]), purpose:_purpose, purposeMemo:_pmemo,
     reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', driveFileId:'', driveUrl:'', driveMoved:false, reviewThread:[]};
   invoices.push(_newInv);
@@ -50264,7 +51015,7 @@ async function saveReimbursement(){
   var imagePath=null;
   if(window._invoicePhotoFile){
     var sb=document.querySelector('.modal .btn-primary'); if(sb){sb.disabled=true;sb.textContent='画像を保存中…';}
-    imagePath=await uploadInvoiceImage(window._invoicePhotoFile, storeObj?storeObj.name:storeId);
+    imagePath=await uploadInvoiceImage(window._invoicePhotoFile, storeObj?storeObj.name:storeId, (typeof _rbIdPre!=='undefined'?_rbIdPre:null));
   }
   var rec={ id:'rb'+Date.now(), payer:payer, payerContact:(docVal('inv-payer-contact')||'').trim(),
     isEmployee:!!empMatch, empId:empMatch?empMatch.id:'', storeId:storeId, amount:Math.round(amount*100)/100,
