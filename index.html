@@ -27644,7 +27644,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '889';
+const APP_VERSION = '890';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -51026,10 +51026,274 @@ function retakeInvoicePhoto(){
   var inp=document.getElementById('inv-photo');
   if(inp){ try{ inp.value=''; }catch(e){} inp.click(); }
 }
+/* ===== v890: 伝票の範囲だけを切り出す =====
+   Motoさん依頼：撮った写真からレシート／Invoice の部分だけを読み取って保存したい。
+   決めごと:
+   ・自動で枠を出すが、勝手には切らない。必ず確認画面を挟む。
+     黙って切ると合計行が枠外に落ちても誰も気づけない。7月のレシート消失と
+     同じ「失敗が見えない」型の事故になるため、ここは1タップ増やす価値がある。
+   ・検出できないときは全体を枠にする。今より悪くなる状態を作らない。
+   ・OpenCV は使わない（CDN で数MB、オフラインで動かない）。自前で組む。
+   ・切った画像で OCR も保存もする。読み取り精度も上がる。
+   ・PDF で入稿されたものは切らない。すでに書類として整っているうえ、
+     v889 で元PDFをそのまま保存する方針にしたため。 */
+
+/* 大津の二値化しきい値 */
+function _dcOtsu(hist, total){
+  var sum=0, i;
+  for(i=0;i<256;i++) sum+=i*hist[i];
+  var sumB=0, wB=0, best=0, thr=127;
+  for(i=0;i<256;i++){
+    wB+=hist[i]; if(!wB) continue;
+    var wF=total-wB; if(!wF) break;
+    sumB+=i*hist[i];
+    var mB=sumB/wB, mF=(sum-sumB)/wF;
+    var v=wB*wF*(mB-mF)*(mB-mF);
+    if(v>best){ best=v; thr=i; }
+  }
+  return thr;
+}
+/* 最大連結成分の外接矩形。4近傍・スタック式（再帰は深さで落ちる） */
+function _dcLargestBox(mask, W, H){
+  var seen=new Uint8Array(W*H), stack=new Int32Array(W*H);
+  var best=null, bestN=0;
+  for(var p=0;p<W*H;p++){
+    if(!mask[p]||seen[p]) continue;
+    var sp=0; stack[sp++]=p; seen[p]=1;
+    var n=0, x0=W, y0=H, x1=-1, y1=-1;
+    while(sp){
+      var q=stack[--sp], qx=q%W, qy=(q-qx)/W;
+      n++;
+      if(qx<x0)x0=qx; if(qx>x1)x1=qx;
+      if(qy<y0)y0=qy; if(qy>y1)y1=qy;
+      if(qx>0     && mask[q-1] && !seen[q-1]){ seen[q-1]=1; stack[sp++]=q-1; }
+      if(qx<W-1   && mask[q+1] && !seen[q+1]){ seen[q+1]=1; stack[sp++]=q+1; }
+      if(qy>0     && mask[q-W] && !seen[q-W]){ seen[q-W]=1; stack[sp++]=q-W; }
+      if(qy<H-1   && mask[q+W] && !seen[q+W]){ seen[q+W]=1; stack[sp++]=q+W; }
+    }
+    if(n>bestN){ bestN=n; best=[x0,y0,x1,y1]; }
+  }
+  return best ? {box:best, n:bestN} : null;
+}
+/* rgba: 縮小済み画像の画素（getImageData().data）/ W,H: そのサイズ
+   返り値は 0〜1 の相対座標。判定できなければ null（＝全体を枠にする） */
+function detectDocRect(rgba, W, H){
+  var N=W*H, gray=new Uint8Array(N), hist=new Uint32Array(256);
+  for(var i=0,p=0;i<N;i++,p+=4){
+    var g=(rgba[p]*299+rgba[p+1]*587+rgba[p+2]*114)/1000|0;
+    gray[i]=g; hist[g]++;
+  }
+  var thr=_dcOtsu(hist,N);
+  /* 紙が明るいか暗いかを決める。伝票は中央・背景は縁、という前提で比べる。
+     黒いテーブルにも白いトレーにも効かせるため、決め打ちにしない。 */
+  var bSum=0,bN=0,cSum=0,cN=0;
+  var mx0=(W*0.3)|0, mx1=(W*0.7)|0, my0=(H*0.3)|0, my1=(H*0.7)|0;
+  for(var y=0;y<H;y++){
+    for(var x=0;x<W;x++){
+      var v=gray[y*W+x];
+      if(x<W*0.06||x>W*0.94||y<H*0.06||y>H*0.94){ bSum+=v; bN++; }
+      else if(x>=mx0&&x<=mx1&&y>=my0&&y<=my1){ cSum+=v; cN++; }
+    }
+  }
+  var borderMean=bN?bSum/bN:128, centerMean=cN?cSum/cN:128;
+  var docIsBright=centerMean>=borderMean;
+  /* 白い紙を白い机に置いた等、差が無いときは切らない。
+     無理に切ると合計行を落としかねないので、判定できないことを返す。 */
+  if(Math.abs(centerMean-borderMean)<12) return null;
+  var mask=new Uint8Array(N);
+  for(var k=0;k<N;k++) mask[k]= docIsBright ? (gray[k]>thr?1:0) : (gray[k]<thr?1:0);
+  var r=_dcLargestBox(mask,W,H);
+  if(!r) return null;
+  var x0=r.box[0], y0=r.box[1], x1=r.box[2], y1=r.box[3];
+  var bw=x1-x0+1, bh=y1-y0+1, frac=(bw*bh)/N;
+  /* 明らかにおかしい結果は捨てる。切りすぎ・細すぎ・ほぼ全面。 */
+  if(frac<0.08) return null;                      /* 小さすぎ＝紙ではなく反射など */
+  if(frac>0.97) return null;                      /* ほぼ全面＝切る意味がない */
+  if(bw<W*0.12||bh<H*0.12) return null;           /* 細すぎ */
+  if(r.n/(bw*bh)<0.55) return null;               /* 埋まりが薄い＝紙ではない */
+  /* 縁を少し足す。ぴったりだと端の文字が欠けて見える。 */
+  var m=Math.max(2, Math.round(Math.max(W,H)*0.015));
+  x0=Math.max(0,x0-m); y0=Math.max(0,y0-m);
+  x1=Math.min(W-1,x1+m); y1=Math.min(H-1,y1+m);
+  return { x:x0/W, y:y0/H, w:(x1-x0+1)/W, h:(y1-y0+1)/H };
+}
+
+/* ---- 範囲の確認画面 ---- */
+var _cropS=null, _CROP_H=13;
+function _cropDraw(){
+  var S=_cropS; if(!S||!S.canvas) return;
+  var c=S.canvas, ctx=c.getContext('2d'), b=S.box;
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.drawImage(S.base,0,0);
+  ctx.fillStyle='rgba(20,16,12,.58)';
+  ctx.fillRect(0,0,c.width,b.y);
+  ctx.fillRect(0,b.y+b.h,c.width,c.height-(b.y+b.h));
+  ctx.fillRect(0,b.y,b.x,b.h);
+  ctx.fillRect(b.x+b.w,b.y,c.width-(b.x+b.w),b.h);
+  ctx.strokeStyle='#f0661f'; ctx.lineWidth=3; ctx.strokeRect(b.x,b.y,b.w,b.h);
+  ctx.strokeStyle='rgba(255,255,255,.32)'; ctx.lineWidth=1;
+  for(var i=1;i<3;i++){
+    ctx.beginPath(); ctx.moveTo(b.x+b.w*i/3,b.y); ctx.lineTo(b.x+b.w*i/3,b.y+b.h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(b.x,b.y+b.h*i/3); ctx.lineTo(b.x+b.w,b.y+b.h*i/3); ctx.stroke();
+  }
+  [[b.x,b.y],[b.x+b.w,b.y],[b.x,b.y+b.h],[b.x+b.w,b.y+b.h]].forEach(function(p){
+    ctx.fillStyle='#f0661f'; ctx.beginPath(); ctx.arc(p[0],p[1],_CROP_H,0,6.2832); ctx.fill();
+    ctx.fillStyle='#fff';    ctx.beginPath(); ctx.arc(p[0],p[1],_CROP_H*0.42,0,6.2832); ctx.fill();
+  });
+}
+function _cropInfo(){
+  var S=_cropS, el=document.getElementById('crop-info'); if(!S||!el) return;
+  var pw=Math.round(S.box.w/S.scale), ph=Math.round(S.box.h/S.scale);
+  var pct=Math.round((S.box.w*S.box.h)/(S.canvas.width*S.canvas.height)*100);
+  el.textContent=pw+'×'+ph+' px（写真の '+pct+'%）';
+}
+function _cropPos(e){
+  var c=_cropS.canvas, r=c.getBoundingClientRect();
+  return { x:(e.clientX-r.left)*(c.width/r.width), y:(e.clientY-r.top)*(c.height/r.height) };
+}
+function cropDown(e){
+  var S=_cropS; if(!S) return; e.preventDefault();
+  var p=_cropPos(e), b=S.box, R=_CROP_H*1.9;
+  var cs=[[b.x,b.y],[b.x+b.w,b.y],[b.x,b.y+b.h],[b.x+b.w,b.y+b.h]];
+  S.drag=null;
+  for(var i=0;i<4;i++){
+    var dx=p.x-cs[i][0], dy=p.y-cs[i][1];
+    if(Math.sqrt(dx*dx+dy*dy)<R){ S.drag={type:'c', i:i}; break; }
+  }
+  if(!S.drag && p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h){
+    S.drag={type:'m', ox:p.x-b.x, oy:p.y-b.y};
+  }
+  if(S.drag){ try{ S.canvas.setPointerCapture(e.pointerId); }catch(_){} }
+}
+function cropMove(e){
+  var S=_cropS; if(!S||!S.drag) return; e.preventDefault();
+  var p=_cropPos(e), b=S.box, W=S.canvas.width, H=S.canvas.height, MIN=44;
+  if(S.drag.type==='m'){
+    b.x=Math.max(0, Math.min(W-b.w, p.x-S.drag.ox));
+    b.y=Math.max(0, Math.min(H-b.h, p.y-S.drag.oy));
+  } else {
+    var x0=b.x, y0=b.y, x1=b.x+b.w, y1=b.y+b.h;
+    var px=Math.max(0,Math.min(W,p.x)), py=Math.max(0,Math.min(H,p.y));
+    if(S.drag.i===0){ x0=Math.min(px,x1-MIN); y0=Math.min(py,y1-MIN); }
+    if(S.drag.i===1){ x1=Math.max(px,x0+MIN); y0=Math.min(py,y1-MIN); }
+    if(S.drag.i===2){ x0=Math.min(px,x1-MIN); y1=Math.max(py,y0+MIN); }
+    if(S.drag.i===3){ x1=Math.max(px,x0+MIN); y1=Math.max(py,y0+MIN); }
+    b.x=x0; b.y=y0; b.w=x1-x0; b.h=y1-y0;
+  }
+  _cropDraw(); _cropInfo();
+}
+function cropUp(){ if(_cropS) _cropS.drag=null; }
+function cropReset(){
+  var S=_cropS; if(!S) return;
+  var c=S.canvas;
+  S.box = S.auto
+    ? { x:S.auto.x*c.width, y:S.auto.y*c.height, w:S.auto.w*c.width, h:S.auto.h*c.height }
+    : { x:0, y:0, w:c.width, h:c.height };
+  _cropDraw(); _cropInfo();
+}
+function cropApply(useAll){
+  var S=_cropS; if(!S) return;
+  _cropS=null;
+  var done=function(f){
+    try{ URL.revokeObjectURL(S.url); }catch(e){}
+    closeModalDirect();
+    S.resolve(f);
+  };
+  if(useAll) return done(S.file);
+  try{
+    var sx=Math.max(0, Math.round(S.box.x/S.scale));
+    var sy=Math.max(0, Math.round(S.box.y/S.scale));
+    var sw=Math.min(S.iw-sx, Math.round(S.box.w/S.scale));
+    var sh=Math.min(S.ih-sy, Math.round(S.box.h/S.scale));
+    if(sw<8||sh<8) return done(S.file);
+    var cv=document.createElement('canvas'); cv.width=sw; cv.height=sh;
+    var cx=cv.getContext('2d');
+    cx.fillStyle='#fff'; cx.fillRect(0,0,sw,sh);
+    cx.drawImage(S.img, sx,sy,sw,sh, 0,0,sw,sh);
+    cv.toBlob(function(b){
+      if(!b){ showToast('切り出しに失敗したので全体を使います','warning'); return done(S.file); }
+      var nm=String(S.file.name||'receipt').replace(/\.[^.]+$/,'')+'_crop.jpg';
+      /* 縮小は入れない。長辺2400への調整は _invNormalizeJpeg が一手に引き受ける。 */
+      done(new File([b], nm, {type:'image/jpeg'}));
+    }, 'image/jpeg', 0.95);
+  }catch(e){
+    console.warn('crop apply', e);
+    showToast('切り出しに失敗したので全体を使います','warning');
+    done(S.file);
+  }
+}
+/* 写真を受け取り、確認後のファイルを返す。何かあれば元のファイルをそのまま返す。 */
+function askInvoiceCrop(file){
+  return new Promise(function(resolve){
+    var url;
+    try{ url=URL.createObjectURL(file); }catch(e){ return resolve(file); }
+    var img=new Image();
+    img.onerror=function(){ try{URL.revokeObjectURL(url);}catch(e){} resolve(file); };
+    img.onload=function(){
+      try{
+        var iw=img.naturalWidth||img.width, ih=img.naturalHeight||img.height;
+        if(!iw||!ih) throw new Error('size unknown');
+        /* 検出は長辺360pxで。iPhoneでも一瞬で終わる大きさ。 */
+        var ds=Math.min(1, 360/Math.max(iw,ih));
+        var dw=Math.max(20,Math.round(iw*ds)), dh=Math.max(20,Math.round(ih*ds));
+        var dcv=document.createElement('canvas'); dcv.width=dw; dcv.height=dh;
+        var dcx=dcv.getContext('2d',{willReadFrequently:true});
+        dcx.drawImage(img,0,0,dw,dh);
+        var auto=null;
+        try{ auto=detectDocRect(dcx.getImageData(0,0,dw,dh).data, dw, dh); }
+        catch(e){ console.warn('detectDocRect', e); }
+        /* プレビューは一度だけ描いて使い回す。指で動かすたびに元画像を
+           縮小し直すと、大きい写真でカクつくため。 */
+        var CW=Math.min(760, iw), scale=CW/iw, ch=Math.max(1,Math.round(ih*scale));
+        var base=document.createElement('canvas'); base.width=CW; base.height=ch;
+        base.getContext('2d').drawImage(img,0,0,CW,ch);
+        openModal('<div class="modal-title"><i class="ti ti-crop" style="color:var(--accent)"></i> '
+          + t('伝票の範囲を確認','Check the receipt area')+'</div>'
+          + '<div style="font-size:11.5px;color:var(--muted);margin-bottom:7px;line-height:1.6">'
+          + (auto
+              ? '<i class="ti ti-sparkles" style="color:var(--green)"></i> '
+                + t('伝票らしい範囲を自動で囲みました。','Detected the receipt area.')
+              : '<i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> '
+                + t('自動で見つけられませんでした。指で囲ってください。','Could not detect it — drag to set the area.'))
+          + '<br>' + t('読み取りも保存も、この枠の中だけになります。','Both OCR and the saved file use only this area.')
+          + '</div>'
+          + '<canvas id="crop-cv" width="'+CW+'" height="'+ch+'" '
+          + 'style="width:100%;height:auto;border-radius:10px;display:block;touch-action:none;'
+          + 'background:var(--surface2);max-height:56vh;object-fit:contain" '
+          + 'onpointerdown="cropDown(event)" onpointermove="cropMove(event)" '
+          + 'onpointerup="cropUp()" onpointercancel="cropUp()" onpointerleave="cropUp()"></canvas>'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-top:7px">'
+          + '<span id="crop-info" style="font-size:11px;color:var(--muted)"></span>'
+          + '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="cropReset()">'
+          + '<i class="ti ti-refresh"></i> '+t('枠を戻す','Reset')+'</button></div>'
+          + '<div class="btn-row">'
+          + '<button class="btn btn-secondary" onclick="cropApply(true)">'
+          + '<i class="ti ti-photo"></i> '+t('全体を使う','Use whole photo')+'</button>'
+          + '<button class="btn btn-primary" onclick="cropApply(false)">'
+          + '<i class="ti ti-scan"></i> '+t('この範囲で読み取る','Use this area')+'</button></div>');
+        var canvas=document.getElementById('crop-cv');
+        if(!canvas){ try{URL.revokeObjectURL(url);}catch(e){} return resolve(file); }
+        _cropS={ canvas:canvas, base:base, img:img, url:url, file:file,
+                 iw:iw, ih:ih, scale:scale, auto:auto, drag:null,
+                 box: auto ? { x:auto.x*CW, y:auto.y*ch, w:auto.w*CW, h:auto.h*ch }
+                           : { x:CW*0.05, y:ch*0.05, w:CW*0.90, h:ch*0.90 },
+                 resolve:resolve };
+        _cropDraw(); _cropInfo();
+      }catch(e){
+        console.warn('askInvoiceCrop', e);
+        try{ URL.revokeObjectURL(url); }catch(_){}
+        resolve(file);
+      }
+    };
+    img.src=url;
+  });
+}
 async function realInvoiceOCR(input){
   var file=input&&input.files&&input.files[0];
   if(!file) return;
-  await runInvoiceOCR(file);
+  /* v890: こちらの入口も同じ扱いにする。片方だけ切れる状態を作らない。 */
+  var use = _invIsPdf(file) ? file : await askInvoiceCrop(file);
+  await runInvoiceOCR(use || file);
   try{ input.value=''; }catch(e){}
 }
 async function onInvoiceFilePicked(input){
@@ -51050,7 +51314,9 @@ async function onInvoiceFilePicked(input){
       if(el) el.innerHTML='<div class="alert alert-warning" style="margin-bottom:8px"><i class="ti ti-alert-triangle"></i> PDFの読込に失敗しました。画像（JPG/PNG）にして読み取るか、手入力で追加してください。</div>';
     }
   } else {
-    await runInvoiceOCR(file);
+    /* v890: 伝票の範囲を確認してから読み取る。使うのは枠の中だけ。 */
+    var use = await askInvoiceCrop(file);
+    await runInvoiceOCR(use || file);
   }
   try{ input.value=''; }catch(e){}
 }
