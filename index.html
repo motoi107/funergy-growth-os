@@ -13275,7 +13275,9 @@ var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export',
 /* ============================================================
    ROUTER
 ============================================================ */
-var SKEL_LIGHT_PAGES = { settings:1, mypage:1, crew_handbook:1, notifications:1, biz_guide:1, required:1, goals:1 };
+/* v886: acct_center を追加。ここに無いページはコールドスタート中スケルトンを出して
+   return するため、起動直後・強制リロード直後だけボタンが効かない状態になっていた。 */
+var SKEL_LIGHT_PAGES = { settings:1, mypage:1, crew_handbook:1, notifications:1, biz_guide:1, required:1, goals:1, acct_center:1 };
 function skeletonMain(){
   function ln(w,h,mt){ return '<div class="skel" style="height:'+(h||12)+'px;width:'+w+';border-radius:6px;'+(mt?'margin-top:'+mt+'px;':'')+'"></div>'; }
   function card(){ return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px">'+ln('45%',14)+ln('82%',12,10)+ln('66%',12,8)+ln('90%',12,8)+'</div>'; }
@@ -13355,7 +13357,19 @@ function renderPage(page) {
     case 'vacation':     el.innerHTML = renderVacation(); break;
     case 'mileage':      el.innerHTML = renderMileage(); break;
 case 'lost_receipt': el.innerHTML = renderLostReceipt(); break;
-case 'acct_center':  el.innerHTML = renderAcctCenter(); break;
+case 'acct_center':
+      /* v886: 描画関数が例外を投げると el.innerHTML への代入自体が起きず、前の画面が
+         残ってボタンも効かない。v885 で実際にこれが起きた（AC_TABS 未定義）。
+         「何も変わらない」ではなく「落ちた事実」が画面に出るようにする。 */
+      try { el.innerHTML = renderAcctCenter(); }
+      catch(e){
+        try{ console.error('renderAcctCenter', e); }catch(_){}
+        el.innerHTML = '<div class="alert alert-warning" style="padding:12px 14px">'
+          + '<i class="ti ti-alert-triangle"></i><div style="font-size:12.5px">'
+          + '<b>' + t('経理センターの描画に失敗しました','Failed to render the accounting center') + '</b><br>'
+          + escapeHtml(String(e && e.message || e)) + '</div></div>';
+      }
+      break;
     case 'expense':      el.innerHTML = renderExpense(); break;
     case 'hr':           el.innerHTML = renderHR(); break;
     case 'hiring':       el.innerHTML = renderHiring(); break;
@@ -27482,7 +27496,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '885';
+const APP_VERSION = '886';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32588,6 +32602,55 @@ function acUploadList(kind){
   });
   return h + '</div>';
 }
+/* v886: AC_TABS と _acCat / _acSub の宣言がファイルから消えていた。
+   renderAcctCenter() の1行目が AC_TABS.find(...) のため ReferenceError で落ち、
+   el.innerHTML への代入自体が起きず、前の画面（Office管理）が残ったまま
+   どのボタンも効かない状態になっていた。HANDOFF_v885 の記載どおりに復元する。
+   守るべき約束ごと（ここを崩すと静かに壊れる）:
+   ・sub.id は _acPend() が返す 'invoice','lost','gas','exp','vac' と一致させること。
+     ずれると未処理バッジの飛び先（acSetSub）が存在しない中タブになる。
+   ・sub.list は _acRows() が受け取る 'invoice','receipt','reimb','lost','gas' のみ。
+   ・sub.fn / sub.more は window[名前]() で引数なしに呼ぶ。引数が要る関数は下の
+     acDashBody / acErrBody のように包んでから載せること。 */
+var _acCat = 'dash';
+var _acSub = 'dash';
+function acDashBody(){ return renderOfficeMgr(true); }   /* 帯なしで出す */
+function acErrBody(){ return renderErrorCenter(true); }  /* 埋め込み表示 */
+var AC_TABS = [
+  { id:'dash', label:'経理ダッシュボード', icon:'ti-layout-dashboard', subs:[
+      { id:'dash', label:'経理ダッシュボード', fn:'acDashBody' }
+  ]},
+  { id:'review', label:'経理レビュー', icon:'ti-file-check', subs:[
+      { id:'invoice',  label:'Invoice',       list:'invoice', more:'renderInvoice' },
+      { id:'receipt',  label:'レシート',       list:'receipt' },
+      { id:'reimb',    label:'建て替え',       list:'reimb',   more:'renderReimburseCard' },
+      { id:'lost',     label:'紛失届',         list:'lost',    more:'renderLostReceipt' },
+      { id:'gas',      label:'ガソリン代',     list:'gas',     more:'renderMileage' },
+      { id:'vac',      label:'休暇申請',       fn:'renderVacation' },
+      { id:'exp',      label:'事前経費',       fn:'renderExpense' },
+      { id:'purchase', label:'仕入明細',       fn:'renderPurchaseDetail' },
+      { id:'vendor',   label:'業者マスター',   fn:'renderVendorMaster' },
+      { id:'acctrev',  label:'区分・承認',     fn:'renderAcctReview' },
+      { id:'err',      label:'エラーセンター', fn:'acErrBody' },
+      { id:'task',     label:'タスク',         fn:'renderOfficeTasks' },
+      { id:'appr',     label:'報告・承認',     fn:'renderApproval' }
+  ]},
+  { id:'tip', label:'Tip＆シフトリーダー', icon:'ti-coin', subs:[
+      { id:'tip',   label:'Tip管理',        fn:'renderTipMgmt' },
+      { id:'tipsl', label:'シフトリーダー', fn:'renderTipShiftLeader' }
+  ]},
+  { id:'export', label:'出力センター', icon:'ti-file-export', subs:[
+      { id:'export', label:'棚卸・Tip', fn:'renderAcctExport' }
+  ]},
+  { id:'attend', label:'勤怠', icon:'ti-clock-hour-4', subs:[
+      { id:'attend', label:'本部タイムカード', fn:'renderOfficeAttend' }
+  ]},
+  { id:'hr', label:'人材', icon:'ti-users', subs:[
+      { id:'hr',     label:'人材', fn:'renderHR' },
+      { id:'growth', label:'育成', fn:'renderGrowthHub' },
+      { id:'hiring', label:'採用', fn:'renderHiring' }
+  ]}
+];
 function acSetCat(id){
   _acF = { store:'', ym:'', third:'', st:'' };
   _acCat = id;
