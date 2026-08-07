@@ -27644,7 +27644,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '888';
+const APP_VERSION = '889';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -49694,6 +49694,11 @@ async function bulkOcrRecover(ym){
       var sj=await sg.json(); var url=SUPABASE_URL+'/storage/v1'+(sj.signedURL||sj.signedUrl||'');
       var imgRes=await fetch(url); if(!imgRes.ok) throw new Error('img HTTP '+imgRes.status);
       var blob=await imgRes.blob();
+      /* v889: 保存形式が PDF になったので、OCR に渡す前に画像へ戻す。
+         ここを飛ばすと、PDFで保存した伝票が一括復旧から丸ごと漏れる。 */
+      if((blob.type==='application/pdf') || /\.pdf$/i.test(String(tg.path||''))){
+        blob = await pdfToImageFile(new File([blob], 'recover.pdf', {type:'application/pdf'}));
+      }
       var b64=await new Promise(function(res,rej){ var fr=new FileReader(); fr.onload=function(){ res(String(fr.result).split(',')[1]); }; fr.onerror=rej; fr.readAsDataURL(blob); });
       var hint=(typeof getIngredients==='function')?getIngredients().slice(0,200).map(function(x){return x.name;}).join(', '):'';
       var res=await fetch(SUPABASE_URL+'/functions/v1/invoice_ocr', { method:'POST', headers:supaHeaders(),
@@ -50585,24 +50590,134 @@ try{
   setInterval(function(){ if(navigator.onLine!==false) pimgFlush(true); }, 180000);
 }catch(e){}
 
+/* ===== v889: 伝票は PDF で保存する =====
+   Motoさん依頼：経理が扱うなら画像より PDF。メモ機能はそのまま。
+   決めごと:
+   ・OCR に渡すものは今までどおり画像。読み取り精度に影響を出さない。
+     保存する実体だけを PDF にする。
+   ・PDF 化は自前で組む。CDN のライブラリに頼ると、電波の悪い現場
+     （v873 で退避キューを作った理由そのもの）で変換できず形式が混ざる。
+   ・元から PDF で届いたものは、その PDF をそのまま保存する。
+     pdfToImageFile() で潰すと3ページ目以降が消えるため。
+   ・既存の .jpg は変換しない。ビューアが拡張子で出し分ける。
+   ・変換に失敗したら元の画像で保存する。形式より伝票が残ることを優先する。 */
+function _pdfNum(n){ return String(Math.round(n*100)/100); }
+function _pdfLatin1(str){
+  var out=new Uint8Array(str.length);
+  for(var i=0;i<str.length;i++) out[i]=str.charCodeAt(i)&0xff;
+  return out;
+}
+/* JPEG をそのまま /DCTDecode で埋める。再圧縮しないので、ここで画質は落ちない。
+   ページは必ず Letter。伝票ごとに紙のサイズが変わると経理が印刷・保管しにくい。 */
+function _jpegToPdfBytes(jpegBytes, iw, ih){
+  var PW=612, PH=792, M=18;                       /* Letter 72dpi・余白0.25in */
+  var s=Math.min((PW-M*2)/iw, (PH-M*2)/ih);
+  var dw=iw*s, dh=ih*s, dx=(PW-dw)/2, dy=(PH-dh)/2;
+  var parts=[], len=0, offs=[];
+  function push(u8){ parts.push(u8); len+=u8.length; }
+  function pushStr(str){ push(_pdfLatin1(str)); }
+  function obj(n, head, stream){
+    offs[n]=len;
+    pushStr(n+' 0 obj\n'+head+'\n');
+    if(stream){ pushStr('stream\n'); push(stream); pushStr('\nendstream\n'); }
+    pushStr('endobj\n');
+  }
+  var content='q\n'+_pdfNum(dw)+' 0 0 '+_pdfNum(dh)+' '+_pdfNum(dx)+' '+_pdfNum(dy)+' cm\n/Im0 Do\nQ\n';
+  var cb=_pdfLatin1(content);
+  pushStr('%PDF-1.4\n');
+  obj(1, '<</Type/Catalog/Pages 2 0 R>>');
+  obj(2, '<</Type/Pages/Kids[3 0 R]/Count 1>>');
+  obj(3, '<</Type/Page/Parent 2 0 R/MediaBox[0 0 '+PW+' '+PH+']'
+       + '/Resources<</XObject<</Im0 4 0 R>>>>/Contents 5 0 R>>');
+  obj(4, '<</Type/XObject/Subtype/Image/Width '+iw+'/Height '+ih
+       + '/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/DCTDecode/Length '
+       + jpegBytes.length+'>>', jpegBytes);
+  obj(5, '<</Length '+cb.length+'>>', cb);
+  var xref=len, N=6;
+  var x='xref\n0 '+N+'\n0000000000 65535 f \n';
+  for(var i=1;i<N;i++) x+=String(offs[i]).padStart(10,'0')+' 00000 n \n';
+  x+='trailer\n<</Size '+N+'/Root 1 0 R>>\nstartxref\n'+xref+'\n%%EOF\n';
+  pushStr(x);
+  var out=new Uint8Array(len), p=0;
+  parts.forEach(function(u){ out.set(u,p); p+=u.length; });
+  return out;
+}
+/* canvas を通して JPEG に揃える。ここには2つ意味がある。
+   ① iPhone の写真は EXIF に回転が入っている。生のまま PDF に埋めると横倒しになる。
+      canvas に描くとブラウザが回転を適用した状態になるので、必ず正しい向きで入る。
+   ② 4〜12MB の写真を 2400px に抑える。送信が重いこと自体が
+      7月のレシート消失（アップロード失敗の握り潰し）の背景でもあった。 */
+function _invNormalizeJpeg(file){
+  return new Promise(function(res, rej){
+    var url;
+    try{ url=URL.createObjectURL(file); }catch(e){ return rej(e); }
+    var img=new Image();
+    img.onload=function(){
+      try{
+        var MAX=2400;
+        var w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+        if(!w || !h){ throw new Error('size unknown'); }
+        var sc=Math.min(1, MAX/Math.max(w,h));
+        var cw=Math.max(1,Math.round(w*sc)), ch=Math.max(1,Math.round(h*sc));
+        var cv=document.createElement('canvas'); cv.width=cw; cv.height=ch;
+        var cx=cv.getContext('2d');
+        cx.fillStyle='#fff'; cx.fillRect(0,0,cw,ch);   /* 透過PNG が黒くならないように */
+        cx.drawImage(img,0,0,cw,ch);
+        cv.toBlob(function(b){
+          try{ URL.revokeObjectURL(url); }catch(e){}
+          if(!b) return rej(new Error('toBlob failed'));
+          b.arrayBuffer().then(function(ab){
+            res({ bytes:new Uint8Array(ab), w:cw, h:ch });
+          }, rej);
+        }, 'image/jpeg', 0.9);
+      }catch(e){ try{ URL.revokeObjectURL(url); }catch(_){} rej(e); }
+    };
+    img.onerror=function(){ try{ URL.revokeObjectURL(url); }catch(_){} rej(new Error('image decode failed')); };
+    img.src=url;
+  });
+}
+function _invIsPdf(f){
+  return !!f && ((f.type==='application/pdf') || /\.pdf$/i.test(f.name||''));
+}
+async function invoiceToPdfFile(file){
+  if(!file) return null;
+  if(_invIsPdf(file)) return file;               /* 元がPDFならそのまま残す */
+  var n=await _invNormalizeJpeg(file);
+  var bytes=_jpegToPdfBytes(n.bytes, n.w, n.h);
+  var nm=String(file.name||'invoice').replace(/\.[^.]+$/,'')+'.pdf';
+  return new File([bytes], nm, {type:'application/pdf'});
+}
 async function uploadInvoiceImage(file, storeName, invId){
   if(!file) return null;
   window._invPendingImgId = null;
+  window._invPdfFallback = '';
   var path = '';
+  /* v889: 保存する実体を PDF にする。元がPDFで届いていればそれを優先する。 */
+  var up=file, ext='pdf', mime='application/pdf';
+  try{
+    up = await invoiceToPdfFile(window._invoiceSourceFile || file);
+    if(!up) throw new Error('convert returned null');
+  }catch(e){
+    /* 変換できなくても伝票は必ず残す。形式より、写真が失われないことが優先。 */
+    console.warn('invoice pdf convert failed, falling back to image', e);
+    window._invPdfFallback = String((e&&e.message)||e||'convert failed');
+    up=file;
+    ext=(file.type&&file.type.indexOf('png')>=0)?'png':'jpg';
+    mime=file.type||'image/jpeg';
+  }
   try{
     var d=new Date(); var ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
-    var ext=(file.type&&file.type.indexOf('png')>=0)?'png':'jpg';
     path=saniStore(storeName)+'/'+ym+'/inv_'+Date.now()+'.'+ext;
     var r=await fetch(SUPABASE_URL+'/storage/v1/object/invoices/'+encodeURI(path), {
       method:'POST',
-      headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':file.type||'image/jpeg', 'x-upsert':'true' },
-      body:file
+      headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':mime, 'x-upsert':'true' },
+      body:up
     });
     if(!r.ok){
       var _msg=''; try{ _msg=await r.text(); }catch(e2){}
       console.warn('invoice image upload failed', r.status, _msg);
       window._invUploadErr = 'HTTP '+r.status+(_msg?(' '+String(_msg).slice(0,120)):'');
-      window._invPendingImgId = await pimgQueue(file, path, invId);
+      window._invPendingImgId = await pimgQueue(up, path, invId);   /* v889: PDFのまま退避 */
       return null;
     }
     window._invUploadErr = '';
@@ -50613,7 +50728,7 @@ async function uploadInvoiceImage(file, storeName, invId){
     console.warn('invoice image upload error', e);
     window._invUploadErr = String((e && e.message) || e || 'network');
     /* v873: 捨てずに端末へ退避する。ここで返さないと写真が永久に失われる。 */
-    try{ window._invPendingImgId = await pimgQueue(file, path, invId); }catch(e2){ window._invPendingImgId = null; }
+    try{ window._invPendingImgId = await pimgQueue(up, path, invId); }catch(e2){ window._invPendingImgId = null; }
     return null;
   }
 }
@@ -50623,6 +50738,44 @@ async function uploadInvoiceImage(file, storeName, invId){
    メモ（店舗・用途・誰が・自由記入）は明細に保存する。
    これまでは viewInvoiceImage() が別タブに画像を開くだけで、
    照合するには画面を行き来する必要があった。 */
+/* v889: PDF は <img> では出せないので、1ページ目から順に描く。
+   署名URLを直接 pdf.js に渡さず、いったん自分で取ってから渡す。
+   一括復旧と同じ取り方にして、CORS の当たり方を1本に揃えるため。
+   描けないとき（オフライン等）は［別タブで開く］に案内する。 */
+async function _ivShowPdf(box, url){
+  try{
+    var lib=await ensurePdfJs(); if(!lib) throw new Error('pdfjs unavailable');
+    var res=await fetch(url); if(!res.ok) throw new Error('HTTP '+res.status);
+    var buf=await res.arrayBuffer();
+    var pdf=await lib.getDocument({data:buf}).promise;
+    var total=pdf.numPages||1, n=Math.min(total,3);
+    box.innerHTML=''; box.style.display='block'; box.style.background='transparent';
+    for(var p=1;p<=n;p++){
+      var page=await pdf.getPage(p);
+      var base=page.getViewport({scale:1});
+      var sc=Math.min(2, 900/(base.width||600));
+      var vp=page.getViewport({scale:sc});
+      var c=document.createElement('canvas');
+      c.width=Math.ceil(vp.width); c.height=Math.ceil(vp.height);
+      c.style.cssText='max-width:100%;height:auto;border-radius:9px;display:block;'
+        +'margin-bottom:6px;border:1px solid var(--border);background:#fff';
+      box.appendChild(c);
+      await page.render({canvasContext:c.getContext('2d'), viewport:vp}).promise;
+    }
+    if(total>n){
+      var more=document.createElement('div');
+      more.style.cssText='font-size:10.5px;color:var(--muted);text-align:center;padding:2px 0 4px';
+      more.textContent='ほか '+(total-n)+' ページ（別タブで全部見られます）';
+      box.appendChild(more);
+    }
+  }catch(e){
+    console.warn('pdf preview', e);
+    box.innerHTML='<div style="padding:16px;text-align:center;font-size:12px;color:var(--muted)">'
+      +'<i class="ti ti-file-type-pdf" style="font-size:30px;color:var(--red);display:block;margin-bottom:7px"></i>'
+      +escapeHtml(t('PDFのプレビューを出せませんでした','Could not preview the PDF'))+'<br>'
+      +escapeHtml(t('［別タブで開く］から確認してください','Use Open instead'))+'</div>';
+  }
+}
 function _ivEsc(s){ return escapeHtml(String(s==null?'':s)); }
 async function openInvoiceViewer(id){
   var all = ls('invoices', [])||[];
@@ -50700,7 +50853,10 @@ async function openInvoiceViewer(id){
       var j=await r.json(); var box=document.getElementById('iv-img');
       if(box){
         if(j && j.signedURL){
-          box.innerHTML='<img src="'+SUPABASE_URL+'/storage/v1'+j.signedURL+'" '
+          var _u=SUPABASE_URL+'/storage/v1'+j.signedURL;
+          /* v889: 拡張子で出し分ける。既存の .jpg はこれまでどおり <img>。 */
+          if(/\.pdf$/i.test(String(inv.imagePath||''))) await _ivShowPdf(box, _u);
+          else box.innerHTML='<img src="'+_u+'" '
             + 'style="max-width:100%;max-height:60vh;border-radius:9px;display:block">';
         } else {
           box.innerHTML='<span style="font-size:12px;color:var(--red);padding:14px;text-align:center">'
@@ -50735,8 +50891,8 @@ async function viewInvoiceImage(path){
     });
     var d=await r.json();
     if(d && d.signedURL){ window.open(SUPABASE_URL+'/storage/v1'+d.signedURL, '_blank'); }
-    else { showToast('画像を開けませんでした','danger'); }
-  }catch(e){ showToast('画像を開けませんでした','danger'); }
+    else { showToast('ファイルを開けませんでした','danger'); }
+  }catch(e){ showToast('ファイルを開けませんでした','danger'); }
 }
 
 /* ============================================================
@@ -50886,6 +51042,9 @@ async function onInvoiceFilePicked(input){
     try{
       var img=await pdfToImageFile(file);
       await runInvoiceOCR(img);
+      /* v889: OCR には画像を渡すが、保存するのは元のPDF。
+         pdfToImageFile() は3ページまでしか使わないので、潰すとページが消える。 */
+      window._invoiceSourceFile = file;
     }catch(e){
       console.warn('pdf ocr', e);
       if(el) el.innerHTML='<div class="alert alert-warning" style="margin-bottom:8px"><i class="ti ti-alert-triangle"></i> PDFの読込に失敗しました。画像（JPG/PNG）にして読み取るか、手入力で追加してください。</div>';
@@ -50928,6 +51087,8 @@ async function pdfToImageFile(file){
 async function runInvoiceOCR(file){
   if(!file) return;
   window._invoicePhotoFile = file;
+  /* v889: 既定は「画像から作ったPDF」。元がPDFのときだけ呼び出し側が上書きする。 */
+  window._invoiceSourceFile = null;
   var el=document.getElementById('ocr-result');
   if(el) el.innerHTML='<div class="alert alert-info" style="margin-bottom:8px"><i class="ti ti-loader"></i> AIで読み取り中…（10〜30秒）</div>';
   try{
