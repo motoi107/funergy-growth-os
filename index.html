@@ -24390,6 +24390,8 @@ function slPeriodOfShift(storeId, sh){
    ここは日ごとに呼んで数えるだけで、判定条件を作り直さない。
    ※ Store Leader（SL拠出・再分配）とは別物。あちらは半月精算、
      こちらはその日の Shift Leader を務めた回数。 */
+/* v887: これは回数を数えるだけ。単価も持たず、制度対象店かも見ない。
+   金額を出す用途には使わないこと（必ず slPayrollData() を使う）。 */
 function slCountsInRange(storeId, fromISO, toISO){
   var out = {};
   if(typeof slDayRecords !== 'function' || typeof _slEachDate !== 'function') return out;
@@ -24497,6 +24499,85 @@ function slPeriodSummary(storeId, fromISO, toISO){
     .sort(function(a,b){ return b.count-a.count || String(a.name).localeCompare(String(b.name)); });
   return { rows:rows, excluded:excluded, total:total, days:days, amount:cfg.amount, from:fromISO, to:toISO };
 }
+/* ===== v887: シフトリーダー手当「誰にいくら払うか」 =====
+   Motoさん依頼。出力に回数だけでなく単価と支給額まで出す。
+   金額の計算は slPeriodSummary() が唯一の正。ここでは包むだけで条件を作り直さない
+   （画面とCSVで数字が食い違うのを防ぐ。同じ class の事故を何度も出しているため）。
+   ・対象は G1 のみ（slDayRecords が除外側に回す）
+   ・単価は sl_config.amount の全店共通。店ごとには持たない
+   ・制度対象外の店は enabled:false を返し、金額を一切出さない
+     （slCountsInRange は店を見ないので、金額を出すこちらで必ず塞ぐ） */
+function slPayrollData(storeId, fromISO, toISO){
+  var empty = { enabled:false, rows:[], excluded:[], total:0, amount:0, days:0,
+                from:fromISO, to:toISO, store:storeId };
+  try{
+    if(typeof slStoreEnabled==='function' && !slStoreEnabled(storeId)) return empty;
+    var s = slPeriodSummary(storeId, fromISO, toISO);
+    s.enabled = true; s.store = storeId;
+    return s;
+  }catch(e){ console.warn('slPayrollData', e); return empty; }
+}
+function _slRecLabel(x){
+  return String(x.date||'').slice(5) + x.period + (x.src==='manual' ? '(手)' : '');
+}
+/* CSV の共通ブロック。Tip一覧・配分表・専用出力の3か所から同じものを呼ぶ。 */
+function slPayrollRows(storeId, fromISO, toISO){
+  var p = slPayrollData(storeId, fromISO, toISO);
+  var nm = (typeof _owStoreName==='function') ? _owStoreName(storeId) : storeId;
+  var rows = [];
+  rows.push(['【シフトリーダー手当】', nm, fromISO + ' 〜 ' + toISO]);
+  if(!p.enabled){
+    rows.push([nm + ' は Shift Leader 制度の対象外です']);
+    return rows;
+  }
+  rows.push(['単価', '$' + p.amount.toFixed(2) + ' / 1回', '対象は G1 のみ',
+             '該当日数 ' + p.days + '日']);
+  rows.push(['氏名','ランチ(回)','ディナー(回)','回数計','単価($)','支給額($)','該当日']);
+  var tl=0, td=0, tc=0;
+  (p.rows||[]).forEach(function(r){
+    tl += (r.L||0); td += (r.D||0); tc += (r.count||0);
+    rows.push([r.name, (r.L||0), (r.D||0), (r.count||0),
+      p.amount.toFixed(2), (r.amount||0).toFixed(2),
+      (r.recs||[]).map(_slRecLabel).join(' ')]);
+  });
+  rows.push(['合計', tl, td, tc, '', p.total.toFixed(2), (p.rows||[]).length + '名']);
+  if((p.excluded||[]).length){
+    var uniq={}; p.excluded.forEach(function(x){ uniq[x.name]=x.reason; });
+    rows.push([]);
+    rows.push(['【対象外】','理由','','','','','手当は G1 のみが対象です']);
+    Object.keys(uniq).forEach(function(n){ rows.push([n, uniq[n]]); });
+  }
+  return rows;
+}
+/* 単独出力。給与にそのまま渡せる形にする。 */
+function exportSlPayrollCSV(storeId, anyDate){
+  var per = _p4Period(anyDate);
+  var p = slPayrollData(storeId, per.from, per.to);
+  var nm = _owStoreName(storeId);
+  if(!p.enabled){ showToast(nm + ' は Shift Leader 制度の対象外です','warning'); return; }
+  if(!p.rows.length){ showToast('この期間の Shift Leader 記録がありません','danger'); return; }
+  downloadCSV(slPayrollRows(storeId, per.from, per.to),
+    'シフトリーダー手当_' + nm + '_' + per.from + '_' + per.to + '.csv');
+  showToast(nm + '（' + per.label + '）' + _money(p.total) + ' を出力しました','success');
+}
+function exportAllSlPayrollCSV(d1, d2){
+  var rows = [], grand = 0, hit = 0;
+  (getVisibleStores()||[]).forEach(function(s){
+    if(typeof slStoreEnabled==='function' && !slStoreEnabled(s.id)) return;
+    [d1, d2].forEach(function(dt){
+      var per = _p4Period(dt);
+      var p = slPayrollData(s.id, per.from, per.to);
+      if(!p.enabled || !p.rows.length) return;
+      rows = rows.concat(slPayrollRows(s.id, per.from, per.to));
+      rows.push([]);
+      grand += p.total; hit++;
+    });
+  });
+  if(!hit){ showToast('対象期間の Shift Leader 記録がありません','danger'); return; }
+  rows.push(['【総合計】','', '', '', '', grand.toFixed(2), hit + '件']);
+  downloadCSV(rows, 'シフトリーダー手当_全店_' + acctMonthLabel() + '.csv');
+  showToast('全店のシフトリーダー手当 ' + _money(grand) + ' を出力しました','success');
+}
 /* ---- 画面 ---- */
 function renderTipShiftLeader(){
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
@@ -24525,12 +24606,34 @@ function renderTipShiftLeader(){
     +'<div style="flex:1"></div>'
     +(['gm','ceo'].indexOf(curRole)>=0?'<button class="btn btn-secondary btn-sm" onclick="openSlConfig()"><i class="ti ti-settings"></i> 設定</button>':'')
     +'</div>';
-  h+='<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
-    +'<div><div style="font-size:10px;color:var(--muted)">対象人数</div><div style="font-size:17px;font-weight:800">'+sum.rows.length+'</div></div>'
-    +'<div><div style="font-size:10px;color:var(--muted)">回数</div><div style="font-size:17px;font-weight:800">'+sum.rows.reduce(function(a,b){return a+b.count;},0)+'</div></div>'
-    +'<div><div style="font-size:10px;color:var(--muted)">支給合計</div><div style="font-size:17px;font-weight:800;color:var(--green)">'+_money(sum.total)+'</div></div>'
-    +'<div><div style="font-size:10px;color:var(--muted)">単価</div><div style="font-size:17px;font-weight:800">'+_money(sum.amount)+'</div></div>'
-    +'</div>';
+  /* v887: 数字だけ並んでいて何が重要か分からなかったので、色とアイコンを付ける。
+     支給合計は払う金額なので一番大きく緑で出す。 */
+  var _slTiles = [
+    { ic:'ti-users',        c:'var(--accent2)', k:t('対象人数','People'),  v:String(sum.rows.length),
+      s:t('名','') },
+    { ic:'ti-repeat',       c:'var(--accent)',  k:t('回数','Shifts'),
+      v:String(sum.rows.reduce(function(a,b){return a+b.count;},0)), s:t('回','') },
+    { ic:'ti-cash-banknote',c:'var(--green)',   k:t('支給合計','Total pay'), v:_money(sum.total),
+      s:t('この期間','this period'), big:true },
+    { ic:'ti-tag',          c:'var(--muted)',   k:t('単価','Rate'),        v:_money(sum.amount),
+      s:t('1回あたり','per shift') }
+  ];
+  h+='<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin-top:9px">'
+    +_slTiles.map(function(x){
+      return '<div style="border:1px solid '+(x.big?x.c+'44':'var(--border)')+';border-radius:11px;padding:8px 10px;'
+        +'background:'+(x.big?x.c+'0f':'var(--surface)')+'">'
+        +'<div style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);font-weight:700">'
+        +'<i class="ti '+x.ic+'" style="color:'+x.c+';font-size:12px"></i>'+x.k+'</div>'
+        +'<div style="font-size:'+(x.big?'21':'18')+'px;font-weight:800;color:'+(x.big?x.c:'var(--tm)')+';line-height:1.25">'+x.v+'</div>'
+        +'<div style="font-size:9.5px;color:var(--muted)">'+x.s+'</div></div>';
+    }).join('') + '</div>';
+  /* 出力（給与にそのまま渡せる形） */
+  if(sum.rows.length){
+    h+='<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" '
+      +'onclick="exportSlPayrollCSV(\''+escapeHtml(storeId)+'\',\''+per.to+'\')">'
+      +'<i class="ti ti-file-download" style="color:var(--green)"></i> '
+      +t('支給一覧をCSV出力','Export payout list')+'（'+_money(sum.total)+'）</button>';
+  }
   if(!hasJob){
     h+='<div class="alert alert-warning" style="margin:8px 0 0;padding:8px 10px"><i class="ti ti-alert-triangle"></i><div style="font-size:11px;line-height:1.6">'
       +'Toast の勤怠データに Job 名がまだ含まれていません（取り込み側の対応が必要です）。'
@@ -24541,28 +24644,63 @@ function renderTipShiftLeader(){
   if(!sum.rows.length){
     h+='<div class="card" style="font-size:12px;color:var(--muted)"><i class="ti ti-info-circle"></i> この期間の Shift Leader 記録はまだありません。</div>';
   } else {
-    h+='<div class="card" style="padding:8px"><div style="overflow:auto"><table style="border-collapse:collapse;font-size:11.5px;width:100%">'
-      +'<thead><tr style="text-align:left;color:var(--muted);font-size:10px">'
-      +'<th style="padding:5px 8px">氏名</th><th style="padding:5px 8px;text-align:center">L</th>'
-      +'<th style="padding:5px 8px;text-align:center">D</th><th style="padding:5px 8px;text-align:center">回数</th>'
-      +'<th style="padding:5px 8px;text-align:right">支給額</th><th style="padding:5px 8px">該当日</th></tr></thead><tbody>';
-    sum.rows.forEach(function(r){
-      h+='<tr style="border-top:1px solid var(--border)">'
-        +'<td style="padding:6px 8px;font-weight:700;white-space:nowrap">'+escapeHtml(r.name)+'</td>'
-        +'<td style="padding:6px 8px;text-align:center;color:var(--accent2)">'+(r.L||'—')+'</td>'
-        +'<td style="padding:6px 8px;text-align:center;color:var(--accent)">'+(r.D||'—')+'</td>'
-        +'<td style="padding:6px 8px;text-align:center;font-weight:800">'+r.count+'</td>'
-        +'<td style="padding:6px 8px;text-align:right;font-weight:800;color:var(--green)">'+_money(r.amount)+'</td>'
-        +'<td style="padding:6px 8px;font-size:10.5px;color:var(--muted);line-height:1.7">'
-        +r.recs.map(function(x){
-          return '<span style="white-space:nowrap;margin-right:6px">'+escapeHtml(x.date.slice(5))
-            +'<b style="color:'+(x.period==='D'?'var(--accent)':'var(--accent2)')+'">'+x.period+'</b>'
-            +(x.src==='manual'?'<i class="ti ti-hand-finger" style="font-size:9px;color:var(--muted)" title="手入力"></i>':'')
-            +'</span>';
-        }).join('')
-        +'</td></tr>';
+    /* v887: 表だと横に流れて金額が読めなかった。1人1枚にして、
+       支給額を右に大きく緑で出す。順位・L/D・該当日を色分けする。 */
+    var _slMax = sum.rows.reduce(function(a,b){ return Math.max(a, b.amount||0); }, 0) || 1;
+    var _slChip = function(ic, lbl, n, col){
+      if(!n) return '';
+      return '<span style="display:inline-flex;align-items:center;gap:3px;border-radius:6px;padding:2px 7px;'
+        +'font-weight:800;color:'+col+';background:'+col+'14;border:1px solid '+col+'33">'
+        +'<i class="ti '+ic+'" style="font-size:11px"></i>'+lbl+' '+n+'</span>';
+    };
+    h+='<div class="card" style="padding:10px 11px">'
+      +'<div style="display:flex;align-items:center;gap:7px;margin-bottom:9px;flex-wrap:wrap">'
+      +'<i class="ti ti-cash-banknote" style="color:var(--green);font-size:16px"></i>'
+      +'<span style="font-size:12.5px;font-weight:800">'+t('支給明細','Payout')+'</span>'
+      +'<span style="font-size:10.5px;color:var(--muted)">'+t('誰にいくら払うか','who gets paid what')+'</span>'
+      +'<span style="margin-left:auto;font-size:16px;font-weight:800;color:var(--green)">'+_money(sum.total)+'</span>'
+      +'</div>';
+    sum.rows.forEach(function(r, i){
+      var rank=i+1;
+      var medal = rank===1?'#d4a017' : rank===2?'#9aa0a6' : rank===3?'#b87333' : '';
+      var pct = Math.max(4, Math.round(((r.amount||0)/_slMax)*100));
+      h+='<div style="border:1px solid var(--border);border-radius:11px;padding:9px 10px;margin-bottom:7px">'
+        +'<div style="display:flex;align-items:center;gap:8px">'
+        +'<span style="flex-shrink:0;width:21px;height:21px;border-radius:50%;display:inline-flex;'
+        +'align-items:center;justify-content:center;font-size:10.5px;font-weight:800;'
+        +'color:'+(medal?'#fff':'var(--muted)')+';background:'+(medal||'var(--surface2)')+'">'+rank+'</span>'
+        +'<span style="font-size:13.5px;font-weight:800;min-width:0;overflow:hidden;'
+        +'text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(r.name)+'</span>'
+        +'<span style="margin-left:auto;font-size:18px;font-weight:800;color:var(--green);'
+        +'white-space:nowrap">'+_money(r.amount)+'</span></div>'
+        +'<div style="height:5px;border-radius:3px;background:var(--surface2);margin:7px 0 6px;overflow:hidden">'
+        +'<div style="height:100%;width:'+pct+'%;background:var(--green);opacity:.85"></div></div>'
+        +'<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:10.5px">'
+        +_slChip('ti-sun','L', r.L, 'var(--accent2)')
+        +_slChip('ti-moon','D', r.D, 'var(--accent)')
+        +'<span style="color:var(--muted);font-weight:700">'+r.count+t('回','')+' × '+_money(sum.amount)+'</span>'
+        +'</div>'
+        +'<div style="margin-top:6px;font-size:10px;line-height:2">'
+        +(r.recs||[]).slice().sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); })
+          .map(function(x){
+            var c = (x.period==='D') ? 'var(--accent)' : 'var(--accent2)';
+            return '<span style="display:inline-flex;align-items:center;gap:2px;border-radius:5px;'
+              +'padding:1px 5px;margin:0 4px 3px 0;font-weight:700;white-space:nowrap;'
+              +'color:'+c+';background:'+c+'12;border:1px solid '+c+'2e">'
+              +escapeHtml(String(x.date).slice(5))+' '+x.period
+              +(x.src==='manual'?'<i class="ti ti-hand-finger" style="font-size:9px" title="手入力"></i>':'')
+              +'</span>';
+          }).join('')
+        +'</div></div>';
     });
-    h+='</tbody></table></div></div>';
+    h+='<div style="display:flex;align-items:center;gap:6px;border-top:2px solid var(--border);'
+      +'padding-top:9px;margin-top:2px">'
+      +'<i class="ti ti-sum" style="color:var(--green)"></i>'
+      +'<span style="font-size:12px;font-weight:800">'+t('支給合計','Total')+'</span>'
+      +'<span style="font-size:10.5px;color:var(--muted)">'+sum.rows.length+t('名','')+'</span>'
+      +'<span style="margin-left:auto;font-size:19px;font-weight:800;color:var(--green)">'
+      +_money(sum.total)+'</span></div>';
+    h+='</div>';
   }
   if(sum.excluded.length){
     var uniq={}; sum.excluded.forEach(function(x){ uniq[x.name]=x.reason; });
@@ -24872,19 +25010,20 @@ function exportTipPeriodCsv(){
   /* v876: シフトリーダー。日付の列と同じ並びで、務めた日に SL を立てる。
      判定は slDayRecords() が正。条件をここで作り直さない。
      Store Leader（SL拠出・再分配）とは別物。 */
-  var _slc = (typeof slCountsInRange==='function') ? slCountsInRange(storeId, info.from, info.to) : {};
-  var _slNames = Object.keys(_slc).sort();
-  if(_slNames.length){
+  /* v887: 回数の右に単価と支給額を足す（Motoさん依頼）。金額は slPayrollData() が正。 */
+  var _slp = slPayrollData(storeId, info.from, info.to);
+  var _slPay = _slp.rows||[];
+  if(_slPay.length){
     rows.push([]);
-    rows.push(['【シフトリーダー】']);
+    rows.push(['【シフトリーダー】','単価 $'+_slp.amount.toFixed(2)+' / 1回','対象は G1 のみ']);
     var _slHead=['従業員＼日付',''];
     dists.forEach(function(x){ _slHead.push(md(x.date)+' ランチ'); _slHead.push(md(x.date)+' ディナー'); });
-    _slHead.push('期間合計(回)');
+    _slHead.push('期間合計(回)'); _slHead.push('単価($)'); _slHead.push('支給額($)');
     rows.push(_slHead);
     var _slDay={};
     dists.forEach(function(x){ try{ _slDay[x.date]=slDayRecords(storeId, x.date); }catch(e){ _slDay[x.date]={ok:[]}; } });
-    _slNames.forEach(function(nm){
-      var row=[nm,''], tot=0;
+    _slPay.forEach(function(p){
+      var nm=p.name, row=[nm,''], tot=0;
       dists.forEach(function(x){
         var ok=(_slDay[x.date]||{}).ok||[];
         var hasL=ok.some(function(z){ return z.name===nm && z.period!=='D'; });
@@ -24892,11 +25031,16 @@ function exportTipPeriodCsv(){
         row.push(hasL?'SL':''); row.push(hasD?'SL':'');
         if(hasL) tot++; if(hasD) tot++;
       });
-      row.push(tot); rows.push(row);
+      row.push(tot); row.push(_slp.amount.toFixed(2)); row.push((p.amount||0).toFixed(2));
+      rows.push(row);
     });
+    var _slTot=['合計','']; dists.forEach(function(){ _slTot.push(''); _slTot.push(''); });
+    _slTot.push(_slPay.reduce(function(a,x){ return a+(x.count||0); },0));
+    _slTot.push(''); _slTot.push(_slp.total.toFixed(2));
+    rows.push(_slTot);
   }
   downloadCSV(rows, `Tip配分_${(store.name||storeId)}_${info.from}_${info.to}.csv`);
-  showToast('配分表（①〜④＋各スタッフ／Tip Rate／シフトリーダー付き）をCSV出力しました','success');
+  showToast('配分表（①〜④＋各スタッフ／Tip Rate／シフトリーダー支給額つき）をCSV出力しました','success');
 }
 function tipMatrixToggleExcl(storeId, date, name, slot){ toggleTipExclude(storeId, date, name, slot); if(typeof renderPage==='function') renderPage('tip'); }
 /* 配分表のセル1つ（タップでTip対象外の切替） */
@@ -27496,7 +27640,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '886';
+const APP_VERSION = '887';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -39840,7 +39984,7 @@ function renderAcctExport() {
   var d2 = `${y}-${String(m+1).padStart(2,'0')}-20`;   // 16-末期
 
   var html = `<div class="section-header">
-    <div><div class="section-title">経理出力</div><div class="section-sub">Tip一覧・月次棚卸をCSV出力（Excelで開けます）</div></div>
+    <div><div class="section-title"><i class="ti ti-file-export" style="color:var(--accent)"></i> 経理出力</div><div class="section-sub">Tip一覧・シフトリーダー手当・月次棚卸をCSV出力（Excelで開けます）</div></div>
   </div>
   <div class="card" style="padding:10px;margin-bottom:10px">
     <div style="display:flex;align-items:center;justify-content:center;gap:12px">
@@ -39866,6 +40010,45 @@ function renderAcctExport() {
 
   html += officePayrollCardHtml(y, m);
   html += `</div>`;
+
+  /* v887: 出力する前に「どの店にいくら出るか」が見えるようにする。Motoさん依頼。 */
+  var _slStores = stores.filter(function(s){
+    return (typeof slStoreEnabled==='function') && slStoreEnabled(s.id);
+  });
+  if(_slStores.length){
+    var _slGrand = 0, _slCards = '';
+    _slStores.forEach(function(s){
+      var a = slPayrollData(s.id, _p4Period(d1).from, _p4Period(d1).to);
+      var b = slPayrollData(s.id, _p4Period(d2).from, _p4Period(d2).to);
+      var mo = (a.total||0) + (b.total||0);
+      var ppl = {}; (a.rows||[]).concat(b.rows||[]).forEach(function(r){ ppl[r.name]=1; });
+      _slGrand += mo;
+      _slCards += '<div style="padding:9px 0;border-bottom:1px solid var(--border)">'
+        + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+        + '<span class="store-dot" style="background:'+s.color+'"></span>'
+        + '<span style="font-weight:700;font-size:13px">'+escapeHtml(s.name)+'</span>'
+        + '<span style="font-size:10.5px;color:var(--muted)"><i class="ti ti-users"></i> '
+        + Object.keys(ppl).length + '名</span>'
+        + '<span style="margin-left:auto;font-size:15px;font-weight:800;color:'
+        + (mo>0?'var(--green)':'var(--muted)')+'">'+_money(mo)+'</span></div>'
+        + '<div style="display:flex;gap:6px;margin-top:6px">'
+        + '<button class="btn btn-secondary btn-sm" style="flex:1" '
+        + 'onclick="exportSlPayrollCSV(\''+s.id+'\',\''+d1+'\')">1〜15日 '+_money(a.total||0)+'</button>'
+        + '<button class="btn btn-secondary btn-sm" style="flex:1" '
+        + 'onclick="exportSlPayrollCSV(\''+s.id+'\',\''+d2+'\')">16〜末 '+_money(b.total||0)+'</button>'
+        + '</div></div>';
+    });
+    html += '<div class="card"><div class="card-title">'
+      + '<i class="ti ti-crown" style="color:#d4a017"></i>シフトリーダー手当'
+      + '<span class="tag tag-green" style="margin-left:auto">'+_money(_slGrand)+'</span></div>'
+      + '<p style="font-size:12px;color:var(--muted);margin-bottom:6px">'
+      + '誰が何回務めて、いくら払うかを出力します（該当日つき）。対象は G1 のみ・'
+      + '単価は Shift Leader 設定の $'+ (typeof slCfg==='function'? slCfg().amount.toFixed(2) : '0.00') +'/回。</p>'
+      + _slCards
+      + '<button class="btn btn-primary" style="width:100%;margin-top:10px" '
+      + 'onclick="exportAllSlPayrollCSV(\''+d1+'\',\''+d2+'\')">'
+      + '<i class="ti ti-download"></i> 全店まとめて出力（両期間）</button></div>';
+  }
 
   html += `<div class="card"><div class="card-title"><i class="ti ti-clipboard-list" style="color:var(--accent)"></i>月次棚卸一覧</div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">各店のMonthly棚卸（理論・実棚・差異・金額）を出力します。${acctMonthLabel()}に確定された棚卸が対象です。</p>`;
@@ -40236,23 +40419,37 @@ function tipCSVRows(storeId, anyDate) {
   rows.push([]);
   rows.push(['【スタッフ別 最終受取（半月精算）】']);
   /* v876: シフトリーダー回数を同じ表に並べる。区分欄の Store Leader とは別の列。 */
-  var _slc = (typeof slCountsInRange==='function') ? slCountsInRange(storeId, range.from, range.to) : {};
+  /* v887: 回数だけでは支給できないので、単価・手当・受取＋手当まで出す（Motoさん依頼）。
+     金額は slPayrollData()＝slPeriodSummary() が正。slCountsInRange() は数えるだけで
+     単価を持たず、制度対象外の店も数えてしまうので、金額を出すこちらでは使わない。 */
+  var _slp = slPayrollData(storeId, range.from, range.to);
+  var _slc = {}; (_slp.rows||[]).forEach(function(x){ _slc[x.name]=x; });
+  var _slRate = _slp.enabled ? _slp.amount.toFixed(2) : '';
   rows.push(['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)',
-    'シフトリーダー ランチ(回)','シフトリーダー ディナー(回)','シフトリーダー 計(回)']);
+    'シフトリーダー ランチ(回)','シフトリーダー ディナー(回)','シフトリーダー 計(回)',
+    'シフトリーダー 単価($)','シフトリーダー 手当($)','受取＋手当($)']);
   settle.rows.forEach(r=>{
-    var _c=_slc[r.name]||{L:0,D:0,total:0};
+    var _c=_slc[r.name], _amt=_c?(_c.amount||0):0;
     rows.push([r.name, r.isSL?'Store Leader':'スタッフ',
       r.hours.toFixed(2), r.base.toFixed(2), r.contribution.toFixed(2), r.redistrib.toFixed(2), r.final.toFixed(2),
-      _c.L, _c.D, _c.total]);
+      _c?_c.L:0, _c?_c.D:0, _c?_c.count:0,
+      _c?_slRate:'', _amt.toFixed(2), (r.final+_amt).toFixed(2)]);
   });
   /* 精算表に出てこない人（配分ゼロでもSLを務めた人）を落とさない */
   Object.keys(_slc).forEach(function(nm){
     if(settle.rows.some(function(r){ return r.name===nm; })) return;
     var c=_slc[nm];
-    rows.push([nm,'スタッフ','0.00','0.00','0.00','0.00','0.00', c.L, c.D, c.total]);
+    rows.push([nm,'スタッフ','0.00','0.00','0.00','0.00','0.00', c.L, c.D, c.count,
+      _slRate, (c.amount||0).toFixed(2), (c.amount||0).toFixed(2)]);
   });
   var totalFinal = settle.rows.reduce((a,r)=>a+r.final,0);
-  rows.push(['合計','','','','','', totalFinal.toFixed(2)]);
+  rows.push(['合計','','','','','', totalFinal.toFixed(2), '','','','',
+    (_slp.total||0).toFixed(2), (totalFinal+(_slp.total||0)).toFixed(2)]);
+  /* 給与担当が1枚で完結できるよう、支給明細（該当日つき）も同じCSVに付ける。 */
+  if(_slp.enabled && (_slp.rows||[]).length){
+    rows.push([]);
+    rows = rows.concat(slPayrollRows(storeId, range.from, range.to));
+  }
   return rows;
 }
 function exportTipCSV(storeId, anyDate) {
