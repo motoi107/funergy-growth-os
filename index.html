@@ -5927,7 +5927,12 @@ const MENU_GROUPS = [
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
     children:['tasks','lala']},
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
-    children:['staff_master','hiring','shift_admin','tip','hr','vacation','totoya_docs','crew_handbook']},
+    /* v891: mileage を追加。NAV_ITEMS の roles には全役職が書いてあったのに、
+      children に載せているのが ACCT_GROUPS だけだったため、経理以外の誰の画面にも
+      ガソリン代のタブが出ていなかった（G1〜CEO すべて）。休暇申請の隣に置く。
+      ここに載せると、設定の「Grade別の非表示ページ」にも並ぶので、
+      G2 には出したくない等の調整は設定側でできる。 */
+   children:['staff_master','hiring','shift_admin','tip','hr','vacation','mileage','totoya_docs','crew_handbook']},
   {id:'g_growth', label:'育成・評価', icon:'ti-school', roles:['ceo','gm','office','am','sl'],
     children:['skill','ojt_admin','growth_mgr','leadership','growthhub']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
@@ -27644,7 +27649,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '890';
+const APP_VERSION = '891';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -32116,7 +32121,9 @@ function canViewMileageRec(r){
   return canApproveMileage(r);
 }
 function canManageMileage(){ return ['ceo','gm','office'].includes(curRole) || canManageVacations(); }
-function canSubmitMileage(){ return (typeof myGradeNum==='function'?myGradeNum():1) >= 4; }
+/* v891: G4以上 → G3以上（Motoさん指示）。シフトリーダーが申請できるようになる。
+   承認側（canApproveMileage）は変えていない。申請できるだけで、承認権限は従来のまま。 */
+function canSubmitMileage(){ return (typeof myGradeNum==='function'?myGradeNum():1) >= 3; }
 
 var _gmapsLoading=null;
 function ensureGoogleMaps(){
@@ -32155,7 +32162,7 @@ function saveMileageConfigDo(){
 
 var _mileOneWay=null;
 function openMileageModal(){
-  if(!canSubmitMileage()){ alert('ガソリン代の申請はG4以上が対象です'); return; }
+  if(!canSubmitMileage()){ alert('ガソリン代の申請はG3以上が対象です'); return; }
   var c=getMileageConfig();
   var today=todayISO();
   _mileOneWay=null;
@@ -47916,9 +47923,17 @@ function renderMypage() {
   } else { html += `<p style="color:var(--muted);font-size:13px">${t('申請履歴なし','No requests')}</p>`; }
   html += '</div>';
 
-  // 9b. 申請（G4以上のみ・G3以下は対象外）— 経費申請 / ガソリン代
-  if ((typeof myGradeNum==='function' ? myGradeNum() : 1) >= 4) {
+  /* v891: 事前経費とガソリン代を1つの >=4 でまとめて出していたため、
+     ガソリン代を G3 に開けると事前経費まで一緒に開いてしまう。
+     しきい値を書き直すのではなく、それぞれの判定関数に任せて中で分ける。
+     ・事前経費 canSubmitExpense() … G4以上（変更なし）
+     ・ガソリン代 canSubmitMileage() … G3以上（v891で変更）
+     こうしておくと、次にどちらかのグレードを動かしてもここは直さなくてよい。 */
+  var _mpExp = (typeof canSubmitExpense==='function') ? canSubmitExpense() : false;
+  var _mpMile = (typeof canSubmitMileage==='function') ? canSubmitMileage() : false;
+  if (_mpExp || _mpMile) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-files"></i>${t('申請','Requests')}</div>`;
+    if (_mpExp) {
     var myExp = (typeof getExpenseRequests==='function') ? getExpenseRequests().filter(function(r){return r.employee===me;}) : [];
     html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0">
       <div style="font-size:13px;font-weight:600"><i class="ti ti-file-invoice" style="color:var(--accent)"></i> ${t('事前経費申請','Pre-Approval Expense')}</div>
@@ -47929,15 +47944,19 @@ function renderMypage() {
         html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(r.project||'')}</div><span class="tag ${sc}">${tStatus(r.status)}</span></div><div class="approval-meta">$${(r.total||0).toFixed(2)}</div></div>`;
       });
     }
+    }
+    if (_mpMile) {
     var myMile = (typeof getMileageRequests==='function') ? getMileageRequests().filter(function(r){return r.employee===me;}) : [];
-    html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--border);margin-top:4px">
+    /* 事前経費が出ていないときは上の区切り線を出さない（先頭が線で始まらないように） */
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0${_mpExp?';border-top:1px solid var(--border);margin-top:4px':''}">
       <div style="font-size:13px;font-weight:600"><i class="ti ti-gas-station" style="color:var(--accent2)"></i> ${t('ガソリン代','Mileage')}</div>
       <button class="btn btn-secondary btn-sm" onclick="go('mileage')">${t('申請・確認','Open')}</button></div>`;
-    if (myMile.length) {
+    if (_mpMile && myMile.length) {
       myMile.slice(-2).reverse().forEach(function(r){
         var sc = r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
         html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(r.date||'')} ${escapeHtml(r.purpose||'')}</div><span class="tag ${sc}">${tStatus(r.status)}</span></div><div class="approval-meta">${r.miles} mi · $${(r.amount||0).toFixed(2)}</div></div>`;
       });
+    }
     }
     html += '</div>';
   }
