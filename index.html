@@ -366,6 +366,29 @@ body.shift-wide .main { max-width:1900px; }
   padding: 20px;
 }
 .modal-overlay.open { display: flex; }
+/* v892: 伝票の範囲確認は専用の層に出す。撮影ボタンが Invoice/Receipt登録モーダルの
+   中にあるため、modal-overlay を使い回すと登録フォームごと上書きされる（v890 の事故）。
+   z-index は modal-overlay(200) より上。 */
+.crop-overlay {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.82);
+  z-index: 300;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.crop-overlay.open { display: flex; }
+.crop-sheet {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 92vh;
+  overflow-y: auto;
+}
 .modal {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -922,6 +945,12 @@ body.shift-wide .main { max-width:1900px; }
 <!-- ====== MODALS ====== -->
 <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
   <div class="modal" id="modal-body"></div>
+</div>
+
+<!-- v892: 伝票の範囲確認。登録モーダルの中から呼ばれるので、modal-body とは
+     別の層に置く。ここを modal-overlay に戻すと登録フォームが消える。 -->
+<div class="crop-overlay" id="crop-overlay" onclick="cropBackdrop(event)">
+  <div class="crop-sheet" id="crop-sheet"></div>
 </div>
 
 <script>
@@ -27649,7 +27678,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '891';
+const APP_VERSION = '892';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -51139,6 +51168,31 @@ function detectDocRect(rgba, W, H){
 
 /* ---- 範囲の確認画面 ---- */
 var _cropS=null, _CROP_H=13;
+/* v892: openModal() は使わない。撮影ボタンが Invoice/Receipt登録モーダルの中に
+   あるため、modal-body を書き換えると inv-vendor / ocr-result ごと消え、
+   読み取り結果の行き先が無くなって保存できなくなる（v890 の事故）。 */
+function _cropOpen(html){
+  var ov=document.getElementById('crop-overlay'), sh=document.getElementById('crop-sheet');
+  if(!ov||!sh) return false;
+  sh.innerHTML=html; ov.classList.add('open');
+  return true;
+}
+function _cropClose(){
+  var ov=document.getElementById('crop-overlay'), sh=document.getElementById('crop-sheet');
+  if(ov) ov.classList.remove('open');
+  if(sh) sh.innerHTML='';            /* canvas を残さない */
+}
+/* 背景タップ・×。どちらも「写真全体で読み取る」に倒す。
+   ここで resolve しないと await が返らず、撮影しても何も起きなくなる。 */
+function cropBackdrop(e){
+  if(e && e.target===document.getElementById('crop-overlay')) cropDismiss();
+}
+function cropDismiss(){
+  if(!_cropS){ _cropClose(); return; }
+  showToast(t('範囲を選ばずに閉じたので、写真全体で読み取ります',
+              'Closed without choosing an area — using the whole photo'),'warning');
+  cropApply(true);
+}
 function _cropDraw(){
   var S=_cropS; if(!S||!S.canvas) return;
   var c=S.canvas, ctx=c.getContext('2d'), b=S.box;
@@ -51212,42 +51266,47 @@ function cropReset(){
 }
 function cropApply(useAll){
   var S=_cropS; if(!S) return;
-  _cropS=null;
-  var done=function(f){
-    try{ URL.revokeObjectURL(S.url); }catch(e){}
-    closeModalDirect();
-    S.resolve(f);
-  };
-  if(useAll) return done(S.file);
+  /* 後始末と resolve は S.finish に一本化する。どこから抜けても必ず1回だけ返る。 */
+  if(useAll) return S.finish(S.file);
   try{
     var sx=Math.max(0, Math.round(S.box.x/S.scale));
     var sy=Math.max(0, Math.round(S.box.y/S.scale));
     var sw=Math.min(S.iw-sx, Math.round(S.box.w/S.scale));
     var sh=Math.min(S.ih-sy, Math.round(S.box.h/S.scale));
-    if(sw<8||sh<8) return done(S.file);
+    if(sw<8||sh<8) return S.finish(S.file);
     var cv=document.createElement('canvas'); cv.width=sw; cv.height=sh;
     var cx=cv.getContext('2d');
     cx.fillStyle='#fff'; cx.fillRect(0,0,sw,sh);
     cx.drawImage(S.img, sx,sy,sw,sh, 0,0,sw,sh);
     cv.toBlob(function(b){
-      if(!b){ showToast('切り出しに失敗したので全体を使います','warning'); return done(S.file); }
+      if(!b){ showToast('切り出しに失敗したので全体を使います','warning'); return S.finish(S.file); }
       var nm=String(S.file.name||'receipt').replace(/\.[^.]+$/,'')+'_crop.jpg';
       /* 縮小は入れない。長辺2400への調整は _invNormalizeJpeg が一手に引き受ける。 */
-      done(new File([b], nm, {type:'image/jpeg'}));
+      S.finish(new File([b], nm, {type:'image/jpeg'}));
     }, 'image/jpeg', 0.95);
   }catch(e){
     console.warn('crop apply', e);
     showToast('切り出しに失敗したので全体を使います','warning');
-    done(S.file);
+    S.finish(S.file);
   }
 }
 /* 写真を受け取り、確認後のファイルを返す。何かあれば元のファイルをそのまま返す。 */
 function askInvoiceCrop(file){
   return new Promise(function(resolve){
-    var url;
-    try{ url=URL.createObjectURL(file); }catch(e){ return resolve(file); }
+    var url=null, settled=false;
+    /* v892: 抜け道を1つにする。× / 背景タップ / 例外 / 切り出し失敗のどれでも
+       ここを通り、必ず1回だけ resolve する。返せないと await が固まり、
+       撮影しても読み取りも保存も始まらない（v890 の事故）。 */
+    var finish=function(f){
+      if(settled) return; settled=true;
+      _cropS=null;
+      try{ _cropClose(); }catch(e){}
+      try{ if(url) URL.revokeObjectURL(url); }catch(e){}
+      resolve(f || file);
+    };
+    try{ url=URL.createObjectURL(file); }catch(e){ return finish(file); }
     var img=new Image();
-    img.onerror=function(){ try{URL.revokeObjectURL(url);}catch(e){} resolve(file); };
+    img.onerror=function(){ finish(file); };
     img.onload=function(){
       try{
         var iw=img.naturalWidth||img.width, ih=img.naturalHeight||img.height;
@@ -51266,8 +51325,9 @@ function askInvoiceCrop(file){
         var CW=Math.min(760, iw), scale=CW/iw, ch=Math.max(1,Math.round(ih*scale));
         var base=document.createElement('canvas'); base.width=CW; base.height=ch;
         base.getContext('2d').drawImage(img,0,0,CW,ch);
-        openModal('<div class="modal-title"><i class="ti ti-crop" style="color:var(--accent)"></i> '
-          + t('伝票の範囲を確認','Check the receipt area')+'</div>'
+        var ok=_cropOpen('<div class="modal-title"><span><i class="ti ti-crop" style="color:var(--accent)"></i> '
+          + t('伝票の範囲を確認','Check the receipt area')+'</span>'
+          + '<button class="modal-close" onclick="cropDismiss()">\u00d7</button></div>'
           + '<div style="font-size:11.5px;color:var(--muted);margin-bottom:7px;line-height:1.6">'
           + (auto
               ? '<i class="ti ti-sparkles" style="color:var(--green)"></i> '
@@ -51290,23 +51350,23 @@ function askInvoiceCrop(file){
           + '<i class="ti ti-photo"></i> '+t('全体を使う','Use whole photo')+'</button>'
           + '<button class="btn btn-primary" onclick="cropApply(false)">'
           + '<i class="ti ti-scan"></i> '+t('この範囲で読み取る','Use this area')+'</button></div>');
-        var canvas=document.getElementById('crop-cv');
-        if(!canvas){ try{URL.revokeObjectURL(url);}catch(e){} return resolve(file); }
+        var canvas=ok ? document.getElementById('crop-cv') : null;
+        if(!canvas) return finish(file);
         _cropS={ canvas:canvas, base:base, img:img, url:url, file:file,
                  iw:iw, ih:ih, scale:scale, auto:auto, drag:null,
                  box: auto ? { x:auto.x*CW, y:auto.y*ch, w:auto.w*CW, h:auto.h*ch }
                            : { x:CW*0.05, y:ch*0.05, w:CW*0.90, h:ch*0.90 },
-                 resolve:resolve };
+                 finish:finish };
         _cropDraw(); _cropInfo();
       }catch(e){
         console.warn('askInvoiceCrop', e);
-        try{ URL.revokeObjectURL(url); }catch(_){}
-        resolve(file);
+        finish(file);
       }
     };
     img.src=url;
   });
 }
+
 async function realInvoiceOCR(input){
   var file=input&&input.files&&input.files[0];
   if(!file) return;
