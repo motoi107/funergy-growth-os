@@ -27678,7 +27678,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '892';
+const APP_VERSION = '893';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50436,7 +50436,8 @@ function openInvoiceModal() {
       <input class="form-input" type="date" id="inv-docdate" value="${(function(){var _d=new Date();return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})()}">
     </div>
     <div class="form-group"><label class="form-label">業者 / 購入先</label>
-      <input class="form-input" id="inv-vendor" list="inv-vendor-list" placeholder="業者名を入力or選択" oninput="checkVendorRegistered();invKindRefresh()">
+      <input class="form-input" id="inv-vendor" list="inv-vendor-list" placeholder="写真から自動で入ります" oninput="invVendorTouched();checkVendorRegistered();invKindRefresh()">
+      <div style="font-size:10.5px;color:var(--muted);margin-top:3px"><i class="ti ti-sparkles" style="color:var(--green)"></i> 入力は不要です。写真を撮ると読み取って入ります（違うときだけ直してください）</div>
       <datalist id="inv-vendor-list">${vendorsSorted().map(v=>`<option value="${v.name}">`).join('')}</datalist>
       <div id="inv-vendor-warn"></div>
     </div>
@@ -50690,11 +50691,11 @@ function _jpegToPdfBytes(jpegBytes, iw, ih){
   parts.forEach(function(u){ out.set(u,p); p+=u.length; });
   return out;
 }
-/* canvas を通して JPEG に揃える。ここには2つ意味がある。
-   ① iPhone の写真は EXIF に回転が入っている。生のまま PDF に埋めると横倒しになる。
-      canvas に描くとブラウザが回転を適用した状態になるので、必ず正しい向きで入る。
-   ② 4〜12MB の写真を 2400px に抑える。送信が重いこと自体が
-      7月のレシート消失（アップロード失敗の握り潰し）の背景でもあった。 */
+/* canvas を通して JPEG に揃える。
+   v893: 向きの補正はここではやらない。invUprightFile() が取り込み時に済ませており、
+   ここに来る画像は EXIF を持たない。二重に回すと逆に倒れる。
+   残る役割は、4〜12MB の写真を 2400px に抑えること。送信が重いこと自体が
+   7月のレシート消失（アップロード失敗の握り潰し）の背景でもあった。 */
 function _invNormalizeJpeg(file){
   return new Promise(function(res, rej){
     var url;
@@ -51001,6 +51002,10 @@ function applyVendorSuggest(name){
   el.value=name; checkVendorRegistered();
   showToast('業者を「'+name+'」に設定しました','success');
 }
+/* v893: 手で触ったら自動上書きの対象から外す。 */
+function invVendorTouched(){
+  try{ var el=document.getElementById('inv-vendor'); if(el) el.dataset.auto='0'; }catch(e){}
+}
 function checkVendorRegistered() {
   var name = document.getElementById('inv-vendor').value.trim();
   var warn = document.getElementById('inv-vendor-warn');
@@ -51166,6 +51171,138 @@ function detectDocRect(rgba, W, H){
   return { x:x0/W, y:y0/H, w:(x1-x0+1)/W, h:(y1-y0+1)/H };
 }
 
+/* ===== v893: 伝票の向きを取り込み時に必ず立てる =====
+   Motoさん報告：文字の向きが勝手に変わる。原因は EXIF の回転タグ。
+   iPhone の写真は画素を回さず「回して表示してね」というタグだけ付ける。
+   さらに厄介なのは、そのタグを自動で適用するかがブラウザ実装で違うこと。
+   決め打ちすると端末ごとに向きが変わる（＝勝手に変わって見える）。
+   なので:
+   ① タグを自分で読む
+   ② この端末が自動適用するかを、見本を1枚デコードして実測する
+   ③ 自動適用されない端末でだけ自分で回す
+   ④ 結果を EXIF の無い JPEG に焼き直す
+   ここから先（切り出し・OCR・PDF）は向きを一切考えなくてよくなる。
+   向きの扱いはこの1か所だけが持つ。 */
+function _exifOrientation(bytes){
+  try{
+    if(!bytes || bytes.length<4) return 1;
+    if(bytes[0]!==0xFF || bytes[1]!==0xD8) return 1;        /* SOI でなければ JPEG でない */
+    var p=2, len=bytes.length;
+    while(p+3<len){
+      if(bytes[p]!==0xFF){ p++; continue; }
+      var marker=bytes[p+1];
+      if(marker===0xD8 || marker===0x01 || (marker>=0xD0 && marker<=0xD7)){ p+=2; continue; }
+      if(marker===0xDA || marker===0xD9) break;             /* 画像データに入ったら終わり */
+      var size=(bytes[p+2]<<8)|bytes[p+3];
+      if(size<2) break;
+      if(marker===0xE1 && p+9<len && bytes[p+4]===0x45 && bytes[p+5]===0x78
+         && bytes[p+6]===0x69 && bytes[p+7]===0x66 && bytes[p+8]===0x00){   /* Exif\0\0 */
+        var tiff=p+10;
+        if(tiff+8>len) return 1;
+        var be;
+        if(bytes[tiff]===0x4D && bytes[tiff+1]===0x4D) be=true;
+        else if(bytes[tiff]===0x49 && bytes[tiff+1]===0x49) be=false;
+        else return 1;
+        var u16=function(o){ return be?((bytes[o]<<8)|bytes[o+1]):((bytes[o+1]<<8)|bytes[o]); };
+        var u32=function(o){
+          return be ? (((bytes[o]<<24)|(bytes[o+1]<<16)|(bytes[o+2]<<8)|bytes[o+3])>>>0)
+                    : (((bytes[o+3]<<24)|(bytes[o+2]<<16)|(bytes[o+1]<<8)|bytes[o])>>>0);
+        };
+        if(u16(tiff+2)!==42) return 1;
+        var ifd=tiff+u32(tiff+4);
+        if(ifd+2>len) return 1;
+        var n=u16(ifd);
+        for(var i=0;i<n;i++){
+          var e=ifd+2+i*12;
+          if(e+12>len) break;
+          if(u16(e)===0x0112){ var v=u16(e+8); return (v>=1&&v<=8)?v:1; }
+        }
+        return 1;
+      }
+      p+=2+size;
+    }
+  }catch(e){}
+  return 1;
+}
+/* 向き→canvas 変換。(w,h) は回転前の見た目サイズ。 */
+function _orientTransform(ori, w, h){
+  var swap=(ori>=5 && ori<=8);
+  var tf;
+  switch(ori){
+    case 2: tf=[-1,0,0,1,w,0]; break;      /* 左右反転 */
+    case 3: tf=[-1,0,0,-1,w,h]; break;     /* 180度 */
+    case 4: tf=[1,0,0,-1,0,h]; break;      /* 上下反転 */
+    case 5: tf=[0,1,1,0,0,0]; break;       /* 転置 */
+    case 6: tf=[0,1,-1,0,h,0]; break;      /* 右90度 */
+    case 7: tf=[0,-1,-1,0,h,w]; break;     /* 転置+180 */
+    case 8: tf=[0,-1,1,0,0,w]; break;      /* 左90度 */
+    default: tf=[1,0,0,1,0,0];
+  }
+  return { cw: swap?h:w, ch: swap?w:h, tf: tf };
+}
+/* この端末が EXIF の回転を自動で適用するか。1度だけ実測して覚える。 */
+var _exifAutoRotate=null;
+function _detectExifAutoRotate(){
+  if(_exifAutoRotate!==null) return Promise.resolve(_exifAutoRotate);
+  return new Promise(function(res){
+    var done=function(v){ _exifAutoRotate=v; res(v); };
+    try{
+      var im=new Image();
+      /* 2x1 に orientation=6。自動適用されるなら 1x2 になって返る。 */
+      im.onload=function(){ done(im.naturalWidth===1 && im.naturalHeight===2); };
+      im.onerror=function(){ done(false); };
+      im.src='data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4QAiRXhpZgAATU0AKgAAAAgAAQESAAMAAAABAAYAAAAAAAD/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLikxMC4pLSwzOko+MzZGNywtQFdBRkxOUlNSMj5aYVpQYEpRUk//2wBDAQ4ODhMREyYVFSZPNS01T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0//wAARCAABAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD06iiigD//2Q==';
+    }catch(e){ done(false); }
+  });
+}
+/* 取り込んだ写真を「まっすぐ・EXIFなし」の JPEG にして返す。
+   何かあれば元のファイルをそのまま返す（写真を失わないことを優先）。 */
+async function invUprightFile(file){
+  try{
+    if(!file || _invIsPdf(file)) return file;
+    var buf=await file.arrayBuffer();
+    var ori=_exifOrientation(new Uint8Array(buf));
+    var auto=await _detectExifAutoRotate();
+    /* 自動適用する端末では img はすでに立っているので、回す量は 0 でよい。 */
+    var need = auto ? 1 : ori;
+    /* タグが無ければ触らない。
+       タグがあるときは、端末が自動で立てていても必ず焼き直す。EXIF を残したまま
+       先へ流すと、タグを見ない相手（OCR に送るバイト列、PDF への埋め込み）に
+       渡ったときだけ倒れる。端末や経路によって出たり出なかったりする、
+       いちばん追いにくい形の不具合になるため、ここで確実に落としておく。 */
+    if(ori===1) return file;
+    return await new Promise(function(res){
+      var url;
+      try{ url=URL.createObjectURL(file); }catch(e){ return res(file); }
+      var img=new Image();
+      img.onerror=function(){ try{URL.revokeObjectURL(url);}catch(e){} res(file); };
+      img.onload=function(){
+        try{
+          var w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+          if(!w||!h) throw new Error('size unknown');
+          var o=_orientTransform(need, w, h);
+          var cv=document.createElement('canvas'); cv.width=o.cw; cv.height=o.ch;
+          var cx=cv.getContext('2d');
+          cx.fillStyle='#fff'; cx.fillRect(0,0,o.cw,o.ch);
+          cx.setTransform(o.tf[0],o.tf[1],o.tf[2],o.tf[3],o.tf[4],o.tf[5]);
+          cx.drawImage(img,0,0,w,h);
+          cx.setTransform(1,0,0,1,0,0);
+          cv.toBlob(function(b){
+            try{ URL.revokeObjectURL(url); }catch(e){}
+            if(!b) return res(file);
+            var nm=String(file.name||'photo').replace(/\.[^.]+$/,'')+'.jpg';
+            res(new File([b], nm, {type:'image/jpeg'}));
+          }, 'image/jpeg', 0.95);
+        }catch(e){
+          console.warn('invUprightFile draw', e);
+          try{ URL.revokeObjectURL(url); }catch(_){}
+          res(file);
+        }
+      };
+      img.src=url;
+    });
+  }catch(e){ console.warn('invUprightFile', e); return file; }
+}
 /* ---- 範囲の確認画面 ---- */
 var _cropS=null, _CROP_H=13;
 /* v892: openModal() は使わない。撮影ボタンが Invoice/Receipt登録モーダルの中に
@@ -51370,9 +51507,11 @@ function askInvoiceCrop(file){
 async function realInvoiceOCR(input){
   var file=input&&input.files&&input.files[0];
   if(!file) return;
+  /* v893: 撮影の入口。ここが一番 EXIF の回転タグが付く経路。 */
+  var up = _invIsPdf(file) ? file : await invUprightFile(file);
   /* v890: こちらの入口も同じ扱いにする。片方だけ切れる状態を作らない。 */
-  var use = _invIsPdf(file) ? file : await askInvoiceCrop(file);
-  await runInvoiceOCR(use || file);
+  var use = _invIsPdf(up) ? up : await askInvoiceCrop(up);
+  await runInvoiceOCR(use || up);
   try{ input.value=''; }catch(e){}
 }
 async function onInvoiceFilePicked(input){
@@ -51393,9 +51532,12 @@ async function onInvoiceFilePicked(input){
       if(el) el.innerHTML='<div class="alert alert-warning" style="margin-bottom:8px"><i class="ti ti-alert-triangle"></i> PDFの読込に失敗しました。画像（JPG/PNG）にして読み取るか、手入力で追加してください。</div>';
     }
   } else {
+    /* v893: 先に向きを立てる。ここから先は EXIF を持たない画像しか流れない。
+       切り出しの座標計算も、向きが揺れていると別の場所を切ってしまう。 */
+    var up = await invUprightFile(file);
     /* v890: 伝票の範囲を確認してから読み取る。使うのは枠の中だけ。 */
-    var use = await askInvoiceCrop(file);
-    await runInvoiceOCR(use || file);
+    var use = await askInvoiceCrop(up);
+    await runInvoiceOCR(use || up);
   }
   try{ input.value=''; }catch(e){}
 }
@@ -51461,13 +51603,17 @@ async function runInvoiceOCR(file){
     }
     if(data && data.vendor){
       var vEl=document.getElementById('inv-vendor');
-      if(vEl && !vEl.value){
+      /* v893: 自動で入れた値は撮り直しで上書きする。手で直した値は尊重する。
+         空のときだけ入れる作りだと、撮り直しても前の業者名が残り続ける。 */
+      if(vEl && (!vEl.value || vEl.dataset.auto==='1')){
         window._invVendorRaw=String(data.vendor||'');
         /* v611: 読取名（法人格・支店名付き）を登録業者へ自動で寄せる。確度が低い時のみ読取名のまま。 */
         var _vm=(typeof matchVendorBest==='function')?matchVendorBest(data.vendor):null;
         if(_vm && _vm.score>=0.8){ vEl.value=_vm.vendor.name; showToast('業者を自動判定: '+_vm.vendor.name,'success'); }
         else { vEl.value=data.vendor; }
+        try{ vEl.dataset.auto='1'; }catch(e){}   /* 自動で入れた印 */
         if(typeof checkVendorRegistered==='function') checkVendorRegistered();
+        if(typeof invKindRefresh==='function') invKindRefresh();
       }
     }
     // 店舗名の自動判定（OCR応答に storeName / shipTo 等があれば対象店舗を自動選択）
