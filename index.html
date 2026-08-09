@@ -8238,7 +8238,11 @@ function funergyNowStores(){
   if (!financial && g3 && typeof myStoreId==='function' && isTotoyaStore(myStoreId())) {
     return sortByLoginOrder(activeStores().filter(function(s){ return isTotoyaStore(s.id); }));
   }
-  return sortByLoginOrder(getVisibleStores());
+  /* v894: ダッシュボードの Funergy Now も店舗別KPIと同じスコープにする。
+     片方だけ全店だと、同じ画面で見えている店の数が食い違って混乱する。
+     dashScopeStores() は AM 以外では getVisibleStores() をそのまま返すので、
+     GM・CEO・SL・crew の見え方は変わらない。 */
+  return sortByLoginOrder((typeof dashScopeStores==='function') ? dashScopeStores() : getVisibleStores());
 }
 /* 実店舗ID → レシピのオーナーキー（Totoya実店舗は'TOTOYA'に集約） */
 function recipeOwnerKey(storeId){ return isTotoyaStore(storeId) ? 'TOTOYA' : storeId; }
@@ -13931,10 +13935,37 @@ function favRemove(id){
   if(!confirm('「'+(r.label||'')+'」をお気に入りから削除しますか？')) return;
   r._deleted=true; r.ts=Date.now(); setFavsRaw(raw); updateFavStar(); renderPage(curPage);
 }
+/* ===== v894: ダッシュボードの店舗別KPIだけ AM にも全店を出す =====
+   Motoさん指示：GM と同じ見え方にする。ただしダッシュボードだけ。
+   getVisibleStores() を広げると予実・発注・タスク・出力など全画面に波及するので、
+   あの関数には絶対に手を入れない。ここで別のスコープを作って、
+   ダッシュボードの表示だけがこちらを使う。
+   ・数字は全店見える
+   ・管轄外の店には入れない（下の dashCanEnter で遷移を塞ぐ）
+   ・優先アクション／本日のタスクは管轄店舗のまま。入れない店の警告を出しても動けない。 */
+function dashScopeStores(){
+  if(curRole!=='am') return getVisibleStores();
+  /* 上部で店舗を1つ選んでいるときは、GM と同じくその店だけに絞る。 */
+  var out=(curStore==='ALL'||curStore==='OFFICE')
+    ? activeStores()
+    : activeStores().filter(function(s){ return s.id===curStore; });
+  return sortByLoginOrder(out);
+}
+/* AM が実際に入ってよい店か。管轄外は数字を見せるだけで、画面遷移はさせない。
+   ここを緩めると、予実など管轄外の店の中身が開けてしまう。 */
+function dashCanEnter(id){
+  if(curRole!=='am') return true;
+  try{
+    var ids=myAmStores().concat(mySupportStores());
+    return ids.indexOf(id)>=0;
+  }catch(e){ return false; }
+}
 function renderDashboard() {
   var rc = ROLE_CONFIG[curRole];
   if (!rc.financial) return canSeeDashboard() ? renderSlFunergyNow() : renderMypage();
-  var stores = sortByLoginOrder(getVisibleStores()).map(s => storeData(s.id));
+  /* v894: 表示するKPIは dashScopeStores()（AM は全店）。
+     同じ行が renderLaborOverview() にもあるが、あちらは管轄店舗のまま。 */
+  var stores = sortByLoginOrder(dashScopeStores()).map(s => storeData(s.id));
   var tB = stores.reduce((a,s)=>a+s.b,0);
   var tA = stores.reduce((a,s)=>a+s.a,0);
   var tp = pct(tA,tB);
@@ -13954,13 +13985,17 @@ function renderDashboard() {
   if (!['gm','ceo'].includes(curRole)) {
     getVisibleStores().forEach(s=>{ var ops=getDailyOps(s.id); var inc=ops.filter(t=>t.required&&!t.done); if(inc.length) reqAlerts.push({store:s.name, count:inc.length, id:s.id}); });
   }
-  var danger = stores.filter(s=>s.status==='danger');
-  var laborOver = stores.filter(s=>s.labor>32);
-  var fcOver = stores.filter(s=>s.fc>34);
+  /* v894: 優先アクションは管轄店舗のみに絞る。全店の警告を出しても、
+     AM は管轄外の店に入れないので動きようがない（押しても遷移しない）。 */
+  var actionable = stores.filter(function(s){ return dashCanEnter(s.id); });
+  var danger = actionable.filter(s=>s.status==='danger');
+  var laborOver = actionable.filter(s=>s.labor>32);
+  var fcOver = actionable.filter(s=>s.fc>34);
 
   var html = '';
   if (window._dashOpen['dash-stores']===undefined) window._dashOpen['dash-stores']=true; // 店舗別リストは既定で開く
-  var scopeLabel = curRole==='am' ? t('管轄店舗','My stores') : t('全店','All stores');
+  /* v894: AM も全店を見るようになったので表示を合わせる。 */
+  var scopeLabel = t('全店','All stores');
   html += `<div class="card" id="rt-sales-card">
     <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${scopeLabel} · ${t('本日','Today')}</span></div>
     <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
@@ -13985,11 +14020,13 @@ function renderDashboard() {
         var color = statusColor(s.status);
         var sFc = s.fc>0 ? statusColor(statusFromCeil(s.fc,31,34)) : 'var(--muted)';
         var sL  = s.labor>0 ? statusColor(statusFromCeil(s.labor,29,32)) : 'var(--muted)';
+        /* v894: 管轄外の店は数字だけ。タップしても中には入れない。 */
+        var _canEnter = dashCanEnter(s.id);
         html += `<div class="store-row">
           <div class="store-dot" style="background:${s.color}"></div>
-          <div style="flex:1" onclick="switchStore('${s.id}');go('budget')">
+          <div style="flex:1${_canEnter?'':';cursor:default'}" ${_canEnter?`onclick="switchStore('${s.id}');go('budget')"`:''}>
             <div style="display:flex;align-items:center;justify-content:space-between;">
-              <div class="store-name">${s.name}</div>
+              <div class="store-name">${s.name}${_canEnter?'':` <span class="tag tag-gray" style="font-size:9.5px;vertical-align:middle">${t('管轄外','Other')}</span>`}</div>
               <span class="tag ${statusTag(s.status)}">${s.sp}%</span>
             </div>
             <div class="progress-bar"><div class="progress-fill" style="background:${color};width:${Math.min(s.sp,100)}%"></div></div>
@@ -14000,7 +14037,7 @@ function renderDashboard() {
             </div>
             ${(function(){var _p=ppaTripleLine(s.id,0); return _p?'<div style="margin-top:5px;font-size:13px">'+_p+'</div>':'';})()}
           </div>
-          <button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>
+          ${_canEnter?`<button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="event.stopPropagation();switchStore('${s.id}');openStoreCmd()"><i class="ti ti-building-store"></i></button>`:''}
         </div>`;
       });
       html += '</div>';
@@ -27678,7 +27715,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '893';
+const APP_VERSION = '894';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
