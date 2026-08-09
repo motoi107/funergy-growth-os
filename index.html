@@ -27719,7 +27719,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '895';
+const APP_VERSION = '896';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -30708,8 +30708,11 @@ function renderShiftOptConfig(storeId){
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${getWeekStr()}週のAvailability提出を元に、上記条件で最適メンバーを自動選出します。</div>
     <button class="btn btn-secondary" style="width:100%" onclick="showOptPreview('${storeId}')"><i class="ti ti-player-play"></i> ${getWeekStr()}週のプレビューを生成</button>
   </div>`;
-  if (window._optPreview && _optPreview.storeId===storeId && _optPreview.week===getWeekStr()) {
-    html += optPreviewHtml(_optPreview.res, storeId, getWeekStr());
+  /* v896: 代入は window._optPreview なのに参照だけ window. が抜けていた。
+     いまは window のプロパティが同名のグローバル変数として見えるので偶然動くが、
+     宣言としては存在しない。書き方を代入側に揃える。 */
+  if (window._optPreview && window._optPreview.storeId===storeId && window._optPreview.week===getWeekStr()) {
+    html += optPreviewHtml(window._optPreview.res, storeId, getWeekStr());
   }
   return html;
 }
@@ -51969,14 +51972,21 @@ async function saveInvoice() {
   var storeObj = STORES.find(x=>x.id===invStoreId);
   var imagePath = null;
   if (window._invoicePhotoFile) {
-    var saveBtn = event && event.target ? event.target : null;
+    /* v896: window.event に頼っていた。非標準で、ボタン以外（タイマーや
+       Promise の後続、プログラムからの呼び出し）から saveInvoice() を呼ぶと
+       undefined になり、二重押し防止が効かない。同じ関数の下で既に使っている
+       querySelector に揃える。 */
+    var saveBtn = document.querySelector('.modal .btn-primary');
+    /* 元のラベルを控える。ボタンは『保存・価格更新』または『申請する』で、
+       固定文字で戻すと失敗後に別のラベルへ化ける。 */
+    var saveBtnLabel = saveBtn ? saveBtn.textContent : '';
     if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '画像を保存中…'; }
     window._invUploadErr = '';
     imagePath = await uploadInvoiceImage(window._invoicePhotoFile, storeObj?storeObj.name:invStoreId);
     /* v872: 画像を選んだのに上がらなかったときは、黙って明細だけ登録しない。
    ここを素通りさせていたため、現場は成功したと思って画面を閉じ、写真が失われていた。 */
 if (!imagePath) {
-  if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+  if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = saveBtnLabel; }
   var _go = confirm('画像を保存できませんでした。'
     + (window._invUploadErr ? ('\n理由: ' + window._invUploadErr) : '')
     + '\n\n［キャンセル］写真を保持したまま、通信を確認してもう一度保存する（おすすめ）'
