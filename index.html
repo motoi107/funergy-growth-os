@@ -27756,7 +27756,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '899';
+const APP_VERSION = '900';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -47622,6 +47622,11 @@ const SURVEY_STORE_NAME = {
   'F06'  : 'LaLa'
 };
 
+/* v900: 自店/他店の選択肢も日英併記にした。Googleフォームの選択肢と1文字も違ってはいけない。
+   前後の空白・スラッシュ前後の空白まで一致させること。ずれると空欄で通る。 */
+const SURVEY_HOME_LABEL  = '自分の所属店 / My store';
+const SURVEY_OTHER_LABEL = '他店 / Another store';
+
 var _dcState = { storeCode:null, used:false, busy:false, isHome:null };   /* v898: isHome はサーバーの判定 */
 
 /* ログイン中ユーザー。既存の _curEmp() / myGradeNum() に合わせる。
@@ -47645,7 +47650,7 @@ function surveyUrl(storeCode, homeStore, isHomeOverride){
     ? isHomeOverride : (storeCode === homeStore);
   return DISCOUNT_FORM_BASE
     + '&' + DISCOUNT_E_STORE + '=' + encodeURIComponent(name)
-    + '&' + DISCOUNT_E_HOME  + '=' + encodeURIComponent(isHome ? '自分の所属店' : '他店');
+    + '&' + DISCOUNT_E_HOME  + '=' + encodeURIComponent(isHome ? SURVEY_HOME_LABEL : SURVEY_OTHER_LABEL);
 }
 
 /* v898: staff_discount_use へは anon で直接書かない。Edge Function 経由にする。
@@ -47787,9 +47792,13 @@ function renderDiscount(){
 /* フォームへ実際に送る文字列の一覧。表記ゆれは「エラーを出さずに空欄で通る」ため、
    展開前に Googleフォームのプルダウンと目視で突き合わせる。 */
 function dcSelfCheck(){
-  return Object.keys(SURVEY_STORE_NAME).map(function(k){
+  var a = Object.keys(SURVEY_STORE_NAME).map(function(k){
     return k + '  →  ' + SURVEY_STORE_NAME[k];
-  }).join('\n');
+  });
+  a.push('---- 自店/他店 ----');
+  a.push('自店  →  ' + SURVEY_HOME_LABEL);
+  a.push('他店  →  ' + SURVEY_OTHER_LABEL);
+  return a.join('\n');
 }
 
 function renderMypage() {
