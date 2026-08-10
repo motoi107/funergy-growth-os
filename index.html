@@ -20068,7 +20068,7 @@ function renderBudgetDaily() {
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div></div>
     <table class="inv-table" style="min-width:${isAgg?'620':'1080'}px;font-size:12px"><thead><tr>
-      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'</th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'</th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
+      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'</th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'</th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th><th>${t('人件費率*','Labor %*')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
   var cumB=0, cumA=0;
@@ -20106,6 +20106,10 @@ function renderBudgetDaily() {
       tipTotal = tf.total;
       if (dayAct>0 && tipTotal>0) tipRate = tipTotal/dayAct*100;
     }
+    /* v901: 日別の人件費率＝人件費 ÷ 実績。
+       分子の dayLaborCost は残業割増を含まない（週40h超の判定は週単位でしか出せない）ため、
+       laborCoreForYm を使う月次KPIの人件費率とは一致しない。表下に注記あり。 */
+    var dayLaborRate = (hasAct && dayAct>0 && dayLaborCost>0) ? dayLaborCost/dayAct*100 : null;
     cumB += dayBud; cumA += (hasAct?dayAct:0);
     var rate = dayBud&&hasAct ? Math.round(dayAct/dayBud*100) : null;
     var cumRate = cumB ? Math.round(cumA/cumB*100) : 0;
@@ -20124,10 +20128,13 @@ function renderBudgetDaily() {
       ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="${t('チップ総額','Tip total')} $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
       <td style="font-size:11px;color:var(--muted)">${dayLaborH>0?dayLaborH.toFixed(1):'—'}</td>
       <td style="font-size:11px;color:var(--muted)">${dayLaborCost>0?fmtUSD2(dayLaborCost):'—'}</td>
+      <td style="font-size:11px">${dayLaborRate!=null?`<span title="${fmtUSD2(dayLaborCost)} ÷ ${fmtUSD2(dayAct)}">${dayLaborRate.toFixed(1)}%</span>`:'—'}</td>
       ${(!isAgg&&canEdit)?`<td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openDailyActualModal('${scopeStores[0].id}','${d.date}','${d.dow}')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>`:''}
     </tr>`;
   });
   html += '</tbody></table>';
+  /* v901: 月次KPIとの差の理由。ここを消すと日別と月次のズレが説明されないまま残る。 */
+  html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('* 人件費率＝人件費 ÷ 実績。日別は週40時間超の残業割増を含まないため、上部の月次KPIの人件費率とは一致しません。','* Labor % = Labor $ ÷ Actual. Daily values exclude the weekly overtime premium, so they do not match the monthly Labor % KPI above.')}</p>`;
   if (isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('集計ビューでは天気・イベントは各店ビューで確認・入力できます','In aggregate view, weather/events are viewed and entered per store')}</p>`;
   html += '</div>';
   return html;
@@ -27756,7 +27763,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '900';
+const APP_VERSION = '901';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
