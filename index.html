@@ -13223,7 +13223,11 @@ function initApp() {
   /* v897: QR（?s=店舗コード）で開かれていたら割引カードに着地する。
      このアプリにハッシュルーターは無いので、ここで行き先を差し替えないと
      コードは読めても割引画面には辿り着かない。 */
-  try{ if(!curStoreLogin && typeof dcPickStoreFromUrl==='function' && dcPickStoreFromUrl()) curPage='discount'; }catch(e){}
+  /* v898: buildNav() は上で既に走っているので、ここで行き先を変えたら組み直す。
+     v897 は中身だけ割引証・タブは「ダッシュボード」のままになっていた。 */
+  try{ if(!curStoreLogin && typeof dcPickStoreFromUrl==='function' && dcPickStoreFromUrl()){
+    curPage='discount'; curGroup=groupOfPage('discount').id; buildNav();
+  } }catch(e){}
   curGroup = groupOfPage(curPage).id;
   renderPage(curPage);
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
@@ -27752,7 +27756,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '897';
+const APP_VERSION = '898';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -47618,7 +47622,7 @@ const SURVEY_STORE_NAME = {
   'F06'  : 'LaLa'
 };
 
-var _dcState = { storeCode:null, used:false, busy:false };
+var _dcState = { storeCode:null, used:false, busy:false, isHome:null };   /* v898: isHome はサーバーの判定 */
 
 /* ログイン中ユーザー。既存の _curEmp() / myGradeNum() に合わせる。
    GM・CEO・Chef・経理は store:'ALL' なので home_store は 'ALL' になり、
@@ -47633,31 +47637,32 @@ function _cardUser(){
   };
 }
 
-function surveyUrl(storeCode, homeStore){
+function surveyUrl(storeCode, homeStore, isHomeOverride){
   var name = SURVEY_STORE_NAME[storeCode];
   if(!name) return null;   /* 未知コードはボタンを出さない（空欄送信を防ぐ） */
-  var isHome = storeCode === homeStore;
+  /* v898: サーバーが返した判定があればそれを使う（ログとフォームの答えを一致させる） */
+  var isHome = (isHomeOverride === true || isHomeOverride === false)
+    ? isHomeOverride : (storeCode === homeStore);
   return DISCOUNT_FORM_BASE
     + '&' + DISCOUNT_E_STORE + '=' + encodeURIComponent(name)
     + '&' + DISCOUNT_E_HOME  + '=' + encodeURIComponent(isHome ? '自分の所属店' : '他店');
 }
 
+/* v898: staff_discount_use へは anon で直接書かない。Edge Function 経由にする。
+   行の中身（staff_id / grade / 所属店 / used_at）はサーバーがマスターから組み立てるので、
+   ここでは本人確認の材料（氏名＋セッションPIN）と店舗コードだけを渡す。 */
 async function insertDiscountUse(storeCode){
-  var u = _cardUser();
-  var row = {
-    staff_id        : u.staff_id,
-    staff_name      : u.name,
-    staff_home_store: u.home_store,
-    staff_grade     : u.grade,
-    store_code      : storeCode,
-    is_home_store   : storeCode === u.home_store
-  };
-  var res = await fetch(SUPABASE_URL + '/rest/v1/staff_discount_use', {
+  if(!curUserName || !window._sessionPin){
+    throw new Error('本人確認ができません。一度ログアウトして入り直してください。');
+  }
+  var res = await fetch(SUPABASE_URL + '/functions/v1/discount-log', {
     method : 'POST',
-    headers: supaHeaders({ Prefer:'return=minimal' }),
-    body   : JSON.stringify(row)
+    headers: supaHeaders(),
+    body   : JSON.stringify({ action:'use', name:curUserName, pin:window._sessionPin, store:storeCode })
   });
-  if(!res.ok) throw new Error('HTTP ' + res.status + ' ' + await res.text());
+  var j = null; try{ j = await res.json(); }catch(e){}
+  if(!res.ok || !j || !j.ok) throw new Error('HTTP ' + res.status + ' ' + ((j && j.error) || ''));
+  _dcState.isHome = !!j.is_home_store;   /* 自店/他店はサーバーを正とする */
   return true;
 }
 
@@ -47740,7 +47745,7 @@ function renderDiscount(){
     }
 
     var storeName = SURVEY_STORE_NAME[sc] || sc;
-    var sUrl = surveyUrl(sc, u.home_store);
+    var sUrl = surveyUrl(sc, u.home_store, _dcState.isHome);
     var homeLabel = SURVEY_STORE_NAME[u.home_store] || u.home_store || '—';
 
     var h = '<div class="dc-card' + (_dcState.used ? ' is-used' : '') + '">'
