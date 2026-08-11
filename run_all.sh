@@ -45,7 +45,7 @@ if [ -f discount_survey.gs ]; then
 fi
 
 echo "=== 検証 ==="
-for f in verify_v896 verify_v901 smoke_v900 verify_v886 verify_v887 verify_v888 verify_v891 \
+for f in verify_v896 verify_v901 verify_v902 smoke_v900 verify_v886 verify_v887 verify_v888 verify_v891 \
          smoke_v886 smoke_v887 smoke_v889 smoke_v890 smoke_v892 smoke_v893 \
          smoke_v894 smoke_v894_rows smoke_v895; do
   printf "  %-18s " "$f"
