@@ -17883,6 +17883,294 @@ function saveMeetThresholds(){
   MEET_KPI_DEF.forEach(function(d){ var g=parseFloat((document.getElementById('mth-g-'+d.key)||{}).value); var y=parseFloat((document.getElementById('mth-y-'+d.key)||{}).value); if(!isNaN(g)&&!isNaN(y)) setMeetThreshold(d.key, g, y); });
   closeModalDirect(); if(typeof showToast==='function') showToast(t('しきい値を保存しました','Thresholds saved'),'success'); renderPage('budget');
 }
+/* ============================================================
+   v903: 差分分解（中間MTG「原因はどこか」の計算層）
+
+   目的: 「売上 −$18,200」で止めず、
+         ランチかディナーか → どの曜日か → 客数か客単価か まで割る。
+
+   ★分解できるKPIとできないKPIがある。データの持ち方で決まる。
+
+     売上 / 客数 / 客単価  … L/D・曜日とも可
+                             （日次実績の lunchSales 等 ＋ 曜日別予算 dow[seg][i]）
+     リピート率            … L/Dは可（repeatStatsLD）。曜日別の目標が無いので曜日は不可
+     人件費率              … 按分のみ（v902 と同じ理由。割増・給与税・月給が週/月単位）
+     原価率                … 不可。月次Invoice、棚卸は月末のみ
+     ドリンク比率          … 不可。出数が「月×店」で1オブジェクト、L/Dの軸を持たない
+
+   ★当月は「前日まで」で揃える。
+     実績を前日までで取るなら、予算も前日までの曜日回数で作らないと必ず未達に見える。
+     曜日別予算は「その曜日1日あたり」なので、経過した回数を数えて掛ける。
+     （月間の曜日回数 weekdayCountsForMonth を使うと当月では過大になる）
+
+   ★テイクアウトの扱い。
+     日次実績の lunchSales はテイクアウトを含む。一方 予算は lunch/dinner/takeout の3本立て。
+     そのまま L/D だけで比べると、テイクアウトのぶん予算側だけ多くなる。
+     そこで実績側から toLunchSales/toDinnerSales を抜き、
+       店内ランチ ＋ 店内ディナー ＋ テイクアウト = 合計
+     の3つに割って予算と1対1で対応させる。按分はしない。
+   ============================================================ */
+
+/* 日付(YYYY-MM-DD) → 曜日index。DOW=['月',…,'日'] に合わせる（0=月, 6=日）。
+   weekdayCountsForMonth と同じ変換にすること。ここがずれると原因分析が静かに狂う。 */
+function _gapDowIdx(dateISO){
+  var p = String(dateISO).split('-');
+  var jsDow = new Date(+p[0], +p[1]-1, +p[2]).getDay();   /* 0=日 */
+  return (jsDow===0) ? 6 : jsDow-1;
+}
+/* 集計対象の日。当月は前日まで、過去月は月末まで。
+   戻り: [{date, dowIdx}]  ＋ 曜日ごとの経過回数 counts[7] */
+function _gapDaysElapsed(ym){
+  var days = daysOfYm(ym), out = [], counts = [0,0,0,0,0,0,0];
+  var cutoff = null;
+  try { if (ym === curYm()) cutoff = bizToday(); } catch(e){}
+  days.forEach(function(d){
+    if (cutoff && !(d.date < cutoff)) return;      /* 当月は前日まで */
+    var i = _gapDowIdx(d.date);
+    out.push({ date:d.date, dowIdx:i });
+    counts[i]++;
+  });
+  return { days:out, counts:counts };
+}
+/* 曜日別予算の1日あたり。dowSegMonthly と同じ式にする（新しい計算式を作らない）。 */
+function _gapDowPerDay(dow, seg, i){
+  if (!dow || !dow[seg]) return 0;
+  var cell = dow[seg][i] || {};
+  return (seg==='takeout')
+    ? (parseFloat(cell.orders)||0)*(parseFloat(cell.spend)||0)
+    : (parseFloat(cell.guests)||0)*(parseFloat(cell.spend)||0);
+}
+function _gapDowGuestsPerDay(dow, seg, i){
+  if (!dow || !dow[seg]) return 0;
+  var cell = dow[seg][i] || {};
+  return (seg==='takeout') ? (parseFloat(cell.orders)||0) : (parseFloat(cell.guests)||0);
+}
+
+/* 本体。戻り値は必ず {ok, reason, …} の形。数字が作れないときは null を返し 0 にしない。 */
+function _meetGapBreakdown(storeId, ym, key){
+  var NG = { sales:0, guests:0, ppa:0 };
+  if (!(key in NG)) {
+    var why = (key==='fc')     ? { reason:'fc_monthly',   note:'原価は月次集計・棚卸は月末のみのため、月中および区分別には割れません' }
+            : (key==='drink')  ? { reason:'drink_nold',   note:'ドリンク比率は出数（月×店）から算出しており、ランチ/ディナーの区分を持ちません' }
+            : (key==='labor')  ? { reason:'labor_alloc',  note:'人件費率は按分のみ（割増・給与税・月給は日中に割れません）。区分別は会議カードの内訳を参照' }
+            : (key==='repeat') ? { reason:'repeat_ld_only', note:'リピート率はランチ/ディナー別のみ算出できます（曜日別の目標がありません）' }
+            : { reason:'unsupported', note:'このKPIは分解できません' };
+    return { ok:false, key:key, reason:why.reason, note:why.note };
+  }
+
+  var b = null; try { b = getBudgetForMonth(storeId, ym); } catch(e){}
+  if (!b) return { ok:false, key:key, reason:'no_budget', note:'この月の予算が未設定です' };
+  var dow = null; try { dow = getDow(b); } catch(e){}
+  var usesDow = false; try { usesDow = (typeof usesDowMode==='function') ? usesDowMode(b) : false; } catch(e){}
+
+  var el = _gapDaysElapsed(ym);
+  if (!el.days.length) return { ok:false, key:key, reason:'no_days', note:'集計できる日がありません（月初のため）' };
+
+  var da = {}; try { da = getDailyActuals(storeId) || {}; } catch(e){}
+
+  /* 実績を 店内L / 店内D / テイクアウト に割る。テイクアウトは L/D の中に入っているので抜く。 */
+  var A = { lunch:{s:0,g:0}, dinner:{s:0,g:0}, takeout:{s:0,g:0} };
+  var dowA = []; for (var i=0;i<7;i++) dowA.push({ lunch:{s:0,g:0}, dinner:{s:0,g:0}, takeout:{s:0,g:0} });
+  var hasAny = false, hasTO = false;
+  el.days.forEach(function(d){
+    var ov = da[d.date] || {};
+    if (ov.actual == null) return;
+    hasAny = true;
+    var tls = Number(ov.toLunchSales)||0,  tds = Number(ov.toDinnerSales)||0;
+    var tlc = Number(ov.toLunchCount)||0,  tdc = Number(ov.toDinnerCount)||0;
+    if (tls || tds || tlc || tdc) hasTO = true;
+    var ls = (Number(ov.lunchSales)||0)  - tls,  lg = (Number(ov.lunchGuests)||0)  - tlc;
+    var ds = (Number(ov.dinnerSales)||0) - tds,  dg = (Number(ov.dinnerGuests)||0) - tdc;
+    if (ls<0) ls=0; if (lg<0) lg=0; if (ds<0) ds=0; if (dg<0) dg=0;
+    var k = dowA[d.dowIdx];
+    A.lunch.s+=ls;   A.lunch.g+=lg;   k.lunch.s+=ls;   k.lunch.g+=lg;
+    A.dinner.s+=ds;  A.dinner.g+=dg;  k.dinner.s+=ds;  k.dinner.g+=dg;
+    A.takeout.s+=tls+tds; A.takeout.g+=tlc+tdc; k.takeout.s+=tls+tds; k.takeout.g+=tlc+tdc;
+  });
+  if (!hasAny) return { ok:false, key:key, reason:'no_actual', note:'この月の実績がまだ入力されていません' };
+
+  var SEGS = hasTO ? ['lunch','dinner','takeout'] : ['lunch','dinner'];
+  var LBL  = { lunch:'ランチ', dinner:'ディナー', takeout:'テイクアウト' };
+  var val  = function(o){ return (key==='guests') ? o.g : o.s; };
+
+  /* 目標。曜日別予算があれば「経過した曜日回数 × その曜日の1日あたり」。
+     無ければ月次予算を経過日数で日割り（粗いが、既存データで正確に出せる範囲）。 */
+  var T = { lunch:0, dinner:0, takeout:0 }, dowT = [];
+  for (var j=0;j<7;j++) dowT.push({ lunch:0, dinner:0, takeout:0 });
+  var tgtMode = usesDow ? 'dow' : 'prorate';
+  if (usesDow) {
+    SEGS.forEach(function(sg){
+      for (var i2=0;i2<7;i2++){
+        var per = (key==='guests') ? _gapDowGuestsPerDay(dow, sg, i2) : _gapDowPerDay(dow, sg, i2);
+        var v = per * el.counts[i2];
+        dowT[i2][sg] = v; T[sg] += v;
+      }
+    });
+  } else {
+    var segs = {}; try { segs = (typeof getSegments==='function') ? getSegments(b) : {}; } catch(e){}
+    var totalDays = daysOfYm(ym).length, frac = totalDays ? el.days.length/totalDays : 1;
+    SEGS.forEach(function(sg){
+      var m = 0;
+      try {
+        m = (key==='guests')
+          ? ((sg==='takeout') ? (parseFloat((segs[sg]||{}).orders)||0) : (parseFloat((segs[sg]||{}).guests)||0))
+          : ((typeof segSales==='function') ? segSales(segs[sg], sg) : 0);
+      } catch(e){}
+      T[sg] = m * frac;
+      /* 日割りモードでは曜日別の目標が作れない。曜日分解は出さない。 */
+    });
+  }
+
+  /* 区分別 */
+  var ld = {};
+  SEGS.forEach(function(sg){
+    var a = val(A[sg]), t = T[sg];
+    ld[sg] = { label:LBL[sg], act:a, tgt:t, gap:a-t };
+  });
+  var actT = 0, tgtT = 0;
+  SEGS.forEach(function(sg){ actT += val(A[sg]); tgtT += T[sg]; });
+
+  /* 客単価は率なので合算ではなく 売上÷客数 で出し直す */
+  if (key==='ppa') {
+    SEGS.forEach(function(sg){
+      var a = A[sg].g>0 ? A[sg].s/A[sg].g : null;
+      var per = 0, cnt = 0;
+      if (usesDow) { for (var i3=0;i3<7;i3++){ var gpd=_gapDowGuestsPerDay(dow,sg,i3); if(gpd>0){ per += _gapDowPerDay(dow,sg,i3)*el.counts[i3]; cnt += gpd*el.counts[i3]; } } }
+      var t = cnt>0 ? per/cnt : null;
+      ld[sg] = { label:LBL[sg], act:a, tgt:t, gap:(a!=null&&t!=null)?(a-t):null };
+    });
+    var ga = 0, sa = 0, gt = 0, st = 0;
+    SEGS.forEach(function(sg){ ga+=A[sg].g; sa+=A[sg].s; });
+    if (usesDow) SEGS.forEach(function(sg){ for (var i4=0;i4<7;i4++){ gt += _gapDowGuestsPerDay(dow,sg,i4)*el.counts[i4]; st += _gapDowPerDay(dow,sg,i4)*el.counts[i4]; } });
+    actT = ga>0 ? sa/ga : null; tgtT = gt>0 ? st/gt : null;
+  }
+
+  /* 曜日別。曜日別予算が無いときは出さない（推計を混ぜない）。 */
+  var dowOut = null;
+  if (usesDow && key!=='ppa') {
+    dowOut = [];
+    for (var i5=0;i5<7;i5++){
+      var a2 = 0, t2 = 0;
+      SEGS.forEach(function(sg){ a2 += val(dowA[i5][sg]); t2 += dowT[i5][sg]; });
+      dowOut.push({ i:i5, label:DOW[i5], days:el.counts[i5], act:a2, tgt:t2, gap:a2-t2 });
+    }
+  }
+
+  /* 売上の差を「客数のせい」と「客単価のせい」に割る。
+     ΔS = (G実 − G目)×P目 ＋ G実×(P実 − P目)   ← 恒等式なので必ず ΔS に一致する */
+  var cause = null;
+  if (key==='sales' && usesDow) {
+    var Ga=0, Sa=0, Gt=0, St=0;
+    SEGS.forEach(function(sg){
+      Ga += A[sg].g; Sa += A[sg].s;
+      for (var i6=0;i6<7;i6++){ Gt += _gapDowGuestsPerDay(dow,sg,i6)*el.counts[i6]; St += _gapDowPerDay(dow,sg,i6)*el.counts[i6]; }
+    });
+    if (Gt>0 && Ga>0) {
+      var Pt = St/Gt, Pa = Sa/Ga;
+      var byG = (Ga-Gt)*Pt, byP = Ga*(Pa-Pt);
+      cause = { guestsEffect:byG, ppaEffect:byP,
+        driver: (Math.abs(byG)>=Math.abs(byP)) ? 'guests' : 'ppa',
+        guestsAct:Ga, guestsTgt:Gt, ppaAct:Pa, ppaTgt:Pt };
+    }
+  }
+
+  return { ok:true, key:key, storeId:storeId, ym:ym,
+    unit: (key==='guests') ? 'count' : 'money',
+    act:actT, tgt:tgtT, gap:(actT!=null&&tgtT!=null)?(actT-tgtT):null,
+    ld:ld, segs:SEGS, dow:dowOut, cause:cause,
+    tgtMode:tgtMode, days:el.days.length, dowCounts:el.counts, hasTakeout:hasTO };
+}
+/* v904: 差分の原因を描く。計算は _meetGapBreakdown(v903) が持つ。ここは表示だけ。 */
+function _meetGapHtml(storeId, ym, key){
+  var g = null;
+  try { g = _meetGapBreakdown(storeId, ym, key); } catch(e){ return ''; }
+  if (!g) return '';
+  var muted = 'color:var(--muted);font-size:9.5px';
+  if (!g.ok) {
+    /* 分解できない理由は出す。黙って消すと「なぜ出ないのか」が毎回議題になる。 */
+    if (g.reason==='no_budget' || g.reason==='no_actual' || g.reason==='no_days')
+      return '<div style="'+muted+';margin-top:6px">'+escapeHtml(g.note)+'</div>';
+    return '';
+  }
+  var money = (g.unit!=='count');
+  var f  = function(v){ return money ? fmtK(v) : (Math.round(v)+t('名','')); };
+  var fd = function(v){ var s=(v>=0?'+':'−'); return s+(money?fmtK(Math.abs(v)):Math.round(Math.abs(v))); };
+  var col = function(v){ return v>=0 ? 'var(--green)' : 'var(--red)'; };
+
+  var h = '<div style="border-top:1px solid var(--border);margin-top:9px;padding-top:8px">';
+
+  /* ① 区分別。バーの長さは「差の絶対値」の構成比。未達の内訳を見るための図。 */
+  var segs = g.segs || [];
+  var neg = 0; segs.forEach(function(s){ var x=g.ld[s]; if(x && x.gap<0) neg += -x.gap; });
+  h += '<div style="'+muted+';margin-bottom:5px">'+t('どこで足りないか','Where the gap is')+'</div>';
+  segs.forEach(function(s){
+    var x = g.ld[s]; if(!x) return;
+    var share = (neg>0 && x.gap<0) ? (-x.gap/neg) : 0;
+    var w = Math.max(2, Math.round(share*100));
+    h += '<div style="display:flex;align-items:center;gap:7px;margin-bottom:4px">'
+      +  '<span style="font-size:10.5px;width:58px;flex-shrink:0">'+escapeHtml(x.label)+'</span>'
+      +  '<div style="flex:1;height:14px;background:var(--surface2);border-radius:3px;overflow:hidden">'
+      +  (x.gap<0 ? '<div style="width:'+w+'%;height:100%;background:var(--red)"></div>' : '')
+      +  '</div>'
+      +  '<span style="font-size:10.5px;font-weight:700;color:'+col(x.gap)+';width:74px;text-align:right;flex-shrink:0">'+fd(x.gap)+'</span>'
+      +  '</div>';
+  });
+  /* 最大の未達区分を1行で言う */
+  if (neg>0) {
+    var top=null; segs.forEach(function(s){ var x=g.ld[s]; if(x && x.gap<0 && (!top || x.gap<g.ld[top].gap)) top=s; });
+    if (top) {
+      var pct = Math.round(-g.ld[top].gap/neg*100);
+      h += '<div style="font-size:10px;color:var(--tm);margin-top:2px">'
+        +  t('不足の','')+' <b style="color:var(--red)">'+pct+'%</b> '+t('が','')+escapeHtml(g.ld[top].label)+'</div>';
+    }
+  }
+
+  /* ③ 客数か客単価か。恒等分解なので「どちらのせいか」を断定できる。 */
+  if (g.cause) {
+    var c = g.cause;
+    var gp = (c.guestsTgt>0) ? Math.round(c.guestsAct/c.guestsTgt*100) : null;
+    var pp = (c.ppaTgt>0)    ? Math.round(c.ppaAct/c.ppaTgt*100)       : null;
+    h += '<div style="font-size:10px;color:var(--tm);margin-top:5px;line-height:1.7">'
+      +  t('客数','Guests')+' <b style="color:'+(gp!=null&&gp<100?'var(--red)':'var(--green)')+'">'+(gp!=null?gp+'%':'—')+'</b>'
+      +  '（'+fd(c.guestsEffect)+'）　'
+      +  t('客単価','Avg check')+' <b style="color:'+(pp!=null&&pp<100?'var(--red)':'var(--green)')+'">'+(pp!=null?pp+'%':'—')+'</b>'
+      +  '（'+fd(c.ppaEffect)+'）'
+      +  '<br>→ '+t('主因は','Driver: ')+'<b style="color:var(--red)">'
+      +  (c.driver==='guests'?t('集客','traffic'):t('客単価','avg check'))+'</b></div>';
+  }
+
+  /* ② 曜日別。曜日別予算がある店だけ。無い店では v903 が null を返す。 */
+  if (g.dow && g.dow.length===7) {
+    var mx = 0; g.dow.forEach(function(d){ var a=Math.abs(d.gap); if(a>mx) mx=a; });
+    if (mx>0) {
+      h += '<div style="'+muted+';margin:8px 0 5px">'+t('曜日別（予算との差）','By day of week')+'</div>'
+        +  '<div style="display:flex;gap:3px;align-items:flex-end;height:46px">';
+      g.dow.forEach(function(d){
+        var hh = Math.max(3, Math.round(Math.abs(d.gap)/mx*34));
+        var c2 = d.gap<0 ? 'var(--red)' : 'var(--green)';
+        h += '<div style="flex:1;text-align:center" title="'+escapeHtml(d.label)+' '+fd(d.gap)+'（'+d.days+t('回','')+'）">'
+          +  '<div style="height:'+hh+'px;background:'+c2+';border-radius:2px"></div>'
+          +  '<div style="font-size:9.5px;color:'+(d.gap<0?'var(--red)':'var(--muted)')+';margin-top:3px">'+escapeHtml(d.label)+'</div></div>';
+      });
+      h += '</div>';
+      /* 未達が大きい曜日を上位3つまで名指しする */
+      var bad = g.dow.filter(function(d){ return d.gap<0; }).sort(function(a,b){ return a.gap-b.gap; }).slice(0,3);
+      var negD = 0; g.dow.forEach(function(d){ if(d.gap<0) negD += -d.gap; });
+      if (bad.length && negD>0) {
+        var sh2 = Math.round(bad.reduce(function(a,d){ return a + (-d.gap); },0)/negD*100);
+        h += '<div style="font-size:10px;color:var(--tm);margin-top:6px">'
+          +  '<b style="color:var(--red)">'+bad.map(function(d){ return escapeHtml(d.label); }).join('・')+'</b> '
+          +  t('で不足の','')+' <b>'+sh2+'%</b></div>';
+      }
+    }
+  } else if (g.tgtMode==='prorate') {
+    h += '<div style="'+muted+';margin-top:7px">'+t('曜日別は曜日別予算を設定すると表示されます（現在は月次予算の日割り）','Set a day-of-week budget to see the weekday split')+'</div>';
+  }
+
+  h += '<div style="'+muted+';margin-top:6px">'
+    +  t('前日までの','')+g.days+t('日ぶん','d')+(g.hasTakeout?t('／テイクアウトは区分を分けて計上','/takeout counted separately'):'')+'</div>';
+  return h + '</div>';
+}
 /* 中間MTG: KPIをアイコン＋達成/未達バッジで強調表示 */
 function _meetKpiTile(storeId, ym, key, act, tgt, opts){
   opts=opts||{}; var def=_meetKpiDef(key); var lower=(opts.lower!=null)?opts.lower:def.lower; var unit=opts.unit||''; var money=opts.money;
@@ -18016,6 +18304,8 @@ function _meetStoreCard(store, k, ym, isCurrent){
     var landCol=_meetStatColor(_meetStatus('sales', landing, k.budget, false));
     h+='<div style="font-size:9.5px;color:var(--muted);margin-top:5px;line-height:1.5"><i class="ti ti-plane-arrival"></i> '+t('着地予測','Proj')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(0)+'%）':'')+'　·　'+t('後半 必要','Rest need')+' <b>'+fmtK(reqPerDay)+t('/日','/d')+'</b>×'+remDays+t('日','d')+'</div>';
   }
+  /* v904: 差分の原因（区分別・曜日別・客数/客単価）。計算は v903。 */
+  try { h += _meetGapHtml(store.id, ym, 'sales'); } catch(e){}
   h+='</div>';
   h+='<div style="display:flex;justify-content:flex-end;margin:3px 0 2px"><button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+store.id+'\')"><i class="ti ti-bulb"></i> '+t('当月 予算の考え方','Budget rationale')+'</button></div>';
   if(salesSt==='miss') h+=_meetInputBlock(store.id, ym, {key:'sales'}, true);
@@ -27833,7 +28123,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '902';
+const APP_VERSION = '904';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
