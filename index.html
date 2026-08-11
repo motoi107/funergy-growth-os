@@ -10014,7 +10014,8 @@ var SUPA_MASTER_MAP = {
     map:function(o){ return { code:o.code, name:o.name, cls:o.cls||null, data:o }; } },
 };
 /* app_settings に入れるマスター設定キー（プレフィックス一致も可） */
-var SUPA_SETTING_KEYS = ['m_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
+var SUPA_SETTING_KEYS = ['pl_public',   /* v910: PL取込の率の材料。利益(netop/opex)は含めない */
+  'm_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
   'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc','ow_limits','sl_config'];
@@ -10937,6 +10938,9 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   offboardings:    { merge: mergeReqTomb, covers: _coversReqTomb },
   supply_orders:   { merge: mergeReqTomb, covers: _coversReqTomb },
   expense_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
+  /* v910: PL取込。月をキーにした入れ物なので、月単位で新しい方を採る。
+     取り込む端末が複数あっても、別の月を入れた分は消えない。 */
+  pl_public:      { merge: mergeMapByKey, covers: _coversMapByKey },
   m_store_kpi:    { merge: mergeMapByKey, covers: _coversMapByKey },
   m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey },
   invoices:       { merge: mergeInvoices, covers: _coversInvoices },
@@ -12428,6 +12432,9 @@ function renderSimplePL(){
     +'<button class="btn btn-secondary btn-sm" '+(plOff>=0?'disabled style="opacity:.4"':'')+' onclick="plNav(1)"><i class="ti ti-chevron-right"></i></button>'
     +(plOff<0?'<button class="btn btn-secondary btn-sm" onclick="plOff=0;_secRerender()">今月へ</button>':'')
     +'</div>';
+  /* v910: PLブックの取り込み。1ファイルで全店・全月がまとめて入る。 */
+  h += '<div style="display:flex;justify-content:flex-end;margin:0 2px 8px">'
+    +  '<button class="btn btn-primary btn-sm" onclick="openPlImport()"><i class="ti ti-file-upload"></i> '+t('PLブックを取り込む','Import PL workbook')+'</button></div>';
   h += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 簡易PL＝売上(日次実績)・原価(棚卸法)・人件費(Labor共通コア)は<b>実数</b>、変動費は<b>実PL 1〜5月の平均</b>(店舗別・上書き可)＋建替経費の実費、GET='+(cfg.getRate||4.712)+'%、固定費は<b>実PL 5月の実数</b>。実PL列と並べて差異を検証できます。<b>各項目行をタップで内訳を表示。</b></div>';
 
   // 全店合計
@@ -18104,6 +18111,314 @@ function _meetGapBreakdown(storeId, ym, key){
     ld:ld, segs:SEGS, dow:dowOut, cause:cause,
     tgtMode:tgtMode, budDaily:budDaily, days:el.days.length, dowCounts:el.counts, hasTakeout:hasTO };
 }
+/* PL2025_SEED — 2025年 確定PL（会計事務所 BS&PL 2025-12 より抽出）
+
+   目的: 昨対（前年同月比）の基準。アプリは2026年のデータしか持っていなかった。
+
+   ★消費税の扱いが2025年と2026年で違う。ここが最大の注意点。
+     2025年PL: 消費税は「売上の中」(Total Revenues r12 に Sales-State tax r11 を含む)
+     2026年PL: 消費税は「売上の外」(Other Income 側。Total for Income には含まれない)
+     どちらも消費税の支払い(Taxes-General Excise)は経費の中にある。
+
+     → sales は税を引いて2026年と定義をそろえてある。そのまま昨対に使ってよい。
+       引かずに比べると昨対が約4.5%過大に出る。
+     → netop は「税込売上ベース」のPL原文の値。したがって
+         sales + tax - cogs - payroll - opex = netop   ← この式で閉じる
+         sales - cogs - payroll - opex ≠ netop        ← 税のぶんズレる
+       tax を残してあるのはこのため。営業利益の昨対を出すときは、
+       2026年の netop が消費税の支払いぶんだけ低く出ることに注意（基準が違う）。
+
+   出典行(全シート共通): Total Revenues r12 / Sales-State tax r11 / Total COGS r23 /
+     Total Operating Expenses r38(=従業員経費合計→payroll) /
+     Total General & Admin Expenses r91(=一般経費合計→opex) / Net Income before tax r95
+
+   店舗対応: ToriTon→F01 / Tenkichi→F02 / FiveStar→F03 /
+     AngryShrimp→F03-G（2026年に Waikiki Garlic Shack へ改名。旧称ASはこれ） /
+     Totoya→F04-K(Kaimuki) / Totoya2→F04-P(Piikoi)
+   データなし: F04-A(Aiea)=2026年2月開店 / F05(Marujuu)=2025年12月開店だがこのPLに未反映
+
+   検証: 67レコード全件で上記の式が成立（差は丸めの2件×$2のみ）。
+     予算進捗2025の日次売上合計とも突き合わせ済み（税抜で差1%以内、
+     Piikoi 2025-06 は $16,880 で完全一致）。
+
+   ★これは取り込みではなく固定値。2025年の元Excelは月ごとに列レイアウトが
+     変わる（店舗追加のたびに右へずれ、1〜6月は店名ラベルすら無い）ため、
+     パーサを持たない方針。Motoさん確認済み。 */
+var PL2025_SEED = {
+  '2025-01': {'F01':{sales:118293,tax:5574,cogs:30016,payroll:41553,opex:27218,netop:25081}, 'F02':{sales:96623,tax:4549,cogs:28104,payroll:34391,opex:19609,netop:19068}, 'F03':{sales:53015,tax:2497,cogs:25813,payroll:15453,opex:12773,netop:1473}, 'F03-G':{sales:43769,tax:2062,cogs:14924,payroll:15545,opex:11759,netop:3602}, 'F04-K':{sales:143320,tax:6753,cogs:54346,payroll:32330,opex:21868,netop:41530}},
+  '2025-02': {'F01':{sales:111231,tax:5241,cogs:28618,payroll:40919,opex:28414,netop:18520}, 'F02':{sales:116305,tax:5480,cogs:41237,payroll:36754,opex:22873,netop:20921}, 'F03':{sales:56053,tax:2640,cogs:21773,payroll:16168,opex:12886,netop:7865}, 'F03-G':{sales:52392,tax:2468,cogs:17140,payroll:13860,opex:11787,netop:12074}, 'F04-K':{sales:130929,tax:6169,cogs:57019,payroll:30109,opex:21977,netop:27994}},
+  '2025-03': {'F01':{sales:137980,tax:6488,cogs:36073,payroll:42619,opex:33896,netop:31880}, 'F02':{sales:141260,tax:6299,cogs:49729,payroll:41410,opex:30197,netop:26224}, 'F03':{sales:62540,tax:2946,cogs:24109,payroll:18228,opex:14225,netop:8924}, 'F03-G':{sales:51433,tax:2423,cogs:15688,payroll:12391,opex:12763,netop:13014}, 'F04-K':{sales:147368,tax:6943,cogs:59311,payroll:34044,opex:31150,netop:29807}},
+  '2025-04': {'F01':{sales:120611,tax:5597,cogs:26663,payroll:41568,opex:29740,netop:28237}, 'F02':{sales:126049,tax:5719,cogs:39346,payroll:41691,opex:24602,netop:26128}, 'F03':{sales:53848,tax:2486,cogs:19758,payroll:14305,opex:12463,netop:9806}, 'F03-G':{sales:47050,tax:2155,cogs:14474,payroll:12813,opex:11438,netop:10480}, 'F04-K':{sales:127849,tax:5942,cogs:49374,payroll:33675,opex:21096,netop:29646}},
+  '2025-05': {'F01':{sales:133715,tax:6301,cogs:32647,payroll:42300,opex:32870,netop:32198}, 'F02':{sales:137940,tax:6149,cogs:43975,payroll:42556,opex:26914,netop:30644}, 'F03':{sales:56854,tax:2637,cogs:22127,payroll:14526,opex:15524,netop:7314}, 'F03-G':{sales:54028,tax:2473,cogs:16082,payroll:12766,opex:14819,netop:12835}, 'F04-K':{sales:154421,tax:7191,cogs:55040,payroll:35365,opex:24985,netop:46222}},
+  '2025-06': {'F01':{sales:131303,tax:6144,cogs:29771,payroll:36804,opex:33430,netop:37441}, 'F02':{sales:120481,tax:5504,cogs:38065,payroll:42720,opex:24455,netop:20746}, 'F03':{sales:54364,tax:2515,cogs:18788,payroll:14206,opex:15961,netop:7923}, 'F03-G':{sales:49831,tax:2247,cogs:12250,payroll:11092,opex:15706,netop:13031}, 'F04-K':{sales:140816,tax:6564,cogs:51912,payroll:38958,opex:20765,netop:35745}, 'F04-P':{sales:16880,tax:795,cogs:7330,payroll:7583,opex:30982,netop:-28219}},
+  '2025-07': {'F01':{sales:122506,tax:5772,cogs:29968,payroll:53813,opex:30839,netop:13659}, 'F02':{sales:114178,tax:5222,cogs:36625,payroll:54817,opex:24795,netop:3162}, 'F03':{sales:57670,tax:2695,cogs:21776,payroll:30111,opex:15430,netop:-6953}, 'F03-G':{sales:49827,tax:2312,cogs:16461,payroll:20003,opex:14449,netop:1225}, 'F04-K':{sales:117853,tax:5498,cogs:45676,payroll:42671,opex:24610,netop:10394}, 'F04-P':{sales:96026,tax:4456,cogs:34903,payroll:38367,opex:21085,netop:6129}},
+  '2025-08': {'F01':{sales:125531,tax:5915,cogs:31168,payroll:40268,opex:31708,netop:28302}, 'F02':{sales:150160,tax:6231,cogs:49770,payroll:41302,opex:28803,netop:36517}, 'F03':{sales:61911,tax:2904,cogs:25814,payroll:13884,opex:14362,netop:10754}, 'F03-G':{sales:50604,tax:2373,cogs:13889,payroll:16608,opex:15631,netop:6850}, 'F04-K':{sales:112349,tax:5266,cogs:43536,payroll:30792,opex:21271,netop:22016}, 'F04-P':{sales:120806,tax:5539,cogs:48131,payroll:30357,opex:21432,netop:26424}},
+  '2025-09': {'F01':{sales:120231,tax:5629,cogs:28650,payroll:41279,opex:32161,netop:23771}, 'F02':{sales:151329,tax:7024,cogs:51230,payroll:46721,opex:29877,netop:30525}, 'F03':{sales:51390,tax:2422,cogs:25942,payroll:29451,opex:20112,netop:-21693}, 'F03-G':{sales:39220,tax:1800,cogs:7011,payroll:162,opex:9789,netop:24057}, 'F04-K':{sales:94482,tax:4415,cogs:40116,payroll:28686,opex:19733,netop:10362}, 'F04-P':{sales:113396,tax:5158,cogs:43934,payroll:26208,opex:20876,netop:27537}},
+  '2025-10': {'F01':{sales:122095,tax:5718,cogs:32101,payroll:42906,opex:30031,netop:22775}, 'F02':{sales:157348,tax:7371,cogs:55873,payroll:44133,opex:27945,netop:36767}, 'F03':{sales:49657,tax:2102,cogs:20788,payroll:29667,opex:19001,netop:-17697}, 'F03-G':{sales:36112,tax:1696,cogs:5198,payroll:674,opex:9016,netop:22920}, 'F04-K':{sales:88472,tax:4141,cogs:35587,payroll:30420,opex:16686,netop:9920}, 'F04-P':{sales:111763,tax:5223,cogs:43055,payroll:35718,opex:19467,netop:18746}},
+  '2025-11': {'F01':{sales:120030,tax:5621,cogs:32003,payroll:34202,opex:33895,netop:25551}, 'F02':{sales:137131,tax:6423,cogs:44026,payroll:41032,opex:30793,netop:27703}, 'F03':{sales:40624,tax:1908,cogs:27117,payroll:31625,opex:18922,netop:-35131}, 'F03-G':{sales:35059,tax:1645,cogs:1786,payroll:0,opex:10185,netop:24734}, 'F04-K':{sales:82701,tax:3871,cogs:32776,payroll:26537,opex:14377,netop:12882}, 'F04-P':{sales:106746,tax:4997,cogs:39028,payroll:31385,opex:20503,netop:20827}},
+  '2025-12': {'F01':{sales:130430,tax:6109,cogs:29875,payroll:43241,opex:34633,netop:28790}, 'F02':{sales:153179,tax:7174,cogs:48962,payroll:42941,opex:31161,netop:37289}, 'F03':{sales:62308,tax:2927,cogs:41389,payroll:33994,opex:22300,netop:-32448}, 'F03-G':{sales:49588,tax:2328,cogs:3567,payroll:49,opex:12400,netop:35899}, 'F04-K':{sales:109880,tax:5144,cogs:42559,payroll:28490,opex:23044,netop:20932}, 'F04-P':{sales:132109,tax:6186,cogs:49749,payroll:35733,opex:26036,netop:26777}},
+};
+
+/* v909: 前年同月の確定売上。無ければ null（0にしない＝「昨対なし」と「昨対0」を区別する）。
+   F04-A(Aiea)は2026年2月開店、F05(Marujuu)は2025年12月開店だが2025年PLに未反映のため、
+   この2店は常に null が返る。画面は null を見て「前年データなし」を出す。 */
+function _plPrevYear(storeId, ym){
+  try {
+    var p = String(ym).split('-');
+    var pym = (parseInt(p[0],10)-1) + '-' + p[1];
+    var r = PL2025_SEED[pym];
+    return (r && r[storeId]) ? r[storeId] : null;
+  } catch(e){ return null; }
+}
+/* 昨対（%）。前年が無い/0なら null。 */
+function _plYoY(storeId, ym, actual){
+  var pv = _plPrevYear(storeId, ym);
+  if (!pv || !(pv.sales > 0) || actual == null) return null;
+  return Math.round(actual / pv.sales * 1000) / 10;
+}
+/* 昨対の表示（色つき）。prevSales も返して、画面が前年額を出せるようにする。 */
+function _plYoYHtml(storeId, ym, actual, small){
+  var pv = _plPrevYear(storeId, ym);
+  var fs = small ? '9px' : '9.5px';
+  if (!pv || !(pv.sales > 0)) {
+    return '<span style="font-size:'+fs+';color:var(--muted)" title="'+escapeHtml(t('2025年の確定PLにこの店舗のデータがありません','No 2025 PL data for this store'))+'">'+t('前年なし','No PY')+'</span>';
+  }
+  if (actual == null || !(actual > 0)) return '<span style="font-size:'+fs+';color:var(--muted)">'+t('前年','PY')+' '+fmtK(pv.sales)+'</span>';
+  var r = Math.round(actual / pv.sales * 1000) / 10;
+  var col = (r >= 100) ? 'var(--green)' : (r >= 95 ? 'var(--yellow)' : 'var(--red)');
+  return '<span style="font-size:'+fs+'" title="'+escapeHtml(t('前年同月','Prev year')+' '+fmtK(pv.sales))+'">'
+    +  t('昨対','YoY')+' <b style="color:'+col+'">'+r.toFixed(1)+'%</b>'
+    +  '<span style="color:var(--muted)"> ('+fmtK(pv.sales)+')</span></span>';
+}
+
+/* ============================================================
+   v910: 会計PLブック(.xlsx)の取り込み
+
+   ★行も列も決め打ちしない。
+     2026年PLは店ごとに経費項目の数が違い、合計行の位置がずれる
+     （Tori Ton: 売上r16 / Tenkichi: r15 / Waikiki: r13 …）。
+     行を固定すると静かに違う数字が入る。ラベルで探すこと。
+     月も 2025年形式は D 列始まり、2026年形式は B 列始まりで違うので、
+     「Jan 2026」形式の見出しを探して列→月の対応を作る。
+   ============================================================ */
+var PL_SHEET_MAP = {
+  'tori ton':'F01', 'toriton':'F01',
+  'tenkichi':'F02',
+  /* FSPとWGSはPL上合算（Motoさん確認済み）。分離できないので合算のまま持つ。 */
+  'waikiki':'F03+F03-G',
+  't-kaimuki':'F04-K', 'kaimuki':'F04-K',
+  't-piikoi':'F04-P',  'piikoi':'F04-P',
+  't-aiea':'F04-A',    'aiea':'F04-A',
+  'marujuu':'F05'
+};
+var PL_LABELS = {
+  sales:   'total for income',
+  cogs:    'total for cost of goods sold',
+  payroll: 'total for 1.payroll expenses',
+  opex:    'total for 2. operating expenses',
+  netop:   'net operating income'
+};
+var PL_MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+var PL_MONTH_RE = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{4})$/i;
+
+function _plCell(ws, r, c){ var a = XLSX.utils.encode_cell({r:r, c:c}); var v = ws[a]; return v ? v.v : null; }
+function _plFindMonthCols(ws, maxR, maxC){
+  for (var r=0; r<=Math.min(maxR,12); r++){
+    var cols = {}, n = 0;
+    for (var c=0; c<=maxC; c++){
+      var v = _plCell(ws, r, c);
+      if (typeof v !== 'string') continue;
+      var m = v.trim().match(PL_MONTH_RE);
+      if (m){ cols[c] = m[2] + '-' + String(PL_MONTHS.indexOf(m[1].toLowerCase().slice(0,3))+1).padStart(2,'0'); n++; }
+    }
+    if (n >= 2) return { row:r, cols:cols };
+  }
+  return null;
+}
+function _plFindRows(ws, maxR){
+  var found = {};
+  for (var r=0; r<=maxR; r++){
+    var v = _plCell(ws, r, 0);
+    if (typeof v !== 'string') continue;
+    var k = v.trim().toLowerCase();
+    for (var key in PL_LABELS) if (PL_LABELS[key] === k) found[key] = r;
+  }
+  return found;
+}
+function parsePLWorkbook(wb){
+  var out = { months:[], rows:[], warnings:[] }, seen = {};
+  wb.SheetNames.forEach(function(name){
+    var sid = PL_SHEET_MAP[String(name).trim().toLowerCase()];
+    if (!sid){ out.warnings.push('シート「'+name+'」は対応する店舗が不明のため取り込みません'); return; }
+    var ws = wb.Sheets[name];
+    var ref = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+    var mc = _plFindMonthCols(ws, ref.e.r, ref.e.c);
+    if (!mc){ out.warnings.push('シート「'+name+'」に月の見出し（例: Jan 2026）が見つかりません'); return; }
+    var rr = _plFindRows(ws, ref.e.r);
+    var miss = Object.keys(PL_LABELS).filter(function(k){ return rr[k]==null; });
+    if (miss.length){ out.warnings.push('シート「'+name+'」に合計行が見つかりません: '+miss.join(', ')); return; }
+    Object.keys(mc.cols).forEach(function(cs){
+      var c = +cs, ym = mc.cols[cs], v = {}, allNull = true;
+      Object.keys(PL_LABELS).forEach(function(k){
+        var raw = _plCell(ws, rr[k], c);
+        var n = (typeof raw === 'number') ? raw : null;
+        if (n !== null) allNull = false;
+        v[k] = (n === null) ? 0 : Math.round(n);
+      });
+      if (allNull) return;                        /* 未来の月は空。取り込まない */
+      seen[ym] = 1;
+      out.rows.push({ storeKey:sid, ym:ym, sheet:name, v:v });
+    });
+  });
+  out.months = Object.keys(seen).sort();
+  out.rows.forEach(function(r){
+    var lhs = r.v.sales - r.v.cogs - r.v.payroll - r.v.opex;
+    r.ok = Math.abs(lhs - r.v.netop) <= 2;
+    if (!r.ok) out.warnings.push(r.sheet+' '+r.ym+': 検算が合わないため取り込みません（'+lhs+' vs '+r.v.netop+'）');
+  });
+  return out;
+}
+
+/* SheetJS は取り込みのときだけ読む。アプリ本体には持たない。 */
+function _plLoadXlsx(){
+  return new Promise(function(res, rej){
+    if (window.XLSX) return res(window.XLSX);
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload = function(){ window.XLSX ? res(window.XLSX) : rej(new Error('XLSXの読み込みに失敗しました')); };
+    s.onerror = function(){ rej(new Error('XLSXの読み込みに失敗しました（通信を確認してください）')); };
+    document.head.appendChild(s);
+  });
+}
+
+var _plImport = null;   /* 解析結果の一時置き場。保存を押すまでどこにも書かない */
+
+function openPlImport(){
+  openModal('<div class="modal-title">'+t('PLブックの取り込み','Import PL workbook')
+    +' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11.5px;color:var(--muted);line-height:1.7;margin-bottom:10px">'
+    +t('会計事務所のPL（.xlsx）を選ぶと、店舗×月の確定値を読み取ります。<br>読み取った内容を確認してから保存します。選んだだけでは保存されません。',
+       'Pick the accounting PL (.xlsx). You will review before anything is saved.')+'</div>'
+    +'<input type="file" id="pl-file" accept=".xlsx,.xls" style="font-size:12px" onchange="plFilePicked(this)">'
+    +'<div id="pl-preview" style="margin-top:12px"></div>');
+}
+function plFilePicked(el){
+  var f = el && el.files && el.files[0];
+  if (!f) return;
+  var box = document.getElementById('pl-preview');
+  if (box) box.innerHTML = '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> '+t('読み込み中…','Reading…')+'</div>';
+  _plLoadXlsx().then(function(){
+    var fr = new FileReader();
+    fr.onload = function(){
+      var r;
+      try { r = parsePLWorkbook(XLSX.read(new Uint8Array(fr.result), {type:'array'})); }
+      catch(e){ if(box) box.innerHTML = '<div style="color:var(--red);font-size:12px">'+escapeHtml(t('解析できませんでした','Could not parse'))+': '+escapeHtml(String(e && e.message || e))+'</div>'; return; }
+      _plImport = r;
+      if (box) box.innerHTML = _plPreviewHtml(r);
+    };
+    fr.onerror = function(){ if(box) box.innerHTML = '<div style="color:var(--red);font-size:12px">'+t('ファイルを読めませんでした','Could not read file')+'</div>'; };
+    fr.readAsArrayBuffer(f);
+  }).catch(function(e){
+    if (box) box.innerHTML = '<div style="color:var(--red);font-size:12px">'+escapeHtml(String(e && e.message || e))+'</div>';
+  });
+}
+function _plPreviewHtml(r){
+  var good = r.rows.filter(function(x){ return x.ok; });
+  var h = '';
+  if (!good.length){
+    h += '<div style="color:var(--red);font-size:12px;font-weight:700;margin-bottom:8px">'+t('取り込める行がありません','Nothing to import')+'</div>';
+  } else {
+    h += '<div style="font-size:12px;margin-bottom:6px"><b>'+good.length+t('件','')+'</b> '
+      +  t('を取り込みます','ready')+'（'+escapeHtml(r.months[0]||'')+' 〜 '+escapeHtml(r.months[r.months.length-1]||'')+'）</div>';
+    var by = {};
+    good.forEach(function(x){ (by[x.storeKey] = by[x.storeKey] || []).push(x); });
+    h += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:11px;min-width:100%">'
+      +  '<thead><tr><th style="text-align:left;padding:4px 6px;color:var(--muted)">'+t('店舗','Store')+'</th>'
+      +  r.months.map(function(m){ return '<th style="padding:4px 8px;color:var(--muted);white-space:nowrap">'+escapeHtml(m.slice(5))+t('月','')+'</th>'; }).join('')
+      +  '</tr></thead><tbody>';
+    Object.keys(by).forEach(function(sk){
+      var m2 = {}; by[sk].forEach(function(x){ m2[x.ym] = x.v.sales; });
+      h += '<tr><td style="padding:4px 6px;white-space:nowrap"><b>'+escapeHtml(_plStoreLabel(sk))+'</b></td>'
+        +  r.months.map(function(m){ return '<td style="padding:4px 8px;text-align:right;white-space:nowrap">'+(m2[m]!=null?fmtK(m2[m]):'—')+'</td>'; }).join('')
+        +  '</tr>';
+    });
+    h += '</tbody></table></div>'
+      +  '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">'
+      +  t('表は売上（消費税を除く額）。原価・人件費・経費・営業利益も同時に取り込みます。','Sales shown (excl. tax). Cost, payroll, opex and operating income are imported too.')
+      +  '<br>'+t('営業利益と経費はこの端末にだけ保存します（他の端末・店長には出ません）。','Operating income and opex stay on this device only.')+'</div>';
+  }
+  if (r.warnings.length){
+    h += '<div style="margin-top:9px;border:1px solid var(--yellow);border-radius:8px;padding:8px;font-size:10.5px;line-height:1.7">'
+      +  '<b style="color:var(--yellow)"><i class="ti ti-alert-triangle"></i> '+t('取り込まないもの','Skipped')+'</b><br>'
+      +  r.warnings.map(function(w){ return escapeHtml(w); }).join('<br>')+'</div>';
+  }
+  h += '<div class="btn-row" style="margin-top:12px"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
+    +  (good.length ? '<button class="btn btn-primary" onclick="plImportSave()"><i class="ti ti-download"></i> '+t('取り込む','Import')+'</button>' : '')+'</div>';
+  return h;
+}
+function _plStoreLabel(sk){
+  if (sk === 'F03+F03-G') return 'Waikiki（FSP+WGS 合算）';
+  try { var st = STORES.find(function(x){ return x.id === sk; }); if (st) return st.name; } catch(e){}
+  return sk;
+}
+/* 保存。pl_actual（全項目・端末内）と pl_public（率の材料のみ・同期）に分ける。 */
+function plImportSave(){
+  var r = _plImport;
+  if (!r || !r.rows.length){ showToast(t('取り込む内容がありません','Nothing to import'),'info'); return; }
+  var good = r.rows.filter(function(x){ return x.ok; });
+  var act = ls('pl_actual', {}) || {};
+  var pub = ls('pl_public', {}) || {};
+  var now = Date.now(), n = 0;
+  good.forEach(function(x){
+    if (!act[x.ym]) act[x.ym] = {};
+    if (!pub[x.ym]) pub[x.ym] = {};
+    act[x.ym][x.storeKey] = { sales:x.v.sales, cogs:x.v.cogs, payroll:x.v.payroll, opex:x.v.opex, netop:x.v.netop };
+    /* ★ opex と netop は入れない。利益 = sales-cogs-payroll-opex なので、
+       opex を出すと引き算で利益が分かってしまう。 */
+    pub[x.ym][x.storeKey] = { sales:x.v.sales, cogs:x.v.cogs, payroll:x.v.payroll, _at:now };
+    n++;
+  });
+  if (!act._src) act._src = {};
+  r.months.forEach(function(m){ act._src[m] = 'PL取込 ' + (typeof todayJP==='function' ? todayJP() : ''); });
+  pub._at = now;
+  lsSet('pl_actual', act);
+  lsSet('pl_public', pub);
+  _plImport = null;
+  try { closeModalDirect(); } catch(e){}
+  showToast(n + t('件を取り込みました','rows imported'), 'success');
+  try { _secRerender(); } catch(e){}
+}
+
+/* v908: その月・その店の数字が「確定(会計PL取込)」か「速報(アプリの日次実績)」か。
+   判定はここ1か所。画面ごとに書き写さない。
+   pl_actual は簡易PL画面の実PL入力/Excel取込が書く入れ物で、
+   v909 のPLアップロードも同じ入れ物へ入れる（判定は変えなくて済む）。 */
+function _meetIsConfirmed(storeId, ym){
+  try {
+    /* v910: 全端末に届くのは pl_public。会議タブはこれを見る。
+       pl_actual は利益を含むためセキュアページの端末にしか無い。 */
+    var p = ls('pl_public', null);
+    if (p && p[ym] && p[ym][storeId]) return true;
+    /* FSPとWGSはPL上合算。個別の確定値は作れないので、合算の行があれば両方に印を出す。 */
+    if ((storeId === 'F03' || storeId === 'F03-G') && p && p[ym] && p[ym]['F03+F03-G']) return true;
+    var a = ls('pl_actual', null);
+    if (a && a[ym] && a[ym][storeId]) return true;
+    if ((storeId === 'F03' || storeId === 'F03-G') && a && a[ym] && a[ym]['F03+F03-G']) return true;
+    return false;
+  } catch(e){ return false; }
+}
+function _meetConfirmSrc(ym){
+  try { var a = ls('pl_actual', null); return (a && a._src && a._src[ym]) ? String(a._src[ym]) : ''; } catch(e){ return ''; }
+}
+/* 確定/速報のバッジ。文字と色の両方で出す（色だけで判断させない） */
+function _meetConfirmBadge(storeId, ym, small){
+  var c = _meetIsConfirmed(storeId, ym);
+  var fs = small ? '7.5px' : '9px';
+  return '<span title="'+(c?escapeHtml(t('会計PLの確定値','Confirmed from accounting PL')+(_meetConfirmSrc(ym)?'（'+_meetConfirmSrc(ym)+'）':'')):escapeHtml(t('アプリの日次実績（速報）','App daily actuals (provisional)')))+'"'
+    +  ' style="font-size:'+fs+';font-weight:800;padding:1px 5px;border-radius:20px;white-space:nowrap;'
+    +  (c ? 'background:var(--green);color:#fff' : 'background:var(--surface2);color:var(--muted);border:1px solid var(--border)')+'">'
+    +  (c ? t('確定','Final') : t('速報','Prov.'))+'</span>';
+}
 /* v907: 固定表示するKPI帯。判定は既存の _meetStatus / _meetStatColor をそのまま使う
    （帯とカード本体で判定が食い違わないようにするため、新しいしきい値を作らない）。 */
 function _meetPinShort(v, money, unit){
@@ -18114,7 +18429,7 @@ function _meetPinShort(v, money, unit){
   if (a >= 1000) return '$' + (Math.round(v/100)/10) + 'k';
   return '$' + (Math.round(v*10)/10);
 }
-function _meetPinHtml(store, rows, sts, paceBudget, isCurrent){
+function _meetPinHtml(store, rows, sts, paceBudget, isCurrent, ymForPin){
   var items = [];
   rows.forEach(function(it, i){
     var st = sts[i];
@@ -18129,9 +18444,12 @@ function _meetPinHtml(store, rows, sts, paceBudget, isCurrent){
     var r = function(x){ return x.st==='miss' ? 0 : (x.st==='warn' ? 1 : (x.st==='none' ? 3 : 2)); };
     return r(a) - r(b);
   });
+  /* v908: 外枠は固定、中のKPIだけ横スクロール。
+     「予算の考え方」はスクロール領域の外に置くので、右へ流れて消えない。 */
   var h = '<div style="position:sticky;top:52px;z-index:30;background:var(--surface);'
     +     'margin:0 0 9px;padding:6px 0 7px;border-bottom:1px solid var(--border);'
-    +     'display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch">';
+    +     'display:flex;gap:6px;align-items:stretch">'
+    +     '<div style="display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;flex:1;min-width:0">';
   items.forEach(function(x){
     var col = (x.st==='none') ? 'var(--muted)' : _meetStatColor(x.st);
     var tint = (x.st==='none') ? 'var(--surface2)' : _meetStatTint(x.st);
@@ -18143,6 +18461,13 @@ function _meetPinHtml(store, rows, sts, paceBudget, isCurrent){
       +  '<span style="font-size:9.5px;color:var(--muted);font-weight:700"> / '
       +  _meetPinShort(x.tgt, x.money, x.unit)+'</span></div></div>';
   });
+  h += '</div>';
+  /* v908: 予算の考え方。常に見える位置へ（従来はカード中ほどでスクロールすると消えた）。 */
+  /* v908: この月の数字がどちらか。会議で最初に確認する情報なので帯に出す。 */
+  try { if (ymForPin) h += '<span style="flex:0 0 auto;align-self:center">'+_meetConfirmBadge(store.id, ymForPin)+'</span>'; } catch(e){}
+  h += '<button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+store.id+'\')"'
+    +  ' style="flex:0 0 auto;padding:4px 9px;font-size:10.5px;align-self:center;white-space:nowrap">'
+    +  '<i class="ti ti-bulb"></i> '+t('考え方','Rationale')+'</button>';
   return h + '</div>';
 }
 /* v904: 差分の原因を描く。計算は _meetGapBreakdown(v903) が持つ。ここは表示だけ。 */
@@ -18371,7 +18696,7 @@ function _meetStoreCard(store, k, ym, isCurrent){
   var h='<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)
     +'<span class="tag '+(missCount===0?'tag-green':(missCount<=1?'tag-yellow':'tag-red'))+'" style="margin-left:auto">'+(missCount===0?t('全KPI達成','All met'):(missCount+t('件 未達',' missed')))+'</span></div>';
   /* v907: 目標の固定表示。スクロールしても「何が目標か」が消えないようにする。 */
-  try { h += _meetPinHtml(store, rows, _sts, paceBudget, isCurrent); } catch(e){}
+  try { h += _meetPinHtml(store, rows, _sts, paceBudget, isCurrent, ym); } catch(e){}
   // 売上ヒーロー
   h+='<div style="background:'+_meetStatTint(salesSt)+';border:1px solid '+(salesSt==='miss'?'var(--red)':'var(--border)')+';border-radius:11px;padding:11px 13px;margin-bottom:2px">'
     +'<div style="display:flex;align-items:center;gap:8px"><i class="ti ti-trending-up" style="color:'+salesCol+';font-size:16px"></i><span style="font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.03em">'+t('売上','SALES')+(isCurrent?t('（前日まで）',' (to date)'):'')+'</span>'
@@ -18381,11 +18706,13 @@ function _meetStoreCard(store, k, ym, isCurrent){
   if(isCurrent){
     var landCol=_meetStatColor(_meetStatus('sales', landing, k.budget, false));
     h+='<div style="font-size:9.5px;color:var(--muted);margin-top:5px;line-height:1.5"><i class="ti ti-plane-arrival"></i> '+t('着地予測','Proj')+' <b style="color:'+landCol+'">'+fmtK(landing)+'</b>'+(landPct!=null?'（'+landPct.toFixed(0)+'%）':'')+'　·　'+t('後半 必要','Rest need')+' <b>'+fmtK(reqPerDay)+t('/日','/d')+'</b>×'+remDays+t('日','d')+'</div>';
+    /* v909: 着地予測と前年同月を並べる。前日までの実績同士では月の途中なので比べられない。 */
+    try { h+='<div style="margin-top:3px"><i class="ti ti-calendar-stats" style="font-size:10px;color:var(--muted)"></i> '+_plYoYHtml(store.id, ym, landing)+'<span style="font-size:9px;color:var(--muted)"> '+t('（着地予測との比較）','(vs projection)')+'</span></div>'; } catch(e){}
   }
   /* v904: 差分の原因（区分別・曜日別・客数/客単価）。計算は v903。 */
   try { h += _meetGapHtml(store.id, ym, 'sales'); } catch(e){}
   h+='</div>';
-  h+='<div style="display:flex;justify-content:flex-end;margin:3px 0 2px"><button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+store.id+'\')"><i class="ti ti-bulb"></i> '+t('当月 予算の考え方','Budget rationale')+'</button></div>';
+  /* v908: 予算の考え方は固定帯へ移した（ここには出さない。二重に置くと押し間違える）。 */
   if(salesSt==='miss') h+=_meetInputBlock(store.id, ym, {key:'sales'}, true);
   rows.slice(1).forEach(function(it){ var ex='';
     if(it.key==='guests'){ var od=k.opDays||daysPassed||0; var avg=(od>0&&k.guests>0)?('<div>'+t('平均集客','Avg')+' '+(Math.round(k.guests/od*10)/10)+(it.unit||'')+t('/日','/d')+'</div>'):''; ex=avg+_meetSegExtra(k,'guests',store.id,ym,paceFrac,it.unit||''); }
@@ -18466,7 +18793,9 @@ function _meetYearMatrix(store, y){
   var sticky='position:sticky;left:0;z-index:1;box-shadow:2px 0 0 var(--border)';
   var curBg='rgba(43,121,208,.07)';
   var th='<th style="'+sticky+';background:var(--surface);padding:6px 8px;text-align:left;font-size:10px;color:var(--muted);min-width:112px">'+t('KPI','KPI')+'</th>';
-  MOS.forEach(function(M){ th+='<th onclick="openBudgetReview(\''+sid+'\',false,\''+M.ym+'\')" title="'+t('予算の考え方','Budget rationale')+'" style="padding:8px 16px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap;cursor:pointer;color:'+(M.cur?'var(--accent)':'var(--tm)')+(M.cur?';background:'+curBg:'')+'">'+M.m+t('月','')+' <i class="ti ti-bulb" style="font-size:9px;opacity:.55"></i>'+(M.cur?' <span style="font-size:7.5px">'+t('進行','WIP')+'</span>':'')+'</th>'; });
+  MOS.forEach(function(M){ th+='<th onclick="openBudgetReview(\''+sid+'\',false,\''+M.ym+'\')" title="'+t('予算の考え方','Budget rationale')+'" style="padding:8px 16px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap;cursor:pointer;color:'+(M.cur?'var(--accent)':'var(--tm)')+(M.cur?';background:'+curBg:'')+'">'+M.m+t('月','')+' <i class="ti ti-bulb" style="font-size:9px;opacity:.55"></i>'+(M.cur?' <span style="font-size:7.5px">'+t('進行','WIP')+'</span>':'')
+    /* v908: その月が会計PL取込の確定値か、アプリの速報値か。 */
+    +'<div style="margin-top:2px">'+_meetConfirmBadge(sid, M.ym, true)+'</div>'+'</th>'; });
   var body='';
   KEYS.forEach(function(kk){ var def=_meetKpiDef(kk); var meta=META[kk]; var label=meta.label||t(def.label,def.labelEn);
     // 目標 行
@@ -18485,10 +18814,25 @@ function _meetYearMatrix(store, y){
       var disp=meta.f(av); var inner=canEd?('<span onclick="openMeetKgiEdit(\''+sid+'\',\''+kk+'\',\'a\','+M.m+')" style="cursor:pointer;border-bottom:1px dashed '+col+'">'+disp+'</span>'):disp;
       body+='<td style="text-align:center;padding:6px 16px;white-space:nowrap;background:'+(st==='none'?(M.cur?curBg:''):_meetStatTint(st))+'"><div style="font-size:13px;font-weight:800;color:'+col+'">'+inner+(ed?'<sup style="font-size:7px;color:var(--accent2)">✎</sup>':'')+'</div>'+(diff?'<div style="font-size:9px;font-weight:800;color:'+col+'">'+diff+'</div>':'')+'</td>'; });
     body+='</tr>';
+    /* v909: 売上だけ「昨年」行を足す。全KPIに足すと行数が3倍になって読めなくなる。
+       前年は2025年の確定PL（税抜にそろえ済み）。データが無い店は「—」。 */
+    if (kk === 'sales') {
+      body+='<tr><td style="'+sticky+';background:var(--surface);padding:2px 8px 7px 36px;font-size:11px;font-weight:700;color:var(--muted)">'+t('昨年','Prev yr')+'</td>';
+      MOS.forEach(function(M){ var bg=M.cur?(';background:'+curBg):'';
+        var pv=null; try { pv=_plPrevYear(sid, M.ym); } catch(e){}
+        if(!pv || !(pv.sales>0)){ body+='<td style="text-align:center;color:var(--border);font-size:11px'+bg+'">—</td>'; return; }
+        var av2=cellV(kk,'a',M.m,M.off,M.ym);
+        var yy=(av2!=null && av2>0) ? Math.round(av2/pv.sales*1000)/10 : null;
+        var c2=(yy==null)?'var(--muted)':((yy>=100)?'var(--green)':(yy>=95?'var(--yellow)':'var(--red)'));
+        body+='<td style="text-align:center;padding:4px 16px;white-space:nowrap'+bg+'">'
+          +'<div style="font-size:11px;color:var(--muted)">'+fmtK(pv.sales)+'</div>'
+          +(yy!=null?('<div style="font-size:9.5px;font-weight:800;color:'+c2+'">'+yy.toFixed(1)+'%</div>'):'')+'</td>'; });
+      body+='</tr>';
+    }
   });
   return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">'+y+t('年 KPI推移','KPI trend')+'</span></div>'
     +'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="border-collapse:collapse;min-width:100%"><thead><tr>'+th+'</tr></thead><tbody>'+body+'</tbody></table></div>'
-    +'<div style="font-size:9px;color:var(--muted);margin-top:6px;line-height:1.6">'+t('各KPIに「目標」行と「実績」行。実績下段＝差異(実績−目標)。緑=達成/黄=注意/赤=未達。1〜6月=Excel取込／7月〜=月次進捗のライブ値。'+(canEd?'数値をタップで編集（✎＝手編集済）。':''),'Target & Actual rows per KPI; below actual = difference. Jan–Jun = Excel import; Jul+ = live Monthly.'+(canEd?' Tap a value to edit.':''))+'</div></div>';
+    +'<div style="font-size:9px;color:var(--muted);margin-top:6px;line-height:1.6">'+t('各KPIに「目標」行と「実績」行。実績下段＝差異(実績−目標)。緑=達成/黄=注意/赤=未達。1〜6月=Excel取込／7月〜=月次進捗のライブ値。'+t('売上の「昨年」行＝2025年の確定PL（消費税を除いて当年と定義をそろえた額）。下段は昨対。Aiea・Marujuuは前年データがありません。','')+(canEd?'数値をタップで編集（✎＝手編集済）。':''),'Target & Actual rows per KPI; below actual = difference. Jan–Jun = Excel import; Jul+ = live Monthly.'+(canEd?' Tap a value to edit.':''))+'</div></div>';
 }
 function renderMeetingReview(){
   var ym0=budgetYM(); var ym=ym0.y+'-'+String(ym0.m).padStart(2,'0');
@@ -18555,7 +18899,13 @@ function renderMeetingReview(){
   if(mode==='start'){ ks.forEach(function(x){ html+=_meetYearMatrix(x.s, ym0.y)+_meetTaskSection(x.s); }); }
   /* v902: 中間MTGはタスク欄を出さない（月初MTGは従来どおり）。
      _meetTaskSection 自体は残してあるので、戻すならここに足すだけ。 */
-  else { ks.forEach(function(x){ html+=_meetStoreCard(x.s, x.k, ym, isCurrent); }); }
+  else {
+    /* v908: 第3層。月初MTGと同じ _meetYearMatrix をそのまま呼ぶ（数字の作り方を二重に持たない）。 */
+    ks.forEach(function(x){
+      html += _meetStoreCard(x.s, x.k, ym, isCurrent);
+      try { html += _meetYearMatrix(x.s, ym0.y); } catch(e){}
+    });
+  }
   return html;
 }
 function renderAnnualPlan(){
@@ -26913,7 +27263,8 @@ async function loadStoreLabor(sid, guid, days, liveFill){
 /* v720: 'inv_' を追加。inv_<店> は棚卸のカウント/PAR/日次フラグ＝手入力データなのに
    OP_SYNC_PREFIX の 'inv_' により「再取得可」と判定され、空き容量作成で削除され得た。
    クラウド未送信の状態で消すと入力が失われるため保護する（'inv_hist_' も内包される）。 */
-var LS_NEVER_FREE = ['spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','spl_cc_actions_',   /* v767 */
+var LS_NEVER_FREE = ['pl_public','pl_actual',   /* v910: 会計PLの取込値。容量整理で消さない */
+  'spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','spl_cc_actions_',   /* v767 */
   'spl_cc_metrics_','cc_scores','spl_cc_scores_',   /* v768 */
   'cc_logs','spl_cc_logs_',   /* v772 */
   'inv_','inv_hist_','budgets_v2','budget_approved_','spl_budgets_v2_','spl_inv_hist_',
@@ -28206,7 +28557,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '907';
+const APP_VERSION = '910';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
