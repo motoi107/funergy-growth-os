@@ -18192,6 +18192,124 @@ function _plYoYHtml(storeId, ym, actual, small){
 }
 
 /* ============================================================
+   v911: 全店選択時のサマリーカード
+
+   全店では「どの店を見に行くか」を決められれば足りる。
+   差分の原因・曜日別・年間一覧は、店を選んでから出す。
+   ============================================================ */
+
+/* 月別の売上合計。日次実績を1回読んで集計する。
+   ★keyKpiStats を12回呼ばない（メモ化が無いので12か月×店舗数ぶん重くなる）。
+     ここは推移の形を見るための数字で、判定には使わない。 */
+function _meetMonthlySales(storeId, year){
+  var out = new Array(12).fill(null), da = {};
+  try { da = getDailyActuals(storeId) || {}; } catch(e){ return out; }
+  var pre = String(year) + '-';
+  Object.keys(da).forEach(function(d){
+    if (d.indexOf(pre) !== 0) return;
+    var ov = da[d]; if (!ov || ov.actual == null) return;
+    var m = parseInt(d.slice(5,7), 10) - 1;
+    if (m < 0 || m > 11) return;
+    out[m] = (out[m] || 0) + (Number(ov.actual) || 0);
+  });
+  return out;
+}
+/* 年間推移のミニグラフ。今年（実線）と昨年（薄い線）。SVGなので軽い。 */
+function _meetTrendSvg(storeId, year){
+  var cur = _meetMonthlySales(storeId, year);
+  var prev = new Array(12).fill(null);
+  for (var m=0; m<12; m++){
+    try {
+      var r = PL2025_SEED[(year-1) + '-' + String(m+1).padStart(2,'0')];
+      var v = r && r[storeId];
+      /* FSPとWGSはPL上合算。個別店では合算値を出さない（実態とずれるため）。 */
+      if (v) prev[m] = v.sales;
+    } catch(e){}
+  }
+  var all = cur.concat(prev).filter(function(x){ return x != null && x > 0; });
+  if (!all.length) return '';
+  var mx = Math.max.apply(null, all), W = 168, H = 34, pad = 2;
+  var xy = function(i, v){ return [ pad + i*((W-pad*2)/11), H - pad - (v/mx)*(H-pad*2) ]; };
+  var line = function(arr){
+    var segs = [], run = [];
+    arr.forEach(function(v, i){
+      if (v == null || !(v > 0)) { if (run.length > 1) segs.push(run); run = []; return; }
+      run.push(xy(i, v));
+    });
+    if (run.length > 1) segs.push(run);
+    return segs.map(function(pts){
+      return 'M' + pts.map(function(p){ return p[0].toFixed(1)+','+p[1].toFixed(1); }).join('L');
+    }).join(' ');
+  };
+  var dPrev = line(prev), dCur = line(cur);
+  var s = '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:'+W+'px;height:'+H+'px;overflow:visible" aria-hidden="true">';
+  if (dPrev) s += '<path d="'+dPrev+'" fill="none" stroke="var(--border)" stroke-width="1.5"/>';
+  if (dCur)  s += '<path d="'+dCur+'" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linejoin="round"/>';
+  /* 直近の実績に点を打つ */
+  for (var i=11; i>=0; i--){ if (cur[i] != null && cur[i] > 0){ var p = xy(i, cur[i]);
+    s += '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.2" fill="var(--accent)"/>'; break; } }
+  return s + '</svg>';
+}
+
+/* 店舗1枚ぶんのサマリー。判定は既存の _meetStatus / _meetKpiRows を使う（食い違わせない）。 */
+function _meetStoreSummary(store, k, ym, isCurrent){
+  var rows = [], sts = [], missNames = [], miss = 0;
+  try { rows = _meetKpiRows(k) || []; } catch(e){}
+
+  var paceBudget = 0;
+  if (isCurrent) {
+    var c = null; try { c = cumulativeToToday(store.id, ym); } catch(e){}
+    paceBudget = (c && c.budToToday > 0) ? Math.round(c.budToToday) : Math.round(k.budget || 0);
+  } else { paceBudget = (k.budget || 0); }
+
+  var salesSt = 'none';
+  try { salesSt = _meetStatus('sales', (k.sales||0), paceBudget, false); } catch(e){}
+  if (salesSt === 'miss'){ miss++; missNames.push(t('売上','Sales')); }
+  rows.slice(1).forEach(function(it){
+    var st = 'none';
+    try { st = _meetStatus(it.key, it.act, it.tgt, !!it.lower); } catch(e){}
+    sts.push(st);
+    if (st === 'miss'){ miss++; missNames.push(it.label); }
+  });
+
+  var gap = (k.sales||0) - paceBudget;
+  var gapCol = (gap >= 0) ? 'var(--green)' : 'var(--red)';
+  var landing = null, landPct = null;
+  try {
+    var dp = k.daysPassed || 0, mdn = daysOfYm(ym).length;
+    if (isCurrent && dp > 0) landing = Math.round((k.sales||0) / dp * mdn); else landing = (k.sales||0);
+    if ((k.budget||0) > 0) landPct = Math.round(landing / k.budget * 100);
+  } catch(e){}
+
+  var badge = (miss === 0)
+    ? '<span class="tag tag-green" style="margin-left:auto">'+t('全KPI達成','All met')+'</span>'
+    : '<span class="tag '+(miss<=1?'tag-yellow':'tag-red')+'" style="margin-left:auto">'+miss+t('件 未達',' missed')+'</span>';
+
+  var h = '<div class="card" style="padding:11px 13px;margin-bottom:8px;cursor:pointer"'
+    +  ' onclick="setBudgetStore(\''+store.id+'\')" title="'+escapeHtml(t('タップでこの店の詳細へ','Open this store'))+'">'
+    +  '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">'
+    +  '<i class="ti ti-building-store" style="font-size:15px;color:var(--muted)"></i>'
+    +  '<span style="font-size:13px;font-weight:800">'+escapeHtml(store.name)+'</span>';
+  try { h += _meetConfirmBadge(store.id, ym, true); } catch(e){}
+  h += badge + '</div>'
+    +  '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">'
+    +  '<span style="font-size:17px;font-weight:800;color:'+gapCol+'">'+(gap>=0?'+':'−')+fmtK(Math.abs(gap))+'</span>'
+    +  '<span style="font-size:11px;color:var(--muted)">'+fmtK(k.sales||0)+' / '+fmtK(paceBudget)+'</span>'
+    +  (landPct!=null?'<span style="font-size:10.5px;color:var(--muted)">'+t('着地','Proj')+' '+landPct+'%</span>':'');
+  try { h += '<span style="margin-left:auto">'+_plYoYHtml(store.id, ym, landing, true)+'</span>'; } catch(e){}
+  h += '</div>';
+
+  if (missNames.length){
+    h += '<div style="font-size:10.5px;color:var(--muted);margin-top:5px">'+t('未達','Missed')+': '
+      +  '<span style="color:var(--red);font-weight:700">'+missNames.map(function(n){ return escapeHtml(n); }).join(' · ')+'</span></div>';
+  }
+  var g = ''; try { g = _meetTrendSvg(store.id, parseInt(String(ym).slice(0,4),10)); } catch(e){}
+  if (g) h += '<div style="margin-top:6px">'+g+'<div style="font-size:9px;color:var(--muted);margin-top:1px">'
+    +  t('月別売上の推移（濃い＝今年／薄い＝昨年）','Monthly sales (bold = this year, light = last year)')+'</div></div>';
+  return h + '</div>';
+}
+
+/* ============================================================
    v910: 会計PLブック(.xlsx)の取り込み
 
    ★行も列も決め打ちしない。
@@ -18900,11 +19018,18 @@ function renderMeetingReview(){
   /* v902: 中間MTGはタスク欄を出さない（月初MTGは従来どおり）。
      _meetTaskSection 自体は残してあるので、戻すならここに足すだけ。 */
   else {
-    /* v908: 第3層。月初MTGと同じ _meetYearMatrix をそのまま呼ぶ（数字の作り方を二重に持たない）。 */
+    /* v911: 全店のときは店舗ごとのサマリーだけ。
+       第3層(年間一覧)は個々の店の結果なので全店ぶんは出さない。
+       1店を選ぶと従来どおり 詳細＋差分の原因＋年間一覧 が出る。 */
+    var _multi = ks.length > 1;
     ks.forEach(function(x){
+      if (_multi) { try { html += _meetStoreSummary(x.s, x.k, ym, isCurrent); return; } catch(e){} }
       html += _meetStoreCard(x.s, x.k, ym, isCurrent);
       try { html += _meetYearMatrix(x.s, ym0.y); } catch(e){}
     });
+    if (_multi) html += '<div style="font-size:10.5px;color:var(--muted);margin:2px 2px 10px;line-height:1.6">'
+      + '<i class="ti ti-info-circle"></i> '
+      + t('差分の原因・曜日別・年間一覧は、店舗を選ぶと出ます。','Pick a store to see the gap breakdown and yearly table.')+'</div>';
   }
   return html;
 }
@@ -28557,7 +28682,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '910';
+const APP_VERSION = '911';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
