@@ -17980,6 +17980,7 @@ function _meetGapBreakdown(storeId, ym, key){
   /* 実績を 店内L / 店内D / テイクアウト に割る。テイクアウトは L/D の中に入っているので抜く。 */
   var A = { lunch:{s:0,g:0}, dinner:{s:0,g:0}, takeout:{s:0,g:0} };
   var dowA = []; for (var i=0;i<7;i++) dowA.push({ lunch:{s:0,g:0}, dinner:{s:0,g:0}, takeout:{s:0,g:0} });
+  var dowManual = [0,0,0,0,0,0,0];   /* v914: 日別予算を手入力した日の数（曜日ごと） */
   var hasAny = false, hasTO = false;
   el.days.forEach(function(d){
     var ov = da[d.date] || {};
@@ -18035,8 +18036,12 @@ function _meetGapBreakdown(storeId, ym, key){
     el.days.forEach(function(d){
       var ov2 = da[d.date] || {};
       var dayBud = 0;
-      if (ov2.budget != null && ov2.budget !== '') { var _b = parseFloat(ov2.budget); if (!isNaN(_b)) dayBud = _b; }
-      else { try { dayBud = (typeof dayBudgetFor==='function') ? (dayBudgetFor(b, d.date) || 0) : 0; } catch(e){ dayBud = 0; } }
+      if (ov2.budget != null && ov2.budget !== '') { var _b = parseFloat(ov2.budget); if (!isNaN(_b)) dayBud = _b; dowManual[d.dowIdx]++; }
+      else {
+        /* v914: 予算側の日別手入力(b.days)も「客数×単価の形を持たない日」なので数える。 */
+        try { if (b && b.days && b.days[d.date] != null && b.days[d.date] !== '') dowManual[d.dowIdx]++; } catch(e){}
+        try { dayBud = (typeof dayBudgetFor==='function') ? (dayBudgetFor(b, d.date) || 0) : 0; } catch(e){ dayBud = 0; }
+      }
       budDaily += dayBud;
       /* その日の予算を区分へ配る。合計は必ず dayBud に戻る。 */
       var r = {}, rt = 0;
@@ -18111,7 +18116,10 @@ function _meetGapBreakdown(storeId, ym, key){
     unit: (key==='guests') ? 'count' : 'money',
     act:actT, tgt:tgtT, gap:(actT!=null&&tgtT!=null)?(actT-tgtT):null,
     ld:ld, segs:SEGS, dow:dowOut, cause:cause,
-    tgtMode:tgtMode, budDaily:budDaily, days:el.days.length, dowCounts:el.counts, hasTakeout:hasTO };
+    tgtMode:tgtMode, budDaily:budDaily, days:el.days.length, dowCounts:el.counts, hasTakeout:hasTO,
+    /* v914: 曜日×区分の実績と目標。曜日別の予定/実績表で使う。
+       同じものを別関数で計算し直すとズレるので、ここで作ったものをそのまま渡す。 */
+    dowAct:dowA, dowTgt:dowT, dowManual:dowManual, dow7:dow, usesDow:usesDow };
 }
 /* PL2025_SEED — 2025年 確定PL（会計事務所 BS&PL 2025-12 より抽出）
 
@@ -18485,7 +18493,24 @@ function _meetConfirmBadge(storeId, ym, small){
     +  (c ? 'background:var(--green);color:#fff' : 'background:var(--surface2);color:var(--muted);border:1px solid var(--border)')+'">'
     +  (c ? t('確定','Final') : t('速報','Prov.'))+'</span>';
 }
-/* v907: 固定表示するKPI帯。判定は既存の _meetStatus / _meetStatColor をそのまま使う
+/* v913: 店名の固定行。KPIの数字は載せない（カードと重複するため）。
+   載せるのは「どの店か」「未達が何件か」「速報/確定」「予算の考え方」の4つだけ。 */
+function _meetStorePinHtml(store, missCount, ym){
+  var col = (missCount===0) ? 'var(--green)' : (missCount<=1 ? 'var(--yellow)' : 'var(--red)');
+  var h = '<div style="position:sticky;top:52px;z-index:30;background:var(--surface);'
+    +     'margin:0 0 9px;padding:6px 0 7px;border-bottom:1px solid var(--border);'
+    +     'display:flex;align-items:center;gap:7px;flex-wrap:nowrap">'
+    +  '<i class="ti ti-building-store" style="font-size:15px;color:var(--muted);flex-shrink:0"></i>'
+    +  '<span style="font-size:12.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(store.name)+'</span>'
+    +  '<span style="font-size:10px;font-weight:800;color:'+col+';white-space:nowrap;flex-shrink:0">'
+    +  (missCount===0 ? t('全KPI達成','All met') : (missCount+t('件 未達',' missed')))+'</span>';
+  try { h += '<span style="flex-shrink:0">'+_meetConfirmBadge(store.id, ym, true)+'</span>'; } catch(e){}
+  h += '<button class="btn btn-secondary btn-sm" onclick="openBudgetReview(\''+store.id+'\')"'
+    +  ' style="margin-left:auto;flex:0 0 auto;padding:3px 9px;font-size:10.5px;white-space:nowrap">'
+    +  '<i class="ti ti-bulb"></i> '+t('考え方','Rationale')+'</button>';
+  return h + '</div>';
+}
+/* v907: 固定表示するKPI帯（v913で廃止・未使用）。判定は既存の _meetStatus / _meetStatColor をそのまま使う
    （帯とカード本体で判定が食い違わないようにするため、新しいしきい値を作らない）。 */
 function _meetPinShort(v, money, unit){
   if (v == null) return '—';
@@ -18535,6 +18560,169 @@ function _meetPinHtml(store, rows, sts, paceBudget, isCurrent, ymForPin){
     +  ' style="flex:0 0 auto;padding:4px 9px;font-size:10.5px;align-self:center;white-space:nowrap">'
     +  '<i class="ti ti-bulb"></i> '+t('考え方','Rationale')+'</button>';
   return h + '</div>';
+}
+/* ============================================================
+   v914: 予算の考え方を売上カードに常時表示する。
+   「どう組んだか」と「今どうなっているか」を並べないと比較できない。
+   ============================================================ */
+function _meetPlanHtml(store, ym, landing){
+  var b = null, raw = null;
+  try { b = getBudgetForMonth(store.id, ym); } catch(e){}
+  try { raw = getBudgets().find(function(x){ return x.storeId===store.id; }); } catch(e){}
+  if (!b) return '';
+  var muted = 'color:var(--muted);font-size:9.5px';
+  var h = '<div style="border-top:1px solid var(--border);margin-top:9px;padding-top:8px;max-width:620px">'
+    +  '<div style="display:flex;align-items:center;gap:5px;margin-bottom:5px">'
+    +  '<i class="ti ti-bulb" style="font-size:13px;color:var(--accent)"></i>'
+    +  '<span style="'+muted+'">'+t('この月の予算の考え方','How this budget was built')+'</span>';
+  try {
+    var stt = (typeof budStatusFor==='function') ? budStatusFor(raw, ym) : '';
+    if (stt) h += '<span style="margin-left:auto;'+muted+'">'+escapeHtml(stt)+'</span>';
+  } catch(e){}
+  h += '</div>';
+
+  /* ① 根拠・重点。未入力は隠さず「未入力」と出す。 */
+  var r = null; try { r = (typeof budRationale==='function') ? budRationale(raw, ym) : null; } catch(e){}
+  var basis = (r && (r.basis||'').trim()) || '';
+  var focus = (r && (r.focus||'').trim()) || '';
+  if (basis || focus) {
+    h += '<div style="font-size:11.5px;line-height:1.8">'
+      +  '<span style="'+muted+';font-weight:700">'+t('根拠','Basis')+'</span> '+escapeHtml(basis||'—')+'<br>'
+      +  '<span style="'+muted+';font-weight:700">'+t('重点','Focus')+'</span> '+escapeHtml(focus||'—')+'</div>';
+  } else {
+    h += '<div style="font-size:10.5px;color:var(--muted);line-height:1.7">'
+      +  t('根拠・重点が未入力です。','No basis/focus entered yet. ')
+      +  '<span onclick="openBudgetReview(\''+store.id+'\',false,\''+ym+'\')" style="color:var(--accent);cursor:pointer;text-decoration:underline">'
+      +  t('入力する','Enter')+'</span></div>';
+  }
+
+  /* ② 想定と現状の乖離。ここが会議で話す数字。 */
+  var prevS = 0; try { prevS = Math.round((prevMonthStats(store.id, ym)||{}).sales||0); } catch(e){}
+  var monBud = 0;
+  try { monBud = Math.round(daysOfYm(ym).reduce(function(a,dd){ return a + (dayBudgetFor(b, dd.date)||0); }, 0)); } catch(e){}
+  if (prevS > 0 && monBud > 0) {
+    var planPct = Math.round(monBud/prevS*1000)/10;
+    var realPct = (landing != null && landing > 0) ? Math.round(landing/prevS*1000)/10 : null;
+    var gapPt = (realPct != null) ? Math.round((realPct - planPct)*10)/10 : null;
+    var col = (gapPt == null) ? 'var(--muted)' : (gapPt >= 0 ? 'var(--green)' : 'var(--red)');
+    h += '<div style="background:var(--surface2);border-radius:8px;padding:6px 9px;margin-top:6px;font-size:11px;line-height:1.7">'
+      +  t('前月実績','Prev')+' '+fmtK(prevS)+' → '+t('予算','Budget')+' '+fmtK(monBud)
+      +  ' <b>'+(planPct>=100?'+':'')+(Math.round((planPct-100)*10)/10)+'%</b>'+t('の想定','planned')
+      +  (realPct != null
+          ? ('<br>'+t('着地予測','Proj')+' '+fmtK(landing)+' → '+t('前月比','vs prev')
+             +' <b style="color:'+((realPct>=planPct)?'var(--green)':'var(--red)')+'">'+(realPct>=100?'+':'')+(Math.round((realPct-100)*10)/10)+'%</b>'
+             +'　<b style="color:'+col+'">'+(gapPt>=0?'+':'')+gapPt+'pt</b>'+t('の乖離','gap'))
+          : '')
+      +  '</div>';
+  }
+
+  /* ③ 曜日別の 客数 × 単価 ＝ 日別売上 */
+  h += _meetDowPlanTable(store, ym);
+  return h + '</div>';
+}
+
+/* 曜日別の予定/実績。数字は _meetGapBreakdown（v903/v906/v914）から取る。 */
+function _meetDowPlanTable(store, ym){
+  var g = null;
+  try { g = _meetGapBreakdown(store.id, ym, 'sales'); } catch(e){}
+  if (!g || !g.ok || !g.usesDow || !g.dowAct) {
+    return '<div style="font-size:9.5px;color:var(--muted);margin-top:7px">'
+      + t('曜日別の組み立ては、曜日別予算を設定すると表示されます','Set a day-of-week budget to see the plan')+'</div>';
+  }
+  var SEGS = ['lunch','dinner','takeout'];      /* v914: テイクアウト列は常に出す（案B） */
+  var LBL  = { lunch:t('ランチ','Lunch'), dinner:t('ディナー','Dinner'), takeout:t('テイクアウト','Takeout') };
+  var num = function(v){ return (v==null) ? '—' : String(Math.round(v)); };
+  var mny = function(v){ return (v==null) ? '—' : ('$'+(Math.round(v*10)/10)); };
+  var arrow = function(plan, act, fmt, better){
+    if (act == null) return '<span style="color:var(--muted)">'+fmt(plan)+'</span>';
+    var c = (plan>0 && act>0) ? ((better(act,plan)) ? 'var(--green)' : 'var(--red)') : 'var(--tm)';
+    return fmt(plan)+' <span style="color:var(--muted)">→</span> <b style="color:'+c+'">'+fmt(act)+'</b>';
+  };
+  var up = function(a,p){ return a >= p*0.995; };
+
+  var sticky = 'position:sticky;left:0;z-index:1;background:var(--surface);box-shadow:2px 0 0 var(--border)';
+  var h = '<div style="'+'font-size:9.5px;color:var(--muted);margin:9px 0 4px'+'">'
+    +  t('曜日別の組み立て（客数 × 単価 ＝ 日別売上）','By weekday (guests × check = daily sales)')
+    +  '　<span style="color:var(--muted)">'+t('予定 → 実績','plan → actual')+'</span></div>'
+    +  '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="border-collapse:collapse;font-size:10.5px;white-space:nowrap">'
+    +  '<thead><tr style="color:var(--muted)">'
+    +  '<th style="'+sticky+';text-align:left;padding:2px 8px 4px 2px;font-weight:700">'+t('曜日','Day')+'</th>';
+  SEGS.forEach(function(sg){ h += '<th colspan="2" style="padding:2px 8px 4px;border-left:1px solid var(--border);font-weight:700">'+LBL[sg]+'</th>'; });
+  h += '<th colspan="2" style="padding:2px 8px 4px;border-left:1px solid var(--border);font-weight:700">'+t('1日あたり','Per day')+'</th></tr>'
+    +  '<tr style="color:var(--muted)"><th style="'+sticky+'"></th>';
+  SEGS.forEach(function(sg){
+    h += '<th style="padding:0 8px 4px;font-weight:400;border-left:1px solid var(--border)">'+(sg==='takeout'?t('件数','Orders'):t('客数','Guests'))+'</th>'
+      +  '<th style="padding:0 8px 4px;font-weight:400">'+t('単価','Check')+'</th>';
+  });
+  h += '<th style="padding:0 8px 4px;font-weight:400;border-left:1px solid var(--border)">'+t('売上','Sales')+'</th>'
+    +  '<th style="padding:0 8px 4px;font-weight:400">'+t('差','Gap')+'</th></tr></thead><tbody>';
+
+  var anyManual = false;
+  for (var i=0; i<7; i++){
+    var n = g.dowCounts[i] || 0;
+    var wend = (i===5 || i===6);
+    var bg = wend ? 'background:var(--surface2)' : '';
+    h += '<tr style="border-top:1px solid var(--border);'+bg+'">'
+      +  '<th style="'+sticky+(wend?';background:var(--surface2)':'')+';text-align:left;padding:4px 8px 4px 2px;font-weight:400">'
+      +  DOW[i]+' <span style="color:var(--muted)">'+n+t('回','')+'</span></th>';
+    if (!n) {
+      /* v914: まだ来ていない曜日は薄く出す。予定は見えるべきなので行は残す。 */
+      SEGS.forEach(function(sg){
+        var pg = _gapDowGuestsPerDay(g.dow7, sg, i), pv = _gapDowPerDay(g.dow7, sg, i);
+        var ps = (pg>0) ? pv/pg : null;
+        h += '<td style="padding:4px 8px;border-left:1px solid var(--border);color:var(--border)">'+(pg>0?num(pg):'—')+'</td>'
+          +  '<td style="padding:4px 8px;color:var(--border)">'+(ps!=null?mny(ps):'—')+'</td>';
+      });
+      h += '<td style="padding:4px 8px;border-left:1px solid var(--border);color:var(--border)">—</td>'
+        +  '<td style="padding:4px 8px;color:var(--border)">—</td></tr>';
+      continue;
+    }
+    SEGS.forEach(function(sg){
+      var pg = _gapDowGuestsPerDay(g.dow7, sg, i);
+      var pv = _gapDowPerDay(g.dow7, sg, i);
+      var ps = (pg>0) ? pv/pg : null;
+      var a = g.dowAct[i][sg] || {s:0,g:0};
+      var ag = (a.g>0) ? a.g/n : null;
+      var as = (a.g>0) ? a.s/a.g : null;
+      if (!(pg>0) && !(a.g>0)) {
+        /* v914: 予定も実績も無い区分は 0 ではなく — にする。
+           0 と書くと「0人だった」に読めるが、実際は使っていない区分。 */
+        h += '<td style="padding:4px 8px;border-left:1px solid var(--border);color:var(--border)">—</td>'
+          +  '<td style="padding:4px 8px;color:var(--border)">—</td>';
+        return;
+      }
+      h += '<td style="padding:4px 8px;border-left:1px solid var(--border)">'+arrow(pg, ag, num, up)+'</td>'
+        +  '<td style="padding:4px 8px">'+arrow(ps, as, mny, up)+'</td>';
+    });
+    var tS = 0, aS = 0, aG = 0;
+    SEGS.forEach(function(sg){ tS += (g.dowTgt[i]&&g.dowTgt[i][sg])||0;
+      aS += (g.dowAct[i][sg]||{s:0}).s||0; aG += (g.dowAct[i][sg]||{g:0}).g||0; });
+    if (tS > 0 && aS === 0 && aG === 0) {
+      /* v914: 予算はあるのに実績が丸ごと無い曜日。
+         「入力していない」のか「本当に0だった」のかは区別できないので、
+         $0 と断定せず — にする。−$6,000 と出すと未入力を未達と誤読する。 */
+      h += '<td style="padding:4px 8px;border-left:1px solid var(--border);color:var(--muted)">'
+        +  fmtK(tS/n)+' → <span style="color:var(--border)">—</span></td>'
+        +  '<td title="'+escapeHtml(t('この曜日の実績が未入力です','No actuals entered for this weekday'))
+        +  '" style="padding:4px 8px;color:var(--border)">—</td></tr>';
+      continue;
+    }
+    var man = g.dowManual[i] || 0; if (man) anyManual = true;
+    var gap = aS - tS;
+    /* v914: 手入力の日を含む行は、客数×単価の列と日計が一致しない。
+       理由をその場（title）に出す。注記だけだとどの行のことか分からない。 */
+    var manT = man ? (' title="'+escapeHtml(t('この曜日の'+man+'日は日別予算を手入力しています。金額のみの設定なので、左の客数×単価とは一致しません。',
+                                              man+' day(s) use a manually entered daily budget (amount only).'))+'"') : '';
+    h += '<td'+manT+' style="padding:4px 8px;border-left:1px solid var(--border);color:var(--muted)">'
+      +  fmtK(tS/n)+(man?'<span style="color:var(--accent2);font-weight:800">*</span>':'')+' → '+fmtK(aS/n)+'</td>'
+      +  '<td style="padding:4px 8px;font-weight:700;color:'+(gap>=0?'var(--green)':'var(--red)')+'">'
+      +  (gap>=0?'+':'−')+fmtK(Math.abs(gap))+'</td></tr>';
+  }
+  h += '</tbody></table></div>';
+  if (anyManual) h += '<div style="font-size:9px;color:var(--muted);margin-top:4px">'
+    +  t('* 日別予算を手入力した日を含みます。手入力は客数×単価の形を持たないため、売上にだけ反映されます。',
+         '* includes days with a manually entered daily budget (amount only, no guests x check).')+'</div>';
+  return h;
 }
 /* v904: 差分の原因を描く。計算は _meetGapBreakdown(v903) が持つ。ここは表示だけ。 */
 function _meetGapHtml(storeId, ym, key){
@@ -18638,16 +18826,33 @@ function _meetKpiTile(storeId, ym, key, act, tgt, opts){
   var col=_meetStatColor(st), tint=_meetStatTint(st);
   var fmtV=function(v){ if(money) return (typeof fmtUSD2==='function')?fmtUSD2(v):('$'+(Math.round(v*100)/100)); return (Math.round(v*10)/10)+unit; };
   var diff=_meetDiffStr(key, act, tgt, lower, unit, money);
-  var pill='<span style="font-size:11.5px;font-weight:800;color:#fff;background:'+col+';border-radius:20px;padding:3px 12px;white-space:nowrap">'+_meetStatLabel(st)+(diff?' '+diff:'')+'</span>';
+  /* v913: 判定は文字と記号の両方で出す（色だけに頼らない）。 */
+  var mark = (st==='ok') ? '<i class="ti ti-check"></i>' : (st==='miss' ? '<i class="ti ti-x"></i>' : (st==='warn' ? '<i class="ti ti-alert-triangle"></i>' : ''));
   var extra=opts.extra||'';
-  var h='<div style="display:flex;align-items:center;gap:11px;background:'+tint+';border:1.5px solid '+(st==='miss'?'var(--red)':(st==='warn'?'var(--yellow)':'var(--border)'))+';border-radius:11px;padding:10px 12px;margin-top:7px">'
-    +'<div style="width:34px;height:34px;border-radius:9px;background:'+col+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti '+def.icon+'" style="color:#fff;font-size:18px"></i></div>'
-    +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:800;color:var(--tm)">'+label+'</div>'
-    +'<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-top:2px">'
-      +'<span style="white-space:nowrap"><span style="font-size:9.5px;color:var(--muted);font-weight:700">'+t('実績','ACT')+'</span> <span style="font-size:19px;font-weight:800;color:'+col+'">'+(act>0?fmtV(act):'—')+'</span></span>'
-      +'<span style="white-space:nowrap"><span style="font-size:9.5px;color:var(--muted);font-weight:700">'+t('目標','TGT')+'</span> <span style="font-size:17px;font-weight:800;color:var(--tm)">'+(tgt>0?fmtV(tgt):'—')+'</span></span>'
-    +'</div>'+(extra?'<div style="font-size:10px;color:var(--muted);margin-top:1px">'+extra+'</div>':'')+'</div>'
-    +pill+'</div>';
+  /* v913: 目標と実績を左右に分ける。
+       目標は月中に動かないので薄く固定、実績は更新される側なので判定色を付ける。
+       「色が付いている側が最新」と決めておけば、数字の大小に関係なく見分けられる。 */
+  var fmtT=function(v){ return (v>0)?fmtV(v):'—'; };
+  var box=function(cap, val, valCol, bg, mk){
+    return '<div style="flex:1;min-width:0;background:'+bg+';border-radius:9px;padding:6px 9px">'
+      +  '<div style="font-size:9.5px;font-weight:700;color:'+(valCol==='var(--muted)'?'var(--muted)':valCol)+'">'+cap+'</div>'
+      +  '<div style="display:flex;align-items:baseline;gap:4px;margin-top:1px">'
+      +  '<span style="font-size:18px;font-weight:800;color:'+valCol+';white-space:nowrap">'+val+'</span>'
+      +  (mk?'<span style="font-size:13px;color:'+valCol+'">'+mk+'</span>':'')+'</div></div>';
+  };
+  var h='<div style="background:'+tint+';border:1.5px solid '+(st==='miss'?'var(--red)':(st==='warn'?'var(--yellow)':'var(--border)'))+';border-radius:11px;padding:10px 12px;margin-bottom:8px">'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'
+    +'<div style="width:26px;height:26px;border-radius:8px;background:'+col+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti '+def.icon+'" style="color:#fff;font-size:14px"></i></div>'
+    +'<div style="font-size:13px;font-weight:800;color:var(--tm)">'+label+'</div></div>'
+    +'<div style="display:flex;gap:8px">'
+    +box(t('目標','Target'), fmtT(tgt), 'var(--muted)', 'var(--surface)', '')
+    +box(t('実績','Actual'), (act>0?fmtV(act):'—'), (act>0?col:'var(--muted)'), (st==='none'?'var(--surface)':tint), mark)
+    +'</div>'
+    +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:6px">'
+      +(diff?'<span style="font-size:12px;font-weight:800;color:'+col+';white-space:nowrap">'+diff+'</span>':'')
+      +'<span style="font-size:10px;color:var(--muted)">'+_meetStatLabel(st)+'</span>'
+    +'</div>'+(extra?'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+extra+'</div>':'')
+    +'</div>';
   if(st==='miss') h+=_meetInputBlock(storeId, ym, {key:key}, true);
   return h;
 }
@@ -18761,8 +18966,10 @@ function _meetStoreCard(store, k, ym, isCurrent){
   var salesCol=_meetStatColor(salesSt);
   var h='<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)
     +'<span class="tag '+(missCount===0?'tag-green':(missCount<=1?'tag-yellow':'tag-red'))+'" style="margin-left:auto">'+(missCount===0?t('全KPI達成','All met'):(missCount+t('件 未達',' missed')))+'</span></div>';
-  /* v907: 目標の固定表示。スクロールしても「何が目標か」が消えないようにする。 */
-  try { h += _meetPinHtml(store, rows, _sts, paceBudget, isCurrent, ym); } catch(e){}
+  /* v913: 固定KPI帯は廃止。すぐ下のKPIカードと同じ内容で、しかも小さくて読めなかった。
+     店名の行だけ sticky にして「どの店を見ているか」と「予算の考え方」を残す。
+     KPIの数字はここに載せない（カードと重複させないのがこの版の目的）。 */
+  try { h += _meetStorePinHtml(store, missCount, ym); } catch(e){}
   // 売上ヒーロー
   h+='<div style="background:'+_meetStatTint(salesSt)+';border:1px solid '+(salesSt==='miss'?'var(--red)':'var(--border)')+';border-radius:11px;padding:11px 13px;margin-bottom:2px">'
     +'<div style="display:flex;align-items:center;gap:8px"><i class="ti ti-trending-up" style="color:'+salesCol+';font-size:16px"></i><span style="font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.03em">'+t('売上','SALES')+(isCurrent?t('（前日まで）',' (to date)'):'')+'</span>'
@@ -18775,6 +18982,9 @@ function _meetStoreCard(store, k, ym, isCurrent){
     /* v909: 着地予測と前年同月を並べる。前日までの実績同士では月の途中なので比べられない。 */
     try { h+='<div style="margin-top:3px"><i class="ti ti-calendar-stats" style="font-size:10px;color:var(--muted)"></i> '+_plYoYHtml(store.id, ym, landing)+'<span style="font-size:9px;color:var(--muted)"> '+t('（着地予測との比較）','(vs projection)')+'</span></div>'; } catch(e){}
   }
+  /* v914: 予算の考え方を常時表示（従来はタップでモーダル）。
+     どう組んだかと今どうなっているかを並べて見るのが目的。 */
+  try { h += _meetPlanHtml(store, ym, landing); } catch(e){}
   /* v904: 差分の原因（区分別・曜日別・客数/客単価）。計算は v903。 */
   try { h += _meetGapHtml(store.id, ym, 'sales'); } catch(e){}
   h+='</div>';
@@ -28621,7 +28831,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '912';
+const APP_VERSION = '914';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
