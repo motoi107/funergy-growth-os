@@ -28630,13 +28630,19 @@ function renderLaborDetail(storeId, store) {
 
   var totalCost=0, totalReg=0, totalOt=0, shownCount=0;
   var _tbody='';
-  // マスター在籍スタッフ
+  /* v916: 「名簿に居るか」ではなく「まだ描いていないか」で振り分ける。
+     store:'ALL' かつ応援店舗にこの店が入っている月給者は、
+     ①月給でスキップ ②store厳密一致で対象外 ③名簿に居るので未登録でもない
+     となって3つとも漏れ、名前も金額も出なかった（v915までの穴）。 */
+  var _shown = {};
+  // マスター在籍スタッフ（時給）
   staff.forEach(function(e){
     if(typeof empPayType==='function' && empPayType(e)==='monthly') return; // 月給制は下の固定給セクションで計上
     var a = agg[e.name];
     if(!a || (a.reg<=0 && a.ot<=0)) return; // この期間に勤務が無い人は省略
     var calc = laborForEmployee(e.name, {regular:a.reg, ot:a.ot});
     totalCost+=calc.total; totalReg+=calc.reg; totalOt+=calc.ot; shownCount++;
+    _shown[e.name] = 1;   /* v916 */
     _tbody += `<tr>
       <td>${escapeHtml(e.name)}${owRowBadge(_ow.byName[e.name])}<div style="font-size:9px;color:var(--muted)">${escapeHtml(owGradeOfName(e.name)||(ROLE_CONFIG[e.role]||{}).label||'')}</div></td>
       <td>${calc.reg>0?calc.reg+'h':'—'}</td>
@@ -28654,6 +28660,7 @@ function renderLaborDetail(storeId, store) {
     var _amt = (_dimM>0) ? Math.round(_msal*_periodDaysM/_dimM*100)/100 : 0;
     var a = agg[e.name]||{reg:0,ot:0};
     totalCost += _amt; totalReg += (a.reg||0); totalOt += (a.ot||0); shownCount++;
+    _shown[e.name] = 1;   /* v916 */
     _tbody += `<tr>
       <td>${escapeHtml(e.name)} <span class="tag tag-gray" style="font-size:9px">月給</span>${owRowBadge(_ow.byName[e.name])}<div style="font-size:9px;color:var(--muted)">${escapeHtml(owGradeOfName(e.name)||(ROLE_CONFIG[e.role]||{}).label||'')}</div></td>
       <td>${a.reg>0?a.reg+'h':'<span style="color:var(--muted)">—</span>'}</td>
@@ -28661,31 +28668,73 @@ function renderLaborDetail(storeId, store) {
       ${canWage?`<td style="font-weight:600">${fmtUSD2(_amt)}<div style="font-size:9px;color:var(--muted)">固定給 日割 ${_periodDaysM}/${_dimM}日</div></td>`:''}
     </tr>`;
   });
-  // マスター未登録（tip_laborにはあるがマスターに無い名前）
-  var unmatched = Object.keys(agg).filter(function(n){return staffNames.indexOf(n)<0 && (agg[n].reg>0||agg[n].ot>0);});
-  unmatched.forEach(function(name){
+  /* v916: ここまでで描いていない「打刻のある人」を全員出す。
+     旧版は staffNames（名簿）に無い人だけを拾っていたため、
+     名簿に居るのに①②から漏れた人がどこにも出なかった。
+     判定を「まだ描いていない」に変えると、漏れが構造的に起きない。 */
+  var _rest = Object.keys(agg).filter(function(n){ return !_shown[n] && (agg[n].reg>0||agg[n].ot>0); });
+  var _unreg = [];   /* v916: 本当にマスターに居ない人だけ（下の注意書き用） */
+  _rest.forEach(function(name){
     var a = agg[name];
     var calc = laborForEmployee(name, {regular:a.reg, ot:a.ot});
     totalCost+=calc.total; totalReg+=calc.reg; totalOt+=calc.ot; shownCount++;
-    /* v915: store:'ALL' の人は staffForStore() に入らないためここに落ちる。
-       マスターに居るのに「未登録」と黄色で出すと、金額が付いたときに誤警報になる。
-       在籍が確認できる人は所属と計上理由を出す。 */
+    _shown[name] = 1;
     var _uEmp = null;
     try { _uEmp = (getEmployees()||[]).find(function(x){ return x && x.name===name; }) || null; } catch(e){}
     var _uStore = _uEmp ? (_uEmp.store==='ALL' ? '全店' : ((STORES.find(function(s){return s.id===_uEmp.store;})||{}).name || _uEmp.store || '')) : '';
-    var _uNote = _uEmp
-      ? `<div style="font-size:9px;color:var(--muted)">${escapeHtml(_uStore)}／現場計上</div>`
-      : `<div style="font-size:9px;color:var(--yellow)">マスター未登録</div>`;
-    _tbody += `<tr style="opacity:0.85">
-      <td>${escapeHtml(name)}${_uNote}</td>
+    var _uMonthly = !!(_uEmp && typeof empPayType==='function' && empPayType(_uEmp)==='monthly');
+    /* マスターに居るのに「未登録」と黄色で出すと誤警報になる。
+       月給者がここに来るのは「固定給は別店（または本部）で、現場ぶんだけこの店に計上」という意味。 */
+    var _uNote = !_uEmp
+      ? `<div style="font-size:9px;color:var(--yellow)">マスター未登録</div>`
+      : (_uMonthly
+        ? `<div style="font-size:9px;color:var(--muted)">${escapeHtml(_uStore)}／現場計上（固定給は別計上）</div>`
+        : `<div style="font-size:9px;color:var(--muted)">${escapeHtml(_uStore)}</div>`);
+    var _uTag = _uMonthly ? ' <span class="tag tag-blue" style="font-size:9px">現場計上</span>' : '';
+    if(!_uEmp) _unreg.push(name);
+    _tbody += `<tr${_uEmp?'':' style="opacity:0.85"'}>
+      <td>${escapeHtml(name)}${_uTag}${owRowBadge(_ow.byName[name])}${_uNote}</td>
       <td>${a.reg>0?a.reg+'h':'—'}</td>
       <td>${a.ot>0?`<span class="tag tag-yellow" style="font-size:9px">${a.ot}h</span>`:'—'}</td>
-      ${canWage?`<td style="color:${calc.wage>0?'inherit':'var(--muted)'}">${calc.wage>0?fmtUSD2(calc.total):'$0<div style=\"font-size:9px\">時給未設定</div>'}</td>`:''}
+      ${canWage?`<td style="font-weight:${_uEmp?'600':'400'};color:${calc.wage>0?'inherit':'var(--muted)'}">${calc.wage>0?fmtUSD2(calc.total):'$0<div style=\"font-size:9px\">時給未設定</div>'}</td>`:''}
     </tr>`;
   });
+
+  /* v916: Grade別労働時間には出ているのに、明細に1行も出ていない人。
+     同じ画面・同じ店・同じ週を見ているのに差が出るのは、
+     集計期間の条件（当月内・前日まで）で落ちている場合だけ。
+     黙って消えると原因が分からないので、理由を画面に出す。 */
+  var _owOnly = [];
+  try {
+    Object.keys((_ow && _ow.byName) || {}).forEach(function(n){
+      if(!_shown[n]) _owOnly.push(n);
+    });
+  } catch(e){}
   if(!shownCount){
     _tbody += `<tr><td colspan="${canWage?4:3}" style="text-align:center;color:var(--muted);padding:18px">この期間の勤怠データがありません。<br>右上の「最新に更新」でToast勤怠を取得してください。</td></tr>`;
   }
+  /* v916: 明細の行合計と、下のサマリー(共通コア)が食い違ったら画面に出す。
+     食い違うのは「明細に描かれていない人が集計に入っている」ときなので、
+     黙っていると数字だけが合わなくなる（教訓㉚: 画面の中に基準を2つ作らない）。 */
+  var _coreWage = (Number(_core.hourly)||0) + (Number(_core.salary)||0) + (Number(_core.leave)||0);
+  var _gap = Math.round((totalCost - _coreWage)*100)/100;
+  var _warn = '';
+  if (canWage && Math.abs(_gap) >= 0.01) {
+    _warn += '<div class="card" style="padding:9px 11px;margin-bottom:10px;border:1px solid var(--red)">'
+      + '<div style="font-size:12px;font-weight:700;color:var(--red)"><i class="ti ti-alert-triangle"></i> 明細とサマリーが一致していません</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.7">'
+      + '明細の合計 ' + fmtUSD2(totalCost) + ' / サマリーの給与 ' + fmtUSD2(_coreWage)
+      + '（差 ' + fmtUSD2(_gap) + '）。<br>明細に出ていない人が集計に入っています。</div></div>';
+  }
+  if (_owOnly.length) {
+    _warn += '<div class="card" style="padding:9px 11px;margin-bottom:10px;border:1px solid var(--yellow)">'
+      + '<div style="font-size:12px;font-weight:700"><i class="ti ti-info-circle" style="color:var(--yellow)"></i> Grade別には出ているが明細に無い人</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.7">'
+      + escapeHtml(_owOnly.join('、'))
+      + '<br>この月の集計期間（当月内・前日まで）から外れた日の打刻です。'
+      + 'Grade別は週まるごとを数えるため、月をまたぐ日や本日分もそちらには出ます。</div></div>';
+  }
+  html += _warn;
   // ===== 連動サマリー（共通コア: 労働時間タブ・予実と同一計算）=====
   var _tax = _core.tax;
   var _ins = _core.ins;
@@ -28710,8 +28759,11 @@ function renderLaborDetail(storeId, store) {
   html += `<div class="card"><div class="card-title"><i class="ti ti-table"></i>勤怠明細（従業員別）</div><table class="inv-table" style="width:100%;font-size:12px"><thead><tr>
     <th>従業員</th><th>通常h</th><th>OT h</th>${canWage?'<th>賃金</th>':''}</tr></thead><tbody>`+_tbody+`</tbody></table>`;
   html += '</div>';
-  if (unmatched.length) {
-    html += `<div class="alert alert-warning" style="padding:8px 10px;margin-top:8px;font-size:11px"><i class="ti ti-info-circle"></i><div>${unmatched.length}名がマスター未登録のため賃金が$0です。従業員マスターで登録・時給設定すると自動計算されます。</div></div>`;
+  /* v916: unmatched（名簿に無い名前）は _rest に統合したので、
+     ここは「本当にマスターに居ない人」だけを数える。
+     マスターに居て現場計上で出ている人を「未登録」と数えると誤警報になる。 */
+  if (_unreg.length) {
+    html += `<div class="alert alert-warning" style="padding:8px 10px;margin-top:8px;font-size:11px"><i class="ti ti-info-circle"></i><div>${_unreg.length}名がマスター未登録のため賃金が$0です（${escapeHtml(_unreg.slice(0,5).join('、'))}${_unreg.length>5?' ほか':''}）。従業員マスターで登録・時給設定すると自動計算されます。</div></div>`;
   }
 
   // サマリー
@@ -28840,7 +28892,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '915';
+const APP_VERSION = '916';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
