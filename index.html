@@ -28667,8 +28667,17 @@ function renderLaborDetail(storeId, store) {
     var a = agg[name];
     var calc = laborForEmployee(name, {regular:a.reg, ot:a.ot});
     totalCost+=calc.total; totalReg+=calc.reg; totalOt+=calc.ot; shownCount++;
+    /* v915: store:'ALL' の人は staffForStore() に入らないためここに落ちる。
+       マスターに居るのに「未登録」と黄色で出すと、金額が付いたときに誤警報になる。
+       在籍が確認できる人は所属と計上理由を出す。 */
+    var _uEmp = null;
+    try { _uEmp = (getEmployees()||[]).find(function(x){ return x && x.name===name; }) || null; } catch(e){}
+    var _uStore = _uEmp ? (_uEmp.store==='ALL' ? '全店' : ((STORES.find(function(s){return s.id===_uEmp.store;})||{}).name || _uEmp.store || '')) : '';
+    var _uNote = _uEmp
+      ? `<div style="font-size:9px;color:var(--muted)">${escapeHtml(_uStore)}／現場計上</div>`
+      : `<div style="font-size:9px;color:var(--yellow)">マスター未登録</div>`;
     _tbody += `<tr style="opacity:0.85">
-      <td>${escapeHtml(name)}<div style="font-size:9px;color:var(--yellow)">マスター未登録</div></td>
+      <td>${escapeHtml(name)}${_uNote}</td>
       <td>${a.reg>0?a.reg+'h':'—'}</td>
       <td>${a.ot>0?`<span class="tag tag-yellow" style="font-size:9px">${a.ot}h</span>`:'—'}</td>
       ${canWage?`<td style="color:${calc.wage>0?'inherit':'var(--muted)'}">${calc.wage>0?fmtUSD2(calc.total):'$0<div style=\"font-size:9px\">時給未設定</div>'}</td>`:''}
@@ -28831,7 +28840,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '914';
+const APP_VERSION = '915';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -28987,7 +28996,7 @@ const JOB_TITLES = [
   {key:'Operation Leader',label:'Operation Leader',payType:'hourly', permRole:'sl',   defWage:20},
   {key:'Store Leader',   label:'Store Leader',   payType:'hourly',  permRole:'sl',   defWage:20},
   {key:'Store Manager',  label:'Store Manager',  payType:'monthly', permRole:'sl',   defMonthly:6000},
-  {key:'Head Chef',      label:'Head Chef',      payType:'monthly', permRole:'sl',   defMonthly:6000},
+  {key:'Head Chef',      label:'Head Chef',      payType:'monthly', permRole:'sl',   defMonthly:6000, defSiteWage:17},   /* v915: 現場に出たぶんの店舗配賦単価 */
   {key:'Area Manager',   label:'Area Manager',   payType:'monthly', permRole:'am',   defMonthly:7000},
   {key:'Corporate Chef', label:'Corporate Chef', payType:'monthly', permRole:'am',   defMonthly:7000},
   {key:'Customer Service Manager', label:'Customer Service Manager', payType:'monthly', permRole:'am', defMonthly:7000},
@@ -29011,7 +29020,7 @@ function isMonthlyTitle(key){ var t=jobTitle(key); return !!(t && t.payType==='m
 function getTitleWageTable() {
   var saved = ls('m_titlewage', null);
   var base = {};
-  JOB_TITLES.forEach(t=>{ base[t.key] = (t.payType==='monthly') ? {monthly:t.defMonthly} : {wage:t.defWage}; });
+  JOB_TITLES.forEach(t=>{ base[t.key] = (t.payType==='monthly') ? {monthly:t.defMonthly} : {wage:t.defWage}; if(t.defSiteWage!=null) base[t.key].siteWage = t.defSiteWage; });   /* v915 */
   if (saved) Object.keys(saved).forEach(k=>{ base[k] = Object.assign(base[k]||{}, saved[k]); });
   return base;
 }
@@ -29022,8 +29031,23 @@ function empPayType(e){
   if (e && e.monthlySalary!=null && e.monthlySalary!=='' && parseFloat(e.monthlySalary)>0) return 'monthly'; // 月給額が設定されていれば月給者（固定給を人件費に反映）
   return isMonthlyTitle(e.title) ? 'monthly' : 'hourly';
 }
+/* v915: 月給者が現場に出たぶんを、打刻した店の人件費へ配賦する単価。
+   ★個人ではなく役職(m_titlewage)に持つ。
+     個人フィールドにすると SUPA_MASTER_MAP.m_employees の給与剥がし
+     (delete d.wage / d.monthlySalary) の対象になり、入れ忘れれば anon から読める。
+     役職別の標準単価は JOB_TITLES に元から書かれている情報なので露出を増やさない。
+   ★効くのは store:'ALL' の月給者だけ。
+     所属店が実店舗の月給者は laborCoreForYm の monthlyNames で
+     時給集計から除外されるため、同じ役職に単価を入れても影響しない。
+   ★未設定は 0。従来（月給者は時給0）と完全に同じ挙動に落ちる。 */
+function empSiteWageOf(e) {
+  if (!e || empPayType(e)!=='monthly') return 0;
+  var tbl = getTitleWageTable();
+  var sw = (e.title && tbl[e.title] && tbl[e.title].siteWage!=null) ? Number(tbl[e.title].siteWage) : 0;
+  return (sw > 0) ? sw : 0;
+}
 function empWageOf(e) {
-  if (empPayType(e)==='monthly') return 0; // 月給者は時給0
+  if (empPayType(e)==='monthly') return empSiteWageOf(e);   /* v915: 未設定は0（従来どおり） */
   if (e.wage!=null && e.wage!=='') return parseFloat(e.wage);   // 個別上書き
   var tbl = getTitleWageTable();
   if (e.title && tbl[e.title] && tbl[e.title].wage!=null) return tbl[e.title].wage;
@@ -37252,23 +37276,49 @@ function openTitleWageModal() {
     var cell = (t.payType==='monthly')
       ? `<input class="form-input" id="tw-${t.key.replace(/[^A-Za-z]/g,'')}" type="number" inputmode="decimal" step="50" value="${tbl[t.key]&&tbl[t.key].monthly!=null?tbl[t.key].monthly:''}" style="width:110px;padding:5px" placeholder="月給$">`
       : `<input class="form-input" id="tw-${t.key.replace(/[^A-Za-z]/g,'')}" type="number" inputmode="decimal" step="0.25" value="${tbl[t.key]&&tbl[t.key].wage!=null?tbl[t.key].wage:''}" style="width:110px;padding:5px" placeholder="時給$/h">`;
+    /* v915: 月給役職だけ「現場計上時給」を持てる。時給役職は通常の時給がそのまま使われる */
+    var site = (t.payType==='monthly')
+      ? `<input class="form-input" id="tws-${t.key.replace(/[^A-Za-z]/g,'')}" type="number" inputmode="decimal" step="0.25" value="${tbl[t.key]&&tbl[t.key].siteWage!=null?tbl[t.key].siteWage:''}" style="width:92px;padding:5px" placeholder="$/h">`
+      : `<span style="font-size:10px;color:var(--muted)">—</span>`;
     return `<tr><td style="font-size:12px">${t.label}</td>
       <td style="text-align:center"><span class="tag ${t.payType==='monthly'?'tag-blue':'tag-gray'}" style="font-size:9px">${t.payType==='monthly'?'月給':'時給'}</span></td>
-      <td style="text-align:right">${cell}</td></tr>`;
+      <td style="text-align:right">${cell}</td>
+      <td style="text-align:right">${site}</td></tr>`;
   }).join('');
   openModal(`<div class="modal-title">役職別 給与表 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">役職ごとのデフォルト給与を設定します。従業員ごとの個別上書きは従業員編集で行います。</div>
-    <table class="inv-table" style="width:100%"><thead><tr><th>役職</th><th style="text-align:center">形態</th><th style="text-align:right">デフォルト</th></tr></thead><tbody>${rows}</tbody></table>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7"><i class="ti ti-info-circle"></i> <b>現場計上</b>＝月給者が現場に出たとき、打刻した店の人件費へ配賦する時給です。固定給とは別枠で、店舗ごとの人件費率を実態に合わせるための単価です。給与税17%と週40h超のOT×1.5は通常の時給と同じ扱いで乗ります。<br>所属店が「全店」の月給者にだけ効きます（特定店舗に所属する月給者は固定給で計上されるため影響しません）。</div>
+    <table class="inv-table" style="width:100%"><thead><tr><th>役職</th><th style="text-align:center">形態</th><th style="text-align:right">デフォルト</th><th style="text-align:right">現場計上</th></tr></thead><tbody>${rows}</tbody></table>
     <div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
     <button class="btn btn-primary" onclick="saveTitleWageTable()"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
 }
 function saveTitleWageTable() {
   var tbl = {};
   JOB_TITLES.forEach(t=>{
-    var el = document.getElementById('tw-'+t.key.replace(/[^A-Za-z]/g,''));
-    if (!el) return;
-    var v = el.value!=='' ? parseFloat(el.value) : null;
-    if (v!=null) tbl[t.key] = (t.payType==='monthly') ? {monthly:v} : {wage:v};
+    var key = t.key.replace(/[^A-Za-z]/g,'');
+    var el = document.getElementById('tw-'+key);
+    if (el) {
+      var v = el.value!=='' ? parseFloat(el.value) : null;
+      if (v!=null) tbl[t.key] = (t.payType==='monthly') ? {monthly:v} : {wage:v};
+    }
+    /* v915: 現場計上時給。★給与欄が空でも単独で保存する。
+       ここを el の early return の中に書くと、給与欄を空にした瞬間に
+       現場計上時給まで消える（この関数は tbl を毎回作り直すため）。 */
+    if (t.payType==='monthly') {
+      var sEl = document.getElementById('tws-'+key);
+      if (sEl) {
+        var sv = sEl.value!=='' ? parseFloat(sEl.value) : null;
+        if (sv!=null && sv>0) { if (!tbl[t.key]) tbl[t.key] = {}; tbl[t.key].siteWage = sv; }
+        else if (t.defSiteWage!=null) {
+          /* ★空にした＝止めたい、という意思表示。
+             getTitleWageTable は既定(defSiteWage)の上に保存値を Object.assign するため、
+             「保存しない」だけでは既定の17が復活して二度と消せない。
+             0 を明示的に書いて打ち消す（empSiteWageOf は sw>0 のときだけ返す）。 */
+          if (!tbl[t.key]) tbl[t.key] = {};
+          tbl[t.key].siteWage = 0;
+        }
+      }
+    }
   });
   setTitleWageTable(tbl);
   closeModalDirect();
