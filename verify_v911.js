@@ -27,8 +27,13 @@ function grab(s, name){
   return '';
 }
 
-['_meetStoreSummary','_meetTrendSvg','_meetMonthlySales'].forEach(n =>
-  ok(grab(src, n).length > 0, n + ' がある'));
+/* v912 で年間推移グラフを廃止したため、_meetTrendSvg / _meetMonthlySales は現在は無い。
+   v911 の主張（サマリーだけにして軽くした）は _meetStoreSummary で見る。
+   グラフまわりの検証は v911 のソースに対して行う。 */
+ok(grab(src, '_meetStoreSummary').length > 0, '_meetStoreSummary がある');
+const V911 = fs.readFileSync('index_v911_backup.html','utf8');
+['_meetTrendSvg','_meetMonthlySales'].forEach(n =>
+  ok(grab(V911, n).length > 0, 'v911 には ' + n + ' があった'));
 
 /* ---------- ①② 分岐 ---------- */
 (() => {
@@ -44,8 +49,7 @@ function grab(s, name){
 })();
 ok(grab(src, '_meetStoreCard') === grab(prev, '_meetStoreCard'), '店舗カードそのものは触っていない');
 ok(grab(src, '_meetYearMatrix') === grab(prev, '_meetYearMatrix'), '年間一覧そのものは触っていない');
-ok(/if\(mode==='start'\)\{ ks\.forEach\(function\(x\)\{ html\+=_meetYearMatrix\(x\.s, ym0\.y\)\+_meetTaskSection\(x\.s\); \}\); \}/.test(src),
-   '月初MTGは従来どおり全店ぶん出る');
+ok(/if\(mode==='start'\)/.test(V911), 'v911 の時点では月初MTGが別モードだった');
 
 /* ---------- ③ 判定は既存関数 ---------- */
 const sum = grab(src, '_meetStoreSummary');
@@ -57,9 +61,9 @@ ok(/_meetConfirmBadge\(store\.id, ym, true\)/.test(sum), '速報/確定を出す
 ok(/_plYoYHtml\(store\.id, ym, landing, true\)/.test(sum), '昨対を出す（着地予測と比較）');
 
 /* ---------- ④ 軽さ ---------- */
-ok(!/keyKpiStats/.test(grab(src,'_meetMonthlySales')), '月別集計で keyKpiStats を呼ばない');
-ok(!/keyKpiStats/.test(grab(src,'_meetTrendSvg')), 'グラフでも keyKpiStats を呼ばない');
-ok((grab(src,'_meetMonthlySales').match(/getDailyActuals/g)||[]).length === 1, '日次実績の読み取りは1回だけ');
+ok(!/keyKpiStats/.test(grab(V911,'_meetMonthlySales')), '月別集計で keyKpiStats を呼ばない');
+ok(!/keyKpiStats/.test(grab(V911,'_meetTrendSvg')), 'グラフでも keyKpiStats を呼ばない');
+ok((grab(V911,'_meetMonthlySales').match(/getDailyActuals/g)||[]).length === 1, 'v911 のグラフは日次実績の読み取り1回だけだった');
 ok(!/keyKpiStats/.test(sum), 'サマリー本体でも keyKpiStats を呼ばない（k は呼び出し元から渡る）');
 
 /* ---------- 実行 ---------- */
@@ -72,7 +76,7 @@ const sb = {
   getDailyActuals: () => DA, PL2025_SEED: PL, console,
 };
 const K = Object.keys(sb);
-const F = new Function(...K, grab(src,'_meetMonthlySales') + grab(src,'_meetTrendSvg')
+const F = new Function(...K, grab(V911,'_meetMonthlySales') + grab(V911,'_meetTrendSvg')
   + '\nreturn{_meetMonthlySales,_meetTrendSvg};')(...K.map(k => sb[k]));
 
 (() => {
@@ -99,7 +103,7 @@ const F = new Function(...K, grab(src,'_meetMonthlySales') + grab(src,'_meetTren
   const s2 = (() => {
     const D2 = {};
     ['2026-01-05','2026-02-05','2026-05-05','2026-06-05'].forEach(d => D2[d] = {actual:5000});
-    const G = new Function('getDailyActuals','PL2025_SEED','console', grab(src,'_meetMonthlySales')+grab(src,'_meetTrendSvg')+'\nreturn{_meetTrendSvg};')(()=>D2, PL, console);
+    const G = new Function('getDailyActuals','PL2025_SEED','console', grab(V911,'_meetMonthlySales')+grab(V911,'_meetTrendSvg')+'\nreturn{_meetTrendSvg};')(()=>D2, PL, console);
     return G._meetTrendSvg('F02', 2026);
   })();
   ok(/M[\d.,]+L[\d.,]+/.test(s2), '欠けた月をまたいで線を引かない（区間ごとに分ける）');
@@ -109,14 +113,14 @@ const F = new Function(...K, grab(src,'_meetMonthlySales') + grab(src,'_meetTren
 /* ⑥ データが無いとき */
 (() => {
   const G = new Function('getDailyActuals','PL2025_SEED','console',
-    grab(src,'_meetMonthlySales') + grab(src,'_meetTrendSvg') + '\nreturn{_meetTrendSvg};')(()=>({}), {}, console);
+    grab(V911,'_meetMonthlySales') + grab(V911,'_meetTrendSvg') + '\nreturn{_meetTrendSvg};')(()=>({}), {}, console);
   ok(G._meetTrendSvg('F04-A', 2026) === '', '実績も前年も無ければグラフを出さない（空の枠を残さない）');
   const G2 = new Function('getDailyActuals','PL2025_SEED','console',
-    grab(src,'_meetMonthlySales') + grab(src,'_meetTrendSvg') + '\nreturn{_meetTrendSvg};')(()=>DA, {}, console);
+    grab(V911,'_meetMonthlySales') + grab(V911,'_meetTrendSvg') + '\nreturn{_meetTrendSvg};')(()=>DA, {}, console);
   const s = G2._meetTrendSvg('F02', 2026);
   ok(/^<svg/.test(s) && (s.match(/<path/g)||[]).length === 1, '前年が無くても今年だけで描ける', (s.match(/<path/g)||[]).length);
   const G3 = new Function('getDailyActuals','PL2025_SEED','console',
-    grab(src,'_meetMonthlySales') + grab(src,'_meetTrendSvg') + '\nreturn{_meetTrendSvg};')(()=>{ throw new Error('x'); }, PL, console);
+    grab(V911,'_meetMonthlySales') + grab(V911,'_meetTrendSvg') + '\nreturn{_meetTrendSvg};')(()=>{ throw new Error('x'); }, PL, console);
   let err = null; try { G3._meetTrendSvg('F02', 2026); } catch(e){ err = e.message; }
   ok(err === null, '読み取りに失敗しても例外を投げない', err);
 })();

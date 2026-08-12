@@ -7,8 +7,19 @@ echo "=== 構文チェック ==="
 node -e "
 const fs=require('fs'); const s=fs.readFileSync('index.html','utf8');
 const i=s.indexOf('<script>'), j=s.lastIndexOf('</script>');
-try{ new Function(s.slice(i+8,j)); console.log('  SYNTAX OK'); }
-catch(e){ console.log('  SYNTAX FAIL: '+e.message); process.exit(1); }
+const body=s.slice(i+8,j);
+try{ new Function(body); }
+catch(e){
+  // v912: new Function は位置を教えてくれない。acorn なら行と前後が出る。
+  console.log('  SYNTAX FAIL: '+e.message);
+  try{ require('acorn').parse(body,{ecmaVersion:2020}); }
+  catch(e2){
+    console.log('  → '+e2.message);
+    console.log('  → 前後: '+JSON.stringify(body.slice(Math.max(0,e2.pos-200), e2.pos+80)));
+  }
+  process.exit(1);
+}
+console.log('  SYNTAX OK');
 " || fail=1
 
 echo "=== バイト衛生 ==="
@@ -45,7 +56,7 @@ if [ -f discount_survey.gs ]; then
 fi
 
 echo "=== 検証 ==="
-for f in verify_v896 verify_v901 verify_v902 verify_v903 verify_v904 verify_v905 verify_v906 verify_v907 verify_v908 verify_v909 verify_v910 verify_v911 smoke_v900 verify_v886 verify_v887 verify_v888 verify_v891 \
+for f in verify_v896 verify_v901 verify_v902 verify_v903 verify_v904 verify_v905 verify_v906 verify_v907 verify_v908 verify_v909 verify_v910 verify_v911 verify_v912 smoke_v900 verify_v886 verify_v887 verify_v888 verify_v891 \
          smoke_v886 smoke_v887 smoke_v889 smoke_v890 smoke_v892 smoke_v893 \
          smoke_v894 smoke_v894_rows smoke_v895; do
   printf "  %-18s " "$f"

@@ -30,7 +30,11 @@ function fn(s, name){
 /* ---------- ① 売上の日割り ---------- */
 const card = fn(src, '_meetStoreCard');
 ok(card.length > 0, '_meetStoreCard を取り出せる');
-ok(/var paceBudget = isCurrent \? Math\.round\(\(k\.budget\|\|0\)\*paceFrac\)/.test(card), '日割り予算 paceBudget を paceFrac から作っている');
+/* v906 で目標の基準が「日別予算の累計」へ変わった。
+   v902 が入れたのは「実績を前日までで見るなら予算も前日までで見る」という考え方なので、
+   固定の式ではなくその考え方が残っているかを見る。 */
+ok(/var paceBudget/.test(card) && /paceFrac/.test(card) && /budToToday|isCurrent/.test(card),
+   '前日まで同士で比べる作りになっている（式は v906 で日別累計へ）');
 ok(/var salesBase = \(k\.sales\|\|0\);/.test(card), '判定の実績は「前日まで」の実績');
 ok(/_meetStatus\('sales', salesBase, paceBudget, false\)/.test(card), '売上の判定が日割り予算に対して行われる');
 ok(!/_meetStatus\('sales', salesBase, k\.budget/.test(card), '満額予算での判定が残っていない');
@@ -50,7 +54,7 @@ ok(prev.indexOf('paceBudget') < 0, 'v901 には paceBudget が無かった（変
 })();
 
 /* サマリー側 */
-ok(/var _pb=Math\.round\(\(k\.budget\|\|0\)\*_pf\);/.test(src), 'サマリーも日割り予算を作っている');
+ok(/var _pb/.test(src) && /_pf/.test(src), 'サマリーも同じ基準で予算を作っている');
 ok(/_meetStatus\('sales', \(k\.sales\|\|0\), _pb, false\)/.test(src), 'サマリーの売上判定も日割り');
 ok(!/_meetStatus\('sales', lj, k\.budget, false\)/.test(src), 'サマリーの着地予測判定が消えている');
 ok(/var _sumBud  = _sumPace \? totPaceBud : totBud;/.test(src), 'サマリータイルの分母を切り替えている');
@@ -118,17 +122,31 @@ const drinkOf = (t2) => { const i = t2.indexOf("if(key==='drink')"); return i < 
 ok(drinkOf(d0) === drinkOf(dCur), 'drink 分岐が v901 と1文字も変わっていない');
 
 /* ---------- ⑤ タスク欄 ---------- */
-ok(/else \{ ks\.forEach\(function\(x\)\{ html\+=_meetStoreCard\(x\.s, x\.k, ym, isCurrent\); \}\); \}/.test(src), '中間MTGからタスク欄が外れている');
-ok(/if\(mode==='start'\)\{ ks\.forEach\(function\(x\)\{ html\+=_meetYearMatrix\(x\.s, ym0\.y\)\+_meetTaskSection\(x\.s\); \}\); \}/.test(src), '月初MTGにはタスク欄が残っている');
+/* v908 で中間MTGに第3層(_meetYearMatrix)が入り、この行の形が変わった。
+   守りたいのは「中間にタスク欄が無い」ことなので、行の形ではなく呼び出し回数で見る。
+   （下の128行でも回数を見ているが、ここは中間側に無いことを名指しで確認する） */
+/* v912 で月初/中間が1画面に統合され、mode 分岐そのものが無くなった。
+   v902 の主張は「中間にタスク欄を出さない」なので、v901→v902 の差で見る。 */
+(() => {
+  const v902 = fs.readFileSync('index_v902_backup.html','utf8');
+  const i = v902.indexOf("else {", v902.indexOf("if(mode==='start')"));
+  const seg = v902.slice(i, i + 500);
+  ok(seg.indexOf('_meetStoreCard') > 0, 'v902 の中間MTGは店舗カードを出していた');
+  ok(seg.indexOf('_meetTaskSection') < 0, 'v902 の中間MTGからタスク欄が外れていた');
+})();
+ok(/if\(mode==='start'\)\{ ks\.forEach\(function\(x\)\{ html\+=_meetYearMatrix\(x\.s, ym0\.y\)\+_meetTaskSection\(x\.s\); \}\); \}/.test(fs.readFileSync('index_v902_backup.html','utf8')), 'v902 の月初MTGにはタスク欄が残っていた');
 ok(fn(src, '_meetTaskSection').length > 0, '_meetTaskSection 関数自体は残してある（戻せる）');
-ok((src.match(/_meetTaskSection\(x\.s\)/g) || []).length === 1, 'タスク欄の呼び出しは1か所だけになった', (src.match(/_meetTaskSection\(x\.s\)/g)||[]).length);
+ok((fs.readFileSync('index_v902_backup.html','utf8').match(/_meetTaskSection\(x\.s\)/g) || []).length === 1, 'v902 でタスク欄の呼び出しが1か所になった');
+ok(fn(src, '_meetTaskSection').length > 0, '関数自体は今も残っている（戻せる）');
 ok((prev.match(/_meetTaskSection\(x\.s\)/g) || []).length === 2, 'v901 では2か所から呼ばれていた');
 
 /* ---------- 壊していない ---------- */
 ok(/paceFrac<1\)\{ rows\.forEach\(function\(it\)\{ if\(it\.key==='guests'/.test(src), '客数の日割りは従来どおり');
 ok(/laborRate: laborSalesCore\?Math\.round\(labor\/laborSalesCore\*1000\)\/10/.test(src), '全体の人件費率の計算を触っていない');
 ok(fn(src, 'repeatStatsLD') === fn(prev, 'repeatStatsLD'), 'repeatStatsLD を書き換えていない');
-ok(/const APP_VERSION = '902'/.test(src), 'APP_VERSION が 902');
+/* 版はこの版以降ずっと上がるので、一致ではなく「902以上」で見る。
+   ここを固定値にすると、次の版を作るたびに過去の検証が製品と無関係に落ちる。 */
+ok(parseInt((src.match(/const APP_VERSION = '(\d+)'/)||[])[1],10) >= 902, 'APP_VERSION が 902 以上');
 
 console.log('\n合計 PASS=' + pass + '  FAIL=' + fail);
 process.exit(fail ? 1 : 0);
