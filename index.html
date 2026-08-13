@@ -12054,6 +12054,22 @@ function getPlActual(){
 }
 function getPlOverrides(){ return ls('pl_overrides', {})||{}; }
 var plOff = 0;
+var _plOffInit = false;
+/* v918: 取り込んだ直後に「実PL未取込」と出ていた原因。
+   plOff の初期値は 0（今月）だが、実PLは前月までしか無いので必ず外れていた。
+   最初に開くとき1回だけ、実PLのある最新月へ寄せる。
+   以後は plNav() の操作を尊重する（毎回戻すと月を送れなくなる）。 */
+function _plInitOff(){
+  if (_plOffInit) return;
+  _plOffInit = true;
+  try{
+    var a = getPlActual();
+    var yms = Object.keys(a).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort();
+    if (!yms.length) return;
+    var latest = yms[yms.length-1];
+    for (var o=0; o>=-36; o--){ if (ymFromOffset(o) === latest){ plOff = o; return; } }
+  }catch(e){}
+}
 function plYm(){ return ymFromOffset(plOff); }
 function plNav(d){ plOff+=d; if(plOff>0) plOff=0; _secRerender(); }
 function plVcVal(cfg, ovr, sid, ym, cat){
@@ -12466,7 +12482,26 @@ function saveHqPlan(ym, sid){
   closeModalDirect(); showToast('本部予算を保存しました','success'); _secRerender();
 }
 /* ===== 簡易PL 本体 ===== */
+/* v918: 実PLの店舗キー解決。
+   ★取込は PL_SHEET_MAP により Waikiki を 'F03+F03-G' の合算キーで保存するが、
+     読み出しは actual[st.id] だったため 'F03' とも 'F03-G' とも一致せず、
+     実PL列が空・全店合計からも落ちていた。
+   合算行は F03（FSP）側に出し、F03-G には合算である旨を出す。
+   全店合計は Object.keys(actual) を1回ずつ足すので二重計上にならない。 */
+var PL_COMBINED = { 'F03':'F03+F03-G', 'F03-G':'F03+F03-G' };
+function plActualFor(actual, storeId){
+  if (!actual) return null;
+  if (actual[storeId]) return actual[storeId];
+  var ck = PL_COMBINED[storeId];
+  if (ck && actual[ck] && storeId === 'F03') return actual[ck];
+  return null;
+}
+function plIsCombinedInto(actual, storeId){
+  var ck = PL_COMBINED[storeId];
+  return !!(ck && actual && actual[ck] && storeId !== 'F03');
+}
 function renderSimplePL(){
+  _plInitOff();                                   /* v918 */
   var ym = plYm(); var p=ym.split('-');
   var mLabel = parseInt(p[0],10)+'年'+parseInt(p[1],10)+'月';
   var cfg = getPlConfig();
@@ -12489,6 +12524,7 @@ function renderSimplePL(){
   /* v910: PLブックの取り込み。1ファイルで全店・全月がまとめて入る。 */
   h += '<div style="display:flex;justify-content:flex-end;margin:0 2px 8px">'
     +  '<button class="btn btn-primary btn-sm" onclick="openPlImport()"><i class="ti ti-file-upload"></i> '+t('PLブックを取り込む','Import PL workbook')+'</button></div>';
+  h += renderPlCoverage(stores, ym);              /* v918 */
   h += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 簡易PL＝売上(日次実績)・原価(棚卸法)・人件費(Labor共通コア)は<b>実数</b>、変動費は<b>実PL 1〜5月の平均</b>(店舗別・上書き可)＋建替経費の実費、GET='+(cfg.getRate||4.712)+'%、固定費は<b>実PL 5月の実数</b>。実PL列と並べて差異を検証できます。<b>各項目行をタップで内訳を表示。</b></div>';
 
   // 全店合計
@@ -12497,8 +12533,15 @@ function renderSimplePL(){
   stores.forEach(function(st){
     var c=plComputeStore(st.id, ym, plOff); comp[st.id]=c;
     tot.sales+=c.sales; tot.cogs+=c.cogs; tot.labor+=c.labor; tot.expT+=c.expT; tot.profit+=c.profit;
-    if(atot && actual[st.id]){ ['sales','cogs','payroll','opex','netop'].forEach(function(k){ atot[k]+=actual[st.id][k]||0; }); }
   });
+  /* v918: 実PLの合計は、店舗一覧ではなく取り込んだキーを1回ずつ足す。
+     こうしないと 'F03+F03-G' の合算行が誰にも足されず、Waikiki が全店合計から落ちる。 */
+  if (atot){
+    Object.keys(actual).forEach(function(k){
+      if (k.charAt(0)==='_') return;
+      ['sales','cogs','payroll','opex','netop'].forEach(function(f){ atot[f] += Number(actual[k][f])||0; });
+    });
+  }
   h += '<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-building-skyscraper" style="color:var(--accent)"></i>全店合計（'+mLabel+'）</div>'
     +'<div class="kpi-grid">'
     +kpi('売上', m(tot.sales), atot?('実PL '+m(atot.sales)):'', 'var(--tm)')
@@ -12509,7 +12552,7 @@ function renderSimplePL(){
 
   stores.forEach(function(st){
     var c=comp[st.id];
-    var a=actual?actual[st.id]:null;
+    var a=plActualFor(actual, st.id);              /* v918 */
     var aExp=a?(a.opex||0):null;
     var hasCfg = !!(cfg.vcAvg[st.id]||cfg.fixed[st.id]);
     h += '<div class="card"><div class="card-title"><span class="store-dot" style="background:'+(st.color||'#888')+'"></span>'+escapeHtml(st.name)
@@ -12539,6 +12582,64 @@ function renderSimplePL(){
     h += '</tbody></table></div></div>';
   });
   return h;
+}
+/* ===== v918: 取込状況（月×店舗）=====
+   何月のどの店が入っていて、どこが空なのかを一目で出す。
+   取り込んだ直後にここが埋まるので、「取り込んだのに反映されない」が起きなくなる。 */
+function renderPlCoverage(stores, curYmStr){
+  var a = getPlActual();
+  var yms = Object.keys(a).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort();
+  if (!yms.length){
+    return '<div class="card" style="padding:10px 12px;margin-bottom:10px;font-size:11.5px;color:var(--muted)">'
+      + '<i class="ti ti-table"></i> 実PLはまだ1件も取り込まれていません。上の「PLブックを取り込む」から追加してください。</div>';
+  }
+  /* 表示する列＝取り込みに出てくる店舗キーの和集合（合算キーも1列として扱う） */
+  var keys = {}, order = [];
+  stores.forEach(function(st){ if(!keys[st.id]){ keys[st.id]=st.name; order.push(st.id); } });
+  yms.forEach(function(ym){
+    Object.keys(a[ym]||{}).forEach(function(k){
+      if (k.charAt(0)==='_') return;
+      if (!keys[k]){ keys[k]=k; order.push(k); }
+    });
+  });
+  /* 合算キーがある店舗の個別列は出さない（常に空になり紛らわしいため） */
+  var hasComb = yms.some(function(ym){ return a[ym] && a[ym]['F03+F03-G']; });
+  if (hasComb) order = order.filter(function(k){ return k!=='F03' && k!=='F03-G'; });
+  var shortOf = function(k){
+    if (k === 'F03+F03-G') return 'WKK';
+    var st = stores.find(function(s){ return s.id===k; });
+    return st ? (st.short || st.name.slice(0,4)) : k;
+  };
+  var h = '<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-table"></i>取込状況'
+    + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">'+yms.length+'か月 × '+order.length+'店</span></div>'
+    + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:11px;min-width:'+(120+order.length*44)+'px">'
+    + '<thead><tr><th style="text-align:left">月</th>';
+  order.forEach(function(k){ h += '<th style="text-align:center">'+escapeHtml(shortOf(k))+'</th>'; });
+  h += '<th style="text-align:right">売上計</th></tr></thead><tbody>';
+  yms.slice().reverse().forEach(function(ym){
+    var row = a[ym]||{}, sum = 0, cur = (ym===curYmStr);
+    h += '<tr style="'+(cur?'background:var(--surface2);font-weight:700':'')+'">'
+      + '<td style="text-align:left"><a href="javascript:void(0)" onclick="plGoYm(\''+ym+'\')" style="color:var(--accent)">'
+      + parseInt(ym.slice(5),10)+'月</a></td>';
+    order.forEach(function(k){
+      var v = row[k];
+      if (v){ sum += Number(v.sales)||0; }
+      var mark = v ? (v.detail ? '<span style="color:var(--green)">●</span>'
+                               : '<span style="color:var(--yellow)" title="合計のみ・内訳なし">◍</span>')
+                   : '<span style="color:var(--muted)">—</span>';
+      h += '<td style="text-align:center">'+mark+'</td>';
+    });
+    h += '<td style="text-align:right">$'+Math.round(sum).toLocaleString('en-US')+'</td></tr>';
+  });
+  h += '</tbody></table></div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.7">'
+    + '● 内訳つきで取込済　◍ 合計のみ（内訳なし）　— 未取込。月をタップするとその月を表示します。'
+    + (hasComb ? '<br>WKK は FSP と WGS の合算行です（PL上分離できません）。' : '')
+    + '</div></div>';
+  return h;
+}
+function plGoYm(ym){
+  for (var o=0; o>=-36; o--){ if (ymFromOffset(o) === ym){ plOff = o; _secRerender(); return; } }
 }
 /* 簡易PL 項目ドリルダウン: 各行タップで内訳を表示 */
 function openPlDetailModal(sid, key){
@@ -18346,6 +18447,81 @@ var PL_LABELS = {
   opex:    'total for 2. operating expenses',
   netop:   'net operating income'
 };
+/* ===== v918: 販管費の科目分類 =====
+   実PLブックの科目名（正規化キー）→ 区分。
+   変動費(variable) / 光熱費(utility) / 固定費(fixed) / 裁量費(discretionary)。
+
+   ★光熱費を変動費に混ぜない。混ぜると Marujuu の突出（売上比5.61%・他店の2〜4倍）が
+     埋もれる。準変動費として独立させるのが今回の目的。
+   ★Utilities - Internet/Cable は使用量に連動しない定額契約なので固定費に置く。
+   ★ここは既定値。pl_expense_class（画面から編集可能）で店舗横断で上書きできる。 */
+var PL_EXPENSE_CLASS_DEFAULT = {
+  /* 変動費: 売上・客数に連動する */
+  'merchant account fees':'variable',
+  'taxes - general excise tax':'variable',
+  'supplies - floor':'variable',
+  'supplies - kitchen':'variable',
+  'supplies - food truck':'variable',
+  'staff meal expense (賄い)':'variable',
+  'operational error & guest recovery':'variable',
+  'freight / delivery':'variable',
+  'shipping & postage':'variable',
+  'bank service charge':'variable',
+  /* 光熱費: 準変動。営業時間・調理量・客数に緩く連動する */
+  'utilities - electricity':'utility',
+  'utilities - gas':'utility',
+  'utilities - water':'utility',
+  'utility - disposal & waste':'utility',
+  /* 固定費: 売上に連動しない */
+  'rent - store':'fixed',
+  'rent - storage':'fixed',
+  'equipment rental':'fixed',
+  'insurance - general':'fixed',
+  'licenses & fees':'fixed',
+  'taxes and licenses':'fixed',
+  'dues, subscriptions & membership fee':'fixed',
+  'pos & systems expense':'fixed',
+  'utilities - internet/cable':'fixed',
+  /* 裁量費: 判断で増減できる。改善余地はここ */
+  'advertising & marketing':'discretionary',
+  'repairs & maintenance':'discretionary',
+  'auto - fuel & repair':'discretionary',
+  'auto - parking & tolls':'discretionary',
+  'uniform':'discretionary',
+  'menu development':'discretionary',
+  'meeting meal':'discretionary',
+  'gift- under $25':'discretionary',
+  'gift - over $25':'discretionary',
+  'office supplies & expenses':'discretionary',
+  'miscellaneous expense':'discretionary'
+};
+var PL_CLASS_LABEL = { variable:'変動費', utility:'光熱費', fixed:'固定費', discretionary:'裁量費', other:'未分類' };
+var PL_CLASS_ORDER = ['variable','utility','fixed','discretionary','other'];
+/* 科目名の正規化。実PLには二重スペースがある（'Insurance -  General' 等）ので必ず潰す。 */
+function plNormAccount(s){ return String(s==null?'':s).trim().toLowerCase().replace(/\s+/g,' '); }
+function getPlExpenseClass(){
+  var o = ls('pl_expense_class', null);
+  return (o && typeof o==='object') ? o : {};
+}
+/* 未知の科目は 'other'（未分類）。黙って落とすと合計が合わなくなるので必ず区分を返す。 */
+function plClassOf(name){
+  var k = plNormAccount(name);
+  var ovr = getPlExpenseClass();
+  if (ovr[k] && PL_CLASS_LABEL[ovr[k]]) return ovr[k];
+  return PL_EXPENSE_CLASS_DEFAULT[k] || 'other';
+}
+/* 明細 {科目名:金額} → {variable, utility, fixed, discretionary, other, _unknown:[名前]} */
+function plClassTotals(detail){
+  var out = { variable:0, utility:0, fixed:0, discretionary:0, other:0, _unknown:[] };
+  if (!detail || typeof detail!=='object') return out;
+  Object.keys(detail).forEach(function(k){
+    if (k.charAt(0)==='_') return;
+    var cls = plClassOf(k);
+    out[cls] += Number(detail[k])||0;
+    if (cls==='other') out._unknown.push(k);
+  });
+  return out;
+}
 var PL_MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
 var PL_MONTH_RE = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{4})$/i;
 
@@ -18373,6 +18549,29 @@ function _plFindRows(ws, maxR){
   }
   return found;
 }
+/* v918: 販管費の科目行を拾う。
+   '2. operating expenses' の次の行から 'total for 2. operating expenses' の手前まで。
+   ★店舗ごとに科目が違うので、固定の行リストにはしない。出てきた行を全部拾う。 */
+function _plFindOpexDetailRows(ws, maxR){
+  var start = -1, end = -1;
+  for (var r=0; r<=maxR; r++){
+    var v = _plCell(ws, r, 0);
+    if (typeof v !== 'string') continue;
+    var k = v.trim().toLowerCase();
+    if (start < 0 && k === '2. operating expenses'){ start = r; continue; }
+    if (start >= 0 && k === PL_LABELS.opex){ end = r; break; }
+  }
+  if (start < 0 || end < 0) return null;
+  var rows = [];
+  for (var r2=start+1; r2<end; r2++){
+    var lv = _plCell(ws, r2, 0);
+    if (typeof lv !== 'string') continue;
+    var label = lv.trim();
+    if (!label) continue;
+    rows.push({ row:r2, label:label });
+  }
+  return rows;
+}
 function parsePLWorkbook(wb){
   var out = { months:[], rows:[], warnings:[] }, seen = {};
   wb.SheetNames.forEach(function(name){
@@ -18385,6 +18584,8 @@ function parsePLWorkbook(wb){
     var rr = _plFindRows(ws, ref.e.r);
     var miss = Object.keys(PL_LABELS).filter(function(k){ return rr[k]==null; });
     if (miss.length){ out.warnings.push('シート「'+name+'」に合計行が見つかりません: '+miss.join(', ')); return; }
+    var det = _plFindOpexDetailRows(ws, ref.e.r);   /* v918 */
+    if (!det) out.warnings.push('シート「'+name+'」の販管費の内訳が読めません（合計のみ取り込みます）');
     Object.keys(mc.cols).forEach(function(cs){
       var c = +cs, ym = mc.cols[cs], v = {}, allNull = true;
       Object.keys(PL_LABELS).forEach(function(k){
@@ -18394,8 +18595,23 @@ function parsePLWorkbook(wb){
         v[k] = (n === null) ? 0 : Math.round(n);
       });
       if (allNull) return;                        /* 未来の月は空。取り込まない */
+      /* v918: 販管費の科目明細。0の科目は持たない（店舗ごとに科目が違うため入れ物が膨らむ） */
+      var detail = null;
+      if (det){
+        detail = {};
+        det.forEach(function(d){
+          var raw = _plCell(ws, d.row, c);
+          if (typeof raw !== 'number') return;
+          /* ★丸めを二重にかけない。科目を1本ずつ丸めてから足すと、
+             26科目で最大$13ずれる（実物のMarujuu 2月で$3の差が出た）。
+             セント単位で持ち、表示のときだけ丸める。 */
+          var n = Math.round(raw*100)/100;
+          if (!n) return;
+          detail[d.label] = Math.round((( detail[d.label]||0) + n)*100)/100;
+        });
+      }
       seen[ym] = 1;
-      out.rows.push({ storeKey:sid, ym:ym, sheet:name, v:v });
+      out.rows.push({ storeKey:sid, ym:ym, sheet:name, v:v, detail:detail });
     });
   });
   out.months = Object.keys(seen).sort();
@@ -18403,6 +18619,18 @@ function parsePLWorkbook(wb){
     var lhs = r.v.sales - r.v.cogs - r.v.payroll - r.v.opex;
     r.ok = Math.abs(lhs - r.v.netop) <= 2;
     if (!r.ok) out.warnings.push(r.sheet+' '+r.ym+': 検算が合わないため取り込みません（'+lhs+' vs '+r.v.netop+'）');
+    /* v918: 科目明細の合計が販管費の合計と合うか。合わないなら拾い漏れがある。
+       ここは取り込みを止めない（合計は正しいので）が、黙って進めない。 */
+    if (r.ok && r.detail){
+      var ds = 0;
+      Object.keys(r.detail).forEach(function(k){ ds += Number(r.detail[k])||0; });
+      /* r.v.opex は $1 に丸めた値なので、突き合わせは $1 未満の幅で見る。
+         これより開くなら科目の拾い漏れ＝本物の問題。 */
+      if (Math.abs(ds - r.v.opex) > 1){
+        out.warnings.push(r.sheet+' '+r.ym+': 販管費の内訳合計が合いません（内訳 '+ds+' / 合計 '+r.v.opex+'）。内訳は取り込みません');
+        r.detail = null;
+      }
+    }
   });
   return out;
 }
@@ -18501,6 +18729,8 @@ function plImportSave(){
     if (!act[x.ym]) act[x.ym] = {};
     if (!pub[x.ym]) pub[x.ym] = {};
     act[x.ym][x.storeKey] = { sales:x.v.sales, cogs:x.v.cogs, payroll:x.v.payroll, opex:x.v.opex, netop:x.v.netop };
+    /* v918: 販管費の科目明細。★pl_public には入れない（内訳から opex が復元でき、利益が割れる） */
+    if (x.detail) act[x.ym][x.storeKey].detail = x.detail;
     /* ★ opex と netop は入れない。利益 = sales-cogs-payroll-opex なので、
        opex を出すと引き算で利益が分かってしまう。 */
     pub[x.ym][x.storeKey] = { sales:x.v.sales, cogs:x.v.cogs, payroll:x.v.payroll, _at:now };
@@ -28983,7 +29213,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '917';
+const APP_VERSION = '918';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
