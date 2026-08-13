@@ -9004,6 +9004,53 @@ function _coversMapByTime(check, want){
   }
   return true;
 }
+/* ===== v917: 棚卸（inv_count_ / inv_top_ / inv_templates）の合流ルール =====
+   形は「上位キー → 値」の平坦なマップ。値は数値・文字列・配列と様々で、
+   値そのものに時刻を持てないため、同じ入れ物の中に _at（キー→保存時刻）を添える。
+
+     inv_count_<店>_<年月>  { '1234': 5, '1235': null, _at:{ '1234':1723…, '1235':1723… } }
+     inv_top_<店>_<年月>    { purchase: 12000, _at:{ purchase:1723… } }
+     inv_templates          { 'F05': [ …テンプレ… ],  _at:{ 'F05':1723… } }
+
+   ・キーの和集合を採る。片方にしか無いキーは必ず残す（これが今回の事案の修正）。
+   ・両方にあるキーは _at の新しい方。同点はローカル。
+     既存データに _at は無いので、移行中は同点＝ローカルが勝つ＝従来どおりの挙動になる。
+   ・null は「消した印」。値として普通に扱えばよく、特別扱いは要らない。
+     消したことが _at 付きで伝わるので、古い控えから復活しない。
+   ・mergeMapByTime は使えない。あちらは値がレコード（_at や _deleted を持つ object）
+     である前提で、数値やテンプレ配列を渡すと壊れる（v826 が fc_monthly_ で
+     「項目名を日付キーと誤解して壊れる」と書いているのと同じ理由）。 */
+function _invAtMap(o){
+  try{ return (o && typeof o._at==='object' && o._at) ? o._at : {}; }catch(e){ return {}; }
+}
+function mergeInvByKey(cloud, local){
+  var c=(cloud&&typeof cloud==='object')?cloud:{}, l=(local&&typeof local==='object')?local:{};
+  var ca=_invAtMap(c), la=_invAtMap(l);
+  var out={}, at={}, keys={};
+  Object.keys(c).forEach(function(k){ if(k!=='_at') keys[k]=1; });
+  Object.keys(l).forEach(function(k){ if(k!=='_at') keys[k]=1; });
+  Object.keys(keys).forEach(function(k){
+    var hasC=Object.prototype.hasOwnProperty.call(c,k), hasL=Object.prototype.hasOwnProperty.call(l,k);
+    var tc=Number(ca[k])||0, tl=Number(la[k])||0;
+    var useL = hasL && (!hasC || tl>=tc);      /* 同点はローカル */
+    out[k] = useL ? l[k] : c[k];
+    var t = useL ? tl : tc;
+    if(t) at[k]=t;
+  });
+  if(Object.keys(at).length) out._at=at;
+  return out;
+}
+function _coversInvByKey(check, want){
+  if(!check||typeof check!=='object') return false;
+  if(!want||typeof want!=='object') return true;
+  var ha=_invAtMap(check), wa=_invAtMap(want);
+  for(var k in want){
+    if(!want.hasOwnProperty(k) || k==='_at') continue;
+    if(!Object.prototype.hasOwnProperty.call(check,k)) return false;
+    if((Number(wa[k])||0) > (Number(ha[k])||0)) return false;
+  }
+  return true;
+}
 /* ===== v826: 原価 月次（fc_monthly_<店>_<月>）の合流ルール =====
    【なぜ要るか】
      クラウド同期の対象なのに合流ルールが無く「丸ごと上書き」だった。
@@ -11120,6 +11167,13 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
   /* v783: 棚卸の仕入価格の手入力。品目ごとに新しい方が勝つ。
      「戻す」は行を消さず p:null として残すため、削除の復活も取り消しの巻き戻りも起きない。 */
   'inv_price_': { merge: mergeMapByTime, covers: _coversMapByTime },
+  /* v917: 棚卸の数量・上部入力・テンプレ。同期対象('inv_')なのに合流ルールが無く、
+     端末Bの1セル入力が端末Aの棚卸を丸ごと消していた。
+     ★ inv_F05 では前方一致しない（inv_count_… / inv_top_… という名前のため）ので、
+       registerInvMergeKeys() では塞げない。ここに明示的に足す。 */
+  'inv_count_':  { merge: mergeInvByKey, covers: _coversInvByKey },
+  'inv_top_':    { merge: mergeInvByKey, covers: _coversInvByKey },
+  'inv_templates': { merge: mergeInvByKey, covers: _coversInvByKey },
   /* v825: 日次売上。合流ルールが無く「丸ごと上書き」だったため、
      直近14日ぶんしか持っていない端末が押し上げると、
      クラウドの7月前半が消えて全端末に伝播した（Tenkichi 7/1〜7/18）。
@@ -23238,6 +23292,8 @@ function invItemVendor(code) {
 function getInvTemplates(storeId) {
   var all = ls('inv_templates', {});
   if (!all[storeId]) {
+    /* v917: 初回生成もクラウドへ push される。_at を付けて、
+       後から開いた端末の初期テンプレが、先に編集された内容を上書きしないようにする。 */
     // 初期化: 既存のdailyフラグからDailyテンプレを作る + Monthly（全品）
     var items = getInvItems(storeId);
     var dailyCodes = items.filter(i=>i.daily).map(i=>i.code);
@@ -23245,11 +23301,18 @@ function getInvTemplates(storeId) {
       {id:'tpl_daily', name:'Daily（主要食材）', kind:'daily', codes:dailyCodes},
       {id:'tpl_monthly', name:'Monthly（全品）', kind:'monthly', codes:null},
     ];
+    if(!all._at || typeof all._at!=='object') all._at={};
+    all._at[storeId]=Date.now();   /* v917 */
     lsSet('inv_templates', all);
   }
   return all[storeId];
 }
-function setInvTemplates(storeId, tpls) { var all=ls('inv_templates', {}); all[storeId]=tpls; lsSet('inv_templates', all); }
+function setInvTemplates(storeId, tpls) {
+  var all=ls('inv_templates', {}); all[storeId]=tpls;
+  if(!all._at || typeof all._at!=='object') all._at={};
+  all._at[storeId]=Date.now();   /* v917: 店舗ごとに合流するための時刻 */
+  lsSet('inv_templates', all);
+}
 function getInvTemplate(storeId, tplId) { return getInvTemplates(storeId).find(t=>t.id===tplId) || getInvTemplates(storeId)[0]; }
 /* テンプレに含まれる棚卸アイテムを返す */
 function itemsForTemplate(storeId, tplId) {
@@ -23896,11 +23959,21 @@ function _invMigrateToJune(storeId){
     lsSet(flagKey, true);
   }catch(e){ console.warn('inv migrate', e); }
 }
-function getInvTop(storeId, ym){ ym=ym||invYm(); return ls('inv_top_'+storeId+'_'+ym, null) || {}; }
+/* v917: inv_count_ と同じ。生の形（_at 付き）は読み書きする側だけが使う。 */
+function getInvTopRaw(storeId, ym){ ym=ym||invYm(); return ls('inv_top_'+storeId+'_'+ym, null) || {}; }
+function getInvTop(storeId, ym){
+  var raw=getInvTopRaw(storeId, ym), out={};
+  Object.keys(raw).forEach(function(k){ if(k!=='_at') out[k]=raw[k]; });
+  return out;
+}
 function setInvTop(storeId, field, val){
   var _ym=invYm();
-  var o=getInvTop(storeId,_ym); var v=parseFloat(val);
-  o[field]=(val===''||isNaN(v))?'':v; lsSet('inv_top_'+storeId+'_'+_ym, o);
+  var o=getInvTopRaw(storeId,_ym); var v=parseFloat(val);
+  /* こちらは元から delete せず '' を入れる作りなので、印は要らない。時刻だけ足す。 */
+  o[field]=(val===''||isNaN(v))?'':v;
+  if(!o._at || typeof o._at!=='object') o._at={};
+  o._at[field]=Date.now();
+  lsSet('inv_top_'+storeId+'_'+_ym, o);
   var t=invComputeTotals(storeId), prev=invPrevStockYm(storeId,_ym);
   var purchase=parseFloat(o.purchase)||0;
   var moves=(typeof invMovesFor==='function')?invMovesFor(storeId,_ym).net:(parseFloat(o.moves)||0);  /* v618 */
@@ -24046,11 +24119,29 @@ function renderInvToppageInner(storeId){
 
 /* ===== 棚卸（新）：自店マスター食材 × 業者別 × 金額集計 × 入力毎保存 ===== */
 function invFmtMoney(n){ return '$'+(Number(n)||0).toFixed(2); }
-function getInvCounts(storeId, ym){ ym=ym||invYm(); return ls('inv_count_'+storeId+'_'+ym, null) || {}; }
+/* v917: 保存された生の形。_at（品目ごとの保存時刻）と null（消した印）を含む。
+   読み書きする側だけがこれを使う。 */
+function getInvCountsRaw(storeId, ym){ ym=ym||invYm(); return ls('inv_count_'+storeId+'_'+ym, null) || {}; }
+/* v917: 描画側から見た形は従来と完全に同じ（_at と印を取り除く）。
+   Object.keys(counts).length で「入力があるか」を見ている箇所があるため、
+   ここで取り除かないと、消した品目や内部データを1件と数えてしまう。 */
+function getInvCounts(storeId, ym){
+  var raw=getInvCountsRaw(storeId, ym), out={};
+  Object.keys(raw).forEach(function(k){
+    if(k==='_at') return;          /* 内部の時刻表 */
+    if(raw[k]===null) return;      /* 消した印 */
+    out[k]=raw[k];
+  });
+  return out;
+}
 function setInvCount(storeId, code, val){
   var _ym=invYm();
-  var c=getInvCounts(storeId,_ym); var v=parseFloat(val);
-  if(val===''||isNaN(v)) delete c[code]; else c[code]=v;
+  var c=getInvCountsRaw(storeId,_ym); var v=parseFloat(val);
+  /* v917: delete すると、他端末の古い控えから復活してしまう。
+     消したことを印(null)として残し、_at で「いつ消したか」を伝える。 */
+  if(val===''||isNaN(v)) c[code]=null; else c[code]=v;
+  if(!c._at || typeof c._at!=='object') c._at={};
+  c._at[code]=Date.now();
   lsSet('inv_count_'+storeId+'_'+_ym, c);
   invRefreshInputSection(storeId);
   var tp=document.getElementById('inv-toppage'); if(tp) tp.innerHTML=renderInvToppageInner(storeId);
@@ -28892,7 +28983,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '916';
+const APP_VERSION = '917';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
