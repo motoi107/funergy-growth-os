@@ -10074,7 +10074,7 @@ var OP_SYNC_KEYS = ['lala_tasks','office_close','applicants','onboardings','appr
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_actual','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
    唯一の入口 openLaborHourModal() に呼び出し元が無く（doToastLaborFetch も同じ）、
@@ -10113,7 +10113,21 @@ function obPushSecret(ob){
   if (!ob || !ob.id || !ob.inviteToken) return;
   try { authObPriv({ action:'save', obId:ob.id, token:ob.inviteToken, secret:obSecretOf(ob) }).catch(function(){}); } catch(e){}
 }
+/* ===== v919: 端末ローカル専用キー =====
+   クラウドへ push もせず、クラウドから pull しても適用しない。
+
+   ★push と pull の両方を止める必要がある。
+     _applyKvRows() は OP_SYNC_KEYS を見ずに app_state の全行を適用するため、
+     OP_SYNC_KEYS から抜くだけでは「押し上げないが降ってくる」状態になり、
+     クラウドに残った古い行で端末が上書きされ続ける。
+
+   pl_actual: 実PLの確定値（opex / netop / 科目明細）。
+     v910 のコメントが「セキュアページの端末にしか無い」と宣言している内容を、
+     実装として成立させる。匿名キーで読める app_state に利益を置かない。 */
+var LS_LOCAL_ONLY = ['pl_actual'];
+function isLocalOnlyKey(key){ return LS_LOCAL_ONLY.indexOf(String(key||'')) >= 0; }
 function isOpSyncKey(key){
+  if (isLocalOnlyKey(key)) return false;   /* v919 */
   if (!key) return false;
   // 設定キーは除外（app_settings 側で扱う。例: dailyops_template_*）
   if (SUPA_SETTING_KEYS.indexOf(key)>=0) return false;
@@ -10442,6 +10456,10 @@ function _applyKvRows(rows){
       /* v721: 必要時だけ取得する行は端末に書かない（クラウドの行はそのまま残る）。
          読まれた時点で ls() が自動取得するため、データが見えなくなることはない。 */
       if(_lsOnDemand(row.key)) return;
+      /* v919: 端末ローカル専用キーはクラウドから受け取らない。
+         合流ルールが無いキーは row.value で丸ごと置き換わるため、
+         ここを通すと取り込んだ実PLがクラウドの古い行で消える。 */
+      if(typeof isLocalOnlyKey==='function' && isLocalOnlyKey(row.key)) return;
       var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
       var _val=row.value;
       if(_def){ try{ var _loc=_lsRaw(row.key, null); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }   /* v763 */
@@ -12049,7 +12067,11 @@ function getPlConfig(){
 }
 function getPlActual(){
   var a = ls('pl_actual', null);
-  if (!a) { a = { '2026-05': PL_SEED.actualMay, _src:{'2026-05':'Excel取込（暫定PL）'} }; lsSet('pl_actual', a); }
+  /* v919: ★シードを書き込まない。
+     以前は lsSet でシードを保存していたため、経理やCEOの端末がセキュアページを
+     開いただけで「2026-05の1件だけ」がクラウドへ押し上がり、
+     取り込み済みの全月を上書きしていた。読むだけにする。 */
+  if (!a) return { '2026-05': PL_SEED.actualMay, _src:{'2026-05':'Excel取込（暫定PL）'} };
   return a;
 }
 function getPlOverrides(){ return ls('pl_overrides', {})||{}; }
@@ -12525,6 +12547,7 @@ function renderSimplePL(){
   h += '<div style="display:flex;justify-content:flex-end;margin:0 2px 8px">'
     +  '<button class="btn btn-primary btn-sm" onclick="openPlImport()"><i class="ti ti-file-upload"></i> '+t('PLブックを取り込む','Import PL workbook')+'</button></div>';
   h += renderPlCoverage(stores, ym);              /* v918 */
+  h += renderPlTrend();                           /* v920 */
   h += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 簡易PL＝売上(日次実績)・原価(棚卸法)・人件費(Labor共通コア)は<b>実数</b>、変動費は<b>実PL 1〜5月の平均</b>(店舗別・上書き可)＋建替経費の実費、GET='+(cfg.getRate||4.712)+'%、固定費は<b>実PL 5月の実数</b>。実PL列と並べて差異を検証できます。<b>各項目行をタップで内訳を表示。</b></div>';
 
   // 全店合計
@@ -12583,6 +12606,297 @@ function renderSimplePL(){
   });
   return h;
 }
+/* ===== v920: PL推移（実PLの分析）=====
+   pl_actual（実PLの確定値）だけを使う。簡易PLの速報値とは混ぜない。
+   速報との突き合わせは下の月次の表が担うので、ここは確定値の推移に徹する。 */
+var PL_TREND_SERIES = [
+  { key:'cogs',          label:'原価',   color:'#211b15' },
+  { key:'payroll',       label:'人件費', color:'#3b82f6' },
+  { key:'variable',      label:'変動費', color:'#8b5cf6' },
+  { key:'utility',       label:'光熱費', color:'#9c6209' },
+  { key:'fixed',         label:'固定費', color:'#6d6459' },
+  { key:'discretionary', label:'裁量費', color:'#f0661f' },
+  { key:'other',         label:'未分類', color:'#e23b3b' }
+];
+/* v920: 実PLには返金・調整のマイナス計上がある（Marujuu 1月の電気 -$121 等）。
+   '$-121' は読み違えるので '-$121' に揃える。 */
+function plMoney(v){
+  var n = Math.round(Number(v)||0);
+  return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US');
+}
+var _plTrendScope = 'ALL';
+var _plTrendMode  = 'pct';     /* 'pct' 構成比 / 'amt' 金額 */
+
+/* 取り込み済みの店舗キー一覧（合算キーもそのまま1つとして扱う） */
+function plTrendScopes(){
+  var a = getPlActual(), keys = {}, out = [];
+  Object.keys(a).forEach(function(ym){
+    if (!/^\d{4}-\d{2}$/.test(ym)) return;
+    Object.keys(a[ym]||{}).forEach(function(k){ if (k.charAt(0)!=='_') keys[k]=1; });
+  });
+  Object.keys(keys).forEach(function(k){ out.push({ id:k, label:plScopeLabel(k) }); });
+  out.sort(function(x,y){ return x.id < y.id ? -1 : 1; });
+  return out;
+}
+function plScopeLabel(k){
+  if (k === 'F03+F03-G') return 'Waikiki';
+  try{
+    var st = (typeof STORES!=='undefined' ? STORES : []).find(function(s){ return s.id===k; });
+    if (st) return st.name;
+  }catch(e){}
+  return k;
+}
+/* 月次の系列。scope='ALL' なら全キーを合算する。 */
+function plTrendData(scope){
+  var a = getPlActual();
+  var yms = Object.keys(a).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort();
+  var out = [];
+  yms.forEach(function(ym){
+    var row = a[ym]||{}, keys = Object.keys(row).filter(function(k){ return k.charAt(0)!=='_'; });
+    if (scope !== 'ALL') keys = keys.filter(function(k){ return k===scope; });
+    if (!keys.length) return;
+    var r = { ym:ym, sales:0, cogs:0, payroll:0, opex:0, netop:0,
+              variable:0, utility:0, fixed:0, discretionary:0, other:0,
+              hasDetail:true, unknown:{} };
+    keys.forEach(function(k){
+      var v = row[k]||{};
+      r.sales   += Number(v.sales)||0;
+      r.cogs    += Number(v.cogs)||0;
+      r.payroll += Number(v.payroll)||0;
+      r.opex    += Number(v.opex)||0;
+      r.netop   += Number(v.netop)||0;
+      if (v.detail){
+        var t = plClassTotals(v.detail);
+        r.variable += t.variable; r.utility += t.utility;
+        r.fixed += t.fixed; r.discretionary += t.discretionary; r.other += t.other;
+        (t._unknown||[]).forEach(function(n){ r.unknown[n] = 1; });
+      } else {
+        r.hasDetail = false;          /* 内訳の無い月は0で埋めない */
+      }
+    });
+    out.push(r);
+  });
+  return out;
+}
+/* 内訳が無い月は販管費を1本の帯として扱う（0にすると利益が過大に見える） */
+function plTrendBands(r){
+  if (r.hasDetail){
+    return PL_TREND_SERIES.map(function(s){ return { key:s.key, label:s.label, color:s.color, v:Number(r[s.key])||0 }; })
+      .filter(function(b){ return b.v > 0; });
+  }
+  return [
+    { key:'cogs',    label:'原価',   color:'#211b15', v:r.cogs },
+    { key:'payroll', label:'人件費', color:'#3b82f6', v:r.payroll },
+    { key:'opex',    label:'販管費（内訳なし）', color:'#a99e90', v:r.opex }
+  ].filter(function(b){ return b.v > 0; });
+}
+function plTrendSvg(data, mode){
+  if (!data.length) return '<div style="color:var(--muted);padding:22px;text-align:center;font-size:12px">取り込まれた実PLがありません</div>';
+  var n = data.length, w = Math.max(320, n*54), h = 190, padL = 34, padR = 8, padT = 12, padB = 22;
+  var plotH = h - padT - padB, bw = (w - padL - padR)/n;
+  /* 金額モードの上限は「売上」か「費用合計」の大きいほう。構成比は売上=100%に固定 */
+  var max = 1;
+  if (mode === 'amt'){
+    data.forEach(function(r){
+      var sum = plTrendBands(r).reduce(function(x,b){ return x+b.v; }, 0);
+      max = Math.max(max, r.sales, sum);
+    });
+  }
+  var bars = '', pts = [], gridY = '';
+  [0,0.25,0.5,0.75,1].forEach(function(g){
+    var y = padT + plotH*(1-g);
+    gridY += '<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+y.toFixed(1)+'" stroke="var(--border)" stroke-width="0.5"/>'
+      + '<text x="'+(padL-4)+'" y="'+(y+3).toFixed(1)+'" font-size="8" fill="var(--muted)" text-anchor="end">'
+      + (mode==='pct' ? Math.round(g*100)+'%' : '$'+Math.round(max*g/1000)+'k') + '</text>';
+  });
+  data.forEach(function(r, i){
+    var x = padL + i*bw, base = mode==='pct' ? (r.sales||1) : max;
+    var acc = 0;
+    plTrendBands(r).forEach(function(b){
+      var frac = b.v/base;
+      var bh = frac*plotH, y = padT + plotH - (acc+frac)*plotH;
+      acc += frac;
+      if (bh <= 0) return;
+      bars += '<rect x="'+(x+bw*0.16).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+(bw*0.68).toFixed(1)
+        + '" height="'+bh.toFixed(1)+'" fill="'+b.color+'"><title>'+escapeHtml(b.label)+' $'
+        + Math.round(b.v).toLocaleString('en-US')+'</title></rect>';
+    });
+    /* 営業利益率の折れ線（構成比）／営業利益（金額） */
+    var pv = mode==='pct' ? (r.sales>0 ? r.netop/r.sales : 0) : (r.netop/max);
+    pts.push((x+bw/2).toFixed(1)+','+(padT + plotH - pv*plotH).toFixed(1));
+    bars += '<text x="'+(x+bw/2).toFixed(1)+'" y="'+(h-6)+'" font-size="8.5" fill="var(--muted)" text-anchor="middle">'
+      + parseInt(r.ym.slice(5),10)+'月</text>';
+  });
+  var line = '<polyline points="'+pts.join(' ')+'" fill="none" stroke="#15a66a" stroke-width="2" stroke-linejoin="round"/>';
+  var dots = pts.map(function(p){ var c=p.split(','); return '<circle cx="'+c[0]+'" cy="'+c[1]+'" r="2.6" fill="#15a66a"/>'; }).join('');
+  return '<div style="overflow-x:auto"><svg viewBox="0 0 '+w+' '+h+'" width="'+(n>8?w:'100%')
+    + '" height="'+h+'" preserveAspectRatio="xMinYMin meet" style="display:block;max-width:'+(n>8?'none':'100%')+'">'
+    + gridY + bars + line + dots + '</svg></div>';
+}
+function plSetScope(s){ _plTrendScope = s; _secRerender(); }
+function plSetMode(m){ _plTrendMode = m; _secRerender(); }
+
+function renderPlTrend(){
+  var data = plTrendData(_plTrendScope);
+  var scopes = plTrendScopes();
+  if (!scopes.length) return '';
+  if (_plTrendScope !== 'ALL' && !scopes.some(function(s){ return s.id===_plTrendScope; })) _plTrendScope = 'ALL';
+  /* マイナス計上（返金・調整）がある。'$-121' ではなく '-$121' と出す。 */
+  var m = plMoney;
+  var pc = function(v,s){ return s>0 ? (Math.round(v/s*1000)/10)+'%' : '—'; };
+
+  var h = '<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-chart-bar"></i>推移（実PL）'
+    + '<span style="margin-left:auto;display:flex;gap:4px">'
+    + '<button class="btn btn-sm '+(_plTrendMode==='pct'?'btn-primary':'btn-secondary')+'" style="padding:2px 9px;font-size:10px" onclick="plSetMode(\'pct\')">構成比</button>'
+    + '<button class="btn btn-sm '+(_plTrendMode==='amt'?'btn-primary':'btn-secondary')+'" style="padding:2px 9px;font-size:10px" onclick="plSetMode(\'amt\')">金額</button>'
+    + '</span></div>';
+  /* スコープ切替 */
+  h += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">'
+    + '<button class="btn btn-sm '+(_plTrendScope==='ALL'?'btn-primary':'btn-secondary')+'" style="padding:2px 9px;font-size:10px" onclick="plSetScope(\'ALL\')">全社</button>';
+  scopes.forEach(function(s){
+    h += '<button class="btn btn-sm '+(_plTrendScope===s.id?'btn-primary':'btn-secondary')+'" style="padding:2px 9px;font-size:10px" onclick="plSetScope(\''+s.id+'\')">'
+      + escapeHtml(s.label)+'</button>';
+  });
+  h += '</div>';
+  h += plTrendSvg(data, _plTrendMode);
+  /* 凡例。区分をタップすると科目の内訳へ */
+  h += '<div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:8px;font-size:10.5px">';
+  PL_TREND_SERIES.forEach(function(s){
+    var tot = data.reduce(function(a,r){ return a+(Number(r[s.key])||0); }, 0);
+    if (!tot && s.key==='other') return;
+    var clickable = (s.key!=='cogs' && s.key!=='payroll');
+    h += '<span style="'+(clickable?'cursor:pointer;':'')+'display:inline-flex;align-items:center;gap:4px"'
+      + (clickable?' onclick="openPlClassModal(\''+s.key+'\')"':'')+'>'
+      + '<span style="width:9px;height:9px;border-radius:2px;background:'+s.color+';display:inline-block"></span>'
+      + escapeHtml(s.label)+(clickable?' <i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i>':'')+'</span>';
+  });
+  h += '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:14px;height:2px;background:#15a66a;display:inline-block"></span>営業利益率</span>';
+  h += '</div>';
+  /* 数表 */
+  h += '<div style="overflow-x:auto;margin-top:10px"><table class="inv-table" style="width:100%;font-size:11px;min-width:'+(120+data.length*62)+'px">'
+    + '<thead><tr><th style="text-align:left">項目</th>';
+  data.forEach(function(r){ h += '<th style="text-align:right">'+parseInt(r.ym.slice(5),10)+'月</th>'; });
+  h += '</tr></thead><tbody>';
+  var rowOf = function(label, key, color){
+    var s = '<tr><td style="text-align:left">'
+      + (color?'<span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:'+color+';margin-right:4px"></span>':'')
+      + label+'</td>';
+    data.forEach(function(r){
+      var v = Number(r[key])||0;
+      s += '<td style="text-align:right">'+(_plTrendMode==='pct' ? pc(v, r.sales) : m(v))+'</td>';
+    });
+    return s + '</tr>';
+  };
+  h += '<tr style="font-weight:700"><td style="text-align:left">売上</td>'
+    + data.map(function(r){ return '<td style="text-align:right">'+m(r.sales)+'</td>'; }).join('') + '</tr>';
+  h += rowOf('原価','cogs','#211b15') + rowOf('人件費','payroll','#3b82f6');
+  var anyDetail = data.some(function(r){ return r.hasDetail; });
+  if (anyDetail){
+    h += rowOf('変動費','variable','#8b5cf6') + rowOf('光熱費','utility','#9c6209')
+      +  rowOf('固定費','fixed','#6d6459') + rowOf('裁量費','discretionary','#f0661f');
+    if (data.some(function(r){ return r.other>0; })) h += rowOf('未分類','other','#e23b3b');
+  } else {
+    h += rowOf('販管費','opex','#a99e90');
+  }
+  h += '<tr style="font-weight:700;border-top:2px solid var(--border)"><td style="text-align:left">営業利益</td>'
+    + data.map(function(r){
+        var col = r.netop>=0 ? 'var(--green)' : 'var(--red)';
+        return '<td style="text-align:right;color:'+col+'">'+(_plTrendMode==='pct' ? pc(r.netop, r.sales) : m(r.netop))+'</td>';
+      }).join('') + '</tr>';
+  h += '</tbody></table></div>';
+  /* 内訳の無い月・未分類の科目は黙って隠さない */
+  var noDet = data.filter(function(r){ return !r.hasDetail; }).map(function(r){ return parseInt(r.ym.slice(5),10)+'月'; });
+  if (noDet.length){
+    h += '<div style="font-size:10px;color:var(--yellow);margin-top:6px;line-height:1.7"><i class="ti ti-alert-circle"></i> '
+      + escapeHtml(noDet.join('・'))+' は科目の内訳がありません（販管費を1本にまとめて表示）。PLブックを取り込み直すと分かれます。</div>';
+  }
+  /* 区分がマイナスになると帯から落ちる（描けないため）。黙って落とすと帯の合計が
+     原価+人件費+販管費 と食い違うので、差が出たら必ず画面に出す。 */
+  var gapMs = [];
+  data.forEach(function(r){
+    var bs = plTrendBands(r).reduce(function(x,b){ return x+b.v; }, 0);
+    if (Math.abs(bs - (r.cogs + r.payroll + r.opex)) > 1) gapMs.push(parseInt(r.ym.slice(5),10)+'月');
+  });
+  if (gapMs.length){
+    h += '<div style="font-size:10px;color:var(--red);margin-top:4px;line-height:1.7"><i class="ti ti-alert-triangle"></i> '
+      + escapeHtml(gapMs.join('・'))+' はグラフの帯の合計が費用の合計と一致しません（マイナス計上の科目がある可能性）。数表の値をご覧ください。</div>';
+  }
+  var unk = {}; data.forEach(function(r){ Object.keys(r.unknown||{}).forEach(function(k){ unk[k]=1; }); });
+  var unkList = Object.keys(unk);
+  if (unkList.length){
+    h += '<div style="font-size:10px;color:var(--red);margin-top:4px;line-height:1.7"><i class="ti ti-help-circle"></i> 未分類の科目: '
+      + escapeHtml(unkList.join('、'))+'</div>';
+  }
+  return h + '</div>';
+}
+
+/* ===== v920: 区分の中身（科目ごとの月次推移）=====
+   「変動費は何にいくら使っているのか分かりづらい」への答え。
+   光熱費なら 電気／ガス／水道／廃棄 まで辿れる。 */
+function openPlClassModal(cls){
+  var a = getPlActual();
+  var yms = Object.keys(a).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort();
+  var acc = {}, byYm = {}, salesByYm = {};
+  yms.forEach(function(ym){
+    var row = a[ym]||{};
+    Object.keys(row).forEach(function(k){
+      if (k.charAt(0)==='_') return;
+      if (_plTrendScope !== 'ALL' && k !== _plTrendScope) return;
+      var v = row[k]||{};
+      salesByYm[ym] = (salesByYm[ym]||0) + (Number(v.sales)||0);
+      if (!v.detail) return;
+      Object.keys(v.detail).forEach(function(name){
+        if (name.charAt(0)==='_') return;
+        if (plClassOf(name) !== cls) return;
+        var amt = Number(v.detail[name])||0;
+        if (!acc[name]) acc[name] = {};
+        acc[name][ym] = (acc[name][ym]||0) + amt;
+        byYm[ym] = (byYm[ym]||0) + amt;
+      });
+    });
+  });
+  var names = Object.keys(acc).sort(function(x,y){
+    var sx = yms.reduce(function(s,m){ return s+(acc[x][m]||0); }, 0);
+    var sy = yms.reduce(function(s,m){ return s+(acc[y][m]||0); }, 0);
+    return sy - sx;                       /* 金額の大きい科目を上に */
+  });
+  var m = plMoney;
+  var scopeLabel = _plTrendScope==='ALL' ? '全社' : plScopeLabel(_plTrendScope);
+  var body = '';
+  if (!names.length){
+    body = '<div style="padding:16px;color:var(--muted);font-size:12px;text-align:center">'
+      + 'この区分の科目がありません。PLブックを取り込むと表示されます。</div>';
+  } else {
+    body = '<div style="font-size:10.5px;color:var(--muted);margin-bottom:8px;line-height:1.7">'
+      + escapeHtml(scopeLabel)+'　金額の大きい科目から並べています。増減は最初の月と最後の月の比較です。</div>'
+      + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:11px;min-width:'+(180+yms.length*58)+'px">'
+      + '<thead><tr><th style="text-align:left">科目</th>';
+    yms.forEach(function(ym){ body += '<th style="text-align:right">'+parseInt(ym.slice(5),10)+'月</th>'; });
+    body += '<th style="text-align:right">増減</th></tr></thead><tbody>';
+    names.forEach(function(nm){
+      var first = acc[nm][yms[0]]||0, last = acc[nm][yms[yms.length-1]]||0;
+      var d = last - first;
+      var col = Math.abs(d) < Math.max(50, first*0.05) ? 'var(--muted)' : (d>0 ? 'var(--red)' : 'var(--green)');
+      body += '<tr><td style="text-align:left">'+escapeHtml(nm)+'</td>';
+      yms.forEach(function(ym){ body += '<td style="text-align:right">'+(acc[nm][ym]!=null ? m(acc[nm][ym]) : '—')+'</td>'; });
+      body += '<td style="text-align:right;color:'+col+'">'+(d>=0?'+':'')+m(d)+'</td></tr>';
+    });
+    body += '<tr style="font-weight:700;border-top:2px solid var(--border)"><td style="text-align:left">合計</td>';
+    yms.forEach(function(ym){ body += '<td style="text-align:right">'+m(byYm[ym]||0)+'</td>'; });
+    var f0 = byYm[yms[0]]||0, l0 = byYm[yms[yms.length-1]]||0;
+    body += '<td style="text-align:right">'+((l0-f0)>=0?'+':'')+m(l0-f0)+'</td></tr>';
+    body += '<tr style="color:var(--muted)"><td style="text-align:left">売上比</td>';
+    yms.forEach(function(ym){
+      var s = salesByYm[ym]||0;
+      body += '<td style="text-align:right">'+(s>0 ? (Math.round((byYm[ym]||0)/s*1000)/10)+'%' : '—')+'</td>';
+    });
+    body += '<td></td></tr></tbody></table></div>';
+  }
+  openModal('<div class="modal-title">'+escapeHtml(PL_CLASS_LABEL[cls]||cls)+' の内訳'
+    + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + body
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
+}
 /* ===== v918: 取込状況（月×店舗）=====
    何月のどの店が入っていて、どこが空なのかを一目で出す。
    取り込んだ直後にここが埋まるので、「取り込んだのに反映されない」が起きなくなる。 */
@@ -12610,8 +12924,14 @@ function renderPlCoverage(stores, curYmStr){
     var st = stores.find(function(s){ return s.id===k; });
     return st ? (st.short || st.name.slice(0,4)) : k;
   };
+  /* v919: トーストは消えるので、最後にいつ何件入ったかを画面に残す */
+  var nCell = 0;
+  yms.forEach(function(ym){ Object.keys(a[ym]||{}).forEach(function(k){ if(k.charAt(0)!=='_') nCell++; }); });
+  var lastSrc = '';
+  try{ var sv = a._src||{}; Object.keys(sv).sort().forEach(function(k){ if(sv[k]) lastSrc = sv[k]; }); }catch(e){}
   var h = '<div class="card" style="margin-bottom:10px"><div class="card-title"><i class="ti ti-table"></i>取込状況'
-    + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">'+yms.length+'か月 × '+order.length+'店</span></div>'
+    + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">'+yms.length+'か月 × '+order.length+'店 ／ '+nCell+'件'
+    + (lastSrc ? '　'+escapeHtml(lastSrc) : '') + '</span></div>'
     + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:11px;min-width:'+(120+order.length*44)+'px">'
     + '<thead><tr><th style="text-align:left">月</th>';
   order.forEach(function(k){ h += '<th style="text-align:center">'+escapeHtml(shortOf(k))+'</th>'; });
@@ -12634,6 +12954,7 @@ function renderPlCoverage(stores, curYmStr){
   h += '</tbody></table></div>'
     + '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.7">'
     + '● 内訳つきで取込済　◍ 合計のみ（内訳なし）　— 未取込。月をタップするとその月を表示します。'
+    + '<br>実PLはこの端末にだけ保存され、クラウドへは送りません（利益を含むため）。他の端末で見るにはそちらでも取り込んでください。'
     + (hasComb ? '<br>WKK は FSP と WGS の合算行です（PL上分離できません）。' : '')
     + '</div></div>';
   return h;
@@ -29213,7 +29534,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '918';
+const APP_VERSION = '920';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
