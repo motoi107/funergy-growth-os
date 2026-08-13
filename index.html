@@ -23563,10 +23563,14 @@ function saveFcPurposeConfig(){
 }
 /* 経理PL（別ファイル）の原価額を保存し、アプリ算出と突き合わせる */
 function plActualKey(storeId, ym){ return 'pl_actual_'+storeId+'_'+ym; }
-function getPlActual(storeId, ym){ var v=ls(plActualKey(storeId, ym), null); return (v&&typeof v==='object')?v:{}; }
+/* v921: ★簡易PL側の getPlActual() と名前が衝突していた（12068行）。
+   トップレベルの関数宣言は後勝ちなので、こちらが簡易PL側を潰し、
+   取り込んだ実PLが画面から見えなくなっていた。
+   savePlActualCost と対になる名前に改める。用途は経理PLの原価額のみ。 */
+function getPlActualCost(storeId, ym){ var v=ls(plActualKey(storeId, ym), null); return (v&&typeof v==='object')?v:{}; }
 function savePlActualCost(storeId, ym){
   var v=parseFloat((docVal('pl-actual-cost')||'').replace(/[^0-9.\-]/g,''));
-  var cur=getPlActual(storeId, ym);
+  var cur=getPlActualCost(storeId, ym);   /* v921 */
   cur.cost = isNaN(v)?null:v;
   cur.by=(curUserName||''); cur.at=(typeof nowJP==='function'?nowJP():'');
   lsSet(plActualKey(storeId, ym), cur);
@@ -23576,7 +23580,7 @@ function savePlActualCost(storeId, ym){
 }
 function openPlReconcile(storeId, ym){
   var r=foodCostOf(storeId, ym);
-  var pa=getPlActual(storeId, ym);
+  var pa=getPlActualCost(storeId, ym);   /* v921 */
   var nc=monthNonCostYm(storeId, ym);
   var m=function(n){ return '$'+(Number(n)||0).toFixed(2); };
   var diff=(pa.cost!=null)?(Number(pa.cost)-r.cost):null;
@@ -29534,7 +29538,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '920';
+const APP_VERSION = '921';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41070,8 +41074,13 @@ function renderErrorCenter(embedded){
 }
 
 /* v880: 経理センターの「経理ダッシュボード」から帯なしで呼べるようにする。
-   bare=true のとき、見出しと内部タブ帯を出さない（大タブが上にあるので二重になる）。 */
-function renderOfficeDash(){ officeMgrTab='dash'; return renderOfficeMgr(true); }
+   bare=true のとき、見出しと内部タブ帯を出さない（大タブが上にあるので二重になる）。
+   ★v921: ここにあった renderOfficeDash() のラッパを削除した。
+     41214行に同名の実体があり、トップレベルの後勝ちで常に実体が使われていたため
+     このラッパは一度も呼ばれていない（経理センターは acDashBody() から
+     renderOfficeMgr(true) を直接呼ぶ）。
+     さらに renderOfficeMgr の中から renderOfficeDash() を呼んでいるので、
+     並び順が変わってラッパが勝つと無限再帰する罠だった。挙動は変わらない。 */
 function renderOfficeMgr(bare){
   var html = bare ? '' : '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
 
