@@ -19752,12 +19752,79 @@ function _meetConfirmSrc(ym){
 }
 /* 確定/速報のバッジ。文字と色の両方で出す（色だけで判断させない） */
 function _meetConfirmBadge(storeId, ym, small){
-  var c = _meetIsConfirmed(storeId, ym);
+  /* v926: 『確定』は数字を実際にPLへ差し替えたときだけ出す。
+     以前は pl_public に行があるだけで『確定』と出していたため、
+     数字は速報のままなのに確定の印が付いていた。 */
+  var st = _meetConfirmState(storeId, ym);
+  var c = (st === 'final');
   var fs = small ? '7.5px' : '9px';
+  if (st === 'comb') {
+    return '<span title="'+escapeHtml(t('会計PLではFSPとWGSが合算のため、店舗別の確定値が作れません（数字はアプリの日次実績）','FSP and WGS are combined in the accounting PL, so no per-store final figure exists (figures are app daily actuals)'))+'"'
+      +  ' style="font-size:'+fs+';font-weight:800;padding:1px 5px;border-radius:20px;white-space:nowrap;'
+      +  'background:var(--surface2);color:var(--yellow);border:1px solid var(--yellow)">'
+      +  t('合算','Combined')+'</span>';
+  }
   return '<span title="'+(c?escapeHtml(t('会計PLの確定値','Confirmed from accounting PL')+(_meetConfirmSrc(ym)?'（'+_meetConfirmSrc(ym)+'）':'')):escapeHtml(t('アプリの日次実績（速報）','App daily actuals (provisional)')))+'"'
     +  ' style="font-size:'+fs+';font-weight:800;padding:1px 5px;border-radius:20px;white-space:nowrap;'
     +  (c ? 'background:var(--green);color:#fff' : 'background:var(--surface2);color:var(--muted);border:1px solid var(--border)')+'">'
     +  (c ? t('確定','Final') : t('速報','Prov.'))+'</span>';
+}
+/* v926: 会計PLからKPIを作る。取り込んだ数字を画面に出すのはここ1か所。
+   ★pl_public は sales / cogs / payroll だけ（利益は入れない・v919の設計）。
+     したがってPLから作れるのは 売上・原価率・人件費率 の3つ。
+     客数・リピート率・ドリンク比率・味噌・いくら・GoogleはPLに無いのでアプリのまま。
+   ★Waikiki(F03 / F03-G) はPL上 'F03+F03-G' の1シート。店舗別の値が作れないので
+     null を返す。合算値を片方に入れると二重計上になる（Motoさん確認済み）。
+   ★売上0の月は率が作れないので null。「無い」と「0」を分ける（教訓(54)）。 */
+function _meetPlKpi(storeId, ym){
+  try {
+    if (storeId === 'F03' || storeId === 'F03-G') return null;
+    var r = null;
+    var p = ls('pl_public', null);
+    if (p && p[ym] && p[ym][storeId]) r = p[ym][storeId];
+    if (!r) { var a = ls('pl_actual', null); if (a && a[ym] && a[ym][storeId]) r = a[ym][storeId]; }
+    if (!r) return null;
+    var s = Number(r.sales) || 0;
+    if (!(s > 0)) return null;
+    var cg = Number(r.cogs), pr = Number(r.payroll);
+    return {
+      sales: s,
+      fcRate:    isFinite(cg) ? Math.round(cg / s * 1000) / 10 : null,
+      laborRate: isFinite(pr) ? Math.round(pr / s * 1000) / 10 : null
+    };
+  } catch(e){ return null; }
+}
+/* v926: バッジの3状態。
+   final … 会計PLの確定値をこの画面に出している
+   comb  … PLはあるが合算（Waikiki）。店舗別の確定値は作れない
+   prov  … アプリの日次実績（速報）
+   ★「PLが覆っているか」の判定は _meetIsConfirmed のまま（v910の契約を変えない）。
+     ここは「その数字を出せるか」まで見る。出せないのに『確定』と言わないための層。 */
+function _meetConfirmState(storeId, ym){
+  try {
+    if (storeId === 'F03' || storeId === 'F03-G') return _meetIsConfirmed(storeId, ym) ? 'comb' : 'prov';
+    return _meetPlKpi(storeId, ym) ? 'final' : 'prov';
+  } catch(e){ return 'prov'; }
+}
+/* v926: keyKpiStats の結果にPLの確定値をかぶせる。
+   ★元の k は書き換えない（浅いコピーを返す）。keyKpiStats 自体は不変。
+   ★客単価は「売上÷客数」なので、売上をPLにしたら客単価も作り直す。
+     でないと 客単価×客数 ≠ 売上 になる（教訓㊶ 合計が2か所にあるなら一致を守る）。
+     客数はPLに無いのでアプリの値を使う＝PL売上 ÷ アプリ客数。 */
+function _meetApplyPl(k, storeId, ym){
+  try {
+    if (!k) return k;
+    if (_meetConfirmState(storeId, ym) !== 'final') return k;
+    var pl = _meetPlKpi(storeId, ym); if (!pl) return k;
+    var o = {}; for (var key in k) o[key] = k[key];
+    o.sales = pl.sales;
+    if (pl.fcRate    != null) o.fcRate    = pl.fcRate;
+    if (pl.laborRate != null) o.laborRate = pl.laborRate;
+    o.ppa = (k.guests > 0) ? Math.round(pl.sales / k.guests * 100) / 100 : k.ppa;
+    o.achieve = (k.budget > 0) ? Math.round(pl.sales / k.budget * 1000) / 10 : k.achieve;
+    o.plSrc = true;
+    return o;
+  } catch(e){ return k; }
 }
 /* v913: 店名の固定行。KPIの数字は載せない（カードと重複するため）。
    載せるのは「どの店か」「未達が何件か」「速報/確定」「予算の考え方」の4つだけ。 */
@@ -20310,7 +20377,10 @@ function _meetYearMatrix(store, y){
   if(!KEYS.length){ return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)+'</div><div style="color:var(--muted);font-size:12px">'+t('この店舗のExcel取込データはありません（7月以降はライブ値で表示）。','No Excel data imported for this store.')+'</div></div>'; }
   var canEd=(typeof qbCanEdit==='function')?qbCanEdit():false;
   var edits=getKgiEdits();
+  /* v926: 確定月はPLの数字を出す。1〜6月は cellV がシードを優先するので届かない
+     （「1〜6月の会議記録の数字は動かさない」A案・Motoさん確認済みを維持）。 */
   function liveA(kk, ym, off){ if(off>0) return null; var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
+    try{ k=_meetApplyPl(k, sid, ym); }catch(e){}
     switch(kk){ case 'sales': return k.sales||null; case 'guests': return isB?((k.opDays>0)?Math.round((k.guests||0)/k.opDays):null):(k.guests||null); case 'ppa': return k.ppa||null; case 'repeat': return k.repeatRate; case 'fc': return k.fcRate||null; case 'labor': return k.laborRate||null; case 'miso': return k.misoRate; case 'ikura': return k.ikuraRate; case 'drink': return k.drinkRate; default: return null; } }
   /* v868: 目標行がシステムの設定を一切見ておらず、Excel取込のシードを返し続けていた。
      シードには12か月ぶん目標が入っているため、7月以降もExcelの数字が勝ち、
@@ -20395,7 +20465,9 @@ function renderMeetingReview(){
     +((typeof qbCanEdit==='function'&&qbCanEdit())?'<button class="btn btn-secondary btn-sm" onclick="openMeetThresholdModal()"><i class="ti ti-adjustments"></i> '+t('しきい値設定','Thresholds')+'</button>':'')
     +'<button class="btn btn-secondary btn-sm" onclick="setBudgetTab(\'quarter\')"><i class="ti ti-flag"></i> '+t('Qコミットへ','Q Commit')+'</button></div>';
   var days=daysOfYm(ym);
-  var ks=stores.map(function(s){ var k; try{ k=keyKpiStats([s], days); }catch(e){ k=null; } return {s:s, k:k}; }).filter(function(x){return x.k;});
+  /* v926: 確定月はPLの数字に差し替える。ここ1か所で通すと、
+     店舗カード・KPI帯・全社サマリーが同じ数字になる（バッジと食い違わない）。 */
+  var ks=stores.map(function(s){ var k; try{ k=keyKpiStats([s], days); }catch(e){ k=null; } try{ k=_meetApplyPl(k, s.id, ym); }catch(e){} return {s:s, k:k}; }).filter(function(x){return x.k;});
   if(!ks.length){ html+='<div class="card" style="text-align:center;padding:18px;color:var(--muted)">'+t('対象店舗がありません','No stores in scope')+'</div>'; return html; }
   // 全社サマリー（未達件数＝しきい値ベース）
   var totSales=0, totBud=0, totMiss=0, totKpi=0, storeMiss=0, totPaceBud=0;
@@ -30199,7 +30271,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '925';
+const APP_VERSION = '926';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
