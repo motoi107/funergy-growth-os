@@ -259,12 +259,22 @@ body.shift-wide .main { max-width:1900px; }
    ★幅の数字は body.md-wide と同じ（1500 / 1880）。新しい数字を作らない。 */
 @media (min-width:1180px) {
   body.meet-wide .main { max-width:1500px; }
+  /* v928: 店舗カードを2列にする。
+     売上ヒーローの中身は _meetPlanHtml(620px) と _meetGapHtml(560px) で
+     頭打ちなので、器だけ広げると右半分が死に領域になっていた。
+     頭打ちは残したまま（文章の行長も曜日別テーブルも今の幅が読みやすい）、
+     余った幅にKPIタイルを置く。
+     ★sticky の店名行はこの2列の外にあるので影響しない（v913の設計を維持）。 */
+  .meet-card-2col { display:grid; grid-template-columns:minmax(0,680px) minmax(0,1fr);
+                    column-gap:14px; align-items:start; }
   /* KPIタイル。1枚に入るのは「目標／実績」の2ボックスだけなので、
      広い画面で1列に積むと極端に間延びする。
+     ★列数は auto-fit。右カラムの幅は画面幅・左カラム・余白の積み重ねで決まるので、
+       ビューポート幅から列数を決め打ちすると合わない（v927はそれで合っていなかった）。
      ★row-gap は 0。タイルは margin-bottom をインラインで持っており
        （_meetKpiTile・v914で凍結）、縦の間隔はそちらに任せる。 */
-  .meet-kpi-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr));
-                   column-gap:10px; row-gap:0; }
+  .meet-kpi-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr));
+                   column-gap:10px; row-gap:0; align-items:start; }
   /* 全店ビューの店舗カード。7〜9店が縦に並ぶと会議の冒頭で一望できない。
      ★row-gap は 0。_meetStoreSummary（v913で凍結）の margin-bottom に任せる。 */
   .meet-store-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr));
@@ -272,7 +282,7 @@ body.shift-wide .main { max-width:1900px; }
 }
 @media (min-width:1560px) {
   body.meet-wide .main { max-width:1880px; }
-  .meet-kpi-grid   { grid-template-columns:repeat(3, minmax(0,1fr)); }
+  /* v928: KPIタイルは auto-fit なのでここで列数を決め打ちしない。 */
   .meet-store-grid { grid-template-columns:repeat(3, minmax(0,1fr)); }
 }
 .card {
@@ -18914,6 +18924,13 @@ function _meetG2Options(selected, storeId){
   return opts;
 }
 function _meetInputBlock(storeId, ym, it, missed){
+  /* v928: 未達のタスク化を一旦廃止（Motoさん指示）。
+     呼び出し元は2か所（_meetKpiTile 20216行 / _meetStoreCard 20352行）だが、
+     _meetKpiTile は v914 / v926 / v927 の3本が凍結しているので触らない。
+     ここで1行返せば両方が止まる。
+     ★戻すときはこの return を消すだけ。
+     ★入力済みの meet_review は消していない。画面に出さないだけ。 */
+  return '';
   var rv=getMeetReview(storeId, ym)[it.key]||{};
   var pv=getMeetReview(storeId, ymShift(ym,-1))[it.key]||{};
   var canEd=(typeof qbCanEdit==='function')?qbCanEdit():true;
@@ -20330,6 +20347,10 @@ function _meetStoreCard(store, k, ym, isCurrent){
      店名の行だけ sticky にして「どの店を見ているか」と「予算の考え方」を残す。
      KPIの数字はここに載せない（カードと重複させないのがこの版の目的）。 */
   try { h += _meetStorePinHtml(store, missCount, ym); } catch(e){}
+  /* v928: ここから2列。左＝売上ヒーロー、右＝KPIタイル。
+     店名の固定行(sticky)はこの外に置く。中に入れると sticky が
+     グリッドの列の中でしか効かなくなる。 */
+  h+='<div class="meet-card-2col">';
   // 売上ヒーロー
   h+='<div style="background:'+_meetStatTint(salesSt)+';border:1px solid '+(salesSt==='miss'?'var(--red)':'var(--border)')+';border-radius:11px;padding:11px 13px;margin-bottom:2px">'
     +'<div style="display:flex;align-items:center;gap:8px"><i class="ti ti-trending-up" style="color:'+salesCol+';font-size:16px"></i><span style="font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.03em">'+t('売上','SALES')+(isCurrent?t('（前日まで）',' (to date)'):'')+'</span>'
@@ -20363,6 +20384,7 @@ function _meetStoreCard(store, k, ym, isCurrent){
     else if(it.key==='drink'){ ex=_meetSegExtra(k,'drink',store.id,ym,1,''); }
     h+=_meetKpiTile(store.id, ym, it.key, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, extra:ex, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
   h+='</div>';   /* v927: meet-kpi-grid を閉じる */
+  h+='</div>';   /* v928: meet-card-2col を閉じる */
   return h;
 }
 /* 月初KGI: 1〜6月=Excel取込値, 7月〜=ライブ数値, 手編集オーバーレイ(タップ編集・同期) */
@@ -30309,7 +30331,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '927';
+const APP_VERSION = '928';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
