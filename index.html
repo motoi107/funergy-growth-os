@@ -12427,6 +12427,40 @@ function hqPairAgg(la, lb, months){
   return d;
 }
 function hqSetView(v){ _hqView=v; _secRerender(); }
+/* v946: 統合タブで見る指標。グラフ2つが連動する。 */
+var _hqMetric = 'profit';
+function hqSetMetric(k){ _hqMetric=k; _secRerender(); }
+var HQ_METRICS = [
+  ['sales','売上','m'], ['guests','客数','n'], ['ppa','客単価','p'],
+  ['cogs','原価','m'], ['labor','人件費','m'], ['opex','販管費','m'], ['profit','営業利益','m']
+];
+/* v946: きりの良い刻み。
+   ★mdSalesChartHtml(v943) に同じ計算のローカル版がある。本来1つにすべきだが、
+     あの関数は v941〜v944 で4回触っており、見た目に効かない整理で5回目を入れない。
+     次にあの関数を触る回に寄せること。 */
+function _niceStep(mv, want){
+  var raw = (Math.abs(mv) / (want || 5)) || 1;
+  var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  var q = raw / mag;
+  return (q <= 1 ? 1 : q <= 2 ? 2 : q <= 2.5 ? 2.5 : q <= 5 ? 5 : 10) * mag;
+}
+/* v946: 指標ごとの書式。 */
+function _hqFmt(kind, v, ax){
+  if (v == null) return '—';
+  if (kind === 'n') return Math.round(v).toLocaleString();
+  if (kind === 'p') return '$' + v.toFixed(2);
+  if (ax) {
+    var a = Math.abs(v), s = v < 0 ? '-' : '';
+    if (a >= 1000000) return s + '$' + (a / 1000000).toFixed(a >= 10000000 ? 0 : 1) + 'M';
+    if (a >= 1000)    return s + '$' + Math.round(a / 1000) + 'k';
+    return s + '$' + Math.round(a);
+  }
+  return (v < 0 ? '-' : '') + '$' + Math.abs(Math.round(v)).toLocaleString();
+}
+/* v945: 予算設定タブの中の切替。'sales'=売上構成 / 'cost'=費用
+   ★状態変数は他の _hq* と並べる。関数と関数の間に置くと、
+     直前の関数を取り出したときに末尾に付いてくる（教訓(62)の別の形）。 */
+var _hqSetupTab = 'sales';
 /* v938: 売上構成の計算。ここ1か所。画面にも保存にも同じものを使う。
    ★客数はテイクアウトを含む（monthGuestBudget 23374行・v932 と同じ母集団）。
      含めないと実績と分母が変わり、達成率が壊れる（教訓(68)）。 */
@@ -12465,17 +12499,28 @@ function hqPlanForYm(sid, ym){
   var labor = (Number(e.laborAmt)>0) ? Number(e.laborAmt)
             : (Number(e.laborRate)>0 ? sales*Number(e.laborRate)/100 : null);
   // 変動費: 項目ごとに上書き(vcOvr)があればそれ、無ければ簡易PL設定
-  var vcOvr=e.vcOvr||{};
-  var vcT=0; PL_VC_CATS.forEach(function(c){
-    var ov=vcOvr[c[0]]; vcT += (ov!=null&&ov!=='') ? (Number(ov)||0) : (Number((cfg.vcAvg[sid]||{})[c[0]])||0);
-  });
+  /* v945: 合計での指定(vcTotal)があればそれを正とする。
+     科目は8つあり、月ごとに全部入れるのは現実的でない。内訳が要る月だけ vcOvr で詰める。 */
+  var vcT;
+  if (e.vcTotal != null && e.vcTotal !== '') { vcT = Number(e.vcTotal) || 0; }
+  else {
+    var vcOvr=e.vcOvr||{};
+    vcT=0; PL_VC_CATS.forEach(function(c){
+      var ov=vcOvr[c[0]]; vcT += (ov!=null&&ov!=='') ? (Number(ov)||0) : (Number((cfg.vcAvg[sid]||{})[c[0]])||0);
+    });
+  }
   // GET: 上書き(getOvr)があれば金額、無ければ率
   var get = (e.getOvr!=null&&e.getOvr!=='') ? (Number(e.getOvr)||0) : sales*(cfg.getRate||4.712)/100;
   // 固定費: 項目ごとに上書き(fixOvr)
-  var fixOvr=e.fixOvr||{};
-  var fixT=0; PL_FIX_CATS.forEach(function(c){
-    var ov=fixOvr[c[0]]; fixT += (ov!=null&&ov!=='') ? (Number(ov)||0) : (Number((cfg.fixed[sid]||{})[c[0]])||0);
-  });
+  /* v945: 固定費も同じ。合計指定が優先。 */
+  var fixT;
+  if (e.fixTotal != null && e.fixTotal !== '') { fixT = Number(e.fixTotal) || 0; }
+  else {
+    var fixOvr=e.fixOvr||{};
+    fixT=0; PL_FIX_CATS.forEach(function(c){
+      var ov=fixOvr[c[0]]; fixT += (ov!=null&&ov!=='') ? (Number(ov)||0) : (Number((cfg.fixed[sid]||{})[c[0]])||0);
+    });
+  }
   var profit=(cogs!=null&&labor!=null)?(sales-cogs-labor-vcT-get-fixT):null;
   /* v937: PL層の opex と突き合わせるための共通項 */
   return {guests:g>0?g:null, ppa:p>0?p:null, sales:sales, cogs:cogs, gross:cogs!=null?sales-cogs:null, labor:labor, vcT:vcT, get:get, fixT:fixT, opex:vcT+get+fixT, profit:profit, note:e.note||''};
@@ -12586,6 +12631,8 @@ function hqSetupRecalc(ym){
   var s=document.getElementById('hqs-'+ym+'-sales'), g=document.getElementById('hqs-'+ym+'-guests');
   if(s) s.textContent = c ? ('$'+c.sales.toLocaleString()) : '—';
   if(g) g.textContent = (c&&c.guests) ? c.guests.toLocaleString() : '—';
+  var pp=document.getElementById('hqs-'+ym+'-ppa');
+  if(pp) pp.textContent = (c&&c.ppa!=null) ? ('$'+c.ppa.toFixed(2)) : '—';
   var tot=0, any=false;
   for(var i=1;i<=12;i++){
     var y=_hqYear+'-'+String(i).padStart(2,'0');
@@ -12640,48 +12687,128 @@ function hqSetupSave(sid){
   showToast(n+'か月を保存しました'+(cleared?('（'+cleared+'か月は構成を外しました）'):''),'success');
   _secRerender();
 }
-/* v939: 期間ごとのギャップを積み上げで見せる。
-   ①計画ギャップ（店舗−本部）と ②実行ギャップ（実績−店舗）を積む。
-   どちらもふつうはマイナスなので下向きに伸びる。0 の線を必ず引く。 */
-function hqGapSvg(rows, key){
-  var has=rows.some(function(r){ return (r.g1&&r.g1[key]!=null)||(r.g2&&r.g2[key]!=null); });
-  if(!has) return '<div style="color:var(--muted);padding:18px;text-align:center;font-size:12px">本部予算・店舗予算・確定PLが揃っている期間がありません</div>';
-  var n=rows.length, w=Math.max(300, n*96), h=178, padL=46, padR=10, padT=14, padB=30;
-  var plotH=h-padT-padB, bw=(w-padL-padR)/n;
-  var lo=0, hi=0;
+/* v946: 3つの水準とギャップを、軸を共有した1つの塊で描く。
+   ★描き方は v943/v944 で通した形に揃える。
+     preserveAspectRatio="none" ＋ non-scaling-stroke、SVG に文字を入れない、
+     ラベルは HTML で % 合わせ、丸は HTML の div。 */
+function hqMetricChart(rows, key, kind){
+  var vals = [];
+  rows.forEach(function(r){
+    ['hq','st','ac'].forEach(function(L){ if(r[L] && r[L][key]!=null) vals.push(r[L][key]); });
+  });
+  if(!vals.length) return '<div style="color:var(--muted);padding:20px;text-align:center;font-size:12px">'
+    + 'この指標のデータがまだありません</div>';
+  var hi = Math.max.apply(null, vals), lo = Math.min.apply(null, vals);
+  if (lo > 0) lo = 0;                       /* 0 を含めて水準の高さを正しく見せる */
+  if (hi === lo) hi = lo + 1;
+  var pad = (hi - lo) * 0.08; hi += pad; if (lo < 0) lo -= pad;
+  var n = rows.length, w = 240, h = 96, axL = 46;
+  var X = function(i){ return n<2 ? (w/2) : (i/(n-1)*w); };
+  var Y = function(v){ return (h - (v - lo)/(hi - lo)*h); };
+  var pctX = function(i){ return (X(i)/w*100).toFixed(2); };
+  var pctY = function(v){ return (Y(v)/h*100).toFixed(2); };
+  /* 横線 */
+  var stp = _niceStep(hi - lo, 4), gy = [];
+  for (var v0 = Math.ceil(lo/stp)*stp; v0 <= hi && gy.length < 6; v0 += stp) gy.push(v0);
+  var gridH = gy.map(function(v){
+    return '<line x1="0" y1="' + Y(v).toFixed(1) + '" x2="' + w + '" y2="' + Y(v).toFixed(1)
+      + '" stroke="' + (Math.abs(v)<1e-9?'#ddd5ca':'#efe9e1') + '" stroke-width="1" '
+      + 'vector-effect="non-scaling-stroke"/>';
+  }).join('');
+  var gridV = rows.map(function(r,i){
+    return i===0 ? '' : '<line x1="' + X(i).toFixed(1) + '" y1="0" x2="' + X(i).toFixed(1)
+      + '" y2="' + h + '" stroke="#f2ece4" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+  }).join('');
+  /* 3本の線。切れ目（データの無い期間）でつながないよう区間に分ける。 */
+  var LAY = [['hq','本部予算','var(--accent2)','',3],
+             ['st','店舗予算','var(--accent)','6 4',2],
+             ['ac','実績PL','var(--green)','',3]];
+  var lines = '', dots = '';
+  LAY.forEach(function(L){
+    var run = [], segs = [];
+    rows.forEach(function(r,i){
+      var v = (r[L[0]] && r[L[0]][key]!=null) ? r[L[0]][key] : null;
+      if(v==null){ if(run.length) segs.push(run); run=[]; return; }
+      run.push(X(i).toFixed(1) + ',' + Y(v).toFixed(1));
+      if(n<=6) dots += '<div style="position:absolute;left:' + pctX(i) + '%;top:' + pctY(v)
+        + '%;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;background:' + L[2]
+        + ';box-shadow:0 0 0 1.5px var(--card);pointer-events:none"></div>';
+    });
+    if(run.length) segs.push(run);
+    segs.forEach(function(sg){
+      /* ★1点だけの区間は線にしない。点が1つの polyline は描画されないが markup に残る。
+         n<=6 のときは上のループで既に丸を置いているので、ここで足すと二重になる。 */
+      if(sg.length===1){
+        if(n<=6) return;
+        dots += '<div style="position:absolute;left:' + (Number(sg[0].split(',')[0])/w*100).toFixed(2)
+          + '%;top:' + (Number(sg[0].split(',')[1])/h*100).toFixed(2)
+          + '%;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;background:' + L[2]
+          + ';pointer-events:none"></div>';
+        return;
+      }
+      lines += '<polyline points="' + sg.join(' ') + '" fill="none" stroke="' + L[2]
+        + '" stroke-width="' + L[4] + '" stroke-linejoin="round"'
+        + (L[3] ? ' stroke-dasharray="' + L[3] + '"' : '')
+        + ' vector-effect="non-scaling-stroke"><title>' + L[1] + '</title></polyline>';
+    });
+  });
+  var yLab = '<div style="position:absolute;left:0;top:0;bottom:0;width:' + (axL-4)
+    + 'px;font-size:8.5px;color:var(--muted);font-weight:600;pointer-events:none">'
+    + gy.map(function(v){
+        return '<div style="position:absolute;right:0;top:' + pctY(v)
+          + '%;transform:translateY(-50%);white-space:nowrap">' + _hqFmt(kind, v, true) + '</div>';
+      }).join('') + '</div>';
+  var lg = '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:10.5px;color:var(--muted);margin-bottom:3px">'
+    + LAY.map(function(L){
+        return '<span><span style="display:inline-block;width:14px;height:0;vertical-align:middle;'
+          + 'border-top:' + (L[3] ? '2px dashed ' : '3px solid ') + L[2] + '"></span> ' + L[1] + '</span>';
+      }).join('') + '</div>';
+  var svgLv = '<div style="position:relative;padding-left:' + axL + 'px">' + yLab
+    + '<div style="position:relative">'
+    + '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" '
+    + 'style="display:block;width:100%;height:auto;aspect-ratio:' + w + '/' + h
+    + ';min-height:130px;max-height:190px">'
+    + gridH + gridV + lines + '</svg>' + dots + '</div></div>';
+  return lg + svgLv;
+}
+/* v946: 期間ごとのギャップを積み上げで見せる。
+   ★v939 は SVG の中に文字を置いていた。preserveAspectRatio="none" では文字が横に伸びるので、
+     ラベルを外に出し、上の水準グラフと日付の軸を共有する形にした。 */
+function hqGapChart(rows, key, kind){
+  var has = rows.some(function(r){ return (r.g1&&r.g1[key]!=null)||(r.g2&&r.g2[key]!=null); });
+  if(!has) return '<div style="color:var(--muted);padding:14px;text-align:center;font-size:11.5px">'
+    + '本部予算・店舗予算・確定PLが揃っている期間がありません</div>';
+  var n = rows.length, w = 240, h = 62, axL = 46;
+  var lo = 0, hi = 0;
   rows.forEach(function(r){
     var a=(r.g1&&r.g1[key]!=null)?r.g1[key]:0, b=(r.g2&&r.g2[key]!=null)?r.g2[key]:0;
-    var neg=(a<0?a:0)+(b<0?b:0), pos=(a>0?a:0)+(b>0?b:0);
-    lo=Math.min(lo,neg); hi=Math.max(hi,pos);
+    lo = Math.min(lo, (a<0?a:0)+(b<0?b:0));
+    hi = Math.max(hi, (a>0?a:0)+(b>0?b:0));
   });
-  if(lo===0&&hi===0){ hi=1; }
-  var span=(hi-lo)||1, y0=padT+plotH*(hi/span);
-  var yOf=function(v){ return padT + plotH*((hi-v)/span); };
-  var g='<line x1="'+padL+'" y1="'+y0.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+y0.toFixed(1)+'" stroke="var(--border)" stroke-width="1"/>'
-    + '<text x="'+(padL-5)+'" y="'+(y0+3).toFixed(1)+'" font-size="8" fill="var(--muted)" text-anchor="end">0</text>';
+  if(lo===0 && hi===0) hi = 1;
+  var span = (hi - lo) || 1;
+  var Y = function(v){ return (h - (v - lo)/span*h); };
+  var bw = w/n, g = '';
+  g += '<line x1="0" y1="' + Y(0).toFixed(1) + '" x2="' + w + '" y2="' + Y(0).toFixed(1)
+    + '" stroke="#ddd5ca" stroke-width="1" vector-effect="non-scaling-stroke"/>';
   rows.forEach(function(r,i){
-    var x=padL+i*bw+bw*0.22, bwid=bw*0.56;
-    var acc=0, tot=0;
-    [['g1','var(--accent)'],['g2','var(--green)']].forEach(function(p){
-      var v=(r[p[0]]&&r[p[0]][key]!=null)?r[p[0]][key]:null;
-      if(v==null||v===0) return;
-      tot+=v;
-      var y1=yOf(acc), y2=yOf(acc+v);
-      acc+=v;
-      g+='<rect x="'+x.toFixed(1)+'" y="'+Math.min(y1,y2).toFixed(1)+'" width="'+bwid.toFixed(1)
-        +'" height="'+Math.max(1,Math.abs(y2-y1)).toFixed(1)+'" fill="'+p[1]+'" opacity="0.85"><title>'
-        +(p[0]==='g1'?'① 計画ギャップ ':'② 実行ギャップ ')
-        +(v<0?'-':'+')+'$'+Math.abs(Math.round(v)).toLocaleString()+'</title></rect>';
+    var x = i*bw + bw*0.24, bwid = bw*0.52, acc = 0;
+    [['g1','① 計画','var(--accent)'],['g2','② 実行','var(--green)']].forEach(function(p){
+      var v = (r[p[0]] && r[p[0]][key]!=null) ? r[p[0]][key] : null;
+      if(v==null || v===0) return;
+      var y1 = Y(acc), y2 = Y(acc+v); acc += v;
+      g += '<rect x="' + x.toFixed(1) + '" y="' + Math.min(y1,y2).toFixed(1) + '" width="' + bwid.toFixed(1)
+        + '" height="' + Math.max(0.6, Math.abs(y2-y1)).toFixed(1) + '" fill="' + p[2] + '" opacity="0.85">'
+        + '<title>' + p[1] + ' ' + _hqFmt(kind, v) + '</title></rect>';
     });
-    if(tot!==0){
-      var ty=yOf(tot); var above=(tot<0);
-      g+='<text x="'+(x+bwid/2).toFixed(1)+'" y="'+(above?ty+11:ty-4).toFixed(1)+'" font-size="9" '
-        +'fill="'+(tot<0?'var(--red)':'var(--green)')+'" text-anchor="middle">'
-        +(tot<0?'-':'+')+'$'+Math.abs(Math.round(tot/1000))+'k</text>';
-    }
-    g+='<text x="'+(padL+i*bw+bw/2).toFixed(1)+'" y="'+(h-8)+'" font-size="9.5" fill="var(--tm)" text-anchor="middle">'+escapeHtml(r.label)+'</text>';
   });
-  return '<svg viewBox="0 0 '+w+' '+h+'" style="width:100%;min-width:'+Math.min(w,560)+'px;height:'+h+'px" role="img">'+g+'</svg>';
+  return '<div style="position:relative;padding-left:' + axL + 'px">'
+    + '<div style="position:absolute;left:0;top:0;bottom:0;width:' + (axL-4)
+    + 'px;font-size:8.5px;color:var(--muted);font-weight:600;pointer-events:none">'
+    + '<div style="position:absolute;right:0;top:' + (Y(0)/h*100).toFixed(2) + '%;transform:translateY(-50%)">0</div></div>'
+    + '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" '
+    + 'style="display:block;width:100%;height:auto;aspect-ratio:' + w + '/' + h
+    + ';min-height:76px;max-height:110px">' + g + '</svg></div>';
 }
 /* v939: 統合ビュー。1つの表に4層とギャップを縦に並べる。 */
 function renderHqUnified(){
@@ -12745,12 +12872,35 @@ function renderHqUnified(){
     h+='<div style="font-size:10.5px;color:var(--amber);margin-top:8px;line-height:1.6"><i class="ti ti-alert-triangle"></i> ①②③ で対象の月数が違うため ③ = ①+② になりません（確定PLのある月だけで引いているためです）。</div>';
   }
   h+='</div>';
-  /* グラフ */
-  h+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>ギャップの推移（営業利益）</div>'
-    +'<div style="display:flex;gap:14px;font-size:10.5px;color:var(--muted);margin-bottom:4px">'
+  /* v946: 指標を選ぶと2つのグラフが連動する。日付の軸は2つで共有する。 */
+  var _mt = HQ_METRICS.find(function(x){ return x[0]===_hqMetric; }) || HQ_METRICS[6];
+  h+='<div class="card" style="margin-bottom:8px">'
+    +'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">'
+    + HQ_METRICS.map(function(x){
+        var on=(x[0]===_mt[0]);
+        return '<div onclick="hqSetMetric(\''+x[0]+'\')" style="cursor:pointer;font-size:11.5px;'
+          +'padding:4px 11px;border-radius:999px;'
+          +(on?'background:var(--accent);color:#fff;font-weight:700':'border:1px solid var(--border);color:var(--muted)')
+          +'">'+x[1]+'</div>';
+      }).join('')
+    +'</div>'
+    +'<div class="card-title" style="margin-bottom:2px"><i class="ti ti-chart-line" style="color:var(--accent)"></i>'
+    + escapeHtml(_mt[1]) + 'の水準</div>'
+    + hqMetricChart(rows, _mt[0], _mt[2])
+    +'<div class="card-title" style="margin:10px 0 2px"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>'
+    +'ギャップの内訳</div>'
+    +'<div style="display:flex;gap:14px;font-size:10.5px;color:var(--muted);margin-bottom:3px">'
     +'<span><span style="display:inline-block;width:10px;height:10px;background:var(--accent);border-radius:2px"></span> ① 計画</span>'
     +'<span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px"></span> ② 実行</span></div>'
-    +'<div style="overflow-x:auto">'+hqGapSvg(rows,'profit')+'</div></div>';
+    + hqGapChart(rows, _mt[0], _mt[2])
+    /* ★日付の軸は2つのグラフで共有する。同じ期間なので2回出す意味がない。 */
+    +'<div style="display:flex;margin-left:46px;font-size:9px;color:var(--muted);font-weight:600;margin-top:2px">'
+    + rows.map(function(r){ return '<div style="flex:1;text-align:center">'+escapeHtml(r.label)+'</div>'; }).join('')
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:7px;line-height:1.6">'
+    +'上の3本が離れているほど下の棒が伸びます。① が厚い月は<b>予算作り</b>の問題、'
+    +'② が厚い月は<b>オペレーション</b>の問題です。</div>'
+    +'</div>';
   /* 統合表 */
   var mets=[['売上','sales',m0,mS],['客数','guests',n0,nS],['客単価','ppa',p2,p2S],
             ['原価','cogs',m0,mS],['人件費','labor',m0,mS],
@@ -12795,6 +12945,206 @@ function renderHqUnified(){
   h+='<div style="font-size:10.5px;color:var(--muted);margin:8px 2px 0;line-height:1.7"><i class="ti ti-info-circle"></i> <b>①計画ギャップ</b>＝店舗予算−本部予算（店舗の計画が目標に届いているか）。<b>②実行ギャップ</b>＝実績−店舗予算（計画どおり動けているか）。<b>③合計</b>＝実績−本部予算。ギャップは<b>両方の数字が揃っている月だけ</b>で計算します。客単価は月ごとの差を足さず、期間で集計してから引いています。実績は会計PLの確定値のみです。</div>';
   return h;
 }
+/* v945: 費用の予算。売上構成と同じく月ごとに置く。 */
+function hqSetupTab(t){ _hqSetupTab=t; _secRerender(); }
+/* その店・その月の本部予算の売上（保存済み）。費用は率で置くので売上が要る。 */
+function _hqBudSales(sid, ym){
+  var e=(getHqBudget()[ym]||{})[sid]||{};
+  var sg=hqSegCalc(e.seg, e.days);
+  var s = sg ? sg.sales : (Number(e.total)||0);
+  return s>0 ? s : null;
+}
+function _hqCfgVc(sid){
+  var cfg=getPlConfig(), t=0;
+  PL_VC_CATS.forEach(function(c){ t += Number((cfg.vcAvg[sid]||{})[c[0]])||0; });
+  return t;
+}
+function _hqCfgFix(sid){
+  var cfg=getPlConfig(), t=0;
+  PL_FIX_CATS.forEach(function(c){ t += Number((cfg.fixed[sid]||{})[c[0]])||0; });
+  return t;
+}
+/* 費用1か月ぶんの計算。画面にも保存にも同じものを使う（式を2つ持たない）。 */
+function hqCostCalc(sid, ym, inp){
+  var sales=_hqBudSales(sid, ym);
+  if(!sales) return null;
+  var num=function(v){ if(v==null||v==='') return null; var x=parseFloat(v); return isFinite(x)?x:null; };
+  var fr=num(inp.fcRate), lr=num(inp.laborRate);
+  var cogs = fr!=null ? sales*fr/100 : null;
+  var labor= lr!=null ? sales*lr/100 : null;
+  var vcv=num(inp.vcTotal), fxv=num(inp.fixTotal);
+  var vcT = vcv!=null ? vcv : _hqCfgVc(sid);
+  var fixT= fxv!=null ? fxv : _hqCfgFix(sid);
+  var get = sales*((getPlConfig().getRate)||4.712)/100;
+  var opex= vcT+get+fixT;
+  /* ★原価か人件費のどちらかが無ければ利益は出さない。0 にしない（教訓(54)）。 */
+  var profit=(cogs!=null&&labor!=null)?(sales-cogs-labor-opex):null;
+  return { sales:sales, cogs:cogs, labor:labor, vcT:vcT, get:get, fixT:fixT, opex:opex,
+           profit:profit, rate:(profit!=null&&sales>0)?profit/sales*100:null };
+}
+function _hqCostRead(ym){
+  var g=function(f){ var el=document.getElementById('hqc-'+ym+'-'+f); return el?el.value:''; };
+  return { fcRate:g('fc'), laborRate:g('lb'), vcTotal:g('vc'), fixTotal:g('fx') };
+}
+function hqCostRecalc(ym){
+  var sid=_hqScope, c=hqCostCalc(sid, ym, _hqCostRead(ym));
+  var set=function(f,v){ var el=document.getElementById('hqc-'+ym+'-'+f); if(el) el.textContent=v; };
+  var m=function(v){ return v==null?'—':'$'+Math.round(v).toLocaleString(); };
+  set('opex', c?m(c.opex):'—');
+  set('profit', c?m(c.profit):'—');
+  set('rate', (c&&c.rate!=null)?(Math.round(c.rate*10)/10+'%'):'—');
+  var ts=0,tp=0,to=0,anyP=false,anyS=false;
+  for(var i=1;i<=12;i++){
+    var y=_hqYear+'-'+String(i).padStart(2,'0');
+    var cc=hqCostCalc(sid, y, _hqCostRead(y));
+    if(cc){ ts+=cc.sales; to+=cc.opex; anyS=true; if(cc.profit!=null){ tp+=cc.profit; anyP=true; } }
+  }
+  var e1=document.getElementById('hqc-t-sales'); if(e1) e1.textContent=anyS?m(ts):'—';
+  var e2=document.getElementById('hqc-t-opex');  if(e2) e2.textContent=anyS?m(to):'—';
+  var e3=document.getElementById('hqc-t-profit');if(e3) e3.textContent=anyP?m(tp):'—';
+  var e4=document.getElementById('hqc-t-rate');  if(e4) e4.textContent=(anyP&&ts>0)?(Math.round(tp/ts*1000)/10+'%'):'—';
+}
+function hqCostCopy(ym){
+  var r=_hqCostRead(ym);
+  if(!(r.fcRate||r.laborRate||r.vcTotal||r.fixTotal)){ showToast('この月に費用が入っていません','warning'); return; }
+  if(!confirm(ym+' の費用を'+_hqYear+'年の他の11か月へコピーします。よろしいですか？')) return;
+  for(var i=1;i<=12;i++){
+    var y=_hqYear+'-'+String(i).padStart(2,'0');
+    if(y===ym) continue;
+    [['fc',r.fcRate],['lb',r.laborRate],['vc',r.vcTotal],['fx',r.fixTotal]].forEach(function(p){
+      var el=document.getElementById('hqc-'+y+'-'+p[0]); if(el) el.value=p[1];
+    });
+    hqCostRecalc(y);
+  }
+  showToast('11か月へコピーしました。保存を押すと確定します','info');
+}
+/* ★確定PLから出発点を引く。
+   その月のPLがあればその月、無ければその店の確定月の平均。
+   販管費は PL では opex 一本で変動費と固定費に割れないので、
+   固定費は pl_config の値を使い、残りを変動費に寄せる（近似）。 */
+function hqCostFromPl(sid){
+  var a=ls('pl_actual', null);
+  if(!a){ showToast('確定PLが取り込まれていません','warning'); return; }
+  var mine=[];
+  Object.keys(a).forEach(function(k){
+    if(k==='_src') return;
+    var r=plActualFor(a[k], sid);
+    if(r && Number(r.sales)>0) mine.push({ ym:k, r:r });
+  });
+  if(!mine.length){ showToast('この店舗の確定PLがありません','warning'); return; }
+  var avg=function(f){
+    var t=0,n=0;
+    mine.forEach(function(x){ var v=Number(x.r[f]); if(isFinite(v)){ t+=v; n++; } });
+    return n?t/n:null;
+  };
+  var avgS=avg('sales'), avgC=avg('cogs'), avgP=avg('payroll'), avgO=avg('opex');
+  if(!confirm('確定PL '+mine.length+'か月から出発点を引きます。\n'
+    +'その月のPLがあればその月、無ければ平均を使います。\n'
+    +'※販管費はPLでは一本なので、固定費は設定値・残りを変動費に寄せます。\n'
+    +'入力中の内容は上書きされます。よろしいですか？')) return;
+  var cfgFix=_hqCfgFix(sid), gr=(getPlConfig().getRate)||4.712, n=0;
+  for(var i=1;i<=12;i++){
+    var ym=_hqYear+'-'+String(i).padStart(2,'0');
+    var hit=mine.find(function(x){ return x.ym===ym; });
+    var S = hit?Number(hit.r.sales):avgS;
+    var C = hit?Number(hit.r.cogs):avgC;
+    var P = hit?Number(hit.r.payroll):avgP;
+    var O = hit?Number(hit.r.opex):avgO;
+    if(!(S>0)) continue;
+    var set=function(f,v){ var el=document.getElementById('hqc-'+ym+'-'+f); if(el) el.value=v; };
+    if(isFinite(C)) set('fc', Math.round(C/S*1000)/10);
+    if(isFinite(P)) set('lb', Math.round(P/S*1000)/10);
+    if(isFinite(O)){
+      var vc=O - S*gr/100 - cfgFix;
+      set('vc', Math.round(vc>0?vc:0));
+      set('fx', Math.round(cfgFix));
+    }
+    hqCostRecalc(ym); n++;
+  }
+  showToast(n+'か月に引きました。確認して保存してください','info');
+}
+function hqCostSave(sid){
+  var hq=getHqBudget(), n=0;
+  var num=function(v){ if(v==null||v==='') return null; var x=parseFloat(v); return isFinite(x)?x:null; };
+  for(var i=1;i<=12;i++){
+    var ym=_hqYear+'-'+String(i).padStart(2,'0');
+    var r=_hqCostRead(ym);
+    var fr=num(r.fcRate), lr=num(r.laborRate), vc=num(r.vcTotal), fx=num(r.fixTotal);
+    var e=(hq[ym]||{})[sid];
+    if(fr==null&&lr==null&&vc==null&&fx==null){
+      /* 空にしたら費用だけ外す。売上構成やメモは残す（v857 の教訓）。 */
+      if(e){ e.fcRate=null; e.laborRate=null; e.vcTotal=null; e.fixTotal=null; }
+      continue;
+    }
+    hq[ym]=hq[ym]||{};
+    e=hq[ym][sid]||{};
+    e.fcRate=fr; e.laborRate=lr; e.vcTotal=vc; e.fixTotal=fx;
+    e.by=myName(); e.at=nowJP();
+    hq[ym][sid]=e; n++;
+  }
+  Object.keys(hq).forEach(function(k){ if(hq[k]&&typeof hq[k]==='object'&&!Object.keys(hq[k]).length) delete hq[k]; });
+  lsSet('hq_budget', hq);
+  showToast(n+'か月の費用を保存しました','success');
+  _secRerender();
+}
+function renderHqCost(sid){
+  var m=function(v){ return v==null?'—':'$'+Math.round(v).toLocaleString(); };
+  var h='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.7">'
+    +'<i class="ti ti-info-circle"></i> 原価と人件費は<b>率</b>、変動費と固定費は<b>月額の合計</b>で置きます。'
+    +'GET は売上に率を掛けて自動です。科目ごとの内訳が要る月は、年間一覧の月ヘッダから。'
+    +'<b>売上構成が入っていない月は計算できません</b>（費用は売上に対して決まるため）。</div>';
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:800px;font-size:11px">'
+    +'<thead><tr><th style="text-align:left;min-width:44px"></th>'
+    +'<th style="text-align:right;min-width:66px">原価率</th>'
+    +'<th style="text-align:right;min-width:66px">人件費率</th>'
+    +'<th style="text-align:right;min-width:74px">変動費</th>'
+    +'<th style="text-align:right;min-width:56px">GET</th>'
+    +'<th style="text-align:right;min-width:74px">固定費</th>'
+    +'<th style="text-align:right;min-width:78px;border-left:2px solid var(--border)">販管費計</th>'
+    +'<th style="text-align:right;min-width:82px">営業利益</th>'
+    +'<th style="text-align:right;min-width:56px">利益率</th>'
+    +'<th style="min-width:34px"></th></tr></thead><tbody>';
+  var inp=function(ym,f,v,step,suf){
+    return '<td style="text-align:right"><input id="hqc-'+ym+'-'+f+'" class="form-input" type="number" '
+      +'inputmode="decimal"'+(step?' step="'+step+'"':'')+' value="'+v+'" '
+      +'oninput="hqCostRecalc(\''+ym+'\')" '
+      +'style="padding:4px 6px;font-size:11px;text-align:right;width:100%;min-width:52px">'
+      +(suf?'<span style="font-size:9px;color:var(--muted)">'+suf+'</span>':'')+'</td>';
+  };
+  var gr=(getPlConfig().getRate)||4.712;
+  for(var i=1;i<=12;i++){
+    var ym=_hqYear+'-'+String(i).padStart(2,'0');
+    var e=(getHqBudget()[ym]||{})[sid]||{};
+    var c=hqCostCalc(sid, ym, { fcRate:e.fcRate, laborRate:e.laborRate,
+                                vcTotal:e.vcTotal, fixTotal:e.fixTotal });
+    /* ★金額指定が入っている月は率が効かない。黙って効かないのを避ける。 */
+    var amtWarn=(Number(e.fcAmt)>0||Number(e.laborAmt)>0)
+      ? '<i class="ti ti-alert-triangle" style="color:var(--amber)" title="この月は月別モーダルで金額が指定されています。率より金額が優先されます"></i>' : '';
+    h+='<tr><td style="text-align:left;font-weight:700">'+i+'月 '+amtWarn+'</td>'
+      +inp(ym,'fc',(e.fcRate!=null?e.fcRate:''),'0.1','%')
+      +inp(ym,'lb',(e.laborRate!=null?e.laborRate:''),'0.1','%')
+      +inp(ym,'vc',(e.vcTotal!=null?e.vcTotal:''),'1')
+      +'<td style="text-align:right;color:var(--muted)">'+(c?m(c.get):'—')+'</td>'
+      +inp(ym,'fx',(e.fixTotal!=null?e.fixTotal:''),'1')
+      +'<td style="text-align:right;border-left:2px solid var(--border)" id="hqc-'+ym+'-opex">'+(c?m(c.opex):'—')+'</td>'
+      +'<td style="text-align:right;font-weight:800" id="hqc-'+ym+'-profit">'+(c?m(c.profit):'—')+'</td>'
+      +'<td style="text-align:right" id="hqc-'+ym+'-rate">'+((c&&c.rate!=null)?(Math.round(c.rate*10)/10+'%'):'—')+'</td>'
+      +'<td style="text-align:center"><button class="btn btn-secondary" style="padding:2px 6px;font-size:10px" '
+      +'onclick="hqCostCopy(\''+ym+'\')" title="この月を他の月へコピー"><i class="ti ti-copy"></i></button></td></tr>';
+  }
+  h+='</tbody></table></div>';
+  h+='<div style="display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap;font-size:12px">'
+    +'<span>年間売上 <b id="hqc-t-sales">—</b></span>'
+    +'<span>販管費 <b id="hqc-t-opex">—</b></span>'
+    +'<span>営業利益 <b id="hqc-t-profit" style="font-size:15px">—</b></span>'
+    +'<span>利益率 <b id="hqc-t-rate">—</b></span>'
+    +'<button class="btn btn-secondary btn-sm" onclick="hqCostFromPl(\''+sid+'\')">'
+    +'<i class="ti ti-history"></i> 確定PLから引く</button>'
+    +'<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="hqCostSave(\''+sid+'\')">'
+    +'<i class="ti ti-device-floppy"></i> 保存</button></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:6px">GET は '+gr+'% で自動計算しています。</div>';
+  return h;
+}
 function renderHqSetup(){
   var stores=sortByLoginOrder(activeStores());
   if(_hqScope==='ALL'){
@@ -12803,11 +13153,20 @@ function renderHqSetup(){
       +'上の選択で店舗を選んでください（予算設定は店舗ごとです）</div></div>';
   }
   var st=stores.find(function(x){return x.id===_hqScope;})||{name:_hqScope};
+  /* v945: 売上構成 / 費用 の2枚。 */
+  var head='<div style="display:flex;align-items:center;gap:8px;margin:0 2px 8px;flex-wrap:wrap">'
+    +'<b style="font-size:12.5px">'+escapeHtml(st.name)+'</b>'
+    +'<div class="seg-tabs" style="max-width:220px">'
+    +'<div class="seg-tab'+(_hqSetupTab!=='cost'?' active':'')+'" onclick="hqSetupTab(\'sales\')">売上構成</div>'
+    +'<div class="seg-tab'+(_hqSetupTab==='cost'?' active':'')+'" onclick="hqSetupTab(\'cost\')">費用</div>'
+    +'</div></div>';
+  if(_hqSetupTab==='cost') return head + renderHqCost(_hqScope);
   var h='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.7">'
     +'<i class="ti ti-info-circle"></i> 1日あたりの<b>理想の集客と客単価</b>を入れると、営業日数を掛けて月商になります。'
     +'<b>客数にはテイクアウトの件数も含みます</b>（実績側と母集団をそろえるため）。'
     +'曜日別ではなく日割り平均です。原価率・人件費率・固定費は年間一覧の月ヘッダから。</div>';
-  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:940px;font-size:11px">'
+  h = head + h;
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:1000px;font-size:11px">'
     +'<thead><tr><th style="text-align:left;min-width:52px">'+escapeHtml(st.name)+'</th>'
     +'<th style="text-align:right;min-width:56px">営業日数</th>'
     +'<th style="text-align:right;min-width:60px">L 客数</th><th style="text-align:right;min-width:60px">L 単価</th>'
@@ -12815,6 +13174,7 @@ function renderHqSetup(){
     +'<th style="text-align:right;min-width:60px">TO 件数</th><th style="text-align:right;min-width:60px">TO 単価</th>'
     +'<th style="text-align:right;min-width:80px;border-left:2px solid var(--border)">月商</th>'
     +'<th style="text-align:right;min-width:60px">客数</th>'
+    +'<th style="text-align:right;min-width:64px">客単価</th>'
     +'<th style="min-width:40px"></th></tr></thead><tbody>';
   var inp=function(ym,f,v,step){
     return '<td style="text-align:right"><input id="hqs-'+ym+'-'+f+'" class="form-input" type="number" '
@@ -12832,6 +13192,8 @@ function renderHqSetup(){
       +'<td style="text-align:right;font-weight:800;border-left:2px solid var(--border)" id="hqs-'+ym+'-sales">'
       +(c?('$'+c.sales.toLocaleString()):'—')+'</td>'
       +'<td style="text-align:right" id="hqs-'+ym+'-guests">'+((c&&c.guests)?c.guests.toLocaleString():'—')+'</td>'
+      /* v945: 構成の結果としての客単価。直接は入力しない（売上と食い違うため）。 */
+      +'<td style="text-align:right" id="hqs-'+ym+'-ppa">'+((c&&c.ppa!=null)?('$'+c.ppa.toFixed(2)):'—')+'</td>'
       +'<td style="text-align:center"><button class="btn btn-secondary" style="padding:2px 6px;font-size:10px" '
       +'onclick="hqSetupCopy(\''+ym+'\')" title="この月を他の月へコピー"><i class="ti ti-copy"></i></button></td></tr>';
   }
@@ -31148,7 +31510,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '944';
+const APP_VERSION = '946';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
