@@ -19869,6 +19869,10 @@ function _meetApplyPl(k, storeId, ym){
     if (pl.laborRate != null) o.laborRate = pl.laborRate;
     o.ppa = (k.guests > 0) ? Math.round(pl.sales / k.guests * 100) / 100 : k.ppa;
     o.achieve = (k.budget > 0) ? Math.round(pl.sales / k.budget * 1000) / 10 : k.achieve;
+    /* v930: 上書き前のアプリ値（速報）を退避する。
+       これが無いと「速報と確定の差」を出す手段が無い。
+       ★元の k は書き換えない。退避先も浅いコピーの中だけ。 */
+    o.app = { sales:k.sales, fcRate:k.fcRate, laborRate:k.laborRate, ppa:k.ppa };
     o.plSrc = true;
     return o;
   } catch(e){ return k; }
@@ -20366,6 +20370,17 @@ function _meetStoreCard(store, k, ym, isCurrent){
     /* v909: 着地予測と前年同月を並べる。前日までの実績同士では月の途中なので比べられない。 */
     try { h+='<div style="margin-top:3px"><i class="ti ti-calendar-stats" style="font-size:10px;color:var(--muted)"></i> '+_plYoYHtml(store.id, ym, landing)+'<span style="font-size:9px;color:var(--muted)"> '+t('（着地予測との比較）','(vs projection)')+'</span></div>'; } catch(e){}
   }
+  /* v930: 確定月は「速報（アプリ）」と PL との差を1行で出す。
+     売上ヒーローの実績はPL値に差し替わっているので、元の速報が見えなくなっていた。
+     ★差は PL − 速報（確定でどれだけ動いたか）。 */
+  if (k.plSrc && k.app && k.app.sales > 0) {
+    var _gap = _meetDiffStr('sales', k.sales, k.app.sales, false, '', true);
+    h += '<div style="font-size:9.5px;color:var(--muted);margin-top:3px">'
+      + '<i class="ti ti-report-analytics"></i> ' + t('速報（アプリ）','Prov. (app)') + ' '
+      + '<b>' + fmtK(k.app.sales) + '</b>'
+      + (_gap ? ('　' + t('PL差','PL gap') + ' <b>' + _gap + '</b>') : '')
+      + '</div>';
+  }
   /* v914: 予算の考え方を常時表示（従来はタップでモーダル）。
      どう組んだかと今どうなっているかを並べて見るのが目的。 */
   try { h += _meetPlanHtml(store, ym, landing); } catch(e){}
@@ -20440,6 +20455,27 @@ function _meetYearMatrix(store, y){
   function liveA(kk, ym, off){ if(off>0) return null; var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
     try{ k=_meetApplyPl(k, sid, ym); }catch(e){}
     switch(kk){ case 'sales': return k.sales||null; case 'guests': return isB?((k.opDays>0)?Math.round((k.guests||0)/k.opDays):null):(k.guests||null); case 'ppa': return k.ppa||null; case 'repeat': return k.repeatRate; case 'fc': return k.fcRate||null; case 'labor': return k.laborRate||null; case 'miso': return k.misoRate; case 'ikura': return k.ikuraRate; case 'drink': return k.drinkRate; default: return null; } }
+  /* v930: 速報（アプリの日次実績）。_meetApplyPl が退避した上書き前の値を読む。
+     ★PLから作れるのは sales / fc / labor の3つだけなので、それ以外は null。
+     ★確定していない月は実績＝速報で差が無いので null（行に「—」を出す）。
+     ★liveA の switch は複製しない（同じ処理を2か所に置かない）。 */
+  function liveApp(kk, ym, off){ if(off>0) return null;
+    var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
+    try{ k=_meetApplyPl(k, sid, ym); }catch(e){ return null; }
+    if(!k || !k.plSrc || !k.app) return null;
+    switch(kk){
+      case 'sales': return (k.app.sales>0)?k.app.sales:null;
+      case 'fc':    return (k.app.fcRate!=null)?k.app.fcRate:null;
+      case 'labor': return (k.app.laborRate!=null)?k.app.laborRate:null;
+      default: return null; } }
+  /* v930: その月・そのKPIの実績セルが、会計PLの値になっているか。
+     1〜6月はExcelのシードが勝つ（A案）。手入力があればそれが勝つ。
+     ★「確定バッジが出ている」と「そのセルがPL値である」は別。ここで分ける。 */
+  function isPlCell(kk, m, ym){
+    if(kk!=='sales' && kk!=='fc' && kk!=='labor') return false;
+    if(isEdited(kk,'a',m)) return false;
+    if(!(ym > MEETING_KGI_SEED_UNTIL)) return false;
+    try { return _meetConfirmState(sid, ym)==='final'; } catch(e){ return false; } }
   /* v868: 目標行がシステムの設定を一切見ておらず、Excel取込のシードを返し続けていた。
      シードには12か月ぶん目標が入っているため、7月以降もExcelの数字が勝ち、
      予算設定の売上目標も KPI管理のリピート率・ドリンク比率も画面に届いていなかった。
@@ -20482,8 +20518,29 @@ function _meetYearMatrix(store, y){
       if(av==null){ var inner0=canEd?('<span onclick="openMeetKgiEdit(\''+sid+'\',\''+kk+'\',\'a\','+M.m+')" style="cursor:pointer;color:var(--border)">—</span>'):'—'; body+='<td style="text-align:center;color:var(--border)'+bg+'">'+inner0+'</td>'; return; }
       var st=_meetStatus(kk, av, tv, meta.lower); var col=_meetStatColor(st); var diff=_meetDiffStr(kk, av, tv, meta.lower, meta.unit, meta.money);
       var disp=meta.f(av); var inner=canEd?('<span onclick="openMeetKgiEdit(\''+sid+'\',\''+kk+'\',\'a\','+M.m+')" style="cursor:pointer;border-bottom:1px dashed '+col+'">'+disp+'</span>'):disp;
-      body+='<td style="text-align:center;padding:6px 16px;white-space:nowrap;background:'+(st==='none'?(M.cur?curBg:''):_meetStatTint(st))+'"><div style="font-size:13px;font-weight:800;color:'+col+'">'+inner+(ed?'<sup style="font-size:7px;color:var(--accent2)">✎</sup>':'')+'</div>'+(diff?'<div style="font-size:9px;font-weight:800;color:'+col+'">'+diff+'</div>':'')+'</td>'; });
+      /* v930: そのセルが会計PLの値なら印を付ける。1〜6月のExcel値・手入力には付けない。 */
+      var plMark=isPlCell(kk,M.m,M.ym)?'<sup style="font-size:7px;font-weight:800;color:var(--green);margin-left:2px">PL</sup>':'';
+      body+='<td style="text-align:center;padding:6px 16px;white-space:nowrap;background:'+(st==='none'?(M.cur?curBg:''):_meetStatTint(st))+'"><div style="font-size:13px;font-weight:800;color:'+col+'">'+inner+plMark+(ed?'<sup style="font-size:7px;color:var(--accent2)">✎</sup>':'')+'</div>'+(diff?'<div style="font-size:9px;font-weight:800;color:'+col+'">'+diff+'</div>':'')+'</td>'; });
     body+='</tr>';
+    /* v930: 「速報（アプリ）」行。確定月だけ、アプリの日次実績とPLとの差を出す。
+       ★sales / fc / labor だけ（PLから作れるのがこの3つだけ）。
+       ★年内に1か月も確定が無ければ行ごと出さない（「—」が12個並ぶだけになる）。
+       ★差は PL − 速報（確定でどれだけ動いたか）。Motoさん確認済み。
+       ★色は付けない。これは達成/未達の判定ではなく、ずれの大きさの観測。 */
+    if (kk==='sales' || kk==='fc' || kk==='labor') {
+      var _appVals=MOS.map(function(M){ return liveApp(kk, M.ym, M.off); });
+      if (_appVals.some(function(v){ return v!=null; })) {
+        body+='<tr><td style="'+sticky+';background:var(--surface);padding:2px 8px 7px 36px;font-size:11px;font-weight:700;color:var(--muted)">'+t('速報（アプリ）','Prov. (app)')+'</td>';
+        MOS.forEach(function(M,ix){ var bg=M.cur?(';background:'+curBg):''; var apv=_appVals[ix];
+          if(apv==null){ body+='<td style="text-align:center;color:var(--border);font-size:11px'+bg+'">—</td>'; return; }
+          var plv=cellV(kk,'a',M.m,M.off,M.ym);
+          var gap=(plv!=null)?_meetDiffStr(kk, plv, apv, meta.lower, meta.unit, meta.money):'';
+          body+='<td style="text-align:center;padding:4px 16px;white-space:nowrap'+bg+'">'
+            +'<div style="font-size:11px;color:var(--muted)">'+meta.f(apv)+'</div>'
+            +(gap?('<div style="font-size:9px;font-weight:800;color:var(--muted)">'+t('PL','PL')+' '+gap+'</div>'):'')+'</td>'; });
+        body+='</tr>';
+      }
+    }
     /* v909: 売上だけ「昨年」行を足す。全KPIに足すと行数が3倍になって読めなくなる。
        前年は2025年の確定PL（税抜にそろえ済み）。データが無い店は「—」。 */
     if (kk === 'sales') {
@@ -20502,7 +20559,7 @@ function _meetYearMatrix(store, y){
   });
   return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">'+y+t('年 KPI推移','KPI trend')+'</span></div>'
     +'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="border-collapse:collapse;min-width:100%"><thead><tr>'+th+'</tr></thead><tbody>'+body+'</tbody></table></div>'
-    +'<div style="font-size:9px;color:var(--muted);margin-top:6px;line-height:1.6">'+t('各KPIに「目標」行と「実績」行。実績下段＝差異(実績−目標)。緑=達成/黄=注意/赤=未達。1〜6月=Excel取込／7月〜=月次進捗のライブ値。'+t('売上の「昨年」行＝2025年の確定PL（消費税を除いて当年と定義をそろえた額）。下段は昨対。Aiea・Marujuuは前年データがありません。','')+(canEd?'数値をタップで編集（✎＝手編集済）。':''),'Target & Actual rows per KPI; below actual = difference. Jan–Jun = Excel import; Jul+ = live Monthly.'+(canEd?' Tap a value to edit.':''))+'</div></div>';
+    +'<div style="font-size:9px;color:var(--muted);margin-top:6px;line-height:1.6">'+t('各KPIに「目標」行と「実績」行。実績下段＝差異(実績−目標)。緑=達成/黄=注意/赤=未達。1〜6月=Excel取込／7月〜=月次進捗のライブ値。'+t('「PL」の印＝その数字が会計PLの確定値（1〜6月のExcel値と手入力には付かない）。「速報（アプリ）」行＝アプリの日次実績。下段はPL−速報（確定でどれだけ動いたか）。売上の「昨年」行＝2025年の確定PL（消費税を除いて当年と定義をそろえた額）。下段は昨対。Aiea・Marujuuは前年データがありません。','')+(canEd?'数値をタップで編集（✎＝手編集済）。':''),'Target & Actual rows per KPI; below actual = difference. Jan–Jun = Excel import; Jul+ = live Monthly.'+(canEd?' Tap a value to edit.':''))+'</div></div>';
 }
 function renderMeetingReview(){
   var ym0=budgetYM(); var ym=ym0.y+'-'+String(ym0.m).padStart(2,'0');
@@ -30334,7 +30391,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '929';
+const APP_VERSION = '930';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
