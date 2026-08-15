@@ -1792,14 +1792,19 @@ function totoyaKpiCalc(sid, period){
   var man=(typeof getKpiManual==='function')?getKpiManual(sid, period):{};
   var mix=getMenuMix(sid, period);
   var recipes=(typeof activeRecipes==='function'?activeRecipes():getRecipes()).filter(function(r){return recipeInStore(r,sid);});
-  var autoSum=function(guids, kwStr){
+  /* v933: 当たった商品名を控える。どの商品が数に入っているかが分からないと、
+     「分子が多い」の原因（設定が3店共通なので店ごとに当たり方が違う）を追えない。
+     ★合計の計算は1行も変えていない。 */
+  var _hits={};
+  var autoSum=function(guids, kwStr, tag){
     var kws=_totoyaKw(kwStr);
     if((!guids||!guids.length) && !kws.length) return null;
-    var has=false, s=0;
+    var has=false, s=0, names=[];
     recipes.forEach(function(r){
       var hit = (guids && r.toastGuid && guids.indexOf(r.toastGuid)>=0) || _totoyaMatchKw(r.name, kws);
-      if(hit){ s+=parseFloat((mix.items||{})[r.id])||0; has=true; }
+      if(hit){ var q=parseFloat((mix.items||{})[r.id])||0; s+=q; has=true; names.push({n:r.name, q:q}); }
     });
+    if(tag) _hits[tag]=names;
     return has?s:null;
   };
   // toast_sales のモディファイア集計列（first_time_count等と同じ仕組み）を月内合計
@@ -1807,9 +1812,9 @@ function totoyaKpiCalc(sid, period){
   var ymStr=(function(){ var p=String(period).split('.'); return p[0]+'-'+String(p[1]).padStart(2,'0'); })();
   var dSum=function(field){ var has=false,s=0; Object.keys(da).forEach(function(d){ if(d.indexOf(ymStr)===0){ var v=(da[d]||{})[field]; if(v!=null&&!isNaN(v)){ s+=Number(v); has=true; } } }); return has?s:null; };
   // 優先順位: 手入力 > Toast(モディファイア集計) > menu_mix(GUID/キーワード)
-  var resolve=function(guids,kw,dailyField,manKey){
+  var resolve=function(guids,kw,dailyField,manKey,tag){
     var d=dSum(dailyField);
-    var a=(d!=null)?d:autoSum(guids,kw);
+    var a=(d!=null)?d:autoSum(guids,kw,tag);
     var aSrc=(d!=null)?'Toast':(a!=null?'menu_mix':null);
     var m=man[manKey];
     if(m!=null&&m!==''&&!isNaN(m)) return {v:Number(m), src:'手入力', na:a, naSrc:aSrc};
@@ -1817,14 +1822,15 @@ function totoyaKpiCalc(sid, period){
   };
   var rA=resolve(tcfg.misoAllGuids,tcfg.misoAllKw,'misoTotal','tMisoAll');
   var rU=resolve(tcfg.misoUpGuids,tcfg.misoUpKw,'misoUpgrade','tMisoUp');
-  var rI=resolve(tcfg.ikuraGuids,tcfg.ikuraKw,'ikuraShower','tIkura');
-  var rB=resolve(tcfg.ikuraBowlGuids,tcfg.ikuraBowlKw,'ikuraBowls','tBowls');
+  var rI=resolve(tcfg.ikuraGuids,tcfg.ikuraKw,'ikuraShower','tIkura','ikura');
+  var rB=resolve(tcfg.ikuraBowlGuids,tcfg.ikuraBowlKw,'ikuraBowls','tBowls','bowls');
   var misoAll=rA.v, misoUp=rU.v, ikura=rI.v, bowls=rB.v;
   return {
     eff:{misoAll:misoAll,misoUp:misoUp,ikura:ikura,bowls:bowls},
     src:{misoAll:rA.src,misoUp:rU.src,ikura:rI.src,bowls:rB.src},
     na:{misoAll:rA.na,misoUp:rU.na,ikura:rI.na,bowls:rB.na},
     man:{misoAll:man.tMisoAll,misoUp:man.tMisoUp,ikura:man.tIkura,bowls:man.tBowls},
+    hits:_hits,   /* v933: menu_mix で当たった商品（原因追跡用） */
     sel:{ a:(tcfg.misoAllGuids||[]).length+(_totoyaKw(tcfg.misoAllKw).length?1:0)+(dSum('misoTotal')!=null?1:0),
           u:(tcfg.misoUpGuids||[]).length+(_totoyaKw(tcfg.misoUpKw).length?1:0)+(dSum('misoUpgrade')!=null?1:0),
           i:(tcfg.ikuraGuids||[]).length+(_totoyaKw(tcfg.ikuraKw).length?1:0)+(dSum('ikuraShower')!=null?1:0),
@@ -1853,9 +1859,18 @@ function totoyaKpiNote(key, sid, period){
   if(typeof isTotoyaStore!=='function' || !isTotoyaStore(sid)) return '';
   if(key!=='misoUpgradeRate' && key!=='ikuraShowerRate') return '';
   var tk=totoyaKpiCalc(sid, period); var na=function(n){return n==null?'—':n;};
+  /* v933: 数字の出所を出す。手入力 / Toast / menu_mix のどれかで原因が変わる。
+     menu_mix のときは当たった商品名も出す（設定が3店共通なので、
+     店によって当たり方が違って率がずれる）。 */
+  var sr=function(x){ return x?('<span style="color:var(--accent)">['+x+']</span>'):'<span style="color:var(--red)">[出所なし]</span>'; };
+  var hitTxt=function(tag){
+    var a=(tk.hits||{})[tag]; if(!a || !a.length) return '';
+    return '<div style="padding-left:8px">・'+a.map(function(x){ return escapeHtml(x.n)+' '+x.q; }).join(' ／ ')+'</div>';
+  };
   var txt = (key==='misoUpgradeRate')
-    ? "分子② Crab/Today's/Udon味噌汁 "+na(tk.eff.misoUp)+" ÷ 分母① 全味噌汁(Aosa含む) "+na(tk.eff.misoAll)
-    : "分子③ いくらシャワー[店内] "+na(tk.eff.ikura)+" ÷ 分母④ Take/Matsu/Tokujo[店内] "+na(tk.eff.bowls);
+    ? "分子② Crab/Today's/Udon味噌汁 "+na(tk.eff.misoUp)+sr(tk.src.misoUp)+" ÷ 分母① 全味噌汁(Aosa含む) "+na(tk.eff.misoAll)+sr(tk.src.misoAll)
+    : "分子③ いくらシャワー[店内] "+na(tk.eff.ikura)+sr(tk.src.ikura)+" ÷ 分母④ Take/Matsu/Tokujo[店内] "+na(tk.eff.bowls)+sr(tk.src.bowls)
+      + hitTxt('ikura') + hitTxt('bowls');
   return '<div style="font-size:9px;color:var(--muted);margin-top:3px;line-height:1.3">'+txt+'</div>';
 }
 /* 指定月の period文字列（offset=0今月, -1先月） */
@@ -18758,8 +18773,23 @@ function setQBudgetObj(storeId,y,q,obj){ var all=ls('q_budgets',{})||{}; if(obj&
   all[storeId+'_'+y+'Q'+q]=obj; lsSet('q_budgets', all); }
 function quarterActuals(storeId,y,q){
   var months=_quarterMonths(y,q); var st={sales:0,guests:0,labor:0,food:0,elapsed:0,dataMonths:0,ftB:0,rpB:0};
-  months.forEach(function(ym){ var off=_ymToOffset(ym); if(off>0) return; var ms=monthStats(storeId, off)||{}; st.sales+=ms.sales||0; st.guests+=ms.guests||0; st.elapsed++; if(ms.hasData)st.dataMonths++;
-    try{ var pl=plComputeStore(storeId, ym, off); st.food+=pl.cogs||0; st.labor+=pl.labor||0; }catch(e){ st.food+=ms.food||0; st.labor+=ms.labor||0; }
+  months.forEach(function(ym){ var off=_ymToOffset(ym); if(off>0) return; var ms=monthStats(storeId, off)||{}; st.elapsed++; if(ms.hasData)st.dataMonths++;
+    /* v933: 会計PLを取り込んだ月は、会議タブと同じ数字を使う（Motoさん要望）。
+       これまでは monthStats（アプリ日次）と plComputeStore（簡易PL）だけを見ていたため、
+       同じ月なのに会議資料とQコミットで売上が違っていた。
+       ★客数はPLに無いのでアプリのまま（v926の判断と同じ）。
+       ★Waikikiは合算なので _meetPlKpi が null を返す＝従来どおりの計算に落ちる。 */
+    var _pl=null; try{ _pl=_meetPlKpi(storeId, ym); }catch(e){}
+    st.guests+=ms.guests||0;
+    if(_pl){
+      st.sales+=_pl.sales||0;
+      st.food +=(_pl.cogs!=null?_pl.cogs:0);
+      st.labor+=(_pl.payroll!=null?_pl.payroll:0);
+      st.plMonths=(st.plMonths||0)+1;
+    } else {
+      st.sales+=ms.sales||0;
+      try{ var pl=plComputeStore(storeId, ym, off); st.food+=pl.cogs||0; st.labor+=pl.labor||0; }catch(e){ st.food+=ms.food||0; st.labor+=ms.labor||0; }
+    }
     var _r=_qbRepeatRate(storeId, ym); st.ftB+=_r.ft; st.rpB+=_r.rp;
   });
   st.fcRate=st.sales?Math.round(st.food/st.sales*1000)/10:0; st.laborRate=st.sales?Math.round(st.labor/st.sales*1000)/10:0; st.ppa=st.guests?Math.round(st.sales/st.guests*100)/100:0;
@@ -18772,10 +18802,19 @@ function quarterTargets(storeId,y,q){
   months.forEach(function(ym){
     var pp=ym.split('-'), yy=+pp[0], mm=+pp[1];
     var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(storeId, ym):null;
-    var registered=_qbBudgetIsForMonth(b, ym);
-    var dow=(b && registered)?getDow(b):null; var seg={lunch:0,dinner:0,takeout:0}, msales=0, mguests=0;
-    if(dow){ var bd=dowSegBreakdown(dow,{y:yy,m:mm}); seg={lunch:bd.lunch,dinner:bd.dinner,takeout:bd.takeout}; msales=bd.lunch+bd.dinner+bd.takeout; var counts=bd.counts||weekdayCountsForMonth(yy,mm);
-      ['lunch','dinner'].forEach(function(sg){ for(var k=0;k<7;k++){ var c=(dow[sg]||[])[k]||{}; mguests+=(parseFloat(c.guests)||0)*(counts[k]||0); } }); }
+    /* v933: 他の画面と同じ1か所から取る。
+       従来は曜日別(dow)しか集計せず、区分別(segments)で組んだ予算が 0 になっていた。
+       さらに独自の登録判定 _qbBudgetIsForMonth を通すため、当月以外は
+       月データが無いと売上0扱いになっていた（承認済みの7月が出ない原因）。
+       ★客数も monthGuestBudget に寄せる。v932 でテイクアウトを含めたので、
+         ここだけ lunch+dinner のままだと他画面と違う値になる。 */
+    var msales=0, mguests=0;
+    try{ msales=Math.round(monthSalesBudget(storeId, ym)||0); }catch(e){}
+    try{ mguests=Math.round(monthGuestBudget(storeId, _ymToOffset(ym))||0); }catch(e){}
+    var registered=(msales>0 || mguests>0);
+    /* 区分の内訳は表示用。曜日別で組んだ月だけ出せる。 */
+    var seg={lunch:0,dinner:0,takeout:0};
+    try{ if(b && usesDowMode(b)){ var bd=dowSegBreakdown(getDow(b),{y:yy,m:mm}); seg={lunch:bd.lunch,dinner:bd.dinner,takeout:bd.takeout}; } }catch(e){}
     var el=(_ymToOffset(ym)<=0);
     salesT+=msales; guestsT+=mguests; if(el){ salesEl+=msales; guestsEl+=mguests; }
     byMonth.push({ym:ym, sales:msales, guests:mguests, seg:seg, elapsed:el, registered:registered, rationale:_qbMonthRationale(b, ym)});
@@ -18826,16 +18865,22 @@ function _qbRepeatRate(storeId, ym){
 function _qbMonthData(storeId, ym){
   var pp=ym.split('-'), yy=+pp[0], mm=+pp[1];
   var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(storeId, ym):null;
-  var registered=_qbBudgetIsForMonth(b, ym);
-  var dow=(b && registered)?getDow(b):null; var seg={lunch:0,dinner:0,takeout:0}, tSales=0, tGuests=0;
-  if(dow){ var bd=dowSegBreakdown(dow,{y:yy,m:mm}); seg={lunch:bd.lunch,dinner:bd.dinner,takeout:bd.takeout}; tSales=bd.lunch+bd.dinner+bd.takeout; var counts=bd.counts||weekdayCountsForMonth(yy,mm);
-    ['lunch','dinner'].forEach(function(sg){ for(var k=0;k<7;k++){ var c=(dow[sg]||[])[k]||{}; tGuests+=(parseFloat(c.guests)||0)*(counts[k]||0); } }); }
+  /* v933: quarterTargets と同じ読み方に揃える（月カードと四半期合計が食い違わない）。 */
+  var tSales=0, tGuests=0;
+  try{ tSales=Math.round(monthSalesBudget(storeId, ym)||0); }catch(e){}
+  try{ tGuests=Math.round(monthGuestBudget(storeId, _ymToOffset(ym))||0); }catch(e){}
+  var registered=(tSales>0 || tGuests>0);
+  var seg={lunch:0,dinner:0,takeout:0};
+  try{ if(b && usesDowMode(b)){ var bd=dowSegBreakdown(getDow(b),{y:yy,m:mm}); seg={lunch:bd.lunch,dinner:bd.dinner,takeout:bd.takeout}; } }catch(e){}
   var off=_ymToOffset(ym); var ms=(off<=0)?(monthStats(storeId,off)||{}):{};
+  /* v933: 確定月は会計PLの売上を使う（quarterActuals と同じ）。 */
+  var _plM=null; if(off<=0){ try{ _plM=_meetPlKpi(storeId, ym); }catch(e){} }
   var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId)||{}):{};
-  var aG=ms.guests||0, aS=ms.sales||0;
+  var aG=ms.guests||0, aS=(_plM?(_plM.sales||0):(ms.sales||0));
   // 原価率・人件費率は棚卸法COGS(食材移動込み)＋laborCoreForYm（現行集計）を反映
   var aFc=0, aLb=0, cogsSrc='';
-  if(off<=0){ try{ var pl=plComputeStore(storeId, ym, off); if(pl.sales){ aFc=Math.round(pl.cogs/pl.sales*1000)/10; aLb=Math.round(pl.labor/pl.sales*1000)/10; } cogsSrc=pl.cogsSrc; }catch(e){} }
+  if(_plM){ aFc=(_plM.fcRate!=null?_plM.fcRate:0); aLb=(_plM.laborRate!=null?_plM.laborRate:0); cogsSrc='会計PL（確定）'; }
+  else if(off<=0){ try{ var pl=plComputeStore(storeId, ym, off); if(pl.sales){ aFc=Math.round(pl.cogs/pl.sales*1000)/10; aLb=Math.round(pl.labor/pl.sales*1000)/10; } cogsSrc=pl.cogsSrc; }catch(e){} }
   var _rep=_qbRepeatRate(storeId, ym);
   return { ym:ym, mm:mm, seg:seg, tSales:tSales, tGuests:tGuests, tPpa:tGuests?Math.round(tSales/tGuests*100)/100:0, tFc:kpi.foodCost||0, tLb:kpi.laborPct||0, tRep:kpi.repeatRate||0,
     aSales:aS, aGuests:aG, aPpa:aG?Math.round(aS/aG*100)/100:0, aFc:aFc, aLb:aLb, aRep:_rep.rate, cogsSrc:cogsSrc, hasData:!!ms.hasData, elapsed:off<=0, registered:registered,
@@ -19860,6 +19905,9 @@ function _meetPlKpi(storeId, ym){
     var cg = Number(r.cogs), pr = Number(r.payroll);
     return {
       sales: s,
+      /* v933: 生の額も返す。率から掛け戻すと 0.1%刻みの丸めが四半期で積み上がる。 */
+      cogs:    isFinite(cg) ? cg : null,
+      payroll: isFinite(pr) ? pr : null,
       fcRate:    isFinite(cg) ? Math.round(cg / s * 1000) / 10 : null,
       laborRate: isFinite(pr) ? Math.round(pr / s * 1000) / 10 : null
     };
@@ -30468,7 +30516,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '932';
+const APP_VERSION = '933';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
