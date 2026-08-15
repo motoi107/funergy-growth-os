@@ -12267,7 +12267,7 @@ function renderSecureBody(){
   /* v925: 下のサブタブと見た目を揃える */
   var bar = '<div class="seg-tabs" style="max-width:520px">'
     +'<div class="seg-tab'+(t==='karte'?' active':'')+'" onclick="secTab(\'karte\')"><i class="ti ti-id-badge-2"></i>成長カルテ</div>'
-    +'<div class="seg-tab'+(t==='pl'?' active':'')+'" onclick="secTab(\'pl\')"><i class="ti ti-report-money"></i>簡易PL</div>'
+    +'<div class="seg-tab'+(t==='pl'?' active':'')+'" onclick="secTab(\'pl\')"><i class="ti ti-report-money"></i>PL分析</div>'
     +'<div class="seg-tab'+(t==='hq'?' active':'')+'" onclick="secTab(\'hq\')"><i class="ti ti-building-bank"></i>本部予算</div>'
     +'</div>';
   return bar + (t==='pl' ? renderSimplePL() : t==='hq' ? renderHqBudget() : renderGrowthKarte());
@@ -12295,6 +12295,26 @@ var _hqLayer = 'hq';    // hq|store|act|diff
 var _hqScope = 'ALL';   // 'ALL' or storeId
 function hqSetYear(d){ _hqYear+=d; _secRerender(); }
 function hqSetLayer(l){ _hqLayer=l; _secRerender(); }
+/* v938: 本部予算のサブタブ。'list'=年間一覧 / 'setup'=予算設定 */
+var _hqView = 'list';
+function hqSetView(v){ _hqView=v; _secRerender(); }
+/* v938: 売上構成の計算。ここ1か所。画面にも保存にも同じものを使う。
+   ★客数はテイクアウトを含む（monthGuestBudget 23374行・v932 と同じ母集団）。
+     含めないと実績と分母が変わり、達成率が壊れる（教訓(68)）。 */
+function hqSegCalc(seg, days){
+  var d = Number(days)||0;
+  if (!seg || !(d>0)) return null;
+  var n = function(v){ var x=parseFloat(v); return isFinite(x)&&x>0 ? x : 0; };
+  var L=seg.lunch||{}, D=seg.dinner||{}, T=seg.takeout||{};
+  var lg=n(L.guests), lp=n(L.ppa), dg=n(D.guests), dp=n(D.ppa), to=n(T.orders), tp=n(T.ppa);
+  var dailySales = lg*lp + dg*dp + to*tp;
+  var dailyGuests = lg + dg + to;
+  if (!(dailySales>0)) return null;
+  var sales = Math.round(dailySales*d), guests = Math.round(dailyGuests*d);
+  return { sales:sales, guests:guests>0?guests:null,
+           ppa:guests>0?Math.round(sales/guests*100)/100:null,
+           toSales:Math.round(to*tp*d), days:d };
+}
 function hqSetScope(v){ _hqScope=v; _secRerender(); }
 function _hqOffOf(ym){ var n=new Date(); var p=ym.split('-'); return (parseInt(p[0],10)-n.getFullYear())*12+(parseInt(p[1],10)-1-n.getMonth()); }
 /* 本部予算層（GMの計画）: 客数×客単価→売上、目標率/金額→原価/人件費、変動費・GET・固定費は
@@ -12303,6 +12323,10 @@ function hqPlanForYm(sid, ym){
   var e=(getHqBudget()[ym]||{})[sid]; if(!e) return null;
   var g=Number(e.guests)||0, p=Number(e.ppa)||0;
   var sales=(g>0&&p>0)?Math.round(g*p):(Number(e.total)||0);
+  /* v938: 売上構成（L/D/TO × 営業日数）があればそれを正とする。
+     客数×客単価から掛け戻すと、客単価を2桁に丸めたぶんの誤差が乗る（v933 と同じ理由）。 */
+  var _sg=hqSegCalc(e.seg, e.days);
+  if(_sg){ sales=_sg.sales; g=_sg.guests||0; p=_sg.ppa||0; }
   if(!(sales>0)) return null;
   var cfg=getPlConfig();
   // 原価: 金額指定(fcAmt)優先、次に率(fcRate)
@@ -12324,7 +12348,8 @@ function hqPlanForYm(sid, ym){
     var ov=fixOvr[c[0]]; fixT += (ov!=null&&ov!=='') ? (Number(ov)||0) : (Number((cfg.fixed[sid]||{})[c[0]])||0);
   });
   var profit=(cogs!=null&&labor!=null)?(sales-cogs-labor-vcT-get-fixT):null;
-  return {guests:g>0?g:null, ppa:p>0?p:null, sales:sales, cogs:cogs, gross:cogs!=null?sales-cogs:null, labor:labor, vcT:vcT, get:get, fixT:fixT, profit:profit, note:e.note||''};
+  /* v937: PL層の opex と突き合わせるための共通項 */
+  return {guests:g>0?g:null, ppa:p>0?p:null, sales:sales, cogs:cogs, gross:cogs!=null?sales-cogs:null, labor:labor, vcT:vcT, get:get, fixT:fixT, opex:vcT+get+fixT, profit:profit, note:e.note||''};
 }
 /* 店舗予算層（現場の承認予算）: 売上＋予算原価率/人件費率＋客数予算から展開 */
 function hqStoreForYm(sid, ym){
@@ -12340,24 +12365,49 @@ function hqStoreForYm(sid, ym){
   var get=sales*(cfg.getRate||4.712)/100;
   var fixT=0; PL_FIX_CATS.forEach(function(c){ fixT+=Number((cfg.fixed[sid]||{})[c[0]])||0; });
   var profit=(cogs!=null&&labor!=null)?(sales-cogs-labor-vcT-get-fixT):null;
-  return {guests:(g!=null&&g>0)?g:null, ppa:(g!=null&&g>0)?sales/g:null, sales:sales, cogs:cogs, gross:cogs!=null?sales-cogs:null, labor:labor, vcT:vcT, get:get, fixT:fixT, profit:profit};
+  /* v937: PL層の opex と突き合わせるための共通項 */
+  return {guests:(g!=null&&g>0)?g:null, ppa:(g!=null&&g>0)?sales/g:null, sales:sales, cogs:cogs, gross:cogs!=null?sales-cogs:null, labor:labor, vcT:vcT, get:get, fixT:fixT, opex:vcT+get+fixT, profit:profit};
 }
-/* 実績層（簡易PLと同一計算・当月まで） */
+/* v937: 確定PL（pl_actual）から実績を作る。
+   ★店舗の解決は既存の plActualFor() に任せる。Waikiki は PL上 'F03+F03-G' の合算で、
+     plActualFor は F03 側にだけ合算行を返し F03-G には null を返す。
+     全店合算はこの性質で1回だけ足され、二重計上にならない（v918 で確立した作法）。
+   ★客数はPLに無いのでアプリから取る（v933 の会議タブと同じ扱い）。
+   ★変動費 / GET / 固定費 はPLの opex から分解できないので null を返す。
+     0 にすると「費用ゼロ」に見えてしまう。「無い」と「0」は別（教訓(54)）。 */
+function hqPlActForYm(sid, ym){
+  try{
+    var a = ls('pl_actual', null); if(!a) return null;
+    var r = plActualFor(a[ym]||null, sid); if(!r) return null;
+    var sales = Number(r.sales)||0; if(!(sales>0)) return null;
+    /* ★Number(null) は 0 になる。null と 0 を取り違えないよう先に弾く（教訓(54)）。 */
+    var num = function(v){ if(v==null||v==='') return null; var x=Number(v); return isFinite(x)?x:null; };
+    var cogs = num(r.cogs), labor = num(r.payroll), opex = num(r.opex), profit = num(r.netop);
+    var off = _hqOffOf(ym);
+    var ms = safeMonthStats(sid, off)||{};
+    var g = (ms && ms.guests>0) ? ms.guests : null;
+    return {guests:g, ppa:g?sales/g:null, sales:sales, cogs:cogs,
+            gross:(cogs!=null)?sales-cogs:null, labor:labor,
+            vcT:null, get:null, fixT:null, opex:opex, profit:profit, _pl:true};
+  }catch(e){ return null; }
+}
+/* v937: 実績＝確定PLのみ。速報（簡易PL）は出さない（Motoさん確認①）。
+   PLが未取込の月は null を返し、画面は「—」を出す。推計で埋めない。 */
 function hqActForYm(sid, ym){
   if(ym>curYm()) return null;
-  var off=_hqOffOf(ym);
-  var c=plComputeStore(sid, ym, off);
-  if(!(c.sales>0)) return null;
-  var ms=safeMonthStats(sid, off)||{};
-  var g=(ms&&ms.guests>0)?ms.guests:null;
-  return {guests:g, ppa:g?c.sales/g:null, sales:c.sales, cogs:c.cogs, gross:c.gross, labor:c.labor, vcT:c.vcT, get:c.get, fixT:c.fixT, profit:c.profit};
+  return hqPlActForYm(sid, ym);
 }
+/* v937: opex（販管費計）を加えた。予算層は vcT+get+fixT、PL層はPLの opex。
+   定義の違う2つを同じ行で比べられるようにするための共通項。 */
 function _hqAggAdd(t, v){
-  ['guests','sales','cogs','labor','vcT','get','fixT','profit'].forEach(function(k){ if(v[k]!=null){ t[k]=(t[k]||0)+v[k]; t._has[k]=true; } });
+  ['guests','sales','cogs','labor','vcT','get','fixT','opex','profit'].forEach(function(k){ if(v[k]!=null){ t[k]=(t[k]||0)+v[k]; t._has[k]=true; } });
+  t._n=(t._n||0)+1;
 }
 function _hqAggFin(t){
   if(!t._has.sales) return null;
-  ['guests','cogs','labor','profit'].forEach(function(k){ if(!t._has[k]) t[k]=null; });
+  /* v937: vcT/get/fixT/opex も「無い」なら null に落とす。
+     落とさないと未設定が $0 として表示され、費用ゼロに見える（教訓(54)）。 */
+  ['guests','cogs','labor','vcT','get','fixT','opex','profit'].forEach(function(k){ if(!t._has[k]) t[k]=null; });
   t.gross=(t.cogs!=null)?t.sales-t.cogs:null;
   t.ppa=(t.guests!=null&&t.guests>0)?t.sales/t.guests:null;
   return t;
@@ -12374,7 +12424,7 @@ function hqCellData(layer, ym){
     var a=hqCellData('act', ym), hh=hqCellData('hq', ym);
     if(!a||!hh) return null;
     var d={};
-    ['guests','ppa','sales','cogs','gross','labor','vcT','get','fixT','profit'].forEach(function(k){ d[k]=(a[k]!=null&&hh[k]!=null)?a[k]-hh[k]:null; });
+    ['guests','ppa','sales','cogs','gross','labor','vcT','get','fixT','opex','profit'].forEach(function(k){ d[k]=(a[k]!=null&&hh[k]!=null)?a[k]-hh[k]:null; });
     return d;
   }
   var stores=(_hqScope==='ALL')?activeStores():activeStores().filter(function(x){return x.id===_hqScope;});
@@ -12382,6 +12432,131 @@ function hqCellData(layer, ym){
   var t={_has:{}}; var any=false;
   stores.forEach(function(st){ var v=hqLayerVal(layer, st.id, ym); if(v){ any=true; _hqAggAdd(t,v); } });
   return any?_hqAggFin(t):null;
+}
+/* v938: 予算設定タブ。月ごとに 営業日数 と L/D/TO の日割りを入れる。
+   ★12か月×9店を1つずつ入れるのは現実的でないので「他の月へコピー」を付ける。
+   ★全店合算では編集できない（どの店の数字か決まらない）。店舗を選ばせる。 */
+function _hqSegOf(sid, ym){
+  var e=(getHqBudget()[ym]||{})[sid]||{};
+  var s=e.seg||{}, L=s.lunch||{}, D=s.dinner||{}, T=s.takeout||{};
+  var dflt=0; try{ dflt=(daysOfYm(ym)||[]).length; }catch(x){ dflt=30; }
+  return { days:(e.days!=null&&e.days!==''?e.days:dflt),
+           lg:(L.guests!=null?L.guests:''), lp:(L.ppa!=null?L.ppa:''),
+           dg:(D.guests!=null?D.guests:''), dp:(D.ppa!=null?D.ppa:''),
+           to:(T.orders!=null?T.orders:''), tp:(T.ppa!=null?T.ppa:'') };
+}
+function _hqSetupRead(ym){
+  var g=function(f){ var el=document.getElementById('hqs-'+ym+'-'+f); return el?el.value:''; };
+  return { days:g('days'),
+           seg:{ lunch:{guests:g('lg'), ppa:g('lp')},
+                 dinner:{guests:g('dg'), ppa:g('dp')},
+                 takeout:{orders:g('to'), ppa:g('tp')} } };
+}
+function hqSetupRecalc(ym){
+  var r=_hqSetupRead(ym), c=hqSegCalc(r.seg, r.days);
+  var s=document.getElementById('hqs-'+ym+'-sales'), g=document.getElementById('hqs-'+ym+'-guests');
+  if(s) s.textContent = c ? ('$'+c.sales.toLocaleString()) : '—';
+  if(g) g.textContent = (c&&c.guests) ? c.guests.toLocaleString() : '—';
+  var tot=0, any=false;
+  for(var i=1;i<=12;i++){
+    var y=_hqYear+'-'+String(i).padStart(2,'0');
+    var cc=hqSegCalc(_hqSetupRead(y).seg, _hqSetupRead(y).days);
+    if(cc){ tot+=cc.sales; any=true; }
+  }
+  var t=document.getElementById('hqs-total');
+  if(t) t.textContent = any ? ('$'+tot.toLocaleString()) : '—';
+}
+function hqSetupCopy(ym){
+  var r=_hqSetupRead(ym);
+  if(!hqSegCalc(r.seg, r.days)){ showToast('この月に売上構成が入っていません','warning'); return; }
+  if(!confirm(ym+' の内容を'+_hqYear+'年の他の11か月へコピーします。\n各月の営業日数はその月の日数に合わせます。よろしいですか？')) return;
+  for(var i=1;i<=12;i++){
+    var y=_hqYear+'-'+String(i).padStart(2,'0');
+    if(y===ym) continue;
+    var dn=0; try{ dn=(daysOfYm(y)||[]).length; }catch(x){ dn=r.days; }
+    var set=function(f,v){ var el=document.getElementById('hqs-'+y+'-'+f); if(el) el.value=v; };
+    set('days', dn||r.days);
+    set('lg', r.seg.lunch.guests); set('lp', r.seg.lunch.ppa);
+    set('dg', r.seg.dinner.guests); set('dp', r.seg.dinner.ppa);
+    set('to', r.seg.takeout.orders); set('tp', r.seg.takeout.ppa);
+    hqSetupRecalc(y);
+  }
+  showToast('11か月へコピーしました。保存を押すと確定します','info');
+}
+function hqSetupSave(sid){
+  var hq=getHqBudget(), n=0, cleared=0;
+  for(var i=1;i<=12;i++){
+    var ym=_hqYear+'-'+String(i).padStart(2,'0');
+    var r=_hqSetupRead(ym), c=hqSegCalc(r.seg, r.days);
+    var e=(hq[ym]||{})[sid];
+    if(!c){
+      /* 構成が空。既にある月の売上構成だけ外す。原価率などは残す（v857 の教訓）。 */
+      if(e && e.seg){ e.seg=null; e.days=null; cleared++; }
+      continue;
+    }
+    var num=function(v){ var x=parseFloat(v); return isFinite(x)&&x>0?x:null; };
+    hq[ym]=hq[ym]||{};
+    e=hq[ym][sid]||{};
+    e.seg={ lunch:{guests:num(r.seg.lunch.guests), ppa:num(r.seg.lunch.ppa)},
+            dinner:{guests:num(r.seg.dinner.guests), ppa:num(r.seg.dinner.ppa)},
+            takeout:{orders:num(r.seg.takeout.orders), ppa:num(r.seg.takeout.ppa)} };
+    e.days=c.days;
+    /* 派生値も書く。seg を読まない既存の画面がそのまま動くように。 */
+    e.total=c.sales; e.guests=c.guests; e.ppa=c.ppa;
+    e.by=myName(); e.at=nowJP();
+    hq[ym][sid]=e; n++;
+  }
+  Object.keys(hq).forEach(function(k){ if(hq[k]&&typeof hq[k]==='object'&&!Object.keys(hq[k]).length) delete hq[k]; });
+  lsSet('hq_budget', hq);
+  showToast(n+'か月を保存しました'+(cleared?('（'+cleared+'か月は構成を外しました）'):''),'success');
+  _secRerender();
+}
+function renderHqSetup(){
+  var stores=sortByLoginOrder(activeStores());
+  if(_hqScope==='ALL'){
+    return '<div class="card" style="padding:18px;text-align:center;font-size:12.5px;color:var(--muted)">'
+      +'<i class="ti ti-building-store" style="font-size:22px"></i><div style="margin-top:6px">'
+      +'上の選択で店舗を選んでください（予算設定は店舗ごとです）</div></div>';
+  }
+  var st=stores.find(function(x){return x.id===_hqScope;})||{name:_hqScope};
+  var h='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.7">'
+    +'<i class="ti ti-info-circle"></i> 1日あたりの<b>理想の集客と客単価</b>を入れると、営業日数を掛けて月商になります。'
+    +'<b>客数にはテイクアウトの件数も含みます</b>（実績側と母集団をそろえるため）。'
+    +'曜日別ではなく日割り平均です。原価率・人件費率・固定費は年間一覧の月ヘッダから。</div>';
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:940px;font-size:11px">'
+    +'<thead><tr><th style="text-align:left;min-width:52px">'+escapeHtml(st.name)+'</th>'
+    +'<th style="text-align:right;min-width:56px">営業日数</th>'
+    +'<th style="text-align:right;min-width:60px">L 客数</th><th style="text-align:right;min-width:60px">L 単価</th>'
+    +'<th style="text-align:right;min-width:60px">D 客数</th><th style="text-align:right;min-width:60px">D 単価</th>'
+    +'<th style="text-align:right;min-width:60px">TO 件数</th><th style="text-align:right;min-width:60px">TO 単価</th>'
+    +'<th style="text-align:right;min-width:80px;border-left:2px solid var(--border)">月商</th>'
+    +'<th style="text-align:right;min-width:60px">客数</th>'
+    +'<th style="min-width:40px"></th></tr></thead><tbody>';
+  var inp=function(ym,f,v,step){
+    return '<td style="text-align:right"><input id="hqs-'+ym+'-'+f+'" class="form-input" type="number" '
+      +'inputmode="decimal"'+(step?' step="'+step+'"':'')+' value="'+v+'" '
+      +'oninput="hqSetupRecalc(\''+ym+'\')" '
+      +'style="padding:4px 6px;font-size:11px;text-align:right;width:100%;min-width:52px"></td>';
+  };
+  for(var i=1;i<=12;i++){
+    var ym=_hqYear+'-'+String(i).padStart(2,'0');
+    var v=_hqSegOf(_hqScope, ym), c=hqSegCalc({lunch:{guests:v.lg,ppa:v.lp},dinner:{guests:v.dg,ppa:v.dp},takeout:{orders:v.to,ppa:v.tp}}, v.days);
+    h+='<tr><td style="text-align:left;font-weight:700">'+i+'月</td>'
+      +inp(ym,'days',v.days)+inp(ym,'lg',v.lg)+inp(ym,'lp',v.lp,'0.01')
+      +inp(ym,'dg',v.dg)+inp(ym,'dp',v.dp,'0.01')
+      +inp(ym,'to',v.to)+inp(ym,'tp',v.tp,'0.01')
+      +'<td style="text-align:right;font-weight:800;border-left:2px solid var(--border)" id="hqs-'+ym+'-sales">'
+      +(c?('$'+c.sales.toLocaleString()):'—')+'</td>'
+      +'<td style="text-align:right" id="hqs-'+ym+'-guests">'+((c&&c.guests)?c.guests.toLocaleString():'—')+'</td>'
+      +'<td style="text-align:center"><button class="btn btn-secondary" style="padding:2px 6px;font-size:10px" '
+      +'onclick="hqSetupCopy(\''+ym+'\')" title="この月を他の月へコピー"><i class="ti ti-copy"></i></button></td></tr>';
+  }
+  h+='</tbody></table></div>';
+  h+='<div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">'
+    +'<div style="font-size:12px">年間売上 <b id="hqs-total" style="font-size:15px">—</b></div>'
+    +'<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="hqSetupSave(\''+_hqScope+'\')">'
+    +'<i class="ti ti-device-floppy"></i> 保存</button></div>';
+  return h;
 }
 function renderHqBudget(){
   var yr=_hqYear;
@@ -12397,15 +12572,33 @@ function renderHqBudget(){
     +'<option value="ALL"'+(_hqScope==='ALL'?' selected':'')+'>全店合算</option>'
     +stores.map(function(x){return '<option value="'+x.id+'"'+(_hqScope===x.id?' selected':'')+'>'+escapeHtml(x.name)+'</option>';}).join('')
     +'</select></div>';
+  /* v938: 年間一覧 / 予算設定 のサブタブ。
+     ★.phase-tabs はアプリ全体で52か所使われているので触らない。
+       上に .seg-tabs を1本足すだけにする（v925 で簡易PLに使ったのと同じ帯）。 */
+  h+='<div class="seg-tabs" style="max-width:340px;margin-bottom:8px">'
+    +'<div class="seg-tab'+(_hqView!=='setup'?' active':'')+'" onclick="hqSetView(\'list\')"><i class="ti ti-table"></i>年間一覧</div>'
+    +'<div class="seg-tab'+(_hqView==='setup'?' active':'')+'" onclick="hqSetView(\'setup\')"><i class="ti ti-adjustments"></i>予算設定</div>'
+    +'</div>';
+  if(_hqView==='setup') return h + renderHqSetup();
   h+='<div class="phase-tabs" style="margin-bottom:8px">'+layers.map(function(l){ return '<div class="phase-tab'+(_hqLayer===l[0]?' active':'')+'" onclick="hqSetLayer(\''+l[0]+'\')">'+l[1]+'</div>'; }).join('')+'</div>';
-  h+='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.7"><i class="ti ti-info-circle"></i> <b>本部予算</b>＝GMの年間計画（客数×客単価→売上、目標原価率/人件費率→営業利益まで自動展開）。<b>店舗予算</b>＝各店の承認予算。<b>実績</b>＝簡易PLと同一計算。'
+  h+='<div style="font-size:10.5px;color:var(--muted);margin:0 2px 8px;line-height:1.7"><i class="ti ti-info-circle"></i> <b>本部予算</b>＝GMの年間計画（客数×客単価→売上、目標原価率/人件費率→営業利益まで自動展開）。<b>店舗予算</b>＝各店の承認予算。<b>実績</b>＝会計PLの確定値（未取込の月は「—」。速報は出しません）。'
     +(_hqScope==='ALL'?'編集は店舗を選択してから月ヘッダをタップ。':'<b>月ヘッダ（✎）をタップで本部予算を編集。</b>')+'変動費・GET・固定費は簡易PL設定を自動適用。金額は$1単位に丸めて表示。</div>';
 
   var data=yms.map(function(ym){ try{ return hqCellData(_hqLayer, ym); }catch(e){ return null; } });
+  /* v937: 全店合算で一部の店にしかPLが無いと、合計が小さく出て「未達」に見える。
+     何店ぶんを足したのかを出す。数字を黙って小さく見せない。 */
+  var _plNote='';
+  if(_hqLayer==='act' && _hqScope==='ALL'){
+    var _exp=activeStores().filter(function(x){ return !plIsCombinedInto({'F03+F03-G':1}, x.id); }).length;
+    var _short=[];
+    yms.forEach(function(ym,i){ var v=data[i]; if(v && v._n!=null && v._n<_exp) _short.push((i+1)+'月 '+v._n+'/'+_exp+'店'); });
+    if(_short.length) _plNote='<div style="font-size:10.5px;color:var(--amber,#EF9F27);margin:0 2px 8px"><i class="ti ti-alert-triangle"></i> 確定PLが揃っていない月があります（'+escapeHtml(_short.join(' / '))+'）。合計はその店舗ぶんだけです。</div>';
+  }
   var tot={_has:{}}; var anyT=false;
   data.forEach(function(v){ if(v){ anyT=true; _hqAggAdd(tot, v); } });
   var totF=anyT?_hqAggFin(tot):null;
 
+  h+=_plNote;
   var isDiff=(_hqLayer==='diff');
   var sgn=function(v){ return (isDiff&&v>=0)?'+':''; };
   var m0=function(v){ if(v==null)return '—'; return sgn(v)+(v<0?'-':'')+'$'+Math.abs(Math.round(v)).toLocaleString(); };
@@ -12421,6 +12614,8 @@ function renderHqBudget(){
     ['変動費','vcT',m0,false],
     ['GET','get',m0,false],
     ['固定費','fixT',m0,false],
+    /* v937: 販管費計。PL層は変動費/GET/固定費に割れないのでここだけが比較できる行になる。 */
+    ['販管費 計','opex',m0,false],
     ['営業利益','profit',m0,true]
   ];
   var curYmStr=curYm();
@@ -12480,6 +12675,11 @@ function renderHqBudget(){
   return h;
 }
 function openHqPlanModal(ym, sid){
+  /* v938 */
+  var _hqSegE=((getHqBudget()[ym]||{})[sid])||{};
+  var _hqSegR=hqSegCalc(_hqSegE.seg, _hqSegE.days);
+  var _hqSegOn=!!_hqSegR, _hqSegDays=_hqSegOn?_hqSegR.days:0;
+  var _hqSegRo=_hqSegOn?' readonly style="opacity:.55"':'';
   var st=STORES.find(function(x){return x.id===sid;})||{name:sid};
   var cur=(getHqBudget()[ym]||{})[sid]||{};
   var cfg=getPlConfig();
@@ -12506,11 +12706,14 @@ function openHqPlanModal(ym, sid){
     +'<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.7">店舗予算（参考）: <b>'+(sb!=null?(fmtUSD2(sb)):'未提出')+'</b></div>'
     // 売上
     +'<div class="form-label" style="font-weight:700;color:var(--accent);margin-bottom:4px">① 売上</div>'
+    /* v938: 売上構成がある月は、ここで直しても効かない（hqPlanForYm が seg を優先する）。
+       黙って効かないのが一番わるいので、どこで管理しているかを出して入力を止める。 */
+    +(_hqSegOn?'<div style="font-size:11px;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px;line-height:1.6"><i class="ti ti-info-circle"></i> この月の売上は<b>「予算設定」タブ</b>で組んでいます（L/D/TO × 営業日数'+_hqSegDays+'日）。変更はそちらから。</div>':'')
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
-    +'<div class="form-group"><label class="form-label">客数（月間）</label><input class="form-input" id="hqp-guests" type="number" inputmode="numeric" value="'+(cur.guests!=null?cur.guests:'')+'" oninput="'+calc+'"></div>'
-    +'<div class="form-group"><label class="form-label">客単価 ($)</label><input class="form-input" id="hqp-ppa" type="number" inputmode="decimal" step="0.01" value="'+(cur.ppa!=null?cur.ppa:'')+'" oninput="'+calc+'"></div>'
+    +'<div class="form-group"><label class="form-label">客数（月間）</label><input class="form-input" id="hqp-guests" type="number" inputmode="numeric" value="'+(cur.guests!=null?cur.guests:'')+'" oninput="'+calc+'"'+_hqSegRo+'></div>'
+    +'<div class="form-group"><label class="form-label">客単価 ($)</label><input class="form-input" id="hqp-ppa" type="number" inputmode="decimal" step="0.01" value="'+(cur.ppa!=null?cur.ppa:'')+'" oninput="'+calc+'"'+_hqSegRo+'></div>'
     +'</div>'
-    +'<div class="form-group"><label class="form-label">売上直接入力 ($)<span style="font-size:9px;color:var(--muted)"> 客数×客単価が空のときのみ使用</span></label><input class="form-input" id="hqp-total" type="number" inputmode="decimal" value="'+(cur.total!=null&&!(cur.guests>0&&cur.ppa>0)?cur.total:'')+'" oninput="'+calc+'"></div>'
+    +'<div class="form-group"><label class="form-label">売上直接入力 ($)<span style="font-size:9px;color:var(--muted)"> 客数×客単価が空のときのみ使用</span></label><input class="form-input" id="hqp-total" type="number" inputmode="decimal" value="'+(cur.total!=null&&!(cur.guests>0&&cur.ppa>0)?cur.total:'')+'" oninput="'+calc+'"'+_hqSegRo+'></div>'
     +'<div style="font-size:13px;margin:2px 0 12px">→ 売上予算: <b id="hqp-sales" style="color:var(--accent)">—</b></div>'
     // 原価・人件費（率/金額切替）
     +'<div class="form-label" style="font-weight:700;color:var(--accent);margin-bottom:4px">② 原価・人件費</div>'
@@ -12595,7 +12798,10 @@ function saveHqPlan(ym, sid){
     lsSet('hq_budget', hq);
     closeModalDirect(); showToast('この月の本部予算を削除しました','info'); _secRerender(); return;
   }
+  /* v938: 売上構成を引き継ぐ。引き継がないと、原価率を直しただけで L/D/TO が消える。 */
+  var _prevE=(hq[ym]||{})[sid]||{};
   hq[ym][sid]={
+    seg:_prevE.seg||null, days:_prevE.days||null,
     total:sales, guests:(g>0?g:null), ppa:(pp>0?Math.round(pp*100)/100:null),
     fcRate:(!isNaN(fc)&&fc>0?fc:null), laborRate:(!isNaN(lb)&&lb>0?lb:null),
     fcAmt:(!isNaN(fca)&&fca>0?Math.round(fca):null), laborAmt:(!isNaN(lba)&&lba>0?Math.round(lba):null),
@@ -12648,7 +12854,9 @@ function renderSimplePL(){
     +(plOff<0?'<button class="btn btn-secondary btn-sm" onclick="plOff=0;_secRerender()">今月へ</button>':'')
     +'</div>';
   /* v910: PLブックの取り込み。1ファイルで全店・全月がまとめて入る。 */
-  h += '<div style="display:flex;justify-content:flex-end;margin:0 2px 8px">'
+  /* v936: 取り込みの隣に書き出し。対の操作なので離さない。 */
+  h += '<div style="display:flex;justify-content:flex-end;gap:6px;margin:0 2px 8px">'
+    +  '<button class="btn btn-secondary btn-sm" onclick="backupPl()"><i class="ti ti-download"></i> '+t('書き出す','Export')+'</button>'
     +  '<button class="btn btn-primary btn-sm" onclick="openPlImport()"><i class="ti ti-file-upload"></i> '+t('PLブックを取り込む','Import PL workbook')+'</button></div>';
   h += renderPlCoverage(stores, ym);              /* v918 */
   /* v923: 縦に長くなりすぎるのでサブタブに分ける。PCで見る前提。 */
@@ -19820,6 +20028,31 @@ function _plStoreLabel(sk){
   if (sk === 'F03+F03-G') return 'Waikiki（FSP+WGS 合算）';
   try { var st = STORES.find(function(x){ return x.id === sk; }); if (st) return st.name; } catch(e){}
   return sk;
+}
+/* v936: 取り込んだPLを1つのJSONに書き出す。
+   pl_actual は端末内にしか無いので、別の端末や手元の検証へ持ち出す手段がこれまで無かった。
+   ★形は backupBudgets() / backupInvHistory() と揃える（新しい型を作らない）。
+   ★pl_actual には opex / netop が入る＝利益を含むファイルが端末に落ちる。
+     ただし簡易PLタブは既に画面へ利益を出しているので、このボタンで新たに見える情報は無い。
+     タブ自体のロール絞りは別件（v925 5-11）。 */
+function backupPl(){
+  try{
+    var act = ls('pl_actual', null), pub = ls('pl_public', null);
+    var yms = act ? Object.keys(act).filter(function(k){ return k !== '_src'; }) : [];
+    if (!yms.length){ showToast(t('取り込んだPLがありません','No imported PL'),'warning'); return; }
+    var rows = 0;
+    yms.forEach(function(ym){ rows += Object.keys(act[ym]||{}).length; });
+    var out = { app:'Funergy Growth OS', type:'pl_backup',
+                version:(typeof APP_VERSION!=='undefined'?APP_VERSION:''),
+                at:(typeof nowJP==='function'?nowJP():''),
+                months:yms.sort(), pl_actual:act, pl_public:(pub||{}) };
+    var blob = new Blob([JSON.stringify(out,null,2)], {type:'application/json'});
+    var url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = 'pl_backup_'+(new Date().toISOString().slice(0,10))+'.json';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ try{ document.body.removeChild(a); URL.revokeObjectURL(url); }catch(e){} },500);
+    showToast(yms.length+t('か月・','mo / ')+rows+t('件を書き出しました','rows exported'),'success');
+  }catch(e){ showToast(t('書き出しに失敗しました','Export failed'),'danger'); }
 }
 /* 保存。pl_actual（全項目・端末内）と pl_public（率の材料のみ・同期）に分ける。 */
 function plImportSave(){
@@ -30614,7 +30847,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '935';
+const APP_VERSION = '938';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
