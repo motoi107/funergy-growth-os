@@ -3174,23 +3174,39 @@ function mdSalesChartHtml(ser, color, h, solo, forecast){
     var k = (fc - actEnd) / (budEnd - budYest), pf = [];
     for (var i = iy; i < n; i++) pf.push(X(i) + ',' + Y(actEnd + (full[i].bud - budYest) * k));
     fcLine = '<polyline points="' + pf.join(' ') + '" fill="none" stroke="' + color
-      + '" stroke-width="1.6" stroke-dasharray="2 2.5" opacity=".62"/>';
+      + '" stroke-width="1.6" stroke-dasharray="2 2.5" opacity=".62" vector-effect="non-scaling-stroke"/>';
   }
   var xy = X(iy);
+  /* v941: 実績と予算の差を面で見せる。累計線は0から積み上がるので
+     2本ともほぼ同じ傾きの直線に見えて、差が読み取れない。 */
+  var gap = '';
+  if (iy > 0) {
+    var back = [];
+    for (var gi = iy; gi >= 0; gi--) back.push(X(gi) + ',' + Y(full[gi].bud));
+    var behind = actEnd < budYest;
+    gap = '<polygon points="' + pAct + ' ' + back.join(' ') + '" fill="'
+      + (behind ? '#e23b3b' : '#15a66a') + '" opacity=".13"/>';
+  }
   return '<div class="md-chart"><div class="md-chart-t">売上の累計'
     + '<span class="md-lg"><i style="background:' + color + '"></i>実績</span>'
     + '<span class="md-lg"><i style="background:repeating-linear-gradient(90deg,#a99e90 0 3px,transparent 3px 5px)"></i>予算</span>'
     + (fcLine ? '<span class="md-lg"><i style="background:repeating-linear-gradient(90deg,' + color
         + ' 0 2px,transparent 2px 4px)"></i>予測</span>' : '')
     + '</div>'
-    + '<svg viewBox="0 0 ' + w + ' ' + (h + lab) + '" preserveAspectRatio="none" style="width:100%;height:' + (h + lab) + 'px">'
-    + (solo ? '<line x1="0" y1="' + Y(budEnd) + '" x2="' + w + '" y2="' + Y(budEnd)
-        + '" stroke="#e6ded4" stroke-width="1"/>' : '')
-    + '<line x1="' + xy + '" y1="0" x2="' + xy + '" y2="' + h + '" stroke="#cfc6ba" stroke-width="1" stroke-dasharray="2 2"/>'
-    + '<polyline points="' + pBud + '" fill="none" stroke="#a99e90" stroke-width="1.6" stroke-dasharray="3 3"/>'
+    /* v941: ②高さを固定pxから幅に追従させる。aspect-ratio で幅から決め、min/max で挟む。
+       携帯（幅350前後）で約125px、PCの広いカードで150px。携帯用とPC用を分けない。 */
+    + '<svg viewBox="0 0 ' + w + ' ' + (h + lab) + '" preserveAspectRatio="none" '
+    + 'style="display:block;width:100%;height:auto;aspect-ratio:' + w + '/' + (h + lab)
+    + ';min-height:110px;max-height:150px">'
+    /* v941: ④月末予算の水平線は常に出す（天井が見える） */
+    + '<line x1="0" y1="' + Y(budEnd) + '" x2="' + w + '" y2="' + Y(budEnd)
+    + '" stroke="#e6ded4" stroke-width="1" vector-effect="non-scaling-stroke"/>'
+    + gap
+    + '<line x1="' + xy + '" y1="0" x2="' + xy + '" y2="' + h + '" stroke="#cfc6ba" stroke-width="1" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>'
+    + '<polyline points="' + pBud + '" fill="none" stroke="#a99e90" stroke-width="1.6" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
     + fcLine
-    + '<polyline points="' + pAct + '" fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linejoin="round"/>'
-    + '<circle cx="' + xy + '" cy="' + Y(actEnd) + '" r="2.6" fill="' + color + '"/>'
+    + '<polyline points="' + pAct + '" fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+    + '<circle cx="' + xy + '" cy="' + Y(actEnd) + '" r="2.6" fill="' + color + '" vector-effect="non-scaling-stroke"/>'
     + '</svg>'
     + '<div style="display:flex;justify-content:space-between;font-size:8.5px;color:var(--muted);'
     + 'font-weight:600;margin-top:-2px">'
@@ -31060,7 +31076,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '940';
+const APP_VERSION = '941';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
