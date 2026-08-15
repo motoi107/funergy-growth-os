@@ -1842,15 +1842,24 @@ function totoyaKpiCalc(sid, period){
 /* Totoyaスコープの味噌汁/いくらシャワー率を集計（複数店舗合算）。period例 '2026.6' */
 function totoyaScopeRates(storeIds, period){
   var misoAll=0,misoUp=0,ikura=0,bowls=0,has=false;
+  /* v934: 店舗別の内訳（値・出所・当たった商品）を持ち帰る。
+     内訳モーダルは合算値しか持たないため、分子と分母が別々の経路から
+     来ていても気づけなかった。v869 の drinkParts と同じ形。 */
+  var parts=[];
   (storeIds||[]).forEach(function(sid){
     if(typeof isTotoyaStore!=='function' || !isTotoyaStore(sid)) return;
     var tk=totoyaKpiCalc(sid, period);
+    parts.push({ sid:sid, ikura:tk.eff.ikura, bowls:tk.eff.bowls,
+      misoUp:tk.eff.misoUp, misoAll:tk.eff.misoAll,
+      srcIkura:tk.src.ikura, srcBowls:tk.src.bowls,
+      srcMisoUp:tk.src.misoUp, srcMisoAll:tk.src.misoAll,
+      hits:tk.hits||{} });
     if(tk.eff.misoAll!=null){ misoAll+=tk.eff.misoAll; has=true; }
     if(tk.eff.misoUp!=null) misoUp+=tk.eff.misoUp;
     if(tk.eff.ikura!=null) ikura+=tk.eff.ikura;
     if(tk.eff.bowls!=null) bowls+=tk.eff.bowls;
   });
-  return { has:has, misoAll:misoAll, misoUp:misoUp, ikura:ikura, bowls:bowls,
+  return { has:has, misoAll:misoAll, misoUp:misoUp, ikura:ikura, bowls:bowls, parts:parts,
     misoRate:(has&&misoAll>0)?Math.round(misoUp/misoAll*1000)/10:null,
     ikuraRate:(has&&bowls>0)?Math.round(ikura/bowls*1000)/10:null };
 }
@@ -20356,8 +20365,35 @@ function _meetSegExtra(k, key, storeId, ym, paceFrac, unit){
     return wrap([ seg(t('ランチ','L'), k.lunchGuests, (k.lunchGuestBud!=null?Math.round(k.lunchGuestBud*pf):null), false, unit),
       seg(t('ディナー','D'), k.dinnerGuests, (k.dinnerGuestBud!=null?Math.round(k.dinnerGuestBud*pf):null), false, unit),
       seg(t('テイクアウト','TO'), k.toCount, (k.takeoutBud!=null?Math.round(k.takeoutBud*pf):null), false, unit) ]); }
-  if(key==='ppa'){ var segs={}; try{ var b=getBudgetForMonth(storeId, ym); segs=(typeof getSegments==='function')?getSegments(b):{}; }catch(e){}
-    var tl=(segs.lunch?parseFloat(segs.lunch.spend):0)||null, td=(segs.dinner?parseFloat(segs.dinner.spend):0)||null, tt=(segs.takeout?parseFloat(segs.takeout.spend):0)||null;
+  if(key==='ppa'){
+    /* v934: 曜日別モード(dow)で組んだ予算から単価目標を出す。
+       従来は getSegments(b)（区分別モード）しか見ていなかったため、
+       曜日別で組んだ店はディナー・テイクアウトの目標が「—」になっていた
+       （ランチだけ出るのは segments 側に古い値が残っているため）。
+       ★v933 でQコミットに入れたのと同じ「両モードを読む」形。
+       ★単価は 金額合計 ÷ 客数合計 の加重平均。材料は dowSegMonthly と同じ。
+         曜日ごとに単価が違うので、単純平均にはしない。 */
+    var tl=null, td=null, tt=null;
+    try{
+      var b=getBudgetForMonth(storeId, ym);
+      if(b && typeof usesDowMode==='function' && usesDowMode(b)){
+        var _p=String(ym||'').split('-');
+        var _cnt=weekdayCountsForMonth(parseInt(_p[0],10), parseInt(_p[1],10));
+        var _dw=getDow(b);
+        var _unit=function(sg){
+          var amt=dowSegMonthly(_dw,sg,_cnt)||0, num=0;
+          for(var i=0;i<7;i++){ var c=(_dw[sg]||[])[i]||{};
+            num += ((sg==='takeout')?(parseFloat(c.orders)||0):(parseFloat(c.guests)||0))*(_cnt[i]||0); }
+          return (num>0)?Math.round(amt/num*100)/100:null;
+        };
+        tl=_unit('lunch'); td=_unit('dinner'); tt=_unit('takeout');
+      } else {
+        var segs=(typeof getSegments==='function')?(getSegments(b)||{}):{};
+        tl=(segs.lunch?parseFloat(segs.lunch.spend):0)||null;
+        td=(segs.dinner?parseFloat(segs.dinner.spend):0)||null;
+        tt=(segs.takeout?parseFloat(segs.takeout.spend):0)||null;
+      }
+    }catch(e){}
     /* v932: 先頭に「店内」を出す。L/Dの内訳より前に、テイクアウトを抜いた全体を見せる。
        見出しの客単価はテイクアウト込みなので、その差がそのまま影響の大きさになる。 */
     return wrap([ seg(t('店内','Dine-in'), k.ppaDine, k.ppaDineBudget, true),
@@ -23424,6 +23460,7 @@ function keyKpiStats(scopeStores, days){
     repeatTgt: kpiRpTgt,
     totoyaScope: totoyaScope,
     misoRate: tr.misoRate, ikuraRate: tr.ikuraRate,
+    totoyaParts: tr.parts||[],   /* v934: 内訳モーダルで出所を出すため */
     misoUp: tr.misoUp, misoAll: tr.misoAll, ikura: tr.ikura, ikuraBowls: tr.bowls,
     misoTgt: misoTgt, ikuraTgt: ikuraTgt,
     opDays: Object.keys(dayHasActual).length,
@@ -23464,13 +23501,38 @@ function misoSub(k){
   if(!k || k.misoRate==null) return '';
   return _kpiRow2(t('味噌汁を付けた数','Miso attached'), (k.misoUp||0).toLocaleString())
     + _kpiRow2(t('対象の丼数','Eligible bowls'), (k.misoAll||0).toLocaleString())
-    + _kpiRow2(t('UP率','Rate'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?(t('目標','tgt')+' '+k.misoTgt+'%'):'');
+    + _kpiRow2(t('UP率','Rate'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?(t('目標','tgt')+' '+k.misoTgt+'%'):'')
+    + _totoyaSrcRows(k.totoyaParts, 'srcMisoUp', 'srcMisoAll', t('分子','Num'), t('分母','Den'));
+}
+/* v934: 数字の出所を出す。手入力 / Toast / menu_mix のどれかで原因が変わる。
+   ★分子と分母で出所が違うときは赤で警告する。別の母集団を割っていることになる。 */
+function _totoyaSrcRows(parts, numKey, denKey, numLbl, denLbl){
+  if(!parts || !parts.length) return '';
+  var h='';
+  parts.forEach(function(p){
+    var sn=p[numKey]||'—', sd=p[denKey]||'—';
+    var bad=(sn!==sd);
+    h += '<div style="font-size:10.5px;color:var(--muted);padding:4px 0 0">'
+      +  '<b>'+escapeHtml((typeof mcStoreLabel==='function')?mcStoreLabel(p.sid):p.sid)+'</b> '
+      +  numLbl+' <span style="color:'+(bad?'var(--red)':'var(--accent)')+'">['+escapeHtml(sn)+']</span>'
+      +  ' ／ '+denLbl+' <span style="color:'+(bad?'var(--red)':'var(--accent)')+'">['+escapeHtml(sd)+']</span>'
+      +  (bad?' <span style="color:var(--red);font-weight:700">出所が違います</span>':'')
+      +  '</div>';
+    ['ikura','bowls'].forEach(function(tag){
+      var a=(p.hits||{})[tag]; if(!a || !a.length) return;
+      h += '<div style="font-size:9.5px;color:var(--muted);padding-left:10px">'
+        +  escapeHtml(tag==='ikura'?'分子':'分母')+'：'
+        +  a.map(function(x){ return escapeHtml(x.n)+' '+x.q; }).join(' ／ ')+'</div>';
+    });
+  });
+  return h;
 }
 function ikuraSub(k){
   if(!k || k.ikuraRate==null) return '';
   return _kpiRow2(t('いくらシャワー数','Ikura shower'), (k.ikura||0).toLocaleString())
     + _kpiRow2(t('対象の丼数','Eligible bowls'), (k.ikuraBowls||0).toLocaleString())
-    + _kpiRow2(t('実施率','Rate'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?(t('目標','tgt')+' '+k.ikuraTgt+'%'):'');
+    + _kpiRow2(t('実施率','Rate'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?(t('目標','tgt')+' '+k.ikuraTgt+'%'):'')
+    + _totoyaSrcRows(k.totoyaParts, 'srcIkura', 'srcBowls', t('分子','Num'), t('分母','Den'));
 }
 function drinkSubDetail(k){
   if(!k) return '';
@@ -30516,7 +30578,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '933';
+const APP_VERSION = '934';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
