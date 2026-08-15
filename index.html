@@ -3228,6 +3228,12 @@ function mdSalesChartHtml(ser, color, h, solo, forecast){
       }).join('')
     + '<div style="position:absolute;right:0;top:' + pctY(0)
     + '%;transform:translateY(-50%)">$0</div></div>';
+  /* v944: 前日の点。SVG の中で丸を描くのはやめる。
+     circle は非等比で楕円になり（v941）、長さ0の線＋丸い端点は携帯で縦長になった（v942）。
+     HTML の div なら border-radius:50% で必ず真円。位置は軸ラベルと同じ % の仕組み。 */
+  var dot = '<div style="position:absolute;left:' + pctX(iy) + '%;top:' + pctY(actEnd)
+    + '%;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%;background:' + color
+    + ';box-shadow:0 0 0 2px var(--card);pointer-events:none"></div>';
   var xLab = xlab.map(function(i){
       var p = Number(pctX(i));
       var pos = p < 5 ? 'left:0' : (p > 95 ? 'right:0' : 'left:' + p + '%;transform:translateX(-50%)');
@@ -3256,6 +3262,10 @@ function mdSalesChartHtml(ser, color, h, solo, forecast){
     /* v943: 左に $ラベルのぶんを空ける。ラベルは絶対配置で % で合わせる。 */
     + '<div style="position:relative;padding-left:' + axL + 'px">'
     + yLab
+    /* v944: ★絶対配置の % は padding box の幅に対して解く。
+       外側は padding-left を持っているので、丸を直接そこに置くと 40px ずれる。
+       プロット領域だけを囲む箱を1枚はさむ。 */
+    + '<div style="position:relative">'
     + '<svg viewBox="0 0 ' + w + ' ' + (h + lab) + '" preserveAspectRatio="none" '
     + 'style="display:block;width:100%;height:auto;aspect-ratio:' + w + '/' + (h + lab)
     + ';min-height:110px;max-height:150px">'
@@ -3268,13 +3278,9 @@ function mdSalesChartHtml(ser, color, h, solo, forecast){
     + '<polyline points="' + pBud + '" fill="none" stroke="#a99e90" stroke-width="1.6" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
     + fcLine
     + '<polyline points="' + pAct + '" fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
-    /* v942: 前日の点。<circle> は塗りなので非等比スケールで楕円につぶれる。
-       non-scaling-stroke は線の太さにしか効かず、図形の形には効かない（v941 の見落とし）。
-       ★長さ0の線に丸い端点を付けると、線幅が画面pxで解釈されるので
-         どんな倍率でも真円になる。stroke-width が直径。 */
-    + '<line x1="' + xy + '" y1="' + Y(actEnd) + '" x2="' + xy + '" y2="' + Y(actEnd)
-    + '" stroke="' + color + '" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>'
-    + '</svg></div>'
+    + '</svg>'
+    + dot
+    + '</div></div>'
     /* v943: 日付の軸。両端そろえの3つ並びをやめ、縦線と同じ位置に置く。 */
     + '<div style="position:relative;height:11px;margin-left:' + axL
     + 'px;font-size:8.5px;color:var(--muted);font-weight:600">'
@@ -31142,7 +31148,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '943';
+const APP_VERSION = '944';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
