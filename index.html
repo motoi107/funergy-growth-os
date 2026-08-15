@@ -19125,14 +19125,17 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
     <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
-    <div class="phase-tab${budgetTab==='analysis'?' active':''}" onclick="setBudgetTab('analysis')">${t('経営分析','Analytics')}</div>
     <div class="phase-tab${budgetTab==='meeting'?' active':''}" onclick="setBudgetTab('meeting')">${t('会議','Meeting')}</div>
-    <div class="phase-tab${budgetTab==='minutes'?' active':''}" onclick="setBudgetTab('minutes')">${t('議事録','Minutes')}</div>
+    <div class="phase-tab${budgetTab==='analysis'?' active':''}" onclick="setBudgetTab('analysis')">${t('経営分析','Analytics')}</div>
   </div>`;
   if (budgetTab==='monthly') budgetTab='summary'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
+  /* v940: 議事録タブを外した。開いたままの端末が空画面にならないよう月次へ寄せる。
+     ★関数(renderMeetingMinutes)とシード(MINUTES_SEED)は残す。
+       minutesMonthlySales() が年間計画の未登録月の補完に使っており、
+       消すと年間計画の数字が静かに欠ける（21216行）。 */
+  if (budgetTab==='minutes') budgetTab='summary';
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   if (budgetTab==='meeting') return html + renderMeetingReview(); // 会議ビュー（中間/月初MTG）
-  if (budgetTab==='minutes') return html + renderMeetingMinutes(); // 議事録は独自のシート選択あり
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
   if (budgetTab==='annual') return html + renderAnnualPlan(); // 年間計画は独自の店舗スコープあり
   if (budgetTab==='setup' && (_budgetStore==='ALL' || !_budgetStore)) { var _vsb=getVisibleStores(); if(_vsb.length) _budgetStore=_vsb[0].id; }
@@ -21180,7 +21183,19 @@ function renderMeetingReview(){
   if (ks.length > 1) html+='<div class="card" style="border:1.5px solid '+sumCol+'"><div class="card-title"><i class="ti ti-clipboard-check" style="color:'+sumCol+'"></i>'
     +scopeName+t(' 当月サマリー',' — this month')+'<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+ym+'</span></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:8px">'
-    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('売上 実績/予算','Sales act/bud')+(_sumPace?t('（前日まで）',' (to date)'):'')+'</div><div style="font-size:16px;font-weight:800;color:'+_meetStatColor(_meetStatus('sales',totSales,_sumBud,false))+'">'+fmtK(totSales)+'</div><div style="font-size:9px;color:var(--muted)">/ '+fmtK(_sumBud)+'（'+(_meetDiffStr('sales',totSales,_sumBud,false,'',true)||('±0'))+'）</div></div>'
+    /* v940: 予算が 9px で実績の下に埋もれていたので、実績と同じ行に大きく並べる。
+       ★_sumPace のとき _sumBud は「前日まで」のペース予算であって月間予算ではない。
+         月間予算(totBud)は別に併記する。モードで「予算」の意味が変わったまま
+         大きく出すのが一番まぎらわしい。 */
+    +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('売上 実績/予算','Sales act/bud')+(_sumPace?t('（前日まで）',' (to date)'):'')+'</div>'
+    +'<div style="display:flex;align-items:baseline;justify-content:center;gap:3px;flex-wrap:wrap;line-height:1.25">'
+    +'<span style="font-size:16px;font-weight:800;color:'+_meetStatColor(_meetStatus('sales',totSales,_sumBud,false))+'">'+fmtK(totSales)+'</span>'
+    +'<span style="font-size:11px;color:var(--muted)">/</span>'
+    +'<span style="font-size:14px;font-weight:800;color:var(--tm)">'+fmtK(_sumBud)+'</span>'
+    +'</div>'
+    +'<div style="font-size:9.5px;color:var(--muted)">（'+(_meetDiffStr('sales',totSales,_sumBud,false,'',true)||('±0'))+'）</div>'
+    +(_sumPace?('<div style="font-size:10px;color:var(--tm);margin-top:1px">'+t('月間予算','Month budget')+' <b>'+fmtK(totBud)+'</b></div>'):'')
+    +'</div>'
     +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達 KPI','Missed KPIs')+'</div><div style="font-size:16px;font-weight:800;color:'+(totMiss===0?'var(--green)':'var(--red)')+'">'+totMiss+' / '+totKpi+'</div><div style="font-size:9px;color:var(--muted)">'+t('要対策','need action')+'</div></div>'
     +'<div style="text-align:center"><div style="font-size:9.5px;color:var(--muted)">'+t('未達のある店','Stores w/ miss')+'</div><div style="font-size:16px;font-weight:800;color:'+(storeMiss===0?'var(--green)':'var(--yellow)')+'">'+storeMiss+' / '+ks.length+'</div><div style="font-size:9px;color:var(--muted)">'+t('店舗','stores')+'</div></div>'
     +'</div></div>';
@@ -31045,7 +31060,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '939';
+const APP_VERSION = '940';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
