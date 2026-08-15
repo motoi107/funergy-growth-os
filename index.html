@@ -1849,7 +1849,9 @@ function totoyaScopeRates(storeIds, period){
   (storeIds||[]).forEach(function(sid){
     if(typeof isTotoyaStore!=='function' || !isTotoyaStore(sid)) return;
     var tk=totoyaKpiCalc(sid, period);
-    parts.push({ sid:sid, ikura:tk.eff.ikura, bowls:tk.eff.bowls,
+    /* v935: 日別の内訳を引くために月も持たせる。period は '2026.8' の形なので揃える。 */
+    var _pym=(function(){ var q=String(period||'').split('.'); return (q.length>1)?(q[0]+'-'+String(q[1]).padStart(2,'0')):''; })();
+    parts.push({ sid:sid, ym:_pym, ikura:tk.eff.ikura, bowls:tk.eff.bowls,
       misoUp:tk.eff.misoUp, misoAll:tk.eff.misoAll,
       srcIkura:tk.src.ikura, srcBowls:tk.src.bowls,
       srcMisoUp:tk.src.misoUp, srcMisoAll:tk.src.misoAll,
@@ -23502,22 +23504,56 @@ function misoSub(k){
   return _kpiRow2(t('味噌汁を付けた数','Miso attached'), (k.misoUp||0).toLocaleString())
     + _kpiRow2(t('対象の丼数','Eligible bowls'), (k.misoAll||0).toLocaleString())
     + _kpiRow2(t('UP率','Rate'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?(t('目標','tgt')+' '+k.misoTgt+'%'):'')
-    + _totoyaSrcRows(k.totoyaParts, 'srcMisoUp', 'srcMisoAll', t('分子','Num'), t('分母','Den'));
+    + _totoyaSrcRows(k.totoyaParts, 'srcMisoUp', 'srcMisoAll', t('分子','Num'), t('分母','Den'), 'misoUpgrade', 'misoTotal');
 }
 /* v934: 数字の出所を出す。手入力 / Toast / menu_mix のどれかで原因が変わる。
    ★分子と分母で出所が違うときは赤で警告する。別の母集団を割っていることになる。 */
-function _totoyaSrcRows(parts, numKey, denKey, numLbl, denLbl){
+/* v935: 日別の内訳。毎日おかしいのか特定の日だけかで、疑う先が変わる。
+   ★Toast連携の値は toast_sales の列をそのまま読んでいるだけ（1271行）で、
+     判定条件はEdge Function側にある。ここで直せないので、直すための材料を出す。
+   ★率が50%を超える日に印を付ける。目標15%に対して明らかに外れている日。 */
+function _totoyaDayRows(sid, ym, numField, denField){
+  if(!sid || !ym) return '';
+  var da={}; try{ da=(typeof getDailyActuals==='function')?(getDailyActuals(sid)||{}):{}; }catch(e){ return ''; }
+  var days=Object.keys(da).filter(function(d){ return d.indexOf(ym)===0; }).sort();
+  if(!days.length) return '';
+  var cells=[], any=false, oddN=0;
+  days.forEach(function(d){
+    var v=da[d]||{}; var nv=v[numField], dv=v[denField];
+    if(nv==null && dv==null) return;
+    any=true;
+    var n2=Number(nv)||0, d2=Number(dv)||0;
+    var odd=(d2>0 && n2/d2>0.5) || (d2===0 && n2>0) || (n2>d2);
+    if(odd) oddN++;
+    cells.push('<span style="white-space:nowrap;color:'+(odd?'var(--red)':'var(--muted)')+(odd?';font-weight:700':'')+'">'
+      + escapeHtml(d.slice(5).replace('-','/')) + ' ' + n2 + '/' + (dv==null?'—':d2) + '</span>');
+  });
+  if(!any) return '';
+  return '<details style="margin-top:4px"><summary style="cursor:pointer;font-size:10px;color:var(--muted)">'
+    + t('日別で見る','By day') + '（' + cells.length + t('日','d') + '）'   /* 並ぶ数と一致させる */
+    + (oddN?('<span style="color:var(--red);font-weight:700"> ★'+oddN+t('日が50%超','d over 50%')+'</span>'):'')
+    + '</summary><div style="display:flex;flex-wrap:wrap;gap:6px;font-size:9.5px;padding:4px 0 0">'
+    + cells.join('') + '</div></details>';
+}
+function _totoyaSrcRows(parts, numKey, denKey, numLbl, denLbl, numField, denField){
   if(!parts || !parts.length) return '';
   var h='';
   parts.forEach(function(p){
     var sn=p[numKey]||'—', sd=p[denKey]||'—';
     var bad=(sn!==sd);
+    /* v935: 店舗ごとの実数と率も出す。全店を選べば3店を並べて比較できる。 */
+    var nv=(numKey==='srcIkura')?p.ikura:p.misoUp, dv=(numKey==='srcIkura')?p.bowls:p.misoAll;
+    var rt=(dv>0 && nv!=null)?(Math.round(nv/dv*1000)/10):null;
     h += '<div style="font-size:10.5px;color:var(--muted);padding:4px 0 0">'
       +  '<b>'+escapeHtml((typeof mcStoreLabel==='function')?mcStoreLabel(p.sid):p.sid)+'</b> '
+      +  ((nv!=null||dv!=null)?('<b style="color:var(--tm)">'+(nv==null?'—':nv)+' / '+(dv==null?'—':dv)+'</b>'
+          + (rt!=null?(' <b style="color:'+(rt>50?'var(--red)':'var(--tm)')+'">'+rt.toFixed(1)+'%</b>'):'')
+          + '　'):'')
       +  numLbl+' <span style="color:'+(bad?'var(--red)':'var(--accent)')+'">['+escapeHtml(sn)+']</span>'
       +  ' ／ '+denLbl+' <span style="color:'+(bad?'var(--red)':'var(--accent)')+'">['+escapeHtml(sd)+']</span>'
       +  (bad?' <span style="color:var(--red);font-weight:700">出所が違います</span>':'')
       +  '</div>';
+    if(numField) h += _totoyaDayRows(p.sid, p.ym, numField, denField);
     ['ikura','bowls'].forEach(function(tag){
       var a=(p.hits||{})[tag]; if(!a || !a.length) return;
       h += '<div style="font-size:9.5px;color:var(--muted);padding-left:10px">'
@@ -23532,7 +23568,7 @@ function ikuraSub(k){
   return _kpiRow2(t('いくらシャワー数','Ikura shower'), (k.ikura||0).toLocaleString())
     + _kpiRow2(t('対象の丼数','Eligible bowls'), (k.ikuraBowls||0).toLocaleString())
     + _kpiRow2(t('実施率','Rate'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?(t('目標','tgt')+' '+k.ikuraTgt+'%'):'')
-    + _totoyaSrcRows(k.totoyaParts, 'srcIkura', 'srcBowls', t('分子','Num'), t('分母','Den'));
+    + _totoyaSrcRows(k.totoyaParts, 'srcIkura', 'srcBowls', t('分子','Num'), t('分母','Den'), 'ikuraShower', 'ikuraBowls');
 }
 function drinkSubDetail(k){
   if(!k) return '';
@@ -30578,7 +30614,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '934';
+const APP_VERSION = '935';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
