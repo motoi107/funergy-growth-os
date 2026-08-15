@@ -16241,6 +16241,23 @@ function dowSegBreakdown(dow, ym) {
 }
 /* 予実の客数予算（月合計）。区分別に客数×曜日回数を合算。
    集客数KPIの目標として使う（予実連動）。offset=0今月/-1先月 */
+/* v932: テイクアウトの売上予算（月合計）。店内客単価の目標を出すために使う。
+   ★計算式は増やさない。曜日別は dowSegMonthly、区分別は segSales に任せる。
+   ★日別手入力の月は区分の内訳が残らない（monthSalesBudget 22438-22448行）。
+     そのときも予算定義側の値を返す＝手入力による増減は店内側に寄る。 */
+function monthTakeoutSalesBudget(storeId, ym){
+  var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(storeId, ym):null;
+  if(!b) return 0;
+  try{
+    if(typeof usesDowMode==='function' && usesDowMode(b)){
+      var p=String(ym||'').split('-');
+      var counts=weekdayCountsForMonth(parseInt(p[0],10), parseInt(p[1],10));
+      return dowSegMonthly(getDow(b),'takeout',counts)||0;
+    }
+    var sg=getSegments(b);
+    return (sg&&sg.takeout)?(segSales(sg.takeout,'takeout')||0):0;
+  }catch(e){ return 0; }
+}
 function budgetTakeoutMonthly(storeId, offset){
   var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
   var ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
@@ -20293,7 +20310,10 @@ function _meetSegExtra(k, key, storeId, ym, paceFrac, unit){
       seg(t('テイクアウト','TO'), k.toCount, (k.takeoutBud!=null?Math.round(k.takeoutBud*pf):null), false, unit) ]); }
   if(key==='ppa'){ var segs={}; try{ var b=getBudgetForMonth(storeId, ym); segs=(typeof getSegments==='function')?getSegments(b):{}; }catch(e){}
     var tl=(segs.lunch?parseFloat(segs.lunch.spend):0)||null, td=(segs.dinner?parseFloat(segs.dinner.spend):0)||null, tt=(segs.takeout?parseFloat(segs.takeout.spend):0)||null;
-    return wrap([ seg(t('ランチ','L'), k.ppaLunch, tl, true), seg(t('ディナー','D'), k.ppaDinner, td, true), seg(t('テイクアウト','TO'), k.ppaTO, tt, true) ]); }
+    /* v932: 先頭に「店内」を出す。L/Dの内訳より前に、テイクアウトを抜いた全体を見せる。
+       見出しの客単価はテイクアウト込みなので、その差がそのまま影響の大きさになる。 */
+    return wrap([ seg(t('店内','Dine-in'), k.ppaDine, k.ppaDineBudget, true),
+      seg(t('ランチ','L'), k.ppaLunch, tl, true), seg(t('ディナー','D'), k.ppaDinner, td, true), seg(t('テイクアウト','TO'), k.ppaTO, tt, true) ]); }
   /* v902: リピート率のL/D。日次実績の firstTimeBowls・repeatBowls の L/D 別項目から出す（既存関数）。
      目標はL/D別に持っていないため、店舗のリピート率目標を両方に当てる。 */
   if(key==='repeat'){
@@ -23201,13 +23221,21 @@ function repeatRateCard(scopeStores, days){
 
 /* 客数（集客）予算 月合計：ランチ＋ディナー。dow方式が無ければセグメントguestsで代替 */
 function monthGuestBudget(storeId, offset){
+  /* v932: テイクアウトを足す。
+     売上予算(monthSalesBudget)は lunch+dinner+takeout なのに、ここは lunch+dinner だけだった。
+     そのため 客単価目標 = 売上予算/客数予算 の分子だけTO込みになり、
+     テイクアウト予算を積むほど目標客単価が勝手に上がっていた。
+     実績側の客数もTO込み（keyKpiStats 23250行）なので、目標もTO込みが正しい。
+     ★ここ1か所で 会議タブ・ダッシュボード・本部集計・KPI推移一覧 が同時に揃う。 */
   var gl=budgetGuestsMonthly(storeId,'lunch',offset);
   var gd=budgetGuestsMonthly(storeId,'dinner',offset);
-  if(gl!=null || gd!=null) return (gl||0)+(gd||0);
+  var gt=budgetTakeoutMonthly(storeId,offset);
+  if(gl!=null || gd!=null || gt!=null) return (gl||0)+(gd||0)+(gt||0);
   var d=new Date(); d.setMonth(d.getMonth()+(offset||0));
   var ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
   var segs=getSegments(getBudgetForMonth(storeId, ym));
-  var g=(parseFloat(segs.lunch.guests)||0)+(parseFloat(segs.dinner.guests)||0);
+  /* v932: 区分別モードの側も揃える。テイクアウトは orders で持つ（segSales と同じ）。 */
+  var g=(parseFloat(segs.lunch.guests)||0)+(parseFloat(segs.dinner.guests)||0)+(segs.takeout?(parseFloat(segs.takeout.orders)||0):0);
   return g>0?Math.round(g):null;
 }
 /* 前月の日付リスト（リピート率の前月比用） */
@@ -23223,6 +23251,7 @@ function prevMonthDaysList(ym){
 function keyKpiStats(scopeStores, days){
   var sales=0,budget=0,guests=0,food=0,labor=0,laborHours=0,dayHasActual={};
   var lunchS=0,lunchG=0,dinnerS=0,dinnerG=0,toLS=0,toDS=0,toLC=0,toDC=0;
+  var guestsTO=0, toSalesBud=0;   /* v932: 店内客単価のための集計（実績のTO客数／TO売上予算） */
   var salesBud=0,guestBud=0,fcBud$=0,laborBud$=0,segSales$=0,hasGuestBud=false;
   var lunchGuestBud=0,dinnerGuestBud=0,takeoutBud=0,hasLGB=false,hasDGB=false,hasTGB=false;
   var todayStr=todayISO();
@@ -23249,6 +23278,11 @@ function keyKpiStats(scopeStores, days){
         sales+=ov.actual;
         var cnt = metric==='bowls' ? ((Number(ov.bowls)||0)+(Number(ov.takeoutBowls)||0)) : (Number(ov.guests)||0);
         guests+=cnt;
+        /* v932: 店内客単価のために、テイクアウト分を業態に合わせて数える。
+           bowls は丼数、それ以外は注文件数。丼数と件数は別物なので
+           toCount(件数) で丼数を代用してはいけない。 */
+        guestsTO += (metric==='bowls') ? (Number(ov.takeoutBowls)||0)
+                  : ((Number(ov.toLunchCount)||0)+(Number(ov.toDinnerCount)||0));
         if(ov.actual>0){
           /* 原価は月次 Invoice＋買い出し＋食材移動 で後段集計（棚卸は月末のみ）*/
           if(typeof toastLaborHoursForDate==='function') laborHours+=toastLaborHoursForDate(s.id,d.date);
@@ -23276,6 +23310,8 @@ function keyKpiStats(scopeStores, days){
     var _glb=budgetGuestsMonthly(s.id,'lunch',ofst); if(_glb!=null){ lunchGuestBud+=_glb; hasLGB=true; }
     var _gdb=budgetGuestsMonthly(s.id,'dinner',ofst); if(_gdb!=null){ dinnerGuestBud+=_gdb; hasDGB=true; }
     var _gtb=budgetTakeoutMonthly(s.id,ofst); if(_gtb!=null){ takeoutBud+=_gtb; hasTGB=true; }
+    /* v932: 店内客単価の目標の分子に使う。 */
+    try{ toSalesBud += (monthTakeoutSalesBudget(s.id, ym)||0); }catch(e){}
   });
   var rs=repeatStats(scopeStores,days);
   var rsPrev=repeatStats(scopeStores, prevMonthDaysList(ym));
@@ -23315,6 +23351,19 @@ function keyKpiStats(scopeStores, days){
     ppaLunch: (function(){ var g=((toLS+toDS)>0)?Math.max(0,lunchG-toLC):lunchG; var sv=((toLS+toDS)>0)?(lunchS-toLS):lunchS; return g>0?Math.round(sv/g*100)/100:null; })(), lunchGuests:lunchG,
     ppaDinner: (function(){ var g=((toLS+toDS)>0)?Math.max(0,dinnerG-toDC):dinnerG; var sv=((toLS+toDS)>0)?(dinnerS-toDS):dinnerS; return g>0?Math.round(sv/g*100)/100:null; })(), dinnerGuests:dinnerG,
     ppaTO: ((toLS+toDS)>0&&(toLC+toDC)>0)?Math.round((toLS+toDS)/(toLC+toDC)*100)/100:null,
+    /* v932: 店内だけの客単価。テイクアウトを分子・分母の両方から抜く。
+       分母だけ抜くと、テイクアウト売上が店内客数に乗って単価が跳ね上がる。 */
+    dineGuests: Math.max(0, guests - guestsTO),
+    dineSales:  Math.max(0, sales - toLS - toDS),
+    ppaDine: ((guests-guestsTO)>0)
+      ? Math.round(Math.max(0, sales-toLS-toDS)/(guests-guestsTO)*100)/100 : null,
+    /* v932: 店内客単価の目標。①で guestBud はテイクアウト込みになったので、
+       店内の客数予算は guestBud − takeoutBud で戻す。 */
+    ppaDineBudget: (function(){
+      var gd2 = guestBud - (hasTGB?takeoutBud:0);
+      if(!(hasGuestBud && gd2>0)) return null;
+      return Math.round(Math.max(0,(salesBud||budget) - toSalesBud)/gd2*100)/100;
+    })(),
     fcRate: sales?Math.round(food/sales*1000)/10:0,
     laborRate: laborSalesCore?Math.round(labor/laborSalesCore*1000)/10:(sales?Math.round(labor/sales*1000)/10:0),
     repeatRate: (rs.has&&rs.total>0)?Math.round(rs.repeat/rs.total*1000)/10:null,
@@ -30419,7 +30468,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '931';
+const APP_VERSION = '932';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
