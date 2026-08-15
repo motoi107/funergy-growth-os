@@ -267,6 +267,13 @@ body.shift-wide .main { max-width:1900px; }
      ★sticky の店名行はこの2列の外にあるので影響しない（v913の設計を維持）。 */
   .meet-card-2col { display:grid; grid-template-columns:minmax(0,680px) minmax(0,1fr);
                     column-gap:14px; align-items:start; }
+  /* v931: 上部のグラフ2つ。左＝売上の累計、右＝週ごとの達成率。
+     ★1.4fr : 1fr。累計線は31点の時系列なので幅がそのまま解像度になる。
+       ヒートマップは5行×4〜6週の固定グリッドで、広げても間延びするだけ。
+     ★1179px以下ではこの指定が当たらず、ただの div ＝縦積みになる
+       （ダッシュボードの狭い幅と同じ見え方）。 */
+  .meet-graph-2col { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);
+                     column-gap:14px; align-items:start; }
   /* KPIタイル。1枚に入るのは「目標／実績」の2ボックスだけなので、
      広い画面で1列に積むと極端に間延びする。
      ★列数は auto-fit。右カラムの幅は画面幅・左カラム・余白の積み重ねで決まるので、
@@ -20354,6 +20361,27 @@ function _meetStoreCard(store, k, ym, isCurrent){
      店名の行だけ sticky にして「どの店を見ているか」と「予算の考え方」を残す。
      KPIの数字はここに載せない（カードと重複させないのがこの版の目的）。 */
   try { h += _meetStorePinHtml(store, missCount, ym); } catch(e){}
+  /* v931: 月の進み方を先に見せる。数字を詰めるのはその後。
+     ダッシュボードの店舗カードから、会議タブに無いグラフ2つだけを持ってくる。
+     売上/進捗予算・着地予測・KPI 2×2 は下に全部あるので持ってこない
+     （しかも確定月はPL値とアプリ値で食い違う）。
+     ★このグラフは速報（アプリの日次実績）だけで描かれる。mdStoreSeries は
+       getDailyActuals から積むのでPLを見ない。すぐ下の売上ヒーローには
+       v930 でPL値が出るため、出所を必ず書く（Motoさん確認済み・案A）。
+     ★店名の固定行(sticky)より下に置く。上に置くと sticky が効かなくなる。 */
+  (function(){
+    var _ser=null; try{ _ser=mdStoreSeries(store.id, ym); }catch(e){ return; }
+    var _chart='', _heat='';
+    try{ _chart=mdSalesChartHtml(_ser, salesCol, 74, true, (isCurrent?(landing||0):0))||''; }catch(e){}
+    try{ _heat=mdWeekHeatHtml(store.id, ym)||''; }catch(e){}
+    if(!_chart && !_heat) return;   /* どちらも描けない月は行ごと出さない */
+    h+='<div class="meet-graph-2col" style="margin-bottom:8px">'
+      + '<div>'+_chart+'</div><div>'+_heat+'</div></div>'
+      + '<div style="font-size:9px;color:var(--muted);margin:-4px 0 8px">'
+      + '<i class="ti ti-info-circle"></i> '
+      + t('上の2つはアプリの日次実績で描いています（会計PLは月次の1点しか無いため）。','Both charts are drawn from the app daily actuals (the accounting PL has one monthly figure only).')
+      + '</div>';
+  })();
   /* v928: ここから2列。左＝売上ヒーロー、右＝KPIタイル。
      店名の固定行(sticky)はこの外に置く。中に入れると sticky が
      グリッドの列の中でしか効かなくなる。 */
@@ -30391,7 +30419,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '930';
+const APP_VERSION = '931';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
