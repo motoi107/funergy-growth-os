@@ -81,6 +81,31 @@ v937・v939 でそれぞれ踏んだ。
 `V.between()` は**見つからなければ例外**にする。黙って空文字を返して
 「主張が全部通った」ように見えるのが一番わるい。
 
+### 属性ではなく性質を見る（v942 で発覚）
+
+v941 は「circle に `vector-effect` が付いている」を主張して通っていた。
+だが `vector-effect` は**線の太さにしか効かない**。丸は楕円につぶれたままだった。
+**属性が付いていることは確かめたが、丸が丸いことは確かめていなかった。**
+
+```js
+✗ V.ok(V.has(F, /vector-effect="non-scaling-stroke"/), '点に付いている')
+○ V.ok(V.noDistortShapes(svg).ok, '形が崩れる要素（circle/rect/text）を置いていない')
+○ V.ok(V.strokesScaleSafe(svg).ok, '線を引く要素すべてに non-scaling-stroke')
+```
+
+### 数を数えない（教訓(65)）
+
+```js
+✗ V.ok(V.count(F, /vector-effect/g) === 6, '6つに付いている')
+    → v943 が目盛り線を足しただけで落ちる。実際に4本落ちた。
+✗ V.ok((svg.match(/<line/g)||[]).length === 3, '線は3本')
+
+○ V.ok(V.strokesScaleSafe(svg).ok, '全部に付いている')
+○ V.ok(/<line x1="0" y1="/.test(svg), '天井の線がある')
+```
+
+「いくつある」ではなく「置いたものが残っている」「全部が条件を満たす」で書く。
+
 ---
 
 ## 凍結の再ベース

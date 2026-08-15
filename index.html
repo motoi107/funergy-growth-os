@@ -3177,6 +3177,64 @@ function mdSalesChartHtml(ser, color, h, solo, forecast){
       + '" stroke-width="1.6" stroke-dasharray="2 2.5" opacity=".62" vector-effect="non-scaling-stroke"/>';
   }
   var xy = X(iy);
+  /* v943: 目盛り。★ラベルは SVG の外（HTML）に置く。
+     preserveAspectRatio="none" では <text> も横に伸びるため（v941/v942 と同じ理屈）。
+     枠は viewBox をぴったり伸ばすので、viewBox 座標の % と枠の % は厳密に一致する。 */
+  var axL = 40;                       /* 左に空ける幅（$ラベルの場所） */
+  var pctY = function(v){ return (Y(v) / (h + lab) * 100).toFixed(2); };
+  var pctX = function(i){ return (i / (n - 1) * 100).toFixed(2); };
+  /* きりの良い刻み。mx は実績・予算・予測の最大×1.06 なので半端な値になる。 */
+  var niceStep = function(mv, want){
+    var raw = (mv / want) || 1;
+    var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    var q = raw / mag;
+    return (q <= 1 ? 1 : q <= 2 ? 2 : q <= 2.5 ? 2.5 : q <= 5 ? 5 : 10) * mag;
+  };
+  var axFmt = function(v){
+    if (v >= 1000000) return '$' + (v / 1000000).toFixed(v >= 10000000 ? 0 : 1) + 'M';
+    if (v >= 1000)    return '$' + Math.round(v / 1000) + 'k';
+    return '$' + Math.round(v);
+  };
+  var gy = [], stp = niceStep(mx, 5);   /* 5分割。4だと $1M 規模で横線が2本しか出ない */
+  for (var gv = stp; gv < mx * 0.985 && gy.length < 5; gv += stp) gy.push(gv);
+  /* 日付は7日ごと。両端は必ず出す。 */
+  var gx = [];
+  for (var gi2 = 7; gi2 < n - 1; gi2 += 7) gx.push(gi2);
+  /* ★月末は必ず出す（目標の期日なので）。両端と週の目盛りを候補にして間引く。 */
+  var xlab = [0].concat(gx);
+  if (xlab.indexOf(n - 1) < 0) xlab.push(n - 1);
+  var endP = Number(pctX(n - 1));
+  xlab = xlab.filter(function(i){
+    return i === 0 || i === n - 1 || Math.abs(Number(pctX(i)) - endP) >= 8;
+  });
+  /* ★前日のラベルと近すぎる日付は消す（8/14 と 8/15 が重なる） */
+  var iyP = Number(pctX(iy));
+  xlab = xlab.filter(function(i){ return Math.abs(Number(pctX(i)) - iyP) >= 9; });
+  var gridH = gy.map(function(v){
+    return '<line x1="0" y1="' + Y(v) + '" x2="' + w + '" y2="' + Y(v)
+      + '" stroke="#efe9e1" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+  }).join('');
+  var gridV = gx.map(function(i){
+    return '<line x1="' + X(i) + '" y1="0" x2="' + X(i) + '" y2="' + h
+      + '" stroke="#f2ece4" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+  }).join('');
+  var baseAx = '<line x1="0" y1="' + h + '" x2="' + w + '" y2="' + h
+    + '" stroke="#ddd5ca" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+  var yLab = '<div style="position:absolute;left:0;top:0;bottom:0;width:' + (axL - 4)
+    + 'px;font-size:8.5px;color:var(--muted);font-weight:600;pointer-events:none">'
+    + gy.map(function(v){
+        return '<div style="position:absolute;right:0;top:' + pctY(v)
+          + '%;transform:translateY(-50%);white-space:nowrap">' + axFmt(v) + '</div>';
+      }).join('')
+    + '<div style="position:absolute;right:0;top:' + pctY(0)
+    + '%;transform:translateY(-50%)">$0</div></div>';
+  var xLab = xlab.map(function(i){
+      var p = Number(pctX(i));
+      var pos = p < 5 ? 'left:0' : (p > 95 ? 'right:0' : 'left:' + p + '%;transform:translateX(-50%)');
+      return '<div style="position:absolute;' + pos + ';white-space:nowrap">' + md(full[i].date) + '</div>';
+    }).join('')
+    + '<div style="position:absolute;' + (iyP > 88 ? 'right:0' : 'left:' + iyP + '%;transform:translateX(-50%)')
+    + ';white-space:nowrap;color:' + color + '">前日 ' + md(el[iy].date) + '</div>';
   /* v941: 実績と予算の差を面で見せる。累計線は0から積み上がるので
      2本ともほぼ同じ傾きの直線に見えて、差が読み取れない。 */
   var gap = '';
@@ -3195,9 +3253,13 @@ function mdSalesChartHtml(ser, color, h, solo, forecast){
     + '</div>'
     /* v941: ②高さを固定pxから幅に追従させる。aspect-ratio で幅から決め、min/max で挟む。
        携帯（幅350前後）で約125px、PCの広いカードで150px。携帯用とPC用を分けない。 */
+    /* v943: 左に $ラベルのぶんを空ける。ラベルは絶対配置で % で合わせる。 */
+    + '<div style="position:relative;padding-left:' + axL + 'px">'
+    + yLab
     + '<svg viewBox="0 0 ' + w + ' ' + (h + lab) + '" preserveAspectRatio="none" '
     + 'style="display:block;width:100%;height:auto;aspect-ratio:' + w + '/' + (h + lab)
     + ';min-height:110px;max-height:150px">'
+    + gridH + gridV + baseAx
     /* v941: ④月末予算の水平線は常に出す（天井が見える） */
     + '<line x1="0" y1="' + Y(budEnd) + '" x2="' + w + '" y2="' + Y(budEnd)
     + '" stroke="#e6ded4" stroke-width="1" vector-effect="non-scaling-stroke"/>'
@@ -3212,12 +3274,11 @@ function mdSalesChartHtml(ser, color, h, solo, forecast){
          どんな倍率でも真円になる。stroke-width が直径。 */
     + '<line x1="' + xy + '" y1="' + Y(actEnd) + '" x2="' + xy + '" y2="' + Y(actEnd)
     + '" stroke="' + color + '" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>'
-    + '</svg>'
-    + '<div style="display:flex;justify-content:space-between;font-size:8.5px;color:var(--muted);'
-    + 'font-weight:600;margin-top:-2px">'
-    + '<span>' + md(full[0].date) + '</span>'
-    + '<span style="color:' + color + '">前日 ' + md(el[iy].date) + '</span>'
-    + '<span>' + md(full[n - 1].date) + '</span></div></div>';
+    + '</svg></div>'
+    /* v943: 日付の軸。両端そろえの3つ並びをやめ、縦線と同じ位置に置く。 */
+    + '<div style="position:relative;height:11px;margin-left:' + axL
+    + 'px;font-size:8.5px;color:var(--muted);font-weight:600">'
+    + xLab + '</div></div>';
 }
 function mdSalesSparkHtml(ser, color, h){
   h = h || 46;
@@ -31081,7 +31142,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '942';
+const APP_VERSION = '943';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
