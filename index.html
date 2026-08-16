@@ -28419,6 +28419,213 @@ function exportAllSlPayrollCSV(d1, d2){
   downloadCSV(rows, 'シフトリーダー手当_全店_' + acctMonthLabel() + '.csv');
   showToast('全店のシフトリーダー手当 ' + _money(grand) + ' を出力しました','success');
 }
+/* ===== v951: 本部シフトイン（現場時給での店舗計上）=====
+   本部の人間が店舗に入ったぶんを、月給ではなく現場時給($17)で店舗に計上する。
+   その合計を出して、本部経費から同額を引けるようにする。Motoさん指示。
+
+   ★対象は「月給者で、その店舗の所属でない人」。役職名で列挙しない。
+     役職が増えたとき（Customer Service Manager 等）に取りこぼすため。
+   ★自店で働く Store Manager は対象外。月給が salary として日割り計上済みで、
+     _laborCoreForYmRaw も monthlyNames で hourly から除いている。二重計上になる。 */
+function hqSiteEmpOf(name){
+  try{ return (getEmployees()||[]).find(function(x){ return x && x.name===name; }) || null; }catch(e){ return null; }
+}
+/* v952: 対象は【本部所属の月給者】だけ。
+   ★v951 は「月給者で、その店舗の所属でない人」としていたため、
+     F01 の Store Manager が F02 を手伝った分まで対象になっていた。
+     Store Manager は固定給の日割りに戻す（Motoさん指示）。
+   ★本部の人は store:'ALL'（DEFAULT_EMPLOYEES 7189行〜）。
+     'ALL' を直接見ず「STORES に無い店舗ID＝本部」で判定する。
+     'OFFICE' 等の別の値が入っても拾えるようにするため。 */
+function isHqStaff(emp){
+  if(!emp) return false;
+  if(typeof empPayType!=='function' || empPayType(emp)!=='monthly') return false;
+  var st = emp.store;
+  if(!st) return true;                                   /* 未設定は本部扱い */
+  try{ return !(STORES||[]).some(function(s){ return s && s.id===st; }); }
+  catch(e){ return false; }
+}
+function isHqSiteWorker(emp, storeId){
+  /* 本部所属なら、どの店に入っても対象。店舗所属の月給者は対象外。 */
+  return isHqStaff(emp) && emp.store !== storeId;
+}
+/* その店・その期間の本部シフトイン。
+   ★週の区切りと40時間の判定を _laborCoreForYmRaw(30906行) と完全にそろえる。
+     この額は店舗人件費に実際に乗っている額であり、本部経費から引く額でもある。
+     別の式で出すと1円ずれ、引き算が合わなくなる。 */
+function hqSiteLaborData(storeId, fromISO, toISO){
+  var out = { store:storeId, from:fromISO, to:toISO, rows:[], total:0, hours:0, noWage:[] };
+  try{
+    var yms = {};
+    yms[String(fromISO).slice(0,7)] = 1; yms[String(toISO).slice(0,7)] = 1;
+    var byName = {};        /* name -> {reg, ot, hours, days:{}} */
+    /* ★月をまたぐ期間では、境界の週が両方の月の週リストに現れる
+       （laborMonthWeeks は1日の直前の日曜から始まるため）。
+       同じ週を2回足すと時間も金額も倍になる。日曜で重複を外す。 */
+    var seenWeek = {};
+    Object.keys(yms).forEach(function(ym){
+      laborMonthWeeks(ym).forEach(function(w){
+        if(seenWeek[w.sun]) return; seenWeek[w.sun] = 1;
+        var weekHours = {}, weekDays = {};
+        laborWeekDays(w.sun).forEach(function(dt){
+          if(dt < fromISO || dt > toISO) return;
+          var labor = getTipLabor(storeId, dt); if(!labor) return;
+          Object.keys(labor).forEach(function(n){
+            var h = _laborHrs(labor[n]); if(!(h>0)) return;
+            if(!isHqSiteWorker(hqSiteEmpOf(n), storeId)) return;
+            weekHours[n] = (weekHours[n]||0) + h;
+            (weekDays[n] = weekDays[n] || []).push(dt);
+          });
+        });
+        Object.keys(weekHours).forEach(function(n){
+          var wh = weekHours[n];
+          /* ★週40時間超は1.5倍（Motoさん指示②）。判定は週ごと。_laborCoreForYmRaw と同じ。 */
+          var ot = Math.max(0, wh - 40), reg = wh - ot;
+          if(!byName[n]) byName[n] = { reg:0, ot:0, hours:0, days:[] };
+          byName[n].reg += reg; byName[n].ot += ot; byName[n].hours += wh;
+          byName[n].days = byName[n].days.concat(weekDays[n]||[]);
+        });
+      });
+    });
+    var r2 = function(x){ return Math.round(x*100)/100; };
+    Object.keys(byName).sort().forEach(function(n){
+      var a = byName[n], e = hqSiteEmpOf(n);
+      var wage = (typeof empSiteWageOf==='function') ? (Number(empSiteWageOf(e))||0) : 0;
+      var amt = r2(a.reg*wage + a.ot*wage*1.5);
+      var row = { name:n, title:(e&&e.title)||'', store:(e&&e.store)||'', wage:wage,
+                  reg:r2(a.reg), ot:r2(a.ot), hours:r2(a.hours), amount:amt,
+                  days:a.days.sort() };
+      out.rows.push(row);
+      out.hours = r2(out.hours + a.hours);
+      out.total = r2(out.total + amt);
+      /* ★現場時給が未設定だと $0 で通る。店舗にも本部にも乗らない金額が生まれるので出す。 */
+      if(!(wage>0)) out.noWage.push(row);
+    });
+  }catch(e){ console.warn('hqSiteLaborData', e); }
+  return out;
+}
+/* 全店ぶん */
+function hqSiteLaborAll(fromISO, toISO){
+  var out = { from:fromISO, to:toISO, stores:[], total:0, hours:0, noWage:0 };
+  try{
+    (getVisibleStores()||[]).forEach(function(s){
+      var d = hqSiteLaborData(s.id, fromISO, toISO);
+      if(!d.rows.length) return;
+      out.stores.push(d);
+      out.total = Math.round((out.total + d.total)*100)/100;
+      out.hours = Math.round((out.hours + d.hours)*100)/100;
+      out.noWage += d.noWage.length;
+    });
+  }catch(e){ console.warn('hqSiteLaborAll', e); }
+  return out;
+}
+/* v952: 本部以上に限定（Motoさん指示）。CEO / GM / 経理 / AM / Head Chef。
+   ★Store Manager(g4) は ROLE_ALIAS で curRole が 'am' になる。
+     ロール名だけでは AM と区別できない（v851 と同じ落とし穴）。curRealRole で見る。
+     AM は 'am'、Store Manager は 'g4'。
+   ★事務Crew(office_crew) は noWage で給与が一切見えない役職なので入れない。 */
+function canSeeHqSite(){
+  if(['ceo','gm','office','chef'].indexOf(curRole) >= 0) return true;
+  return curRealRole === 'am';
+}
+function hqSitePayrollRows(storeId, fromISO, toISO){
+  var d = hqSiteLaborData(storeId, fromISO, toISO);
+  var nm = (typeof _owStoreName==='function') ? _owStoreName(storeId) : storeId;
+  var rows = [];
+  rows.push(['【本部シフトイン】', nm, fromISO + ' 〜 ' + toISO]);
+  rows.push(['この額は店舗の人件費に含まれています。本部経費からは同額を除いてください。']);
+  rows.push(['氏名','役職','所属','通常(h)','残業(h)','時間計(h)','現場時給($)','金額($)','日付']);
+  d.rows.forEach(function(r){
+    rows.push([r.name, r.title, r.store, r.reg, r.ot, r.hours,
+               r.wage.toFixed(2), r.amount.toFixed(2),
+               r.days.map(function(x){ return x.slice(5).replace('-','/'); }).join(' ')]);
+  });
+  rows.push(['合計','','','','', d.hours, '', d.total.toFixed(2), d.rows.length + '名']);
+  if(d.noWage.length){
+    rows.push([]);
+    rows.push(['【現場時給が未設定】','役職テーブルで設定してください','','','','','','','']);
+    d.noWage.forEach(function(r){ rows.push([r.name, r.title, '', '', '', r.hours, '0.00', '0.00', '']); });
+  }
+  return rows;
+}
+function exportHqSitePayrollCSV(storeId, fromISO, toISO){
+  var d = hqSiteLaborData(storeId, fromISO, toISO);
+  var nm = (typeof _owStoreName==='function') ? _owStoreName(storeId) : storeId;
+  if(!d.rows.length){ showToast(nm + ' はこの期間に本部シフトインがありません','danger'); return; }
+  downloadCSV(hqSitePayrollRows(storeId, fromISO, toISO),
+    '本部シフトイン_' + nm + '_' + fromISO + '_' + toISO + '.csv');
+  showToast(nm + ' ' + _money(d.total) + ' を出力しました','success');
+}
+function exportAllHqSitePayrollCSV(fromISO, toISO){
+  var all = hqSiteLaborAll(fromISO, toISO);
+  if(!all.stores.length){ showToast('この期間に本部シフトインがありません','danger'); return; }
+  var rows = [];
+  all.stores.forEach(function(d){ rows = rows.concat(hqSitePayrollRows(d.store, fromISO, toISO)); rows.push([]); });
+  rows.push(['【総合計】','','','','', all.hours, '', all.total.toFixed(2), all.stores.length + '店']);
+  rows.push(['※ 本部経費からこの額を除いてください']);
+  downloadCSV(rows, '本部シフトイン_全店_' + fromISO + '_' + toISO + '.csv');
+  showToast('全店 ' + _money(all.total) + ' を出力しました','success');
+}
+function renderTipHqSite(storeId, info){
+  if(!canSeeHqSite()){
+    return '<div class="card" style="padding:18px;text-align:center;font-size:12.5px;color:var(--muted)">'
+      + '<i class="ti ti-lock" style="font-size:22px"></i>'
+      + '<div style="margin-top:6px">この画面は本部（GM / CEO / 経理 / AM / Head Chef）のみです</div></div>';
+  }
+  var d = hqSiteLaborData(storeId, info.from, info.to);
+  var all = hqSiteLaborAll(info.from, info.to);
+  var nm = _owStoreName(storeId);
+  var h = '<div class="card" style="margin-bottom:10px"><div class="card-title">'
+    + '<i class="ti ti-briefcase" style="color:var(--accent)"></i>全店の本部シフトイン</div>'
+    + '<div style="font-size:22px;font-weight:800">' + _money(all.total) + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:2px">'
+    + all.hours + 'h ／ ' + all.stores.length + '店 ／ ' + info.rangeLabel + '</div>'
+    + '<div style="font-size:11px;color:var(--accent2);margin-top:6px;line-height:1.6">'
+    + '<i class="ti ti-info-circle"></i> この額は<b>各店舗の人件費に含まれています</b>。'
+    + '本部経費からは同額を除いてください。</div>'
+    + (all.noWage ? '<div style="font-size:11px;color:var(--red);margin-top:6px;line-height:1.6">'
+        + '<i class="ti ti-alert-triangle"></i> 現場時給が未設定の人が ' + all.noWage
+        + '名います。$0 で計上され、店舗にも本部にも乗りません。役職テーブルで設定してください。</div>' : '')
+    + '</div>';
+  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+    + '<button class="btn btn-secondary btn-sm" onclick="exportHqSitePayrollCSV(\''+storeId+'\',\''+info.from+'\',\''+info.to+'\')">'
+    + '<i class="ti ti-table-export"></i> ' + escapeHtml(nm) + 'をCSV</button>'
+    + '<button class="btn btn-secondary btn-sm" onclick="exportAllHqSitePayrollCSV(\''+info.from+'\',\''+info.to+'\')">'
+    + '<i class="ti ti-table-export"></i> 全店をCSV</button></div>';
+  if(!d.rows.length){
+    return h + '<div class="card" style="padding:18px;text-align:center;font-size:12.5px;color:var(--muted)">'
+      + escapeHtml(nm) + ' はこの期間に本部シフトインがありません</div>';
+  }
+  h += '<div class="card"><div class="card-title">' + escapeHtml(nm) + '</div>'
+    + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:700px;font-size:11px">'
+    + '<thead><tr><th style="text-align:left">氏名</th><th style="text-align:left">役職</th>'
+    + '<th style="text-align:right">通常</th><th style="text-align:right">残業</th>'
+    + '<th style="text-align:right">時間計</th><th style="text-align:right">現場時給</th>'
+    + '<th style="text-align:right;border-left:2px solid var(--border)">金額</th>'
+    + '<th style="text-align:left">日付</th></tr></thead><tbody>';
+  d.rows.forEach(function(r){
+    h += '<tr><td style="text-align:left;font-weight:700">' + escapeHtml(r.name) + '</td>'
+      + '<td style="text-align:left;color:var(--muted)">' + escapeHtml(r.title) + '</td>'
+      + '<td style="text-align:right">' + r.reg + '</td>'
+      + '<td style="text-align:right' + (r.ot>0?';color:var(--accent)':'') + '">' + (r.ot>0?r.ot:'—') + '</td>'
+      + '<td style="text-align:right">' + r.hours + '</td>'
+      + '<td style="text-align:right' + (r.wage>0?'':';color:var(--red);font-weight:700') + '">'
+      + (r.wage>0 ? ('$'+r.wage.toFixed(2)) : '未設定') + '</td>'
+      + '<td style="text-align:right;font-weight:800;border-left:2px solid var(--border)">' + _money(r.amount) + '</td>'
+      + '<td style="text-align:left;font-size:10px;color:var(--muted)">'
+      + escapeHtml(r.days.map(function(x){ return x.slice(5).replace('-','/'); }).join(' ')) + '</td></tr>';
+  });
+  h += '<tr><td colspan="4" style="text-align:left;font-weight:800">合計</td>'
+    + '<td style="text-align:right;font-weight:800">' + d.hours + '</td><td></td>'
+    + '<td style="text-align:right;font-weight:800;border-left:2px solid var(--border)">' + _money(d.total) + '</td>'
+    + '<td style="text-align:left;color:var(--muted)">' + d.rows.length + '名</td></tr>';
+  h += '</tbody></table></div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.7">'
+    + '対象は<b>本部所属の月給者</b>（GM / AM / Head Chef / Corporate Chef 等）です。'
+    + '<b>Store Manager は含みません</b>。固定給の日割りで計上されます。'
+    + '<b>週40時間を超えたぶんは1.5倍</b>で計上しています（店舗の人件費と同じ計算）。</div></div>';
+  return h;
+}
 /* ---- 画面 ---- */
 function renderTipShiftLeader(){
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
@@ -28659,16 +28866,20 @@ function renderTipMgmt() {
   // 表示切替（配分表・チップ率のみ）
   var _tipG2 = (['gm','ceo','office','am'].indexOf(curRole)>=0) || (function(){ var me=getEmployees().find(function(x){return x.name===(typeof myName==='function'?myName():'');}); return me?empGradeNum(me)>=2:false; })();
   var _slOn = (typeof slStoreEnabled==='function') && slStoreEnabled(storeId);   /* v801 */
-  if (['rate','matrix'].concat(_tipG2?['ratemgmt']:[]).concat(_slOn?['sl']:[]).indexOf(tipPeriodView)<0) tipPeriodView='matrix';
+  /* v951: 本部シフトインは G4以上。Motoさん指示③。 */
+  var _hqSiteOn = (typeof canSeeHqSite==='function') && canSeeHqSite();
+  if (['rate','matrix'].concat(_tipG2?['ratemgmt']:[]).concat(_slOn?['sl']:[]).concat(_hqSiteOn?['hqsite']:[]).indexOf(tipPeriodView)<0) tipPeriodView='matrix';
   html += `<div class="phase-tabs">
     <div class="phase-tab${tipPeriodView==='matrix'?' active':''}" onclick="setTipPeriodView('matrix')">${t('配分表','Distribution')}</div>
     <div class="phase-tab${tipPeriodView==='rate'?' active':''}" onclick="setTipPeriodView('rate')"><i class="ti ti-percentage" style="font-size:12px"></i> ${t('チップ率','Tip Rate')}</div>
     ${_slOn?`<div class="phase-tab${tipPeriodView==='sl'?' active':''}" onclick="setTipPeriodView('sl')"><i class="ti ti-crown" style="font-size:12px"></i> ${t('Shift Leader','Shift Leader')}</div>`:''}
     ${_tipG2?`<div class="phase-tab${tipPeriodView==='ratemgmt'?' active':''}" onclick="setTipPeriodView('ratemgmt')"><i class="ti ti-adjustments-check" style="font-size:12px"></i> ${t('Tip Rate管理','Tip Rate Admin')}</div>`:''}
+    ${_hqSiteOn?`<div class="phase-tab${tipPeriodView==='hqsite'?' active':''}" onclick="setTipPeriodView('hqsite')"><i class="ti ti-briefcase" style="font-size:12px"></i> ${t('本部シフトイン','HQ shift-in')}</div>`:''}
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
   if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を最新化','Refresh this period')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
 
+  if (tipPeriodView==='hqsite')   return html + renderTipHqSite(storeId, info);   /* v951 */
   if (tipPeriodView==='sl')       return html + renderTipShiftLeader();   /* v801 */
   if (tipPeriodView==='ratemgmt') return html + renderTipRateMgmt();
   if (tipPeriodView==='rate')   return html + renderTipRate();
@@ -31543,7 +31754,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '950';
+const APP_VERSION = '952';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -31698,12 +31909,12 @@ const JOB_TITLES = [
   {key:'Kitchen Leader', label:'Kitchen Leader', payType:'hourly',  permRole:'sl',   defWage:18.5},
   {key:'Operation Leader',label:'Operation Leader',payType:'hourly', permRole:'sl',   defWage:20},
   {key:'Store Leader',   label:'Store Leader',   payType:'hourly',  permRole:'sl',   defWage:20},
-  {key:'Store Manager',  label:'Store Manager',  payType:'monthly', permRole:'sl',   defMonthly:6000},
+  {key:'Store Manager',  label:'Store Manager',  payType:'monthly', permRole:'sl',   defMonthly:6000},   /* v952: 現場時給を外した。自店は月給の日割り、他店も付けない（Motoさん指示） */
   {key:'Head Chef',      label:'Head Chef',      payType:'monthly', permRole:'sl',   defMonthly:6000, defSiteWage:17},   /* v915: 現場に出たぶんの店舗配賦単価 */
-  {key:'Area Manager',   label:'Area Manager',   payType:'monthly', permRole:'am',   defMonthly:7000},
-  {key:'Corporate Chef', label:'Corporate Chef', payType:'monthly', permRole:'am',   defMonthly:7000},
-  {key:'Customer Service Manager', label:'Customer Service Manager', payType:'monthly', permRole:'am', defMonthly:7000},
-  {key:'General Manager',label:'General Manager',payType:'monthly', permRole:'gm',   defMonthly:8000},
+  {key:'Area Manager',   label:'Area Manager',   payType:'monthly', permRole:'am',   defMonthly:7000, defSiteWage:17},
+  {key:'Corporate Chef', label:'Corporate Chef', payType:'monthly', permRole:'am',   defMonthly:7000, defSiteWage:17},
+  {key:'Customer Service Manager', label:'Customer Service Manager', payType:'monthly', permRole:'am', defMonthly:7000, defSiteWage:17},
+  {key:'General Manager',label:'General Manager',payType:'monthly', permRole:'gm',   defMonthly:8000, defSiteWage:17},
   {key:'Office Crew',    label:'事務Crew',       payType:'hourly',  permRole:'office_crew', defWage:18},
   {key:'Accountant',     label:'Accountant',     payType:'monthly', permRole:'office',defMonthly:6000},
   {key:'Office Manager', label:'Office Manager', payType:'monthly', permRole:'office',defMonthly:6000},
