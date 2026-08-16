@@ -7577,7 +7577,11 @@ function halfMonthDates(dateISO) {
 ============================================================ */
 var TIP_CC_FEE = 0.035;
 function getCashTips(storeId) { return ls('cash_tips_'+storeId, {}); }
-function setCashTips(storeId, data) { lsSet('cash_tips_'+storeId, data); }
+function setCashTips(storeId, data) {
+  lsSet('cash_tips_'+storeId, data);
+  /* v947: 入力した瞬間にその店のタスクを消す。次の日まで残らないように。 */
+  try{ if(typeof sweepCashTipTasks==='function') sweepCashTipTasks(storeId); }catch(e){}
+}
 function getCashTip(storeId, date) { return getCashTips(storeId)[date] || {lunch:0, dinner:0, entered:false}; }
 /* L/D どちらか片方だけでも保存できる。両方入力済みで entered=true（未入力タスクも解消） */
 function saveCashTipSides(storeId, date, lunchVal, dinnerVal) {
@@ -31510,7 +31514,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '946';
+const APP_VERSION = '947';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -57469,16 +57473,53 @@ function renderWorkCenter(){
   }
   return h;
 }
+/* v947: 入力済みになったキャッシュチップタスクに墓標を立てる。
+   ★配列から消さない。mergeTasks が「削除優先」で扱うので、墓標でないと
+     他端末の古い配列と合流したときに復活する（deleteTask と同じ作法）。
+   ★「入力された」を積極的に確かめる。cashTipMissing が false なだけでは足りない。
+     その店のデータが端末に載っていないときも false になるため（cash_tips_ は
+     店舗ごとの別キーで需要読み）。記録が実在するか、その日が定休のときだけ消す。 */
+function sweepCashTipTasks(onlyStore){
+  try{
+    var arr = getTasks(); if(!Array.isArray(arr) || !arr.length) return 0;
+    var cache = {};
+    var tipsOf = function(sid){ if(!(sid in cache)) cache[sid] = getCashTips(sid) || {}; return cache[sid]; };
+    var n = 0;
+    arr.forEach(function(t){
+      if(!t || t.auto !== 'cashtip' || t._deleted) return;
+      if(onlyStore && t.store !== onlyStore) return;
+      var m = /^ctip_(.+)_(\d{4}-\d{2}-\d{2})$/.exec(t.refId || '');
+      if(!m) return;
+      var sid = m[1], date = m[2];
+      var kill = false;
+      if(typeof isNoCashTipStore === 'function' && isNoCashTipStore(sid)){
+        kill = true;                               /* 対象外店舗になった */
+      } else {
+        var dow = null;
+        try{ dow = ['日','月','火','水','木','金','土'][new Date(date+'T00:00:00').getDay()]; }catch(e){}
+        var closed = (typeof dayClosureMode === 'function') && dayClosureMode(sid, date, dow) === 'closed';
+        var rec = tipsOf(sid)[date];
+        /* ★記録が無く定休でもない＝端末にデータが無いだけかもしれない。消さない。 */
+        if(!rec && !closed) return;
+        if(typeof cashTipMissing === 'function' && cashTipMissing(sid, date)) return;
+        kill = true;
+      }
+      if(kill){ t._deleted = true; t.updatedTs = Date.now(); n++; }
+    });
+    if(n) setTasks(arr);
+    return n;
+  }catch(e){ console.warn('ctip sweep', e); return 0; }
+}
 /* 前日のキャッシュチップ未入力を検知 → タスク化＋店舗のG3以上へ通知（0なら「0」と入力の注意つき） */
 function checkCashTipTasks(){
   try{
     var y = isoOf(new Date(Date.now()-86400000));
     if (window._ctipChk === y) return; window._ctipChk = y;
+    /* v947: 入力済みになったものと対象外店舗の分をここで掃除する。
+       ★以前は tasks.filter(...) で配列から消していたが、それでは同期で復活する。
+         sweepCashTipTasks が墓標を立てる（mergeTasks が削除優先で扱う）。 */
+    try{ sweepCashTipTasks(); }catch(e){}
     var tasks = getTasks(); var changed=false;
-    // 対象外店舗（Waikiki 2店: F03/F03-G）の自動生成済みキャッシュチップタスクを一括削除
-    var before = tasks.length;
-    tasks = tasks.filter(function(t){ return !(t && t.auto==='cashtip' && typeof isNoCashTipStore==='function' && isNoCashTipStore(t.store)); });
-    if (tasks.length !== before) changed = true;
     activeStores().forEach(function(st){
       if (typeof cashTipMissing!=='function' || !cashTipMissing(st.id, y)) return;
       var refId = 'ctip_'+st.id+'_'+y;
