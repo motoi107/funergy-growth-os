@@ -3491,7 +3491,8 @@ function mdTodayTasks() {
   try {
     var today = todayISO();
     return (getTasks() || []).filter(function (t) {
-      return t && t.status !== '完了' && (!t.due || t.due <= today);
+      /* v948: _deleted を除く。手で削除したタスクがここに残っていた。 */
+      return t && !t._deleted && t.status !== '完了' && (!t.due || t.due <= today);
     });
   } catch (e) { return []; }
 }
@@ -16054,7 +16055,8 @@ function renderDashboard() {
   var me = rc.name;
   var allTasks = getTasks();
   var today = todayISO();
-  var myTasks = allTasks.filter(t=>t.status!=='完了' && (t.assignee===me || t.assignee===''));
+  /* v948: _deleted を除く */
+  var myTasks = allTasks.filter(t=>t && !t._deleted && t.status!=='完了' && (t.assignee===me || t.assignee===''));
   var overdue = myTasks.filter(t=>t.due && t.due < today);
   var todayTasks = myTasks.filter(t=>t.due===today);
   var approvalsAll = ls('approvals', []).filter(a=>a.status==='pending');
@@ -16278,7 +16280,8 @@ function renderSlFunergyNow(){
     if (s.fc>34) alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} ${t('Food Cost超過','Food cost over')} ${s.fc}%`, act:`switchStore('${s.id}');go('foodcost')`});
   });
   myStores.forEach(function(s){ var inc=getDailyOps(s.id).filter(function(t){return t.required&&!t.done;}); if(inc.length) alerts.push({lv:'danger', icon:'ti-checklist', text:`${s.name} ${t('必須チェック未完','Required incomplete')} ${inc.length}${t('件','')}`, act:`switchStore('${s.id}');openStoreCmd()`}); });
-  var myTasks = getTasks().filter(function(t){ return t.status!=='完了' && t.assignee===me; });
+  /* v948: _deleted を除く */
+  var myTasks = getTasks().filter(function(t){ return t && !t._deleted && t.status!=='完了' && t.assignee===me; });
   var overdue = myTasks.filter(function(t){ return t.due && t.due<todayStr; });
   var todayTasks = myTasks.filter(function(t){ return t.due===todayStr; });
   if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`${t('期限切れタスク','Overdue tasks')} ${overdue.length}${t('件','')}`, act:`go('tasks')`});
@@ -16382,7 +16385,8 @@ function renderStoreCmd() {
   var reqItems = ops.filter(t=>t.required);
   var reqIncomplete = reqItems.filter(t=>!t.done);
   var goals = ls('goals_v2', []).filter(g=>g.scope==='store' && (g.storeId===storeId || g.storeId==='ALL'));
-  var tasks = getTasks().filter(t=>(t.store===storeId||t.store==='ALL') && t.status!=='完了');
+  /* v948: _deleted を除く */
+  var tasks = getTasks().filter(t=>t && !t._deleted && (t.store===storeId||t.store==='ALL') && t.status!=='完了');
   var canEdit = ROLE_CONFIG[curRole].canCreate;
   var dailyComplete = ops.length>0 && opsDone===ops.length;
   var cfg = getStoreOpsConfig();
@@ -31514,7 +31518,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '947';
+const APP_VERSION = '948';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -51784,7 +51788,8 @@ function renderMypage() {
   _shiftCard += '</div>';
 
   // 3. 個人タスク
-  var myTasks = getTasks().filter(t=>t.assignee===me && t.status!=='完了');
+  /* v948: _deleted を除く */
+  var myTasks = getTasks().filter(t=>t && !t._deleted && t.assignee===me && t.status!=='完了');
   var _taskCard = `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>${t('今日のタスク',"Today's Tasks")}</div>`;
   if (myTasks.length) {
     myTasks.forEach(tk => {
@@ -57410,7 +57415,8 @@ function renderWorkCenter(){
   }
   var issues = []; if (canErr){ try{ issues = ecCollect(); }catch(e){} }
   var hi = issues.filter(function(x){return x.sev==='high';}).length;
-  var openT = getTasks().filter(function(t){ return t.status!=='完了' && (t.store==='ALL' || !t.store || getVisibleStores().some(function(st){return st.id===t.store;})); });
+  /* v948: _deleted を除く。ここが件数バッジの元。 */
+  var openT = getTasks().filter(function(t){ return t && !t._deleted && t.status!=='完了' && (t.store==='ALL' || !t.store || getVisibleStores().some(function(st){return st.id===t.store;})); });
   var today = todayISO();
   var dueT = openT.filter(function(t){ return t.due && t.due<=today; });
   if (workTab==='announce' && !canAnn) workTab='today';
@@ -57486,14 +57492,14 @@ function sweepCashTipTasks(onlyStore){
     var tipsOf = function(sid){ if(!(sid in cache)) cache[sid] = getCashTips(sid) || {}; return cache[sid]; };
     var n = 0;
     arr.forEach(function(t){
-      if(!t || t.auto !== 'cashtip' || t._deleted) return;
+      if(!t || t.auto !== 'cashtip' || t._deleted || t.status === '完了') return;
       if(onlyStore && t.store !== onlyStore) return;
       var m = /^ctip_(.+)_(\d{4}-\d{2}-\d{2})$/.exec(t.refId || '');
       if(!m) return;
       var sid = m[1], date = m[2];
-      var kill = false;
+      var kill = false, offStore = false;
       if(typeof isNoCashTipStore === 'function' && isNoCashTipStore(sid)){
-        kill = true;                               /* 対象外店舗になった */
+        kill = true; offStore = true;              /* 対象外店舗になった */
       } else {
         var dow = null;
         try{ dow = ['日','月','火','水','木','金','土'][new Date(date+'T00:00:00').getDay()]; }catch(e){}
@@ -57504,7 +57510,14 @@ function sweepCashTipTasks(onlyStore){
         if(typeof cashTipMissing === 'function' && cashTipMissing(sid, date)) return;
         kill = true;
       }
-      if(kill){ t._deleted = true; t.updatedTs = Date.now(); n++; }
+      if(!kill) return;
+      /* v948: ★消し方を既存にそろえる。
+         入力済み・定休は「完了」。saveCashTipSides(7587行) と同じ形にしないと、
+         status しか見ていない画面（ワークセンター等）から消えない。
+         対象外店舗だけは墓標にする（そもそも存在すべきでないタスクなので）。 */
+      if(offStore){ t._deleted = true; }
+      else { t.status = '完了'; t.progress = 100; if(typeof nowJP==='function') t.doneAt = nowJP(); }
+      t.updatedTs = Date.now(); n++;
     });
     if(n) setTasks(arr);
     return n;
