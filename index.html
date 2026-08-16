@@ -5490,7 +5490,7 @@ function mdStoreSeries(storeId, ym){
     var days = daysOfYm(ym) || [];
     var acts = getDailyActuals(storeId) || {};
     var b = getBudgetForMonth(storeId, ym);
-    var today = todayISO();
+    var today = bizToday();   /* v955: 全端末でハワイ基準にそろえる */
     var weeks = (laborMonthWeeks(ym) || []).map(function(w){
       return { sun:w.sun, sales:0, bud:0, guests:0, food:0, hasAct:false };
     });
@@ -17225,7 +17225,7 @@ function _kpiMiniChip(label, big, sub, accent){
 }
 /* 売上進捗: 平日平均 / 週末平均(金土日) の1日あたり売上 */
 function salesSplitSub(scopeStores, days){
-  var todayStr=todayISO();
+  var todayStr=bizToday();   /* v955: 全端末でハワイ基準にそろえる */
   var wkS=0, weS=0, wkD={}, weD={};
   (scopeStores||[]).forEach(function(s){
     var da=getDailyActuals(s.id);
@@ -17261,7 +17261,7 @@ function repeatCompareSub(scopeStores, days){
 }
 /* 客単価: 実績のある日の 最低単価 / 最高単価（日別レンジ） */
 function checkRangeSub(scopeStores, days){
-  var todayStr=todayISO();
+  var todayStr=bizToday();   /* v955: 全端末でハワイ基準にそろえる */
   var perDate={};
   (scopeStores||[]).forEach(function(s){
     var da=getDailyActuals(s.id);
@@ -17925,7 +17925,11 @@ function _cumulativeToTodayRaw(storeId, ymOpt) {
   var _core = laborCoreForYm(storeId, ym); // Labor額は共通コア（労働時間/勤怠明細/予実で同一）
   var b = getBudgetForMonth(storeId, ym); // 1〜6月はファイル取込、7月以降は予算設定タブ
   var actuals = getDailyActuals(storeId);
-  var todayStr = todayISO();
+  /* v955: ★ここが「予算の進捗が端末のタイムゾーンで変わる」の原因だった。
+     todayISO() は端末の時計。日本は HST より19時間先なので、日本時間の
+     05:00〜23:59 はハワイの前日にあたり、日本側だけ1日多く予算が積まれていた。
+     bizToday() はハワイの壁時計を返す（bizNow 23060行）。全端末で同じ日になる。 */
+  var todayStr = bizToday();
   var dailyIns = storeInsuranceDaily(storeId, ym); // 保険の日割り（その店舗）
   var dailySalary = storeSalaryDaily(storeId, ym); // 月給の日割り（その店舗・暦日割）
   var budToToday=0, actToToday=0, budMonth=0, actMonth=0;
@@ -18041,7 +18045,7 @@ function msAgg(storeId, mi){
   var b=getBudgetForMonth(storeId, mi.ym);
   var dailyIns=(typeof storeInsuranceDaily==='function')?storeInsuranceDaily(storeId, mi.ym):0;
   var dailySalary=(typeof storeSalaryDaily==='function')?storeSalaryDaily(storeId, mi.ym):0;
-  var todayStr=todayISO();
+  var todayStr=bizToday();   /* v955: 全端末でハワイ基準にそろえる */
   var sales=0,budget=0,guests=0,food=0,labor=0,daysWithActual=0,trend=[];
   mi.days.forEach(function(d){
     var ov=actuals[d.date]||{};
@@ -23059,6 +23063,16 @@ function todayISO(){ return isoOf(new Date()); }
 /* 業務時計: 端末TZに関係なくハワイ(HST=UTC-10, DSTなし)の壁時計を返す。当月/当日判定を全端末で統一（勤怠打刻・レコード初期日付は対象外＝現地時刻のまま） */
 function bizNow(){ var u=new Date(Date.now()-10*3600*1000); return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), u.getUTCHours(), u.getUTCMinutes(), u.getUTCSeconds()); }
 function bizToday(){ var d=bizNow(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+/* v955: 端末とハワイで日付が違うときだけ、画面にそれを出す。
+   数字が合わない理由が分からないまま放置されるのが一番わるい。 */
+function bizTzNote(){
+  try{
+    if (todayISO() === bizToday()) return '';
+    return '<div style="font-size:10.5px;color:var(--amber);margin:0 2px 8px;line-height:1.6">'
+      + '<i class="ti ti-clock-exclamation"></i> この端末の日付は <b>' + todayISO() + '</b> ですが、'
+      + '集計は<b>ハワイ時間の ' + bizToday() + '</b> を基準にしています（全員が同じ数字を見るため）。</div>';
+  }catch(e){ return ''; }
+}
 function bizYm(){ var d=bizNow(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
 function ymOf(d){ d=(d instanceof Date)?d:new Date(d); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
 function fmtJP(d){ d=(d instanceof Date)?d:new Date(d); if(isNaN(d)) return ''; return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0'); }
@@ -24269,7 +24283,7 @@ function keyKpiStats(scopeStores, days){
   var guestsTO=0, toSalesBud=0;   /* v932: 店内客単価のための集計（実績のTO客数／TO売上予算） */
   var salesBud=0,guestBud=0,fcBud$=0,laborBud$=0,segSales$=0,hasGuestBud=false;
   var lunchGuestBud=0,dinnerGuestBud=0,takeoutBud=0,hasLGB=false,hasDGB=false,hasTGB=false;
-  var todayStr=todayISO();
+  var todayStr=bizToday();   /* v955: 全端末でハワイ基準にそろえる */
   var ym=(days&&days[0])?days[0].date.slice(0,7):'';
   var gct=function(id){return (typeof guestCountType==='function')?guestCountType(id):'guest';};
   var allBowls=(scopeStores&&scopeStores.length>0) && scopeStores.every(function(s){return gct(s.id)==='bowls';});
@@ -30716,7 +30730,7 @@ function setLaborStore(v){ _laborStore = v; if(v==='ALL') laborTab='overview'; r
 function renderLaborHours(storeId, store) {
   var days = attMonthDays();
   var actuals = getDailyActuals(storeId);
-  var todayStr = todayISO();
+  var todayStr = bizToday();   /* v955: 予実の画面。全端末でハワイ基準にそろえる */
   var rows = [];
   var cumHours=0, cumSales=0, cumPlanned=0;
   days.forEach(d=>{
@@ -31789,7 +31803,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '954';
+const APP_VERSION = '955';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
