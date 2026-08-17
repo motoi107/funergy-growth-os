@@ -19717,22 +19717,34 @@ function renderInitiativeBody(it, store){
       +'<i class="ti ti-cloud-download"></i> 出数を取得</button></div></div>';
   }
   /* --- サマリー --- */
-  var sumQty=(tA.has&&pA.has&&tB.has&&pB.has)?((tA.qty+pA.qty)-(tB.qty+pB.qty)):null;
-  var dRep=cA.hasCust&&cB.hasCust?(cA.repeat-cB.repeat):null;
-  var dPpa=(cA.ppa!=null&&cB.ppa!=null)?Math.round((cA.ppa-cB.ppa)*100)/100:null;
+  /* ★v957: 前後で「データがあった日数」が揃っているときだけ差を出す。
+     v956 は片方が8日ぶんでも引き算して「+333食の純増」と出していた。 */
+  var qtyOK=initSameCover(tA,tB)&&initSameCover(pA,pB);
+  var custOK=initSameCover(cA,cB);
+  var sumQty=qtyOK?((tA.qty+pA.qty)-(tB.qty+pB.qty)):null;
+  var dRep=custOK?(cA.repeat-cB.repeat):null;
+  var dPpa=(custOK&&cA.ppa!=null&&cB.ppa!=null)?Math.round((cA.ppa-cB.ppa)*100)/100:null;
   html+='<div class="card" style="margin-bottom:8px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">'
     +_initTile('対象商品の出数', tA.has?_initNum(tA.qty,' 食'):'—', '開始から'+w.n+'日')
-    +_initTile('2品の合計', sumQty==null?'—':((sumQty>0?'+':'')+sumQty+' 食'), sumQty==null?'出数の取得が必要':(sumQty>0?'純増':(sumQty<0?'減っている':'横ばい＝置き換え')))
-    +_initTile('リピート客', dRep==null?'—':((dRep>0?'+':'')+dRep+' 人'), dRep==null?'データなし':'実数')
+    +_initTile('2品の合計', sumQty==null?'—':((sumQty>0?'+':'')+sumQty+' 食'), sumQty==null?'日数が揃っていません':(sumQty>0?'純増':(sumQty<0?'減っている':'横ばい＝置き換え')))
+    +_initTile('リピート客', dRep==null?'—':((dRep>0?'+':'')+dRep+' 人'), dRep==null?'日数が揃っていません':'実数')
     +_initTile('客単価', cA.ppa==null?'—':('$'+cA.ppa.toFixed(2)), dPpa==null?'—':('開始前比 '+(dPpa>0?'+':'')+'$'+Math.abs(dPpa).toFixed(2)))
+    +'</div></div>';
+  /* ★v957: 取得状況を常に出す。揃っていても「何日ぶんで見ているか」は判断に要る。 */
+  html+='<div class="card" style="margin-bottom:8px;padding:8px 10px">'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.8">'
+    +'<i class="ti ti-calendar-stats"></i> 集計に使えた日数 … '
+    +'出数 前<b>'+tB.days+'</b>/'+tB.want+'日・後<b>'+tA.days+'</b>/'+tA.want+'日　'
+    +'新規リピート 前<b>'+cB.days+'</b>/'+cB.want+'日・後<b>'+cA.days+'</b>/'+cA.want+'日'
     +'</div></div>';
   /* --- ① 推移 --- */
   html+=initTrendCard(it, store, mix, w);
   /* --- ② カニバリ判定 --- */
   html+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-arrows-exchange" style="color:var(--accent)"></i>② カニバリ判定</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">合計が動かなければ、増えたのではなく入れ替わっただけ。</div>';
-  if(!tA.has||!tB.has||!pA.has||!pB.has){
-    html+='<div style="font-size:12px;color:var(--muted)">出数が揃っていないため判定できません。</div>';
+  if(!qtyOK){
+    html+='<div style="font-size:12px;color:var(--muted)">出数の日数が揃っていないため判定できません。</div>'
+      +initCoverNote(tB, tA, '対象商品の出数')+initCoverNote(pB, pA, '比較商品の出数');
   } else {
     var dT=tA.qty-tB.qty, dP=pA.qty-pB.qty, dS=(tA.qty+pA.qty)-(tB.qty+pB.qty);
     html+='<table style="width:100%;font-size:12.5px;border-collapse:collapse">'
@@ -19757,6 +19769,9 @@ function renderInitiativeBody(it, store){
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">率だけ見ると読み違えます。まず人数で見てください。</div>';
   if(!cA.hasCust||!cB.hasCust){
     html+='<div style="font-size:12px;color:var(--muted)">この店はToastで新規/リピートを取っていないため出せません。</div>';
+  } else if(!custOK){
+    html+='<div style="font-size:12px;color:var(--muted)">新規/リピートの日数が揃っていないため判定できません。</div>'
+      +initCoverNote(cB, cA, '新規/リピート');
   } else {
     html+='<table style="width:100%;font-size:12.5px;border-collapse:collapse">'
       +'<tr style="color:var(--muted);font-size:11px"><td style="padding:4px 0">指標</td>'
@@ -19792,13 +19807,17 @@ function initTrendCard(it, store, mix, w){
   var dates=initDateList(from, w.afterTo);
   var da=getDailyActuals(store.id);
   var qs=dates.map(function(d){ return initQtyOn(mix, d, it.targetGuids); });
+  /* ★v957: 比較商品も別の線で出す。商品ごとの動きが見たいという要望と、
+     欠測日が目で分かるようにする狙いを兼ねる。 */
+  var ps=dates.map(function(d){ return initQtyOn(mix, d, it.compareGuids); });
   var rs=dates.map(function(d){
     var ov=da[d]||{};
     if(ov.firstTimeBowls==null && ov.repeatBowls==null) return null;
     var f=Number(ov.firstTimeBowls)||0, r=Number(ov.repeatBowls)||0;
     return (f+r)>0 ? Math.round(r/(f+r)*1000)/10 : null;
   });
-  var maxQ=Math.max(1, Math.ceil(Math.max.apply(null, qs.map(function(v){return v==null?0:v;}))/5)*5);
+  var _all=qs.concat(ps).map(function(v){return v==null?0:v;});
+  var maxQ=Math.max(1, Math.ceil(Math.max.apply(null, _all)/5)*5);
   var step=(dates.length>1)?(W/(dates.length-1)):0;
   function px(i){ return X0+i*step; }
   function pyQ(v){ return Y0+H-(v/maxQ)*H; }
@@ -19813,10 +19832,18 @@ function initTrendCard(it, store, mix, w){
     return out;
   }
   var si=dates.indexOf(it.startDate);
-  var svg='<svg viewBox="0 0 620 200" style="width:100%;height:auto">'
-    +'<line x1="'+X0+'" y1="'+Y0+'" x2="'+X0+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
+  /* ★v957: 枠線と目盛り線。線だけ浮いていて位置が読めない状態だった。
+     rect ではなく4本の line で囲む。rect は viewBox が横に伸びると角の丸みや
+     線幅が崩れるため（教訓：形が崩れる要素を置かない）。 */
+  var svg='<svg viewBox="0 0 620 200" style="width:100%;height:auto">';
+  [0,0.25,0.5,0.75,1].forEach(function(f){
+    var y=Y0+H-f*H;
+    svg+='<line x1="'+X0+'" y1="'+y+'" x2="'+(X0+W)+'" y2="'+y+'" stroke="var(--bd)"'
+      +(f===0||f===1?'':' stroke-dasharray="2 4"')+' vector-effect="non-scaling-stroke"/>';
+  });
+  svg+='<line x1="'+X0+'" y1="'+Y0+'" x2="'+X0+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
     +'<line x1="'+(X0+W)+'" y1="'+Y0+'" x2="'+(X0+W)+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
-    +'<line x1="'+X0+'" y1="'+(Y0+H)+'" x2="'+(X0+W)+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>';
+    +'<line x1="'+X0+'" y1="'+Y0+'" x2="'+(X0+W)+'" y2="'+Y0+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>';
   [0,0.5,1].forEach(function(f){
     var y=Y0+H-f*H;
     svg+='<text x="'+(X0-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="var(--muted)">'+Math.round(maxQ*f)+'</text>'
@@ -19828,7 +19855,16 @@ function initTrendCard(it, store, mix, w){
     svg+='<line x1="'+px(si)+'" y1="'+Y0+'" x2="'+px(si)+'" y2="'+(Y0+H)+'" stroke="var(--muted)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
       +'<text x="'+(px(si)+4)+'" y="'+(Y0+10)+'" font-size="10" fill="var(--tm)">'+escapeHtml(it.startDate)+' 開始</text>';
   }
-  svg+=line(rs, pyR, 'var(--accent2)', true)+line(qs, pyQ, 'var(--accent)', false);
+  /* ★v957: 欠測日に薄い縦帯を敷く。線が切れている理由が「データが無いから」だと
+     ひと目で分かるようにする。0で埋めてつなぐことはしない。 */
+  dates.forEach(function(d,i){
+    if(qs[i]!=null || ps[i]!=null) return;
+    var x=px(i)-(step/2), wdt=Math.max(2, step);
+    svg+='<rect x="'+Math.max(X0,x).toFixed(1)+'" y="'+Y0+'" width="'+Math.min(wdt,X0+W-Math.max(X0,x)).toFixed(1)+'" height="'+H+'" fill="var(--muted)" opacity="0.10"/>';
+  });
+  svg+=line(rs, pyR, 'var(--accent2)', true)
+    +line(ps, pyQ, 'var(--tm)', false)
+    +line(qs, pyQ, 'var(--accent)', false);
   [0, Math.floor((dates.length-1)/2), dates.length-1].forEach(function(i){
     if(i<0||i>=dates.length) return;
     svg+='<text x="'+px(i)+'" y="'+(Y0+H+16)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+dates[i].slice(5)+'</text>';
@@ -19837,10 +19873,13 @@ function initTrendCard(it, store, mix, w){
   return '<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-chart-line" style="color:var(--accent)"></i>① '+escapeHtml(it.startDate)+' からの推移</div>'
     +svg
     +'<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:4px">'
-    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:3px;margin-right:4px"></span>対象商品の出数（食／日）</span>'
-    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent2);vertical-align:3px;margin-right:4px"></span>リピート率（％）</span></div>'
+    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:3px;margin-right:4px"></span>'+escapeHtml(it.targetLabel||'対象商品')+'（食／日）</span>'
+    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--tm);vertical-align:3px;margin-right:4px"></span>'+escapeHtml(it.compareLabel||'比較商品')+'（食／日）</span>'
+    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent2);vertical-align:3px;margin-right:4px"></span>リピート率（％）</span>'
+    +'<span><span style="display:inline-block;width:12px;height:9px;background:var(--muted);opacity:.18;vertical-align:0;margin-right:4px"></span>データが無い日</span></div>'
     +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'
-    +'相関係数は出していません。開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。2本の動きを見て判断してください。</div></div>';
+    +'相関係数は出していません。開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。動きを見て判断してください。'
+    +'<br>線が切れている日は<b>データが無い日</b>です。0ではありません。灰色の帯がその日にあたります。</div></div>';
 }
 function _initTile(label, val, sub){
   return '<div style="background:var(--bg2);border-radius:8px;padding:9px 10px">'
@@ -24597,9 +24636,11 @@ function initDateList(from, to){
 /* 期間内の 新規/リピート/客数/売上。1件も実績が無ければ has:false（0では埋めない） */
 function initCustAgg(sid, dates){
   var da=getDailyActuals(sid);
-  var o={first:0, repeat:0, guests:0, sales:0, hasCust:false, hasSales:false};
+  /* ★v957: days（新規/リピートが取れた日数）も数える。出数と同じ理由。 */
+  var o={first:0, repeat:0, guests:0, sales:0, hasCust:false, hasSales:false, days:0, want:dates.length};
   dates.forEach(function(d){
     var ov=da[d]||{};
+    if(ov.firstTimeBowls!=null || ov.repeatBowls!=null) o.days++;
     if(ov.firstTimeBowls!=null){ o.first+=Number(ov.firstTimeBowls)||0; o.hasCust=true; }
     if(ov.repeatBowls!=null){ o.repeat+=Number(ov.repeatBowls)||0; o.hasCust=true; }
     if(ov.guests!=null){ o.guests+=Number(ov.guests)||0; }
@@ -24611,14 +24652,32 @@ function initCustAgg(sid, dates){
   o.ppa =(o.hasSales && o.guests>0) ? Math.round(o.sales/o.guests*100)/100 : null;
   return o;
 }
-/* 期間内の出数。mix が未取得なら has:false */
+/* 期間内の出数。mix が未取得なら has:false
+   ★v957: days（データがあった日数）を返す。
+   v956 は「1日でもあれば has:true」だったため、前が8日ぶん・後が11日ぶんでも
+   そのまま引き算して「+333食の純増」と出していた。
+   日単位では「無い」と「0」を分けたのに、期間単位で分けていなかった。 */
 function initQtyAgg(mix, dates, guids){
-  var n=0, has=false;
+  var n=0, has=false, days=0;
   dates.forEach(function(d){
     var v=initQtyOn(mix, d, guids);
-    if(v!=null){ n+=v; has=true; }
+    if(v!=null){ n+=v; has=true; days++; }
   });
-  return {qty:n, has:has};
+  return {qty:n, has:has, days:days, want:dates.length};
+}
+/* 前後の期間で「データがあった日数」が揃っているか。
+   揃っていないのに差を出すと、取り込み不足を成果と読み違える。 */
+function initSameCover(a, b){
+  return !!(a && b && a.has && b.has && a.days === b.days && a.days === a.want && b.days === b.want);
+}
+function initCoverNote(a, b, label){
+  if(!a || !b) return '';
+  if(initSameCover(a, b)) return '';
+  return '<div style="font-size:11px;color:var(--amber);line-height:1.8;margin-top:6px">'
+    + '<i class="ti ti-alert-triangle"></i> '+label+'が揃っていません（前'+a.want+'日中 <b>'+a.days+'日</b>ぶん / '
+    + '後'+b.want+'日中 <b>'+b.days+'日</b>ぶん）。日数が違うまま引き算すると、'
+    + '取り込み不足を成果と読み違えます。<b>差は出しません。</b>'
+    + '設定 → Toast同期で「31日取り込み」を実行してください。</div>';
 }
 function repeatStats(scopeStores, days){
   var first=0,repeat=0,sr=0,has=false;
@@ -32207,7 +32266,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '956';
+const APP_VERSION = '957';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
