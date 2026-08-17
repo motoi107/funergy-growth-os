@@ -9372,6 +9372,20 @@ function _coversListByCode(check, want){
 /* 保存時刻を必ず前より進める（同じミリ秒に続けて保存しても同点にしない） */
 function _bumpAt(prev){ return Math.max(Date.now(), (Number(prev&&prev._at)||0)+1); }
 /* v755: 識別子は id が基本だが、棚卸履歴のように月(ym)で1件が決まるものもある。 */
+/* v956: 施策の定義（施策分析タブ）。
+   1件 = {id, name, storeId, startDate, targetGuids[], compareGuids[], _deleted, _mut}
+   ★合流ルールを最初から付ける。同期156キーのうち89キーが未保護（audit_merge_gaps.js）で、
+     予算全消しと Tenkichi 日次売上の事故はどちらもこれが原因だった。90個目にしない。
+   ★id単位なので、MotoさんとYukiさんが別々の施策を同時に登録しても消し合わない。 */
+function getInitiatives(){ var a=ls('initiatives', []); return Array.isArray(a)?a:[]; }
+function getInitiativesLive(){ return getInitiatives().filter(function(x){ return x && !x._deleted; }); }
+function setInitiatives(list){
+  var prev=getInitiatives();
+  lsSet('initiatives', _stampListBy(list, prev, _slId));
+}
+function initiativesFor(storeId){
+  return getInitiativesLive().filter(function(x){ return x.storeId===storeId; });
+}
 function _slId(x){
   if(!x) return null;
   if(x.id!=null) return 'id:'+x.id;
@@ -10290,7 +10304,11 @@ var SUPA_SETTING_KEYS = ['pl_public',   /* v910: PL取込の率の材料。利�
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
-var OP_SYNC_KEYS = ['lala_tasks','office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
+/* v956: initiatives（施策の定義）を追加。合流ルールは OP_MERGE に登録済み。
+   ★コメントは配列の外に置く。verify_v919 がこの配列を JSON.parse しており、
+     行内コメントを入れると JSON として壊れて落ちる。 */
+var OP_SYNC_KEYS = ['initiatives',
+  'lala_tasks','office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
@@ -11180,6 +11198,9 @@ async function pushBudgetsNow(){
   diagBudgets();
 }
 var OP_MERGE = {
+  /* v956: 施策の定義。id単位の和集合／削除はtombstone／勝敗は _mut。
+     新しいキーを「合流ルール無し」で増やさない。 */
+  initiatives:        { merge: mergeStampedList, covers: _coversStampedList },
   /* v856: 本部予算。合流ルールが無く、セキュアページを開くたびの
      supaPullAllMasters() でクラウドの値に丸ごと上書きされていた。 */
   hq_budget: { merge: mergeHqBudget, covers: _coversHqBudget },
@@ -19614,6 +19635,7 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
     <div class="phase-tab${budgetTab==='meeting'?' active':''}" onclick="setBudgetTab('meeting')">${t('会議','Meeting')}</div>
     <div class="phase-tab${budgetTab==='analysis'?' active':''}" onclick="setBudgetTab('analysis')">${t('経営分析','Analytics')}</div>
+    <div class="phase-tab${budgetTab==='initiative'?' active':''}" onclick="setBudgetTab('initiative')">${t('施策分析','Initiatives')}</div>
   </div>`;
   if (budgetTab==='monthly') budgetTab='summary'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
   /* v940: 議事録タブを外した。開いたままの端末が空画面にならないよう月次へ寄せる。
@@ -19621,6 +19643,7 @@ function renderBudget() {
        minutesMonthlySales() が年間計画の未登録月の補完に使っており、
        消すと年間計画の数字が静かに欠ける（21216行）。 */
   if (budgetTab==='minutes') budgetTab='summary';
+  if (budgetTab==='initiative') return html + renderInitiative(); // v956: 施策分析。独自の店舗スコープあり
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   if (budgetTab==='meeting') return html + renderMeetingReview(); // 会議ビュー（中間/月初MTG）
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
@@ -19632,6 +19655,296 @@ function renderBudget() {
   return html + renderBudgetSummary();
 }
 function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
+/* ============================================================
+   v956: 施策分析
+   ・カニバリは合計行で判定する。バーガー単体の出数だけ見ると、
+     ハンバーグが同じだけ減っていても成功に見える。
+   ・新規/リピートは実数を先に、率を後に出す。新規が増えると率は必ず下がるので、
+     率だけ見ると「新規獲得がうまくいっているほど成績が悪く見える」逆転が起きる。
+============================================================ */
+var _initStore = '';
+var _initSel = '';
+function setInitStore(sid){ _initStore=sid; _initSel=''; renderPage('budget'); }
+function setInitSel(id){ _initSel=id; renderPage('budget'); }
+function initCanEdit(){ return ['ceo','gm'].indexOf(curRole)>=0; }
+function _initNum(v, unit){ return (v==null) ? '—' : (Number(v).toLocaleString()+(unit||'')); }
+function _initDelta(v, unit, lowerIsBetter){
+  if(v==null) return '<span style="color:var(--muted)">—</span>';
+  var good = lowerIsBetter ? (v<0) : (v>0);
+  var c = (v===0) ? 'var(--muted)' : (good?'var(--green)':'var(--red)');
+  return '<span style="color:'+c+'">'+(v>0?'+':'')+Number(v).toLocaleString()+(unit||'')+'</span>';
+}
+function renderInitiative(){
+  var vs=getVisibleStores();
+  if(!vs.length) return '<div class="card"><div style="font-size:12px;color:var(--muted)">表示できる店舗がありません。</div></div>';
+  if(!_initStore || !vs.some(function(s){return s.id===_initStore;})) _initStore=vs[0].id;
+  var store=vs.find(function(s){return s.id===_initStore;});
+  var html=bStoreChips(_initStore, 'setInitStore', {showAll:false});
+  var list=initiativesFor(_initStore);
+  html+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-flask" style="color:var(--accent)"></i>施策分析'
+    +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">'+escapeHtml(store.name)+'</span></div>';
+  if(!list.length){
+    html+='<div style="font-size:12px;color:var(--muted);line-height:1.8">この店に登録された施策がありません。'
+      +(initCanEdit()?'':'（登録はGM・CEOのみ）')+'</div>';
+    if(initCanEdit()) html+='<div class="btn-row"><button class="btn btn-primary btn-sm" onclick="initEdit(\'\')"><i class="ti ti-plus"></i> 施策を登録</button></div>';
+    return html+'</div>';
+  }
+  if(!_initSel || !list.some(function(x){return x.id===_initSel;})) _initSel=list[0].id;
+  var opts=list.map(function(x){ return '<option value="'+escapeHtml(x.id)+'"'+(x.id===_initSel?' selected':'')+'>'+escapeHtml(x.name)+'（'+escapeHtml(x.startDate)+'〜）</option>'; }).join('');
+  html+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+    +'<select class="form-select" style="width:auto;min-width:200px;font-size:13px" onchange="setInitSel(this.value)">'+opts+'</select>'
+    +(initCanEdit()?('<button class="btn btn-secondary btn-sm" onclick="initEdit(\''+escapeHtml(_initSel)+'\')"><i class="ti ti-edit"></i> 編集</button>'
+      +'<button class="btn btn-secondary btn-sm" onclick="initEdit(\'\')"><i class="ti ti-plus"></i> 新規</button>'):'')
+    +'</div></div>';
+  html+=renderInitiativeBody(list.find(function(x){return x.id===_initSel;}), store);
+  return html;
+}
+function renderInitiativeBody(it, store){
+  if(!it) return '';
+  var w=initWindows(it.startDate);
+  if(!w) return '<div class="card"><div style="font-size:12px;color:var(--muted)">開始日（'+escapeHtml(it.startDate||'未設定')+'）がまだ来ていません。</div></div>';
+  var ym=String(it.startDate).slice(0,7);
+  var mix=initMixFor(store.id, ym);
+  var afterD=initDateList(w.afterFrom, w.afterTo), beforeD=initDateList(w.beforeFrom, w.beforeTo);
+  var cA=initCustAgg(store.id, afterD), cB=initCustAgg(store.id, beforeD);
+  var tA=initQtyAgg(mix, afterD, it.targetGuids), tB=initQtyAgg(mix, beforeD, it.targetGuids);
+  var pA=initQtyAgg(mix, afterD, it.compareGuids), pB=initQtyAgg(mix, beforeD, it.compareGuids);
+  var html='';
+  if(!mix){
+    html+='<div class="card" style="margin-bottom:8px"><div style="font-size:12px;color:var(--muted);line-height:1.8">'
+      +'<i class="ti ti-database-off"></i> 出数がまだ取得されていません。'
+      +'<button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="initLoadMix(\''+escapeHtml(store.id)+'\',\''+escapeHtml(ym)+'\')">'
+      +'<i class="ti ti-cloud-download"></i> 出数を取得</button></div></div>';
+  }
+  /* --- サマリー --- */
+  var sumQty=(tA.has&&pA.has&&tB.has&&pB.has)?((tA.qty+pA.qty)-(tB.qty+pB.qty)):null;
+  var dRep=cA.hasCust&&cB.hasCust?(cA.repeat-cB.repeat):null;
+  var dPpa=(cA.ppa!=null&&cB.ppa!=null)?Math.round((cA.ppa-cB.ppa)*100)/100:null;
+  html+='<div class="card" style="margin-bottom:8px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">'
+    +_initTile('対象商品の出数', tA.has?_initNum(tA.qty,' 食'):'—', '開始から'+w.n+'日')
+    +_initTile('2品の合計', sumQty==null?'—':((sumQty>0?'+':'')+sumQty+' 食'), sumQty==null?'出数の取得が必要':(sumQty>0?'純増':(sumQty<0?'減っている':'横ばい＝置き換え')))
+    +_initTile('リピート客', dRep==null?'—':((dRep>0?'+':'')+dRep+' 人'), dRep==null?'データなし':'実数')
+    +_initTile('客単価', cA.ppa==null?'—':('$'+cA.ppa.toFixed(2)), dPpa==null?'—':('開始前比 '+(dPpa>0?'+':'')+'$'+Math.abs(dPpa).toFixed(2)))
+    +'</div></div>';
+  /* --- ① 推移 --- */
+  html+=initTrendCard(it, store, mix, w);
+  /* --- ② カニバリ判定 --- */
+  html+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-arrows-exchange" style="color:var(--accent)"></i>② カニバリ判定</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">合計が動かなければ、増えたのではなく入れ替わっただけ。</div>';
+  if(!tA.has||!tB.has||!pA.has||!pB.has){
+    html+='<div style="font-size:12px;color:var(--muted)">出数が揃っていないため判定できません。</div>';
+  } else {
+    var dT=tA.qty-tB.qty, dP=pA.qty-pB.qty, dS=(tA.qty+pA.qty)-(tB.qty+pB.qty);
+    html+='<table style="width:100%;font-size:12.5px;border-collapse:collapse">'
+      +'<tr style="color:var(--muted);font-size:11px"><td style="padding:4px 0">商品</td>'
+      +'<td style="text-align:right">前'+w.n+'日</td><td style="text-align:right">後'+w.n+'日</td><td style="text-align:right">差</td></tr>'
+      +_initRow('対象（'+escapeHtml(it.targetLabel||'施策商品')+'）', tB.qty+' 食', tA.qty+' 食', _initDelta(dT,' 食'))
+      +_initRow('比較（'+escapeHtml(it.compareLabel||'既存商品')+'）', pB.qty+' 食', pA.qty+' 食', _initDelta(dP,' 食'))
+      +'<tr style="border-top:1px solid var(--bd);font-weight:700"><td style="padding:6px 0">合計</td>'
+      +'<td style="text-align:right">'+(tB.qty+pB.qty)+' 食</td><td style="text-align:right">'+(tA.qty+pA.qty)+' 食</td>'
+      +'<td style="text-align:right">'+_initDelta(dS,' 食')+'</td></tr></table>';
+    var swap=Math.min(tA.qty-tB.qty, Math.max(0, -(pA.qty-pB.qty)));
+    var msg;
+    if(dS>0 && swap>0) msg='対象が'+dT+'食増えたうち、<b>'+swap+'食は比較商品からの置き換え</b>です。残り'+dS+'食が純増。置き換えは起きていますが、それを上回って伸びています。';
+    else if(dS>0) msg='置き換えは起きていません。合計で<b>'+dS+'食の純増</b>です。';
+    else if(dS===0) msg='<b>合計が動いていません。</b>増えたのではなく入れ替わっただけです。売上への寄与はありません。';
+    else msg='<b>合計が'+Math.abs(dS)+'食減っています。</b>対象商品が既存商品を食っており、全体では落ちています。';
+    html+='<div style="font-size:11.5px;line-height:1.8;margin-top:8px;color:var(--tm)">'+msg+'</div>';
+  }
+  html+='</div>';
+  /* --- ③ 新規とリピート --- */
+  html+='<div class="card"><div class="card-title"><i class="ti ti-users" style="color:var(--accent2)"></i>③ 新規とリピート</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">率だけ見ると読み違えます。まず人数で見てください。</div>';
+  if(!cA.hasCust||!cB.hasCust){
+    html+='<div style="font-size:12px;color:var(--muted)">この店はToastで新規/リピートを取っていないため出せません。</div>';
+  } else {
+    html+='<table style="width:100%;font-size:12.5px;border-collapse:collapse">'
+      +'<tr style="color:var(--muted);font-size:11px"><td style="padding:4px 0">指標</td>'
+      +'<td style="text-align:right">前'+w.n+'日</td><td style="text-align:right">後'+w.n+'日</td><td style="text-align:right">差</td></tr>'
+      +_initRow('新規客', cB.first+' 人', cA.first+' 人', _initDelta(cA.first-cB.first,' 人'))
+      +_initRow('リピート客', cB.repeat+' 人', cA.repeat+' 人', _initDelta(cA.repeat-cB.repeat,' 人'))
+      +'<tr style="border-top:1px solid var(--bd);font-weight:700"><td style="padding:6px 0">合計</td>'
+      +'<td style="text-align:right">'+cB.total+' 人</td><td style="text-align:right">'+cA.total+' 人</td>'
+      +'<td style="text-align:right">'+_initDelta(cA.total-cB.total,' 人')+'</td></tr>'
+      +'<tr style="color:var(--muted)"><td style="padding:6px 0">リピート率</td>'
+      +'<td style="text-align:right">'+(cB.rate==null?'—':cB.rate+' %')+'</td>'
+      +'<td style="text-align:right">'+(cA.rate==null?'—':cA.rate+' %')+'</td>'
+      +'<td style="text-align:right">'+((cA.rate==null||cB.rate==null)?'—':((cA.rate-cB.rate>0?'+':'')+(Math.round((cA.rate-cB.rate)*10)/10)+' pt'))+'</td></tr></table>';
+    var note='';
+    var dRp=cA.repeat-cB.repeat, dFt=cA.first-cB.first;
+    if(dRp>0 && cA.rate!=null && cB.rate!=null && cA.rate<cB.rate)
+      note='<b>リピート率の低下は悪化ではありません。</b>リピート客は'+dRp+'人増えています。率が下がったのは新規が'+dFt+'人増えて分母が膨らんだからです。';
+    else if(dRp>0) note='リピート客が'+dRp+'人増えています。';
+    else if(dRp<0) note='<b>リピート客が'+Math.abs(dRp)+'人減っています。</b>新規が増えていても、戻ってきていません。';
+    else note='リピート客は横ばいです。';
+    note+='<br>なお、開始日に初めて来た人が戻るかどうかは来店周期ぶんの時間が経たないと分かりません。'
+      +'いまの数字には施策前からの常連が含まれます。';
+    html+='<div style="font-size:11.5px;line-height:1.8;margin-top:8px;color:var(--tm)">'+note+'</div>';
+  }
+  return html+'</div>';
+}
+/* ① 推移。縦軸2本（左=出数 食/日・右=リピート率 %）＋横軸=日付。
+   相関係数は出さない。開始から日が浅いうちは曜日変動を拾うだけで、
+   根拠が無いのに根拠に見える数字が出るほうが害が大きい。 */
+function initTrendCard(it, store, mix, w){
+  var H=130, W=520, X0=52, Y0=20;
+  var from=initDateAdd(it.startDate, -Math.min(w.n, 7));
+  var dates=initDateList(from, w.afterTo);
+  var da=getDailyActuals(store.id);
+  var qs=dates.map(function(d){ return initQtyOn(mix, d, it.targetGuids); });
+  var rs=dates.map(function(d){
+    var ov=da[d]||{};
+    if(ov.firstTimeBowls==null && ov.repeatBowls==null) return null;
+    var f=Number(ov.firstTimeBowls)||0, r=Number(ov.repeatBowls)||0;
+    return (f+r)>0 ? Math.round(r/(f+r)*1000)/10 : null;
+  });
+  var maxQ=Math.max(1, Math.ceil(Math.max.apply(null, qs.map(function(v){return v==null?0:v;}))/5)*5);
+  var step=(dates.length>1)?(W/(dates.length-1)):0;
+  function px(i){ return X0+i*step; }
+  function pyQ(v){ return Y0+H-(v/maxQ)*H; }
+  function pyR(v){ return Y0+H-(v/100)*H; }
+  function line(vals, py, color, dash){
+    var seg=[], out='';
+    vals.forEach(function(v,i){
+      if(v==null){ if(seg.length>1) out+='<polyline points="'+seg.join(' ')+'" fill="none" stroke="'+color+'" stroke-width="2"'+(dash?' stroke-dasharray="4 3"':'')+' vector-effect="non-scaling-stroke"/>'; seg=[]; return; }
+      seg.push(px(i)+','+py(v).toFixed(1));
+    });
+    if(seg.length>1) out+='<polyline points="'+seg.join(' ')+'" fill="none" stroke="'+color+'" stroke-width="2"'+(dash?' stroke-dasharray="4 3"':'')+' vector-effect="non-scaling-stroke"/>';
+    return out;
+  }
+  var si=dates.indexOf(it.startDate);
+  var svg='<svg viewBox="0 0 620 200" style="width:100%;height:auto">'
+    +'<line x1="'+X0+'" y1="'+Y0+'" x2="'+X0+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
+    +'<line x1="'+(X0+W)+'" y1="'+Y0+'" x2="'+(X0+W)+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
+    +'<line x1="'+X0+'" y1="'+(Y0+H)+'" x2="'+(X0+W)+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>';
+  [0,0.5,1].forEach(function(f){
+    var y=Y0+H-f*H;
+    svg+='<text x="'+(X0-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="var(--muted)">'+Math.round(maxQ*f)+'</text>'
+      +'<text x="'+(X0+W+6)+'" y="'+(y+4)+'" font-size="10" fill="var(--muted)">'+Math.round(100*f)+'</text>';
+  });
+  svg+='<text x="14" y="'+(Y0+H/2)+'" text-anchor="middle" transform="rotate(-90 14 '+(Y0+H/2)+')" font-size="10" fill="var(--muted)">出数（食／日）</text>'
+    +'<text x="606" y="'+(Y0+H/2)+'" text-anchor="middle" transform="rotate(90 606 '+(Y0+H/2)+')" font-size="10" fill="var(--muted)">リピート率（％）</text>';
+  if(si>=0){
+    svg+='<line x1="'+px(si)+'" y1="'+Y0+'" x2="'+px(si)+'" y2="'+(Y0+H)+'" stroke="var(--muted)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
+      +'<text x="'+(px(si)+4)+'" y="'+(Y0+10)+'" font-size="10" fill="var(--tm)">'+escapeHtml(it.startDate)+' 開始</text>';
+  }
+  svg+=line(rs, pyR, 'var(--accent2)', true)+line(qs, pyQ, 'var(--accent)', false);
+  [0, Math.floor((dates.length-1)/2), dates.length-1].forEach(function(i){
+    if(i<0||i>=dates.length) return;
+    svg+='<text x="'+px(i)+'" y="'+(Y0+H+16)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+dates[i].slice(5)+'</text>';
+  });
+  svg+='<text x="'+(X0+W/2)+'" y="'+(Y0+H+36)+'" text-anchor="middle" font-size="10" fill="var(--muted)">営業日（日付）</text></svg>';
+  return '<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-chart-line" style="color:var(--accent)"></i>① '+escapeHtml(it.startDate)+' からの推移</div>'
+    +svg
+    +'<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:4px">'
+    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:3px;margin-right:4px"></span>対象商品の出数（食／日）</span>'
+    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent2);vertical-align:3px;margin-right:4px"></span>リピート率（％）</span></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'
+    +'相関係数は出していません。開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。2本の動きを見て判断してください。</div></div>';
+}
+function _initTile(label, val, sub){
+  return '<div style="background:var(--bg2);border-radius:8px;padding:9px 10px">'
+    +'<div style="font-size:10.5px;color:var(--muted)">'+label+'</div>'
+    +'<div style="font-size:19px;font-weight:800;margin:2px 0">'+val+'</div>'
+    +'<div style="font-size:10px;color:var(--muted)">'+sub+'</div></div>';
+}
+function _initRow(label, b, a, d){
+  return '<tr style="border-top:1px solid var(--bd)"><td style="padding:6px 0">'+label+'</td>'
+    +'<td style="text-align:right">'+b+'</td><td style="text-align:right">'+a+'</td>'
+    +'<td style="text-align:right">'+d+'</td></tr>';
+}
+/* 施策の登録・編集。商品は既存の商品ピッカーと同じ「検索付きチェック」で選ぶ。
+   GUIDをコードに焼き付けないので、次の施策でも画面から設定できる。 */
+async function initEdit(id){
+  if(!initCanEdit()){ showToast('施策の登録はGM・CEOのみです','warning'); return; }
+  var it=getInitiativesLive().find(function(x){return x.id===id;}) ||
+    {id:'', name:'', storeId:_initStore, startDate:bizToday(), targetGuids:[], compareGuids:[], targetLabel:'', compareLabel:''};
+  /* ★商品一覧は fetchToastMenuItems(guid)（非同期）。openBowlCatModal と同じ取り方にそろえる。
+     GUID重複を落としてカテゴリ→名前で並べるところまで同じ。 */
+  var st=getStoresAll().find(function(x){return x.id===_initStore;})||{name:_initStore};
+  var guid=st.toastGuid||st.restaurant_guid;
+  if(!guid){ showToast('この店舗にToast GUIDが設定されていません','warning'); return; }
+  openModal('<div class="modal-title">'+escapeHtml(st.name)+'</div><div style="padding:20px;text-align:center;color:var(--muted)"><i class="ti ti-loader"></i> メニューを読み込み中…</div>');
+  var raw=await fetchToastMenuItems(guid);
+  var seen={}, items=[];
+  (raw||[]).forEach(function(x){ if(x&&x.guid&&!seen[x.guid]){ seen[x.guid]=1; items.push(x); } });
+  items.sort(function(a,b){ return (a.category||'').localeCompare(b.category||'')||(a.name||'').localeCompare(b.name||''); });
+  openModal('<div class="modal-title">'+(id?'施策の編集':'施策の登録')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="padding:2px 2px 8px">'
+    +'<div class="form-group"><label class="form-label">施策名</label>'
+    +'<input class="form-input" id="init-name" value="'+escapeHtml(it.name||'')+'" placeholder="ハンバーガー販売開始"></div>'
+    +'<div class="form-group"><label class="form-label">開始日</label>'
+    +'<input class="form-input" type="date" id="init-start" value="'+escapeHtml(it.startDate||'')+'"></div>'
+    +'<div class="form-group"><label class="form-label">対象商品の名前（表示用）</label>'
+    +'<input class="form-input" id="init-tlabel" value="'+escapeHtml(it.targetLabel||'')+'" placeholder="ハンバーガー"></div>'
+    +'<div class="form-group"><label class="form-label">比較商品の名前（表示用）</label>'
+    +'<input class="form-input" id="init-clabel" value="'+escapeHtml(it.compareLabel||'')+'" placeholder="ハンバーグ"></div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin:4px 0 8px">'
+    +'比較商品は「置き換えが起きていないか」を見るためのものです。'
+    +'新商品と食い合いそうな既存商品を選んでください。</div>'
+    +'<div class="form-group"><label class="form-label">対象商品</label>'
+    +initItemPicker('t', items, it.targetGuids||[])+'</div>'
+    +'<div class="form-group"><label class="form-label">比較商品</label>'
+    +initItemPicker('c', items, it.compareGuids||[])+'</div>'
+    +'<div class="btn-row">'
+    +(id?'<button class="btn btn-danger btn-sm" onclick="initDelete(\''+escapeHtml(id)+'\')"><i class="ti ti-trash"></i> 削除</button>':'')
+    +'<button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="initSave(\''+escapeHtml(id)+'\')">保存</button></div></div>');
+}
+function initItemPicker(pfx, items, sel){
+  if(!items.length) return '<div style="font-size:11px;color:var(--muted)">メニューが未取得です。メニュー画面で同期してください。</div>';
+  var s={}; (sel||[]).forEach(function(g){ s[g]=1; });
+  var rows=items.map(function(m){
+    return '<label style="display:flex;gap:6px;align-items:center;font-size:12px;padding:2px 0" data-nm="'+escapeHtml(String(m.name||'').toLowerCase())+'">'
+      +'<input type="checkbox" class="init-'+pfx+'" value="'+escapeHtml(m.guid)+'"'+(s[m.guid]?' checked':'')+'>'
+      +'<span>'+escapeHtml(m.name||m.guid)+'</span></label>';
+  }).join('');
+  return '<input class="form-input" style="margin-bottom:4px" placeholder="商品名で絞り込み" oninput="initFilter(this,\''+pfx+'\')">'
+    +'<div id="init-box-'+pfx+'" style="max-height:150px;overflow:auto;border:1px solid var(--bd);border-radius:6px;padding:6px">'+rows+'</div>';
+}
+function initFilter(el, pfx){
+  var q=String(el.value||'').toLowerCase();
+  var box=document.getElementById('init-box-'+pfx); if(!box) return;
+  Array.prototype.forEach.call(box.querySelectorAll('label'), function(l){
+    l.style.display = (!q || String(l.getAttribute('data-nm')||'').indexOf(q)>=0) ? '' : 'none';
+  });
+}
+function _initChecked(pfx){
+  return Array.prototype.map.call(document.querySelectorAll('.init-'+pfx+':checked'), function(x){ return x.value; });
+}
+function initSave(id){
+  var name=(document.getElementById('init-name')||{}).value||'';
+  var start=(document.getElementById('init-start')||{}).value||'';
+  if(!name.trim()){ showToast('施策名を入れてください','warning'); return; }
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(start)){ showToast('開始日を入れてください','warning'); return; }
+  var tg=_initChecked('t');
+  if(!tg.length){ showToast('対象商品を1つ以上選んでください','warning'); return; }
+  var list=getInitiatives();
+  var rec={ id: id||('init_'+Date.now().toString(36)), name:name.trim(), storeId:_initStore,
+    startDate:start, targetGuids:tg, compareGuids:_initChecked('c'),
+    targetLabel:((document.getElementById('init-tlabel')||{}).value||'').trim(),
+    compareLabel:((document.getElementById('init-clabel')||{}).value||'').trim() };
+  var i=list.findIndex(function(x){return x&&x.id===rec.id;});
+  if(i>=0) list[i]=Object.assign({}, list[i], rec); else list.push(rec);
+  setInitiatives(list);
+  _initSel=rec.id;
+  closeModalDirect(); showToast('保存しました','success'); renderPage('budget');
+}
+function initDelete(id){
+  if(!confirm('この施策を削除しますか。')) return;
+  var list=getInitiatives();
+  var i=list.findIndex(function(x){return x&&x.id===id;});
+  /* 物理削除しない。端末間マージで復活しないよう tombstone を立てる */
+  if(i>=0){ list[i]._deleted=true; setInitiatives(list); }
+  _initSel='';
+  closeModalDirect(); showToast('削除しました','success'); renderPage('budget');
+}
+async function initLoadMix(sid, ym){
+  showToast('出数を取得しています…','info');
+  var r=await initMixFetch(sid, ym);
+  showToast(r?'取得しました':'取得できませんでした', r?'success':'warning');
+  renderPage('budget');
+}
 
 /* ===================================================================
    議事録タブ（予実内）: 経営計画書（KGI＋各店舗）をアプリ内で閲覧・編集
@@ -23534,6 +23847,43 @@ function dayBudgetFromBases(b, dow, ym) {
   return 0;
 }
 function getDailyActuals(storeId) { return ls('daily_actuals_'+storeId, {}); }
+/* ============================================================
+   v956: 日別の出数（施策分析タブ用）
+   ・getMenuMix は月まとめなので日別が取れない。toast_item_sales を日×商品で読む。
+   ・端末ローカルにだけ置く。クラウドへ送らない＝同期キーを増やさない
+     （fv_sales_ と同じ考え方。元がクラウドにあるので、いつでも取り直せる）。
+   ・1セッション1回だけ取得する。
+============================================================ */
+function initMixKey(sid, ym){ return 'init_mix_'+sid+'_'+ym; }
+function initMixFor(sid, ym){
+  var c=ls(initMixKey(sid, ym), null);
+  return (c && c.d) ? c.d : null;   /* {'YYYY-MM-DD': {guid: qty}} / 未取得は null */
+}
+async function initMixFetch(sid, ym){
+  var st=(typeof STORES!=='undefined')?STORES.find(function(s){return s.id===sid;}):null;
+  if(!st || !st.toastGuid) return null;
+  var rows=[];
+  try{
+    rows = await supaFetchAllRows('toast_item_sales?restaurant_guid=eq.'+encodeURIComponent(st.toastGuid)
+      +'&business_month=eq.'+ym+'&order=id.asc');
+  }catch(e){ console.warn('initMixFetch', e); return null; }
+  var byDate={};
+  (rows||[]).forEach(function(r){
+    var d=r&&(r.business_date||r.date); if(!d) return;   /* 月次集計行(business_date=NULL)は捨てる */
+    var ds=String(d).slice(0,10), g=r.item_guid||r.guid; if(!g) return;
+    if(!byDate[ds]) byDate[ds]={};
+    byDate[ds][g]=(byDate[ds][g]||0)+(Number(r.qty)||0);
+  });
+  try{ lsSet(initMixKey(sid, ym), {at:Date.now(), d:byDate}); }catch(e){}
+  return byDate;
+}
+/* 指定した商品GUID群の、その日の合計出数。データが無い日は null（0では埋めない） */
+function initQtyOn(mix, date, guids){
+  if(!mix || !mix[date]) return null;
+  var day=mix[date], n=0;
+  (guids||[]).forEach(function(g){ n += (Number(day[g])||0); });
+  return n;
+}
 /* v825: 中身のある日次売上を、空で上書きしない。
    合流ルールでクラウド側は守られるが、手元まで空にすると画面が0表示になる。 */
 function setDailyActuals(storeId, data) {
@@ -24217,6 +24567,59 @@ function totoyaBowlMatrixCard(scopeStores, days){
 }
 
 /* リピート率（全店共通）。Totoya=丼モディファイア / ToriTon・Tenkichi=Customersメニュー FT/RP/SR */
+/* ============================================================
+   v956: 施策分析の集計
+   ・前期間 = 開始日の前 N日（開始日は含めない）
+   ・後期間 = 開始日から N日（★開始日を含める）
+     オフバイワンで1日ずれると判定が反転しうるので、境界は1か所で決める。
+============================================================ */
+function initDateAdd(ymd, n){
+  var p=String(ymd).split('-');
+  var d=new Date(Date.UTC(+p[0], (+p[1])-1, (+p[2])+n));
+  return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0');
+}
+/* 開始日から見た前後の期間。today はハワイ基準（bizToday）で決める＝全端末で同じ */
+function initWindows(startDate, today){
+  var t=today||bizToday();
+  if(!startDate || startDate>t) return null;
+  var elapsed=0, cur=startDate;
+  while(cur<=t && elapsed<400){ elapsed++; cur=initDateAdd(startDate, elapsed); }
+  var n=elapsed;                                   /* 後期間の日数＝開始日から今日まで */
+  var afterFrom=startDate, afterTo=initDateAdd(startDate, n-1);
+  var beforeTo=initDateAdd(startDate, -1), beforeFrom=initDateAdd(startDate, -n);
+  return {n:n, beforeFrom:beforeFrom, beforeTo:beforeTo, afterFrom:afterFrom, afterTo:afterTo};
+}
+function initDateList(from, to){
+  var out=[], cur=from, guard=0;
+  while(cur<=to && guard++<400){ out.push(cur); cur=initDateAdd(cur, 1); }
+  return out;
+}
+/* 期間内の 新規/リピート/客数/売上。1件も実績が無ければ has:false（0では埋めない） */
+function initCustAgg(sid, dates){
+  var da=getDailyActuals(sid);
+  var o={first:0, repeat:0, guests:0, sales:0, hasCust:false, hasSales:false};
+  dates.forEach(function(d){
+    var ov=da[d]||{};
+    if(ov.firstTimeBowls!=null){ o.first+=Number(ov.firstTimeBowls)||0; o.hasCust=true; }
+    if(ov.repeatBowls!=null){ o.repeat+=Number(ov.repeatBowls)||0; o.hasCust=true; }
+    if(ov.guests!=null){ o.guests+=Number(ov.guests)||0; }
+    var sv=(ov.sales!=null)?ov.sales:((Number(ov.lunchSales)||0)+(Number(ov.dinnerSales)||0));
+    if(sv!=null && !isNaN(sv) && Number(sv)>0){ o.sales+=Number(sv); o.hasSales=true; }
+  });
+  o.total=o.first+o.repeat;
+  o.rate=(o.hasCust && o.total>0) ? Math.round(o.repeat/o.total*1000)/10 : null;
+  o.ppa =(o.hasSales && o.guests>0) ? Math.round(o.sales/o.guests*100)/100 : null;
+  return o;
+}
+/* 期間内の出数。mix が未取得なら has:false */
+function initQtyAgg(mix, dates, guids){
+  var n=0, has=false;
+  dates.forEach(function(d){
+    var v=initQtyOn(mix, d, guids);
+    if(v!=null){ n+=v; has=true; }
+  });
+  return {qty:n, has:has};
+}
 function repeatStats(scopeStores, days){
   var first=0,repeat=0,sr=0,has=false;
   scopeStores.forEach(function(s){
@@ -30413,7 +30816,8 @@ async function loadStoreLabor(sid, guid, days, liveFill){
 /* v720: 'inv_' を追加。inv_<店> は棚卸のカウント/PAR/日次フラグ＝手入力データなのに
    OP_SYNC_PREFIX の 'inv_' により「再取得可」と判定され、空き容量作成で削除され得た。
    クラウド未送信の状態で消すと入力が失われるため保護する（'inv_hist_' も内包される）。 */
-var LS_NEVER_FREE = ['pl_public','pl_actual',   /* v910: 会計PLの取込値。容量整理で消さない */
+var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なので消したら再生できない */
+  'pl_public','pl_actual',   /* v910: 会計PLの取込値。容量整理で消さない */
   'spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','spl_cc_actions_',   /* v767 */
   'spl_cc_metrics_','cc_scores','spl_cc_scores_',   /* v768 */
   'cc_logs','spl_cc_logs_',   /* v772 */
@@ -31803,7 +32207,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '955';
+const APP_VERSION = '956';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
