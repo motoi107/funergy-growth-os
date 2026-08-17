@@ -19725,7 +19725,10 @@ function renderInitiativeBody(it, store){
   var dRep=custOK?(cA.repeat-cB.repeat):null;
   var dPpa=(custOK&&cA.ppa!=null&&cB.ppa!=null)?Math.round((cA.ppa-cB.ppa)*100)/100:null;
   html+='<div class="card" style="margin-bottom:8px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">'
-    +_initTile('対象商品の出数', tA.has?_initNum(tA.qty,' 食'):'—', '開始から'+w.n+'日')
+    /* ★v958: 「開始から11日」と書くと、11日ぶんのデータがある錯覚を与える。
+       実際に集計できた日数を出す。 */
+    +_initTile('対象商品の出数', tA.has?_initNum(tA.qty,' 食'):'—',
+        tA.has?(w.n+'日中 '+tA.days+'日ぶん'):'出数の取得が必要')
     +_initTile('2品の合計', sumQty==null?'—':((sumQty>0?'+':'')+sumQty+' 食'), sumQty==null?'日数が揃っていません':(sumQty>0?'純増':(sumQty<0?'減っている':'横ばい＝置き換え')))
     +_initTile('リピート客', dRep==null?'—':((dRep>0?'+':'')+dRep+' 人'), dRep==null?'日数が揃っていません':'実数')
     +_initTile('客単価', cA.ppa==null?'—':('$'+cA.ppa.toFixed(2)), dPpa==null?'—':('開始前比 '+(dPpa>0?'+':'')+'$'+Math.abs(dPpa).toFixed(2)))
@@ -19743,8 +19746,10 @@ function renderInitiativeBody(it, store){
   html+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-arrows-exchange" style="color:var(--accent)"></i>② カニバリ判定</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">合計が動かなければ、増えたのではなく入れ替わっただけ。</div>';
   if(!qtyOK){
+    /* ★v958: 対象と比較は同じ mix から読むので、取得状況は必ず同じになる。
+       2行出しても同じことを2回言うだけなので1行にまとめる。 */
     html+='<div style="font-size:12px;color:var(--muted)">出数の日数が揃っていないため判定できません。</div>'
-      +initCoverNote(tB, tA, '対象商品の出数')+initCoverNote(pB, pA, '比較商品の出数');
+      +initCoverNote(tB, tA, '出数');
   } else {
     var dT=tA.qty-tB.qty, dP=pA.qty-pB.qty, dS=(tA.qty+pA.qty)-(tB.qty+pB.qty);
     html+='<table style="width:100%;font-size:12.5px;border-collapse:collapse">'
@@ -24668,7 +24673,14 @@ function initQtyAgg(mix, dates, guids){
 /* 前後の期間で「データがあった日数」が揃っているか。
    揃っていないのに差を出すと、取り込み不足を成果と読み違える。 */
 function initSameCover(a, b){
-  return !!(a && b && a.has && b.has && a.days === b.days && a.days === a.want && b.days === b.want);
+  /* ★v958: v957 は a.has だけを見ていた。
+     initQtyAgg は has を返すが、initCustAgg が返すのは hasCust。
+     そのため客数側は常に undefined となり、11/11日そろっていても false。
+     ③新規とリピートが永久に出ない状態だった。
+     どちらの集計オブジェクトも通せるように、両方の名前を見る。 */
+  var ha=!!(a && (a.has || a.hasCust));
+  var hb=!!(b && (b.has || b.hasCust));
+  return !!(a && b && ha && hb && a.days === b.days && a.days === a.want && b.days === b.want);
 }
 function initCoverNote(a, b, label){
   if(!a || !b) return '';
@@ -32266,7 +32278,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '957';
+const APP_VERSION = '958';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
