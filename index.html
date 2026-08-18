@@ -8029,8 +8029,25 @@ function toggleTipExclude(storeId, date, name, slot) {
   setTipExclude(storeId, date, ex);
 }
 
-/* Store Leader 50%別枠配分のON/OFF（将来OFFにできる） */
-function getTipLeaderSplit() { return false; /* Store Leader 50%別枠は廃止 */ }
+/* ============================================================
+   Store Leader 50%別枠配分のON/OFF
+   ★v959: 廃止が半分しか行われていなかった。
+     日次配分（calcTipDistribution）は getTipLeaderSplit() を見て止まっていたが、
+     半月精算（calcHalfMonthSettlement）は *0.5 がベタ書きで生き残っていた。
+     経理出力は半月精算の結果を書き出すため、廃止後も金額が変わり続けていた。
+     （ToriTon 2026-08-16〜08-31 で $874.22 が拠出され、他9名へ再分配されていた）
+     → スイッチを1本化し、両方がここを見る。
+
+   ★適用開始日。この日より前は従来どおり50%を残す。
+     7月以前は支給済みで、遡って変えると帳簿と食い違うため。
+     8/1〜8/15 は未支給であることを確認済み（Motoさん 2026-08-17）。 */
+var TIP_SL_SPLIT_END = '2026-08-01';
+/* dateISO を渡すとその期間の適用可否を返す。
+   渡さない場合は false（廃止済み）。日次配分の呼び出し元は変えない。 */
+function getTipLeaderSplit(dateISO) {
+  if (!dateISO) return false;
+  return String(dateISO) < TIP_SL_SPLIT_END;   /* 境界日そのものは「適用しない」側 */
+}
 function setTipLeaderSplit(v) { lsSet('tip_leader_split', !!v); }
 
 /* Store Manager以上（管理職）＋OfficeはTip対象外。役職(title)ベースで判定
@@ -8118,7 +8135,10 @@ function calcTipDistribution(storeId, date) {
   return { tip, list, distSum, hasLabor: !!labor, leaderSplit, unmatched:_unmatched };
 }
 
-/* 半月精算: Store Leaderの日次取り分合計の50%をプール→SL以外の半月総労働時間で再分配 */
+/* 半月精算: Store Leaderの日次取り分合計の50%をプール→SL以外の半月総労働時間で再分配
+   ★v959: TIP_SL_SPLIT_END 以降は適用しない。日次配分＝最終受取になる。
+   期間の開始日で判定する。半月のまん中で切り替わると、
+   同じ期間の中で拠出した人と受け取った人が食い違うため。 */
 function calcHalfMonthSettlement(storeId, anyDateInPeriod) {
   var range = halfMonthRange(anyDateInPeriod);
   var dates = halfMonthDates(anyDateInPeriod);
@@ -8134,28 +8154,33 @@ function calcHalfMonthSettlement(storeId, anyDateInPeriod) {
       hoursTotal[r.name] = (hoursTotal[r.name]||0) + (r.lunchHours||0) + (r.dinnerHours||0);
     });
   });
+  /* ★v959: 期間の開始日で適用可否を決める。ここが false なら
+     拠出も再分配もゼロになり、日次配分がそのまま最終受取になる。 */
+  var slSplitOn = getTipLeaderSplit(range.from);
   // Store Leaderの拠出（日次取り分合計の50%）
   var slPool = 0;
-  Object.keys(dailyTotal).forEach(name=>{
+  if (slSplitOn) Object.keys(dailyTotal).forEach(name=>{
     if (isStoreLeader(name)) slPool += dailyTotal[name]*0.5;
   });
   // SL以外の総労働時間
   var nonSLHours = 0;
-  Object.keys(hoursTotal).forEach(name=>{
+  if (slSplitOn) Object.keys(hoursTotal).forEach(name=>{
     if (!isStoreLeader(name)) nonSLHours += hoursTotal[name];
   });
   var perHour = nonSLHours>0 ? slPool/nonSLHours : 0;
   // 最終
   var rows = Object.keys(dailyTotal).map(name=>{
-    var sl = isStoreLeader(name);
+    /* ★v959: 適用外の期間では SL 判定そのものを使わない。
+       isSL フラグが端末に残っていても、金額に影響しないようにする。 */
+    var sl = slSplitOn && isStoreLeader(name);
     var base = dailyTotal[name];
     var h = hoursTotal[name]||0;
     var contribution = sl ? base*0.5 : 0;       // 拠出
-    var redistrib = sl ? 0 : h*perHour;          // 受取（SL以外）
+    var redistrib = (slSplitOn && !sl) ? h*perHour : 0;   // 受取（SL以外）
     var final = base - contribution + redistrib;
     return { name, isSL:sl, hours:h, base, contribution, redistrib, final };
   }).sort((a,b)=>b.final-a.final);
-  return { range, rows, slPool, nonSLHours, perHour, anyLabor };
+  return { range, rows, slPool, nonSLHours, perHour, anyLabor, slSplitOn };
 }
 
 /* マイページ用: 現在の半月の自分のチップ見込み（半月精算後の最終値） */
@@ -8196,7 +8221,7 @@ function showMyTipDetail(storeId, name) {
       <tr style="border-top:2px solid var(--border);font-weight:700"><td colspan="3">日次配分合計</td><td style="text-align:right">$${dayTotal.toFixed(2)}</td></tr>
       <tr style="color:var(--accent2)"><td colspan="3">半月精算後（SL再分配反映）</td><td style="text-align:right;font-weight:700">$${settle.total.toFixed(2)}</td></tr>
       </tfoot></table>
-      <p style="font-size:11px;color:var(--muted);margin-top:8px">日次配分にStore Leaderの50%再分配を反映した最終額が精算後です。</p>`;
+      <p style="font-size:11px;color:var(--muted);margin-top:8px">${settle.slSplitOn ? '日次配分にStore Leaderの50%再分配を反映した最終額が精算後です。' : '日次配分がそのまま最終額です。'}</p>`;
   }
   html += `<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`;
   openModal(html);
@@ -32278,7 +32303,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '958';
+const APP_VERSION = '959';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
