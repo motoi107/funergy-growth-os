@@ -19733,13 +19733,16 @@ function renderInitiativeBody(it, store){
   if(!w) return '<div class="card"><div style="font-size:12px;color:var(--muted)">開始日（'+escapeHtml(it.startDate||'未設定')+'）がまだ来ていません。</div></div>';
   var ym=String(it.startDate).slice(0,7);
   var mix=initMixFor(store.id, ym);
+  var modMix=initModFor(store.id, ym);   /* ★v961: モディファイア別の出数 */
   var afterD=initDateList(w.afterFrom, w.afterTo), beforeD=initDateList(w.beforeFrom, w.beforeTo);
   var cA=initCustAgg(store.id, afterD), cB=initCustAgg(store.id, beforeD);
   var tA=initQtyAgg(mix, afterD, it.targetGuids), tB=initQtyAgg(mix, beforeD, it.targetGuids);
   var pA=initQtyAgg(mix, afterD, it.compareGuids), pB=initQtyAgg(mix, beforeD, it.compareGuids);
   /* ★v960: 粗利。食数だけでは置き換えの実害が分からない。 */
-  var gtA=initGpAgg(mix, afterD, it.targetGuids, it, store.id), gtB=initGpAgg(mix, beforeD, it.targetGuids, it, store.id);
-  var gpA=initGpAgg(mix, afterD, it.compareGuids, it, store.id), gpB=initGpAgg(mix, beforeD, it.compareGuids, it, store.id);
+  var gtA=initGpAgg(mix, afterD, it.targetGuids, it, store.id, modMix), gtB=initGpAgg(mix, beforeD, it.targetGuids, it, store.id, modMix);
+  var gpA=initGpAgg(mix, afterD, it.compareGuids, it, store.id, modMix), gpB=initGpAgg(mix, beforeD, it.compareGuids, it, store.id, modMix);
+  /* ★v961: モディファイアの合計が item_qty と合っているか */
+  var audit=initModAudit(modMix, afterD, it.targetGuids);
   var gpReady=initGpReady(it, store.id, (it.targetGuids||[]).concat(it.compareGuids||[]));
   var html='';
   if(!mix){
@@ -19818,6 +19821,10 @@ function renderInitiativeBody(it, store){
         +'食数だけでは置き換えの実害が分かりません。'
         +'<b>施策の編集</b>から商品ごとの粗利単価を入れてください。</div>';
     }
+    /* ★v961: モディファイア別の内訳。single/double/combo の出数と粗利を出す。
+       double は追加料金より原価増のほうが大きく、売れるほど粗利が減る。
+       混ぜた平均粗利ではこの逆ざやが見えないため、内訳を必ず出す。 */
+    html+=initModBreakdown(it, modMix, afterD, audit, w);
     var swap=Math.min(tA.qty-tB.qty, Math.max(0, -(pA.qty-pB.qty)));
     var msg;
     if(dS>0 && swap>0) msg='対象が'+dT+'食増えたうち、<b>'+swap+'食は比較商品からの置き換え</b>です。残り'+dS+'食が純増。';
@@ -19974,6 +19981,48 @@ function initTrendCard(it, store, mix, w, gpReady){
     +'相関係数は出していません。開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。動きを見て判断してください。'
     +'<br>線が切れている日は<b>データが無い日</b>です。0ではありません。灰色の帯がその日にあたります。</div></div>';
 }
+/* モディファイア別の内訳と、取りこぼしの検知 */
+function initModBreakdown(it, modMix, dates, audit, w){
+  if(!audit || !audit.has) return '';
+  var byMod={};
+  (dates||[]).forEach(function(d){
+    if(!modMix || !modMix[d]) return;
+    (it.targetGuids||[]).forEach(function(g){
+      var e=modMix[d][g]; if(!e) return;
+      Object.keys(e).forEach(function(k){ if(k==='_item') return; byMod[k]=(byMod[k]||0)+(Number(e[k])||0); });
+    });
+  });
+  var names=Object.keys(byMod).sort(function(a,b){ return byMod[b]-byMod[a]; });
+  if(!names.length) return '';
+  var h='<div style="margin-top:12px;border-top:1px solid var(--bd);padding-top:10px">'
+    +'<div style="font-size:12px;font-weight:700;margin-bottom:2px">内訳（'+escapeHtml(it.targetLabel||'対象商品')+'・後'+w.n+'日）</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">1食あたりの粗利増分。マイナスは売れるほど粗利が減ります。</div>'
+    +'<table style="width:100%;font-size:12.5px;border-collapse:collapse">'
+    +'<tr style="color:var(--muted);font-size:11px"><td style="padding:4px 0">モディファイア</td>'
+    +'<td style="text-align:right">出数</td><td style="text-align:right">増分/食</td><td style="text-align:right">粗利影響</td></tr>';
+  names.forEach(function(n){
+    var inc=initModGpOf(it, n), eff=Math.round(byMod[n]*inc*100)/100;
+    h+='<tr style="border-top:1px solid var(--bd)"><td style="padding:6px 0">'+escapeHtml(n)+'</td>'
+      +'<td style="text-align:right">'+byMod[n]+' 食</td>'
+      +'<td style="text-align:right;color:'+(inc<0?'var(--red)':(inc>0?'var(--green)':'var(--muted)'))+'">'
+      +(inc===0?'—':((inc>0?'+':'−')+'$'+Math.abs(inc).toFixed(2)))+'</td>'
+      +'<td style="text-align:right">'+_initDelta(eff,'',false,true)+'</td></tr>';
+  });
+  h+='</table>';
+  /* ★取りこぼしの検知。合計が商品の出数と合わなければ、
+     Toast側で名前が変わって判定が外れた可能性がある。 */
+  if(!audit.ok){
+    h+='<div style="font-size:11px;color:var(--amber);line-height:1.8;margin-top:8px">'
+      +'<i class="ti ti-alert-triangle"></i> <b>モディファイアの合計が商品の出数と合いません</b>'
+      +'（商品 '+audit.itemQty+' 食 / モディファイア計 '+audit.modQty+' 食・差 '+(audit.gap>0?'+':'')+audit.gap+'）。'
+      +'Toast側でモディファイア名が変わったか、選択されていない注文があります。'
+      +'このままだと粗利が'+(audit.gap<0?'過小':'過大')+'に出ます。</div>';
+  } else {
+    h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">'
+      +'商品 '+audit.itemQty+' 食 ＝ モディファイア計 '+audit.modQty+' 食。取りこぼしはありません。</div>';
+  }
+  return h+'</div>';
+}
 function _initTile(label, val, sub){
   return '<div style="background:var(--bg2);border-radius:8px;padding:9px 10px">'
     +'<div style="font-size:10.5px;color:var(--muted)">'+label+'</div>'
@@ -20019,6 +20068,15 @@ async function initEdit(id){
     +'<b>選んだ商品すべてに入っていないと、粗利の判定は出ません。</b></div>'
     +'<div class="form-group"><label class="form-label">対象商品</label>'
     +initItemPicker('t', items, it.targetGuids||[], it.gpByGuid||{}, _initStore)+'</div>'
+    /* ★v961: モディファイアの粗利増分。single/double/combo を想定。
+       商品の粗利単価とは別物なので、欄を分けて置く。 */
+    +'<div class="form-group"><label class="form-label">モディファイアの粗利増分</label>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-bottom:6px">'
+    +'コンボやサイズ変更のように、売価と原価が同時に動くものを入れます。'
+    +'<b>1食あたりの粗利の増減</b>です（売価の増分 − 原価の増分）。'
+    +'例: combo は売価+$3.00・原価+$1.02 なので <b>1.98</b>、'
+    +'double は売価+$3.00・原価+$3.35 なので <b>-0.35</b>。</div>'
+    +initModGpRows(it.modGp||{})+'</div>'
     +'<div class="form-group"><label class="form-label">比較商品</label>'
     +initItemPicker('c', items, it.compareGuids||[], it.gpByGuid||{}, _initStore)+'</div>'
     +'<div class="btn-row">'
@@ -20045,6 +20103,42 @@ function initItemPicker(pfx, items, sel, gpMap, storeId){
   }).join('');
   return '<input class="form-input" style="margin-bottom:4px" placeholder="商品名で絞り込み" oninput="initFilter(this,\''+pfx+'\')">'
     +'<div id="init-box-'+pfx+'" style="max-height:150px;overflow:auto;border:1px solid var(--bd);border-radius:6px;padding:6px">'+rows+'</div>';
+}
+/* モディファイアの増分の入力行。既に入っているものを出し、追加もできる。 */
+function initModGpRows(map){
+  var keys=Object.keys(map||{});
+  if(!keys.length) keys=['single','double','combo'];   /* Marujuu の初期値。名前は編集できる */
+  var h='<div id="init-modgp">';
+  keys.forEach(function(k){ h+=_initModGpRow(k, map[k]); });
+  h+='</div><button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="initModGpAdd()">'
+    +'<i class="ti ti-plus"></i> 行を追加</button>';
+  return h;
+}
+function _initModGpRow(name, val){
+  return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'
+    +'<input class="form-input initmod-name" value="'+escapeHtml(name||'')+'" placeholder="モディファイア名"'
+    +' style="flex:1;font-size:12px;padding:3px 6px">'
+    +'<span style="color:var(--muted);font-size:11px">増分$</span>'
+    +'<input type="number" step="0.01" class="initmod-val" value="'+(val!=null?escapeHtml(String(val)):'')+'"'
+    +' placeholder="0.00" style="width:76px;font-size:12px;padding:3px 6px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="this.parentNode.remove()" style="padding:2px 6px">×</button></div>';
+}
+function initModGpAdd(){
+  var box=document.getElementById('init-modgp'); if(!box) return;
+  box.insertAdjacentHTML('beforeend', _initModGpRow('', null));
+}
+/* 入力された増分を集める。名前が空の行は捨てる。0 は有効な値として通す。 */
+function _initCollectModGp(){
+  var out={}, box=document.getElementById('init-modgp');
+  if(!box) return out;
+  Array.prototype.forEach.call(box.children, function(row){
+    var n=row.querySelector('.initmod-name'), v=row.querySelector('.initmod-val');
+    if(!n || !v) return;
+    var nm=String(n.value||'').trim(); if(!nm) return;
+    var vv=String(v.value||'').trim();
+    if(vv!=='' && !isNaN(vv)) out[nm]=Number(vv);
+  });
+  return out;
 }
 function initFilter(el, pfx){
   var q=String(el.value||'').toLowerCase();
@@ -20078,7 +20172,8 @@ function initSave(id){
     startDate:start, targetGuids:tg, compareGuids:_initChecked('c'),
     targetLabel:((document.getElementById('init-tlabel')||{}).value||'').trim(),
     compareLabel:((document.getElementById('init-clabel')||{}).value||'').trim(),
-    gpByGuid: _initCheckedGp('c', _initCheckedGp('t', {})) };
+    gpByGuid: _initCheckedGp('c', _initCheckedGp('t', {})),
+    modGp: _initCollectModGp() };
   var i=list.findIndex(function(x){return x&&x.id===rec.id;});
   if(i>=0) list[i]=Object.assign({}, list[i], rec); else list.push(rec);
   setInitiatives(list);
@@ -20097,6 +20192,8 @@ function initDelete(id){
 async function initLoadMix(sid, ym){
   showToast('出数を取得しています…','info');
   var r=await initMixFetch(sid, ym);
+  /* ★v961: モディファイア別も一緒に取る。無い店では空が返るだけで害はない。 */
+  try{ await initModFetch(sid, ym); }catch(e){ console.warn('initModFetch', e); }
   showToast(r?'取得しました':'取得できませんでした', r?'success':'warning');
   renderPage('budget');
 }
@@ -24033,6 +24130,58 @@ async function initMixFetch(sid, ym){
   return byDate;
 }
 /* ============================================================
+   v961: モディファイア別の出数（toast_item_modifier_sales）
+   ・Edge Function v961 が店×日×商品×モディファイア で記録している。
+   ・item_qty（その商品の総出数）も入っているので、
+     モディファイアの合計と合うかを検算できる。
+   ・出数と同じく端末ローカルにだけ置く。クラウドへは送らない。
+============================================================ */
+function initModKey(sid, ym){ return 'init_mod_'+sid+'_'+ym; }
+function initModFor(sid, ym){
+  var c=ls(initModKey(sid, ym), null);
+  return (c && c.d) ? c.d : null;   /* {'YYYY-MM-DD': {guid: {mod:qty, _item:itemQty}}} */
+}
+async function initModFetch(sid, ym){
+  var st=(typeof STORES!=='undefined')?STORES.find(function(s){return s.id===sid;}):null;
+  if(!st || !st.toastGuid) return null;
+  var rows=[];
+  try{
+    rows = await supaFetchAllRows('toast_item_modifier_sales?restaurant_guid=eq.'+encodeURIComponent(st.toastGuid)
+      +'&business_date=gte.'+ym+'-01&business_date=lte.'+ym+'-31&order=business_date.asc');
+  }catch(e){ console.warn('initModFetch', e); return null; }
+  var byDate={};
+  (rows||[]).forEach(function(r){
+    var d=r&&r.business_date; if(!d) return;
+    var ds=String(d).slice(0,10), g=r.item_guid, mn=r.modifier_name;
+    if(!g || !mn) return;
+    if(!byDate[ds]) byDate[ds]={};
+    if(!byDate[ds][g]) byDate[ds][g]={_item:0};
+    byDate[ds][g][mn]=(byDate[ds][g][mn]||0)+(Number(r.qty)||0);
+    /* item_qty は同じ商品・同じ日で全行同じ値。最大を取れば足し込み事故を避けられる */
+    byDate[ds][g]._item=Math.max(byDate[ds][g]._item, Number(r.item_qty)||0);
+  });
+  try{ lsSet(initModKey(sid, ym), {at:Date.now(), d:byDate}); }catch(e){}
+  return byDate;
+}
+/* ★モディファイアの合計が item_qty と合っているか。
+   合わない＝Toast側で名前が変わって判定が外れた、または未選択の注文がある。
+   いくらシャワーは判定が外れても気づけず 90.2% を出し続けた。同じにしない。 */
+function initModAudit(modMix, dates, guids){
+  var item=0, mods=0, days=0, has=false;
+  (dates||[]).forEach(function(d){
+    if(!modMix || !modMix[d]) return;
+    var any=false;
+    (guids||[]).forEach(function(g){
+      var e=modMix[d][g]; if(!e) return;
+      item+=Number(e._item)||0;
+      Object.keys(e).forEach(function(k){ if(k!=='_item') mods+=Number(e[k])||0; });
+      any=true;
+    });
+    if(any){ days++; has=true; }
+  });
+  return {itemQty:item, modQty:mods, days:days, has:has, ok:(has && item===mods), gap:mods-item};
+}
+/* ============================================================
    v960: 粗利単価（商品GUIDごと）
    ・優先順位は 手入力 > レシピ自動。既存のKPI手入力フォールバックと同じ考え方。
    ・自動は _menuAgg（メニューエンジニアリング・19059行）と同じ式を使う。
@@ -24064,9 +24213,20 @@ function initGpReady(it, storeId, guids){
   if(!g.length) return false;
   return g.every(function(x){ return initGpOf(it, storeId, x)!=null; });
 }
-/* 期間内の粗利額 = Σ(その日の出数 × 粗利単価)。
-   出数と同じく days/want を返し、日数が揃わなければ差を出さない。 */
-function initGpAgg(mix, dates, guids, it, storeId){
+/* モディファイアの粗利増分。未設定は 0 として扱う（増分なので 0 が自然）。
+   ★v961: single は $0.00、double は −$0.35、combo は +$1.98（Motoさん 2026-08-18）。
+   増分方式にする理由: single/double/combo は Bacon などと同じグループにあり
+   同時に選べる可能性がある。3択として扱うと合計が合わない。 */
+function initModGpOf(it, modName){
+  var m=(it && it.modGp) ? it.modGp[modName] : null;
+  return (m!=null && m!=='' && !isNaN(m)) ? Number(m) : 0;
+}
+/* 期間内の粗利額
+     = Σ(その日の出数 × 基本粗利) + Σ(モディファイア出現数 × 増分)
+   出数と同じく days/want を返し、日数が揃わなければ差を出さない。
+   ★v961: modMix を渡すとモディファイアの増分を反映する。
+   渡さなければ v960 と同じ結果になる（後方互換）。 */
+function initGpAgg(mix, dates, guids, it, storeId, modMix){
   var amt=0, has=false, days=0;
   var gp={}; (guids||[]).forEach(function(g){ gp[g]=initGpOf(it, storeId, g); });
   dates.forEach(function(d){
@@ -24076,6 +24236,12 @@ function initGpAgg(mix, dates, guids, it, storeId){
       var q=Number(day[g])||0;
       if(gp[g]==null) return;         /* 粗利単価が無い商品は足さない */
       sub+=q*gp[g]; any=true;
+      /* モディファイアの増分。その商品に付いたものだけを足す。 */
+      var me=(modMix && modMix[d]) ? modMix[d][g] : null;
+      if(me) Object.keys(me).forEach(function(k){
+        if(k==='_item') return;
+        sub += (Number(me[k])||0) * initModGpOf(it, k);
+      });
     });
     if(any){ amt+=sub; has=true; days++; }
   });
@@ -32438,7 +32604,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '960';
+const APP_VERSION = '961';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
