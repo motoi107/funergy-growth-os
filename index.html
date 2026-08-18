@@ -20016,11 +20016,24 @@ function initTrendCard(it, store, mix, w, gpReady){
   var ps=dates.map(function(d){ return initQtyOn(mix, d, it.compareGuids); });
   var gt=dates.map(function(d){ return gpOn(d, it.targetGuids); });
   var gc=dates.map(function(d){ return gpOn(d, it.compareGuids); });
-  var rs=dates.map(function(d){
+  /* ★v965: 率ではなく実数を出す（Motoさん依頼）。
+     率は新規が増えると必ず下がるので、増えているかの判断に使えない。
+     総客数 = 新規 + リピート。合計が内訳の和になるので、
+     粗利のグラフと同じ「太線＝合計／細線＝内訳」の形にできる。
+     ※客単価は 売上÷guests で出しており、そちらとは数字がずれる。 */
+  var cf=dates.map(function(d){
     var ov=da[d]||{};
     if(ov.firstTimeBowls==null && ov.repeatBowls==null) return null;
-    var f=Number(ov.firstTimeBowls)||0, r=Number(ov.repeatBowls)||0;
-    return (f+r)>0 ? Math.round(r/(f+r)*1000)/10 : null;
+    return Number(ov.firstTimeBowls)||0;
+  });
+  var cr=dates.map(function(d){
+    var ov=da[d]||{};
+    if(ov.firstTimeBowls==null && ov.repeatBowls==null) return null;
+    return Number(ov.repeatBowls)||0;
+  });
+  var ct=dates.map(function(d,i){
+    if(cf[i]==null && cr[i]==null) return null;
+    return (cf[i]||0)+(cr[i]||0);
   });
   var sd=it.startDate, sl=sd+' 開始';
   var lgTC=_initLg('var(--accent)', tLabel)+_initLg('var(--tm)', cLabel);
@@ -20056,11 +20069,19 @@ function initTrendCard(it, store, mix, w, gpReady){
     '<b>太い線が判断材料です。</b>2品を足した'+(gpMode?'粗利':'食数')+'が増えていれば、'+tLabel+'を出した意味があります。'
     +'細い2本は、その中身がどう入れ替わったかです。'
     +'<br>線が切れている日は<b>データが無い日</b>です。0ではありません。');
-  /* リピート率。％なので軸が違う。別カードにする */
-  html+=initChartCard('ti-users', 'リピート率の推移', '％',
-    initChartSvg({dates:dates, startDate:sd, startLabel:sl, maxFixed:100, height:80, viewH:138, ticks:4,
-      series:[{vals:rs,color:'var(--accent2)'}]}),
-    '', '相関係数は出していません。開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。');
+  /* ★v965: 客数の推移。人／日なので粗利・食数とは軸が違う。別カードのまま。
+     率ではなく実数。総客数を太線、新規とリピートを細線にする。 */
+  html+=initChartCard('ti-users', '客数の推移', '人／日',
+    initChartSvg({dates:dates, startDate:sd, startLabel:sl, height:120, viewH:210, ticks:4,
+      lastLabel:true, padLeft:58, axisY:'客数（人）', axisX:'営業日',
+      series:[{vals:ct,color:'var(--accent)',width:3},
+              {vals:cf,color:'var(--accent2)',width:1.5},
+              {vals:cr,color:'var(--tm)',width:1.5}]}),
+    _initLg('var(--accent)', '総客数')+_initLg('var(--accent2)', '新規')+_initLg('var(--tm)', 'リピート'),
+    '<b>率ではなく人数で出しています。</b>リピート率は新規が増えると必ず下がるので、'
+    +'増えているかの判断には使えません。リピートの線が上がっていれば増えています。'
+    +'<br>率は下の表で見られます。相関係数は出していません。'
+    +'開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。');
   /* 日別の表 */
   html+=initDailyTable(it, store, mix, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel, gpOn);
   return html;
@@ -32792,7 +32813,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '964';
+const APP_VERSION = '965';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
