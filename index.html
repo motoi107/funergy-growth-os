@@ -19913,21 +19913,22 @@ function initChartSvg(opt){
   var step=(dates.length>1)?(W/(dates.length-1)):0;
   var px=function(i){ return X0+i*step; };
   var py=function(v){ return Y0+H-(v/maxQ)*H; };
+  /* ★v964: 目盛りを増やす。4分割で数字が3つしか出ず、線の位置が読めなかった。 */
+  var ticks=opt.ticks||5;
   var svg='<svg viewBox="0 0 620 '+vh+'" style="width:100%;height:auto">';
-  /* 枠線と目盛り線。rect ではなく line で囲む（横に伸びたとき角や線幅が崩れないため） */
-  [0,0.25,0.5,0.75,1].forEach(function(f){
-    var y=Y0+H-f*H;
+  for(var _t=0;_t<=ticks;_t++){
+    var f=_t/ticks, y=Y0+H-f*H;
     svg+='<line x1="'+X0+'" y1="'+y+'" x2="'+(X0+W)+'" y2="'+y+'" stroke="var(--bd)"'
-      +(f===0||f===1?'':' stroke-dasharray="2 4"')+' vector-effect="non-scaling-stroke"/>';
-  });
-  svg+='<line x1="'+X0+'" y1="'+Y0+'" x2="'+X0+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
-    +'<line x1="'+(X0+W)+'" y1="'+Y0+'" x2="'+(X0+W)+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
-    +'<line x1="'+X0+'" y1="'+Y0+'" x2="'+(X0+W)+'" y2="'+Y0+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>';
-  [0,0.5,1].forEach(function(f){
-    var y=Y0+H-f*H, v=Math.round(maxQ*f);
-    svg+='<text x="'+(X0-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="var(--muted)">'
-      +(opt.money?('$'+v.toLocaleString()):v)+'</text>';
-  });
+      +(_t===0?'':' stroke-dasharray="2 4"')+' vector-effect="non-scaling-stroke"/>';
+  }
+  /* ★軸線は目盛り線より太くする。同じ細さだと枠が沈んで読めない。 */
+  svg+='<line x1="'+X0+'" y1="'+Y0+'" x2="'+X0+'" y2="'+(Y0+H)+'" stroke="var(--bd)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>'
+    +'<line x1="'+X0+'" y1="'+(Y0+H)+'" x2="'+(X0+W)+'" y2="'+(Y0+H)+'" stroke="var(--bd)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>';
+  for(var _t2=0;_t2<=ticks;_t2++){
+    var f2=_t2/ticks, y2=Y0+H-f2*H, v2=Math.round(maxQ*f2);
+    svg+='<text x="'+(X0-6)+'" y="'+(y2+4)+'" text-anchor="end" font-size="10" fill="var(--muted)">'
+      +(opt.money?('$'+v2.toLocaleString()):v2)+'</text>';
+  }
   /* 欠測日の帯。食数のグラフだけに出す（3枚に出すと同じ日付の重複になる） */
   if(opt.gaps) dates.forEach(function(d,i){
     var any=false;
@@ -19952,10 +19953,27 @@ function initChartSvg(opt){
     (s.vals||[]).forEach(function(v,i){ if(v==null){ flush(); return; } seg.push(px(i)+','+py(v).toFixed(1)); });
     flush();
   });
-  [0, Math.floor((dates.length-1)/2), dates.length-1].forEach(function(i){
-    if(i<0||i>=dates.length) return;
-    svg+='<text x="'+px(i)+'" y="'+(Y0+H+16)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+dates[i].slice(5)+'</text>';
+  /* ★v964: 横軸は全日付を出す。3つだけではどの日か追えなかった。
+     多すぎて詰まる場合だけ間引く（1日おき、それでも詰まれば2日おき）。 */
+  var every=dates.length<=14 ? 1 : (dates.length<=28 ? 2 : Math.ceil(dates.length/14));
+  dates.forEach(function(d,i){
+    if(i%every!==0 && i!==dates.length-1) return;
+    svg+='<line x1="'+px(i)+'" y1="'+(Y0+H)+'" x2="'+px(i)+'" y2="'+(Y0+H+4)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
+      +'<text x="'+px(i)+'" y="'+(Y0+H+17)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+d.slice(5)+'</text>';
   });
+  /* ★v964: 最後の実データに値ラベル。いちばん知りたい数字を読み取り不要にする。 */
+  if(opt.lastLabel){
+    var ls=series[0]||{}, li=-1;
+    (ls.vals||[]).forEach(function(v,i){ if(v!=null) li=i; });
+    if(li>=0){
+      var lv=ls.vals[li], lx=px(li), ly=py(lv);
+      svg+='<circle cx="'+lx+'" cy="'+ly.toFixed(1)+'" r="4" fill="'+ls.color+'" stroke="var(--bg)" stroke-width="2" vector-effect="non-scaling-stroke"/>'
+        +'<text x="'+(lx-8)+'" y="'+(ly-8).toFixed(1)+'" text-anchor="end" font-size="10" fill="var(--tm)">'
+        +(opt.money?('$'+Number(lv).toLocaleString()):Number(lv).toLocaleString())+'</text>';
+    }
+  }
+  if(opt.axisY) svg+='<text x="14" y="'+(Y0+H/2)+'" text-anchor="middle" transform="rotate(-90 14 '+(Y0+H/2)+')" font-size="10" fill="var(--muted)">'+escapeHtml(opt.axisY)+'</text>';
+  if(opt.axisX) svg+='<text x="'+(X0+W/2)+'" y="'+(Y0+H+36)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+escapeHtml(opt.axisX)+'</text>';
   return svg+'</svg>';
 }
 /* カード1枚。単位は回転ラベルではなく見出しの右端に出す（回転は読みにくい） */
@@ -19987,6 +20005,8 @@ function initTrendCard(it, store, mix, w, gpReady){
     (guids||[]).forEach(function(g){ if(gpFor[g]!=null) n+=(Number(day[g])||0)*gpFor[g]; });
     return Math.round(n*100)/100;
   };
+  /* ★v964: 前週同曜日を出すため、表示は7日前からでも読み込みは14日前まで要る。
+     initMixFor は月単位で持っているので、範囲を広げても追加の取得は発生しない。 */
   var from=initDateAdd(it.startDate, -Math.min(w.n, 7));
   var dates=initDateList(from, w.afterTo);
   var da=getDailyActuals(store.id);
@@ -20010,43 +20030,43 @@ function initTrendCard(it, store, mix, w, gpReady){
     if(gt[i]==null && gc[i]==null) return null;
     return Math.round(((gt[i]||0)+(gc[i]||0))*100)/100;
   });
+  /* ★v964: 合計と内訳を1枚に統合（Motoさん依頼）。
+     合計 = 対象 + 比較 なので同じ $ の軸に乗る。太さで主役と脇役を分ける。
+     食数と粗利は単位が違うので、1枚を切り替える。 */
+  var gpMode = (_initChartMode!=='qty') && gpReady;
+  var qsum=dates.map(function(d,i){
+    if(qs[i]==null && ps[i]==null) return null;
+    return (qs[i]||0)+(ps[i]||0);
+  });
+  var sT = gpMode?gt:qs, sC = gpMode?gc:ps, sS = gpMode?gsum:qsum;
   var html='';
-  /* ★v963: 判断はここ1本。個別の線は「なぜそう動いたか」の説明であって判断材料ではない。
-     Motoさん「最終的に粗利が増えているのかどうか」。主役と脇役を入れ替えた。 */
-  if(gpReady){
-    html+=initChartCard('ti-currency-dollar', '① 合計粗利の推移', '$／日',
-      initChartSvg({dates:dates, startDate:sd, startLabel:sl, money:true, gaps:true,
-        series:[{vals:gsum,color:'var(--accent)',width:3}]}),
-      _initLg('var(--accent)', tLabel+' ＋ '+cLabel)
-      +'<span><span style="display:inline-block;width:12px;height:9px;background:var(--muted);opacity:.18;vertical-align:0;margin-right:4px"></span>データが無い日</span>',
-      '<b>判断はこの線です。</b>2品を足した粗利が増えていれば、'+tLabel+'を出した意味があります。'
-      +'以下は、その中身がどう動いたかの内訳です。');
-  } else {
-    html+=initChartCard('ti-currency-dollar', '① 合計粗利の推移', '$／日',
-      '<div style="font-size:12px;color:var(--muted);padding:14px 2px">'
-      +'粗利単価が設定されていない商品があります。<b>施策の編集</b>から入れてください。</div>', '', '');
-  }
-  /* ② 食数の内訳。欠測の帯は①と②に出す（以降は同じ日付の重複になるので出さない） */
-  html+=initChartCard('ti-chart-line', '② 食数の内訳', '食／日',
-    initChartSvg({dates:dates, startDate:sd, startLabel:sl,
-      series:[{vals:ps,color:'var(--tm)'},{vals:qs,color:'var(--accent)'}]}),
-    lgTC, '線が切れている日は<b>データが無い日</b>です。0ではありません。');
-  /* ③ 粗利の内訳。カニバリの中身を見るために残す（Motoさんの指示） */
-  if(gpReady){
-    html+=initChartCard('ti-arrows-exchange', '③ 粗利の内訳', '$／日',
-      initChartSvg({dates:dates, startDate:sd, startLabel:sl, money:true,
-        series:[{vals:gc,color:'var(--tm)'},{vals:gt,color:'var(--accent)'}]}),
-      lgTC, '合計が横ばいのとき、置き換えなのか両方落ちたのかはここで分かります。');
-  }
-  /* ④ リピート率。上限100%固定。食数・粗利と軸が違うので別カードにする */
-  html+=initChartCard('ti-users', '④ リピート率の推移', '％',
-    initChartSvg({dates:dates, startDate:sd, startLabel:sl, maxFixed:100, height:80, viewH:138,
+  var tabs = gpReady ? ('<div style="display:flex;gap:6px;margin-bottom:8px">'
+    +'<button class="btn btn-sm '+(gpMode?'btn-secondary':'btn-primary')+'" onclick="setInitChartMode(\'qty\')">食数</button>'
+    +'<button class="btn btn-sm '+(gpMode?'btn-primary':'btn-secondary')+'" onclick="setInitChartMode(\'gp\')">粗利</button></div>') : '';
+  html+=initChartCard(gpMode?'ti-currency-dollar':'ti-chart-line',
+    gpMode?'粗利の推移':'食数の推移', gpMode?'$／日':'食／日',
+    tabs+initChartSvg({dates:dates, startDate:sd, startLabel:sl, money:gpMode, gaps:true,
+      ticks:5, lastLabel:true, height:160, viewH:250, padLeft:58,
+      axisY:gpMode?'粗利額（$）':'出数（食）', axisX:'営業日',
+      series:[{vals:sS,color:'var(--accent)',width:3},
+              {vals:sC,color:'var(--accent2)',width:1.5},
+              {vals:sT,color:'var(--tm)',width:1.5}]}),
+    _initLg('var(--accent)', '合計（判断はこれ）')+_initLg('var(--accent2)', cLabel)+_initLg('var(--tm)', tLabel)
+    +'<span><span style="display:inline-block;width:12px;height:9px;background:var(--muted);opacity:.18;vertical-align:0;margin-right:4px"></span>データが無い日</span>',
+    '<b>太い線が判断材料です。</b>2品を足した'+(gpMode?'粗利':'食数')+'が増えていれば、'+tLabel+'を出した意味があります。'
+    +'細い2本は、その中身がどう入れ替わったかです。'
+    +'<br>線が切れている日は<b>データが無い日</b>です。0ではありません。');
+  /* リピート率。％なので軸が違う。別カードにする */
+  html+=initChartCard('ti-users', 'リピート率の推移', '％',
+    initChartSvg({dates:dates, startDate:sd, startLabel:sl, maxFixed:100, height:80, viewH:138, ticks:4,
       series:[{vals:rs,color:'var(--accent2)'}]}),
     '', '相関係数は出していません。開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。');
-  /* ⑤ 日別の表（Motoさん依頼） */
-  html+=initDailyTable(it, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel);
+  /* 日別の表 */
+  html+=initDailyTable(it, store, mix, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel, gpOn);
   return html;
 }
+var _initChartMode='gp';   /* 'gp' = 粗利 / 'qty' = 食数 */
+function setInitChartMode(m){ _initChartMode=m; renderPage('budget'); }
 /* ============================================================
    v963: 日別の数字（Motoさん依頼）
    ★0 と 未販売 と 欠測 を分ける。
@@ -20057,8 +20077,34 @@ function initTrendCard(it, store, mix, w, gpReady){
 ============================================================ */
 function _iq(v){ return v==null ? '<span style="color:var(--muted)">—</span>' : Number(v).toLocaleString(); }
 function _im(v){ return v==null ? '<span style="color:var(--muted)">—</span>' : ('$'+Number(v).toFixed(2)); }
-function initDailyTable(it, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel){
+/* ★v964: 「ハンバーグのみを売っていた頃」との比較（Motoさん指摘）
+     前週同曜日 … その日の7日前の合計粗利。開始日以降なら必ず対象商品を
+                   売っていない時期になる。曜日変動が消えるのでいちばん正確。
+     前14日平均 … 開始日の前日から遡った14日の日平均。全行で同じ基準線。
+   ★どちらも「対象商品が無かった頃の粗利」。ここと比べないと、
+     合計が増えたのか元からその水準だったのかが分からない。 */
+var _INIT_WDAY=['日','月','火','水','木','金','土'];
+function _initWday(d){ var p=d.split('-'); return _INIT_WDAY[new Date(Date.UTC(+p[0],+p[1]-1,+p[2])).getUTCDay()]; }
+/* 開始日の前日から遡った14日の、合計粗利の日平均。データがある日だけで割る。 */
+function initBaseAvg(it, mix, gpOn){
+  var to=initDateAdd(it.startDate,-1), from=initDateAdd(it.startDate,-14);
+  var all=(it.targetGuids||[]).concat(it.compareGuids||[]);
+  var s=0,n=0;
+  initDateList(from,to).forEach(function(d){
+    var v=gpOn(d, all);
+    if(v!=null && mix && mix[d]){ s+=v; n++; }
+  });
+  return n>0 ? {avg:Math.round(s/n*100)/100, days:n} : null;
+}
+function _idiff(v){
+  if(v==null) return '<span style="color:var(--muted)">—</span>';
+  var c=(v===0)?'var(--muted)':(v>0?'var(--green)':'var(--red)');
+  return '<span style="color:'+c+'">'+(v>0?'+':(v<0?'−':''))+'$'+Math.abs(v).toFixed(2)+'</span>';
+}
+function initDailyTable(it, store, mix, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel, gpOn){
   var sd=it.startDate;
+  var allG=(it.targetGuids||[]).concat(it.compareGuids||[]);
+  var base=gpReady ? initBaseAvg(it, mix, gpOn) : null;
   var sQ=0,sG=0,cQ=0,cG=0,hasAny=false;
   var rows='';
   dates.forEach(function(d,i){
@@ -20073,12 +20119,19 @@ function initDailyTable(it, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel
     var sg = (!gpReady||gone) ? null : Math.round(((tg||0)+(cg||0))*100)/100;
     if(tq!=null) sQ+=tq; if(tg!=null) sG+=tg;
     if(cq!=null) cQ+=cq; if(cg!=null) cG+=cg;
+    /* ★前週同曜日。7日前の合計粗利。開始日以降なら必ず対象商品が無かった日。 */
+    var pw = (gpReady && !gone) ? gpOn(initDateAdd(d,-7), allG) : null;
+    var dPw = (pw!=null && sg!=null) ? Math.round((sg-pw)*100)/100 : null;
+    var dBs = (base && sg!=null) ? Math.round((sg-base.avg)*100)/100 : null;
     rows+='<tr style="border-top:1px solid var(--bd)'+(d===sd?';background:var(--bg2)':'')+'">'
-      +'<td style="padding:5px 0;white-space:nowrap">'+d.slice(5)+(d===sd?' <span style="font-size:9px;color:var(--accent)">開始</span>':'')+'</td>'
+      +'<td style="padding:5px 0;white-space:nowrap">'+d.slice(5)+'('+_initWday(d)+')'+(d===sd?' <span style="font-size:9px;color:var(--accent)">開始</span>':'')+'</td>'
       +'<td style="text-align:right">'+_iq(cq)+'</td><td style="text-align:right">'+_im(cg)+'</td>'
       +'<td style="text-align:right">'+_iq(tq)+'</td><td style="text-align:right">'+_im(tg)+'</td>'
       +'<td style="text-align:right;font-weight:700">'+_iq(sq)+'</td>'
-      +'<td style="text-align:right;font-weight:700">'+_im(sg)+'</td></tr>';
+      +'<td style="text-align:right;font-weight:700">'+_im(sg)+'</td>'
+      +'<td style="text-align:right">'+_im(pw)+'</td>'
+      +'<td style="text-align:right">'+_idiff(dPw)+'</td>'
+      +'<td style="text-align:right">'+_idiff(dBs)+'</td></tr>';
   });
   if(!hasAny) return '';
   var body='<div style="overflow-x:auto"><table style="width:100%;font-size:12px;border-collapse:collapse;white-space:nowrap">'
@@ -20086,12 +20139,16 @@ function initDailyTable(it, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel
     +'<td style="padding:3px 0"></td>'
     +'<td colspan="2" style="text-align:center">'+cLabel+'</td>'
     +'<td colspan="2" style="text-align:center">'+tLabel+'</td>'
-    +'<td colspan="2" style="text-align:center;color:var(--tm)">合計</td></tr>'
+    +'<td colspan="2" style="text-align:center;color:var(--tm)">合計</td>'
+    +'<td colspan="2" style="text-align:center">前週同曜日</td>'
+    +'<td style="text-align:center">前14日平均</td></tr>'
     +'<tr style="color:var(--muted);font-size:10px">'
     +'<td style="padding:3px 0">日付</td>'
     +'<td style="text-align:right">出数</td><td style="text-align:right">粗利</td>'
     +'<td style="text-align:right">出数</td><td style="text-align:right">粗利</td>'
-    +'<td style="text-align:right">出数</td><td style="text-align:right">粗利</td></tr>'
+    +'<td style="text-align:right">出数</td><td style="text-align:right">粗利</td>'
+    +'<td style="text-align:right">粗利</td><td style="text-align:right">差</td>'
+    +'<td style="text-align:right">差</td></tr>'
     +rows
     +'<tr style="border-top:2px solid var(--bd);font-weight:700">'
     +'<td style="padding:6px 0">期間計</td>'
@@ -20100,10 +20157,16 @@ function initDailyTable(it, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel
     +'<td style="text-align:right">'+sQ.toLocaleString()+'</td>'
     +'<td style="text-align:right">'+(gpReady?('$'+sG.toFixed(2)):'—')+'</td>'
     +'<td style="text-align:right">'+(cQ+sQ).toLocaleString()+'</td>'
-    +'<td style="text-align:right">'+(gpReady?('$'+(cG+sG).toFixed(2)):'—')+'</td></tr>'
+    +'<td style="text-align:right">'+(gpReady?('$'+(cG+sG).toFixed(2)):'—')+'</td>'
+    +'<td colspan="3" style="text-align:right;font-weight:400;color:var(--muted);font-size:10px">'
+    +(base?('前14日平均 $'+base.avg.toFixed(2)+'／日（'+base.days+'日ぶん）'):'')+'</td></tr>'
     +'</table></div>';
-  return initChartCard('ti-table', '⑤ 日別の数字', '', body, '',
-    '<b>—</b> は数字が無い日です。開始日より前の'+tLabel+'は未販売、'
+  return initChartCard('ti-table', '日別の数字', '', body, '',
+    '<b>前週同曜日</b>は7日前の合計粗利です。開始日以降なら'+tLabel+'を売っていない日なので、'
+    +'<b>'+cLabel+'だけを売っていた頃との比較</b>になります。曜日を揃えているので、'
+    +'平日と週末の差に惑わされません。'
+    +'<br><b>前14日平均</b>は開始日の前日から遡った14日の日平均です。基準線として使ってください。'
+    +'<br><b>—</b> は数字が無い日です。開始日より前の'+tLabel+'は未販売、'
     +'それ以外はその日のデータが取れていません。<b>0</b> は売れなかった日です。');
 }
 /* モディファイア別の内訳と、取りこぼしの検知 */
@@ -32729,7 +32792,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '963';
+const APP_VERSION = '964';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
