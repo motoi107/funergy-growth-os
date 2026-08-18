@@ -20084,6 +20084,8 @@ function initTrendCard(it, store, mix, w, gpReady){
     +'開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。');
   /* 日別の表 */
   html+=initDailyTable(it, store, mix, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel, gpOn);
+  /* ★v966: 日別の表の下。表が根拠、こちらが結論という並びにする。 */
+  html+=initPerUnitCard(it, store, dates, qs, gsum, gpReady, gpOn, tLabel, cLabel);
   return html;
 }
 var _initChartMode='gp';   /* 'gp' = 粗利 / 'qty' = 食数 */
@@ -20121,6 +20123,100 @@ function _idiff(v){
   if(v==null) return '<span style="color:var(--muted)">—</span>';
   var c=(v===0)?'var(--muted)':(v>0?'var(--green)':'var(--red)');
   return '<span style="color:'+c+'">'+(v>0?'+':(v<0?'−':''))+'$'+Math.abs(v).toFixed(2)+'</span>';
+}
+/* ============================================================
+   v966: 対象商品1食あたり、合計粗利がいくら動いたか
+   （その日の合計粗利 − 前週同曜日の合計粗利）÷ その日の対象商品の出数
+   ★前週同曜日と比べるので曜日変動が消える。
+   ★開始から7日ぶんまでしか使えない。8日目以降は前週も販売後になり、
+     「対象商品が無かった頃」との比較でなくなる。
+============================================================ */
+function initPerUnitEffect(it, dates, qs, gsum, gpReady, gpOn){
+  if(!gpReady) return null;
+  var sd=it.startDate;
+  var allG=(it.targetGuids||[]).concat(it.compareGuids||[]);
+  var lastValid=initDateAdd(sd, 6);   /* 開始日から7日ぶん（0〜6日目） */
+  var days=[], sum=0, n=0, skipped=0;
+  dates.forEach(function(d,i){
+    if(d<sd) return;                                  /* 開始前は対象外 */
+    if(d>lastValid){ skipped++; return; }             /* 8日目以降は比較の意味が変わる */
+    var q=qs[i], g=gsum[i];
+    if(q==null || g==null || q<=0) return;            /* 欠測・未販売の日は使わない */
+    var pw=gpOn(initDateAdd(d,-7), allG);
+    if(pw==null) return;                              /* 前週が取れていなければ使わない */
+    var per=Math.round((g-pw)/q*100)/100;
+    days.push({date:d, qty:q, now:g, prev:pw, per:per});
+    sum+=per; n++;
+  });
+  if(!n) return {days:[], avg:null, n:0, skipped:skipped};
+  return {days:days, avg:Math.round(sum/n*100)/100, n:n, skipped:skipped};
+}
+/* 理論値。純増なら対象商品の粗利がそのまま乗る。
+   置き換えなら「対象の粗利 − 比較の粗利」だけ動く（比較商品によって幅がある）。 */
+function initTheoryRange(it, store){
+  var t=(it.targetGuids||[]).map(function(g){ return initGpOf(it, store.id, g); }).filter(function(v){ return v!=null; });
+  var c=(it.compareGuids||[]).map(function(g){ return initGpOf(it, store.id, g); }).filter(function(v){ return v!=null; });
+  if(!t.length) return null;
+  var tMin=Math.min.apply(null,t), tMax=Math.max.apply(null,t);
+  if(!c.length) return {netMin:tMin, netMax:tMax, swapMin:null, swapMax:null};
+  var cMin=Math.min.apply(null,c), cMax=Math.max.apply(null,c);
+  return {netMin:tMin, netMax:tMax,
+          swapMin:Math.round((tMin-cMax)*100)/100,   /* いちばん高い商品から奪った場合 */
+          swapMax:Math.round((tMax-cMin)*100)/100};  /* いちばん安い商品から奪った場合 */
+}
+function initPerUnitCard(it, store, dates, qs, gsum, gpReady, gpOn, tLabel, cLabel){
+  var r=initPerUnitEffect(it, dates, qs, gsum, gpReady, gpOn);
+  if(!r) return '';
+  var th=initTheoryRange(it, store);
+  var body='';
+  if(r.avg==null){
+    body='<div style="font-size:12px;color:var(--muted);line-height:1.8">'
+      +'まだ計算できません。'+tLabel+'が売れた日と、その前週同曜日の両方に'
+      +'データが必要です。</div>';
+  } else {
+    var c=(r.avg>0)?'var(--green)':(r.avg<0?'var(--red)':'var(--muted)');
+    body='<div style="font-size:26px;font-weight:800;color:'+c+';margin:2px 0">'
+      +(r.avg>0?'+':(r.avg<0?'−':''))+'$'+Math.abs(r.avg).toFixed(2)
+      +'<span style="font-size:12px;font-weight:400;color:var(--muted);margin-left:6px">／'+tLabel+'1食</span></div>'
+      +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+r.n+'日ぶんの平均</div>';
+    body+='<table style="width:100%;font-size:12px;border-collapse:collapse">'
+      +'<tr style="color:var(--muted);font-size:10px"><td style="padding:3px 0">日付</td>'
+      +'<td style="text-align:right">その日</td><td style="text-align:right">前週同曜日</td>'
+      +'<td style="text-align:right">差</td><td style="text-align:right">出数</td>'
+      +'<td style="text-align:right">1食あたり</td></tr>';
+    r.days.forEach(function(x){
+      var d2=Math.round((x.now-x.prev)*100)/100;
+      body+='<tr style="border-top:1px solid var(--bd)">'
+        +'<td style="padding:5px 0;white-space:nowrap">'+x.date.slice(5)+'('+_initWday(x.date)+')</td>'
+        +'<td style="text-align:right">$'+x.now.toFixed(2)+'</td>'
+        +'<td style="text-align:right">$'+x.prev.toFixed(2)+'</td>'
+        +'<td style="text-align:right">'+_idiff(d2)+'</td>'
+        +'<td style="text-align:right">'+x.qty+' 食</td>'
+        +'<td style="text-align:right;font-weight:700">'+_idiff(x.per)+'</td></tr>';
+    });
+    body+='</table>';
+  }
+  /* 理論値。実測がどのあたりかで、純増寄りか置き換え寄りかが読める。 */
+  if(th){
+    body+='<div style="margin-top:10px;padding:8px 10px;background:var(--bg2);border-radius:6px;font-size:11.5px;line-height:1.9">'
+      +'<b>目安</b><br>'
+      +'まるごと新規のお客が増えた場合 … <b>+$'+th.netMin.toFixed(2)+'〜+$'+th.netMax.toFixed(2)+'</b>／1食<br>'
+      +(th.swapMin!=null
+        ? (escapeHtml(cLabel)+'から乗り換えた場合 … <b>'
+           +(th.swapMin>=0?'+':'−')+'$'+Math.abs(th.swapMin).toFixed(2)+'〜'
+           +(th.swapMax>=0?'+':'−')+'$'+Math.abs(th.swapMax).toFixed(2)+'</b>／1食')
+        : '')
+      +'</div>';
+  }
+  var note='<b>'+tLabel+'を1食増やすと、合計粗利がいくら動いたか</b>を出しています。'
+    +'その日の合計粗利から前週同曜日を引き、'+tLabel+'の出数で割った値です。'
+    +'曜日を揃えているので、平日と週末の差に惑わされません。'
+    +'<br><b>プラスなら増やす、マイナスなら止める</b>が読み取れます。'
+    +'上の目安と比べて、新規のお客が増えているのか、'+cLabel+'から乗り換えられているのかが分かります。';
+  if(r.skipped>0) note+='<br>開始から8日目以降の'+r.skipped+'日は使っていません。'
+    +'前週も'+tLabel+'を売っていた日になるため、「売っていなかった頃」との比較にならないからです。';
+  if(r.n>0 && r.n<3) note+='<br><b>まだ'+r.n+'日ぶんです。</b>日が経つほど確かになります。';
+  return initChartCard('ti-target', tLabel+'1食あたりの効果', '', body, '', note);
 }
 function initDailyTable(it, store, mix, dates, qs, ps, gt, gc, gsum, gpReady, tLabel, cLabel, gpOn){
   var sd=it.startDate;
@@ -32813,7 +32909,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '965';
+const APP_VERSION = '966';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
