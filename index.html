@@ -19880,59 +19880,34 @@ function renderInitiativeBody(it, store){
 /* ① 推移。縦軸2本（左=出数 食/日・右=リピート率 %）＋横軸=日付。
    相関係数は出さない。開始から日が浅いうちは曜日変動を拾うだけで、
    根拠が無いのに根拠に見える数字が出るほうが害が大きい。 */
-var _initTrendMode='qty';   /* 'qty' = 食数 / 'gp' = 粗利 */
-function setInitTrendMode(m){ _initTrendMode=m; renderPage('budget'); }
-function initTrendCard(it, store, mix, w, gpReady){
-  /* ★v960: 食数と粗利を同時に描くと縦軸が3本になって読めない。切り替えにする。
-     粗利単価が未設定なら食数のまま（切り替えボタンを出さない）。 */
-  var gpMode = (_initTrendMode==='gp') && gpReady;
-  var gpFor = {};
-  if(gpMode){ (it.targetGuids||[]).concat(it.compareGuids||[]).forEach(function(g){ gpFor[g]=initGpOf(it, store.id, g); }); }
-  /* その日のその商品群の値。食数モードは出数、粗利モードは出数×粗利単価。 */
-  var valOn=function(d, guids){
-    if(!gpMode) return initQtyOn(mix, d, guids);
-    if(!mix || !mix[d]) return null;
-    var day=mix[d], n=0;
-    (guids||[]).forEach(function(g){ if(gpFor[g]!=null) n+=(Number(day[g])||0)*gpFor[g]; });
-    return Math.round(n*100)/100;
-  };
-  var H=130, W=520, X0=52, Y0=20;
-  var from=initDateAdd(it.startDate, -Math.min(w.n, 7));
-  var dates=initDateList(from, w.afterTo);
-  var da=getDailyActuals(store.id);
-  var qs=dates.map(function(d){ return valOn(d, it.targetGuids); });
-  /* ★v957: 比較商品も別の線で出す。商品ごとの動きが見たいという要望と、
-     欠測日が目で分かるようにする狙いを兼ねる。 */
-  var ps=dates.map(function(d){ return valOn(d, it.compareGuids); });
-  var rs=dates.map(function(d){
-    var ov=da[d]||{};
-    if(ov.firstTimeBowls==null && ov.repeatBowls==null) return null;
-    var f=Number(ov.firstTimeBowls)||0, r=Number(ov.repeatBowls)||0;
-    return (f+r)>0 ? Math.round(r/(f+r)*1000)/10 : null;
-  });
-  var _all=qs.concat(ps).map(function(v){return v==null?0:v;});
-  var _mx=Math.max.apply(null, _all);
-  /* 粗利は桁が大きいので刻みを変える。食数は5刻みのまま。 */
-  var _step=gpMode?Math.max(50, Math.pow(10, Math.max(0, String(Math.round(_mx)).length-2))*5):5;
-  var maxQ=Math.max(_step, Math.ceil(_mx/_step)*_step);
-  var step=(dates.length>1)?(W/(dates.length-1)):0;
-  function px(i){ return X0+i*step; }
-  function pyQ(v){ return Y0+H-(v/maxQ)*H; }
-  function pyR(v){ return Y0+H-(v/100)*H; }
-  function line(vals, py, color, dash){
-    var seg=[], out='';
-    vals.forEach(function(v,i){
-      if(v==null){ if(seg.length>1) out+='<polyline points="'+seg.join(' ')+'" fill="none" stroke="'+color+'" stroke-width="2"'+(dash?' stroke-dasharray="4 3"':'')+' vector-effect="non-scaling-stroke"/>'; seg=[]; return; }
-      seg.push(px(i)+','+py(v).toFixed(1));
-    });
-    if(seg.length>1) out+='<polyline points="'+seg.join(' ')+'" fill="none" stroke="'+color+'" stroke-width="2"'+(dash?' stroke-dasharray="4 3"':'')+' vector-effect="non-scaling-stroke"/>';
-    return out;
+/* ============================================================
+   v962: グラフを1枚ずつ描く共通部品
+   ★v960 は1枚の絵に軸の違う3種類（食数or粗利／リピート率／欠測帯）を乗せていた。
+     線が5種類あり、どれがどの軸か読めなかった。
+     リピート率は粗利とも食数とも軸が違うのに同じ絵に乗っていたのが主因。
+   → 1枚 = 縦軸1本 に固定し、3回呼ぶ。
+   series: [{vals:[], color:'', label:''}]  vals は null 可（欠測は線を切る）
+============================================================ */
+function initChartSvg(opt){
+  var dates=opt.dates, series=opt.series||[];
+  var H=opt.height||110, W=520, X0=opt.padLeft||52, Y0=16;
+  var vh=(opt.viewH||168);
+  var _all=[];
+  series.forEach(function(s){ (s.vals||[]).forEach(function(v){ if(v!=null) _all.push(v); }); });
+  var _mx=_all.length?Math.max.apply(null,_all):0;
+  /* 目盛りの刻み。上限が固定なら（リピート率など）それを使う。 */
+  var maxQ;
+  if(opt.maxFixed!=null){ maxQ=opt.maxFixed; }
+  else {
+    var _step=opt.step || (_mx>=200 ? Math.pow(10, Math.max(0, String(Math.round(_mx)).length-2))*5 : 5);
+    _step=Math.max(_step, 1);
+    maxQ=Math.max(_step, Math.ceil(_mx/_step)*_step);
   }
-  var si=dates.indexOf(it.startDate);
-  /* ★v957: 枠線と目盛り線。線だけ浮いていて位置が読めない状態だった。
-     rect ではなく4本の line で囲む。rect は viewBox が横に伸びると角の丸みや
-     線幅が崩れるため（教訓：形が崩れる要素を置かない）。 */
-  var svg='<svg viewBox="0 0 620 200" style="width:100%;height:auto">';
+  var step=(dates.length>1)?(W/(dates.length-1)):0;
+  var px=function(i){ return X0+i*step; };
+  var py=function(v){ return Y0+H-(v/maxQ)*H; };
+  var svg='<svg viewBox="0 0 620 '+vh+'" style="width:100%;height:auto">';
+  /* 枠線と目盛り線。rect ではなく line で囲む（横に伸びたとき角や線幅が崩れないため） */
   [0,0.25,0.5,0.75,1].forEach(function(f){
     var y=Y0+H-f*H;
     svg+='<line x1="'+X0+'" y1="'+y+'" x2="'+(X0+W)+'" y2="'+y+'" stroke="var(--bd)"'
@@ -19942,44 +19917,110 @@ function initTrendCard(it, store, mix, w, gpReady){
     +'<line x1="'+(X0+W)+'" y1="'+Y0+'" x2="'+(X0+W)+'" y2="'+(Y0+H)+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>'
     +'<line x1="'+X0+'" y1="'+Y0+'" x2="'+(X0+W)+'" y2="'+Y0+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>';
   [0,0.5,1].forEach(function(f){
-    var y=Y0+H-f*H;
-    svg+='<text x="'+(X0-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="var(--muted)">'+(gpMode?('$'+Math.round(maxQ*f).toLocaleString()):Math.round(maxQ*f))+'</text>'
-      +'<text x="'+(X0+W+6)+'" y="'+(y+4)+'" font-size="10" fill="var(--muted)">'+Math.round(100*f)+'</text>';
+    var y=Y0+H-f*H, v=Math.round(maxQ*f);
+    svg+='<text x="'+(X0-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="var(--muted)">'
+      +(opt.money?('$'+v.toLocaleString()):v)+'</text>';
   });
-  svg+='<text x="14" y="'+(Y0+H/2)+'" text-anchor="middle" transform="rotate(-90 14 '+(Y0+H/2)+')" font-size="10" fill="var(--muted)">'+(gpMode?'粗利額（$／日）':'出数（食／日）')+'</text>'
-    +'<text x="606" y="'+(Y0+H/2)+'" text-anchor="middle" transform="rotate(90 606 '+(Y0+H/2)+')" font-size="10" fill="var(--muted)">リピート率（％）</text>';
-  if(si>=0){
-    svg+='<line x1="'+px(si)+'" y1="'+Y0+'" x2="'+px(si)+'" y2="'+(Y0+H)+'" stroke="var(--muted)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
-      +'<text x="'+(px(si)+4)+'" y="'+(Y0+10)+'" font-size="10" fill="var(--tm)">'+escapeHtml(it.startDate)+' 開始</text>';
-  }
-  /* ★v957: 欠測日に薄い縦帯を敷く。線が切れている理由が「データが無いから」だと
-     ひと目で分かるようにする。0で埋めてつなぐことはしない。 */
-  dates.forEach(function(d,i){
-    if(qs[i]!=null || ps[i]!=null) return;
+  /* 欠測日の帯。食数のグラフだけに出す（3枚に出すと同じ日付の重複になる） */
+  if(opt.gaps) dates.forEach(function(d,i){
+    var any=false;
+    series.forEach(function(s){ if(s.vals[i]!=null) any=true; });
+    if(any) return;
     var x=px(i)-(step/2), wdt=Math.max(2, step);
     svg+='<rect x="'+Math.max(X0,x).toFixed(1)+'" y="'+Y0+'" width="'+Math.min(wdt,X0+W-Math.max(X0,x)).toFixed(1)+'" height="'+H+'" fill="var(--muted)" opacity="0.10"/>';
   });
-  svg+=line(rs, pyR, 'var(--accent2)', true)
-    +line(ps, pyQ, 'var(--tm)', false)
-    +line(qs, pyQ, 'var(--accent)', false);
+  /* 開始日の縦線 */
+  var si=dates.indexOf(opt.startDate);
+  if(si>=0){
+    svg+='<line x1="'+px(si)+'" y1="'+Y0+'" x2="'+px(si)+'" y2="'+(Y0+H)+'" stroke="var(--muted)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>';
+    if(opt.startLabel) svg+='<text x="'+(px(si)+4)+'" y="'+(Y0+10)+'" font-size="10" fill="var(--tm)">'+escapeHtml(opt.startLabel)+'</text>';
+  }
+  /* 線。欠測は線を切る（0で埋めない） */
+  series.forEach(function(s){
+    var seg=[];
+    var flush=function(){
+      if(seg.length>1) svg+='<polyline points="'+seg.join(' ')+'" fill="none" stroke="'+s.color+'" stroke-width="2" vector-effect="non-scaling-stroke"/>';
+      seg=[];
+    };
+    (s.vals||[]).forEach(function(v,i){ if(v==null){ flush(); return; } seg.push(px(i)+','+py(v).toFixed(1)); });
+    flush();
+  });
   [0, Math.floor((dates.length-1)/2), dates.length-1].forEach(function(i){
     if(i<0||i>=dates.length) return;
     svg+='<text x="'+px(i)+'" y="'+(Y0+H+16)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+dates[i].slice(5)+'</text>';
   });
-  svg+='<text x="'+(X0+W/2)+'" y="'+(Y0+H+36)+'" text-anchor="middle" font-size="10" fill="var(--muted)">営業日（日付）</text></svg>';
-  var tabs = gpReady ? ('<div style="display:flex;gap:6px;margin-bottom:6px">'
-    +'<button class="btn btn-sm '+(gpMode?'btn-secondary':'btn-primary')+'" onclick="setInitTrendMode(\'qty\')">食数</button>'
-    +'<button class="btn btn-sm '+(gpMode?'btn-primary':'btn-secondary')+'" onclick="setInitTrendMode(\'gp\')">粗利額</button></div>') : '';
-  return '<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-chart-line" style="color:var(--accent)"></i>① '+escapeHtml(it.startDate)+' からの推移</div>'
-    +tabs+svg
-    +'<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:4px">'
-    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:3px;margin-right:4px"></span>'+escapeHtml(it.targetLabel||'対象商品')+(gpMode?'（$／日）':'（食／日）')+'</span>'
-    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--tm);vertical-align:3px;margin-right:4px"></span>'+escapeHtml(it.compareLabel||'比較商品')+(gpMode?'（$／日）':'（食／日）')+'</span>'
-    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent2);vertical-align:3px;margin-right:4px"></span>リピート率（％）</span>'
-    +'<span><span style="display:inline-block;width:12px;height:9px;background:var(--muted);opacity:.18;vertical-align:0;margin-right:4px"></span>データが無い日</span></div>'
-    +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'
-    +'相関係数は出していません。開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。動きを見て判断してください。'
-    +'<br>線が切れている日は<b>データが無い日</b>です。0ではありません。灰色の帯がその日にあたります。</div></div>';
+  return svg+'</svg>';
+}
+/* カード1枚。単位は回転ラベルではなく見出しの右端に出す（回転は読みにくい） */
+function initChartCard(icon, title, unit, svg, legend, note){
+  return '<div class="card" style="margin-bottom:8px">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between">'
+    +'<div class="card-title" style="margin-bottom:2px"><i class="ti '+icon+'" style="color:var(--accent)"></i>'+title+'</div>'
+    +'<span style="font-size:10px;color:var(--muted)">'+unit+'</span></div>'
+    +svg
+    +(legend?('<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:4px">'+legend+'</div>'):'')
+    +(note?('<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'+note+'</div>'):'')
+    +'</div>';
+}
+function _initLg(color, label){
+  return '<span><span style="display:inline-block;width:14px;height:2px;background:'+color+';vertical-align:3px;margin-right:4px"></span>'+label+'</span>';
+}
+/* ★v962: 3枚に分ける。1枚 = 縦軸1本。
+   v960 は1枚に軸の違う3種類（食数or粗利／リピート率／欠測帯）を乗せていた。
+   線が5種類あり、どれがどの軸か読めなかった。
+   桁の差はそのまま見せる（Motoさんと合意・案A）。
+   ハンバーグ575食 対 ハンバーガー46食。小さく見えるのは実際に小さいから。 */
+function initTrendCard(it, store, mix, w, gpReady){
+  var gpFor = {};
+  (it.targetGuids||[]).concat(it.compareGuids||[]).forEach(function(g){ gpFor[g]=initGpOf(it, store.id, g); });
+  /* 粗利額 = Σ(出数 × 粗利単価)。単価が無い商品は足さない。 */
+  var gpOn=function(d, guids){
+    if(!mix || !mix[d]) return null;
+    var day=mix[d], n=0;
+    (guids||[]).forEach(function(g){ if(gpFor[g]!=null) n+=(Number(day[g])||0)*gpFor[g]; });
+    return Math.round(n*100)/100;
+  };
+  var from=initDateAdd(it.startDate, -Math.min(w.n, 7));
+  var dates=initDateList(from, w.afterTo);
+  var da=getDailyActuals(store.id);
+  var tLabel=escapeHtml(it.targetLabel||'対象商品');
+  var cLabel=escapeHtml(it.compareLabel||'比較商品');
+  var qs=dates.map(function(d){ return initQtyOn(mix, d, it.targetGuids); });
+  var ps=dates.map(function(d){ return initQtyOn(mix, d, it.compareGuids); });
+  var gt=dates.map(function(d){ return gpOn(d, it.targetGuids); });
+  var gc=dates.map(function(d){ return gpOn(d, it.compareGuids); });
+  var rs=dates.map(function(d){
+    var ov=da[d]||{};
+    if(ov.firstTimeBowls==null && ov.repeatBowls==null) return null;
+    var f=Number(ov.firstTimeBowls)||0, r=Number(ov.repeatBowls)||0;
+    return (f+r)>0 ? Math.round(r/(f+r)*1000)/10 : null;
+  });
+  var sd=it.startDate, sl=sd+' 開始';
+  var lgTC=_initLg('var(--accent)', tLabel)+_initLg('var(--tm)', cLabel);
+  var html='';
+  /* ① 食数。欠測の帯はここだけに出す（3枚に出すと同じ日付の重複になる） */
+  html+=initChartCard('ti-chart-line', '① 食数の推移', '食／日',
+    initChartSvg({dates:dates, startDate:sd, startLabel:sl, gaps:true,
+      series:[{vals:ps,color:'var(--tm)'},{vals:qs,color:'var(--accent)'}]}),
+    lgTC+'<span><span style="display:inline-block;width:12px;height:9px;background:var(--muted);opacity:.18;vertical-align:0;margin-right:4px"></span>データが無い日</span>',
+    '線が切れている日は<b>データが無い日</b>です。0ではありません。灰色の帯がその日にあたります。');
+  /* ② 粗利額。単価が全部そろっていなければ出さない（過小な合計を見せない） */
+  if(gpReady){
+    html+=initChartCard('ti-currency-dollar', '② 粗利額の推移', '$／日',
+      initChartSvg({dates:dates, startDate:sd, startLabel:sl, money:true,
+        series:[{vals:gc,color:'var(--tm)'},{vals:gt,color:'var(--accent)'}]}),
+      lgTC, '');
+  } else {
+    html+=initChartCard('ti-currency-dollar', '② 粗利額の推移', '$／日',
+      '<div style="font-size:12px;color:var(--muted);padding:14px 2px">'
+      +'粗利単価が設定されていない商品があります。<b>施策の編集</b>から入れてください。</div>', '', '');
+  }
+  /* ③ リピート率。上限100%固定。食数・粗利と軸が違うので別カードにする */
+  html+=initChartCard('ti-users', '③ リピート率の推移', '％',
+    initChartSvg({dates:dates, startDate:sd, startLabel:sl, maxFixed:100, height:80, viewH:138,
+      series:[{vals:rs,color:'var(--accent2)'}]}),
+    '', '相関係数は出していません。開始から'+w.n+'日では曜日変動を拾うだけで、根拠が無いのに根拠に見える数字になります。');
+  return html;
 }
 /* モディファイア別の内訳と、取りこぼしの検知 */
 function initModBreakdown(it, modMix, dates, audit, w){
@@ -32604,7 +32645,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '961';
+const APP_VERSION = '962';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
