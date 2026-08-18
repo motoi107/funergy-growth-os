@@ -19693,11 +19693,14 @@ function setInitStore(sid){ _initStore=sid; _initSel=''; renderPage('budget'); }
 function setInitSel(id){ _initSel=id; renderPage('budget'); }
 function initCanEdit(){ return ['ceo','gm'].indexOf(curRole)>=0; }
 function _initNum(v, unit){ return (v==null) ? '—' : (Number(v).toLocaleString()+(unit||'')); }
-function _initDelta(v, unit, lowerIsBetter){
+function _initDelta(v, unit, lowerIsBetter, isMoney){
   if(v==null) return '<span style="color:var(--muted)">—</span>';
   var good = lowerIsBetter ? (v<0) : (v>0);
   var c = (v===0) ? 'var(--muted)' : (good?'var(--green)':'var(--red)');
-  return '<span style="color:'+c+'">'+(v>0?'+':'')+Number(v).toLocaleString()+(unit||'')+'</span>';
+  /* ★v960: 金額は $ を付け、符号は絶対値の外に出す（-$12.30 ではなく −$12.30 と読める形） */
+  var body = isMoney ? ((v>0?'+':(v<0?'−':''))+'$'+Math.abs(Number(v)).toFixed(2))
+                     : ((v>0?'+':'')+Number(v).toLocaleString()+(unit||''));
+  return '<span style="color:'+c+'">'+body+'</span>';
 }
 function renderInitiative(){
   var vs=getVisibleStores();
@@ -19734,6 +19737,10 @@ function renderInitiativeBody(it, store){
   var cA=initCustAgg(store.id, afterD), cB=initCustAgg(store.id, beforeD);
   var tA=initQtyAgg(mix, afterD, it.targetGuids), tB=initQtyAgg(mix, beforeD, it.targetGuids);
   var pA=initQtyAgg(mix, afterD, it.compareGuids), pB=initQtyAgg(mix, beforeD, it.compareGuids);
+  /* ★v960: 粗利。食数だけでは置き換えの実害が分からない。 */
+  var gtA=initGpAgg(mix, afterD, it.targetGuids, it, store.id), gtB=initGpAgg(mix, beforeD, it.targetGuids, it, store.id);
+  var gpA=initGpAgg(mix, afterD, it.compareGuids, it, store.id), gpB=initGpAgg(mix, beforeD, it.compareGuids, it, store.id);
+  var gpReady=initGpReady(it, store.id, (it.targetGuids||[]).concat(it.compareGuids||[]));
   var html='';
   if(!mix){
     html+='<div class="card" style="margin-bottom:8px"><div style="font-size:12px;color:var(--muted);line-height:1.8">'
@@ -19745,6 +19752,10 @@ function renderInitiativeBody(it, store){
   /* ★v957: 前後で「データがあった日数」が揃っているときだけ差を出す。
      v956 は片方が8日ぶんでも引き算して「+333食の純増」と出していた。 */
   var qtyOK=initSameCover(tA,tB)&&initSameCover(pA,pB);
+  /* 粗利は「日数が揃っている」に加えて「粗利単価が全商品そろっている」が要る。
+     1商品でも単価が無いと合計が過小になり、判断を誤らせる。 */
+  var gpOK=qtyOK && gpReady && initSameCover(gtA,gtB) && initSameCover(gpA,gpB);
+  var dGp=gpOK?Math.round(((gtA.amt+gpA.amt)-(gtB.amt+gpB.amt))*100)/100:null;
   var custOK=initSameCover(cA,cB);
   var sumQty=qtyOK?((tA.qty+pA.qty)-(tB.qty+pB.qty)):null;
   var dRep=custOK?(cA.repeat-cB.repeat):null;
@@ -19754,7 +19765,10 @@ function renderInitiativeBody(it, store){
        実際に集計できた日数を出す。 */
     +_initTile('対象商品の出数', tA.has?_initNum(tA.qty,' 食'):'—',
         tA.has?(w.n+'日中 '+tA.days+'日ぶん'):'出数の取得が必要')
-    +_initTile('2品の合計', sumQty==null?'—':((sumQty>0?'+':'')+sumQty+' 食'), sumQty==null?'日数が揃っていません':(sumQty>0?'純増':(sumQty<0?'減っている':'横ばい＝置き換え')))
+    /* ★v960: Motoさんの関心は粗利なので、いちばん目立つ位置を粗利にする。
+       食数は下の②で見られる。 */
+    +_initTile('2品の合計粗利', dGp==null?'—':((dGp>0?'+':'')+'$'+Math.abs(dGp).toFixed(2)),
+        dGp==null?(gpReady?'日数が揃っていません':'粗利単価が未設定'):(dGp>0?'純増':(dGp<0?'減っている':'横ばい')))
     +_initTile('リピート客', dRep==null?'—':((dRep>0?'+':'')+dRep+' 人'), dRep==null?'日数が揃っていません':'実数')
     +_initTile('客単価', cA.ppa==null?'—':('$'+cA.ppa.toFixed(2)), dPpa==null?'—':('開始前比 '+(dPpa>0?'+':'')+'$'+Math.abs(dPpa).toFixed(2)))
     +'</div></div>';
@@ -19766,7 +19780,7 @@ function renderInitiativeBody(it, store){
     +'新規リピート 前<b>'+cB.days+'</b>/'+cB.want+'日・後<b>'+cA.days+'</b>/'+cA.want+'日'
     +'</div></div>';
   /* --- ① 推移 --- */
-  html+=initTrendCard(it, store, mix, w);
+  html+=initTrendCard(it, store, mix, w, gpReady);
   /* --- ② カニバリ判定 --- */
   html+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-arrows-exchange" style="color:var(--accent)"></i>② カニバリ判定</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">合計が動かなければ、増えたのではなく入れ替わっただけ。</div>';
@@ -19785,12 +19799,40 @@ function renderInitiativeBody(it, store){
       +'<tr style="border-top:1px solid var(--bd);font-weight:700"><td style="padding:6px 0">合計</td>'
       +'<td style="text-align:right">'+(tB.qty+pB.qty)+' 食</td><td style="text-align:right">'+(tA.qty+pA.qty)+' 食</td>'
       +'<td style="text-align:right">'+_initDelta(dS,' 食')+'</td></tr></table>';
+    /* ★v960: 粗利の段。食数が横ばいでも粗利が落ちていれば、置き換えの実害が出る。 */
+    if(gpOK){
+      var dGt=Math.round((gtA.amt-gtB.amt)*100)/100;
+      var dGp2=Math.round((gpA.amt-gpB.amt)*100)/100;
+      html+='<table style="width:100%;font-size:12.5px;border-collapse:collapse;margin-top:10px">'
+        +'<tr style="color:var(--muted);font-size:11px"><td style="padding:4px 0">粗利</td>'
+        +'<td style="text-align:right">前'+w.n+'日</td><td style="text-align:right">後'+w.n+'日</td><td style="text-align:right">差</td></tr>'
+        +_initRow('対象（'+escapeHtml(it.targetLabel||'施策商品')+'）', '$'+gtB.amt.toFixed(2), '$'+gtA.amt.toFixed(2), _initDelta(dGt,'',false,true))
+        +_initRow('比較（'+escapeHtml(it.compareLabel||'既存商品')+'）', '$'+gpB.amt.toFixed(2), '$'+gpA.amt.toFixed(2), _initDelta(dGp2,'',false,true))
+        +'<tr style="border-top:1px solid var(--bd);font-weight:700"><td style="padding:6px 0">合計</td>'
+        +'<td style="text-align:right">$'+(gtB.amt+gpB.amt).toFixed(2)+'</td>'
+        +'<td style="text-align:right">$'+(gtA.amt+gpA.amt).toFixed(2)+'</td>'
+        +'<td style="text-align:right">'+_initDelta(dGp,'',false,true)+'</td></tr></table>';
+    } else if(!gpReady){
+      html+='<div style="font-size:11px;color:var(--amber);line-height:1.8;margin-top:8px">'
+        +'<i class="ti ti-alert-triangle"></i> 粗利単価が設定されていない商品があります。'
+        +'食数だけでは置き換えの実害が分かりません。'
+        +'<b>施策の編集</b>から商品ごとの粗利単価を入れてください。</div>';
+    }
     var swap=Math.min(tA.qty-tB.qty, Math.max(0, -(pA.qty-pB.qty)));
     var msg;
-    if(dS>0 && swap>0) msg='対象が'+dT+'食増えたうち、<b>'+swap+'食は比較商品からの置き換え</b>です。残り'+dS+'食が純増。置き換えは起きていますが、それを上回って伸びています。';
+    if(dS>0 && swap>0) msg='対象が'+dT+'食増えたうち、<b>'+swap+'食は比較商品からの置き換え</b>です。残り'+dS+'食が純増。';
     else if(dS>0) msg='置き換えは起きていません。合計で<b>'+dS+'食の純増</b>です。';
-    else if(dS===0) msg='<b>合計が動いていません。</b>増えたのではなく入れ替わっただけです。売上への寄与はありません。';
-    else msg='<b>合計が'+Math.abs(dS)+'食減っています。</b>対象商品が既存商品を食っており、全体では落ちています。';
+    else if(dS===0) msg='<b>食数の合計が動いていません。</b>増えたのではなく入れ替わっただけです。';
+    else msg='<b>食数の合計が'+Math.abs(dS)+'食減っています。</b>';
+    /* ★v960: 判断は粗利で下す。食数と粗利が食い違う場合を明示する。
+       食数が増えても粗利が減っていれば、その施策は儲かっていない。 */
+    if(dGp!=null){
+      if(dGp>0 && dS<=0) msg+='<br><b>ただし粗利は$'+dGp.toFixed(2)+'増えています。</b>単価の高い商品に入れ替わったので、食数が減っても利益は出ています。';
+      else if(dGp<0 && dS>0) msg+='<br><b>しかし粗利は$'+Math.abs(dGp).toFixed(2)+'減っています。</b>食数は増えましたが、単価の低い商品に置き換わったため利益は落ちています。<b>この施策は儲かっていません。</b>';
+      else if(dGp>0) msg+='<br>粗利も<b>$'+dGp.toFixed(2)+'の純増</b>です。';
+      else if(dGp<0) msg+='<br>粗利も<b>$'+Math.abs(dGp).toFixed(2)+'減っています。</b>';
+      else msg+='<br>粗利は横ばいです。';
+    }
     html+='<div style="font-size:11.5px;line-height:1.8;margin-top:8px;color:var(--tm)">'+msg+'</div>';
   }
   html+='</div>';
@@ -19831,15 +19873,30 @@ function renderInitiativeBody(it, store){
 /* ① 推移。縦軸2本（左=出数 食/日・右=リピート率 %）＋横軸=日付。
    相関係数は出さない。開始から日が浅いうちは曜日変動を拾うだけで、
    根拠が無いのに根拠に見える数字が出るほうが害が大きい。 */
-function initTrendCard(it, store, mix, w){
+var _initTrendMode='qty';   /* 'qty' = 食数 / 'gp' = 粗利 */
+function setInitTrendMode(m){ _initTrendMode=m; renderPage('budget'); }
+function initTrendCard(it, store, mix, w, gpReady){
+  /* ★v960: 食数と粗利を同時に描くと縦軸が3本になって読めない。切り替えにする。
+     粗利単価が未設定なら食数のまま（切り替えボタンを出さない）。 */
+  var gpMode = (_initTrendMode==='gp') && gpReady;
+  var gpFor = {};
+  if(gpMode){ (it.targetGuids||[]).concat(it.compareGuids||[]).forEach(function(g){ gpFor[g]=initGpOf(it, store.id, g); }); }
+  /* その日のその商品群の値。食数モードは出数、粗利モードは出数×粗利単価。 */
+  var valOn=function(d, guids){
+    if(!gpMode) return initQtyOn(mix, d, guids);
+    if(!mix || !mix[d]) return null;
+    var day=mix[d], n=0;
+    (guids||[]).forEach(function(g){ if(gpFor[g]!=null) n+=(Number(day[g])||0)*gpFor[g]; });
+    return Math.round(n*100)/100;
+  };
   var H=130, W=520, X0=52, Y0=20;
   var from=initDateAdd(it.startDate, -Math.min(w.n, 7));
   var dates=initDateList(from, w.afterTo);
   var da=getDailyActuals(store.id);
-  var qs=dates.map(function(d){ return initQtyOn(mix, d, it.targetGuids); });
+  var qs=dates.map(function(d){ return valOn(d, it.targetGuids); });
   /* ★v957: 比較商品も別の線で出す。商品ごとの動きが見たいという要望と、
      欠測日が目で分かるようにする狙いを兼ねる。 */
-  var ps=dates.map(function(d){ return initQtyOn(mix, d, it.compareGuids); });
+  var ps=dates.map(function(d){ return valOn(d, it.compareGuids); });
   var rs=dates.map(function(d){
     var ov=da[d]||{};
     if(ov.firstTimeBowls==null && ov.repeatBowls==null) return null;
@@ -19847,7 +19904,10 @@ function initTrendCard(it, store, mix, w){
     return (f+r)>0 ? Math.round(r/(f+r)*1000)/10 : null;
   });
   var _all=qs.concat(ps).map(function(v){return v==null?0:v;});
-  var maxQ=Math.max(1, Math.ceil(Math.max.apply(null, _all)/5)*5);
+  var _mx=Math.max.apply(null, _all);
+  /* 粗利は桁が大きいので刻みを変える。食数は5刻みのまま。 */
+  var _step=gpMode?Math.max(50, Math.pow(10, Math.max(0, String(Math.round(_mx)).length-2))*5):5;
+  var maxQ=Math.max(_step, Math.ceil(_mx/_step)*_step);
   var step=(dates.length>1)?(W/(dates.length-1)):0;
   function px(i){ return X0+i*step; }
   function pyQ(v){ return Y0+H-(v/maxQ)*H; }
@@ -19876,10 +19936,10 @@ function initTrendCard(it, store, mix, w){
     +'<line x1="'+X0+'" y1="'+Y0+'" x2="'+(X0+W)+'" y2="'+Y0+'" stroke="var(--bd)" vector-effect="non-scaling-stroke"/>';
   [0,0.5,1].forEach(function(f){
     var y=Y0+H-f*H;
-    svg+='<text x="'+(X0-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="var(--muted)">'+Math.round(maxQ*f)+'</text>'
+    svg+='<text x="'+(X0-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="var(--muted)">'+(gpMode?('$'+Math.round(maxQ*f).toLocaleString()):Math.round(maxQ*f))+'</text>'
       +'<text x="'+(X0+W+6)+'" y="'+(y+4)+'" font-size="10" fill="var(--muted)">'+Math.round(100*f)+'</text>';
   });
-  svg+='<text x="14" y="'+(Y0+H/2)+'" text-anchor="middle" transform="rotate(-90 14 '+(Y0+H/2)+')" font-size="10" fill="var(--muted)">出数（食／日）</text>'
+  svg+='<text x="14" y="'+(Y0+H/2)+'" text-anchor="middle" transform="rotate(-90 14 '+(Y0+H/2)+')" font-size="10" fill="var(--muted)">'+(gpMode?'粗利額（$／日）':'出数（食／日）')+'</text>'
     +'<text x="606" y="'+(Y0+H/2)+'" text-anchor="middle" transform="rotate(90 606 '+(Y0+H/2)+')" font-size="10" fill="var(--muted)">リピート率（％）</text>';
   if(si>=0){
     svg+='<line x1="'+px(si)+'" y1="'+Y0+'" x2="'+px(si)+'" y2="'+(Y0+H)+'" stroke="var(--muted)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
@@ -19900,11 +19960,14 @@ function initTrendCard(it, store, mix, w){
     svg+='<text x="'+px(i)+'" y="'+(Y0+H+16)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+dates[i].slice(5)+'</text>';
   });
   svg+='<text x="'+(X0+W/2)+'" y="'+(Y0+H+36)+'" text-anchor="middle" font-size="10" fill="var(--muted)">営業日（日付）</text></svg>';
+  var tabs = gpReady ? ('<div style="display:flex;gap:6px;margin-bottom:6px">'
+    +'<button class="btn btn-sm '+(gpMode?'btn-secondary':'btn-primary')+'" onclick="setInitTrendMode(\'qty\')">食数</button>'
+    +'<button class="btn btn-sm '+(gpMode?'btn-primary':'btn-secondary')+'" onclick="setInitTrendMode(\'gp\')">粗利額</button></div>') : '';
   return '<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-chart-line" style="color:var(--accent)"></i>① '+escapeHtml(it.startDate)+' からの推移</div>'
-    +svg
+    +tabs+svg
     +'<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:4px">'
-    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:3px;margin-right:4px"></span>'+escapeHtml(it.targetLabel||'対象商品')+'（食／日）</span>'
-    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--tm);vertical-align:3px;margin-right:4px"></span>'+escapeHtml(it.compareLabel||'比較商品')+'（食／日）</span>'
+    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:3px;margin-right:4px"></span>'+escapeHtml(it.targetLabel||'対象商品')+(gpMode?'（$／日）':'（食／日）')+'</span>'
+    +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--tm);vertical-align:3px;margin-right:4px"></span>'+escapeHtml(it.compareLabel||'比較商品')+(gpMode?'（$／日）':'（食／日）')+'</span>'
     +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent2);vertical-align:3px;margin-right:4px"></span>リピート率（％）</span>'
     +'<span><span style="display:inline-block;width:12px;height:9px;background:var(--muted);opacity:.18;vertical-align:0;margin-right:4px"></span>データが無い日</span></div>'
     +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'
@@ -19950,23 +20013,35 @@ async function initEdit(id){
     +'<input class="form-input" id="init-clabel" value="'+escapeHtml(it.compareLabel||'')+'" placeholder="ハンバーグ"></div>'
     +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin:4px 0 8px">'
     +'比較商品は「置き換えが起きていないか」を見るためのものです。'
-    +'新商品と食い合いそうな既存商品を選んでください。</div>'
+    +'新商品と食い合いそうな既存商品を選んでください。'
+    +'<br><b>粗利$</b>は1食あたりの粗利（売価−原価）です。レシピがあれば自動で入ります。'
+    +'コンボのように原価率から逆算した数字は、手で入れてください。'
+    +'<b>選んだ商品すべてに入っていないと、粗利の判定は出ません。</b></div>'
     +'<div class="form-group"><label class="form-label">対象商品</label>'
-    +initItemPicker('t', items, it.targetGuids||[])+'</div>'
+    +initItemPicker('t', items, it.targetGuids||[], it.gpByGuid||{}, _initStore)+'</div>'
     +'<div class="form-group"><label class="form-label">比較商品</label>'
-    +initItemPicker('c', items, it.compareGuids||[])+'</div>'
+    +initItemPicker('c', items, it.compareGuids||[], it.gpByGuid||{}, _initStore)+'</div>'
     +'<div class="btn-row">'
     +(id?'<button class="btn btn-danger btn-sm" onclick="initDelete(\''+escapeHtml(id)+'\')"><i class="ti ti-trash"></i> 削除</button>':'')
     +'<button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
     +'<button class="btn btn-primary" onclick="initSave(\''+escapeHtml(id)+'\')">保存</button></div></div>');
 }
-function initItemPicker(pfx, items, sel){
+function initItemPicker(pfx, items, sel, gpMap, storeId){
   if(!items.length) return '<div style="font-size:11px;color:var(--muted)">メニューが未取得です。メニュー画面で同期してください。</div>';
   var s={}; (sel||[]).forEach(function(g){ s[g]=1; });
   var rows=items.map(function(m){
+    /* ★v960: 粗利単価の欄。レシピがあれば初期値が入る。
+       コンボのように原価率から逆算した数字は手で入れる（添付の表がそれ）。 */
+    var cur=(gpMap&&gpMap[m.guid]!=null)?gpMap[m.guid]:'';
+    var auto=(typeof initAutoGp==='function')?initAutoGp(storeId, m.guid):null;
     return '<label style="display:flex;gap:6px;align-items:center;font-size:12px;padding:2px 0" data-nm="'+escapeHtml(String(m.name||'').toLowerCase())+'">'
       +'<input type="checkbox" class="init-'+pfx+'" value="'+escapeHtml(m.guid)+'"'+(s[m.guid]?' checked':'')+'>'
-      +'<span>'+escapeHtml(m.name||m.guid)+'</span></label>';
+      +'<span style="flex:1;min-width:0">'+escapeHtml(m.name||m.guid)+'</span>'
+      +'<span style="color:var(--muted);font-size:10px">粗利$</span>'
+      +'<input type="number" step="0.01" class="initgp-'+pfx+'" data-guid="'+escapeHtml(m.guid)+'"'
+      +' value="'+(cur!==''?escapeHtml(String(cur)):(auto!=null?auto.toFixed(2):''))+'"'
+      +' placeholder="'+(auto!=null?auto.toFixed(2):'未設定')+'"'
+      +' style="width:66px;font-size:11px;padding:2px 4px;border:1px solid var(--bd);border-radius:4px"></label>';
   }).join('');
   return '<input class="form-input" style="margin-bottom:4px" placeholder="商品名で絞り込み" oninput="initFilter(this,\''+pfx+'\')">'
     +'<div id="init-box-'+pfx+'" style="max-height:150px;overflow:auto;border:1px solid var(--bd);border-radius:6px;padding:6px">'+rows+'</div>';
@@ -19981,6 +20056,16 @@ function initFilter(el, pfx){
 function _initChecked(pfx){
   return Array.prototype.map.call(document.querySelectorAll('.init-'+pfx+':checked'), function(x){ return x.value; });
 }
+/* チェックされた商品の粗利単価を拾う。空欄は入れない（0にしない）。 */
+function _initCheckedGp(pfx, into){
+  Array.prototype.forEach.call(document.querySelectorAll('.init-'+pfx+':checked'), function(cb){
+    var el=document.querySelector('.initgp-'+pfx+'[data-guid="'+cb.value+'"]');
+    if(!el) return;
+    var v=String(el.value||'').trim();
+    if(v!=='' && !isNaN(v)) into[cb.value]=Number(v);
+  });
+  return into;
+}
 function initSave(id){
   var name=(document.getElementById('init-name')||{}).value||'';
   var start=(document.getElementById('init-start')||{}).value||'';
@@ -19992,7 +20077,8 @@ function initSave(id){
   var rec={ id: id||('init_'+Date.now().toString(36)), name:name.trim(), storeId:_initStore,
     startDate:start, targetGuids:tg, compareGuids:_initChecked('c'),
     targetLabel:((document.getElementById('init-tlabel')||{}).value||'').trim(),
-    compareLabel:((document.getElementById('init-clabel')||{}).value||'').trim() };
+    compareLabel:((document.getElementById('init-clabel')||{}).value||'').trim(),
+    gpByGuid: _initCheckedGp('c', _initCheckedGp('t', {})) };
   var i=list.findIndex(function(x){return x&&x.id===rec.id;});
   if(i>=0) list[i]=Object.assign({}, list[i], rec); else list.push(rec);
   setInitiatives(list);
@@ -23945,6 +24031,55 @@ async function initMixFetch(sid, ym){
   });
   try{ lsSet(initMixKey(sid, ym), {at:Date.now(), d:byDate}); }catch(e){}
   return byDate;
+}
+/* ============================================================
+   v960: 粗利単価（商品GUIDごと）
+   ・優先順位は 手入力 > レシピ自動。既存のKPI手入力フォールバックと同じ考え方。
+   ・自動は _menuAgg（メニューエンジニアリング・19059行）と同じ式を使う。
+     同じ数字を2つの式で出さないため。
+   ・レシピは r.toastGuid で Toast の商品GUIDと1対1（1202行）。
+============================================================ */
+function initAutoGp(storeId, guid){
+  try{
+    var rs=(typeof activeRecipes==='function')?activeRecipes():getRecipes();
+    var owner=(typeof recipeOwnerOf==='function')?recipeOwnerOf(storeId):storeId;
+    var r=rs.find(function(x){ return x && x.toastGuid===guid && (x.storeId===storeId || x.storeId===owner || !x.storeId); });
+    if(!r) return null;
+    var price=parseFloat(r.price)||0;
+    if(price<=0) return null;
+    var cr=(typeof recipeCostRate==='function')?recipeCostRate(r):0;
+    return Math.round(price*(100-cr)/100*100)/100;
+  }catch(e){ return null; }
+}
+/* 手入力があればそれ、無ければレシピ自動。どちらも無ければ null（0にしない） */
+function initGpOf(it, storeId, guid){
+  var m=(it && it.gpByGuid) ? it.gpByGuid[guid] : null;
+  if(m!=null && m!=='' && !isNaN(m)) return Number(m);
+  return initAutoGp(storeId, guid);
+}
+/* 指定した商品GUID群に、粗利単価が1つでも欠けていないか。
+   1つでも欠けていると合計粗利が過小になり、判断を誤らせる。 */
+function initGpReady(it, storeId, guids){
+  var g=(guids||[]);
+  if(!g.length) return false;
+  return g.every(function(x){ return initGpOf(it, storeId, x)!=null; });
+}
+/* 期間内の粗利額 = Σ(その日の出数 × 粗利単価)。
+   出数と同じく days/want を返し、日数が揃わなければ差を出さない。 */
+function initGpAgg(mix, dates, guids, it, storeId){
+  var amt=0, has=false, days=0;
+  var gp={}; (guids||[]).forEach(function(g){ gp[g]=initGpOf(it, storeId, g); });
+  dates.forEach(function(d){
+    if(!mix || !mix[d]) return;
+    var day=mix[d], any=false, sub=0;
+    (guids||[]).forEach(function(g){
+      var q=Number(day[g])||0;
+      if(gp[g]==null) return;         /* 粗利単価が無い商品は足さない */
+      sub+=q*gp[g]; any=true;
+    });
+    if(any){ amt+=sub; has=true; days++; }
+  });
+  return {amt:Math.round(amt*100)/100, has:has, days:days, want:dates.length};
 }
 /* 指定した商品GUID群の、その日の合計出数。データが無い日は null（0では埋めない） */
 function initQtyOn(mix, date, guids){
@@ -32303,7 +32438,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '959';
+const APP_VERSION = '960';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
