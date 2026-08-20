@@ -22839,8 +22839,13 @@ function qcMonthGaps(R){
 /* KPIカードに載せる項目。key は MEET_KPI_DEF と同じものを使う（見た目を揃えるため）。 */
 function qcKpiItems(R){
   return [
-    { key:'sales',  act:R.aSales,  tgt:R.tSales,  money:true },
-    { key:'guests', act:R.aGuests, tgt:R.tGuests, unit:'' },
+    /* ★v970: 売上と客数は「積み上げ」なので経過ぶんの目標と比べる（Motoさん指摘）。
+       四半期合計と比べると、9月末まで必ず巨額の未達に見える。
+       R.paceSales / R.paceGuests は qcCompute が既に出している（判定カードと同じ値）。
+       ★率のKPI（客単価・リピート率・原価率・人件費率）は経過期間に依存しないので
+         そのまま。画面でも客単価104%・リピート97%と妥当に出ていた。 */
+    { key:'sales',  act:R.aSales,  tgt:R.paceSales,  money:true, full:R.tSales },
+    { key:'guests', act:R.aGuests, tgt:R.paceGuests, unit:'',    full:R.tGuests },
     { key:'ppa',    act:R.aPpa,    tgt:R.tPpa,    money:true },
     { key:'repeat', act:R.aRep,    tgt:R.tRep,    unit:'%' },
     { key:'fc',     act:R.aFc,     tgt:R.tFc,     unit:'%', lower:true, impact:R.fcImpact },
@@ -22924,11 +22929,12 @@ function setQcMode(m){ _qcMode = (m==='cum') ? 'cum' : 'month'; renderPage('budg
 function setQcOnly(k){ _qcOnly = (_qcOnly===k) ? null : k; renderPage('budget'); }
 function setQcOpen(k){ _qcOpen = (_qcOpen===k) ? null : k; renderPage('budget'); }
 /* 前Q3ヶ月 ＋ 今Q3ヶ月＝6点。3点では折れ線にならない。 */
+/* ★v970: 前Qを外して現Qだけにする（Motoさん 2026-08-20）。
+   四半期どうしの比較は年間計画タブで行う。 */
 function qcSeries(scope, y, q){
-  var pv=_qcPrevQ(y,q);
-  var months=_quarterMonths(pv.y,pv.q).concat(_quarterMonths(y,q));
+  var months=_quarterMonths(y,q);
   var ids=_qcScopeStores(scope).map(function(s){ return s.id; });
-  var out={ months:[], t:{}, a:{}, raw:[] };
+  var out={ months:[], t:{}, a:{}, raw:[], paceT:[] };
   QC_SERIES_KPIS.forEach(function(k){ out.t[k.key]=[]; out.a[k.key]=[]; });
   months.forEach(function(ym, i){
     var tS=0,tG=0,aS=0,aG=0, wT=0,wA=0, tFcW=0,tLbW=0,tRepW=0, aFcW=0,aLbW=0, ft=0,rp=0;
@@ -22945,8 +22951,14 @@ function qcSeries(scope, y, q){
       if(m.elapsed) elapsed=true;
       if(m.registered) reg=true;
     });
-    out.months.push({ ym:ym, mm:+String(ym).split('-')[1], inQ:(i>=3),
-                      elapsed:elapsed, registered:reg, prov:prov });
+    /* ★進行中の月は経過日ぶんしか実績が無い。売上・客数は「積み上げ」なので
+       経過ぶんに直した目標と比べないと、その月だけ崖のように落ちて見える。
+       qcPaceRatio は qcCompute が paceSales を出すのに使っているものと同じ。 */
+    var pr=1; try{ pr=qcPaceRatio(ym); }catch(e){ pr=1; }
+    out.months.push({ ym:ym, mm:+String(ym).split('-')[1], inQ:true, pace:pr,
+                      elapsed:elapsed, registered:reg, prov:prov,
+                      running:(pr>0 && pr<1) });
+    out.paceT.push({ sales:(tS>0?tS*pr:null), guests:(tG>0?tG*pr:null) });
     out.raw.push({ tS:tS, tG:tG, aS:aS, aG:aG, wT:wT, wA:wA,
                    tFcW:tFcW, tLbW:tLbW, tRepW:tRepW, aFcW:aFcW, aLbW:aLbW, ft:ft, rp:rp });
     var P=function(k,tv,av){ out.t[k].push(tv); out.a[k].push(av); };
@@ -22979,12 +22991,18 @@ function qcCumSeries(ser){
   return out;
 }
 /* ★達成率に換算。100%＝目標。低い方が良いKPIは反転して常に100%超＝良いに揃える。
-   （mdWeekRates の pct / inv と同じ約束。新しい決めごとを作らない） */
+   （mdWeekRates の pct / inv と同じ約束。新しい決めごとを作らない）
+   ★v970: 売上・客数は「積み上げ」なので、進行中の月では経過ぶんの目標と比べる。
+     これをやらないと、当月だけ必ず未達に見える（v861 で週次を直したのと同じ理由）。 */
 function qcRateSeries(ser, cum){
   var t=(cum||ser).t, a=(cum||ser).a, out={};
   QC_SERIES_KPIS.forEach(function(k){
     out[k.key]=ser.months.map(function(m,i){
       var tv=t[k.key][i], av=a[k.key][i];
+      if(!cum && (k.key==='sales' || k.key==='guests') && ser.paceT && ser.paceT[i]){
+        var pt=ser.paceT[i][k.key];
+        if(pt!=null) tv=pt;
+      }
       if(!(tv>0) || !(av>0)) return null;
       return k.lower ? (tv/av*100) : (av/tv*100);
     });
@@ -23044,9 +23062,7 @@ function _qcSvg(lines, opts){
 function _qcAxis(ser){
   return '<div style="display:flex;font-size:9px;color:var(--muted);font-weight:600;margin-top:2px">'
     + ser.months.map(function(m){ return '<span style="flex:1;text-align:center">'+m.mm+t('月','')+'</span>'; }).join('')
-    + '</div><div style="display:flex;font-size:9px;margin-top:1px">'
-    + '<span style="flex:3;text-align:center;color:var(--muted)">'+t('前Q（参考）','Prev Q')+'</span>'
-    + '<span style="flex:3;text-align:center;color:var(--tm);font-weight:700">'+t('今Q','This Q')+'</span></div>';
+    + '</div>';
 }
 /* ★経過分の未達（確定した過去）と、残りで必要な量（これから）を分けて出す。
    同じカードに混ぜると、どちらの話をしているのか分からなくなる。 */
@@ -23111,40 +23127,199 @@ function renderQcFillCard(R){
     +line('ti-scale',   t('半々で埋める','Half and half'), g(w.halfGuest)+' ・ '+p(w.halfPpa))
     +'</div>';
 }
-/* ★全KPIを1枚に重ねる。達成率なので同じ軸に乗る。金額は個別カードで読む。 */
-function renderQcTrendChart(ser, cum, title){
-  var rates=qcRateSeries(ser, cum);
-  var lines=[];
-  QC_SERIES_KPIS.forEach(function(k){
-    var v=rates[k.key];
-    var dim=(_qcOnly && _qcOnly!==k.key);
-    var sp=k.lower ? _qcSplitProv(v, ser.months) : { solid:v, dashed:null };
-    lines.push({ v:sp.solid, color:k.color, w:(_qcOnly===k.key?2.6:1.8), op:(dim?0.15:1) });
-    if(sp.dashed) lines.push({ v:sp.dashed, color:k.color, w:(_qcOnly===k.key?2.6:1.8),
-                               dash:'3 3', op:(dim?0.15:0.85) });
+/* ★v970: 6本の折れ線をやめてヒートマップにする（Motoさん 2026-08-20・案A）。
+   前Qを外すと3点しか残らず、6本が交差して読めなくなるため。
+   3ヶ月なら数字入りの升目のほうが一目で読める。
+   ★ダッシュボードの週次ヒートマップ（mdWeekHeatHtml）と同じCSSを使う。
+     新しい見た目を作らない。 */
+function renderQcHeat(ser){
+  var rates=qcRateSeries(ser);
+  var n=ser.months.length;
+  var col=function(v){ return v==null?'':(v>=100?'var(--green)':(v>=95?'var(--amber)':'var(--red)')); };
+  var h='<div class="md-chart"><div class="md-chart-t"><i class="ti ti-grid-dots"></i>'
+    +t('月ごとの達成率（100%＝目標）','Monthly achievement (100% = target)')
+    +'<span class="md-lg"><i style="background:var(--green)"></i>100%↑</span>'
+    +'<span class="md-lg"><i style="background:var(--amber)"></i>95%↑</span>'
+    +'<span class="md-lg"><i style="background:var(--red)"></i>'+t('未達','Miss')+'</span></div>'
+    +'<div class="md-hm" style="grid-template-columns:64px repeat('+n+',1fr)"><div></div>';
+  ser.months.forEach(function(m){
+    h+='<div class="hd">'+m.mm+t('月','')+(m.running?'<br><span style="font-weight:400">'+t('進行中','WIP')+'</span>':'')+'</div>';
   });
-  var svg=_qcSvg(lines, { n:ser.months.length, h:96, base:[100], divider:2, minH:104, maxH:150 });
-  if(!svg) return '';
-  var chips=QC_SERIES_KPIS.map(function(k){
-    var v=rates[k.key], last=null;
-    for(var i=v.length-1;i>=0;i--){ if(v[i]!=null){ last=v[i]; break; } }
-    var on=(!_qcOnly || _qcOnly===k.key);
-    var col=(last==null)?'var(--muted)':(last>=100?'var(--green)':(last>=95?'var(--yellow)':'var(--red)'));
-    return '<span onclick="setQcOnly(\''+k.key+'\')" style="cursor:pointer;font-size:10px;padding:3px 8px;'
-      +'border-radius:999px;border:1px solid '+(_qcOnly===k.key?k.color:'var(--border)')+';'
-      +'opacity:'+(on?1:0.4)+';white-space:nowrap">'
-      +'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:'+k.color+';margin-right:4px"></span>'
-      +t(k.label,k.labelEn)+' <b style="color:'+col+'">'+(last==null?'—':Math.round(last)+'%')+'</b></span>';
+  QC_SERIES_KPIS.forEach(function(k){
+    h+='<div class="rl">'+t(k.label,k.labelEn)+'</div>';
+    ser.months.forEach(function(m,i){
+      var v=rates[k.key][i];
+      if(v==null){ h+='<div class="cel na">—</div>'; return; }
+      /* ★棚卸未確定の月は薄くして、確定値と見分けられるようにする */
+      var prov=(k.lower && m.prov);
+      h+='<div class="cel" style="background:'+col(v)+(prov?';opacity:.55':'')+'" '
+        +'title="'+t(k.label,k.labelEn)+' '+m.mm+t('月','')+(prov?'（'+t('暫定','provisional')+'）':'')+'">'
+        +Math.round(v)+'</div>';
+    });
+  });
+  h+='</div><div style="font-size:9.5px;color:var(--muted);margin-top:5px;line-height:1.6">'
+    +t('原価率・人件費率は反転済み（数字が大きいほど良い）。薄い升は棚卸未確定の暫定値。',
+       'FC/Labor inverted (higher is better). Faded cells are provisional.')
+    +'<br>'+t('進行中の月は、売上と客数だけ経過日ぶんの目標と比べています。',
+              'For the current month, sales and guests are compared against a pro-rated target.')
+    +'</div></div>';
+  return h;
+}
+/* 客数の日次累計。売上と同じ形にそろえる。 */
+function qcDailyGuests(scope, y, q){
+  var ids=_qcScopeStores(scope).map(function(s){ return s.id; });
+  var months=_quarterMonths(y,q);
+  var dates=[], bud={}, act={}, has={}, mStart={};
+  months.forEach(function(ym){
+    mStart[ym]=dates.length;
+    var gb=0; try{ gb=Number(monthGuestBudget(ids[0], _ymToOffset(ym)))||0; }catch(e){}
+    var dd=daysOfYm(ym)||[];
+    var per=dd.length?(gb/dd.length):0;
+    dd.forEach(function(d){ dates.push(d.date); bud[d.date]=0; act[d.date]=0; });
+    ids.forEach(function(sid){
+      var g=0; try{ g=Number(monthGuestBudget(sid, _ymToOffset(ym)))||0; }catch(e){}
+      var p=dd.length?(g/dd.length):0;
+      dd.forEach(function(d){ bud[d.date]+=p; });
+    });
+    if(per){}
+  });
+  var today=(typeof bizToday==='function')?bizToday():'';
+  ids.forEach(function(sid){
+    var acts=null; try{ acts=getDailyActuals(sid)||{}; }catch(e){ return; }
+    dates.forEach(function(d){
+      if(d>=today) return;
+      var ov=acts[d]; if(!ov || ov.actual==null) return;
+      var g=0; try{ g=_mdDayGuests(sid, ov)||0; }catch(e){}
+      act[d]+=g; has[d]=1;
+    });
+  });
+  var bc=0, ac=0, out=[];
+  dates.forEach(function(d){
+    bc+=bud[d]||0;
+    if(has[d]) ac+=act[d]||0;
+    out.push({ date:d, bud:Math.round(bc), act:has[d]?Math.round(ac):null });
+  });
+  var iy=-1; for(var i=out.length-1;i>=0;i--){ if(out[i].act!=null){ iy=i; break; } }
+  return { pts:out, iy:iy, months:months, mStart:mStart, dates:dates };
+}
+/* ★v970: 四半期の日次累計。ダッシュボードの mdStoreSeries を3ヶ月ぶん繋ぐ。
+   budFull / line は月内の累計なので、いったん日次に戻してから四半期で積み直す。 */
+function qcDailySeries(scope, y, q){
+  var ids=_qcScopeStores(scope).map(function(s){ return s.id; });
+  var months=_quarterMonths(y,q);
+  var dates=[], bud={}, act={}, has={}, mStart={};
+  months.forEach(function(ym){
+    mStart[ym]=dates.length;
+    (daysOfYm(ym)||[]).forEach(function(dd){ dates.push(dd.date); bud[dd.date]=0; act[dd.date]=0; });
+  });
+  ids.forEach(function(sid){
+    months.forEach(function(ym){
+      var s=null; try{ s=mdStoreSeries(sid, ym); }catch(e){ return; }
+      if(!s) return;
+      var pb=0; (s.budFull||[]).forEach(function(p){
+        if(bud[p.date]!=null) bud[p.date]+=(p.bud-pb); pb=p.bud; });
+      var pa=0; (s.line||[]).forEach(function(p){
+        if(act[p.date]!=null){ act[p.date]+=(p.act-pa); has[p.date]=1; } pa=p.act; });
+    });
+  });
+  var bc=0, ac=0, out=[];
+  dates.forEach(function(d){
+    bc+=bud[d]||0;
+    if(has[d]) ac+=act[d]||0;
+    out.push({ date:d, bud:Math.round(bc), act:has[d]?Math.round(ac):null });
+  });
+  var iy=-1; for(var i=out.length-1;i>=0;i--){ if(out[i].act!=null){ iy=i; break; } }
+  return { pts:out, iy:iy, months:months, mStart:mStart, dates:dates };
+}
+/* ★v970: ダッシュボードと同じ作りの累計カーブ。
+   y軸の$ラベルと横グリッド、月境界の縦線、本日の縦線と点、着地見込みの点線。
+   ラベルは全部 HTML 側（SVG に <text> を置くと横に伸びる・v943）。 */
+function qcDailyChart(ds, R, opts){
+  opts=opts||{};
+  if(!ds || !ds.pts || ds.pts.length<2 || ds.iy<0) return '';
+  var P=ds.pts, n=P.length, iy=ds.iy;
+  var w=300, h=70, lab=10, color=opts.color||'#E24B4A';
+  var budEnd=P[n-1].bud, actEnd=P[iy].act;
+  var fc=Number(opts.forecast)||0;
+  var mx=Math.max(budEnd, fc, actEnd)*1.06 || 1;
+  var X=function(i){ return (i/(n-1)*w).toFixed(1); };
+  var Y=function(v){ return (h-v/mx*h).toFixed(1); };
+  var pctX=function(i){ return (i/(n-1)*100).toFixed(2); };
+  var pctY=function(v){ return (Y(v)/(h+lab)*100).toFixed(2); };
+  /* きりの良い刻み（mdSalesChartHtml と同じ考え方） */
+  var niceStep=function(mv, want){
+    var raw=(mv/want)||1, mag=Math.pow(10, Math.floor(Math.log10(raw))), qq=raw/mag;
+    return (qq<=1?1:qq<=2?2:qq<=2.5?2.5:qq<=5?5:10)*mag;
+  };
+  var axFmt=opts.fmt||function(v){
+    if(v>=1000000) return '$'+(v/1000000).toFixed(v>=10000000?0:1)+'M';
+    if(v>=1000) return '$'+Math.round(v/1000)+'k';
+    return '$'+Math.round(v);
+  };
+  var gy=[], stp=niceStep(mx,4);
+  for(var gv=stp; gv<mx*0.985 && gy.length<5; gv+=stp) gy.push(gv);
+  var svg='<svg viewBox="0 0 '+w+' '+(h+lab)+'" preserveAspectRatio="none" '
+    +'style="display:block;width:100%;height:auto;aspect-ratio:'+w+'/'+(h+lab)
+    +';min-height:132px;max-height:176px">';
+  gy.forEach(function(v){
+    svg+='<line x1="0" y1="'+Y(v)+'" x2="'+w+'" y2="'+Y(v)+'" stroke="var(--border)" '
+      +'stroke-width="1" vector-effect="non-scaling-stroke"/>';
+  });
+  svg+='<line x1="0" y1="'+h+'" x2="'+w+'" y2="'+h+'" stroke="var(--border)" stroke-width="1.2" '
+    +'vector-effect="non-scaling-stroke"/>';
+  /* 月の境目 */
+  ds.months.forEach(function(ym, mi){
+    if(!mi) return;
+    var xi=X(ds.mStart[ym]);
+    svg+='<line x1="'+xi+'" y1="0" x2="'+xi+'" y2="'+h+'" stroke="var(--border)" stroke-width="1" '
+      +'vector-effect="non-scaling-stroke"/>';
+  });
+  var xy=X(iy);
+  svg+='<line x1="'+xy+'" y1="0" x2="'+xy+'" y2="'+h+'" stroke="var(--muted)" stroke-width="1" '
+    +'stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>';
+  svg+='<polyline points="'+P.map(function(p,i){ return X(i)+','+Y(p.bud); }).join(' ')
+    +'" fill="none" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="3 3" '
+    +'vector-effect="non-scaling-stroke"/>';
+  /* 着地見込み: 予算カーブを (fc-actEnd)/(budEnd-budNow) で縮める＝Q末で fc に一致 */
+  var budNow=P[iy].bud, fcTxt='';
+  if(fc>0 && budEnd>budNow && iy<n-1){
+    var k=(fc-actEnd)/(budEnd-budNow), pf=[];
+    for(var i2=iy;i2<n;i2++) pf.push(X(i2)+','+Y(actEnd+(P[i2].bud-budNow)*k));
+    svg+='<polyline points="'+pf.join(' ')+'" fill="none" stroke="'+color+'" stroke-width="1.6" '
+      +'stroke-dasharray="2 2.5" opacity=".62" vector-effect="non-scaling-stroke"/>';
+    fcTxt=t('着地見込み','Forecast')+' '+axFmt(fc);
+  }
+  svg+='<polyline points="'+P.slice(0,iy+1).map(function(p,i){ return X(i)+','+Y(p.act); }).join(' ')
+    +'" fill="none" stroke="'+color+'" stroke-width="2.4" stroke-linejoin="round" '
+    +'vector-effect="non-scaling-stroke"/>';
+  svg+='</svg>';
+  /* ★y軸ラベル・本日の点・x軸ラベルは HTML 側（SVG に置くと横に伸びる） */
+  var yLab=gy.map(function(v){
+    return '<div style="position:absolute;left:0;top:'+pctY(v)+'%;transform:translateY(-50%);'
+      +'font-size:8.5px;color:var(--muted);font-weight:600">'+axFmt(v)+'</div>';
   }).join('');
-  return '<div class="qc-c" data-on="'+((_qcMode==='month')===(title.indexOf(t('月別','Month'))>=0)?1:0)+'">'
-    +'<div style="font-size:11.5px;font-weight:800;color:var(--tm);margin-bottom:1px">'+escapeHtml(title)+'</div>'
-    +'<div style="font-size:9.5px;color:var(--muted);margin-bottom:5px">'
-    +t('100%＝目標。原価率・人件費率は反転済み（上が良い）','100% = target. FC/Labor inverted (up is good)')+'</div>'
-    +svg+_qcAxis(ser)
-    +'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:7px">'+chips+'</div>'
-    +(_qcOnly?('<div style="font-size:9.5px;color:var(--muted);margin-top:4px">'
-      +t('もう一度タップで全部に戻ります','Tap again to show all')+'</div>'):'')
-    +'</div>';
+  var dot='<div style="position:absolute;left:'+pctX(iy)+'%;top:'+pctY(actEnd)+'%;'
+    +'width:8px;height:8px;border-radius:50%;background:'+color+';border:2px solid var(--card);'
+    +'transform:translate(-50%,-50%)"></div>';
+  var md=function(iso){ var p=String(iso||'').split('-'); return p.length>2?(+p[1]+'/'+ +p[2]):''; };
+  var xLab='<span style="position:absolute;left:0">'+md(P[0].date)+'</span>';
+  ds.months.forEach(function(ym, mi){
+    if(!mi) return;
+    var i3=ds.mStart[ym];
+    if(Math.abs(+pctX(i3)-+pctX(iy))<9) return;
+    xLab+='<span style="position:absolute;left:'+pctX(i3)+'%;transform:translateX(-50%)">'+md(P[i3].date)+'</span>';
+  });
+  xLab+='<span style="position:absolute;left:'+pctX(iy)+'%;transform:translateX(-50%);color:'+color+'">'
+    +md(P[iy].date)+'</span>'
+    +'<span style="position:absolute;right:0">'+md(P[n-1].date)+'</span>';
+  return '<div style="margin-top:6px"><div style="position:relative;padding-left:34px">'+yLab
+    +'<div style="position:relative">'+svg+dot+'</div>'
+    +'<div style="position:relative;height:12px;font-size:8.5px;color:var(--muted);font-weight:600">'+xLab+'</div>'
+    +'</div><div style="display:flex;flex-wrap:wrap;gap:9px;font-size:9.5px;color:var(--muted);margin-top:4px">'
+    +'<span><span style="display:inline-block;width:14px;border-top:2px solid '+color+';vertical-align:4px"></span> '+t('実績','Actual')+'</span>'
+    +'<span><span style="display:inline-block;width:14px;border-top:2px dashed var(--muted);vertical-align:4px"></span> '+t('予算','Budget')+'</span>'
+    +(fcTxt?('<span><span style="display:inline-block;width:14px;border-top:2px dotted '+color+';vertical-align:4px"></span> '+fcTxt+'</span>'):'')
+    +'</div></div>';
 }
 /* 個別KPIの実額グラフ。★統合グラフでは金額が読めないので、こちらで読む。 */
 function _qcKpiChart(ser, cum, key){
@@ -23185,30 +23360,40 @@ function _qcKpiChart(ser, cum, key){
     +t('今Q','This Q')+' '+fmt(av[5]!=null?av[5]:(av[4]!=null?av[4]:av[3]))+'</div></div>';
 }
 /* ★KPIカード一覧。会議タブと同じ _meetKpiTile をそのまま使う（改修しない）。 */
-function renderQcKpiCards(scope, y, q, R, ser){
-  var cum=ser?qcCumSeries(ser):null;
+function renderQcKpiCards(scope, y, q, R, ser, ds, dsG){
   var h='<div class="card"><div class="card-title" style="font-size:13px">'
     +'<i class="ti ti-layout-grid" style="color:var(--accent)"></i> '+t('KPI別 達成状況','KPI status')
     +'<span style="margin-left:auto;font-size:10px;color:var(--muted);font-weight:400">'
-    +t('目標は四半期合計','Target = quarter total')+'</span></div><div class="qc-kpis">';
+    +t('売上・客数は経過分の目標','Sales/Guests vs elapsed target')+'</span></div><div class="qc-kpis">';
   qcKpiItems(R).forEach(function(it){
     var extra='';
-    /* ★個別の推移グラフ。携帯では開いた1つだけ、PCでは全部（CSSで出し分け）。 */
-    if(ser){
-      var opened=(_qcOpen===it.key);
-      extra+='<div style="font-size:10px;color:var(--accent);cursor:pointer;margin-bottom:2px" '
-        +'class="qc-mini-t" onclick="setQcOpen(\''+it.key+'\')">'
-        +'<i class="ti ti-chart-line"></i> '+t('推移','Trend')+' <i class="ti ti-chevron-'+(opened?'up':'down')+'"></i></div>'
-        +'<div class="qc-mini" data-on="'+(opened?1:0)+'">'
-        +_qcKpiChart(ser, (_qcMode==='cum'?cum:null), it.key)+'</div>';
+    /* ★v970: 日次で描けるのは売上と客数だけ（他は月次でしか出ない）。
+       率のKPIはヒートマップで読む。無理に3点の折れ線を出さない。 */
+    if(it.key==='sales' || it.key==='guests'){
+      var _d=(it.key==='sales')?ds:dsG;
+      if(_d){
+        var opened=(_qcOpen===it.key);
+        extra+='<div style="font-size:10px;color:var(--accent);cursor:pointer;margin-bottom:2px" '
+          +'class="qc-mini-t" onclick="setQcOpen(\''+it.key+'\')">'
+          +'<i class="ti ti-chart-line"></i> '+t('累計の推移','Cumulative')
+          +' <i class="ti ti-chevron-'+(opened?'up':'down')+'"></i></div>'
+          +'<div class="qc-mini" data-on="'+(opened?1:0)+'">'
+          +((it.key==='sales')
+            ? qcDailyChart(_d, R, { color:'#E24B4A', forecast:R.forecastPace })
+            : qcDailyChart(_d, R, { color:'#D85A30',
+                fmt:function(v){ return Math.round(v).toLocaleString(); } }))
+          +'</div>';
+      }
     }
-    if(it.key==='fc' || it.key==='labor'){
-      /* ★月ごとの未達額。「7月終了時点で何がどのくらい足りなかったか」への答え。 */
+    /* ★v970: v969 で条件と中身が入れ違っていたのを直す。
+       原価率カードに「主因 客数」が、売上カードに「区分別には割れません（按分のみ）」が
+       出ていた。分岐の中身を正しい側に戻す。 */
+    if(it.key==='sales'){
       var drv=(Math.abs(R.gapGuest)>=Math.abs(R.gapPpa))?t('客数','Guests'):t('客単価','Avg check');
       extra+='<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+t('主因','Driver')+' <b>'+drv+'</b>'
         +'（'+t('客数','Guests')+' '+_qcSign(R.gapGuest)+' ／ '+t('客単価','Avg check')+' '+_qcSign(R.gapPpa)+'）</div>';
     }
-    if(it.key==='sales'){
+    if(it.key==='fc' || it.key==='labor'){
       /* ★_meetGapBreakdown は fc / labor を分解できない（棚卸が月末のみ・按分のみ）。
          できないものをできるように見せない。理由だけ書く。 */
       extra+='<div style="font-size:10.5px;color:'+((it.impact||0)>0?'var(--red)':'var(--green)')+'">'
@@ -23216,6 +23401,12 @@ function renderQcKpiCards(scope, y, q, R, ser){
         +'<div style="font-size:9.5px;color:var(--muted);margin-top:1px">'
         +(it.key==='fc'?t('区分別には割れません（棚卸が月末のみ）','Cannot split by segment (inventory is month-end only)')
                        :t('区分別には割れません（按分のみ）','Cannot split by segment (allocation only)'))+'</div>';
+    }
+    if(it.full){
+      extra+='<div style="font-size:9.5px;color:var(--muted);margin-top:2px">'
+        +t('四半期合計の目標','Full-quarter target')+' '
+        +(it.money?fmtK(it.full):Math.round(it.full).toLocaleString())
+        +'（'+t('経過','elapsed')+' '+Math.round((R.paceSales&&R.tSales)?(R.paceSales/R.tSales*100):0)+'%）</div>';
     }
     h+=_meetKpiTile(scope, R.months[0], it.key, it.act, it.tgt,
         { money:it.money, unit:it.unit, lower:it.lower, extra:extra });
@@ -23261,8 +23452,20 @@ function renderQcFocus(storeId, y, q, opts){
         +'<div style="font-size:9.5px;color:var(--muted);margin-top:2px">'+t('自動','Auto')+' · '
         +escapeHtml(r.kpiLabel)+t('で追跡（前','tracked (vs ')+r.prevLabel+t('比）',')')+'</div>';
       /* ★v969: 2点比較では「推移」にならないので6ヶ月の折れ線を出す（Motoさん指摘）。 */
+      /* ★v970: 重点項目は前Qを外したので3点しか無い。折れ線をやめ、
+         月ごとの実数を並べるだけにする（無理にグラフにしない）。 */
       var _ck=QC_FOCUS_CHART[r.key];
-      if(opts.ser && _ck){ try{ h+=_qcKpiChart(opts.ser, null, _ck); }catch(e){} }
+      if(opts.ser && _ck){
+        try{
+          h+='<div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.7">'
+            +opts.ser.months.map(function(m,i){
+              var v=opts.ser.a[_ck][i];
+              return m.mm+t('月','')+' <b style="color:var(--tm)">'
+                +(v==null?'—':(Math.round(v*10)/10)+(QC_SERIES_KPIS.find(function(x){return x.key===_ck;})||{}).unit||'')
+                +'</b>';
+            }).join(' ／ ')+'</div>';
+        }catch(e){}
+      }
     } else {
       /* ★KPIに紐づかない項目。専用ページを作らず、会議タブでその場で書けるようにする。 */
       h+='<div style="display:flex;align-items:center;gap:8px">'
@@ -23425,28 +23628,29 @@ function renderQuarterBudget(){
     if(_R.tSales || _R.aSales){
       html+=renderQcHeadCard(_qbStore, y, q, _R);
       html+=renderQcFillCard(_R);
-      /* ★v969: 統合グラフ。携帯は月別/Q累計をトグル、PCは両方並べる（CSSで出し分け）。 */
+      /* ★v970: トグルを廃止。日次累計がQ累計そのものなので二重にしない。
+         率のKPIはヒートマップ（3ヶ月×6KPI）で読む。 */
       var _ser=null; try{ _ser=qcSeries(_qbStore, y, q); }catch(e){ console.warn('qcSeries', e); }
-      if(_ser){
+      var _ds=null, _dsG=null;
+      try{ _ds=qcDailySeries(_qbStore, y, q); }catch(e){ console.warn('qcDailySeries', e); }
+      if(_ds){
         html+='<div class="card">'
           +'<div class="card-title" style="font-size:13px"><i class="ti ti-chart-line" style="color:var(--accent)"></i> '
-          +t('KPI達成率の推移','KPI achievement trend')+'</div>'
-          +'<div class="qc-toggle" style="display:flex;gap:6px;margin-bottom:8px">'
-          +'<div onclick="setQcMode(\'month\')" style="flex:1;text-align:center;cursor:pointer;font-size:11.5px;padding:6px;border-radius:7px;'
-          +'border:1px solid '+(_qcMode==='month'?'var(--accent)':'var(--border)')+';'
-          +'color:'+(_qcMode==='month'?'var(--tm)':'var(--muted)')+'">'+t('月別','Monthly')+'</div>'
-          +'<div onclick="setQcMode(\'cum\')" style="flex:1;text-align:center;cursor:pointer;font-size:11.5px;padding:6px;border-radius:7px;'
-          +'border:1px solid '+(_qcMode==='cum'?'var(--accent)':'var(--border)')+';'
-          +'color:'+(_qcMode==='cum'?'var(--tm)':'var(--muted)')+'">'+t('Q累計','Q cumulative')+'</div></div>'
-          +'<div class="qc-charts">'
-          +renderQcTrendChart(_ser, null, t('月別','Monthly'))
-          +renderQcTrendChart(_ser, qcCumSeries(_ser), t('Q累計','Q cumulative'))
-          +'</div>'
-          +'<div style="font-size:9.5px;color:var(--muted);margin-top:6px">'
-          +t('Q累計は四半期ごとに積み直します。前Qのカーブと並べて読んでください。',
-             'Cumulative resets each quarter so both curves are comparable.')+'</div></div>';
+          +t('売上の累計','Cumulative sales')+' '+y+' Q'+q+'</div>'
+          +qcDailyChart(_ds, _R, { color:'#E24B4A', forecast:_R.forecastPace })
+          +'<div style="font-size:10px;color:var(--muted);margin-top:5px">'
+          +t('Q目標','Q target')+' '+fmtK(_R.tSales)
+          +'　'+t('着地見込み','Forecast')+' '+fmtK(_R.forecastPace)
+          +'　<b style="color:'+((_R.forecastPace>=_R.tSales)?'var(--green)':'var(--red)')+'">'
+          +_qcSign(_R.forecastPace-_R.tSales)+'</b></div></div>';
+        try{ _dsG=qcDailyGuests(_qbStore, y, q); }catch(e){}
       }
-      html+=renderQcKpiCards(_qbStore, y, q, _R, _ser);
+      if(_ser){
+        html+='<div class="card"><div class="card-title" style="font-size:13px">'
+          +'<i class="ti ti-grid-dots" style="color:var(--accent)"></i> '
+          +t('KPI別 達成率','KPI achievement')+'</div>'+renderQcHeat(_ser)+'</div>';
+      }
+      html+=renderQcKpiCards(_qbStore, y, q, _R, _ser, _ds, _dsG);
       if(_R.unreg.length){
         html+='<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
           +'<i class="ti ti-alert-triangle"></i> '+t('予算未登録の月があります（目標が過小に出ます）','Some months have no budget (target understated)')+'：'
@@ -33853,7 +34057,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '969';
+const APP_VERSION = '970';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
