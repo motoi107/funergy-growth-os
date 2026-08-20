@@ -3551,6 +3551,10 @@ function mdRailHtml(stores, counts) {
         + escapeHtml(m.l || e.sev || '') + '</span>'
         + '<span class="md-li-t">' + escapeHtml(e.title || '') + '</span></div>';
     });
+  /* ★v968: Qコミットの「状態」だけを出す（Motoさん 2026-08-20）。
+     詳細は会議タブに置く。ダッシュボードは判断の場なので、
+     全店の提出状況と未達件数だけを見せてタップで飛ばす。 */
+  try { h += qcCommitStatusCard(); } catch (e) { }
   try { h += renderCompanyMessageCard(); } catch (e) { }
   try { h += renderPriceAlertCard(); } catch (e) { }
   return h;
@@ -22504,6 +22508,21 @@ function renderMeetingReview(){
   html+='<div style="display:flex;justify-content:flex-end;gap:6px;margin:0 0 8px">'
     +((typeof qbCanEdit==='function'&&qbCanEdit())?'<button class="btn btn-secondary btn-sm" onclick="openMeetThresholdModal()"><i class="ti ti-adjustments"></i> '+t('しきい値設定','Thresholds')+'</button>':'')
     +'<button class="btn btn-secondary btn-sm" onclick="setBudgetTab(\'quarter\')"><i class="ti ti-flag"></i> '+t('Qコミットへ','Q Commit')+'</button></div>';
+  /* ★v968: 会議タブに重点項目カードを出す（Motoさん 2026-08-20）。
+     手入力の項目はここでその場で書けるようにする。
+     ★専用の入力ページは作らない。作っても埋まらない。
+     月次会議はもともと開くので、その流れに乗せる。
+     ★店舗スコープは会議タブと同じ budgetScopeStores() を使う（食い違わせない）。 */
+  try{
+    var _mqSt=budgetScopeStores();
+    if(_mqSt.length===1 && _mqSt[0] && _mqSt[0].id){
+      var _mqQn=Math.floor((ym0.m-1)/3)+1;
+      html += renderQcFocus(_mqSt[0].id, ym0.y, _mqQn,
+        { canWrite:(typeof qbCanEdit==='function')?qbCanEdit():false });
+    } else {
+      html += qcCommitStatusCard(ym0.y, Math.floor((ym0.m-1)/3)+1);
+    }
+  }catch(e){ console.warn('renderQcFocus(meeting)', e); }
   var days=daysOfYm(ym);
   /* v926: 確定月はPLの数字に差し替える。ここ1か所で通すと、
      店舗カード・KPI帯・全社サマリーが同じ数字になる（バッジと食い違わない）。 */
@@ -22734,8 +22753,338 @@ function qcCompute(scope, y, q){
           : (R.pacePct>=0.95) ? 'watch' : 'behind';
   return R;
 }
+/* ============================================================
+   v968 Qコミットのカード一覧
+   ------------------------------------------------------------
+   ★_meetKpiTile は改修せず流用する（7本の検証が凍結している）。
+     未達時の入力ブロックは v928 で無効化済みなので、抑制フラグは不要。
+   ★重点項目の進捗は保存しない。前Qの実績と今Qの実績を都度比べる。
+     コミット時の値を保存する設計にすると、保存漏れと合流事故の種になる。
+============================================================ */
+/* ★教訓(62): qcCompute の直後は必ず function から始める。
+   ここに var を置くと V.fn が末尾に巻き込み、qcCompute が「変わった」ことになる。 */
+function _qcPrevQ(y,q){ return (q>1) ? { y:y, q:q-1 } : { y:y-1, q:4 }; }
+var QC_FOCUS_KPI = {
+  newcust:  { kind:'newcust', label:'新規客数',        unit:'',  lower:false },
+  repeat:   { kind:'repeat',  label:'リピート率',      unit:'%', lower:false },
+  ppa:      { kind:'ppa',     label:'客単価',          money:true, lower:false },
+  dinner:   { kind:'seg', seg:'dinner',  label:'ディナー売上',     money:true, lower:false },
+  lunch:    { kind:'seg', seg:'lunch',   label:'ランチ売上',       money:true, lower:false },
+  takeout:  { kind:'seg', seg:'takeout', label:'テイクアウト売上', money:true, lower:false },
+  foodcost: { kind:'fc',      label:'原価率',          unit:'%', lower:true },
+  labor:    { kind:'labor',   label:'人件費率',        unit:'%', lower:true }
+};
+/* 四半期の区分別売上。ランチ/ディナーからテイクアウトを抜く（_meetGapBreakdown と同じ作法）。 */
+function qcSegAgg(storeId, y, q){
+  var o={ lunch:0, dinner:0, takeout:0 };
+  var da={}; try{ da=getDailyActuals(storeId)||{}; }catch(e){ return o; }
+  _quarterMonths(y,q).forEach(function(ym){
+    Object.keys(da).forEach(function(d){
+      if(d.indexOf(ym)!==0) return;
+      var v=da[d]||{}; if(v.actual==null) return;
+      var tls=Number(v.toLunchSales)||0, tds=Number(v.toDinnerSales)||0;
+      var l=(Number(v.lunchSales)||0)-tls, dn=(Number(v.dinnerSales)||0)-tds;
+      o.lunch  += (l>0?l:0);
+      o.dinner += (dn>0?dn:0);
+      o.takeout+= tls+tds;
+    });
+  });
+  return o;
+}
+function _qcScopeStores(scope){
+  return (scope==='ALL')
+    ? ((typeof getVisibleStores==='function')?getVisibleStores():STORES)
+    : [{ id:scope }];
+}
+/* ★不足額を打ち手に翻訳する。客数と客単価の2軸（Motoさん 2026-08-20）。
+   区分まで割ると選択肢が増えて打ち手が絞れないため、あえて2軸に留める。 */
+function qcFillWays(R){
+  var need=R.short||0, days=R.daysLeft||0;
+  if(!(need>0) || !(days>0)) return { ok:false, need:need, days:days };
+  var ppa=R.aPpa||0, gPerDay=R.daysDone?(R.aGuests/R.daysDone):0;
+  var byGuest = ppa>0 ? (need/ppa/days) : null;              /* 1日あたり必要な追加客数 */
+  var byPpa   = R.aGuests>0 && gPerDay>0 ? (need/(gPerDay*days)) : null;  /* 必要な客単価増 */
+  return { ok:true, need:need, days:days,
+           byGuest:byGuest, byPpa:byPpa,
+           halfGuest:(byGuest!=null?byGuest/2:null),
+           halfPpa:(byPpa!=null?byPpa/2:null) };
+}
+/* 月ごとの未達額。R.byMonth（scope 集計済み）をそのまま使う。 */
+function qcMonthGaps(R){
+  return (R.months||[]).map(function(ym){
+    var b=R.byMonth[ym]||{ t:0, a:0, tg:0, ag:0 };
+    var off=_ymToOffset(ym);
+    return { ym:ym, mm:+String(ym).split('-')[1], future:(off>0),
+             tSales:b.t, aSales:b.a, gap:(b.a-b.t),
+             tGuests:b.tg, aGuests:b.ag, gapG:(b.ag-b.tg),
+             registered:(b.reg>0) };
+  });
+}
+/* KPIカードに載せる項目。key は MEET_KPI_DEF と同じものを使う（見た目を揃えるため）。 */
+function qcKpiItems(R){
+  return [
+    { key:'sales',  act:R.aSales,  tgt:R.tSales,  money:true },
+    { key:'guests', act:R.aGuests, tgt:R.tGuests, unit:'' },
+    { key:'ppa',    act:R.aPpa,    tgt:R.tPpa,    money:true },
+    { key:'repeat', act:R.aRep,    tgt:R.tRep,    unit:'%' },
+    { key:'fc',     act:R.aFc,     tgt:R.tFc,     unit:'%', lower:true, impact:R.fcImpact },
+    { key:'labor',  act:R.aLb,     tgt:R.tLb,     unit:'%', lower:true, impact:R.lbImpact }
+  ];
+}
+/* 重点項目の進捗。前Q実績 → 今Q実績。保存しない。 */
+function qcFocusRows(storeId, y, q){
+  var qb=getQBudget(storeId,y,q)||{};
+  var keys=qb.focusItems||[];
+  if(!keys.length) return [];
+  var pv=_qcPrevQ(y,q);
+  var aNow=null, aPrev=null, sNow=null, sPrev=null;
+  var notes=(qb.focusNotes)||{};
+  return keys.map(function(k){
+    var def=QC_FOCUS_KPI[k];
+    var fi=(typeof QB_FOCUS_ITEMS!=='undefined')?QB_FOCUS_ITEMS.find(function(x){return x.key===k;}):null;
+    var label=(fi&&fi.label)||k;
+    if(!def){
+      /* ★KPIに紐づかない項目（menu / cs / staff / review）は手入力メモ */
+      var list=notes[k]||[];
+      return { key:k, label:label, mode:'manual', notes:list,
+               last:(list.length?list[list.length-1]:null) };
+    }
+    if(!aNow){ aNow=quarterActuals(storeId,y,q); aPrev=quarterActuals(storeId,pv.y,pv.q); }
+    var now=null, prev=null;
+    if(def.kind==='seg'){
+      if(!sNow){ sNow=qcSegAgg(storeId,y,q); sPrev=qcSegAgg(storeId,pv.y,pv.q); }
+      now=sNow[def.seg]; prev=sPrev[def.seg];
+    } else if(def.kind==='newcust'){ now=aNow.ftB; prev=aPrev.ftB; }
+    else if(def.kind==='repeat'){ now=aNow.repeat; prev=aPrev.repeat; }
+    else if(def.kind==='ppa'){    now=aNow.ppa;    prev=aPrev.ppa; }
+    else if(def.kind==='fc'){     now=aNow.fcRate; prev=aPrev.fcRate; }
+    else if(def.kind==='labor'){  now=aNow.laborRate; prev=aPrev.laborRate; }
+    var has=(now>0 && prev>0);
+    var diff=has?(now-prev):null;
+    var good=has?(def.lower ? (diff<0) : (diff>0)):null;
+    return { key:k, label:label, mode:'auto', kpiLabel:def.label, unit:def.unit||'',
+             money:!!def.money, lower:!!def.lower, prev:prev, now:now,
+             diff:diff, good:good, has:has, prevLabel:'Q'+pv.q };
+  });
+}
+function saveQcNote(storeId, y, q, key){
+  var el=document.getElementById('qcn-'+storeId+'-'+key);
+  var txt=el?String(el.value||'').trim():'';
+  if(!txt){ showToast('内容を入力してください','warning'); return; }
+  var obj=getQBudget(storeId,y,q)||{};
+  if(!obj.focusNotes) obj.focusNotes={};
+  if(!obj.focusNotes[key]) obj.focusNotes[key]=[];
+  obj.focusNotes[key].push({ ym:(typeof bizYm==='function')?bizYm():'',
+    text:txt, by:(typeof myName==='function')?myName():curRole,
+    at:(typeof nowJP==='function')?nowJP():'' });
+  setQBudgetObj(storeId,y,q,obj);
+  showToast('重点項目の記録を保存しました','success');
+  renderPage(curPage);
+}
 function _qcPct(v){ return (v==null)?'—':(Math.round(v*1000)/10)+'%'; }
 function _qcSign(v){ return (v>=0?'+':'−')+fmtK(Math.abs(v)).slice(1); }
+/* ★経過分の未達（確定した過去）と、残りで必要な量（これから）を分けて出す。
+   同じカードに混ぜると、どちらの話をしているのか分からなくなる。 */
+function renderQcHeadCard(scope, y, q, R){
+  var col=(R.level==='good')?'var(--green)':(R.level==='watch')?'var(--yellow)':'var(--red)';
+  var badge=(R.level==='good')?t('達成ペース','On pace')
+          :(R.level==='watch')?t('やや遅れ','Slightly behind')
+          :(R.level==='behind')?t('要挽回','Behind'):'—';
+  var name=(scope==='ALL')?t('全店','All stores'):((STORES.find(function(s){return s.id===scope;})||{}).name||scope);
+  var gapCol=(R.paceGap>=0)?'var(--green)':'var(--red)';
+  var rCol=(R.needRatio==null)?'var(--muted)':(R.needRatio<=1?'var(--green)':(R.needRatio<=1.15?'var(--yellow)':'var(--red)'));
+  var box=function(cap, val, valCol, sub){
+    return '<div style="flex:1;min-width:0;background:var(--surface2);border-radius:9px;padding:8px 10px">'
+      +'<div style="font-size:10px;color:var(--muted);font-weight:700">'+cap+'</div>'
+      +'<div style="font-size:20px;font-weight:800;color:'+valCol+';white-space:nowrap;margin-top:1px">'+val+'</div>'
+      +'<div style="font-size:9.5px;color:var(--muted);margin-top:1px">'+sub+'</div></div>';
+  };
+  return '<div class="card" style="margin-bottom:10px;border-left:3px solid '+col+'">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+    +'<div style="font-size:13px;font-weight:800"><i class="ti ti-target-arrow" style="color:'+col+'"></i> '
+    +y+' Q'+q+' <span style="color:var(--muted);font-weight:400">'+escapeHtml(name)+'</span></div>'
+    +'<span style="padding:2px 10px;border-radius:999px;background:var(--surface2);color:'+col+';font-weight:800;font-size:11px">'+badge+'</span></div>'
+    +'<div style="display:flex;gap:8px">'
+    +box(t('経過分の過不足','Elapsed gap'), _qcSign(R.paceGap), gapCol,
+         t('経過分の目標','Target so far')+' '+fmtK(R.paceSales))
+    +box(t('残りで必要','Needed/day'), (R.daysLeft>0?fmtK(R.perDayNeed):'—'), rCol,
+         (R.daysLeft>0
+           ? (t('今','now')+' '+fmtK(R.perDayNow)+' ・ '+((R.needRatio==null)?'—':(Math.round(R.needRatio*100)/100)+t('倍','x')))
+           : t('四半期は終了','Quarter ended')))
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:7px">'
+    +t('Q進捗','Q progress')+' <b style="color:'+col+'">'+fmtK(R.aSales)+' / '+fmtK(R.tSales)+'（'+_qcPct(R.progress)+'）</b>'
+    +(R.daysLeft>0?(' ／ '+t('残り','left')+' '+R.daysLeft+t('日','d')):'')
+    +' ／ '+t('着地見込み','Forecast')+' '+fmtK(R.forecastPace)+'</div>'
+    +'</div>';
+}
+/* ★「あと$X」で止めない。打ち手の単位まで翻訳する。 */
+function renderQcFillCard(R){
+  var w=qcFillWays(R);
+  if(!w.ok){
+    return '<div class="card" style="margin-bottom:10px;border-left:3px solid var(--green)">'
+      +'<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> '
+      +((R.short>0)?t('四半期は終了しています。','Quarter has ended.')
+                   :t('Q目標に到達しています。','Quarter target reached.'))+'</div></div>';
+  }
+  var line=function(icon, label, val){
+    return '<div style="display:flex;align-items:baseline;gap:8px;padding:5px 0;border-top:1px solid var(--border)">'
+      +'<i class="ti '+icon+'" style="color:var(--yellow);font-size:14px"></i>'
+      +'<span style="flex:1;font-size:11.5px">'+label+'</span>'
+      +'<b style="font-size:14px;color:var(--tm)">'+val+'</b></div>';
+  };
+  var g=function(v){ return (v==null)?'—':('+'+Math.ceil(v)+t('人/日','/d')); };
+  var p=function(v){ return (v==null)?'—':('+$'+(Math.round(v*100)/100)); };
+  return '<div class="card" style="margin-bottom:10px;border-left:3px solid var(--yellow)">'
+    +'<div style="font-size:12.5px;font-weight:800;color:var(--tm);margin-bottom:2px">'
+    +'<i class="ti ti-arrow-guide" style="color:var(--yellow)"></i> '
+    +t('あと','Remaining')+' <b style="font-size:15px">'+fmtK(w.need)+'</b> '+t('を何で埋めるか','— how to close it')+'</div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:4px">'
+    +t('残り','left')+' '+w.days+t('日','d')+' ／ '+t('現在の客単価','current avg check')+' $'+(Math.round((R.aPpa||0)*100)/100)+'</div>'
+    +line('ti-friends', t('客数だけで埋める','Guests only'), g(w.byGuest))
+    +line('ti-coin',    t('客単価だけで埋める','Avg check only'), p(w.byPpa))
+    +line('ti-scale',   t('半々で埋める','Half and half'), g(w.halfGuest)+' ・ '+p(w.halfPpa))
+    +'</div>';
+}
+/* ★KPIカード一覧。会議タブと同じ _meetKpiTile をそのまま使う（改修しない）。 */
+function renderQcKpiCards(scope, y, q, R){
+  var gaps=qcMonthGaps(R);
+  var h='<div class="card"><div class="card-title" style="font-size:13px">'
+    +'<i class="ti ti-layout-grid" style="color:var(--accent)"></i> '+t('KPI別 達成状況','KPI status')
+    +'<span style="margin-left:auto;font-size:10px;color:var(--muted);font-weight:400">'
+    +t('目標は四半期合計','Target = quarter total')+'</span></div>';
+  qcKpiItems(R).forEach(function(it){
+    var extra='';
+    if(it.key==='sales' || it.key==='guests'){
+      /* ★月ごとの未達額。「7月終了時点で何がどのくらい足りなかったか」への答え。 */
+      var money=(it.key==='sales');
+      extra='<div style="font-size:10.5px;color:var(--muted);line-height:1.7">'
+        +gaps.map(function(m){
+          if(m.future) return m.mm+t('月','')+' <span style="color:var(--muted)">'+t('これから','—')+'</span>';
+          if(!m.registered) return m.mm+t('月','')+' <span style="color:var(--yellow)">'+t('予算未登録','no budget')+'</span>';
+          var gp=money?m.gap:m.gapG;
+          var c=(gp>=0)?'var(--green)':'var(--red)';
+          var sv=money?_qcSign(gp):((gp>=0?'+':'−')+Math.abs(Math.round(gp)).toLocaleString());
+          return m.mm+t('月','')+' <b style="color:'+c+'">'+sv+'</b>';
+        }).join(' ／ ')+'</div>';
+      if(it.key==='sales'){
+        var drv=(Math.abs(R.gapGuest)>=Math.abs(R.gapPpa))?t('客数','Guests'):t('客単価','Avg check');
+        extra+='<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+t('主因','Driver')+' <b>'+drv+'</b>'
+          +'（'+t('客数','Guests')+' '+_qcSign(R.gapGuest)+' ／ '+t('客単価','Avg check')+' '+_qcSign(R.gapPpa)+'）</div>';
+      }
+    } else if(it.key==='fc' || it.key==='labor'){
+      /* ★_meetGapBreakdown は fc / labor を分解できない（棚卸が月末のみ・按分のみ）。
+         できないものをできるように見せない。理由だけ書く。 */
+      extra='<div style="font-size:10.5px;color:'+((it.impact||0)>0?'var(--red)':'var(--green)')+'">'
+        +t('利益への影響','Profit impact')+' '+((it.impact||0)>0?'−':'+')+fmtK(Math.abs(it.impact||0)).slice(1)+'</div>'
+        +'<div style="font-size:9.5px;color:var(--muted);margin-top:1px">'
+        +(it.key==='fc'?t('区分別には割れません（棚卸が月末のみ）','Cannot split by segment (inventory is month-end only)')
+                       :t('区分別には割れません（按分のみ）','Cannot split by segment (allocation only)'))+'</div>';
+    }
+    h+=_meetKpiTile(scope, R.months[0], it.key, it.act, it.tgt,
+        { money:it.money, unit:it.unit, lower:it.lower, extra:extra });
+  });
+  return h+'</div>';
+}
+/* ★重点項目の進捗。Qコミット・会議タブの両方から呼ぶ。
+   compact=true で会議タブ用（見出しを小さく、入力欄つき）。 */
+function renderQcFocus(storeId, y, q, opts){
+  opts=opts||{};
+  var qb=getQBudget(storeId,y,q)||{};
+  var rows=qcFocusRows(storeId,y,q);
+  var h='<div class="card"><div class="card-title" style="font-size:13px">'
+    +'<i class="ti ti-flag" style="color:var(--accent2)"></i> '+y+' Q'+q+' '+t('の重点項目','focus items')
+    +(qb.status==='committed'
+      ?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>'
+      :' <span class="tag tag-yellow" style="font-size:9px">'+t('未コミット','Not committed')+'</span>')+'</div>';
+  if(!rows.length){
+    return h+'<div style="font-size:11.5px;color:var(--muted)">'
+      +t('この四半期の重点項目がまだ選ばれていません。','No focus items selected for this quarter.')
+      +(opts.link!==false?' <a onclick="go(\'budget\')" style="color:var(--accent);cursor:pointer">'+t('Qコミットで設定','Set in Q-commit')+'</a>':'')
+      +'</div></div>';
+  }
+  rows.forEach(function(r, idx){
+    h+='<div style="padding:7px 0'+(idx?';border-top:1px solid var(--border)':'')+'">';
+    if(r.mode==='auto'){
+      var col=r.has?(r.good?'var(--green)':'var(--red)'):'var(--muted)';
+      var fv=function(v){ return r.money?('$'+(Math.round(v*100)/100)):((Math.round(v*10)/10)+r.unit); };
+      var ds=r.has?((r.diff>=0?'+':'−')+(r.money?('$'+(Math.round(Math.abs(r.diff)*100)/100)):((Math.round(Math.abs(r.diff)*10)/10)+(r.unit==='%'?'pt':r.unit)))):'—';
+      h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        +'<span style="flex:1;font-size:12px;font-weight:700">'+escapeHtml(r.label)+'</span>'
+        +(r.has?('<span style="font-size:11.5px;color:var(--muted)">'+fv(r.prev)+' → </span>'
+                +'<span style="font-size:12.5px;font-weight:800;color:'+col+'">'+fv(r.now)+'</span>'
+                +'<span class="tag" style="font-size:9px;border:1px solid '+col+';color:'+col+';background:transparent">'+ds+'</span>')
+               :('<span style="font-size:10.5px;color:var(--muted)">'+t('前四半期の実績がありません','No prior-quarter actual')+'</span>'))
+        +'</div>'
+        +'<div style="font-size:9.5px;color:var(--muted);margin-top:2px">'+t('自動','Auto')+' · '
+        +escapeHtml(r.kpiLabel)+t('で追跡（前','tracked (vs ')+r.prevLabel+t('比）',')')+'</div>';
+    } else {
+      /* ★KPIに紐づかない項目。専用ページを作らず、会議タブでその場で書けるようにする。 */
+      h+='<div style="display:flex;align-items:center;gap:8px">'
+        +'<span style="flex:1;font-size:12px;font-weight:700">'+escapeHtml(r.label)+'</span>'
+        +'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)">'+t('手入力','Manual')+'</span></div>';
+      if(r.last){
+        h+='<div style="font-size:11px;margin-top:3px;line-height:1.6">'+escapeHtml(r.last.text)+'</div>'
+          +'<div style="font-size:9.5px;color:var(--muted);margin-top:1px">'+escapeHtml(r.last.by||'')+' '+escapeHtml(r.last.at||'')
+          +(r.notes.length>1?('　'+t('他','+')+(r.notes.length-1)+t('件','')):'')+'</div>';
+      } else {
+        h+='<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+t('まだ記録がありません','No record yet')+'</div>';
+      }
+      if(opts.canWrite){
+        h+='<div style="display:flex;gap:5px;margin-top:5px">'
+          +'<input class="form-input" id="qcn-'+storeId+'-'+r.key+'" style="flex:1;font-size:11.5px;padding:6px 8px" placeholder="'+t('今月の進捗・結果','Progress this month')+'">'
+          +'<button class="btn btn-secondary btn-sm" onclick="saveQcNote(\''+storeId+'\','+y+','+q+',\''+r.key+'\')">'+t('記録','Save')+'</button></div>';
+      }
+    }
+    h+='</div>';
+  });
+  if(qb.basis) h+='<div style="margin-top:7px;padding-top:6px;border-top:1px dashed var(--border);font-size:10.5px;line-height:1.6">'
+    +'<b>'+t('達成の軸','Axis')+'</b>: '+escapeHtml(qb.basis)+'</div>';
+  return h+'</div>';
+}
+/* ★全店のコミット状態だけを出すカード。管理ダッシュボードと全社会議ビュー用。
+   ここに数字を並べない。判断の場に詳細を積むと、既存の判定レイヤーと役割が被る。 */
+function qcCommitStatusCard(y, q){
+  var d=(typeof bizNow==='function')?bizNow():new Date();
+  if(!y) y=d.getFullYear();
+  if(!q) q=Math.floor(d.getMonth()/3)+1;
+  var stores=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
+  var done=0, miss=0, rows=[];
+  stores.forEach(function(st){
+    var qb=getQBudget(st.id,y,q)||{};
+    var state=(qb.status==='committed')?'committed':(qb.basis?'draft':'none');
+    if(state==='committed') done++;
+    var bad=0;
+    try{
+      qcFocusRows(st.id,y,q).forEach(function(r){
+        if(r.mode==='auto' && r.has && r.good===false) bad++;
+      });
+    }catch(e){}
+    miss+=bad;
+    rows.push({ id:st.id, name:st.name||st.id, state:state, bad:bad, n:(qb.focusItems||[]).length });
+  });
+  var meta={ committed:{c:'var(--green)', l:t('コミット済','Committed')},
+             draft:{c:'var(--yellow)', l:t('下書き','Draft')},
+             none:{c:'var(--muted)', l:t('未提出','Not submitted')} };
+  var h='<div class="card"><div class="card-title" style="font-size:13px">'
+    +'<i class="ti ti-flag" style="color:var(--accent2)"></i> '+y+' Q'+q+' '+t('コミット状況','Commit status')
+    +'<span style="margin-left:auto;font-size:10px;color:var(--muted);font-weight:400">'
+    +t('詳細は会議タブ','Details in meeting tab')+'</span></div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">'
+    +'<span class="tag '+((done===stores.length&&stores.length)?'tag-green':'tag-yellow')+'" style="font-size:11px">'
+    +t('コミット済','Committed')+' '+done+'/'+stores.length+t('店','')+'</span>'
+    +'<span class="tag '+(miss?'tag-red':'tag-gray')+'" style="font-size:11px">'
+    +t('重点項目の未達','Focus miss')+' '+miss+t('件','')+'</span></div>';
+  rows.forEach(function(r){
+    var m=meta[r.state];
+    h+='<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--border)">'
+      +'<span style="flex:1;font-size:11.5px;font-weight:600">'+escapeHtml(r.name)+'</span>'
+      +(r.n?('<span style="font-size:10px;color:var(--muted)">'+t('重点','focus')+' '+r.n+t('件','')+'</span>'):'')
+      +(r.bad?('<span class="tag tag-red" style="font-size:9px">'+t('未達','miss')+' '+r.bad+'</span>'):'')
+      +'<span class="tag" style="font-size:9px;border:1px solid '+m.c+';color:'+m.c+';background:transparent">'+m.l+'</span></div>';
+  });
+  return h+'</div>';
+}
 function renderQCommitSummary(scope, y, q){
   var R=qcCompute(scope, y, q);
   if(!R.tSales && !R.aSales){
@@ -22823,8 +23172,26 @@ function renderQuarterBudget(){
   // store tabs
   html+=bStoreChips(_qbStore,'setQbStore'); // 略称チップで統一
 
-  /* v746: 四半期トータルの達成サマリー（全店・単店どちらでも先頭に出す） */
-  try{ html+=renderQCommitSummary(_qbStore, y, q); }catch(e){ console.warn('renderQCommitSummary', e); }
+  /* ★v968: 横バーのサマリーをカード一覧に置き換える（Motoさん 2026-08-20）。
+     ①判定と過不足 ②あと$Xを何で埋めるか ③KPI別カード の順に置く。
+     ②を②の位置に置くのは、不足額を見た直後に打ち手の単位を読ませるため。 */
+  try{
+    var _R=qcCompute(_qbStore, y, q);
+    if(_R.tSales || _R.aSales){
+      html+=renderQcHeadCard(_qbStore, y, q, _R);
+      html+=renderQcFillCard(_R);
+      html+=renderQcKpiCards(_qbStore, y, q, _R);
+      if(_R.unreg.length){
+        html+='<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
+          +'<i class="ti ti-alert-triangle"></i> '+t('予算未登録の月があります（目標が過小に出ます）','Some months have no budget (target understated)')+'：'
+          +_R.unreg.slice(0,4).map(function(u){ return escapeHtml(u.store+' '+u.ym); }).join('、')
+          +(_R.unreg.length>4?' 他':'')+'</div>';
+      }
+    } else {
+      html+='<div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">'
+        +t('この四半期の予算が登録されていません。予算設定から各月を登録してください。','No budget registered for this quarter.')+'</div></div>';
+    }
+  }catch(e){ console.warn('qcCards', e); }
 
   if(_qbStore==='ALL'){
     // 集計（全店合計の項目別）
@@ -22892,12 +23259,10 @@ function renderQuarterBudget(){
       return;
     }
     /* 実績 vs 目標 */
-    html+=_qbProgLine(t('売上','Sales'), md.aSales, md.tSales, {money:true})
-      +_qbProgLine(t('客数','Guests'), md.aGuests, md.tGuests, {unit:t('名','')})
-      +_qbProgLine(t('客単価','Avg check'), md.aPpa, md.tPpa, {money:true})
-      +_qbProgLine(t('原価率','FC')+(md.cogsSrc?'（'+md.cogsSrc+'）':''), md.aFc, md.tFc, {unit:'%', lower:true})
-      +_qbProgLine(t('人件費率','Labor %'), md.aLb, md.tLb, {unit:'%', lower:true})
-      +_qbProgLine(t('リピート率','Repeat rate'), md.aRep, md.tRep, {unit:'%'})
+    /* ★v968: 月別の横バー6本を削除（Motoさん 2026-08-20）。
+       達成状況は上のKPIカードで読む。ここは「その月に何を狙っていたか」だけを残す。
+       バーとカードの両方を出すと役割が重複し、どちらを見ればよいか分からなくなる。 */
+    html+=''
       +(md.cogsSrc==='仕入合計'?'<div style="font-size:9px;color:var(--yellow);margin-top:2px">'+t('※原価率は棚卸未確定のため仕入合計で暫定。','※ FC is provisional until inventory is finalized.')+'</div>':'')
       /* この月の狙い（考え方）を同じカード内に並べる */
       +'<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">'
@@ -33213,7 +33578,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '967';
+const APP_VERSION = '968';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
