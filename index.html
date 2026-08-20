@@ -31011,6 +31011,13 @@ function renderAttMonthData(storeId, store) {
     return html;
   }
 
+  /* ★v967: 勤怠データタブにも同じカードを出す。
+     このタブは SL も開けるので、設定ボタンだけ renderClockErrors 側で GM/CEO に絞っている。 */
+  try{
+    var _ceA = ceForPeriod(storeId, laborMonthWeeks(ymOf(attMonthRef())), '');
+    html += renderClockErrors(storeId, _ceA, attMonthLabel(), days.map(function(d){ return d.date; }));
+  }catch(e){ console.warn('clockErrors', e); }
+
   var canApprove = attDayCanApprove();
   if (['office','gm','ceo'].indexOf(curRole)>=0) {
     html += `<div class="card" style="padding:10px 14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -32408,6 +32415,297 @@ function owRecentSundays(n){
   return out;
 }
 /* 勤怠明細の表示期間ぶんをまとめて評価する */
+/* ============================================================
+   v967 打刻エラー検知（Clock Error）
+   ------------------------------------------------------------
+   ★意図は「検知」だけ。修正は Toast 側で行う（Motoさん 2026-08-19）。
+     戻り道は cronSync(直近31日) → tip_labor(upsert) →
+     syncTipLaborFromDB → setTipLabor(無条件上書き) で既に通っている。
+     31日より古い日を Toast で直した場合は cron が触らないので、
+     勤怠データタブの「この月を最新化」が要る。
+
+   ★深夜帯の時刻で判定するのは「推測」である
+     Toast は自動クロックアウトかどうかをフラグで持っているが、いまの
+     Edge Function は inDate/outDate しか保存していない。フラグを
+     取り込むまでの繋ぎ。いくらシャワー(v956)の部分一致と同じ構造なので、
+     窓は設定で動かせるようにし、実際の分布を同じカードに出す。
+
+   ★12h単独はエラーにしない
+     実際に12h働く人がいる。毎日赤くすると見られなくなる。
+     正常な12hは通常の時刻に終わり、誤りの12hは深夜に終わる。
+============================================================ */
+var CE_DEFAULT_CFG = { nightFrom:'03:00', nightTo:'05:00', longH:12, shortMin:15 };
+var CE_KIND_LABEL = {
+  auto:'自動クロックアウト疑い', reverse:'IN/OUT逆転', bad:'時刻不正',
+  long:'長時間', short:'極端に短い', overlap:'打刻重複'
+};
+var CE_ERROR_KINDS = ['auto','reverse','bad'];   /* 確実（赤）。それ以外は疑い（黄） */
+function getCeCfg(){
+  var m = ls('ce_config', null) || {};
+  return {
+    nightFrom: /^\d{1,2}:\d{2}$/.test(m.nightFrom||'') ? m.nightFrom : CE_DEFAULT_CFG.nightFrom,
+    nightTo:   /^\d{1,2}:\d{2}$/.test(m.nightTo||'')   ? m.nightTo   : CE_DEFAULT_CFG.nightTo,
+    longH:     (Number(m.longH)>0)    ? Number(m.longH)    : CE_DEFAULT_CFG.longH,
+    shortMin:  (Number(m.shortMin)>0) ? Number(m.shortMin) : CE_DEFAULT_CFG.shortMin
+  };
+}
+function setCeCfg(m){ lsSet('ce_config', m); }
+/* ハワイ時刻での「その日の何分目か」。splitHours と同じ -10h の作法にそろえる
+   （新しい時差ロジックを作らない。ここを自前で書くと必ずずれる）。 */
+function _ceMinOfDay(iso){
+  if(!iso) return null;
+  var ms = new Date(iso).getTime(); if(isNaN(ms)) return null;
+  var d = new Date(ms - 10*3600*1000);
+  return d.getUTCHours()*60 + d.getUTCMinutes();
+}
+function _ceHm(str){ var m=String(str||'').match(/^(\d{1,2}):(\d{2})$/); return m?(+m[1]*60 + +m[2]):null; }
+function _ceClock(iso){
+  var m=_ceMinOfDay(iso); if(m==null) return '--:--';
+  return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+}
+function _ceHours(sh){
+  if(!sh || !sh.inDate || !sh.outDate) return null;
+  var a=new Date(sh.inDate).getTime(), b=new Date(sh.outDate).getTime();
+  if(isNaN(a)||isNaN(b)) return null;
+  return (b-a)/3600000;
+}
+/* 窓は日付をまたぐことがある（例 23:00〜05:00）ので両方に対応する */
+function _ceInNight(min, cfg){
+  var a=_ceHm(cfg.nightFrom), b=_ceHm(cfg.nightTo);
+  if(min==null || a==null || b==null) return false;
+  return (a<=b) ? (min>=a && min<=b) : (min>=a || min<=b);
+}
+/* 打刻1本の判定。確実(error)と疑い(warn)を分ける。 */
+function ceCheckShift(sh, cfg){
+  cfg = cfg || getCeCfg();
+  var kinds = [];
+  if(!sh || !sh.inDate) return { level:null, kinds:kinds, hours:0 };
+  var h = _ceHours(sh);
+  if(h==null){ kinds.push('bad'); return { level:'error', kinds:kinds, hours:0 }; }
+  if(h<=0) kinds.push('reverse');
+  if(_ceInNight(_ceMinOfDay(sh.outDate), cfg)) kinds.push('auto');
+  if(kinds.length) return { level:'error', kinds:kinds, hours:h };
+  /* ★ここから下は「疑い」。深夜帯でない12hは正常な長時間勤務でありうる。 */
+  if(h > cfg.longH) kinds.push('long');
+  else if(h*60 < cfg.shortMin) kinds.push('short');
+  return { level: kinds.length?'warn':null, kinds:kinds, hours:h };
+}
+function _ceOverlap(shifts){
+  var a=(shifts||[]).filter(function(x){ return x && x.inDate && x.outDate; })
+    .map(function(x){ return { s:new Date(x.inDate).getTime(), e:new Date(x.outDate).getTime() }; })
+    .filter(function(x){ return !isNaN(x.s) && !isNaN(x.e) && x.e>x.s; })
+    .sort(function(p,q){ return p.s-q.s; });
+  for(var i=1;i<a.length;i++){ if(a[i].s < a[i-1].e) return true; }
+  return false;
+}
+/* 1日ぶん。人ごとにまとめる。 */
+function ceScanDay(storeId, date, cfg){
+  cfg = cfg || getCeCfg();
+  var out = { date:date, rows:[], nError:0, nWarn:0 };
+  var labor = getTipLabor(storeId, date);
+  if(!labor) return out;
+  Object.keys(labor).forEach(function(n){
+    var e = labor[n]||{}, shifts = e.shifts||[];
+    if(!shifts.length) return;
+    var kinds={}, level=null, det=[];
+    shifts.forEach(function(sh){
+      var r = ceCheckShift(sh, cfg);
+      if(!r.kinds.length) return;
+      r.kinds.forEach(function(k){ kinds[k]=1; });
+      if(r.level==='error') level='error';
+      else if(r.level==='warn' && level!=='error') level='warn';
+      det.push({ inClock:_ceClock(sh.inDate), outClock:_ceClock(sh.outDate),
+                 hours:Math.round((r.hours||0)*100)/100, kinds:r.kinds });
+    });
+    if(_ceOverlap(shifts)){ kinds['overlap']=1; if(level!=='error') level='warn'; }
+    if(!level) return;
+    out.rows.push({ name:n, date:date, level:level, kinds:Object.keys(kinds), det:det });
+    if(level==='error') out.nError++; else out.nWarn++;
+  });
+  return out;
+}
+/* 1週(日〜土)。Grade別と同じ週の刻みを使う（新しい日付ロジックを作らない）。 */
+function ceScanWeek(storeId, sunISO, cfg){
+  var out = { sun:sunISO, rows:[], byName:{}, nError:0, nWarn:0 };
+  laborWeekDays(sunISO).forEach(function(dt){
+    ceScanDay(storeId, dt, cfg).rows.forEach(function(r){
+      out.rows.push(r);
+      var b = out.byName[r.name] || (out.byName[r.name] = { error:0, warn:0 });
+      if(r.level==='error'){ b.error++; out.nError++; } else { b.warn++; out.nWarn++; }
+    });
+  });
+  return out;
+}
+/* 期間ぶん。owForPeriod と同じ形にそろえてある（並べて使うため）。 */
+function ceForPeriod(storeId, weeks, selWeek){
+  var cfg = getCeCfg();
+  var sunList = selWeek ? [selWeek] : (weeks||[]).map(function(w){ return w.sun; });
+  var rows=[], byWeek={}, byName={}, ovr=[];
+  sunList.forEach(function(sun){
+    var w = ceScanWeek(storeId, sun, cfg);
+    byWeek[sun] = w;
+    w.rows.forEach(function(r){
+      rows.push(r);
+      var b = byName[r.name] || (byName[r.name] = { error:0, warn:0 });
+      if(r.level==='error') b.error++; else b.warn++;
+    });
+    /* ★att_override がある日は Toast を取り直しても画面が変わらない。
+       Toast側で直す運用なので、これは「直したのに直らない」の原因になる。 */
+    laborWeekDays(sun).forEach(function(dt){
+      var o = (typeof getAttOverride==='function') ? getAttOverride(storeId, dt) : null;
+      if(o && o.data) ovr.push({ date:dt, by:o.by||'', at:o.at||'' });
+    });
+  });
+  rows.sort(function(a,b){
+    var rk=function(x){ return x.level==='error'?0:1; };
+    return rk(a)-rk(b) || String(b.date).localeCompare(String(a.date))
+        || String(a.name).localeCompare(String(b.name));
+  });
+  return { rows:rows, byWeek:byWeek, byName:byName, sunList:sunList, cfg:cfg,
+           error: rows.filter(function(r){ return r.level==='error'; }),
+           warn:  rows.filter(function(r){ return r.level==='warn'; }),
+           overrides: ovr };
+}
+/* クロックアウト時刻の分布。窓を決め打ちにしないための材料。 */
+function ceOutHistogram(storeId, dates){
+  var h=[], i;
+  for(i=0;i<24;i++) h.push(0);
+  var total=0;
+  (dates||[]).forEach(function(dt){
+    var labor = getTipLabor(storeId, dt); if(!labor) return;
+    Object.keys(labor).forEach(function(n){
+      ((labor[n]||{}).shifts||[]).forEach(function(sh){
+        var m=_ceMinOfDay(sh.outDate); if(m==null) return;
+        h[Math.floor(m/60)]++; total++;
+      });
+    });
+  });
+  return { hours:h, total:total };
+}
+/* Grade別労働時間の行に出す印。超過の理由がデータなのかを、その場で見せる。 */
+function ceWeekBadge(ce, name, sun){
+  if(!ce || !ce.byWeek || !ce.byWeek[sun]) return '';
+  var b = ce.byWeek[sun].byName[name]; if(!b) return '';
+  if(b.error>0) return '<span class="tag tag-red" style="font-size:9px;margin-left:4px">打刻'+b.error+'件</span>';
+  if(b.warn>0)  return '<span class="tag tag-yellow" style="font-size:9px;margin-left:4px">要確認'+b.warn+'件</span>';
+  return '';
+}
+function _ceKindTags(kinds, level){
+  return (kinds||[]).map(function(k){
+    var isErr = CE_ERROR_KINDS.indexOf(k)>=0;
+    var col = isErr ? 'var(--red)' : 'var(--yellow)';
+    return '<span class="tag" style="font-size:9px;border:1px solid '+col+';color:'+col
+      + ';background:transparent;margin-left:3px">'+escapeHtml(CE_KIND_LABEL[k]||k)+'</span>';
+  }).join('');
+}
+function _ceHistHtml(hist, cfg){
+  if(!hist || !hist.total) return '';
+  var mx=1, i;
+  for(i=0;i<24;i++) if(hist.hours[i]>mx) mx=hist.hours[i];
+  var bars='';
+  for(i=0;i<24;i++){
+    var v=hist.hours[i];
+    var inWin=_ceInNight(i*60+30, cfg);
+    var hpx=Math.round(v/mx*26);
+    bars += '<div title="'+i+'時台 '+v+'件" style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:1px">'
+      + '<div style="width:100%;height:'+hpx+'px;background:'+(inWin?'var(--red)':'var(--muted)')+';opacity:'+(v?0.85:0.15)+';border-radius:1px"></div>'
+      + '<div style="font-size:7px;color:var(--muted)">'+(i%6===0?i:'')+'</div></div>';
+  }
+  return '<div style="margin-top:8px"><div style="font-size:10.5px;color:var(--muted);margin-bottom:3px">'
+    + 'クロックアウト時刻の分布（'+hist.total+'件・赤が判定窓）</div>'
+    + '<div style="display:flex;gap:1px;align-items:flex-end;height:40px">'+bars+'</div></div>';
+}
+/* 打刻エラーカード。★Grade別労働時間より「上」に置く。
+   データが正しいか → 働き方が適正か、の順にする。 */
+function renderClockErrors(storeId, ce, periodLabel, dates){
+  var cfg = ce.cfg || getCeCfg();
+  var canCfg = ['gm','ceo'].indexOf(curRole)>=0;
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-alarm-off" style="color:var(--accent)"></i>打刻エラー'
+    + (canCfg ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openCeCfgModal()"><i class="ti ti-adjustments"></i> 判定の設定</button>' : '')
+    + '</div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+    + '<span class="tag ' + (ce.error.length?'tag-red':'tag-green') + '" style="font-size:11px">確実 ' + ce.error.length + '件</span>'
+    + '<span class="tag ' + (ce.warn.length?'tag-yellow':'tag-gray') + '" style="font-size:11px">疑い ' + ce.warn.length + '件</span>'
+    + '<span class="tag tag-gray" style="font-size:11px">判定窓 ' + escapeHtml(cfg.nightFrom) + '〜' + escapeHtml(cfg.nightTo) + '</span>'
+    + '</div>';
+
+  if(ce.overrides && ce.overrides.length){
+    h += '<div class="alert alert-warning" style="padding:7px 10px;font-size:11px;margin-bottom:8px">'
+      + '<i class="ti ti-alert-triangle"></i> <b>アプリ側の手動修正が残っている日が' + ce.overrides.length + '日あります。</b>'
+      + 'この日は Toast で直しても画面に反映されません（手動修正が優先されるため）。<br>'
+      + '<span style="color:var(--muted)">'
+      + ce.overrides.slice(0,8).map(function(o){ return escapeHtml(o.date)+(o.by?'（'+escapeHtml(o.by)+'）':''); }).join(' / ')
+      + (ce.overrides.length>8?' …':'') + '</span></div>';
+  }
+
+  if(!ce.rows.length){
+    h += '<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> '
+       + escapeHtml(periodLabel) + ' に打刻エラーはありません。</div>';
+  } else {
+    h += '<div style="max-height:280px;overflow:auto">';
+    ce.rows.forEach(function(r){
+      var col = r.level==='error' ? 'var(--red)' : 'var(--yellow)';
+      h += '<div style="border-top:1px solid var(--border);padding:6px 0;font-size:11.5px">'
+        + '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">'
+        + '<b style="flex:1">' + escapeHtml(r.name) + '</b>'
+        + '<span style="font-size:10.5px;color:var(--muted)">' + escapeHtml(r.date) + '</span>'
+        + _ceKindTags(r.kinds, r.level) + '</div>'
+        + '<div style="color:' + col + ';font-size:10.5px;margin-top:2px">'
+        + r.det.map(function(d){ return escapeHtml(d.inClock)+' → '+escapeHtml(d.outClock)+'（'+d.hours+'h）'; }).join(' / ')
+        + '</div></div>';
+    });
+    h += '</div>';
+    h += '<div style="font-size:10.5px;color:var(--muted);margin-top:7px"><i class="ti ti-info-circle"></i> '
+      + '修正は Toast 側で行ってください。直近31日は夜間同期で自動的に戻ってきます。'
+      + 'それより古い日は「勤怠データ」タブの「この月を最新化」を押してください。</div>';
+  }
+
+  h += _ceHistHtml(ceOutHistogram(storeId, dates), cfg);
+  /* ★見えないものを見えないと書く。ここを黙っていると「エラー0＝健全」と読まれる。 */
+  h += '<div style="font-size:10px;color:var(--muted);margin-top:7px;border-top:1px dashed var(--border);padding-top:5px">'
+    + '※ クロックアウトが1件も無い打刻は、取り込みの時点で除外されるためここには出ません'
+    + '（その人ごとその日の勤怠から消えます）。Edge Function 側の対応が要ります。</div>';
+  return h + '</div>';
+}
+function openCeCfgModal(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('判定の設定は GM・CEO のみです','warning'); return; }
+  var c = getCeCfg();
+  openModal('<div class="modal-title"><i class="ti ti-adjustments"></i> 打刻エラーの判定 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">'
+    + '自動クロックアウトは Toast の設定時刻に付きます。上の分布を見て、実際に固まっている時間帯に窓を合わせてください。</div>'
+    + '<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid var(--border)">'
+    + '<b style="width:96px;font-size:12px">判定窓</b>'
+    + '<input class="form-input" id="ce-nf" type="time" value="'+escapeHtml(c.nightFrom)+'" style="flex:1">'
+    + '<span style="font-size:11px;color:var(--muted)">〜</span>'
+    + '<input class="form-input" id="ce-nt" type="time" value="'+escapeHtml(c.nightTo)+'" style="flex:1"></div>'
+    + '<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid var(--border)">'
+    + '<b style="width:96px;font-size:12px">長時間</b>'
+    + '<input class="form-input" id="ce-lh" type="number" min="1" max="24" step="0.5" value="'+c.longH+'" style="flex:1">'
+    + '<span style="font-size:11px;color:var(--muted)">h超で「疑い」</span></div>'
+    + '<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid var(--border)">'
+    + '<b style="width:96px;font-size:12px">短すぎ</b>'
+    + '<input class="form-input" id="ce-sm" type="number" min="1" max="240" step="1" value="'+c.shortMin+'" style="flex:1">'
+    + '<span style="font-size:11px;color:var(--muted)">分未満で「疑い」</span></div>'
+    + '<div style="font-size:10.5px;color:var(--muted);margin-top:7px">'
+    + '判定窓に入るクロックアウトは「確実」（赤）。長時間・短すぎ・重複は「疑い」（黄）です。'
+    + '実際に長時間働く方がいるため、長時間だけでは赤にしません。</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
+    + '<button class="btn btn-primary" onclick="saveCeCfg()"><i class="ti ti-device-floppy"></i> 保存</button></div>');
+}
+function saveCeCfg(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('判定の設定は GM・CEO のみです','warning'); return; }
+  var nf=(document.getElementById('ce-nf')||{}).value||'';
+  var nt=(document.getElementById('ce-nt')||{}).value||'';
+  var lh=Number((document.getElementById('ce-lh')||{}).value);
+  var sm=Number((document.getElementById('ce-sm')||{}).value);
+  if(!/^\d{1,2}:\d{2}$/.test(nf) || !/^\d{1,2}:\d{2}$/.test(nt)){ showToast('判定窓の時刻が正しくありません','warning'); return; }
+  if(!(lh>0&&lh<=24)){ showToast('長時間は1〜24hで指定してください','warning'); return; }
+  if(!(sm>0&&sm<=240)){ showToast('短すぎは1〜240分で指定してください','warning'); return; }
+  setCeCfg({ nightFrom:nf, nightTo:nt, longH:lh, shortMin:sm });
+  closeModalDirect();
+  showToast('打刻エラーの判定を保存しました','success');
+  renderPage(curPage);
+}
 function owForPeriod(storeId, weeks, selWeek){
   var sunList = selWeek ? [selWeek] : (weeks||[]).map(function(w){ return w.sun; });
   var rows = [], byName = {};
@@ -32449,7 +32747,7 @@ function owRowBadge(b){
   return '';
 }
 /* 勤怠明細に出すカード */
-function renderLaborOverwork(storeId, ow, periodLabel){
+function renderLaborOverwork(storeId, ow, periodLabel, ce){
   var lim = getOwLimits();
   var canCfg = ['gm','ceo'].indexOf(curRole)>=0;
   var h = '<div class="card"><div class="card-title"><i class="ti ti-clock-exclamation" style="color:var(--accent)"></i>Grade別 労働時間（週 日〜土）'
@@ -32473,7 +32771,8 @@ function renderLaborOverwork(storeId, ow, periodLabel){
       var others = Object.keys(r.byStore).filter(function(sid){ return sid!==storeId; });
       h += '<div style="border-top:1px solid var(--border);padding:6px 0;font-size:11.5px">'
         + '<div style="display:flex;gap:8px;align-items:baseline">'
-        + '<b style="flex:1">' + escapeHtml(r.name) + ' <span style="font-size:10px;color:var(--muted)">' + escapeHtml(r.grade||'等級未設定') + '</span></b>'
+        + '<b style="flex:1">' + escapeHtml(r.name) + ' <span style="font-size:10px;color:var(--muted)">' + escapeHtml(r.grade||'等級未設定') + '</span>'
+        + ceWeekBadge(ce, r.name, r.sun) + '</b>'   /* ★v967: 超過の理由が打刻なのかを、その場で見せる */
         + '<span style="font-weight:800;color:' + col + '">' + r.total + 'h</span>'
         + '<span style="font-size:10px;color:var(--muted)">' + (isOver ? ('上限' + r.max + 'h') : ('下限' + r.min + 'h')) + '</span>'
         + '<span class="tag" style="font-size:9.5px;border:1px solid ' + col + ';color:' + col + ';background:transparent">'
@@ -32621,7 +32920,12 @@ function renderLaborDetail(storeId, store) {
     <div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> 表示: ${periodLabel}${_core.cutoff?'（本日分は明日反映）':''}。OTは日曜起算の週ごとに40h超×1.5で自動算出（月跨ぎ週はこの月の分のみ）。更新は右上の「最新に更新」から。</div>
   </div>`;
 
-  html += renderLaborOverwork(storeId, _ow, periodLabel);   /* v793 */
+  /* ★v967: データ品質(打刻) → 労務判断(Grade別) の順に置く。
+     Grade別は _laborHrs（＝Toastの素の値）を見ているので、打刻が誤っていれば
+     そのまま超過に化ける。どちらが原因かを、並びと行の印で分かるようにする。 */
+  var _ce = ceForPeriod(storeId, weeks, selWeek);
+  html += renderClockErrors(storeId, _ce, periodLabel, attMonthDays().map(function(d){ return d.date; }));
+  html += renderLaborOverwork(storeId, _ow, periodLabel, _ce);   /* v793 / ★v967: 第4引数 */
 
   var totalCost=0, totalReg=0, totalOt=0, shownCount=0;
   var _tbody='';
@@ -32909,7 +33213,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '966';
+const APP_VERSION = '967';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
