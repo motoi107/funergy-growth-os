@@ -19860,8 +19860,13 @@ function initVerdict(R){
     else if(R.dGp>0 && R.dQty!=null && R.dQty<=0) mix='単価の高い商品に入れ替わったので、食数が減っても利益は出ています。';
   }
   if(R.dGp==null) return {key:'wait', label:'まだ判定できません',
-    why:(R.gpReady?'前後で日数が揃っていないため差を出していません。出数を最新化してください。'
-                 :'粗利単価が設定されていない商品があります。施策の編集から入れてください。')};
+    why:(!R.gpReady?'粗利単価が設定されていない商品があります。施策の編集から入れてください。'
+      /* ★描画に使う文字列なので、集計が揃っていなくても絶対に例外を投げない。
+         ここで落ちるとカードではなく画面ごと白くなる。 */
+      :('前後で営業日数が揃っていないため差を出していません（前'+((R.tB||{}).days||0)+'日'+_initMissNote(R.tB)
+        +'・後'+((R.tA||{}).days||0)+'日'+_initMissNote(R.tA)+'）。'
+        +'定休日で欠ける日は判定できますが、同期待ちの日があると揃いません。'
+        +'上の「最新化」を試してください。'))};
   if(R.dGp<0) return {key:'stop', label:'見直す',
     why:'品目の粗利が $'+Math.abs(R.dGp).toFixed(2)+' 減っています。'+mix};
   if(R.dGp===0) return {key:'watch', label:'様子を見る',
@@ -19901,9 +19906,12 @@ function initVerdictCard(it, store, w, R){
     +'<b>'+(w.weeks+1)+'週目は '+escapeHtml(w.nextDate)+' に揃います。</b><br>'
     /* ★v957 の主張を残す。揃っていても「何日ぶんで見ているか」は判断に要る。 */
     +'<i class="ti ti-calendar-stats"></i> 集計に使えた日数 … 出数 前'+w.n+'日中 '+R.tB.days
-    +'日ぶん・後'+w.n+'日中 '+R.tA.days+'日ぶん'
+    +'日ぶん'+_initMissNote(R.tB)+'・後'+w.n+'日中 '+R.tA.days+'日ぶん'+_initMissNote(R.tA)
     +'　新規リピート 前'+R.cB.days+'/'+R.cB.want
     +'日・後'+R.cA.days+'/'+R.cA.want+'日<br>'
+    /* ★v978: 定休日で欠ける日があることを明示する。「欠け 月」と出れば定休日だと分かる。 */
+    +'<i class="ti ti-calendar-off"></i> 定休日で欠ける日は、前後どちらにも同じだけ入るので判定できます。'
+    +'欠けている曜日が前後で違うときだけ止めます。<br>'
     +'<i class="ti ti-alert-circle"></i> ここでいう粗利は施策に登録した商品ぶんです。'
     +'開始日に初めて来た人が戻るかどうかは、来店周期ぶんの時間が経たないと分かりません。</div></div>';
 }
@@ -19938,17 +19946,20 @@ function initThreeCard(it, R){
     +'</div></div>';
 }
 /* 1週ぶんの数字。★7日すべて揃っている週だけ値を返す（歯抜けの週を谷に見せない）。 */
+/* ★v978: 「7日そろった週だけ」をやめた。定休日がある店では永久に描けない。
+   生の値と営業日数をそのまま返し、揃いの判定は initWeekSeries でまとめて行う。 */
 function initWeekOne(it, store, mix, modMix, from, to, idx){
   var ds=initDateList(from, to);
   var all=(it.targetGuids||[]).concat(it.compareGuids||[]);
   var g=initGpAgg(mix, ds, all, it, store.id, modMix);
   var c=initCustAgg(store.id, ds);
   return { idx:idx, from:from, to:to,
-    gp:(g.days===7)?g.amt:null,
-    first:(c.days===7)?c.first:null,
-    repeat:(c.days===7)?c.repeat:null,
-    guests:(c.days===7)?c.total:null,
-    ppa:(c.salesDays===7 && c.guests>0)?Math.round(c.sales/c.guests*100)/100:null };
+    gdays:g.days, cdays:c.days, sdays:c.salesDays,
+    gp:g.has?g.amt:null,
+    first:c.hasCust?c.first:null,
+    repeat:c.hasCust?c.repeat:null,
+    guests:c.hasCust?c.total:null,
+    ppa:(c.hasSales && c.guests>0)?Math.round(c.sales/c.guests*100)/100:null };
 }
 /* ★開始前の週も同じ軸に並べる。開始後だけを描くと
    「もともと上向きだったのか、施策で上がったのか」が判別できない。 */
@@ -19960,14 +19971,24 @@ function initWeekSeries(it, store, w, mix, modMix){
   for(k=0;k<n;k++)
     out.push(initWeekOne(it, store, mix, modMix,
       initDateAdd(it.startDate, k*7), initDateAdd(it.startDate, k*7+6), k+1));
+  /* ★v978: 営業日数がいちばん多い週を基準にし、それに満たない週だけ空欄にする。
+     定休日で6日の週どうしは並べられる。5日の週（同期待ち）を混ぜると
+     棒が短く出て「その週は落ちた」という嘘になるので、そこだけ空ける。 */
+  [['gp','gdays'], ['first','cdays'], ['repeat','cdays'], ['guests','cdays'], ['ppa','sdays']]
+    .forEach(function(p){
+      var ref=0;
+      out.forEach(function(r){ if(r[p[1]]>ref) ref=r[p[1]]; });
+      out.forEach(function(r){ if(r[p[1]]!==ref) r[p[0]]=null; });
+    });
   return out;
 }
 /* ★週の点は2〜4個しかないので折れ線をやめて棒にする（引き継ぎ 8章）。
    ★SVG に <text> と <circle> を置かない。数値は HTML 側に併記する。 */
-function initWeekChart(rows, key, kind){
+function initWeekChart(rows, key, kind, dayKey){
   var got=rows.map(function(r){ return r[key]; }).filter(function(v){ return v!=null; });
   if(!got.length) return '<div style="font-size:12px;color:var(--muted);line-height:1.8;padding:10px 0">'
-    +'この指標はまだ出せません。7日すべて揃った週がありません。</div>';
+    +'この指標はまだ出せません。営業日数が揃った週がありません。'
+    +'上の「最新化」で出数を取り直してください。</div>';
   var mx=Math.max.apply(null,got), mn=Math.min.apply(null,got);
   var top=Math.max(mx,0), bot=Math.min(mn,0), rng=(top-bot)||1;
   var W=520, H=96, Y0=10, n=rows.length;
@@ -20004,7 +20025,9 @@ function initWeekChart(rows, key, kind){
       +'<div style="font-size:12px;font-weight:800;color:'+(isPre?'var(--muted)':'var(--tm)')+'">'+fmt(r[key])+'</div>'
       +'<div style="font-size:10px;color:'+(isPre?'var(--muted)':'var(--accent)')+'">'
       +(isPre?(r.idx+'週'):('+'+r.idx+'週'))+'</div>'
-      +'<div style="font-size:9.5px;color:var(--muted)">'+escapeHtml(r.from.slice(5).replace('-','/'))+'</div></div>';
+      /* ★v978: その週の営業日数を出す。定休日で6日なのが目で分かる。 */
+      +'<div style="font-size:9.5px;color:var(--muted)">'+escapeHtml(r.from.slice(5).replace('-','/'))
+      +(dayKey&&r[dayKey]!=null?('・'+r[dayKey]+'日'):'')+'</div></div>';
   });
   return svg+lab+'</div>';
 }
@@ -20014,16 +20037,16 @@ function initWeekCard(it, store, w, mix, modMix){
   var k=(_initWkTab==='cust'||_initWkTab==='ppa')?_initWkTab:'gp';
   var body, note;
   if(k==='gp'){
-    body=initWeekChart(rows,'gp','money');
+    body=initWeekChart(rows,'gp','money','gdays');
     note='2品の合計粗利（週合計）。開始前の週と同じ軸に並べています。';
   } else if(k==='cust'){
-    body=initWeekChart(rows,'repeat','count')
+    body=initWeekChart(rows,'repeat','count','cdays')
       +'<div style="font-size:11px;color:var(--muted);margin-top:8px">新規</div>'
-      +initWeekChart(rows,'first','count');
+      +initWeekChart(rows,'first','count','cdays');
     note='上がリピート客、下が新規客。★率ではなく人数で見てください。'
       +'率は新規が増えると必ず下がるので、増えているかの判断に使えません。';
   } else {
-    body=initWeekChart(rows,'ppa','ppa');
+    body=initWeekChart(rows,'ppa','ppa','sdays');
     note='客単価（週の売上 ÷ 週の客数）。テイクアウトを含みます。';
   }
   return '<div class="card" style="margin-bottom:8px">'
@@ -20037,7 +20060,8 @@ function initWeekCard(it, store, w, mix, modMix){
     +'<span style="display:inline-block;width:11px;height:8px;background:var(--muted);opacity:.42;vertical-align:0;margin-right:4px"></span>開始前　'
     +'<span style="display:inline-block;width:11px;height:8px;background:var(--accent);vertical-align:0;margin:0 4px 0 8px"></span>開始後<br>'
     +escapeHtml('') + note
-    +'<br><b>7日すべて揃った週だけ描いています。</b>欠けている週は空欄です。</div></div>';
+    +'<br><b>営業日数がいちばん多い週を基準に描いています。</b>'
+    +'定休日で毎週6日なら6日どうしで並びます。それに満たない週（同期待ちなど）は空欄です。</div></div>';
 }
 /* 根拠。判断には要らないが、数字の裏取りには要る。既定は畳む。 */
 function initEvidence(it, store, w, mix, modMix, R){
@@ -25994,10 +26018,10 @@ function initModGpOf(it, modName){
    ★v961: modMix を渡すとモディファイアの増分を反映する。
    渡さなければ v960 と同じ結果になる（後方互換）。 */
 function initGpAgg(mix, dates, guids, it, storeId, modMix){
-  var amt=0, has=false, days=0;
+  var amt=0, has=false, days=0, miss=[];
   var gp={}; (guids||[]).forEach(function(g){ gp[g]=initGpOf(it, storeId, g); });
   dates.forEach(function(d){
-    if(!mix || !mix[d]) return;
+    if(!mix || !mix[d]){ miss.push(d); return; }
     var day=mix[d], any=false, sub=0;
     (guids||[]).forEach(function(g){
       var q=Number(day[g])||0;
@@ -26010,9 +26034,9 @@ function initGpAgg(mix, dates, guids, it, storeId, modMix){
         sub += (Number(me[k])||0) * initModGpOf(it, k);
       });
     });
-    if(any){ amt+=sub; has=true; days++; }
+    if(any){ amt+=sub; has=true; days++; } else { miss.push(d); }
   });
-  return {amt:Math.round(amt*100)/100, has:has, days:days, want:dates.length};
+  return {amt:Math.round(amt*100)/100, has:has, days:days, want:dates.length, miss:miss};
 }
 /* 指定した商品GUID群の、その日の合計出数。データが無い日は null（0では埋めない） */
 function initQtyOn(mix, date, guids){
@@ -26758,10 +26782,12 @@ function initCustAgg(sid, dates){
   /* ★v977: salesDays を分けて数える。days は新規/リピートが取れた日数なので、
      売上の有無の判定に使い回すと「客数は揃っているが売上は歯抜け」を見落とす。 */
   var o={first:0, repeat:0, guests:0, sales:0, hasCust:false, hasSales:false,
-         days:0, salesDays:0, want:dates.length};
+         days:0, salesDays:0, want:dates.length, miss:[], salesMiss:[]};
   dates.forEach(function(d){
     var ov=da[d]||{};
-    if(ov.firstTimeBowls!=null || ov.repeatBowls!=null) o.days++;
+    /* ★v978: 欠けた日を控える（定休日の判別に使う） */
+    if(ov.firstTimeBowls!=null || ov.repeatBowls!=null) o.days++; else o.miss.push(d);
+    if(!(ov.sales!=null || ov.lunchSales!=null || ov.dinnerSales!=null)) o.salesMiss.push(d);
     if(ov.firstTimeBowls!=null){ o.first+=Number(ov.firstTimeBowls)||0; o.hasCust=true; }
     if(ov.repeatBowls!=null){ o.repeat+=Number(ov.repeatBowls)||0; o.hasCust=true; }
     if(ov.guests!=null){ o.guests+=Number(ov.guests)||0; }
@@ -26779,33 +26805,61 @@ function initCustAgg(sid, dates){
    そのまま引き算して「+333食の純増」と出していた。
    日単位では「無い」と「0」を分けたのに、期間単位で分けていなかった。 */
 function initQtyAgg(mix, dates, guids){
-  var n=0, has=false, days=0;
+  var n=0, has=false, days=0, miss=[];
   dates.forEach(function(d){
     var v=initQtyOn(mix, d, guids);
-    if(v!=null){ n+=v; has=true; days++; }
+    /* ★v978: 欠けた日を控える。定休日なのか取りこぼしなのかは曜日で分かる。 */
+    if(v!=null){ n+=v; has=true; days++; } else { miss.push(d); }
   });
-  return {qty:n, has:has, days:days, want:dates.length};
+  return {qty:n, has:has, days:days, want:dates.length, miss:miss};
 }
 /* 前後の期間で「データがあった日数」が揃っているか。
    揃っていないのに差を出すと、取り込み不足を成果と読み違える。 */
+/* 欠けた日の曜日。窓は必ず完全週なので、前後は同じ曜日構成になっている。
+   だから曜日でそのまま突き合わせられる。 */
+function _initMissDow(o){
+  return ((o && o.miss) || []).map(function(d){ return _initWday(d); }).sort().join('');
+}
+/* 欠けた曜日を画面に出す形にする。「欠け 月」と出れば定休日だと分かる。 */
+function _initMissNote(o){
+  var m=((o && o.miss) || []);
+  if(!m.length) return '';
+  var w={}; m.forEach(function(d){ w[_initWday(d)]=1; });
+  return '（欠け '+Object.keys(w).join('・')+'）';
+}
 function initSameCover(a, b){
   /* ★v958: v957 は a.has だけを見ていた。
      initQtyAgg は has を返すが、initCustAgg が返すのは hasCust。
-     そのため客数側は常に undefined となり、11/11日そろっていても false。
-     ③新規とリピートが永久に出ない状態だった。
      どちらの集計オブジェクトも通せるように、両方の名前を見る。 */
   var ha=!!(a && (a.has || a.hasCust));
   var hb=!!(b && (b.has || b.hasCust));
-  return !!(a && b && ha && hb && a.days === b.days && a.days === a.want && b.days === b.want);
+  if(!(a && b && ha && hb)) return false;
+  /* ★v978（Motoさんの指摘・Marujuu は月曜定休）:
+     v977 までは days===want、つまり7日すべてにデータがあることを要求していた。
+     ★定休日がある店はこの条件を永久に満たせず、判定が一度も出ない。
+     守りたいのは「7日そろっていること」ではなく「前後の土俵が同じこと」。
+     窓は完全週なので前後は同じ曜日構成。日数が等しく、欠けている曜日も同じなら
+     定休日が入っていても比較は成立する。
+       前6(欠け月)/後6(欠け月) → 比べる ✓ 定休日
+       前6(欠け月)/後5(欠け月火) → 比べない ✗ 同期待ち
+       前6(欠け月)/後6(欠け火)  → 比べない ✗ 土俵が違う */
+  if(a.days !== b.days) return false;
+  return _initMissDow(a) === _initMissDow(b);
 }
 function initCoverNote(a, b, label){
   if(!a || !b) return '';
   if(initSameCover(a, b)) return '';
+  /* ★v978: 定休日は前後どちらにも同じだけ入るので、それだけでは揃わない理由にならない。
+     何曜日が欠けているかを出して、定休日か取りこぼしかを読み手が判断できるようにする。 */
+  var _same=(_initMissDow(a)===_initMissDow(b));
   return '<div style="font-size:11px;color:var(--amber);line-height:1.8;margin-top:6px">'
-    + '<i class="ti ti-alert-triangle"></i> '+label+'が揃っていません（前'+a.want+'日中 <b>'+a.days+'日</b>ぶん / '
-    + '後'+b.want+'日中 <b>'+b.days+'日</b>ぶん）。日数が違うまま引き算すると、'
-    + '取り込み不足を成果と読み違えます。<b>差は出しません。</b>'
-    + '設定 → Toast同期で「31日取り込み」を実行してください。</div>';
+    + '<i class="ti ti-alert-triangle"></i> '+label+'が揃っていません（前'+a.want+'日中 <b>'+a.days+'日</b>ぶん'
+    + _initMissNote(a)+' / 後'+b.want+'日中 <b>'+b.days+'日</b>ぶん'+_initMissNote(b)+'）。'
+    + (_same ? '欠けている曜日は前後で同じですが、日数が違います。'
+             : '★欠けている曜日が前後で違います。同じ土俵になっていません。')
+    + '日数が違うまま引き算すると、取り込み不足を成果と読み違えます。<b>差は出しません。</b>'
+    + '上の「最新化」、それでも直らなければ 設定 → Toast同期で「31日取り込み」を実行してください。'
+    + '<br>定休日で欠ける日は、前後どちらにも同じだけ入るので判定できます。</div>';
 }
 function repeatStats(scopeStores, days){
   var first=0,repeat=0,sr=0,has=false;
@@ -34698,7 +34752,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '977';
+const APP_VERSION = '978';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
