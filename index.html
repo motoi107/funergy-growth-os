@@ -546,16 +546,26 @@ body.shift-wide .main { max-width:1900px; }
 /* ★v969: Qコミットのグラフとカード。携帯とPCで出し分ける。
    境界は .sec-shell と同じ 1180px（新しい境界を作らない）。
    ★JSで幅を見ない。回転や分割表示で崩れるため、CSSだけで切り替える。 */
-/* ★v973: Qコミットの並び。PCで画面を広く使う（Motoさん 2026-08-20）。
-   ★DOMの順は A→B→C→D→E→F のまま。全幅にしたいものに .qb-w を付けるだけで、
-     あとはグリッドの自然な流れに任せる。並べ替えると携帯の順が変わる。
-   ★境界は .sec-shell と同じ 1180px。新しい境界を作らない。
-   ★v969〜v972 の .qc-* は6つとも使用箇所ゼロになっていたので削除した。
-     使われていないCSSは、そこにあるだけで「効いている」と誤解される。 */
-.qb-grid { display:grid; gap:0; }
+/* ★v975: Qコミットの並び。役割で2列に分ける（Motoさん 2026-08-21）。
+   主列 = 今どうなっているか（サマリー → 日次の推移 → KPI別）
+   副列 = 何を狙って何に約束したか（月別の考え方 → 重点項目 → 達成方針）
+   ★v974 は高さの差が大きいカードを横に並べたので右側に大きな空白ができた。
+     高さで並べず、役割で列を分ける。差は副列が縦に積むことで吸収される。
+   ★これまでの全幅フラグ方式では「どちらの列に積むか」を表現できないので、
+     2つの入れ物に分ける方式へ変えた。携帯では入れ物ごと縦に並ぶだけ。
+   ★境界は .sec-shell と同じ 1180px。新しい境界を作らない。 */
+.qb-grid { display:block; }
 @media (min-width:1180px){
-  .qb-grid { grid-template-columns:1fr 1fr; gap:0 14px; align-items:start; }
-  .qb-grid > .qb-w { grid-column:1 / -1; }
+  .qb-grid { display:grid; grid-template-columns:1.62fr 1fr; gap:0 14px; align-items:start; }
+}
+/* ★グラフの高さ。インラインに書くとメディアクエリで上書きできないのでクラスに置く。
+   aspect-ratio は 3.4:1 なのに 200px で頭打ちだったため、幅が広いほど
+   平べったくなっていた（1320px幅で 6.6:1）。PCでは 300px まで許す。 */
+.qc-svg-main { max-height:200px; }
+.qc-svg-gap  { max-height:88px; }
+@media (min-width:1180px){
+  .qc-svg-main { max-height:300px; }
+  .qc-svg-gap  { max-height:120px; }
 }
 
 /* サブタブ。数が増えたので「今どこにいるか」を分かりやすくする。
@@ -23093,8 +23103,8 @@ function renderQcSummary(scope, y, q, R){
   var fcDiff=(R.forecastPace||0)-T;
   var elapsedPct=T?Math.round(R.paceSales/T*100):0;
 
-  /* ★v973: サマリーはPCで全幅（バーが横に伸びるほど位置関係が読みやすい）。 */
-  var h='<div class="card qb-w" style="border-left:3px solid '+col+'">'
+  /* ★v975: 全幅をやめて主列に積む。中身の量に対して1300pxは広すぎた。 */
+  var h='<div class="card" style="border-left:3px solid '+col+'">'
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">'
     +'<span style="font-size:13.5px;font-weight:800">'+y+' Q'+q
     +' <span style="color:var(--muted);font-weight:400;font-size:11.5px">'+escapeHtml(name)+'</span></span>'
@@ -23235,9 +23245,10 @@ function _qcDaySvg(S, raw, h){
   };
   var stp=niceStep(mx-mn, 5), gy=[];
   for(var gv=Math.ceil(mn/stp)*stp; gv<mx && gy.length<6; gv+=stp) gy.push(gv);
-  var s='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" '
+  /* ★v975: max-height はクラスへ（インラインだとメディアクエリで上書きできない）。 */
+  var s='<svg class="qc-svg-main" viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" '
     +'style="display:block;width:100%;height:auto;aspect-ratio:'+w+'/'+h
-    +';min-height:'+Math.round(h*1.5)+'px;max-height:'+Math.round(h*2)+'px">';
+    +';min-height:'+Math.round(h*1.5)+'px">';
   gy.forEach(function(v){
     s+='<line x1="0" y1="'+Y(v)+'" x2="'+w+'" y2="'+Y(v)+'" stroke="var(--border)" '
       +'stroke-width="1" vector-effect="non-scaling-stroke"/>';
@@ -23279,9 +23290,10 @@ function _qcGapSvg(S, raw, h){
   var X=function(i){ return (15+i*((w-25)/(n-1))).toFixed(1); };
   var Y=function(v){ return (h/2-(v/lim)*(h/2-4)).toFixed(1); };
   var zero=Y(0);
-  var s='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" '
+  /* ★v975: 下段も同じくクラスへ。 */
+  var s='<svg class="qc-svg-gap" viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" '
     +'style="display:block;width:100%;height:auto;aspect-ratio:'+w+'/'+h
-    +';min-height:'+Math.round(h*1.5)+'px;max-height:'+Math.round(h*2)+'px">';
+    +';min-height:'+Math.round(h*1.5)+'px">';
   /* 面はゼロ線を跨ぐので、正負で塗り分けるために2枚に分ける */
   var band=function(sign, color){
     var pts=[], open=false, out='';
@@ -23347,7 +23359,7 @@ function renderQcDayCard(scope, y, q, R, raw){
     return sg+'$'+Math.round(a).toLocaleString();
   };
   var A=_qcDaySvg(S, raw, 100), G=_qcGapSvg(S, raw, 44);
-  if(!A) return '<div class="card qb-w"><div class="card-title" style="font-size:13px">'
+  if(!A) return '<div class="card"><div class="card-title" style="font-size:13px">'
     +'<i class="ti ti-chart-histogram" style="color:var(--accent)"></i> '+t('日次の推移','Daily trend')+'</div>'
     +'<div style="display:flex;gap:4px;overflow-x:auto;padding-bottom:6px;margin-bottom:8px">'+tabs+'</div>'
     +'<div style="font-size:11.5px;color:var(--muted)">'+t('この四半期のデータがまだありません。','No data yet for this quarter.')+'</div></div>';
@@ -23377,9 +23389,9 @@ function renderQcDayCard(scope, y, q, R, raw){
     +def.color+'">'+md(raw.rows[A.iy].date)+'</span>';
   xLab+='<span style="position:absolute;right:0">'+md(raw.rows[raw.rows.length-1].date)+'</span>';
   var lastA=(A.iy>=0)?S.act[A.iy]:null;
-  /* ★v974: 日次の推移はPCで全幅（Motoさん「横に広く（カード2枚分）」）。
-     グラフが横に伸びるほど日々の凸凹が読める。ここが主役。 */
-  var h='<div class="card qb-w"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+  /* ★v975: 全幅をやめて主列に積む。主列は約62%あるので幅は十分で、
+     高さ制限を上げたぶん凸凹はむしろ読みやすくなる。 */
+  var h='<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
     +'<span style="font-size:13px;font-weight:800"><i class="ti ti-chart-histogram" style="color:var(--accent)"></i> '
     +t('日次の推移','Daily trend')+'</span>'
     +'<span style="font-size:10px;color:var(--muted)">'+y+' Q'+q+'</span></div>'
@@ -23956,7 +23968,7 @@ function renderQuarterBudget(){
   /* ★v973: ここからグリッド。PCでは2列、携帯は1列（CSSだけで切り替える）。
      ★try / if の外で開くこと。中で開くと、予算未登録や例外のときに
        閉じるほうだけが残ってレイアウトが崩れる。 */
-  html+='<div class="qb-grid">';
+  html+='<div class="qb-grid"><div class="qb-main">';
 
   /* ★v968: 横バーのサマリーをカード一覧に置き換える（Motoさん 2026-08-20）。
      ①判定と過不足 ②あと$Xを何で埋めるか ③KPI別カード の順に置く。
@@ -23976,17 +23988,18 @@ function renderQuarterBudget(){
       if(_raw){ try{ html+=renderQcDayCard(_qbStore, y, q, _R, _raw); }catch(e){ console.warn('renderQcDayCard', e); } }
       /* ★v972: 売上の累計カードは削除。日次の推移カードの売上タブと中身が重なり、
          着地見込みはサマリーのバー上の印に移したため。 */
-      /* ★v974: KPI別テーブルは月別の後ろへ移した（Motoさん「月別進捗とKPI別を左右に」）。
-         月別が左・KPI別が右になるよう、出力の順そのものを入れ替えている。
-         CSS の order は auto-placement の兄弟全体に効いてしまい他のカードまで動く。 */
+      /* ★v975: KPI別テーブルを主列へ戻す。行タップで上の日次グラフのタブが
+         切り替わるので、上下に隣り合っているほうが関係が見える。
+         v974 では左右に離れていた。 */
+      html+=renderQcKpiTable(_qbStore, y, q, _R, _ser);
       if(_R.unreg.length){
-        html+='<div class="card qb-w" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
+        html+='<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
           +'<i class="ti ti-alert-triangle"></i> '+t('予算未登録の月があります（目標が過小に出ます）','Some months have no budget (target understated)')+'：'
           +_R.unreg.slice(0,4).map(function(u){ return escapeHtml(u.store+' '+u.ym); }).join('、')
           +(_R.unreg.length>4?' 他':'')+'</div>';
       }
     } else {
-      html+='<div class="card qb-w" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">'
+      html+='<div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">'
         +t('この四半期の予算が登録されていません。予算設定から各月を登録してください。','No budget registered for this quarter.')+'</div></div>';
     }
   }catch(e){ console.warn('qcCards', e); }
@@ -24036,6 +24049,9 @@ function renderQuarterBudget(){
   var st=stores.find(function(x){return x.id===_qbStore;})||stores[0]; if(!st) return html+'<div class="card">'+t('店舗がありません','No stores')+'</div>';
   var qt=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
   var mds=months.map(function(ym){ return _qbMonthData(st.id, ym); });
+  /* ★v975: ここから副列。try / if の外で切り替えること。
+     中で切り替えると、予算未登録や例外のときに入れ物が食い違う。 */
+  html+='</div><div class="qb-side">';
   /* v747: 「合計進捗」カードは上部のQ達成サマリーと重複するため削除 */
   /* v747: 「月別 進捗」と「月ごとの考え方」を1枚に統合。
      進捗と、その月に何を狙っていたか（考え方）を並べて見比べられるようにする。 */
@@ -24079,11 +24095,6 @@ function renderQuarterBudget(){
       +'</div>';
   });
   html+='<div style="font-size:9px;color:var(--muted);margin-top:2px">'+t('原価率＝棚卸法COGS（期首＋仕入＋食材移動−期末）／人件費率＝実勤怠×時給＋固定給＋有給。考え方は単月予算の提出時メモ。','FC = inventory COGS / Labor = actual hours×wage + salary + PTO. Rationale is from the monthly budget submission.')+'</div></div>';
-  /* ★v974: KPI別テーブルをここに置く。PCでは左が月別・右がKPI別になる。
-     _R / _ser は上の try で作っているので、無い場合は出さない。 */
-  try{ if(typeof _R!=='undefined' && _R && (_R.tSales || _R.aSales)){
-    html+=renderQcKpiTable(_qbStore, y, q, _R, (typeof _ser!=='undefined')?_ser:null);
-  } }catch(e){ console.warn('renderQcKpiTable', e); }
   /* ★v969: Qコミットに重点項目カードを出す。v968 では会議タブとダッシュボードに
      しか繋いでおらず、重点項目を設定する画面に進捗が出ていなかった（漏れ）。 */
   try{ html+=renderQcFocus(st.id, y, q, { canWrite:qbCanEdit(), link:false, ser:_qcFocusSer(st.id,y,q) }); }
@@ -24108,7 +24119,7 @@ function renderQuarterBudget(){
     html+=(chips?('<div style="margin-bottom:6px">'+chips+'</div>'):'')+(qb.basis?('<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>'+t('達成の軸','Axis')+':</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>'+t('具体施策','Actions')+':</b> '+escapeHtml(qb.focus)):'')+'</div>'):'<div style="font-size:11px;color:var(--muted)">'+t('まだ設定されていません。','Not set yet.')+'</div>');
   }
   html+='</div>';
-  html+='</div>';   /* ★v973: .qb-grid を閉じる */
+  html+='</div></div>';   /* ★v975: 副列と .qb-grid を閉じる */
   return html;
 }
 
@@ -34394,7 +34405,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '974';
+const APP_VERSION = '975';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
