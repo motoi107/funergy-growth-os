@@ -546,17 +546,16 @@ body.shift-wide .main { max-width:1900px; }
 /* ★v969: Qコミットのグラフとカード。携帯とPCで出し分ける。
    境界は .sec-shell と同じ 1180px（新しい境界を作らない）。
    ★JSで幅を見ない。回転や分割表示で崩れるため、CSSだけで切り替える。 */
-.qc-charts { display:grid; gap:12px; }
-.qc-charts > .qc-c[data-on="0"] { display:none; }
-.qc-kpis { display:grid; gap:0; }
-.qc-mini[data-on="0"] { display:none; }
+/* ★v973: Qコミットの並び。PCで画面を広く使う（Motoさん 2026-08-20）。
+   ★DOMの順は A→B→C→D→E→F のまま。全幅にしたいものに .qb-w を付けるだけで、
+     あとはグリッドの自然な流れに任せる。並べ替えると携帯の順が変わる。
+   ★境界は .sec-shell と同じ 1180px。新しい境界を作らない。
+   ★v969〜v972 の .qc-* は6つとも使用箇所ゼロになっていたので削除した。
+     使われていないCSSは、そこにあるだけで「効いている」と誤解される。 */
+.qb-grid { display:grid; gap:0; }
 @media (min-width:1180px){
-  .qc-charts { grid-template-columns:1fr 1fr; }
-  .qc-charts > .qc-c[data-on="0"] { display:block; }
-  .qc-toggle { display:none !important; }
-  .qc-kpis { grid-template-columns:1fr 1fr; gap:0 12px; }
-  .qc-mini[data-on="0"] { display:block; }
-  .qc-mini-t { display:none; }
+  .qb-grid { grid-template-columns:1fr 1fr; gap:0 14px; align-items:start; }
+  .qb-grid > .qb-w { grid-column:1 / -1; }
 }
 
 /* サブタブ。数が増えたので「今どこにいるか」を分かりやすくする。
@@ -23094,7 +23093,8 @@ function renderQcSummary(scope, y, q, R){
   var fcDiff=(R.forecastPace||0)-T;
   var elapsedPct=T?Math.round(R.paceSales/T*100):0;
 
-  var h='<div class="card" style="border-left:3px solid '+col+'">'
+  /* ★v973: サマリーはPCで全幅（バーが横に伸びるほど位置関係が読みやすい）。 */
+  var h='<div class="card qb-w" style="border-left:3px solid '+col+'">'
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">'
     +'<span style="font-size:13.5px;font-weight:800">'+y+' Q'+q
     +' <span style="color:var(--muted);font-weight:400;font-size:11.5px">'+escapeHtml(name)+'</span></span>'
@@ -23155,7 +23155,8 @@ function renderQcSummary(scope, y, q, R){
 function renderQcKpiTable(scope, y, q, R, ser){
   var rates=ser?qcRateSeries(ser):null;
   var mons=ser?ser.months:[];
-  var cols='minmax(52px,1fr) repeat('+(mons.length||3)+',20px) minmax(74px,1.4fr) 56px';
+  /* ★v973: Gap列が56px固定で −$2,073.27 が2行に折り返していた。広げて折り返さない。 */
+  var cols='minmax(48px,1fr) repeat('+(mons.length||3)+',20px) minmax(72px,auto) minmax(70px,auto)';
   var cell=function(v, faded){
     if(v==null) return '<span style="text-align:center;font-size:9.5px;color:var(--muted)">—</span>';
     var bg=(v>=100)?'var(--green)':(v>=95)?'var(--amber)':'var(--red)';
@@ -23170,7 +23171,7 @@ function renderQcKpiTable(scope, y, q, R, ser){
     +'font-size:9px;color:var(--muted);font-weight:700;margin-bottom:2px"><span></span>'
     + (mons.length?mons.map(function(m){ return '<span style="text-align:center">'+m.mm+'</span>'; }).join('')
                   :'<span></span><span></span><span></span>')
-    +'<span></span><span style="text-align:right">'+t('差','Gap')+'</span></div>';
+    +'<span></span><span style="text-align:right;white-space:nowrap">'+t('差','Gap')+'</span></div>';
 
   qcKpiItems(R).forEach(function(it){
     var def=QC_DAY_TABS.find(function(x){ return x.key===it.key; })||{};
@@ -23198,9 +23199,14 @@ function renderQcKpiTable(scope, y, q, R, ser){
         h+=cell(rates?rates[it.key][i]:null, (lower && m.prov));
       });
     } else { h+='<span></span><span></span><span></span>'; }
-    h+='<span style="font-size:11px;text-align:right;padding-right:3px;color:var(--tm)">'+fv(it.act)
-      +'<span style="color:var(--muted)">/'+fv(it.tgt)+'</span></span>'
-      +'<span style="font-size:11px;text-align:right;font-weight:700;color:'+dc+'">'+ds+'</span></div>';
+    /* ★v973: fmtK はセント表記なので1行に並べると長い（$206,121.89/$208,195.16）。
+       桁は仕様どおりなので触らず、実績と目標を2行に分けて入れ物の側で受ける。 */
+    h+='<span style="font-size:10.5px;text-align:right;padding-right:3px;line-height:1.35;'
+      +'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+      +'<span style="color:var(--tm);font-weight:700">'+fv(it.act)+'</span><br>'
+      +'<span style="color:var(--muted)">'+fv(it.tgt)+'</span></span>'
+      +'<span style="font-size:11px;text-align:right;font-weight:700;white-space:nowrap;color:'+dc+'">'
+      +ds+'</span></div>';
   });
   h+='<div style="font-size:9.5px;color:var(--muted);margin-top:7px;padding-top:6px;'
     +'border-top:1px solid var(--border);line-height:1.6">'
@@ -23945,6 +23951,10 @@ function renderQuarterBudget(){
     +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.7"><i class="ti ti-target"></i> '+t('目標は','Target = ')+'<b>'+t('単月予算(月次)を自動合算','auto-sum of monthly budgets')+'</b>'+t('。実績は当四半期の経過月累計。達成/未達を項目別に表示します。','. Actual = MTD cumulative for the quarter. Hit/miss shown by item.')+'</div></div>';
   // store tabs
   html+=bStoreChips(_qbStore,'setQbStore'); // 略称チップで統一
+  /* ★v973: ここからグリッド。PCでは2列、携帯は1列（CSSだけで切り替える）。
+     ★try / if の外で開くこと。中で開くと、予算未登録や例外のときに
+       閉じるほうだけが残ってレイアウトが崩れる。 */
+  html+='<div class="qb-grid">';
 
   /* ★v968: 横バーのサマリーをカード一覧に置き換える（Motoさん 2026-08-20）。
      ①判定と過不足 ②あと$Xを何で埋めるか ③KPI別カード の順に置く。
@@ -23967,13 +23977,13 @@ function renderQuarterBudget(){
       /* ★v972: ヒートマップとKPIカード×6を1枚のテーブルに統合。 */
       html+=renderQcKpiTable(_qbStore, y, q, _R, _ser);
       if(_R.unreg.length){
-        html+='<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
+        html+='<div class="card qb-w" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
           +'<i class="ti ti-alert-triangle"></i> '+t('予算未登録の月があります（目標が過小に出ます）','Some months have no budget (target understated)')+'：'
           +_R.unreg.slice(0,4).map(function(u){ return escapeHtml(u.store+' '+u.ym); }).join('、')
           +(_R.unreg.length>4?' 他':'')+'</div>';
       }
     } else {
-      html+='<div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">'
+      html+='<div class="card qb-w" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">'
         +t('この四半期の予算が登録されていません。予算設定から各月を登録してください。','No budget registered for this quarter.')+'</div></div>';
     }
   }catch(e){ console.warn('qcCards', e); }
@@ -24071,7 +24081,7 @@ function renderQuarterBudget(){
   try{ html+=renderQcFocus(st.id, y, q, { canWrite:qbCanEdit(), link:false, ser:_qcFocusSer(st.id,y,q) }); }
   catch(e){ console.warn('renderQcFocus(qcommit)', e); }
   // 四半期の達成方針（重点項目チェック＋補足）
-  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> '+t('四半期の達成方針','Quarter plan')+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'')+'</div>';
+  html+='<div class="card qb-w"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> '+t('四半期の達成方針','Quarter plan')+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'')+'</div>';
   if(qbCanEdit()){
     html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('重点項目（この四半期で力を入れること・複数可）','Focus items (what to prioritize this quarter · multiple)')+'</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
     QB_FOCUS_ITEMS.forEach(function(fi){ var on=(qb.focusItems||[]).indexOf(fi.key)>=0;
@@ -24087,6 +24097,7 @@ function renderQuarterBudget(){
     html+=(chips?('<div style="margin-bottom:6px">'+chips+'</div>'):'')+(qb.basis?('<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>'+t('達成の軸','Axis')+':</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>'+t('具体施策','Actions')+':</b> '+escapeHtml(qb.focus)):'')+'</div>'):'<div style="font-size:11px;color:var(--muted)">'+t('まだ設定されていません。','Not set yet.')+'</div>');
   }
   html+='</div>';
+  html+='</div>';   /* ★v973: .qb-grid を閉じる */
   return html;
 }
 
@@ -34372,7 +34383,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '972';
+const APP_VERSION = '973';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
