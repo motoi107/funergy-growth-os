@@ -546,17 +546,24 @@ body.shift-wide .main { max-width:1900px; }
 /* ★v969: Qコミットのグラフとカード。携帯とPCで出し分ける。
    境界は .sec-shell と同じ 1180px（新しい境界を作らない）。
    ★JSで幅を見ない。回転や分割表示で崩れるため、CSSだけで切り替える。 */
-/* ★v975: Qコミットの並び。役割で2列に分ける（Motoさん 2026-08-21）。
-   主列 = 今どうなっているか（サマリー → 日次の推移 → KPI別）
-   副列 = 何を狙って何に約束したか（月別の考え方 → 重点項目 → 達成方針）
-   ★v974 は高さの差が大きいカードを横に並べたので右側に大きな空白ができた。
-     高さで並べず、役割で列を分ける。差は副列が縦に積むことで吸収される。
-   ★これまでの全幅フラグ方式では「どちらの列に積むか」を表現できないので、
-     2つの入れ物に分ける方式へ変えた。携帯では入れ物ごと縦に並ぶだけ。
+/* ★v976: Qコミットの並び。行ごとの対にする（Motoさん 2026-08-20）。
+     全幅  A サマリー
+     2列   B 日次の推移 62% ｜ C KPI別 38%
+     全幅  全店テーブル（全店のみ）
+     2列   D 月別 62% ｜ E 重点項目＋F 達成方針 38%（単店のみ）
+
+   ★v975 の「主列／副列」は縦に長い柱を2本立てる形だったので、
+     全店のように片方の中身が存在しない経路で右半分が丸ごと空いた。
+     行ごとに組めば各行が自己完結し、どこで return しても開閉が壊れない。
+
+   ★display:contents にすると、狭い画面では包みが存在しないのと同じになり、
+     DOM の順がそのまま縦の順になる（携帯は A→B→C→D→E→F のまま）。
    ★境界は .sec-shell と同じ 1180px。新しい境界を作らない。 */
-.qb-grid { display:block; }
+.qb-pair  { display:contents; }
+.qb-stack { display:contents; }
 @media (min-width:1180px){
-  .qb-grid { display:grid; grid-template-columns:1.62fr 1fr; gap:0 14px; align-items:start; }
+  .qb-pair  { display:grid; grid-template-columns:1.62fr 1fr; gap:0 14px; align-items:start; }
+  .qb-stack { display:block; }
 }
 /* ★グラフの高さ。インラインに書くとメディアクエリで上書きできないのでクラスに置く。
    aspect-ratio は 3.4:1 なのに 200px で頭打ちだったため、幅が広いほど
@@ -23968,7 +23975,6 @@ function renderQuarterBudget(){
   /* ★v973: ここからグリッド。PCでは2列、携帯は1列（CSSだけで切り替える）。
      ★try / if の外で開くこと。中で開くと、予算未登録や例外のときに
        閉じるほうだけが残ってレイアウトが崩れる。 */
-  html+='<div class="qb-grid"><div class="qb-main">';
 
   /* ★v968: 横バーのサマリーをカード一覧に置き換える（Motoさん 2026-08-20）。
      ①判定と過不足 ②あと$Xを何で埋めるか ③KPI別カード の順に置く。
@@ -23983,6 +23989,10 @@ function renderQuarterBudget(){
       var _ser=null; try{ _ser=qcSeries(_qbStore, y, q); }catch(e){ console.warn('qcSeries', e); }
       /* ★v971: 日次の推移カード（タブ切替）を判定・埋め方の直下に置く。
          KPIカードから絵を外してここ1枚に集約した（同じ絵が並ぶのをやめる）。 */
+      /* ★v976: ここから1列目の対（日次の推移 ｜ KPI別）。
+         全店・単店のどちらでもこの try の中で開いて閉じるので、
+         この後の早期 return に巻き込まれない。 */
+      html+='<div class="qb-pair">';
       var _raw=null;
       try{ _raw=qcDayRaw(_qbStore, y, q); }catch(e){ console.warn('qcDayRaw', e); }
       if(_raw){ try{ html+=renderQcDayCard(_qbStore, y, q, _R, _raw); }catch(e){ console.warn('renderQcDayCard', e); } }
@@ -23992,6 +24002,7 @@ function renderQuarterBudget(){
          切り替わるので、上下に隣り合っているほうが関係が見える。
          v974 では左右に離れていた。 */
       html+=renderQcKpiTable(_qbStore, y, q, _R, _ser);
+      html+='</div>';   /* 日次｜KPI別 の対をここで閉じる */
       if(_R.unreg.length){
         html+='<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
           +'<i class="ti ti-alert-triangle"></i> '+t('予算未登録の月があります（目標が過小に出ます）','Some months have no budget (target understated)')+'：'
@@ -24042,6 +24053,8 @@ function renderQuarterBudget(){
         +'<td style="text-align:center;padding:5px 4px">'+(qb.status==='committed'?'<span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':(qb.basis?'<span class="tag tag-yellow" style="font-size:9px">'+t('下書き','Draft')+'</span>':'<span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)">'+t('未','—')+'</span>'))+'</td></tr>';
     });
     html+='</tbody></table></div>';
+    /* ★v976: 全店はここで抜ける。上の対は try の中で閉じてあるので、
+       この return で開けっぱなしになる入れ物は無い。 */
     return html;
   }
 
@@ -24049,9 +24062,9 @@ function renderQuarterBudget(){
   var st=stores.find(function(x){return x.id===_qbStore;})||stores[0]; if(!st) return html+'<div class="card">'+t('店舗がありません','No stores')+'</div>';
   var qt=quarterTargets(st.id,y,q), a=quarterActuals(st.id,y,q), qb=getQBudget(st.id,y,q)||{};
   var mds=months.map(function(ym){ return _qbMonthData(st.id, ym); });
-  /* ★v975: ここから副列。try / if の外で切り替えること。
-     中で切り替えると、予算未登録や例外のときに入れ物が食い違う。 */
-  html+='</div><div class="qb-side">';
+  /* ★v976: ここから2列目の対（月別 ｜ 重点項目＋達成方針）。
+     この行だけで開閉が完結するので、上の全店経路が return しても影響しない。 */
+  html+='<div class="qb-pair">';
   /* v747: 「合計進捗」カードは上部のQ達成サマリーと重複するため削除 */
   /* v747: 「月別 進捗」と「月ごとの考え方」を1枚に統合。
      進捗と、その月に何を狙っていたか（考え方）を並べて見比べられるようにする。 */
@@ -24095,6 +24108,9 @@ function renderQuarterBudget(){
       +'</div>';
   });
   html+='<div style="font-size:9px;color:var(--muted);margin-top:2px">'+t('原価率＝棚卸法COGS（期首＋仕入＋食材移動−期末）／人件費率＝実勤怠×時給＋固定給＋有給。考え方は単月予算の提出時メモ。','FC = inventory COGS / Labor = actual hours×wage + salary + PTO. Rationale is from the monthly budget submission.')+'</div></div>';
+  /* ★v976: 重点項目と達成方針は右の1マスに縦に積む（月別と高さが揃う）。
+     携帯では display:contents で包みが消えるので、順番はそのまま。 */
+  html+='<div class="qb-stack">';
   /* ★v969: Qコミットに重点項目カードを出す。v968 では会議タブとダッシュボードに
      しか繋いでおらず、重点項目を設定する画面に進捗が出ていなかった（漏れ）。 */
   try{ html+=renderQcFocus(st.id, y, q, { canWrite:qbCanEdit(), link:false, ser:_qcFocusSer(st.id,y,q) }); }
@@ -24119,7 +24135,7 @@ function renderQuarterBudget(){
     html+=(chips?('<div style="margin-bottom:6px">'+chips+'</div>'):'')+(qb.basis?('<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>'+t('達成の軸','Axis')+':</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>'+t('具体施策','Actions')+':</b> '+escapeHtml(qb.focus)):'')+'</div>'):'<div style="font-size:11px;color:var(--muted)">'+t('まだ設定されていません。','Not set yet.')+'</div>');
   }
   html+='</div>';
-  html+='</div></div>';   /* ★v975: 副列と .qb-grid を閉じる */
+  html+='</div></div>';   /* ★v976: 積みと対を閉じる */
   return html;
 }
 
@@ -34405,7 +34421,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '975';
+const APP_VERSION = '976';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
