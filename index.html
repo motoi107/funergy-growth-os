@@ -23347,7 +23347,7 @@ function renderQcDayCard(scope, y, q, R, raw){
     return sg+'$'+Math.round(a).toLocaleString();
   };
   var A=_qcDaySvg(S, raw, 100), G=_qcGapSvg(S, raw, 44);
-  if(!A) return '<div class="card"><div class="card-title" style="font-size:13px">'
+  if(!A) return '<div class="card qb-w"><div class="card-title" style="font-size:13px">'
     +'<i class="ti ti-chart-histogram" style="color:var(--accent)"></i> '+t('日次の推移','Daily trend')+'</div>'
     +'<div style="display:flex;gap:4px;overflow-x:auto;padding-bottom:6px;margin-bottom:8px">'+tabs+'</div>'
     +'<div style="font-size:11.5px;color:var(--muted)">'+t('この四半期のデータがまだありません。','No data yet for this quarter.')+'</div></div>';
@@ -23377,7 +23377,9 @@ function renderQcDayCard(scope, y, q, R, raw){
     +def.color+'">'+md(raw.rows[A.iy].date)+'</span>';
   xLab+='<span style="position:absolute;right:0">'+md(raw.rows[raw.rows.length-1].date)+'</span>';
   var lastA=(A.iy>=0)?S.act[A.iy]:null;
-  var h='<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+  /* ★v974: 日次の推移はPCで全幅（Motoさん「横に広く（カード2枚分）」）。
+     グラフが横に伸びるほど日々の凸凹が読める。ここが主役。 */
+  var h='<div class="card qb-w"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
     +'<span style="font-size:13px;font-weight:800"><i class="ti ti-chart-histogram" style="color:var(--accent)"></i> '
     +t('日次の推移','Daily trend')+'</span>'
     +'<span style="font-size:10px;color:var(--muted)">'+y+' Q'+q+'</span></div>'
@@ -23974,8 +23976,9 @@ function renderQuarterBudget(){
       if(_raw){ try{ html+=renderQcDayCard(_qbStore, y, q, _R, _raw); }catch(e){ console.warn('renderQcDayCard', e); } }
       /* ★v972: 売上の累計カードは削除。日次の推移カードの売上タブと中身が重なり、
          着地見込みはサマリーのバー上の印に移したため。 */
-      /* ★v972: ヒートマップとKPIカード×6を1枚のテーブルに統合。 */
-      html+=renderQcKpiTable(_qbStore, y, q, _R, _ser);
+      /* ★v974: KPI別テーブルは月別の後ろへ移した（Motoさん「月別進捗とKPI別を左右に」）。
+         月別が左・KPI別が右になるよう、出力の順そのものを入れ替えている。
+         CSS の order は auto-placement の兄弟全体に効いてしまい他のカードまで動く。 */
       if(_R.unreg.length){
         html+='<div class="card qb-w" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
           +'<i class="ti ti-alert-triangle"></i> '+t('予算未登録の月があります（目標が過小に出ます）','Some months have no budget (target understated)')+'：'
@@ -24076,12 +24079,20 @@ function renderQuarterBudget(){
       +'</div>';
   });
   html+='<div style="font-size:9px;color:var(--muted);margin-top:2px">'+t('原価率＝棚卸法COGS（期首＋仕入＋食材移動−期末）／人件費率＝実勤怠×時給＋固定給＋有給。考え方は単月予算の提出時メモ。','FC = inventory COGS / Labor = actual hours×wage + salary + PTO. Rationale is from the monthly budget submission.')+'</div></div>';
+  /* ★v974: KPI別テーブルをここに置く。PCでは左が月別・右がKPI別になる。
+     _R / _ser は上の try で作っているので、無い場合は出さない。 */
+  try{ if(typeof _R!=='undefined' && _R && (_R.tSales || _R.aSales)){
+    html+=renderQcKpiTable(_qbStore, y, q, _R, (typeof _ser!=='undefined')?_ser:null);
+  } }catch(e){ console.warn('renderQcKpiTable', e); }
   /* ★v969: Qコミットに重点項目カードを出す。v968 では会議タブとダッシュボードに
      しか繋いでおらず、重点項目を設定する画面に進捗が出ていなかった（漏れ）。 */
   try{ html+=renderQcFocus(st.id, y, q, { canWrite:qbCanEdit(), link:false, ser:_qcFocusSer(st.id,y,q) }); }
   catch(e){ console.warn('renderQcFocus(qcommit)', e); }
+  /* ★v974: 全幅をやめて重点項目と横に並べる。日次を全幅にしたので、
+     残りは 月別｜KPI別 と 重点項目｜達成方針 でちょうど2行に収まる。
+     全幅のままだと重点項目が1つだけ残って右半分が空く。 */
   // 四半期の達成方針（重点項目チェック＋補足）
-  html+='<div class="card qb-w"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> '+t('四半期の達成方針','Quarter plan')+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'')+'</div>';
+  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> '+t('四半期の達成方針','Quarter plan')+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'')+'</div>';
   if(qbCanEdit()){
     html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('重点項目（この四半期で力を入れること・複数可）','Focus items (what to prioritize this quarter · multiple)')+'</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
     QB_FOCUS_ITEMS.forEach(function(fi){ var on=(qb.focusItems||[]).indexOf(fi.key)>=0;
@@ -34383,7 +34394,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '973';
+const APP_VERSION = '974';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
