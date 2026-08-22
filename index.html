@@ -19758,6 +19758,15 @@ function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
 ============================================================ */
 var _initStore = '';
 var _initSel = '';
+/* v985: 施策分析のモード。'item'＝商品の施策（従来）／'tko'＝テイクアウト。
+   ★テイクアウトを既存の施策レコードに乗せなかった理由:
+     既存は targetGuids（商品GUID）と menu_mix の出数を前提にした前後2窓の比較。
+     テイクアウトは商品ではなくチャネルで、しかも欲しいのは週次の推移。窓2つでは出せない。
+     日次の takeoutBowls / toLunchSales はすでに揃っているので、別モードのほうが素直。 */
+var _initMode = 'item';
+var _tkoTab = 'bowls';
+function setInitMode(m){ _initMode=(m==='tko')?'tko':'item'; renderPage('budget'); }
+function setTkoTab(k){ _tkoTab=k; renderPage('budget'); }
 function setInitStore(sid){ _initStore=sid; _initSel=''; renderPage('budget'); }
 function setInitSel(id){ _initSel=id; renderPage('budget'); }
 function initCanEdit(){ return ['ceo','gm'].indexOf(curRole)>=0; }
@@ -19777,6 +19786,17 @@ function renderInitiative(){
   if(!_initStore || !vs.some(function(s){return s.id===_initStore;})) _initStore=vs[0].id;
   var store=vs.find(function(s){return s.id===_initStore;});
   var html=bStoreChips(_initStore, 'setInitStore', {showAll:false});
+  /* ★テイクアウトは Totoya のみ（Motoさん確認済み）。丼が単位で、
+     店内/TO の丼を分ける設定（bowlGuids）を持っているのが Totoya だけのため。 */
+  var _tkoOk = tkoIsTotoya(_initStore);
+  if(!_tkoOk && _initMode==='tko') _initMode='item';   /* 他店へ切り替えたら商品モードへ戻す */
+  if(_tkoOk){
+    html+='<div class="seg-tabs" style="max-width:340px">'
+      +'<div class="seg-tab'+(_initMode==='item'?' active':'')+'" onclick="setInitMode(\'item\')"><i class="ti ti-flask"></i>商品の施策</div>'
+      +'<div class="seg-tab'+(_initMode==='tko'?' active':'')+'" onclick="setInitMode(\'tko\')"><i class="ti ti-shopping-bag"></i>テイクアウト</div>'
+      +'</div>';
+    if(_initMode==='tko') return html + renderTakeout(store);
+  }
   var list=initiativesFor(_initStore);
   html+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-flask" style="color:var(--accent)"></i>施策分析'
     +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">'+escapeHtml(store.name)+'</span></div>';
@@ -19795,6 +19815,396 @@ function renderInitiative(){
     +'</div></div>';
   html+=renderInitiativeBody(list.find(function(x){return x.id===_initSel;}), store);
   return html;
+}
+/* ============================================================
+   v985 テイクアウトのチャネル分析（Totoya・週次）
+   ------------------------------------------------------------
+   A 判定（結論・根拠3行・前提）
+   B 週次の推移（タブ切替1枚・開始前の週も同じ軸に並べる）
+   C 3つの問い
+   D 3店の比較（TO比率。規模も開始時期も違うので生数字では比べられない）
+   E 根拠（details で畳む）
+   ★4段すべて全幅の独立カード。どこで return しても開閉が壊れない（v977 の判断）。
+   ★CSSを1行も足していない。横並びは既存の auto-fit グリッドだけ。
+============================================================ */
+var TKO_WEEKS = 16;      /* 見せる完全週の本数 */
+var TKO_WIN = 4;         /* 前後の平均をとる週数 */
+var TKO_MINWIN = 2;      /* これ未満なら判定しない */
+function tkoIsTotoya(sid){
+  try{ return ((STORES.find(function(x){return x.id===sid;})||{}).brand==='Totoya'); }catch(e){ return false; }
+}
+function tkoStores(){
+  var vs=(typeof getVisibleStores==='function')?getVisibleStores():STORES;
+  return vs.filter(function(s){ return tkoIsTotoya(s.id); });
+}
+/* その日付が属する週の月曜。★DOW は月曜始まりなので (getDay()+6)%7 が経過日数。 */
+function tkoMonday(ymd){
+  var p=String(ymd).split('-');
+  var d=new Date(Date.UTC(+p[0], (+p[1])-1, +p[2]));
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay()+6)%7));
+  return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0');
+}
+/* その店がその週に開けるはずの日数。定休日設定があれば引く（Totoyaは毎日＝7）。 */
+function tkoWantDays(sid){
+  var bd=((STORES.find(function(x){return x.id===sid;})||{}).bizDays)||{};
+  var n=0; for(var i=0;i<7;i++){ if(bd[DOW[i]]!=='closed') n++; }
+  return n||7;
+}
+/* ★1日ぶんの取り出し。ここが「定義が2つある」を吸収する唯一の場所。
+   ・売上は lunchSales/dinnerSales が TO込み → 店内は引き算
+   ・丼は lunchBowls/dinnerBowls が TO抜き   → 店内はそのまま
+   混ぜると必ず間違えるので、他所でこの計算をしないこと。 */
+function tkoDay(sid, date){
+  var ov=(getDailyActuals(sid)||{})[date]||{};
+  var has=(ov.actual!=null);
+  var dine=(ov.lunchBowls!=null||ov.dinnerBowls!=null)
+    ? ((Number(ov.lunchBowls)||0)+(Number(ov.dinnerBowls)||0))
+    : (ov.bowls!=null ? (Number(ov.bowls)||0) : null);
+  var to=(ov.lunchTakeoutBowls!=null||ov.dinnerTakeoutBowls!=null)
+    ? ((Number(ov.lunchTakeoutBowls)||0)+(Number(ov.dinnerTakeoutBowls)||0))
+    : (ov.takeoutBowls!=null ? (Number(ov.takeoutBowls)||0) : null);
+  var toS=(Number(ov.toLunchSales)||0)+(Number(ov.toDinnerSales)||0);
+  var segS=(Number(ov.lunchSales)||0)+(Number(ov.dinnerSales)||0);
+  return { has:has, dine:dine, to:to,
+    toL:(Number(ov.lunchTakeoutBowls)||0), toD:(Number(ov.dinnerTakeoutBowls)||0),
+    dineS:Math.max(0, segS-toS), toS:toS, segS:segS,
+    toCount:(ov.takeout!=null?(Number(ov.takeout)||0):null) };
+}
+/* 直近 n 本の完全週。★当日を含む週は出さない（Toastは夜間同期で当日が必ず欠ける）。 */
+function tkoWeekRows(sid, n){
+  var today=bizToday();
+  var curMon=tkoMonday(today);
+  var rows=[], want=tkoWantDays(sid);
+  for(var w=n; w>=1; w--){
+    var mon=initDateAdd(curMon, -7*w);
+    var r={ mon:mon, sun:initDateAdd(mon,6), days:0, want:want,
+      dine:0, to:0, tot:0, dineS:0, toS:0, segS:0, toCount:0, hasTo:false, hasCount:false,
+      toL:0, toD:0 };
+    for(var i=0;i<7;i++){
+      var d=tkoDay(sid, initDateAdd(mon,i));
+      if(!d.has) continue;
+      r.days++;
+      r.dine+=(d.dine||0); r.to+=(d.to||0);
+      r.dineS+=d.dineS; r.toS+=d.toS; r.segS+=d.segS;
+      r.toL+=d.toL; r.toD+=d.toD;
+      if(d.to!=null && d.to>0) r.hasTo=true;
+      if(d.toCount!=null){ r.toCount+=d.toCount; if(d.toCount>0) r.hasCount=true; }
+    }
+    r.tot=r.dine+r.to;
+    r.full=(r.days>=r.want);
+    r.share=(r.tot>0)?(r.to/r.tot*100):null;
+    r.shareS=(r.segS>0)?(r.toS/r.segS*100):null;
+    r.dinePpa=(r.dine>0)?(r.dineS/r.dine):null;
+    r.toPpa=(r.to>0)?(r.toS/r.to):null;
+    rows.push(r);
+  }
+  return rows;
+}
+/* ★開始週の推定。TOが立った週が2週続く、その最初の週。
+   1回きりの試し打ちで開始と判定しないため。見つからなければ -1。 */
+function tkoDetectStart(rows){
+  for(var i=0;i<rows.length-1;i++){
+    if(rows[i].to>0 && rows[i+1].to>0) return i;
+  }
+  return -1;
+}
+function tkoAvg(arr, key){
+  var v=arr.map(function(r){ return r[key]; }).filter(function(x){ return x!=null; });
+  if(!v.length) return null;
+  return v.reduce(function(a,b){return a+b;},0)/v.length;
+}
+function tkoCompute(sid){
+  var rows=tkoWeekRows(sid, TKO_WEEKS);
+  var si=tkoDetectStart(rows);
+  var R={ rows:rows, si:si, sid:sid, pre:[], post:[], reason:null, dropped:[] };
+  if(si<0){ R.reason='nostart'; return R; }
+  R.startMon=rows[si].mon;
+  /* ★平均は「完全な週」だけ。欠けた週は棒には描くが平均には入れない。 */
+  rows.forEach(function(r,i){ if(!r.full && r.days>0) R.dropped.push(r.mon); });
+  /* 前 = 開始週の手前の完全週で、TOがまだ0の週 */
+  for(var i=si-1; i>=0 && R.pre.length<TKO_WIN; i--){
+    if(!rows[i].full) continue;
+    if(rows[i].to>0) break;      /* TOが立っている週は「前」ではない */
+    R.pre.unshift(rows[i]);
+  }
+  /* 後 = 直近の完全週。★開始週そのものは使わない（週の途中から始まっている） */
+  for(var j=rows.length-1; j>si && R.post.length<TKO_WIN; j--){
+    if(!rows[j].full) continue;
+    R.post.unshift(rows[j]);
+  }
+  if(!R.pre.length){ R.reason='nopre'; return R; }
+  if(R.post.length<TKO_MINWIN){ R.reason='nopost'; return R; }
+  R.preTot=tkoAvg(R.pre,'tot'); R.postTot=tkoAvg(R.post,'tot');
+  R.preDine=tkoAvg(R.pre,'dine'); R.postDine=tkoAvg(R.post,'dine');
+  R.postTo=tkoAvg(R.post,'to');
+  R.preSeg=tkoAvg(R.pre,'segS'); R.postSeg=tkoAvg(R.post,'segS');
+  R.net=R.postTot-R.preTot;
+  /* ★これが結論。TO1杯あたり何杯の純増か。1.0＝完全な足し算 / 0＝完全な置き換え */
+  R.perTo=(R.postTo>0)?(R.net/R.postTo):null;
+  R.totPct=(R.preTot>0)?((R.postTot/R.preTot-1)*100):null;
+  R.dinePct=(R.preDine>0)?((R.postDine/R.preDine-1)*100):null;
+  R.segPct=(R.preSeg>0)?((R.postSeg/R.preSeg-1)*100):null;
+  var pDineS=R.post.reduce(function(a,r){return a+r.dineS;},0), pDine=R.post.reduce(function(a,r){return a+r.dine;},0);
+  var pToS=R.post.reduce(function(a,r){return a+r.toS;},0), pTo=R.post.reduce(function(a,r){return a+r.to;},0);
+  R.dinePpa=pDine>0?(pDineS/pDine):null;
+  R.toPpa=pTo>0?(pToS/pTo):null;
+  R.ppaGap=(R.dinePpa!=null&&R.toPpa!=null)?(R.toPpa-R.dinePpa):null;
+  var pL=R.post.reduce(function(a,r){return a+r.toL;},0), pD=R.post.reduce(function(a,r){return a+r.toD;},0);
+  R.toLunchPct=((pL+pD)>0)?(pL/(pL+pD)*100):null;
+  /* ★打ち方の整合。定義が2つあるので、両方立っているかを先に見る。 */
+  var pCnt=R.post.reduce(function(a,r){return a+r.toCount;},0);
+  R.toCount=pCnt; R.toBowls=pTo;
+  R.mismatch = (pCnt>0 && pTo===0) ? 'nobowl'
+             : (pTo>0 && pCnt===0) ? 'nodo' : null;
+  R.perOrder=(pCnt>0&&pTo>0)?(pTo/pCnt):null;
+  return R;
+}
+/* 判定。★2軸で決める（合計が増えたか／それがTOのぶんか）。
+   合計だけ見ると季節要因を施策の効果と読み違える。だから開始前の週も同じ軸に並べる。 */
+function tkoVerdict(R){
+  if(R.reason) return { key:'none', label:'まだ判定できません', col:'var(--muted)' };
+  var up=(R.totPct!=null && R.totPct>2), down=(R.totPct!=null && R.totPct<-2);
+  if(down) return { key:'stop', label:'見直す', col:'var(--red)', why:'合計が減っている' };
+  if(up && R.perTo!=null && R.perTo>=0.5) return { key:'go', label:'続ける', col:'var(--green)', why:'合計が増え、その多くがTOのぶん' };
+  if(up) return { key:'watch', label:'様子を見る', col:'var(--yellow)', why:'合計は増えたが、多くは店内からの移動' };
+  return { key:'watch', label:'様子を見る', col:'var(--yellow)', why:'合計が横ばい＝ほぼ置き換え' };
+}
+function _tkoN(v, d){ return (v==null)?'—':Number(v).toFixed(d==null?0:d); }
+function _tkoPct(v){ return (v==null)?'—':((v>0?'+':'')+v.toFixed(1)+'%'); }
+function _tkoCol(v, up){ if(v==null) return 'var(--muted)'; var g=up?(v>0):(v<0); return v===0?'var(--muted)':(g?'var(--green)':'var(--red)'); }
+function tkoVerdictCard(store, R){
+  var V=tkoVerdict(R);
+  var h='<div class="card" style="border:1.5px solid '+V.col+';margin-bottom:8px">'
+    +'<div style="font-size:11px;color:var(--muted)"><i class="ti ti-shopping-bag"></i> テイクアウト・'+escapeHtml(store.name)+'</div>'
+    +'<div style="font-size:18px;font-weight:800;color:'+V.col+';margin:3px 0 7px">'+V.label
+    +(V.why?('<span style="font-size:12px;font-weight:400;color:var(--tm)"> — '+V.why+'</span>'):'')+'</div>';
+  if(R.reason){
+    var msg = (R.reason==='nostart') ? 'テイクアウトのデータが2週続けて立っている週がありません。開始週を推定できません。'
+            : (R.reason==='nopre')   ? '開始週より前に、TOが無い完全な週がありません。開始前と比べられないので純増は出せません（推移だけ下に出します）。'
+            : '開始後の完全な週が'+TKO_MINWIN+'週に足りません。週が貯まると判定が出ます。';
+    h+='<div style="font-size:12px;color:var(--muted);line-height:1.8">'+msg+'</div></div>';
+    return h;
+  }
+  h+='<div style="font-size:13px;line-height:2">'
+    +'TO 1杯あたりの純増 <b>'+(R.perTo!=null?R.perTo.toFixed(2):'—')+' 杯</b>'
+    +'<span style="font-size:11px;color:var(--muted)">（1.0＝完全な足し算／0＝完全な置き換え）</span><br>'
+    +'合計 '+_tkoN(R.preTot)+' → '+_tkoN(R.postTot)+' 杯／週 <b style="color:'+_tkoCol(R.totPct,true)+'">'+_tkoPct(R.totPct)+'</b><br>'
+    +'店内 '+_tkoN(R.preDine)+' → '+_tkoN(R.postDine)+' 杯／週 <b style="color:'+_tkoCol(R.dinePct,true)+'">'+_tkoPct(R.dinePct)+'</b>'
+    +'</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;padding-top:7px;border-top:1px solid var(--border);line-height:1.8">'
+    +'開始週の推定 <b>'+escapeHtml(R.startMon)+'</b> の週（TOが2週続けて立った最初の週）'
+    +'　・　前'+R.pre.length+'週 vs 直近'+R.post.length+'週（どちらも完全週。開始週そのものは使っていません）<br>'
+    +'★合計が増えていても、それがテイクアウトのぶんとは限りません。開始前の週も同じ軸に並べてあるので、元の傾向かどうかは下のグラフで見てください。';
+  if(R.dropped.length) h+='<br>営業日が欠けた週を平均から外しています：'+R.dropped.map(function(m){return escapeHtml(m.slice(5).replace('-','/'));}).join('・');
+  if(R.mismatch==='nobowl') h+='<br><span style="color:var(--red)">★TOの件数は立っていますが、TOの丼数が0です。店舗設定の bowlGuids（Take Outメニューの商品）が未設定の可能性があります。</span>';
+  if(R.mismatch==='nodo') h+='<br><span style="color:var(--red)">★TOの丼数は立っていますが、TOの件数が0です。Toastのダイニングオプションが Take Out になっていない可能性があります。</span>';
+  h+='</div></div>';
+  return h;
+}
+/* ============================================================
+   週次のグラフ。★店内とTOを積み上げ、合計を線で重ねる。
+   TOの帯が伸びても合計の線が寝ていれば、客が移っただけ。これが一番見せたい形。
+============================================================ */
+function tkoChart(rows, key, si){
+  var W=560, H=118, X0=44, Y0=14, n=rows.length;
+  if(!n) return '';
+  var stacked=(key==='bowls'||key==='sales');
+  var vals=[];
+  rows.forEach(function(r){
+    if(key==='bowls') vals.push(r.tot);
+    else if(key==='sales') vals.push(r.segS);
+    else if(key==='share') vals.push(r.share);
+    else { if(r.dinePpa!=null) vals.push(r.dinePpa); if(r.toPpa!=null) vals.push(r.toPpa); }
+  });
+  var mx=Math.max.apply(null, vals.concat([0]))||1;
+  var maxQ=(key==='share')?Math.max(10, Math.ceil(mx/10)*10):(Math.ceil(mx/ (mx>=1000?500:50))*(mx>=1000?500:50)||1);
+  var gap=W/n, bw=Math.max(8, Math.round(gap*0.56));
+  var py=function(v){ return Y0+H-(v/maxQ)*H; };
+  var cx=function(i){ return X0+gap*i+gap/2; };
+  var svg='<svg viewBox="0 0 '+(X0+W+12)+' '+(H+46)+'" style="width:100%;height:auto">';
+  for(var t=0;t<=4;t++){
+    var y=Y0+H-(t/4)*H;
+    svg+='<line x1="'+X0+'" y1="'+y.toFixed(1)+'" x2="'+(X0+W)+'" y2="'+y.toFixed(1)+'" stroke="var(--bd)"'
+      +(t===0?'':' stroke-dasharray="2 4"')+' vector-effect="non-scaling-stroke"/>'
+      +'<text x="'+(X0-6)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="10" fill="var(--muted)">'
+      +(key==='sales'?('$'+Math.round(maxQ*t/4).toLocaleString()):(key==='share'?(Math.round(maxQ*t/4)+'%'):Math.round(maxQ*t/4)))+'</text>';
+  }
+  rows.forEach(function(r,i){
+    var x=X0+gap*i+(gap-bw)/2;
+    var dim=(!r.full);
+    if(stacked){
+      var a=(key==='bowls')?r.dine:r.dineS, b=(key==='bowls')?r.to:r.toS;
+      var ha=(a/maxQ)*H, hb=(b/maxQ)*H;
+      svg+='<rect x="'+x.toFixed(1)+'" y="'+(Y0+H-ha).toFixed(1)+'" width="'+bw+'" height="'+Math.max(0,ha).toFixed(1)+'" fill="var(--muted)" opacity="'+(dim?0.28:0.55)+'"/>';
+      if(hb>0) svg+='<rect x="'+x.toFixed(1)+'" y="'+(Y0+H-ha-hb).toFixed(1)+'" width="'+bw+'" height="'+hb.toFixed(1)+'" fill="var(--accent)" opacity="'+(dim?0.4:1)+'"/>';
+    } else if(key==='share'){
+      var v=r.share; if(v==null) return;
+      var hh=(v/maxQ)*H;
+      svg+='<rect x="'+x.toFixed(1)+'" y="'+(Y0+H-hh).toFixed(1)+'" width="'+bw+'" height="'+hh.toFixed(1)+'" fill="var(--accent)" opacity="'+(dim?0.4:1)+'"/>';
+    }
+  });
+  if(stacked){
+    var seg=[];
+    rows.forEach(function(r,i){ var v=(key==='bowls')?r.tot:r.segS; seg.push(cx(i).toFixed(1)+','+py(v).toFixed(1)); });
+    svg+='<polyline points="'+seg.join(' ')+'" fill="none" stroke="var(--tm)" stroke-width="2" vector-effect="non-scaling-stroke"/>';
+  }
+  if(key==='ppa'){
+    [['dinePpa','var(--muted)'],['toPpa','var(--accent)']].forEach(function(p){
+      var sg=[], flush=function(){ if(sg.length>1) svg+='<polyline points="'+sg.join(' ')+'" fill="none" stroke="'+p[1]+'" stroke-width="2" vector-effect="non-scaling-stroke"/>'; sg=[]; };
+      rows.forEach(function(r,i){ var v=r[p[0]]; if(v==null){ flush(); return; } sg.push(cx(i).toFixed(1)+','+py(v).toFixed(1)); });
+      flush();
+    });
+  }
+  /* 開始週の縦線 */
+  if(si>=0 && si<n){
+    var bx=X0+gap*si;
+    svg+='<line x1="'+bx.toFixed(1)+'" y1="'+(Y0-8)+'" x2="'+bx.toFixed(1)+'" y2="'+(Y0+H)+'" stroke="var(--accent)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
+      +'<text x="'+(bx+4).toFixed(1)+'" y="'+(Y0-1)+'" font-size="10" fill="var(--accent)">TO開始</text>';
+  }
+  /* 横軸。詰まるときだけ間引く。★欠けた週は日付の下に印を出す。 */
+  var every=(n<=10)?1:(n<=18?2:Math.ceil(n/9));
+  rows.forEach(function(r,i){
+    if(i%every!==0 && i!==n-1) return;
+    svg+='<text x="'+cx(i).toFixed(1)+'" y="'+(Y0+H+15)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'
+      +escapeHtml(r.mon.slice(5).replace('-','/'))+'</text>';
+  });
+  rows.forEach(function(r,i){
+    if(r.full || r.days===0) return;
+    svg+='<text x="'+cx(i).toFixed(1)+'" y="'+(Y0+H+28)+'" text-anchor="middle" font-size="9" fill="var(--yellow)">'+r.days+'日</text>';
+  });
+  return svg+'</svg>';
+}
+function tkoWeekCard(R){
+  var tabs=[['bowls','丼数'],['sales','売上'],['share','TO比率'],['ppa','客単価']];
+  var k=['bowls','sales','share','ppa'].indexOf(_tkoTab)>=0?_tkoTab:'bowls';
+  var bar='<div class="seg-tabs" style="max-width:420px">'+tabs.map(function(t){
+    return '<div class="seg-tab'+(k===t[0]?' active':'')+'" onclick="setTkoTab(\''+t[0]+'\')">'+t[1]+'</div>';
+  }).join('')+'</div>';
+  var lg=(k==='bowls'||k==='sales')
+      ? '<span><span style="display:inline-block;width:10px;height:10px;background:var(--muted);opacity:.55;vertical-align:-1px;margin-right:4px"></span>店内</span>'
+        +'<span><span style="display:inline-block;width:10px;height:10px;background:var(--accent);vertical-align:-1px;margin-right:4px"></span>テイクアウト</span>'
+        +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--tm);vertical-align:3px;margin-right:4px"></span>合計</span>'
+      : (k==='ppa' ? '<span><span style="display:inline-block;width:14px;height:2px;background:var(--muted);vertical-align:3px;margin-right:4px"></span>店内</span>'
+                     +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:3px;margin-right:4px"></span>テイクアウト</span>' : '');
+  var note=(k==='bowls'||k==='sales')
+    ? 'テイクアウトの帯が伸びても合計の線が寝ていれば、客が移っただけです。開始前の週も同じ軸に並べています。'
+    : (k==='share' ? 'TO比率＝TO丼 ÷ 合計丼。規模の違う店を比べるときはこの軸を使います。'
+                   : '客単価。TOが店内より低いまま置き換えが進むと、合計が横ばいでも利益は落ちます。');
+  return '<div class="card" style="margin-bottom:8px">'
+    +'<div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>週次の推移'
+    +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">完全週のみ・当日を含む週は出しません</span></div>'
+    +bar+tkoChart(R.rows, k, R.si)
+    +(lg?'<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:2px">'+lg+'</div>':'')
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'+note+'</div></div>';
+}
+function tkoThreeCard(R){
+  if(R.reason) return '';
+  var tile=function(lab, val, sub, col){
+    return '<div style="background:var(--surface2);border-radius:10px;padding:9px 11px">'
+      +'<div style="font-size:10.5px;color:var(--muted)">'+lab+'</div>'
+      +'<div style="font-size:18px;font-weight:800;color:'+(col||'var(--tm)')+'">'+val+'</div>'
+      +'<div style="font-size:10px;color:var(--muted)">'+sub+'</div></div>';
+  };
+  var h='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-help-circle" style="color:var(--accent2)"></i>3つの問い</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">';
+  h+=tile('合計は増えたか', _tkoPct(R.totPct), _tkoN(R.preTot)+' → '+_tkoN(R.postTot)+' 杯', _tkoCol(R.totPct,true));
+  h+=tile('店内は減ったか', _tkoPct(R.dinePct), _tkoN(R.preDine)+' → '+_tkoN(R.postDine)+' 杯', _tkoCol(R.dinePct,true));
+  h+=tile('客単価の差', (R.ppaGap!=null?((R.ppaGap>0?'+':'−')+'$'+Math.abs(R.ppaGap).toFixed(2)):'—'),
+    '店内 '+(R.dinePpa!=null?'$'+R.dinePpa.toFixed(2):'—')+' ／ TO '+(R.toPpa!=null?'$'+R.toPpa.toFixed(2):'—'), _tkoCol(R.ppaGap,true));
+  h+=tile('TOが埋めた時間帯', (R.toLunchPct!=null?('ランチ '+R.toLunchPct.toFixed(0)+'%'):'—'),
+    'ランチが満席の店なら席を使わず純増', 'var(--tm)');
+  h+='</div><div style="font-size:10.5px;color:var(--muted);margin-top:7px;line-height:1.7">'
+    +'★率と実数は両方見てください。合計が増えていても、店内の落ち込みが大きければ置き換えが進んでいます。</div></div>';
+  return h;
+}
+/* ★3店の比較。規模も開始時期も違うので生数字では比べられない。TO比率で並べる。 */
+function tkoCompareCard(){
+  var sts=tkoStores();
+  if(sts.length<2) return '';
+  var W=560, H=96, X0=44, Y0=12;
+  var all=sts.map(function(s){ return { st:s, rows:tkoWeekRows(s.id, TKO_WEEKS) }; });
+  var mx=0; all.forEach(function(a){ a.rows.forEach(function(r){ if(r.share!=null && r.share>mx) mx=r.share; }); });
+  if(mx<=0) return '';
+  var maxQ=Math.max(10, Math.ceil(mx/10)*10);
+  var n=TKO_WEEKS, gap=W/(n-1);
+  var svg='<svg viewBox="0 0 '+(X0+W+12)+' '+(H+34)+'" style="width:100%;height:auto">';
+  for(var t=0;t<=2;t++){
+    var y=Y0+H-(t/2)*H;
+    svg+='<line x1="'+X0+'" y1="'+y.toFixed(1)+'" x2="'+(X0+W)+'" y2="'+y.toFixed(1)+'" stroke="var(--bd)"'+(t===0?'':' stroke-dasharray="2 4"')+' vector-effect="non-scaling-stroke"/>'
+      +'<text x="'+(X0-6)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="10" fill="var(--muted)">'+Math.round(maxQ*t/2)+'%</text>';
+  }
+  all.forEach(function(a){
+    var col=_bStoreCol(a.st.id), sg=[], flush=function(){ if(sg.length>1) svg+='<polyline points="'+sg.join(' ')+'" fill="none" stroke="'+col+'" stroke-width="2" vector-effect="non-scaling-stroke"/>'; sg=[]; };
+    a.rows.forEach(function(r,i){
+      if(r.share==null || r.days===0){ flush(); return; }
+      sg.push((X0+gap*i).toFixed(1)+','+(Y0+H-(r.share/maxQ)*H).toFixed(1));
+    });
+    flush();
+  });
+  var every=Math.ceil(n/6);
+  all[0].rows.forEach(function(r,i){
+    if(i%every!==0 && i!==n-1) return;
+    svg+='<text x="'+(X0+gap*i).toFixed(1)+'" y="'+(Y0+H+15)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'+escapeHtml(r.mon.slice(5).replace('-','/'))+'</text>';
+  });
+  svg+='</svg>';
+  var lg=all.map(function(a){
+    var last=null; a.rows.forEach(function(r){ if(r.share!=null) last=r.share; });
+    return '<span><span style="display:inline-block;width:14px;height:2px;background:'+_bStoreCol(a.st.id)+';vertical-align:3px;margin-right:4px"></span>'
+      +escapeHtml(a.st.name)+(last!=null?(' '+last.toFixed(1)+'%'):' —')+'</span>';
+  }).join('');
+  return '<div class="card" style="margin-bottom:8px">'
+    +'<div class="card-title"><i class="ti ti-building-store" style="color:var(--accent2)"></i>3店の比較 · TO比率</div>'
+    +svg+'<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:2px">'+lg+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'
+    +'★規模も開始時期も違うので、生の丼数では比べられません。比率なら並べられます。'
+    +'<br>★3店とも同じ向きに動いているなら、それはテイクアウトではなく季節や全店の施策の影響です。</div></div>';
+}
+function tkoEvidence(R){
+  var rows=R.rows;
+  var h='<div class="card"><details><summary style="font-size:12.5px;font-weight:700;cursor:pointer;color:var(--accent2)">根拠を見る（週次の生データ・打ち方の整合）</summary>';
+  h+='<div style="font-size:11px;color:var(--muted);line-height:1.8;margin:8px 0">'
+    +'<b>打ち方の整合</b>：テイクアウトの定義はアプリの中に2つあります。'
+    +'<br>・売上と件数の TO ＝ Toast のダイニングオプション（注文をどう出したか）'
+    +'<br>・丼数の TO ＝ メニュー構造（Take Out メニューのどの商品を打ったか）'
+    +'<br>両方が立っていないと、その軸の分析はできません。'
+    +'<br>直近'+(R.post?R.post.length:0)+'週：TO件数 <b>'+(R.toCount||0).toLocaleString()+'</b> 件 ／ TO丼 <b>'+(R.toBowls||0).toLocaleString()+'</b> 杯'
+    +(R.perOrder!=null?('（1件あたり '+R.perOrder.toFixed(2)+' 杯）'):'')
+    +'</div>';
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:520px;font-size:11px"><thead><tr>'
+    +'<th style="text-align:left">週（月〜日）</th><th style="text-align:right">日数</th>'
+    +'<th style="text-align:right">店内</th><th style="text-align:right">TO</th><th style="text-align:right">合計</th>'
+    +'<th style="text-align:right">TO比率</th><th style="text-align:right">店内単価</th><th style="text-align:right">TO単価</th>'
+    +'</tr></thead><tbody>';
+  rows.forEach(function(r,i){
+    var mark=(i===R.si)?' <span style="color:var(--accent);font-size:9px">開始</span>':'';
+    h+='<tr'+(!r.full?' style="opacity:.6"':'')+'><td>'+escapeHtml(r.mon.slice(5).replace('-','/'))+mark+'</td>'
+      +'<td style="text-align:right'+(!r.full?';color:var(--yellow)':'')+'">'+r.days+'</td>'
+      +'<td style="text-align:right">'+r.dine.toLocaleString()+'</td>'
+      +'<td style="text-align:right">'+r.to.toLocaleString()+'</td>'
+      +'<td style="text-align:right;font-weight:700">'+r.tot.toLocaleString()+'</td>'
+      +'<td style="text-align:right">'+(r.share!=null?r.share.toFixed(1)+'%':'—')+'</td>'
+      +'<td style="text-align:right">'+(r.dinePpa!=null?'$'+r.dinePpa.toFixed(2):'—')+'</td>'
+      +'<td style="text-align:right">'+(r.toPpa!=null?'$'+r.toPpa.toFixed(2):'—')+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.7">'
+    +'★店内売上は lunchSales/dinnerSales から TO を引いた値です（この2つは TO を含みます）。'
+    +'店内丼は TO を含まないのでそのままです。単位が非対称なので、他の画面の数字と足し合わせないでください。'
+    +'<br>★薄い行は営業日が欠けた週です。平均からは外していますが、消さずに出しています。</div>';
+  return h+'</details></div>';
+}
+function renderTakeout(store){
+  if(!store) return '';
+  var R;
+  try{ R=tkoCompute(store.id); }
+  catch(e){ console.warn('tkoCompute', e); return '<div class="card"><div style="font-size:12px;color:var(--muted)">テイクアウトの集計に失敗しました。</div></div>'; }
+  var anyTo=R.rows.some(function(r){ return r.to>0; });
+  if(!anyTo){
+    return '<div class="card"><div style="font-size:12px;color:var(--muted);line-height:1.8">'
+      +'この店のテイクアウトの丼数が、直近'+TKO_WEEKS+'週で1件も記録されていません。'
+      +'<br>店舗設定の bowlGuids（Take Out メニューの商品）が未設定か、まだ開始していない可能性があります。</div></div>';
+  }
+  return tkoVerdictCard(store, R) + tkoWeekCard(R) + tkoThreeCard(R) + tkoCompareCard() + tkoEvidence(R);
 }
 /* ============================================================
    v977 施策分析の画面
@@ -35001,7 +35411,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '984';
+const APP_VERSION = '985';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
