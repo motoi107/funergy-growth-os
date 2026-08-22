@@ -18000,6 +18000,18 @@ function cumulativeToToday(storeId, ymOpt) {
   var _k = String(storeId) + '|' + (ymOpt || (typeof curYm==='function'?curYm():'')) + '|' + (ymOpt ? 'y' : 'c');
   return _mdMemo('cum', _k, function(){ return _cumulativeToTodayRaw(storeId, ymOpt); });
 }
+/* ============================================================
+   v981 ★月がどこまで進んだかは「暦日」ではなく「日別予算の累計」で見る
+   ------------------------------------------------------------
+   dayBudgetFor は bizDayFactor を通すので定休日の予算は 0 になり、
+   曜日係数（土日が高い）も入っている。暦日の均等按分は定休日も1日として
+   数えるため、月曜定休の店では「休んだ日のぶんまで予算が経過した」ことになる。
+   ★戻り値は 0〜100。前日までの予算が無い月初1日は null（0% と出さない）。
+============================================================ */
+function budElapsedPct(c){
+  if(!c || !(c.budMonth>0)) return null;
+  return Math.round((c.budToToday||0)/c.budMonth*1000)/10;
+}
 function _cumulativeToTodayRaw(storeId, ymOpt) {
   var ym = ymOpt || curYm();
   var days = ymOpt ? daysOfYm(ymOpt) : monthDays();
@@ -19820,9 +19832,16 @@ function initWaitCard(it, w){
 /* 判定に使う数字を1か所で作る。画面側では計算しない。 */
 function initCompute(it, store, w, mix, modMix){
   var R={ w:w };
-  R.afterD=initDateList(w.afterFrom, w.afterTo);
-  R.beforeD=initDateList(w.beforeFrom, w.beforeTo);
-  R.cA=initCustAgg(store.id, R.afterD);  R.cB=initCustAgg(store.id, R.beforeD);
+  R.fullA=initDateList(w.afterFrom, w.afterTo);
+  R.fullB=initDateList(w.beforeFrom, w.beforeTo);
+  /* ★v980: 前後を対でそろえる。片方だけ休んだ日は両方落とす。
+     ★ここから先の集計はすべて「そろえたあとの日」だけを見る。 */
+  R.pair=initPairDays(mix, R.fullB, R.fullA);
+  R.afterD=R.pair.after;  R.beforeD=R.pair.before;
+  /* ★v979: 営業日をここで1回だけ決め、すべての集計に同じ集合を渡す。 */
+  R.openA=initOpenDays(mix, R.afterD);  R.openB=initOpenDays(mix, R.beforeD);
+  R.cA=initCustAgg(store.id, R.afterD, R.openA);
+  R.cB=initCustAgg(store.id, R.beforeD, R.openB);
   R.tA=initQtyAgg(mix, R.afterD, it.targetGuids);   R.tB=initQtyAgg(mix, R.beforeD, it.targetGuids);
   R.pA=initQtyAgg(mix, R.afterD, it.compareGuids);  R.pB=initQtyAgg(mix, R.beforeD, it.compareGuids);
   R.gtA=initGpAgg(mix, R.afterD, it.targetGuids, it, store.id, modMix);
@@ -19846,6 +19865,9 @@ function initCompute(it, store, w, mix, modMix){
   R.dSales=R.salesOK?Math.round((R.cA.sales-R.cB.sales)*100)/100:null;
   /* ★1食あたりの効果。前週同曜日をやめ、窓の差を対象商品の出数で割る（期限切れしない）。 */
   R.perUnit=(R.dGp!=null && R.tA.qty>0)?Math.round(R.dGp/R.tA.qty*100)/100:null;
+  /* ★v980: 対で落とし続けると残りが薄くなる。週あたり4営業日を切ったら判定しない。
+     少ない日数で出した差は、施策の効果ではなくその日の当たり外れになる。 */
+  R.thin=!!(w.weeks && (R.pair.n/w.weeks) < 4);
   R.verdict=initVerdict(R);
   return R;
 }
@@ -19859,14 +19881,28 @@ function initVerdict(R){
     if(R.dGp<0 && R.dQty>0) mix='食数は増えていますが、単価の低い商品に置き換わったため利益は落ちています。この施策は儲かっていません。';
     else if(R.dGp>0 && R.dQty!=null && R.dQty<=0) mix='単価の高い商品に入れ替わったので、食数が減っても利益は出ています。';
   }
+  /* ★v980: そろえた結果が薄すぎるときは、揃っていても判定しない。 */
+  if(R.thin) return {key:'wait', label:'まだ判定できません',
+    why:'前後をそろえた結果、営業日が '+R.pair.n+'日ぶんしか残りませんでした。'
+      +'これだけの日数で出した差は、施策の効果ではなくその日の当たり外れになります。'
+      +'週が増えれば日数も増えるので、'+((R.w&&R.w.nextDate)||'次の週')+' を待ってください。'};
   if(R.dGp==null) return {key:'wait', label:'まだ判定できません',
     why:(!R.gpReady?'粗利単価が設定されていない商品があります。施策の編集から入れてください。'
       /* ★描画に使う文字列なので、集計が揃っていなくても絶対に例外を投げない。
          ここで落ちるとカードではなく画面ごと白くなる。 */
-      :('前後で営業日数が揃っていないため差を出していません（前'+((R.tB||{}).days||0)+'日'+_initMissNote(R.tB)
-        +'・後'+((R.tA||{}).days||0)+'日'+_initMissNote(R.tA)+'）。'
-        +'定休日で欠ける日は判定できますが、同期待ちの日があると揃いません。'
-        +'上の「最新化」を試してください。'))};
+      :(function(){
+        /* ★v979: どの曜日が前後で食い違っているかまで書く。
+           定休日なら前後どちらにも同じだけ入るので、食い違う曜日は定休日ではない。 */
+        var odd=_initOddMiss(R.tB, R.tA);
+        return '前後で営業日数が揃っていないため差を出していません（前'+((R.tB||{}).days||0)+'日'
+          +_initMissNote(R.tB)+'・後'+((R.tA||{}).days||0)+'日'+_initMissNote(R.tA)+'）。'
+          +(odd.length
+            ? ('<b>'+odd.join('・')+'曜が前後で食い違っています。定休日なら前後どちらにも同じだけ入るので、'
+               +'これは定休日ではありません。</b>その日が臨時休業だったか、'
+               +'Toastの取り込みが落ちているかのどちらかです。'
+               +'上の「最新化」で直らなければ 設定 → Toast同期で「31日取り込み」を実行してください。')
+            : '欠けている曜日は前後で同じですが、日数が違います。上の「最新化」を試してください。');
+      })())};
   if(R.dGp<0) return {key:'stop', label:'見直す',
     why:'品目の粗利が $'+Math.abs(R.dGp).toFixed(2)+' 減っています。'+mix};
   if(R.dGp===0) return {key:'watch', label:'様子を見る',
@@ -19905,13 +19941,19 @@ function initVerdictCard(it, store, w, R){
     +(w.remain?('締まっていない '+w.remain+'日は入れていません。'):'')
     +'<b>'+(w.weeks+1)+'週目は '+escapeHtml(w.nextDate)+' に揃います。</b><br>'
     /* ★v957 の主張を残す。揃っていても「何日ぶんで見ているか」は判断に要る。 */
+    /* ★v980: そろえるために落とした日を必ず出す。
+       何を捨てたかを見せないまま数字だけ出すのが、いちばんやってはいけないこと。 */
+    +(_initDropNote(R.pair, w)?(_initDropNote(R.pair, w)+'<br>'):'')
     +'<i class="ti ti-calendar-stats"></i> 集計に使えた日数 … 出数 前'+w.n+'日中 '+R.tB.days
     +'日ぶん'+_initMissNote(R.tB)+'・後'+w.n+'日中 '+R.tA.days+'日ぶん'+_initMissNote(R.tA)
     +'　新規リピート 前'+R.cB.days+'/'+R.cB.want
     +'日・後'+R.cA.days+'/'+R.cA.want+'日<br>'
     /* ★v978: 定休日で欠ける日があることを明示する。「欠け 月」と出れば定休日だと分かる。 */
     +'<i class="ti ti-calendar-off"></i> 定休日で欠ける日は、前後どちらにも同じだけ入るので判定できます。'
-    +'欠けている曜日が前後で違うときだけ止めます。<br>'
+    +'欠けている曜日が前後で違うときだけ止めます。'
+    /* ★v979: 客数も出数と同じ営業日で数えていることを書く。
+       ここが分かれていたせいで、客数だけ揃ったことになって差が出ていた。 */
+    +'新規・リピート・客単価も、出数と同じ営業日だけで数えています。<br>'
     +'<i class="ti ti-alert-circle"></i> ここでいう粗利は施策に登録した商品ぶんです。'
     +'開始日に初めて来た人が戻るかどうかは、来店周期ぶんの時間が経たないと分かりません。</div></div>';
 }
@@ -19948,11 +19990,13 @@ function initThreeCard(it, R){
 /* 1週ぶんの数字。★7日すべて揃っている週だけ値を返す（歯抜けの週を谷に見せない）。 */
 /* ★v978: 「7日そろった週だけ」をやめた。定休日がある店では永久に描けない。
    生の値と営業日数をそのまま返し、揃いの判定は initWeekSeries でまとめて行う。 */
-function initWeekOne(it, store, mix, modMix, from, to, idx){
-  var ds=initDateList(from, to);
+function initWeekOne(it, store, mix, modMix, from, to, idx, keep){
+  /* ★v980: 対でそろえたあとの日だけを見る。
+     そろえないと、台風の週だけ棒が短くなり「その週は落ちた」という嘘を描く。 */
+  var ds=initDateList(from, to).filter(function(d){ return !keep || keep[d]; });
   var all=(it.targetGuids||[]).concat(it.compareGuids||[]);
   var g=initGpAgg(mix, ds, all, it, store.id, modMix);
-  var c=initCustAgg(store.id, ds);
+  var c=initCustAgg(store.id, ds, initOpenDays(mix, ds));   /* ★v979: 週も同じ営業日で */
   return { idx:idx, from:from, to:to,
     gdays:g.days, cdays:c.days, sdays:c.salesDays,
     gp:g.has?g.amt:null,
@@ -19965,12 +20009,18 @@ function initWeekOne(it, store, mix, modMix, from, to, idx){
    「もともと上向きだったのか、施策で上がったのか」が判別できない。 */
 function initWeekSeries(it, store, w, mix, modMix){
   var out=[], n=w.weeks, k;
+  /* ★v980: 判定と同じ対で日をそろえる。
+     前の j 週目と後の j 週目は同じ位置どうしなので、そろえれば営業日数が必ず一致する。 */
+  var P=initPairDays(mix, initDateList(w.beforeFrom, w.beforeTo),
+                          initDateList(w.afterFrom, w.afterTo));
+  var keep=null;
+  if(mix){ keep={}; P.before.concat(P.after).forEach(function(d){ keep[d]=1; }); }
   for(k=-n;k<=-1;k++)
     out.push(initWeekOne(it, store, mix, modMix,
-      initDateAdd(it.startDate, k*7), initDateAdd(it.startDate, k*7+6), k));
+      initDateAdd(it.startDate, k*7), initDateAdd(it.startDate, k*7+6), k, keep));
   for(k=0;k<n;k++)
     out.push(initWeekOne(it, store, mix, modMix,
-      initDateAdd(it.startDate, k*7), initDateAdd(it.startDate, k*7+6), k+1));
+      initDateAdd(it.startDate, k*7), initDateAdd(it.startDate, k*7+6), k+1, keep));
   /* ★v978: 営業日数がいちばん多い週を基準にし、それに満たない週だけ空欄にする。
      定休日で6日の週どうしは並べられる。5日の週（同期待ち）を混ぜると
      棒が短く出て「その週は落ちた」という嘘になるので、そこだけ空ける。 */
@@ -22486,7 +22536,15 @@ function _meetStoreCard(store, k, ym, isCurrent){
     reqPerDay = remDays>0 ? Math.round(Math.max(0,(k.budget||0)-(k.sales||0))/remDays) : 0;
     landPct = (k.budget>0) ? Math.round(landing/k.budget*1000)/10 : null;
   }
-  var paceFrac = (isCurrent && monthDays>0) ? Math.min(1, daysPassed/monthDays) : 1;
+  /* ★v981: 客数目標の按分も暦日をやめる。日別の客数予算は存在しないので、
+     売上予算のカーブ（budToToday/budMonth）で代用する（mdVerdict と同じ方法）。 */
+  var paceFrac = 1;
+  if(isCurrent){
+    var _cf=null; try{ _cf=cumulativeToToday(store.id, ym); }catch(e){}
+    var _bp=budElapsedPct(_cf);
+    paceFrac = (_bp!=null) ? Math.min(1, _bp/100)
+             : ((monthDays>0)?Math.min(1, daysPassed/monthDays):1);
+  }
   if(paceFrac<1){ rows.forEach(function(it){ if(it.key==='guests' && it.tgt>0){ it.tgt=Math.round(it.tgt*paceFrac); it._paced=true; } }); }
   /* v902: 中間は「前日までの実績 vs 日割り予算」で判定する。
      従来は実績（前日まで）を満額の月間予算と並べていたため必ず未達に見え、
@@ -22911,10 +22969,25 @@ function planGoMonth(ym){ try{ dailyMonthOffset=_ymToOffset(ym); }catch(e){} if(
    ・率（原価・人件費）の差は金額に換算し、利益への影響として見せる
 ============================================================ */
 /* その月が「どれだけ経過したか」0〜1。実績は前日までなので当月は (日-1)/月日数 とする。 */
-function qcPaceRatio(ym){
+function qcPaceRatio(ym, scope){
   var off=_ymToOffset(ym);
   if(off<0) return 1;                       /* 過去月＝満了 */
   if(off>0) return 0;                       /* 未来月＝未着手 */
+  /* ★v981: 暦日の均等按分をやめ、日別予算の累計で見る。
+     暦日按分は定休日も1日として数えるので、月曜定休の店では
+     休んだ日のぶんまで「予算が経過した」ことになっていた。 */
+  try{
+    var _sts=(scope && scope!=='ALL') ? [{id:scope}]
+      : ((typeof getVisibleStores==='function')?getVisibleStores()
+        :((typeof STORES!=='undefined')?STORES:[]));
+    var bt=0, bm=0;
+    _sts.forEach(function(st){
+      var c=null; try{ c=cumulativeToToday(st.id, ym); }catch(e){}
+      if(c){ bt+=c.budToToday||0; bm+=c.budMonth||0; }
+    });
+    if(bm>0) return Math.min(1, Math.max(0, bt/bm));
+  }catch(e){}
+  /* 予算がまだ入っていない店しか無いときだけ暦日へ落ちる */
   var d=(typeof bizNow==='function')?bizNow():new Date();
   var dim=new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
   return Math.min(1, Math.max(0, (d.getDate()-1)/dim));
@@ -22959,7 +23032,7 @@ function qcCompute(scope, y, q){
     R.tFcW+=(qt.fcRate||0)*w; R.tLbW+=(qt.laborRate||0)*w; R.tRepW+=(qt.repeat||0)*w;
     R.repRp+=(a.rpB||0); R.repBase+=((a.ftB||0)+(a.rpB||0));
     (qt.byMonth||[]).forEach(function(m){
-      var r=qcPaceRatio(m.ym);
+      var r=qcPaceRatio(m.ym, scope);   /* ★v981: 店舗スコープを渡す */
       R.paceSales+=(m.sales||0)*r; R.paceGuests+=(m.guests||0)*r;
       var bm=R.byMonth[m.ym]; if(bm){ bm.t+=(m.sales||0); bm.tg+=(m.guests||0); bm.tot++; if(m.registered) bm.reg++; }
       if(!m.registered) R.unreg.push({ store:st.name||st.id, ym:m.ym });
@@ -23192,7 +23265,7 @@ function qcSeries(scope, y, q){
     /* ★進行中の月は経過日ぶんしか実績が無い。売上・客数は「積み上げ」なので
        経過ぶんに直した目標と比べないと、その月だけ崖のように落ちて見える。
        qcPaceRatio は qcCompute が paceSales を出すのに使っているものと同じ。 */
-    var pr=1; try{ pr=qcPaceRatio(ym); }catch(e){ pr=1; }
+    var pr=1; try{ pr=qcPaceRatio(ym, scope); }catch(e){ pr=1; }   /* ★v981 */
     out.months.push({ ym:ym, mm:+String(ym).split('-')[1], inQ:true, pace:pr,
                       elapsed:elapsed, registered:reg, prov:prov,
                       running:(pr>0 && pr<1) });
@@ -25065,14 +25138,15 @@ function _bStoreProgCards(items, setter){
 function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
   var items = (typeof sortByLoginOrder==='function'?sortByLoginOrder(stores):stores).map(function(st){
     var c = cumByStore[st.id]||{};
-    var bud = c.budMonth||0;
+    /* ★v981: 当月は前日までの予算と比べる（ヒーローカードと同じ物差し）。 */
+    var bud = isCur ? (c.budToToday||0) : (c.budMonth||0);
     var act = isCur ? (c.actToToday||0) : (c.actMonth||0);
     var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
     var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
-    return { id:st.id, name:st.name, color:_bStoreCol(st.id), actual:act, budget:bud, pace:(isCur?paceRef:null),
+    return { id:st.id, name:st.name, color:_bStoreCol(st.id), actual:act, budget:bud, pace:(isCur?100:null),
       sub:t('原価率','FC')+' '+(fc!=null?fc+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(lb!=null?lb+'%':'—') };
   });
-  var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+t('店舗別 月次進捗','By Store · Monthly')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('実績／月間予算・達成率','Actual / Monthly budget · Achievement')+(isCur?t('（縦線＝今日の暦日ペース）',' (line = today\'s pace)'):'')+'</span></div>';
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+t('店舗別 月次進捗','By Store · Monthly')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+(isCur?t('前日までの実績／前日までの予算・達成率','Actual / Budget, through yesterday'):t('実績／月間予算・達成率','Actual / Monthly budget · Achievement'))+(isCur?t('（縦線＝予算どおり100%）',' (line = 100% on budget)'):'')+'</span></div>';
   h += _bStoreProgCards(items, 'setBudgetStore');
   h += '</div>';
   try{
@@ -25123,12 +25197,19 @@ function renderBudgetAllStoreAgg(stores, cumByStore, agg, isCur, mdays, monLabel
   /* 売上：実績 / 予算合計 */
   h += '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'
      + '<div style="font-size:26px;font-weight:800">'+fmtK(refAct)+'</div>'
-     + '<div style="font-size:12px;color:var(--muted)">'+t('／ 全店 月間予算','/ All-store monthly budget')+' '+fmtK(agg.budMonth)+'</div></div>';
-  h += '<div style="margin:10px 0 6px">'+progBar(achv,{h:12,color:col,pace:isCur?paceRef:null})+'</div>';
+     + '<div style="font-size:12px;color:var(--muted)">'
+     + (isCur ? (t('／ 前日までの予算','/ Budget through yesterday')+' '+fmtK(agg.budToToday))
+              : (t('／ 全店 月間予算','/ All-store monthly budget')+' '+fmtK(agg.budMonth)))
+     + '</div></div>';
+  /* ★v981: 縦線は 100%（＝予算どおり）。従来は暦日ペースの位置に引いていた。 */
+  h += '<div style="margin:10px 0 6px">'+progBar(achv,{h:12,color:col,pace:isCur?100:null})+'</div>';
   h += '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11.5px">'
      + '<span style="color:'+col+';font-weight:700">'+t('達成','Achieved')+' '+(achv!=null?achv.toFixed(1)+'%':'—')+'</span>'
      + (isCur
-        ? '<span style="color:var(--tm)">'+t('今日のペース',"Today's pace")+' '+paceRef.toFixed(1)+'% → <b style="color:'+col+'">'
+        /* ★v981: 100% が予算どおりなので、差は achv−100。
+           「月の進み」は予算ベースの経過率（暦日ではない）。 */
+        ? '<span style="color:var(--tm)">'+t('月間予算','Monthly budget')+' '+fmtK(agg.budMonth)
+          +'<span style="color:var(--muted)"> ・ '+t('月の進み','Elapsed')+' '+paceRef.toFixed(1)+'%</span> → <b style="color:'+col+'">'
           +(paceDiff!=null?((paceDiff>=0?'+':'')+paceDiff.toFixed(1)+'pt '+(paceDiff>=0?t('先行','ahead'):t('ビハインド','behind'))):'—')+'</b></span>'
         : '<span style="color:var(--muted)">'+t('月間実績','Month actual')+' '+fmtK(agg.actMonth)+'</span>')
      + '</div>';
@@ -25188,9 +25269,14 @@ function renderBudgetSummary() {
     agg.daysWithActual = Math.max(agg.daysWithActual, c.daysWithActual||0);
   });
   var refAct = isCur ? agg.actToToday : agg.actMonth;
-  var achv = agg.budMonth>0 ? Math.round(refAct/agg.budMonth*1000)/10 : null;
-  var paceRef = isCur ? (mdays>0?Math.round(agg.daysPassed/mdays*1000)/10:0) : 100; // 暦日ペース（前日まで）
-  var paceDiff = achv!=null ? Math.round((achv-paceRef)*10)/10 : null;
+  /* ★v981: 分母を「前日までの予算」にする。100% が予算どおり。
+     従来は分母が月間満額で、8/21 なら達成率は65%前後にしかならず、
+     隣の「今日のペース」と見比べないと達成しているかを判断できなかった。 */
+  var _refBud = isCur ? (agg.budToToday||0) : (agg.budMonth||0);
+  var achv = _refBud>0 ? Math.round(refAct/_refBud*1000)/10 : null;
+  /* 月の進み具合。★暦日ではなく日別予算の累計で見る（定休日と曜日係数を持っている）。 */
+  var paceRef = isCur ? (budElapsedPct(agg)!=null?budElapsedPct(agg):0) : 100;
+  var paceDiff = achv!=null ? Math.round((achv-100)*10)/10 : null;
   var heroCol = achv==null?'var(--muted)':(paceDiff>=0?'var(--green)':paceDiff>=-3?'var(--yellow)':'var(--red)');
   var landing = (isCur && agg.daysPassed>0) ? refAct/agg.daysPassed*mdays : refAct;
   var landPct = agg.budMonth>0 ? Math.round(landing/agg.budMonth*1000)/10 : null;
@@ -26110,9 +26196,9 @@ function renderBudgetDaily() {
       var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
       var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
       return { id:s.id, name:s.name, color:_bStoreCol(s.id), actual:act, budget:bud, pace:null,
-        sub:t('累計予算＝本日まで','Cum. budget = through today')+' ・ '+t('原価率','FC')+' '+(fc!=null?fc+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(lb!=null?lb+'%':'—') };
+        sub:t('累計予算＝前日まで','Cum. budget = through yesterday')+' ・ '+t('原価率','FC')+' '+(fc!=null?fc+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(lb!=null?lb+'%':'—') };
     });
-    html += '<div class="card"><div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>'+t('店舗別 今日の現在地','By Store · Today')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('累計売上／累計予算・対予算ペース','Cum. sales / Cum. budget · vs-budget pace')+'</span></div>';
+    html += '<div class="card"><div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>'+t('店舗別 前日までの現在地','By Store · Through yesterday')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('累計売上／累計予算・対予算ペース','Cum. sales / Cum. budget · vs-budget pace')+'</span></div>';
     html += _bStoreProgCards(_dItems, 'setDailyScope');
     html += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+t('タップで各店の日次詳細（日別入力・KPI）へ。','Tap a store for daily detail (per-day input · KPI).')+'</div></div>';
     return html;
@@ -26142,26 +26228,35 @@ function renderBudgetDaily() {
       var override = (getDailyActuals(s.id)[d.date]||{});
       var dayBud = override.budget!=null ? override.budget : (b?dayBudgetFor(b,d.date,d.dow):0);
       sumBudget += dayBud;
-      if (d.date<=todayStr) sumBudgetToToday += dayBud;
-      sumActual += (override.actual!=null?override.actual:0);
+      /* ★v981: 当日を分母にも分子にも入れない。
+         当日の予算だけが分母に乗り、実績は Toast の夜間同期前で 0 のままなので、
+         達成率が1日ぶん低く出ていた（8/21 の Marujuu で約5.6ポイント）。
+         ★すぐ下の店舗別カードは cumulativeToToday（前日まで）を使っており、
+           同じ画面の中でヒーローカードだけが当日を含んでいた。 */
+      if (d.date<todayStr){
+        sumBudgetToToday += dayBud;
+        sumActual += (override.actual!=null?override.actual:0);
+      }
     });
   });
-  var paceRate = sumBudgetToToday ? Math.round(sumActual/sumBudgetToToday*1000)/10 : 0;
+  /* ★v981: 前日までの予算が無い（月初1日）ときは 0% ではなく null。
+     0% は「未達」に見えるが、実際は「まだ判定できない」。 */
+  var paceRate = sumBudgetToToday>0 ? Math.round(sumActual/sumBudgetToToday*1000)/10 : null;
   var monthRate = sumBudget ? Math.round(sumActual/sumBudget*1000)/10 : 0;
 
   var _dOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
   var _dLbl = (typeof dailyMonthLabel==='function')?dailyMonthLabel():getPeriod();
   // 日次進捗メインカード：今日の現在地（累計売上／累計予算・本日まで）
-  var _dpCol = pctColor(paceRate);
+  var _dpCol = (paceRate==null) ? 'var(--muted)' : pctColor(paceRate);
   html += `<div class="card" style="border:1.5px solid ${_dpCol}">
-    <div class="card-title"><i class="ti ti-map-pin" style="color:${_dpCol}"></i>${escapeHtml(title)}${t(' 今日の現在地 — 累計売上／累計予算',' — Today · Cum. sales / Cum. budget')}${_dOff!==0?'（'+_dLbl+'）':''}</div>
+    <div class="card-title"><i class="ti ti-map-pin" style="color:${_dpCol}"></i>${escapeHtml(title)}${t(' 前日までの現在地 — 累計売上／累計予算',' — Through yesterday · Cum. sales / Cum. budget')}${_dOff!==0?'（'+_dLbl+'）':''}</div>
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
       <div style="font-size:26px;font-weight:800;color:var(--tm)">${fmtUSD2(sumActual)}</div>
-      <div style="font-size:12px;color:var(--muted)">${t('／ 累計予算','/ Cum. budget')} ${fmtUSD2(sumBudgetToToday)}</div>
-      <span class="tag ${paceRate>=100?'tag-green':paceRate>=90?'tag-yellow':'tag-red'}" style="margin-left:auto;font-size:13px">${paceRate}%</span>
+      <div style="font-size:12px;color:var(--muted)">${t('／ 前日までの予算','/ Budget through yesterday')} ${fmtUSD2(sumBudgetToToday)}</div>
+      <span class="tag ${paceRate==null?'tag-gray':paceRate>=100?'tag-green':paceRate>=90?'tag-yellow':'tag-red'}" style="margin-left:auto;font-size:13px">${paceRate==null?'—':paceRate+'%'}</span>
     </div>
-    <div style="margin:10px 0 6px">${progBar(paceRate,{h:12,color:_dpCol})}</div>
-    <div style="font-size:11.5px;color:${_dpCol};font-weight:700">${t('対予算ペース','vs-budget pace')} ${paceRate}%<span style="color:var(--muted);font-weight:400"> ${t('・ 累計売上 ÷ 累計予算（本日まで）','· Cum. sales ÷ cum. budget (through today)')}</span></div>
+    <div style="margin:10px 0 6px">${progBar(paceRate==null?0:paceRate,{h:12,color:_dpCol,pace:100})}</div>
+    <div style="font-size:11.5px;color:${_dpCol};font-weight:700">${t('対予算ペース（前日まで）','vs-budget pace (through yesterday)')} ${paceRate==null?t('まだ判定できません（前日までの予算がありません）','No budget elapsed yet'):paceRate+'%'}<span style="color:var(--muted);font-weight:400"> ${t('・ 累計売上 ÷ 累計予算（本日まで）','· Cum. sales ÷ cum. budget (through today)')}</span></div>
     <div style="font-size:11px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">${t('月間で見た現在地：売上実績','Month view · Actual sales')} <b style="color:var(--tm)">${fmtUSD2(sumActual)}</b> ${t('／ 総予算','/ Total budget')} ${fmtUSD2(sumBudget)}（${t('月間達成率','Month achievement')} <b>${monthRate}%</b>）</div>
   </div>`;
 
@@ -26775,8 +26870,65 @@ function initDateList(from, to){
   while(cur<=to && guard++<400){ out.push(cur); cur=initDateAdd(cur, 1); }
   return out;
 }
-/* 期間内の 新規/リピート/客数/売上。1件も実績が無ければ has:false（0では埋めない） */
-function initCustAgg(sid, dates){
+/* ============================================================
+   v979 ★「営業していた日」を1か所で決める
+   ------------------------------------------------------------
+   同じ7日窓なのに、出数は6日・客数は7日と数えていた。原因は定義が2つあったこと。
+     toast_item_sales … 閉まっていた日は行が立たない（＝営業日でないと分かる）
+     daily_actuals    … 閉まっていた日にも 0 の行が立つ（＝区別できない）
+   ★区別できる側を正にする。出数に行がある日だけを営業日とし、
+     出数・粗利・客数すべてに同じ集合を当てる。
+   ★取りこぼしで出数が落ちた日は客数も一緒に落ちるが、
+     比べないほうが、間違って比べるより安全。欠けた日は画面に出るので気づける。
+============================================================ */
+function initOpenDays(mix, dates){
+  var set={};
+  if(!mix) return null;                      /* 出数が未取得なら判定材料が無い＝適用しない */
+  (dates||[]).forEach(function(d){ if(mix[d]) set[d]=1; });
+  return set;
+}
+/* ============================================================
+   v980 ★前後を対でそろえる（Motoさん「8/16は台風で休業です」）
+   ------------------------------------------------------------
+   窓は完全週なので、前の i 日目と後の i 日目は必ず同じ曜日になる（差は 7W 日）。
+   ★どちらか一方でも営業していない対は、両方とも落とす。
+
+     定休日 … 元から両方が休み。落としても何も変わらない
+     台風   … 後だけ休み。対になる前の同じ曜日も落として釣り合わせる
+
+   これをやらないと、台風の日が「後」の窓に永久に居座り、
+   窓が何週伸びても後ろだけ1日少ないまま＝この施策は永久に判定できない。
+   ★分析者が手でやることをそのまま実装しただけ。他に正しい扱い方は無い。
+
+   drop には「営業していたのに、対を合わせるために落とした日」だけを入れる。
+   定休日は入れない（前後どちらも休みなので、報告する意味が無い）。
+============================================================ */
+function initPairDays(mix, beforeD, afterD){
+  var b=[], a=[], drop=[];
+  var open=function(d){ return !!(mix && mix[d]); };
+  for(var i=0;i<afterD.length && i<beforeD.length;i++){
+    if(open(beforeD[i]) && open(afterD[i])){ b.push(beforeD[i]); a.push(afterD[i]); }
+    else if(mix){
+      /* 片方だけ営業していた日は「そろえるために捨てた日」として控える */
+      if(open(beforeD[i])) drop.push(beforeD[i]);
+      if(open(afterD[i]))  drop.push(afterD[i]);
+    }
+  }
+  if(!mix) return {before:beforeD, after:afterD, drop:[], n:afterD.length};
+  return {before:b, after:a, drop:drop, n:a.length};
+}
+/* 落とした日の書き方。★何を捨てたかを見せないまま数字を出さない。 */
+function _initDropNote(P, w){
+  if(!P || !P.drop || !P.drop.length) return '';
+  var per=w&&w.weeks?Math.round(P.n/w.weeks*10)/10:P.n;
+  return '<i class="ti ti-scissors"></i> 前後をそろえるため '
+    + P.drop.map(function(d){ return _initWday(d)+' '+d.slice(5).replace('-','/'); }).join('・')
+    + ' を除いています。片方だけ休んだ日（台風など）は、対になるもう一方も落とさないと'
+    + '土俵が揃いません。<b>'+P.n+'営業日'+(w&&w.weeks>1?('（週あたり '+per+'日）'):'')+'ぶんで比べています。</b>';
+}
+/* 期間内の 新規/リピート/客数/売上。1件も実績が無ければ has:false（0では埋めない）
+   ★v979: openSet を渡すと、営業日でない日は「データが無い日」として扱う。 */
+function initCustAgg(sid, dates, openSet){
   var da=getDailyActuals(sid);
   /* ★v957: days（新規/リピートが取れた日数）も数える。出数と同じ理由。 */
   /* ★v977: salesDays を分けて数える。days は新規/リピートが取れた日数なので、
@@ -26785,6 +26937,11 @@ function initCustAgg(sid, dates){
          days:0, salesDays:0, want:dates.length, miss:[], salesMiss:[]};
   dates.forEach(function(d){
     var ov=da[d]||{};
+    /* ★v979: 営業していない日は「データが無い日」として扱う。
+       daily_actuals は定休日にも 0 の行が立つので、そのまま数えると
+       前後で営業日数が違うのに「揃っている」ことになり、差を出してしまう
+       （Motoさんのスクショ: 出数 前6/後5 なのに 客数 前7/後7 で −220人と出ていた）。 */
+    if(openSet && !openSet[d]){ o.miss.push(d); o.salesMiss.push(d); return; }
     /* ★v978: 欠けた日を控える（定休日の判別に使う） */
     if(ov.firstTimeBowls!=null || ov.repeatBowls!=null) o.days++; else o.miss.push(d);
     if(!(ov.sales!=null || ov.lunchSales!=null || ov.dinnerSales!=null)) o.salesMiss.push(d);
@@ -26821,11 +26978,30 @@ function _initMissDow(o){
   return ((o && o.miss) || []).map(function(d){ return _initWday(d); }).sort().join('');
 }
 /* 欠けた曜日を画面に出す形にする。「欠け 月」と出れば定休日だと分かる。 */
+/* ★v979: 曜日だけでは、定休日なのか取りこぼしなのかの判断に一手間かかる。
+   日付まで出せば、その日に何があったかをすぐ確かめられる。
+   多いときは曜日だけにまとめる（1行に収まらなくなるため）。 */
 function _initMissNote(o){
   var m=((o && o.miss) || []);
   if(!m.length) return '';
+  if(m.length<=3) return '（欠け '+m.map(function(d){
+    return _initWday(d)+' '+d.slice(5).replace('-','/');
+  }).join('・')+'）';
   var w={}; m.forEach(function(d){ w[_initWday(d)]=1; });
-  return '（欠け '+Object.keys(w).join('・')+'）';
+  return '（欠け '+Object.keys(w).join('・')+' 計'+m.length+'日）';
+}
+/* 定休日らしいか。前後どちらにも同じ曜日が同じ数だけ欠けていれば定休日とみなせる。
+   それ以外の曜日が混ざっていれば、臨時休業か取りこぼし。 */
+function _initOddMiss(a, b){
+  var cnt=function(o){
+    var m={}; ((o && o.miss)||[]).forEach(function(d){ var k=_initWday(d); m[k]=(m[k]||0)+1; });
+    return m;
+  };
+  var ca=cnt(a), cb=cnt(b), out=[];
+  Object.keys(ca).concat(Object.keys(cb)).forEach(function(k){
+    if((ca[k]||0)!==(cb[k]||0) && out.indexOf(k)<0) out.push(k);
+  });
+  return out;
 }
 function initSameCover(a, b){
   /* ★v958: v957 は a.has だけを見ていた。
@@ -26946,7 +27122,9 @@ function keyKpiStats(scopeStores, days){
     var metric=gct(s.id);
     (days||[]).forEach(function(d){
       var ov=actuals[d.date]||{};
-      var past=d.date<=todayStr;
+      /* ★v981: 実績も前日までにそろえる。予算は budToToday（前日まで）なのに
+         実績だけ当日を含んでいたため、当日ぶんが入ると高く出る形になっていた。 */
+      var past=d.date<todayStr;
       if(past && ov.actual!=null){
         sales+=ov.actual;
         var cnt = metric==='bowls' ? ((Number(ov.bowls)||0)+(Number(ov.takeoutBowls)||0)) : (Number(ov.guests)||0);
@@ -34752,7 +34930,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '978';
+const APP_VERSION = '981';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
