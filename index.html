@@ -259,6 +259,19 @@ body.shift-wide .main { max-width:1900px; }
    ★幅の数字は body.md-wide と同じ（1500 / 1880）。新しい数字を作らない。 */
 @media (min-width:1180px) {
   body.meet-wide .main { max-width:1500px; }
+  /* ===== v982: 日次進捗（月次と統合）をPC幅で使い切る =====
+     日次一覧の表は min-width:1080px。.main が 900px のままだと必ず横スクロールになり、
+     右端の人件費率まで一度に見えない。
+     ★1179px以下は 900px のまま。スマホ・狭い窓の見た目は変えない。
+     ★幅の数字は body.meet-wide と同じ（1500 / 1880）。新しい数字を作らない。 */
+  body.bud-wide .main { max-width:1500px; }
+  /* 店舗カードを横に流す。全店ビューで9店が縦に並ぶと一望できない。
+     ★列数は auto-fit。カードの幅は画面幅と余白の積み重ねで決まるので、
+       ビューポート幅から列数を決め打ちすると合わない（v927 でそれをやって合わなかった）。
+     ★row-gap は 0。カードは margin-bottom:8px をインラインで持っている
+       （_bStoreProgCards）。縦の間隔はそちらに任せる。 */
+  .bud-store-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(230px,1fr));
+                    column-gap:10px; row-gap:0; align-items:start; }
   /* v928: 店舗カードを2列にする。
      売上ヒーローの中身は _meetPlanHtml(620px) と _meetGapHtml(560px) で
      頭打ちなので、器だけ広げると右半分が死に領域になっていた。
@@ -289,6 +302,7 @@ body.shift-wide .main { max-width:1900px; }
 }
 @media (min-width:1560px) {
   body.meet-wide .main { max-width:1880px; }
+  body.bud-wide .main { max-width:1880px; }
   /* v928: KPIタイルは auto-fit なのでここで列数を決め打ちしない。 */
   .meet-store-grid { grid-template-columns:repeat(3, minmax(0,1fr)); }
 }
@@ -15519,6 +15533,10 @@ function renderPage(page) {
      setBudgetTab() は renderPage('budget') を通るので、タブを切り替えると付け外しされる。 */
   try { document.body.classList.toggle('meet-wide',
     page === 'budget' && typeof budgetTab !== 'undefined' && budgetTab === 'meeting'); } catch (e) { }
+  /* v982: 日次進捗のときだけ .main の 900px 制限を外す。他のタブ・他画面には影響しない。
+     setBudgetTab() は renderPage('budget') を通るので、タブを切り替えると付け外しされる。 */
+  try { document.body.classList.toggle('bud-wide',
+    page === 'budget' && typeof budgetTab !== 'undefined' && budgetTab === 'daily'); } catch (e) { }
   // v652: コールドスタート時のみ、重いデータ裏取得中はスケルトン表示。完了後の再描画で本物へ差し替え。ウォームは即表示。
   if (window._heavyPending && localStorage.getItem('heavy_ready')!=='1' && !SKEL_LIGHT_PAGES[page]) {
     if(el){ el.innerHTML = skeletonMain(); }
@@ -19488,7 +19506,7 @@ function pageStoreTabs(activeId, includeAll){
 function storeChipBar(current, fnName, label){ return bStoreChips(current, fnName); }
 function storeSelectBar(current, onchangeFn, label){ return bStoreChips(current, onchangeFn); }
 
-var budgetTab = 'summary';
+var budgetTab = 'daily';   /* v982: 月次進捗を日次に統合したので既定を日次へ */
 var _budgetStore = 'ALL';
 function budgetMonthOptions(){
   var now=bizNow(); var cy=now.getFullYear(), cm=now.getMonth();
@@ -19701,7 +19719,6 @@ function renderBudget() {
   <div style="margin:0 0 8px">${syncFreshBadge()}</div>
   <div class="phase-tabs">
     <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">${t('日次進捗','Daily')}</div>
-    <div class="phase-tab${budgetTab==='summary'?' active':''}" onclick="setBudgetTab('summary')">${t('月次進捗','Monthly')}</div>
     <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
     <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
@@ -19709,12 +19726,16 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='analysis'?' active':''}" onclick="setBudgetTab('analysis')">${t('経営分析','Analytics')}</div>
     <div class="phase-tab${budgetTab==='initiative'?' active':''}" onclick="setBudgetTab('initiative')">${t('施策分析','Initiatives')}</div>
   </div>`;
-  if (budgetTab==='monthly') budgetTab='summary'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
+  /* ★v982: 月次進捗(summary)を日次進捗に統合した。
+     budgetTab はセッションに保存されるので、'summary' のまま開いている端末が必ずいる。
+     ここで寄せないと空画面になる。 */
+  if (budgetTab==='summary') budgetTab='daily';
+  if (budgetTab==='monthly') budgetTab='daily'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
   /* v940: 議事録タブを外した。開いたままの端末が空画面にならないよう月次へ寄せる。
      ★関数(renderMeetingMinutes)とシード(MINUTES_SEED)は残す。
        minutesMonthlySales() が年間計画の未登録月の補完に使っており、
        消すと年間計画の数字が静かに欠ける（21216行）。 */
-  if (budgetTab==='minutes') budgetTab='summary';
+  if (budgetTab==='minutes') budgetTab='daily';
   if (budgetTab==='initiative') return html + renderInitiative(); // v956: 施策分析。独自の店舗スコープあり
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   if (budgetTab==='meeting') return html + renderMeetingReview(); // 会議ビュー（中間/月初MTG）
@@ -19723,8 +19744,9 @@ function renderBudget() {
   if (budgetTab==='setup' && (_budgetStore==='ALL' || !_budgetStore)) { var _vsb=getVisibleStores(); if(_vsb.length) _budgetStore=_vsb[0].id; }
   html += bStoreChips(_budgetStore, 'setBudgetStore', {showAll: budgetTab!=='setup'});
   if (budgetTab==='setup') return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup());
-  if (budgetTab==='analysis') return html + renderMonthlySummary();
-  return html + renderBudgetSummary();
+  /* ★v982: 上の寄せで budgetTab は daily/quarter/annual/setup/meeting/analysis/initiative に限られ、
+     daily 以外はすべて先に return している。ここへ来るのは analysis だけ。 */
+  return html + renderMonthlySummary();
 }
 function setBudgetTab(t) { budgetTab = t; renderPage('budget'); }
 /* ============================================================
@@ -22906,10 +22928,40 @@ function renderMeetingReview(){
       + t('差分の原因・曜日別・年間一覧は、店舗を選ぶと出ます。','Pick a store to see the gap breakdown and yearly table.')+'</div>';
   return html;
 }
+/* ============================================================
+   v983 年間計画 — 予算だけの一覧から「年間の予実」へ
+   ------------------------------------------------------------
+   ★v982 まで、この画面は実績を1つも出していなかった（引き継ぎ書 0-4 の表のとおり）。
+   ★物差しは v981 と同じ。「経過ぶん」どうしで比べる。
+     年間満額を分母にすると8月時点では永久に60%台にしかならず、
+     予算どおり出ている年でも未達に見える。
+   ★按分は暦日ではなく日別予算の累計（qcPaceRatio）。暦日は定休日も1日として数えるので、
+     月曜定休の店では「休んだ日のぶんまで予算が経過した」ことになる。
+   ★Qをタップすると Qコミットへ飛ぶ。月タップ（予算設定）は details の中に残す。
+     潰すと予算設定への導線が消える。
+============================================================ */
+var _apY = null;
+function _apEnsureY(){ if(_apY==null){ try{ _apY=budgetYM().y; }catch(e){ _apY=(bizNow()).getFullYear(); } } return _apY; }
+function setApYear(delta){ _apEnsureY(); _apY += delta; renderPage('budget'); }
+/* Qの状態。★「経過月数」ではなく月のオフセットで決める。
+   経過月数だと、年をまたいで過去年を見たときに全部 running になる。 */
+function _apQState(y,q){
+  var m=_quarterMonths(y,q);
+  if(_ymToOffset(m[0])>0) return 'future';
+  if(_ymToOffset(m[2])<0) return 'done';
+  return 'running';
+}
+function planGoQuarter(y,q){
+  try{ _qbY=y; _qbQ=q; }catch(e){}
+  /* 年間計画の店舗スコープをQコミットへ引き継ぐ。移った先で別の店を見ていたら意味がない。 */
+  try{ if(typeof _budgetStore!=='undefined' && typeof _qbStore!=='undefined') _qbStore=_budgetStore; }catch(e){}
+  if(typeof setBudgetTab==='function') setBudgetTab('quarter');
+}
 function renderAnnualPlan(){
-  var y = budgetYM().y;
+  var y = _apEnsureY();
   var stores = budgetScopeStores();
   var isAgg = stores.length>1;
+  var scope = isAgg ? 'ALL' : ((stores[0]||{}).id||'ALL');
   function _annualQ(sid,q){
     var qt=quarterTargets(sid,y,q); var out={sales:0,guests:0,byMonth:[]};
     (qt.byMonth||[]).forEach(function(mb){
@@ -22927,36 +22979,153 @@ function renderAnnualPlan(){
       qt.byMonth.forEach(function(mb,i){ if(!agg.byMonth[i]) agg.byMonth[i]={ym:mb.ym,sales:0,guests:0,registered:false,fromMinutes:false}; agg.byMonth[i].sales+=mb.sales; agg.byMonth[i].guests+=mb.guests; if(mb.registered) agg.byMonth[i].registered=true; if(mb.fromMinutes) agg.byMonth[i].fromMinutes=true; }); });
     return agg;
   }
-  var qColors={1:'#5DB554',2:'#2B79D0',3:'#D98E3B',4:'#8B5E3C'};
-  var yearSales=0, yearGuests=0, qhtml='';
-  [1,2,3,4].forEach(function(q){
-    var qt=qData(q); yearSales+=qt.sales; yearGuests+=qt.guests;
-    var m1=(q-1)*3+1, m3=(q-1)*3+3;
-    var badge='';
-    if(!isAgg && stores[0]){ var c=getQBudget(stores[0].id,y,q); badge = (c&&c.status==='committed')?'<span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'<span class="tag tag-gray" style="font-size:9px">'+t('未コミット','Not committed')+'</span>'; }
-    else { var cc=stores.filter(function(s){ var c=getQBudget(s.id,y,q); return c&&c.status==='committed'; }).length; if(cc) badge='<span class="tag tag-green" style="font-size:9px">'+cc+'/'+stores.length+' '+t('コミット','committed')+'</span>'; }
-    var col=qColors[q];
-    qhtml += '<div class="card" style="border-left:3px solid '+col+';padding:10px 12px;margin-bottom:8px">'
-      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><b style="font-size:15px;color:'+col+'">Q'+q+'</b><span style="font-size:11px;color:var(--muted)">'+m1+'〜'+m3+t('月','')+'</span>'+badge
-      +'<span style="margin-left:auto;font-weight:800;font-size:15px">'+fmtUSD2(qt.sales)+'</span></div>';
-    (qt.byMonth||[]).forEach(function(mb){
-      var mm=+String(mb.ym).split('-')[1];
-      qhtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border);cursor:pointer" onclick="planGoMonth(\''+mb.ym+'\')">'
-        +'<span style="font-size:12px;font-weight:600;width:38px;color:var(--muted)">'+mm+t('月','')+'</span>'
-        +'<span style="flex:1;font-size:13px;font-weight:700">'+fmtUSD2(mb.sales)+'</span>'
-        +(mb.fromMinutes?'<span class="tag tag-blue" style="font-size:9px">'+t('議事録','Minutes')+'</span>':(mb.registered?'<span class="tag tag-green" style="font-size:9px">'+t('登録済','Registered')+'</span>':'<span class="tag tag-gray" style="font-size:9px">'+t('未登録','Not set')+'</span>'))
-        +'<i class="ti ti-chevron-right" style="color:var(--muted);font-size:14px"></i></div>';
+  /* ★実績。quarterActuals は会計PL取込済みの月はPL、未取込はアプリ日次を使う（v933）。
+     出どころが月で違うので plMonths を数えて画面に出す。 */
+  function qAct(q){
+    var o={sales:0, guests:0, plMonths:0, dataMonths:0};
+    stores.forEach(function(st){
+      var a={}; try{ a=quarterActuals(st.id,y,q)||{}; }catch(e){ a={}; }
+      o.sales+=a.sales||0; o.guests+=a.guests||0;
+      o.plMonths+=a.plMonths||0; o.dataMonths=Math.max(o.dataMonths, a.dataMonths||0);
     });
-    qhtml += '</div>';
+    return o;
+  }
+  /* ★経過ぶんの予算。日別予算の累計（qcPaceRatio）で按分する。暦日ではない。 */
+  function qPaceBud(byMonth){
+    var tot=0;
+    (byMonth||[]).forEach(function(mb){
+      var r=0;
+      try{ r=qcPaceRatio(mb.ym, scope); }catch(e){ r=(_ymToOffset(mb.ym)<0)?1:0; }
+      tot += (mb.sales||0)*r;
+    });
+    return tot;
+  }
+  var qColors={1:'#5DB554',2:'#2B79D0',3:'#D98E3B',4:'#8B5E3C'};
+  var yearBud=0, yearAct=0, yearPace=0, yearGuests=0, yearActGuests=0, yearPl=0;
+  var rows=[];
+  [1,2,3,4].forEach(function(q){
+    var bud=qData(q), act=qAct(q), state=_apQState(y,q);
+    var pace=(state==='done')?bud.sales:((state==='future')?0:qPaceBud(bud.byMonth));
+    yearBud+=bud.sales; yearGuests+=bud.guests;
+    yearAct+=act.sales; yearActGuests+=act.guests; yearPl+=act.plMonths;
+    yearPace+=pace;
+    rows.push({q:q, bud:bud, act:act, pace:pace, state:state});
   });
+  /* ★分母は経過ぶん。材料が無ければ null（0% と出さない） */
+  var yearPct = yearPace>0 ? Math.round(yearAct/yearPace*1000)/10 : null;
+  var yearCol = (yearPct==null)?'var(--muted)':(yearPct>=100?'var(--green)':yearPct>=95?'var(--yellow)':'var(--red)');
+  /* ★着地見込。いまの「予算に対する出方」がこのまま続いたら年間でどこに着くか。 */
+  var landing = (yearPct!=null) ? yearBud*(yearAct/yearPace) : null;
+  var landPct = (landing!=null && yearBud>0) ? Math.round(landing/yearBud*1000)/10 : null;
+  var yearFullPct = yearBud>0 ? Math.round(yearAct/yearBud*1000)/10 : null;
+
   var html='';
   html += bStoreChips(_budgetStore, 'setBudgetStore');
-  html += '<div class="card"><div class="card-title"><i class="ti ti-calendar-month"></i>'+t('年間計画','Annual Plan')+' '+y+t('年','')+'<span style="margin-left:auto;font-weight:800;font-size:16px">'+fmtUSD2(yearSales)+'</span></div>'
-    +'<div style="font-size:11px;color:var(--muted);line-height:1.6">'+t('各月の売上予算をQ単位でまとめています。数字は予算設定（＝Qコミットビュー）と連動。月をタップするとその月の予算設定へ移動します。',"Monthly sales budgets grouped by quarter. Figures sync with Budget Setup (= Q Commit view). Tap a month to open that month's budget.")+'</div></div>';
-  html += qhtml;
-  html += '<div class="card" style="text-align:center;padding:14px"><div style="font-size:11px;color:var(--muted)">'+y+t('年','')+' '+t('年間売上予算','Annual sales budget')+'</div>'
-    +'<div style="font-size:24px;font-weight:800;color:var(--accent)">'+fmtUSD2(yearSales)+'</div>'
-    +(yearGuests?'<div style="font-size:11px;color:var(--muted)">'+t('客数計','Guests total')+' '+Math.round(yearGuests).toLocaleString()+t('名','')+'</div>':'')+'</div>';
+
+  /* ---------------- A 年間の現在地 ---------------- */
+  html += '<div class="card" style="border:1.5px solid '+yearCol+'">'
+    + '<div class="card-title"><i class="ti ti-calendar-month" style="color:'+yearCol+'"></i>'+t('年間予実','Annual')+' '+y
+    + '<span style="margin-left:auto;display:flex;align-items:center;gap:6px">'
+    + '<button class="btn btn-secondary btn-sm" onclick="setApYear(-1)"><i class="ti ti-chevron-left"></i></button>'
+    + '<button class="btn btn-secondary btn-sm" onclick="setApYear(1)"><i class="ti ti-chevron-right"></i></button>'
+    + '</span></div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-bottom:3px">'+t('経過ぶん（終わったQ ＋ 進行中のQは前日まで）','Elapsed portion (closed quarters + current quarter through yesterday)')+'</div>'
+    + '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'
+    + '<div style="font-size:26px;font-weight:800">'+fmtK(yearAct)+'</div>'
+    + '<div style="font-size:12px;color:var(--muted)">'+t('／ 経過ぶん予算','/ Elapsed budget')+' '+fmtK(yearPace)+'</div>'
+    + '<span style="margin-left:auto;font-size:16px;font-weight:800;color:'+yearCol+'">'+(yearPct!=null?yearPct.toFixed(1)+'%':'—')+'</span>'
+    + '</div>'
+    + '<div style="margin:10px 0 6px">'+progBar(yearPct,{h:12,color:yearCol,pace:100})+'</div>';
+  if(yearPct==null){
+    html += '<div style="font-size:11.5px;color:var(--muted)">'+t('まだ判定できません（経過ぶんの予算がありません）','No elapsed budget yet')+'</div>';
+  } else {
+    html += '<div style="font-size:11.5px;color:var(--tm)">'
+      + '<i class="ti ti-plane-arrival" style="color:'+(landPct==null?'var(--muted)':(landPct>=100?'var(--green)':'var(--red)'))+'"></i> '
+      + t('着地見込','Projected')+' <b>'+fmtK(landing)+'</b>'
+      + (landPct!=null?('（'+t('年間予算比','vs annual budget')+' <b style="color:'+(landPct>=100?'var(--green)':'var(--red)')+'">'+landPct.toFixed(1)+'%</b>）'):'')
+      + '</div>';
+  }
+  /* ★率と実数が食い違う向きは両方書く。満額比だけ見ると年の途中は必ず未達に見える。 */
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border);line-height:1.7">'
+    + t('年間予算','Annual budget')+' <b style="color:var(--tm)">'+fmtK(yearBud)+'</b>'
+    + (yearFullPct!=null?('（'+t('満額比','vs full')+' '+yearFullPct.toFixed(1)+'%）'):'')
+    + (yearGuests?('　・　'+t('客数予算','Guest budget')+' '+Math.round(yearGuests).toLocaleString()+t('名','')+(yearActGuests?('／'+t('実績','act')+' '+Math.round(yearActGuests).toLocaleString()):'')):'')
+    + '</div>';
+  html += '</div>';
+
+  /* ---------------- B 四半期別 ---------------- */
+  html += '<div class="card"><div class="card-title"><i class="ti ti-layout-columns" style="color:var(--accent)"></i>'+t('四半期別','By quarter')
+    + '<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto"><i class="ti ti-hand-finger"></i> '+t('タップでQコミットへ','Tap for Q Commit')+'</span></div>';
+  rows.forEach(function(r){
+    var q=r.q, col=qColors[q], m1=(q-1)*3+1, m3=(q-1)*3+3;
+    var pct = (r.state==='future')?null:(r.pace>0?Math.round(r.act.sales/r.pace*1000)/10:null);
+    var pc = (pct==null)?'var(--muted)':(pct>=100?'var(--green)':pct>=95?'var(--yellow)':'var(--red)');
+    /* バーはQ満額に対する進み。縦線＝いまここに居るはず、という位置。
+       ★％の分母（経過ぶん）とバーの分母（Q満額）は違う。だから両方を文字で書く。 */
+    /* ★progBar は受け取った値をそのまま left:...% に入れる。丸めないと
+       left:55.00000000000001% のような値がDOMに出る。 */
+    var barPct = r.bud.sales>0 ? Math.round(Math.min(100, r.act.sales/r.bud.sales*100)*10)/10 : 0;
+    var barPace = (r.state==='future'||!(r.bud.sales>0)) ? null
+                : Math.round(Math.min(100, r.pace/r.bud.sales*100)*10)/10;
+    var badge;
+    if(r.state==='done') badge='<span class="tag tag-green" style="font-size:9px">'+t('確定','Closed')+'</span>';
+    else if(r.state==='future') badge='<span class="tag tag-gray" style="font-size:9px">'+t('未開始','Not started')+'</span>';
+    else badge='<span class="tag tag-yellow" style="font-size:9px">'+t('進行中','In progress')+' '+t('残','')+qcDaysLeft(y,q)+t('日','d')+'</span>';
+    var cbadge='';
+    if(!isAgg && stores[0]){ var c=getQBudget(stores[0].id,y,q); if(c&&c.status==='committed') cbadge='<span class="tag tag-blue" style="font-size:9px">'+t('コミット済','Committed')+'</span>'; }
+    else { var cc=stores.filter(function(st){ var c2=getQBudget(st.id,y,q); return c2&&c2.status==='committed'; }).length; if(cc) cbadge='<span class="tag tag-blue" style="font-size:9px">'+cc+'/'+stores.length+' '+t('コミット','committed')+'</span>'; }
+    html += '<div style="border-left:3px solid '+col+';padding:8px 0 9px 10px;margin-bottom:9px;cursor:pointer" onclick="planGoQuarter('+y+','+q+')">'
+      + '<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
+      + '<b style="font-size:15px;color:'+col+'">Q'+q+'</b>'
+      + '<span style="font-size:11px;color:var(--muted)">'+m1+'〜'+m3+t('月','')+'</span>'+badge+cbadge
+      + '<span style="margin-left:auto;font-weight:800;font-size:15px;color:'+pc+'">'+(pct!=null?pct.toFixed(1)+'%':'—')+'</span>'
+      + '<i class="ti ti-chevron-right" style="color:var(--muted);font-size:14px"></i></div>'
+      + '<div style="margin:6px 0 4px">'+progBar(barPct,{h:8,color:pc,pace:barPace})+'</div>'
+      + '<div style="font-size:11px;color:var(--muted)">'
+      + (r.state==='future'
+          ? (t('予算','Budget')+' '+fmtK(r.bud.sales))
+          : (t('実績','Act')+' <b style="color:var(--tm)">'+fmtK(r.act.sales)+'</b> ／ '
+             + (r.state==='done'? (t('Q予算','Q budget')+' '+fmtK(r.bud.sales))
+                                : (t('経過ぶん予算','Elapsed budget')+' '+fmtK(r.pace)))))
+      + '</div>';
+    /* ★Q満額比も書く。経過ぶん比だけだと「Qの中でどこまで来たか」が読めない。 */
+    if(r.state==='running' && r.bud.sales>0){
+      html += '<div style="font-size:10px;color:var(--muted);margin-top:2px">'+t('Q満額','Q full')+' '+fmtK(r.bud.sales)
+        + t('（満額比 ','(vs full ')+(Math.round(r.act.sales/r.bud.sales*1000)/10).toFixed(1)+'%）</div>';
+    }
+    /* ★実績の出どころ。混ざっていることを黙って隠さない。 */
+    if(r.state!=='future' && r.act.plMonths>0 && !isAgg){
+      html += '<div style="font-size:10px;color:var(--accent2);margin-top:2px"><i class="ti ti-file-check"></i> '
+        + t('会計PL','Accounting PL')+' '+r.act.plMonths+'/3'+t('ヶ月','mo')+t('（残りはアプリ日次）',' (rest from app daily)')+'</div>';
+    }
+    /* 月の内訳。★タップは予算設定へ（従来の導線を残す）。 */
+    html += '<details style="margin-top:5px" onclick="event.stopPropagation()">'
+      + '<summary style="font-size:10.5px;color:var(--accent2);cursor:pointer">'+t('月の内訳','By month')+'</summary>';
+    (r.bud.byMonth||[]).forEach(function(mb){
+      var mm=+String(mb.ym).split('-')[1];
+      var moff=_ymToOffset(mb.ym);
+      var mAct=0; if(moff<=0){ stores.forEach(function(st){ try{ var ms=monthStats(st.id, moff)||{}; mAct+=ms.sales||0; }catch(e){} }); }
+      /* ★当月を満額予算と比べない。実績は前日までしか無いので必ず未達に見える
+         （v981 で月次進捗に対して直したのと同じ形）。Qと同じ qcPaceRatio で按分する。
+         ★按分の定義を2か所に置かない。ここで独自に暦日按分を書くと必ず食い違う。 */
+      var mRatio=0; try{ mRatio=qcPaceRatio(mb.ym, scope); }catch(e){ mRatio=(moff<0)?1:0; }
+      var mBase = (mb.sales||0)*mRatio;
+      var mPct = (moff<=0 && mBase>0) ? Math.round(mAct/mBase*1000)/10 : null;
+      html += '<div style="display:flex;align-items:center;gap:7px;padding:5px 0;border-top:1px solid var(--border);cursor:pointer" onclick="event.stopPropagation();planGoMonth(\'' + mb.ym + '\')">'
+        + '<span style="font-size:11.5px;font-weight:600;width:34px;color:var(--muted)">'+mm+t('月','')+'</span>'
+        + '<span style="font-size:12px;font-weight:700;min-width:64px">'+(moff<=0?fmtK(mAct):'—')+'</span>'
+        + '<span style="font-size:10.5px;color:var(--muted);flex:1">／ '+fmtK(moff===0?mBase:mb.sales)+(moff===0?t('（前日まで）',' (through yest.)'):'')+'</span>'
+        + (mPct!=null?('<span style="font-size:11px;font-weight:700;color:'+(mPct>=100?'var(--green)':mPct>=95?'var(--yellow)':'var(--red)')+'">'+mPct.toFixed(1)+'%</span>'):'')
+        + (mb.fromMinutes?'<span class="tag tag-blue" style="font-size:9px">'+t('議事録','Minutes')+'</span>':(mb.registered?'':'<span class="tag tag-gray" style="font-size:9px">'+t('未登録','Not set')+'</span>'))
+        + '<i class="ti ti-chevron-right" style="color:var(--muted);font-size:13px"></i></div>';
+    });
+    html += '</details></div>';
+  });
+  html += '<div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.7">'
+    + t('達成率＝実績 ÷ 経過ぶんの予算（終わったQはQ予算）。100% が予算どおり。','Achievement = actual ÷ elapsed budget (closed quarters use the full Q budget). 100% = on budget.')
+    + t('バーはQ予算に対する進み、縦線が「いま居るはずの位置」。','The bar is progress against the Q budget; the line marks where you should be.')
+    + t('進行中のQの按分は日別予算の累計（暦日ではないので定休日を数えません）。','The current quarter is prorated by cumulative daily budget, not calendar days, so closed days are not counted.')
+    + '</div></div>';
   return html;
 }
 function planGoMonth(ym){ try{ dailyMonthOffset=_ymToOffset(ym); }catch(e){} if(typeof setBudgetTab==='function') setBudgetTab('setup'); }
@@ -25135,7 +25304,11 @@ function _bStoreProgCards(items, setter){
       +'</div>';
   }).join('');
 }
-function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
+/* 店舗別カード。v982 で日次進捗（月次と統合）から呼ぶ唯一の場所になった。
+   ★paceRef は使っていなかったので落とした（縦線は pace:(isCur?100:null) で決めている）。
+   ★タップ先は setDailyScope。統合後のタブが読むのは dailyStoreScope なので、
+     setBudgetStore を呼ぶと『押しても切り替わらない』になる。 */
+function renderBudgetSummaryStores(stores, cumByStore, isCur){
   var items = (typeof sortByLoginOrder==='function'?sortByLoginOrder(stores):stores).map(function(st){
     var c = cumByStore[st.id]||{};
     /* ★v981: 当月は前日までの予算と比べる（ヒーローカードと同じ物差し）。 */
@@ -25147,7 +25320,7 @@ function renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef){
       sub:t('原価率','FC')+' '+(fc!=null?fc+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(lb!=null?lb+'%':'—') };
   });
   var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+t('店舗別 月次進捗','By Store · Monthly')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+(isCur?t('前日までの実績／前日までの予算・達成率','Actual / Budget, through yesterday'):t('実績／月間予算・達成率','Actual / Monthly budget · Achievement'))+(isCur?t('（縦線＝予算どおり100%）',' (line = 100% on budget)'):'')+'</span></div>';
-  h += _bStoreProgCards(items, 'setBudgetStore');
+  h += '<div class="bud-store-grid">'+_bStoreProgCards(items, 'setDailyScope')+'</div>';
   h += '</div>';
   try{
     var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && budStatusFor(b, budYmStr())==='GM承認待ち'; });
@@ -25248,68 +25421,16 @@ function renderBudgetAllStoreAgg(stores, cumByStore, agg, isCur, mdays, monLabel
   }
   return h + '</div>';
 }
-function renderBudgetSummary() {
-  var stores = budgetScopeStores();
-  var _selOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
-  var _monLabel = (typeof dailyMonthLabel==='function')?dailyMonthLabel():t('当月','This month');
-  var isCur = (_selOff===0);
-  var days; try{ days = daysOfYm(ymFromOffset(_selOff)); }catch(e){ days = monthDays(); }
-  var mdays = days.length;
-
-  // ===== 集計（予算に対して今どこか） =====
-  var agg = {budToToday:0, actToToday:0, budMonth:0, actMonth:0, costToToday:0, laborToToday:0, daysPassed:0, daysWithActual:0};
-  var cumByStore = {};
-  stores.forEach(function(st){
-    var c = cumulativeToToday(st.id, isCur?null:ymFromOffset(_selOff)) || {};
-    cumByStore[st.id] = c;
-    agg.budToToday += c.budToToday||0; agg.actToToday += c.actToToday||0;
-    agg.budMonth += c.budMonth||0; agg.actMonth += c.actMonth||0;
-    agg.costToToday += c.costToToday||0; agg.laborToToday += c.laborToToday||0;
-    agg.daysPassed = Math.max(agg.daysPassed, c.daysPassed||0);
-    agg.daysWithActual = Math.max(agg.daysWithActual, c.daysWithActual||0);
-  });
-  var refAct = isCur ? agg.actToToday : agg.actMonth;
-  /* ★v981: 分母を「前日までの予算」にする。100% が予算どおり。
-     従来は分母が月間満額で、8/21 なら達成率は65%前後にしかならず、
-     隣の「今日のペース」と見比べないと達成しているかを判断できなかった。 */
-  var _refBud = isCur ? (agg.budToToday||0) : (agg.budMonth||0);
-  var achv = _refBud>0 ? Math.round(refAct/_refBud*1000)/10 : null;
-  /* 月の進み具合。★暦日ではなく日別予算の累計で見る（定休日と曜日係数を持っている）。 */
-  var paceRef = isCur ? (budElapsedPct(agg)!=null?budElapsedPct(agg):0) : 100;
-  var paceDiff = achv!=null ? Math.round((achv-100)*10)/10 : null;
-  var heroCol = achv==null?'var(--muted)':(paceDiff>=0?'var(--green)':paceDiff>=-3?'var(--yellow)':'var(--red)');
-  var landing = (isCur && agg.daysPassed>0) ? refAct/agg.daysPassed*mdays : refAct;
-  var landPct = agg.budMonth>0 ? Math.round(landing/agg.budMonth*1000)/10 : null;
-  var wow = isCur ? wowStats(stores) : {sales:null,guests:null,ppa:null,fcPt:null};
-
+/* ============================================================
+   v982 重要KPI（目標 vs 実績 ＋ 前週比）
+   ------------------------------------------------------------
+   旧 renderBudgetSummary の②をそのまま関数にしたもの。中身は変えていない。
+   ★旧 keyKpiCard とは同じ keyKpiStats を見ているが、こちらは目標列・前週比・
+     タップで内訳（openKpiDetail）を持つ。統合で 2枚並べる理由がないのでこちらを残す。
+   ★agg は {budToToday, actToToday, budMonth, actMonth} だけ見る。
+============================================================ */
+function budKpiCard(stores, days, agg, isCur, wow){
   var html = '';
-
-  // 全店/複数店：v802 で合算カードを先頭に追加し、その下に従来の店舗別カードを出す
-  if (stores.length > 1) {
-    return html
-      + renderBudgetAllStoreAgg(stores, cumByStore, agg, isCur, mdays, _monLabel)
-      + renderBudgetSummaryStores(stores, cumByStore, isCur, paceRef);
-  }
-
-  // ===== ① 今月の現在地（実績／月間予算＋暦日ペースライン＋前週比） =====
-  html += `<div class="card" style="border:1.5px solid ${heroCol}">
-    <div class="card-title"><i class="ti ti-target-arrow" style="color:${heroCol}"></i>${escapeHtml(_monLabel)}${t('の現在地 — 売上 実績／予算',' — Sales: Actual / Budget')}
-      <span style="margin-left:auto">${wow.sales!=null?wowBadge(wow.sales,true,false,t('前週比','WoW')):`<span style="font-size:10px;color:var(--muted);font-weight:400">${isCur?(t('前日まで','through')+' '+agg.daysPassed+'/'+mdays+t('日','d')):t('月間確定','Month final')}</span>`}</span></div>
-    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
-      <div style="font-size:26px;font-weight:800">${fmtK(refAct)}</div>
-      <div style="font-size:12px;color:var(--muted)">${t('／ 月間予算','/ Monthly budget')} ${fmtK(agg.budMonth)}</div>
-    </div>
-    <div style="margin:10px 0 6px">${progBar(achv,{h:12,color:heroCol,pace:isCur?paceRef:null})}</div>
-    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11.5px">
-      <span style="color:${heroCol};font-weight:700">${t('達成','Achieved')} ${achv!=null?achv.toFixed(1)+'%':'—'}</span>
-      ${isCur?`<span style="color:var(--tm)">${t('今日のペース',"Today's pace")} ${paceRef.toFixed(1)}%（${agg.daysPassed}/${mdays}${t('日','d')}） → <b style="color:${heroCol}">${paceDiff!=null?((paceDiff>=0?'+':'')+paceDiff.toFixed(1)+'pt '+(paceDiff>=0?t('先行','ahead'):t('ビハインド','behind'))):'—'}</b></span>`:`<span style="color:var(--muted)">${t('月間実績','Month actual')} ${fmtK(agg.actMonth)}</span>`}
-    </div>
-    ${isCur?`<div style="font-size:11px;color:var(--tm);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">
-      <i class="ti ti-plane-arrival" style="color:${landPct==null?'var(--muted)':landPct>=100?'var(--green)':'var(--red)'}"></i> ${t('着地予測','Projected')} <b>${fmtK(landing)}</b>${landPct!=null?`（${t('予算比','vs budget')} <b style="color:${landPct>=100?'var(--green)':'var(--red)'}">${landPct.toFixed(1)}%</b>）`:''}
-    </div>`:''}
-  </div>`;
-
-  // ===== ② KPI（目標 vs 実績 ＋ 前週比） =====
   var k = keyKpiStats(stores, days);
   window._kpiDetails={}; var _kpiDetSeq=0;
   var kpiTile = function(icon, label, valStr, tgtStr, col, badge, sub, detail){
@@ -25355,37 +25476,6 @@ function renderBudgetSummary() {
   if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上。お酒の対象カテゴリ設定に依存します。','Drink sales ÷ total, per store. Depends on alcohol category setting.'), drinkSubDetail(k))});
   html += `</div>
     <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
-
-
-  // ===== ③ 店舗別ワンライン（複数店スコープ時のみ） =====
-  if (stores.length > 1){
-    html += `<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent2)"></i>${t('店舗別（タップで単店表示）','By store (tap for single)')}</div>`;
-    sortByLoginOrder(stores).forEach(function(st){
-      var c = cumByStore[st.id]||{};
-      var b2 = c.budMonth||0;
-      var a2 = isCur ? (c.actToToday||0) : (c.actMonth||0);
-      var p2 = b2>0 ? Math.round(a2/b2*1000)/10 : null;
-      var pd2 = p2!=null ? Math.round((p2-paceRef)*10)/10 : null;
-      var fc2 = a2>0 ? Math.round((c.costToToday||0)/a2*1000)/10 : null;
-      var lb2 = a2>0 ? Math.round((c.laborToToday||0)/a2*1000)/10 : null;
-      var col2 = p2==null?'var(--muted)':(pd2>=0?'var(--green)':pd2>=-3?'var(--yellow)':'var(--red)');
-      html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="setBudgetStore('${st.id}')">
-        <span class="store-dot" style="background:${st.color||'#888'}"></span>
-        <div style="min-width:86px;font-size:12px;font-weight:600">${escapeHtml(st.name)}</div>
-        <div style="flex:1">${progBar(p2,{h:7,color:col2,pace:isCur?paceRef:null})}</div>
-        <div style="min-width:52px;text-align:right;font-weight:700;color:${col2};font-size:12px">${p2!=null?p2.toFixed(1)+'%':'—'}</div>
-        <div style="min-width:72px;text-align:right;font-size:10px;color:var(--muted)">${t('原','FC')}${fc2!=null?fc2.toFixed(1)+'%':'—'}・${t('人','Labor')}${lb2!=null?lb2.toFixed(1)+'%':'—'}</div>
-      </div>`;
-    });
-    html += `<div style="font-size:10px;color:var(--muted);margin-top:6px">${t('達成率＝月間予算比','Achievement = vs monthly budget')}${isCur?t('（前日までの実績）。縦線＝今日の暦日ペース、色＝ペース比'," (actual through yesterday). Line = today's calendar pace, color = vs pace"):''}${t('。原＝原価率・人＝人件費率（実数）。','. FC = food cost %, Labor = labor % (actual).')}</div></div>`;
-  }
-
-  // ===== 承認待ちの控えめな通知 =====
-  try{
-    var pendB = getBudgets().filter(function(b){ return stores.find(function(s){return s.id===b.storeId;}) && budStatusFor(b, budYmStr())==='GM承認待ち'; });
-    if (pendB.length) html += `<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab('setup')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">${t('GM承認待ちの予算が','Budgets pending GM approval:')} <b>${pendB.length}${t('店',' stores')}</b> ${t('あります — タップで予算設定へ','— tap to open Budget Setup')}</div></div>`;
-  }catch(e){}
-
   return html;
 }
 
@@ -26190,17 +26280,32 @@ function renderBudgetDaily() {
       +'<button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>'
       +'<span style="font-size:13px;font-weight:600">'+dailyMonthLabel()+'</span>'
       +'<button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button></div>';
-    var _dItems = vis.map(function(s){
-      var c = cumulativeToToday(s.id) || {};
-      var act = c.actToToday||0, bud = (c.budToToday>0)?c.budToToday:(c.budMonth||0);
-      var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
-      var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
-      return { id:s.id, name:s.name, color:_bStoreCol(s.id), actual:act, budget:bud, pace:null,
-        sub:t('累計予算＝前日まで','Cum. budget = through yesterday')+' ・ '+t('原価率','FC')+' '+(fc!=null?fc+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(lb!=null?lb+'%':'—') };
+    /* ============================================================
+       ★v982: 月次進捗と統合。全店は「合算カード＋店舗別カード」だけ。
+         日次一覧の表は出さない（Motoさん確認済・従来の振る舞いを維持）。
+       ★v981 まで、ここは cumulativeToToday(s.id) を ym 無しで呼んでいた。
+         中では ym=curYm()（常に当月）なのに days=monthDays()（dailyMonthOffset を見る）なので、
+         ◀ で先月に移すと「7月の日付に8月の予算カーブ」を当てた数字が出ていた。
+         さらに todayStr は当月なので、過去月は全日が「経過済み」になる。
+         ★月を渡して、旧月次進捗と同じ数え方にそろえる。
+    ============================================================ */
+    var _aOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
+    var _aCur = (_aOff===0);
+    var _aDays; try{ _aDays = daysOfYm(ymFromOffset(_aOff)); }catch(e){ _aDays = days; }
+    var _agg = {budToToday:0, actToToday:0, budMonth:0, actMonth:0, costToToday:0, laborToToday:0, daysPassed:0, daysWithActual:0};
+    var _cumBy = {};
+    vis.forEach(function(st){
+      var c = cumulativeToToday(st.id, _aCur?null:ymFromOffset(_aOff)) || {};
+      _cumBy[st.id] = c;
+      _agg.budToToday += c.budToToday||0; _agg.actToToday += c.actToToday||0;
+      _agg.budMonth += c.budMonth||0; _agg.actMonth += c.actMonth||0;
+      _agg.costToToday += c.costToToday||0; _agg.laborToToday += c.laborToToday||0;
+      _agg.daysPassed = Math.max(_agg.daysPassed, c.daysPassed||0);
+      _agg.daysWithActual = Math.max(_agg.daysWithActual, c.daysWithActual||0);
     });
-    html += '<div class="card"><div class="card-title"><i class="ti ti-map-pin" style="color:var(--accent)"></i>'+t('店舗別 前日までの現在地','By Store · Through yesterday')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+t('累計売上／累計予算・対予算ペース','Cum. sales / Cum. budget · vs-budget pace')+'</span></div>';
-    html += _bStoreProgCards(_dItems, 'setDailyScope');
-    html += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+t('タップで各店の日次詳細（日別入力・KPI）へ。','Tap a store for daily detail (per-day input · KPI).')+'</div></div>';
+    html += renderBudgetAllStoreAgg(vis, _cumBy, _agg, _aCur, _aDays.length, dailyMonthLabel());
+    html += renderBudgetSummaryStores(vis, _cumBy, _aCur);
+    html += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px">'+t('タップで各店の日次詳細（日別入力・KPI・日次一覧）へ。','Tap a store for daily detail (per-day input · KPI · daily list).')+'</div>';
     return html;
   }
 
@@ -26260,8 +26365,23 @@ function renderBudgetDaily() {
     <div style="font-size:11px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">${t('月間で見た現在地：売上実績','Month view · Actual sales')} <b style="color:var(--tm)">${fmtUSD2(sumActual)}</b> ${t('／ 総予算','/ Total budget')} ${fmtUSD2(sumBudget)}（${t('月間達成率','Month achievement')} <b>${monthRate}%</b>）</div>
   </div>`;
 
-  // 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）
-  html += keyKpiCard(scopeStores, days, title);
+  /* ★v982: 旧月次進捗のKPIカードをここへ移設（目標列・前週比・タップで内訳）。
+     分母はヒーローカードと同じ cumulativeToToday（当月＝前日まで／過去月＝月間確定）。
+     ★上の sumActual/sumBudgetToToday を使い回さない。あちらは日別予算の単純合計で、
+       人件費・原価を持たない（KPIカードは率も出す）。 */
+  var _kCur = (_dOff===0);
+  var _kAgg = {budToToday:0, actToToday:0, budMonth:0, actMonth:0};
+  scopeStores.forEach(function(st){
+    var c = cumulativeToToday(st.id, _kCur?null:ymFromOffset(_dOff)) || {};
+    _kAgg.budToToday += c.budToToday||0; _kAgg.actToToday += c.actToToday||0;
+    _kAgg.budMonth += c.budMonth||0; _kAgg.actMonth += c.actMonth||0;
+  });
+  html += budKpiCard(scopeStores, days, _kAgg, _kCur, _kCur?wowStats(scopeStores):{sales:null,guests:null,ppa:null,fcPt:null});
+  /* 旧月次進捗にあった承認待ちの通知。タブを消しただけで黙って消さない。 */
+  try{
+    var _pendB = getBudgets().filter(function(b){ return scopeStores.find(function(x){return x.id===b.storeId;}) && budStatusFor(b, budYmStr())==='GM承認待ち'; });
+    if (_pendB.length) html += '<div class="alert alert-warning" style="padding:8px 12px;cursor:pointer" onclick="setBudgetTab(\'setup\')"><i class="ti ti-clock-exclamation"></i><div style="font-size:12px">'+t('GM承認待ちの予算が','Budgets pending GM approval:')+' <b>'+_pendB.length+t('店',' stores')+'</b> '+t('あります — タップで予算設定へ','— tap to open Budget Setup')+'</div></div>';
+  }catch(e){}
 
   // 日次テーブル
   var canEdit = ROLE_CONFIG[curRole].canCreate;
@@ -27367,58 +27487,9 @@ function drinkSubDetail(k){
 }
 function sgn(n){ return (n>=0?'+':'')+n; }
 /* 重要KPIカード（6指標＋予実比較）。各予実画面で共通利用 */
-function keyKpiCard(scopeStores, days, title){
-  var k=keyKpiStats(scopeStores,days);
-  var unitTxt=k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests');
-  var acCol=pctColor(k.achieve);
-  var rCol=k.repeatRate==null?'var(--muted)':(k.repeatRate>=50?'var(--green)':k.repeatRate>=30?'var(--yellow)':'var(--red)');
-  // 集客（予実）
-  var guestSub = k.guestBudget!=null ? (t('予算','Bud')+' '+k.guestBudget.toLocaleString()+'　'+t('達成','ach ')+Math.round(k.guests/k.guestBudget*100)+'%') : unitTxt;
-  var guestCol = k.guestBudget!=null ? (k.guests>=k.guestBudget?'var(--green)':k.guests>=k.guestBudget*0.9?'var(--yellow)':'var(--red)') : 'var(--tm)';
-  // 客単価（予実）
-  var ppaSub = k.ppaBudget!=null ? (t('予算','Bud')+' $'+k.ppaBudget.toFixed(2)+'　'+sgn(Math.round((k.ppa-k.ppaBudget)*100)/100)) : (t('売上÷','Sales ÷ ')+unitTxt);
-  // 原価率（予実：目標＝予算原価率）
-  var fcCol, fcSub;
-  if(k.fcBudgetRate!=null){ fcCol=k.fcRate<=0?'var(--muted)':(k.fcRate<=k.fcBudgetRate?'var(--green)':k.fcRate<=k.fcBudgetRate+3?'var(--yellow)':'var(--red)');
-    fcSub=t('目標','Tgt')+' '+k.fcBudgetRate+'%'+(k.fcRate>0?'　'+sgn(Math.round((k.fcRate-k.fcBudgetRate)*10)/10)+'pt':''); }
-  else { fcCol=k.fcRate>0?(k.fcRate<=31?'var(--green)':k.fcRate<=34?'var(--yellow)':'var(--red)'):'var(--muted)'; fcSub=t('目標 ≤31%','Tgt ≤31%'); }
-  // 人件費率（予実）
-  var lCol, lSub;
-  if(k.laborBudgetRate!=null){ lCol=k.laborRate<=0?'var(--muted)':(k.laborRate<=k.laborBudgetRate?'var(--green)':k.laborRate<=k.laborBudgetRate+3?'var(--yellow)':'var(--red)');
-    lSub=t('目標','Tgt')+' '+k.laborBudgetRate+'%'+(k.laborRate>0?'　'+sgn(Math.round((k.laborRate-k.laborBudgetRate)*10)/10)+'pt':''); }
-  else { lCol=k.laborRate>0?(k.laborRate<=28?'var(--green)':k.laborRate<=31?'var(--yellow)':'var(--red)'):'var(--muted)'; lSub=t('目標 ≤28%','Tgt ≤28%'); }
-  // 人件費率の補足: 1日あたり平均労働時間・平均人件費
-  if(k.avgLaborHoursPerDay!=null||k.avgLaborCostPerDay!=null){
-    lSub += '<br><span style="font-size:9px;color:var(--muted)">'+t('労働','Labor')+(k.avgLaborHoursPerDay!=null?k.avgLaborHoursPerDay+'h':'—')+t('/日','/d')+' ・ '+(k.avgLaborCostPerDay!=null?'$'+k.avgLaborCostPerDay.toLocaleString():'—')+t('/日','/d')+'</span>';
-  }
-  // リピート率（前月比）
-  var rSub = k.repeatHas ? ('Repeat '+k.repeat.toLocaleString()+' / '+t('計','Tot ')+k.rTotal.toLocaleString()+(k.repeatPrev!=null?'　'+t('前月','prev')+k.repeatPrev+'%':'')) : t('同期後に表示','Shows after sync');
-  // リピート率の補足: 1日あたり平均ファーストタイマー数・平均リピーター数
-  if(k.repeatHas && (k.avgFirstPerDay!=null||k.avgRepeatPerDay!=null)){
-    rSub += '<br><span style="font-size:9px;color:var(--muted)">FT '+(k.avgFirstPerDay!=null?k.avgFirstPerDay:'—')+''+t('/日','/d')+' ・ RP '+(k.avgRepeatPerDay!=null?k.avgRepeatPerDay:'—')+t('/日','/d')+'</span>';
-  }
-  // Totoya専用（味噌汁アップグレード／いくらシャワー）
-  var misoCol = k.misoRate==null?'var(--muted)':(k.misoTgt!=null?(k.misoRate>=k.misoTgt?'var(--green)':k.misoRate>=k.misoTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
-  var ikuraCol = k.ikuraRate==null?'var(--muted)':(k.ikuraTgt!=null?(k.ikuraRate>=k.ikuraTgt?'var(--green)':k.ikuraRate>=k.ikuraTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
-  var misoSub = (k.misoAll>0)?('②'+(k.misoUp||0).toLocaleString()+' / '+t('全','of ')+(k.misoAll||0).toLocaleString()+(k.misoTgt!=null?'　'+t('目標','tgt')+k.misoTgt+'%':'')):t('同期後に表示','Shows after sync');
-  var ikuraSub = (k.ikuraBowls>0)?('③'+(k.ikura||0).toLocaleString()+' / '+t('対象','of ')+(k.ikuraBowls||0).toLocaleString()+(k.ikuraTgt!=null?'　'+t('目標','tgt')+k.ikuraTgt+'%':'')):t('同期後に表示','Shows after sync');
-  // ドリンク比率（ToriTon/Tenkichi/Marujuu）
-  var drinkCol = k.drinkRate==null?'var(--muted)':(k.drinkTgt!=null?(k.drinkRate>=k.drinkTgt?'var(--green)':k.drinkRate>=k.drinkTgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)');
-  var drinkSub = k.drinkRate!=null?(t('ドリンク売上÷総売上','Drink sales ÷ total')+(k.drinkTgt!=null?'　'+t('目標','tgt')+k.drinkTgt+'%':'')):t('メニュー出数待ち','Awaiting menu mix');
-  return `<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>${t('重要KPI','Key KPIs')}${title?'・'+title:''}　<span style="font-size:10px;color:var(--muted);font-weight:400">${t('実績／予算比較','Actual / Budget')}</span></div>
-    <div class="kpi-grid">
-      ${kpi(t('売上','Sales'), fmtUSD2(k.sales), t('予算','Bud')+' '+fmtK(k.budget)+' / '+t('達成','ach ')+k.achieve+'%', acCol)}
-      ${kpi(k.unit==='丼'?t('集客(丼数)','Guests (bowls)'):t('集客','Guests'), (k.guests||0).toLocaleString(), guestSub, guestCol)}
-      ${kpi(t('客単価（全体）','Avg check (all)'), '$'+(k.ppa||0).toFixed(2), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), 'var(--tm)')}
-      ${kpi(t('リピート率','Repeat rate'), k.repeatRate==null?'—':k.repeatRate+'%', rSub, rCol)}
-      ${kpi(t('原価率','Food cost %'), k.fcRate>0?k.fcRate+'%':'—', fcSub, fcCol)}
-      ${kpi(t('人件費率','Labor %'), k.laborRate>0?k.laborRate+'%':'—', lSub, lCol)}
-      ${k.drinkScope?kpi(t('ドリンク比率','Drink ratio'), k.drinkRate==null?'—':k.drinkRate+'%', drinkSub, drinkCol):''}
-      ${k.totoyaScope?kpi(t('味噌汁UP率','Miso upsell %'), k.misoRate==null?'—':k.misoRate+'%', misoSub, misoCol):''}
-      ${k.totoyaScope?kpi(t('いくらシャワー率','Ikura shower %'), k.ikuraRate==null?'—':k.ikuraRate+'%', ikuraSub, ikuraCol):''}
-    </div>
-  </div>`;
-}
+/* v982: keyKpiCard は廃止。日次進捗からの1か所しか呼ばれておらず、
+   そこを budKpiCard（旧月次進捗のKPIカード）に差し替えた。
+   ★残すと「まだ使われている」と誤解されるのでその場で消す。 */
 
 function storeLatLng(storeId) {
   var coords = {
@@ -34930,7 +35001,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '981';
+const APP_VERSION = '984';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -60825,7 +60896,7 @@ function renderRespMatrix(){
     +[['ti-heart-handshake',_respL('理念を守る','Live the philosophy')],['ti-mood-smile',_respL('全員接客','Everyone serves guests')],['ti-speakerphone',_respL('声出し・返事の徹底','Speak up & respond')],['ti-clock-check',_respL('自己勤怠の管理','Manage your own attendance')+'<br><span style="font-size:10px;color:var(--muted)">'+_respL('打刻・シフト希望の提出','Clock in/out & submit availability')+'</span>']].map(function(x){
       return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 10px;display:flex;align-items:center;gap:8px"><i class="ti '+x[0]+'" style="color:var(--accent);font-size:16px"></i><b>'+x[1]+'</b></div>';
     }).join('')+'</div></div>';
-  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">'+(en?'●=<b>Final responsibility</b> (owns the result / fixes on error) / ◎=<b>Execution responsibility</b> (make it happen) / ○=Task/assist (no responsibility) / △=Aware/report. <b>Anyone may do store tasks</b> — but responsibility stays exactly as this table shows.':'●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助（責任なし）／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。')
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.7">'+(en?'●=<b>Final responsibility</b> (owns the result / fixes on error) / ◎=<b>Execution responsibility</b> (make it happen) / ○=Task/assist (no responsibility) / △=Aware/report. <b>Anyone may do store tasks</b> — but responsibility stays exactly as this table shows.':'●=<b>最終責任</b>（結果に責任・エラー時の是正責任）／◎=<b>実行責任</b>（やり切る責任）／○=実務・補助（責任なし）／△=把握・報告。<b>店の作業は誰がやってもOK</b> — ただし責任の所在はこの表の通り動きません。')
 
     +(editing?'<br><b style="color:var(--accent)">編集モード（GM/CEO）:</b> セルのプルダウンで責任を変更→<b>即保存・全端末に同期</b>。業務名・備考も直接編集、カテゴリごとの行追加・行削除も可能。確定したら「表示モードで見る」で仕上がりを確認。':'')
     +(mx.at?'<br><span style="font-size:10px">最終更新: '+escapeHtml(mx.at)+(mx.by?'（'+escapeHtml(mx.by)+'）':'')+'</span>':'')+'</div>'
