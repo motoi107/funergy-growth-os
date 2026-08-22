@@ -19765,7 +19765,19 @@ var _initSel = '';
      日次の takeoutBowls / toLunchSales はすでに揃っているので、別モードのほうが素直。 */
 var _initMode = 'item';
 var _tkoTab = 'bowls';
-function setInitMode(m){ _initMode=(m==='tko')?'tko':'item'; renderPage('budget'); }
+/* v986: ランチ分析を足したのでモードが3つになった。★店によって使える数が違う。 */
+var _lunTab = 'guests';
+function setInitMode(m){ _initMode=(m==='tko'||m==='lunch')?m:'item'; renderPage('budget'); }
+function setLunTab(k){ _lunTab=k; renderPage('budget'); }
+/* その店で使えるモード。[値, 表示名, アイコン]。★先頭は必ず 'item'（どの店にもある）。
+   テイクアウト … Totoya のみ（丼を店内/TOに分ける bowlGuids を持つのがそこだけ）
+   ランチ       … ランチの実績が立っている店だけ。ブランドでは決めない。 */
+function initModes(sid){
+  var out=[['item','商品の施策','ti-flask']];
+  if(tkoIsTotoya(sid)) out.push(['tko','テイクアウト','ti-shopping-bag']);
+  if(lunHasData(sid)) out.push(['lunch','ランチ','ti-sun']);
+  return out;
+}
 function setTkoTab(k){ _tkoTab=k; renderPage('budget'); }
 function setInitStore(sid){ _initStore=sid; _initSel=''; renderPage('budget'); }
 function setInitSel(id){ _initSel=id; renderPage('budget'); }
@@ -19786,17 +19798,17 @@ function renderInitiative(){
   if(!_initStore || !vs.some(function(s){return s.id===_initStore;})) _initStore=vs[0].id;
   var store=vs.find(function(s){return s.id===_initStore;});
   var html=bStoreChips(_initStore, 'setInitStore', {showAll:false});
-  /* ★テイクアウトは Totoya のみ（Motoさん確認済み）。丼が単位で、
-     店内/TO の丼を分ける設定（bowlGuids）を持っているのが Totoya だけのため。 */
-  var _tkoOk = tkoIsTotoya(_initStore);
-  if(!_tkoOk && _initMode==='tko') _initMode='item';   /* 他店へ切り替えたら商品モードへ戻す */
-  if(_tkoOk){
-    html+='<div class="seg-tabs" style="max-width:340px">'
-      +'<div class="seg-tab'+(_initMode==='item'?' active':'')+'" onclick="setInitMode(\'item\')"><i class="ti ti-flask"></i>商品の施策</div>'
-      +'<div class="seg-tab'+(_initMode==='tko'?' active':'')+'" onclick="setInitMode(\'tko\')"><i class="ti ti-shopping-bag"></i>テイクアウト</div>'
-      +'</div>';
-    if(_initMode==='tko') return html + renderTakeout(store);
+  /* ★v986: モードは店ごとに変わる（initModes）。
+     ★店を切り替えたとき、その店に無いモードのまま描くと空の画面になる。必ず商品へ戻す。 */
+  var _modes = initModes(_initStore);
+  if(!_modes.some(function(m){ return m[0]===_initMode; })) _initMode='item';
+  if(_modes.length>1){
+    html+='<div class="seg-tabs" style="max-width:460px">'+_modes.map(function(m){
+      return '<div class="seg-tab'+(_initMode===m[0]?' active':'')+'" onclick="setInitMode(\''+m[0]+'\')"><i class="ti '+m[2]+'"></i>'+m[1]+'</div>';
+    }).join('')+'</div>';
   }
+  if(_initMode==='tko')   return html + renderTakeout(store);
+  if(_initMode==='lunch') return html + renderLunch(store);
   var list=initiativesFor(_initStore);
   html+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i class="ti ti-flask" style="color:var(--accent)"></i>施策分析'
     +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">'+escapeHtml(store.name)+'</span></div>';
@@ -20205,6 +20217,475 @@ function renderTakeout(store){
       +'<br>店舗設定の bowlGuids（Take Out メニューの商品）が未設定か、まだ開始していない可能性があります。</div></div>';
   }
   return tkoVerdictCard(store, R) + tkoWeekCard(R) + tkoThreeCard(R) + tkoCompareCard() + tkoEvidence(R);
+}
+/* ============================================================
+   v986 ランチ分析（週次）
+   ------------------------------------------------------------
+   A 判定（客数か単価か・次の一手・前提）
+   B 週次の推移（客数 / 売上 / 客単価 / ランチ比率）
+   C 平日 vs 週末（曜日別＋3つの群）
+   D 予実（当月・前日まで。会議タブと同じ _meetGapBreakdown から取る）
+   E 根拠（週次の生データ・定義・★いま測れないもの）
+   ★5段すべて全幅の独立カード。どこで return しても開閉が壊れない（v977 の判断）。
+   ★CSSを1行も足していない。横並びは既存の auto-fit グリッドだけ。
+============================================================ */
+var LUN_WEEKS = 16;      /* 見せる完全週の本数 */
+var LUN_WIN = 4;         /* 前後の平均をとる週数 */
+var LUN_MINWIN = 2;      /* これ未満なら判定しない */
+var LUN_DOWW = 8;        /* 曜日別に使う直近の週数。★16週だと直近の変化がぼける */
+/* ★1日ぶんの取り出し。ここが「テイクアウトを引く」唯一の場所。
+   lunchSales / lunchGuests は TO を含むので引く。_meetGapBreakdown と同じ引き算。
+   ★式を変えるなら両方変えること。片方だけ直すと会議タブと数字が食い違う。 */
+function lunDay(da, date){
+  var ov=(da||{})[date];
+  if(!ov || ov.actual==null) return null;      /* 実績が無い日＝休業か未同期。0にしない */
+  var tS=Number(ov.toLunchSales)||0, tC=Number(ov.toLunchCount)||0;
+  var s=(Number(ov.lunchSales)||0)-tS,  g=(Number(ov.lunchGuests)||0)-tC;
+  var ds=(Number(ov.dinnerSales)||0)-(Number(ov.toDinnerSales)||0);
+  var dg=(Number(ov.dinnerGuests)||0)-(Number(ov.toDinnerCount)||0);
+  if(s<0)s=0; if(g<0)g=0; if(ds<0)ds=0; if(dg<0)dg=0;
+  return { s:s, g:g, ds:ds, dg:dg, day:(Number(ov.actual)||0), toS:tS, toC:tC };
+}
+/* この店にランチ分析を出すか。★ブランドではなく実績で決める。
+   直近 LUN_WEEKS 週に、ランチ客が立った日が4日以上あれば出す。 */
+function lunHasData(sid){
+  try{
+    var da=(typeof getDailyActuals==='function')?(getDailyActuals(sid)||{}):{};
+    var today=bizToday(), n=0;
+    for(var i=1;i<=LUN_WEEKS*7;i++){
+      var d=lunDay(da, initDateAdd(today, -i));
+      if(d && d.g>0){ n++; if(n>=4) return true; }
+    }
+  }catch(e){}
+  return false;
+}
+/* 直近 n 本の完全週。★週の切り方は v985 のものをそのまま使う（2つ目を作らない）。 */
+function lunWeekRows(sid, n){
+  var da=getDailyActuals(sid)||{};
+  var curMon=tkoMonday(bizToday()), want=tkoWantDays(sid), rows=[];
+  for(var w=n; w>=1; w--){
+    var mon=initDateAdd(curMon, -7*w);
+    var r={ mon:mon, sun:initDateAdd(mon,6), days:0, want:want, g:0, s:0, dg:0, ds:0, day:0 };
+    for(var i=0;i<7;i++){
+      var d=lunDay(da, initDateAdd(mon,i));
+      if(!d) continue;
+      r.days++; r.g+=d.g; r.s+=d.s; r.dg+=d.dg; r.ds+=d.ds; r.day+=d.day;
+    }
+    r.full=(r.days>=r.want);
+    r.seg=r.s+r.ds;                                    /* 店内の合計（ランチ＋ディナー） */
+    r.ppa=(r.g>0)?(r.s/r.g):null;
+    r.dppa=(r.dg>0)?(r.ds/r.dg):null;
+    /* ★ランチ比率は「店内ランチ ÷ 店内合計」。分母に TO を混ぜない（分子が店内なので）。 */
+    r.share=(r.seg>0)?(r.s/r.seg*100):null;
+    rows.push(r);
+  }
+  return rows;
+}
+function lunAvg(arr, key){
+  var v=arr.map(function(r){ return r[key]; }).filter(function(x){ return x!=null; });
+  if(!v.length) return null;
+  return v.reduce(function(a,b){return a+b;},0)/v.length;
+}
+/* 曜日別。直近 weeks 週の完全・不完全を問わず、
+   ★ランチ客が立った日だけを数える。定休日や休業日で平均が薄まらないようにする。 */
+function lunDowRows(sid, weeks){
+  var da=getDailyActuals(sid)||{};
+  var curMon=tkoMonday(bizToday()), out=[];
+  for(var i=0;i<7;i++) out.push({ i:i, label:DOW[i], n:0, g:0, s:0 });
+  for(var w=weeks; w>=1; w--){
+    var mon=initDateAdd(curMon, -7*w);
+    for(var k=0;k<7;k++){
+      var d=lunDay(da, initDateAdd(mon,k));
+      if(!d || d.g<=0) continue;
+      out[k].n++; out[k].g+=d.g; out[k].s+=d.s;
+    }
+  }
+  out.forEach(function(o){
+    o.avgG=(o.n>0)?(o.g/o.n):null;
+    o.avgS=(o.n>0)?(o.s/o.n):null;
+    o.ppa=(o.g>0)?(o.s/o.g):null;
+  });
+  return out;
+}
+/* ★3つの群にする。依頼は「平日 vs 週末」だが、金曜はどちらでもない動きをすることが多い。
+   2つに丸めると金の判断ができないので、金だけ独立させて3つで出す。 */
+function lunGroups(dr){
+  function mk(lab, idx){
+    var n=0,g=0,s=0;
+    idx.forEach(function(i){ n+=dr[i].n; g+=dr[i].g; s+=dr[i].s; });
+    return { label:lab, n:n, g:g, s:s,
+      avgG:(n>0)?(g/n):null, avgS:(n>0)?(s/n):null, ppa:(g>0)?(s/g):null };
+  }
+  return [ mk('平日（月〜木）',[0,1,2,3]), mk('金',[4]), mk('週末（土日）',[5,6]) ];
+}
+function lunCompute(sid){
+  var rows=lunWeekRows(sid, LUN_WEEKS);
+  var R={ sid:sid, rows:rows, pre:[], post:[], reason:null, dropped:[] };
+  /* ★欠けた週は棒には描くが平均には入れない。何を捨てたかを必ず見せる（v985 と同じ）。 */
+  rows.forEach(function(r){ if(!r.full && r.days>0) R.dropped.push(r.mon); });
+  for(var j=rows.length-1; j>=0 && R.post.length<LUN_WIN; j--){ if(rows[j].full) R.post.unshift(rows[j]); }
+  var firstPost=R.post.length ? rows.indexOf(R.post[0]) : rows.length;
+  for(var i=firstPost-1; i>=0 && R.pre.length<LUN_WIN; i--){ if(rows[i].full) R.pre.unshift(rows[i]); }
+  R.dow=lunDowRows(sid, LUN_DOWW);
+  R.groups=lunGroups(R.dow);
+  R.postFrom=firstPost;
+  if(R.post.length<LUN_MINWIN){ R.reason='nopost'; return R; }
+  if(R.pre.length<LUN_MINWIN){ R.reason='nopre'; return R; }
+  var pg=R.pre.reduce(function(a,r){return a+r.g;},0),  ps=R.pre.reduce(function(a,r){return a+r.s;},0);
+  var qg=R.post.reduce(function(a,r){return a+r.g;},0), qs=R.post.reduce(function(a,r){return a+r.s;},0);
+  R.preG=pg/R.pre.length;  R.postG=qg/R.post.length;
+  R.preS=ps/R.pre.length;  R.postS=qs/R.post.length;
+  R.prePpa=(pg>0)?(ps/pg):null;  R.postPpa=(qg>0)?(qs/qg):null;
+  R.dS=R.postS-R.preS;
+  R.gPct=(R.preG>0)?((R.postG/R.preG-1)*100):null;
+  R.sPct=(R.preS>0)?((R.postS/R.preS-1)*100):null;
+  R.pPct=(R.prePpa>0)?((R.postPpa/R.prePpa-1)*100):null;
+  /* ★これが結論。ΔS を客数のぶんと単価のぶんに割る。恒等式なので合計は必ず ΔS。 */
+  if(R.prePpa!=null && R.postPpa!=null){
+    R.byG=(R.postG-R.preG)*R.prePpa;
+    R.byP=R.postG*(R.postPpa-R.prePpa);
+    R.driver=(Math.abs(R.byG)>=Math.abs(R.byP))?'guests':'ppa';
+  }
+  R.preShare=lunAvg(R.pre,'share');  R.postShare=lunAvg(R.post,'share');
+  R.preD=R.pre.reduce(function(a,r){return a+r.ds;},0)/R.pre.length;
+  R.postD=R.post.reduce(function(a,r){return a+r.ds;},0)/R.post.length;
+  R.dPct=(R.preD>0)?((R.postD/R.preD-1)*100):null;
+  return R;
+}
+/* 判定。★売上の向きだけでは決めない。中身（客数・単価）を必ず添える。 */
+function lunVerdict(R){
+  if(R.reason) return { key:'none', label:'まだ判定できません', col:'var(--muted)' };
+  var up=(R.sPct!=null && R.sPct>2), down=(R.sPct!=null && R.sPct<-2);
+  var gUp=(R.gPct!=null && R.gPct>0), pUp=(R.pPct!=null && R.pPct>0);
+  return {
+    key: up?'up':(down?'down':'flat'),
+    label: up?'伸びている':(down?'落ちている':'横ばい'),
+    col: up?'var(--green)':(down?'var(--red)':'var(--yellow)'),
+    why: (gUp&&pUp) ? '客数・客単価とも増えている'
+       : (gUp&&!pUp) ? '客数は増え、客単価は落ちている'
+       : (!gUp&&pUp) ? '客単価は上がり、客数は減っている'
+       : '客数・客単価とも落ちている'
+  };
+}
+/* ★次の一手。四象限のどこにいるかで打つ手が逆になる。
+   判定ではなく「示唆」として出す。決めるのは人。 */
+function lunNext(R){
+  if(R.reason) return null;
+  var gUp=(R.gPct!=null && R.gPct>0), pUp=(R.pPct!=null && R.pPct>0);
+  if(gUp&&pUp)  return '人も単価も動いている。形を変えず、席と人手が足りているかを先に見る。';
+  if(gUp&&!pUp) return '人は来ている。次は単価。セット化・+1品・上位グレードの見せ方に余地がある。';
+  if(!gUp&&pUp) return '単価で埋めている状態。値上げは効いているが人が減っている。まず集客を戻す。';
+  return 'まず客数。単価をいじる前に、人が来ない理由（時間帯・待ち・認知）を潰す。';
+}
+function _lunN(v, d){ return (v==null)?'—':Number(v).toFixed(d==null?0:d); }
+function _lunPct(v){ return (v==null)?'—':((v>0?'+':'')+v.toFixed(1)+'%'); }
+function _lunCol(v, up){ if(v==null) return 'var(--muted)'; var g=up?(v>0):(v<0); return v===0?'var(--muted)':(g?'var(--green)':'var(--red)'); }
+function _lunM(v, d){ return (v==null)?'—':('$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:(d==null?0:d),maximumFractionDigits:(d==null?0:d)})); }
+/* ★符号は絶対値の外に出す（-$12 ではなく −$12 と読める形。v960 と同じ作法）。 */
+function _lunSign(v){ return (v==null)?'—':((v>0?'+':(v<0?'−':''))+'$'+Math.abs(Math.round(v)).toLocaleString()); }
+function lunVerdictCard(store, R){
+  var V=lunVerdict(R);
+  var h='<div class="card" style="border:1.5px solid '+V.col+';margin-bottom:8px">'
+    +'<div style="font-size:11px;color:var(--muted)"><i class="ti ti-sun"></i> ランチ・'+escapeHtml(store.name)+'</div>'
+    +'<div style="font-size:18px;font-weight:800;color:'+V.col+';margin:3px 0 7px">'+V.label
+    +(V.why?('<span style="font-size:12px;font-weight:400;color:var(--tm)"> — '+V.why+'</span>'):'')+'</div>';
+  if(R.reason){
+    var msg=(R.reason==='nopost')
+      ? '完全な週が'+LUN_MINWIN+'週に足りません。週が貯まると判定が出ます。'
+      : '比べられる前の完全週が'+LUN_MINWIN+'週に足りません。推移と曜日別は下に出します。';
+    h+='<div style="font-size:12px;color:var(--muted);line-height:1.8">'+msg+'</div></div>';
+    return h;
+  }
+  h+='<div style="font-size:13px;line-height:2">'
+    +'売上 '+_lunM(R.preS)+' → '+_lunM(R.postS)+' ／週 <b style="color:'+_lunCol(R.sPct,true)+'">'+_lunPct(R.sPct)+'</b><br>'
+    +'客数 '+_lunN(R.preG)+' → '+_lunN(R.postG)+' 人／週 <b style="color:'+_lunCol(R.gPct,true)+'">'+_lunPct(R.gPct)+'</b><br>'
+    +'客単価 '+_lunM(R.prePpa,2)+' → '+_lunM(R.postPpa,2)+' <b style="color:'+_lunCol(R.pPct,true)+'">'+_lunPct(R.pPct)+'</b>'
+    +'</div>';
+  if(R.byG!=null && R.byP!=null){
+    h+='<div style="margin-top:8px;padding-top:7px;border-top:1px solid var(--border);font-size:13px;line-height:1.9">'
+      +'差 <b>'+_lunSign(R.dS)+'</b>／週　＝　'
+      +'客数のぶん <b style="color:'+_lunCol(R.byG,true)+'">'+_lunSign(R.byG)+'</b>'
+      +'　＋　単価のぶん <b style="color:'+_lunCol(R.byP,true)+'">'+_lunSign(R.byP)+'</b>'
+      +'<div style="font-size:11px;color:var(--muted)">動いているのは<b>'+(R.driver==='guests'?'客数':'客単価')+'</b>のほうです。</div></div>';
+  }
+  var nx=lunNext(R);
+  if(nx) h+='<div style="margin-top:7px;font-size:12px;color:var(--tm);line-height:1.8"><i class="ti ti-arrow-right" style="color:var(--accent)"></i> '+nx+'</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;padding-top:7px;border-top:1px solid var(--border);line-height:1.8">'
+    +'前'+R.pre.length+'週 vs 直近'+R.post.length+'週（どちらも完全週。当日を含む週は使っていません）'
+    +'<br>★店内のランチだけです（テイクアウトは抜いてあります）。'
+    +'★この画面の「ランチ」は L/D の境目より前の注文で、ランチ営業時間とは別物です（根拠カードに時刻）。';
+  if(R.dropped.length) h+='<br>営業日が欠けた週を平均から外しています：'+R.dropped.map(function(m){return escapeHtml(m.slice(5).replace('-','/'));}).join('・');
+  h+='</div></div>';
+  return h;
+}
+/* ============================================================
+   週次のグラフ。★売上だけランチ／ディナーを積み上げる。
+   ランチの帯が伸びても合計の線が寝ていれば、ディナーから移っただけ。
+============================================================ */
+function lunChart(rows, key, R){
+  var W=560, H=118, X0=48, Y0=14, n=rows.length;
+  if(!n) return '';
+  var stacked=(key==='sales');
+  var vals=[];
+  rows.forEach(function(r){
+    if(key==='guests') vals.push(r.g);
+    else if(key==='sales') vals.push(r.seg);
+    else if(key==='share'){ if(r.share!=null) vals.push(r.share); }
+    else { if(r.ppa!=null) vals.push(r.ppa); if(r.dppa!=null) vals.push(r.dppa); }
+  });
+  var mx=Math.max.apply(null, vals.concat([0]))||1;
+  var maxQ;
+  if(key==='share') maxQ=Math.max(10, Math.ceil(mx/10)*10);
+  else { var st=(mx>=1000)?500:((mx>=100)?50:5); maxQ=(Math.ceil(mx/st)*st)||1; }
+  var gap=W/n, bw=Math.max(8, Math.round(gap*0.56));
+  var py=function(v){ return Y0+H-(v/maxQ)*H; };
+  var cx=function(i){ return X0+gap*i+gap/2; };
+  var money=(key==='sales'||key==='ppa');
+  var svg='<svg viewBox="0 0 '+(X0+W+12)+' '+(H+46)+'" style="width:100%;height:auto">';
+  for(var t=0;t<=4;t++){
+    var y=Y0+H-(t/4)*H, lv=maxQ*t/4;
+    svg+='<line x1="'+X0+'" y1="'+y.toFixed(1)+'" x2="'+(X0+W)+'" y2="'+y.toFixed(1)+'" stroke="var(--bd)"'
+      +(t===0?'':' stroke-dasharray="2 4"')+' vector-effect="non-scaling-stroke"/>'
+      +'<text x="'+(X0-6)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="10" fill="var(--muted)">'
+      +(money?('$'+Math.round(lv).toLocaleString()):(key==='share'?(Math.round(lv)+'%'):Math.round(lv)))+'</text>';
+  }
+  rows.forEach(function(r,i){
+    var x=X0+gap*i+(gap-bw)/2, dim=(!r.full);
+    if(stacked){
+      var a=r.s, b=r.ds;
+      var ha=(a/maxQ)*H, hb=(b/maxQ)*H;
+      svg+='<rect x="'+x.toFixed(1)+'" y="'+(Y0+H-ha).toFixed(1)+'" width="'+bw+'" height="'+Math.max(0,ha).toFixed(1)+'" fill="var(--accent)" opacity="'+(dim?0.4:1)+'"/>';
+      if(hb>0) svg+='<rect x="'+x.toFixed(1)+'" y="'+(Y0+H-ha-hb).toFixed(1)+'" width="'+bw+'" height="'+hb.toFixed(1)+'" fill="var(--muted)" opacity="'+(dim?0.28:0.55)+'"/>';
+    } else if(key==='guests' || key==='share'){
+      var v=(key==='guests')?r.g:r.share;
+      if(v==null) return;
+      var hh=(v/maxQ)*H;
+      svg+='<rect x="'+x.toFixed(1)+'" y="'+(Y0+H-hh).toFixed(1)+'" width="'+bw+'" height="'+Math.max(0,hh).toFixed(1)+'" fill="var(--accent)" opacity="'+(dim?0.4:1)+'"/>';
+    }
+  });
+  if(stacked){
+    var seg=[];
+    rows.forEach(function(r,i){ seg.push(cx(i).toFixed(1)+','+py(r.seg).toFixed(1)); });
+    svg+='<polyline points="'+seg.join(' ')+'" fill="none" stroke="var(--tm)" stroke-width="2" vector-effect="non-scaling-stroke"/>';
+  }
+  if(key==='ppa'){
+    [['ppa','var(--accent)'],['dppa','var(--muted)']].forEach(function(p){
+      var sg=[], flush=function(){ if(sg.length>1) svg+='<polyline points="'+sg.join(' ')+'" fill="none" stroke="'+p[1]+'" stroke-width="2" vector-effect="non-scaling-stroke"/>'; sg=[]; };
+      rows.forEach(function(r,i){ var v=r[p[0]]; if(v==null){ flush(); return; } sg.push(cx(i).toFixed(1)+','+py(v).toFixed(1)); });
+      flush();
+    });
+  }
+  /* ★直近の窓の始まり。前後どこを平均したかが目で分かるように線を引く。 */
+  if(R && R.post && R.post.length && R.postFrom>=0 && R.postFrom<n){
+    var bx=X0+gap*R.postFrom;
+    svg+='<line x1="'+bx.toFixed(1)+'" y1="'+(Y0-8)+'" x2="'+bx.toFixed(1)+'" y2="'+(Y0+H)+'" stroke="var(--accent2)" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>'
+      +'<text x="'+(bx+4).toFixed(1)+'" y="'+(Y0-1)+'" font-size="10" fill="var(--accent2)">直近'+R.post.length+'週</text>';
+  }
+  var every=(n<=10)?1:(n<=18?2:Math.ceil(n/9));
+  rows.forEach(function(r,i){
+    if(i%every!==0 && i!==n-1) return;
+    svg+='<text x="'+cx(i).toFixed(1)+'" y="'+(Y0+H+15)+'" text-anchor="middle" font-size="10" fill="var(--muted)">'
+      +escapeHtml(r.mon.slice(5).replace('-','/'))+'</text>';
+  });
+  rows.forEach(function(r,i){
+    if(r.full || r.days===0) return;
+    svg+='<text x="'+cx(i).toFixed(1)+'" y="'+(Y0+H+28)+'" text-anchor="middle" font-size="9" fill="var(--yellow)">'+r.days+'日</text>';
+  });
+  return svg+'</svg>';
+}
+function lunWeekCard(R){
+  var tabs=[['guests','客数'],['sales','売上'],['ppa','客単価'],['share','ランチ比率']];
+  var k=['guests','sales','ppa','share'].indexOf(_lunTab)>=0?_lunTab:'guests';
+  var bar='<div class="seg-tabs" style="max-width:420px">'+tabs.map(function(t){
+    return '<div class="seg-tab'+(k===t[0]?' active':'')+'" onclick="setLunTab(\''+t[0]+'\')">'+t[1]+'</div>';
+  }).join('')+'</div>';
+  var lg=(k==='sales')
+      ? '<span><span style="display:inline-block;width:10px;height:10px;background:var(--accent);vertical-align:-1px;margin-right:4px"></span>ランチ</span>'
+        +'<span><span style="display:inline-block;width:10px;height:10px;background:var(--muted);opacity:.55;vertical-align:-1px;margin-right:4px"></span>ディナー</span>'
+        +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--tm);vertical-align:3px;margin-right:4px"></span>店内合計</span>'
+      : (k==='ppa' ? '<span><span style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:3px;margin-right:4px"></span>ランチ</span>'
+                     +'<span><span style="display:inline-block;width:14px;height:2px;background:var(--muted);vertical-align:3px;margin-right:4px"></span>ディナー</span>' : '');
+  var note=(k==='guests') ? '週あたりのランチ客数（店内）。集客そのものです。棒が薄い週は営業日が欠けています。'
+    : (k==='sales') ? '★ランチの帯が伸びても合計の線が寝ていれば、ディナーから移っただけです。'
+    : (k==='ppa') ? 'ランチとディナーの客単価。差が開くほど、ランチを増やすと全体の単価は下がります。'
+    : 'ランチ比率＝店内ランチ売上 ÷ 店内合計。ランチに寄っているのか、ディナーが弱いのかを見ます。';
+  return '<div class="card" style="margin-bottom:8px">'
+    +'<div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>週次の推移'
+    +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">完全週のみ・当日を含む週は出しません</span></div>'
+    +bar+lunChart(R.rows, k, R)
+    +(lg?'<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:2px">'+lg+'</div>':'')
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'+note+'</div></div>';
+}
+/* ============================================================
+   平日 vs 週末。★曜日の棒と、3つの群のタイル。
+   ★客数と単価を同時に見せる。売上だけだと「土日は強い」で終わり、
+     それが人が多いからなのか単価が高いからなのかが分からない。
+============================================================ */
+function lunDowChart(dr){
+  var W=560, H=104, X0=48, Y0=12, n=7;
+  var mx=Math.max.apply(null, dr.map(function(o){ return o.avgG||0; }).concat([0]))||1;
+  var st=(mx>=100)?50:((mx>=20)?10:5);
+  var maxQ=(Math.ceil(mx/st)*st)||1;
+  var gap=W/n, bw=Math.max(10, Math.round(gap*0.5));
+  var svg='<svg viewBox="0 0 '+(X0+W+12)+' '+(H+42)+'" style="width:100%;height:auto">';
+  for(var t=0;t<=2;t++){
+    var y=Y0+H-(t/2)*H;
+    svg+='<line x1="'+X0+'" y1="'+y.toFixed(1)+'" x2="'+(X0+W)+'" y2="'+y.toFixed(1)+'" stroke="var(--bd)"'
+      +(t===0?'':' stroke-dasharray="2 4"')+' vector-effect="non-scaling-stroke"/>'
+      +'<text x="'+(X0-6)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="10" fill="var(--muted)">'+Math.round(maxQ*t/2)+'</text>';
+  }
+  dr.forEach(function(o,i){
+    var x=X0+gap*i+(gap-bw)/2;
+    var col=(i>=5)?'var(--accent2)':((i===4)?'var(--purple)':'var(--accent)');
+    if(o.avgG!=null){
+      var hh=(o.avgG/maxQ)*H;
+      svg+='<rect x="'+x.toFixed(1)+'" y="'+(Y0+H-hh).toFixed(1)+'" width="'+bw+'" height="'+Math.max(0,hh).toFixed(1)+'" fill="'+col+'"/>';
+    }
+    svg+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(Y0+H+15)+'" text-anchor="middle" font-size="10" fill="var(--tm)">'+escapeHtml(o.label)+'</text>'
+      +'<text x="'+(x+bw/2).toFixed(1)+'" y="'+(Y0+H+27)+'" text-anchor="middle" font-size="9" fill="var(--muted)">'
+      +(o.ppa!=null?('$'+o.ppa.toFixed(0)):'—')+'</text>';
+  });
+  return svg+'</svg>';
+}
+function lunDowCard(store, R){
+  var dr=R.dow, gs=R.groups;
+  var wk=gs[0], fr=gs[1], we=gs[2];
+  var tile=function(o, col){
+    return '<div style="background:var(--surface2);border-radius:10px;padding:9px 11px">'
+      +'<div style="font-size:10.5px;color:'+(col||'var(--muted)')+'">'+o.label+'</div>'
+      +'<div style="font-size:18px;font-weight:800;color:var(--tm)">'+_lunN(o.avgG)+' 人<span style="font-size:11px;font-weight:400;color:var(--muted)">／日</span></div>'
+      +'<div style="font-size:10px;color:var(--muted)">単価 '+_lunM(o.ppa,2)+'　売上 '+_lunM(o.avgS)+'／日　'+o.n+'日</div></div>';
+  };
+  var h='<div class="card" style="margin-bottom:8px">'
+    +'<div class="card-title"><i class="ti ti-calendar-week" style="color:var(--accent2)"></i>平日 vs 週末'
+    +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">直近'+LUN_DOWW+'週・1日あたり</span></div>'
+    +lunDowChart(dr)
+    +'<div style="font-size:10.5px;color:var(--muted);margin:2px 0 8px;line-height:1.7">棒＝平均客数／日　棒の下＝客単価。'
+    +'<span style="color:var(--purple)">金</span>は平日にも週末にも寄せず、独立で出しています。</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">'
+    +tile(wk)+tile(fr,'var(--purple)')+tile(we,'var(--accent2)')+'</div>';
+  /* ★倍率で言い切る。生の数字だけだと「週末が強い」で止まって次が決まらない。 */
+  if(wk.avgG!=null && we.avgG!=null && wk.avgG>0 && wk.ppa!=null && we.ppa!=null && wk.ppa>0){
+    var rg=we.avgG/wk.avgG, rp=we.ppa/wk.ppa;
+    var say = (rg>=1.15 && rp<1.05) ? '週末は<b>人が増えるだけ</b>で単価は変わりません。週末は席の回転と人手、平日は単価が課題です。'
+            : (rg<1.05 && rp>=1.10) ? '週末は<b>単価が上がるだけ</b>で人数は変わりません。週末に高単価の受け皿があり、平日は集客が課題です。'
+            : (rg>=1.15 && rp>=1.10) ? '週末は<b>人も単価も上</b>。平日とは別の商売として組み立てたほうが早いです。'
+            : '週末と平日で大きな差がありません。<b>曜日で分けるより、時間帯や客層で分けたほうが</b>手がかりが出ます。';
+    h+='<div style="font-size:12px;color:var(--tm);margin-top:8px;padding-top:7px;border-top:1px solid var(--border);line-height:1.9">'
+      +'週末は平日の　客数 <b>'+rg.toFixed(2)+'倍</b>　／　単価 <b>'+rp.toFixed(2)+'倍</b><br>'+say+'</div>';
+  }
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.7">'
+    +'★ランチ客が1人も立っていない日は数えていません（定休・休業でならすと平均が下がるため）。'
+    +'日数が少ない曜日は、その数字を鵜呑みにしないでください。</div>';
+  return h+'</div>';
+}
+/* ============================================================
+   予実。★ここで新しく計算しない。会議タブの _meetGapBreakdown から取る。
+   同じ数字を2つの経路で作らない（v982 の教訓）。向こうが直れば、ここも直る。
+============================================================ */
+function lunGapLunch(sid, ym, key){
+  try{
+    if(typeof _meetGapBreakdown!=='function') return { ok:false, note:'分解の関数がありません' };
+    var r=_meetGapBreakdown(sid, ym, key);
+    if(!r || !r.ok) return { ok:false, note:(r&&r.note)||'算出できません' };
+    var L=(r.ld&&r.ld.lunch)||null;
+    if(!L) return { ok:false, note:'ランチの内訳がありません' };
+    return { ok:true, act:L.act, tgt:L.tgt, gap:L.gap, tgtMode:r.tgtMode, days:r.days };
+  }catch(e){ console.warn('lunGapLunch', e); return { ok:false, note:'算出に失敗しました' }; }
+}
+function lunBudgetCard(store){
+  var ym; try{ ym=curYm(); }catch(e){ return ''; }
+  var S=lunGapLunch(store.id, ym, 'sales');
+  var G=lunGapLunch(store.id, ym, 'guests');
+  var P=lunGapLunch(store.id, ym, 'ppa');
+  var h='<div class="card" style="margin-bottom:8px">'
+    +'<div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>予実 · 店内ランチ'
+    +'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(String(ym))+'・前日まで</span></div>';
+  if(!S.ok){
+    h+='<div style="font-size:12px;color:var(--muted);line-height:1.8">'+escapeHtml(S.note)+'</div>'
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.7">'
+      +'★この段の数字は会議タブの内訳と同じ計算から取っています。予算を入れると、両方に同時に出ます。</div></div>';
+    return h;
+  }
+  var tile=function(lab, act, tgt, money, dg){
+    var pct=(tgt!=null && tgt>0 && act!=null)?(act/tgt*100):null;
+    var col=(pct==null)?'var(--muted)':(pct>=100?'var(--green)':(pct>=90?'var(--yellow)':'var(--red)'));
+    var f=function(v){ return money?_lunM(v,dg==null?0:dg):_lunN(v); };
+    return '<div style="background:var(--surface2);border-radius:10px;padding:9px 11px">'
+      +'<div style="font-size:10.5px;color:var(--muted)">'+lab+'</div>'
+      +'<div style="font-size:18px;font-weight:800;color:'+col+'">'+(pct!=null?(pct.toFixed(0)+'%'):'—')+'</div>'
+      +'<div style="font-size:10px;color:var(--muted)">実績 '+f(act)+' ／ 予算 '+f(tgt)+'</div></div>';
+  };
+  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">'
+    +tile('売上', S.act, S.tgt, true, 0)
+    +(G.ok?tile('客数', G.act, G.tgt, false):'<div style="background:var(--surface2);border-radius:10px;padding:9px 11px"><div style="font-size:10.5px;color:var(--muted)">客数</div><div style="font-size:13px;color:var(--muted);margin-top:6px">'+escapeHtml(G.note)+'</div></div>')
+    +(P.ok?tile('客単価', P.act, P.tgt, true, 2):'<div style="background:var(--surface2);border-radius:10px;padding:9px 11px"><div style="font-size:10.5px;color:var(--muted)">客単価</div><div style="font-size:13px;color:var(--muted);margin-top:6px">'+escapeHtml(P.note)+'</div></div>')
+    +'</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:7px;line-height:1.7">'
+    +'★上の週次は「前4週 vs 直近4週」、ここは「当月の前日まで vs 予算」。'
+    +'見ている期間が違うので、向きが食い違うことがあります。どちらも正しい数字です。'
+    +'<br>★この段は会議タブの内訳と同じ計算から取っています（数字が2つに割れないように）。</div>';
+  return h+'</div>';
+}
+function lunEvidence(store, R){
+  var rows=R.rows;
+  var spl='16:00';
+  try{ if(typeof tipSplitHourFor==='function' && typeof _hhFromFrac==='function') spl=_hhFromFrac(tipSplitHourFor(store.id)); }catch(e){}
+  var h='<div class="card"><details><summary style="font-size:12.5px;font-weight:700;cursor:pointer;color:var(--accent2)">根拠を見る（週次の生データ・定義・いま測れないもの）</summary>';
+  h+='<div style="font-size:11px;color:var(--muted);line-height:1.8;margin:8px 0">'
+    +'<b>この画面の「ランチ」</b>：Toast の注文を <b>'+escapeHtml(spl)+'</b> より前か後かで割ったうちの「前」です'
+    +'（店舗設定の「L/Dの境目」）。<b>ランチ営業時間（'+escapeHtml(String(store.lunchHours||'11:00-14:30'))+'）とは別物</b>で、'
+    +'営業時間のあと '+escapeHtml(spl)+' までに入った注文もランチに入ります。'
+    +'<br><b>店内だけ</b>：lunchSales / lunchGuests はテイクアウトを含むので、toLunchSales / toLunchCount を引いています。'
+    +'<br><b>ランチ比率</b>：店内ランチ ÷ 店内合計（ランチ＋ディナー）。分母にテイクアウトを混ぜていません。'
+    +'</div>';
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:540px;font-size:11px"><thead><tr>'
+    +'<th style="text-align:left">週（月〜日）</th><th style="text-align:right">日数</th>'
+    +'<th style="text-align:right">L客数</th><th style="text-align:right">L売上</th><th style="text-align:right">L単価</th>'
+    +'<th style="text-align:right">D売上</th><th style="text-align:right">D単価</th><th style="text-align:right">L比率</th>'
+    +'</tr></thead><tbody>';
+  rows.forEach(function(r,i){
+    var mark=(i===R.postFrom)?' <span style="color:var(--accent2);font-size:9px">直近</span>':'';
+    h+='<tr'+(!r.full?' style="opacity:.6"':'')+'><td>'+escapeHtml(r.mon.slice(5).replace('-','/'))+mark+'</td>'
+      +'<td style="text-align:right'+(!r.full?';color:var(--yellow)':'')+'">'+r.days+'</td>'
+      +'<td style="text-align:right;font-weight:700">'+Math.round(r.g).toLocaleString()+'</td>'
+      +'<td style="text-align:right">'+_lunM(r.s)+'</td>'
+      +'<td style="text-align:right">'+_lunM(r.ppa,2)+'</td>'
+      +'<td style="text-align:right">'+_lunM(r.ds)+'</td>'
+      +'<td style="text-align:right">'+_lunM(r.dppa,2)+'</td>'
+      +'<td style="text-align:right">'+(r.share!=null?r.share.toFixed(1)+'%':'—')+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  /* ★測れないものを黙って出さない。なぜ測れないかと、測れるようにする道を書く。 */
+  h+='<div style="font-size:11px;color:var(--muted);line-height:1.8;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">'
+    +'<b style="color:var(--yellow)">★いま測れないもの：ハッピーアワー</b>'
+    +'<br>同期は注文を '+escapeHtml(spl)+' の前後で<b>2つに割るだけ</b>で、3つ目の時間帯を持っていません。'
+    +'商品別の出数（toast_item_sales）も日単位で、何時に売れたかを持ちません。'
+    +'<br>つまり「15時台の売上」を出す材料がアプリにもDBにも無く、'
+    +'いま出せる数字はすべて<b>推定</b>になります。判断材料にならないので出していません。'
+    +'<br>測れるようにする道は2つ：'
+    +'<br>　①<b>ハッピーアワー限定の商品</b>を Toast のメニューで分けて、その商品GUIDを登録する（同期の改修は不要）'
+    +'<br>　②<b>同期に時間帯を足す</b>（Edge Function に3つ目のバケツ＋DB列。過去ぶんは再同期が要る）'
+    +'<br>①は「何杯出たか」まで、②は「いくら売れたか」まで分かります。'
+    +'</div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.7">'
+    +'★薄い行は営業日が欠けた週です。平均からは外していますが、消さずに出しています。'
+    +'<br>★L単価・D単価は店内だけの客単価です。他の画面のテイクアウト込みの単価とは一致しません。</div>';
+  return h+'</details></div>';
+}
+function renderLunch(store){
+  if(!store) return '';
+  var R;
+  try{ R=lunCompute(store.id); }
+  catch(e){ console.warn('lunCompute', e); return '<div class="card"><div style="font-size:12px;color:var(--muted)">ランチの集計に失敗しました。</div></div>'; }
+  var any=R.rows.some(function(r){ return r.g>0; });
+  if(!any){
+    return '<div class="card"><div style="font-size:12px;color:var(--muted);line-height:1.8">'
+      +'この店のランチ客数が、直近'+LUN_WEEKS+'週で1件も記録されていません。'
+      +'<br>Toastの同期がまだか、L/Dの境目より前の注文が無い可能性があります。</div></div>';
+  }
+  return lunVerdictCard(store, R) + lunWeekCard(R) + lunDowCard(store, R)
+       + lunBudgetCard(store) + lunEvidence(store, R);
 }
 /* ============================================================
    v977 施策分析の画面
@@ -35411,7 +35892,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '985';
+const APP_VERSION = '986';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
