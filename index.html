@@ -26738,6 +26738,147 @@ function drinkTrendSub(scopeStores, days){
   return h;
 }
 /* ============================================================
+   v992 原価率＝業者別の推移／ドリンク＝お酒とソフトの比率の推移
+============================================================ */
+/* 1か月ぶんの業者別仕入。★「当月仕入」と同じルールで数える。
+   請求書は Receipt と Reimburse を除外し、複数店に割ったぶんだけ足す。
+   買い出し（purchases）も業者名で同じ袋に入れる。
+   ★合計は monthInvoiceTotalYm + monthPurchaseTotalYm と一致しなければならない。 */
+function fcVendorMonth(scopeStores, ym){
+  var map={}, total=0;
+  var canon=function(v){
+    var n=(v==null?'':String(v)).trim();
+    if(!n) return t('業者未設定','No vendor');
+    try{ if(typeof vendorCanon==='function'){ var c=vendorCanon(n); if(c) return c; } }catch(e){}
+    return n;
+  };
+  var add=function(name, amt){
+    if(!(amt>0) && !(amt<0)) return;
+    var k=canon(name);
+    if(!map[k]) map[k]={vendor:k, amt:0, n:0};
+    map[k].amt+=amt; map[k].n++; total+=amt;
+  };
+  var ids={}; (scopeStores||[]).forEach(function(st){ ids[st.id]=1; });
+  /* 請求書。★1枚を複数店で分けている場合は、スコープに入っている店の数だけ足す。
+     monthInvoiceTotalYm を店ごとに呼ぶのと同じ結果になる。 */
+  var inv=[]; try{ inv=ls('invoices',[])||[]; }catch(e){ inv=[]; }
+  inv.forEach(function(v){
+    if(v.docType==='Receipt' || v.docType==='Reimburse') return;
+    var d=null; try{ d=_invDate(v); }catch(e){}
+    if(!d) return;
+    if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
+    var sids=[]; try{ sids=_invStoreIds(v)||[]; }catch(e){}
+    if(!sids.length) return;
+    var hit=0; sids.forEach(function(x){ if(ids[x]) hit++; });
+    if(!hit) return;
+    add(v.vendor, (Number(v.total)||0)/sids.length*hit);
+  });
+  /* 買い出し */
+  (scopeStores||[]).forEach(function(st){
+    var ps=[]; try{ ps=getPurchases(st.id)||[]; }catch(e){ ps=[]; }
+    ps.forEach(function(p){
+      var inYm=false;
+      try{ inYm = dateInYm(p.date, ym) || (!p.date && ym===curYm()); }catch(e){}
+      if(!inYm) return;
+      add(p.vendor, parseFloat(p.amount)||0);
+    });
+  });
+  var rows=Object.keys(map).map(function(k){ return map[k]; }).sort(function(a,b){ return b.amt-a.amt; });
+  return { rows:rows, total:total, byName:map };
+}
+/* 業者別 × 3か月。★行は「3か月のどこかで金額がある業者」を全部出してから絞る。
+   当月だけで絞ると、今月まだ請求が来ていない業者が消えて「減った」ことに気づけない。 */
+function fcVendorTriSub(scopeStores, days){
+  var ym=(days&&days[0])?days[0].date.slice(0,7):''; if(!ym) return '';
+  var yms=[ymShift(ym,-2), ymShift(ym,-1), ym];
+  var labs=[t('前々月','2 mo'), t('前月','Last mo'), t('当月','This mo')];
+  var ms=yms.map(function(y){ return fcVendorMonth(scopeStores, y); });
+  var names={};
+  ms.forEach(function(m){ m.rows.forEach(function(r){ names[r.vendor]=1; }); });
+  var list=Object.keys(names);
+  if(!list.length) return '';
+  var rows=list.map(function(nm){
+    var v=ms.map(function(m){ return (m.byName[nm]? m.byName[nm].amt : 0); });
+    /* ★色を付ける比較は 前々月→前月。どちらも完了した月なので比べられる。 */
+    var d=(v[0]>0)?((v[1]/v[0]-1)*100):null;
+    return { vendor:nm, v:v, d:d, max:Math.max(v[0],v[1],v[2]) };
+  }).sort(function(a,b){ return b.max-a.max; });
+  var TOP=8;
+  var shown=rows.slice(0,TOP), rest=rows.slice(TOP);
+  var restV=[0,0,0];
+  rest.forEach(function(r){ restV[0]+=r.v[0]; restV[1]+=r.v[1]; restV[2]+=r.v[2]; });
+  var money=function(x){ return (x>0||x<0)?('$'+Math.round(x).toLocaleString()):'—'; };
+  var h=_kdHead(t('業者別の仕入（前々月 / 前月 / 当月）','Purchases by vendor'));
+  h+='<div style="margin-top:6px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
+    +'<thead><tr style="color:var(--muted)">'
+    +'<th style="text-align:left;font-weight:600;padding:3px 4px">'+t('業者','Vendor')+'</th>'
+    + labs.map(function(l,i){ return '<th style="text-align:right;font-weight:600;padding:3px 4px'+(i===2?';color:var(--accent2)':'')+'">'+l+'</th>'; }).join('')
+    +'<th style="text-align:right;font-weight:600;padding:3px 4px">'+t('前月比','Δ')+'</th></tr></thead><tbody>';
+  var tr=function(nm, v, d, dim){
+    var dc=(d==null)?'var(--muted)':(Math.abs(d)<0.05?'var(--muted)':(d>0?'var(--red)':'var(--green)'));
+    return '<tr style="border-top:1px solid var(--border)'+(dim?';opacity:.7':'')+'">'
+      +'<td style="padding:4px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(nm)+'</td>'
+      + v.map(function(x,i){ return '<td style="text-align:right;padding:4px'+(i===2?';color:var(--accent2)':'')+(i===1?';font-weight:700':'')+'">'+money(x)+'</td>'; }).join('')
+      +'<td style="text-align:right;padding:4px;color:'+dc+';font-weight:700">'+(d==null?'—':((d>0?'+':'')+d.toFixed(0)+'%'))+'</td></tr>';
+  };
+  shown.forEach(function(r){ h+=tr(r.vendor, r.v, r.d, false); });
+  if(rest.length) h+=tr(t('その他','Other')+' '+rest.length+t('社',''), restV, (restV[0]>0?((restV[1]/restV[0]-1)*100):null), true);
+  h+='<tr style="border-top:2px solid var(--border)"><td style="padding:4px;font-weight:700">'+t('合計','Total')+'</td>'
+    + ms.map(function(m,i){ return '<td style="text-align:right;padding:4px;font-weight:700'+(i===2?';color:var(--accent2)':'')+'">'+money(m.total)+'</td>'; }).join('')
+    + '<td style="text-align:right;padding:4px;font-weight:700">'
+    + ((ms[0].total>0)?((ms[1].total/ms[0].total-1)>0?'+':'')+((ms[1].total/ms[0].total-1)*100).toFixed(0)+'%':'—')+'</td></tr>';
+  h+='</tbody></table></div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.7">'
+    +t('★「前月比」は 前々月→前月 の変化です。どちらも完了した月なので比べられます。',
+       'The Δ column compares 2-months-ago to last month (both complete).')
+    +'<br>'+t('★当月は月の途中です。月末にまとめて請求が来る業者があるので、当月だけを見て「減った」と判断しないでください。',
+              'The current month is incomplete; some vendors bill at month end.')
+    +'<br>'+t('★合計は上の「当月仕入」と同じ数え方です（Receipt と Reimburse を除き、買い出しを含む）。',
+              'Totals use the same rule as Purchases above.')
+    +'<br>'+t('※「業者別 当月仕入」カード（経理）はレシートも含む別の数え方なので、金額が一致しません。',
+              'Note: the accounting vendor card counts receipts too, so it differs.')
+    +'</div>';
+  return h;
+}
+/* ---- ドリンク：お酒／ソフトの比率を3か月で並べる ----
+   ★依頼は「比率」。金額の棒（v991）だけだと、売上が伸びた月に全部太くなって比べにくい。 */
+function drinkRatioTriSub(scopeStores, days){
+  var ym=(days&&days[0])?days[0].date.slice(0,7):''; if(!ym) return '';
+  var tri=drinkTriFor(scopeStores, ym);
+  if(!tri.some(function(m){ return m.has; })) return '';
+  var pct=function(v){ return (v==null)?'—':(v.toFixed(1)+'%'); };
+  var alcT=tri.map(function(m){ return (m.total>0)? m.alcohol/m.total*100 : null; });
+  var sofT=tri.map(function(m){ return (m.total>0)? m.soft/m.total*100 : null; });
+  var h=_kdHead(t('お酒／ソフトの比率（対総売上）','Alcohol / soft as % of sales'));
+  h+='<div style="margin-top:6px;display:flex;gap:4px">'
+    + tri.map(function(m,i){
+        return _kpiMiniChip(m.label,
+          '<span style="color:'+KD_CALC+'">'+pct(alcT[i])+'</span>',
+          '<span style="color:'+KD_CSOFT+'">'+t('ソフト','Soft')+' '+pct(sofT[i])+'</span>', i===2);
+      }).join('') + '</div>';
+  var d=function(a){ return (a[1]!=null&&a[0]!=null)?(a[1]-a[0]):null; };
+  var dA=d(alcT), dS=d(sofT);
+  if(dA!=null || dS!=null){
+    var f=function(x){ return (x==null)?'—':((x>0?'+':'')+x.toFixed(1)+'pt'); };
+    h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'
+      +t('前々月→前月','2 mo → last mo')+'　'
+      +t('お酒','Alc')+' <b style="color:'+KD_CALC+'">'+f(dA)+'</b>　'
+      +t('ソフト','Soft')+' <b style="color:'+KD_CSOFT+'">'+f(dS)+'</b></div>';
+  }
+  /* ★ドリンクの中での取り合いも出す。総売上が動いた月は、対総売上だと両方動いてしまう。 */
+  var inA=tri.map(function(m){ return m.alcShare; });
+  if(inA.some(function(x){ return x!=null; })){
+    h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.8">'
+      +t('ドリンクの中でお酒が占める割合','Alcohol share within drinks')+'：'
+      + tri.map(function(m,i){ return m.label+' <b style="color:var(--tm)">'+pct(inA[i])+'</b>'; }).join('　')
+      +'</div>';
+  }
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.7">'
+    +t('★当月は月の途中です。比率どうしなら月の途中でも比べられます（金額は比べられません）。',
+       'Ratios are comparable mid-month; amounts are not.')+'</div>';
+  return h;
+}
+/* ============================================================
    v982 重要KPI（目標 vs 実績 ＋ 前週比）
    ------------------------------------------------------------
    旧 renderBudgetSummary の②をそのまま関数にしたもの。中身は変えていない。
@@ -26785,11 +26926,11 @@ function budKpiCard(stores, days, agg, isCur, wow){
   if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString(), {title:t('リピート率','Repeat rate'), body:_kpiDetailWrap(t('前々月・前月・当月のリピート率と、初回／リピートの実数の推移。','Repeat rate and first/repeat counts: 2 mo ago / last mo / this mo.'), repeatTrendSub(stores,days))});
   html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null, {title:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), body:_kpiDetailWrap(t('区分別（ランチ／ディナー／テイクアウト）の1日あたり実績／予算、曜日ごとの平均、前々月からの推移。','Per-day by segment (L/D/TO), by weekday, and the 3-month trend.'), (guestAvgSub(k)||'')+guestDowTriSub(stores,days,k.unit==='丼'?t('丼','bowls'):t('人','guests')))});
   html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価、実績のある日の最低〜最高、曜日ごとの平均、前々月からの推移。','Check by segment, daily range, by weekday, and the 3-month trend.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days)+checkDowTriSub(stores,days))});
-  html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。','COGS: begin inv + purchases + transfer − end inv.'), fcBreakdownSub(stores,days))});
+  html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。あわせて業者別の仕入を前々月・前月と比較。','COGS breakdown, plus purchases by vendor vs the prior two months.'), (fcBreakdownSub(stores,days)||'')+fcVendorTriSub(stores,days))});
   html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。あわせて1日あたりの総労働時間と人件費額の推移。','Payroll split G2+/G1, plus hours-per-day and payroll trend.'), (laborGradeSub(stores,days)||'')+laborTrendSub(stores,days))});
   if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('味噌汁UP率 ★','Miso upsell % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null, {title:t('味噌汁UP率','Miso upsell %'), body:_kpiDetailWrap(t('味噌汁を付けた数 ÷ 対象の丼数。','Attached ÷ eligible bowls.'), misoSub(k))});
   if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null, {title:t('いくらシャワー率','Ikura shower %'), body:_kpiDetailWrap(t('いくらシャワー数 ÷ 対象の丼数。','Ikura ÷ eligible bowls.'), ikuraSub(k))});
-  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上と、お酒／ソフトの内訳・曜日別・前々月からの推移。お酒の対象カテゴリ設定に依存します。','Drink ÷ total per store, alcohol/soft split, by weekday, and the 3-month trend.'), (drinkSubDetail(k)||'')+drinkTrendSub(stores,days))});
+  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上と、お酒／ソフトの内訳・曜日別・前々月からの推移。お酒の対象カテゴリ設定に依存します。','Drink ÷ total per store, alcohol/soft split, by weekday, and the 3-month trend.'), (drinkSubDetail(k)||'')+drinkRatioTriSub(stores,days)+drinkTrendSub(stores,days))});
   html += `</div>
     <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
   return html;
@@ -36330,7 +36471,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '991';
+const APP_VERSION = '992';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
