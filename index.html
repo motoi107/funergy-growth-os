@@ -3381,11 +3381,14 @@ function mdWowFor(storeId, ym){
   if (ym !== curYm()) return {};
   try { return wowStats([{ id: storeId }]) || {}; } catch(e){ return {}; }
 }
-function mdWowTag(v, goodWhenUp){
+/* v988: days を渡すと、7日そろわなかったときだけ日数を添える。
+   ★そろっているときは何も足さない。毎回括弧が付くと読みにくくなる。 */
+function mdWowTag(v, goodWhenUp, days){
   if (v == null) return '';
   var good = goodWhenUp ? (v >= 0) : (v <= 0);
+  var note = (days != null && days < 7) ? '（' + days + '日で比較）' : '';
   return '<span class="md-wow" style="background:' + (good ? '#15a66a1f' : '#e23b3b1f')
-    + ';color:' + (good ? 'var(--green)' : 'var(--red)') + '">前週比 ' + (v > 0 ? '+' : '') + v + '%</span>';
+    + ';color:' + (good ? 'var(--green)' : 'var(--red)') + '">前週比 ' + (v > 0 ? '+' : '') + v + '%' + note + '</span>';
 }
 var MD_CARD_KPIS = [['guests','ti-friends'],['ppa','ti-coin'],['labor_rate','ti-users'],['cost_rate','ti-meat']];
 function mdStoreCardHtml(storeId, ym, solo){
@@ -3410,7 +3413,7 @@ function mdStoreCardHtml(storeId, ym, solo){
       + '<div class="md-sc-fix">' + escapeHtml(f0.how) + '</div>';
   } else {
     h += '<div class="md-sc-v" style="color:' + sm.color + '">' + mdFmt(sales.actual, sales.unit)
-      + mdWowTag(wow.sales, true) + '</div>'
+      + mdWowTag(wow.sales, true, wow.days) + '</div>'
       + '<div class="md-sc-s">進捗予算 ' + mdFmt(sales.target, sales.unit) + '　<b style="color:' + sm.color + '">'
       + mdSigned(sales.diff, sales.unit) + '（' + (sales.target > 0 ? Math.round(sales.actual/sales.target*1000)/10 : 0) + '%）</b>'
       + (fc > 0 && ser.budMonth > 0
@@ -26137,24 +26140,36 @@ function saveSeg(storeId, seg) {
 
 /* ===== 前週比（WoW）: 昨日までの直近7日 vs その前の7日（同曜日構成で比較） ===== */
 function wowStats(stores){
-  var base = new Date(); base.setHours(0,0,0,0);
-  function sumRange(startOffset){
-    var s=0,g=0,f=0,has=false;
-    for(var i=1;i<=7;i++){
-      var iso=isoOf(new Date(base.getTime()-(startOffset+i)*86400000));
-      (stores||[]).forEach(function(st){
-        var ov=(getDailyActuals(st.id)||{})[iso]||{};
-        if(ov.actual!=null){
-          has=true; s+=Number(ov.actual)||0;
-          var metric=(typeof guestCountType==='function')?guestCountType(st.id):'guest';
-          g += metric==='bowls' ? ((Number(ov.bowls)||0)+(Number(ov.takeoutBowls)||0)) : (Number(ov.guests)||0);
-          if(ov.actual>0) f += (ov.foodCost!=null)?(Number(ov.foodCost)||0):dayCostReal(st.id, iso);
-        }
-      });
-    }
-    return {sales:s, guests:g, food:f, has:has};
+  /* ★v987: 起点は端末の時計ではなくハワイの営業日。
+     日本から見ると端末の日付が1日進むので、直近7日の窓にハワイの当日が入っていた。
+     当日はまだ同期されていないので必ず0。7日のつもりが6日になり、
+     売れていても前週比がマイナスに出る（実測で +10% が −7% と表示された）。 */
+  var _biz = bizToday();
+  /* 1日ぶんを足す。実績のある店が1つも無ければ null を返す（0と区別する）。 */
+  function dayOf(offset){
+    var iso=initDateAdd(_biz, -offset), s=0,g=0,f=0,has=false;
+    (stores||[]).forEach(function(st){
+      var ov=(getDailyActuals(st.id)||{})[iso]||{};
+      if(ov.actual!=null){
+        has=true; s+=Number(ov.actual)||0;
+        var metric=(typeof guestCountType==='function')?guestCountType(st.id):'guest';
+        g += metric==='bowls' ? ((Number(ov.bowls)||0)+(Number(ov.takeoutBowls)||0)) : (Number(ov.guests)||0);
+        if(ov.actual>0) f += (ov.foodCost!=null)?(Number(ov.foodCost)||0):dayCostReal(st.id, iso);
+      }
+    });
+    return has ? {sales:s, guests:g, food:f} : null;
   }
-  var cur=sumRange(0), prev=sumRange(7);
+  /* ★v988: 前後を対でそろえる。窓のずれはちょうど7日なので、同じ i は必ず同じ曜日。
+     ★片方でも実績が無い i は、両方から落とす。0として足すと、休んだ日がある側が必ず低く出る。
+     同期の遅れ・定休日・臨時休業のどれにも同じ手で効く（v980 の initPairDays と同じ考え方）。 */
+  var cur={sales:0,guests:0,food:0,has:false}, prev={sales:0,guests:0,food:0,has:false}, paired=0, dropped=[];
+  for(var i=1;i<=7;i++){
+    var a=dayOf(i), b=dayOf(i+7);
+    if(!a || !b){ dropped.push(initDateAdd(_biz, -i)); continue; }
+    cur.sales+=a.sales;  cur.guests+=a.guests;  cur.food+=a.food;  cur.has=true;
+    prev.sales+=b.sales; prev.guests+=b.guests; prev.food+=b.food; prev.has=true;
+    paired++;
+  }
   var ok = cur.has && prev.has && prev.sales>0;
   var curPpa=cur.guests>0?cur.sales/cur.guests:null, prevPpa=prev.guests>0?prev.sales/prev.guests:null;
   var curFc=cur.sales>0?cur.food/cur.sales*100:null, prevFc=prev.sales>0?prev.food/prev.sales*100:null;
@@ -26162,7 +26177,9 @@ function wowStats(stores){
     sales: ok?Math.round((cur.sales-prev.sales)/prev.sales*1000)/10:null,
     guests:(ok&&prev.guests>0)?Math.round((cur.guests-prev.guests)/prev.guests*1000)/10:null,
     ppa: (curPpa!=null&&prevPpa!=null&&prevPpa>0)?Math.round((curPpa-prevPpa)/prevPpa*1000)/10:null,
-    fcPt:(curFc!=null&&prevFc!=null)?Math.round((curFc-prevFc)*10)/10:null
+    fcPt:(curFc!=null&&prevFc!=null)?Math.round((curFc-prevFc)*10)/10:null,
+    /* ★何日で比べたか。7日そろわなかったときだけ画面に出す。 */
+    days: paired, dropped: dropped
   };
 }
 /* WoWバッジ。goodWhenUp=false は「下がる＝改善」のKPI。pt=true はポイント差表記（改善/悪化を明記） */
@@ -26313,6 +26330,414 @@ function renderBudgetAllStoreAgg(stores, cumByStore, agg, isCur, mdays, monLabel
   return h + '</div>';
 }
 /* ============================================================
+   v989 KPI内訳の共通部品（曜日別・3か月推移・横棒）
+   ------------------------------------------------------------
+   ★6つの内訳が同じ形を使う。数え方を1か所に閉じ込めるのが目的。
+============================================================ */
+var KD_DOW = ['月','火','水','木','金','土','日'];
+/* 日ごとに全店を合算する。pick(ov, sid, date) は {a:分子, b:分母} を返す（b は省略可）。
+   ★実績が無い日と未来日は数えない。0として数えると休業日で平均が沈む。 */
+function kdAgg(scopeStores, days, pick){
+  var todayStr=bizToday(), byDate={}, aSum=0, bSum=0, n=0;
+  (scopeStores||[]).forEach(function(st){
+    var da=(typeof getDailyActuals==='function')?(getDailyActuals(st.id)||{}):{};
+    (days||[]).forEach(function(d){
+      if(d.date>todayStr) return;
+      var ov=da[d.date];
+      if(!ov || ov.actual==null) return;
+      var v=pick(ov, st.id, d.date);
+      if(!v) return;
+      if(!byDate[d.date]) byDate[d.date]={a:0,b:0};
+      byDate[d.date].a+=(Number(v.a)||0);
+      byDate[d.date].b+=(Number(v.b)||0);
+    });
+  });
+  Object.keys(byDate).forEach(function(dt){ n++; aSum+=byDate[dt].a; bSum+=byDate[dt].b; });
+  return { byDate:byDate, a:aSum, b:bSum, days:n,
+    /* 1日あたり */ per:(n>0? aSum/n : null),
+    /* 率＝合計÷合計。★日ごとの率を平均しない。 */ rate:(bSum>0? aSum/bSum : null) };
+}
+/* 曜日別。0=月。★bizDowIdx は 0=日 なので +6%7 でずらす（端末TZに依らない）。 */
+function kdDow(agg){
+  var out=[]; for(var i=0;i<7;i++) out.push({i:i, label:KD_DOW[i], n:0, a:0, b:0});
+  Object.keys((agg&&agg.byDate)||{}).forEach(function(dt){
+    var o=out[(bizDowIdx(dt)+6)%7];
+    o.n++; o.a+=agg.byDate[dt].a; o.b+=agg.byDate[dt].b;
+  });
+  out.forEach(function(o){ o.per=(o.n>0?o.a/o.n:null); o.rate=(o.b>0?o.a/o.b:null); });
+  return out;
+}
+/* 前々月・前月・当月を同じ pick で集計する。 */
+function kdTri(scopeStores, ym, pick){
+  if(!ym) return [];
+  return [
+    {label:t('前々月','2 mo'),   ym:ymShift(ym,-2), agg:kdAgg(scopeStores, prevMonthDaysList(ymShift(ym,-1)), pick)},
+    {label:t('前月','Last mo'),  ym:ymShift(ym,-1), agg:kdAgg(scopeStores, prevMonthDaysList(ym), pick)},
+    {label:t('当月','This mo'),  ym:ym,             agg:kdAgg(scopeStores, daysOfYm(ym), pick)}
+  ];
+}
+/* 横棒1組。fmt(v) で表示、n は営業日数。★週末（土日）は色を変える。 */
+function kdBars(rows, fmt, key){
+  var k=key||'per';
+  var vals=rows.map(function(r){ return (r[k]==null?0:r[k]); });
+  var mx=Math.max.apply(null, vals.concat([0]))||1;
+  return '<div style="margin-top:6px">'+rows.map(function(r){
+    var v=r[k], we=(r.i>=5);
+    var w=(v==null||v<=0)?0:Math.max(2, v/mx*100);
+    return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
+      +'<span style="width:15px;font-size:10.5px;font-weight:700;color:'+(we?'var(--accent2)':'var(--muted)')+'">'+r.label+'</span>'
+      +'<div style="flex:1;min-width:30px;height:11px;background:var(--surface2);border-radius:6px;overflow:hidden">'
+        +'<div style="height:100%;width:'+w.toFixed(1)+'%;background:'+(we?'var(--accent2)':'var(--accent)')+'"></div></div>'
+      +'<span style="width:64px;text-align:right;font-size:11px;font-weight:700;color:var(--tm)">'+(v==null?'—':fmt(v))+'</span>'
+      +'<span style="width:26px;text-align:right;font-size:9px;color:var(--muted)">'+(r.n>0?(r.n+t('日','d')):'—')+'</span>'
+      +'</div>';
+  }).join('')+'</div>';
+}
+/* 3か月のチップ＋当月と前月の差。★差は「前月比」だと分かるように書く。 */
+function kdTriChips(tri, fmt, key){
+  var k=key||'per';
+  var h='<div style="margin-top:6px;display:flex;gap:4px">'+tri.map(function(m,i){
+    var v=m.agg[k];
+    return _kpiMiniChip(m.label, (v==null?'—':fmt(v)), (m.agg.days>0?(m.agg.days+t('日','d')):''), i===2);
+  }).join('')+'</div>';
+  var p=tri[1]&&tri[1].agg[k], c=tri[2]&&tri[2].agg[k];
+  if(p!=null && c!=null && p>0){
+    var d=(c/p-1)*100;
+    var col=(Math.abs(d)<0.05)?'var(--muted)':(d>0?'var(--green)':'var(--red)');
+    h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+t('前月比','vs last mo')
+      +' <b style="color:'+col+'">'+(d>0?'+':'')+d.toFixed(1)+'%</b></div>';
+  }
+  return h;
+}
+function _kdHead(txt){
+  return '<div style="font-size:9.5px;color:var(--muted);letter-spacing:.03em;margin-top:10px">'
+    +'<i class="ti ti-calendar-stats" style="font-size:10px"></i> '+txt+'</div>';
+}
+/* pick: その店の数え方（丼か客数か）に従う。checkRangeSub と同じ規約。 */
+function kdPickCount(ov, sid){
+  var metric=(typeof guestCountType==='function')?guestCountType(sid):'guest';
+  var c=(metric==='bowls')?((Number(ov.bowls)||0)+(Number(ov.takeoutBowls)||0)):(Number(ov.guests)||0);
+  return c>0?{a:c}:null;
+}
+function kdPickSales(ov){ return (ov.actual>0)?{a:Number(ov.actual)||0}:null; }
+function kdPickPpa(ov, sid){
+  if(!(ov.actual>0)) return null;
+  var c=kdPickCount(ov, sid);
+  return c?{a:Number(ov.actual)||0, b:c.a}:null;
+}
+var _kdMoney = function(v){ return '$'+Math.round(v).toLocaleString(); };
+var _kdMoney2 = function(v){ return '$'+v.toFixed(2); };
+var _kdNum = function(v){ return (Math.round(v*10)/10).toLocaleString(); };
+/* ---- 売上進捗：曜日ごとの1日平均 ---- */
+function salesDowSub(scopeStores, days){
+  var dw=kdDow(kdAgg(scopeStores, days, kdPickSales));
+  if(!dw.some(function(r){ return r.n>0; })) return '';
+  return _kdHead(t('曜日ごとの1日あたり売上（当月・実績のある日だけ）','Avg daily sales by weekday'))
+    + kdBars(dw, _kdMoney, 'per');
+}
+/* ---- 客数：曜日別 ＋ 3か月推移 ---- */
+function guestDowTriSub(scopeStores, days, unit){
+  var ym=(days&&days[0])?days[0].date.slice(0,7):'';
+  var u=unit||t('人','guests');
+  var h='';
+  var dw=kdDow(kdAgg(scopeStores, days, kdPickCount));
+  if(dw.some(function(r){ return r.n>0; })){
+    h += _kdHead(t('曜日ごとの1日あたり','Per-day by weekday')+'（'+u+'）') + kdBars(dw, _kdNum, 'per');
+  }
+  if(ym){
+    var tri=kdTri(scopeStores, ym, kdPickCount);
+    if(tri.some(function(m){ return m.agg.days>0; })){
+      h += _kdHead(t('1日あたりの推移','Per-day trend')+'（'+u+'）') + kdTriChips(tri, _kdNum, 'per');
+    }
+  }
+  return h;
+}
+/* ---- 客単価：曜日別 ＋ 3か月推移。★率なので合計÷合計。 ---- */
+function checkDowTriSub(scopeStores, days){
+  var ym=(days&&days[0])?days[0].date.slice(0,7):'';
+  var h='';
+  var dw=kdDow(kdAgg(scopeStores, days, kdPickPpa));
+  if(dw.some(function(r){ return r.n>0; })){
+    h += _kdHead(t('曜日ごとの客単価（売上合計÷客数合計）','Avg check by weekday')) + kdBars(dw, _kdMoney2, 'rate');
+  }
+  if(ym){
+    var tri=kdTri(scopeStores, ym, kdPickPpa);
+    if(tri.some(function(m){ return m.agg.days>0; })){
+      h += _kdHead(t('客単価の推移','Avg check trend')) + kdTriChips(tri, _kdMoney2, 'rate');
+    }
+  }
+  return h;
+}
+/* ============================================================
+   v990 リピート率と人件費率の内訳
+============================================================ */
+/* 積み上げの横棒。parts=[{v,color,label}]。★合計に対する割合で描く。 */
+function kdStackBar(parts, total){
+  var T=(total!=null?total:parts.reduce(function(a,p){return a+(p.v||0);},0));
+  if(!(T>0)) return '';
+  return '<div style="height:12px;background:var(--surface2);border-radius:6px;overflow:hidden;display:flex">'
+    + parts.map(function(p){
+        var w=(p.v||0)/T*100;
+        return w>0 ? '<div style="height:100%;width:'+w.toFixed(2)+'%;background:'+p.color+'"></div>' : '';
+      }).join('')
+    + '</div>';
+}
+function kdLegend(items){
+  return '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:10.5px;color:var(--muted);margin-top:4px">'
+    + items.map(function(i){
+        return '<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'
+          +i.color+';margin-right:4px;vertical-align:-1px"></span>'+i.label+'</span>';
+      }).join('') + '</div>';
+}
+/* ---- リピート率：率の推移 ＋ 実数（初回／リピート）の推移 ----
+   ★率だけだと「初回が減って率が上がった」のを見落とす。実数を必ず並べる。 */
+var KD_CFIRST='#e8794a', KD_CREPEAT='#15a66a';
+function repeatTrendSub(scopeStores, days){
+  var ym=(days&&days[0])?days[0].date.slice(0,7):''; if(!ym) return '';
+  var months=[
+    {label:t('前々月','2 mo'),  list:prevMonthDaysList(ymShift(ym,-1))},
+    {label:t('前月','Last mo'), list:prevMonthDaysList(ym)},
+    {label:t('当月','This mo'), list:daysOfYm(ym)}
+  ];
+  var rows=months.map(function(m){
+    var st=repeatStats(scopeStores, m.list||[]);
+    return { label:m.label, first:st.first||0, repeat:st.repeat||0, total:st.total||0, has:st.has,
+      rate:(st.has && st.total>0)?(st.repeat/st.total*100):null };
+  });
+  if(!rows.some(function(r){ return r.has && r.total>0; })) return '';
+  var mxT=Math.max.apply(null, rows.map(function(r){return r.total;}).concat([0]))||1;
+  var h=_kdHead(t('リピート率の推移','Repeat rate trend'));
+  h+='<div style="margin-top:6px;display:flex;gap:4px">'
+    + rows.map(function(r,i){ return _kpiMiniChip(r.label, r.rate==null?'—':r.rate.toFixed(1)+'%', '', i===2); }).join('')
+    + '</div>';
+  /* ★実数。棒の長さは「その月の対象数」、色の内訳が 初回／リピート。 */
+  h+=_kdHead(t('数の推移（初回／リピート）','Counts (first / repeat)'));
+  h+='<div style="margin-top:6px">'+rows.map(function(r){
+    var w=(r.total>0)?Math.max(3, r.total/mxT*100):0;
+    return '<div style="margin-bottom:7px">'
+      +'<div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);margin-bottom:2px">'
+        +'<span>'+r.label+'</span>'
+        +'<span>'+t('計','Tot')+' <b style="color:var(--tm)">'+Math.round(r.total).toLocaleString()+'</b>'
+        +'　'+t('初回','First')+' '+Math.round(r.first).toLocaleString()
+        +'　'+t('リピート','Rep')+' '+Math.round(r.repeat).toLocaleString()+'</span></div>'
+      +'<div style="width:'+w.toFixed(1)+'%;min-width:3%">'
+        + kdStackBar([{v:r.repeat, color:KD_CREPEAT},{v:r.first, color:KD_CFIRST}], r.total)
+      +'</div></div>';
+  }).join('')+'</div>';
+  h+=kdLegend([{color:KD_CREPEAT,label:t('リピート','Repeat')},{color:KD_CFIRST,label:t('初回','First')}]);
+  /* ★読み方を書く。率と実数が逆を向くことがあるので、そこを言葉にしておく。 */
+  var p=rows[1], c=rows[2];
+  if(p && c && p.total>0 && c.total>0 && p.rate!=null && c.rate!=null){
+    var dR=c.rate-p.rate, dF=(p.first>0)?((c.first/p.first-1)*100):null;
+    var say='';
+    if(dR>0.5 && dF!=null && dF<-5) say=t('★率は上がっていますが、初回が減っています。新規が来ていないぶんの上昇です。','Rate up but first-timers down.');
+    else if(dR<-0.5 && dF!=null && dF>5) say=t('率は下がっていますが、初回が増えています。新規獲得は効いています。','Rate down but first-timers up.');
+    else if(dR>0.5) say=t('率も実数も伸びています。','Both rate and counts up.');
+    else if(dR<-0.5) say=t('率が下がっています。リピートの実数も確認してください。','Rate down — check repeat counts.');
+    if(say) h+='<div style="font-size:11px;color:var(--tm);margin-top:7px;line-height:1.7">'+say+'</div>';
+  }
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">'
+    +t('★当月は前日まで。月の途中なので、実数は前月より小さく出ます（率は比較できます）。',
+       'Current month is through yesterday, so counts read lower than a full month.')+'</div>';
+  return h;
+}
+/* ---- 人件費率：総労働時間／日 と 人件費額 の推移 ----
+   ★時間は getTipLabor から、額は laborCoreForYm から。額をここで足し直さない。 */
+function laborHoursForYm(scopeStores, ym){
+  /* ★当日は除く（>= で切る）。まだ終わっていない日を入れると1日あたりが沈む。
+     ★額のほうの laborCoreForYm も cutoff=bizToday() で「当日より前」までなので、
+       時間と額を並べて見せる以上、期間は必ずそろえること。 */
+  var todayStr=bizToday(), byDate={};
+  (scopeStores||[]).forEach(function(st){
+    (daysOfYm(ym)||[]).forEach(function(d){
+      if(d.date>=todayStr) return;
+      var lb=null; try{ lb=getTipLabor(st.id, d.date); }catch(e){ return; }
+      if(!lb) return;
+      var hh=0;
+      Object.keys(lb).forEach(function(n){ hh+=(_laborHrs(lb[n])||0); });
+      if(hh>0){ byDate[d.date]=(byDate[d.date]||0)+hh; }
+    });
+  });
+  var ks=Object.keys(byDate), sum=0;
+  ks.forEach(function(k){ sum+=byDate[k]; });
+  return { hours:sum, days:ks.length, per:(ks.length>0? sum/ks.length : null) };
+}
+function laborCostForYm(scopeStores, ym){
+  var total=0, has=false;
+  (scopeStores||[]).forEach(function(st){
+    var core=null; try{ core=laborCoreForYm(st.id, ym); }catch(e){ return; }
+    if(!core) return;
+    has=true; total+=(Number(core.total)||0);
+  });
+  return has?total:null;
+}
+function laborTrendSub(scopeStores, days){
+  var ym=(days&&days[0])?days[0].date.slice(0,7):''; if(!ym) return '';
+  var yms=[ymShift(ym,-2), ymShift(ym,-1), ym];
+  var labs=[t('前々月','2 mo'), t('前月','Last mo'), t('当月','This mo')];
+  var hrs=yms.map(function(y){ return laborHoursForYm(scopeStores, y); });
+  var cost=yms.map(function(y){ return laborCostForYm(scopeStores, y); });
+  var h='';
+  if(hrs.some(function(x){ return x.days>0; })){
+    h+=_kdHead(t('1日あたりの総労働時間','Total hours per day'));
+    h+='<div style="margin-top:6px;display:flex;gap:4px">'
+      + hrs.map(function(x,i){
+          return _kpiMiniChip(labs[i], x.per==null?'—':(Math.round(x.per*10)/10)+'h',
+            (x.days>0?(x.days+t('日','d')):''), i===2);
+        }).join('') + '</div>';
+    var p=hrs[1].per, c=hrs[2].per;
+    if(p!=null && c!=null && p>0){
+      var d=(c/p-1)*100;
+      h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+t('前月比','vs last mo')
+        +' <b style="color:'+(Math.abs(d)<0.05?'var(--muted)':(d>0?'var(--red)':'var(--green)'))+'">'
+        +(d>0?'+':'')+d.toFixed(1)+'%</b> '
+        +t('（増＝投入が増えている）','(up = more hours)')+'</div>';
+    }
+  }
+  if(cost.some(function(x){ return x!=null; })){
+    h+=_kdHead(t('人件費額（賃金＋税・保険等）','Payroll (wage + tax/ins)'));
+    h+='<div style="margin-top:6px;display:flex;gap:4px">'
+      + cost.map(function(x,i){ return _kpiMiniChip(labs[i], x==null?'—':fmtK(Math.round(x)), '', i===2); }).join('')
+      + '</div>';
+    var pc=cost[1], cc=cost[2];
+    if(pc!=null && cc!=null && pc>0){
+      var dc=(cc/pc-1)*100;
+      h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+t('前月比','vs last mo')
+        +' <b style="color:'+(Math.abs(dc)<0.05?'var(--muted)':(dc>0?'var(--red)':'var(--green)'))+'">'
+        +(dc>0?'+':'')+dc.toFixed(1)+'%</b></div>';
+    }
+  }
+  if(h) h+='<div style="font-size:10px;color:var(--muted);margin-top:7px;line-height:1.6">'
+    +t('★時間は打刻から、額は人件費の計算（会議タブ・PLと同じ）から取っています。',
+       'Hours come from punches; the amount comes from the same payroll calc as the meeting tab.')
+    +'<br>'+t('★当月は前日まで。額は月給者の日割りを含むため、月の途中では前月より小さく出ます。',
+              'Current month is through yesterday; salaried staff are pro-rated.')
+    +'<br>'+t('★時間には月給者の打刻も入ります（額のほうは月額を日割りで計上）。',
+              'Hours include salaried staff punches; their cost is pro-rated monthly.')+'</div>';
+  return h;
+}
+/* ============================================================
+   v991 ドリンク比率の内訳（ソフト／お酒とその推移）
+============================================================ */
+var KD_CALC='#9b59b6', KD_CSOFT='#4a90e8';
+/* 3か月ぶんの ソフト／お酒。★金額の作り方は salesMixForScope に任せる（2つ目を作らない）。 */
+function drinkTriFor(scopeStores, ym){
+  var ids=(scopeStores||[]).map(function(s){ return s.id; });
+  return [
+    {label:t('前々月','2 mo'),  ym:ymShift(ym,-2)},
+    {label:t('前月','Last mo'), ym:ymShift(ym,-1)},
+    {label:t('当月','This mo'), ym:ym}
+  ].map(function(m){
+    var mx=null;
+    try{ mx=salesMixForScope(ids, m.ym, m.ym); }catch(e){ mx=null; }
+    var d=mx?(mx.alcohol+mx.soft):0;
+    return { label:m.label, ym:m.ym, has:!!(mx&&mx.hasMenu&&mx.total>0),
+      alcohol:(mx?mx.alcohol:0), soft:(mx?mx.soft:0), drink:d, total:(mx?mx.total:0),
+      rate:(mx&&mx.total>0)?(d/mx.total*100):null,
+      alcShare:(d>0&&mx)?(mx.alcohol/d*100):null };
+  });
+}
+/* 日別の出数から、ドリンクの金額を日ごとに出す。
+   ★取り込み済み（initMixFor が中身を返す）ときだけ。null なら呼び元が説明を出す。
+   ★カテゴリの引き当ては salesMixForScope と同じ規約（drinkCats / alcoholCats）。 */
+function drinkDowFor(scopeStores, ym){
+  var recipes=(typeof activeRecipes==='function')?activeRecipes():((typeof getRecipes==='function')?getRecipes():[]);
+  var out=[]; for(var i=0;i<7;i++) out.push({i:i, label:KD_DOW[i], n:0, a:0, b:0});
+  var seen={}, any=false;
+  var todayStr=bizToday();
+  (scopeStores||[]).forEach(function(st){
+    var day=null; try{ day=initMixFor(st.id, ym); }catch(e){ day=null; }
+    if(!day) return;
+    any=true;
+    var cfg=(typeof getKpiConfigFor==='function')?getKpiConfigFor(st.id):{drinkCats:[],alcoholCats:[]};
+    var drinkCats=(cfg.drinkCats||[]).map(function(c){ return String(c).toLowerCase(); });
+    var byGuid={};
+    recipes.forEach(function(r){
+      if(!r.toastGuid) return;
+      if(typeof recipeInStore==='function' && !recipeInStore(r, st.id)) return;
+      byGuid[r.toastGuid]={ price:(parseFloat(r.price)||0), cat:(r.category?String(r.category).toLowerCase():'') };
+    });
+    Object.keys(day).forEach(function(dt){
+      if(dt>=todayStr) return;                 /* 当日は出数が揃っていない */
+      var items=day[dt]||{}, dr=0, tot=0;
+      Object.keys(items).forEach(function(g){
+        var m=byGuid[g]; if(!m) return;
+        var v=(Number(items[g])||0)*m.price;
+        tot+=v;
+        if(drinkCats.length && m.cat && drinkCats.indexOf(m.cat)>=0) dr+=v;
+      });
+      if(!(tot>0)) return;
+      if(!seen[dt]) seen[dt]={a:0,b:0};
+      seen[dt].a+=dr; seen[dt].b+=tot;
+    });
+  });
+  if(!any) return null;                        /* 未取込。0と区別する */
+  Object.keys(seen).forEach(function(dt){
+    var o=out[(bizDowIdx(dt)+6)%7];
+    o.n++; o.a+=seen[dt].a; o.b+=seen[dt].b;
+  });
+  out.forEach(function(o){ o.rate=(o.b>0? o.a/o.b*100 : null); });
+  return out;
+}
+function drinkTrendSub(scopeStores, days){
+  var ym=(days&&days[0])?days[0].date.slice(0,7):''; if(!ym) return '';
+  var h='';
+  var tri=drinkTriFor(scopeStores, ym);
+  if(tri.some(function(m){ return m.has; })){
+    h+=_kdHead(t('ドリンク比率の推移','Drink ratio trend'));
+    h+='<div style="margin-top:6px;display:flex;gap:4px">'
+      + tri.map(function(m,i){ return _kpiMiniChip(m.label, m.rate==null?'—':m.rate.toFixed(1)+'%', '', i===2); }).join('')
+      + '</div>';
+    /* ★内訳。ドリンクの中でお酒が何割かは、率そのものより動きが読みやすい。 */
+    h+=_kdHead(t('お酒／ソフトの内訳とその推移','Alcohol / soft split'));
+    var mxD=Math.max.apply(null, tri.map(function(m){ return m.drink; }).concat([0]))||1;
+    h+='<div style="margin-top:6px">'+tri.map(function(m){
+      var w=(m.drink>0)?Math.max(3, m.drink/mxD*100):0;
+      return '<div style="margin-bottom:7px">'
+        +'<div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);margin-bottom:2px">'
+          +'<span>'+m.label+'</span>'
+          +'<span>'+t('ドリンク','Drink')+' <b style="color:var(--tm)">'+fmtK(Math.round(m.drink))+'</b>'
+          +(m.alcShare!=null?('　'+t('うちお酒','alc')+' '+m.alcShare.toFixed(0)+'%'):'')+'</span></div>'
+        +'<div style="width:'+w.toFixed(1)+'%;min-width:3%">'
+          + kdStackBar([{v:m.alcohol,color:KD_CALC},{v:m.soft,color:KD_CSOFT}], m.drink)
+        +'</div></div>';
+    }).join('')+'</div>';
+    h+=kdLegend([{color:KD_CALC,label:t('お酒','Alcohol')},{color:KD_CSOFT,label:t('ソフト','Soft')}]);
+    var p=tri[1], c=tri[2];
+    if(p&&c&&p.alcShare!=null&&c.alcShare!=null){
+      var d=c.alcShare-p.alcShare;
+      if(Math.abs(d)>=1) h+='<div style="font-size:11px;color:var(--tm);margin-top:6px;line-height:1.7">'
+        + (d>0 ? t('★ドリンクに占めるお酒の割合が上がっています（客単価に効きます）。','Alcohol share is up.')
+               : t('★ドリンクに占めるお酒の割合が下がっています。ソフトに寄っています。','Alcohol share is down.'))
+        + '</div>';
+    }
+  }
+  /* ---- 曜日別（日別の出数を取り込んでいれば） ---- */
+  var dw=null; try{ dw=drinkDowFor(scopeStores, ym); }catch(e){ dw=null; }
+  if(dw && dw.some(function(r){ return r.n>0; })){
+    h+=_kdHead(t('曜日ごとのドリンク比率（日別の出数から）','Drink ratio by weekday'));
+    h+=kdBars(dw, function(v){ return v.toFixed(1)+'%'; }, 'rate');
+  } else {
+    h+=_kdHead(t('曜日別','By weekday'));
+    h+='<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.7">'
+      + t('日別の出数がまだ取り込まれていません。','Daily item counts are not loaded yet.')
+      + t('★予実 → 施策分析 でこの店を開くと日別の出数を取りに行くので、その後にここへ出ます。',
+          ' Open Budget → Initiatives for this store to load them.')
+      + '</div>';
+  }
+  /* ---- ★出せないもの ---- */
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:10px;padding-top:8px;border-top:1px solid var(--border);line-height:1.7">'
+    + '<b style="color:var(--yellow)">'+t('★L／D／TO 別は出せません','★No L/D/TO split')+'</b><br>'
+    + t('ドリンクの金額は出数×売価で作っており、出数は月（または日）までしか持たず、時刻を持ちません。',
+        'Drink amounts come from item counts × price; counts have no time of day.')
+    + t('ランチのハイボールとディナーのハイボールを分ける材料がアプリにもDBにもありません。',
+        ' Nothing separates a lunch drink from a dinner drink.')
+    + t('推定は出しません。同期に時間帯のバケツを足せば出せるようになります（ハッピーアワーと同じ工事）。',
+        ' Adding a time-of-day bucket to the sync would enable it.')
+    + '</div>';
+  return h;
+}
+/* ============================================================
    v982 重要KPI（目標 vs 実績 ＋ 前週比）
    ------------------------------------------------------------
    旧 renderBudgetSummary の②をそのまま関数にしたもの。中身は変えていない。
@@ -26356,15 +26781,15 @@ function budKpiCard(stores, days, agg, isCur, wow){
   var _spCol = pctColor(_sp);
   html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>${t('KPI 目標との差・前週比','KPI vs Target · WoW')} <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${t('目標＝KPI管理／承認予算','Target = KPI mgmt / approved budget')}</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">`;
-  html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''), {title:t('売上進捗','Sales progress'), body:_kpiDetailWrap(t('平日（月〜木）と週末（金土日）の1日あたり平均売上。','Avg daily sales: weekday (Mon–Thu) vs weekend (Fri–Sun).'), salesSplitSub(stores,days))});
-  if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString(), {title:t('リピート率','Repeat rate'), body:_kpiDetailWrap(t('前々月・前月・当月のリピート率推移。','Repeat trend: 2 mo ago / last mo / this mo.'), repeatCompareSub(stores,days))});
-  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null, {title:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), body:_kpiDetailWrap(t('区分別（ランチ／ディナー／テイクアウト）の1日あたり実績／予算。','Per-day actual/budget by segment (L/D/TO).'), guestAvgSub(k))});
-  html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価と、実績のある日の最低〜最高（日別レンジ）。','Check by segment, plus lowest–highest daily.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days))});
+  html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''), {title:t('売上進捗','Sales progress'), body:_kpiDetailWrap(t('平日（月〜木）と週末（金土日）の1日あたり平均売上と、曜日ごとの平均。','Avg daily sales: weekday vs weekend, and by weekday.'), salesSplitSub(stores,days)+salesDowSub(stores,days))});
+  if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString(), {title:t('リピート率','Repeat rate'), body:_kpiDetailWrap(t('前々月・前月・当月のリピート率と、初回／リピートの実数の推移。','Repeat rate and first/repeat counts: 2 mo ago / last mo / this mo.'), repeatTrendSub(stores,days))});
+  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null, {title:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), body:_kpiDetailWrap(t('区分別（ランチ／ディナー／テイクアウト）の1日あたり実績／予算、曜日ごとの平均、前々月からの推移。','Per-day by segment (L/D/TO), by weekday, and the 3-month trend.'), (guestAvgSub(k)||'')+guestDowTriSub(stores,days,k.unit==='丼'?t('丼','bowls'):t('人','guests')))});
+  html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価、実績のある日の最低〜最高、曜日ごとの平均、前々月からの推移。','Check by segment, daily range, by weekday, and the 3-month trend.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days)+checkDowTriSub(stores,days))});
   html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。','COGS: begin inv + purchases + transfer − end inv.'), fcBreakdownSub(stores,days))});
-  html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。','Payroll split: G2+ / G1. Excludes tax/insurance.'), laborGradeSub(stores,days))});
+  html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。あわせて1日あたりの総労働時間と人件費額の推移。','Payroll split G2+/G1, plus hours-per-day and payroll trend.'), (laborGradeSub(stores,days)||'')+laborTrendSub(stores,days))});
   if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('味噌汁UP率 ★','Miso upsell % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null, {title:t('味噌汁UP率','Miso upsell %'), body:_kpiDetailWrap(t('味噌汁を付けた数 ÷ 対象の丼数。','Attached ÷ eligible bowls.'), misoSub(k))});
   if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null, {title:t('いくらシャワー率','Ikura shower %'), body:_kpiDetailWrap(t('いくらシャワー数 ÷ 対象の丼数。','Ikura ÷ eligible bowls.'), ikuraSub(k))});
-  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上。お酒の対象カテゴリ設定に依存します。','Drink sales ÷ total, per store. Depends on alcohol category setting.'), drinkSubDetail(k))});
+  if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上と、お酒／ソフトの内訳・曜日別・前々月からの推移。お酒の対象カテゴリ設定に依存します。','Drink ÷ total per store, alcohol/soft split, by weekday, and the 3-month trend.'), (drinkSubDetail(k)||'')+drinkTrendSub(stores,days))});
   html += `</div>
     <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
   return html;
@@ -26391,9 +26816,11 @@ function monthDays() {
 }
 /* 直近n日（今日を含む）の {date,dow} 配列。ログイン時同期・当日同期で範囲を絞るのに使う。 */
 function recentDays(n){
-  var arr=[]; var base=new Date(); base.setHours(0,0,0,0);
-  for(var i=n-1;i>=0;i--){ var dt=new Date(base.getTime()-i*86400000);
-    arr.push({date:dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'), dow:DOW[(dt.getDay()+6)%7]}); }
+  /* ★v987: 起点をハワイの営業日に。端末が先に日付を跨ぐと、
+     取りに行く範囲が1日ぶんうしろへずれて、いちばん古い日を取り逃していた。 */
+  var arr=[], base=bizToday();
+  for(var i=n-1;i>=0;i--){ var iso=initDateAdd(base, -i);
+    arr.push({date:iso, dow:DOW[(bizDowIdx(iso)+6)%7]}); }
   return arr;
 }
 function todayDays(){ return recentDays(1); }
@@ -27840,6 +28267,17 @@ function totoyaBowlMatrixCard(scopeStores, days){
    ・後期間 = 開始日から N日（★開始日を含める）
      オフバイワンで1日ずれると判定が反転しうるので、境界は1か所で決める。
 ============================================================ */
+/* v987: ISO文字列の曜日番号（0=日）。UTCで解釈するので端末TZに左右されない。
+   ★業務日の曜日は必ずこれで出す。new Date(iso).getDay() は端末TZで1日ずれる。 */
+function bizDowIdx(ymd){
+  var p=String(ymd).split('-');
+  return new Date(Date.UTC(+p[0], (+p[1])-1, +p[2])).getUTCDay();
+}
+/* v987: 業務日どうしの日数差（a − b）。カレンダー日で数える。 */
+function bizDayDiff(a, b){
+  var pa=String(a).split('-'), pb=String(b).split('-');
+  return Math.round((Date.UTC(+pa[0],(+pa[1])-1,+pa[2]) - Date.UTC(+pb[0],(+pb[1])-1,+pb[2]))/86400000);
+}
 function initDateAdd(ymd, n){
   var p=String(ymd).split('-');
   var d=new Date(Date.UTC(+p[0], (+p[1])-1, (+p[2])+n));
@@ -35892,7 +36330,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '986';
+const APP_VERSION = '991';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -39939,9 +40377,10 @@ var _shiftWeekOff = 0;
 /* 指定オフセット週の日曜のフル日付(YYYY-MM-DD)。off省略時は現在の選択週。 */
 function getWeekSundayISO(off) {
   var o = (off===undefined) ? _shiftWeekOff : off;
-  var d = new Date(); d.setHours(0,0,0,0);
-  d.setDate(d.getDate() - d.getDay() + o*7);   // getDay(): 日=0 → その週の日曜へ
-  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  /* ★v987: 起点をハワイの営業日に。端末が先に日付を跨ぐ夕方以降、
+     土曜だけ「今週」が翌週の日曜を指していた（シフトの週がまるごと1本ずれる）。 */
+  var _b = bizToday();
+  return initDateAdd(_b, -bizDowIdx(_b) + o*7);   // bizDowIdx: 日=0 → その週の日曜へ
 }
 /* 後方互換: 旧名。日曜始まりの週基準日を返す（内部は日曜）。 */
 function getWeekMondayISO() { return getWeekSundayISO(); }
@@ -40108,10 +40547,11 @@ function openClosureEditor(storeId, week){
   var st=STORES.find(function(x){return x.id===storeId;})||{name:storeId};
   var cls=getStoreClosures(storeId);
   // 当月＋来月の日付を対象（祝日・イベント名を併記）
-  var today=new Date(); today.setHours(0,0,0,0);
-  var days=[]; for(var i=0;i<62;i++){ var dt=new Date(today.getTime()+i*86400000);
-    var iso=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
-    days.push({iso:iso, dow:['日','月','火','水','木','金','土'][dt.getDay()]}); }
+  /* ★v987: 起点をハワイの営業日に。端末が先に日付を跨ぐと、
+     候補日の先頭がハワイの明日になり、今日を休みに指定できなかった。 */
+  var today=bizToday();
+  var days=[]; for(var i=0;i<62;i++){ var iso=initDateAdd(today, i);
+    days.push({iso:iso, dow:['日','月','火','水','木','金','土'][bizDowIdx(iso)]}); }
   var rows=days.map(function(d){
     var c=cls[d.iso]||{}; var ev=(typeof dayEventFor==='function')?dayEventFor(d.iso):'';
     var md=Number(d.iso.slice(5,7))+'/'+Number(d.iso.slice(8,10));
@@ -61446,8 +61886,9 @@ function taskPriColor(p){ return p==='高'?'var(--eval-low)':p==='中'?'var(--ev
 function taskStatusColor(s){ return s==='完了'?'var(--green)':s==='レビュー'?'var(--purple)':s==='進行中'?'var(--accent2)':'var(--muted)'; }
 function taskDueInfo(due){
   if(!due) return {label:'',color:'var(--muted)',overdue:false};
-  var d=new Date(due+'T00:00:00'), today=new Date(); today.setHours(0,0,0,0);
-  var diff=Math.round((d-today)/86400000);
+  /* ★v987: 起点をハワイの営業日に。端末が先に日付を跨ぐと、
+     ハワイではまだ今日が期限のタスクが「期限超過」と赤くなっていた。 */
+  var diff=bizDayDiff(due, bizToday());
   if(diff<0) return {label:'期限超過 '+(-diff)+'日',color:'var(--eval-low)',overdue:true};
   if(diff===0) return {label:'今日',color:'var(--eval-mid)',overdue:false};
   if(diff<=7) return {label:'今週 '+due.slice(5),color:'var(--eval-mid)',overdue:false};
