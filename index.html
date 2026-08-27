@@ -36471,7 +36471,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '993';
+const APP_VERSION = '995';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50803,7 +50803,10 @@ var SPECIALIST_DEPTS = {
 };
 var SPECIALIST_TITLE_DEPT = {
   'Accountant':'経理', 'Office Manager':'経理',
-  'Corporate Chef':'調理',
+  /* v994: Head Chef を追加（Motoさん判断）。
+     ★Corporate Chef の前段階なので、同じ軸で評価する。
+     ★経理も同じ考え方：Accountant / Office Manager が同じ経理の軸を使う。 */
+  'Head Chef':'調理', 'Corporate Chef':'調理',
   'Customer Service Manager':'サービス',
 };
 function empSpecialistDept(e){ return (e && (e.career || SPECIALIST_TITLE_DEPT[e.title])) || null; }
@@ -50817,8 +50820,32 @@ var SPECIALIST_AXIS_ITEMS = {
     F:['業務フローの標準化','Excel/ツールでの効率化','自動化・ペーパーレス推進','属人化の排除'],
     G:['後輩への業務指導','マニュアル整備','チェック体制の構築','チーム全体の底上げ'],
     H:['数字に誠実（粉飾しない）','透明性のある報告','理念に基づく判断','模範となる行動']
+  },
+  /* ★v994: 調理の項目。①だけ足すと specialistCats() が軸名1つに落ちて
+     8項目・24点の粗い評価になるので、経理と同じ 8軸×4項目＝32項目・96点でそろえる。
+     ★文言は草案。人の評価を決める文なので、Motoさんの確認後に直すこと。
+     ★語彙は既存の C「キッチン/プレップ」と原価・仕入まわりからそろえてある
+       （DOH・温度管理・歩留まり・棚卸・発注・ロス・Food Cost）。 */
+  '調理': {
+    A:['DOH基準を理解し店舗で徹底できる','温度管理・保管・手洗いを実行し点検できる','アレルギー・異物混入を予防し対応できる','衛生事故の初動と再発防止ができる'],
+    B:['レシピどおりに作れる・作らせる','盛り付けと提供品質の基準を決めて守らせる','店舗間で味と見た目をそろえられる','品質のブレに気づき原因を特定できる'],
+    C:['新メニューを企画し試作できる','売れ筋・死に筋を見て商品を入れ替えられる','原価と売価のバランスをとって設計できる','テスト販売の結果を数字で検証できる'],
+    D:['レシピの原価計算ができる','歩留まりを把握して設計に反映できる','仕入先と価格を比較して選べる','価格改定や代替食材の判断ができる'],
+    E:['プレップの段取りと人の配置を組める','ピークタイムの厨房を回せる','発注・在庫・棚卸を回せる','厨房の動線と作業手順を改善できる'],
+    F:['Food Cost を理解し月次で説明できる','棚卸の数字を読んで異常に気づける','ロスの発生源を特定して減らせる','原価の予実差を改善アクションにつなげられる'],
+    G:['調理スタッフのレベルを正しく判断できる','相手に合わせて調理を教えられる','レシピ・手順書を整備して残せる','次の Head Chef 候補を育てられる'],
+    H:['日本の食文化を理解し料理に反映できる','食材と作り手への敬意がある','品質や衛生でごまかさない','Funergy らしい楽しさを料理で表現できる']
   }
 };
+/* ★v994: いま誰にどの項目セットが当たっているか。保存時に記録して、
+   あとから項目が入れ替わったことに気づけるようにする。 */
+function lssItemSetOf(name){
+  try{
+    var e=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===name;}):null;
+    var d=e?empSpecialistDept(e):null;
+    return d||'general';
+  }catch(err){ return 'general'; }
+}
 function specialistCats(dept){
   var d=SPECIALIST_DEPTS[dept]; if(!d) return null;
   var its=SPECIALIST_AXIS_ITEMS[dept]||{};
@@ -50848,7 +50875,11 @@ function setGradeAxis(m){ lsSet('grade_axis', m); }
 /* その従業員の担当軸（A〜Hのkey配列） */
 function empAxes(e){
   if(!e) return [];
-  if(empSpecialistDept(e)) return ['A','B','C','D','E','F','G','H']; // 専門職は部門別A〜H全軸が担当
+  /* ★専門職は部門別A〜H全軸が担当。
+     ★v994: このため DEFAULT_GRADE_AXIS_BY_TITLE の 'Head Chef':['C','E','F','G','H'] は
+       この版から効かない（Head Chef が調理の専門職になったため）。設定は残してあるが、
+       担当軸モーダルでは「専門職」と印を付けて、編集しても変わらないことを示す。 */
+  if(empSpecialistDept(e)) return ['A','B','C','D','E','F','G','H'];
   var m=getGradeAxis();
   if(e.title && m[e.title]) return m[e.title].slice();
   var g=empGrade(e);
@@ -50870,6 +50901,38 @@ function empAxisEval(e){
   return {axes:axes, hasData:true, perAxis:per, minAxis:minAxis, pro:pro, L4:L4};
 }
 /* 担当軸の表示（A〜Hチップ＋一人前状況＋次の目標） */
+/* ★v994: 保存されている点数が、いまの項目セットと違うセットで付けられていないか。
+   項目IDは軸＋連番（'A0'…）なので、セットが変わると同じIDが別の質問を指す。
+   ★勝手に消さない・勝手に読み替えない。人に知らせて、消すかどうかを選ばせる。 */
+function lssSetMismatch(name){
+  var rec=getLssScores(name);
+  if(!rec || !rec.scores || !Object.keys(rec.scores).length) return null;
+  var now=lssItemSetOf(name);
+  var was=rec._set;
+  if(was===now) return null;
+  return { now:now, was:(was||null) };
+}
+function lssSetWarnHtml(name){
+  var m=lssSetMismatch(name); if(!m) return '';
+  var label=function(k){ return k==='general'?'運営共通':(k||'（記録なし）'); };
+  var canClear=(typeof canEditLss==='function') && canEditLss(name);
+  return '<div style="border:1px solid var(--yellow);border-radius:8px;padding:8px 10px;margin:8px 0;background:var(--surface2)">'
+    +'<div style="font-size:11.5px;font-weight:700;color:var(--yellow)"><i class="ti ti-alert-triangle"></i> 評価項目が入れ替わっています</div>'
+    +'<div style="font-size:11px;color:var(--tm);line-height:1.7;margin-top:4px">'
+    +'いまの項目は<b>'+escapeHtml(label(m.now))+'</b>ですが、保存されている点数は<b>'+escapeHtml(label(m.was))+'</b>の項目で付けられたものです。'
+    +'<br>★点数は残っていますが、<b>質問の中身が違います</b>。そのままでは別の質問の答えが入ったままになります。'
+    +'<br>下の項目を見ながら<b>付け直してください</b>。'
+    +(canClear?'一度まっさらにするなら「点数をクリア」を押してから保存します。':'')
+    +'</div>'
+    +(canClear?('<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="lssClearDraft()"><i class="ti ti-eraser"></i> 点数をクリア</button>'):'')
+    +'</div>';
+}
+/* 下書きだけを空にする。★保存を押すまで実データは変えない。 */
+function lssClearDraft(){
+  window._lssDraft={};
+  try{ renderLssItems(); renderLssSummary(); }catch(e){}
+  showToast('点数をクリアしました（保存を押すと確定します）','warning');
+}
 function lssAxisHtml(e){
   var ax=empAxisEval(e);
   if(!ax.axes.length) return '';
@@ -51341,6 +51404,9 @@ function setLssScores(name, data){
       var cur = ls(LSS_EMP_PREFIX+name, null);
       data._at = Math.max(Date.now(), (Number(cur&&cur._at)||0)+1);   /* 必ず前より進める */
       if(!data._by){ try{ data._by = (typeof myName==='function')?myName():''; }catch(e){ data._by=''; } }
+      /* ★v994: どの項目セットで付けたかを残す。項目IDは軸＋連番なので、
+         セットが変わると同じIDが別の質問を指す。あとで気づけるようにする。 */
+      try{ data._set = (typeof lssItemSetOf==='function')?lssItemSetOf(name):'general'; }catch(e){}
     }
   }catch(e){ console.warn('setLssScores stamp', e); }
   lsSet(LSS_EMP_PREFIX+name, data);
@@ -55190,6 +55256,7 @@ async function openLssDetail(name) {
   }
   var html = `<div class="modal-title">Career Score — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div id="lss-summary"></div>
+    ${lssSetWarnHtml(name)}
     ${axisBlock}
     ${ojtBlock}
     ${evalRubricLegendHtml()}
@@ -57118,18 +57185,24 @@ function renderMypage() {
 
   // 9. Growth Hub（My Page内に埋め込み）
   var posts = ls('growthhub', []);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-mood-heart" style="color:var(--accent)"></i>${t('お悩み相談室','Support Room')}
-    <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openGHModal()"><i class="ti ti-plus"></i> ${t('相談する','Ask')}</button></div>
-    <p style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-lock"></i> ${t('困っていることを気軽に相談できます。管理者だけが見ます','Talk to managers privately about anything')}</p>`;
+  /* ★v995: フォームの入口に集約（Motoさん指示）。
+     ★crew はお悩み相談室ページを開けないので、ここが現場スタッフの唯一の入口。
+       v993 でページ側だけ直したときは、この人たちに何も届いていなかった。 */
+  html += ghVoiceCardCompact();
+  /* 過去の相談は残す。★返事待ちの人を放置しない。
+     ★ただし飛び先（growthhub）を開けない人がいるので、リンクにはしない。
+       返信が来ているかどうかが、その場で分かればよい。 */
   var myPosts = posts.filter(p=>p.author===me).slice(-3).reverse();
   if (myPosts.length) {
+    html += `<div class="card"><div class="card-title" style="font-size:12.5px"><i class="ti ti-message-2" style="color:var(--muted)"></i>${t('これまでの相談','Past consultations')}</div>`;
     myPosts.forEach(p => {
       var st=p.status||'未対応'; var stc=st==='解決'?'tag-green':st==='対応中'?'tag-yellow':'tag-red';
-      html += `<div class="approval-item" onclick="go('growthhub')" style="cursor:pointer"><div class="approval-header"><div class="approval-title">${p.title}</div><span class="tag ${stc}">${tStatus(st)}</span></div>
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(p.title||'')}</div><span class="tag ${stc}">${tStatus(st)}</span></div>
         ${(p.replies||[]).some(r=>r.byMgr)?`<div style="font-size:11px;color:var(--green);margin-top:4px"><i class="ti ti-message"></i> ${t('管理者から返信あり','Manager replied')}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('確認待ち','Awaiting reply')+'</div>'}</div>`;
     });
-  } else { html += `<p style="color:var(--muted);font-size:13px">${t('相談はまだありません。困ったことがあれば気軽に','No posts yet')}</p>`; }
-  html += '</div>';
+    html += `<p style="font-size:10px;color:var(--muted);margin-top:6px">${t('★新しい相談は上のフォームからお願いします。','★Please use the form above for anything new.')}</p>`;
+    html += '</div>';
+  }
 
   // ▼ 上部プレースホルダを ①今週のシフト ②タスク ③勤怠実績 に差し替え
   html = html.replace('<!--TOP_OPS-->', (_shiftCard||'') + (_taskCard||'') + (_attCard||''));
@@ -66355,6 +66428,33 @@ function _ghAssure(){
     + row('ti-clock', t('1〜2分で送れます。急ぎなら優先度で「できるだけ早く」を選べます。',
                         'Takes 1–2 minutes. Mark it urgent if it needs a fast review.'));
 }
+/* ★v995: マイページ用の1枚版。
+   ★crew はお悩み相談室ページを開けない（NAV_ITEMS の roles に crew が無い）。
+     つまり現場のスタッフにとって、ここが唯一の入口。
+   マイページは縦に長いので3枚は差し込まない。中身は落とさず並べ方だけ変える。 */
+function ghVoiceCardCompact(){
+  var p = GH_PROMPTS[ghPromptIdx()];
+  return '<div class="card">'
+    + '<div class="card-title"><i class="ti ti-mood-heart" style="color:var(--accent)"></i>'
+      + t('お悩み相談室','Support Room') + '</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-top:-2px;line-height:1.6">'
+      + t('困っていること・改善してほしいこと・アイデアを、会社本部へ直接届けられます。',
+          'Send concerns, improvement requests and ideas straight to headquarters.') + '</div>'
+    + '<div style="margin:8px 0 10px">' + _ghAssure() + '</div>'
+    + '<div>' + _ghFormBtn(t('フォームを開く','Open the form')) + '</div>'
+    + '<div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--border)">'
+      + '<div style="display:flex;align-items:center;gap:6px">'
+        + '<i class="ti ti-bulb" style="color:var(--yellow);font-size:13px"></i>'
+        + '<span style="font-size:10.5px;color:var(--muted);font-weight:700">'
+        + t('こんなことでも大歓迎です','Anything like this is welcome') + '</span>'
+        + '<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:2px 9px;font-size:10px" onclick="ghRollPrompt()">'
+        + '<i class="ti ti-refresh"></i> ' + t('別の例','Another') + '</button></div>'
+      + '<div style="font-size:13.5px;font-weight:700;color:var(--tm);margin-top:5px;line-height:1.5">'
+        + '「' + t(p[0], p[1]) + '」</div>'
+      + '<div style="font-size:10px;color:var(--muted);margin-top:4px">'
+        + t('★小さなことで構いません。1行でも届きます。','Small things are fine — one line is enough.')
+      + '</div></div></div>';
+}
 function ghVoiceCard(mgr){
   var p = GH_PROMPTS[ghPromptIdx()];
   var h = '<div class="card" style="border:1.5px solid var(--accent);margin-bottom:8px">'
@@ -66382,21 +66482,11 @@ function ghVoiceCard(mgr){
     + '<div style="font-size:10.5px;color:var(--muted);margin-top:5px;line-height:1.6">'
       + t('★小さなことで構いません。1行でも届きます。','Small things are fine — one line is enough.')
       + '</div></div>';
-  /* ★返事がほしい人の逃げ道。匿名だと返事ができないので、ここを消さない。 */
-  h += '<div class="card" style="margin-bottom:8px">'
-    + '<div style="display:flex;align-items:center;gap:6px">'
-      + '<i class="ti ti-messages" style="color:var(--accent2)"></i>'
-      + '<span style="font-size:12.5px;font-weight:700;color:var(--tm)">'
-      + t('返事がほしいときは','If you want a reply') + '</span></div>'
-    + '<div style="font-size:11.5px;color:var(--muted);margin-top:5px;line-height:1.7">'
-      + t('アプリの相談は<b>担当者がついて1対1で返事</b>します。ただし<b>見る人が違います</b>：店長・AM・GM が見ます。',
-          'In-app consultations get a named owner and a 1-on-1 reply, but <b>a different group sees them</b>: store managers, AM and GM.')
-      + '<br>' + t('店長に知られたくない内容は、上のフォームを使ってください。',
-                   'If you would rather your store manager not see it, use the form above.')
-      + '</div>'
-    + '<div style="margin-top:9px"><button class="btn btn-secondary btn-sm" onclick="openGHModal()">'
-      + '<i class="ti ti-plus"></i> ' + t('アプリで相談する','Consult in the app') + '</button></div>'
-    + '</div>';
+  /* ★v995: 「アプリで相談する」の導線は外した（Motoさん指示・一旦削除）。
+     ★入口を1つにする。2つあると「どっちに書けばいいのか」で止まる。
+     ★消したのは入口だけ。openGHModal / 返信 / 担当者づけ / ステータスは残してある。
+       既にある相談は下に出るし、管理職は返信できる。返事待ちの人を放置しない。
+       戻すときは、ここにボタンを1つ足すだけでよい。 */
   if(mgr){
     /* ★管理職には「フォームはアプリに入らない」と書く。書かないと見落とす。 */
     h += '<div class="card" style="margin-bottom:8px;border-left:3px solid var(--yellow)">'
