@@ -36471,7 +36471,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '992';
+const APP_VERSION = '993';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -66300,6 +66300,116 @@ function saveMeetingTask() {
    - スタッフ: 自分の投稿のみ見える（プライベート）
    - 管理職(GM/CEO/AM/SM): スコープ内スタッフの投稿が見える、返信・ステータス管理
 ============================================================ */
+/* ============================================================
+   v993 声を届ける窓口（Googleフォーム導線）
+   ------------------------------------------------------------
+   ★フォームとアプリ内の相談は「見える人」が違う。混ぜない。
+       フォーム   … GM と CEO のみ。店長・他スタッフには共有されない。匿名可。
+       アプリ内   … ghIsManager()（ceo/gm/office/am/店長）。記名。1対1で返事。
+   ★フォームの回答はアプリに入らない。担当者づけ・通知・タスク自動生成は
+     アプリ内の相談だけに効く。管理職の画面にそう書く。
+============================================================ */
+const IDEA_FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSfFPk8l7cpL_IX3topbvf8RtBMTWB5eyR4ZhfHO2MKecq78vA/viewform?usp=header';
+/* ★お題。白紙がいちばん強い抵抗なので、1行の例を必ず1つ見せる。
+   「重い相談」ではなく「これくらいでいいのか」と思える粒度にそろえてある。 */
+const GH_PROMPTS = [
+  ['今日、ちょっとやりにくかったこと','Something that felt awkward today'],
+  ['もっと早く終わりそうな作業','A task that could be faster'],
+  ['あったら助かる道具・備品','A tool or supply that would help'],
+  ['新しく入った人が困りそうなこと','Something new staff would struggle with'],
+  ['やめてもいいかもしれない作業','A task we might be able to drop'],
+  ['お客様に言われて、気になったこと','Something a guest said that stuck with you'],
+  ['ムダになっている食材や時間','Food or time going to waste'],
+  ['他店のやり方で、真似したいこと','Something another store does well'],
+  ['メニューでこうしたら喜ばれそう、と思うこと','A menu idea guests would like'],
+  ['言いにくいけれど、直したほうがいいこと','Something hard to say but worth fixing']
+];
+var _ghPromptIdx = null;
+/* 日替わり。★毎日同じ順で回ると飽きるので、日付から始点を決める。 */
+function ghPromptIdx(){
+  if(_ghPromptIdx!=null) return _ghPromptIdx;
+  var d=''; try{ d=bizToday(); }catch(e){ d='2026-01-01'; }
+  var n=0; for(var i=0;i<d.length;i++) n+=d.charCodeAt(i);
+  _ghPromptIdx = n % GH_PROMPTS.length;
+  return _ghPromptIdx;
+}
+function ghRollPrompt(){
+  _ghPromptIdx = (ghPromptIdx()+1) % GH_PROMPTS.length;
+  renderPage('growthhub');
+}
+function _ghFormBtn(label){
+  return '<a class="btn btn-primary" href="'+IDEA_FORM_URL+'" target="_blank" rel="noopener"'
+    + ' style="text-decoration:none;display:inline-flex;align-items:center;gap:6px">'
+    + '<i class="ti ti-external-link"></i>'+label+'</a>';
+}
+/* ★安心の3行。フォームに実際に書いてあることだけを写す。約束を発明しない。 */
+function _ghAssure(){
+  var row=function(icon,txt){
+    return '<div style="display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--tm);line-height:1.6;margin-top:5px">'
+      +'<i class="ti '+icon+'" style="color:var(--green);font-size:14px;flex:0 0 auto;margin-top:1px"></i><span>'+txt+'</span></div>';
+  };
+  return row('ti-user-off', t('<b>匿名で送れます。</b>送信方法で「匿名で送信する」を選ぶだけです。',
+                             '<b>You can send anonymously</b> — just pick "Submit anonymously".'))
+    + row('ti-eye-off', t('見るのは <b>GM と CEO だけ</b>です。店長や他のスタッフには共有されません。',
+                          'Only the <b>GM and CEO</b> see it. Not store managers or coworkers.'))
+    + row('ti-clock', t('1〜2分で送れます。急ぎなら優先度で「できるだけ早く」を選べます。',
+                        'Takes 1–2 minutes. Mark it urgent if it needs a fast review.'));
+}
+function ghVoiceCard(mgr){
+  var p = GH_PROMPTS[ghPromptIdx()];
+  var h = '<div class="card" style="border:1.5px solid var(--accent);margin-bottom:8px">'
+    + '<div style="display:flex;align-items:center;gap:7px">'
+      + '<i class="ti ti-message-2-heart" style="color:var(--accent);font-size:20px"></i>'
+      + '<div style="font-size:15px;font-weight:800;color:var(--tm)">'
+      + t('スタッフ意見・相談窓口','Staff Voice & Support') + '</div></div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-top:3px;line-height:1.6">'
+      + t('困っていること、改善してほしいこと、こうしたら良くなるというアイデアを、会社本部へ直接届けられます。',
+          'Send concerns, improvement requests, and ideas straight to headquarters.')
+      + '</div>'
+    + '<div style="margin:8px 0 10px">' + _ghAssure() + '</div>'
+    + '<div>' + _ghFormBtn(t('フォームを開く','Open the form')) + '</div>'
+    + '</div>';
+  /* ★お題。白紙を見せない。 */
+  h += '<div class="card" style="margin-bottom:8px">'
+    + '<div style="display:flex;align-items:center;gap:6px">'
+      + '<i class="ti ti-bulb" style="color:var(--yellow)"></i>'
+      + '<span style="font-size:11px;color:var(--muted);font-weight:700">'
+      + t('こんなことでも大歓迎です','Anything like this is welcome') + '</span>'
+      + '<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:2px 9px;font-size:10px" onclick="ghRollPrompt()">'
+      + '<i class="ti ti-refresh"></i> ' + t('別の例','Another') + '</button></div>'
+    + '<div style="font-size:15px;font-weight:700;color:var(--tm);margin-top:6px;line-height:1.5">'
+      + '「' + t(p[0], p[1]) + '」</div>'
+    + '<div style="font-size:10.5px;color:var(--muted);margin-top:5px;line-height:1.6">'
+      + t('★小さなことで構いません。1行でも届きます。','Small things are fine — one line is enough.')
+      + '</div></div>';
+  /* ★返事がほしい人の逃げ道。匿名だと返事ができないので、ここを消さない。 */
+  h += '<div class="card" style="margin-bottom:8px">'
+    + '<div style="display:flex;align-items:center;gap:6px">'
+      + '<i class="ti ti-messages" style="color:var(--accent2)"></i>'
+      + '<span style="font-size:12.5px;font-weight:700;color:var(--tm)">'
+      + t('返事がほしいときは','If you want a reply') + '</span></div>'
+    + '<div style="font-size:11.5px;color:var(--muted);margin-top:5px;line-height:1.7">'
+      + t('アプリの相談は<b>担当者がついて1対1で返事</b>します。ただし<b>見る人が違います</b>：店長・AM・GM が見ます。',
+          'In-app consultations get a named owner and a 1-on-1 reply, but <b>a different group sees them</b>: store managers, AM and GM.')
+      + '<br>' + t('店長に知られたくない内容は、上のフォームを使ってください。',
+                   'If you would rather your store manager not see it, use the form above.')
+      + '</div>'
+    + '<div style="margin-top:9px"><button class="btn btn-secondary btn-sm" onclick="openGHModal()">'
+      + '<i class="ti ti-plus"></i> ' + t('アプリで相談する','Consult in the app') + '</button></div>'
+    + '</div>';
+  if(mgr){
+    /* ★管理職には「フォームはアプリに入らない」と書く。書かないと見落とす。 */
+    h += '<div class="card" style="margin-bottom:8px;border-left:3px solid var(--yellow)">'
+      + '<div style="font-size:11px;color:var(--tm);line-height:1.8">'
+      + '<b>' + t('管理職の方へ','For managers') + '</b><br>'
+      + t('★フォームの回答は<b>アプリに入りません</b>。担当者づけ・通知・タスクの自動生成は、下のアプリ内の相談だけに効きます。',
+          'Form responses do <b>not</b> enter the app. Assignment, notifications and auto-tasks only work for in-app consultations.')
+      + '<br>' + t('★フォームの回答を見るのは GM と CEO です。回答はスプレッドシートで確認してください。',
+                   'Form responses are reviewed by the GM and CEO in the spreadsheet.')
+      + '</div></div>';
+  }
+  return h;
+}
 var ghFilter = 'all';
 /* 相談を見られる管理職か */
 function ghIsManager(){ return ['ceo','gm','office','am'].includes(curRole) || isStoreManager(); }
@@ -66316,9 +66426,10 @@ function renderGrowthHub() {
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var html = `<div class="section-header">
     <div><div class="section-title"><i class="ti ti-mood-heart" style="color:var(--accent)"></i> ${t('お悩み相談室','Consultation Room')}</div>
-    <div class="section-sub">${mgr?t('スタッフからの相談に1対1で対応','Respond 1-on-1 to staff consultations'):t('困っていること、気軽に相談できます（管理者だけが見ます）','Feel free to reach out — only managers can see this')}</div></div>
-    ${!mgr?`<button class="btn btn-primary btn-sm" onclick="openGHModal()"><i class="ti ti-plus"></i> ${t('相談する','New consultation')}</button>`:''}
+    <div class="section-sub">${mgr?t('スタッフからの相談に1対1で対応','Respond 1-on-1 to staff consultations'):t('気づいたこと・提案・困っていること、どれでも送れます','Ideas, suggestions or concerns — all welcome')}</div></div>
   </div>`;
+  /* ★v993: 窓口の案内を最初に出す。相談する人が探さなくていいように。 */
+  html += ghVoiceCard(mgr);
 
   if (mgr) {
     // 管理職ビュー: スコープ内の投稿、ステータスフィルタ
@@ -66346,14 +66457,9 @@ function renderGrowthHub() {
 
   // スタッフビュー: 自分の投稿のみ
   var mine = posts.filter(p=> p.author===me);
-  if (!mine.length) {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:36px">
-      <i class="ti ti-mood-heart" style="font-size:34px;margin-bottom:10px;display:block;color:var(--accent)"></i>
-      <div style="font-size:14px;color:var(--tm);font-weight:600;margin-bottom:4px">${t('困っていること、ありませんか？','Anything on your mind?')}</div>
-      <div style="font-size:12px">${t('仕事のこと・シフト・人間関係など、何でも気軽に相談してください。','Work, shifts, relationships — feel free to consult about anything.')}<br>${t('あなたの相談は<b>管理者だけ</b>が見ます。同僚には見えません。','Only <b>managers</b> can see your consultation. Coworkers cannot.')}</div>
-      <button class="btn btn-primary" style="margin-top:14px" onclick="openGHModal()"><i class="ti ti-plus"></i> ${t('相談する','New consultation')}</button>
-    </div>`;
-  } else {
+  /* ★v993: 空のときの大きな案内は出さない。上の窓口カードと同じことを2回言うことになる。
+     「相談する」ボタンも窓口カードの中にある。 */
+  if (mine.length) {
     html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('あなたの相談（管理者だけが見ています）','Your consultations (only managers can see)')}</div>`;
     mine.slice().reverse().forEach(p=> html += ghPostCard(p, false));
   }
