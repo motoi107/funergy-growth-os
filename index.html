@@ -36471,7 +36471,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '995';
+const APP_VERSION = '996';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -56841,6 +56841,10 @@ function renderMypage() {
   // ===== ゲーミフィケーション（実績バッジ） =====
   html += renderBadges(me, emp);
 
+  /* ★v996: 相談室を上へ。これまでマイページの96%地点＝いちばん下にあり、
+     ★下までスクロールしない人には、どれだけ派手にしても存在しなかった。
+     ★上げすぎない：シフト・タスク・勤怠は仕事に必要なので、その上には置かない。 */
+  html += '<!--VOICE-->';
   // ▼ 上部に配置: ①今週のシフト ②タスク ③勤怠実績（後段で組み立てた内容をここに差し込む）
   html += '<!--TOP_OPS-->';
 
@@ -57187,8 +57191,9 @@ function renderMypage() {
   var posts = ls('growthhub', []);
   /* ★v995: フォームの入口に集約（Motoさん指示）。
      ★crew はお悩み相談室ページを開けないので、ここが現場スタッフの唯一の入口。
-       v993 でページ側だけ直したときは、この人たちに何も届いていなかった。 */
-  html += ghVoiceCardCompact();
+       v993 でページ側だけ直したときは、この人たちに何も届いていなかった。
+     ★v996: カード自体は上の <!--VOICE--> へ差し込む。ここでは組み立てるだけ。 */
+  var _voiceCard = ghVoiceCardCompact();
   /* 過去の相談は残す。★返事待ちの人を放置しない。
      ★ただし飛び先（growthhub）を開けない人がいるので、リンクにはしない。
        返信が来ているかどうかが、その場で分かればよい。 */
@@ -57206,6 +57211,8 @@ function renderMypage() {
 
   // ▼ 上部プレースホルダを ①今週のシフト ②タスク ③勤怠実績 に差し替え
   html = html.replace('<!--TOP_OPS-->', (_shiftCard||'') + (_taskCard||'') + (_attCard||''));
+  /* ★v996: 相談室をバッジの直後へ。★差し替え漏れで印が画面に出ないよう、必ず replace する。 */
+  html = html.replace('<!--VOICE-->', (_voiceCard||''));
 
   return html;
 }
@@ -66410,10 +66417,45 @@ function ghRollPrompt(){
   _ghPromptIdx = (ghPromptIdx()+1) % GH_PROMPTS.length;
   renderPage('growthhub');
 }
+/* ★v996: 会社の言葉。ここ1か所を直せば全部の画面が変わる。
+   ★これは姿勢であって約束ではない。「必ず返信します」等はここにも書かない。 */
+function _ghLead(){ return t('みんなの声で、もっと良い会社にしていきます','Your voice makes this a better company'); }
+/* 受け付ける中身。★フォームの選択肢そのまま。発明していない。
+   ★4つ並べるだけで「文句を言う場所ではない」と伝わる。 */
+function _ghKinds(){
+  return [t('困りごと','Concerns'), t('店舗の改善','Store fixes'),
+          t('会社への提案','Company ideas'), t('アイデア','Ideas')]
+    .map(function(x){
+      return '<span style="display:inline-block;background:var(--surface2);color:var(--tm);'
+        +'border-radius:999px;padding:3px 10px;font-size:11px;font-weight:600">'+x+'</span>';
+    }).join(' ');
+}
+/* ★v996: 全幅・大きめ。道具の名前ではなく、自分が何をするかを書く。 */
 function _ghFormBtn(label){
   return '<a class="btn btn-primary" href="'+IDEA_FORM_URL+'" target="_blank" rel="noopener"'
-    + ' style="text-decoration:none;display:inline-flex;align-items:center;gap:6px">'
-    + '<i class="ti ti-external-link"></i>'+label+'</a>';
+    + ' style="text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px;'
+    + 'width:100%;padding:13px;font-size:15px;font-weight:700">'
+    + '<i class="ti ti-send" style="font-size:18px"></i>'+label+'</a>';
+}
+/* 匿名などの表示（Motoさん「匿名とかの表示は良い」）。
+   ★3行積みから横並びのチップへ。大きな一文に場所を譲るため。
+   ★押す前に読める位置は変えない。チップだけだと「どこで匿名を選ぶのか」が落ちるので補足を残す。 */
+function _ghAssureChips(){
+  var c=function(icon,txt){
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--tm)">'
+      +'<i class="ti '+icon+'" style="color:var(--green);font-size:13px"></i>'+txt+'</span>';
+  };
+  return '<div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:9px">'
+    + c('ti-user-off', t('<b>匿名でOK</b>','<b>Anonymous OK</b>'))
+    + c('ti-eye-off',  t('見るのは <b>GM と CEO だけ</b>','Seen by <b>GM & CEO only</b>'))
+    + c('ti-clock',    t('1〜2分','1–2 min'))
+    + '</div>'
+    + '<div style="font-size:10.5px;color:var(--muted);line-height:1.7;margin-bottom:10px">'
+    + t('匿名で送れます。フォームの「送信方法」で「匿名で送信する」を選ぶだけです。店長や他のスタッフには共有されません。',
+        'You can send anonymously — pick "Submit anonymously" under "How to send". Not shared with store managers or coworkers.')
+    + '<br>' + t('急ぎのときは、優先度で「できるだけ早く」を選べます。',
+                 'If it is urgent, mark the priority as soon as possible.')
+    + '</div>';
 }
 /* ★安心の3行。フォームに実際に書いてあることだけを写す。約束を発明しない。 */
 function _ghAssure(){
@@ -66434,14 +66476,23 @@ function _ghAssure(){
    マイページは縦に長いので3枚は差し込まない。中身は落とさず並べ方だけ変える。 */
 function ghVoiceCardCompact(){
   var p = GH_PROMPTS[ghPromptIdx()];
-  return '<div class="card">'
-    + '<div class="card-title"><i class="ti ti-mood-heart" style="color:var(--accent)"></i>'
-      + t('お悩み相談室','Support Room') + '</div>'
-    + '<div style="font-size:12px;color:var(--muted);margin-top:-2px;line-height:1.6">'
-      + t('困っていること・改善してほしいこと・アイデアを、会社本部へ直接届けられます。',
-          'Send concerns, improvement requests and ideas straight to headquarters.') + '</div>'
-    + '<div style="margin:8px 0 10px">' + _ghAssure() + '</div>'
-    + '<div>' + _ghFormBtn(t('フォームを開く','Open the form')) + '</div>'
+  /* ★v996: 周りの白いカードと別物に見せる。枠2px＋薄い下地。CSSは足していない。 */
+  return '<div class="card" style="border:2px solid var(--accent);'
+      + 'background:linear-gradient(180deg,var(--surface2),var(--surface));padding-top:14px">'
+    + '<div style="display:flex;align-items:center;gap:9px">'
+      + '<span style="width:34px;height:34px;border-radius:50%;background:var(--accent);'
+        + 'display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto">'
+        + '<i class="ti ti-mood-heart" style="color:#fff;font-size:19px"></i></span>'
+      + '<div><div style="font-size:10.5px;color:var(--muted);font-weight:700;letter-spacing:.04em">'
+        + t('お悩み相談室','Support Room') + '</div>'
+      + '<div style="font-size:16px;font-weight:800;color:var(--tm);line-height:1.35">'
+        + _ghLead() + '</div></div></div>'
+    + '<div style="font-size:12px;color:var(--tm);margin-top:8px;line-height:1.7">'
+      + t('困っていること、こうしたらもっと良くなると思うこと。どんな小さなことでも聞かせてください。',
+          'Anything that troubles you, or any idea to make things better — big or small.') + '</div>'
+    + '<div style="margin:8px 0 11px;display:flex;flex-wrap:wrap;gap:5px">' + _ghKinds() + '</div>'
+    + _ghAssureChips()
+    + '<div>' + _ghFormBtn(t('意見・アイデアを送る','Send your idea')) + '</div>'
     + '<div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--border)">'
       + '<div style="display:flex;align-items:center;gap:6px">'
         + '<i class="ti ti-bulb" style="color:var(--yellow);font-size:13px"></i>'
@@ -66457,17 +66508,25 @@ function ghVoiceCardCompact(){
 }
 function ghVoiceCard(mgr){
   var p = GH_PROMPTS[ghPromptIdx()];
-  var h = '<div class="card" style="border:1.5px solid var(--accent);margin-bottom:8px">'
-    + '<div style="display:flex;align-items:center;gap:7px">'
-      + '<i class="ti ti-message-2-heart" style="color:var(--accent);font-size:20px"></i>'
-      + '<div style="font-size:15px;font-weight:800;color:var(--tm)">'
-      + t('スタッフ意見・相談窓口','Staff Voice & Support') + '</div></div>'
-    + '<div style="font-size:12px;color:var(--muted);margin-top:3px;line-height:1.6">'
-      + t('困っていること、改善してほしいこと、こうしたら良くなるというアイデアを、会社本部へ直接届けられます。',
-          'Send concerns, improvement requests, and ideas straight to headquarters.')
+  /* ★v996: マイページと同じ見せ方にそろえる。同じものが画面で違う顔をしていると、
+     どちらかが「別の機能」に見えてしまう。 */
+  var h = '<div class="card" style="border:2px solid var(--accent);margin-bottom:8px;'
+      + 'background:linear-gradient(180deg,var(--surface2),var(--surface));padding-top:14px">'
+    + '<div style="display:flex;align-items:center;gap:9px">'
+      + '<span style="width:34px;height:34px;border-radius:50%;background:var(--accent);'
+        + 'display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto">'
+        + '<i class="ti ti-message-2-heart" style="color:#fff;font-size:19px"></i></span>'
+      + '<div><div style="font-size:10.5px;color:var(--muted);font-weight:700;letter-spacing:.04em">'
+        + t('スタッフ意見・相談窓口','Staff Voice & Support') + '</div>'
+      + '<div style="font-size:16px;font-weight:800;color:var(--tm);line-height:1.35">'
+        + _ghLead() + '</div></div></div>'
+    + '<div style="font-size:12px;color:var(--tm);margin-top:8px;line-height:1.7">'
+      + t('困っていること、こうしたらもっと良くなると思うこと。どんな小さなことでも聞かせてください。',
+          'Anything that troubles you, or any idea to make things better — big or small.')
       + '</div>'
-    + '<div style="margin:8px 0 10px">' + _ghAssure() + '</div>'
-    + '<div>' + _ghFormBtn(t('フォームを開く','Open the form')) + '</div>'
+    + '<div style="margin:8px 0 11px;display:flex;flex-wrap:wrap;gap:5px">' + _ghKinds() + '</div>'
+    + _ghAssureChips()
+    + '<div>' + _ghFormBtn(t('意見・アイデアを送る','Send your idea')) + '</div>'
     + '</div>';
   /* ★お題。白紙を見せない。 */
   h += '<div class="card" style="margin-bottom:8px">'
