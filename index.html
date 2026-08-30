@@ -36471,7 +36471,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '996';
+const APP_VERSION = '1000';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -51426,17 +51426,43 @@ function _coversLssRec(check, want){
 function canViewLssChangeReason() { return ['ceo','gm','am'].includes(curRole); }
 /* LSSロールの上下関係（評価対象の階層比較用） */
 function lssRoleRank(role){ return {ceo:4, gm:3, am:2, sl:1}[role] || 0; }
+/* ★v997: G4（Store Manager）の編集範囲。担当店の G3・G2 だけ。
+   ★許可リストで書く。条件を足し忘れても「広がる」側に倒れないようにするため。
+   ★grade は empGrade() で見る。role だけで見ると title で昇格した人を取りこぼす。
+   ★担当店は名簿（getEmployees）の自分のレコードから取る。
+     ★myAmStores() は myStoreId() 経由で、名簿に自分が居ないと画面の店セレクタ
+       （curStore）に落ちる。それを担当店として使うと、店を切り替えるだけで
+       他店の G3・G2 が編集できてしまう。ここでは名簿にしか従わない。
+   ★応援（support）でその店に入っている人も対象。Career Score の一覧
+     （visibleStaffForManager）が「配属店 ∪ 応援」で見せているので、
+     見える人と評価できる人をそろえる。 */
+function _lssG4CanEdit(target){
+  if (!target || !target.name) return false;
+  var g = (typeof empGrade==='function') ? empGrade(target) : '';
+  if (g !== 'G3' && g !== 'G2') return false;          /* ★G1・G4・G5 は対象外 */
+  var meName = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
+  var meEmp = (typeof getEmployees==='function')
+    ? getEmployees().find(function(x){ return x.name === meName; }) : null;
+  var mine = meEmp && meEmp.store;
+  if (!mine || mine === 'ALL' || mine === 'OFFICE') return false;  /* ★担当店が無ければ誰も編集不可 */
+  if (target.store === mine) return true;
+  return (target.support||[]).indexOf(mine) >= 0;
+}
 /* LSSスコアの採点・変更の可否：
    - 評価者はAM以上（ceo/gm/am）
    - 本人による自己編集は不可
    - 自分より上位は評価不可（評価者ランク ≧ 対象ランク）
-   - CEOは評価対象外 */
+   - CEOは評価対象外
+   - ★v997: G4 は担当店の G3・G2 のみ（_lssG4CanEdit）
+     ★ROLE_ALIAS で G4 の curRole は 'am' になるため、上の行だけでは
+       他店のスタッフ・他店の G4・同格の G5 まで通っていた。 */
 function canEditLss(name) {
   if (!['ceo','gm','am'].includes(curRole)) return false;
   var meName = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
   if (!name || name === meName) return false;
   var target = getEmployees().find(x=>x.name===name) || {};
   if (target.role === 'ceo') return false;
+  if (curRealRole === 'g4') return _lssG4CanEdit(target);
   if (lssRoleRank(target.role) > lssRoleRank(curRole)) return false;
   return true;
 }
@@ -54469,6 +54495,297 @@ function lssEligibility(name) {
 function getLssRequests() { return ls('lss_requests', []); }
 function addLssRequest(req) { var l=getLssRequests(); l.push(req); lsSet('lss_requests', l); }
 function lssPendingFor(name, kind) { return getLssRequests().filter(r=>r.name===name && r.kind===kind && r.status==='申請中').slice(-1)[0]; }
+/* ★v1000: いま見ているのが自分か。 */
+function lssIsSelf(name){
+  var meName = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
+  return !!(name && meName && name === meName);
+}
+/* ★v1000: 本人が自分の Career Score を変更申請できるか。G2〜G5 のみ。
+   ★G1 はページ自体を開けない。GM・CEO は自分の点を直接書ける立場なので、
+     申請の仕組みに入れると「自分で出して自分で承認」になる。 */
+function lssCanSelfRequest(name){
+  if (!lssIsSelf(name)) return false;
+  var me = (typeof getEmployees==='function')
+    ? getEmployees().find(function(x){ return x.name === name; }) : null;
+  if (!me || me.status==='退職') return false;
+  var g = (typeof gradeNum==='function' && typeof empGrade==='function') ? gradeNum(empGrade(me)) : 0;
+  return g >= 2 && g <= 5;
+}
+/* ★v1000: 採点欄をさわれるか。★canEditLss（正の点を直接書いてよいか）とは別。
+   ★本人はここでは通るが、保存は必ず申請に回る（saveLssScores を見ること）。 */
+function canScoreLss(name){ return canEditLss(name) || lssCanSelfRequest(name); }
+/* ★v998: Career Score の変更に承認が要るか。
+   ★v1000: 本人の自己評価も必ず承認を通す。
+   ★curRealRole で見る。ROLE_ALIAS で curRole は 'am' になるため。 */
+function lssNeedsApproval(name){
+  if (lssCanSelfRequest(name)) return true;
+  return curRealRole === 'g4';
+}
+/* 自分が出した、その人あての承認待ち。★他人の申請を自分の画面に載せないため。 */
+function lssMyPendingScoreReq(name){
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
+  return getLssRequests().filter(function(r){
+    return r && r.kind==='score' && r.name===name && r.by===me && _srPending(r);
+  }).slice(-1)[0];
+}
+/* 項目IDから、その人の項目セットでの見出しを引く。
+   ★lssCatsForName を使う。専門職は同じIDが別の質問を指す（v994の教訓）。 */
+function lssItemLabelFor(name, id){
+  var cats = (typeof lssCatsForName==='function') ? lssCatsForName(name) : LSS_CATEGORIES;
+  var key = String(id).slice(0,1), idx = parseInt(String(id).slice(1), 10);
+  var c = (cats||[]).find(function(x){ return x.key===key; });
+  var lb = (c && c.items && c.items[idx]!=null) ? c.items[idx] : '';
+  if (key==='H' && lb && (''+lb).indexOf('：')>=0) lb = (''+lb).split('：').slice(1).join('：');
+  return { cat:key, catName:(c&&c.name)||key, label:lb||('項目 '+id) };
+}
+/* 下書きと「承認済みの点」の差分。★変えた項目だけを返す。
+   ★from は送信時点の承認済みの値。v999 の承認時に現在値と突き合わせるために持つ。 */
+function lssDiffFromDraft(name){
+  var rec = getLssScores(name) || {};
+  var base = rec.scores || {};
+  var draft = window._lssDraft || {};
+  var cats = (typeof lssCatsForName==='function') ? lssCatsForName(name) : LSS_CATEGORIES;
+  var out = [];
+  (cats||[]).forEach(function(c){
+    (c.items||[]).forEach(function(_lb, i){
+      var id = lssItemId(c.key, i);
+      var b = (base[id]!=null  && base[id]!=='')  ? parseInt(base[id], 10)  : null;
+      var d = (draft[id]!=null && draft[id]!=='') ? parseInt(draft[id], 10) : null;
+      if (b === d) return;
+      var info = lssItemLabelFor(name, id);
+      out.push({ id:id, cat:c.key, catName:(c.name||info.catName), label:info.label, from:b, to:d });
+    });
+  });
+  return out;
+}
+/* ★v998: 申請の id。★Date.now() だけだと、同じミリ秒に出た2件が同じ id になる。
+   lss_requests のマージは id での和集合なので、別の申請が1件に潰れて片方が消える。
+   ★別の端末どうしでも起きる（別の店の G4 が同時に出したとき）ので、
+     連番だけでは足りない。連番（同一端末）＋乱数（端末間）の両方を付ける。 */
+var _lssqSeq = 0;
+function _lssqId(){ return 'lssq' + Date.now() + '_' + (++_lssqSeq) + '_' + Math.random().toString(36).slice(2,7); }
+/* ★v998: 申請として積む。★lss_emp_（正の点）には一切書かない。 */
+function submitLssScoreRequest(name){
+  /* ★v1000: 他人を評価する権限か、本人の自己評価か。どちらかが要る。 */
+  if (!canScoreLss(name)) { showToast('権限がありません','warning'); return; }
+  var diff = lssDiffFromDraft(name);
+  if (!diff.length) { showToast('変更がありません','info'); return; }
+  var by = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
+  var emp = (typeof getEmployees==='function') ? (getEmployees().find(function(x){return x.name===name;})||{}) : {};
+  var reqs = getLssRequests();
+  /* ★1件は「対象者 × 申請者」ごと。前の自分の申請中は消さずに取消にする。
+     ★物理削除だと他端末の「申請中」が同期で復活する（申請系は status 更新のみ）。
+     ★v1000: r.by===by を足した。本人申請が入ると、同じ人に対して
+       G4 の申請と本人の申請が同時に並ぶ。片方を消すのは別人の評価を消すこと。 */
+  reqs.forEach(function(r){
+    if (r && r.kind==='score' && r.name===name && r.by===by && _srPending(r)) {
+      r.status = '取消'; r.supersededAt = Date.now();
+    }
+  });
+  reqs.push({
+    id: _lssqId(), kind: 'score', name: name, status: '申請中',
+    by: by, byRole: (curRealRole||curRole), store: emp.store||'',
+    date: todayJP(), ts: Date.now(),
+    _set: (typeof lssItemSetOf==='function') ? lssItemSetOf(name) : 'general',
+    self: lssIsSelf(name),   /* ★v1000: 自己評価かどうか。承認画面で見分けるため */
+    diff: diff,
+    basePct: (lssSummary(name)||{}).totalPct,
+    wantPct: lssSummaryFromDraft().totalPct,
+    comment: (document.getElementById('lss-comment')||{}).value||'',
+    changeReason: ((document.getElementById('lss-changereason')||{}).value||'').trim()
+  });
+  lsSet('lss_requests', reqs);
+  closeModalDirect();
+  /* ★v999: 宛先は GM だけ。_notifAudience は role 完全一致で配るので、
+     role が 'ceo' の Tacさんには届かない。★try/catch は addApproval と同じ書き方。 */
+  try{ addNotif({ type:'approval', title:'承認待ち：Career Score',
+    text:(name + ' の変更 ' + diff.length + '項目（' + by + ' 申請）'),
+    toRoles:['gm'], page:'leadership', refId:'lssq' }); }catch(e){}
+  showToast(name+' のCareer Score変更を申請しました（承認後に反映されます）','success');
+  renderPage('leadership');
+}
+/* ★v999: Career Score の変更を承認できるのは GM（Motoさん）だけ。
+   ★curRealRole で見る。既存の承認エンジンは ceo を gm の代理として通すので、
+     そこには載せずに、ここで宛先を決める。 */
+function lssCanApproveScore(){ return (curRealRole||curRole) === 'gm'; }
+function lssPendingScoreReqs(){
+  return getLssRequests().filter(function(r){ return r && r.kind==='score' && _srPending(r); });
+}
+/* ★申請したあとに別の人が同じ項目を触ったもの。
+   ここに出た項目は、承認するとその人の変更が消える。 */
+function lssScoreDrift(r){
+  var cur = (getLssScores(r && r.name) || {}).scores || {};
+  return ((r && r.diff) || []).filter(function(d){
+    var now = (cur[d.id]!=null && cur[d.id]!=='') ? parseInt(cur[d.id], 10) : null;
+    return now !== d.from;
+  });
+}
+/* 申請時のセットと今のセットが違うか。違えば承認できない（v994の教訓）。 */
+function lssScoreSetNg(r){
+  var now = (typeof lssItemSetOf==='function') ? lssItemSetOf(r && r.name) : 'general';
+  return (r && r._set && r._set !== now) ? { was:r._set, now:now } : null;
+}
+/* 差分の表示。★軸ごとにまとめて、変えた項目だけ出す。 */
+function lssScoreDiffHtml(r){
+  var drift = {}; lssScoreDrift(r).forEach(function(d){ drift[d.id] = true; });
+  var cur = (getLssScores(r.name) || {}).scores || {};
+  var byCat = {}, order = [];
+  (r.diff||[]).forEach(function(d){
+    if (!byCat[d.cat]) { byCat[d.cat] = []; order.push(d.cat); }
+    byCat[d.cat].push(d);
+  });
+  var sc = function(v){ return (v==null) ? t('未','—') : v; };
+  var h = '';
+  order.forEach(function(k){
+    var rows = byCat[k];
+    h += '<div style="display:flex;align-items:center;gap:6px;margin:10px 0 4px">'
+      + '<span style="font-size:12px;font-weight:700;color:var(--tm)">'
+      + escapeHtml(k + ' ' + (rows[0].catName||'')) + '</span>'
+      + '<span style="font-size:11px;color:var(--muted)">' + rows.length + t('件',' items') + '</span></div>';
+    rows.forEach(function(d){
+      var up = (d.to==null?0:d.to) > (d.from==null?0:d.from);
+      var col = up ? 'var(--green)' : 'var(--red)';
+      h += '<div style="border-bottom:1px solid var(--border);padding:6px 0">'
+        + '<div style="display:flex;align-items:center;gap:8px">'
+        + '<span style="flex:1;font-size:12px">' + escapeHtml(d.label||d.id) + '</span>'
+        + '<span style="font-size:12px;color:var(--muted)">' + sc(d.from) + '</span>'
+        + '<i class="ti ti-arrow-right" style="font-size:13px;color:var(--muted)"></i>'
+        + '<span style="font-size:12px;font-weight:700;color:' + col + '">' + sc(d.to) + '</span>'
+        + '<i class="ti ti-arrow-' + (up?'up':'down') + '" style="font-size:14px;color:' + col + '"></i>'
+        + '</div>';
+      if (drift[d.id]) {
+        var nowv = (cur[d.id]!=null && cur[d.id]!=='') ? cur[d.id] : null;
+        h += '<div style="background:var(--bg);border-radius:6px;padding:5px 8px;margin-top:4px;'
+          + 'font-size:11px;color:var(--red)"><i class="ti ti-alert-triangle"></i> '
+          + t('申請のあとに別の人が変えています（申請時 ','Changed by someone else after this request (was ')
+          + sc(d.from) + ' · ' + t('現在 ','now ') + sc(nowv) + t('）。承認するとこの項目は ',').  Approving sets it to ')
+          + sc(d.to) + t(' になります。','.') + '</div>';
+      }
+      h += '</div>';
+    });
+  });
+  return h;
+}
+/* ★v999: 承認カード。GM だけに出す。 */
+function lssScoreApprovalCardHtml(){
+  if (!lssCanApproveScore()) return '';
+  var reqs = lssPendingScoreReqs();
+  if (!reqs.length) return '';
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>'
+    + t('Career Score の変更承認','Career Score changes') + ' (' + reqs.length + ')</div>';
+  reqs.forEach(function(r){
+    var setNg = lssScoreSetNg(r);
+    var total = 0;
+    try { total = (lssCatsForName(r.name)||[]).reduce(function(a,c){ return a + ((c.items||[]).length); }, 0); } catch(e){}
+    h += '<div style="border:1px solid var(--border);border-radius:10px;padding:11px;margin-bottom:9px">'
+      + '<div style="display:flex;align-items:flex-start;gap:8px"><div style="flex:1;min-width:0">'
+      + '<div style="font-size:14px;font-weight:700">' + escapeHtml(r.name) + t(' のCareer Score変更',' — Career Score change') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + t('申請 ','From ') + escapeHtml(r.by||'')
+      + (r.self ? (' <span class="tag" style="background:var(--accent);color:#fff;font-size:9px">'
+          + t('自己評価','Self') + '</span>') : '')
+      + ' · ' + escapeHtml(r.date||'') + '</div></div>'
+      + '<span class="tag" style="background:var(--surface2);color:var(--muted);font-size:10px">'
+      + t('承認待ち','Pending') + '</span></div>'
+      + '<div style="display:flex;gap:12px;margin:9px 0;padding:8px 10px;background:var(--surface2);border-radius:8px">'
+      + '<div><div style="font-size:11px;color:var(--muted)">' + t('総合','Total') + '</div>'
+      + '<div style="font-size:15px">' + (r.basePct!=null?r.basePct:'—') + '% → '
+      + '<span style="color:var(--green);font-weight:700">' + (r.wantPct!=null?r.wantPct:'—') + '%</span></div></div>'
+      + '<div style="border-left:1px solid var(--border);padding-left:12px">'
+      + '<div style="font-size:11px;color:var(--muted)">' + t('変更した項目','Changed') + '</div>'
+      + '<div style="font-size:15px">' + ((r.diff||[]).length)
+      + (total ? ' <span style="font-size:11px;color:var(--muted)">/ ' + total + t('項目',' items') + '</span>' : '')
+      + '</div></div></div>';
+    if (r.changeReason) {
+      h += '<div style="border-left:2px solid var(--accent);background:var(--surface2);padding:7px 10px;margin-bottom:10px">'
+        + '<div style="font-size:11px;color:var(--muted)">' + t('変更理由','Reason') + '</div>'
+        + '<div style="font-size:12px;margin-top:2px">' + escapeHtml(r.changeReason) + '</div></div>';
+    }
+    if (setNg) {
+      h += '<div class="alert alert-warning" style="padding:7px 10px;font-size:12px;margin-bottom:8px">'
+        + '<i class="ti ti-alert-triangle"></i> '
+        + t('評価項目が入れ替わっています（申請時 ','The item set changed (was ') + escapeHtml(setNg.was)
+        + t(' / 現在 ',' / now ') + escapeHtml(setNg.now)
+        + t('）。同じIDが別の質問を指すため承認できません。申請しなおしてください。',
+            '). The same ids point at different questions, so this cannot be approved.') + '</div>';
+    }
+    h += lssScoreDiffHtml(r);
+    if (total) {
+      h += '<div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-eye-off"></i> '
+        + t('変えていない','The other ') + (total - (r.diff||[]).length) + t('項目は出していません',' items are unchanged and not shown') + '</div>';
+    }
+    h += '<div class="form-group" style="margin:9px 0 6px"><input class="form-input" id="lssrj-' + r.id + '" '
+      + 'placeholder="' + t('却下する場合の理由（任意）','Reason if rejecting (optional)') + '" style="font-size:12px"></div>'
+      + '<div class="btn-row">'
+      + '<button class="btn btn-danger btn-sm" onclick="rejectLssScoreRequest(\'' + r.id + '\')">'
+      + '<i class="ti ti-x"></i> ' + t('却下','Reject') + '</button>'
+      + (setNg ? '' : ('<button class="btn btn-success btn-sm" onclick="approveLssScoreRequest(\'' + r.id + '\')">'
+        + '<i class="ti ti-check"></i> ' + t('承認して反映','Approve') + '</button>'))
+      + '</div></div>';
+  });
+  return h + '</div>';
+}
+/* ★v999: 承認して反映。★項目ごとに当てる。丸ごと上書きしない。 */
+function approveLssScoreRequest(id){
+  if (!lssCanApproveScore()) { showToast(t('承認できるのはGMだけです','Only the GM can approve'),'warning'); return; }
+  var reqs = getLssRequests();
+  var r = reqs.find(function(x){ return x.id===id; });
+  if (!r || r.kind!=='score' || !_srPending(r)) { showToast(t('この申請は処理済みです','Already handled'),'info'); return; }
+  if (lssScoreSetNg(r)) { showToast(t('評価項目が入れ替わっています。申請しなおしてください','The item set changed — ask for a new request'),'warning'); return; }
+  var rec = getLssScores(r.name) || {};
+  var prevPct = lssSummary(r.name).totalPct;
+  /* ★いま入っている点に、差分だけを当てる。
+     差分に入っていない項目は触らない＝申請中に別の人が変えた分が残る。 */
+  var scores = Object.assign({}, rec.scores||{});
+  (r.diff||[]).forEach(function(d){
+    if (d.to == null) delete scores[d.id]; else scores[d.id] = d.to;
+  });
+  setLssScores(r.name, { evaluator: (r.by||''), date: todayJP(), scores: scores,
+    comment: (r.comment||''), status: '確定' });
+  var newPct = lssSummary(r.name).totalPct;
+  var me = (ROLE_CONFIG[curRole]||{}).name || curUserName || '';
+  var hist = ls('lss_history', []);
+  var entry = { name:r.name, pct:newPct, prevPct:prevPct, by:(r.by||''), approver:me,
+    date: todayJP(), ts: Date.now(), comment:(r.comment||''), items:((r.diff||[]).length) };
+  if (r.changeReason) entry.changeReason = r.changeReason;
+  hist.push(entry);
+  lsSet('lss_history', hist);
+  r.status = '承認'; r.approver = me; r.approvedDate = todayJP(); r.decidedAt = Date.now();
+  lsSet('lss_requests', reqs);
+  try{ addNotif({ type:'approval', title:t('Career Score 承認','Career Score approved'),
+    text:(r.name + t(' の変更 ',' — ') + ((r.diff||[]).length) + t('項目を承認しました',' items approved')),
+    toUser:(r.by||''), page:'leadership', refId:r.id }); }catch(e){}
+  showToast(r.name + t(' のCareer Scoreを反映しました',' — Career Score updated'),'success');
+  renderPage('leadership');
+}
+/* ★v999: 却下。★点は1つも動かさない。申請は理由つきで残す。 */
+function rejectLssScoreRequest(id){
+  if (!lssCanApproveScore()) { showToast(t('却下できるのはGMだけです','Only the GM can reject'),'warning'); return; }
+  var reqs = getLssRequests();
+  var r = reqs.find(function(x){ return x.id===id; });
+  if (!r || r.kind!=='score' || !_srPending(r)) { showToast(t('この申請は処理済みです','Already handled'),'info'); return; }
+  var el = document.getElementById('lssrj-' + id);
+  var me = (ROLE_CONFIG[curRole]||{}).name || curUserName || '';
+  r.status = '却下'; r.approver = me; r.approvedDate = todayJP(); r.decidedAt = Date.now();
+  r.rejectReason = ((el && el.value) || '').trim();
+  lsSet('lss_requests', reqs);
+  try{ addNotif({ type:'approval', title:t('Career Score 却下','Career Score rejected'),
+    text:(r.name + t(' の変更は却下されました',' — change rejected') + (r.rejectReason ? ('：' + r.rejectReason) : '')),
+    toUser:(r.by||''), page:'leadership', refId:r.id }); }catch(e){}
+  showToast(t('却下しました','Rejected'),'danger');
+  renderPage('leadership');
+}
+/* 承認待ちの知らせ。★「まだ反映されていない」ことを必ず書く。 */
+function lssPendingBannerHtml(name){
+  /* ★v1000: 自分の申請を優先して出す。無ければ他の人が出した申請を知らせる。 */
+  var p = (typeof lssMyPendingScoreReq==='function') ? lssMyPendingScoreReq(name) : null;
+  if (!p) p = (typeof lssPendingFor==='function') ? lssPendingFor(name,'score') : null;
+  if (!p) return '';
+  var n = (p.diff||[]).length;
+  return '<div class="alert alert-warning" style="margin:6px 0;padding:7px 10px;font-size:12px">'
+    + '<i class="ti ti-clock"></i> 承認待ち：' + n + '項目の変更を申請中です'
+    + '<span style="font-weight:700">（まだ反映されていません）</span>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:2px">申請 ' + (p.date||'') + ' · ' + escapeHtml(p.by||'') + '</div></div>';
+}
 
 /* ===== 店舗別レベルアップ／Tip条件（フェーズ2） =====
    skill_rules[storeId] = {
@@ -55126,8 +55443,13 @@ function renderLeadership() {
     if(lssView==='nominate' && _isGmCeo) return html + renderDevNominate();
   }
 
+  /* ★v999: Career Score の変更承認。GM だけに出る。 */
+  html += lssScoreApprovalCardHtml();
+
   // 承認待ち（昇格・Tip申請）
-  var pendingReqs = getLssRequests().filter(r=>r.status==='申請中');
+  /* ★v999: kind:'score' は下の行に混ぜない。promo と Tip の2択で書かれていて、
+     score を入れると「Tip · Leadership undefined%」になる。 */
+  var pendingReqs = getLssRequests().filter(r=>r.status==='申請中' && r.kind!=='score');
   if (pendingReqs.length && ROLE_CONFIG[curRole].canApprove) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>${t('承認待ち','Pending')} (${pendingReqs.length})</div>`;
     pendingReqs.forEach(r=>{
@@ -55159,7 +55481,7 @@ function renderLeadership() {
           <div style="font-size:11px;color:var(--muted)">${e.title||ROLE_CONFIG[e.role].label}${storeName?' · '+storeName:''}</div>
           ${sum.hasData?`<div style="margin-top:3px"><span class="tag" style="background:${lv.color};color:#fff;font-size:9px">${lv.label}</span> <span style="font-size:11px;color:var(--muted)">${sum.totalScore}/${sum.totalMax}${t('点',' pts')}</span></div>`:'<div style="font-size:11px;color:var(--muted);margin-top:3px">'+t('未評価','Not evaluated')+'</div>'}
         </div>
-        <button class="btn btn-${sum.hasData?'secondary':'primary'} btn-sm" onclick="openLssDetail('${e.name.replace(/'/g,"\\'")}')">${(sum.hasData||!canEditLss(e.name))?t('詳細','Details'):t('評価する','Evaluate')}</button>
+        <button class="btn btn-${sum.hasData?'secondary':'primary'} btn-sm" onclick="openLssDetail('${e.name.replace(/'/g,"\\'")}')">${(sum.hasData||!canScoreLss(e.name))?t('詳細','Details'):(lssIsSelf(e.name)?t('自己評価','Self-review'):t('評価する','Evaluate'))}</button>
       </div>`;
     // カテゴリ別ミニバー
     if (sum.hasData) {
@@ -55177,7 +55499,9 @@ function renderLeadership() {
 
   // 履歴（スコア＋申請承認）
   var lssHist = ls('lss_history', []);
-  var reqHist = getLssRequests().filter(r=>r.status!=='申請中');
+  /* ★v998: kind:'score' はここに出さない。下の行は promo と Tip の2択で書かれていて、
+     score を混ぜると「Tip申請 undefined%」になる。★v999 で専用の行を足す。 */
+  var reqHist = getLssRequests().filter(r=>r.status!=='申請中' && r.kind!=='score');
   if (viewOthers && (lssHist.length || reqHist.length)) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>${t('履歴','History')}</div>`;
     reqHist.slice().reverse().slice(0,6).forEach(r=>{
@@ -55235,7 +55559,18 @@ async function openLssDetail(name) {
   window._lssCat = window._lssCat || 'H';
   var rec = getLssScores(name) || {};
   window._lssDraft = Object.assign({}, rec.scores||{});
-  var canScore = canEditLss(name);
+  /* ★v998: 申請中の変更を、申請した側（G4）の下書きにだけ戻す。
+     ★戻さないと、開き直すたびに承認済みの値が出て同じ採点をやり直すことになる。
+     ★GM・CEO には戻さない。ここで載せると「保存」で承認画面を素通りできてしまう。
+     ★正の点（lss_emp_）は動かしていない。画面の下書きだけ。 */
+  if (typeof lssNeedsApproval==='function' && lssNeedsApproval(name)) {
+    /* ★v1000: 自分が出した申請だけを戻す。他人の申請内容を自分の画面に載せない。 */
+    var _pend = (typeof lssMyPendingScoreReq==='function') ? lssMyPendingScoreReq(name) : null;
+    if (_pend && _pend.diff) _pend.diff.forEach(function(d){
+      if (d.to==null) delete window._lssDraft[d.id]; else window._lssDraft[d.id] = d.to;
+    });
+  }
+  var canScore = canScoreLss(name);   /* ★v1000: 本人の自己評価も採点欄をさわれる */
   var dEmp = (typeof getEmployees==='function') ? getEmployees().find(function(x){return x.name===name;}) : null;
   var axisBlock = dEmp ? ('<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:8px 0"><div style="font-size:11px;color:var(--muted);margin-bottom:5px"><i class="ti ti-target" style="color:var(--accent)"></i> 担当軸（このGradeの責任領域）</div>'+lssAxisHtml(dEmp)+'</div>') : '';
   var ojtBlock = '';
@@ -55257,6 +55592,7 @@ async function openLssDetail(name) {
   var html = `<div class="modal-title">Career Score — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div id="lss-summary"></div>
     ${lssSetWarnHtml(name)}
+    ${lssPendingBannerHtml(name)}
     ${axisBlock}
     ${ojtBlock}
     ${evalRubricLegendHtml()}
@@ -55268,7 +55604,7 @@ async function openLssDetail(name) {
     html += `<div class="form-group" style="margin-top:4px"><label class="form-label" style="display:flex;align-items:center;gap:6px"><i class="ti ti-message-2" style="color:var(--accent)"></i>変更理由 <span style="font-size:10px;color:var(--muted);font-weight:400">（任意・スコアを上下させた背景を残せます）</span></label>
       <textarea class="form-textarea" id="lss-changereason" placeholder="例：接客クレーム対応が大きく改善／在庫管理で連続ミスがあり一時的に下方修正 など" style="min-height:50px"></textarea></div>`;
     html += `<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
-      <button class="btn btn-primary" onclick="saveLssScores('${name.replace(/'/g,"\\'")}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`;
+      <button class="btn btn-primary" onclick="saveLssScores('${name.replace(/'/g,"\\'")}')"><i class="ti ${lssNeedsApproval(name)?'ti-send':'ti-device-floppy'}"></i> ${lssNeedsApproval(name)?(lssIsSelf(name)?'自己評価を申請':'承認へ申請'):'保存'}</button></div>`;
   } else {
     html += `<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`;
   }
@@ -55353,7 +55689,7 @@ function renderLssItems() {
   var el=document.getElementById('lss-items'); if(!el) return;
   var c=curLssCat(window._lssCat);
   var draft=window._lssDraft||{};
-  var canScore=canEditLss(window._lssName);
+  var canScore=canScoreLss(window._lssName);
   var groups=lssGroupsOf(c.key);
   var L_LABELS=curLang==='en'?['None','Sometimes','Consistent','Role model']:['未','時々','継続','模範'];
   var L_COLS=['var(--muted)','var(--yellow)','var(--green)','var(--accent)'];
@@ -55396,7 +55732,7 @@ function openLssScorePopup(catKey, idx){
   var label=c.items[idx]; if(catKey==='H' && label && (''+label).indexOf('：')>=0) label=(''+label).split('：').slice(1).join('：'); if(curLang==='en' && c.items_en && c.items_en[idx]!=null) label=c.items_en[idx];
   var id=lssItemId(catKey, idx);
   var cur=(window._lssDraft||{})[id]; cur=(cur!=null&&cur!=='')?parseInt(cur):null;
-  var canScore=canEditLss(window._lssName);
+  var canScore=canScoreLss(window._lssName);
   var rub=getEvalRubric();
   var cols={0:'var(--muted)',1:'var(--yellow)',2:'var(--green)',3:'var(--accent)'};
   closeLssScorePopup();
@@ -55441,7 +55777,7 @@ function lssUpdateGroupPcts() {
   });
 }
 function lssSetScore(id, val) {
-  if (!canEditLss(window._lssName)) return;
+  if (!canScoreLss(window._lssName)) return;
   if (!window._lssDraft) window._lssDraft = {};
   window._lssDraft[id] = val;
   // ボタンの見た目を更新
@@ -55458,7 +55794,13 @@ function lssSetScore(id, val) {
   lssUpdateGroupPcts();
 }
 function saveLssScores(name) {
+  /* ★v1000: 本人は必ず申請へ。canEditLss は本人を弾くので、先に見る。
+     ★この順番が大事。逆にすると自己評価が「権限がありません」で落ちる。 */
+  if (lssCanSelfRequest(name)) { submitLssScoreRequest(name); return; }
   if (!canEditLss(name)) { showToast('権限がありません（AM以上・本人以外のみ変更可）','warning'); return; }
+  /* ★v998: 承認が要るとき（G4・本人の自己評価）は、正の点を書かずに申請として積む。
+     ★ここより下は lss_emp_ を書く経路なので、必ず return する。 */
+  if (lssNeedsApproval(name)) { submitLssScoreRequest(name); return; }
   var by = (ROLE_CONFIG[curRole]||{}).name||curUserName;
   var prev = getLssScores(name);
   var prevPct = prev ? lssSummary(name).totalPct : null;
