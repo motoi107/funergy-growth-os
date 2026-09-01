@@ -30958,6 +30958,8 @@ function invComputeMatrix(storeId){
 function invRefreshInputSection(storeId){
   var t=invComputeTotals(storeId), counts=getInvCounts(storeId), codes=getStoreIngredients(storeId);
   codes.forEach(function(code){ var el=document.getElementById('inv-amt-'+code); if(el) el.textContent=(counts[code]!=null)?invFmtMoney(t.perItem[code]||0):'—'; });
+  /* ★v1001: 冷凍/冷蔵の合計欄も、入力のたびに書き替える。 */
+  codes.forEach(function(code){ var q=document.getElementById('inv-qty-'+code); if(q) q.textContent=(counts[code]!=null)?counts[code]:'—'; });
   _invVendorList(storeId).forEach(function(v,idx){ var el=document.getElementById('inv-vsub-'+idx); if(el) el.textContent=invFmtMoney(t.perVendor[v]||0); });
 }
 /* v618: 棚卸「表紙」の食材移動を、食材移動ページの記録から自動反映（タップで明細） */
@@ -31062,14 +31064,72 @@ function getInvCountsRaw(storeId, ym){ ym=ym||invYm(); return ls('inv_count_'+st
 /* v917: 描画側から見た形は従来と完全に同じ（_at と印を取り除く）。
    Object.keys(counts).length で「入力があるか」を見ている箇所があるため、
    ここで取り除かないと、消した品目や内部データを1件と数えてしまう。 */
+/* ★v1001: 冷凍/冷蔵に分けて入れる店。いまは Kaimuki だけ。
+   ★広げるときはここに店IDを足すだけ。 */
+function invSplitOn(storeId){ return storeId === 'F04-K'; }
+var INV_SPLIT_PARTS = [
+  { k:'f', ja:'冷凍', en:'Freezer', icon:'ti-snowflake', color:'var(--blue)' },
+  { k:'r', ja:'冷蔵', en:'Fridge',  icon:'ti-fridge',    color:'var(--green)' }
+];
+/* 内訳ひとつ分を読む。未入力・消した印は null。 */
+function invSplitVal(storeId, code, part, ym){
+  var raw=getInvCountsRaw(storeId, ym);
+  var v=raw[code+':'+part];
+  if(v===null || v===undefined || v==='') return null;
+  var n=parseFloat(v); return isNaN(n) ? null : n;
+}
+/* 内訳が1つでも入っているか。 */
+function invHasSplit(storeId, code, ym){
+  for(var i=0;i<INV_SPLIT_PARTS.length;i++){
+    if(invSplitVal(storeId, code, INV_SPLIT_PARTS[i].k, ym)!=null) return true;
+  }
+  return false;
+}
+/* v917: 描画側から見た形は従来と完全に同じ（_at と印を取り除く）。
+   ★v1001: 内訳（code:f / code:r）もここで畳んで、実棚の数ひとつにして返す。
+     ★内訳をそのまま返すと、Object.keys(counts).length が品目数を数え違える。
+     ★合計は保存していない。ここで足すのが唯一の合計の出どころ。 */
 function getInvCounts(storeId, ym){
-  var raw=getInvCountsRaw(storeId, ym), out={};
+  var raw=getInvCountsRaw(storeId, ym), out={}, sum={};
   Object.keys(raw).forEach(function(k){
     if(k==='_at') return;          /* 内部の時刻表 */
+    var key=String(k), p=key.indexOf(':');
+    if(p>0){                       /* ★冷凍/冷蔵の内訳 */
+      if(raw[k]===null) return;    /* 消した印 */
+      var part=key.slice(p+1);
+      if(part!=='f' && part!=='r') return;
+      var n=parseFloat(raw[k]); if(isNaN(n)) return;
+      var code=key.slice(0,p);
+      sum[code]=(sum[code]||0)+n;
+      return;
+    }
     if(raw[k]===null) return;      /* 消した印 */
     out[k]=raw[k];
   });
+  /* ★内訳がある品目は、内訳の合計を実棚とする（古い合計より優先） */
+  Object.keys(sum).forEach(function(code){ out[code]=sum[code]; });
   return out;
+}
+/* ★v1001: 内訳ひとつ分を保存する。★setInvCount とは別の関数。
+   （setInvCount は verify_v917 が中身を見ているので触らない） */
+function setInvSplit(storeId, code, part, val){
+  if(part!=='f' && part!=='r') return;
+  var _ym=invYm();
+  var c=getInvCountsRaw(storeId,_ym); var v=parseFloat(val);
+  var key=code+':'+part;
+  /* ★v917 と同じ扱い。delete すると他端末の古い控えから復活する。 */
+  if(val===''||isNaN(v)) c[key]=null; else c[key]=v;
+  if(!c._at || typeof c._at!=='object') c._at={};
+  c._at[key]=Date.now();
+  /* ★内訳を入れたら、分ける前に入っていた合計は印を付けて消す。
+     読み取りは内訳を優先するので放置しても表示は合うが、
+     ★内訳を全部消したときに古い数が復活してしまう。 */
+  if(c[code]!==null && c[code]!==undefined){ c[code]=null; c._at[code]=Date.now(); }
+  lsSet('inv_count_'+storeId+'_'+_ym, c);
+  invRefreshInputSection(storeId);
+  var tp=document.getElementById('inv-toppage'); if(tp) tp.innerHTML=renderInvToppageInner(storeId);
+  var st=document.getElementById('inv-autosave');
+  if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
 }
 function setInvCount(storeId, code, val){
   var _ym=invYm();
@@ -31189,6 +31249,8 @@ function _invVendorList(storeId){
 function invRecalcTotals(storeId){
   var t=invComputeTotals(storeId), counts=getInvCounts(storeId), codes=getStoreIngredients(storeId);
   codes.forEach(function(code){ var el=document.getElementById('inv-amt-'+code); if(el) el.textContent=(counts[code]!=null)?invFmtMoney(t.perItem[code]||0):'—'; });
+  /* ★v1001: 冷凍/冷蔵の合計欄も、入力のたびに書き替える。 */
+  codes.forEach(function(code){ var q=document.getElementById('inv-qty-'+code); if(q) q.textContent=(counts[code]!=null)?counts[code]:'—'; });
   _invVendorList(storeId).forEach(function(v,idx){ var el=document.getElementById('inv-vsub-'+idx); if(el) el.textContent=invFmtMoney(t.perVendor[v]||0); });
   ['food','liquor','beverage','supply'].forEach(function(cl){ var el=document.getElementById('inv-csub-'+cl); if(el) el.textContent=invFmtMoney(t.perClass[cl]||0); });
   var g=document.getElementById('inv-grand'); if(g) g.textContent=invFmtMoney(t.grand);
@@ -31305,6 +31367,7 @@ function renderInventory(){
   // 表紙（Toppage）サマリー
   html += `<div id="inv-toppage">${renderInvToppageInner(storeId)}</div>`;
   // 業者別
+  var _spl = invSplitOn(storeId);   /* ★v1001: 冷凍/冷蔵に分けて入力する店か */
   _invVendorList(storeId).forEach(function(v,idx){
     var vItems=items.filter(function(i){return (i.vendor||'未設定')===v;});
     html += `<div class="card" style="padding:0;overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border-bottom:1px solid var(--border)">
@@ -31312,7 +31375,9 @@ function renderInventory(){
       <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">${escapeHtml(v==='未設定'?(curLang==='en'?'Unassigned':'未設定'):v)}</div><div style="font-size:10px;color:var(--muted)">${vItems.length}${curLang==='en'?' items':'品目'}</div></div>
       <div style="text-align:right"><div style="font-size:9px;color:var(--muted)">${curLang==='en'?'Subtotal':'小計'}</div><div id="inv-vsub-${idx}" style="font-size:14px;font-weight:700">${invFmtMoney(t.perVendor[v]||0)}</div></div>
     </div>
-    <table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">${curLang==='en'?'Ingredient':'食材'}</th><th>${curLang==='en'?'Unit price':'単価'}</th><th>${curLang==='en'?'Qty':'数量'}</th><th>${curLang==='en'?'Amount':'金額'}</th></tr></thead><tbody>`;
+    <table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">${curLang==='en'?'Ingredient':'食材'}</th><th>${curLang==='en'?'Unit price':'単価'}</th>${_spl
+      ? INV_SPLIT_PARTS.map(function(P){ return '<th style="color:'+P.color+'"><i class="ti '+P.icon+'"></i> '+(curLang==='en'?P.en:P.ja)+'</th>'; }).join('')+`<th>${curLang==='en'?'Total':'合計'}</th>`
+      : `<th>${curLang==='en'?'Qty':'数量'}</th>`}<th>${curLang==='en'?'Amount':'金額'}</th></tr></thead><tbody>`;
     vItems.forEach(function(i){
       var uv=invUnitValue(i,storeId), cnt=counts[i.code];
       var _pe=invPriceEditable(storeId), _bp=invBasePrice(i,storeId);   /* v783 */
@@ -31322,7 +31387,17 @@ function renderInventory(){
         <td style="text-align:right">${_pe
           ? `<input id="inv-price-${i.code}" type="number" inputmode="decimal" step="0.01" min="0" value="${_bp}" onchange="setInvPrice('${storeId}',${i.code},this.value)" style="width:74px;padding:5px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:12px"><div id="inv-ptag-${i.code}" style="font-size:9px;color:var(--muted);margin-top:2px">${_invPriceTagHtml(i,storeId)}</div>`
           : `<span style="color:var(--muted)">$${uv.toFixed(uv<1?4:2)}</span><div id="inv-ptag-${i.code}" style="font-size:9px;color:var(--muted)">${_invPriceTagHtml(i,storeId)}</div>`}</td>
-        <td style="text-align:center"><input type="number" inputmode="decimal" step="0.01" inputmode="decimal" value="${cnt!=null?cnt:''}" oninput="setInvCount('${storeId}',${i.code},this.value)" style="width:62px;padding:6px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:13px"></td>
+        ${_spl
+          ? INV_SPLIT_PARTS.map(function(P){
+              var pv=invSplitVal(storeId, i.code, P.k);
+              return '<td style="text-align:center"><input type="number" inputmode="decimal" step="0.01" value="'+(pv!=null?pv:'')+'" oninput="setInvSplit(\'' + storeId + '\',' + i.code + ',\'' + P.k + '\',this.value)" style="width:52px;padding:6px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:13px"></td>';
+            }).join('')
+            /* ★分ける前に入っていた数は、内訳を入れると消える。先に見せておく。 */
+            + '<td id="inv-qty-'+i.code+'" style="text-align:center;font-weight:600">'
+            + (cnt!=null?cnt:'—')
+            + ((cnt!=null && !invHasSplit(storeId,i.code)) ? '<div style="font-size:9px;color:var(--muted);font-weight:400">'+(curLang==='en'?'before split':'分ける前の数')+'</div>' : '')
+            + '</td>'
+          : `<td style="text-align:center"><input type="number" inputmode="decimal" step="0.01" inputmode="decimal" value="${cnt!=null?cnt:''}" oninput="setInvCount('${storeId}',${i.code},this.value)" style="width:62px;padding:6px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:13px"></td>`}
         <td id="inv-amt-${i.code}" style="text-align:right;font-weight:600">${cnt!=null?invFmtMoney(uv*cnt):'—'}</td>
       </tr>`;
     });
@@ -31571,6 +31646,9 @@ function saveInventory(storeId){
     var cnt=counts[code]; if(cnt==null) return;
     var uv=invUnitValue(i,storeId);
     var _L={code:code, name:i.name, cls:(i.cls||catClass(i.cat)), vendor:i.vendor||'未設定', unit:i.unit||'', actual:cnt, unitVal:uv, value:cnt*uv};
+    /* ★v1001: 冷凍/冷蔵で入れた品目は内訳も残す。actual は合計のままなので、
+       読み出し側（金額・Food Cost・CSV）は何も変わらない。 */
+    if(invHasSplit(storeId, code)){ _L.frz=invSplitVal(storeId,code,'f'); _L.rfg=invSplitVal(storeId,code,'r'); }
     if(invPriceOf(storeId, code)!=null) _L.manual=1;   /* v783: 仕入価格を手入力した行 */
     lines.push(_L);
   });
@@ -36471,7 +36549,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1000';
+const APP_VERSION = '1001';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
