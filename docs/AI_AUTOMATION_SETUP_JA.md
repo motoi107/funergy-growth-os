@@ -10,20 +10,22 @@
 
 ### Claude
 
-1. Claude CodeでGitHubを接続し、`motoi107/funergy-growth-os` を選ぶ。通常のチャットへコードを貼り付ける運用を、リポジトリに対する作業へ切り替える。
-2. Claude GitHub Appをこのリポジトリに接続する。
-3. 同梱の自動レビューを使う場合、GitHub ActionsのSecretに次のいずれかを登録する。値はコードやPRへ書かない。
+1. 完了: Claude Code WebでGitHubを接続し、`motoi107/funergy-growth-os` を選択した。
+2. 完了: Claude GitHub Appをこのリポジトリに接続した。
+3. 完了: Claudeが `CLAUDE.md` と読み込み先の共有記録を実セッションで確認した。
+4. Claude Routine「Growth OS：Claude自動レビュー」を作成済み。画面で確認したイベント設定は `All pull request events`、フィルターは `Base branch equals main` と `Is draft equals false`。指示で対象を未マージ・同一リポジトリのPRに限定し、同一SHAへの完了済みレビューを重複投稿しない。コード変更・マージ・公開は行わず、結果をPRに記録する。手動実行によるPR #2のレビュー投稿は確認済み。GitHubイベントによる自動起動と更新後の再レビューは本更新のpushで検証し、結果をPR #2に残す。
+5. 同梱のGitHub Actions版レビューを代わりに使う場合、GitHub ActionsのSecretに次のいずれかを登録する。値はコードやPRへ書かない。
    - Claudeの契約を利用: `CLAUDE_CODE_OAUTH_TOKEN`。Claude Codeの `claude setup-token` または `/install-github-app` で準備する。
    - API利用: `ANTHROPIC_API_KEY`。この場合はRepository variable `GROWTH_CLAUDE_AUTH` を `api` にする。API利用料が発生する。
-4. 接続後、Repository variable `GROWTH_CLAUDE_REVIEW_ENABLED` を `true` にする。未設定の間はClaudeジョブを実行しない。
+6. Actions版を使う場合だけ、Repository variable `GROWTH_CLAUDE_REVIEW_ENABLED` を `true` にする。未設定の間はClaudeジョブを実行しない。
 
 代わりにClaude Codeのブラウザ版からPRを開き、Auto-fixを有効にして、CI失敗やレビュー指摘の修正を任せる方法もある。通常のチャットへのGitHub資料接続だけでは、コードの自動保存まで有効になったと扱わない。
 
 ### Codex
 
-このチャットから対象リポジトリを参照できる。所有者アカウントには書込権限があるが、連携アプリによるブランチ作成はGitHubから403（Resource not accessible by integration）で拒否された。GitHub連携の対象リポジトリ・権限を確認し、再接続後に実際のブランチ作成を再検証する。
+このチャットから対象リポジトリの読み書きができる。2026-09-07に再接続後、ブランチ作成、コミット、PR #1の作成とマージまで成功した。
 
-GitHubのPRイベントから動くWorkの自動確認は、書込接続を確認してから登録する。今回の調査ではタスクをまだ作成していない。
+GitHubのPRイベントから動くCodexの自動確認はまだ登録していない。
 
 別の方法としてCodex cloudで同じリポジトリを設定し、Code review / Automatic reviewsを有効にできる。二重レビューを避けるため、常設するCodex側の自動確認は一つにする。特定の変更への手動依頼は `@codex review`。
 
@@ -54,6 +56,7 @@ GitHubのPRイベントから動くWorkの自動確認は、書込接続を確�
 
 - Claude Code / GitHub Actions: https://code.claude.com/docs/en/github-actions
 - Claude Code / ブラウザ版・Auto-fix: https://code.claude.com/docs/en/claude-code-on-the-web
+- Claude Code / Routines: https://code.claude.com/docs/en/routines
 - Claudeのプロジェクト記憶: https://code.claude.com/docs/en/memory
 - Codex / GitHubレビュー: https://learn.chatgpt.com/docs/third-party/github
 - GitHub / 自動マージ: https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request
