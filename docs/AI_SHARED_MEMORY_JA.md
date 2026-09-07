@@ -24,13 +24,13 @@
 ## GitHub版の基準
 
 - 初回調査時の `main`: `504e3111cb591a3f469bb0e660585cb08c1757b6`
-- 現在の `main`: `acce7895a47174aa2675aff4755657f5289b1445`（PR #1）
-- このコミットの日付: 2026-09-01 04:17:43 UTC
+- PR #1反映後の確認基準: `acce7895a47174aa2675aff4755657f5289b1445`。作業開始時はGitHubから最新の `main` を再取得する。
+- 初回調査対象 `504e311` の日付: 2026-09-01 04:17:43 UTC
 - `APP_VERSION` / `SW_BUILD`: ともに `1001`
 - `index.html`: 5,474,016 bytes（非圧縮のソースサイズ）
 - インラインJavaScript: 1本、4,689,780文字。実行時間は未測定。
 - 外部スクリプト: SupabaseクライアントをCDNから取得。
-- 上記コミットのGitHub Pages公開処理は成功している（run `33469302544`）。コード保存後の公開経路はすでに存在する。
+- 初回調査対象 `504e311` のGitHub Pages公開処理は成功している（run `33469302544`）。コード保存後の公開経路はすでに存在する。
 - PR #1ではClaudeレビューworkflowは未有効のためskipされた。レビュー完了とは扱わない。
 - 2026-09-07、Claude Code Webがこのリポジトリへ接続され、`CLAUDE.md` から3つの共有ファイルを実際に読めることをClaudeセッションで確認した。ファイル変更は行っていない。
 
@@ -60,4 +60,12 @@ PR #1とマージ後の `growth-checks.yml` は成功した。マージ後のGit
 
 現行GitHub版と同じblobハッシュのHTML・service workerを使い、構文とバージョン整合のローカル確認に成功。非圧縮HTMLは5,474,016 bytes、ローカルgzip試算は1,513,745 bytes。実際の配信圧縮率や読み込み時間とは別の値。
 
-ClaudeによるPR自動レビュー、Codex側の自動レビュー、更新後の再レビュー、公開条件の検証が完了するまでは「双方の完全自動運用が稼働済み」と報告しない。Claude Routineと自動マージは未有効化。
+Claude Routineは作成済み。設定画面で `All pull request events`、`Base branch equals main`、`Is draft equals false` を確認した。2026-09-07 17:46:48 UTC、手動実行からPR #2の `82eb1d6b56802b80e659ed32f5069d4ab2af58e3` に対するClaudeレビューがGitHubへ投稿された。投稿の `performed_via_github_app.slug` は `claude`。CodexもGitHubから直接この投稿を取得して確認した。
+
+レビュー記録: https://github.com/motoi107/funergy-growth-os/pull/2#issuecomment-5574097272
+
+Claudeは共有記録の「Routine未作成」という古い記述を指摘したため、本更新で修正した。本更新をPR #2へpushし、GitHubイベントによる自動起動と新しいSHAへの再レビューを検証する。手動実行の成功だけではイベントによる起動成功とは扱わない。後続の実行結果と対象SHAはPR #2に記録する。
+
+PR #1は当時、両AIの実レビュー記録を残さずマージされていた。後日の接続確認を過去のレビュー承認として扱わない。以降は実装担当とレビュー担当、対象SHAと検証結果をPR上に残す。
+
+Codex側の自動レビュー、更新後の再レビュー、公開条件の検証が完了するまでは「双方の完全自動運用が稼働済み」と報告しない。自動マージは未有効化。GitHub Actions版のClaudeジョブのskipから、非公開のSecretの有無を断定しない。

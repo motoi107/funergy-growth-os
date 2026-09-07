@@ -13,7 +13,7 @@
 1. 完了: Claude Code WebでGitHubを接続し、`motoi107/funergy-growth-os` を選択した。
 2. 完了: Claude GitHub Appをこのリポジトリに接続した。
 3. 完了: Claudeが `CLAUDE.md` と読み込み先の共有記録を実セッションで確認した。
-4. 自動レビューは、Claudeの契約内で動くGitHubイベント付きClaude Routineを優先する。`pull_request.opened` と `pull_request.synchronize` を対象にし、draftを除外して、最新コミットへのレビュー結果をGitHubへ残す。Routineはまだ未作成。
+4. Claude Routine「Growth OS：Claude自動レビュー」を作成済み。画面で確認したイベント設定は `All pull request events`、フィルターは `Base branch equals main` と `Is draft equals false`。指示で対象を未マージ・同一リポジトリのPRに限定し、同一SHAへの完了済みレビューを重複投稿しない。コード変更・マージ・公開は行わず、結果をPRに記録する。手動実行によるPR #2のレビュー投稿は確認済み。GitHubイベントによる自動起動と更新後の再レビューは本更新のpushで検証し、結果をPR #2に残す。
 5. 同梱のGitHub Actions版レビューを代わりに使う場合、GitHub ActionsのSecretに次のいずれかを登録する。値はコードやPRへ書かない。
    - Claudeの契約を利用: `CLAUDE_CODE_OAUTH_TOKEN`。Claude Codeの `claude setup-token` または `/install-github-app` で準備する。
    - API利用: `ANTHROPIC_API_KEY`。この場合はRepository variable `GROWTH_CLAUDE_AUTH` を `api` にする。API利用料が発生する。
