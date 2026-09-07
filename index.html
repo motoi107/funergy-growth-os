@@ -1019,6 +1019,12 @@ body.shift-wide .main { max-width:1900px; }
 @media(max-width:800px) { .mp-layout { grid-template-columns:1fr; } .mp-plans { order:2; } }
 @media(max-width:480px) { .mp-panel { padding:16px; } .mp-root h2 { font-size:19px; } .mp-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .mp-modes { width:100%; } .mp-modes button { flex:1; } }
 
+
+.mt-root{width:100%;min-width:0}.mt-section{margin:22px 0;padding:22px}.mt-table-wrap{overflow-x:auto}.mt-table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}.mt-table th,.mt-table td{padding:9px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap}.mt-table th:first-child{text-align:left;white-space:normal;min-width:135px}.mt-table thead{background:var(--surface2);color:var(--muted);font-size:11px}.mt-table tbody tr:hover{background:var(--surface2)}.mt-table td:nth-child(4){font-weight:800;background:rgba(204,96,46,.06)}.mt-table td:last-child{width:150px}.mt-spark{display:block;width:100%;min-width:90px;max-width:180px;height:56px}.mt-overview{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;background:var(--surface);padding:12px 0;border-bottom:1px solid var(--border)}.mt-overview>div{padding:10px;background:var(--surface2);border-radius:10px;min-width:0}.mt-overview span{font-size:11px;display:block}.mt-overview strong{font-size:20px;display:block;margin-top:8px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.mt-week-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:25px}.mt-week-grid h4{min-height:38px}.mt-week-grid .mp-barline b{min-width:65px}.mt-daily-trends{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:20px;margin:15px 0;font-size:12px}.mt-root .mp-plans .mp-plan{display:grid;grid-template-columns:1fr 2fr;gap:4px 24px}.mt-root .mp-plans .mp-plan h4{grid-column:1/-1}.mt-root .mp-plan-copy{font-size:13px}.mt-missing{color:var(--muted)}
+@media(max-width:1050px){.mt-overview{grid-template-columns:repeat(4,minmax(0,1fr))}.mt-week-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.mt-table{font-size:12px}.mt-section{padding:15px}}
+@media(max-width:600px){.mt-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.mt-daily-trends{grid-template-columns:repeat(2,minmax(0,1fr))}.mt-root .mp-plans .mp-plan{display:block}.mt-week-grid{gap:15px}.mt-table th,.mt-table td{padding:8px 6px}}
+@media(min-width:1100px){.mt-overview{position:sticky;top:52px;z-index:25}}
+@media print{.mt-overview{position:static}.mt-root .mp-modes,.mt-root button{display:none}.mt-section{break-inside:avoid}.mt-table-wrap{overflow:visible}}
 </style>
 </head>
 <body>
@@ -19830,7 +19836,7 @@ function mpPlans(stores,p){
   var raw=getBudgets();
   var content=stores.map(function(s){
     var b=raw.find(function(x){return x.storeId===s.id;}), r=budRationale(b,p.plan)||{};
-    return '<div class="mp-plan"><h4>'+mpText(s.name)+'</h4><div class="mp-plan-label">'+t('重点目標','Priority goals')+'</div><div class="mp-plan-copy">'+mpText(r.focus||t('予算設定で未入力','Not entered in Budget Setup'))+'</div><details><summary>'+t('予算の根拠を見る','Budget rationale')+'</summary><div class="mp-plan-copy">'+mpText(r.basis||t('予算設定で未入力','Not entered in Budget Setup'))+'</div></details></div>';
+    return '<div class="mp-plan"><h4>'+mpText(s.name)+'</h4><div class="mp-plan-label">'+t('重点目標','Priority goals')+'</div><div class="mp-plan-copy">'+mpText(r.focus||t('予算設定で未入力','Not entered in Budget Setup'))+'</div><div class="mp-plan-label">'+t('予算の根拠','Budget rationale')+'</div><div class="mp-plan-copy">'+mpText(r.basis||t('予算設定で未入力','Not entered in Budget Setup'))+'</div></div>';
   }).join('');
   return mpPanel(p.plan+' '+t('今月の予定','Monthly plan'),'<p class="mp-note">'+t('予算作成時に設定した根拠・重点目標','Rationale and priority goals from Budget Setup')+'</p>'+content,'mp-plans');
 }
@@ -19848,35 +19854,115 @@ function mpBudgetSummary(store,p,k,has){
   return mpPanel(t('予算に対してどうか','Progress against budget'),'<div class="mp-pair"><div>'+label+'<strong>'+mpNumber(budget>0?budget:null,'sales')+'</strong></div><div>'+t('実績との差','Actual minus budget')+'<strong>'+mpNumber(has&&budget>0?k.sales-budget:null,'sales')+'</strong></div></div>'
     +(p.current?'<p class="mp-note">'+t('月間予算 ','Full-month budget ')+mpNumber(k.budget>0?k.budget:null,'sales')+'</p>':''));
 }
-function renderMeetingPreview(){
-  var p=mpPeriod(), stores=budgetScopeStores();
-  var h='<div class="mp-root"><div class="mp-intro"><div><span class="mp-eyebrow">'+t('会議プレビュー','Meeting preview')+'</span><h2>'+t('数字を確認し、次の打ち手へ','Review results. Decide next steps.')+'</h2></div><div class="mp-modes">';
-  [['start',t('月初MTG','Month start')],['mid',t('中間MTG','Mid-month')]].forEach(function(m){h+='<button type="button" aria-pressed="'+(_mpMode===m[0])+'" onclick="mpSelect(\'mode\',\''+m[0]+'\')">'+m[1]+'</button>';});
-  h+='</div></div><div class="mp-period"><b>'+p.review+' '+(_mpMode==='start'?t('結果の振り返り','Results'):t('進捗確認','Progress'))+'</b><span>'+t('計画：','Plan: ')+p.plan+' · '+(p.current?t('前日まで','Through yesterday'):(p.future?t('対象月は未来です','Future period'):t('月全体','Full month')))+'</span></div>';
-  h+='<div class="mp-store-select">'+bStoreChips(_budgetStore,'setBudgetStore')+'</div>';
-  if(!stores.length) return h+mpEmpty()+'</div>';
-  h+='<div class="mp-layout"><div class="mp-main">';
-  if(stores.length>1){
-    h+=mpPanel(t('店舗を選んで詳しく確認','Choose a store to explore'),'<p class="mp-note">'+t('客数と丼数を混ぜず、店舗ごとに比較します。上の店舗ボタンから詳細を開いてください。','Compare each store separately so guests and bowls are not combined. Choose a store above.')+'</p>');
-  } else if(p.future || p.end===0){h+=mpEmpty();}
-  else {
-    var s=stores[0], days=mpDays(p.review,p), raw=keyKpiStats([s],days), k=_meetApplyPl(raw,s.id,p.review);
-    var has=raw.opDays>0 || !!k.plSrc;
-    var metrics=mpMetricRows(k,has);
-    h+='<div class="mp-metrics">'+metrics.map(function(m){return '<button type="button" aria-pressed="'+(_mpMetric===m[0])+'" onclick="mpSelect(\'metric\',\''+m[0]+'\')"><span>'+m[1]+'</span><strong>'+mpNumber(m[2],m[0])+'</strong></button>';}).join('')+'</div>';
-    h+='<p class="mp-note">'+(k.plSrc?t('上段：PL確定値を反映。日別グラフ：アプリ実績（速報）のため、確定値と異なる場合があります。','Summary includes final P&L. Daily charts use app records and may differ.'):t('アプリ実績（速報）。算出できない項目は — 表示。','App records (provisional). Unavailable metrics show —.'))+'</p>';
-    h+=mpBudgetSummary(s,p,k,has);
-    var title=metrics.filter(function(m){return m[0]===_mpMetric;})[0][1];
-    h+='<h2 class="mp-detail-title">'+mpText(title)+' <small>'+mpText(s.name)+' · '+p.review+'</small></h2>';
-    if(['sales','guests','ppa'].indexOf(_mpMetric)>=0) h+=mpDailyDetail(s,p,_mpMetric);
-    else if(_mpMetric==='labor') h+=mpHours(s,p);
-    else if(_mpMetric==='drink') h+=mpPanel(t('ドリンクの構成・推移','Drink mix and trend'),drinkRatioTriSub([s],days)+drinkTrendSub([s],days)||mpEmpty());
-    else if(_mpMetric==='repeat') h+=mpPanel(t('初回とリピートの推移','First-time / repeat trend'),repeatTrendSub([s],days)||mpEmpty());
-    else if(_mpMetric==='food') h+=mpPanel(t('仕入れの内訳・推移','Purchasing breakdown'),'<p class="mp-note">'+t('下段は仕入ベース。PL確定原価とは対象が異なります。','Purchases below differ from final P&L food cost.')+'</p>'+(fcVendorTriSub([s],days)||mpEmpty()));
+function renderMeetingPreview(){return renderMeetingTest();}
+/* Meeting test: expanded, read-only KPI board. Original meeting is independent. */
+function mtRatio(a,b){return a!=null&&b>0?a/b*100:null;}
+function mtSum(rows,key){var n=0,sum=0;rows.forEach(function(r){if(r[key]!=null&&isFinite(Number(r[key]))){n++;sum+=Number(r[key]);}});return n?sum:null;}
+function mtPlus(a,b){return a==null&&b==null?null:(a||0)+(b||0);}
+function mtDiv(a,b){return a!=null&&b>0?a/b:null;}
+function mtSnapshot(store,ym,p){
+  var days=mpDays(ym,p), da=getDailyActuals(store.id), rows=days.map(function(d){return da[d.date]||{};}), vals={}, unit=guestCountType(store.id)==='bowls';
+  var actualRows=rows.filter(function(r){return r.actual!=null;}), k=days.length?keyKpiStats([store],days):{};
+  vals.sales=mtSum(actualRows,'actual'); vals.recorded=actualRows.length||null;
+  var countRows=actualRows.filter(function(r){return unit?(r.bowls!=null||r.takeoutBowls!=null):r.guests!=null;});
+  vals.guests=countRows.length?countRows.reduce(function(a,r){return a+(unit?(Number(r.bowls)||0)+(Number(r.takeoutBowls)||0):Number(r.guests)||0);},0):null;
+  vals.salesDay=mtDiv(vals.sales,k.opDays); vals.guestsDay=mtDiv(vals.guests,k.opDays);
+  vals.ppa=mtDiv(mtSum(countRows,'actual'),vals.guests);
+  [['lunchGuests','lunchGuests'],['dinnerGuests','dinnerGuests'],['lunchSales','lunchSales'],['dinnerSales','dinnerSales']].forEach(function(v){vals[v[0]]=mtSum(actualRows,v[1]);});
+  vals.toCount=mtPlus(mtSum(actualRows,'toLunchCount'),mtSum(actualRows,'toDinnerCount'));
+  vals.toBowls=unit?mtSum(actualRows,'takeoutBowls'):null;
+  vals.toSales=mtPlus(mtSum(actualRows,'toLunchSales'),mtSum(actualRows,'toDinnerSales'));
+  vals.ppaLunch=vals.lunchGuests!=null?k.ppaLunch:null; vals.ppaDinner=vals.dinnerGuests!=null?k.ppaDinner:null;
+  vals.ppaDine=vals.guests!=null?k.ppaDine:null; vals.ppaTO=vals.toCount!=null?k.ppaTO:null;
+  vals.first=mtSum(rows,'firstTimeBowls'); vals.repeat=mtSum(rows,'repeatBowls'); vals.sr=mtSum(rows,'superRegular');
+  vals.repeatTotal=vals.first!=null&&vals.repeat!=null?vals.first+vals.repeat:null;
+  vals.repeatRate=mtRatio(vals.repeat,vals.repeatTotal); vals.firstDay=mtDiv(vals.first,k.opDays); vals.repeatDay=mtDiv(vals.repeat,k.opDays);
+  var hoursDays=[],pairedSales=0,pairedHours=0;
+  days.forEach(function(d){var lb=getTipLabor(store.id,d.date);if(!lb||!Object.keys(lb).length)return;var h=0;Object.keys(lb).forEach(function(n){h+=_laborHrs(lb[n])||0;});hoursDays.push({date:d.date,hours:h});if(da[d.date]&&da[d.date].actual!=null){pairedSales+=Number(da[d.date].actual)||0;pairedHours+=h;}});
+  vals.hours=hoursDays.length?hoursDays.reduce(function(a,r){return a+r.hours;},0):null;vals.hoursDay=mtDiv(vals.hours,hoursDays.length);vals.salesHour=pairedHours>0?pairedSales/pairedHours:null;
+  var cutoff=p.current?(days.length?ym+'-'+String(days.length+1).padStart(2,'0'):ym+'-01'):null;
+  // A short comparison month ends at the following month boundary, never an invalid Feb 30.
+  if(p.current&&days.length===daysOfYm(ym).length)cutoff=ymShift(ym,1)+'-01';
+  var core=days.length?laborCoreForYm(store.id,ym,p.current?{endBefore:cutoff}:undefined):null;
+  var hasLabor=core&&(hoursDays.length>0||core.total>0);
+  ['hourly','salary','leave','tax','ins','manual'].forEach(function(key){vals[key]=hasLabor?core[key]:null;});
+  vals.labor=hasLabor?core.total:null;vals.laborRate=hasLabor?mtRatio(core.total,core.sales):null;
+  vals.laborDay=hasLabor?mtDiv(core.total,core.periodDays):null;
+  if(hasLabor){
+    var emps=getEmployees()||[], monthly=storeMonthlyStaff(store.id)||[],names={};vals.g1=0;vals.g2=0;
+    monthly.forEach(function(e){var m=empMonthlyOf(e);if(!(m>0))return;names[e.name]=1;vals[empGradeNum(e)>=2?'g2':'g1']+=core.dim>0?m*core.periodDays/core.dim:0;});
+    Object.keys(core.byName||{}).forEach(function(n){if(names[n])return;var e=emps.find(function(x){return x.name===n&&x.store===store.id;})||emps.find(function(x){return x.name===n;}),a=core.byName[n];vals[e&&empGradeNum(e)>=2?'g2':'g1']+=laborForEmployee(n,{regular:a.reg,ot:a.ot}).total||0;});
   }
-  h+='</div>'+mpPlans(stores,p)+'</div></div>';
-  return h;
+  return {ym:ym,days:days,vals:vals,k:k,hours:hoursDays,core:core};
 }
+function mtSpark(values,previous){
+  var nums=values.concat(previous||[]).filter(function(v){return v!=null&&isFinite(v);});if(!nums.length)return '<span class="mt-missing">—</span>';
+  var lo=Math.min.apply(null,nums.concat([0])),hi=Math.max.apply(null,nums.concat([1])),range=hi-lo||1;
+  function line(a,old){var s='',last=null;a.forEach(function(v,i){if(v==null||!isFinite(v)){last=null;return;}var x=8+i*164/Math.max(a.length-1,1),y=48-(v-lo)/range*40;if(last)s+='<line x1="'+last.x+'" y1="'+last.y+'" x2="'+x+'" y2="'+y+'" stroke="'+(old?'#8996a5':'#cc602e')+'" stroke-width="2" '+(old?'stroke-dasharray="4 3"':'')+'/>';s+='<circle cx="'+x+'" cy="'+y+'" r="3" fill="'+(old?'#8996a5':'#cc602e')+'"/>';last={x:x,y:y};});return s;}
+  return '<svg class="mt-spark" viewBox="0 0 180 56" aria-hidden="true"><line x1="8" x2="172" y1="48" y2="48" stroke="#d6dbe0"/>'+line(previous||[],true)+line(values,false)+'</svg>';
+}
+function mtTable(title,defs,snaps,previous,note){
+  var h='<section class="mp-panel mt-section"><h3>'+mpText(title)+'</h3><p class="mp-note">'+mpText(note||'')+'</p><div class="mt-table-wrap"><table class="mt-table"><thead><tr><th>'+t('項目','Metric')+'</th>';
+  snaps.forEach(function(s){h+='<th>'+mpText(s.ym)+'</th>';});h+='<th>'+t('月間目標','Monthly target')+'</th><th>'+t('前年同月','Prior year')+'</th><th>'+t('前年差','YoY change')+'</th><th>'+t('3か月の推移','3-month trend')+'</th></tr></thead><tbody>';
+  defs.forEach(function(d){var values=snaps.map(function(s){return s.vals[d[0]];}),prev=previous.map(function(s){return s.vals[d[0]];}),now=values[2],old=prev[2];h+='<tr><th scope="row">'+mpText(d[1])+'</th>';values.forEach(function(v){h+='<td>'+mpNumber(v,d[2])+'</td>';});var targetKeys={sales:'budget',guests:'guestBudget',ppa:'ppaBudget',ppaDine:'ppaDineBudget',laborRate:'laborBudgetRate',repeatRate:'repeatTgt',foodRate:'fcBudgetRate',drinkRate:'drinkTgt',misoRate:'misoTgt',ikuraRate:'ikuraTgt'};var target=(snaps[2].k||{})[targetKeys[d[0]]];h+='<td>'+mpNumber(target,d[2])+'</td><td>'+mpNumber(old,d[2])+'</td><td>'+(now!=null&&old!=null?((now-old>0?'+':'')+(['labor','drink','repeat','food'].indexOf(d[2])>=0?(now-old).toFixed(1)+'pt':mpNumber(now-old,d[2]))):'—')+'</td><td>'+mtSpark(values,prev)+'</td></tr>';});
+  return h+'</tbody></table></div><p class="mp-note">'+t('橙実線：対象年／灰破線：前年。— は未登録・未取得・計算対象なし。率・単価は合計から計算。','Orange solid: selected year / gray dashed: prior year. — = missing or not applicable. Rates use aggregate totals.')+'</p></section>';
+}
+function mtWeekday(store,p){
+  var h='<section class="mp-panel mt-section"><h3>'+t('曜日別｜売上・客数・客単価・労働時間','Weekdays | sales, guests, check and hours')+'</h3><div class="mt-week-grid">';
+  ['sales','guests','ppa'].forEach(function(kind){var a=mpDailyAgg(store,p.review,p,kind),names=t('月,火,水,木,金,土,日','Mon,Tue,Wed,Thu,Fri,Sat,Sun').split(',');h+='<div><h4>'+({sales:t('1日平均売上','Sales per day'),guests:guestCountType(store.id)==='bowls'?t('1日平均丼数','Bowls per day'):t('1日平均客数','Guests per day'),ppa:t('平均単価','Average check')})[kind]+'</h4>'+mpBars(kdDow(a).map(function(r,i){return {label:names[i],v:kind==='ppa'?r.rate:r.per,note:r.n+t('日',' days')};}),kind)+'</div>';});
+  var byDate={};mpDays(p.review,p).forEach(function(d){var lb=getTipLabor(store.id,d.date);if(!lb||!Object.keys(lb).length)return;var h=0;Object.keys(lb).forEach(function(n){h+=_laborHrs(lb[n])||0;});byDate[d.date]={a:h,b:0};});
+  h+='<div><h4>'+t('1日平均労働時間','Hours per punched day')+'</h4>'+mpBars(kdDow({byDate:byDate}).map(function(r,i){return {label:t('月,火,水,木,金,土,日','Mon,Tue,Wed,Thu,Fri,Sat,Sun').split(',')[i],v:r.per,note:r.n+t('日',' days')};}),'hours')+'</div></div><p class="mp-note">'+t('売上・客数は有効な実績日、時間は打刻日の平均。客単価は曜日ごとの売上合計÷客数合計。','Sales and guests use valid recorded days; hours use punched days. Check = weekday sales / guests.')+'</p></section>';return h;
+}
+function mtDailyTable(store,p,snap){
+  var da=getDailyActuals(store.id),hrs={};snap.hours.forEach(function(r){hrs[r.date]=r.hours;});var metrics=[['actual',t('売上','Sales'),'sales'],['count',guestCountType(store.id)==='bowls'?t('丼数','Bowls'):t('客数','Guests'),'guests'],['ppa',t('単価','Check'),'ppa'],['hours',t('時間','Hours'),'hours'],['productivity',t('売上/時間','Sales/hour'),'ppa']];
+  var days=snap.days.map(function(d){var ov=da[d.date]||{},a=ov.actual!=null?Number(ov.actual):null,c=guestCountType(store.id)==='bowls'?mtPlus(ov.bowls==null?null:Number(ov.bowls),ov.takeoutBowls==null?null:Number(ov.takeoutBowls)):(ov.guests==null?null:Number(ov.guests));return {date:d.date,actual:a,count:a!=null?c:null,ppa:mtDiv(a,c),hours:hrs[d.date]==null?null:hrs[d.date],productivity:mtDiv(a,hrs[d.date])};});
+  var h='<section class="mp-panel mt-section"><h3>'+t('日別｜全営業日の数字と推移','Daily | numbers and trends')+'</h3><div class="mt-daily-trends">';metrics.forEach(function(m){h+='<div><b>'+m[1]+'</b>'+mtSpark(days.map(function(d){return d[m[0]];}),[])+'</div>';});h+='</div><div class="mt-table-wrap"><table class="mt-table"><thead><tr><th>'+t('日付','Date')+'</th>';metrics.forEach(function(m){h+='<th>'+m[1]+'</th>';});h+='</tr></thead><tbody>';days.forEach(function(d){h+='<tr><th>'+d.date.slice(5)+' '+t('日,月,火,水,木,金,土','Sun,Mon,Tue,Wed,Thu,Fri,Sat').split(',')[new Date(d.date+'T12:00:00Z').getUTCDay()]+'</th>';metrics.forEach(function(m){h+='<td>'+mpNumber(d[m[0]],m[2])+'</td>';});h+='</tr>';});return h+'</tbody></table></div><p class="mp-note">'+t('人件費率の曜日・日別配分は未設定です。月給・残業・税保険を推測配分せず、実打刻時間と売上/時間を表示しています。','Daily / weekday labor-cost allocation is not configured. Actual punch hours and sales/hour are shown without guessing salary, overtime or overhead allocations.')+'</p></section>';
+}
+function mtMonthExtras(store,ym){
+  var days=daysOfYm(ym).filter(function(d){return d.date<bizToday();}),da=getDailyActuals(store.id),has=days.some(function(d){return da[d.date]&&da[d.date].actual!=null;}),sales=mtSum(days.map(function(d){return da[d.date]||{};}),'actual'),v={},mx=salesMixForScope([store.id],ym,ym),fc=foodCostOf(store.id,ym,sales),rawFc=getFcMonthly(store.id,ym)||{},tn=monthTransferNetYm(store.id,ym);
+  if(mx&&mx.hasMenu&&mx.total>0){v.drink=mx.drink;v.alcohol=mx.alcohol;v.soft=mx.soft;v.drinkRate=mtRatio(mx.drink,mx.total);v.alcShare=mtRatio(mx.alcohol,mx.drink);v.softShare=mtRatio(mx.soft,mx.drink);v.menuSales=mx.total;}
+  if(has||fc.purch||rawFc.endInv){v.invoice=fc.invoice;v.buy=fc.buy;v.transfer=fc.transfer;v.transferIn=tn.inAmt;v.transferOut=tn.outAmt;v.purchases=fc.purch;v.begin=rawFc.beginInv!=null&&rawFc.beginInv!==''?fc.begin:null;v.end=fc.hasEnd?fc.end:null;v.cost=fc.cost;v.foodRate=sales>0?(fc.hasEnd?fc.rate:fc.provisionalRate):null;}
+  if(isTotoyaStore(store.id)){var tr=totoyaScopeRates([store.id],ym.slice(0,4)+'.'+Number(ym.slice(5)));if(tr.has){v.misoUp=tr.misoUp;v.misoAll=tr.misoAll;v.misoRate=tr.misoRate;v.ikura=tr.ikura;v.ikuraBowls=tr.bowls;v.ikuraRate=tr.ikuraRate;}}
+  return {ym:ym,vals:v,fc:fc};
+}
+var _mtLoading=false, _mtLoadMessage='';
+async function mtLoadDrink(){
+  if(_mtLoading)return;var stores=budgetScopeStores(),p=mpPeriod();if(stores.length!==1||p.future)return;var sid=stores[0].id,months=[-2,-1,0].map(function(n){return ymShift(p.review,n);});_mtLoading=true;_mtLoadMessage='';renderPage('budget');
+  var ok=0;try{for(var i=0;i<months.length;i++){if(!budgetScopeStores().some(function(s){return s.id===sid;}))break;var d=await initMixFetch(sid,months[i]);if(d&&Object.keys(d).length)ok++;}}catch(e){console.warn('meeting test mix',e);}finally{_mtLoading=false;_mtLoadMessage=ok? t('日別明細を読み込みました。','Daily detail loaded.'):t('日別明細を取得できませんでした。同期状態またはデータ有無を確認してください。','Daily detail unavailable. Check sync status or source data.');if(budgetTab==='meeting-test'||budgetTab==='meeting-preview')renderPage('budget');}
+}
+function mtDrinkWeekday(store,p){
+  var mix=initMixFor(store.id,p.review),names=t('月,火,水,木,金,土,日','Mon,Tue,Wed,Thu,Fri,Sat,Sun').split(','),sums=names.map(function(n){return {label:n,a:0,s:0,total:0,n:0};}),cfg=getKpiConfigFor(store.id),recipes=activeRecipes(),byGuid={},dc=(cfg.drinkCats||[]).map(function(c){return String(c).toLowerCase();}),ac=(cfg.alcoholCats||[]).map(function(c){return String(c).toLowerCase();}),missing=0;
+  recipes.forEach(function(r){if(r.toastGuid&&recipeInStore(r,store.id))byGuid[r.toastGuid]=r;});
+  mpDays(p.review,p).forEach(function(d){if(!mix||!mix[d.date])return;var row=sums[(new Date(d.date+'T12:00:00Z').getUTCDay()+6)%7],total=0,a=0,s=0;Object.keys(mix[d.date]).forEach(function(g){var r=byGuid[g];if(!r){missing++;return;}var rev=(Number(mix[d.date][g])||0)*(parseFloat(r.price)||0),c=String(r.category||'').toLowerCase();total+=rev;if(dc.indexOf(c)>=0){if(ac.indexOf(c)>=0)a+=rev;else s+=rev;}});if(total>0){row.a+=a;row.s+=s;row.total+=total;row.n++;}});
+  var h='<section class="mp-panel mt-section"><h3>'+t('ドリンク｜曜日別構成','Drinks | weekday mix')+'</h3><button type="button" class="btn btn-secondary" onclick="mtLoadDrink()" '+(_mtLoading?'disabled':'')+'>'+(_mtLoading?t('読み込み中…','Loading…'):t('日別明細を読み込む・更新','Load / refresh daily detail'))+'</button><p role="status" class="mp-note">'+mpText(_mtLoadMessage)+'</p><div class="mt-week-grid">';
+  [['a',t('お酒 / 日','Alcohol/day'),'sales'],['s',t('ソフト / 日','Soft/day'),'sales'],['rate',t('ドリンク比率','Drink share'),'drink'],['share',t('ドリンク内のお酒割合','Alcohol within drinks'),'drink']].forEach(function(m){h+='<div><h4>'+m[1]+'</h4>'+mpBars(sums.map(function(r){return {label:r.label,v:r.n?(m[0]==='rate'?mtRatio(r.a+r.s,r.total):m[0]==='share'?mtRatio(r.a,r.a+r.s):r[m[0]]/r.n):null,note:r.n+t('日',' days')};}),m[2])+'</div>';});return h+'</div><p class="mp-note">'+t('出数×現在のメニュー価格の推計。値引き・価格変更を含むPOS実売上とは異なります。未対応商品件数：','Estimated quantity × current menu price; differs from POS net sales and historical pricing. Unmapped item-days: ')+missing+'</p></section>';
+}
+function renderMeetingTest(){
+  var p=mpPeriod(),stores=budgetScopeStores(),h='<div class="mp-root mt-root"><div class="mp-intro"><div><span class="mp-eyebrow">'+t('会議テスト｜実データ・閲覧用','Meeting test | live records, read only')+'</span><h2>'+t('KPIを、細部まで一緒に確認','Review every KPI together')+'</h2></div><div class="mp-modes">';
+  [['start',t('月初MTG','Month start')],['mid',t('中間MTG','Mid-month')]].forEach(function(m){h+='<button type="button" aria-pressed="'+(_mpMode===m[0])+'" onclick="mpSelect(\'mode\',\''+m[0]+'\')">'+m[1]+'</button>';});
+  h+='</div></div><div class="mp-period"><b>'+p.review+' '+(_mpMode==='start'?t('前月結果','Previous-month results'):t('進捗確認','Progress'))+'</b><span>'+t('計画：','Plan: ')+p.plan+' · '+(p.current?t('前日まで／過去月も同じ日付まで','Through yesterday / same day cutoff in comparisons'):t('月全体','Full month'))+'</span></div><div class="mp-store-select">'+bStoreChips(_budgetStore,'setBudgetStore')+'</div>';
+  if(!stores.length)return h+mpEmpty()+'</div>';
+  h+=mpPlans(stores,p);
+  if(stores.length!==1)return h+mpPanel(t('店舗を選択してください','Select a store'),'<p>'+t('上の店舗ボタンで1店舗を選ぶと、すべての詳細を常時表示します。客数と丼数は混在させません。','Select one store above to display every detail. Guests and bowls are kept separate.')+'</p>')+'</div>';
+  if(p.future||!p.end)return h+mpEmpty()+'</div>';
+  var s=stores[0],snaps=[-2,-1,0].map(function(n){return mtSnapshot(s,ymShift(p.review,n),p);}),prev=[-2,-1,0].map(function(n){return mtSnapshot(s,ymShift(p.review,n-12),p);}),current=snaps[2],k=p.current?current.k:_meetApplyPl(current.k,s.id,p.review),has=current.vals.sales!=null,unit=guestCountType(s.id)==='bowls';
+  h+='<div class="mt-overview">'+mpMetricRows(k,has).map(function(m){return '<div><span>'+m[1]+'</span><strong>'+mpNumber(m[2],m[0])+'</strong></div>';}).join('')+'</div><p class="mp-note">'+t('上段は現行KPIと同じ集計（確定PLがあれば反映）。以下の実績推移はアプリ速報値。月次集計のみの項目は別枠です。','Summary follows existing KPIs (final P&L where available). Trends below use provisional app records; monthly-only metrics are separate.')+'</p>';
+  h+=mpBudgetSummary(s,p,k,has);
+  var note=p.current?t('各月とも1日から同じ日付まで。営業日数・曜日構成の違いもご確認ください。','Each month uses the same day cutoff; recorded days and weekday mix can differ.'):t('月全体の集計。営業日数が違う月は1日平均も比較してください。','Full-month totals. Compare daily averages when recorded days differ.');
+  h+=mtTable(t('01 売上・集客','01 Sales and traffic'),[['sales',t('売上合計','Total sales'),'sales'],['salesDay',t('営業日平均売上','Sales per sales day'),'sales'],['recorded',t('実績登録日数','Recorded days'),'guests'],['guests',unit?t('丼数合計','Total bowls'):t('客数合計','Total guests'),'guests'],['guestsDay',unit?t('営業日平均丼数','Bowls per sales day'):t('営業日平均客数','Guests per sales day'),'guests'],['lunchGuests',t('ランチ客数','Lunch guests'),'guests'],['dinnerGuests',t('ディナー客数','Dinner guests'),'guests'],['toCount',t('テイクアウト注文件数','Takeout orders'),'guests']].concat(unit?[['toBowls',t('テイクアウト丼数','Takeout bowls'),'guests']]:[]),snaps,prev,note);
+  h+=mtTable(t('02 単価・時間帯別売上','02 Average check and daypart sales'),[['ppa',unit?t('丼単価','Revenue per bowl'):t('客単価','Average check'),'ppa'],['ppaDine',t('店内単価','Dine-in check'),'ppa'],['ppaLunch',t('ランチ店内単価','Lunch dine-in check'),'ppa'],['ppaDinner',t('ディナー店内単価','Dinner dine-in check'),'ppa'],['ppaTO',t('TO注文単価','Takeout per order'),'ppa'],['lunchSales',t('ランチ売上（TO含む）','Lunch sales (incl. TO)'),'sales'],['dinnerSales',t('ディナー売上（TO含む）','Dinner sales (incl. TO)'),'sales'],['toSales',t('TO売上（内数）','Takeout sales (subset)'),'sales']],snaps,prev,note);
+  h+=mtTable(t('03 リピート・初回','03 Repeat and first-time'),[['repeatRate',t('リピート率','Repeat rate'),'repeat'],['first',t('初回','First-time'),'guests'],['repeat',t('リピート（SR含む）','Repeat (includes SR)'),'guests'],['sr',t('うちSuper Regular','Super Regular (subset)'),'guests'],['repeatTotal',t('初回＋リピート','First + repeat'),'guests'],['firstDay',t('営業日平均・初回','First-time per sales day'),'guests'],['repeatDay',t('営業日平均・リピート','Repeat per sales day'),'guests']],snaps,prev,note);
+  h+=mtTable(t('04 人件費・労働時間','04 Labor cost and hours'),[['laborRate',t('人件費率（勤怠集計）','Labor cost % (timekeeping)'),'labor'],['labor',t('人件費合計','Total labor cost'),'sales'],['hourly',t('時給者賃金','Hourly wages'),'sales'],['salary',t('月給按分','Prorated salary'),'sales'],['g2',t('G2以上賃金','G2+ wages'),'sales'],['g1',t('G1等賃金','G1 / other wages'),'sales'],['leave',t('有給等賃金','Leave pay'),'sales'],['tax',t('給与税','Payroll tax'),'sales'],['ins',t('保険','Insurance'),'sales'],['manual',t('手入力人件費','Manual labor cost'),'sales'],['laborDay',t('暦日平均人件費','Labor cost per calendar day'),'sales'],['hours',t('総打刻時間','Total punched hours'),'hours'],['hoursDay',t('打刻日平均時間','Hours per punched day'),'hours'],['salesHour',t('売上／労働時間','Sales / labor hour'),'ppa']],snaps,prev,note+' '+t('G別賃金は時給＋月給の別分類で合計への追加項目ではありません。売上/時間は売上と打刻の両方がある日だけ。','Grade wages regroup hourly and salary pay; do not add them again. Sales/hour uses days with both sales and punches.'));
+  h+=mtWeekday(s,p)+mtDailyTable(s,p,current);
+  var ms=snaps.map(function(x){var m=mtMonthExtras(s,x.ym);m.k=x.k;return m;}),py=prev.map(function(x){return mtMonthExtras(s,x.ym);}),monthNote=t('月次資料：中間MTGでも全月の登録済み値です。同日付比較ではありません。未締め月と締め済み月を区別して確認してください。','Monthly sources: even at mid-month these are all registered monthly values, not equal-cutoff comparisons. Distinguish open and closed months.');
+  if(isDrinkRateStore(s.id)){h+=mtTable(t('05 ドリンク｜月次メニュー集計','05 Drinks | monthly menu mix'),[['menuSales',t('メニュー推計売上','Estimated menu sales'),'sales'],['drinkRate',t('ドリンク比率','Drink share'),'drink'],['drink',t('ドリンク計','Total drinks'),'sales'],['alcohol',t('お酒','Alcohol'),'sales'],['soft',t('ソフトドリンク','Soft drinks'),'sales'],['alcShare',t('ドリンク内お酒割合','Alcohol within drinks'),'drink'],['softShare',t('ドリンク内ソフト割合','Soft within drinks'),'drink']],ms,py,monthNote+' '+t('出数×現在の価格による推計です。','Estimated quantities × current prices.'));h+=mtDrinkWeekday(s,p);}
+  h+=mtTable(t('06 原価・棚卸・仕入','06 Food cost, inventory and purchasing'),[['foodRate',t('原価率／棚卸前は仕入率','Food cost % / purchase % before close'),'food'],['cost',t('原価／棚卸前は仕入計','Cost / purchases before close'),'sales'],['begin',t('期首棚卸','Beginning inventory'),'sales'],['invoice',t('原価対象Invoice','Cost-eligible invoices'),'sales'],['buy',t('原価対象買い出し','Cost-eligible purchases'),'sales'],['transferIn',t('店舗間受入','Transfers in'),'sales'],['transferOut',t('店舗間払出','Transfers out'),'sales'],['transfer',t('食材移動純額','Net transfers'),'sales'],['end',t('期末棚卸','Ending inventory'),'sales']],ms,py,monthNote+' '+ms.map(function(x){return x.ym+': '+(x.fc.hasEnd?t('棚卸あり','inventory entered'):t('棚卸待ち・仕入ベース','awaiting inventory / purchases'));}).join(' / '));
+  var vendors=ms.map(function(x){return fcVendorMonth([s],x.ym);}),pv=py.map(function(x){return fcVendorMonth([s],x.ym);}),names={};vendors.concat(pv).forEach(function(m){m.rows.forEach(function(r){names[r.vendor]=true;});});var keys=Object.keys(names).sort();
+  if(keys.length){var vn=function(list){return list.map(function(m,i){var v={};keys.forEach(function(n,j){v['v'+j]=m.byName[n]?m.byName[n].amt:null;});return {ym:ms[i].ym,vals:v};});};h+=mtTable(t('仕入先別｜請求総額','Vendors | invoice and purchase totals'),keys.map(function(n,j){return ['v'+j,n,'sales'];}),vn(vendors),vn(pv),monthNote+' '+t('請求総額です。用途による除外後の原価とは一致しない場合があります。','Gross invoice amounts can differ from cost-eligible food costs.'));}
+  if(isTotoyaStore(s.id))h+=mtTable(t('07 Totoya 専用KPI','07 Totoya KPIs'),[['misoRate',t('味噌汁UP率','Miso upgrade rate'),'drink'],['misoUp',t('味噌汁UP数','Miso upgrades'),'guests'],['misoAll',t('味噌汁対象数','Miso eligible bowls'),'guests'],['ikuraRate',t('いくらシャワー率','Ikura shower rate'),'drink'],['ikura',t('いくらシャワー数','Ikura showers'),'guests'],['ikuraBowls',t('いくら対象丼数','Ikura eligible bowls'),'guests']],ms,py,monthNote+' '+t('現行KPIで選択されたデータソースを使用します。','Uses the data sources selected by existing KPIs.'));
+  return h+'</div>';
+}
+
 
 function renderBudget() {
   normalizeBudgetsDemo();
@@ -19891,7 +19977,7 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
     <div class="phase-tab${budgetTab==='meeting'?' active':''}" onclick="setBudgetTab('meeting')">${t('会議','Meeting')}</div>
-    <button type="button" class="phase-tab${budgetTab==='meeting-preview'?' active':''}" onclick="setBudgetTab('meeting-preview')">${t('会議プレビュー','Meeting Preview')}</button>
+    <button type="button" class="phase-tab${budgetTab==='meeting-test'?' active':''}" onclick="setBudgetTab('meeting-test')">${t('会議テスト','Meeting Test')}</button>
     <div class="phase-tab${budgetTab==='analysis'?' active':''}" onclick="setBudgetTab('analysis')">${t('経営分析','Analytics')}</div>
     <div class="phase-tab${budgetTab==='initiative'?' active':''}" onclick="setBudgetTab('initiative')">${t('施策分析','Initiatives')}</div>
   </div>`;
@@ -19907,7 +19993,7 @@ function renderBudget() {
   if (budgetTab==='minutes') budgetTab='daily';
   if (budgetTab==='initiative') return html + renderInitiative(); // v956: 施策分析。独自の店舗スコープあり
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
-  if (budgetTab==='meeting-preview') return html + renderMeetingPreview();
+  if (budgetTab==='meeting-test' || budgetTab==='meeting-preview') return html + renderMeetingPreview();
   if (budgetTab==='meeting') return html + renderMeetingReview(); // 会議ビュー（中間/月初MTG）
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
   if (budgetTab==='annual') return html + renderAnnualPlan(); // 年間計画は独自の店舗スコープあり
@@ -36716,7 +36802,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1003';
+const APP_VERSION = '1004';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
