@@ -981,6 +981,44 @@ body.shift-wide .main { max-width:1900px; }
 .dc-note{font-size:12px;color:var(--muted);margin:8px 0 14px;line-height:1.7}
 .dc-wide{display:block;width:100%;text-align:center;font-size:16px;padding:15px 18px;box-sizing:border-box;text-decoration:none}
 .dc-hint{font-size:12px;color:var(--muted);line-height:1.8}
+.mp-root { color:var(--tm); }
+.mp-root h2 { font-size:21px; line-height:1.4; margin:6px 0 12px; }
+.mp-root h3 { font-size:15px; margin:0 0 12px; }
+.mp-root h4 { font-size:14px; margin:0 0 14px; }
+.mp-intro { display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin:18px 0; }
+.mp-eyebrow { color:var(--accent); font-size:12px; font-weight:700; }
+.mp-modes { display:flex; gap:4px; padding:4px; background:var(--surface2); border-radius:12px; }
+.mp-modes button { border:0; padding:12px 16px; background:transparent; color:var(--tm); border-radius:9px; cursor:pointer; font:inherit; }
+.mp-modes button[aria-pressed="true"] { background:var(--accent); color:white; }
+.mp-period { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:14px 16px; background:var(--surface2); border-radius:10px; margin-bottom:14px; font-size:13px; }
+.mp-period span,.mp-note { color:var(--muted); }
+.mp-store-select { margin-bottom:16px; }
+.mp-layout { display:grid; grid-template-columns:minmax(0,2fr) minmax(240px,1fr); gap:20px; align-items:start; }
+.mp-main { min-width:0; }
+.mp-panel { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:20px; margin-bottom:16px; min-width:0; overflow-wrap:anywhere; }
+.mp-note { font-size:12px; line-height:1.7; margin:8px 0 14px; }
+.mp-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+.mp-metrics button { background:var(--surface); border:1px solid var(--border); color:var(--tm); border-radius:12px; padding:14px 10px; text-align:left; cursor:pointer; min-width:0; }
+.mp-metrics button[aria-pressed="true"] { border:2px solid var(--accent); padding:13px 9px; }
+.mp-metrics span { display:block; font-size:12px; }
+.mp-metrics strong { display:block; font-size:20px; font-variant-numeric:tabular-nums; margin-top:7px; overflow-wrap:anywhere; }
+.mp-detail-title small { display:block; font-size:12px; font-weight:400; color:var(--muted); margin-top:4px; }
+.mp-barrow { margin:0 0 15px; }
+.mp-rowtitle { display:flex; justify-content:space-between; gap:8px; font-size:13px; margin-bottom:5px; }
+.mp-rowtitle small { font-size:11px; color:var(--muted); }
+.mp-barline { display:flex; align-items:center; gap:12px; min-height:22px; }
+.mp-track { background:var(--surface2); border-radius:4px; height:9px; flex:1; overflow:hidden; }
+.mp-track span { display:block; height:100%; border-radius:4px; }
+.mp-barline b { min-width:82px; text-align:right; font-size:12px; font-variant-numeric:tabular-nums; }
+.mp-plan { border-top:1px solid var(--border); padding:18px 0 4px; }
+.mp-plan-label { color:var(--accent); font-size:12px; font-weight:700; margin:6px 0; }
+.mp-plan-copy { white-space:pre-wrap; font-size:14px; line-height:1.85; margin-bottom:14px; }
+.mp-root summary { cursor:pointer; font-size:13px; padding:12px 0; }
+.mp-pair { display:grid; grid-template-columns:1fr 1fr; gap:12px; font-size:12px; }
+.mp-pair strong { display:block; font-size:24px; margin-top:8px; }
+@media(max-width:800px) { .mp-layout { grid-template-columns:1fr; } .mp-plans { order:2; } }
+@media(max-width:480px) { .mp-panel { padding:16px; } .mp-root h2 { font-size:19px; } .mp-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .mp-modes { width:100%; } .mp-modes button { flex:1; } }
+
 </style>
 </head>
 <body>
@@ -19713,6 +19751,133 @@ async function _freshRefresh(){
   renderPage((typeof curPage!=='undefined')?curPage:'budget');
 }
 
+/* Meeting preview: read-only presentation. Budget rationale remains owned by Budget Setup. */
+var _mpMode = 'start', _mpMetric = 'guests';
+function mpSelect(kind, value){
+  if(kind==='mode' && ['start','mid'].indexOf(value)>=0) _mpMode=value;
+  if(kind==='metric' && ['sales','guests','ppa','labor','drink','repeat','food'].indexOf(value)>=0) _mpMetric=value;
+  renderPage('budget');
+}
+function mpPeriod(){
+  var b=budgetYM(), plan=b.y+'-'+String(b.m).padStart(2,'0');
+  var review=_mpMode==='start'?ymShift(plan,-1):plan;
+  var today=bizToday(), current=review===today.slice(0,7);
+  return {plan:plan, review:review, current:current, future:review>today.slice(0,7),
+    end:current?Number(today.slice(8))-1:(review>today.slice(0,7)?0:daysOfYm(review).length)};
+}
+function mpDays(ym, period){
+  return daysOfYm(ym).filter(function(d){return d.date<bizToday() && (!period.current || +d.date.slice(8)<=period.end) && !period.future;});
+}
+function mpText(v){return escapeHtml(v==null?'':String(v));}
+function mpEmpty(){return '<p class="mp-note">'+t('対象期間のデータがありません。未取得は 0 として表示しません。','No data for this period. Missing data is not shown as zero.')+'</p>';}
+function mpNumber(v, kind){
+  if(v==null || !isFinite(v)) return '—';
+  if(kind==='sales') return '$'+Math.round(v).toLocaleString();
+  if(kind==='ppa') return '$'+v.toFixed(2);
+  if(['labor','drink','repeat','food'].indexOf(kind)>=0) return v.toFixed(1)+'%';
+  if(kind==='hours') return v.toFixed(1)+'h';
+  return (Math.round(v*10)/10).toLocaleString();
+}
+function mpPanel(title, body, extra){return '<section class="mp-panel '+(extra||'')+'"><h3>'+mpText(title)+'</h3>'+body+'</section>';}
+/* Bar lengths share a zero baseline. Null stays absent; values remain readable without hover. */
+function mpBars(rows, kind){
+  var nums=[]; rows.forEach(function(r){if(r.v!=null) nums.push(r.v); if(r.prev!=null) nums.push(r.prev);});
+  if(!nums.length) return mpEmpty();
+  var max=Math.max.apply(null,nums.concat([1]));
+  return '<div class="mp-bars">'+rows.map(function(r){
+    function bar(v, previous){return '<div class="mp-barline"><div class="mp-track"><span style="width:'+Math.max(0,(v||0)/max*100).toFixed(2)+'%;background:'+(previous?'var(--muted)':'var(--accent)')+'"></span></div><b>'+mpNumber(v,kind)+'</b></div>';}
+    return '<div class="mp-barrow"><div class="mp-rowtitle">'+mpText(r.label)+(r.note?'<small>'+mpText(r.note)+'</small>':'')+'</div>'+bar(r.v,false)+(r.compare?bar(r.prev,true):'')+'</div>';
+  }).join('')+'</div>';
+}
+function mpDailyAgg(store, ym, p, kind){
+  var picker=kind==='sales'?kdPickSales:(kind==='ppa'?kdPickPpa:kdPickCount);
+  return kdAgg([store],mpDays(ym,p),picker);
+}
+function mpTrend(store,p,kind){
+  var rows=[-2,-1,0].map(function(shift){
+    var ym=ymShift(p.review,shift), a=mpDailyAgg(store,ym,p,kind), prev=mpDailyAgg(store,ymShift(ym,-12),p,kind);
+    return {label:ym,v:a.days?(kind==='ppa'?a.rate:a.per):null,prev:prev.days?(kind==='ppa'?prev.rate:prev.per):null,compare:true,
+      note:t('実績日数 ','Recorded days ')+a.days+' / '+t('前年 ','prior year ')+prev.days};
+  });
+  var desc=kind==='ppa'?t('売上合計 ÷ 客数合計','Total sales / total guests'):t('実績のある日の1日平均','Average per recorded day');
+  return '<p class="mp-note">'+desc+' · '+t('橙：対象年　灰：前年同月','Orange: selected year · Gray: prior year')+'</p>'+mpBars(rows,kind)
+    +'<p class="mp-note">'+(p.current?t('各月とも1日〜同じ日付までで比較。曜日・祝日の構成差は含みます。','Each month is limited to the same day of month. Weekday and holiday mix may differ.'):t('各月の全期間を比較。実績日数も合わせて確認してください。','Full months, with recorded-day counts shown.'))+'</p>';
+}
+function mpDailyDetail(store,p,kind){
+  var a=mpDailyAgg(store,p.review,p,kind);
+  var names=t('月,火,水,木,金,土,日','Mon,Tue,Wed,Thu,Fri,Sat,Sun').split(',');
+  var dw=kdDow(a).map(function(r,i){return {label:names[i],v:kind==='ppa'?r.rate:r.per,note:r.n+t('日',' days')};});
+  var day=Object.keys(a.byDate).sort().map(function(date){var r=a.byDate[date];return {label:date.slice(5),v:kind==='ppa'?(r.b>0?r.a/r.b:null):r.a};});
+  return mpPanel(t('直近3か月と前年','Three months / prior year'),mpTrend(store,p,kind))
+    +mpPanel(t('曜日別','Weekday pattern'),'<p class="mp-note">'+(kind==='ppa'?t('売上合計 ÷ 客数合計','Total sales / total guests'):t('実績のある日の1日平均','Average per recorded day'))+'</p>'+mpBars(dw,kind))
+    +mpPanel(t('日ごとの実績','Daily detail'),'<details><summary>'+t('日別グラフを開く','Open daily chart')+'</summary>'+mpBars(day,kind)+'</details>');
+}
+function mpHours(store,p){
+  var byDate={}, sum=0;
+  mpDays(p.review,p).forEach(function(d){
+    var lb=getTipLabor(store.id,d.date); if(!lb) return;
+    var h=0; Object.keys(lb).forEach(function(n){h+=_laborHrs(lb[n])||0;});
+    if(h>0){byDate[d.date]={a:h,b:0};sum+=h;}
+  });
+  var names=t('月,火,水,木,金,土,日','Mon,Tue,Wed,Thu,Fri,Sat,Sun').split(',');
+  var rows=kdDow({byDate:byDate}).map(function(r,i){return {label:names[i],v:r.per,note:r.n+t('日',' days')};});
+  var dates=Object.keys(byDate).sort(), avg=dates.length?sum/dates.length:null;
+  return mpPanel(t('投入時間を確認','Labor hours'),'<div class="mp-pair"><div>'+t('総労働時間','Total hours')+'<strong>'+mpNumber(dates.length?sum:null,'hours')+'</strong></div><div>'+t('打刻日の平均','Average per punched day')+'<strong>'+mpNumber(avg,'hours')+'</strong></div></div><p class="mp-note">'+t('月給者を含む打刻時間。打刻がない日は平均から除外。','Punch hours include salaried staff. Days without punches are excluded.')+'</p>')
+    +mpPanel(t('曜日別の平均労働時間','Average hours by weekday'),mpBars(rows,'hours'))
+    +mpPanel(t('日別の労働時間','Daily labor hours'),'<details><summary>'+t('日別グラフを開く','Open daily chart')+'</summary>'+mpBars(dates.map(function(d){return {label:d.slice(5),v:byDate[d].a};}),'hours')+'</details><p class="mp-note">'+t('日別・曜日別の人件費率は、月給・残業・税保険の配分方法を確認してから追加します。上部の月次率とは区別します。','Daily / weekday labor-cost rates require a salary, overtime and overhead allocation rule. The monthly rate above is separate.')+'</p>');
+}
+function mpPlans(stores,p){
+  var raw=getBudgets();
+  var content=stores.map(function(s){
+    var b=raw.find(function(x){return x.storeId===s.id;}), r=budRationale(b,p.plan)||{};
+    return '<div class="mp-plan"><h4>'+mpText(s.name)+'</h4><div class="mp-plan-label">'+t('重点目標','Priority goals')+'</div><div class="mp-plan-copy">'+mpText(r.focus||t('予算設定で未入力','Not entered in Budget Setup'))+'</div><details><summary>'+t('予算の根拠を見る','Budget rationale')+'</summary><div class="mp-plan-copy">'+mpText(r.basis||t('予算設定で未入力','Not entered in Budget Setup'))+'</div></details></div>';
+  }).join('');
+  return mpPanel(p.plan+' '+t('今月の予定','Monthly plan'),'<p class="mp-note">'+t('予算作成時に設定した根拠・重点目標','Rationale and priority goals from Budget Setup')+'</p>'+content,'mp-plans');
+}
+function mpMetricRows(k,has){
+  return [
+    ['sales',t('売上','Sales'),has?k.sales:null],['guests',k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'),has&&k.guests>0?k.guests:null],
+    ['ppa',k.unit==='丼'?t('丼単価','Per bowl'):t('客単価','Avg check'),has&&k.guests>0?k.ppa:null],
+    ['labor',t('人件費率','Labor %'),has?k.laborRate:null],['drink',t('ドリンク比率','Drink %'),k.drinkScope?k.drinkRate:null],
+    ['repeat',t('リピート率','Repeat %'),k.repeatHas?k.repeatRate:null],['food',t('原価率','Food cost %'),has?k.fcRate:null]
+  ];
+}
+function mpBudgetSummary(store,p,k,has){
+  var budget=k.budget, label=t('月間予算','Monthly budget');
+  if(p.current){var cum=cumulativeToToday(store.id,p.review);budget=cum?cum.budToToday:null;label=t('前日までの累計予算','Budget through yesterday');}
+  return mpPanel(t('予算に対してどうか','Progress against budget'),'<div class="mp-pair"><div>'+label+'<strong>'+mpNumber(budget>0?budget:null,'sales')+'</strong></div><div>'+t('実績との差','Actual minus budget')+'<strong>'+mpNumber(has&&budget>0?k.sales-budget:null,'sales')+'</strong></div></div>'
+    +(p.current?'<p class="mp-note">'+t('月間予算 ','Full-month budget ')+mpNumber(k.budget>0?k.budget:null,'sales')+'</p>':''));
+}
+function renderMeetingPreview(){
+  var p=mpPeriod(), stores=budgetScopeStores();
+  var h='<div class="mp-root"><div class="mp-intro"><div><span class="mp-eyebrow">'+t('会議プレビュー','Meeting preview')+'</span><h2>'+t('数字を確認し、次の打ち手へ','Review results. Decide next steps.')+'</h2></div><div class="mp-modes">';
+  [['start',t('月初MTG','Month start')],['mid',t('中間MTG','Mid-month')]].forEach(function(m){h+='<button type="button" aria-pressed="'+(_mpMode===m[0])+'" onclick="mpSelect(\'mode\',\''+m[0]+'\')">'+m[1]+'</button>';});
+  h+='</div></div><div class="mp-period"><b>'+p.review+' '+(_mpMode==='start'?t('結果の振り返り','Results'):t('進捗確認','Progress'))+'</b><span>'+t('計画：','Plan: ')+p.plan+' · '+(p.current?t('前日まで','Through yesterday'):(p.future?t('対象月は未来です','Future period'):t('月全体','Full month')))+'</span></div>';
+  h+='<div class="mp-store-select">'+bStoreChips(_budgetStore,'setBudgetStore')+'</div>';
+  if(!stores.length) return h+mpEmpty()+'</div>';
+  h+='<div class="mp-layout"><div class="mp-main">';
+  if(stores.length>1){
+    h+=mpPanel(t('店舗を選んで詳しく確認','Choose a store to explore'),'<p class="mp-note">'+t('客数と丼数を混ぜず、店舗ごとに比較します。上の店舗ボタンから詳細を開いてください。','Compare each store separately so guests and bowls are not combined. Choose a store above.')+'</p>');
+  } else if(p.future || p.end===0){h+=mpEmpty();}
+  else {
+    var s=stores[0], days=mpDays(p.review,p), raw=keyKpiStats([s],days), k=_meetApplyPl(raw,s.id,p.review);
+    var has=raw.opDays>0 || !!k.plSrc;
+    var metrics=mpMetricRows(k,has);
+    h+='<div class="mp-metrics">'+metrics.map(function(m){return '<button type="button" aria-pressed="'+(_mpMetric===m[0])+'" onclick="mpSelect(\'metric\',\''+m[0]+'\')"><span>'+m[1]+'</span><strong>'+mpNumber(m[2],m[0])+'</strong></button>';}).join('')+'</div>';
+    h+='<p class="mp-note">'+(k.plSrc?t('上段：PL確定値を反映。日別グラフ：アプリ実績（速報）のため、確定値と異なる場合があります。','Summary includes final P&L. Daily charts use app records and may differ.'):t('アプリ実績（速報）。算出できない項目は — 表示。','App records (provisional). Unavailable metrics show —.'))+'</p>';
+    h+=mpBudgetSummary(s,p,k,has);
+    var title=metrics.filter(function(m){return m[0]===_mpMetric;})[0][1];
+    h+='<h2 class="mp-detail-title">'+mpText(title)+' <small>'+mpText(s.name)+' · '+p.review+'</small></h2>';
+    if(['sales','guests','ppa'].indexOf(_mpMetric)>=0) h+=mpDailyDetail(s,p,_mpMetric);
+    else if(_mpMetric==='labor') h+=mpHours(s,p);
+    else if(_mpMetric==='drink') h+=mpPanel(t('ドリンクの構成・推移','Drink mix and trend'),drinkRatioTriSub([s],days)+drinkTrendSub([s],days)||mpEmpty());
+    else if(_mpMetric==='repeat') h+=mpPanel(t('初回とリピートの推移','First-time / repeat trend'),repeatTrendSub([s],days)||mpEmpty());
+    else if(_mpMetric==='food') h+=mpPanel(t('仕入れの内訳・推移','Purchasing breakdown'),'<p class="mp-note">'+t('下段は仕入ベース。PL確定原価とは対象が異なります。','Purchases below differ from final P&L food cost.')+'</p>'+(fcVendorTriSub([s],days)||mpEmpty()));
+  }
+  h+='</div>'+mpPlans(stores,p)+'</div></div>';
+  return h;
+}
+
 function renderBudget() {
   normalizeBudgetsDemo();
   var html = `<div class="section-header">
@@ -19726,6 +19891,7 @@ function renderBudget() {
     <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
     <div class="phase-tab${budgetTab==='meeting'?' active':''}" onclick="setBudgetTab('meeting')">${t('会議','Meeting')}</div>
+    <button type="button" class="phase-tab${budgetTab==='meeting-preview'?' active':''}" onclick="setBudgetTab('meeting-preview')">${t('会議プレビュー','Meeting Preview')}</button>
     <div class="phase-tab${budgetTab==='analysis'?' active':''}" onclick="setBudgetTab('analysis')">${t('経営分析','Analytics')}</div>
     <div class="phase-tab${budgetTab==='initiative'?' active':''}" onclick="setBudgetTab('initiative')">${t('施策分析','Initiatives')}</div>
   </div>`;
@@ -19741,6 +19907,7 @@ function renderBudget() {
   if (budgetTab==='minutes') budgetTab='daily';
   if (budgetTab==='initiative') return html + renderInitiative(); // v956: 施策分析。独自の店舗スコープあり
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
+  if (budgetTab==='meeting-preview') return html + renderMeetingPreview();
   if (budgetTab==='meeting') return html + renderMeetingReview(); // 会議ビュー（中間/月初MTG）
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
   if (budgetTab==='annual') return html + renderAnnualPlan(); // 年間計画は独自の店舗スコープあり
@@ -36549,7 +36716,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1002';
+const APP_VERSION = '1003';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
