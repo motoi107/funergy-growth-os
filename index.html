@@ -36549,7 +36549,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1002';
+const APP_VERSION = '1003';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41691,9 +41691,110 @@ var _acCat = 'dash';
 var _acSub = 'dash';
 function acDashBody(){ return renderOfficeMgr(true); }   /* 帯なしで出す */
 function acErrBody(){ return renderErrorCenter(true); }  /* 埋め込み表示 */
+/* FUNERGY_BOT_CENTER_BEGIN: integrated accounting workspace; no LINE transport enabled. */
+var _botView = { store:'', from:'', to:'', rows:[], scanned:false, missing:[], overrides:[], failed:[] };
+function botCanView(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
+function botStores(){ return getVisibleStores().filter(function(s){ return !!s.toastGuid; }); }
+function botYesterday(){ return new Date(Date.now()-10*3600000-86400000).toISOString().slice(0,10); }
+function botDays(from,to){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(from)||!/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error(t('日付を選択してください','Choose dates'));
+  var a=Date.parse(from+'T00:00:00Z'), b=Date.parse(to+'T00:00:00Z');
+  if(!isFinite(a)||!isFinite(b)||new Date(a).toISOString().slice(0,10)!==from||new Date(b).toISOString().slice(0,10)!==to||b<a||b-a>30*86400000||to>botYesterday())
+    throw new Error(t('前日までの31日以内を選択してください','Choose up to 31 days, ending no later than yesterday'));
+  var days=[]; for(var ms=a;ms<=b;ms+=86400000) days.push(new Date(ms).toISOString().slice(0,10));
+  return days;
+}
+function botScan(){
+  if(!botCanView()) return;
+  var read=function(id){return (document.getElementById(id)||{}).value||'';};
+  var from=read('bot-from'), to=read('bot-to'), store=read('bot-store'), dates;
+  try{dates=botDays(from,to);}catch(e){showToast(e.message,'warning');return;}
+  var rows=[],missing=[],overrides=[],failed=[], cfg=getCeCfg();
+  botStores().filter(function(s){return !store||s.id===store;}).forEach(function(s){
+    dates.forEach(function(dt){
+      var label=s.name+' / '+dt;
+      try{
+        var labor=getTipLabor(s.id,dt), ovr=getAttOverride(s.id,dt);
+        if(ovr&&ovr.data) overrides.push(label);
+        if(!labor||!Object.keys(labor).length){missing.push(label);return;}
+        ceScanDay(s.id,dt,cfg).rows.forEach(function(r){ rows.push(Object.assign({},r,{storeId:s.id,storeName:s.name,override:!!(ovr&&ovr.data)})); });
+      }catch(e){failed.push(label);}
+    });
+  });
+  _botView={store:store,from:from,to:to,rows:rows,scanned:true,missing:missing,overrides:overrides,failed:failed,cfg:cfg};
+  renderPage('acct_center');
+}
+function botKindText(kinds,lang){
+  var en={auto:'Possible automatic clock-out (time-window estimate)',reverse:'Clock-in/out reversed',bad:'Invalid or missing time',long:'Long shift',short:'Very short shift',overlap:'Overlapping shifts'};
+  return (kinds||[]).map(function(k){return lang==='en'?(en[k]||k):(CE_KIND_LABEL[k]||k);}).join(' / ');
+}
+function botDraftText(r,lang){
+  var lines=lang==='en'?['[Funergy | Attendance check]',r.storeName+' / '+r.date,'Team member: '+r.name,'Please confirm: '+botKindText(r.kinds,'en')]:['【Funergy｜勤怠確認】',r.storeName+' / '+r.date,'対象：'+r.name,'確認内容：'+botKindText(r.kinds,'ja')];
+  (r.det||[]).forEach(function(d){lines.push(d.inClock+' → '+d.outClock+' ('+d.hours+'h)');});
+  if(r.override) lines.push(lang==='en'?'This date has a manual adjustment in Funergy+. Please ask accounting to reconcile it.':'この日はFunergy＋に手動補正があります。経理側で照合してください。');
+  lines.push(lang==='en'?'If the entry is incorrect, please correct it in Toast and reply with the correction details. If it is correct, please let us know.':'打刻に誤りがあればToastで修正し、修正内容をご返信ください。正しい打刻の場合も、その旨をお知らせください。');
+  return lines.join('\n');
+}
+function botOpenDraft(index,lang){
+  if(!botCanView()) return;
+  var r=_botView.rows[index]; if(!r) return;
+  openModal('<div class="modal-title">'+t('LINE確認依頼の下書き','LINE request draft')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<p>'+t('内容を確認・編集してコピーしてください。まだ送信されません。下書きは保存されません。','Review, edit and copy. Nothing is sent. Draft edits are not saved.')+'</p>'
+    +'<textarea id="bot-draft" class="form-input" style="min-height:250px;width:100%">'+escapeHtml(botDraftText(r,lang))+'</textarea>'
+    +'<button class="btn btn-primary" onclick="botCopyDraft()">'+t('下書きをコピー','Copy draft')+'</button>');
+}
+async function botCopyDraft(){
+  if(!botCanView()) return;
+  var el=document.getElementById('bot-draft'); if(!el)return;
+  try{await navigator.clipboard.writeText(el.value);showToast(t('コピーしました（未送信）','Copied (not sent)'),'success');}
+  catch(e){el.focus();el.select();showToast(t('文章を選択しました。手動でコピーしてください','Text selected. Please copy manually.'),'warning');}
+}
+function botOpenPurchases(){ if(botCanView()) go('supply_order'); }
+function botOpenTasks(){ if(botCanView()){_acCat='review';acSetSub('task');} }
+function renderBotCenter(){
+  if(!botCanView()) return '<div class="card">'+t('経理・GM・CEO専用です','Accounting, GM and CEO only')+'</div>';
+  var v=_botView,cfg=getCeCfg(), stores=botStores(), esc=escapeHtml;
+  var h='<div class="card"><div class="card-title"><i class="ti ti-robot" style="color:var(--accent)"></i>'+t('業務Bot','Operations Bot')+'</div>'
+    +'<p>'+t('勤怠の確認と修正依頼を、Funergy＋の判定基準でまとめます。','Review attendance and prepare correction requests using Funergy+ rules.')+'</p>'
+    +'<span class="tag tag-yellow">'+t('LINE未接続・自動送信なし','LINE disconnected · no automatic sending')+'</span></div>';
+  h+='<div class="card"><div class="card-title">'+t('勤怠の確認対象','Attendance checks')+'</div>'
+    +'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">'
+    +'<label>'+t('店舗','Store')+'<select id="bot-store" class="form-input"><option value="">'+t('全店','All stores')+'</option>'
+    +stores.map(function(s){return '<option value="'+esc(s.id)+'"'+(s.id===v.store?' selected':'')+'>'+esc(s.name)+'</option>';}).join('')+'</select></label>'
+    +'<label>'+t('開始日','From')+'<input id="bot-from" type="date" class="form-input" max="'+botYesterday()+'" value="'+esc(v.from||botYesterday())+'"></label>'
+    +'<label>'+t('終了日','Through')+'<input id="bot-to" type="date" class="form-input" max="'+botYesterday()+'" value="'+esc(v.to||botYesterday())+'"></label>'
+    +'<button class="btn btn-primary" onclick="botScan()">'+t('確認対象を表示','Show checks')+'</button></div>'
+    +'<p style="font-size:12px;color:var(--muted)">'+t('この端末に取得済みの勤怠を確認します。Toastの再取得や修正完了の判定は行いません。','Checks attendance already loaded on this device. Does not refetch Toast or confirm that corrections are complete.')+'</p>'
+    +'<p style="font-size:12px">'+t('現在の判定設定','Current rules')+': '+esc(cfg.nightFrom)+'–'+esc(cfg.nightTo)+' / '+esc(String(cfg.longH))+'h / '+esc(String(cfg.shortMin))+'min · '+t('この端末の設定','Device settings')+'</p>';
+  if(!v.scanned) h+='<p>'+t('店舗と期間を選んで確認してください。','Choose stores and dates to review.')+'</p>';
+  else{
+    if(JSON.stringify(v.cfg)!==JSON.stringify(cfg)) h+='<p class="tag tag-yellow">'+t('判定設定が変わりました。再度表示してください。','Rules changed. Run the check again.')+'</p>';
+    h+='<p><b>'+v.rows.length+' '+t('件の確認対象','checks to review')+'</b> · '+t('取得済みデータ内の検知結果','Findings in loaded data')+'</p>';
+    if(v.missing.length) h+='<details><summary>'+t('データ未取得または勤務記録なし','Data not loaded or no shifts recorded')+' ('+v.missing.length+')</summary><p>'+v.missing.map(esc).join('<br>')+'</p></details>';
+    if(v.failed.length) h+='<details><summary>'+t('判定できなかった店舗・日付','Store dates that could not be checked')+' ('+v.failed.length+')</summary><p>'+v.failed.map(esc).join('<br>')+'</p></details>';
+    if(v.overrides.length) h+='<details><summary>'+t('手動補正あり：Toast修正後も経理で照合が必要','Manual adjustments: accounting reconciliation required')+' ('+v.overrides.length+')</summary><p>'+v.overrides.map(esc).join('<br>')+'</p></details>';
+    v.rows.forEach(function(r,i){
+      h+='<div style="padding:14px 0;border-top:1px solid var(--border)"><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between"><b>'+esc(r.name)+'</b><span>'+esc(r.storeName)+' / '+esc(r.date)+'</span></div>'
+        +'<p>'+esc(botKindText(r.kinds,typeof curLang!=='undefined'&&curLang==='en'?'en':'ja'))+'</p>'
+        +'<p>'+r.det.map(function(d){return esc(d.inClock+' → '+d.outClock+' ('+d.hours+'h)');}).join(' / ')+'</p>'
+        +'<div style="display:flex;gap:8px"><button class="btn btn-secondary btn-sm" onclick="botOpenDraft('+i+',\'en\')">English '+t('下書き','draft')+'</button>'
+        +'<button class="btn btn-secondary btn-sm" onclick="botOpenDraft('+i+',\'ja\')">日本語 '+t('下書き','draft')+'</button></div></div>';
+    });
+  }
+  h+='<p style="font-size:12px;color:var(--muted)">'+t('退勤時刻が保存されていない打刻は、この一覧には含まれません。','Entries without stored clock-out times are not included in this list.')+'</p></div>';
+  h+='<div class="card"><div class="card-title">'+t('発注・対応管理','Purchasing and follow-up')+'</div><div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-secondary" onclick="botOpenPurchases()">'+t('備品発注を開く','Open supply orders')+'</button>'
+    +'<button class="btn btn-secondary" onclick="botOpenTasks()">'+t('経理タスクを開く','Open accounting tasks')+'</button></div>'
+    +'<p>'+t('既存の発注・タスク画面で管理します。LINEの依頼取込、Amazonの注文画面への連携、Void明細の検知は未接続です。','Use existing purchasing and task screens. LINE request intake, Amazon checkout integration and Void detail detection are not connected yet.')+'</p></div>';
+  return h;
+}
+/* FUNERGY_BOT_CENTER_END */
 var AC_TABS = [
   { id:'dash', label:'経理ダッシュボード', icon:'ti-layout-dashboard', subs:[
       { id:'dash', label:'経理ダッシュボード', fn:'acDashBody' }
+  ]},
+  { id:'bot', label:'業務Bot', labelEn:'Operations Bot', icon:'ti-robot', subs:[
+      { id:'bot', label:'業務Bot', fn:'renderBotCenter' }
   ]},
   { id:'review', label:'経理レビュー', icon:'ti-file-check', subs:[
       { id:'invoice',  label:'Invoice',       list:'invoice', more:'renderInvoice' },
@@ -41751,7 +41852,7 @@ function renderAcctCenter(){
     + AC_TABS.map(function(c){
         var on = (c.id===cat.id), cn = _catN(c);
         return '<button class="ac-btn'+(on?' active':'')+'" onclick="acSetCat(\''+c.id+'\')">'
-          + '<i class="ti '+c.icon+'"></i>' + escapeHtml(c.label)
+          + '<i class="ti '+c.icon+'"></i>' + escapeHtml(c.labelEn ? t(c.label,c.labelEn) : c.label)
           + (cn ? '<span class="ac-n">'+cn+'</span>' : '') + '</button>';
       }).join('') + '</div>';
   if(cat.subs.length > 1){
