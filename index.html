@@ -12479,14 +12479,15 @@ async function showManagerSecure(){
 function _secRerender(){ var b=document.getElementById('mgr-secure-body'); if(b){ try{ b.innerHTML=renderSecureBody(); }catch(e){ b.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; } } }
 function secTab(t){ window._secTab=t; _secRerender(); }
 function renderSecureBody(){
-  var t = (window._secTab==='pl'||window._secTab==='hq') ? window._secTab : 'karte';
+  var t = (window._secTab==='pl'||window._secTab==='hq'||window._secTab==='bot') ? window._secTab : 'karte';
   /* v925: 下のサブタブと見た目を揃える */
   var bar = '<div class="seg-tabs" style="max-width:520px">'
     +'<div class="seg-tab'+(t==='karte'?' active':'')+'" onclick="secTab(\'karte\')"><i class="ti ti-id-badge-2"></i>成長カルテ</div>'
     +'<div class="seg-tab'+(t==='pl'?' active':'')+'" onclick="secTab(\'pl\')"><i class="ti ti-report-money"></i>PL分析</div>'
     +'<div class="seg-tab'+(t==='hq'?' active':'')+'" onclick="secTab(\'hq\')"><i class="ti ti-building-bank"></i>本部予算</div>'
     +'</div>';
-  return bar + (t==='pl' ? renderSimplePL() : t==='hq' ? renderHqBudget() : renderGrowthKarte());
+  bar += '<button class="btn btn-secondary" onclick="secTab(\'bot\')">業務Bot / Operations Bot</button>';
+  return bar + (t==='bot' ? renderBotCenter() : t==='pl' ? renderSimplePL() : t==='hq' ? renderHqBudget() : renderGrowthKarte());
 }
 /* ============================================================
    本部予算（セキュアページ）: 年間計画表（本部予算 vs 店舗予算 vs 実績）
@@ -14790,7 +14791,7 @@ function savePlActual(sid){
   closeModalDirect(); showToast('実PLを保存しました','success'); _secRerender();
 }
 function managerLogout(){
-  window._authSession=null;
+  window._authSession=null; if(typeof botResetShared==='function') botResetShared();
   window._secureMode=false; window._karteUnlocked=false;
   curRole=null; curUserName=null; curStore=null;
   var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='none';
@@ -15197,7 +15198,7 @@ function doLogout() {
   try{ notifRealtimeStop(); }catch(e){}
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
-  window._sessionPin = null; window._empPrivate = null;
+  window._sessionPin = null; window._empPrivate = null; if(typeof botResetShared==='function') botResetShared();
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   loginBackToLocation();
@@ -35777,7 +35778,7 @@ var CE_KIND_LABEL = {
 };
 var CE_ERROR_KINDS = ['auto','reverse','bad'];   /* 確実（赤）。それ以外は疑い（黄） */
 function getCeCfg(){
-  var m = ls('ce_config', null) || {};
+  var m = window._botSharedClock || ls('ce_config', null) || {};
   return {
     nightFrom: /^\d{1,2}:\d{2}$/.test(m.nightFrom||'') ? m.nightFrom : CE_DEFAULT_CFG.nightFrom,
     nightTo:   /^\d{1,2}:\d{2}$/.test(m.nightTo||'')   ? m.nightTo   : CE_DEFAULT_CFG.nightTo,
@@ -36028,7 +36029,7 @@ function openCeCfgModal(){
     + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
     + '<button class="btn btn-primary" onclick="saveCeCfg()"><i class="ti ti-device-floppy"></i> 保存</button></div>');
 }
-function saveCeCfg(){
+async function saveCeCfg(){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('判定の設定は GM・CEO のみです','warning'); return; }
   var nf=(document.getElementById('ce-nf')||{}).value||'';
   var nt=(document.getElementById('ce-nt')||{}).value||'';
@@ -36037,7 +36038,12 @@ function saveCeCfg(){
   if(!/^\d{1,2}:\d{2}$/.test(nf) || !/^\d{1,2}:\d{2}$/.test(nt)){ showToast('判定窓の時刻が正しくありません','warning'); return; }
   if(!(lh>0&&lh<=24)){ showToast('長時間は1〜24hで指定してください','warning'); return; }
   if(!(sm>0&&sm<=240)){ showToast('短すぎは1〜240分で指定してください','warning'); return; }
-  setCeCfg({ nightFrom:nf, nightTo:nt, longH:lh, shortMin:sm });
+  var nextCfg={ nightFrom:nf, nightTo:nt, longH:lh, shortMin:sm };
+  if(window._botSharedClock){
+    try{var saved=await botAPI({action:'config',clock:nextCfg});window._botSharedClock=saved.clock;}
+    catch(e){showToast(e.message,'warning');return;}
+  }
+  setCeCfg(nextCfg);
   closeModalDirect();
   showToast('打刻エラーの判定を保存しました','success');
   renderPage(curPage);
@@ -41722,7 +41728,7 @@ function botScan(){
     });
   });
   _botView={store:store,from:from,to:to,rows:rows,scanned:true,missing:missing,overrides:overrides,failed:failed,cfg:cfg};
-  renderPage('acct_center');
+  botRender();
 }
 function botKindText(kinds,lang){
   var en={auto:'Possible automatic clock-out (time-window estimate)',reverse:'Clock-in/out reversed',bad:'Invalid or missing time',long:'Long shift',short:'Very short shift',overlap:'Overlapping shifts'};
@@ -41751,12 +41757,12 @@ async function botCopyDraft(){
 }
 function botOpenPurchases(){ if(botCanView()) go('supply_order'); }
 function botOpenTasks(){ if(botCanView()){_acCat='review';acSetSub('task');} }
-function renderBotCenter(){
+function renderBotLocalCenter(){
   if(!botCanView()) return '<div class="card">'+t('経理・GM・CEO専用です','Accounting, GM and CEO only')+'</div>';
   var v=_botView,cfg=getCeCfg(), stores=botStores(), esc=escapeHtml;
   var h='<div class="card"><div class="card-title"><i class="ti ti-robot" style="color:var(--accent)"></i>'+t('業務Bot','Operations Bot')+'</div>'
     +'<p>'+t('勤怠の確認と修正依頼を、Funergy＋の判定基準でまとめます。','Review attendance and prepare correction requests using Funergy+ rules.')+'</p>'
-    +'<span class="tag tag-yellow">'+t('LINE未接続・自動送信なし','LINE disconnected · no automatic sending')+'</span></div>';
+    +'<span class="tag tag-yellow">'+t('取得済みデータの下書き','Drafts from loaded data')+'</span></div>';
   h+='<div class="card"><div class="card-title">'+t('勤怠の確認対象','Attendance checks')+'</div>'
     +'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">'
     +'<label>'+t('店舗','Store')+'<select id="bot-store" class="form-input"><option value="">'+t('全店','All stores')+'</option>'
@@ -41785,9 +41791,132 @@ function renderBotCenter(){
   h+='<div class="card"><div class="card-title">'+t('発注・対応管理','Purchasing and follow-up')+'</div><div style="display:flex;gap:8px;flex-wrap:wrap">'
     +'<button class="btn btn-secondary" onclick="botOpenPurchases()">'+t('備品発注を開く','Open supply orders')+'</button>'
     +'<button class="btn btn-secondary" onclick="botOpenTasks()">'+t('経理タスクを開く','Open accounting tasks')+'</button></div>'
-    +'<p>'+t('既存の発注・タスク画面で管理します。LINEの依頼取込、Amazonの注文画面への連携、Void明細の検知は未接続です。','Use existing purchasing and task screens. LINE request intake, Amazon checkout integration and Void detail detection are not connected yet.')+'</p></div>';
+    +'<p>'+t('LINEからの依頼と対応履歴は、業務Botの共有案件で管理します。','Manage LINE requests and follow-up history in the shared cases view.')+'</p></div>';
   return h;
 }
+/* FUNERGY_BOT_SHARED_BEGIN */
+var _botShared={view:'shared',data:null,busy:false,error:'',store:'',status:'',kind:''};
+var _botSession=null;
+var _botModalCase=null, _botModalVersion=null;
+function botResetShared(){_botSession=null;_botShared.data=null;_botShared.error='';}
+function botRender(){if(window._secureMode&&window._secTab==='bot')_secRerender();else renderPage('acct_center');}
+async function botFetchSharedClock(){
+  try{var r=await fetch(SUPABASE_URL+'/functions/v1/ops-bot?action=config',{cache:'no-store'});if(!r.ok)return;var j=await r.json();if(j.clock){window._botSharedClock=j.clock;lsSet('ce_config',j.clock);}}catch(e){}
+}
+async function botAPI(payload,retried){
+  var session=_botSession||(window._authSession||null);
+  if(!session||!session.access_token)throw new Error(t('共有案件を開くにはメール認証してください','Sign in with your manager email to open shared cases'));
+  var r=await fetch(SUPABASE_URL+'/functions/v1/ops-bot',{method:'POST',headers:{apikey:SUPABASE_ANON,Authorization:'Bearer '+session.access_token,'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(r.status===401&&!retried&&session.refresh_token){
+    var rr=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:SUPABASE_ANON,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:session.refresh_token})});
+    if(rr.ok){var jj=await rr.json();_botSession={access_token:jj.access_token,refresh_token:jj.refresh_token};return botAPI(payload,true);}
+  }
+  var j=await r.json();if(!r.ok){if(r.status===401)botResetShared();var messages={conflict:t('他の担当者が更新しました。再読込してください','Another reviewer updated this case. Reload it.'),send_unresolved:t('送信結果の確認が必要です。履歴から同じ送信を再確認してください','Resolve the previous send from its history first.'),line_token_missing:t('LINEのアクセストークンが未設定です','LINE access token is not configured'),unauthorized:t('メール認証の有効期限が切れました。再認証してください','Please sign in again.'),forbidden:t('この操作の権限がありません','You do not have permission for this action'),invalid_config:t('GM・CEOが判定設定を共有してください','GM or CEO must publish the clock rules first'),scan_busy:t('この店舗は取得処理中です。少し待って更新してください','This store is being scanned. Refresh shortly.')};throw Error(messages[j.error]||j.error||t('接続できませんでした','Connection failed'));}return j;
+}
+function botLoginModal(){
+  openModal('<div class="modal-title">'+t('共有案件のメール認証','Sign in to shared cases')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div><p>'+t('Funergy＋の管理者メール・パスワードを使用します。','Use your existing Funergy+ manager email and password.')+'</p><input id="bot-email" class="form-input" type="email" autocomplete="username" placeholder="Email"><input id="bot-password" class="form-input" type="password" autocomplete="current-password" placeholder="Password"><p id="bot-login-error"></p><button id="bot-login-button" class="btn btn-primary" onclick="botLogin()">'+t('認証','Sign in')+'</button>');
+}
+async function botLogin(){
+  var email=document.getElementById('bot-email'),pass=document.getElementById('bot-password'),btn=document.getElementById('bot-login-button');if(!email||!pass)return;btn.disabled=true;
+  try{var r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:SUPABASE_ANON,'Content-Type':'application/json'},body:JSON.stringify({email:email.value.trim(),password:pass.value})});pass.value='';if(!r.ok)throw Error(t('メール・パスワードを確認してください','Check your email and password'));var j=await r.json();botResetShared();_botSession={access_token:j.access_token,refresh_token:j.refresh_token};var data=await botAPI({action:'list'});_botShared.data=data;closeModalDirect();botRender();}
+  catch(e){_botSession=null;var el=document.getElementById('bot-login-error');if(el)el.textContent=e.message;}finally{btn.disabled=false;}
+}
+async function botLoadShared(){
+  if(!botCanView()||_botShared.busy)return;_botShared.busy=true;_botShared.error='';botRender();
+  try{_botShared.data=await botAPI({action:'list'});if(_botShared.data.clock){window._botSharedClock=_botShared.data.clock;lsSet('ce_config',window._botSharedClock);}}
+  catch(e){_botShared.data=null;_botShared.error=e.message;}finally{_botShared.busy=false;botRender();}
+}
+function botSharedView(view){_botShared.view=view;botRender();}
+function botSetFilter(key,value){if(['store','status','kind'].indexOf(key)>=0)_botShared[key]=value;botRender();}
+function botStatus(s){var ja={review:'確認待ち',waiting:'返信待ち',correction:'修正依頼',verify:'再確認待ち',ready:'発注可能',done:'完了'};var en={review:'Review',waiting:'Awaiting reply',correction:'Correction needed',verify:'Recheck',ready:'Ready to order',done:'Done'};return curLang==='en'?(en[s]||s):(ja[s]||s);}
+function botCaseKind(k){return ({labor:t('勤怠','Attendance'),void:'Void',purchase:t('発注','Purchase')})[k]||k;}
+function botSuggestedDraft(c){
+  var p=c.payload||{},en=curLang==='en',text='';
+  if(c.kind==='labor'){
+    text=(en?'Please check the attendance entry for ':'勤怠をご確認ください：')+(p.employee_name||c.subject)+' / '+c.business_date+'\n'+botKindText(p.kinds,en?'en':'ja');
+    (p.shifts||[]).forEach(function(s){text+='\n'+_ceClock(s.inDate)+' → '+_ceClock(s.outDate);});
+    if(p.open_shift)text+='\n'+(en?'Clock-out is missing. Please confirm whether this shift is still ongoing.':'退勤時刻がありません。勤務継続中か、打刻漏れかをご確認ください。');
+    text+='\n'+(en?'If incorrect, please correct it in Toast and reply with this case code and the correction details.':'誤りがあればToastで修正し、この案件番号と修正内容をご返信ください。');
+  }else if(c.kind==='void')text=(en?'Please confirm the reason for this Void: ':'こちらのVoidの理由をご確認ください：')+c.subject+' / '+c.business_date;
+  else text=(en?'Please confirm this purchase request: ':'こちらの発注依頼をご確認ください：')+c.subject;
+  return text;
+}
+function renderBotCenter(){
+ if(!botCanView())return '<div class="card">'+t('経理・GM・CEO専用です','Accounting, GM and CEO only')+'</div>';
+ var d=_botShared.data,esc=escapeHtml;
+ var h='<div class="card"><div class="card-title"><i class="ti ti-robot"></i> '+t('業務Bot','Operations Bot')+'</div><p>'+t('勤怠・Void・発注依頼の確認と、LINEでのやり取りをまとめます。送信と発注は担当者が確認して実行します。','Manage attendance, Void and purchase checks with LINE follow-up. A reviewer confirms every message and order.')+'</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary" onclick="botSharedView(\'shared\')">'+t('共有案件','Shared cases')+'</button><button class="btn btn-secondary" onclick="botSharedView(\'local\')">'+t('取得済み勤怠の確認','Review loaded attendance')+'</button><button class="btn btn-secondary" onclick="botLoginModal()">'+t('メール認証','Email sign-in')+'</button><button class="btn btn-primary" onclick="botLoadShared()" '+(_botShared.busy?'disabled':'')+'>'+t('更新','Refresh')+'</button></div></div>';
+ if(_botShared.view==='local')return h+renderBotLocalCenter();
+ if(_botShared.error)h+='<div class="card" role="alert">'+esc(_botShared.error)+'</div>';
+ if(_botShared.busy)return h+'<div class="card">'+t('読込中…','Loading…')+'</div>';
+ if(!d)return h+'<div class="card">'+t('メール認証後に共有案件を読み込めます。','Sign in with your manager email to load shared cases.')+'</div>';
+ h+='<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="tag '+(d.line.secret&&d.line.token?'tag-green':'tag-yellow')+'">'+(d.line.secret&&d.line.token?t('LINE接続情報：設定済み','LINE credentials configured'):t('LINE接続情報：設定待ち','LINE credentials pending'))+'</span><span class="tag tag-gray">'+t('送信は確認後のみ','Messages require review')+'</span></div><p>'+t('自動取得','Scheduled collection')+': '+(d.worker_enabled?t('有効','Enabled'):t('停止中','Paused'))+'</p>';
+ var stores=d.stores||[];
+ h+='<div style="display:flex;gap:8px;flex-wrap:wrap"><select id="bot-cloud-store" class="form-input">'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'">'+esc(s.name)+'</option>';}).join('')+'</select><input id="bot-cloud-date" class="form-input" type="date" max="'+botYesterday()+'" value="'+botYesterday()+'"><button class="btn btn-primary" onclick="botCloudScan()" '+(_botShared.busy?'disabled':'')+'>'+t('Toastから勤怠・Voidを取得','Fetch attendance and Voids from Toast')+'</button><button class="btn btn-secondary" onclick="botNewPurchase()">'+t('発注依頼を登録','Add purchase request')+'</button></div>';
+ if(['gm','ceo'].indexOf(d.actor.role)>=0)h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn btn-secondary" onclick="botPublishConfig()">'+t('判定設定を全体に適用','Publish clock rules')+'</button><button class="btn btn-secondary" onclick="botWorkerToggle()">'+(d.worker_enabled?t('自動取得を停止','Pause collection'):t('自動取得を有効化','Enable collection'))+'</button><button class="btn btn-secondary" onclick="botGroupsModal()">'+t('LINEグループ設定','LINE group settings')+'</button></div>';
+ if(!d.clock)h+='<p>'+t('最初にGM・CEOが既存の判定設定を確認し、全体に適用してください。','GM or CEO must review and publish the existing clock rules first.')+'</p>';
+ h+='<p style="font-size:12px">'+t('LINEに「発注依頼 商品名」または「/order 商品名」で送ると、登録済みグループの依頼を取り込みます。返信には案件番号 B-… を付けてください。','In a registered group, start a request with “/order item name”. Include the B-… case code in follow-up replies.')+'</p></div>';
+ h+='<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap"><select class="form-input" onchange="botSetFilter(\'store\',this.value)"><option value="">'+t('全店舗','All stores')+'</option>'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'"'+(_botShared.store===s.store_id?' selected':'')+'>'+esc(s.name)+'</option>';}).join('')+'</select><select class="form-input" onchange="botSetFilter(\'kind\',this.value)"><option value="">'+t('全種類','All types')+'</option>'+['labor','void','purchase'].map(function(k){return '<option value="'+k+'"'+(_botShared.kind===k?' selected':'')+'>'+botCaseKind(k)+'</option>';}).join('')+'</select><select class="form-input" onchange="botSetFilter(\'status\',this.value)"><option value="">'+t('全状況','All statuses')+'</option>'+['review','waiting','correction','verify','ready','done'].map(function(s){return '<option value="'+s+'"'+(_botShared.status===s?' selected':'')+'>'+botStatus(s)+'</option>';}).join('')+'</select></div><p style="font-size:12px">'+t('更新順・最新200件','Latest 200 cases by update time')+'</p>';
+ var rows=(d.cases||[]).filter(function(c){return (!_botShared.store||c.store_id===_botShared.store)&&(!_botShared.kind||c.kind===_botShared.kind)&&(!_botShared.status||c.status===_botShared.status);});
+ if(!rows.length)h+='<p>'+t('表示対象の案件はありません。未取得の店舗について異常なしを示すものではありません。','No cases in this view. Stores not yet scanned have not been assessed.')+'</p>';
+ rows.forEach(function(c){h+='<button class="btn btn-secondary" style="display:block;width:100%;text-align:left;margin-top:8px;white-space:normal" onclick="botCaseModal(\''+esc(c.id)+'\')"><b>'+esc(c.subject)+'</b><br><span style="font-size:12px">'+esc(c.code)+' · '+esc(c.store_id)+' · '+esc(c.business_date)+' · '+botCaseKind(c.kind)+' · '+botStatus(c.status)+'</span></button>';});
+ h+='</div><details class="card"><summary>'+t('取得状況','Collection status')+'</summary>'+(d.runs||[]).map(function(r){return '<p>'+esc(r.store_id)+' / '+esc(r.last_success||'—')+(r.last_error?' / '+esc(r.last_error):'')+'</p>';}).join('')+'</details>';
+ return h;
+}
+async function botCloudScan(){
+ if(_botShared.busy)return;var store=document.getElementById('bot-cloud-store').value,date=document.getElementById('bot-cloud-date').value;_botShared.busy=true;botRender();
+ try{var j=await botAPI({action:'scan',store_id:store,date:date});showToast(t('取得・案件保存が完了しました','Fetched and saved cases')+' ('+j.created_or_matched+')','success');}
+ catch(e){showToast(e.message,'warning');}finally{_botShared.busy=false;await botLoadShared();}
+}
+async function botPublishConfig(){
+ var cfg=getCeCfg();if(!confirm(t('次の判定設定を全体で使います：','Publish these shared clock rules:')+'\n'+JSON.stringify(cfg)))return;
+ try{var j=await botAPI({action:'config',clock:cfg});window._botSharedClock=j.clock;lsSet('ce_config',j.clock);await botLoadShared();}catch(e){showToast(e.message,'warning');}
+}
+async function botWorkerToggle(){try{await botAPI({action:'worker_config',enabled:!_botShared.data.worker_enabled});await botLoadShared();}catch(e){showToast(e.message,'warning');}}
+function botGroupsModal(){
+ var d=_botShared.data,esc=escapeHtml;
+ openModal('<div class="modal-title">'+t('LINEグループ設定','LINE group settings')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div><p>'+t('Botをグループへ追加後、受信したグループIDを店舗に紐付けます。未登録グループの会話は取り込みません。','After adding the bot, bind its detected group ID to a store. Conversations in unregistered groups are not imported.')+'</p><input id="bot-group-id" class="form-input" placeholder="Group ID (C…)" list="bot-known-groups"><datalist id="bot-known-groups">'+(d.groups||[]).map(function(g){return '<option value="'+esc(g.group_id)+'">'+esc(g.label||g.store_id||'Pending')+'</option>';}).join('')+'</datalist><input id="bot-group-label" class="form-input" placeholder="'+t('グループ名','Group name')+'"><select id="bot-group-store" class="form-input">'+d.stores.map(function(s){return '<option value="'+esc(s.store_id)+'">'+esc(s.name)+'</option>';}).join('')+'</select><label><input id="bot-group-enabled" type="checkbox">'+t('このグループの取込・確認後送信を有効にする','Enable intake and reviewed sending for this group')+'</label><button class="btn btn-primary" onclick="botSaveGroup()">'+t('保存','Save')+'</button><hr>'+(d.groups||[]).map(function(g){return '<p>'+esc(g.label||g.group_id)+' / '+esc(g.store_id||'—')+' / '+(g.enabled?'ON':'OFF')+'</p>';}).join(''));
+}
+async function botSaveGroup(){try{await botAPI({action:'group',group_id:document.getElementById('bot-group-id').value.trim(),store_id:document.getElementById('bot-group-store').value,label:document.getElementById('bot-group-label').value,enabled:document.getElementById('bot-group-enabled').checked});closeModalDirect();await botLoadShared();}catch(e){showToast(e.message,'warning');}}
+function botNewPurchase(){var d=_botShared.data;if(!d)return;openModal('<div class="modal-title">'+t('発注依頼','Purchase request')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div><select id="bot-new-store" class="form-input">'+d.stores.map(function(s){return '<option value="'+escapeHtml(s.store_id)+'">'+escapeHtml(s.name)+'</option>';}).join('')+'</select><input id="bot-new-subject" class="form-input" maxlength="160" placeholder="'+t('商品名・依頼内容','Item / request')+'"><button class="btn btn-primary" id="bot-new-save" onclick="botSavePurchase()">'+t('登録','Create')+'</button>');}
+async function botSavePurchase(){var btn=document.getElementById('bot-new-save');if(btn.disabled)return;btn.disabled=true;btn.dataset.request=btn.dataset.request||crypto.randomUUID();try{await botAPI({action:'create_purchase',request_id:btn.dataset.request,store_id:document.getElementById('bot-new-store').value,subject:document.getElementById('bot-new-subject').value});closeModalDirect();await botLoadShared();}catch(e){btn.disabled=false;showToast(e.message,'warning');}}
+async function botCaseModal(id){
+ var d=_botShared.data,c=d&&(d.cases||[]).find(function(x){return x.id===id;});if(!c)return;_botModalCase=id;_botModalVersion=c.version;var esc=escapeHtml,p=c.payload||{},approve=['gm','ceo','office'].indexOf(d.actor.role)>=0,groups=d.groups.filter(function(g){return g.enabled&&g.store_id===c.store_id;});
+ var h='<div class="modal-title">'+esc(c.code)+'<button class="modal-close" onclick="closeModalDirect()">×</button></div><h3>'+esc(c.subject)+'</h3><p>'+esc(c.business_date)+' / '+botStatus(c.status)+'</p>';
+ if(p.request)h+='<p style="white-space:pre-wrap">'+esc(p.request)+'</p>';
+ if(p.override)h+='<p>'+t('手動補正あり：ToastとFunergy＋の両方を照合してください。','Manual adjustment: reconcile Toast with Funergy+.')+'</p>';
+ if(c.kind==='labor')h+='<p>'+esc(botKindText(p.kinds,curLang))+'</p><p>'+(p.shifts||[]).map(function(sh){return esc(_ceClock(sh.inDate)+' → '+_ceClock(sh.outDate));}).join(' / ')+'</p>'+(p.open_shift?'<p>'+t('退勤記録なし：勤務継続中か打刻漏れかを確認してください。','No clock-out: check whether still working or a missed punch.')+'</p>':'');
+ if(c.kind==='void')h+='<p>'+t('理由','Reason')+': '+esc(p.reason||p.reason_guid||t('未取得','Unavailable'))+'<br>'+t('担当者','Staff')+': '+esc(p.user_name||p.user_guid||'—')+'<br>'+t('承認者','Approver')+': '+esc(p.approver_name||p.approver_guid||'—')+'</p>';
+ if(c.kind==='purchase')h+='<label>'+t('商品ページURL','Product page URL')+'<input id="bot-case-url" class="form-input" type="url" value="'+esc(p.url||'')+'"></label><label>'+t('数量','Quantity')+'<input id="bot-case-qty" class="form-input" type="number" min="1" value="'+esc(String(p.quantity||1))+'"></label><button class="btn btn-secondary" onclick="botCaseAction(\''+id+'\',\'purchase\')">'+t('商品・数量を保存','Save item and quantity')+'</button>'+(p.url&&/^https:\/\//.test(p.url)?'<p><a href="'+esc(p.url)+'" target="_blank" rel="noopener noreferrer">'+t('商品ページを開く','Open product page')+'</a></p>':'')+(approve?'<button class="btn btn-secondary" onclick="botCaseAction(\''+id+'\',\'approve\')">'+t('内容を確認して発注可能にする','Approve for manual ordering')+'</button>':'')+(c.status==='ready'&&approve?'<input id="bot-order-number" class="form-input" placeholder="'+t('注文番号（注文後に入力）','Order number (after placing order)')+'"><button class="btn btn-primary" onclick="botCaseAction(\''+id+'\',\'ordered\')">'+t('発注済みを記録','Record order placed')+'</button>':'');
+ h+='<label>'+t('LINE送信文（編集できます）','LINE message (editable)')+'<textarea id="bot-case-draft" class="form-input" style="width:100%;min-height:150px">'+esc(p.draft||botSuggestedDraft(c))+'</textarea></label><button class="btn btn-secondary" onclick="botCaseAction(\''+id+'\',\'draft\')">'+t('下書きを保存','Save draft')+'</button>';
+ if(approve&&groups.length&&c.status!=='done')h+='<select id="bot-send-group" class="form-input">'+groups.map(function(g){return '<option value="'+esc(g.group_id)+'">'+esc(g.label||g.group_id)+'</option>';}).join('')+'</select><button class="btn btn-primary" id="bot-send-button" onclick="botCaseSend(\''+id+'\')">'+t('宛先・内容を確認してLINEへ送信','Review recipient and send to LINE')+'</button>';
+ h+='<textarea id="bot-case-note" class="form-input" placeholder="'+t('確認内容・対応メモ','Review notes')+'"></textarea><div style="display:flex;gap:8px;flex-wrap:wrap">'+['note','correction','reported'].map(function(a){return '<button class="btn btn-secondary" onclick="botCaseAction(\''+id+'\',\''+a+'\')">'+({note:t('メモを保存','Save note'),correction:t('修正依頼として管理','Mark correction needed'),reported:t('修正報告を記録','Record correction reported')})[a]+'</button>';}).join('')+(c.kind==='labor'?'<button class="btn btn-secondary" onclick="botCaseAction(\''+id+'\',\'recheck\')">'+t('Toastで修正を再確認','Recheck correction in Toast')+'</button>':'')+(approve&&c.kind!=='purchase'?'<button class="btn btn-secondary" onclick="botCaseAction(\''+id+'\',\'acknowledge\')">'+t('確認内容を記録して完了','Record review and close')+'</button>':'')+'</div><div id="bot-case-history">'+t('履歴を読込中…','Loading history…')+'</div>';
+ openModal(h);
+ try{var j=await botAPI({action:'detail',id:id});var el=document.getElementById('bot-case-history');if(el&&_botModalCase===id){el.dataset.caseId=id;el.innerHTML='<hr>'+j.outbox.filter(function(o){return o.state!=='sent';}).map(function(o){return '<p>'+esc(o.state)+' / '+esc(o.created_at)+(approve?(o.state==='failed'?'':('<button class="btn btn-secondary btn-sm" onclick="botRetrySend(\''+id+'\',\''+o.id+'\')">'+t('同じ送信を再確認','Retry this same send')+'</button>'))+'<button class="btn btn-secondary btn-sm" onclick="botResolveSend(\''+o.id+'\',\'sent\')">'+t('LINEで受信を確認済み','Confirmed in LINE')+'</button><button class="btn btn-secondary btn-sm" onclick="botResolveSend(\''+o.id+'\',\'failed\')">'+t('LINEで未送信を確認済み','Confirmed not sent')+'</button>':'')+'</p>';}).join('')+j.events.map(function(e){return '<p style="white-space:pre-wrap">'+esc(e.created_at)+' / '+esc(e.kind)+'<br>'+esc(e.data.text||e.data.note||e.data.order_number||'')+'</p>';}).join('');}c._outbox=j.outbox;}
+ catch(e){var el=document.getElementById('bot-case-history');if(el&&_botModalCase===id)el.textContent=e.message;}
+}
+async function botCaseAction(id,action){
+ var c=(_botShared.data.cases||[]).find(function(x){return x.id===id;});if(!c||_botShared.busy)return;
+ var val=function(id){return (document.getElementById(id)||{}).value||'';};var payload={action:action,id:id,version:_botModalVersion,note:val('bot-case-note'),draft:val('bot-case-draft'),url:val('bot-case-url'),quantity:val('bot-case-qty'),order_number:val('bot-order-number')};
+ _botShared.busy=true;
+ try{var j=await botAPI(payload);if(action==='recheck')showToast(j.clean?t('Toastで修正を確認し、完了にしました','Correction verified in Toast; case closed'):t('引き続き確認が必要です。完了にはしていません','Further review is needed. Case remains open'),j.clean?'success':'warning');closeModalDirect();}
+ catch(e){showToast(e.message,'warning');}finally{_botShared.busy=false;await botLoadShared();}
+}
+async function botCaseSend(id,retry){
+ var c=_botShared.data.cases.find(function(x){return x.id===id;});if(!c||_botShared.busy)return;var btn=document.getElementById('bot-send-button');
+ var text=retry?retry.body.replace(/^\[B-[A-F0-9]{12}\]\n/,''):document.getElementById('bot-case-draft').value;
+ var group=retry?retry.group_id:document.getElementById('bot-send-group').value;var g=_botShared.data.groups.find(function(x){return x.group_id===group;});
+ if(!confirm(t('この内容をLINEへ送信します。','Send this message to LINE?')+'\n'+(g&&g.label||group)+'\n\n'+text))return;
+ var request=retry?retry.id:crypto.randomUUID();if(btn)btn.disabled=true;_botShared.busy=true;
+ try{var j=await botAPI({action:'send',id:id,version:_botModalVersion,request_id:request,group_id:group,text:text});showToast(j.state==='sent'?t('LINEが送信を受け付けました','LINE accepted the message'):t('送信結果を履歴で確認してください。新しい送信は作らず、同じ送信を再確認してください','Check send history. Retry the same send instead of creating a new one.'),j.state==='sent'?'success':'warning');closeModalDirect();}
+ catch(e){showToast(e.message,'warning');closeModalDirect();}finally{_botShared.busy=false;await botLoadShared();}
+}
+async function botResolveSend(id,state){
+ var note=prompt(t('LINEの履歴で実際の送信結果を確認し、確認内容を記入してください。','Check the actual LINE history and describe what you verified.'));if(!note||!note.trim())return;
+ try{await botAPI({action:'resolve_send',outbox_id:id,state:state,note:note});closeModalDirect();await botLoadShared();}catch(e){showToast(e.message,'warning');}
+}
+function botRetrySend(id,request){var c=_botShared.data.cases.find(function(x){return x.id===id;});var o=c&&c._outbox&&c._outbox.find(function(x){return x.id===request;});if(o)botCaseSend(id,o);}
+setTimeout(botFetchSharedClock,0);
+/* FUNERGY_BOT_SHARED_END */
 /* FUNERGY_BOT_CENTER_END */
 var AC_TABS = [
   { id:'dash', label:'経理ダッシュボード', icon:'ti-layout-dashboard', subs:[

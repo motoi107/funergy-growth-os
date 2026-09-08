@@ -85,3 +85,7 @@ bot/clock-detector.mjsは既存判定ブロックの生成コピー。DOMとloca
 未接続：LINE署名検証受信・送信、対象グループと送信承認者の紐付け、サーバー側権限を備えた案件保存、ce_configの共有、TimeEntry GUIDを使った照合と勤務中レコードを除く未退勤確認、Void明細、購入依頼取込。既存のapp_stateへ機密メッセージを追加保存しない。これらを完了するまでは「Bot稼働済み」としない。
 
 検証：node --test tests/bot-center.test.mjs（初回6/6成功）、python3 scripts/check-static-release.py（1003整合・構文成功）。検証ガイドが参照するvlib.jsはこのリポジトリに存在しないため、Node標準test/VMによる実行検証を使用。実機表示・本番への書込み・LINE送信は未実施。実装Codex。最終コミットとレビュー結果はPRに記録する。
+
+## 業務Bot接続・公開作業（2026-09-08 UTC）
+
+Motoが残作業とFunergy＋への反映を許可。PR #6を継続し、共有案件、LINE受信/確認後送信、返信の再確認待ち、Toast GUIDでの照合、Void明細、発注承認と注文番号記録、共有判定設定を追加。詳細と限界はBOT_OPERATIONS_JA.md。既存hyper-workerと集計テーブルを変更しない。LINEの秘密情報とグループ紐付けは未設定のため、実メッセージ送受信は確認していない。自動取得は初期OFF。公開・独立レビューの実績は最終SHAとともにPRに記録する。
