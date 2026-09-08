@@ -5,7 +5,7 @@ const {PGlite}=await import(process.env.BOT_PGLITE_MODULE||'./runtime/node_modul
 const gm='00000000-0000-4000-8000-000000000001',crew='00000000-0000-4000-8000-000000000002';
 const group='C'+'a'.repeat(32),other='C'+'b'.repeat(32);
 let db;
-async function init(){db=new PGlite();await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key); create table store_config(store_id text primary key,name text,active boolean default true); create table manager_auth(user_id uuid primary key,role text); insert into store_config(store_id,name) values('TEST','Test Restaurant'),('OTHER','Other Restaurant'); insert into manager_auth values('${gm}','gm'),('${crew}','office_crew'); grant select on store_config,manager_auth to service_role;`);await db.exec(fs.readFileSync(new URL('../db/ops-bot.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-all-stores.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-monitor.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-mentions.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-daily-range.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-auth.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-morning-summary.sql',import.meta.url),'utf8'));}
+async function init(){db=new PGlite();await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key); create table store_config(store_id text primary key,name text,active boolean default true); create table manager_auth(user_id uuid primary key,role text); insert into store_config(store_id,name) values('TEST','Test Restaurant'),('OTHER','Other Restaurant'); insert into manager_auth values('${gm}','gm'),('${crew}','office_crew'); grant select on store_config,manager_auth to service_role;`);await db.exec(fs.readFileSync(new URL('../db/ops-bot.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-all-stores.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-monitor.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-mentions.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-daily-range.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-auth.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-morning-summary.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-morning-summary-details.sql',import.meta.url),'utf8'));}
 const q=async(sql,p=[])=>(await db.query(sql,p)).rows;
 const write=async(op,id,version,data={},actor=gm)=>(await q('select bot_case_write($1,$2,$3,$4,$5) as v',[op,actor,id,version,JSON.stringify(data)]))[0].v;
 const finding=async(key='test-case',kind='purchase',payload={})=>write('finding',null,null,{source_key:key,kind,store_id:'TEST',business_date:'2026-08-01',subject:'Synthetic case',payload});
@@ -191,16 +191,23 @@ test('database workflows are atomic, duplicate-safe, permission-checked and dura
   const fresh=await reserve(crypto.randomUUID(),'New reviewed text');assert.notEqual(fresh.id,first.id);
   assert.equal((await q("select count(*)::int n from bot_outbox where case_id=$1 and reminder_date=$2 and state<>'failed'",[c.id,day]))[0].n,1);
  });
- await t.test('automatic morning snapshot counts in-scope unresolved cases and reserves one immutable daily message',async()=>{
+ await t.test('automatic morning snapshot includes safe case details and reserves immutable message bundles',async()=>{
   const now='2026-09-08T19:00:00Z',day='2026-09-08',summaryGroup='C'+'d'.repeat(32);
   await q("update bot_settings set value='{\"enabled\":true,\"finance_enabled\":true}' where key='worker'");
   await q("insert into bot_groups(group_id,label,enabled,all_stores) values($1,'HQ',true,true)",[summaryGroup]);
   await q("insert into bot_settings(key,value) values('morning_summary',$1)",[JSON.stringify({enabled:true,group_id:summaryGroup,label:'HQ'})]);
   const j=await q('select bot_claim_range($1,$2) v',['TEST',now]);await q('select bot_finish_range_v2($1,$2,$3,$4,$5)',['TEST',j[0].v.business_date,j[0].v.lease_id,null,true]);
-  const snap=(await q('select bot_morning_snapshot($1) v',[now]))[0].v;assert.equal(snap.expected,14);assert.equal(snap.ok,7);assert.equal(snap.finance_ok,1);assert.equal(snap.finance_enabled,true);assert.equal(snap.counts.unpaid,0);
-  const msg={type:'text',text:'Morning summary'};const rid=crypto.randomUUID();
-  const reserve=async(message=msg)=>(await q('select bot_reserve_morning_summary($1,$2,$3,$4) v',[day,summaryGroup,rid,JSON.stringify(message)]))[0].v;
-  const first=await reserve(),again=await reserve({type:'text',text:'Changed'});assert.equal(first.id,again.id);assert.deepEqual(again.data.message,msg);
+  await write('finding',null,null,{source_key:'summary-person',kind:'labor',store_id:'TEST',business_date:'2026-09-01',subject:'Synthetic Person / bad',payload:{employee_name:'Synthetic Person',kinds:['bad']}});
+  const snap=(await q('select bot_morning_snapshot($1) v',[now]))[0].v;assert.equal(snap.expected,14);assert.equal(snap.ok,7);assert.equal(snap.finance_ok,1);assert.equal(snap.finance_enabled,true);assert.equal(snap.counts.unpaid,0);assert.equal(snap.detail_total,1);assert.equal(snap.details[0].employee_name,'Synthetic Person');assert.match(snap.details[0].code,/^B-/);
+  const messages=[{type:'text',text:'Morning summary'},{type:'text',text:'Morning details'}],rid=crypto.randomUUID();
+  const reserve=async(bundle=messages,variant='daily')=>(await q('select bot_reserve_morning_summary_v2($1,$2,$3,$4,$5) v',[day,summaryGroup,rid,JSON.stringify(bundle),variant]))[0].v;
+  const first=await reserve(),again=await reserve([{type:'text',text:'Changed'}]);assert.equal(first.id,again.id);assert.deepEqual(again.data.messages,messages);
+  const resend=await reserve(messages,'resend-details-v1');assert.notEqual(resend.id,first.id);assert.equal(resend.data.variant,'resend-details-v1');
+  assert.equal((await reserve(messages,'resend-details-v1')).id,resend.id);
+  await assert.rejects(()=>reserve(Array.from({length:6},()=>({type:'text',text:'x'})),'resend-details-v1'),/invalid_message/);
+  await assert.rejects(()=>reserve(messages,'resend-other'),/invalid_summary_variant/);
+  await assert.rejects(()=>q('select bot_reserve_morning_summary_v2($1,$2,$3,$4,$5)',[day,summaryGroup,rid,null,'daily']),/invalid_message/);
+  await assert.rejects(()=>q('select bot_reserve_morning_summary_v2($1,$2,$3,$4,$5)',[day,summaryGroup,rid,JSON.stringify(messages),null]),/invalid_summary_variant/);
   await q('select bot_finish_morning_summary($1,$2,$3,$4)',[first.id,'accepted',200,'line']);
   assert.equal((await reserve()).data.state,'accepted');
   await db.exec('set role authenticated');await assert.rejects(()=>reserve(),/permission denied/);await assert.rejects(()=>q('select bot_morning_snapshot($1)',[now]),/permission denied/);await db.exec('reset role');

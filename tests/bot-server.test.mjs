@@ -173,17 +173,35 @@ test('morning summary reports zeroes only after complete collection and lists st
  m=formatMorningSummary({from:'2026-10-01',to:'2026-09-30',expected:0,ok:0,failed:0,active_stores:0,finance_enabled:true,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
  assert.equal(m.complete,false);assert.match(m.text,/No active stores/);
 });
+test('morning summary adds actionable person, error, payment and case details in bounded LINE messages',()=>{
+ const details=[
+  {code:'B-000000000001',store_id:'TEST',store_name:'Test Restaurant',business_date:'2026-09-03',kind:'labor',subject:'Synthetic Person / bad',employee_name:'Synthetic Person',kinds:['bad'],open_shift:true},
+  {code:'B-000000000002',store_id:'TEST',store_name:'Test Restaurant',business_date:'2026-09-04',kind:'void',subject:'Payment Void / #1234',amount:20,user_name:'Synthetic Staff',approver_name:'Synthetic Manager',reason:'Input error'},
+  {code:'B-000000000003',store_id:'TEST',store_name:'Test Restaurant',business_date:'2026-09-05',kind:'unpaid',subject:'Unpaid / #5678',amount:18.5}
+ ];
+ const m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:1,void:1,unpaid:1},stores:[{store_id:'TEST',store_name:'Test Restaurant',labor:1,void:1,unpaid:1}],details},{resend:true});
+ assert.equal(m.detail_count,3);assert.equal(m.messages.length,2);assert.match(m.messages[0].text,/詳細版再送/);
+ assert.match(m.messages[1].text,/Synthetic Person.*退勤打刻なし.*B-000000000001/);
+ assert.match(m.messages[1].text,/#1234 \$20\.00.*Synthetic Staff.*Synthetic Manager.*Input error.*B-000000000002/);
+ assert.match(m.messages[1].text,/#5678 \$18\.50.*B-000000000003/);
+ for(const message of m.messages){assert.equal(message.type,'text');assert.ok(message.text.length<=4900);}
+ const unknown=formatMorningSummary({...m,from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:1,unpaid:0},stores:[],details:[{...details[1],amount:null,user_name:'Line\nBreak\u0000Test'}],detail_total:1});
+ assert.match(unknown.messages[1].text,/金額不明/);assert.doesNotMatch(unknown.messages[1].text,/\$0\.00|\u0000|Line\nBreak/);
+ const many=Array.from({length:250},(_,i)=>({...details[0],code:'B-'+String(i).padStart(12,'0'),kinds:Array.from({length:100},(_,k)=>'unexpected-kind-'+k)}));
+ const bounded=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:250,void:0,unpaid:0},stores:[],details:many,detail_total:250});
+ assert.ok(bounded.messages.length<=5);assert.match(bounded.messages.at(-1).text,/ほか \d+件/);for(const message of bounded.messages)assert.ok(message.text.length<=4900);
+});
 test('automatic morning summary is worker-key gated, targets configured headquarters group and is idempotent',async()=>{
- const group='C'+'d'.repeat(32),event={id:7,data:{state:'pending',request_id:guid(77),message:{type:'text',text:'Saved morning summary'}}};let pushes=0,finished=[];
+ const group='C'+'d'.repeat(32),event={id:7,data:{state:'pending',request_id:guid(77),messages:[{type:'text',text:'Saved morning summary'},{type:'text',text:'Saved details'}]}};let pushes=0,finished=[];
  const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'line'})[k],fetch:async(url,init)=>{
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
   if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
   if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
   if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-09-08',from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
-  if(url.endsWith('/rpc/bot_reserve_morning_summary'))return Response.json(event);
+  if(url.endsWith('/rpc/bot_reserve_morning_summary_v2')){const body=JSON.parse(init.body);assert.equal(body.p_variant,'daily');return Response.json(event);}
   if(url.endsWith('/rpc/bot_finish_morning_summary')){finished.push(JSON.parse(init.body));event.data.state=finished.at(-1).p_state;return Response.json(null);}
-  if(url==='https://api.line.me/v2/bot/message/push'){pushes++;assert.equal(JSON.parse(init.body).to,group);assert.equal(init.headers['X-Line-Retry-Key'],guid(77));return new Response(null,{status:200,headers:{'x-line-request-id':'line-request'}});}
+  if(url==='https://api.line.me/v2/bot/message/push'){pushes++;const body=JSON.parse(init.body);assert.equal(body.to,group);assert.equal(body.messages.length,2);assert.equal(init.headers['X-Line-Retry-Key'],guid(77));return new Response(null,{status:200,headers:{'x-line-request-id':'line-request'}});}
   throw Error('unexpected morning path '+url);
  }});
  const call=key=>h(new Request('https://fn.test',{method:'POST',headers:{'x-bot-worker-key':key},body:JSON.stringify({action:'worker',mode:'morning_summary'})}));
