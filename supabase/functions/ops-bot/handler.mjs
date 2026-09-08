@@ -101,6 +101,21 @@ export function lineMentionMessage(text,user){
  if(escaped.length+12>5000)throw Error('invalid_message');
  return {type:'textV2',text:'{assignee}\n'+escaped,substitution:{assignee:{type:'mention',mentionee:{type:'user',userId:user}}}};
 }
+export function formatMorningSummary(s){
+ const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&s?.finance_enabled===true&&Number(s?.ok)===Number(s?.expected)&&Number(s?.finance_ok)===Number(s?.expected)&&Number(s?.failed)===0;
+ const labor=n('labor'),voids=n('void'),unpaid=n('unpaid'),total=labor+voids+unpaid;
+ const period=Number(s.expected)===0&&Number(s.active_stores)>0?'当月は対象日なし / No completed days this month':s.from+' - '+s.to;
+ const lines=['【業務Bot 朝の確認 / Morning Check】','対象 / Period: '+period,
+  '勤怠エラー / Timecard: '+labor+'件','決済Void / Payment Void: '+voids+'件','未決済 / Unpaid: '+unpaid+'件'];
+ if(Number(s?.active_stores)===0)lines.push('取得元 / Stores: 有効店舗なし・要確認 / No active stores');
+ if(s?.finance_enabled!==true||Number(s?.finance_ok)!==Number(s?.expected))lines.push('決済監視 / Finance collection: 未完了・要確認 ('+Number(s?.finance_ok||0)+'/'+Number(s?.expected||0)+')');
+ if(!complete)lines.push('取得状況 / Collection: 未完了・要確認 ('+Number(s.ok||0)+'/'+Number(s.expected||0)+'、失敗 / Failed '+Number(s.failed||0)+')');
+ else if(total===0)lines.push('異常はありません / No unresolved issues.');
+ else lines.push('未解決 合計 / Total unresolved: '+total+'件');
+ for(const row of s.stores||[])lines.push(row.store_name+' ('+row.store_id+'): 勤怠 '+Number(row.labor||0)+' / Void '+Number(row.void||0)+' / 未決済 '+Number(row.unpaid||0));
+ lines.push(complete?'取得完了 / Collection complete':'「異常なし」ではありません。取得結果を確認してください。 / Do not treat this as all clear.');
+ const text=lines.join('\n');if(text.length>4900)throw Error('invalid_message');return {text,complete,total};
+}
 export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  const sb=env('SUPABASE_URL'), service=env('SUPABASE_SERVICE_ROLE_KEY'), anon=env('SUPABASE_ANON_KEY');
  const headers={apikey:service,Authorization:'Bearer '+service,'Content-Type':'application/json'};
@@ -173,10 +188,10 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const result=await scan(storeID,job.business_date,null,cfg?.finance_enabled===true);
    const start=Date.now(),pending=await db('bot_cases?kind=in.(labor,void,unpaid)&status=neq.done&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&store_id=eq.'+encodeURIComponent(storeID)+'&business_date=eq.'+job.business_date+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
    for(const c of pending){if(Date.now()-start>45000)break;try{await recheck(c,null);}catch{/* Evidence failures stay unresolved and are shown separately. */}}
-   await rpc('bot_finish_range',{p_store:storeID,p_date:job.business_date,p_lease:job.lease_id,p_error:null});
+   await rpc('bot_finish_range_v2',{p_store:storeID,p_date:job.business_date,p_lease:job.lease_id,p_error:null,p_finance:cfg?.finance_enabled===true});
    return {...result,business_date:job.business_date,range:true};
   }catch(e){
-   await rpc('bot_finish_range',{p_store:storeID,p_date:job.business_date,p_lease:job.lease_id,p_error:/^[a-z_]+$/.test(e.message)?e.message:'scan_failed'}).catch(()=>{});
+   await rpc('bot_finish_range_v2',{p_store:storeID,p_date:job.business_date,p_lease:job.lease_id,p_error:/^[a-z_]+$/.test(e.message)?e.message:'scan_failed',p_finance:false}).catch(()=>{});
    throw e;
   }
  }
@@ -189,6 +204,27 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   const sends=cases.length?await db('bot_outbox?case_id=in.('+cases.map(c=>c.id).join(',')+')&reminder_date=eq.'+overview.day+'&state=in.(sent,pending,unknown)&select=case_id,state'):[];
   for(const c of cases){c.daily_send=sends.find(o=>o.case_id===c.id)?.state||null;c.daily_check=dailyDisposition(c,overview.day);}
   return {overview,cases,next:rows.length>100?cases.at(-1).id:null};
+ }
+ async function morningSummary(){
+  const cfg=await setting('morning_summary');
+  if(!cfg?.enabled)return {skipped:true,reason:'morning_summary_disabled'};
+  if(!/^C[a-f0-9]{32}$/i.test(cfg.group_id||'')||!cfg.label)throw Error('morning_summary_not_configured');
+  const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(cfg.group_id)+'&enabled=eq.true&select=group_id,label,all_stores');
+  if(groups.length!==1||groups[0].all_stores!==true||groups[0].label!==cfg.label)throw Error('group_not_enabled');
+  if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
+  const snapshot=await rpc('bot_morning_snapshot',{}),formatted=formatMorningSummary(snapshot);
+  const reserved=await rpc('bot_reserve_morning_summary',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_message:{type:'text',text:formatted.text}});
+  if(reserved.data?.state==='accepted')return {state:'accepted',already_sent:true,day:snapshot.day};
+  if(reserved.data?.state==='failed')return {state:'failed',review_required:true,day:snapshot.day};
+  const message=reserved.data?.message,request=reserved.data?.request_id;
+  if(!UUID.test(request||'')||message?.type!=='text'||typeof message.text!=='string')throw Error('morning_summary_invalid_reservation');
+  let state='unknown',status=null,lineRequest=null;
+  try{
+   const r=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':request},body:JSON.stringify({to:cfg.group_id,messages:[message]})});
+   status=r.status;lineRequest=r.headers.get('x-line-request-id');state=r.ok||(r.status===409&&!!r.headers.get('x-line-accepted-request-id'))?'accepted':r.status>=400&&r.status<500&&r.status!==429?'failed':'unknown';
+  }catch{state='unknown';}
+  await rpc('bot_finish_morning_summary',{p_event:reserved.id,p_state:state,p_status:status,p_line_request:lineRequest});
+  return {state,day:snapshot.day,complete:formatted.complete,total:formatted.total,line_status:status};
  }
  async function recheck(c,actor){
   try{return await checkCase(c,actor);}catch(e){await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:{clean:false,message:/^[a-z_]+$/.test(e.message)?e.message:'verification_failed',checked_at:new Date().toISOString()}}).catch(()=>{});throw e;}
@@ -283,8 +319,9 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    }
    const body=JSON.parse(new TextDecoder().decode(bytes));
    if(body.action==='worker'){
-    const cfg=await setting('worker');if(!cfg?.key||req.headers.get('x-bot-worker-key')!==cfg.key)throw Error('unauthorized');
-    if(!cfg.enabled||!(await setting('clock')))return json({skipped:true});
+   const cfg=await setting('worker');if(!cfg?.key||req.headers.get('x-bot-worker-key')!==cfg.key)throw Error('unauthorized');
+   if(!cfg.enabled||!(await setting('clock')))return json({skipped:true});
+    if(body.mode==='morning_summary')return json(await morningSummary());
     if(body.mode!=='monitor'&&(await setting('collection_range'))?.mode==='month_to_yesterday')return json(await rangeRun(String(body.store_id)));
     const date=new Date(Date.now()-10*3600000-86400000).toISOString().slice(0,10);
     const result=body.mode==='monitor'?{}:await scan(String(body.store_id),date,null,cfg.finance_enabled===true);
