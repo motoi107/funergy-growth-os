@@ -76,6 +76,7 @@ test('shared group and assignment UI work in both languages and escape user cont
   ctx.botOwnersModal();assert.match(ctx.modal,/bot-owner-0/);
   const html=ctx.renderBotCenter();assert.match(html,/bot-intake-1/);assert.match(html,/&lt;unsafe&gt;/);
   await ctx.botCaseModal(ctx._botShared.data.cases[0].id);assert.match(ctx.modal,/HQ &lt;test&gt;/);assert.doesNotMatch(ctx.modal,/Other only/);assert.match(ctx.modal,/&lt;Manager&gt;/);assert.match(ctx.modal,/bot-assignee/);
+  ctx._botShared.data.daily={overview:{day:'2026-09-08'}};ctx._botShared.data.cases[0].payload.draft='Saved reviewer wording';await ctx.botCaseModal(ctx._botShared.data.cases[0].id,true);assert.match(ctx.modal,/Saved reviewer wording/);
  }
 });
 test('attendance is the initial shared filter and default collection explicitly excludes Voids',async()=>{
@@ -105,4 +106,11 @@ test('work center hosts the same bot view and async updates stay in that tab',()
  const ctx=context();ctx.curPage='tasks';let page;ctx.renderPage=p=>{page=p;};ctx.botRender();assert.equal(page,'tasks');
  assert.match(source,/if \(workTab==='bot' && botCanView\(\)\) return bar \+ renderBotCenter\(\)/);
  assert.match(source,/botCanView\(\)\?`<div class="phase-tab\$\{workTab==='bot'/);
+});
+
+test('morning panel groups assignees, preserves prior months, separates failures and has bilingual drafts',()=>{
+ const ctx=context();const base={id:'00000000-0000-4000-8000-000000000001',code:'B-000000000001',kind:'labor',business_date:'2026-08-31',status:'review',store_id:'TEST',subject:'<unsafe>',assignee:'<Manager>',payload:{},daily_check:'action'};
+ ctx._botShared.data={daily:{overview:{day:'2026-09-08',from:'2026-09-01',to:'2026-09-07',ok:1,expected:7,failed:1,issues:[]},cases:[base,{...base,id:'00000000-0000-4000-8000-000000000002',daily_check:'review',last_check:{message:'toast_read_failed'}}],next:'cursor'}};
+ for(const lang of ['en','ja']){ctx.curLang=lang;const html=ctx.botDailyPanel();assert.match(html,/&lt;Manager&gt;/);assert.doesNotMatch(html,/<unsafe>/);assert.match(html,/botDailyMore/);assert.equal((html.match(/botMorningOpen\('[^']+',true\)/g)||[]).length,1);assert.ok(ctx.botMorningDraft(base).includes(lang==='en'?'Morning check':'毎朝の確認'));}
+ ctx._botShared.data.daily.cases[0].daily_send='sent';assert.doesNotMatch(ctx.botDailyPanel(),/botMorningOpen\('[^']+',true\)/);
 });

@@ -5,7 +5,7 @@ const {PGlite}=await import(process.env.BOT_PGLITE_MODULE||'./runtime/node_modul
 const gm='00000000-0000-4000-8000-000000000001',crew='00000000-0000-4000-8000-000000000002';
 const group='C'+'a'.repeat(32),other='C'+'b'.repeat(32);
 let db;
-async function init(){db=new PGlite();await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create table store_config(store_id text primary key,name text,active boolean default true); create table manager_auth(user_id uuid primary key,role text); insert into store_config(store_id,name) values('TEST','Test Restaurant'),('OTHER','Other Restaurant'); insert into manager_auth values('${gm}','gm'),('${crew}','office_crew'); grant select on store_config,manager_auth to service_role;`);await db.exec(fs.readFileSync(new URL('../db/ops-bot.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-all-stores.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-monitor.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-mentions.sql',import.meta.url),'utf8'));}
+async function init(){db=new PGlite();await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create table store_config(store_id text primary key,name text,active boolean default true); create table manager_auth(user_id uuid primary key,role text); insert into store_config(store_id,name) values('TEST','Test Restaurant'),('OTHER','Other Restaurant'); insert into manager_auth values('${gm}','gm'),('${crew}','office_crew'); grant select on store_config,manager_auth to service_role;`);await db.exec(fs.readFileSync(new URL('../db/ops-bot.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-all-stores.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-monitor.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-mentions.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-daily-range.sql',import.meta.url),'utf8'));}
 const q=async(sql,p=[])=>(await db.query(sql,p)).rows;
 const write=async(op,id,version,data={},actor=gm)=>(await q('select bot_case_write($1,$2,$3,$4,$5) as v',[op,actor,id,version,JSON.stringify(data)]))[0].v;
 const finding=async(key='test-case',kind='purchase',payload={})=>write('finding',null,null,{source_key:key,kind,store_id:'TEST',business_date:'2026-08-01',subject:'Synthetic case',payload});
@@ -123,6 +123,45 @@ test('database workflows are atomic, duplicate-safe, permission-checked and dura
   const reserve=async m=>(await q('select bot_reserve_send_v2($1,$2,$3,$4,$5,$6,$7) v',[gm,c.id,c.version,rid,group,'hi',JSON.stringify(m)]))[0].v;
   const first=await reserve(msg);const retry=await reserve({type:'text',text:'changed'});assert.deepEqual(first.line_message,msg);assert.deepEqual(retry.line_message,msg);
   await db.exec('set role authenticated');await assert.rejects(()=>reserve(msg),/permission denied/);await db.exec('reset role');
+ });
+
+ await t.test('monthly queue covers all completed days, retries failures and rolls months without overlap',async()=>{
+  await q("insert into bot_settings(key,value) values('worker','{\"enabled\":true}') on conflict(key) do update set value=excluded.value");
+  const when='2026-09-08T19:00:00Z';
+  const claim=async(date=when)=>(await q('select bot_claim_range($1,$2) v',['TEST',date]))[0].v;
+  const finish=async(j,error=null)=>(await q('select bot_finish_range($1,$2,$3,$4) v',['TEST',j.business_date,j.lease_id,error]))[0].v;
+  let j=await claim();assert.equal(j.business_date,'2026-09-01');assert.equal(await claim(),null);
+  assert.equal(await finish({...j,lease_id:crypto.randomUUID()}),false);assert.equal(await finish(j,'toast_read_failed'),true);
+  for(let i=2;i<=7;i++){j=await claim();assert.equal(j.business_date,'2026-09-0'+i);await finish(j);}
+  assert.equal(await claim(),null);
+  j=await claim('2026-09-08T19:16:00Z');assert.equal(j.business_date,'2026-09-01');assert.equal(j.attempts,2);await finish(j);
+  assert.equal(await claim('2026-09-08T19:20:00Z'),null);
+  const o=(await q('select bot_range_overview($1) v',[when]))[0].v;assert.equal(o.expected,14);assert.equal(o.ok,7);assert.equal(o.failed,0);
+  j=await claim('2026-09-09T19:00:00Z');assert.equal(j.business_date,'2026-09-08');await finish(j);
+  // Previous cycle successes must be fetched again, and missing yesterday has priority.
+  j=await claim('2026-09-09T19:01:00Z');assert.equal(j.business_date,'2026-09-01');await finish(j);
+  assert.equal(await claim('2026-10-01T19:00:00Z'),null);
+  j=await claim('2026-10-02T19:00:00Z');assert.equal(j.business_date,'2026-10-01');await finish(j);
+  assert.equal((await q('select bot_range_overview($1) v',['2026-10-01T19:00:00Z']))[0].v.expected,0);
+  // Hawaii is still September at 09:59 UTC on October 1.
+  assert.equal((await q('select bot_range_overview($1) v',['2026-10-01T09:59:00Z']))[0].v.from,'2026-09-01');
+  await db.exec('set role authenticated');await assert.rejects(()=>claim(),/permission denied/);await assert.rejects(()=>q('select * from bot_scan_days'),/permission denied/);await db.exec('reset role');
+ });
+ await t.test('morning reservation rejects stale evidence and duplicates while keeping the approved message',async()=>{
+  let c=await finding('daily-reminder','labor',{});const day=(await q("select (now() at time zone 'Pacific/Honolulu')::date::text d"))[0].d;
+  const msg={type:'text',text:'Daily check'};const reserve=async(id=crypto.randomUUID(),body='Daily check',actor=gm)=>(await q('select bot_reserve_daily_send($1,$2,$3,$4,$5,$6,$7,$8) v',[actor,c.id,c.version,id,group,body,JSON.stringify(msg),day]))[0].v;
+  await assert.rejects(()=>reserve(),/recheck_required/);
+  await q("select bot_record_check($1,$2,$3,$4)",[c.id,c.version,null,JSON.stringify({message:'still_flagged_or_manual_review',clean:false})]);
+  c=(await q('select * from bot_cases where id=$1',[c.id]))[0];
+  const first=await reserve();const again=await reserve();assert.equal(first.id,again.id);
+  await assert.rejects(()=>reserve(crypto.randomUUID(),'Changed text'),/daily_already_prepared/);
+  await assert.rejects(()=>reserve(crypto.randomUUID(),'Daily check',crew),/forbidden/);
+  assert.equal((await q('select count(*)::int n from bot_outbox where case_id=$1 and reminder_date=$2',[c.id,day]))[0].n,1);
+  await q('select bot_finish_send($1,$2)',[first.id,'failed']);
+  c=(await q('select * from bot_cases where id=$1',[c.id]))[0];
+  await assert.rejects(()=>reserve(first.id),/failed_send_requires_new_review/);
+  const fresh=await reserve(crypto.randomUUID(),'New reviewed text');assert.notEqual(fresh.id,first.id);
+  assert.equal((await q("select count(*)::int n from bot_outbox where case_id=$1 and reminder_date=$2 and state<>'failed'",[c.id,day]))[0].n,1);
  });
  await db.close();
 });
