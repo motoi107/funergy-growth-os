@@ -35,9 +35,14 @@ test('raw labor preserves GUIDs, open shifts and existing thresholds; Order Only
  a.outDate='2026-08-01T21:00:00-10:00';assert.equal(laborFindings([a],names,cfg,store,'2026-08-01').length,0);
  a.outDate=null;assert.equal(laborFindings([a],[{guid:guid(99),firstName:'Order',lastName:'Only'}],cfg,store,'2026-08-01').length,0);
 });
-test('Void collection includes voided selections and references without copying customer data',()=>{
- const f=voidFindings([{guid:guid(1),customer:{email:'do-not-copy@example.test'},checks:[{guid:guid(2),selections:[{guid:guid(3),voided:true,displayName:'Test item',price:10,voidInformation:{voidReason:{guid:guid(4)}}}]}]}],store,'2026-08-01');
- assert.equal(f.length,1);assert.equal(f[0].payload.reason_guid,guid(4));assert.equal(JSON.stringify(f).includes('do-not-copy'),false);
+test('transaction Voids exclude items, deduplicate parents and include payment voidInfo',()=>{
+ const item={guid:guid(3),voided:true,displayName:'Test item',modifiers:[{guid:guid(4),voided:true}]};
+ const order={guid:guid(1),customer:{email:'do-not-copy@example.test'},checks:[{guid:guid(2),selections:[item],payments:[]}]};
+ assert.equal(voidFindings([order],store,'2026-08-01').length,0);
+ order.checks[0].payments=[{guid:guid(5),paymentStatus:'VOIDED',amount:20,voidInfo:{voidReason:{guid:guid(6)}}}];
+ let f=voidFindings([order],store,'2026-08-01',[{guid:guid(6),name:'Synthetic reason'}]);assert.equal(f.length,1);assert.equal(f[0].payload.scope,'payment');assert.equal(f[0].payload.reason,'Synthetic reason');
+ order.checks[0].voided=true;f=voidFindings([order],store,'2026-08-01');assert.equal(f.length,1);assert.equal(f[0].payload.scope,'check');
+ order.voided=true;f=voidFindings([order],store,'2026-08-01');assert.equal(f.length,1);assert.equal(f[0].payload.scope,'order');assert.equal(JSON.stringify(f).includes('do-not-copy'),false);
 });
 test('settings, dates and purchase links reject malformed or unsafe values',()=>{
  assert.throws(()=>validConfig({...cfg,nightFrom:'99:99'}));assert.throws(()=>validConfig(null));assert.throws(()=>safePurchaseURL('javascript:alert(1)'));assert.throws(()=>safePurchaseURL('https://u:p@example.com'));assert.throws(()=>safePurchaseURL('https://127.0.0.1/'));assert.equal(safePurchaseURL('https://www.amazon.com/dp/TEST'),'https://www.amazon.com/dp/TEST');assert.throws(()=>businessDate('2026-02-30'));assert.throws(()=>businessDate('2099-01-01'));
@@ -79,4 +84,28 @@ test('minimal write responses are successful for owner, group and clock settings
   const r=await h(new Request('https://fn.test',{method:'POST',headers:{Authorization:'Bearer synthetic'},body:JSON.stringify(body)}));assert.equal(r.status,200);const result=await r.json();assert.equal(result.error,undefined);
  }
  assert.equal(saved.get('owner:TEST').value.name,'Synthetic Manager');assert.equal(saved.get('C'+'a'.repeat(32)).all_stores,true);assert.deepEqual(saved.get('clock').value,cfg);
+});
+test('manual default and scheduled collection call labor only; legacy item sends are rejected',async()=>{
+ const calls=[];
+ const env=k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',SUPABASE_ANON_KEY:'anon',TOAST_CLIENT_ID:'synthetic',TOAST_CLIENT_SECRET:'synthetic'})[k];
+ const h=createHandler({env,fetch:async(url,init)=>{
+  calls.push(url);
+  if(url.endsWith('/auth/v1/user'))return Response.json({id:guid(1)});
+  if(url.includes('/manager_auth?'))return Response.json([{role:'gm'}]);
+  if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',name:'Test',restaurant_guid:guid(2)}]);
+  if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
+  if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'synthetic-worker'}}]);
+  if(url.endsWith('/rpc/bot_take_run'))return Response.json(true);
+  if(url.includes('/authentication/v1/'))return Response.json({token:{accessToken:'synthetic-toast'}});
+  if(url.includes('/labor/v1/')||url.includes('/app_state?'))return Response.json([]);
+  if(url.includes('/bot_runs?'))return new Response(null,{status:204});
+  if(url.includes('/bot_cases?kind=eq.labor'))return Response.json([]);
+  if(url.includes('/bot_cases?id='))return Response.json([{id:guid(3),kind:'void',payload:{scope:'selection'},version:1}]);
+  throw Error('unexpected_path');
+ }});
+ for(const action of ['scan','worker']){
+  const r=await h(new Request('https://fn.test',{method:'POST',headers:{Authorization:'Bearer synthetic','x-bot-worker-key':'synthetic-worker'},body:JSON.stringify({action,store_id:'TEST',date:'2026-08-01'})}));assert.equal(r.status,200,await r.text());
+ }
+ assert.equal(calls.some(x=>x.includes('/orders/')||x.includes('/config/v2/voidReasons')),false);
+ const r=await h(new Request('https://fn.test',{method:'POST',headers:{Authorization:'Bearer synthetic'},body:JSON.stringify({action:'send',id:guid(3),version:1})}));assert.equal((await r.json()).error,'item_void_out_of_scope');
 });

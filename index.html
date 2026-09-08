@@ -36555,7 +36555,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1004';
+const APP_VERSION = '1005';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41795,7 +41795,7 @@ function renderBotLocalCenter(){
   return h;
 }
 /* FUNERGY_BOT_SHARED_BEGIN */
-var _botShared={view:'shared',data:null,busy:false,error:'',store:'',status:'',kind:''};
+var _botShared={view:'shared',data:null,busy:false,error:'',store:'',status:'',kind:'labor'};
 var _botSession=null;
 var _botModalCase=null, _botModalVersion=null;
 function botResetShared(){_botSession=null;_botShared.data=null;_botShared.error='';}
@@ -41851,8 +41851,9 @@ function renderBotCenter(){
  if(!d)return h+'<div class="card">'+t('メール認証後に共有案件を読み込めます。','Sign in with your manager email to load shared cases.')+'</div>';
  h+='<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="tag '+(d.line.secret&&d.line.token?'tag-green':'tag-yellow')+'">'+(d.line.secret&&d.line.token?t('LINE接続情報：設定済み','LINE credentials configured'):t('LINE接続情報：設定待ち','LINE credentials pending'))+'</span><span class="tag tag-gray">'+t('送信は確認後のみ','Messages require review')+'</span></div><p>'+t('自動取得','Scheduled collection')+': '+(d.worker_enabled?t('有効','Enabled'):t('停止中','Paused'))+'</p>';
  var stores=d.stores||[];
- h+='<div style="display:flex;gap:8px;flex-wrap:wrap"><select id="bot-cloud-store" class="form-input">'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'">'+esc(s.name)+'</option>';}).join('')+'</select><input id="bot-cloud-date" class="form-input" type="date" max="'+botYesterday()+'" value="'+botYesterday()+'"><button class="btn btn-primary" onclick="botCloudScan()" '+(_botShared.busy?'disabled':'')+'>'+t('Toastから勤怠・Voidを取得','Fetch attendance and Voids from Toast')+'</button><button class="btn btn-secondary" onclick="botNewPurchase()">'+t('発注依頼を登録','Add purchase request')+'</button></div>';
+ h+='<div style="display:flex;gap:8px;flex-wrap:wrap"><select id="bot-cloud-store" class="form-input">'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'">'+esc(s.name)+'</option>';}).join('')+'</select><input id="bot-cloud-date" class="form-input" type="date" max="'+botYesterday()+'" value="'+botYesterday()+'"><button class="btn btn-primary" onclick="botCloudScan()" '+(_botShared.busy?'disabled':'')+'>'+t('Toastから勤怠を取得','Fetch attendance from Toast')+'</button><button class="btn btn-secondary" onclick="botNewPurchase()">'+t('発注依頼を登録','Add purchase request')+'</button></div>';
  if(['gm','ceo'].indexOf(d.actor.role)>=0)h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn btn-secondary" onclick="botPublishConfig()">'+t('判定設定を全体に適用','Publish clock rules')+'</button><button class="btn btn-secondary" onclick="botWorkerToggle()">'+(d.worker_enabled?t('自動取得を停止','Pause collection'):t('自動取得を有効化','Enable collection'))+'</button><button class="btn btn-secondary" onclick="botGroupsModal()">'+t('LINEグループ設定','LINE group settings')+'</button></div>';
+ h+='<p>'+t('まずは勤怠の確認から運用します。商品単位のVoidは対象外です。','Start with attendance review. Item-level Voids are excluded.')+'</p><details><summary>'+t('会計・決済Void（後で運用）','Transaction Voids (for later use)')+'</summary><button class="btn btn-secondary" onclick="botCloudScan(true)">'+t('会計・決済Voidも取得','Also fetch check/payment Voids')+'</button></details>';
  if(!d.clock)h+='<p>'+t('最初にGM・CEOが既存の判定設定を確認し、全体に適用してください。','GM or CEO must review and publish the existing clock rules first.')+'</p>';
  h+='<p style="font-size:12px">'+t('全店グループの発注依頼は「発注依頼 [店舗名] 商品名」。店舗未指定は下で割り当てます。完了報告は「B-… 完了」と返信してください。報告後に再確認してから完了になります。','In an all-store group use “/order [store name] item”. Assign requests without a store below. Reply “B-… done” to report completion; it remains pending verification.')+'</p>';
  if(['gm','ceo','office'].indexOf(d.actor.role)>=0)h+='<button class="btn btn-secondary" onclick="botOwnersModal()">'+t('店舗の担当者設定','Store assignees')+'</button>';
@@ -41865,9 +41866,9 @@ function renderBotCenter(){
  h+='</div><details class="card"><summary>'+t('取得状況','Collection status')+'</summary>'+(d.runs||[]).map(function(r){return '<p>'+esc(r.store_id)+' / '+esc(r.last_success||'—')+(r.last_error?' / '+esc(r.last_error):'')+'</p>';}).join('')+'</details>';
  return h;
 }
-async function botCloudScan(){
+async function botCloudScan(withVoids){
  if(_botShared.busy)return;var store=document.getElementById('bot-cloud-store').value,date=document.getElementById('bot-cloud-date').value;_botShared.busy=true;botRender();
- try{var j=await botAPI({action:'scan',store_id:store,date:date});showToast(t('取得・案件保存が完了しました','Fetched and saved cases')+' ('+j.created_or_matched+')','success');}
+ try{var j=await botAPI({action:'scan',store_id:store,date:date,with_voids:withVoids===true});_botShared.kind=withVoids===true?'void':'labor';showToast(t('取得・案件保存が完了しました','Fetched and saved cases')+' ('+j.created_or_matched+')','success');}
  catch(e){showToast(e.message,'warning');}finally{_botShared.busy=false;await botLoadShared();}
 }
 async function botPublishConfig(){

@@ -40,21 +40,23 @@ export function laborFindings(entries,employees,cfg,store,date,override=false){
       open_shift:people[r.name].some(x=>!x.outDate),draft:''}
   }));
 }
+// Transaction scope: whole checks/orders and voided payments, never item/modifier selections.
 export function voidFindings(orders,store,date,reasons=[],employees=[]){
-  const reasonNames=new Map(reasons.map(x=>[x.guid,x.name]));
-  const staffNames=new Map(employees.map(x=>[x.guid,((x.firstName||'')+' '+(x.lastName||'')).trim()||x.name||x.guid]));
-  const rows=[];
-  for(const order of orders){
-    const add=(obj,scope,check)=>{if(!obj?.voided||!obj.guid)return;
-      const vi=obj.voidInformation||{};
-      rows.push({source_key:'void:'+store.store_id+':'+obj.guid,kind:'void',store_id:store.store_id,business_date:date,subject:'Void / '+(obj.displayName||obj.displayNumber||order.displayNumber||scope),payload:{store_name:store.name,order_guid:order.guid,check_guid:check?.guid||null,entity_guid:obj.guid,scope,item:obj.displayName||null,amount:obj.price??obj.amount??null,reason:reasonNames.get(vi.voidReason?.guid)||null,user_name:staffNames.get(vi.voidUser?.guid)||null,approver_name:staffNames.get(vi.voidApprover?.guid)||null,reason_guid:vi.voidReason?.guid||null,user_guid:vi.voidUser?.guid||null,approver_guid:vi.voidApprover?.guid||null,void_date:vi.voidDate||null,source:'toast_direct',fetched_at:new Date().toISOString()}});
-    };
-    add(order,'order');
-    for(const check of order.checks||[]){add(check,'check',check);
-      const walk=(selections)=>{for(const s of selections||[]){add(s,'selection',check);walk(s.modifiers);}};walk(check.selections);
-    }
+ const reasonNames=new Map(reasons.map(x=>[x.guid,x.name]));
+ const staffNames=new Map(employees.map(x=>[x.guid,((x.firstName||'')+' '+(x.lastName||'')).trim()||x.name||x.guid]));
+ const rows=[];
+ for(const order of orders){
+  const add=(obj,scope,check)=>{
+   if(!obj?.guid)return;const vi=obj.voidInfo||obj.voidInformation||{},reason=vi.voidReason?.guid||obj.voidReason?.guid;
+   rows.push({source_key:'void:'+store.store_id+':'+obj.guid,kind:'void',store_id:store.store_id,business_date:date,subject:'Transaction Void / '+scope+' #'+(check?.displayNumber||obj.displayNumber||order.displayNumber||obj.guid),payload:{store_name:store.name,order_guid:order.guid,check_guid:check?.guid||null,entity_guid:obj.guid,scope,amount:obj.totalAmount??obj.amount??null,reason:reasonNames.get(reason)||null,user_name:staffNames.get(vi.voidUser?.guid)||null,approver_name:staffNames.get(vi.voidApprover?.guid)||null,reason_guid:reason||null,user_guid:vi.voidUser?.guid||null,approver_guid:vi.voidApprover?.guid||null,void_date:vi.voidDate||obj.voidDate||null,source:'toast_direct',fetched_at:new Date().toISOString()}});
+  };
+  if(order.voided){add(order,'order');continue;}
+  for(const check of order.checks||[]){
+   if(check.voided){add(check,'check',check);continue;}
+   for(const payment of check.payments||[])if(payment.paymentStatus==='VOIDED')add(payment,'payment',check);
   }
-  return rows;
+ }
+ return rows;
 }
 export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  const sb=env('SUPABASE_URL'), service=env('SUPABASE_SERVICE_ROLE_KEY'), anon=env('SUPABASE_ANON_KEY');
@@ -91,7 +93,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    throw Error('toast_pagination_limit');
   };
  }
- async function scan(storeID,date,actor,withVoids=true){
+ async function scan(storeID,date,actor,withVoids=false){
   const store=await getStore(storeID),cfg=validConfig(await setting('clock'));
   if(!(await rpc('bot_take_run',{p_store:storeID})))throw Error('scan_busy');
   try{
@@ -129,6 +131,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   const result=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:{clean:true,checked_at:new Date().toISOString(),time_entry_ids:ids,cfg}});return {clean:true,case:result};
  }
  async function send(c,actor,body){
+  if(c.kind==='void'&&!['order','check','payment'].includes(c.payload?.scope))throw Error('item_void_out_of_scope');
   if(!APPROVERS.includes(actor.role))throw Error('forbidden');
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
   if(!UUID.test(body.request_id||''))throw Error('invalid_request_id');
@@ -182,7 +185,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     return json({...result,verified});
    }
    const actor=await authorize(req);
-   if(body.action==='list')return json({actor,cases:await db('bot_cases?order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
+   if(body.action==='list')return json({actor,cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.in.(order,check,payment))')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
    if(body.action==='resolve_send'){
     if(!APPROVERS.includes(actor.role)||!UUID.test(body.outbox_id||''))throw Error('forbidden');
     await rpc('bot_resolve_send',{p_actor:actor.id,p_id:body.outbox_id,p_state:body.state,p_note:String(body.note||'').trim()});return json({ok:true});
@@ -212,7 +215,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     if(!/^C[a-f0-9]{32}$/i.test(body.group_id||''))throw Error('invalid_group');
     await db('bot_groups?on_conflict=group_id','POST',{group_id:body.group_id,store_id:body.all_stores===true?null:body.store_id,all_stores:body.all_stores===true,label:String(body.label||'').slice(0,120),enabled:body.enabled===true,updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true});
    }
-   if(body.action==='scan')return json(await scan(String(body.store_id),businessDate(body.date),actor.id,body.with_voids!==false));
+   if(body.action==='scan')return json(await scan(String(body.store_id),businessDate(body.date),actor.id,body.with_voids===true));
    if(body.action==='create_purchase'){
     const store=await getStore(body.store_id);if(!UUID.test(body.request_id||''))throw Error('invalid_request_id');const subject=String(body.subject||'').trim();if(!subject||subject.length>160)throw Error('subject_required');
     return json(await rpc('bot_case_write',{p_op:'finding',p_actor:actor.id,p_data:{source_key:'manual:'+body.request_id,kind:'purchase',store_id:store.store_id,business_date:new Date(Date.now()-10*3600000).toISOString().slice(0,10),subject,payload:{request:String(body.request||subject).slice(0,5000),source:'manual'}}}));
