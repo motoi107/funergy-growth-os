@@ -87,6 +87,13 @@ export function financeResolution(c,order){
  if(received<Math.round(total*100))return no('payment_coverage_incomplete');
  return {clean:true,verification_type:c.kind==='unpaid'?'unpaid_paid':'payment_void_recovered',check_guid:check.guid,payment_guids:ids,total,received:received/100};
 }
+export function lineMentionMessage(text,user){
+ if(!user)return {type:'text',text};
+ if(!/^U[a-f0-9]{32}$/i.test(user))throw Error('invalid_line_user');
+ const escaped=text.replaceAll('{','{{').replaceAll('}','}}');
+ if(escaped.length+12>5000)throw Error('invalid_message');
+ return {type:'textV2',text:'{assignee}\n'+escaped,substitution:{assignee:{type:'mention',mentionee:{type:'user',userId:user}}}};
+}
 export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  const sb=env('SUPABASE_URL'), service=env('SUPABASE_SERVICE_ROLE_KEY'), anon=env('SUPABASE_ANON_KEY');
  const headers={apikey:service,Authorization:'Bearer '+service,'Content-Type':'application/json'};
@@ -178,24 +185,35 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   if(!clean){const result={clean:false,message:'still_flagged_or_manual_review',checked_at:new Date().toISOString()};await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:result});return result;}
   const result=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:{clean:true,checked_at:new Date().toISOString(),time_entry_ids:ids,cfg}});return {clean:true,case:result};
  }
+ async function lineMember(group,user){
+  if(!/^C[a-f0-9]{32}$/i.test(group||'')||!/^U[a-f0-9]{32}$/i.test(user||''))throw Error('invalid_line_user');
+  const r=await timed('https://api.line.me/v2/bot/group/'+group+'/member/'+user,{headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN')}});
+  if(!r.ok)throw Error('line_member_unavailable');const p=await r.json();if(p.userId!==user)throw Error('line_member_unavailable');return p;
+ }
  async function send(c,actor,body){
   if(c.kind==='void'&&c.payload?.scope!=='payment')throw Error('item_void_out_of_scope');
   if(!APPROVERS.includes(actor.role))throw Error('forbidden');
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
   if(!UUID.test(body.request_id||''))throw Error('invalid_request_id');
   const message=String(body.text||'').trim();if(!message||message.length>4900)throw Error('invalid_message');
-  const previous=await db('bot_outbox?id=eq.'+body.request_id+'&select=body');
+  const previous=await db('bot_outbox?id=eq.'+body.request_id+'&select=body,line_message');
   if(!previous.length&&message.length>4500)throw Error('invalid_message');
   // Retried messages preserve the exact reviewed snapshot, including old assignment headers.
   const store=await getStore(c.store_id);
   const header='['+c.code+']\n店舗 / Store: '+store.name+' ('+c.store_id+')\n担当 / Assigned to: '+(c.assignee||'店舗マネージャー / Store manager')+'\n';
   const full=previous.length ? '['+c.code+']\n'+message : header+message;
   const group=await db('bot_groups?group_id=eq.'+encodeURIComponent(body.group_id)+'&enabled=eq.true');if(group.length!==1||(!group[0].all_stores&&group[0].store_id!==c.store_id))throw Error('group_not_enabled');
-  const o=await rpc('bot_reserve_send',{p_actor:actor.id,p_id:c.id,p_version:body.version,p_request:body.request_id,p_group:body.group_id,p_body:full});
+  let lineMessage=previous.length?(previous[0].line_message||{type:'text',text:full}):lineMentionMessage(full,null);
+  if(!previous.length&&body.mention_user){
+   const link=await setting('line_link:'+body.group_id+':'+c.store_id);
+   if(!link||link.user_id!==body.mention_user||link.assignee!==c.assignee)throw Error('mention_link_changed');
+   await lineMember(body.group_id,link.user_id);lineMessage=lineMentionMessage(full,link.user_id);
+  }
+  const o=await rpc('bot_reserve_send_v2',{p_actor:actor.id,p_id:c.id,p_version:body.version,p_request:body.request_id,p_group:body.group_id,p_body:full,p_message:lineMessage});
   if(o.state==='sent')return {state:'sent',request_id:o.id};
   let state='unknown';
   try{
-   const r=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':o.id},body:JSON.stringify({to:o.group_id,messages:[{type:'text',text:o.body}]})});
+   const r=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':o.id},body:JSON.stringify({to:o.group_id,messages:[o.line_message||{type:'text',text:o.body}]})});
    state=r.ok||(r.status===409&&!!r.headers.get('x-line-accepted-request-id'))?'sent':r.status>=400&&r.status<500&&r.status!==429?'failed':'unknown';
   }catch{state='unknown';}
   await rpc('bot_finish_send',{p_id:o.id,p_state:state});return {state,request_id:o.id};
@@ -218,6 +236,12 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     const data=JSON.parse(new TextDecoder().decode(bytes));if(!Array.isArray(data.events))throw Error('invalid_events');
     for(const e of data.events){const g=e.source?.groupId;if(!/^C[a-f0-9]{32}$/i.test(g||''))continue;
      if(!e.webhookEventId||typeof e.webhookEventId!=='string')continue;
+     const registration=e.message?.type==='text'&&/^(?:担当者登録|register)\s+(.{1,120})$/i.exec(e.message.text.trim());
+     if(registration&&/^U[a-f0-9]{32}$/i.test(e.source?.userId||'')){
+      const groups=await db('bot_groups?group_id=eq.'+g+'&enabled=eq.true');
+      if(groups.length===1)await db('bot_settings?on_conflict=key','POST',{key:'line_candidate:'+g+':'+e.source.userId,value:{group_id:g,user_id:e.source.userId,claimed_name:registration[1],registered_at:new Date().toISOString()},updated_at:new Date().toISOString()},'resolution=merge-duplicates');
+      continue;
+     }
      await rpc('bot_ingest',{p_event_id:e.webhookEventId,p_group:g,p_user:e.source?.userId||'',p_text:e.message?.type==='text'?e.message.text:'',p_type:e.type});
     }
     return json({ok:true});
@@ -233,7 +257,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     return json({...result,checked,verified});
    }
    const actor=await authorize(req);
-   if(body.action==='list')return json({actor,cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
+   if(body.action==='list')return json({actor,cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
    if(body.action==='resolve_send'){
     if(!APPROVERS.includes(actor.role)||!UUID.test(body.outbox_id||''))throw Error('forbidden');
     await rpc('bot_resolve_send',{p_actor:actor.id,p_id:body.outbox_id,p_state:body.state,p_note:String(body.note||'').trim()});return json({ok:true});
@@ -248,6 +272,21 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(body.action==='worker_config'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const c=await setting('worker');if(!c)throw Error('worker_not_configured');
     await db('bot_settings?key=eq.worker','PATCH',{value:{...c,enabled:typeof body.enabled==='boolean'?body.enabled:!!c.enabled,finance_enabled:typeof body.finance_enabled==='boolean'?body.finance_enabled:!!c.finance_enabled},updated_at:new Date().toISOString()});return json({enabled:typeof body.enabled==='boolean'?body.enabled:!!c.enabled,finance_enabled:typeof body.finance_enabled==='boolean'?body.finance_enabled:!!c.finance_enabled});
+   }
+   if(body.action==='line_link'||body.action==='line_profile'){
+    if(!APPROVERS.includes(actor.role))throw Error('forbidden');await getStore(body.store_id);
+    const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(body.group_id)+'&enabled=eq.true');
+    if(groups.length!==1||(!groups[0].all_stores&&groups[0].store_id!==body.store_id))throw Error('group_not_enabled');
+    const key='line_link:'+body.group_id+':'+body.store_id;
+    if(body.remove===true){await db('bot_settings?key=eq.'+encodeURIComponent(key),'DELETE');return json({ok:true});}
+    const candidate=await setting('line_candidate:'+body.group_id+':'+body.user_id);
+    if(!candidate)throw Error('registration_required');
+    const owner=await setting('owner:'+body.store_id);if(!owner?.name||owner.name!==body.assignee)throw Error('mention_link_changed');
+    const profile=await lineMember(body.group_id,body.user_id);
+    if(body.action==='line_profile')return json({profile:{user_id:profile.userId,display_name:profile.displayName}});
+    if(body.display_name!==profile.displayName)throw Error('mention_link_changed');
+    const value={group_id:body.group_id,store_id:body.store_id,user_id:body.user_id,assignee:owner.name,display_name:profile.displayName,approved_by:actor.id,approved_at:new Date().toISOString()};
+    await db('bot_settings?on_conflict=key','POST',{key,value,updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true,link:value});
    }
    if(body.action==='owner'){
     if(!APPROVERS.includes(actor.role))throw Error('forbidden');await getStore(body.store_id);

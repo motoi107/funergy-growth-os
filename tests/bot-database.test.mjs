@@ -5,7 +5,7 @@ const {PGlite}=await import(process.env.BOT_PGLITE_MODULE||'./runtime/node_modul
 const gm='00000000-0000-4000-8000-000000000001',crew='00000000-0000-4000-8000-000000000002';
 const group='C'+'a'.repeat(32),other='C'+'b'.repeat(32);
 let db;
-async function init(){db=new PGlite();await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create table store_config(store_id text primary key,name text,active boolean default true); create table manager_auth(user_id uuid primary key,role text); insert into store_config(store_id,name) values('TEST','Test Restaurant'),('OTHER','Other Restaurant'); insert into manager_auth values('${gm}','gm'),('${crew}','office_crew'); grant select on store_config,manager_auth to service_role;`);await db.exec(fs.readFileSync(new URL('../db/ops-bot.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-all-stores.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-monitor.sql',import.meta.url),'utf8'));}
+async function init(){db=new PGlite();await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create table store_config(store_id text primary key,name text,active boolean default true); create table manager_auth(user_id uuid primary key,role text); insert into store_config(store_id,name) values('TEST','Test Restaurant'),('OTHER','Other Restaurant'); insert into manager_auth values('${gm}','gm'),('${crew}','office_crew'); grant select on store_config,manager_auth to service_role;`);await db.exec(fs.readFileSync(new URL('../db/ops-bot.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-all-stores.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-monitor.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-mentions.sql',import.meta.url),'utf8'));}
 const q=async(sql,p=[])=>(await db.query(sql,p)).rows;
 const write=async(op,id,version,data={},actor=gm)=>(await q('select bot_case_write($1,$2,$3,$4,$5) as v',[op,actor,id,version,JSON.stringify(data)]))[0].v;
 const finding=async(key='test-case',kind='purchase',payload={})=>write('finding',null,null,{source_key:key,kind,store_id:'TEST',business_date:'2026-08-01',subject:'Synthetic case',payload});
@@ -117,6 +117,12 @@ test('database workflows are atomic, duplicate-safe, permission-checked and dura
   c=await write('verified',c.id,c.version,{clean:true,verification_type:'unpaid_paid',checked_at:'2026-08-02T00:00:00Z'},null);assert.equal(c.status,'done');assert.equal(c.last_check.clean,true);
   c=await finding('unpaid-monitor','unpaid',{fingerprint:'open',amount:20});assert.equal(c.status,'review');
   await db.exec('set role authenticated');await assert.rejects(()=>q('select bot_record_check($1,$2,$3,$4)',[c.id,c.version,gm,'{}']),/permission denied/);await db.exec('reset role');
+ });
+ await t.test('mention snapshot is immutable across retries and private to service callers',async()=>{
+  const c=await finding('mention-snapshot'),rid=crypto.randomUUID();const msg={type:'textV2',text:'{assignee} hi',substitution:{assignee:{type:'mention',mentionee:{type:'user',userId:'U'+'a'.repeat(32)}}}};
+  const reserve=async m=>(await q('select bot_reserve_send_v2($1,$2,$3,$4,$5,$6,$7) v',[gm,c.id,c.version,rid,group,'hi',JSON.stringify(m)]))[0].v;
+  const first=await reserve(msg);const retry=await reserve({type:'text',text:'changed'});assert.deepEqual(first.line_message,msg);assert.deepEqual(retry.line_message,msg);
+  await db.exec('set role authenticated');await assert.rejects(()=>reserve(msg),/permission denied/);await db.exec('reset role');
  });
  await db.close();
 });

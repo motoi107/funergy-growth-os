@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createHandler,validSignature,validConfig,safePurchaseURL,laborFindings,voidFindings,unpaidFindings,financeResolution,businessDate} from '../supabase/functions/ops-bot/handler.mjs';
+import {createHandler,validSignature,validConfig,safePurchaseURL,laborFindings,voidFindings,unpaidFindings,financeResolution,businessDate,lineMentionMessage} from '../supabase/functions/ops-bot/handler.mjs';
 const cfg={nightFrom:'03:00',nightTo:'05:00',longH:12,shortMin:15};
 const store={store_id:'TEST',name:'Test Restaurant'};
 const guid=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
@@ -55,10 +55,10 @@ test('all-store sends include store and assignee and retry the exact approved sn
   if(url.endsWith('/auth/v1/user'))return Response.json({id:guid(1)});
   if(url.includes('/manager_auth?'))return Response.json([{role:'gm'}]);
   if(url.includes('/bot_cases?'))return Response.json([c]);
-  if(url.includes('/bot_outbox?'))return Response.json(saved?[{body:saved.body}]:[]);
+  if(url.includes('/bot_outbox?'))return Response.json(saved?[{body:saved.body,line_message:saved.line_message}]:[]);
   if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',name:'Test Restaurant'}]);
   if(url.includes('/bot_groups?'))return Response.json([{group_id:group,store_id:null,all_stores:true}]);
-  if(url.endsWith('/rpc/bot_reserve_send')){const b=JSON.parse(init.body);if(saved)assert.equal(b.p_body,saved.body);else saved={id:request,group_id:group,body:b.p_body,state:'unknown'};return Response.json(saved);}
+  if(url.endsWith('/rpc/bot_reserve_send_v2')){const b=JSON.parse(init.body);if(saved)assert.equal(b.p_body,saved.body);else saved={id:request,group_id:group,body:b.p_body,line_message:b.p_message,state:'unknown'};return Response.json(saved);}
   if(url.endsWith('/rpc/bot_finish_send'))return Response.json(null);
   if(url==='https://api.line.me/v2/bot/message/push'){pushed.push(JSON.parse(init.body));return Response.json({}, {status:500});}
   throw Error('unexpected path');
@@ -133,4 +133,21 @@ test('payment-void recovery requires original record, unchanged bill, and replac
  order.checks[0].payments.push({guid:guid(4),type:'CASH',amount:20,paidDate:'2026-08-01T12:00:00Z'});
  assert.equal(financeResolution(c,order).verification_type,'payment_void_recovered');
  order.checks[0].payments.shift();assert.equal(financeResolution(c,order).message,'payment_missing_manual_review');
+});
+
+test('mention payload escapes literal braces and targets only an explicit LINE user',()=>{
+ const uid='U'+'a'.repeat(32),m=lineMentionMessage('Literal {assignee} {x}',uid);
+ assert.equal(m.type,'textV2');assert.equal(m.text,'{assignee}\nLiteral {{assignee}} {{x}}');assert.equal(m.substitution.assignee.mentionee.userId,uid);
+ assert.deepEqual(lineMentionMessage('plain',null),{type:'text',text:'plain'});assert.throws(()=>lineMentionMessage('x','all'));
+});
+test('registration requires a signed event in an enabled group and never auto-approves',async()=>{
+ const group='C'+'a'.repeat(32),uid='U'+'b'.repeat(32),writes=[];let enabled=true;
+ const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_SECRET:'secret'})[k],fetch:async(url,init)=>{
+  if(url.includes('/bot_groups?'))return Response.json(enabled?[{enabled:true}]:[]);
+  if(url.includes('/bot_settings?')){writes.push(JSON.parse(init.body));return new Response(null,{status:201});}throw Error('unexpected_path');
+ }});
+ const raw=new TextEncoder().encode(JSON.stringify({events:[{webhookEventId:'registration',type:'message',source:{groupId:group,userId:uid},message:{type:'text',text:'担当者登録 Example'}}]}));
+ const call=async()=>h(new Request('https://fn.test?route=line',{method:'POST',headers:{'x-line-signature':await sign(raw,'secret')},body:raw}));
+ assert.equal((await call()).status,200);assert.equal(writes.length,1);assert.equal(writes[0].key,'line_candidate:'+group+':'+uid);assert.equal(writes[0].value.approved_by,undefined);
+ enabled=false;assert.equal((await call()).status,200);assert.equal(writes.length,1);
 });
