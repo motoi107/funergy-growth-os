@@ -67,3 +67,14 @@ test('direct access denied for store staff; dates bounded to previous day and 31
   assert.throws(()=>ctx.botDays('2099-01-01','2099-01-01'));
   assert.equal(ctx.botDays('2026-08-01','2026-08-31').length,31);
 });
+test('shared group and assignment UI work in both languages and escape user content',async()=>{
+ const ctx=context();
+ ctx._botShared.data={actor:{role:'gm'},line:{secret:true,token:true},stores:[{store_id:'TEST',name:'Test Store'}],groups:[{group_id:'C'+'c'.repeat(32),all_stores:true,enabled:true,label:'HQ <test>'},{group_id:'C'+'b'.repeat(32),store_id:'OTHER',enabled:true,label:'Other only'}],owners:[],intakes:[{id:1,data:{text:'<unsafe>'}}],cases:[{id:'00000000-0000-4000-8000-000000000001',code:'B-000000000001',kind:'labor',store_id:'TEST',business_date:'2026-08-01',subject:'Synthetic',assignee:'<Manager>',version:1,status:'review',payload:{}}],runs:[]};
+ ctx.botAPI=async()=>({events:[],outbox:[]});
+ for(const lang of ['en','ja']){
+  ctx.curLang=lang;ctx.botGroupsModal();assert.match(ctx.modal,/value="__all__"/);assert.match(ctx.modal,/HQ &lt;test&gt;/);
+  ctx.botOwnersModal();assert.match(ctx.modal,/bot-owner-0/);
+  const html=ctx.renderBotCenter();assert.match(html,/bot-intake-1/);assert.match(html,/&lt;unsafe&gt;/);
+  await ctx.botCaseModal(ctx._botShared.data.cases[0].id);assert.match(ctx.modal,/HQ &lt;test&gt;/);assert.doesNotMatch(ctx.modal,/Other only/);assert.match(ctx.modal,/&lt;Manager&gt;/);assert.match(ctx.modal,/bot-assignee/);
+ }
+});

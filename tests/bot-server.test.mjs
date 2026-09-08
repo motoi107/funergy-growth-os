@@ -42,3 +42,26 @@ test('Void collection includes voided selections and references without copying 
 test('settings, dates and purchase links reject malformed or unsafe values',()=>{
  assert.throws(()=>validConfig({...cfg,nightFrom:'99:99'}));assert.throws(()=>validConfig(null));assert.throws(()=>safePurchaseURL('javascript:alert(1)'));assert.throws(()=>safePurchaseURL('https://u:p@example.com'));assert.throws(()=>safePurchaseURL('https://127.0.0.1/'));assert.equal(safePurchaseURL('https://www.amazon.com/dp/TEST'),'https://www.amazon.com/dp/TEST');assert.throws(()=>businessDate('2026-02-30'));assert.throws(()=>businessDate('2099-01-01'));
 });
+test('all-store sends include store and assignee and retry the exact approved snapshot',async()=>{
+ const group='C'+'c'.repeat(32),request=guid(12);let saved=null,pushed=[];
+ const c={id:guid(10),code:'B-000000000001',store_id:'TEST',version:1,assignee:'Synthetic Manager'};
+ const env=k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',SUPABASE_ANON_KEY:'anon',LINE_CHANNEL_ACCESS_TOKEN:'synthetic-token'})[k];
+ const h=createHandler({env,fetch:async(url,init)=>{
+  if(url.endsWith('/auth/v1/user'))return Response.json({id:guid(1)});
+  if(url.includes('/manager_auth?'))return Response.json([{role:'gm'}]);
+  if(url.includes('/bot_cases?'))return Response.json([c]);
+  if(url.includes('/bot_outbox?'))return Response.json(saved?[{body:saved.body}]:[]);
+  if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',name:'Test Restaurant'}]);
+  if(url.includes('/bot_groups?'))return Response.json([{group_id:group,store_id:null,all_stores:true}]);
+  if(url.endsWith('/rpc/bot_reserve_send')){const b=JSON.parse(init.body);if(saved)assert.equal(b.p_body,saved.body);else saved={id:request,group_id:group,body:b.p_body,state:'unknown'};return Response.json(saved);}
+  if(url.endsWith('/rpc/bot_finish_send'))return Response.json(null);
+  if(url==='https://api.line.me/v2/bot/message/push'){pushed.push(JSON.parse(init.body));return Response.json({}, {status:500});}
+  throw Error('unexpected path');
+ }});
+ const call=text=>h(new Request('https://fn.test',{method:'POST',headers:{Authorization:'Bearer synthetic'},body:JSON.stringify({action:'send',id:c.id,version:1,request_id:request,group_id:group,text})}));
+ assert.equal((await call('Please check')).status,200);
+ assert.match(saved.body,/Store: Test Restaurant \(TEST\)/);assert.match(saved.body,/Assigned to: Synthetic Manager/);
+ c.assignee='Changed after snapshot';
+ assert.equal((await call(saved.body.replace(/^\[B-[A-F0-9]{12}\]\n/,''))).status,200);
+ assert.equal(pushed.length,2);assert.deepEqual(pushed[0],pushed[1]);
+});
