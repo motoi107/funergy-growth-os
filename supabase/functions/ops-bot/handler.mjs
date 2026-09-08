@@ -119,7 +119,10 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   const r=await timed(sb+'/auth/v1/user',{headers:{apikey:anon,Authorization:authorization}});
   if(!r.ok)throw Error('unauthorized');const u=await r.json();if(!u.id)throw Error('unauthorized');
   const roles=await db('manager_auth?user_id=eq.'+encodeURIComponent(u.id)+'&select=role');
-  if(roles.length!==1||!ROLES.includes(roles[0].role))throw Error('forbidden');return {id:u.id,role:roles[0].role};
+  if(roles.length===1&&ROLES.includes(roles[0].role))return {id:u.id,role:roles[0].role};
+  const members=await db('bot_users?user_id=eq.'+encodeURIComponent(u.id)+'&enabled=eq.true&select=user_id');
+  if(members.length!==1)throw Error('forbidden');
+  return {id:u.id,role:'office_crew',bot_only:true};
  }
  async function getStore(id){const a=await db('store_config?store_id=eq.'+encodeURIComponent(id)+'&active=eq.true&select=store_id,restaurant_guid,name');if(a.length!==1)throw Error('invalid_store');return a[0];}
  async function toastClient(store){

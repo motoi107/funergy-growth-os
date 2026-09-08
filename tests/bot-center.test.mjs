@@ -114,3 +114,25 @@ test('morning panel groups assignees, preserves prior months, separates failures
  for(const lang of ['en','ja']){ctx.curLang=lang;const html=ctx.botDailyPanel();assert.match(html,/&lt;Manager&gt;/);assert.doesNotMatch(html,/<unsafe>/);assert.match(html,/botDailyMore/);assert.equal((html.match(/botMorningOpen\('[^']+',true\)/g)||[]).length,1);assert.ok(ctx.botMorningDraft(base).includes(lang==='en'?'Morning check':'毎朝の確認'));}
  ctx._botShared.data.daily.cases[0].daily_send='sent';assert.doesNotMatch(ctx.botDailyPanel(),/botMorningOpen\('[^']+',true\)/);
 });
+
+test('AM can reach Bot sign-in without a manager session or private administrator tabs',()=>{
+ const ctx=context();ctx.curRole='am';assert.equal(ctx.botCanView(),true);ctx.botLoginModal();
+ assert.match(ctx.modal,/Bot-only access does not open administrator pages/);assert.equal(ctx.window._authSession,undefined);
+ ctx.curLang='ja';ctx.botLoginModal();assert.match(ctx.modal,/Bot専用登録では管理者ページは開けません/);
+});
+test('administrator entry and secure rendering reject office staff, AM and Bot-only sessions',async()=>{
+ const elements=new Map();const el=id=>{if(!elements.has(id))elements.set(id,{style:{},dataset:{},value:'test',focus(){}});return elements.get(id);};
+ const ctx={SUPABASE_URL:'https://db.test',SUPABASE_ANON:'anon',window:{},loginPerson:null,loginStoreMode:false,document:{getElementById:el},fetch:async url=>Response.json(url.includes('/token?')?{access_token:'token'}:[{role:'office_crew'}])};
+ vm.createContext(ctx);
+ const begin=source.indexOf('function managerRoleAllowed('),end=source.indexOf('/* ============================================================',begin);
+ vm.runInContext(source.slice(begin,end),ctx);
+ const render=source.indexOf('function renderSecureBody(){'),rend=source.indexOf('/* ============================================================',render);
+ vm.runInContext(source.slice(render,rend),ctx);
+ for(const role of ['office_crew','am','crew']){
+  ctx.loginPerson={role};el('manager-login-screen').style.display='none';ctx.showManagerLogin();assert.equal(el('manager-login-screen').style.display,'none');
+  ctx.window._authSession={role,access_token:'token'};assert.equal(ctx.managerSessionAllowed(),false);assert.doesNotMatch(ctx.renderSecureBody(),/secTab|PL分析|本部予算|成長カルテ/);
+ }
+ ctx.window._authSession=null;assert.equal(ctx.managerSessionAllowed(),false);
+ for(const role of ['ceo','gm','office']){ctx.loginPerson={role};ctx.showManagerLogin();assert.equal(el('manager-login-screen').style.display,'flex');ctx.window._authSession={role,access_token:'token'};assert.equal(ctx.managerSessionAllowed(),true);}
+ await ctx.doManagerLogin();assert.equal(ctx.window._authSession,null);assert.match(el('mgr-err').textContent,/管理者ページの権限がありません/);
+});

@@ -5,7 +5,7 @@ const {PGlite}=await import(process.env.BOT_PGLITE_MODULE||'./runtime/node_modul
 const gm='00000000-0000-4000-8000-000000000001',crew='00000000-0000-4000-8000-000000000002';
 const group='C'+'a'.repeat(32),other='C'+'b'.repeat(32);
 let db;
-async function init(){db=new PGlite();await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create table store_config(store_id text primary key,name text,active boolean default true); create table manager_auth(user_id uuid primary key,role text); insert into store_config(store_id,name) values('TEST','Test Restaurant'),('OTHER','Other Restaurant'); insert into manager_auth values('${gm}','gm'),('${crew}','office_crew'); grant select on store_config,manager_auth to service_role;`);await db.exec(fs.readFileSync(new URL('../db/ops-bot.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-all-stores.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-monitor.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-mentions.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-daily-range.sql',import.meta.url),'utf8'));}
+async function init(){db=new PGlite();await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key); create table store_config(store_id text primary key,name text,active boolean default true); create table manager_auth(user_id uuid primary key,role text); insert into store_config(store_id,name) values('TEST','Test Restaurant'),('OTHER','Other Restaurant'); insert into manager_auth values('${gm}','gm'),('${crew}','office_crew'); grant select on store_config,manager_auth to service_role;`);await db.exec(fs.readFileSync(new URL('../db/ops-bot.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-all-stores.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-monitor.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-mentions.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-daily-range.sql',import.meta.url),'utf8'));await db.exec(fs.readFileSync(new URL('../db/ops-bot-auth.sql',import.meta.url),'utf8'));}
 const q=async(sql,p=[])=>(await db.query(sql,p)).rows;
 const write=async(op,id,version,data={},actor=gm)=>(await q('select bot_case_write($1,$2,$3,$4,$5) as v',[op,actor,id,version,JSON.stringify(data)]))[0].v;
 const finding=async(key='test-case',kind='purchase',payload={})=>write('finding',null,null,{source_key:key,kind,store_id:'TEST',business_date:'2026-08-01',subject:'Synthetic case',payload});
@@ -13,6 +13,34 @@ test('database workflows are atomic, duplicate-safe, permission-checked and dura
  await init();
  await t.test('anon/authenticated cannot read tables or invoke service RPC',async()=>{
   for(const role of ['anon','authenticated']){await db.exec('set role '+role);await assert.rejects(()=>q('select * from bot_cases'),/permission denied/);await assert.rejects(()=>write('finding',null,null,{}),/permission denied/);await db.exec('reset role');}
+ });
+ await t.test('Bot-only users cannot self-enroll, approve, send, or gain manager access; revocation is immediate',async()=>{
+  const member='00000000-0000-4000-8000-000000000070';
+  await q('insert into auth.users values($1)',[member]);await q('insert into bot_users(user_id) values($1)',[member]);
+  assert.equal((await q('select count(*)::int n from manager_auth where user_id=$1',[member]))[0].n,0);
+  let c=await finding('bot-only');
+  const intake=(await q("insert into bot_events(kind,event_key,data) values('line_needs_store','bot-only-intake',$1) returning id",[JSON.stringify({text:'/order Synthetic cups'})]))[0];
+  await db.exec('set role service_role');
+  const assigned=(await q('select bot_assign_intake($1,$2,$3) v',[member,intake.id,'TEST']))[0].v;
+  assert.equal(assigned.store_id,'TEST');assert.equal(assigned.kind,'purchase');
+  c=await write('note',c.id,c.version,{note:'Bot-only review'},member);
+  c=await write('draft',c.id,c.version,{draft:'Reviewed draft'},member);
+  await q('select bot_record_check($1,$2,$3,$4)',[c.id,c.version,member,JSON.stringify({message:'manual_review'})]);
+  c=(await q('select * from bot_cases where id=$1',[c.id]))[0];
+  for(const op of ['approve','ordered','assign'])await assert.rejects(()=>write(op,c.id,c.version,{assignee:'Synthetic'},member),/forbidden/);
+  await assert.rejects(()=>q('select bot_reserve_send($1,$2,$3,$4,$5,$6)',[member,c.id,c.version,crypto.randomUUID(),group,'Synthetic']),/forbidden/);
+  await q('update bot_users set enabled=false where user_id=$1',[member]);
+  await assert.rejects(()=>write('note',c.id,c.version,{note:'revoked'},member),/forbidden/);
+  await assert.rejects(()=>q('select bot_assign_intake($1,$2,$3)',[member,intake.id,'TEST']),/forbidden/);
+  await assert.rejects(()=>q('select bot_record_check($1,$2,$3,$4)',[c.id,c.version,member,'{}']),/forbidden/);
+  await db.exec('reset role');
+  for(const role of ['anon','authenticated']){
+   await db.exec('set role '+role);
+   await assert.rejects(()=>q('select * from bot_users'),/permission denied/);
+   await assert.rejects(()=>q('insert into bot_users(user_id) values($1)',[member]),/permission denied/);
+   await assert.rejects(()=>q('select bot_actor_role($1)',[member]),/permission denied/);
+   await db.exec('reset role');
+  }
  });
  await t.test('case creation deduplicates and stale edits preserve data',async()=>{
   const c=await finding();assert.equal((await finding()).id,c.id);
