@@ -78,3 +78,10 @@ test('shared group and assignment UI work in both languages and escape user cont
   await ctx.botCaseModal(ctx._botShared.data.cases[0].id);assert.match(ctx.modal,/HQ &lt;test&gt;/);assert.doesNotMatch(ctx.modal,/Other only/);assert.match(ctx.modal,/&lt;Manager&gt;/);assert.match(ctx.modal,/bot-assignee/);
  }
 });
+test('attendance is the initial shared filter and default collection explicitly excludes Voids',async()=>{
+ const ctx=context();assert.equal(ctx._botShared.kind,'labor');const calls=[];
+ ctx.document.getElementById=id=>({value:id==='bot-cloud-store'?'TEST':'2026-08-01'});
+ ctx.botAPI=async body=>{calls.push(body);return {created_or_matched:0};};ctx.botLoadShared=async()=>{};
+ await ctx.botCloudScan();assert.equal(calls[0].with_voids,false);assert.equal(ctx._botShared.kind,'labor');
+ await ctx.botCloudScan(true);assert.equal(calls[1].with_voids,true);assert.equal(ctx._botShared.kind,'');
+});
