@@ -2,6 +2,13 @@ import { createClockDetector } from '../../../bot/clock-detector.mjs';
 const ROLES=['ceo','gm','office','office_crew'], APPROVERS=['ceo','gm','office'];
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const enc=new TextEncoder();
+export function dailyDisposition(c,day){
+ if(c.status==='done')return 'done';
+ const checked=c.last_checked_at&&new Date(new Date(c.last_checked_at).getTime()-10*3600000).toISOString().slice(0,10);
+ if(checked!==day||(c.payload?.fetched_at&&Date.parse(c.last_checked_at)<Date.parse(c.payload.fetched_at)))return 'unverified';
+ return ['still_flagged_or_manual_review','payment_not_confirmed','payment_coverage_incomplete'].includes(c.last_check?.message)?'action':'review';
+}
+
 export function validConfig(c){
   if(!c||!/^([01]?\d|2[0-3]):[0-5]\d$/.test(c.nightFrom)||!/^([01]?\d|2[0-3]):[0-5]\d$/.test(c.nightTo)||!(Number(c.longH)>0&&Number(c.longH)<=24)||!(Number(c.shortMin)>0&&Number(c.shortMin)<=240)) throw Error('invalid_config');
   return {nightFrom:c.nightFrom,nightTo:c.nightTo,longH:Number(c.longH),shortMin:Number(c.shortMin)};
@@ -100,7 +107,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  const timed=(url,init={})=>fetcher(url,{...init,signal:AbortSignal.timeout(20000)});
  async function db(path,method='GET',body,prefer){
   const r=await timed(sb+'/rest/v1/'+path,{method,headers:{...headers,...(prefer?{Prefer:prefer}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
-  if(!r.ok){const j=await r.json().catch(()=>({}));const known=['conflict','forbidden','not_found','send_unresolved','retry_mismatch','failed_send_requires_new_review','retry_expired_check_line','group_not_enabled','closed_case','purchase_details_required','order_number_required','invalid_state','note_required','assignee_required'];throw Error(known.find(x=>j.message?.includes(x))||(r.status===409?'conflict':'database_error'));}
+  if(!r.ok){const j=await r.json().catch(()=>({}));const known=['conflict','forbidden','not_found','send_unresolved','retry_mismatch','failed_send_requires_new_review','retry_expired_check_line','group_not_enabled','closed_case','purchase_details_required','order_number_required','invalid_state','note_required','assignee_required','daily_date_changed','daily_already_prepared','recheck_required'];throw Error(known.find(x=>j.message?.includes(x))||(r.status===409?'conflict':'database_error'));}
   // PostgREST minimal writes can return 201 with an empty body.
   const text=await r.text();return text.trim()?JSON.parse(text):null;
  }
@@ -154,6 +161,31 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    await db('bot_runs?store_id=eq.'+encodeURIComponent(storeID),'PATCH',{running_until:null,last_success:new Date().toISOString(),last_error:null});
    return {created_or_matched:findings.length,override,entries:entries.length};
   }catch(e){await db('bot_runs?store_id=eq.'+encodeURIComponent(storeID),'PATCH',{running_until:null,last_error:String(e.message).slice(0,80)}).catch(()=>{});throw e;}
+ }
+ async function rangeRun(storeID){
+  const job=await rpc('bot_claim_range',{p_store:storeID});
+  if(!job)return {skipped:true,range_complete_or_waiting:true};
+  try{
+   const cfg=await setting('worker');
+   const result=await scan(storeID,job.business_date,null,cfg?.finance_enabled===true);
+   const start=Date.now(),pending=await db('bot_cases?kind=in.(labor,void,unpaid)&status=neq.done&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&store_id=eq.'+encodeURIComponent(storeID)+'&business_date=eq.'+job.business_date+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
+   for(const c of pending){if(Date.now()-start>45000)break;try{await recheck(c,null);}catch{/* Evidence failures stay unresolved and are shown separately. */}}
+   await rpc('bot_finish_range',{p_store:storeID,p_date:job.business_date,p_lease:job.lease_id,p_error:null});
+   return {...result,business_date:job.business_date,range:true};
+  }catch(e){
+   await rpc('bot_finish_range',{p_store:storeID,p_date:job.business_date,p_lease:job.lease_id,p_error:/^[a-z_]+$/.test(e.message)?e.message:'scan_failed'}).catch(()=>{});
+   throw e;
+  }
+ }
+ async function dailyOverview(after){
+  if(after!==undefined&&after!==null&&!UUID.test(after))throw Error('invalid_cursor');
+  const overview=await rpc('bot_range_overview',{});
+  // Prior-month unresolved cases remain in reminders and in the hourly monitor.
+  const rows=await db('bot_cases?kind=in.(labor,void,unpaid)&status=neq.done&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&business_date=lt.'+overview.day+'&order=id.asc&limit=101'+(after?'&id=gt.'+after:''));
+  const cases=rows.slice(0,100);
+  const sends=cases.length?await db('bot_outbox?case_id=in.('+cases.map(c=>c.id).join(',')+')&reminder_date=eq.'+overview.day+'&state=in.(sent,pending,unknown)&select=case_id,state'):[];
+  for(const c of cases){c.daily_send=sends.find(o=>o.case_id===c.id)?.state||null;c.daily_check=dailyDisposition(c,overview.day);}
+  return {overview,cases,next:rows.length>100?cases.at(-1).id:null};
  }
  async function recheck(c,actor){
   try{return await checkCase(c,actor);}catch(e){await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:{clean:false,message:/^[a-z_]+$/.test(e.message)?e.message:'verification_failed',checked_at:new Date().toISOString()}}).catch(()=>{});throw e;}
@@ -209,7 +241,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(!link||link.user_id!==body.mention_user||link.assignee!==c.assignee)throw Error('mention_link_changed');
    await lineMember(body.group_id,link.user_id);lineMessage=lineMentionMessage(full,link.user_id);
   }
-  const o=await rpc('bot_reserve_send_v2',{p_actor:actor.id,p_id:c.id,p_version:body.version,p_request:body.request_id,p_group:body.group_id,p_body:full,p_message:lineMessage});
+  const o=await rpc(body.daily_date?'bot_reserve_daily_send':'bot_reserve_send_v2',{p_actor:actor.id,p_id:c.id,p_version:body.version,p_request:body.request_id,p_group:body.group_id,p_body:full,p_message:lineMessage,...(body.daily_date?{p_day:body.daily_date}:{})});
   if(o.state==='sent')return {state:'sent',request_id:o.id};
   let state='unknown';
   try{
@@ -250,6 +282,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(body.action==='worker'){
     const cfg=await setting('worker');if(!cfg?.key||req.headers.get('x-bot-worker-key')!==cfg.key)throw Error('unauthorized');
     if(!cfg.enabled||!(await setting('clock')))return json({skipped:true});
+    if(body.mode!=='monitor'&&(await setting('collection_range'))?.mode==='month_to_yesterday')return json(await rangeRun(String(body.store_id)));
     const date=new Date(Date.now()-10*3600000-86400000).toISOString().slice(0,10);
     const result=body.mode==='monitor'?{}:await scan(String(body.store_id),date,null,cfg.finance_enabled===true);
     const start=Date.now(),pending=await db('bot_cases?kind=in.(labor,void,unpaid)&status=neq.done&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&store_id=eq.'+encodeURIComponent(body.store_id)+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
@@ -257,7 +290,8 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     return json({...result,checked,verified});
    }
    const actor=await authorize(req);
-   if(body.action==='list')return json({actor,cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
+   if(body.action==='daily')return json(await dailyOverview(body.after));
+   if(body.action==='list')return json({actor,daily:await dailyOverview(),cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
    if(body.action==='resolve_send'){
     if(!APPROVERS.includes(actor.role)||!UUID.test(body.outbox_id||''))throw Error('forbidden');
     await rpc('bot_resolve_send',{p_actor:actor.id,p_id:body.outbox_id,p_state:body.state,p_note:String(body.note||'').trim()});return json({ok:true});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createHandler,validSignature,validConfig,safePurchaseURL,laborFindings,voidFindings,unpaidFindings,financeResolution,businessDate,lineMentionMessage} from '../supabase/functions/ops-bot/handler.mjs';
+import {createHandler,validSignature,validConfig,safePurchaseURL,laborFindings,voidFindings,unpaidFindings,financeResolution,businessDate,lineMentionMessage,dailyDisposition} from '../supabase/functions/ops-bot/handler.mjs';
 const cfg={nightFrom:'03:00',nightTo:'05:00',longH:12,shortMin:15};
 const store={store_id:'TEST',name:'Test Restaurant'};
 const guid=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
@@ -94,6 +94,7 @@ test('manual default and scheduled collection call labor only; legacy item sends
   if(url.includes('/manager_auth?'))return Response.json([{role:'gm'}]);
   if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',name:'Test',restaurant_guid:guid(2)}]);
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
+  if(url.includes('key=eq.collection_range'))return Response.json([]);
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'synthetic-worker'}}]);
   if(url.endsWith('/rpc/bot_take_run'))return Response.json(true);
   if(url.includes('/authentication/v1/'))return Response.json({token:{accessToken:'synthetic-toast'}});
@@ -150,4 +151,49 @@ test('registration requires a signed event in an enabled group and never auto-ap
  const call=async()=>h(new Request('https://fn.test?route=line',{method:'POST',headers:{'x-line-signature':await sign(raw,'secret')},body:raw}));
  assert.equal((await call()).status,200);assert.equal(writes.length,1);assert.equal(writes[0].key,'line_candidate:'+group+':'+uid);assert.equal(writes[0].value.approved_by,undefined);
  enabled=false;assert.equal((await call()).status,200);assert.equal(writes.length,1);
+});
+
+test('morning reminders require fresh evidence and separate technical failures',()=>{
+ const c={status:'review',last_checked_at:'2026-09-08T16:00:00Z',last_check:{message:'still_flagged_or_manual_review'},payload:{fetched_at:'2026-09-08T15:00:00Z'}};
+ assert.equal(dailyDisposition(c,'2026-09-08'),'action');
+ assert.equal(dailyDisposition(c,'2026-09-09'),'unverified');
+ assert.equal(dailyDisposition({...c,payload:{fetched_at:'2026-09-08T17:00:00Z'}},'2026-09-08'),'unverified');
+ assert.equal(dailyDisposition({...c,last_check:{message:'toast_read_failed'}},'2026-09-08'),'review');
+ assert.equal(dailyDisposition({...c,status:'done'},'2026-09-08'),'done');
+});
+test('monthly worker uses leased business dates and records failures without sending LINE',async()=>{
+ let failed=false,job=true;const results=[];
+ const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',TOAST_CLIENT_ID:'synthetic',TOAST_CLIENT_SECRET:'synthetic'})[k],fetch:async(url,init)=>{
+  if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'test',finance_enabled:false}}]);
+  if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
+  if(url.includes('key=eq.collection_range'))return Response.json([{value:{mode:'month_to_yesterday'}}]);
+  if(url.endsWith('/rpc/bot_claim_range'))return Response.json(job?{business_date:'2026-09-01',lease_id:guid(44)}:null);
+  if(url.endsWith('/rpc/bot_finish_range')){results.push(JSON.parse(init.body));return Response.json(true);}
+  if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',restaurant_guid:guid(1)}]);
+  if(url.endsWith('/rpc/bot_take_run'))return Response.json(true);
+  if(url.includes('/authentication/v1/'))return Response.json({token:{accessToken:'test'}});
+  if(url.includes('/timeEntries?')){assert.ok(url.includes('businessDate=20260901'));if(failed)return Response.json({}, {status:500});return Response.json([]);}
+  if(url.includes('/bot_cases?'))return Response.json([]);
+  if(url.includes('/employees')||url.includes('/app_state?'))return Response.json([]);
+  if(url.includes('/bot_runs?'))return new Response(null,{status:204});
+  throw Error('unexpected_call_'+url);
+ }});
+ const call=()=>h(new Request('https://fn.test',{method:'POST',headers:{'x-bot-worker-key':'test'},body:JSON.stringify({action:'worker',store_id:'TEST'})}));
+ let res=await call();assert.equal(res.status,200);assert.equal((await res.json()).business_date,'2026-09-01');assert.equal(results[0].p_error,null);
+ failed=true;res=await call();assert.equal(res.status,400);assert.equal(results[1].p_error,'toast_read_failed');
+ job=false;res=await call();assert.equal((await res.json()).skipped,true);assert.equal(results.length,2);
+});
+test('daily page uses stable pagination, retains prior-month cases and excludes worker secrets',async()=>{
+ const rows=Array.from({length:101},(_,i)=>({id:guid(i+1),status:'review',business_date:'2026-08-30',payload:{},last_checked_at:null}));
+ const paths=[];const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_ANON_KEY:'anon',SUPABASE_SERVICE_ROLE_KEY:'service'})[k],fetch:async(url)=>{
+  paths.push(url);if(url.endsWith('/auth/v1/user'))return Response.json({id:guid(999)});
+  if(url.includes('/manager_auth?'))return Response.json([{role:'office'}]);
+  if(url.endsWith('/rpc/bot_range_overview'))return Response.json({day:'2026-09-08',from:'2026-09-01',to:'2026-09-07'});
+  if(url.includes('/bot_cases?'))return Response.json(rows);
+  if(url.includes('/bot_outbox?'))return Response.json([{case_id:guid(1),state:'sent'}]);
+  throw Error('unexpected_read');
+ }});
+ const res=await h(new Request('https://fn.test',{method:'POST',headers:{authorization:'Bearer user'},body:JSON.stringify({action:'daily',after:guid(500)})}));
+ const data=await res.json();assert.equal(data.cases.length,100);assert.equal(data.next,guid(100));assert.equal(data.cases[0].daily_send,'sent');assert.equal(data.cases[0].daily_check,'unverified');
+ assert.ok(paths.some(p=>p.includes('id=gt.'+guid(500))));assert.equal(paths.some(p=>p.includes('business_date=gte.')),false);
 });
