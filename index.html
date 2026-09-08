@@ -12331,7 +12331,10 @@ function closeStaffPass(){
 
 /* ログイン画面初期化（所属選択の店舗グリッドを描画） */
 /* ===== 管理者ログイン（Supabase Auth・メール認証） ===== */
+function managerRoleAllowed(role){ return ['ceo','gm','office'].indexOf(role)>=0; }
+function managerSessionAllowed(){ return !!(window._authSession && window._authSession.access_token && managerRoleAllowed(window._authSession.role)); }
 function showManagerLogin(){
+  if(!loginPerson || loginStoreMode || !managerRoleAllowed(loginPerson.role)) return;
   var ls=document.getElementById('login-screen'); if(ls) ls.style.display='none';
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='flex';
   var e=document.getElementById('mgr-err'); if(e) e.style.display='none';
@@ -12358,7 +12361,7 @@ async function doManagerLogin(){
     var mr=await fetch(SUPABASE_URL+'/rest/v1/manager_auth?select=emp_id,role',{
       headers:{ 'apikey':SUPABASE_ANON, 'Authorization':'Bearer '+j.access_token } });
     var rows=await mr.json();
-    if(!Array.isArray(rows) || !rows.length){ fail('このアカウントは管理者として登録されていません'); return; }
+    if(!mr.ok || !Array.isArray(rows) || rows.length!==1 || !managerRoleAllowed(rows[0].role)){ window._authSession=null; if(passEl) passEl.value=''; fail('このアカウントには管理者ページの権限がありません。Bot専用アカウントは通常ログイン後、ワークセンターの業務Botで認証してください。'); return; }
     window._authSession={ access_token:j.access_token, refresh_token:j.refresh_token, email:email, emp_id:rows[0].emp_id, role:rows[0].role };
     if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; }
     if(passEl) passEl.value='';
@@ -12446,6 +12449,7 @@ function plComputeStore(sid, ym, off){
     beginInv:Math.round(parseFloat(fc.beginInv)||0), endInv:Math.round(parseFloat(fc.endInv)||0), purchOrder:Math.round(purchOrder), purchBuy:Math.round(purchBuy), transferIn:Math.round(_tnet.inAmt), transferOut:Math.round(_tnet.outAmt) };
 }
 async function showManagerSecure(){
+  if(!managerSessionAllowed()){ hideManagerLogin(); return; }
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
   var ls=document.getElementById('login-screen'); if(ls) ls.style.display='none';
   var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='block';
@@ -12479,6 +12483,7 @@ async function showManagerSecure(){
 function _secRerender(){ var b=document.getElementById('mgr-secure-body'); if(b){ try{ b.innerHTML=renderSecureBody(); }catch(e){ b.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; } } }
 function secTab(t){ window._secTab=t; _secRerender(); }
 function renderSecureBody(){
+  if(!managerSessionAllowed()) return '<div class="card">管理者認証が必要です / Administrator sign-in required</div>';
   var t = (window._secTab==='pl'||window._secTab==='hq'||window._secTab==='bot') ? window._secTab : 'karte';
   /* v925: 下のサブタブと見た目を揃える */
   var bar = '<div class="seg-tabs" style="max-width:520px">'
@@ -14927,7 +14932,7 @@ function loginPickPerson(empId, el) {
   var locLabel = loginLocation==='OFFICE'?t('Office','Office'):(STORES.find(s=>s.id===loginLocation)||{name:loginLocation}).name;
   document.getElementById('login-pin-role').textContent = roleLabel + ' · ' + locLabel;
   var _mgrEntry=document.getElementById('mgr-login-entry');
-  if(_mgrEntry) _mgrEntry.style.display=(['ceo','gm','office'].indexOf(emp.role)>=0)?'block':'none';
+  if(_mgrEntry) _mgrEntry.style.display=managerRoleAllowed(emp.role)?'block':'none';
   document.getElementById('login-step-name').style.display='none';
   document.getElementById('login-step-pin').style.display='block';
   refreshLoginLabels();
@@ -36555,7 +36560,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1008';
+const APP_VERSION = '1009';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41699,7 +41704,7 @@ function acDashBody(){ return renderOfficeMgr(true); }   /* 帯なしで出す *
 function acErrBody(){ return renderErrorCenter(true); }  /* 埋め込み表示 */
 /* FUNERGY_BOT_CENTER_BEGIN: integrated accounting workspace; no LINE transport enabled. */
 var _botView = { store:'', from:'', to:'', rows:[], scanned:false, missing:[], overrides:[], failed:[] };
-function botCanView(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
+function botCanView(){ return ['ceo','gm','office','office_crew','am'].indexOf(curRole)>=0; }
 function botStores(){ return getVisibleStores().filter(function(s){ return !!s.toastGuid; }); }
 function botYesterday(){ return new Date(Date.now()-10*3600000-86400000).toISOString().slice(0,10); }
 function botDays(from,to){
@@ -41758,7 +41763,7 @@ async function botCopyDraft(){
 function botOpenPurchases(){ if(botCanView()) go('supply_order'); }
 function botOpenTasks(){ if(botCanView()){_acCat='review';acSetSub('task');} }
 function renderBotLocalCenter(){
-  if(!botCanView()) return '<div class="card">'+t('経理・GM・CEO専用です','Accounting, GM and CEO only')+'</div>';
+  if(!botCanView()) return '<div class="card">'+t('経理・事務・AM・GM・CEO向けです','For accounting, office staff, AM, GM and CEO')+'</div>';
   var v=_botView,cfg=getCeCfg(), stores=botStores(), esc=escapeHtml;
   var h='<div class="card"><div class="card-title"><i class="ti ti-robot" style="color:var(--accent)"></i>'+t('業務Bot','Operations Bot')+'</div>'
     +'<p>'+t('勤怠の確認と修正依頼を、Funergy＋の判定基準でまとめます。','Review attendance and prepare correction requests using Funergy+ rules.')+'</p>'
@@ -41807,7 +41812,7 @@ async function botFetchSharedClock(){
 }
 async function botAPI(payload,retried){
   var session=_botSession||(window._authSession||null);
-  if(!session||!session.access_token)throw new Error(t('共有案件を開くにはメール認証してください','Sign in with your manager email to open shared cases'));
+  if(!session||!session.access_token)throw new Error(t('共有案件を開くにはメール認証してください','Sign in with your registered Bot email to open shared cases'));
   var r=await fetch(SUPABASE_URL+'/functions/v1/ops-bot',{method:'POST',headers:{apikey:SUPABASE_ANON,Authorization:'Bearer '+session.access_token,'Content-Type':'application/json'},body:JSON.stringify(payload)});
   if(r.status===401&&!retried&&session.refresh_token){
     var rr=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:SUPABASE_ANON,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:session.refresh_token})});
@@ -41816,7 +41821,7 @@ async function botAPI(payload,retried){
   var j=await r.json();if(!r.ok){if(r.status===401)botResetShared();var messages={conflict:t('他の担当者が更新しました。再読込してください','Another reviewer updated this case. Reload it.'),send_unresolved:t('送信結果の確認が必要です。履歴から同じ送信を再確認してください','Resolve the previous send from its history first.'),line_token_missing:t('LINEのアクセストークンが未設定です','LINE access token is not configured'),unauthorized:t('メール認証の有効期限が切れました。再認証してください','Please sign in again.'),forbidden:t('この操作の権限がありません','You do not have permission for this action'),invalid_config:t('GM・CEOが判定設定を共有してください','GM or CEO must publish the clock rules first'),scan_busy:t('この店舗は取得処理中です。少し待って更新してください','This store is being scanned. Refresh shortly.')};throw Error(messages[j.error]||j.error||t('接続できませんでした','Connection failed'));}return j;
 }
 function botLoginModal(){
-  openModal('<div class="modal-title">'+t('共有案件のメール認証','Sign in to shared cases')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div><p>'+t('Funergy＋の管理者メール・パスワードを使用します。','Use your existing Funergy+ manager email and password.')+'</p><input id="bot-email" class="form-input" type="email" autocomplete="username" placeholder="Email"><input id="bot-password" class="form-input" type="password" autocomplete="current-password" placeholder="Password"><p id="bot-login-error"></p><button id="bot-login-button" class="btn btn-primary" onclick="botLogin()">'+t('認証','Sign in')+'</button>');
+  openModal('<div class="modal-title">'+t('共有案件のメール認証','Sign in to shared cases')+'<button class="modal-close" onclick="closeModalDirect()">×</button></div><p>'+t('Bot利用登録済みのメール・パスワードを入力してください。Bot専用登録では管理者ページは開けません。新規登録はGM・CEOへ依頼してください。','Enter your registered Bot email and password. Bot-only access does not open administrator pages. Ask your GM or CEO to register you.')+'</p><input id="bot-email" class="form-input" type="email" autocomplete="username" placeholder="Email"><input id="bot-password" class="form-input" type="password" autocomplete="current-password" placeholder="Password"><p id="bot-login-error"></p><button id="bot-login-button" class="btn btn-primary" onclick="botLogin()">'+t('認証','Sign in')+'</button>');
 }
 async function botLogin(){
   var email=document.getElementById('bot-email'),pass=document.getElementById('bot-password'),btn=document.getElementById('bot-login-button');if(!email||!pass)return;btn.disabled=true;
@@ -41876,7 +41881,7 @@ async function botMorningOpen(id,reminder){
  await botCaseModal(id,reminder);
 }
 function renderBotCenter(){
- if(!botCanView())return '<div class="card">'+t('経理・GM・CEO専用です','Accounting, GM and CEO only')+'</div>';
+ if(!botCanView())return '<div class="card">'+t('経理・事務・AM・GM・CEO向けです','For accounting, office staff, AM, GM and CEO')+'</div>';
  var d=_botShared.data,esc=escapeHtml;
  var h='<div class="card"><div class="card-title"><i class="ti ti-robot"></i> '+t('業務Bot','Operations Bot')+'</div><p>'+t('勤怠・Void・発注依頼の確認と、LINEでのやり取りをまとめます。送信と発注は担当者が確認して実行します。','Manage attendance, Void and purchase checks with LINE follow-up. A reviewer confirms every message and order.')+'</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary" onclick="botSharedView(\'shared\')">'+t('共有案件','Shared cases')+'</button><button class="btn btn-secondary" onclick="botSharedView(\'local\')">'+t('取得済み勤怠の確認','Review loaded attendance')+'</button><button class="btn btn-secondary" onclick="botLoginModal()">'+t('メール認証','Email sign-in')+'</button><button class="btn btn-primary" onclick="botLoadShared()" '+(_botShared.busy?'disabled':'')+'>'+t('更新','Refresh')+'</button></div></div>';
  if(_botShared.view==='local')return h+renderBotLocalCenter();

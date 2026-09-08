@@ -124,3 +124,11 @@ Motoが残作業とFunergy＋への反映を許可。PR #6を継続し、共有�
 適用順: db/ops-bot-daily-range.sql → ops-bot → db/ops-bot-range-schedule.sql → index.html/sw.js 1008。既存workerの有効状態、LINEグループ・担当者の承認、Toast同期は変更しない。
 
 ローカル検証: Node標準test/VMとPGliteの合成データで、月替わり・ハワイ日付・月初ゼロ件・全日取得・失敗再試行・リース・朝の送信予約・権限・日英表示を検証。静的リリース検証も実行。最終SHA、独立レビュー、反映状況は変更PRに記録。現段階で公開完了・定刻の実機成功とは扱わない。
+
+
+1009: Bot用メール登録をservice-only bot_usersへ分離し、manager_authを追加せず事務Crew相当の案件操作を許可する。既存管理者登録は維持。管理者入口・認証結果・描画はCEO/GM/経理に限定し、事務Crew/AMは管理者ページへ通さない。AMに通常ワークセンターのBotタブを追加。実メールアカウント作成・送信は行わず、登録手順はBOT_OPERATIONS_JA.mdへ記載。最終レビューと公開結果は変更PR参照。
+
+
+1009検証・反映状況（2026-09-08 UTC）: 実装コミット3173d335685b474ac773a2b6ada6c41c96f2a4ac、tree ca2b3c56521be33b79193b96959d699ec27ec4d6。Codex review_monthly_botが独立レビューし、未指定発注依頼の登録RPCに残っていた権限参照を修正後に再レビュー、残る指摘なし。Node 47件成功、静的1009整合成功。Supabase migration ops_bot_separate_member_auth適用済み、ops-bot version 9 ACTIVE、配備されたhandlerはローカル実装と一致。新規の実利用者登録は未実施。
+
+画面は公開待ち。GitHub create_blobで1009 HTML全体の公開送信を自動承認審査が拒否（明示承認は1007のみ、今回のソースには未確認との理由）。別経路で迂回せず、公開ブランチcodex/bot-only-authはmain基準の作成だけでソースは未push、PRも未作成。1009のソース公開を含む承認後に最新mainを再取得し、この差分をpush・レビュー・公開する。既存1008画面とサーバー9は互換。実機の新規Botログインと1009 HTML/SWの公開一致は未検証。

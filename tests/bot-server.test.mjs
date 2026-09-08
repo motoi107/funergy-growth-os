@@ -14,7 +14,7 @@ test('signature verification uses original bytes and fails closed',async()=>{
 });
 test('unauthenticated callers and untrusted metadata cannot access cases',async()=>{
  const calls=[];const env=k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'test-service',SUPABASE_ANON_KEY:'test-anon'})[k];
- const h=createHandler({env,fetch:async(url)=>{calls.push(url);if(url.endsWith('/auth/v1/user'))return Response.json({id:guid(1),user_metadata:{role:'ceo'}});if(url.includes('manager_auth'))return Response.json([]);throw Error('Unexpected private read');}});
+ const h=createHandler({env,fetch:async(url)=>{calls.push(url);if(url.endsWith('/auth/v1/user'))return Response.json({id:guid(1),user_metadata:{role:'ceo'}});if(url.includes('manager_auth')||url.includes('bot_users'))return Response.json([]);throw Error('Unexpected private read');}});
  let r=await h(new Request('https://fn.test',{method:'POST',body:JSON.stringify({action:'list'})}));assert.equal(r.status,401);assert.equal(calls.length,0);
  r=await h(new Request('https://fn.test',{method:'POST',headers:{Authorization:'Bearer fake'},body:JSON.stringify({action:'list'})}));assert.equal(r.status,403);
  r=await h(new Request('https://fn.test',{method:'POST',headers:{Origin:'https://evil.test'},body:'{}'}));assert.equal(r.status,403);
@@ -196,4 +196,26 @@ test('daily page uses stable pagination, retains prior-month cases and excludes 
  const res=await h(new Request('https://fn.test',{method:'POST',headers:{authorization:'Bearer user'},body:JSON.stringify({action:'daily',after:guid(500)})}));
  const data=await res.json();assert.equal(data.cases.length,100);assert.equal(data.next,guid(100));assert.equal(data.cases[0].daily_send,'sent');assert.equal(data.cases[0].daily_check,'unverified');
  assert.ok(paths.some(p=>p.includes('id=gt.'+guid(500))));assert.equal(paths.some(p=>p.includes('business_date=gte.')),false);
+});
+
+test('Bot-only membership grants case access but denies administrator configuration and sends',async()=>{
+ let enabled=true;const calls=[];
+ const env=k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',SUPABASE_ANON_KEY:'anon'})[k];
+ const h=createHandler({env,fetch:async(url)=>{
+  calls.push(url);
+  if(url.endsWith('/auth/v1/user'))return Response.json({id:guid(70),user_metadata:{role:'gm'}});
+  if(url.includes('/manager_auth?'))return Response.json([]);
+  if(url.includes('/bot_users?')){assert.match(url,/enabled=eq.true/);return Response.json(enabled?[{user_id:guid(70)}]:[]);}
+  if(url.includes('/bot_cases?'))return Response.json([{id:guid(10),version:1}]);
+  if(url.endsWith('/rpc/bot_range_overview'))return Response.json({day:'2026-09-08'});
+  if(url.includes('/bot_outbox?'))return Response.json([]);
+  if(url.includes('/bot_settings?'))return Response.json([]);
+  if(url.includes('/bot_scan_days?'))return Response.json([]);
+  if(url.includes('/store_config?'))return Response.json([]);
+  throw Error('Unexpected private access: '+url);
+ }});
+ const call=body=>h(new Request('https://fn.test',{method:'POST',headers:{Authorization:'Bearer synthetic'},body:JSON.stringify(body)}));
+ assert.equal((await call({action:'daily'})).status,200);
+ for(const body of [{action:'config',clock:cfg},{action:'worker_config'},{action:'group'},{action:'owner'}, {action:'send',id:guid(10),version:1}])assert.equal((await call(body)).status,403);
+ enabled=false;calls.length=0;assert.equal((await call({action:'daily'})).status,403);assert.equal(calls.some(x=>x.includes('/bot_cases?')),false);
 });
