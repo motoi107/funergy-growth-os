@@ -62,7 +62,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  const timed=(url,init={})=>fetcher(url,{...init,signal:AbortSignal.timeout(20000)});
  async function db(path,method='GET',body,prefer){
   const r=await timed(sb+'/rest/v1/'+path,{method,headers:{...headers,...(prefer?{Prefer:prefer}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
-  if(!r.ok){const j=await r.json().catch(()=>({}));const known=['conflict','forbidden','not_found','send_unresolved','retry_mismatch','failed_send_requires_new_review','retry_expired_check_line','group_not_enabled','closed_case','purchase_details_required','order_number_required','invalid_state','note_required'];throw Error(known.find(x=>j.message?.includes(x))||(r.status===409?'conflict':'database_error'));}
+  if(!r.ok){const j=await r.json().catch(()=>({}));const known=['conflict','forbidden','not_found','send_unresolved','retry_mismatch','failed_send_requires_new_review','retry_expired_check_line','group_not_enabled','closed_case','purchase_details_required','order_number_required','invalid_state','note_required','assignee_required'];throw Error(known.find(x=>j.message?.includes(x))||(r.status===409?'conflict':'database_error'));}
   return r.status===204?null:r.json();
  }
  const rpc=(name,args)=>db('rpc/'+name,'POST',args);
@@ -131,9 +131,14 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   if(!APPROVERS.includes(actor.role))throw Error('forbidden');
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
   if(!UUID.test(body.request_id||''))throw Error('invalid_request_id');
-  const message=String(body.text||'').trim();if(!message||message.length>4500)throw Error('invalid_message');
-  const full='['+c.code+']\n'+message;
-  const group=await db('bot_groups?group_id=eq.'+encodeURIComponent(body.group_id)+'&enabled=eq.true&store_id=eq.'+encodeURIComponent(c.store_id));if(group.length!==1)throw Error('group_not_enabled');
+  const message=String(body.text||'').trim();if(!message||message.length>4900)throw Error('invalid_message');
+  const previous=await db('bot_outbox?id=eq.'+body.request_id+'&select=body');
+  if(!previous.length&&message.length>4500)throw Error('invalid_message');
+  // Retried messages preserve the exact reviewed snapshot, including old assignment headers.
+  const store=await getStore(c.store_id);
+  const header='['+c.code+']\n店舗 / Store: '+store.name+' ('+c.store_id+')\n担当 / Assigned to: '+(c.assignee||'店舗マネージャー / Store manager')+'\n';
+  const full=previous.length ? '['+c.code+']\n'+message : header+message;
+  const group=await db('bot_groups?group_id=eq.'+encodeURIComponent(body.group_id)+'&enabled=eq.true');if(group.length!==1||(!group[0].all_stores&&group[0].store_id!==c.store_id))throw Error('group_not_enabled');
   const o=await rpc('bot_reserve_send',{p_actor:actor.id,p_id:c.id,p_version:body.version,p_request:body.request_id,p_group:body.group_id,p_body:full});
   if(o.state==='sent')return {state:'sent',request_id:o.id};
   let state='unknown';
@@ -176,7 +181,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     return json({...result,verified});
    }
    const actor=await authorize(req);
-   if(body.action==='list')return json({actor,cases:await db('bot_cases?order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
+   if(body.action==='list')return json({actor,cases:await db('bot_cases?order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
    if(body.action==='resolve_send'){
     if(!APPROVERS.includes(actor.role)||!UUID.test(body.outbox_id||''))throw Error('forbidden');
     await rpc('bot_resolve_send',{p_actor:actor.id,p_id:body.outbox_id,p_state:body.state,p_note:String(body.note||'').trim()});return json({ok:true});
@@ -192,10 +197,19 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const c=await setting('worker');if(!c)throw Error('worker_not_configured');
     await db('bot_settings?key=eq.worker','PATCH',{value:{...c,enabled:body.enabled===true},updated_at:new Date().toISOString()});return json({enabled:body.enabled===true});
    }
+   if(body.action==='owner'){
+    if(!APPROVERS.includes(actor.role))throw Error('forbidden');await getStore(body.store_id);
+    const name=String(body.name||'').trim();if(!name||name.length>120||/[\r\n]/.test(name))throw Error('assignee_required');
+    await db('bot_settings?on_conflict=key','POST',{key:'owner:'+body.store_id,value:{name},updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true});
+   }
+   if(body.action==='assign_intake'){
+    if(!Number.isSafeInteger(body.event_id)||body.event_id<=0)throw Error('invalid_id');
+    return json(await rpc('bot_assign_intake',{p_actor:actor.id,p_event:body.event_id,p_store:body.store_id}));
+   }
    if(body.action==='group'){
-    if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');await getStore(body.store_id);
+    if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');if(body.all_stores!==true)await getStore(body.store_id);
     if(!/^C[a-f0-9]{32}$/i.test(body.group_id||''))throw Error('invalid_group');
-    await db('bot_groups?on_conflict=group_id','POST',{group_id:body.group_id,store_id:body.store_id,label:String(body.label||'').slice(0,120),enabled:body.enabled===true,updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true});
+    await db('bot_groups?on_conflict=group_id','POST',{group_id:body.group_id,store_id:body.all_stores===true?null:body.store_id,all_stores:body.all_stores===true,label:String(body.label||'').slice(0,120),enabled:body.enabled===true,updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true});
    }
    if(body.action==='scan')return json(await scan(String(body.store_id),businessDate(body.date),actor.id,body.with_voids!==false));
    if(body.action==='create_purchase'){
@@ -207,8 +221,9 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(body.action==='send')return json(await send(c,actor,body));
    if(c.version!==body.version)throw Error('conflict');
    if(body.action==='recheck')return json(await recheck(c,actor.id));
-   const ops=['note','draft','correction','reported','acknowledge','purchase','approve','ordered'];if(!ops.includes(body.action))throw Error('bad_action');
-   const data={note:String(body.note||'').trim(),draft:String(body.draft||'').trim(),order_number:String(body.order_number||'').trim()};
+   const ops=['assign','note','draft','correction','reported','acknowledge','purchase','approve','ordered'];if(!ops.includes(body.action))throw Error('bad_action');
+   const data={assignee:String(body.assignee||'').trim(),note:String(body.note||'').trim(),draft:String(body.draft||'').trim(),order_number:String(body.order_number||'').trim()};
+   if(body.action==='assign'&&/[\r\n]/.test(data.assignee))throw Error('assignee_required');
    if(body.action==='purchase'){data.url=safePurchaseURL(body.url);data.quantity=Number(body.quantity);if(!Number.isFinite(data.quantity)||data.quantity<=0||data.quantity>100000)throw Error('invalid_quantity');}
    return json(await rpc('bot_case_write',{p_op:body.action,p_actor:actor.id,p_id:c.id,p_version:body.version,p_data:data}));
   }catch(e){const code=e instanceof SyntaxError?'invalid_json':e.message||'request_failed';const status=code==='unauthorized'?401:code==='forbidden'?403:['conflict','send_unresolved','scan_busy'].includes(code)?409:code.includes('missing')||code.includes('not_configured')?503:400;return json({error:/^[a-z_]+$/.test(code)?code:'request_failed'},status);}
