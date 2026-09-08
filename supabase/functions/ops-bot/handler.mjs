@@ -40,23 +40,52 @@ export function laborFindings(entries,employees,cfg,store,date,override=false){
       open_shift:people[r.name].some(x=>!x.outDate),draft:''}
   }));
 }
-// Transaction scope: whole checks/orders and voided payments, never item/modifier selections.
+// Only payment-level Voids; item/check/order cancellations are not payment failures.
+export function paymentIsVoided(p){return p.paymentStatus==='VOIDED'||(p.type!=='CREDIT'&&!!p.voidInfo?.voidDate);}
 export function voidFindings(orders,store,date,reasons=[],employees=[]){
  const reasonNames=new Map(reasons.map(x=>[x.guid,x.name]));
  const staffNames=new Map(employees.map(x=>[x.guid,((x.firstName||'')+' '+(x.lastName||'')).trim()||x.name||x.guid]));
  const rows=[];
- for(const order of orders){
-  const add=(obj,scope,check)=>{
-   if(!obj?.guid)return;const vi=obj.voidInfo||obj.voidInformation||{},reason=vi.voidReason?.guid||obj.voidReason?.guid;
-   rows.push({source_key:'void:'+store.store_id+':'+obj.guid,kind:'void',store_id:store.store_id,business_date:date,subject:'Transaction Void / '+scope+' #'+(check?.displayNumber||obj.displayNumber||order.displayNumber||obj.guid),payload:{store_name:store.name,order_guid:order.guid,check_guid:check?.guid||null,entity_guid:obj.guid,scope,amount:obj.totalAmount??obj.amount??null,reason:reasonNames.get(reason)||null,user_name:staffNames.get(vi.voidUser?.guid)||null,approver_name:staffNames.get(vi.voidApprover?.guid)||null,reason_guid:reason||null,user_guid:vi.voidUser?.guid||null,approver_guid:vi.voidApprover?.guid||null,void_date:vi.voidDate||obj.voidDate||null,source:'toast_direct',fetched_at:new Date().toISOString()}});
-  };
-  if(order.voided){add(order,'order');continue;}
-  for(const check of order.checks||[]){
-   if(check.voided){add(check,'check',check);continue;}
-   for(const payment of check.payments||[])if(payment.paymentStatus==='VOIDED')add(payment,'payment',check);
+ for(const order of orders)for(const check of order.checks||[])for(const pay of check.payments||[]){
+  if(!pay.guid||!paymentIsVoided(pay))continue;const vi=pay.voidInfo||{},reason=vi.voidReason?.guid;
+  rows.push({source_key:'void:'+store.store_id+':'+pay.guid,kind:'void',store_id:store.store_id,business_date:date,subject:'Payment Void / #'+(check.displayNumber||order.displayNumber||pay.guid),payload:{store_name:store.name,order_guid:order.guid,check_guid:check.guid,entity_guid:pay.guid,scope:'payment',check_total:check.totalAmount??null,amount:pay.amount??null,reason:reasonNames.get(reason)||null,user_name:staffNames.get(vi.voidUser?.guid)||null,approver_name:staffNames.get(vi.voidApprover?.guid)||null,reason_guid:reason||null,user_guid:vi.voidUser?.guid||null,approver_guid:vi.voidApprover?.guid||null,void_date:vi.voidDate||null,source:'toast_direct',fetched_at:new Date().toISOString()}});
+ }
+ return rows;
+}
+export function unpaidFindings(orders,store,date){
+ const rows=[];
+ for(const order of orders){if(order.deleted||order.voided)continue;
+  for(const c of order.checks||[]){
+   if(!c.guid||c.deleted||c.voided||c.paymentStatus!=='OPEN'||!(Number(c.totalAmount??c.amount)>0))continue;
+   rows.push({source_key:'unpaid:'+store.store_id+':'+c.guid,kind:'unpaid',store_id:store.store_id,business_date:date,subject:'Unpaid / #'+(c.displayNumber||order.displayNumber||c.guid),payload:{store_name:store.name,order_guid:order.guid,check_guid:c.guid,amount:c.totalAmount??c.amount,payment_status:c.paymentStatus,source:'toast_direct',fingerprint:JSON.stringify({status:c.paymentStatus,total:c.totalAmount??c.amount}),fetched_at:new Date().toISOString()}});
   }
  }
  return rows;
+}
+export function financeResolution(c,order){
+ const no=reason=>({clean:false,message:reason});
+ if(!order||order.guid!==c.payload.order_guid||order.deleted||order.voided)return no('order_missing_or_cancelled_review');
+ const checks=(order.checks||[]).filter(x=>x.guid===c.payload.check_guid);if(checks.length!==1)return no('check_missing_manual_review');const check=checks[0];
+ if(check.deleted||check.voided)return no('check_cancelled_manual_review');
+ if(c.kind==='void'&&(check.payments||[]).filter(p=>p.guid===c.payload.entity_guid).length!==1)return no('payment_missing_manual_review');
+ // CLOSED alone can follow a write-off/discount. Require a positive bill, unchanged amount for
+ // unpaid cases, and captured/non-card paid funds covering the total, including tips.
+ const total=Number(check.totalAmount);if(check.paymentStatus!=='CLOSED'||!Number.isFinite(total)||total<=0)return no('payment_not_confirmed');
+ if(c.kind==='void'&&(!Number.isFinite(Number(c.payload.check_total))||Number(c.payload.check_total)<=0||Math.round(total*100)!==Math.round(Number(c.payload.check_total)*100)))return no('bill_changed_manual_review');
+ if(c.kind==='unpaid'&&Math.round(total*100)!==Math.round(Number(c.payload.amount)*100))return no('bill_changed_manual_review');
+ let received=0;const ids=[];
+ for(const p of check.payments||[]){
+  if(paymentIsVoided(p)||!p.guid||!p.paidDate)continue;
+  if(p.type==='CREDIT'?p.paymentStatus!=='CAPTURED':!['CASH','GIFTCARD','HOUSE_ACCOUNT','REWARDCARD','LEVELUP','TOAST_SV','OTHER'].includes(p.type))continue;
+  if(p.type!=='CREDIT'&&['CANCELLED','ERROR','ERROR_NETWORK','DENIED','PROCESSING_VOID'].includes(p.paymentStatus))continue;
+  if(p.refundStatus==='FULL'||(p.refundStatus&&!['NONE','PARTIAL'].includes(p.refundStatus)))continue;
+  if((p.refundStatus==='PARTIAL'||p.refund)&&(!p.refund||typeof p.refund.refundAmount!=='number'||typeof p.refund.tipRefundAmount!=='number'))continue;
+  const values=[p.amount,p.tipAmount??0,p.refund?.refundAmount??0,p.refund?.tipRefundAmount??0].map(Number);
+  if(values.some(x=>!Number.isFinite(x)||x<0))continue;
+  const net=values[0]+values[1]-values[2]-values[3];if(net<=0)continue;received+=Math.round(net*100);ids.push(p.guid);
+ }
+ if(received<Math.round(total*100))return no('payment_coverage_incomplete');
+ return {clean:true,verification_type:c.kind==='unpaid'?'unpaid_paid':'payment_void_recovered',check_guid:check.guid,payment_guids:ids,total,received:received/100};
 }
 export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  const sb=env('SUPABASE_URL'), service=env('SUPABASE_SERVICE_ROLE_KEY'), anon=env('SUPABASE_ANON_KEY');
@@ -83,11 +112,11 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   if(!env('TOAST_CLIENT_ID')||!env('TOAST_CLIENT_SECRET'))throw Error('toast_not_configured');
   const r=await timed('https://ws-api.toasttab.com/authentication/v1/authentication/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId:env('TOAST_CLIENT_ID'),clientSecret:env('TOAST_CLIENT_SECRET'),userAccessType:'TOAST_MACHINE_CLIENT'})});
   if(!r.ok)throw Error('toast_auth_failed');const token=(await r.json())?.token?.accessToken;if(!token)throw Error('toast_auth_failed');
-  return async path=>{
+  return async (path,object=false)=>{
    let url=new URL('https://ws-api.toasttab.com'+path),all=[],seen=new Set();
    for(let page=0;page<40;page++){
     const r=await timed(url.href,{headers:{Authorization:'Bearer '+token,'Toast-Restaurant-External-ID':store.restaurant_guid}});
-    if(!r.ok)throw Error(r.status===429?'toast_rate_limited':'toast_read_failed');const j=await r.json();if(!Array.isArray(j))throw Error('toast_invalid_response');all.push(...j);
+    if(!r.ok)throw Error(r.status===429?'toast_rate_limited':'toast_read_failed');const j=await r.json();if(object){if(!j||Array.isArray(j)||typeof j!=='object')throw Error('toast_invalid_response');return j;}if(!Array.isArray(j))throw Error('toast_invalid_response');all.push(...j);
     const next=r.headers.get('Toast-Next-Page-Token');if(!next)return all;if(seen.has(next))throw Error('toast_pagination_loop');seen.add(next);url.searchParams.set('pageToken',next);
    }
    throw Error('toast_pagination_limit');
@@ -104,7 +133,15 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const findings=laborFindings(entries,employees,cfg,store,date,override);
    if(withVoids){const orders=[];let complete=false;
     for(let page=1;page<=40;page++){const batch=await get('/orders/v2/ordersBulk?businessDate='+bd+'&pageSize=100&page='+page);orders.push(...batch);if(batch.length<100){complete=true;break;}}
-    if(!complete)throw Error('toast_pagination_limit');let reasons=[];try{reasons=await get('/config/v2/voidReasons');}catch{ /* Preserve unavailable references as IDs for accounting review. */ }findings.push(...voidFindings(orders,store,date,reasons,employees));
+    if(!complete)throw Error('toast_pagination_limit');
+    findings.push(...unpaidFindings(orders,store,date));
+    // voidBusinessDate also finds a payment voided today for an older order.
+    const ids=await get('/orders/v2/payments?voidBusinessDate='+bd);
+    if(ids.length>100||ids.some(id=>!UUID.test(id)))throw Error('payment_batch_requires_review');
+    let reasons=[];try{reasons=await get('/config/v2/voidReasons');}catch{/* Keep reason IDs. */}
+    const payments=[];
+    for(const id of [...new Set(ids)]){const pay=await get('/orders/v2/payments/'+id,true);if(pay.guid!==id||!UUID.test(pay.orderGuid||'')||!UUID.test(pay.checkGuid||''))throw Error('toast_invalid_response');const order=orders.find(o=>o.guid===pay.orderGuid)||await get('/orders/v2/orders/'+pay.orderGuid,true);if(order.guid!==pay.orderGuid)throw Error('toast_invalid_response');const check=(order.checks||[]).find(c=>c.guid===pay.checkGuid);payments.push({guid:pay.orderGuid,checks:[{guid:pay.checkGuid,displayNumber:check?.displayNumber,totalAmount:check?.totalAmount,payments:[pay]}]});}
+    findings.push(...voidFindings(payments,store,date,reasons,employees));
    }
    for(const f of findings)await rpc('bot_case_write',{p_op:'finding',p_actor:actor,p_data:f});
    await db('bot_runs?store_id=eq.'+encodeURIComponent(storeID),'PATCH',{running_until:null,last_success:new Date().toISOString(),last_error:null});
@@ -112,7 +149,18 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   }catch(e){await db('bot_runs?store_id=eq.'+encodeURIComponent(storeID),'PATCH',{running_until:null,last_error:String(e.message).slice(0,80)}).catch(()=>{});throw e;}
  }
  async function recheck(c,actor){
-  if(c.kind!=='labor')throw Error('labor_only');
+  try{return await checkCase(c,actor);}catch(e){await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:{clean:false,message:/^[a-z_]+$/.test(e.message)?e.message:'verification_failed',checked_at:new Date().toISOString()}}).catch(()=>{});throw e;}
+ }
+ async function checkCase(c,actor){
+  if(['void','unpaid'].includes(c.kind)){
+   if(c.kind==='void'&&c.payload.scope!=='payment')throw Error('item_void_out_of_scope');
+   if(!UUID.test(c.payload.order_guid||'')||!UUID.test(c.payload.check_guid||''))throw Error('order_ids_required');
+   const store=await getStore(c.store_id),get=await toastClient(store),order=await get('/orders/v2/orders/'+c.payload.order_guid,true);
+   const result={...financeResolution(c,order),checked_at:new Date().toISOString()};
+   if(!result.clean){await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:result});return result;}
+   const updated=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:result});return {...result,case:updated};
+  }
+  if(c.kind!=='labor')throw Error('unsupported_monitor_kind');
   const ids=(c.payload.shifts||[]).map(x=>x.guid);if(!ids.length||ids.length>100||ids.some(x=>!UUID.test(x)))throw Error('time_entry_ids_required');
   const store=await getStore(c.store_id), get=await toastClient(store),cfg=validConfig(await setting('clock'));
   const entries=[];
@@ -127,11 +175,11 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   if(detector._ceOverlap(shifts)||shifts.some(x=>detector.ceCheckShift(x,cfg).level))clean=false;
   // Moved records require review of their new business day; do not auto-close them.
   if(entries.some(x=>String(x.businessDate)!==c.business_date.replaceAll('-','')))clean=false;
-  if(!clean){const result={clean:false,message:'still_flagged_or_manual_review',checked_at:new Date().toISOString()};await db('bot_events','POST',{case_id:c.id,actor,kind:'verification_checked',data:result},'return=minimal');return result;}
+  if(!clean){const result={clean:false,message:'still_flagged_or_manual_review',checked_at:new Date().toISOString()};await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:result});return result;}
   const result=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:{clean:true,checked_at:new Date().toISOString(),time_entry_ids:ids,cfg}});return {clean:true,case:result};
  }
  async function send(c,actor,body){
-  if(c.kind==='void'&&!['order','check','payment'].includes(c.payload?.scope))throw Error('item_void_out_of_scope');
+  if(c.kind==='void'&&c.payload?.scope!=='payment')throw Error('item_void_out_of_scope');
   if(!APPROVERS.includes(actor.role))throw Error('forbidden');
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
   if(!UUID.test(body.request_id||''))throw Error('invalid_request_id');
@@ -179,13 +227,13 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     const cfg=await setting('worker');if(!cfg?.key||req.headers.get('x-bot-worker-key')!==cfg.key)throw Error('unauthorized');
     if(!cfg.enabled||!(await setting('clock')))return json({skipped:true});
     const date=new Date(Date.now()-10*3600000-86400000).toISOString().slice(0,10);
-    const result=await scan(String(body.store_id),date,null);
-    const pending=await db('bot_cases?kind=eq.labor&status=eq.verify&store_id=eq.'+encodeURIComponent(body.store_id)+'&order=updated_at.asc&limit=10');
-    let verified=0;for(const c of pending){try{if((await recheck(c,null)).clean)verified++;}catch{ /* Retain unresolved cases for human review. */ }}
-    return json({...result,verified});
+    const result=body.mode==='monitor'?{}:await scan(String(body.store_id),date,null,cfg.finance_enabled===true);
+    const start=Date.now(),pending=await db('bot_cases?kind=in.(labor,void,unpaid)&status=neq.done&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&store_id=eq.'+encodeURIComponent(body.store_id)+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
+    let checked=0,verified=0;for(const c of pending){if(Date.now()-start>45000)break;try{if((await recheck(c,null)).clean)verified++;}catch{/* Error and check time are recorded; the case stays open. */}checked++;}
+    return json({...result,checked,verified});
    }
    const actor=await authorize(req);
-   if(body.action==='list')return json({actor,cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.in.(order,check,payment))')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
+   if(body.action==='list')return json({actor,cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
    if(body.action==='resolve_send'){
     if(!APPROVERS.includes(actor.role)||!UUID.test(body.outbox_id||''))throw Error('forbidden');
     await rpc('bot_resolve_send',{p_actor:actor.id,p_id:body.outbox_id,p_state:body.state,p_note:String(body.note||'').trim()});return json({ok:true});
@@ -199,7 +247,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    }
    if(body.action==='worker_config'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const c=await setting('worker');if(!c)throw Error('worker_not_configured');
-    await db('bot_settings?key=eq.worker','PATCH',{value:{...c,enabled:body.enabled===true},updated_at:new Date().toISOString()});return json({enabled:body.enabled===true});
+    await db('bot_settings?key=eq.worker','PATCH',{value:{...c,enabled:typeof body.enabled==='boolean'?body.enabled:!!c.enabled,finance_enabled:typeof body.finance_enabled==='boolean'?body.finance_enabled:!!c.finance_enabled},updated_at:new Date().toISOString()});return json({enabled:typeof body.enabled==='boolean'?body.enabled:!!c.enabled,finance_enabled:typeof body.finance_enabled==='boolean'?body.finance_enabled:!!c.finance_enabled});
    }
    if(body.action==='owner'){
     if(!APPROVERS.includes(actor.role))throw Error('forbidden');await getStore(body.store_id);

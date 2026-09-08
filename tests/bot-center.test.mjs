@@ -83,5 +83,5 @@ test('attendance is the initial shared filter and default collection explicitly 
  ctx.document.getElementById=id=>({value:id==='bot-cloud-store'?'TEST':'2026-08-01'});
  ctx.botAPI=async body=>{calls.push(body);return {created_or_matched:0};};ctx.botLoadShared=async()=>{};
  await ctx.botCloudScan();assert.equal(calls[0].with_voids,false);assert.equal(ctx._botShared.kind,'labor');
- await ctx.botCloudScan(true);assert.equal(calls[1].with_voids,true);assert.equal(ctx._botShared.kind,'void');
+ await ctx.botCloudScan(true);assert.equal(calls[1].with_voids,true);assert.equal(ctx._botShared.kind,'');
 });
