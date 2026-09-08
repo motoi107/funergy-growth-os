@@ -63,7 +63,8 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  async function db(path,method='GET',body,prefer){
   const r=await timed(sb+'/rest/v1/'+path,{method,headers:{...headers,...(prefer?{Prefer:prefer}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
   if(!r.ok){const j=await r.json().catch(()=>({}));const known=['conflict','forbidden','not_found','send_unresolved','retry_mismatch','failed_send_requires_new_review','retry_expired_check_line','group_not_enabled','closed_case','purchase_details_required','order_number_required','invalid_state','note_required','assignee_required'];throw Error(known.find(x=>j.message?.includes(x))||(r.status===409?'conflict':'database_error'));}
-  return r.status===204?null:r.json();
+  // PostgREST minimal writes can return 201 with an empty body.
+  const text=await r.text();return text.trim()?JSON.parse(text):null;
  }
  const rpc=(name,args)=>db('rpc/'+name,'POST',args);
  const setting=async key=>(await db('bot_settings?key=eq.'+key+'&select=value'))[0]?.value||null;
