@@ -65,3 +65,18 @@ test('all-store sends include store and assignee and retry the exact approved sn
  assert.equal((await call(saved.body.replace(/^\[B-[A-F0-9]{12}\]\n/,''))).status,200);
  assert.equal(pushed.length,2);assert.deepEqual(pushed[0],pushed[1]);
 });
+test('minimal write responses are successful for owner, group and clock settings',async()=>{
+ const saved=new Map();
+ const env=k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',SUPABASE_ANON_KEY:'anon'})[k];
+ const h=createHandler({env,fetch:async(url,init)=>{
+  if(url.endsWith('/auth/v1/user'))return Response.json({id:guid(1)});
+  if(url.includes('/manager_auth?'))return Response.json([{role:'gm'}]);
+  if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',name:'Test Store'}]);
+  if(init.method==='POST'&&(url.includes('/bot_settings?')||url.includes('/bot_groups?'))){const b=JSON.parse(init.body);saved.set(b.key||b.group_id,b);return new Response(null,{status:201});}
+  throw Error('unexpected read/write');
+ }});
+ for(const body of [{action:'owner',store_id:'TEST',name:'Synthetic Manager'},{action:'group',group_id:'C'+'a'.repeat(32),all_stores:true,label:'Synthetic HQ',enabled:true},{action:'config',clock:cfg}]){
+  const r=await h(new Request('https://fn.test',{method:'POST',headers:{Authorization:'Bearer synthetic'},body:JSON.stringify(body)}));assert.equal(r.status,200);const result=await r.json();assert.equal(result.error,undefined);
+ }
+ assert.equal(saved.get('owner:TEST').value.name,'Synthetic Manager');assert.equal(saved.get('C'+'a'.repeat(32)).all_stores,true);assert.deepEqual(saved.get('clock').value,cfg);
+});
