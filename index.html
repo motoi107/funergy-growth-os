@@ -36555,7 +36555,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1005';
+const APP_VERSION = '1006';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41795,11 +41795,13 @@ function renderBotLocalCenter(){
   return h;
 }
 /* FUNERGY_BOT_SHARED_BEGIN */
+var _botBatch=null;
+var _botScanSelection={store:'__all__',from:'',to:''};
 var _botShared={view:'shared',data:null,busy:false,error:'',store:'',status:'',kind:'labor'};
 var _botSession=null;
 var _botModalCase=null, _botModalVersion=null;
 function botResetShared(){_botSession=null;_botShared.data=null;_botShared.error='';}
-function botRender(){if(window._secureMode&&window._secTab==='bot')_secRerender();else renderPage('acct_center');}
+function botRender(){if(typeof curPage!=='undefined'&&curPage==='tasks'){renderPage('tasks');return;}if(window._secureMode&&window._secTab==='bot')_secRerender();else renderPage('acct_center');}
 async function botFetchSharedClock(){
   try{var r=await fetch(SUPABASE_URL+'/functions/v1/ops-bot?action=config',{cache:'no-store'});if(!r.ok)return;var j=await r.json();if(j.clock){window._botSharedClock=j.clock;lsSet('ce_config',j.clock);}}catch(e){}
 }
@@ -41848,12 +41850,15 @@ function renderBotCenter(){
  var h='<div class="card"><div class="card-title"><i class="ti ti-robot"></i> '+t('業務Bot','Operations Bot')+'</div><p>'+t('勤怠・Void・発注依頼の確認と、LINEでのやり取りをまとめます。送信と発注は担当者が確認して実行します。','Manage attendance, Void and purchase checks with LINE follow-up. A reviewer confirms every message and order.')+'</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary" onclick="botSharedView(\'shared\')">'+t('共有案件','Shared cases')+'</button><button class="btn btn-secondary" onclick="botSharedView(\'local\')">'+t('取得済み勤怠の確認','Review loaded attendance')+'</button><button class="btn btn-secondary" onclick="botLoginModal()">'+t('メール認証','Email sign-in')+'</button><button class="btn btn-primary" onclick="botLoadShared()" '+(_botShared.busy?'disabled':'')+'>'+t('更新','Refresh')+'</button></div></div>';
  if(_botShared.view==='local')return h+renderBotLocalCenter();
  if(_botShared.error)h+='<div class="card" role="alert">'+esc(_botShared.error)+'</div>';
- if(_botShared.busy)return h+'<div class="card">'+t('読込中…','Loading…')+'</div>';
+ if(_botShared.busy)return h+botBatchProgress()+'<div class="card">'+t('処理中はこの画面を開いたままにしてください。','Keep this page open while processing.')+'</div>';
  if(!d)return h+'<div class="card">'+t('メール認証後に共有案件を読み込めます。','Sign in with your manager email to load shared cases.')+'</div>';
  h+='<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="tag '+(d.line.secret&&d.line.token?'tag-green':'tag-yellow')+'">'+(d.line.secret&&d.line.token?t('LINE接続情報：設定済み','LINE credentials configured'):t('LINE接続情報：設定待ち','LINE credentials pending'))+'</span><span class="tag tag-gray">'+t('送信は確認後のみ','Messages require review')+'</span></div><p>'+t('自動取得','Scheduled collection')+': '+(d.worker_enabled?t('有効','Enabled'):t('停止中','Paused'))+'</p>';
  h+='<p>'+t('未解決案件は自動取得が有効な間、毎時順次再確認します（各店1回最大20件）。返信だけでは完了にしません。','When collection is enabled, unresolved cases are rechecked hourly, up to 20 per store per run. A reply alone does not close a case.')+'</p>';
  var stores=d.stores||[];
- h+='<div style="display:flex;gap:8px;flex-wrap:wrap"><select id="bot-cloud-store" class="form-input">'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'">'+esc(s.name)+'</option>';}).join('')+'</select><input id="bot-cloud-date" class="form-input" type="date" max="'+botYesterday()+'" value="'+botYesterday()+'"><button class="btn btn-primary" onclick="botCloudScan()" '+(_botShared.busy?'disabled':'')+'>'+t('Toastから勤怠を取得','Fetch attendance from Toast')+'</button><button class="btn btn-secondary" onclick="botNewPurchase()">'+t('発注依頼を登録','Add purchase request')+'</button></div>';
+ h+=botBatchProgress();
+ h+='<div style="display:flex;gap:8px;flex-wrap:wrap"><label>'+t('取得する店舗','Stores to fetch')+'<select id="bot-cloud-store" class="form-input" onchange="_botScanSelection.store=this.value"><option value="__all__">'+t('全店一括','All stores')+'</option>'+stores.map(function(st){return '<option value="'+esc(st.store_id)+'"'+(_botScanSelection.store===st.store_id?' selected':'')+'>'+esc(st.name)+'</option>';}).join('')+'</select></label><label>'+t('開始日','From')+'<input id="bot-cloud-from" class="form-input" type="date" max="'+botYesterday()+'" value="'+esc(_botScanSelection.from||botYesterday())+'" onchange="_botScanSelection.from=this.value"></label><label>'+t('終了日','To')+'<input id="bot-cloud-to" class="form-input" type="date" max="'+botYesterday()+'" value="'+esc(_botScanSelection.to||botYesterday())+'" onchange="_botScanSelection.to=this.value"></label><button class="btn btn-primary" onclick="botCloudScan()">'+t('Toastから勤怠を取得','Fetch attendance from Toast')+'</button><button class="btn btn-secondary" onclick="botNewPurchase()">'+t('発注依頼を登録','Add purchase request')+'</button></div><p>'+t('1回の取得は最大31日。全店を選ぶと、店舗・日付ごとに順番に取得します。','Up to 31 days per batch. All stores are fetched sequentially by store and date.')+'</p>';
+ h+='<details class="card"><summary>'+t('グループLINEで勤怠をテストする','Test attendance in your LINE group')+'</summary><ol><li>'+t('まず1日分の勤怠を取得し、実際の確認対象を1件開きます。','Fetch one day and open one real attendance case.')+'</li><li>'+t('担当者と宛先グループを確認し、本文の先頭に【動作確認】を付けてLINEへ送信します。','Check the assignee and group, prefix the message with [TEST], then send.')+'</li><li>'+t('LINEで案件番号付きの通知を確認。必要な修正をToastで行い、「B-案件番号 完了」とグループへ返信します。','Check the case-coded message in LINE. Correct Toast if needed and reply “B-case-code done” in the group.')+'</li><li>'+t('この画面を更新し「再確認待ち」を確認。「Toastで正常化を再確認」で、異常が残れば未完了、解消していれば完了になることを確認します。','Refresh to see Recheck, then recheck Toast. Unresolved errors stay open; verified corrections close the case.')+'</li></ol><p>'+t('正常な打刻をテストのために変更する必要はありません。通知の到着と返信は実際のグループで確認してください。','Do not alter correct time entries for testing. Verify delivery and replies in the actual group.')+'</p></details>';
+
  if(['gm','ceo'].indexOf(d.actor.role)>=0)h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn btn-secondary" onclick="botPublishConfig()">'+t('判定設定を全体に適用','Publish clock rules')+'</button><button class="btn btn-secondary" onclick="botWorkerToggle()">'+(d.worker_enabled?t('自動取得を停止','Pause collection'):t('自動取得を有効化','Enable collection'))+'</button><button class="btn btn-secondary" onclick="botGroupsModal()">'+t('LINEグループ設定','LINE group settings')+'</button></div>';
  h+='<p>'+t('まずは勤怠の確認から運用します。商品単位のVoidは対象外です。','Start with attendance review. Item-level Voids are excluded.')+'</p><details><summary>'+t('決済Void・未決済','Payment Voids and unpaid checks')+'</summary><button class="btn btn-secondary" onclick="botCloudScan(true)">'+t('決済Void・未決済も取得','Also fetch payment Voids and unpaid checks')+'</button></details>';
  if(['gm','ceo'].indexOf(d.actor.role)>=0)h+='<button class="btn btn-secondary" onclick="botFinanceToggle()">'+(d.finance_enabled?t('決済の自動取得を停止','Pause payment collection'):t('決済Void・未決済の自動取得を有効化','Enable payment Void and unpaid collection'))+'</button>';
@@ -41869,10 +41874,25 @@ function renderBotCenter(){
  h+='</div><details class="card"><summary>'+t('取得状況','Collection status')+'</summary>'+(d.runs||[]).map(function(r){return '<p>'+esc(r.store_id)+' / '+esc(r.last_success||'—')+(r.last_error?' / '+esc(r.last_error):'')+'</p>';}).join('')+'</details>';
  return h;
 }
+function botBatchProgress(){
+ if(!_botBatch)return '';var b=_botBatch,esc=escapeHtml,ok=b.jobs.filter(function(j){return j.state==='ok';}).length,failed=b.jobs.filter(function(j){return j.state==='error';}),pending=b.jobs.filter(function(j){return j.state==='pending';}).length;
+ return '<div class="card" role="status"><b>'+t('一括取得','Batch collection')+'</b><p>'+t('成功','Succeeded')+': '+ok+' / '+b.jobs.length+' · '+t('失敗','Failed')+': '+failed.length+' · '+t('未取得','Pending')+': '+pending+'</p><p>'+esc(b.current||'')+'</p>'+(_botShared.busy?'<button class="btn btn-secondary" onclick="_botBatch.stop=true;this.disabled=true">'+t('現在の取得後に停止','Stop after current request')+'</button>':((failed.length||pending)?'<button class="btn btn-secondary" onclick="botRunBatch(true)">'+t('失敗・未取得分を再開','Resume failed and pending')+'</button>':''))+failed.map(function(j){return '<p>'+esc(j.store+' / '+j.date+' / '+j.error)+'</p>';}).join('')+'</div>';
+}
+function botScanJobs(store,from,to){
+ var parse=function(v){if(!/^\d{4}-\d{2}-\d{2}$/.test(v))throw Error(t('日付を入力してください','Enter valid dates'));var d=new Date(v+'T00:00:00Z');if(!isFinite(d.getTime())||d.toISOString().slice(0,10)!==v)throw Error(t('日付が不正です','Invalid date'));return d.getTime();};
+ var a=parse(from),z=parse(to);if(z<a||z-a>30*86400000||to>botYesterday())throw Error(t('前日までの31日以内の期間を指定してください','Choose up to 31 days ending no later than yesterday'));
+ var stores=(_botShared.data&&_botShared.data.stores||[]).filter(function(st){return store==='__all__'||st.store_id===store;});if(!stores.length)throw Error(t('取得対象の店舗がありません','No stores selected'));
+ var jobs=[];for(var day=a;day<=z;day+=86400000)stores.forEach(function(st){jobs.push({store:st.store_id,date:new Date(day).toISOString().slice(0,10),state:'pending'});});return jobs;
+}
 async function botCloudScan(withVoids){
- if(_botShared.busy)return;var store=document.getElementById('bot-cloud-store').value,date=document.getElementById('bot-cloud-date').value;_botShared.busy=true;botRender();
- try{var j=await botAPI({action:'scan',store_id:store,date:date,with_voids:withVoids===true});_botShared.kind=withVoids===true?'':'labor';showToast(t('取得・案件保存が完了しました','Fetched and saved cases')+' ('+j.created_or_matched+')','success');}
- catch(e){showToast(e.message,'warning');}finally{_botShared.busy=false;await botLoadShared();}
+ if(_botShared.busy)return;
+ try{var store=document.getElementById('bot-cloud-store').value,from=document.getElementById('bot-cloud-from').value,to=document.getElementById('bot-cloud-to').value;var jobs=botScanJobs(store,from,to);_botScanSelection={store:store,from:from,to:to};_botBatch={jobs:jobs,withVoids:withVoids===true,stop:false,current:''};await botRunBatch(false);}catch(e){showToast(e.message,'warning');}
+}
+async function botRunBatch(retry){
+ if(_botShared.busy||!_botBatch)return;var b=_botBatch;
+ if(retry)b.jobs.forEach(function(j){if(j.state==='error')j.state='pending';});b.stop=false;_botShared.busy=true;_botShared.kind=b.withVoids?'':'labor';botRender();
+ try{for(var i=0;i<b.jobs.length;i++){var j=b.jobs[i];if(b.stop)break;if(j.state!=='pending')continue;b.current=j.store+' / '+j.date;botRender();try{await botAPI({action:'scan',store_id:j.store,date:j.date,with_voids:b.withVoids});j.state='ok';delete j.error;}catch(e){j.state='error';j.error=e.message;if(/auth|forbidden|sign.in/i.test(e.message))b.stop=true;}botRender();}}
+ finally{b.current=b.stop?t('停止しました。未取得分は再開できます。','Stopped. Pending requests can be resumed.'):t('処理が終了しました。成功・失敗の件数をご確認ください。','Processing finished. Review success and failure counts.');_botShared.busy=false;await botLoadShared();}
 }
 async function botPublishConfig(){
  var cfg=getCeCfg();if(!confirm(t('次の判定設定を全体で使います：','Publish these shared clock rules:')+'\n'+JSON.stringify(cfg)))return;
@@ -63195,6 +63215,7 @@ function renderWorkCenter(){
   var openT = getTasks().filter(function(t){ return t && !t._deleted && t.status!=='完了' && (t.store==='ALL' || !t.store || getVisibleStores().some(function(st){return st.id===t.store;})); });
   var today = todayISO();
   var dueT = openT.filter(function(t){ return t.due && t.due<=today; });
+  if (workTab==='bot' && !botCanView()) workTab='today';
   if (workTab==='announce' && !canAnn) workTab='today';
   if (workTab==='error' && !canErr) workTab='today';
   var bar = `<div class="section-header"><div><div class="section-title"><i class="ti ti-layout-dashboard" style="color:var(--accent)"></i> ワークセンター</div><div class="section-sub">タスク・承認・エラー・アナウンスの作業ハブ</div></div></div>
@@ -63204,9 +63225,11 @@ function renderWorkCenter(){
     <div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>
     ${canErr?`<div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> エラー${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>`:''}
     ${canMc?`<div class="phase-tab${workTab==='mgmt'?' active':''}" onclick="setWorkTab('mgmt')"><i class="ti ti-shield-check" style="font-size:12px"></i> 管理統括</div>`:''}
+    ${botCanView()?`<div class="phase-tab${workTab==='bot'?' active':''}" onclick="setWorkTab('bot')"><i class="ti ti-robot"></i> ${t('業務Bot','Operations Bot')}</div>`:''}
     <div class="phase-tab${workTab==='requests'?' active':''}" onclick="setWorkTab('requests')"><i class="ti ti-inbox" style="font-size:12px"></i> 対応依頼</div>
     ${canAnn?`<div class="phase-tab${workTab==='announce'?' active':''}" onclick="setWorkTab('announce')"><i class="ti ti-speakerphone" style="font-size:12px"></i> アナウンス</div>`:''}
   </div>`;
+  if (workTab==='bot' && botCanView()) return bar + renderBotCenter();
   if (workTab==='tasks')    return bar + renderTasks();
   if (workTab==='approval') return bar + renderApproval();
   if (workTab==='mgmt')     { if(!canMc){ workTab='today'; } else return bar + renderMgmtControl(true); }   /* v823 */

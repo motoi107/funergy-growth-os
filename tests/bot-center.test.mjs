@@ -79,9 +79,30 @@ test('shared group and assignment UI work in both languages and escape user cont
  }
 });
 test('attendance is the initial shared filter and default collection explicitly excludes Voids',async()=>{
- const ctx=context();assert.equal(ctx._botShared.kind,'labor');const calls=[];
+ const ctx=context();assert.equal(ctx._botShared.kind,'labor');const calls=[];ctx._botShared.data={stores:[{store_id:'TEST'}]};
  ctx.document.getElementById=id=>({value:id==='bot-cloud-store'?'TEST':'2026-08-01'});
  ctx.botAPI=async body=>{calls.push(body);return {created_or_matched:0};};ctx.botLoadShared=async()=>{};
  await ctx.botCloudScan();assert.equal(calls[0].with_voids,false);assert.equal(ctx._botShared.kind,'labor');
  await ctx.botCloudScan(true);assert.equal(calls[1].with_voids,true);assert.equal(ctx._botShared.kind,'');
+});
+
+test('bulk scans cover inclusive days and all stores, preserve failures, and retry only unfinished work',async()=>{
+ const ctx=context();ctx._botShared.data={stores:[{store_id:'A'},{store_id:'B'}]};ctx.botYesterday=()=> '2026-08-10';
+ assert.throws(()=>ctx.botScanJobs('__all__','2026-07-01','2026-08-10'));
+ assert.throws(()=>ctx.botScanJobs('__all__','2026-08-02','2026-08-01'));
+ assert.throws(()=>ctx.botScanJobs('__all__','2026-02-30','2026-03-01'));
+ assert.throws(()=>ctx.botScanJobs('__all__','2026-08-10','2026-08-11'));
+ assert.equal(ctx.botScanJobs('__all__','2026-07-11','2026-08-10').length,62);
+ const calls=[];ctx.botLoadShared=async()=>{};ctx.botAPI=async b=>{calls.push(b);if(calls.length===2)throw Error('toast_read_failed');return {};};
+ ctx._botBatch={jobs:ctx.botScanJobs('__all__','2026-08-01','2026-08-02'),withVoids:false};
+ await ctx.botRunBatch(false);assert.equal(calls.length,4);assert.equal(ctx._botBatch.jobs.filter(j=>j.state==='error').length,1);
+ await ctx.botRunBatch(true);assert.equal(calls.length,5);assert.equal(calls[4].store_id,'B');assert.equal(calls[4].date,'2026-08-01');
+ assert.equal(ctx._botBatch.jobs.every(j=>j.state==='ok'),true);
+ ctx._botBatch={jobs:ctx.botScanJobs('__all__','2026-08-01','2026-08-02'),withVoids:true};ctx.botAPI=async b=>{ctx._botBatch.stop=true;assert.equal(b.with_voids,true);};
+ await ctx.botRunBatch(false);assert.equal(ctx._botBatch.jobs.filter(j=>j.state==='pending').length,3);
+});
+test('work center hosts the same bot view and async updates stay in that tab',()=>{
+ const ctx=context();ctx.curPage='tasks';let page;ctx.renderPage=p=>{page=p;};ctx.botRender();assert.equal(page,'tasks');
+ assert.match(source,/if \(workTab==='bot' && botCanView\(\)\) return bar \+ renderBotCenter\(\)/);
+ assert.match(source,/botCanView\(\)\?`<div class="phase-tab\$\{workTab==='bot'/);
 });
