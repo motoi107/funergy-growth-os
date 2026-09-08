@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createHandler,validSignature,validConfig,safePurchaseURL,laborFindings,voidFindings,unpaidFindings,financeResolution,businessDate,lineMentionMessage,dailyDisposition} from '../supabase/functions/ops-bot/handler.mjs';
+import {createHandler,validSignature,validConfig,safePurchaseURL,laborFindings,voidFindings,unpaidFindings,financeResolution,businessDate,lineMentionMessage,dailyDisposition,formatMorningSummary} from '../supabase/functions/ops-bot/handler.mjs';
 const cfg={nightFrom:'03:00',nightTo:'05:00',longH:12,shortMin:15};
 const store={store_id:'TEST',name:'Test Restaurant'};
 const guid=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
@@ -161,6 +161,36 @@ test('morning reminders require fresh evidence and separate technical failures',
  assert.equal(dailyDisposition({...c,last_check:{message:'toast_read_failed'}},'2026-09-08'),'review');
  assert.equal(dailyDisposition({...c,status:'done'},'2026-09-08'),'done');
 });
+test('morning summary reports zeroes only after complete collection and lists store counts',()=>{
+ let m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
+ assert.equal(m.complete,true);assert.equal(m.total,0);assert.match(m.text,/No unresolved issues/);assert.match(m.text,/Unpaid: 0/);
+ m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:55,failed:1,active_stores:8,finance_enabled:true,finance_ok:55,counts:{labor:2,void:1,unpaid:0},stores:[{store_id:'TEST',store_name:'Test Restaurant',labor:2,void:1,unpaid:0}]});
+ assert.equal(m.complete,false);assert.equal(m.total,3);assert.match(m.text,/未完了/);assert.match(m.text,/Test Restaurant \(TEST\)/);assert.doesNotMatch(m.text,/No unresolved issues/);
+ m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:false,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
+ assert.equal(m.complete,false);assert.match(m.text,/Finance collection/);assert.doesNotMatch(m.text,/No unresolved issues/);
+ m=formatMorningSummary({from:'2026-10-01',to:'2026-09-30',expected:0,ok:0,failed:0,active_stores:8,finance_enabled:true,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
+ assert.match(m.text,/No completed days this month/);
+ m=formatMorningSummary({from:'2026-10-01',to:'2026-09-30',expected:0,ok:0,failed:0,active_stores:0,finance_enabled:true,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
+ assert.equal(m.complete,false);assert.match(m.text,/No active stores/);
+});
+test('automatic morning summary is worker-key gated, targets configured headquarters group and is idempotent',async()=>{
+ const group='C'+'d'.repeat(32),event={id:7,data:{state:'pending',request_id:guid(77),message:{type:'text',text:'Saved morning summary'}}};let pushes=0,finished=[];
+ const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'line'})[k],fetch:async(url,init)=>{
+  if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);
+  if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
+  if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
+  if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
+  if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-09-08',from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
+  if(url.endsWith('/rpc/bot_reserve_morning_summary'))return Response.json(event);
+  if(url.endsWith('/rpc/bot_finish_morning_summary')){finished.push(JSON.parse(init.body));event.data.state=finished.at(-1).p_state;return Response.json(null);}
+  if(url==='https://api.line.me/v2/bot/message/push'){pushes++;assert.equal(JSON.parse(init.body).to,group);assert.equal(init.headers['X-Line-Retry-Key'],guid(77));return new Response(null,{status:200,headers:{'x-line-request-id':'line-request'}});}
+  throw Error('unexpected morning path '+url);
+ }});
+ const call=key=>h(new Request('https://fn.test',{method:'POST',headers:{'x-bot-worker-key':key},body:JSON.stringify({action:'worker',mode:'morning_summary'})}));
+ assert.equal((await call('wrong')).status,401);assert.equal(pushes,0);
+ let r=await call('worker');assert.equal(r.status,200);assert.equal((await r.json()).state,'accepted');assert.equal(pushes,1);assert.equal(finished[0].p_state,'accepted');
+ r=await call('worker');assert.equal((await r.json()).already_sent,true);assert.equal(pushes,1);
+});
 test('monthly worker uses leased business dates and records failures without sending LINE',async()=>{
  let failed=false,job=true;const results=[];
  const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',TOAST_CLIENT_ID:'synthetic',TOAST_CLIENT_SECRET:'synthetic'})[k],fetch:async(url,init)=>{
@@ -168,7 +198,7 @@ test('monthly worker uses leased business dates and records failures without sen
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
   if(url.includes('key=eq.collection_range'))return Response.json([{value:{mode:'month_to_yesterday'}}]);
   if(url.endsWith('/rpc/bot_claim_range'))return Response.json(job?{business_date:'2026-09-01',lease_id:guid(44)}:null);
-  if(url.endsWith('/rpc/bot_finish_range')){results.push(JSON.parse(init.body));return Response.json(true);}
+  if(url.endsWith('/rpc/bot_finish_range_v2')){results.push(JSON.parse(init.body));return Response.json(true);}
   if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',restaurant_guid:guid(1)}]);
   if(url.endsWith('/rpc/bot_take_run'))return Response.json(true);
   if(url.includes('/authentication/v1/'))return Response.json({token:{accessToken:'test'}});
