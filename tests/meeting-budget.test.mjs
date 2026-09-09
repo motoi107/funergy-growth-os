@@ -119,3 +119,9 @@ test('year matrix preserves revised zero/missing targets, historical seeds and e
   c.edits={TEST:{sales:{t9:123}}};assert.equal(c.cellV('sales','t',9,0,'2026-09'),123);
   c.edits={};c.budget={segments:{dinner:{sales:3000}}};assert.equal(c.cellV('ppa','t',9,0,'2026-09'),null);
 });
+test('a store without a budget still renders actual chart series with unknown targets',()=>{
+  const c=setup();c.budget=null;c.daily={'2026-09-01':{actual:255,guests:5}};
+  c.laborMonthWeeks=()=>[{sun:'2026-08-30'}];c.laborWeekHours=()=>({byWeek:{},total:0});c._mdDayGuests=(id,ov)=>ov.guests||0;c.dayCostReal=()=>0;c.getStoreKpiTargets=()=>({});c.mcYmOffset=()=>0;
+  const ser=c.mdStoreSeries('TEST','2026-09',true);near(ser.salesMonth,255);near(ser.budMonth,0);
+  const r=c.mdWeekRates('TEST','2026-09',true)[0];assert.equal(r.sales,null);assert.equal(r.guests,null);assert.equal(r.ppa,null);
+});
