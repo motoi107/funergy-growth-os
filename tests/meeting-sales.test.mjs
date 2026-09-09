@@ -5,18 +5,18 @@ import vm from 'node:vm';
 import {execFileSync} from 'node:child_process';
 
 const source=fs.readFileSync(new URL('../index.html',import.meta.url),'utf8').replace(/\r\n/g,'\n');
-function fn(name,s=source){
+export function fn(name,s=source){
   const start=s.indexOf('function '+name+'(');
   assert.ok(start>=0,name);
   const end=s.indexOf('\n}',start);
   return s.slice(start,end+2);
 }
-function ctx(){
+export function ctx(){
   const c={console,Date,DOW:['月','火','水','木','金','土','日'],
     cfg:{mode:'hours',dow:{},lOn:false,dOn:true},closure:null,
     getTipHoursCfg:()=>c.cfg,tipHoursWindowFor:()=>c.cfg,
     dowLabelForDate:()=> '月',dayClosureMode:()=>c.closure,
-    getBudgetForMonth:()=>c.budget,getDow:b=>b.dow,getSegments:b=>b.segments||{},
+    getBudgetForMonth:()=>c.budget,getDow:b=>b.dow,getSegments:b=>b?.segments||{},
     bizToday:()=> '2026-09-09',getDailyActuals:()=>c.daily,
     guestCountType:()=> 'guest',laborCoreForYm:()=>({total:0,sales:0}),
     getTipLabor:()=>null,foodCostOf:()=>({invoice:0,buy:0,transfer:0}),
@@ -26,7 +26,7 @@ function ctx(){
     repeatStats:()=>({has:false}),prevMonthDaysList:()=>[],t:(ja,en)=>c.lang==='en'?en:ja,
     daily:{},salesBudget:14000};
   vm.createContext(c);
-  for(const name of ['usesDowMode','weekdayCountsForMonth','dowSegMonthly','salesActualForDay','budgetSpendBasis','keyKpiStats','_meetSegExtra','_meetLaborLD','_meetKpiRows']) vm.runInContext(fn(name),c);
+  for(const name of ['usesDowMode','segSales','weekdayCountsForMonth','dowSegMonthly','salesActualForDay','budgetSpendBasis','daysOfYm','meetingBudgetPlan','meetingBudgetKpi','keyKpiStats','_meetSegExtra','_meetLaborLD','_meetKpiRows']) vm.runInContext(fn(name),c);
   c.budget={dow:{lunch:[],dinner:Array.from({length:7},()=>({guests:10,spend:51})),takeout:[]}};
   return c;
 }
@@ -71,7 +71,7 @@ test('multi-store spend targets retain stores with legacy sales and guests but n
   c.getBudgetForMonth=id=>id==='ENTERED'?entered:{segments:{dinner:{guests:300,sales:9000}}};
   c.monthSalesBudget=id=>id==='ENTERED'?14000:9000;
   const k=c.keyKpiStats([{id:'ENTERED'},{id:'LEGACY'}],[{date:'2026-09-01'}]);
-  assert.equal(k.budget,23000);assert.equal(k.ppaBudget,40.5);assert.equal(k.ppaDineBudget,40.5);
+  assert.equal(k.budget,23000);assert.ok(Math.abs(k.ppaBudget-23000/(14000/51+300))<1e-9);assert.ok(Math.abs(k.ppaBudget-k.ppaDineBudget)<1e-9);
 });
 test('explicit zero-price guests are included in a weighted target',()=>{
   const c=ctx();c.budget.dow.lunch=Array.from({length:7},()=>({guests:10,spend:0}));
@@ -84,12 +84,12 @@ test('meeting KPI integration uses adjusted services and entered target, keeps r
   const k=c.keyKpiStats([{id:'TEST'}],[{date:'2026-09-01'},{date:'2026-09-09'}]);
   assert.equal(k.sales,1020);assert.equal(k.guests,20);assert.equal(k.ppa,51);
   assert.equal(k.lunchGuests,0);assert.equal(k.dinnerGuests,20);assert.equal(k.ppaLunch,null);assert.equal(k.ppaDinner,51);
-  assert.equal(k.budget,14000);assert.equal(k.ppaBudget,51);assert.equal(k.ppaDineBudget,51);
+  assert.equal(k.budget,14000);assert.ok(Math.abs(k.ppaBudget-51)<1e-9);assert.ok(Math.abs(k.ppaDineBudget-51)<1e-9);
   assert.equal(JSON.stringify(c.daily),before);
   for(const lang of ['ja','en']){c.lang=lang;
     const html=c._meetSegExtra(k,'ppa','TEST','2026-09',1,'');
     assert.match(html,/\$51/); assert.doesNotMatch(html,/ランチ|>L /);
-    assert.equal(c._meetKpiRows(k).find(x=>x.key==='ppa').tgt,51);
+    assert.ok(Math.abs(c._meetKpiRows(k).find(x=>x.key==='ppa').tgt-51)<1e-9);
   }
 });
 test('meeting labor sales denominator uses same service classification',()=>{
@@ -97,12 +97,12 @@ test('meeting labor sales denominator uses same service classification',()=>{
   c.daysOfYm=()=>[{date:'2026-09-01'}];const b=c._meetLaborLD('TEST','2026-09');
   assert.equal(b.lunchSales,0);assert.equal(b.dinnerSales,500);
 });
-test('meeting detail uses dinner-only actuals and spend target despite a zero sales budget day',()=>{
+test('meeting detail preserves dinner-only actuals and a zero target day has no spend target',()=>{
   const c=ctx();for(const name of ['_gapDowPerDay','_gapDowGuestsPerDay','_meetGapBreakdown']) vm.runInContext(fn(name),c);
   c._gapDaysElapsed=()=>({days:[{date:'2026-09-01',dowIdx:1}],counts:[0,1,0,0,0,0,0]});
   c.daily={'2026-09-01':{actual:510,guests:10,lunchSales:102,dinnerSales:408,lunchGuests:2,dinnerGuests:8,budget:0}};
   const p=c._meetGapBreakdown('TEST','2026-09','ppa');
-  assert.equal(p.tgt,51);assert.equal(p.act,51);assert.equal(p.ld.lunch.act,null);assert.equal(p.ld.dinner.act,51);
+  assert.equal(p.tgt,null);assert.equal(p.act,51);assert.equal(p.ld.lunch.act,null);assert.equal(p.ld.dinner.act,51);
   const s=c._meetGapBreakdown('TEST','2026-09','sales');
   assert.equal(s.tgt,0);assert.equal(s.act,510);assert.equal(s.ld.lunch.act,0);assert.equal(s.ld.dinner.act,510);
 });
