@@ -22204,7 +22204,7 @@ function _meetGapBreakdown(storeId, ym, key){
   var dowManual = [0,0,0,0,0,0,0];   /* v914: 日別予算を手入力した日の数（曜日ごと） */
   var hasAny = false, hasTO = false;
   el.days.forEach(function(d){
-    var ov = da[d.date] || {};
+    var ov = salesActualForDay(storeId,d.date,da[d.date]);
     if (ov.actual == null) return;
     hasAny = true;
     var tls = Number(ov.toLunchSales)||0,  tds = Number(ov.toDinnerSales)||0;
@@ -22294,11 +22294,11 @@ function _meetGapBreakdown(storeId, ym, key){
       var t = cnt>0 ? per/cnt : null;
       ld[sg] = { label:LBL[sg], act:a, tgt:t, gap:(a!=null&&t!=null)?(a-t):null };
     });
-    var ga = 0, sa = 0, gt = 0;
+    var ga = 0, sa = 0, gt = 0, spendSales = 0;
     SEGS.forEach(function(sg){ ga+=A[sg].g; sa+=A[sg].s; });
-    /* v906: 目標客単価 = 日別予算の累計 ÷ 予算客数。売上側を budDaily に揃える。 */
-    if (usesDow) SEGS.forEach(function(sg){ for (var i4=0;i4<7;i4++){ gt += _gapDowGuestsPerDay(dow,sg,i4)*el.counts[i4]; } });
-    actT = ga>0 ? sa/ga : null; tgtT = gt>0 ? budDaily/gt : null;
+    /* 客単価目標は入力単価を客数で加重平均。日別の売上調整から切り離す。 */
+    if (usesDow) SEGS.forEach(function(sg){ for (var i4=0;i4<7;i4++){ gt += _gapDowGuestsPerDay(dow,sg,i4)*el.counts[i4]; spendSales += _gapDowPerDay(dow,sg,i4)*el.counts[i4]; } });
+    actT = ga>0 ? sa/ga : null; tgtT = gt>0 ? spendSales/gt : null;
   }
 
   /* 曜日別。曜日別予算が無いときは出さない（推計を混ぜない）。 */
@@ -23354,7 +23354,7 @@ function _meetLaborLD(storeId, ym){
   var days=daysOfYm(ym), da={}; try{ da=getDailyActuals(storeId)||{}; }catch(e){}
   var lc=0, dc=0, lsv=0, dsv=0;
   days.forEach(function(d){
-    var ov=da[d.date]||{};
+    var ov=salesActualForDay(storeId,d.date,da[d.date]);
     lsv+=Number(ov.lunchSales)||0; dsv+=Number(ov.dinnerSales)||0;
     var lab=null; try{ lab=getTipLabor(storeId, d.date); }catch(e){}
     if(!lab) return;
@@ -28692,9 +28692,55 @@ function prevMonthDaysList(ym){
     arr.push({date:py+'-'+String(pm+1).padStart(2,'0')+'-'+String(d).padStart(2,'0'), dow:DOW[(dt.getDay()+6)%7]}); }
   return arr;
 }
+/* Reporting-only service classification. Never mutate raw daily data or Tip inputs.
+   A single dinner service includes advance orders entered before its opening time. */
+function salesActualForDay(storeId, date, raw){
+  raw=raw||{};
+  try{
+    var cfg=getTipHoursCfg(storeId);
+    if(!cfg || cfg.mode!=='hours' || !cfg.dow) return raw;
+    var win=tipHoursWindowFor(storeId,date);
+    if(!win || win.lOn!==false || win.dOn!==true) return raw;
+    var closed=typeof dayClosureMode==='function' ? dayClosureMode(storeId,date,dowLabelForDate(date)) : null;
+    if(closed==='closed' || closed==='dclose') return raw;
+    var out=Object.assign({},raw);
+    [['lunchSales','dinnerSales'],['lunchGuests','dinnerGuests'],
+     ['toLunchSales','toDinnerSales'],['toLunchCount','toDinnerCount']].forEach(function(pair){
+      if(raw[pair[0]]==null && raw[pair[1]]==null) return;
+      out[pair[1]]=(Number(raw[pair[0]])||0)+(Number(raw[pair[1]])||0);
+      out[pair[0]]=0;
+    });
+    return out;
+  }catch(e){ return raw; }
+}
+/* Entered spend targets, weighted by planned guests/orders. Daily sales overrides
+   change the sales plan, not the entered spend target. Explicit ym avoids date rollover. */
+function budgetSpendBasis(storeId, ym){
+  var b=getBudgetForMonth(storeId,ym), out={sales:0,guests:0,dineSales:0,dineGuests:0};
+  if(!b) return out;
+  var add=function(sg,g,p){
+    g=Number(g)||0;
+    if(!(g>0 && Number.isFinite(p) && p>=0)) return;
+    out.sales+=g*p; out.guests+=g;
+    if(sg!=='takeout'){ out.dineSales+=g*p; out.dineGuests+=g; }
+  };
+  if(usesDowMode(b)){
+    var parts=String(ym).split('-'), counts=weekdayCountsForMonth(+parts[0],+parts[1]), dw=getDow(b);
+    ['lunch','dinner','takeout'].forEach(function(sg){
+      for(var i=0;i<7;i++){ var c=(dw[sg]||[])[i]||{};
+        add(sg,(parseFloat(sg==='takeout'?c.orders:c.guests)||0)*(counts[i]||0),parseFloat(c.spend)); }
+    });
+  }else{
+    var segs=getSegments(b);
+    ['lunch','dinner','takeout'].forEach(function(sg){ var c=segs[sg]||{};
+      add(sg,parseFloat(sg==='takeout'?c.orders:c.guests),parseFloat(c.spend)); });
+  }
+  return out;
+}
 /* ===== 重要KPI（売上/集客/客単価/リピート率/原価率/人件費率）統一集計＋予実比較 ===== */
 function keyKpiStats(scopeStores, days){
   var sales=0,budget=0,guests=0,food=0,labor=0,laborHours=0,dayHasActual={};
+  var spendBasis={sales:0,guests:0,dineSales:0,dineGuests:0};
   var lunchS=0,lunchG=0,dinnerS=0,dinnerG=0,toLS=0,toDS=0,toLC=0,toDC=0;
   var guestsTO=0, toSalesBud=0;   /* v932: 店内客単価のための集計（実績のTO客数／TO売上予算） */
   var salesBud=0,guestBud=0,fcBud$=0,laborBud$=0,segSales$=0,hasGuestBud=false;
@@ -28712,12 +28758,13 @@ function keyKpiStats(scopeStores, days){
   (scopeStores||[]).forEach(function(s){
     var actuals=getDailyActuals(s.id);
     var b=getBudgetForMonth(s.id, ym);
+    var sb=budgetSpendBasis(s.id,ym);
     var segs=getSegments(b);
     var dailyIns=(typeof storeInsuranceDaily==='function')?storeInsuranceDaily(s.id, ym):0;
     var dailySalary=(typeof storeSalaryDaily==='function')?storeSalaryDaily(s.id, ym):0;
     var metric=gct(s.id);
     (days||[]).forEach(function(d){
-      var ov=actuals[d.date]||{};
+      var ov=salesActualForDay(s.id,d.date,actuals[d.date]);
       /* ★v981: 実績も前日までにそろえる。予算は budToToday（前日まで）なのに
          実績だけ当日を含んでいたため、当日ぶんが入ると高く出る形になっていた。 */
       var past=d.date<todayStr;
@@ -28758,7 +28805,15 @@ function keyKpiStats(scopeStores, days){
     var _gdb=budgetGuestsMonthly(s.id,'dinner',ofst); if(_gdb!=null){ dinnerGuestBud+=_gdb; hasDGB=true; }
     var _gtb=budgetTakeoutMonthly(s.id,ofst); if(_gtb!=null){ takeoutBud+=_gtb; hasTGB=true; }
     /* v932: 店内客単価の目標の分子に使う。 */
-    try{ toSalesBud += (monthTakeoutSalesBudget(s.id, ym)||0); }catch(e){}
+    var localToSalesBud=0;
+    try{ localToSalesBud=monthTakeoutSalesBudget(s.id,ym)||0; toSalesBud+=localToSalesBud; }catch(e){}
+    /* Fallback belongs to each store, so mixed scopes retain legacy-only budgets. */
+    if(!(sb.guests>0) && gb>0){ sb.guests=gb; sb.sales=_msb; }
+    var localDineGuests=(gb||0)-(_gtb||0);
+    if(!(sb.dineGuests>0) && localDineGuests>0){
+      sb.dineGuests=localDineGuests; sb.dineSales=Math.max(0,_msb-localToSalesBud);
+    }
+    Object.keys(spendBasis).forEach(function(key){ spendBasis[key]+=sb[key]; });
   });
   var rs=repeatStats(scopeStores,days);
   var rsPrev=repeatStats(scopeStores, prevMonthDaysList(ym));
@@ -28807,6 +28862,7 @@ function keyKpiStats(scopeStores, days){
     /* v932: 店内客単価の目標。①で guestBud はテイクアウト込みになったので、
        店内の客数予算は guestBud − takeoutBud で戻す。 */
     ppaDineBudget: (function(){
+      if(spendBasis.dineGuests>0) return Math.round(spendBasis.dineSales/spendBasis.dineGuests*100)/100;
       var gd2 = guestBud - (hasTGB?takeoutBud:0);
       if(!(hasGuestBud && gd2>0)) return null;
       return Math.round(Math.max(0,(salesBud||budget) - toSalesBud)/gd2*100)/100;
@@ -28816,7 +28872,8 @@ function keyKpiStats(scopeStores, days){
     repeatRate: (rs.has&&rs.total>0)?Math.round(rs.repeat/rs.total*1000)/10:null,
     repeatHas: rs.has&&rs.total>0, repeat:rs.repeat, first:rs.first, sr:rs.sr, rTotal:rs.total,
     guestBudget: hasGuestBud&&guestBud>0?guestBud:null,
-    ppaBudget: (hasGuestBud&&guestBud>0)?Math.round((salesBud||budget)/guestBud*100)/100:null,
+    ppaBudget: spendBasis.guests>0 ? Math.round(spendBasis.sales/spendBasis.guests*100)/100
+      : ((hasGuestBud&&guestBud>0)?Math.round((salesBud||budget)/guestBud*100)/100:null),
     fcBudgetRate: (kpiFcTgt!=null?kpiFcTgt:(segSales$?Math.round(fcBud$/segSales$*1000)/10:null)),
     laborBudgetRate: (kpiLbTgt!=null?kpiLbTgt:(segSales$?Math.round(laborBud$/segSales$*1000)/10:null)),
     repeatPrev: (rsPrev.has&&rsPrev.total>0)?Math.round(rsPrev.repeat/rsPrev.total*1000)/10:null,
@@ -36560,7 +36617,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1009';
+const APP_VERSION = '1010';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
