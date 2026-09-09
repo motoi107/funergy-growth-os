@@ -132,3 +132,18 @@ Motoが残作業とFunergy＋への反映を許可。PR #6を継続し、共有�
 1009検証・反映状況（2026-09-08 UTC）: 実装コミット3173d335685b474ac773a2b6ada6c41c96f2a4ac、tree ca2b3c56521be33b79193b96959d699ec27ec4d6。Codex review_monthly_botが独立レビューし、未指定発注依頼の登録RPCに残っていた権限参照を修正後に再レビュー、残る指摘なし。Node 47件成功、静的1009整合成功。Supabase migration ops_bot_separate_member_auth適用済み、ops-bot version 9 ACTIVE、配備されたhandlerはローカル実装と一致。新規の実利用者登録は未実施。
 
 画面は公開待ち。GitHub create_blobで1009 HTML全体の公開送信を自動承認審査が拒否（明示承認は1007のみ、今回のソースには未確認との理由）。別経路で迂回せず、公開ブランチcodex/bot-only-authはmain基準の作成だけでソースは未push、PRも未作成。1009のソース公開を含む承認後に最新mainを再取得し、この差分をpush・レビュー・公開する。既存1008画面とサーバー9は互換。実機の新規Botログインと1009 HTML/SWの公開一致は未検証。
+
+
+1010（会議タブ）: ランチOFF・ディナーONの日の事前注文を、表示用コピーで売上・客数・TOともディナーへ合算。元データ・Tip・Toast同期は維持。客単価目標は日別調整後の売上÷未調整客数から、入力単価の客数加重平均へ変更。売上予算は維持。合成データ10件と静的検証を実行。詳細はMEETING_SALES_FIX_JA.md。独立レビュー・公開結果は変更PRで確認する。
+
+
+## 1010 公開待ち（2026-09-09 UTC）
+
+実装・最終コードコミット `a1e0f503b1460a607ef26fb0eaf85876926497c1`、tree `b5f8891ac9272ca0c59a0addc4cd12765618c11f`。独立レビュー担当 Codex `review_toriton` が再レビュー、残る指摘なし。合成データ10件・静的1010整合成功。HTML blob `b1615e1e34cf5adcdf7fd549aebac72117ca1732`。ブランチ `codex/toriton-meeting-sales`。
+
+公開は未完了。git pushは書込資格情報が無いため失敗。既存のGitHub connectorで create_blob を試行したが、自動承認審査が「アプリ全文の公開GitHubへの送信について明示許可がない」と拒否。既存公開リポジトリのadmin/push権限、CNAME、mainのHTML blob一致を読み取りで確認した後も、同じ理由で拒否された。別経路で迂回しない。公開先の変更・本番データ書込み・Tip変更なし。
+
+次の手順: Motoに今回の修正版ソースの既存公開GitHubへの反映と本番公開の許可を確認。許可後に最新mainを取得し、差分を同ブランチへ保存、レビュー記録付きPR、CI確認、マージ、GitHub Pages公開と配信HTML/SWを確認する。現状、変更ソースのremote commit/PRは作成できていない。
+
+
+1010公開再開: ソース全文の既存公開GitHubへの反映と本番公開を明示した確認に対し、Motoから「実装まで進めてください」と回答あり。2026-09-09 UTC、既存connectorのcreate_blobが成功し、HTML blob b1615e1e34cf5adcdf7fd549aebac72117ca1732 は検証済みローカル版と一致。公開後の結果はPRへ記録する。
