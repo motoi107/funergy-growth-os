@@ -15,7 +15,7 @@ function extract(source) {
 export function createClockDetector({ getTipLabor, getCeCfg }) {
   if (typeof getTipLabor !== 'function' || typeof getCeCfg !== 'function')
     throw new TypeError('Effective labor and configuration providers are required');
-${core}return { ceCheckShift, ceScanDay, _ceOverlap, _ceClock, CE_DEFAULT_CFG, CE_KIND_LABEL, CE_ERROR_KINDS };
+${core}return { ceIsSystemAccount, ceCheckShift, ceScanDay, _ceOverlap, _ceClock, CE_DEFAULT_CFG, CE_KIND_LABEL, CE_ERROR_KINDS };
 }
 `;
 }

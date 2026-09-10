@@ -28,13 +28,13 @@ export async function validSignature(raw,signature,secret){
   const key=await crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['verify']);
   return crypto.subtle.verify('HMAC',key,Uint8Array.from(atob(signature),c=>c.charCodeAt(0)),raw);
 }
-function orderOnly(name){const n=String(name||'').toLowerCase().replace(/[\s_\-.]/g,'');return n.includes('orderonly')||n==='order';}
+const {ceIsSystemAccount}=createClockDetector({getTipLabor:()=>null,getCeCfg:()=>null});
 export function laborFindings(entries,employees,cfg,store,date,override=false){
   validConfig(cfg);const names=new Map(employees.map(e=>[e.guid,((e.firstName||'')+' '+(e.lastName||'')).trim()||e.name||e.guid]));
   const people={};
   for(const te of entries){
     const id=te.employeeReference?.guid;
-    if(te.deleted||!te.guid||!id||orderOnly(names.get(id)))continue;
+    if(te.deleted||!te.guid||!id||ceIsSystemAccount(names.get(id)))continue;
     (people[id]??=[]).push({guid:te.guid,inDate:te.inDate??null,outDate:te.outDate??null,employee_guid:id,autoClockedOut:te.autoClockedOut===true});
   }
   const effective=Object.fromEntries(Object.entries(people).map(([id,shifts])=>[id,{shifts}]));
@@ -275,6 +275,12 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const updated=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:result});return {...result,case:updated};
   }
   if(c.kind!=='labor')throw Error('unsupported_monitor_kind');
+  // Exclusion is a scope decision, not proof that a person's clock entry was corrected.
+  if(ceIsSystemAccount(c.payload?.employee_name)){
+   const evidence={clean:true,verification_type:'nonhuman_account_excluded',message:'excluded_nonhuman_account',employee_name:c.payload.employee_name,checked_at:new Date().toISOString()};
+   const updated=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:evidence});
+   return {...evidence,case:updated};
+  }
   const ids=(c.payload.shifts||[]).map(x=>x.guid);if(!ids.length||ids.length>100||ids.some(x=>!UUID.test(x)))throw Error('time_entry_ids_required');
   const store=await getStore(c.store_id), get=await toastClient(store),cfg=validConfig(await setting('clock'));
   const entries=[];
