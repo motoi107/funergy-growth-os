@@ -163,15 +163,15 @@ test('morning reminders require fresh evidence and separate technical failures',
 });
 test('morning summary reports zeroes only after complete collection and lists store counts',()=>{
  let m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
- assert.equal(m.complete,true);assert.equal(m.total,0);assert.match(m.text,/No unresolved issues/);assert.match(m.text,/Unpaid: 0/);
+ assert.equal(m.complete,true);assert.equal(m.total,0);assert.match(m.text,/未解決の異常はありません/);assert.match(m.text,/Unpaid 0/);
  m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:55,failed:1,active_stores:8,finance_enabled:true,finance_ok:55,counts:{labor:2,void:1,unpaid:0},stores:[{store_id:'TEST',store_name:'Test Restaurant',labor:2,void:1,unpaid:0}]});
- assert.equal(m.complete,false);assert.equal(m.total,3);assert.match(m.text,/未完了/);assert.match(m.text,/Test Restaurant \(TEST\)/);assert.doesNotMatch(m.text,/No unresolved issues/);
+ assert.equal(m.complete,false);assert.equal(m.total,3);assert.match(m.text,/未完了/);assert.doesNotMatch(m.text,/未解決の異常はありません/);
  m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:false,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
- assert.equal(m.complete,false);assert.match(m.text,/Finance collection/);assert.doesNotMatch(m.text,/No unresolved issues/);
+ assert.equal(m.complete,false);assert.match(m.text,/決済データの取得が未完了/);assert.doesNotMatch(m.text,/未解決の異常はありません/);
  m=formatMorningSummary({from:'2026-10-01',to:'2026-09-30',expected:0,ok:0,failed:0,active_stores:8,finance_enabled:true,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
- assert.match(m.text,/No completed days this month/);
+ assert.match(m.text,/当月は対象日なし/);
  m=formatMorningSummary({from:'2026-10-01',to:'2026-09-30',expected:0,ok:0,failed:0,active_stores:0,finance_enabled:true,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
- assert.equal(m.complete,false);assert.match(m.text,/No active stores/);
+ assert.equal(m.complete,false);assert.match(m.text,/有効店舗がありません/);
 });
 test('morning summary adds actionable person, error, payment and case details in bounded LINE messages',()=>{
  const details=[
@@ -180,10 +180,10 @@ test('morning summary adds actionable person, error, payment and case details in
   {code:'B-000000000003',store_id:'TEST',store_name:'Test Restaurant',business_date:'2026-09-05',kind:'unpaid',subject:'Unpaid / #5678',amount:18.5}
  ];
  const m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:1,void:1,unpaid:1},stores:[{store_id:'TEST',store_name:'Test Restaurant',labor:1,void:1,unpaid:1}],details},{resend:true});
- assert.equal(m.detail_count,3);assert.equal(m.messages.length,2);assert.match(m.messages[0].text,/詳細版再送/);
- assert.match(m.messages[1].text,/Synthetic Person.*退勤打刻なし.*B-000000000001/);
- assert.match(m.messages[1].text,/#1234 \$20\.00.*Synthetic Staff.*Synthetic Manager.*Input error.*B-000000000002/);
- assert.match(m.messages[1].text,/#5678 \$18\.50.*B-000000000003/);
+ assert.equal(m.detail_count,3);assert.equal(m.messages.length,2);assert.match(m.messages[0].text,/再送/);
+ assert.match(m.messages[1].text,/Synthetic Person.*退勤打刻なし.*B-000000000001/s);
+ assert.match(m.messages[1].text,/#1234.*\$20\.00.*Synthetic Staff.*Synthetic Manager.*Input error.*B-000000000002/s);
+ assert.match(m.messages[1].text,/#5678.*\$18\.50.*B-000000000003/s);
  for(const message of m.messages){assert.equal(message.type,'text');assert.ok(message.text.length<=4900);}
  const unknown=formatMorningSummary({...m,from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:1,unpaid:0},stores:[],details:[{...details[1],amount:null,user_name:'Line\nBreak\u0000Test'}],detail_total:1});
  assert.match(unknown.messages[1].text,/金額不明/);assert.doesNotMatch(unknown.messages[1].text,/\$0\.00|\u0000|Line\nBreak/);
@@ -194,6 +194,7 @@ test('morning summary adds actionable person, error, payment and case details in
 test('automatic morning summary is worker-key gated, targets configured headquarters group and is idempotent',async()=>{
  const group='C'+'d'.repeat(32),event={id:7,data:{state:'pending',request_id:guid(77),messages:[{type:'text',text:'Saved morning summary'},{type:'text',text:'Saved details'}]}};let pushes=0,finished=[];
  const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'line'})[k],fetch:async(url,init)=>{
+  if(url.includes('kind=eq.lifecycle_notice'))return Response.json([]);
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
   if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
@@ -266,4 +267,18 @@ test('Bot-only membership grants case access but denies administrator configurat
  assert.equal((await call({action:'daily'})).status,200);
  for(const body of [{action:'config',clock:cfg},{action:'worker_config'},{action:'group'},{action:'owner'}, {action:'send',id:guid(10),version:1}])assert.equal((await call(body)).status,403);
  enabled=false;calls.length=0;assert.equal((await call({action:'daily'})).status,403);assert.equal(calls.some(x=>x.includes('/bot_cases?')),false);
+});
+test('lifecycle delivery discards older transitions and retries one immutable LINE request',async()=>{
+ const group='C'+'e'.repeat(32),id=guid(80),request=guid(81),notices=[{id:90,case_id:id,created_at:new Date().toISOString(),data:{state:'pending',group_id:group,request_id:guid(82),case:{code:'#80',status:'hq_review',status_version:2,store_id:'TEST',subject:'Old',payload:{response:{note:'Old reason'}}}}},{id:91,case_id:id,created_at:new Date().toISOString(),data:{state:'pending',group_id:group,request_id:request,case:{code:'#80',status:'hq_review',status_version:4,store_id:'TEST',subject:'New',payload:{response:{note:'New reason'}}}}}];const pushes=[];
+ const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'token'})[k],fetch:async(url,init)=>{
+  if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
+  if(url.includes('kind=eq.lifecycle_notice'))return Response.json(notices.filter(e=>['pending','unknown'].includes(e.data.state)));
+  if(url.includes('/bot_events?id=eq.')){const n=notices.find(e=>url.includes('eq.'+e.id));n.data=JSON.parse(init.body).data;return new Response(null,{status:204});}
+  if(url.includes('/bot_groups?'))return Response.json([{all_stores:true}]);
+  if(url.includes('/bot_cases?id='))return Response.json([{status:'hq_review',status_version:4}]);
+  if(url.includes('/bot_cases?kind='))return Response.json([]);
+  if(url.endsWith('/message/push')){pushes.push({key:init.headers['X-Line-Retry-Key'],body:JSON.parse(init.body)});return new Response(null,{status:pushes.length===1?500:200});}
+  throw Error('unexpected lifecycle path '+url);
+ }});
+ const r=await h(new Request('https://fn.test',{method:'POST',headers:{'x-bot-worker-key':'worker'},body:JSON.stringify({action:'worker',mode:'monitor',store_id:'TEST'})}));assert.equal(r.status,200);assert.equal(notices[0].data.state,'cancelled');assert.equal(notices[1].data.state,'sent');assert.equal(pushes.length,2);assert.equal(pushes[0].key,request);assert.equal(pushes[1].key,request);assert.deepEqual(pushes[0].body,pushes[1].body);assert.match(pushes[0].body.messages[0].text,/New reason/);
 });

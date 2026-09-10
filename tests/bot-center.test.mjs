@@ -136,3 +136,11 @@ test('administrator entry and secure rendering reject office staff, AM and Bot-o
  for(const role of ['ceo','gm','office']){ctx.loginPerson={role};ctx.showManagerLogin();assert.equal(el('manager-login-screen').style.display,'flex');ctx.window._authSession={role,access_token:'token'};assert.equal(ctx.managerSessionAllowed(),true);}
  await ctx.doManagerLogin();assert.equal(ctx.window._authSession,null);assert.match(el('mgr-err').textContent,/管理者ページの権限がありません/);
 });
+test('HQ queue and response controls render in Japanese and English without exposing approval to crews',async()=>{
+ const c=context(),id='00000000-0000-4000-8000-000000000010';c.botAPI=async()=>({events:[],outbox:[]});c._ceClock=()=>'';
+ for(const lang of ['ja','en']){c.curLang=lang;c._botShared.data={actor:{role:'gm'},stores:[{store_id:'TEST',name:'Test'}],groups:[],cases:[{id,code:'#123',status:'hq_review',kind:'unpaid',version:3,store_id:'TEST',business_date:'2026-08-01',subject:'Synthetic',payload:{response:{actor:'<Manager>',note:'<reason>'}}}],daily:{overview:{day:'2026-09-10',from:'2026-09-01',to:'2026-09-09',expected:1,ok:1,failed:0},cases:[],next:null}};c._botShared.data.daily.cases=c._botShared.data.cases;
+ const panel=c.botDailyPanel();assert.match(panel,/#123/);assert.match(panel,lang==='ja'?/本部確認待ち/:/Awaiting HQ review/);
+ await c.botCaseModal(id);assert.match(c.modal,/hq_approve/);assert.match(c.modal,/hq_return/);assert.doesNotMatch(c.modal,/botReminderDraft|botCaseSend/);assert.match(c.modal,/&lt;reason&gt;/);
+ c._botShared.data.actor.role='office_crew';await c.botCaseModal(id);assert.doesNotMatch(c.modal,/hq_approve|hq_return/);
+ }
+});

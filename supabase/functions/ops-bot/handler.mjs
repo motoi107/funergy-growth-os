@@ -1,9 +1,14 @@
+import {parseCaseReply,replyHelp,replyChoices,responseReceipt} from '../../../bot/case-replies.mjs';
 import { createClockDetector } from '../../../bot/clock-detector.mjs';
 const ROLES=['ceo','gm','office','office_crew'], APPROVERS=['ceo','gm','office'];
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const enc=new TextEncoder();
 export function dailyDisposition(c,day){
  if(c.status==='done')return 'done';
+ if(c.status==='hq_review')return 'hq_review';
+ if(c.status==='verify')return 'verify';
+ if(c.due_date&&c.due_date>day)return 'scheduled';
+ if(c.status==='correction'&&c.payload?.returned&&c.due_date&&c.due_date<=day)return 'action';
  const checked=c.last_checked_at&&new Date(new Date(c.last_checked_at).getTime()-10*3600000).toISOString().slice(0,10);
  if(checked!==day||(c.payload?.fetched_at&&Date.parse(c.last_checked_at)<Date.parse(c.payload.fetched_at)))return 'unverified';
  return ['still_flagged_or_manual_review','payment_not_confirmed','payment_coverage_incomplete'].includes(c.last_check?.message)?'action':'review';
@@ -55,7 +60,7 @@ export function voidFindings(orders,store,date,reasons=[],employees=[]){
  const rows=[];
  for(const order of orders)for(const check of order.checks||[])for(const pay of check.payments||[]){
   if(!pay.guid||!paymentIsVoided(pay))continue;const vi=pay.voidInfo||{},reason=vi.voidReason?.guid;
-  rows.push({source_key:'void:'+store.store_id+':'+pay.guid,kind:'void',store_id:store.store_id,business_date:date,subject:'Payment Void / #'+(check.displayNumber||order.displayNumber||pay.guid),payload:{store_name:store.name,order_guid:order.guid,check_guid:check.guid,entity_guid:pay.guid,scope:'payment',check_total:check.totalAmount??null,amount:pay.amount??null,reason:reasonNames.get(reason)||null,user_name:staffNames.get(vi.voidUser?.guid)||null,approver_name:staffNames.get(vi.voidApprover?.guid)||null,reason_guid:reason||null,user_guid:vi.voidUser?.guid||null,approver_guid:vi.voidApprover?.guid||null,void_date:vi.voidDate||null,source:'toast_direct',fetched_at:new Date().toISOString()}});
+  rows.push({source_key:'void:'+store.store_id+':'+pay.guid,kind:'void',store_id:store.store_id,business_date:date,subject:'Payment Void / #'+(check.displayNumber||order.displayNumber||pay.guid),payload:{store_name:store.name,order_guid:order.guid,check_guid:check.guid,entity_guid:pay.guid,fingerprint:JSON.stringify({amount:pay.amount??null,total:check.totalAmount??null,void:pay.voidInfo??null,status:pay.paymentStatus??null}),scope:'payment',check_total:check.totalAmount??null,amount:pay.amount??null,reason:reasonNames.get(reason)||null,user_name:staffNames.get(vi.voidUser?.guid)||null,approver_name:staffNames.get(vi.voidApprover?.guid)||null,reason_guid:reason||null,user_guid:vi.voidUser?.guid||null,approver_guid:vi.voidApprover?.guid||null,void_date:vi.voidDate||null,source:'toast_direct',fetched_at:new Date().toISOString()}});
  }
  return rows;
 }
@@ -101,54 +106,61 @@ export function lineMentionMessage(text,user){
  if(escaped.length+12>5000)throw Error('invalid_message');
  return {type:'textV2',text:'{assignee}\n'+escaped,substitution:{assignee:{type:'mention',mentionee:{type:'user',userId:user}}}};
 }
-const MORNING_KIND_LABELS={auto:'自動クロックアウト疑い / Suspected auto clock-out',reverse:'IN/OUT逆転 / Reversed IN/OUT',bad:'時刻不正 / Invalid time',long:'長時間 / Long shift',short:'極端に短い / Very short shift',overlap:'打刻重複 / Overlapping shifts'};
+const MORNING_KIND_JA={auto:'自動クロックアウト疑い',reverse:'IN/OUT逆転',bad:'時刻不正',long:'長時間勤務',short:'極端に短い勤務',overlap:'打刻重複'};
+const MORNING_PROGRESS={not_sent:'🔴 未通知',notify_failed:'🔴 通知失敗・要確認',waiting:'🟠 対応待ち',reminder_failed:'🟠 対応待ち（再通知失敗）',in_progress:'🟡 修正対応中',recheck:'🔵 完了報告済み・Toast再確認待ち',send_check:'⚪ 送信結果確認',review:'⚪ 本部確認待ち'};
 function morningField(value,max=120){return String(value??'').replace(/[\u0000-\u001f\u007f-\u009f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,max);}
-function morningDetailLine(c){
- const date=morningField(c.business_date,10).slice(5).replace('-','/'),code=morningField(c.code,20),store=morningField(c.store_name||c.store_id,80);
+function morningIssue(c){
+ const raw=Array.isArray(c.kinds)?c.kinds:[],labels=raw.slice(0,8).map(k=>k==='bad'&&c.open_shift===true?'退勤打刻なし':MORNING_KIND_JA[k]||morningField(k,50));
+ return (labels.length?labels.join('・'):'要確認')+(raw.length>8?'・ほか'+(raw.length-8)+'種':'');
+}
+function morningProgress(c){if(c.status==='hq_review')return '本部確認待ち';if(c.status==='verify')return '修正反映待ち';const key=morningField(c.progress,30)||'review';return MORNING_PROGRESS[key]||MORNING_PROGRESS.review;}
+function morningCaseBlock(c,index){
+ const date=morningField(c.business_date,10).slice(5).replace('-','/'),code=morningField(c.code,20),progress=morningProgress(c),assignee=morningField(c.assignee,100)||'店舗担当者未設定';
  if(c.kind==='labor'){
-  const name=morningField(c.employee_name||c.subject||'氏名不明 / Unknown',100);
-  const rawKinds=Array.isArray(c.kinds)?c.kinds:[],kinds=rawKinds.slice(0,8).map(k=>k==='bad'&&c.open_shift===true?'退勤打刻なし / Missing clock-out':MORNING_KIND_LABELS[k]||morningField(k,50));
-  const issue=(kinds.length?kinds.join(', '):'要確認 / Review required')+(rawKinds.length>8?'、ほか '+(rawKinds.length-8)+'種 / '+(rawKinds.length-8)+' more':'');
-  return '・'+date+' '+name+'：'+issue+'｜'+code+'｜'+store;
+  const name=morningField(c.employee_name||c.subject||'氏名不明',100);
+  return index+'. '+name+'（'+date+'）\n内容：'+morningIssue(c)+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
  }
- const ref=morningField(c.subject,100).replace(/^Payment Void \/\s*|^Unpaid \/\s*/i,'');
- const hasAmount=c.amount!==null&&c.amount!==undefined&&c.amount!=='',amount=Number(c.amount),money=hasAmount&&Number.isFinite(amount)?'$'+amount.toFixed(2):'金額不明 / Amount unknown';
+ const ref=morningField(c.subject,100).replace(/^Payment Void \/\s*|^Unpaid \/\s*/i,''),hasAmount=c.amount!==null&&c.amount!==undefined&&c.amount!=='',amount=Number(c.amount),money=hasAmount&&Number.isFinite(amount)?'$'+amount.toFixed(2):'金額不明';
  if(c.kind==='void'){
   const who=morningField(c.user_name,100),approver=morningField(c.approver_name,100),reason=morningField(c.reason,120);
-  return '・'+date+' '+ref+' '+money+(who?'｜操作 / By: '+who:'')+(approver?'｜承認 / Approved: '+approver:'')+(reason?'｜理由 / Reason: '+reason:'')+'｜'+code+'｜'+store;
+  return index+'. Payment Void '+ref+'（'+date+'）\n金額：'+money+(who?'\n操作：'+who:'')+(approver?'／承認：'+approver:'')+(reason?'\n理由：'+reason:'')+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
  }
- return '・'+date+' '+ref+' '+money+'｜'+code+'｜'+store;
+ return index+'. Unpaid '+ref+'（'+date+'）\n金額：'+money+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
 }
-function morningDetailMessages(details,total){
+function morningStoreMessages(details,total,stores=[]){
  if(!Array.isArray(details)||!details.length)return [];
- const rows=details.slice(0,200).map(c=>morningDetailLine(c).slice(0,1000)),chunks=[];let current='【未解決の詳細 / Unresolved Details】',processed=0,omitted=0;
- for(let i=0;i<rows.length;i++){
-  const next=current+'\n'+rows[i];
-  if(next.length<=4700){current=next;processed++;continue;}
-  if(chunks.length>=3){omitted=Math.max(Number(total||rows.length)-processed,rows.length-processed);break;}
-  chunks.push(current);current='【未解決の詳細（続き） / Details continued】\n'+rows[i];processed++;
+ const rows=details.slice(0,200),groups=[];
+ const storeTotals=new Map((Array.isArray(stores)?stores:[]).map(s=>[morningField(s.store_id,80),Number(s.labor||0)+Number(s.void||0)+Number(s.unpaid||0)]));
+ for(const row of rows){const key=morningField(row.store_id,80),last=groups.at(-1);if(!last||last.key!==key)groups.push({key,name:morningField(row.store_name||row.store_id,80),rows:[row]});else last.rows.push(row);}
+ const sections=[];
+ for(const group of groups){
+  let text='【'+group.name+'｜未解決 '+(storeTotals.get(group.key)??group.rows.length)+'件】',count=0,part=1;
+  for(let i=0;i<group.rows.length;i++){
+   const c=group.rows[i],block=(morningCaseBlock(c,i+1)+(c.due_date?'\n期限：'+c.due_date:'')+(c.response?'\n回答：'+morningField(c.response.actor,80)+' / '+morningField(c.response.note,250):'')+(c.returned?'\n差し戻し：'+morningField(c.returned.note,180):'')).slice(0,1100),next=text+'\n\n'+block;
+   if(next.length<=4600){text=next;count++;continue;}
+   sections.push({text,count});part++;text='【'+group.name+'｜続き '+part+'】\n\n'+block;count=1;
+  }
+  sections.push({text,count});
  }
- chunks.push(current);
- omitted=Math.max(omitted,Number(total||rows.length)-processed);
- if(omitted>0)chunks[chunks.length-1]=chunks[chunks.length-1].slice(0,4550)+'\nほか '+omitted+'件はFunergy＋で確認 / See '+omitted+' more in Funergy+';
- return chunks.slice(0,4);
+ const used=sections.slice(0,4),shown=used.reduce((n,x)=>n+x.count,0),omitted=Math.max(0,Number(total||rows.length)-shown),chunks=used.map(x=>x.text);
+ if(omitted>0)chunks[chunks.length-1]=chunks[chunks.length-1].slice(0,4500)+'\n\nほか '+omitted+'件はFunergy＋で確認';
+ return chunks;
 }
 export function formatMorningSummary(s,{resend=false}={}){
  const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&s?.finance_enabled===true&&Number(s?.ok)===Number(s?.expected)&&Number(s?.finance_ok)===Number(s?.expected)&&Number(s?.failed)===0;
- const labor=n('labor'),voids=n('void'),unpaid=n('unpaid'),total=labor+voids+unpaid;
- const period=Number(s.expected)===0&&Number(s.active_stores)>0?'当月は対象日なし / No completed days this month':s.from+' - '+s.to;
- const lines=[resend?'【業務Bot 朝の確認・詳細版再送 / Morning Check · Detailed resend】':'【業務Bot 朝の確認 / Morning Check】','対象 / Period: '+period,
-  '勤怠エラー / Timecard: '+labor+'件','決済Void / Payment Void: '+voids+'件','未決済 / Unpaid: '+unpaid+'件'];
- if(Number(s?.active_stores)===0)lines.push('取得元 / Stores: 有効店舗なし・要確認 / No active stores');
- if(s?.finance_enabled!==true||Number(s?.finance_ok)!==Number(s?.expected))lines.push('決済監視 / Finance collection: 未完了・要確認 ('+Number(s?.finance_ok||0)+'/'+Number(s?.expected||0)+')');
- if(!complete)lines.push('取得状況 / Collection: 未完了・要確認 ('+Number(s.ok||0)+'/'+Number(s.expected||0)+'、失敗 / Failed '+Number(s.failed||0)+')');
- else if(total===0)lines.push('異常はありません / No unresolved issues.');
- else lines.push('未解決 合計 / Total unresolved: '+total+'件');
- for(const row of s.stores||[])lines.push(row.store_name+' ('+row.store_id+'): 勤怠 '+Number(row.labor||0)+' / Void '+Number(row.void||0)+' / 未決済 '+Number(row.unpaid||0));
- lines.push(complete?'取得完了 / Collection complete':'「異常なし」ではありません。取得結果を確認してください。 / Do not treat this as all clear.');
+ const labor=n('labor'),voids=n('void'),unpaid=n('unpaid'),total=labor+voids+unpaid,period=Number(s.expected)===0&&Number(s.active_stores)>0?'当月は対象日なし':s.from+'〜'+s.to,p=s.progress_counts||{};
+ const lines=[resend?'【毎朝 本部確認レポート｜再送】':'【毎朝 本部確認レポート】','対象：'+period,'取得：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'　決済確認：'+Number(s.finance_ok||0)+'/'+Number(s.expected||0),'未解決：'+total+'件（勤怠 '+labor+'／Payment Void '+voids+'／Unpaid '+unpaid+'）'];
+ if(total>0)lines.push('進捗：未通知 '+Number(p.not_sent||0)+'／通知失敗 '+Number(p.notify_failed||0)+'／対応待ち '+Number(p.waiting||0)+'／再通知失敗 '+Number(p.reminder_failed||0)+'／修正中 '+Number(p.in_progress||0)+'／再確認待ち '+Number(p.recheck||0)+'／本部確認 '+Number(p.review||0)+'／送信確認 '+Number(p.send_check||0));
+ if(Number(s?.active_stores)===0)lines.push('⚠️ 有効店舗がありません');
+ if(s?.finance_enabled!==true||Number(s?.finance_ok)!==Number(s?.expected))lines.push('⚠️ 決済データの取得が未完了です');
+ if(!complete)lines.push('⚠️ 取得未完了：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'、失敗 '+Number(s.failed||0));
+ else if(total===0)lines.push('✅ 現在、未解決の異常はありません');
+ else lines.push('✅ データ取得完了　店舗別レポートを確認してください');
+ lines.push('本部確認待ち：'+Number(s.status_counts?.hq_review||0)+'件');
+ for(const c of (s.recent_closed||[]).slice(0,20))lines.push('完了：'+c.code+'｜'+morningField(c.store_id)+'｜'+morningField(c.subject,90)+'｜'+morningField(c.closure?.note,90));
+ if((s.recent_closed||[]).length>20)lines.push('完了の続きはFunergy＋で確認');
  const text=lines.join('\n');if(text.length>4900)throw Error('invalid_message');
- const detailCount=Number(s.detail_total??(Array.isArray(s.details)?s.details.length:0));
- const messages=[{type:'text',text},...morningDetailMessages(s.details,detailCount).map(detail=>({type:'text',text:detail}))];
+ const detailCount=Number(s.detail_total??(Array.isArray(s.details)?s.details.length:0)),messages=[{type:'text',text},...morningStoreMessages(s.details,detailCount,s.stores).map(detail=>({type:'text',text:detail}))];
  return {text,messages,complete,total,detail_count:detailCount};
 }
 export function createHandler({env,fetch:fetcher=globalThis.fetch}){
@@ -157,7 +169,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  const timed=(url,init={})=>fetcher(url,{...init,signal:AbortSignal.timeout(20000)});
  async function db(path,method='GET',body,prefer){
   const r=await timed(sb+'/rest/v1/'+path,{method,headers:{...headers,...(prefer?{Prefer:prefer}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
-  if(!r.ok){const j=await r.json().catch(()=>({}));const known=['conflict','forbidden','not_found','send_unresolved','retry_mismatch','failed_send_requires_new_review','retry_expired_check_line','group_not_enabled','closed_case','purchase_details_required','order_number_required','invalid_state','note_required','assignee_required','daily_date_changed','daily_already_prepared','recheck_required'];throw Error(known.find(x=>j.message?.includes(x))||(r.status===409?'conflict':'database_error'));}
+  if(!r.ok){const j=await r.json().catch(()=>({}));const known=['conflict','forbidden','not_found','send_unresolved','retry_mismatch','failed_send_requires_new_review','retry_expired_check_line','group_not_enabled','closed_case','purchase_details_required','order_number_required','invalid_state','note_required','assignee_required','daily_date_changed','daily_already_prepared','recheck_required','hq_review_required','response_required','due_date_required'];throw Error(known.find(x=>j.message?.includes(x))||(r.status===409?'conflict':'database_error'));}
   // PostgREST minimal writes can return 201 with an empty body.
   const text=await r.text();return text.trim()?JSON.parse(text):null;
  }
@@ -221,7 +233,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   try{
    const cfg=await setting('worker');
    const result=await scan(storeID,job.business_date,null,cfg?.finance_enabled===true);
-   const start=Date.now(),pending=await db('bot_cases?kind=in.(labor,void,unpaid)&status=neq.done&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&store_id=eq.'+encodeURIComponent(storeID)+'&business_date=eq.'+job.business_date+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
+   const start=Date.now(),pending=await db('bot_cases?kind=in.(labor,void,unpaid)&status=not.in.(done,hq_review)&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&store_id=eq.'+encodeURIComponent(storeID)+'&business_date=eq.'+job.business_date+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
    for(const c of pending){if(Date.now()-start>45000)break;try{await recheck(c,null);}catch{/* Evidence failures stay unresolved and are shown separately. */}}
    await rpc('bot_finish_range_v2',{p_store:storeID,p_date:job.business_date,p_lease:job.lease_id,p_error:null,p_finance:cfg?.finance_enabled===true});
    return {...result,business_date:job.business_date,range:true};
@@ -240,15 +252,27 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   for(const c of cases){c.daily_send=sends.find(o=>o.case_id===c.id)?.state||null;c.daily_check=dailyDisposition(c,overview.day);}
   return {overview,cases,next:rows.length>100?cases.at(-1).id:null};
  }
+ async function flushCaseNotices(){
+  if(!env('LINE_CHANNEL_ACCESS_TOKEN'))return {skipped:true};
+  const notices=await db('bot_events?kind=eq.lifecycle_notice&data->>state=in.(pending,unknown)&order=id.asc&limit=5');let sent=0;
+  for(const e of notices){
+   const n=e.data;if(Date.parse(e.created_at)<Date.now()-23*3600000){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'expired'}});continue;}
+   const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(n.group_id)+'&enabled=eq.true');
+   const current=await db('bot_cases?id=eq.'+e.case_id+'&select=status,status_version');
+   if(!groups.length||(!groups[0].all_stores&&groups[0].store_id!==n.case.store_id)||!current.length||current[0].status!==n.case.status||current[0].status_version!==n.case.status_version){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'cancelled'}});continue;}
+   let state='unknown';try{const response=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':n.request_id},body:JSON.stringify({to:n.group_id,messages:[{type:'text',text:responseReceipt(n.case).slice(0,4600)+(n.case.status==='hq_review'?'\n'+n.case.code+' 承認して終了 理由 / approve reason\n'+n.case.code+' 差し戻し 理由 / return reason':'')}]})});state=response.ok||response.status===409&&!!response.headers.get('x-line-accepted-request-id')?'sent':response.status>=400&&response.status<500&&response.status!==429?'failed':'unknown';}catch{}
+   await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state}});if(state==='sent')sent++;
+  }return {sent};
+ }
  async function morningSummary(variant='daily'){
-  if(!['daily','resend-details-v1'].includes(variant))throw Error('invalid_summary_variant');
+  if(!['daily','resend-details-v1','resend-report-v1','mention-preview-v1'].includes(variant))throw Error('invalid_summary_variant');
   const cfg=await setting('morning_summary');
   if(!cfg?.enabled)return {skipped:true,reason:'morning_summary_disabled'};
   if(!/^C[a-f0-9]{32}$/i.test(cfg.group_id||'')||!cfg.label)throw Error('morning_summary_not_configured');
   const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(cfg.group_id)+'&enabled=eq.true&select=group_id,label,all_stores');
   if(groups.length!==1||groups[0].all_stores!==true||groups[0].label!==cfg.label)throw Error('group_not_enabled');
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
-  const snapshot=await rpc('bot_morning_snapshot',{}),formatted=formatMorningSummary(snapshot,{resend:variant!=='daily'});
+  const snapshot=await rpc('bot_morning_snapshot',{}),formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatMorningSummary(snapshot,{resend:variant!=='daily'});
   const reserved=await rpc('bot_reserve_morning_summary_v2',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant});
   if(reserved.data?.state==='accepted')return {state:'accepted',already_sent:true,day:snapshot.day};
   if(reserved.data?.state==='failed')return {state:'failed',review_required:true,day:snapshot.day};
@@ -266,6 +290,8 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   try{return await checkCase(c,actor);}catch(e){await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:{clean:false,message:/^[a-z_]+$/.test(e.message)?e.message:'verification_failed',checked_at:new Date().toISOString()}}).catch(()=>{});throw e;}
  }
  async function checkCase(c,actor){
+  if(c.status==='done'||c.status==='hq_review')return {clean:c.status==='done',case:c,message:c.status==='hq_review'?'hq_review_required':'closed_case'};
+  if(c.status==='correction'&&c.payload?.returned){const result={clean:false,message:'awaiting_store_response',checked_at:new Date().toISOString()};await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:result});return result;}
   if(['void','unpaid'].includes(c.kind)){
    if(c.kind==='void'&&c.payload.scope!=='payment')throw Error('item_void_out_of_scope');
    if(!UUID.test(c.payload.order_guid||'')||!UUID.test(c.payload.check_guid||''))throw Error('order_ids_required');
@@ -314,7 +340,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   // Retried messages preserve the exact reviewed snapshot, including old assignment headers.
   const store=await getStore(c.store_id);
   const header='['+c.code+']\n店舗 / Store: '+store.name+' ('+c.store_id+')\n担当 / Assigned to: '+(c.assignee||'店舗マネージャー / Store manager')+'\n';
-  const full=previous.length ? '['+c.code+']\n'+message : header+message;
+  const full=previous.length ? previous[0].body : header+message;
   const group=await db('bot_groups?group_id=eq.'+encodeURIComponent(body.group_id)+'&enabled=eq.true');if(group.length!==1||(!group[0].all_stores&&group[0].store_id!==c.store_id))throw Error('group_not_enabled');
   let lineMessage=previous.length?(previous[0].line_message||{type:'text',text:full}):lineMentionMessage(full,null);
   if(!previous.length&&body.mention_user){
@@ -322,6 +348,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(!link||link.user_id!==body.mention_user||link.assignee!==c.assignee)throw Error('mention_link_changed');
    await lineMember(body.group_id,link.user_id);lineMessage=lineMentionMessage(full,link.user_id);
   }
+  if(!previous.length&&['labor','void','unpaid'].includes(c.kind))lineMessage={...lineMessage,quickReply:replyChoices(c.code)};
   const o=await rpc(body.daily_date?'bot_reserve_daily_send':'bot_reserve_send_v2',{p_actor:actor.id,p_id:c.id,p_version:body.version,p_request:body.request_id,p_group:body.group_id,p_body:full,p_message:lineMessage,...(body.daily_date?{p_day:body.daily_date}:{})});
   if(o.state==='sent')return {state:'sent',request_id:o.id};
   let state='unknown';
@@ -355,7 +382,15 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
       if(groups.length===1)await db('bot_settings?on_conflict=key','POST',{key:'line_candidate:'+g+':'+e.source.userId,value:{group_id:g,user_id:e.source.userId,claimed_name:registration[1],registered_at:new Date().toISOString()},updated_at:new Date().toISOString()},'resolution=merge-duplicates');
       continue;
      }
-     await rpc('bot_ingest',{p_event_id:e.webhookEventId,p_group:g,p_user:e.source?.userId||'',p_text:e.message?.type==='text'?e.message.text:'',p_type:e.type});
+     if(e.type==='postback')continue;
+     const text=e.message?.type==='text'?e.message.text:'',parsed=parseCaseReply(text);
+     if(parsed){
+      const result=await rpc('bot_reply_ingest',{p_event:e.webhookEventId,p_group:g,p_user:e.source?.userId||'',p_text:text,p_code:parsed.code,p_action:parsed.invalid?null:parsed.action,p_note:parsed.note||null,p_due:parsed.due_date||null});
+      if(e.replyToken&&!result.ignored&&!result.duplicate){
+       const message=result.id?responseReceipt(result):result.error==='forbidden'?'回答は記録しました。案件の状態変更には本部での回答権限登録が必要です。 / Reply recorded. HQ must authorize your response access.':result.error==='hq_review_required'?'本部確認待ちです。本部は「案件番号 承認して終了 理由」または「案件番号 差し戻し 理由」で回答してください。 / Awaiting HQ approval or return.':result.error==='closed_case'?'この案件は完了済みです。 / This case is already closed.':result.not_found?'案件が見つかりません。通知の案件番号を確認してください。 / Check the case number.':replyHelp(result.code||parsed.code);
+       await timed('https://api.line.me/v2/bot/message/reply',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json'},body:JSON.stringify({replyToken:e.replyToken,messages:[{type:'text',text:message.slice(0,4900), ...(result.id&&result.status==='hq_review'?{quickReply:{items:[['承認 / Approve','承認して終了'],['差し戻し / Return','差し戻し']].map(([label,cmd])=>({type:'action',action:{type:'postback',label,data:'case_reply='+encodeURIComponent(result.code),inputOption:'openKeyboard',fillInText:result.code+' '+cmd+' '}}))}}:{})}]})});
+      }
+     }else await rpc('bot_ingest',{p_event_id:e.webhookEventId,p_group:g,p_user:e.source?.userId||'',p_text:text,p_type:e.type});
     }
     return json({ok:true});
    }
@@ -363,17 +398,18 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(body.action==='worker'){
    const cfg=await setting('worker');if(!cfg?.key||req.headers.get('x-bot-worker-key')!==cfg.key)throw Error('unauthorized');
    if(!cfg.enabled||!(await setting('clock')))return json({skipped:true});
+    await flushCaseNotices();
     if(body.mode==='morning_summary')return json(await morningSummary(body.variant||'daily'));
     if(body.mode!=='monitor'&&(await setting('collection_range'))?.mode==='month_to_yesterday')return json(await rangeRun(String(body.store_id)));
     const date=new Date(Date.now()-10*3600000-86400000).toISOString().slice(0,10);
     const result=body.mode==='monitor'?{}:await scan(String(body.store_id),date,null,cfg.finance_enabled===true);
-    const start=Date.now(),pending=await db('bot_cases?kind=in.(labor,void,unpaid)&status=neq.done&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&store_id=eq.'+encodeURIComponent(body.store_id)+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
+    const start=Date.now(),pending=await db('bot_cases?kind=in.(labor,void,unpaid)&status=not.in.(done,hq_review)&or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&store_id=eq.'+encodeURIComponent(body.store_id)+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
     let checked=0,verified=0;for(const c of pending){if(Date.now()-start>45000)break;try{if((await recheck(c,null)).clean)verified++;}catch{/* Error and check time are recorded; the case stays open. */}checked++;}
-    return json({...result,checked,verified});
+    await flushCaseNotices();return json({...result,checked,verified});
    }
    const actor=await authorize(req);
    if(body.action==='daily')return json(await dailyOverview(body.after));
-   if(body.action==='list')return json({actor,daily:await dailyOverview(),cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
+   if(body.action==='list')return json({actor,daily:await dailyOverview(),cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),line_responders:await db('bot_settings?key=like.line_responder:*&select=key,value'),closure_rules:await setting('closure_rules'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
    if(body.action==='resolve_send'){
     if(!APPROVERS.includes(actor.role)||!UUID.test(body.outbox_id||''))throw Error('forbidden');
     await rpc('bot_resolve_send',{p_actor:actor.id,p_id:body.outbox_id,p_state:body.state,p_note:String(body.note||'').trim()});return json({ok:true});
@@ -388,6 +424,29 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(body.action==='worker_config'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const c=await setting('worker');if(!c)throw Error('worker_not_configured');
     await db('bot_settings?key=eq.worker','PATCH',{value:{...c,enabled:typeof body.enabled==='boolean'?body.enabled:!!c.enabled,finance_enabled:typeof body.finance_enabled==='boolean'?body.finance_enabled:!!c.finance_enabled},updated_at:new Date().toISOString()});return json({enabled:typeof body.enabled==='boolean'?body.enabled:!!c.enabled,finance_enabled:typeof body.finance_enabled==='boolean'?body.finance_enabled:!!c.finance_enabled});
+   }
+   if(body.action==='closure_rules'){
+    if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');
+    const c=body.rules;if(!c||['finance_hq','unchanged_hq','other_hq','labor_fixed_hq'].some(k=>typeof c[k]!=='boolean')||!Number.isFinite(c.finance_threshold)||c.finance_threshold<0)throw Error('invalid_config');
+    await db('bot_settings?on_conflict=key','POST',{key:'closure_rules',value:{finance_hq:c.finance_hq,unchanged_hq:c.unchanged_hq,other_hq:c.other_hq,labor_fixed_hq:c.labor_fixed_hq,finance_threshold:c.finance_threshold},updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true});
+   }
+   if(body.action==='responder_profile'){
+    if(!APPROVERS.includes(actor.role))throw Error('forbidden');
+    const candidate=await setting('line_candidate:'+body.group_id+':'+body.user_id);if(!candidate)throw Error('registration_required');
+    const profile=await lineMember(body.group_id,body.user_id);return json({profile:{display_name:profile.displayName}});
+   }
+   if(body.action==='line_responder'){
+    if(!APPROVERS.includes(actor.role))throw Error('forbidden');
+    if(!/^C[a-f0-9]{32}$/i.test(body.group_id||'')||!/^U[a-f0-9]{32}$/i.test(body.user_id||''))throw Error('invalid_line_user');
+    const key='line_responder:'+body.group_id+':'+body.user_id;
+    if(body.remove===true){await db('bot_settings?key=eq.'+encodeURIComponent(key),'DELETE');return json({ok:true});}
+    if(!['manager','hq'].includes(body.role)||body.role==='hq'&&!['gm','ceo'].includes(actor.role))throw Error('forbidden');
+    const candidate=await setting('line_candidate:'+body.group_id+':'+body.user_id);if(!candidate)throw Error('registration_required');
+    const groups=await db('bot_groups?group_id=eq.'+body.group_id+'&enabled=eq.true');if(groups.length!==1)throw Error('group_not_enabled');
+    const stores=Array.isArray(body.stores)?[...new Set(body.stores)]:[];if(body.role==='manager'&&!stores.length)throw Error('invalid_store');
+    for(const id of stores){await getStore(id);if(!groups[0].all_stores&&groups[0].store_id!==id)throw Error('forbidden');}
+    const profile=await lineMember(body.group_id,body.user_id);if(body.display_name!==profile.displayName)throw Error('mention_link_changed');
+    await db('bot_settings?on_conflict=key','POST',{key,value:{group_id:body.group_id,user_id:body.user_id,display_name:profile.displayName,role:body.role,stores,enabled:true,approved_by:actor.id,approved_at:new Date().toISOString()},updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true});
    }
    if(body.action==='line_link'||body.action==='line_profile'){
     if(!APPROVERS.includes(actor.role))throw Error('forbidden');await getStore(body.store_id);
@@ -427,6 +486,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const rows=await db('bot_cases?id=eq.'+body.id);if(rows.length!==1)throw Error('not_found');const c=rows[0];
    if(body.action==='send')return json(await send(c,actor,body));
    if(c.version!==body.version)throw Error('conflict');
+   if(body.action==='respond')return json(await rpc('bot_case_respond',{p_id:c.id,p_version:c.version,p_action:body.response,p_note:String(body.note||'').trim(),p_actor:actor.id,p_due:body.due_date||null}));
    if(body.action==='recheck')return json(await recheck(c,actor.id));
    const ops=['assign','note','draft','correction','reported','acknowledge','purchase','approve','ordered'];if(!ops.includes(body.action))throw Error('bad_action');
    const data={assignee:String(body.assignee||'').trim(),note:String(body.note||'').trim(),draft:String(body.draft||'').trim(),order_number:String(body.order_number||'').trim()};
