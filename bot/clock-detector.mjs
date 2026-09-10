@@ -58,6 +58,12 @@ function _ceOverlap(shifts){
   for(var i=1;i<a.length;i++){ if(a[i].s < a[i-1].e) return true; }
   return false;
 }
+/* 勤怠検知のみ: 予約された端末/注文専用アカウント名を除外する。
+   人名不明・未登録・管理者という理由だけでは除外しない。 */
+function ceIsSystemAccount(name){
+  var n=String(name||'').normalize('NFKC').toLowerCase().replace(/[\s_\-.]+/g,' ').trim();
+  return n==='order' || /(?:^| )(?:order ?only|kiosk(?: ?mode)?)(?: |$)/.test(n);
+}
 /* 1日ぶん。人ごとにまとめる。 */
 function ceScanDay(storeId, date, cfg){
   cfg = cfg || getCeCfg();
@@ -65,6 +71,7 @@ function ceScanDay(storeId, date, cfg){
   var labor = getTipLabor(storeId, date);
   if(!labor) return out;
   Object.keys(labor).forEach(function(n){
+    if(ceIsSystemAccount(n)) return;
     var e = labor[n]||{}, shifts = e.shifts||[];
     if(!shifts.length) return;
     var kinds={}, level=null, det=[];
@@ -84,5 +91,5 @@ function ceScanDay(storeId, date, cfg){
   });
   return out;
 }
-return { ceCheckShift, ceScanDay, _ceOverlap, _ceClock, CE_DEFAULT_CFG, CE_KIND_LABEL, CE_ERROR_KINDS };
+return { ceIsSystemAccount, ceCheckShift, ceScanDay, _ceOverlap, _ceClock, CE_DEFAULT_CFG, CE_KIND_LABEL, CE_ERROR_KINDS };
 }

@@ -35898,6 +35898,12 @@ function _ceOverlap(shifts){
   for(var i=1;i<a.length;i++){ if(a[i].s < a[i-1].e) return true; }
   return false;
 }
+/* 勤怠検知のみ: 予約された端末/注文専用アカウント名を除外する。
+   人名不明・未登録・管理者という理由だけでは除外しない。 */
+function ceIsSystemAccount(name){
+  var n=String(name||'').normalize('NFKC').toLowerCase().replace(/[\s_\-.]+/g,' ').trim();
+  return n==='order' || /(?:^| )(?:order ?only|kiosk(?: ?mode)?)(?: |$)/.test(n);
+}
 /* 1日ぶん。人ごとにまとめる。 */
 function ceScanDay(storeId, date, cfg){
   cfg = cfg || getCeCfg();
@@ -35905,6 +35911,7 @@ function ceScanDay(storeId, date, cfg){
   var labor = getTipLabor(storeId, date);
   if(!labor) return out;
   Object.keys(labor).forEach(function(n){
+    if(ceIsSystemAccount(n)) return;
     var e = labor[n]||{}, shifts = e.shifts||[];
     if(!shifts.length) return;
     var kinds={}, level=null, det=[];
@@ -36618,7 +36625,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1011';
+const APP_VERSION = '1012';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
