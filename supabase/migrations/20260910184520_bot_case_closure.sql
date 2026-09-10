@@ -44,7 +44,7 @@ begin
    if p_data->'payload'->>'fingerprint' is not null and c.payload->>'fingerprint' is null then
     update public.bot_cases set payload=payload||jsonb_build_object('fingerprint',p_data->'payload'->>'fingerprint') where id=c.id returning * into c;
    elsif p_data->'payload'->>'fingerprint' is not null and (c.payload->>'fingerprint') is distinct from (p_data->'payload'->>'fingerprint') then
-    update public.bot_cases set payload=(payload-'response'-'closure')||((p_data->'payload')- 'draft'),closed_at=null,due_date=null,status='review',version=version+1,updated_at=now() where id=c.id returning * into c;
+    update public.bot_cases set payload=(payload-'response'-'closure'-'returned'-'verification')||((p_data->'payload')- 'draft'),closed_at=null,due_date=null,status='review',version=version+1,updated_at=now() where id=c.id returning * into c;
     insert into public.bot_events(case_id,actor,kind) values(c.id,p_actor,'source_changed');
    end if;
    return to_jsonb(c);
@@ -236,6 +236,7 @@ begin
  end if;
  if c.version<>p_version then raise exception 'conflict'; end if;
  if c.status in ('done','hq_review','verify') then raise exception 'closed_case'; end if;
+ if c.due_date>(now() at time zone 'Pacific/Honolulu')::date then raise exception 'due_date_not_reached'; end if;
  if length(p_body) not between 1 and 4900 then raise exception 'invalid_message'; end if;
  if not exists(select 1 from public.bot_groups where group_id=p_group and enabled and (all_stores or store_id=c.store_id)) then raise exception 'group_not_enabled'; end if;
  update public.bot_cases set version=version+1,updated_at=now() where id=c.id returning * into c;
