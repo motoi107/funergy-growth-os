@@ -8790,7 +8790,7 @@ function buildVarianceRows(storeId, period) {
       code: parseInt(code),
       name: (theo[code]&&theo[code].name) || (aEntry&&aEntry.name) || ing.name || ('#'+code),
       unit: (theo[code]&&theo[code].unit) || (aEntry&&aEntry.unit) || ing.unit || '',
-      cls: catClass(ing.cat),
+      cls: storeIngredientClass(ing, storeId),
       theoQty: tQty,
       actQty: aQty,
       hasActual: hasActual,
@@ -8833,6 +8833,32 @@ function catClass(code) { var c = getCategories().find(c=>c.code===code); return
 function className(clsId) { var c = CLASSES.find(c=>c.id===clsId); return c?c.name:'その他'; }
 function classColor(clsId) { var c = CLASSES.find(c=>c.id===clsId); return c?c.color:'#888'; }
 function ingClass(ing) { return catClass(ing.cat); }
+/* 1014: Store-specific purchasing/inventory classification. Unknown licenses
+   retain the shared master classification; Totoya is confirmed unlicensed.
+   Never rewrite the global ingredient or historical monetary values. */
+function storeLiquorLicense(storeOrId){
+  var st=typeof storeOrId==='object' ? storeOrId : STORES.find(function(x){return x.id===storeOrId || x.name===storeOrId;});
+  if(!st) return null;
+  if(typeof st.liquorLicense==='boolean') return st.liquorLicense;
+  if(st.liquorLicense===null) return null;
+  if(['F04-K','F04-P','F04-A'].indexOf(st.id)>=0 || String(st.brand||'').trim().toLowerCase()==='totoya') return false;
+  return null;
+}
+function storeCostClass(cls, storeId){
+  return cls==='liquor' && storeLiquorLicense(storeId)===false ? 'food' : cls;
+}
+function storeCostClassTotals(totals, storeId){
+  var result={};
+  Object.keys(totals||{}).forEach(function(cls){
+    var target=storeCostClass(cls,storeId);
+    result[target]=(result[target]||0)+(Number(totals[cls])||0);
+  });
+  return result;
+}
+function storeIngredientClass(ing, storeId){
+  return storeCostClass(ing.cls || catClass(ing.cat), storeId);
+}
+
 
 /* ============================================================
    STATE
@@ -30255,7 +30281,7 @@ function getInvItems(storeId) {
   return masterIngs.map(function(i, idx){
     var s = savedByCode[i.code];
     return {
-      code:i.code, name:i.name, unit:i.unit, cls:catClass(i.cat),
+      code:i.code, name:i.name, unit:i.unit, cls:storeIngredientClass(i, storeId),
       par: s&&s.par!=null ? s.par : 20,
       last: s&&s.last!=null ? s.last : 0,
       received: s&&s.received!=null ? s.received : 0,
@@ -31013,7 +31039,7 @@ function invComputeMatrix(storeId){
   var vmap={}, totals={food:0,liquor:0,beverage:0,supply:0,total:0};
   _invVendorList(storeId).forEach(function(v){ vmap[v]={food:0,liquor:0,beverage:0,supply:0,total:0}; });
   codes.forEach(function(code){ var i=ings.find(function(x){return x.code===code;}); if(!i) return; var cnt=counts[code]; if(cnt==null) return;
-    var val=cnt*invUnitValue(i,storeId), v=i.vendor||'未設定', cls=i.cls||catClass(i.cat);
+    var val=cnt*invUnitValue(i,storeId), v=i.vendor||'未設定', cls=storeIngredientClass(i,storeId);
     if(!vmap[v]) vmap[v]={food:0,liquor:0,beverage:0,supply:0,total:0};
     vmap[v][cls]=(vmap[v][cls]||0)+val; vmap[v].total+=val; totals[cls]=(totals[cls]||0)+val; totals.total+=val;
   });
@@ -31300,7 +31326,7 @@ function invComputeTotals(storeId){
     var val=cnt*invUnitValue(i,storeId);
     perItem[code]=val;
     var v=i.vendor||'未設定'; perVendor[v]=(perVendor[v]||0)+val;
-    var cls=i.cls||catClass(i.cat); perClass[cls]=(perClass[cls]||0)+val;
+    var cls=storeIngredientClass(i,storeId); perClass[cls]=(perClass[cls]||0)+val;
     grand+=val;
   });
   return {perItem:perItem, perVendor:perVendor, perClass:perClass, grand:grand};
@@ -31445,7 +31471,7 @@ function renderInventory(){
     vItems.forEach(function(i){
       var uv=invUnitValue(i,storeId), cnt=counts[i.code];
       var _pe=invPriceEditable(storeId), _bp=invBasePrice(i,storeId);   /* v783 */
-      var clsMeta=CLASSES.find(function(c){return c.id===(i.cls||catClass(i.cat));})||{};
+      var clsMeta=CLASSES.find(function(c){return c.id===storeIngredientClass(i,storeId);})||{};
       html += `<tr>
         <td style="text-align:left"><div style="font-weight:600">${escapeHtml(i.name)}</div><div style="font-size:9px;color:var(--muted)"><span style="color:${clsMeta.color||'var(--muted)'}">${clsMeta.name||''}</span> · ${escapeHtml(i.unit||'')}</div></td>
         <td style="text-align:right">${_pe
@@ -31633,7 +31659,8 @@ function invRenderConfirmedView(storeId, snap, ym){
       ${kpi('修正', (snap.edits&&snap.edits.length)?snap.edits.length+'回':'なし', (snap.edits&&snap.edits.length)?escapeHtml(snap.edits[snap.edits.length-1].by+' '+snap.edits[snap.edits.length-1].at):'—', (snap.edits&&snap.edits.length)?'var(--yellow)':'var(--muted)')}
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">`;
-  CLASSES.forEach(function(cl){ var v=(snap.perClass||{})[cl.id]||0; if(!v) return; h+=`<span style="font-size:10px;border:1px solid ${cl.color};color:${cl.color};border-radius:6px;padding:2px 8px">${cl.name} ${invFmtMoney(v)}</span>`; });
+  var displayClasses=storeCostClassTotals(snap.perClass,storeId);
+  CLASSES.forEach(function(cl){ var v=displayClasses[cl.id]||0; if(!v) return; h+=`<span style="font-size:10px;border:1px solid ${cl.color};color:${cl.color};border-radius:6px;padding:2px 8px">${cl.name} ${invFmtMoney(v)}</span>`; });
   h+=`</div>
     ${(snap.edits&&snap.edits.length)?`<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">修正履歴（${snap.edits.length}件）</summary>${snap.edits.map(function(e){return '<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><i class="ti ti-pencil" style="color:var(--yellow)"></i> '+escapeHtml(e.by||'')+' '+escapeHtml(e.at||'')+(e.prevGrand!=null?' <span style="color:var(--muted)">（修正前総額 '+invFmtMoney(e.prevGrand)+'）</span>':'')+'</div>';}).join('')}</details>`:''}
     <div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-lock"></i> 確定済みのため表示のみ。数量の修正・追加入力は右上の「修正」ボタンから行えます（修正履歴が残ります）。</div>
@@ -36625,7 +36652,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1013';
+const APP_VERSION = '1014';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -49636,17 +49663,22 @@ function invoiceAcctData(y, m) {
   var inMonth = invoices.filter(function(inv){ var d = parseJaDate(inv.date); return d && d.getFullYear()===y && d.getMonth()===m; });
   var matrix = {}, storeTotals = {}, clsTotals = {food:0,liquor:0,beverage:0,supply:0}, grand = 0, details = [];
   inMonth.forEach(function(inv){
-    var sid = inv.storeId || '未設定';
+    var sids = _invStoreIds(inv);
+    if(!sids.length) sids=['未設定'];
     (inv.lines||[]).forEach(function(l){
       var ing = (l.code!=null) ? ingByCode[l.code] : null;
-      var cls = ing ? ingClass(ing) : 'food';
-      if (!clsTotals.hasOwnProperty(cls)) cls = 'food';
-      var amt = (l.lineTotal!=null) ? l.lineTotal : ((l.newPrice||0) * (l.qty||0));
-      matrix[sid] = matrix[sid] || {food:0,liquor:0,beverage:0,supply:0};
-      matrix[sid][cls] += amt;
-      storeTotals[sid] = (storeTotals[sid]||0) + amt;
-      clsTotals[cls] += amt; grand += amt;
-      details.push({date:inv.date, storeId:sid, vendor:inv.vendor, name:l.name, cls:cls, qty:(l.qty||0), price:(l.newPrice||0), amount:amt});
+      var baseCls = ing ? ingClass(ing) : 'food';
+      var fullAmt = Number(l.lineTotal!=null ? l.lineTotal : ((l.newPrice||0)*(l.qty||0)))||0;
+      sids.forEach(function(sid){
+        var cls = storeCostClass(baseCls, sid);
+        if (!clsTotals.hasOwnProperty(cls)) cls = 'food';
+        var amt = fullAmt/sids.length;
+        matrix[sid] = matrix[sid] || {food:0,liquor:0,beverage:0,supply:0};
+        matrix[sid][cls] += amt;
+        storeTotals[sid] = (storeTotals[sid]||0) + amt;
+        clsTotals[cls] += amt; grand += amt;
+        details.push({date:inv.date, storeId:sid, vendor:inv.vendor, name:l.name, cls:cls, qty:(l.qty||0)/sids.length, price:Number(l.newPrice)||0, amount:amt});
+      });
     });
   });
   return {inMonth:inMonth, matrix:matrix, storeTotals:storeTotals, clsTotals:clsTotals, grand:grand, details:details};
@@ -49735,7 +49767,7 @@ function invStoreVendorData(storeId, y, m){
     var vendor=l.vendor||((function(){ var ing=ings.find(function(x){return x.name===l.name;}); return (ing&&ing.vendor)?ing.vendor:'（業者未設定）'; })());
     var uc=(l.unitVal!=null)?(Number(l.unitVal)||0):((function(){ var ing=ings.find(function(x){return x.name===l.name;}); return ing?(Number(ing.price)||0):0; })());
     var val=(l.value!=null)?(Number(l.value)||0):(uc*actual);
-    var clsN=className(l.cls)||l.cls||'（区分なし）';
+    var clsN=className(storeCostClass(l.cls,storeId))||l.cls||'（区分なし）';
     if(!byVendor[vendor]) byVendor[vendor]={items:[], total:0, count:0};
     byVendor[vendor].items.push({cls:clsN, name:l.name, actual:actual, uc:uc, val:val});
     byVendor[vendor].total+=val; byVendor[vendor].count++;
@@ -49970,7 +50002,7 @@ function inventoryCSVRows(storeId, y, m) {
       var uc = ing ? ing.price : 0;
       var val = uc*(l.actual||0);
       totalVal += val;
-      rows.push([className(l.cls)||l.cls||'', l.name, (l.theory||0).toFixed(1), (l.actual||0).toFixed(1),
+      rows.push([className(storeCostClass(l.cls,storeId))||l.cls||'', l.name, (l.theory||0).toFixed(1), (l.actual||0).toFixed(1),
         (l.diff||0).toFixed(1), uc.toFixed(2), val.toFixed(2)]);
     });
     rows.push(['','','','','','棚卸総額', totalVal.toFixed(2)]);
@@ -70237,6 +70269,14 @@ function openStoreModal(storeId) {
         </label>`).join('')}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">業態によって適用されるKPIが変わります（KPI管理タブで設定）</div>
     </div>
+    <div class="form-group"><label class="form-label">${t('リカーライセンス（仕入分類）','Liquor license (purchase classification)')}</label>
+      <select class="form-select" id="st-liquor-license">
+        <option value="" ${storeLiquorLicense(s)==null?'selected':''}>${t('未確認（従来の分類）','Unconfirmed (existing classification)')}</option>
+        <option value="false" ${storeLiquorLicense(s)===false?'selected':''}>${t('なし（酒の仕入れはフード）','No (alcohol purchases count as food)')}</option>
+        <option value="true" ${storeLiquorLicense(s)===true?'selected':''}>${t('あり（お酒を別集計）','Yes (alcohol reported separately)')}</option>
+      </select>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${t('免許なし店舗の料理用の酒は食材に分類。既存の仕入れ・棚卸出力にも適用します。ソフトドリンクは飲料のままです。','At unlicensed stores, cooking alcohol counts as food, including existing purchases and inventory exports. Soft drinks remain beverages.')}</div>
+    </div>
     <div class="form-group"><label class="form-label">Toast Restaurant GUID</label><input class="form-input" id="st-toast" value="${s.toastGuid||''}" placeholder="Toast連携用ID（任意）"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">ランチ営業時間</label><input class="form-input" id="st-lunch" value="${s.lunchHours||''}" placeholder="11:00-14:30"></div>
@@ -70366,6 +70406,7 @@ function saveStore(storeId) {
     name, brand: document.getElementById('st-brand').value.trim()||name,
     toastGuid: document.getElementById('st-toast').value.trim().toLowerCase(),
     format: fmtEl ? fmtEl.value : 'dining',
+    liquorLicense: (function(){ var v=(document.getElementById('st-liquor-license')||{}).value; return v==='true'?true:v==='false'?false:null; })(),
     lunchHours: lunch, dinnerHours: dinner,
     hours: (lunch&&dinner) ? (lunch.split('-')[0]+'-'+dinner.split('-').slice(-1)[0]) : (lunch||dinner||''),
     takeout: document.getElementById('st-takeout').checked,
