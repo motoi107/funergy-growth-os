@@ -36625,7 +36625,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1012';
+const APP_VERSION = '1013';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -48004,13 +48004,70 @@ function fvAlertsSubmit(){
   if(!fvSaveConfig(cfg)){ showToast(t('保存に失敗しました','Save failed'),'warning'); return; }
   showToast(t('保存しました','Saved'),'success'); renderPage('fv_variance');
 }
+var _itReportMonth = '';
+function itReportMonth(){
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(_itReportMonth) ? _itReportMonth : String(bizToday()).slice(0,7);
+}
+function itSetReportMonth(ym){
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) return;
+  _itReportMonth=ym; renderPage('ing_transfer');
+}
+function itMonthlyReport(ym, stores){
+  var ids=stores.map(function(s){return s.id;});
+  var rows=getIngTransfers().filter(function(r){return r && String(r.date).slice(0,7)===ym && (ids.indexOf(r.from)>=0 || ids.indexOf(r.to)>=0);})
+    .slice().sort(function(a,b){return String(a.date).localeCompare(String(b.date));});
+  var cents=function(r){return Number.isFinite(Number(r.amount)) ? Math.round(Number(r.amount)*100) : 0;};
+  var totalCents=0, invalid=0;
+  rows.forEach(function(r){totalCents+=cents(r); if(r.amount==null || r.amount==='' || !Number.isFinite(Number(r.amount))) invalid++;});
+  var perStore=stores.map(function(s){
+    var incoming=0,outgoing=0,inCount=0,outCount=0;
+    rows.forEach(function(r){if(r.to===s.id){incoming+=cents(r);inCount++;} if(r.from===s.id){outgoing+=cents(r);outCount++;}});
+    return {id:s.id,name:s.name,inAmt:incoming/100,outAmt:outgoing/100,net:(incoming-outgoing)/100,inCount:inCount,outCount:outCount};
+  });
+  return {ym:ym,rows:rows,stores:perStore,total:totalCents/100,count:rows.length,invalid:invalid};
+}
+function itReportSheets(ym, stores){
+  var d=itMonthlyReport(ym,stores), name=function(id){return (STORES.find(function(s){return s.id===id;})||{}).name||id;};
+  var summary=[[t('食材移動 月次集計','Monthly ingredient transfers'),ym],
+    [t('対象店舗','Selected stores'),stores.map(function(s){return s.name;}).join(' / ')],
+    [t('移動総額($)・1移動を1回計上','Transfer value ($), each movement counted once'),d.total],
+    [t('明細件数','Line count'),d.count],[],
+    [t('店舗','Store'),t('受入額($)','Received ($)'),t('払出額($)','Sent ($)'),t('差引額($)','Net ($)'),t('受入件数','Received lines'),t('払出件数','Sent lines')]];
+  d.stores.forEach(function(s){summary.push([s.name,s.inAmt,s.outAmt,s.net,s.inCount,s.outCount]);});
+  summary.push([], [t('差引＝受入−払出。保存済み移動額を使用。棚卸資産額には加算しません。','Net = received minus sent. Uses recorded transfer values; not added to inventory asset totals.')]);
+  if(d.invalid) summary.push([t('金額未登録・不正な明細件数（集計は0扱い）','Missing/invalid amount lines (counted as zero)'),d.invalid]);
+  var detail=[[t('食材移動 明細','Transfer details'),ym],
+    [t('日付','Date'),t('払出店','From'),t('受入店','To'),t('食材コード','Ingredient code'),t('食材','Ingredient'),t('数量','Qty'),t('単位','Unit'),t('記録時単価($)','Recorded unit price ($)'),t('移動額($)','Transfer amount ($)'),t('担当','Recorded by')]];
+  d.rows.forEach(function(r){detail.push([r.date,name(r.from),name(r.to),r.code||'',r.name||'',r.qty,r.unit||'',r.unitVal==null?'':r.unitVal,Number.isFinite(Number(r.amount))?Number(r.amount):'',r.by||'']);});
+  if(!d.count) detail.push([t('この月の移動記録はありません','No transfers recorded this month')]);
+  return [{name:t('食材移動集計','Transfer summary'),rows:summary},{name:t('食材移動明細','Transfer details'),rows:detail}];
+}
+function itExportMonth(){
+  var ym=itReportMonth();
+  downloadExcelSheets(itReportSheets(ym,getVisibleStores()),'Ingredient_transfers_'+ym+'.xls');
+}
+function itMonthlySummaryHtml(){
+  var ym=itReportMonth(), d=itMonthlyReport(ym,getVisibleStores());
+  var money=function(n){return '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});};
+  var h='<div class="card"><div class="card-title">'+t('食材移動・月次サマリー','Monthly transfer summary')+'</div>'
+    +'<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center"><label>'+t('対象月','Month')+' <input class="form-input" type="month" value="'+ym+'" onchange="itSetReportMonth(this.value)"></label>'
+    +'<button class="btn btn-secondary" onclick="itExportMonth()">'+t('集計・明細Excel','Export summary & details')+'</button></div>'
+    +'<p style="font-size:16px">'+t('対象店舗に関わる移動総額','Transfer value involving selected stores')+' <strong style="font-size:26px">'+money(d.total)+'</strong> / '+d.count+' '+t('明細','lines')+'</p>'
+    +'<p style="font-size:12px;color:var(--muted)">'+t('移動日で月別集計。1移動を1回計上し、記録時の金額を使用します。差引＝受入−払出。','Grouped by transfer date. Each movement is counted once using its recorded value. Net = received minus sent.')+'</p>'
+    +'<div style="overflow-x:auto"><table class="data-table" style="width:100%;font-size:14px"><thead><tr><th>'+t('店舗','Store')+'</th><th>'+t('受入額','Received')+'</th><th>'+t('払出額','Sent')+'</th><th>'+t('差引額','Net')+'</th></tr></thead><tbody>';
+  d.stores.forEach(function(s){h+='<tr><td>'+escapeHtml(s.name)+'</td><td>'+money(s.inAmt)+'</td><td>'+money(s.outAmt)+'</td><td>'+money(s.net)+'</td></tr>';});
+  h+='</tbody></table></div>';
+  if(!d.count) h+='<p>'+t('この月の移動記録はありません','No transfers recorded this month')+'</p>';
+  if(d.invalid) h+='<p>'+t('金額未登録・不正な明細があります（集計は0扱い）：','Missing/invalid amount lines (counted as zero): ')+d.invalid+'</p>';
+  return h+'</div>';
+}
 function renderIngTransfer(){
   var ings=getIngredients();
   var sn=function(id){ return (STORES.find(function(s){return s.id===id;})||{}).name||id; };
   var storeOptsFrom=STORES.map(function(s,i){ return '<option value="'+s.id+'"'+(i===0?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('');
   var storeOptsTo=STORES.map(function(s,i){ return '<option value="'+s.id+'"'+(i===1?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('');
   var dl=ings.map(function(i){ return '<option value="'+escapeHtml(i.name)+(i.code?(' ｜ '+escapeHtml(String(i.code))):'')+'">'; }).join('');
-  var h='<div class="card"><div class="card-title"><i class="ti ti-arrows-exchange" style="color:var(--accent)"></i> '+t('食材移動（店舗間）','Ingredient transfer (between stores)')+'</div>'
+  var h=itMonthlySummaryHtml()+'<div class="card"><div class="card-title"><i class="ti ti-arrows-exchange" style="color:var(--accent)"></i> '+t('食材移動（店舗間）','Ingredient transfer (between stores)')+'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.7">'+t('A店→B店へ食材を移動すると、移動額を原価に反映します。','Transferring ingredients A→B applies the transfer value to cost.')+'<b>'+t('貸した店＝原価マイナス','Lending store = cost minus')+'</b>／<b>'+t('借りた店＝原価プラス','Borrowing store = cost plus')+'</b>'+t('（＝原価率に反映）。','(reflected in cost %).')+''+t('評価は仕入単価×数量。','Valued at purchase unit price × qty.')+'</div>'
     +'<div class="form-group"><label class="form-label">'+t('移動日','Transfer date')+'</label><input class="form-input" id="it-date" type="date" value="'+(typeof bizToday==='function'?bizToday():todayISO())+'"></div>'
     +'<div class="form-row"><div class="form-group"><label class="form-label">'+t('貸出店（From）','Lending store (From)')+'</label><select class="form-select" id="it-from" onchange="itPreview()">'+storeOptsFrom+'</select></div>'
@@ -48020,8 +48077,8 @@ function renderIngTransfer(){
     +'<div id="it-amt" style="font-size:13px;padding:8px 10px;background:var(--surface2);border-radius:8px;margin-bottom:10px"><span style="color:var(--muted)">'+t('食材を選択してください','Select an ingredient')+'</span></div>'
     +'<button class="btn btn-primary" style="width:100%" onclick="ingTransferSubmit()"><i class="ti ti-check"></i> '+t('完了（移動を記録）','Done (record transfer)')+'</button></div>';
   // 履歴（台帳）
-  var arr=getIngTransfers().slice().sort(function(a,b){ return (b.at||b.date||'').localeCompare(a.at||a.date||''); }).slice(0,40);
-  h+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--accent)"></i> '+t('移動履歴（最新40件）','Transfer history (latest 40)')+'</div>';
+  var arr=itMonthlyReport(itReportMonth(),getVisibleStores()).rows.slice().reverse();
+  h+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--accent)"></i> '+t('対象月の移動履歴','Transfers in selected month')+' — '+itReportMonth()+'</div>';
   if(!arr.length){ h+='<div style="font-size:12px;color:var(--muted);padding:6px 2px">'+t('まだ移動記録はありません。','No transfer records yet.')+'</div>'; }
   else {
     h+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="color:var(--muted);font-size:10px"><th style="text-align:left;padding:4px">'+t('日付','Date')+'</th><th style="text-align:left;padding:4px">'+t('移動','Transfer')+'</th><th style="text-align:left;padding:4px">'+t('食材','Ingredient')+'</th><th style="text-align:right;padding:4px">'+t('数量','Qty')+'</th><th style="text-align:right;padding:4px">'+t('金額','Amount')+'</th><th style="padding:4px"></th></tr></thead><tbody>';
@@ -48708,15 +48765,15 @@ function openInvExportModal(){
     return '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:8px 0;border-bottom:1px solid var(--border)">'
       +'<div><span class="store-dot" style="background:'+(s.color||'#888')+'"></span><span style="font-weight:600">'+escapeHtml(s.name)+'</span>'
       +'<span style="font-size:11px;color:var(--muted);margin-left:4px">'+(mHist.length?(mHist.length+'回確定'):'記録なし')+'</span></div>'
-      +'<button class="btn btn-secondary btn-sm" '+(mHist.length?'':'disabled')+' onclick="invExpStore(\''+s.id+'\','+y+','+m+')"><i class="ti ti-download"></i> 出力</button></div>';
+      +'<button class="btn btn-secondary btn-sm" '+((mHist.length||itMonthlyReport(y+'-'+String(m+1).padStart(2,'0'),[s]).count)?'':'disabled')+' onclick="invExpStore(\''+s.id+'\','+y+','+m+')"><i class="ti ti-download"></i> 出力</button></div>';
   }).join('');
-  var anyData=stores.some(function(s){ return (ls('inv_hist_'+s.id,[])||[]).some(function(h){return invHistInMonth(h,y,m);}); });
+  var anyData=itMonthlyReport(y+'-'+String(m+1).padStart(2,'0'),stores).count>0 || stores.some(function(s){ return (ls('inv_hist_'+s.id,[])||[]).some(function(h){return invHistInMonth(h,y,m);}); });
   openModal('<div class="modal-title"><i class="ti ti-clipboard-list" style="color:var(--green)"></i> 棚卸Excel出力（店舗別タブ・業者別集計） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:8px">'
     +'<button class="btn btn-secondary btn-sm" onclick="setInvExpMonth(-1)"><i class="ti ti-chevron-left"></i></button>'
     +'<span style="font-weight:700;min-width:110px;text-align:center">'+label+'</span>'
     +'<button class="btn btn-secondary btn-sm" '+(_invExpMonth>=0?'disabled':'')+' onclick="setInvExpMonth(1)"><i class="ti ti-chevron-right"></i></button></div>'
-    +'<p style="font-size:11px;color:var(--muted);margin-bottom:8px">各店のMonthly棚卸を業者別に集計したExcelを出力します（全店出力は店舗ごとにタブ＋先頭に全店サマリー）。'+label+'に確定された棚卸が対象です。</p>'
+    +'<p style="font-size:12px;color:var(--muted);margin-bottom:8px">'+t('店舗別・業者別の棚卸と、同月の食材移動集計・明細を1つのExcelに出力します。移動のみの店舗も出力でき、棚卸未確定と表示します。','Export inventory by store/vendor plus monthly transfer summary and details in one Excel file. Stores with transfers only are marked as inventory not finalized.')+'</p>'
     +'<div class="card" style="padding:6px 12px">'+rows+'</div>'
     +'<button class="btn btn-primary" style="width:100%;margin-top:10px" '+(anyData?'':'disabled')+' onclick="invExpAll('+y+','+m+')"><i class="ti ti-download"></i> 全店まとめて出力</button>'
     +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>');
@@ -49409,7 +49466,7 @@ function renderAcctExport() {
   }
 
   html += `<div class="card"><div class="card-title"><i class="ti ti-clipboard-list" style="color:var(--accent)"></i>月次棚卸一覧</div>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">各店のMonthly棚卸（理論・実棚・差異・金額）を出力します。${acctMonthLabel()}に確定された棚卸が対象です。</p>`;
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px">${t('月次棚卸と同月の食材移動集計・明細を1つのExcelに出力します。','Export monthly inventory and transfer summary/details together in one Excel file.')} ${acctMonthLabel()}</p>`;
   stores.forEach(s => {
     var mHist = ls('inv_hist_'+s.id, []);
     var inMonth = mHist.filter(h=>invHistInMonth(h, y, m));
@@ -49417,7 +49474,7 @@ function renderAcctExport() {
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
         <div><span class="store-dot" style="background:${s.color}"></span><span style="font-weight:600">${s.name}</span>
           <span style="font-size:11px;color:var(--muted);margin-left:4px">${inMonth.length?inMonth.length+'回確定':'記録なし'}</span></div>
-        <button class="btn btn-secondary btn-sm" ${inMonth.length?'':'disabled'} onclick="exportInventoryCSV('${s.id}',${y},${m})">出力</button>
+        <button class="btn btn-secondary btn-sm" ${(inMonth.length||itMonthlyReport(y+'-'+String(m+1).padStart(2,'0'),[s]).count)?'':'disabled'} onclick="exportInventoryCSV('${s.id}',${y},${m})">出力</button>
       </div></div>`;
   });
   html += `<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="exportAllInventoryCSV(${y},${m})"><i class="ti ti-download"></i> 全店まとめて出力</button>`;
@@ -49921,19 +49978,25 @@ function inventoryCSVRows(storeId, y, m) {
   return rows;
 }
 function exportInventoryCSV(storeId, y, m) {
+  var stores=getVisibleStores().filter(function(s){return s.id===storeId;});
+  if(!stores.length) return;
   var s = STORES.find(x=>x.id===storeId)||{name:storeId};
   var rows = invStoreSheetRows(storeId, y, m);
-  if (!rows) { showToast('この月の棚卸記録がありません','danger'); return; }
-  downloadExcelSheets([{name:s.name, rows:rows}], `棚卸_${s.name}_${y}-${String(m+1).padStart(2,'0')}.xls`);
+  var ym=y+'-'+String(m+1).padStart(2,'0');
+  if (!rows && !itMonthlyReport(ym,stores).count) { showToast('この月の棚卸・食材移動記録がありません','danger'); return; }
+  downloadExcelSheets([{name:s.name, rows:rows||[[s.name,ym],[t('棚卸未確定','Inventory not finalized')]]}].concat(itReportSheets(ym,stores)), `棚卸_${s.name}_${ym}.xls`);
   showToast(`${s.name} の月次棚卸（業者別集計）を出力しました`,'success');
 }
 function exportAllInventoryCSV(y, m) {
   var stores = getVisibleStores();
   var datas = [];
   stores.forEach(function(s){ var d=invStoreVendorData(s.id, y, m); if(d) datas.push(d); });
-  if (!datas.length) { showToast('対象月の棚卸記録がありません','danger'); return; }
+  var ym=y+'-'+String(m+1).padStart(2,'0');
+  if (!datas.length && !itMonthlyReport(ym,stores).count) { showToast('対象月の棚卸・食材移動記録がありません','danger'); return; }
   var sheets = [];
   datas.forEach(function(d){ sheets.push({name:d.store.name, rows:invStoreSheetRows(d.store.id, y, m)}); });
+  stores.filter(function(s){return !datas.some(function(d){return d.store.id===s.id;});}).forEach(function(s){sheets.push({name:s.name,rows:[[s.name,ym],[t('棚卸未確定','Inventory not finalized')]]});});
+  sheets=sheets.concat(itReportSheets(ym,stores));
   downloadExcelSheets(sheets, `月次棚卸_全店_${y}-${String(m+1).padStart(2,'0')}.xls`);
   showToast('全店の月次棚卸（店舗別タブ・業者別集計）を出力しました','success');
 }
