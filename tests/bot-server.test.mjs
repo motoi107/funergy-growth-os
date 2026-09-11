@@ -268,6 +268,23 @@ test('Bot-only membership grants case access but denies administrator configurat
  for(const body of [{action:'config',clock:cfg},{action:'worker_config'},{action:'group'},{action:'owner'}, {action:'send',id:guid(10),version:1}])assert.equal((await call(body)).status,403);
  enabled=false;calls.length=0;assert.equal((await call({action:'daily'})).status,403);assert.equal(calls.some(x=>x.includes('/bot_cases?')),false);
 });
+test('completion broadcasts are deferred to the morning report, including old pending and unknown sends',async()=>{
+ const group='C'+'e'.repeat(32),notices=['pending','unknown'].map((state,i)=>({id:100+i,case_id:guid(85+i),created_at:'2026-09-01T03:16:00Z',data:{state,group_id:group,request_id:guid(90+i),case:{code:'#'+(85+i),status:'done',store_id:'TEST',subject:'Synthetic closed case'}}}));
+ let pushes=0;
+ const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'token'})[k],fetch:async(url,init)=>{
+  if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
+  if(url.includes('kind=eq.lifecycle_notice'))return Response.json(notices.filter(e=>['pending','unknown'].includes(e.data.state)));
+  if(url.includes('/bot_events?id=eq.')){const e=notices.find(e=>url.endsWith('eq.'+e.id));e.data=JSON.parse(init.body).data;return new Response(null,{status:204});}
+  if(url.includes('/bot_cases?kind='))return Response.json([]);
+  if(url.endsWith('/message/push')){pushes++;return new Response(null,{status:200});}
+  throw Error('Unexpected closure delivery path '+url);
+ }});
+ const call=()=>h(new Request('https://fn.test',{method:'POST',headers:{'x-bot-worker-key':'worker'},body:JSON.stringify({action:'worker',mode:'monitor',store_id:'TEST'})}));
+ assert.equal((await call()).status,200);assert.equal((await call()).status,200);assert.equal(pushes,0);
+ assert.ok(notices.every(e=>e.data.state==='morning_summary'&&e.data.delivery==='daily_hq_report'));
+ const report=formatMorningSummary({from:'2026-09-01',to:'2026-09-10',expected:1,ok:1,failed:0,active_stores:1,finance_enabled:true,finance_ok:1,counts:{},recent_closed:[{code:'#85',store_id:'TEST',subject:'Synthetic closed case',closure:{note:'Toast verified'}}]});
+ assert.match(report.text,/確認完了の定時報告｜毎朝9:00 HST/);assert.match(report.text,/完了：#85.*Synthetic closed case.*Toast verified/);
+});
 test('lifecycle delivery discards older transitions and retries one immutable LINE request',async()=>{
  const group='C'+'e'.repeat(32),id=guid(80),request=guid(81),notices=[{id:90,case_id:id,created_at:new Date().toISOString(),data:{state:'pending',group_id:group,request_id:guid(82),case:{code:'#80',status:'hq_review',status_version:2,store_id:'TEST',subject:'Old',payload:{response:{note:'Old reason'}}}}},{id:91,case_id:id,created_at:new Date().toISOString(),data:{state:'pending',group_id:group,request_id:request,case:{code:'#80',status:'hq_review',status_version:4,store_id:'TEST',subject:'New',payload:{response:{note:'New reason'}}}}}];const pushes=[];
  const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'token'})[k],fetch:async(url,init)=>{
