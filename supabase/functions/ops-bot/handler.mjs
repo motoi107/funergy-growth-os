@@ -114,11 +114,30 @@ function morningIssue(c){
  return (labels.length?labels.join('・'):'要確認')+(raw.length>8?'・ほか'+(raw.length-8)+'種':'');
 }
 function morningProgress(c){if(c.status==='hq_review')return '本部確認待ち';if(c.status==='verify')return '修正反映待ち';const key=morningField(c.progress,30)||'review';return MORNING_PROGRESS[key]||MORNING_PROGRESS.review;}
+export function morningShiftLines(c){
+ const shifts=Array.isArray(c.shifts)?c.shifts.filter(x=>x&&typeof x==='object'):[];
+ if(!shifts.length)return '打刻：詳細を取得できません。Funergy＋で確認してください';
+ const ms=v=>v?Date.parse(v):NaN;
+ const clock=(v,missing)=>{if(!v)return missing;const n=ms(v);return Number.isFinite(n)?new Date(n-10*3600000).toISOString().slice(5,16).replace('-','/').replace('T',' '):'時刻不正';};
+ let cfg;try{cfg=validConfig(c.shift_cfg);}catch{}
+ const detector=createClockDetector({getTipLabor:()=>null,getCeCfg:()=>cfg});
+ const rows=shifts.filter(x=>x&&typeof x==='object').map((sh,i)=>{
+  const a=ms(sh.inDate),b=ms(sh.outDate),valid=Number.isFinite(a)&&Number.isFinite(b)&&b>a;
+  const overlap=valid&&shifts.some((other,j)=>j!==i&&other&&ms(other.outDate)>ms(other.inDate)&&a<ms(other.outDate)&&ms(other.inDate)<b);
+  let kinds=cfg?detector.ceCheckShift(sh,cfg).kinds:[];
+  if(!sh.inDate||!sh.outDate)kinds=[...new Set([...kinds,'bad'])];
+  if(overlap)kinds=[...kinds,'overlap'];
+  const reasons=kinds.map(k=>k==='bad'?(!sh.inDate?'出勤未打刻':!sh.outDate?'退勤未打刻':'時刻不正'):k==='long'?'長時間：'+cfg.longH+'時間超':k==='short'?'短時間：'+cfg.shortMin+'分未満':k==='auto'?'自動退勤疑い：退勤が'+cfg.nightFrom+'〜'+cfg.nightTo:k==='overlap'?'他の打刻と重複':MORNING_KIND_JA[k]||k);
+  const minutes=valid?Math.round((b-a)/60000):null,duration=minutes===null?'時間算出不可':Math.floor(minutes/60)+'時間'+String(minutes%60).padStart(2,'0')+'分';
+  return {flag:kinds.length>0,text:'勤務'+(i+1)+'：'+clock(sh.inDate,'出勤未打刻')+' → '+clock(sh.outDate,'退勤未打刻')+'（'+duration+'）\n'+(reasons.length?'確認点：'+reasons.join('／'):cfg?'この打刻の単独エラーなし':'判定設定未取得・勤務を確認')};
+ }).sort((a,b)=>Number(b.flag)-Number(a.flag));
+ return '検知時の打刻（HST・休憩控除前）\n'+rows.slice(0,4).map(x=>x.text).join('\n')+(rows.length>4?'\nほか'+(rows.length-4)+'勤務はFunergy＋で確認':'');
+}
 function morningCaseBlock(c,index){
  const date=morningField(c.business_date,10).slice(5).replace('-','/'),code=morningField(c.code,20),progress=morningProgress(c),assignee=morningField(c.assignee,100)||'店舗担当者未設定';
  if(c.kind==='labor'){
   const name=morningField(c.employee_name||c.subject||'氏名不明',100);
-  return index+'. '+name+'（'+date+'）\n内容：'+morningIssue(c)+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
+  return index+'. '+name+'（'+date+'）\n内容：'+morningIssue(c)+'\n'+morningShiftLines(c)+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
  }
  const ref=morningField(c.subject,100).replace(/^Payment Void \/\s*|^Unpaid \/\s*/i,''),hasAmount=c.amount!==null&&c.amount!==undefined&&c.amount!=='',amount=Number(c.amount),money=hasAmount&&Number.isFinite(amount)?'$'+amount.toFixed(2):'金額不明';
  if(c.kind==='void'){
@@ -277,7 +296,19 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(cfg.group_id)+'&enabled=eq.true&select=group_id,label,all_stores');
   if(groups.length!==1||groups[0].all_stores!==true||groups[0].label!==cfg.label)throw Error('group_not_enabled');
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
-  const snapshot=await rpc('bot_morning_snapshot',{}),formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatMorningSummary(snapshot,{resend:variant!=='daily'});
+  const snapshot=await rpc('bot_morning_snapshot',{});
+  const labor=(snapshot.details||[]).filter(c=>c.kind==='labor'&&/^#[0-9]+$/.test(c.code));
+  for(let i=0;i<labor.length;i+=50){
+   const batch=labor.slice(i,i+50);
+   try{
+    const rows=await db('bot_cases?code=in.'+encodeURIComponent('('+batch.map(c=>c.code).join(',')+')')+'&select=code,payload');
+    for(const c of batch){const p=rows.find(r=>r.code===c.code)?.payload;
+     // Keep the report's detection and shift evidence consistent across reads.
+     if(p&&JSON.stringify(p.kinds)===JSON.stringify(c.kinds)&&p.employee_name===c.employee_name){c.shifts=p.shifts;c.shift_cfg=p.cfg;}
+    }
+   }catch{/* Missing detail is explicitly reported without suppressing the HQ report. */}
+  }
+  const formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatMorningSummary(snapshot,{resend:variant!=='daily'});
   const reserved=await rpc('bot_reserve_morning_summary_v2',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant});
   if(reserved.data?.state==='accepted')return {state:'accepted',already_sent:true,day:snapshot.day};
   if(reserved.data?.state==='failed')return {state:'failed',review_required:true,day:snapshot.day};
