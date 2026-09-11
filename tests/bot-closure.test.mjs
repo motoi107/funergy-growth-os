@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';
 import {PGlite} from './runtime/node_modules/@electric-sql/pglite/dist/index.js';
-import {parseCaseReply,replyChoices,responseReceipt} from '../bot/case-replies.mjs';
+import {parseCompletionReply,completionReceipt,parseCaseReply,replyChoices,responseReceipt} from '../bot/case-replies.mjs';
 import {dailyDisposition,formatMorningSummary,createHandler} from '../supabase/functions/ops-bot/handler.mjs';
 const gm='00000000-0000-4000-8000-000000000001',crew='00000000-0000-4000-8000-000000000002',g='C'+'a'.repeat(32),u='U'+'a'.repeat(32),hq='U'+'b'.repeat(32);
 let db;const q=async(s,p=[])=>(await db.query(s,p)).rows;const get=async id=>(await q('select * from bot_cases where id=$1',[id]))[0];
@@ -10,6 +10,7 @@ const reply=async(c,action='fixed',note='Synthetic correction',actor=gm,line=nul
 async function init(){db=new PGlite();await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key);create table store_config(store_id text primary key,name text,active boolean default true);create table manager_auth(user_id uuid primary key,role text);insert into store_config values('TEST','Test',true),('OTHER','Other',true);insert into manager_auth values('${gm}','gm'),('${crew}','office_crew');grant select on store_config,manager_auth to service_role;`);
 for(const f of ['ops-bot','ops-bot-all-stores','ops-bot-monitor','ops-bot-mentions','ops-bot-daily-range','ops-bot-auth','ops-bot-morning-summary','ops-bot-morning-summary-details'])await db.exec(fs.readFileSync(new URL('../db/'+f+'.sql',import.meta.url),'utf8'));
 await find('pre-existing');await db.exec(fs.readFileSync(new URL('../supabase/migrations/20260910184520_bot_case_closure.sql',import.meta.url),'utf8'));
+await db.exec(fs.readFileSync(new URL('../supabase/migrations/20260911205005_bot_simple_completion.sql',import.meta.url),'utf8'));
 await q('insert into bot_groups(group_id,enabled,all_stores) values($1,true,true)',[g]);
 for(const [user,role] of [[u,'manager'],[hq,'hq']])await q('insert into bot_settings(key,value) values($1,$2)',['line_responder:'+g+':'+user,JSON.stringify({enabled:true,role,stores:['TEST'],approved_by:gm,display_name:'Synthetic '+role})]);
 await q("insert into bot_settings(key,value) values('morning_summary',$1)",[JSON.stringify({enabled:true,group_id:g,label:'HQ'})]);}
@@ -43,13 +44,53 @@ await t.test('signed LINE webhook changes the real test database and responds; r
  const c=await find('signed-webhook');let replies=0;
  const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_SECRET:'synthetic',LINE_CHANNEL_ACCESS_TOKEN:'token'})[k],fetch:async(url,init)=>{
   if(url.endsWith('/rpc/bot_reply_ingest')){const p=JSON.parse(init.body);return Response.json((await q('select bot_reply_ingest($1,$2,$3,$4,$5,$6,$7,$8) v',[p.p_event,p.p_group,p.p_user,p.p_text,p.p_code,p.p_action,p.p_note,p.p_due]))[0].v);}
-  if(url.endsWith('/message/reply')){replies++;assert.match(JSON.parse(init.body).messages[0].text,/本部確認待ち/);return Response.json({});}throw Error('unexpected path '+url);
+  if(url.endsWith('/message/reply')){replies++;assert.match(JSON.parse(init.body).messages[0].text,/対応継続/);return Response.json({});}throw Error('unexpected path '+url);
  }});
- const bytes=new TextEncoder().encode(JSON.stringify({events:[{type:'message',webhookEventId:'signed-event',replyToken:'synthetic-reply',source:{groupId:g,userId:hq},message:{type:'text',text:c.code+' その他・終了 Duplicate entry'}}]}));
+ const bytes=new TextEncoder().encode(JSON.stringify({events:[{type:'message',webhookEventId:'signed-event',replyToken:'synthetic-reply',source:{groupId:g,userId:hq},message:{type:'text',text:c.code+' 対応中 '+new Date(Date.now()+86400000).toISOString().slice(0,10)+' Checking entry'}}]}));
  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode('synthetic'),{name:'HMAC',hash:'SHA-256'},false,['sign']);const sig=btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC',key,bytes))));
  const request=signature=>new Request('https://fn.test?route=line',{method:'POST',headers:{'x-line-signature':signature},body:bytes});
  assert.equal((await h(request('bad'))).status,401);assert.equal((await get(c.id)).status,'review');
- assert.equal((await h(request(sig))).status,200);assert.equal((await get(c.id)).status,'hq_review');assert.equal(replies,1);
+ assert.equal((await h(request(sig))).status,200);assert.equal((await get(c.id)).status,'correction');assert.equal(replies,1);
  const version=(await get(c.id)).version;assert.equal((await h(request(sig))).status,200);assert.equal((await get(c.id)).version,version);assert.equal(replies,1);
 });
+
+await t.test('unenrolled LINE completion: batch, scope, retry, closed state, and evidence changes',async()=>{
+ const a=await find('simple-a'), b=await find('simple-b','void'), other=await find('simple-other','labor','a','OTHER');
+ const local='C'+'d'.repeat(32),unknown='U'+'f'.repeat(32);
+ await q('insert into bot_groups(group_id,enabled,all_stores,store_id) values($1,true,false,$2)',[local,'TEST']);
+ const invoke=(event,codes,group=local,user=unknown)=>q('select bot_complete_reports($1,$2,$3,$4,$5) v',[event,group,user,'案件'+codes.join(',')+' 確認済み',codes]);
+ const r=(await invoke('simple',[a.code,b.code,other.code,'#999999']))[0].v;
+ assert.deepEqual(r.results.map(x=>x.status||x.error),['done','done','not_found','not_found']);
+ const closed=await get(a.id);assert.equal(closed.payload.closure.type,'line_reported');assert.equal(closed.payload.closure.line_user,unknown);assert.ok(closed.closed_at);assert.equal(closed.due_date,null);
+ assert.equal((await get(other.id)).status,'review');
+ assert.equal((await invoke('simple',[a.code,b.code]))[0].v.duplicate,true);assert.equal((await get(a.id)).version,closed.version);
+ assert.equal((await invoke('simple-again',[a.code]))[0].v.results[0].already_closed,true);
+ await q('update bot_cases set legacy_code=$1 where id=$2',['B-ABCDEF123456',a.id]);assert.equal((await invoke('simple-alias',['B-ABCDEF123456']))[0].v.results[0].already_closed,true);
+ assert.equal((await invoke('disabled',[other.code],'C'+'e'.repeat(32)))[0].v.ignored,true);
+ assert.equal((await invoke('no-user',[other.code],local,''))[0].v.ignored,true);
+ assert.equal((await find('simple-a')).status,'done');assert.equal((await find('simple-a','labor','changed')).status,'review');
+ for(const role of ['anon','authenticated']){await db.exec('set role '+role);await assert.rejects(()=>invoke('denied',[b.code]),/permission denied/);await db.exec('reset role');}
+});
+await t.test('signed batch webhook closes without enrollment and sends one itemized receipt',async()=>{
+ const a=await find('batch-hook-a'),b=await find('batch-hook-b','unpaid');let replies=0;
+ const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_SECRET:'synthetic',LINE_CHANNEL_ACCESS_TOKEN:'token'})[k],fetch:async(url,init)=>{
+  if(url.endsWith('/rpc/bot_complete_reports')){const p=JSON.parse(init.body);return Response.json((await q('select bot_complete_reports($1,$2,$3,$4,$5) v',[p.p_event,p.p_group,p.p_user,p.p_text,p.p_codes]))[0].v);}
+  if(url.endsWith('/message/reply')){replies++;const text=JSON.parse(init.body).messages[0].text;assert.ok(text.includes(a.code)&&text.includes(b.code));assert.match(text,/Closed/);return Response.json({});}throw Error('unexpected '+url);
+ }});
+ const bytes=new TextEncoder().encode(JSON.stringify({events:[{type:'message',webhookEventId:'batch-hook',replyToken:'test',source:{groupId:g,userId:'U'+'f'.repeat(32)},message:{type:'text',text:'案件'+a.code+','+b.code+' 確認済み'}}]}));
+ const key=await crypto.subtle.importKey('raw',new TextEncoder().encode('synthetic'),{name:'HMAC',hash:'SHA-256'},false,['sign']);const sig=btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC',key,bytes))));
+ const request=signature=>new Request('https://fn.test?route=line',{method:'POST',headers:{'x-line-signature':signature},body:bytes});
+ assert.equal((await h(request('bad'))).status,401);assert.equal((await get(a.id)).status,'review');
+ assert.equal((await h(request(sig))).status,200);assert.equal((await get(a.id)).status,'done');assert.equal((await get(b.id)).status,'done');
+ assert.equal((await h(request(sig))).status,200);assert.equal(replies,1);
+});
 await db.close();});
+
+test('single and multiple explicit completion reports in Japanese and English',()=>{
+ for(const text of ['案件#24,#30,#53 確認済み','＃２４、＃３０、＃５３ 完了',' #24 #30 #53 done '])assert.deepEqual(parseCompletionReply(text).codes,['#24','#30','#53']);
+ for(const text of ['#24 完了','#24 修正済み','#24 fixed corrected time','#24 confirmed no change valid','#24 その他・終了 重複'])assert.equal(parseCompletionReply(text).codes[0],'#24');
+ for(const text of ['了解','#24 未完了','#24 完了ですか','#24 not done','#24 対応中 2026-09-20 checking','#24,#30'])assert.equal(parseCompletionReply(text),null,text);
+ for(const text of ['#24 完了 ですか？','#24 完了 ですか','#24 完了 していません','#24 done not yet',"#24 fixed hasn't been checked",'#24 確認済み ではない'])assert.equal(parseCompletionReply(text).invalid,true,text);
+ assert.equal(parseCompletionReply(Array.from({length:21},(_,i)=>'#'+(i+1)).join(',')+' 完了').invalid,true);
+ assert.deepEqual(parseCompletionReply('#24,#24 完了').codes,['#24']);
+});
