@@ -24,5 +24,6 @@ export function parseCompletionReply(input) {
  return {codes,note:m[2].trim()};
 }
 export function completionReceipt(result){
- return '完了報告の受付 / Completion report\n'+(result.results||[]).map(c=>`${c.code}｜${c.error==='not_found'?'対象案件が見つかりません / Not found':c.error==='invalid_kind'?'完了報告の対象外 / Unsupported':c.already_closed?'完了済み / Already closed':c.status==='done'?'完了 / Closed':'受付できません / Not accepted'}${c.subject?'｜'+String(c.subject).slice(0,100):''}`).join('\n');
+ const header=(result.results||[]).some(c=>c.status==='done'&&!c.error)?'Your completion report has been received.\n完了報告を承りました。':'Unable to accept the completion report. Please check the results below.\n完了報告を受け付けられませんでした。以下をご確認ください。';
+ return header+'\n\n'+(result.results||[]).map(c=>`${c.code}｜${c.error==='not_found'?'対象案件が見つかりません / Not found':c.error==='invalid_kind'?'完了報告の対象外 / Unsupported':c.already_closed?'完了済み / Already closed':c.status==='done'?'完了 / Closed':'受付できません / Not accepted'}${c.subject?'｜'+String(c.subject).slice(0,100):''}`).join('\n');
 }
