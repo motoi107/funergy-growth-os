@@ -1,4 +1,4 @@
-import {parseCaseReply,replyHelp,replyChoices,responseReceipt} from '../../../bot/case-replies.mjs';
+import {parseCompletionReply,completionReceipt,parseCaseReply,replyHelp,replyChoices,responseReceipt} from '../../../bot/case-replies.mjs';
 import { createClockDetector } from '../../../bot/clock-detector.mjs';
 const ROLES=['ceo','gm','office','office_crew'], APPROVERS=['ceo','gm','office'];
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -419,7 +419,16 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
       continue;
      }
      if(e.type==='postback')continue;
-     const text=e.message?.type==='text'?e.message.text:'',parsed=parseCaseReply(text);
+     const text=e.message?.type==='text'?e.message.text:'',completion=parseCompletionReply(text);
+     if(completion){
+      const result=completion.invalid?{invalid:true}:await rpc('bot_complete_reports',{p_event:e.webhookEventId,p_group:g,p_user:e.source?.userId||'',p_text:text,p_codes:completion.codes});
+      if(e.replyToken&&!result.ignored&&!result.duplicate){
+       const message=result.invalid?(completion.reason==='limit'?'案件は20件以内、報告は4000文字以内で送ってください。 / Up to 20 cases and 4000 characters.':'完了として登録していません。完了した場合は「案件番号 完了」と送ってください。 / Not closed. To confirm completion, send case number + done.'):completionReceipt(result);
+       await timed('https://api.line.me/v2/bot/message/reply',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json'},body:JSON.stringify({replyToken:e.replyToken,messages:[{type:'text',text:message.slice(0,4900)}]})});
+      }
+      continue;
+     }
+     const parsed=parseCaseReply(text);
      if(parsed){
       const result=await rpc('bot_reply_ingest',{p_event:e.webhookEventId,p_group:g,p_user:e.source?.userId||'',p_text:text,p_code:parsed.code,p_action:parsed.invalid?null:parsed.action,p_note:parsed.note||null,p_due:parsed.due_date||null});
       if(e.replyToken&&!result.ignored&&!result.duplicate){
