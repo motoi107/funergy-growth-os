@@ -157,6 +157,7 @@ export function formatMorningSummary(s,{resend=false}={}){
  else if(total===0)lines.push('✅ 現在、未解決の異常はありません');
  else lines.push('✅ データ取得完了　店舗別レポートを確認してください');
  lines.push('本部確認待ち：'+Number(s.status_counts?.hq_review||0)+'件');
+ if((s.recent_closed||[]).length)lines.push('【確認完了の定時報告｜毎朝9:00 HST】');
  for(const c of (s.recent_closed||[]).slice(0,20))lines.push('完了：'+c.code+'｜'+morningField(c.store_id)+'｜'+morningField(c.subject,90)+'｜'+morningField(c.closure?.note,90));
  if((s.recent_closed||[]).length>20)lines.push('完了の続きはFunergy＋で確認');
  const text=lines.join('\n');if(text.length>4900)throw Error('invalid_message');
@@ -256,7 +257,11 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))return {skipped:true};
   const notices=await db('bot_events?kind=eq.lifecycle_notice&data->>state=in.(pending,unknown)&order=id.asc&limit=5');let sent=0;
   for(const e of notices){
-   const n=e.data;if(Date.parse(e.created_at)<Date.now()-23*3600000){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'expired'}});continue;}
+   const n=e.data;
+   // Closure broadcasts belong to the existing 09:00 HST HQ report. Keep the
+   // audit event, but do not send or retry a separate completion push.
+   if(n.case?.status==='done'){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'morning_summary',delivery:'daily_hq_report'}});continue;}
+   if(Date.parse(e.created_at)<Date.now()-23*3600000){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'expired'}});continue;}
    const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(n.group_id)+'&enabled=eq.true');
    const current=await db('bot_cases?id=eq.'+e.case_id+'&select=status,status_version');
    if(!groups.length||(!groups[0].all_stores&&groups[0].store_id!==n.case.store_id)||!current.length||current[0].status!==n.case.status||current[0].status_version!==n.case.status_version){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'cancelled'}});continue;}
