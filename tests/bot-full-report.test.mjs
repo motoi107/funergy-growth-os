@@ -11,7 +11,7 @@ test('full morning report: complete snapshot, bounded transport, immutable retry
  try{
  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key);create table store_config(store_id text primary key,name text,active boolean default true);create table manager_auth(user_id uuid primary key,role text);insert into store_config values('TEST','Synthetic Restaurant',true);grant select on store_config,manager_auth to service_role;`);
  for(const f of ['ops-bot','ops-bot-all-stores','ops-bot-monitor','ops-bot-mentions','ops-bot-daily-range','ops-bot-auth','ops-bot-morning-summary','ops-bot-morning-summary-details'])await db.exec(fs.readFileSync(new URL('../db/'+f+'.sql',import.meta.url),'utf8'));
- for(const f of ['20260910184520_bot_case_closure','20260911205005_bot_simple_completion','20260912220724_bot_full_morning_report'])await db.exec(fs.readFileSync(new URL('../supabase/migrations/'+f+'.sql',import.meta.url),'utf8'));
+ for(const f of ['20260910184520_bot_case_closure','20260911205005_bot_simple_completion','20260912220724_bot_full_morning_report','20260912224146_bot_report_responsibility'])await db.exec(fs.readFileSync(new URL('../supabase/migrations/'+f+'.sql',import.meta.url),'utf8'));
  await q('insert into bot_groups(group_id,label,enabled,all_stores) values($1,$2,true,true)',[group,'HQ']);
  await q("insert into bot_settings(key,value) values('morning_summary',$1)",[JSON.stringify({enabled:true,group_id:group,label:'HQ'})]);
  await q(`insert into bot_cases(source_key,kind,store_id,business_date,subject,status,closed_at,payload)

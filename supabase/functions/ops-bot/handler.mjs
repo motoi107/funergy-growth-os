@@ -133,8 +133,8 @@ export function morningShiftLines(c){
  }).sort((a,b)=>Number(b.flag)-Number(a.flag));
  return '検知時の打刻（HST・休憩控除前）\n'+rows.map(x=>x.text).join('\n');
 }
-function morningCaseBlock(c,index){
- const date=morningField(c.business_date,10).slice(5).replace('-','/'),code=morningField(c.code,20),progress=morningProgress(c),assignee=morningField(c.assignee,100)||'店舗担当者未設定';
+function morningCaseBlock(c,index,category=null){
+ const date=morningField(c.business_date,10).slice(5).replace('-','/'),code=morningField(c.code,20),progress=morningProgress(c),assignee=category==='labor'?'Moto・Yuki':category==='finance'?'経理':morningField(c.assignee,100)||'店舗担当者未設定';
  if(c.kind==='labor'){
   const name=morningField(c.employee_name||c.subject||'氏名不明',100);
   return index+'. '+name+'（'+date+'）\n内容：'+morningIssue(c)+'\n'+morningShiftLines(c)+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
@@ -155,7 +155,7 @@ function morningTextParts(text,max=4300){
  }
  if(rest)parts.push(rest);return parts;
 }
-function morningStoreMessages(details,total,stores=[]){
+function morningStoreMessages(details,total,stores=[],category=null){
  if(!Array.isArray(details)||!details.length)return [];
  if(details.length!==Number(total))throw Error('morning_summary_incomplete_details');
  const groups=new Map();
@@ -165,7 +165,7 @@ function morningStoreMessages(details,total,stores=[]){
  for(const group of groups.values()){
   const header='【'+group.name+'｜未解決 '+(storeTotals.get(group.key)??group.rows.length)+'件】';let text=header;
   for(let i=0;i<group.rows.length;i++){
-   const c=group.rows[i],block=morningCaseBlock(c,i+1)+(c.due_date?'\n期限：'+c.due_date:'')+(c.response?'\n回答：'+morningField(c.response.actor,80)+' / '+morningField(c.response.note,Infinity):'')+(c.returned?'\n差し戻し：'+morningField(c.returned.note,Infinity):'');
+   const c=group.rows[i],block=morningCaseBlock(c,i+1,category)+(c.due_date?'\n期限：'+c.due_date:'')+(c.response?'\n回答：'+morningField(c.response.actor,80)+' / '+morningField(c.response.note,Infinity):'')+(c.returned?'\n差し戻し：'+morningField(c.returned.note,Infinity):'');
    const parts=morningTextParts(block,4000);
    for(let j=0;j<parts.length;j++){
     const piece=(parts.length>1?'案件：'+morningField(c.code,20)+'｜進捗：'+morningProgress(c)+'｜詳細 '+(j+1)+'/'+parts.length+'\n':'')+parts[j];
@@ -177,13 +177,14 @@ function morningStoreMessages(details,total,stores=[]){
  }
  return sections;
 }
-export function formatMorningSummary(s,{resend=false}={}){
- const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&s?.finance_enabled===true&&Number(s?.ok)===Number(s?.expected)&&Number(s?.finance_ok)===Number(s?.expected)&&Number(s?.failed)===0;
+export function formatMorningSummary(s,{resend=false,category=null}={}){
+ const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&Number(s?.ok)===Number(s?.expected)&&Number(s?.failed)===0&&(category==='labor'||s?.finance_enabled===true&&Number(s?.finance_ok)===Number(s?.expected));
  const labor=n('labor'),voids=n('void'),unpaid=n('unpaid'),total=labor+voids+unpaid,period=Number(s.expected)===0&&Number(s.active_stores)>0?'当月は対象日なし':s.from+'〜'+s.to,p=s.progress_counts||{};
- const lines=[resend?'【毎朝 本部確認レポート｜再送】':'【毎朝 本部確認レポート】','対象：'+period,'取得：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'　決済確認：'+Number(s.finance_ok||0)+'/'+Number(s.expected||0),'未解決：'+total+'件（勤怠 '+labor+'／Payment Void '+voids+'／Unpaid '+unpaid+'）'];
+ const title=category==='labor'?'勤怠管理レポート':category==='finance'?'会計管理レポート':'毎朝 本部確認レポート';
+ const lines=['【'+title+(resend?'｜再送':'')+'】',...(category?['管理担当：'+(category==='labor'?'Moto・Yuki':'経理')]:[]),'対象：'+period,category==='labor'?'勤怠取得：'+Number(s.ok||0)+'/'+Number(s.expected||0):'取得：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'　決済確認：'+Number(s.finance_ok||0)+'/'+Number(s.expected||0),'未解決：'+total+'件'+(category==='labor'?'（勤怠）':category==='finance'?'（Payment Void '+voids+'／Unpaid '+unpaid+'）':'（勤怠 '+labor+'／Payment Void '+voids+'／Unpaid '+unpaid+'）')];
  if(total>0)lines.push('進捗：未通知 '+Number(p.not_sent||0)+'／通知失敗 '+Number(p.notify_failed||0)+'／対応待ち '+Number(p.waiting||0)+'／再通知失敗 '+Number(p.reminder_failed||0)+'／修正中 '+Number(p.in_progress||0)+'／再確認待ち '+Number(p.recheck||0)+'／本部確認 '+Number(p.review||0)+'／送信確認 '+Number(p.send_check||0));
  if(Number(s?.active_stores)===0)lines.push('⚠️ 有効店舗がありません');
- if(s?.finance_enabled!==true||Number(s?.finance_ok)!==Number(s?.expected))lines.push('⚠️ 決済データの取得が未完了です');
+ if(category!=='labor'&&(s?.finance_enabled!==true||Number(s?.finance_ok)!==Number(s?.expected)))lines.push('⚠️ 決済データの取得が未完了です');
  if(!complete)lines.push('⚠️ 取得未完了：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'、失敗 '+Number(s.failed||0));
  else if(total===0)lines.push('✅ 現在、未解決の異常はありません');
  else lines.push('✅ データ取得完了　店舗別レポートを確認してください');
@@ -193,15 +194,29 @@ export function formatMorningSummary(s,{resend=false}={}){
  const text=lines.join('\n');if(text.length>4900)throw Error('invalid_message');
  const detailCount=Number(s.detail_total??(Array.isArray(s.details)?s.details.length:0));
  if(s.detail_total!==undefined&&(detailCount!==(s.details||[]).length||detailCount!==total))throw Error('morning_summary_incomplete_details');
- const messages=[{type:'text',text},...morningStoreMessages(s.details,detailCount,s.stores).map(detail=>({type:'text',text:detail}))];
+ const messages=[{type:'text',text},...morningStoreMessages(s.details,detailCount,s.stores,category).map(detail=>({type:'text',text:detail}))];
  for(const c of closed){
   const header='【確認完了の定時報告｜毎朝9:00 HST】\n案件：'+morningField(c.code,20)+'｜完了',body='店舗：'+morningField(c.store_name||c.store_id)+'\n内容：'+morningField(c.subject,Infinity)+'\n回答者：'+morningField(c.closure?.actor||'Toast',100)+'\n回答：'+morningField(c.closure?.note,Infinity);
   for(const part of morningTextParts(body))messages.push({type:'text',text:header+'\n'+part});
  }
  messages[messages.length-1].text+='\n\n【レポート終了】未解決 '+detailCount+'件・確認完了 '+closed.length+'件を全件掲載';
- for(let i=0;i<messages.length;i++)messages[i].text='【本部レポート '+(i+1)+'/'+messages.length+'】\n'+messages[i].text;
+ for(let i=0;i<messages.length;i++)messages[i].text='【'+(category==='labor'?'勤怠管理｜Moto・Yuki':category==='finance'?'会計管理｜経理':'本部レポート')+' '+(i+1)+'/'+messages.length+'】\n'+messages[i].text;
 
  return {text,messages,complete,total,detail_count:detailCount};
+}
+// Each responsibility gets its own overview, progress, details, closures and numbering.
+export function formatResponsibleMorningReports(s,options={}){
+ const details=s.details||[],closed=s.recent_closed||[],known=c=>['labor','void','unpaid'].includes(c.kind);
+ if(details.some(c=>!known(c))||closed.some(c=>!known(c)))throw Error('morning_summary_missing_case_kind');
+ if(s.detail_total!==undefined&&Number(s.detail_total)!==details.length)throw Error('morning_summary_incomplete_details');
+ if(s.counts&&['labor','void','unpaid'].some(k=>Number(s.counts[k]||0)!==details.filter(c=>c.kind===k).length))throw Error('morning_summary_incomplete_details');
+ const reports=['labor','finance'].map(category=>{
+  const belongs=c=>category==='labor'?c.kind==='labor':c.kind==='void'||c.kind==='unpaid',rows=details.filter(belongs),done=closed.filter(belongs),progress={},statuses={};
+  for(const c of rows){const key=c.status==='hq_review'?'review':c.status==='verify'?'recheck':c.progress||'review';progress[key]=(progress[key]||0)+1;statuses[c.status]=(statuses[c.status]||0)+1;}
+  const stores=(s.stores||[]).map(store=>({...store,labor:category==='labor'?store.labor:0,void:category==='finance'?store.void:0,unpaid:category==='finance'?store.unpaid:0}));
+  return {category,...formatMorningSummary({...s,details:rows,detail_total:rows.length,recent_closed:done,counts:{labor:rows.filter(c=>c.kind==='labor').length,void:rows.filter(c=>c.kind==='void').length,unpaid:rows.filter(c=>c.kind==='unpaid').length},stores,progress_counts:progress,status_counts:statuses},{...options,category})};
+ });
+ return {reports,messages:reports.flatMap(r=>r.messages),text:reports.map(r=>r.text).join('\n\n'),complete:reports.every(r=>r.complete),total:details.length,detail_count:details.length};
 }
 export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  const sb=env('SUPABASE_URL'), service=env('SUPABASE_SERVICE_ROLE_KEY'), anon=env('SUPABASE_ANON_KEY');
@@ -328,7 +343,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     }
    }catch{/* Missing detail is explicitly reported without suppressing the HQ report. */}
   }
-  const formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatMorningSummary(snapshot,{resend:variant!=='daily'});
+  const formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatResponsibleMorningReports(snapshot,{resend:variant!=='daily'});
   const reserved=await rpc('bot_reserve_morning_summary_v3',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant,p_snapshot_at:snapshot.snapshot_at||null});
   if(reserved.data?.state==='accepted')return {state:'accepted',already_sent:true,day:snapshot.day};
   if(reserved.data?.state==='failed')return {state:'failed',review_required:true,day:snapshot.day};
