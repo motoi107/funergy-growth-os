@@ -14,7 +14,7 @@ test('shift notices show Hawaii dates, elapsed duration, actual thresholds, miss
 });
 test('large shift lists retain case identity and response status within LINE limits',()=>{
  const c={kind:'labor',code:'#123',employee_name:'Example',business_date:'2026-09-08',store_id:'TEST',status:'hq_review',kinds:['long'],shift_cfg:cfg,shifts:Array.from({length:30},()=>({inDate:'2026-09-08T20:00:00Z',outDate:'2026-09-09T09:00:00Z'}))};
- const m=formatMorningSummary({details:[c],counts:{labor:1},stores:[]});assert.match(m.messages[1].text,/ほか26勤務/);assert.match(m.messages[1].text,/本部確認待ち/);assert.match(m.messages[1].text,/案件：#123/);assert.ok(m.messages.every(x=>x.text.length<=4900));
+ const m=formatMorningSummary({details:[c],counts:{labor:1},stores:[]});assert.doesNotMatch(m.messages.map(x=>x.text).join('\n'),/ほか26勤務/);assert.match(m.messages.map(x=>x.text).join('\n'),/勤務30：/);assert.match(m.messages[1].text,/本部確認待ち/);assert.match(m.messages[1].text,/案件：#123/);assert.ok(m.messages.every(x=>x.text.length<=4900));
 });
 test('morning worker enriches saved cases before reservation without changing delivery timing',async()=>{
  const group='C'+'a'.repeat(32),guid='00000000-0000-4000-8000-000000000001';let reserved,pushes=0;
@@ -27,8 +27,8 @@ test('morning worker enriches saved cases before reservation without changing de
   if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
   if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-09-09',details:[detail],counts:{labor:1},stores:[]});
   if(url.includes('/bot_cases?code=in.'))return Response.json([{code:'#123',payload:{employee_name:'Example',kinds:['long'],cfg,shifts:[{inDate:'2026-09-08T20:00:00Z',outDate:'2026-09-09T09:00:00Z'}]}}]);
-  if(url.endsWith('/rpc/bot_reserve_morning_summary_v2')){reserved=JSON.parse(init.body);return Response.json({id:1,data:{state:'pending',messages:reserved.p_messages,request_id:guid}});}
-  if(url.endsWith('/rpc/bot_finish_morning_summary'))return Response.json(null);
+  if(url.endsWith('/rpc/bot_reserve_morning_summary_v3')){reserved=JSON.parse(init.body);return Response.json({id:1,data:{state:'pending',batches:[{state:'pending',messages:reserved.p_messages,request_id:guid}]}});}
+  if(url.endsWith('/rpc/bot_finish_morning_summary_batch'))return Response.json(null);
   if(url.endsWith('/message/push')){pushes++;return new Response(null,{status:200});}
   throw Error(url);
  }});
