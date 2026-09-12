@@ -27986,6 +27986,24 @@ function renderBudgetDaily() {
   // 日毎リピート率（bowls: repeat/(first+repeat)）を表示するか — FSP/WGS以外＆当月にfirst/repeatデータがある場合のみ
   var showRR = false;
   try{ showRR = scopeStores.length && scopeStores.every(function(s){return s.id!=='F03'&&s.id!=='F03-G';}) && days.some(function(dd){ return scopeStores.some(function(s){ var ov=(getDailyActuals(s.id)[dd.date]||{}); return ov.firstTimeBowls!=null||ov.repeatBowls!=null; }); }); }catch(e){}
+  /* v1023: 店舗売上とイベント出店の関係を1行で。合計は参考値（予算・PLには入れていない）。 */
+  (function(){
+    var _evRows = eventsForMonth(scopeStores, days), _evT = eventSum(_evRows);
+    if (!_evT.count) return;
+    var _stAct = 0; days.forEach(function(dd){ scopeStores.forEach(function(ss){
+      var _o=(getDailyActuals(ss.id)||{})[dd.date]||{}; if(_o.actual!=null) _stAct += Number(_o.actual)||0; }); });
+    var tile = function(label, val, sub, col, bd){
+      return '<div style="flex:1;min-width:150px;border:1px solid '+(bd||'var(--border)')+';border-radius:10px;padding:8px 12px">'
+        + '<div style="font-size:10px;color:var(--muted);font-weight:700">'+label+'</div>'
+        + '<div style="font-size:18px;font-weight:800;margin-top:2px'+(col?';color:'+col:'')+'">'+fmtUSD2(val)+'</div>'
+        + '<div style="font-size:10px;color:var(--muted)">'+sub+'</div></div>';
+    };
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+      + tile(t('店舗売上（この月）','Store sales (month)'), _stAct, t('予算・達成率はこちら','Budget & achievement use this'))
+      + tile(t('イベント出店 売上','Pop-up sales'), _evT.sales, _evT.count+t('件 ／ 予算対象外',' events · no budget'), 'var(--accent2)', 'var(--accent2)')
+      + tile(t('合計（店舗＋イベント）','Total (store + pop-up)'), _stAct+_evT.sales, t('参考値（予算・PLには含めていません）','Reference only (not in budget or P&L)'))
+      + '</div>';
+  })();
   html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>${t('日次一覧','Daily list')}
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>
@@ -27993,7 +28011,7 @@ function renderBudgetDaily() {
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div></div>
     <table class="inv-table" style="min-width:${isAgg?'620':'1080'}px;font-size:12px"><thead><tr>
-      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'</th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'</th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th><th>${t('人件費率*','Labor %*')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
+      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th style="color:var(--accent2)">'+t('イベント出店','Pop-up')+'</th>'}${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'</th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'</th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th><th>${t('人件費率*','Labor %*')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
   var cumB=0, cumA=0;
@@ -28019,6 +28037,13 @@ function renderBudgetDaily() {
       var _tl=(typeof toastLaborCostForDate==='function')?toastLaborCostForDate(s.id, d.date):0;
       if(_tl>0){ var _ex=_storeExtra[s.id]||{sal:0,ins:0}; dayLaborCost += _tl*(1+PAYROLL_TAX_RATE)+_ex.sal*(1+PAYROLL_TAX_RATE)+_ex.ins; }
     });
+    /* v1023: その日のイベント出店。★dayAct には足さない（予算・達成率・累計は店舗売上のまま）。 */
+    var dayEv = { count:0, sum:eventSum([]), label:'' };
+    if (!isAgg && scopeStores[0]) {
+      var _evs = dayEventsFor(scopeStores[0].id, d.date);
+      dayEv = { count:_evs.length, sum:eventSum(_evs),
+                label:_evs.map(function(e){ return e.name||t('（名称なし）','(no name)'); }).join('・') };
+    }
     var dayRT = (dayFirst+dayRepeat)>0 ? Math.round(dayRepeat/(dayFirst+dayRepeat)*1000)/10 : null;
     var rtCellTd = showRR ? ('<td style="text-align:center;font-size:11px">'+(dayRT!=null?('<span title="first '+dayFirst+' / repeat '+dayRepeat+'" style="font-weight:600;color:var(--accent2)">'+dayRT+'%</span>'):'<span style="color:var(--muted)">—</span>')+'</td>') : '';
     var dayHol = !isAgg ? dayEventFor(d.date) : '';
@@ -28046,6 +28071,7 @@ function renderBudgetDaily() {
       ${isAgg?'':`<td class="d-wx" style="font-size:14px">${weatherIcon(weather)}</td><td class="d-wx" style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="${t('タップでメモ編集','Tap to edit memo')}"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">'+t('＋メモ','+Memo')+'</span>':'-'):''}</td>`}
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="'+t('Toast実績','Toast actual')+'"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="${t('手入力','Manual')}: ${escapeHtml(_manBy)}"></i>`:''}</td>
+      ${isAgg?'':`<td style="font-size:11px">${dayEv.count?`<span style="font-weight:700;color:var(--accent2)">${fmtUSD2(dayEv.sum.sales)}</span><div style="font-size:9.5px;color:var(--muted)">${escapeHtml(dayEv.label)}</div>`:'<span style="color:var(--muted)">—</span>'}</td>`}
       ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="${t('テイクアウト丼数','Takeout bowls')}"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
       ${rtCellTd}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
@@ -28062,6 +28088,8 @@ function renderBudgetDaily() {
   html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('* 人件費率＝人件費 ÷ 実績。日別は週40時間超の残業割増を含まないため、上部の月次KPIの人件費率とは一致しません。','* Labor % = Labor $ ÷ Actual. Daily values exclude the weekly overtime premium, so they do not match the monthly Labor % KPI above.')}</p>`;
   if (isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('集計ビューでは天気・イベントは各店ビューで確認・入力できます','In aggregate view, weather/events are viewed and entered per store')}</p>`;
   html += '</div>';
+  /* v1023: イベント出店（明細）。店舗売上とは別枠。 */
+  html += eventListCard(scopeStores, days, canEdit, isAgg);
   return html;
 }
 function setDailyScope(s) { dailyStoreScope = s; renderPage('budget'); }
@@ -29409,6 +29437,161 @@ async function doWeatherSync(storeId) {
 }
 async function doWeatherSyncSilent(storeId) {
   return await fetchWeatherForView(storeId, monthDays());
+}
+
+/* ============================================================
+   v1023: イベント出店（単発の出店）。店舗の売上とは別に持つ。
+   ・保存先は日次実績のレコードの events 配列（store×日付）。Toast 同期は既存キーを残すので消えない。
+   ・店舗の予算・達成率・累計・簡易PL・月次KPI・中間MTG には入れない（イベントに予算が無いため）。
+   ============================================================ */
+var EVENT_FIELDS = ['sales','guests','cost','labor','fee'];
+/* その日のイベント一覧。壊れた値でも落ちないように整える（数字でないものは 0）。 */
+function dayEventsFor(storeId, date){
+  var ov = (getDailyActuals(storeId)||{})[date] || {};
+  var arr = Array.isArray(ov.events) ? ov.events : [];
+  return arr.map(function(e, i){
+    var o = { id:(e && e.id) || ('ev'+i), name:(e&&e.name)||'', place:(e&&e.place)||'',
+              by:(e&&e.by)||'', at:(e&&e.at)||'', editBy:(e&&e.editBy)||'', editAt:(e&&e.editAt)||'' };
+    EVENT_FIELDS.forEach(function(f){ var v=Number(e&&e[f]); o[f] = isFinite(v)?v:0; });
+    o.gross = o.sales - o.cost - o.labor - o.fee;   /* 粗利＝売上−原価−人件費−出店料 */
+    return o;
+  });
+}
+/* 合計。日にも月にも同じものを使う（別々に足すとズレる）。 */
+function eventSum(list){
+  var o = { count:(list||[]).length, gross:0 };
+  EVENT_FIELDS.forEach(function(f){ o[f]=0; });
+  (list||[]).forEach(function(e){ EVENT_FIELDS.forEach(function(f){ o[f]+=Number(e[f])||0; }); o.gross+=Number(e.gross)||0; });
+  return o;
+}
+/* 月ぶん。days は monthDays() と同じ形（{date}の配列）。 */
+function eventsForMonth(stores, days){
+  var rows = [];
+  (stores||[]).forEach(function(st){
+    (days||[]).forEach(function(d){
+      dayEventsFor(st.id, d.date).forEach(function(e){
+        rows.push(Object.assign({}, e, { storeId:st.id, storeName:st.name, date:d.date, dow:d.dow }));
+      });
+    });
+  });
+  rows.sort(function(a,b){ return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  return rows;
+}
+/* イベント出店のカード（日次一覧の下）。単店でも全店でも同じ形。 */
+function eventListCard(stores, days, canEdit, multi){
+  var rows = eventsForMonth(stores, days), tot = eventSum(rows);
+  var money = function(v){ return fmtUSD2(v); };
+  var h = '<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-tent"></i>'
+    + t('イベント出店','Pop-up events')
+    + ' <span style="font-size:11px;color:var(--muted);font-weight:400">'+escapeHtml(dailyMonthLabel())+'</span>';
+  if (canEdit && !multi) h += '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openEventModal(\''+stores[0].id+'\')"><i class="ti ti-plus"></i>'+t('出店を追加','Add event')+'</button>';
+  h += '</div>';
+  if (!rows.length) {
+    h += '<div style="font-size:11.5px;color:var(--muted);padding:4px 2px">'
+      + t('この月のイベント出店はまだありません。','No pop-up events recorded for this month yet.')
+      + (canEdit&&!multi ? t('「出店を追加」から記録できます。','Use “Add event” to record one.') : '')+'</div></div>';
+    return h;
+  }
+  h += '<table class="inv-table" style="min-width:'+(multi?'860':'780')+'px;font-size:12px"><thead><tr>'
+    + '<th>'+t('日','Day')+'</th>'+(multi?'<th>'+t('店舗','Store')+'</th>':'')
+    + '<th>'+t('イベント名','Event')+'</th><th>'+t('場所','Place')+'</th>'
+    + '<th>'+t('売上','Sales')+'</th><th>'+t('食数','Servings')+'</th><th>'+t('原価','Cost')+'</th>'
+    + '<th>'+t('人件費','Labor')+'</th><th>'+t('出店料','Fee')+'</th><th>'+t('粗利','Gross')+'</th>'
+    + ((canEdit&&!multi)?'<th></th>':'') + '</tr></thead><tbody>';
+  rows.forEach(function(e){
+    h += '<tr><td style="white-space:nowrap">'+escapeHtml(e.date.slice(5).replace('-','/'))+'<span style="color:var(--muted);font-size:10px">('+escapeHtml(e.dow||'')+')</span></td>'
+      + (multi?'<td style="font-size:11px">'+escapeHtml(e.storeName||e.storeId)+'</td>':'')
+      + '<td style="font-weight:600">'+escapeHtml(e.name||t('（名称なし）','(no name)'))+'</td>'
+      + '<td style="font-size:11px;color:var(--muted)">'+escapeHtml(e.place||'—')+'</td>'
+      + '<td style="font-weight:600">'+money(e.sales)+'</td>'
+      + '<td>'+(e.guests?Math.round(e.guests):'—')+'</td>'
+      + '<td style="color:var(--muted)">'+(e.cost?money(e.cost):'—')+'</td>'
+      + '<td style="color:var(--muted)">'+(e.labor?money(e.labor):'—')+'</td>'
+      + '<td style="color:var(--muted)">'+(e.fee?money(e.fee):'—')+'</td>'
+      + '<td style="font-weight:700;color:'+(e.gross>=0?'var(--green)':'var(--red)')+'">'+money(e.gross)+'</td>'
+      + ((canEdit&&!multi)?'<td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openEventModal(\''+e.storeId+'\',\''+e.date+'\',\''+e.id+'\')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>':'')
+      + '</tr>';
+  });
+  h += '<tr style="font-weight:700;background:rgba(0,0,0,0.02)"><td colspan="'+(multi?4:3)+'">'+t('合計','Total')+' '+tot.count+t('件','')+'</td>'
+    + '<td>'+money(tot.sales)+'</td><td>'+(tot.guests?Math.round(tot.guests):'—')+'</td>'
+    + '<td>'+money(tot.cost)+'</td><td>'+money(tot.labor)+'</td><td>'+money(tot.fee)+'</td>'
+    + '<td style="color:'+(tot.gross>=0?'var(--green)':'var(--red)')+'">'+money(tot.gross)+'</td>'
+    + ((canEdit&&!multi)?'<td></td>':'') + '</tr></tbody></table>';
+  h += '<p style="font-size:11px;color:var(--muted);margin-top:6px">'
+    + t('イベント出店は店舗の予算・達成率・累計には含めません（単発のため予算がありません）。Toast には入らないため手入力です。',
+        'Pop-up events are excluded from the store budget, achievement and cumulative figures (one-off, no budget). They are not in Toast, so they are entered by hand.')+'</p>';
+  return h + '</div>';
+}
+/* 追加・編集。date を渡さないときは今日（表示中の月に無ければ月初）。 */
+function openEventModal(storeId, date, evId){
+  var days = monthDays(), ym = (days[0]||{}).date.slice(0,7);
+  var d0 = date || ((bizToday()||'').slice(0,7)===ym ? bizToday() : (days[0]||{}).date);
+  var cur = null;
+  if (evId) cur = dayEventsFor(storeId, d0).filter(function(e){ return e.id===evId; })[0] || null;
+  var v = function(x){ return (cur && cur[x]!=null && cur[x]!=='') ? cur[x] : ''; };
+  var num = function(x){ return (cur && Number(cur[x])) ? cur[x] : ''; };
+  var f = function(id, label, val, ph){
+    return '<div class="form-group"><label class="form-label">'+label+'</label>'
+      + '<input class="form-input" id="'+id+'" type="number" inputmode="decimal" step="0.01" value="'+val+'" placeholder="'+(ph||'0')+'"></div>';
+  };
+  openModal('<div class="modal-title">'+t('イベント出店','Pop-up event')+(cur?t('（編集）','(edit)'):t('（追加）','(add)'))
+    + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div class="form-row">'
+    + '<div class="form-group"><label class="form-label">'+t('日付','Date')+'</label>'
+    +   '<select class="form-select" id="ev-date">'+days.map(function(x){ return '<option value="'+x.date+'"'+(x.date===d0?' selected':'')+'>'+x.date.slice(5).replace('-','/')+' ('+x.dow+')</option>'; }).join('')+'</select></div>'
+    + '<div class="form-group"><label class="form-label">'+t('イベント名','Event name')+'</label>'
+    +   '<input class="form-input" id="ev-name" type="text" value="'+escapeHtml(v('name'))+'" placeholder="'+t('ホノルル・フェス','Honolulu Festival')+'"></div>'
+    + '</div>'
+    + '<div class="form-group"><label class="form-label">'+t('場所','Place')+'</label>'
+    +   '<input class="form-input" id="ev-place" type="text" value="'+escapeHtml(v('place'))+'" placeholder="'+t('例: Kakaako','e.g. Kakaako')+'"></div>'
+    + '<div class="form-row">'+f('ev-sales', t('売上 ($)','Sales ($)'), num('sales'))+f('ev-guests', t('食数','Servings'), num('guests'))+'</div>'
+    + '<div class="form-row">'+f('ev-cost', t('原価 ($)','Cost ($)'), num('cost'))+f('ev-labor', t('人件費 ($)','Labor ($)'), num('labor'))+'</div>'
+    + '<div class="form-row">'+f('ev-fee', t('出店料 ($)','Booth fee ($)'), num('fee'))+'<div class="form-group"></div></div>'
+    + '<div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">'
+    +   t('粗利＝売上−原価−人件費−出店料（自動）。店舗の予算・達成率には含めません。',
+          'Gross = Sales − Cost − Labor − Fee (auto). Excluded from the store budget and achievement.')+'</div>'
+    + (cur&&cur.by?'<div style="font-size:10px;color:var(--muted);margin-bottom:8px"><i class="ti ti-user-check"></i> '+t('記録','Recorded')+': '+escapeHtml(cur.by)+' '+escapeHtml(cur.at||'')
+        + (cur.editBy?' ／ '+t('修正','Edited')+': '+escapeHtml(cur.editBy)+' '+escapeHtml(cur.editAt||''):'')+'</div>':'')
+    + '<div class="btn-row">'
+    + (cur?'<button class="btn btn-secondary" style="color:var(--red)" onclick="deleteEvent(\''+storeId+'\',\''+d0+'\',\''+evId+'\')">'+t('削除','Delete')+'</button>':'')
+    + '<button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
+    + '<button class="btn btn-primary" onclick="saveEvent(\''+storeId+'\',\''+d0+'\''+(evId?',\''+evId+'\'':'')+')">'+t('保存','Save')+'</button></div>');
+}
+function saveEvent(storeId, date, evId){
+  var g = function(id){ var el=document.getElementById(id); return el?el.value:''; };
+  var n = function(id){ var x=parseFloat(g(id)); return isFinite(x)?x:0; };
+  var newDate = g('ev-date') || date;
+  var rec = { id: evId || ('ev'+Date.now().toString(36)), name:(g('ev-name')||'').trim(), place:(g('ev-place')||'').trim(),
+              sales:n('ev-sales'), guests:n('ev-guests'), cost:n('ev-cost'), labor:n('ev-labor'), fee:n('ev-fee') };
+  if (!rec.name && !rec.sales) { showToast(t('イベント名か売上を入れてください','Enter an event name or sales'),'error'); return; }
+  /* 記録者は日次実績と同じ myName()/nowJP()（saveDailyActual と揃える） */
+  var keep = evId ? (dayEventsFor(storeId, date).filter(function(e){ return e.id===evId; })[0]||{}) : {};
+  rec.by = keep.by || myName(); rec.at = keep.at || nowJP();
+  if (evId && keep.by) { rec.editBy = myName(); rec.editAt = nowJP(); }
+  var actuals = getDailyActuals(storeId);
+  /* 日付を変えたときは、元の日から外して新しい日へ移す（両方に残さない） */
+  if (evId) {
+    var prevRec = actuals[date] || {};
+    var left = (Array.isArray(prevRec.events)?prevRec.events:[]).filter(function(e){ return (e&&e.id)!==evId; });
+    actuals[date] = Object.assign({}, prevRec, { events: left });
+  }
+  var tgt = actuals[newDate] || {};
+  var list = (Array.isArray(tgt.events)?tgt.events:[]).slice();
+  list.push(rec);
+  actuals[newDate] = Object.assign({}, tgt, { events: list });
+  setDailyActuals(storeId, actuals);
+  closeModalDirect();
+  showToast(t('イベント出店を保存しました','Pop-up event saved'),'success');
+  renderPage('budget');
+}
+function deleteEvent(storeId, date, evId){
+  var actuals = getDailyActuals(storeId), rec = actuals[date] || {};
+  var left = (Array.isArray(rec.events)?rec.events:[]).filter(function(e){ return (e&&e.id)!==evId; });
+  actuals[date] = Object.assign({}, rec, { events: left });
+  setDailyActuals(storeId, actuals);
+  closeModalDirect();
+  showToast(t('イベント出店を削除しました','Pop-up event deleted'),'success');
+  renderPage('budget');
 }
 
 function openDayMemo(storeId, date, dow){
@@ -36861,7 +37044,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1022';
+const APP_VERSION = '1023';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
