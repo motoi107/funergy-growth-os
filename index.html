@@ -12550,16 +12550,18 @@ function _secRerender(){ var b=document.getElementById('mgr-secure-body'); if(b)
 function secTab(t){ window._secTab=t; _secRerender(); }
 function renderSecureBody(){
   if(!managerSessionAllowed()) return '<div class="card">管理者認証が必要です / Administrator sign-in required</div>';
-  var t = (window._secTab==='pl'||window._secTab==='hq'||window._secTab==='bot') ? window._secTab : 'karte';
+  /* ★v1021: 変数名は _st。t にすると翻訳関数 t() を隠してしまい、
+     v1016 が足した t('業務Bot',…) が TypeError になって、このページ全体が「表示エラー」になっていた。 */
+  var _st = (window._secTab==='pl'||window._secTab==='hq'||window._secTab==='bot') ? window._secTab : 'karte';
   /* v925: 下のサブタブと見た目を揃える */
   var bar = '<div class="seg-tabs" style="max-width:520px">'
-    +'<div class="seg-tab'+(t==='karte'?' active':'')+'" onclick="secTab(\'karte\')"><i class="ti ti-id-badge-2"></i>成長カルテ</div>'
-    +'<div class="seg-tab'+(t==='pl'?' active':'')+'" onclick="secTab(\'pl\')"><i class="ti ti-report-money"></i>PL分析</div>'
-    +'<div class="seg-tab'+(t==='hq'?' active':'')+'" onclick="secTab(\'hq\')"><i class="ti ti-building-bank"></i>本部予算</div>'
-    +'<div class="seg-tab'+(t==='bot'?' active':'')+'" onclick="secTab(\'bot\')"><i class="ti ti-robot"></i>'+t('業務Bot','Operations Bot')+'</div>'
+    +'<div class="seg-tab'+(_st==='karte'?' active':'')+'" onclick="secTab(\'karte\')"><i class="ti ti-id-badge-2"></i>成長カルテ</div>'
+    +'<div class="seg-tab'+(_st==='pl'?' active':'')+'" onclick="secTab(\'pl\')"><i class="ti ti-report-money"></i>PL分析</div>'
+    +'<div class="seg-tab'+(_st==='hq'?' active':'')+'" onclick="secTab(\'hq\')"><i class="ti ti-building-bank"></i>本部予算</div>'
+    +'<div class="seg-tab'+(_st==='bot'?' active':'')+'" onclick="secTab(\'bot\')"><i class="ti ti-robot"></i>'+t('業務Bot','Operations Bot')+'</div>'
     +'</div>';
   /* v1016: 業務Bot もタブの1つにする。別ボタンだと、開いている間どのタブも選択中にならない。 */
-  return bar + (t==='bot' ? renderBotCenter() : t==='pl' ? renderSimplePL() : t==='hq' ? renderHqBudget() : renderGrowthKarte());
+  return bar + (_st==='bot' ? renderBotCenter() : _st==='pl' ? renderSimplePL() : _st==='hq' ? renderHqBudget() : renderGrowthKarte());
 }
 /* ============================================================
    本部予算（セキュアページ）: 年間計画表（本部予算 vs 店舗予算 vs 実績）
@@ -12757,7 +12759,9 @@ function hqPlActForYm(sid, ym){
     var sales = Number(r.sales)||0; if(!(sales>0)) return null;
     /* ★Number(null) は 0 になる。null と 0 を取り違えないよう先に弾く（教訓(54)）。 */
     var num = function(v){ if(v==null||v==='') return null; var x=Number(v); return isFinite(x)?x:null; };
-    var cogs = num(r.cogs), labor = num(r.payroll), opex = num(r.opex), profit = num(r.netop);
+    /* v1020: 営業利益は Net Income（本部費・減価償却・その他収入を含む）。v1019 以前の取込には無いので Net Operating Income */
+    var cogs = num(r.cogs), labor = num(r.payroll), opex = num(r.opex),
+        profit = (r.netinc != null && r.netinc !== '') ? num(r.netinc) : num(r.netop);
     var off = _hqOffOf(ym);
     var ms = safeMonthStats(sid, off)||{};
     var g = (ms && ms.guests>0) ? ms.guests : null;
@@ -13708,6 +13712,18 @@ function renderSimplePL(){
     +  '<button class="btn btn-secondary btn-sm" onclick="backupPl()"><i class="ti ti-download"></i> '+t('書き出す','Export')+'</button>'
     +  '<button class="btn btn-primary btn-sm" onclick="openPlImport()"><i class="ti ti-file-upload"></i> '+t('PLブックを取り込む','Import PL workbook')+'</button></div>';
   h += renderPlCoverage(stores, ym);              /* v918 */
+  /* v1020: Net Income（本部費・減価償却・その他収入まで入った営業利益）が無い月は知らせる。
+     v1019 以前に取り込んだデータは Net Operating Income しか持たないため、取り込み直すまで営業利益が本部費を引く前の数字になる。 */
+  try {
+    var _pa = getPlActual(), _noNet = [];
+    Object.keys(_pa).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort().forEach(function(ym2){
+      var any2 = false;
+      Object.keys(_pa[ym2]||{}).forEach(function(k){ if (k.charAt(0)==='_') return; var v2 = _pa[ym2][k]||{}; if (v2.netinc == null || v2.netinc === '') any2 = true; });
+      if (any2) _noNet.push(parseInt(ym2.slice(5),10)+t('月',''));
+    });
+    if (_noNet.length) h += '<div class="alert alert-warning" style="font-size:11px;margin-bottom:10px"><i class="ti ti-alert-triangle"></i> '
+      + escapeHtml(_noNet.join('・'))+t(' は Net Income が未取込です（営業利益が本部費を引く前の Net Operating Income で出ています）。PLブックを取り込み直してください。',' has no Net Income yet (operating income shown before head-office fees). Re-import the PL workbook.')+'</div>';
+  } catch(e){}
   /* v923: 縦に長くなりすぎるのでサブタブに分ける。PCで見る前提。 */
   var _pt = plTab();
   /* v925: タブが7つに増えたので、丸いピルの羅列から区切りのある帯に変える。
@@ -13731,7 +13747,7 @@ function renderSimplePL(){
   h += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 2px 10px;line-height:1.6"><i class="ti ti-info-circle"></i> 簡易PL＝売上(日次実績)・原価(棚卸法)・人件費(Labor共通コア)は<b>実数</b>、変動費は<b>実PL 1〜5月の平均</b>(店舗別・上書き可)＋建替経費の実費、GET='+(cfg.getRate||4.712)+'%、固定費は<b>実PL 5月の実数</b>。実PL列と並べて差異を検証できます。<b>各項目行をタップで内訳を表示。</b></div>';
 
   // 全店合計
-  var tot={sales:0,cogs:0,labor:0,expT:0,profit:0}, atot=actual?{sales:0,cogs:0,payroll:0,opex:0,netop:0}:null;
+  var tot={sales:0,cogs:0,labor:0,expT:0,profit:0}, atot=actual?{sales:0,cogs:0,payroll:0,opex:0,netop:0,profit:0}:null;   /* v1020: profit＝Net Income */
   var comp={};
   stores.forEach(function(st){
     var c=plComputeStore(st.id, ym, plOff); comp[st.id]=c;
@@ -13743,12 +13759,14 @@ function renderSimplePL(){
     Object.keys(actual).forEach(function(k){
       if (k.charAt(0)==='_') return;
       ['sales','cogs','payroll','opex','netop'].forEach(function(f){ atot[f] += Number(actual[k][f])||0; });
+      var _ni = actual[k].netinc;
+      atot.profit += (_ni != null && _ni !== '' && isFinite(Number(_ni))) ? Number(_ni) : (Number(actual[k].netop)||0);   /* v1020 */
     });
   }
   h += '<div class="card" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-building-skyscraper" style="color:var(--accent)"></i>全店合計（'+mLabel+'）</div>'
     +'<div class="kpi-grid">'
     +kpi('売上', m(tot.sales), atot?('実PL '+m(atot.sales)):'', 'var(--tm)')
-    +kpi('営業利益', m(tot.profit), pct(tot.profit,tot.sales)+(atot?('　実PL '+m(atot.netop)):''), tot.profit>=0?'var(--green)':'var(--red)')
+    +kpi('営業利益', m(tot.profit), pct(tot.profit,tot.sales)+(atot?('　実PL '+m(atot.profit)):''), tot.profit>=0?'var(--green)':'var(--red)')
     +kpi('原価率', pct(tot.cogs,tot.sales), atot?('実PL '+pct(atot.cogs,atot.sales)):'', 'var(--yellow)')
     +kpi('人件費率', pct(tot.labor,tot.sales), atot?('実PL '+pct(atot.payroll,atot.sales)):'', 'var(--accent2)')
     +'</div></div>';
@@ -13801,7 +13819,8 @@ function renderSimplePL(){
     h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'get\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 消費税(GET) <span style="font-size:9px;color:var(--muted)">売上×'+(cfg.getRate||4.712)+'%</span></td><td style="text-align:right">'+m(c.get)+' <span style="font-size:9px;color:var(--muted);font-weight:400">'+pct(c.get,c.sales)+'</span></td></tr>';
     h += '<tr onclick="openPlDetailModal(\''+st.id+'\',\'fix\')" style="cursor:pointer"><td style="text-align:left"><i class="ti ti-zoom-in" style="font-size:9px;color:var(--muted)"></i> 固定費 <span style="font-size:9px;color:var(--muted)">家賃・保険・システム</span></td><td style="text-align:right">'+m(c.fixT)+' <span style="font-size:9px;color:var(--muted);font-weight:400">'+pct(c.fixT,c.sales)+'</span></td></tr>';
     h += row('経費計', c.expT, aExp, '変動+GET+固定 vs 実PL運営費');
-    h += row('営業利益', c.profit, a?a.netop:null, pct(c.profit,c.sales), true, c.profit>=0?'var(--green)':'var(--red)', 'profit');
+    /* v1020: 実PLの営業利益は Net Income（無ければ Net Operating Income） */
+    h += row('営業利益', c.profit, a?((a.netinc!=null&&a.netinc!==''&&isFinite(Number(a.netinc)))?Number(a.netinc):a.netop):null, pct(c.profit,c.sales), true, c.profit>=0?'var(--green)':'var(--red)', 'profit');
     h += '</tbody></table></div></div>';
   });
   h += '</div>';   /* v925: sec-2col を閉じる */
@@ -13858,7 +13877,8 @@ function plTrendData(scope){
     if (!keys.length) return;
     var r = { ym:ym, sales:0, cogs:0, payroll:0, opex:0, netop:0,
               variable:0, utility:0, fixed:0, discretionary:0, other:0,
-              hasDetail:true, unknown:{} };
+              hasDetail:true, unknown:{},
+              profit:0, netAll:true };   /* v1020: profit＝営業利益（Net Income。無ければ netop）。netAll＝全店 Net Income あり */
     keys.forEach(function(k){
       var v = row[k]||{};
       r.sales   += Number(v.sales)||0;
@@ -13866,6 +13886,9 @@ function plTrendData(scope){
       r.payroll += Number(v.payroll)||0;
       r.opex    += Number(v.opex)||0;
       r.netop   += Number(v.netop)||0;
+      /* v1020: 営業利益は Net Income。v1019 以前の取込には無いので netop で埋め、netAll を落とす（画面で知らせる） */
+      if (v.netinc != null && v.netinc !== '' && isFinite(Number(v.netinc))) r.profit += Number(v.netinc);
+      else { r.profit += Number(v.netop)||0; r.netAll = false; }
       if (v.detail){
         var t = plClassTotals(v.detail);
         r.variable += t.variable; r.utility += t.utility;
@@ -13923,7 +13946,9 @@ function plTrendSvg(data, mode){
         + Math.round(b.v).toLocaleString('en-US')+'</title></rect>';
     });
     /* 営業利益率の折れ線（構成比）／営業利益（金額） */
-    var pv = mode==='pct' ? (r.sales>0 ? r.netop/r.sales : 0) : (r.netop/max);
+    /* v1020: 営業利益（profit）。profit の無い行（手組みの行）は netop */
+    var pfv = (r.profit != null) ? r.profit : r.netop;
+    var pv = mode==='pct' ? (r.sales>0 ? pfv/r.sales : 0) : (pfv/max);
     pts.push((x+bw/2).toFixed(1)+','+(padT + plotH - pv*plotH).toFixed(1));
     bars += '<text x="'+(x+bw/2).toFixed(1)+'" y="'+(h-6)+'" font-size="8.5" fill="var(--muted)" text-anchor="middle">'
       + parseInt(r.ym.slice(5),10)+'月</text>';
@@ -13958,7 +13983,7 @@ function plRentOf(rec){
 function plFlSummary(scope){
   var a = getPlActual();
   var yms = Object.keys(a).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort();
-  var o = { sales:0, cogs:0, payroll:0, rent:0, netop:0, rentKnown:true, months:yms.length };
+  var o = { sales:0, cogs:0, payroll:0, rent:0, netop:0, profit:0, rentKnown:true, months:yms.length };   /* v1020: profit＝Net Income */
   yms.forEach(function(ym){
     var row = a[ym]||{};
     Object.keys(row).forEach(function(k){
@@ -13967,6 +13992,7 @@ function plFlSummary(scope){
       var v = row[k]||{};
       o.sales += Number(v.sales)||0; o.cogs += Number(v.cogs)||0;
       o.payroll += Number(v.payroll)||0; o.netop += Number(v.netop)||0;
+      o.profit += (v.netinc != null && v.netinc !== '' && isFinite(Number(v.netinc))) ? Number(v.netinc) : (Number(v.netop)||0);   /* v1020 */
       var rt = plRentOf(v);
       if (rt == null) o.rentKnown = false; else o.rent += rt;
     });
@@ -13976,7 +14002,7 @@ function plFlSummary(scope){
   o.fl = (o.f!=null && o.l!=null) ? o.f+o.l : null;
   o.r  = (o.sales>0 && o.rentKnown) ? o.rent/o.sales : null;
   o.flr= (o.fl!=null && o.r!=null) ? o.fl+o.r : null;
-  o.op = o.sales>0 ? o.netop/o.sales : null;
+  o.op = o.sales>0 ? o.profit/o.sales : null;   /* v1020: 営業利益率は Net Income で */
   return o;
 }
 /* ===== v923: 売上・原価のカテゴリ判定 =====
@@ -14151,7 +14177,8 @@ function plProfitSummary(scope){
   var yms = Object.keys(a).filter(function(k){ return /^\d{4}-\d{2}$/.test(k); }).sort();
   var o = { sales:0, cogs:0, payroll:0, opex:0, netop:0,
             variable:0, utility:0, fixed:0, discretionary:0, other:0,
-            dep:0, hq:0, depKnown:true, hqKnown:true, splitKnown:true, months:0 };
+            dep:0, hq:0, depKnown:true, hqKnown:true, splitKnown:true, months:0,
+            profit:0, netAll:true };   /* v1020: profit＝営業利益（Net Income）。netop（NOI）・EBITDA・本部費控除後は今までどおり */
   var seen = {};
   yms.forEach(function(ym){
     var row = a[ym]||{};
@@ -14163,6 +14190,8 @@ function plProfitSummary(scope){
       o.sales += Number(v.sales)||0;   o.cogs   += Number(v.cogs)||0;
       o.payroll += Number(v.payroll)||0; o.opex += Number(v.opex)||0;
       o.netop += Number(v.netop)||0;
+      if (v.netinc != null && v.netinc !== '' && isFinite(Number(v.netinc))) o.profit += Number(v.netinc);
+      else { o.profit += Number(v.netop)||0; o.netAll = false; }   /* v1020 */
       if (v.detail){
         var t = plClassTotals(v.detail);
         o.variable += t.variable; o.utility += t.utility;
@@ -14183,7 +14212,8 @@ function plProfitSummary(scope){
   /* 対象の月が1つも無ければ「0」ではなく「無い」。 */
   o.ebitda  = (o.months > 0 && o.depKnown) ? o.netop + o.dep : null;
   o.afterHq = (o.months > 0 && o.hqKnown)  ? o.netop - o.hq  : null;
-  o.opRate = o.sales>0 ? o.netop/o.sales : null;
+  o.opRate = o.sales>0 ? o.profit/o.sales : null;   /* v1020: 営業利益率は Net Income で */
+  o.netOther = o.profit - o.netop;                   /* v1020: その他収入 − その他費用（本部費・減価償却など） */
   /* 見方A: 人件費を全部 固定費とみなす / 見方B: 人件費の半分を変動費とみなす */
   o.be = null;
   if (o.splitKnown && o.sales > 0 && o.months > 0){
@@ -14215,12 +14245,20 @@ function renderPlProfit(){
     + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">'+escapeHtml(scopeLabel)+' · '+o.months+'か月 累計</span></div>';
   /* 指標 */
   h += '<div class="kpi-grid" style="margin-bottom:10px">'
-    + kpi('営業利益', plMoney(o.netop), pc(o.opRate), o.netop>=0?'var(--green)':'var(--red)')
+    + kpi('営業利益', plMoney(o.profit), pc(o.opRate), o.profit>=0?'var(--green)':'var(--red)')
     + kpi('EBITDA', o.ebitda==null?'—':plMoney(o.ebitda), o.depKnown?('減価償却 '+plMoney(o.dep)):'減価償却が未取込',
           (o.ebitda!=null&&o.ebitda<0)?'var(--red)':'var(--tm)')
     + kpi('本部費控除後', o.afterHq==null?'—':plMoney(o.afterHq), o.hqKnown?('本部費 '+plMoney(o.hq)):'本部費が未取込',
           (o.afterHq!=null&&o.afterHq<0)?'var(--red)':'var(--tm)')
     + '</div>';
+  /* v1020: 営業利益は Net Income。何を足し引きした数字かを1行で示す（本部費控除後は今までどおり NOI − 本部費）。 */
+  h += '<div style="font-size:10.5px;color:var(--muted);margin:-4px 0 10px;line-height:1.7"><i class="ti ti-info-circle"></i> '
+    + '営業利益＝PLブックの Net Income（Net Operating Income '+plMoney(o.netop)+' に、その他収入−その他費用（本部費・減価償却など）'
+    + (o.netOther>=0?'+':'')+plMoney(o.netOther)+' を加えた数字）。本部費控除後＝Net Operating Income − 本部費。</div>';
+  if (!o.netAll){
+    h += '<div class="alert alert-warning" style="font-size:11px;margin-bottom:10px"><i class="ti ti-alert-triangle"></i> '
+      + 'Net Income が未取込の月があります（その月の営業利益は Net Operating Income＝本部費を引く前）。PLブックを取り込み直してください。</div>';
+  }
   /* 損益分岐点 */
   if (!o.be){
     h += '<div style="font-size:11px;color:var(--yellow);line-height:1.7"><i class="ti ti-alert-circle"></i> '
@@ -14284,7 +14322,7 @@ function renderPlProfitBoard(){
     var col = (b && b.margin!=null && b.margin<0) ? 'var(--red)' : ((b && b.margin<0.1) ? 'var(--yellow)' : 'inherit');
     h += '<tr style="cursor:pointer" onclick="plSetScope(\''+r.id+'\')">'
       + '<td style="text-align:left">'+escapeHtml(r.label)+'</td>'
-      + '<td style="text-align:right;color:'+(r.d.netop<0?'var(--red)':'inherit')+'">'+plMoney(r.d.netop)+'</td>'
+      + '<td style="text-align:right;color:'+(r.d.profit<0?'var(--red)':'inherit')+'">'+plMoney(r.d.profit)+'</td>'
       + '<td style="text-align:right;color:'+((r.d.ebitda!=null&&r.d.ebitda<0)?'var(--red)':'inherit')+'">'+(r.d.ebitda==null?'—':plMoney(r.d.ebitda))+'</td>'
       + '<td style="text-align:right;color:'+((r.d.afterHq!=null&&r.d.afterHq<0)?'var(--red)':'inherit')+'">'+(r.d.afterHq==null?'—':plMoney(r.d.afterHq))+'</td>'
       + '<td style="text-align:right">'+(b?pc(b.cm):'—')+'</td>'
@@ -14294,7 +14332,7 @@ function renderPlProfitBoard(){
   var all = plProfitSummary('ALL'), ba = all.be && all.be.a;
   h += '<tr style="font-weight:700;border-top:2px solid var(--border)">'
     + '<td style="text-align:left">全社</td>'
-    + '<td style="text-align:right">'+plMoney(all.netop)+'</td>'
+    + '<td style="text-align:right">'+plMoney(all.profit)+'</td>'
     + '<td style="text-align:right">'+(all.ebitda==null?'—':plMoney(all.ebitda))+'</td>'
     + '<td style="text-align:right">'+(all.afterHq==null?'—':plMoney(all.afterHq))+'</td>'
     + '<td style="text-align:right">'+(ba?pc(ba.cm):'—')+'</td>'
@@ -14526,8 +14564,9 @@ function renderPlTrend(){
   }
   h += '<tr style="font-weight:700;border-top:2px solid var(--border)"><td style="text-align:left">営業利益</td>'
     + data.map(function(r){
-        var col = r.netop>=0 ? 'var(--green)' : 'var(--red)';
-        return '<td style="text-align:right;color:'+col+'">'+(_plTrendMode==='pct' ? pc(r.netop, r.sales) : m(r.netop))+'</td>';
+        var pf2 = (r.profit != null) ? r.profit : r.netop;   /* v1020: Net Income */
+        var col = pf2>=0 ? 'var(--green)' : 'var(--red)';
+        return '<td style="text-align:right;color:'+col+'">'+(_plTrendMode==='pct' ? pc(pf2, r.sales) : m(pf2))+'</td>';
       }).join('') + '</tr>';
   h += '</tbody></table></div>';
   /* 内訳の無い月・未分類の科目は黙って隠さない */
@@ -14848,14 +14887,15 @@ function openPlActualModal(sid){
     +'<div class="form-row" style="flex-wrap:wrap">'
     +f('sales','売上（Total Income）',a.sales)+f('cogs','原価（Total COGS）',a.cogs)
     +f('payroll','人件費（Total Payroll）',a.payroll)+f('opex','運営費（Total Operating Exp）',a.opex)
-    +f('netop','営業利益（Net Operating Income）',a.netop)
+    +f('netop','Net Operating Income（本部費を引く前）',a.netop)
+    +f('netinc','営業利益（Net Income）',a.netinc)
     +'</div><div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="savePlActual(\''+sid+'\')">保存</button></div>');
 }
 function savePlActual(sid){
   var ym=plYm(); var act=getPlActual();
   act[ym]=act[ym]||{}; act._src=act._src||{};
   var g=function(id){ var v=document.getElementById('pla-'+id).value; return v===''?null:(parseFloat(v)||0); };
-  var rec={sales:g('sales'),cogs:g('cogs'),payroll:g('payroll'),opex:g('opex'),netop:g('netop')};
+  var rec={sales:g('sales'),cogs:g('cogs'),payroll:g('payroll'),opex:g('opex'),netop:g('netop'),netinc:g('netinc')};   /* v1020 */
   var any=Object.keys(rec).some(function(k){return rec[k]!=null;});
   if(any){ act[ym][sid]=rec; if(!act._src[ym]) act._src[ym]='手入力'; }
   else { delete act[ym][sid]; }
@@ -22287,6 +22327,11 @@ function _meetGapBreakdown(storeId, ym, key){
   });
   if (!hasAny) return { ok:false, key:key, reason:'no_actual', note:'この月の実績がまだ入力されていません' };
 
+  /* ★v1022: 曜日別の客数予算が無い店では、客数の差分を出さない（Motoさんの決定 9/11「A」）。
+     この店の客数目標は月額の日割りでしかなく、会議で本物の目標に見えてしまう。0 や推計で埋めない。 */
+  if (key==='guests' && !usesDow)
+    return { ok:false, key:key, reason:'no_dow_guests',
+             note:'曜日別の客数予算が無いため、客数の差分は出せません（曜日別予算を設定すると出ます）' };
   var plan=meetingBudgetPlan(storeId,ym);
   hasTO=hasTO || plan.month.segments.takeout.s>0 || plan.month.segments.takeout.g>0;
   var SEGS = hasTO ? ['lunch','dinner','takeout'] : ['lunch','dinner'];
@@ -22295,13 +22340,19 @@ function _meetGapBreakdown(storeId, ym, key){
 
   var T={lunch:0,dinner:0,takeout:0}, TG={lunch:0,dinner:0,takeout:0}, dowT=[], dowG=[];
   for(var j=0;j<7;j++){dowT.push({lunch:0,dinner:0,takeout:0});dowG.push({lunch:0,dinner:0,takeout:0});}
-  var tgtMode='daily', budDaily=0, complete=true;
+  var tgtMode=(key==='guests')?'dow_guests':'daily', budDaily=0, complete=true;   /* ★v1022: 客数は曜日別の客数予算から */
   el.days.forEach(function(d){var day=plan.days[d.date]; if(!day) return;
     budDaily+=day.sales;complete=complete&&day.complete;if(day.manual)dowManual[d.dowIdx]++;
     SEGS.forEach(function(sg){var x=day.segments[sg], v=key==='guests'?x.g:x.s;
       T[sg]+=v;TG[sg]+=x.g;dowT[d.dowIdx][sg]+=v;dowG[d.dowIdx][sg]+=x.g;});
   });
   if(!complete) return {ok:false,key:key,reason:'no_budget_basis',note:'客数・客単価の予算設定を確認してください'};
+  /* ★v1022: 予算がまったく無い月は、区分（ランチ/ディナー/テイクアウト）の比率が作れない。
+     全部 0 を目標として出すと「実績ぶんだけ超過」に見えるので、理由を返す（Motoさんの決定 9/11「A」）。 */
+  var _tgtAny=0; SEGS.forEach(function(sg){ _tgtAny += Math.abs(T[sg]); });
+  if (!(budDaily>0) && !(_tgtAny>0))
+    return { ok:false, key:key, reason:'no_ld_ratio',
+             note:'この月の予算が入っていないため、区分別の目標を作れません' };
 
   /* 区分別 */
   var ld = {};
@@ -22692,6 +22743,37 @@ function parsePLWorkbook(wb){
       else if (s.key === 'detail') out.warnings.push('シート「'+name+'」の販管費の内訳が読めません（合計のみ取り込みます）');
     });
     var det = secRows.detail || null;
+    /* v1020: Net Income（Net Operating Income ＋ その他収入 − その他費用。本部費・減価償却はその他費用にある）。
+       Motoさんの決定（9/11）：PL分析・本部予算の「営業利益」はこの行。行番号（68）は決め打ちせず、ほかの行と同じくラベルで探す。
+       Net Income の無い形式でも取り込みは止めない（営業利益は Net Operating Income のまま。画面で知らせる）。
+       間の行（Net Other Income・Total for Other Income／Other Expenses）は検算に使う。無い行は null（0 にしない）。
+       ★どの行も Net Operating Income より下だけを探す（売上の中にも「Other Income」を含む科目があるため）。 */
+    var rNet = -1, rNetOther = -1, rOthInc = -1, rOthExp = -1;
+    for (var q = rr.netop + 1; q <= ref.e.r; q++){          /* Net Operating Income より下だけ（売上の中の同名行と混同しない） */
+      var lq = _plCell(ws, q, 0);
+      if (typeof lq !== 'string') continue;
+      var kq = lq.trim().toLowerCase();
+      if (rNet < 0 && kq === 'net income') rNet = q;
+      else if (rNetOther < 0 && kq === 'net other income') rNetOther = q;
+      else if (rOthInc < 0 && kq === 'total for other income') rOthInc = q;
+      else if (rOthExp < 0 && kq === 'total for other expenses') rOthExp = q;
+    }
+    if (rNet < 0) out.warnings.push('シート「'+name+'」に Net Income 行が無いため、営業利益は Net Operating Income（本部費を引く前）のまま取り込みます');
+    /* v1020: その他収入（Other Income）の科目。Net Operating Income より下だけを見る
+       （売上の中の「06. Sales - Other Income」と混同しない）。見出しが無ければ null。 */
+    var oiRows = null;
+    if (rNet > rr.netop){
+      var oiS = -1;
+      for (var q2 = rr.netop + 1; q2 < rNet; q2++){
+        var l2 = _plCell(ws, q2, 0);
+        if (typeof l2 !== 'string') continue;
+        var k2 = l2.trim().toLowerCase();
+        if (oiS < 0){ if (k2 === 'other income') oiS = q2; continue; }
+        if (k2.indexOf('total for ') === 0) break;
+        if (!k2) continue;
+        oiRows = oiRows || []; oiRows.push({ row:q2, label:l2.trim() });
+      }
+    }
     Object.keys(mc.cols).forEach(function(cs){
       var c = +cs, ym = mc.cols[cs], v = {}, allNull = true;
       Object.keys(PL_LABELS).forEach(function(k){
@@ -22701,6 +22783,9 @@ function parsePLWorkbook(wb){
         v[k] = (n === null) ? 0 : Math.round(n);
       });
       if (allNull) return;                        /* 未来の月は空。取り込まない */
+      /* v1020: Net Income と、検算に使う行。無い行は null のまま（0 と区別する・教訓(54)） */
+      var nAt = function(r0){ if (r0 < 0) return null; var x0 = _plCell(ws, r0, c); return (typeof x0 === 'number') ? x0 : null; };
+      v.netinc = (nAt(rNet) == null) ? null : Math.round(nAt(rNet));
       /* v918/v922: 科目明細。0の科目は持たない（店舗ごとに科目が違うため入れ物が膨らむ）。
          ★丸めを二重にかけない。1本ずつ丸めてから足すと26科目で最大$13ずれる
            （実物の Marujuu 2月で$3の差が出た）。セント単位で持ち、表示で丸める。 */
@@ -22718,7 +22803,20 @@ function parsePLWorkbook(wb){
         dets[s.key] = o;
       });
       seen[ym] = 1;
-      out.rows.push({ storeKey:sid, ym:ym, sheet:name, v:v, detail:(dets.detail||null), dets:dets });
+      /* v1020: その他収入の科目（セント単位で持ち、表示で丸める。ほかのセクションと同じ） */
+      if (oiRows){
+        var oi = {};
+        oiRows.forEach(function(d){
+          var raw2 = _plCell(ws, d.row, c);
+          if (typeof raw2 !== 'number') return;
+          var n2 = Math.round(raw2*100)/100;
+          if (!n2) return;
+          oi[d.label] = Math.round(((oi[d.label]||0) + n2)*100)/100;
+        });
+        dets.detailOthInc = oi;
+      }
+      out.rows.push({ storeKey:sid, ym:ym, sheet:name, v:v, detail:(dets.detail||null), dets:dets,
+                      netOther:nAt(rNetOther), othInc:nAt(rOthInc), othExp:nAt(rOthExp) });
     });
   });
   out.months = Object.keys(seen).sort();
@@ -22726,6 +22824,23 @@ function parsePLWorkbook(wb){
     var lhs = r.v.sales - r.v.cogs - r.v.payroll - r.v.opex;
     r.ok = Math.abs(lhs - r.v.netop) <= 2;
     if (!r.ok) out.warnings.push(r.sheet+' '+r.ym+': 検算が合わないため取り込みません（'+lhs+' vs '+r.v.netop+'）');
+    /* v1020: Net Income の検算。Net Operating Income ＋ Net Other Income（無ければ その他収入 − その他費用。どちらも無ければ 0）＝ Net Income。
+       合わなければ NOI と Net Income の間に読めていない行がある＝この行は取り込まない（netop の検算と同じ扱い）。 */
+    if (r.ok && r.v.netinc != null){
+      var no = (r.netOther != null) ? r.netOther : ((r.othInc||0) - (r.othExp||0));
+      if (Math.abs((r.v.netop + no) - r.v.netinc) > 2){
+        r.ok = false;
+        out.warnings.push(r.sheet+' '+r.ym+': Net Income の検算が合わないため取り込みません（'+Math.round(r.v.netop + no)+' vs '+r.v.netinc+'）');
+      }
+    }
+    /* v1020: その他収入の内訳合計が Total for Other Income と合うか（合わなければこの内訳だけ落とす。v922 と同じ） */
+    if (r.ok && r.dets && r.dets.detailOthInc && r.othInc != null){
+      var ds2 = 0; Object.keys(r.dets.detailOthInc).forEach(function(k){ ds2 += Number(r.dets.detailOthInc[k])||0; });
+      if (Math.abs(ds2 - r.othInc) > 1){
+        out.warnings.push(r.sheet+' '+r.ym+': detailOthInc の内訳合計が合いません（内訳 '+Math.round(ds2)+' / 合計 '+Math.round(r.othInc)+'）。この内訳は取り込みません');
+        r.dets.detailOthInc = null;
+      }
+    }
     /* v918: 科目明細の合計が販管費の合計と合うか。合わないなら拾い漏れがある。
        ここは取り込みを止めない（合計は正しいので）が、黙って進めない。 */
     /* v922: セクションごとに内訳の合計と合計行を突き合わせる。
@@ -22813,7 +22928,7 @@ function _plPreviewHtml(r){
     });
     h += '</tbody></table></div>'
       +  '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">'
-      +  t('表は売上（消費税を除く額）。原価・人件費・経費・営業利益も同時に取り込みます。','Sales shown (excl. tax). Cost, payroll, opex and operating income are imported too.')
+      +  t('表は売上（消費税を除く額）。原価・人件費・経費・営業利益も同時に取り込みます。営業利益は Net Income（本部費・減価償却・その他収入を含む）です。','Sales shown (excl. tax). Cost, payroll, opex and operating income are imported too. Operating income = Net Income (after head-office fees, depreciation and other income).')
       +  '<br>'+t('営業利益と経費はこの端末にだけ保存します（他の端末・店長には出ません）。','Operating income and opex stay on this device only.')+'</div>';
   }
   if (r.warnings.length){
@@ -22866,7 +22981,8 @@ function plImportSave(){
   good.forEach(function(x){
     if (!act[x.ym]) act[x.ym] = {};
     if (!pub[x.ym]) pub[x.ym] = {};
-    act[x.ym][x.storeKey] = { sales:x.v.sales, cogs:x.v.cogs, payroll:x.v.payroll, opex:x.v.opex, netop:x.v.netop };
+    /* v1020: netinc（Net Income）。無いブックなら null。★pl_public には入れない（netop と同じ） */
+    act[x.ym][x.storeKey] = { sales:x.v.sales, cogs:x.v.cogs, payroll:x.v.payroll, opex:x.v.opex, netop:x.v.netop, netinc:(x.v.netinc==null?null:x.v.netinc) };
     /* v918/v922: 科目明細。★pl_public には入れない（内訳から opex が復元でき、利益が割れる） */
     if (x.dets){
       Object.keys(x.dets).forEach(function(dk){
@@ -23232,7 +23348,8 @@ function _meetGapHtml(storeId, ym, key){
   var muted = 'color:var(--muted);font-size:9.5px';
   if (!g.ok) {
     /* 分解できない理由は出す。黙って消すと「なぜ出ないのか」が毎回議題になる。 */
-    if (g.reason==='no_budget' || g.reason==='no_actual' || g.reason==='no_days')
+    if (g.reason==='no_budget' || g.reason==='no_actual' || g.reason==='no_days'
+        || g.reason==='no_dow_guests' || g.reason==='no_ld_ratio')   /* ★v1022 */
       return '<div style="'+muted+';margin-top:6px">'+escapeHtml(g.note)+'</div>';
     return '';
   }
@@ -23314,7 +23431,10 @@ function _meetGapHtml(storeId, ym, key){
 
   h += '<div style="'+muted+';margin-top:6px">'
     +  t('前日までの','')+g.days+t('日ぶん','d')
-    +  (g.tgtMode==='daily'?t('／目標は変更後の日別予算の累計','/target = cumulative daily budget'):'')
+    /* ★v1022: 「（日次進捗と同じ）」を戻す。前日までの予算はダッシュボードと同じ数字（Motoさんの決定・v1017）。
+       客数（dow_guests）は曜日別の客数予算の累計なので、そう書く。 */
+    +  (g.tgtMode==='daily'?t('／目標は日別予算の累計（日次進捗と同じ）','/target = cumulative daily budget (same as the daily tracker)')
+        : g.tgtMode==='dow_guests'?t('／目標は曜日別の客数予算の累計','/target = cumulative day-of-week guest budget'):'')
     +  (g.hasTakeout?t('／テイクアウトは区分を分けて計上','/takeout counted separately'):'')+'</div>';
   return h + '</div>';
 }
@@ -36741,7 +36861,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1019';
+const APP_VERSION = '1022';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
