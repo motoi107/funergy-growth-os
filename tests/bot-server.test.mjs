@@ -189,10 +189,10 @@ test('morning summary adds actionable person, error, payment and case details in
  assert.match(unknown.messages[1].text,/金額不明/);assert.doesNotMatch(unknown.messages[1].text,/\$0\.00|\u0000|Line\nBreak/);
  const many=Array.from({length:250},(_,i)=>({...details[0],code:'B-'+String(i).padStart(12,'0'),kinds:Array.from({length:100},(_,k)=>'unexpected-kind-'+k)}));
  const bounded=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:250,void:0,unpaid:0},stores:[],details:many,detail_total:250});
- assert.ok(bounded.messages.length<=5);assert.match(bounded.messages.at(-1).text,/ほか \d+件/);for(const message of bounded.messages)assert.ok(message.text.length<=4900);
+ assert.ok(bounded.messages.length>5);assert.doesNotMatch(bounded.messages.at(-1).text,/ほか \d+件/);assert.match(bounded.messages.at(-1).text,/B-000000000249/);for(const message of bounded.messages)assert.ok(message.text.length<=4900);
 });
 test('automatic morning summary is worker-key gated, targets configured headquarters group and is idempotent',async()=>{
- const group='C'+'d'.repeat(32),event={id:7,data:{state:'pending',request_id:guid(77),messages:[{type:'text',text:'Saved morning summary'},{type:'text',text:'Saved details'}]}};let pushes=0,finished=[];
+ const group='C'+'d'.repeat(32),event={id:7,data:{state:'pending',request_id:guid(77),batches:[{state:'pending',request_id:guid(77),messages:[{type:'text',text:'Saved morning summary'},{type:'text',text:'Saved details'}]}]}};let pushes=0,finished=[];
  const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'line'})[k],fetch:async(url,init)=>{
   if(url.includes('kind=eq.lifecycle_notice'))return Response.json([]);
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);
@@ -200,8 +200,8 @@ test('automatic morning summary is worker-key gated, targets configured headquar
   if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
   if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
   if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-09-08',from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
-  if(url.endsWith('/rpc/bot_reserve_morning_summary_v2')){const body=JSON.parse(init.body);assert.equal(body.p_variant,'daily');return Response.json(event);}
-  if(url.endsWith('/rpc/bot_finish_morning_summary')){finished.push(JSON.parse(init.body));event.data.state=finished.at(-1).p_state;return Response.json(null);}
+  if(url.endsWith('/rpc/bot_reserve_morning_summary_v3')){const body=JSON.parse(init.body);assert.equal(body.p_variant,'daily');return Response.json(event);}
+  if(url.endsWith('/rpc/bot_finish_morning_summary_batch')){finished.push(JSON.parse(init.body));event.data.state=finished.at(-1).p_state;return Response.json(null);}
   if(url==='https://api.line.me/v2/bot/message/push'){pushes++;const body=JSON.parse(init.body);assert.equal(body.to,group);assert.equal(body.messages.length,2);assert.equal(init.headers['X-Line-Retry-Key'],guid(77));return new Response(null,{status:200,headers:{'x-line-request-id':'line-request'}});}
   throw Error('unexpected morning path '+url);
  }});
@@ -283,7 +283,7 @@ test('completion broadcasts are deferred to the morning report, including old pe
  assert.equal((await call()).status,200);assert.equal((await call()).status,200);assert.equal(pushes,0);
  assert.ok(notices.every(e=>e.data.state==='morning_summary'&&e.data.delivery==='daily_hq_report'));
  const report=formatMorningSummary({from:'2026-09-01',to:'2026-09-10',expected:1,ok:1,failed:0,active_stores:1,finance_enabled:true,finance_ok:1,counts:{},recent_closed:[{code:'#85',store_id:'TEST',subject:'Synthetic closed case',closure:{note:'Toast verified'}}]});
- assert.match(report.text,/確認完了の定時報告｜毎朝9:00 HST/);assert.match(report.text,/完了：#85.*Synthetic closed case.*Toast verified/);
+ assert.match(report.messages.map(m=>m.text).join("\n"),/確認完了の定時報告｜毎朝9:00 HST/);assert.match(report.messages.map(m=>m.text).join("\n"),/案件：#85.*Synthetic closed case.*Toast verified/s);
 });
 test('lifecycle delivery discards older transitions and retries one immutable LINE request',async()=>{
  const group='C'+'e'.repeat(32),id=guid(80),request=guid(81),notices=[{id:90,case_id:id,created_at:new Date().toISOString(),data:{state:'pending',group_id:group,request_id:guid(82),case:{code:'#80',status:'hq_review',status_version:2,store_id:'TEST',subject:'Old',payload:{response:{note:'Old reason'}}}}},{id:91,case_id:id,created_at:new Date().toISOString(),data:{state:'pending',group_id:group,request_id:request,case:{code:'#80',status:'hq_review',status_version:4,store_id:'TEST',subject:'New',payload:{response:{note:'New reason'}}}}}];const pushes=[];

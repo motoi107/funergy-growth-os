@@ -110,8 +110,8 @@ const MORNING_KIND_JA={auto:'自動クロックアウト疑い',reverse:'IN/OUT�
 const MORNING_PROGRESS={not_sent:'🔴 未通知',notify_failed:'🔴 通知失敗・要確認',waiting:'🟠 対応待ち',reminder_failed:'🟠 対応待ち（再通知失敗）',in_progress:'🟡 修正対応中',recheck:'🔵 完了報告済み・Toast再確認待ち',send_check:'⚪ 送信結果確認',review:'⚪ 本部確認待ち'};
 function morningField(value,max=120){return String(value??'').replace(/[\u0000-\u001f\u007f-\u009f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,max);}
 function morningIssue(c){
- const raw=Array.isArray(c.kinds)?c.kinds:[],labels=raw.slice(0,8).map(k=>k==='bad'&&c.open_shift===true?'退勤打刻なし':MORNING_KIND_JA[k]||morningField(k,50));
- return (labels.length?labels.join('・'):'要確認')+(raw.length>8?'・ほか'+(raw.length-8)+'種':'');
+ const raw=Array.isArray(c.kinds)?c.kinds:[],labels=raw.map(k=>k==='bad'&&c.open_shift===true?'退勤打刻なし':MORNING_KIND_JA[k]||morningField(k,50));
+ return labels.length?labels.join('・'):'要確認';
 }
 function morningProgress(c){if(c.status==='hq_review')return '本部確認待ち';if(c.status==='verify')return '修正反映待ち';const key=morningField(c.progress,30)||'review';return MORNING_PROGRESS[key]||MORNING_PROGRESS.review;}
 export function morningShiftLines(c){
@@ -131,7 +131,7 @@ export function morningShiftLines(c){
   const minutes=valid?Math.round((b-a)/60000):null,duration=minutes===null?'時間算出不可':Math.floor(minutes/60)+'時間'+String(minutes%60).padStart(2,'0')+'分';
   return {flag:kinds.length>0,text:'勤務'+(i+1)+'：'+clock(sh.inDate,'出勤未打刻')+' → '+clock(sh.outDate,'退勤未打刻')+'（'+duration+'）\n'+(reasons.length?'確認点：'+reasons.join('／'):cfg?'この打刻の単独エラーなし':'判定設定未取得・勤務を確認')};
  }).sort((a,b)=>Number(b.flag)-Number(a.flag));
- return '検知時の打刻（HST・休憩控除前）\n'+rows.slice(0,4).map(x=>x.text).join('\n')+(rows.length>4?'\nほか'+(rows.length-4)+'勤務はFunergy＋で確認':'');
+ return '検知時の打刻（HST・休憩控除前）\n'+rows.map(x=>x.text).join('\n');
 }
 function morningCaseBlock(c,index){
  const date=morningField(c.business_date,10).slice(5).replace('-','/'),code=morningField(c.code,20),progress=morningProgress(c),assignee=morningField(c.assignee,100)||'店舗担当者未設定';
@@ -141,29 +141,41 @@ function morningCaseBlock(c,index){
  }
  const ref=morningField(c.subject,100).replace(/^Payment Void \/\s*|^Unpaid \/\s*/i,''),hasAmount=c.amount!==null&&c.amount!==undefined&&c.amount!=='',amount=Number(c.amount),money=hasAmount&&Number.isFinite(amount)?'$'+amount.toFixed(2):'金額不明';
  if(c.kind==='void'){
-  const who=morningField(c.user_name,100),approver=morningField(c.approver_name,100),reason=morningField(c.reason,120);
+  const who=morningField(c.user_name,100),approver=morningField(c.approver_name,100),reason=morningField(c.reason,Infinity);
   return index+'. Payment Void '+ref+'（'+date+'）\n金額：'+money+(who?'\n操作：'+who:'')+(approver?'／承認：'+approver:'')+(reason?'\n理由：'+reason:'')+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
  }
  return index+'. Unpaid '+ref+'（'+date+'）\n金額：'+money+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
 }
+// Split at line boundaries when possible; never discard text or split a surrogate pair.
+function morningTextParts(text,max=4300){
+ const parts=[];let rest=text;
+ while(rest.length>max){let end=rest.lastIndexOf('\n',max);if(end<1)end=max;
+  if(/[\uD800-\uDBFF]/.test(rest[end-1]))end--;
+  parts.push(rest.slice(0,end));rest=rest.slice(end);if(rest.startsWith('\n'))rest=rest.slice(1);
+ }
+ if(rest)parts.push(rest);return parts;
+}
 function morningStoreMessages(details,total,stores=[]){
  if(!Array.isArray(details)||!details.length)return [];
- const rows=details.slice(0,200),groups=[];
+ if(details.length!==Number(total))throw Error('morning_summary_incomplete_details');
+ const groups=new Map();
  const storeTotals=new Map((Array.isArray(stores)?stores:[]).map(s=>[morningField(s.store_id,80),Number(s.labor||0)+Number(s.void||0)+Number(s.unpaid||0)]));
- for(const row of rows){const key=morningField(row.store_id,80),last=groups.at(-1);if(!last||last.key!==key)groups.push({key,name:morningField(row.store_name||row.store_id,80),rows:[row]});else last.rows.push(row);}
+ for(const row of details){const key=morningField(row.store_id,80);if(!groups.has(key))groups.set(key,{key,name:morningField(row.store_name||row.store_id,80),rows:[]});groups.get(key).rows.push(row);}
  const sections=[];
- for(const group of groups){
-  let text='【'+group.name+'｜未解決 '+(storeTotals.get(group.key)??group.rows.length)+'件】',count=0,part=1;
+ for(const group of groups.values()){
+  const header='【'+group.name+'｜未解決 '+(storeTotals.get(group.key)??group.rows.length)+'件】';let text=header;
   for(let i=0;i<group.rows.length;i++){
-   const c=group.rows[i],block=(morningCaseBlock(c,i+1)+(c.due_date?'\n期限：'+c.due_date:'')+(c.response?'\n回答：'+morningField(c.response.actor,80)+' / '+morningField(c.response.note,250):'')+(c.returned?'\n差し戻し：'+morningField(c.returned.note,180):'')).slice(0,1100),next=text+'\n\n'+block;
-   if(next.length<=4600){text=next;count++;continue;}
-   sections.push({text,count});part++;text='【'+group.name+'｜続き '+part+'】\n\n'+block;count=1;
+   const c=group.rows[i],block=morningCaseBlock(c,i+1)+(c.due_date?'\n期限：'+c.due_date:'')+(c.response?'\n回答：'+morningField(c.response.actor,80)+' / '+morningField(c.response.note,Infinity):'')+(c.returned?'\n差し戻し：'+morningField(c.returned.note,Infinity):'');
+   const parts=morningTextParts(block,4000);
+   for(let j=0;j<parts.length;j++){
+    const piece=(parts.length>1?'案件：'+morningField(c.code,20)+'｜進捗：'+morningProgress(c)+'｜詳細 '+(j+1)+'/'+parts.length+'\n':'')+parts[j];
+    if(text.length+piece.length+2>4500){sections.push(text);text=header+'（続き）';}
+    text+='\n\n'+piece;
+   }
   }
-  sections.push({text,count});
+  sections.push(text);
  }
- const used=sections.slice(0,4),shown=used.reduce((n,x)=>n+x.count,0),omitted=Math.max(0,Number(total||rows.length)-shown),chunks=used.map(x=>x.text);
- if(omitted>0)chunks[chunks.length-1]=chunks[chunks.length-1].slice(0,4500)+'\n\nほか '+omitted+'件はFunergy＋で確認';
- return chunks;
+ return sections;
 }
 export function formatMorningSummary(s,{resend=false}={}){
  const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&s?.finance_enabled===true&&Number(s?.ok)===Number(s?.expected)&&Number(s?.finance_ok)===Number(s?.expected)&&Number(s?.failed)===0;
@@ -176,11 +188,19 @@ export function formatMorningSummary(s,{resend=false}={}){
  else if(total===0)lines.push('✅ 現在、未解決の異常はありません');
  else lines.push('✅ データ取得完了　店舗別レポートを確認してください');
  lines.push('本部確認待ち：'+Number(s.status_counts?.hq_review||0)+'件');
- if((s.recent_closed||[]).length)lines.push('【確認完了の定時報告｜毎朝9:00 HST】');
- for(const c of (s.recent_closed||[]).slice(0,20))lines.push('完了：'+c.code+'｜'+morningField(c.store_id)+'｜'+morningField(c.subject,90)+'｜'+morningField(c.closure?.note,90));
- if((s.recent_closed||[]).length>20)lines.push('完了の続きはFunergy＋で確認');
+ const closed=s.recent_closed||[];
+ if(closed.length)lines.push('確認完了：'+closed.length+'件（詳細は後続の完了報告）');
  const text=lines.join('\n');if(text.length>4900)throw Error('invalid_message');
- const detailCount=Number(s.detail_total??(Array.isArray(s.details)?s.details.length:0)),messages=[{type:'text',text},...morningStoreMessages(s.details,detailCount,s.stores).map(detail=>({type:'text',text:detail}))];
+ const detailCount=Number(s.detail_total??(Array.isArray(s.details)?s.details.length:0));
+ if(s.detail_total!==undefined&&(detailCount!==(s.details||[]).length||detailCount!==total))throw Error('morning_summary_incomplete_details');
+ const messages=[{type:'text',text},...morningStoreMessages(s.details,detailCount,s.stores).map(detail=>({type:'text',text:detail}))];
+ for(const c of closed){
+  const header='【確認完了の定時報告｜毎朝9:00 HST】\n案件：'+morningField(c.code,20)+'｜完了',body='店舗：'+morningField(c.store_name||c.store_id)+'\n内容：'+morningField(c.subject,Infinity)+'\n回答者：'+morningField(c.closure?.actor||'Toast',100)+'\n回答：'+morningField(c.closure?.note,Infinity);
+  for(const part of morningTextParts(body))messages.push({type:'text',text:header+'\n'+part});
+ }
+ messages[messages.length-1].text+='\n\n【レポート終了】未解決 '+detailCount+'件・確認完了 '+closed.length+'件を全件掲載';
+ for(let i=0;i<messages.length;i++)messages[i].text='【本部レポート '+(i+1)+'/'+messages.length+'】\n'+messages[i].text;
+
  return {text,messages,complete,total,detail_count:detailCount};
 }
 export function createHandler({env,fetch:fetcher=globalThis.fetch}){
@@ -297,7 +317,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   if(groups.length!==1||groups[0].all_stores!==true||groups[0].label!==cfg.label)throw Error('group_not_enabled');
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
   const snapshot=await rpc('bot_morning_snapshot',{});
-  const labor=(snapshot.details||[]).filter(c=>c.kind==='labor'&&/^#[0-9]+$/.test(c.code));
+  const labor=(snapshot.details||[]).filter(c=>c.kind==='labor'&&!Object.hasOwn(c,'shifts')&&/^#[0-9]+$/.test(c.code));
   for(let i=0;i<labor.length;i+=50){
    const batch=labor.slice(i,i+50);
    try{
@@ -309,18 +329,27 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    }catch{/* Missing detail is explicitly reported without suppressing the HQ report. */}
   }
   const formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatMorningSummary(snapshot,{resend:variant!=='daily'});
-  const reserved=await rpc('bot_reserve_morning_summary_v2',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant});
+  const reserved=await rpc('bot_reserve_morning_summary_v3',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant,p_snapshot_at:snapshot.snapshot_at||null});
   if(reserved.data?.state==='accepted')return {state:'accepted',already_sent:true,day:snapshot.day};
   if(reserved.data?.state==='failed')return {state:'failed',review_required:true,day:snapshot.day};
-  const messages=reserved.data?.messages||(reserved.data?.message?[reserved.data.message]:[]),request=reserved.data?.request_id;
-  if(!UUID.test(request||'')||!Array.isArray(messages)||messages.length<1||messages.length>5||messages.some(message=>message?.type!=='text'||typeof message.text!=='string'||message.text.length<1||message.text.length>4900))throw Error('morning_summary_invalid_reservation');
-  let state='unknown',status=null,lineRequest=null;
-  try{
-   const r=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':request},body:JSON.stringify({to:cfg.group_id,messages})});
-   status=r.status;lineRequest=r.headers.get('x-line-request-id');state=r.ok||(r.status===409&&!!r.headers.get('x-line-accepted-request-id'))?'accepted':r.status>=400&&r.status<500&&r.status!==429?'failed':'unknown';
-  }catch{state='unknown';}
-  await rpc('bot_finish_morning_summary',{p_event:reserved.id,p_state:state,p_status:status,p_line_request:lineRequest});
-  return {state,day:snapshot.day,complete:formatted.complete,total:formatted.total,detail_count:formatted.detail_count,message_count:messages.length,line_status:status};
+  const batches=reserved.data?.batches;
+  if(!Array.isArray(batches)||!batches.length)throw Error('morning_summary_invalid_reservation');
+  let sent=0;
+  for(let i=0;i<batches.length;i++){
+   const batch=batches[i],messages=batch.messages,request=batch.request_id;
+   if(batch.state==='accepted')continue;
+   if(!UUID.test(request||'')||!Array.isArray(messages)||messages.length<1||messages.length>5||messages.some(message=>message?.type!=='text'||typeof message.text!=='string'||message.text.length<1||message.text.length>4900))throw Error('morning_summary_invalid_reservation');
+   let state='unknown',status=null,lineRequest=null;
+   try{
+    const r=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':request},body:JSON.stringify({to:cfg.group_id,messages})});
+    status=r.status;lineRequest=r.headers.get('x-line-request-id');state=r.ok||(r.status===409&&!!r.headers.get('x-line-accepted-request-id'))?'accepted':r.status>=400&&r.status<500&&r.status!==429?'failed':'unknown';
+   }catch{state='unknown';}
+   await rpc('bot_finish_morning_summary_batch',{p_event:reserved.id,p_batch:i,p_state:state,p_status:status,p_line_request:lineRequest});
+   if(state!=='accepted')return {state,day:snapshot.day,batch:i+1,batch_count:batches.length,line_status:status,review_required:state==='failed'};
+   sent+=messages.length;
+  }
+  return {state:'accepted',day:snapshot.day,complete:formatted.complete,total:formatted.total,detail_count:formatted.detail_count,message_count:batches.reduce((n,b)=>n+b.messages.length,0),sent_message_count:sent,batch_count:batches.length};
+
  }
  async function recheck(c,actor){
   try{return await checkCase(c,actor);}catch(e){await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:{clean:false,message:/^[a-z_]+$/.test(e.message)?e.message:'verification_failed',checked_at:new Date().toISOString()}}).catch(()=>{});throw e;}
