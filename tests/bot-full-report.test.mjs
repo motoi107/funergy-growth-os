@@ -17,13 +17,14 @@ test('full morning report: complete snapshot, bounded transport, immutable retry
  await q(`insert into bot_cases(source_key,kind,store_id,business_date,subject,status,closed_at,payload)
  select 'synthetic-'||n,'labor','TEST',current_date-40,'Synthetic Person '||n,case when n<=250 then 'review' else 'done' end,case when n>250 then now()-interval '10 minutes' end,$1::jsonb from generate_series(1,375)n`,[JSON.stringify({employee_name:'Synthetic Person',kinds:['long'],cfg,shifts:[{inDate:'2026-09-08T20:00:00Z',outDate:'2026-09-09T09:00:00Z'}],closure:{note:'Synthetic completion',actor:'Synthetic reviewer'}})]);
  const snap=(await q('select bot_morning_snapshot() v'))[0].v,day=snap.day;
- await t.test('all 250 open and 125 completed cases are included, with atomic shifts and no omitted cases',()=>{
+ await t.test('all 250 open cases are included and 125 completed cases omitted, with atomic shifts and no omitted cases',()=>{
   assert.equal(snap.details.length,250);assert.equal(snap.detail_total,250);assert.equal(snap.recent_closed.length,125);
   assert.deepEqual(snap.details[0].shift_cfg,cfg);assert.equal(snap.details[0].shifts.length,1);
   const formatted=formatMorningSummary(snap),text=formatted.messages.map(m=>m.text).join('\n');
-  for(const c of [...snap.details,...snap.recent_closed])assert.ok(text.includes('案件：'+c.code),c.code);
+  for(const c of snap.details)assert.ok(text.includes('案件：'+c.code),c.code);
   assert.ok(formatted.messages.length>5);assert.doesNotMatch(text,/ほか\s*\d+件|続きはFunergy/);
-  assert.match(text,/レポート終了.*250件.*125件/);assert.ok(formatted.messages.every(m=>m.text.length<=4900));
+  for(const c of snap.recent_closed)assert.ok(!text.includes('案件：'+c.code));
+  assert.match(text,/レポート終了.*250件を全件掲載/);assert.ok(formatted.messages.every(m=>m.text.length<=4900));
   assert.throws(()=>formatMorningSummary({...snap,details:snap.details.slice(0,200)}),/incomplete_details/);
  });
  const attempts=[];let failSecond=true;
@@ -54,7 +55,7 @@ test('full morning report: complete snapshot, bounded transport, immutable retry
   assert.deepEqual(attempts[1],attempts[2]);assert.notEqual(attempts[0].key,attempts[2].key);
   const delivered=attempts.filter((_,i)=>i!==1).flatMap(x=>x.body.messages).map(m=>m.text).join('\n');
   assert.doesNotMatch(delivered,/Changed after reservation/);assert.match(delivered,/レポート終了/);
-  for(const c of [...snap.details,...snap.recent_closed])assert.ok(delivered.includes('案件：'+c.code));
+  for(const c of snap.details)assert.ok(delivered.includes('案件：'+c.code));
   event=(await q("select * from bot_events where kind='morning_summary'"))[0];assert.equal(event.data.state,'accepted');assert.ok(event.data.batches.every(b=>b.state==='accepted'));
   const count=attempts.length;r=await call('worker');assert.equal((await r.json()).already_sent,true);assert.equal(attempts.length,count);
  });

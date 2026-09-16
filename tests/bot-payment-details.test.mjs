@@ -118,7 +118,7 @@ test('lifecycle delivery revalidates closure and destination after the external 
  }
 });
 
-test('morning finance and completed reports include transaction identity while reusing one Toast read',async()=>{
+test('morning finance includes transaction identity and omits completed cases',async()=>{
  const c=legacyCase(),closed={...c,code:'#22',status:'done',closed_at:'2026-08-02T15:00:00Z'},pushes=[];let reserved,orderReads=0;
  const detail={code:c.code,kind:'void',store_id:'TEST',store_name:store.name,business_date:c.business_date,subject:c.subject,status:c.status,amount:17.5};
  const h=createHandler({env,fetch:async(url,init)=>{
@@ -138,8 +138,8 @@ test('morning finance and completed reports include transaction identity while r
   throw Error(url);
  }});
  assert.equal((await h(workerRequest('morning_summary'))).status,200);assert.equal(orderReads,1);assert.equal(reserved.p_variant,'daily');
- const text=reserved.p_messages.map(m=>m.text).join('\n');assert.equal((text.match(/Order #: #900/g)||[]).length,2);assert.equal((text.match(/Voided: 2026-08-01 22:02:03 HST/g)||[]).length,2);
- assert.match(text,/勤怠管理/);assert.match(text,/会計管理/);assert.match(text,/案件：#21/);assert.match(text,/案件：#22/);assert.ok(reserved.p_messages.every(m=>m.text.length<=4900));assert.equal(pushes.length,1);
+ const text=reserved.p_messages.map(m=>m.text).join('\n');assert.equal((text.match(/Order #: #900/g)||[]).length,1);assert.equal((text.match(/Voided: 2026-08-01 22:02:03 HST/g)||[]).length,1);
+ assert.match(text,/勤怠管理/);assert.match(text,/会計管理/);assert.match(text,/案件：#21/);assert.doesNotMatch(text,/案件：#22/);assert.ok(reserved.p_messages.every(m=>m.text.length<=4900));assert.equal(pushes.length,1);
 });
 
 test('snapshots never borrow newer transaction details, including reopened and reclosed findings',async()=>{
@@ -160,6 +160,6 @@ test('snapshots never borrow newer transaction details, including reopened and r
    throw Error(url);
   }});
   assert.equal((await h(workerRequest('morning_summary'))).status,200);
-  const text=reserved.p_messages.map(m=>m.text).join('\n');if(state.status!=='hq_review')assert.match(text,/Earlier closure/);assert.match(text,/Voided: 未取得/);assert.doesNotMatch(text,/Order #: #900|06:00:00/);
+  const text=reserved.p_messages.map(m=>m.text).join('\n');if(state.status!=='hq_review')assert.doesNotMatch(text,/Earlier closure|案件：#21/);else assert.match(text,/Voided: 未取得/);assert.doesNotMatch(text,/Order #: #900|06:00:00/);
  }
 });

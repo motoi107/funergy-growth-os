@@ -163,13 +163,13 @@ test('morning reminders require fresh evidence and separate technical failures',
 });
 test('morning summary reports zeroes only after complete collection and lists store counts',()=>{
  let m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
- assert.equal(m.complete,true);assert.equal(m.total,0);assert.match(m.text,/未解決の異常はありません/);assert.match(m.text,/Unpaid 0/);
+ assert.equal(m.complete,true);assert.equal(m.total,0);assert.equal(m.messages.length,0);assert.equal(m.text,'');
  m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:55,failed:1,active_stores:8,finance_enabled:true,finance_ok:55,counts:{labor:2,void:1,unpaid:0},stores:[{store_id:'TEST',store_name:'Test Restaurant',labor:2,void:1,unpaid:0}]});
  assert.equal(m.complete,false);assert.equal(m.total,3);assert.match(m.text,/未完了/);assert.doesNotMatch(m.text,/未解決の異常はありません/);
  m=formatMorningSummary({from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:false,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
  assert.equal(m.complete,false);assert.match(m.text,/決済データの取得が未完了/);assert.doesNotMatch(m.text,/未解決の異常はありません/);
  m=formatMorningSummary({from:'2026-10-01',to:'2026-09-30',expected:0,ok:0,failed:0,active_stores:8,finance_enabled:true,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
- assert.match(m.text,/当月は対象日なし/);
+ assert.equal(m.messages.length,0);
  m=formatMorningSummary({from:'2026-10-01',to:'2026-09-30',expected:0,ok:0,failed:0,active_stores:0,finance_enabled:true,finance_ok:0,counts:{labor:0,void:0,unpaid:0},stores:[]});
  assert.equal(m.complete,false);assert.match(m.text,/有効店舗がありません/);
 });
@@ -192,14 +192,14 @@ test('morning summary adds actionable person, error, payment and case details in
  assert.ok(bounded.messages.length>5);assert.doesNotMatch(bounded.messages.at(-1).text,/ほか \d+件/);assert.match(bounded.messages.at(-1).text,/B-000000000249/);for(const message of bounded.messages)assert.ok(message.text.length<=4900);
 });
 test('automatic morning summary is worker-key gated, targets configured headquarters group and is idempotent',async()=>{
- const group='C'+'d'.repeat(32),event={id:7,data:{state:'pending',request_id:guid(77),batches:[{state:'pending',request_id:guid(77),messages:[{type:'text',text:'Saved morning summary'},{type:'text',text:'Saved details'}]}]}};let pushes=0,finished=[];
+ const group='C'+'d'.repeat(32),event={id:7,data:{state:'pending',request_id:guid(77),batches:[{state:'pending',request_id:guid(77),messages:[{type:'text',text:'Saved morning summary'},{type:'text',text:'Saved details'}]}]}};let pushes=0,finished=[],healthy=false;
  const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'line'})[k],fetch:async(url,init)=>{
   if(url.includes('kind=eq.lifecycle_notice'))return Response.json([]);
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
   if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
   if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
-  if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-09-08',from:'2026-09-01',to:'2026-09-07',expected:56,ok:56,failed:0,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
+  if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-09-08',from:'2026-09-01',to:'2026-09-07',expected:56,ok:healthy?56:55,failed:healthy?0:1,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
   if(url.endsWith('/rpc/bot_reserve_morning_summary_v3')){const body=JSON.parse(init.body);assert.equal(body.p_variant,'daily');return Response.json(event);}
   if(url.endsWith('/rpc/bot_finish_morning_summary_batch')){finished.push(JSON.parse(init.body));event.data.state=finished.at(-1).p_state;return Response.json(null);}
   if(url==='https://api.line.me/v2/bot/message/push'){pushes++;const body=JSON.parse(init.body);assert.equal(body.to,group);assert.equal(body.messages.length,2);assert.equal(init.headers['X-Line-Retry-Key'],guid(77));return new Response(null,{status:200,headers:{'x-line-request-id':'line-request'}});}
@@ -209,6 +209,16 @@ test('automatic morning summary is worker-key gated, targets configured headquar
  assert.equal((await call('wrong')).status,401);assert.equal(pushes,0);
  let r=await call('worker');assert.equal(r.status,200);assert.equal((await r.json()).state,'accepted');assert.equal(pushes,1);assert.equal(finished[0].p_state,'accepted');
  r=await call('worker');assert.equal((await r.json()).already_sent,true);assert.equal(pushes,1);
+ healthy=true;r=await call('worker');assert.equal((await r.json()).reason,'no_findings');assert.equal(pushes,1);
+ healthy=false;event.data.state='pending';event.data.batches[0].messages=[{type:'text',text:'【確認完了の定時報告｜毎朝9:00 HST】'}];
+ r=await call('worker');assert.equal((await r.json()).reason,'legacy_completion_report');assert.equal(pushes,1);assert.equal(finished.length,1);
+ event.data.batches[0].messages=[{type:'text',text:'【勤怠管理｜Moto・Yuki 2/2】\n店舗：Synthetic\n案件：#123\n回答：確認完了の定時報告\n✅ 現在、未解決の異常はありません'},{type:'text',text:'Unresolved details'}];
+ r=await call('worker');assert.equal((await r.json()).state,'accepted');assert.equal(pushes,2);
+ event.data.state='pending';event.data.batches.unshift({state:'accepted',messages:[{type:'text',text:'【確認完了の定時報告｜毎朝9:00 HST】'}]});
+ r=await call('worker');assert.equal((await r.json()).state,'accepted');assert.equal(pushes,3);
+ event.data.state='pending';event.data.batches[1].messages=[{type:'text',text:'【会計管理｜経理 1/1】\n【会計管理レポート】\n✅ 現在、未解決の異常はありません'}];
+ r=await call('worker');assert.equal((await r.json()).reason,'legacy_completion_report');assert.equal(pushes,3);
+
 });
 test('monthly worker uses leased business dates and records failures without sending LINE',async()=>{
  let failed=false,job=true;const results=[];
@@ -283,7 +293,7 @@ test('completion broadcasts are deferred to the morning report, including old pe
  assert.equal((await call()).status,200);assert.equal((await call()).status,200);assert.equal(pushes,0);
  assert.ok(notices.every(e=>e.data.state==='morning_summary'&&e.data.delivery==='daily_hq_report'));
  const report=formatMorningSummary({from:'2026-09-01',to:'2026-09-10',expected:1,ok:1,failed:0,active_stores:1,finance_enabled:true,finance_ok:1,counts:{},recent_closed:[{code:'#85',store_id:'TEST',subject:'Synthetic closed case',closure:{note:'Toast verified'}}]});
- assert.match(report.messages.map(m=>m.text).join("\n"),/確認完了の定時報告｜毎朝9:00 HST/);assert.match(report.messages.map(m=>m.text).join("\n"),/案件：#85.*Synthetic closed case.*Toast verified/s);
+ assert.equal(report.messages.length,0);
 });
 test('lifecycle delivery discards older transitions and retries one immutable LINE request',async()=>{
  const group='C'+'e'.repeat(32),id=guid(80),request=guid(81),notices=[{id:90,case_id:id,created_at:new Date().toISOString(),data:{state:'pending',group_id:group,request_id:guid(82),case:{code:'#80',status:'hq_review',status_version:2,store_id:'TEST',subject:'Old',payload:{response:{note:'Old reason'}}}}},{id:91,case_id:id,created_at:new Date().toISOString(),data:{state:'pending',group_id:group,request_id:request,case:{code:'#80',status:'hq_review',status_version:4,store_id:'TEST',subject:'New',payload:{response:{note:'New reason'}}}}}];const pushes=[];
