@@ -1,5 +1,6 @@
 import {parseCompletionReply,completionReceipt,parseCaseReply,replyHelp,replyChoices,responseReceipt} from '../../../bot/case-replies.mjs';
 import { createClockDetector } from '../../../bot/clock-detector.mjs';
+import {paymentIdentity,paymentVoidDetails} from '../../../bot/payment-details.mjs';
 const ROLES=['ceo','gm','office','office_crew'], APPROVERS=['ceo','gm','office'];
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const enc=new TextEncoder();
@@ -60,7 +61,7 @@ export function voidFindings(orders,store,date,reasons=[],employees=[]){
  const rows=[];
  for(const order of orders)for(const check of order.checks||[])for(const pay of check.payments||[]){
   if(!pay.guid||!paymentIsVoided(pay))continue;const vi=pay.voidInfo||{},reason=vi.voidReason?.guid;
-  rows.push({source_key:'void:'+store.store_id+':'+pay.guid,kind:'void',store_id:store.store_id,business_date:date,subject:'Payment Void / #'+(check.displayNumber||order.displayNumber||pay.guid),payload:{store_name:store.name,order_guid:order.guid,check_guid:check.guid,entity_guid:pay.guid,fingerprint:JSON.stringify({amount:pay.amount??null,total:check.totalAmount??null,void:pay.voidInfo??null,status:pay.paymentStatus??null}),scope:'payment',check_total:check.totalAmount??null,amount:pay.amount??null,reason:reasonNames.get(reason)||null,user_name:staffNames.get(vi.voidUser?.guid)||null,approver_name:staffNames.get(vi.voidApprover?.guid)||null,reason_guid:reason||null,user_guid:vi.voidUser?.guid||null,approver_guid:vi.voidApprover?.guid||null,void_date:vi.voidDate||null,source:'toast_direct',fetched_at:new Date().toISOString()}});
+  rows.push({source_key:'void:'+store.store_id+':'+pay.guid,kind:'void',store_id:store.store_id,business_date:date,subject:'Payment Void / #'+(check.displayNumber||order.displayNumber||pay.guid),payload:{store_name:store.name,order_guid:order.guid,check_guid:check.guid,entity_guid:pay.guid,...paymentIdentity(order,check,pay),fingerprint:JSON.stringify({amount:pay.amount??null,total:check.totalAmount??null,void:pay.voidInfo??null,status:pay.paymentStatus??null}),scope:'payment',check_total:check.totalAmount??null,amount:pay.amount??null,reason:reasonNames.get(reason)||null,user_name:staffNames.get(vi.voidUser?.guid)||null,approver_name:staffNames.get(vi.voidApprover?.guid)||null,reason_guid:reason||null,user_guid:vi.voidUser?.guid||null,approver_guid:vi.voidApprover?.guid||null,void_date:vi.voidDate||null,source:'toast_direct',fetched_at:new Date().toISOString()}});
  }
  return rows;
 }
@@ -142,7 +143,7 @@ function morningCaseBlock(c,index,category=null){
  const ref=morningField(c.subject,100).replace(/^Payment Void \/\s*|^Unpaid \/\s*/i,''),hasAmount=c.amount!==null&&c.amount!==undefined&&c.amount!=='',amount=Number(c.amount),money=hasAmount&&Number.isFinite(amount)?'$'+amount.toFixed(2):'金額不明';
  if(c.kind==='void'){
   const who=morningField(c.user_name,100),approver=morningField(c.approver_name,100),reason=morningField(c.reason,Infinity);
-  return index+'. Payment Void '+ref+'（'+date+'）\n金額：'+money+(who?'\n操作：'+who:'')+(approver?'／承認：'+approver:'')+(reason?'\n理由：'+reason:'')+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
+  return index+'. Payment Void\n'+paymentVoidDetails(c)+(who?'\n操作：'+who:'')+(approver?'／承認：'+approver:'')+(reason?'\n理由：'+reason:'')+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
  }
  return index+'. Unpaid '+ref+'（'+date+'）\n金額：'+money+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
 }
@@ -196,7 +197,7 @@ export function formatMorningSummary(s,{resend=false,category=null}={}){
  if(s.detail_total!==undefined&&(detailCount!==(s.details||[]).length||detailCount!==total))throw Error('morning_summary_incomplete_details');
  const messages=[{type:'text',text},...morningStoreMessages(s.details,detailCount,s.stores,category).map(detail=>({type:'text',text:detail}))];
  for(const c of closed){
-  const header='【確認完了の定時報告｜毎朝9:00 HST】\n案件：'+morningField(c.code,20)+'｜完了',body='店舗：'+morningField(c.store_name||c.store_id)+'\n内容：'+morningField(c.subject,Infinity)+'\n回答者：'+morningField(c.closure?.actor||'Toast',100)+'\n回答：'+morningField(c.closure?.note,Infinity);
+  const header='【確認完了の定時報告｜毎朝9:00 HST】\n案件：'+morningField(c.code,20)+'｜完了',body='店舗：'+morningField(c.store_name||c.store_id)+'\n内容：'+morningField(c.subject,Infinity)+(c.kind==='void'?'\n'+paymentVoidDetails(c):'')+'\n回答者：'+morningField(c.closure?.actor||'Toast',100)+'\n回答：'+morningField(c.closure?.note,Infinity);
   for(const part of morningTextParts(body))messages.push({type:'text',text:header+'\n'+part});
  }
  messages[messages.length-1].text+='\n\n【レポート終了】未解決 '+detailCount+'件・確認完了 '+closed.length+'件を全件掲載';
@@ -256,6 +257,24 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    throw Error('toast_pagination_limit');
   };
  }
+ function paymentLookupCache(){return {stores:new Map(),orders:new Map(),until:Date.now()+30000};}
+ async function paymentCaseDetails(c,cache=paymentLookupCache()){
+  const p=c.payload||{};
+  if(c.kind!=='void'||(p.order_number&&p.check_number&&p.order_opened_date)||Date.now()>cache.until||!UUID.test(p.order_guid||'')||!UUID.test(p.check_guid||'')||!UUID.test(p.entity_guid||''))return c;
+  try{
+   if(!cache.stores.has(c.store_id))cache.stores.set(c.store_id,getStore(c.store_id).then(toastClient));
+   const get=await cache.stores.get(c.store_id),key=c.store_id+':'+p.order_guid;
+   if(!cache.orders.has(key))cache.orders.set(key,get('/orders/v2/orders/'+p.order_guid,true));
+   const order=await cache.orders.get(key);if(order.guid!==p.order_guid)return c;
+   const checks=(order.checks||[]).filter(x=>x.guid===p.check_guid);if(checks.length!==1)return c;
+   const payments=(checks[0].payments||[]).filter(x=>x.guid===p.entity_guid);
+   if(payments.length!==1||!paymentIsVoided(payments[0]))return c;
+   const identity=paymentIdentity(order,checks[0],payments[0]),missing={};
+   for(const [key,value] of Object.entries(identity))if(!p[key]&&value!==null&&value!=='')missing[key]=value;
+   // Only supplement identity. Amount, void time, evidence and status stay as detected.
+   return {...c,payload:{...p,...missing}};
+  }catch{return c;} // Explicit unavailable labels preserve delivery when Toast is down.
+ }
  async function scan(storeID,date,actor,withVoids=false){
   const store=await getStore(storeID),cfg=validConfig(await setting('clock'));
   if(!(await rpc('bot_take_run',{p_store:storeID})))throw Error('scan_busy');
@@ -274,7 +293,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     if(ids.length>100||ids.some(id=>!UUID.test(id)))throw Error('payment_batch_requires_review');
     let reasons=[];try{reasons=await get('/config/v2/voidReasons');}catch{/* Keep reason IDs. */}
     const payments=[];
-    for(const id of [...new Set(ids)]){const pay=await get('/orders/v2/payments/'+id,true);if(pay.guid!==id||!UUID.test(pay.orderGuid||'')||!UUID.test(pay.checkGuid||''))throw Error('toast_invalid_response');const order=orders.find(o=>o.guid===pay.orderGuid)||await get('/orders/v2/orders/'+pay.orderGuid,true);if(order.guid!==pay.orderGuid)throw Error('toast_invalid_response');const check=(order.checks||[]).find(c=>c.guid===pay.checkGuid);payments.push({guid:pay.orderGuid,checks:[{guid:pay.checkGuid,displayNumber:check?.displayNumber,totalAmount:check?.totalAmount,payments:[pay]}]});}
+    for(const id of [...new Set(ids)]){const pay=await get('/orders/v2/payments/'+id,true);if(pay.guid!==id||!UUID.test(pay.orderGuid||'')||!UUID.test(pay.checkGuid||''))throw Error('toast_invalid_response');const order=orders.find(o=>o.guid===pay.orderGuid)||await get('/orders/v2/orders/'+pay.orderGuid,true);if(order.guid!==pay.orderGuid)throw Error('toast_invalid_response');const check=(order.checks||[]).find(c=>c.guid===pay.checkGuid);payments.push({guid:pay.orderGuid,displayNumber:order.displayNumber,openedDate:order.openedDate,checks:[{guid:pay.checkGuid,displayNumber:check?.displayNumber,totalAmount:check?.totalAmount,payments:[pay]}]});}
     findings.push(...voidFindings(payments,store,date,reasons,employees));
    }
    for(const f of findings)await rpc('bot_case_write',{p_op:'finding',p_actor:actor,p_data:f});
@@ -309,18 +328,34 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  }
  async function flushCaseNotices(){
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))return {skipped:true};
-  const notices=await db('bot_events?kind=eq.lifecycle_notice&data->>state=in.(pending,unknown)&order=id.asc&limit=5');let sent=0;
+  const notices=await db('bot_events?kind=eq.lifecycle_notice&data->>state=in.(pending,unknown)&order=id.asc&limit=5'),lookup=paymentLookupCache();let sent=0;
   for(const e of notices){
-   const n=e.data;
+   let n=e.data;
    // Closure broadcasts belong to the existing 09:00 HST HQ report. Keep the
    // audit event, but do not send or retry a separate completion push.
    if(n.case?.status==='done'){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'morning_summary',delivery:'daily_hq_report'}});continue;}
    if(Date.parse(e.created_at)<Date.now()-23*3600000){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'expired'}});continue;}
    const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(n.group_id)+'&enabled=eq.true');
-   const current=await db('bot_cases?id=eq.'+e.case_id+'&select=status,status_version');
+   const current=await db('bot_cases?id=eq.'+e.case_id+'&select=status,status_version,kind,business_date,subject,payload,store_id');
    if(!groups.length||(!groups[0].all_stores&&groups[0].store_id!==n.case.store_id)||!current.length||current[0].status!==n.case.status||current[0].status_version!==n.case.status_version){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'cancelled'}});continue;}
-   let state='unknown';try{const response=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':n.request_id},body:JSON.stringify({to:n.group_id,messages:[{type:'text',text:responseReceipt(n.case).slice(0,4600)+(n.case.status==='hq_review'?'\n'+n.case.code+' 承認して終了 理由 / approve reason\n'+n.case.code+' 差し戻し 理由 / return reason':'')}]})});state=response.ok||response.status===409&&!!response.headers.get('x-line-accepted-request-id')?'sent':response.status>=400&&response.status<500&&response.status!==429?'failed':'unknown';}catch{}
-   await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state}});if(state==='sent')sent++;
+   if(!n.line_message){
+    // Legacy unknown sends may already have been delivered. Retry their original body.
+    const legacy=n.state==='unknown';
+    const detailed=legacy?n.case:await paymentCaseDetails({...n.case,kind:current[0].kind,business_date:current[0].business_date,payload:{...current[0].payload,...n.case.payload}},lookup);
+    const line_message={type:'text',text:responseReceipt(detailed,{includeTransaction:!legacy}).slice(0,4600)+(n.case.status==='hq_review'?'\n'+n.case.code+' 承認して終了 理由 / approve reason\n'+n.case.code+' 差し戻し 理由 / return reason':'')};
+    // Only one worker may freeze the body. Concurrent workers read that same body.
+    const saved=await db('bot_events?id=eq.'+e.id+'&data->line_message=is.null&data->>state=in.(pending,unknown)','PATCH',{data:{...n,line_message,state:'unknown'}},'return=representation');
+    n=saved?.[0]?.data||(await db('bot_events?id=eq.'+e.id+'&select=data'))[0]?.data;
+    if(!n?.line_message||!['pending','unknown'].includes(n.state))continue;
+   }
+   // Toast enrichment can take time. Revalidate state and destination after all lookups.
+   const [latest,activeGroups]=await Promise.all([
+    db('bot_cases?id=eq.'+e.case_id+'&select=status,status_version'),
+    db('bot_groups?group_id=eq.'+encodeURIComponent(n.group_id)+'&enabled=eq.true')
+   ]);
+   if(!activeGroups.length||(!activeGroups[0].all_stores&&activeGroups[0].store_id!==n.case.store_id)||!latest.length||latest[0].status!==n.case.status||latest[0].status_version!==n.case.status_version){await db('bot_events?id=eq.'+e.id+'&data->>state=in.(pending,unknown)','PATCH',{data:{...n,state:'cancelled'}});continue;}
+   let state='unknown';try{const response=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':n.request_id},body:JSON.stringify({to:n.group_id,messages:[n.line_message]})});state=response.ok||response.status===409&&!!response.headers.get('x-line-accepted-request-id')?'sent':response.status>=400&&response.status<500&&response.status!==429?'failed':'unknown';}catch{}
+   await db('bot_events?id=eq.'+e.id+'&data->>state=in.(pending,unknown)','PATCH',{data:{...n,state}});if(state==='sent')sent++;
   }return {sent};
  }
  async function morningSummary(variant='daily'){
@@ -342,6 +377,21 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
      if(p&&JSON.stringify(p.kinds)===JSON.stringify(c.kinds)&&p.employee_name===c.employee_name){c.shifts=p.shifts;c.shift_cfg=p.cfg;}
     }
    }catch{/* Missing detail is explicitly reported without suppressing the HQ report. */}
+  }
+  const closedVoids=new Set(snapshot.recent_closed||[]),voids=[...(snapshot.details||[]),...closedVoids].filter(c=>c.kind==='void'&&/^#[0-9]+$/.test(c.code)),lookup=paymentLookupCache();
+  for(let i=0;i<voids.length;i+=50){
+   const batch=voids.slice(i,i+50);
+   try{
+    const rows=await db('bot_cases?code=in.'+encodeURIComponent('('+batch.map(c=>c.code).join(',')+')')+'&select=code,kind,store_id,subject,business_date,payload,status,closed_at,updated_at');
+    for(const c of batch){const row=rows.find(r=>r.code===c.code);
+     // A snapshot must not borrow details from a different finding or newer amount.
+     if(!row||row.kind!=='void'||row.store_id!==c.store_id||row.subject!==c.subject||(c.business_date&&row.business_date!==c.business_date)||(c.amount!==undefined&&Number(c.amount)!==Number(row.payload?.amount)))continue;
+     const snapshotAt=Date.parse(snapshot.snapshot_at),updatedAt=Date.parse(row.updated_at);
+     if(!Number.isFinite(snapshotAt)||!Number.isFinite(updatedAt)||updatedAt>snapshotAt)continue;
+     if(closedVoids.has(c)&&(!c.closed_at||row.status!=='done'||!Number.isFinite(Date.parse(c.closed_at))||Date.parse(row.closed_at)!==Date.parse(c.closed_at)))continue;
+     const detailed=await paymentCaseDetails(row,lookup);c.payload=detailed.payload;c.business_date=row.business_date;
+    }
+   }catch{/* Render unavailable fields instead of hiding the case or suppressing the report. */}
   }
   const formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatResponsibleMorningReports(snapshot,{resend:variant!=='daily'});
   const reserved=await rpc('bot_reserve_morning_summary_v3',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant,p_snapshot_at:snapshot.snapshot_at||null});
