@@ -1,3 +1,4 @@
+import {paymentVoidDetails} from './payment-details.mjs';
 // Deliberately constrained commands: free text and questions never close cases.
 export function parseCaseReply(input) {
  const text=String(input||'').normalize('NFKC').trim();
@@ -9,7 +10,7 @@ export function parseCaseReply(input) {
 }
 export const replyHelp=code=>`${code} 完了 / done\n複数は案件番号をカンマで区切る / Separate case numbers with commas\n${code} 修正済み 修正内容\n${code} 確認済み・変更なし 理由\n${code} その他・終了 理由\n${code} 対応中 YYYY-MM-DD 対応内容\nEnglish: fixed / confirmed no change / other close / in progress YYYY-MM-DD + reason`;
 export function replyChoices(code){return {items:[['修正済み / Fixed',`${code} 修正済み `],['変更なし / No change',`${code} 確認済み・変更なし `],['その他 / Other',`${code} その他・終了 `],['対応中 / In progress',`${code} 対応中 `]].map(([label,fillInText])=>({type:'action',action:{type:'postback',label,data:'case_reply='+encodeURIComponent(code),inputOption:'openKeyboard',fillInText}}))};}
-export function responseReceipt(c){const states={hq_review:'本部確認待ち / Awaiting HQ review',verify:'修正反映の確認待ち / Awaiting verification',correction:'対応継続 / Action required',done:'完了 / Closed'};const decision=c.payload?.closure||c.payload?.returned||c.payload?.response||{};const at=decision.at?new Date(decision.at).toLocaleString('ja-JP',{timeZone:'Pacific/Honolulu'}):'';return `${c.code}｜${c.payload?.store_name||c.store_id}｜${c.subject}\n${states[c.status]||c.status}\n${decision.note||''}\n確認者 / By: ${decision.actor||'Toast'}${at?'｜'+at+' HST':''}`;}
+export function responseReceipt(c,{includeTransaction=true}={}){const states={hq_review:'本部確認待ち / Awaiting HQ review',verify:'修正反映の確認待ち / Awaiting verification',correction:'対応継続 / Action required',done:'完了 / Closed'};const decision=c.payload?.closure||c.payload?.returned||c.payload?.response||{};const at=decision.at?new Date(decision.at).toLocaleString('ja-JP',{timeZone:'Pacific/Honolulu'}):'';const details=includeTransaction?paymentVoidDetails(c):'';return `${details?'案件 / Case: ':''}${c.code}｜${c.payload?.store_name||c.store_id}｜${details?'Payment Void':c.subject}\n${states[c.status]||c.status}\n${details?details+'\n':''}${decision.note||''}\n確認者 / By: ${decision.actor||'Toast'}${at?'｜'+at+' HST':''}`;}
 
 // Explicit reports in an enabled LINE group can close up to 20 cases at once.
 export function parseCompletionReply(input) {

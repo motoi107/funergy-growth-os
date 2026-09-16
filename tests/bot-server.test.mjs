@@ -290,7 +290,7 @@ test('lifecycle delivery discards older transitions and retries one immutable LI
  const h=createHandler({env:k=>({SUPABASE_URL:'https://db.test',SUPABASE_SERVICE_ROLE_KEY:'service',LINE_CHANNEL_ACCESS_TOKEN:'token'})[k],fetch:async(url,init)=>{
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
   if(url.includes('kind=eq.lifecycle_notice'))return Response.json(notices.filter(e=>['pending','unknown'].includes(e.data.state)));
-  if(url.includes('/bot_events?id=eq.')){const n=notices.find(e=>url.includes('eq.'+e.id));n.data=JSON.parse(init.body).data;return new Response(null,{status:204});}
+  if(url.includes('/bot_events?id=eq.')){const n=notices.find(e=>url.includes('eq.'+e.id));if(init.method==='GET')return Response.json([{data:n.data}]);n.data=JSON.parse(init.body).data;return init.headers.Prefer==='return=representation'?Response.json([{data:n.data}]):new Response(null,{status:204});}
   if(url.includes('/bot_groups?'))return Response.json([{all_stores:true}]);
   if(url.includes('/bot_cases?id='))return Response.json([{status:'hq_review',status_version:4}]);
   if(url.includes('/bot_cases?kind='))return Response.json([]);
