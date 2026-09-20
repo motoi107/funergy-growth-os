@@ -10439,7 +10439,7 @@ var SUPA_MASTER_MAP = {
     map:function(o){ return { code:o.code, name:o.name, cls:o.cls||null, data:o }; } },
 };
 /* app_settings に入れるマスター設定キー（プレフィックス一致も可） */
-var SUPA_SETTING_KEYS = ['pl_public',   /* v910: PL取込の率の材料。利益(netop/opex)は含めない */
+var SUPA_SETTING_KEYS = ['pl_public','handbook_test_form',   /* v1024: 理解度チェックのフォーム URL と entry ID */   /* v910: PL取込の率の材料。利益(netop/opex)は含めない */
   'm_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
@@ -10450,7 +10450,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 /* v956: initiatives（施策の定義）を追加。合流ルールは OP_MERGE に登録済み。
    ★コメントは配列の外に置く。verify_v919 がこの配列を JSON.parse しており、
      行内コメントを入れると JSON として壊れて落ちる。 */
-var OP_SYNC_KEYS = ['initiatives',
+var OP_SYNC_KEYS = ['initiatives','handbook_tests',
   'lala_tasks','office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
@@ -11407,6 +11407,8 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   menu_log:       { merge: mergeAppendLog, covers: _coversLog },
   reject_log:     { merge: mergeAppendLog, covers: _coversLog },
   handbook_log:   { merge: mergeAppendLog, covers: _coversLog },
+  /* v1024: 理解度チェックの端末側の記録。名前ごとに独立しているので名前単位で合流する（handbook_reads と違い、2台が同時に書いても消し合わない）。 */
+  handbook_tests: { merge: mergeMapByTime, covers: _coversMapByTime },
   /* v753: リスト型3画面。性質が違うので別々のルールを当てる。
      残業申請は追加のみ（更新・削除なし）なので足し算でよい。
      育成推薦・備品カタログは id ごとに新しい更新が勝つ（削除は最優先）。 */
@@ -37044,7 +37046,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1023';
+const APP_VERSION = '1024';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -71522,10 +71524,207 @@ function hbMarkRead(id){
   reads[me][id]={v:ch.version||1, at:nowJP()};
   lsSet('handbook_reads', reads);
   showToast('第'+(ch.order||'')+'章を読了として記録しました','success');
+  /* v1024: 全章が読了になった瞬間だけ、理解度チェックの開始画面へ（未回答のときだけ。回答済み・申告済みなら一覧へ）。 */
+  _hbView=null;
+  try{ if(hbTestStatus(me, hbChaptersSorted(), reads[me]||{})==='pending') _hbView='__test'; }catch(e){ _hbView=null; }
+  renderPage('crew_handbook');
+  if(_hbView==='__test') window.scrollTo(0,0);
+}
+/* v1024:start hbtest */
+/* ============================================================
+   v1024: Handbook 理解度チェック（Google フォーム）。Motoさんの決定 9/19・UI案19。
+   ・全10章が読了になった瞬間に開始画面を出す（章の順番は問わない）。未回答のあいだは一覧の上にカードが残る。
+   ・名前・店舗・言語はフォームの URL で自動入力（entry ID は GM/CEO が「フォーム設定」で入れる）。Email はフォームで本人が入力。
+   ・記録は2段：端末（handbook_tests＝開始・送信申告。名前ごとに合流）と、サーバー（handbook_test_results＝Apps Script → Edge Function が書く。ここは読むだけ）。
+   ・読了の記録（handbook_reads）には触らない。予算・KPI など他の集計にも入れない。
+   ============================================================ */
+var HB_TEST_FORM_DEFAULT = 'https://docs.google.com/forms/d/e/1FAIpQLSc94bBBJkQDNE1pCnDmr_uvPqPktSfQSg8ATRySSIBmUbxLRg/viewform';
+var _hbTestRes = null, _hbTestResAt = 0;   /* サーバーの結果（端末内の写し）。取り直しは 60 秒に 1 回まで */
+function hbTestCfg(){
+  var c = ls('handbook_test_form', null); c = (c && typeof c==='object') ? c : {};
+  return { url: c.url || HB_TEST_FORM_DEFAULT, eName: c.eName||'', eStore: c.eStore||'', eLang: c.eLang||'',
+           langJa: c.langJa||'日本語', langEn: c.langEn||'English' };
+}
+function hbTests(){ var v = ls('handbook_tests', {}); return (v && typeof v==='object' && !Array.isArray(v)) ? v : {}; }
+function hbTestRec(name){ return name ? (hbTests()[name] || null) : null; }
+function hbTestSave(name, patch){
+  if(!name) return null;
+  var all = hbTests(); var rec = Object.assign({}, all[name]||{}, patch||{}, { _at: Date.now() });
+  all[name] = rec; lsSet('handbook_tests', all); return rec;
+}
+/* 全章が読了か（更新あり・要再確認の章が1つでもあれば false）。 */
+function hbAllRead(chs, mine){
+  chs = chs||[]; mine = mine||{};
+  return chs.length>0 && chs.every(function(c){ return hbStatus(c, mine[c.id])==='read'; });
+}
+/* フォームに入れる店舗名（店舗IDは出さない）。従業員割引アンケートと同じ表記（SURVEY_STORE_NAME）。所属が無ければ空。 */
+function hbStoreNameOf(name){
+  var e = (getEmployees()||[]).find(function(x){ return x && x.name===name; }) || {};
+  if (typeof SURVEY_STORE_NAME!=='undefined' && SURVEY_STORE_NAME && SURVEY_STORE_NAME[e.store]) return SURVEY_STORE_NAME[e.store];
+  var st = ((typeof STORES!=='undefined' && STORES) || []).find(function(x){ return x && x.id===e.store; });
+  return st ? (st.name||'') : '';
+}
+/* サーバーの結果のうち、その人の最新の1件。無ければ null。 */
+function hbTestResultOf(name){
+  var rows = _hbTestRes || ls('hbtest_results_cache', null) || [];
+  var best = null;
+  (Array.isArray(rows)?rows:[]).forEach(function(r){
+    if(!r || r.name!==name) return;
+    if(!best || String(r.submitted_at||'') > String(best.submitted_at||'')) best = r;
+  });
+  return best;
+}
+/* 状態：done＝サーバーに結果がある／claimed＝本人が送信を申告（結果の反映待ち）／pending＝全章読了・未回答／notyet＝章が残っている */
+function hbTestStatus(name, chs, mine){
+  if(!name) return 'notyet';
+  if (hbTestResultOf(name)) return 'done';
+  var rec = hbTestRec(name);
+  if (rec && rec.submittedAt) return 'claimed';
+  return hbAllRead(chs, mine) ? 'pending' : 'notyet';
+}
+/* 自動入力つきの URL。entry ID が1つも無ければ素の URL（開けるが自動入力されない）。 */
+function hbTestUrl(name){
+  var c = hbTestCfg(); var url = c.url; var q = [];
+  if (c.eName && name) q.push(c.eName+'='+encodeURIComponent(name));
+  if (c.eStore){ var sn = hbStoreNameOf(name); if (sn) q.push(c.eStore+'='+encodeURIComponent(sn)); }
+  if (c.eLang) q.push(c.eLang+'='+encodeURIComponent(_hbLang==='en' ? c.langEn : c.langJa));
+  if (!q.length) return url;
+  return url + (url.indexOf('?')>=0 ? '&' : '?') + 'usp=pp_url&' + q.join('&');
+}
+/* サーバーの結果を取り直す（60秒に1回まで）。失敗しても手元の写しはそのまま。変わっていたら Handbook を描き直す。 */
+async function hbLoadTestResults(force){
+  if(!force && _hbTestResAt && Date.now()-_hbTestResAt < 60000) return false;
+  _hbTestResAt = Date.now();
+  var rows = null;
+  try{
+    var res = await fetch(SUPABASE_URL+'/rest/v1/handbook_test_results?select=response_id,name,store,lang,score,max_score,submitted_at&order=submitted_at.desc&limit=2000', { headers: supaHeaders() });
+    if(res && res.ok){ var j = await res.json(); if(Array.isArray(j)) rows = j; }
+  }catch(e){ rows = null; }
+  if(!Array.isArray(rows)) return false;
+  var before = JSON.stringify(_hbTestRes || ls('hbtest_results_cache', null) || []);
+  _hbTestRes = rows;
+  try{ lsSet('hbtest_results_cache', rows); }catch(e){}
+  var changed = before !== JSON.stringify(rows);
+  if(changed && typeof curPage!=='undefined' && curPage==='crew_handbook'){ try{ renderPage('crew_handbook'); }catch(e){} }
+  return changed;
+}
+function hbTestScoreText(r){
+  if(!r || r.score==null || r.max_score==null) return '';
+  return (Math.round(Number(r.score)*10)/10)+'/'+(Math.round(Number(r.max_score)*10)/10);
+}
+function hbTestWhen(r){
+  if(!r || !r.submitted_at) return '';
+  return (typeof botTime==='function') ? botTime(r.submitted_at) : String(r.submitted_at).slice(5,10).replace(/^0/,'').replace('-','/');
+}
+/* 「チェックを始める」：開始を記録して、<a target=_blank> はそのまま開かせる（戻り値 true）。 */
+function hbTestStarted(){
+  var me = curUserName||''; if(!me) return true;
+  var rec = hbTestRec(me);
+  if(!(rec && rec.startedAt)) hbTestSave(me, { startedAt: nowJP(), lang: _hbLang });
+  setTimeout(function(){ try{ renderPage('crew_handbook'); }catch(e){} }, 300);
+  return true;
+}
+/* 「回答を送信しました」：本人の申告。サーバーの結果が届けば done に置き換わる。 */
+function hbTestClaim(){
+  var me = curUserName||''; if(!me){ showToast('ログインユーザーが特定できません','warning'); return; }
+  hbTestSave(me, { submittedAt: nowJP(), lang: _hbLang });
+  showToast('理解度チェックの送信を記録しました / Recorded','success');
   _hbView=null; renderPage('crew_handbook');
 }
+function hbOpenTest(){ _hbView='__test'; renderPage('crew_handbook'); window.scrollTo(0,0); }
+/* 開始画面（全章読了の直後・一覧のカードから）。 */
+function hbRenderTest(chs, mine){
+  var me = curUserName||''; var st = hbTestStatus(me, chs, mine); var rec = hbTestRec(me)||{};
+  var started = !!rec.startedAt;
+  var h='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-secondary btn-sm" onclick="hbBack()"><i class="ti ti-arrow-left"></i> 一覧へ</button>'
+    +'<b style="flex:1;font-size:13px;min-width:150px"><i class="ti ti-circle-check" style="color:var(--green)"></i> 全'+chs.length+'章 読了 / All chapters read</b></div>';
+  if(st==='done'){
+    var r=hbTestResultOf(me);
+    return h+'<div class="card" style="border:1.5px solid var(--green)"><div class="card-title"><i class="ti ti-clipboard-check" style="color:var(--green)"></i>理解度チェック / Understanding Check <span class="tag tag-green" style="margin-left:auto">回答済み '+escapeHtml(hbTestWhen(r))+'</span></div>'
+      +'<div style="font-size:12px;line-height:1.75">回答ありがとうございました。内容は店長・本部が確認します。<br>Thank you — your answers have been received.</div></div>';
+  }
+  if(st==='claimed'){
+    return h+'<div class="card" style="border:1.5px solid var(--accent2)"><div class="card-title"><i class="ti ti-clipboard-check"></i>理解度チェック / Understanding Check <span class="tag tag-blue" style="margin-left:auto">送信を記録 '+escapeHtml(rec.submittedAt||'')+'</span></div>'
+      +'<div style="font-size:12px;line-height:1.75">送信を記録しました。フォームの結果が届くと「回答済み」に変わります。<br>Your submission has been noted.</div></div>';
+  }
+  if(st!=='pending'){
+    return h+'<div class="card"><div style="font-size:12px;color:var(--muted)">全章を読了すると、理解度チェックを受けられます。 / Finish all chapters first.</div></div>';
+  }
+  h+='<div class="card" style="border:1.5px solid var(--accent)">'
+    +'<div class="card-title"><i class="ti ti-clipboard-check"></i>理解度チェック / Understanding Check</div>'
+    +'<div style="font-size:12px;line-height:1.75">お疲れさまでした。最後に Handbook の理解度チェックにお答えください（約10分）。<br>暗記のテストではありません。分からない問題は Handbook を見ながら答えて構いません。</div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:6px">This is not a memorization test. You may refer to the Handbook while answering.</div>'
+    +'<div style="margin-top:10px;background:var(--surface2);border-radius:10px;padding:10px 12px;font-size:11.5px;line-height:2">'
+    +'<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--muted)">回答者 / Name</span><b>'+escapeHtml(me)+'</b></div>'
+    +'<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--muted)">店舗 / Store</span><b>'+escapeHtml(hbStoreNameOf(me)||'—')+'</b></div>'
+    +'<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--muted)">言語 / Language</span><b>'+(_hbLang==='en'?'English':'日本語')+'</b></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);line-height:1.6">この3つはフォームに自動で入ります（Handbook で選んでいる言語で開きます）。Email はフォームで入力してください。</div></div>'
+    +'<a class="btn btn-primary" style="width:100%;margin-top:12px;text-decoration:none" href="'+escapeHtml(hbTestUrl(me))+'" target="_blank" rel="noopener" onclick="return hbTestStarted()"><i class="ti ti-external-link"></i> チェックを始める / Start</a>'
+    +'<div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px;line-height:1.6">Google フォームが別画面で開きます。送信が終わったら、この画面に戻って下のボタンを押してください。</div>'
+    +'<button class="btn btn-secondary" style="width:100%;margin-top:10px"'+(started?'':' disabled')+' onclick="hbTestClaim()"><i class="ti '+(started?'ti-check':'ti-lock')+'"></i> 回答を送信しました / I submitted</button>'
+    +'<div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px;line-height:1.6">'+(started?'（フォームを送信してから押してください）':'（「チェックを始める」を押すと有効になります）')+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:8px;line-height:1.6">あとで受ける場合は「一覧へ」。Handbook の一覧の上に、このチェックが残ります。</div>'
+    +'</div>';
+  return h;
+}
+/* 一覧の上のカード（スタッフ）。章が残っているうちは出さない。 */
+function hbTestCard(chs, mine){
+  var me = curUserName||''; var st = hbTestStatus(me, chs, mine);
+  if(st==='notyet') return '';
+  var rec = hbTestRec(me)||{};
+  if(st==='done'){
+    return '<div class="card" style="border:1.5px solid var(--green)"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-clipboard-check" style="color:var(--green);font-size:18px"></i>'
+      +'<b style="flex:1;font-size:13px">理解度チェック / Understanding Check</b><span class="tag tag-green">回答済み '+escapeHtml(hbTestWhen(hbTestResultOf(me)))+'</span></div>'
+      +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-top:6px">回答ありがとうございました。内容は店長・本部が確認します。Handbook が更新されたときは、もう一度お願いすることがあります。</div></div>';
+  }
+  if(st==='claimed'){
+    return '<div class="card" style="border:1.5px solid var(--accent2)"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-clipboard-check" style="color:var(--accent2);font-size:18px"></i>'
+      +'<b style="flex:1;font-size:13px">理解度チェック / Understanding Check</b><span class="tag tag-blue">送信を記録 '+escapeHtml(rec.submittedAt||'')+'</span></div>'
+      +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-top:6px">フォームの結果が届くと「回答済み」に変わります。</div></div>';
+  }
+  var started = !!rec.startedAt;
+  return '<div class="card" style="border:1.5px solid var(--yellow)"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-clipboard-check" style="color:var(--accent);font-size:18px"></i>'
+    +'<b style="flex:1;font-size:13px">理解度チェック / Understanding Check</b><span class="tag tag-yellow">未回答</span></div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-top:6px">全10章を読み終えたら、最後にこのチェックにお答えください（約10分・Handbook を見ながらでOK）。<br>Please complete this check after reading all chapters.</div>'
+    +'<div style="display:flex;gap:6px;margin-top:8px"><button class="btn btn-primary btn-sm" style="flex:1" onclick="hbOpenTest()"><i class="ti ti-external-link"></i> チェックを始める</button>'
+    +'<button class="btn btn-secondary btn-sm" style="flex:1"'+(started?'':' disabled')+' onclick="hbTestClaim()"><i class="ti ti-check"></i> 送信しました</button></div></div>';
+}
+/* 進捗管理の「理解度チェック」列。 */
+function hbTestCell(name, chs, mine){
+  var st = hbTestStatus(name, chs, mine);
+  if(st==='done'){ var r=hbTestResultOf(name); var sc=hbTestScoreText(r); return '<span class="tag tag-green">回答済み '+(sc?escapeHtml(sc)+' ':'')+escapeHtml(hbTestWhen(r))+'</span>'; }
+  if(st==='claimed') return '<span class="tag tag-blue">送信申告（結果待ち）</span>';
+  if(st==='pending') return '<span class="tag tag-yellow">未回答</span>';
+  return '<span class="tag tag-gray">読了待ち</span>';
+}
+/* GM/CEO：フォームの URL と entry ID（app_settings で全端末同期）。 */
+function openHbTestCfg(){
+  if(['ceo','gm'].indexOf(curRole)<0){ showToast('フォーム設定はGM/CEOのみ','warning'); return; }
+  var c=hbTestCfg();
+  openModal('<div class="modal-title"><i class="ti ti-settings"></i> 理解度チェックのフォーム設定 <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-bottom:10px">entry ID は、フォームの Apps Script（handbook_test.gs の inspectForm）か「事前入力した URL を取得」で確かめて入れてください。空のままでもフォームは開けますが、名前・店舗・言語は自動入力されません。</div>'
+    +'<div class="form-group"><label class="form-label">フォームの URL（viewform）</label><input class="form-input" id="hbt-url" value="'+escapeHtml(c.url)+'"></div>'
+    +'<div class="form-row"><div class="form-group"><label class="form-label">名前の entry ID</label><input class="form-input" id="hbt-ename" value="'+escapeHtml(c.eName)+'" placeholder="entry.123456789"></div>'
+    +'<div class="form-group"><label class="form-label">店舗の entry ID</label><input class="form-input" id="hbt-estore" value="'+escapeHtml(c.eStore)+'" placeholder="entry.123456789"></div></div>'
+    +'<div class="form-row"><div class="form-group"><label class="form-label">言語の entry ID</label><input class="form-input" id="hbt-elang" value="'+escapeHtml(c.eLang)+'" placeholder="entry.123456789"></div>'
+    +'<div class="form-group"><label class="form-label">言語の選択肢の文字（日本語 / English）</label><div style="display:flex;gap:6px"><input class="form-input" id="hbt-lja" value="'+escapeHtml(c.langJa)+'"><input class="form-input" id="hbt-len" value="'+escapeHtml(c.langEn)+'"></div></div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button><button class="btn btn-primary" onclick="hbTestCfgSave()"><i class="ti ti-device-floppy"></i> 保存する</button></div>');
+}
+function hbTestCfgSave(){
+  var gv=function(x){ var el=document.getElementById(x); return el?String(el.value||'').trim():''; };
+  var url=gv('hbt-url');
+  if(!/^https:\/\/docs\.google\.com\/forms\//.test(url)){ showToast('Google フォームの URL（https://docs.google.com/forms/…）を入れてください','warning'); return; }
+  var ent=function(v){ v=String(v||'').replace(/\s/g,''); if(/^\d+$/.test(v)) v='entry.'+v; return (v && !/^entry\.\d+$/.test(v)) ? null : v; };
+  var eName=ent(gv('hbt-ename')), eStore=ent(gv('hbt-estore')), eLang=ent(gv('hbt-elang'));
+  if(eName===null||eStore===null||eLang===null){ showToast('entry ID は「entry.数字」の形で入れてください','warning'); return; }
+  lsSet('handbook_test_form', { url:url.replace(/[?#].*$/,''), eName:eName, eStore:eStore, eLang:eLang, langJa:gv('hbt-lja')||'日本語', langEn:gv('hbt-len')||'English' });
+  closeModalDirect(); showToast('フォーム設定を保存しました','success'); renderPage('crew_handbook');
+}
+/* v1024:end hbtest */
 function renderHandbook(){
   ensureHbSeed();
+  try{ hbLoadTestResults(); }catch(e){}   /* v1024: 理解度チェックの結果（60秒に1回まで。変われば描き直す） */
   var chs=hbChaptersSorted();
   var me=curUserName||'';
   var reads=ls('handbook_reads',{})||{}; var mine=reads[me]||{};
@@ -71539,6 +71738,7 @@ function renderHandbook(){
       +'<div class="phase-tab'+(_hbTab==='admin'?' active':'')+'" onclick="hbSetTab(\'admin\')">進捗管理</div>'
       +'<div class="phase-tab'+(_hbTab==='log'?' active':'')+'" onclick="hbSetTab(\'log\')">更新ログ</div></div>';
   }
+  if(_hbView==='__test') return h + hbRenderTest(chs, mine);   /* v1024 */
   if(_hbView) return h + hbRenderReader(chs, mine);
   if(_hbTab==='admin' && canAdmin) return h + hbRenderAdmin(chs, reads);
   if(_hbTab==='log' && canAdmin) return h + hbRenderLog();
@@ -71553,6 +71753,7 @@ function renderHandbook(){
     +''+'<div style="margin-top:8px">'+progBar(pct,{h:10,color:allDone?'var(--green)':'var(--accent)'})+'</div>'+''
     +(staleN>0?'<div style="font-size:11px;color:var(--yellow);margin-top:6px"><i class="ti ti-alert-triangle"></i> 更新された章が'+staleN+'章あります。再度読んで読了チェックしてください。':'')
     +'</div>';
+  h+=hbTestCard(chs, mine);   /* v1024: 全章読了後の理解度チェック（未回答のあいだ残る） */
   chs.forEach(function(c){
     var st=hbStatus(c, mine[c.id]);
     var badge = st==='read' ? '<span style="font-size:10px;padding:2px 8px;border-radius:9px;border:1px solid var(--green);color:var(--green);font-weight:700">✓ 読了</span>'
@@ -71597,7 +71798,12 @@ function hbRenderAdmin(chs, reads){
   var h='<div class="card" style="padding:8px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
     +'<select onchange="hbSetStore(this.value)" style="padding:7px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--tm);font-size:12px"><option value="ALL">全店舗</option>'
     +stores.map(function(st){return '<option value="'+st.id+'"'+(_hbStore===st.id?' selected':'')+'>'+escapeHtml(st.name)+'</option>';}).join('')+'</select>'
-    +'<span style="font-size:11px;color:var(--muted)">対象 '+emps.length+'名</span></div>';
+    +'<span style="font-size:11px;color:var(--muted)">対象 '+emps.length+'名</span>'
+    +(['ceo','gm'].indexOf(curRole)>=0?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openHbTestCfg()"><i class="ti ti-settings"></i> フォーム設定</button>':'')+'</div>';
+  /* v1024: 理解度チェックの状態を人ごとに持つ（列・KPI・未回答一覧で使う） */
+  var _tc=hbTestCfg(), _tDone=0, _tPend=0, _tClaim=0, _tPending=[], _tScore=0, _tMax=0;
+  if(['ceo','gm'].indexOf(curRole)>=0 && !_tc.eName && !_tc.eStore && !_tc.eLang)
+    h+='<div class="alert alert-warning" style="font-size:11.5px"><i class="ti ti-alert-triangle"></i> 理解度チェックのフォームに entry ID が入っていません。名前・店舗・言語が自動入力されないので、「フォーム設定」で入れてください。</div>';
   var doneAll=0, incomplete=[];
   var rows=emps.map(function(e){
     var mine=reads[e.name]||{}; var readN=0, staleN=0;
@@ -71611,13 +71817,24 @@ function hbRenderAdmin(chs, reads){
     if(ok) doneAll++; else incomplete.push(e.name+'（'+(chs.length-readN)+'章）');
     var stn=(STORES.find(function(x){return x.id===e.store;})||{}).name||e.store||'';
     return '<tr><td style="text-align:left;white-space:nowrap"><b>'+escapeHtml(e.name)+'</b><br><span style="font-size:9px;color:var(--muted)">'+escapeHtml(stn)+'</span></td>'
-      +'<td style="text-align:center;font-weight:800;color:'+(ok?'var(--green)':'var(--tm)')+'">'+readN+'/'+chs.length+(staleN?'<br><span style="font-size:9px;color:var(--yellow)">要再確認'+staleN+'</span>':'')+'</td>'+cells+'</tr>';
+      +'<td style="text-align:center;font-weight:800;color:'+(ok?'var(--green)':'var(--tm)')+'">'+readN+'/'+chs.length+(staleN?'<br><span style="font-size:9px;color:var(--yellow)">要再確認'+staleN+'</span>':'')+'</td>'+cells
+      +'<td class="hb-test-td" style="text-align:center;white-space:nowrap">'+(function(){
+          var _ts=hbTestStatus(e.name, chs, mine);
+          if(_ts==='done'){ _tDone++; var _r=hbTestResultOf(e.name); if(_r && _r.score!=null && _r.max_score!=null){ _tScore+=Number(_r.score)||0; _tMax+=Number(_r.max_score)||0; } }
+          else if(_ts==='claimed'){ _tClaim++; }
+          else if(_ts==='pending'){ _tPend++; _tPending.push(e.name); }
+          return hbTestCell(e.name, chs, mine);
+        })()+'</td></tr>';
   }).join('');
   h+='<div class="kpi-grid" style="margin-bottom:8px">'+kpi('全章読了', doneAll+' / '+emps.length+'名', '', doneAll===emps.length&&emps.length>0?'var(--green)':'var(--accent)')
-    +kpi('未完了', String(emps.length-doneAll)+'名', '', emps.length-doneAll>0?'var(--yellow)':'var(--green)')+'</div>';
-  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:'+(220+chs.length*40)+'px;font-size:11px"><thead><tr><th style="text-align:left">スタッフ</th><th>進捗</th>'
-    +chs.map(function(c){return '<th title="'+escapeHtml(c.titleJa||'')+'">'+(c.order||'')+'</th>';}).join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div>'
-    +'<div style="font-size:10px;color:var(--muted);margin-top:6px">✓=読了　●=更新あり・要再確認　－=未読。列番号は章番号（タップ不可・タイトルは長押し/ホバー）。</div>';
+    +kpi('未完了', String(emps.length-doneAll)+'名', '', emps.length-doneAll>0?'var(--yellow)':'var(--green)')
+    +kpi('チェック回答済み', _tDone+' / '+emps.length+'名', '未回答 '+_tPend+'名'+(_tClaim?'・申告のみ '+_tClaim+'名':'')+(_tMax>0?'　平均 '+(Math.round(_tScore/_tDone*10)/10)+'/'+(Math.round(_tMax/_tDone*10)/10):''), _tDone===emps.length&&emps.length>0?'var(--green)':'var(--accent)')+'</div>';
+  h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:'+(340+chs.length*40)+'px;font-size:11px"><thead><tr><th style="text-align:left">スタッフ</th><th>進捗</th>'
+    +chs.map(function(c){return '<th title="'+escapeHtml(c.titleJa||'')+'">'+(c.order||'')+'</th>';}).join('')+'<th class="hb-test-th" style="white-space:nowrap">理解度チェック</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:6px">✓=読了　●=更新あり・要再確認　－=未読。列番号は章番号（タップ不可・タイトルは長押し/ホバー）。</div>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:2px">理解度チェック：<b>回答済み</b>＝フォームの結果が届いた（点数/満点・送信日時）　<b>送信申告</b>＝本人が送信を申告・結果の反映待ち　<b>未回答</b>＝全章読了・未送信　<b>読了待ち</b>＝章が残っている。自由記述など回答の中身は Google フォームの「回答」で見られます。</div>';
+  if(_tPending.length) h+='<div class="card" style="margin-top:8px"><div class="card-title"><i class="ti ti-clipboard-check" style="color:var(--yellow)"></i>理解度チェック 未回答（全章は読了済み）</div><div style="font-size:11.5px;line-height:1.9">'+_tPending.map(escapeHtml).join('、 ')+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">本人の Handbook 一覧の上に「未回答」のカードが出続けます。</div></div>';
   if(incomplete.length) h+='<div class="card" style="margin-top:8px"><div class="card-title"><i class="ti ti-alert-circle" style="color:var(--yellow)"></i>未完了者（残り章数）</div><div style="font-size:11.5px;line-height:1.9">'+incomplete.map(escapeHtml).join('、 ')+'</div></div>';
   return h;
 }
