@@ -1,5 +1,6 @@
 import {parseCompletionReply,completionReceipt,parseCaseReply,replyHelp,replyChoices,responseReceipt} from '../../../bot/case-replies.mjs';
 import { createClockDetector } from '../../../bot/clock-detector.mjs';
+import {cashTipFindings,formatCashTipReport,reportRoute,caseCategory} from '../../../bot/cash-tip-report.mjs';
 import {paymentIdentity,paymentVoidDetails} from '../../../bot/payment-details.mjs';
 const ROLES=['ceo','gm','office','office_crew'], APPROVERS=['ceo','gm','office'];
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -333,6 +334,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(n.group_id)+'&enabled=eq.true');
    const current=await db('bot_cases?id=eq.'+e.case_id+'&select=status,status_version,kind,business_date,subject,payload,store_id');
    if(!groups.length||(!groups[0].all_stores&&groups[0].store_id!==n.case.store_id)||!current.length||current[0].status!==n.case.status||current[0].status_version!==n.case.status_version){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'cancelled'}});continue;}
+   if(!await routeAllowed(current[0].kind,n.group_id)){await db('bot_events?id=eq.'+e.id,'PATCH',{data:{...n,state:'cancelled',reason:'report_route_changed'}});continue;}
    if(!n.line_message){
     // Legacy unknown sends may already have been delivered. Retry their original body.
     const legacy=n.state==='unknown';
@@ -349,20 +351,53 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     db('bot_groups?group_id=eq.'+encodeURIComponent(n.group_id)+'&enabled=eq.true')
    ]);
    if(!activeGroups.length||(!activeGroups[0].all_stores&&activeGroups[0].store_id!==n.case.store_id)||!latest.length||latest[0].status!==n.case.status||latest[0].status_version!==n.case.status_version){await db('bot_events?id=eq.'+e.id+'&data->>state=in.(pending,unknown)','PATCH',{data:{...n,state:'cancelled'}});continue;}
+   if(!await routeAllowed(current[0].kind,n.group_id))continue;
    let state='unknown';try{const response=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':n.request_id},body:JSON.stringify({to:n.group_id,messages:[n.line_message]})});state=response.ok||response.status===409&&!!response.headers.get('x-line-accepted-request-id')?'sent':response.status>=400&&response.status<500&&response.status!==429?'failed':'unknown';}catch{}
    await db('bot_events?id=eq.'+e.id+'&data->>state=in.(pending,unknown)','PATCH',{data:{...n,state}});if(state==='sent')sent++;
   }return {sent};
  }
- async function morningSummary(variant='daily'){
+ async function groupDirectory(){
+  if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
+  const groups=await db('bot_groups?select=group_id,label,enabled,all_stores');
+  const results=[];
+  for(const group of groups){
+   if(!/^C[a-f0-9]{32}$/i.test(group.group_id))continue;
+   try{const r=await timed('https://api.line.me/v2/bot/group/'+group.group_id+'/summary',{headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN')}});
+    const data=r.ok?await r.json():{};
+    results.push({...group,live_name:typeof data.groupName==='string'?data.groupName:null,line_status:r.status});
+   }catch{results.push({...group,live_name:null,line_status:null});}
+  }
+  return {groups:results};
+ }
+ async function routeAllowed(kind,group){
+  const category=caseCategory(kind);if(!category)return true;
+  const cfg=await setting('morning_summary');let route;
+  try{route=reportRoute(cfg,category);}catch{return false;}
+  return !route||cfg.enabled===true&&route.group_id===group;
+ }
+ async function cashTipReport(snapshot,cfg,variant){
+  if(cfg.cash_tip?.enabled!==true)return null;
+  const [stores,masters,states]=await Promise.all([
+   db('store_config?active=eq.true&select=store_id,name,active'),
+   db('stores?select=id,data'),
+   db('app_state?or='+encodeURIComponent('(key.like.cash_tips_*,key.eq.tip_hours_config,key.eq.store_closures)')+'&select=key,value')
+  ]);
+  const values=Object.fromEntries(states.map(s=>[s.key,s.value])),cash=Object.fromEntries(stores.map(s=>[s.store_id,values['cash_tips_'+s.store_id]||{}]));
+  const rows=cashTipFindings({from:snapshot.from,to:snapshot.to,stores:stores.map(s=>({...s,data:masters.find(m=>m.id===s.store_id)?.data})),cash,hours:values.tip_hours_config||{},closures:values.store_closures||{},config:cfg.cash_tip});
+  return formatCashTipReport(rows,{from:snapshot.from,to:snapshot.to,resend:variant!=='daily'});
+ }
+ async function morningSummary(variant='daily',preview=false,onlyCategory=null){
   if(!['daily','resend-details-v1','resend-report-v1','mention-preview-v1'].includes(variant))throw Error('invalid_summary_variant');
+  if(onlyCategory!==null&&!['labor','finance','cash_tip'].includes(onlyCategory))throw Error('invalid_report_category');
   const cfg=await setting('morning_summary');
   if(!cfg?.enabled)return {skipped:true,reason:'morning_summary_disabled'};
+  if(onlyCategory&&!cfg.routes)throw Error('report_route_not_configured');
   if(!/^C[a-f0-9]{32}$/i.test(cfg.group_id||'')||!cfg.label)throw Error('morning_summary_not_configured');
-  const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(cfg.group_id)+'&enabled=eq.true&select=group_id,label,all_stores');
-  if(groups.length!==1||groups[0].all_stores!==true||groups[0].label!==cfg.label)throw Error('group_not_enabled');
+  if(!cfg.routes){const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(cfg.group_id)+'&enabled=eq.true&select=group_id,label,all_stores');
+   if(groups.length!==1||groups[0].all_stores!==true||groups[0].label!==cfg.label)throw Error('group_not_enabled');}
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
   const snapshot=await rpc('bot_morning_snapshot',{});
-  const labor=(snapshot.details||[]).filter(c=>c.kind==='labor'&&!Object.hasOwn(c,'shifts')&&/^#[0-9]+$/.test(c.code));
+  const labor=(snapshot.details||[]).filter(c=>(!onlyCategory||onlyCategory==='labor')&&c.kind==='labor'&&!Object.hasOwn(c,'shifts')&&/^#[0-9]+$/.test(c.code));
   for(let i=0;i<labor.length;i+=50){
    const batch=labor.slice(i,i+50);
    try{
@@ -373,7 +408,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     }
    }catch{/* Missing detail is explicitly reported without suppressing the HQ report. */}
   }
-  const voids=(snapshot.details||[]).filter(c=>c.kind==='void'&&/^#[0-9]+$/.test(c.code)),lookup=paymentLookupCache();
+  const voids=(snapshot.details||[]).filter(c=>(!onlyCategory||onlyCategory==='finance')&&c.kind==='void'&&/^#[0-9]+$/.test(c.code)),lookup=paymentLookupCache();
   for(let i=0;i<voids.length;i+=50){
    const batch=voids.slice(i,i+50);
    try{
@@ -388,8 +423,28 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    }catch{/* Render unavailable fields instead of hiding the case or suppressing the report. */}
   }
   const formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatResponsibleMorningReports(snapshot,{resend:variant!=='daily'});
+  if(cfg.routes){
+   if(variant==='mention-preview-v1')throw Error('invalid_summary_variant');
+   const reports=formatted.reports.filter(r=>!onlyCategory||r.category===onlyCategory);
+   if(!onlyCategory||onlyCategory==='cash_tip'){
+    try{const cash=await cashTipReport(snapshot,cfg,variant);if(cash)reports.push(cash);}catch{reports.push({category:'cash_tip',error:'cash_tip_read_failed'});}
+   }
+   if(preview)return {day:snapshot.day,from:snapshot.from,to:snapshot.to,reports:reports.map(r=>{
+    try{return {...r,route:reportRoute(cfg,r.category)};}catch{return {...r,route:null,route_error:'report_route_not_configured'};}
+   })};
+   const results=[];
+   for(const report of reports){
+    try{if(report.error)throw Error(report.error);const route=reportRoute(cfg,report.category);results.push({category:report.category,...await deliverMorningReport(snapshot,report,route,variant,report.category)});}
+    catch(e){results.push({category:report.category,state:'failed',error:/^[a-z_]+$/.test(e.message)?e.message:'report_failed'});}
+   }
+   return {day:snapshot.day,reports:results};
+  }
+  if(preview)return {day:snapshot.day,reports:formatted.reports||[],route:cfg};
+  return deliverMorningReport(snapshot,formatted,cfg,variant);
+ }
+ async function deliverMorningReport(snapshot,formatted,cfg,variant,category=null){
   if(!formatted.messages.length)return {state:'skipped',reason:'no_findings',day:snapshot.day};
-  const reserved=await rpc('bot_reserve_morning_summary_v3',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant,p_snapshot_at:snapshot.snapshot_at||null});
+  const reserved=await rpc(category?'bot_reserve_morning_report':'bot_reserve_morning_summary_v3',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant,p_snapshot_at:snapshot.snapshot_at||null,...(category?{p_category:category}:{})});
   if(reserved.data?.state==='accepted')return {state:'accepted',already_sent:true,day:snapshot.day};
   if(reserved.data?.state==='failed')return {state:'failed',review_required:true,day:snapshot.day};
   const batches=reserved.data?.batches;
@@ -406,6 +461,11 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const batch=batches[i],messages=batch.messages,request=batch.request_id;
    if(batch.state==='accepted')continue;
    if(!UUID.test(request||'')||!Array.isArray(messages)||messages.length<1||messages.length>5||messages.some(message=>message?.type!=='text'||typeof message.text!=='string'||message.text.length<1||message.text.length>4900))throw Error('morning_summary_invalid_reservation');
+   // Also check legacy workers: routing may be enabled while they reserve/enrich.
+   // Never replay their combined immutable bundle to the previous audience.
+   const latest=await setting('morning_summary'),route=category?reportRoute(latest,category):latest;
+   const groups=await db('bot_groups?group_id=eq.'+encodeURIComponent(cfg.group_id)+'&enabled=eq.true&select=group_id,label,all_stores');
+   if(latest?.enabled!==true||!route||!category&&latest.routes||route.group_id!==cfg.group_id||route.label!==cfg.label||category==='cash_tip'&&latest.cash_tip?.enabled!==true||groups.length!==1||groups[0].all_stores!==true||groups[0].label!==cfg.label)return {state:'skipped',reason:'report_route_changed',day:snapshot.day};
    let state='unknown',status=null,lineRequest=null;
    try{
     const r=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':request},body:JSON.stringify({to:cfg.group_id,messages})});
@@ -473,6 +533,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   const store=await getStore(c.store_id);
   const header='['+c.code+']\n店舗 / Store: '+store.name+' ('+c.store_id+')\n担当 / Assigned to: '+(c.assignee||'店舗マネージャー / Store manager')+'\n';
   const full=previous.length ? previous[0].body : header+message;
+  if(!await routeAllowed(c.kind,body.group_id))throw Error('group_not_enabled');
   const group=await db('bot_groups?group_id=eq.'+encodeURIComponent(body.group_id)+'&enabled=eq.true');if(group.length!==1||(!group[0].all_stores&&group[0].store_id!==c.store_id))throw Error('group_not_enabled');
   let lineMessage=previous.length?(previous[0].line_message||{type:'text',text:full}):lineMentionMessage(full,null);
   if(!previous.length&&body.mention_user){
@@ -483,6 +544,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   if(!previous.length&&['labor','void','unpaid'].includes(c.kind))lineMessage={...lineMessage,quickReply:replyChoices(c.code)};
   const o=await rpc(body.daily_date?'bot_reserve_daily_send':'bot_reserve_send_v2',{p_actor:actor.id,p_id:c.id,p_version:body.version,p_request:body.request_id,p_group:body.group_id,p_body:full,p_message:lineMessage,...(body.daily_date?{p_day:body.daily_date}:{})});
   if(o.state==='sent')return {state:'sent',request_id:o.id};
+  if(!await routeAllowed(c.kind,o.group_id))throw Error('group_not_enabled');
   let state='unknown';
   try{
    const r=await timed('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+env('LINE_CHANNEL_ACCESS_TOKEN'),'Content-Type':'application/json','X-Line-Retry-Key':o.id},body:JSON.stringify({to:o.group_id,messages:[o.line_message||{type:'text',text:o.body}]})});
@@ -538,7 +600,14 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const body=JSON.parse(new TextDecoder().decode(bytes));
    if(body.action==='worker'){
    const cfg=await setting('worker');if(!cfg?.key||req.headers.get('x-bot-worker-key')!==cfg.key)throw Error('unauthorized');
+   if(body.mode==='group_directory')return json(await groupDirectory());
+   if(body.mode==='morning_preview')return json(await morningSummary(body.variant||'daily',true));
    if(!cfg.enabled||!(await setting('clock')))return json({skipped:true});
+   if(body.mode==='morning_summary'&&Object.hasOwn(body,'category')){
+    if(!['labor','finance','cash_tip'].includes(body.category))throw Error('invalid_report_category');
+    // A requested category-only send must not flush unrelated lifecycle notices.
+    return json(await morningSummary(body.variant||'daily',false,body.category));
+   }
     await flushCaseNotices();
     if(body.mode==='morning_summary')return json(await morningSummary(body.variant||'daily'));
     if(body.mode!=='monitor'&&(await setting('collection_range'))?.mode==='month_to_yesterday')return json(await rangeRun(String(body.store_id)));

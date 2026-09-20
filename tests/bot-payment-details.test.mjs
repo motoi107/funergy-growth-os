@@ -63,6 +63,7 @@ function lifecycleHarness({legacy=false,toastFail=false,race=false,mismatch=fals
  const h=createHandler({env,fetch:async(url,init)=>{
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker'}}]);
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
+  if(url.includes('key=eq.morning_summary'))return Response.json([]);
   if(url.includes('kind=eq.lifecycle_notice'))return Response.json(['pending','unknown'].includes(data.state)?[{id:1,case_id:current.id,created_at:new Date().toISOString(),data:structuredClone(data)}]:[]);
   if(url.includes('/bot_groups?'))return Response.json(groupEnabled?[{all_stores:true}]:[]);
   if(url.includes('/bot_cases?id='))return Response.json([current]);
