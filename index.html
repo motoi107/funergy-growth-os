@@ -10450,7 +10450,7 @@ var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 /* v956: initiatives（施策の定義）を追加。合流ルールは OP_MERGE に登録済み。
    ★コメントは配列の外に置く。verify_v919 がこの配列を JSON.parse しており、
      行内コメントを入れると JSON として壊れて落ちる。 */
-var OP_SYNC_KEYS = ['initiatives','handbook_tests',
+var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'lala_tasks','office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
@@ -11409,6 +11409,8 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   handbook_log:   { merge: mergeAppendLog, covers: _coversLog },
   /* v1024: 理解度チェックの端末側の記録。名前ごとに独立しているので名前単位で合流する（handbook_reads と違い、2台が同時に書いても消し合わない）。 */
   handbook_tests: { merge: mergeMapByTime, covers: _coversMapByTime },
+  /* v1025: OJTの受講記録。人ごとに独立しているので名前単位で合流する。 */
+  ojt_enroll:     { merge: mergeMapByTime, covers: _coversMapByTime },
   /* v753: リスト型3画面。性質が違うので別々のルールを当てる。
      残業申請は追加のみ（更新・削除なし）なので足し算でよい。
      育成推薦・備品カタログは id ごとに新しい更新が勝つ（削除は最優先）。 */
@@ -15751,7 +15753,7 @@ case 'acct_center':
     case 'growth_mgr':   el.innerHTML = renderGrowthManager(); break;
     case 'ojt_admin':    el.innerHTML = renderOjtAdmin(); break;
     case 'approval':     workTab='approval'; el.innerHTML = renderWorkCenter(); break;
-    case 'mypage':       el.innerHTML = renderFavCard() + renderMypage(); break;
+    case 'mypage':       el.innerHTML = _myOjtOpen ? myOjtCard() : (renderFavCard() + myOjtCard() + renderMypage()); break;   /* v1025: OJTを開いている間はOJT画面だけ */
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
     case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
@@ -37046,7 +37048,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1024';
+const APP_VERSION = '1025';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -53148,149 +53150,226 @@ var OJT_G3_SERVER_TESTS = {
   ]
 };
 
+/* v1025: G3 Kitchen Leader OJT。Motoさんの7項目＋Funergyらしさ（決定 9/19）。
+   ・id は kk1〜kk8（古い k1〜k7 の進捗を誤って引き継がないため）
+   ・テストは 選択式10問（choices/a/why つき・アプリで自動採点）＋ 面談用の記述2問（q/guide）
+   ・合格ラインは OJT_QUIZ_PASS（90%）。選択式に合格してから面談へ進む */
+function _ojq(q, choices, a, why){ return {q:q, choices:choices, a:a, why:why}; }
 var OJT_G3_KITCHEN = {
   key:'ojt_g3_kitchen', gradeLabel:'G2 → G3', title:'Kitchen Leader OJT',
   modules:[
-    {id:'k1',no:1,axis:'C',title:'衛生管理（DOH基準の徹底）',
-      mindset:'G2「ルールを守る」→ G3「店の衛生基準を維持・指導し、DOH基準を満たし続ける責任を持つ」。',
+    {id:'kk1',no:1,axis:'C',title:'クオリティ管理（提供基準とポーション）',
+      mindset:'G2「決められたとおりに作る」→ G3「店の基準を決めて守らせ、ばらつきを数字で見る」。',
+      human:'同じ一皿でも、受け取るお客様にとっては一度きりの食事。',
+      goal:'提供基準を全員に守らせ、味・見た目・量・温度のばらつきを無くせる',
+      knowledge:[
+        '提供基準（味・見た目・量・温度）をどう決め、どう共有するか',
+        'ポーションのばらつきが原価率とお客様の信頼に与える影響',
+        'スケールと盛り付け写真の使い方（高原価食材ほど厳密に）',
+        'ばらつきを数字で見る方法（作り直し数・クレーム件数・原価率の推移）'
+      ],
+      checks:['提供基準（写真つき）を1ポジション分つくって掲示した','ピーク時に自分で最終確認を行い、基準外を止めた','主要3品のポーションを実測し、ばらつきを記録した'],
+      hasTest:true,reflect:{axisFloor:3}},
+    {id:'kk2',no:2,axis:'C',title:'キッチンクルー（G1・G2）の教育',
+      mindset:'G2「自分ができる」→ G3「人ができるようにする。できるまで付き合う」。',
+      human:'教わった人は、いつか誰かに教える。育てることが店を続けさせる。',
+      goal:'G1・G2を計画的に育て、スキルレベルの承認まで責任を持てる',
+      knowledge:[
+        '教える順番（やってみせる → 説明 → やらせる → その場でフィードバック）',
+        '最初に教えるのは衛生と安全。次に手順、最後にスピード',
+        '人ではなく行動を指摘する伝え方と、その場で短く伝える理由',
+        'スキルレベルの承認基準（一人で安定してできる）とアプリへの記録'
+      ],
+      checks:['担当を決めてG1を1人、ポジション1つ分育てた','スキルレベルの承認をアプリで1件行った','教えた内容と次の課題を成長カルテに記録した'],
+      hasTest:true,reflect:{axisFloor:3}},
+    {id:'kk3',no:3,axis:'C',title:'原価の把握（計算・報告・適正価格の設定）',
+      mindset:'G2「決められた原価を守る」→ G3「自分で計算し、数字で報告し、売価まで提案する」。',
+      human:'原価は「おいしい」と会社が続くことを両立させるための道具。',
+      goal:'主要メニューの原価・原価率を自分で出し、適正売価を根拠つきで提案できる',
+      knowledge:[
+        '原価率＝原価 ÷ 売価。歩留まりとロスを原価に入れる考え方',
+        '原価率が上がったときに見る順番（仕入単価 → 使用量 → ロス）',
+        '適正売価の決め方（原価・相場・値ごろ感の3つで決める）',
+        '棚卸との関係（期首＋仕入−期末＝実際の使用高）と月次の報告'
+      ],
+      checks:['アプリのレシピ原価で主要3品の原価率を出した','原価が動いた月の理由を数字で店長に報告した','1品について適正売価を根拠つきで提案した'],
+      hasTest:true,reflect:{axisFloor:3}},
+    {id:'kk4',no:4,axis:'C',title:'メニュー提案の流れ',
+      mindset:'G2「言われたメニューを作る」→ G3「売れる・回る・利益が出るメニューを提案する」。',
+      human:'一皿の提案が、店の景色とお客様の会話を変える。',
+      goal:'企画から提供開始まで、順番どおりに提案を通せる',
+      knowledge:[
+        '最初に確認するのは仕入れの安定と原価（作りたい気持ちはその次）',
+        'ピーク時に出せるか（仕込み量・提供時間・ポジション負荷）の確認',
+        '試食 → 原価と売価を添えて申請 → 承認 → レシピ登録 → クルー教育 → 告知',
+        '提供後の評価（出数・原価率・クルーの負荷）と見直しの順番'
+      ],
+      checks:['新メニューを1件、企画から承認まで進めた','ピーク時のオペレーション確認を行い、結果を記録した','提供開始後に出数と原価率をふり返り、店長に報告した'],
+      hasTest:true,reflect:{axisFloor:3}},
+    {id:'kk5',no:5,axis:'C',title:'レシピ作成と管理',
+      mindset:'G2「レシピを見て作る」→ G3「誰が作っても同じになるレシピを書き、最新に保つ」。',
+      human:'レシピは、いない日の自分の代わりに立つ人への手紙。',
+      goal:'分量・手順・盛り付けを誰でも再現できる形で書き、更新を管理できる',
+      knowledge:[
+        '分量は「適量」ではなくグラムで書く。味見の基準も書く',
+        '写真で盛り付けの基準を固定する（言葉だけでは揃わない）',
+        'アプリのレシピ機能（原価計算と共有）と、変更時のバージョン管理',
+        '廃番は消さずに停止（履歴を残す）。他店展開は食材と設備を確認してから'
+      ],
+      checks:['新しいレシピを1品、アプリに登録した','既存レシピを1品、最新の作り方に更新して共有した','自分以外のクルーに作らせて、同じ仕上がりになるか確認した'],
+      hasTest:true,reflect:{axisFloor:3}},
+    {id:'kk6',no:6,axis:'C',title:'衛生管理（DOH基準の徹底）',
+      mindset:'G2「ルールを守る」→ G3「店の衛生基準を維持・指導し、DOH基準を満たし続ける」。',
       human:'「お客様の安全を守る」という責任感は、人の自覚から生まれる。',
-      goal:'衛生・温度・保管基準を高いレベルで維持し、キッチン全体に徹底できる',
+      goal:'衛生・温度・保管の基準を高いレベルで維持し、キッチン全体に徹底できる',
       knowledge:[
-        'DOH/HACCPの基準と、危険温度帯（食中毒のメカニズム）',
-        '交差汚染の防止・手洗い・保管・ラベル表示のルール',
-        '清掃・消毒のスケジュール管理',
-        '衛生違反のリスク（食中毒・営業停止・罰則・信用失墜）'
+        '危険温度帯（41〜135°F）と食中毒のメカニズム、再加熱は165°F以上',
+        '交差汚染の防止（まな板・包丁の使い分け、冷蔵庫は生肉を下に）',
+        'ラベル表示と先入れ先出し、温度記録の付け方と異常時の報告',
+        'DOH検査で見られるところ（温度記録・保管・手洗い設備）'
       ],
-      checks:[
-        'DOH基準を満たし続け、抜き打ち検査でも指摘ゼロを保てる',
-        '温度・保管を毎回記録し、基準を外さない',
-        '交差汚染を起こさない仕組みを徹底できる',
-        'スタッフの衛生違反に気づき、その場で是正・指導できる'
-      ],
-      hasTest:true,reflect:{skill:'kitchen',axisFloor:3}},
-    {id:'k2',no:2,axis:'C',title:'在庫管理とロス削減',
-      mindset:'G2「在庫を数える」→ G3「適正在庫を設計し、欠品・廃棄・滞留を防いでキャッシュを守る」。',
-      human:'「もったいない」を惜しむ感覚と、現場を思う工夫は人ならでは。',
-      goal:'適正在庫を設計・運用し、欠品と廃棄・滞留ロスを継続的に減らせる',
-      knowledge:[
-        '棚卸の正確な方法と、適正在庫水準の設計',
-        '先入れ先出し（FIFO）・ロット管理',
-        '廃棄ロスの種類・原因と、その削減方法'
-      ],
-      checks:[
-        '棚卸を正確に行い、ズレを出さない',
-        '品目ごとに適正在庫を設定・運用できる',
-        'FIFO・ロット管理を徹底できる',
-        '廃棄ロス・滞留在庫を分析し、継続的に減らせる'
-      ],
-      hasTest:false,reflect:{axisFloor:3}},
-    {id:'k3',no:3,axis:'C',title:'品質管理とクオリティへのプライド',
-      mindset:'G2「決まり通り作る」→ G3「品質基準を定義・徹底し、"このクオリティが当たり前"という文化とプライドを作る」。',
-      human:'「これでいいのか」と妥協しない誇りは、人の心からしか生まれない。',
-      goal:'品質基準を徹底し、基準外を絶対に出さない文化とプライドをチームに根付かせる',
-      knowledge:[
-        '商品ごとの品質基準（味・盛り付け・温度・提供時間）',
-        '品質がばらつく要因と、官能評価のポイント',
-        '基準を守る文化・プライドの作り方'
-      ],
-      checks:[
-        '基準を満たさない商品を絶対に出さない判断ができる',
-        '品質のばらつきを見つけ、原因を是正できる',
-        '全スタッフに品質基準を徹底させられる',
-        'クオリティの重要性とプライドを言動で示せる'
-      ],
+      checks:['1週間、温度記録を確認し、異常があれば是正した','交差汚染につながる作業を見つけて直させた','衛生の指導を1回、クルー全員に行った'],
       hasTest:true,reflect:{axisFloor:3}},
-    {id:'k4',no:4,axis:'C',title:'ポーション管理（オーバーポーション対策）',
-      mindset:'G2「レシピ通り作る」→ G3「ポーションを数値で管理し、オーバーポーションの原因を特定して対策・指導できる」。',
-      human:'数字を守りつつ「お客様の満足」も考える、そのバランスは人の判断。',
-      goal:'標準ポーションを徹底し、オーバーポーションの原因を特定・対策・指導できる',
+    {id:'kk7',no:7,axis:'C',title:'棚卸の正確な実行',
+      mindset:'G2「言われた棚卸を手伝う」→ G3「正確さに責任を持ち、差異の理由まで説明する」。',
+      human:'数えた数字が、来月の判断と仲間の評価をつくる。',
+      goal:'棚卸を正確に実行し、差異の原因を突き止めて次に活かせる',
       knowledge:[
-        '標準ポーションとレシピ遵守がなぜ重要か（原価・味・提供の一貫性）',
-        'オーバーポーションが起きる原因：計量しない／目分量／急ぎ／教育不足／疲労・慣れ／器具の不統一／「多い方が喜ばれる」誤解／在庫が多いと多く盛る心理',
-        'オーバーポーションが原価率・利益に与える影響（数％でも積み重なると大きい）',
-        '対策：計量器具の標準化／盛付見本／定期チェック／フィードバックと教育'
+        '棚卸の目的（実際の使用高と原価を正しく出す）と、毎回同じ条件で行う理由',
+        '数え方の基本（単位を決める・開封済みは重さで測る・2人で確認）',
+        '数え漏れが起きやすい場所（冷凍庫の奥・予備在庫・バックヤード）',
+        '差異が出たときの見方（数え直し → 仕入と廃棄の記録 → 単価の入力ミス）'
       ],
-      checks:[
-        '標準ポーションを計量・目視で正確に守れる',
-        '現場でオーバーポーションの原因を特定できる',
-        '計量器具・盛付見本を整備し、盛り付けを標準化できる',
-        'スタッフの盛り付けを定期チェックし、是正・指導できる',
-        'ポーション起因の原価ロスを削減できる'
-      ],
+      checks:['月末の棚卸をアプリの棚卸表で1回、自分で仕切った','差異の大きい品目を調べ、原因を書き出した','棚卸の結果から発注量を見直した'],
       hasTest:true,reflect:{axisFloor:3}},
-    {id:'k5',no:5,axis:'C',title:'原価・原価率・売価の基礎',
-      mindset:'G2「原価を意識する」→ G3「原価の構造を理解し、品質を保ちながら原価率を改善し、売価の妥当性まで考えられる」。',
-      human:'数字の先に「店とお客様」を見られるのが、人の経営感覚。',
-      goal:'原価の考え方を理解し、品質を保ちつつ原価率を改善し、売価設定の基礎を考えられる',
+    {id:'kk8',no:8,axis:'H',title:'Funergyらしさ（裏方の誇りと楽しむ心）',
+      mindset:'G2「自分の持ち場を守る」→ G3「店の空気をつくり、キッチンから体験を支える」。',
+      human:'見えない準備がお客様の体験をつくる。裏方にしか作れない誇りがある。',
+      goal:'Funergyが大切にする体験をキッチンから支え、チームの空気をつくれる',
       knowledge:[
-        '「原価とは何か」（材料費・歩留まり・ロス）と原価率の計算',
-        '原価率を改善する手法（歩留まり改善・ロス削減・仕入れ見直し・ポーション管理）',
-        '売価設定の基礎（原価率・提供価値・競合）とFLコストの概念'
+        'Funergyが大切にすること（日本にいるような体験）とキッチンの役割',
+        'ホールとの連携（提供順とタイミングの共有、忙しい時ほど声を掛け合う）',
+        'ミスが起きたときは人を責めず、仕組みを直す',
+        '改善は小さく試して結果を共有する。数字と自分の仕事のつながり'
       ],
-      checks:[
-        '「原価とは何か」を自分の言葉で説明し、計算できる',
-        '商品ごとの原価・原価率を把握できる',
-        '品質を落とさずに原価率を改善する施策を実行できる',
-        '原価と価値から売価の妥当性を考えられる'
-      ],
-      hasTest:true,reflect:{axisFloor:3}},
-    {id:'k6',no:6,axis:'C',title:'アルバイトの育成',
-      mindset:'G2「自分ができる」→ G3「アルバイトを戦力に育て、キッチンの品質と生産性を人で支える」。',
-      human:'人を育てるのは、愛情と忍耐。そして相手を信じる気持ちがいる。',
-      goal:'アルバイトを計画的に育て、品質・衛生・ポーションを正しく教え、戦力化・定着させられる',
-      knowledge:[
-        '育成計画の立て方（今できること／次の目標／期限）',
-        '教え方の型（説明→手本→やらせる→フィードバック）と言語化のコツ',
-        '新人がつまずきやすいポイントと、モチベーション・定着（離職防止）の工夫',
-        '衛生・品質・ポーションを正しく教える順番'
-      ],
-      checks:[
-        '新人ごとの育成計画を立てられる',
-        '手順を言語化し、手本→実践→FBで教えられる',
-        'つまずきを見つけてフォローできる',
-        '衛生・品質・ポーションを正しく教え、徹底させられる',
-        '育成進捗を管理し、戦力化・定着につなげられる'
-      ],
-      hasTest:true,reflect:{axisFloor:3}},
-    {id:'k7',no:7,axis:'H',title:'Funergyらしさ（裏方の誇りと楽しむ心）',
-      mindset:'G2「黙々と作る」→ G3「裏方こそFunergyのEnergyの源。品質と楽しさで店を支え、チームに誇りと活気を生む」。表に出なくても、店の心臓はキッチンにある。',
-      human:'お客様に直接会えない裏方でも、一皿に込めた心はお客様に届く。その想いは機械では作れない。',
-      goal:'キッチンからFunergyらしさ（品質への誇り・楽しむ姿勢・チームの活気）を生み出せる',
-      knowledge:[
-        'Funergyのクレド/バリューと、キッチンが担う役割',
-        '「品質＝お客様へのおもてなし」という考え方',
-        '忙しくてもチームを前向きにする声かけ・雰囲気づくり',
-        '裏方の誇り（見えない所こそ手を抜かない）'
-      ],
-      checks:[
-        '品質を"おもてなし"として語り、こだわれる',
-        '忙しい時もキッチンの雰囲気を前向きに保てる',
-        'チームに裏方の誇りと楽しむ姿勢を伝えられる',
-        'Funergyのクレド/バリューを日々の判断・行動で示せる'
-      ],
+      checks:['ホールと提供順の決めごとをつくって運用した','キッチンの改善を1つ提案し、結果を共有した','新しく入った人が早く馴染むための工夫を実行した'],
       hasTest:true,reflect:{axisFloor:3}}
   ]
 };
 var OJT_G3_KITCHEN_TESTS = {
-  k1:[
-    {q:'衛生管理を怠ると店にどんなリスクがありますか？特に重要な管理点（温度・交差汚染等）を挙げて説明してください。',guide:'食中毒・営業停止・信用失墜のリスクと、危険温度帯/手洗い/交差汚染防止などの管理点'}
+  kk1:[
+    _ojq('提供基準（味・見た目・量・温度）を最終的に決め、守らせる責任は誰にありますか。',['本人の感覚に任せる','キッチンリーダー（G3）','その日いちばん早く入ったクルー','ホールスタッフ'],1,'基準を決めて守らせるのがG3の役割。'),
+    _ojq('ポーションがばらつくと、まず何が起きますか。',['何も起きない','原価率がブレて、お客様に不公平が生まれる','仕入れが安くなる','提供が速くなる'],1,'量のブレは原価と信頼の両方に効く。'),
+    _ojq('スケール（はかり）を必ず使うべきなのはどれですか。',['調味料の下味','高原価の食材（ネタ・肉）の盛り付け','洗い物の分担','ドリンクの氷'],1,'原価の大きい食材ほど、目分量の差が金額に出る。'),
+    _ojq('提供直前に料理が冷めてしまったとき、正しい対応は。',['そのまま出す','温め直して出す（温度基準を満たせば）','量を増やして出す','お客様に謝ってそのまま出す'],1,'基準を満たせない料理は出さない。満たすなら出す。'),
+    _ojq('盛り付けを全員で揃えるのに、いちばん効くのはどれですか。',['口頭で毎回伝える','基準の写真を貼る','ベテランだけが盛る','盛り付けを自由にする'],1,'言葉だけでは揃わない。写真が基準になる。'),
+    _ojq('忙しい時間帯に品質が落ちます。最初に見直すのはどれですか。',['お客様の入店数を制限する','仕込み量とポジション配置','メニューの値上げ','提供基準をゆるめる'],1,'基準を下げるのではなく、準備と人の配置を直す。'),
+    _ojq('新人が作った料理について、正しいのはどれですか。',['最初の数回はリーダーが必ず確認してフィードバックする','本人に任せて様子を見る','クレームが出たら指導する','ホールに判断してもらう'],0,'最初に基準を体に入れるのがいちばん早い。'),
+    _ojq('同じ料理でクレームが続きました。まずやることは。',['担当を外す','現物と作業を確認して原因を特定し、再発防止をルール化する','メニューから外す','値段を下げる'],1,'人を替える前に、原因と仕組みを直す。'),
+    _ojq('基準を外れた料理が出来てしまいました。どうしますか。',['忙しいので出す','作り直す','量を減らして出す','ホールに謝ってもらう'],1,'一度の機会損失より、信頼のほうが高くつく。'),
+    _ojq('品質のばらつきを「数字」で見るには、どれを追いますか。',['売上だけ','作り直しの数・クレーム件数・原価率の推移','出勤人数','勤務時間'],1,'感覚ではなく、続けて追える数字で見る。'),
+    {q:'あなたの店で、クオリティが落ちやすいのはどの時間帯・どのメニューですか。理由と、あなたが取る対策を説明してください。', guide:'具体的な場面が挙がっているか。原因（人・仕込み・配置）と対策がつながっているか'},
+    {q:'ポーションを守らせるために、クルーにどう説明しますか。原価と体験の両方に触れて説明してください。', guide:'「決まりだから」で終わらず、数字とお客様の体験の両方で語れているか'}
   ],
-  k3:[
-    {q:'なぜ品質にこだわる必要がありますか？基準を満たさない商品が出そうな時、どう判断・行動しますか？',guide:'リピート/信用/ブランド価値の理解と、「出さない」判断・是正・指導ができるか'}
+  kk2:[
+    _ojq('人に教えるときの基本の順番はどれですか。',['説明 → 質問 → 任せる','やってみせる → 説明 → やらせる → フィードバック','マニュアルを渡す → 任せる','見て覚えさせる'],1,'見せて、やらせて、その場で直す。'),
+    _ojq('入ったばかりのG1に、最初に教えるべきなのは。',['スピード','衛生と安全（手洗い・包丁・火）','売上の数字','盛り付けの美しさ'],1,'速さは後。安全と衛生が先。'),
+    _ojq('できていないことを伝えるとき、正しいのはどれですか。',['人柄を指摘する','行動を具体的に指摘する','みんなの前で強く叱る','後日まとめて伝える'],1,'人ではなく行動。具体的に、その場で。'),
+    _ojq('スキルレベルを「承認」する基準はどれですか。',['1回できた','一人で安定してできる','やる気がある','長く働いている'],1,'安定してできて初めて承認。'),
+    _ojq('教えたのに定着しません。次にやることは。',['もう一度同じ説明をする','手順を分解し、チェックリストにして反復させる','本人のやる気の問題として様子を見る','担当を外す'],1,'定着しないのは、たいてい教え方の分解が足りない。'),
+    _ojq('ピーク中に新人が固まってしまいました。どうしますか。',['その場で全部説明する','今やることを一つだけ指示し、あとで振り返る','他の人に代わってもらい放置する','終わってから叱る'],1,'その場は一つだけ。振り返りは後で。'),
+    _ojq('誰が誰を教えるか、正しい決め方は。',['手が空いた人がその都度','ポジションごとに担当を決めて記録する','ベテラン1人に全部任せる','本人に選ばせる'],1,'担当と記録がないと、教育は抜ける。'),
+    _ojq('G2に任せるべき役割はどれですか。',['日々のOJTと手順の指導','最終的な承認','売価の決定','シフトの最終決定'],0,'日々の指導はG2、承認と育成の責任はG3。'),
+    _ojq('良い評価・悪い評価を伝えるタイミングとして正しいのは。',['その場で短く伝え、面談でまとめて話す','年に1回の面談だけ','気づいたときに全部まとめて','本人が聞いてきたときだけ'],0,'その場の一言と、面談の整理は役割が違う。'),
+    _ojq('教育の記録はどこに残しますか。',['自分のメモ帳','アプリ（スキルレベルの承認と成長カルテ）','特に残さない','ホールの掲示板'],1,'記録が残らないと、次の人が同じ苦労をする。'),
+    {q:'あなたが今いちばん育てたいクルーを1人思い浮かべてください。その人の課題と、8週間でどう育てるか計画を説明してください。', guide:'課題が具体的か。順番（衛生→手順→速さ）と確認方法が入っているか'},
+    {q:'教えても伸びないクルーがいます。あなたはどう向き合いますか。', guide:'本人のせいにせず、教え方・環境・目標の分解に目が向いているか'}
   ],
-  k4:[
-    {q:'オーバーポーションはなぜ起きると思いますか？原因をできるだけ挙げ、それぞれの対策を書いてください。',guide:'計量しない/目分量/急ぎ/教育不足/器具不統一/心理などの原因と、計量標準化/見本/定期チェック/教育の対策'},
-    {q:'オーバーポーションは原価率にどう影響しますか？',guide:'1食あたり数％でも積み重なると利益を大きく削る、という理解'}
+  kk3:[
+    _ojq('原価率の計算式はどれですか。',['売価 ÷ 原価','原価 ÷ 売価','（売価−原価）÷ 原価','原価 ÷ 客数'],1,'原価率＝原価÷売価。'),
+    _ojq('レシピ原価に入れるべきものはどれですか。',['主材料だけ','使用する食材すべて（歩留まりを考えたうえで）','仕入額の合計','人件費'],1,'調味料も端材のロスも一皿の原価。'),
+    _ojq('原価率が上がりました。最初に見る順番はどれですか。',['売価 → 客数 → 人件費','仕入単価 → 使用量（ポーション）→ ロス','広告 → 立地 → 天気','仕入先 → 支払日 → 税金'],1,'値段・使う量・捨てた量の順に見る。'),
+    _ojq('歩留まりとは何ですか。',['仕入れた量のうち、実際に使える量の割合','売れ残りの割合','値引きした割合','廃棄の金額'],0,'使える量の割合。原価はここで変わる。'),
+    _ojq('新メニューの原価率が目標を超えました。最初に検討するのは。',['売価を上げる','分量・食材・歩留まりを見直す','メニューをやめる','盛り付けを小さく見せる'],1,'売価変更はその後。相場と値ごろ感も見て判断する。'),
+    _ojq('適正売価を決めるときに見る3つはどれですか。',['原価・相場・値ごろ感','原価・人件費・家賃','原価・気分・在庫','売上・客数・回転'],0,'原価だけでも相場だけでも決まらない。'),
+    _ojq('原価の報告について、正しいのはどれですか。',['聞かれたときだけ答える','月次で数字と理由をセットで店長に報告する','年に一度まとめる','ホールに共有する'],1,'数字だけでも理由だけでも判断できない。'),
+    _ojq('まかないと廃棄の記録について正しいのは。',['まとめて廃棄として記録する','分けて記録する','記録しない','売上から引く'],1,'分けないと、ロスの原因が見えなくなる。'),
+    _ojq('実際の使用高を出す式はどれですか。',['期首在庫 ＋ 仕入 − 期末在庫','仕入 − 売上','期末在庫 − 期首在庫','仕入 ÷ 売上'],0,'棚卸が正確でないと原価も正確にならない。'),
+    _ojq('原価が下がったのに味が落ちた、と言われました。正しい見方は。',['原価が下がったので問題ない','分量や食材の質が落ちていないか確認する','売価を下げる','気のせいとして扱う'],1,'原価の改善は、品質を守ったうえで初めて成果。'),
+    {q:'あなたの店で原価率がいちばん高いメニューを1つ挙げ、原価率・理由・改善案を数字で説明してください。', guide:'実際の数字が出ているか。分量・歩留まり・仕入のどれに手を打つかが具体的か'},
+    {q:'仕入価格が上がり、目標原価率を超えました。店長にどう報告し、何を提案しますか。', guide:'事実（数字）→原因→選択肢（分量・食材・売価）→推奨、の順に話せているか'}
   ],
-  k5:[
-    {q:'「原価」とは何か、あなたの言葉で説明してください。原価率を改善する具体策も挙げてください。',guide:'材料費・歩留まりの理解と、ロス削減/歩留まり改善/仕入れ見直し/ポーション管理など品質を落とさない策'},
-    {q:'商品の売価は、どんな要素を踏まえて決めるべきだと思いますか？',guide:'原価率・提供価値・競合/相場・客満足のバランス'}
+  kk4:[
+    _ojq('新メニューを考えるとき、最初に確認すべきものはどれですか。',['仕入れが安定して入るか・原価はいくらか','自分が作りたい料理かどうか','盛り付けが映えるかどうか','他店が出していないかどうか'],0,'続けて出せないメニューは、提案として成立しない。'),
+    _ojq('試作の前に決めておくことはどれですか。',['ターゲットと価格帯','皿の色','告知の文章','提供する曜日'],0,'誰に、いくらで出すかが決まって初めて試作が意味を持つ。'),
+    _ojq('オペレーションの確認で必ず見るのはどれですか。',['ピーク時に出せるか（仕込み量・提供時間・負荷）','写真映えするか','SNSで流行っているか','原価が最安か'],0,'回らないメニューは、必ず品質を落とす。'),
+    _ojq('提案を通す順番として正しいのはどれですか。',['告知 → 試作 → 承認','試食 → 原価と売価を添えて申請 → 承認 → レシピ登録 → 教育 → 告知','レシピ登録 → 提供 → 承認','承認 → 仕入先を探す → 試作'],1,'決めてから作るのではなく、確かめてから決める。'),
+    _ojq('提供開始の前に必ず用意するものはどれですか。',['レシピ登録・クルー教育・告知（POP）','値引きクーポン','新しい皿','SNS投稿だけ'],0,'作れて、伝えられて、初めて提供できる。'),
+    _ojq('提供後の評価で見る数字はどれですか。',['出数と原価率、クルーの負荷','来店数だけ','SNSのいいね数','仕入額だけ'],0,'売れても回らない・儲からないメニューは続かない。'),
+    _ojq('思ったより売れません。見直す順番として適切なのは。',['すぐに販売をやめる','見せ方（POP・説明）→ 価格 → 内容','いきなり値下げする','別の新メニューを出す'],1,'伝わっていないだけのことが多い。'),
+    _ojq('季節メニューを考えるときの基本はどれですか。',['食材の旬と仕入価格','流行のネーミング','去年と同じ内容','いちばん高い食材を使う'],0,'旬は、品質と原価の両方で有利になる。'),
+    _ojq('アレルギーについて、正しい対応はどれですか。',['使用食材を明記し、クルーが答えられるようにする','聞かれたら厨房に確認する','メニューには書かない','ホールに任せる'],0,'命に関わる。確認できる状態にしておく。'),
+    _ojq('既存メニューと仕込みを共有できる新メニューの利点はどれですか。',['負荷と原価を下げられる','見た目が良くなる','値上げしやすい','在庫が増える'],0,'新しい仕込みを増やさない提案は、現場で続く。'),
+    {q:'あなたが今出したい新メニューを1つ、企画から提供開始までの流れで説明してください。', guide:'仕入・原価・オペレーション・承認・教育・告知が順序立てて出てくるか'},
+    {q:'そのメニューの売価をいくらにしますか。原価・相場・値ごろ感の3つで理由を説明してください。', guide:'数字の根拠があるか。3つの観点に触れているか'}
   ],
-  k7:[
-    {q:'キッチン（裏方）からFunergyらしさをどう作りますか？「品質」と「おもてなし」の関係をあなたの言葉で書いてください。',guide:'品質＝お客様への想い・誇り、忙しい時の前向きな雰囲気づくり、楽しむ姿勢が書けているか'}
+  kk5:[
+    _ojq('レシピに必ず書くべきものはどれですか。',['分量・手順・盛り付け・提供温度','作った人の名前','仕入先','売価だけ'],0,'再現に必要なものがすべて書いてあるか。'),
+    _ojq('分量の書き方として正しいのはどれですか。',['適量','グラムなどの単位で数値を書く','お玉で1杯くらい','人によって変える'],1,'「適量」は人によって変わる＝再現できない。'),
+    _ojq('レシピを変更したときの正しい扱いはどれですか。',['上書きして終わり','変更を記録し、全店とクルーに共有する','自分だけが覚えておく','次の棚卸まで待つ'],1,'変更が伝わらないと、店ごとに味が変わる。'),
+    _ojq('アプリのレシピ機能の役割はどれですか。',['原価計算と共有','シフト作成','売上予測','勤怠管理'],0,'レシピが原価と直結している。'),
+    _ojq('レシピに写真を付ける目的はどれですか。',['盛り付けの基準を揃えるため','SNS用','メニュー表に使うため','記録のため'],0,'言葉だけでは盛り付けは揃わない。'),
+    _ojq('誰が作っても同じ味にするために、最も重要なのはどれですか。',['手順と分量の固定、味見の基準','作る人を固定する','高い食材を使う','時間をかける'],0,'属人化させないことがリーダーの仕事。'),
+    _ojq('レシピと発注の関係として正しいのはどれですか。',['関係ない','使用量から必要量が分かる','発注は勘で決める','レシピは発注後に作る'],1,'使う量が分かれば、頼む量が決まる。'),
+    _ojq('提供をやめたメニューのレシピはどうしますか。',['削除する','停止にして履歴を残す','そのまま放置する','紙に印刷して捨てる'],1,'復活や検証のときに履歴が効く。'),
+    _ojq('他店に同じメニューを展開するとき、先に確認するのはどれですか。',['食材と設備の違い','店長の好み','座席数','営業時間'],0,'同じ設備・同じ食材でなければ同じ物はできない。'),
+    _ojq('レシピを最新に保つ責任は誰にありますか。',['本部','キッチンリーダー','ホールリーダー','アルバイト'],1,'現場で最新にできるのはキッチンリーダー。'),
+    {q:'あなたの店の看板メニューを1品、新人が一人で作れるレシピとして書くとき、何をどこまで書きますか。', guide:'分量（数値）・手順・盛り付け・温度・味見の基準まで具体的に挙げられているか'},
+    {q:'レシピを更新したとき、全員に定着させるまでの手順を説明してください。', guide:'共有だけで終わらず、実際に作らせて確認するところまで入っているか'}
+  ],
+  kk6:[
+    _ojq('危険温度帯はどれですか。',['0〜40°F','41〜135°F','136〜165°F','170°F以上'],1,'この温度帯に置く時間を短くする。'),
+    _ojq('手を洗うタイミングとして必ず必要なのはどれですか。',['出勤時だけ','作業を変えるたび・生の食材を触ったあと','休憩のあとだけ','汚れが見えたときだけ'],1,'見た目の汚れではなく、作業の切り替えで洗う。'),
+    _ojq('交差汚染を防ぐ方法として正しいのはどれですか。',['まな板と包丁を用途で分ける','洗剤を多く使う','手袋を長時間着け続ける','まとめて下処理する'],0,'手袋も洗わない手と同じ。分けることが基本。'),
+    _ojq('冷蔵庫の保管で正しい順番はどれですか。',['上に生肉、下に加熱済み','上に加熱済み、下に生肉','順番は関係ない','野菜を最下段にする'],1,'ドリップが落ちても汚染しない順に置く。'),
+    _ojq('ラベル表示について正しいのはどれですか。',['日付と中身を書き、先入れ先出しをする','中身だけ書く','開封日は不要','棚卸のときにまとめて書く'],0,'日付が無いと、古いものから使えない。'),
+    _ojq('再加熱の目安温度はどれですか。',['120°F','140°F','165°F以上','200°F以上'],2,'再加熱は165°F以上まで。'),
+    _ojq('体調不良（発熱・嘔吐・下痢）のクルーへの対応はどれですか。',['マスクをして調理させる','調理には入れず、報告して交代させる','短時間なら調理させる','本人に判断させる'],1,'本人の判断に任せない。ルールとして止める。'),
+    _ojq('DOHの検査で特に見られるのはどれですか。',['温度記録・保管状態・手洗い設備','メニューの価格','従業員の人数','売上の記録'],0,'記録と設備は、その場で作れない。'),
+    _ojq('温度記録について正しいのはどれですか。',['毎日決めた時間に記録し、異常はすぐ報告する','週に一度まとめて記録する','異常があったときだけ記録する','記憶しておく'],0,'記録は、守っている証拠でもある。'),
+    _ojq('清掃の責任について正しいのはどれですか。',['気づいた人がやる','分担と記録を決め、リーダーが確認する','閉店担当だけがやる','月末にまとめてやる'],1,'決めて、記録して、確認する。'),
+    {q:'あなたの店で衛生上いちばんリスクが高いのはどこですか。理由と、リーダーとしての対策を説明してください。', guide:'場所・作業が具体的か。仕組み（分担・記録・確認）で直そうとしているか'},
+    {q:'クルーが手洗いを飛ばしているのを見つけました。その場と、その後の対応を説明してください。', guide:'その場で止める判断と、再発させない仕組み（教育・掲示・確認）の両方があるか'}
+  ],
+  kk7:[
+    _ojq('棚卸の目的はどれですか。',['在庫を減らすこと','実際の使用高と原価を正しく出すこと','発注をやめること','倉庫を掃除すること'],1,'正しい数字が出て初めて、原価が語れる。'),
+    _ojq('棚卸を行うタイミングとして正しいのはどれですか。',['月末の営業終了後、毎回同じ条件で','忙しくない日を選んで随時','月初の朝','仕入れの直後'],0,'条件が変わると、前月と比べられない。'),
+    _ojq('数え方の基本として正しいのはどれですか。',['単位を決めて、2人で確認する','1人で素早く数える','だいたいの数を記入する','前月の数字を写す'],0,'単位と確認がそろって初めて正確になる。'),
+    _ojq('開封済みの食材はどう数えますか。',['目分量で割合を書く','重さで測る','未開封として数える','数えない'],1,'目分量は、人によって倍ちがうこともある。'),
+    _ojq('数え漏れが起きやすい場所はどれですか。',['冷凍庫の奥・予備在庫・バックヤード','冷蔵庫の手前','調理台の上','レジ周り'],0,'見えない場所ほど漏れる。順路を決めて数える。'),
+    _ojq('前月と比べて差異が大きいとき、最初にやることは。',['数え直して、仕入と廃棄の記録を確認する','そのまま報告する','前月の数字に合わせる','翌月で調整する'],0,'合わせるのではなく、理由を突き止める。'),
+    _ojq('棚卸金額が実感より大きすぎるとき、疑うべきものはどれですか。',['単価の入力ミスと二重計上','売上の減少','客数の増加','人件費'],0,'数量より単価の誤りのほうが金額に響く。'),
+    _ojq('アプリでの棚卸の進め方として正しいのはどれですか。',['棚卸表の順に数え、その場で入力する','紙に書いて翌日まとめて入力する','記憶して後で入力する','人に任せる'],0,'後からの転記は、必ずどこかで狂う。'),
+    _ojq('棚卸の結果は発注にどう使いますか。',['適正在庫が分かり、過剰仕入れを防げる','使わない','値上げの根拠にする','人員配置に使う'],0,'棚卸は、次の月の発注の材料になる。'),
+    _ojq('棚卸の正確さに責任を持つのは誰ですか。',['本部','キッチンリーダー','数えた人全員','会計担当'],1,'仕切る人が責任を持つ。'),
+    {q:'前月と比べて棚卸の差異が大きく出ました。原因をどう突き止め、どう報告しますか。', guide:'数え直し・記録の確認・単価の確認という順番があるか。報告に数字と原因があるか'},
+    {q:'棚卸を2人で正確に、かつ早く終わらせるための段取りを説明してください。', guide:'順路・分担・単位・確認方法が具体的に出てくるか'}
+  ],
+  kk8:[
+    _ojq('Funergyが大切にしているお客様の体験はどれですか。',['日本にいるような感覚','いちばん安い価格','いちばん早い提供','いちばん多い量'],0,'体験を作ることが、価格競争から店を守る。'),
+    _ojq('キッチンがホールを助けるために、いちばん効くのはどれですか。',['提供順とタイミングの共有','料理の量を増やす','盛り付けを豪華にする','ホールに任せる'],0,'出す順番が揃うと、店全体の流れが変わる。'),
+    _ojq('「裏方の誇り」とはどういうことですか。',['目立たないこと','見えない準備がお客様の体験をつくっていること','ホールより上だということ','誰にも文句を言われないこと'],1,'準備の質が、そのまま体験の質になる。'),
+    _ojq('忙しい時ほど大事になるのはどれですか。',['黙って作業する','声を掛け合う','自分の持ち場だけ見る','あとでまとめて話す'],1,'声が止まると、連携も止まる。'),
+    _ojq('新しく入った人が早く馴染むために、リーダーがやることはどれですか。',['名前で呼び、役割を渡す','しばらく様子を見る','厳しく接する','先輩に任せる'],0,'居場所と役割があると、人は続く。'),
+    _ojq('ミスが起きたとき、リーダーの正しい対応はどれですか。',['人を責める','原因と仕組みを直す','見なかったことにする','本人に謝らせて終わる'],1,'同じミスが起きる仕組みのほうが問題。'),
+    _ojq('「楽しむ心」について、正しいのはどれですか。',['自分たちが楽しんでいると、お客様にも伝わる','仕事中は楽しんではいけない','お客様の前だけ笑顔にする','忙しいときは関係ない'],0,'空気は、作っている人からしか生まれない。'),
+    _ojq('改善を提案するときのやり方として良いのはどれですか。',['小さく試して結果を共有する','全店で一斉に変える','思いついたらすぐ全員に指示する','上が決めるまで待つ'],0,'小さく試すと、失敗しても戻せる。'),
+    _ojq('キッチンが店の数字を見る意味はどれですか。',['自分の仕事と結果がつながって見える','経理の仕事だから','評価のためだけ','特に意味はない'],0,'数字は、自分の仕事の答え合わせ。'),
+    _ojq('G3（キッチンリーダー）の役割をいちばんよく表しているのはどれですか。',['自分がいちばん速く作る','基準を守らせ、人を育て、店の結果に責任を持つ','全部を自分でやる','指示を待つ'],1,'一人でやる人ではなく、店を回す人。'),
+    {q:'あなたにとって「Funergyらしいキッチン」とはどんなキッチンですか。今の店との差と、あなたが変えたいことを書いてください。', guide:'自分の言葉で語れているか。具体的な行動に落ちているか'},
+    {q:'キッチンからお客様の体験を良くするために、明日からできることを1つ挙げ、どう続けるか説明してください。', guide:'小さく実行できるか。続ける仕組み（共有・確認）まで考えているか'}
   ]
 };
-
 var OJT_G4_STORE = {
   key:'ojt_g4', gradeLabel:'G2 → G3', title:'Operation Leader OJT',
   modules:[
@@ -53543,7 +53622,18 @@ function openOjtModuleK(name, key){
       return '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px">'+box+'<span style="font-size:12px;line-height:1.45'+(cdone?';color:var(--muted)':'')+'">'+escapeHtml(c)+'</span></div>';
     }).join('');
     var testBlock='';
-    if(m.hasTest){
+    /* v1025: 選択式テストのあるモジュールは、点数と面談の状態を出す（記入式は従来どおり） */
+    if(m.hasTest && typeof ojrQuizQs==='function' && ojrQuizQs(key,m.id).length){
+      var _s=ojrModState(name,key,m), _tk=_s.talk;
+      testBlock='<div style="width:100%;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+        +'<span class="tag '+(_s.quizPass?'tag-green':'tag-yellow')+'" style="font-size:10px">選択式 '+(_s.quizPass?'合格 '+_s.best+'%':(_s.tries?'前回 '+(_s.quiz.lastPct||0)+'%':'未受験'))+'</span>'
+        +'<span class="tag '+(_tk&&_tk.result!=='re'?'tag-green':'')+'" style="font-size:10px'+(_tk&&_tk.result!=='re'?'':';background:var(--surface2)')+'">面談 '+(_tk?(_tk.result==='best'?'◎':_tk.result==='good'?'○':'△ 再面談'):'未')+'</span>'
+        +(_s.checks.claim?'<span class="tag tag-yellow" style="font-size:10px">実技の承認待ち '+_s.checks.claim+'件</span>':'')
+        +(canEdit?'<button class="btn btn-secondary btn-sm" style="padding:2px 10px;margin-left:auto" onclick="openOjrTalk(\''+esc+'\',\''+key+'\',\''+m.id+'\')"><i class="ti ti-message-2"></i> 面談を記録</button>':'')
+        +'</div>'
+        +(_tk&&_tk.note?'<div style="width:100%;font-size:11px;color:var(--muted);line-height:1.7;background:var(--surface2);border-radius:8px;padding:7px 9px;margin-top:5px">'+escapeHtml(_tk.note)+'</div>':'');
+    }
+    else if(m.hasTest){
       if(p.testPass){ testBlock='<span class="tag tag-green" style="font-size:10px">確認テスト合格'+(p.testBy?'（'+escapeHtml(p.testBy)+'）':'')+'</span>'+(canEdit?' <button class="btn btn-secondary btn-sm" style="padding:1px 8px" onclick="ojtPassTestK(\''+esc+'\',\''+key+'\',\''+m.id+'\',false)">取消</button>':''); }
       else if(canEdit){ testBlock='<details style="width:100%;margin-top:4px"><summary style="font-size:12px;cursor:pointer;color:var(--accent)">記入式テスト</summary>'+ojtTestHtmlK(name,key,m.id)+'<button class="btn btn-primary btn-sm" style="margin-top:4px" onclick="ojtPassTestK(\''+esc+'\',\''+key+'\',\''+m.id+'\',true)">記入を確認して合格にする</button></details>'; }
       else { testBlock='<span class="tag" style="font-size:10px">テスト未</span>'; }
@@ -55640,15 +55730,507 @@ function renderOjtGateMap(){
   return h;
 }
 
+/* v1025:start ojtrun */
+/* ============================================================
+   v1025: OJTを実際に進めるための仕組み（Motoさんの決定 9/19・UI案21）。
+   ・受講管理（管理側）：受講の開始・進み具合・修了判定・GM/CEO承認
+   ・本人の画面（マイページから）：座学を読む → 実技を申告 → 選択式テスト（自動採点）→ 面談
+   ・合格は「選択式 90% 以上」→「面談で◎か○」。面談を記録した時だけモジュール合格が立つ。
+   ・期限・通知は持たない（決定⑤）。開始日だけ記録する。
+   ============================================================ */
+var OJT_QUIZ_PASS = 90;     /* 選択式テストの合格ライン（%） */
+var OJT_RETRY_DAYS = 3;     /* 不合格のあと、再挑戦できるまでの日数（回数は無制限） */
+var _myOjtOpen = false;     /* 本人：マイページからOJT画面を開いているか */
+var _myOjtMod = null;       /* 本人：開いているモジュール */
+var _myOjtQuiz = null;      /* 本人：受験中のテスト */
+
+/* ---- 受講記録（app_state の ojt_enroll。名前ごと） ---- */
+function ojrAll(){ var v=ls('ojt_enroll',{}); return (v&&typeof v==='object'&&!Array.isArray(v))?v:{}; }
+function ojrOf(name){ return name?(ojrAll()[name]||null):null; }
+function ojrSave(name, patch){
+  if(!name) return null;
+  var all=ojrAll(); var rec=Object.assign({}, all[name]||{}, patch||{}, {_at:Date.now()});
+  all[name]=rec; lsSet('ojt_enroll', all); return rec;
+}
+function ojrCanManage(){ return ['gm','ceo','am'].indexOf(curRole)>=0; }               /* 受講の開始・停止 */
+/* 実技の承認・面談。★既存の g2CanEdit（実技チェックを付けられる人）と同じ顔ぶれに揃える。
+   ここを広げると実技チェックだけ付けられない人が出て、片方だけ進む。Head Chef・店長を入れるかは要判断。 */
+function ojrCanTrain(){ return (typeof g2CanEdit==='function') ? g2CanEdit() : ['gm','ceo','am','sl'].indexOf(curRole)>=0; }
+function ojrLabel(key){ return ((typeof OJT_REG!=='undefined'&&OJT_REG[key])||{}).label||'OJT'; }
+/* 本人が今受けているOJT（無ければ null） */
+function ojrMyKey(){ var r=ojrOf(curUserName||''); return (r&&r.key&&r.status!=='stopped')?r.key:null; }
+
+/* 状態：none（受講していない）／active（受講中）／judging（全モジュール合格・承認待ち）／done（承認済み）／stopped（停止） */
+function ojrStatus(name){
+  var r=ojrOf(name); if(!r||!r.key) return 'none';
+  if(r.status==='stopped') return 'stopped';
+  var all=false; try{ all=ojtProgressK(name, r.key).all; }catch(e){ all=false; }
+  if(!all) return 'active';
+  return (r.gmAt && r.ceoAt) ? 'done' : 'judging';
+}
+function ojrStatusTag(st){
+  if(st==='active')  return '<span class="tag tag-blue" style="font-size:9.5px">受講中</span>';
+  if(st==='judging') return '<span class="tag tag-yellow" style="font-size:9.5px">修了判定待ち</span>';
+  if(st==='done')    return '<span class="tag tag-green" style="font-size:9.5px">修了・承認済み</span>';
+  if(st==='stopped') return '<span class="tag" style="background:var(--surface2);font-size:9.5px">停止</span>';
+  return '';
+}
+
+/* ---- 設問（選択式／面談用の記述） ---- */
+function _ojrIsQuiz(q){ return !!(q && Array.isArray(q.choices) && q.choices.length); }
+function ojrQuizQs(key, modId){ return (ojtTestsK(key)[modId]||[]).filter(_ojrIsQuiz); }
+function ojrTalkQs(key, modId){ return (ojtTestsK(key)[modId]||[]).filter(function(q){ return q && !_ojrIsQuiz(q); }); }
+
+/* ---- 記録の読み出し（grade_ojt の中に持つ） ---- */
+function ojrMod(name, key, modId){ var p=ojtProgK(name,key)[modId]; return (p&&typeof p==='object')?p:{}; }
+function ojrQuiz(name, key, modId){ var q=ojrMod(name,key,modId).quiz; return (q&&typeof q==='object')?q:{tries:[]}; }
+function ojrTalk(name, key, modId){ var v=ojrMod(name,key,modId).talk; return (v&&typeof v==='object')?v:null; }
+function ojrQuizPassed(name, key, modId){ return !!ojrQuiz(name,key,modId).pass; }
+/* 再挑戦できるまでの残り日数（0なら今すぐ受けられる） */
+function ojrRetryIn(name, key, modId){
+  var q=ojrQuiz(name,key,modId); if(q.pass) return 0;
+  var tries=Array.isArray(q.tries)?q.tries:[]; var last=tries.length?tries[tries.length-1]:null;
+  if(!last || !last.ms) return 0;
+  var d=Math.ceil((Number(last.ms) + OJT_RETRY_DAYS*86400000 - Date.now())/86400000);
+  return d>0?d:0;
+}
+/* モジュールの状態：quiz（選択式）→ talk（面談）→ done（合格） */
+function ojrModState(name, key, mod){
+  var p=ojrMod(name,key,mod.id), q=ojrQuiz(name,key,mod.id), tk=ojrTalk(name,key,mod.id);
+  var checks=(mod.checks||[]), cDone=0, cClaim=0;
+  checks.forEach(function(_,i){
+    if(p.checks && p.checks[i]) cDone++;
+    else if(p.claims && p.claims[i]) cClaim++;
+  });
+  var done=false; try{ done=g2ModDone(ojtProgK(name,key), mod); }catch(e){ done=false; }
+  return { done:done, quiz:q, talk:tk, quizPass:!!q.pass, best:Number(q.best)||0,
+           tries:(Array.isArray(q.tries)?q.tries.length:0), retryIn:ojrRetryIn(name,key,mod.id),
+           checks:{done:cDone, claim:cClaim, total:checks.length},
+           hasQuiz:ojrQuizQs(key,mod.id).length>0 };
+}
+/* その人が次にやること（1行） */
+function ojrNextStep(name, key){
+  var mods=ojtModulesK(key);
+  for(var i=0;i<mods.length;i++){
+    var m=mods[i], st=ojrModState(name,key,m);
+    if(st.done) continue;
+    var no=(m.no||i+1)+'. '+(m.title||'');
+    if(st.checks.claim>0) return no+'（実技の承認待ち '+st.checks.claim+'件）';
+    if(st.checks.done<st.checks.total) return no+'（実技 '+st.checks.done+'/'+st.checks.total+'）';
+    if(st.hasQuiz && !st.quizPass) return no+(st.tries?'（テスト再挑戦'+(st.retryIn?'・'+st.retryIn+'日後から':'')+'・前回'+(st.quiz.lastPct||0)+'%）':'（テスト未受験）');
+    return no+'（面談待ち）';
+  }
+  return '全モジュール合格 → 修了判定';
+}
+
+/* ---- 受講の開始・停止 ---- */
+function openOjrStart(){
+  if(!ojrCanManage()){ showToast('受講の開始はGM/CEO/AMのみです','warning'); return; }
+  var emps=getEmployees().filter(function(e){ return e && e.name && e.status!=='退職' && !e.osDisabled; });
+  emps.sort(function(a,b){ return a.name<b.name?-1:1; });
+  var opts=emps.map(function(e){
+    var st=ojrStatus(e.name);
+    return '<option value="'+escapeHtml(e.name)+'">'+escapeHtml(e.name)+'（'+escapeHtml(_ojrStoreNm(e.store))+'）'+(st!=='none'?' ※受講記録あり':'')+'</option>';
+  }).join('');
+  openModal('<div class="modal-title"><i class="ti ti-user-plus"></i> 受講を開始する <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-bottom:10px">受講に入れると、本人のマイページにOJTが出ます。期限は設けません（開始日だけ記録します）。</div>'
+    +'<div class="form-group"><label class="form-label">対象者</label><select class="form-input" id="ojr-name">'+opts+'</select></div>'
+    +'<div class="form-row"><div class="form-group"><label class="form-label">トラック</label><select class="form-input" id="ojr-key">'
+    +'<option value="ojt_g3_kitchen">G2→G3 Kitchen Leader</option><option value="ojt_g3_server">G2→G3 Server Leader</option>'
+    +'<option value="ojt_g4">G2→G3 Operation Leader</option><option value="ojt_g2">G1→G2 Crew Leader</option></select></div>'
+    +'<div class="form-group"><label class="form-label">トレーナー</label><input class="form-input" id="ojr-trainer" placeholder="例：Head Chef（Kaimuki）"></div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
+    +'<button class="btn btn-primary" onclick="ojrStart()"><i class="ti ti-player-play"></i> 開始する</button></div>');
+}
+function _ojrStoreNm(id){ var st=((typeof STORES!=='undefined'&&STORES)||[]).find(function(x){return x&&x.id===id;}); return st?(st.name||''):(id||''); }
+function ojrStart(){
+  if(!ojrCanManage()){ showToast('受講の開始はGM/CEO/AMのみです','warning'); return; }
+  var gv=function(id){ var el=document.getElementById(id); return el?String(el.value||'').trim():''; };
+  var name=gv('ojr-name'), key=gv('ojr-key'), trainer=gv('ojr-trainer');
+  if(!name||!key){ showToast('対象者とトラックを選んでください','warning'); return; }
+  var prev=ojrOf(name), past=(prev&&Array.isArray(prev.past))?prev.past.slice(0,9):[];
+  if(prev&&prev.key) past.unshift({key:prev.key, startedAt:prev.startedAt||'', endedAt:todayJP(), status:ojrStatus(name)});
+  ojrSave(name, { key:key, track:(OJT_REG[key]||{}).track||null, trainer:trainer, startedAt:todayJP(),
+                  startedBy:(ROLE_CONFIG[curRole]||{}).name||curUserName, status:'active',
+                  gmBy:'', gmAt:'', ceoBy:'', ceoAt:'', past:past });
+  closeModalDirect(); showToast(name+' の '+ojrLabel(key)+' を開始しました','success'); renderPage('ojt_admin');
+}
+function ojrStop(name){
+  if(!ojrCanManage()){ showToast('受講の停止はGM/CEO/AMのみです','warning'); return; }
+  if(!confirm(name+' の受講を停止しますか？（進捗とテストの記録は残ります）')) return;
+  ojrSave(name, { status:'stopped', stoppedAt:todayJP() });
+  showToast('受講を停止しました','warning'); renderPage('ojt_admin');
+}
+function ojrResume(name){
+  if(!ojrCanManage()){ showToast('受講の再開はGM/CEO/AMのみです','warning'); return; }
+  ojrSave(name, { status:'active', stoppedAt:'' }); showToast('受講を再開しました','success'); renderPage('ojt_admin');
+}
+/* ---- 修了の承認（GMとCEOの両方・決定④） ---- */
+function ojrApprove(name, who){
+  var r=ojrOf(name); if(!r||!r.key){ showToast('受講記録がありません','warning'); return; }
+  if(ojrStatus(name)==='active'){ showToast('まだ全モジュールが合格していません','warning'); return; }
+  if(who==='gm' && ['gm','ceo'].indexOf(curRole)<0){ showToast('GM承認はGM/CEOのみです','warning'); return; }
+  if(who==='ceo' && curRole!=='ceo'){ showToast('CEO承認はCEOのみです','warning'); return; }
+  var by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
+  ojrSave(name, who==='gm' ? {gmBy:by, gmAt:todayJP()} : {ceoBy:by, ceoAt:todayJP()});
+  showToast((who==='gm'?'GM':'CEO')+'承認を記録しました'+(ojrStatus(name)==='done'?'（両方そろって修了）':''),'success');
+  renderPage('ojt_admin');
+}
+
+/* ---- 実技：本人の申告 → トレーナーの承認 ---- */
+function ojrClaim(modId, idx){
+  var key=ojrMyKey(), me=curUserName||''; if(!key||!me) return;
+  _ojtWriteK(me, key, function(o){
+    if(!o.modules[modId]) o.modules[modId]={};
+    var m=o.modules[modId]; if(!m.claims) m.claims={};
+    if(m.claims[idx]) delete m.claims[idx]; else m.claims[idx]={at:todayJP()};
+  });
+  renderPage('mypage');
+}
+
+/* ---- 選択式テスト（本人・自動採点） ---- */
+function ojrQuizOpen(modId){
+  var key=ojrMyKey(), me=curUserName||''; if(!key||!me) return;
+  var left=ojrRetryIn(me,key,modId);
+  if(left>0){ showToast('再挑戦は'+left+'日後からです（前回から'+OJT_RETRY_DAYS+'日あけます）','warning'); return; }
+  if(ojrQuizPassed(me,key,modId)){ showToast('このテストはすでに合格しています','success'); return; }
+  var qs=ojrQuizQs(key, modId);
+  if(!qs.length){ showToast('このモジュールに選択式テストはありません','warning'); return; }
+  _myOjtQuiz={ key:key, modId:modId, qs:qs, i:0, ans:[], result:null };
+  renderPage('mypage'); window.scrollTo(0,0);
+}
+function ojrQuizPick(i){ if(!_myOjtQuiz) return; _myOjtQuiz.ans[_myOjtQuiz.i]=i; renderPage('mypage'); }
+function ojrQuizGo(step){
+  if(!_myOjtQuiz) return;
+  var n=_myOjtQuiz.i+step; if(n<0) n=0; if(n>_myOjtQuiz.qs.length-1) n=_myOjtQuiz.qs.length-1;
+  _myOjtQuiz.i=n; renderPage('mypage'); window.scrollTo(0,0);
+}
+function ojrQuizQuit(){ _myOjtQuiz=null; renderPage('mypage'); window.scrollTo(0,0); }
+function ojrQuizSubmit(){
+  var z=_myOjtQuiz; if(!z) return;
+  var unanswered=[]; z.qs.forEach(function(_,i){ if(z.ans[i]==null) unanswered.push(i+1); });
+  if(unanswered.length){ showToast('未回答があります（Q'+unanswered.join('・Q')+'）','warning'); return; }
+  var wrong=[]; z.qs.forEach(function(q,i){ if(z.ans[i]!==q.a) wrong.push(i); });
+  var total=z.qs.length, score=total-wrong.length, pct=Math.round(score/total*100), pass=(pct>=OJT_QUIZ_PASS);
+  var me=curUserName||'';
+  _ojtWriteK(me, z.key, function(o){
+    if(!o.modules[z.modId]) o.modules[z.modId]={};
+    var m=o.modules[z.modId]; var q=(m.quiz&&typeof m.quiz==='object')?m.quiz:{};
+    if(!Array.isArray(q.tries)) q.tries=[];
+    q.tries.push({at:nowJP(), ms:Date.now(), score:score, total:total, pct:pct, pass:pass, wrong:wrong});
+    if(q.tries.length>20) q.tries=q.tries.slice(-20);
+    q.best=Math.max(Number(q.best)||0, pct); q.pass=!!q.pass||pass; q.lastAt=nowJP(); q.lastPct=pct;
+    m.quiz=q;
+  });
+  z.result={score:score, total:total, pct:pct, pass:pass, wrong:wrong, ans:z.ans.slice()};
+  renderPage('mypage'); window.scrollTo(0,0);
+}
+
+/* ---- 面談（トレーナー）。ここで初めてモジュール合格が立つ ---- */
+function openOjrTalk(name, key, modId){
+  if(!ojrCanTrain()){ showToast('面談の記録はリーダー以上（SL/AM/GM/CEO）のみです','warning'); return; }
+  var mod=ojtModulesK(key).find(function(x){return x.id===modId;}); if(!mod) return;
+  var qs=ojrTalkQs(key, modId), st=ojrModState(name,key,mod), tk=st.talk||{};
+  var esc=String(name).replace(/'/g,"\\'");
+  var h='<div class="modal-title"><i class="ti ti-message-2"></i> 面談 — '+escapeHtml(mod.title)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11.5px;color:var(--muted);line-height:1.7;margin-bottom:8px">'+escapeHtml(name)+'　選択式テスト：'
+    +(st.quizPass?'<b style="color:var(--green)">合格 '+st.best+'%</b>':'<b style="color:var(--red)">未合格'+(st.tries?'（前回 '+(st.quiz.lastPct||0)+'%）':'（未受験）')+'</b>')
+    +'　／　実技 '+st.checks.done+'/'+st.checks.total+'</div>';
+  if(!st.quizPass) h+='<div class="alert alert-warning" style="font-size:11.5px"><i class="ti ti-alert-triangle"></i> 選択式テスト（'+OJT_QUIZ_PASS+'%以上）に合格してから面談を行ってください。</div>';
+  h+=qs.map(function(q,i){
+    return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+      +'<div style="font-size:12.5px;font-weight:700;line-height:1.55">Q'+(i+1)+'. '+escapeHtml(q.q)+'</div>'
+      +(q.guide?'<div style="font-size:10.5px;color:var(--muted);margin-top:4px"><i class="ti ti-bulb"></i> 評価ポイント：'+escapeHtml(q.guide)+'</div>':'')+'</div>';
+  }).join('');
+  h+='<div class="form-group"><label class="form-label">面談メモ（本人にも見えます）</label>'
+    +'<textarea class="form-input" id="ojr-talk-note" rows="3" placeholder="良かった点と、次の課題">'+escapeHtml(tk.note||'')+'</textarea></div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">判定（◎か○でこのモジュールは合格、△は再面談）</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" style="color:var(--red);border-color:var(--red)" onclick="ojrTalkSave(\''+esc+'\',\''+key+'\',\''+modId+'\',\'re\')">△ 再面談</button>'
+    +'<button class="btn btn-secondary" onclick="ojrTalkSave(\''+esc+'\',\''+key+'\',\''+modId+'\',\'good\')">○ 合格</button>'
+    +'<button class="btn btn-primary" onclick="ojrTalkSave(\''+esc+'\',\''+key+'\',\''+modId+'\',\'best\')">◎ よくできている</button></div>';
+  openModal(h);
+}
+function ojrTalkSave(name, key, modId, result){
+  if(!ojrCanTrain()){ showToast('面談の記録はリーダー以上のみです','warning'); return; }
+  var pass=(result==='good'||result==='best');
+  if(pass && !ojrQuizPassed(name,key,modId)){ showToast('選択式テストの合格（'+OJT_QUIZ_PASS+'%以上）が先です','warning'); return; }
+  var mod=ojtModulesK(key).find(function(x){return x.id===modId;}); if(!mod) return;
+  var el=document.getElementById('ojr-talk-note'), note=el?String(el.value||'').trim():'';
+  var by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
+  var was=g2ModDone(ojtProgK(name,key), mod);
+  _ojtWriteK(name, key, function(o){
+    if(!o.modules[modId]) o.modules[modId]={};
+    var m=o.modules[modId];
+    m.talk={ result:result, by:by, at:todayJP(), note:note };
+    m.testPass=!!pass; if(pass){ m.testBy=by; m.testDate=todayJP(); }
+  });
+  _ojtAfterChangeK(name, key, mod, was);
+  closeModalDirect();
+  showToast(pass?'面談を記録しました（モジュール合格）':'再面談として記録しました', pass?'success':'warning');
+  renderPage(curPage);
+}
+
+/* ============================================================ 受講管理（OJT管理のタブ） */
+function renderOjrAdmin(){
+  var all=ojrAll(), names=Object.keys(all).filter(function(n){ return all[n] && all[n].key; });
+  names.sort(function(a,b){ return String(all[b].startedAt||'')<String(all[a].startedAt||'')?-1:1; });
+  var act=[], jud=[], fin=[], stp=[];
+  names.forEach(function(n){ var st=ojrStatus(n); (st==='active'?act:st==='judging'?jud:st==='done'?fin:stp).push(n); });
+  var h='';
+  h+='<div class="kpi-grid" style="margin-bottom:8px">'
+    +kpi('受講中', act.length+'名', '', act.length?'var(--accent)':'var(--muted)')
+    +kpi('修了判定待ち', jud.length+'名', jud.length?'GM/CEOの承認':'', jud.length?'var(--accent2)':'var(--muted)')
+    +kpi('修了（承認済み）', fin.length+'名', '', fin.length?'var(--green)':'var(--muted)')
+    +'</div>';
+  if(!names.length){
+    h+='<div class="card"><div style="font-size:12px;color:var(--muted);line-height:1.8">まだ受講者がいません。'
+      +(ojrCanManage()?'右上の「受講を開始する」から、候補者・トラック・トレーナーを決めて始めてください。':'GM/CEO/AM が受講を開始すると、ここに出ます。')
+      +'</div></div>';
+    return h;
+  }
+  var card=function(title, icon, list){
+    if(!list.length) return '';
+    return '<div class="card"><div class="card-title"><i class="ti '+icon+'"></i>'+title+'</div>'+list.map(ojrRow).join('')+'</div>';
+  };
+  h+=card('受講中','ti-school',act)+card('修了判定待ち（GM・CEO承認）','ti-flag-check',jud)+card('修了','ti-award',fin)+card('停止','ti-player-pause',stp);
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:2px;line-height:1.7">'
+    +'モジュールの合格は「選択式テスト '+OJT_QUIZ_PASS+'% 以上 → 面談で◎か○」。面談を記録したときに合格が立ち、Career Score の軸へ自動反映されます。'
+    +'不合格のテストは'+OJT_RETRY_DAYS+'日後から何回でも再挑戦できます（毎回の点数が残ります）。</div>';
+  return h;
+}
+function ojrRow(name){
+  var r=ojrOf(name)||{}, key=r.key, st=ojrStatus(name);
+  var pr={done:0,total:0,pct:0}; try{ pr=ojtProgressK(name,key); }catch(e){}
+  var mods=ojtModulesK(key)||[];
+  var qOk=0, qHas=0, sum=0, cnt=0, claim=0;
+  mods.forEach(function(m){
+    var s=ojrModState(name,key,m);
+    if(s.hasQuiz){ qHas++; if(s.quizPass) qOk++; }
+    if(s.best){ sum+=s.best; cnt++; }
+    claim+=s.checks.claim;
+  });
+  var col=(st==='done')?'#15A66A':(st==='judging')?'#0E78C4':'#F0661F';
+  var esc=String(name).replace(/'/g,"\\'");
+  var emp=getEmployees().find(function(e){return e&&e.name===name;})||{};
+  var h='<div style="border-top:1px solid var(--border);padding:11px 2px;display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
+    +'<div style="flex:1;min-width:270px">'
+    +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap"><b style="font-size:13.5px">'+escapeHtml(name)+'</b>'
+    +'<span style="font-size:10.5px;color:var(--muted)">'+escapeHtml(_ojrStoreNm(emp.store))+'</span>'
+    +'<span class="tag" style="background:'+col+'26;color:'+col+';font-size:9.5px;font-weight:700">'+escapeHtml(ojrLabel(key))+'</span>'
+    +ojrStatusTag(st)+(claim?'<span class="tag tag-yellow" style="font-size:9.5px">実技の承認待ち '+claim+'件</span>':'')+'</div>'
+    +'<div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap"><div style="flex:1;min-width:120px;max-width:260px">'+progBar(pr.pct,{h:6,color:col})+'</div>'
+    +'<span style="font-size:11px;color:var(--muted)">モジュール <b style="color:var(--tm)">'+pr.done+'/'+pr.total+'</b>'
+    +(qHas?'　テスト <b style="color:var(--tm)">'+qOk+'/'+qHas+'合格</b>':'')
+    +(cnt?'　平均 <b style="color:var(--tm)">'+Math.round(sum/cnt)+'%</b>':'')+'</span></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:5px">トレーナー '+escapeHtml(r.trainer||'—')+'　／　開始 '+escapeHtml(r.startedAt||'—')
+    +(r.gmAt?'　／　GM承認 '+escapeHtml(r.gmAt):'')+(r.ceoAt?'　／　CEO承認 '+escapeHtml(r.ceoAt):'')+'</div>'
+    +(st!=='done'?'<div style="font-size:11px;margin-top:4px"><i class="ti ti-arrow-narrow-right" style="color:'+col+'"></i> 次：'+escapeHtml(ojrNextStep(name,key))+'</div>':'')
+    +'</div><div style="display:flex;flex-direction:column;gap:5px;min-width:132px">'
+    +'<button class="btn btn-secondary btn-sm" onclick="openOjtModuleK(\''+esc+'\',\''+key+'\')"><i class="ti ti-list-check"></i> 進捗を開く</button>';
+  if(st==='judging'){
+    if(!r.gmAt && ['gm','ceo'].indexOf(curRole)>=0) h+='<button class="btn btn-primary btn-sm" onclick="ojrApprove(\''+esc+'\',\'gm\')"><i class="ti ti-check"></i> GM承認</button>';
+    if(r.gmAt && !r.ceoAt && curRole==='ceo') h+='<button class="btn btn-primary btn-sm" onclick="ojrApprove(\''+esc+'\',\'ceo\')"><i class="ti ti-check"></i> CEO承認</button>';
+    if(r.gmAt && !r.ceoAt && curRole!=='ceo') h+='<div style="font-size:10px;color:var(--muted);text-align:center">CEO承認待ち</div>';
+    if(!r.gmAt && ['gm','ceo'].indexOf(curRole)<0) h+='<div style="font-size:10px;color:var(--muted);text-align:center">GM承認待ち</div>';
+  }
+  if(ojrCanManage() && st!=='done') h+=(st==='stopped'
+    ? '<button class="btn btn-secondary btn-sm" onclick="ojrResume(\''+esc+'\')"><i class="ti ti-player-play"></i> 再開</button>'
+    : '<button class="btn btn-secondary btn-sm" onclick="ojrStop(\''+esc+'\')"><i class="ti ti-player-pause"></i> 停止</button>');
+  h+='</div></div>';
+  return h;
+}
+
+/* ============================================================ 本人の画面（マイページから） */
+function myOjtCard(){
+  var key=ojrMyKey(), me=curUserName||''; if(!key||!me) return '';
+  if(_myOjtOpen) return renderMyOjt();
+  var pr={done:0,total:0,pct:0}; try{ pr=ojtProgressK(me,key); }catch(e){}
+  var st=ojrStatus(me), r=ojrOf(me)||{};
+  return '<div class="card" style="border:1.5px solid '+(st==='done'?'var(--green)':'var(--accent)')+'">'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-school" style="color:'+(st==='done'?'var(--green)':'var(--accent)')+';font-size:19px"></i>'
+    +'<b style="flex:1;font-size:13.5px">'+escapeHtml(ojrLabel(key))+'</b>'+ojrStatusTag(st)+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-top:5px">トレーナー：'+escapeHtml(r.trainer||'—')+'　開始：'+escapeHtml(r.startedAt||'—')+'</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;margin-top:8px"><div style="flex:1">'+progBar(pr.pct,{h:9,color:st==='done'?'var(--green)':'var(--accent)'})+'</div>'
+    +'<b style="font-size:13px;color:'+(st==='done'?'var(--green)':'var(--accent)')+'">'+pr.done+' / '+pr.total+'</b></div>'
+    +(st==='judging'?'<div style="font-size:11.5px;line-height:1.7;margin-top:7px">全モジュール合格です。GMとCEOの承認を待っています。</div>':'')
+    +(st==='active'?'<div style="font-size:11.5px;line-height:1.7;margin-top:7px"><b><i class="ti ti-arrow-narrow-right" style="color:var(--accent)"></i> 次：</b>'+escapeHtml(ojrNextStep(me,key))+'</div>':'')
+    +'<button class="btn btn-primary" style="width:100%;margin-top:9px" onclick="myOjtGo()"><i class="ti ti-player-play"></i> OJTを開く</button></div>';
+}
+function myOjtGo(){ _myOjtOpen=true; _myOjtMod=null; _myOjtQuiz=null; renderPage('mypage'); window.scrollTo(0,0); }
+function myOjtBack(){
+  if(_myOjtQuiz){ _myOjtQuiz=null; }
+  else if(_myOjtMod){ _myOjtMod=null; }
+  else { _myOjtOpen=false; }
+  renderPage('mypage'); window.scrollTo(0,0);
+}
+function renderMyOjt(){
+  var key=ojrMyKey(), me=curUserName||''; if(!key||!me){ _myOjtOpen=false; return ''; }
+  var h='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-secondary btn-sm" onclick="myOjtBack()"><i class="ti ti-arrow-left"></i> 戻る</button>'
+    +'<b style="flex:1;font-size:13px;min-width:140px">'+escapeHtml(ojrLabel(key))+'</b>'+ojrStatusTag(ojrStatus(me))+'</div>';
+  if(_myOjtQuiz) return h + (_myOjtQuiz.result ? myOjtQuizResult() : myOjtQuizView());
+  if(_myOjtMod) return h + myOjtModView(key, me);
+  return h + myOjtListView(key, me);
+}
+function myOjtListView(key, me){
+  var mods=ojtModulesK(key), pr=ojtProgressK(me,key);
+  var h='<div class="card"><div style="display:flex;gap:8px;align-items:center"><div style="flex:1">'+progBar(pr.pct,{h:9,color:pr.all?'var(--green)':'var(--accent)'})+'</div>'
+    +'<b style="font-size:13px;color:'+(pr.all?'var(--green)':'var(--accent)')+'">'+pr.done+' / '+pr.total+'</b></div>';
+  mods.forEach(function(m,i){
+    var s=ojrModState(me,key,m), tag, cls;
+    if(s.done){ tag='合格'; cls='tag-green'; }
+    else if(s.quizPass){ tag='面談待ち'; cls='tag-yellow'; }
+    else if(s.checks.claim>0){ tag='実技の承認待ち'; cls='tag-yellow'; }
+    else if(s.tries){ tag='テスト再挑戦'; cls='tag-yellow'; }
+    else if(s.checks.done>0){ tag='進行中'; cls='tag-blue'; }
+    else { tag='未着手'; cls=''; }
+    var sub=(s.checks.total?'実技 '+s.checks.done+'/'+s.checks.total:'')
+      +(s.hasQuiz?'　テスト '+(s.quizPass?'合格 '+s.best+'%':(s.tries?'前回 '+(s.quiz.lastPct||0)+'%':'未受験')):'')
+      +(s.talk?'　面談 '+(s.talk.result==='best'?'◎':s.talk.result==='good'?'○':'△'):'');
+    h+='<div onclick="myOjtOpenMod(\''+m.id+'\')" style="cursor:pointer;display:flex;gap:9px;align-items:center;border-top:1px solid var(--border);padding:9px 0">'
+      +'<span style="width:21px;height:21px;border-radius:50%;background:var(--surface2);font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">'+(m.no||i+1)+'</span>'
+      +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600">'+escapeHtml(m.title)+'</div>'
+      +'<div style="font-size:10px;color:var(--muted);margin-top:1px">'+escapeHtml(sub||'まだ始めていません')+'</div></div>'
+      +'<span class="tag '+cls+'" style="font-size:9.5px;flex-shrink:0'+(cls?'':';background:var(--surface2)')+'">'+tag+'</span>'
+      +'<i class="ti ti-chevron-right" style="color:var(--muted);font-size:15px"></i></div>';
+  });
+  h+='</div>';
+  if(!pr.all) h+='<div class="card" style="background:var(--surface2)"><div style="font-size:11.5px;line-height:1.8"><b><i class="ti ti-arrow-narrow-right" style="color:var(--accent)"></i> 次にやること</b><br>'
+    +escapeHtml(ojrNextStep(me,key))+'</div></div>';
+  return h;
+}
+function myOjtOpenMod(modId){ _myOjtMod=modId; _myOjtQuiz=null; renderPage('mypage'); window.scrollTo(0,0); }
+function myOjtModView(key, me){
+  var mod=ojtModulesK(key).find(function(x){return x.id===_myOjtMod;});
+  if(!mod){ _myOjtMod=null; return ''; }
+  var s=ojrModState(me,key,mod), p=ojrMod(me,key,mod.id);
+  var col=(_ojtAxisColor()[mod.axis])||'var(--muted)';
+  var h='<div class="card" style="border-left:3px solid '+col+'">'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="flex:1;font-size:14px">'+(mod.no||'')+'. '+escapeHtml(mod.title)+'</b>'
+    +(s.done?'<span class="tag tag-green" style="font-size:10px">合格</span>':'')+'</div>'
+    +(mod.mindset?'<div style="font-size:11px;background:'+col+'14;border-radius:7px;padding:7px 9px;margin-top:8px;line-height:1.55"><b style="color:'+col+'">考え方 G2→G3</b>　'+escapeHtml(mod.mindset)+'</div>':'')
+    +(mod.human?'<div style="font-size:11px;background:rgba(240,102,31,0.08);border-radius:7px;padding:7px 9px;margin-top:6px;line-height:1.55"><b style="color:var(--accent)">🫶 人だからこそ</b>　'+escapeHtml(mod.human)+'</div>':'')
+    +(mod.goal?'<div style="font-size:11.5px;color:var(--muted);margin:8px 0 7px"><b>ゴール</b>：'+escapeHtml(mod.goal)+'</div>':'');
+  if(mod.knowledge&&mod.knowledge.length){
+    h+='<div style="font-size:10.5px;font-weight:700;color:var(--accent2);margin:8px 0 4px"><i class="ti ti-book"></i> 座学（読む）</div>'
+      +mod.knowledge.map(function(k){ return '<div style="font-size:11.5px;line-height:1.8">・'+escapeHtml(k)+'</div>'; }).join('');
+  }
+  if(mod.checks&&mod.checks.length){
+    h+='<div style="font-size:10.5px;font-weight:700;color:var(--muted);margin:10px 0 5px"><i class="ti ti-checkup-list"></i> 現場での実践（できたらタップ → トレーナーが承認）</div>';
+    mod.checks.forEach(function(c,ci){
+      var ok=!!(p.checks&&p.checks[ci]), claimed=!!(p.claims&&p.claims[ci]);
+      h+='<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px">'
+        +'<span '+(ok?'':'onclick="ojrClaim(\''+mod.id+'\','+ci+')" style="cursor:pointer;')+(ok?'style="':'')
+        +'flex-shrink:0;width:19px;height:19px;border-radius:5px;border:1.5px solid '+(ok?'var(--green)':claimed?'var(--yellow)':'var(--border)')+';background:'+(ok?'var(--green)':claimed?'var(--yellow)':'transparent')+';display:inline-flex;align-items:center;justify-content:center">'
+        +((ok||claimed)?'<i class="ti ti-check" style="color:#fff;font-size:12px"></i>':'')+'</span>'
+        +'<span style="font-size:12px;line-height:1.45'+(ok?';color:var(--muted)':'')+'">'+escapeHtml(c)
+        +(!ok&&claimed?'<span style="font-size:10px;color:var(--yellow)">　承認待ち</span>':'')+'</span></div>';
+    });
+    if(p.cBy) h+='<div style="font-size:9.5px;color:var(--muted);margin-bottom:6px">最終サイン：'+escapeHtml(p.cBy)+'・'+escapeHtml(p.cDate||'')+'</div>';
+  }
+  /* 選択式テスト */
+  if(s.hasQuiz){
+    var qn=ojrQuizQs(key,mod.id).length;
+    h+='<div style="border:1px solid '+(s.quizPass?'var(--green)':'var(--border)')+';border-radius:10px;padding:10px 12px;margin-top:10px'+(s.quizPass?';background:rgba(21,166,106,0.06)':'')+'">'
+      +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap"><i class="ti ti-clipboard-check" style="color:'+(s.quizPass?'var(--green)':'var(--accent)')+'"></i>'
+      +'<b style="font-size:12.5px;flex:1">確認テスト（選択式'+qn+'問・自動採点）</b>'
+      +(s.quizPass?'<span class="tag tag-green" style="font-size:10px">合格 '+s.best+'%</span>':(s.tries?'<span class="tag tag-yellow" style="font-size:10px">前回 '+(s.quiz.lastPct||0)+'%</span>':''))+'</div>'
+      +'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-top:5px">合格ラインは '+OJT_QUIZ_PASS+'%。不合格でも'+OJT_RETRY_DAYS+'日後から何回でも受けられます。</div>';
+    if(!s.quizPass){
+      h+= s.retryIn>0
+        ? '<div class="btn btn-secondary" style="width:100%;margin-top:7px;opacity:.6">再挑戦は'+s.retryIn+'日後から</div>'
+        : '<button class="btn btn-primary" style="width:100%;margin-top:7px" onclick="ojrQuizOpen(\''+mod.id+'\')"><i class="ti ti-player-play"></i> テストを受ける</button>';
+    }
+    if(s.tries) h+=myOjtTryList(me,key,mod.id);
+    h+='</div>';
+  }
+  /* 面談 */
+  h+='<div style="border:1px solid '+(s.talk&&s.talk.result!=='re'?'var(--green)':'var(--border)')+';border-radius:10px;padding:10px 12px;margin-top:8px">'
+    +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap"><i class="ti ti-message-2"></i><b style="font-size:12.5px;flex:1">面談（トレーナー）</b>'
+    +(s.talk?'<span class="tag '+(s.talk.result==='re'?'tag-yellow':'tag-green')+'" style="font-size:10px">'+(s.talk.result==='best'?'◎ よくできている':s.talk.result==='good'?'○ 合格':'△ 再面談')+'</span>':'<span class="tag" style="background:var(--surface2);font-size:10px">未</span>')+'</div>'
+    +(s.talk&&s.talk.note?'<div style="font-size:11.5px;line-height:1.75;background:var(--surface2);border-radius:9px;padding:9px 11px;margin-top:6px">'+escapeHtml(s.talk.note)+'</div>':'')
+    +(s.talk?'<div style="font-size:9.5px;color:var(--muted);margin-top:5px">'+escapeHtml(s.talk.by||'')+'・'+escapeHtml(s.talk.at||'')+'</div>'
+            :'<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-top:5px">選択式テストに合格したら、トレーナーと面談します。記述の設問について話し、◎か○でこのモジュールは合格です。</div>')
+    +(ojrCanTrain()?'<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:7px" onclick="openOjrTalk(\''+String(me).replace(/'/g,"\\'")+'\',\''+key+'\',\''+mod.id+'\')"><i class="ti ti-pencil"></i> 面談を記録する</button>':'')
+    +'</div>';
+  h+='</div>';
+  return h;
+}
+function myOjtTryList(name, key, modId){
+  var tries=(ojrQuiz(name,key,modId).tries)||[];
+  if(!tries.length) return '';
+  return '<div style="font-size:10.5px;color:var(--muted);margin-top:7px;line-height:1.8">'
+    +tries.slice().reverse().map(function(tr,i){
+      return '<div>'+(tries.length-i)+'回目　'+escapeHtml(tr.at||'')+'　'+tr.score+'/'+tr.total+'（'+tr.pct+'%）'
+        +(tr.pass?'<span style="color:var(--green)">　合格</span>':'<span style="color:var(--red)">　不合格</span>')+'</div>';
+    }).join('')+'</div>';
+}
+function myOjtQuizView(){
+  var z=_myOjtQuiz, q=z.qs[z.i], picked=z.ans[z.i];
+  var mod=ojtModulesK(z.key).find(function(x){return x.id===z.modId;})||{};
+  var h='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<b style="flex:1;font-size:13px;min-width:140px">'+escapeHtml(mod.title||'')+' — 確認テスト</b>'
+    +'<span class="tag tag-blue" style="font-size:10px">'+(z.i+1)+' / '+z.qs.length+'問</span></div>'
+    +'<div class="card">'
+    +progBar(Math.round((z.i+1)/z.qs.length*100),{h:6,color:'var(--accent)'})
+    +'<div style="font-size:10.5px;color:var(--muted);margin:10px 0 4px">Q'+(z.i+1)+' / '+z.qs.length+'　選択式（自動採点）</div>'
+    +'<div style="font-size:13.5px;font-weight:700;line-height:1.6;margin-bottom:10px">'+escapeHtml(q.q)+'</div>';
+  q.choices.forEach(function(c, ci){
+    var sel=(picked===ci);
+    h+='<div onclick="ojrQuizPick('+ci+')" style="cursor:pointer;border:1.5px solid '+(sel?'var(--accent)':'var(--border)')+';background:'+(sel?'rgba(240,102,31,0.07)':'var(--surface)')+';border-radius:10px;padding:10px 12px;margin-bottom:7px;display:flex;gap:9px;align-items:center">'
+      +'<span style="width:20px;height:20px;border-radius:50%;border:1.5px solid '+(sel?'var(--accent)':'var(--border)')+';background:'+(sel?'var(--accent)':'transparent')+';flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:'+(sel?'#fff':'var(--muted)')+'">'+'ABCD'.charAt(ci)+'</span>'
+      +'<span style="font-size:12.5px;line-height:1.5">'+escapeHtml(c)+'</span></div>';
+  });
+  h+='<div style="display:flex;gap:7px;margin-top:10px">'
+    +(z.i>0?'<button class="btn btn-secondary" style="flex:1" onclick="ojrQuizGo(-1)"><i class="ti ti-arrow-left"></i> 前の問題</button>':'')
+    +(z.i<z.qs.length-1
+      ? '<button class="btn btn-primary" style="flex:2" onclick="ojrQuizGo(1)">次の問題 <i class="ti ti-arrow-right"></i></button>'
+      : '<button class="btn btn-primary" style="flex:2" onclick="ojrQuizSubmit()"><i class="ti ti-send"></i> 採点する</button>')
+    +'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:7px;line-height:1.6">合格ラインは '+OJT_QUIZ_PASS+'%。途中で「戻る」を押すと、この回はやり直しになります。</div>'
+    +'<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:7px" onclick="ojrQuizQuit()">中断する</button>'
+    +'</div>';
+  return h;
+}
+function myOjtQuizResult(){
+  var z=_myOjtQuiz, r=z.result;
+  var mod=ojtModulesK(z.key).find(function(x){return x.id===z.modId;})||{};
+  var col=r.pass?'var(--green)':'var(--red)';
+  var h='<div class="card" style="border:1.5px solid '+col+'">'
+    +'<div class="card-title"><i class="ti ti-clipboard-check" style="color:'+col+'"></i>'+escapeHtml(mod.title||'')+' — 結果'
+    +'<span class="tag '+(r.pass?'tag-green':'tag-red')+'" style="margin-left:auto">'+(r.pass?'合格':'不合格')+'</span></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:9px">'
+    +'<div style="flex:1;min-width:120px;border:1px solid var(--border);border-radius:10px;padding:8px 11px"><div style="font-size:10px;color:var(--muted);font-weight:700">点数</div>'
+    +'<div style="font-size:20px;font-weight:800;color:'+col+'">'+r.score+' / '+r.total+'</div><div style="font-size:10px;color:var(--muted)">'+r.pct+'%・合格ライン'+OJT_QUIZ_PASS+'%</div></div>'
+    +'<div style="flex:1;min-width:120px;border:1px solid var(--border);border-radius:10px;padding:8px 11px"><div style="font-size:10px;color:var(--muted);font-weight:700">次</div>'
+    +'<div style="font-size:13px;font-weight:700;margin-top:3px;line-height:1.5">'+(r.pass?'トレーナーと面談':(ojrRetryIn(curUserName||'',z.key,z.modId)?ojrRetryIn(curUserName||'',z.key,z.modId)+'日後に再挑戦':'再挑戦できます'))+'</div></div></div>';
+  if(r.wrong.length){
+    h+='<div style="font-size:10.5px;font-weight:700;color:var(--muted);margin:4px 0 5px"><i class="ti ti-refresh"></i> ふりかえり（間違えた問題）</div>';
+    r.wrong.forEach(function(qi){
+      var q=z.qs[qi];
+      h+='<div style="border:1px solid var(--yellow);border-radius:9px;padding:9px 11px;font-size:11.5px;line-height:1.7;background:rgba(214,158,46,0.06);margin-bottom:6px">'
+        +'<b>Q'+(qi+1)+'</b>　'+escapeHtml(q.q)+'<br>'
+        +'<span style="color:var(--red)">あなたの答え：'+escapeHtml(q.choices[r.ans[qi]]||'—')+'</span><br>'
+        +'<span style="color:var(--green)">正解：'+escapeHtml(q.choices[q.a]||'')+'</span>'
+        +(q.why?'<br><span style="color:var(--muted)">'+escapeHtml(q.why)+'</span>':'')+'</div>';
+    });
+  } else {
+    h+='<div style="font-size:11.5px;line-height:1.75;background:var(--surface2);border-radius:9px;padding:9px 11px">全問正解です。面談では、現場でどう使うかを自分の言葉で話せるようにしておきましょう。</div>';
+  }
+  h+='<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="myOjtBack()">モジュールに戻る</button></div>';
+  return h;
+}
+/* v1025:end ojtrun */
 function renderOjtAdmin(){
   if(ojtAdminKey==='preplv') ojtAdminKey='trainee';
   var _amPlus=['gm','ceo','am'].indexOf(curRole)>=0;
   var tabs;
   if(_amPlus){
-    tabs=[['ojt_g2','G1→G2 Crew'],['ojt_g3_server','G3 Server'],['ojt_g3_kitchen','G3 Kitchen'],['ojt_g4','G3 Operation'],['trainee','Trainee'],['gatemap','ゲート基準マップ'],['bizguide','業務ガイド']];
+    /* v1025: 受講管理を先頭に（実際のOJTはここから進める） */
+    tabs=[['enroll','受講管理'],['ojt_g2','G1→G2 Crew'],['ojt_g3_server','G3 Server'],['ojt_g3_kitchen','G3 Kitchen'],['ojt_g4','G3 Operation'],['trainee','Trainee'],['gatemap','ゲート基準マップ'],['bizguide','業務ガイド']];
   } else if(myGradeNum()>=4){
-    tabs=[['gatemap','ゲート基準マップ'],['bizguide','業務ガイド']];
-    if(ojtAdminKey!=='gatemap' && ojtAdminKey!=='bizguide') ojtAdminKey='gatemap';
+    tabs=[['enroll','受講管理'],['gatemap','ゲート基準マップ'],['bizguide','業務ガイド']];
+    if(['enroll','gatemap','bizguide'].indexOf(ojtAdminKey)<0) ojtAdminKey='enroll';
   } else {
     tabs=[['bizguide','業務ガイド']]; // G3以下のSLも業務ガイドは閲覧可（旧・ワークセンター内から移設）
     ojtAdminKey='bizguide';
@@ -55656,6 +56238,11 @@ function renderOjtAdmin(){
   var tabsHtml='<div class="phase-tabs" style="flex-wrap:wrap">'+tabs.map(function(t){ return '<div class="phase-tab'+(ojtAdminKey===t[0]?' active':'')+'" onclick="setOjtAdminKey(\''+t[0]+'\')">'+t[1]+'</div>'; }).join('')+'</div>';
   if(ojtAdminKey==='bizguide'){
     return '<div class="section-header"><div><div class="section-title">OJT管理</div><div class="section-sub">業務ガイド — Grade別のアプリ活用と責任マトリクス</div></div></div>'+tabsHtml+renderBizGuideBody();
+  }
+  if(ojtAdminKey==='enroll'){   /* v1025 */
+    return '<div class="section-header"><div><div class="section-title">OJT管理</div><div class="section-sub">受講管理 — 今どこまで進んでいるか・テストの結果・修了判定</div></div>'
+      +(ojrCanManage()?'<button class="btn btn-primary btn-sm" onclick="openOjrStart()"><i class="ti ti-user-plus"></i> 受講を開始する</button>':'')
+      +'</div>'+tabsHtml+renderOjrAdmin();
   }
   if(ojtAdminKey==='gatemap'){
     return '<div class="section-header"><div><div class="section-title">OJT管理</div><div class="section-sub">Phase1-4 ゲート基準マップ（店舗毎・チップ進行連動）</div></div></div>'+tabsHtml+renderOjtGateMap();
@@ -55732,24 +56319,39 @@ function ojtTestEditor(modId){
   var d=window._ojtDraft; if(!d.tests) d.tests={};
   var qs=d.tests[modId]||[];
   var h='<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-top:6px;background:var(--surface2)">';
-  h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px"><i class="ti ti-pencil"></i> 記入式テスト（受講者が記入 → リーダーが確認して合格）</div>';
+  h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px"><i class="ti ti-pencil"></i> テスト（選択式＝アプリで自動採点／記述＝面談で使う）</div>';
   if(!qs.length) h+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">設問がありません。下のボタンで追加してください。</div>';
   qs.forEach(function(q,qi){
+    var _isQ=(q && Array.isArray(q.choices) && q.choices.length);   /* v1025: 選択式か記述か */
     h+='<div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px;background:var(--surface)">';
+    h+='<div style="font-size:10px;font-weight:700;color:'+(_isQ?'var(--accent2)':'var(--muted)')+';margin-bottom:4px">'+(_isQ?'選択式（自動採点・正解は A の位置で記録）':'記述（面談で使う）')+'</div>';
     h+='<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:5px"><span style="font-size:11px;font-weight:700;flex-shrink:0;padding-top:6px">Q'+(qi+1)+'</span>'
       +'<textarea onchange="ojtTestQEdit(\''+modId+'\','+qi+',\'q\',this.value)" rows="2" placeholder="設問（記入式）" style="flex:1;font-size:12px;padding:5px 7px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm);resize:vertical;font-family:inherit">'+escapeHtml(q.q||'')+'</textarea>'
       +'<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red);padding:2px 8px" onclick="ojtTestQDel(\''+modId+'\','+qi+')" title="この設問を削除">×</button></div>';
+    if(_isQ){
+      h+=q.choices.map(function(c,ci){
+        return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'
+          +'<span onclick="ojtTestQEdit(\''+modId+'\','+qi+',\'a\','+ci+')" title="正解にする" style="cursor:pointer;width:20px;height:20px;border-radius:50%;flex-shrink:0;border:1.5px solid '+(q.a===ci?'var(--green)':'var(--border)')+';background:'+(q.a===ci?'var(--green)':'transparent')+';display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:'+(q.a===ci?'#fff':'var(--muted)')+'">'+'ABCD'.charAt(ci)+'</span>'
+          +'<input value="'+escapeHtml(c)+'" onchange="ojtTestChoiceEdit(\''+modId+'\','+qi+','+ci+',this.value)" style="flex:1;font-size:12px;padding:5px 7px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)"></div>';
+      }).join('');
+      h+='<label style="font-size:10px;color:var(--muted)">解説（間違えた人に見せる・任意）</label>'
+        +'<input value="'+escapeHtml(q.why||'')+'" onchange="ojtTestQEdit(\''+modId+'\','+qi+',\'why\',this.value)" style="width:100%;font-size:11px;padding:5px 7px;margin:2px 0 4px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--tm)">';
+    }
     h+='<label style="font-size:10px;color:var(--muted)">評価ポイント / 模範解答（採点者向け・任意）</label>'
       +'<textarea onchange="ojtTestQEdit(\''+modId+'\','+qi+',\'guide\',this.value)" rows="1" placeholder="例：欠品と廃棄を防ぐ考え方が書けているか" style="width:100%;font-size:11px;padding:5px 7px;margin-top:2px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--tm);resize:vertical;font-family:inherit">'+escapeHtml(q.guide||'')+'</textarea>';
     h+='</div>';
   });
-  h+='<button class="btn btn-secondary btn-sm" onclick="ojtTestQAdd(\''+modId+'\')"><i class="ti ti-plus"></i> 設問を追加</button></div>';
+  h+='<button class="btn btn-secondary btn-sm" onclick="ojtTestQAdd(\''+modId+'\')"><i class="ti ti-plus"></i> 記述を追加</button>'
+    +' <button class="btn btn-secondary btn-sm" onclick="ojtTestQAddChoice(\''+modId+'\')"><i class="ti ti-plus"></i> 選択式を追加</button></div>';
   return h;
 }
 function ojtEditField(idx, field, val){ var d=window._ojtDraft; if(!d)return; var m=d.modules[idx]; if(!m) return; m[field]=val; if(field==='axis') renderPage('ojt_admin'); }
 function ojtToggleTest(idx){ var d=window._ojtDraft; if(!d)return; var m=d.modules[idx]; if(!m) return; m.hasTest=!m.hasTest; if(m.hasTest){ if(!d.tests)d.tests={}; if(!d.tests[m.id]||!d.tests[m.id].length) d.tests[m.id]=[{q:'',guide:''}]; } renderPage('ojt_admin'); }
 function ojtTestQEdit(modId, qi, field, val){ var d=window._ojtDraft; if(!d)return; if(!d.tests)d.tests={}; var qs=d.tests[modId]||[]; var q=qs[qi]; if(!q) return; if(field==='q') q.q=val; else if(field==='guide') q.guide=val; }
 function ojtTestQAdd(modId){ var d=window._ojtDraft; if(!d)return; if(!d.tests)d.tests={}; if(!d.tests[modId])d.tests[modId]=[]; d.tests[modId].push({q:'',guide:''}); renderPage('ojt_admin'); }
+/* v1025: 選択式の追加と、選択肢の文言の編集 */
+function ojtTestQAddChoice(modId){ var d=window._ojtDraft; if(!d)return; if(!d.tests)d.tests={}; if(!d.tests[modId])d.tests[modId]=[]; d.tests[modId].push({q:'',choices:['','','',''],a:0,why:''}); renderPage('ojt_admin'); }
+function ojtTestChoiceEdit(modId, qi, ci, val){ var d=window._ojtDraft; if(!d||!d.tests||!d.tests[modId])return; var q=d.tests[modId][qi]; if(!q||!Array.isArray(q.choices))return; q.choices[ci]=val; }
 function ojtTestQDel(modId, qi){ var d=window._ojtDraft; if(!d)return; if(d.tests&&d.tests[modId]){ d.tests[modId].splice(qi,1); } renderPage('ojt_admin'); }
 function ojtSaveDraft(){ if(!window._ojtDraft) return; setOjtDefK(ojtAdminKey, window._ojtDraft); showToast('保存しました（'+((OJT_REG[ojtAdminKey]||{}).label||'OJT')+'）。実際のOJTに反映されます','success'); }
 function ojtResetDraft(){ if(!confirm('このOJTの編集内容を破棄して初期値に戻しますか？')) return; var dd=ojtDefaultK(ojtAdminKey); if(!dd.tests)dd.tests={}; if(!window._ojtDraftMap)window._ojtDraftMap={}; window._ojtDraftMap[ojtAdminKey]=dd; window._ojtDraft=dd; setOjtDefK(ojtAdminKey, dd); showToast('初期値に戻しました','success'); renderPage('ojt_admin'); }
