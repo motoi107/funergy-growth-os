@@ -37048,7 +37048,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1025';
+const APP_VERSION = '1027';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -52960,7 +52960,10 @@ function getG2Prog(name){ var m=getGradeOjt(); var e=(m[name]&&m[name].ojt_g2)||
 function g2CheckCount(prog, mod){ var p=prog[mod.id]||{}; var tot=(mod.checks&&mod.checks.length)||0; var done=0; if(tot){ mod.checks.forEach(function(_,i){ if(p.checks&&p.checks[i]) done++; }); } return {done:done,total:tot}; }
 function g2ModDone(prog, mod){ var p=prog[mod.id]||{}; var checksOk; if(mod.checks && mod.checks.length){ checksOk = mod.checks.every(function(_,i){ return p.checks && p.checks[i]; }); } else { checksOk = !!p.practical; } return checksOk && (!mod.hasTest || !!p.testPass); }
 function g2Progress(name){ var prog=getG2Prog(name); var done=g2Modules().filter(function(m){return g2ModDone(prog,m);}).length; var tot=g2Modules().length; return {done:done,total:tot,pct:Math.round(done/tot*100),all:done===tot}; }
-function g2CanEdit(){ return ['gm','ceo','am','sl'].includes(curRole); }
+/* v1026: OJTのサイン・テスト合格・実技の承認・面談ができる人。
+   Motoさんの決定 9/19 で Head Chef（chef）と店長（g4）を追加。どちらも Grade は G4。
+   ★ここを広げると ojrCanTrain（面談）も同時に広がる（g2CanEdit を呼んでいるため）。 */
+function g2CanEdit(){ return ['gm','ceo','am','sl','chef','g4'].includes(curRole); }
 function _g2Write(name, fn){ var m=getGradeOjt(); if(!m[name])m[name]={}; if(!m[name].ojt_g2)m[name].ojt_g2={}; if(!m[name].ojt_g2.modules)m[name].ojt_g2.modules={}; fn(m[name].ojt_g2); lsSet('grade_ojt', m); }
 
 function _g2SkillLv(name,store,pos){ var s=getEmpSkillsStore(name,store)[pos]; return s?(s.level!=null?s.level:(typeof s==='number'?s:0)):0; }
@@ -52996,7 +52999,7 @@ function _g2AfterChange(name, mod, wasDone){
   else if(!pr.all&&cur){ _g2Write(name,function(o){ o.done=false; delete o.date; delete o.by; }); }
 }
 function g2SetCheck(name, modId, idx, done){
-  if(!g2CanEdit()){ showToast('サインはリーダー以上（SL/AM/GM）のみ','warning'); return; }
+  if(!g2CanEdit()){ showToast('サインはリーダー以上（SL/店長/Head Chef/AM/GM）のみ','warning'); return; }
   var mod=g2Modules().find(function(x){return x.id===modId;}); if(!mod) return;
   var was=g2ModDone(getG2Prog(name), mod);
   _g2Write(name,function(o){ if(!o.modules[modId])o.modules[modId]={}; if(!o.modules[modId].checks)o.modules[modId].checks={}; o.modules[modId].checks[idx]=!!done; o.modules[modId].cBy=(ROLE_CONFIG[curRole]||{}).name||curUserName; o.modules[modId].cDate=todayJP(); });
@@ -53007,7 +53010,7 @@ function g2SaveAnswer(name, modId, qIdx, val){
   _g2Write(name,function(o){ if(!o.modules[modId])o.modules[modId]={}; if(!o.modules[modId].answers)o.modules[modId].answers={}; o.modules[modId].answers[qIdx]=val; });
 }
 function g2PassTest(name, modId, pass){
-  if(!g2CanEdit()){ showToast('テスト合格の確認はリーダー以上（SL/AM/GM）のみ','warning'); return; }
+  if(!g2CanEdit()){ showToast('テスト合格の確認はリーダー以上（SL/店長/Head Chef/AM/GM）のみ','warning'); return; }
   var mod=g2Modules().find(function(x){return x.id===modId;}); if(!mod) return;
   var was=g2ModDone(getG2Prog(name), mod);
   _g2Write(name,function(o){ if(!o.modules[modId])o.modules[modId]={}; o.modules[modId].testPass=!!pass; o.modules[modId].testBy=(ROLE_CONFIG[curRole]||{}).name||curUserName; o.modules[modId].testDate=todayJP(); });
@@ -53577,7 +53580,7 @@ function _ojtAfterChangeK(name,key,mod,wasDone){
   if(pr.all&&nowDone&&!wasDone) showToast('🎉 '+(reg.label||'OJT')+' 全モジュール修了','success');
 }
 function ojtSetCheckK(name,key,modId,idx,done){
-  if(!g2CanEdit()){ showToast('サインはリーダー以上（SL/AM/GM）のみ','warning'); return; }
+  if(!g2CanEdit()){ showToast('サインはリーダー以上（SL/店長/Head Chef/AM/GM）のみ','warning'); return; }
   var mod=ojtModulesK(key).find(function(x){return x.id===modId;}); if(!mod) return;
   var was=g2ModDone(ojtProgK(name,key), mod);
   _ojtWriteK(name,key,function(o){ if(!o.modules[modId])o.modules[modId]={}; if(!o.modules[modId].checks)o.modules[modId].checks={}; o.modules[modId].checks[idx]=!!done; o.modules[modId].cBy=(ROLE_CONFIG[curRole]||{}).name||curUserName; o.modules[modId].cDate=todayJP(); });
@@ -53586,7 +53589,7 @@ function ojtSetCheckK(name,key,modId,idx,done){
 }
 function ojtSaveAnswerK(name,key,modId,qIdx,val){ _ojtWriteK(name,key,function(o){ if(!o.modules[modId])o.modules[modId]={}; if(!o.modules[modId].answers)o.modules[modId].answers={}; o.modules[modId].answers[qIdx]=val; }); }
 function ojtPassTestK(name,key,modId,pass){
-  if(!g2CanEdit()){ showToast('テスト合格の確認はリーダー以上（SL/AM/GM）のみ','warning'); return; }
+  if(!g2CanEdit()){ showToast('テスト合格の確認はリーダー以上（SL/店長/Head Chef/AM/GM）のみ','warning'); return; }
   var mod=ojtModulesK(key).find(function(x){return x.id===modId;}); if(!mod) return;
   var was=g2ModDone(ojtProgK(name,key), mod);
   _ojtWriteK(name,key,function(o){ if(!o.modules[modId])o.modules[modId]={}; o.modules[modId].testPass=!!pass; o.modules[modId].testBy=(ROLE_CONFIG[curRole]||{}).name||curUserName; o.modules[modId].testDate=todayJP(); });
@@ -55754,7 +55757,8 @@ function ojrSave(name, patch){
 }
 function ojrCanManage(){ return ['gm','ceo','am'].indexOf(curRole)>=0; }               /* 受講の開始・停止 */
 /* 実技の承認・面談。★既存の g2CanEdit（実技チェックを付けられる人）と同じ顔ぶれに揃える。
-   ここを広げると実技チェックだけ付けられない人が出て、片方だけ進む。Head Chef・店長を入れるかは要判断。 */
+   ここを独自に広げると実技チェックだけ付けられない人が出て、片方だけ進む（教訓78）。
+   v1026: g2CanEdit 側に Head Chef（chef）と店長（g4）を入れたので、面談もその顔ぶれになる。 */
 function ojrCanTrain(){ return (typeof g2CanEdit==='function') ? g2CanEdit() : ['gm','ceo','am','sl'].indexOf(curRole)>=0; }
 function ojrLabel(key){ return ((typeof OJT_REG!=='undefined'&&OJT_REG[key])||{}).label||'OJT'; }
 /* 本人が今受けているOJT（無ければ null） */
@@ -55928,7 +55932,7 @@ function ojrQuizSubmit(){
 
 /* ---- 面談（トレーナー）。ここで初めてモジュール合格が立つ ---- */
 function openOjrTalk(name, key, modId){
-  if(!ojrCanTrain()){ showToast('面談の記録はリーダー以上（SL/AM/GM/CEO）のみです','warning'); return; }
+  if(!ojrCanTrain()){ showToast('面談の記録はリーダー以上（SL/店長/Head Chef/AM/GM/CEO）のみです','warning'); return; }
   var mod=ojtModulesK(key).find(function(x){return x.id===modId;}); if(!mod) return;
   var qs=ojrTalkQs(key, modId), st=ojrModState(name,key,mod), tk=st.talk||{};
   var esc=String(name).replace(/'/g,"\\'");
@@ -72330,7 +72334,9 @@ function renderHandbook(){
   var chs=hbChaptersSorted();
   var me=curUserName||'';
   var reads=ls('handbook_reads',{})||{}; var mine=reads[me]||{};
-  var canAdmin=['ceo','gm','office','office_crew','am'].indexOf(curRole)>=0;
+  /* v1027: 進捗管理・更新ログを見られる人。Motoさんの依頼 9/19 で G4 以上（店長 g4・Head Chef chef）を追加。
+     章の追加・編集（canEdit）と、理解度チェックの「フォーム設定」は GM/CEO のまま。 */
+  var canAdmin=['ceo','gm','office','office_crew','am','g4','chef'].indexOf(curRole)>=0;
   var canEdit=['ceo','gm'].indexOf(curRole)>=0;
   var h='<div class="section-header"><div><div class="section-title"><i class="ti ti-book" style="color:var(--accent)"></i> Handbook</div><div class="section-sub">入社後に必ず全章を読み、読了チェックをしてください / Please read all chapters</div></div>'
     +(canEdit&&_hbTab==='chapters'&&!_hbView?'<button class="btn btn-secondary btn-sm" onclick="openHbEdit(null)"><i class="ti ti-plus"></i> 章を追加</button>':'')+'</div>';
