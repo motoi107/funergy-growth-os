@@ -8937,7 +8937,8 @@ var NAV_LABEL_EN = {
   'アナウンス':'Announcements','設定':'Settings',
   '予実':'Budget','人材管理':'People','育成・評価':'Development','食材管理':'Ingredients',
   '本部':'HQ','経理':'Accounting','店舗管理':'Store Mgmt','シフト':'Shift','スキル':'Skills','チップ':'Tips',
-  '休暇承認':'Vacation Approval'
+  '休暇承認':'Vacation Approval',
+  '従業員割引':'Employee Discount'   /* v1028 */
 };
 function navLabelEn(l){ return (curLang==='en' && NAV_LABEL_EN[l]!=null) ? NAV_LABEL_EN[l] : l; }
 /* 従業員マスターを閲覧・編集できる個人（役職ではなく個人名・名で判定） */
@@ -37048,7 +37049,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1027';
+const APP_VERSION = '1028';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -58819,7 +58820,7 @@ function surveyUrl(storeCode, homeStore, isHomeOverride){
    ここでは本人確認の材料（氏名＋セッションPIN）と店舗コードだけを渡す。 */
 async function insertDiscountUse(storeCode){
   if(!curUserName || !window._sessionPin){
-    throw new Error('本人確認ができません。一度ログアウトして入り直してください。');
+    throw new Error(t('本人確認ができません。一度ログアウトして入り直してください。','We could not verify who you are. Please log out and log in again.'));
   }
   var res = await fetch(SUPABASE_URL + '/functions/v1/discount-log', {
     method : 'POST',
@@ -58841,7 +58842,7 @@ async function useDiscount(){
   if(_dcState.busy || _dcState.used) return;
   _dcState.busy = true;
   var btn = document.getElementById('dc-use-btn');
-  if(btn){ btn.disabled = true; btn.textContent = '記録中...'; }
+  if(btn){ btn.disabled = true; btn.textContent = t('記録中...','Recording...'); }
   try{
     await insertDiscountUse(_dcState.storeCode);
     _dcState.used = true;
@@ -58851,9 +58852,9 @@ async function useDiscount(){
     var err = document.getElementById('dc-error');
     if(err){
       err.style.display = 'block';
-      err.textContent = '記録に失敗しました。電波状況を確認してもう一度お試しください。（' + (e && e.message) + '）';
+      err.textContent = t('記録に失敗しました。電波状況を確認してもう一度お試しください。（','Could not record it. Check your connection and try again. (') + (e && e.message) + t('）',')');
     }
-    if(btn){ btn.disabled = false; btn.textContent = 'この店で割引を利用する'; }
+    if(btn){ btn.disabled = false; btn.textContent = t('この店で割引を利用する','Use my discount at this store'); }
   }finally{
     _dcState.busy = false;
   }
@@ -58910,9 +58911,10 @@ function renderDiscount(){
     var sc = _dcState.storeCode;
 
     if(!sc){
-      return '<div class="card"><div class="card-title">従業員割引</div>'
-        + '<p class="dc-hint">店頭の QR コードを読み取ると、この画面に割引証が出ます。<br>'
-        + '読み取り後にログインが必要になった場合も、店舗は保持されます。</p></div>';
+      /* v1028: 表示はすべて t(日本語, English)。判定に使う値（店舗コードなど）は英語にしない。 */
+      return '<div class="card"><div class="card-title">' + t('従業員割引','Employee Discount') + '</div>'
+        + '<p class="dc-hint">' + t('店頭の QR コードを読み取ると、この画面に割引証が出ます。','Scan the QR code at the store and your discount pass appears here.') + '<br>'
+        + t('読み取り後にログインが必要になった場合も、店舗は保持されます。','If you have to log in after scanning, the store is remembered.') + '</p></div>';
     }
 
     var storeName = SURVEY_STORE_NAME[sc] || sc;
@@ -58920,33 +58922,33 @@ function renderDiscount(){
     var homeLabel = SURVEY_STORE_NAME[u.home_store] || u.home_store || '—';
 
     var h = '<div class="dc-card' + (_dcState.used ? ' is-used' : '') + '">'
-      + '<div class="dc-head">FUNERGY 従業員割引証</div>'
+      + '<div class="dc-head">' + t('FUNERGY 従業員割引証','FUNERGY Employee Discount Pass') + '</div>'
       + '<div class="dc-name">' + escapeHtml(u.name) + '</div>'
       + '<div class="dc-meta">' + escapeHtml(homeLabel) + ' / G' + escapeHtml(u.grade) + '</div>'
       + '<div class="dc-bar" data-grade="' + escapeHtml(u.grade) + '"></div>'
-      + '<div class="dc-store">利用店舗: ' + escapeHtml(storeName) + '</div>'
+      + '<div class="dc-store">' + t('利用店舗: ','Store: ') + escapeHtml(storeName) + '</div>'
       + '<div class="dc-clock" id="dc-clock"></div>'
-      + (_dcState.used ? '<div class="dc-stamp">利用済み</div>' : '')
+      + (_dcState.used ? '<div class="dc-stamp">' + t('利用済み','USED') + '</div>' : '')
       + '</div>'
       + '<div id="dc-error" class="dc-error" style="display:none"></div>';
 
     if(_dcState.used){
       h += (sUrl
-          ? '<a class="btn btn-primary dc-wide" href="' + escapeHtml(sUrl) + '" target="_blank" rel="noopener">アンケートに回答する</a>'
+          ? '<a class="btn btn-primary dc-wide" href="' + escapeHtml(sUrl) + '" target="_blank" rel="noopener">' + t('アンケートに回答する','Take the survey') + '</a>'
           : '')
-        + '<p class="dc-note">1〜2分で終わります。完全に匿名です。誰が答えたかは記録されません。</p>'
-        + '<button class="btn btn-sm" onclick="_dcState.used=false;renderPage(\'discount\')">もう一度利用する</button>';
+        + '<p class="dc-note">' + t('1〜2分で終わります。完全に匿名です。誰が答えたかは記録されません。','It takes 1-2 minutes. It is fully anonymous - we never record who answered.') + '</p>'
+        + '<button class="btn btn-sm" onclick="_dcState.used=false;renderPage(\'discount\')">' + t('もう一度利用する','Use it again') + '</button>';
     }else{
-      h += '<button class="btn btn-primary dc-wide" id="dc-use-btn" onclick="useDiscount()">この店で割引を利用する</button>'
-        + '<p class="dc-note">レジで、この画面の<strong>秒が動いていること</strong>を店舗スタッフに見せてください。</p>';
+      h += '<button class="btn btn-primary dc-wide" id="dc-use-btn" onclick="useDiscount()">' + t('この店で割引を利用する','Use my discount at this store') + '</button>'
+        + '<p class="dc-note">' + t('レジで、この画面の<strong>秒が動いていること</strong>を店舗スタッフに見せてください。','At the register, show this screen to the staff and make sure the <strong>seconds are moving</strong>.') + '</p>';
     }
     return h;
 
   }catch(e){
     /* 描画例外で前の画面が残る silent failure を防ぐ */
     stopCardClock();
-    return '<div class="card"><div class="card-title" style="color:var(--red)">従業員割引</div>'
-      + '<p class="dc-hint">画面の表示に失敗しました：' + escapeHtml(e && e.message) + '</p></div>';
+    return '<div class="card"><div class="card-title" style="color:var(--red)">' + t('従業員割引','Employee Discount') + '</div>'
+      + '<p class="dc-hint">' + t('画面の表示に失敗しました：','This screen could not be displayed: ') + escapeHtml(e && e.message) + '</p></div>';
   }
 }
 
