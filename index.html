@@ -4411,18 +4411,34 @@ async function mcLoadDetailExtras(alertId) {
 }
 
 function mcNotifStatusLabel(n) {
-  if (n.acknowledged_at) return { t: '確認済み', c: '#2f9e44' };
-  if (n.read_at) return { t: '既読', c: '#e0a020' };
-  if (n.status === 'failed') return { t: '送信失敗', c: '#e23b3b' };
-  if (n.status === 'sent') return { t: '未読', c: 'var(--muted)' };
-  return { t: '送信待ち', c: 'var(--muted)' };
+  /* v1029: 表示だけ日英。保存する status（sent/read/…）は変えない。 */
+  if (n.acknowledged_at) return { t: t('確認済み','Acknowledged'), c: '#2f9e44' };
+  if (n.read_at) return { t: t('既読','Read'), c: '#e0a020' };
+  if (n.status === 'failed') return { t: t('送信失敗','Send failed'), c: '#e23b3b' };
+  if (n.status === 'sent') return { t: t('未読','Unread'), c: 'var(--muted)' };
+  return { t: t('送信待ち','Pending'), c: 'var(--muted)' };
+}
+/* v1029: 重要度・状況の表示だけ英語にする（MC_SEV / MC_STATUS の中身は他画面とデータで使うので触らない）。 */
+function mcSevLabel(key) {
+  var d = { critical: t('緊急','Urgent'), warning: t('注意','Warning'), info: t('確認','Info') };
+  return d[key] || ((MC_SEV[key] || {}).label || key);
+}
+function mcStatusLabel(key) {
+  var d = { open: t('未対応','Open'), in_progress: t('対応中','In progress'), resolved: t('解決','Resolved'), excluded: t('対象外','Excluded') };
+  return d[key] || ((MC_STATUS[key] || {}).label || key);
 }
 function mcElapsed(iso) {
-  var t = Date.parse(iso || ''); if (!t) return '';
-  var m = Math.floor((Date.now() - t) / 60000);
-  if (m < 60) return m + '分';
-  if (m < 1440) return Math.floor(m / 60) + '時間';
-  return Math.floor(m / 1440) + '日';
+  var ms = Date.parse(iso || ''); if (!ms) return '';
+  var m = Math.floor((Date.now() - ms) / 60000);
+  /* v1029: 単位も日英。日本語は「3時間」、英語は「3h」。 */
+  if (m < 60) return m + t('分','m');
+  if (m < 1440) return Math.floor(m / 60) + t('時間','h');
+  return Math.floor(m / 1440) + t('日','d');
+}
+/* v1029: 「3時間前」「3h ago」。並びが逆なのでまとめて作る。 */
+function mcElapsedAgo(iso) {
+  var e = mcElapsed(iso); if (!e) return '';
+  return t(e + '前', e + ' ago');
 }
 
 /* 通知の状況（GM が見る欄・仕様§9） */
@@ -4449,11 +4465,11 @@ function mcCommentPanelHtml(alertId) {
         + '<div style="font-size:12.5px;line-height:1.6;word-break:break-word">' + escapeHtml(c.comment || '') + '</div></div>';
     }).join('');
   } else {
-    h += '<div style="font-size:11.5px;color:var(--muted);padding:6px 0">コメントはありません</div>';
+    h += '<div style="font-size:11.5px;color:var(--muted);padding:6px 0">' + t('コメントはありません','No messages yet') + '</div>';
   }
   h += '<div style="display:flex;gap:6px;margin-top:7px">'
-    + '<input id="mc-cmt" type="text" placeholder="コメントを書く" style="flex:1;min-width:0;box-sizing:border-box;font-size:13px;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
-    + '<button class="btn btn-secondary btn-sm" style="flex:0 0 auto" onclick="mcPostComment(\'' + alertId + '\',(document.getElementById(\'mc-cmt\')||{}).value)">送信</button>'
+    + '<input id="mc-cmt" type="text" placeholder="' + t('コメントを書く','Write a message') + '" style="flex:1;min-width:0;box-sizing:border-box;font-size:13px;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit">'
+    + '<button class="btn btn-secondary btn-sm" style="flex:0 0 auto" onclick="mcPostComment(\'' + alertId + '\',(document.getElementById(\'mc-cmt\')||{}).value)">' + t('送信','Send') + '</button>'
     + '</div>';
   return h;
 }
@@ -4504,7 +4520,7 @@ async function mcMarkNotif(id, kind) {
   else { fields = { acknowledged_at: mcNowIso(), status: 'acknowledged', read_at: n.read_at || mcNowIso() }; }
   var r = await mcUpdateLocked(MC_TBL.notif, id, n.version, fields);
   if (r.conflict) { await mcLoadMyRequests(true); return; }
-  if (!r.ok) { showToast('保存できませんでした', 'danger'); return; }
+  if (!r.ok) { showToast(t('保存できませんでした','Could not save'), 'danger'); return; }
   var i = mcReq.notifs.findIndex(function (x) { return x.id === id; });
   if (i >= 0) mcReq.notifs[i] = r.row;
   if (kind === 'ack') {
@@ -4519,25 +4535,25 @@ async function mcActionUpdate(actionId, kind, text) {
   var ac = mcReq.actions.find(function (x) { return x.id === actionId; });
   if (!ac) return;
   if (ac.assigned_to !== mcMyName() && !mcCanResolve(mcAlertStoreOf(ac.alert_id))) {
-    showToast('この依頼の担当ではありません', 'warning'); return;
+    showToast(t('この依頼の担当ではありません','This request is not assigned to you'), 'warning'); return;
   }
   var fields = { };
   if (kind === 'start') { fields.status = 'in_progress'; fields.started_at = mcNowIso(); }
   else if (kind === 'report') {
-    if (!String(text || '').trim()) { showToast('対応内容を入力してください', 'warning'); return; }
+    if (!String(text || '').trim()) { showToast(t('対応内容を入力してください','Please describe what you did'), 'warning'); return; }
     fields.status = 'reported'; fields.completed_at = mcNowIso(); fields.response_message = text;
   } else return;
   var r = await mcUpdateLocked(MC_TBL.action, actionId, ac.version, fields);
-  if (r.conflict) { await mcLoadMyRequests(true); showToast('他の人が先に更新していました', 'warning'); return; }
-  if (!r.ok) { showToast('保存できませんでした', 'danger'); return; }
+  if (r.conflict) { await mcLoadMyRequests(true); showToast(t('他の人が先に更新していました','Someone else updated this first'), 'warning'); return; }
+  if (!r.ok) { showToast(t('保存できませんでした','Could not save'), 'danger'); return; }
   var i = mcReq.actions.findIndex(function (x) { return x.id === actionId; });
   if (i >= 0) mcReq.actions[i] = r.row;
   await mcLogEvent(ac.alert_id, 'action_' + kind, { status: ac.status }, r.row, null);
   if (kind === 'report') {
     var al = mcReqFindAlert(ac.alert_id);
     if (al) await mcNotifyAlert(al, 'reported', { message: text, gen: actionId + '-report', only: ['am', 'gm'] });
-    showToast('完了報告を送りました。GM / AM の確認をお待ちください', 'success');
-  } else showToast('対応を開始しました', 'success');
+    showToast(t('完了報告を送りました。GM / AM の確認をお待ちください','Report sent. Your GM / AM will review it.'), 'success');
+  } else showToast(t('対応を開始しました','Started'), 'success');
   renderPage('mc_requests');
 }
 function mcAlertStoreOf(alertId) { var a = mcReqFindAlert(alertId) || mcFindAlert(alertId); return a ? a.store_id : ''; }
@@ -4547,33 +4563,34 @@ function mcReqToggle(id) { mcReq.openId = (mcReq.openId === id) ? '' : id; rende
 function renderMcRequests(embedded) {
   if (!mcReq.loaded && !mcReq.loading) { try { mcLoadMyRequests(); } catch (e) { } }
   try { if (typeof mcRealtimeStart === 'function' && !mcRt.on) mcRealtimeStart(); } catch (e) { }   /* v813 */
+  /* v1029: 表示はすべて t(日本語, English)。保存する値・人が書いた本文は英語にしない。 */
   var h = embedded ? '' : ('<div class="section-header"><div><div class="section-title">'
-    + '<i class="ti ti-inbox"></i> 対応依頼</div>'
-    + '<div class="section-sub">自分あての通知と、依頼された対応をここで確認します</div></div></div>');
+    + '<i class="ti ti-inbox"></i> ' + t('対応依頼','My Requests') + '</div>'
+    + '<div class="section-sub">' + t('自分あての通知と、依頼された対応をここで確認します','Your notifications and the tasks assigned to you') + '</div></div></div>');
 
   if (mcReq.schemaMissing) {
-    return h + mcBanner('ti-database-off', MC_SEV.warning.color, 'まだ準備中です',
-      '管理統括のデータベースが適用されていません。GM に確認してください。');
+    return h + mcBanner('ti-database-off', MC_SEV.warning.color, t('まだ準備中です','Not set up yet'),
+      t('管理統括のデータベースが適用されていません。GM に確認してください。','The management database has not been set up. Please check with your GM.'));
   }
-  if (mcReq.err) return h + mcBanner('ti-plug-connected-x', MC_SEV.critical.color, '取得できませんでした', escapeHtml(mcReq.err));
+  if (mcReq.err) return h + mcBanner('ti-plug-connected-x', MC_SEV.critical.color, t('取得できませんでした','Could not load'), escapeHtml(mcReq.err));
   if (mcReq.loading && !mcReq.notifs.length) {
-    return h + '<div class="card" style="text-align:center;padding:24px;font-size:12.5px;color:var(--muted)">読み込み中…</div>';
+    return h + '<div class="card" style="text-align:center;padding:24px;font-size:12.5px;color:var(--muted)">' + t('読み込み中…','Loading…') + '</div>';
   }
   var unread = mcMyUnread();
   h += '<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:12px">'
     + '<div style="flex:1 1 96px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px 8px;text-align:center">'
     + '<div style="font-size:23px;font-weight:800;color:' + (unread ? MC_SEV.critical.color : 'var(--muted)') + '">' + unread + '</div>'
-    + '<div style="font-size:10.5px;color:var(--muted);margin-top:3px">未読</div></div>'
+    + '<div style="font-size:10.5px;color:var(--muted);margin-top:3px">' + t('未読','Unread') + '</div></div>'
     + '<div style="flex:1 1 96px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px 8px;text-align:center">'
     + '<div style="font-size:23px;font-weight:800">' + mcReq.actions.filter(function (a) { return a.status !== 'verified' && a.status !== 'rejected'; }).length + '</div>'
-    + '<div style="font-size:10.5px;color:var(--muted);margin-top:3px">対応中の依頼</div></div>'
+    + '<div style="font-size:10.5px;color:var(--muted);margin-top:3px">' + t('対応中の依頼','Open tasks') + '</div></div>'
     + '<button class="btn btn-secondary btn-sm" style="flex:0 0 auto;align-self:center" onclick="mcLoadMyRequests(true)"><i class="ti ti-refresh"></i></button>'
     + '</div>';
 
   if (!mcReq.notifs.length) {
     return h + '<div class="card" style="text-align:center;padding:26px">'
       + '<i class="ti ti-circle-check" style="font-size:34px;color:var(--green)"></i>'
-      + '<div style="font-size:13.5px;font-weight:600;margin-top:8px">対応依頼はありません</div></div>';
+      + '<div style="font-size:13.5px;font-weight:600;margin-top:8px">' + t('対応依頼はありません','No requests right now') + '</div></div>';
   }
 
   h += mcReq.notifs.map(function (n) {
@@ -4584,50 +4601,50 @@ function renderMcRequests(embedded) {
     var act = mcReq.actions.filter(function (x) { return x.alert_id === n.alert_id; })[0];
     var x = '<div class="card" style="padding:12px;border-left:3px solid ' + sev.color + '">';
     x += '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:4px">'
-      + '<span style="font-size:10.5px;font-weight:700;color:#fff;background:' + sev.color + ';padding:2px 7px;border-radius:6px">' + sev.label + '</span>'
+      + '<span style="font-size:10.5px;font-weight:700;color:#fff;background:' + sev.color + ';padding:2px 7px;border-radius:6px">' + mcSevLabel(n.priority) + '</span>'
       + '<span style="font-size:10.5px;color:var(--muted)">' + escapeHtml(mcStoreLabel(n.store_id)) + '</span>'
       + '<span style="margin-left:auto;font-size:10.5px;font-weight:700;color:' + st.c + '">' + st.t + '</span></div>';
     x += '<div style="font-size:13.5px;font-weight:700;line-height:1.5">' + escapeHtml(n.title || '') + '</div>';
     if (n.body) x += '<div style="font-size:12px;color:var(--muted);line-height:1.6;margin-top:3px;word-break:break-word">' + escapeHtml(n.body) + '</div>';
-    x += '<div style="font-size:10.5px;color:var(--muted);margin-top:5px">' + mcElapsed(n.created_at) + '前</div>';
+    x += '<div style="font-size:10.5px;color:var(--muted);margin-top:5px">' + mcElapsedAgo(n.created_at) + '</div>';
 
     if (open && a) {
       function row(l, v) { return (v === null || v === undefined || v === '') ? '' : '<div style="display:flex;gap:8px;font-size:11.5px;line-height:1.7"><span style="flex:0 0 76px;color:var(--muted)">' + l + '</span><span style="flex:1;min-width:0;word-break:break-word">' + v + '</span></div>'; }
       x += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">';
       var _rv = (typeof mcVals === 'function') ? mcVals(a) : { cur: '', tgt: '', fc: '' };   /* v818 */
-      x += row(_rv.curL || '現在値', _rv.cur);
-      x += row(_rv.tgtL || '目標値', _rv.tgt);
-      x += row(_rv.fcL || '月末予測', _rv.fc);
-      x += row('影響額', a.estimated_impact != null ? fmtMoney(a.estimated_impact) : '');
-      x += row('想定原因', a.cause_summary ? escapeHtml(a.cause_summary) : '');
-      x += row('推奨対応', a.recommended_action ? escapeHtml(a.recommended_action) : '');
-      x += row('状況', (MC_STATUS[a.status] || {}).label || a.status);
-      if (act) x += row('依頼', escapeHtml(act.request_message || '') + '<span style="color:var(--muted)"> / ' + escapeHtml(act.requested_by || '') + '</span>');
+      x += row(_rv.curL || t('現在値','Current'), _rv.cur);
+      x += row(_rv.tgtL || t('目標値','Target'), _rv.tgt);
+      x += row(_rv.fcL || t('月末予測','Forecast'), _rv.fc);
+      x += row(t('影響額','Impact'), a.estimated_impact != null ? fmtMoney(a.estimated_impact) : '');
+      x += row(t('想定原因','Likely cause'), a.cause_summary ? escapeHtml(a.cause_summary) : '');
+      x += row(t('推奨対応','Suggested action'), a.recommended_action ? escapeHtml(a.recommended_action) : '');
+      x += row(t('状況','Status'), mcStatusLabel(a.status));
+      if (act) x += row(t('依頼','Request'), escapeHtml(act.request_message || '') + '<span style="color:var(--muted)"> / ' + escapeHtml(act.requested_by || '') + '</span>');
       if (act && act.assigned_to === mcMyName() && act.status !== 'verified' && typeof mcEditField === 'function') {
-        x += mcEditField(MC_TBL.action, act.id, 'response_message', '対応内容（自動保存）', act.response_message, 'やったことを書いてください');   /* v813 */
-      } else if (act && act.response_message) x += row('対応内容', escapeHtml(act.response_message));
+        x += mcEditField(MC_TBL.action, act.id, 'response_message', t('対応内容（自動保存）','What you did (saved automatically)'), act.response_message, t('やったことを書いてください','Describe what you did'));   /* v813 */
+      } else if (act && act.response_message) x += row(t('対応内容','What was done'), escapeHtml(act.response_message));
       x += '</div>';
 
       x += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">'
-        + '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">やり取り</div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">' + t('やり取り','Messages') + '</div>'
         + ((mcExtra.id === a.id) ? mcCommentPanelHtml(a.id)
-          : '<button class="btn btn-secondary btn-sm" style="width:100%" onclick="mcLoadDetailExtras(\'' + a.id + '\')">コメントを読み込む</button>')
+          : '<button class="btn btn-secondary btn-sm" style="width:100%" onclick="mcLoadDetailExtras(\'' + a.id + '\')">' + t('コメントを読み込む','Load messages') + '</button>')
         + '</div>';
 
       var btn = [];
-      if (!n.acknowledged_at) btn.push('<button class="btn btn-primary btn-sm" style="flex:1 1 100px" onclick="mcMarkNotif(\'' + n.id + '\',\'ack\')">確認しました</button>');
-      if (act && act.status === 'requested') btn.push('<button class="btn btn-secondary btn-sm" style="flex:1 1 100px" onclick="mcActionUpdate(\'' + act.id + '\',\'start\')">対応開始</button>');
+      if (!n.acknowledged_at) btn.push('<button class="btn btn-primary btn-sm" style="flex:1 1 100px" onclick="mcMarkNotif(\'' + n.id + '\',\'ack\')">' + t('確認しました','Got it') + '</button>');
+      if (act && act.status === 'requested') btn.push('<button class="btn btn-secondary btn-sm" style="flex:1 1 100px" onclick="mcActionUpdate(\'' + act.id + '\',\'start\')">' + t('対応開始','Start') + '</button>');
       if (act && (act.status === 'in_progress' || act.status === 'acknowledged' || act.status === 'requested')) {
-        btn.push('<button class="btn btn-secondary btn-sm" style="flex:1 1 100px" onclick="mcReportPrompt(\'' + act.id + '\')">完了報告</button>');
+        btn.push('<button class="btn btn-secondary btn-sm" style="flex:1 1 100px" onclick="mcReportPrompt(\'' + act.id + '\')">' + t('完了報告','Report done') + '</button>');
       }
       if (btn.length) x += '<div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px">' + btn.join('') + '</div>';
       if (act && act.status === 'reported') {
         x += '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">'
-          + '完了報告を送りました。GM / 管轄AM が内容を確認すると解決になります。</div>';
+          + t('完了報告を送りました。GM / 管轄AM が内容を確認すると解決になります。','Your report was sent. It is resolved once your GM / AM reviews it.') + '</div>';
       }
     }
     x += '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" style="width:100%" onclick="mcReqOpen(\'' + n.id + '\')">'
-      + (open ? '閉じる' : '内容を見る') + '</button></div>';
+      + (open ? t('閉じる','Close') : t('内容を見る','View details')) + '</button></div>';
     return x + '</div>';
   }).join('');
   return h;
@@ -4640,9 +4657,10 @@ function mcReqOpen(id) {
   if (was !== id) { try { mcMarkNotif(id, 'read'); } catch (e) { } }
 }
 function mcReportPrompt(actionId) {
-  var t = prompt('対応した内容を書いてください（GM / AM が確認します）');
-  if (t === null) return;
-  mcActionUpdate(actionId, 'report', t);
+  /* v1029: prompt も日英。変数名 t は言語関数 t() と衝突するので msg にした。 */
+  var msg = prompt(t('対応した内容を書いてください（GM / AM が確認します）','Describe what you did (your GM / AM will review it)'));
+  if (msg === null) return;
+  mcActionUpdate(actionId, 'report', msg);
 }
 
 /* ============================================================
@@ -8938,7 +8956,8 @@ var NAV_LABEL_EN = {
   '予実':'Budget','人材管理':'People','育成・評価':'Development','食材管理':'Ingredients',
   '本部':'HQ','経理':'Accounting','店舗管理':'Store Mgmt','シフト':'Shift','スキル':'Skills','チップ':'Tips',
   '休暇承認':'Vacation Approval',
-  '従業員割引':'Employee Discount'   /* v1028 */
+  '従業員割引':'Employee Discount',   /* v1028 */
+  '対応依頼':'My Requests'   /* v1029 */
 };
 function navLabelEn(l){ return (curLang==='en' && NAV_LABEL_EN[l]!=null) ? NAV_LABEL_EN[l] : l; }
 /* 従業員マスターを閲覧・編集できる個人（役職ではなく個人名・名で判定） */
@@ -37049,7 +37068,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1028';
+const APP_VERSION = '1029';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
