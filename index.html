@@ -8989,6 +8989,8 @@ var _SPLIT_KEYS = {
   supply_orders:    {type:'arr', by:function(r){return r&&r.store;}, readFilter:function(r){return !(r&&r._deleted);}},
   invoices:         {type:'arr', by:function(r){return r&&r.storeId;}, readFilter:function(r){return !(r&&r._deleted);}},
   reimbursements:   {type:'arr', by:function(r){return r&&r.storeId;}, readFilter:function(r){return !(r&&r._deleted);}},
+  /* v1030: チェック（小切手）の控え。店舗ごとに行を分け、削除は論理削除（reimbursements と同じ）。 */
+  checks:           {type:'arr', by:function(r){return r&&r.storeId;}, readFilter:function(r){return !(r&&r._deleted);}},
   tip_requests:     {type:'arr', by:function(r){return r&&r.name;}},
   tip_history:      {type:'arr', by:function(r){return r&&r.name;}},
   ot_requests:      {type:'arr', by:function(r){return r&&r.name;}},
@@ -10476,7 +10478,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
    唯一の入口 openLaborHourModal() に呼び出し元が無く（doToastLaborFetch も同じ）、
@@ -10594,7 +10596,7 @@ function outboxLabel(key){
     ['budget_approved_','承認済み予算'],['approvals','承認申請'],['tasks_all','タスク'],['fv_count_','日次食材差異(棚卸)'],
     ['fv_moves_','日次食材差異(入出庫)'],['fv_review_','日次食材差異(原因)'],['fv_config','日次食材差異(設定)'],
     ['cash_tips_','現金チップ'],['skills_st_','スキル'],['m_ingredients','食材マスタ'],['m_vendors','業者マスタ'],
-    ['m_recipes','レシピ'],['inv_','棚卸'],['purchases_','買い出し'],['reimbursements','立替'],
+    ['m_recipes','レシピ'],['inv_','棚卸'],['purchases_','買い出し'],['reimbursements','立替'],['spl_checks_','チェック'],['checks','チェック'],
     ['ec_log','エラーセンター記録'],['menu_log','メニュー変更ログ'],['reject_log','不採用ログ'],
     ['handbook_log','ハンドブック更新ログ'],['prep_history','仕込みレベル履歴'],['meeting_minutes','議事録']];
   for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return map[i][1]; }
@@ -11415,6 +11417,7 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey },
   invoices:       { merge: mergeInvoices, covers: _coversInvoices },
   reimbursements: { merge: mergeInvoices, covers: _coversInvoices },
+  checks:         { merge: mergeInvoices, covers: _coversInvoices },   /* v1030: 登録端末と経理端末が同じ行を書く */
   tasks_all:      { merge: mergeTasks, covers: _coversTasks, after: function(){ try{ if(curPage==='tasks') renderPage('tasks'); }catch(e){} } },
   /* v722: 日次食材差異の設定。ings/recipes はエントリ単位で新しい方が勝つ(端末間で消えない) */
   fv_config:      { merge: mergeFvConfig, covers: _coversFvConfig },
@@ -11670,7 +11673,7 @@ registerInvMergeKeys();
      ・すでに論理削除(_deleted)を使うもの（tasks_all / mileage_requests / expense_requests）
      ・invoices / reimbursements は本版で論理削除へ変更（下記 _SPLIT_KEYS.readFilter と対で運用）
    ※ 物理削除のままのキーをここに足すと「削除した行がマージで復活」するため、必ず論理削除とセットで追加すること。 */
-var SPLIT_MERGE_SAFE_KEYS = ['invoices','reimbursements','tasks_all','mileage_requests','expense_requests','lost_receipts',
+var SPLIT_MERGE_SAFE_KEYS = ['invoices','reimbursements','checks','tasks_all','mileage_requests','expense_requests','lost_receipts',
   'skill_history','lss_history','tip_history','career_history',
   /* v686: 申請系。物理削除は無く status 更新のみ（mergeSkillReq はレビュー済みを優先）。
      端末間で申請が消えるのを防ぐ。 */
@@ -37068,7 +37071,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1029';
+const APP_VERSION = '1030';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41991,6 +41994,9 @@ function _acPend(){
     return (typeof pendingAcctReviewCount==='function') ? pendingAcctReviewCount() : 0; });
   add('invoice','画像が付いていない伝票', function(){
     return (ls('invoices',[])||[]).filter(function(v){ return v && !v._deleted && v.imageMissing && !v.imagePath; }).length; });
+  add('check','未確認のチェック', function(){   /* v1030 */
+    return (typeof getChecks==='function')
+      ? getChecks().filter(function(c){ return (c.reviewStatus||'未確認')==='未確認'; }).length : 0; });
   add('lost','承認待ちの紛失届', function(){
     return (typeof getLostReceipts==='function')
       ? getLostReceipts().filter(function(r){ return (r.status||'申請中')==='申請中'; }).length : 0; });
@@ -42051,6 +42057,16 @@ function _acRows(kind){
     var r = inv(function(v){ return v.docType==='Reimburse'; });
     r.forEach(function(x){ x.third = x.who || x.third; });
     return { label:'申請者', rows:r };
+  }
+  if(kind==='check'){
+    /* v1030: チェック（小切手）。checks から作る。Drive に入っていない行は補足に出す。 */
+    return { label:'支払先', rows: (typeof getChecks==='function'?getChecks():[]).map(function(c){
+      return { id:c.id, kind:'check', date:_acDate(c.checkDate), store:c.storeId,
+               third:(c.payee||''), amount:Number(c.amount||0),
+               sub:('#'+(c.checkNo||'')+((c.driveFileId||c.driveUrl)?'':(' · '+t('Drive未保存','Not in Drive')))+(c.memo?(' · '+c.memo):'')),
+               who:(c.byUser||c.by||''), img:!!(c.driveFileId||c.driveUrl||c.imagePath), pending:false,
+               status:(c.reviewStatus||'') };
+    }) };
   }
   if(kind==='lost'){
     return { label:'申請者', rows: (typeof getLostReceipts==='function'?getLostReceipts():[]).map(function(v){
@@ -42174,7 +42190,8 @@ function acUploadList(kind){
   h += '<div class="card" style="padding:0;overflow:hidden">';
   view.forEach(function(r,i){
     var col=_acStCol(r.st);
-    var click = (r.kind==='inv') ? (' onclick="openInvoiceViewer(\''+r.id+'\')"') : '';
+    var click = (r.kind==='inv') ? (' onclick="openInvoiceViewer(\''+r.id+'\')"')
+      : ((r.kind==='check') ? (' onclick="openCheckReview(\''+r.id+'\')"') : '');   /* v1030 */
     h += '<div'+click+' style="display:flex;gap:9px;padding:10px 11px'
       + (i?';border-top:1px solid var(--border)':'')+(click?';cursor:pointer':'')+'">'
       + '<span style="flex-shrink:0;width:4px;border-radius:3px;background:'+col+'"></span>'
@@ -42201,9 +42218,9 @@ function acUploadList(kind){
    el.innerHTML への代入自体が起きず、前の画面（Office管理）が残ったまま
    どのボタンも効かない状態になっていた。HANDOFF_v885 の記載どおりに復元する。
    守るべき約束ごと（ここを崩すと静かに壊れる）:
-   ・sub.id は _acPend() が返す 'invoice','lost','gas','exp','vac' と一致させること。
+   ・sub.id は _acPend() が返す 'invoice','check','lost','gas','exp','vac' と一致させること。
      ずれると未処理バッジの飛び先（acSetSub）が存在しない中タブになる。
-   ・sub.list は _acRows() が受け取る 'invoice','receipt','reimb','lost','gas' のみ。
+   ・sub.list は _acRows() が受け取る 'invoice','receipt','reimb','check','lost','gas' のみ。
    ・sub.fn / sub.more は window[名前]() で引数なしに呼ぶ。引数が要る関数は下の
      acDashBody / acErrBody のように包んでから載せること。 */
 var _acCat = 'dash';
@@ -42879,6 +42896,7 @@ var AC_TABS = [
       { id:'invoice',  label:'Invoice',       list:'invoice', more:'renderInvoice' },
       { id:'receipt',  label:'レシート',       list:'receipt' },
       { id:'reimb',    label:'建て替え',       list:'reimb',   more:'renderReimburseCard' },
+      { id:'check',    label:'チェック',       list:'check' },   /* v1030: 行を押すと openCheckReview */
       { id:'lost',     label:'紛失届',         list:'lost',    more:'renderLostReceipt' },
       { id:'gas',      label:'ガソリン代',     list:'gas',     more:'renderMileage' },
       { id:'vac',      label:'休暇申請',       fn:'renderVacation' },
@@ -61756,8 +61774,9 @@ function renderInvoice() {
   var html = `<div class="section-header"><div><div class="section-title">${t('Invoice管理','Invoice management')}</div><div class="section-sub">${t('アップロード→照合→価格更新','Upload → match → update prices')}</div></div>
     <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button><button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('伝票診断・復旧','Diagnose / recover')}</button>`:''}${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> ${t('Invoice登録','Add invoice')}</button></div></div>`;
   var _canCard = ['ceo','gm','office','office_crew'].includes(curRole);
-  html += `<div class="mm-tabs" style="margin-bottom:10px"><button class="mm-tab${(window._invMainView||'list')!=='cardusage'?' active':''}" onclick="setInvMainView('list')"><i class="ti ti-file-invoice"></i> ${t('Invoice一覧','Invoice list')}</button>${_canCard?`<button class="mm-tab${(window._invMainView||'list')==='cardusage'?' active':''}" onclick="setInvMainView('cardusage')"><i class="ti ti-credit-card"></i> ${t('カード使用管理','Card usage')}</button>`:''}</div>`;
+  html += `<div class="mm-tabs" style="margin-bottom:10px"><button class="mm-tab${['cardusage','checks'].indexOf(window._invMainView||'list')<0?' active':''}" onclick="setInvMainView('list')"><i class="ti ti-file-invoice"></i> ${t('Invoice一覧','Invoice list')}</button>${_canCard?`<button class="mm-tab${(window._invMainView||'list')==='cardusage'?' active':''}" onclick="setInvMainView('cardusage')"><i class="ti ti-credit-card"></i> ${t('カード使用管理','Card usage')}</button>`:''}<button class="mm-tab${(window._invMainView||'list')==='checks'?' active':''}" onclick="setInvMainView('checks')"><i class="ti ti-writing-sign"></i> ${t('チェック','Checks')}${(function(){var n=checkReturnedCount();return n?' <span style="color:var(--red);font-weight:800">'+n+'</span>':'';})()}</button></div>`;
   if ((window._invMainView||'list')==='cardusage' && _canCard) return html + renderCardUsage();
+  if ((window._invMainView||'list')==='checks') return html + renderCheckList();   /* v1030 */
   html += renderReimburseCard();
   if (!invoices.length) {
     html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-file-invoice" style="font-size:32px;margin-bottom:8px;display:block"></i>${t('Invoice履歴なし','No invoice history')}</div>`;
@@ -61908,14 +61927,12 @@ function openInvoiceModal() {
     storeSelHtml = `<div class="form-group"><label class="form-label">対象店舗</label>
       <div style="font-weight:600;padding:4px 0"><span class="store-dot" style="background:${candidates[0].color}"></span>${candidates[0].name}</div></div>`;
   }
-  openModal(`<div class="modal-title">Invoice / Receipt登録 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  /* v1030: チェック（小切手）は入力がまったく違うので別の中身で出す（店舗の選び方と種別ボタンは共通）。 */
+  if (invoiceDocType==='Check') { openModal(checkModalHtml(candidates)); return; }
+  openModal(`<div class="modal-title">Invoice / Receipt / チェック登録 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     ${storeSelHtml}
     <div class="form-group"><label class="form-label">種別</label>
-      <div style="display:flex;gap:8px">
-        <button class="btn ${invoiceDocType==='Invoice'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Invoice')">業者Invoice</button>
-        <button class="btn ${invoiceDocType==='Receipt'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Receipt')">Receipt読み取り</button>
-        <button class="btn ${invoiceDocType==='Reimburse'?'btn-primary':'btn-secondary'} btn-sm" style="flex:1" onclick="setInvDocType('Reimburse')">建て替え経費</button>
-      </div>
+      ${invDocTypeButtons()}
     </div>
     <div class="form-group"><label class="form-label">伝票日付 <span style="font-weight:400;color:var(--muted);font-size:11px">（請求書に記載の日付。月次集計はこの日付で計上）</span></label>
       <input class="form-input" type="date" id="inv-docdate" value="${(function(){var _d=new Date();return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})()}">
@@ -61995,6 +62012,556 @@ function openInvoiceModal() {
   setTimeout(renderOCRResult, 30);
 }
 function setInvDocType(t) { invoiceDocType = t; openInvoiceModal(); }
+/* v1030: 種別ボタン。4つになったので2列に並べる（ほかの3つの文言と動きは今のまま）。 */
+function invDocTypeButtons(){
+  var b = function(k, label){
+    return '<button class="btn '+(invoiceDocType===k?'btn-primary':'btn-secondary')+' btn-sm" style="white-space:nowrap" onclick="setInvDocType(\''+k+'\')">'+label+'</button>';
+  };
+  return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+    + b('Invoice','業者Invoice') + b('Receipt','Receipt読み取り') + b('Reimburse','建て替え経費')
+    + b('Check', t('チェック（小切手）','Check')) + '</div>';
+}
+/* ============================================================
+   v1030: チェック（小切手）の控え（Motoさんの決定 9/24・UI案23）
+   ・店が業者などに渡したチェック（支払い）だけを扱う。Invoice とは紐づけない。原価には入れない（支払いの記録）。
+   ・記録は app_state の checks。invoices に入れない（原価の集計が仕入として数え、二重計上になるため）。
+   ・画像：Storage に上げる → drive-sync で Drive の Checks/<チェックの年月>/ に保存（全店まとめ）→
+     Drive に入ったら Storage のコピーを消す（口座番号・サインが写るため）。入らなかったときだけ残し、経理が再送する。
+     ファイル名：<番号>_<日付>_<店舗>_<支払先>_<金額>.pdf
+   ・drive-sync へは建て替え経費と同じ呼び方（kind:'receipt' ＋ subfolder）で渡す。drive-sync のソースは手元に無い。
+   ・読み取り：Edge Function check_ocr。未デプロイ（404）や失敗のときは手入力で登録できる。
+============================================================ */
+var CHECK_OCR_FN = SUPABASE_URL + '/functions/v1/check_ocr';
+function getChecks(){ return (ls('checks', [])||[]).filter(function(x){ return x && !x._deleted; }); }
+function saveChecks(v){ return lsSet('checks', v); }
+function canReviewChecks(){ return !isViewOnlyRole() && ['ceo','gm','office'].indexOf(curRole)>=0; }
+function _ckSeesAll(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
+function _ckMine(c){
+  if(!c) return false;
+  if(c.byUser && curUserName) return c.byUser===curUserName;
+  return c.by === ((ROLE_CONFIG[curRole]||{}).name||'');
+}
+function checksScoped(){
+  var all = getChecks(); if(_ckSeesAll()) return all;
+  var ids = invoiceStoreCandidates().map(function(s){ return s.id; });
+  return all.filter(function(c){ return ids.indexOf(c.storeId)>=0 || _ckMine(c); });
+}
+function canDeleteCheck(c){
+  if(!c || isViewOnlyRole()) return false;
+  if(['ceo','gm','office'].indexOf(curRole)>=0) return true;
+  return _ckMine(c) && (c.reviewStatus||'未確認')!=='確認済み';
+}
+function checkReturnedCount(){
+  try{ return checksScoped().filter(function(c){ return c.reviewStatus==='差し戻し' && _ckMine(c); }).length; }catch(e){ return 0; }
+}
+function _ckStoreName(id){
+  if(id==='OFFICE') return 'Office';
+  var s = (typeof STORES!=='undefined') ? STORES.find(function(x){ return x.id===id; }) : null;
+  return s ? s.name : (id||'');
+}
+function _ckStoreColor(id){
+  var s = (typeof STORES!=='undefined') ? STORES.find(function(x){ return x.id===id; }) : null;
+  return s ? s.color : '#6b7280';
+}
+function _ckNo(v){ return String(v==null?'':v).replace(/[^0-9]/g,'').slice(0,12); }
+function _ckAmt(v){ var n=parseFloat(String(v==null?'':v).replace(/[$,\s]/g,'')); return isFinite(n) ? Math.round(n*100)/100 : 0; }
+function _ckMoney(v){ return '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function _ckDay(iso){
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso||'')); if(!m) return String(iso||'');
+  var w = new Date(+m[1], +m[2]-1, +m[3]).getDay(), md = Number(m[2])+'/'+Number(m[3]);
+  return t(md+'（'+['日','月','火','水','木','金','土'][w]+'）', md+' ('+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][w]+')');
+}
+/* 時刻はハワイ時間で持ち、画面は 9/24 14:12 の形で出す（共同作業メモの表記ルール） */
+function _ckNow(){
+  var d = (typeof bizNow==='function') ? bizNow() : new Date();
+  return fmtJP(d)+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+function _ckAt(s){ var m = /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{1,2}:\d{2})/.exec(String(s||'')); return m ? (Number(m[2])+'/'+Number(m[3])+' '+m[4]) : String(s||''); }
+function _ckThreadAdd(c, kind, text){
+  if(!c.reviewThread) c.reviewThread = [];
+  c.reviewThread.push({ kind:kind, text:text||'', by:(curUserName||(ROLE_CONFIG[curRole]||{}).name||''), role:curRole, at:_ckNow() });
+}
+function _ckStLabel(st){ st = st||'未確認'; return t(st, ({'未確認':'Unreviewed','確認中':'Reviewing','確認済み':'Reviewed','差し戻し':'Returned'})[st]||st); }
+function _ckStTag(st){ st = st||'未確認'; return st==='確認済み' ? 'tag-green' : (st==='差し戻し' ? 'tag-red' : 'tag-yellow'); }
+function checkDriveFolder(c){ return 'Checks/'+String((c&&c.checkDate)||'').slice(0,7); }
+function checkDriveName(c, ext){
+  return [safeFileName(c.checkNo), c.checkDate, safeFileName(_ckStoreName(c.storeId)), safeFileName(c.payee), Number(c.amount||0).toFixed(2)].join('_')
+    + '.' + (ext||'pdf');
+}
+function _ckValid(c){
+  if(!c.checkNo) return t('チェック番号を入力してください','Enter the check number');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(c.checkDate||'')) return t('チェックの日付を入力してください','Enter the check date');
+  if(!c.payee) return t('支払先を入力してください','Enter the payee');
+  if(!(c.amount>0)) return t('金額を入力してください','Enter the amount');
+  return '';
+}
+/* ---- 登録画面 ---- */
+function _ckFormRec(){
+  var sel = document.getElementById('invoice-store');
+  return { storeId: sel ? sel.value : (window._invoiceStore||''), checkNo:_ckNo(docVal('ck-no')), checkDate:(docVal('ck-date')||'').trim(),
+           payee:(docVal('ck-payee')||'').trim(), amount:_ckAmt(docVal('ck-amount')), memo:(docVal('ck-memo')||'').trim() };
+}
+function checkDestHtml(){
+  var c = _ckFormRec(), ready = !!c.storeId && !_ckValid(c);
+  return '<i class="ti ti-brand-google-drive"></i> '+t('保存先','Saved to')+'：<b>'
+    + escapeHtml(ready ? checkDriveFolder(c).replace('/',' / ') : 'Checks / '+t('年月','YYYY-MM'))+' /</b> '
+    + escapeHtml(ready ? checkDriveName(c,'pdf') : t('番号_日付_店舗_支払先_金額','number_date_store_payee_amount'));
+}
+function checkNamePreview(){ var el=document.getElementById('ck-dest'); if(el) el.innerHTML=checkDestHtml(); }
+function _ckField(id, label, req, attrs){
+  return '<div class="form-group"><label class="form-label">'+label+(req?' <span style="color:var(--accent2)">*</span>':'')+'</label>'
+    + '<input class="form-input" id="'+id+'" '+attrs+'></div>';
+}
+function checkModalHtml(cands){
+  cands = cands || [];
+  window._checkPhotoFile = null;
+  var sid = window._invoiceStore || '';
+  var storeSel = '';
+  if(cands.length > 1){
+    storeSel = '<div class="form-group"><label class="form-label">'+t('対象店舗','Store')+' <span style="color:var(--accent2)">*</span></label>'
+      + '<select class="form-input" id="invoice-store" onchange="window._invoiceStore=this.value;checkNamePreview()">'
+      + cands.map(function(s){ return '<option value="'+s.id+'"'+(s.id===sid?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('')
+      + '</select></div>';
+  } else if(cands.length === 1){
+    storeSel = '<div class="form-group"><label class="form-label">'+t('対象店舗','Store')+'</label>'
+      + '<div style="font-weight:600;padding:4px 0"><span class="store-dot" style="background:'+cands[0].color+'"></span>'+escapeHtml(cands[0].name)+'</div></div>';
+  }
+  var today = (typeof bizToday==='function') ? bizToday() : new Date().toISOString().slice(0,10);
+  var upd = ' oninput="this.dataset.auto=\'\';checkNamePreview()"';
+  return '<div class="modal-title">'+t('Invoice / Receipt / チェック登録','Invoice / Receipt / Check')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + storeSel
+    + '<div class="form-group"><label class="form-label">'+t('種別','Type')+'</label>'+invDocTypeButtons()+'</div>'
+    + '<div class="form-group" style="border:1px solid var(--accent);border-radius:8px;padding:10px;background:rgba(124,58,237,0.04)">'
+    +   '<label class="form-label" style="color:var(--accent)"><i class="ti ti-writing-sign"></i> '+t('渡したチェック（小切手）の控え','Copy of a check you wrote')+'</label>'
+    +   '<div style="font-size:11px;color:var(--muted);line-height:1.7">'
+    +   t('業者などに渡すチェックを、渡す前に撮って登録します。経理が内容を確認し、画像は Google Drive の月別フォルダに保存されます。原価には入りません（仕入は Invoice 側で計上済みのため）。',
+          'Take a photo of the check before you hand it over. Accounting reviews it, and the image is saved to a monthly Google Drive folder. It is not added to food cost (the invoice already is).')
+    +   '</div></div>'
+    + '<div class="form-group"><label class="form-label">'+t('チェックの画像','Photo of the check')+' <span style="color:var(--accent2)">*</span></label>'
+    +   '<input type="file" id="ck-photo" accept="image/*" capture="environment" style="display:none" onchange="checkPhotoPicked(this)">'
+    +   '<input type="file" id="ck-file" accept="image/*" style="display:none" onchange="checkPhotoPicked(this)">'
+    +   '<div id="ck-photo-box" style="border:2px dashed var(--border);border-radius:8px;padding:18px;text-align:center;cursor:pointer" onclick="document.getElementById(\'ck-photo\').click()">'
+    +     '<i class="ti ti-camera" style="font-size:28px;color:var(--muted)"></i>'
+    +     '<div style="font-size:12px;color:var(--muted);margin-top:6px">'+t('チェックを撮影してAIで読み取り','Take a photo to read it with AI')+'</div></div>'
+    +   '<div style="display:flex;gap:6px;margin-top:6px">'
+    +     '<button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById(\'ck-photo\').click()"><i class="ti ti-camera"></i> '+t('撮影','Camera')+'</button>'
+    +     '<button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById(\'ck-file\').click()"><i class="ti ti-file-upload"></i> '+t('ファイルから','From file')+'</button></div>'
+    +   '<div id="ck-ocr" style="font-size:10.5px;color:var(--muted);margin-top:5px;line-height:1.6"><i class="ti ti-sparkles" style="color:var(--green)"></i> '
+    +   t('撮ると番号・日付・支払先・金額を読み取って入れます（違うときだけ直してください）','The number, date, payee and amount are filled in from the photo (fix anything that is wrong)')+'</div>'
+    + '</div>'
+    + '<div class="form-row">'
+    +   _ckField('ck-no', t('チェック番号','Check number'), true, 'inputmode="numeric" placeholder="1042"'+upd)
+    +   '<div class="form-group"><label class="form-label">'+t('チェックの日付','Check date')+' <span style="color:var(--accent2)">*</span></label>'
+    +   '<input class="form-input" type="date" id="ck-date" value="'+today+'" data-auto="1" onchange="this.dataset.auto=\'\';checkNamePreview()"></div>'
+    + '</div>'
+    + _ckField('ck-payee', t('支払先（業者）','Payee (vendor)'), true, 'list="ck-payee-list" autocomplete="off"'+upd)
+    + '<datalist id="ck-payee-list">'+((typeof vendorsSorted==='function')?vendorsSorted():[]).map(function(v){ return '<option value="'+escapeHtml(v.name)+'">'; }).join('')+'</datalist>'
+    + _ckField('ck-amount', t('金額（$）','Amount ($)'), true, 'inputmode="decimal" placeholder="0.00"'+upd)
+    + _ckField('ck-memo', t('メモ（任意）','Memo (optional)'), false, 'placeholder="'+escapeHtml(t('例：納品時に手渡し','e.g. handed over at delivery'))+'"')
+    + '<div id="ck-dest" style="font-size:10.5px;color:var(--muted);line-height:1.7;margin:-4px 0 12px;word-break:break-all">'+checkDestHtml()+'</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
+    + '<button class="btn btn-primary" onclick="saveCheck()">'+t('登録する','Register')+'</button></div>';
+}
+function _ckShowPhoto(boxId, f){
+  var box = document.getElementById(boxId); if(!box) return;
+  var url = ''; try{ url = URL.createObjectURL(f); }catch(e){}
+  box.style.padding = '6px'; box.style.borderStyle = 'solid';
+  box.innerHTML = url
+    ? '<img src="'+url+'" alt="" style="width:100%;display:block;border-radius:6px">'
+    : '<div style="font-size:12px;padding:10px"><i class="ti ti-check" style="color:var(--green)"></i> '+escapeHtml(f.name||'')+'</div>';
+}
+async function checkPhotoPicked(input){
+  var f = input && input.files && input.files[0]; if(!f) return;
+  window._checkPhotoFile = f;
+  _ckShowPhoto('ck-photo-box', f);
+  return await checkRunOcr(f);
+}
+/* 読み取り：check_ocr → { readable, reason, checkNo, date:'YYYY-MM-DD', payee, amount }。
+   自動で入れた欄（data-auto=1）と空の欄だけ埋める。手で直した欄は撮り直しても上書きしない（v893 と同じ考え方）。 */
+async function checkRunOcr(f){
+  var el = document.getElementById('ck-ocr');
+  if(el) el.innerHTML = '<i class="ti ti-loader"></i> '+t('AIで読み取り中…（10〜30秒）','Reading with AI… (10–30 s)');
+  var data = null, err = '';
+  try{
+    var b64 = await fileToBase64(f);
+    var names = ((typeof vendorsSorted==='function')?vendorsSorted():[]).slice(0,300).map(function(v){ return v.name; });
+    var r = await fetch(CHECK_OCR_FN, { method:'POST', headers:supaHeaders(), body:JSON.stringify({ image:b64, mediaType:(f.type||'image/jpeg'), vendors:names }) });
+    if(r.status===404) err = 'not_deployed';
+    else if(!r.ok) err = 'HTTP '+r.status;
+    else data = await r.json();
+  }catch(e){ err = String((e&&e.message)||e||'network'); }
+  el = document.getElementById('ck-ocr');
+  if(err || !data){
+    if(el) el.innerHTML = '<span style="color:var(--yellow)"><i class="ti ti-pencil"></i> '
+      + (err==='not_deployed'
+          ? t('読み取りはまだ準備中です。番号・日付・支払先・金額を入力してください。','Reading is not set up yet. Please type the number, date, payee and amount.')
+          : t('読み取れませんでした（','Could not read it (')+escapeHtml(err||'no data')+t('）。入力してください。','). Please type the details.'))
+      + '</span>';
+    return { ok:false, error:(err||'no data') };
+  }
+  if(data.readable===false || data.blurry===true){
+    window._checkPhotoFile = null;
+    var box = document.getElementById('ck-photo-box');
+    if(box){ box.style.padding='18px'; box.style.borderStyle='dashed';
+      box.innerHTML = '<i class="ti ti-camera" style="font-size:28px;color:var(--muted)"></i><div style="font-size:12px;color:var(--muted);margin-top:6px">'+t('チェックを撮影してAIで読み取り','Take a photo to read it with AI')+'</div>'; }
+    if(el) el.innerHTML = '<span style="color:var(--red)"><i class="ti ti-camera-off"></i> '
+      + t('読み取れませんでした。ピントを合わせ、チェック全体が入るよう撮り直してください。','Could not read the photo. Retake it in focus with the whole check in frame.')
+      + (data.reason?(' ('+escapeHtml(String(data.reason))+')'):'')+'</span>';
+    try{ showToast(t('画像が不鮮明です。撮り直してください','The photo is unclear. Please retake it'),'warning'); }catch(e){}
+    return { ok:false, error:'unreadable' };
+  }
+  var filled = [];
+  var put = function(id, v){
+    var e = document.getElementById(id); if(!e || v==null || v==='') return;
+    if(e.value && e.dataset.auto!=='1') return;
+    e.value = v; e.dataset.auto = '1'; filled.push(id);
+  };
+  put('ck-no', _ckNo(data.checkNo));
+  if(/^\d{4}-\d{2}-\d{2}$/.test(String(data.date||''))) put('ck-date', String(data.date));
+  var p = String(data.payee||'').trim();
+  if(p && typeof matchVendorBest==='function'){ var vm = matchVendorBest(p); if(vm && vm.score>=0.8) p = vm.vendor.name; }
+  put('ck-payee', p);
+  var a = _ckAmt(data.amount); if(a>0) put('ck-amount', a.toFixed(2));
+  if(el) el.innerHTML = '<span style="color:var(--green)"><i class="ti ti-sparkles"></i> '
+    + t('読み取りました。違うところだけ直してください。','Filled in from the photo. Fix anything that is wrong.')+'</span>';
+  checkNamePreview();
+  return { ok:true, filled:filled };
+}
+/* 画像を Storage に上げる。チェックは退避キュー（pimgQueue）に入れない：
+   あとで上がっても Drive に送る人がいないため。失敗したらその場で知らせ、もう一度押してもらう。 */
+async function uploadCheckImage(file, storeName){
+  var up = file, ext = 'pdf', mime = 'application/pdf';
+  try{ up = (typeof invoiceToPdfFile==='function') ? await invoiceToPdfFile(file) : null; if(!up) throw new Error('convert'); }
+  catch(e){ up = file; ext = (file.type && file.type.indexOf('png')>=0) ? 'png' : 'jpg'; mime = file.type || 'image/jpeg'; }
+  var ym = ((typeof bizToday==='function') ? bizToday() : new Date().toISOString()).slice(0,7);
+  var path = saniStore(storeName)+'/'+ym+'/chk_'+Date.now()+'.'+ext;
+  try{
+    var r = await fetch(SUPABASE_URL+'/storage/v1/object/invoices/'+encodeURI(path), {
+      method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':mime, 'x-upsert':'true' }, body:up });
+    if(!r.ok){ var m=''; try{ m = await r.text(); }catch(e2){} return { ok:false, error:'HTTP '+r.status+(m?(' '+String(m).slice(0,80)):'') }; }
+    return { ok:true, path:path };
+  }catch(e){ return { ok:false, error:String((e&&e.message)||e||'network') }; }
+}
+async function _ckDeleteStorage(path){
+  if(!path) return true;
+  try{ var r = await fetch(SUPABASE_URL+'/storage/v1/object/invoices/'+encodeURI(path), { method:'DELETE', headers:supaHeaders() }); return !!(r && r.ok); }
+  catch(e){ return false; }
+}
+/* Drive へ保存 → 入ったら Storage のコピーを消す。記録はその都度読み直して書く（ほかの端末の変更を消さない）。 */
+async function checkPushDrive(id){
+  var arr = ls('checks', [])||[]; var c = arr.find(function(x){ return x && x.id===id; });
+  if(!c) return { ok:false, error:'not_found' };
+  if(!c.imagePath) return { ok:!!(c.driveFileId||c.driveUrl), error:((c.driveFileId||c.driveUrl)?'':'no_image') };
+  var ext = String(c.imagePath).split('.').pop() || 'pdf';
+  var name = checkDriveName(c, ext), folder = checkDriveFolder(c);
+  var dr = null;
+  try{ dr = await driveSync('push', { bucket:'invoices', storagePath:c.imagePath, fileName:name, kind:'receipt', subfolder:folder }); }
+  catch(e){ dr = { ok:false, error:String((e&&e.message)||e) }; }
+  arr = ls('checks', [])||[]; c = arr.find(function(x){ return x && x.id===id; });
+  if(!c) return { ok:false, error:'not_found' };
+  if(!(dr && dr.ok)){
+    c.driveError = (dr && dr.error) || 'failed'; invTouch(c); saveChecks(arr);
+    return { ok:false, error:c.driveError };
+  }
+  c.driveFileId = dr.fileId || ''; c.driveUrl = dr.webViewLink || ''; c.driveName = name; c.driveFolder = folder; c.driveError = '';
+  var gone = await _ckDeleteStorage(c.imagePath);
+  if(gone){ c.imagePath = null; c.imageRemoved = true; c.imageRemoveFailed = false; }
+  else { c.imageRemoveFailed = true; }
+  invTouch(c); saveChecks(arr);
+  return { ok:true, removed:gone };
+}
+async function saveCheck(){
+  var c = _ckFormRec();
+  if(!c.storeId){ alert(t('店舗を選んでください','Choose a store')); return; }
+  if(!window._checkPhotoFile){ alert(t('チェックの画像を撮影してください（必須）','Take a photo of the check (required)')); return; }
+  var bad = _ckValid(c); if(bad){ alert(bad); return; }
+  /* 支払先は登録業者名に寄せる（v611 と同じ基準） */
+  if(typeof getVendors==='function' && !getVendors().find(function(v){ return v.name===c.payee; }) && typeof matchVendorBest==='function'){
+    var vm = matchVendorBest(c.payee); if(vm && vm.score>=0.9) c.payee = vm.vendor.name;
+  }
+  var dup = getChecks().find(function(x){ return Number(x.checkNo)===Number(c.checkNo); });
+  if(dup && !confirm(t('チェック番号 #'+c.checkNo+' は '+_ckDay(dup.checkDate)+' に '+_ckStoreName(dup.storeId)+' で登録済みです。別のチェックとして登録しますか？',
+                       'Check #'+c.checkNo+' was already entered on '+_ckDay(dup.checkDate)+' at '+_ckStoreName(dup.storeId)+'. Register it as a different check?'))) return;
+  var storeName = _ckStoreName(c.storeId);
+  var btn = document.querySelector('.modal .btn-primary');
+  if(btn){ btn.disabled = true; btn.textContent = t('画像を保存中…','Saving image…'); }
+  var up = await uploadCheckImage(window._checkPhotoFile, storeName);
+  if(!up.ok){
+    if(btn){ btn.disabled = false; btn.textContent = t('登録する','Register'); }
+    alert(t('画像を保存できませんでした。電波を確認して、もう一度「登録する」を押してください。','Could not upload the image. Check the connection and tap Register again.')+'\n('+up.error+')');
+    return;
+  }
+  var rec = { id:'ck'+Date.now(), storeId:c.storeId, checkNo:c.checkNo, checkDate:c.checkDate, payee:c.payee, amount:c.amount, memo:c.memo,
+    imagePath:up.path, imageRemoved:false, driveFileId:'', driveUrl:'', driveName:'', driveFolder:'', driveError:'',
+    reviewStatus:'未確認', reviewNote:'', reviewedBy:'', reviewedAt:'', reviewThread:[],
+    by:(ROLE_CONFIG[curRole]||{}).name||'', byUser:(curUserName||''), createdAt:_ckNow() };
+  invTouch(rec);
+  var arr = ls('checks', [])||[]; arr.push(rec); saveChecks(arr);
+  if(btn) btn.textContent = t('Driveへ保存中…','Saving to Drive…');
+  var dr = await checkPushDrive(rec.id);
+  try{ notifyAccounting('【チェック】'+storeName+' #'+rec.checkNo+' '+rec.payee+' '+_ckMoney(rec.amount),
+      'チェック（小切手）の控えが登録されました。\n店舗: '+storeName+'\nチェック番号: #'+rec.checkNo+'\n日付: '+rec.checkDate+'\n支払先: '+rec.payee+'\n金額: '+_ckMoney(rec.amount)
+      +(rec.memo?'\nメモ: '+rec.memo:'')+'\n登録: '+(rec.byUser||rec.by)+'\n\n経理センター → 経理レビュー →「チェック」で確認してください。'); }catch(e){}
+  try{ addNotif({ type:'upload', title:'新しいチェック', text:(storeName+' / #'+rec.checkNo+' '+rec.payee+' '+_ckMoney(rec.amount)).slice(0,140), toRoles:['office','gm'], page:'acct_center', refId:rec.id }); }catch(e){}
+  window._checkPhotoFile = null;
+  closeModalDirect();
+  showToast(dr.ok ? t('チェックを登録しました（Driveに保存）','Check saved (to Drive)')
+                  : t('チェックを登録しました。Driveへの保存はできなかったので、経理が保存し直します','Check saved. The Drive upload failed; accounting will retry it'), dr.ok?'success':'warning');
+  window._invMainView = 'checks';
+  try{ renderPage('invoice'); }catch(e){}
+}
+/* ---- 店舗側：Invoice管理 →「チェック」 ---- */
+function renderCheckList(){
+  var rows = checksScoped().slice().sort(function(a,b){
+    var ra = (a.reviewStatus==='差し戻し')?0:1, rb = (b.reviewStatus==='差し戻し')?0:1;
+    if(ra!==rb) return ra-rb;
+    return String(b.checkDate||'').localeCompare(String(a.checkDate||'')) || String(b.id).localeCompare(String(a.id));
+  });
+  var h = '<div style="font-size:11px;color:var(--muted);line-height:1.7;margin:0 2px 6px">'
+    + t('登録したチェックの一覧です。差し戻されたものは「対応・再提出」から直せます。画像は Google Drive の Checks / 年月 フォルダに保存されます。',
+        'Checks entered for your store. Fix returned ones with “Respond & resubmit”. Images are saved to Google Drive (Checks / year-month).')+'</div>'
+    + '<div style="text-align:right;margin:0 0 8px"><button class="btn btn-secondary btn-sm" onclick="setInvDocType(\'Check\')"><i class="ti ti-plus"></i> '+t('チェックを登録','Add a check')+'</button></div>';
+  if(!rows.length){
+    return h + '<div class="card" style="text-align:center;color:var(--muted);padding:34px"><i class="ti ti-writing-sign" style="font-size:30px;display:block;margin-bottom:8px"></i>'
+      + t('チェックの登録はまだありません','No checks yet')+'</div>';
+  }
+  rows.slice(0,60).forEach(function(c){
+    var rs = c.reviewStatus||'未確認';
+    h += '<div class="card"><div class="approval-header">'
+      + '<div style="min-width:0"><div class="approval-title">'+escapeHtml(c.payee||'')+'</div>'
+      + '<div class="approval-meta"><span class="store-dot" style="background:'+_ckStoreColor(c.storeId)+'"></span>'+escapeHtml(_ckStoreName(c.storeId))
+      + ' · '+escapeHtml(_ckDay(c.checkDate))+' · '+t('チェック','Check')+' #'+escapeHtml(c.checkNo||'')+' · '+_ckMoney(c.amount)+'</div></div>'
+      + '<div style="display:flex;align-items:center;gap:6px">'
+      + '<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="openCheckReview(\''+c.id+'\')" title="'+t('詳細','Details')+'"><i class="ti ti-eye"></i></button>'
+      + '<span class="tag '+_ckStTag(rs)+'" style="white-space:nowrap">'+_ckStLabel(rs)+'</span></div></div>'
+      + (c.memo ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">'+escapeHtml(c.memo)+'</div>' : '');
+    if(rs==='差し戻し'){
+      h += '<div style="font-size:12px;color:var(--red);background:#fff3f3;border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin-top:6px"><i class="ti ti-arrow-back-up"></i> '
+        + t('差し戻し理由：','Return reason: ')+escapeHtml(c.reviewNote||t('(理由未記入)','(no reason given)'))
+        + (c.reviewedBy?' <span style="color:var(--muted)">— '+escapeHtml(c.reviewedBy)+'</span>':'')+'</div>';
+      if(_ckMine(c)) h += '<div style="margin-top:6px"><button class="btn btn-primary btn-sm" style="background:var(--accent2);border-color:var(--accent2)" onclick="openCheckResubmit(\''+c.id+'\')"><i class="ti ti-send"></i> '+t('対応・再提出','Respond & resubmit')+'</button></div>';
+    }
+    h += '</div>';
+  });
+  if(rows.length > 60) h += '<div style="font-size:11px;color:var(--muted);text-align:center;margin:6px 0">'+t('新しい60件を表示しています（全件は経理センターで見られます）','Showing the latest 60 (all of them are in the accounting center)')+'</div>';
+  return h;
+}
+/* ---- 詳細・経理の確認 ---- */
+function _ckKv(k, v){
+  return '<div style="display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--border);font-size:12.5px">'
+    + '<span style="width:104px;flex-shrink:0;color:var(--muted);font-size:11.5px">'+k+'</span><span style="flex:1;min-width:0;word-break:break-word">'+v+'</span></div>';
+}
+function _ckThread(c){
+  var th = c.reviewThread || []; if(!th.length) return '';
+  var kl = function(k){ return t(k, ({'差し戻し':'Returned','再提出':'Resubmitted'})[k]||k); };
+  return '<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer"><i class="ti ti-messages"></i> '+t('やり取り','Messages')+'（'+th.length+'）</summary>'
+    + th.map(function(e){
+        var col = e.kind==='差し戻し' ? 'var(--red)' : (e.kind==='再提出' ? 'var(--accent2)' : 'var(--muted)');
+        return '<div style="border-left:2px solid '+col+';padding:2px 0 2px 8px;margin:4px 0">'
+          + '<div style="font-size:10px;color:'+col+';font-weight:700">'+escapeHtml(kl(e.kind||''))+' · '+escapeHtml(e.by||'')+(e.at?' · '+escapeHtml(_ckAt(e.at)):'')+'</div>'
+          + '<div style="font-size:12px">'+escapeHtml(e.text||'')+'</div></div>';
+      }).join('') + '</details>';
+}
+function _ckImageHtml(c){
+  if(c.driveUrl || c.driveFileId){
+    return (c.driveUrl ? '<a class="btn btn-secondary" style="width:100%;display:flex;justify-content:center;text-decoration:none" href="'+escapeHtml(c.driveUrl)+'" target="_blank" rel="noopener"><i class="ti ti-brand-google-drive"></i> '+t('Driveで画像を開く','Open the image in Drive')+'</a>' : '')
+      + '<div style="font-size:10.5px;color:var(--muted);line-height:1.7;margin-top:6px;word-break:break-all"><i class="ti ti-folder"></i> '
+      + escapeHtml(String(c.driveFolder||checkDriveFolder(c)).replace('/',' / '))+' / '+escapeHtml(c.driveName||'')+'</div>'
+      + '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:5px"><span class="tag tag-green" style="font-size:10px">'+t('Drive保存済み','In Drive')+'</span>'
+      + (c.imageRemoved ? '<span class="tag tag-gray" style="font-size:10px">'+t('アプリ側の画像は削除済み','App copy deleted')+'</span>'
+          : (c.imagePath ? '<span class="tag tag-yellow" style="font-size:10px">'+t('アプリ側の画像が残っています','App copy still stored')+'</span>' : ''))
+      + (c.driveNameStale ? '<span class="tag tag-gray" style="font-size:10px">'+t('ファイル名は最初の登録のまま','File name is from the first entry')+'</span>' : '')
+      + '</div>'
+      + ((c.imagePath && canReviewChecks()) ? '<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:6px" onclick="checkRemoveAppCopy(\''+c.id+'\')"><i class="ti ti-trash"></i> '+t('アプリ側の画像を消す','Delete the app copy')+'</button>' : '');
+  }
+  if(c.imagePath){
+    return '<div class="alert alert-warning" style="padding:9px 11px;margin-bottom:0"><i class="ti ti-alert-triangle"></i><div style="font-size:12px;line-height:1.6">'
+      + t('まだ Drive に保存できていません','Not saved to Drive yet')+(c.driveError?(' ('+escapeHtml(c.driveError)+')'):'')+'</div></div>'
+      + '<div style="display:flex;gap:6px;margin-top:6px"><button class="btn btn-secondary btn-sm" style="flex:1" onclick="viewInvoiceImage(\''+escapeHtml(c.imagePath)+'\')"><i class="ti ti-photo"></i> '+t('画像を開く','Open image')+'</button>'
+      + (canReviewChecks() ? '<button class="btn btn-secondary btn-sm" style="flex:1" onclick="checkRetryDrive(\''+c.id+'\')"><i class="ti ti-brand-google-drive"></i> '+t('Driveへ保存し直す','Save to Drive again')+'</button>' : '')
+      + '</div>';
+  }
+  return '<div style="font-size:12px;color:var(--muted);text-align:center;background:var(--surface2);border-radius:9px;padding:14px">'+t('画像がありません','No image')+'</div>';
+}
+function openCheckReview(id){
+  var c = (ls('checks', [])||[]).find(function(x){ return x && x.id===id; });
+  if(!c || c._deleted){ showToast(t('チェックが見つかりません','Check not found'),'warning'); return; }
+  var rs = c.reviewStatus||'未確認';
+  var act = '';
+  if(canReviewChecks()){
+    act = '<div style="font-size:10.5px;color:var(--muted);line-height:1.7;margin-top:10px">'
+      + t('番号・日付・金額・支払先を画像と照らして確認してください。直すときは「差し戻す」で理由を書くと、登録した人に届きます。',
+          'Compare the number, date, amount and payee with the image. To fix something, tap Return and write the reason — it goes to the person who entered it.')+'</div>'
+      + '<div style="display:flex;gap:7px;margin-top:10px">'
+      + '<button class="btn btn-secondary" style="flex:1;color:var(--red);border-color:var(--red)" onclick="checkRejectModal(\''+c.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('差し戻す','Return')+'</button>'
+      + (rs!=='確認済み' ? '<button class="btn btn-primary" style="flex:2" onclick="checkApprove(\''+c.id+'\')"><i class="ti ti-check"></i> '+t('確認済みにする','Mark reviewed')+'</button>' : '')
+      + '</div>';
+  } else if(isViewOnlyRole()){
+    act = '<div style="font-size:11px;color:var(--muted);margin-top:10px"><i class="ti ti-eye"></i> '+t('閲覧のみです（確認・差し戻しは経理・GM・CEO）','View only (accounting / GM / CEO review checks)')+'</div>';
+  }
+  if(canDeleteCheck(c)){
+    act += '<div style="text-align:right;margin-top:10px"><button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="checkDeleteConfirm(\''+c.id+'\')"><i class="ti ti-trash"></i> '+t('削除','Delete')+'</button></div>';
+  }
+  openModal('<div class="modal-title">'+t('チェックの確認','Check review')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + _ckImageHtml(c)
+    + '<div style="display:flex;align-items:center;gap:8px;margin:12px 0 4px"><b style="font-size:15px;min-width:0;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(c.payee||'')+'</b>'
+    + '<span class="tag '+_ckStTag(rs)+'" style="margin-left:auto;white-space:nowrap">'+_ckStLabel(rs)+'</span></div>'
+    + _ckKv(t('店舗','Store'), escapeHtml(_ckStoreName(c.storeId)))
+    + _ckKv(t('チェック番号','Check number'), '<b>#'+escapeHtml(c.checkNo||'')+'</b>')
+    + _ckKv(t('チェックの日付','Check date'), escapeHtml(_ckDay(c.checkDate)))
+    + _ckKv(t('金額','Amount'), '<b style="font-size:15px">'+_ckMoney(c.amount)+'</b>')
+    + (c.memo ? _ckKv(t('メモ','Memo'), escapeHtml(c.memo)) : '')
+    + _ckKv(t('登録','Entered by'), escapeHtml((c.byUser||c.by||'')+(c.createdAt?(' · '+_ckAt(c.createdAt)):'')))
+    + (c.reviewedBy ? _ckKv(t('確認','Reviewed by'), escapeHtml(c.reviewedBy+(c.reviewedAt?(' · '+_ckAt(c.reviewedAt)):''))) : '')
+    + ((rs==='差し戻し' && c.reviewNote) ? '<div style="font-size:12px;color:var(--red);background:#fff3f3;border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin-top:6px"><i class="ti ti-arrow-back-up"></i> '+t('差し戻し理由：','Return reason: ')+escapeHtml(c.reviewNote)+'</div>' : '')
+    + _ckThread(c)
+    + act);
+}
+function checkApprove(id){
+  if(!canReviewChecks()){ showToast(t('確認の権限がありません','You cannot review checks'),'warning'); return; }
+  var arr = ls('checks', [])||[]; var c = arr.find(function(x){ return x && x.id===id; }); if(!c) return;
+  c.reviewStatus = '確認済み'; c.reviewNote = '';
+  c.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || ''; c.reviewedAt = _ckNow(); invTouch(c);
+  saveChecks(arr);
+  closeModalDirect();
+  showToast(t('確認済みにしました','Marked as reviewed'),'success');
+  try{ renderPage(curPage); }catch(e){}
+}
+function checkRejectModal(id){
+  if(!canReviewChecks()){ showToast(t('確認の権限がありません','You cannot review checks'),'warning'); return; }
+  var c = (ls('checks', [])||[]).find(function(x){ return x && x.id===id; }); if(!c) return;
+  openModal('<div class="modal-title">'+t('差し戻し','Return')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+escapeHtml(_ckStoreName(c.storeId))+' · #'+escapeHtml(c.checkNo||'')+' · '+escapeHtml(c.payee||'')+' · '+_ckMoney(c.amount)+'</div>'
+    + '<div class="form-group"><label class="form-label">'+t('差し戻し理由','Reason')+' <span style="color:var(--accent2)">*</span></label>'
+    + '<textarea class="form-input" id="ck-reason" rows="3" placeholder="'+escapeHtml(t('例：金額が読めません。撮り直してください。','e.g. The amount is not readable. Please retake the photo.'))+'"></textarea>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> '+t('登録した人（','The person who entered it (')+escapeHtml(c.byUser||c.by||'?')+t('）の「チェック」タブに理由が出ます。',') sees the reason in the Checks tab.')+'</div></div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="openCheckReview(\''+c.id+'\')">'+t('戻る','Back')+'</button>'
+    + '<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="checkRejectConfirm(\''+c.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('差し戻す','Return')+'</button></div>');
+}
+function checkRejectConfirm(id){
+  if(!canReviewChecks()) return;
+  var reason = (docVal('ck-reason')||'').trim();
+  if(!reason){ showToast(t('理由を入力してください','Write the reason'),'warning'); return; }
+  var arr = ls('checks', [])||[]; var c = arr.find(function(x){ return x && x.id===id; }); if(!c) return;
+  c.reviewStatus = '差し戻し'; c.reviewNote = reason;
+  c.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || ''; c.reviewedAt = _ckNow();
+  _ckThreadAdd(c, '差し戻し', reason); invTouch(c);
+  saveChecks(arr);
+  try{ if(c.byUser) addNotif({ type:'reject', title:'チェックが差し戻されました', text:(_ckStoreName(c.storeId)+' / #'+c.checkNo+' '+c.payee+'：'+reason).slice(0,140), toUser:c.byUser, page:'invoice', refId:c.id }); }catch(e){}
+  closeModalDirect();
+  showToast(t('差し戻しました','Returned'),'success');
+  try{ renderPage(curPage); }catch(e){}
+}
+async function checkRetryDrive(id){
+  if(!canReviewChecks()) return;
+  showToast(t('Driveへ保存中…','Saving to Drive…'),'info');
+  var r = await checkPushDrive(id);
+  showToast(r.ok ? t('Driveに保存しました','Saved to Drive') : (t('Driveに保存できませんでした：','Could not save to Drive: ')+(r.error||'')), r.ok?'success':'warning');
+  openCheckReview(id);
+}
+async function checkRemoveAppCopy(id){
+  if(!canReviewChecks()) return;
+  var arr = ls('checks', [])||[]; var c = arr.find(function(x){ return x && x.id===id; }); if(!c || !c.imagePath) return;
+  if(!(c.driveUrl || c.driveFileId)){ showToast(t('Driveに保存できていないので消せません','It is not in Drive yet, so it cannot be deleted'),'warning'); return; }
+  var ok = await _ckDeleteStorage(c.imagePath);
+  arr = ls('checks', [])||[]; c = arr.find(function(x){ return x && x.id===id; }); if(!c) return;
+  if(ok){ c.imagePath = null; c.imageRemoved = true; c.imageRemoveFailed = false; invTouch(c); saveChecks(arr); }
+  showToast(ok ? t('アプリ側の画像を消しました','App copy deleted') : t('消せませんでした','Could not delete it'), ok?'success':'warning');
+  openCheckReview(id);
+}
+/* ---- 差し戻しへの対応（登録した人） ---- */
+function openCheckResubmit(id){
+  var c = (ls('checks', [])||[]).find(function(x){ return x && x.id===id; }); if(!c) return;
+  window._checkPhotoFile = null;
+  var val = function(v){ return ' value="'+escapeHtml(v==null?'':String(v))+'"'; };
+  openModal('<div class="modal-title">'+t('差し戻しへの対応','Respond to the return')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+escapeHtml(_ckStoreName(c.storeId))+' · #'+escapeHtml(c.checkNo||'')+' · '+escapeHtml(c.payee||'')+' · '+_ckMoney(c.amount)+'</div>'
+    + '<div style="font-size:12px;color:var(--red);background:#fff3f3;border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin-bottom:10px"><i class="ti ti-arrow-back-up"></i> '
+    + t('差し戻し理由：','Return reason: ')+escapeHtml(c.reviewNote||'')+'</div>'
+    + '<div class="form-row">'
+    +   _ckField('ck-no', t('チェック番号','Check number'), true, 'inputmode="numeric"'+val(c.checkNo))
+    +   _ckField('ck-date', t('チェックの日付','Check date'), true, 'type="date"'+val(c.checkDate))
+    + '</div>'
+    + _ckField('ck-payee', t('支払先（業者）','Payee (vendor)'), true, 'autocomplete="off"'+val(c.payee))
+    + _ckField('ck-amount', t('金額（$）','Amount ($)'), true, 'inputmode="decimal"'+val(Number(c.amount||0).toFixed(2)))
+    + _ckField('ck-memo', t('メモ（任意）','Memo (optional)'), false, val(c.memo||''))
+    + '<div class="form-group"><label class="form-label">'+t('画像を撮り直す（任意）','Retake the photo (optional)')+'</label>'
+    +   '<input type="file" id="ck-rphoto" accept="image/*" capture="environment" style="display:none" onchange="checkResubmitPhoto(this)">'
+    +   '<div id="ck-rphoto-box" style="border:2px dashed var(--border);border-radius:8px;padding:12px;text-align:center;cursor:pointer" onclick="document.getElementById(\'ck-rphoto\').click()">'
+    +   '<i class="ti ti-camera" style="font-size:22px;color:var(--muted)"></i><div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('タップして撮影（撮り直すときだけ）','Tap to take a new photo (only if needed)')+'</div></div></div>'
+    + '<div class="form-group"><label class="form-label">'+t('返信・対応内容','What you changed')+' <span style="color:var(--accent2)">*</span></label>'
+    + '<textarea class="form-input" id="ck-reply" rows="3" placeholder="'+escapeHtml(t('例：撮り直しました。金額をご確認ください。','e.g. Retook the photo. Please check the amount.'))+'"></textarea></div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
+    + '<button class="btn btn-primary" onclick="submitCheckResubmit(\''+c.id+'\')"><i class="ti ti-send"></i> '+t('再提出','Resubmit')+'</button></div>');
+}
+function checkResubmitPhoto(input){
+  var f = input && input.files && input.files[0]; if(!f) return;
+  window._checkPhotoFile = f; _ckShowPhoto('ck-rphoto-box', f);
+}
+async function submitCheckResubmit(id){
+  var reply = (docVal('ck-reply')||'').trim();
+  if(!reply){ showToast(t('対応内容を入力してください','Write what you changed'),'warning'); return; }
+  var arr = ls('checks', [])||[]; var c = arr.find(function(x){ return x && x.id===id; }); if(!c) return;
+  var nv = { storeId:c.storeId, checkNo:_ckNo(docVal('ck-no')), checkDate:(docVal('ck-date')||'').trim(), payee:(docVal('ck-payee')||'').trim(),
+             amount:_ckAmt(docVal('ck-amount')), memo:(docVal('ck-memo')||'').trim() };
+  var bad = _ckValid(nv); if(bad){ alert(bad); return; }
+  var changed = (nv.checkNo!==c.checkNo || nv.checkDate!==c.checkDate || nv.payee!==c.payee || nv.amount!==Number(c.amount));
+  if(window._checkPhotoFile){
+    var btn = document.querySelector('.modal .btn-primary'); if(btn){ btn.disabled = true; btn.textContent = t('画像を保存中…','Saving image…'); }
+    var up = await uploadCheckImage(window._checkPhotoFile, _ckStoreName(c.storeId));
+    if(!up.ok){
+      if(btn){ btn.disabled = false; btn.textContent = t('再提出','Resubmit'); }
+      alert(t('画像を保存できませんでした。もう一度お試しください。','Could not upload the image. Please try again.')+'\n('+up.error+')'); return;
+    }
+    arr = ls('checks', [])||[]; c = arr.find(function(x){ return x && x.id===id; }); if(!c) return;
+    var oldFile = c.driveFileId, oldPath = c.imagePath;
+    Object.assign(c, { checkNo:nv.checkNo, checkDate:nv.checkDate, payee:nv.payee, amount:nv.amount, memo:nv.memo,
+      imagePath:up.path, imageRemoved:false, imageRemoveFailed:false, driveFileId:'', driveUrl:'', driveName:'', driveFolder:'', driveError:'', driveNameStale:false });
+    invTouch(c); saveChecks(arr);
+    if(oldPath) await _ckDeleteStorage(oldPath);
+    var dr = await checkPushDrive(id);
+    /* 差し戻された古い画像は Drive から消す（新しい画像が Drive に入ったときだけ） */
+    if(dr.ok && oldFile){ try{ await driveSync('delete', { fileId:oldFile }); }catch(e){} }
+    arr = ls('checks', [])||[]; c = arr.find(function(x){ return x && x.id===id; }); if(!c) return;
+  } else {
+    Object.assign(c, { checkNo:nv.checkNo, checkDate:nv.checkDate, payee:nv.payee, amount:nv.amount, memo:nv.memo });
+    /* Drive のファイル名・フォルダは最初の登録のまま（名前を変える呼び方は drive-sync の中身を見てから足す） */
+    if(changed && (c.driveFileId || c.driveUrl)) c.driveNameStale = true;
+  }
+  c.reviewStatus = '未確認';
+  _ckThreadAdd(c, '再提出', reply); invTouch(c);
+  saveChecks(arr);
+  try{ addNotif({ type:'resubmit', title:'差し戻したチェックが再提出されました', text:(_ckStoreName(c.storeId)+' / #'+c.checkNo+' '+c.payee+' '+_ckMoney(c.amount)).slice(0,140), toRoles:['office','gm'], page:'acct_center', refId:c.id }); }catch(e){}
+  window._checkPhotoFile = null;
+  closeModalDirect();
+  showToast(t('再提出しました（経理の確認に戻りました）','Resubmitted (back to accounting)'),'success');
+  try{ renderPage(curPage); }catch(e){}
+}
+/* ---- 削除 ---- */
+function checkDeleteConfirm(id){
+  var c = (ls('checks', [])||[]).find(function(x){ return x && x.id===id; }); if(!c) return;
+  if(!canDeleteCheck(c)){ showToast(t('削除の権限がありません','You cannot delete this'),'warning'); return; }
+  openModal('<div class="modal-title">'+t('削除の確認','Delete?')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:13px;margin-bottom:8px">'+t('このチェックの記録を削除します。元に戻せません。','This deletes the check record. It cannot be undone.')+'</div>'
+    + '<div style="font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">'
+    + escapeHtml(_ckStoreName(c.storeId))+' · #'+escapeHtml(c.checkNo||'')+' · '+escapeHtml(c.payee||'')+' · '+_ckMoney(c.amount)+' · '+escapeHtml(_ckDay(c.checkDate))+'</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-info-circle"></i> '+t('Drive のファイルとアプリ側の画像も削除します。','The Drive file and the app copy are deleted too.')+'</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
+    + '<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="checkDeleteDo(\''+c.id+'\')"><i class="ti ti-trash"></i> '+t('削除する','Delete')+'</button></div>');
+}
+async function checkDeleteDo(id){
+  var arr = ls('checks', [])||[]; var c = arr.find(function(x){ return x && x.id===id; }); if(!c) return;
+  if(!canDeleteCheck(c)){ showToast(t('削除の権限がありません','You cannot delete this'),'warning'); return; }
+  var driveOk = true;
+  if(c.driveFileId){ try{ var dr = await driveSync('delete', { fileId:c.driveFileId }); driveOk = !!(dr && dr.ok); }catch(e){ driveOk = false; } }
+  if(c.imagePath) await _ckDeleteStorage(c.imagePath);
+  arr = ls('checks', [])||[]; c = arr.find(function(x){ return x && x.id===id; }); if(!c) return;
+  c._deleted = true; c._deletedAt = _ckNow(); invTouch(c);
+  saveChecks(arr);
+  closeModalDirect();
+  showToast(driveOk ? t('削除しました','Deleted') : t('削除しました（Drive のファイルは手動で削除してください）','Deleted (please delete the Drive file by hand)'), driveOk?'success':'warning');
+  try{ renderPage(curPage); }catch(e){}
+}
 /* 買い出し/カードレシート：下4桁→社員自動特定（在籍・G3以上） */
 function invMatchEmp(){
   var last4=(docVal('inv-card4')||'').replace(/[^0-9]/g,'');
@@ -63330,6 +63897,7 @@ var _invLinkIdx=null, _invLinkQ='', _invNewIdx=null;
 
 async function saveInvoice() {
   if (invoiceDocType==='Reimburse') { return saveReimbursement(); }
+  if (invoiceDocType==='Check') { return saveCheck(); }   /* v1030: 念のため（チェックの画面は saveCheck を直接呼ぶ） */
   if (!invoiceTmpLines.length) { alert('品目がありません。写真読取か「手入力で品目追加」で追加してください'); return; }
   var vendor = document.getElementById('inv-vendor').value.trim();
   if (!vendor) { alert('業者・購入先を入力してください'); return; }
