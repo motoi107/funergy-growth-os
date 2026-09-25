@@ -8001,10 +8001,30 @@ function tipSplitHourFor(sid){ var v=Number((getTipHoursCfg(sid)||{}).splitHour)
 function _hhFromFrac(f){ f=Number(f); if(!(f>=0&&f<=24)) f=16; var H=Math.floor(f), M=Math.round((f-H)*60); if(M===60){H++;M=0;} return String(H).padStart(2,'0')+':'+String(M).padStart(2,'0'); }
 function _fracFromHH(hh){ var m=String(hh||'').match(/^(\d{1,2}):(\d{2})$/); if(!m) return 16; var f=(+m[1])+(+m[2])/60; f=Math.round(f*4)/4; return (f>=0&&f<=24)?f:16; }
 function _thToMin(t){ var m=String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m?(+m[1]*60+ +m[2]):null; }
+/* v1033: Tip の時間の数え方（Motoさんの決定 9/25）。営業日 2026-09-16 以降だけに効かせる
+   （それより前＝支払い済みの期間は、画面を開き直しても数字が変わらないよう今までの数え方のまま）。
+   ・すべてハワイ時間（HST）で数える。端末が日本時間でも同じ結果になる。
+   ・0時を過ぎた勤務時間も数える。営業日の締め（Toast のオートクローズ 4:00 AM）までをその営業日とする。 */
+var TIP_HOURS_FIX_FROM = '2026-09-16';
+var TIP_BIZDAY_END_H = 28;   /* 営業日の0時から28時間＝翌 4:00（締め）。忘れた退勤で何十時間も数えないための上限も兼ねる */
+function tipHoursFixOn(date){ return /^\d{4}-\d{2}-\d{2}$/.test(String(date||'')) && String(date) >= TIP_HOURS_FIX_FROM; }
+function _hstMidnightMs(date){
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date||''));
+  return m ? Date.UTC(+m[1], +m[2]-1, +m[3], 10, 0, 0) : NaN;   /* ハワイの0:00＝UTC 10:00 */
+}
+/* 打刻と「営業日のハワイ0時から startH〜endH 時間」の重なり（h）。endH は 24 を超えてよい（翌日の深夜）。 */
+function _tipOverlapBizH(inIso, outIso, date, startH, endH){
+  var base = _hstMidnightMs(date); if(isNaN(base)) return 0;
+  var inMs = new Date(inIso).getTime(), outMs = new Date(outIso).getTime();
+  if(!(outMs > inMs)) return 0;
+  var lo = Math.max(inMs, base + startH*3600000), hi = Math.min(outMs, base + endH*3600000);
+  return hi > lo ? (hi - lo)/3600000 : 0;
+}
 function _thOverlapH(inDate, outDate, date, t1, t2){
   var a=_thToMin(t1), b=_thToMin(t2); if(a==null||b==null) return null;
   var di=new Date(inDate), doo=new Date(outDate); if(isNaN(di)||isNaN(doo)) return null;
-  var base=new Date(date+'T00:00:00');
+  /* v1033: 9/16 以降は窓の起点をハワイの0時に（端末の時刻の0時だと、日本の端末で19時間ずれていた） */
+  var base = tipHoursFixOn(date) ? new Date(_hstMidnightMs(date)) : new Date(date+'T00:00:00');
   var w1=new Date(base.getTime()+a*60000), w2=new Date(base.getTime()+b*60000);
   if (b<=a) w2=new Date(w2.getTime()+86400000);
   var st=Math.max(di.getTime(), w1.getTime()), en=Math.min(doo.getTime(), w2.getTime());
@@ -8060,10 +8080,16 @@ function applyTipSplit(storeId, date, data){
       var e = data[nm] || {}; var sh = e.shifts;
       if(!sh || !sh.length) return;
       var L = 0, D = 0, ok = true;
+      var fix = tipHoursFixOn(date);   /* v1033: 9/16 以降は営業日のハワイ0時から。0時を過ぎた分も D（締め 4:00 まで） */
       sh.forEach(function(x){
         if(!x.inDate || !x.outDate){ ok = false; return; }
-        L += overlapHours(x.inDate, x.outDate, 0, sp);
-        D += overlapHours(x.inDate, x.outDate, sp, 24);
+        if(fix){
+          L += _tipOverlapBizH(x.inDate, x.outDate, date, 0, sp);
+          D += _tipOverlapBizH(x.inDate, x.outDate, date, sp, TIP_BIZDAY_END_H);
+        } else {
+          L += overlapHours(x.inDate, x.outDate, 0, sp);
+          D += overlapHours(x.inDate, x.outDate, sp, 24);
+        }
       });
       if(ok){ e.lunch = Math.round(L*100)/100; e.dinner = Math.round(D*100)/100; }
     });
@@ -28052,7 +28078,7 @@ function renderBudgetDaily() {
       + tile(t('合計（店舗＋イベント）','Total (store + pop-up)'), _stAct+_evT.sales, t('参考値（予算・PLには含めていません）','Reference only (not in budget or P&L)'))
       + '</div>';
   })();
-  html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>${t('日次一覧','Daily list')}
+  html += `<div class="card" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>${t('日次一覧','Daily list')}<span class="tag" style="margin-left:8px;font-size:10px;background:rgba(124,58,237,0.08);color:var(--accent);font-weight:700" title="${t('1日＝Toast の営業日（締め時刻で区切ります）','One day = Toast business day (split at the closeout time)')}">${t('営業日で集計','By business day')}</span>
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>
       <span style="font-size:13px;font-weight:600">${dailyMonthLabel()}</span>
@@ -28137,6 +28163,9 @@ function renderBudgetDaily() {
   html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('* 人件費率＝人件費 ÷ 実績。日別は週40時間超の残業割増を含まないため、上部の月次KPIの人件費率とは一致しません。','* Labor % = Labor $ ÷ Actual. Daily values exclude the weekly overtime premium, so they do not match the monthly Labor % KPI above.')}</p>`;
   /* v1031: チップ率の内訳の読み方。1日の率と同じ数え方であることを書いておく（お客様が付けた率より少し低く出るため）。 */
   if (!isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:4px">${t('* チップ率：上＝1日、L＝ランチの Tip ÷ ランチ売上、D＝ディナーの Tip ÷ ディナー売上。Tip はカード Tip から手数料'+(TIP_CC_FEE*100).toFixed(1)+'%を引いた額＋現金 Tip（Waikiki はカードのみ）。テイクアウトは時間帯でランチ・ディナーに含みます。ランチ休みの日は D だけ出します。','* Tip %: top = whole day, L = lunch tips ÷ lunch sales, D = dinner tips ÷ dinner sales. Tips = card tips minus the '+(TIP_CC_FEE*100).toFixed(1)+'% card fee + cash tips (Waikiki: card only). Takeout is counted in lunch or dinner by time. On lunch-off days only D is shown.')}</p>`;
+  /* v1032: 1日の区切り。LaLa（営業は 2:00 AM まで・Toast の締め 4:00 AM）の0時以降の会計の扱い。
+     L/D の振り分けは hyper-worker v1032 が行う（0時を過ぎた会計＝その営業日のディナー）。 */
+  html += `<p style="font-size:11px;color:var(--muted);margin-top:4px">${t('* 1日＝Toast の営業日（締め時刻で区切ります）。0時を過ぎた会計は、前の日の営業日のディナーに入ります。','* One day = Toast business day (split at the closeout time). Checks after midnight count toward the previous business day, as dinner.')}</p>`;
   if (isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('集計ビューでは天気・イベントは各店ビューで確認・入力できます','In aggregate view, weather/events are viewed and entered per store')}</p>`;
   html += '</div>';
   /* v1023: イベント出店（明細）。店舗売上とは別枠。 */
@@ -37095,7 +37124,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1031';
+const APP_VERSION = '1033';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
