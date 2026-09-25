@@ -27870,6 +27870,27 @@ function dailyScopeStores() {
   return s ? [s] : [vis[0]];
 }
 
+/* v1031: 日次進捗のチップ率の下に、ランチ・ディナーのチップ率を小さく出す（Motoさんの決定 9/24・UI案24 の案A）。
+   数え方は1日の率と同じ（tipForDay：カード Tip から手数料 TIP_CC_FEE を引いた額＋現金 Tip。Waikiki はカードのみ）。
+   L＝ランチの Tip ÷ ランチ売上、D＝ディナーの Tip ÷ ディナー売上。テイクアウトは時間帯でどちらかに含まれる
+   （テイクアウトの Tip は toast-sync が分けて取っていないため。分けるのは案B＝見送り）。
+   ランチ休みの日は tipForDay がランチの Tip をディナーに回すので、D だけを「Tip 全部 ÷ ランチ＋ディナー売上」で出す
+   （ランチ売上のままだと D が高く出すぎる）。売上の無い側は出さない。売上があって Tip が 0 の側は「—」。 */
+function tipLDHtml(tf, lunchSales, dinnerSales){
+  if(!tf) return '';
+  var ls = Number(lunchSales)||0, ds = Number(dinnerSales)||0;
+  var row = function(k, col, tip, sales, lbl){
+    if(!(sales>0)) return '';
+    tip = Number(tip)||0;
+    return '<div style="white-space:nowrap" title="'+lbl+' Tip $'+tip.toFixed(2)+' ÷ $'+sales.toFixed(2)+'">'
+      + '<span style="display:inline-block;width:12px;color:'+col+';font-weight:700">'+k+'</span>'
+      + (tip>0 ? (tip/sales*100).toFixed(1)+'%' : '—') + '</div>';
+  };
+  var h = tf.lunchOff
+    ? row('D', 'var(--accent2)', tf.total, ls+ds, t('ディナー','Dinner'))
+    : row('L', 'var(--accent)', tf.lunchTotal, ls, t('ランチ','Lunch')) + row('D', 'var(--accent2)', tf.dinnerTotal, ds, t('ディナー','Dinner'));
+  return h ? '<div style="font-size:9px;color:var(--tm);line-height:1.35;margin-top:2px">'+h+'</div>' : '';
+}
 function renderBudgetDaily() {
   var vis = getVisibleStores();
   var multiStore = vis.length > 1;
@@ -28038,7 +28059,7 @@ function renderBudgetDaily() {
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div></div>
     <table class="inv-table" style="min-width:${isAgg?'620':'1080'}px;font-size:12px"><thead><tr>
-      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th style="color:var(--accent2)">'+t('イベント出店','Pop-up')+'</th>'}${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'</th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'</th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th><th>${t('人件費率*','Labor %*')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
+      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th style="color:var(--accent2)">'+t('イベント出店','Pop-up')+'</th>'}${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'</th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'<div style="font-size:9px;color:var(--tm);font-weight:500">'+t('1日／L・D','Day / L·D')+'</div></th>'}<th>${t('労働h','Labor h')}</th><th>${t('人件費','Labor $')}</th><th>${t('人件費率*','Labor %*')}</th>${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
   var cumB=0, cumA=0;
@@ -28083,6 +28104,7 @@ function renderBudgetDaily() {
       tipTotal = tf.total;
       if (dayAct>0 && tipTotal>0) tipRate = tipTotal/dayAct*100;
     }
+    var tipLD = (tipRate!=null) ? tipLDHtml(tf, dayLunch, dayDinner) : '';   /* v1031: L・D の内訳 */
     /* v901: 日別の人件費率＝人件費 ÷ 実績。
        分子の dayLaborCost は残業割増を含まない（週40h超の判定は週単位でしか出せない）ため、
        laborCoreForYm を使う月次KPIの人件費率とは一致しない。表下に注記あり。 */
@@ -28103,7 +28125,7 @@ function renderBudgetDaily() {
       ${rtCellTd}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${pctColor(cumRate)};font-size:11px">${cumRate}%</span></td>
-      ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="${t('チップ総額','Tip total')} $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>`:'—'}</td>`}
+      ${isAgg?'':`<td style="font-size:11px">${tipRate!=null?`<span title="${t('チップ総額','Tip total')} $${tipTotal.toFixed(2)}">${tipRate.toFixed(1)}%</span>${tipLD}`:'—'}</td>`}
       <td style="font-size:11px;color:var(--muted)">${dayLaborH>0?dayLaborH.toFixed(1):'—'}</td>
       <td style="font-size:11px;color:var(--muted)">${dayLaborCost>0?fmtUSD2(dayLaborCost):'—'}</td>
       <td style="font-size:11px">${dayLaborRate!=null?`<span title="${fmtUSD2(dayLaborCost)} ÷ ${fmtUSD2(dayAct)}">${dayLaborRate.toFixed(1)}%</span>`:'—'}</td>
@@ -28113,6 +28135,8 @@ function renderBudgetDaily() {
   html += '</tbody></table>';
   /* v901: 月次KPIとの差の理由。ここを消すと日別と月次のズレが説明されないまま残る。 */
   html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('* 人件費率＝人件費 ÷ 実績。日別は週40時間超の残業割増を含まないため、上部の月次KPIの人件費率とは一致しません。','* Labor % = Labor $ ÷ Actual. Daily values exclude the weekly overtime premium, so they do not match the monthly Labor % KPI above.')}</p>`;
+  /* v1031: チップ率の内訳の読み方。1日の率と同じ数え方であることを書いておく（お客様が付けた率より少し低く出るため）。 */
+  if (!isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:4px">${t('* チップ率：上＝1日、L＝ランチの Tip ÷ ランチ売上、D＝ディナーの Tip ÷ ディナー売上。Tip はカード Tip から手数料'+(TIP_CC_FEE*100).toFixed(1)+'%を引いた額＋現金 Tip（Waikiki はカードのみ）。テイクアウトは時間帯でランチ・ディナーに含みます。ランチ休みの日は D だけ出します。','* Tip %: top = whole day, L = lunch tips ÷ lunch sales, D = dinner tips ÷ dinner sales. Tips = card tips minus the '+(TIP_CC_FEE*100).toFixed(1)+'% card fee + cash tips (Waikiki: card only). Takeout is counted in lunch or dinner by time. On lunch-off days only D is shown.')}</p>`;
   if (isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('集計ビューでは天気・イベントは各店ビューで確認・入力できます','In aggregate view, weather/events are viewed and entered per store')}</p>`;
   html += '</div>';
   /* v1023: イベント出店（明細）。店舗売上とは別枠。 */
@@ -37071,7 +37095,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1030';
+const APP_VERSION = '1031';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
