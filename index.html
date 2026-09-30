@@ -9360,6 +9360,59 @@ function _coversByTime(check, want){
   return check!=null;
 }
 /* 項目ごとに新しい保存が勝つマップ（日別の勤怠承認）。削除は最優先。 */
+/* v1034: 日次実績（daily_actuals_<店>）の端末間の合流（Motoさんの依頼 9/25：イベント出店が他の端末で見えない）。
+   以前の mergeMapByTime は日ごとに _at の新しい方を採るが、日の行に _at を付ける処理がどこにも無く、
+   いつも同点＝手元が勝っていた。他の端末は Toast 取り込みで全部の日の行を持つので、イベント入りの行を受け取らず、
+   押し上げるとクラウドからイベントを消していた。
+   ・イベントは1件ずつ：id で和集合、同じ id は1件ごとの _at の新しい方（同点は手元）。削除は「削除の印」で残す。
+     印の無い古いイベントは和集合になるので、どの端末に入っていたものも消えない。
+   ・ほかの項目は日の行の _at の新しい方（同点は手元）。採った側に無い項目は、もう一方から補う
+     （日次実績の行から項目を消す処理は無い。Toast の行しか持たない端末が押し上げても、メモ・手入力・天気が消えない）。 */
+function _evMerge(cloudArr, localArr){
+  var out=[], idx={};
+  var put=function(e, isLocal){
+    if(!e || typeof e!=='object') return;
+    var id = e.id ? String(e.id) : ('~'+JSON.stringify(e));   /* id の無い古い形は中身で見分ける */
+    if(!(id in idx)){ idx[id]=out.length; out.push(e); return; }
+    var cur=out[idx[id]], tc=Number(cur._at)||0, te=Number(e._at)||0;
+    if(te>tc || (te===tc && isLocal)) out[idx[id]]=e;
+  };
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(e){ put(e,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(e){ put(e,true); });
+  return out;
+}
+function mergeDailyActuals(cloud, local){
+  var out={}, c=(cloud&&typeof cloud==='object')?cloud:{}, l=(local&&typeof local==='object')?local:{};
+  Object.keys(c).forEach(function(k){ out[k]=c[k]; });
+  Object.keys(l).forEach(function(k){
+    if(!(k in out)){ out[k]=l[k]; return; }
+    var a=out[k], b=l[k];
+    if(!a || typeof a!=='object' || !b || typeof b!=='object'){ out[k]=(_recAt(b)>=_recAt(a))?b:a; return; }
+    var ad=!!a._deleted, bd=!!b._deleted;
+    if(ad!==bd){ out[k]= ad?a:b; return; }
+    var base = (_recAt(b)>=_recAt(a)) ? b : a, other = (base===b) ? a : b;
+    var r = Object.assign({}, base);
+    Object.keys(other).forEach(function(f){ if(!(f in r)) r[f]=other[f]; });
+    if(Array.isArray(a.events) || Array.isArray(b.events)) r.events = _evMerge(a.events, b.events);
+    out[k]=r;
+  });
+  return out;
+}
+function _coversDailyActuals(check, want){
+  if(!check||typeof check!=='object') return false;
+  for(var k in want){ if(!want.hasOwnProperty(k)) continue;
+    var w=want[k], h=check[k];
+    if(h===undefined) return false;
+    if(w&&w._deleted && !(h&&h._deleted)) return false;
+    if(_recAt(w) && _recAt(h)<_recAt(w)) return false;
+    var he={}; ((h&&Array.isArray(h.events))?h.events:[]).forEach(function(e){ if(e&&e.id) he[e.id]=Number(e._at)||0; });
+    var ws=(w&&Array.isArray(w.events))?w.events:[];
+    for(var i=0;i<ws.length;i++){ var e=ws[i]; if(!e||!e.id) continue;
+      if(!(e.id in he)) return false;
+      if((Number(e._at)||0) > he[e.id]) return false; }
+  }
+  return true;
+}
 function mergeMapByTime(cloud, local){
   var out={}, c=(cloud&&typeof cloud==='object')?cloud:{}, l=(local&&typeof local==='object')?local:{};
   Object.keys(c).forEach(function(k){ out[k]=c[k]; });
@@ -11630,13 +11683,14 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
   'inv_count_':  { merge: mergeInvByKey, covers: _coversInvByKey },
   'inv_top_':    { merge: mergeInvByKey, covers: _coversInvByKey },
   'inv_templates': { merge: mergeInvByKey, covers: _coversInvByKey },
-  /* v825: 日次売上。合流ルールが無く「丸ごと上書き」だったため、
+  /* v1034: 日次売上は mergeDailyActuals に（イベントは1件ずつ・採った側に無い項目は補う）。以下は v825 の経緯。
+     v825: 日次売上。合流ルールが無く「丸ごと上書き」だったため、
      直近14日ぶんしか持っていない端末が押し上げると、
      クラウドの7月前半が消えて全端末に伝播した（Tenkichi 7/1〜7/18）。
      日付キーの和集合にして、範囲外の日が消えないようにする。
      日ごとの勝敗は _at で判定するが、既存データに _at は無いので
      同点＝ローカルが勝つ。これは今までと同じ挙動で、退行しない。 */
-  'daily_actuals_': { merge: mergeMapByTime, covers: _coversMapByTime },
+  'daily_actuals_': { merge: mergeDailyActuals, covers: _coversDailyActuals, keepLocal: true },
   /* v826: 原価 月次。単一オブジェクトなので mergeMapByTime は使えない
      （項目名を日付キーと誤解して壊れる）。項目ごとに合流する。 */
   'fc_monthly_': { merge: mergeFcMonthly, covers: _coversFcMonthly },
@@ -12105,6 +12159,16 @@ function _coversMapByKey(check, want){
   return true;
 }
 var _opLastPushErr = {};   /* v744: キーごとの最後の失敗理由（未送信の原因表示に使う） */
+/* v1034: 押し上げはクラウドを取りに行っている間（await）に、同じキーへ新しい保存が入ることがある。
+   以前は取りに行く前の値で端末を書き戻していたので、オフラインや遅い回線だと、あとから入れたイベント・メモが端末から消えた
+   （本物の画面2つの確認で再現）。keepLocal の付いたキー（日次実績）は、書き戻す直前の手元の値と合流してから書く。
+   ほかのキーは今までどおり。 */
+function _opWriteBack(key, def, val){
+  var v = val;
+  if(def && def.keepLocal){ try{ var cur = _lsRaw(key, null); if(cur && typeof cur==='object') v = def.merge(val, cur); }catch(e){} }
+  _lsWriteVerified(key, JSON.stringify(v));
+  return v;
+}
 function opMergePush(key, localVal, table){
   table = table || 'app_state';
   var def = _opMergeDef(key); if(!def) return Promise.resolve();
@@ -12120,13 +12184,13 @@ function opMergePush(key, localVal, table){
         var cloud = await _fetchOpValue(key, table);
         if(cloud===undefined){ // 取得失敗→マージせず素通し
           var _u0 = await supaUpsert(table, [_opUpsertRow(key, desired, table)]);
-          _lsWriteVerified(key, JSON.stringify(desired));         /* v763 */
+          _opWriteBack(key, def, desired);                         /* v763 → v1034: 手元の新しい保存を残す */
           _ok = (_u0!==false);
           if(!_ok) _err='クラウドへの書き込みに失敗しました';
           break;
         }
         var merged = def.merge(cloud, desired);
-        _lsWriteVerified(key, JSON.stringify(merged));            /* v763 */
+        _opWriteBack(key, def, merged);                           /* v763 → v1034: 手元の新しい保存を残す */
         var _u1 = await supaUpsert(table, [_opUpsertRow(key, merged, table)]);
         if(_u1===false){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
         var check = await _fetchOpValue(key, table);
@@ -29528,7 +29592,7 @@ var EVENT_FIELDS = ['sales','guests','cost','labor','fee'];
 /* その日のイベント一覧。壊れた値でも落ちないように整える（数字でないものは 0）。 */
 function dayEventsFor(storeId, date){
   var ov = (getDailyActuals(storeId)||{})[date] || {};
-  var arr = Array.isArray(ov.events) ? ov.events : [];
+  var arr = (Array.isArray(ov.events) ? ov.events : []).filter(function(e){ return !(e && e._deleted); });   /* v1034: 削除の印は出さない */
   return arr.map(function(e, i){
     var o = { id:(e && e.id) || ('ev'+i), name:(e&&e.name)||'', place:(e&&e.place)||'',
               by:(e&&e.by)||'', at:(e&&e.at)||'', editBy:(e&&e.editBy)||'', editAt:(e&&e.editAt)||'' };
@@ -29648,15 +29712,17 @@ function saveEvent(storeId, date, evId){
   var keep = evId ? (dayEventsFor(storeId, date).filter(function(e){ return e.id===evId; })[0]||{}) : {};
   rec.by = keep.by || myName(); rec.at = keep.at || nowJP();
   if (evId && keep.by) { rec.editBy = myName(); rec.editAt = nowJP(); }
+  /* v1034: 端末間の合流で新しい方を採るための印（1件ごと） */
+  var _now = Date.now(); rec._at = _now;
   var actuals = getDailyActuals(storeId);
-  /* 日付を変えたときは、元の日から外して新しい日へ移す（両方に残さない） */
-  if (evId) {
+  /* 日付を変えたときは、元の日には「削除の印」を残して新しい日へ移す（消すだけだと、他の端末の古い行から戻ってくる） */
+  if (evId && newDate !== date) {
     var prevRec = actuals[date] || {};
-    var left = (Array.isArray(prevRec.events)?prevRec.events:[]).filter(function(e){ return (e&&e.id)!==evId; });
+    var left = (Array.isArray(prevRec.events)?prevRec.events:[]).map(function(e){ return (e&&e.id)===evId ? { id:evId, _deleted:true, _at:_now } : e; });
     actuals[date] = Object.assign({}, prevRec, { events: left });
   }
   var tgt = actuals[newDate] || {};
-  var list = (Array.isArray(tgt.events)?tgt.events:[]).slice();
+  var list = (Array.isArray(tgt.events)?tgt.events:[]).filter(function(e){ return (e&&e.id)!==rec.id; });
   list.push(rec);
   actuals[newDate] = Object.assign({}, tgt, { events: list });
   setDailyActuals(storeId, actuals);
@@ -29666,7 +29732,8 @@ function saveEvent(storeId, date, evId){
 }
 function deleteEvent(storeId, date, evId){
   var actuals = getDailyActuals(storeId), rec = actuals[date] || {};
-  var left = (Array.isArray(rec.events)?rec.events:[]).filter(function(e){ return (e&&e.id)!==evId; });
+  /* v1034: 消さずに「削除の印」を残す（他の端末の古い行から戻ってこないように） */
+  var left = (Array.isArray(rec.events)?rec.events:[]).map(function(e){ return (e&&e.id)===evId ? { id:evId, _deleted:true, _at:Date.now() } : e; });
   actuals[date] = Object.assign({}, rec, { events: left });
   setDailyActuals(storeId, actuals);
   closeModalDirect();
@@ -29690,6 +29757,7 @@ function saveDayMemo(storeId, date){
   var ov=actuals[date]||{};
   var v=((document.getElementById('dm-memo')||{}).value||'').trim();
   ov.event=v; ov.eventAuto=false;
+  ov._at=Date.now();   /* v1034: 端末間の合流で新しい方を採るための印 */
   actuals[date]=ov;
   setDailyActuals(storeId, actuals);
   closeModalDirect();
@@ -29737,7 +29805,7 @@ function saveDailyActual(storeId, date) {
     event: document.getElementById('da-event').value.trim(), eventAuto:false,
     foodCost: food===''?(prev.foodCost!=null?prev.foodCost:null):parseFloat(food),
     labor: labor===''?(prev.labor!=null?prev.labor:null):parseFloat(labor),
-  }, _meta);
+  }, _meta, { _at: Date.now() });   /* v1034: 端末間の合流で新しい方を採るための印 */
   setDailyActuals(storeId, actuals);
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId);
@@ -37124,7 +37192,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1033';
+const APP_VERSION = '1034';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
