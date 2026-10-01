@@ -31349,15 +31349,17 @@ var INV_STORE_SEEDS={
 ]
 };
 var INV_SEED_CLS_CAT={food:1000, liquor:24000, beverage:30000, supply:40000};
-var INV_SEED_LABELS={F01:'ToriTon', F02:'Tenkichi', TOTOYA:'Totoya（3店共通）', F05:'Marujuu'};
+var INV_SEED_LABELS={F01:'ToriTon', F02:'Tenkichi', TOTOYA:'Totoya（3店共通）', F05:'Marujuu', F06:'LaLa'};   /* v1038: LaLa */
 function _hasInvSeed(storeId){
   if(storeId==='F05') return true;
+  if(storeId==='F06') return true;   /* v1038: LaLa（請求書から作ったデータ） */
   var k=recipeOwnerKey(storeId);
   return (typeof INV_STORE_SEEDS!=='undefined') && !!(INV_STORE_SEEDS[k] && INV_STORE_SEEDS[k].length);
 }
 function importInvSeedFor(storeId){
   if(['gm','ceo','office'].indexOf(curRole)<0){ alert('GM/CEO/Officeのみ取り込めます'); return; }
   if(storeId==='F05'){ return importMarujuuIngredients(); }
+  if(storeId==='F06'){ return openLalaImport(); }   /* v1038: 確認画面を出してから登録 */
   var key=recipeOwnerKey(storeId);
   var seed=(typeof INV_STORE_SEEDS!=='undefined')?INV_STORE_SEEDS[key]:null;
   if(!seed||!seed.length){ alert('この店舗の取込データはありません'); return; }
@@ -31376,6 +31378,457 @@ function importInvSeedFor(storeId){
   all[key]=arr; lsSet('store_ingredients', all);
   showToast(label+'に'+seed.length+'品目を取り込みました（新規'+added+'・更新'+updated+'）','success');
   renderPage('inventory');
+}
+
+/* ============================================================
+   v1039: LaLa の食材（請求書 73枚から作ったデータ・lala_invoice_seed_v1・2026-10-01）★重さは g（1 lb＝453.59237 g）
+   元データ v1038/lala_seed_data.json md5 0d18aab7ab01c1301252afb66f5404e6（v1039/make_lala_seed.py で作り直せる）
+   c=番号 x=元データの商品ID（二重登録を防ぐ鍵） n=日本語名 e=原票の名前 v=業者（元データの表記）s=業者商品コード（文字列）
+   k=区分 t=カテゴリ u=棚卸単位 cu=元データの単位コード（u が g で cu が lb＝請求書は lb・g に直した品目） q=購入1単位の棚卸単位数 p=購入単位の参考単価（無い＝単価未設定）
+   pu=購入単位 pk=規格・入数（原票）d=単価の日付 i=1 棚卸表に入れる／0 マスターだけ r=要確認の内容 b=数え方の決まり（読み取れないものだけ）
+============================================================ */
+var LALA_SEED_V = "lala_invoice_seed_v1@2026-10-01+g";
+var LALA_SEED = [
+{"c":600001,"x":"LALA-P-511DA1C59E","n":"えのき 150g","e":"Mushroom, Enoki 34x5.3oz","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"パック","cu":"PKG","q":1,"pu":"パック","pk":"34 x 150 g","d":"2026-09-23","i":1,"p":4.0},
+{"c":600002,"x":"LALA-P-55C3E226C7","n":"えのき 7oz","e":"Mushroom, Enoki 25pk x 7oz","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"パック","cu":"PKG","q":1,"pu":"パック","pk":"25 x 7 oz","d":"2026-09-29","i":1,"p":5.27},
+{"c":600003,"x":"LALA-P-43E953E1AC","n":"しそ 100枚","e":"Shiso","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"パック","cu":"PK","q":1,"pu":"パック","pk":"100 count","d":"2026-09-29","i":1,"p":22.89},
+{"c":600004,"x":"LALA-P-E19972EA79","n":"にら","e":"Chives, Flat","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"variable weight","d":"2026-09-26","i":1,"p":3.94},
+{"c":600005,"x":"LALA-P-9E15DF1D0B","n":"みょうが","e":"Myoga","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"variable weight","d":"2026-09-18","i":1,"p":42.25},
+{"c":600006,"x":"LALA-P-C1AD0812C1","n":"むきにんにく 5lb袋","e":"Garlic, Peeled","v":"Ala Moana Produce","s":"5054","k":"food","t":10000,"u":"袋","cu":"BAG","q":1,"pu":"袋","pk":"6 x 5 lb","d":"2026-09-08","i":1,"p":20.58},
+{"c":600007,"x":"LALA-P-C25FEB52BD","n":"アスパラガス Large","e":"Asparagus, Large","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"束","cu":"BCH","q":1,"pu":"束","pk":"11 bunch per case","d":"2026-09-08","i":1,"p":10.12},
+{"c":600008,"x":"LALA-P-EF78782F8C","n":"アボカド 48s","e":"Avocado, 48s","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"個","cu":"PC","q":1,"pu":"個","pk":"USA","d":"2026-09-08","i":1,"p":2.1},
+{"c":600009,"x":"LALA-P-9B1C44FA55","n":"エリンギ 9.5oz","e":"Mushroom, Eryngi","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"パック","cu":"PK","q":1,"pu":"パック","pk":"10 x 9.5 oz","d":"2026-09-08","i":1,"p":9.02},
+{"c":600010,"x":"LALA-P-84249EF02F","n":"キャベツ","e":"Cabbage, Head","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"50 lb case","d":"2026-09-29","i":1,"p":1.81},
+{"c":600011,"x":"LALA-P-4E39C0ED8C","n":"ジャンボ玉ねぎ","e":"Onion, Jumbo","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"50 lb sack USA","d":"2026-09-18","i":1,"p":1.34},
+{"c":600012,"x":"LALA-P-27C29AA987","n":"チェリートマト","e":"Tomato, Cherry","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"12 x 1 pint","d":"2026-09-25","i":1,"p":6.15},
+{"c":600013,"x":"LALA-P-DC21DA498D","n":"トマト 5x5","e":"Tomato 5x5","v":"Ala Moana Produce","s":"5190","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"25 lb case","d":"2026-09-21","i":1,"p":3.11},
+{"c":600014,"x":"LALA-P-187F17B656","n":"ハート・オブ・パーム","e":"Heart of Palm","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"variable weight","d":"2026-09-24","i":1,"p":25.35},
+{"c":600015,"x":"LALA-P-6652AE3036","n":"ラセットポテト 50s","e":"Potato, Russet 50s","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"50 lb case","d":"2026-09-29","i":1,"p":1.23},
+{"c":600016,"x":"LALA-P-F114E2A4A4","n":"レモン 140s Choice","e":"Lemon, 140s Choice","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"USA","d":"2026-09-25","i":1,"p":2.25},
+{"c":600017,"x":"LALA-P-7A8D2726C3","n":"山芋","e":"Yamaimo","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"22 lb case","d":"2026-09-29","i":1,"p":5.6},
+{"c":600018,"x":"LALA-P-B0C89EA925","n":"日本きゅうり","e":"Cucumber, Japan","v":"Ala Moana Produce","s":"5040","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"40 lb case","d":"2026-09-29","i":1,"p":3.87},
+{"c":600019,"x":"LALA-P-736618B8CB","n":"東京ねぎ","e":"Tokyo Negi","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"40 lb case","d":"2026-09-21","i":1,"p":8.17},
+{"c":600020,"x":"LALA-P-CAC246FC85","n":"玉レタス 24s","e":"Lettuce, Head 24s","v":"Ala Moana Produce","s":"5075","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"35 lb case","d":"2026-09-24","i":1,"p":2.3},
+{"c":600021,"x":"LALA-P-C1D4626457","n":"生しいたけ M","e":"Mushroom, Shiitake Medium","v":"Ala Moana Produce","s":"5096","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"5 lb case","d":"2026-09-26","i":1,"p":13.13},
+{"c":600022,"x":"LALA-P-465838E7CF","n":"生姜","e":"Ginger","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"30 lb case","d":"2026-09-08","i":1,"p":4.11},
+{"c":600023,"x":"LALA-P-A41BD73CEA","n":"長なす","e":"Eggplant, Long","v":"Ala Moana Produce","s":"5045","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"35 lb case","d":"2026-09-23","i":1,"p":4.3},
+{"c":600024,"x":"LALA-P-91C9C8D43E","n":"長大根","e":"Daikon, Long","v":"Ala Moana Produce","s":"5042","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"50 lb case","d":"2026-09-18","i":1,"p":3.8},
+{"c":600025,"x":"LALA-P-93DA05F9D3","n":"青ねぎ 2mmカット","e":"Green Onion, Cut 2mm","v":"Ala Moana Produce","s":"4031","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"2 lb pack","d":"2026-09-24","i":1,"p":11.97},
+{"c":600026,"x":"LALA-P-D7999748D5","n":"青ねぎ H-1","e":"Onion, Green H-1","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"25 lb case","d":"2026-09-29","i":1,"p":7.44},
+{"c":600027,"x":"LALA-P-3F7B850625","n":"韓国大根","e":"Daikon, Korean","v":"Ala Moana Produce","s":"","k":"food","t":10000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"44 lb case","d":"2026-09-29","i":1,"p":3.1},
+{"c":600028,"x":"LALA-P-ABFFC28D19","n":"Aloha ソフト豆腐","e":"Tofu, Aloha Soft","v":"Ala Moana Produce","s":"","k":"food","t":11000,"u":"パック","cu":"PK","q":1,"pu":"パック","pk":"pack size not stated","d":"2026-09-08","i":1,"p":3.73,"r":["1パックの容量が記載されていない"]},
+{"c":600029,"x":"LALA-P-169A91E28C","n":"House Foods 木綿豆腐 14oz","e":"Tofu, House Firm","v":"Ala Moana Produce","s":"","k":"food","t":11000,"u":"パック","cu":"PK","q":1,"pu":"パック","pk":"12 x 14 oz","d":"2026-09-08","i":1,"p":2.64},
+{"c":600030,"x":"LALA-P-D7AFC57737","n":"卵 Large US","e":"Egg, Large US","v":"Ala Moana Produce","s":"","k":"food","t":2000,"u":"半ケース","cu":"HALF_CS","q":1,"pu":"半ケース","pk":"half case; egg count not stated","d":"2026-09-29","i":1,"p":53.52,"b":"半ケースを1として数える。卵数への換算は保留","r":["1/2CSあたり卵数が不明。半ケース=1で入力し、卵1個単価を推測しない"]},
+{"c":600031,"x":"LALA-P-74110D6153","n":"US和牛 ストリップロイン 8–9","e":"US Wagyu Striploin (8-9) SPB Boneless","v":"ATM International USA","s":"","k":"food","t":3000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"variable weight","d":"2026-09-16","i":1,"p":32.0,"r":["業者商品コードが読み取れないため空欄。商品名で仮識別"]},
+{"c":600032,"x":"LALA-P-81AF9CB735","n":"US和牛 センターカット・トップサーロイン","e":"Center Cut Top Sirloin (US Wagyu)","v":"ATM International USA","s":"185-1-S","k":"food","t":3000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"variable weight","d":"2026-09-10","i":1,"p":14.0},
+{"c":600033,"x":"LALA-P-1B55290628","n":"豚ひき肉 Taco Ground Pork","e":"Taco Ground Pork","v":"ATM International USA","s":"CPP12","k":"food","t":3000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"5 lb x 4 packs","d":"2026-09-21","i":1,"p":4.1},
+{"c":600034,"x":"LALA-P-FAD1C92E09","n":"豚バラ 12mmスライス","e":"Pork Belly Slice (12mm)","v":"ATM International USA","s":"","k":"food","t":3000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"12 mm","d":"2026-09-25","i":1,"p":7.8,"r":["業者商品コードが読み取れないため空欄。商品名で仮識別"]},
+{"c":600035,"x":"LALA-P-E817CA2E0F","n":"やまや 明太子マッシュ","e":"Mentaiko Mash (Yamaya)","v":"ATM International USA","s":"115-Y","k":"food","t":6000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"340 g x 16","d":"2026-09-21","i":1,"p":14.0,"r":["原票は3 lb・3パック・340gを併記。重量の整合が取れないためパック換算を保留。14 USD/lbは原票値"]},
+{"c":600036,"x":"LALA-P-6263D7ED38","n":"Bertrand-Delespierre Brut 1er Cru NV","e":"Bertrand-Delespierre Enfant de la Montagne Brut 1er Cru NV","v":"Flavors of Italy","s":"WCBDEDLMNV","k":"liquor","t":23000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 750 mL","d":"2026-09-17","i":1,"p":692.75},
+{"c":600037,"x":"LALA-P-9830CA9ECF","n":"Figli Luigi Oddero Barolo Convento 2017","e":"Figli Luigi Oddero Barolo Convento 2017","v":"Flavors of Italy","s":"WODCO171","k":"liquor","t":23000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 750 mL","d":"2026-09-17","i":1,"p":452.4},
+{"c":600038,"x":"LALA-P-785B46D7DC","n":"Mosse Magic of Ju-Ju 2023","e":"Agnes et Rene Mosse Vin de France Magic of Ju-Ju 2023","v":"Flavors of Italy","s":"WLD9113723","k":"liquor","t":23000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 750 mL","d":"2026-09-17","i":1,"p":241.55},
+{"c":600039,"x":"LALA-P-8ABCEE80C8","n":"Salvatore Marino Turi Bianco 2024","e":"Salvatore Marino Terre Siciliane Bianco Turi 2024","v":"Flavors of Italy","s":"WLD1710324","k":"liquor","t":23000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 750 mL","d":"2026-09-17","i":1,"p":198.0},
+{"c":600040,"x":"LALA-P-C879D31A7B","n":"VentiVenti ランブルスコ 2024","e":"VentiVenti Lambrusco Modena Rosso 2024","v":"Flavors of Italy","s":"WVVLM24","k":"liquor","t":23000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 750 mL","d":"2026-09-17","i":1,"p":165.95},
+{"c":600041,"x":"LALA-P-3A85777B4A","n":"福寿 ブルー 純米吟醸","e":"Fukuju Blue Junmai Ginjo","v":"Island Distributing","s":"953158","k":"liquor","t":21000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-15","i":1,"p":315.6},
+{"c":600042,"x":"LALA-P-7E20CB879F","n":"貴 Noble Arrow","e":"Takahiro Noble Arrow","v":"Island Distributing","s":"865067","k":"liquor","t":21000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 720 mL","d":"2026-09-15","i":1,"p":159.0},
+{"c":600043,"x":"LALA-P-10D6F37AB6","n":"黒牛 Black Bull 純米吟醸","e":"Kuroushi Black Bull Junmai Ginjo","v":"Island Distributing","s":"578319","k":"liquor","t":21000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-15","i":1,"p":353.4},
+{"c":600044,"x":"LALA-P-C3AAA0445B","n":"スポットプローン XL カナダ産","e":"RC Spot Prawn (XL) 20-24P Wild Canada","v":"JFC International","s":"18330","k":"food","t":6000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 2.2 lb","d":"","i":1,"r":["無償提供のみのため通常単価は未設定"]},
+{"c":600045,"x":"LALA-P-E5F0A7BF37","n":"ニチレイ ボイルベビーホタテ M","e":"Nichirei Cook Baby Scallop M Japan","v":"JFC International","s":"28249","k":"food","t":6000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"5 x 2.2 lb","d":"2026-09-09","i":1,"p":41.0},
+{"c":600046,"x":"LALA-P-CC8B8C10FB","n":"House Foods ソフト豆腐 14oz","e":"HSE Tofu Soft","v":"JFC International","s":"27563","k":"food","t":11000,"u":"個","cu":"EA","q":12,"pu":"ケース","pk":"12 x 14 oz","d":"2026-09-29","i":1,"p":25.8,"b":"12個×14 oz/ケース"},
+{"c":600047,"x":"LALA-P-CF7F3D9AED","n":"JB 寿ちくわ 5本","e":"JB Kotobuki Chikuwa 5P Frozen","v":"JFC International","s":"69474","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"2 x 30 x 5.64 oz","d":"2026-09-09","i":1,"p":1.7},
+{"c":600048,"x":"LALA-P-85E9A22899","n":"WP 冷凍枝豆 中国産","e":"WP Edamame Soybeans Frozen China","v":"JFC International","s":"25100","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"20 x 1 lb","d":"2026-09-09","i":1,"p":2.25},
+{"c":600049,"x":"LALA-P-788F89D849","n":"JB 冷凍讃岐うどん 5食","e":"JB Sanuki Udon 5P IVP Frozen","v":"JFC International","s":"04660","k":"food","t":8000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"2 x 6 x 44 oz","d":"2026-09-09","i":1,"p":3.5},
+{"c":600050,"x":"LALA-P-CD664123AF","n":"WP きな粉","e":"WP Kinako Soy Bean Flour","v":"JFC International","s":"03356","k":"food","t":8000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"24 x 7 oz","d":"2026-09-09","i":1,"p":2.45},
+{"c":600051,"x":"LALA-P-32A4798E79","n":"玉錦 スーパープレミアム米 50lb","e":"Tamanishiki Super Premium Rice","v":"JFC International","s":"62475","k":"food","t":8000,"u":"g","cu":"lb","q":22679.6185,"pu":"ケース","pk":"50 lb","d":"","i":1,"r":["無償提供のみのため通常単価は未設定"]},
+{"c":600052,"x":"LALA-P-0440CBA52C","n":"Heavenly Chef 大豆油","e":"Heavenly Chef Soybean Oil","v":"JFC International","s":"68853","k":"food","t":13000,"u":"缶","cu":"CAN","q":1,"pu":"ケース","pk":"560 fl oz","d":"2026-09-22","i":1,"p":52.0,"b":"560 fl oz容器を1として数える"},
+{"c":600053,"x":"LALA-P-9A66E4B019","n":"JB あら塩","e":"JB Arajio Natural Sea Salt","v":"JFC International","s":"22716","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 2.20 lb","d":"2026-09-09","i":1,"p":3.95},
+{"c":600054,"x":"LALA-P-853A7674C6","n":"Koha チャプサルコチュジャン","e":"Koha Chapsal Kochujang","v":"JFC International","s":"04127","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 8 oz","d":"2026-09-09","i":1,"p":3.5},
+{"c":600055,"x":"LALA-P-98D032990F","n":"N-S すき焼きたれ","e":"N-S Sukiyaki Sauce","v":"JFC International","s":"42461","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 5.40 lb","d":"2026-09-22","i":1,"p":19.0},
+{"c":600056,"x":"LALA-P-88EF226B54","n":"S&B にんにくペースト","e":"SB Fresh Garlic Paste","v":"JFC International","s":"13335","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 2.20 lb","d":"2026-09-29","i":1,"p":13.0},
+{"c":600057,"x":"LALA-P-A12DD0E51B","n":"S&B 和風ねりからし チューブ","e":"SB Nerikarashi Wafu In Tube","v":"JFC International","s":"04595","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 10 x 1.52 oz","d":"2026-09-22","i":1,"p":2.0},
+{"c":600058,"x":"LALA-P-C47E2805A6","n":"S&B 粉からし","e":"SB Mustard Ground Karashi","v":"JFC International","s":"03050","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"5 x 4 x 14 oz","d":"2026-09-09","i":1,"p":14.5},
+{"c":600059,"x":"LALA-P-DF7FA4BDE0","n":"ひかり 円熟こうじ味噌","e":"Hikari Enjuku Koji Miso Cup","v":"JFC International","s":"14858","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"8 x 26.4 oz","d":"2026-09-09","i":1,"p":6.75},
+{"c":600060,"x":"LALA-P-13E178E17F","n":"キッコーマン Smooth Aromatic 醤油","e":"KKM Smooth Aromatic Soy Sauce","v":"JFC International","s":"64132","k":"food","t":1000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 6.80 fl oz","d":"2026-09-22","i":1,"p":18.0,"b":"6本×6.80 fl oz/ケース"},
+{"c":600061,"x":"LALA-P-97A0CE8D1A","n":"キッコーマン ポン酢","e":"KKM Ponzu","v":"JFC International","s":"15542","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 0.50 gal","d":"2026-09-22","i":1,"p":9.5},
+{"c":600062,"x":"LALA-P-B6888B6C8F","n":"キッコーマン マンジョウ 味みりん","e":"KKM Manjo Aji Mirin","v":"JFC International","s":"02137","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 60 fl oz","d":"2026-09-22","i":1,"p":8.5},
+{"c":600063,"x":"LALA-P-4F1C12A72C","n":"キッコーマン 醤油 1gal","e":"KKM Soy Sauce Plastic Bottle","v":"JFC International","s":"06263","k":"food","t":1000,"u":"本","cu":"BTL","q":4,"pu":"ケース","pk":"4 x 1 gal","d":"","i":1,"b":"4本×1 gallon/ケース","r":["無償提供のみのため通常単価は未設定"]},
+{"c":600064,"x":"LALA-P-1C38BB6138","n":"キッコーマン 醤油 64fl oz","e":"KKM Soy Sauce Plastic Bottle","v":"JFC International","s":"27533","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 64 fl oz","d":"2026-09-09","i":1,"p":7.5},
+{"c":600065,"x":"LALA-P-A0788781A2","n":"ヒガシマル うすくち醤油","e":"Higashimaru Usukuchi Shoyu","v":"JFC International","s":"32837","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 1.8 L","d":"2026-09-09","i":1,"p":7.5},
+{"c":600066,"x":"LALA-P-70728B30E3","n":"マルイ 生おろしわさび 800","e":"Marui Nama Oroshi Wasabi 800 Frozen","v":"JFC International","s":"02369","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"15 x 28.2 oz","d":"2026-09-09","i":1,"p":15.0},
+{"c":600067,"x":"LALA-P-D07E6867BB","n":"九鬼 白ねりごま","e":"Kuki Sesame Seed Paste White","v":"JFC International","s":"63350","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 35.2 oz","d":"2026-09-09","i":1,"p":18.0},
+{"c":600068,"x":"LALA-P-7907F5902D","n":"桃屋 ごはんですよ 徳用","e":"Momoya Gohandesuyo Tokuyo","v":"JFC International","s":"14283","k":"food","t":1000,"u":"個","cu":"EA","q":24,"pu":"ケース","pk":"4 x 6 x 13.75 oz","d":"2026-09-09","i":1,"p":156.0,"b":"4×6瓶/ケース"},
+{"c":600069,"x":"LALA-P-3459670A8B","n":"理研 とりだし EX","e":"Riken Toridashi EX Chicken Stock","v":"JFC International","s":"62912","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 17.6 oz","d":"2026-09-09","i":1,"p":38.0},
+{"c":600070,"x":"LALA-P-3CABD933D3","n":"あさ開 水神 純米酒","e":"Asabiraki Suijin Junmai Sake","v":"JFC International","s":"82859","k":"liquor","t":21000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-29","i":1,"p":238.8},
+{"c":600071,"x":"LALA-P-5DD755C491","n":"中野BC 紅南高梅酒","e":"Nakano Beninanko Umeshu Shochu","v":"JFC International","s":"86900","k":"liquor","t":24000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"6 x 720 mL","d":"2026-09-15","i":1,"p":20.0},
+{"c":600072,"x":"LALA-P-FC8519F1B5","n":"大関 相撲 純米酒","e":"Ozeki Sumo Junmai Sake","v":"JFC International","s":"22477","k":"liquor","t":21000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"6 x 2 L","d":"2026-09-09","i":1,"p":11.0},
+{"c":600073,"x":"LALA-P-D3BB33AC4B","n":"宮崎本店 キンミヤ 紙パック","e":"Miyazaki Kinmiya Shochu Paper Pack","v":"JFC International","s":"85581","k":"liquor","t":22000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 1.8 L","d":"2026-09-29","i":1,"p":84.0},
+{"c":600074,"x":"LALA-P-6E3F984CF9","n":"獺祭45 純米大吟醸","e":"Dassai 45 JDGJ Sake","v":"JFC International","s":"62126","k":"liquor","t":21000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-29","i":1,"p":264.0},
+{"c":600075,"x":"LALA-P-AF60633C4B","n":"薩州 赤兎馬 抹茶焼酎","e":"Sasshu Sekitoba Matcha Shochu","v":"JFC International","s":"30867","k":"liquor","t":22000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 720 mL","d":"2026-09-16","i":1,"p":129.0},
+{"c":600076,"x":"LALA-P-178571A2D7","n":"薩州 赤兎馬 焼酎","e":"Sasshu Sekitoba Shochu","v":"JFC International","s":"30866","k":"liquor","t":22000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 720 mL","d":"2026-09-15","i":1,"p":129.0},
+{"c":600077,"x":"LALA-P-CDEC158820","n":"さばフィレ 151–185g","e":"Saba Fillet 151-185g","v":"Maguro International Hawaii","s":"SAB0466","k":"food","t":6000,"u":"ケース","cu":"CS","q":1,"pu":"ケース","pk":"15PK (6 kg) / 2CS","d":"2026-09-21","i":1,"p":220.0,"r":["15PK(6kg)/2CSの入数関係を確認。ケース単位220 USDを維持"]},
+{"c":600078,"x":"LALA-P-B58F56CA3C","n":"アトランティックサーモン フィレ 10UP","e":"Salmon Atlantic Fillet 10UP","v":"Maguro International Hawaii","s":"SA22952","k":"food","t":6000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"variable weight fillet","d":"2026-09-21","i":1,"p":9.5},
+{"c":600079,"x":"LALA-P-405ADC0340","n":"生すり身","e":"Surimi-Paste (Raw)","v":"Okuhara Foods","s":"","k":"food","t":6000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"5 lb bag","d":"2026-09-29","i":1,"p":3.95},
+{"c":600080,"x":"LALA-P-8E37538399","n":"うずまき 5.5oz","e":"Uzumaki","v":"Okuhara Foods","s":"21802","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"5.5 oz","d":"2026-09-29","i":1,"p":2.2},
+{"c":600081,"x":"LALA-P-21C4414964","n":"ごぼう天 5.5oz","e":"Gobo Tempura","v":"Okuhara Foods","s":"21801","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"5.5 oz","d":"2026-09-29","i":1,"p":2.2},
+{"c":600082,"x":"LALA-P-3C4563B056","n":"ちくわ 5.5oz","e":"Chikuwa","v":"Okuhara Foods","s":"21803","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"5.5 oz","d":"2026-09-29","i":1,"p":2.2},
+{"c":600083,"x":"LALA-P-5B9A9B301C","n":"野菜天 5.5oz","e":"Vegetable Tempura","v":"Okuhara Foods","s":"21805","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"5.5 oz","d":"2026-09-29","i":1,"p":2.2},
+{"c":600084,"x":"LALA-P-3346EF71E7","n":"豚バラ 2mmスライス","e":"Pork Belly 2mm Sliced","v":"Redondo's","s":"8225","k":"food","t":3000,"u":"ケース","cu":"CS","q":1,"pu":"ケース","pk":"","d":"2026-09-29","i":1,"p":64.6,"r":["ケース重量が原票にない。別商品1466の12 lbを流用せずケースで棚卸し"]},
+{"c":600085,"x":"LALA-P-3C450EE7A0","n":"鶏もも 骨なし・皮付き 10oz","e":"Chicken Thigh B/L S/O 10oz","v":"Redondo's","s":"8313","k":"food","t":3000,"u":"g","cu":"lb","q":6803.88555,"pu":"ケース","pk":"15 lb/CS; 10 oz portions","d":"2026-09-29","i":1,"p":59.25},
+{"c":600086,"x":"LALA-P-52EE24DDAC","n":"シューストリング・フレンチフライ","e":"Shoe String French Fries","v":"Redondo's","s":"7003","k":"food","t":11000,"u":"g","cu":"lb","q":12246.99399,"pu":"ケース","pk":"27 lb/CS","d":"2026-09-11","i":1,"p":46.55},
+{"c":600087,"x":"LALA-P-73C71121EB","n":"冷凍うに 100g","e":"Frozen Uni (Sea Urchin)","v":"Santa International","s":"Frozen Uni","k":"food","t":6000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 100 g","d":"2026-09-21","i":1,"p":22.0,"r":["100g×10pkと数量10の対応から単品を100gと仮解釈。現物で確認"]},
+{"c":600088,"x":"LALA-P-4B011AEDF6","n":"サントリー ウイスキー 季 TOKI","e":"Suntory Whisky Toki 86","v":"Southern Glazer's of HI","s":"412171","k":"liquor","t":24000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 750 mL","d":"2026-09-17","i":1,"p":184.5},
+{"c":600089,"x":"LALA-P-E0ABCB0D40","n":"ジェムソン アイリッシュウイスキー","e":"Jameson Irish Whiskey 80","v":"Southern Glazer's of HI","s":"24600","k":"liquor","t":24000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 1.75 L","d":"2026-09-17","i":1,"p":249.0},
+{"c":600090,"x":"LALA-P-424FA09EDE","n":"ドン・フリオ レポサド","e":"Don Julio Tequila Reposado 80","v":"Southern Glazer's of HI","s":"971837","k":"liquor","t":24000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"750 mL","d":"2026-09-25","i":1,"p":49.25},
+{"c":600091,"x":"LALA-P-716698AFAE","n":"ルイ・ロデレール コレクション246","e":"Louis Roederer Brut Collection 246","v":"Southern Glazer's of HI","s":"660949","k":"liquor","t":23000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"750 mL","d":"2026-09-25","i":1,"p":67.0},
+{"c":600092,"x":"LALA-P-89260F154B","n":"響 Japanese Harmony","e":"Hibiki Whisky Japanese Harmony","v":"Southern Glazer's of HI","s":"389170","k":"liquor","t":24000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"6 x 750 mL","d":"2026-09-17","i":1,"p":72.17},
+{"c":600093,"x":"LALA-P-4CF3070946","n":"Icy Strait チャムいくら","e":"F-Icy Strait Chum Ikura","v":"The Cherry Co.","s":"67041","k":"food","t":6000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 2.2 lb","d":"2026-09-21","i":1,"p":96.0},
+{"c":600094,"x":"LALA-P-0F7E278725","n":"あん肝 AZ","e":"F-Ankimo (AZ)","v":"The Cherry Co.","s":"63562","k":"food","t":6000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"14 x 7.77 oz","d":"2026-09-08","i":1,"p":23.6},
+{"c":600095,"x":"LALA-P-ECDA7F8CEE","n":"えいひれ","e":"F-Ei Hire","v":"The Cherry Co.","s":"70650","k":"food","t":6000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"20 x 17.6 oz","d":"2026-09-08","i":1,"p":27.55},
+{"c":600096,"x":"LALA-P-588C8FD10F","n":"しめさば 丸主","e":"F-Shime Saba Marunushi","v":"The Cherry Co.","s":"74496","k":"food","t":6000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"20 x 125 g","d":"2026-09-21","i":1,"p":4.1},
+{"c":600097,"x":"LALA-P-5A048169EC","n":"たこわさび AZ","e":"F-Tako Wasabi AZ","v":"The Cherry Co.","s":"71212","k":"food","t":6000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 2.2 lb","d":"2026-09-08","i":1,"p":35.0},
+{"c":600098,"x":"LALA-P-29C245FB9E","n":"冷凍ハマチフィレ","e":"F-Reikun Hamachi Fillet","v":"The Cherry Co.","s":"72988","k":"food","t":6000,"u":"g","cu":"lb","q":453.59237,"pu":"lb","pk":"AB 4.6 lb (6 pc/CS) 2L","d":"2026-09-21","i":1,"p":17.8},
+{"c":600099,"x":"LALA-P-769D2A0286","n":"冷凍枝豆 MYK","e":"F-MYK S Edamame","v":"The Cherry Co.","s":"71140","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"20 x 14.1 oz","d":"2026-09-08","i":1,"p":2.5},
+{"c":600100,"x":"LALA-P-B2A8011CD0","n":"北海 小倉つぶあん","e":"F-Hokkai Ogura (Tsubu An)","v":"The Cherry Co.","s":"72042","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"4 bags x 11 lb (5 kg)","d":"2026-09-29","i":1,"p":43.77},
+{"c":600101,"x":"LALA-P-344C59BE5C","n":"厚焼き玉子 あじかん","e":"F-Atsuyaki Tamago Ajikan","v":"The Cherry Co.","s":"71071","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"24 x 500 g","d":"2026-09-08","i":1,"p":6.63},
+{"c":600102,"x":"LALA-P-D1DB07908C","n":"味付けかんぴょう","e":"F-Ajitsuke Kanpyo","v":"The Cherry Co.","s":"54241","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 2.2 lb","d":"2026-09-08","i":1,"p":14.2},
+{"c":600103,"x":"LALA-P-3E6C6A7CE4","n":"森永 絹ごし豆腐 Soft","e":"Mori-Nu Silken Tofu Soft","v":"The Cherry Co.","s":"52630","k":"food","t":11000,"u":"個","cu":"EA","q":12,"pu":"ケース","pk":"12 x 10.8 oz","d":"2026-09-21","i":1,"p":19.9,"b":"12個×10.8 oz/ケース"},
+{"c":600104,"x":"LALA-P-BF60914CFE","n":"油揚げ 8枚入り","e":"F-Aburaage 8pcs","v":"The Cherry Co.","s":"71806","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"40 x 80 g (8 pcs)","d":"2026-09-08","i":1,"p":2.46},
+{"c":600105,"x":"LALA-P-730FC7B917","n":"Miyako 片栗粉","e":"Miyako Katakuriko","v":"The Cherry Co.","s":"22848","k":"food","t":8000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"4 x 10 lb","d":"2026-09-08","i":1,"p":22.9},
+{"c":600106,"x":"LALA-P-81549E68F3","n":"サトウ 切り餅","e":"Kirimochi Sato Tsukitate","v":"The Cherry Co.","s":"44723","k":"food","t":8000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"20 x 14.1 oz (8 pcs)","d":"2026-09-08","i":1,"p":7.3},
+{"c":600107,"x":"LALA-P-1C9177F176","n":"日清 バイオレット薄力粉","e":"Nissin Violet Hakurikiko","v":"The Cherry Co.","s":"20570","k":"food","t":8000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"15 x 1 kg","d":"2026-09-21","i":1,"p":4.8},
+{"c":600108,"x":"LALA-P-6A7F5AACA8","n":"祭 コシヒカリ 40lb","e":"Matsuri Rice Koshihikari","v":"The Cherry Co.","s":"20422","k":"food","t":8000,"u":"g","cu":"lb","q":18143.6948,"pu":"袋","pk":"40 lb","d":"2026-09-08","i":1,"p":55.0},
+{"c":600109,"x":"LALA-P-5E8FAF318B","n":"讃岐うどん プレ半切り","e":"F-Sanuki Udon Pre 1/2 Cut","v":"The Cherry Co.","s":"13031","k":"food","t":8000,"u":"パック","cu":"PK","q":8,"pu":"ケース","pk":"8 x 5 x 8.11 oz","d":"2026-09-21","i":1,"p":34.3,"b":"5玉入りを1パック。8パック/ケース。玉単位ではない"},
+{"c":600110,"x":"LALA-P-8DDD93493B","n":"Miyako だし昆布","e":"MYK-O Dashi Konbu","v":"The Cherry Co.","s":"58302","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"8 x 2.2 lb","d":"2026-09-29","i":1,"p":25.3},
+{"c":600111,"x":"LALA-P-2FD11C8A53","n":"Miyako カットわかめ","e":"MYK-O Cut Wakame","v":"The Cherry Co.","s":"28470","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"20 x 1 lb","d":"2026-09-08","i":1,"p":16.1},
+{"c":600112,"x":"LALA-P-D120E75A52","n":"Miyako ヤマキ 花かつお","e":"Miyako Hanakatsuo Yamaki","v":"The Cherry Co.","s":"30631","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 1 lb","d":"2026-09-21","i":1,"p":23.0},
+{"c":600113,"x":"LALA-P-E91B47B4F0","n":"S&B 七味唐辛子 小瓶","e":"S&B Nanami Togarashi","v":"The Cherry Co.","s":"30328","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"16/10/.52 oz; source says 10EA","d":"2026-09-15","i":1,"p":2.1,"r":["16/10/.52oz、10EAの入数表記を確認。EAから重量への換算は行わない"]},
+{"c":600114,"x":"LALA-P-61AD8E5FC3","n":"かどや ごま油","e":"Kadoya Sesame Oil","v":"The Cherry Co.","s":"29315","k":"food","t":13000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 3.5 lb","d":"2026-09-21","i":1,"p":24.2},
+{"c":600115,"x":"LALA-P-94939BCBCA","n":"だしいりこ","e":"F-Dashi Iriko","v":"The Cherry Co.","s":"50733","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 3.3 lb","d":"2026-09-08","i":1,"p":41.0},
+{"c":600116,"x":"LALA-P-3B52B2A69C","n":"もみじおろし","e":"Momiji Oroshi","v":"The Cherry Co.","s":"30329","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"4/12/6.3 oz","d":"2026-09-08","i":1,"p":5.0},
+{"c":600117,"x":"LALA-P-BBBF135BED","n":"ガーリックペースト NS-1","e":"F-Kin Garlic Paste (NS-1)","v":"The Cherry Co.","s":"23683","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 2.2 lb","d":"2026-09-08","i":1,"p":12.7},
+{"c":600118,"x":"LALA-P-A7BF45D9A7","n":"キユーピー マヨネーズ 450g","e":"QP Mayonnaise Tube 450g","v":"The Cherry Co.","s":"43082","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"20 x 450 g","d":"2026-09-08","i":1,"p":5.1},
+{"c":600119,"x":"LALA-P-0AA5DCD218","n":"ヤマキ つゆ","e":"Yamaki Tsuyu","v":"The Cherry Co.","s":"20243","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 1.8 L","d":"2026-09-08","i":1,"p":12.9},
+{"c":600120,"x":"LALA-P-AA646F8356","n":"ヤマサ うすくち醤油","e":"Yamasa Usukuchi Soy Sauce","v":"The Cherry Co.","s":"23525","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"16 x 34 fl oz","d":"2026-09-08","i":1,"p":4.2},
+{"c":600121,"x":"LALA-P-BB424FBA70","n":"ヤマサ たまり醤油","e":"Yamasa Tamari Shoyu","v":"The Cherry Co.","s":"27247","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 64 oz","d":"2026-09-21","i":1,"p":14.3},
+{"c":600122,"x":"LALA-P-52FD0DAD2A","n":"ユウキ 甜麺醤","e":"Yuki Tenmenjyan","v":"The Cherry Co.","s":"6613","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 1 kg","d":"2026-09-21","i":1,"p":16.75},
+{"c":600123,"x":"LALA-P-E9AAF1D7C2","n":"ユウキ 貝柱スープ","e":"Yuki Kaibashira Soup Base","v":"The Cherry Co.","s":"9245","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 400 g","d":"2026-09-08","i":1,"p":15.3},
+{"c":600124,"x":"LALA-P-3E8164194C","n":"上きざみのり","e":"Jyo Kizami Nori","v":"The Cherry Co.","s":"63892","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 3.5 oz","d":"2026-09-21","i":1,"p":15.5},
+{"c":600125,"x":"LALA-P-445F696991","n":"創味 関西和風だし","e":"MYK Kansai Wafu Dashi (Somi)","v":"The Cherry Co.","s":"20329","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 1.8 L","d":"2026-09-08","i":1,"p":16.3},
+{"c":600126,"x":"LALA-P-EC89D55E00","n":"半切り焼のり Silver","e":"Hangiri Silver Yakinori","v":"The Cherry Co.","s":"64380","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 100 pcs (3.5 oz)","d":"2026-09-08","i":1,"p":17.6},
+{"c":600127,"x":"LALA-P-85ABFD8144","n":"山印 ゆず果汁","e":"Yuzu Kajyu Yamajirushi","v":"The Cherry Co.","s":"30520","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 25.3 fl oz","d":"2026-09-08","i":1,"p":25.8},
+{"c":600128,"x":"LALA-P-71E269740E","n":"昆布茶","e":"Konbu Cha","v":"The Cherry Co.","s":"6197","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 2.2 lb","d":"2026-09-08","i":1,"p":29.75},
+{"c":600129,"x":"LALA-P-5169DAB81E","n":"東海 七味唐辛子","e":"Tokai Shichimi","v":"The Cherry Co.","s":"30275","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"20 x 10.5 oz","d":"2026-09-21","i":1,"p":6.5},
+{"c":600130,"x":"LALA-P-EAD950921D","n":"白がり甘酢漬け","e":"White Gari Amazuzuke","v":"The Cherry Co.","s":"40178","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"10 x 2 lb (910 g)","d":"2026-09-21","i":1,"p":5.98},
+{"c":600131,"x":"LALA-P-B8962E02C1","n":"粉山椒","e":"Kona Sansho","v":"The Cherry Co.","s":"54909","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"30 x 100 g","d":"2026-09-08","i":1,"p":44.63},
+{"c":600132,"x":"LALA-P-AF50D09A6B","n":"粗おろし生姜 EM-758","e":"F-Kin Arame Oroshi Shoga","v":"The Cherry Co.","s":"30395","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"2/6/26.5 oz (EM-758)","d":"2026-09-08","i":1,"p":15.8},
+{"c":600133,"x":"LALA-P-413E84156A","n":"鈴勝 うなぎ蒲焼たれ","e":"Unagi Kabayaki Tare Suzukatsu","v":"The Cherry Co.","s":"22712","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 60 fl oz (1.8 L)","d":"2026-09-21","i":1,"p":16.0},
+{"c":600134,"x":"LALA-P-611FDD637E","n":"青のり粉 粗目","e":"Ao Noriko (Coarse)","v":"The Cherry Co.","s":"1704","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"25 x 100 g","d":"2026-09-08","i":1,"p":7.35},
+{"c":600135,"x":"LALA-P-D6E7F99683","n":"青ゆず胡椒","e":"Bulk Blue Yuzu Kosho","v":"The Cherry Co.","s":"30269","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"6 x 2.2 lb (bottle)","d":"2026-09-08","i":1,"p":35.7},
+{"c":600136,"x":"LALA-P-F8A2008C84","n":"EX Strong 炭酸水 500mL","e":"EX Strong Club Soda 500ml","v":"The Cherry Co.","s":"10149","k":"beverage","t":30000,"u":"本","cu":"BTL","q":24,"pu":"ケース","pk":"24 x 500 mL","d":"2026-09-29","i":1,"p":34.0,"b":"24本×500 mL/ケース"},
+{"c":600137,"x":"LALA-P-9238CC291B","n":"Taka Green Breeze Organic 300g","e":"Taka Green Breeze Organic","v":"The Cherry Co.","s":"51076","k":"beverage","t":31000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 300 g","d":"2026-09-18","i":1,"p":34.4},
+{"c":600138,"x":"LALA-P-CB5C334969","n":"カルピコ 濃縮 紙パック","e":"Calpico Concentrate Paper Carton","v":"The Cherry Co.","s":"11073","k":"beverage","t":30000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 33.8 fl oz","d":"2026-09-15","i":1,"p":8.3},
+{"c":600139,"x":"LALA-P-A7FD2A3F9D","n":"高知アイス ゆずドリンク 1L","e":"F-Yuzu Drink 1L Kochi Ice","v":"The Cherry Co.","s":"11054","k":"beverage","t":30000,"u":"パック","cu":"PK","q":6,"pu":"ケース","pk":"6 x 1 L bags","d":"2026-09-15","i":1,"p":179.0,"b":"6袋×1 L/ケース"},
+{"c":600140,"x":"LALA-P-FA0B5163C3","n":"いいちこ シルエット","e":"Iichiko Shochu Mugi Silhouette","v":"The Cherry Co.","s":"4083","k":"liquor","t":22000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 750 mL","d":"2026-09-29","i":1,"p":193.0},
+{"c":600141,"x":"LALA-P-5996861303","n":"オリオンビール 小瓶","e":"SM Bottle Orion Beer","v":"The Cherry Co.","s":"67200","k":"liquor","t":20000,"u":"本","cu":"BTL","q":24,"pu":"ケース","pk":"24 x 11.3 fl oz (334 mL)","d":"2026-09-18","i":1,"p":57.0},
+{"c":600142,"x":"LALA-P-50D28110CB","n":"久保田 純米大吟醸","e":"Kubota Junmai Daiginjo","v":"The Cherry Co.","s":"6375","k":"liquor","t":21000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 720 mL; with box","d":"2026-09-29","i":1,"p":134.0},
+{"c":600143,"x":"LALA-P-33CBABEC33","n":"八海山 大吟醸45","e":"Hakkaisan Daiginjo 45","v":"The Cherry Co.","s":"10366","k":"liquor","t":21000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-15","i":1,"p":300.0},
+{"c":600144,"x":"LALA-P-7E56CB27DF","n":"南部美人 心白 純米大吟醸","e":"Nanbu Bijin Shinpaku Junmai Daiginjo","v":"The Cherry Co.","s":"5119","k":"liquor","t":21000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-15","i":1,"p":327.0},
+{"c":600145,"x":"LALA-P-8D16721F82","n":"南部美人 糖類無添加梅酒","e":"Nanbu Bijin Muto Umeshu","v":"The Cherry Co.","s":"4126","k":"liquor","t":24000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"12 x 720 mL","d":"2026-09-15","i":1,"p":24.9},
+{"c":600146,"x":"LALA-P-643AFBA1EB","n":"楯野川 清流 純米大吟醸","e":"Tatenokawa Seiryu Junmai Daiginjo","v":"The Cherry Co.","s":"10311","k":"liquor","t":21000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-15","i":1,"p":248.0},
+{"c":600147,"x":"LALA-P-9CC24FC007","n":"白露垂珠 純米大吟醸 竹の露","e":"Hakurou Suishu JDG Takeno Tsuyu","v":"The Cherry Co.","s":"8590","k":"liquor","t":21000,"u":"本","cu":"BTL","q":10,"pu":"ケース","pk":"10 x 720 mL","d":"2026-09-15","i":1,"p":289.0},
+{"c":600148,"x":"LALA-P-4EF7C36FB8","n":"花彫酒・紹興酒","e":"Hua Tiao Chiew (Shao Hsing)","v":"The Cherry Co.","s":"5954","k":"liquor","t":24000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"12 x 750 mL","d":"2026-09-08","i":1,"p":6.7},
+{"c":600149,"x":"LALA-P-8464C0D264","n":"越後ビール こしひかり","e":"Koshihikari Echigo Beer","v":"The Cherry Co.","s":"9907","k":"liquor","t":20000,"u":"本","cu":"BTL","q":24,"pu":"ケース","pk":"24 x 11.15 fl oz (330 mL)","d":"2026-09-18","i":1,"p":76.0},
+{"c":600150,"x":"LALA-P-A0A2820155","n":"酔鯨 特別純米","e":"Suigei Tokubetsu Junmai","v":"The Cherry Co.","s":"6453","k":"liquor","t":21000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-25","i":1,"p":195.0},
+{"c":600151,"x":"LALA-P-26B84821CA","n":"結びしらたき 250g","e":"C_Shirataki Musubi 250g SK","v":"Wismettac Asian Foods","s":"80005","k":"food","t":11000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"30 x 8.81 oz","d":"2026-09-29","i":1,"p":2.4},
+{"c":600152,"x":"LALA-P-EB1D165A14","n":"しそ梅 梅干し 1kg","e":"C_Umeboshi Shiso Ume In Jar 1kg SK","v":"Wismettac Asian Foods","s":"12738","k":"food","t":1000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"2 x 6 x 2.2 lb","d":"2026-09-18","i":1,"p":17.0},
+{"c":600153,"x":"LALA-P-7491A610C4","n":"アサヒ スーパードライ 0.0%","e":"D_Beer Asahi Super Dry ALC 0.0%","v":"Wismettac Asian Foods","s":"76245","k":"beverage","t":30000,"u":"本","cu":"BTL","q":24,"pu":"ケース","pk":"4 x 6 x 11.2 oz","d":"2026-09-18","i":1,"p":34.8,"b":"4×6本/ケース"},
+{"c":600154,"x":"LALA-P-4D921A93E6","n":"アサヒ スーパードライ 樽 19.6L","e":"D_Beer Asahi S. Dry 19.6L w/Keg 11191U","v":"Wismettac Asian Foods","s":"06254A","k":"liquor","t":20000,"u":"樽","cu":"KEG","q":1,"pu":"個","pk":"19.6 L keg","d":"2026-09-29","i":1,"p":110.0,"b":"19.6 L樽を1樽として数える。空樽は含めない"},
+{"c":600155,"x":"LALA-P-B7D7E62326","n":"二階堂 吉四六 麦焼酎","e":"C_Shochu Nikaido Kitchom Oita Mugi 720ml","v":"Wismettac Asian Foods","s":"05193","k":"liquor","t":22000,"u":"本","cu":"BTL","q":6,"pu":"ケース","pk":"6 x 720 mL","d":"2026-09-18","i":1,"p":280.8},
+{"c":600156,"x":"LALA-P-4804A8BBD4","n":"合同 鍛高譚 20%","e":"C_Shochu Perilla Tantakatan Godo 720ml 20%","v":"Wismettac Asian Foods","s":"06853N","k":"liquor","t":22000,"u":"本","cu":"BTL","q":12,"pu":"ケース","pk":"12 x 720 mL","d":"2026-09-18","i":1,"p":108.0},
+{"c":600157,"x":"LALA-P-A19B4B85E5","n":"黒霧島 芋焼酎 24%","e":"C_Shochu Potato Kuro Kirishima 750ml 24% N","v":"Wismettac Asian Foods","s":"06825N","k":"liquor","t":22000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"6 x 750 mL","d":"2026-09-29","i":1,"p":14.0},
+{"c":600158,"x":"LALA-P-0E7212762D","n":"手取川 いきな女","e":"Tedorigawa Iki na Onna","v":"World Sake Imports","s":"HI-JS1061","k":"liquor","t":21000,"u":"本","cu":"BTL","q":1,"pu":"個","pk":"12 x 720 mL","d":"2026-09-17","i":1,"p":40.74},
+{"c":600159,"x":"LALA-P-892F815D58","n":"白ディナーナプキン 2層","e":"2-Ply Dinner Napkins White 15 x 17 inch 1/8 Fold","v":"Hawaii Candlelight & POS Paper Supply","s":"80205","k":"supply","t":40000,"u":"単位","cu":"unit","q":1,"pu":"単位","pk":"4.25 x 7.5 inch folded; pack count not stated","d":"2026-09-22","i":0,"p":80.59,"b":"請求単位のまま。入数は未確認","r":["納品単位あたり枚数が原票にない"]},
+{"c":600160,"x":"LALA-P-859B0F6F93","n":"黒ニトリル手袋 L 3.5mil","e":"Large Clean Safety Black Nitrile Exam PF Gloves 3.5mil","v":"Hawaii Candlelight & POS Paper Supply","s":"GNBL CS4904","k":"supply","t":40000,"u":"単位","cu":"unit","q":1,"pu":"単位","pk":"","d":"2026-09-22","i":0,"p":52.15,"b":"請求単位のまま。入数は未確認","r":["ケースまたは箱の枚数が原票にない"]},
+{"c":600161,"x":"LALA-P-FC27D9141A","n":"黒ニトリル手袋 M 5.0mil","e":"Medium Clean Safety Black Nitrile Exam PF Gloves 5.0mil","v":"Hawaii Candlelight & POS Paper Supply","s":"GNBM CS6343","k":"supply","t":40000,"u":"ケース","cu":"CS","q":1,"pu":"ケース","pk":"1000 per case","d":"2026-09-22","i":0,"p":52.15},
+{"c":600162,"x":"LALA-P-63C4B7E73F","n":"Fujinap 天ぷら敷紙","e":"Fujinap Tempura Shikigami","v":"JFC International","s":"41745","k":"supply","t":40000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"12 x 5 x 100 sheets","d":"2026-09-22","i":0,"p":2.75,"r":["請求EAの内袋枚数を確認。単価2.75 USD/EAのまま保持"]},
+{"c":600163,"x":"LALA-P-3516F07402","n":"竹串 6インチ","e":"Bamboo Skewer 6 inch Japan","v":"JFC International","s":"30210","k":"supply","t":40000,"u":"個","cu":"EA","q":1,"pu":"個","pk":"30 x 1500 pc","d":"2026-09-09","i":0,"p":9.75,"r":["請求EAと1500本パックの対応を確認。串1本あたり単価は未設定"]},
+{"c":600164,"x":"LALA-P-E1EF6E4665","n":"Touryu 備長炭 V","e":"Touryu Binchotan V","v":"The Cherry Co.","s":"98514","k":"supply","t":40000,"u":"ケース","cu":"CS","q":1,"pu":"ケース","pk":"22 lb (10 kg) AAA","d":"2026-09-21","i":0,"p":29.0,"b":"22 lb箱のまま数える"},
+{"c":600165,"x":"LALA-P-9A11A3F858","n":"イワタニ ガスカートリッジ","e":"Iwatani Gas Cartridge BU-6","v":"The Cherry Co.","s":"21414","k":"supply","t":40000,"u":"パック","cu":"PK","q":1,"pu":"パック","pk":"3 packs x 4 pcs x 8 oz","d":"2026-09-08","i":0,"p":6.7,"r":["商品コード末尾の2がコードか付記か要確認。ガス1PKの本数も確定しない"]},
+{"c":600166,"x":"LALA-P-AEE3DF1B5B","n":"和紙おしぼり","e":"Washi Paper Oshibori Hand Wipe","v":"The Cherry Co.","s":"84399","k":"supply","t":40000,"u":"パック","cu":"PK","q":6,"pu":"ケース","pk":"6 x 100 pcs; 200 x 265 mm","d":"2026-09-18","i":0,"p":74.5,"b":"100枚入りを1パック。6パック/ケース"},
+{"c":600167,"x":"LALA-P-F26174F01A","n":"竹箸 24cm","e":"Take Twin Hadaka Brown Chopsticks 24cm","v":"The Cherry Co.","s":"94371","k":"supply","t":40000,"u":"パック","cu":"PK","q":30,"pu":"ケース","pk":"30 x 100 pairs","d":"2026-09-15","i":0,"p":170.0,"b":"100膳入りを1パック。30パック/ケース"}
+];
+/* 入れないもの（備品・設備／保留）。取込の確認画面に名前だけ出す */
+var LALA_SEED_SKIP = [
+{"x":"LALA-P-58DC279739","n":"厚揚げ 12oz（欠品）","v":"Ala Moana Produce","why":"保留（欠品）"},
+{"x":"LALA-P-655337A533","n":"油揚げ 四角（欠品）","v":"Ala Moana Produce","why":"保留（欠品）"},
+{"x":"LALA-P-1D048A532F","n":"味の素 ほんだし（欠品）","v":"JFC International","why":"保留（欠品）"},
+{"x":"LALA-P-7F1368EA7A","n":"豚バラ 2mm RRR（返品対象）","v":"Redondo's","why":"保留（返品）"},
+{"x":"LALA-P-5EE735821C","n":"1/3サイズ ディープパン 4インチ","v":"Bargreen Ellingson","why":"備品・設備"},
+{"x":"LALA-P-AE46CE6999","n":"Inverness ロックグラス 7oz","v":"Bargreen Ellingson","why":"備品・設備"},
+{"x":"LALA-P-257BA2A5B1","n":"Vacu-Vin ボトルストッパー","v":"Bargreen Ellingson","why":"備品・設備"},
+{"x":"LALA-P-6D687F4512","n":"Vacu-Vin ワインポンプ＆ストッパー","v":"Bargreen Ellingson","why":"備品・設備"},
+{"x":"LALA-P-DD37A9F124","n":"クリアスクイーズボトル 32oz 6本","v":"Bargreen Ellingson","why":"備品・設備"},
+{"x":"LALA-P-A7FB15E330","n":"ステンレス バーシェーカー 30oz","v":"Bargreen Ellingson","why":"備品・設備"},
+{"x":"LALA-P-2426696FB3","n":"Winco アルミパイ皿 9インチ","v":"Restaurant Equipment Wholesale","why":"備品・設備"},
+{"x":"LALA-P-956B14512E","n":"ステンレス粉振り 10oz","v":"Restaurant Equipment Wholesale","why":"備品・設備"},
+{"x":"LALA-P-E0FE77F509","n":"リーデル Degust 白ワイングラス","v":"Southern Glazer's of HI","why":"備品・設備"},
+{"x":"LALA-P-A7B3511236","n":"アサヒ ビールディスペンサー","v":"Wismettac Asian Foods","why":"備品・設備"},
+{"x":"LALA-P-59E3E816C7","n":"アサヒ ビールピッチャー 60oz","v":"Wismettac Asian Foods","why":"備品・設備"}
+];
+/* 業者名：アプリの業者マスタ・食材マスタにこの名前があれば、そちらに合わせる（大文字小文字・’ は区別しない） */
+var LALA_VENDOR_ALIAS = {"The Cherry Co.":["Cherry"],"JFC International":["JFC"],"Ala Moana Produce":["Ala Moana"],"Wismettac Asian Foods":["Wismettac"],"Southern Glazer's of HI":["Southern glazer's of hi","Southern Glazer's","Southern glazer's"],"Maguro International Hawaii":["Maguro International","Maguro Int"],"Redondo's":["Redondo's"],"World Sake Imports":["World sake","World Sake"],"ATM International USA":["ATM"],"Okuhara Foods":["Okuhara"],"Hawaii Candlelight & POS Paper Supply":["Hawaiancandle","Hawaii Candlelight"]};
+/* ============================================================
+   v1038: LaLa（F06）の食材登録と棚卸表（Motoさん 9/30・請求書 73枚から作ったデータ）
+   ・入れ先はほかの店と同じ：食材マスター（m_ingredients）＋ LaLa の自店登録（store_ingredients['F06']）。
+     棚卸の入力・保存・確定・Food Cost はほかの店と同じ道を通る（新しい保存先は作らない）。
+   ・二重に登録しない：元データの商品ID（extId）で照合する。★登録済みの品目は書き換えない
+     （あとで食材マスターで直した値を、取り込み直しで消さない）。
+   ・★同じ番号に別の品目があったら、何も書かずに止める（既存の番号を上書きしない）。
+   ・登録の前に確認画面：件数・業者名の対応・入れないもの・LaLa の棚卸表にある今回のデータ以外の品目。
+   ・単価が無いもの（無償提供のみ）は noPrice。棚卸で 0ドルとして見せず「単価未設定」と出す。
+============================================================ */
+var LALA_STORE = 'F06';
+function _lalaNorm(s){
+  s=String(s==null?'':s);
+  try{ s=s.normalize('NFKC'); }catch(e){}
+  return s.replace(/[’‘`´]/g,"'").replace(/\s+/g,' ').trim().toLowerCase();
+}
+/* 業者名をアプリの名前に合わせる。{ 元の表記: { name: 使う名前, from: 元の表記, matched: アプリにあったか } }
+   業者マスタ → 食材マスタの順に探す。無ければ元の表記（請求書の名前）のまま。 */
+function lalaVendorMap(){
+  var have={};
+  try{ (getVendors()||[]).forEach(function(v){ if(v&&v.name){ var k=_lalaNorm(v.name); if(!have[k]) have[k]=v.name; } }); }catch(e){}
+  try{ (ls('m_ingredients', DEFAULT_INGREDIENTS)||[]).forEach(function(i){ if(i&&i.vendor){ var k=_lalaNorm(i.vendor); if(!have[k]) have[k]=i.vendor; } }); }catch(e){}
+  var out={};
+  LALA_SEED.forEach(function(r){
+    if(out[r.v]) return;
+    var cands=(LALA_VENDOR_ALIAS[r.v]||[]).concat([r.v]), hit=null;
+    for(var k=0;k<cands.length;k++){ var h=have[_lalaNorm(cands[k])]; if(h){ hit=h; break; } }
+    out[r.v]={ name:hit||r.v, from:r.v, matched:!!hit };
+  });
+  return out;
+}
+/* 取込の計画。★何も書かない（確認画面と取込の両方がこれを使う） */
+function lalaImportPlan(){
+  var ings=ls('m_ingredients', DEFAULT_INGREDIENTS)||[];
+  var byCode={}, byExt={};
+  ings.forEach(function(i){ if(!i) return; byCode[i.code]=i; if(i.extId) byExt[i.extId]=i; });
+  var fresh=[], have=[], conflicts=[], codeOf={};
+  LALA_SEED.forEach(function(r){
+    var e=byExt[r.x];
+    if(e){ have.push(r); codeOf[r.x]=e.code; return; }
+    var c=byCode[r.c];
+    if(c){ conflicts.push({ r:r, name:c.name||'', vendor:c.vendor||'' }); return; }
+    fresh.push(r); codeOf[r.x]=r.c;
+  });
+  var all=ls('store_ingredients',{})||{};
+  var cur=(all[recipeOwnerKey(LALA_STORE)]||[]).slice();
+  var mine={}; LALA_SEED.forEach(function(r){ if(codeOf[r.x]!=null) mine[codeOf[r.x]]=1; });
+  var invCodes=LALA_SEED.filter(function(r){ return r.i && codeOf[r.x]!=null; }).map(function(r){ return codeOf[r.x]; });
+  var toAdd=invCodes.filter(function(c){ return cur.indexOf(c)<0; });
+  var others=cur.filter(function(c){ return !mine[c]; });
+  var vs={}; LALA_SEED.forEach(function(r){ if(r.i) vs[r.v]=1; });
+  return { total:LALA_SEED.length, inv:LALA_SEED.filter(function(r){return r.i;}).length, masterOnly:LALA_SEED.filter(function(r){return !r.i;}).length,
+    vendors:Object.keys(vs).length, fresh:fresh, have:have, conflicts:conflicts, codeOf:codeOf, vmap:lalaVendorMap(),
+    cur:cur.length, toAdd:toAdd, onSheet:invCodes.length-toAdd.length, others:others,
+    review:LALA_SEED.filter(function(r){ return r.i && r.r && r.r.length; }).length,
+    noPrice:LALA_SEED.filter(function(r){ return r.i && r.p==null; }).length, skip:LALA_SEED_SKIP,
+    gram:LALA_SEED.filter(function(r){ return r.i && r.u==='g'; }).length, toG:lalaToGPlan(ings) };   /* v1039 */
+}
+/* 食材マスターの1行。棚卸の単価 = price ÷ qty（invUnitValue と同じ） */
+function _lalaRecord(r, vname){
+  var price=(r.p!=null)?Number(r.p):0, qty=Number(r.q)||1;
+  var rec={ code:r.c, name:r.n, nameEN:r.e, cat:r.t, cls:r.k, unit:r.u, vendor:vname, price:price, qty:qty, yield:100,
+    uc:Math.round((qty>0?price/qty:price)*100000)/100000, orderUnit:r.pu, storePrices:{}, aliases:[],
+    extId:r.x, sku:String(r.s||''), pack:r.pk||'', priceDate:r.d||'', seed:LALA_SEED_V };
+  if(r.b) rec.countNote=r.b;   /* 数え方の決まり（樽・卵・5玉入り など） */
+  if(r.p==null) rec.noPrice=true;
+  if(r.r && r.r.length) rec.review=r.r.slice();
+  return rec;
+}
+function openLalaImport(){
+  if(['gm','ceo','office'].indexOf(curRole)<0){ alert(t('GM/CEO/Officeのみ取り込めます','Only GM, CEO or Office can import')); return; }
+  var p=lalaImportPlan();
+  var row=function(icon, col, label, val, sub){
+    return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--border)">'
+      +'<i class="ti '+icon+'" style="color:'+col+';font-size:16px;margin-top:1px;flex-shrink:0"></i>'
+      +'<div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">'
+      +'<span style="font-size:12.5px;font-weight:700">'+label+'</span><b style="font-size:14px;white-space:nowrap">'+val+'</b></div>'
+      +(sub?'<div style="font-size:10.5px;color:var(--muted);line-height:1.55;margin-top:1px">'+sub+'</div>':'')+'</div></div>';
+  };
+  var it=t('品目',' items');
+  var h='<div class="modal-title">'+t('LaLa の食材を登録','Register LaLa items')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  h+='<div style="font-size:11.5px;color:var(--muted);line-height:1.7;margin-bottom:6px">'
+    +t('請求書 73枚から作ったデータ（16業者・182品目・9/8〜9/29）。登録すると、LaLa の棚卸表に業者ごとに並びます。単価はデータのまま（棚卸の単価＝購入単価÷入数）。重さは g で数えます。',
+       'Built from 73 invoices (16 vendors, 182 items, 9/8–9/29). Prices are kept as in the data (count price = purchase price ÷ units per purchase). Weights are counted in g.')+'</div>';
+  h+=row('ti-clipboard-list','var(--green)', t('棚卸表に入れる','On the count sheet'), p.inv+it, p.vendors+t('業者',' vendors'));
+  h+=row('ti-package','var(--accent2)', t('食材マスターだけに登録','Master only'), p.masterOnly+it, t('消耗品。あとで「品目追加」で棚卸表に入れられます','Supplies. Add them to the sheet later with "Add item"'));
+  h+=row('ti-eye-off','var(--muted)', t('登録しない','Not registered'), p.skip.length+it,
+    t('備品・設備 ','Equipment ')+p.skip.filter(function(x){return x.why==='備品・設備';}).length+t('／保留 ',' / On hold ')+p.skip.filter(function(x){return x.why!=='備品・設備';}).length
+    +' <details style="display:inline"><summary style="display:inline;cursor:pointer;text-decoration:underline">'+t('名前','names')+'</summary><div style="margin-top:4px">'
+    +p.skip.map(function(x){ return escapeHtml(x.n)+'（'+escapeHtml(x.why)+'）'; }).join('<br>')+'</div></details>');
+  h+=row('ti-alert-triangle','var(--yellow)', t('要確認','To check'), p.review+it, t('棚卸表の名前の下に内容を出します（入数・コード・単価など）','Shown under the item name on the sheet'));
+  h+=row('ti-coin-off','var(--yellow)', t('単価未設定','No price'), p.noPrice+it, t('無償提供のみで通常の単価が無いもの。0ドルとして数えず「単価未設定」と出します（食材マスターで仕入価格を入れると金額に入ります）','Received free only. Not valued at $0; enter a price in the master to include it'));
+  h+=row('ti-scale','var(--accent)', t('重さは g で量る','Weights in g'), p.gram+it, t('請求書の lb を 1 lb＝453.59237 g で直しています。値段は請求書のまま（1lb $32.00 なら棚卸の単価は $0.0705/g）','Invoice lb converted at 1 lb = 453.59237 g. Prices stay as invoiced ($32.00/lb → $0.0705/g)'));   /* v1039 */
+  /* 既存データとの照合 */
+  h+='<div style="background:var(--surface2);border-radius:10px;padding:9px 12px;margin:10px 0 4px;font-size:12px;line-height:1.75">'
+    +'<div style="font-weight:700;margin-bottom:2px"><i class="ti ti-arrows-exchange"></i> '+t('今のデータとの照合','Check against current data')+'</div>'
+    +'<div>'+t('食材マスター：新しく登録 ','Master: new ')+'<b>'+p.fresh.length+'</b>'+t('・登録済み ',' · already ')+'<b>'+p.have.length+'</b>'+t('・番号の重なり ',' · code clash ')+'<b style="color:'+(p.conflicts.length?'var(--red)':'inherit')+'">'+p.conflicts.length+'</b></div>'
+    +'<div>'+t('LaLa の棚卸表：今 ','LaLa sheet: now ')+p.cur+it+t(' → 新しく入れる ',' → add ')+'<b>'+p.toAdd.length+'</b>'+(p.onSheet?t('（入っているもの ',' (already ')+p.onSheet+t('）',')'):'')+'</div>';
+  var vk=Object.keys(p.vmap);
+  h+='<details style="margin-top:2px"><summary style="cursor:pointer">'+t('業者名','Vendor names')+'（'+t('アプリの名前に合わせる ','matched ')+vk.filter(function(k){return p.vmap[k].matched && p.vmap[k].name!==k;}).length+'）</summary><div style="margin-top:4px;font-size:11px">'
+    +vk.map(function(k){ var m=p.vmap[k];
+      return escapeHtml(k)+(m.name!==k?(' → <b>'+escapeHtml(m.name)+'</b>'):'')+' <span style="color:var(--muted)">'+(m.matched?t('（アプリの業者名）','(app name)'):t('（請求書の名前のまま）','(as on invoice)'))+'</span>'; }).join('<br>')+'</div></details>';
+  h+='</div>';
+  if(p.toG.codes.length){   /* v1039: v1038 の取込で lb のまま入った品目 */
+    var _gc=p.toG.counts.reduce(function(a,c){ return a+c.n; },0);
+    h+='<div style="border:1.5px solid var(--yellow);border-radius:10px;padding:9px 12px;margin-top:8px;font-size:12px;line-height:1.65">'
+      +'<div style="font-weight:700"><i class="ti ti-scale" style="color:var(--yellow)"></i> '+t('lb のまま入っている ','Still in lb: ')+'<b>'+p.toG.codes.length+it+'</b>'+t(' を g に直す',' → convert to g')+'</div>'
+      +'<div style="font-size:10.5px;color:var(--muted)">'+t('v1038 で登録した重さの品目です。単位を g、入数を ×453.59237 にします（値段はそのままなので、金額は変わりません）。','Registered with v1038. Unit becomes g and pack size ×453.59237 (prices unchanged, so amounts stay the same). ')
+      +(_gc?t('入力済みの棚卸数 ','Entered counts: ')+'<b>'+_gc+t('件','')+'</b>'+t(' も g に直します（7.25 lb → 3,288.54 g）。',' are converted too (7.25 lb → 3,288.54 g). '):'')
+      +t('確定済みの棚卸の記録は書き換えません。','Finalized records are not changed.')+'</div></div>';
+  }
+  if(p.others.length){
+    h+='<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.55;border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-top:8px">'
+      +'<input type="checkbox" id="lala-imp-rm" style="width:18px;height:18px;flex-shrink:0;margin-top:1px">'
+      +'<span>'+t('今回のデータに無い品目が LaLa の棚卸表に ','The LaLa sheet has ')+'<b>'+p.others.length+it+'</b>'+t(' あります（ほかの店からのコピーなど）。棚卸表から外す',' not in this data (e.g. copied from another store). Remove them from the sheet')
+      +'<div style="font-size:10.5px;color:var(--muted)">'+t('食材マスターからは消しません。外さなければ、そのまま残ります。','They stay in the master. If unchecked, they stay on the sheet.')+'</div></span></label>';
+  }
+  if(p.conflicts.length){
+    h+='<div class="alert alert-danger" style="margin-top:10px"><i class="ti ti-alert-triangle"></i><div style="font-size:12px">'
+      +t('食材マスターで同じ番号を別の品目が使っています。上書きしないため、登録を止めます。Claude に知らせてください。','Some codes are already used by other items. Nothing will be written.')
+      +'<div style="font-size:11px;margin-top:4px">'+p.conflicts.slice(0,8).map(function(c){ return '#'+c.r.c+' '+escapeHtml(c.name)+'（'+escapeHtml(c.vendor)+'）'; }).join('<br>')+'</div></div></div>';
+  }
+  var nothing=!p.fresh.length && !p.toAdd.length && !p.others.length && !p.toG.codes.length;   /* v1039: g に直すものがあれば押せる */
+  if(nothing) h+='<div style="font-size:12px;color:var(--green);margin-top:10px"><i class="ti ti-circle-check"></i> '+t('すべて登録済みです。','Everything is already registered.')+'</div>';
+  var _gN=p.toG.codes.length, _lbl=(p.fresh.length||!_gN)?(t('登録する','Register')+'（'+(p.fresh.length)+it+'）'):'';   /* v1039 */
+  if(_gN) _lbl+=(_lbl?t('・','; '):'')+t('g に直す','Convert to g')+'（'+_gN+it+'）';
+  h+='<button class="btn btn-primary" style="width:100%;margin-top:12px" onclick="runLalaImport()"'+((p.conflicts.length||nothing)?' disabled':'')+'><i class="ti ti-file-import"></i> '
+    +_lbl+'</button>'
+    +'<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="closeModalDirect()">'+t('やめる','Cancel')+'</button></div>';
+  openModal(h);
+}
+function runLalaImport(){
+  if(['gm','ceo','office'].indexOf(curRole)<0){ alert(t('GM/CEO/Officeのみ取り込めます','Only GM, CEO or Office can import')); return; }
+  var p=lalaImportPlan();
+  if(p.conflicts.length){ alert(t('同じ番号を別の品目が使っているため、登録を止めました。','Stopped: codes already used by other items.')); return; }
+  var rm=!!((document.getElementById('lala-imp-rm')||{}).checked);
+  var ings=getIngredients(), added=0;
+  p.fresh.forEach(function(r){
+    if(ings.some(function(x){ return x && (x.code===r.c || x.extId===r.x); })) return;   /* 念のため：同じ番号・同じ商品IDがあれば足さない */
+    ings.push(_lalaRecord(r, (p.vmap[r.v]||{}).name||r.v)); added++;
+  });
+  var gi=_lalaGItems(ings, p.toG.codes);   /* v1039: lb のまま入っている品目を g に（値段はそのまま） */
+  if(added || gi) lsSet('m_ingredients', ings);
+  var gc=gi?_lalaGCounts(p.toG.codes):0;   /* 入力済みの棚卸数も g に（品目を直したときだけ） */
+  var all=ls('store_ingredients',{})||{}, key=recipeOwnerKey(LALA_STORE), arr=(all[key]||[]).slice(), put=0, out=0;
+  p.toAdd.forEach(function(c){ if(arr.indexOf(c)<0){ arr.push(c); put++; } });
+  if(rm && p.others.length){ var before=arr.length; arr=arr.filter(function(c){ return p.others.indexOf(c)<0; }); out=before-arr.length; }
+  if(put || out){ all[key]=arr; lsSet('store_ingredients', all); }
+  closeModalDirect();
+  showToast(t('LaLa に ','Registered ')+added+t('品目を登録しました（棚卸表に ',' items (sheet +')+put+(out?t('・外した ',' / removed ')+out:'')+t('）',')')
+    +(gi?t('。g に直した ','. Converted to g: ')+gi+t('品目',' items')+(gc?t('（棚卸数 ',' (counts ')+gc+t('件）',')'):''):''), 'success');
+  renderPage('inventory');
+}
+/* 単価が無い品目（LaLa の無償提供など）。食材マスターで仕入価格を入れたら外れる */
+function _invNoPrice(i){ return !!(i && i.noPrice && !(Number(i.price)>0)); }
+function _invNoPriceSet(storeId){
+  var o={};
+  try{ var ings=getIngredients(); getStoreIngredients(storeId).forEach(function(c){ var i=ings.find(function(x){ return x.code===c; }); if(_invNoPrice(i)) o[c]=1; }); }catch(e){}
+  return o;
+}
+/* 元データを持つ品目（extId がある行＝LaLa）だけ、1品を2段にする（ほかの店の行は今のまま）。
+   上の段：名前・原票の名前・規格・要確認（表の幅いっぱい）／下の段：区分・単価・数量・金額。
+   携帯で名前の欄が細く、原票の名前と要確認を足すと1品が縦に長くなりすぎるため。 */
+function _invItemHeadRow(i, spl){
+  var en=String(i.nameEN||'').trim(), sub=[];
+  if(en && en!==i.name) sub.push(escapeHtml(en));
+  if(i.pack) sub.push(escapeHtml(i.pack));
+  if(Number(i.qty)>1) sub.push('1'+escapeHtml(i.orderUnit||'')+'='+_invQtyFmt(i.qty)+escapeHtml(i.unit||''));   /* v1039: 1lb=453.6g・1ケース=6,803.9g */
+  if(i.countNote) sub.push(escapeHtml(i.countNote));
+  var clamp=function(n){ return 'display:-webkit-box;-webkit-line-clamp:'+n+';-webkit-box-orient:vertical;overflow:hidden'; };
+  return '<tr><td colspan="'+(spl?6:4)+'" style="text-align:left;border-bottom:none;padding:9px 10px 0">'
+    +'<div style="font-weight:600">'+escapeHtml(i.name)+'</div>'
+    +(sub.length?'<div style="font-size:9.5px;color:var(--muted);line-height:1.4;'+clamp(2)+'">'+sub.join(' · ')+'</div>':'')
+    +((i.review&&i.review.length)?'<div style="font-size:9.5px;color:var(--yellow);line-height:1.4;'+clamp(3)+'"><i class="ti ti-alert-triangle"></i> '+escapeHtml(t('要確認','Check'))+'：'+escapeHtml(i.review.join(' / '))+'</div>':'')
+    +'</td></tr>';
+}
+function _invItemSideCell(i, clsMeta){
+  return '<td style="text-align:left;vertical-align:middle;font-size:10px;white-space:nowrap"><span style="color:'+(clsMeta.color||'var(--muted)')+'">'+escapeHtml(clsMeta.name||'')+'</span></td>';
+}
+
+/* ============================================================
+   v1039: LaLa の重さは g で量る（Motoさん 9/30「lbではかりません、gでお願いします」）
+   ・取込データ（LALA_SEED）の重さの 32品目は棚卸単位 g・入数＝lb×453.59237（購入単位と値段は請求書のまま）。
+   ・v1038 の取込で lb のまま入った品目は、取込の確認画面から g に直す（GM・CEO・Office が押したときだけ）。
+       品目：単位 g・入数×453.59237（値段はそのまま＝金額は変わらない）。★自分で単位を変えた品目は触らない。
+       入力済みの棚卸数（inv_count_F06_<年月>）：数×453.59237。★二度掛けしない印（<番号>:u = 'g'）を同じ入れ物に残す
+         （getInvCounts・invSplitVal は「:f」「:r」以外の「:」付きを読まないので、数の読み取りは変わらない。合流はほかの数と同じ _at）。
+       確定済みの記録（inv_hist_）は書き換えない（金額は確定したときのまま正しい。単位 lb の記録として残る）。
+   ・lb のまま入っている品目があるあいだは、LaLa の棚卸表の上に知らせを出す（数を g で入れて 453倍の金額にしないため）。
+============================================================ */
+var LALA_G_PER_LB = 453.59237;   /* 1 lb = 453.59237 g */
+/* 入数の書き方：1lb=453.6g・1ケース=6,803.9g（整数は今までどおり：1ケース=6本） */
+function _invQtyFmt(q){ q=Number(q)||0; return (Math.round(q)===q)?String(q):q.toLocaleString('en-US',{maximumFractionDigits:1}); }
+/* v1038 の取込で lb のまま入っている LaLa の品目の番号（取込データでは g の品目・単位が今も lb のものだけ） */
+function _lalaLbCodes(ings){
+  var g={}; LALA_SEED.forEach(function(r){ if(r.u==='g' && r.cu==='lb') g[r.x]=1; });
+  return (ings||[]).filter(function(i){ return i && i.extId && g[i.extId] && i.unit==='lb'; }).map(function(i){ return i.code; });
+}
+/* 棚卸数の入れ物のキー → 品目の番号（'600017'・'600017:f'・'600017:r'）。_at や印（:u）は null */
+function _lalaGCountCode(k){ var m=/^(\d+)(?::[fr])?$/.exec(String(k)); return m?m[1]:null; }
+/* g に直す計画。★何も書かない。counts＝まだ直していない入力済みの棚卸数がある月 */
+function lalaToGPlan(ings){
+  var codes=_lalaLbCodes(ings), set={}, counts=[];
+  codes.forEach(function(c){ set[c]=1; });
+  if(codes.length){
+    lsKeys('inv_count_'+LALA_STORE+'_').forEach(function(k){
+      var raw=ls(k,null), n=0; if(!raw || typeof raw!=='object') return;
+      Object.keys(raw).forEach(function(kk){ var c=_lalaGCountCode(kk); if(c && set[c] && raw[c+':u']!=='g' && typeof raw[kk]==='number') n++; });
+      if(n) counts.push({ key:k, n:n });
+    });
+  }
+  return { codes:codes, counts:counts };
+}
+/* 品目を g に（ings の中で直す。保存は呼ぶ側）。直した品目の数を返す */
+function _lalaGItems(ings, codes){
+  var set={}, n=0; (codes||[]).forEach(function(c){ set[c]=1; });
+  (ings||[]).forEach(function(i){
+    if(!i || !set[i.code] || i.unit!=='lb') return;
+    var q=(Number(i.qty)>0?Number(i.qty):1)*LALA_G_PER_LB;
+    i.qty=Math.round(q*100000)/100000; i.unit='g'; i.unitWas='lb';
+    i.uc=Math.round((Number(i.price)||0)/i.qty*100000)/100000;
+    n++;
+  });
+  return n;
+}
+/* 入力済みの棚卸数を g に（月ごとに保存）。★印（<番号>:u='g'）がある品目は二度掛けしない。直した数の件数を返す */
+function _lalaGCounts(codes){
+  var set={}, n=0, now=Date.now(); (codes||[]).forEach(function(c){ set[c]=1; });
+  lsKeys('inv_count_'+LALA_STORE+'_').forEach(function(k){
+    var raw=ls(k,null), ch=0, done={}; if(!raw || typeof raw!=='object') return;
+    if(!raw._at || typeof raw._at!=='object') raw._at={};
+    Object.keys(raw).forEach(function(kk){
+      var c=_lalaGCountCode(kk); if(!c || !set[c] || raw[c+':u']==='g') return;
+      if(typeof raw[kk]==='number'){ raw[kk]=Math.round(raw[kk]*LALA_G_PER_LB*100)/100; raw._at[kk]=now; ch++; }
+      done[c]=1;
+    });
+    if(!ch) return;
+    Object.keys(done).forEach(function(c){ raw[c+':u']='g'; raw._at[c+':u']=now; });
+    lsSet(k, raw); n+=ch;
+  });
+  return n;
+}
+/* LaLa の棚卸表の上の知らせ（lb のまま入っている品目があるときだけ） */
+function _lalaLbBanner(storeId, items){
+  if(storeId!==LALA_STORE) return '';
+  var n=_lalaLbCodes(items).length; if(!n) return '';
+  var can=['gm','ceo','office'].indexOf(curRole)>=0;
+  return '<div class="alert alert-warning" style="padding:8px 12px;margin-bottom:10px"><i class="ti ti-scale"></i><div style="font-size:12px;flex:1;line-height:1.55">'
+    +'<b>'+t('重さの品目が lb のままです（','Weighed items are still in lb (')+n+t('品目）',' items)')+'</b><br>'
+    +t('g に直すまでは、数量の下の単位（lb）のとおりに入れてください。','Until converted, enter them in lb as shown under each box.')
+    +(can?'':t('g に直すのは GM・CEO・Office です。',' GM/CEO/Office can convert.'))+'</div>'
+    +(can?'<button class="btn btn-primary btn-sm" onclick="openLalaImport()"><i class="ti ti-scale"></i> '+t('g に直す','Convert to g')+'</button>':'')+'</div>';
 }
 
 var MARUJUU_SEED=[
@@ -31636,7 +32089,8 @@ function invComputeMatrix(storeId){
 }
 function invRefreshInputSection(storeId){
   var t=invComputeTotals(storeId), counts=getInvCounts(storeId), codes=getStoreIngredients(storeId);
-  codes.forEach(function(code){ var el=document.getElementById('inv-amt-'+code); if(el) el.textContent=(counts[code]!=null)?invFmtMoney(t.perItem[code]||0):'—'; });
+  var _np=_invNoPriceSet(storeId);   /* v1038: 単価未設定は 0ドルと見せない */
+  codes.forEach(function(code){ var el=document.getElementById('inv-amt-'+code); if(el) el.textContent=(counts[code]!=null&&!_np[code])?invFmtMoney(t.perItem[code]||0):'—'; });
   /* ★v1001: 冷凍/冷蔵の合計欄も、入力のたびに書き替える。 */
   codes.forEach(function(code){ var q=document.getElementById('inv-qty-'+code); if(q) q.textContent=(counts[code]!=null)?counts[code]:'—'; });
   _invVendorList(storeId).forEach(function(v,idx){ var el=document.getElementById('inv-vsub-'+idx); if(el) el.textContent=invFmtMoney(t.perVendor[v]||0); });
@@ -31893,12 +32347,15 @@ function _invPriceRowSync(storeId, code){
 /* 価格欄の下の小さな注記。手入力なら印と「戻す」、内容量があれば割り算後の単価も出す。 */
 function _invPriceTagHtml(i, storeId, ym){
   if(!i) return '';
+  if(_invNoPrice(i)) return '';   /* v1038: 単価未設定（「単価 $0」と出さない） */
   var manual = invPriceOf(storeId, i.code, ym)!=null;
   var u = escapeHtml(i.unit||'');
   var h = manual
     ? '<span style="color:var(--yellow)"><i class="ti ti-pencil"></i> 手入力</span> <a href="javascript:void(0)" onclick="invResetPrice(\'' + storeId + '\',' + i.code + ')" style="color:var(--muted);text-decoration:underline">戻す</a>'
     : (u ? '/'+u : '&nbsp;');
-  if(i.qty && i.qty>0){ var uv=invUnitValue(i, storeId, ym); h += '<div>単価 $'+uv.toFixed(uv<1?4:2)+(u?'/'+u:'')+'</div>'; }
+  if(i.extId){   /* v1038: 元データの品目（LaLa）。上に棚卸の単価があるので、ここは購入単位の値段（1ケース $134.00 など） */
+    if(Number(i.qty)>0 && Number(i.qty)!==1) h += '<div>1'+escapeHtml(i.orderUnit||'')+' $'+invBasePrice(i, storeId, ym).toFixed(2)+'</div>';
+  } else if(i.qty && i.qty>0){ var uv=invUnitValue(i, storeId, ym); h += '<div>単価 $'+uv.toFixed(uv<1?4:2)+(u?'/'+u:'')+'</div>'; }
   return h;
 }
 function invUnitValue(i, storeId, ym){
@@ -31927,7 +32384,8 @@ function _invVendorList(storeId){
 }
 function invRecalcTotals(storeId){
   var t=invComputeTotals(storeId), counts=getInvCounts(storeId), codes=getStoreIngredients(storeId);
-  codes.forEach(function(code){ var el=document.getElementById('inv-amt-'+code); if(el) el.textContent=(counts[code]!=null)?invFmtMoney(t.perItem[code]||0):'—'; });
+  var _np=_invNoPriceSet(storeId);   /* v1038 */
+  codes.forEach(function(code){ var el=document.getElementById('inv-amt-'+code); if(el) el.textContent=(counts[code]!=null&&!_np[code])?invFmtMoney(t.perItem[code]||0):'—'; });
   /* ★v1001: 冷凍/冷蔵の合計欄も、入力のたびに書き替える。 */
   codes.forEach(function(code){ var q=document.getElementById('inv-qty-'+code); if(q) q.textContent=(counts[code]!=null)?counts[code]:'—'; });
   _invVendorList(storeId).forEach(function(v,idx){ var el=document.getElementById('inv-vsub-'+idx); if(el) el.textContent=invFmtMoney(t.perVendor[v]||0); });
@@ -32043,6 +32501,7 @@ function renderInventory(){
     html += `<div class="card" style="text-align:center;padding:26px"><i class="ti ti-carrot" style="font-size:34px;color:var(--muted)"></i><div style="font-size:14px;font-weight:600;margin-top:8px">${curLang==='en'?'No ingredients registered for this store':'自店マスターに食材が登録されていません'}</div><div style="font-size:12px;color:var(--muted);margin:6px 0 12px;line-height:1.6">${curLang==='en'?'Register ingredients for this store in Ingredient Master to see them here by vendor.':'食材マスターでこの店舗に食材を登録すると、ここに業者別で表示されます。'}</div><button class="btn btn-primary btn-sm" onclick="go('ingredient_master')"><i class="ti ti-arrow-right"></i> ${curLang==='en'?'To Ingredient Master':'食材マスターへ'}</button>${_hasInvSeed(storeId)?` <button class="btn btn-success btn-sm" onclick="importInvSeedFor('${storeId}')"><i class="ti ti-file-import"></i> ${(INV_SEED_LABELS[recipeOwnerKey(storeId)]||'Excel')}${curLang==='en'?' ingredients':'食材を取込'}</button>`:''}</div>`;
     return html;
   }
+  html += _lalaLbBanner(storeId, items);   /* v1039: lb のまま入っている LaLa の品目があるときだけ */
   // 表紙（Toppage）サマリー
   html += `<div id="inv-toppage">${renderInvToppageInner(storeId)}</div>`;
   // 業者別
@@ -32061,11 +32520,11 @@ function renderInventory(){
       var uv=invUnitValue(i,storeId), cnt=counts[i.code];
       var _pe=invPriceEditable(storeId), _bp=invBasePrice(i,storeId);   /* v783 */
       var clsMeta=CLASSES.find(function(c){return c.id===storeIngredientClass(i,storeId);})||{};
-      html += `<tr>
-        <td style="text-align:left"><div style="font-weight:600">${escapeHtml(i.name)}</div><div style="font-size:9px;color:var(--muted)"><span style="color:${clsMeta.color||'var(--muted)'}">${clsMeta.name||''}</span> · ${escapeHtml(i.unit||'')}</div></td>
+      html += `${i.extId?_invItemHeadRow(i, _spl):''}<tr>
+        ${i.extId?_invItemSideCell(i, clsMeta):`<td style="text-align:left"><div style="font-weight:600">${escapeHtml(i.name)}</div><div style="font-size:9px;color:var(--muted)"><span style="color:${clsMeta.color||'var(--muted)'}">${clsMeta.name||''}</span> · ${escapeHtml(i.unit||'')}</div></td>`}
         <td style="text-align:right">${_pe
           ? `<input id="inv-price-${i.code}" type="number" inputmode="decimal" step="0.01" min="0" value="${_bp}" onchange="setInvPrice('${storeId}',${i.code},this.value)" style="width:74px;padding:5px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:12px"><div id="inv-ptag-${i.code}" style="font-size:9px;color:var(--muted);margin-top:2px">${_invPriceTagHtml(i,storeId)}</div>`
-          : `<span style="color:var(--muted)">$${uv.toFixed(uv<1?4:2)}</span><div id="inv-ptag-${i.code}" style="font-size:9px;color:var(--muted)">${_invPriceTagHtml(i,storeId)}</div>`}</td>
+          : (_invNoPrice(i)?`<span style="color:var(--yellow);font-weight:700;font-size:11px">${curLang==='en'?'No price':'単価未設定'}</span>`:`<span style="color:var(--muted)">$${uv.toFixed(uv<1?4:2)}</span>`)+`<div id="inv-ptag-${i.code}" style="font-size:9px;color:var(--muted)">${_invPriceTagHtml(i,storeId)}</div>`}</td>
         ${_spl
           ? INV_SPLIT_PARTS.map(function(P){
               var pv=invSplitVal(storeId, i.code, P.k);
@@ -32076,13 +32535,18 @@ function renderInventory(){
             + (cnt!=null?cnt:'—')
             + ((cnt!=null && !invHasSplit(storeId,i.code)) ? '<div style="font-size:9px;color:var(--muted);font-weight:400">'+(curLang==='en'?'before split':'分ける前の数')+'</div>' : '')
             + '</td>'
-          : `<td style="text-align:center"><input type="number" inputmode="decimal" step="0.01" inputmode="decimal" value="${cnt!=null?cnt:''}" oninput="setInvCount('${storeId}',${i.code},this.value)" style="width:62px;padding:6px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:13px"></td>`}
-        <td id="inv-amt-${i.code}" style="text-align:right;font-weight:600">${cnt!=null?invFmtMoney(uv*cnt):'—'}</td>
+          : `<td style="text-align:center"><input type="number" inputmode="decimal" step="0.01" inputmode="decimal" value="${cnt!=null?cnt:''}" oninput="setInvCount('${storeId}',${i.code},this.value)" style="width:62px;padding:6px;text-align:right;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:13px">${i.extId?`<div style="font-size:9.5px;color:var(--muted);margin-top:2px">${escapeHtml(i.unit||'')}</div>`:''}</td>`}
+        <td id="inv-amt-${i.code}" style="text-align:right;font-weight:600">${(cnt!=null&&!_invNoPrice(i))?invFmtMoney(uv*cnt):'—'}</td>
       </tr>`;
     });
     html += `</tbody></table></div>`;
   });
   html += `<div style="font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6"><i class="ti ti-info-circle"></i> ${curLang==='en'?'Entries auto-save. Finalize to record the monthly inventory and reflect it in Food Cost ending inventory. Unit price = price / pack size when pack size exists, else purchase price.':'入力すると自動保存されます。「確定」で当月の棚卸として記録し、Food Costの期末在庫額に反映します。単価は内容量があれば「価格÷内容量」、なければ仕入価格を使用します。<b>仕入価格は当月のみ手入力で直せます（食材マスターは変更されません）。</b>'}</div>`;
+  /* v1038: 単価未設定・要確認の品目がある店だけ（いまは LaLa） */
+  var _npN=items.filter(function(i){ return _invNoPrice(i); }).length, _rvN=items.filter(function(i){ return i.extId && i.review && i.review.length; }).length;
+  if(_npN||_rvN) html += `<div style="font-size:10.5px;color:var(--yellow);margin-top:4px;line-height:1.6"><i class="ti ti-alert-triangle"></i> ${curLang==='en'
+    ?((_npN?_npN+' item(s) have no price and are not counted in the amount (enter a price in the ingredient master). ':'')+(_rvN?_rvN+' item(s) need checking (shown under the name).':''))
+    :((_npN?'単価未設定の '+_npN+'品目は金額に入りません（食材マスターで仕入価格を入れると入ります）。':'')+(_rvN?'要確認の '+_rvN+'品目は名前の下に内容を出しています。':''))}</div>`;
   return html;
 }
 
@@ -32267,7 +32731,7 @@ function invRenderConfirmedView(storeId, snap, ym){
       <div style="text-align:right"><div style="font-size:9px;color:var(--muted)">小計</div><div style="font-size:14px;font-weight:700">${invFmtMoney(sub)}</div></div>
     </div>
     <table class="inv-table" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">食材</th><th>単価</th><th>数量</th><th>金額</th></tr></thead><tbody>
-    ${lines.map(function(l){ return `<tr><td style="text-align:left"><div style="font-weight:600">${escapeHtml(l.name)}</div><div style="font-size:9px;color:var(--muted)">${escapeHtml(l.unit||'')}</div></td><td style="text-align:right;color:var(--muted)">$${(l.unitVal||0).toFixed((l.unitVal||0)<1?4:2)}${l.manual?'<div style="font-size:9px;color:var(--yellow)"><i class="ti ti-pencil"></i> 手入力</div>':''}</td><td style="text-align:center;font-weight:600">${l.actual}</td><td style="text-align:right;font-weight:600">${invFmtMoney(l.value||0)}</td></tr>`; }).join('')}
+    ${lines.map(function(l){ return `<tr><td style="text-align:left"><div style="font-weight:600">${escapeHtml(l.name)}</div><div style="font-size:9px;color:var(--muted)">${escapeHtml(l.unit||'')}</div></td><td style="text-align:right;color:var(--muted)">${l.noPrice?'<span style="color:var(--yellow);font-weight:700;font-size:11px">単価未設定</span>':('$'+(l.unitVal||0).toFixed((l.unitVal||0)<1?4:2))}${l.manual?'<div style="font-size:9px;color:var(--yellow)"><i class="ti ti-pencil"></i> 手入力</div>':''}</td><td style="text-align:center;font-weight:600">${l.actual}</td><td style="text-align:right;font-weight:600">${l.noPrice?'—':invFmtMoney(l.value||0)}</td></tr>`; }).join('')}
     </tbody></table></div>`;
   });
   return h;
@@ -32330,6 +32794,7 @@ function saveInventory(storeId){
        読み出し側（金額・Food Cost・CSV）は何も変わらない。 */
     if(invHasSplit(storeId, code)){ _L.frz=invSplitVal(storeId,code,'f'); _L.rfg=invSplitVal(storeId,code,'r'); }
     if(invPriceOf(storeId, code)!=null) _L.manual=1;   /* v783: 仕入価格を手入力した行 */
+    if(_invNoPrice(i)) _L.noPrice=1;   /* v1038: 単価未設定（金額 0 は「無料」ではない） */
     lines.push(_L);
   });
   if(!lines.length){ alert('棚卸数が入力されていません'); return; }
@@ -32340,7 +32805,8 @@ function saveInventory(storeId){
      confirm すら出ないまま中断していた。hist への保存も setFcMonthly も showToast も
      この行より下にあるため、ボタンを押しても完全に無反応になっていた。
      v806 で _ym → ym にリネームした際の取りこぼし。 */
-  if(!confirm(invConfirmMonthText(ym)+'の棚卸として確定します。\n\nよろしいですか？')) return;
+  var _npL=lines.filter(function(l){ return l.noPrice; }).length;   /* v1038 */
+  if(!confirm(invConfirmMonthText(ym)+'の棚卸として確定します。'+(_npL?('\n\n単価未設定の '+_npL+'品目は金額に入っていません。'):'')+'\n\nよろしいですか？')) return;
   var now=new Date();
   var snap={date:nowJP(), ym:ym, by:ROLE_CONFIG[curRole].name, mode:'monthly', grand:t.grand, perClass:t.perClass, perVendor:t.perVendor, lines:lines};
   var hist=ls('inv_hist_'+storeId,[])||[];
@@ -37241,7 +37707,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1037';
+const APP_VERSION = '1039';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
