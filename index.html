@@ -124,6 +124,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--tm); min-he
 }
 .login-btn:hover { opacity: .9; }
 .login-btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn[data-acct-busy] { opacity: .45; cursor: wait; }   /* v1040: 経理の出力（その月を取り直している間） */
 .login-err { color: var(--red); font-size: 13px; margin-top: 8px; display: none; }
 
 /* ====== APP SHELL ====== */
@@ -4915,7 +4916,8 @@ function mcDetectCost(storeId, ym) {
   var c, r, kpi;
   try {
     c = cumulativeToToday(storeId, ym);
-    r = foodCostOf(storeId, ym, (c && c.actMonth > 0) ? c.actMonth : null);
+    var _ev = (typeof monthEventSalesYm === 'function') ? (monthEventSalesYm(storeId, ym).sales || 0) : 0;   /* v1041: 原価率の売上にイベント出店も足す */
+    r = foodCostOf(storeId, ym, (c && c.actMonth + _ev > 0) ? c.actMonth + _ev : null);
     kpi = getStoreKpiTargets(storeId) || {};
   } catch (e) { return out; }
   if (!r) return out;
@@ -4934,7 +4936,7 @@ function mcDetectCost(storeId, ym) {
       current_value: rate, target_value: target, forecast_value: rate,
       estimated_impact: mcRound(over / 100 * (r.sales || 0)),
       description: (r.hasEnd ? '棚卸で確定した原価率です。' : '期末棚卸が未入力のため、仕入ベースの暫定値です。')
-        + ' 仕入 ' + fmtMoney(r.purch) + ' / 売上 ' + fmtMoney(r.sales),
+        + ' 仕入 ' + fmtMoney(r.purch) + ' / 売上 ' + fmtMoney(r.sales) + (_ev ? '（イベント出店 ' + fmtMoney(_ev) + ' を含む）' : ''),
       cause_summary: r.hasEnd ? '仕入過多・ロス・レシピ差異のいずれか' : '暫定値のため、棚卸を入れると変わります',
       recommended_action: r.hasEnd ? '仕入明細と食材移動を確認してください' : '期末棚卸を入力してください',
     });
@@ -5705,7 +5707,8 @@ function mdVerdict(storeId, code, ym) {
       var kC = getStoreKpiTargets(storeId) || {};
       var tC = Number(kC.foodCost);
       /* v842: 目標が無くても実測は出せるので、先に率を出してから目標を見る */
-      var r = foodCostOf(storeId, ym, (c.actMonth > 0) ? c.actMonth : null);
+      var _ev = (typeof monthEventSalesYm === 'function') ? (monthEventSalesYm(storeId, ym).sales || 0) : 0;   /* v1041: 原価率の売上にイベント出店も足す（棚卸表と同じ数字） */
+      var r = foodCostOf(storeId, ym, (c.actMonth + _ev > 0) ? c.actMonth + _ev : null);
       if (!r) return mdUnknown(code, 'calc_error');
       var rate = r.hasEnd ? Number(r.rate) : Number(r.provisionalRate);
       if (!(tC > 0)) return mdUnknown(code, 'no_target', '', rate);
@@ -29670,6 +29673,24 @@ function eventsForMonth(stores, days){
   rows.sort(function(a,b){ return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
   return rows;
 }
+/* v1041: その月のイベント出店の売上の合計（Motoさん 10/2「Kaimuki のイベント出店の売上が棚卸表の売上に反映されていない」）。
+   イベントの食材は店の仕入・棚卸から出ているので、原価率（棚卸法）の売上にはイベントの売上も足す
+   （棚卸表の「原価の内訳」・表紙、原価率(FC) の月次・全店、原価率のアラート、中間MTG の原価率）。
+   足すのは売上だけ。イベントの原価・人件費・出店料は足さない（原価は棚卸で数えているので、足すと二重になる）。
+   予算・達成率・累計・簡易PL・月次KPI の売上には入れない（9/12 の決定のまま。UI案26 の答え待ち）。
+   count は売上が入っているイベントの件数。削除の印は dayEventsFor が除く。 */
+function monthEventSalesYm(storeId, ym){
+  var o = { sales:0, count:0 };
+  try{
+    var actuals = getDailyActuals(storeId) || {};
+    Object.keys(actuals).forEach(function(date){
+      if (String(date).slice(0,7) !== ym) return;
+      dayEventsFor(storeId, date).forEach(function(e){ if (e.sales) { o.sales += e.sales; o.count++; } });
+    });
+  }catch(e){}
+  o.sales = Math.round(o.sales*100)/100;
+  return o;
+}
 /* イベント出店のカード（日次一覧の下）。単店でも全店でも同じ形。 */
 function eventListCard(stores, days, canEdit, multi){
   var rows = eventsForMonth(stores, days), tot = eventSum(rows);
@@ -30484,13 +30505,14 @@ function renderFcAllStores(){
   vis.forEach(function(s){
     var fc = getFcMonthly(s.id, ym);
     var stats = monthStats(s.id, fcMonthOffset);
-    var _r = foodCostOf(s.id, ym, (parseFloat(fc.sales)||stats.sales||0));   /* v688: 一元化（食材移動・用途フィルタを反映） */
+    var _ev = (typeof monthEventSalesYm==='function') ? monthEventSalesYm(s.id, ym) : {sales:0, count:0};   /* v1041: 原価率の売上にイベント出店も足す */
+    var _r = foodCostOf(s.id, ym, (parseFloat(fc.sales)||((stats.sales||0)+(_ev.sales||0))||0));   /* v688: 一元化（食材移動・用途フィルタを反映） */
     var purchases = _r.invoice + _r.buy;
     var used = _r.cost;
     var sales = _r.sales;
     var rate = _r.hasEnd ? _r.rate : _r.provisionalRate;
     var col = !rate ? 'var(--muted)' : (rate<=31?'var(--green)':rate<=34?'var(--yellow)':'var(--red)');
-    html += `<tr><td style="cursor:pointer" onclick="setFcStore('${s.id}')">${s.name}</td><td style="text-align:right">${fmtUSD2(used)}</td><td style="text-align:right">${fmtUSD2(sales)}</td><td style="text-align:right;color:${col};font-weight:600">${rate?rate.toFixed(1)+'%':'—'}</td></tr>`;
+    html += `<tr><td style="cursor:pointer" onclick="setFcStore('${s.id}')">${s.name}</td><td style="text-align:right">${fmtUSD2(used)}</td><td style="text-align:right">${fmtUSD2(sales)}${(_ev.sales&&!parseFloat(fc.sales))?'<div style="font-size:9px;color:var(--muted);font-weight:400">イベント '+fmtUSD2(_ev.sales)+' 込み</div>':''}</td><td style="text-align:right;color:${col};font-weight:600">${rate?rate.toFixed(1)+'%':'—'}</td></tr>`;
   });
   html += `</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:6px">店舗名タップで各店の詳細（日次/月次/理論原価/買い出し/メニュー別）を表示。棚卸額が未入力の店は売上ベースのみ。</div></div>`;
   html += _fcVendorCard('ALL', ym);
@@ -30559,7 +30581,8 @@ function renderFcMonthly(storeId, store) {
   var fc = getFcMonthly(storeId, ym);
   var invStat = monthInvoiceStatsYm(storeId, ym);
   /* v688: 原価は foodCostOf() に一元化 */
-  var _fcR = foodCostOf(storeId, ym, (parseFloat(fc.sales)||stats.sales||0));
+  var _fcEv = (typeof monthEventSalesYm==='function') ? monthEventSalesYm(storeId, ym) : {sales:0, count:0};   /* v1041: 原価率の売上にイベント出店も足す */
+  var _fcR = foodCostOf(storeId, ym, (parseFloat(fc.sales)||((stats.sales||0)+(_fcEv.sales||0))||0));
   var orderTotal = _fcR.invoice;
   var purchaseTotal = _fcR.buy;
   var purchases = orderTotal + purchaseTotal;
@@ -30584,7 +30607,7 @@ function renderFcMonthly(storeId, store) {
       ${_fcTnet.outAmt>0?`<tr><td>− 食材移動（貸出）</td><td style="text-align:right">− ${fmtUSD2(_fcTnet.outAmt)}</td></tr>`:''}
       <tr><td>期末棚卸額</td><td style="text-align:right">− $${(parseFloat(fc.endInv)||0).toLocaleString()}</td></tr>
       <tr style="font-weight:700"><td>使用原価</td><td style="text-align:right;color:var(--accent)">$${usedCost.toLocaleString()}</td></tr>
-      <tr><td>売上${(!fc.sales&&stats.sales)?' <span style="font-size:9px;color:var(--muted)">（日次実績から自動）</span>':''}</td><td style="text-align:right">${fmtUSD2(sales)}</td></tr>
+      <tr><td>売上${(!fc.sales&&(stats.sales||_fcEv.sales))?' <span style="font-size:9px;color:var(--muted)">（日次実績'+(_fcEv.sales?'＋イベント出店 '+_fcEv.count+'件 '+fmtUSD2(_fcEv.sales)+' ':'')+'から自動）</span>':''}</td><td style="text-align:right">${fmtUSD2(sales)}</td></tr>
     </tbody></table>
     <div class="kpi-grid" style="margin-top:10px">
       ${kpi('実績原価率', rate+'%', '使用原価÷売上', color)}
@@ -32046,7 +32069,8 @@ function setInvTop(storeId, field, val){
   var t=invComputeTotals(storeId), prev=invPrevStockYm(storeId,_ym);
   var purchase=parseFloat(o.purchase)||0;
   var moves=(typeof invMovesFor==='function')?invMovesFor(storeId,_ym).net:(parseFloat(o.moves)||0);  /* v618 */
-  var sales=(o.sales!=null&&o.sales!=='')?parseFloat(o.sales):Math.round((monthStats(storeId, invMonthOffset)||{}).sales||0);
+  var _ev=(typeof monthEventSalesYm==='function') ? monthEventSalesYm(storeId, _ym) : {sales:0, count:0};   /* v1041: 表紙と同じ（イベント出店も足す） */
+  var sales=(o.sales!=null&&o.sales!=='')?parseFloat(o.sales):Math.round(((monthStats(storeId, invMonthOffset)||{}).sales||0)+(_ev.sales||0));
   var cogs=prev+purchase+moves-t.grand; var rate=sales>0?(cogs/sales*100):null;
   var rc=document.getElementById('inv-costrate'); if(rc) rc.textContent=(rate!=null?rate.toFixed(1)+'%':'—');
   var cg=document.getElementById('inv-cogs'); if(cg) cg.textContent=invFmtMoney(cogs);
@@ -32155,7 +32179,8 @@ function renderInvToppageInner(storeId){
   var prev=invPrevStockYm(storeId,_ym), cur=t.grand;
   var purchase=parseFloat(top.purchase)||0;
   var _mv=invMovesFor(storeId,_ym), moves=_mv.net;      /* v618: 食材移動の記録から自動反映 */
-  var sales=(top.sales!=null&&top.sales!=='')?parseFloat(top.sales):Math.round((monthStats(storeId, invMonthOffset)||{}).sales||0);
+  var _ev=(typeof monthEventSalesYm==='function') ? monthEventSalesYm(storeId, _ym) : {sales:0, count:0};   /* v1041: 原価率の売上にイベント出店も足す */
+  var sales=(top.sales!=null&&top.sales!=='')?parseFloat(top.sales):Math.round(((monthStats(storeId, invMonthOffset)||{}).sales||0)+(_ev.sales||0));
   var cogs=prev+purchase+moves-cur, rate=sales>0?(cogs/sales*100):null;
   var m=invComputeMatrix(storeId);
   function box(label,inner,sub){ return '<div style="background:var(--surface2);border-radius:10px;padding:9px 10px"><div style="font-size:10px;color:var(--muted)">'+label+'</div>'+inner+(sub?'<div style="font-size:9px;color:var(--muted)">'+sub+'</div>':'')+'</div>'; }
@@ -32169,7 +32194,7 @@ function renderInvToppageInner(storeId){
     +'<div style="font-size:16px;font-weight:800;color:'+(moves>0?'var(--red)':(moves<0?'var(--green)':'var(--tm)'))+'">'+(moves<0?'− ':(moves>0?'＋ ':''))+invFmtMoney(Math.abs(moves))+'</div>'
     +'<div style="font-size:9px;color:var(--muted)">'+(_mv.src==='auto'?(_mv.count+'件 · タップで明細'):(_mv.src==='manual'?'手入力（記録なし）':'記録なし · タップで確認'))+'</div></div>';
   h+= box('当月の棚', '<div id="inv-cur" style="font-size:16px;font-weight:800;color:var(--green)">'+invFmtMoney(cur)+'</div>','棚卸合計');
-  h+= box('売上', moneyInput('sales', top.sales),'未入力時は自動');
+  h+= box('売上', moneyInput('sales', top.sales),'未入力時は自動'+(_ev.sales?'（イベント '+invFmtMoney(_ev.sales)+' 込み）':''));
   h+= box('原価率', '<div style="font-size:16px;font-weight:800">原価 <span id="inv-cogs">'+invFmtMoney(cogs)+'</span></div><div style="font-size:13px;font-weight:700;color:var(--accent)">率 <span id="inv-costrate">'+(rate!=null?rate.toFixed(1)+'%':'—')+'</span></div>','前月棚＋仕入＋移動−当月棚');
   h+='</div>';
   // カテゴリー総額
@@ -32593,7 +32618,9 @@ function invCogsBreakdown(storeId, ym, snap){
   var _fcm=(typeof getFcMonthly==='function') ? (getFcMonthly(storeId, ym)||{}) : {};
   var _manual=parseFloat(_fcm.sales)||0;
   var _actual=(typeof monthSalesOfYm==='function') ? monthSalesOfYm(storeId, ym) : {sales:0, days:0};
-  var _sales=_manual || _actual.sales || 0;
+  var _ev=(typeof monthEventSalesYm==='function') ? monthEventSalesYm(storeId, ym) : {sales:0, count:0};   /* v1041: イベント出店の売上も足す */
+  var _auto=(_actual.sales||0)+(_ev.sales||0);
+  var _sales=_manual || _auto || 0;
   var r=(typeof foodCostOf==='function') ? foodCostOf(storeId, ym, _sales) : null;
   if(!r) return null;
   var tnet=(typeof monthTransferNetYm==='function') ? (monthTransferNetYm(storeId, ym)||{}) : {};
@@ -32610,8 +32637,9 @@ function invCogsBreakdown(storeId, ym, snap){
     purch:r.purch, cost:r.cost, sales:r.sales, rate:r.rate, hasEnd:r.hasEnd, mode:r.mode,
     invoiceTotal:invTotal, nonCost:nonCost.total, nonCostBy:nonCost.byPurpose,
     snapGrand:grand, endGap:gap,
-    salesSrc: _manual ? 'manual' : (_actual.sales>0 ? 'actual' : 'none'),
-    salesDays: _actual.days, salesActual: _actual.sales, salesManual: _manual
+    salesSrc: _manual ? 'manual' : (_auto>0 ? 'actual' : 'none'),
+    salesDays: _actual.days, salesActual: _auto, salesManual: _manual,
+    salesStore: _actual.sales, salesEvent: _ev.sales, salesEventCount: _ev.count   /* v1041: 売上の内訳（日次実績・イベント出店） */
   };
 }
 function renderInvCogsCard(storeId, ym, snap){
@@ -32640,13 +32668,13 @@ function renderInvCogsCard(storeId, ym, snap){
     + '<div style="font-size:28px;font-weight:800;color:'+col+'">'+(d.rate>0?d.rate.toFixed(1)+'%':'—')+'</div>'
     + '<div style="font-size:11.5px;color:var(--muted)">原価 <b style="color:var(--tm)">'+_fcMoney(d.cost)+'</b>'
     + ' ／ 売上 '+(d.sales>0?_fcMoney(d.sales):'<span style="color:var(--yellow)">未入力</span>')
-    + (d.salesSrc==='actual'?'<span style="font-size:10px;color:var(--muted)">（日次実績 '+d.salesDays+'日ぶんを自動反映）</span>':'')
+    + (d.salesSrc==='actual'?'<span style="font-size:10px;color:var(--muted)">（日次実績 '+d.salesDays+'日ぶん'+(d.salesEvent?'＋イベント出店 '+d.salesEventCount+'件 '+_fcMoney(d.salesEvent)+' ':'')+'を自動反映）</span>':'')
     + (d.salesSrc==='manual'?'<span style="font-size:10px;color:var(--muted)">（原価管理タブの手入力）</span>':'')
     + '</div></div>';
   /* 手入力と実績がずれている場合は必ず出す。どちらで計算したか分からないと原価率を追えない */
   if(d.salesSrc==='manual' && d.salesActual>0 && Math.abs(d.salesManual-d.salesActual)>=1){
     h+='<div style="font-size:10.5px;color:var(--yellow);margin-bottom:4px"><i class="ti ti-alert-triangle"></i> '
-      +'日次実績の合計は '+_fcMoney(d.salesActual)+'（'+d.salesDays+'日）ですが、原価管理タブの手入力 '
+      +'日次実績'+(d.salesEvent?'＋イベント出店':'')+'の合計は '+_fcMoney(d.salesActual)+'（'+d.salesDays+'日'+(d.salesEvent?'・イベント '+d.salesEventCount+'件':'')+'）ですが、原価管理タブの手入力 '
       +_fcMoney(d.salesManual)+' を使っています。'
       +'<span style="color:var(--muted)">手入力を空にすると実績が自動で入ります。</span></div>';
   }
@@ -34440,6 +34468,7 @@ function renderTipMgmt() {
   var storeId = curStore==='ALL'?STORES[0].id:curStore;
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var info = tipPeriodInfo();
+  try{ var _tym=info.y+'-'+String(info.m+1).padStart(2,'0'); if(isFrozenMonth(_tym)) _acctAutoRefresh(_tym); }catch(e){}   /* v1040: 過去の月は開いたときに全店ぶん取り直す */
 
   var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header"><div><div class="section-title">${t('チップ管理','Tip Management')}</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -37707,7 +37736,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1039';
+const APP_VERSION = '1041';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50841,6 +50870,9 @@ function renderAcctExport() {
   var y = ref.getFullYear(), m = ref.getMonth();
   var d1 = `${y}-${String(m+1).padStart(2,'0')}-05`;   // 1-15期
   var d2 = `${y}-${String(m+1).padStart(2,'0')}-20`;   // 16-末期
+  var _ym = y+'-'+String(m+1).padStart(2,'0');   /* v1040: この月の Toast（売上・Tip・勤怠）を全店ぶん取り直す */
+  _acctAutoRefresh(_ym);
+  var _busy = _acctBusy(_ym) ? ' disabled data-acct-busy="1"' : '';   /* 取り直し中は押せない（薄く表示） */
 
   var html = `<div class="section-header">
     <div><div class="section-title"><i class="ti ti-file-export" style="color:var(--accent)"></i> 経理出力</div><div class="section-sub">Tip一覧・シフトリーダー手当・月次棚卸をCSV出力（Excelで開けます）</div></div>
@@ -50859,7 +50891,8 @@ function renderAcctExport() {
     <div class="card-title"><i class="ti ti-file-spreadsheet" style="color:var(--accent)"></i>まとめて出力（Excel・タブ分け）</div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Tip / Shift Leader / 本部シフトイン を
     <b>1ファイル3タブ</b>で出力します。両期間・全店ぶんが入ります。</p>
-    <button class="btn btn-primary" style="width:100%" onclick="exportAcctPayrollBook('${d1}','${d2}')">
+    ${_acctFreshNoteHtml(_ym)}
+    <button class="btn btn-primary" style="width:100%"${_busy} onclick="exportAcctPayrollBook('${d1}','${d2}')">
       <i class="ti ti-download"></i> ${acctMonthLabel()} をまとめて出力</button>
   </div>`;
   html += `<div class="card"><div class="card-title"><i class="ti ti-coin" style="color:var(--green)"></i>Tip一覧（半月別）</div>
@@ -50867,14 +50900,14 @@ function renderAcctExport() {
   stores.forEach(s => {
     html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
-        <div style="font-weight:600"><span class="store-dot" style="background:${s.color}"></span>${s.name}</div>
+        <div style="font-weight:600"><span class="store-dot" style="background:${s.color}"></span>${s.name}${_acctTipStatusHtml(s, _ym)}</div>
         <div style="display:flex;gap:6px">
-          <button class="btn btn-secondary btn-sm" onclick="exportTipCSV('${s.id}','${d1}')">1〜15日</button>
-          <button class="btn btn-secondary btn-sm" onclick="exportTipCSV('${s.id}','${d2}')">16〜末</button>
+          <button class="btn btn-secondary btn-sm"${_busy} onclick="exportTipCSV('${s.id}','${d1}')">1〜15日</button>
+          <button class="btn btn-secondary btn-sm"${_busy} onclick="exportTipCSV('${s.id}','${d2}')">16〜末</button>
         </div>
       </div></div>`;
   });
-  html += `<button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="exportAllTipCSV('${d1}','${d2}')"><i class="ti ti-download"></i> 全店まとめて出力（両期間）</button>`;
+  html += `<button class="btn btn-primary" style="width:100%;margin-top:10px"${_busy} onclick="exportAllTipCSV('${d1}','${d2}')"><i class="ti ti-download"></i> 全店まとめて出力（両期間）</button>`;
 
   html += officePayrollCardHtml(y, m);
   html += `</div>`;
@@ -50900,9 +50933,9 @@ function renderAcctExport() {
         + '<span style="margin-left:auto;font-size:15px;font-weight:800;color:'
         + (mo>0?'var(--green)':'var(--muted)')+'">'+_money(mo)+'</span></div>'
         + '<div style="display:flex;gap:6px;margin-top:6px">'
-        + '<button class="btn btn-secondary btn-sm" style="flex:1" '
+        + '<button class="btn btn-secondary btn-sm" style="flex:1"'+_busy+' '
         + 'onclick="exportSlPayrollCSV(\''+s.id+'\',\''+d1+'\')">1〜15日 '+_money(a.total||0)+'</button>'
-        + '<button class="btn btn-secondary btn-sm" style="flex:1" '
+        + '<button class="btn btn-secondary btn-sm" style="flex:1"'+_busy+' '
         + 'onclick="exportSlPayrollCSV(\''+s.id+'\',\''+d2+'\')">16〜末 '+_money(b.total||0)+'</button>'
         + '</div></div>';
     });
@@ -50913,7 +50946,7 @@ function renderAcctExport() {
       + '誰が何回務めて、いくら払うかを出力します（該当日つき）。対象は G1 のみ・'
       + '単価は Shift Leader 設定の $'+ (typeof slCfg==='function'? slCfg().amount.toFixed(2) : '0.00') +'/回。</p>'
       + _slCards
-      + '<button class="btn btn-primary" style="width:100%;margin-top:10px" '
+      + '<button class="btn btn-primary" style="width:100%;margin-top:10px"'+_busy+' '
       + 'onclick="exportAllSlPayrollCSV(\''+d1+'\',\''+d2+'\')">'
       + '<i class="ti ti-download"></i> 全店まとめて出力（両期間）</button></div>';
   }
@@ -51329,26 +51362,136 @@ function tipCSVRows(storeId, anyDate) {
    ★シートは必ず3つ出す。データが無い月にタブが消えると、
      「出し忘れ」なのか「その月は無かった」のか区別がつかない。
      行が無いシートには理由を1行入れる。 */
+/* ============================================================
+   v1040: 経理の出力で店が静かに抜けないようにする（Motoさん 10/2「経理の出力（棚卸とかTipとか）に LaLa が抜けてる」）
+   ・原因：Tip・本部シフトインは「この端末にある Toast の勤怠」から作る。自動の同期は当月だけで、
+     過去月は端末ごとに一度読んだら固定（monthloaded_）。あとから接続した店（LaLa）や、あとで取り込まれた日の分は、
+     その端末に届かないまま。全店の出力は、勤怠が無い店を何も言わずに飛ばしていた。
+   ・① 出力センターを開いたとき（月を変えたときも）、その月の売上・Tip・勤怠を全店ぶん DB から取り直す（固定を気にせず読む）。
+       取り直しているあいだは Tip・シフトリーダー・経理まとめの出力ボタンを止める（押した時点のデータで出すため。
+       iPhone は押してから時間がたつとダウンロードを止めることがあるので、押してから待つ作りにはしない）。30秒で待つのをやめる。
+       Tip管理で過去の月を開いたときも同じように取り直す。
+   ・② 全店の Tip 出力の先頭に「この出力に入っていない店」（店・期間・理由）。
+   ・③ 出力センターの Tip 一覧に、店ごとの勤怠の日数（無ければ理由）。
+   ・④ 同じ半月は1回だけ数える（Tip管理の「経理まとめ」は同じ半月の初日と末日を渡すため、合計が2倍になっていた）。
+============================================================ */
+var ACCT_FRESH_MS = 10*60*1000;       /* 取り直してから10分は取り直さない */
+var ACCT_FRESH_TIMEOUT_MS = 30*1000;  /* 30秒で待つのをやめる（出力ボタンを止めっぱなしにしない） */
+var _acctFresh = {};                  /* ym → { p:取り直し中の Promise } または { at:終わった時刻, res:店ごとの結果, late:時間切れ } */
+function acctRefreshMonth(ym, force){
+  var f=_acctFresh[ym];
+  if(f && f.p) return f.p;
+  if(f && f.at && !force && Date.now()-f.at < ACCT_FRESH_MS) return Promise.resolve(f.res);
+  var stores=(getVisibleStores()||[]).filter(function(x){ return x && x.toastGuid; });
+  var days=daysOfYm(ym);
+  var one=function(st){
+    var r={ id:st.id, sales:0, labor:0, err:'' };
+    return Promise.resolve()
+      .then(function(){ return syncStoreActualsFromToast(st.id, st.toastGuid, days); })
+      .then(function(x){ r.sales=(x&&x.updated)||0; if(x&&x.error) r.err=String(x.error); }, function(e){ r.err=String((e&&e.message)||e); })
+      .then(function(){ return syncTipLaborFromDB(st.id, st.toastGuid, days); })
+      .then(function(x){ r.labor=(x&&x.updated)||0; }, function(e){ r.err=r.err||String((e&&e.message)||e); })
+      .then(function(){ return r; });
+  };
+  var all=Promise.all(stores.map(one)).then(function(list){
+    var res={}; list.forEach(function(r){ res[r.id]=r; });
+    try{ if(isFrozenMonth(ym)) list.forEach(function(r){ if(!r.err) lsSet(monthFrozenKey(r.id, ym), true); }); }catch(e){}
+    try{ markSynced('ops'); }catch(e){}
+    return res;
+  });
+  var timer=new Promise(function(ok){ setTimeout(function(){ ok(null); }, ACCT_FRESH_TIMEOUT_MS); });
+  var p=Promise.race([all, timer]).then(function(res){
+    _acctFresh[ym]={ at:Date.now(), res:res||{}, late:!res };
+    return res||{};
+  });
+  _acctFresh[ym]={ p:p };
+  return p;
+}
+/* 画面を開いたときに取り直し、終わったら同じ画面を描き直す（10分以内に取り直していれば何もしない） */
+function _acctAutoRefresh(ym){
+  var f=_acctFresh[ym];
+  if(f && (f.p || (f.at && Date.now()-f.at < ACCT_FRESH_MS))) return;
+  var pg=(typeof curPage!=='undefined')?curPage:'';
+  acctRefreshMonth(ym).then(function(){ try{ if(curPage===pg) renderPage(pg); }catch(e){} });
+}
+/* 「もう一度」：10分以内でも取り直す */
+function acctRefreshNow(ym){
+  var pg=(typeof curPage!=='undefined')?curPage:'';
+  acctRefreshMonth(ym, true).then(function(){ try{ if(curPage===pg) renderPage(pg); }catch(e){} });
+  try{ renderPage(pg); }catch(e){}
+}
+function _acctBusy(ym){ var f=_acctFresh[ym]; return !!(f && f.p); }
+/* その月に勤怠がある日（Toast の取り込み・手で直した勤怠）。getTipLabor と同じ見方（直した勤怠が先） */
+function _acctLaborDays(sid, ym){
+  var out={ count:0, first:'', last:'' };
+  daysOfYm(ym).forEach(function(d){
+    var has=false;
+    try{ var o=getAttOverride(sid, d.date); has=!!(o && o.data); }catch(e){}
+    if(!has) has=!!ls('tip_labor_'+sid+'_'+d.date, null);
+    if(has){ out.count++; if(!out.first) out.first=d.date; out.last=d.date; }
+  });
+  return out;
+}
+function _acctMd(iso){ return Number(String(iso).slice(5,7))+'/'+Number(String(iso).slice(8,10)); }
+function _acctTipStatusHtml(st, ym){
+  var n=_acctLaborDays(st.id, ym);
+  if(n.count) return '<div style="font-size:10.5px;color:var(--muted);font-weight:400">'+t('勤怠 ','Labor ')+n.count+t('日（',' days (')+_acctMd(n.first)+'〜'+_acctMd(n.last)+t('）',')')+'</div>';
+  if(_acctBusy(ym) && st.toastGuid) return '<div style="font-size:10.5px;color:var(--muted);font-weight:400"><i class="ti ti-loader"></i> '+t('取り直し中…','Reloading…')+'</div>';   /* GUID の無い店は取り直さないので「未接続」のまま */
+  return '<div style="font-size:10.5px;color:var(--yellow);font-weight:400;line-height:1.5"><i class="ti ti-alert-triangle"></i> '
+    +(st.toastGuid ? t('この月の勤怠がありません（Tip管理の「この期間を最新化」で Toast から取り直せます）','No labor this month (use “Refresh this period” in Tip management)')
+                   : t('Toast 未接続（店舗マスターの Toast GUID が空）','Toast not connected (no GUID in the store master)'))+'</div>';
+}
+function _acctFreshNoteHtml(ym){
+  var f=_acctFresh[ym]||{}, st;
+  if(f.p) st='<i class="ti ti-loader"></i> '+t('この月の売上・Tip・勤怠を全店ぶん取り直しています。終わると出力ボタンが押せます。','Reloading this month’s sales, tips and labor for all stores. Export buttons unlock when done.');
+  else if(f.at) st='<i class="ti ti-circle-check" style="color:var(--green)"></i> '+t('この月の売上・Tip・勤怠を全店ぶん取り直しました ','Reloaded this month’s data for all stores ')
+    +new Date(f.at).toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'})
+    +(f.late?t('（時間切れ：一部はこの端末にあったデータ）',' (timed out: some data is from this device)'):'')
+    +' <a href="javascript:void(0)" onclick="acctRefreshNow(\''+ym+'\')" style="color:var(--muted);text-decoration:underline">'+t('もう一度','Again')+'</a>';
+  else st='<i class="ti ti-info-circle"></i> '+t('出力の前に、この月の売上・Tip・勤怠を全店ぶん取り直します。','This month’s data is reloaded for all stores before exporting.');
+  return '<div style="font-size:10.5px;color:var(--muted);margin:0 0 8px;line-height:1.6">'+st+'</div>';
+}
+/* 全店の Tip 出力に入らなかった店（店・期間・理由）。出力の先頭に置く */
+function _acctTipMiss(st, dt, err){
+  var r=halfMonthRange(dt);
+  var why = err ? t('出力できませんでした：','Could not export: ')+String((err&&err.message)||err)
+          : (!st.toastGuid ? t('Toast 未接続（店舗マスターの Toast GUID が空）','Toast not connected (no GUID in the store master)')
+                           : t('この期間の勤怠（Toast のタイムカード）がありません','No labor (Toast time entries) in this period'));
+  return [st.name, r.from+' 〜 '+r.to, why];
+}
+function _acctTipMissRows(list){
+  if(!list || !list.length) return [];
+  return [[t('【この出力に入っていない店】','[Stores not included]')], [t('店舗','Store'), t('期間','Period'), t('理由','Reason')]].concat(list).concat([[]]);
+}
+/* 同じ半月は1回だけ（Tip管理の「経理まとめ」は同じ半月の初日と末日を渡す） */
+function _acctPeriods(d1, d2){
+  var out=[], seen={};
+  [d1, d2].forEach(function(dt){ if(!dt) return; var k=halfMonthRange(dt).from; if(seen[k]) return; seen[k]=1; out.push(dt); });
+  return out;
+}
+
 function acctPayrollSheets(d1, d2){
   var stores = getVisibleStores() || [];
   var per = function(dt){ return (typeof _p4Period==='function') ? _p4Period(dt) : null; };
+  var periods = _acctPeriods(d1, d2);   /* v1040: 同じ半月は1回だけ（Tip管理の経理まとめは同じ半月の初日と末日を渡す） */
   /* --- Tip --- */
-  var tip = [], tipHit = 0;
+  var tip = [], tipHit = 0, tipMiss = [];   /* v1040: 入らなかった店は理由つきで先頭に（静かに抜けない） */
   stores.forEach(function(s){
-    [d1, d2].forEach(function(dt){
+    periods.forEach(function(dt){
       try{
         var settle = calcHalfMonthSettlement(s.id, dt);
-        if(!settle || !settle.anyLabor) return;
+        if(!settle || !settle.anyLabor){ tipMiss.push(_acctTipMiss(s, dt, null)); return; }
         tip = tip.concat(tipCSVRows(s.id, dt)); tip.push([]); tipHit++;
-      }catch(e){}
+      }catch(e){ tipMiss.push(_acctTipMiss(s, dt, e)); }
     });
   });
-  if(!tipHit) tip = [['この期間のTip記録がありません']];
+  if(!tipHit) tip = [['この期間のTip記録がありません'], []].concat(_acctTipMissRows(tipMiss));   /* v1040: 1行目は今までどおり・店ごとの理由はその下 */
+  else tip = _acctTipMissRows(tipMiss).concat(tip);   /* v1040: 入っていない店を先頭に */
   /* --- Shift Leader --- */
   var sl = [], slHit = 0, slTotal = 0;
   stores.forEach(function(s){
     if(typeof slStoreEnabled==='function' && !slStoreEnabled(s.id)) return;
-    [d1, d2].forEach(function(dt){
+    periods.forEach(function(dt){   /* v1040 */
       try{
         var p0 = per(dt); if(!p0) return;
         var p = slPayrollData(s.id, p0.from, p0.to);
@@ -51362,7 +51505,7 @@ function acctPayrollSheets(d1, d2){
   else sl = [['この期間のシフトリーダー記録がありません']];
   /* --- 本部シフトイン --- */
   var hq = [], hqHit = 0, hqTotal = 0, hqHours = 0;
-  [d1, d2].forEach(function(dt){
+  periods.forEach(function(dt){   /* v1040 */
     var p0 = per(dt); if(!p0) return;
     try{
       var all = hqSiteLaborAll(p0.from, p0.to);
@@ -51399,18 +51542,18 @@ function exportTipCSV(storeId, anyDate) {
 }
 function exportAllTipCSV(d1, d2) {
   var stores = getVisibleStores();
-  var rows = [];
+  var rows = [], miss = [];   /* v1040: 勤怠が無い店も理由つきで先頭に出す（静かに抜けない） */
   stores.forEach(s=>{
-    [d1,d2].forEach(d=>{
+    _acctPeriods(d1, d2).forEach(d=>{
       var settle = calcHalfMonthSettlement(s.id, d);
-      if (!settle.anyLabor) return;
+      if (!settle.anyLabor) { miss.push(_acctTipMiss(s, d, null)); return; }
       rows = rows.concat(tipCSVRows(s.id, d));
       rows.push([]);
     });
   });
   if (!rows.length) { showToast('対象期間の勤怠データがありません','danger'); return; }
-  downloadCSV(rows, `Tip一覧_全店_${acctMonthLabel()}.csv`);
-  showToast('全店のTip一覧を出力しました','success');
+  downloadCSV(_acctTipMissRows(miss).concat(rows), `Tip一覧_全店_${acctMonthLabel()}.csv`);
+  showToast('全店のTip一覧を出力しました'+(miss.length?('（入っていない店・期間 '+miss.length+'件は先頭に理由）'):''),'success');
 }
 function inventoryCSVRows(storeId, y, m) {
   var s = STORES.find(x=>x.id===storeId)||{name:storeId};
