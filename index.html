@@ -10560,7 +10560,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','karte_pin','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','karte_pin','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
    唯一の入口 openLaborHourModal() に呼び出し元が無く（doToastLaborFetch も同じ）、
@@ -11464,6 +11464,8 @@ var OP_MERGE = {
   growth_karte:       { merge: mergeMapByTime, covers: _coversMapByTime },
   q_budgets:          { merge: mergeMapByTime, covers: _coversMapByTime },
   karte_bonus_config: { merge: mergeStamped,   covers: _coversStamped },
+  bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
+  grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1043: グレード履歴。社員ごとに新しいほう */
   /* v767: 本部目標と行動計画。id単位の和集合で、勝敗は必ず _mut（時刻）で決める。
      ここが無いと、部分データを持つ端末の保存がクラウドを丸ごと上書きする。 */
   hq_goals:      { merge: mergeCcList,    covers: _coversCcList },
@@ -12681,7 +12683,10 @@ function renderSecureBody(){
     +'<div class="seg-tab'+(_st==='bot'?' active':'')+'" onclick="secTab(\'bot\')"><i class="ti ti-robot"></i>'+t('業務Bot','Operations Bot')+'</div>'
     +'</div>';
   /* v1016: 業務Bot もタブの1つにする。別ボタンだと、開いている間どのタブも選択中にならない。 */
-  return bar + (_st==='bot' ? renderBotCenter() : _st==='pl' ? renderSimplePL() : _st==='hq' ? renderHqBudget() : renderGrowthKarte());
+  var _sb = (_st==='bot' ? renderBotCenter() : _st==='pl' ? renderSimplePL() : _st==='hq' ? renderHqBudget() : renderGrowthKarte());
+  /* v1045: 本人に見せる表示のあいだは、上のタブ（PL分析・本部予算・業務Bot）を出さない。本人が押して開けないように（UI案31 段階4） */
+  if(_st==='karte' && window._karteSelf && window._karteViewEmp && ['gm','ceo'].indexOf(curRole)>=0) bar='';
+  return bar + _sb;
 }
 /* ============================================================
    本部予算（セキュアページ）: 年間計画表（本部予算 vs 店舗予算 vs 実績）
@@ -15024,7 +15029,7 @@ function savePlActual(sid){
 }
 function managerLogout(){
   window._authSession=null; if(typeof botResetShared==='function') botResetShared();
-  window._secureMode=false; window._karteUnlocked=false;
+  window._secureMode=false; window._karteUnlocked=false; window._karteSelf=false;   /* v1045 */
   curRole=null; curUserName=null; curStore=null;
   var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='none';
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
@@ -36045,7 +36050,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
   'fv_count_','fv_moves_','fv_review_','fv_config',
-  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','q_budgets',
+  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','q_budgets',
   'sl_config','sl_manual_',
   'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'lala_tasks'];   /* v804: LaLa（手入力・再生不可） */   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
@@ -37736,7 +37741,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1041';
+const APP_VERSION = '1045';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -47077,6 +47082,7 @@ function saveEmp(empId) {
   var coefEl = document.getElementById('e-coef');
   if (coefEl) { data.coef = parseFloat(coefEl.value)||1; }
   data.prep = (data.title==='Prep'||data.title==='Prep Specialist');
+  if (typeof ghBeforeSaveEmp==='function' && ghBeforeSaveEmp(empId, data)) return;   /* v1043: グレードが変わるときは確定日を聞いてから保存する（UI案31-5b） */
   var emps = getEmployees();
   if (empId) {
     var e = emps.find(x=>x.id===empId);
@@ -47087,6 +47093,7 @@ function saveEmp(empId) {
     emps.push(data);
   }
   lsSet('m_employees', emps);
+  try{ if(typeof ghAfterSaveEmp==='function') ghAfterSaveEmp(empId, data, emps); }catch(err){ console.warn('ghAfterSaveEmp', err); }   /* v1043: グレード履歴に記録 */
   try{ var _se = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_se) saveEmpPrivate(_se.id, _se.wage, _se.email, _se.phone, _se.monthlySalary); }catch(e){}
   // シフト条件を保存（配属店舗がある場合）。最大時間のみ更新、曜日×区分の詳細はシフト画面で。
   var store = data.store;
@@ -55327,7 +55334,9 @@ function saveKarte(empId, k){ var m=getKarteAll(); k.updatedAt=new Date().toISOS
 
 function karteEligibleEmps(){
   var cfg=kbCfg();
+  var _ctx=(typeof bonusEligCtx==='function')?bonusEligCtx(cfg):null;   /* v1044: グレード履歴から（途中で変わった人・途中退職の例外） */
   return getEmployees().filter(function(e){
+    if(_ctx){ var _st=bonusElig(e, cfg, _ctx); return !!(_st && _st.ok); }
     if(e.status && e.status!=='在籍') return false;
     var g=empGrade(e); return g && cfg.gradeBase[g]!=null;
   }).sort(function(a,b){ return empGradeNum(b)-empGradeNum(a) || String(a.name||'').localeCompare(String(b.name||'')); });
@@ -55389,11 +55398,15 @@ var BQ_STAGES = [
 ];
 function bqAll(){ var m=ls('bonus_q', {}); return (m && typeof m==='object')?m:{}; }
 function bqGet(q){
-  var d=bqAll()[q]||{};
-  return { profit:(d.profit&&typeof d.profit==='object')?d.profit:{},
+  var d=bqAll()[q]; if(!d || typeof d!=='object' || Array.isArray(d)) d={};
+  return Object.assign({}, d, { profit:(d.profit&&typeof d.profit==='object')?d.profit:{},   /* v1044: 知らない項目も落とさない */
            profitLocked:!!d.profitLocked, profitLockedAt:d.profitLockedAt||'', profitLockedBy:d.profitLockedBy||'',
            csFreeze:(d.csFreeze&&typeof d.csFreeze==='object')?d.csFreeze:{},
-           locked:!!d.locked, lockedAt:d.lockedAt||'', lockedBy:d.lockedBy||'' };
+           locked:!!d.locked, lockedAt:d.lockedAt||'', lockedBy:d.lockedBy||'',
+           co:(d.co&&typeof d.co==='object')?d.co:{},                                     /* v1042: 会社全体の経常利益・経常利益率 */
+           poolSnap:(d.poolSnap&&typeof d.poolSnap==='object')?d.poolSnap:null,          /* v1042: 査定を確定したときの原資 */
+           incl:(d.incl&&typeof d.incl==='object')?d.incl:{},                             /* v1044: 例外として入れた人 */
+           segSnap:(d.segSnap&&typeof d.segSnap==='object')?d.segSnap:null });            /* v1044: 査定を確定したときの区間 */
 }
 function bqSet(q, d){
   if(!q) return false;
@@ -55553,6 +55566,9 @@ function bqLockQuarter(q){
       totalMax:sum.totalMax, cats:(sum.cats||[]).map(function(c){ return {key:c.key,name:c.name,score:c.score,max:c.max,pct:c.pct}; }) };
   });
   d.profitLocked=true; if(!d.profitLockedAt){ d.profitLockedAt=_bqNow(); d.profitLockedBy=_bqWho(); }
+  var _pi=bonusPoolInfo(cfg, q);   /* v1042: 原資を確定したときの数字で固定する（表をあとで変えても動かない） */
+  d.poolSnap={ profit:_pi.profit, margin:_pi.margin, rate:_pi.rate, lo:(_pi.row?_pi.row.lo:null), hi:(_pi.row?_pi.row.hi:null), amount:_pi.amount, at:_bqNow(), by:_bqWho() };
+  try{ var _qr=ghQRange(q); d.segSnap=null; if(_qr){ var _ss={}; karteEligibleEmps().forEach(function(e){ _ss[e.id]=bonusSegs(e, _qr, {}).map(function(x){ return {g:x.g, from:x.from, to:x.to, days:x.days, noHist:!!x.noHist}; }); }); d.segSnap=_ss; } }catch(err){ d.segSnap=null; }   /* v1044: 区間も固定 */
   d.locked=true; d.lockedAt=_bqNow(); d.lockedBy=_bqWho();
   if(bqSet(q,d)===false){ showToast('保存できませんでした','danger'); return; }
   showToast(q+' の査定を確定しました','success'); bqRefresh();
@@ -55560,7 +55576,7 @@ function bqLockQuarter(q){
 function bqUnlockQuarter(q){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
   if(!confirm(q+' の査定確定を解除します。\n利益と評価が再び編集できるようになり、査定額が変わる可能性があります。\n給与・ボーナス履歴に記録済みの金額は自動では変わりません。よろしいですか？')) return;
-  var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy='';
+  var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy=''; d.poolSnap=null; d.segSnap=null;   /* v1042: 確定したときの原資も外す・v1044: 区間も */
   bqSet(q,d); showToast('解除しました','info'); bqRefresh();
 }
 function bqRefresh(){ if(typeof kbRefresh==='function') kbRefresh(); else if(typeof renderPage==='function') renderPage(curPage); }
@@ -55607,8 +55623,10 @@ function budgetAchieveFor(cfg, e){
 /* Career Score のカテゴリー内訳（説明表示用） */
 function bonusCsDetail(e, b){
   /* v797: 確定済みならその時点の内訳を出す（後から評価が変わっても査定は動かない） */
-  if(b && b.csFrozen && b.csCats && b.csCats.length)
-    return {hasData:true, cats:b.csCats, totalScore:b.csPct!=null?0:0, totalMax:0, totalPct:b.csPct, frozen:true, at:b.csFrozenAt};
+  if(b && b.csFrozen && b.csCats && b.csCats.length){
+    var _ts=0, _tm=0; b.csCats.forEach(function(c){ _ts+=Number(c&&c.score)||0; _tm+=Number(c&&c.max)||0; });   /* v1044: 確定した内訳の合計（以前は「0 / 0点」と出ていた） */
+    return {hasData:true, cats:b.csCats, totalScore:Math.round(_ts*10)/10, totalMax:Math.round(_tm*10)/10, totalPct:b.csPct, frozen:true, at:b.csFrozenAt};
+  }
   var sum=(typeof lssSummary==='function')?lssSummary(e&&e.name):null;
   if(!sum||!sum.hasData) return {hasData:false, cats:[], totalScore:0, totalMax:0, totalPct:0};
   return {hasData:true, cats:sum.cats||[], totalScore:sum.totalScore, totalMax:sum.totalMax, totalPct:sum.totalPct};
@@ -55726,11 +55744,12 @@ function renderBonusBreakdown(e, b, cfg){
   h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:2px">'
     +'<i class="ti ti-math-symbols"></i> どう計算したか</div>';
   h+='<div style="font-size:10.5px;color:var(--muted);margin-bottom:4px">'
-    +'Grade基準額 × 予算達成率 × 店舗利益係数 × Career Score係数</div>';
+    +(b.prorated?'日割り基準額':'Grade基準額')+' × 予算達成率 × 店舗利益係数 × Career Score係数</div>';
 
-  /* ① 基準額 */
-  var run=b.base;
-  h+=_baStepRow('1','Grade基準額',
+  /* ① 基準額（v1044：グレード履歴から日割り） */
+  var run=(b.prorated?b.prBase:b.base);
+  if(b.prorated) h+=_baStepRow('1','日割り基準額（グレード履歴から）', bonusSegsBreakHtml(b, cfg), _money(b.prBase), run, 'var(--tm)', '');
+  else h+=_baStepRow('1','Grade基準額',
       'Grade <b>'+escapeHtml(b.grade||'—')+'</b> の四半期基準額。ここが出発点です。',
       _money(b.base), run, 'var(--tm)', '');
 
@@ -55789,10 +55808,15 @@ function renderBonusBreakdown(e, b, cfg){
       (b.csCoef>1?'var(--green)':(b.csCoef<1?'var(--red)':'var(--muted)')),
       cs.hasData?'':'未評価のため中立で計算しています。');
 
-  h+='<div style="display:flex;align-items:center;justify-content:space-between;border-top:2px solid var(--border);margin-top:6px;padding-top:8px">'
+  var _el=(b.segs||[]).filter(function(x){ return x.elig; });   /* v1044: 日割りは区間ごとに計算して足す */
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;'+(_el.length>1?'gap:8px;flex-wrap:wrap;':'')+'border-top:2px solid var(--border);margin-top:6px;padding-top:8px">'
     +'<span style="font-size:12px;font-weight:800">査定額</span>'
+    +(_el.length>1?'<span style="font-size:12px;color:var(--muted);margin-left:auto">'+_el.map(function(x){ return x.g+' 分 '+_money(x.amount); }).join(' ＋ ')+' ＝</span>':'')
     +'<span style="font-size:18px;font-weight:800;color:var(--accent)">'+_money(b.amount)+'</span></div>';
-  h+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'
+  if(b.prorated) h+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'
+    +'区間ごとに 日割り基準額 ×'+b.baCoef.toFixed(2)+' ×'+b.spCoef.toFixed(2)+' ×'+b.csCoef.toFixed(2)+' を一度に計算して端数を処理し、足しています'
+    +'（今のグレードで四半期まるごとなら '+_money(b.full)+'）。</div>';
+  else h+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'
     +'各段の金額は端数処理の途中経過です。最終額は '+_money(b.base)+' ×'+b.baCoef.toFixed(2)
     +' ×'+b.spCoef.toFixed(2)+' ×'+b.csCoef.toFixed(2)+' を一度に計算しています。</div>';
   return h+'</div>';
@@ -55809,24 +55833,1272 @@ function bonusForEmp(e, cfg){
   var spPct; if(_psids.length){ var _ss=0; _psids.forEach(function(sid){ _ss+=storeScoreOf(cfg,sid); }); spPct=Math.round(_ss/_psids.length); } else { spPct=100; }
   var spf=spCoef(spPct,cfg);
   var ba=budgetAchieveFor(cfg,e);   /* v795: 対象クォーターの予算達成率 */
+  var _full=Math.round(base*ba.coef*spf*csf);   /* v1044: 今のグレードで四半期まるごと（日割りの前の計算） */
+  var _pr=(typeof bonusProrate==='function')?bonusProrate(e, cfg, ba.coef, spf, csf):null;   /* v1044: グレード履歴から日割り（UI案31 段階3） */
   return {grade:g, base:base, csPct:pct, csCoef:csf, spPct:spPct, spCoef:spf,
     baPct:ba.pct, baCoef:ba.coef, ba:ba,
     profitStore:(_psids[0]||e.store), profitStores:_psids,
-    amount:Math.round(base*ba.coef*spf*csf), hasCS:!!(sum&&sum.hasData),
+    amount:(_pr?_pr.amount:_full), hasCS:!!(sum&&sum.hasData),
+    full:_full, segs:(_pr?_pr.segs:null), prBase:(_pr?_pr.base:base), qDays:(_pr?_pr.n:0), prorated:!!(_pr&&_pr.prorated),
     csFrozen:!!_fz, csFrozenAt:(_fz&&_fz.at)||'', csCats:(sum&&sum.cats)||[]};
 }
-function bonusPool(cfg){ return Math.round((cfg.profit||0)*(cfg.poolRate||0)); }
+/* ===== v1042: ボーナス原資は会社全体の経常利益率で決める（CEO の表）・算出基準のメモ（Motoさん 10/5・UI案31 段階1） =====
+   【原資】経常利益率（%）を手で入れると、表から原資率が決まり、原資＝その四半期の経常利益 × 原資率（Motoさん 10/5）。
+     原資は今までどおり「上限」（算出合計が超えたら全員に同じ割合を掛ける）。5%未満は原資 $0（全員 $0）。
+     経常利益・経常利益率は四半期ごとに持つ（bonus_q の co）。今までの経常利益（karte_bonus_config.profit）は選んでいる四半期だけ引き継ぐ。
+     未入力なら原資は決まらない（上限を掛けない＝今までの未入力と同じ）。
+     査定を確定するとその時点の原資を固定する（bonus_q の poolSnap）。表をあとで変えても確定した四半期は動かない。
+   【表】bonus_rules.table（GM・CEO が編集・前の表を残す）。無ければ CEO の表（2026/10/5）。
+     四捨五入せずに比べる。境目ちょうどは上の段（7.0% → 7%以上〜8%未満）。
+   【メモ】bonus_rules.memo（複数行・版を残す・コピー）。ハンドブックは CEO が直接編集する。利益率はスタッフに見せない（セキュアページの中だけ）。
+   【同期】bonus_rules は表とメモを別々に合流（mergeMapByTime）。片方を直してももう片方は消えない。 */
+var BONUS_POOL_TABLE_DEFAULT = [
+  {lo:null, hi:5,  r:0},  {lo:5,  hi:6,  r:1},  {lo:6,  hi:7,  r:2},  {lo:7,  hi:8,  r:3},  {lo:8,  hi:9,  r:5},
+  {lo:9,  hi:10, r:7},  {lo:10, hi:11, r:8},  {lo:11, hi:12, r:9},  {lo:12, hi:13, r:10}, {lo:13, hi:14, r:11},
+  {lo:14, hi:15, r:12}, {lo:15, hi:16, r:13}, {lo:16, hi:18, r:14}, {lo:18, hi:null, r:15}
+];
+function bonusRules(){ var r=ls('bonus_rules', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function bonusRulesSave(part, obj){ var r=bonusRules(); obj._at=Date.now(); r[part]=obj; return lsSet('bonus_rules', r); }
+/* 数字に直す。全角（１１．１％・－２）も読む。空・数字でないものは null */
+function _bpNum(v){
+  if(v==null) return null;
+  var t=String(v).replace(/[０-９]/g, function(ch){ return String.fromCharCode(ch.charCodeAt(0)-0xFEE0); })
+    .replace(/[．。]/g,'.').replace(/[－−‐]/g,'-').replace(/[%％$＄,，\s　]/g,'');
+  if(t==='') return null; var n=Number(t); return isFinite(n)?n:null;
+}
+function _bpBlank(v){ return v==null || String(v).replace(/[\s　]/g,'')===''; }
+function bonusPoolTable(){
+  var t=bonusRules().table;
+  var rows=(t && Array.isArray(t.rows)) ? t.rows.filter(function(b){ return b && typeof b==='object'; }) : [];
+  return rows.length ? rows : BONUS_POOL_TABLE_DEFAULT;
+}
+/* 経常利益率が入る段。四捨五入しない。境目ちょうどは上の段（以上〜未満） */
+function bonusPoolRow(margin, rows){
+  var m=_bpNum(margin); if(m==null) return null;
+  var hit=null;
+  (rows||bonusPoolTable()).forEach(function(b){
+    var lo=_bpNum(b.lo), hi=_bpNum(b.hi);
+    if(!hit && (lo==null || m>=lo) && (hi==null || m<hi)) hit=b;
+  });
+  return hit;
+}
+function bonusPoolRowLabel(b){
+  if(!b) return '';
+  var lo=_bpNum(b.lo), hi=_bpNum(b.hi);
+  if(lo==null && hi==null) return 'すべて';
+  if(lo==null) return hi+'%未満';
+  if(hi==null) return lo+'%以上';
+  return lo+'%以上〜'+hi+'%未満';
+}
+/* 表のすき間・重なり。マイナスから上まで、どの経常利益率も1つの段に入ること */
+function bonusPoolTableCheck(rows){
+  var msgs=[];
+  (rows||[]).forEach(function(b){ ['lo','hi','r'].forEach(function(f){ var v=b&&b[f]; if(!_bpBlank(v) && _bpNum(v)==null) msgs.push('数字ではない値があります（「'+String(v)+'」）'); }); });
+  var rs=(rows||[]).map(function(b){ return {lo:_bpNum(b&&b.lo), hi:_bpNum(b&&b.hi), r:_bpNum(b&&b.r)}; });
+  rs.sort(function(a,b){ return (a.lo==null?-Infinity:a.lo)-(b.lo==null?-Infinity:b.lo); });
+  if(!rs.length) return {ok:false, msgs:['段がありません'], rows:rs};
+  if(rs[0].lo!=null) msgs.push(rs[0].lo+'%未満がどの段にも入っていません（一番上の段の「以上」を空にしてください）');
+  if(rs[rs.length-1].hi!=null) msgs.push(rs[rs.length-1].hi+'%以上がどの段にも入っていません（一番下の段の「未満」を空にしてください）');
+  rs.forEach(function(b,i){
+    if(b.lo!=null && b.hi!=null && !(b.lo<b.hi)) msgs.push('「以上」が「未満」と同じか大きい段があります（'+b.lo+'%〜'+b.hi+'%）');
+    if(b.r==null || b.r<0 || b.r>100) msgs.push('原資率は 0〜100% で入れてください');
+    if(i>0){
+      var p=rs[i-1];
+      if(p.hi==null || b.lo==null) msgs.push('途中の段の「以上」か「未満」が空いています');
+      else if(p.hi<b.lo) msgs.push('すき間：'+p.hi+'%〜'+b.lo+'% がどの段にも入っていません');
+      else if(p.hi>b.lo) msgs.push('重なり：'+b.lo+'%〜'+p.hi+'% が2つの段に入っています');
+    }
+  });
+  var out=[]; msgs.forEach(function(m){ if(out.indexOf(m)<0) out.push(m); });
+  return {ok:!out.length, msgs:out, rows:rs};
+}
+/* その四半期の会社全体の数字。今までの経常利益（四半期を分けていなかった）は、選んでいる四半期だけ引き継ぐ */
+function bonusCoOf(q, cfg){
+  q=String(q||'').trim();
+  var co=(q && typeof bqGet==='function') ? (bqGet(q).co||{}) : {};
+  var profit=_bpNum(co.profit), margin=_bpNum(co.margin), legacy=false;
+  /* 引き継ぐのは、入れたときに選んでいた四半期（profitQ・無ければ今の四半期）だけ。
+     この四半期でまだ一度も経常利益を触っていないときだけ（消したあとに戻ってこないように） */
+  var lq=cfg ? String(cfg.profitQ||cfg.quarter||'').trim() : '';
+  if(q && profit==null && !('profit' in co) && cfg && lq===q && Number(cfg.profit)>0){ profit=Number(cfg.profit); legacy=true; }
+  return {profit:profit, margin:margin, legacy:legacy, at:co.at||'', by:co.by||''};
+}
+function bonusSetCo(field, v){
+  var cfg=kbCfg(), q=String(cfg.quarter||'').trim();
+  if(!q){ showToast('四半期を入れてください','warning'); return; }
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('原資を変えられるのは GM・CEO です','warning'); return; }
+  var d=bqGet(q);
+  if(d.locked){ showToast(q+' の査定は確定済みです（原資は確定したときの数字で固定）','warning'); return; }
+  var n=_bpNum(v);
+  if(n==null && !_bpBlank(v)){ showToast('数字で入れてください（例 '+(field==='margin'?'11.1':'338550')+'）','warning'); kbRefresh(); return; }   /* 打ち間違いで消さない */
+  var c=Object.assign({}, d.co||{});
+  if(field!=='profit' && _bpNum(c.profit)==null){ var pv=bonusCoOf(q,cfg); if(pv.legacy) c.profit=pv.profit; }   /* 引き継いだ経常利益をこの四半期に残す */
+  c[field]=(n==null)?'':n;
+  c.at=_bqNow(); c.by=_bqWho();
+  d.co=c;
+  if(bqSet(q,d)===false){ showToast('保存できませんでした','danger'); return; }
+  kbRefresh();
+}
+/* その四半期の原資。確定済みなら確定したときの数字 */
+function bonusPoolInfo(cfg, q){
+  cfg=cfg||kbCfg(); q=String(q||(cfg&&cfg.quarter)||'').trim();
+  var d=(q && typeof bqGet==='function') ? bqGet(q) : {};
+  if(d.locked && d.poolSnap && typeof d.poolSnap==='object'){
+    var sp=d.poolSnap, amt=_bpNum(sp.amount);
+    return {q:q, profit:_bpNum(sp.profit), margin:_bpNum(sp.margin), rate:_bpNum(sp.rate), row:(_bpNum(sp.rate)==null?null:{lo:sp.lo, hi:sp.hi, r:sp.rate}),
+            amount:amt, known:amt!=null, snap:true, at:sp.at||'', by:sp.by||'', legacy:false};
+  }
+  var co=bonusCoOf(q,cfg), row=bonusPoolRow(co.margin);
+  var rate=row?_bpNum(row.r):null;
+  var amount=(rate!=null && co.profit!=null) ? Math.round(Math.max(0,co.profit)*rate/100) : null;
+  return {q:q, profit:co.profit, margin:co.margin, rate:rate, row:row, amount:amount, known:amount!=null, snap:false, legacy:co.legacy};
+}
+function bonusPool(cfg){ var p=bonusPoolInfo(cfg); return p.known ? p.amount : 0; }
 function bonusTotals(cfg){
   var emps=karteEligibleEmps(); var total=0;
   var rows=emps.map(function(e){ var b=bonusForEmp(e,cfg); total+=b.amount; return {e:e,b:b}; });
-  var pool=bonusPool(cfg); var over=total>pool && pool>0; var factor=over?(pool/total):1;
-  return {rows:rows, total:total, pool:pool, over:over, factor:factor, diff:pool-total};
+  var pi=bonusPoolInfo(cfg), pool=pi.known?pi.amount:0;
+  /* v1042: 原資が決まっていない（経常利益・経常利益率が未入力）ときは上限を掛けない。原資 $0（5%未満）は全員 $0 */
+  var over=pi.known && total>pool; var factor=over?(total>0?pool/total:0):1;
+  return {rows:rows, total:total, pool:pool, over:over, factor:factor, diff:pool-total, poolKnown:pi.known, poolInfo:pi};
+}
+/* --- 設定タブ：ボーナス原資のカード --- */
+function renderBonusPoolCard(cfg){
+  var q=String(cfg.quarter||'').trim(), qq=_bonusQParse(q), pi=bonusPoolInfo(cfg), d=q?bqGet(q):{};
+  var canEdit=['gm','ceo'].indexOf(curRole)>=0, locked=!!d.locked;
+  var range='';
+  if(qq){ var ms=_quarterMonths(qq.y,qq.q); range=(+ms[0].slice(5))+'/1〜'+(+ms[2].slice(5))+'/'+new Date(qq.y, qq.q*3, 0).getDate(); }
+  var dis=(locked||!canEdit)?' disabled':'';
+  var h='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--accent)"></i>ボーナス原資（四半期）'
+    +(locked?'<span class="tag tag-green" style="margin-left:6px;font-size:10px">確定済み</span>':'')+'</div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">会社全体の経常利益率を下の表に当てて、原資率が決まります（CEO の表）。</div>';
+  h+='<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">';
+  h+='<div><label class="form-label">四半期</label><input class="form-input" style="width:110px" value="'+escapeHtml(q)+'" onchange="bonusSetQuarter(this.value)">'
+    +(range?'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+range+'</div>':'')+'</div>';
+  h+='<div><label class="form-label">四半期 経常利益（$）</label><input id="bp-profit" class="form-input" style="width:150px;text-align:right" inputmode="decimal" value="'+(pi.profit==null?'':pi.profit)+'" placeholder="例 338550"'+dis+' onchange="bonusSetCo(\'profit\',this.value)">'
+    +(pi.legacy?'<div style="font-size:10px;color:var(--muted);margin-top:2px">今までの入力を表示しています</div>':'')+'</div>';
+  h+='<div><label class="form-label">経常利益率（%）</label><input id="bp-margin" class="form-input" style="width:100px;text-align:right" inputmode="decimal" value="'+(pi.margin==null?'':pi.margin)+'" placeholder="例 11.1"'+dis+' onchange="bonusSetCo(\'margin\',this.value)"></div>';
+  h+='<div style="background:var(--surface2);border-radius:8px;padding:7px 12px;min-width:130px"><div style="font-size:10px;color:var(--muted)">原資率（表から自動）</div>'
+    +'<div id="bp-rate" style="font-size:16px;font-weight:800;color:var(--accent)">'+(pi.rate==null?'—':pi.rate+'%')+'</div>'
+    +'<div style="font-size:10px;color:var(--muted)">'+(pi.row?escapeHtml(bonusPoolRowLabel(pi.row)):'経常利益率を入れると決まります')+'</div></div>';
+  h+='</div>';
+  h+='<div style="border:1.5px solid '+(pi.known?'var(--accent)':'var(--border)')+';border-radius:12px;padding:9px 12px;margin-top:10px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'
+    +'<span style="font-size:12px;font-weight:700">ボーナス原資（上限）</span>';
+  if(pi.known) h+='<span style="font-size:11.5px;color:var(--muted)">＝ 経常利益 '+_money(pi.profit)+' × '+pi.rate+'%</span><span id="bp-amount" style="margin-left:auto;font-size:20px;font-weight:800">'+_money(pi.amount)+'</span>';
+  else h+='<span style="font-size:11.5px;color:var(--muted)">'+(pi.margin==null?'経常利益率を入れると決まります。':'経常利益を入れると決まります。')+'決まるまでは上限を掛けません。</span><span id="bp-amount" style="margin-left:auto;font-size:20px;font-weight:800;color:var(--muted)">—</span>';
+  h+='</div>';
+  if(pi.known && pi.amount===0) h+='<div style="font-size:11px;color:var(--red);margin-top:5px"><i class="ti ti-alert-triangle"></i> 経常利益率が '+escapeHtml(bonusPoolRowLabel(pi.row))+' のため、原資は $0 です（この四半期のボーナスは全員 $0 になります）。</div>';
+  if(locked && pi.snap) h+='<div style="font-size:11px;color:var(--muted);margin-top:5px"><i class="ti ti-lock"></i> 査定を確定したときの数字で固定しています'+(pi.at?'（'+escapeHtml(String(pi.at).slice(0,16))+'）':'')+'。表を変えてもこの四半期の原資は変わりません。</div>';
+  else if(locked) h+='<div style="font-size:11px;color:var(--muted);margin-top:5px;line-height:1.6"><i class="ti ti-lock"></i> この四半期は v1041 以前に確定したため、確定したときの原資は残っていません（給与・ボーナス履歴に記録した金額はそのままです）。原資を入れ直すときは、査定の確定を解除してください。</div>';
+  h+= window._bpDraft ? _bonusPoolTableEditHtml() : _bonusPoolTableViewHtml(pi, canEdit);
+  return h+'</div>';
+}
+function _bonusPoolTableViewHtml(pi, canEdit){
+  var rows=bonusPoolTable(), t=bonusRules().table;
+  var h='<div style="display:flex;align-items:center;margin:12px 0 5px;gap:8px;flex-wrap:wrap"><span style="font-size:11px;font-weight:700;color:var(--muted)"><i class="ti ti-table"></i> 原資率の表</span>'
+    +'<span style="font-size:10px;color:var(--muted)">'+((t&&t.at)?('最終更新 '+escapeHtml(String(t.at).slice(0,16))+'・'+escapeHtml(t.by||'')):'CEO の表（2026/10/5）')+'</span>'
+    +((t&&t.hist&&t.hist.length)?'<button class="btn btn-secondary btn-sm" style="font-size:10.5px;padding:2px 8px" onclick="bpHistory()">前の表</button>':'')
+    +(canEdit?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="bpEditStart()"><i class="ti ti-edit"></i> 表を編集</button>':'')+'</div>';
+  var half=Math.ceil(rows.length/2);
+  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0 14px">';
+  [rows.slice(0,half), rows.slice(half)].forEach(function(col){
+    h+='<div>';
+    col.forEach(function(b){
+      var on=!!(pi && pi.row && _bpNum(pi.row.lo)===_bpNum(b.lo) && _bpNum(pi.row.hi)===_bpNum(b.hi));
+      h+='<div style="display:flex;justify-content:space-between;font-size:11.5px;padding:3px 8px;border-radius:6px;'+(on?'background:var(--accent);color:#fff;font-weight:800':'border-bottom:1px solid var(--border)')+'">'
+        +'<span>'+escapeHtml(bonusPoolRowLabel(b))+'</span><span>'+escapeHtml(String(b.r))+'%'+(_bpNum(b.hi)==null?'（上限）':'')+'</span></div>';
+    });
+    h+='</div>';
+  });
+  h+='</div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:5px">経常利益率は四捨五入せずに比べます。境目ちょうど（例 7.0%）は上の段（7%以上〜8%未満）です。</div>';
+  return h;
+}
+function _bonusPoolTableEditHtml(){
+  var d=window._bpDraft||[];
+  var inp=function(i,f,v,w){ return '<input class="form-input" style="width:'+(w||70)+'px;text-align:right;padding:4px 7px;font-size:12px" inputmode="decimal" value="'+(v==null?'':escapeHtml(String(v)))+'" placeholder="—" oninput="bpDraftSet('+i+',\''+f+'\',this.value)">'; };
+  var h='<div style="border:1.5px dashed var(--accent);border-radius:12px;padding:10px 12px;margin-top:12px">';
+  h+='<div style="font-size:12px;font-weight:800;margin-bottom:4px"><i class="ti ti-table" style="color:var(--accent)"></i> 原資率の表を編集</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px;line-height:1.6">一番上の段の「以上」と一番下の段の「未満」は空のままにします（マイナスから上まで、どの経常利益率も1つの段に入るように）。</div>';
+  h+='<div style="overflow:auto"><table style="border-collapse:collapse;font-size:12px;min-width:360px"><thead><tr style="color:var(--muted);font-size:10.5px;text-align:left">'
+    +'<th style="padding:3px 6px">経常利益率（以上）</th><th style="padding:3px 6px">（未満）</th><th style="padding:3px 6px">原資率</th><th></th></tr></thead><tbody>';
+  d.forEach(function(b,i){
+    h+='<tr style="border-top:1px solid var(--border)"><td style="padding:3px 6px;white-space:nowrap">'+inp(i,'lo',b.lo)+' %</td><td style="padding:3px 6px;white-space:nowrap">'+inp(i,'hi',b.hi)+' %</td>'
+      +'<td style="padding:3px 6px;white-space:nowrap">'+inp(i,'r',b.r,60)+' %</td><td style="padding:3px 2px"><button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="bpDraftDel('+i+')">×</button></td></tr>';
+  });
+  h+='</tbody></table></div>';
+  h+='<div id="bp-check" style="margin-top:6px">'+_bpCheckAll(d)+'</div>';
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">'
+    +'<button class="btn btn-secondary btn-sm" onclick="bpDraftAdd()"><i class="ti ti-plus"></i> 段を追加</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="bpDraftReset()"><i class="ti ti-arrow-back-up"></i> CEO の表（2026/10/5）に戻す</button>'
+    +'<span style="flex:1"></span><button class="btn btn-secondary btn-sm" onclick="bpEditCancel()">キャンセル</button>'
+    +'<button class="btn btn-primary btn-sm" onclick="bpEditSave()"><i class="ti ti-device-floppy"></i> 保存</button></div>';
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px">保存すると「いつ・誰が・前の表」を残します。確定した四半期の原資は、そのときの数字のまま変わりません。</div>';
+  return h+'</div>';
+}
+function _bpCheckHtml(ck){
+  if(ck.ok) return '<div style="font-size:11px;color:var(--green)"><i class="ti ti-circle-check"></i> マイナスから上まで、すき間・重なりはありません（'+ck.rows.length+'段）。</div>';
+  return ck.msgs.map(function(m){ return '<div style="font-size:11px;color:var(--red)"><i class="ti ti-alert-triangle"></i> '+escapeHtml(m)+'</div>'; }).join('');
+}
+/* 編集中の表で、今の四半期がどうなるか（保存前に確かめられるように） */
+function _bpPreviewHtml(rows){
+  var cfg=kbCfg(), q=String(cfg.quarter||'').trim(); if(!q) return '';
+  var co=bonusCoOf(q,cfg); if(co.margin==null) return '';
+  var row=bonusPoolRow(co.margin, rows), rate=row?_bpNum(row.r):null; if(rate==null) return '';
+  var amt=(co.profit!=null)?Math.round(Math.max(0,co.profit)*rate/100):null;
+  return '<div id="bp-preview" style="font-size:11px;color:var(--tm);margin-top:3px"><i class="ti ti-arrow-right" style="color:var(--accent)"></i> この表だと '+escapeHtml(q)+'：経常利益率 '+co.margin+'% → 原資率 <b>'+rate+'%</b>'
+    +(amt!=null?'（原資 <b>'+_money(amt)+'</b>）':'')
+    +(bqGet(q).locked?'<span style="color:var(--muted)">。ただし '+escapeHtml(q)+' は確定済みなので変わりません</span>':'')+'</div>';
+}
+function _bpCheckAll(d){ var ck=bonusPoolTableCheck(d); return _bpCheckHtml(ck)+(ck.ok?_bpPreviewHtml(ck.rows):''); }
+function bpEditStart(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('原資率の表を変えられるのは GM・CEO です','warning'); return; }
+  window._bpDraft=bonusPoolTable().map(function(b){ return {lo:_bpNum(b.lo), hi:_bpNum(b.hi), r:_bpNum(b.r)}; });
+  karteRerender();
+}
+function bpEditCancel(){ window._bpDraft=null; karteRerender(); }
+function bpDraftSet(i, f, v){
+  var d=window._bpDraft; if(!d || !d[i]) return;
+  var n=_bpNum(v);
+  d[i][f]=_bpBlank(v)?null:(n!=null?n:String(v));   /* 数字でないときはそのまま持って、保存を止める */
+  var el=document.getElementById('bp-check'); if(el) el.innerHTML=_bpCheckAll(d);
+}
+function bpDraftAdd(){ var d=window._bpDraft; if(!d) return; var last=d[d.length-1]; d.push({lo:(last?_bpNum(last.hi):null), hi:null, r:0}); karteRerender(); }
+function bpDraftDel(i){ var d=window._bpDraft; if(!d) return; d.splice(i,1); karteRerender(); }
+function bpDraftReset(){ window._bpDraft=BONUS_POOL_TABLE_DEFAULT.map(function(b){ return {lo:b.lo, hi:b.hi, r:b.r}; }); karteRerender(); }
+function bpEditSave(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('原資率の表を変えられるのは GM・CEO です','warning'); return; }
+  var ck=bonusPoolTableCheck(window._bpDraft||[]);
+  if(!ck.ok){ showToast('表にすき間か重なりがあります。直してから保存してください','warning'); return; }
+  var prev=bonusRules().table, hist=((prev&&prev.hist)||[]).slice(-19), now=_bqNow();
+  if(prev && Array.isArray(prev.rows) && prev.rows.length) hist.push({rows:prev.rows, at:prev.at||'', by:prev.by||'', until:now});
+  else hist.push({rows:BONUS_POOL_TABLE_DEFAULT, at:'', by:'CEO の表（2026/10/5・既定）', until:now});
+  if(bonusRulesSave('table', {rows:ck.rows, at:now, by:_bqWho(), hist:hist})===false){ showToast('保存できませんでした','danger'); return; }
+  window._bpDraft=null; showToast('原資率の表を保存しました','success'); karteRerender();
+}
+function bpHistory(){
+  var t=bonusRules().table; if(!t || !t.hist || !t.hist.length) return;
+  var h='<div class="modal-title">原資率の表（前の表） <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  t.hist.slice().reverse().forEach(function(x){
+    var who=(x.at?escapeHtml(String(x.at).slice(0,16))+' 保存・':'')+escapeHtml(x.by||'');
+    h+='<div style="border-top:1px solid var(--border);padding:8px 0"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">'+who+(x.until?'　→ '+escapeHtml(String(x.until).slice(0,16))+' まで使った表':'')+'</div>'
+      +'<div style="font-size:11.5px;line-height:1.7;background:var(--surface2);border-radius:8px;padding:6px 10px">'+escapeHtml(bonusPoolTableText(x.rows)).replace(/\n/g,'<br>')+'</div></div>';
+  });
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(h);
+}
+/* --- 設定タブ：ボーナスの算出基準（メモ） --- */
+function bonusMemo(){ var m=bonusRules().memo; return (m && typeof m==='object' && typeof m.text==='string') ? m : null; }
+function bonusPoolTableText(rows){
+  return (rows||bonusPoolTable()).map(function(b){ return bonusPoolRowLabel(b)+'：'+b.r+'%'+(_bpNum(b.hi)==null?'（上限）':''); }).join('\n');
+}
+function bonusMemoDraft(){
+  return '■ ボーナス原資\n会社全体の経常利益率に応じて、経常利益から以下の割合をボーナス原資として設定\n'+bonusPoolTableText()
+    +'\n\n■ 個人の査定額\nGrade基準額 × 予算達成率係数 × 店舗利益係数 × Career Score係数\n'
+    +'・算出合計が原資を超えたときは、全員に同じ割合を掛けて原資に収める\n'
+    +'・四半期の途中でグレードが変わった人は、グレードごとに日数で按分して計算する（新しいグレードは確定日の翌日から。入社は当日から）\n'
+    +'・四半期の途中で退職した人は支給対象外（例外は個別に判断）';
+}
+function _bmHtml(text){
+  return String(text||'').split('\n').map(function(line){ var e=escapeHtml(line); return /^■/.test(line) ? '<b style="color:var(--accent)">'+e+'</b>' : e; }).join('<br>');
+}
+function renderBonusMemoCard(){
+  var m=bonusMemo(), canEdit=['gm','ceo'].indexOf(curRole)>=0;
+  var h='<div class="card"><div class="card-title"><i class="ti ti-notes" style="color:var(--accent)"></i>ボーナスの算出基準（メモ）';
+  if(!window._bmEdit) h+='<span style="margin-left:auto;display:flex;gap:6px"><button class="btn btn-secondary btn-sm" onclick="bmCopy()"><i class="ti ti-copy"></i> コピー</button>'
+    +(canEdit?'<button class="btn btn-secondary btn-sm" onclick="bmEditStart()"><i class="ti ti-edit"></i> 編集</button>':'')+'</span>';
+  h+='</div>';
+  if(window._bmEdit){
+    h+='<textarea id="bm-text" class="form-textarea" rows="18" style="width:100%;font-size:12px;line-height:1.6;font-family:inherit">'+escapeHtml(m?m.text:bonusMemoDraft())+'</textarea>';
+    h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">'
+      +'<button class="btn btn-secondary btn-sm" onclick="bmInsertTable()"><i class="ti ti-table-import"></i> 原資率の表を差し込む</button>'
+      +'<span style="flex:1"></span><button class="btn btn-secondary btn-sm" onclick="bmEditCancel()">キャンセル</button>'
+      +'<button class="btn btn-primary btn-sm" onclick="bmSave()"><i class="ti ti-device-floppy"></i> 保存</button></div>';
+    h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.6">改行はそのまま残ります。計算式が2行・3行になっても大丈夫です。このメモはセキュアページの中だけで見えます。</div>';
+  } else {
+    if(!m) h+='<div style="font-size:10.5px;color:var(--yellow);margin-bottom:5px"><i class="ti ti-info-circle"></i> まだ保存していません。CEO の表と今の計算式から作った下書きです。「編集」で直して保存してください。</div>';
+    h+='<div style="font-size:12px;line-height:1.75;background:var(--surface2);border-radius:10px;padding:10px 13px">'+_bmHtml(m?m.text:bonusMemoDraft())+'</div>';
+    if(m) h+='<div style="display:flex;gap:10px;align-items:center;font-size:10.5px;color:var(--muted);margin-top:6px;flex-wrap:wrap"><span><i class="ti ti-history"></i> 最終更新 '+escapeHtml(String(m.at||'').slice(0,16))+'・'+escapeHtml(m.by||'')+'（'+(m.ver||1)+'回目）</span>'
+      +((m.hist&&m.hist.length)?'<button class="btn btn-secondary btn-sm" style="font-size:10.5px;padding:2px 8px" onclick="bmHistory()">前の版を見る</button>':'')+'</div>';
+  }
+  return h+'</div>';
+}
+function bmEditStart(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('メモを変えられるのは GM・CEO です','warning'); return; }
+  window._bmEdit=true; karteRerender();
+  setTimeout(function(){ var t=document.getElementById('bm-text'); if(t) t.focus(); }, 60);
+}
+function bmEditCancel(){ window._bmEdit=false; karteRerender(); }
+function bmInsertTable(){
+  var t=document.getElementById('bm-text'); if(!t) return;
+  var v=t.value, txt=bonusPoolTableText(), a=t.selectionStart, b=t.selectionEnd;
+  if(typeof a!=='number' || typeof b!=='number'){ a=b=v.length; }
+  var pre=v.slice(0,a), post=v.slice(b);
+  if(pre && pre.slice(-1)!=='\n') txt='\n'+txt;     /* 行の途中なら次の行から入れる */
+  if(post && post.charAt(0)!=='\n') txt=txt+'\n';   /* 後ろに文が続くなら改行で分ける */
+  t.value=pre+txt+post; t.selectionStart=t.selectionEnd=pre.length+txt.length; t.focus();
+}
+function bmSave(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('メモを変えられるのは GM・CEO です','warning'); return; }
+  var t=document.getElementById('bm-text'); if(!t) return;
+  var text=String(t.value||'').replace(/\r\n/g,'\n'), prev=bonusMemo();
+  if(prev && prev.text===text){ window._bmEdit=false; karteRerender(); return; }   /* 変えていなければ版を増やさない */
+  var hist=((prev&&prev.hist)||[]).slice(-19);
+  if(prev) hist.push({text:prev.text, at:prev.at||'', by:prev.by||'', ver:prev.ver||1});
+  if(bonusRulesSave('memo', {text:text, at:_bqNow(), by:_bqWho(), ver:((prev&&prev.ver)||0)+1, hist:hist})===false){ showToast('保存できませんでした','danger'); return; }
+  window._bmEdit=false; showToast('算出基準のメモを保存しました','success'); karteRerender();
+}
+function bmCopy(){
+  var m=bonusMemo(), text=m?m.text:bonusMemoDraft();
+  var done=function(){ showToast('メモをコピーしました','success'); };
+  var fallback=function(){
+    try{ var ta=document.createElement('textarea'); ta.value=text; ta.setAttribute('readonly',''); ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); done(); }
+    catch(e){ showToast('コピーできませんでした','danger'); }
+  };
+  try{ if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done, fallback); return; } }catch(e){}
+  fallback();
+}
+function bmHistory(){
+  var m=bonusMemo(); if(!m || !m.hist || !m.hist.length) return;
+  var h='<div class="modal-title">算出基準のメモ（前の版） <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  m.hist.slice().reverse().forEach(function(x){
+    h+='<div style="border-top:1px solid var(--border);padding:8px 0"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">'+(x.ver||'')+'回目・'+escapeHtml(String(x.at||'').slice(0,16))+'・'+escapeHtml(x.by||'')+'</div>'
+      +'<div style="font-size:11.5px;line-height:1.7;background:var(--surface2);border-radius:8px;padding:8px 10px">'+_bmHtml(x.text||'')+'</div></div>';
+  });
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
+  openModal(h);
+}
+
+/* ===== v1043: グレード履歴（グレード確定日）— UI案31 段階2（CEO の依頼 10/5・Motoさんの決定 10/5） =====
+   【記録】grade_hist[社員id] = { recs:[{id, d:'YYYY-MM-DD', g:'G3', from:'G2', start:false, src, by, at, note}], name, _at }
+     d＝確定日（グレードが決まった日）。新しいグレードは確定日の翌日から。入社の記録（start）だけは当日から。下がったときも同じ。
+     from＝前のグレード（自動の記録は必ず持つ）。最初の記録より前の期間は from のグレード。
+     src：title＝役職の変更（従業員の編集）・promo＝昇格申請の承認・stage＝Leader昇格・hire＝従業員の登録・manual＝手入力・import＝取込
+   【自動】役職（または権限ロール）を変えてグレードが変わるとき：従業員の編集の「保存」で確定日を聞いてから記録（今日が入る・直せる）。
+     昇格申請の承認・Leader昇格：その日（ハワイの日付）で記録。グレードが変わらない役職の変更（例 Server Leader → Kitchen Leader）では記録しない。
+     G1-P（Prep）は G1 として扱う（ボーナスの対象かどうかが同じ）。
+   【区間】ghSegments(e, 開始, 終了)：記録から「いつからいつまで何のグレードか」。記録が無い人は今のグレード（noHist＝確定日 未設定）。
+     入社日より前・退職日より後は入れない。
+   【同期】grade_hist は社員ごとに新しいほう（mergeMapByTime）。容量整理で消さない。 */
+var GH_SRC = { title:'自動：役職の変更', promo:'自動：昇格申請の承認', stage:'自動：Leader昇格', hire:'自動：従業員の登録', manual:'手入力', import:'取込' };
+var GH_GRADES = ['G1','G2','G3','G4','G5','G6'];
+function ghNormG(g){
+  var t=String(g==null?'':g).toUpperCase().replace(/[\s　]/g,'');
+  if(t==='G1-P'||t==='G1P') return 'G1';
+  var m=t.match(/^G?([1-6])$/); return m?('G'+m[1]):'';
+}
+/* 日付 → 'YYYY-MM-DD'（読めなければ null）。2024/4/1・2024-04-01・2024.4.1・2024年4月1日・4/1/2024（米国式）・全角も読む */
+function ghDate(v){
+  if(v==null) return null;
+  var t=String(v).replace(/[０-９]/g,function(c){ return String.fromCharCode(c.charCodeAt(0)-0xFEE0); })
+    .replace(/[／．]/g,'/').replace(/[－−]/g,'-').replace(/年|月/g,'/').replace(/日/g,'').trim();
+  t=t.replace(/\s*([\/\-.])\s*/g,'$1').split(/[T\s]/)[0];
+  var m=t.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/), y, mo, d;
+  if(m){ y=+m[1]; mo=+m[2]; d=+m[3]; }
+  else { m=t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/); if(!m) return null; y=+m[3]; mo=+m[1]; d=+m[2]; }
+  if(y<1990||y>2100||mo<1||mo>12||d<1||d>31) return null;
+  var dt=new Date(Date.UTC(y,mo-1,d)); if(dt.getUTCMonth()!==mo-1||dt.getUTCDate()!==d) return null;
+  return y+'-'+String(mo).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+}
+function ghT(s){ var a=String(s).split('-'); return Date.UTC(+a[0], +a[1]-1, +a[2]); }
+function ghAdd(s, n){ var d=new Date(ghT(s)+n*86400000); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0'); }
+function ghDays(a, b){ return Math.round((ghT(b)-ghT(a))/86400000)+1; }   /* a〜b（両端を含む） */
+function ghMD(s){ var a=String(s).split('-'); return (+a[1])+'/'+(+a[2]); }
+function ghYMD(s){ var a=String(s).split('-'); return (+a[0])+'/'+(+a[1])+'/'+(+a[2]); }
+function ghQOf(d){ var a=String(d).split('-'); return a[0]+'-Q'+(Math.floor((+a[1]-1)/3)+1); }
+function ghQRange(q){
+  var p=(typeof _bonusQParse==='function')?_bonusQParse(q):null; if(!p) return null;
+  var qs=p.y+'-'+String((p.q-1)*3+1).padStart(2,'0')+'-01', last=new Date(Date.UTC(p.y, p.q*3, 0));
+  var qe=p.y+'-'+String(p.q*3).padStart(2,'0')+'-'+String(last.getUTCDate()).padStart(2,'0');
+  return {q:p.y+'-Q'+p.q, qs:qs, qe:qe, n:ghDays(qs,qe)};
+}
+function ghToday(){ return (typeof bizToday==='function') ? bizToday() : ((typeof todayISO==='function') ? todayISO() : new Date().toISOString().slice(0,10)); }
+function _ghWho(){ return (typeof myName==='function')?myName():(curUserName||''); }
+function _ghNow(){ return (typeof nowJP==='function')?nowJP():new Date().toISOString(); }
+function ghHire(e){ var h=ghDate(e&&e.hireDate); if(h) return h; try{ return ghDate(getKarte(e.id).hireDate); }catch(err){ return null; } }
+function ghResign(e){ return ghDate(e&&e.resignDate); }
+/* --- 記録 --- */
+function ghAll(){ var m=ls('grade_hist', {}); return (m && typeof m==='object' && !Array.isArray(m)) ? m : {}; }
+function ghCmp(a, b){ return a.d<b.d?-1:(a.d>b.d?1:(((b.start?1:0)-(a.start?1:0)) || String(a.at||'').localeCompare(String(b.at||'')))); }
+function ghRecs(empId){
+  var x=ghAll()[empId], r=(x && Array.isArray(x.recs)) ? x.recs : [];
+  return r.filter(function(a){ return a && typeof a==='object' && ghDate(a.d) && ghNormG(a.g); })
+    .map(function(a){ return Object.assign({}, a, {d:ghDate(a.d), g:ghNormG(a.g), from:ghNormG(a.from), start:!!a.start}); }).sort(ghCmp);
+}
+function ghSave(empId, recs, name){
+  var m=ghAll(); m[empId]={ recs:(recs||[]).slice().sort(ghCmp), name:name||((m[empId]||{}).name)||'', _at:Date.now() };
+  return lsSet('grade_hist', m);
+}
+function ghNewId(){ return 'gh'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+/* 1件足す（同じ確定日・同じグレード・同じ種類は二重に入れない） */
+function ghAddRec(empId, rec, name){
+  var recs=ghRecs(empId), d=ghDate(rec.d), g=ghNormG(rec.g);
+  if(!d || !g) return false;
+  if(recs.some(function(r){ return r.d===d && r.g===g && !!r.start===!!rec.start; })) return false;
+  recs.push(Object.assign({id:ghNewId(), by:_ghWho(), at:_ghNow(), note:''}, rec, {d:d, g:g, from:ghNormG(rec.from), start:!!rec.start}));
+  return ghSave(empId, recs, name)!==false;
+}
+/* 役職が変わったあとに呼ぶ：グレードが変わっていれば今日の日付で記録（昇格申請の承認・Leader昇格） */
+function ghAutoRec(e, g0, src, note){
+  if(!e) return false;
+  var g1=ghNormG(empGrade(e)); g0=ghNormG(g0);
+  if(!g0 || !g1 || g0===g1) return false;
+  return ghAddRec(e.id, {d:ghToday(), g:g1, from:g0, start:false, src:src, note:note||''}, e.name);
+}
+/* --- 区間 --- */
+/* 記録から「いつからいつまで何のグレードか」[{g, from, to(含む・null＝今も), rec, prev, pre}]。from=null は「ずっと前から」 */
+function ghTimeline(e, recs){
+  recs=(recs||ghRecs(e.id)).slice().sort(ghCmp);
+  var out=[];
+  recs.forEach(function(r){
+    var from=r.start ? r.d : ghAdd(r.d, 1);
+    if(!out.length && !r.start && r.from) out.push({g:r.from, from:null, to:null, rec:null, prev:null, pre:true});   /* 最初の記録より前は「前のグレード」 */
+    var prev=out.length ? out[out.length-1].g : (r.from||null);
+    if(out.length) out[out.length-1].to=ghAdd(from, -1);
+    out.push({g:r.g, from:from, to:null, rec:r, prev:prev, pre:false});
+  });
+  return out.filter(function(t){ return !(t.from && t.to && t.from>t.to); });
+}
+/* 期間 a〜b の中の区間。[{g, from, to, days, rec, prev, pre, noHist}]。入社日より前・退職日より後は入れない */
+function ghSegments(e, qs, qe, recs){
+  if(!e || !qs || !qe) return [];
+  recs=recs||ghRecs(e.id);
+  var hire=ghHire(e), resign=ghResign(e);
+  var a0=(hire && hire>qs) ? hire : qs, b0=(resign && resign<qe) ? resign : qe;
+  if(a0>b0) return [];
+  if(!recs.length){ var g0=ghNormG(empGrade(e)); return g0 ? [{g:g0, from:a0, to:b0, days:ghDays(a0,b0), rec:null, prev:null, pre:false, noHist:true}] : []; }
+  var out=[];
+  ghTimeline(e, recs).forEach(function(t){
+    var a=(t.from && t.from>a0) ? t.from : a0, b=(t.to && t.to<b0) ? t.to : b0;
+    if(a>b) return;
+    out.push({g:t.g, from:a, to:b, days:ghDays(a,b), rec:t.rec, prev:t.prev, pre:!!t.pre, noHist:false});
+  });
+  return out;
+}
+/* 記録より前でグレードが分からない期間（最初の記録が入社でなく、前のグレードも無いとき） */
+function ghGapBefore(e, qs, qe, recs){
+  recs=recs||ghRecs(e.id); if(!recs.length) return null;
+  var r0=recs[0]; if(r0.start || r0.from) return null;
+  var hire=ghHire(e), a0=(hire && hire>qs) ? hire : qs, f=ghAdd(r0.d, 1), b=(f<=qe) ? ghAdd(f, -1) : qe;
+  return (a0<=b) ? {from:a0, to:b, days:ghDays(a0,b)} : null;
+}
+/* 今の役職（グレード）と最後の記録が合っているか */
+function ghCheck(e, recs){
+  recs=recs||ghRecs(e.id); var cur=ghNormG(empGrade(e));
+  if(!recs.length) return {state:'none', cur:cur, last:''};
+  var last=recs[recs.length-1].g;
+  return {state:(last===cur?'ok':'diff'), cur:cur, last:last};
+}
+/* --- 見た目 --- */
+function ghColor(g){
+  var n=ghNormG(g);
+  try{ var m=(typeof GRADE_MAP_DATA!=='undefined')?GRADE_MAP_DATA.find(function(x){ return x.g===n; }):null; if(m && m.col) return m.col; }catch(err){}
+  return 'var(--muted)';
+}
+function ghBadge(g){ var n=ghNormG(g)||String(g||'—'); return '<span style="display:inline-block;background:'+ghColor(n)+';color:#fff;font-weight:800;border-radius:6px;padding:1px 7px;font-size:11px;line-height:1.5">'+escapeHtml(n)+'</span>'; }
+function ghSrcTag(r){
+  var t=GH_SRC[r.src]||r.src||'', c=(r.src==='import')?'var(--muted)':((r.src==='manual')?'var(--accent2)':'var(--green)');
+  return t ? '<span style="font-size:10px;border:1px solid '+c+';color:'+c+';border-radius:5px;padding:0 5px;white-space:nowrap">'+escapeHtml(t)+'</span>' : '';
+}
+function ghElig(g, cfg){ cfg=cfg||kbCfg(); var n=ghNormG(g); return !!(n && cfg.gradeBase && cfg.gradeBase[n]!=null); }
+function ghEmp(empId){ return getEmployees().find(function(x){ return x.id===empId; }); }
+
+/* --- ③ 役職を変えて保存するとき（UI案31-5b）：確定日を聞いてから記録 --- */
+function ghBeforeSaveEmp(empId, data){
+  if(!empId) return false;
+  var old=ghEmp(empId); if(!old) return false;
+  var g0=ghNormG(empGrade(old)), g1=ghNormG(empGrade(Object.assign({}, old, data)));
+  var p=window._ghPend;
+  if(p && p.ok && p.empId===empId && p.g1===g1) return false;   /* 確定日を聞いたあと → そのまま保存へ */
+  window._ghPend=null;
+  if(!g0 || !g1 || g0===g1) return false;                        /* グレードが変わらない役職の変更では聞かない */
+  window._ghPend={ empId:empId, g0:g0, g1:g1, name:data.name||old.name||'', t0:old.title||'', t1:data.title||'', d:ghToday(), note:'', ok:false };
+  var body=document.getElementById('modal-body');
+  if(body){ var fr=document.createDocumentFragment(); while(body.firstChild) fr.appendChild(body.firstChild); window._ghStash=fr; }   /* 編集中の画面は消さずに取っておく */
+  openModal(ghConfirmHtml(window._ghPend));
+  return true;
+}
+function ghConfirmHtml(p){
+  var up=gradeNum(p.g1)>gradeNum(p.g0), cfg=kbCfg();
+  var h='<div class="modal-title"><i class="ti ti-stairs-'+(up?'up':'down')+'" style="color:var(--accent)"></i> グレードが変わります <button class="modal-close" onclick="ghConfirmCancel()">×</button></div>';
+  h+='<div style="font-size:12.5px;line-height:1.8;margin-bottom:8px">'+escapeHtml(p.name)+' の役職を <b>'+escapeHtml(p.t0||'（未設定）')+'</b> → <b>'+escapeHtml(p.t1||'（未設定）')+'</b> に変えます。</div>';
+  h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:10px">'+ghBadge(p.g0)+' <i class="ti ti-arrow-right" style="color:var(--muted)"></i> '+ghBadge(p.g1)
+    +'<span style="font-size:12px;font-weight:800;color:'+(up?'var(--green)':'var(--red)')+'">'+(up?'↑ 昇格':'↓ 降格')+'</span>'
+    +((!ghElig(p.g0,cfg) && ghElig(p.g1,cfg))?'<span style="font-size:11px;color:var(--accent);font-weight:700">ボーナスの対象になる</span>':'')
+    +((ghElig(p.g0,cfg) && !ghElig(p.g1,cfg))?'<span style="font-size:11px;color:var(--muted);font-weight:700">ボーナスの対象から外れる</span>':'')+'</div>';
+  h+='<div class="form-group"><label class="form-label">確定日（グレードが決まった日）</label>'
+    +'<input type="date" class="form-input" id="gh-cf-date" style="max-width:190px;font-weight:700" value="'+escapeHtml(p.d)+'" onchange="ghConfirmDate(this.value)" oninput="ghConfirmDate(this.value)">'
+    +'<div id="gh-cf-info" style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.6">'+ghConfirmInfo(p)+'</div></div>';
+  h+='<div class="form-group"><label class="form-label">メモ（任意）</label><input class="form-input" id="gh-cf-note" placeholder="例：昇格面談で決定" value="'+escapeHtml(p.note||'')+'"></div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);line-height:1.6">昇格申請を承認したとき・下がったときも、同じようにグレード履歴に記録します。グレードが変わらない役職の変更（例：Server Leader → Kitchen Leader）では出ません。</div>';
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="ghConfirmCancel()">キャンセル</button><button class="btn btn-primary" onclick="ghConfirmSave()"><i class="ti ti-device-floppy"></i> グレード履歴に記録して保存</button></div>';
+  return h;
+}
+function ghConfirmInfo(p){
+  var d=ghDate(p.d); if(!d) return '<span style="color:var(--red)">確定日を入れてください。</span>';
+  var from=ghAdd(d, 1), qr=ghQRange(ghQOf(from)), cfg=kbCfg();
+  var s=(d===ghToday()?'役職を変えた日（今日）が入っています。':'')+'昇格面談の日など、実際に決まった日に直せます。<br>新しいグレードは確定日の翌日（<b>'+ghMD(from)+'</b>）から。';
+  if(qr){
+    var segs=[]; if(from>qr.qs) segs.push({g:p.g0, a:qr.qs, b:d}); segs.push({g:p.g1, a:from, b:qr.qe});
+    var el=segs.filter(function(x){ return ghElig(x.g,cfg); }).map(function(x){ return x.g+' '+ghMD(x.a)+'〜'+ghMD(x.b); });
+    s+=qr.q+' のボーナスは'+(el.length>1?' '+el.join('・')+' の2行になります。':(el.length?' '+el[0]+' の日割りです。':'対象外です（G1）。'));
+  }
+  return s;
+}
+function ghConfirmDate(v){ var p=window._ghPend; if(!p) return; p.d=v; var el=document.getElementById('gh-cf-info'); if(el) el.innerHTML=ghConfirmInfo(p); }
+function _ghRestoreForm(){
+  var body=document.getElementById('modal-body'), st=window._ghStash; window._ghStash=null;
+  if(!body || !st) return false;
+  body.innerHTML=''; body.appendChild(st); return true;
+}
+function ghConfirmCancel(){ window._ghPend=null; if(!_ghRestoreForm()) closeModalDirect(); }   /* 編集中の画面に戻る（入れた内容はそのまま） */
+function ghConfirmSave(){
+  var p=window._ghPend; if(!p) return;
+  var d=ghDate((document.getElementById('gh-cf-date')||{}).value||p.d);
+  if(!d){ showToast('確定日を入れてください','warning'); return; }
+  var nt=document.getElementById('gh-cf-note'); p.note=String(nt?nt.value:(p.note||'')).trim(); p.d=d; p.ok=true;
+  if(!_ghRestoreForm()){ window._ghPend=null; showToast('編集の画面が見つかりません。もう一度開いてください','danger'); closeModalDirect(); return; }
+  saveEmp(p.empId);   /* 戻した入力のまま保存する（ghBeforeSaveEmp は通り、保存のあとで記録する） */
+}
+function ghAfterSaveEmp(empId, data, emps){
+  var p=window._ghPend; window._ghPend=null;
+  if(empId){
+    if(p && p.ok && p.empId===empId) ghAddRec(empId, {d:p.d, g:p.g1, from:p.g0, start:false, src:'title', note:p.note||''}, (data&&data.name)||p.name);
+    return;
+  }
+  /* 新しく登録した人：入社日があれば入社の記録（当日から） */
+  var e=(emps||[]).find(function(x){ return x.id===(data&&data.id); }), g=e?ghNormG(empGrade(e)):'', h=ghDate(data&&data.hireDate);
+  if(e && g && h) ghAddRec(e.id, {d:h, g:g, start:true, src:'hire'}, e.name);
+}
+
+/* --- ① 成長カルテの「グレード履歴」タブ（UI案31-4） --- */
+function ghQuarterOpts(sel){
+  var cur=ghQOf(ghToday()), p=_bonusQParse(cur), out=[];
+  for(var i=0;i<8;i++){ var y=p.y, q=p.q-i; while(q<1){ q+=4; y--; } out.push(y+'-Q'+q); }
+  var nx=(p.q===4)?((p.y+1)+'-Q1'):(p.y+'-Q'+(p.q+1)); out.unshift(nx);
+  if(sel && out.indexOf(sel)<0) out.push(sel);
+  return out;
+}
+function ghSetQ(q){ window._ghQ=q; karteRerender(); }
+function ghSetMode(m){ window._ghMode=(m==='all')?'all':'chg'; karteRerender(); }
+/* この四半期のボーナスに関係する人（G2以上の区間がある人・途中で辞めた人も） */
+function ghBandPeople(qr, cfg){
+  cfg=cfg||kbCfg();
+  return getEmployees().filter(function(e){
+    if(e.status==='退職' && !ghResign(e)) return false;
+    var r=ghResign(e); if(r && r<qr.qs) return false;
+    return ghSegments(e, qr.qs, qr.qe).some(function(s){ return ghElig(s.g, cfg); });
+  }).sort(function(a,b){ return empGradeNum(b)-empGradeNum(a) || String(a.name||'').localeCompare(String(b.name||'')); });
+}
+function renderGradeHistTab(cfg){
+  cfg=cfg||kbCfg();
+  var q=window._ghQ || String(cfg.quarter||'').trim() || ghQOf(ghToday());
+  var qr=ghQRange(q) || ghQRange(ghQOf(ghToday())); q=qr.q;
+  var mode=(window._ghMode==='all')?'all':'chg', canEdit=['gm','ceo'].indexOf(curRole)>=0;
+  var people=ghBandPeople(qr, cfg);
+  var h='<div class="card"><div class="card-title"><i class="ti ti-timeline" style="color:var(--accent)"></i>グレード履歴'
+    +'<select class="form-select" style="margin-left:auto;width:auto;font-size:12px;padding:4px 8px" onchange="ghSetQ(this.value)">'
+    +ghQuarterOpts(q).map(function(x){ var r=ghQRange(x); return '<option value="'+x+'"'+(x===q?' selected':'')+'>'+x+'（'+ghMD(r.qs)+'〜'+ghMD(r.qe)+'）</option>'; }).join('')+'</select></div>';
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
+    +'<div class="seg-tabs" style="margin:0;padding:2px"><div class="seg-tab'+(mode==='chg'?' active':'')+'" style="padding:4px 10px;font-size:11.5px" onclick="ghSetMode(\'chg\')">この四半期に変わった人</div>'
+    +'<div class="seg-tab'+(mode==='all'?' active':'')+'" style="padding:4px 10px;font-size:11.5px" onclick="ghSetMode(\'all\')">全員</div></div><span style="flex:1"></span>'
+    +(canEdit?'<button class="btn btn-secondary btn-sm" onclick="ghPickPerson()"><i class="ti ti-plus"></i> 記録を追加</button><button class="btn btn-secondary btn-sm" onclick="ghOpenImport()"><i class="ti ti-file-import"></i> 過去のデータを取り込む</button>':'')+'</div>';
+  /* 知らせ：確定日が未設定・最後の記録と違う */
+  var none=people.filter(function(e){ return !ghRecs(e.id).length; });
+  var diff=getEmployees().filter(function(e){ return e.status!=='退職' && ghCheck(e).state==='diff'; });
+  var gaps=people.filter(function(e){ return !!ghGapBefore(e, qr.qs, qr.qe); });
+  var warn=function(icon, html, empId){ return '<div style="background:#f5a62314;border:1px solid var(--yellow);border-radius:10px;padding:8px 11px;font-size:11.5px;line-height:1.6;margin-bottom:8px;display:flex;gap:8px;align-items:flex-start">'
+    +'<i class="ti '+icon+'" style="color:var(--yellow);margin-top:2px"></i><span style="flex:1">'+html+'</span>'+((canEdit&&empId)?'<button class="btn btn-secondary btn-sm" style="font-size:11px" onclick="ghOpenEdit(\''+empId+'\')">設定する</button>':'')+'</div>'; };
+  var nm=function(list){ return list.slice(0,6).map(function(e){ return escapeHtml(e.name||'')+'（'+ghNormG(empGrade(e))+'）'; }).join('・')+(list.length>6?' ほか':''); };
+  if(none.length) h+=warn('ti-alert-triangle','<b>確定日が未設定の人が '+none.length+'名</b>：'+nm(none)+'。履歴が無いので、今のグレードを四半期まるごとに使っています。', none[0].id);
+  if(diff.length) h+=warn('ti-arrows-diff','<b>今の役職と最後の記録が違う人が '+diff.length+'名</b>：'+diff.slice(0,6).map(function(e){ var c=ghCheck(e); return escapeHtml(e.name||'')+'（記録 '+c.last+' → 今 '+c.cur+'）'; }).join('・')+'。役職を変えたときの記録がありません。', diff[0].id);
+  if(gaps.length) h+=warn('ti-help-circle','<b>記録より前のグレードが分からない人が '+gaps.length+'名</b>：'+nm(gaps)+'。最初の記録の「前のグレード」を入れてください（分からない期間はボーナスの対象外になります）。', gaps[0].id);
+  h+= (mode==='all') ? ghAllTableHtml(canEdit) : ghChangeTableHtml(qr, canEdit);
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 役職を変えて保存したとき・昇格申請を承認したときは、その日を確定日として自動で記録します（日付はあとで直せます）。下がったときも同じです。'
+    +(canEdit?'行をタップでその人の履歴を編集。':'')+'</div></div>';
+  h+=ghBandHtml(qr, people, cfg, canEdit);
+  return h;
+}
+function ghChangeRows(qr){
+  var rows=[];
+  getEmployees().forEach(function(e){
+    var recs=ghRecs(e.id); if(!recs.length) return;
+    ghTimeline(e, recs).forEach(function(t){
+      if(!t.rec || !t.from || t.from<qr.qs || t.from>qr.qe) return;
+      rows.push({e:e, r:t.rec, prev:t.prev, from:t.from});
+    });
+  });
+  return rows.sort(function(a,b){ return a.r.d<b.r.d?1:(a.r.d>b.r.d?-1:String(a.e.name||'').localeCompare(String(b.e.name||''))); });
+}
+function ghChangeHtml(r, prev){
+  if(r.start) return '<span style="font-size:11px;color:var(--muted)">入社</span> '+ghBadge(r.g);
+  if(!prev) return '<span style="font-size:11px;color:var(--muted)">前 ?</span> <i class="ti ti-arrow-right" style="font-size:11px;color:var(--muted)"></i> '+ghBadge(r.g);
+  var up=gradeNum(r.g)>gradeNum(prev), same=(r.g===prev), cfg=kbCfg();
+  return ghBadge(prev)+' <i class="ti ti-arrow-right" style="font-size:11px;color:var(--muted)"></i> '+ghBadge(r.g)
+    +(same?'':' <span style="font-size:10.5px;font-weight:700;white-space:nowrap;color:'+(up?'var(--green)':'var(--red)')+'">'+(up?'↑ 昇格':'↓ 降格')+'</span>')
+    +((!ghElig(prev,cfg) && ghElig(r.g,cfg))?'<div style="font-size:10px;color:var(--accent);margin-top:2px">ボーナスの対象になる</div>':'')
+    +((ghElig(prev,cfg) && !ghElig(r.g,cfg))?'<div style="font-size:10px;color:var(--muted);margin-top:2px">ボーナスの対象から外れる</div>':'');
+}
+function ghChangeTableHtml(qr, canEdit){
+  var rows=ghChangeRows(qr);
+  if(!rows.length) return '<div style="font-size:12px;color:var(--muted);padding:14px;text-align:center;background:var(--surface2);border-radius:10px">'+qr.q+'（'+ghMD(qr.qs)+'〜'+ghMD(qr.qe)+'）に変わった人はいません。</div>';
+  var h='<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:560px"><thead><tr style="background:var(--surface2);text-align:left;color:var(--muted);font-size:10.5px">'
+    +'<th style="padding:7px 8px">確定日</th><th style="padding:7px 8px">名前</th><th style="padding:7px 8px">変更</th><th style="padding:7px 8px">新しいグレード</th><th style="padding:7px 8px">記録</th></tr></thead><tbody>';
+  rows.forEach(function(x){
+    h+='<tr style="border-top:1px solid var(--border);'+(canEdit?'cursor:pointer':'')+'"'+(canEdit?' onclick="ghOpenEdit(\''+x.e.id+'\')"':'')+'>'
+      +'<td style="padding:8px;font-weight:700;white-space:nowrap">'+ghYMD(x.r.d)+'</td>'
+      +'<td style="padding:8px;font-weight:700;white-space:nowrap">'+escapeHtml(x.e.name||'')+'<div style="font-size:10px;color:var(--muted);font-weight:400">'+escapeHtml(x.e.title||'')+'</div></td>'
+      +'<td style="padding:8px;white-space:nowrap">'+ghChangeHtml(x.r, x.prev)+'</td>'
+      +'<td style="padding:8px;white-space:nowrap">'+ghMD(x.from)+' から<div style="font-size:10px;color:var(--muted)">'+(x.r.start?'入社日の当日から':'確定日の翌日から')+'</div></td>'
+      +'<td style="padding:8px">'+ghSrcTag(x.r)+'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(x.r.by||'')+(x.r.note?'・'+escapeHtml(x.r.note):'')+'</div></td></tr>';
+  });
+  return h+'</tbody></table></div>';
+}
+function ghAllTableHtml(canEdit){
+  var list=getEmployees().filter(function(e){ return e.status!=='退職' && (gradeNum(ghNormG(empGrade(e)))>=2 || ghRecs(e.id).length); })
+    .sort(function(a,b){ return empGradeNum(b)-empGradeNum(a) || String(a.name||'').localeCompare(String(b.name||'')); });
+  if(!list.length) return '<div style="font-size:12px;color:var(--muted);padding:14px;text-align:center">対象の人がいません。</div>';
+  var h='<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:560px"><thead><tr style="background:var(--surface2);text-align:left;color:var(--muted);font-size:10.5px">'
+    +'<th style="padding:7px 8px">名前</th><th style="padding:7px 8px">今</th><th style="padding:7px 8px">最後の記録</th><th style="padding:7px 8px;text-align:right">記録</th><th style="padding:7px 8px">状態</th></tr></thead><tbody>';
+  list.forEach(function(e){
+    var recs=ghRecs(e.id), c=ghCheck(e, recs), last=recs[recs.length-1];
+    var st=c.state==='ok'?'<span style="color:var(--green);font-size:11px"><i class="ti ti-circle-check"></i> 一致</span>'
+      :(c.state==='diff'?'<span style="color:var(--yellow);font-size:11px;font-weight:700"><i class="ti ti-alert-triangle"></i> 記録 '+c.last+' と違う</span>'
+      :'<span style="color:var(--yellow);font-size:11px;font-weight:700"><i class="ti ti-alert-triangle"></i> 確定日 未設定</span>');
+    h+='<tr style="border-top:1px solid var(--border);'+(canEdit?'cursor:pointer':'')+'"'+(canEdit?' onclick="ghOpenEdit(\''+e.id+'\')"':'')+'>'
+      +'<td style="padding:8px;font-weight:700;white-space:nowrap">'+escapeHtml(e.name||'')+'<div style="font-size:10px;color:var(--muted);font-weight:400">'+escapeHtml(e.title||'')+'</div></td>'
+      +'<td style="padding:8px">'+ghBadge(c.cur||'—')+'</td>'
+      +'<td style="padding:8px;white-space:nowrap">'+(last?(ghYMD(last.d)+' '+ghBadge(last.g)+(last.start?' <span style="font-size:10px;color:var(--muted)">入社</span>':'')):'<span style="color:var(--muted)">—</span>')+'</td>'
+      +'<td style="padding:8px;text-align:right">'+recs.length+'件</td><td style="padding:8px">'+st+'</td></tr>';
+  });
+  return h+'</tbody></table></div>';
+}
+function ghBandHtml(qr, people, cfg, canEdit){
+  var h='<div class="card"><div class="card-title"><i class="ti ti-calendar-stats" style="color:var(--accent)"></i>'+qr.q+' の対象期間（グレード履歴から自動）</div>';
+  if(!people.length) return h+'<div style="font-size:12px;color:var(--muted);padding:10px">この四半期にボーナスの対象（G2以上）の期間がある人はいません。</div></div>';
+  var p=_bonusQParse(qr.q), ms=_quarterMonths(p.y, p.q);
+  h+='<div style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);margin:0 0 3px"><div style="width:112px;flex-shrink:0"></div><div style="flex:1;display:flex">'
+    +ms.map(function(ym){ var a=ym+'-01', b=ghAdd(ghAdd(a,32).slice(0,8)+'01',-1); return '<div style="width:'+(ghDays(a,b)/qr.n*100)+'%;border-left:1px solid var(--border);padding-left:4px">'+(+ym.slice(5))+'月</div>'; }).join('')+'</div><span style="width:16px;flex-shrink:0"></span></div>';
+  people.forEach(function(e){
+    var segs=ghSegments(e, qr.qs, qr.qe), gap=ghGapBefore(e, qr.qs, qr.qe), noH=segs.some(function(s){ return s.noHist; });
+    h+='<div style="display:flex;align-items:center;gap:6px;margin:4px 0"><div style="width:112px;flex-shrink:0;font-size:11.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(canEdit?'cursor:pointer':'')+'"'+(canEdit?' onclick="ghOpenEdit(\''+e.id+'\')"':'')+'>'+escapeHtml(e.name||'')+'</div>'
+      +'<div style="flex:1;position:relative;height:24px;background:var(--surface2);border-radius:6px;overflow:hidden">';
+    segs.forEach(function(s){
+      var left=ghDays(qr.qs, s.from)-1, el=ghElig(s.g, cfg), col=el?ghColor(s.g):'#c9c3b8';
+      h+='<div style="position:absolute;top:0;bottom:0;left:'+(left/qr.n*100)+'%;width:'+(s.days/qr.n*100)+'%;background:'+col+';border-right:2px solid var(--surface);color:#fff;font-size:10.5px;font-weight:700;display:flex;align-items:center;padding-left:6px;white-space:nowrap;overflow:hidden" title="'+s.g+' '+ghMD(s.from)+'〜'+ghMD(s.to)+'（'+s.days+'日）">'
+        +(s.days<25 ? (s.g+' '+s.days+'日') : (s.g+' '+ghMD(s.from)+'〜'+ghMD(s.to)+'（'+s.days+'日）'+(el?'':' 対象外')))+'</div>';
+    });
+    if(gap) h+='<div style="position:absolute;top:0;bottom:0;left:'+((ghDays(qr.qs,gap.from)-1)/qr.n*100)+'%;width:'+(gap.days/qr.n*100)+'%;background:repeating-linear-gradient(45deg,#f5a62333,#f5a62333 4px,transparent 4px,transparent 8px);color:var(--yellow);font-size:10px;font-weight:700;display:flex;align-items:center;padding-left:6px;white-space:nowrap;overflow:hidden">?</div>';
+    h+='</div>'+((noH||gap)?'<i class="ti ti-alert-triangle" style="color:var(--yellow);width:16px;flex-shrink:0" title="'+(noH?'確定日 未設定':'記録より前のグレードが分からない')+'"></i>':'<span style="width:16px;flex-shrink:0"></span>')+'</div>';
+  });
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6">色のある期間がボーナスの対象（G2以上）。グレードが変わった人は区間が2つになり、査定一覧でも2行で計算します。灰色＝G1（対象外）・空白＝入社前／退職後・<span style="color:var(--yellow)">?</span>＝記録より前のグレードが分からない期間。<i class="ti ti-alert-triangle" style="color:var(--yellow)"></i>＝確定日 未設定（今のグレードを四半期まるごとに使っています）。</div>';
+  return h+'</div>';
+}
+
+/* --- ② 1人の履歴の編集（UI案31-5a） --- */
+function ghPickPerson(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('グレード履歴を変えられるのは GM・CEO です','warning'); return; }
+  var list=getEmployees().filter(function(e){ return e.status!=='退職'; }).sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  var h='<div class="modal-title">記録を追加する人 <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  h+='<div class="form-group"><label class="form-label">名前</label><select class="form-select" id="gh-pick">'+list.map(function(e){ return '<option value="'+escapeHtml(e.id)+'">'+escapeHtml(e.name||'')+'（'+(ghNormG(empGrade(e))||'—')+'・'+escapeHtml(e.title||'')+'）</option>'; }).join('')+'</select></div>';
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="ghOpenEdit(document.getElementById(\'gh-pick\').value, true)">次へ</button></div>';
+  openModal(h);
+}
+function ghOpenEdit(empId, add){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('グレード履歴を変えられるのは GM・CEO です','warning'); return; }
+  var e=ghEmp(empId); if(!e){ showToast('その人が見つかりません','warning'); return; }
+  var cfg=kbCfg(), q=window._ghQ || String(cfg.quarter||'').trim() || ghQOf(ghToday());
+  window._ghEdit={ empId:empId, recs:ghRecs(empId).map(function(r){ return Object.assign({}, r); }), q:(ghQRange(q)||ghQRange(ghQOf(ghToday()))).q, dirty:false, err:'' };
+  if(add) ghEdAdd(); else openModal(ghEditHtml());
+}
+function ghEditHtml(){
+  var x=window._ghEdit; if(!x) return '';
+  var e=ghEmp(x.empId)||{name:'',title:''}, recs=x.recs.slice().sort(ghCmp), c=ghCheck(e, recs), qr=ghQRange(x.q), cfg=kbCfg();
+  x.recs=recs;
+  var h='<div class="modal-title">'+escapeHtml(e.name||'')+' のグレード履歴 <button class="modal-close" onclick="ghEdClose()">×</button></div>';
+  h+='<div style="font-size:12px;margin-bottom:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">今の役職 <b>'+escapeHtml(e.title||'（未設定）')+'</b> ＝ '+ghBadge(c.cur||'—')
+    +(c.state==='ok'?'<span style="color:var(--green);font-size:11px"><i class="ti ti-circle-check"></i> 最後の記録（'+c.last+'）と一致</span>'
+      :(c.state==='diff'?'<span style="color:var(--yellow);font-size:11px;font-weight:700"><i class="ti ti-alert-triangle"></i> 最後の記録（'+c.last+'）と違います</span>'
+      :'<span style="color:var(--yellow);font-size:11px;font-weight:700"><i class="ti ti-alert-triangle"></i> まだ記録がありません（今のグレードを四半期まるごとに使っています）</span>'))+'</div>';
+  if(!recs.length) h+='<div style="font-size:11.5px;color:var(--muted);background:var(--surface2);border-radius:10px;padding:8px 11px;margin-bottom:8px;line-height:1.6">「記録を追加」で今のグレード（'+(c.cur||'—')+'）になった日（確定日）を入れてください。入社したときから今のグレードなら「入社の記録」を。</div>';
+  var tl=ghTimeline(e, recs);
+  recs.forEach(function(r, i){
+    var t=tl.find(function(z){ return z.rec===r; }), prev=t?t.prev:null, first=(i===0);
+    var opts=function(sel, blank){ return (blank?'<option value="">'+blank+'</option>':'')+GH_GRADES.map(function(g){ return '<option value="'+g+'"'+(g===sel?' selected':'')+'>'+g+'</option>'; }).join(''); };
+    h+='<div style="border:1px solid '+(i===recs.length-1?'var(--accent)':'var(--border)')+';border-radius:10px;padding:8px 10px;margin-bottom:7px">'
+      +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+      +'<span style="font-size:11px;color:var(--muted);width:40px">'+(r.start?'入社日':'確定日')+'</span>'
+      +'<input type="date" class="form-input" style="width:150px;padding:5px 8px;font-size:12.5px;font-weight:700" value="'+escapeHtml(r.d||'')+'" onchange="ghEdSet('+i+',\'d\',this.value)">'
+      +(r.start?'':(first?'<select class="form-select" style="width:auto;padding:4px 6px;font-size:12px" title="前のグレード" onchange="ghEdSet('+i+',\'from\',this.value)">'+opts(r.from,'（前のグレード）')+'</select> <i class="ti ti-arrow-right" style="font-size:11px;color:var(--muted)"></i>'
+        :(prev?ghBadge(prev)+' <i class="ti ti-arrow-right" style="font-size:11px;color:var(--muted)"></i>':'')))
+      +'<select class="form-select" style="width:auto;padding:4px 6px;font-size:12px" onchange="ghEdSet('+i+',\'g\',this.value)">'+opts(r.g, r.g?'':'（グレード）')+'</select>'
+      +'<span style="flex:1"></span><button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" title="この記録を消す" onclick="ghEdDel('+i+')">×</button></div>'
+      +'<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap"><span style="font-size:10.5px;color:var(--muted);white-space:nowrap;margin-left:46px">'
+      +(ghDate(r.d)&&r.g?((r.start?ghMD(r.d):ghMD(ghAdd(r.d,1)))+' から '+r.g+'（'+(r.start?'入社日の当日から':'確定日の翌日から')+'）'):'日付とグレードを入れてください')+'</span>'
+      +ghSrcTag(r)+'<input class="form-input" style="flex:1;min-width:120px;padding:4px 7px;font-size:11.5px" placeholder="メモ（任意）" value="'+escapeHtml(r.note||'')+'" onchange="ghEdSet('+i+',\'note\',this.value)"></div></div>';
+  });
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="ghEdAdd()"><i class="ti ti-plus"></i> 記録を追加（昇格・降格）</button>'
+    +(recs.some(function(r){ return r.start; })?'':'<button class="btn btn-secondary btn-sm" onclick="ghEdAddStart()"><i class="ti ti-user-plus"></i> 入社の記録</button>')+'</div>';
+  if(qr){
+    var ok=recs.every(function(r){ return ghDate(r.d) && ghNormG(r.g); });
+    var segs=ok?ghSegments(e, qr.qs, qr.qe, recs):[], gap=ok?ghGapBefore(e, qr.qs, qr.qe, recs):null;
+    h+='<div style="background:var(--surface2);border-radius:10px;padding:8px 11px;margin-top:10px;font-size:11.5px;line-height:1.8"><b>'+qr.q+' の対象期間</b><br>'
+      +(segs.length?segs.map(function(s){ return ghBadge(s.g)+' '+ghMD(s.from)+'〜'+ghMD(s.to)+'（'+s.days+'日）'+(ghElig(s.g,cfg)?'':' <span style="color:var(--muted)">対象外</span>'); }).join('　'):'<span style="color:var(--muted)">この四半期に在籍した期間がありません</span>')
+      +(gap?'<div style="color:var(--yellow);font-size:11px"><i class="ti ti-help-circle"></i> '+ghMD(gap.from)+'〜'+ghMD(gap.to)+' はグレードが分かりません（最初の記録の「前のグレード」を入れてください）。</div>':'')+'</div>';
+  }
+  h+='<div id="gh-ed-err" style="font-size:11.5px;color:var(--red);margin-top:6px">'+(x.err?'<i class="ti ti-alert-triangle"></i> '+escapeHtml(x.err):'')+'</div>';
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="ghEdClose()">閉じる</button><button class="btn btn-primary" onclick="ghEdSave()"><i class="ti ti-device-floppy"></i> 保存</button></div>';
+  return h;
+}
+function ghEdSet(i, f, v){
+  var x=window._ghEdit; if(!x || !x.recs[i]) return;
+  var r=x.recs[i];
+  if(f==='d') r.d=ghDate(v)||'';
+  else if(f==='g' || f==='from') r[f]=ghNormG(v);
+  else if(f==='note'){ r.note=String(v||''); x.dirty=true; return; }   /* メモは描き直さない（入力中の文字を消さない） */
+  x.dirty=true; x.err=''; openModal(ghEditHtml());
+}
+function ghEdAdd(){
+  var x=window._ghEdit; if(!x) return;
+  var e=ghEmp(x.empId), cur=ghNormG(empGrade(e)), last=x.recs.length?x.recs[x.recs.length-1].g:'';
+  x.recs.push({ id:ghNewId(), d:ghToday(), g:(cur && cur!==last)?cur:'', from:'', start:false, src:'manual', by:_ghWho(), at:_ghNow(), note:'', _new:true });
+  x.dirty=true; x.err=''; openModal(ghEditHtml());
+}
+function ghEdAddStart(){
+  var x=window._ghEdit; if(!x) return;
+  var e=ghEmp(x.empId), r0=x.recs[0];
+  x.recs.unshift({ id:ghNewId(), d:ghHire(e)||'', g:(r0&&r0.from)||(r0?'':ghNormG(empGrade(e))), from:'', start:true, src:'manual', by:_ghWho(), at:_ghNow(), note:'', _new:true });
+  x.dirty=true; x.err=''; openModal(ghEditHtml());
+}
+function ghEdDel(i){ var x=window._ghEdit; if(!x) return; x.recs.splice(i,1); x.dirty=true; x.err=''; openModal(ghEditHtml()); }
+function ghEdClose(){
+  var x=window._ghEdit;
+  if(x && x.dirty && !confirm('保存していない変更があります。閉じますか？')) return;
+  window._ghEdit=null; closeModalDirect();
+}
+function ghEdCheck(recs){
+  var bad=recs.filter(function(r){ return !ghDate(r.d) || !ghNormG(r.g); });
+  if(bad.length) return '日付かグレードが入っていない記録があります';
+  var seen={};
+  for(var i=0;i<recs.length;i++){ var r=recs[i]; if(r.start) continue; var k=r.d; if(seen[k]) return ghYMD(r.d)+' に記録が2つあります（同じ日の昇格・降格は1つにしてください）'; seen[k]=1; }
+  return '';
+}
+function ghEdSave(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('グレード履歴を変えられるのは GM・CEO です','warning'); return; }
+  var x=window._ghEdit; if(!x) return;
+  var err=ghEdCheck(x.recs);
+  if(err){ x.err=err; openModal(ghEditHtml()); return; }
+  var old={}; ghRecs(x.empId).forEach(function(r){ old[r.id]=r; });
+  var out=x.recs.map(function(r){
+    var o=old[r.id], c=Object.assign({}, r); delete c._new;
+    if(o && (o.d!==c.d || o.g!==c.g || (o.from||'')!==(c.from||'') || (o.note||'')!==(c.note||'') || !!o.start!==!!c.start)){ c.edBy=_ghWho(); c.edAt=_ghNow(); }
+    if(!o){ c.by=_ghWho(); c.at=_ghNow(); c.src=c.src||'manual'; }
+    return c;
+  });
+  var e=ghEmp(x.empId);
+  if(ghSave(x.empId, out, e&&e.name)===false){ showToast('保存できませんでした','danger'); return; }
+  window._ghEdit=null; closeModalDirect(); showToast('グレード履歴を保存しました','success'); karteRerender();
+}
+
+/* --- ⑥ 過去のデータの取り込み（UI案31-6） --- */
+function ghOpenImport(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('取り込めるのは GM・CEO です','warning'); return; }
+  window._ghImp={ text:'', map:{} };
+  var h='<div class="modal-title">グレード履歴の取り込み（過去のデータ） <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  h+='<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px;line-height:1.6">Excel やスプレッドシートの表をそのまま貼り付けてください。列：<b>名前・確定日・グレード</b>・給与（任意）・メモ（任意）。'
+    +'グレードは G1〜G6 か役職名（例 Server Leader）。メモに「入社」とある行（または入社日と同じ日）は入社の記録（当日から）。給与があれば「給与・ボーナス履歴」に昇給としても入れます。</div>';
+  h+='<textarea class="form-textarea" id="gh-imp-text" rows="8" style="width:100%;font-size:11.5px;font-family:ui-monospace,Menlo,monospace" placeholder="Ken Sample&#9;2024/4/1&#9;G1&#9;&#9;入社" oninput="ghImpInput(this.value)"></textarea>';
+  h+='<div id="gh-imp-res"></div>';
+  openModal(h);
+}
+function ghImpInput(v){ var x=window._ghImp; if(!x) return; x.text=String(v||''); clearTimeout(window._ghImpT); window._ghImpT=setTimeout(ghImpRender, 200); }
+function ghImpPick(i, empId){ var x=window._ghImp; if(!x) return; if(empId) x.map[i]=empId; else delete x.map[i]; ghImpRender(); }
+function ghImpSplit(line){
+  if(line.indexOf('\t')>=0) return line.split('\t');
+  var out=[], cur='', q=false;
+  for(var i=0;i<line.length;i++){ var ch=line[i]; if(ch==='"'){ q=!q; continue; } if(ch===',' && !q){ out.push(cur); cur=''; continue; } cur+=ch; }
+  out.push(cur); return out;
+}
+function ghImpGrade(s){
+  var g=ghNormG(s); if(g) return g;
+  var t=String(s||'').trim().toLowerCase(); if(!t) return '';
+  var keys=Object.keys(GRADE_TITLES);
+  for(var i=0;i<keys.length;i++){ if(GRADE_TITLES[keys[i]].some(function(x){ return String(x).toLowerCase()===t; })) return ghNormG(keys[i]); }
+  return '';
+}
+function ghImpNorm(s){ return String(s||'').toLowerCase().replace(/[\s　]+/g,' ').trim(); }
+function ghLev(a, b){
+  if(a===b) return 0; var m=a.length, n=b.length; if(!m) return n; if(!n) return m;
+  var p=[], c; for(var j=0;j<=n;j++) p[j]=j;
+  for(var i=1;i<=m;i++){ c=[i]; for(var k=1;k<=n;k++){ c[k]=Math.min(p[k]+1, c[k-1]+1, p[k-1]+(a[i-1]===b[k-1]?0:1)); } p=c; }
+  return p[n];
+}
+function ghImpSuggest(name, emps){
+  var t=ghImpNorm(name); if(!t) return [];
+  var tok=t.split(' ').sort().join(' ');
+  return emps.map(function(e){ var n=ghImpNorm(e.name); var d=(n.split(' ').sort().join(' ')===tok)?0.5:ghLev(t, n); if(d>2 && (n.indexOf(t)===0 || t.indexOf(n)===0)) d=2.5; return {e:e, d:d}; })
+    .filter(function(x){ return x.d<=2.5; }).sort(function(a,b){ return a.d-b.d; }).slice(0,3).map(function(x){ return x.e; });
+}
+function ghImpPay(s){
+  var t=String(s||'').trim(); if(!t) return null;
+  var n=Number(t.replace(/[０-９]/g,function(c){ return String.fromCharCode(c.charCodeAt(0)-0xFEE0); }).replace(/[^0-9.]/g,''));
+  if(!isFinite(n) || n<=0) return {bad:true, raw:t};
+  var unit=/月|month|mo\b|\/m\b/i.test(t)?'/月':(/時|hour|hr|\/h\b/i.test(t)?'/時':'');
+  return {amount:n, unit:unit, raw:t};
+}
+/* 貼り付けた表を読む → [{i, name, dRaw, gRaw, pay, note, emp, sugg, d, g, start, st, msg}] */
+function ghImpParse(text, map){
+  var emps=getEmployees(), byName={};
+  emps.forEach(function(e){ var k=ghImpNorm(e.name); if(k && !byName[k]) byName[k]=e; });
+  var rows=[], lines=String(text||'').split(/\r?\n/), seen={};
+  lines.forEach(function(l, i){
+    if(!l.trim()) return;
+    var c=ghImpSplit(l).map(function(z){ return String(z==null?'':z).trim(); });
+    if(!rows.length && /^(名前|氏名|name|employee)/i.test(c[0]||'')) return;   /* 見出しの行 */
+    var r={ i:i, name:c[0]||'', dRaw:c[1]||'', gRaw:c[2]||'', payRaw:c[3]||'', note:c[4]||'' };
+    var pick=map && map[i] ? emps.find(function(e){ return e.id===map[i]; }) : null;
+    r.emp=pick || byName[ghImpNorm(r.name)] || null; r.picked=!!pick;
+    r.sugg=r.emp ? [] : ghImpSuggest(r.name, emps);
+    r.d=ghDate(r.dRaw); r.g=ghImpGrade(r.gRaw); r.pay=ghImpPay(r.payRaw);
+    r.start=/入社/.test(r.note) || !!(r.emp && r.d && ghHire(r.emp)===r.d);
+    if(!r.emp){ r.st='name'; r.msg='名前を確認'; }
+    else if(!r.d){ r.st='date'; r.msg='日付を確認'; }
+    else if(!r.g){ r.st='grade'; r.msg='グレードを確認'; }
+    else if(r.pay && r.pay.bad){ r.st='pay'; r.msg='給与を確認'; }
+    else {
+      var ex=ghRecs(r.emp.id), key=r.emp.id+'|'+r.d+'|'+(r.start?'s':'c');
+      var same=ex.some(function(x){ return x.d===r.d && x.g===r.g && !!x.start===r.start; }) || (seen[key]===r.g);
+      var clash=!r.start && (ex.some(function(x){ return !x.start && x.d===r.d && x.g!==r.g; }) || (seen[key] && seen[key]!==r.g));
+      if(same){ r.st='same'; r.msg='すでにある'; }
+      else if(clash){ r.st='clash'; r.msg='同じ日に2つ'; }
+      else { r.st='ok'; r.msg=r.pay?'登録＋昇給':'登録'; seen[key]=r.g; }
+    }
+    rows.push(r);
+  });
+  return rows;
+}
+function ghImpRender(){
+  var x=window._ghImp, el=document.getElementById('gh-imp-res'); if(!x || !el) return;
+  var rows=ghImpParse(x.text, x.map);
+  if(!rows.length){ el.innerHTML=''; return; }
+  var ok=rows.filter(function(r){ return r.st==='ok'; }), same=rows.filter(function(r){ return r.st==='same'; }), chk=rows.filter(function(r){ return ['ok','same'].indexOf(r.st)<0; });
+  var emps=getEmployees().slice().sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+  var h='<div style="font-size:11px;font-weight:700;color:var(--muted);margin:10px 0 4px">読み取った結果（まだ登録していません）</div>';
+  h+='<div style="overflow:auto;max-height:42vh"><table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:var(--surface2);text-align:left;color:var(--muted);font-size:10px">'
+    +'<th style="padding:5px 6px">結果</th><th style="padding:5px 6px">名前（メモ）</th><th style="padding:5px 6px">確定日</th><th style="padding:5px 6px">G</th><th style="padding:5px 6px">給与</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    var col=r.st==='ok'?'var(--green)':(r.st==='same'?'var(--muted)':'var(--yellow)');
+    var icon=r.st==='ok'?'ti-circle-check':(r.st==='same'?'ti-equal':'ti-alert-triangle');
+    var nm=escapeHtml(r.name||'（空）');
+    if(r.st==='name' || r.picked){
+      nm='<span style="color:'+(r.picked?'var(--tm)':'var(--yellow)')+';font-weight:700">'+nm+'</span><div><select class="form-select" style="font-size:11px;padding:2px 5px;width:auto;max-width:130px;margin-top:2px" onchange="ghImpPick('+r.i+',this.value)">'
+        +'<option value="">→ だれ？（選ぶ）</option>'+(r.sugg.length?'<optgroup label="近い名前">'+r.sugg.map(function(e){ return '<option value="'+escapeHtml(e.id)+'"'+(r.emp&&r.emp.id===e.id?' selected':'')+'>→ '+escapeHtml(e.name)+' ？</option>'; }).join('')+'</optgroup>':'')
+        +'<optgroup label="全員">'+emps.map(function(e){ return '<option value="'+escapeHtml(e.id)+'"'+(r.picked&&r.emp&&r.emp.id===e.id?' selected':'')+'>'+escapeHtml(e.name)+'</option>'; }).join('')+'</optgroup></select></div>';
+    }
+    var dt=r.d?('<span style="white-space:nowrap">'+ghYMD(r.d)+'</span>'+(r.start?'<div style="font-size:10px;color:var(--muted)">入社</div>':'')+(r.st==='clash'?'<div style="font-size:10px;color:var(--yellow)">別のグレードがある</div>':'')):'<span style="color:var(--yellow);font-weight:700;white-space:nowrap">'+escapeHtml(r.dRaw||'（空）')+'</span><div style="font-size:10px;color:var(--yellow)">読めない日付</div>';
+    var gg=r.g?ghBadge(r.g):'<span style="color:var(--yellow);font-weight:700">'+escapeHtml(r.gRaw||'（空）')+'</span>';
+    var pay=r.pay?(r.pay.bad?'<span style="color:var(--yellow)">'+escapeHtml(r.pay.raw)+'</span>':'<span style="white-space:nowrap">'+escapeHtml(r.pay.raw)+'</span><div style="font-size:10px;color:var(--green);white-space:nowrap">→ 昇給</div>'):'<span style="color:var(--muted)">—</span>';
+    h+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 6px;white-space:nowrap;font-size:10.5px;color:'+col+';font-weight:700"><i class="ti '+icon+'"></i> '+r.msg+'</td>'
+      +'<td style="padding:5px 6px;word-break:break-word">'+nm+(r.note?'<div style="font-size:10px;color:var(--muted)">'+escapeHtml(r.note)+'</div>':'')+'</td><td style="padding:5px 6px">'+dt+'</td><td style="padding:5px 6px">'+gg+'</td><td style="padding:5px 6px">'+pay+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  var nPay=ok.filter(function(r){ return r.pay; }).length;
+  h+='<div style="font-size:11.5px;margin-top:8px"><b style="color:var(--green)">登録 '+ok.length+'件</b>'+(nPay?'（うち昇給 '+nPay+'件）':'')
+    +(same.length?'・<span style="color:var(--muted)">すでにある '+same.length+'件（入れない）</span>':'')+(chk.length?'・<b style="color:var(--yellow)">確認 '+chk.length+'件</b>（直すと登録できます）':'')+'</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6">同じ人・同じ確定日・同じグレードは二重に入れません。登録したあとも1件ずつ直せます。</div>';
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="ghImpRun()"'+(ok.length?'':' disabled')+'><i class="ti ti-file-import"></i> '+ok.length+'件を登録</button></div>';
+  el.innerHTML=h;
+}
+function ghImpRun(){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('取り込めるのは GM・CEO です','warning'); return; }
+  var x=window._ghImp; if(!x) return;
+  var rows=ghImpParse(x.text, x.map).filter(function(r){ return r.st==='ok'; });
+  if(!rows.length){ showToast('登録できる行がありません','warning'); return; }
+  var m=ghAll(), who=_ghWho(), at=_ghNow(), nRec=0, nPay=0, kAll=getKarteAll(), kTouched={};
+  rows.forEach(function(r){
+    var id=r.emp.id, cur=(m[id]&&Array.isArray(m[id].recs))?m[id].recs.slice():[];
+    cur.push({id:ghNewId(), d:r.d, g:r.g, from:'', start:r.start, src:'import', by:who, at:at, note:r.note||''});
+    m[id]={ recs:cur.sort(ghCmp), name:r.emp.name||'', _at:Date.now() }; nRec++;
+    if(r.pay){
+      var k=kAll[id]||{}; k.payLog=k.payLog||[];
+      var amt=String(Math.round(r.pay.amount*100)/100);
+      if(!k.payLog.some(function(p){ return p.type==='昇給' && p.date===r.d && String(p.amount)===amt; })){
+        k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:r.d, type:'昇給', amount:amt, note:'取込'+(r.pay.unit?'（'+r.pay.unit+'）':'')+(r.note?'・'+r.note:''), src:'import'});
+        k.updatedAt=new Date().toISOString(); k._at=Date.now(); kAll[id]=k; kTouched[id]=1; nPay++;
+      }
+    }
+  });
+  if(lsSet('grade_hist', m)===false){ showToast('保存できませんでした','danger'); return; }
+  if(nPay) lsSet('growth_karte', kAll);
+  window._ghImp=null; closeModalDirect();
+  showToast('グレード履歴を '+nRec+'件 登録しました'+(nPay?'（昇給 '+nPay+'件）':''),'success'); karteRerender();
+}
+
+/* ===== v1044: 四半期の日割りと2行の計算・途中退職の例外 — UI案31 段階3（CEO の依頼 10/5・Motoさんの決定 10/5） =====
+   【日割り】区間ごとに Grade基準額 × 日数 ÷ 四半期の日数 × 予算 × 利益 × Career Score（係数は四半期で1つ）。端数は区間ごとに処理し、本人の合計はその和。
+     区間はグレード履歴から（新しいグレードは確定日の翌日から・入社は当日から）。G1・入社前・退職後・グレードが分からない期間は入れない。
+     四半期の途中で変わらない人は今までと1セントも同じ（基準額 × 92/92）。
+   【対象】在籍していて、その四半期に G2 以上の期間がある人。四半期の途中で辞めた人・あとで辞めた人・休職・研修中は対象外（CEO 10/5）。
+     例外として入れると在籍していた期間を日割り（bonus_q[四半期].incl）。
+   【固定】査定を確定すると区間も固定（bonus_q[四半期].segSnap）。 */
+function bonusSegs(e, qr, d){
+  d=d||((typeof bqGet==='function')?bqGet(qr.q):{});
+  var sn=(d.locked && d.segSnap && typeof d.segSnap==='object') ? d.segSnap[e.id] : null;
+  if(Array.isArray(sn)) return sn.map(function(x){ return {g:ghNormG(x&&x.g), from:x&&x.from, to:x&&x.to, days:Number(x&&x.days)||0, noHist:!!(x&&x.noHist), snap:true}; })
+    .filter(function(x){ return x.g && ghDate(x.from) && ghDate(x.to) && x.days>0; });
+  return ghSegments(e, qr.qs, qr.qe);
+}
+/* 対象外になる理由（null＝ふつうに対象）。hide＝この四半期とは関係ない（前に辞めた・辞めた日が分からない） */
+function bonusOutReason(e, qr){
+  var r=ghResign(e);
+  if(r && r<qr.qs) return {k:'before', hide:true};
+  if(r && r<=qr.qe) return {k:'mid', label:'四半期の途中で退職（'+ghMD(r)+'）'};
+  if(e.status==='退職') return r ? {k:'after', label:'四半期のあとに退職（'+ghYMD(r)+'）'} : {k:'gone', hide:true};
+  if(e.status && e.status!=='在籍') return {k:'status', label:String(e.status)};
+  return null;
+}
+function bonusEligCtx(cfg){ var qr=ghQRange(String((cfg&&cfg.quarter)||'').trim()); return qr ? {qr:qr, d:bqGet(qr.q)} : null; }
+/* この四半期のボーナスの対象か。null＝四半期が読めない（今までどおり今の役職で決める） */
+function bonusElig(e, cfg, ctx){
+  cfg=cfg||kbCfg(); ctx=ctx||bonusEligCtx(cfg); if(!ctx) return null;
+  var any=bonusSegs(e, ctx.qr, ctx.d).some(function(x){ return cfg.gradeBase && cfg.gradeBase[x.g]!=null; });
+  if(!any) return {ok:false, out:null, hide:true};
+  var out=bonusOutReason(e, ctx.qr);
+  if(!out) return {ok:true, out:null};
+  if(out.hide) return {ok:false, out:out, hide:true};
+  var inc=(ctx.d.incl && typeof ctx.d.incl==='object') ? ctx.d.incl : {};
+  return {ok:!!inc[e.id], out:out, exc:!!inc[e.id], inc:inc[e.id]||null};
+}
+/* 日割り。区間ごとの金額と合計。四半期が読めないときは null（今までどおり） */
+function bonusProrate(e, cfg, ba, sp, cs){
+  var qr=(typeof ghQRange==='function') ? ghQRange(String((cfg&&cfg.quarter)||'').trim()) : null;
+  if(!qr) return null;
+  var segs=bonusSegs(e, qr), out=[], total=0, base=0, cur=ghNormG(empGrade(e));
+  segs.forEach(function(x){
+    var gb=(cfg.gradeBase && cfg.gradeBase[x.g]!=null) ? Number(cfg.gradeBase[x.g])||0 : null, el=(gb!=null);
+    var pr=el ? gb*x.days/qr.n : 0, amt=el ? Math.round(pr*ba*sp*cs) : 0;
+    out.push({g:x.g, from:x.from, to:x.to, days:x.days, elig:el, gbase:el?gb:0, pr:pr, amount:amt, noHist:!!x.noHist, rec:x.rec||null, prev:x.prev||null, snap:!!x.snap});
+    if(el){ total+=amt; base+=pr; }
+  });
+  var el=out.filter(function(x){ return x.elig; });
+  var whole=(el.length===1 && el[0].days===qr.n && el[0].g===cur && out.length===1);
+  return {segs:out, amount:total, base:base, n:qr.n, q:qr.q, qs:qr.qs, qe:qr.qe, prorated:!whole};
+}
+/* 「G2 41日＋G3 51日」（long＝「Grade G2（7/1〜8/10・41日）と G3（…）」） */
+function bonusSegsLabel(b, long){
+  var el=(b && b.segs || []).filter(function(x){ return x.elig; });
+  if(!el.length) return '';
+  if(long) return el.map(function(x){ return 'Grade <b>'+x.g+'</b>（'+ghMD(x.from)+'〜'+ghMD(x.to)+'・'+x.days+'日）'; }).join('と ');
+  return el.map(function(x){ return x.g+' '+x.days+'日'; }).join('＋');
+}
+/* 算定根拠 ① の中身：区間の表と、いつ何が変わったか */
+function bonusSegsBreakHtml(b, cfg){
+  var segs=b.segs||[], n=b.qDays, notes=[];
+  segs.forEach(function(x){
+    var r=x.rec;
+    if(r && r.start && x.from===r.d) notes.push('入社 '+ghMD(r.d)+'（当日から '+x.g+'）');
+    else if(r && !r.start && x.prev && x.from===ghAdd(r.d,1)) notes.push(ghMD(r.d)+' に '+x.prev+' → '+x.g+'（確定日の翌日 '+ghMD(x.from)+' から '+x.g+'）');
+    if(!x.elig) notes.push(ghMD(x.from)+'〜'+ghMD(x.to)+' は '+x.g+'（対象外）');
+    if(x.noHist) notes.push('グレード履歴が無いので、今のグレード（'+x.g+'）で計算しています（グレード履歴で確定日を入れてください）');
+  });
+  var el=segs.filter(function(x){ return x.elig; });
+  var h=(notes.length?notes.map(escapeHtml).join('。')+'。':'')+'四半期 '+n+'日のうち、対象の期間を日割りしています。';
+  h+='<table style="border-collapse:collapse;margin-top:3px;font-size:11px;color:var(--tm)">'+el.map(function(x){
+    return '<tr><td style="padding:2px 8px 2px 0">'+ghBadge(x.g)+'</td><td style="padding:2px 8px 2px 0;white-space:nowrap">'+ghMD(x.from)+'〜'+ghMD(x.to)+'</td><td style="padding:2px 8px 2px 0;text-align:right;white-space:nowrap">'+x.days+'日</td>'
+      +'<td style="padding:2px 0;white-space:nowrap">'+_money(x.gbase)+' × '+x.days+'/'+n+' ＝ <b>'+_money(x.pr)+'</b></td></tr>';
+  }).join('')+'</table>';
+  return h;
+}
+/* 例外として入れる・外す（GM・CEO・確定前だけ） */
+function bonusInclSet(empId, on){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('例外を変えられるのは GM・CEO です','warning'); return; }
+  var cfg=kbCfg(), qr=ghQRange(String(cfg.quarter||'').trim());
+  if(!qr){ showToast('四半期を入れてください','warning'); return; }
+  var d=bqGet(qr.q);
+  if(d.locked){ showToast(qr.q+' の査定は確定済みです（例外は変えられません）','warning'); return; }
+  var e=ghEmp(empId), inc=Object.assign({}, d.incl||{});
+  if(on){
+    if(!confirm((e?e.name:'')+' を '+qr.q+' のボーナスに例外として入れます。\n在籍していた期間を日割りで計算します。よろしいですか？')) return;
+    inc[empId]={at:_ghNow(), by:_ghWho()};
+  } else delete inc[empId];
+  d.incl=inc;
+  if(bqSet(qr.q, d)===false){ showToast('保存できませんでした','danger'); return; }
+  showToast(on?'例外として入れました':'例外を外しました', on?'success':'info');
+  kbRefresh();
+}
+/* 査定一覧の表（UI案31-7） */
+function kbListTableHtml(cfg, tot){
+  var qr=ghQRange(String(cfg.quarter||'').trim()), qn=qr?qr.n:0;
+  var cols=['氏名','利益係数店舗','対象期間','G','日数','日割り基準額','予算','利益','CS','算出額','本人の合計'].concat(tot.over?['調整後']:[]);
+  var right={'日数':1,'日割り基準額':1,'予算':1,'利益':1,'CS':1,'算出額':1,'本人の合計':1,'調整後':1};
+  var h='<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:780px">';
+  h+='<thead><tr style="background:var(--surface2);text-align:left">'+cols.map(function(x){ return '<th style="padding:7px 7px;font-size:10px;color:var(--muted);white-space:nowrap'+(right[x]?';text-align:right':'')+'">'+x+'</th>'; }).join('')+'</tr></thead><tbody>';
+  if(!tot.rows.length) h+='<tr><td colspan="'+cols.length+'" style="padding:18px;text-align:center;color:var(--muted)">対象者（G2以上・在籍）がいません</td></tr>';
+  var ctx=bonusEligCtx(cfg);
+  tot.rows.forEach(function(r){
+    var e=r.e, b=r.b, lv=(typeof evalLevelFromPct==='function')?evalLevelFromPct(b.csPct):{n:'-',color:'var(--muted)'};
+    var segs=b.segs||null, el=segs?segs.filter(function(x){ return x.elig; }):[];
+    if(!el.length) el=[{g:b.grade, from:null, to:null, days:null, gbase:b.base, pr:b.base, amount:b.amount, elig:true}];   /* 四半期が読めないとき（今までどおり） */
+    var n=el.length, skipped=segs?segs.filter(function(x){ return !x.elig; }):[];
+    var st=ctx?bonusElig(e, cfg, ctx):null, gap=qr?ghGapBefore(e, qr.qs, qr.qe):null, hire=ghHire(e);
+    var coef=function(v, pct, no){ return '<td rowspan="'+n+'" style="padding:7px;text-align:right;vertical-align:middle;border-top:1px solid var(--border);white-space:nowrap">'
+      +(no?'<span style="color:var(--muted)">未 ×1.00</span>':'×'+Number(v).toFixed(2)+(pct!=null?'<div style="font-size:9.5px;color:var(--muted)">'+pct+'%</div>':''))+'</td>'; };
+    el.forEach(function(x, i){
+      var top=(i===0);
+      h+='<tr style="border-top:1px '+(top?'solid':'dashed')+' var(--border);cursor:pointer" onclick="openKarteDetail(\''+e.id+'\')">';
+      if(top){
+        h+='<td rowspan="'+n+'" style="padding:7px;font-weight:700;white-space:nowrap;vertical-align:top;border-top:1px solid var(--border)">'+escapeHtml(e.name||'')
+          +' <span style="color:'+lv.color+';font-weight:700;font-size:10px">L'+lv.n+'</span>'
+          +(n>1?'<div style="font-size:9.5px;color:var(--accent);font-weight:700">途中でグレード変更（'+n+'行）</div>':'')
+          +skipped.map(function(z){ return '<div style="font-size:9.5px;color:var(--muted);font-weight:400">'+ghMD(z.from)+'〜'+ghMD(z.to)+' は '+z.g+'（対象外）</div>'; }).join('')
+          +(gap?'<div style="font-size:9.5px;color:var(--yellow);font-weight:700"><i class="ti ti-help-circle"></i> '+ghMD(gap.from)+'〜'+ghMD(gap.to)+' グレード不明（対象外）</div>':'')
+          +(el.some(function(z){ return z.noHist; })?'<div style="font-size:9.5px;color:var(--yellow);font-weight:700"><i class="ti ti-alert-triangle"></i> 確定日 未設定</div>':'')
+          +((qr && hire && hire>=qr.qs && hire<=qr.qe)?'<div style="font-size:9.5px;color:var(--muted);font-weight:400">入社 '+ghMD(hire)+'</div>':'')
+          +((st && st.exc)?'<div style="font-size:9.5px;color:var(--accent2);font-weight:700"><i class="ti ti-user-exclamation"></i> 例外：'+escapeHtml(st.out.label)+'</div>':'')+'</td>';
+        h+='<td rowspan="'+n+'" style="padding:6px 7px;vertical-align:middle;border-top:1px solid var(--border)">'+_karteStoreSel(cfg,e,b)+'</td>';
+      }
+      h+='<td style="padding:7px;white-space:nowrap">'+(x.from?(ghMD(x.from)+'〜'+ghMD(x.to)):'四半期')+'</td>'
+        +'<td style="padding:7px">'+ghBadge(x.g)+'</td>'
+        +'<td style="padding:7px;text-align:right;white-space:nowrap">'+(x.days!=null?x.days+'/'+qn:'—')+'</td>'
+        +'<td style="padding:7px;text-align:right;white-space:nowrap">'+_money(x.pr)+(x.days!=null?'<div style="font-size:9.5px;color:var(--muted)">'+_money(x.gbase)+' × '+x.days+'/'+qn+'</div>':'')+'</td>';
+      if(top) h+=coef(b.baCoef, (b.ba&&b.ba.noData)?null:b.baPct, !!(b.ba&&b.ba.noData))+coef(b.spCoef!=null?b.spCoef:1, b.spPct!=null?b.spPct:100, false)+coef(b.csCoef, b.hasCS?b.csPct:null, !b.hasCS);
+      h+='<td style="padding:7px;text-align:right;font-weight:700">'+_money(x.amount)+'</td>';
+      if(top){
+        h+='<td rowspan="'+n+'" style="padding:7px;text-align:right;font-weight:800;font-size:13px;vertical-align:middle;border-top:1px solid var(--border);white-space:nowrap">'+_money(b.amount)
+          +((b.prorated && b.full!=null && b.full!==b.amount)?'<div style="font-size:9.5px;color:var(--muted);font-weight:400">まるごと '+_money(b.full)+'</div>':'')+'</td>';
+        if(tot.over) h+='<td rowspan="'+n+'" style="padding:7px;text-align:right;font-weight:800;color:var(--accent);vertical-align:middle;border-top:1px solid var(--border);white-space:nowrap">'+_money(b.amount*tot.factor)+'</td>';
+      }
+      h+='</tr>';
+    });
+  });
+  h+='</tbody></table></div>';
+  if(qr) h+='<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0;line-height:1.6"><i class="ti ti-info-circle"></i> 日割り基準額＝Grade基準額 × その区間の日数 ÷ 四半期の日数（'+qn+'日）。係数（予算・利益・CS）は四半期で1つ。算出額は区間ごとに出して、本人の合計はその和。「まるごと」＝今のグレードで四半期まるごと計算した場合（日割りの前の計算）。</div>';
+  return h;
+}
+/* 対象外の人（途中退職・休職など）と例外 */
+function kbExcCardHtml(cfg, tot){
+  var ctx=bonusEligCtx(cfg); if(!ctx) return '';
+  var canEdit=['gm','ceo'].indexOf(curRole)>=0, locked=!!ctx.d.locked;
+  var list=getEmployees().map(function(e){ return {e:e, st:bonusElig(e, cfg, ctx)}; }).filter(function(x){ return x.st && x.st.out && !x.st.hide; })
+    .sort(function(a,b){ return (b.st.exc?1:0)-(a.st.exc?1:0) || String(a.e.name||'').localeCompare(String(b.e.name||'')); });
+  if(!list.length) return '';
+  var h='<div class="card"><div class="card-title"><i class="ti ti-user-off" style="color:var(--accent)"></i>対象外の人（途中退職・休職など）'+(locked?'<span class="tag tag-green" style="margin-left:6px;font-size:10px">確定済み</span>':'')+'</div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin:-2px 0 6px;line-height:1.6">四半期の途中で辞めた人は支給の対象外です（CEO 10/5）。例外として入れると、在籍していた期間を日割りで計算して一覧に入ります。</div>';
+  list.forEach(function(x){
+    var e=x.e, b=bonusForEmp(e, cfg), on=!!x.st.exc;
+    var el=(b.segs||[]).filter(function(z){ return z.elig; });
+    h+='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding:7px 0">'
+      +'<b style="font-size:12px">'+escapeHtml(e.name||'')+'</b><span style="font-size:11px;color:'+(x.st.out.k==='mid'?'var(--red)':'var(--muted)')+'">'+escapeHtml(x.st.out.label)+'</span>'
+      +'<span style="font-size:11px;color:var(--muted)">'+el.map(function(z){ return z.g+' '+ghMD(z.from)+'〜'+ghMD(z.to)+'（'+z.days+'日）'; }).join('・')+'</span>'
+      +'<span style="margin-left:auto;font-size:12px;font-weight:700;'+(on?'color:var(--accent2)':'color:var(--muted)')+'">'+(on?'入れている ':'入れたら ')+_money(b.amount)+'</span>'
+      +((canEdit && !locked)?'<button class="btn '+(on?'btn-secondary':'btn-secondary')+' btn-sm" onclick="bonusInclSet(\''+e.id+'\','+(on?'false':'true')+')">'+(on?'外す':'例外として入れる')+'</button>':'')
+      +((on && x.st.inc && x.st.inc.by)?'<div style="flex-basis:100%;font-size:10px;color:var(--muted)">例外として入れた：'+escapeHtml(String(x.st.inc.at||'').slice(0,16))+'・'+escapeHtml(x.st.inc.by)+'</div>':'')+'</div>';
+  });
+  if(locked) h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px"><i class="ti ti-lock"></i> 査定を確定しているので、例外は変えられません（解除すると変えられます）。</div>';
+  return h+'</div>';
+}
+
+/* ===== v1045: 一人ずつの個人ページ（成長管理）と本人に見せる表示 — UI案31 段階4（CEO の依頼 10/5・Motoさんの決定 10/5） =====
+   【個人ページ】上に「← 一覧・‹ 前の人・名前で選ぶ・› 次の人（査定一覧と同じ並び）・本人に見せる表示・印刷」。中身は4つのタブ
+     （概要／グレード・ボーナス／面談・フィードバック／目標・資格）。今までのカードはそのままどれかのタブに入れた。
+   【本人に見せる表示】名前・グレードの歩み・Career Score・今期のボーナス（原資の調整のあと）・ボーナスの推移・フィードバック・次期の目標だけ。
+     原資・経常利益率・計算式（係数）・給与・ほかの人の名前は出さない（Motoさん 10/5「利益率は基本スタッフに見せない」）。 */
+var KD_TABS = [['sum','概要','ti-layout-dashboard'], ['grade','グレード・ボーナス','ti-stairs-up'], ['talk','面談・フィードバック','ti-messages'], ['goal','目標・資格','ti-flag']];
+function karteDetTab(t){ window._karteDetTab=KD_TABS.some(function(x){ return x[0]===t; })?t:'sum'; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
+function karteSelfView(on){ window._karteSelf=!!on; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
+function karteGoPerson(id){ if(!id) return; window._karteSelf=false; window._karteViewEmp=id; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
+/* 前後の人：査定一覧と同じ並び（いま見ている人が入っていなければ最後に） */
+function kdPeople(e){ var l=karteEligibleEmps(); if(e && !l.some(function(x){ return x.id===e.id; })) l=l.concat([e]); return l; }
+/* 期間の長さ「1年2か月」（暦の月で数える） */
+function kdTenure(from, to){
+  var a=String(from||'').split('-'), b=String(to||'').split('-'); if(a.length<3 || b.length<3) return '';
+  var mo=(+b[0]-+a[0])*12+(+b[1]-+a[1])-((+b[2])<(+a[2])?1:0);
+  if(mo<1) return '1か月未満';
+  var y=Math.floor(mo/12), m=mo%12;
+  return (y?y+'年':'')+(m?m+'か月':'');
+}
+function kdHeadHtml(e, g, gcol, lv){
+  var hire=ghHire(e), store=(typeof _karteStoreNm==='function'?_karteStoreNm(e.store):null)||e.store||'';
+  return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;flex-wrap:wrap"><div style="font-weight:800;font-size:18px"><i class="ti ti-id-badge-2" style="color:'+gcol+'"></i> '+escapeHtml(e.name||'')+'</div>'
+    +ghBadge(g||'—')+'<span style="background:'+lv.color+';color:#fff;font-weight:700;border-radius:6px;padding:2px 8px;font-size:11px">L'+lv.n+' '+escapeHtml(lv.label||'')+'</span></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin:0 2px 8px">'+escapeHtml(e.title||'')+(store?' ・ '+escapeHtml(store):'')
+    +(hire?' ・ <span style="white-space:nowrap">入社 '+ghYMD(hire)+'（勤続 '+kdTenure(hire, ghToday())+'）</span>':'')+'</div>';
+}
+function kdTopHtml(e, g, gcol, lv, tab){
+  var ppl=kdPeople(e), n=ppl.length, i=ppl.findIndex(function(x){ return x.id===e.id; });
+  var prev=(n>1)?ppl[(i-1+n)%n]:null, next=(n>1)?ppl[(i+1)%n]:null;
+  var h='<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-secondary btn-sm" onclick="karteBackToList()"><i class="ti ti-arrow-left"></i> 一覧</button>'
+    +(prev?'<button class="btn btn-secondary btn-sm" title="'+escapeHtml(prev.name||'')+'" onclick="karteGoPerson(\''+prev.id+'\')"><i class="ti ti-chevron-left"></i></button>':'')
+    +'<select class="form-select" style="width:auto;max-width:210px;font-size:12.5px;padding:5px 9px;font-weight:700" onchange="karteGoPerson(this.value)">'
+    +ppl.map(function(x){ return '<option value="'+escapeHtml(x.id)+'"'+(x.id===e.id?' selected':'')+'>'+escapeHtml(x.name||'')+'</option>'; }).join('')+'</select>'
+    +(next?'<button class="btn btn-secondary btn-sm" title="'+escapeHtml(next.name||'')+'" onclick="karteGoPerson(\''+next.id+'\')"><i class="ti ti-chevron-right"></i></button>':'')
+    +'<span style="margin-left:auto;display:flex;gap:6px"><button class="btn btn-secondary btn-sm" onclick="karteSelfView(true)"><i class="ti ti-eye"></i> 本人に見せる表示</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="window.print()"><i class="ti ti-printer"></i> 印刷</button></span></div>';
+  h+=kdHeadHtml(e, g, gcol, lv);
+  h+='<div class="seg-tabs" style="margin:6px 0 10px">'+KD_TABS.map(function(t){ return '<div class="seg-tab'+(t[0]===tab?' active':'')+'" onclick="karteDetTab(\''+t[0]+'\')"><i class="ti '+t[2]+'"></i>'+t[1]+'</div>'; }).join('')+'</div>';
+  return h;
+}
+/* グレードの歩み（グレード履歴から）。mgr=false は本人に見せる表示（編集のボタンを出さない） */
+function kdJourneyHtml(e, mgr){
+  var recs=ghRecs(e.id), tl=ghTimeline(e, recs), today=ghToday(), canEdit=!!mgr && ['gm','ceo'].indexOf(curRole)>=0;
+  var h='<div class="card"><div class="card-title"><i class="ti ti-stairs-up" style="color:var(--accent)"></i>グレードの歩み'
+    +(canEdit?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="ghOpenEdit(\''+e.id+'\')"><i class="ti ti-edit"></i> 履歴を直す</button>':'')+'</div>';
+  if(!tl.length) return h+'<div style="font-size:12px;color:var(--muted);line-height:1.7">'+(mgr?('グレード履歴がまだありません（今は '+ghBadge(empGrade(e)||'—')+'）。「履歴を直す」か「グレード履歴」タブで確定日を入れると、ここに歩みが出ます。')
+    :('今のグレードは '+ghBadge(empGrade(e)||'—')+' です。'))+'</div></div>';
+  h+='<div style="display:flex;flex-wrap:wrap;align-items:stretch;row-gap:8px;padding-bottom:2px">';   /* 狭い画面・印刷では折り返す（横にはみ出さない） */
+  tl.forEach(function(t, i){
+    var last=(i===tl.length-1), r=t.rec, end=t.to||today, future=!!(t.from && t.from>today);
+    var line=t.pre?'（記録より前）':(((r&&r.start)?'入社 ':'')+ghYMD(r?r.d:t.from));
+    var sub=t.pre?'':(future?(ghMD(t.from)+' から（これから）'):(((r&&r.start)?'':'確定日（'+ghMD(t.from)+' から）・')+kdTenure(t.from, end)+(last?'（今まで）':'')));
+    h+='<div style="flex:1;min-width:118px;padding:0 6px 0 0">'
+      +'<div style="height:6px;background:'+ghColor(t.g)+';border-radius:3px;margin:9px 0 6px"></div>'
+      +'<div style="display:flex;align-items:center;gap:5px">'+ghBadge(t.g)+(last?'<span style="font-size:10px;color:var(--accent);font-weight:800">今</span>':'')+'</div>'
+      +'<div style="font-size:11px;font-weight:700;margin-top:3px">'+line+'</div><div style="font-size:10px;color:var(--muted)">'+sub+'</div></div>';
+  });
+  return h+'</div></div>';
+}
+/* 今期のボーナス：記録済みならその金額。まだなら算出額（原資を超えていれば調整のあと） */
+function kdCurAmount(e, b, cfg){
+  var q=String(cfg.quarter||'').trim(), k=getKarte(e.id);
+  var rec=(k.payLog||[]).find(function(p){ return p && p.src==='auto' && p.quarter===q; });
+  if(rec) return {amt:Number(String(rec.amount||'').replace(/[$,\s]/g,''))||0, recorded:true, adj:false, out:false};
+  var tot=bonusTotals(cfg), inRows=tot.rows.some(function(r){ return r.e.id===e.id; });
+  if(!inRows) return {amt:0, recorded:false, adj:false, out:true};
+  return {amt:tot.over?Math.round(b.amount*tot.factor):b.amount, recorded:false, adj:!!tot.over, out:false};
+}
+/* ボーナスの推移：給与・ボーナス履歴（四半期の自動の記録・手入力のボーナス）＋今の四半期（まだ記録していなければ「査定中」） */
+function kdBonusHist(e, k, b, cfg, cur){
+  var by={};
+  (k.payLog||[]).forEach(function(p){
+    if(!p || p.type!=='ボーナス') return;
+    var amt=Number(String(p.amount||'').replace(/[$,\s]/g,''))||0;
+    var q=(p.src==='auto')?String(p.quarter||'').trim():(ghDate(p.date)?ghQOf(ghDate(p.date)):'');
+    var qr=ghQRange(q); if(!qr) return; q=qr.q;
+    var sn=p.snap||{}, gl=(Array.isArray(sn.segs) && sn.segs.length>1)?(sn.segs[0].g+'→'+sn.segs[sn.segs.length-1].g):String(sn.grade||'');
+    if(p.src==='auto') by[q]={amt:amt, g:gl, auto:true};
+    else if(!by[q] || !by[q].auto){ var o=by[q]||{amt:0, g:'', auto:false}; o.amt+=amt; by[q]=o; }
+  });
+  var cr=ghQRange(String(cfg.quarter||'').trim());
+  if(cr && !by[cr.q] && cur && !cur.out && cur.amt>0){
+    var el=(b.segs||[]).filter(function(x){ return x.elig; });
+    by[cr.q]={amt:cur.amt, g:(el.length>1?(el[0].g+'→'+el[el.length-1].g):(el[0]?el[0].g:ghNormG(b.grade))), cur:true};
+  }
+  return Object.keys(by).sort().slice(-6).map(function(q){ return Object.assign({q:q}, by[q]); });
+}
+function kdBonusTrendHtml(e, k, b, cfg, cur){
+  var list=kdBonusHist(e, k, b, cfg, cur);
+  var h='<div class="card"><div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>ボーナスの推移（四半期）</div>';
+  if(!list.length) return h+'<div style="font-size:11.5px;color:var(--muted)">まだ記録がありません（四半期の査定を履歴に記録すると、ここに推移が出ます）。</div></div>';
+  var mx=Math.max.apply(null, list.map(function(x){ return x.amt; }))||1;
+  h+='<div style="display:flex;align-items:flex-end;gap:12px;height:132px;padding:0 6px">';
+  list.forEach(function(x){
+    var hh=Math.max(4, Math.round(x.amt/mx*86)), col=x.g?ghColor(String(x.g).split('→').pop()):'var(--accent)';
+    h+='<div style="flex:1;min-width:0;text-align:center"><div style="font-size:11px;font-weight:800;margin-bottom:3px;white-space:nowrap">'+_money(x.amt).replace(/\.00$/,'')+'</div>'
+      +'<div style="height:'+hh+'px;background:'+col+';border-radius:6px 6px 0 0;opacity:'+(x.cur?'0.5':'0.85')+(x.cur?';outline:1.5px dashed '+col+';outline-offset:1px':'')+'"></div>'
+      +'<div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.4">'+escapeHtml(x.q)+'<br>'+escapeHtml(x.g||'')+(x.cur?'<span style="white-space:nowrap">（査定中）</span>':'')+'</div></div>';
+  });
+  return h+'</div></div>';
+}
+function _kdNw(t){ return '<span style="white-space:nowrap">'+t+'</span>'; }
+/* 「（G2 41日＋G3 51日）」：「51日」の途中で折り返さない（折り返すなら「＋」のところで） */
+function _kdSegs(b){ var l=bonusSegsLabel(b); return l?('（'+l.split('＋').map(_kdNw).join('＋')+'）'):''; }
+function _kdClip(t, n){ t=String(t||''); return t.length>n?(t.slice(0,n)+'…'):t; }
+function kdMeetings(k){ return (k.meetings||[]).filter(function(m){ return m; }).slice().sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); }); }
+function kdTilesHtml(e, k, b, cfg, sum, pct, lv, gcol, cur){
+  var mt=kdMeetings(k)[0], goals=(k.goals||[]).filter(function(x){ return x && x.text; }), done=goals.filter(function(x){ return x.done; }).length;
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px">'
+    +_kTile('Career Score', (sum&&sum.hasData)?(pct+'%'):'未評価', 'L'+lv.n+' '+escapeHtml(lv.label||''), lv.color)
+    +_kTile('今期ボーナス', _money(b.amount), escapeHtml(cfg.quarter||'')+(b.prorated?_kdSegs(b):'')
+      +((cur&&cur.out)?_kdNw('・対象外（査定一覧に入っていません）'):'')+((cur&&cur.adj)?_kdNw('・原資の調整後 '+_money(cur.amt)):'')
+      +((cur&&cur.recorded)?_kdNw('・記録済み'+(Math.round(cur.amt)!==Math.round(b.amount)?' '+_money(cur.amt):'')):''), gcol)
+    +_kTile('前回の面談', (mt&&ghDate(mt.date))?ghMD(ghDate(mt.date)):'—', mt?escapeHtml(String(mt.by||'')+(mt.note?'・'+_kdClip(String(mt.note).replace(/\s+/g,' '), 14):'')):'まだありません', 'var(--tm)')
+    +_kTile('次期の目標', goals.length?(done+' / '+goals.length):'—', goals.length?'達成・進行中':'未設定', 'var(--green)')+'</div>';
+}
+function kdRecentTalkHtml(e, k){
+  var ms=kdMeetings(k).slice(0,2);
+  var h='<div class="card"><div class="card-title"><i class="ti ti-messages" style="color:var(--accent)"></i>最近の面談・フィードバック<span style="margin-left:auto"><button class="btn btn-secondary btn-sm" onclick="kdAddMeeting(\''+e.id+'\')"><i class="ti ti-plus"></i> 面談を記録</button></span></div>';
+  if(!ms.length) h+='<div style="font-size:11.5px;color:var(--muted)">まだ面談記録がありません。</div>';
+  ms.forEach(function(m){
+    var d=ghDate(m.date);
+    h+='<div style="border-top:1px solid var(--border);padding:7px 0;font-size:12px;line-height:1.7"><div style="display:flex;gap:8px;color:var(--muted);font-size:11px"><b style="color:var(--tm)">'+(d?ghYMD(d):escapeHtml(m.date||''))+'</b>'+escapeHtml(m.by||'')+'</div>'
+      +'<div>'+(m.note?escapeHtml(m.note).replace(/\n/g,'<br>'):'<span style="color:var(--muted)">（メモなし）</span>')+'</div></div>';
+  });
+  return h+'</div>';
+}
+function kdAddMeeting(empId){ window._karteDetTab='talk'; karteAddMeeting(empId); }
+/* グレード・ボーナス タブ：この人のグレード履歴 */
+function kdGradeCardHtml(e, cfg){
+  var recs=ghRecs(e.id), tl=ghTimeline(e, recs), canEdit=['gm','ceo'].indexOf(curRole)>=0, c=ghCheck(e, recs), qr=ghQRange(String(cfg.quarter||'').trim());
+  var h='<div class="card"><div class="card-title"><i class="ti ti-timeline" style="color:var(--accent)"></i>グレード履歴'+(canEdit?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="ghOpenEdit(\''+e.id+'\')"><i class="ti ti-edit"></i> 編集</button>':'')+'</div>';
+  h+='<div style="font-size:12px;margin-bottom:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">今の役職 <b>'+escapeHtml(e.title||'（未設定）')+'</b> ＝ '+ghBadge(c.cur||'—')
+    +(c.state==='ok'?'<span style="color:var(--green);font-size:11px"><i class="ti ti-circle-check"></i> 最後の記録と一致</span>'
+      :(c.state==='diff'?'<span style="color:var(--yellow);font-size:11px;font-weight:700"><i class="ti ti-alert-triangle"></i> 最後の記録（'+c.last+'）と違います</span>'
+      :'<span style="color:var(--yellow);font-size:11px;font-weight:700"><i class="ti ti-alert-triangle"></i> 確定日 未設定（今のグレードを四半期まるごとに使っています）</span>'))+'</div>';
+  if(recs.length){
+    h+='<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--surface2);text-align:left;color:var(--muted);font-size:10.5px">'
+      +'<th style="padding:6px 8px">確定日</th><th style="padding:6px 8px">変更</th><th style="padding:6px 8px">いつから</th><th style="padding:6px 8px">記録</th></tr></thead><tbody>';
+    tl.slice().reverse().forEach(function(t){
+      if(!t.rec) return;
+      h+='<tr style="border-top:1px solid var(--border)"><td style="padding:7px 8px;font-weight:700;white-space:nowrap">'+ghYMD(t.rec.d)+'</td><td style="padding:7px 8px;white-space:nowrap">'+ghChangeHtml(t.rec, t.prev)+'</td>'
+        +'<td style="padding:7px 8px;white-space:nowrap">'+ghYMD(t.from)+'<div style="font-size:10px;color:var(--muted)">'+(t.rec.start?'入社日の当日から':'確定日の翌日から')+'</div></td>'
+        +'<td style="padding:7px 8px">'+ghSrcTag(t.rec)+'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(t.rec.by||'')+(t.rec.note?'・'+escapeHtml(t.rec.note):'')+'</div></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  if(qr){
+    var d=bqGet(qr.q), segs=bonusSegs(e, qr, d), gap=ghGapBefore(e, qr.qs, qr.qe, recs);
+    h+='<div style="background:var(--surface2);border-radius:10px;padding:8px 11px;margin-top:8px;font-size:11.5px;line-height:1.8"><b>'+qr.q+' の対象期間</b>'+((d.locked && d.segSnap && d.segSnap[e.id])?'<span style="color:var(--muted);font-size:10.5px">（査定を確定したときの区間）</span>':'')+'<br>'
+      +(segs.length?segs.map(function(x){ return ghBadge(x.g)+' '+ghMD(x.from)+'〜'+ghMD(x.to)+'（'+x.days+'日）'+(ghElig(x.g,cfg)?'':' <span style="color:var(--muted)">対象外</span>'); }).join('　'):'<span style="color:var(--muted)">この四半期に在籍した期間がありません</span>')
+      +(gap?'<div style="color:var(--yellow);font-size:11px"><i class="ti ti-help-circle"></i> '+ghMD(gap.from)+'〜'+ghMD(gap.to)+' はグレードが分かりません（対象外）。</div>':'')+'</div>';
+  }
+  return h+'</div>';
+}
+/* 本人に見せる表示：原資・経常利益率・計算式（係数）・給与・ほかの人は出さない */
+function renderKarteSelfView(e, x){
+  var cfg=x.cfg, k=x.k, b=x.b, sum=x.sum, pct=x.pct, lv=x.lv, g=x.g, gcol=x.gcol, cur=kdCurAmount(e, b, cfg);
+  /* 本人に見せる表示のあいだは、セキュアページの見出し（ログアウト・ログイン中のメール）を隠す。印刷ではボタンの行を出さない */
+  var h='<style>'+(window._secureMode?'#manager-secure-screen .sec-shell>div:not(#mgr-secure-body){display:none!important}':'')+'@media print{.kd-noprint{display:none!important}}</style>'
+    +'<div class="kd-noprint" style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="karteSelfView(false)"><i class="ti ti-arrow-left"></i> 管理の表示に戻る</button>'
+    +'<span style="font-size:10.5px;color:var(--muted)"><i class="ti ti-eye"></i> 本人に見せる表示</span>'
+    +'<span style="margin-left:auto"><button class="btn btn-secondary btn-sm" onclick="window.print()"><i class="ti ti-printer"></i> 印刷</button></span></div>';
+  h+=kdHeadHtml(e, g, gcol, lv);
+  h+=kdJourneyHtml(e, false);
+  var goals=(k.goals||[]).filter(function(z){ return z && z.text; }), done=goals.filter(function(z){ return z.done; }).length;
+  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px">'
+    +_kTile('Career Score', (sum&&sum.hasData)?(pct+'%'):'未評価', 'L'+lv.n+' '+escapeHtml(lv.label||''), lv.color)
+    +_kTile('今期のボーナス', cur.out?'対象外':_money(cur.amt), escapeHtml(cfg.quarter||'')+((b.prorated && !cur.out)?_kdSegs(b):'')+(cur.out?'':_kdNw(cur.recorded?'・記録済み':'・査定中')), gcol)
+    +_kTile('次期の目標', goals.length?(done+' / '+goals.length):'—', goals.length?'達成・進行中':'これから決めます', 'var(--green)')+'</div>';
+  h+=kdBonusTrendHtml(e, k, b, cfg, cur);
+  if(sum && sum.hasData && sum.cats && sum.cats.length){
+    h+='<div class="card"><div class="card-title"><i class="ti ti-chart-donut" style="color:var(--accent)"></i>Career Score の内訳</div><div style="display:flex;flex-direction:column;gap:5px">';
+    sum.cats.forEach(function(c){ var p=Math.max(0, Math.min(100, Number(c.pct)||0));
+      h+='<div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span style="flex:0 0 150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(c.name||c.key||'')+'</span>'
+        +'<div style="flex:1;background:var(--border);border-radius:4px;height:7px;overflow:hidden"><div style="width:'+p+'%;height:7px;background:'+(p>=75?'var(--green)':(p>=50?'var(--accent)':'var(--red)'))+'"></div></div>'
+        +'<span style="width:40px;text-align:right;font-weight:700">'+Math.round(p)+'%</span></div>'; });
+    h+='</div></div>';
+  }
+  var notes=[['strengthsNote','強み（すばらしい点）','var(--green)'], ['growthNote','次に伸ばす点','var(--accent2)'], ['improveNote','改善してほしい点','var(--accent)'], ['overall','総合所見','var(--tm)']]
+    .filter(function(z){ return String(k[z[0]]||'').trim(); });
+  h+='<div class="card"><div class="card-title"><i class="ti ti-message-heart" style="color:var(--accent)"></i>フィードバック</div>';
+  if(!notes.length) h+='<div style="font-size:11.5px;color:var(--muted)">まだ書かれていません。</div>';
+  notes.forEach(function(z){ h+='<div style="border-top:1px solid var(--border);padding:7px 0;font-size:12.5px;line-height:1.75"><b style="color:'+z[2]+'">'+z[1]+'</b><div>'+escapeHtml(String(k[z[0]]).trim()).replace(/\n/g,'<br>')+'</div></div>'; });
+  h+='</div>';
+  h+='<div class="card"><div class="card-title"><i class="ti ti-flag" style="color:var(--accent)"></i>次期の目標</div>';
+  if(!goals.length) h+='<div style="font-size:11.5px;color:var(--muted)">これから一緒に決めます。</div>';
+  goals.forEach(function(z){ var due=ghDate(z.due);
+    h+='<div style="display:flex;gap:8px;align-items:flex-start;border-top:1px solid var(--border);padding:7px 0;font-size:12.5px;line-height:1.6"><span style="color:'+(z.done?'var(--green)':'var(--muted)')+';font-weight:800">'+(z.done?'✓':'○')+'</span>'
+      +'<div style="flex:1"><div style="font-weight:700">'+escapeHtml(z.text)+'</div>'+((z.metric||due)?'<div style="font-size:11px;color:var(--muted)">'+escapeHtml(z.metric||'')+(due?((z.metric?'・':'')+ghYMD(due)+' まで'):'')+'</div>':'')+'</div></div>'; });
+  h+='</div>';
+  return h;
 }
 
 /* --- config 編集 --- */
 function bonusSetProfit(v){ var c=kbCfg(); c.profit=Math.max(0,parseFloat(String(v).replace(/[, ]/g,''))||0); kbSave(c); kbRefresh(); }
 function bonusSetRate(v){ var c=kbCfg(); c.poolRate=Math.max(0,(parseFloat(v)||0)/100); kbSave(c); kbRefresh(); }
-function bonusSetQuarter(v){ var c=kbCfg(); c.quarter=v; kbSave(c); kbRefresh(); }
+function bonusSetQuarter(v){ var c=kbCfg();
+  if(Number(c.profit)>0 && !c.profitQ) c.profitQ=String(c.quarter||'').trim();   /* v1042: 今までの経常利益は、そのとき選んでいた四半期のもの */
+  c.quarter=String(v||'').trim(); kbSave(c); kbRefresh(); }
 function bonusSetGradeBase(g,v){ var c=kbCfg(); c.gradeBase[g]=Math.max(0,parseFloat(String(v).replace(/[, ]/g,''))||0); kbSave(c); kbRefresh(); }
 function bonusSetCs(which,v){ var c=kbCfg(); c[which]=parseFloat(v)||0; kbSave(c); kbRefresh(); }
 function bonusSetStoreScore(sid,v){ var c=kbCfg(); c.storeScore=c.storeScore||{}; var n=parseFloat(String(v).replace(/[%, ]/g,'')); if(isNaN(n)){ delete c.storeScore[sid]; } else { c.storeScore[sid]=Math.max(0,n); } kbSave(c); kbRefresh(); }
@@ -55862,24 +57134,21 @@ function renderGrowthKarte(){
   h+='</div>';
   h+='<div class="phase-tabs" style="margin-bottom:10px">'
     +'<div class="phase-tab'+(tab==='list'?' active':'')+'" onclick="karteSetTab(\'list\')"><i class="ti ti-list" style="font-size:12px"></i> 査定一覧</div>'
+    +'<div class="phase-tab'+(tab==='grade'?' active':'')+'" onclick="karteSetTab(\'grade\')"><i class="ti ti-timeline" style="font-size:12px"></i> グレード履歴</div>'   /* v1043 */
     +'<div class="phase-tab'+(tab==='config'?' active':'')+'" onclick="karteSetTab(\'config\')"><i class="ti ti-settings" style="font-size:12px"></i> 設定</div>'
     +'</div>';
-  if(tab==='config'){ h+=renderKarteConfig(cfg, tot); }
+  if(tab==='grade'){ h+=renderGradeHistTab(cfg); }
+  else if(tab==='config'){ h+=renderKarteConfig(cfg, tot); }
   else { h+='<div id="kbResult">'+kbResultHtml()+'</div>'; }
   return h;
 }
-function karteSetTab(t){ window._karteTab=(t==='config'?'config':'list'); karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
+function karteSetTab(t){ window._karteTab=((t==='config'||t==='grade')?t:'list'); karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
 
 function renderKarteConfig(cfg, tot){
   var h='';
-  /* 原資 */
-  h+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--accent)"></i>ボーナス原資（四半期）</div>';
-  h+='<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">';
-  h+='<div><label class="form-label">四半期</label><input class="form-input" style="width:110px" value="'+escapeHtml(cfg.quarter||'')+'" onchange="bonusSetQuarter(this.value)"></div>';
-  h+='<div><label class="form-label">四半期 経常利益（$）</label><input class="form-input" style="width:150px;text-align:right" value="'+(cfg.profit||0)+'" onchange="bonusSetProfit(this.value)"></div>';
-  h+='<div><label class="form-label">原資率（%）</label><input class="form-input" style="width:90px;text-align:right" value="'+(Math.round((cfg.poolRate||0)*1000)/10)+'" onchange="bonusSetRate(this.value)"></div>';
-  h+='<div style="background:var(--surface2);border-radius:8px;padding:7px 12px"><div style="font-size:10px;color:var(--muted)">原資（上限）</div><div style="font-size:16px;font-weight:800;color:var(--accent)">'+_money(tot.pool)+'</div></div>';
-  h+='</div></div>';
+  /* 原資（v1042：経常利益率から・CEO の表）と算出基準のメモ */
+  h+=renderBonusPoolCard(cfg);
+  h+=renderBonusMemoCard();
   /* グレード基準額 */
   h+='<div class="card"><div class="card-title"><i class="ti ti-stairs-up" style="color:var(--accent)"></i>グレード別 基準額</div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">';
@@ -55896,7 +57165,7 @@ function renderKarteConfig(cfg, tot){
   h+='<div><label class="form-label">利益係数 下限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.spMin+'" onchange="bonusSetSp(\'spMin\',this.value)"></div>';
   h+='<div><label class="form-label">利益係数 上限</label><input class="form-input" style="width:78px;text-align:right" value="'+cfg.spMax+'" onchange="bonusSetSp(\'spMax\',this.value)"></div>';
   h+='</div>';
-  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 個人額＝<b>Grade基準額 × 予算達成率 × 店舗利益係数 × CS係数 × 店舗利益係数</b>。CS係数＝Career Score%、店舗利益係数＝利益達成率% を各下限〜上限に線形マップ（100%＝中央）。</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 個人額＝<b>Grade基準額（グレード履歴から日割り）× 予算達成率 × 店舗利益係数 × CS係数</b>。CS係数＝Career Score%、店舗利益係数＝利益達成率% を各下限〜上限に線形マップ（100%＝中央）。</div>';
   h+='</div>';
   /* 店舗別利益スコア */
   h+='<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店舗別 利益スコア</div>';
@@ -56008,19 +57277,26 @@ function _karteStoreSel(cfg,e,b){
   var over=!!(cfg.empStore&&cfg.empStore[e.id]);
   var _bs=(typeof karteEmpStoreBasis==='function')?karteEmpStoreBasis(cfg,e):{label:''};   /* v799 */
   var label=(nm.length===0)?'未設定':(nm.length===1?nm[0]:(nm[0]+' +'+(nm.length-1)));
-  label+='<div style="font-size:9px;color:var(--muted);font-weight:400">'+escapeHtml(_bs.label||'')+'</div>';
-  return '<button onclick="event.stopPropagation();openKarteStoreModal(\''+e.id+'\')" title="'+escapeHtml(nm.join(' / '))+'" style="font-size:11px;max-width:140px;padding:3px 8px;border:1px solid '+(over?'var(--accent)':'var(--border)')+';border-radius:6px;background:var(--surface);color:var(--tm);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-flex;align-items:center;gap:4px"><i class="ti ti-building-store" style="font-size:11px;flex-shrink:0"></i><span style="overflow:hidden;text-overflow:ellipsis">'+escapeHtml(label)+'</span></button>';
+  /* v1044: 説明（配属店・手動指定など）は2行目に文字として出す。以前は HTML ごと escapeHtml して「<div style=…>」という文字が出ていた（v799〜） */
+  return '<button onclick="event.stopPropagation();openKarteStoreModal(\''+e.id+'\')" title="'+escapeHtml(nm.join(' / '))+'" style="font-size:11px;max-width:140px;padding:3px 8px;border:1px solid '+(over?'var(--accent)':'var(--border)')+';border-radius:6px;background:var(--surface);color:var(--tm);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-flex;align-items:center;gap:4px"><i class="ti ti-building-store" style="font-size:11px;flex-shrink:0"></i>'
+    +'<span style="display:inline-flex;flex-direction:column;align-items:flex-start;min-width:0;overflow:hidden;line-height:1.25"><span style="overflow:hidden;text-overflow:ellipsis;max-width:110px">'+escapeHtml(label)+'</span>'
+    +(_bs.label?'<span style="font-size:9px;color:var(--muted);font-weight:400">'+escapeHtml(_bs.label)+'</span>':'')+'</span></button>';
 }
 
 function kbResultHtml(){
   var cfg=kbCfg(); var tot=bonusTotals(cfg);
   var h='';
   /* 原資サマリ */
-  h+='<div class="card" style="border-left:3px solid '+(tot.over?'var(--red)':'var(--green)')+'"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">';
-  h+='<div><div style="font-size:10px;color:var(--muted)">算出合計</div><div style="font-size:18px;font-weight:800">'+_money(tot.total)+'</div></div>';
-  h+='<div><div style="font-size:10px;color:var(--muted)">原資（'+(Math.round((cfg.poolRate||0)*1000)/10)+'%）</div><div style="font-size:18px;font-weight:800">'+_money(tot.pool)+'</div></div>';
-  h+='<div><div style="font-size:10px;color:var(--muted)">'+(tot.over?'超過':'余剰')+'</div><div style="font-size:18px;font-weight:800;color:'+(tot.over?'var(--red)':'var(--green)')+'">'+(tot.diff>=0?'+':'')+_money(tot.diff)+'</div></div>';
-  if(tot.over){ h+='<div style="background:#e23b3b14;border-radius:8px;padding:6px 11px;font-size:11px;color:var(--red);line-height:1.5"><b>原資超過</b>。原資調整係数 ×'+tot.factor.toFixed(3)+' を適用すると合計が原資に収まります（下表「調整後」）。</div>'; }
+  var _pi=tot.poolInfo||{};   /* v1042: 原資は経常利益率から（未入力なら決まらない＝上限を掛けない） */
+  h+='<div class="card" style="border-left:3px solid '+(!tot.poolKnown?'var(--border)':(tot.over?'var(--red)':'var(--green)'))+'"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">';
+  h+='<div><div style="font-size:10px;color:var(--muted)">算出合計（日割り）</div><div style="font-size:18px;font-weight:800">'+_money(tot.total)+'</div></div>';
+  h+='<div><div style="font-size:10px;color:var(--muted)">原資（'+(tot.poolKnown?('経常利益率 '+_pi.margin+'% → '+_pi.rate+'%'):'未設定')+'）</div><div style="font-size:18px;font-weight:800'+(tot.poolKnown?'':';color:var(--muted)')+'">'+(tot.poolKnown?_money(tot.pool):'—')+'</div></div>';
+  if(tot.poolKnown) h+='<div><div style="font-size:10px;color:var(--muted)">'+(tot.over?'超過':'余剰')+'</div><div style="font-size:18px;font-weight:800;color:'+(tot.over?'var(--red)':'var(--green)')+'">'+(tot.diff>=0?'+':'')+_money(tot.diff)+'</div></div>';
+  else h+='<div style="font-size:11px;color:var(--muted);line-height:1.5;flex:1;min-width:200px">設定タブで、この四半期の経常利益と経常利益率を入れると原資が決まります（決まるまでは上限を掛けません）。</div>';
+  if(tot.over && tot.pool===0){ h+='<div style="background:#e23b3b14;border-radius:8px;padding:6px 11px;font-size:11px;color:var(--red);line-height:1.5"><b>原資 $0</b>。経常利益率が '+escapeHtml(bonusPoolRowLabel(_pi.row))+' のため、この四半期のボーナスは全員 $0 です（下表「調整後」）。</div>'; }
+  else if(tot.over){ h+='<div style="background:#e23b3b14;border-radius:8px;padding:6px 11px;font-size:11px;color:var(--red);line-height:1.5"><b>原資超過</b>。原資調整係数 ×'+tot.factor.toFixed(3)+' を適用すると合計が原資に収まります（下表「調整後」）。</div>'; }
+  var _qr4=ghQRange(String(cfg.quarter||'').trim());   /* v1044 */
+  if(_qr4) h+='<div style="flex-basis:100%;font-size:11px;color:var(--muted);line-height:1.6">'+_qr4.q+'：'+ghMD(_qr4.qs)+'〜'+ghMD(_qr4.qe)+'（'+_qr4.n+'日）。グレードが変わった人は、グレード履歴から区間ごとに日割りで計算します。</div>';
   h+='<div style="flex-basis:100%;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:6px;padding-top:10px">';
   h+='<button class="btn btn-primary btn-sm" onclick="bonusConfirmQuarter()"><i class="ti ti-check"></i> この四半期を確定して履歴に記録</button>';
   var _cq=String(cfg.quarter||'').trim(); var _cst=(cfg.confirmedLog&&cfg.confirmedLog[_cq])||null;
@@ -56029,31 +57305,9 @@ function kbResultHtml(){
   h+='</div>';
   h+='</div></div>';
 
-  /* ボーナス一覧 */
-  h+='<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:560px">';
-  h+='<thead><tr style="background:var(--surface2);text-align:left">'
-    +['氏名','利益係数店舗','G','Lv','基準額','予算%','予算係数','CS%','CS係数','利益%','利益係数','算出額'].concat(tot.over?['調整後']:[]).map(function(x){return '<th style="padding:8px 10px;font-size:10.5px;color:var(--muted);white-space:nowrap">'+x+'</th>';}).join('')
-    +'</tr></thead><tbody>';
-  if(!tot.rows.length){ h+='<tr><td colspan="'+(tot.over?13:12)+'" style="padding:18px;text-align:center;color:var(--muted)">対象者（G2以上・在籍）がいません</td></tr>'; }
-  tot.rows.forEach(function(r){
-    var e=r.e, b=r.b; var lv=(typeof evalLevelFromPct==='function')?evalLevelFromPct(b.csPct):{n:'-',color:'var(--muted)'};
-    h+='<tr style="border-top:1px solid var(--border);cursor:pointer" onclick="openKarteDetail(\''+e.id+'\')">'
-      +'<td style="padding:8px 10px;font-weight:700;white-space:nowrap">'+escapeHtml(e.name||'')+'</td>'
-      +'<td style="padding:6px 8px">'+_karteStoreSel(cfg,e,b)+'</td>'
-      +'<td style="padding:8px 10px;font-weight:700">'+b.grade+'</td>'
-      +'<td style="padding:8px 10px"><span style="color:'+lv.color+';font-weight:700">L'+lv.n+'</span></td>'
-      +'<td style="padding:8px 10px;text-align:right">'+_money(b.base)+'</td>'
-      +'<td style="padding:8px 10px;text-align:right">'+((b.ba&&b.ba.noData)?'<span style="color:var(--muted)">未</span>':(b.baPct+'%'))+'</td>'
-      +'<td style="padding:8px 10px;text-align:right">'+Number(b.baCoef!=null?b.baCoef:1).toFixed(2)+'</td>'
-      +'<td style="padding:8px 10px;text-align:right">'+(b.hasCS?b.csPct+'%':'<span style="color:var(--muted)">未</span>')+'</td>'
-      +'<td style="padding:8px 10px;text-align:right">'+b.csCoef.toFixed(2)+'</td>'
-      +'<td style="padding:8px 10px;text-align:right">'+(b.spPct!=null?b.spPct+'%':'100%')+'</td>'
-      +'<td style="padding:8px 10px;text-align:right">'+(b.spCoef!=null?b.spCoef.toFixed(2):'1.00')+'</td>'
-      +'<td style="padding:8px 10px;text-align:right;font-weight:800">'+_money(b.amount)+'</td>'
-      +(tot.over?'<td style="padding:8px 10px;text-align:right;font-weight:800;color:var(--accent)">'+_money(b.amount*tot.factor)+'</td>':'')
-      +'</tr>';
-  });
-  h+='</tbody></table></div>';
+  /* ボーナス一覧（v1044：グレード履歴から日割り・途中で変わった人は2行／UI案31-7）・対象外の人と例外 */
+  h+=kbListTableHtml(cfg, tot);
+  h+=kbExcCardHtml(cfg, tot);
   h+='<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0"><i class="ti ti-click"></i> 行をタップで個人の総合人事評価ページ（推移・ボーナス査定・面談サポート）を開きます。</div>';
   return h;
 }
@@ -56064,8 +57318,8 @@ function kbRefresh(){
 
 /* ===== 個人カルテ（面談資料） ===== */
 /* ===== 個人カルテ = 総合人事評価ページ（面談資料） ===== */
-function openKarteDetail(empId){ window._karteViewEmp=empId; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
-function karteBackToList(){ window._karteViewEmp=null; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
+function openKarteDetail(empId){ window._karteSelf=false; window._karteViewEmp=empId; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
+function karteBackToList(){ window._karteSelf=false; window._karteDetTab='sum'; window._karteViewEmp=null; karteRerender(); try{window.scrollTo(0,0);}catch(e){} }
 
 function karteTenure(hire){
   if(!hire) return '—';
@@ -56078,7 +57332,8 @@ function karteTenure(hire){
 /* ボーナス「なぜこの金額か」説明（原資・計算式は出さない・係数のみ） */
 function karteBonusExplain(e, b){
   var out=[];
-  out.push('Grade <b>'+b.grade+'</b> の基準額 <b>'+_money(b.base)+'</b> をベースに査定しています。');
+  if(b.prorated) out.push('グレード履歴から、'+bonusSegsLabel(b, true)+' の日割り基準額 <b>'+_money(b.prBase)+'</b> をベースに査定しています。');   /* v1044 */
+  else out.push('Grade <b>'+b.grade+'</b> の基準額 <b>'+_money(b.base)+'</b> をベースに査定しています。');
   if(b.hasCS){
     var csDir = b.csCoef>1.0?'標準を上回る':(b.csCoef<1.0?'標準を下回る':'標準どおりの');
     out.push('Career Score <b>'+b.csPct+'%</b> の評価により、評価係数は'+csDir+' <b>×'+b.csCoef.toFixed(2)+'</b> が反映されています。');
@@ -56138,26 +57393,16 @@ function renderKarteDetailPage(empId){
   var storeId=(e.store&&e.store!=='ALL')?e.store:null;
   var elig=(typeof checkLevelUpEligibility==='function'&&storeId)?checkLevelUpEligibility(e.name,storeId):null;
 
+  if(window._karteSelf) return renderKarteSelfView(e, {cfg:cfg, k:k, b:b, sum:sum, pct:pct, lv:lv, g:g, gcol:gcol});   /* v1045: 本人に見せる表示（UI案31 段階4） */
   var h='';
-  /* ヘッダー */
-  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">';
-  h+='<button class="btn btn-secondary btn-sm" onclick="karteBackToList()"><i class="ti ti-arrow-left"></i> 一覧</button>';
-  h+='<div style="font-weight:800;font-size:16px"><i class="ti ti-id-badge-2" style="color:'+gcol+'"></i> '+escapeHtml(e.name||'')+'</div>';
-  h+='<span style="background:'+gcol+';color:#fff;font-weight:800;border-radius:8px;padding:3px 9px;font-size:13px">'+g+'</span>';
-  h+='<span style="background:'+lv.color+';color:#fff;font-weight:700;border-radius:6px;padding:2px 8px;font-size:11px">L'+lv.n+' '+escapeHtml(lv.label||'')+'</span>';
-  h+='<span style="margin-left:auto"><button class="btn btn-secondary btn-sm" onclick="window.print()"><i class="ti ti-printer"></i> 印刷</button></span>';
-  h+='</div>';
-  h+='<div style="font-size:12px;color:var(--muted);margin:0 2px 10px">'+escapeHtml(e.title||'')+' ・ '+escapeHtml((typeof _karteStoreNm==='function'?_karteStoreNm(e.store):null)||e.store||'')+' ・ 勤続 '+karteTenure(k.hireDate)+'</div>';
-
-  /* サマリー tiles */
-  var skAcq=0, skTot=0;
-  try{ if(storeId){ var poss=getStorePositions(storeId).filter(function(p){return p!=='Energy'&&p!=='Leadership';}); var sk=getEmpSkills(e.name)||{}; skTot=poss.length; skAcq=poss.filter(function(p){return sk[p]&&sk[p].status==='承認'&&sk[p].level>=2;}).length; } }catch(_e){}
-  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:8px;margin-bottom:10px">';
-  h+=_kTile('Career Score', (sum&&sum.hasData)?(pct+'%'):'未評価', 'レベル L'+lv.n, lv.color);
-  h+=_kTile('Tip Rate', (rate===0?'No Tip':(rate!=null?rate+'%':'—')), (elig&&elig.target?('次: '+elig.target.label):''), 'var(--accent)');
-  h+=_kTile('スキル Lv2+', skAcq+' / '+skTot, '習得ポジション', 'var(--green)');
-  h+=_kTile('今期ボーナス', _money(b.amount), escapeHtml(cfg.quarter||''), gcol);
-  h+='</div>';
+  var _tab=KD_TABS.some(function(x){ return x[0]===window._karteDetTab; })?window._karteDetTab:'sum';   /* v1045: 一人ずつのページ・タブ */
+  h+=kdTopHtml(e, g, gcol, lv, _tab);
+  if(_tab==='sum'){
+  var _cur=kdCurAmount(e, b, cfg);
+  h+=kdJourneyHtml(e, true);
+  h+=kdTilesHtml(e, k, b, cfg, sum, pct, lv, gcol, _cur);
+  h+=kdBonusTrendHtml(e, k, b, cfg, _cur);
+  h+=kdRecentTalkHtml(e, k);
 
   /* Career Score 推移 */
   h+='<div class="card"><div class="card-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i>Career Score の推移</div>';
@@ -56188,11 +57433,14 @@ function renderKarteDetailPage(empId){
   else { h+='<div style="font-size:11px;color:var(--muted)">変更履歴なし</div>'; }
   h+='</div>';
 
+  } else if(_tab==='grade'){
+  h+=kdGradeCardHtml(e, cfg);
+
   /* 給与・ボーナス査定（係数の見える化・原資/計算式は非表示） */
   h+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--accent)"></i>給与・ボーナス査定（'+escapeHtml(cfg.quarter||'')+'）</div>';
   h+='<div style="font-size:12px;margin-bottom:8px"><span style="color:var(--muted)">現在給与：</span><b>'+(e.wage?('$'+e.wage):'—')+'</b></div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">';
-  h+=_kFactor('Grade基準額', _money(b.base), gcol);
+  h+=_kFactor(b.prorated?'日割り基準額':'Grade基準額', _money(b.prorated?b.prBase:b.base), gcol);   /* v1044 */
   h+=_kFactor('予算達成率', '×'+b.baCoef.toFixed(2)+(b.ba&&b.ba.noData?' (未)':''), 'var(--accent2)');
   h+=_kFactor('Career Score係数', '×'+b.csCoef.toFixed(2)+(b.hasCS?'':' (未)'), lv.color);
   if(b.spCoef!=null) h+=_kFactor('店舗利益係数', '×'+b.spCoef.toFixed(2), 'var(--green)');
@@ -56215,7 +57463,7 @@ function renderKarteDetailPage(empId){
       +'<span style="font-size:11.5px;font-weight:700">ボーナス'+(p.quarter?' <span style="color:var(--muted);font-weight:500">('+escapeHtml(p.quarter)+')</span>':'')+'</span>'
       +'<span style="font-weight:800;margin-left:auto">'+_money(Number(p.amount)||0)+'</span>'
       +'<button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="kartePayDel(\''+empId+'\',\''+p.id+'\')">×</button>';
-      if(sn.grade){ h+='<div style="flex-basis:100%;font-size:10px;color:var(--muted);padding-left:2px">'+escapeHtml(sn.grade)+' 基準'+_money(sn.base||0)+(sn.baCoef!=null?' ・予算×'+Number(sn.baCoef).toFixed(2):'')+(sn.coef!=null?' ・個人×'+Number(sn.coef).toFixed(2)+'(旧式)':'')+' ・CS×'+(sn.csCoef!=null?Number(sn.csCoef).toFixed(2):'—')+(sn.spCoef!=null?' ・利益×'+Number(sn.spCoef).toFixed(2):'')+((sn.adj!=null&&sn.adj<1)?' ・原資調整×'+Number(sn.adj).toFixed(3):'')+'</div>'; }
+      if(sn.grade){ h+='<div style="flex-basis:100%;font-size:10px;color:var(--muted);padding-left:2px">'+((Array.isArray(sn.segs)&&sn.segs.length&&sn.prBase!=null&&Math.abs(sn.prBase-(sn.base||0))>0.004)?(escapeHtml(sn.segs.map(function(x){ return x.g+' '+x.days+'日'; }).join('＋'))+' 日割り'+_money(sn.prBase)+' ・'):'')+escapeHtml(sn.grade)+' 基準'+_money(sn.base||0)+(sn.baCoef!=null?' ・予算×'+Number(sn.baCoef).toFixed(2):'')+(sn.coef!=null?' ・個人×'+Number(sn.coef).toFixed(2)+'(旧式)':'')+' ・CS×'+(sn.csCoef!=null?Number(sn.csCoef).toFixed(2):'—')+(sn.spCoef!=null?' ・利益×'+Number(sn.spCoef).toFixed(2):'')+((sn.adj!=null&&sn.adj<1)?' ・原資調整×'+Number(sn.adj).toFixed(3):'')+'</div>'; }
       h+='</div>';
     } else {
       h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px">'
@@ -56230,6 +57478,7 @@ function renderKarteDetailPage(empId){
   h+='<button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="kartePayAdd(\''+empId+'\')"><i class="ti ti-plus"></i> 履歴を追加</button>';
   h+='</div>';
 
+  } else if(_tab==='talk'){
   /* 面談サポート */
   h+='<div class="card" style="border-left:3px solid var(--accent)"><div class="card-title"><i class="ti ti-messages" style="color:var(--accent)"></i>面談サポート</div>';
   h+='<div style="font-size:11px;color:var(--muted);margin-bottom:4px">今回のトークポイント（自動生成／上から順に話すとスムーズ）</div>';
@@ -56241,6 +57490,15 @@ function renderKarteDetailPage(empId){
   h+=_kNote('総合所見（良い点を中心に）', 'overall', k, empId, null);
   h+='</div>';
 
+  /* 面談ログ */
+  h+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--accent)"></i>面談ログ</div>';
+  var mtgs=(k.meetings||[]).slice().reverse();
+  if(mtgs.length){ mtgs.forEach(function(m){ h+='<div style="border-top:1px solid var(--border);padding:7px 0"><div style="display:flex;gap:8px;align-items:center;margin-bottom:3px"><input type="date" class="form-input" style="width:150px" value="'+escapeHtml(m.date||'')+'" onchange="karteSetMeeting(\''+empId+'\',\''+m.id+'\',\'date\',this.value)"><span style="color:var(--muted);font-size:10px">'+escapeHtml(m.by||'')+'</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 7px;color:var(--red)" onclick="karteDelMeeting(\''+empId+'\',\''+m.id+'\')">×</button></div><textarea class="form-textarea" style="min-height:44px" placeholder="所感・合意事項・申し送り" onchange="karteSetMeeting(\''+empId+'\',\''+m.id+'\',\'note\',this.value)">'+escapeHtml(m.note||'')+'</textarea></div>'; }); }
+  else { h+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">まだ面談記録がありません。実施したら記録して次回の申し送りに使いましょう。</div>'; }
+  h+='<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="karteAddMeeting(\''+empId+'\')"><i class="ti ti-plus"></i> 面談を記録</button>';
+  h+='</div>';
+
+  } else {
   /* 次期の目標 */
   h+='<div class="card"><div class="card-title"><i class="ti ti-flag" style="color:var(--accent)"></i>次期の目標（合意事項）</div>';
   var goals=k.goals||[];
@@ -56252,14 +57510,6 @@ function renderKarteDetailPage(empId){
     +'<button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" onclick="karteDelGoal(\''+empId+'\',\''+gg.id+'\')">×</button></div>'; }); }
   else { h+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">目標が未設定です。面談で合意した目標（何を・いつまでに・どうなったら達成か）を追加しましょう。</div>'; }
   h+='<button class="btn btn-secondary btn-sm" onclick="karteAddGoal(\''+empId+'\')"><i class="ti ti-plus"></i> 目標を追加</button>';
-  h+='</div>';
-
-  /* 面談ログ */
-  h+='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--accent)"></i>面談ログ</div>';
-  var mtgs=(k.meetings||[]).slice().reverse();
-  if(mtgs.length){ mtgs.forEach(function(m){ h+='<div style="border-top:1px solid var(--border);padding:7px 0"><div style="display:flex;gap:8px;align-items:center;margin-bottom:3px"><input type="date" class="form-input" style="width:150px" value="'+escapeHtml(m.date||'')+'" onchange="karteSetMeeting(\''+empId+'\',\''+m.id+'\',\'date\',this.value)"><span style="color:var(--muted);font-size:10px">'+escapeHtml(m.by||'')+'</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 7px;color:var(--red)" onclick="karteDelMeeting(\''+empId+'\',\''+m.id+'\')">×</button></div><textarea class="form-textarea" style="min-height:44px" placeholder="所感・合意事項・申し送り" onchange="karteSetMeeting(\''+empId+'\',\''+m.id+'\',\'note\',this.value)">'+escapeHtml(m.note||'')+'</textarea></div>'; }); }
-  else { h+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">まだ面談記録がありません。実施したら記録して次回の申し送りに使いましょう。</div>'; }
-  h+='<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="karteAddMeeting(\''+empId+'\')"><i class="ti ti-plus"></i> 面談を記録</button>';
   h+='</div>';
 
   /* 資格・基本情報 */
@@ -56283,6 +57533,8 @@ function renderKarteDetailPage(empId){
   h+='<div style="font-size:10px;color:var(--muted);margin-top:8px">最終更新：'+escapeHtml(k.updatedAt?new Date(k.updatedAt).toLocaleString('ja'):'—')+'</div>';
   h+='</div>';
 
+  }
+
   return h;
 }
 
@@ -56305,7 +57557,8 @@ function kartePayDel(empId,pid){ var k=getKarte(empId); k.payLog=(k.payLog||[]).
 function _bonusWritePay(e,b,q,payAmt,adj){
   var all=getKarteAll(); var now=new Date().toISOString(); var by=(typeof myName==='function'?myName():(curUserName||''));
   var k=all[e.id]||{}; k.payLog=k.payLog||[];
-  var snap={grade:b.grade, base:b.base, baPct:b.baPct, baCoef:b.baCoef, csPct:b.csPct, csCoef:b.csCoef, spPct:b.spPct, spCoef:b.spCoef, hasCS:b.hasCS, raw:b.amount, adj:adj};
+  var snap={grade:b.grade, base:b.base, baPct:b.baPct, baCoef:b.baCoef, csPct:b.csPct, csCoef:b.csCoef, spPct:b.spPct, spCoef:b.spCoef, hasCS:b.hasCS, raw:b.amount, adj:adj,
+    prBase:b.prBase, full:b.full, segs:(b.segs||[]).filter(function(x){ return x.elig; }).map(function(x){ return {g:x.g, from:x.from, to:x.to, days:x.days, amount:x.amount}; })};   /* v1044: 日割りの区間も残す */
   var ex=null; for(var i=0;i<k.payLog.length;i++){ if(k.payLog[i].src==='auto' && k.payLog[i].quarter===q){ ex=k.payLog[i]; break; } }
   if(ex){ ex.amount=String(payAmt); ex.date=(typeof todayISO==='function'?todayISO():ex.date); ex.snap=snap; ex.by=by; ex.at=now; }
   else { k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:String(payAmt), note:'四半期査定（自動記録）', src:'auto', quarter:q, snap:snap, by:by, at:now}); }
@@ -58590,7 +59843,8 @@ function approveLssRequest(id, status) {
   // 昇格承認時は役職を反映（任意指定があれば）
   if (status==='承認' && r.kind==='promo' && r.wantTitle) {
     var emps = getEmployees(); var e = emps.find(x=>x.name===r.name);
-    if (e) { e.title = r.wantTitle; var jt=jobTitle(r.wantTitle); if(jt) e.role=jt.permRole; lsSet('m_employees', emps); }
+    if (e) { var _g0=(typeof ghNormG==='function')?ghNormG(empGrade(e)):''; e.title = r.wantTitle; var jt=jobTitle(r.wantTitle); if(jt) e.role=jt.permRole; lsSet('m_employees', emps);
+      try{ if(typeof ghAutoRec==='function') ghAutoRec(e, _g0, 'promo', '昇格申請の承認'); }catch(err){} }   /* v1043: グレードが変わったらグレード履歴に記録（今日・あとで直せる） */
   }
   showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
   renderPage(curPage);
@@ -71972,10 +73226,12 @@ function advanceStage(name, by) {
   if (d.stage===6 && d.targetCareer) {
     var emps = getEmployees(); var e = emps.find(x=>x.name===name);
     if (e && jobTitle(d.targetCareer)) {
+      var _g0 = (typeof ghNormG==='function') ? ghNormG(empGrade(e)) : '';   /* v1043 */
       e.title = d.targetCareer;
       var jt = jobTitle(d.targetCareer);
       if (jt && jt.permRole) e.role = jt.permRole;  // 権限ロールも連動（sl等）
       lsSet('m_employees', emps);
+      try{ if(typeof ghAutoRec==='function') ghAutoRec(e, _g0, 'stage', 'Leader昇格'); }catch(err){}   /* v1043: グレードが変わったらグレード履歴に記録 */
       // 昇格を会社履歴に記録
       var ch = ls('career_history', []);
       ch.push({name:name, event:'Leader昇格', title:d.targetCareer, by:by||((ROLE_CONFIG[curRole]||{}).name), date:nowJP()});
