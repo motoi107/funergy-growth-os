@@ -1912,7 +1912,7 @@ function totoyaKpiCalc(sid, period){
     return has?s:null;
   };
   // toast_sales のモディファイア集計列（first_time_count等と同じ仕組み）を月内合計
-  var da=(typeof getDailyActuals==='function')?getDailyActuals(sid):{};
+  var da=(typeof getDailyActuals==='function')?_daRO(sid):{};
   var ymStr=(function(){ var p=String(period).split('.'); return p[0]+'-'+String(p[1]).padStart(2,'0'); })();
   var dSum=function(field){ var has=false,s=0; Object.keys(da).forEach(function(d){ if(d.indexOf(ymStr)===0){ var v=(da[d]||{})[field]; if(v!=null&&!isNaN(v)){ s+=Number(v); has=true; } } }); return has?s:null; };
   // 優先順位: 手入力 > Toast(モディファイア集計) > menu_mix(GUID/キーワード)
@@ -7869,7 +7869,7 @@ async function saveCreditTipAdj(storeId, date){
 }
 
 function tipForDay(storeId, date) {
-  var av = getDailyActuals(storeId)[date] || {};
+  var av = _daRO(storeId)[date] || {};
   var cash = getCashTip(storeId, date);
   var _adj = (typeof getCreditTipAdj==='function' ? getCreditTipAdj(storeId, date) : null) || {};
   var lAdj = +(_adj.lAdj)||0, dAdj = +(_adj.dAdj)||0;
@@ -9194,8 +9194,8 @@ function _idbFlush() {
     var st = tx.objectStore(IDB_STORE);
     batch.forEach(function (v, k) {
       try {
-        if (v === null) { st.delete(k); if (_IDB_MEM) _IDB_MEM.delete(k); }
-        else { st.put(v, k); if (_IDB_MEM) _IDB_MEM.set(k, v); }
+        if (v === null) { st.delete(k); if (_IDB_MEM) { if (_IDB_MEM.has(k)) _lskBump(); _IDB_MEM.delete(k); } }   /* v1049 */
+        else { st.put(v, k); if (_IDB_MEM) { if (!_IDB_MEM.has(k)) _lskBump(); _IDB_MEM.set(k, v); } }
       } catch (e) { }
     });
     tx.oncomplete = function () {
@@ -9234,7 +9234,7 @@ function _idbQueue(key, json) {
     if (typeof lsIsDeviceLocal === 'function' && lsIsDeviceLocal(key)) return false;
     /* v765: メモリ側を同期で更新する。保存した直後の読み取りが
        書き込み完了(非同期)を待たずに新しい値を見られるようにするため。 */
-    if (_IDB_MEM) { if (json === null) _IDB_MEM.delete(key); else _IDB_MEM.set(key, json); }
+    if (_IDB_MEM) { if ((json === null) === _IDB_MEM.has(key)) _lskBump(); if (json === null) _IDB_MEM.delete(key); else _IDB_MEM.set(key, json); }   /* v1049: 顔ぶれが変わるときだけ世代を進める */
     _idbQ.set(key, json);
     if (_idbTimer) clearTimeout(_idbTimer);
     _idbTimer = setTimeout(function () { _idbTimer = null; _idbFlush(); }, 300);
@@ -9244,7 +9244,7 @@ function _idbQueue(key, json) {
 
 function _idbClearAll() {
   try {
-    if (_IDB_MEM) _IDB_MEM.clear();
+    if (_IDB_MEM) { _IDB_MEM.clear(); _lskBump(); }   /* v1049 */
     _idbQ = new Map();
     if (!_idbDB) return;
     _idbDB.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).clear();
@@ -9277,7 +9277,7 @@ async function _idbBoot() {
     if (!_idbDB) { _idbState = 'unavailable'; return; }
     var m = await _idbLoadAll();
     if (m === null) { _idbState = 'unavailable'; _idbDB = null; return; }  /* 読めなければ使わない */
-    _IDB_MEM = m; _idbStat.loaded = m.size;
+    _IDB_MEM = m; _idbStat.loaded = m.size; _lskBump();   /* v1049 */
     _idbState = 'ready';
     _idbFlush();                              /* 起動中に溜まった分を書く */
     _idbStat.backfilled = _idbBackfill();
@@ -9325,7 +9325,7 @@ function idbDiag() {
    【互換】中身は従来と同じ localStorage の走査。この版では挙動は一切変わらない。
    【注意】列挙結果を先に配列へ確定させるため、ループ中にキーを消しても添字がずれない
      （従来の直接走査では削除するたびに次のキーを飛ばしていた）。 */
-function lsKeys(prefix){
+function _lsKeysScan(prefix){
   var out=[], seen={};
   try{
     var p=(prefix==null?'':String(prefix));
@@ -9348,6 +9348,35 @@ function lsKeys(prefix){
   }catch(e){}
   return out;
 }
+/* v1049: キーの一覧を覚えておく（Motoさん 10/5「アプリが重たくなった」）。
+   予算（budgets_v2）を読むたびに端末の全部のキーを数え直していて、1回の描画で千回以上になっていた。
+   ★キーの顔ぶれが変わったら必ず数え直す：_LSK.gen（世代）は localStorage の新しいキー・削除・全消し、
+     IndexedDB のメモリ（_IDB_MEM）の新しいキー・削除・全消しで進む（_lskBump）。localStorage と _IDB_MEM の件数・_IDB_MEM の入れ替えも見る。
+   ★返すのは今までと同じ順番の新しい配列（呼び出し側が並べ替えても、覚えている一覧は変わらない）。 */
+var _LSK = { gen:0, sig:null, mem:null, all:null, by:{} };
+function _lskBump(){ try{ _LSK.gen++; }catch(e){} }   /* 起動の途中で _LSK がまだ無くても、呼んだ側を止めない */
+function lsKeys(prefix){
+  try{
+    var p=(prefix==null?'':String(prefix));
+    var ready=!!(_idbState==='ready' && _IDB_MEM);
+    var sig=_LSK.gen+'|'+localStorage.length+'|'+(ready?_IDB_MEM.size:'-');
+    if(_LSK.sig!==sig || _LSK.mem!==(ready?_IDB_MEM:null) || !_LSK.all){
+      _LSK.all=_lsKeysScan(''); _LSK.by={}; _LSK.sig=sig; _LSK.mem=(ready?_IDB_MEM:null);
+    }
+    var hit=Object.prototype.hasOwnProperty.call(_LSK.by, p) ? _LSK.by[p] : null;
+    if(!hit){ hit = p ? _LSK.all.filter(function(k){ return k.indexOf(p)===0; }) : _LSK.all; _LSK.by[p]=hit; }
+    return hit.slice();
+  }catch(e){ return _lsKeysScan(prefix); }
+}
+/* v1049: localStorage のキーの顔ぶれが変わったら世代を進める（直接 setItem・removeItem している所も漏らさない） */
+(function(){
+  try{
+    var SP=window.Storage.prototype, _set=SP.setItem, _rem=SP.removeItem, _clr=SP.clear;
+    SP.setItem=function(k, v){ try{ if(this===window.localStorage && this.getItem(k)===null) _lskBump(); }catch(e){} return _set.apply(this, arguments); };
+    SP.removeItem=function(k){ try{ if(this===window.localStorage && this.getItem(k)!==null) _lskBump(); }catch(e){} return _rem.apply(this, arguments); };
+    SP.clear=function(){ try{ if(this===window.localStorage) _lskBump(); }catch(e){} return _clr.apply(this, arguments); };
+  }catch(e){}
+})();
 /* ===== v750: 設定型データに「誰が・いつ保存したか」を記録する =====
    【背景】テンプレート・固定費・OJTチェックのような設定型(type:'obj')は、
      履歴や申請のように足し算で合流できない。合流の基準が無いため、これまでは
@@ -18406,7 +18435,7 @@ function _monthStatsRaw(storeId, offset) {
   var now = bizNow();
   var ref = new Date(now.getFullYear(), now.getMonth()+(offset||0), 1);
   var prefix = ref.getFullYear() + '-' + String(ref.getMonth()+1).padStart(2,'0'); // 'YYYY-MM'
-  var actuals = getDailyActuals(storeId);
+  var actuals = _daRO(storeId);
   var sales=0, guests=0, labor=0, food=0, daysWithData=0;
   Object.keys(actuals).forEach(date => {
     if (date.slice(0,7) !== prefix) return;
@@ -19553,7 +19582,7 @@ function renderMsStoreRank(){
 /* L/D別 新規/リピートの集計（日次actualsの firstTimeBowlsLunch 等から） */
 function repeatStatsLD(scopeStores, days){
   var lF=0,lR=0,dF=0,dR=0,has=false;
-  (scopeStores||[]).forEach(function(s){ var da=getDailyActuals(s.id); (days||[]).forEach(function(d){ var ov=da[d.date]||{};
+  (scopeStores||[]).forEach(function(s){ var da=_daRO(s.id); (days||[]).forEach(function(d){ var ov=da[d.date]||{};
     if(ov.firstTimeBowlsLunch!=null){ lF+=Number(ov.firstTimeBowlsLunch)||0; has=true; }
     if(ov.repeatBowlsLunch!=null){ lR+=Number(ov.repeatBowlsLunch)||0; has=true; }
     if(ov.firstTimeBowlsDinner!=null){ dF+=Number(ov.firstTimeBowlsDinner)||0; has=true; }
@@ -22163,7 +22192,7 @@ var QB_FOCUS_ITEMS=[
 ];
 /* 月別の目標(単月予算)と実績(monthStats)をまとめる */
 function _qbRepeatRate(storeId, ym){
-  var da=(typeof getDailyActuals==='function')?getDailyActuals(storeId):{}; var ft=0,rp=0,has=false;
+  var da=(typeof getDailyActuals==='function')?_daRO(storeId):{}; var ft=0,rp=0,has=false;
   Object.keys(da).forEach(function(d){ if(d.indexOf(ym)===0){ var v=da[d]||{}; if(v.firstTimeBowls!=null||v.repeatBowls!=null){ ft+=Number(v.firstTimeBowls)||0; rp+=Number(v.repeatBowls)||0; has=true; } } });
   var tot=ft+rp; return {rate:(has&&tot>0)?Math.round(rp/tot*1000)/10:0, ft:ft, rp:rp, has:has};
 }
@@ -27725,7 +27754,7 @@ function _monthSalesBudgetByPlan(storeId, ym) {
   }
   /* 日別の手入力を拾う。1日でもあれば日ごとに積み直す。 */
   var ovs = {};
-  try { ovs = (typeof getDailyActuals === 'function') ? (getDailyActuals(storeId) || {}) : {}; } catch (e) { ovs = {}; }
+  try { ovs = (typeof getDailyActuals === 'function') ? (_daRO(storeId) || {}) : {}; } catch (e) { ovs = {}; }
   var days = [];
   try { days = daysOfYm(ym) || []; } catch (e) { days = []; }
   if (!days.length) return base;
@@ -27804,6 +27833,21 @@ function dayBudgetFromBases(b, dow, ym) {
   return 0;
 }
 function getDailyActuals(storeId) { return ls('daily_actuals_'+storeId, {}); }
+/* v1048: 日次実績を「読むだけ」で取り出す（Motoさん 10/5「バージョンを更新したら重たくなった」）。
+   保存の中身（文字列）が前に解いたときと同じなら、前に解いたものをそのまま返す。中身が変われば必ず解き直す（古い数字は返らない）。
+   ★返したものを書き換えないこと。書き換えて保存する処理は今までどおり getDailyActuals を使う（そちらは毎回新しく解く）。
+   端末に無いとき・解けないときは getDailyActuals と同じ（必要時の取得の仕組みもそのまま動く）。 */
+var _DA_RO = {};
+function _daRO(storeId){
+  var key='daily_actuals_'+storeId, raw=null;
+  try{ raw=_lsStoreGet(key); }catch(e){ raw=null; }
+  if(raw==null) return getDailyActuals(storeId);
+  var c=_DA_RO[storeId];
+  if(c && c.raw===raw) return c.val;
+  var val=getDailyActuals(storeId);   /* 1回目は今までどおり ls() を通す（取得の仕組みを動かす） */
+  _DA_RO[storeId]={raw:raw, val:val};
+  return val;
+}
 /* ============================================================
    v956: 日別の出数（施策分析タブ用）
    ・getMenuMix は月まとめなので日別が取れない。toast_item_sales を日×商品で読む。
@@ -28095,10 +28139,15 @@ function ldLaborDay(storeId, date){
   Object.keys(lab).forEach(function(n){
     var e=lab[n]; if(!e) return;
     var rL=Number(e.rawLunch)||0, rD=Number(e.rawDinner)||0, wL=Number(e.lunch)||0, wD=Number(e.dinner)||0;
-    var useRaw=(rL+rD)>=(wL+wD), hL=useRaw?rL:wL, hD=useRaw?rD:wD, w=0; try{ w=empWage(n)||0; }catch(e2){}
+    var useRaw=(rL+rD)>=(wL+wD), hL=useRaw?rL:wL, hD=useRaw?rD:wD, w=0; try{ w=_ldWage(n)||0; }catch(e2){}   /* v1048 */
     r.hL+=hL; r.hD+=hD; r.cL+=hL*w; r.cD+=hD*w;
   });
   return r;
+}
+/* v1048: 時給の表（1回の描画で1回だけ作る。empWage(名前) と同じ答え） */
+function _ldWage(name){
+  var m=_mdMemo('ldwage', '', function(){ var o={}; try{ getEmployees().forEach(function(e){ if(e && e.name!=null && !Object.prototype.hasOwnProperty.call(o, e.name)) o[e.name]=empWageOf(e); }); }catch(e){} return o; });
+  return Object.prototype.hasOwnProperty.call(m, name) ? (m[name]||0) : 0;
 }
 /* 集める日：前日まで（当月）／月の全部（過去月） */
 function ldDates(days){
@@ -28107,7 +28156,7 @@ function ldDates(days){
 }
 function ldAgg(storeId, dates){
   var z=function(){ return {sales:0, g:0, days:0, tip:0, tipSales:0, first:0, rep:0, rHas:false, hrs:0, wage:0, lo:null, hi:null}; };
-  var L=z(), D=z(), T=z(), da={}; try{ da=getDailyActuals(storeId)||{}; }catch(e){}
+  var L=z(), D=z(), T=z(), da={}; try{ da=_daRO(storeId)||{}; }catch(e){}
   var rng=function(x, v){ if(!(v>0)) return; x.lo=(x.lo==null)?v:Math.min(x.lo, v); x.hi=(x.hi==null)?v:Math.max(x.hi, v); };
   (dates||[]).forEach(function(d){
     var raw=da[d]||{}; if(!(Number(raw.actual)>0)) return;
@@ -28250,7 +28299,7 @@ function ldFootHtml(F, o){
 /* ------------------------------------------------------------ 昨対（曜日合わせ） */
 function yoyAgg(storeId, dates){
   var z=function(){ return {sales:0, g:0, days:0}; }, N={L:z(), D:z(), T:z()}, Y={L:z(), D:z(), T:z()}, used=[], noAct=0, skipped=0, da={};
-  try{ da=getDailyActuals(storeId)||{}; }catch(e){}
+  try{ da=_daRO(storeId)||{}; }catch(e){}
   (dates||[]).forEach(function(d){
     var p=pyDay(storeId, yoyDowDate(d)); if(!p){ skipped++; return; }
     used.push(d);
@@ -28321,7 +28370,7 @@ function yoyCard(store, ym){
 }
 /* 売上の累計（今年と去年）。preserveAspectRatio="none" なので線は non-scaling-stroke、丸や文字は置かない */
 function yoyCumSvg(storeId, used){
-  var da={}; try{ da=getDailyActuals(storeId)||{}; }catch(e){}
+  var da={}; try{ da=_daRO(storeId)||{}; }catch(e){}
   var a=0, b=0, pts=[];
   used.forEach(function(d){ var r=da[d]||{}, p=pyDay(storeId, yoyDowDate(d)); a+=(Number(r.actual)>0?Number(r.actual):0); b+=(p?p.s:0); pts.push({a:a, b:b}); });
   var W=300, H=92, mx=Math.max(a, b)*1.05||1, n=pts.length, r=_yoyR(a, b);
@@ -28365,7 +28414,8 @@ function yoyAllCard(stores, ym){
   var tn=0, tp=0, np=0;
   (stores||[]).forEach(function(st){
     if(!st || !st.id) return;
-    var A=yoyAgg(st.id, dates), N=A.now, Y=A.py, nowAll=ldAgg(st.id, dates).T.sales;
+    var A=yoyAgg(st.id, dates), N=A.now, Y=A.py, nowAll=0, _da=_daRO(st.id)||{};   /* v1048: Tip・勤怠までは集めない */
+    dates.forEach(function(d){ var v=Number((_da[d]||{}).actual); if(v>0) nowAll+=v; });
     h+='<tr><td style="color:var(--tm);white-space:normal;line-height:1.3">'+escapeHtml(st.name||st.id)+'</td><td><div class="v" style="font-size:12.5px">'+_ldM0(nowAll)+'</div></td>';
     if(!A.used.length){ h+='<td colspan="6" style="text-align:left"><span style="font-size:10.5px;color:var(--muted)">'+yoyNoPyReason(st.id)+'</span></td></tr>'; return; }
     tn+=N.T.sales; tp+=Y.T.sales; np++;
@@ -28467,7 +28517,7 @@ function renderBudgetDaily() {
   days.forEach(d => {
     scopeStores.forEach(s => {
       var b = _dlBud(s.id);   /* v761 */
-      var override = (getDailyActuals(s.id)[d.date]||{});
+      var override = (_daRO(s.id)[d.date]||{});
       var dayBud = override.budget!=null ? override.budget : (b?dayBudgetFor(b,d.date,d.dow):0);
       sumBudget += dayBud;
       /* ★v981: 当日を分母にも分子にも入れない。
@@ -28514,8 +28564,6 @@ function renderBudgetDaily() {
     _kAgg.budMonth += c.budMonth||0; _kAgg.actMonth += c.actMonth||0;
   });
   html += budKpiCard(scopeStores, days, _kAgg, _kCur, _kCur?wowStats(scopeStores):{sales:null,guests:null,ppa:null,fcPt:null});
-  /* v1046: ランチ・ディナーのまとめ（Motoさんの依頼 10/5・UI案32-1）。1店のときだけ（全店は上で店舗カードだけにして返している） */
-  if (scopeStores.length===1) html += ldSummaryCard(scopeStores[0], days);
   /* 旧月次進捗にあった承認待ちの通知。タブを消しただけで黙って消さない。 */
   try{
     var _pendB = getBudgets().filter(function(b){ return scopeStores.find(function(x){return x.id===b.storeId;}) && budStatusFor(b, budYmStr())==='GM承認待ち'; });
@@ -28527,13 +28575,13 @@ function renderBudgetDaily() {
   var guestLabel = (!isAgg && scopeStores[0]) ? guestCountLabel(scopeStores[0].id) : t('客数','Guests');
   // 日毎リピート率（bowls: repeat/(first+repeat)）を表示するか — FSP/WGS以外＆当月にfirst/repeatデータがある場合のみ
   var showRR = false;
-  try{ showRR = scopeStores.length && scopeStores.every(function(s){return s.id!=='F03'&&s.id!=='F03-G';}) && days.some(function(dd){ return scopeStores.some(function(s){ var ov=(getDailyActuals(s.id)[dd.date]||{}); return ov.firstTimeBowls!=null||ov.repeatBowls!=null; }); }); }catch(e){}
+  try{ showRR = scopeStores.length && scopeStores.every(function(s){return s.id!=='F03'&&s.id!=='F03-G';}) && days.some(function(dd){ return scopeStores.some(function(s){ var ov=(_daRO(s.id)[dd.date]||{}); return ov.firstTimeBowls!=null||ov.repeatBowls!=null; }); }); }catch(e){}
   /* v1023: 店舗売上とイベント出店の関係を1行で。合計は参考値（予算・PLには入れていない）。 */
   (function(){
     var _evRows = eventsForMonth(scopeStores, days), _evT = eventSum(_evRows);
     if (!_evT.count) return;
     var _stAct = 0; days.forEach(function(dd){ scopeStores.forEach(function(ss){
-      var _o=(getDailyActuals(ss.id)||{})[dd.date]||{}; if(_o.actual!=null) _stAct += Number(_o.actual)||0; }); });
+      var _o=(_daRO(ss.id)||{})[dd.date]||{}; if(_o.actual!=null) _stAct += Number(_o.actual)||0; }); });
     var tile = function(label, val, sub, col, bd){
       return '<div style="flex:1;min-width:150px;border:1px solid '+(bd||'var(--border)')+';border-radius:10px;padding:8px 12px">'
         + '<div style="font-size:10px;color:var(--muted);font-weight:700">'+label+'</div>'
@@ -28567,7 +28615,7 @@ function renderBudgetDaily() {
     var dayLH=0, dayDH=0, dayLW=0, dayDW=0, dayLF=0, dayLR=0, dayDF=0, dayDR=0, dayRLD=false;   /* v1046: L/D */
     scopeStores.forEach(s => {
       var b = _dlBud(s.id);   /* v761 */
-      var ov = (getDailyActuals(s.id)[d.date]||{});
+      var ov = (_daRO(s.id)[d.date]||{});
       var bd = ov.budget!=null ? ov.budget : (b?dayBudgetFor(b,d.date,d.dow):0);
       dayBud += bd;
       if (ov.actual!=null) { dayAct += ov.actual; hasAct=true; }
@@ -28653,6 +28701,9 @@ function renderBudgetDaily() {
   html += '</div>';
   /* v1023: イベント出店（明細）。店舗売上とは別枠。 */
   html += eventListCard(scopeStores, days, canEdit, isAgg);
+  /* v1046→v1047: ランチ・ディナーのまとめ（UI案32-1）。ページのいちばん下（Motoさんの依頼 10/5「日次進捗のランチディナーまとめはページ下部に」）。
+     1店のときだけ（全店は上で店舗カードだけにして返している） */
+  if (scopeStores.length===1) html += ldSummaryCard(scopeStores[0], days);
   return html;
 }
 function setDailyScope(s) { dailyStoreScope = s; renderPage('budget'); }
@@ -29359,7 +29410,7 @@ function initCoverNote(a, b, label){
 function repeatStats(scopeStores, days){
   var first=0,repeat=0,sr=0,has=false;
   scopeStores.forEach(function(s){
-    var da=getDailyActuals(s.id);
+    var da=_daRO(s.id);
     days.forEach(function(d){
       var ov=da[d.date]||{};
       if(ov.firstTimeBowls!=null){ first+=Number(ov.firstTimeBowls)||0; has=true; }
@@ -29471,7 +29522,7 @@ function meetingBudgetPlan(storeId, ym){
     dates.forEach(function(d){var day=empty();day.complete=false;out.days[d.date]=day;});
     return out;
   }
-  var dw=usesDowMode(b)?b.dow:null, segs=getSegments(b), raw=getDailyActuals(storeId)||{}, basis={}, base=0;
+  var dw=usesDowMode(b)?b.dow:null, segs=getSegments(b), raw=_daRO(storeId)||{}, basis={}, base=0;
   var monthMix=empty(), manual=false;
   dates.forEach(function(d){
     var i=(new Date(d.date+'T12:00:00').getDay()+6)%7, parts={}, total=0;
@@ -29575,7 +29626,7 @@ function keyKpiStats(scopeStores, days){
   var laborSalesCore=0;
   if(ym){ (scopeStores||[]).forEach(function(s){ try{ var lc=laborCoreForYm(s.id, ym); labor += lc.total; laborSalesCore += (lc.sales||0); }catch(e){} }); }
   (scopeStores||[]).forEach(function(s){
-    var actuals=getDailyActuals(s.id);
+    var actuals=_daRO(s.id);
     var b=getBudgetForMonth(s.id, ym);
     var plan=meetingBudgetPlan(s.id,ym); plans.push(plan);
     var sb=budgetSpendBasis(s.id,ym);
@@ -30010,7 +30061,7 @@ async function doWeatherSyncSilent(storeId) {
 var EVENT_FIELDS = ['sales','guests','cost','labor','fee'];
 /* その日のイベント一覧。壊れた値でも落ちないように整える（数字でないものは 0）。 */
 function dayEventsFor(storeId, date){
-  var ov = (getDailyActuals(storeId)||{})[date] || {};
+  var ov = (_daRO(storeId)||{})[date] || {};
   var arr = (Array.isArray(ov.events) ? ov.events : []).filter(function(e){ return !(e && e._deleted); });   /* v1034: 削除の印は出さない */
   return arr.map(function(e, i){
     var o = { id:(e && e.id) || ('ev'+i), name:(e&&e.name)||'', place:(e&&e.place)||'',
@@ -37169,7 +37220,7 @@ function _laborCoreForYmRaw(storeId, ym, opts){
   leavePay = Math.round(leavePay*100)/100;
   var dim = daysInMonthOf(ym);
   var periodDays=0, sales=0, manual=0, daysWithActual=0, seen={};
-  var acts = getDailyActuals(storeId);
+  var acts = _daRO(storeId);
   weeks.forEach(function(w){
     laborWeekDays(w.sun).forEach(function(dt){
       if(!inRange(dt) || seen[dt]) return; seen[dt]=1; periodDays++;
@@ -38103,7 +38154,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1046';
+const APP_VERSION = '1049';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
