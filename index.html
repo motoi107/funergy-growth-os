@@ -10596,7 +10596,7 @@ var SUPA_SETTING_KEYS = ['pl_public','handbook_test_form',   /* v1024: 理解度
   'm_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
-  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc','ow_limits','sl_config'];
+  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc','ow_limits','sl_config','ocs_cfg'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
@@ -10622,7 +10622,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
      LS_NEVER_FREE への追加がセットで要る（手入力データになるため） */
 var OP_SYNC_PREFIX = ['sl_manual_','spl_','budget_approved_','skills_st_','lss_emp_','help_requests_','ot_approvals_','att_approve_','att_day_approve_','cash_tips_','shift_fixed_',
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
-  'daily_actuals_','menu_mix_','fav_',
+  'daily_actuals_','menu_mix_','fav_','ocs_asg_','ocs_ev_',
   'fv_count_','fv_moves_','fv_review_'];   /* fav_<user>: お気に入り（個人別・クラウド保存）／ v722: 日次食材差異(手入力)。fv_sales_ は端末ローカルのみ＝同期しない */
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
 function authObPriv(payload){
@@ -11514,7 +11514,8 @@ var OP_MERGE = {
   q_budgets:          { merge: mergeMapByTime, covers: _coversMapByTime },
   karte_bonus_config: { merge: mergeStamped,   covers: _coversStamped },
   bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
-  grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1043: グレード履歴。社員ごとに新しいほう */
+  grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime },
+  ocs_cfg:            { merge: mergeLssRec,    covers: _coversLssRec },      /* v1050: オフィス用 Career Score の正式運用の ON/OFF（新しい保存が勝つ） */   /* v1043: グレード履歴。社員ごとに新しいほう */
   /* v767: 本部目標と行動計画。id単位の和集合で、勝敗は必ず _mut（時刻）で決める。
      ここが無いと、部分データを持つ端末の保存がクラウドを丸ごと上書きする。 */
   hq_goals:      { merge: mergeCcList,    covers: _coversCcList },
@@ -11708,6 +11709,9 @@ function _coversOfficeAttend(checkArr, wantArr){
 var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _coversOfficeAttend },
   /* v752: Career Score。丸ごと上書きだったため他端末の評価が消えていた。 */
   'lss_emp_': { merge: mergeLssRec, covers: _coversLssRec },
+  /* v1050: オフィス用 Career Score。担当設定は保存時刻の新しいほう／評価は期間・部分（自己・上長・確定…）ごとに新しいほう＋月次確認・修正履歴の和集合 */
+  'ocs_asg_': { merge: mergeLssRec, covers: _coversLssRec },
+  'ocs_ev_': { merge: mergeOcsEv, covers: _coversOcsEv },
   /* v754: 手入力データ。すべて時刻で判定し、値の大小では決めない。 */
   'att_day_approve_': { merge: mergeMapByTime, covers: _coversMapByTime },
   'att_approve_': { merge: mergeByTime, covers: _coversByTime },
@@ -15837,7 +15841,7 @@ function switchStore(id) {
 var OFFICE_OK_PAGES = ['crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','supply_order','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','discount','labor','foodcost','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory',
   /* v766: 食材管理メニューに出ているのに OFFICE から開けなかった2画面を追加。
      本部ログインだと Office管理へ弾かれていた（chef 以前からの不具合）。 */
-  'fv_variance','ing_transfer',
+  'fv_variance','ing_transfer','office_career',
   'cc_plan','purchase_detail',
   'mgmt_ctrl','mc_requests',
   /* v884: 経理センターと紛失届。ここに載せ忘れると、オフィス表示では
@@ -15964,6 +15968,7 @@ case 'acct_center':
     case 'fv_variance':  el.innerHTML = renderFvVariance(); break;
     case 'vendor_master': el.innerHTML = renderVendorMaster(); break;
     case 'leadership':   el.innerHTML = renderLeadership(); break;
+    case 'office_career': el.innerHTML = renderOfficeCareer(); break;   /* v1050: オフィス用 Career Score */
     case 'skill':        el.innerHTML = renderSkill(); break;
     case 'tiprate':      el.innerHTML = renderTipRate(); break;
     case 'ojtmap':       el.innerHTML = renderOjtMap(); break;
@@ -36464,7 +36469,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
   'fv_count_','fv_moves_','fv_review_','fv_config',
   'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','q_budgets',
-  'sl_config','sl_manual_',
+  'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
   'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'lala_tasks'];   /* v804: LaLa（手入力・再生不可） */   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
 function _lsProtectedKey(k){
@@ -38154,7 +38159,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1049';
+const APP_VERSION = '1051';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -54018,6 +54023,13 @@ function canEditLss(name) {
 /* 他人のCareer Score閲覧可否：Area Manager以上（ceo/gm/am）のみ。
    Store Manager以下（sl・crew等）は本人のCareer Scoreのみ閲覧可。 */
 function canViewOthersLss(){ return ['ceo','gm','am'].includes(curRole); }
+/* ★v1051: G4（Store Manager）が Career Score を見られるのは G4 以下の人だけ（Motoさんの決定 10/5）。
+   ★一覧・承認待ち・履歴・詳細に効く。採点・承認の権限（canEditLss など）は変えない。
+   ★curRealRole で見る（ROLE_ALIAS で curRole は 'am'）。Grade が分からない人は見せない。 */
+function lssG4Sees(e){ if (curRealRole !== 'g4') return true; var g = (e && typeof empGrade==='function') ? gradeNum(empGrade(e)) : 0; return g>=1 && g<=4; }
+/* 名前で引く（申請・履歴は名前で持っている）。履歴の件数ぶん名簿を読み直さないよう、1回の描画につき1回だけ表を作る（_mdMemo は renderPage の最初で消える） */
+function _lssG4Map(){ var m={}; try{ getEmployees().forEach(function(e){ if(e && e.name!=null && !Object.prototype.hasOwnProperty.call(m, e.name)) m[e.name]=lssG4Sees(e); }); }catch(err){} return m; }
+function lssG4SeesName(name){ if (curRealRole !== 'g4') return true; var m=(typeof _mdMemo==='function') ? _mdMemo('lssG4', '', _lssG4Map) : _lssG4Map(); return !!(m && Object.prototype.hasOwnProperty.call(m, name) && m[name]); }
 /* カテゴリ別集計 → [{key,name,score,max,pct}] + 総合 */
 function lssSummary(name) {
   var rec = getLssScores(name);
@@ -58912,7 +58924,8 @@ function lssCanSelfRequest(name){
 }
 /* ★v1000: 採点欄をさわれるか。★canEditLss（正の点を直接書いてよいか）とは別。
    ★本人はここでは通るが、保存は必ず申請に回る（saveLssScores を見ること）。 */
-function canScoreLss(name){ return canEditLss(name) || lssCanSelfRequest(name); }
+function canScoreLss(name){ if (typeof ocsOldLocked==='function' && ocsOldLocked(name)) return false;   /* v1050 */
+  return canEditLss(name) || lssCanSelfRequest(name); }
 /* ★v998: Career Score の変更に承認が要るか。
    ★v1000: 本人の自己評価も必ず承認を通す。
    ★curRealRole で見る。ROLE_ALIAS で curRole は 'am' になるため。 */
@@ -59804,9 +59817,1567 @@ function renderTalentPipeline(){
 /* v684: Career Score 本人申請の解放フラグ。true にすると「申請」ボタンが有効になる。
    現状は準備中表示（押下不可）＝運用が定着してから解放する。 */
 var LSS_SELFAPPLY_LIVE = false;
+/* ===== v1050: オフィス用 Career Score（OFFICE_CAREER_V1・7カテゴリ・35項目） =====
+   Motoさんの依頼（10/5・添付の仕様）。店舗用 Career Score（lss_emp_・LSS_CATEGORIES・専門職の8軸）とは別の仕組みとして足す。
+   ★店舗用の項目・計算・保存・表示は変えない。lssSummary・empEvalInfo・ボーナス（bonusForEmp）は旧方式のまま
+     ＝時給・給与・チップ・賞与・Grade・Level（L1〜L5）に影響しない。自動昇格・自動昇給・自動賞与変更は無い。
+   ★0〜3点（総合100点）は L1〜L5 とは別の指標。自動変換しない。
+   【保存】今の Career Score と同じ保存先（app_state）。キーは従業員ID（名前ではない）。
+     ocs_asg_<従業員ID>  本人ごとの担当設定：評価で使う Grade・35項目それぞれの担当区分・採点対象・必須・重要・次Grade育成・担当範囲・専門実務の重み
+     ocs_ev_<従業員ID>   評価：期間（四半期）ごと。作成時の項目定義・担当設定・配点を写して持つ。
+                          自己評価(self)・上長評価(mgr)・確定(conf)・昇格候補の確認(promo)・破棄(void) は別々に保存し、別々に合流する。月次確認(checks)・修正履歴(revs) は id ごとの和集合。
+     ocs_cfg（app_settings） 正式運用を始めたか（live）。始めるまではプレビュー＝GM・CEO だけが見られる。
+   【権限】今の Career Score の判定を土台にする
+     他人を見る：canViewOthersLss() かつ visibleStaffForManager() の範囲（GM・CEO は全員）／本人：自分の分だけ（正式運用後）
+     上長評価：canEditLss()／確定・確定後の修正：lssCanApproveScore()（GM）
+     担当設定・対象者の追加：GM・CEO（担当軸マスターと同じ）／正式運用の開始・停止：GM
+     ★v1051（Motoさんの決定 10/5）：
+       ・自己評価は、担当設定が有効な本人なら Grade を問わず入力できる（オフィス用だけ。旧方式の本人申請 G2〜G5 は変えない）
+       ・担当設定で「上長評価をする人」（従業員ID）を GM・CEO が指定できる。指定された人は、その人の評価だけを見て上長評価・月次確認ができる（確定・担当設定はできない）
+       ・G4（Store Manager）が見られるのは、評価に使う Grade が G4 以下の人だけ（lssG4Sees と同じ考え）
+   【計算】区分（O-A／O-B〜O-E／O-F／O-G）の得点率＝採点済み項目の得点÷満点、総合＝得点率×区分の配点の合計。
+     未確認（未入力を含む）は0点にしない＝分母にも入れない（暫定）。配点がある区分に採点済みが無ければ総合は出さない（未算出）。
+     対象外・育成中・配点0の区分（G1・G2 の O-G）は総合に入れない。 */
+var OCS_TPL = 'OFFICE_CAREER_V1';
+var OCS_TPL_VER = 1;
+var OCS_ASG_PREFIX = 'ocs_asg_';
+var OCS_EV_PREFIX = 'ocs_ev_';
+var OCS_GRADES = ['G1','G2','G3','G4','G5'];
+var OCS_WEIGHTS = {
+  G1:{A:20, P:60, F:20, G:0}, G2:{A:20, P:60, F:20, G:0},
+  G3:{A:20, P:50, F:20, G:10}, G4:{A:20, P:35, F:20, G:25}, G5:{A:20, P:30, F:20, G:30}
+};
+var OCS_GROUPS = [
+  {k:'A', ja:'O-A 基本姿勢', en:'O-A Basics'},
+  {k:'P', ja:'O-B〜O-E 専門実務', en:'O-B–O-E Specialist work'},
+  {k:'F', ja:'O-F 改善・標準化', en:'O-F Improvement'},
+  {k:'G', ja:'O-G 運営・育成', en:'O-G Operations & development'}
+];
+var OCS_CATS = [
+  {k:'A', ja:'基本姿勢・Funergyの行動基準', en:'Basic conduct & Funergy standards',
+    note:{ja:'全Grade共通の必須カテゴリ。性格の明るさ、上司との親しさ、社交性ではなく、実際の対応を評価する。', en:'Required for every grade. Evaluate actual conduct — not personality, closeness to managers, or sociability.'}},
+  {k:'B', ja:'購買・日常経理', en:'Purchasing & daily accounting',
+    note:{ja:'支払管理の高評価は、本人に送金権限を付与する意味ではない。必要な確認・承認を守って完了につなげることを評価する。', en:'A high score in payment management does not grant authority to send money. It rewards completing work while keeping the required checks and approvals.'}},
+  {k:'C', ja:'人事・給与・福利厚生', en:'HR, payroll & benefits',
+    note:{ja:'チップ管理は店舗主導のままとする。オフィスが毎回店舗の代わりに計算をやり直すことを、高評価の条件にしない。', en:'Tip management stays store-led. Re-doing the stores\' calculations every time is not a condition for a high score.'}},
+  {k:'D', ja:'許認可・保険・契約', en:'Permits, insurance & contracts',
+    note:{ja:'ビザ取得率や行政の処理日数ではなく、本人が管理できる準備・連絡・期限・進捗を評価する。専門判断を一人で行うことではなく、必要な時点で専門家・承認者へつなげることを評価する。', en:'Evaluate what the person can control — preparation, communication, deadlines and progress — not visa approval rates or government processing times. Reward connecting to experts and approvers at the right time, not making expert calls alone.'}},
+  {k:'E', ja:'財務・税務・月次管理', en:'Finance, tax & month-end',
+    note:{ja:'外部の会計担当者が作成する場合は、資料準備、照合、未解決事項の整理、説明など、社内担当者が担う範囲を設定する。帳票を出力するだけで高評価にしない。', en:'When an outside accountant prepares statements, set the in-house scope (preparing documents, reconciling, organizing open items, explaining). Just printing reports does not earn a high score.'}},
+  {k:'F', ja:'改善・標準化・情報管理', en:'Improvement, standards & information',
+    note:{ja:'AIやシステムの使用回数ではなく、確認品質を維持して実際に業務が改善したかを見る。プログラムを自作できることは必須にしない。', en:'Look at whether work actually improved while keeping check quality — not how often AI or systems are used. Writing programs is not required.'}},
+  {k:'G', ja:'オフィス運営・育成', en:'Office operations & development',
+    note:{ja:'育成は部下の人数で評価しない。他のオフィススタッフや店舗担当者が仕事を再現できるようにしたことを評価する。', en:'Development is not measured by the number of reports. Reward enabling other office staff or store contacts to reproduce the work.'}}
+];
+var OCS_ITEMS = [
+  {c:'O-A1', cat:'A', ja:'正確性・自己確認', en:'Accuracy & self-check',
+    dja:'提出前に金額、日付、店舗、対象者、添付資料を確認する。不明な情報を推測で処理せず、必要な確認を行う。', den:'Checks amounts, dates, store, person and attachments before submitting. Does not fill gaps by guessing; confirms what is unclear.'},
+  {c:'O-A2', cat:'A', ja:'期限・優先順位・報告', en:'Deadlines, priorities & reporting',
+    dja:'締切から逆算して進める。遅れる可能性がある場合、期限前に状況、影響、必要な対応を伝える。', den:'Works backward from deadlines. If something may be late, reports the status, impact and needed action before the deadline.'},
+  {c:'O-A3', cat:'A', ja:'権限・機密情報・記録', en:'Authority, confidentiality & records',
+    dja:'自分で判断してよい範囲を守る。給与・個人情報を適切に扱い、承認や変更の記録を残す。', den:'Stays within the scope of own authority. Handles payroll and personal information properly and keeps records of approvals and changes.'},
+  {c:'O-A4', cat:'A', ja:'店舗・従業員への配慮', en:'Consideration for stores & staff',
+    dja:'相手が理解しやすい案内をする。不備を指摘するだけでなく、必要な対応、期限、相談先を伝える。', den:'Gives guidance people can easily follow. When pointing out a problem, also says what to do, by when, and whom to ask.'},
+  {c:'O-A5', cat:'A', ja:'協働・責任ある対応', en:'Collaboration & ownership',
+    dja:'問題を隠さず共有する。担当の境界で放置せず、次の担当につながるまで確認する。必要な支援を求め、周囲と協力する。', den:'Shares problems openly. Does not leave things at the boundary of a role; follows through until the next owner has it. Asks for help when needed and works with others.'},
+  {c:'O-B1', cat:'B', ja:'備品発注', en:'Supply ordering',
+    dja:'必要数、在庫、納期、予算を確認し、適切に発注する。過剰発注や欠品を防ぐ。', den:'Checks quantities, stock, lead time and budget, and orders appropriately. Prevents over-ordering and stock-outs.'},
+  {c:'O-B2', cat:'B', ja:'インボイス入力', en:'Invoice entry',
+    dja:'業者、店舗、日付、金額、費目を適切に登録し、元の証憑と結び付けて保存する。', den:'Records vendor, store, date, amount and expense category correctly, and saves it linked to the source document.'},
+  {c:'O-B3', cat:'B', ja:'インボイス確認', en:'Invoice review',
+    dja:'重複、金額違い、未納品、店舗違いなどを発見し、必要な相手に確認して解消する。', den:'Finds duplicates, wrong amounts, undelivered items, wrong stores, etc., and resolves them with the right people.'},
+  {c:'O-B4', cat:'B', ja:'支払管理', en:'Payment management',
+    dja:'支払予定、承認状況、実行結果を管理し、支払漏れ、二重支払、承認のない支払を防ぐ。', den:'Tracks scheduled payments, approval status and results; prevents missed, duplicate or unapproved payments.'},
+  {c:'O-B5', cat:'B', ja:'デイリーセールス管理', en:'Daily sales management',
+    dja:'売上データを正しく整理し、決済・入金情報との違いや異常を確認して報告する。', den:'Organizes sales data correctly, checks differences or anomalies against payment and deposit data, and reports them.'},
+  {c:'O-C1', cat:'C', ja:'入退社管理', en:'Onboarding & offboarding',
+    dja:'必要情報の回収、登録・変更・終了処理、関係者への連絡をチェックリストに沿って進める。', den:'Collects required information, handles registration, changes and terminations, and contacts the people involved, following the checklist.'},
+  {c:'O-C2', cat:'C', ja:'Payroll', en:'Payroll',
+    dja:'勤怠、承認済み給与条件、控除・調整情報などを揃え、担当範囲に応じて入力、計算結果の確認、例外案件の整理を行う。', den:'Gathers time records, approved pay terms, deductions and adjustments; within own scope, enters data, checks calculated results and sorts out exceptions.'},
+  {c:'O-C3', cat:'C', ja:'チップ管理の支援・確認', en:'Tip management support & review',
+    dja:'店舗で確認された情報を受け取り、不足や不整合を店舗へ差し戻し、Payrollにつながる状態にする。', den:'Receives information confirmed by stores, sends gaps or inconsistencies back to the store, and gets it ready for payroll.'},
+  {c:'O-C4', cat:'C', ja:'健康保険の手続き', en:'Health insurance procedures',
+    dja:'対象者、必要情報、社内処理期限を確認し、加入・変更・終了の進捗と完了を管理する。', den:'Confirms eligible people, required information and internal deadlines; tracks enrollments, changes and terminations through completion.'},
+  {c:'O-C5', cat:'C', ja:'TDIの申請支援', en:'TDI claim support',
+    dja:'必要書類と申請先を案内し、提出状況、追加依頼、完了までの進捗を管理する。', den:'Explains the required documents and where to file; tracks submission, follow-up requests and progress to completion.'},
+  {c:'O-D1', cat:'D', ja:'J1の手続き管理', en:'J-1 process management',
+    dja:'必要書類、本人・店舗・スポンサーとの連絡、社内準備期限、未解決事項を管理する。', den:'Manages required documents, communication with the person, store and sponsor, internal preparation deadlines and open issues.'},
+  {c:'O-D2', cat:'D', ja:'E2の手続き管理', en:'E-2 process management',
+    dja:'弁護士などからの依頼を整理し、会社・本人の資料収集、提出、追加対応の進捗を管理する。', den:'Organizes requests from attorneys and others; tracks collection of company and personal documents, submission and follow-up.'},
+  {c:'O-D3', cat:'D', ja:'リカーライセンス・各種パーミット', en:'Liquor license & permits',
+    dja:'対象店舗、更新時期、必要書類、申請状況を把握し、準備漏れや更新忘れを防ぐ。', den:'Knows the stores covered, renewal dates, required documents and application status; prevents missed preparation or renewals.'},
+  {c:'O-D4', cat:'D', ja:'会社の保険管理', en:'Company insurance',
+    dja:'契約期間、対象店舗、更新、変更連絡、必要証明書を管理し、確認事項を適切に上げる。', den:'Manages policy periods, covered stores, renewals, change notices and certificates, and escalates questions appropriately.'},
+  {c:'O-D5', cat:'D', ja:'業者との契約管理', en:'Vendor contracts',
+    dja:'契約金額、期間、更新・解約条件、承認者、必要対応を整理し、更新前に判断材料を揃える。', den:'Organizes contract amounts, terms, renewal and cancellation conditions, approvers and required actions; prepares decision material before renewal.'},
+  {c:'O-E1', cat:'E', ja:'タックスの支払管理', en:'Tax payment management',
+    dja:'必要資料、支払予定、確認済み金額、承認、支払完了の証跡を管理し、専門家との確認事項を整理する。', den:'Manages required documents, payment schedule, confirmed amounts, approvals and proof of payment; organizes questions for tax professionals.'},
+  {c:'O-E2', cat:'E', ja:'PL作成・確認', en:'P&L preparation & review',
+    dja:'対象期間、店舗、費目を正しく整理し、未計上や誤分類を確認する。数字の根拠を担当範囲に応じて説明する。', den:'Organizes period, store and accounts correctly; checks for missing entries and misclassification. Explains the basis of the numbers within own scope.'},
+  {c:'O-E3', cat:'E', ja:'BS作成・残高照合', en:'Balance sheet & reconciliation',
+    dja:'現預金、未払金、借入金などの残高を根拠資料と照合し、不一致や未解決項目を明示する。', den:'Reconciles balances such as cash, payables and loans against supporting documents; clearly flags mismatches and open items.'},
+  {c:'O-E4', cat:'E', ja:'月次締め・差異の説明', en:'Month-end close & variances',
+    dja:'締めの進行と未処理事項を管理し、前月・予算との差異の原因と影響を報告する。', den:'Manages close progress and open items; reports causes and impact of variances vs. last month and budget.'},
+  {c:'O-E5', cat:'E', ja:'資金予定・支払見通し', en:'Cash plan & payment outlook',
+    dja:'今後のPayroll、税金、業者支払などをまとめ、資金不足や大きな支出の可能性を早めに伝える。', den:'Summarizes upcoming payroll, taxes, vendor payments, etc., and flags possible cash shortfalls or large outflows early.'},
+  {c:'O-F1', cat:'F', ja:'書類・データの整理', en:'Documents & data organization',
+    dja:'本人以外も適切な権限で必要資料を見つけられるよう整理する。最新版と過去版を区別する。', den:'Organizes files so others with proper access can find what they need. Keeps current and past versions distinct.'},
+  {c:'O-F2', cat:'F', ja:'手順書・チェックリスト', en:'Procedures & checklists',
+    dja:'作業手順、確認箇所、例外時の相談先を記録し、他の人が実際に使える状態にする。', den:'Documents steps, check points and whom to consult on exceptions, in a form others can actually use.'},
+  {c:'O-F3', cat:'F', ja:'店舗との提出ルールの整備', en:'Store submission rules',
+    dja:'書式、提出先、締切を揃え、不備や再確認を減らす。変更は必要な承認を得て周知する。', den:'Standardizes formats, recipients and deadlines to reduce errors and re-checks. Gets approval for changes and announces them.'},
+  {c:'O-F4', cat:'F', ja:'ツール活用・自動化の検証', en:'Tools & automation validation',
+    dja:'二重入力や手作業を減らし、処理結果の正しさとエラー時の対応を確認する。', den:'Reduces double entry and manual work; verifies results are correct and how errors are handled.'},
+  {c:'O-F5', cat:'F', ja:'改善効果の確認・定着', en:'Measuring & sustaining improvements',
+    dja:'改善前後の時間、手戻り、確認漏れなどを比較し、効果が続いているか確認する。', den:'Compares time, rework and missed checks before and after a change, and confirms the effect lasts.'},
+  {c:'O-G1', cat:'G', ja:'業務分担・全体進行', en:'Work allocation & overall progress',
+    dja:'締切、繁忙、担当者の状況を把握し、仕事の集中や処理漏れを防ぐ。', den:'Keeps track of deadlines, busy periods and each person\'s load; prevents overload and missed work.'},
+  {c:'O-G2', cat:'G', ja:'確認体制・リスク管理', en:'Review structure & risk management',
+    dja:'誰が作成・確認・承認するかを明確にし、異常時に止める・相談する仕組みを運用する。', den:'Makes clear who prepares, reviews and approves; runs a way to stop and escalate when something is off.'},
+  {c:'O-G3', cat:'G', ja:'指導・フィードバック', en:'Coaching & feedback',
+    dja:'相手に合った説明を行い、実施後に確認する。できた点と改善点を具体的に伝える。', den:'Explains in a way that fits the person and follows up afterward. Gives specific feedback on what went well and what to improve.'},
+  {c:'O-G4', cat:'G', ja:'代替対応・引継ぎ', en:'Coverage & handover',
+    dja:'重要業務について、不在時の担当、必要資料、相談先を整え、代替対応を確認する。', den:'For key work, sets up who covers during absence, the needed materials and whom to consult, and confirms coverage works.'},
+  {c:'O-G5', cat:'G', ja:'経営報告・店舗拡大への準備', en:'Management reporting & expansion readiness',
+    dja:'問題、影響、対応案、必要な判断をGMへ報告する。新店や業務増加に必要な準備を計画する。', den:'Reports problems, impact, options and decisions needed to the GM. Plans preparation needed for new stores or more work.'}
+];
+var OCS_GRADE_EXPECT = {
+  G1:{ja:'割り当てられた工程の実行、自己確認、記録、不備報告。全社管理や高度な例外判断は求めない。', en:'Carry out assigned steps, self-check, record and report problems. Company-wide management and complex exception calls are not expected.'},
+  G2:{ja:'定型業務の準備から完了確認まで。通常の問い合わせ、関係者への確認、例外の適切な相談。', en:'Routine work from preparation to confirming completion. Handles normal inquiries, checks with the people involved, escalates exceptions appropriately.'},
+  G3:{ja:'複数領域の進行・品質管理、他者の確認、例外対応、指導。自分が処理できるだけではなく、他者の処理も支える。', en:'Progress and quality across several areas, reviewing others\' work, handling exceptions, coaching. Supports others\' work, not only own.'},
+  G4:{ja:'オフィス全体の分担、期限、確認体制、改善、代替対応。35項目全体を見渡すが、すべての専門実務を本人一人で処理することは求めない。外部委託している業務も、担当者・進捗・リスクを把握する。', en:'Allocation, deadlines, review structure, improvement and coverage for the whole office. Oversees all 35 items but is not expected to do all specialist work alone. Knows owners, progress and risks of outsourced work too.'},
+  G5:{ja:'部門予算、資金見通し、外部専門家の活用、管理方針、店舗拡大対応。会社から正式に委任された範囲で責任を持つ。', en:'Department budget, cash outlook, use of outside experts, management policy and expansion. Responsible within the scope formally delegated by the company.'}
+};
+var OCS_PAYROLL_SCOPE = {
+  G1:{ja:'必要資料を揃え、不足・不一致を伝えられる。', en:'Gathers the needed materials and reports gaps or mismatches.'},
+  G2:{ja:'定型処理を実行し、照合して確認者へ提出できる。', en:'Runs the routine process, reconciles, and submits to the reviewer.'},
+  G3:{ja:'複数店舗の結果、差異、例外を確認して承認可能な状態にできる。', en:'Reviews results, differences and exceptions across stores and gets them ready for approval.'},
+  G4:{ja:'店舗提出から確認・不在時対応まで、全体が安定して回る状態を管理できる。', en:'Manages the whole flow — from store submissions to review and coverage — so it runs steadily.'}
+};
+var OCS_ROLES = [
+  {k:'main',   ja:'主担当',   en:'Owner'},
+  {k:'check',  ja:'確認担当', en:'Reviewer'},
+  {k:'backup', ja:'代替担当', en:'Backup'},
+  {k:'dev',    ja:'育成中',   en:'Developing'},
+  {k:'na',     ja:'対象外',   en:'Not applicable'}
+];
+var OCS_SCORES = [
+  {v:0, ja:'未習得', en:'Not yet acquired', dja:'現在の役割として必要で、実技や確認により未習得と分かった状態。', den:'Required for the current role, and practice or review showed it is not yet acquired.'},
+  {v:1, ja:'補助が必要', en:'Needs support', dja:'手順は理解しているが、途中の確認や修正支援が必要。', den:'Understands the steps but needs checks or correction support along the way.'},
+  {v:2, ja:'担当範囲を自立して実行', en:'Independent within scope', dja:'必要な承認・照合を守り、通常業務を完了できる。例外は適切に相談できる。', den:'Completes normal work while keeping required approvals and reconciliations; escalates exceptions appropriately.'},
+  {v:3, ja:'安定・再現・改善', en:'Stable, teaches, improves', dja:'安定して実行でき、担当範囲を他者に伝えられる、または改善を実装・定着させられる。', den:'Performs steadily and can teach the scope to others, or implements and sustains improvements.'}
+];
+var OCS_SCORE_COLORS = ['var(--muted)','var(--yellow)','var(--green)','var(--accent)'];
+var OCS_AVOID = [
+  {ja:'2人を順位付けする相対評価', en:'Ranking people against each other'},
+  {ja:'残業時間の多さによる加点', en:'Extra points for long overtime'},
+  {ja:'休暇を取らないことによる加点', en:'Extra points for not taking time off'},
+  {ja:'性格、社交性、上司との親しさによる評価', en:'Rating personality, sociability or closeness to managers'},
+  {ja:'担当していない仕事を0点にすること', en:'Giving 0 for work that is not assigned'},
+  {ja:'実施機会がないことを未習得と決めつけること', en:'Treating "no opportunity yet" as "not acquired"'},
+  {ja:'店舗の提出遅延や行政の処理遅延を、そのまま本人の減点にすること', en:'Penalizing the person for store or government delays'},
+  {ja:'ミスを早く発見して報告した場合と、隠した場合を同じ扱いにすること', en:'Treating an early-reported mistake the same as a hidden one'},
+  {ja:'確認・承認を省略して早く処理したことを高評価にすること', en:'Rewarding speed gained by skipping checks or approvals'},
+  {ja:'仕事を抱え込むことや属人化を、高い責任感として評価すること', en:'Rewarding hoarding work or single-person dependency as "responsibility"'},
+  {ja:'担当範囲や配点を、結果を見てから都合よく変更すること', en:'Changing scope or weights after seeing the results'}
+];
+/* 初期割り当て案（★能力評価ではない。担当範囲を確認するための入口。点数・実績は入れない＝全項目 未確認で始まる）。
+   ★案は名前で人に当てない。管理者が従業員マスターから ID で人を選び、案を選んで適用する。 */
+var OCS_IMPORTANT_DEFAULT = ['O-A2','O-A3','O-B4','O-C2','O-E1'];
+var OCS_PROPOSALS = {
+  akane_g1: {ja:'Akane さんの初期案（G1・16項目）', en:'Initial plan for Akane (G1 · 16 items)', who:'akane', grade:'G1',
+    items:['O-A1','O-A2','O-A3','O-A4','O-A5','O-B1','O-B2','O-B3','O-B4','O-B5','O-C1','O-C2','O-C3','O-D1','O-F1','O-F2'],
+    devFlag:['O-B1','O-B2','O-B3'], dev:[],
+    scopeNote:{ja:'正確な準備、日常入力、資料回収、不備確認、記録・共有を中心にする。支払の最終承認、Payroll全体の確認責任、オフィス全体の管理責任は含めない。', en:'Centered on accurate preparation, daily entry, collecting documents, spotting problems, recording and sharing. Final payment approval, overall payroll review and office-wide management are not included.'},
+    devNote:{ja:'G2への育成方向：備品発注やインボイス処理など、決まった業務を準備から完了確認まで自立して回す。', en:'Toward G2: run defined work such as supply ordering and invoice processing on her own, from preparation to confirming completion.'},
+    hints:{
+      'O-A1':{ja:'自分が入力・提出するものの金額・日付・店舗・対象者・添付の確認', en:'Checking amounts, dates, store, person and attachments on what she enters or submits'},
+      'O-A2':{ja:'自分の担当工程の締切管理と、遅れそうなときの早めの報告', en:'Managing deadlines for her own steps and reporting early when something may be late'},
+      'O-A3':{ja:'自分の権限の範囲を守り、給与・個人情報を適切に扱い、記録を残す', en:'Staying within her authority, handling payroll and personal data properly, and keeping records'},
+      'O-A4':{ja:'店舗・従業員への案内と、不備の連絡（対応・期限・相談先を添える）', en:'Guidance to stores and staff, and notices of problems (with action, deadline and contact)'},
+      'O-A5':{ja:'問題の共有、次の担当への引継ぎの確認、支援の依頼', en:'Sharing problems, confirming handoffs to the next owner, and asking for help'},
+      'O-B1':{ja:'備品の必要数・在庫・納期・予算を確認して発注（承認は今の手順どおり）', en:'Checking quantities, stock, lead time and budget, then ordering (approvals as today)'},
+      'O-B2':{ja:'インボイスの入力と証憑の保存', en:'Entering invoices and saving the source documents'},
+      'O-B3':{ja:'重複・金額違い・未納品・店舗違いの発見と確認依頼', en:'Spotting duplicates, wrong amounts, undelivered items or wrong stores, and asking for confirmation'},
+      'O-B4':{ja:'支払予定・承認状況の記録と、漏れ・二重の発見（支払の最終承認は含めない）', en:'Recording payment schedule and approval status; spotting gaps or duplicates (final payment approval not included)'},
+      'O-B5':{ja:'デイリーセールスの整理と、異常の報告', en:'Organizing daily sales and reporting anomalies'},
+      'O-C1':{ja:'チェックリストに沿った入退社の情報回収・登録・連絡', en:'Collecting, registering and communicating onboarding/offboarding info per the checklist'},
+      'O-C2':{ja:'必要資料を揃え、不足・不一致を伝える（Payroll 全体の確認責任は含めない）', en:'Gathering the needed materials and reporting gaps or mismatches (overall payroll review not included)'},
+      'O-C3':{ja:'店舗から受け取ったチップ情報の不足・不整合の差し戻し', en:'Sending gaps or inconsistencies in store tip information back to the store'},
+      'O-D1':{ja:'J1 の必要書類の回収・連絡・期限の記録', en:'Collecting J-1 documents, communicating and recording deadlines'},
+      'O-F1':{ja:'担当の書類・データの整理（最新版と過去版の区別）', en:'Organizing her files and data (current vs. past versions)'},
+      'O-F2':{ja:'自分の担当業務の手順書・チェックリストの記録', en:'Writing procedures and checklists for her own tasks'}
+    }},
+  marcia_g3: {ja:'Marcia さんの初期案（G3・27項目）', en:'Initial plan for Marcia (G3 · 27 items)', who:'marcia', grade:'G3',
+    items:['O-A1','O-A2','O-A3','O-A4','O-A5','O-B2','O-B3','O-B4','O-B5','O-C1','O-C2','O-C3','O-C4','O-C5','O-D1','O-D2','O-D3','O-D4','O-D5','O-E1','O-E2','O-E3','O-E4','O-F2','O-F3','O-G3','O-G4'],
+    devFlag:[], dev:['O-G1','O-G2','O-G5','O-F4','O-F5','O-E5'],
+    scopeNote:{ja:'複数領域の進行・品質確認、例外整理、店舗との調整、Akane さんへの指導・共有。会計・税務・ビザの専門判断は、外部担当者との分担を明記する。', en:'Progress and quality across several areas, sorting out exceptions, coordinating with stores, coaching and sharing with Akane. For accounting, tax and visa expert judgment, state the split with outside partners.'},
+    devNote:{ja:'G4への追加育成項目は、正式に現在の担当責任へ組み込まれるまで、現在のスコアの分母に入れない。G4就任の確認時には、35項目全体について、直接担当・確認担当・外部委託の管理など、責任の所在が整理されているか確認する。', en:'The added G4 development items stay out of the current score until they formally become part of her current responsibilities. When confirming a move to G4, check that ownership of all 35 items (direct, review, managing outsourced work) is clear.'},
+    hints:{
+      'O-A1':{ja:'自分と Akane さんの提出物の確認（金額・日付・店舗・対象者・添付）', en:'Checking her own and Akane\'s submissions (amounts, dates, store, person, attachments)'},
+      'O-A2':{ja:'複数領域の締切の管理と、遅れの見込みの早めの報告', en:'Managing deadlines across areas and reporting expected delays early'},
+      'O-A3':{ja:'権限の範囲を守り、給与・個人情報を適切に扱い、承認・変更の記録を残す', en:'Staying within authority, handling payroll and personal data properly, recording approvals and changes'},
+      'O-A4':{ja:'店舗・従業員への案内と、不備の連絡・調整（対応・期限・相談先を添える）', en:'Guidance and coordination with stores and staff on problems (with action, deadline and contact)'},
+      'O-A5':{ja:'問題の共有、担当の境界の引継ぎ確認、外部担当者との連携', en:'Sharing problems, confirming handoffs between owners, working with outside partners'},
+      'O-B2':{ja:'インボイス入力の確認（Akane さんの入力のチェック）と例外対応', en:'Reviewing invoice entry (checking Akane\'s entries) and handling exceptions'},
+      'O-B3':{ja:'インボイスの差異・例外の確認と解消', en:'Reviewing and resolving invoice differences and exceptions'},
+      'O-B4':{ja:'支払予定・承認状況・実行結果の管理（送金権限の付与ではない）', en:'Managing payment schedule, approvals and results (not authority to send money)'},
+      'O-B5':{ja:'デイリーセールスの差異・異常の確認と報告', en:'Reviewing and reporting daily sales differences and anomalies'},
+      'O-C1':{ja:'入退社手続きの進行管理と確認', en:'Managing and reviewing onboarding/offboarding'},
+      'O-C2':{ja:'複数店舗の結果、差異、例外を確認して承認可能な状態にする', en:'Reviewing results, differences and exceptions across stores and getting them ready for approval'},
+      'O-C3':{ja:'チップ情報の差し戻し状況の確認と、Payroll へのつなぎ（計算のやり直しは求めない）', en:'Checking tip information returned to stores and connecting it to payroll (not re-doing calculations)'},
+      'O-C4':{ja:'健康保険の加入・変更・終了の進捗と完了の管理', en:'Tracking health insurance enrollments, changes and terminations to completion'},
+      'O-C5':{ja:'TDI の申請支援と進捗管理', en:'Supporting TDI claims and tracking progress'},
+      'O-D1':{ja:'J1 手続きの進行・期限・未解決事項の管理（専門判断はスポンサー・専門家）', en:'Managing J-1 progress, deadlines and open issues (expert judgment by the sponsor and experts)'},
+      'O-D2':{ja:'E2 の依頼整理と資料収集・提出・追加対応の進捗管理（専門判断は弁護士）', en:'Organizing E-2 requests; tracking documents, submission and follow-up (legal judgment by attorneys)'},
+      'O-D3':{ja:'リカーライセンス・パーミットの更新時期と申請状況の管理', en:'Managing liquor license and permit renewal dates and application status'},
+      'O-D4':{ja:'会社の保険の契約期間・更新・証明書の管理', en:'Managing company insurance periods, renewals and certificates'},
+      'O-D5':{ja:'業者契約の金額・期間・更新条件の整理と、更新前の判断材料', en:'Organizing vendor contract amounts, terms and renewal conditions; preparing decision material'},
+      'O-E1':{ja:'タックス支払の資料・予定・承認・証跡の管理（税務判断は外部の専門家）', en:'Managing tax payment documents, schedule, approvals and proof (tax judgment by outside experts)'},
+      'O-E2':{ja:'PL の整理・確認と、担当範囲での数字の説明（外部の会計担当者との分担を明記）', en:'Organizing and reviewing the P&L and explaining numbers within scope (split with the outside accountant stated)'},
+      'O-E3':{ja:'BS の残高照合と未解決項目の明示', en:'Reconciling balance sheet accounts and flagging open items'},
+      'O-E4':{ja:'月次締めの進行と、前月・予算との差異の報告', en:'Running month-end close and reporting variances vs. last month and budget'},
+      'O-F2':{ja:'手順書・チェックリストの整備（Akane さんが使える状態に）', en:'Maintaining procedures and checklists (usable by Akane)'},
+      'O-F3':{ja:'店舗との提出ルールの整備と周知（変更は承認を得て）', en:'Setting store submission rules and announcing them (changes with approval)'},
+      'O-G3':{ja:'Akane さんへの指導・フィードバック', en:'Coaching and feedback for Akane'},
+      'O-G4':{ja:'重要業務の不在時の担当・資料・相談先の準備と、代替対応の確認', en:'Preparing coverage, materials and contacts for key work, and confirming backup works'},
+      'O-G1':{ja:'G4への育成：締切・繁忙・担当者の状況を見た全体進行', en:'Toward G4: overall progress based on deadlines, busy periods and each person\'s load'},
+      'O-G2':{ja:'G4への育成：作成・確認・承認の分担と、異常時に止める仕組み', en:'Toward G4: who prepares, reviews and approves, and a way to stop when something is off'},
+      'O-G5':{ja:'G4への育成：GM への経営報告と拡大準備', en:'Toward G4: management reporting to the GM and expansion readiness'},
+      'O-F4':{ja:'G4への育成：ツール活用・自動化の検証', en:'Toward G4: validating tools and automation'},
+      'O-F5':{ja:'G4への育成：改善効果の確認・定着', en:'Toward G4: measuring and sustaining improvements'},
+      'O-E5':{ja:'G4への育成：資金予定・支払見通し', en:'Toward G4: cash plan and payment outlook'}
+    }},
+  blank: {ja:'空のテンプレート（O-A の5項目だけ）', en:'Blank template (O-A five items only)', who:'', grade:'',
+    items:['O-A1','O-A2','O-A3','O-A4','O-A5'], devFlag:[], dev:[], hints:{}}
+};
+
+/* ---------- 小さな道具 ---------- */
+function ocsTx(o){ return o ? (curLang==='en' ? (o.en!=null ? o.en : o.ja) : o.ja) : ''; }
+function ocsItemName(d){ return curLang==='en' ? (d.en||d.ja) : d.ja; }
+function ocsItemDesc(d){ return curLang==='en' ? (d.den||d.dja) : d.dja; }
+function ocsItemDef(code){ for(var i=0;i<OCS_ITEMS.length;i++){ if(OCS_ITEMS[i].c===code) return OCS_ITEMS[i]; } return null; }
+function ocsCatDef(k){ for(var i=0;i<OCS_CATS.length;i++){ if(OCS_CATS[i].k===k) return OCS_CATS[i]; } return null; }
+function ocsGrpOfCat(cat){ return cat==='A' ? 'A' : (cat==='F' ? 'F' : (cat==='G' ? 'G' : 'P')); }
+function ocsRoleLabel(k){ var r=OCS_ROLES.find(function(x){ return x.k===k; }); return r ? ocsTx(r) : t('未設定','Not set'); }
+function ocsNormGrade(g){ var x=String(g==null?'':g).toUpperCase().replace(/\s/g,''); if(x==='G1-P') x='G1'; return OCS_GRADES.indexOf(x)>=0 ? x : ''; }
+function ocsWeightsFor(g){ var w=OCS_WEIGHTS[ocsNormGrade(g)]; return w ? {A:w.A, P:w.P, F:w.F, G:w.G} : null; }
+function ocsCopy(o){ try{ return JSON.parse(JSON.stringify(o==null?null:o)); }catch(e){ return null; } }
+function ocsNum(v){ if(v===0||v===1||v===2||v===3) return v; if(v==='0'||v==='1'||v==='2'||v==='3') return +v; return null; }
+function ocsNowIso(){ return new Date().toISOString(); }
+function ocsFmt(iso){
+  if(!iso) return '';
+  try{
+    var d=new Date(iso); if(isNaN(d.getTime())) return String(iso).slice(0,16);
+    var m={}; new Intl.DateTimeFormat('en-US',{timeZone:'Pacific/Honolulu', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false})
+      .formatToParts(d).forEach(function(p){ m[p.type]=p.value; });
+    return m.year+'/'+m.month+'/'+m.day+' '+(m.hour==='24'?'00':m.hour)+':'+m.minute;
+  }catch(e){ return String(iso).slice(0,16); }
+}
+function ocsQ(v){ return String(v==null?'':v).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }   /* onclick の引数（'…'）に入れる値 */
+function ocsMe(){ return curUserName || (ROLE_CONFIG[curRole]||{}).name || ''; }
+function ocsEmp(id){ try{ return getEmployees().find(function(e){ return e && e.id===id; }) || null; }catch(e){ return null; } }
+function ocsIsSelf(e){ var me=ocsMe(); return !!(e && e.name && me && e.name===me); }
+function ocsPeriodNow(){ return (typeof ghQOf==='function') ? ghQOf(bizToday()) : (bizToday().slice(0,4)+'-Q'+(Math.floor((+bizToday().slice(5,7)-1)/3)+1)); }
+function ocsPeriodLabel(p){
+  var m=String(p||'').match(/^(\d{4})-Q([1-4])$/); if(!m) return String(p||'');
+  var q=+m[2], a=(q-1)*3+1, b=q*3;
+  var EN=['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return t(m[1]+'年 Q'+q+'（'+a+'〜'+b+'月）', 'Q'+q+' '+m[1]+' ('+EN[a]+'–'+EN[b]+')');
+}
+/* 根拠・コメントに機密（SSN・口座やカードの番号）を書かせない。案件番号や保管場所だけを書く。 */
+function ocsSensitiveHit(text){
+  var s=String(text||'');
+  if(/(^|\D)\d{3}[-\s]\d{2}[-\s]\d{4}(\D|$)/.test(s)) return 'ssn';
+  if(/\d{12,}/.test(s.replace(/[\s\-]/g,''))) return 'number';
+  return null;
+}
+
+/* ---------- 設定（正式運用を始めたか） ---------- */
+function ocsCfg(){ var c=ls('ocs_cfg', null); return (c && typeof c==='object') ? c : {live:false}; }
+function ocsLive(){ return !!ocsCfg().live; }
+function ocsSetLive(on){
+  if(!lssCanApproveScore()){ showToast(t('正式運用の開始・停止は GM だけです','Only the GM can start or stop live use'),'warning'); return; }
+  var msg = on ? t('オフィス用 Career Score の正式運用を始めます。\n・オフィススタッフ本人が自分の評価を見られるようになります\n・担当設定が「有効」の人は、旧方式（経理の8軸など）の採点が読み取り専用になります\nよろしいですか？',
+                   'Start live use of the office Career Score?\n- Office staff can see their own evaluation\n- For people with an active plan, the old Career Score becomes read-only')
+               : t('正式運用を止めてプレビューに戻します（保存した評価は消えません）。よろしいですか？','Stop live use and go back to preview? (Saved evaluations are kept.)');
+  if(!confirm(msg)) return;
+  var c=ocsCopy(ocsCfg())||{}; var log=Array.isArray(c.log)?c.log:[];
+  log.push({on:!!on, by:ocsMe(), at:ocsNowIso()});
+  lsSet('ocs_cfg', {live:!!on, by:ocsMe(), at:ocsNowIso(), _at:Math.max(Date.now(), (Number(c._at)||0)+1), _by:ocsMe(), log:log.slice(-50)});
+  showToast(on ? t('正式運用を始めました','Live use started') : t('プレビューに戻しました','Back to preview'), 'success');
+  ocsRerender();
+}
+
+/* ---------- 権限（今の Career Score の判定をそのまま使う） ---------- */
+function ocsIsAdmin(){ return !curStoreLogin && ['gm','ceo'].indexOf(curRole)>=0; }
+function ocsCanOpenList(){
+  if(curStoreLogin) return false;
+  if(!ocsLive()) return ocsIsAdmin();
+  return canViewOthersLss() || ocsDelegateIds().length>0;   /* v1051: 上長評価をする人に指定された人も（見えるのは指定された人だけ） */
+}
+/* v1051: ログインしている人の従業員レコード（名前で引く＝今のログインと同じ） */
+function ocsMyEmp(){ var me=ocsMe(); if(!me) return null; try{ return getEmployees().find(function(e){ return e && e.name===me; }) || null; }catch(err){ return null; } }
+/* v1051: 私が「上長評価をする人」に指定されているか（正式運用後・担当設定が有効・本人ではない・私が在籍） */
+function ocsIsDelegateFor(e){
+  if(!e || curStoreLogin || !ocsLive()) return false;
+  var me=ocsMyEmp(); if(!me || !me.id || me.id===e.id || me.status==='退職') return false;
+  var a=ocsAsg(e.id); return !!(a && a.state==='active' && a.mgrBy && a.mgrBy===me.id);
+}
+function ocsDelegateIds(){
+  if(curStoreLogin || !ocsLive()) return [];
+  var me=ocsMyEmp(); if(!me || !me.id || me.status==='退職') return [];
+  return ocsAsgIds().filter(function(id){ var a=ocsAsg(id); return id!==me.id && a && a.state==='active' && a.mgrBy===me.id; });
+}
+/* v1051: G4 が見られるのは G4 以下（評価に使う Grade。担当設定が無ければ役職から） */
+function ocsG4Sees(e){
+  if(curRealRole!=='g4') return true;
+  var a=e ? ocsAsg(e.id) : null, g=ocsNormGrade(a && a.grade) || ocsNormGrade(empGrade(e));
+  var n=g ? gradeNum(g) : 0;
+  return n>=1 && n<=4;
+}
+function ocsCanView(e){
+  if(!e || curStoreLogin) return false;
+  if(ocsIsSelf(e)) return ocsLive() || ocsIsAdmin();
+  if(ocsIsDelegateFor(e)) return true;   /* v1051: 上長評価をする人に指定された人 */
+  if(!ocsLive() && !ocsIsAdmin()) return false;
+  if(!canViewOthersLss()) return false;
+  if(ocsIsAdmin()) return true;
+  if(!ocsG4Sees(e)) return false;        /* v1051: G4 は G4 以下だけ */
+  try{ return visibleStaffForManager().some(function(x){ return x.id===e.id; }); }catch(err){ return false; }
+}
+/* v1051: 本人の自己評価は、担当設定が有効なら Grade を問わず（G1 も）。オフィス用だけ。旧方式の lssCanSelfRequest は変えない */
+function ocsCanSelf(e){
+  if(!e || curStoreLogin || !ocsLive() || !ocsIsSelf(e) || e.status==='退職') return false;
+  var a=ocsAsg(e.id); return !!(a && a.state==='active');
+}
+function ocsCanMgr(e){
+  if(!e || curStoreLogin) return false;
+  if(ocsIsDelegateFor(e)) return true;   /* v1051: 上長評価をする人に指定された人 */
+  if(!ocsLive() && !ocsIsAdmin()) return false;
+  if(!ocsG4Sees(e)) return false;
+  return canEditLss(e.name);
+}
+function ocsCanConfirm(e){ return !!e && !curStoreLogin && lssCanApproveScore() && !ocsIsSelf(e); }
+function ocsCanAssign(){ return ocsIsAdmin(); }
+/* 正式運用後、担当設定が有効な人の旧方式（lss_emp_）は読み取り専用（旧テンプレートの履歴として残す） */
+function ocsOldLocked(name){
+  try{
+    if(!name || !ocsLive()) return false;
+    var build=function(){ var m={}; ocsAsgIds().forEach(function(id){ var a=ocsAsg(id), e=ocsEmp(id); if(a && e && e.name && a.state==='active') m[e.name]=1; }); return m; };
+    var m=(typeof _mdMemo==='function') ? _mdMemo('ocsOldLocked', '', build) : build();
+    return !!(m && Object.prototype.hasOwnProperty.call(m, name));
+  }catch(err){ return false; }
+}
+
+/* ---------- 担当設定（ocs_asg_<従業員ID>） ---------- */
+function ocsAsg(empId){ if(!empId) return null; var a=ls(OCS_ASG_PREFIX+empId, null); return (a && typeof a==='object' && a.items) ? a : null; }
+function ocsAsgIds(){ try{ return lsKeys(OCS_ASG_PREFIX).map(function(k){ return k.slice(OCS_ASG_PREFIX.length); }).filter(Boolean); }catch(e){ return []; } }
+function ocsHint(code, propKey, grade){
+  var p=OCS_PROPOSALS[propKey]; if(p && p.hints && p.hints[code]) return p.hints[code];
+  if(code==='O-C2'){ var g=ocsNormGrade(grade); if(OCS_PAYROLL_SCOPE[g]) return OCS_PAYROLL_SCOPE[g]; }
+  return null;
+}
+/* 案から担当設定を作る。★点数・実績は入れない。担当範囲(scope)も空のまま（案は hint として出し、管理者が入れる） */
+function ocsNewAsg(e, propKey, grade){
+  var p=OCS_PROPOSALS[propKey]||OCS_PROPOSALS.blank, g=ocsNormGrade(grade)||ocsNormGrade(p.grade)||'G1';
+  var items={};
+  OCS_ITEMS.forEach(function(d){
+    var inc=p.items.indexOf(d.c)>=0, isDev=(p.dev||[]).indexOf(d.c)>=0;
+    items[d.c]={ role: inc ? 'main' : (isDev ? 'dev' : 'na'), scored: inc, req: inc && d.cat==='A',
+      imp: inc && OCS_IMPORTANT_DEFAULT.indexOf(d.c)>=0, dev: isDev || (p.devFlag||[]).indexOf(d.c)>=0, scope:'', w:1 };
+  });
+  var now=ocsNowIso();
+  return { empId:e.id, name:e.name, tpl:OCS_TPL, tplVer:OCS_TPL_VER, grade:g, proposal:(OCS_PROPOSALS[propKey]?propKey:'blank'),
+    items:items, weights:ocsWeightsFor(g), state:'draft', rev:0, createdAt:now, createdBy:ocsMe(), log:[] };
+}
+function ocsSaveAsg(a, what, reason){
+  var cur=ocsAsg(a.empId);
+  a.rev=Math.max(Number(a.rev)||0, Number(cur&&cur.rev)||0)+1;
+  a._at=Math.max(Date.now(), (Number(cur&&cur._at)||0)+1); a._by=ocsMe(); a.updatedAt=ocsNowIso();
+  a.log=(Array.isArray(a.log)?a.log:[]).concat([{at:a.updatedAt, by:ocsMe(), what:what||'', reason:reason||'', rev:a.rev}]).slice(-80);
+  return lsSet(OCS_ASG_PREFIX+a.empId, a);
+}
+function ocsIsTarget(it){ return !!(it && it.scored && it.role!=='na' && it.role!=='dev'); }
+/* 有効にできるか：採点対象に担当範囲がある・配点がある区分に採点対象がある・配点の合計が100 */
+function ocsAsgProblems(a){
+  var out=[], W=a.weights||{}, cnt={A:0,P:0,F:0,G:0}, noScope=[];
+  if(!ocsNormGrade(a.grade)) out.push(t('評価で使う Grade が未設定です','The grade used for evaluation is not set'));
+  OCS_ITEMS.forEach(function(d){ var it=(a.items||{})[d.c]; if(!ocsIsTarget(it)) return; cnt[ocsGrpOfCat(d.cat)]++; if(!String(it.scope||'').trim()) noScope.push(d.c); });
+  var sum=(Number(W.A)||0)+(Number(W.P)||0)+(Number(W.F)||0)+(Number(W.G)||0);
+  if(sum!==100) out.push(t('配点の合計が100ではありません（'+sum+'）','Weights do not add up to 100 ('+sum+')'));
+  OCS_GROUPS.forEach(function(g){ if((Number(W[g.k])||0)>0 && !cnt[g.k]) out.push(t(g.ja+' に配点（'+W[g.k]+'%）がありますが、採点対象の項目がありません。担当範囲と配点の設定を確認してください',
+    g.en+' has a weight ('+W[g.k]+'%) but no scored items. Check the scope and weight settings')); });
+  if(noScope.length) out.push(t('担当範囲が未設定の採点対象：','Scored items without a scope: ')+noScope.join('・'));
+  if(a.mgrBy){   /* v1051 */
+    var ev=ocsEmp(a.mgrBy);
+    if(a.mgrBy===a.empId) out.push(t('上長評価をする人に本人は指定できません','The person cannot review themselves'));
+    else if(!ev) out.push(t('上長評価をする人（ID '+a.mgrBy+'）が従業員マスターにいません','The reviewer (ID '+a.mgrBy+') is not in the employee master'));
+    else if(ev.status==='退職') out.push(t('上長評価をする人（'+ev.name+'）は退職しています','The reviewer ('+ev.name+') has resigned'));
+  }
+  return out;
+}
+
+/* ---------- 評価（ocs_ev_<従業員ID>） ---------- */
+var OCS_EV_PARTS = ['meta','self','mgr','conf','promo','void'];
+function ocsEvDoc(empId){ var d=ls(OCS_EV_PREFIX+empId, null); return (d && typeof d==='object' && d.evals && typeof d.evals==='object') ? d : {empId:empId, evals:{}}; }
+function ocsEv(empId, period){ var d=ocsEvDoc(empId), ev=d.evals[period]; return (ev && typeof ev==='object' && ev.meta) ? ev : null; }
+function ocsPeriods(empId){ return Object.keys(ocsEvDoc(empId).evals||{}).filter(function(p){ return /^\d{4}-Q[1-4]$/.test(p); }).sort().reverse(); }
+function ocsDefsSnap(){ return OCS_ITEMS.map(function(d){ return {c:d.c, cat:d.cat, ja:d.ja, en:d.en, dja:d.dja, den:d.den}; }); }
+function ocsNewEv(a, period){
+  var now=ocsNowIso();
+  return { id:period, period:period, empId:a.empId, name:a.name, createdAt:now, createdBy:ocsMe(),
+    meta:{ grade:a.grade, tpl:a.tpl||OCS_TPL, tplVer:a.tplVer||OCS_TPL_VER, defs:ocsDefsSnap(), asg:ocsCopy(a.items), weights:ocsCopy(a.weights), asgRev:a.rev||0, at:now, by:ocsMe(), _at:Date.now() },
+    checks:[], revs:[] };
+}
+function ocsStamp(part, prev){ part._at=Math.max(Date.now(), (Number(prev&&prev._at)||0)+1); return part; }
+function ocsPutEv(empId, ev){
+  var d=ocsEvDoc(empId); d.empId=empId; d.evals=d.evals||{}; ev._at=Date.now(); d.evals[ev.period]=ev; d._at=Date.now();
+  return lsSet(OCS_EV_PREFIX+empId, d);
+}
+/* 合流：期間ごと・部分ごとに新しいほう。月次確認・修正履歴は id ごとの和集合。★どの部分も消さない。 */
+function _ocsUnion(a, b){
+  var m={}, order=[];
+  [a,b].forEach(function(arr){ (Array.isArray(arr)?arr:[]).forEach(function(x){ if(!x || !x.id) return;
+    if(!m[x.id]){ m[x.id]=x; order.push(x.id); } else if((Number(x._at)||0) >= (Number(m[x.id]._at)||0)) m[x.id]=x; }); });
+  return order.map(function(id){ return m[id]; }).sort(function(x,y){ return String(x.at||'').localeCompare(String(y.at||'')); });
+}
+function mergeOcsEv(cloud, local){
+  var c=(cloud && typeof cloud==='object') ? cloud : {}, l=(local && typeof local==='object') ? local : {};
+  var out=Object.assign({}, c, l), ce=(c.evals && typeof c.evals==='object') ? c.evals : {}, le=(l.evals && typeof l.evals==='object') ? l.evals : {}, evs={};
+  Object.keys(ce).forEach(function(k){ evs[k]=ce[k]; });
+  Object.keys(le).forEach(function(k){
+    var a=evs[k], b=le[k];
+    if(!a || typeof a!=='object'){ evs[k]=b; return; }
+    if(!b || typeof b!=='object') return;
+    var r=Object.assign({}, a, b);
+    OCS_EV_PARTS.forEach(function(p){
+      var x=a[p], y=b[p];
+      if(x==null && y==null){ delete r[p]; return; }
+      if(x==null){ r[p]=y; return; } if(y==null){ r[p]=x; return; }
+      r[p]=((Number(y._at)||0) >= (Number(x._at)||0)) ? y : x;
+    });
+    r.checks=_ocsUnion(a.checks, b.checks); r.revs=_ocsUnion(a.revs, b.revs);
+    r._at=Math.max(Number(a._at)||0, Number(b._at)||0);
+    evs[k]=r;
+  });
+  out.evals=evs; out._at=Math.max(Number(c._at)||0, Number(l._at)||0);
+  return out;
+}
+function _coversOcsEv(check, want){
+  if(!check || typeof check!=='object') return false;
+  var ce=check.evals||{}, we=(want && want.evals)||{};
+  for(var k in we){ if(!we.hasOwnProperty(k)) continue;
+    var w=we[k], h=ce[k]; if(!w) continue; if(!h) return false;
+    for(var i=0;i<OCS_EV_PARTS.length;i++){ var p=OCS_EV_PARTS[i];
+      if(w[p] && (!h[p] || (Number(h[p]._at)||0) < (Number(w[p]._at)||0))) return false; }
+    var lists=['checks','revs'];
+    for(var j=0;j<lists.length;j++){ var hm={}; (h[lists[j]]||[]).forEach(function(x){ if(x&&x.id) hm[x.id]=Number(x._at)||0; });
+      var ws=w[lists[j]]||[]; for(var q=0;q<ws.length;q++){ var x=ws[q]; if(!x||!x.id) continue; if(!(x.id in hm) || hm[x.id] < (Number(x._at)||0)) return false; } }
+  }
+  return true;
+}
+
+/* ---------- 計算（★純粋関数。メタ（作成時の写し）と点数だけで決まる） ---------- */
+function ocsCalc(meta, s){
+  s=s||{}; var asg=(meta&&meta.asg)||{}, W=(meta&&meta.weights)||{};
+  var G={}, C={}, tot={targets:0, num:0, uc:0, na:0, dev:0, rec:0};
+  OCS_GROUPS.forEach(function(g){ G[g.k]={w:Number(W[g.k])||0, targets:0, num:0, uc:0, sum:0, max:0, rate:null}; });
+  OCS_CATS.forEach(function(c){ C[c.k]={targets:0, num:0, uc:0, na:0, dev:0, rec:0, sum:0, max:0, rate:null}; });
+  OCS_ITEMS.forEach(function(d){
+    var it=asg[d.c]||{role:'na'}, g=ocsGrpOfCat(d.cat), v=ocsNum(s[d.c]);
+    if(!ocsIsTarget(it)){ if(it.role==='dev' || it.dev){ C[d.cat].dev++; tot.dev++; } else { C[d.cat].na++; tot.na++; } return; }
+    if(G[g].w<=0){ C[d.cat].rec++; tot.rec++; return; }   /* 配点0の区分（G1・G2 の O-G）＝育成記録。総合に入れない */
+    var wi=Number(it.w); if(!(wi>0)) wi=1;
+    G[g].targets++; C[d.cat].targets++; tot.targets++;
+    if(v==null){ G[g].uc++; C[d.cat].uc++; tot.uc++; return; }   /* 未確認：0点にしない・分母にも入れない */
+    G[g].num++; C[d.cat].num++; tot.num++;
+    G[g].sum+=wi*v; G[g].max+=wi*3; C[d.cat].sum+=v; C[d.cat].max+=3;
+  });
+  var total=0, missing=[], needCfg=[], wsum=0;
+  OCS_GROUPS.forEach(function(g){ var x=G[g.k]; wsum+=x.w; if(x.max>0) x.rate=x.sum/x.max;
+    if(x.w>0){ if(!x.targets) needCfg.push(g.k); else if(!x.num) missing.push(g.k); else total+=x.rate*x.w; } });
+  OCS_CATS.forEach(function(c){ var x=C[c.k]; if(x.max>0) x.rate=x.sum/x.max; });
+  var ok=(wsum===100 && !missing.length && !needCfg.length && tot.targets>0);
+  return { groups:G, cats:C, counts:tot, wsum:wsum, missing:missing, needCfg:needCfg,
+    total: ok ? Math.round(total*10)/10 : null,
+    state: !ok ? 'na' : (tot.uc>0 ? 'prov' : 'ready') };
+}
+/* 評価の状態：正式（確定済み）／暫定（未確認あり・確定前）／未算出 */
+function ocsEvState(ev){
+  if(!ev) return {k:'none'};
+  if(ev.void) return {k:'void'};
+  var conf=ev.conf && ev.conf.state==='confirmed';
+  var s=conf ? (ev.conf.s||{}) : ((ev.mgr&&ev.mgr.s)||{});
+  var calc=ocsCalc(ev.meta, s);
+  if(conf) return {k:'ok', calc:calc, src:'conf'};
+  return {k:(calc.state==='na' ? 'na' : 'prov'), calc:calc, src:'mgr', ready:(calc.state==='ready')};
+}
+/* 比べてよいか：Grade・担当範囲・項目定義（版）・配点が同じときだけ */
+function ocsSig(meta){
+  if(!meta) return '';
+  var a={g:meta.grade, t:meta.tpl, v:meta.tplVer, w:meta.weights, i:{}};
+  OCS_ITEMS.forEach(function(d){ var it=(meta.asg||{})[d.c]||{}; a.i[d.c]=[it.role||'', it.scored?1:0, String(it.scope||'').trim(), Number(it.w)||1]; });
+  return JSON.stringify(a);
+}
+function ocsPrevConfirmed(empId, period){
+  var ps=ocsPeriods(empId).filter(function(p){ return p<period; });
+  for(var i=0;i<ps.length;i++){ var ev=ocsEv(empId, ps[i]); if(ev && !ev.void && ev.conf && ev.conf.state==='confirmed') return ev; }
+  return null;
+}
+/* 昇格候補として確認可能か（★自動昇格はしない。最終判断と Grade 変更は既存の承認手続き） */
+function ocsPromoChecks(ev){
+  var st=ocsEvState(ev), conf=(st.k==='ok'), s=conf ? (ev.conf.s||{}) : ((ev.mgr&&ev.mgr.s)||{}), asg=(ev.meta&&ev.meta.asg)||{};
+  var req=[], imp=[];
+  OCS_ITEMS.forEach(function(d){ var it=asg[d.c]; if(!ocsIsTarget(it)) return; if(it.req) req.push(d.c); if(it.imp) imp.push(d.c); });
+  var reqLow=req.filter(function(c){ var v=ocsNum(s[c]); return v==null || v<2; });
+  var impUc=imp.filter(function(c){ return ocsNum(s[c])==null; });
+  var pr=ev.promo||{};
+  var list=[
+    {k:'score', ok:conf && st.calc && st.calc.total!=null && st.calc.total>=80, ja:'正式評価が80点以上', en:'Confirmed score of 80 or more',
+      val: conf && st.calc && st.calc.total!=null ? (st.calc.total+t('点',' pts')) : t('確定前','Not confirmed')},
+    {k:'req', ok:conf && req.length>0 && !reqLow.length, ja:'現在の必須項目がすべて2点以上', en:'All current required items at 2 or more',
+      val: !req.length ? t('必須項目が設定されていません','No required items set') : (reqLow.length ? (t('2点未満・未確認：','Below 2 / unconfirmed: ')+reqLow.join('・')) : (req.length+t('項目すべて',' items, all ok')))},
+    {k:'imp', ok:conf && !impUc.length, ja:'重要項目（給与・支払・機密・期限など）に未確認がない', en:'No unconfirmed important items (payroll, payments, confidentiality, deadlines…)',
+      val: impUc.length ? (t('未確認：','Unconfirmed: ')+impUc.join('・')) : (imp.length+t('項目',' items'))},
+    {k:'issues', ok:!!(pr.issues && pr.issues.ok), ja:'重要な未解決課題について、管理者の確認が完了している', en:'Manager has reviewed important open issues',
+      val: pr.issues && pr.issues.ok ? ((pr.issues.by||'')+' '+ocsFmt(pr.issues.at)) : t('未確認','Not reviewed')},
+    {k:'next', ok:!!(pr.next && pr.next.ok), ja:'次のGradeの代表的業務を実技・実績で確認している', en:'Representative next-grade work confirmed by practice or results',
+      val: pr.next && pr.next.ok ? ((pr.next.by||'')+' '+ocsFmt(pr.next.at)) : t('未確認','Not confirmed')}
+  ];
+  return {list:list, candidate: conf && list.every(function(x){ return x.ok; }), conf:conf};
+}
+
+/* ---------- 画面：状態・入口 ---------- */
+window._ocsSel = window._ocsSel || null;
+window._ocsPeriod = window._ocsPeriod || null;
+window._ocsEdit = window._ocsEdit || null;
+window._ocsAsgEdit = window._ocsAsgEdit || null;
+window._ocsAll = !!window._ocsAll;
+window._ocsOpenCats = window._ocsOpenCats || {};
+function ocsRerender(){ try{ renderPage(curPage==='leadership' ? 'leadership' : 'office_career'); }catch(e){} }
+function ocsTabVisible(){ return ocsCanOpenList(); }
+async function ocsOpen(empId){
+  var e=ocsEmp(empId); if(!e || !ocsCanView(e)){ showToast(t('この評価は見られません','You cannot view this evaluation'),'warning'); return; }
+  window._ocsSel=empId; window._ocsPeriod=null; window._ocsEdit=null; window._ocsAsgEdit=null; window._ocsOpenCats={};
+  ocsRerender(); window.scrollTo(0,0);
+  /* 別端末で保存された最新を取りに行く（今の Career Score の openLssDetail と同じ） */
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED){ await pullOpKey(OCS_ASG_PREFIX+empId); await pullOpKey(OCS_EV_PREFIX+empId); } }catch(err){}
+  if(window._ocsSel===empId && !window._ocsEdit && !window._ocsAsgEdit) ocsRerender();
+}
+function ocsBack(){
+  if(window._ocsEdit && window._ocsEdit.dirty && !confirm(t('保存していない入力があります。破棄して戻りますか？','You have unsaved input. Discard and go back?'))) return;
+  window._ocsEdit=null; window._ocsAsgEdit=null;
+  if(window._ocsSel && ocsCanOpenList()){ window._ocsSel=null; ocsRerender(); return; }
+  window._ocsSel=null;
+  if(curPage==='office_career') go('mypage'); else ocsRerender();
+}
+function ocsGoMine(){ var me=getEmployees().find(function(e){ return e && e.name===ocsMe(); }); if(!me) return; window._ocsSel=me.id; window._ocsPeriod=null; window._ocsEdit=null; window._ocsAsgEdit=null; go('office_career'); }
+function ocsSetPeriod(p){ if(window._ocsEdit){ showToast(t('入力中です。保存かキャンセルをしてから切り替えてください','Save or cancel your input first'),'warning'); return; } window._ocsPeriod=p; ocsRerender(); }
+function ocsToggleAll(){ window._ocsAll=!window._ocsAll; ocsRerender(); }
+function ocsCatToggle(k, el){ try{ window._ocsOpenCats[k]=!!(el && el.open); }catch(e){} }
+function ocsDeny(msg){ return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-lock" style="font-size:22px"></i><div style="margin-top:6px;font-size:13px">'+escapeHtml(msg)+'</div></div>'; }
+function ocsHeaderHtml(sub){
+  return '<div class="section-header"><div><div class="section-title"><i class="ti ti-briefcase" style="color:var(--accent)"></i> '+t('オフィス Career Score','Office Career Score')+'</div>'
+    +'<div class="section-sub">'+sub+'</div></div></div>';
+}
+function ocsPreviewBanner(){
+  if(ocsLive()) return '';
+  return '<div style="border:1.5px dashed var(--accent2);border-radius:10px;padding:9px 12px;margin-bottom:10px;background:rgba(59,130,246,.06);font-size:11.5px;line-height:1.7">'
+    +'<b style="color:var(--accent2)"><i class="ti ti-eye"></i> '+t('プレビュー（正式運用前）','Preview (not live yet)')+'</b> — '
+    +t('いまは GM・CEO だけが見られます。オフィススタッフ本人・AM には出ていません。旧方式の Career Score・ボーナス・Grade には何も影響しません。','Only the GM and CEO can see this. Office staff and AMs do not see it yet. Nothing changes in the old Career Score, bonus or grade.')
+    +'<br>'+t('★ここで保存した担当設定・評価はクラウドに残ります（正式運用を始めると、そのまま使われます）。','★Plans and evaluations saved here are kept in the cloud and carry over when live use starts.')
+    +(lssCanApproveScore() ? ' <button class="btn btn-primary btn-sm" style="margin-left:4px" onclick="ocsSetLive(true)"><i class="ti ti-player-play"></i> '+t('正式運用を始める','Start live use')+'</button>' : '')
+    +'</div>';
+}
+/* 'office_career' ページ／Career Score の「オフィス」タブの中身 */
+function renderOfficeCareer(){
+  var sel=window._ocsSel ? ocsEmp(window._ocsSel) : null;
+  var standalone=(curPage==='office_career');
+  var head=standalone ? ocsHeaderHtml(OCS_TPL+'（'+t('版','v')+OCS_TPL_VER+'）· '+t('7カテゴリ・35項目 · 0〜3点','7 categories · 35 items · 0–3 pts')) : '';
+  if(sel){
+    if(!ocsCanView(sel)) return head+ocsDeny(t('この評価を見る権限がありません','You do not have permission to view this evaluation'));
+    if(window._ocsAsgEdit && window._ocsAsgEdit.empId===sel.id && ocsCanAssign()) return head+ocsAsgEditorHtml(sel);
+    return head+ocsDetailHtml(sel);
+  }
+  if(ocsCanOpenList()) return head+ocsListHtml();
+  var me=getEmployees().find(function(e){ return e && e.name===ocsMe(); });
+  if(me && ocsAsg(me.id) && ocsCanView(me)){ window._ocsSel=me.id; return head+ocsDetailHtml(me); }
+  return head+ocsDeny(t('オフィス用 Career Score の対象ではありません','You are not on the office Career Score'));
+}
+/* マイページのカード（正式運用後・本人の担当設定が有効なときだけ） */
+function ocsMyCardHtml(){
+  try{
+    if(!ocsLive() || curStoreLogin) return '';
+    var me=getEmployees().find(function(e){ return e && e.name===ocsMe(); }); if(!me) return '';
+    var a=ocsAsg(me.id), del=ocsDelegateIds();
+    if((!a || a.state!=='active') && !del.length) return '';
+    if(!a || a.state!=='active') return ocsMyDelegateCard(del, true);
+    var p=ocsPeriodNow(), ev=ocsEv(me.id, p), st=ocsEvState(ev), last=ocsLastConfirmed(me.id);
+    var line;
+    if(!ev) line=t('今期の評価はまだ始まっていません','This quarter\'s evaluation has not started');
+    else if(st.k==='ok') line=t('今期の評価は確定しました','This quarter\'s evaluation is confirmed');
+    else line=(ev.self && ev.self.sub) ? t('自己評価を提出済み・上長評価と確定を待っています','Self-review submitted; waiting for manager review and confirmation') : t('今期の評価が進行中です','This quarter\'s evaluation is in progress');
+    return '<div class="card"><div class="card-title"><i class="ti ti-briefcase" style="color:var(--accent)"></i>'+t('オフィス Career Score','Office Career Score')
+      +'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="ocsGoMine()">'+t('開く','Open')+'</button></div>'
+      +'<div style="font-size:12px;color:var(--tm)">'+escapeHtml(ocsPeriodLabel(p))+' · '+escapeHtml(line)+'</div>'
+      +(last ? '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">'+t('前回の正式評価：','Last confirmed: ')+escapeHtml(ocsPeriodLabel(last.period))+' '+((ocsEvState(last).calc||{}).total)+t('点',' pts')+'</div>' : '')
+      +(del.length ? ocsMyDelegateCard(del, false) : '')
+      +'</div>';
+  }catch(e){ return ''; }
+}
+/* v1051: 上長評価をする人に指定されている分（本人のカードの中、または単独のカード） */
+function ocsMyDelegateCard(ids, alone){
+  var p=ocsPeriodNow();
+  var rows=ids.map(function(id){ var e=ocsEmp(id); if(!e) return '';
+    var ev=ocsEv(id, p), st=ocsEvState(ev);
+    var s = !ev ? t('未開始','Not started') : (st.k==='ok' ? t('確定','Confirmed') : ((ev.mgr ? t('上長評価 入力中','Review in progress') : t('上長評価 まだ','Review not started')) + ((ev.self && ev.self.sub) ? ' · '+t('自己評価 提出済み','self-review submitted') : '')));
+    return '<div style="display:flex;align-items:center;gap:8px;border-top:1px solid var(--border);padding:6px 0;margin-top:4px"><span style="flex:1;font-size:12px"><b>'+escapeHtml(e.name)+'</b> <span style="color:var(--muted);font-size:11px">'+escapeHtml(s)+'</span></span>'
+      +'<button class="btn btn-secondary btn-sm" onclick="ocsGoPerson(\''+ocsQ(id)+'\')">'+t('開く','Open')+'</button></div>'; }).join('');
+  var body='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-top:8px">'+t('あなたが上長評価をする人','People you review')+'</div>'+rows;
+  if(!alone) return body;
+  return '<div class="card"><div class="card-title"><i class="ti ti-briefcase" style="color:var(--accent)"></i>'+t('オフィス Career Score','Office Career Score')+'</div>'+body+'</div>';
+}
+function ocsGoPerson(empId){ window._ocsSel=null; window._ocsPeriod=null; window._ocsEdit=null; window._ocsAsgEdit=null; go('office_career'); ocsOpen(empId); }
+function ocsLastConfirmed(empId){ var ps=ocsPeriods(empId); for(var i=0;i<ps.length;i++){ var ev=ocsEv(empId, ps[i]); if(ev && !ev.void && ev.conf && ev.conf.state==='confirmed') return ev; } return null; }
+
+/* ---------- 一覧 ---------- */
+function ocsStateChip(k, small){
+  var fs=small?'9.5px':'10.5px';
+  if(k==='ok') return '<span class="tag tag-green" style="font-size:'+fs+'">'+t('正式','Confirmed')+'</span>';
+  if(k==='prov') return '<span class="tag tag-blue" style="font-size:'+fs+'">'+t('暫定','Provisional')+'</span>';
+  if(k==='na') return '<span class="tag tag-gray" style="font-size:'+fs+'">'+t('未算出','Not calculated')+'</span>';
+  if(k==='void') return '<span class="tag tag-gray" style="font-size:'+fs+'">'+t('破棄','Discarded')+'</span>';
+  if(k==='wait') return '<span class="tag tag-gray" style="font-size:'+fs+'">'+t('確定前','Not confirmed yet')+'</span>';
+  return '<span class="tag tag-gray" style="font-size:'+fs+'">'+t('未開始','Not started')+'</span>';
+}
+function ocsGradeChips(e, a){
+  var g=ocsNormGrade(a&&a.grade), tg=ocsNormGrade(empGrade(e))||String(empGrade(e)||'—');
+  var h='<span class="tag" style="background:var(--surface2);color:var(--tm);font-size:10px;font-weight:700;border:1px solid var(--border)">'+(g||'—')+'</span>';
+  /* v1051: GM・CEO が「ずれを確認した」なら、警告ではなく記録として出す */
+  var full=(a && a.empId) ? a : ocsAsg(e && e.id);
+  if(g && tg!==g && !ocsIsSelf(e) && ocsGradeOkValid(e, full)) return h+' <span class="tag tag-gray" style="font-size:9.5px" title="'+escapeHtml((full.gradeOk.by||'')+' '+ocsFmt(full.gradeOk.at))+'"><i class="ti ti-check"></i> '
+    +t('役職（'+escapeHtml(e.title||'—')+'）は '+escapeHtml(tg)+' の扱い・評価は '+g+'（確認済み）','Title ('+escapeHtml(e.title||'—')+') maps to '+escapeHtml(tg)+'; evaluated as '+g+' (confirmed)')+'</span>';
+  if(g && tg!==g && !ocsIsSelf(e)) h+=' <span class="tag tag-yellow" style="font-size:9.5px" title="'+escapeHtml(t('従業員マスターの役職から見た Grade','Grade from the job title in the employee master'))+'"><i class="ti ti-alert-triangle"></i> '
+    +t('役職（'+escapeHtml(e.title||'—')+'）から見ると '+escapeHtml(tg),'Title ('+escapeHtml(e.title||'—')+') says '+escapeHtml(tg))+'</span>';
+  return h;
+}
+/* 一覧を開いたとき、ほかの端末で足された人・進んだ評価をクラウドから取り直す（30秒に1回まで） */
+async function ocsPullPrefix(pre){
+  if(typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return false;
+  try{
+    var r=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.'+encodeURIComponent(pre)+'*', { headers: supaHeaders() });
+    if(!r.ok) return false; var rows=await r.json(); if(!Array.isArray(rows) || !rows.length) return false;
+    var before={}; rows.forEach(function(x){ if(x && x.key) before[x.key]=JSON.stringify(ls(x.key, null)); });
+    _applyKvRows(rows);
+    return rows.some(function(x){ return x && x.key && JSON.stringify(ls(x.key, null))!==before[x.key]; });
+  }catch(e){ return false; }
+}
+function ocsListRefresh(){
+  if(window._ocsListPullAt && Date.now()-window._ocsListPullAt<30000) return;
+  window._ocsListPullAt=Date.now();
+  Promise.all([ocsPullPrefix(OCS_ASG_PREFIX), ocsPullPrefix(OCS_EV_PREFIX)]).then(function(r){
+    if((r[0]||r[1]) && !window._ocsSel && !window._ocsEdit && !window._ocsAsgEdit) ocsRerender();
+  }).catch(function(){});
+}
+function ocsListHtml(){
+  try{ ocsListRefresh(); }catch(e){}
+  var ids=ocsAsgIds(), rows=[];
+  ids.forEach(function(id){ var e=ocsEmp(id), a=ocsAsg(id); if(!e || !a) return; if(!ocsCanView(e)) return; rows.push({e:e, a:a}); });
+  rows.sort(function(x,y){ var d=OCS_GRADES.indexOf(ocsNormGrade(y.a.grade))-OCS_GRADES.indexOf(ocsNormGrade(x.a.grade)); return d || String(x.e.name).localeCompare(String(y.e.name)); });
+  var p=ocsPeriodNow();
+  var h=ocsPreviewBanner();
+  h+='<div class="card" style="padding:10px 12px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<div style="flex:1;min-width:200px"><div style="font-size:13px;font-weight:700">'+OCS_TPL+' <span style="font-size:11px;color:var(--muted);font-weight:400">'+t('版','v')+OCS_TPL_VER+' · '+t('7カテゴリ・35項目 · 0〜3点（L1〜L5 とは別の指標）','7 categories · 35 items · 0–3 pts (separate from L1–L5)')+'</span></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+t('今期：','This quarter: ')+escapeHtml(ocsPeriodLabel(p))+(ocsLive()?' · <span style="color:var(--green);font-weight:700">'+t('正式運用中','Live')+'</span>':'')+'</div></div>'
+    +'<button class="btn btn-secondary btn-sm" onclick="ocsOpenItemsModal()"><i class="ti ti-list-details"></i> '+t('項目と配点','Items & weights')+'</button>'
+    +(ocsCanAssign() ? '<button class="btn btn-primary btn-sm" onclick="ocsOpenAddModal()"><i class="ti ti-user-plus"></i> '+t('対象者を追加','Add person')+'</button>' : '')
+    +(ocsLive() && lssCanApproveScore() ? '<button class="btn btn-secondary btn-sm" onclick="ocsSetLive(false)"><i class="ti ti-player-pause"></i> '+t('プレビューに戻す','Back to preview')+'</button>' : '')
+    +'</div></div>';
+  if(!rows.length){
+    h+='<div class="card" style="text-align:center;padding:22px;color:var(--muted);font-size:12.5px;line-height:1.8">'+t('まだ対象者がいません。','No one is on the office Career Score yet.')
+      +(ocsCanAssign() ? '<br>'+t('「対象者を追加」で、従業員マスターから ID で人を選び、初期案（Akane さん G1・Marcia さん G3・空のテンプレート）を当ててください。','Use "Add person" to pick someone from the employee master by ID and apply an initial plan.') : '')+'</div>';
+  }
+  rows.forEach(function(r){
+    var e=r.e, a=r.a, ev=ocsEv(e.id, p), st=ocsEvState(ev), calc=st.calc;
+    var stepSelf = ev && ev.self ? (ev.self.sub ? t('提出済み','Submitted') : t('入力中','In progress')) : t('未','—');
+    var stepMgr = ev && ev.mgr ? ((st.ready||st.k==='ok') ? t('済','Done') : t('入力中','In progress')) : t('未','—');
+    var stepConf = (st.k==='ok') ? t('確定','Confirmed') : t('未','—');
+    var tot = (calc && calc.total!=null) ? ('<span style="font-size:20px;font-weight:800;color:var(--accent)">'+calc.total+'</span><span style="font-size:11px;color:var(--muted)">'+t('点',' pts')+'</span>') : '<span style="font-size:15px;font-weight:700;color:var(--muted)">—</span>';
+    h+='<div class="card" style="padding:12px 14px"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+      +'<div style="flex:1;min-width:210px"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:14.5px">'+escapeHtml(e.name)+'</b>'+ocsGradeChips(e, a)
+      +(a.state==='active' ? '<span class="tag tag-green" style="font-size:9.5px">'+t('担当設定 有効','Plan active')+'</span>' : '<span class="tag tag-yellow" style="font-size:9.5px">'+t('担当設定 下書き','Plan draft')+'</span>')+'</div>'
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:2px">ID '+escapeHtml(e.id)+' · '+escapeHtml(e.title||'')+(e.status==='退職'?' · '+t('退職','Resigned'):'')
+      +(a.mgrBy && ocsEmp(a.mgrBy) ? ' · '+t('上長評価：','Reviewer: ')+escapeHtml(ocsEmp(a.mgrBy).name)+t('（指定）',' (designated)') : '')+'</div>'
+      +'<div style="font-size:11px;color:var(--tm);margin-top:5px">'+escapeHtml(ocsPeriodLabel(p))+'：'+t('自己評価','Self')+' '+stepSelf+' → '+t('上長評価','Manager')+' '+stepMgr+' → '+t('確定','Confirm')+' '+stepConf+'</div>'
+      +(calc ? '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+t('採点済み ','Scored ')+calc.counts.num+' / '+t('採点対象 ','targets ')+calc.counts.targets+(calc.counts.uc?(' · '+t('未確認 ','unconfirmed ')+calc.counts.uc):'')+'</div>' : '')
+      +'</div>'
+      +'<div style="text-align:right;min-width:86px">'+tot+'<div>'+ocsStateChip(st.k, true)+'</div></div>'
+      +'<button class="btn btn-'+(a.state==='active'?'secondary':'primary')+' btn-sm" onclick="ocsOpen(\''+ocsQ(e.id)+'\')">'+t('開く','Open')+'</button>'
+      +'</div></div>';
+  });
+  h+='<div style="font-size:10.5px;color:var(--muted);line-height:1.7;margin:2px 2px 10px">'
+    +t('★旧方式の Career Score（経理の8軸など）は消していません・新しい35項目に変換もしていません。各人の画面の下に「旧テンプレートの履歴」として出ます。','★The old Career Score (e.g. the 8 accounting axes) is kept as is and is not converted to the 35 items. It appears at the bottom of each person\'s page as old-template history.')
+    +'<br>'+t('★この点数は時給・給与・チップ・賞与・Grade には連動しません（ボーナスの計算は今までどおり旧方式の Career Score を使います）。','★This score is not linked to wages, salary, tips, bonus or grade (the bonus still uses the old Career Score).')+'</div>';
+  return h;
+}
+/* 項目と配点の一覧（誰でも読める説明） */
+function ocsOpenItemsModal(){
+  var h='<div class="modal-title">'+OCS_TPL+' · '+t('項目と配点','Items & weights')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  h+='<div style="font-size:11.5px;font-weight:700;margin-bottom:4px">'+t('配点（区分ごと）','Weights by group')+'</div>'
+    +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px"><tr><th style="text-align:left;padding:3px 4px;border-bottom:1px solid var(--border)">Grade</th>'
+    +OCS_GROUPS.map(function(g){ return '<th style="text-align:right;padding:3px 4px;border-bottom:1px solid var(--border)">'+escapeHtml(ocsTx(g))+'</th>'; }).join('')+'</tr>'
+    +OCS_GRADES.map(function(g){ var w=OCS_WEIGHTS[g]; return '<tr><td style="padding:3px 4px;font-weight:700">'+g+'</td>'+OCS_GROUPS.map(function(x){ return '<td style="text-align:right;padding:3px 4px">'+w[x.k]+'%'+(w[x.k]===0?'<div style="font-size:9px;color:var(--muted)">'+t('育成記録','record only')+'</div>':'')+'</td>'; }).join('')+'</tr>'; }).join('')
+    +'</table></div>';
+  h+='<div style="font-size:11.5px;font-weight:700;margin:6px 0 4px">'+t('点数','Scores')+'</div>'
+    +OCS_SCORES.map(function(x){ return '<div style="display:flex;gap:8px;padding:4px 0;border-top:1px solid var(--border)"><span style="flex-shrink:0;width:22px;height:22px;border-radius:6px;background:'+OCS_SCORE_COLORS[x.v]+';color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:12px">'+x.v+'</span><div style="font-size:11px;line-height:1.5"><b>'+escapeHtml(ocsTx(x))+'</b> <span style="color:var(--muted)">'+escapeHtml(curLang==='en'?x.den:x.dja)+'</span></div></div>'; }).join('')
+    +'<div style="font-size:11px;line-height:1.6;padding:4px 0;border-top:1px solid var(--border)"><b>'+t('未確認','Unconfirmed')+'</b> <span style="color:var(--muted)">'+t('担当予定または必須だが、実施機会や判断材料がない。0点にしない（暫定）。','Planned or required, but no opportunity or evidence yet. Not counted as 0 (provisional).')+'</span></div>'
+    +'<div style="font-size:11px;line-height:1.6;padding:4px 0;border-top:1px solid var(--border)"><b>'+t('対象外','Not applicable')+'</b> <span style="color:var(--muted)">'+t('現在の役割では求めていない。分母・分子から除外。','Not required in the current role; excluded from the calculation.')+'</span></div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin:4px 0 8px">'+t('★通常の承認・チェックを受けることを理由に「補助が必要」と判定しない。全項目2点で約66.7点＝通常の担当業務を自立して実行できる状態。','★Do not rate "needs support" just because work goes through normal approvals. All items at 2 ≈ 66.7 = independently doing the normal assigned work.')+'</div>';
+  OCS_CATS.forEach(function(c){
+    h+='<details style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-bottom:6px"><summary style="font-size:12px;font-weight:700;cursor:pointer">O-'+c.k+' '+escapeHtml(ocsTx(c))+'</summary>'
+      +'<div style="font-size:10.5px;color:var(--accent2);margin:4px 0">'+escapeHtml(ocsTx(c.note))+'</div>'
+      +OCS_ITEMS.filter(function(d){ return d.cat===c.k; }).map(function(d){ return '<div style="padding:4px 0;border-top:1px solid var(--border)"><div style="font-size:11.5px;font-weight:700">'+d.c+' '+escapeHtml(ocsItemName(d))+'</div><div style="font-size:10.5px;color:var(--muted);line-height:1.5">'+escapeHtml(ocsItemDesc(d))+'</div></div>'; }).join('')
+      +'</details>';
+  });
+  h+='<details style="border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-bottom:6px"><summary style="font-size:12px;font-weight:700;cursor:pointer">'+t('Grade別の期待範囲','Expectations by grade')+'</summary>'
+    +OCS_GRADES.map(function(g){ return '<div style="padding:4px 0;border-top:1px solid var(--border);font-size:11px;line-height:1.55"><b>'+g+'</b> '+escapeHtml(ocsTx(OCS_GRADE_EXPECT[g]))+'</div>'; }).join('')
+    +'<div style="font-size:11px;font-weight:700;margin-top:6px">'+t('Payroll の例','Payroll example')+'</div>'
+    +['G1','G2','G3','G4'].map(function(g){ return '<div style="font-size:11px;line-height:1.55"><b>'+g+'</b> '+escapeHtml(ocsTx(OCS_PAYROLL_SCOPE[g]))+'</div>'; }).join('')+'</details>';
+  h+='<details style="border:1px solid var(--border);border-radius:8px;padding:6px 10px"><summary style="font-size:12px;font-weight:700;cursor:pointer">'+t('評価で避けること','What to avoid')+'</summary>'
+    +OCS_AVOID.map(function(x){ return '<div style="font-size:11px;line-height:1.6;border-top:1px solid var(--border);padding:3px 0">・'+escapeHtml(ocsTx(x))+'</div>'; }).join('')+'</details>';
+  h+='<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>';
+  openModal(h);
+}
+/* 対象者の追加：★名前で人を決めない。従業員マスターから ID で選ぶ */
+function ocsOfficeLike(e){ return ['office','office_crew'].indexOf(e.role)>=0 || ['Office Crew','Office Staff','Accountant','Office Manager'].indexOf(e.title)>=0; }
+function ocsOpenAddModal(){
+  if(!ocsCanAssign()){ showToast(t('対象者の追加は GM・CEO だけです','Only the GM and CEO can add people'),'warning'); return; }
+  var have={}; ocsAsgIds().forEach(function(id){ have[id]=1; });
+  var emps=getEmployees().filter(function(e){ return e && e.id && e.status!=='退職' && e.role!=='ceo' && !have[e.id]; });
+  var opt=function(e){ return '<option value="'+escapeHtml(e.id)+'">'+escapeHtml(e.id+' · '+e.name+' · '+(e.title||'')+'（'+(empGrade(e)||'—')+'）')+'</option>'; };
+  var off=emps.filter(ocsOfficeLike), oth=emps.filter(function(e){ return !ocsOfficeLike(e); });
+  var h='<div class="modal-title">'+t('対象者を追加','Add person')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">'+t('従業員マスターの<b>従業員ID</b>で選びます（名前の一部では決めません）。初期案は能力評価ではなく、担当範囲を確かめるための入口です。全項目「未確認」で作り、点数・実績は入れません。','Pick by <b>employee ID</b> from the employee master (not by part of a name). The initial plan is not an evaluation — just a starting point for the scope. Every item starts as "unconfirmed"; no scores are entered.')+'</div>'
+    +'<div class="form-group"><label class="form-label">'+t('従業員（ID）','Employee (ID)')+'</label><select class="form-select" id="ocs-add-emp" onchange="ocsAddCheck()"><option value="">'+t('選んでください','Choose')+'</option>'
+    +(off.length?'<optgroup label="'+escapeHtml(t('本部・オフィス','HQ / office'))+'">'+off.map(opt).join('')+'</optgroup>':'')
+    +(oth.length?'<optgroup label="'+escapeHtml(t('その他','Others'))+'">'+oth.map(opt).join('')+'</optgroup>':'')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">'+t('初期案','Initial plan')+'</label><select class="form-select" id="ocs-add-prop" onchange="ocsAddCheck(true)">'
+    +['akane_g1','marcia_g3','blank'].map(function(k){ return '<option value="'+k+'">'+escapeHtml(ocsTx(OCS_PROPOSALS[k]))+'</option>'; }).join('')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">'+t('評価で使う Grade','Grade used for evaluation')+'</label><select class="form-select" id="ocs-add-grade" onchange="ocsAddCheck()">'
+    +OCS_GRADES.map(function(g){ return '<option value="'+g+'"'+(g==='G1'?' selected':'')+'>'+g+'</option>'; }).join('')+'</select>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+t('★従業員マスターの Grade（役職）は変えません。ここで選ぶのは、配点と期待範囲に使う Grade です。','★This does not change the grade (job title) in the employee master. It only picks the weights and expectations.')+'</div></div>'
+    +'<div id="ocs-add-warn"></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="ocsAddSubmit()"><i class="ti ti-check"></i> '+t('下書きを作る','Create draft')+'</button></div>';
+  openModal(h);
+  ocsAddCheck(true);
+}
+function ocsAddCheck(fromProp){
+  var id=(document.getElementById('ocs-add-emp')||{}).value||'', pk=(document.getElementById('ocs-add-prop')||{}).value||'blank';
+  var gs=document.getElementById('ocs-add-grade'), p=OCS_PROPOSALS[pk];
+  if(fromProp && gs && p && p.grade) gs.value=p.grade;
+  var g=(gs||{}).value||'', e=id?ocsEmp(id):null, w=[];
+  if(e){
+    var tg=ocsNormGrade(empGrade(e));
+    if(tg && tg!==g) w.push(t('従業員マスターの役職（'+escapeHtml(e.title||'—')+'）から見た Grade は '+tg+' です。評価では '+g+' の配点を使います。どちらが正しいか確認してください。','The job title ('+escapeHtml(e.title||'—')+') maps to '+tg+'. The evaluation will use '+g+' weights. Please check which is right.'));
+    if(!tg) w.push(t('この人の役職からは Grade が決まりません（'+escapeHtml(e.title||'役職なし')+'）。','No grade can be derived from this person\'s title.'));
+    if(p && p.who && String(e.name||'').toLowerCase().indexOf(p.who)<0) w.push(t('選んだ人と案の対象が違うようです（この案は '+p.who+' さん向け）。そのまま使う場合は、下書きで担当範囲を必ず見直してください。','The plan seems to be for someone else ('+p.who+'). If you use it, review every scope in the draft.'));
+  }
+  var el=document.getElementById('ocs-add-warn');
+  if(el) el.innerHTML=w.map(function(x){ return '<div style="border:1px solid var(--yellow);border-radius:8px;padding:7px 10px;margin-bottom:8px;font-size:11px;line-height:1.6;color:var(--tm)"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> '+x+'</div>'; }).join('');
+}
+function ocsAddSubmit(){
+  if(!ocsCanAssign()) return;
+  var id=(document.getElementById('ocs-add-emp')||{}).value||'', pk=(document.getElementById('ocs-add-prop')||{}).value||'blank', g=(document.getElementById('ocs-add-grade')||{}).value||'';
+  var e=id?ocsEmp(id):null;
+  if(!e){ showToast(t('従業員を選んでください','Choose an employee'),'warning'); return; }
+  if(ocsAsg(e.id)){ showToast(t('この人はもう追加されています','This person is already added'),'warning'); return; }
+  var a=ocsNewAsg(e, pk, g);
+  ocsSaveAsg(a, 'create:'+pk, '');
+  closeModalDirect();
+  window._ocsSel=e.id; window._ocsPeriod=null; window._ocsEdit=null;
+  ocsStartAsgEdit(e.id);
+  showToast(t('下書きを作りました。担当範囲を確認してから「有効にする」を押してください','Draft created. Check the scope, then press "Activate"'),'success');
+}
+
+/* ---------- 担当設定の編集（GM・CEO） ---------- */
+function ocsStartAsgEdit(empId){
+  if(!ocsCanAssign()){ showToast(t('担当設定の変更は GM・CEO だけです','Only the GM and CEO can change plans'),'warning'); return; }
+  var a=ocsAsg(empId); if(!a) return;
+  window._ocsAsgEdit={empId:empId, a:ocsCopy(a), baseAt:Number(a._at)||0, dirty:false};
+  ocsRerender(); window.scrollTo(0,0);
+}
+function ocsAsgSet(code, field, val){
+  var E=window._ocsAsgEdit; if(!E) return; var it=E.a.items[code]; if(!it) return;
+  if(field==='w'){ var n=parseFloat(val); it.w=(n>0 && n<=10) ? Math.round(n*10)/10 : 1; }
+  else if(field==='role'){ it.role=val; if(val==='na'||val==='dev') it.scored=false; if(val==='dev') it.dev=true; }
+  else if(field==='scope'){ it.scope=String(val||'').slice(0,400); }
+  else it[field]=!!val;
+  if(field==='scored' && it.scored && (it.role==='na'||it.role==='dev')) it.role='main';
+  E.dirty=true;
+  if(field!=='scope') ocsRerender();
+}
+function ocsAsgUseHint(code){
+  var E=window._ocsAsgEdit; if(!E) return; var h=ocsHint(code, E.a.proposal, E.a.grade); if(!h) return;
+  E.a.items[code].scope=ocsTx(h); E.dirty=true; ocsRerender();
+}
+function ocsAsgUseAllHints(){
+  var E=window._ocsAsgEdit; if(!E) return; var n=0;
+  OCS_ITEMS.forEach(function(d){ var it=E.a.items[d.c]; if(!it || it.role==='na' || String(it.scope||'').trim()) return; var h=ocsHint(d.c, E.a.proposal, E.a.grade); if(h){ it.scope=ocsTx(h); n++; } });
+  E.dirty=true; ocsRerender(); showToast(t(n+'項目の空欄に案を入れました（保存するまで確定しません）', n+' empty scopes filled from the plan (not saved yet)'),'info');
+}
+function ocsAsgSetGrade(g){
+  var E=window._ocsAsgEdit; if(!E) return; g=ocsNormGrade(g); if(!g) return;
+  E.a.grade=g; E.a.weights=ocsWeightsFor(g); E.dirty=true; ocsRerender();
+}
+/* v1051: 上長評価をする人（従業員ID・空＝指定しない）と、役職から見た Grade とのずれの確認 */
+function ocsAsgSetMgrBy(id){
+  var E=window._ocsAsgEdit; if(!E) return; id=String(id||'');
+  if(id && id===E.empId){ showToast(t('本人は指定できません','The person cannot review themselves'),'warning'); ocsRerender(); return; }
+  E.a.mgrBy=id; E.dirty=true; ocsRerender();
+}
+function ocsGradeOkValid(e, a){
+  var ok=a && a.gradeOk; if(!ok || !e) return false;
+  return ok.grade===ocsNormGrade(a.grade) && ok.title===String(e.title||'') && ok.tg===(ocsNormGrade(empGrade(e))||String(empGrade(e)||''));
+}
+function ocsAsgSetGradeOk(on){
+  var E=window._ocsAsgEdit; if(!E) return; var e=ocsEmp(E.empId); if(!e) return;
+  E.a.gradeOk = on ? {by:ocsMe(), at:ocsNowIso(), grade:ocsNormGrade(E.a.grade), title:String(e.title||''), tg:(ocsNormGrade(empGrade(e))||String(empGrade(e)||''))} : null;
+  E.dirty=true; ocsRerender();
+}
+function ocsAsgCancel(){
+  var E=window._ocsAsgEdit; if(E && E.dirty && !confirm(t('保存していない変更を破棄しますか？','Discard unsaved changes?'))) return;
+  window._ocsAsgEdit=null; ocsRerender();
+}
+async function ocsAsgSave(activate){
+  var E=window._ocsAsgEdit; if(!E || !ocsCanAssign()) return;
+  /* 画面の担当範囲の入力を拾う（onchange の前に押されたときのため） */
+  OCS_ITEMS.forEach(function(d){ var el=document.getElementById('ocs-scope-'+d.c); if(el) E.a.items[d.c].scope=String(el.value||'').slice(0,400); });
+  var bad=OCS_ITEMS.filter(function(d){ return ocsSensitiveHit(E.a.items[d.c].scope); });
+  if(bad.length){ showToast(t('担当範囲に番号（SSN・口座など）のようなものがあります：','Scope looks like it contains an ID or account number: ')+bad.map(function(d){ return d.c; }).join('・'),'warning'); return; }
+  var was=ocsAsg(E.empId), wasActive=!!(was && was.state==='active'), reason='';
+  if(activate || wasActive){
+    var probs=ocsAsgProblems(E.a);
+    if(probs.length){ ocsShowProblems(t('有効にできません','Cannot activate'), probs); return; }
+  }
+  if(wasActive){
+    reason=prompt(t('有効な担当設定を変えます。理由を残してください（例：Akane さんの入退社を Marcia さんの確認担当に変更）','Changing an active plan. Please record a reason'), '');
+    if(reason==null) return; reason=String(reason).trim();
+    if(!reason){ showToast(t('理由を入れてください','Please enter a reason'),'warning'); return; }
+    if(ocsSensitiveHit(reason)){ showToast(t('理由に番号（SSN・口座など）のようなものがあります','The reason looks like it contains an ID or account number'),'warning'); return; }
+  }
+  /* ほかの人の変更を黙って上書きしない */
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_ASG_PREFIX+E.empId); }catch(e){}
+  var cur=ocsAsg(E.empId);
+  if((Number(cur&&cur._at)||0)!==E.baseAt){ ocsConflict(cur && cur._by, cur && cur.updatedAt, function(){ window._ocsAsgEdit=null; ocsRerender(); }); return; }
+  var a=E.a; a.empId=E.empId;
+  if(activate && a.state!=='active'){ a.state='active'; a.activatedBy=ocsMe(); a.activatedAt=ocsNowIso(); }
+  var ok=ocsSaveAsg(a, activate ? 'activate' : (wasActive ? 'edit-active' : 'edit-draft'), reason);
+  window._ocsAsgEdit=null;
+  ocsAfterSave(OCS_ASG_PREFIX+E.empId, ok, activate ? t('担当設定を有効にしました','Plan activated') : t('担当設定を保存しました','Plan saved'));
+  var ev=ocsEv(E.empId, ocsPeriodNow());
+  if(wasActive && ev && !(ev.conf && ev.conf.state==='confirmed') && !ev.void)
+    setTimeout(function(){ showToast(t('今期の評価は作成時の設定で計算しています。新しい設定を今期にも使うには、評価画面の「条件を最新にする」を押してください','This quarter\'s evaluation keeps the plan from when it started. Use "Apply latest plan" on the evaluation to change it'),'info'); }, 1800);
+  ocsRerender();
+}
+function ocsShowProblems(title, list){
+  openModal('<div class="modal-title">'+escapeHtml(title)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +list.map(function(x){ return '<div style="border-left:3px solid var(--yellow);padding:6px 10px;margin-bottom:6px;font-size:12px;line-height:1.6;background:var(--surface2);border-radius:6px">'+escapeHtml(x)+'</div>'; }).join('')
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button></div>');
+}
+function ocsConflict(by, at, reload){
+  window._ocsConflictReload=reload;
+  openModal('<div class="modal-title">'+t('ほかの人が先に保存しています','Someone else saved first')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12.5px;line-height:1.75">'+t('あなたが開いたあとに、','After you opened this, ')+'<b>'+escapeHtml(by||t('別の端末','another device'))+'</b>'+(at?'（'+escapeHtml(ocsFmt(at))+'）':'')
+    +t(' がこの内容を保存しました。<br>上書きせずに止めました。最新を読み込んでから、入力し直してください。',' saved this.<br>Your input was not saved, so nothing was overwritten. Reload the latest and enter it again.')+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる（入力は残す）','Close (keep my input)')+'</button>'
+    +'<button class="btn btn-primary" onclick="closeModalDirect();(window._ocsConflictReload||function(){})()"><i class="ti ti-refresh"></i> '+t('最新を読み込む（入力は破棄）','Load latest (discard input)')+'</button></div>');
+}
+/* 保存のあと：クラウド（正式な保存先）に入ったかを確かめて知らせる */
+async function ocsAfterSave(key, okLocal, msg){
+  if(okLocal===false){ showToast(t('この端末に保存できませんでした（容量）。クラウドへの送信は試みています','Could not save on this device (storage). Trying to send to the cloud'),'warning'); }
+  if(typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ showToast(msg+t('（クラウド同期が切れています＝この端末だけ）',' (cloud sync is off — this device only)'),'warning'); return; }
+  try{
+    for(var i=0;i<4;i++) await new Promise(function(r){ setTimeout(r, 0); });
+    if(typeof _opMergeChain!=='undefined' && _opMergeChain[key]) await _opMergeChain[key];
+    await new Promise(function(r){ setTimeout(r, 0); });
+  }catch(e){}
+  var pending=false; try{ pending=_outboxGet().some(function(x){ return x.key===key; }); }catch(e){}
+  if(pending) showToast(msg+t('。クラウドへはまだ送れていません（自動で再送します）','. Not sent to the cloud yet (will retry automatically)'),'warning');
+  else showToast(msg+t('（クラウドに保存しました）',' (saved to the cloud)'),'success');
+  try{ ocsRerender(); }catch(e){}
+}
+function ocsAsgEditorHtml(e){
+  var E=window._ocsAsgEdit, a=E.a, W=a.weights||{};
+  var h='<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-secondary btn-sm" onclick="ocsAsgCancel()"><i class="ti ti-arrow-left"></i> '+t('戻る','Back')+'</button>'
+    +'<b style="flex:1;font-size:14px;min-width:160px">'+t('担当設定','Plan')+' — '+escapeHtml(e.name)+' <span style="font-size:11px;color:var(--muted);font-weight:400">ID '+escapeHtml(e.id)+'</span></b>'
+    +(a.state==='active' ? '<span class="tag tag-green" style="font-size:10px">'+t('有効','Active')+'</span>' : '<span class="tag tag-yellow" style="font-size:10px">'+t('下書き','Draft')+'</span>')+'</div>';
+  h+='<div class="card" style="padding:10px 12px">'
+    +'<div style="font-size:11.5px;line-height:1.7;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:8px">'
+    +t('これは能力評価ではなく、<b>この人に任せる範囲</b>の設定です。点数・実績はここでは入れません。','This is not an evaluation — it sets <b>what this person is responsible for</b>. No scores are entered here.')
+    +(OCS_PROPOSALS[a.proposal] && OCS_PROPOSALS[a.proposal].scopeNote ? '<br><b>'+t('案の担当範囲：','Plan scope: ')+'</b>'+escapeHtml(ocsTx(OCS_PROPOSALS[a.proposal].scopeNote)) : '')+'</div>'
+    +'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'
+    +'<div><label class="form-label">'+t('評価で使う Grade','Grade used for evaluation')+'</label><select class="form-select" style="width:96px" onchange="ocsAsgSetGrade(this.value)">'
+    +OCS_GRADES.map(function(g){ return '<option value="'+g+'"'+(a.grade===g?' selected':'')+'>'+g+'</option>'; }).join('')+'</select></div>'
+    +'<div style="flex:1;min-width:200px">'+ocsGradeChips(e, a)+'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+escapeHtml(ocsTx(OCS_GRADE_EXPECT[a.grade]))+'</div></div></div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'+OCS_GROUPS.map(function(g){ return '<span class="tag" style="background:var(--surface2);color:var(--tm);font-size:10.5px">'+escapeHtml(ocsTx(g))+' <b>'+(W[g.k]||0)+'%</b>'+((W[g.k]||0)===0?' '+t('（育成記録）','(record only)'):'')+'</span>'; }).join('')+'</div>'
+    +ocsAsgPeopleHtml(e, a)
+    +'<div style="font-size:10px;color:var(--muted);margin-top:4px">'+t('★区分の配点は Grade で決まります。専門実務の中の重み（初期値はすべて1＝等配点）を変えるときは期首に。評価が始まった期の計算は、その期の作成時の設定のまま変わりません。','★Group weights come from the grade. Change item weights inside specialist work only at the start of a period; an evaluation already started keeps its own settings.')+'</div>'
+    +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="ocsAsgUseAllHints()"><i class="ti ti-wand"></i> '+t('空欄に案を入れる','Fill empty scopes from plan')+'</button></div>'
+    +'</div>';
+  var probs=ocsAsgProblems(a);
+  if(probs.length) h+='<div style="border:1px solid var(--yellow);border-radius:8px;padding:7px 10px;margin-bottom:8px;font-size:11px;line-height:1.6"><b style="color:var(--yellow)"><i class="ti ti-alert-triangle"></i> '+t('有効にする前に','Before activating')+'</b><br>'+probs.map(escapeHtml).join('<br>')+'</div>';
+  OCS_CATS.forEach(function(c){
+    var its=OCS_ITEMS.filter(function(d){ return d.cat===c.k; });
+    var n=its.filter(function(d){ return a.items[d.c].role!=='na'; }).length;
+    h+='<details class="card" style="padding:8px 12px" open><summary style="font-size:13px;font-weight:700;cursor:pointer">O-'+c.k+' '+escapeHtml(ocsTx(c))+' <span style="font-size:11px;color:var(--muted);font-weight:400">'+t('担当','assigned')+' '+n+'/'+its.length+'</span></summary>'
+      +'<div style="font-size:10.5px;color:var(--accent2);margin:4px 0 2px;line-height:1.5">'+escapeHtml(ocsTx(c.note))+'</div>';
+    its.forEach(function(d){
+      var it=a.items[d.c], hint=ocsHint(d.c, a.proposal, a.grade), isP=(ocsGrpOfCat(d.cat)==='P');
+      var muted=(it.role==='na');
+      h+='<div style="border-top:1px solid var(--border);padding:8px 0;'+(muted?'opacity:.62':'')+'">'
+        +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="tag" style="background:var(--surface2);color:var(--tm);font-size:10px;font-weight:700">'+d.c+'</span><b style="font-size:12.5px">'+escapeHtml(ocsItemName(d))+'</b></div>'
+        +'<div style="font-size:10.5px;color:var(--muted);line-height:1.5;margin:2px 0 5px">'+escapeHtml(ocsItemDesc(d))+'</div>'
+        +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:11.5px">'
+        +'<select class="form-select" style="width:auto;padding:4px 8px;font-size:12px" onchange="ocsAsgSet(\''+d.c+'\',\'role\',this.value)">'+OCS_ROLES.map(function(r){ return '<option value="'+r.k+'"'+(it.role===r.k?' selected':'')+'>'+escapeHtml(ocsTx(r))+'</option>'; }).join('')+'</select>'
+        +ocsChk(d.c,'scored',it.scored,t('採点対象','Scored'), it.role==='na'||it.role==='dev')
+        +ocsChk(d.c,'req',it.req,t('必須','Required'))
+        +ocsChk(d.c,'imp',it.imp,t('重要','Important'))
+        +ocsChk(d.c,'dev',it.dev,t('次Gradeへの育成','Next-grade growth'))
+        +(isP && it.scored ? '<label style="display:inline-flex;align-items:center;gap:4px">'+t('重み','Weight')+' <input type="number" step="0.5" min="0.5" max="10" value="'+(Number(it.w)||1)+'" style="width:56px;padding:3px 5px;border:1px solid var(--border);border-radius:6px;font-size:12px" onchange="ocsAsgSet(\''+d.c+'\',\'w\',this.value)"></label>' : '')
+        +'</div>';
+      if(it.role!=='na'){
+        h+='<div style="margin-top:6px"><label class="form-label" style="margin-bottom:3px">'+t('この人の担当範囲','Scope for this person')+(it.scored?' <span style="color:var(--red)">*</span>':'')+'</label>'
+          +'<textarea class="form-textarea" id="ocs-scope-'+d.c+'" style="min-height:40px;font-size:12px" placeholder="'+escapeHtml(hint?(t('案：','Plan: ')+ocsTx(hint)):t('例：入力と証憑の保存まで（最終承認は含めない）','e.g. entry and saving documents (final approval not included)'))+'" onchange="ocsAsgSet(\''+d.c+'\',\'scope\',this.value)">'+escapeHtml(it.scope||'')+'</textarea>'
+          +(hint && !String(it.scope||'').trim() ? '<button class="btn btn-secondary btn-sm" style="margin-top:4px;font-size:10.5px;padding:2px 8px" onclick="ocsAsgUseHint(\''+d.c+'\')"><i class="ti ti-arrow-down"></i> '+t('案を入れる','Use plan')+'</button>' : '')
+          +(d.c==='O-C2' && OCS_PAYROLL_SCOPE[a.grade] ? '<div style="font-size:10px;color:var(--muted);margin-top:3px">'+t('Payroll の '+a.grade+' の期待：','Payroll at '+a.grade+': ')+escapeHtml(ocsTx(OCS_PAYROLL_SCOPE[a.grade]))+'</div>' : '')
+          +'</div>';
+      }
+      h+='</div>';
+    });
+    h+='</details>';
+  });
+  h+='<div class="card" style="padding:10px 12px;position:sticky;bottom:8px;z-index:5;box-shadow:0 4px 18px rgba(0,0,0,.12)"><div class="btn-row" style="margin:0">'
+    +'<button class="btn btn-secondary" onclick="ocsAsgCancel()">'+t('キャンセル','Cancel')+'</button>'
+    +(a.state==='active' ? '<button class="btn btn-primary" onclick="ocsAsgSave(false)"><i class="ti ti-device-floppy"></i> '+t('保存（理由を残す）','Save (with reason)')+'</button>'
+      : '<button class="btn btn-secondary" onclick="ocsAsgSave(false)"><i class="ti ti-device-floppy"></i> '+t('下書き保存','Save draft')+'</button><button class="btn btn-primary" onclick="ocsAsgSave(true)"><i class="ti ti-circle-check"></i> '+t('有効にする','Activate')+'</button>')
+    +'</div></div>';
+  return h;
+}
+/* v1051: 担当設定の「上長評価をする人」と「Grade のずれの確認」 */
+function ocsAsgPeopleHtml(e, a){
+  var emps=getEmployees().filter(function(x){ return x && x.id && x.id!==e.id && (x.status!=='退職' || x.id===a.mgrBy) && x.role!=='ceo'; });
+  var opt=function(x){ return '<option value="'+escapeHtml(x.id)+'"'+(a.mgrBy===x.id?' selected':'')+'>'+escapeHtml(x.id+' · '+x.name+' · '+(x.title||'')+(x.status==='退職'?'（退職）':''))+'</option>'; };
+  var off=emps.filter(ocsOfficeLike), oth=emps.filter(function(x){ return !ocsOfficeLike(x); });
+  var g=ocsNormGrade(a.grade), tg=ocsNormGrade(empGrade(e))||String(empGrade(e)||'—');
+  var h='<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start;margin-top:10px;padding-top:8px;border-top:1px dashed var(--border)">'
+    +'<div style="flex:1;min-width:220px"><label class="form-label">'+t('上長評価をする人（指定・任意）','Designated reviewer (optional)')+'</label>'
+    +'<select class="form-select" style="font-size:12.5px" onchange="ocsAsgSetMgrBy(this.value)"><option value="">'+t('指定しない（GM・CEO・AM だけ）','None (GM, CEO, AM only)')+'</option>'
+    +(off.length?'<optgroup label="'+escapeHtml(t('本部・オフィス','HQ / office'))+'">'+off.map(opt).join('')+'</optgroup>':'')
+    +(oth.length?'<optgroup label="'+escapeHtml(t('その他','Others'))+'">'+oth.map(opt).join('')+'</optgroup>':'')+'</select>'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.5">'+t('GM・CEO・AM に加えて、この人も上長評価と月次確認を入れられます（正式運用後）。見られるのは、この人の評価だけ。確定は GM だけ。','Besides the GM, CEO and AM, this person can enter the manager review and monthly checks (after go-live). They see only this person\'s evaluation. Only the GM confirms.')+'</div></div>';
+  if(g && tg!==g){
+    var on=ocsGradeOkValid(e, a);
+    h+='<div style="flex:1;min-width:220px"><label class="form-label">'+t('Grade のずれ','Grade mismatch')+'</label>'
+      +'<label style="display:flex;gap:6px;align-items:flex-start;font-size:11.5px;line-height:1.55;border:1px solid '+(on?'var(--border)':'var(--yellow)')+';border-radius:8px;padding:6px 9px">'
+      +'<input type="checkbox"'+(on?' checked':'')+' onchange="ocsAsgSetGradeOk(this.checked)" style="margin-top:3px"> <span>'
+      +t('役職（'+escapeHtml(e.title||'—')+'）から見ると '+escapeHtml(tg)+' だが、評価は '+g+' でよいことを確認した（従業員マスターの役職・Grade は変えない）','The title ('+escapeHtml(e.title||'—')+') maps to '+escapeHtml(tg)+', but '+g+' is correct for this evaluation (the employee master is not changed)')
+      +(on?'<br><span style="color:var(--muted);font-size:10px">'+escapeHtml((a.gradeOk.by||'')+' '+ocsFmt(a.gradeOk.at))+'</span>':'')+'</span></label></div>';
+  }
+  return h+'</div>';
+}
+function ocsChk(code, field, on, label, disabled){
+  return '<label style="display:inline-flex;align-items:center;gap:3px;'+(disabled?'opacity:.45':'')+'"><input type="checkbox"'+(on?' checked':'')+(disabled?' disabled':'')+' onchange="ocsAsgSet(\''+code+'\',\''+field+'\',this.checked)"> '+escapeHtml(label)+'</label>';
+}
+
+/* ---------- 詳細（1人・1期間） ---------- */
+function ocsScoreChip(v, kind){
+  /* kind: 'na'（対象外）・'hidden'（見せない）・'edit'（入力中） */
+  if(kind==='na') return '<span style="font-size:11px;color:var(--muted)">'+t('対象外','N/A')+'</span>';
+  if(kind==='hidden') return '<span style="font-size:11px;color:var(--muted)">—</span>';
+  var n=ocsNum(v);
+  if(n==null) return '<span style="display:inline-block;font-size:10.5px;color:var(--muted);border:1px dashed var(--border);border-radius:7px;padding:2px 7px;white-space:nowrap">'+t('未確認','Unconfirmed')+'</span>';
+  return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#fff;background:'+OCS_SCORE_COLORS[n]+';border-radius:7px;padding:2px 8px;white-space:nowrap"><b>'+n+'</b> '+escapeHtml(ocsTx(OCS_SCORES[n]))+'</span>';
+}
+function ocsScaleHtml(total, prov){
+  var x=(total==null)?0:Math.max(0, Math.min(100, total));
+  return '<div style="position:relative;height:9px;background:var(--surface2);border-radius:99px;margin:10px 0 3px;overflow:hidden">'
+    +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+x+'%;background:var(--accent);opacity:'+(prov?'.5':'1')+';border-radius:99px"></div>'
+    +'<div style="position:absolute;left:33.3%;top:0;bottom:0;width:1px;background:var(--border)"></div><div style="position:absolute;left:66.7%;top:0;bottom:0;width:1.5px;background:var(--tm);opacity:.35"></div></div>'
+    +'<div style="position:relative;height:28px;font-size:9.5px;color:var(--muted)">'
+    +'<span style="position:absolute;left:0">0</span><span style="position:absolute;left:33.3%;transform:translateX(-50%);text-align:center">33.3<br>'+t('補助が必要','needs support')+'</span>'
+    +'<span style="position:absolute;left:66.7%;transform:translateX(-50%);text-align:center;color:var(--tm)">66.7<br>'+t('自立して実行','independent')+'</span><span style="position:absolute;right:0;text-align:right">100<br>'+t('安定・改善','stable')+'</span></div>';
+}
+function ocsDetailHtml(e){
+  var a=ocsAsg(e.id), me=ocsMe();
+  var periods=ocsPeriods(e.id), now=ocsPeriodNow();
+  if(periods.indexOf(now)<0) periods.unshift(now);
+  var p=window._ocsPeriod && periods.indexOf(window._ocsPeriod)>=0 ? window._ocsPeriod : now;
+  var ev=ocsEv(e.id, p), E=(window._ocsEdit && window._ocsEdit.empId===e.id && window._ocsEdit.period===p) ? window._ocsEdit : null;
+  var meta=ev ? ev.meta : (a ? {grade:a.grade, tpl:a.tpl, tplVer:a.tplVer, asg:a.items, weights:a.weights, asgRev:a.rev} : null);
+  var st=ocsEvState(ev), conf=(st.k==='ok');
+  var isSelf=ocsIsSelf(e), canSelf=ocsCanSelf(e), canMgr=ocsCanMgr(e), canConf=ocsCanConfirm(e);
+  var showMgr=!isSelf || conf;           /* 本人には確定してから上長評価を見せる */
+  var showSelf=isSelf || !!(ev && ev.self && ev.self.sub);   /* 評価者には提出された自己評価だけ */
+  var key=OCS_EV_PREFIX+e.id, unsent=false; try{ unsent=_outboxGet().some(function(x){ return x.key===key || x.key===OCS_ASG_PREFIX+e.id; }); }catch(err){}
+  var h=ocsPreviewBanner();
+  /* 見出し */
+  h+='<div class="card" style="padding:10px 12px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-secondary btn-sm" onclick="ocsBack()"><i class="ti ti-arrow-left"></i> '+t('戻る','Back')+'</button>'
+    +'<div style="flex:1;min-width:180px"><div style="font-size:15px;font-weight:800">'+escapeHtml(e.name)+' <span style="font-size:10.5px;color:var(--muted);font-weight:400">ID '+escapeHtml(e.id)+' · '+escapeHtml(e.title||'')+'</span></div>'
+    +'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px;align-items:center">'+(a?ocsGradeChips(e, {grade:(meta&&meta.grade)||a.grade}):'')
+    +'<span class="tag" style="background:var(--surface2);color:var(--muted);font-size:9.5px">'+escapeHtml((meta&&meta.tpl)||OCS_TPL)+' '+t('版','v')+escapeHtml(String((meta&&meta.tplVer)||OCS_TPL_VER))+'</span>'
+    +(a ? (a.state==='active' ? '<span class="tag tag-green" style="font-size:9.5px">'+t('担当設定 有効','Plan active')+'</span>' : '<span class="tag tag-yellow" style="font-size:9.5px">'+t('担当設定 下書き','Plan draft')+'</span>') : '')
+    +(unsent ? '<span class="tag tag-yellow" style="font-size:9.5px"><i class="ti ti-cloud-off"></i> '+t('クラウド未送信（再送待ち）','Not sent to cloud yet')+'</span>' : '')
+    +'</div></div>'
+    +(ocsCanAssign() && a ? '<button class="btn btn-secondary btn-sm" onclick="ocsStartAsgEdit(\''+ocsQ(e.id)+'\')"><i class="ti ti-adjustments"></i> '+t('担当設定','Plan')+'</button>' : '')
+    +'</div>'
+    +'<div class="phase-tabs" style="margin:8px 0 0">'+periods.map(function(x){ var xe=ocsEv(e.id,x), xs=ocsEvState(xe).k; return '<button class="phase-tab'+(x===p?' active':'')+'" onclick="ocsSetPeriod(\''+x+'\')">'+escapeHtml(ocsPeriodLabel(x))+(x===now?' · '+t('今期','now'):'')+(xs==='ok'?' ✓':'')+'</button>'; }).join('')+'</div>'
+    +'</div>';
+  if(!a){ return h+ocsDeny(t('担当設定がありません','No plan')); }
+  if(ev && ev.void){
+    h+='<div class="card" style="color:var(--muted);font-size:12px">'+t('この期の評価は破棄されています：','This period\'s evaluation was discarded: ')+escapeHtml((ev.void.by||'')+' '+ocsFmt(ev.void.at)+' — '+(ev.void.reason||''))+'</div>';
+    return h+ocsHistoryHtml(e, p);
+  }
+  if(a.state!=='active' && !ev){
+    h+='<div class="card" style="font-size:12px;line-height:1.7"><b><i class="ti ti-info-circle" style="color:var(--accent2)"></i> '+t('担当設定がまだ有効になっていません','The plan is not active yet')+'</b><br>'
+      +t('管理者（GM・CEO）が担当範囲を確かめて「有効にする」を押すと、評価を始められます。','Once the GM/CEO checks the scope and activates the plan, the evaluation can start.')
+      +(ocsCanAssign() ? '<div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="ocsStartAsgEdit(\''+ocsQ(e.id)+'\')"><i class="ti ti-adjustments"></i> '+t('担当設定を確認する','Review plan')+'</button></div>' : '')+'</div>';
+  }
+  /* 入力中の帯 */
+  if(E){
+    h+='<div style="border:1.5px solid var(--accent);border-radius:10px;padding:8px 12px;margin-bottom:10px;background:rgba(240,102,31,.06);font-size:12px">'
+      +'<b style="color:var(--accent)"><i class="ti ti-pencil"></i> '+(E.part==='self' ? t('自己評価を入力中','Entering self-review') : (E.revise ? t('確定した評価を修正中（理由が必要）','Revising a confirmed evaluation (reason required)') : t('上長評価を入力中','Entering manager review')))+'</b>'
+      +' — '+t('項目の点数をタップして選びます。保存するまで記録されません。','Tap an item\'s score to choose. Nothing is recorded until you save.')+'</div>';
+  }
+  /* スコア：入力中＝その入力／確定＝確定時の点／評価者＝上長評価／本人（確定前）＝自己評価（参考） */
+  var selfView = isSelf && !conf && !E;
+  var useS = E ? E.s : (conf ? (ev.conf.s||{}) : (selfView ? ((ev && ev.self && ev.self.s)||{}) : ((ev && ev.mgr) ? (ev.mgr.s||{}) : {})));
+  var calc = meta ? ocsCalc(meta, useS) : null;
+  var stK = E ? (calc.state==='na'?'na':'prov') : (conf ? 'ok' : (selfView ? 'wait' : (calc ? (calc.state==='na'?'na':'prov') : 'none')));
+  var selfCalc = (!isSelf && ev && ev.self && showSelf && meta) ? ocsCalc(meta, ev.self.s||{}) : null;
+  var scoreLabel = E ? (E.part==='self' ? t('自己評価（入力中）','Self-review (editing)') : t('上長評価（入力中）','Manager review (editing)'))
+    : (conf ? t('総合スコア（正式）','Total score (confirmed)') : (selfView ? t('自己評価（参考）','Self-review (reference)') : t('総合スコア（上長評価）','Total score (manager review)')));
+  h+='<div class="card" style="background:linear-gradient(135deg,var(--accent-soft,#fceee4),var(--surface))">'
+    +'<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
+    +'<div style="min-width:120px"><div style="font-size:10.5px;color:var(--muted);font-weight:700">'+scoreLabel+'</div>'
+    +'<div style="display:flex;align-items:baseline;gap:4px">'+(calc && calc.total!=null ? '<span style="font-size:34px;font-weight:800;color:var(--accent);line-height:1.1">'+calc.total+'</span><span style="font-size:12px;color:var(--muted)">/ 100</span>' : '<span style="font-size:24px;font-weight:800;color:var(--muted)">—</span>')+'</div>'
+    +'<div style="margin-top:2px">'+ocsStateChip(stK)+'</div></div>'
+    +'<div style="flex:1;min-width:220px;font-size:11px;line-height:1.7;color:var(--tm)">'+ocsStateText(stK, calc, ev, showMgr, isSelf)+'</div></div>'
+    +ocsScaleHtml(calc ? calc.total : null, stK!=='ok')
+    +'<div style="font-size:10.5px;color:var(--muted)">'+t('目安：全項目2点で約66.7点＝通常の担当業務を自立して実行できる状態。店舗用のランク（Leader 判定）は使いません。','Guide: all items at 2 ≈ 66.7 = independently doing the normal assigned work. Store ranks (Leader levels) are not used.')+'</div>';
+  if(calc){
+    h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:11px">'
+      +'<span>'+t('採点済み','Scored')+' <b>'+calc.counts.num+'</b> / '+t('採点対象','targets')+' <b>'+calc.counts.targets+'</b></span>'
+      +'<span>'+t('未確認','Unconfirmed')+' <b>'+calc.counts.uc+'</b></span>'
+      +'<span style="color:var(--muted)">'+t('対象外','N/A')+' '+calc.counts.na+'</span>'
+      +'<span style="color:var(--muted)">'+t('育成中','Developing')+' '+calc.counts.dev+'</span>'
+      +(calc.counts.rec?'<span style="color:var(--muted)">'+t('育成記録（配点0）','Record only (0%)')+' '+calc.counts.rec+'</span>':'')+'</div>';
+    h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;margin-top:8px">'
+      +OCS_GROUPS.map(function(g){ var x=calc.groups[g.k];
+        var pct=(x.rate==null)?null:Math.round(x.rate*1000)/10;
+        return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 8px">'
+          +'<div style="display:flex;justify-content:space-between;font-size:10.5px;font-weight:700"><span>'+escapeHtml(ocsTx(g))+'</span><span style="color:var(--muted)">'+x.w+'%</span></div>'
+          +(x.w>0 ? ('<div style="font-size:15px;font-weight:800;color:'+(pct==null?'var(--muted)':'var(--tm)')+'">'+(pct==null?'—':pct+'%')+'</div>'
+            +'<div style="font-size:9.5px;color:var(--muted)">'+t('確認済み','confirmed')+' '+x.num+'/'+x.targets+(x.targets===0?' · <span style="color:var(--yellow)">'+t('採点対象なし','no targets')+'</span>':'')+'</div>')
+            : '<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+t('配点0％：育成記録として表示','0%: shown as growth record')+'</div>')
+          +'</div>'; }).join('')+'</div>';
+    if(selfCalc && !(E && E.part==='self')) h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">'+t('自己評価（参考）：','Self-review (reference): ')+(selfCalc.total!=null?selfCalc.total+t('点',' pts'):t('未算出','not calculated'))+' · '+t('採点済み','scored')+' '+selfCalc.counts.num+'/'+selfCalc.counts.targets+(ev.self.sub?'':' · '+t('未提出','not submitted'))+'</div>';
+  }
+  h+='</div>';
+  /* 流れ（自己評価 → 上長評価 → 確定） */
+  h+=ocsFlowHtml(e, a, ev, p, {isSelf:isSelf, canSelf:canSelf, canMgr:canMgr, canConf:canConf, conf:conf, E:E, calc:calc});
+  /* 前回との比較（本人には確定してから） */
+  if(ev && !E && showMgr) h+=ocsCompareHtml(e, ev, calc, conf);
+  /* 強み・課題・育成 */
+  h+=ocsGrowthHtml(e, a, ev, meta, {E:E, showMgr:showMgr, isSelf:isSelf});
+  /* 昇格候補 */
+  if(ev && !E && showMgr) h+=ocsPromoHtml(e, ev, canConf);
+  /* 項目 */
+  h+=ocsItemsHtml(e, meta, ev, {E:E, showMgr:showMgr, showSelf:showSelf, conf:conf, a:a});
+  /* 月次の進捗確認（課題を持つ評価＝今期の上長評価、無ければ前回の正式評価） */
+  if(!E){ var ckSrc=ocsChecksSrc(e, ev, isSelf); if(ckSrc) h+=ocsChecksHtml(e, ckSrc, canMgr && !isSelf, isSelf, p); }
+  /* 本人の補足・異議 */
+  if(ev && !E && (isSelf || (ev.self && (ev.self.obj||ev.self.ack)))) h+=ocsObjectionHtml(e, ev, isSelf);
+  /* 履歴 */
+  if(!E) h+=ocsHistoryHtml(e, p);
+  /* 入力中の保存バー */
+  if(E){
+    h+='<div class="card" style="padding:10px 12px;position:sticky;bottom:8px;z-index:5;box-shadow:0 4px 18px rgba(0,0,0,.12)"><div class="btn-row" style="margin:0">'
+      +'<button class="btn btn-secondary" onclick="ocsCancelEdit()">'+t('キャンセル','Cancel')+'</button>'
+      +(E.part==='self' ? '<button class="btn btn-secondary" onclick="ocsSaveEdit(false)"><i class="ti ti-device-floppy"></i> '+t('下書き保存','Save draft')+'</button><button class="btn btn-primary" onclick="ocsSaveEdit(true)"><i class="ti ti-send"></i> '+t('提出する','Submit')+'</button>'
+        : '<button class="btn btn-primary" onclick="ocsSaveEdit(false)"><i class="ti ti-device-floppy"></i> '+(E.revise?t('修正を保存（理由）','Save revision (reason)'):t('保存','Save'))+'</button>')
+      +'</div></div>';
+  }
+  return h;
+}
+function ocsStateText(k, calc, ev, showMgr, isSelf){
+  if(k==='ok') return t('確定済み：','Confirmed: ')+'<b>'+escapeHtml((ev.conf.by||''))+'</b> '+escapeHtml(ocsFmt(ev.conf.at))+(ev.conf.ver>1?' · '+t('修正 ','revised ')+(ev.conf.ver-1)+t('回',' time(s)'):'');
+  if(isSelf && !showMgr) return t('上長評価は、確定してから表示されます。下の項目は自己評価です。','The manager review is shown after confirmation. Items below show your self-review.');
+  if(!calc) return '';
+  if(k==='na'){
+    if(calc.needCfg.length) return '<span style="color:var(--yellow);font-weight:700"><i class="ti ti-alert-triangle"></i> '+t('配点がある区分の項目がすべて対象外です：','Every item in a weighted group is N/A: ')+calc.needCfg.map(function(g){ return escapeHtml(ocsTx(OCS_GROUPS.find(function(x){return x.k===g;}))); }).join('・')+'</span><br>'+t('担当範囲・配点の設定を確認してください。','Please check the scope and weight settings.');
+    if(!calc.counts.num) return t('まだ採点された項目がありません。全項目「未確認」から始まります（0点ではありません）。','No items are scored yet. Everything starts as "unconfirmed" (not 0).');
+    return t('配点がある区分（','A weighted group (')+calc.missing.map(function(g){ return escapeHtml(ocsTx(OCS_GROUPS.find(function(x){return x.k===g;}))); }).join('・')+t('）に採点済みの項目がまだ無いため、総合は出していません（0点で補ったり、ほかの区分に振り替えたりしません）。',') has no scored items yet, so no total is shown (no 0 fill-in, no moving weight elsewhere).');
+  }
+  if(calc.counts.uc>0) return t('未確認が ','There are ')+'<b>'+calc.counts.uc+'</b>'+t(' 件あります（0点にはしていません）。採点済みの項目だけで計算した参考の点数です。',' unconfirmed items (not counted as 0). This is a reference score from scored items only.');
+  return t('全項目の確認が済みました。GM の確定で正式になります。','All items are checked. It becomes official when the GM confirms.');
+}
+function ocsFlowHtml(e, a, ev, p, o){
+  var stepCss='flex:1;min-width:150px;border:1px solid var(--border);border-radius:9px;padding:8px 10px;background:var(--surface)';
+  var selfSt = ev && ev.self ? (ev.self.sub ? t('提出済み','Submitted')+' · '+escapeHtml(ocsFmt(ev.self.at)) : t('下書き','Draft')) : t('未入力','Not started');
+  var st=ocsEvState(ev);
+  var mgrSt = ev && ev.mgr ? ((st.ready||o.conf) ? t('全項目 済','All items done') : t('途中','In progress'))+' · '+escapeHtml(ev.mgr.by||'')+' '+escapeHtml(ocsFmt(ev.mgr.at)) : t('未入力','Not started');
+  if(o.isSelf && !o.conf && ev && ev.mgr) mgrSt=t('入力中または確定待ち','In progress or awaiting confirmation');
+  var confSt = o.conf ? (escapeHtml(ev.conf.by||'')+' · '+escapeHtml(ocsFmt(ev.conf.at))) : t('未確定','Not confirmed');
+  var canStart = a.state==='active' || !!ev;
+  var btn=function(fn, label, cls){ return '<button class="btn btn-'+(cls||'secondary')+' btn-sm" style="margin-top:6px" onclick="'+fn+'">'+label+'</button>'; };
+  var selfBtn='', mgrBtn='', confBtn='';
+  if(!o.E && canStart && !o.conf && o.canSelf) selfBtn=btn('ocsStartEdit(\'self\')', '<i class="ti ti-pencil"></i> '+(ev&&ev.self?t('自己評価を直す','Edit self-review'):t('自己評価を入力','Enter self-review')), 'primary');
+  var selfNote='';
+  if(o.isSelf && !o.canSelf && ocsLive() && !o.conf) selfNote='<div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5">'+t('担当設定が有効になると、自己評価を入力できます。','You can enter a self-review once the plan is active.')+'</div>';
+  if(!o.E && canStart && !o.conf && o.canMgr) mgrBtn=btn('ocsStartEdit(\'mgr\')', '<i class="ti ti-pencil"></i> '+(ev&&ev.mgr?t('上長評価を続ける','Continue review'):t('上長評価を入力','Enter manager review')), 'primary');
+  if(!o.E && o.conf && o.canConf) mgrBtn=btn('ocsStartEdit(\'mgr\',true)', '<i class="ti ti-edit"></i> '+t('確定後の修正（理由を残す）','Revise (with reason)'));
+  if(!o.E && ev && !o.conf && o.canConf) confBtn=btn('ocsConfirm(\''+ocsQ(e.id)+'\',\''+p+'\')', '<i class="ti ti-circle-check"></i> '+t('確定する','Confirm'), st.ready?'primary':'secondary');
+  var mgrNote='';
+  var mgrBy=(a && a.mgrBy) ? ocsEmp(a.mgrBy) : null;
+  if(!o.isSelf && !o.canMgr) mgrNote='<div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5">'+t('上長評価は GM・CEO・AM（今の Career Score と同じ。G4 は担当店の G2・G3 だけ）と、担当設定で指定した人。','Manager review: GM, CEO, AM (same as the current Career Score; G4 only for G2/G3 in their store) and the designated reviewer.')+'</div>';
+  if(mgrBy) mgrNote+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'+t('指定：','Designated: ')+escapeHtml(mgrBy.name)+'</div>';
+  var voidBtn = (!o.E && ev && !o.conf && ocsCanAssign()) ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto;font-size:10.5px" onclick="ocsVoid(\''+ocsQ(e.id)+'\',\''+p+'\')"><i class="ti ti-trash"></i> '+t('この期の評価を破棄','Discard this period')+'</button>' : '';
+  var cond='';
+  if(ev && !o.E && ocsCanAssign() && !o.conf && a && (Number(a.rev)||0)!==(Number(ev.meta.asgRev)||0))
+    cond='<div style="border:1px solid var(--yellow);border-radius:8px;padding:7px 10px;margin-top:8px;font-size:11px;line-height:1.6"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> '
+      +t('担当設定がこの評価の作成後に変わっています（この評価は作成時の設定で計算）。','The plan changed after this evaluation started (it uses the plan from when it started).')
+      +' <button class="btn btn-secondary btn-sm" style="font-size:10.5px;padding:2px 8px" onclick="ocsApplyLatestPlan(\''+ocsQ(e.id)+'\',\''+p+'\')">'+t('条件を最新にする（理由を残す）','Apply latest plan (with reason)')+'</button></div>';
+  return '<div class="card" style="padding:10px 12px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><b style="font-size:12.5px"><i class="ti ti-route" style="color:var(--accent)"></i> '+escapeHtml(ocsPeriodLabel(p))+t(' の評価',' evaluation')+'</b>'+voidBtn+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
+    +'<div style="'+stepCss+'"><div style="font-size:10.5px;color:var(--muted);font-weight:700">① '+t('自己評価','Self-review')+'</div><div style="font-size:12px;font-weight:700">'+selfSt+'</div>'+selfBtn+selfNote+'</div>'
+    +'<div style="'+stepCss+'"><div style="font-size:10.5px;color:var(--muted);font-weight:700">② '+t('上長評価','Manager review')+'</div><div style="font-size:12px;font-weight:700">'+mgrSt+'</div>'+mgrBtn+mgrNote+'</div>'
+    +'<div style="'+stepCss+'"><div style="font-size:10.5px;color:var(--muted);font-weight:700">③ '+t('確定（GM）','Confirm (GM)')+'</div><div style="font-size:12px;font-weight:700">'+confSt+'</div>'+confBtn+'</div>'
+    +'</div>'+cond+'</div>';
+}
+function ocsCompareHtml(e, ev, calc, conf){
+  var prev=ocsPrevConfirmed(e.id, ev.period); if(!prev) return '';
+  var pst=ocsEvState(prev), pc=pst.calc;
+  var same=(ocsSig(prev.meta)===ocsSig(ev.meta));
+  var h='<div class="card" style="padding:10px 12px"><div style="font-size:12px;font-weight:700;margin-bottom:4px"><i class="ti ti-arrows-diff" style="color:var(--accent2)"></i> '+t('前回（','Previous (')+escapeHtml(ocsPeriodLabel(prev.period))+t('）との比較',')')+'</div>';
+  if(!same){
+    var gUp=OCS_GRADES.indexOf(ocsNormGrade(ev.meta.grade))>OCS_GRADES.indexOf(ocsNormGrade(prev.meta.grade));
+    h+='<div style="font-size:12px;color:var(--tm)">'+t('評価条件が変更されたため単純比較不可','Evaluation conditions changed, so a simple comparison is not possible')+'</div>'
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px;line-height:1.6">'+t('前回：','Previous: ')+escapeHtml(prev.meta.grade)+' · '+(pc&&pc.total!=null?pc.total+t('点',' pts'):'—')
+      +(gUp?'<br>'+t('Grade が上がると期待範囲が広がるため、点数が下がることがあります。能力の後退を意味しません。','A higher grade widens what is expected, so the score can drop. This does not mean the person got worse.'):'')+'</div>';
+  } else if(calc && calc.total!=null && pc && pc.total!=null){
+    var d=Math.round((calc.total-pc.total)*10)/10;
+    h+='<div style="font-size:12px">'+pc.total+' → <b>'+calc.total+'</b> <span style="font-weight:700;color:'+(d>=0?'var(--green)':'var(--muted)')+'">'+(d>=0?'+':'')+d+'</span>'+(conf?'':' <span style="font-size:10.5px;color:var(--muted)">'+t('（今期は暫定）','(this period provisional)')+'</span>')+'</div>';
+  } else h+='<div style="font-size:11.5px;color:var(--muted)">'+t('今期の総合がまだ出ていません','No total for this period yet')+'</div>';
+  return h+'</div>';
+}
+function ocsGrowthHtml(e, a, ev, meta, o){
+  var E=o.E, mg=(ev && ev.mgr && o.showMgr) ? ev.mgr : null;
+  var devItems=OCS_ITEMS.filter(function(d){ var it=((meta&&meta.asg)||{})[d.c]; return it && (it.dev || it.role==='dev'); });
+  var prop=OCS_PROPOSALS[a.proposal];
+  var h='<div class="card" style="padding:10px 12px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px">';
+  /* 強み */
+  h+='<div><div style="font-size:11px;font-weight:700;color:var(--green)"><i class="ti ti-star"></i> '+t('強み','Strengths')+'</div>';
+  if(E && E.part==='mgr') h+='<textarea class="form-textarea" id="ocs-strengths" style="min-height:52px;font-size:12px" placeholder="'+escapeHtml(t('実際の対応で見えた強み（性格・社交性ではなく）','Strengths seen in actual work (not personality)'))+'">'+escapeHtml(E.strengths||'')+'</textarea>';
+  else h+='<div style="font-size:12px;line-height:1.6;white-space:pre-wrap">'+(mg && mg.strengths ? escapeHtml(mg.strengths) : '<span style="color:var(--muted)">—</span>')+'</div>';
+  h+='</div>';
+  /* 課題 */
+  h+='<div><div style="font-size:11px;font-weight:700;color:var(--accent2)"><i class="ti ti-target"></i> '+t('次に伸ばす課題（2〜3件）','Next growth goals (2–3)')+'</div>';
+  if(E && E.part==='mgr'){
+    for(var i=0;i<3;i++){ var is=(E.issues||[])[i]||{};
+      h+='<div style="display:flex;gap:4px;margin-top:4px"><select class="form-select" id="ocs-issue-c-'+i+'" style="width:92px;padding:4px;font-size:11px"><option value="">'+t('項目','Item')+'</option>'
+        +OCS_ITEMS.map(function(d){ return '<option value="'+d.c+'"'+(is.c===d.c?' selected':'')+'>'+d.c+'</option>'; }).join('')+'</select>'
+        +'<input class="form-input" id="ocs-issue-t-'+i+'" style="flex:1;padding:5px 8px;font-size:12px" value="'+escapeHtml(is.t||'')+'" placeholder="'+escapeHtml(t('例：PL の差異を自分で説明できる','e.g. explain P&L variances on her own'))+'"></div>'; }
+  } else {
+    var iss=(mg && Array.isArray(mg.issues)) ? mg.issues.filter(function(x){ return x && (x.t||x.c); }) : [];
+    h+=iss.length ? iss.map(function(x,i){ var d=x.c?ocsItemDef(x.c):null; return '<div style="font-size:12px;line-height:1.6">'+(i+1)+'. '+(d?'<span class="tag" style="background:var(--surface2);font-size:9.5px">'+d.c+'</span> ':'')+escapeHtml(x.t||(d?ocsItemName(d):''))+'</div>'; }).join('') : '<div style="font-size:12px;color:var(--muted)">—</div>';
+  }
+  h+='</div>';
+  /* 育成 */
+  h+='<div><div style="font-size:11px;font-weight:700;color:var(--accent)"><i class="ti ti-seeding"></i> '+t('次のGradeへの育成項目','Growth toward the next grade')+'</div>'
+    +(devItems.length ? devItems.map(function(d){ var it=meta.asg[d.c]; return '<div style="font-size:11.5px;line-height:1.6"><span class="tag" style="background:var(--surface2);font-size:9.5px">'+d.c+'</span> '+escapeHtml(ocsItemName(d))+(ocsIsTarget(it)?' <span style="font-size:10px;color:var(--muted)">'+t('（採点対象）','(scored)')+'</span>':' <span style="font-size:10px;color:var(--muted)">'+t('（総合に入らない）','(not in total)')+'</span>')+'</div>'; }).join('') : '<div style="font-size:12px;color:var(--muted)">—</div>')
+    +(prop && prop.devNote ? '<div style="font-size:10.5px;color:var(--muted);line-height:1.55;margin-top:4px">'+escapeHtml(ocsTx(prop.devNote))+'</div>' : '')
+    +'</div>';
+  h+='</div>';
+  if(E && E.part==='mgr') h+='<div class="form-group" style="margin:8px 0 0"><label class="form-label">'+t('評価コメント','Comment')+'</label><textarea class="form-textarea" id="ocs-mgr-cm" style="min-height:44px;font-size:12px">'+escapeHtml(E.cm||'')+'</textarea></div>';
+  else if(mg && mg.cm) h+='<div style="font-size:11.5px;line-height:1.6;margin-top:8px;padding:6px 9px;background:var(--surface2);border-radius:7px;white-space:pre-wrap"><b>'+t('評価コメント：','Comment: ')+'</b>'+escapeHtml(mg.cm)+'</div>';
+  if(E && E.part==='self') h+='<div class="form-group" style="margin:8px 0 0"><label class="form-label">'+t('本人のコメント・補足','Your comment / notes')+'</label><textarea class="form-textarea" id="ocs-self-cm" style="min-height:44px;font-size:12px">'+escapeHtml(E.cm||'')+'</textarea></div>';
+  else if(ev && ev.self && (o.isSelf || ev.self.sub) && ev.self.cm) h+='<div style="font-size:11.5px;line-height:1.6;margin-top:8px;padding:6px 9px;background:var(--surface2);border-radius:7px;white-space:pre-wrap"><b>'+t('本人のコメント：','Self comment: ')+'</b>'+escapeHtml(ev.self.cm)+'</div>';
+  if(E) h+='<div style="font-size:10px;color:var(--muted);margin-top:6px">'+t('★根拠・コメントに、給与明細・SSN・口座番号・ビザ書類の中身は書かない。案件番号や保管場所だけを書く。','★Do not write pay stubs, SSNs, account numbers or visa document contents. Write only case numbers or where the file is kept.')+'</div>';
+  return h+'</div>';
+}
+function ocsPromoHtml(e, ev, canConf){
+  var pc=ocsPromoChecks(ev);
+  var h='<div class="card" style="padding:10px 12px"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:12.5px"><i class="ti ti-crown" style="color:var(--accent)"></i> '+t('昇格候補の確認','Promotion-candidate check')+'</b>'
+    +(pc.candidate ? '<span class="tag tag-green" style="font-size:10px">'+t('昇格候補として確認可能','Can be reviewed as a promotion candidate')+'</span>' : '<span class="tag tag-gray" style="font-size:10px">'+(pc.conf?t('条件を満たしていません','Conditions not met'):t('確定後に判定します','Checked after confirmation'))+'</span>')+'</div>';
+  pc.list.forEach(function(x){
+    var manual=(x.k==='issues'||x.k==='next');
+    h+='<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-top:1px solid var(--border);margin-top:4px">'
+      +'<i class="ti '+(x.ok?'ti-circle-check':'ti-circle-dashed')+'" style="font-size:16px;color:'+(x.ok?'var(--green)':'var(--muted)')+'"></i>'
+      +'<div style="flex:1;font-size:11.5px;line-height:1.5"><div>'+escapeHtml(ocsTx(x))+'</div><div style="font-size:10.5px;color:var(--muted)">'+escapeHtml(x.val||'')+'</div>'
+      +(manual && ev.promo && ev.promo[x.k] && ev.promo[x.k].note ? '<div style="font-size:10.5px;color:var(--tm)">'+escapeHtml(ev.promo[x.k].note)+'</div>' : '')+'</div>'
+      +(manual && canConf ? '<button class="btn btn-secondary btn-sm" style="font-size:10.5px;padding:2px 8px" onclick="ocsPromoMark(\''+ocsQ(e.id)+'\',\''+ev.period+'\',\''+x.k+'\')">'+(x.ok?t('取り消す','Undo'):t('確認した','Mark reviewed'))+'</button>' : '')
+      +'</div>';
+  });
+  h+='<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">'+t('★点数だけで自動昇格しません。最終判断と正式な Grade 変更は、今の承認手続き（昇格申請・GM 承認）で行います。','★No automatic promotion from the score. The final decision and the grade change go through the existing approval process (promotion request, GM approval).')+'</div>';
+  return h+'</div>';
+}
+function ocsItemsHtml(e, meta, ev, o){
+  if(!meta) return '';
+  var E=o.E, asg=meta.asg||{}, defs={}; ((meta.defs)||[]).forEach(function(d){ defs[d.c]=d; });
+  var mgrS = o.conf ? (ev.conf.s||{}) : ((ev && ev.mgr && o.showMgr) ? (ev.mgr.s||{}) : {});
+  var mgrEv = (ev && ev.mgr && o.showMgr) ? (ev.mgr.ev||{}) : {};
+  var selfS = (ev && ev.self && o.showSelf) ? (ev.self.s||{}) : {}, selfEv=(ev && ev.self && o.showSelf) ? (ev.self.ev||{}) : {};
+  if(E && E.part==='self'){ selfS=E.s; selfEv=E.ev; }
+  if(E && E.part==='mgr'){ mgrS=E.s; mgrEv=E.ev; }
+  var all=window._ocsAll;
+  var h='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:4px 2px 6px"><b style="font-size:13px">'+t('評価項目','Items')+'</b>'
+    +'<div class="phase-tabs" style="margin:0 0 0 auto"><button class="phase-tab'+(!all?' active':'')+'" onclick="if(window._ocsAll)ocsToggleAll()">'+t('担当項目のみ','Assigned only')+'</button><button class="phase-tab'+(all?' active':'')+'" onclick="if(!window._ocsAll)ocsToggleAll()">'+t('35項目すべて','All 35')+'</button></div></div>';
+  OCS_CATS.forEach(function(c){
+    var its=OCS_ITEMS.filter(function(d){ return d.cat===c.k; });
+    var shown=its.filter(function(d){ var it=asg[d.c]||{role:'na'}; return all || it.role!=='na' || it.dev; });
+    if(!shown.length) return;
+    var mainS=E ? E.s : (o.showMgr ? mgrS : selfS);
+    var cc=ocsCalc(meta, mainS).cats[c.k], grpW=Number((meta.weights||{})[ocsGrpOfCat(c.k)])||0;
+    var open = (window._ocsOpenCats[c.k]!==undefined) ? window._ocsOpenCats[c.k] : (E ? true : (c.k==='A'));
+    var pct=(cc.rate==null)?'—':(Math.round(cc.rate*1000)/10+'%');
+    h+='<details class="card" style="padding:8px 12px"'+(open?' open':'')+' ontoggle="ocsCatToggle(\''+c.k+'\',this)"><summary style="cursor:pointer;display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+      +'<b style="font-size:12.5px">O-'+c.k+' '+escapeHtml(ocsTx(c))+'</b>'
+      +'<span style="font-size:10.5px;color:var(--muted)">'+t('担当','assigned')+' '+(cc.targets+cc.dev+cc.rec)+'/'+its.length+' · '+t('確認済み','confirmed')+' '+cc.num+'/'+cc.targets+(cc.rec?' · '+t('記録','record')+' '+cc.rec:'')+'</span>'
+      +'<span style="margin-left:auto;font-size:12px;font-weight:800;color:var(--tm)">'+(grpW>0?pct:'<span style="font-size:10px;color:var(--muted);font-weight:400">'+t('配点0％','0%')+'</span>')+'</span></summary>'
+      +'<div style="font-size:10.5px;color:var(--accent2);margin:4px 0 2px;line-height:1.5">'+escapeHtml(ocsTx(c.note))+'</div>';
+    shown.forEach(function(d){
+      var it=asg[d.c]||{role:'na'}, df=defs[d.c]||d, target=ocsIsTarget(it), rec=target && grpW<=0;
+      var na=!target && !(it.role==='dev'||it.dev);
+      var tags='';
+      tags+='<span class="tag" style="background:var(--surface2);color:'+(it.role==='na'?'var(--muted)':'var(--tm)')+';font-size:9.5px">'+escapeHtml(ocsRoleLabel(it.role))+'</span>';
+      if(it.req) tags+='<span class="tag tag-orange" style="font-size:9.5px">'+t('必須','Required')+'</span>';
+      if(it.imp) tags+='<span class="tag tag-blue" style="font-size:9.5px">'+t('重要','Important')+'</span>';
+      if(it.dev) tags+='<span class="tag" style="background:rgba(21,166,106,.10);color:var(--green);font-size:9.5px">'+t('次Grade育成','Next grade')+'</span>';
+      if(rec) tags+='<span class="tag tag-gray" style="font-size:9.5px">'+t('育成記録（配点0）','Record only')+'</span>';
+      else if(!target && !na) tags+='<span class="tag tag-gray" style="font-size:9.5px">'+t('総合に入らない','Not in total')+'</span>';
+      var scope=String(it.scope||'').trim();
+      var canTapSelf = E && E.part==='self' && !na, canTapMgr = E && E.part==='mgr' && !na;
+      var cell=function(label, v, evid, tap, hide){
+        var chip = na ? ocsScoreChip(null,'na') : (hide ? ocsScoreChip(null,'hidden') : ocsScoreChip(v));
+        return '<div style="display:flex;align-items:center;gap:5px;min-width:0"><span style="font-size:10px;color:var(--muted);width:30px;flex-shrink:0">'+label+'</span>'
+          +(tap ? '<button onclick="ocsOpenScore(\''+d.c+'\')" style="border:none;background:none;padding:0;cursor:pointer">'+chip+' <i class="ti ti-pencil" style="font-size:12px;color:var(--accent)"></i></button>' : chip)
+          +(evid && !hide ? '<span style="font-size:10.5px;color:var(--tm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0" title="'+escapeHtml(evid)+'">'+escapeHtml(evid)+'</span>' : '')+'</div>';
+      };
+      h+='<div data-ocs-item="'+d.c+'" style="border-top:1px solid var(--border);padding:8px 0">'
+        +'<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap"><span class="tag" style="background:var(--surface2);color:var(--tm);font-size:9.5px;font-weight:700">'+d.c+'</span><b style="font-size:12.5px">'+escapeHtml(curLang==='en'?(df.en||df.ja):df.ja)+'</b>'+tags+'</div>'
+        +'<div style="font-size:10.5px;color:var(--muted);line-height:1.5;margin-top:2px">'+escapeHtml(curLang==='en'?(df.den||df.dja):df.dja)+'</div>'
+        +(it.role!=='na' ? '<div style="font-size:11px;line-height:1.55;margin-top:4px;padding:4px 8px;border-radius:6px;'+(scope?'background:var(--surface2)':'border:1px dashed var(--yellow)')+'"><b>'+t('この人の担当範囲：','Scope for this person: ')+'</b>'+(scope?escapeHtml(scope):'<span style="color:var(--yellow)">'+t('未設定（正式評価を確定できません）','Not set (cannot be confirmed)')+'</span>')+'</div>' : '')
+        +(d.c==='O-C2' && OCS_PAYROLL_SCOPE[ocsNormGrade(meta.grade)] ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">'+t('Payroll の '+meta.grade+' の期待：','Payroll at '+meta.grade+': ')+escapeHtml(ocsTx(OCS_PAYROLL_SCOPE[ocsNormGrade(meta.grade)]))+'</div>' : '')
+        +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px 12px;margin-top:6px">'
+        +cell(t('自己','Self'), selfS[d.c], selfEv[d.c], canTapSelf, !o.showSelf && !(E&&E.part==='self'))
+        +cell(t('上長','Mgr'), mgrS[d.c], mgrEv[d.c], canTapMgr, !o.showMgr && !(E&&E.part==='mgr'))
+        +'</div></div>';
+    });
+    h+='</details>';
+  });
+  return h;
+}
+function ocsIssuesOf(ev){ return (ev && ev.mgr && Array.isArray(ev.mgr.issues)) ? ev.mgr.issues.filter(function(x){ return x && (x.t||x.c); }) : []; }
+function ocsChecksSrc(e, ev, isSelf){
+  var conf=function(x){ return !!(x && x.conf && x.conf.state==='confirmed'); };
+  if(ev && !ev.void && ocsIssuesOf(ev).length && (!isSelf || conf(ev))) return ev;
+  var cur=(ev && ev.period) || window._ocsPeriod || ocsPeriodNow();
+  var ps=ocsPeriods(e.id).filter(function(x){ return x<cur; });
+  for(var i=0;i<ps.length;i++){ var x=ocsEv(e.id, ps[i]); if(x && !x.void && conf(x) && ocsIssuesOf(x).length) return x; }
+  return null;
+}
+function ocsChecksHtml(e, ev, canAdd, isSelf, viewP){
+  var cks=(ev.checks||[]).slice().sort(function(a,b){ return String(b.ym).localeCompare(String(a.ym)); });
+  var iss=ocsIssuesOf(ev);
+  if(isSelf && !(ev.conf && ev.conf.state==='confirmed')) iss=[];
+  var ST={up:{ja:'前進',en:'Progress'}, same:{ja:'変化なし',en:'No change'}, help:{ja:'要相談',en:'Needs help'}};
+  var h='<div class="card" style="padding:10px 12px"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:12.5px"><i class="ti ti-calendar-check" style="color:var(--accent)"></i> '+t('月次の進捗確認（成長課題）','Monthly check (growth goals)')+'</b>'
+    +(viewP && ev.period!==viewP ? '<span style="font-size:10.5px;color:var(--muted)">'+escapeHtml(ocsPeriodLabel(ev.period))+t(' の評価で決めた課題',' goals')+'</span>' : '')
+    +(canAdd && iss.length ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="ocsOpenCheck(\''+ocsQ(e.id)+'\',\''+ev.period+'\')"><i class="ti ti-plus"></i> '+t('今月の確認を記録','Record this month')+'</button>' : '')+'</div>';
+  if(!iss.length && !cks.length) h+='<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('上長評価で「次に伸ばす課題」を入れると、月に1回ここで進み具合を記録できます。','Once growth goals are set in the manager review, record progress here once a month.')+'</div>';
+  else if(!cks.length) h+='<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('まだ月次の記録はありません（上長評価をした人が月に1回、課題の進み具合を記録します）。','No monthly records yet (the reviewer records progress on the goals once a month).')+'</div>';
+  cks.forEach(function(ck){
+    h+='<div style="border-top:1px solid var(--border);padding:6px 0;margin-top:4px"><div style="font-size:11px;font-weight:700">'+escapeHtml(ck.ym)+' <span style="font-weight:400;color:var(--muted)">'+escapeHtml(ck.by||'')+' · '+escapeHtml(ocsFmt(ck.at))+'</span></div>'
+      +(ck.items||[]).map(function(x){ var s=ST[x.st]||{ja:'—',en:'—'}; return '<div style="font-size:11.5px;line-height:1.55">・'+escapeHtml(x.t||'')+' — <b>'+escapeHtml(ocsTx(s))+'</b>'+(x.note?' <span style="color:var(--muted)">'+escapeHtml(x.note)+'</span>':'')+'</div>'; }).join('')+'</div>';
+  });
+  return h+'</div>';
+}
+function ocsObjectionHtml(e, ev, isSelf){
+  var s=ev.self||{};
+  var h='<div class="card" style="padding:10px 12px"><b style="font-size:12.5px"><i class="ti ti-message-2" style="color:var(--accent2)"></i> '+t('本人の補足・異議・確認','Notes, objections and acknowledgement')+'</b>';
+  if(s.obj) h+='<div style="font-size:11.5px;line-height:1.6;margin-top:4px;white-space:pre-wrap">'+escapeHtml(s.obj)+'<div style="font-size:10px;color:var(--muted)">'+escapeHtml(ocsFmt(s.objAt))+'</div></div>';
+  if(s.ack) h+='<div style="font-size:11px;color:var(--green);margin-top:4px"><i class="ti ti-check"></i> '+t('本人が内容を確認しました','Acknowledged by the person')+' · '+escapeHtml(ocsFmt(s.ackAt))+'</div>';
+  if(isSelf && ocsLive()){
+    h+='<textarea class="form-textarea" id="ocs-obj" style="min-height:44px;font-size:12px;margin-top:6px" placeholder="'+escapeHtml(t('補足・異議があれば書いてください（機密の中身は書かない）','Add notes or objections (no confidential contents)'))+'">'+escapeHtml(s.obj||'')+'</textarea>'
+      +'<div class="btn-row" style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="ocsSaveObjection(\''+ocsQ(e.id)+'\',\''+ev.period+'\',false)">'+t('補足・異議を保存','Save notes')+'</button>'
+      +((ev.conf && ev.conf.state==='confirmed' && !s.ack) ? '<button class="btn btn-primary btn-sm" onclick="ocsSaveObjection(\''+ocsQ(e.id)+'\',\''+ev.period+'\',true)"><i class="ti ti-check"></i> '+t('内容を確認した','I have read it')+'</button>' : '')+'</div>';
+  }
+  return h+'</div>';
+}
+function ocsHistoryHtml(e, cur){
+  var ps=ocsPeriods(e.id);
+  var h='<div class="card" style="padding:10px 12px"><b style="font-size:12.5px"><i class="ti ti-history" style="color:var(--muted)"></i> '+t('評価履歴','History')+'</b>';
+  if(!ps.length) h+='<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('まだ評価はありません','No evaluations yet')+'</div>';
+  ps.forEach(function(p){
+    var ev=ocsEv(e.id, p), st=ocsEvState(ev), c=st.calc;
+    h+='<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border);margin-top:4px;cursor:pointer" onclick="ocsSetPeriod(\''+p+'\')">'
+      +'<span style="font-size:11.5px;font-weight:'+(p===cur?'800':'600')+';min-width:118px">'+escapeHtml(ocsPeriodLabel(p))+'</span>'+ocsStateChip(st.k, true)
+      +'<span style="font-size:10.5px;color:var(--muted)">'+escapeHtml((ev.meta&&ev.meta.grade)||'')+' · '+escapeHtml((ev.meta&&ev.meta.tpl)||'')+'</span>'
+      +'<span style="margin-left:auto;font-size:13px;font-weight:800">'+(c && c.total!=null && st.k!=='void' && (st.k==='ok' || !ocsIsSelf(e)) ? c.total : '—')+'</span></div>';
+    (ev.revs||[]).forEach(function(r){
+      h+='<div style="font-size:10.5px;color:var(--muted);margin:0 0 4px 12px;line-height:1.5"><i class="ti ti-edit"></i> '+escapeHtml(ocsFmt(r.at))+' '+escapeHtml(r.by||'')+' · '+escapeHtml(r.what==='plan'?t('条件を更新','plan updated'):t('確定後の修正','revision'))
+        +(r.diff && r.diff.length ? ' · '+r.diff.map(function(x){ return x.c+' '+(x.from==null?t('未確認','unconf.'):x.from)+'→'+(x.to==null?t('未確認','unconf.'):x.to); }).join('、') : '')
+        +(r.from!=null||r.to!=null ? ' · '+(r.from==null?'—':r.from)+'→'+(r.to==null?'—':r.to) : '')+'<br>'+t('理由：','Reason: ')+escapeHtml(r.reason||'')+'</div>';
+    });
+  });
+  /* 旧方式（旧テンプレート）の履歴 */
+  try{
+    var old=lssSummary(e.name), rec=old && old.rec;
+    if(old && old.hasData){
+      var setName=(rec && rec._set) ? (rec._set==='general' ? t('運営共通 A〜H','Operations A–H') : rec._set) : t('記録なし','not recorded');
+      h+='<div style="border-top:1px dashed var(--border);margin-top:8px;padding-top:7px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        +'<span class="tag tag-gray" style="font-size:9.5px">'+t('旧テンプレート','Old template')+'</span>'
+        +'<span style="font-size:11.5px">'+t('旧 Career Score（','Old Career Score (')+escapeHtml(setName)+'・'+old.totalMax/3+t('項目）',' items)')+' <b>'+old.totalPct+'%</b>'+(rec && rec.date ? ' · '+escapeHtml(rec.date) : '')+'</span>'
+        +'<button class="btn btn-secondary btn-sm" style="margin-left:auto;font-size:10.5px" onclick="openLssDetail(\''+String(e.name).replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')">'+t('旧方式を見る','View old')+'</button>'
+        +'<div style="font-size:10px;color:var(--muted);width:100%">'+t('旧方式の点数は、新しい35項目に変換していません（別の指標）。','Old scores are not converted to the 35 items (different measure).')+'</div></div>';
+    }
+  }catch(err){}
+  return h+'</div>';
+}
+
+/* ---------- 入力（自己評価・上長評価） ---------- */
+function ocsStartEdit(part, revise){
+  var e=ocsEmp(window._ocsSel); if(!e) return;
+  var a=ocsAsg(e.id), p=window._ocsPeriod || ocsPeriodNow(), ev=ocsEv(e.id, p);
+  if(!ev && (!a || a.state!=='active')){ showToast(t('担当設定が有効になっていません','The plan is not active'),'warning'); return; }
+  var conf=!!(ev && ev.conf && ev.conf.state==='confirmed');
+  if(part==='self'){ if(!ocsCanSelf(e) || conf){ showToast(t('自己評価を入力できません','You cannot enter a self-review'),'warning'); return; } }
+  else if(revise){ if(!conf || !ocsCanConfirm(e)){ showToast(t('確定後の修正は GM だけです','Only the GM can revise'),'warning'); return; } }
+  else { if(!ocsCanMgr(e) || conf){ showToast(t('上長評価を入力できません','You cannot enter a manager review'),'warning'); return; } }
+  var cur=ev && ev[part];
+  window._ocsEdit={ empId:e.id, period:p, part:part, revise:!!revise, baseAt:Number(cur&&cur._at)||0,
+    s:ocsCopy((revise && ev.conf) ? (ev.conf.s||{}) : ((cur&&cur.s)||{}))||{}, ev:ocsCopy((cur&&cur.ev)||{})||{},
+    cm:(cur&&cur.cm)||'', strengths:(cur&&cur.strengths)||'', issues:ocsCopy((cur&&cur.issues)||[])||[], dirty:false };
+  ocsRerender(); window.scrollTo(0,0);
+}
+function ocsCancelEdit(){
+  var E=window._ocsEdit; if(E && E.dirty && !confirm(t('保存していない入力を破棄しますか？','Discard unsaved input?'))) return;
+  window._ocsEdit=null; ocsRerender();
+}
+function ocsCollectTexts(){
+  var E=window._ocsEdit; if(!E) return;
+  var g=function(id){ var el=document.getElementById(id); return el ? String(el.value||'') : null; };
+  if(E.part==='mgr'){
+    var st=g('ocs-strengths'); if(st!=null) E.strengths=st.slice(0,1000);
+    var cm=g('ocs-mgr-cm'); if(cm!=null) E.cm=cm.slice(0,2000);
+    var iss=[]; for(var i=0;i<3;i++){ var c=g('ocs-issue-c-'+i), tx=g('ocs-issue-t-'+i); if(c==null && tx==null) continue; if((c||'') || (tx||'').trim()) iss.push({c:c||'', t:String(tx||'').trim().slice(0,200)}); }
+    if(document.getElementById('ocs-issue-t-0')) E.issues=iss;
+  } else { var sc=g('ocs-self-cm'); if(sc!=null) E.cm=sc.slice(0,2000); }
+}
+function ocsOpenScore(code){
+  var E=window._ocsEdit; if(!E) return; ocsCollectTexts();
+  var d=ocsItemDef(code), ev=ocsEv(E.empId, E.period), a=ocsAsg(E.empId);
+  var meta=ev ? ev.meta : {asg:a.items, grade:a.grade}, it=(meta.asg||{})[code]||{};
+  var cur=ocsNum(E.s[code]), evid=E.ev[code]||'';
+  var opt=function(v, label, desc, col){
+    var sel=(v==='uc') ? (cur==null) : (cur===v);
+    return '<div onclick="ocsPickScore(\''+code+'\',\''+v+'\')" style="display:flex;gap:10px;align-items:flex-start;border:1.5px solid '+(sel?col:'var(--border)')+';border-radius:10px;padding:9px 11px;margin-bottom:7px;cursor:pointer">'
+      +'<span style="flex-shrink:0;min-width:26px;height:26px;border-radius:7px;'+(v==='uc'?'border:1.5px dashed var(--muted);color:var(--muted)':'background:'+col+';color:#fff')+';font-weight:700;display:flex;align-items:center;justify-content:center;font-size:12px;padding:0 4px">'+(v==='uc'?'?':v)+'</span>'
+      +'<div style="flex:1"><div style="font-size:13px;font-weight:600">'+escapeHtml(label)+'</div><div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:2px">'+escapeHtml(desc)+'</div></div>'
+      +(sel?'<i class="ti ti-circle-check" style="color:'+col+';font-size:20px"></i>':'')+'</div>';
+  };
+  closeOcsScore();
+  var ov=document.createElement('div'); ov.id='ocs-score-ov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;display:flex;align-items:flex-end;justify-content:center';
+  ov.onclick=function(ev2){ if(ev2.target===ov) closeOcsScore(); };
+  ov.innerHTML='<div style="background:var(--surface);width:100%;max-width:560px;max-height:88vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;overflow:hidden">'
+    +'<div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px"><div style="flex:1"><div style="font-weight:700;font-size:14px">'+code+' '+escapeHtml(ocsItemName(d))+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted)">'+(E.part==='self'?t('自己評価','Self-review'):t('上長評価','Manager review'))+'</div></div><button class="modal-close" onclick="closeOcsScore()">×</button></div>'
+    +'<div style="padding:12px 16px;overflow-y:auto">'
+    +'<div style="font-size:11px;line-height:1.55;color:var(--muted);margin-bottom:6px">'+escapeHtml(ocsItemDesc(d))+'</div>'
+    +'<div style="font-size:11px;line-height:1.55;background:var(--surface2);border-radius:7px;padding:6px 9px;margin-bottom:8px"><b>'+t('この人の担当範囲：','Scope: ')+'</b>'+(String(it.scope||'').trim()?escapeHtml(it.scope):'<span style="color:var(--yellow)">'+t('未設定','Not set')+'</span>')+'</div>'
+    +OCS_SCORES.map(function(x){ return opt(x.v, x.v+' '+ocsTx(x), curLang==='en'?x.den:x.dja, OCS_SCORE_COLORS[x.v]); }).join('')
+    +opt('uc', t('未確認','Unconfirmed'), t('実施機会や判断材料がない。0点にしない（暫定のまま）。','No opportunity or evidence yet. Not counted as 0 (stays provisional).'), 'var(--muted)')
+    +'<div style="font-size:10.5px;color:var(--muted);margin:2px 0 8px">'+t('★通常の承認・チェックを受けることを理由に「補助が必要」にしない。','★Do not choose "needs support" just because the work goes through normal approvals.')+'</div>'
+    +'<label class="form-label">'+t('根拠（任意・短く）','Evidence (optional, short)')+'</label><input class="form-input" id="ocs-evid" value="'+escapeHtml(evid)+'" placeholder="'+escapeHtml(t('例：9月の Payroll で差異3件を自分で発見・案件 #P-0915','e.g. found 3 payroll differences in Sep · case #P-0915'))+'" style="font-size:12px">'
+    +'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+t('給与明細・SSN・口座番号・ビザ書類の中身は書かない（案件番号や保管場所だけ）','No pay stubs, SSNs, account numbers or visa contents (case numbers or file locations only)')+'</div>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="ocsPickScore(\''+code+'\',null)">'+t('根拠を残して閉じる','Keep evidence and close')+'</button></div>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+}
+function closeOcsScore(){ var o=document.getElementById('ocs-score-ov'); if(o){ try{ document.body.removeChild(o); }catch(e){} } }
+function ocsPickScore(code, v){
+  var E=window._ocsEdit; if(!E) return;
+  var el=document.getElementById('ocs-evid'); var evid=el ? String(el.value||'').trim().slice(0,300) : (E.ev[code]||'');
+  if(ocsSensitiveHit(evid)){ showToast(t('根拠に番号（SSN・口座など）のようなものがあります。案件番号や保管場所だけを書いてください','The evidence looks like it contains an ID or account number. Write only a case number or file location'),'warning'); return; }
+  if(evid) E.ev[code]=evid; else delete E.ev[code];
+  if(v!==null && v!==undefined){ if(v==='uc') delete E.s[code]; else { var n=ocsNum(v); if(n!=null) E.s[code]=n; } }
+  E.dirty=true;
+  try{ haptic('tap'); }catch(e){}
+  closeOcsScore(); ocsRerender();
+}
+async function ocsSaveEdit(submit){
+  var E=window._ocsEdit; if(!E) return; ocsCollectTexts();
+  var e=ocsEmp(E.empId); if(!e) return;
+  var texts=[E.cm, E.strengths].concat((E.issues||[]).map(function(x){ return x.t; })).concat(Object.keys(E.ev).map(function(k){ return E.ev[k]; }));
+  if(texts.some(ocsSensitiveHit)){ showToast(t('コメント・根拠に番号（SSN・口座など）のようなものがあります。消してから保存してください','A comment or evidence looks like it contains an ID or account number. Remove it before saving'),'warning'); return; }
+  if(E.part==='mgr' && (E.issues||[]).length>3){ showToast(t('次に伸ばす課題は3件までです','Up to 3 growth goals'),'warning'); return; }
+  var reason='';
+  if(E.revise){
+    reason=prompt(t('確定した評価を修正します。修正の理由を残してください','You are revising a confirmed evaluation. Please record the reason'), '');
+    if(reason==null) return; reason=String(reason).trim(); if(!reason){ showToast(t('理由を入れてください','Please enter a reason'),'warning'); return; }
+    if(ocsSensitiveHit(reason)){ showToast(t('理由に番号のようなものがあります','The reason looks like it contains an ID number'),'warning'); return; }
+  }
+  /* 最新を取りに行き、開いたあとに誰かが同じ部分を保存していたら止める */
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+E.empId); }catch(err){}
+  var ev=ocsEv(E.empId, E.period);
+  var curPart=ev && ev[E.part];
+  if((Number(curPart&&curPart._at)||0)!==E.baseAt){ ocsConflict(curPart && curPart.by, curPart && curPart.at, function(){ window._ocsEdit=null; ocsRerender(); }); return; }
+  var conf=!!(ev && ev.conf && ev.conf.state==='confirmed');
+  if(E.part==='self' && (conf || !ocsCanSelf(e))){ showToast(t('自己評価を保存できません（確定済み・権限なし）','Cannot save the self-review (confirmed or no permission)'),'warning'); return; }
+  if(E.part==='mgr' && !E.revise && (conf || !ocsCanMgr(e))){ showToast(t('上長評価を保存できません（確定済み・権限なし）','Cannot save the manager review (confirmed or no permission)'),'warning'); return; }
+  if(!ev){
+    var a=ocsAsg(E.empId); if(!a || a.state!=='active'){ showToast(t('担当設定が有効ではありません','The plan is not active'),'warning'); return; }
+    ev=ocsNewEv(a, E.period);
+  }
+  var now=ocsNowIso(), part;
+  if(E.part==='self'){
+    var prevSelf=ev.self||{};
+    part=ocsStamp({s:E.s, ev:E.ev, cm:E.cm, by:ocsMe(), at:now, sub: !!submit || !!prevSelf.sub, subAt: submit ? now : (prevSelf.subAt||null),
+      obj:prevSelf.obj||'', objAt:prevSelf.objAt||null, ack:!!prevSelf.ack, ackAt:prevSelf.ackAt||null}, prevSelf);
+    ev.self=part;
+  } else {
+    var prevMgr=ev.mgr||{};
+    part=ocsStamp({s:E.s, ev:E.ev, cm:E.cm, strengths:E.strengths, issues:E.issues, by:ocsMe(), at:now}, prevMgr);
+    ev.mgr=part;
+    if(E.revise){
+      var old=ev.conf||{}, diff=[];
+      OCS_ITEMS.forEach(function(d){ var x=ocsNum((old.s||{})[d.c]), y=ocsNum(E.s[d.c]); if(x!==y) diff.push({c:d.c, from:x, to:y}); });
+      var calc=ocsCalc(ev.meta, E.s);
+      if(calc.state!=='ready'){ showToast(t('修正後に未確認の項目があります。確定した評価は全項目の確認が必要です','After the revision some items are unconfirmed. A confirmed evaluation needs every item checked'),'warning'); return; }
+      var oldTotal=(ocsCalc(ev.meta, old.s||{})).total;
+      ev.revs=(ev.revs||[]).concat([{id:'rv'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), at:now, by:ocsMe(), what:'revise', reason:reason, diff:diff, from:oldTotal, to:calc.total, _at:Date.now()}]);
+      ev.conf=ocsStamp({state:'confirmed', by:old.by, at:old.at, s:ocsCopy(E.s), total:calc.total, ver:(Number(old.ver)||1)+1, revisedBy:ocsMe(), revisedAt:now}, old);
+    }
+  }
+  var ok=ocsPutEv(E.empId, ev);
+  window._ocsEdit=null;
+  ocsRerender();
+  ocsAfterSave(OCS_EV_PREFIX+E.empId, ok, E.part==='self' ? (submit?t('自己評価を提出しました','Self-review submitted'):t('自己評価の下書きを保存しました','Self-review draft saved')) : (E.revise?t('修正を保存しました','Revision saved'):t('上長評価を保存しました','Manager review saved')));
+}
+/* 確定（GM）：担当範囲あり・未確認なし・課題2〜3件 */
+async function ocsConfirm(empId, period){
+  var e=ocsEmp(empId); if(!e || !ocsCanConfirm(e)){ showToast(t('確定は GM だけです','Only the GM can confirm'),'warning'); return; }
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+empId); }catch(err){}
+  var ev=ocsEv(empId, period); if(!ev || !ev.mgr){ showToast(t('上長評価がまだありません','No manager review yet'),'warning'); return; }
+  if(ev.conf && ev.conf.state==='confirmed'){ showToast(t('もう確定しています','Already confirmed'),'info'); ocsRerender(); return; }
+  var probs=[], calc=ocsCalc(ev.meta, ev.mgr.s||{});
+  var noScope=OCS_ITEMS.filter(function(d){ var it=ev.meta.asg[d.c]; return ocsIsTarget(it) && !String(it.scope||'').trim(); }).map(function(d){ return d.c; });
+  if(noScope.length) probs.push(t('担当範囲が未設定の採点対象があります：','Scored items without a scope: ')+noScope.join('・'));
+  if(calc.needCfg.length) probs.push(t('配点がある区分の項目がすべて対象外です。担当範囲・配点の設定を確認してください','A weighted group has only N/A items. Check the scope and weights'));
+  if(calc.counts.uc>0) probs.push(t('未確認の項目が ','There are ')+calc.counts.uc+t(' 件あります。未確認があるうちは正式に確定できません（暫定のまま）',' unconfirmed items. It cannot be confirmed while items are unconfirmed (stays provisional)'));
+  if(calc.total==null && !calc.needCfg.length && !calc.counts.uc) probs.push(t('総合が算出できません','The total cannot be calculated'));
+  var iss=(ev.mgr.issues||[]).filter(function(x){ return x && (x.t||x.c); });
+  if(iss.length<2 || iss.length>3) probs.push(t('次に伸ばす課題を2〜3件入れてください（いま ','Please set 2–3 growth goals (now ')+iss.length+t('件）',')'));
+  if(probs.length){ ocsShowProblems(t('まだ確定できません','Cannot confirm yet'), probs); return; }
+  if(!confirm(t(e.name+' さんの '+ocsPeriodLabel(period)+' の評価を、'+calc.total+'点で確定します。\n確定後の修正は理由と履歴が残ります。よろしいですか？', 'Confirm '+e.name+'\'s evaluation for '+ocsPeriodLabel(period)+' at '+calc.total+'?\nLater revisions keep a reason and history.'))) return;
+  var now=ocsNowIso();
+  ev.conf=ocsStamp({state:'confirmed', by:ocsMe(), at:now, s:ocsCopy(ev.mgr.s||{}), total:calc.total, ver:1}, ev.conf);
+  var ok=ocsPutEv(empId, ev);
+  ocsRerender();
+  ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('評価を確定しました','Evaluation confirmed'));
+}
+async function ocsPromoMark(empId, period, k){
+  var e=ocsEmp(empId); if(!e || !ocsCanConfirm(e)) return;
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+empId); }catch(err){}
+  var ev=ocsEv(empId, period); if(!ev) return;
+  var pr=ocsCopy(ev.promo)||{}, cur=pr[k]||{};
+  var note='';
+  if(!cur.ok){ note=prompt(k==='issues' ? t('確認した未解決課題のメモ（短く・機密の中身は書かない）','Note on the open issues you reviewed (short, no confidential contents)') : t('確認した実技・実績のメモ（短く）','Note on the practice/results you confirmed (short)'), ''); if(note==null) return; note=String(note).trim().slice(0,300);
+    if(ocsSensitiveHit(note)){ showToast(t('メモに番号のようなものがあります','The note looks like it contains an ID number'),'warning'); return; } }
+  pr[k]= cur.ok ? {ok:false, by:ocsMe(), at:ocsNowIso(), note:''} : {ok:true, by:ocsMe(), at:ocsNowIso(), note:note};
+  ev.promo=ocsStamp(pr, ev.promo);
+  var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('昇格候補の確認を保存しました','Saved'));
+}
+async function ocsVoid(empId, period){
+  if(!ocsCanAssign()) return;
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+empId); }catch(err){}
+  var ev=ocsEv(empId, period); if(!ev) return;
+  if(ev.conf && ev.conf.state==='confirmed'){ showToast(t('確定した評価は破棄できません（修正は理由を残して行います）','A confirmed evaluation cannot be discarded'),'warning'); return; }
+  var reason=prompt(t('この期の評価（未確定）を破棄します。記録は残り、画面からは外れます。理由を書いてください','Discard this unconfirmed evaluation? It stays on record but is hidden. Enter a reason'), '');
+  if(reason==null) return; reason=String(reason).trim(); if(!reason){ showToast(t('理由を入れてください','Please enter a reason'),'warning'); return; }
+  ev.void=ocsStamp({by:ocsMe(), at:ocsNowIso(), reason:reason.slice(0,300)}, ev.void);
+  var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('破棄しました','Discarded'));
+}
+async function ocsApplyLatestPlan(empId, period){
+  if(!ocsCanAssign()) return;
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED){ await pullOpKey(OCS_EV_PREFIX+empId); await pullOpKey(OCS_ASG_PREFIX+empId); } }catch(err){}
+  var ev=ocsEv(empId, period), a=ocsAsg(empId); if(!ev || !a) return;
+  if(ev.conf && ev.conf.state==='confirmed'){ showToast(t('確定した評価の条件は変えられません','A confirmed evaluation\'s conditions cannot change'),'warning'); return; }
+  if(a.state!=='active'){ showToast(t('担当設定が有効ではありません','The plan is not active'),'warning'); return; }
+  var reason=prompt(t('この期の評価の条件（担当範囲・配点・Grade）を、今の担当設定に合わせます。結果を見てから都合よく変える使い方はしないでください。理由を書いてください','Apply the current plan (scope, weights, grade) to this evaluation. Do not use this to adjust after seeing results. Enter a reason'), '');
+  if(reason==null) return; reason=String(reason).trim(); if(!reason){ showToast(t('理由を入れてください','Please enter a reason'),'warning'); return; }
+  var before=ocsCalc(ev.meta, (ev.mgr&&ev.mgr.s)||{}).total;
+  var oldRev=ev.meta.asgRev;
+  ev.meta=ocsStamp({grade:a.grade, tpl:a.tpl||OCS_TPL, tplVer:a.tplVer||OCS_TPL_VER, defs:ocsDefsSnap(), asg:ocsCopy(a.items), weights:ocsCopy(a.weights), asgRev:a.rev||0, at:ocsNowIso(), by:ocsMe()}, ev.meta);
+  var after=ocsCalc(ev.meta, (ev.mgr&&ev.mgr.s)||{}).total;
+  ev.revs=(ev.revs||[]).concat([{id:'rv'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), at:ocsNowIso(), by:ocsMe(), what:'plan', reason:reason.slice(0,300), diff:[], from:before, to:after, asgFrom:oldRev, asgTo:a.rev||0, _at:Date.now()}]);
+  var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('評価の条件を最新の担当設定にしました','Applied the latest plan'));
+}
+async function ocsSaveObjection(empId, period, ack){
+  var e=ocsEmp(empId); if(!e || !ocsIsSelf(e) || !ocsLive()) return;
+  var txt=String((document.getElementById('ocs-obj')||{}).value||'').trim().slice(0,2000);
+  if(ocsSensitiveHit(txt)){ showToast(t('番号（SSN・口座など）のようなものがあります。消してから保存してください','It looks like it contains an ID or account number'),'warning'); return; }
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+empId); }catch(err){}
+  var ev=ocsEv(empId, period); if(!ev) return;
+  var s=ocsCopy(ev.self)||{s:{}, ev:{}, by:ocsMe(), at:ocsNowIso(), sub:false};
+  if(txt!==String(s.obj||'')){ s.obj=txt; s.objAt=ocsNowIso(); }
+  if(ack){ s.ack=true; s.ackAt=ocsNowIso(); }
+  ev.self=ocsStamp(s, ev.self);
+  var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, ack?t('確認しました','Acknowledged'):t('補足・異議を保存しました','Notes saved'));
+}
+/* 月次の進捗確認（上長評価の権限を持つ人） */
+function ocsOpenCheck(empId, period){
+  var e=ocsEmp(empId); if(!e || !ocsCanMgr(e)) return;
+  var ev=ocsEv(empId, period); if(!ev || !ev.mgr) return;
+  var iss=(ev.mgr.issues||[]).filter(function(x){ return x && (x.t||x.c); });
+  var ym=bizToday().slice(0,7), prev=(ev.checks||[]).find(function(c){ return c.ym===ym; });
+  var h='<div class="modal-title">'+t('月次の進捗確認','Monthly check')+' · '+ym+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +iss.map(function(x,i){ var d=x.c?ocsItemDef(x.c):null, pv=(prev&&prev.items&&prev.items[i])||{};
+      return '<div style="border-top:1px solid var(--border);padding:7px 0"><div style="font-size:12px;font-weight:700">'+(i+1)+'. '+escapeHtml(x.t||(d?ocsItemName(d):''))+'</div>'
+        +'<div style="display:flex;gap:6px;margin-top:5px"><select class="form-select" id="ocs-ck-st-'+i+'" style="width:110px;padding:5px;font-size:12px">'
+        +[['up',t('前進','Progress')],['same',t('変化なし','No change')],['help',t('要相談','Needs help')]].map(function(o){ return '<option value="'+o[0]+'"'+(pv.st===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('')+'</select>'
+        +'<input class="form-input" id="ocs-ck-n-'+i+'" style="flex:1;padding:5px 8px;font-size:12px" value="'+escapeHtml(pv.note||'')+'" placeholder="'+escapeHtml(t('メモ（短く）','Note (short)'))+'"></div></div>'; }).join('')
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="ocsSaveCheck(\''+ocsQ(empId)+'\',\''+period+'\')"><i class="ti ti-device-floppy"></i> '+t('保存','Save')+'</button></div>';
+  openModal(h);
+}
+async function ocsSaveCheck(empId, period){
+  var e=ocsEmp(empId); if(!e || !ocsCanMgr(e)) return;
+  var ev0=ocsEv(empId, period); if(!ev0 || !ev0.mgr) return;
+  var iss=(ev0.mgr.issues||[]).filter(function(x){ return x && (x.t||x.c); });
+  var items=iss.map(function(x,i){ var d=x.c?ocsItemDef(x.c):null; return {c:x.c||'', t:x.t||(d?d.ja:''), st:((document.getElementById('ocs-ck-st-'+i)||{}).value||'same'), note:String((document.getElementById('ocs-ck-n-'+i)||{}).value||'').trim().slice(0,200)}; });
+  if(items.some(function(x){ return ocsSensitiveHit(x.note); })){ showToast(t('メモに番号のようなものがあります','A note looks like it contains an ID number'),'warning'); return; }
+  closeModalDirect();
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+empId); }catch(err){}
+  var ev=ocsEv(empId, period); if(!ev) return;
+  var ym=bizToday().slice(0,7);
+  var ck={id:'ck'+ym, ym:ym, by:ocsMe(), at:ocsNowIso(), items:items, _at:Date.now()};
+  var prevCk=(ev.checks||[]).find(function(c){ return c.id===ck.id; }); if(prevCk) ck._at=Math.max(ck._at, (Number(prevCk._at)||0)+1);
+  ev.checks=(ev.checks||[]).filter(function(c){ return c.id!==ck.id; }).concat([ck]);
+  var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('月次の確認を保存しました','Monthly check saved'));
+}
+/* 旧方式（lss_emp_）の詳細に出す帯：正式運用後・担当設定が有効な人 */
+function ocsOldBannerHtml(){
+  return '<div style="border:1px solid var(--accent2);border-radius:8px;padding:8px 10px;margin:8px 0;background:rgba(59,130,246,.06);font-size:11.5px;line-height:1.7">'
+    +'<b style="color:var(--accent2)"><i class="ti ti-info-circle"></i> '+t('旧テンプレートの履歴（読み取り専用）','Old template history (read-only)')+'</b><br>'
+    +t('この人はオフィス用 Career Score（'+OCS_TPL+'）で評価しています。ここは旧方式の記録です。点数は新しい35項目に変換していません。','This person is evaluated with the office Career Score ('+OCS_TPL+'). This is the old record. Scores are not converted to the 35 items.')+'</div>';
+}
 function renderLeadership() {
   // 対象＝リーダー以上
-  var leaders = visibleStaffForManager().filter(e=>(isLeaderPlus(e) || gradeNum(empGrade(e))>=2) && e.status!=='退職' && e.role!=='ceo');
+  var leaders = visibleStaffForManager().filter(e=>(isLeaderPlus(e) || gradeNum(empGrade(e))>=2) && e.status!=='退職' && e.role!=='ceo' && lssG4Sees(e));   /* v1051: G4 は G4 以下だけ */
   leaders.sort(function(a,b){ var d=gradeNum(empGrade(a))-gradeNum(empGrade(b)); return d!==0?d:String(a.name).localeCompare(String(b.name)); });
   // 自分がリーダー以上なら自分も含める
   var meName = (ROLE_CONFIG[curRole]||{}).name||curUserName;
@@ -59833,11 +61404,12 @@ function renderLeadership() {
     var _isGmCeo=['ceo','gm'].includes(curRole);
     html += `<div class="phase-tabs" style="margin-bottom:12px;flex-wrap:wrap">
       <button class="phase-tab${lssView==='score'?' active':''}" onclick="setLssView('score')">Career Score</button>
-      <button class="phase-tab${lssView==='scoremgmt'?' active':''}" onclick="setLssView('scoremgmt')">${t('Score管理','Score admin')}</button>
+      <button class="phase-tab${lssView==='scoremgmt'?' active':''}" onclick="setLssView('scoremgmt')">${t('Score管理','Score admin')}</button>${(typeof ocsTabVisible==='function' && ocsTabVisible())?`<button class="phase-tab${lssView==='office'?' active':''}" onclick="window._ocsSel=null;window._ocsEdit=null;window._ocsAsgEdit=null;setLssView('office')">${t('オフィス','Office')}${ocsLive()?'':' <span style="font-size:9px;opacity:.85">'+t('プレビュー','preview')+'</span>'}</button>`:''}
       ${_isGmCeo?`<button class="phase-tab${lssView==='pipeline'?' active':''}" onclick="setLssView('pipeline')">${t('育成パイプライン','Talent pipeline')}</button>
       <button class="phase-tab${lssView==='nominate'?' active':''}" onclick="setLssView('nominate')">${t('育成指名','Nominate')}</button>`:''}
     </div>`;
     if(lssView==='scoremgmt') return html + renderScoreMgmt();
+    if(lssView==='office' && typeof ocsTabVisible==='function' && ocsTabVisible()) return html + renderOfficeCareer();   /* v1050 */
     if(lssView==='pipeline' && _isGmCeo) return html + renderTalentPipeline();
     if(lssView==='nominate' && _isGmCeo) return html + renderDevNominate();
   }
@@ -59848,7 +61420,7 @@ function renderLeadership() {
   // 承認待ち（昇格・Tip申請）
   /* ★v999: kind:'score' は下の行に混ぜない。promo と Tip の2択で書かれていて、
      score を入れると「Tip · Leadership undefined%」になる。 */
-  var pendingReqs = getLssRequests().filter(r=>r.status==='申請中' && r.kind!=='score');
+  var pendingReqs = getLssRequests().filter(r=>r.status==='申請中' && r.kind!=='score' && lssG4SeesName(r.name));   /* v1051 */
   if (pendingReqs.length && ROLE_CONFIG[curRole].canApprove) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>${t('承認待ち','Pending')} (${pendingReqs.length})</div>`;
     pendingReqs.forEach(r=>{
@@ -59897,10 +61469,10 @@ function renderLeadership() {
   });
 
   // 履歴（スコア＋申請承認）
-  var lssHist = ls('lss_history', []);
+  var lssHist = ls('lss_history', []).filter(function(h){ return lssG4SeesName(h && h.name); });   /* v1051: G4 は G4 以下だけ */
   /* ★v998: kind:'score' はここに出さない。下の行は promo と Tip の2択で書かれていて、
      score を混ぜると「Tip申請 undefined%」になる。★v999 で専用の行を足す。 */
-  var reqHist = getLssRequests().filter(r=>r.status!=='申請中' && r.kind!=='score');
+  var reqHist = getLssRequests().filter(r=>r.status!=='申請中' && r.kind!=='score' && lssG4SeesName(r.name));   /* v1051 */
   if (viewOthers && (lssHist.length || reqHist.length)) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>${t('履歴','History')}</div>`;
     reqHist.slice().reverse().slice(0,6).forEach(r=>{
@@ -59953,6 +61525,7 @@ function saveLssRules() {
 async function openLssDetail(name) {
   var realMe = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   if (name !== realMe && !canViewOthersLss()) { showToast('他のスタッフのCareer Scoreは閲覧できません','warning'); return; }
+  if (name !== realMe && !lssG4SeesName(name)) { showToast('G4 が見られるのは G4 以下のスタッフの Career Score です','warning'); return; }   /* v1051 */
   try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(LSS_EMP_PREFIX+name); }catch(e){}
   window._lssName = name;
   window._lssCat = window._lssCat || 'H';
@@ -59990,7 +61563,7 @@ async function openLssDetail(name) {
   }
   var html = `<div class="modal-title">Career Score — ${name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div id="lss-summary"></div>
-    ${lssSetWarnHtml(name)}
+    ${lssSetWarnHtml(name)}${(typeof ocsOldLocked==='function' && ocsOldLocked(name))?ocsOldBannerHtml():''}
     ${lssPendingBannerHtml(name)}
     ${axisBlock}
     ${ojtBlock}
@@ -60193,6 +61766,8 @@ function lssSetScore(id, val) {
   lssUpdateGroupPcts();
 }
 function saveLssScores(name) {
+  /* v1050: オフィス用 Career Score で評価している人の旧方式は読み取り専用（正式運用後） */
+  if (typeof ocsOldLocked==='function' && ocsOldLocked(name)) { showToast(t('この人はオフィス用 Career Score で評価します（旧方式は読み取り専用）','This person is evaluated with the office Career Score (old one is read-only)'),'warning'); return; }
   /* ★v1000: 本人は必ず申請へ。canEditLss は本人を弾くので、先に見る。
      ★この順番が大事。逆にすると自己評価が「権限がありません」で落ちる。 */
   if (lssCanSelfRequest(name)) { submitLssScoreRequest(name); return; }
@@ -61558,6 +63133,7 @@ function renderMypage() {
     <button class="btn btn-secondary btn-sm" onclick="openMyPinModal()"><i class="ti ti-key"></i> ${t('PIN設定','Set PIN')}</button>
   </div>`;
 
+  html += (typeof ocsMyCardHtml==='function') ? ocsMyCardHtml() : '';   /* v1050: オフィス用 Career Score（本人・正式運用後・担当設定が有効なときだけ） */
   if (!isCrewView) {
     // 管理者は従来のPGD中心
     html += renderCompanyMessageCard();
