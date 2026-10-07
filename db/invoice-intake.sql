@@ -308,7 +308,9 @@ insert into public.invoice_settings(key, value) values
  ('mode', jsonb_build_object('intake', false, 'auto_post', false, 'organize', false, 'mirror', false, 'start_at', null, 'pilot_stores', '[]'::jsonb)),
  ('rules', jsonb_build_object('price_jump_pct', 15, 'total_tolerance_cents', 0, 'line_tolerance_cents', 0,
    'currency_when_absent', null, 'discount_allocation', null, 'closed_through', null, 'max_file_mb', 20, 'batch', 5)),
- ('qb', jsonb_build_object('to', 'funergy+expenses@assist.intuit.com', 'since', '2026-09-29', 'route', null, 'enabled', false))
+ ('qb', jsonb_build_object('to', 'funergy+expenses@assist.intuit.com', 'since', '2026-09-29', 'route', null, 'enabled', false)),
+ -- The existing forwarding (run outside this system) reads and records through this key when qb.route = 'external'.
+ ('qb_external', jsonb_build_object('key', replace(gen_random_uuid()::text,'-','')||replace(gen_random_uuid()::text,'-',''), 'enabled', false))
 on conflict (key) do nothing;
 
 -- ---------------------------------------------------------------- helpers
@@ -803,10 +805,10 @@ begin
  select * into f from public.invoice_files where id=(p->>'file_id')::uuid;
  if f.id is null or f.current_sha256 is null then raise exception 'not_found'; end if;
  if f.source <> 'drive' then return jsonb_build_object('queued', false, 'why', 'not_new_intake'); end if;
- if q->>'route' is distinct from 'invoice-intake' then return jsonb_build_object('queued', false, 'why', 'route_not_assigned'); end if;
+ if coalesce(q->>'route','') not in ('invoice-intake','external') then return jsonb_build_object('queued', false, 'why', 'route_not_assigned'); end if;
  if (f.drive_created_at at time zone 'Pacific/Honolulu')::date < (q->>'since')::date then return jsonb_build_object('queued', false, 'why', 'before_since'); end if;
  insert into public.invoice_qb_outbox(file_id, sha256, to_address, route, attempt_key)
- values(f.id, f.current_sha256, q->>'to', 'invoice-intake', 'qb-' || f.current_sha256 || '-' || md5(q->>'to'))
+ values(f.id, f.current_sha256, q->>'to', q->>'route', 'qb-' || f.current_sha256 || '-' || md5(q->>'to'))
  on conflict do nothing returning * into o;
  if o.id is null then return jsonb_build_object('queued', false, 'why', 'already'); end if;
  perform public.invoice_event(null, f.id, 'worker', 'qb_queued', jsonb_build_object('to', q->>'to'));
@@ -819,7 +821,7 @@ declare o public.invoice_qb_outbox;
 begin
  update public.invoice_qb_outbox set state='sending', attempts=attempts+1, reserved_by=p->>'owner', reserved_at=now(), updated_at=now()
  where id=(select id from public.invoice_qb_outbox where state in ('pending','error') and (next_at is null or next_at<=now())
-            and attempts < 5 order by created_at limit 1 for update skip locked)
+            and attempts < 5 and route='invoice-intake' order by created_at limit 1 for update skip locked)
  returning * into o;
  return case when o.id is null then null else to_jsonb(o) end;
 end $$;
@@ -832,6 +834,8 @@ begin
  if s not in ('sent','error','unknown','pending') then raise exception 'bad_state'; end if;
  select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;
  if o.id is null then raise exception 'not_found'; end if;
+ -- The external sender may only report on its own rows, and only after reserving them.
+ if p->>'actor' = 'external' and (o.route <> 'external' or o.state not in ('sending','unknown') or s = 'pending') then raise exception 'invalid_state'; end if;
  if s='pending' then
   -- Only a person who checked the sender's records may re-queue an unknown send.
   if o.state<>'unknown' then raise exception 'invalid_state'; end if;
@@ -913,7 +917,8 @@ begin
  return jsonb_build_object(
   'last_ok', (select max(finished_at) from public.invoice_runs where kind='intake' and ok),
   'last_run', (select to_jsonb(r) from public.invoice_runs r where kind='intake' order by id desc limit 1),
-  'stores', (select coalesce(jsonb_agg(jsonb_build_object('store_id', s.store_id, 'active', s.active, 'auto_post', s.auto_post,
+  'stores', (select coalesce(jsonb_agg(jsonb_build_object('store_id', s.store_id, 'label', s.label, 'active', s.active, 'auto_post', s.auto_post,
+     'root_folder_id', s.root_folder_id, 'upload_folder_id', s.upload_folder_id, 'aliases', s.aliases, 'reviewer', s.reviewer,
      'last_ok', (select max(finished_at) from public.invoice_runs r where r.kind='scan' and r.store_id=s.store_id and r.ok),
      'last_error', (select error from public.invoice_runs r where r.kind='scan' and r.store_id=s.store_id order by id desc limit 1))), '[]')
      from public.invoice_stores s),
@@ -928,6 +933,9 @@ begin
   'qb', (select coalesce(jsonb_object_agg(state, n), '{}') from (select state, count(*) n from public.invoice_qb_outbox group by state) q),
   'drive', public.invoice_setting('drive_conn'),
   'mode', public.invoice_setting('mode'),
+  'rules', public.invoice_setting('rules'),
+  'qb_settings', public.invoice_setting('qb'),
+  'qb_external_enabled', coalesce((public.invoice_setting('qb_external')->>'enabled')::boolean, false),
   'oldest_pending', (select min(ingested_at) from public.invoice_files where intake_status in ('pending','processing','error')));
 end $$;
 
@@ -943,7 +951,8 @@ language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; k text := p->>'key'; v jsonb := p->'value'; cur jsonb;
 begin
  perform public.invoice_require(actor, array['ceo','gm']);
- if k not in ('mode','rules','qb') then raise exception 'bad_key'; end if;
+ if k not in ('mode','rules','qb','qb_external') then raise exception 'bad_key'; end if;
+ if k = 'qb_external' and (select count(*) from jsonb_object_keys(v) x where x <> 'enabled') > 0 then raise exception 'field_not_editable'; end if;
  cur := public.invoice_setting(k);
  if k='rules' then
   if (v ? 'price_jump_pct') and not ((v->>'price_jump_pct')::numeric between 1 and 100) then raise exception 'bad_value'; end if;
@@ -954,8 +963,9 @@ begin
  if k='qb' and (v ? 'to') then raise exception 'field_not_editable'; end if;
  insert into public.invoice_settings(key, value, updated_by) values(k, cur || v, actor::text)
  on conflict(key) do update set value=excluded.value, updated_at=now(), updated_by=excluded.updated_by;
- perform public.invoice_event(null, null, actor::text, 'settings_'||k, jsonb_build_object('old', cur, 'new', cur || v));
- return public.invoice_setting(k);
+ -- Keys (qb_external) are never written to the history or returned to a screen.
+ perform public.invoice_event(null, null, actor::text, 'settings_'||k, jsonb_build_object('old', cur - 'key', 'new', (cur || v) - 'key'));
+ return public.invoice_setting(k) - 'key';
 end $$;
 
 create function public.invoice_store_save(p jsonb) returns jsonb
@@ -1332,6 +1342,108 @@ begin
   'vendor_unmatched', (select coalesce(jsonb_agg(distinct x->>'vendor'), '[]') from jsonb_array_elements(rows) x where x->>'vendor_key' is null));
 end $$;
 
+-- Drive credentials already saved by drive-sync (service role only). Never returned to a browser.
+create function public.invoice_drive_credentials(p jsonb) returns jsonb
+language plpgsql stable security invoker set search_path=public,pg_temp as $$
+declare r jsonb;
+begin
+ if to_regclass('public.drive_oauth') is null then return null; end if;
+ execute 'select jsonb_build_object(''client_id'', client_id, ''client_secret'', client_secret, ''refresh_token'', refresh_token) from public.drive_oauth where id=1' into r;
+ return r;
+end $$;
+
+-- QuickBooks forwarding done outside this system (qb.route = 'external') uses the same ledger:
+-- it lists what to send, reserves one row, and records the result. Nothing is sent from here.
+create function public.invoice_qb_external_key(p jsonb) returns jsonb
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select jsonb_build_object('key', value->>'key', 'enabled', coalesce((value->>'enabled')::boolean,false)) from public.invoice_settings where key='qb_external';
+$$;
+
+create function public.invoice_qb_external_list(p jsonb) returns jsonb
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select coalesce(jsonb_agg(to_jsonb(x) order by x.created_at), '[]') from (
+  select o.id, o.state, o.attempt_key, o.sha256, o.to_address, o.attempts, o.created_at, f.drive_file_id, f.current_name, f.mime_type, f.store_id, f.drive_created_at
+  from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
+  where o.route='external' and o.state in ('pending','error') and (o.next_at is null or o.next_at<=now()) and o.attempts < 5
+  order by o.created_at limit least(coalesce((p->>'limit')::int,20),100)) x;
+$$;
+
+create function public.invoice_qb_external_reserve(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare o public.invoice_qb_outbox;
+begin
+ update public.invoice_qb_outbox set state='sending', attempts=attempts+1, reserved_by='external', reserved_at=now(), updated_at=now()
+ where id=(p->>'id')::uuid and route='external' and state in ('pending','error') and (next_at is null or next_at<=now())
+ returning * into o;
+ if o.id is null then raise exception 'invalid_state'; end if;
+ perform public.invoice_event(null, o.file_id, 'external', 'qb_reserved', '{}');
+ return to_jsonb(o);
+end $$;
+
+-- 00_Upload of a store: found by name under the store folder, created only on request.
+create function public.invoice_store_folder(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid;
+begin
+ perform public.invoice_require(actor, array['ceo','gm']);
+ update public.invoice_stores set upload_folder_id=p->>'upload_folder_id', updated_at=now(), updated_by=actor::text
+ where store_id=p->>'store_id' and root_folder_id is not null;
+ if not found then raise exception 'not_found'; end if;
+ perform public.invoice_event(null, null, actor::text, 'upload_folder_set', jsonb_build_object('store', p->>'store_id', 'folder', p->>'upload_folder_id'));
+ return (select to_jsonb(x) from public.invoice_stores x where store_id=p->>'store_id');
+end $$;
+
+-- Purchase price history of one product, with the original and the page of each line.
+create function public.invoice_price_history_list(p jsonb) returns jsonb
+language plpgsql stable security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid;
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ return (select coalesce(jsonb_agg(to_jsonb(x) order by x.effective_date desc, x.id desc), '[]') from (
+  select h.id, h.store_id, h.vendor_key, d.vendor_name, h.ingredient_code, h.spec_key, h.purchase_unit, h.effective_date, h.effective_basis, h.invoice_date,
+   d.invoice_no, h.price_per_purchase::text price_per_purchase, h.price_per_count::text price_per_count, h.count_unit,
+   h.price_per_base::text price_per_base, h.base_unit, h.status, h.created_by, h.doc_id, l.page, f.drive_file_id, d.posted_mode
+  from public.invoice_price_history h join public.invoice_docs d on d.id=h.doc_id join public.invoice_lines l on l.id=h.line_id
+  join public.invoice_files f on f.id=d.file_id
+  where h.ingredient_code=p->>'code' and (coalesce((p->>'include_voided')::boolean,false) or h.status='active')
+   and (jsonb_typeof(p->'stores') is distinct from 'array' or h.store_id in (select jsonb_array_elements_text(case when jsonb_typeof(p->'stores')='array' then p->'stores' else '[]'::jsonb end)))
+  order by h.effective_date desc, h.id desc limit 200) x);
+end $$;
+
+-- What the settings and review screens need to show (no keys).
+create function public.invoice_config(p jsonb) returns jsonb
+language plpgsql stable security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid; rl text;
+begin
+ rl := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ return jsonb_build_object('role', rl,
+  'stores', (select coalesce(jsonb_agg(to_jsonb(s) order by s.store_id), '[]') from public.invoice_stores s),
+  'vendors', (select coalesce(jsonb_agg(to_jsonb(v) order by v.display_name), '[]') from public.invoice_vendor_rules v),
+  'maps', (select coalesce(jsonb_agg(to_jsonb(m) order by m.vendor_key, m.vendor_item_code nulls last, m.alias_key), '[]')
+           from (select * from public.invoice_item_maps order by verified, updated_at desc limit 5000) m),
+  'settings', jsonb_build_object('mode', public.invoice_setting('mode'), 'rules', public.invoice_setting('rules'), 'qb', public.invoice_setting('qb'),
+   'qb_external_enabled', coalesce((public.invoice_setting('qb_external')->>'enabled')::boolean, false)));
+end $$;
+
+-- Files that need a person (read errors, unsupported files, filing errors, originals gone) and forwarding rows to check.
+create function public.invoice_problems(p jsonb) returns jsonb
+language plpgsql stable security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid;
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ return jsonb_build_object(
+  'files', (select coalesce(jsonb_agg(to_jsonb(x) order by x.updated_at desc), '[]') from (
+    select f.id, f.store_id, f.current_name, f.mime_type, f.drive_file_id, f.intake_status, f.last_error, f.organize_status, f.organize_error,
+     f.organize_attempts, f.drive_state, f.updated_at
+    from public.invoice_files f
+    where f.intake_status in ('error','unsupported') or f.organize_status='error' or f.drive_state<>'ok'
+    order by f.updated_at desc limit 100) x),
+  'qb', (select coalesce(jsonb_agg(to_jsonb(x) order by x.updated_at desc), '[]') from (
+    select o.id, o.state, o.route, o.attempts, o.last_error, o.updated_at, o.created_at, f.store_id, f.current_name, f.drive_file_id
+    from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
+    where o.state in ('unknown','error') order by o.updated_at desc limit 50) x));
+end $$;
+
 do $$ declare f text; begin
  foreach f in array array['invoice_actor_role(uuid)','invoice_require(uuid,text[])','invoice_setting(text)','invoice_event(uuid,uuid,text,text,jsonb)',
   'invoice_lease(jsonb)','invoice_file_seen(jsonb)','invoice_file_claim(jsonb)','invoice_file_fail(jsonb)','invoice_file_version(jsonb)',
@@ -1343,7 +1455,9 @@ do $$ declare f text; begin
   'invoice_worker_context(jsonb)','invoice_files_due(jsonb)','invoice_app_records(jsonb)','invoice_folder(jsonb)','invoice_organize_request(jsonb)',
   'invoice_organize_due(jsonb)','invoice_integrity_due(jsonb)','invoice_file_content_changed(jsonb)','invoice_file_retry(jsonb)','invoice_drive_conn(jsonb)',
   'invoice_qb_sweep(jsonb)','invoice_qb_candidates(jsonb)','invoice_file_brief(jsonb)','invoice_mirror_due(jsonb)',
-  'invoice_backfill_register(jsonb)','invoice_app_drive_ids(jsonb)','invoice_registered(jsonb)','invoice_reassign(jsonb)','invoice_vendor_seed(jsonb)','invoice_map_seed(jsonb)'] loop
+  'invoice_backfill_register(jsonb)','invoice_app_drive_ids(jsonb)','invoice_registered(jsonb)','invoice_reassign(jsonb)','invoice_vendor_seed(jsonb)','invoice_map_seed(jsonb)','invoice_drive_credentials(jsonb)','invoice_qb_external_key(jsonb)',
+  'invoice_qb_external_list(jsonb)','invoice_qb_external_reserve(jsonb)','invoice_store_folder(jsonb)','invoice_price_history_list(jsonb)',
+  'invoice_config(jsonb)','invoice_problems(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

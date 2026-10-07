@@ -10,6 +10,14 @@ import { createDrive, googleAccessToken, viewUrl, folderUrl } from '../../../inv
 
 const SUPPORTED = { 'application/pdf': true, 'image/jpeg': true, 'image/png': true };
 const READ = ['ceo', 'gm', 'office', 'office_crew'];
+const QB_ROUTES = ['invoice-intake', 'external'];
+
+// Constant-time comparison of a presented key with the stored one.
+function keyMatches(given, stored) {
+  if (!stored || !stored.key || !stored.enabled || typeof given !== 'string' || given.length !== stored.key.length) return false;
+  let diff = 0; for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ stored.key.charCodeAt(i);
+  return diff === 0;
+}
 
 export function postgrestDb({ fetch, url, key }) {
   const h = { apikey: key, authorization: 'Bearer ' + key, 'content-type': 'application/json' };
@@ -45,8 +53,18 @@ export function createHandler(deps) {
   const fetch = deps.fetch || globalThis.fetch.bind(globalThis);
   const url = env('SUPABASE_URL'), service = env('SUPABASE_SERVICE_ROLE_KEY'), anon = env('SUPABASE_ANON_KEY');
   const db = deps.db || postgrestDb({ fetch, url, key: service });
-  const drive = deps.drive || createDrive({ fetch, getToken: () => googleAccessToken({ fetch,
-    clientId: env('GOOGLE_OAUTH_CLIENT_ID'), clientSecret: env('GOOGLE_OAUTH_CLIENT_SECRET'), refreshToken: env('GOOGLE_OAUTH_REFRESH_TOKEN') }) });
+  // Drive access: the function's own secrets when set, otherwise the connection drive-sync already saved
+  // (public.drive_oauth, read with the service role only). Nothing here reaches a browser or a log.
+  async function driveToken() {
+    let c = { clientId: env('GOOGLE_OAUTH_CLIENT_ID'), clientSecret: env('GOOGLE_OAUTH_CLIENT_SECRET'), refreshToken: env('GOOGLE_OAUTH_REFRESH_TOKEN') };
+    if (!c.clientId || !c.clientSecret || !c.refreshToken) {
+      let saved = null;
+      try { saved = await db.rpc('invoice_drive_credentials', {}); } catch { saved = null; }
+      c = saved ? { clientId: saved.client_id, clientSecret: saved.client_secret, refreshToken: saved.refresh_token } : {};
+    }
+    return googleAccessToken({ fetch, ...c });
+  }
+  const drive = deps.drive || createDrive({ fetch, getToken: driveToken });
   const ai = deps.ai || (parts => callModel({ fetch, apiKey: env('ANTHROPIC_API_KEY'), model: env('INVOICE_AI_MODEL') || 'claude-sonnet-4-6', parts }));
   const mailer = deps.mailer || null;
   const now = deps.now || (() => Date.now());
@@ -205,14 +223,16 @@ export function createHandler(deps) {
     }
   }
 
+  // One ledger for every original, whoever sends it. With route 'external' the existing forwarder
+  // reads and records through the qb_external_* actions and nothing is sent from here.
   async function qbStep(ctx, owner, stats) {
-    if (!ctx.qb.enabled || ctx.qb.route !== 'invoice-intake') return;
+    if (!ctx.qb.enabled || !QB_ROUTES.includes(ctx.qb.route)) return;
     await db.rpc('invoice_qb_sweep', {});
     for (const c of await db.rpc('invoice_qb_candidates', { limit: 20 })) {
       const r = await db.rpc('invoice_qb_enqueue', { file_id: c.file_id });
       if (r.queued) stats.qb_queued = (stats.qb_queued || 0) + 1;
     }
-    if (!mailer) return;   // no sending route connected
+    if (ctx.qb.route !== 'invoice-intake' || !mailer) return;   // sending is done by the assigned route only
     for (let i = 0; i < 3; i++) {
       const o = await db.rpc('invoice_qb_reserve', { owner });
       if (!o) break;
@@ -295,7 +315,7 @@ export function createHandler(deps) {
         await processFile(f, ctx, owner, stats);
       }
       if (ctx.mode.organize) for (const o of await db.rpc('invoice_organize_due', { limit: 10 })) { if (now() - t0 > budget * 1.3) break; await organizeOne(o, ctx, stats); }
-      await qbStep(ctx, owner, stats);
+      try { await qbStep(ctx, owner, stats); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }
       await mirrorStep(ctx, stats);
       await integrityStep(ctx, stats);
       await db.rpc('invoice_run_log', { kind: 'intake', started_at: started, ok: true, stats });
@@ -402,6 +422,51 @@ export function createHandler(deps) {
     return { stores: out };
   }
 
+  // 00_Upload of each store: found by name inside the store folder. Without apply it only reports;
+  // with apply it records a single match or creates the folder when there is none. A different folder
+  // already recorded, or two folders with the same name, are reported and never chosen silently.
+  async function folderSetup(actor, b) {
+    const who = await db.rpc('invoice_whoami', { actor });
+    if (!['ceo', 'gm'].includes(who.role)) throw new Error('forbidden');
+    const apply = b.apply === true;
+    const ctx = await context();
+    const out = [];
+    for (const s of ctx.all_stores) {
+      if (b.store_id && s.store_id !== b.store_id) continue;
+      const row = { store_id: s.store_id, label: s.label, root: null, upload: null, action: 'none', problems: [] };
+      out.push(row);
+      if (!s.root_folder_id) { row.problems.push('root_not_set'); continue; }
+      const g = await drive.get(s.root_folder_id);
+      if (g.status !== 200 || g.file.trashed) { row.problems.push('root_unreachable_' + (g.status === 200 ? 'trashed' : g.status)); continue; }
+      if (g.file.mimeType !== 'application/vnd.google-apps.folder') { row.problems.push('root_not_a_folder'); continue; }
+      row.root = { id: s.root_folder_id, name: g.file.name, url: folderUrl(s.root_folder_id) };
+      const found = await drive.findFolders(s.root_folder_id, FOLDER.upload);
+      if (found.length > 1) { row.problems.push('duplicate_upload_folders'); row.candidates = found.map(f => ({ id: f.id, url: folderUrl(f.id) })); continue; }
+      if (found.length === 1) {
+        row.upload = { id: found[0].id, url: folderUrl(found[0].id) };
+        if (s.upload_folder_id === found[0].id) { row.action = 'ok'; continue; }
+        if (s.upload_folder_id) { row.problems.push('different_upload_folder_recorded'); continue; }
+        row.action = apply ? 'recorded' : 'will_record';
+        if (apply) await db.rpc('invoice_store_folder', { actor, store_id: s.store_id, upload_folder_id: found[0].id });
+        continue;
+      }
+      if (s.upload_folder_id) { row.problems.push('recorded_upload_not_inside_store_folder'); continue; }
+      row.action = apply ? 'created' : 'will_create';
+      if (apply) {
+        const c = await drive.createFolder(s.root_folder_id, FOLDER.upload);
+        await db.rpc('invoice_store_folder', { actor, store_id: s.store_id, upload_folder_id: c.id });
+        row.upload = { id: c.id, url: folderUrl(c.id) };
+      }
+    }
+    return { apply, stores: out };
+  }
+
+  async function priceHistory(actor, b) {
+    if (!b.code || typeof b.code !== 'string') throw new Error('bad_value');
+    const rows = await db.rpc('invoice_price_history_list', { actor, code: b.code, stores: Array.isArray(b.stores) ? b.stores : null, include_voided: b.include_voided === true });
+    return { rows: rows.map(r => ({ ...r, original_url: viewUrl(r.drive_file_id) })) };
+  }
+
   // Past originals: a separate mode. Dry run first; registration never reads, posts or forwards.
   async function backfill(actor, b) {
     const who = await db.rpc('invoice_whoami', { actor });
@@ -433,6 +498,9 @@ export function createHandler(deps) {
     list: (a, b) => db.rpc('invoice_list', { ...b, actor: a }).then(r => ({ ...r, rows: r.rows.map(x => ({ ...x, original_url: viewUrl(x.drive_file_id) })) })),
     get: (a, b) => db.rpc('invoice_get', { actor: a, doc_id: b.doc_id }).then(r => ({ ...r, original_url: r.file ? viewUrl(r.file.drive_file_id) : null })),
     health: a => db.rpc('invoice_health', { actor: a }),
+    config: a => db.rpc('invoice_config', { actor: a }),
+    problems: a => db.rpc('invoice_problems', { actor: a }).then(r => ({ files: r.files.map(f => ({ ...f, original_url: viewUrl(f.drive_file_id) })),
+      qb: r.qb.map(o => ({ ...o, original_url: viewUrl(o.drive_file_id) })) })),
     edit,
     post: async (a, b) => {
       const r = await db.rpc('invoice_post', { actor: a, doc_id: b.doc_id, version: b.version, reason: b.reason || '', ack: b.ack || [], adjustment_ack: !!b.adjustment_ack, supersedes: b.supersedes || null });
@@ -452,6 +520,8 @@ export function createHandler(deps) {
     store_save: (a, b) => db.rpc('invoice_store_save', { actor: a, store: b.store }),
     settings_save: (a, b) => db.rpc('invoice_settings_save', { actor: a, key: b.key, value: b.value }),
     folder_plan: folderPlan,
+    folder_setup: folderSetup,
+    price_history: priceHistory,
     vendor_seed: (a, b) => db.rpc('invoice_vendor_seed', { actor: a, apply: b.apply === true }),
     map_seed: (a, b) => db.rpc('invoice_map_seed', { actor: a, store_id: b.store_id || null, apply: b.apply === true, only_ext: b.only_ext !== false }),
   };
@@ -459,6 +529,19 @@ export function createHandler(deps) {
     reason_required: 400, note_required: 400, field_not_editable: 400, bad_value: 400, bad_key: 400, bad_result: 400, bad_relation: 400, bad_action: 400,
     bad_state: 400, bad_target: 400, duplicate_of_required: 400, relation_required: 409, auto_off: 409, not_eligible: 409, bad_supersede: 409,
     not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409 };
+
+  // The forwarder that runs outside this system (qb.route = 'external'). It presents its own key and can only
+  // list what is due, reserve one row, and record what happened to that row.
+  const EXTERNAL = {
+    qb_external_list: async b => ({ rows: (await db.rpc('invoice_qb_external_list', { limit: Math.max(1, Math.min(100, Number(b.limit) || 20)) }))
+      .map(r => ({ ...r, original_url: viewUrl(r.drive_file_id) })) }),
+    qb_external_reserve: b => db.rpc('invoice_qb_external_reserve', { id: b.id }),
+    qb_external_result: b => {
+      if (!['sent', 'error', 'unknown'].includes(b.state)) throw new Error('bad_state');
+      return db.rpc('invoice_qb_result', { actor: 'external', id: b.id, state: b.state, message_id: b.message_id ? String(b.message_id).slice(0, 300) : null,
+        error: b.error ? String(b.error).slice(0, 300) : null, result: { reported_by: 'external', note: b.note ? String(b.note).slice(0, 300) : null } });
+    },
+  };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
@@ -471,12 +554,12 @@ export function createHandler(deps) {
     try { const t = await req.text(); if (t.length > 200000) return json({ error: 'too_large' }, 413); body = JSON.parse(t || '{}'); } catch { return json({ error: 'bad_json' }, 400); }
     try {
       if (body.action === 'worker') {
-        const key = req.headers.get('x-invoice-worker-key') || '';
-        const w = await db.rpc('invoice_worker_key', {});
-        if (!w || !w.key || key.length !== w.key.length || !w.enabled) return json({ error: 'unauthorized' }, 401);
-        let diff = 0; for (let i = 0; i < key.length; i++) diff |= key.charCodeAt(i) ^ w.key.charCodeAt(i);
-        if (diff) return json({ error: 'unauthorized' }, 401);
+        if (!keyMatches(req.headers.get('x-invoice-worker-key') || '', await db.rpc('invoice_worker_key', {}))) return json({ error: 'unauthorized' }, 401);
         return json(await runWorker(body));
+      }
+      if (EXTERNAL[body.action]) {
+        if (!keyMatches(req.headers.get('x-invoice-qb-key') || '', await db.rpc('invoice_qb_external_key', {}))) return json({ error: 'unauthorized' }, 401);
+        return json(await EXTERNAL[body.action](body));
       }
       const fn = ACTIONS[body.action];
       if (!fn) return json({ error: 'unknown_action' }, 400);
