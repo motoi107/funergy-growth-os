@@ -63,6 +63,7 @@ create table public.invoice_files(
  organize_error text,
  organize_next_at timestamptz,
  drive_state text not null default 'ok' check (drive_state in ('ok','missing','trashed','permission_lost','moved_store')),
+ store_assigned_by text,         -- set when a person assigned the store (the file may still sit in another store's folder)
  drive_checked_at timestamptz,
  lease_owner text,
  lease_until timestamptz,
@@ -148,7 +149,7 @@ create table public.invoice_docs(
 -- A posted purchase can exist once per store, vendor, type and number, and once per content hash.
 create unique index invoice_docs_posted_number on public.invoice_docs(store_id, vendor_key, doc_type, invoice_no_norm)
  where status='posted' and invoice_no_norm is not null;
-create unique index invoice_docs_posted_sha on public.invoice_docs(sha256) where status='posted' and posting_kind='purchase';
+create unique index invoice_docs_posted_sha on public.invoice_docs(sha256, doc_index) where status='posted' and posting_kind='purchase';
 create index invoice_docs_lookup on public.invoice_docs(vendor_key, invoice_no_norm);
 create index invoice_docs_date on public.invoice_docs(store_id, invoice_date);
 
@@ -374,7 +375,7 @@ begin
   perform public.invoice_event(null, f.id, 'worker', 'file_seen', jsonb_build_object('name', f.original_name, 'store', s.store_id));
   return jsonb_build_object('file_id', f.id, 'action', 'new', 'status', f.intake_status);
  end if;
- if f.store_id <> s.store_id then
+ if f.store_id <> s.store_id and f.store_assigned_by is null then
   -- Moved into another store's folder: never reassign. Flag it for a person.
   update public.invoice_files set drive_state='moved_store', updated_at=now() where id=f.id;
   perform public.invoice_event(null, f.id, 'worker', 'moved_between_stores', jsonb_build_object('from', f.store_id, 'to', s.store_id));
@@ -449,7 +450,7 @@ end $$;
 create function public.invoice_dup_scope(p jsonb) returns jsonb
 language sql stable security invoker set search_path=public,pg_temp as $$
  select coalesce(jsonb_agg(jsonb_build_object('id',d.id,'file_id',d.file_id,'status',d.status,'store_id',d.store_id,'vendor_key',d.vendor_key,
-  'invoice_no_norm',d.invoice_no_norm,'invoice_date',d.invoice_date,'total_cents',d.total_cents,'content_sig',d.content_sig,'sha256',d.sha256)), '[]')
+  'invoice_no_norm',d.invoice_no_norm,'invoice_date',d.invoice_date,'total_cents',d.total_cents,'content_sig',d.content_sig,'sha256',d.sha256,'duplicate_of',d.duplicate_of)), '[]')
  from public.invoice_docs d
  where d.status in ('review','posted','duplicate')
   and (d.sha256=p->>'sha256'
@@ -466,7 +467,7 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   where h.status='active' and h.store_id=p->>'store_id' and h.vendor_key=p->>'vendor_key' and h.ingredient_code=p->>'ingredient_code'
    and h.spec_key=coalesce(p->>'spec_key','') and h.purchase_unit=coalesce(p->>'purchase_unit','')
    and h.effective_date < (p->>'before')::date
-  order by h.effective_date desc, h.invoice_date desc nulls last, h.invoice_no_norm desc nulls last, h.id desc limit 1) x;
+  order by h.effective_date desc, h.invoice_date desc nulls last, lpad(h.invoice_no_norm, 40, '0') desc nulls last, h.id desc limit 1) x;
 $$;
 
 create function public.invoice_stage(p jsonb) returns jsonb
@@ -521,7 +522,7 @@ begin
  from public.invoice_docs where file_id=f and sha256=(select current_sha256 from public.invoice_files where id=f);
  if p ? 'status' then st := p->>'status'; end if;
  update public.invoice_files set intake_status=coalesce(st,'review'), lease_owner=null, lease_until=null, last_error=null, next_attempt_at=null, updated_at=now()
- where id=f and (lease_owner=p->>'owner' or p->>'owner' is null);
+ where id=f and (lease_owner=p->>'owner' or (p->>'owner' is null and intake_status not in ('pending','processing')));
  return jsonb_build_object('status', st);
 end $$;
 
@@ -534,9 +535,9 @@ begin
  select * into d from public.invoice_docs where id=p_doc;
  select * into l from public.invoice_lines where id=p_line and doc_id=p_doc;
  if d.doc_type<>'invoice' or l.id is null or l.ingredient_code is null or l.price_per_purchase is null or d.effective_date is null then return false; end if;
- select * into im from public.invoice_item_maps where id=l.map_id and verified;
+ select * into im from public.invoice_item_maps where id=l.map_id and verified and vendor_key=d.vendor_key and (store_id is null or store_id=d.store_id);
  if im.id is null or im.ingredient_code<>l.ingredient_code then return false; end if;
- if l.reasons ?| array['catch_weight','line_math','zero_price','negative_line','line_value_missing','unit_mismatch','unit_unverified','spec_changed','map_ambiguous'] then return false; end if;
+ if l.reasons ?| array['catch_weight','line_math','zero_price','negative_line','line_value_missing','unit_mismatch','unit_unverified','spec_changed','map_ambiguous','unmapped'] then return false; end if;
  insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, spec_key, purchase_unit, doc_id, line_id, effective_date,
   effective_basis, invoice_date, invoice_no_norm, price_per_purchase, price_per_count, count_unit, price_per_base, base_unit, conversion, created_by, reason)
  values(d.store_id, d.vendor_key, l.ingredient_code, coalesce(nullif(im.spec_key,''), l.spec_key, ''), coalesce(nullif(im.purchase_unit,''), l.purchase_unit, ''),
@@ -591,7 +592,10 @@ begin
  if nullif(p->>'supersedes','') is not null then
   select * into old from public.invoice_docs where id=(p->>'supersedes')::uuid for update;
   if old.id is null or old.status<>'posted' or old.store_id<>d.store_id or old.vendor_key is distinct from d.vendor_key then raise exception 'bad_supersede'; end if;
-  if closed is not null and to_char(old.invoice_date,'YYYY-MM') <= closed and not coalesce((p->>'adjustment_ack')::boolean,false) then raise exception 'closed_month'; end if;
+  if closed is not null and to_char(old.invoice_date,'YYYY-MM') <= closed then
+   if not coalesce((p->>'adjustment_ack')::boolean,false) then raise exception 'closed_month'; end if;
+   update public.invoice_docs set needs_adjustment=true where id=old.id;
+  end if;
   update public.invoice_price_history set status='voided', voided_by=who, voided_at=now(), void_reason='superseded' where doc_id=old.id and status='active';
   update public.invoice_docs set status='superseded', version=version+1, updated_at=now() where id=old.id;
   update public.invoice_docs set related_doc_id=old.id, relation='correction_of' where id=d.id;
@@ -643,8 +647,8 @@ begin
  update public.invoice_docs x set
   vendor_key=coalesce(p->'header'->>'vendor_key', x.vendor_key), vendor_name=coalesce(p->'header'->>'vendor_name', x.vendor_name),
   invoice_no=coalesce(p->'header'->>'invoice_no', x.invoice_no), invoice_no_norm=coalesce(p->'header'->>'invoice_no_norm', x.invoice_no_norm),
-  invoice_date=coalesce((p->'header'->>'invoice_date')::date, x.invoice_date), delivery_date=coalesce((p->'header'->>'delivery_date')::date, x.delivery_date),
-  due_date=coalesce((p->'header'->>'due_date')::date, x.due_date), doc_type=coalesce(p->'header'->>'doc_type', x.doc_type),
+  invoice_date=coalesce((p->'header'->>'invoice_date')::date, x.invoice_date), delivery_date=case when p->'header' ? 'delivery_date' then (p->'header'->>'delivery_date')::date else x.delivery_date end,
+  due_date=case when p->'header' ? 'due_date' then (p->'header'->>'due_date')::date else x.due_date end, doc_type=coalesce(p->'header'->>'doc_type', x.doc_type),
   posting_kind=coalesce(p->'header'->>'posting_kind', x.posting_kind), currency=coalesce(p->'header'->>'currency', x.currency),
   subtotal_cents=coalesce((p->'header'->>'subtotal_cents')::bigint, x.subtotal_cents), discount_cents=coalesce((p->'header'->>'discount_cents')::bigint, x.discount_cents),
   tax_cents=coalesce((p->'header'->>'tax_cents')::bigint, x.tax_cents), shipping_cents=coalesce((p->'header'->>'shipping_cents')::bigint, x.shipping_cents),
@@ -755,6 +759,9 @@ begin
  if r = 'reconciled' then
   update public.invoice_files set organize_target='reconciled', organize_status='pending', organize_attempts=0, organize_error=null, organize_next_at=null
   where id=d.file_id;
+ else
+  update public.invoice_files set organize_target='unreconciled', organize_status='pending', organize_attempts=0, organize_error=null, organize_next_at=null
+  where id=d.file_id and organize_target='reconciled';
  end if;
  perform public.invoice_event(d.id, d.file_id, actor::text, 'reconcile_'||r, jsonb_build_object('note', p->>'note', 'diff', p->'diff'));
  return jsonb_build_object('ok', true, 'version', d.version + 1);
@@ -834,6 +841,11 @@ begin
  if s not in ('sent','error','unknown','pending') then raise exception 'bad_state'; end if;
  select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;
  if o.id is null then raise exception 'not_found'; end if;
+ -- A person (accounting, GM, CEO) may only settle an unknown result after checking the sender's records.
+ if nullif(p->>'actor','') is not null and p->>'actor' <> 'external' then
+  perform public.invoice_require((p->>'actor')::uuid, array['ceo','gm','office']);
+  if o.state <> 'unknown' or s not in ('sent','pending') then raise exception 'invalid_state'; end if;
+ end if;
  -- The external sender may only report on its own rows, and only after reserving them.
  if p->>'actor' = 'external' and (o.route <> 'external' or o.state not in ('sending','unknown') or s = 'pending') then raise exception 'invalid_state'; end if;
  if s='pending' then
@@ -909,7 +921,7 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   where h.status='active' and (jsonb_typeof(p->'stores') is distinct from 'array' or h.store_id in (select jsonb_array_elements_text(case when jsonb_typeof(p->'stores')='array' then p->'stores' else '[]'::jsonb end)))
    and (jsonb_typeof(p->'codes') is distinct from 'array' or h.ingredient_code in (select jsonb_array_elements_text(case when jsonb_typeof(p->'codes')='array' then p->'codes' else '[]'::jsonb end)))
   order by h.store_id, h.vendor_key, h.ingredient_code, h.spec_key, h.purchase_unit,
-   h.effective_date desc, h.invoice_date desc nulls last, h.invoice_no_norm desc nulls last, h.id desc) x;
+   h.effective_date desc, h.invoice_date desc nulls last, lpad(h.invoice_no_norm, 40, '0') desc nulls last, h.id desc) x;
 $$;
 
 create function public.invoice_health(p jsonb) returns jsonb
@@ -980,6 +992,7 @@ language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; s jsonb := p->'store';
 begin
  perform public.invoice_require(actor, array['ceo','gm']);
+ if coalesce(s->>'store_id','') !~ '^[A-Za-z0-9_-]{1,24}$' then raise exception 'bad_value'; end if;
  insert into public.invoice_stores(store_id, label, root_folder_id, upload_folder_id, active, auto_post, aliases, address_group, reviewer, updated_by)
  values(s->>'store_id', s->>'label', s->>'root_folder_id', s->>'upload_folder_id', coalesce((s->>'active')::boolean,false),
   coalesce((s->>'auto_post')::boolean,false), coalesce(array(select jsonb_array_elements_text(s->'aliases')),'{}'), s->>'address_group', s->>'reviewer', actor::text)
@@ -995,7 +1008,9 @@ language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; v jsonb := p->'vendor';
 begin
  perform public.invoice_require(actor, array['ceo','gm','office']);
- if coalesce((v->>'auto_post')::boolean,false) and public.invoice_actor_role(actor) not in ('ceo','gm') then raise exception 'forbidden'; end if;
+ if coalesce(v->>'vendor_key','') !~ '^[A-Za-z0-9_.:@-]{1,80}$' or length(coalesce(v->>'display_name','')) = 0 then raise exception 'bad_value'; end if;
+ if coalesce((v->>'auto_post')::boolean,false) and public.invoice_actor_role(actor) not in ('ceo','gm')
+    and not coalesce((select auto_post from public.invoice_vendor_rules where vendor_key=v->>'vendor_key'), false) then raise exception 'forbidden'; end if;
  insert into public.invoice_vendor_rules(vendor_key, display_name, aliases, food_kind, auto_post, verified_by, verified_at)
  values(v->>'vendor_key', v->>'display_name', coalesce(array(select jsonb_array_elements_text(v->'aliases')),'{}'), v->>'food_kind',
   coalesce((v->>'auto_post')::boolean,false), actor::text, now())
@@ -1010,7 +1025,9 @@ language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; m jsonb := p->'map'; r public.invoice_item_maps; rl text;
 begin
  rl := public.invoice_require(actor, array['ceo','gm','office']);
- if coalesce((m->>'auto_post')::boolean,false) and rl not in ('ceo','gm') then raise exception 'forbidden'; end if;
+ if coalesce((m->>'auto_post')::boolean,false) and not coalesce((m->>'verified')::boolean,false) then raise exception 'bad_value'; end if;
+ if coalesce((m->>'auto_post')::boolean,false) and rl not in ('ceo','gm')
+    and not (m ? 'id' and coalesce((select auto_post from public.invoice_item_maps where id=(m->>'id')::uuid), false)) then raise exception 'forbidden'; end if;
  if m ? 'id' then
   update public.invoice_item_maps set ingredient_code=m->>'ingredient_code', count_unit=m->>'count_unit', count_per_purchase=(m->>'count_per_purchase')::numeric,
    base_unit=m->>'base_unit', base_per_purchase=(m->>'base_per_purchase')::numeric, verified=coalesce((m->>'verified')::boolean,false),
@@ -1042,7 +1059,9 @@ begin
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid;
  if d.id is null or d.status not in ('posted','superseded') then raise exception 'invalid_state'; end if;
  if d.status='superseded' and not coalesce((p->>'tombstone')::boolean,false) then raise exception 'invalid_state'; end if;
- if d.needs_adjustment and d.status='posted' then
+ -- A closed month in the app is never changed (neither a new copy nor removing a replaced one).
+ if d.needs_adjustment or (public.invoice_setting('rules')->>'closed_through' is not null
+     and to_char(coalesce(d.invoice_date, d.effective_date),'YYYY-MM') <= public.invoice_setting('rules')->>'closed_through') then
   insert into public.invoice_app_mirror(doc_id, app_inv_id, store_id, state, error) values(d.id, app_id, d.store_id, 'held', 'closed_month')
   on conflict(doc_id) do update set state='held', error='closed_month', updated_at=now();
   return jsonb_build_object('state','held');
@@ -1154,7 +1173,10 @@ language sql stable security invoker set search_path=public,pg_temp as $$
  select coalesce(jsonb_agg(to_jsonb(x)), '[]') from (
   select f.id file_id, f.drive_file_id, f.store_id, f.original_name, f.organize_target target, d.invoice_date, d.vendor_name, d.doc_type,
    d.invoice_no, d.internal_no, (select count(*) from public.invoice_file_versions v where v.file_id=f.id) version_no,
-   (select coalesce(jsonb_agg(fo.id), '[]') from public.invoice_folders fo where fo.store_id=f.store_id) store_folder_ids
+   (select coalesce(jsonb_agg(fo.id), '[]') from public.invoice_folders fo where fo.store_id=f.store_id) store_folder_ids,
+   -- A file a person assigned to another store may still sit in a store's 00_Upload; it may be filed from there.
+   case when f.store_assigned_by is not null then (select coalesce(jsonb_agg(s2.upload_folder_id), '[]') from public.invoice_stores s2 where s2.upload_folder_id is not null)
+        else '[]'::jsonb end upload_folder_ids
   from public.invoice_files f
   join public.invoice_docs d on d.file_id=f.id and d.sha256=f.current_sha256 and d.doc_index=0
   where f.drive_state='ok' and f.organize_target is not null
@@ -1219,6 +1241,10 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   where f.source='drive' and f.current_sha256 is not null and f.intake_status not in ('pending','processing','duplicate','unsupported')
    and (f.drive_created_at at time zone 'Pacific/Honolulu')::date >= (public.invoice_setting('qb')->>'since')::date
    and not exists(select 1 from public.invoice_qb_outbox o where o.sha256=f.current_sha256 and o.to_address=public.invoice_setting('qb')->>'to' and o.state<>'cancelled')
+   -- Possible duplicates and documents that could not be read wait for a person before anything is forwarded.
+   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review'
+     and exists(select 1 from jsonb_array_elements(d.reasons) r where r->>'code' in
+       ('duplicate_candidate','same_number_different','app_duplicate_candidate','unreadable','ai_failed','ai_truncated','multiple_documents')))
   order by f.ingested_at limit coalesce((p->>'limit')::int, 20)) f;
 $$;
 
@@ -1236,7 +1262,10 @@ language sql stable security invoker set search_path=public,pg_temp as $$
      'ingredient_code', l.ingredient_code) order by l.line_no), '[]') from public.invoice_lines l where l.doc_id=d.id) lines
   from public.invoice_docs d join public.invoice_files f on f.id=d.file_id
   left join public.invoice_app_mirror m on m.doc_id=d.id
-  where d.posting_kind='purchase' and (
+  where d.posting_kind='purchase'
+   -- Documents received before the start date (the pilot) are not copied: stores still entered them in the app.
+   and (public.invoice_setting('mode')->>'start_at') is not null and f.ingested_at >= (public.invoice_setting('mode')->>'start_at')::timestamptz
+   and (
    (d.status='posted' and (m.doc_id is null or m.state='error' or (m.state='held' and m.error='edited_after_post' and not d.needs_adjustment)))
    or (d.status='superseded' and m.state='mirrored'))
   order by d.posted_at limit coalesce((p->>'limit')::int, 20)) x;
@@ -1286,7 +1315,7 @@ begin
  if f.id is null or not exists(select 1 from public.invoice_stores where store_id=p->>'store_id') then raise exception 'not_found'; end if;
  if exists(select 1 from public.invoice_docs where file_id=f.id and status='posted') then raise exception 'posted_use_correction'; end if;
  update public.invoice_docs set status='rejected', version=version+1, updated_at=now() where file_id=f.id and status in ('review','duplicate');
- update public.invoice_files set store_id=p->>'store_id', drive_state=case when drive_state='moved_store' then 'ok' else drive_state end,
+ update public.invoice_files set store_id=p->>'store_id', store_assigned_by=actor::text, drive_state=case when drive_state='moved_store' then 'ok' else drive_state end,
   intake_status='pending', attempts=0, next_attempt_at=null, organize_status='none', organize_target=null, updated_at=now() where id=f.id;
  perform public.invoice_event(null, f.id, actor::text, 'reassigned', jsonb_build_object('from', f.store_id, 'to', p->>'store_id', 'reason', p->>'reason'));
  return jsonb_build_object('ok', true);
@@ -1302,7 +1331,7 @@ begin
  select coalesce(jsonb_agg(jsonb_build_object('vendor_key', v.id::text, 'display_name', v.name,
    'food_kind', case when v.data->>'kind' in ('food','nonfood') then v.data->>'kind' end,
    'exists', exists(select 1 from public.invoice_vendor_rules r where r.vendor_key=v.id::text)) order by v.name), '[]')
- into rows from public.vendors v where coalesce(v.name,'') <> '';
+ into rows from public.vendors v where coalesce(v.name,'') <> '' and v.id::text ~ '^[A-Za-z0-9_.:@-]{1,80}$';
  if coalesce((p->>'apply')::boolean,false) then
   insert into public.invoice_vendor_rules(vendor_key, display_name, food_kind, auto_post)
   select x->>'vendor_key', x->>'display_name', x->>'food_kind', false from jsonb_array_elements(rows) x
@@ -1380,7 +1409,7 @@ language plpgsql security invoker set search_path=public,pg_temp as $$
 declare o public.invoice_qb_outbox;
 begin
  update public.invoice_qb_outbox set state='sending', attempts=attempts+1, reserved_by='external', reserved_at=now(), updated_at=now()
- where id=(p->>'id')::uuid and route='external' and state in ('pending','error') and (next_at is null or next_at<=now())
+ where id=(p->>'id')::uuid and route='external' and state in ('pending','error') and (next_at is null or next_at<=now()) and attempts < 5
  returning * into o;
  if o.id is null then raise exception 'invalid_state'; end if;
  perform public.invoice_event(null, o.file_id, 'external', 'qb_reserved', '{}');
@@ -1406,15 +1435,15 @@ language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
- return (select coalesce(jsonb_agg(to_jsonb(x) order by x.effective_date desc, x.id desc), '[]') from (
+ return (select coalesce(jsonb_agg(to_jsonb(x) - 'no_key' order by x.effective_date desc, x.invoice_date desc nulls last, x.no_key desc nulls last, x.id desc), '[]') from (
   select h.id, h.store_id, h.vendor_key, d.vendor_name, h.ingredient_code, h.spec_key, h.purchase_unit, h.effective_date, h.effective_basis, h.invoice_date,
    d.invoice_no, h.price_per_purchase::text price_per_purchase, h.price_per_count::text price_per_count, h.count_unit,
-   h.price_per_base::text price_per_base, h.base_unit, h.status, h.created_by, h.doc_id, l.page, f.drive_file_id, d.posted_mode
+   h.price_per_base::text price_per_base, h.base_unit, h.status, h.created_by, h.doc_id, l.page, f.drive_file_id, d.posted_mode, lpad(h.invoice_no_norm, 40, '0') no_key
   from public.invoice_price_history h join public.invoice_docs d on d.id=h.doc_id join public.invoice_lines l on l.id=h.line_id
   join public.invoice_files f on f.id=d.file_id
   where h.ingredient_code=p->>'code' and (coalesce((p->>'include_voided')::boolean,false) or h.status='active')
    and (jsonb_typeof(p->'stores') is distinct from 'array' or h.store_id in (select jsonb_array_elements_text(case when jsonb_typeof(p->'stores')='array' then p->'stores' else '[]'::jsonb end)))
-  order by h.effective_date desc, h.id desc limit 200) x);
+  order by h.effective_date desc, h.invoice_date desc nulls last, lpad(h.invoice_no_norm, 40, '0') desc nulls last, h.id desc limit 200) x);
 end $$;
 
 -- What the settings and review screens need to show (no keys).

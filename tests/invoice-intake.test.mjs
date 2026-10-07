@@ -104,10 +104,11 @@ async function setup() {
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const drive = new FakeDrive();
   drive.folder('R6', 'LaLa', 'INV'); drive.folder('U6', '00_Upload', 'R6'); drive.folder('RK', 'Kaimuki', 'INV'); drive.folder('UK', '00_Upload', 'RK');
-  const fixtures = new Map(); let aiCalls = 0; let aiFail = 0;
+  const fixtures = new Map(); let aiCalls = 0; let aiFail = 0; let aiDown = null;
   const ai = async parts => {
     aiCalls++;
     if (aiFail > 0) { aiFail--; return { ok: false, error: 'ai_network', retryable: true }; }
+    if (aiDown) return { ok: false, error: aiDown };
     const key = Buffer.from(parts[0].base64, 'base64').toString('latin1');
     const fx = [...fixtures.entries()].filter(([tag]) => key.includes(tag)).sort((x, y) => y[0].length - x[0].length)[0];   // most specific tag
     if (!fx) return { ok: true, readable: false, reason: 'unreadable', documents: [] };
@@ -128,7 +129,7 @@ async function setup() {
   const worker = () => call({ action: 'worker' }, { 'x-invoice-worker-key': WORKER_KEY });
   const api = (tok, body) => call(body, tok ? { authorization: 'Bearer ' + tok } : {});
   const q = async (sql, p = []) => (await pg.query(sql, p)).rows;
-  return { pg, db, drive, fixtures, get aiCalls() { return aiCalls; }, failAi(n) { aiFail = n; }, sent, setMail(m) { mailMode = m; }, worker, api, call, q };
+  return { pg, db, drive, fixtures, get aiCalls() { return aiCalls; }, failAi(n) { aiFail = n; }, setAiDown(x) { aiDown = x; }, sent, setMail(m) { mailMode = m; }, worker, api, call, q };
 }
 
 const docsOf = async (E, drive_file_id) => E.q(`select d.* from invoice_docs d join invoice_files f on f.id=d.file_id where f.drive_file_id=$1 order by d.created_at, d.doc_index`, [drive_file_id]);
@@ -769,4 +770,190 @@ test('Drive access uses the function secrets first, then the connection drive-sy
   assert.ok(!/saved-secret|saved-refresh|env-secret/.test(health));
   const logs = JSON.stringify(await E.q('select * from invoice_runs')) + JSON.stringify(await E.q('select * from invoice_events')) + JSON.stringify(await E.q('select * from invoice_settings'));
   assert.ok(!/saved-secret|saved-refresh|env-secret|env-refresh|at-saved|at-env/.test(logs));
+});
+
+// Findings of the independent review (2026-10-07): each one is reproduced here and must stay fixed.
+test('review findings stay fixed', async (t) => {
+  const E = await setup();
+  const L = (code, name, qty, price, amount, unit = 'CS', pack = null) => [code, name, qty, price, amount, unit, pack];
+  const miso = (q = '1', p = '61.20', a = '61.20') => L('06263', 'SHIRO MISO 12/500G', q, p, a, 'CS', '12/500G');
+  const one = async (tag, fx, folder = 'U6', opts) => { E.fixtures.set(tag, fx); const id = E.drive.file(tag + '.pdf', pdf(tag), folder, opts); await E.worker(); return id; };
+  const docOf = async id => (await docsOf(E, id))[0];
+
+  await t.test('1: only accounting, GM or CEO settle an unknown forwarding result, and only as sent or send again', async () => {
+    E.setMail('timeout');
+    const id = await one('R1-1', { readable: true, documents: [doc('7001', '2026-10-06', [miso()])] });
+    E.setMail('ok');
+    const [o] = await E.q(`select o.* from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [id]);
+    assert.equal(o.state, 'unknown');
+    assert.equal((await E.api('tok-crew', { action: 'qb_resolve', id: o.id, state: 'error' })).status, 403);
+    assert.equal((await E.api('tok-other', { action: 'qb_resolve', id: o.id, state: 'sent' })).status, 403);
+    assert.equal((await E.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'error' })).status, 409);
+    await E.worker();
+    assert.equal((await E.q(`select state from invoice_qb_outbox where id=$1`, [o.id]))[0].state, 'unknown');   // still not resent
+    await E.q(`update invoice_qb_outbox set state='pending' where id=$1`, [o.id]);
+    assert.equal((await E.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'sent' })).status, 409);    // a waiting row cannot be marked sent
+    await E.q(`update invoice_qb_outbox set state='unknown' where id=$1`, [o.id]);
+    assert.equal((await E.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'sent', note: 'found in sent mail' })).status, 200);
+  });
+
+  await t.test('4: a file with two invoices can post both', async () => {
+    const id = await one('R4-1', { readable: true, documents: [doc('7101', '2026-10-06', [L('X1', 'ITEM A', '1', '10.00', '10.00')]), doc('7102', '2026-10-06', [L('X2', 'ITEM B', '1', '12.00', '12.00')])] });
+    const ds = await docsOf(E, id);
+    assert.equal(ds.length, 2);
+    for (const d of ds) assert.equal((await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '2通とも確認' })).status, 200);
+  });
+
+  await t.test('5: a failed reading is not stored; after the key is fixed the file is read', async () => {
+    E.setAiDown('ai_http_401');
+    const tag = 'R5-1'; E.fixtures.set(tag, { readable: true, documents: [doc('7201', '2026-10-06', [miso()])] });
+    const id = E.drive.file(tag + '.pdf', pdf(tag), 'U6');
+    await E.worker();
+    const [f] = await E.q(`select id, intake_status, last_error, current_sha256 from invoice_files where drive_file_id=$1`, [id]);
+    assert.equal(f.intake_status, 'error'); assert.match(f.last_error, /ai_failed:ai_http_401/);
+    assert.equal((await E.q(`select count(*)::int n from invoice_extractions where sha256=$1`, [f.current_sha256]))[0].n, 0);
+    assert.equal((await docsOf(E, id)).length, 0);
+    E.setAiDown(null);
+    assert.equal((await E.api('tok-office', { action: 'retry', file_id: f.id })).status, 200);
+    await E.worker();
+    assert.equal((await docsOf(E, id)).length, 1);
+  });
+
+  await t.test('6: correcting the original after its copy was marked duplicate does not block it', async () => {
+    const fx = { readable: true, documents: [doc('7301', '2026-10-06', [L('NEW1', 'NEW ITEM', '1', '9.00', '9.00')])] };
+    const a = await one('R6-1', fx);
+    E.drive.file('copy.pdf', pdf('R6-1'), 'U6'); await E.worker();
+    const orig = await docOf(a);
+    assert.equal(orig.status, 'review');
+    const e = await E.api('tok-office', { action: 'edit', doc_id: orig.id, version: orig.version, header: { food_kind: 'nonfood' }, reason: '食材以外' });
+    assert.equal(e.status, 200, JSON.stringify(e.body));
+    const after = await docOf(a);
+    assert.ok(!codes(after).includes('duplicate_certain'), JSON.stringify(after.reasons));
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: after.id, version: after.version, reason: '確認' })).status, 200);
+  });
+
+  await t.test('7: posting the old reading does not cancel the re-read of new content', async () => {
+    const id = await one('R7-1', { readable: true, documents: [doc('7401', '2026-10-06', [L('NEW2', 'ANOTHER ITEM', '1', '5.00', '5.00')])] });
+    const d = await docOf(id);
+    await E.q(`update invoice_files set intake_status='pending' where drive_file_id=$1`, [id]);   // new content was found
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '確認' })).status, 200);
+    assert.equal((await E.q(`select intake_status from invoice_files where drive_file_id=$1`, [id]))[0].intake_status, 'pending');
+  });
+
+  await t.test('9: after changing the vendor, the old vendor\'s product mapping makes no price row', async () => {
+    const id = await one('R9-1', { readable: true, documents: [doc('7501', '2026-10-05', [miso()])] });
+    let d = await docOf(id);
+    const e = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { vendor_key: 'v2' }, reason: '業者違い' });
+    assert.equal(e.status, 200, JSON.stringify(e.body));
+    d = await docOf(id);
+    const r = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '確認' });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.price_rows, 0);
+    assert.equal((await E.q(`select count(*)::int n from invoice_price_history where doc_id=$1`, [d.id]))[0].n, 0);
+  });
+
+  await t.test('10: a possible duplicate is not forwarded until a person decides', async () => {
+    await one('R10-1', { readable: true, documents: [doc('7601', '2026-10-06', [miso('2', '61.20', '122.40')])] });
+    const b = await one('R10-2', { readable: true, documents: [doc('7601', '2026-10-06', [miso('3', '61.20', '183.60')])] });
+    const d = await docOf(b);
+    assert.ok(codes(d).includes('same_number_different'));
+    assert.equal((await E.q(`select count(*)::int n from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [b]))[0].n, 0);
+  });
+
+  await t.test('11: a file assigned to another store by a person is processed and filed there', async () => {
+    const id = await one('R11-1', { readable: true, documents: [doc('7701', '2026-10-06', [miso()], { ship: 'Totoya Kaimuki, 200 Sample Ave' })] });
+    const d = await docOf(id);
+    assert.ok(codes(d).includes('store_mismatch'));
+    assert.equal((await E.api('tok-office', { action: 'reassign', file_id: d.file_id, store_id: 'F04-K', reason: 'Kaimuki 宛' })).status, 200);
+    await E.worker(); await E.worker();
+    const [f] = await E.q(`select store_id, drive_state, organize_status from invoice_files where drive_file_id=$1`, [id]);
+    assert.equal(f.store_id, 'F04-K'); assert.equal(f.drive_state, 'ok');
+    assert.equal(E.drive.pathOf(id), 'Kaimuki/2026/10/未照合');
+  });
+
+  await t.test('12: on the same date, invoice 1000 is later than invoice 999 (numbers compare as numbers)', async () => {
+    const a = await one('R12-1', { readable: true, documents: [doc('1000', '2026-10-04', [L('01111', 'SOY 6/1.8L', '1', '62.00', '62.00', 'CS', '6/1.8L')])] });
+    let d = await docOf(a); assert.equal((await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '確認' })).status, 200);
+    const b = await one('R12-2', { readable: true, documents: [doc('999', '2026-10-04', [L('01111', 'SOY 6/1.8L', '1', '60.00', '60.00', 'CS', '6/1.8L')])] });
+    d = await docOf(b); assert.equal((await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '確認' })).status, 200);
+    const latest = (await E.api('tok-gm', { action: 'latest_prices', codes: ['I-2'] })).body.find(x => x.store_id === 'F06');
+    assert.equal(latest.invoice_no_norm, '1000');
+    assert.equal((await E.api('tok-gm', { action: 'price_history', code: 'I-2' })).body.rows[0].invoice_no, '1000');
+  });
+
+  await t.test('13: taking back a reconciliation files the original back to 未照合', async () => {
+    const id = await one('R13-1', { readable: true, documents: [doc('7801', '2026-10-06', [L('NEW3', 'THING', '1', '3.00', '3.00')])] });
+    let d = await docOf(id);
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '確認' })).status, 200);
+    d = await docOf(id);
+    assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled' })).status, 200);
+    await E.worker();
+    assert.match(E.drive.pathOf(id), /照合済み$/);
+    d = await docOf(id);
+    assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'discrepancy', note: '送料が違う' })).status, 200);
+    await E.worker();
+    assert.match(E.drive.pathOf(id), /未照合$/);
+  });
+
+  await t.test('14: a misread delivery date can be cleared', async () => {
+    const id = await one('R14-1', { readable: true, documents: [doc('7901', '2026-10-05', [L('NEW4', 'THING 2', '1', '4.00', '4.00')], { delivery: '2026-10-06' })] });
+    let d = await docOf(id);
+    assert.equal(d.effective_basis, 'delivery');
+    const e = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { delivery_date: null }, reason: '納品日の読み違い' });
+    assert.equal(e.status, 200, JSON.stringify(e.body));
+    d = await docOf(id);
+    assert.equal(d.delivery_date, null); assert.equal(d.effective_basis, 'invoice');
+  });
+
+  await t.test('15: reading problems survive a correction; accounting can save an unchanged auto-post flag; key shapes', async () => {
+    const id = await one('R15-1', { readable: true, documents: [doc('8001', '2026-10-06', [L('NEW5', 'THING 3', '1', '2.00', '2.00')])] });
+    let d = await docOf(id);
+    await E.q(`update invoice_docs set reasons = reasons || '[{"code":"ai_truncated"}]'::jsonb where id=$1`, [d.id]);
+    d = await docOf(id);
+    assert.equal((await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { food_kind: 'nonfood' }, reason: '確認' })).status, 200);
+    assert.ok(codes(await docOf(id)).includes('ai_truncated'));
+    assert.equal((await E.api('tok-office', { action: 'vendor_save', vendor: { vendor_key: 'v1', display_name: 'VendorA', aliases: ['VENDOR A INC.'], food_kind: 'food', auto_post: true } })).status, 200);
+    assert.equal((await E.api('tok-office', { action: 'vendor_save', vendor: { vendor_key: 'v2', display_name: 'VendorB', aliases: [], food_kind: 'food', auto_post: true } })).status, 403);
+    assert.equal((await E.api('tok-gm', { action: 'vendor_save', vendor: { vendor_key: "v9');alert(1);('", display_name: 'X', aliases: [] } })).status, 400);
+    assert.equal((await E.api('tok-gm', { action: 'store_save', store: { store_id: "F'1", label: 'X' } })).status, 400);
+    const [m] = await E.q(`select id, version from invoice_item_maps where vendor_item_code='01111'`);
+    assert.equal((await E.api('tok-gm', { action: 'map_save', map: { id: m.id, version: m.version, ingredient_code: 'I-2', verified: false, auto_post: true } })).status, 400);
+  });
+
+  await t.test('2: the app copy skips documents from before the start and never changes a closed month', async () => {
+    await E.q(`update invoice_settings set value=value||jsonb_build_object('start_at', (now() + interval '1 day')::text) where key='mode'`);
+    const id = await one('R2-1', { readable: true, documents: [doc('8101', '2026-10-06', [L('NEW6', 'THING 4', '1', '1.00', '1.00')])] });
+    let d = await docOf(id);
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '確認' })).status, 200);
+    await E.worker();
+    assert.equal((await E.q(`select count(*)::int n from invoice_app_mirror where doc_id=$1`, [d.id]))[0].n, 0);
+    await E.q(`update invoice_settings set value=value||'{"start_at":"2026-10-01T00:00:00Z"}' where key='mode'`);
+    // September is open: the September invoice is copied. Then September closes and a corrected version replaces it.
+    const s1 = await one('R2-2', { readable: true, documents: [doc('8102', '2026-09-25', [L('NEW7', 'THING 5', '1', '8.00', '8.00')])] });
+    d = await docOf(s1);
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '確認' })).status, 200);
+    await E.worker();
+    assert.equal((await E.q(`select state from invoice_app_mirror where doc_id=$1`, [d.id]))[0].state, 'mirrored');
+    await E.q(`update invoice_settings set value=value||'{"closed_through":"2026-09"}' where key='rules'`);
+    const s2 = await one('R2-3', { readable: true, documents: [doc('8102', '2026-09-25', [L('NEW7', 'THING 5', '1', '9.00', '9.00')])] });
+    const nd = await docOf(s2);
+    const r = await E.api('tok-office', { action: 'post', doc_id: nd.id, version: nd.version, reason: '訂正版', supersedes: d.id, adjustment_ack: true });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    await E.worker();
+    assert.equal((await E.q(`select needs_adjustment from invoice_docs where id=$1`, [d.id]))[0].needs_adjustment, true);
+    assert.equal((await E.q(`select state from invoice_app_mirror where doc_id=$1`, [d.id]))[0].state, 'held');
+    const app = (await E.q(`select value from app_state where key='spl_invoices_F06'`))[0].value;
+    const old = app.find(x => x.intakeDocId === d.id);
+    assert.ok(old && !old._deleted, 'the closed month keeps its record');
+    assert.ok(!app.some(x => x.intakeDocId === nd.id), 'the correction is not added into the closed month');
+  });
+
+  await t.test('15b: the outside sender stops after 5 attempts too', async () => {
+    await E.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
+    await E.q(`update invoice_settings set value=value||'{"enabled":true}' where key='qb_external'`);
+    const id = await one('R15-2', { readable: true, documents: [doc('8201', '2026-10-06', [L('NEW8', 'THING 6', '1', '1.50', '1.50')])] });
+    const [o] = await E.q(`select o.id from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [id]);
+    await E.q(`update invoice_qb_outbox set attempts=5 where id=$1`, [o.id]);
+    const [{ k }] = await E.q(`select value->>'key' k from invoice_settings where key='qb_external'`);
+    assert.equal((await E.call({ action: 'qb_external_reserve', id: o.id }, { 'x-invoice-qb-key': k })).status, 409);
+  });
 });

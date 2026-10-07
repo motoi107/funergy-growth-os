@@ -169,9 +169,9 @@ export function createHandler(deps) {
       if (!raw) {
         const res = await ai([{ mime, base64: b64(bytes) }]);
         stats.ai_calls = (stats.ai_calls || 0) + 1;
-        if (!res.ok && res.retryable) { await fail(res.error); return; }
-        const value = res.ok ? { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null }
-          : { readable: false, failed: true, reason: res.error, documents: [] };
+        // A failed reading (network, key, refusal, broken output) is not stored: the file waits and is read again later.
+        if (!res.ok) { stats.ai_failed = (stats.ai_failed || 0) + 1; await fail('ai_failed:' + String(res.error || 'unknown').slice(0, 80)); return; }
+        const value = { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null };
         raw = await db.rpc('invoice_extraction', { sha256: sha, prompt_version: PROMPT_VERSION, model: res.model || null, raw: value });
       } else stats.ai_reused = (stats.ai_reused || 0) + 1;
       await stageDocs(f, store, sha, raw, ctx, mime === 'application/pdf' ? pdfPages(bytes) : 1, stats);
@@ -202,7 +202,7 @@ export function createHandler(deps) {
       const g = await drive.get(o.drive_file_id);
       if (g.status !== 200 || g.file.trashed) throw new Error('original_unavailable_' + g.status);
       const parents = g.file.parents || [];
-      const allowed = new Set([store.upload_folder_id, ...(o.store_folder_ids || [])]);
+      const allowed = new Set([store.upload_folder_id, ...(o.store_folder_ids || []), ...(o.upload_folder_ids || [])]);
       if (!parents.length || !parents.every(p => allowed.has(p))) throw new Error('outside_store_folders');
       const y = await ensureFolder(store, store.root_folder_id, mf.year, 'year');
       const m = await ensureFolder(store, y, mf.month, 'month');
@@ -359,7 +359,11 @@ export function createHandler(deps) {
           line_discount: cents(s.line_discount_cents ?? l.line_discount_cents ?? 0), amount: cents(s.amount_cents ?? l.amount_cents), taxable: l.taxable }; }),
     };
     // A person's chosen mapping takes precedence over code/alias lookup.
-    const forced = lines.map(l => (byId[l.id] && byId[l.id].map_id) || l.map_id);
+    const forced = lines.map(l => {
+      const id = (byId[l.id] && byId[l.id].map_id) || l.map_id;
+      const m = id && ctx.maps.find(x => x.id === id);
+      return m && m.vendor_key === H.vendor_key && (!m.store_id || m.store_id === doc.store_id) ? id : null;
+    });
     const maps = ctx.maps;
     const result = await evaluate(ext, { store, stores: ctx.stores, vendors: ctx.vendors, maps, settings: ctx.rules, started: ctx.started,
       docCount: 1, pageCount: null, forcedMaps: forced,
@@ -367,8 +371,13 @@ export function createHandler(deps) {
     const h = result.header;
     h.content_sig = await contentSignature(h, result.lines);
     const existing = (await db.rpc('invoice_dup_scope', { sha256: doc.sha256, vendor_key: h.vendor_key, invoice_no_norm: h.invoice_no_norm,
-      store_id: doc.store_id, invoice_date: h.invoice_date, total_cents: h.total_cents })).filter(e => e.id !== doc.id && !(e.file_id === doc.file_id && e.sha256 === doc.sha256));
+      store_id: doc.store_id, invoice_date: h.invoice_date, total_cents: h.total_cents }))
+      .filter(e => e.id !== doc.id && !(e.file_id === doc.file_id && e.sha256 === doc.sha256) && e.status !== 'duplicate' && e.duplicate_of !== doc.id);
     applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, []));
+    // What the reading itself got wrong cannot be fixed by editing values: those reasons stay.
+    for (const r of doc.reasons || []) {
+      if (['ai_truncated', 'multiple_documents', 'missing_pages'].includes(r.code) && !result.reasons.some(x => x.code === r.code)) { result.reasons.push(r); result.autoEligible = false; }
+    }
     return result;
   }
 

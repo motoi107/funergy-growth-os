@@ -5,7 +5,7 @@
 状態：サーバー（DB・取込ワーカー・確認ルール・QuickBooks 台帳）とアプリ v1052 の画面を実装し、合成データと本物の画面で検証済み。ブランチ `claude/invoice-drive-intake`。詳細と手順は `docs/INVOICE_DRIVE_INTAKE_JA.md`（13 節が本番の順番）。
 
 次にすること（順番どおり。どれも未実施）：
-1. Codex による独立レビュー（コードと SQL。特に権限・二重送信・締め済みの月・金額）。
+1. Codex による独立レビュー（コードと SQL。特に権限・二重送信・締め済みの月・金額）。10/7 の Claude 別エージェントのレビュー（15 件）は修正済み。
 2. Moto さんの確認：ChatGPT 側の QuickBooks 転送が原本をどこから拾っているか（Drive のフォルダか・メールか）。台帳を見るようにできるか。
 3. SQL の適用 → Edge Function `invoice-intake` の配備（Verify JWT OFF。Drive は既存の `drive_oauth` を使う）→ アプリ v1052 を貼る。
 4. 画面の「設定」で 5 店の店舗フォルダを登録 →「フォルダを確かめる」→ 00_Upload の用意 → 店舗に 00_Upload だけを共有 →「店舗の画面」で案内を出す。LaLa はフォルダができてから。
