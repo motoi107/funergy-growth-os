@@ -30,9 +30,9 @@
 | `invoice/naming.mjs` | `業者名_YYYY-MM-DD_店舗名_INV-番号.ext` |
 | `invoice/drive.mjs` | Drive API（一覧・取得・ダウンロード・名前変更/移動・フォルダ）。削除の機能は持たない |
 | `tests/invoice-*.test.mjs` | 単体・結合（PGlite＋模擬 Drive/AI/メール）・アダプタ・ミューテーション |
-| `index.html`・`sw.js`（v1052） | 画面：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の Invoice管理の提出フォルダの案内、食材編集の「仕入れ履歴」。本体は `invIn*` 関数（`/* FUNERGY_INVOICE_INTAKE_BEGIN */` 〜 `END`） |
+| `index.html`・`sw.js`（v1052 は 10/7 に本番へ貼られた。この PR は v1053） | 画面：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の Invoice管理の提出フォルダの案内、食材編集の「仕入れ履歴」。本体は `invIn*` 関数（`/* FUNERGY_INVOICE_INTAKE_BEGIN */` 〜 `END`） |
 
-アプリの変更（v1052）は、上の画面を足したことと、既存の 7 関数に 1 行ずつ（Drive 取込の写しを旧画面で削除・承認・差し戻ししない／Invoice管理に案内／食材編集にボタン／経理センターの件数）と、PC で経理センターの大タブを折り返す CSS 1 行だけ。保存キー・同期・権限・価格の更新は変えていない。
+アプリの変更（v1052・v1053）は、上の画面を足したことと、既存の 7 関数に 1 行ずつ（Drive 取込の写しを旧画面で削除・承認・差し戻ししない／Invoice管理に案内／食材編集にボタン／経理センターの件数）と、PC で経理センターの大タブを折り返す CSS 1 行だけ。保存キー・同期・権限・価格の更新は変えていない。
 
 ## 3 流れ
 
@@ -160,7 +160,7 @@
 1. Moto の確認（10/6 回答済み：転送は ChatGPT 側・Drive は Moto さんの会社のアカウント・共有ドライブ可・店舗フォルダ 5 店分の URL。LaLa は作成待ち）。残り：今の転送が原本をどこから拾うか、各店で Drive に上げる人の Google アカウント、`pg_policies`。
 2. SQL を適用（`supabase/migrations/20261007090000_invoice_intake.sql`）。既存の表は変更しない。
 3. Edge Function `invoice-intake` を配備（Verify JWT は OFF。関数内で認証する）。Drive は drive-sync の保存済みの連携をそのまま使う（secrets は不要。分けたいときだけ `GOOGLE_OAUTH_*` を入れる）。`ANTHROPIC_API_KEY` は既存。
-4. アプリ v1052 を貼る（`index.html`・`sw.js`）。経理センター「Invoice取込」→ メール認証（業務Bot と同じ）。
+4. アプリ v1053 を貼る（`index.html`・`sw.js`。v1052 は 10/7 に貼られた。v1053 は独立レビューの画面側の修正）。経理センター「Invoice取込」→ メール認証（業務Bot と同じ）。
 5. 「設定」で店舗ごとに店舗フォルダの URL を入れる（Aiea・Piikoi・Kaimuki・ToriTon・Tenkichi。LaLa はフォルダができてから）→「フォルダを確かめる（作らない）」→ 00_Upload が無い店は GM・CEO が「この内容で作る・記録する」。店舗のスタッフには 00_Upload だけを共有。「店舗の画面」で「出す」にした店だけ、Invoice管理に提出フォルダが出る。
 6. 業者・対応表の候補を作る（マスターから・すべて確認モード・未確認から）。
 7. `worker.enabled=true`、cron を登録（`db/invoice-intake-schedule.sql`）。画面の「設定」で取込を ON、試験する店舗を 1 店に、自動反映は OFF のまま確認モードで数日。
@@ -175,7 +175,7 @@
 - 画面：v1051 に戻す（`index.html`・`sw.js`）。サーバーのデータは残る。店舗マスターに入れた提出フォルダ（`invoiceUploadFolderId`）は v1051 では使われないだけ。
 - 新しく作った記録は消さない（追跡できるように残す）。Drive の原本は移動・改名だけで、消していない。
 
-## 14b 画面（v1052・UI案34）
+## 14b 画面（v1052・v1053・UI案34）
 
 | 画面 | 誰が | すること |
 |---|---|---|
@@ -196,8 +196,8 @@
 | `node --test tests/invoice-adapters.test.mjs` | 5/5（Drive・共有ドライブの一覧・Anthropic・PostgREST・HTTP 入口） |
 | `node --test tests/invoice-mutations.test.mjs` | 29/29（守りを 28 か所外すと、どれもテストが落ちることを確認） |
 | `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 20 件・33 段階） |
-| `python3 scripts/check-static-release.py` | 成功（v1052・APP_VERSION と SW_BUILD が一致） |
-| アプリの検証（handoff の `verify_v1052.js`） | 81/81（変えた既存関数は 7 本で各 1 行・同期と保存の仕組みは同じ・escapeHtml・onclick の値は JS の文字列として安全・金額は整数セント・役割・旧画面の境目） |
+| `python3 scripts/check-static-release.py` | 成功（v1053・APP_VERSION と SW_BUILD が一致） |
+| アプリの検証（handoff の `verify_v1052.js`・`verify_v1053.js`） | v1052 78/78・v1053 85/85（v1053 は v1052 から本体と版だけ・変えた既存関数は 7 本で各 1 行・同期と保存の仕組みは同じ・escapeHtml・onclick の値は JS の文字列として安全・金額は整数セント・役割・旧画面の境目） |
 | 本物の画面（handoff の `render/check_invin_v1052.py`） | 50/50・pageerror 0。本物の handler と SQL を PGlite で動かし、ブラウザから メール認証→一覧→要確認（反映・業者を直す・対象外）→照合（原本が照合済みフォルダへ）→取込状況（HEIC・結果不明）→設定（スイッチ・00_Upload の作成・店舗の画面への案内）→店舗の Invoice管理（日英）→仕入れ履歴→スマホ（390px）。事務Crew は閲覧だけ |
 
 既存の他のテスト（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）の失敗は、変更前の main でも同じ件数（今回の変更とは無関係）。
