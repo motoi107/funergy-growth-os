@@ -853,7 +853,7 @@ end $$;
 -- ---------------------------------------------------------------- reading
 create function public.invoice_list(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
-declare actor uuid := nullif(p->>'actor','')::uuid; r jsonb; total int;
+declare actor uuid := nullif(p->>'actor','')::uuid; r jsonb; total int; sum_cents bigint;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  with q as (
@@ -868,12 +868,12 @@ begin
    and (p->>'min_cents' is null or d.total_cents >= (p->>'min_cents')::bigint) and (p->>'max_cents' is null or d.total_cents <= (p->>'max_cents')::bigint)
    and (p->>'item' is null or exists(select 1 from public.invoice_lines l where l.doc_id=d.id and l.raw_name ilike '%'||(p->>'item')||'%'))
    and (p->>'status' is null or d.status=p->>'status') and (p->>'recon' is null or d.recon_status=p->>'recon'))
- select (select count(*) from q),
+ select (select count(*) from q), (select coalesce(sum(total_cents),0) from q),
   coalesce((select jsonb_agg(to_jsonb(x) order by x.invoice_date desc nulls first, x.ingested_at desc) from
    (select * from q order by invoice_date desc nulls first, ingested_at desc
     limit least(coalesce((p->>'limit')::int,50),200) offset coalesce((p->>'offset')::int,0)) x), '[]')
- into total, r;
- return jsonb_build_object('rows', r, 'total', total);
+ into total, sum_cents, r;
+ return jsonb_build_object('rows', r, 'total', total, 'sum_cents', sum_cents);
 end $$;
 
 create function public.invoice_get(p jsonb) returns jsonb
@@ -889,7 +889,10 @@ begin
   'events', (select coalesce(jsonb_agg(to_jsonb(e) order by e.id),'[]') from public.invoice_events e where e.doc_id=d.id or (e.file_id=d.file_id and e.doc_id is null)),
   'related', (select coalesce(jsonb_agg(jsonb_build_object('id',x.id,'doc_type',x.doc_type,'invoice_no',x.invoice_no,'relation',x.relation,'status',x.status)),'[]')
               from public.invoice_docs x where x.related_doc_id=d.id or x.id=d.related_doc_id or x.duplicate_of=d.id or x.id=d.duplicate_of),
-  'qb', (select coalesce(jsonb_agg(to_jsonb(o) - 'reserved_by'),'[]') from public.invoice_qb_outbox o where o.file_id=d.file_id));
+  'qb', (select coalesce(jsonb_agg(to_jsonb(o) - 'reserved_by'),'[]') from public.invoice_qb_outbox o where o.file_id=d.file_id),
+  -- The AI's transcription of this document, shown beside the values in use (never changed).
+  'ai_doc', (select e.raw->'documents'->d.doc_index from public.invoice_extractions e
+             where e.sha256=d.sha256 and e.prompt_version=d.ai->>'prompt_version' limit 1));
 end $$;
 
 -- Latest verified price per store/vendor/product/spec/unit. Order: delivery date (or invoice
@@ -920,7 +923,11 @@ begin
   'stores', (select coalesce(jsonb_agg(jsonb_build_object('store_id', s.store_id, 'label', s.label, 'active', s.active, 'auto_post', s.auto_post,
      'root_folder_id', s.root_folder_id, 'upload_folder_id', s.upload_folder_id, 'aliases', s.aliases, 'reviewer', s.reviewer,
      'last_ok', (select max(finished_at) from public.invoice_runs r where r.kind='scan' and r.store_id=s.store_id and r.ok),
-     'last_error', (select error from public.invoice_runs r where r.kind='scan' and r.store_id=s.store_id order by id desc limit 1))), '[]')
+     'last_error', (select error from public.invoice_runs r where r.kind='scan' and r.store_id=s.store_id order by id desc limit 1),
+     'today', (select count(*) from public.invoice_files f where f.store_id=s.store_id
+               and (f.ingested_at at time zone 'Pacific/Honolulu')::date = (now() at time zone 'Pacific/Honolulu')::date),
+     'review', (select count(*) from public.invoice_docs d where d.store_id=s.store_id and d.status='review'),
+     'errors', (select count(*) from public.invoice_files f where f.store_id=s.store_id and (f.intake_status in ('error','unsupported') or f.organize_status='error')))), '[]')
      from public.invoice_stores s),
   'pending', (select count(*) from public.invoice_files where intake_status='pending'),
   'processing', (select count(*) from public.invoice_files where intake_status='processing'),

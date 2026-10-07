@@ -1,17 +1,18 @@
 # Claude / Codex 共通記録
 
-## 2026-10-07 invoice の Google Drive 取込（Claude・実装中・本番未反映）
+## 2026-10-07 invoice の Google Drive 取込（Claude・実装済み・本番未反映）
 
 依頼：店舗が自店の Drive `00_Upload` に invoice を入れるだけで、AI 読取・通常取引の自動反映・例外だけ人の確認、経理照合で原本を照合済みフォルダへ、QuickBooks への原本転送台帳（仕様 2026-10-06）。
 
-調査：本番 main 009685a の index.html は v1051。invoice は app_state `spl_invoices_<店舗>`、原本は Storage `invoices`（PDF 化）、Drive は drive-sync（ソースなし）。保存のたびに新マスター単価を保存日基準で上書き。QuickBooks 転送のコードはアプリ・全ブランチ・手元の関数に無い（担当不明）。
+調査：本番 main 009685a の index.html は v1051。invoice は app_state `spl_invoices_<店舗>`、原本は Storage `invoices`（PDF 化）、Drive は drive-sync（リポジトリには無い。Moto さんが本文を提供）。保存のたびに新マスター単価を保存日基準で上書き。
 
-実装（ブランチ claude/invoice-drive-intake・ローカル）：`db/invoice-intake.sql`（service_role 専用・RLS・一意制約・invoice 単位の反映 RPC）、`supabase/functions/invoice-intake`（cron で 5 分ごと・ワーカー鍵／本部・経理は Supabase Auth＋manager_auth）、`invoice/*.mjs`（整数セント・明示換算・HST 日付・AI 応答の検査・確認ルール・重複・命名・Drive）。アプリ・SW は変更なし。詳細は `docs/INVOICE_DRIVE_INTAKE_JA.md`。
+Moto さんの回答（10/6 22:50 HST）：UI案34 で実装してよい／QuickBooks への転送は ChatGPT 側が行っている／Drive 連携は Moto さんの会社の Google アカウント・共有ドライブ可・店舗フォルダ 5 店分の URL（LaLa は作成待ち。ID はこの公開リポジトリには書かない）／公開 GitHub のブランチと PR に上げてよい。
 
-検証：合成データで rules 11・intake 17（§14 の 14 項目＋訂正版ほか）・adapters 4・mutations 15（守りを外すと落ちる）すべて成功。Deno 2 でも成功。既存テストの失敗（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）は変更前の main と同じ。独立レビュー（Codex）は未実施。
+実装（ブランチ claude/invoice-drive-intake）：`db/invoice-intake.sql`（service_role 専用・RLS・一意制約・invoice 単位の反映 RPC）、`supabase/functions/invoice-intake`（cron で 5 分ごと・ワーカー鍵／本部・経理は Supabase Auth＋manager_auth／外部の転送は専用の鍵）、`invoice/*.mjs`。Drive は drive-sync が保存した `drive_oauth` をそのまま使える。QuickBooks は `route='external'` で同じ台帳を ChatGPT 側と共有し、このシステムからは送らない。アプリ v1052（`index.html`・`sw.js`）：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の提出フォルダの案内、食材の仕入れ履歴。詳細は `docs/INVOICE_DRIVE_INTAKE_JA.md`。
 
-未完了：本番 DB・関数・cron は未反映。Drive の実フォルダ・所有者・共有、QuickBooks の今の担当と送信手段、画面（UI案34 を Moto に提示・判断待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。公開 GitHub への push は Moto の許可待ち。
+検証：合成データで rules 11・intake 22・adapters 4・mutations 22・Deno 18、アプリの検証 78、本物の画面（本物の handler＋PGlite）49・pageerror 0。既存テストの失敗は変更前の main と同じ。独立レビュー（Codex）は未実施。
 
+未完了：本番 DB・関数・cron・アプリ v1052 は未反映。店舗フォルダの実際の中身（00_Upload の有無・共有ドライブか）、ChatGPT 側の転送が原本をどこから拾うか（台帳を見ないと二重送信のおそれ）、drive-sync の安全化（本文の再提供待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。
 
 ## 2026-09-20 接続・公開保存の承認と勤怠のみ即時送信
 

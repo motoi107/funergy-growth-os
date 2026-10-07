@@ -1,17 +1,18 @@
 # 改修・自動化の作業記録
 
-## 2026-10-07 invoice の Google Drive 取込（Claude・実装中・本番未反映）
+## 2026-10-07 invoice の Google Drive 取込（Claude・実装済み・本番未反映）
 
-依頼：店舗が自店の Drive `00_Upload` に invoice を入れるだけで、AI 読取・通常取引の自動反映・例外だけ人の確認、経理照合で原本を照合済みフォルダへ、QuickBooks への原本転送台帳（仕様 2026-10-06）。
+状態：サーバー（DB・取込ワーカー・確認ルール・QuickBooks 台帳）とアプリ v1052 の画面を実装し、合成データと本物の画面で検証済み。ブランチ `claude/invoice-drive-intake`。詳細と手順は `docs/INVOICE_DRIVE_INTAKE_JA.md`（13 節が本番の順番）。
 
-調査：本番 main 009685a の index.html は v1051。invoice は app_state `spl_invoices_<店舗>`、原本は Storage `invoices`（PDF 化）、Drive は drive-sync（ソースなし）。保存のたびに新マスター単価を保存日基準で上書き。QuickBooks 転送のコードはアプリ・全ブランチ・手元の関数に無い（担当不明）。
+次にすること（順番どおり。どれも未実施）：
+1. Codex による独立レビュー（コードと SQL。特に権限・二重送信・締め済みの月・金額）。
+2. Moto さんの確認：ChatGPT 側の QuickBooks 転送が原本をどこから拾っているか（Drive のフォルダか・メールか）。台帳を見るようにできるか。
+3. SQL の適用 → Edge Function `invoice-intake` の配備（Verify JWT OFF。Drive は既存の `drive_oauth` を使う）→ アプリ v1052 を貼る。
+4. 画面の「設定」で 5 店の店舗フォルダを登録 →「フォルダを確かめる」→ 00_Upload の用意 → 店舗に 00_Upload だけを共有 →「店舗の画面」で案内を出す。LaLa はフォルダができてから。
+5. cron を登録、試験は 1 店・確認モード（自動反映 OFF）で数日 → 業者・商品ごとに自動反映を ON → 開始日時 → アプリへの写しを ON。
+6. QuickBooks：ChatGPT 側と合わせてから `route='external'`・台帳 ON・外部の口 ON（鍵は SQL で渡す）。
 
-実装（ブランチ claude/invoice-drive-intake・ローカル）：`db/invoice-intake.sql`（service_role 専用・RLS・一意制約・invoice 単位の反映 RPC）、`supabase/functions/invoice-intake`（cron で 5 分ごと・ワーカー鍵／本部・経理は Supabase Auth＋manager_auth）、`invoice/*.mjs`（整数セント・明示換算・HST 日付・AI 応答の検査・確認ルール・重複・命名・Drive）。アプリ・SW は変更なし。詳細は `docs/INVOICE_DRIVE_INTAKE_JA.md`。
-
-検証：合成データで rules 11・intake 17（§14 の 14 項目＋訂正版ほか）・adapters 4・mutations 15（守りを外すと落ちる）すべて成功。Deno 2 でも成功。既存テストの失敗（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）は変更前の main と同じ。独立レビュー（Codex）は未実施。
-
-未完了：本番 DB・関数・cron は未反映。Drive の実フォルダ・所有者・共有、QuickBooks の今の担当と送信手段、画面（UI案34 を Moto に提示・判断待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。公開 GitHub への push は Moto の許可待ち。
-
+別件で残っていること：drive-sync の安全化（anon キーで任意のファイルを移動・完全削除できる／設定済みの連携を上書きできる。直した版は本文の再提供待ち）、`push` が subfolder を使わない件、invoice_ocr・Storage `invoices` の anon、`pg_policies` の確認。
 
 ## 2026-09-20 接続・公開保存の承認と勤怠のみ即時送信
 
