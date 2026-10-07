@@ -89,6 +89,22 @@ export function findMap(maps, line, storeId) {
   return { map: m };
 }
 
+// A printed number that carries its unit ("15 LB", "$3.52/LB", "3.52 per LB"). The number is parsed by the
+// same strict parser; the unit is only removed when it is the unit the line already states (expect), or when
+// the line states none (then it becomes the line's unit). Anything else stays unreadable. Credits ("12.34CR")
+// are parsed before this is tried, so a sign marker is never taken for a unit.
+const UNIT_SUFFIX = /^(.*?[\d)])\s*(?:\/\s*|per\s+)?([A-Za-z]{1,8})\.?$/i;
+export function parseWithUnit(text, parse, expect) {
+  const direct = parse(text);
+  if (direct !== null) return { value: direct, unit: null };
+  const m = UNIT_SUFFIX.exec(String(text ?? '').normalize('NFKC').trim());
+  if (!m) return { value: null, unit: null };
+  const unit = unitKey(m[2]);
+  if (expect && unitKey(expect) !== unit) return { value: null, unit: null };
+  const value = parse(m[1]);
+  return value === null ? { value: null, unit: null } : { value, unit };
+}
+
 const usd = (r, d = 10) => ratioToDecimal({ num: r.num, den: r.den * 1000000n }, d);
 const dec = (v, d = 6) => (v === null || v === undefined ? null : trimDecimal(fromScaled(v, d)));
 
@@ -133,14 +149,18 @@ export async function evaluate(ext, ctx) {
   h.invoice_no_norm = normInvoiceNo(ext.invoice_number);
   if (!h.invoice_no_norm && h.posting_kind === 'purchase') add('invoice_no_missing');
 
-  const d = determineDate(ext.invoice_date_text, ext.invoice_date);
-  h.invoice_date = d.value;
-  if (!d.value) add(d.reason);
   if (ext.delivery_date_text) {
     const dd = determineDate(ext.delivery_date_text, ext.delivery_date);
     h.delivery_date = dd.value;
     if (!dd.value) add('delivery_date_invalid');
   } else h.delivery_date = null;
+  const d = determineDate(ext.invoice_date_text, ext.invoice_date);
+  h.invoice_date = d.value;
+  h.invoice_date_basis = d.value ? 'invoice' : null;
+  // Moto 2026-10-07: when no invoice date is printed at all, the printed delivery date is used as the invoice
+  // date. A printed invoice date that cannot be read, or that disagrees, still needs a person.
+  if (!d.value && d.reason === 'date_missing' && h.delivery_date) { h.invoice_date = h.delivery_date; h.invoice_date_basis = 'delivery'; }
+  else if (!d.value) add(d.reason);
   const due = ext.due_date_text ? determineDate(ext.due_date_text, ext.due_date) : { value: null };
   h.due_date = due.value;
   h.effective_date = h.delivery_date || h.invoice_date;
@@ -184,19 +204,33 @@ export async function evaluate(ext, ctx) {
   for (let i = 0; i < extLines.length; i++) {
     const l = extLines[i], n = i + 1;
     const r = [];
-    const qty = parseQty(l.qty), unit = parseMicros(l.unit_price), amount = parseCents(l.amount);
+    // Quantity and price may be printed with their unit ("15 LB", "$3.52/LB"); amounts never are.
+    const qRead = parseWithUnit(l.qty, parseQty, l.unit);
+    const qtyUnit = unitKey(l.unit) || qRead.unit || '';
+    // A price unit that differs from the quantity unit is kept (it makes the line catch-weight, i.e. review).
+    const pRead = parseWithUnit(l.unit_price, parseMicros, l.price_unit);
+    const priceUnit = unitKey(l.price_unit) || pRead.unit || '';
+    const qty = qRead.value, unit = pRead.value, amount = parseCents(l.amount);
     const ldisc = l.line_discount ? parseCents(l.line_discount) : 0;
     const out = {
       line_no: n, page: l.page, item_code: l.item_code, raw_name: l.description || '', raw: l,
-      qty: dec(qty), purchase_unit: unitKey(l.unit) || null, spec: l.pack, spec_key: specKey(l.pack),
+      qty: dec(qty), purchase_unit: qtyUnit || null, spec: l.pack, spec_key: specKey(l.pack),
       unit_price: dec(unit), amount_cents: amount, line_discount_cents: ldisc === null ? null : Math.abs(ldisc),
-      weight: l.weight, weight_unit: l.weight_unit, price_unit: l.price_unit, taxable: l.taxable,
+      weight: l.weight, weight_unit: l.weight_unit, price_unit: l.price_unit || pRead.unit || null, taxable: l.taxable,
     };
     if (l.taxable !== null && l.taxable !== undefined) taxFlags.add(l.taxable);
     if (qty === null || unit === null || amount === null || ldisc === null) { r.push('line_value_missing'); lineBad = true; }
     else {
       lineSum += amount;
-      const catchWeight = !!l.weight || (l.price_unit && unitKey(l.price_unit) !== unitKey(l.unit));
+      // Catch-weight: priced per a different unit than the quantity, or a printed weight that is not simply the
+      // quantity again in the same unit ("15 LB" for 15 LB). Then quantity × price cannot be checked.
+      let weightIsQty = false;
+      if (l.weight) {
+        const w = parseWithUnit(l.weight, parseQty, l.weight_unit || qtyUnit);
+        const wUnit = unitKey(l.weight_unit) || w.unit || qtyUnit;
+        weightIsQty = w.value !== null && w.value === qty && wUnit === qtyUnit && !!qtyUnit;
+      }
+      const catchWeight = (!!l.weight && !weightIsQty) || (!!priceUnit && priceUnit !== qtyUnit);
       if (catchWeight) r.push('catch_weight');
       else {
         const diff = lineMathDiff(qty, unit, amount) - BigInt(out.line_discount_cents) * CENT_PICO;

@@ -1257,3 +1257,38 @@ test('Codex re-review: corrections of a posted invoice', async (t) => {
     });
   }
 });
+
+// 10/7 production: the first real invoice (a produce vendor) printed "$3.52/LB", "15 LB" and only a delivery date.
+// The reading was right but every line was refused. Synthetic values, same shapes.
+test('a produce invoice with units printed on its numbers and only a delivery date is read whole', async () => {
+  const E = await setup();
+  try {
+    E.fixtures.set('PRODUCE-1', { readable: true, documents: [{ doc_type: 'invoice', pages: [1], pages_marked: [], vendor_name: 'Vendor A Inc.',
+      ship_to: 'LaLa Izakaya, 100 Test Street', invoice_number: 'P-77', invoice_date_text: null, invoice_date: null,
+      delivery_date_text: '10/06/2026', delivery_date: '2026-10-06', currency: 'USD', subtotal: '$62.87', tax: '$0.31', total: '$63.18', references: [],
+      lines: [
+        { page: 1, description: 'onion, diced', qty: '10', unit: 'LB', unit_price: '$2.50/LB', price_unit: 'LB', weight: '10 LB', amount: '$25.00' },
+        { page: 1, description: 'onion, peeled', qty: '12.3', unit: 'LB', unit_price: '$2.51/LB', price_unit: 'LB', weight: '12.3 LB', amount: '$30.87' },
+        { page: 1, description: 'lettuce', qty: '4', unit: 'PC', unit_price: '$1.75/PC', price_unit: 'PC', weight: null, amount: '$7.00' }] }] });
+    const id = E.drive.file('produce.jpg', jpg('PRODUCE-1'), 'U6', { mime: 'image/jpeg' });
+    await E.worker();
+    let [d] = await docsOf(E, id);
+    for (const bad of ['line_value_missing', 'catch_weight', 'line_math', 'total_mismatch', 'date_missing']) assert.ok(!codes(d).includes(bad), bad + ' ' + JSON.stringify(d.reasons));
+    assert.equal(d.status, 'review');                                   // new products: a person maps and posts them
+    const [dd] = await E.q(`select invoice_date::text i, delivery_date::text v, effective_date::text e from invoice_docs where id=$1`, [d.id]);
+    assert.deepEqual(dd, { i: '2026-10-06', v: '2026-10-06', e: '2026-10-06' });
+    const lines = await E.q(`select qty::text q, purchase_unit u, unit_price::text p, amount_cents a from invoice_lines where doc_id=$1 order by line_no`, [d.id]);
+    assert.deepEqual(lines.map(l => [Number(l.q), l.u, Number(l.p), Number(l.a)]), [[10, 'LB', 2.5, 2500], [12.3, 'LB', 2.51, 3087], [4, 'PC', 1.75, 700]]);
+
+    // A record staged before this fix has no invoice date: the next correction saves the delivery date with it,
+    // so the stored date always matches the reasons.
+    await E.q(`update invoice_docs set invoice_date=null, reasons=reasons || '[{"code":"date_missing"}]'::jsonb where id=$1`, [d.id]);
+    [d] = await docsOf(E, id);
+    const r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { due_date: '2026-10-31' }, reason: 'due date only' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    [d] = await docsOf(E, id);
+    const [after] = await E.q(`select invoice_date::text i, overrides->'invoice_date'->>'new' o from invoice_docs where id=$1`, [d.id]);
+    assert.equal(after.i, '2026-10-06'); assert.equal(after.o, '2026-10-06');
+    assert.ok(!codes(d).includes('date_missing'), JSON.stringify(d.reasons));
+  } finally { await E.pg.close(); }
+});

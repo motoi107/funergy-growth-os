@@ -70,9 +70,9 @@
 | 読み取り | unreadable, ai_failed, ai_truncated, multiple_documents, missing_pages, no_lines |
 | 書類の種類 | doc_type_unknown, statement（照合用・計上しない）, credit_memo（元 invoice との関連付けが必要）, receipt_route（会社カード・立替は既存の社員別管理） |
 | 業者・店舗 | vendor_unknown（マスター名か登録した別名に完全一致のみ）, vendor_kind_unset, store_mismatch（自動で付け替えない）, ship_to_unrecognized, multi_store |
-| 日付・番号・通貨 | date_missing, date_unreadable, date_disagree, delivery_date_invalid, invoice_no_missing, currency, closed_month |
+| 日付・番号・通貨 | date_missing（請求日の印字が無くても、納品日が読めればその日を請求日にする。Moto さん 10/7）, date_unreadable, date_disagree（印字はあるのに読めない・食い違うときは人が直す）, delivery_date_invalid, invoice_no_missing, currency, closed_month |
 | 金額 | total_missing, total_mismatch（明細＋税＋送料＋その他−値引き＝合計。許容差は設定・初期 $0.00）, discount_allocation（値引きの配り方が未設定）, mixed_tax |
-| 明細 | line_value_missing, line_math（数量×単価−明細値引き＝金額。印字の丸めの 0.5 セントまで）, zero_price, negative_line, catch_weight |
+| 明細 | line_value_missing（数量・単価は単位付きの印字「15 LB」「$3.52/LB」も読む。行が示す単位と違う単位なら読めない扱い。金額は単位付きを受けない）, line_math（数量×単価−明細値引き＝金額。印字の丸めの 0.5 セントまで）, zero_price, negative_line, catch_weight（単価の単位が数量の単位と違う、または印字の重さが数量と違う。重さが数量と同じ値・同じ単位なら catch_weight にしない） |
 | 商品 | unmapped（新商品）, map_ambiguous, map_unverified, unit_mismatch, unit_unverified, spec_changed（規格の変更は値上がりと区別）, no_price_ref, price_jump（同じ規格・基準単位で比べる。初期 ±15%） |
 | 重複 | duplicate_certain, same_number_different, duplicate_candidate, app_duplicate_candidate |
 | 運用 | mode_review_store / vendor / item（確認モード）, intake_not_started |
@@ -175,6 +175,8 @@
 8. Moto さんの決定（10/7）：**最初から全店（6 店。LaLa はフォルダができ次第）で確認モード**（自動反映 OFF）。開始日時を決め、取込とアプリへの写しを ON（「出した」店舗の Invoice は写しから Food Cost に入るので、写しは最初から ON）。店舗ごとに「この店舗の 00_Upload を取り込む」を ON。`worker.enabled=true`・cron を登録（`db/invoice-intake-start.sql`。中身は `db/invoice-intake-schedule.sql` と同じ cron）。この間、Invoice が Food Cost に入るのは本部が「Invoice取込」で反映したものだけ。
    - Claude の提案（Moto さんの決定ではない）：最初の数日は「原本の名前と場所を整える」を OFF（AI の読みを人が確かめる前に名前を付けない）。開始前に、アプリに登録済みの過去の invoice を 1 枚だけ 00_Upload に入れて、読取・重複の候補・「要確認」までを試し、「対象外にする」で片づける（開始前に入ったものはアプリへ写されない）。
 9. **開始日時を過ぎてから**、GM・CEO が「店舗の画面」で各店を「出す」→ その店はアプリで業者 Invoice を登録しない（v1055）。開始前に出すと、その間に 00_Upload に入った invoice は開始前の扱いになりアプリへ写されない（v1055 の「出す」は開始日時が設定されているかだけを見て、過ぎたかは見ない）。店舗のスタッフには 00_Upload だけを共有。店舗への告知は Moto さん。結果を見て、業者・商品ごとに自動反映を ON。
+   - **10/7 09:40 HST ごろ運転開始**（Moto さん）：開始日時は 10/7 中（「運用開始前」の理由が付いていないので過去）、取込 ON・確認モード。最初の本物の invoice（Marujuu・青果の業者・店舗スタッフが 00_Upload に入れた）を Drive から読み、要確認で止めた（自動では反映しない・Food Cost には入っていない）。Drive 接続 OK・最終の正常取込 11:25。
+   - その 1 枚で、AI の読み取りは正しかったのに 3 行とも「数量・単価・金額が読めない明細」になった。原因はこちらの数字の受け取り方（単価が「$3.52/LB」と単位付きで、厳密な数字しか受けていなかった）。印字の重さ「15 LB」も数量の繰り返しなのに catch_weight 扱い。請求日の印字が無く（納品日だけ）「請求日がない」。→ 10/7 に修正（§5・§15）。修正前に取り込んだその 1 枚は、単価を手で入れて確認する（読み直しはしない）。
 10. QuickBooks：今の転送（ChatGPT 側）が台帳を見るようにできたら `route='external'`・台帳 ON・外部の口 ON。このシステムから送るのは、今の転送を止めて送信手段をつないでから `route='invoice-intake'`。
 
 ## 14 切り戻し
@@ -203,8 +205,8 @@
 
 | コマンド | 結果 |
 |---|---|
-| `node --test tests/invoice-rules.test.mjs` | 11/11 |
-| `node --test tests/invoice-intake.test.mjs` | 51/51（Codex の再レビュー（1301623）の C3a・C3b を、全体の SQL と本番と同じ入れ方（最初の migration＋修正）の両方で足した。Codex の指摘 C1〜C5 の再現と、最初の SQL を入れた DB に修正の SQL を重ねる試験を足した。§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
+| `node --test tests/invoice-rules.test.mjs` | 12/12（10/7：単位付きの数字・重さ＝数量・納品日を請求日に、を足した） |
+| `node --test tests/invoice-intake.test.mjs` | 52/52（10/7：青果の invoice（単位付きの数字・納品日だけ）を丸ごと読む・修正前に入った記録は次の訂正で納品日を保存、を足した。修正前のコードでは落ちる。Codex の再レビュー（1301623）の C3a・C3b を、全体の SQL と本番と同じ入れ方（最初の migration＋修正）の両方で足した。Codex の指摘 C1〜C5 の再現と、最初の SQL を入れた DB に修正の SQL を重ねる試験を足した。§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
 | `node --test tests/invoice-adapters.test.mjs` | 5/5（Drive・共有ドライブの一覧・Anthropic・PostgREST・HTTP 入口） |
 | `node --test tests/invoice-mutations.test.mjs` | 38/38（守りを 37 か所外すと、どれもテストが落ちることを確認。Codex の指摘 C1〜C5・C3a・C3b の守り 9 か所を足した） |
 | `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 25 件・42 段階） |

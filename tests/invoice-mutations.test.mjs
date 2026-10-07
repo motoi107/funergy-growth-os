@@ -103,6 +103,11 @@ const CASES = [
     "        if (!res.ok) { stats.ai_failed = (stats.ai_failed || 0) + 1; await fail('ai_failed:' + String(res.error || 'unknown').slice(0, 80)); return; }\n        const value = { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null };",
     "        if (!res.ok && res.retryable) { await fail(res.error); return; }\n        const value = res.ok ? { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null } : { readable: false, failed: true, reason: res.error, documents: [] };"]]],
   ['AI output keeps unknown keys', UNIT, [['invoice/extract.mjs', '  return { ok: true, readable: true, documents };', '  return { ok: true, readable: true, documents, ...j };']]],
+  // 10/7 production fix: numbers printed with their unit, weight equal to the quantity, delivery date as invoice date.
+  ['a printed unit that disagrees with the line is accepted', UNIT, [['invoice/rules.mjs', "if (expect && unitKey(expect) !== unit) return { value: null, unit: null };", '']]],
+  ['any printed weight is taken for the quantity', UNIT, [['invoice/rules.mjs', 'weightIsQty = w.value !== null && w.value === qty && wUnit === qtyUnit && !!qtyUnit;', 'weightIsQty = true;']]],
+  ['an unreadable invoice date is replaced by the delivery date', UNIT, [['invoice/rules.mjs', "if (!d.value && d.reason === 'date_missing' && h.delivery_date)", 'if (!d.value && h.delivery_date)']]],
+  ['the delivery date is not saved with a correction', E2E, [['supabase/functions/invoice-intake/handler.mjs', "if (!('invoice_date' in header) && !g.doc.invoice_date && h.invoice_date && g.doc.status === 'review') header.invoice_date = h.invoice_date;", '']]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {

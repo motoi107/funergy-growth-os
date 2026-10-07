@@ -402,6 +402,9 @@ export function createHandler(deps) {
     for (const k of Object.keys(b.header || {})) { if (!allowed.includes(k)) throw new Error('field_not_editable'); header[k] = b.header[k]; }
     const result = await recheck(g.doc, g.lines, { header, lines: b.lines || [] }, ctx);
     const h = result.header;
+    // An invoice with no printed invoice date takes its delivery date (rules.mjs). When that fills a date the
+    // record does not have yet, it is saved with this correction, so the stored date matches the new reasons.
+    if (!('invoice_date' in header) && !g.doc.invoice_date && h.invoice_date && g.doc.status === 'review') header.invoice_date = h.invoice_date;
     if ('vendor_key' in header) { header.vendor_name = h.vendor_name || null; header.food_kind = header.food_kind ?? h.food_kind ?? null; }
     if ('invoice_no' in header) header.invoice_no_norm = h.invoice_no_norm;
     if ('doc_type' in header) header.posting_kind = h.posting_kind;

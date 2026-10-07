@@ -5,7 +5,7 @@ import { parsePackSpec, unitPrices, convertQty } from '../invoice/units.mjs';
 import { parsePrintedDate, determineDate, hstDate } from '../invoice/dates.mjs';
 import { organizedName, safePart, uniqueName, extensionFor } from '../invoice/naming.mjs';
 import { parseResponse, buildRequest } from '../invoice/extract.mjs';
-import { evaluate, applyDuplicates, findMap } from '../invoice/rules.mjs';
+import { evaluate, applyDuplicates, findMap, parseWithUnit } from '../invoice/rules.mjs';
 import { classifyDuplicates, normInvoiceNo, contentSignature } from '../invoice/dedupe.mjs';
 
 test('money is exact: cents and micros, no floating point', () => {
@@ -129,6 +129,55 @@ test('each exception sends the invoice to review instead of posting', async () =
   const e = base(); e.total = '188.47';
   const r = await evaluate(e, ctx());
   assert.equal(r.header.total_cents, 18847); assert.equal(r.lines[0].amount_cents, 18000); assert.equal(r.lines[0].unit_price, '60');
+});
+
+// 10/7 production: a produce invoice printed "$3.52/LB" and "15 LB", and only a delivery date. Synthetic values, same shapes.
+const produce = () => ({ doc_type: 'invoice', vendor_name: 'Vendor A Inc.', ship_to: 'LaLa Izakaya 100 Test Street', invoice_number: 'P-77',
+  invoice_date_text: null, invoice_date: null, delivery_date_text: '10/06/2026', delivery_date: '2026-10-06', currency: 'USD',
+  subtotal: '$62.87', tax: '$0.31', total: '$63.18', pages: [1], pages_marked: [],
+  lines: [
+    { page: 1, description: 'onion, diced', qty: '10', unit: 'LB', unit_price: '$2.50/LB', price_unit: 'LB', weight: '10 LB', amount: '$25.00' },
+    { page: 1, description: 'onion, peeled', qty: '12.3', unit: 'LB', unit_price: '$2.51/LB', price_unit: 'LB', weight: '12.3 LB', amount: '$30.87' },
+    { page: 1, description: 'lettuce', qty: '4', unit: 'PC', unit_price: '$1.75/PC', price_unit: 'PC', weight: null, amount: '$7.00' }] });
+
+test('numbers printed with their unit are read; a weight that repeats the quantity is not catch-weight', async () => {
+  assert.deepEqual(parseWithUnit('$3.52/LB', parseMicros, 'LB'), { value: 3520000n, unit: 'LB' });
+  assert.deepEqual(parseWithUnit('3.52 per lb', parseMicros, null), { value: 3520000n, unit: 'LB' });
+  assert.deepEqual(parseWithUnit('15LB', parseQty, 'LB'), { value: 15000000n, unit: 'LB' });
+  assert.deepEqual(parseWithUnit('15.1 LB', parseQty, 'lb'), { value: 15100000n, unit: 'LB' });
+  assert.deepEqual(parseWithUnit('12.34CR', parseCents, null), { value: -1234, unit: null });     // a credit, not a unit
+  assert.deepEqual(parseWithUnit('3.52/CS', parseMicros, 'LB'), { value: null, unit: null });    // another unit than the line states
+  assert.deepEqual(parseWithUnit('3.5.2/LB', parseMicros, 'LB'), { value: null, unit: null });
+  assert.deepEqual(parseWithUnit('LB', parseQty, 'LB'), { value: null, unit: null });
+
+  const r = await evaluate(produce(), ctx({ maps: [] }));
+  const c = r.reasons.map(x => x.code);
+  for (const bad of ['line_value_missing', 'catch_weight', 'line_math', 'total_mismatch', 'date_missing']) assert.ok(!c.includes(bad), bad + ' ' + JSON.stringify(r.reasons));
+  assert.ok(c.includes('unmapped'));
+  assert.deepEqual(r.lines.map(l => [l.qty, l.purchase_unit, l.unit_price, l.amount_cents]), [['10', 'LB', '2.5', 2500], ['12.3', 'LB', '2.51', 3087], ['4', 'PC', '1.75', 700]]);
+  assert.equal(r.header.lines_sum_cents, 6287);
+  // Moto 10/7: no printed invoice date → the printed delivery date is the invoice date.
+  assert.equal(r.header.invoice_date, '2026-10-06'); assert.equal(r.header.invoice_date_basis, 'delivery'); assert.equal(r.header.effective_date, '2026-10-06');
+
+  const codesOf = async mut => { const e = produce(); mut(e); return (await evaluate(e, ctx({ maps: [] }))).reasons.map(x => x.code); };
+  assert.ok((await codesOf(e => { e.lines[0].unit_price = '$2.50/CS'; })).includes('line_value_missing'));           // printed unit disagrees
+  assert.ok((await codesOf(e => { e.lines[0].qty = '10 CS'; })).includes('line_value_missing'));
+  assert.ok((await codesOf(e => { e.lines[0].amount = '$25.00/LB'; })).includes('line_value_missing'));             // amounts stay strict
+  assert.ok((await codesOf(e => { e.lines[0].weight = '9.8 LB'; })).includes('catch_weight'));                       // a real weight
+  assert.ok((await codesOf(e => { e.lines[0].weight = '10 KG'; })).includes('catch_weight'));
+  assert.ok((await codesOf(e => { e.lines[0].weight = 'about 10'; })).includes('catch_weight'));
+  assert.ok((await codesOf(e => { e.lines[0].unit = 'CS'; e.lines[0].qty = '1'; e.lines[0].weight = null; e.lines[0].price_unit = null; })).includes('catch_weight')); // priced per LB, sold by the case
+  assert.ok((await codesOf(e => { e.lines[0].unit_price = '$2.60/LB'; })).includes('line_math'));
+  // A quantity printed with its unit when the unit column is empty takes that unit.
+  const e2 = produce(); e2.lines[2].qty = '4 PC'; e2.lines[2].unit = null;
+  assert.equal((await evaluate(e2, ctx({ maps: [] }))).lines[2].purchase_unit, 'PC');
+  // A printed invoice date that cannot be read, or that disagrees, still needs a person.
+  assert.ok((await codesOf(e => { e.invoice_date_text = '13/45/2026'; })).includes('date_unreadable'));
+  assert.ok((await codesOf(e => { e.invoice_date_text = '10/05/2026'; e.invoice_date = '2026-05-10'; })).includes('date_disagree'));
+  assert.ok((await codesOf(e => { e.delivery_date_text = 'next day'; })).includes('date_missing'));
+  const printed = produce(); printed.invoice_date_text = '10/05/2026'; printed.invoice_date = '2026-10-05';
+  const rp = await evaluate(printed, ctx({ maps: [] }));
+  assert.equal(rp.header.invoice_date, '2026-10-05'); assert.equal(rp.header.invoice_date_basis, 'invoice');
 });
 
 test('mapping is exact: similar names are never merged, only this vendor is used, ambiguity is review', () => {
