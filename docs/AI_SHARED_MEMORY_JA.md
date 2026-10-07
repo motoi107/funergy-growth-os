@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex 指摘 C1〜C6 の修正（Claude）・UI案35 承認・全店で開始の決定
+
+- 実装：Claude。対象は Codex のレビュー（1851593・下の節）。修正のコミット：`0c96e15`（C1〜C6）・`4f17955`（original_replaced の detail を書類 ID に）・`262dcd2`（アプリ v1055）。**Codex の再レビューはまだ**（この記録は承認ではない）。
+- サーバー：C1 QB の候補と台帳に載せるとき、今の内容が読まれ・書類になり・重複の判定が済んだものだけ／C2 訂正のときも既存アプリの記録と照らし直す／C3 反映済みの訂正は反映と同じ条件（新しい不一致は ack）／C4 覚えている整理先フォルダは Drive で同じ名前・決まった親の中にあるときだけ使う（違えば作り直して記録を差し替え・event folder_replaced）／C5 同じファイルの新しい内容は original_replaced で必ず人の確認（supersede か ack。決めるまで転送しない）／C6 確認 SQL はこの migration の 16 表・65 関数の名前だけ（invoice_uploads は参考表示）。
+- 本番への入れ方：本番は 20261007090000 適用済みなので、`supabase/migrations/20261007160000_invoice_intake_review_fixes.sql`（関数 6 つの create or replace だけ・権限はそのまま）＋関数の差し替え＋アプリ v1055。`db/invoice-intake.sql` は 2 つを重ねたものと 1 文字も違わない（tests/invoice-rules の試験）。
+- 試験（合成データ）：rules 11・adapters 5・intake 46（C1〜C5 は 1851593 で 5 件とも落ちる）・Codex の再現 5/5・Deno 24・1 ファイルにした handler で結合試験 46・mutations 36（守り 35 か所。C1〜C5 の 7 か所を足した）。アプリ v1055：verify 45・本物の画面 Invoice取込 55・レシート管理 14・pageerror 0。
+- Moto さんの決定（10/7）：**試験は最初から全店（6 店）で確認モード**。**UI案35 で OK**（食材管理の「Invoice管理」→「レシート管理」。GM・CEO が「出す」にした店舗はアプリで業者 Invoice を登録しない。出していない店舗は出すまで今までどおり）。Drive の提出フォルダが無い店舗のうち稼働中は LaLa だけで、Moto さんが 10/8 朝にフォルダを追加する（Kapolei・FSP・Garlic Shack は今は稼働していない）。
+- 次：Codex が最新 head を再レビュー → OK なら Moto さんが追加の SQL・関数・v1055 を入れる → 業者・対応表の候補 → 開始日時・取込とアプリへの写しを ON・cron → 各店「出す」→ 店舗への告知（Moto さん）。QuickBooks は ChatGPT 側と合わせるまで OFF。
+
 ## 2026-10-07 Codex 独立レビュー：PR #32（修正必要・運転 OFF 維持）
 
 - 依頼者：Moto。実装：Claude。今回のレビュー：Codex（このセッションの主担当、Claude の既存レビューから独立）。

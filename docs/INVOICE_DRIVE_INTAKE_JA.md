@@ -20,6 +20,7 @@
 |---|---|
 | `db/invoice-intake.sql`（= `supabase/migrations/20261007090000_invoice_intake.sql`） | 表・一意制約・RLS・RPC。service_role 専用。anon/authenticated は表も関数も使えない |
 | `db/invoice-intake-schedule.sql` | 5 分ごとの起動（pg_cron + pg_net）。既定では何もしない |
+| `supabase/migrations/20261007160000_invoice_intake_review_fixes.sql` | Codex レビュー（1851593）の修正。本番に入っている 20261007090000 の上に、関数 6 つ（invoice_stage・invoice_post・invoice_edit・invoice_folder・invoice_qb_candidates・invoice_qb_enqueue）だけを差し替える（表・設定・記録・鍵・権限は変えない）。`db/invoice-intake.sql` は最初から入れるときの全体で、2 つを重ねたものと 1 文字も違わない（試験で確認） |
 | `db/invoice-intake-precheck.sql`・`db/invoice-intake-postcheck.sql` | 配備の前後の確認（読むだけ）。前：`manager_auth` の形・GM/CEO の登録・`invoice_` の表や関数がまだ無いこと。後：表 16・関数 65・運転はすべて OFF・RLS・ブラウザ（anon/authenticated）から読めない・動かせない。鍵は表示しない |
 | `db/invoice-intake-rollback.sql` | 取り消し。この migration が作った表と関数だけを消す。取込の記録が 1 件でもあれば止まる |
 | `supabase/functions/invoice-intake/handler.mjs`・`index.ts` | 取込ワーカーと、本部・経理の操作 API |
@@ -32,7 +33,7 @@
 | `invoice/naming.mjs` | `業者名_YYYY-MM-DD_店舗名_INV-番号.ext` |
 | `invoice/drive.mjs` | Drive API（一覧・取得・ダウンロード・名前変更/移動・フォルダ）。削除の機能は持たない |
 | `tests/invoice-*.test.mjs` | 単体・結合（PGlite＋模擬 Drive/AI/メール）・アダプタ・ミューテーション |
-| `index.html`・`sw.js`（v1052・v1053 は 10/7 に本番へ貼られた。この PR は v1054） | 画面：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の Invoice管理の提出フォルダの案内、食材編集の「仕入れ履歴」。本体は `invIn*` 関数（`/* FUNERGY_INVOICE_INTAKE_BEGIN */` 〜 `END`） |
+| `index.html`・`sw.js`（v1052〜v1054 は 10/7 に本番へ貼られた。この PR は v1055） | 画面：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の Invoice管理の提出フォルダの案内、食材編集の「仕入れ履歴」。本体は `invIn*` 関数（`/* FUNERGY_INVOICE_INTAKE_BEGIN */` 〜 `END`） |
 
 アプリの変更（v1052・v1053・v1054）は、上の画面を足したことと、既存の 7 関数に 1 行ずつ（Drive 取込の写しを旧画面で削除・承認・差し戻ししない／Invoice管理に案内／食材編集にボタン／経理センターの件数）と、PC で経理センターの大タブを折り返す CSS 1 行だけ。保存キー・同期・権限・価格の更新は変えていない。
 
@@ -157,19 +158,20 @@
 
 店舗：`invoice_stores`（店名ラベル・店舗フォルダ ID・00_Upload ID・宛名と住所の別名・担当・自動反映）。業者：`invoice_vendor_rules`（マスター名・別名・食材/食材以外・自動反映）。商品：`invoice_item_maps`（業者コード or 別名＋規格＋仕入単位 → 食材マスターのコード、入数・基準単位）。`vendor_seed`・`map_seed` は候補を作るだけで、すべて確認モード・未確認から始まる（LaLa の業者コード付き品目を対象）。
 
-## 13 本番に入れる順番（すべて未実施）
+## 13 本番に入れる順番（10/7 時点の進み具合つき）
 
 1. Moto の確認（10/6 回答済み：転送は ChatGPT 側・Drive は Moto さんの会社のアカウント・共有ドライブ可・店舗フォルダ 5 店分の URL。LaLa は作成待ち）。残り：今の転送が原本をどこから拾うか、各店で Drive に上げる人の Google アカウント、`pg_policies`。
-2. SQL を適用（`supabase/migrations/20261007090000_invoice_intake.sql`）。既存の表は変更しない。
-3. Edge Function `invoice-intake` を配備（Verify JWT は OFF。関数内で認証する）。Drive は drive-sync の保存済みの連携をそのまま使う（secrets は不要。分けたいときだけ `GOOGLE_OAUTH_*` を入れる）。`ANTHROPIC_API_KEY` は既存。
-4. アプリ v1054 を貼る（`index.html`・`sw.js`。v1052・v1053 は 10/7 に貼られた。v1053 は独立レビューの画面側の修正、v1054 はサーバーにつながらないときの表示）。経理センター「Invoice取込」→ メール認証（業務Bot と同じ）。
+2. **済（10/7 02:14 HST・Moto さん）** SQL を適用（`supabase/migrations/20261007090000_invoice_intake.sql`）。既存の表は変更しない。
+3. **済（同）** Edge Function `invoice-intake` を配備（Verify JWT は OFF。関数内で認証する）。Drive は drive-sync の保存済みの連携をそのまま使う（secrets は不要）。`ANTHROPIC_API_KEY` は既存。
+4. **済（10/7 02:10 HST）** アプリ v1054。
    - 10/7、本番の v1053 で「設定」が "Failed to fetch" と「読み込み中…」のまま止まった。原因は 2・3 が未実施（Supabase は存在しない関数に CORS の無い 404 を返し、ブラウザは中身を読めない）。v1054 は「取込のサーバー（invoice-intake）につながりません」「読み込めませんでした。…「更新」を押してください」と出す。
    - 2・3 は Supabase の画面だけでできる：SQL Editor で `db/invoice-intake-precheck.sql`（すべて OK）→ migration → `db/invoice-intake-postcheck.sql`。Edge Functions の「Via Editor」に、`deno bundle supabase/functions/invoice-intake/index.ts -o <出力>` で 1 ファイルにしたもの（外からの import は無し）を貼り、名前 `invoice-intake`・JWT の検証 OFF。この状態ではどの運転も OFF のまま。
-5. 「設定」で店舗ごとに店舗フォルダの URL を入れる（Aiea・Piikoi・Kaimuki・ToriTon・Tenkichi。LaLa はフォルダができてから）→「フォルダを確かめる（作らない）」→ 00_Upload が無い店は GM・CEO が「この内容で作る・記録する」。店舗のスタッフには 00_Upload だけを共有。「店舗の画面」で「出す」にした店だけ、Invoice管理に提出フォルダが出る。
-6. 業者・対応表の候補を作る（マスターから・すべて確認モード・未確認から）。
-7. `worker.enabled=true`、cron を登録（`db/invoice-intake-schedule.sql`）。画面の「設定」で取込を ON、試験する店舗を 1 店に、自動反映は OFF のまま確認モードで数日。
-8. 結果を見て、業者・商品ごとに自動反映を ON。開始日時を決める。アプリへの写し（Food Cost・仕入明細）は開始日に ON（旧画面で写しを消せないようにしたのは v1052）。
-9. QuickBooks：今の転送（ChatGPT 側）が台帳を見るようにできたら `route='external'`・台帳 ON・外部の口 ON。このシステムから送るのは、今の転送を止めて送信手段をつないでから `route='invoice-intake'`。
+5. **済（10/7 02:32 HST）** 店舗フォルダ 6 店（Aiea・Piikoi・Kaimuki・ToriTon・Tenkichi・Marujuu）を登録 →「フォルダを確かめる」→ 6 店とも 00_Upload を作って記録。LaLa は 10/8 朝にフォルダを追加（Moto さん）。Kapolei・FSP・Garlic Shack は今は稼働していない（Moto さん 10/7）。
+6. Codex の独立レビュー（1851593・P1 5 件・P2 1 件）→ Claude が修正（§15）→ **Codex の再レビュー（未）** → OK なら：SQL Editor で `supabase/migrations/20261007160000_invoice_intake_review_fixes.sql`（関数 6 つの差し替えだけ）→ `db/invoice-intake-postcheck.sql`（review_fixes が true）→ 関数を差し替え（`deno bundle` の 1 ファイル）→ アプリ v1055（レシート管理）。
+7. 業者・対応表の候補を作る（マスターから・すべて確認モード・未確認から）。業者が無いと「業者がマスターと一致しない」で反映できない。
+8. Moto さんの決定（10/7）：**最初から全店（6 店。LaLa はフォルダができ次第）で確認モード**（自動反映 OFF）。開始日時を決め、取込とアプリへの写しを ON（「出した」店舗の Invoice は写しから Food Cost に入るので、写しは最初から ON）。店舗ごとに「この店舗の 00_Upload を取り込む」を ON。`worker.enabled=true`・cron を登録（`db/invoice-intake-schedule.sql`）。この間、Invoice が Food Cost に入るのは本部が「Invoice取込」で反映したものだけ。
+9. GM・CEO が「店舗の画面」で各店を「出す」→ その店はアプリで業者 Invoice を登録しない（v1055）。店舗のスタッフには 00_Upload だけを共有。店舗への告知は Moto さん。結果を見て、業者・商品ごとに自動反映を ON。
+10. QuickBooks：今の転送（ChatGPT 側）が台帳を見るようにできたら `route='external'`・台帳 ON・外部の口 ON。このシステムから送るのは、今の転送を止めて送信手段をつないでから `route='invoice-intake'`。
 
 ## 14 切り戻し
 
@@ -180,7 +182,7 @@
 - 新しく作った記録は消さない（追跡できるように残す）。Drive の原本は移動・改名だけで、消していない。
 - 配備そのものを取り消す（まだ何も取り込んでいないとき）：関数 `invoice-intake` を削除 → `db/invoice-intake-rollback.sql`（この migration の表と関数だけを消す。記録が 1 件でもあれば止まる）。
 
-## 14b 画面（v1052・v1053・v1054・UI案34）
+## 14b 画面（v1052〜v1055・UI案34・UI案35）
 
 | 画面 | 誰が | すること |
 |---|---|---|
@@ -190,6 +192,7 @@
 | 取込状況 | 4 役割（やり直し・結果不明の処理は経理・GM・CEO） | 最終の正常取込・未処理・要確認・エラー・Drive 接続、店舗ごとの数、エラーの案内（HEIC・パスワード付き PDF など）、QuickBooks 台帳の件数と結果不明の処理（確かめた内容が必須） |
 | 設定 | 見る：4 役割／変える：GM・CEO（業者・対応表の編集と確認は経理も可。自動反映の ON は GM・CEO） | 運用のスイッチ・開始日時・試験する店舗、確認のルール、店舗と Drive のフォルダ、店舗の画面への案内、業者・対応表（候補づくり）、送る担当・台帳・外部の口 |
 | 店舗の Invoice管理 | 店舗のスタッフ（案内を出した店だけ） | 提出フォルダを開くボタンと手順（1 件 1 ファイル・名前はそのまま・撮り直しは追加・HEIC は互換性優先）。会社カード・立替は今までどおり。Drive が使えないときはアプリから |
+| 食材管理の「レシート管理」（v1055・UI案35：旧「Invoice管理」） | 店舗・本部（今までの Invoice管理と同じ役割） | 会社カードのレシート・立替・チェック。タブ：レシート／カード使用管理／チェック／Invoice（閲覧）。**GM・CEO が「店舗の画面」で「出す」にした店舗は、アプリで業者 Invoice を登録しない**（種別に出さない・登録の画面で提出フォルダへ案内・保存の入口でも止める）。出していない店舗は出すまで今までどおり。今までの Invoice と Drive 取込の写しは「Invoice（閲覧）」で見るだけ（差し戻しへの返信はできる）。本部の「請求書」の入口は Invoice取込へ。「出す」は取込とアプリへの写し（開始日時つき）が ON のときだけ・確認の画面つき（出した店舗の Invoice は写しから Food Cost に入るため） |
 | 食材編集の仕入れ履歴 | 4 役割 | 最新単価（納品日→請求日→番号の順）・履歴（原本とページ）・その食材を使うレシピの原価を最新単価で計算した場合（表示だけ。レシピ原価・棚卸・締めた月は書き換えない） |
 
 ## 15 検証（2026-10-07 HST・合成データ・本番データ不使用）
@@ -197,14 +200,16 @@
 | コマンド | 結果 |
 |---|---|
 | `node --test tests/invoice-rules.test.mjs` | 11/11 |
-| `node --test tests/invoice-intake.test.mjs` | 39/39（§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
+| `node --test tests/invoice-intake.test.mjs` | 46/46（Codex の指摘 C1〜C5 の再現と、最初の SQL を入れた DB に修正の SQL を重ねる試験を足した。§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
 | `node --test tests/invoice-adapters.test.mjs` | 5/5（Drive・共有ドライブの一覧・Anthropic・PostgREST・HTTP 入口） |
-| `node --test tests/invoice-mutations.test.mjs` | 29/29（守りを 28 か所外すと、どれもテストが落ちることを確認） |
-| `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 22 件・33 段階） |
+| `node --test tests/invoice-mutations.test.mjs` | 36/36（守りを 35 か所外すと、どれもテストが落ちることを確認。Codex の指摘 C1〜C5 の守り 7 か所を足した） |
+| `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 24 件・38 段階） |
+| `node --test tests/review/invoice-pr32-codex-repro.mjs`（Codex が 1851593 で書いた再現） | 5/5（1851593 では 5 件とも落ちる） |
 | `deno bundle` で作った 1 ファイル（配備用） | 外からの import 無し。手元で起動して GET 405・OPTIONS 204（funergy-plus.com だけ）・ログイン無し 401・ほかのサイト 403。元のコードと同じ中身（commit 8cf0c05 以降、関数のコードは変えていない） |
-| `python3 scripts/check-static-release.py` | 成功（v1054・APP_VERSION と SW_BUILD が一致） |
-| アプリの検証（handoff の `verify_v1052.js`・`verify_v1053.js`・`verify_v1054.js`） | v1052 78/78・v1053 85/85・v1054 93/93（v1054 は v1053 から invInAPI・invInLoadingCard と版だけ。v1053 では 7 件落ちる）（v1053 は v1052 から本体と版だけ・変えた既存関数は 7 本で各 1 行・同期と保存の仕組みは同じ・escapeHtml・onclick の値は JS の文字列として安全・金額は整数セント・役割・旧画面の境目） |
-| 本物の画面（handoff の `render/check_invin_v1052.py`） | v1054 で 52/52・pageerror 0（11：通信そのものが失敗するとき「つながりません」「読み込めませんでした」。v1053 では "Failed to fetch" と「読み込み中…」が残ることも再現）。本物の handler と SQL を PGlite で動かし、ブラウザから メール認証→一覧→要確認（反映・業者を直す・対象外）→照合（原本が照合済みフォルダへ）→取込状況（HEIC・結果不明）→設定（スイッチ・00_Upload の作成・店舗の画面への案内）→店舗の Invoice管理（日英）→仕入れ履歴→スマホ（390px）。事務Crew は閲覧だけ |
+| `python3 scripts/check-static-release.py` | 成功（v1055・APP_VERSION と SW_BUILD が一致） |
+| アプリの検証（handoff の `verify_v1052.js`〜`verify_v1055.js`） | v1055 45/45（v1054 からの差は足した 7 関数・変えた 22 関数・変数 6 つだけ。本体以外は決めた置き換えを戻すと v1054 と同じ。Drive の店舗は業者 Invoice を登録しない・「出す」の条件・C3/C5 の画面）。v1052 78/78・v1053 85/85・v1054 93/93（v1054 は v1053 から invInAPI・invInLoadingCard と版だけ。v1053 では 7 件落ちる）（v1053 は v1052 から本体と版だけ・変えた既存関数は 7 本で各 1 行・同期と保存の仕組みは同じ・escapeHtml・onclick の値は JS の文字列として安全・金額は整数セント・役割・旧画面の境目） |
+| 本物の画面（handoff の `render/check_receipts_v1055.py`） | v1055 で 14/14・pageerror 0（店舗・本部・スマホ・Drive 未対応の店舗・「出す」の確認） |
+| 本物の画面（handoff の `render/check_invin_v1052.py`） | v1055 で 55/55・v1054 で 52/52・pageerror 0（11：通信そのものが失敗するとき「つながりません」「読み込めませんでした」。v1053 では "Failed to fetch" と「読み込み中…」が残ることも再現）。本物の handler と SQL を PGlite で動かし、ブラウザから メール認証→一覧→要確認（反映・業者を直す・対象外）→照合（原本が照合済みフォルダへ）→取込状況（HEIC・結果不明）→設定（スイッチ・00_Upload の作成・店舗の画面への案内）→店舗の Invoice管理（日英）→仕入れ履歴→スマホ（390px）。事務Crew は閲覧だけ |
 
 既存の他のテスト（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）の失敗は、変更前の main でも同じ件数（今回の変更とは無関係）。
 
@@ -226,6 +231,16 @@
 13. 照合を取り消しても原本が照合済みフォルダに残った → 未照合フォルダへ戻す。
 14. 読み違いの納品日を消せなかった → 消せる（請求日は消せない）。
 15. 読み取りが切れた等の理由が修正で消えた／経理が自動反映済みの業者を保存できなかった／権限の無い人にフォルダ確認のボタン／外部の転送の予約が 5 回を超えられた → それぞれ直した。
+
+### Codex 独立レビュー（2026-10-07・対象 1851593）と修正
+
+Codex が P1 5 件・P2 1 件を指摘（PR #32 のレビュー・`docs/AI_SHARED_MEMORY_JA.md`）。Claude が直し、指摘ごとに試験を足した（`tests/invoice-intake.test.mjs`「Codex review findings stay fixed」。1851593 では 5 件とも落ちる）。守りを外すと試験が落ちることも `tests/invoice-mutations.test.mjs` に足した。
+- C1：AI の読み取りに失敗したファイルや、まだ読んでいないファイルが QuickBooks の台帳に載った → 今の内容が読まれ・書類になり・重複の判定が済んだものだけ（候補と台帳に載せるときの両方で確かめる）。外部の転送の台帳も同じ。
+- C2：訂正で「アプリで登録済みの可能性」が消えた → 訂正のときも既存アプリの記録と照らし直す（取込の写しは除く）。
+- C3：反映済みの invoice を合計の合わない値に訂正でき、そのまま写しに入った → 反映と同じ条件（直す必要のある理由が無いこと・新しい不一致は「原本で確かめた」）。前に確かめて反映した不一致が変わらないなら、もう一度は聞かない。
+- C4：人が店舗の外へ動かした整理先のフォルダへ原本を移した → 覚えているフォルダは、Drive で同じ名前のまま決まった親の中にあるときだけ使う（年→月→未照合／照合済みの順に店舗フォルダまで）。動かされた・名前が変わった・ゴミ箱のフォルダは使わず、作り直して記録を差し替える（履歴に残す。元のフォルダには触らない）。
+- C5：同じ Drive ファイルが別の内容で上書きされると、前の版を反映したまま新しい版も自動で反映された → 新しい版は「同じファイルの中身が差し替えられた（original_replaced）」で必ず人の確認。前の版を「訂正版として置き換える」か「別の invoice として反映する（確かめた印）」。決めるまで転送しない・訂正しても印は消えない。
+- C6：配備の確認 SQL が別の仕組みの `invoice_uploads` も数えた → この migration の表 16・関数 65 の名前だけを数える（`invoice_uploads` は参考として出すだけ）。
 
 ## 16 未完了・未確認
 

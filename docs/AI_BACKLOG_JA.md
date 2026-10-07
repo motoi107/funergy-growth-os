@@ -1,6 +1,12 @@
 # 改修・自動化の作業記録
 
-## 2026-10-07 PR #32：Codex 独立レビュー完了・修正待ち
+## 2026-10-07 PR #32：Codex の指摘を修正済み・再レビュー待ち
+
+1. Codex：最新 head を再レビュー（C1〜C6 の修正・アプリ v1055＝UI案35）。`tests/review/invoice-pr32-codex-repro.mjs` は 5/5 で通る。
+2. OK なら Moto さん：`20261007160000`（関数 6 つ）→ `db/invoice-intake-postcheck.sql`（review_fixes true）→ 関数の差し替え → アプリ v1055。
+3. 業者・対応表の候補 → 開始日時・取込とアプリへの写しを ON（全店・確認モード）→ cron と worker.enabled → 各店「出す」（LaLa は 10/8 朝にフォルダ）→ 店舗への告知。
+
+## 2026-10-07 PR #32：Codex 独立レビュー完了・修正待ち（記録）
 
 対象 `1851593bb4de597fa122d3abf77186be0230df00`。P1 5件・P2 1件で修正必要。詳細は共有メモリ先頭と [PR のレビュー](https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5442500109)。既存84テスト成功でも、追加5シナリオで保護の抜けを再現した。
 
