@@ -158,9 +158,22 @@ test('duplicates: same bytes or same content is certain; same number with other 
   assert.equal(s1, s2);
 });
 
-test('the deployable migration is the same SQL that the tests run', async () => {
+test('the deployable migrations are the same SQL that the tests run', async () => {
+  // Production got 20261007090000 (2026-10-07). 20261007160000 replaces six functions (Codex review fixes).
+  // Applying the second file's functions onto the first gives exactly db/invoice-intake.sql, which every test runs.
   const fs = await import('node:fs');
-  const a = fs.readFileSync(new URL('../db/invoice-intake.sql', import.meta.url), 'utf8');
-  const b = fs.readFileSync(new URL('../supabase/migrations/20261007090000_invoice_intake.sql', import.meta.url), 'utf8');
-  assert.equal(a, b);
+  const read = f => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+  const full = read('db/invoice-intake.sql'), first = read('supabase/migrations/20261007090000_invoice_intake.sql');
+  const fixes = read('supabase/migrations/20261007160000_invoice_intake_review_fixes.sql');
+  const fn = /^create (?:or replace )?function public\.(\w+)\((.*?)^(?:\$\$;|end \$\$;)\n/gms;
+  const replaced = [...fixes.matchAll(fn)].map(m => [m[1], m[0].replace('create or replace function', 'create function')]);
+  assert.deepEqual(replaced.map(r => r[0]), ['invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_folder', 'invoice_qb_candidates', 'invoice_qb_enqueue']);
+  assert.ok(!/^(create table|alter |drop |insert |update |delete |grant |revoke )/im.test(fixes.replace(fn, '')), 'the fixes file only replaces functions');
+  let upgraded = first;
+  for (const [name, def] of replaced) {
+    const old = [...first.matchAll(fn)].filter(m => m[1] === name);
+    assert.equal(old.length, 1, name);
+    upgraded = upgraded.replace(old[0][0], () => def);   // a function: "$$" in the SQL must stay as it is
+  }
+  assert.equal(upgraded, full);
 });

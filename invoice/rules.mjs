@@ -38,6 +38,7 @@ export const REASONS = {
   same_number_different: ['同じ番号で内容が違う（訂正版か別書類）', 'Same number, different content'],
   duplicate_candidate:   ['重複の可能性', 'Possible duplicate'],
   app_duplicate_candidate:['アプリで登録済みの可能性', 'May already be registered in the app'],
+  original_replaced:     ['同じファイルの中身が差し替えられた（前の版と見比べる）', 'The file was overwritten with new content (compare with the earlier version)'],
   line_value_missing:    ['数量・単価・金額が読めない明細', 'Line quantity/price/amount missing'],
   line_math:             ['数量×単価が明細金額と一致しない', 'Quantity × price does not equal the line amount'],
   zero_price:            ['単価または金額が 0', 'Zero price or amount'],

@@ -980,16 +980,19 @@ test('deploy checks and the guarded rollback', async () => {
     alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
     alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
     create table public.manager_auth(user_id uuid primary key, role text); create table public.app_state(key text primary key, value json, updated_at timestamptz);
-    insert into public.manager_auth values('${U.gm}', 'gm'); insert into public.app_state values('k', '{"a":1}', now());`);
+    insert into public.manager_auth values('${U.gm}', 'gm'); insert into public.app_state values('k', '{"a":1}', now());
+    -- An older, unrelated table with the same prefix exists in production (C6): it is neither counted nor touched.
+    create table public.invoice_uploads(id text primary key); insert into public.invoice_uploads values('old-1');`);
   const pre = async () => (await pg.query(PRE)).rows.map(r => r.result);
-  assert.ok((await pre()).every(r => r.startsWith('OK')), 'before: every precheck line is OK');
+  assert.ok((await pre()).every(r => r.startsWith('OK')), 'before: every precheck line is OK (the older invoice_uploads does not stop it)');
+  assert.match((await pre())[6], /invoice_uploads/, 'the older table is shown for reference');
   await pg.exec(SQL);
   assert.match((await pre())[2], /^STOP/, 'after: the precheck says it is already installed');
   const post = (await pg.query(POST)).rows[0];
   const created = [...SQL.matchAll(/^create function public\.(\w+)\(/gm)].map(m => m[1]);
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 16, functions: created.length, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
-      rls_on: true, browser_can_read: 0, browser_can_run: 0 });
+      rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates
@@ -1007,6 +1010,189 @@ test('deploy checks and the guarded rollback', async () => {
   assert.ok((await pre()).every(r => r.startsWith('OK')), 'after the rollback the precheck is OK again');
   assert.equal((await pg.query(`select count(*)::int n from app_state`)).rows[0].n, 1, 'app_state is untouched');
   assert.equal((await pg.query(`select count(*)::int n from manager_auth`)).rows[0].n, 1, 'manager_auth is untouched');
+  assert.equal((await pg.query(`select count(*)::int n from invoice_uploads`)).rows[0].n, 1, 'the older invoice_uploads is untouched');
   await pg.exec(SQL);
   assert.equal(Number((await pg.query(POST)).rows[0].functions), created.length, 'it can be installed again');
+});
+
+// Production has the first migration (2026-10-07) and data; the fixes file is applied on top of it.
+test('the review fixes upgrade a database that already has the first migration', async () => {
+  const read = f => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+  const FIRST = read('supabase/migrations/20261007090000_invoice_intake.sql'), FIXES = read('supabase/migrations/20261007160000_invoice_intake_review_fixes.sql');
+  const POST = read('db/invoice-intake-postcheck.sql');
+  const pg = new PGlite();
+  await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+    alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+    alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
+    create table public.manager_auth(user_id uuid primary key, role text); create table public.app_state(key text primary key, value json, updated_at timestamptz);`);
+  await pg.exec(FIRST);
+  await pg.query(`insert into public.invoice_stores(store_id, label, root_folder_id, upload_folder_id) values('F06', 'LaLa', 'R6', 'U6')`);
+  const keyBefore = (await pg.query(`select value->>'key' k from invoice_settings where key='worker'`)).rows[0].k;
+  assert.equal((await pg.query(POST)).rows[0].review_fixes, false, 'the first migration alone does not have the fixes');
+  await pg.exec(FIXES);
+  const post = (await pg.query(POST)).rows[0];
+  assert.equal(post.review_fixes, true); assert.equal(Number(post.functions), 65); assert.equal(Number(post.tables), 16);
+  assert.equal(Number(post.browser_can_run), 0, 'replaced functions keep service_role only');
+  assert.equal(Number(post.browser_can_read), 0);
+  assert.equal((await pg.query(`select value->>'key' k from invoice_settings where key='worker'`)).rows[0].k, keyBefore, 'settings and keys are unchanged');
+  assert.equal((await pg.query(`select count(*)::int n from invoice_stores`)).rows[0].n, 1, 'records are kept');
+  for (const f of ['invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_folder', 'invoice_qb_candidates', 'invoice_qb_enqueue']) {
+    const r = (await pg.query(`select p.prosecdef, p.proconfig from pg_proc p where p.proname=$1`, [f])).rows[0];
+    assert.equal(r.prosecdef, false, f + ' stays security invoker'); assert.deepEqual(r.proconfig, ['search_path=public, pg_temp']);
+  }
+  await pg.exec(FIXES);   // running it twice changes nothing
+  assert.equal((await pg.query(POST)).rows[0].review_fixes, true);
+});
+
+// Codex independent review of 1851593 (2026-10-07): C1-C5. Each case fails on that commit and passes after the fix.
+test('Codex review findings stay fixed', async (t) => {
+  const line = (price = '60.00') => [['06263', 'SHIRO MISO 12/500G', '1', price, price, 'CS', '12/500G']];
+  const intake = async (E, tag, no, date = '2026-10-06', extra = {}) => {
+    E.fixtures.set(tag, { readable: true, documents: [doc(no, date, line(), extra)] });
+    const id = E.drive.file(tag + '.pdf', pdf(tag), 'U6');
+    await E.worker(); return { id, d: (await docsOf(E, id))[0] };
+  };
+  const post = async (E, d, extra = {}) => E.api('tok-gm', { action: 'post', doc_id: d.id, version: d.version, reason: 'synthetic original checked', ...extra });
+  const outboxOf = async (E, id) => E.q(`select o.* from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [id]);
+
+  await t.test('C1: nothing is forwarded before the current content was read and checked for duplicates', async () => {
+    const E = await setup();
+    try {
+      await intake(E, 'C1-ORIGINAL', 'C1'); assert.equal(E.sent.length, 1);
+      E.setAiDown('ai_network');
+      const retake = E.drive.file('retaken.pdf', pdf('C1-ORIGINAL retaken photo'), 'U6');
+      await E.worker();
+      const [f] = await E.q(`select id, intake_status from invoice_files where drive_file_id=$1`, [retake]);
+      assert.equal(f.intake_status, 'error');
+      assert.equal(E.sent.length, 1, 'a file whose reading failed was forwarded');
+      assert.deepEqual(await E.db.rpc('invoice_qb_enqueue', { file_id: f.id }), { queued: false, why: 'not_ready' });
+      // The forwarder outside this system sees nothing either.
+      await E.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
+      await E.worker();
+      assert.equal((await outboxOf(E, retake)).length, 0);
+      // Once read, it is a possible duplicate of the first invoice and still waits for a person.
+      E.setAiDown(null); await E.q(`update invoice_settings set value=value||'{"route":"invoice-intake"}' where key='qb'`);
+      assert.equal((await E.api('tok-office', { action: 'retry', file_id: f.id })).status, 200);
+      await E.worker();
+      const [d] = await docsOf(E, retake);
+      assert.ok(codes(d).some(c => ['duplicate_certain', 'duplicate_candidate'].includes(c)), JSON.stringify(d.reasons));
+      assert.equal(E.sent.length, 1); assert.equal((await outboxOf(E, retake)).length, 0);
+    } finally { await E.pg.close(); }
+  });
+
+  await t.test('C2: a correction keeps the "registered in the app" warning, so nothing is forwarded before a person decides', async () => {
+    const E = await setup();
+    try {
+      E.fixtures.set('C2-LEGACY', { readable: true, documents: [doc('C2', '2026-10-07', [['06263', 'SHIRO MISO 12/500G', '2', '61.20', '122.40', 'CS', '12/500G']])] });
+      const id = E.drive.file('legacy.pdf', pdf('C2-LEGACY'), 'U6'); await E.worker();
+      let [d] = await docsOf(E, id);
+      assert.ok(codes(d).includes('app_duplicate_candidate'));
+      const r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { due_date: '2026-10-31' }, reason: 'due date only' });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      await E.worker(); [d] = await docsOf(E, id);
+      assert.ok(codes(d).includes('app_duplicate_candidate'), JSON.stringify(d.reasons));
+      assert.equal(E.sent.length, 0);
+      // The app's own copies of intake documents are never counted as "registered in the app".
+      await E.q(`update app_state set value=value || '[{"id":"drv_X","src":"drive-intake","storeId":"F06","vendor":"VendorA","docDate":"2026/10/07","total":122.4}]'::jsonb where key='spl_invoices_F06'`);
+      const app = await E.db.rpc('invoice_app_records', { store_id: 'F06' });
+      assert.deepEqual(app.map(a => a.id), ['inv123']);
+    } finally { await E.pg.close(); }
+  });
+
+  await t.test('C3: correcting a posted invoice into a mismatch needs the same acknowledgement as posting', async () => {
+    const E = await setup();
+    try {
+      let { id, d } = await intake(E, 'C3-POSTED', 'C3');
+      assert.equal((await post(E, d)).status, 200);
+      await E.worker(); [d] = await docsOf(E, id);
+      const prices = async () => E.q(`select status, price_per_purchase from invoice_price_history where doc_id=$1 order by created_at`, [d.id]);
+      const before = await prices();
+      const mirrored = async () => (await E.q(`select value from app_state where key='spl_invoices_F06'`))[0].value.find(x => x.intakeDocId === d.id);
+      const bad = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { total_cents: 1 }, reason: 'mistyped total' });
+      assert.equal(bad.status, 409); assert.match(JSON.stringify(bad.body), /total_mismatch/);
+      await E.worker();
+      const [same] = await docsOf(E, id);
+      assert.equal(same.version, d.version); assert.equal(Number(same.total_cents), 6000);
+      assert.deepEqual(await prices(), before); assert.equal((await mirrored()).total, 60);
+      // With the acknowledgement it is saved, and the app copy follows.
+      const ok = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { total_cents: 5990 }, reason: 'credit applied on paper', ack: ['total_mismatch'] });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      await E.worker(); [d] = await docsOf(E, id);
+      assert.equal(d.status, 'posted'); assert.equal((await mirrored()).total, 59.9);
+      // The mismatch accepted before, unchanged, does not ask again for another correction.
+      const again = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { invoice_no: 'C3-A' }, reason: 'number typo' });
+      assert.equal(again.status, 200, JSON.stringify(again.body));
+    } finally { await E.pg.close(); }
+  });
+
+  await t.test('C4: a destination folder moved, renamed or trashed by a person is never used; originals stay inside the store folder', async () => {
+    const E = await setup();
+    try {
+      await intake(E, 'C4-FIRST', 'C4-A');
+      const [year] = await E.q(`select id from invoice_folders where store_id='F06' and role='year'`);
+      E.drive.folder('OUTSIDE', 'Outside', 'ROOT'); E.drive.items.get(year.id).parents = ['OUTSIDE'];
+      const { id } = await intake(E, 'C4-SECOND', 'C4-B');
+      assert.equal(E.drive.pathOf(id), 'LaLa/2026/10/未照合');
+      const [year2] = await E.q(`select id from invoice_folders where store_id='F06' and role='year'`);
+      assert.notEqual(year2.id, year.id);
+      assert.equal(E.drive.items.get(year.id).trashed, false, 'the moved folder is left alone');
+      assert.equal((await E.q(`select count(*)::int n from invoice_events where kind='folder_replaced'`))[0].n, 1);
+      // A renamed month folder and a trashed reconciliation folder are replaced the same way.
+      const [month] = await E.q(`select id from invoice_folders where store_id='F06' and role='month' and parent_id=$1`, [year2.id]);
+      E.drive.items.get(month.id).name = '10 (old)';
+      const { id: third } = await intake(E, 'C4-THIRD', 'C4-C');
+      assert.equal(E.drive.pathOf(third), 'LaLa/2026/10/未照合');
+      const [un] = await E.q(`select id from invoice_folders where store_id='F06' and role='unreconciled' and parent_id=(select id from invoice_folders where store_id='F06' and role='month' and parent_id=$1)`, [year2.id]);
+      E.drive.items.get(un.id).trashed = true;
+      const { id: fourth } = await intake(E, 'C4-FOURTH', 'C4-D');
+      assert.equal(E.drive.pathOf(fourth), 'LaLa/2026/10/未照合');
+      assert.equal(E.drive.items.get(fourth).parents[0] !== un.id, true);
+      for (const f of [id, third, fourth]) assert.ok(!E.drive.pathOf(f).includes('Outside'));
+    } finally { await E.pg.close(); }
+  });
+
+  await t.test('C5: new content in an already-read file waits for a person, who supersedes the earlier version or confirms both', async () => {
+    const E = await setup();
+    try {
+      let { id, d: old } = await intake(E, 'C5-ORIGINAL', 'C5-OLD', '2026-10-02');
+      assert.equal((await post(E, old)).status, 200);
+      const sentBefore = E.sent.length;
+      E.fixtures.set('C5-NEW', { readable: true, documents: [doc('C5-NEW', '2026-10-06', line())] });
+      E.drive.replaceContent(id, pdf('C5-NEW'));
+      await E.q(`update invoice_files set drive_checked_at=now()-interval '7 hours'`);
+      await E.worker(); await E.worker();
+      let rows = await docsOf(E, id);
+      const neu = rows.find(x => x.invoice_no === 'C5-NEW');
+      assert.equal(neu.status, 'review'); assert.ok(codes(neu).includes('original_replaced'));
+      assert.equal(rows.filter(x => x.status === 'posted').length, 1);
+      assert.equal(E.sent.length, sentBefore, 'the new content was forwarded before a person decided');
+      // A correction keeps the warning.
+      const ed = await E.api('tok-office', { action: 'edit', doc_id: neu.id, version: neu.version, header: { due_date: '2026-10-30' }, reason: 'due date' });
+      assert.equal(ed.status, 200);
+      let n2 = (await docsOf(E, id)).find(x => x.invoice_no === 'C5-NEW');
+      assert.ok(codes(n2).includes('original_replaced'));
+      // Posting it alone is refused; superseding the earlier version is the normal way.
+      const refused = await post(E, n2);
+      assert.equal(refused.status, 409); assert.match(JSON.stringify(refused.body), /original_replaced/);
+      [old] = (await docsOf(E, id)).filter(x => x.invoice_no === 'C5-OLD');
+      const sup = await post(E, n2, { supersedes: old.id });
+      assert.equal(sup.status, 200, JSON.stringify(sup.body));
+      rows = await docsOf(E, id);
+      assert.deepEqual(rows.map(x => [x.invoice_no, x.status]).sort(), [['C5-NEW', 'posted'], ['C5-OLD', 'superseded']]);
+    } finally { await E.pg.close(); }
+    const E2 = await setup();
+    try {
+      // A person may also confirm that both are separate invoices (explicit acknowledgement).
+      let { id, d: old } = await intake(E2, 'C5B-ORIGINAL', 'C5B-OLD', '2026-10-02');
+      assert.equal((await post(E2, old)).status, 200);
+      E2.fixtures.set('C5B-NEW', { readable: true, documents: [doc('C5B-NEW', '2026-10-06', line())] });
+      E2.drive.replaceContent(id, pdf('C5B-NEW'));
+      await E2.q(`update invoice_files set drive_checked_at=now()-interval '7 hours'`);
+      await E2.worker(); await E2.worker();
+      const neu = (await docsOf(E2, id)).find(x => x.invoice_no === 'C5B-NEW');
+      const both = await post(E2, neu, { ack: ['original_replaced'] });
+      assert.equal(both.status, 200, JSON.stringify(both.body));
+      assert.equal((await docsOf(E2, id)).filter(x => x.status === 'posted').length, 2);
+    } finally { await E2.pg.close(); }
+  });
 });

@@ -182,13 +182,23 @@ export function createHandler(deps) {
     }
   }
 
+  // A remembered folder is used only while Drive still shows it, by that name, directly inside the expected parent
+  // (and so, level by level, inside the store folder). A folder a person moved, renamed or trashed is never used again.
   async function ensureFolder(store, parentId, name, role) {
     const known = await db.rpc('invoice_folder', { parent_id: parentId, name });
-    if (known && known.id) return known.id;
+    let stale = false;
+    if (known && known.id) {
+      const g = await drive.get(known.id);
+      if (g.status === 200 && g.file && !g.file.trashed && g.file.mimeType === 'application/vnd.google-apps.folder'
+          && g.file.name === name && (g.file.parents || []).includes(parentId)) return known.id;
+      if (g.status !== 200 && g.status !== 404) throw new Error('folder_check_' + g.status);
+      stale = true;
+    }
     const found = await drive.findFolders(parentId, name);
     if (found.length > 1) throw new Error('duplicate_folders:' + name);           // never pick one silently
     const id = found.length ? found[0].id : (await drive.createFolder(parentId, name)).id;
-    const saved = await db.rpc('invoice_folder', { id, parent_id: parentId, name, store_id: store.store_id, role, created_by_worker: !found.length });
+    const saved = await db.rpc('invoice_folder', { id, parent_id: parentId, name, store_id: store.store_id, role, created_by_worker: !found.length, replace: stale });
+    if (!saved || saved.id !== id) throw new Error('folder_record_mismatch:' + name);
     return saved.id;
   }
 
@@ -373,10 +383,12 @@ export function createHandler(deps) {
     const existing = (await db.rpc('invoice_dup_scope', { sha256: doc.sha256, vendor_key: h.vendor_key, invoice_no_norm: h.invoice_no_norm,
       store_id: doc.store_id, invoice_date: h.invoice_date, total_cents: h.total_cents }))
       .filter(e => e.id !== doc.id && !(e.file_id === doc.file_id && e.sha256 === doc.sha256) && e.status !== 'duplicate' && e.duplicate_of !== doc.id);
-    applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, []));
-    // What the reading itself got wrong cannot be fixed by editing values: those reasons stay.
+    // Records registered through the existing app screen are compared again (copies written by this intake are not returned).
+    const app = await db.rpc('invoice_app_records', { store_id: doc.store_id });
+    applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, app));
+    // What the reading itself got wrong, and a replaced original, cannot be fixed by editing values: those reasons stay.
     for (const r of doc.reasons || []) {
-      if (['ai_truncated', 'multiple_documents', 'missing_pages'].includes(r.code) && !result.reasons.some(x => x.code === r.code)) { result.reasons.push(r); result.autoEligible = false; }
+      if (['ai_truncated', 'multiple_documents', 'missing_pages', 'original_replaced'].includes(r.code) && !result.reasons.some(x => x.code === r.code)) { result.reasons.push(r); result.autoEligible = false; }
     }
     return result;
   }
@@ -409,7 +421,8 @@ export function createHandler(deps) {
     const untouched = g.lines.map((l, i) => ({ l, i })).filter(x => !(b.lines || []).some(e => e.line_id === x.l.id))
       .map(x => ({ line_id: x.l.id, set: {}, reasons: result.lines[x.i].reasons }));
     return db.rpc('invoice_edit', { actor, doc_id: b.doc_id, version: b.version, header, lines: [...lines, ...untouched], reason: b.reason,
-      reasons: result.reasons, content_sig: h.content_sig, lines_sum_cents: h.lines_sum_cents, adjustment_ack: !!b.adjustment_ack });
+      reasons: result.reasons, content_sig: h.content_sig, lines_sum_cents: h.lines_sum_cents, adjustment_ack: !!b.adjustment_ack,
+      ack: Array.isArray(b.ack) ? b.ack.filter(x => typeof x === 'string') : [] });
   }
 
   async function folderPlan(actor, b) {

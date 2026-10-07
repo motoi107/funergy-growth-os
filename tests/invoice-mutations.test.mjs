@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
+const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -73,8 +73,26 @@ const CASES = [
   ['the app copy changes a closed month', E2E, [['db/invoice-intake.sql',
     " if d.needs_adjustment or (public.invoice_setting('rules')->>'closed_through' is not null\n     and to_char(coalesce(d.invoice_date, d.effective_date),'YYYY-MM') <= public.invoice_setting('rules')->>'closed_through') then",
     " if d.needs_adjustment and d.status='posted' then"]]],
+  // Candidates and queuing check the same thing (double protection), so both are removed together.
   ['possible duplicates forwarded before a decision', E2E, [['db/invoice-intake.sql',
-    "   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review'\n", "   and not exists(select 1 from public.invoice_docs d where false\n"]]],
+    "   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review'\n", "   and not exists(select 1 from public.invoice_docs d where false\n"],
+    ['db/invoice-intake.sql', "  return jsonb_build_object('queued', false, 'why', 'not_ready');\n", "  null;\n"]]],
+  ['C1: a failed or pending reading is forwarded', E2E, [['db/invoice-intake.sql',
+    "  where f.source='drive' and f.current_sha256 is not null and f.intake_status in ('review','posted')\n", "  where f.source='drive' and f.current_sha256 is not null and f.intake_status not in ('pending','processing','duplicate','unsupported')\n"],
+    ['db/invoice-intake.sql', "   and exists(select 1 from public.invoice_docs d0 where d0.file_id=f.id and d0.sha256=f.current_sha256)\n", ""],
+    ['db/invoice-intake.sql', "  return jsonb_build_object('queued', false, 'why', 'not_ready');\n", "  null;\n"]]],
+  ['C2: a correction forgets the records registered in the app', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, app));", "applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, []));"]]],
+  ['C3: a posted invoice is corrected into a mismatch without acknowledgement', E2E, [['db/invoice-intake.sql',
+    " if d.status='posted' and (affects or touched_price) then\n  select r->>'code' into blocking", " if false then\n  select r->>'code' into blocking"]]],
+  ['C4: a remembered folder is used without checking where it is', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "    if (known && known.id) {\n      const g = await drive.get(known.id);", "    if (known && known.id) { return known.id;\n      const g = await drive.get(known.id);"]]],
+  ['C5: new content in an already-read file is treated as a new invoice', E2E, [['db/invoice-intake.sql',
+    "  rs := rs || jsonb_build_array(jsonb_build_object('code', 'original_replaced', 'detail', prior)); auto := false;", "  null;"]]],
+  ['C5: a replaced original is posted beside the earlier version without a decision', E2E, [['db/invoice-intake.sql',
+    "may_ack text[] := array['line_math','total_mismatch','original_replaced'];", "may_ack text[] := array['line_math','total_mismatch'];"]]],
+  ['C5: a correction drops the replaced-original warning', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "['ai_truncated', 'multiple_documents', 'missing_pages', 'original_replaced'].includes(r.code)", "['ai_truncated', 'multiple_documents', 'missing_pages'].includes(r.code)"]]],
   ['a failed reading is stored as the reading', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     "        if (!res.ok) { stats.ai_failed = (stats.ai_failed || 0) + 1; await fail('ai_failed:' + String(res.error || 'unknown').slice(0, 80)); return; }\n        const value = { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null };",
     "        if (!res.ok && res.retryable) { await fail(res.error); return; }\n        const value = res.ok ? { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null } : { readable: false, failed: true, reason: res.error, documents: [] };"]]],

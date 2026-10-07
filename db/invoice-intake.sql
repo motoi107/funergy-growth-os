@@ -472,10 +472,18 @@ $$;
 
 create function public.invoice_stage(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare d public.invoice_docs; h jsonb := p->'header'; l jsonb; i int := 0; dup uuid; st text;
+declare d public.invoice_docs; h jsonb := p->'header'; l jsonb; i int := 0; dup uuid; st text; prior text;
+ rs jsonb := coalesce(p->'reasons','[]'); auto boolean := coalesce((p->>'auto_eligible')::boolean,false);
 begin
  select * into d from public.invoice_docs where source_key=p->>'source_key';
  if d.id is not null then return jsonb_build_object('doc_id', d.id, 'existed', true, 'version', d.version, 'status', d.status); end if;
+ -- The same Drive file read before with other content (overwritten in Drive): the new version always waits for a person,
+ -- who supersedes the earlier version, marks this one as a duplicate, or confirms that both stand.
+ select string_agg(o.internal_no, ',' order by o.internal_no) into prior from public.invoice_docs o
+ where o.file_id=(p->>'file_id')::uuid and o.sha256 is distinct from p->>'sha256' and o.status in ('posted','review');
+ if prior is not null then
+  rs := rs || jsonb_build_array(jsonb_build_object('code', 'original_replaced', 'detail', prior)); auto := false;
+ end if;
  dup := nullif(p->>'duplicate_of','')::uuid;
  st := case when dup is not null then 'duplicate' else 'review' end;
  insert into public.invoice_docs(source_key, file_id, sha256, doc_index, internal_no, store_id, doc_type, posting_kind,
@@ -492,7 +500,7 @@ begin
   (h->>'other_cents')::bigint, (h->>'total_cents')::bigint, (h->>'lines_sum_cents')::bigint, coalesce(h->'other_charges','[]'),
   h->>'ship_to_raw', coalesce(array(select (jsonb_array_elements_text(h->'pages'))::int), '{}'),
   coalesce(array(select jsonb_array_elements_text(h->'pages_marked')), '{}'), coalesce(h->'references','[]'),
-  p->>'content_sig', st, coalesce(p->'reasons','[]'), coalesce((p->>'auto_eligible')::boolean,false), dup, p->'ai')
+  p->>'content_sig', st, rs, auto, dup, p->'ai')
  returning * into d;
  for l in select * from jsonb_array_elements(coalesce(p->'lines','[]')) loop
   i := i + 1;
@@ -554,7 +562,7 @@ declare d public.invoice_docs; old public.invoice_docs; actor uuid := nullif(p->
  closed text; n int := 0; l public.invoice_lines; skipped int := 0; blocking text; ack text[];
  must_fix text[] := array['duplicate_certain','total_missing','line_value_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','no_lines','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
- may_ack text[] := array['line_math','total_mismatch'];
+ may_ack text[] := array['line_math','total_mismatch','original_replaced'];
 begin
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null then raise exception 'not_found'; end if;
@@ -566,7 +574,8 @@ begin
  ack := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}');
  select r->>'code' into blocking from jsonb_array_elements(d.reasons) r where r->>'code' = any(must_fix) limit 1;
  if blocking is not null then raise exception 'blocked:%', blocking; end if;
- select r->>'code' into blocking from jsonb_array_elements(d.reasons) r where r->>'code' = any(may_ack) and not (r->>'code' = any(ack)) limit 1;
+ select r->>'code' into blocking from jsonb_array_elements(d.reasons) r where r->>'code' = any(may_ack) and not (r->>'code' = any(ack))
+  and not (r->>'code' = 'original_replaced' and nullif(p->>'supersedes','') is not null) limit 1;
  if blocking is not null then raise exception 'blocked:%', blocking; end if;
  if d.doc_type='credit_memo' and (d.related_doc_id is null or d.relation is distinct from 'credit_for') then raise exception 'relation_required'; end if;
  if actor is null then
@@ -622,6 +631,10 @@ declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; e jso
  lrow public.invoice_lines; closed text; touched_price boolean := false; affects boolean := false; chg jsonb := '[]';
  money_fields text[] := array['invoice_date','delivery_date','total_cents','subtotal_cents','tax_cents','shipping_cents','discount_cents','other_cents',
   'vendor_key','invoice_no','doc_type','effective_date'];
+ must_fix text[] := array['duplicate_certain','total_missing','line_value_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
+  'currency','no_lines','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
+ may_ack text[] := array['line_math','total_mismatch'];
+ ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}'); blocking text;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office']);
  if length(coalesce(p->>'reason','')) = 0 then raise exception 'reason_required'; end if;
@@ -640,6 +653,15 @@ begin
   chg := chg || jsonb_build_array(jsonb_build_object('field', f, 'old', to_jsonb(d)->f, 'new', v));
  end loop;
  touched_price := exists(select 1 from jsonb_array_elements(coalesce(p->'lines','[]')) ln where jsonb_typeof(ln->'set')='object' and ln->'set' <> '{}'::jsonb);
+ -- A posted document stays posted only if the corrected values would pass posting: no must-fix reason, and a new or changed
+ -- mismatch is acknowledged by the person (a mismatch accepted when it was posted, unchanged, needs nothing more).
+ if d.status='posted' and (affects or touched_price) then
+  select r->>'code' into blocking from jsonb_array_elements(coalesce(p->'reasons', d.reasons)) r where r->>'code' = any(must_fix) limit 1;
+  if blocking is not null then raise exception 'blocked:%', blocking; end if;
+  select r->>'code' into blocking from jsonb_array_elements(coalesce(p->'reasons', d.reasons)) r
+  where r->>'code' = any(may_ack) and not (r->>'code' = any(ack)) and not (d.reasons @> jsonb_build_array(r)) limit 1;
+  if blocking is not null then raise exception 'blocked:%', blocking; end if;
+ end if;
  if d.status='posted' and (affects or touched_price) and closed is not null
     and (to_char(d.invoice_date,'YYYY-MM') <= closed or coalesce((p->'header'->>'invoice_date'),'9999') <= closed||'-31') then
   if not coalesce((p->>'adjustment_ack')::boolean,false) then raise exception 'closed_month'; end if;
@@ -814,6 +836,14 @@ begin
  if f.source <> 'drive' then return jsonb_build_object('queued', false, 'why', 'not_new_intake'); end if;
  if coalesce(q->>'route','') not in ('invoice-intake','external') then return jsonb_build_object('queued', false, 'why', 'route_not_assigned'); end if;
  if (f.drive_created_at at time zone 'Pacific/Honolulu')::date < (q->>'since')::date then return jsonb_build_object('queued', false, 'why', 'before_since'); end if;
+ -- Same readiness as invoice_qb_candidates, checked again at the moment of queuing.
+ if f.intake_status not in ('review','posted')
+    or not exists(select 1 from public.invoice_docs d0 where d0.file_id=f.id and d0.sha256=f.current_sha256)
+    or exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review'
+      and exists(select 1 from jsonb_array_elements(d.reasons) r where r->>'code' in
+        ('duplicate_candidate','same_number_different','app_duplicate_candidate','unreadable','ai_failed','ai_truncated','multiple_documents','original_replaced'))) then
+  return jsonb_build_object('queued', false, 'why', 'not_ready');
+ end if;
  insert into public.invoice_qb_outbox(file_id, sha256, to_address, route, attempt_key)
  values(f.id, f.current_sha256, q->>'to', q->>'route', 'qb-' || f.current_sha256 || '-' || md5(q->>'to'))
  on conflict do nothing returning * into o;
@@ -1149,6 +1179,16 @@ language plpgsql security invoker set search_path=public,pg_temp as $$
 declare r public.invoice_folders;
 begin
  if p ? 'id' then
+  -- replace=true: the worker found the remembered folder moved, renamed or trashed in Drive; the record now points to the folder in place.
+  if coalesce((p->>'replace')::boolean,false) then
+   if exists(select 1 from public.invoice_folders where id=p->>'id' and not (parent_id=p->>'parent_id' and name=p->>'name')) then raise exception 'folder_conflict'; end if;
+   select * into r from public.invoice_folders where parent_id=p->>'parent_id' and name=p->>'name';
+   if r.id is not null and r.id <> p->>'id' then
+    update public.invoice_folders set id=p->>'id', store_id=p->>'store_id', role=p->>'role', created_by_worker=coalesce((p->>'created_by_worker')::boolean,false), created_at=now()
+    where parent_id=p->>'parent_id' and name=p->>'name';
+    perform public.invoice_event(null, null, 'worker', 'folder_replaced', jsonb_build_object('parent_id', p->>'parent_id', 'name', p->>'name', 'old_id', r.id, 'new_id', p->>'id'));
+   end if;
+  end if;
   insert into public.invoice_folders(id, parent_id, name, store_id, role, created_by_worker)
   values(p->>'id', p->>'parent_id', p->>'name', p->>'store_id', p->>'role', coalesce((p->>'created_by_worker')::boolean,false))
   on conflict(parent_id, name) do nothing;
@@ -1238,13 +1278,15 @@ create function public.invoice_qb_candidates(p jsonb) returns jsonb
 language sql stable security invoker set search_path=public,pg_temp as $$
  select coalesce(jsonb_agg(jsonb_build_object('file_id', f.id)), '[]') from (
   select f.id from public.invoice_files f
-  where f.source='drive' and f.current_sha256 is not null and f.intake_status not in ('pending','processing','duplicate','unsupported')
+  where f.source='drive' and f.current_sha256 is not null and f.intake_status in ('review','posted')
    and (f.drive_created_at at time zone 'Pacific/Honolulu')::date >= (public.invoice_setting('qb')->>'since')::date
    and not exists(select 1 from public.invoice_qb_outbox o where o.sha256=f.current_sha256 and o.to_address=public.invoice_setting('qb')->>'to' and o.state<>'cancelled')
-   -- Possible duplicates and documents that could not be read wait for a person before anything is forwarded.
+   -- The current content must have been read and checked for duplicates: a failed or pending reading has no documents yet.
+   and exists(select 1 from public.invoice_docs d0 where d0.file_id=f.id and d0.sha256=f.current_sha256)
+   -- Possible duplicates, replaced originals and documents that could not be read wait for a person before anything is forwarded.
    and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review'
      and exists(select 1 from jsonb_array_elements(d.reasons) r where r->>'code' in
-       ('duplicate_candidate','same_number_different','app_duplicate_candidate','unreadable','ai_failed','ai_truncated','multiple_documents')))
+       ('duplicate_candidate','same_number_different','app_duplicate_candidate','unreadable','ai_failed','ai_truncated','multiple_documents','original_replaced')))
   order by f.ingested_at limit coalesce((p->>'limit')::int, 20)) f;
 $$;
 
