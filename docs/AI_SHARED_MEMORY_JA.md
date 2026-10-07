@@ -18,7 +18,9 @@ Moto さんの回答（10/6 22:50 HST）：UI案34 で実装してよい／Quick
 
 10/7 の続き：Moto さんが 01:22 HST に v1053（md5 9272e28f…）を main へ貼った。01:27 に「Invoice取込」→「設定」が "Failed to fetch" と「読み込み中…」のままと報告。原因はサーバー未配備（Supabase は存在しない関数に CORS の無い 404 を返すので、ブラウザは 404 を読めず、v1052/v1053 の「まだ動いていません」は出ない。ops-bot は正常に応答）。表示の修正を **v1054**（md5 a1183a3d…・SW_BUILD 1054。v1053 から invInAPI・invInLoadingCard と版だけ）にした。配備の一式（`db/invoice-intake-precheck.sql` → migration → `db/invoice-intake-postcheck.sql`、`deno bundle` で 1 ファイルにした関数、取り消しの `db/invoice-intake-rollback.sql`、日本語の手順）を Moto さんに渡した。配備は Moto さんの操作（または Moto さんの明示の許可のあと）。どの運転も OFF のまま。
 
-未完了：本番 DB・関数・cron は未反映（配備の一式は渡した）。アプリ v1054 は未反映。店舗フォルダの実際の中身（00_Upload の有無・共有ドライブか）、ChatGPT 側の転送が原本をどこから拾うか（台帳を見ないと二重送信のおそれ）、drive-sync の安全化（本文の再提供待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。
+10/7 02:14 HST：Moto さんが配備を終えたと報告（v1054 を main へ・SQL・関数 `invoice-intake`・JWT の検証 OFF）。Claude が確かめたこと：main の index.html・sw.js が v1054（md5 a1183a3d…・09f04d04…）と一致、関数は GET に 405（関数の中の応答。JWT の検証が ON ならゲートウェイが 401 を返す）。DB の中身は Claude からは見えない（Moto さんの画面で設定が開いたことで確認）。どの運転も OFF のまま。
+
+未完了：cron は未登録・取込は OFF。店舗フォルダの登録と「フォルダを確かめる」はこれから。店舗フォルダの実際の中身（00_Upload の有無・共有ドライブか）、ChatGPT 側の転送が原本をどこから拾うか（台帳を見ないと二重送信のおそれ）、drive-sync の安全化（本文の再提供待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。
 
 ## 2026-09-20 接続・公開保存の承認と勤怠のみ即時送信
 
