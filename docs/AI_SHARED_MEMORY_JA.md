@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex 再レビュー完了：PR #32 head 356e456（C3a/C3b解消）
+
+- レビュー担当：Codex（Claudeの実装から独立）。対象：`356e4569164d9eefcde94dfbd081f0cecd106ecb`、修正 `45f14a6`。
+- **判定：C3a・C3bは解消。今回の修正範囲で追加指摘0件、コードレビュー上の阻害事項なし。** 前回のC1/C2/C4/C5/C6の解消も維持。以下の「修正待ち・再レビュー未」は過去の時点の記録。
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5446609335 。接続アカウントがPR作成者本人のためCOMMENTで記録。Codexの判定とGitHubの正式APPROVE状態は区別する。
+- C3a：USD→JPYだけの訂正は409/blocked:currency、保存値はUSDのまま。C3b：既確認の数量不一致を2→200へ訂正（ackなし）すると409/blocked:line_math、数量は2のまま。新たなack付き訂正は保存でき、番号・期日のような金額を変えない訂正も正常。拒否時にversion・明細・価格履歴・アプリ写しが変わらないことも確認。
+- `db/invoice-intake.sql` と元の `20261007090000`＋追加 `20261007160000` の両方で検証。追加SQLは6つのCREATE OR REPLACEのみ、統合SQLと一致。既存行・設定・権限の維持と再適用のテストも成功。1301623からの実装差分は両SQLのinvoice_editのみ。Edge Function、invoice/*.mjs、アプリv1055は変更なし。
+- Codex実行結果：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/*.mjs` **78/78成功**（11+5+51+11。指定の再現テスト通常2/2を含む）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**。`git diff --check` 成功。前回の再現コードは変更せず使用。mutation全件・Deno bundle・実ブラウザ表示は今回再実行していない。
+- 本番への接続・書込み・配備・運転ON・マージなし。既定の配備手順（このheadの追加SQL→postcheck→修正済み関数の差替え→v1055）へ進むためのコードレビューは完了。本番への適用確認は別途必要。全6店・確認モードの決定を維持。外部QuickBooks転送の同一台帳利用は未確認のため、QBは調整完了までOFF。
+
 ## 2026-10-07 Codex 再レビューの C3a・C3b を修正（Claude）・再々レビュー待ち
 
 - 実装：Claude。対象：Codex の再レビュー（1301623・下の節）。修正：`45f14a6`（`db/invoice-intake.sql` と `20261007160000` の invoice_edit。関数のコードは変えていない）。**Codex の再レビューはまだ**（この記録は承認ではない）。
