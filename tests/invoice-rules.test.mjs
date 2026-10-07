@@ -180,6 +180,17 @@ test('numbers printed with their unit are read; a weight that repeats the quanti
   assert.equal(rp.header.invoice_date, '2026-10-05'); assert.equal(rp.header.invoice_date_basis, 'invoice');
 });
 
+test('a unit printed on the quantity finds the product; a recheck without the printed text never fills the invoice date', async () => {
+  const e = base(); e.lines[0].qty = '3 CS'; e.lines[0].unit = null;
+  const r = await evaluate(e, ctx());
+  assert.deepEqual(r.reasons, []); assert.equal(r.lines[0].purchase_unit, 'CS'); assert.equal(r.lines[0].map_id, 'm1');
+  const f = base(); f.lines[0].qty = '3 CS'; f.lines[0].unit = null;
+  assert.equal((await evaluate(f, ctx({ forcedMaps: ['m1'] }))).lines[0].reasons.includes('unit_mismatch'), false);
+  const g = produce();
+  const noFallback = await evaluate(g, ctx({ maps: [], dateFallback: false }));
+  assert.ok(noFallback.reasons.some(x => x.code === 'date_missing')); assert.equal(noFallback.header.invoice_date, null);
+});
+
 test('mapping is exact: similar names are never merged, only this vendor is used, ambiguity is review', () => {
   const maps = [{ ...map, id: 'a', vendor_item_code: null, alias_key: 'shiro miso', spec_key: '12/500G' },
     { ...map, id: 'b', vendor_item_code: null, alias_key: 'shiro miso', spec_key: '12/500G', purchase_unit: 'EA' }];

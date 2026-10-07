@@ -1292,3 +1292,81 @@ test('a produce invoice with units printed on its numbers and only a delivery da
     assert.ok(!codes(d).includes('date_missing'), JSON.stringify(d.reasons));
   } finally { await E.pg.close(); }
 });
+
+test('Codex review of 2544826: what was read stays true through later corrections', async (t) => {
+  const line = [['06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00', 'CS', '12/500G']];
+  const stage = async (E, tag, ext) => {
+    E.fixtures.set(tag, { readable: true, documents: [ext] });
+    const id = E.drive.file(tag + '.pdf', pdf(tag), 'U6'); await E.worker();
+    return { id, d: (await docsOf(E, id))[0] };
+  };
+  const dueOnly = (E, d) => E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { due_date: '2026-10-31' }, reason: 'due date only' });
+  const dates = async (E, d) => (await E.q(`select invoice_date::text i, delivery_date::text v from invoice_docs where id=$1`, [d.id]))[0];
+
+  await t.test('R1: a printed invoice date that could not be read, or that disagrees, is never filled from the delivery date', async () => {
+    const E = await setup();
+    try {
+      for (const [tag, text, iso, code] of [['R1-UNREADABLE', '09/??/2026', null, 'date_unreadable'], ['R1-DISAGREE', '10/05/2026', '2026-05-10', 'date_disagree']]) {
+        const ext = doc(tag, '2026-09-30', line, { delivery: '2026-10-06' }); ext.invoice_date_text = text; ext.invoice_date = iso;
+        let { id, d } = await stage(E, tag, ext);
+        assert.ok(codes(d).includes(code), JSON.stringify(d.reasons));
+        assert.equal((await dueOnly(E, d)).status, 200);
+        [d] = await docsOf(E, id);
+        assert.equal((await dates(E, d)).i, null, tag);
+        assert.ok(codes(d).includes(code), JSON.stringify(d.reasons));
+        const post = await E.api('tok-gm', { action: 'post', doc_id: d.id, version: d.version, reason: 'synthetic' });
+        assert.equal(post.status, 409, JSON.stringify(post.body));
+        // A person enters the date: it is used as entered.
+        const r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { invoice_date: '2026-09-30' }, reason: '原本で確認' });
+        assert.equal(r.status, 200); [d] = await docsOf(E, id);
+        assert.equal((await dates(E, d)).i, '2026-09-30'); assert.ok(!codes(d).includes(code));
+      }
+    } finally { await E.pg.close(); }
+  });
+
+  await t.test('no printed invoice date: the date follows a corrected delivery date, but not a date a person entered', async () => {
+    const E = await setup();
+    try {
+      let { id, d } = await stage(E, 'NO-INV-DATE', doc('NID', null, line, { delivery: '2026-10-06' }));
+      assert.deepEqual(await dates(E, d), { i: '2026-10-06', v: '2026-10-06' });
+      let r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { delivery_date: '2026-10-05' }, reason: '納品日の読み違い' });
+      assert.equal(r.status, 200); [d] = await docsOf(E, id);
+      assert.deepEqual(await dates(E, d), { i: '2026-10-05', v: '2026-10-05' });
+      assert.ok(!codes(d).includes('date_missing'));
+      r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { invoice_date: '2026-10-01' }, reason: '請求日は別の書類で確認' });
+      assert.equal(r.status, 200); [d] = await docsOf(E, id);
+      r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { delivery_date: '2026-10-04' }, reason: '納品日をもう一度直す' });
+      assert.equal(r.status, 200); [d] = await docsOf(E, id);
+      assert.deepEqual(await dates(E, d), { i: '2026-10-01', v: '2026-10-04' });
+    } finally { await E.pg.close(); }
+  });
+
+  await t.test('R2: a price unit printed on the price survives a correction; a per-LB price never becomes a per-case price', async () => {
+    const E = await setup();
+    try {
+      const ext = doc('R2', '2026-10-06', line); ext.lines[0].unit_price = '$60.00/LB'; ext.lines[0].price_unit = null;
+      let { id, d } = await stage(E, 'R2-PRICE-UNIT', ext);
+      const [l0] = await E.q(`select price_unit, reasons from invoice_lines where doc_id=$1`, [d.id]);
+      assert.equal(l0.price_unit, 'LB'); assert.ok(l0.reasons.includes('catch_weight'));
+      assert.equal((await dueOnly(E, d)).status, 200); [d] = await docsOf(E, id);
+      assert.ok(codes(d).includes('catch_weight'), JSON.stringify(d.reasons));
+      const post = await E.api('tok-gm', { action: 'post', doc_id: d.id, version: d.version, reason: 'synthetic' });
+      assert.equal(post.status, 200, JSON.stringify(post.body));
+      assert.equal((await E.q(`select count(*)::int n from invoice_price_history where doc_id=$1 and status='active'`, [d.id]))[0].n, 0);
+    } finally { await E.pg.close(); }
+  });
+
+  await t.test('R3: a unit printed on the quantity is used to find the product', async () => {
+    const E = await setup();
+    try {
+      const ext = doc('R3', '2026-10-06', line); ext.lines[0].qty = '2 CS'; ext.lines[0].unit = null;
+      let { id, d } = await stage(E, 'R3-QTY-UNIT', ext);
+      const [l] = await E.q(`select purchase_unit, reasons, map_id from invoice_lines where doc_id=$1`, [d.id]);
+      assert.equal(l.purchase_unit, 'CS'); assert.ok(l.map_id); assert.ok(!l.reasons.includes('unit_unverified'), JSON.stringify(l.reasons));
+      // and after a correction
+      assert.equal((await dueOnly(E, d)).status, 200); [d] = await docsOf(E, id);
+      const [l2] = await E.q(`select reasons from invoice_lines where doc_id=$1`, [d.id]);
+      assert.ok(!l2.reasons.includes('unit_unverified'), JSON.stringify(l2.reasons));
+    } finally { await E.pg.close(); }
+  });
+});

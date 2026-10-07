@@ -159,7 +159,8 @@ export async function evaluate(ext, ctx) {
   h.invoice_date_basis = d.value ? 'invoice' : null;
   // Moto 2026-10-07: when no invoice date is printed at all, the printed delivery date is used as the invoice
   // date. A printed invoice date that cannot be read, or that disagrees, still needs a person.
-  if (!d.value && d.reason === 'date_missing' && h.delivery_date) { h.invoice_date = h.delivery_date; h.invoice_date_basis = 'delivery'; }
+  // ctx.dateFallback === false: a recheck where the printed text is not known to be absent.
+  if (!d.value && d.reason === 'date_missing' && h.delivery_date && ctx.dateFallback !== false) { h.invoice_date = h.delivery_date; h.invoice_date_basis = 'delivery'; }
   else if (!d.value) add(d.reason);
   const due = ext.due_date_text ? determineDate(ext.due_date_text, ext.due_date) : { value: null };
   h.due_date = due.value;
@@ -248,8 +249,8 @@ export async function evaluate(ext, ctx) {
       if (forcedId) {
         const fmap = vmaps.find(m => m.id === forcedId && (!m.store_id || m.store_id === ctx.store.store_id));
         fm = fmap ? { map: fmap } : { reason: 'unmapped' };
-        if (fmap && fmap.purchase_unit && unitKey(l.unit) && fmap.purchase_unit !== unitKey(l.unit)) fm.reason = 'unit_mismatch';
-      } else fm = findMap(vmaps, { item_code: l.item_code, unit: l.unit, pack: l.pack, raw_name: l.description }, ctx.store.store_id);
+        if (fmap && fmap.purchase_unit && qtyUnit && fmap.purchase_unit !== qtyUnit) fm.reason = 'unit_mismatch';
+      } else fm = findMap(vmaps, { item_code: l.item_code, unit: qtyUnit, pack: l.pack, raw_name: l.description }, ctx.store.store_id);   // the unit read, also from "2 CS"
       if (fm.reason) r.push(fm.reason);
       const m = fm.map;
       if (m) {

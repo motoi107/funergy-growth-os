@@ -348,16 +348,31 @@ export function createHandler(deps) {
     return u && typeof u.id === 'string' ? u.id : null;
   }
 
+  // The invoice date a recheck starts from. A date a person enters now is used as entered. With no printed invoice
+  // date (the AI's transcription has none), the date follows the delivery date (Moto 2026-10-07), also after the
+  // delivery date is corrected. Otherwise the stored date is used; with none stored, the AI's printed text decides,
+  // so a printed date that could not be read or that disagreed stays a reason for a person and is never filled in.
+  function invoiceDateInput(doc, hdr, ai) {
+    const printed = ai ? String(ai.invoice_date_text ?? '').trim() : null;   // null: no transcription to go by
+    const noPrinted = printed === '';
+    if ('invoice_date' in hdr) return { text: hdr.invoice_date || null, iso: hdr.invoice_date || null, derived: false };
+    if (noPrinted && (!doc.invoice_date || doc.invoice_date === doc.delivery_date)) return { text: null, iso: null, derived: true };
+    if (doc.invoice_date || (doc.overrides && 'invoice_date' in doc.overrides)) return { text: doc.invoice_date || null, iso: doc.invoice_date || null, derived: false };
+    return { text: printed || null, iso: ai ? ai.invoice_date || null : null, derived: false };
+  }
+
   // Rebuilds reasons after a person's correction from the current values, never from the AI's.
-  async function recheck(doc, lines, edits, ctx) {
+  // ai: the AI's transcription of this document (invoice_get's ai_doc), used only for what was printed.
+  async function recheck(doc, lines, edits, ctx, ai) {
     const H = { ...doc, ...(edits.header || {}) };
+    const dateIn = invoiceDateInput(doc, edits.header || {}, ai);
     const byId = Object.fromEntries((edits.lines || []).map(e => [e.line_id, e.set || {}]));
     const store = ctx.stores.find(s => s.store_id === doc.store_id) || { store_id: doc.store_id, auto_post: false };
     const vendor = ctx.vendors.find(v => v.vendor_key === H.vendor_key);
     const cents = c => (c === null || c === undefined ? null : (Number(c) / 100).toFixed(2));
     const ext = {
       doc_type: H.doc_type, vendor_name: vendor ? vendor.display_name : H.vendor_raw, ship_to: doc.ship_to_raw, customer_account: doc.vendor_code,
-      invoice_number: H.invoice_no, invoice_date_text: H.invoice_date, invoice_date: H.invoice_date,
+      invoice_number: H.invoice_no, invoice_date_text: dateIn.text, invoice_date: dateIn.iso,
       delivery_date_text: H.delivery_date || null, delivery_date: H.delivery_date || null, due_date_text: H.due_date || null, due_date: H.due_date || null,
       currency: H.currency, subtotal: cents(H.subtotal_cents), discount_total: cents(H.discount_cents), tax: cents(H.tax_cents),
       shipping: cents(H.shipping_cents), total: cents(H.total_cents),
@@ -365,7 +380,9 @@ export function createHandler(deps) {
       pages: doc.pages, pages_marked: doc.pages_marked, references: doc.references_raw,
       lines: lines.map(l => { const s = byId[l.id] || {}; const raw = l.raw || {};
         return { page: l.page, item_code: l.item_code, description: l.raw_name, qty: String(s.qty ?? l.qty ?? ''), unit: s.purchase_unit ?? l.purchase_unit ?? raw.unit,
-          pack: raw.pack, unit_price: String(s.unit_price ?? l.unit_price ?? ''), price_unit: raw.price_unit, weight: raw.weight, weight_unit: raw.weight_unit,
+          pack: raw.pack, unit_price: String(s.unit_price ?? l.unit_price ?? ''),
+          // The units read at intake (also those printed on the numbers, "$3.52/LB") are kept.
+          price_unit: l.price_unit ?? raw.price_unit, weight: l.weight ?? raw.weight, weight_unit: l.weight_unit ?? raw.weight_unit,
           line_discount: cents(s.line_discount_cents ?? l.line_discount_cents ?? 0), amount: cents(s.amount_cents ?? l.amount_cents), taxable: l.taxable }; }),
     };
     // A person's chosen mapping takes precedence over code/alias lookup.
@@ -376,7 +393,7 @@ export function createHandler(deps) {
     });
     const maps = ctx.maps;
     const result = await evaluate(ext, { store, stores: ctx.stores, vendors: ctx.vendors, maps, settings: ctx.rules, started: ctx.started,
-      docCount: 1, pageCount: null, forcedMaps: forced,
+      docCount: 1, pageCount: null, forcedMaps: forced, dateFallback: dateIn.derived,
       priceRef: p => db.rpc('invoice_price_ref', { ...p, store_id: doc.store_id }) });
     const h = result.header;
     h.content_sig = await contentSignature(h, result.lines);
@@ -390,6 +407,7 @@ export function createHandler(deps) {
     for (const r of doc.reasons || []) {
       if (['ai_truncated', 'multiple_documents', 'missing_pages', 'original_replaced'].includes(r.code) && !result.reasons.some(x => x.code === r.code)) { result.reasons.push(r); result.autoEligible = false; }
     }
+    result.invoiceDateDerived = dateIn.derived;
     return result;
   }
 
@@ -400,11 +418,12 @@ export function createHandler(deps) {
     const allowed = ['vendor_key', 'invoice_no', 'invoice_date', 'delivery_date', 'due_date', 'doc_type', 'currency',
       'subtotal_cents', 'discount_cents', 'tax_cents', 'shipping_cents', 'total_cents', 'food_kind'];
     for (const k of Object.keys(b.header || {})) { if (!allowed.includes(k)) throw new Error('field_not_editable'); header[k] = b.header[k]; }
-    const result = await recheck(g.doc, g.lines, { header, lines: b.lines || [] }, ctx);
+    const result = await recheck(g.doc, g.lines, { header, lines: b.lines || [] }, ctx, g.ai_doc || null);
     const h = result.header;
-    // An invoice with no printed invoice date takes its delivery date (rules.mjs). When that fills a date the
-    // record does not have yet, it is saved with this correction, so the stored date matches the new reasons.
-    if (!('invoice_date' in header) && !g.doc.invoice_date && h.invoice_date && g.doc.status === 'review') header.invoice_date = h.invoice_date;
+    // An invoice with no printed invoice date takes its delivery date. When that gives a date the record does not
+    // have yet (an older record, or a corrected delivery date), it is saved with this correction, so the stored
+    // date matches the new reasons.
+    if (!('invoice_date' in header) && result.invoiceDateDerived && h.invoice_date && h.invoice_date !== g.doc.invoice_date) header.invoice_date = h.invoice_date;
     if ('vendor_key' in header) { header.vendor_name = h.vendor_name || null; header.food_kind = header.food_kind ?? h.food_kind ?? null; }
     if ('invoice_no' in header) header.invoice_no_norm = h.invoice_no_norm;
     if ('doc_type' in header) header.posting_kind = h.posting_kind;

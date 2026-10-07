@@ -107,7 +107,14 @@ const CASES = [
   ['a printed unit that disagrees with the line is accepted', UNIT, [['invoice/rules.mjs', "if (expect && unitKey(expect) !== unit) return { value: null, unit: null };", '']]],
   ['any printed weight is taken for the quantity', UNIT, [['invoice/rules.mjs', 'weightIsQty = w.value !== null && w.value === qty && wUnit === qtyUnit && !!qtyUnit;', 'weightIsQty = true;']]],
   ['an unreadable invoice date is replaced by the delivery date', UNIT, [['invoice/rules.mjs', "if (!d.value && d.reason === 'date_missing' && h.delivery_date)", 'if (!d.value && h.delivery_date)']]],
-  ['the delivery date is not saved with a correction', E2E, [['supabase/functions/invoice-intake/handler.mjs', "if (!('invoice_date' in header) && !g.doc.invoice_date && h.invoice_date && g.doc.status === 'review') header.invoice_date = h.invoice_date;", '']]],
+  ['the delivery date is not saved with a correction', E2E, [['supabase/functions/invoice-intake/handler.mjs', "if (!('invoice_date' in header) && result.invoiceDateDerived && h.invoice_date && h.invoice_date !== g.doc.invoice_date) header.invoice_date = h.invoice_date;", '']]],
+  // Codex review of 2544826 (R1–R3).
+  ['R1: an unread printed invoice date is filled from the delivery date on a correction', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    'if (noPrinted && (!doc.invoice_date || doc.invoice_date === doc.delivery_date))', 'if (!doc.invoice_date || (noPrinted && doc.invoice_date === doc.delivery_date))']]],
+  ['a derived invoice date no longer follows a corrected delivery date', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    'result.invoiceDateDerived && h.invoice_date && h.invoice_date !== g.doc.invoice_date', '!g.doc.invoice_date && h.invoice_date']]],
+  ['R2: the price unit read at intake is dropped on a correction', E2E, [['supabase/functions/invoice-intake/handler.mjs', 'price_unit: l.price_unit ?? raw.price_unit,', 'price_unit: raw.price_unit,']]],
+  ['R3: the unit printed on the quantity is not used for the mapping', E2E, [['invoice/rules.mjs', 'unit: qtyUnit, pack: l.pack, raw_name: l.description }', 'unit: l.unit, pack: l.pack, raw_name: l.description }']]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {
