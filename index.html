@@ -6239,7 +6239,7 @@ const NAV_ITEMS = [
    店舗（AM・SL）は自店の登録に使うのでナビに残す。
    roles はメニューの表示可否だけで renderPage() は塞がないので、
    go('invoice') 等の既存リンクは今までどおり動く。 */
-{id:'invoice',     label:'Invoice管理',     icon:'ti-file-invoice',     roles:['ceo','gm','office','office_crew','am','sl','chef']},
+{id:'invoice',     label:'レシート管理',     icon:'ti-receipt',     roles:['ceo','gm','office','office_crew','am','sl','chef']},
   {id:'acct_review', label:'経理レビュー', icon:'ti-checklist',       roles:['ceo','gm','office','office_crew']},
   {id:'office_mgr',  label:'Office管理', icon:'ti-building-skyscraper', roles:['ceo','gm','office','office_crew']},
   {id:'acct_center',  label:'経理センター', icon:'ti-building-bank', roles:['ceo','gm','office','office_crew']},
@@ -8992,7 +8992,7 @@ function langDateLocale() { return curLang==='en' ? 'en-US' : 'ja'; }
 /* ===== ナビ（グループ/タブ）ラベルの英語出し分け辞書。表示専用。IDやデータ値は不変。 ===== */
 var NAV_LABEL_EN = {
   'ダッシュボード':'Dashboard','店舗オペレーション':'Store Operations','予実管理':'Budget vs Actual',
-  '原価率(FC)':'Food Cost (FC)','メニュー':'Menu','原価登録':'Recipe Costing','Invoice管理':'Invoice Mgmt',
+  '原価率(FC)':'Food Cost (FC)','メニュー':'Menu','原価登録':'Recipe Costing','レシート管理':'Receipts',
   '経理レビュー':'Accounting Review','Office管理':'Office Admin','出力センター':'Export Center',
   '棚卸し':'Inventory','発注':'Ordering','備品発注':'Supply Orders','ワークセンター':'Work Center',
   '業務ガイド':'Ops Guide','必須チェック':'Required Checks','目標':'Goals','人件費・勤怠':'Labor & Attendance',
@@ -16893,7 +16893,7 @@ function renderStoreCmd() {
       {label:t('発注','Order'), icon:'ti-truck-delivery', color:'#2e6fd6', page:'order'},
       {label:t('シフト','Shift'), icon:'ti-calendar-event', color:'#f0661f', page:'shift_admin'},
       {label:t('日報','Daily Report'), icon:'ti-clipboard-text', color:'#8b5cf6', action:`scrollToReport()`},
-      {label:t('請求書','Invoice'), icon:'ti-file-invoice', color:'#e0a23a', page:'invoice'},
+      {label:t('レシート','Receipts'), icon:'ti-receipt', color:'#e0a23a', page:'invoice'},
     ];
     html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">`;
     tiles.forEach(ti=>{
@@ -38161,7 +38161,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1054';
+const APP_VERSION = '1055';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -43979,6 +43979,7 @@ setTimeout(botFetchSharedClock,0);
 /* ===== v1052: Invoice取込（Google Drive の店舗フォルダ 00_Upload から読み取った invoice）=====
    UI案34（Motoさん承認 10/6）の画面：経理センターの「Invoice取込」タブ（一覧・要確認・照合・取込状況・設定）、
    店舗の Invoice管理の「提出フォルダ」の案内、食材マスターの仕入れ履歴。
+   v1055（UI案35）：食材管理の「Invoice管理」は「レシート管理」。Drive の提出フォルダを出した店舗は、アプリで業者の Invoice を登録しない（invInUsesDrive）。
    ★サーバーは Edge Function invoice-intake。業務Bot と同じメール認証（Supabase Auth）のセッションで呼ぶ。anon キーだけでは何も読めない。
    ★この画面は「人の判断」を送るだけ。合計を合わせるために数量・単価を自動で直すことはしない。直した値・理由・直した人はサーバーの履歴に残る。
    ★invoice に書かれた文字（業者名・商品名・番号など）は必ず escapeHtml してから出す。指示としては扱わない。
@@ -44003,6 +44004,7 @@ var INVIN_REASONS = {
   missing_pages:['ページ不足の疑い','Pages may be missing'], no_lines:['明細がない','No line items'], closed_month:['締め済みの月（経理の調整処理へ）','Closed month (accounting adjustment)'],
   duplicate_certain:['同じ invoice が登録済み（計上しない）','Already registered (not posted again)'], same_number_different:['同じ番号で内容が違う（訂正版か別書類）','Same number, different content'],
   duplicate_candidate:['重複の可能性','Possible duplicate'], app_duplicate_candidate:['アプリで登録済みの可能性','May already be registered in the app'],
+  original_replaced:['同じファイルの中身が差し替えられた（前の版と見比べる）','The file was overwritten with new content (compare with the earlier version)'],
   line_value_missing:['数量・単価・金額が読めない明細','Line quantity/price/amount missing'], line_math:['数量×単価が明細金額と一致しない','Quantity × price does not equal the line amount'],
   zero_price:['単価または金額が 0','Zero price or amount'], negative_line:['マイナスの明細（返品など）','Negative line (return etc.)'], catch_weight:['重量で請求する明細（キャッチウェイト）','Catch-weight line'],
   unmapped:['商品マスターに対応がない（新商品）','Not mapped to a product (new item)'], map_ambiguous:['対応する商品が複数ある','Several products match'],
@@ -44013,7 +44015,7 @@ var INVIN_REASONS = {
   mode_review_item:['商品は確認モード','Item is in review mode'], intake_not_started:['運用開始前のため自動反映しない','Before the start date']
 };
 /* 人が「確認した」と言えば反映できる理由（それ以外の止める理由は、直すか対象外にする） */
-var INVIN_MAY_ACK = ['line_math','total_mismatch'];
+var INVIN_MAY_ACK = ['line_math','total_mismatch','original_replaced'];
 var INVIN_MUST_FIX = ['duplicate_certain','total_missing','line_value_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','no_lines','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
 var INVIN_ERR = {
@@ -44064,7 +44066,7 @@ async function invInAPI(payload, retried){
     if (rr.ok) { var jj = await rr.json(); _botSession = { access_token:jj.access_token, refresh_token:jj.refresh_token }; return invInAPI(payload, true); }
   }
   var j = null; try { j = await r.json(); } catch(e) { j = null; }
-  if (!r.ok) { if (r.status === 401 && s === _botSession) _botSession = null; throw new Error(invInErrText(j && j.error, r.status)); }
+  if (!r.ok) { if (r.status === 401 && s === _botSession) _botSession = null; var err = new Error(invInErrText(j && j.error, r.status)); err.code = (j && typeof j.error === 'string') ? j.error : ''; throw err; }
   return j;
 }
 function invInLoginModal(){
@@ -44331,7 +44333,7 @@ async function invInLoadDoc(){
 function invInCandIds(d){
   var out = [];
   (d.reasons||[]).forEach(function(r){
-    if (['duplicate_certain','same_number_different','duplicate_candidate'].indexOf(r.code) < 0) return;
+    if (['duplicate_certain','same_number_different','duplicate_candidate','original_replaced'].indexOf(r.code) < 0) return;
     String(r.detail||'').split(',').forEach(function(x){ x = invInId(x.trim()); if (x && out.indexOf(x) < 0) out.push(x); });
   });
   return out;
@@ -44495,9 +44497,10 @@ function invInReviewActions(d){
   var h = '<div class="card" style="padding:10px 12px">';
   var ack = codes.filter(function(c){ return INVIN_MAY_ACK.indexOf(c)>=0; });
   if (ack.length) h += ack.map(function(c){ return '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:4px"><input type="checkbox"'+(E.ack&&E.ack[c]?' checked':'')+' onchange="_invIn.edits.ack[\''+c+'\']=this.checked"> '
-      + t('原本で確かめた：','Checked against the original: ')+e(invInReason(c))+t('（このまま反映する）',' (post as printed)')+'</label>'; }).join('');
+      + (c==='original_replaced' ? t('前の版とは別の invoice として反映する（前の版はそのまま。置き換えるときは下の「訂正版として置き換える」）','Post as a separate invoice (the earlier version stays; to replace it, use “Replace it” below)')
+        : t('原本で確かめた：','Checked against the original: ')+e(invInReason(c))+t('（このまま反映する）',' (post as printed)'))+'</label>'; }).join('');
   if (codes.indexOf('closed_month')>=0) h += '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:4px"><input type="checkbox"'+(E.adj?' checked':'')+' onchange="_invIn.edits.adj=this.checked"> '+t('締め済みの月：経理の調整として反映する（締めた数字は書き換えない）','Closed month: post as an accounting adjustment (closed figures are not rewritten)')+'</label>';
-  var sameNo = (d.reasons||[]).filter(function(r){ return r.code==='same_number_different'; });
+  var sameNo = (d.reasons||[]).filter(function(r){ return r.code==='same_number_different' || r.code==='original_replaced'; });
   var cands = invInCandIds(d);
   if (cands.length) {
     h += '<div style="font-size:11.5px;font-weight:700;margin:6px 0 4px">'+t('重複・訂正版の候補','Possible duplicates / earlier versions')+'</div>' + cands.map(function(id){
@@ -44526,6 +44529,8 @@ function invInSaveRow(d){
   var E = _invIn.edits || {};
   return '<div class="card" style="padding:10px 12px"><div style="font-size:11.5px;font-weight:700;margin-bottom:6px">'+t('反映済みの訂正','Correct a posted document')+'</div>'
     + '<div class="ivx-note" style="margin-top:0">'+t('金額や日付を直すと価格の履歴は作り直され、照合は「未照合」に戻ります。締め済みの月は経理の調整として記録します。','Correcting amounts or dates rebuilds the price history and returns reconciliation to “not reconciled”. Closed months are recorded as an accounting adjustment.')+'</div>'
+    + (E.needAck ? '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin:6px 0;color:'+INVIN_COL.red+'"><input type="checkbox"'+(E.ack&&E.ack[E.needAck]?' checked':'')+' onchange="_invIn.edits.ack[\''+E.needAck+'\']=this.checked"> '
+        + t('原本で確かめた：','Checked against the original: ')+escapeHtml(invInReason(E.needAck))+t('（このまま保存する）',' (save as printed)')+'</label>' : '')
     + '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin:6px 0"><input type="checkbox"'+(E.adj?' checked':'')+' onchange="_invIn.edits.adj=this.checked"> '+t('締め済みの月なら、経理の調整として記録する','If the month is closed, record an accounting adjustment')+'</label>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap"><input class="form-input" style="flex:1;min-width:240px" placeholder="'+t('訂正の理由（必須）','Reason (required)')+'" value="'+escapeHtml(E.reason||'')+'" oninput="_invIn.edits.reason=this.value">'
     + '<button class="btn btn-secondary btn-sm" onclick="invInSave()"><i class="ti ti-device-floppy"></i> '+t('修正を保存','Save correction')+'</button></div></div>';
@@ -44580,8 +44585,15 @@ async function invInSave(){
   if (c.err) { showToast(c.err, 'warning'); return; }
   if (!Object.keys(c.header).length && !c.lines.length) { showToast(t('変更はありません','Nothing changed'), 'info'); return; }
   if (!String(E.reason||'').trim()) { showToast(invInL(INVIN_ERR.reason_required), 'warning'); return; }
-  try { await invInDo(function(){ return invInAPI({ action:'edit', doc_id:d.id, version:d.version, header:c.header, lines:c.lines, reason:E.reason.trim(), adjustment_ack:!!E.adj }); }, t('修正を保存しました（確認の理由は作り直しました）','Saved. The review reasons were rebuilt')); }
-  catch(e) { if (/先に更新|updated this first/.test(e.message)) { delete _invIn.loaded.doc; invInRerender(); } return; }
+  var ack = Object.keys(E.ack||{}).filter(function(k){ return E.ack[k]; });
+  try { await invInDo(function(){ return invInAPI({ action:'edit', doc_id:d.id, version:d.version, header:c.header, lines:c.lines, reason:E.reason.trim(), adjustment_ack:!!E.adj, ack:ack }); }, t('修正を保存しました（確認の理由は作り直しました）','Saved. The review reasons were rebuilt')); }
+  catch(e) {
+    if (/先に更新|updated this first/.test(e.message)) { delete _invIn.loaded.doc; invInRerender(); }
+    /* 反映済みの訂正で、新しい不一致が出たとき：反映と同じ「原本で確かめた」を出す（サーバーが確かめる） */
+    var m = /^blocked:(\w+)$/.exec(e.code || '');
+    if (m && INVIN_MAY_ACK.indexOf(m[1]) >= 0 && d.status==='posted') { _invIn.edits.needAck = m[1]; invInRerender(); }
+    return;
+  }
   _invIn.edits = null; delete _invIn.loaded.doc; delete _invIn.loaded.health; delete _invIn.loaded.review; invInRerender();
 }
 async function invInPost(){
@@ -44802,7 +44814,7 @@ function invInSettings(){
           + '<td>'+(admin ? '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invInStoreModal('+invInJs(id)+')">'+(s?t('編集','Edit'):t('設定する','Set up'))+'</button>' : '')+'</td></tr>';
       }).join('') + '</tbody></table></div>'
     + '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">'+(admin ? '<button class="btn btn-secondary btn-sm" onclick="invInFolderCheck(false)"><i class="ti ti-folder-search"></i> '+t('フォルダを確かめる（作らない）','Check folders (creates nothing)')+'</button>' : '')
-    + '<span class="ivx-note" style="margin:0">'+t('既にあるフォルダを使います。同じ名前のフォルダが2つあるときは止めて知らせます。店舗の画面に案内を出すと、その店の Invoice管理に「提出フォルダを開く」が出ます。','Existing folders are used; two folders with the same name stop the run. “Show” adds an “Open the upload folder” card to that store’s Invoice page.')+'</span></div></div>';
+    + '<span class="ivx-note" style="margin:0">'+t('既にあるフォルダを使います。同じ名前のフォルダが2つあるときは止めて知らせます。店舗の画面に案内を出すと、その店のレシート管理に「提出フォルダを開く」が出て、その店はアプリで業者の Invoice を登録しなくなります（Drive だけ）。','Existing folders are used; two folders with the same name stop the run. “Show” adds an “Open the upload folder” card to that store’s Receipts page, and the store no longer registers supplier invoices in the app (Drive only).')+'</span></div></div>';
   /* ---- 業者・対応表 ---- */
   var vend = C.vendors || [], maps = C.maps || [];
   var unver = maps.filter(function(m){ return !m.verified; }).length;
@@ -44942,16 +44954,30 @@ async function invInFolderCheck(apply){
     + (!apply && pending && invInCanAdmin() ? '<button class="btn btn-primary" onclick="closeModalDirect();invInFolderCheck(true)">'+t('この内容で作る・記録する','Create / record as shown')+'</button>' : '')+'</div>');
   if (apply) { delete _invIn.loaded.config; delete _invIn.loaded.health; invInRerender(); }
 }
-/* 店舗の Invoice管理に出す提出フォルダ（店舗マスターに持つ。案内の表示だけに使う） */
-function invInPublishLink(id, on){
+/* 店舗のレシート管理に出す提出フォルダ（店舗マスターに持つ）。v1055：出した店舗はアプリで業者の Invoice を登録しない（Drive だけ）。
+   Food Cost には Drive 取込の写しで入るので、取込とアプリへの写し（開始日時つき）が ON でないと出せない。 */
+function invInPublishLink(id, on, confirmed){
   if (!invInCanAdmin()) return;
   var s = _invIn.config && (_invIn.config.stores||[]).find(function(x){ return x.store_id===id; });
   if (on && !(s && invInFileId(s.upload_folder_id))) { showToast(t('先に 00_Upload を設定してください','Set 00_Upload first'), 'warning'); return; }
+  var M = (_invIn.config && _invIn.config.settings && _invIn.config.settings.mode) || {};
+  if (on && !(M.intake && M.mirror && M.start_at)) {
+    showToast(t('先に「運用」で取込とアプリへの写し（開始日時つき）を ON にしてください。出した店舗の Invoice は Drive 取込から Food Cost に入るためです。','Turn on intake and the app copy (with a start date) first: the store’s invoices reach Food Cost through the Drive intake.'), 'warning'); return;
+  }
   var stores = getStoresAll(), st = stores.find(function(x){ return x.id===id; });
   if (!st) { showToast(t('店舗マスターにこの店舗がありません','This store is not in the store master'), 'warning'); return; }
+  if (!confirmed) {
+    var nm = escapeHtml(invInStore(id).name);
+    openModal('<div class="modal-title">'+(on ? t('店舗の画面に出す','Show to the store') : t('店舗の画面から隠す','Hide from the store'))+' — '+nm+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      + '<div style="font-size:12.5px;line-height:1.8">'+(on
+        ? t('出すと、この店舗のレシート管理に「提出フォルダを開く」が出て、<b>アプリでは業者の Invoice を登録できなくなります</b>（Google Drive の 00_Upload だけ）。会社カードのレシート・立替・チェックは今までどおりアプリから登録します。','The store’s Receipts page shows “Open the upload folder”, and <b>supplier invoices can no longer be registered in the app</b> (Google Drive 00_Upload only). Card receipts, reimbursements and checks stay in the app.')
+        : t('隠すと、この店舗はまたアプリで業者の Invoice を登録できるようになります。Drive に入った invoice の取込はそのまま続きます。','The store can register supplier invoices in the app again. Invoices in Drive are still read.'))+'</div>'
+      + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="closeModalDirect();invInPublishLink('+invInJs(id)+','+(on?'true':'false')+',true)">'+(on?t('出す','Show'):t('隠す','Hide'))+'</button></div>');
+    return;
+  }
   if (on) st.invoiceUploadFolderId = s.upload_folder_id; else delete st.invoiceUploadFolderId;
   lsSet('m_stores', stores); STORES = getStoresAll();
-  showToast(on ? t('店舗の Invoice管理に案内を出しました','The store’s Invoice page now shows the folder') : t('案内を隠しました','Hidden'), 'success');
+  showToast(on ? t('店舗のレシート管理に案内を出しました（この店舗の Invoice は Drive だけ）','The store’s Receipts page now shows the folder (invoices: Drive only)') : t('案内を隠しました','Hidden'), 'success');
   invInRerender();
 }
 function invInVendorModal(key){
@@ -45013,7 +45039,33 @@ async function invInSeed(kind, apply){
     + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button>'+(n && invInCanAdmin() ? '<button class="btn btn-primary" onclick="invInSeed(\''+kind+'\',true)">'+t('候補を作る','Create candidates')+'</button>' : '')+'</div>');
 }
 
-/* ===================================================================== ⑥ 店舗の提出案内（Invoice管理） */
+/* ===================================================================== ⑥ 店舗の提出案内（v1055：レシート管理の上） */
+/* その店舗が Drive の提出フォルダを使っているか（GM・CEO が「店舗の画面」で出した店舗）。使っている店舗はアプリで業者の Invoice を登録しない */
+function invInUsesDrive(storeId){
+  if (!storeId) return false;
+  try { var s = getStoresAll().find(function(x){ return x.id===storeId; }); return !!(s && invInFileId(s.invoiceUploadFolderId)); } catch(e) { return false; }
+}
+function invInGoIntake(){ _acCat = 'drive'; _acSub = 'dlist'; go('acct_center'); }
+/* 本部（経理・事務・GM・CEO）向け：業者の Invoice は経理センターの Invoice取込で見る */
+function invInHqBarHtml(){
+  if (!invInCan()) return '';
+  var on = []; try { on = getStoresAll().filter(function(s){ return invInFileId(s.invoiceUploadFolderId); }); } catch(e) {}
+  return '<div class="card" style="padding:10px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-left:4px solid var(--accent)">'
+    + '<i class="ti ti-brand-google-drive" style="font-size:20px;color:var(--accent)"></i>'
+    + '<div style="flex:1;min-width:220px;font-size:12px;line-height:1.6"><b>'+t('業者の Invoice は「Invoice取込」で確認します','Supplier invoices are checked in “Invoice intake”')+'</b><div style="color:var(--muted)">'
+    + (on.length ? t('Drive で受け付けている店舗：','Stores using Drive: ')+on.map(function(s){ return escapeHtml(s.name); }).join('・') : t('まだどの店舗にも Drive の提出フォルダを出していません。','No store has been shown a Drive upload folder yet.'))+'</div></div>'
+    + '<button class="btn btn-secondary btn-sm" onclick="invInGoIntake()"><i class="ti ti-arrow-right"></i> '+t('Invoice取込を開く','Open Invoice intake')+'</button></div>';
+}
+/* 登録の画面の上：この店舗の業者 Invoice は Drive へ */
+function invInModalNoteHtml(storeId){
+  if (!invInUsesDrive(storeId)) return '';
+  var s = getStoresAll().find(function(x){ return x.id===storeId; });
+  return '<div style="border:1.5px solid var(--accent);border-radius:10px;padding:9px 11px;margin-bottom:10px;font-size:12px;line-height:1.7">'
+    + '<b><i class="ti ti-brand-google-drive"></i> '+t('業者の Invoice はここでは登録しません','Supplier invoices are not registered here')+'</b><div style="color:var(--muted)">'
+    + t('Google Drive の提出フォルダ（00_Upload）に入れてください。本部が読み取って仕入れに反映します。','Put them in the Google Drive upload folder (00_Upload). Head office reads them and records the purchase.')+'</div>'
+    + '<a class="btn btn-secondary btn-sm" style="margin-top:6px" href="'+invInFolderUrl(s.invoiceUploadFolderId)+'" target="_blank" rel="noopener noreferrer"><i class="ti ti-folder-open"></i> '
+    + (curLang==='en' ? 'Open the '+escapeHtml(s.name)+' upload folder' : escapeHtml(s.name)+' の提出フォルダを開く')+'</a></div>';
+}
 function invInStoreCardHtml(){
   if (['ceo','gm','office','office_crew'].indexOf(curRole) >= 0) return '';
   var cands = []; try { cands = invoiceStoreCandidates().filter(function(s){ return s.id!=='OFFICE'; }); } catch(e) { return ''; }
@@ -45029,11 +45081,12 @@ function invInStoreCardHtml(){
     + '<div style="display:flex;gap:8px;align-items:center"><i class="ti ti-brand-google-drive" style="font-size:22px;color:var(--accent)"></i><b style="font-size:14px;flex:1">'+t('業者の invoice は Google Drive へ','Supplier invoices go to Google Drive')+'</b></div>'
     + withLink.map(function(s){ return '<a class="btn btn-primary" style="display:block;text-align:center;margin-top:10px;font-size:14px;padding:11px" href="'+invInFolderUrl(all[s.id].invoiceUploadFolderId)+'" target="_blank" rel="noopener noreferrer"><i class="ti ti-folder-open"></i> '
       + (curLang==='en' ? 'Open the '+e(s.name)+' upload folder' : e(s.name)+' の提出フォルダを開く')+'</a>'; }).join('')
-    + '<div style="margin-top:10px">'+steps.map(function(x, i){ return '<div style="display:flex;gap:9px;padding:8px 0;border-top:1px solid var(--border)"><span style="width:21px;height:21px;border-radius:50%;background:var(--surface2);font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">'+(i+1)+'</span>'
-      + '<div><div style="font-size:12.5px;font-weight:700">'+x[0]+'</div><div style="font-size:11px;color:var(--muted);line-height:1.55;margin-top:1px">'+x[1]+'</div></div></div>'; }).join('')+'</div>'
+    /* v1055：レシート管理の上なので、4つのポイントはたたんでおく（提出フォルダのボタンはいつも見える） */
+    + '<details style="margin-top:8px"><summary style="font-size:12px;font-weight:700;cursor:pointer;padding:4px 0"><i class="ti ti-list-check"></i> '+t('出し方（4つのポイント）','How to submit (4 tips)')+'</summary>'
+    + '<div style="margin-top:4px">'+steps.map(function(x, i){ return '<div style="display:flex;gap:9px;padding:8px 0;border-top:1px solid var(--border)"><span style="width:21px;height:21px;border-radius:50%;background:var(--surface2);font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">'+(i+1)+'</span>'
+      + '<div><div style="font-size:12.5px;font-weight:700">'+x[0]+'</div><div style="font-size:11px;color:var(--muted);line-height:1.55;margin-top:1px">'+x[1]+'</div></div></div>'; }).join('')+'</div>'+'</details>'
     + '<div style="background:var(--surface2);border-radius:10px;padding:9px 11px;font-size:11.5px;line-height:1.7;margin-top:6px">'+t('入れたあとは本部が読み取り、仕入れに反映します。気になることがあれば経理から連絡します。','Head office reads it and records the purchase. Accounting will contact you if anything needs checking.')+'</div>'
-    + '<div style="font-size:11.5px;margin-top:8px"><b><i class="ti ti-credit-card"></i> '+t('会社カード・立替のレシートは今までどおり','Card and reimbursement receipts: no change')+'</b><div style="color:var(--muted);line-height:1.6;margin-top:2px">'+t('アプリの「Receipt」「建て替え」から登録します（社員ごと・月ごとの管理）。このフォルダには入れません。','Keep using Receipt / Reimbursement in the app (managed per employee and month). Do not put them in this folder.')+'</div></div>'
-    + '<div style="text-align:center;margin-top:8px"><a style="font-size:11.5px;color:var(--muted);cursor:pointer" onclick="openInvoiceModal()">'+t('Drive が使えないとき：アプリから送る','If Drive is not available: send from the app')+' <i class="ti ti-chevron-right"></i></a></div></div>';
+    + '<div style="font-size:11.5px;margin-top:8px"><b><i class="ti ti-credit-card"></i> '+t('会社カードのレシート・立替・チェックは今までどおり','Card receipts, reimbursements and checks: no change')+'</b><div style="color:var(--muted);line-height:1.6;margin-top:2px">'+t('このページの「登録」から入れます（社員ごと・月ごとの管理）。このフォルダには入れません。','Add them with “Add” on this page (managed per employee and month). Do not put them in this folder.')+'</div></div></div>';
 }
 
 /* ===================================================================== ⑦ 食材マスターの仕入れ履歴 */
@@ -51661,7 +51714,7 @@ function officeTodayBoard(){
   return html+'</div>';
 }
 var OFFICE_CLOSE_ITEMS=[
-  {id:'inv',      label:'請求書の回収・Drive保存（全店）', page:'invoice'},
+  {id:'inv',      label:'請求書（Invoice取込）の確認（全店）', fn:'invInGoIntake()'},
   {id:'card',     label:'カード明細の照合（社員別レシート）', page:'acct_export'},
   {id:'review',   label:'経理区分の確定・承認', page:'acct_review'},
   {id:'attend',   label:'勤怠の確定（Toast打刻チェック）', tab:'attend'},
@@ -51696,7 +51749,7 @@ function renderOfficeCloseCard(){
     h+='<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border)">'
       +'<div onclick="toggleOfficeClose(\''+ym+'\',\''+it.id+'\')" style="cursor:pointer;width:22px;height:22px;border-radius:6px;border:1.5px solid '+(on?'var(--green)':'var(--border)')+';background:'+(on?'var(--green)':'transparent')+';display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(on?'<i class="ti ti-check" style="color:#fff;font-size:14px"></i>':'')+'</div>'
       +'<div style="flex:1;font-size:13px;'+(on?'color:var(--muted);text-decoration:line-through':'')+'">'+escapeHtml(it.label)+'</div>'
-      +(it.page?'<button class="btn btn-secondary btn-sm" onclick="go(\''+it.page+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.tab?'<button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\''+it.tab+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':''))
+      +(it.fn?'<button class="btn btn-secondary btn-sm" onclick="'+it.fn+'" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':it.page?'<button class="btn btn-secondary btn-sm" onclick="go(\''+it.page+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.tab?'<button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\''+it.tab+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':''))
       +'</div>';
   });
   h+='</div>';
@@ -51745,7 +51798,7 @@ function renderOfficeDash(){
   // クイックアクション
   html+='<div class="card"><div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>クイックアクセス</div>'
     +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">'
-    + officeLaunch('invoice',{icon:'ti-file-invoice',title:'請求書',sub:'Invoice'})
+    + officeLaunch('acct_center',{icon:'ti-file-invoice',title:'請求書',sub:'Invoice取込'}).replace("go('acct_center')",'invInGoIntake()')
     + officeLaunch('acct_review',{icon:'ti-checklist',title:'経理レビュー',sub:'区分・承認'})
     + '<div class="quick-card" onclick="setOfficeMgrTab(\'export\')" style="cursor:pointer;border:1px solid var(--border);border-radius:12px;padding:14px;text-align:center"><i class="ti ti-file-export" style="font-size:22px;color:var(--accent)"></i><div style="font-size:13px;font-weight:600;margin-top:6px">出力センター</div><div style="font-size:11px;color:var(--muted)">CSV/帳票</div></div>'
     + '</div></div>';
@@ -51773,7 +51826,7 @@ function renderOfficeExport(){
     return h+'</div></div>';
   }
   html+=grp('<i class="ti ti-file-invoice" style="color:var(--accent)"></i>請求書・レシート（Drive）',[
-    {page:'invoice', icon:'ti-file-invoice', title:'請求書', sub:'店舗別・Drive保存'},
+    {page:'acct_center', fn:'invInGoIntake()', icon:'ti-file-invoice', title:'請求書', sub:'Invoice取込（Drive）'},
     {page:'acct_export', icon:'ti-credit-card', title:'カードレシート', sub:'社員別・Drive保存'},
     {page:'acct_review', icon:'ti-checklist', title:'経理レビュー', sub:'区分・承認'}
   ]);
@@ -51899,7 +51952,7 @@ function renderOfficeReport(){
 
 function renderOfficeAcct(){
   var html = '<div class="card-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">';
-  html += officeLaunch('invoice',    {icon:'ti-file-invoice',  title:'請求書',     sub:'Invoice'});
+  html += officeLaunch('acct_center',{icon:'ti-file-invoice',  title:'請求書',     sub:'Invoice取込'}).replace("go('acct_center')",'invInGoIntake()');
   html += officeLaunch('acct_export',{icon:'ti-credit-card',   title:'カード明細',  sub:'レシート/Drive'});
   html += officeLaunch('acct_review',{icon:'ti-checklist',     title:'経理レビュー', sub:'区分・承認'});
   html += officeLaunch('acct_export',{icon:'ti-file-export',   title:'経理出力',    sub:'CSV/Payroll'});
@@ -66453,7 +66506,7 @@ async function bulkOcrRecover(ym){
     +'<div style="font-size:12px;color:var(--muted);margin-top:3px">復旧した伝票は「要確認」です。金額・日付・業者をInvoice管理で確認してください。</div></div>'
     +(failList.length?('<div class="card" style="margin:0 0 8px;max-height:180px;overflow:auto"><div style="font-size:12px;font-weight:700;margin-bottom:3px">失敗一覧</div>'
        +failList.slice(0,40).map(function(x){return '<div style="font-size:10.5px;color:var(--muted)">・'+escapeHtml(x)+'</div>';}).join('')+'</div>'):'')
-    +'<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect();renderPage(\'invoice\')">Invoice管理で確認</button></div>');
+    +'<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect();renderPage(\'invoice\')">レシート管理で確認</button></div>');
 }
 async function openStorageImages(ym){
   ym = ym || (typeof curYm==='function'?curYm():'');
@@ -66933,20 +66986,44 @@ function renderInvoice() {
   var allInv = ls('invoices', []);
   var canAll = ['ceo','gm','office','office_crew'].includes(curRole);
   var candIds = invoiceStoreCandidates().map(s=>s.id);
-  var invoices = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
-  var html = `<div class="section-header"><div><div class="section-title">${t('Invoice管理','Invoice management')}</div><div class="section-sub">${t('アップロード→照合→価格更新','Upload → match → update prices')}</div></div>
-    <div style="display:flex;gap:6px">${['ceo','gm','office','office_crew'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button><button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('伝票診断・復旧','Diagnose / recover')}</button>`:''}${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="openInvoiceModal()"><i class="ti ti-upload"></i> ${t('Invoice登録','Add invoice')}</button></div></div>`;
+  var mineAll = allInv.filter(inv => canAll || !inv.storeId || candIds.includes(inv.storeId));
+  /* v1055（UI案35）：食材管理の「Invoice管理」は「レシート管理」。会社カードのレシート・立替・チェックを登録する画面。
+     業者の Invoice は、Drive の提出フォルダを出した店舗は 00_Upload へ（本部は経理センターの Invoice取込で確認）。
+     今までの Invoice（アプリで登録した分・Drive 取込の写し）は「Invoice（閲覧）」で見るだけ。差し戻しへの返信と削除の権限は今までどおり。 */
+  var receipts = mineAll.filter(inv => inv.docType==='Receipt');
+  var invoices = mineAll.filter(inv => inv.docType!=='Receipt');
+  var _view = window._invMainView || 'list';
   var _canCard = ['ceo','gm','office','office_crew'].includes(curRole);
+  /* Drive の提出フォルダをまだ出していない店舗（LaLa など）は、出すまで今までどおりアプリで業者の Invoice を登録できる */
+  var _invOkStores = invoiceStoreCandidates().filter(s => s.id!=='OFFICE' && !invInUsesDrive(s.id));
+  var html = `<div class="section-header"><div><div class="section-title">${t('レシート管理','Receipts')}</div><div class="section-sub">${t('会社カードのレシート・立替経費・チェック','Company-card receipts, reimbursements and checks')}</div></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${_canCard?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button><button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('伝票診断・復旧','Diagnose / recover')}</button>`:''}${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="invReceiptAdd()"><i class="ti ti-receipt"></i> ${t('レシート・立替を登録','Add receipt / reimbursement')}</button></div></div>`;
   try{ html += invInStoreCardHtml(); }catch(e){}   /* v1052: 提出フォルダ（GM・CEO が「出す」にした店舗だけ） */
+  try{ html += invInHqBarHtml(); }catch(e){}       /* v1055: 本部は Invoice取込へ */
   html += bulkBannerHtml();   /* v1035: まとめて取り込みの未保存 */
-  html += `<div class="mm-tabs" style="margin-bottom:10px"><button class="mm-tab${['cardusage','checks'].indexOf(window._invMainView||'list')<0?' active':''}" onclick="setInvMainView('list')"><i class="ti ti-file-invoice"></i> ${t('Invoice一覧','Invoice list')}</button>${_canCard?`<button class="mm-tab${(window._invMainView||'list')==='cardusage'?' active':''}" onclick="setInvMainView('cardusage')"><i class="ti ti-credit-card"></i> ${t('カード使用管理','Card usage')}</button>`:''}<button class="mm-tab${(window._invMainView||'list')==='checks'?' active':''}" onclick="setInvMainView('checks')"><i class="ti ti-writing-sign"></i> ${t('チェック','Checks')}${(function(){var n=checkReturnedCount();return n?' <span style="color:var(--red);font-weight:800">'+n+'</span>':'';})()}</button></div>`;
-  if ((window._invMainView||'list')==='cardusage' && _canCard) return html + renderCardUsage();
-  if ((window._invMainView||'list')==='checks') return html + renderCheckList();   /* v1030 */
+  var _tab = function(id, icon, label, extra){ var on = id==='list' ? ['cardusage','checks','invoices'].indexOf(_view)<0 : _view===id;
+    return `<button class="mm-tab${on?' active':''}" onclick="setInvMainView('${id}')"><i class="ti ${icon}"></i> ${label}${extra||''}</button>`; };
+  html += `<div class="mm-tabs" style="margin-bottom:10px">${_tab('list','ti-receipt',t('レシート','Receipts'))}${_canCard?_tab('cardusage','ti-credit-card',t('カード使用管理','Card usage')):''}${_tab('checks','ti-writing-sign',t('チェック','Checks'),(function(){var n=checkReturnedCount();return n?' <span style="color:var(--red);font-weight:800">'+n+'</span>':'';})())}${_tab('invoices','ti-file-invoice',t('Invoice（閲覧）','Invoices (view)'),(function(){var n=invoices.filter(function(i){return (i.reviewStatus==='差し戻し') && invIsMine(i);}).length;return n?' <span style="color:var(--red);font-weight:800">'+n+'</span>':'';})())}</div>`;
+  if (_view==='cardusage' && _canCard) return html + renderCardUsage();
+  if (_view==='checks') return html + renderCheckList();   /* v1030 */
+  if (_view==='invoices') {
+    html += `<div class="card" style="padding:10px 12px;font-size:12px;line-height:1.7"><i class="ti ti-info-circle" style="color:var(--accent2)"></i> ${t('業者の Invoice の新しい登録は、Google Drive の提出フォルダ（本部は経理センターの「Invoice取込」）です。ここは今までの記録と Drive 取込の写しを見るだけです（差し戻しへの返信はここからできます）。','New supplier invoices go to the Google Drive upload folder (head office: “Invoice intake” in the accounting center). This tab only shows past records and copies from the Drive intake (you can still answer a return here).')}`
+      + (_invOkStores.length ? `<div style="margin-top:6px;color:var(--muted)">${t('Drive の提出フォルダをまだ使っていない店舗：','Stores not using the Drive folder yet: ')}${_invOkStores.map(function(s){ return escapeHtml(s.name); }).join('・')} <a style="cursor:pointer;color:var(--accent2);white-space:nowrap" onclick="invoiceDocType='Invoice';openInvoiceModal()">${t('これらの店舗の業者 Invoice を登録','Add a supplier invoice for these stores')} <i class="ti ti-chevron-right"></i></a></div>` : '')
+      + `</div>`;
+    if (!invoices.length) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-file-invoice" style="font-size:32px;margin-bottom:8px;display:block"></i>${t('Invoice の記録はありません','No invoice records')}</div>`;
+    invoices.slice().reverse().forEach(inv => { html += invCardHtml(inv); });
+    return html;
+  }
   html += renderReimburseCard();
-  if (!invoices.length) {
-    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-file-invoice" style="font-size:32px;margin-bottom:8px;display:block"></i>${t('Invoice履歴なし','No invoice history')}</div>`;
+  if (!receipts.length) {
+    html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-receipt" style="font-size:32px;margin-bottom:8px;display:block"></i>${t('レシートの記録はまだありません','No receipts yet')}</div>`;
   } else {
-    invoices.slice().reverse().forEach(inv => {
+    receipts.slice().reverse().forEach(inv => { html += invCardHtml(inv); });
+  }
+  return html;
+}
+/* v1055: 1件の記録のカード（v1054 までの renderInvoice の中身を切り出した。レシートと Invoice（閲覧）で共通。スマホで状態の札が縦に割れないよう折り返しだけ足した） */
+function invCardHtml(inv) {
       var s = inv.storeId ? STORES.find(x=>x.id===inv.storeId) : null;
       var storeBadge = s ? `<span class="store-dot" style="background:${s.color}"></span>${s.name} · ` : '';
       var typeLabel = inv.docType==='Receipt' ? 'Receipt' : 'Invoice';
@@ -66963,14 +67040,14 @@ function renderInvoice() {
       if (canDeleteInvoice(inv)) {
         _actions += `<button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteInvoiceConfirm('${inv.id}')"><i class="ti ti-trash"></i> ${t('削除','Delete')}</button>`;
       }
-      html += `<div class="card">
+      return `<div class="card">
         <div class="approval-header">
           <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}${t('品目',' items')} · $${inv.total.toFixed(2)}${_empMeta}</div></div>
-          <div style="display:flex;align-items:center;gap:6px">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">
             <button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="openInvoiceViewer('${inv.id}')" title="${t('画像とメモを確認','Image & memo')}"><i class="ti ti-photo"></i></button>
             ${inv.driveUrl?`<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="${inv.driveUrl}" target="_blank" title="${t('Driveで開く','Open in Drive')}"><i class="ti ti-brand-google-drive"></i></a>`:''}
-            <span class="tag" style="font-size:10px;font-weight:700;color:${_rsCol};border:1px solid ${_rsCol};background:transparent">${t(_rs, ({'未確認':'Unreviewed','差し戻し':'Returned','確認済み':'Reviewed','確認中':'Reviewing'})[_rs]||_rs)}</span>
-            <span class="tag ${inv.applied?(inv.v2Only?'tag-blue':'tag-green'):'tag-yellow'}">${inv.applied?(inv.v2Only?t('新マスター登録済','New master added'):t('価格更新済','Price updated')):t('未反映','Not applied')}</span>
+            <span class="tag" style="white-space:nowrap;font-size:10px;font-weight:700;color:${_rsCol};border:1px solid ${_rsCol};background:transparent">${t(_rs, ({'未確認':'Unreviewed','差し戻し':'Returned','確認済み':'Reviewed','確認中':'Reviewing'})[_rs]||_rs)}</span>
+            <span class="tag ${inv.applied?(inv.v2Only?'tag-blue':'tag-green'):'tag-yellow'}" style="white-space:nowrap">${inv.applied?(inv.v2Only?t('新マスター登録済','New master added'):t('価格更新済','Price updated')):t('未反映','Not applied')}</span>
           </div>
         </div>
         ${invChangesDetail(inv)}
@@ -66978,9 +67055,17 @@ function renderInvoice() {
         ${_thread}
         ${_actions?`<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${_actions}</div>`:''}
       </div>`;
-    });
-  }
-  return html;
+}
+/* v1055: 「レシート・立替を登録」。前に業者 Invoice を選んでいても、この店舗が Drive を使っていればレシートから始める */
+function invReceiptAdd() {
+  if (invoiceDocType==='Invoice') invoiceDocType = 'Receipt';
+  openInvoiceModal();
+}
+/* v1055: 登録の画面で店舗を変えたとき。Drive を使う店舗で業者 Invoice を選んでいたらレシートに切り替えて描き直す */
+function invSetStore(id) {
+  window._invoiceStore = id;
+  if (invoiceDocType==='Invoice' && invInUsesDrive(id)) { invoiceDocType = 'Receipt'; openInvoiceModal(); return; }
+  if (invoiceDocType!=='Check') { var w = document.getElementById('inv-drive-note'); if (w) w.innerHTML = invInModalNoteHtml(id); var b = document.getElementById('inv-type-btns'); if (b) b.innerHTML = invDocTypeButtons(); }
 }
 
 /* ===== Invoice読取・価格更新の内訳表示 =====
@@ -67084,7 +67169,7 @@ function openInvoiceModal() {
   var storeSelHtml = '';
   if (candidates.length > 1) {
     storeSelHtml = `<div class="form-group"><label class="form-label">対象店舗 <span style="color:var(--accent2)">*</span></label>
-      <select class="form-input" id="invoice-store" onchange="window._invoiceStore=this.value">
+      <select class="form-input" id="invoice-store" onchange="invSetStore(this.value)">
         ${candidates.map(s=>`<option value="${s.id}" ${s.id===window._invoiceStore?'selected':''}>${s.name}</option>`).join('')}
       </select>
       <div style="font-size:11px;color:var(--muted);margin-top:3px">この請求書／レシートがどの店舗のものか選んでください</div></div>`;
@@ -67092,12 +67177,15 @@ function openInvoiceModal() {
     storeSelHtml = `<div class="form-group"><label class="form-label">対象店舗</label>
       <div style="font-weight:600;padding:4px 0"><span class="store-dot" style="background:${candidates[0].color}"></span>${candidates[0].name}</div></div>`;
   }
+  /* v1055（UI案35）：Drive の提出フォルダを使う店舗では業者 Invoice を選べない。前に選んでいたらレシートから始める */
+  if (invoiceDocType==='Invoice' && invInUsesDrive(window._invoiceStore)) invoiceDocType = 'Receipt';
   /* v1030: チェック（小切手）は入力がまったく違うので別の中身で出す（店舗の選び方と種別ボタンは共通）。 */
   if (invoiceDocType==='Check') { openModal(checkModalHtml(candidates)); return; }
-  openModal(`<div class="modal-title">Invoice / Receipt / チェック登録 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  openModal(`<div class="modal-title">${t('レシート・立替・チェックの登録','Add a receipt, reimbursement or check')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     ${storeSelHtml}
+    <div id="inv-drive-note">${invInModalNoteHtml(window._invoiceStore)}</div>
     <div class="form-group"><label class="form-label">種別</label>
-      ${invDocTypeButtons()}
+      <div id="inv-type-btns">${invDocTypeButtons()}</div>
     </div>
     ${(invoiceDocType==='Invoice'||invoiceDocType==='Receipt') ? bulkEntryHtml() : ''}
     <div class="form-group"><label class="form-label">伝票日付 <span style="font-weight:400;color:var(--muted);font-size:11px">（請求書に記載の日付。月次集計はこの日付で計上）</span></label>
@@ -68087,9 +68175,11 @@ function invDocTypeButtons(){
   var b = function(k, label){
     return '<button class="btn '+(invoiceDocType===k?'btn-primary':'btn-secondary')+' btn-sm" style="white-space:nowrap" onclick="setInvDocType(\''+k+'\')">'+label+'</button>';
   };
+  /* v1055（UI案35）：Drive の提出フォルダを使う店舗は、業者の Invoice をここでは登録しない（案内は上の枠） */
+  var drive = typeof invInUsesDrive==='function' && invInUsesDrive(window._invoiceStore);
   return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
-    + b('Invoice','業者Invoice') + b('Receipt','Receipt読み取り') + b('Reimburse','建て替え経費')
-    + b('Check', t('チェック（小切手）','Check')) + '</div>';
+    + b('Receipt','Receipt読み取り') + b('Reimburse','建て替え経費')
+    + b('Check', t('チェック（小切手）','Check')) + (drive ? '' : b('Invoice', t('業者Invoice（Drive 未対応の店舗）','Supplier invoice (stores without Drive)'))) + '</div>';
 }
 /* ============================================================
    v1030: チェック（小切手）の控え（Motoさんの決定 9/24・UI案23）
@@ -68198,7 +68288,7 @@ function checkModalHtml(cands){
   }
   var today = (typeof bizToday==='function') ? bizToday() : new Date().toISOString().slice(0,10);
   var upd = ' oninput="this.dataset.auto=\'\';checkNamePreview()"';
-  return '<div class="modal-title">'+t('Invoice / Receipt / チェック登録','Invoice / Receipt / Check')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+  return '<div class="modal-title">'+t('レシート・立替・チェックの登録','Add a receipt, reimbursement or check')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     + storeSel
     + '<div class="form-group"><label class="form-label">'+t('種別','Type')+'</label>'+invDocTypeButtons()+'</div>'
     + '<div class="form-group" style="border:1px solid var(--accent);border-radius:8px;padding:10px;background:rgba(124,58,237,0.04)">'
@@ -70017,6 +70107,12 @@ function _invGather(){
 async function _invSaveCore(ctx, ui){
   var vendor = ctx.vendor, total = ctx.total, invStoreId = ctx.storeId, rcptStores = ctx.rcptStores, priceStores = ctx.priceStores;
   var _purpose = ctx.purpose, _pmemo = ctx.pmemo, _docType = ctx.docType, _lines = ctx.lines;
+  /* v1055（UI案35）：Drive の提出フォルダを使う店舗の業者 Invoice は保存しない（Drive の 00_Upload だけ）。何も書かずに戻る */
+  if (_docType==='Invoice' && typeof invInUsesDrive==='function' && invInUsesDrive(invStoreId)) {
+    var _dm = t('この店舗の業者 Invoice は Google Drive の提出フォルダへ入れてください（アプリでは登録しません）','This store’s supplier invoices go to the Google Drive upload folder (not registered in the app)');
+    if (ui) showToast(_dm, 'warning');
+    return { ok:false, stage:'drive_only', err:_dm };
+  }
   var storeObj = STORES.find(x=>x.id===invStoreId);
   var imagePath = null;
   /* v1036: うしろの保存は画像を先に上げる。上がらなければ何も登録しない
@@ -70131,7 +70227,7 @@ pendingImgId: ((!imagePath && _pendImg) ? _pendImg : undefined),
       if(!ui) return { ok:false, stage:'capacity', err:'端末に保存できませんでした（容量不足の可能性）' };
       var _mb=(function(){ try{ return (lsBytesTotal()/1024/1024).toFixed(1); }catch(e){ return '?'; } })();
       try{ showToast('端末に保存できませんでした（容量不足の可能性）','error'); }catch(e){}
-      alert('この端末に保存できませんでした。\n'+_capacityCauseText(_mb)+'\n\nクラウドへは送信されている場合があります。\n設定＞保存容量で「キャッシュを整理」してから、Invoice管理の「突合診断」で件数をご確認ください。');
+      alert('この端末に保存できませんでした。\n'+_capacityCauseText(_mb)+'\n\nクラウドへは送信されている場合があります。\n設定＞保存容量で「キャッシュを整理」してから、レシート管理の「突合診断」で件数をご確認ください。');
     }
   }catch(e){}
   // 経理へ通知（保存先＝Google Drive。経理レビューで確認）
@@ -70392,7 +70488,7 @@ function renderReimburseCard(){
     +(unpaidSum>0?'<span class="tag tag-yellow" style="margin-left:auto">未払い $'+unpaidSum.toFixed(2)+'</span>'
                  :'<span class="tag tag-gray" style="margin-left:auto">未払いなし</span>')+'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> '
-    +'社員以外が立て替えた経費もここで管理。「Invoice登録」→種別「建て替え経費」から申請します。'
+    +'社員以外が立て替えた経費もここで管理。「レシート・立替を登録」→種別「建て替え経費」から申請します。'
     +'レシート画像は Invoice と同じ保管先です。</div>';
 
   /* 月の切り替え */
@@ -70618,7 +70714,7 @@ function arRejectModal(id){
     +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+escapeHtml(stN)+' · '+escapeHtml(inv.vendor)+' · $'+(inv.total||0).toFixed(2)+'</div>'
     +'<div class="form-group"><label class="form-label">差し戻し理由 <span style="color:var(--accent2)">*</span></label>'
     +'<textarea class="form-input" id="ar-reason" rows="3" placeholder="例：金額が不鮮明です。再撮影をお願いします。"></textarea>'
-    +'<div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> アップロード者（'+escapeHtml(inv.byUser||inv.by||'不明')+'）の「請求書」タブに理由が表示され、サブナビに赤バッジが付きます（メール送信なし）。</div></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:4px"><i class="ti ti-info-circle"></i> アップロード者（'+escapeHtml(inv.byUser||inv.by||'不明')+'）のレシート管理（Invoice（閲覧））に理由が表示され、サブナビに赤バッジが付きます（メール送信なし）。</div></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
     +'<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="arRejectConfirm(\''+inv.id+'\')"><i class="ti ti-arrow-back-up"></i> 差し戻す</button></div>');
 }
@@ -70636,7 +70732,7 @@ async function arRejectConfirm(id){
   try{ var _so=STORES.find(function(x){return x.id===inv.storeId;}); var _stN=_so?_so.name:(inv.storeId||''); addNotif({ type:'reject', title:'請求書が差し戻されました', text:(_stN+' / '+inv.vendor+' $'+(inv.total||0).toFixed(2)+'：'+reason).slice(0,140), toUser:(inv.byUser||''), page:'invoice', refId:inv.id }); }catch(e){}
   lsSet('invoices', invoices);
   closeModalDirect();
-  showToast('差し戻しました（アップロード者の請求書タブに表示されます）','success');
+  showToast('差し戻しました（アップロード者のレシート管理に表示されます）','success');
   renderPage('acct_review');
 }
 
