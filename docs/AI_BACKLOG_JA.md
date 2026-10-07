@@ -1,5 +1,14 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32 362b674：R1〜R3解消、Codex追加指摘R4/R5修正待ち
+
+- 対象`362b6747cdb1605bf84179ce26f7a33024ed157b`。判定：修正必要、P1 1件・P2 1件。前回R1〜R3は再現3/3成功で解消。
+- R4 [P1]：手動確定した請求日が納品日と一致すると自動補完扱いに戻り、納品日だけの訂正で請求日と計上済みmirrorの月まで動く。日付の一致で由来を判定せず、手動確定を保持する。`tests/review/invoice-pr32-date-override-repro.mjs`は現headで期待動作assertion失敗（0/1）。
+- R5 [P2]：`tests/invoice-mutations.test.mjs:109`の旧日付条件アンカーが一致0件で失敗。現コードに合わせて更新し、mutation検証を通す。
+- 既存89/89（新R4追加前）、C3a/C3bのupgrade経路2/2成功。mutation全件は未実行、R5の対象ケースのみ同じrun関数で単独実行して一致数assertion失敗を確認。
+- 詳細：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449208977 と共有メモリ先頭。
+- 次：ClaudeがR4/R5修正→関連試験→最新headをCodex再レビュー→OK後にMotoさんが関数差し替え。SQL・アプリv1055は今回不変。本番への接続・書込み・配備・設定変更なし。共有記録の確認モード運転・QB外部経路調整待ちは維持。下の「再レビュー待ち」は過去の記録。
+
 ## 2026-10-07 PR #32：R1〜R3 修正済み・Codex の再レビュー待ち
 
 1. Codex：最新 head を再レビュー（`tests/review/invoice-pr32-reading-repro.mjs` は 3/3 で通る）。

@@ -1,5 +1,19 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex 再レビュー：PR #32 362b674（R1〜R3解消、追加指摘R4/R5）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`362b6747cdb1605bf84179ce26f7a33024ed157b`。記録直前のPR headも同じ。
+- **判定：修正必要。前回R1〜R3は解消、追加P1 1件・P2 1件。この読み取り修正版の配備・マージを可とするレビューではない。**
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449208977 （行コメント2件）。接続アカウントがPR作成者本人のためCOMMENTとして記録。
+- **R4 [P1]** `handler.mjs:359`：請求日と納品日の一致だけで納品日由来とみなし、手動確定した請求日まで動かす。合成伝票（請求日の印字なし・納品日10/6）で、officeが請求日を9/30に確定→納品日を9/30に訂正→post→納品日だけ10/1に訂正すると、HTTP 200で請求日まで10/1に上書き、postedを維持、mirrorのdocDateも2026/09/30から2026/10/01へ移った。`overrides.invoice_date`より先にderived=trueになるため。人の確定と自動補完を由来で区別して保持する。自動補完の保存もoverrideを作るため、override確認の順序変更だけでは正しい納品日追従を止め得る。これは開いている月間の誤変更であり、閉月ガード迂回の指摘ではない。
+- **R5 [P2]** `tests/invoice-mutations.test.mjs:109`：日付条件の置換アンカーが旧式のまま。`rules.mjs:163`に`&& ctx.dateFallback !== false`が追加されたので一致0件。同じrun関数で対象ケース「an unreadable invoice date is replaced by the delivery date」を単独実行し、`mutation anchor must exist once` / `0 !== 1`を確認。保護を外す検証の前に失敗する。アンカーを現コードに合わせる必要がある。
+- R1〜R3の再現は3/3成功：読めない印字の請求日は期日訂正後も409、単価末尾/LBは訂正後も保持して誤ったCS価格履歴を作らない、数量末尾CSを確認済み対応表へ渡す。C1〜C6/C3a/C3bの既存確認の解消も維持。
+- 実行：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/*.mjs` **89/89成功**（13+5+57+14、R4再現追加前）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**。通常経路も上の89件に含む。
+- 新規再現：`node --test tests/review/invoice-pr32-date-override-repro.mjs` **0/1、期待動作assertion失敗**。実handler/SQL・ローカルPGlite・偽Drive/AI/メール・合成データだけ。請求日とmirrorの9/30維持を検査する。実装コードは変更していない。
+- mutation全件・Deno bundle・実ブラウザ表示は今回再実行していない。mutationはR5の対象1件を同じrun関数で単独実行。SQL本体/migration・アプリv1055は前回から不変。実AIの全プロンプト攻撃耐性や外部QuickBooks転送の同一台帳利用は今回証明していない。
+- 今回は本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。本番の状態は共有記録どおり確認モード開始済みとして扱い、直接確認していない。
+- 次：ClaudeがR4/R5を修正→新再現とmutationを含む関連試験を通す→最新headをCodex再レビュー→OK後にMotoさんが関数差し替え。請求日の印字が無いときだけ納品日を使うMotoさんの決定、業者・商品ごとの自動反映判断、QB外部経路調整待ちは維持。
+
 ## 2026-10-07 Codex の指摘 R1〜R3（2544826）を修正（Claude・Codex の再レビューはまだ）
 
 - 対象：Codex のレビュー（2544826・下の節）。この記録は承認ではない。
