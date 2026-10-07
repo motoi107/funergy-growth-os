@@ -1,5 +1,36 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex 独立レビュー：PR #32（修正必要・運転 OFF 維持）
+
+- 依頼者：Moto。実装：Claude。今回のレビュー：Codex（このセッションの主担当、Claude の既存レビューから独立）。
+- レビュー対象：`1851593bb4de597fa122d3abf77186be0230df00`、`claude/invoice-drive-intake`。対象 SHA の後に追加するこの記録は、修正済みコードの承認ではない。
+- 判定：**P1 5件・P2 1件、修正が必要。運転開始・マージの承認なし。**
+- PR 記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5442500109（該当行へのコメント6件付き）。GitHub 接続の投稿者が PR 作成者と同一のため REQUEST_CHANGES は GitHub が 422 で拒否。COMMENT レビューとして記録しており、APPROVE ではない。
+
+| ID | 優先度 | 指摘・合成データでの再現 | 修正箇所 |
+|---|---|---|---|
+| C1 | P1 | AI 失敗時は SHA だけ保存され書類が無いのに QB 候補へ入る。送信済み invoice の撮り直しを AI 読取失敗にすると、重複未判定で送信が1→2件。外部転送用台帳も同じ候補検索を使う。 | `db/invoice-intake.sql:1241-1247`。現在の SHA の読取・書類作成・重複判定の成功を要求する。 |
+| C2 | P1 | `recheck` は既存アプリの記録を空配列として再判定する。支払期日だけの修正で `app_duplicate_candidate` が消え、未確定のまま次の worker で送信される。 | `handler.mjs:373-376`。再判定でも既存アプリと照合し、自己 mirror だけ除外する。 |
+| C3 | P1 | 反映済み $60 の伝票を明細を変えず合計1 centへ訂正すると、`total_mismatch` があるのに posted を維持し、明示確認なしで mirror が $0.01 になる。 | `db/invoice-intake.sql:692-701`。訂正にも確定時の必須修正・明示確認を適用する。 |
+| C4 | P1 | キャッシュ済み年フォルダを店舗外へ人が動かすと、worker が次の原本をその店舗外フォルダへ移す。 | `handler.mjs:185-190`。整理先の実際の親関係・ごみ箱状態を店舗ルートまで検証する。 |
+| C5 | P1 | 同じ Drive ID の原本を番号・日付の変わった内容で上書きすると、旧版 posted のまま新版も自動 posted。明示的な訂正版確定・置換を経ていない。 | `handler.mjs:127-134`。同じ file_id の既存版を必ず検出し、新版を確認待ちにする。 |
+| C6 | P2 | 配備チェックの `LIKE 'invoice_%'` が旧 `invoice_uploads` も数え、正しい新規権限でも tables=17 / browser_can_read=1。precheck も旧表だけで STOP になる。 | precheck / postcheck。対象をこの migration の16表・65関数に限定し、旧経路は別表示。 |
+
+本番は **読むだけ**で確認：新規16表はすべて RLS 有効、anon/authenticated の SELECT/INSERT/UPDATE/DELETE 権限なし。65関数は両 role の EXECUTE なし・すべて SECURITY INVOKER・固定 search_path。65関数本文は対象 SQL と改行形式を除き一致。配備済み Edge Function は version 1 / Verify JWT OFF。worker・intake・auto_post・organize・mirror・QB・qb_external は全て OFF、QB route=null、invoice-intake cron=0件。鍵・業務レコードの内容は取得・公開していない。本番 worker 呼出し、データ書込み、再配備、設定変更、Drive 操作、実メール送信は行っていない。
+
+確認範囲：Auth user 検証＋manager_auth の役割チェック、worker/外部転送の専用鍵、締め済み月の通常確定・訂正・旧版置換・mirror 保護、原文値保存・整数セント/BigInt 検査、AI応答の許可リストを確認。新 Drive アダプタに削除/ごみ箱操作は無いが、移動範囲は C4 要修正。AIへの指示は文面をデータ扱い・数値補正禁止・ツール操作なし。ただし実 invoice の OCR 精度や画像内の攻撃文に対するモデル耐性を保証しない。
+
+実行結果（本番データ不使用）：
+- `node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs`：55/55。
+- `node --test tests/invoice-mutations.test.mjs`：29/29。
+- `python3 scripts/check-static-release.py`：pass、v1054整合。
+- 追加5シナリオ（C1〜C5）：安全な期待値に対して5/5失敗し不具合を再現。本番から取得した bundle をローカルで動かしても同じ5件を再現。PGlite＋模擬Drive/AI/メールのみ。再現用：`node --test tests/review/invoice-pr32-codex-repro.mjs`（1851593では意図的に失敗する確認用テスト。アプリ実装は変更していない）。
+- Deno、実OCR、実Drive書込み・メール送信、リポジトリに無い handoff の UI 検証は今回未実施。
+
+未解決：C1〜C6。既存 ChatGPT 側転送の取得元・台帳必須参照・原本SHA確認・切替は未検証。旧 invoice_uploads / drive-sync 等を含む全経路が安全との判定ではない。締め保護は rules.closed_through の設定に依存し、棚卸確定とは自動連動しない。
+
+次：Claude が上記を修正して回帰テストを追加 → 修正後の最新 head を Codex が再レビュー → その後に一店舗・確認モード試験を検討。**現時点では運転 OFF・cron 未登録を維持。**
+
 ## 2026-10-07 invoice の Google Drive 取込（Claude・実装済み・本番未反映）
 
 依頼：店舗が自店の Drive `00_Upload` に invoice を入れるだけで、AI 読取・通常取引の自動反映・例外だけ人の確認、経理照合で原本を照合済みフォルダへ、QuickBooks への原本転送台帳（仕様 2026-10-06）。
