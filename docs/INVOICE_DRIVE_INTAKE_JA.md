@@ -20,6 +20,7 @@
 |---|---|
 | `db/invoice-intake.sql`（= `supabase/migrations/20261007090000_invoice_intake.sql`） | 表・一意制約・RLS・RPC。service_role 専用。anon/authenticated は表も関数も使えない |
 | `db/invoice-intake-schedule.sql` | 5 分ごとの起動（pg_cron + pg_net）。既定では何もしない |
+| `db/invoice-intake-start.sql`・`db/invoice-intake-stop.sql` | 運転開始のときに流す 1 つ（`worker.enabled=true` ＋上の cron の登録＋確認の 1 行。鍵は表示しない）と、止めるとき（`worker.enabled=false` ＋ cron の削除。記録・設定・鍵は残る）。2 回流しても同じ（PGlite＋cron/pg_net の模擬で確認） |
 | `supabase/migrations/20261007160000_invoice_intake_review_fixes.sql` | Codex レビュー（1851593）の修正。本番に入っている 20261007090000 の上に、関数 6 つ（invoice_stage・invoice_post・invoice_edit・invoice_folder・invoice_qb_candidates・invoice_qb_enqueue）だけを差し替える（表・設定・記録・鍵・権限は変えない）。`db/invoice-intake.sql` は最初から入れるときの全体で、2 つを重ねたものと 1 文字も違わない（試験で確認） |
 | `db/invoice-intake-precheck.sql`・`db/invoice-intake-postcheck.sql` | 配備の前後の確認（読むだけ）。前：`manager_auth` の形・GM/CEO の登録・`invoice_` の表や関数がまだ無いこと。後：表 16・関数 65・運転はすべて OFF・RLS・ブラウザ（anon/authenticated）から読めない・動かせない。鍵は表示しない |
 | `db/invoice-intake-rollback.sql` | 取り消し。この migration が作った表と関数だけを消す。取込の記録が 1 件でもあれば止まる |
@@ -167,10 +168,13 @@
    - 10/7、本番の v1053 で「設定」が "Failed to fetch" と「読み込み中…」のまま止まった。原因は 2・3 が未実施（Supabase は存在しない関数に CORS の無い 404 を返し、ブラウザは中身を読めない）。v1054 は「取込のサーバー（invoice-intake）につながりません」「読み込めませんでした。…「更新」を押してください」と出す。
    - 2・3 は Supabase の画面だけでできる：SQL Editor で `db/invoice-intake-precheck.sql`（すべて OK）→ migration → `db/invoice-intake-postcheck.sql`。Edge Functions の「Via Editor」に、`deno bundle supabase/functions/invoice-intake/index.ts -o <出力>` で 1 ファイルにしたもの（外からの import は無し）を貼り、名前 `invoice-intake`・JWT の検証 OFF。この状態ではどの運転も OFF のまま。
 5. **済（10/7 02:32 HST）** 店舗フォルダ 6 店（Aiea・Piikoi・Kaimuki・ToriTon・Tenkichi・Marujuu）を登録 →「フォルダを確かめる」→ 6 店とも 00_Upload を作って記録。LaLa は 10/8 朝にフォルダを追加（Moto さん）。Kapolei・FSP・Garlic Shack は今は稼働していない（Moto さん 10/7）。
-6. Codex の独立レビュー（1851593・P1 5 件・P2 1 件）→ Claude が修正（§15）→ **Codex の再レビュー（未）** → OK なら：SQL Editor で `supabase/migrations/20261007160000_invoice_intake_review_fixes.sql`（関数 6 つの差し替えだけ）→ `db/invoice-intake-postcheck.sql`（review_fixes が true）→ 関数を差し替え（`deno bundle` の 1 ファイル）→ アプリ v1055（レシート管理）。
+6. **済（10/7 08:32〜08:44 HST・Moto さん）** Codex の独立レビュー（1851593・P1 5 件・P2 1 件）→ Claude が修正（§15）→ Codex の再レビュー（1301623：C3a・C3b）→ 修正 `45f14a6` → Codex の再々レビューで解消（356e456・記録 f7fa7cb）→ Moto さんが入れた：SQL Editor で `supabase/migrations/20261007160000_invoice_intake_review_fixes.sql`（関数 6 つの差し替えだけ）→ `db/invoice-intake-postcheck.sql`（review_fixes が true）→ 関数を差し替え（`deno bundle` の 1 ファイル）→ アプリ v1055（レシート管理）。
+   - Claude が確かめたこと：main 9210065 の index.html・sw.js が v1055（md5 235b148d…・4ef485fb…）、関数は GET に 405。Moto さんの報告：SQL（追加・確認）はすべて成功、関数を Deploy 済み。08:44 の画面で「Invoice取込」→「設定」が開き、運用はすべて OFF・未処理 0・要確認 0・エラー 0・「Drive 未確認」（取込がまだ一度も動いていないため）。
+   - 08:40 ごろ「更新を押しても設定が開かない」→「更新」は今のタブ（一覧）を読み直すだけで、設定は右端の「設定」タブ。手順書の 5 の書き方が紛らわしかった（Claude）。
 7. 業者・対応表の候補を作る（マスターから・すべて確認モード・未確認から）。業者が無いと「業者がマスターと一致しない」で反映できない。
-8. Moto さんの決定（10/7）：**最初から全店（6 店。LaLa はフォルダができ次第）で確認モード**（自動反映 OFF）。開始日時を決め、取込とアプリへの写しを ON（「出した」店舗の Invoice は写しから Food Cost に入るので、写しは最初から ON）。店舗ごとに「この店舗の 00_Upload を取り込む」を ON。`worker.enabled=true`・cron を登録（`db/invoice-intake-schedule.sql`）。この間、Invoice が Food Cost に入るのは本部が「Invoice取込」で反映したものだけ。
-9. GM・CEO が「店舗の画面」で各店を「出す」→ その店はアプリで業者 Invoice を登録しない（v1055）。店舗のスタッフには 00_Upload だけを共有。店舗への告知は Moto さん。結果を見て、業者・商品ごとに自動反映を ON。
+8. Moto さんの決定（10/7）：**最初から全店（6 店。LaLa はフォルダができ次第）で確認モード**（自動反映 OFF）。開始日時を決め、取込とアプリへの写しを ON（「出した」店舗の Invoice は写しから Food Cost に入るので、写しは最初から ON）。店舗ごとに「この店舗の 00_Upload を取り込む」を ON。`worker.enabled=true`・cron を登録（`db/invoice-intake-start.sql`。中身は `db/invoice-intake-schedule.sql` と同じ cron）。この間、Invoice が Food Cost に入るのは本部が「Invoice取込」で反映したものだけ。
+   - Claude の提案（Moto さんの決定ではない）：最初の数日は「原本の名前と場所を整える」を OFF（AI の読みを人が確かめる前に名前を付けない）。開始前に、アプリに登録済みの過去の invoice を 1 枚だけ 00_Upload に入れて、読取・重複の候補・「要確認」までを試し、「対象外にする」で片づける（開始前に入ったものはアプリへ写されない）。
+9. **開始日時を過ぎてから**、GM・CEO が「店舗の画面」で各店を「出す」→ その店はアプリで業者 Invoice を登録しない（v1055）。開始前に出すと、その間に 00_Upload に入った invoice は開始前の扱いになりアプリへ写されない（v1055 の「出す」は開始日時が設定されているかだけを見て、過ぎたかは見ない）。店舗のスタッフには 00_Upload だけを共有。店舗への告知は Moto さん。結果を見て、業者・商品ごとに自動反映を ON。
 10. QuickBooks：今の転送（ChatGPT 側）が台帳を見るようにできたら `route='external'`・台帳 ON・外部の口 ON。このシステムから送るのは、今の転送を止めて送信手段をつないでから `route='invoice-intake'`。
 
 ## 14 切り戻し
@@ -248,7 +252,7 @@ Codex の再レビュー（2026-10-07・対象 1301623）：C1・C2・C4・C5・
 
 ## 16 未完了・未確認
 
-- 本番：10/7 02:14 HST に Moto さんがアプリ v1054・SQL・関数 `invoice-intake`（JWT の検証 OFF）を入れた（main の md5 一致・関数が GET に 405 を返すことを Claude が確認）。cron は未登録、どの運転も OFF。店舗フォルダは未登録。
+- 本番：10/7 02:14 HST に Moto さんがアプリ v1054・SQL・関数 `invoice-intake`（JWT の検証 OFF）を入れた。08:32〜08:44 に修正（20261007160000・関数の差し替え・v1055）も入れた（§13 の 6）。cron は未登録、どの運転も OFF。店舗フォルダは 6 店登録済み・00_Upload 作成済み（LaLa は 10/8 朝）。本物の Supabase での修正後の動き（取込・反映）はまだ一度も動かしていない。
 - Google Drive：受け取った 5 店の店舗フォルダが My Drive か共有ドライブか、中に 00_Upload があるか、店舗のアカウントでの権限分離は未確認（配備後に「フォルダを確かめる」で見る）。LaLa のフォルダは作成待ち。drive-sync の保存済みの連携（Drive 全体の権限）をそのまま使う前提。
 - drive-sync：Moto さんにもらった本文から、①anon キーだけで任意の Drive ファイルを移動・完全削除できる、②設定済みの連携を anon キーで上書きできる、③`push` が `subfolder` を使わない（チェック・建て替えも未登録のフォルダに入る）、を確認した。直した版（Funergy のフォルダ内だけ・削除はごみ箱・上書きは GM/CEO の認証）は、作業中に本文が手元から失われたため未作成。もう一度ファイルでもらってから作る。
 - QuickBooks：今の転送は ChatGPT 側（10/6）。その転送が原本をどこから拾っているか（Drive のどのフォルダか、メールか）は未確認。台帳を見ずに Drive から拾っていると二重に送るおそれがあるので、`route='external'` と外部の口を ON にする前に合わせる必要がある。このシステムの送信手段は未接続。
