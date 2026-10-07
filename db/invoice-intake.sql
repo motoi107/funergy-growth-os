@@ -479,7 +479,7 @@ begin
  if d.id is not null then return jsonb_build_object('doc_id', d.id, 'existed', true, 'version', d.version, 'status', d.status); end if;
  -- The same Drive file read before with other content (overwritten in Drive): the new version always waits for a person,
  -- who supersedes the earlier version, marks this one as a duplicate, or confirms that both stand.
- select string_agg(o.internal_no, ',' order by o.internal_no) into prior from public.invoice_docs o
+ select string_agg(o.id::text, ',' order by o.created_at, o.doc_index) into prior from public.invoice_docs o
  where o.file_id=(p->>'file_id')::uuid and o.sha256 is distinct from p->>'sha256' and o.status in ('posted','review');
  if prior is not null then
   rs := rs || jsonb_build_array(jsonb_build_object('code', 'original_replaced', 'detail', prior)); auto := false;
