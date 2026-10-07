@@ -16,7 +16,9 @@ Moto さんの回答（10/6 22:50 HST）：UI案34 で実装してよい／Quick
 
 本番の状態（10/7）：Moto さんが 10/7 10:19 UTC に main へ v1052（index md5 8026b63…・SW_BUILD 1052）を貼った（GitHub Pages に公開済み）。サーバー（SQL・invoice-intake）は未配備なので、「Invoice取込」タブは「まだ動いていません」と出るだけ。独立レビューの画面側の修正は同じ 1052 では端末が更新されないため **v1053**（SW_BUILD 1053）にした（PR #32）。
 
-未完了：本番 DB・関数・cron は未反映。アプリ v1053 は未反映。店舗フォルダの実際の中身（00_Upload の有無・共有ドライブか）、ChatGPT 側の転送が原本をどこから拾うか（台帳を見ないと二重送信のおそれ）、drive-sync の安全化（本文の再提供待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。
+10/7 の続き：Moto さんが 01:22 HST に v1053（md5 9272e28f…）を main へ貼った。01:27 に「Invoice取込」→「設定」が "Failed to fetch" と「読み込み中…」のままと報告。原因はサーバー未配備（Supabase は存在しない関数に CORS の無い 404 を返すので、ブラウザは 404 を読めず、v1052/v1053 の「まだ動いていません」は出ない。ops-bot は正常に応答）。表示の修正を **v1054**（md5 a1183a3d…・SW_BUILD 1054。v1053 から invInAPI・invInLoadingCard と版だけ）にした。配備の一式（`db/invoice-intake-precheck.sql` → migration → `db/invoice-intake-postcheck.sql`、`deno bundle` で 1 ファイルにした関数、取り消しの `db/invoice-intake-rollback.sql`、日本語の手順）を Moto さんに渡した。配備は Moto さんの操作（または Moto さんの明示の許可のあと）。どの運転も OFF のまま。
+
+未完了：本番 DB・関数・cron は未反映（配備の一式は渡した）。アプリ v1054 は未反映。店舗フォルダの実際の中身（00_Upload の有無・共有ドライブか）、ChatGPT 側の転送が原本をどこから拾うか（台帳を見ないと二重送信のおそれ）、drive-sync の安全化（本文の再提供待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。
 
 ## 2026-09-20 接続・公開保存の承認と勤怠のみ即時送信
 

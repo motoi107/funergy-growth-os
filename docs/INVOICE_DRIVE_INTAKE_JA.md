@@ -20,6 +20,8 @@
 |---|---|
 | `db/invoice-intake.sql`（= `supabase/migrations/20261007090000_invoice_intake.sql`） | 表・一意制約・RLS・RPC。service_role 専用。anon/authenticated は表も関数も使えない |
 | `db/invoice-intake-schedule.sql` | 5 分ごとの起動（pg_cron + pg_net）。既定では何もしない |
+| `db/invoice-intake-precheck.sql`・`db/invoice-intake-postcheck.sql` | 配備の前後の確認（読むだけ）。前：`manager_auth` の形・GM/CEO の登録・`invoice_` の表や関数がまだ無いこと。後：表 16・関数 65・運転はすべて OFF・RLS・ブラウザ（anon/authenticated）から読めない・動かせない。鍵は表示しない |
+| `db/invoice-intake-rollback.sql` | 取り消し。この migration が作った表と関数だけを消す。取込の記録が 1 件でもあれば止まる |
 | `supabase/functions/invoice-intake/handler.mjs`・`index.ts` | 取込ワーカーと、本部・経理の操作 API |
 | `invoice/decimal.mjs` | 金額は整数セント、単価・数量は 10^-6 の整数（BigInt）。浮動小数点で判定しない |
 | `invoice/units.mjs` | g/kg/lb/oz、ml/l/gal/qt/fl oz の明示定義。ケース・袋・本の換算は確認済みの対応表からだけ |
@@ -30,9 +32,9 @@
 | `invoice/naming.mjs` | `業者名_YYYY-MM-DD_店舗名_INV-番号.ext` |
 | `invoice/drive.mjs` | Drive API（一覧・取得・ダウンロード・名前変更/移動・フォルダ）。削除の機能は持たない |
 | `tests/invoice-*.test.mjs` | 単体・結合（PGlite＋模擬 Drive/AI/メール）・アダプタ・ミューテーション |
-| `index.html`・`sw.js`（v1052 は 10/7 に本番へ貼られた。この PR は v1053） | 画面：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の Invoice管理の提出フォルダの案内、食材編集の「仕入れ履歴」。本体は `invIn*` 関数（`/* FUNERGY_INVOICE_INTAKE_BEGIN */` 〜 `END`） |
+| `index.html`・`sw.js`（v1052・v1053 は 10/7 に本番へ貼られた。この PR は v1054） | 画面：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の Invoice管理の提出フォルダの案内、食材編集の「仕入れ履歴」。本体は `invIn*` 関数（`/* FUNERGY_INVOICE_INTAKE_BEGIN */` 〜 `END`） |
 
-アプリの変更（v1052・v1053）は、上の画面を足したことと、既存の 7 関数に 1 行ずつ（Drive 取込の写しを旧画面で削除・承認・差し戻ししない／Invoice管理に案内／食材編集にボタン／経理センターの件数）と、PC で経理センターの大タブを折り返す CSS 1 行だけ。保存キー・同期・権限・価格の更新は変えていない。
+アプリの変更（v1052・v1053・v1054）は、上の画面を足したことと、既存の 7 関数に 1 行ずつ（Drive 取込の写しを旧画面で削除・承認・差し戻ししない／Invoice管理に案内／食材編集にボタン／経理センターの件数）と、PC で経理センターの大タブを折り返す CSS 1 行だけ。保存キー・同期・権限・価格の更新は変えていない。
 
 ## 3 流れ
 
@@ -160,7 +162,9 @@
 1. Moto の確認（10/6 回答済み：転送は ChatGPT 側・Drive は Moto さんの会社のアカウント・共有ドライブ可・店舗フォルダ 5 店分の URL。LaLa は作成待ち）。残り：今の転送が原本をどこから拾うか、各店で Drive に上げる人の Google アカウント、`pg_policies`。
 2. SQL を適用（`supabase/migrations/20261007090000_invoice_intake.sql`）。既存の表は変更しない。
 3. Edge Function `invoice-intake` を配備（Verify JWT は OFF。関数内で認証する）。Drive は drive-sync の保存済みの連携をそのまま使う（secrets は不要。分けたいときだけ `GOOGLE_OAUTH_*` を入れる）。`ANTHROPIC_API_KEY` は既存。
-4. アプリ v1053 を貼る（`index.html`・`sw.js`。v1052 は 10/7 に貼られた。v1053 は独立レビューの画面側の修正）。経理センター「Invoice取込」→ メール認証（業務Bot と同じ）。
+4. アプリ v1054 を貼る（`index.html`・`sw.js`。v1052・v1053 は 10/7 に貼られた。v1053 は独立レビューの画面側の修正、v1054 はサーバーにつながらないときの表示）。経理センター「Invoice取込」→ メール認証（業務Bot と同じ）。
+   - 10/7、本番の v1053 で「設定」が "Failed to fetch" と「読み込み中…」のまま止まった。原因は 2・3 が未実施（Supabase は存在しない関数に CORS の無い 404 を返し、ブラウザは中身を読めない）。v1054 は「取込のサーバー（invoice-intake）につながりません」「読み込めませんでした。…「更新」を押してください」と出す。
+   - 2・3 は Supabase の画面だけでできる：SQL Editor で `db/invoice-intake-precheck.sql`（すべて OK）→ migration → `db/invoice-intake-postcheck.sql`。Edge Functions の「Via Editor」に、`deno bundle supabase/functions/invoice-intake/index.ts -o <出力>` で 1 ファイルにしたもの（外からの import は無し）を貼り、名前 `invoice-intake`・JWT の検証 OFF。この状態ではどの運転も OFF のまま。
 5. 「設定」で店舗ごとに店舗フォルダの URL を入れる（Aiea・Piikoi・Kaimuki・ToriTon・Tenkichi。LaLa はフォルダができてから）→「フォルダを確かめる（作らない）」→ 00_Upload が無い店は GM・CEO が「この内容で作る・記録する」。店舗のスタッフには 00_Upload だけを共有。「店舗の画面」で「出す」にした店だけ、Invoice管理に提出フォルダが出る。
 6. 業者・対応表の候補を作る（マスターから・すべて確認モード・未確認から）。
 7. `worker.enabled=true`、cron を登録（`db/invoice-intake-schedule.sql`）。画面の「設定」で取込を ON、試験する店舗を 1 店に、自動反映は OFF のまま確認モードで数日。
@@ -174,8 +178,9 @@
 - QuickBooks：`qb.route` を null に戻す（新しく積まない）・`qb_external.enabled=false`（外部の口を閉じる）。送信履歴は残る。
 - 画面：v1051 に戻す（`index.html`・`sw.js`）。サーバーのデータは残る。店舗マスターに入れた提出フォルダ（`invoiceUploadFolderId`）は v1051 では使われないだけ。
 - 新しく作った記録は消さない（追跡できるように残す）。Drive の原本は移動・改名だけで、消していない。
+- 配備そのものを取り消す（まだ何も取り込んでいないとき）：関数 `invoice-intake` を削除 → `db/invoice-intake-rollback.sql`（この migration の表と関数だけを消す。記録が 1 件でもあれば止まる）。
 
-## 14b 画面（v1052・v1053・UI案34）
+## 14b 画面（v1052・v1053・v1054・UI案34）
 
 | 画面 | 誰が | すること |
 |---|---|---|
@@ -192,13 +197,14 @@
 | コマンド | 結果 |
 |---|---|
 | `node --test tests/invoice-rules.test.mjs` | 11/11 |
-| `node --test tests/invoice-intake.test.mjs` | 37/37（§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現） |
+| `node --test tests/invoice-intake.test.mjs` | 39/39（§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
 | `node --test tests/invoice-adapters.test.mjs` | 5/5（Drive・共有ドライブの一覧・Anthropic・PostgREST・HTTP 入口） |
 | `node --test tests/invoice-mutations.test.mjs` | 29/29（守りを 28 か所外すと、どれもテストが落ちることを確認） |
-| `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 20 件・33 段階） |
-| `python3 scripts/check-static-release.py` | 成功（v1053・APP_VERSION と SW_BUILD が一致） |
-| アプリの検証（handoff の `verify_v1052.js`・`verify_v1053.js`） | v1052 78/78・v1053 85/85（v1053 は v1052 から本体と版だけ・変えた既存関数は 7 本で各 1 行・同期と保存の仕組みは同じ・escapeHtml・onclick の値は JS の文字列として安全・金額は整数セント・役割・旧画面の境目） |
-| 本物の画面（handoff の `render/check_invin_v1052.py`） | 50/50・pageerror 0。本物の handler と SQL を PGlite で動かし、ブラウザから メール認証→一覧→要確認（反映・業者を直す・対象外）→照合（原本が照合済みフォルダへ）→取込状況（HEIC・結果不明）→設定（スイッチ・00_Upload の作成・店舗の画面への案内）→店舗の Invoice管理（日英）→仕入れ履歴→スマホ（390px）。事務Crew は閲覧だけ |
+| `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 22 件・33 段階） |
+| `deno bundle` で作った 1 ファイル（配備用） | 外からの import 無し。手元で起動して GET 405・OPTIONS 204（funergy-plus.com だけ）・ログイン無し 401・ほかのサイト 403。元のコードと同じ中身（commit 8cf0c05 以降、関数のコードは変えていない） |
+| `python3 scripts/check-static-release.py` | 成功（v1054・APP_VERSION と SW_BUILD が一致） |
+| アプリの検証（handoff の `verify_v1052.js`・`verify_v1053.js`・`verify_v1054.js`） | v1052 78/78・v1053 85/85・v1054 93/93（v1054 は v1053 から invInAPI・invInLoadingCard と版だけ。v1053 では 7 件落ちる）（v1053 は v1052 から本体と版だけ・変えた既存関数は 7 本で各 1 行・同期と保存の仕組みは同じ・escapeHtml・onclick の値は JS の文字列として安全・金額は整数セント・役割・旧画面の境目） |
+| 本物の画面（handoff の `render/check_invin_v1052.py`） | v1054 で 52/52・pageerror 0（11：通信そのものが失敗するとき「つながりません」「読み込めませんでした」。v1053 では "Failed to fetch" と「読み込み中…」が残ることも再現）。本物の handler と SQL を PGlite で動かし、ブラウザから メール認証→一覧→要確認（反映・業者を直す・対象外）→照合（原本が照合済みフォルダへ）→取込状況（HEIC・結果不明）→設定（スイッチ・00_Upload の作成・店舗の画面への案内）→店舗の Invoice管理（日英）→仕入れ履歴→スマホ（390px）。事務Crew は閲覧だけ |
 
 既存の他のテスト（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）の失敗は、変更前の main でも同じ件数（今回の変更とは無関係）。
 
@@ -223,7 +229,7 @@
 
 ## 16 未完了・未確認
 
-- 本番 DB・Edge Function・cron・アプリ v1052：どれも未反映。
+- 本番：アプリは v1053 まで（10/7 01:22 HST）。DB・Edge Function・cron は未反映（10/7 に「Failed to fetch」になったのはこのため）。配備の一式（確認の SQL・1 ファイルの関数・手順）は Moto さんに渡した。
 - Google Drive：受け取った 5 店の店舗フォルダが My Drive か共有ドライブか、中に 00_Upload があるか、店舗のアカウントでの権限分離は未確認（配備後に「フォルダを確かめる」で見る）。LaLa のフォルダは作成待ち。drive-sync の保存済みの連携（Drive 全体の権限）をそのまま使う前提。
 - drive-sync：Moto さんにもらった本文から、①anon キーだけで任意の Drive ファイルを移動・完全削除できる、②設定済みの連携を anon キーで上書きできる、③`push` が `subfolder` を使わない（チェック・建て替えも未登録のフォルダに入る）、を確認した。直した版（Funergy のフォルダ内だけ・削除はごみ箱・上書きは GM/CEO の認証）は、作業中に本文が手元から失われたため未作成。もう一度ファイルでもらってから作る。
 - QuickBooks：今の転送は ChatGPT 側（10/6）。その転送が原本をどこから拾っているか（Drive のどのフォルダか、メールか）は未確認。台帳を見ずに Drive から拾っていると二重に送るおそれがあるので、`route='external'` と外部の口を ON にする前に合わせる必要がある。このシステムの送信手段は未接続。

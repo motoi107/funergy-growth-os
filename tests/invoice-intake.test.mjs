@@ -969,3 +969,44 @@ test('the migration loads when app_state.value is json', async () => {
   const r = (await pg.query(`select public.invoice_app_records('{"store_id":"F06"}'::jsonb) v, public.invoice_app_drive_ids('{"store_id":"F06"}'::jsonb) d`)).rows[0];
   assert.equal(r.v[0].id, 'a'); assert.deepEqual(r.d, ['x']);
 });
+
+// The deploy package (precheck → migration → postcheck, and the guarded rollback) is run as a whole on
+// a database set up the way Supabase sets up new objects (tables and functions granted to browsers by default).
+test('deploy checks and the guarded rollback', async () => {
+  const rd = f => fs.readFileSync(new URL('../db/' + f, import.meta.url), 'utf8');
+  const PRE = rd('invoice-intake-precheck.sql'), POST = rd('invoice-intake-postcheck.sql'), BACK = rd('invoice-intake-rollback.sql');
+  const pg = new PGlite();
+  await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+    alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+    alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
+    create table public.manager_auth(user_id uuid primary key, role text); create table public.app_state(key text primary key, value json, updated_at timestamptz);
+    insert into public.manager_auth values('${U.gm}', 'gm'); insert into public.app_state values('k', '{"a":1}', now());`);
+  const pre = async () => (await pg.query(PRE)).rows.map(r => r.result);
+  assert.ok((await pre()).every(r => r.startsWith('OK')), 'before: every precheck line is OK');
+  await pg.exec(SQL);
+  assert.match((await pre())[2], /^STOP/, 'after: the precheck says it is already installed');
+  const post = (await pg.query(POST)).rows[0];
+  const created = [...SQL.matchAll(/^create function public\.(\w+)\(/gm)].map(m => m[1]);
+  assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
+    { tables: 16, functions: created.length, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
+      rls_on: true, browser_can_read: 0, browser_can_run: 0 });
+  assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
+  await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
+  // the rollback names exactly the objects the migration creates
+  const listed = (BACK.match(/array\[('[^\]]*')\]\) loop/) || [])[1].match(/'(\w+)'/g).map(s => s.slice(1, -1));
+  assert.deepEqual([...listed].sort(), [...new Set(created)].sort(), 'the rollback lists every function the migration creates');
+  const tables = (BACK.match(/foreach t in array array\[([^\]]*)\]/) || [])[1].match(/'(\w+)'/g).map(s => s.slice(1, -1));
+  assert.deepEqual(tables.sort(), [...SQL.matchAll(/^create table public\.(\w+)\(/gm)].map(m => m[1]).sort());
+  // refuses while anything is recorded, then removes only its own objects
+  await pg.query(`insert into public.invoice_stores(store_id, label) values('F06', 'LaLa')`);
+  await pg.query(`insert into public.invoice_files(drive_file_id, store_id, source, original_name, current_name) values('f1', 'F06', 'drive', 'a.pdf', 'a.pdf')`);
+  await assert.rejects(pg.exec(BACK), /取込の記録が 1 件/);
+  assert.equal(Number((await pg.query(POST)).rows[0].tables), 16, 'nothing was removed');
+  await pg.query(`delete from public.invoice_files`);
+  await pg.exec(BACK);
+  assert.ok((await pre()).every(r => r.startsWith('OK')), 'after the rollback the precheck is OK again');
+  assert.equal((await pg.query(`select count(*)::int n from app_state`)).rows[0].n, 1, 'app_state is untouched');
+  assert.equal((await pg.query(`select count(*)::int n from manager_auth`)).rows[0].n, 1, 'manager_auth is untouched');
+  await pg.exec(SQL);
+  assert.equal(Number((await pg.query(POST)).rows[0].functions), created.length, 'it can be installed again');
+});
