@@ -957,3 +957,15 @@ test('review findings stay fixed', async (t) => {
     assert.equal((await E.call({ action: 'qb_external_reserve', id: o.id }, { 'x-invoice-qb-key': k })).status, 409);
   });
 });
+
+// Production's app_state.value may be json rather than jsonb: the migration must load and read it either way.
+test('the migration loads when app_state.value is json', async () => {
+  const pg = new PGlite();
+  await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+    create table public.manager_auth(user_id uuid primary key, role text); create table public.app_state(key text primary key, value json, updated_at timestamptz);
+    create table public.vendors(id text primary key, name text, data jsonb); create table public.ingredients(code text primary key, name text, unit text, vendor text, qty numeric, data jsonb);
+    insert into public.app_state values('spl_invoices_F06', '[{"id":"a","storeId":"F06","vendor":"V","docDate":"2026/10/01","total":1,"driveFileId":"x"}]', now());`);
+  await pg.exec(SQL);
+  const r = (await pg.query(`select public.invoice_app_records('{"store_id":"F06"}'::jsonb) v, public.invoice_app_drive_ids('{"store_id":"F06"}'::jsonb) d`)).rows[0];
+  assert.equal(r.v[0].id, 'a'); assert.deepEqual(r.d, ['x']);
+});

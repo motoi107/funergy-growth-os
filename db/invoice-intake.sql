@@ -1070,10 +1070,10 @@ begin
  if mm.state = 'held' and not coalesce((p->>'replace')::boolean,false) then return jsonb_build_object('state','held'); end if;
  if mm.state = 'tombstoned' then return jsonb_build_object('state','tombstoned'); end if;
  k := 'spl_invoices_' || d.store_id;
- select value into cur from public.app_state where key=k for update;
+ select value::jsonb into cur from public.app_state where key=k for update;
  if cur is null then
   insert into public.app_state(key, value, updated_at) values(k, jsonb_build_array(rec), now()) on conflict(key) do nothing;
-  if not found then select value into cur from public.app_state where key=k for update; end if;
+  if not found then select value::jsonb into cur from public.app_state where key=k for update; end if;
  end if;
  if cur is not null then
   select e into ex from jsonb_array_elements(cur) e where e->>'id' = app_id limit 1;
@@ -1140,7 +1140,7 @@ create function public.invoice_app_records(p jsonb) returns jsonb
 language sql stable security invoker set search_path=public,pg_temp as $$
  select coalesce(jsonb_agg(jsonb_build_object('id', e->>'id', 'storeId', e->>'storeId', 'vendor', e->>'vendor', 'docDate', e->>'docDate',
    'total', e->'total', '_deleted', coalesce((e->>'_deleted')::boolean,false))), '[]')
- from public.app_state a, jsonb_array_elements(case when jsonb_typeof(a.value)='array' then a.value else '[]'::jsonb end) e
+ from public.app_state a, jsonb_array_elements(case when jsonb_typeof(a.value::jsonb)='array' then a.value::jsonb else '[]'::jsonb end) e   -- ::jsonb: the column may be json or jsonb
  where a.key in ('spl_invoices_' || (p->>'store_id'), 'invoices') and e->>'storeId' = p->>'store_id' and coalesce(e->>'src','') <> 'drive-intake';
 $$;
 
@@ -1294,7 +1294,7 @@ end $$;
 create function public.invoice_app_drive_ids(p jsonb) returns jsonb
 language sql stable security invoker set search_path=public,pg_temp as $$
  select coalesce(jsonb_agg(distinct e->>'driveFileId'), '[]')
- from public.app_state a, jsonb_array_elements(case when jsonb_typeof(a.value)='array' then a.value else '[]'::jsonb end) e
+ from public.app_state a, jsonb_array_elements(case when jsonb_typeof(a.value::jsonb)='array' then a.value::jsonb else '[]'::jsonb end) e   -- ::jsonb: the column may be json or jsonb
  where a.key in ('spl_invoices_' || (p->>'store_id'), 'invoices') and coalesce(e->>'driveFileId','') <> '';
 $$;
 

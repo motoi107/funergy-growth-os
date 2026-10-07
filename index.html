@@ -44055,7 +44055,10 @@ function invInSigned(){ var s = invInSession(); return !!(s && s.access_token); 
 async function invInAPI(payload, retried){
   var s = invInSession();
   if (!s || !s.access_token) throw new Error(invInL(INVIN_ERR.actor_required));
-  var r = await fetch(SUPABASE_URL + INVIN_FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + s.access_token, 'Content-Type':'application/json' }, body:JSON.stringify(payload) });
+  var r;
+  /* 通信そのものが失敗したとき（関数がまだ配備されていない・オフライン）はブラウザが "Failed to fetch" とだけ言うので、分かる言葉にする */
+  try { r = await fetch(SUPABASE_URL + INVIN_FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + s.access_token, 'Content-Type':'application/json' }, body:JSON.stringify(payload) }); }
+  catch(e) { throw new Error(t('取込のサーバー（invoice-intake）につながりません。まだ配備されていないか、通信できません。','Cannot reach the intake server (invoice-intake). It is not deployed yet, or the network is down.')); }
   if (r.status === 401 && !retried && s.refresh_token) {
     var rr = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', { method:'POST', headers:{ apikey:SUPABASE_ANON, 'Content-Type':'application/json' }, body:JSON.stringify({ refresh_token:s.refresh_token }) });
     if (rr.ok) { var jj = await rr.json(); _botSession = { access_token:jj.access_token, refresh_token:jj.refresh_token }; return invInAPI(payload, true); }
@@ -44228,7 +44231,13 @@ function invInGate(){
   return '';
 }
 function invInPendingReview(){ return (_invIn.health && Number(_invIn.health.review)) || 0; }
-function invInLoadingCard(){ return '<div class="card" style="text-align:center;color:var(--muted);padding:18px;font-size:12px"><i class="ti ti-loader-2"></i> '+t('読み込み中…','Loading…')+'</div>'; }
+function invInLoadingCard(){
+  /* 読み込みが失敗して何も待っていないときは「読み込み中」を出し続けない */
+  var waiting = Object.keys(_invIn.loaded).some(function(k){ return _invIn.loaded[k]==='loading'; });
+  if (_invIn.error && !waiting) return '<div class="card" style="text-align:center;color:var(--muted);padding:18px;font-size:12px;line-height:1.8"><i class="ti ti-plug-connected-x" style="font-size:22px;display:block;margin-bottom:4px"></i>'
+    + t('読み込めませんでした。上の案内を確かめて「更新」を押してください。','Could not load. Check the message above and press Refresh.') + '</div>';
+  return '<div class="card" style="text-align:center;color:var(--muted);padding:18px;font-size:12px"><i class="ti ti-loader-2"></i> '+t('読み込み中…','Loading…')+'</div>';
+}
 
 /* ===================================================================== ① 一覧 */
 function invInDefaultQ(){ var today = invInHstDay(0); return { store:'', vendor:'', from: today.slice(0,8)+'01', to: today, invoice_no:'', min:'', max:'', item:'', state:'' }; }
