@@ -8,7 +8,7 @@
 1. Codex による独立レビュー（コードと SQL。特に権限・二重送信・締め済みの月・金額）。10/7 の Claude 別エージェントのレビュー（15 件）は修正済み。
 2. Moto さんの確認：ChatGPT 側の QuickBooks 転送が原本をどこから拾っているか（Drive のフォルダか・メールか）。台帳を見るようにできるか。
 3. アプリ v1054 を貼る（本番は v1053。サーバーが無いと "Failed to fetch" と出ていた表示の修正）→ SQL：`db/invoice-intake-precheck.sql`（すべて OK）→ migration → `db/invoice-intake-postcheck.sql` → Edge Function `invoice-intake` を「Via Editor」で 1 ファイル（`deno bundle`）として配備（JWT の検証 OFF。Drive は既存の `drive_oauth` を使う）。どの運転も OFF のまま。**10/7 02:14 HST に Moto さんが実施済み**（main の md5・関数の応答を Claude が確認）。
-4. 画面の「設定」で 5 店の店舗フォルダを登録 →「フォルダを確かめる」→ 00_Upload の用意 → 店舗に 00_Upload だけを共有 →「店舗の画面」で案内を出す。LaLa はフォルダができてから。
+4. 画面の「設定」で店舗フォルダを登録 →「フォルダを確かめる」→ 00_Upload の用意 → 店舗に 00_Upload だけを共有 →「店舗の画面」で案内を出す。LaLa はフォルダができてから。**10/7：6 店（Marujuu を含む）を登録し、確認の結果は 6 店とも読める・00_Upload は無し。** 共有と店舗への案内は、cron と 1 店の試験の準備ができてから。
 5. cron を登録、試験は 1 店・確認モード（自動反映 OFF）で数日 → 業者・商品ごとに自動反映を ON → 開始日時 → アプリへの写しを ON。
 6. QuickBooks：ChatGPT 側と合わせてから `route='external'`・台帳 ON・外部の口 ON（鍵は SQL で渡す）。
 
