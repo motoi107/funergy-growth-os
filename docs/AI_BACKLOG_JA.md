@@ -1,5 +1,14 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32 72cfcf8：Codex再レビュー完了・R4/R5解消
+
+- 対象`72cfcf8c8023eda9f930320430b0fa59373da508`。Codex判定：R4/R5解消、確認範囲の新規修正必須指摘0件、関数差し替えに向けたコードレビュー上の阻害事項なし。
+- 関連91/91・C3a/C3bのupgrade経路2/2成功。mutationの全57置換箇所一致・対象3ケースの保護を外す検証成功。mutation全46ケース、Deno bundle、実ブラウザ表示は今回未実行。
+- 運用上、訂正で保存した請求日は、自動補完されたものも以後固定。納品日を再訂正する際は請求日も確認し、必要なら明示訂正する。
+- 詳細：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449396764 と共有メモリ先頭。
+- 次：Motoさんがこのheadの`invoice-intake`を1ファイルで差し替え・適用確認。SQL・アプリv1055は今回変更なし。確認モード運転・業者/商品ごとの自動反映判断・QB外部経路調整待ちは維持。
+- 今回はレビューと記録のみ。本番への接続・書込み・配備・設定変更・マージなし。以下の修正待ち・再レビュー待ちは過去の記録。
+
 ## 2026-10-07 PR #32：R4・R5 修正済み・Codex の再レビュー待ち
 
 1. Codex：最新 head を再レビュー（`tests/review/invoice-pr32-date-override-repro.mjs` 1/1・`invoice-pr32-reading-repro.mjs` 3/3）。

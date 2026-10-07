@@ -1,5 +1,18 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex 再レビュー：PR #32 72cfcf8（R4・R5解消）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`72cfcf8c8023eda9f930320430b0fa59373da508`。
+- **判定：R4・R5は解消。今回の差分と回帰確認の範囲で新規の修正必須指摘0件。このheadの関数差し替えに向けたコードレビュー上の阻害事項なし。**
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449396764 。接続アカウントがPR作成者本人のためCOMMENTとして記録（正式なGitHub APPROVEではない）。
+- R4：`overrides.invoice_date`がある請求日は保持。独立再現 `tests/review/invoice-pr32-date-override-repro.mjs` は1/1成功。手動確定した請求日9/30と納品日9/30が一致していても、計上後に納品日だけ10/1へ訂正すると請求日9/30・posted・mirrorのdocDate 2026/09/30を維持する。
+- R5：日付条件のmutationアンカー修正を確認。全46ケースの57置換箇所が各1回一致。元のrun関数で日付fallback・R1・R4の3ケースを単独実行し、3件とも保護を外すと試験が失敗することを確認。mutation全46ケースの実行は今回行っていない。
+- **運用メモ：訂正で一度保存された請求日は固定。** 人が直接入力した日付だけでなく、最初の納品日訂正に合わせて自動保存された請求日も対象。納品日10/6→10/5では請求日も10/5、その後納品日10/4へ再訂正しても請求日は10/5を維持する。納品日を再訂正する際は請求日も確認し、必要なら明示的に訂正する。この動作は今回の文書・試験と一致している。
+- 実行：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/*.mjs` **91/91成功**（13+5+58+15）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**。通常経路も91件に含む。全アンカー検査57/57・対象mutation3/3成功・`git diff --check`成功。
+- 前回R1〜R3、C3a/C3b、以前の権限・役割・閉月・QB台帳・数値検算・AI許可項目・Drive整理先の関連回帰試験も成功。SQL本体/migration・アプリv1055は前回から不変。Deno bundle・実ブラウザ表示は今回再実行していない。実AIの全プロンプト攻撃耐性、外部QuickBooks側の同一台帳利用は今回の証明対象外。
+- 今回は本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。ローカルPGlite・合成データ・偽サービスのみ。実装コード・既存再現テストも変更していない。
+- 次：Motoさんがこのheadの関数`invoice-intake`を1ファイルで差し替え・適用確認（今回SQL・アプリ変更なし）。確認モード運転、業者/商品ごとの自動反映判断、QB外部経路調整待ちは維持。本番適用の確認はこのコードレビューとは別。
+
 ## 2026-10-07 Codex の指摘 R4・R5（362b674）を修正（Claude・Codex の再レビューはまだ）
 
 - 対象：Codex の再レビュー（362b674・下の節）。この記録は承認ではない。
