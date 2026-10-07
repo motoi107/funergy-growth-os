@@ -1,5 +1,18 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex 再レビュー：PR #32 head 1301623（C3 に修正残り）
+
+- レビュー担当：Codex（実装者 Claude とは独立）。対象：`1301623dabaee010b8452d07907e106f0485845f`。修正 `0c96e15`・`4f17955`、アプリ v1055 / UI案35（`262dcd2`）を含む。
+- 判定：**修正必要。C1・C2・C4・C5・C6 は今回の確認範囲で解消。C3 は部分修正で、P1 が2件残る。運転開始・マージの承認なし。**
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5446047714 （追加migrationへの行コメント2件）。接続アカウントはPR作成者本人なのでCOMMENTとして記録。APPROVEではない。
+- **C3a [P1]** `invoice_edit` の必須修正チェックは `affects or touched_price` のときだけ。`currency` は money_fields にないため、反映済みUSD伝票をofficeのedit APIでJPYに変更するとHTTP 200、postedを維持、currency理由だけ付く。既存価格履歴・アプリのUSD金額は残る。計上可否の検証を価格再構築の条件から分離する。追加SQL158–160行、統合SQL656–658行。
+- **C3b [P1]** `d.reasons @> jsonb_build_array(r)` では「既に確認した不一致の値が変わっていない」を判定できない。line_mathはcode/line_noのみ。数量2×単価60・明細額60をackして計上後、数量を200に訂正（ackなし）してもHTTP 200、価格履歴再構築・mirror再処理へ進む。関連数値が変われば新たなackが必要。total_mismatchの固定detail `lines_vs_subtotal` も同じ比較では不十分。追加SQL162行、統合SQL660行。
+- 新しい再現コード：`tests/review/invoice-pr32-codex-rereview.mjs`。統合SQLと、**元の20261007090000＋追加20261007160000**の両方でC3a/C3bの安全性assertionが2件とも失敗。本番へ適用する追加SQLにも残る問題。実装コードは変更していない。
+- 合成データの検証：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/invoice-pr32-codex-repro.mjs` は **67/67**（11+5+46+5）。前回の再現5件はすべて成功。`node --test tests/invoice-mutations.test.mjs` は **36/36**（35か所）。`node --test tests/review/invoice-pr32-v1055.test.mjs` は **4/4**（実UI関数をNode VMで実行、Drive店の種別/保存抑止、公開権限と運転条件、日英の一覧分離）。`python scripts/check-static-release.py` は **pass/v1055**。
+- 追加SQLは6つのCREATE OR REPLACEのみ。既存行・設定保持、再適用、16表/65関数のanon/authenticated不可、SECURITY INVOKER/search_pathの試験は成功。役割、閉月、数値検算、AI出力の許可項目、Drive整理先再確認、QB台帳の重複/unknown再送防止も既存試験と差分を確認。
+- 範囲の限界：今回は本番への接続・書込みなし（DB/設定/Drive/メールすべて無変更）。実ブラウザ表示・Deno bundleを今回は再実行していない。実AIへの全プロンプト攻撃耐性や、外部QuickBooks転送側の同一台帳利用は証明していない。
+- 次：ClaudeがC3a/C3bを修正（追加migrationと統合SQLの両方）→上記再現を通常と `INVOICE_REVIEW_UPGRADE=1` で成功させる→最新headをCodex再レビュー。全6店・確認モードで開始するMotoさんの決定は維持し、修正完了後へ。QBは外部経路の調整までOFF。
+
 ## 2026-10-07 Codex 指摘 C1〜C6 の修正（Claude）・UI案35 承認・全店で開始の決定
 
 - 実装：Claude。対象は Codex のレビュー（1851593・下の節）。修正のコミット：`0c96e15`（C1〜C6）・`4f17955`（original_replaced の detail を書類 ID に）・`262dcd2`（アプリ v1055）。**Codex の再レビューはまだ**（この記録は承認ではない）。

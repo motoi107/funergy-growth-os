@@ -1,5 +1,13 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32 Codex再レビュー：C3a/C3b修正待ち
+
+- 対象 `1301623dabaee010b8452d07907e106f0485845f`。Codex判定：C1/C2/C4/C5/C6は確認範囲で解消、C3にP1が2件残り、運転開始・マージ未承認。
+- C3a：postedのcurrency-only訂正が検証を迂回（USD→JPYで200/posted）。C3b：確認済みline_mathの数量2→200がackなしで通る。reason一致では関連数値の不変を保証できない。詳細は共有メモリ最上段とPRレビュー https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5446047714 。
+- Claude：追加SQL `20261007160000` と統合SQLを修正し、`node --test tests/review/invoice-pr32-codex-rereview.mjs` と `INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` の両方を通す（現headでは各2件失敗）。その後Codexが最新headを再レビュー。
+- 既存＋前回再現67/67、mutations36/36、追加v1055 UI試験4/4、静的release1055成功。本番へ接続・書込みなし。
+- 全6店・確認モード開始という最新決定を維持。修正と再レビュー完了後に追加SQL・関数・v1055を投入。QuickBooksは外部転送との調整までOFF。下の「再レビューまだ」「1店から」等は以前の時点の記録。
+
 ## 2026-10-07 PR #32：Codex の指摘を修正済み・再レビュー待ち
 
 1. Codex：最新 head を再レビュー（C1〜C6 の修正・アプリ v1055＝UI案35）。`tests/review/invoice-pr32-codex-repro.mjs` は 5/5 で通る。
