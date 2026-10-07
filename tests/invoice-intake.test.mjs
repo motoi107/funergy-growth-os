@@ -69,7 +69,7 @@ function doc(no, date, lines, { total, tax = '0.00', ship = 'LaLa Izakaya, 100 T
     lines: lines.map(([code, name, qty, price, amount, unit = 'CS', pack = null]) => ({ page: 1, item_code: code, description: name, qty, unit, pack, unit_price: price, amount })) };
 }
 
-async function setup() {
+async function setup(sql = SQL) {   // sql: another schema to run on (e.g. the production upgrade path)
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key);
     create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;
@@ -84,7 +84,7 @@ async function setup() {
      ('L-4','Old item','EA','Unknown Vendor',1,'{"sku":"9","extId":"lala-4"}'),
      ('T-1','Totoya item','EA','VendorA',1,'{"sku":"55"}');`);
   for (const [k, r] of [['gm', 'gm'], ['office', 'office'], ['crew', 'office_crew'], ['ceo', 'ceo']]) await pg.query('insert into manager_auth(user_id, role) values($1,$2)', [U[k], r]);
-  await pg.exec(SQL);
+  await pg.exec(sql);
   await pg.query(`update invoice_settings set value=jsonb_build_object('key',$1::text,'enabled',true) where key='worker'`, [WORKER_KEY]);
   await pg.exec(`
     update invoice_settings set value=value||'{"intake":true,"auto_post":true,"organize":true,"mirror":true,"start_at":"2026-10-01T00:00:00Z"}' where key='mode';
@@ -1195,4 +1195,65 @@ test('Codex review findings stay fixed', async (t) => {
       assert.equal((await docsOf(E2, id)).filter(x => x.status === 'posted').length, 2);
     } finally { await E2.pg.close(); }
   });
+});
+
+// Codex re-review of 1301623 (2026-10-07): C3 was only partly fixed. Run on the full SQL and on the production upgrade
+// path (the first migration with the fixes file on top), since the fixes file is what production receives.
+test('Codex re-review: corrections of a posted invoice', async (t) => {
+  const UPGRADE = fs.readFileSync(new URL('../supabase/migrations/20261007090000_invoice_intake.sql', import.meta.url), 'utf8') + '\n'
+    + fs.readFileSync(new URL('../supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', import.meta.url), 'utf8');
+  const line = (qty = '1', price = '60.00', amount = '60.00') => [['06263', 'SHIRO MISO 12/500G', qty, price, amount, 'CS', '12/500G']];
+  const posted = async (E, tag, lines, ack = []) => {
+    E.fixtures.set(tag, { readable: true, documents: [doc(tag, '2026-10-06', lines)] });
+    const id = E.drive.file(tag + '.pdf', pdf(tag), 'U6'); await E.worker();
+    let [d] = await docsOf(E, id);
+    const p = await E.api('tok-gm', { action: 'post', doc_id: d.id, version: d.version, reason: 'checked against the original', ack });
+    assert.equal(p.status, 200, JSON.stringify(p.body)); await E.worker();
+    [d] = await docsOf(E, id); return { id, d };
+  };
+  const snapshot = async (E, d) => ({ doc: (await E.q(`select version, currency, total_cents, status from invoice_docs where id=$1`, [d.id]))[0],
+    prices: await E.q(`select status, price_per_purchase from invoice_price_history where doc_id=$1 order by created_at`, [d.id]),
+    lines: await E.q(`select qty from invoice_lines where doc_id=$1 order by line_no`, [d.id]),
+    mirror: (await E.q(`select value from app_state where key='spl_invoices_F06'`))[0].value.find(x => x.intakeDocId === d.id) });
+  for (const [label, sql] of [['full SQL', SQL], ['production upgrade path', UPGRADE]]) {
+    await t.test(`C3a (${label}): a currency change alone cannot keep a posted invoice posted`, async () => {
+      const E = await setup(sql);
+      try {
+        const { d } = await posted(E, 'C3A-' + label.length, line());
+        const before = await snapshot(E, d);
+        const r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { currency: 'JPY' }, reason: 'currency' });
+        assert.equal(r.status, 409); assert.match(JSON.stringify(r.body), /blocked:currency/);
+        await E.worker();
+        assert.deepEqual(await snapshot(E, d), before, 'nothing changed: currency, version, prices and the app copy');
+        // A correction that changes no amount still works.
+        const ok = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { due_date: '2026-10-31' }, reason: 'due date' });
+        assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      } finally { await E.pg.close(); }
+    });
+    await t.test(`C3b (${label}): changing an acknowledged mismatch needs a new acknowledgement`, async () => {
+      const E = await setup(sql);
+      try {
+        let { id, d } = await posted(E, 'C3B-' + label.length, line('2', '60.00', '60.00'), ['line_math']);
+        assert.ok(codes(d).includes('line_math'));
+        const [l] = await E.q(`select id from invoice_lines where doc_id=$1`, [d.id]);
+        const before = await snapshot(E, d);
+        const r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, lines: [{ line_id: l.id, set: { qty: '200' } }], reason: 'qty' });
+        assert.equal(r.status, 409); assert.match(JSON.stringify(r.body), /blocked:line_math/);
+        await E.worker();
+        assert.deepEqual(await snapshot(E, d), before, 'nothing changed');
+        // Acknowledged again, it is saved.
+        const ok = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, lines: [{ line_id: l.id, set: { qty: '200' } }], reason: 'qty, checked again', ack: ['line_math'] });
+        assert.equal(ok.status, 200, JSON.stringify(ok.body));
+        [d] = await docsOf(E, id);
+        assert.equal(Number((await E.q(`select qty from invoice_lines where id=$1`, [l.id]))[0].qty), 200);
+        // A correction that changes no amount keeps the acknowledged mismatch without asking again.
+        const same = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { invoice_no: 'C3B-renamed' }, reason: 'number typo' });
+        assert.equal(same.status, 200, JSON.stringify(same.body));
+        // A total change asks again even if the mismatch code stays the same.
+        [d] = await docsOf(E, id);
+        const tot = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { total_cents: 12001 }, reason: 'total' });
+        assert.equal(tot.status, 409, JSON.stringify(tot.body));
+      } finally { await E.pg.close(); }
+    });
+  }
 });

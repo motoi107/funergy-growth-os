@@ -630,7 +630,10 @@ language plpgsql security invoker set search_path=public,pg_temp as $$
 declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; e jsonb; f text; v jsonb; ov jsonb; lid uuid;
  lrow public.invoice_lines; closed text; touched_price boolean := false; affects boolean := false; chg jsonb := '[]';
  money_fields text[] := array['invoice_date','delivery_date','total_cents','subtotal_cents','tax_cents','shipping_cents','discount_cents','other_cents',
-  'vendor_key','invoice_no','doc_type','effective_date'];
+  'vendor_key','invoice_no','doc_type','effective_date','currency'];
+ -- Values a mismatch is computed from: when one of these (or a line) changes, an earlier acknowledgement no longer covers it.
+ amount_fields text[] := array['total_cents','subtotal_cents','tax_cents','shipping_cents','discount_cents','other_cents','currency','doc_type'];
+ amounts boolean := false;
  must_fix text[] := array['duplicate_certain','total_missing','line_value_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','no_lines','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
  may_ack text[] := array['line_math','total_mismatch'];
@@ -649,17 +652,20 @@ begin
      'currency','subtotal_cents','discount_cents','tax_cents','shipping_cents','other_cents','total_cents','food_kind','effective_date','effective_basis','posting_date'])) then
    raise exception 'field_not_editable'; end if;
   if f = any(money_fields) then affects := true; end if;
+  if f = any(amount_fields) then amounts := true; end if;
   ov := ov || jsonb_build_object(f, jsonb_build_object('old', to_jsonb(d)->f, 'new', v, 'by', actor, 'at', now(), 'reason', p->>'reason'));
   chg := chg || jsonb_build_array(jsonb_build_object('field', f, 'old', to_jsonb(d)->f, 'new', v));
  end loop;
  touched_price := exists(select 1 from jsonb_array_elements(coalesce(p->'lines','[]')) ln where jsonb_typeof(ln->'set')='object' and ln->'set' <> '{}'::jsonb);
- -- A posted document stays posted only if the corrected values would pass posting: no must-fix reason, and a new or changed
- -- mismatch is acknowledged by the person (a mismatch accepted when it was posted, unchanged, needs nothing more).
- if d.status='posted' and (affects or touched_price) then
+ -- A posted document stays posted only if the corrected values would pass posting. This applies to every correction of a
+ -- posted document (a currency change alone must not slip through). A mismatch needs the person's acknowledgement again
+ -- whenever an amount, the currency, the document type or a line changes; only a correction that touches none of these
+ -- keeps a mismatch that was acknowledged when it was posted.
+ if d.status='posted' then
   select r->>'code' into blocking from jsonb_array_elements(coalesce(p->'reasons', d.reasons)) r where r->>'code' = any(must_fix) limit 1;
   if blocking is not null then raise exception 'blocked:%', blocking; end if;
   select r->>'code' into blocking from jsonb_array_elements(coalesce(p->'reasons', d.reasons)) r
-  where r->>'code' = any(may_ack) and not (r->>'code' = any(ack)) and not (d.reasons @> jsonb_build_array(r)) limit 1;
+  where r->>'code' = any(may_ack) and not (r->>'code' = any(ack)) and (amounts or touched_price or not (d.reasons @> jsonb_build_array(r))) limit 1;
   if blocking is not null then raise exception 'blocked:%', blocking; end if;
  end if;
  if d.status='posted' and (affects or touched_price) and closed is not null
