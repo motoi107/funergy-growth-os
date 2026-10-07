@@ -349,15 +349,18 @@ export function createHandler(deps) {
   }
 
   // The invoice date a recheck starts from. A date a person enters now is used as entered. With no printed invoice
-  // date (the AI's transcription has none), the date follows the delivery date (Moto 2026-10-07), also after the
-  // delivery date is corrected. Otherwise the stored date is used; with none stored, the AI's printed text decides,
-  // so a printed date that could not be read or that disagreed stays a reason for a person and is never filled in.
+  // date (the AI's transcription has none), the date is taken from the delivery date (Moto 2026-10-07) as long as no
+  // saved correction has set the invoice date: a date that was ever saved through a correction (overrides) is kept,
+  // whatever it equals, and is never moved by a later delivery-date correction. Otherwise the stored date is used;
+  // with none stored, the AI's printed text decides, so a printed date that could not be read or that disagreed
+  // stays a reason for a person and is never filled in.
   function invoiceDateInput(doc, hdr, ai) {
     const printed = ai ? String(ai.invoice_date_text ?? '').trim() : null;   // null: no transcription to go by
     const noPrinted = printed === '';
+    const saved = !!(doc.overrides && Object.prototype.hasOwnProperty.call(doc.overrides, 'invoice_date'));
     if ('invoice_date' in hdr) return { text: hdr.invoice_date || null, iso: hdr.invoice_date || null, derived: false };
-    if (noPrinted && (!doc.invoice_date || doc.invoice_date === doc.delivery_date)) return { text: null, iso: null, derived: true };
-    if (doc.invoice_date || (doc.overrides && 'invoice_date' in doc.overrides)) return { text: doc.invoice_date || null, iso: doc.invoice_date || null, derived: false };
+    if (noPrinted && !saved && (!doc.invoice_date || doc.invoice_date === doc.delivery_date)) return { text: null, iso: null, derived: true };
+    if (doc.invoice_date || saved) return { text: doc.invoice_date || null, iso: doc.invoice_date || null, derived: false };
     return { text: printed || null, iso: ai ? ai.invoice_date || null : null, derived: false };
   }
 

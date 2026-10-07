@@ -70,7 +70,7 @@
 | 読み取り | unreadable, ai_failed, ai_truncated, multiple_documents, missing_pages, no_lines |
 | 書類の種類 | doc_type_unknown, statement（照合用・計上しない）, credit_memo（元 invoice との関連付けが必要）, receipt_route（会社カード・立替は既存の社員別管理） |
 | 業者・店舗 | vendor_unknown（マスター名か登録した別名に完全一致のみ）, vendor_kind_unset, store_mismatch（自動で付け替えない）, ship_to_unrecognized, multi_store |
-| 日付・番号・通貨 | date_missing（請求日の印字が無くても、納品日が読めればその日を請求日にする。Moto さん 10/7。訂正のときも AI の読みに印字が無いときだけで、直した納品日に合わせる。人が入れた請求日は動かさない）, date_unreadable, date_disagree（印字はあるのに読めない・食い違うときは人が直す）, delivery_date_invalid, invoice_no_missing, currency, closed_month |
+| 日付・番号・通貨 | date_missing（請求日の印字が無くても、納品日が読めればその日を請求日にする。Moto さん 10/7。訂正のときも AI の読みに印字が無いときだけ。訂正で請求日が一度も保存されていなければ直した納品日に合わせる。訂正で保存された請求日は、そのあと納品日だけを直しても動かさない）, date_unreadable, date_disagree（印字はあるのに読めない・食い違うときは人が直す）, delivery_date_invalid, invoice_no_missing, currency, closed_month |
 | 金額 | total_missing, total_mismatch（明細＋税＋送料＋その他−値引き＝合計。許容差は設定・初期 $0.00）, discount_allocation（値引きの配り方が未設定）, mixed_tax |
 | 明細 | line_value_missing（数量・単価は単位付きの印字「15 LB」「$3.52/LB」も読む。行が示す単位と違う単位なら読めない扱い。金額は単位付きを受けない）, line_math（数量×単価−明細値引き＝金額。印字の丸めの 0.5 セントまで）, zero_price, negative_line, catch_weight（単価の単位が数量の単位と違う、または印字の重さが数量と違う。重さが数量と同じ値・同じ単位なら catch_weight にしない） |
 | 商品 | unmapped（新商品）, map_ambiguous, map_unverified, unit_mismatch, unit_unverified, spec_changed（規格の変更は値上がりと区別）, no_price_ref, price_jump（同じ規格・基準単位で比べる。初期 ±15%） |
@@ -206,9 +206,9 @@
 | コマンド | 結果 |
 |---|---|
 | `node --test tests/invoice-rules.test.mjs` | 13/13（10/7：単位付きの数字・重さ＝数量・納品日を請求日に、数量の単位で対応表を引く、を足した） |
-| `node --test tests/invoice-intake.test.mjs` | 57/57（10/7 Codex の R1〜R3：読めない・食い違う請求日は訂正しても埋めない／納品日から来た請求日は直した納品日に合わせる／単価の単位は訂正のあとも残る／数量の単位で対応表を引く。10/7：青果の invoice（単位付きの数字・納品日だけ）を丸ごと読む・修正前に入った記録は次の訂正で納品日を保存、を足した。修正前のコードでは落ちる。Codex の再レビュー（1301623）の C3a・C3b を、全体の SQL と本番と同じ入れ方（最初の migration＋修正）の両方で足した。Codex の指摘 C1〜C5 の再現と、最初の SQL を入れた DB に修正の SQL を重ねる試験を足した。§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
+| `node --test tests/invoice-intake.test.mjs` | 58/58（10/7 Codex の R4：訂正で保存された請求日は納品日だけの訂正で動かない（計上済み・アプリの写しの日付も）。R1〜R3：読めない・食い違う請求日は訂正しても埋めない／納品日から来た請求日は直した納品日に合わせる／単価の単位は訂正のあとも残る／数量の単位で対応表を引く。10/7：青果の invoice（単位付きの数字・納品日だけ）を丸ごと読む・修正前に入った記録は次の訂正で納品日を保存、を足した。修正前のコードでは落ちる。Codex の再レビュー（1301623）の C3a・C3b を、全体の SQL と本番と同じ入れ方（最初の migration＋修正）の両方で足した。Codex の指摘 C1〜C5 の再現と、最初の SQL を入れた DB に修正の SQL を重ねる試験を足した。§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
 | `node --test tests/invoice-adapters.test.mjs` | 5/5（Drive・共有ドライブの一覧・Anthropic・PostgREST・HTTP 入口） |
-| `node --test tests/invoice-mutations.test.mjs` | 42/42（守りを 41 か所外すと、どれもテストが落ちることを確認。Codex の指摘 C1〜C5・C3a・C3b の守り 9 か所、10/7 の読み取りの修正の守り 4 か所を足した） |
+| `node --test tests/invoice-mutations.test.mjs` | 守り 46 か所（10/7 の読み取りの修正 4 か所＋Codex の R1〜R4 と「直した納品日に合わせる」5 か所を足した。R5 で古い目印を直した）。結果は下の記録 |
 | `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 25 件・42 段階） |
 | `node --test tests/review/*.mjs`（Codex が書いた再現：1851593 の 5 件・1301623 の C3a/C3b 2 件・v1055 の画面 4 件） | 11/11。`INVOICE_REVIEW_UPGRADE=1`（最初の migration＋修正）でも C3a/C3b 2/2 |
 | `deno bundle` で作った 1 ファイル（配備用） | 外からの import 無し。手元で起動して GET 405・OPTIONS 204（funergy-plus.com だけ）・ログイン無し 401・ほかのサイト 403。元のコードと同じ中身（commit 8cf0c05 以降、関数のコードは変えていない） |

@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex の指摘 R4・R5（362b674）を修正（Claude・Codex の再レビューはまだ）
+
+- 対象：Codex の再レビュー（362b674・下の節）。この記録は承認ではない。
+- R4：請求日の印字が無い invoice で納品日から請求日を取るのは、訂正で請求日が一度も保存されていない（`overrides.invoice_date` が無い）ときだけにした。訂正で保存された請求日（人が入れたもの、納品日に合わせて保存されたもの）は、値が何であっても、そのあとの納品日だけの訂正で動かさない。由来は SQL を変えずに `overrides` の有無で区別する（取込のときに納品日から入れた日付は `overrides` を持たない）。そのため、納品日に合わせて保存したあと、もう一度納品日だけを直したときは請求日は動かない（必要なら人が請求日を直す）。
+- R5：`tests/invoice-mutations.test.mjs` の請求日の守りの置き換えの目印を今のコードに合わせた。
+- 試験（合成データ）：Codex の再現 `invoice-pr32-date-override-repro.mjs` 1/1・`invoice-pr32-reading-repro.mjs` 3/3。自分の試験：intake 58（R4：人が入れた請求日が納品日と同じになっても、計上後に納品日だけ直したとき請求日・アプリの写しの日付が動かない／納品日に合わせて保存した日付も同じ）。関連 91/91（rules 13・adapters 5・intake 58・`tests/review/*.mjs` 15）・`INVOICE_REVIEW_UPGRADE=1` 2/2。`deno bundle` の 1 ファイルで結合 58/58、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403。SQL・アプリは変えていない。
+- 次：Codex が最新 head を再レビュー → OK なら Moto さんが関数 `invoice-intake` を 1 ファイルで差し替え（SQL 不要）。
+
 ## 2026-10-07 Codex 再レビュー：PR #32 362b674（R1〜R3解消、追加指摘R4/R5）
 
 - 担当：Codex（Claudeの実装から独立）。対象：`362b6747cdb1605bf84179ce26f7a33024ed157b`。記録直前のPR headも同じ。
@@ -20,7 +28,7 @@
 - R1：訂正のときの請求日は `invoiceDateInput`（handler）で決める。人が今入れた日付はそのまま。AI の読みに請求日の印字が無い（`ai_doc.invoice_date_text` が空）ときだけ納品日に合わせる（保存済みの請求日が納品日と同じ＝納品日から来たものなら、直した納品日にも合わせる）。それ以外は保存済みの日付、保存が無ければ AI の印字のまま判定するので、読めない・食い違う印字の日付は人が直すまで date_unreadable / date_disagree のまま（反映は 409）。AI の読みが無い記録では納品日で埋めない（`ctx.dateFallback=false`）。納品日から来た日付が保存値と違うときだけ、その訂正と一緒に保存（保存値と理由を合わせる。人が入れた別の日付は動かさない）。
 - R2：訂正の再判定で、取込のときに保存した `price_unit`・`weight`・`weight_unit`（「$60.00/LB」から読んだ LB を含む）を使う（以前は AI の元の欄だけ）。catch_weight が消えず、LB 単価がケース単価として価格履歴に入らない。
 - R3：「2 CS」の CS を商品の対応表の照合（通常・人が選んだ対応の両方）に使う。
-- 試験（合成データ）：Codex の再現 `tests/review/invoice-pr32-reading-repro.mjs` 3/3。自分の試験を足した：intake 57（R1 は読めない日付と食い違う日付の両方・人が入れると通る／納品日だけの invoice は直した納品日に合わせるが人が入れた日付は動かさない／R2・R3 は訂正のあとも）。4 件とも 2544826 では落ちる。rules 13。`tests/review/*.mjs` 14/14・`INVOICE_REVIEW_UPGRADE=1` 2/2。`deno bundle` の 1 ファイルで結合 57/57、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403。SQL・アプリは変えていない。
+- 試験（合成データ）：Codex の再現 `tests/review/invoice-pr32-reading-repro.mjs` 3/3。自分の試験を足した：intake 57（R1 は読めない日付と食い違う日付の両方・人が入れると通る／納品日だけの invoice は直した納品日に合わせるが人が入れた日付は動かさない／R2・R3 は訂正のあとも）。4 件とも 2544826 では落ちる。rules 13。mutations は R5（下の節）で目印を直したあとに全体を実行。`tests/review/*.mjs` 14/14・`INVOICE_REVIEW_UPGRADE=1` 2/2。`deno bundle` の 1 ファイルで結合 57/57、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403。SQL・アプリは変えていない。
 - 次：Codex が最新 head を再レビュー → OK なら Moto さんが関数 `invoice-intake` を 1 ファイルで差し替え（SQL 不要）。
 
 ## 2026-10-07 Codex レビュー：PR #32 2544826（読み取り修正に指摘3件）

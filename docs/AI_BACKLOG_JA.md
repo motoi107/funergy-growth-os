@@ -1,5 +1,10 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32：R4・R5 修正済み・Codex の再レビュー待ち
+
+1. Codex：最新 head を再レビュー（`tests/review/invoice-pr32-date-override-repro.mjs` 1/1・`invoice-pr32-reading-repro.mjs` 3/3）。
+2. OK なら Moto さん：関数 `invoice-intake` を 1 ファイルで差し替え（SQL は不要）。
+
 ## 2026-10-07 PR #32 362b674：R1〜R3解消、Codex追加指摘R4/R5修正待ち
 
 - 対象`362b6747cdb1605bf84179ce26f7a33024ed157b`。判定：修正必要、P1 1件・P2 1件。前回R1〜R3は再現3/3成功で解消。

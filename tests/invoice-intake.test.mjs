@@ -1341,6 +1341,30 @@ test('Codex review of 2544826: what was read stays true through later correction
     } finally { await E.pg.close(); }
   });
 
+  await t.test('R4: an invoice date saved by a correction is never moved by a later delivery-date correction, even when the two are equal', async () => {
+    const E = await setup();
+    try {
+      let { id, d } = await stage(E, 'R4-SAVED-DATE', doc('R4', null, line, { delivery: '2026-10-06' }));
+      const edit = async (header, reason) => { const r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header, reason }); assert.equal(r.status, 200, JSON.stringify(r.body)); [d] = await docsOf(E, id); };
+      await edit({ invoice_date: '2026-09-30' }, '請求日は別の書類で確認');
+      await edit({ delivery_date: '2026-09-30' }, '納品日の読み違い');                 // the two now happen to be equal
+      assert.deepEqual(await dates(E, d), { i: '2026-09-30', v: '2026-09-30' });
+      assert.equal((await E.api('tok-gm', { action: 'post', doc_id: d.id, version: d.version, reason: 'synthetic' })).status, 200);
+      [d] = await docsOf(E, id); await E.worker();
+      await edit({ delivery_date: '2026-10-01' }, '納品日だけ直す');
+      await E.worker();
+      assert.deepEqual(await dates(E, d), { i: '2026-09-30', v: '2026-10-01' });
+      const [app] = await E.q(`select value from app_state where key='spl_invoices_F06'`);
+      assert.equal(app.value.find(x => x.intakeDocId === d.id).docDate, '2026/09/30');
+      // A date taken from the delivery date and saved with a correction is kept the same way afterwards.
+      ({ id, d } = await stage(E, 'R4-FOLLOWED', doc('R4B', null, line, { delivery: '2026-10-06' })));
+      await edit({ delivery_date: '2026-10-05' }, '納品日の読み違い');
+      assert.deepEqual(await dates(E, d), { i: '2026-10-05', v: '2026-10-05' });
+      await edit({ delivery_date: '2026-10-04' }, 'もう一度直す');
+      assert.deepEqual(await dates(E, d), { i: '2026-10-05', v: '2026-10-04' });
+    } finally { await E.pg.close(); }
+  });
+
   await t.test('R2: a price unit printed on the price survives a correction; a per-LB price never becomes a per-case price', async () => {
     const E = await setup();
     try {
