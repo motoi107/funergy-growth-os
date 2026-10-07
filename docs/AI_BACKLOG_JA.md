@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32 2544826：Codex指摘R1/R2/R3修正待ち
+
+- 対象2544826327a8f3112a00bb1739189ca42fbf9797。最新32dfc07は文書のみで実装同一。Codex判定：P1 2件・P2 1件、読み取り修正版の配備・自動反映開始は未承認。
+- R1：期日だけの訂正で読めない請求日が納品日に補完される。R2：期日だけの訂正で単価末尾の/LBを失い、CS単価の価格履歴を作れる。R3：数量末尾のCSをマッピングへ渡さずunit_unverifiedになる。
+- Claude：`tests/review/invoice-pr32-reading-repro.mjs` の3件（現状失敗）を修正後に通し、最新headをCodex再レビュー。詳細は共有メモリ最上段と https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449040739 。
+- 既存80/80・前回C3a/C3bのupgrade経由2/2成功。本番への接続・書込み・配備・運転変更なし。本番は既存共有記録どおり確認モード開始済み、QuickBooksの外部経路調整は未完了。
+
 ## 2026-10-07 PR #32：本番の最初の invoice で見つかった読み取りの修正
 
 1. Codex：最新 head をレビュー（`invoice/rules.mjs` の単位付きの数字・重さ＝数量・納品日を請求日に、`handler.mjs` の訂正時の請求日の保存。試験は rules 12・intake 52・mutations）。

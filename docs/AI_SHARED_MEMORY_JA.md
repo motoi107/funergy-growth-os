@@ -1,5 +1,18 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex レビュー：PR #32 2544826（読み取り修正に指摘3件）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`2544826327a8f3112a00bb1739189ca42fbf9797`。記録前の最新head `32dfc0777ec8d9d36666bfa9dd333088c61bd3a2` は試験結果の文書2行の追記のみで実装同一。
+- **判定：修正必要、P1 2件・P2 1件。この読み取り修正版の配備・自動反映開始は未承認。** 前回356e456のC3a/C3b修正の解消は維持。
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449040739 （行コメント3件）。接続がPR作成者本人のためCOMMENTで記録。
+- **R1 [P1]** `handler.mjs:407`：読めない印字の請求日まで納品日に置き換わる。合成原本の請求日09/??/2026・納品日10/06はdate_unreadableで止まるが、期日だけeditするとrecheckが保存値nullを印字無しとみなし、請求日10/06を補完してエラーを消す。その後post200、価格履歴1行。元の印字・理由を保持し、date_unreadable/date_disagreeは人が請求日を直すまで補完しない。月の判定にも影響する。
+- **R2 [P1]** `rules.mjs:219` と `handler.mjs:368`：単価末尾から取得した単位が訂正時に失われる。数量2 CS・単価$60.00/LB・price_unit=null・明細$120はLB/catch_weightで保存されるが、期日だけeditすると数値60とraw.price_unit=nullで再評価され、catch_weightが消える。postすると$60/CS・$0.01/gの価格履歴が作成された。読み取って保存したprice_unitを再検証へ引き継ぐ必要がある。
+- **R3 [P2]** `rules.mjs:209,251-252`：数量の末尾から得たqtyUnitをマッピングに渡していない。qty='2 CS'・unit=nullはpurchase_unit=CSで保存されるが、確認済みCS対応でもunit_unverifiedとなる。通常/指定マップ双方で読み取った単位を照合し、自動反映・価格履歴を不要に止めないようにする。
+- 新規再現：`tests/review/invoice-pr32-reading-repro.mjs`（実handler/SQL、PGlite、偽Drive/AI/メール、合成データのみ）。R1/R2/R3の期待動作assertionが3件失敗。
+- 実行：既存 `node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/*.mjs` **80/80成功**（12+5+52+11、新再現追加前）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**。新再現は `node --test tests/review/invoice-pr32-reading-repro.mjs`。mutation42件・Deno bundle・実ブラウザ表示は今回再実行していない。
+- 今回は本番への接続・書込み・配備・運転変更・Drive操作・メール送信・マージなし。共有記録では本番は確認モードで運転開始済みとして扱う。SQL本体/migration・アプリv1055は前回レビューから不変。追加start/stop SQLは静的確認のみ。本番で試していない。
+- 次：ClaudeがR1/R2/R3を修正→新再現を成功させる→最新headを再レビュー→OK後に関数差し替え。請求日の印字が無いときだけ納品日を用いるMotoさんの決定、全店確認モード、QB外部経路調整待ちは維持。
+
 ## 2026-10-07 本番の最初の invoice で見つかった読み取りの修正（Claude・Codex のレビューはまだ）
 
 - 本番：10/7 09:40 HST ごろ Moto さんが運転を始め（開始日時は 10/7 中・取込 ON・確認モード）、Marujuu の店舗スタッフが入れた最初の本物の invoice（青果の業者）が Drive→AI→要確認まで通った。自動では反映していない（Food Cost には入っていない）。Drive 接続 OK。
