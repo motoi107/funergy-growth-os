@@ -741,6 +741,7 @@ test('Drive access uses the function secrets first, then the connection drive-sy
     const u = String(url);
     if (u === 'https://oauth2.googleapis.com/token') { const b = new URLSearchParams(init.body); calls.push(['token', b.get('client_id'), b.get('refresh_token')]); return Response.json({ access_token: 'at-' + b.get('client_id') }); }
     if (u.startsWith('https://www.googleapis.com/drive/v3/files?')) { calls.push(['list', init.headers.authorization]); return Response.json({ files: [] }); }
+    if (/^https:\/\/www\.googleapis\.com\/drive\/v3\/files\/[^/?]+\?fields=id/.test(u)) { calls.push(['folder', init.headers.authorization]); return Response.json({ id: 'x' }); }
     if (u.endsWith('/auth/v1/user')) return Response.json({ id: U.gm });
     throw new Error('unexpected network call ' + u);
   };
@@ -758,7 +759,7 @@ test('Drive access uses the function secrets first, then the connection drive-sy
     grant select on public.drive_oauth to service_role; set role service_role;`);
   r = await run({});
   assert.equal(r.ok, true);
-  assert.deepEqual(calls[0], ['token', 'saved-client', 'saved-refresh']); assert.equal(calls[1][1], 'Bearer at-saved-client');
+  assert.deepEqual(calls[0], ['token', 'saved-client', 'saved-refresh']); assert.equal(calls.find(c => c[0] === 'list')[1], 'Bearer at-saved-client');
   calls.length = 0;
   r = await run({ GOOGLE_OAUTH_CLIENT_ID: 'env-client', GOOGLE_OAUTH_CLIENT_SECRET: 'env-secret', GOOGLE_OAUTH_REFRESH_TOKEN: 'env-refresh' });
   assert.deepEqual(calls[0], ['token', 'env-client', 'env-refresh']);

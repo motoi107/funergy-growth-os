@@ -23,6 +23,7 @@ const q = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
 export function createDrive({ fetch, getToken }) {
   let token = null;
+  const driveOf = new Map();   // folder id -> shared drive id (null in My Drive)
   async function call(path, init = {}, raw = false) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!token) { const t = await getToken(); if (!t.ok) { const e = new Error(t.error); e.code = t.error; throw e; } token = t.token; }
@@ -34,12 +35,23 @@ export function createDrive({ fetch, getToken }) {
     }
   }
   const common = 'supportsAllDrives=true&includeItemsFromAllDrives=true';
+  // Items inside a shared drive are listed with corpora=drive and that drive's id; the default
+  // corpus ('user') is not relied on for folders that live in a shared drive.
+  async function scope(folderId) {
+    if (!driveOf.has(folderId)) {
+      const r = await call(`/files/${encodeURIComponent(folderId)}?fields=id,driveId&supportsAllDrives=true`);
+      if (r.status !== 200) return '';
+      driveOf.set(folderId, (r.body && r.body.driveId) || null);
+    }
+    const id = driveOf.get(folderId);
+    return id ? '&corpora=drive&driveId=' + encodeURIComponent(id) : '';
+  }
   return {
     async listFolder(folderId, pageToken) {
       const p = new URLSearchParams({ q: `'${q(folderId)}' in parents and trashed=false and mimeType!='${FOLDER_MIME}'`,
         fields: `nextPageToken,files(${FILE_FIELDS})`, pageSize: '100', orderBy: 'createdTime' });
       if (pageToken) p.set('pageToken', pageToken);
-      const r = await call('/files?' + p + '&' + common);
+      const r = await call('/files?' + p + '&' + common + await scope(folderId));
       if (r.status !== 200) { const e = new Error('drive_list_' + r.status); e.status = r.status; throw e; }
       return { files: r.body.files || [], next: r.body.nextPageToken || null };
     },
@@ -62,7 +74,7 @@ export function createDrive({ fetch, getToken }) {
     },
     async findFolders(parentId, name) {
       const p = new URLSearchParams({ q: `'${q(parentId)}' in parents and name='${q(name)}' and mimeType='${FOLDER_MIME}' and trashed=false`, fields: 'files(id,name)' });
-      const r = await call('/files?' + p + '&' + common);
+      const r = await call('/files?' + p + '&' + common + await scope(parentId));
       if (r.status !== 200) { const e = new Error('drive_list_' + r.status); e.status = r.status; throw e; }
       return r.body.files || [];
     },
@@ -77,7 +89,7 @@ export function createDrive({ fetch, getToken }) {
       do {
         const p = new URLSearchParams({ q: `'${q(folderId)}' in parents and trashed=false`, fields: 'nextPageToken,files(id,name)', pageSize: '1000' });
         if (pageToken) p.set('pageToken', pageToken);
-        const r = await call('/files?' + p + '&' + common);
+        const r = await call('/files?' + p + '&' + common + await scope(folderId));
         if (r.status !== 200) { const e = new Error('drive_list_' + r.status); e.status = r.status; throw e; }
         (r.body.files || []).forEach(f => names.push({ id: f.id, name: f.name }));
         pageToken = r.body.nextPageToken || null;

@@ -24,10 +24,12 @@ test('Google token refresh and Drive requests: scoped queries, shared-drive flag
   const d = createDrive({ fetch, getToken });
   const r = await d.listFolder("U6'x", null);
   assert.equal(r.files.length, 1); assert.equal(tokens, 2);
-  const list = new URL(calls[3].url);
+  const li = calls.findIndex(c => c.url.startsWith('https://www.googleapis.com/drive/v3/files?'));
+  const list = new URL(calls[li].url);
   assert.equal(list.searchParams.get('q'), "'U6\\'x' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'");
   assert.equal(list.searchParams.get('supportsAllDrives'), 'true'); assert.equal(list.searchParams.get('includeItemsFromAllDrives'), 'true');
-  assert.equal(calls[3].init.headers.authorization, 'Bearer tok2');
+  assert.equal(list.searchParams.get('corpora'), null);                 // My Drive folder: default corpus
+  assert.equal(calls[li].init.headers.authorization, 'Bearer tok2');
   const body = new URLSearchParams(calls[0].init.body);
   assert.equal(body.get('grant_type'), 'refresh_token'); assert.equal(body.get('refresh_token'), 'rt');
   await d.findFolders('R6', "Kaimuki's");
@@ -39,6 +41,21 @@ test('Google token refresh and Drive requests: scoped queries, shared-drive flag
   assert.equal(typeof d.delete, 'undefined'); assert.equal(typeof d.trash, 'undefined');
   assert.ok(calls.every(c => !/method":"DELETE"/.test(JSON.stringify(c.init)) && c.init.method !== 'DELETE'));
   assert.deepEqual(await googleAccessToken({ fetch, clientId: '', clientSecret: '', refreshToken: '' }), { ok: false, error: 'drive_not_configured' });
+});
+
+test('Folders in a shared drive are listed with corpora=drive and the drive id (looked up once per folder)', async () => {
+  const { calls, fetch } = recorder(url => {
+    if (url.startsWith('https://oauth2.googleapis.com/token')) return Response.json({ access_token: 't' });
+    if (/\/files\/U7\?/.test(url) || /\/files\/R7\?/.test(url)) return Response.json({ id: 'x', driveId: 'SD-1' });
+    return Response.json({ files: [], nextPageToken: null });
+  });
+  const d = createDrive({ fetch, getToken: () => googleAccessToken({ fetch, clientId: 'c', clientSecret: 's', refreshToken: 'r' }) });
+  await d.listFolder('U7', null); await d.listFolder('U7', null);
+  await d.findFolders('R7', '2026'); await d.listNames('R7');
+  const lists = calls.filter(c => c.url.startsWith('https://www.googleapis.com/drive/v3/files?')).map(c => new URL(c.url));
+  assert.equal(lists.length, 4);
+  assert.ok(lists.every(u => u.searchParams.get('corpora') === 'drive' && u.searchParams.get('driveId') === 'SD-1' && u.searchParams.get('supportsAllDrives') === 'true'));
+  assert.equal(calls.filter(c => /\/files\/(U7|R7)\?fields=id%2CdriveId|\/files\/(U7|R7)\?fields=id,driveId/.test(c.url)).length, 2);   // one lookup per folder
 });
 
 test('Anthropic call: key only in the header, temperature 0, PDF as a document, failures classified, key never echoed', async () => {

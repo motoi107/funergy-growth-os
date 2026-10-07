@@ -119,6 +119,7 @@
 - ワーカー用は専用の Google アカウント（Invoices 以外にアクセスを持たない）を推奨。今の drive-sync の OAuth は Drive 全体の権限。
 - 個人の My Drive の場合、店舗がアップロードしたファイルの所有者は店舗側に残り、移動・改名ができないことがある。共有ドライブが使えるか、実アカウントで確認が必要。
 - Moto さん（10/6）：Drive 連携は Moto さんの会社の Google アカウント、共有ドライブは使える。店舗フォルダの URL は Aiea・Piikoi・Kaimuki・ToriTon・Tenkichi の 5 店分を受け取った（LaLa は作成待ち）。**フォルダ ID はこの公開リポジトリには書かない**（画面の「設定」で入れる）。今のフォルダが My Drive か共有ドライブか、中に `00_Upload` があるかは、配備後に「フォルダを確かめる」で見る（まだ見ていない）。
+- 共有ドライブ：一覧は `supportsAllDrives`・`includeItemsFromAllDrives` に加えて、フォルダが共有ドライブにあるときは `corpora=drive`・`driveId` を付ける（フォルダごとに1回だけ driveId を調べる）。既定の `corpora=user` では共有ドライブの中身が返らないことがあるため（Google の資料で確認・2026-10-07）。
 - 00_Upload の用意（`folder_setup`）：店舗フォルダの中を名前で探す。1 つなら記録、無ければ GM・CEO が押したときだけ作る、2 つ以上や別のフォルダが記録済みなら止めて知らせる（自動で選ばない・切り替えない）。
 - 店舗の Invoice管理の案内：GM・CEO が「出す」にした店舗だけ、店舗マスター（`stores.data.invoiceUploadFolderId`）に 00_Upload の ID を入れる。店舗マスターは anon キーで読める表なので、フォルダ ID は見えるが、開けるかどうかは Drive の共有で決まる。
 
@@ -192,9 +193,9 @@
 |---|---|
 | `node --test tests/invoice-rules.test.mjs` | 11/11 |
 | `node --test tests/invoice-intake.test.mjs` | 22/22（§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方） |
-| `node --test tests/invoice-adapters.test.mjs` | 4/4（Drive・Anthropic・PostgREST・HTTP 入口） |
+| `node --test tests/invoice-adapters.test.mjs` | 5/5（Drive・共有ドライブの一覧・Anthropic・PostgREST・HTTP 入口） |
 | `node --test tests/invoice-mutations.test.mjs` | 22/22（守りを 21 か所外すと、どれもテストが落ちることを確認。外部の転送の鍵・自分の行だけ・ここから送らない・鍵を画面に出さない・00_Upload を勝手に作らない／切り替えない を含む） |
-| `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 18 件） |
+| `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 19 件） |
 | `python3 scripts/check-static-release.py` | 成功（v1052・APP_VERSION と SW_BUILD が一致） |
 | アプリの検証（handoff の `verify_v1052.js`） | 78/78（変えた既存関数は 7 本で各 1 行・同期と保存の仕組みは同じ・escapeHtml・金額は整数セント・役割・旧画面の境目） |
 | 本物の画面（handoff の `render/check_invin_v1052.py`） | 49/49・pageerror 0。本物の handler と SQL を PGlite で動かし、ブラウザから メール認証→一覧→要確認（反映・業者を直す・対象外）→照合（原本が照合済みフォルダへ）→取込状況（HEIC・結果不明）→設定（スイッチ・00_Upload の作成・店舗の画面への案内）→店舗の Invoice管理（日英）→仕入れ履歴→スマホ（390px）。事務Crew は閲覧だけ |

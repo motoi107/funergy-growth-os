@@ -10,7 +10,7 @@ Moto さんの回答（10/6 22:50 HST）：UI案34 で実装してよい／Quick
 
 実装（ブランチ claude/invoice-drive-intake）：`db/invoice-intake.sql`（service_role 専用・RLS・一意制約・invoice 単位の反映 RPC）、`supabase/functions/invoice-intake`（cron で 5 分ごと・ワーカー鍵／本部・経理は Supabase Auth＋manager_auth／外部の転送は専用の鍵）、`invoice/*.mjs`。Drive は drive-sync が保存した `drive_oauth` をそのまま使える。QuickBooks は `route='external'` で同じ台帳を ChatGPT 側と共有し、このシステムからは送らない。アプリ v1052（`index.html`・`sw.js`）：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の提出フォルダの案内、食材の仕入れ履歴。詳細は `docs/INVOICE_DRIVE_INTAKE_JA.md`。
 
-検証：合成データで rules 11・intake 22・adapters 4・mutations 22・Deno 18、アプリの検証 78、本物の画面（本物の handler＋PGlite）49・pageerror 0。既存テストの失敗は変更前の main と同じ。独立レビュー（Codex）は未実施。
+検証：合成データで rules 11・intake 22・adapters 5・mutations 22・Deno 19、アプリの検証 78、本物の画面（本物の handler＋PGlite）49・pageerror 0。既存テストの失敗は変更前の main と同じ。独立レビュー（Codex）は未実施。
 
 未完了：本番 DB・関数・cron・アプリ v1052 は未反映。店舗フォルダの実際の中身（00_Upload の有無・共有ドライブか）、ChatGPT 側の転送が原本をどこから拾うか（台帳を見ないと二重送信のおそれ）、drive-sync の安全化（本文の再提供待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。
 
