@@ -200,11 +200,11 @@
 | コマンド | 結果 |
 |---|---|
 | `node --test tests/invoice-rules.test.mjs` | 11/11 |
-| `node --test tests/invoice-intake.test.mjs` | 46/46（Codex の指摘 C1〜C5 の再現と、最初の SQL を入れた DB に修正の SQL を重ねる試験を足した。§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
+| `node --test tests/invoice-intake.test.mjs` | 51/51（Codex の再レビュー（1301623）の C3a・C3b を、全体の SQL と本番と同じ入れ方（最初の migration＋修正）の両方で足した。Codex の指摘 C1〜C5 の再現と、最初の SQL を入れた DB に修正の SQL を重ねる試験を足した。§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
 | `node --test tests/invoice-adapters.test.mjs` | 5/5（Drive・共有ドライブの一覧・Anthropic・PostgREST・HTTP 入口） |
-| `node --test tests/invoice-mutations.test.mjs` | 36/36（守りを 35 か所外すと、どれもテストが落ちることを確認。Codex の指摘 C1〜C5 の守り 7 か所を足した） |
-| `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 24 件・38 段階） |
-| `node --test tests/review/invoice-pr32-codex-repro.mjs`（Codex が 1851593 で書いた再現） | 5/5（1851593 では 5 件とも落ちる） |
+| `node --test tests/invoice-mutations.test.mjs` | 38/38（守りを 37 か所外すと、どれもテストが落ちることを確認。Codex の指摘 C1〜C5・C3a・C3b の守り 9 か所を足した） |
+| `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 25 件・42 段階） |
+| `node --test tests/review/*.mjs`（Codex が書いた再現：1851593 の 5 件・1301623 の C3a/C3b 2 件・v1055 の画面 4 件） | 11/11。`INVOICE_REVIEW_UPGRADE=1`（最初の migration＋修正）でも C3a/C3b 2/2 |
 | `deno bundle` で作った 1 ファイル（配備用） | 外からの import 無し。手元で起動して GET 405・OPTIONS 204（funergy-plus.com だけ）・ログイン無し 401・ほかのサイト 403。元のコードと同じ中身（commit 8cf0c05 以降、関数のコードは変えていない） |
 | `python3 scripts/check-static-release.py` | 成功（v1055・APP_VERSION と SW_BUILD が一致） |
 | アプリの検証（handoff の `verify_v1052.js`〜`verify_v1055.js`） | v1055 45/45（v1054 からの差は足した 7 関数・変えた 22 関数・変数 6 つだけ。本体以外は決めた置き換えを戻すと v1054 と同じ。Drive の店舗は業者 Invoice を登録しない・「出す」の条件・C3/C5 の画面）。v1052 78/78・v1053 85/85・v1054 93/93（v1054 は v1053 から invInAPI・invInLoadingCard と版だけ。v1053 では 7 件落ちる）（v1053 は v1052 から本体と版だけ・変えた既存関数は 7 本で各 1 行・同期と保存の仕組みは同じ・escapeHtml・onclick の値は JS の文字列として安全・金額は整数セント・役割・旧画面の境目） |
@@ -241,6 +241,10 @@ Codex が P1 5 件・P2 1 件を指摘（PR #32 のレビュー・`docs/AI_SHARE
 - C4：人が店舗の外へ動かした整理先のフォルダへ原本を移した → 覚えているフォルダは、Drive で同じ名前のまま決まった親の中にあるときだけ使う（年→月→未照合／照合済みの順に店舗フォルダまで）。動かされた・名前が変わった・ゴミ箱のフォルダは使わず、作り直して記録を差し替える（履歴に残す。元のフォルダには触らない）。
 - C5：同じ Drive ファイルが別の内容で上書きされると、前の版を反映したまま新しい版も自動で反映された → 新しい版は「同じファイルの中身が差し替えられた（original_replaced）」で必ず人の確認。前の版を「訂正版として置き換える」か「別の invoice として反映する（確かめた印）」。決めるまで転送しない・訂正しても印は消えない。
 - C6：配備の確認 SQL が別の仕組みの `invoice_uploads` も数えた → この migration の表 16・関数 65 の名前だけを数える（`invoice_uploads` は参考として出すだけ）。
+
+Codex の再レビュー（2026-10-07・対象 1301623）：C1・C2・C4・C5・C6 は解消、C3 に P1 が 2 件残り → 修正（`45f14a6`）。
+- C3a：通貨だけを USD→JPY に訂正すると、確かめずに反映済みのまま保存された（確かめるのが金額・明細の訂正のときだけだった）→ 反映済みの訂正はすべて反映と同じ条件で確かめる。通貨も金額の項目に入れた（価格の履歴・照合・写しも訂正に合わせて作り直す）。
+- C3b：確かめて反映した不一致の数量をさらに変えても、もう一度の確認なしで保存された（理由の形だけを比べていた）→ 金額・通貨・書類の種類・明細のどれかが変わったら、前の確認は使わずにもう一度確かめる。どれも変わらない訂正（番号・期日など）は前の確認のまま。
 
 ## 16 未完了・未確認
 

@@ -8,6 +8,11 @@
 - 既存＋前回再現67/67、mutations36/36、追加v1055 UI試験4/4、静的release1055成功。本番へ接続・書込みなし。
 - 全6店・確認モード開始という最新決定を維持。修正と再レビュー完了後に追加SQL・関数・v1055を投入。QuickBooksは外部転送との調整までOFF。下の「再レビューまだ」「1店から」等は以前の時点の記録。
 
+## 2026-10-07 PR #32：再レビューの C3a・C3b も修正済み・再々レビュー待ち
+
+1. Codex：最新 head を再レビュー（`45f14a6` の C3a・C3b。`tests/review/invoice-pr32-codex-rereview.mjs` は通常と `INVOICE_REVIEW_UPGRADE=1` の両方で通る）。
+2. 以降は下の節の 2・3 のとおり（追加の SQL・関数・v1055 → 全店・確認モードで開始）。
+
 ## 2026-10-07 PR #32：Codex の指摘を修正済み・再レビュー待ち
 
 1. Codex：最新 head を再レビュー（C1〜C6 の修正・アプリ v1055＝UI案35）。`tests/review/invoice-pr32-codex-repro.mjs` は 5/5 で通る。
