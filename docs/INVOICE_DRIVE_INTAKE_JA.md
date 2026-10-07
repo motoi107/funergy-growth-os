@@ -208,7 +208,7 @@
 | `node --test tests/invoice-rules.test.mjs` | 12/12（10/7：単位付きの数字・重さ＝数量・納品日を請求日に、を足した） |
 | `node --test tests/invoice-intake.test.mjs` | 52/52（10/7：青果の invoice（単位付きの数字・納品日だけ）を丸ごと読む・修正前に入った記録は次の訂正で納品日を保存、を足した。修正前のコードでは落ちる。Codex の再レビュー（1301623）の C3a・C3b を、全体の SQL と本番と同じ入れ方（最初の migration＋修正）の両方で足した。Codex の指摘 C1〜C5 の再現と、最初の SQL を入れた DB に修正の SQL を重ねる試験を足した。§14 の 1〜14 ＋訂正版・訂正後の再照合・初期候補・文面の指示＋外部の転送の台帳・00_Upload の用意・仕入れ履歴・設定と問題の一覧・Drive の連携の読み方＋独立レビューの指摘 15 件の再現＋`app_state.value` が json でも入る＋配備の前後の確認と取り消し（Supabase と同じ既定の権限を入れた DB で）） |
 | `node --test tests/invoice-adapters.test.mjs` | 5/5（Drive・共有ドライブの一覧・Anthropic・PostgREST・HTTP 入口） |
-| `node --test tests/invoice-mutations.test.mjs` | 38/38（守りを 37 か所外すと、どれもテストが落ちることを確認。Codex の指摘 C1〜C5・C3a・C3b の守り 9 か所を足した） |
+| `node --test tests/invoice-mutations.test.mjs` | 42/42（守りを 41 か所外すと、どれもテストが落ちることを確認。Codex の指摘 C1〜C5・C3a・C3b の守り 9 か所、10/7 の読み取りの修正の守り 4 か所を足した） |
 | `deno check supabase/functions/invoice-intake/index.ts`・`deno test` | 成功（Edge Runtime と同じ Deno 2 で 25 件・42 段階） |
 | `node --test tests/review/*.mjs`（Codex が書いた再現：1851593 の 5 件・1301623 の C3a/C3b 2 件・v1055 の画面 4 件） | 11/11。`INVOICE_REVIEW_UPGRADE=1`（最初の migration＋修正）でも C3a/C3b 2/2 |
 | `deno bundle` で作った 1 ファイル（配備用） | 外からの import 無し。手元で起動して GET 405・OPTIONS 204（funergy-plus.com だけ）・ログイン無し 401・ほかのサイト 403。元のコードと同じ中身（commit 8cf0c05 以降、関数のコードは変えていない） |
