@@ -1,5 +1,20 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex レビュー：PR #32 497a444（UI案36・修正必要）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`497a444ca2200c9b30b1b142e3104f3e6a6f3b1f`。UI案36・アプリv1056・追加SQL `20261007200000`。
+- **判定：修正必要。追加P1 3件（R6〜R8）。このheadの配備・マージを可とするレビューではない。**
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5450061653 （行コメント3件）。接続アカウントがPR作成者本人のためCOMMENTとして記録。
+- **R6 [P1]** `handler.mjs:460–461`：業者名の自動学習がctxの古い業者行を全置換し、同時更新された運転設定・別名を消す。GMのinvoice訂正中にCEOがauto_post=falseと別名追加を保存→学習が古いtrue・別名配列を保存→次のinvoiceが自動postedとなった。別名だけを最新行へ原子的に追加し、運転設定などを変更しない。名前の競合判定も保存と同じトランザクションで行う。
+- **R7 [P1]** 追加SQL38–39行・UIのINFO分類：旧line_value_missingは数量/単価だけでなく明細金額/値引きの読取失敗も含む。72cfcf8の実rules/handler/SQLで明細amount='6O.OO'を取込（amount_cents=null、review）→追加SQLを適用→v1056 UIでは金額ok・一括反映可能true・初期選択され、batch postでpostedとなった。新規取込のline_amount_missingだけでは旧伝票は保護されない。既存理由の互換処理または新しい数量/単価専用の参考コードが必要。
+- **R8 [P1]** `index.html:44831–44835`：「この内容で反映する」がsaveの返却versionを捨て、getの最新versionでpostする。$60を表示して番号だけ訂正・保存v2→別担当者が合計/小計/明細を$120へ更新v3→get→post(version=3)で、最初の担当者が見ていない$120を計上した。保存結果と読戻しのversionを照合し、違えば再表示・再確認する。DBの版チェックを最新versionで迂回しない。
+- 新規独立再現：`tests/review/invoice-pr32-accounting-repro.mjs`。`node --test tests/review/invoice-pr32-accounting-repro.mjs` **0/3、3件の期待動作assertionが失敗**。実handler/SQL/index.htmlのUIモジュール、ローカルPGlite、合成データ・偽Drive/AI/メールだけ。R7はgit履歴の72cfcf8を読み、実際の旧版取込→追加SQLを検証する（そのcommitを含むgit履歴が必要）。
+- 既存試験：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/invoice-ui.test.mjs tests/review/*.mjs` **106/106成功**（15+5+65+6+15、新再現追加前）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**（3本のmigration）。`python3 scripts/check-static-release.py` **pass/v1056**。
+- 3関数置換と統合SQLの一致・既存16表/65関数の権限/SECURITY INVOKER/search_path・追加SQL再適用・閉月/重複/QB台帳/不確かな明細を価格履歴に入れない条件の関連試験は成功。Claudeが変更したCodex試験3ファイルも確認：確認モードを明示する変更と、C3bを「数量×単価は参考、不整合明細は価格履歴に入れず、金額差は再確認」とする変更は、記録されたUI案36の業務方針と整合。C3a・R1〜R4などの再現も成功。
+- 今回はmutation全件・Deno bundle・実ブラウザ表示は未実行。UIは実モジュールをNode VMで動かし、R7/R8は実handler/SQLへ接続。実AIの全プロンプト攻撃耐性や外部QuickBooks側の同一台帳利用は証明対象外。
+- 本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。実装は変更せず、記録と再現テストのみ追加。本番の運転状態は既存共有記録どおりに扱い、今回確認していない。
+- 次：ClaudeがR6〜R8修正→新再現と関連試験を成功させる→修正後の最新headをCodex再レビュー→OK後にMotoさんがSQL→postcheck→関数→アプリの順で反映。経理の4項目確認・商品/単価は参考とする業務方針は維持。
+
 ## 2026-10-07 UI案36：経理の確認は 4 項目（Claude・実装済み・Codex のレビューはまだ・本番未反映）
 
 - 依頼：Moto さん 10/7 13:05 HST「経理側の確認は 業者名 invoiceナンバー 金額 配達店舗 の確認です。対応する商品や単価は確認しません。これだと今の仕様だと商品選択等に手間が取られ過ぎます。スムーズに確認作業を進められる仕様にしてください」→ Claude が UI案36（要確認の表・1 件の確認・設定）を出す → 13:14「実機で確認します 進めてください」。この記録は承認ではない。

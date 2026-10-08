@@ -1,5 +1,14 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32 497a444：Codex指摘R6〜R8修正待ち
+
+- 対象`497a444ca2200c9b30b1b142e3104f3e6a6f3b1f`（UI案36/v1056/追加SQL20261007200000）。判定：P1 3件、修正必要。
+- R6：業者別名の自動学習が古いauto_post等を全置換し、同時更新した停止設定を戻す。別名だけを最新行へ原子的に追加する。
+- R7：旧line_value_missingの明細金額エラーまで参考扱いになり、既存未確認伝票が金額OK・一括反映可能になる。旧データの互換処理が必要。
+- R8：保存→読戻しの間に別担当者が金額を変えると、その最新versionを使って未表示の金額を計上する。save返却versionと一致しなければ再確認する。
+- `tests/review/invoice-pr32-accounting-repro.mjs`の3件は現状期待動作assertion失敗。既存106/106・upgrade2/2・static release v1056成功。詳細：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5450061653 と共有メモリ先頭。
+- 次：ClaudeがR6〜R8修正→新再現を含む試験→最新headを再レビュー→OK後にMotoさんがSQL/postcheck/関数/アプリを反映。経理の4項目確認という方針は維持。今回、本番への接続・書込み・配備・設定変更・マージなし。
+
 ## 2026-10-07 PR #32：UI案36（経理の確認は 4 項目）実装済み・Codex のレビュー待ち
 
 1. Codex：最新 head をレビュー（理由の 3 区分と SQL の一致・自動反映の条件・人の反映・印字名を覚える条件・`line_amount_missing`・アプリ v1056 のまとめて反映と「この内容で反映する」・**Claude が直した Codex の試験 3 ファイル**）。
