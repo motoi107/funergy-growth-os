@@ -44007,7 +44007,8 @@ var INVIN_REASONS = {
   duplicate_certain:['同じ invoice が登録済み（計上しない）','Already registered (not posted again)'], same_number_different:['同じ番号で内容が違う（訂正版か別書類）','Same number, different content'],
   duplicate_candidate:['重複の可能性','Possible duplicate'], app_duplicate_candidate:['アプリで登録済みの可能性','May already be registered in the app'],
   original_replaced:['同じファイルの中身が差し替えられた（前の版と見比べる）','The file was overwritten with new content (compare with the earlier version)'],
-  line_value_missing:['数量・単価が読めない明細（金額は読めた）','Line quantity/price not legible (amount read)'],
+  line_value_missing:['数量・単価・金額のどれかが読めない明細（前の版の読み取り）','Line quantity, price or amount not legible (earlier reading)'],
+  line_qty_price_missing:['数量・単価が読めない明細（金額は読めた）','Line quantity/price not legible (amount read)'],
   line_amount_missing:['明細の金額が読めない（合計を明細で確かめられない）','Line amount not legible (the total cannot be checked against the lines)'], line_math:['数量×単価が明細金額と一致しない','Quantity × price does not equal the line amount'],
   zero_price:['単価または金額が 0','Zero price or amount'], negative_line:['マイナスの明細（返品など）','Negative line (return etc.)'], catch_weight:['重量で請求する明細（キャッチウェイト）','Catch-weight line'],
   unmapped:['商品マスターに対応がない（新商品）','Not mapped to a product (new item)'], map_ambiguous:['対応する商品が複数ある','Several products match'],
@@ -44018,19 +44019,19 @@ var INVIN_REASONS = {
   mode_review_item:['商品は確認モード','Item is in review mode'], intake_not_started:['運用開始前のため自動反映しない','Before the start date']
 };
 /* 人が「確認した」と言えば反映できる理由（それ以外の止める理由は、直すか対象外にする）。サーバーの invoice_post と同じ */
-var INVIN_MAY_ACK = ['total_mismatch','original_replaced'];
+var INVIN_MAY_ACK = ['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];
 var INVIN_MUST_FIX = ['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
 /* v1056（UI案36）：商品・単価の理由は参考。反映を止めず、経理の「確認すること」に出さない（明細の中には残る）。サーバーの INFO_REASONS と同じ */
 var INVIN_INFO = ['unmapped','map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed','no_price_ref','price_jump',
-  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_value_missing','discount_allocation','mixed_tax'];
+  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax'];
 /* 確認モード：その店舗・業者をまだ「自動」にしていないだけ（中身の問題ではない。まとめて反映できる） */
 var INVIN_MODE = ['mode_review_store','mode_review_vendor'];
 /* 4 項目（と日付）のどこに付く理由か。? は読めない・決まっていない、! は合わない・食い違う */
 var INVIN_FIELD = {
   vendor_unknown:['vendor','?'], vendor_kind_unset:['vendor','?'],
   invoice_no_missing:['no','?'], duplicate_certain:['no','!'], same_number_different:['no','!'], duplicate_candidate:['no','!'], app_duplicate_candidate:['no','!'], original_replaced:['no','!'],
-  total_missing:['amount','?'], total_mismatch:['amount','!'], line_amount_missing:['amount','!'], currency:['amount','!'], missing_pages:['amount','!'],
+  total_missing:['amount','?'], total_mismatch:['amount','!'], line_amount_missing:['amount','!'], line_value_missing:['amount','!'], currency:['amount','!'], missing_pages:['amount','!'],
   store_mismatch:['store','!'], ship_to_unrecognized:['store','?'], multi_store:['store','!'],
   date_missing:['date','?'], date_unreadable:['date','?'], date_disagree:['date','!'], delivery_date_invalid:['date','?'], closed_month:['date','!']
 };
@@ -44047,6 +44048,7 @@ var INVIN_HINT = {
   total_missing:['合計が読めない → 原本の合計を入れる','No total → enter it from the original'],
   total_mismatch:['合計が明細＋税などと合わない → 原本の合計を確かめる','Total differs from lines + charges → check the original'],
   line_amount_missing:['明細の金額が読めない → 原本の合計を確かめる','Line amounts not legible → check the total on the original'],
+  line_value_missing:['明細が読めない（前の版の読み取り）→ 原本の合計を確かめる','Line not legible (earlier reading) → check the total on the original'],
   currency:['通貨が USD でない・不明 → 確かめる','Currency not USD or unknown → check'],
   missing_pages:['ページ不足の疑い → 原本を確かめる','Pages may be missing → check the original'],
   store_mismatch:['宛先が別の店舗 → 店舗を確かめる','Addressed to another store → check the store'],
@@ -44598,7 +44600,7 @@ function invInDetail(mode){
     };
     var vNote = join([fh('vendor'), (canEdit && !d.vendor_key && d.vendor_raw) ? t('選ぶと、この印字名（','Choosing one remembers the printed name (')+e(d.vendor_raw)+t('）を業者の別名として覚えます（次回から ✓）',') as a name of that vendor (✓ next time)') : '']);
     var tol = Number(((((_invIn.config||{}).settings||{}).rules)||{}).total_tolerance_cents)||0, amt = '';
-    var lineGap = codes.indexOf('line_amount_missing')>=0;
+    var lineGap = codes.indexOf('line_amount_missing')>=0 || codes.indexOf('line_value_missing')>=0;
     var base = d.subtotal_cents!=null ? Number(d.subtotal_cents) : (d.lines_sum_cents!=null && !lineGap ? Number(d.lines_sum_cents) : null);
     if (base!==null && d.total_cents!=null) {
       var calc = base - Number(d.discount_cents||0) + Number(d.tax_cents||0) + Number(d.shipping_cents||0) + Number(d.other_cents||0), diff = Math.abs(calc - Number(d.total_cents));
@@ -44685,7 +44687,7 @@ function invInDetail(mode){
   var linesCard;
   if (rv) {
     var cnt = function(list){ return lines.filter(function(l){ return invInLineCodes(l).some(function(c){ return list.indexOf(c)>=0; }); }).length; };
-    var nNew = cnt(['unmapped']), nMap = cnt(['map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed']), nJump = cnt(['price_jump']), nQty = cnt(['line_value_missing']);
+    var nNew = cnt(['unmapped']), nMap = cnt(['map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed']), nJump = cnt(['price_jump']), nQty = cnt(['line_qty_price_missing']);
     var ref = [[nNew,t('新商品 ','New items ')],[nMap,t('商品の対応 ','Mapping ')],[nJump,t('単価の変化 ','Price change ')],[nQty,t('数量・単価が読めない ','Qty/price unread ')]]
       .filter(function(x){ return x[0]; }).map(function(x){ return invInChip(x[1]+x[0], INVIN_COL.gray); }).join(' ');
     linesCard = '<div class="card'+(_invIn.mob==='orig'?' ivx-hide-m':'')+'" style="padding:10px 12px"><details'+(_invIn.linesOpen?' open':'')+' ontoggle="_invIn.linesOpen=this.open">'
@@ -44801,7 +44803,7 @@ async function invInSave(fromConfirm){
   var G = _invIn.doc; if (!G) return false; var d = G.doc, E = _invIn.edits;
   var c = invInCollectEdits(d, G.lines||[]);
   if (c.err) { showToast(c.err, 'warning'); return false; }
-  if (!Object.keys(c.header).length && !c.lines.length) { if (!fromConfirm) showToast(t('変更はありません','Nothing changed'), 'info'); return !!fromConfirm; }
+  if (!Object.keys(c.header).length && !c.lines.length) { if (!fromConfirm) showToast(t('変更はありません','Nothing changed'), 'info'); return null; }
   /* v1056：要確認の訂正は理由が空でもよい（「経理の確認で直した」と残す）。反映済みの訂正は理由が要る */
   var reason = String(E.reason||'').trim();
   if (!reason && d.status==='posted') { showToast(invInL(INVIN_ERR.reason_required), 'warning'); return false; }
@@ -44820,17 +44822,22 @@ async function invInSave(fromConfirm){
   if (res.alias_learned) { delete _invIn.loaded.config; showToast(t('保存しました。「','Saved. Remembered “')+res.alias_learned+t('」をこの業者の名前として覚えました','” as a name of this vendor'), 'success'); }
   else if (!fromConfirm) showToast(t('保存しました（確認すること・印は作り直しました）','Saved. The checks were rebuilt'), 'success');
   delete _invIn.loaded.health; delete _invIn.loaded.review;
-  if (fromConfirm) return true;
-  _invIn.edits = null; delete _invIn.loaded.doc; invInRerender(); return true;
+  if (fromConfirm) return res;   /* 「この内容で反映する」：保存した版（res.version）と読み直した版を比べる */
+  _invIn.edits = null; delete _invIn.loaded.doc; invInRerender(); return res;
 }
 /* 「この内容で反映する」：直した値があれば先に保存し、読み直して、まだ直すところ・確かめるところが無ければ反映する */
 async function invInConfirm(){
   var G = _invIn.doc; if (!G || _invIn.busy) return; var d = G.doc, E = _invIn.edits || {};
   if (invInHasEdits()) {
     var keep = { reason:E.reason||'', ack:E.ack||{}, adj:!!E.adj, sup:E.sup||'', dupOf:E.dupOf||'' };
-    if (!(await invInSave(true))) return;
+    var saved = await invInSave(true); if (!saved) return;
     try { await invInLoadDoc(); } catch(err) { showToast(String(err && err.message || err), 'warning'); delete _invIn.loaded.doc; invInRerender(); return; }
     if (!_invIn.doc || _invIn.doc.doc.id !== d.id || !_invIn.edits) { invInRerender(); return; }
+    /* 保存したあと、読み直すまでにほかの人が直していたら反映しない（見ていない金額を反映しない・Codex R8）。読み直した内容を見てもう一度押してもらう */
+    if (Number(_invIn.doc.doc.version) !== Number(saved.version)) {
+      showToast(t('保存のあとにほかの人がこの invoice を直しました。今の内容を確かめてから、もう一度「この内容で反映する」を押してください','Someone changed this invoice after you saved. Check the current values and press “Post as shown” again'), 'warning');
+      invInRerender(); return;
+    }
     _invIn.edits.reason = keep.reason; _invIn.edits.ack = keep.ack; _invIn.edits.adj = keep.adj; _invIn.edits.sup = keep.sup; _invIn.edits.dupOf = keep.dupOf;
     d = _invIn.doc.doc;
   }
@@ -45195,7 +45202,9 @@ async function invInStoreSave(id){
   var store = { store_id:id, label:label, root_folder_id:root||null, upload_folder_id:up||null, aliases:v('ivst-al').split(/\n+/).map(function(x){ return x.trim(); }).filter(Boolean),
     reviewer:v('ivst-rv')||null, active:!!(document.getElementById('ivst-act')||{}).checked, auto_post:!!(document.getElementById('ivst-auto')||{}).checked,
     address_group:(cur && cur.address_group) || null };
-  try { await invInDo(function(){ return invInAPI({ action:'store_save', store:store }); }, t('保存しました','Saved')); } catch(e) { return; }
+  if (cur && cur.updated_at) store.expect_updated_at = cur.updated_at;   /* 開いたあとにほかの人が保存していたら上書きしない */
+  try { await invInDo(function(){ return invInAPI({ action:'store_save', store:store }); }, t('保存しました','Saved')); }
+  catch(e) { if (e.code==='conflict') { closeModalDirect(); delete _invIn.loaded.config; invInRerender(); } return; }
   closeModalDirect(); delete _invIn.loaded.config; delete _invIn.loaded.health; invInRerender();
 }
 async function invInFolderCheck(apply){
@@ -45257,14 +45266,18 @@ function invInVendorModal(key){
 }
 async function invInVendorSave(key){
   var v = function(k){ return String((document.getElementById(k)||{}).value||'').trim(); };
+  var cur = ((_invIn.config && _invIn.config.vendors) || []).find(function(x){ return x.vendor_key===key; });
   var vendor = { vendor_key:key, display_name:v('ivv-name'), aliases:v('ivv-al').split(/\n+/).map(function(x){ return x.trim(); }).filter(Boolean), food_kind:v('ivv-kind')||null,
     auto_post:!!(document.getElementById('ivv-auto')||{}).checked };
+  if (cur && cur.updated_at) vendor.expect_updated_at = cur.updated_at;   /* 開いたあとに保存・名前の学習があれば上書きしない */
   if (!vendor.display_name) { showToast(invInL(INVIN_ERR.bad_value), 'warning'); return; }
-  try { await invInDo(function(){ return invInAPI({ action:'vendor_save', vendor:vendor }); }, t('保存しました','Saved')); } catch(e) { return; }
+  try { await invInDo(function(){ return invInAPI({ action:'vendor_save', vendor:vendor }); }, t('保存しました','Saved')); }
+  catch(e) { if (e.code==='conflict') { closeModalDirect(); delete _invIn.loaded.config; invInRerender(); } return; }
   closeModalDirect(); delete _invIn.loaded.config; invInRerender();
 }
 /* v1056（UI案36）：業者・店舗の「自動」をその場で切り替える（GM・CEO。サーバーでも役割を確かめる） */
-function invInVendorBody(v, auto){ return { vendor_key:v.vendor_key, display_name:v.display_name, aliases:v.aliases||[], food_kind:v.food_kind||null, auto_post:!!auto }; }
+/* 「自動」の切り替えは自動の印だけを送る（名前・別名・種類はサーバーの今の値のまま。覚えた名前を消さない） */
+function invInVendorBody(v, auto){ return { vendor_key:v.vendor_key, auto_post:!!auto }; }
 async function invInVendorAuto(key, on){
   if (!invInCanAdmin()) return;
   var v = ((_invIn.config && _invIn.config.vendors) || []).find(function(x){ return x.vendor_key===key; }); if (!v) return;
@@ -45303,7 +45316,7 @@ async function invInStoreAutoAllDo(){
   try {
     for (var i = 0; i < list.length; i++) {
       var s = list[i];
-      var store = { store_id:s.store_id, label:s.label, root_folder_id:s.root_folder_id||null, upload_folder_id:s.upload_folder_id||null, aliases:s.aliases||[], address_group:s.address_group||null, reviewer:s.reviewer||null, active:true, auto_post:true };
+      var store = { store_id:s.store_id, auto_post:true };   /* 自動の印だけ（フォルダ・宛名・担当はサーバーの今の値のまま） */
       try { await invInAPI({ action:'store_save', store:store }); ok++; } catch(e) { ng.push(String(e && e.message || e)); }
     }
   } finally { _invIn.busy = false; }

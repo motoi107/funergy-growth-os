@@ -41,7 +41,10 @@ export const REASONS = {
   duplicate_candidate:   ['重複の可能性', 'Possible duplicate'],
   app_duplicate_candidate:['アプリで登録済みの可能性', 'May already be registered in the app'],
   original_replaced:     ['同じファイルの中身が差し替えられた（前の版と見比べる）', 'The file was overwritten with new content (compare with the earlier version)'],
-  line_value_missing:    ['数量・単価が読めない明細（金額は読めた）', 'Line quantity or price missing (amount read)'],
+  // line_value_missing is no longer produced (it also covered an unreadable amount before 2026-10-07). Documents read
+  // earlier may still carry it, so it holds like line_amount_missing (Codex R7) until a correction re-checks the lines.
+  line_value_missing:    ['数量・単価・金額のどれかが読めない明細（前の版の読み取り）', 'Line quantity, price or amount missing (earlier reading)'],
+  line_qty_price_missing:['数量・単価が読めない明細（金額は読めた）', 'Line quantity or price missing (amount read)'],
   line_amount_missing:   ['明細の金額が読めない（合計を明細で確かめられない）', 'Line amount missing (the total cannot be checked against the lines)'],
   line_math:             ['数量×単価が明細金額と一致しない', 'Quantity × price does not equal the line amount'],
   zero_price:            ['単価または金額が 0', 'Zero price or amount'],
@@ -64,7 +67,7 @@ export const REASONS = {
 // Reasons about products and unit prices: shown for reference, never a reason to stop posting (by a person or
 // automatically). The same list is in db/invoice-intake.sql (invoice_post); tests/invoice-rules keeps them equal.
 export const INFO_REASONS = ['unmapped', 'map_ambiguous', 'map_unverified', 'unit_mismatch', 'unit_unverified', 'spec_changed', 'no_price_ref', 'price_jump',
-  'mode_review_item', 'catch_weight', 'line_math', 'zero_price', 'negative_line', 'line_value_missing', 'discount_allocation', 'mixed_tax'];
+  'mode_review_item', 'catch_weight', 'line_math', 'zero_price', 'negative_line', 'line_qty_price_missing', 'discount_allocation', 'mixed_tax'];
 const INFO = new Set(INFO_REASONS);
 export const blocksPosting = reasons => (reasons || []).some(r => !INFO.has(r.code));
 
@@ -233,7 +236,7 @@ export async function evaluate(ext, ctx) {
     // The amount is what accounting checks: a line whose amount cannot be read leaves the total unchecked.
     if (amount === null || ldisc === null) { r.push('line_amount_missing'); lineBad = true; }
     else lineSum += amount;
-    if (qty === null || unit === null) { if (!r.includes('line_amount_missing')) r.push('line_value_missing'); }
+    if (qty === null || unit === null) { if (!r.includes('line_amount_missing')) r.push('line_qty_price_missing'); }
     else if (amount !== null && ldisc !== null) {
       // Catch-weight: priced per a different unit than the quantity, or a printed weight that is not simply the
       // quantity again in the same unit ("15 LB" for 15 LB). Then quantity × price cannot be checked.

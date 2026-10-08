@@ -152,7 +152,7 @@ test('numbers printed with their unit are read; a weight that repeats the quanti
 
   const r = await evaluate(produce(), ctx({ maps: [] }));
   const c = r.reasons.map(x => x.code);
-  for (const bad of ['line_value_missing', 'catch_weight', 'line_math', 'total_mismatch', 'date_missing']) assert.ok(!c.includes(bad), bad + ' ' + JSON.stringify(r.reasons));
+  for (const bad of ['line_value_missing', 'line_qty_price_missing', 'catch_weight', 'line_math', 'total_mismatch', 'date_missing']) assert.ok(!c.includes(bad), bad + ' ' + JSON.stringify(r.reasons));
   assert.ok(c.includes('unmapped'));
   assert.deepEqual(r.lines.map(l => [l.qty, l.purchase_unit, l.unit_price, l.amount_cents]), [['10', 'LB', '2.5', 2500], ['12.3', 'LB', '2.51', 3087], ['4', 'PC', '1.75', 700]]);
   assert.equal(r.header.lines_sum_cents, 6287);
@@ -160,8 +160,8 @@ test('numbers printed with their unit are read; a weight that repeats the quanti
   assert.equal(r.header.invoice_date, '2026-10-06'); assert.equal(r.header.invoice_date_basis, 'delivery'); assert.equal(r.header.effective_date, '2026-10-06');
 
   const codesOf = async mut => { const e = produce(); mut(e); return (await evaluate(e, ctx({ maps: [] }))).reasons.map(x => x.code); };
-  assert.ok((await codesOf(e => { e.lines[0].unit_price = '$2.50/CS'; })).includes('line_value_missing'));           // printed unit disagrees
-  assert.ok((await codesOf(e => { e.lines[0].qty = '10 CS'; })).includes('line_value_missing'));
+  assert.ok((await codesOf(e => { e.lines[0].unit_price = '$2.50/CS'; })).includes('line_qty_price_missing'));           // printed unit disagrees
+  assert.ok((await codesOf(e => { e.lines[0].qty = '10 CS'; })).includes('line_qty_price_missing'));
   assert.ok((await codesOf(e => { e.lines[0].amount = '$25.00/LB'; })).includes('line_amount_missing'));            // amounts stay strict
   assert.ok((await codesOf(e => { e.lines[0].weight = '9.8 LB'; })).includes('catch_weight'));                       // a real weight
   assert.ok((await codesOf(e => { e.lines[0].weight = '10 KG'; })).includes('catch_weight'));
@@ -265,7 +265,7 @@ test('the deployable migrations are the same SQL that the tests run', async () =
   const fn = /^create (?:or replace )?function public\.(\w+)\((.*?)^(?:\$\$;|end \$\$;)\n/gms;
   let upgraded = first;
   for (const [file, names] of [['supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', ['invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_folder', 'invoice_qb_candidates', 'invoice_qb_enqueue']],
-    ['supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', ['invoice_price_insert', 'invoice_post', 'invoice_edit']]]) {
+    ['supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', ['invoice_price_insert', 'invoice_post', 'invoice_edit', 'invoice_store_save', 'invoice_vendor_save']]]) {
     const fixes = read(file);
     const replaced = [...fixes.matchAll(fn)].map(m => [m[1], m[0].replace('create or replace function', 'create function')]);
     assert.deepEqual(replaced.map(r => r[0]), names, file);

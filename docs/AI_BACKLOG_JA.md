@@ -1,5 +1,10 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32：R6〜R8 修正済み・Codex の再レビュー待ち
+
+1. Codex：最新 head を再レビュー（`tests/review/invoice-pr32-accounting-repro.mjs` は 3/3 で通る。R6 は DB の invoice_edit の学習と vendor/store_save の部分保存・conflict、R7 は line_value_missing を止める理由に戻し line_qty_price_missing を参考に、R8 は画面の版の照合）。
+2. OK なら Moto さん：`20261007200000`（関数 5 つ）→ postcheck（accounting_checks true）→ 関数 → アプリ v1056 → 実機で確認。
+
 ## 2026-10-07 PR #32 497a444：Codex指摘R6〜R8修正待ち
 
 - 対象`497a444ca2200c9b30b1b142e3104f3e6a6f3b1f`（UI案36/v1056/追加SQL20261007200000）。判定：P1 3件、修正必要。

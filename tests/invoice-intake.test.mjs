@@ -1317,7 +1317,7 @@ test('a produce invoice with units printed on its numbers and only a delivery da
     const id = E.drive.file('produce.jpg', jpg('PRODUCE-1'), 'U6', { mime: 'image/jpeg' });
     await E.worker();
     let [d] = await docsOf(E, id);
-    for (const bad of ['line_value_missing', 'catch_weight', 'line_math', 'total_mismatch', 'date_missing']) assert.ok(!codes(d).includes(bad), bad + ' ' + JSON.stringify(d.reasons));
+    for (const bad of ['line_value_missing', 'line_qty_price_missing', 'catch_weight', 'line_math', 'total_mismatch', 'date_missing']) assert.ok(!codes(d).includes(bad), bad + ' ' + JSON.stringify(d.reasons));
     assert.equal(d.status, 'review');                                   // the store is in review mode here (see above)
     const [dd] = await E.q(`select invoice_date::text i, delivery_date::text v, effective_date::text e from invoice_docs where id=$1`, [d.id]);
     assert.deepEqual(dd, { i: '2026-10-06', v: '2026-10-06', e: '2026-10-06' });
@@ -1458,28 +1458,50 @@ test('UI案36: products and unit prices never hold an invoice; vendor, number, a
       ext.lines[0].qty = '?';
       const { d } = await stage(E, 'U36-QTY', ext);
       assert.equal(d.status, 'review');
-      assert.ok(codes(d).includes('line_value_missing') && codes(d).includes('unmapped') && !codes(d).includes('total_mismatch'), JSON.stringify(d.reasons));
+      assert.ok(codes(d).includes('line_qty_price_missing') && codes(d).includes('unmapped') && !codes(d).includes('total_mismatch'), JSON.stringify(d.reasons));
       const r = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '経理の確認（業者・番号・金額・店舗）' });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.equal(await priceRows(E, d), 0, 'a line without a quantity is not price history');
     } finally { await E.pg.close(); }
   });
 
-  await t.test('a line amount that cannot be read holds the invoice for a person, who can still post it', async () => {
+  await t.test('a line amount that cannot be read holds the invoice; a person posts it only after ticking that the total was checked', async () => {
     const E = await setup();
     try {
       const ext = doc('U36-2', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']]);
       ext.lines[0].amount = '6O.OO';
       const { d } = await stage(E, 'U36-AMOUNT', ext);
       assert.equal(d.status, 'review'); assert.ok(codes(d).includes('line_amount_missing'), JSON.stringify(d.reasons));
-      const r = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '合計は原本で確認' });
+      const no = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '経理の確認' });
+      assert.equal(no.status, 409); assert.match(JSON.stringify(no.body), /blocked:line_amount_missing/);
+      const r = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '合計は原本で確認', ack: ['line_amount_missing'] });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.equal(await priceRows(E, d), 0, 'a line without an amount is not price history');
     } finally { await E.pg.close(); }
   });
 
+  // Codex R7: before 2026-10-07 line_value_missing also meant an unreadable amount. A document read then keeps that code
+  // until it is corrected, so the code holds: never automatic, and a person posts it only after ticking the check.
+  await t.test('a document read earlier with line_value_missing is held like an unreadable amount', async () => {
+    const E = await setup();
+    try {
+      await E.q(`update invoice_stores set auto_post=false`);
+      const { d } = await stage(E, 'U36-LEGACY', doc('U36-6', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']]));
+      await E.q(`update invoice_docs set reasons='[{"code":"line_value_missing","line_no":1}]'::jsonb, auto_eligible=true where id=$1`, [d.id]);
+      await E.q(`update invoice_lines set reasons='["line_value_missing"]'::jsonb, amount_cents=null where doc_id=$1`, [d.id]);
+      await E.q(`update invoice_stores set auto_post=true`);
+      await assert.rejects(E.db.rpc('invoice_post', { doc_id: d.id, version: d.version }), /blocked:line_value_missing|not_eligible/);
+      const no = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '経理の確認' });
+      assert.equal(no.status, 409); assert.match(JSON.stringify(no.body), /blocked:line_value_missing/);
+      const ok = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '合計は原本で確認', ack: ['line_value_missing'] });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      assert.equal(await priceRows(E, d), 0);
+    } finally { await E.pg.close(); }
+  });
+
   await t.test('choosing the vendor for an unknown printed name teaches that name; changing one known vendor to another does not', async () => {
     const E = await setup();
+    await E.q(`update invoice_stores set auto_post=false`);   // keeps the documents in review for the corrections below
     try {
       let { d } = await stage(E, 'U36-NEWV', doc('U36-3', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']], { vendor: 'Hawaii Fish Co.' }));
       assert.ok(codes(d).includes('vendor_unknown'));
@@ -1490,10 +1512,59 @@ test('UI案36: products and unit prices never hold an invoice; vendor, number, a
       assert.equal(d.vendor_key, 'v1'); assert.ok(!codes(d).includes('vendor_unknown'));
       // A known vendor changed to another: nothing is taught (the name would match two vendors).
       ({ d } = await stage(E, 'U36-SWAP', doc('U36-5', '2026-10-05', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']])));
-      if (d.status === 'posted') return;   // nothing to correct when it posted by itself; the rule above is the point
+      assert.equal(d.status, 'review');
       const s2 = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { vendor_key: 'v2' }, reason: '業者違い' });
       assert.equal(s2.status, 200); assert.equal(s2.body.alias_learned, undefined);
       assert.deepEqual((await E.q(`select aliases from invoice_vendor_rules where vendor_key='v2'`))[0].aliases, []);
+    } finally { await E.pg.close(); }
+  });
+
+  // Codex R6: the name is added in the database, in the same transaction as the correction, to the latest vendor row.
+  await t.test('learning a name only appends it to the latest vendor row, and never a name another vendor has in another spelling', async () => {
+    const E = await setup();
+    await E.q(`update invoice_stores set auto_post=false`);
+    try {
+      let { d } = await stage(E, 'U36-LATEST', doc('U36-10', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']], { vendor: 'Kona Produce' }));
+      // Someone stops the vendor and adds a name after this screen was opened.
+      await E.q(`update invoice_vendor_rules set auto_post=false, aliases=aliases || '{Saved meanwhile}'::text[] where vendor_key='v1'`);
+      const r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { vendor_key: 'v1' }, reason: '業者を選んだ' });
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.alias_learned, 'Kona Produce');
+      assert.deepEqual((await E.q(`select aliases, auto_post from invoice_vendor_rules where vendor_key='v1'`))[0],
+        { aliases: ['VENDOR A INC.', 'Saved meanwhile', 'Kona Produce'], auto_post: false });
+      assert.equal((await E.q(`select count(*)::int n from invoice_events where doc_id=$1 and kind='vendor_alias_learned'`, [d.id]))[0].n, 1);
+      // Other vendors already have the name (other case and spacing; two of them, so it matched no vendor): nothing is taught.
+      await E.q(`update invoice_vendor_rules set aliases='{"  maui   FARMS "}' where vendor_key='v2'`);
+      await E.q(`insert into invoice_vendor_rules(vendor_key, display_name, aliases, food_kind, auto_post) values ('v3', 'VendorC', '{"MAUI FARMS"}', 'food', false)`);
+      ({ d } = await stage(E, 'U36-TAKEN', doc('U36-11', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']], { vendor: 'Maui Farms' })));
+      assert.equal(d.vendor_key, null); assert.ok(codes(d).includes('vendor_unknown'));
+      const r2 = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { vendor_key: 'v1' }, reason: '業者を選んだ' });
+      assert.equal(r2.status, 200, JSON.stringify(r2.body)); assert.equal(r2.body.alias_learned, undefined);
+      assert.ok(!(await E.q(`select aliases from invoice_vendor_rules where vendor_key='v1'`))[0].aliases.includes('Maui Farms'));
+    } finally { await E.pg.close(); }
+  });
+
+  await t.test('a vendor or store switch changes only the switch, and a screen that read an older row cannot overwrite a newer save', async () => {
+    const E = await setup();
+    try {
+      const v0 = (await E.q(`select to_jsonb(v) j from invoice_vendor_rules v where vendor_key='v1'`))[0].j;
+      await E.q(`update invoice_vendor_rules set aliases=aliases || '{Learned name}'::text[], updated_at=now() + interval '1 second' where vendor_key='v1'`);
+      const sw = await E.api('tok-gm', { action: 'vendor_save', vendor: { vendor_key: 'v1', auto_post: false } });
+      assert.equal(sw.status, 200, JSON.stringify(sw.body));
+      assert.deepEqual((await E.q(`select aliases, auto_post, food_kind, display_name from invoice_vendor_rules where vendor_key='v1'`))[0],
+        { aliases: ['VENDOR A INC.', 'Learned name'], auto_post: false, food_kind: 'food', display_name: 'VendorA' });
+      const stale = await E.api('tok-gm', { action: 'vendor_save', vendor: { vendor_key: 'v1', display_name: 'VendorA', aliases: v0.aliases, food_kind: 'food', auto_post: true, expect_updated_at: v0.updated_at } });
+      assert.equal(stale.status, 409, JSON.stringify(stale.body));
+      assert.ok((await E.q(`select aliases from invoice_vendor_rules where vendor_key='v1'`))[0].aliases.includes('Learned name'));
+      assert.equal((await E.api('tok-office', { action: 'vendor_save', vendor: { vendor_key: 'v1', auto_post: true } })).status, 403, 'office cannot switch a stopped vendor on');
+      assert.equal((await E.api('tok-gm', { action: 'vendor_save', vendor: { vendor_key: 'v1', surprise: 1 } })).status, 400);
+      const s0 = (await E.q(`select to_jsonb(s) j from invoice_stores s where store_id='F06'`))[0].j;
+      await E.q(`update invoice_stores set reviewer='Newer reviewer', updated_at=now() + interval '1 second' where store_id='F06'`);
+      assert.equal((await E.api('tok-gm', { action: 'store_save', store: { store_id: 'F06', auto_post: false } })).status, 200);
+      const st = (await E.q(`select auto_post, reviewer, upload_folder_id, aliases from invoice_stores where store_id='F06'`))[0];
+      assert.deepEqual({ auto: st.auto_post, reviewer: st.reviewer, up: st.upload_folder_id, al: st.aliases }, { auto: false, reviewer: 'Newer reviewer', up: s0.upload_folder_id, al: s0.aliases });
+      const staleStore = await E.api('tok-gm', { action: 'store_save', store: { ...Object.fromEntries(['store_id', 'label', 'root_folder_id', 'upload_folder_id', 'active', 'auto_post', 'aliases', 'address_group', 'reviewer'].map(k => [k, s0[k]])), expect_updated_at: s0.updated_at } });
+      assert.equal(staleStore.status, 409, JSON.stringify(staleStore.body));
+      assert.equal((await E.q(`select reviewer from invoice_stores where store_id='F06'`))[0].reviewer, 'Newer reviewer');
     } finally { await E.pg.close(); }
   });
 

@@ -1,5 +1,16 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex の指摘 R6〜R8（497a444）を修正（Claude・Codex の再レビューはまだ）
+
+- 対象：Codex のレビュー（497a444・下の節）。この記録は承認ではない。UI案36（経理は 4 項目だけ確かめる）の方針は変えていない。
+- R6：業者名の学習をアプリの関数から DB の `invoice_edit` の中へ移した（訂正と同じトランザクション）。`learn_alias` の印だけを受け取り、DB が鍵（`pg_advisory_xact_lock`）を取って、最新の業者の行に印字名を 1 つ足すだけ（自動の印・ほかの名前・種類は触らない）。名前の重なりの判定も同じトランザクションで、dedupe.mjs の aliasKey と同じ正規化（NFKC・小文字・空白）。イベント `vendor_alias_learned`。あわせて `invoice_vendor_save`・`invoice_store_save` を、送った項目だけを変える形にし（設定の「自動」の切り替えは自動の印だけを送る）、編集画面は開いたときの `updated_at` を送って、そのあとにほかの保存・学習があれば 409 conflict（古い画面で上書きしない）。業者の保存も同じ鍵を取る。
+- R7：古い読み取りの `line_value_missing`（金額が読めない場合も含む）は参考に入れない。数量・単価だけが読めない新しい理由は `line_qty_price_missing`（参考）にした。`line_value_missing` は `line_amount_missing` と同じく止める理由で、人の反映は「原本で確かめた」（ack）のあとだけ（`line_amount_missing` も同じにした）。どちらも価格の履歴に入らない。データの書き換えはしない（古い関数が残る配備の途中に入った記録も守れる）。訂正すると今のルールで付け直す。
+- R8：「この内容で反映する」は、保存の応答の版と読み直した版が違えば反映しない（新しい内容を出して、もう一度押してもらう）。反映はその人が保存して見た版でだけ送る。
+- 追加の SQL `20261007200000` は関数 5 つ（invoice_price_insert・invoice_post・invoice_edit・invoice_store_save・invoice_vendor_save）。postcheck の accounting_checks は 5 つすべてを見る。`db/invoice-intake.sql` は 3 つの migration を重ねたものと 1 文字も違わない（試験）。
+- 試験（合成データ）：Codex の再現 `tests/review/invoice-pr32-accounting-repro.mjs` 3/3。関連 113/113（rules 15・adapters 5・intake 68・ui 7・`tests/review/*.mjs` 18）・`INVOICE_REVIEW_UPGRADE=1` 2/2・mutations 58/58（守り 58 か所。57 か所は全件の実行で、C5 の 1 か所は目印を今の SQL に合わせたあと単独で実行）・`deno bundle` の 1 ファイルで結合 68/68、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403・static release v1056。handoff：verify_v1056 84/84・本物の画面 check_invin_v1056 85/85・pageerror 0。自分で足した試験：古い line_value_missing は自動にならず ack が要る／明細の金額が読めない invoice は ack が要る／学習は最新の行に足すだけ（同時に止めた業者は止まったまま・あとで足した名前も残る）・別の綴りでほかの業者が持つ名前は覚えない／切り替えは印だけ・古い画面の保存は 409（業者・店舗）／画面：保存後に版が変わったら送らない。
+- 本番：何も入れていない。入れる順番は変わらない（SQL → postcheck（accounting_checks true）→ 関数 → v1056）。
+- 次：Codex が最新 head を再レビュー → OK なら Moto さんが入れる。
+
 ## 2026-10-07 Codex レビュー：PR #32 497a444（UI案36・修正必要）
 
 - 担当：Codex（Claudeの実装から独立）。対象：`497a444ca2200c9b30b1b142e3104f3e6a6f3b1f`。UI案36・アプリv1056・追加SQL `20261007200000`。

@@ -37,5 +37,10 @@ select
   -- Accounting checks only vendor, number, amount and store (UI案36, 20261007200000): products and prices are for reference.
   coalesce((select bool_and(p.prosrc like '%line_amount_missing%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname = 'invoice_price_insert')
-    and (select bool_and(p.prosrc like '%info text[]%' and p.prosrc not like '%''line_math'',''total_mismatch''%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.proname = 'invoice_post'), false) as accounting_checks;
+    and (select bool_and(p.prosrc like '%info text[]%' and p.prosrc like '%line_qty_price_missing%' and p.prosrc not like '%''line_math'',''total_mismatch''%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'invoice_post')
+    -- Names are learned in the database with the correction; a switch changes only the switch (Codex R6–R8 fixes).
+    and (select bool_and(p.prosrc like '%learn_alias%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'invoice_edit')
+    and (select count(*) = 2 and bool_and(p.prosrc like '%expect_updated_at%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname in ('invoice_vendor_save', 'invoice_store_save')), false) as accounting_checks;

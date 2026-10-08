@@ -545,7 +545,7 @@ begin
  if d.doc_type<>'invoice' or l.id is null or l.ingredient_code is null or l.price_per_purchase is null or d.effective_date is null then return false; end if;
  select * into im from public.invoice_item_maps where id=l.map_id and verified and vendor_key=d.vendor_key and (store_id is null or store_id=d.store_id);
  if im.id is null or im.ingredient_code<>l.ingredient_code then return false; end if;
- if l.reasons ?| array['catch_weight','line_math','zero_price','negative_line','line_value_missing','line_amount_missing','unit_mismatch','unit_unverified','spec_changed','map_ambiguous','unmapped'] then return false; end if;
+ if l.reasons ?| array['catch_weight','line_math','zero_price','negative_line','line_value_missing','line_qty_price_missing','line_amount_missing','unit_mismatch','unit_unverified','spec_changed','map_ambiguous','unmapped'] then return false; end if;
  insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, spec_key, purchase_unit, doc_id, line_id, effective_date,
   effective_basis, invoice_date, invoice_no_norm, price_per_purchase, price_per_count, count_unit, price_per_base, base_unit, conversion, created_by, reason)
  values(d.store_id, d.vendor_key, l.ingredient_code, coalesce(nullif(im.spec_key,''), l.spec_key, ''), coalesce(nullif(im.purchase_unit,''), l.purchase_unit, ''),
@@ -565,8 +565,10 @@ declare d public.invoice_docs; old public.invoice_docs; actor uuid := nullif(p->
  must_fix text[] := array['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
  info text[] := array['unmapped','map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed','no_price_ref','price_jump',
-  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_value_missing','discount_allocation','mixed_tax'];
- may_ack text[] := array['total_mismatch','original_replaced'];
+  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax'];
+ -- A line amount that cannot be read leaves the total unchecked: posted only when the person checked it against the
+ -- original. line_value_missing is the code documents read before 2026-10-07 carry for the same case (Codex R7).
+ may_ack text[] := array['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];
 begin
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null then raise exception 'not_found'; end if;
@@ -642,8 +644,9 @@ declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; e jso
  -- are kept for reference only: they never stop posting (info), and a line that cannot be matched is not price history.
  must_fix text[] := array['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
- may_ack text[] := array['total_mismatch'];
+ may_ack text[] := array['total_mismatch','line_amount_missing','line_value_missing'];
  ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}'); blocking text;
+ learned text; akey text;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office']);
  if length(coalesce(p->>'reason','')) = 0 then raise exception 'reason_required'; end if;
@@ -736,7 +739,23 @@ begin
  end if;
  -- Every earlier value is kept in the event log, so repeated corrections never lose history.
  perform public.invoice_event(d.id, d.file_id, actor::text, 'edited', jsonb_build_object('changes', chg, 'reason', p->>'reason'));
- return jsonb_build_object('ok', true, 'version', d.version + 1);
+ -- A person picked the vendor for a printed name that matched no vendor: teach that name, in this transaction, on the
+ -- latest vendor row. Only the name is appended (the vendor's switches and other names stay as they are now), and only
+ -- when no vendor has the name yet (same normalisation as invoice/dedupe.mjs aliasKey), so a name never becomes ambiguous.
+ akey := nullif(btrim(regexp_replace(lower(normalize(coalesce(d.vendor_raw,''), NFKC)), '\s+', ' ', 'g')), '');
+ if coalesce((p->>'learn_alias')::boolean,false) and d.vendor_key is null and akey is not null
+    and coalesce(p->'header'->>'vendor_key','') <> '' then
+  perform pg_advisory_xact_lock(hashtext('invoice_vendor_rules'));
+  if not exists(select 1 from public.invoice_vendor_rules v, unnest(array[v.display_name] || v.aliases) a(name)
+                where nullif(btrim(regexp_replace(lower(normalize(a.name, NFKC)), '\s+', ' ', 'g')), '') = akey) then
+   update public.invoice_vendor_rules set aliases=aliases || d.vendor_raw, updated_at=now() where vendor_key=p->'header'->>'vendor_key';
+   if found then
+    learned := d.vendor_raw;
+    perform public.invoice_event(d.id, d.file_id, actor::text, 'vendor_alias_learned', jsonb_build_object('vendor_key', p->'header'->>'vendor_key', 'alias', learned));
+   end if;
+  end if;
+ end if;
+ return jsonb_build_object('ok', true, 'version', d.version + 1) || case when learned is not null then jsonb_build_object('alias_learned', learned) else '{}'::jsonb end;
 end $$;
 
 create function public.invoice_mark(p jsonb) returns jsonb
@@ -1031,33 +1050,68 @@ end $$;
 
 create function public.invoice_store_save(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare actor uuid := nullif(p->>'actor','')::uuid; s jsonb := p->'store';
+declare actor uuid := nullif(p->>'actor','')::uuid; s jsonb := p->'store'; cur public.invoice_stores;
+ k text; known text[] := array['store_id','label','root_folder_id','upload_folder_id','active','auto_post','aliases','address_group','reviewer','expect_updated_at'];
 begin
  perform public.invoice_require(actor, array['ceo','gm']);
  if coalesce(s->>'store_id','') !~ '^[A-Za-z0-9_-]{1,24}$' then raise exception 'bad_value'; end if;
- insert into public.invoice_stores(store_id, label, root_folder_id, upload_folder_id, active, auto_post, aliases, address_group, reviewer, updated_by)
- values(s->>'store_id', s->>'label', s->>'root_folder_id', s->>'upload_folder_id', coalesce((s->>'active')::boolean,false),
-  coalesce((s->>'auto_post')::boolean,false), coalesce(array(select jsonb_array_elements_text(s->'aliases')),'{}'), s->>'address_group', s->>'reviewer', actor::text)
- on conflict(store_id) do update set label=excluded.label, root_folder_id=excluded.root_folder_id, upload_folder_id=excluded.upload_folder_id,
-  active=excluded.active, auto_post=excluded.auto_post, aliases=excluded.aliases, address_group=excluded.address_group, reviewer=excluded.reviewer,
-  updated_at=now(), updated_by=excluded.updated_by;
+ for k in select jsonb_object_keys(s) loop if not (k = any(known)) then raise exception 'bad_value'; end if; end loop;
+ select * into cur from public.invoice_stores where store_id=s->>'store_id' for update;
+ -- A screen sends the time it read the store; if someone saved it since, nothing is overwritten.
+ if s ? 'expect_updated_at' and (cur.store_id is null or cur.updated_at is distinct from (s->>'expect_updated_at')::timestamptz) then raise exception 'conflict'; end if;
+ if cur.store_id is null then
+  insert into public.invoice_stores(store_id, label, root_folder_id, upload_folder_id, active, auto_post, aliases, address_group, reviewer, updated_by)
+  values(s->>'store_id', s->>'label', s->>'root_folder_id', s->>'upload_folder_id', coalesce((s->>'active')::boolean,false),
+   coalesce((s->>'auto_post')::boolean,false), coalesce(array(select jsonb_array_elements_text(s->'aliases')),'{}'), s->>'address_group', s->>'reviewer', actor::text);
+ else
+  -- Only the keys that were sent change (a switch on its own leaves the folders, names and reviewer as they are now).
+  update public.invoice_stores x set
+   label=case when s ? 'label' then s->>'label' else x.label end,
+   root_folder_id=case when s ? 'root_folder_id' then s->>'root_folder_id' else x.root_folder_id end,
+   upload_folder_id=case when s ? 'upload_folder_id' then s->>'upload_folder_id' else x.upload_folder_id end,
+   active=case when s ? 'active' then coalesce((s->>'active')::boolean,false) else x.active end,
+   auto_post=case when s ? 'auto_post' then coalesce((s->>'auto_post')::boolean,false) else x.auto_post end,
+   aliases=case when s ? 'aliases' then coalesce(array(select jsonb_array_elements_text(s->'aliases')),'{}') else x.aliases end,
+   address_group=case when s ? 'address_group' then s->>'address_group' else x.address_group end,
+   reviewer=case when s ? 'reviewer' then s->>'reviewer' else x.reviewer end,
+   updated_at=now(), updated_by=actor::text
+  where x.store_id=cur.store_id;
+ end if;
  perform public.invoice_event(null, null, actor::text, 'store_saved', s);
  return (select to_jsonb(x) from public.invoice_stores x where store_id=s->>'store_id');
 end $$;
 
 create function public.invoice_vendor_save(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare actor uuid := nullif(p->>'actor','')::uuid; v jsonb := p->'vendor';
+declare actor uuid := nullif(p->>'actor','')::uuid; v jsonb := p->'vendor'; cur public.invoice_vendor_rules;
+ k text; known text[] := array['vendor_key','display_name','aliases','food_kind','auto_post','expect_updated_at'];
 begin
  perform public.invoice_require(actor, array['ceo','gm','office']);
- if coalesce(v->>'vendor_key','') !~ '^[A-Za-z0-9_.:@-]{1,80}$' or length(coalesce(v->>'display_name','')) = 0 then raise exception 'bad_value'; end if;
+ if coalesce(v->>'vendor_key','') !~ '^[A-Za-z0-9_.:@-]{1,80}$' then raise exception 'bad_value'; end if;
+ if v ? 'display_name' and length(coalesce(v->>'display_name','')) = 0 then raise exception 'bad_value'; end if;
+ for k in select jsonb_object_keys(v) loop if not (k = any(known)) then raise exception 'bad_value'; end if; end loop;
+ -- One writer at a time with the alias learning in invoice_edit (no name is taught twice or lost between a read and a write).
+ perform pg_advisory_xact_lock(hashtext('invoice_vendor_rules'));
+ select * into cur from public.invoice_vendor_rules where vendor_key=v->>'vendor_key' for update;
+ -- A screen sends the time it read the vendor; if someone saved it since (or a name was learned), nothing is overwritten.
+ if v ? 'expect_updated_at' and (cur.vendor_key is null or cur.updated_at is distinct from (v->>'expect_updated_at')::timestamptz) then raise exception 'conflict'; end if;
  if coalesce((v->>'auto_post')::boolean,false) and public.invoice_actor_role(actor) not in ('ceo','gm')
-    and not coalesce((select auto_post from public.invoice_vendor_rules where vendor_key=v->>'vendor_key'), false) then raise exception 'forbidden'; end if;
- insert into public.invoice_vendor_rules(vendor_key, display_name, aliases, food_kind, auto_post, verified_by, verified_at)
- values(v->>'vendor_key', v->>'display_name', coalesce(array(select jsonb_array_elements_text(v->'aliases')),'{}'), v->>'food_kind',
-  coalesce((v->>'auto_post')::boolean,false), actor::text, now())
- on conflict(vendor_key) do update set display_name=excluded.display_name, aliases=excluded.aliases, food_kind=excluded.food_kind,
-  auto_post=excluded.auto_post, verified_by=excluded.verified_by, verified_at=excluded.verified_at, updated_at=now();
+    and not coalesce(cur.auto_post, false) then raise exception 'forbidden'; end if;
+ if cur.vendor_key is null then
+  if length(coalesce(v->>'display_name','')) = 0 then raise exception 'bad_value'; end if;
+  insert into public.invoice_vendor_rules(vendor_key, display_name, aliases, food_kind, auto_post, verified_by, verified_at)
+  values(v->>'vendor_key', v->>'display_name', coalesce(array(select jsonb_array_elements_text(v->'aliases')),'{}'), v->>'food_kind',
+   coalesce((v->>'auto_post')::boolean,false), actor::text, now());
+ else
+  -- Only the keys that were sent change (a switch on its own leaves the names and the kind as they are now).
+  update public.invoice_vendor_rules x set
+   display_name=case when v ? 'display_name' then v->>'display_name' else x.display_name end,
+   aliases=case when v ? 'aliases' then coalesce(array(select jsonb_array_elements_text(v->'aliases')),'{}') else x.aliases end,
+   food_kind=case when v ? 'food_kind' then v->>'food_kind' else x.food_kind end,
+   auto_post=case when v ? 'auto_post' then coalesce((v->>'auto_post')::boolean,false) else x.auto_post end,
+   verified_by=actor::text, verified_at=now(), updated_at=now()
+  where x.vendor_key=cur.vendor_key;
+ end if;
  perform public.invoice_event(null, null, actor::text, 'vendor_saved', v);
  return (select to_jsonb(x) from public.invoice_vendor_rules x where vendor_key=v->>'vendor_key');
 end $$;
