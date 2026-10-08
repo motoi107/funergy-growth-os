@@ -1,5 +1,26 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 夜：勤務時間の「計」が Tip の対象時間で出ていた（Claude・アプリ v1057・PR #33・Codex のレビューはまだ・本番未反映）
+
+- 報告：Moto さん 10/7 18:27 HST「勤務時間の計算が違う理由はなんですか？ 至急解決したい まず原因を知りたい」。LaLa のスタッフのマイページ「今月の勤怠記録」で、10/1 17:08〜0:11（実働 7.05h）と 10/2 17:24〜0:24（実働 7.0h）がどちらも 6.5h。
+- 原因：マイページなど 6 か所が、打刻の時間（`rawLunch`＋`rawDinner`）ではなく Tip の対象時間（`lunch`＋`dinner`、`getTipLabor` で窓に切ったもの）を足していた。Tip 対象時間が「営業時間のみ」の店は窓の外が抜ける。LaLa の窓はディナー 17:30〜0:00 と推定（写真の 2 日がどちらもちょうど 6.5h になるのはこの窓だけ。本番の設定は Claude からは見えない）。Labor の共通コア `_laborHrs`・人件費・本部シフトインの出力は前から実働で数えている。
+- Moto さんの決定（18:3x HST）：直す（v1057）。**LaLa の Tip 対象時間が 0:00 までなのは意図どおり**（0:00 以降の勤務は Tip の対象外のまま）。
+- v1057（ブランチ `claude/attendance-actual-hours`・PR #33・head `32f7089`・main `1e5c505` が土台）：`renderMypage`（今月の勤怠記録）・`cyclePayHours`（給与予定）・`actualHoursForDate`（照合の「30分以上差異」）・`laborBreakdownForPeriod`（1 日だけ）・`sumWeekStats`（週の比較）・`unregisteredClockIns` の 1 行ずつを `_laborHrs(e)` に。Tip の時間・配分・Labor の共通コア・同期・保存キーは変えていない。index md5 `45db00bd…`・sw `57df6cd0…`（SW_BUILD 1057）。SQL・Edge Function の変更なし。
+- 試験（合成データ・本番データ不使用）：`tests/attendance-hours.test.mjs` 5/5（v1056 では 1/5）。`node --test tests/*.test.mjs` は 143/170・27 失敗だが **main（v1056）でもファイルごとに同じ数**（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4。今回とは無関係）。static release pass/v1057。handoff 側：`verify_v1057` 48/48（変えた関数は 6 本・戻すと v1056 と同じ・ほかの 4,923 関数は同じ）、本物の画面 `render/check_hours_v1057.py` 12/12・pageerror 0（v1056 で 6.5h・6.5h を再現 → v1057 で 7.0h・7.0h・計 14.1h、給与予定 13h → 14.05h、照合 6.5h → 7.05h、Tip の時間は両方の版で 6.5h、英語も同じ）。handoff の `run_all`（v1057 まで）本物の FAIL 0・欠落 13 本。
+- 気をつけること：照合は実働で比べるので、営業時間のみの店の誤った「30分以上差異」は消える。「勤怠時間すべて」の店は 9/16 以降は数字が変わらない（9/15 以前の 0 時をまたいだ日は少し大きく出る）。手動修正の日は Labor の共通コアと同じ `_laborHrs`＝打刻と修正値の大きいほう（修正で**減らした**時間は Labor 集計にもマイページにも出ない。前からの共通コアの動き・別件）。
+- Tip 対象時間の設定（`tip_hours_config`）は日付を持たず、過去の日の Tip の計算にもさかのぼって効く。勤務時間を直す目的で設定を変えないこと（Moto さんにも伝えた）。
+- 次：Codex が PR #33 をレビュー（Moto さんが急ぐなら先にマージしてもよいかは Moto さんの判断）→ マージで公開 → 実機でマイページの「計」を確認。PR #33 のあとに PR #32 をマージするときは `index.html`・`sw.js` の版の行がぶつかるので main（v1057）側を採る。
+
+## 2026-10-07 夜：UI案36 と hyper-worker v1056 を本番に入れた（Moto さん）・実機確認待ち
+
+- Moto さんの回答（18:2x HST）：UI案36 の一式を `1_追加のSQL`（`20261007200000`）→ `2_確認のSQL`（postcheck）→ 関数 `invoice-intake`（0a1daa7 の 1 ファイル）→ アプリ v1056 の順で全部入れた。hyper-worker v1056 も入れて、Aiea の 9/5 を取り込み直した（結果の詳しい報告・accounting_checks の値・全店 9/1〜昨日の取り直しは確認待ち）。
+- Claude が確かめたこと：main `1e5c505`（17:51 HST）の index・sw が v1056（md5 `7a477ba6…`・`e9e0df5b…`）と一致。関数 `invoice-intake` は鍵なしの GET に 405（18:2x HST。その直前の 1 回は 404 で、配備の切り替え中だったと思われる）。DB の中身は Claude からは見えない。
+- 念のため確かめたこと（合成データ・PGlite）：アプリ v1056 が古い SQL（`20261007160000` まで）に「自動」の部分保存を送っても、店舗は label の NOT NULL、業者は bad_value で止まり、フォルダ・宛名・業者名は何も変わらない（配備の順番を間違えてもデータは壊れない）。
+- hyper-worker v1056 は Codex のレビューを受けないまま本番に入った（小さな修正。レビューは引き続き任意）。本体はこのリポジトリに無い。
+- **セキュリティ（新しく確かめた事実）**：hyper-worker は鍵も apikey も付けない GET に Toast の店舗一覧（店名・住所・ID）を返した＝Verify JWT は OFF で、関数の中でも呼び出し元を確かめていない（SECURITY_IMPACT_v1023 ③・HANDOFF_v1032 §1 の懸念が本番で当たっている。v961 から）。ソースでは同じ口で取込の実行（cronSync）や勤怠の取得も鍵なしで呼べる作り（本番では試していない。GET を 1 回送っただけで、何も書いていない）。直すには呼び出し元の確認（アプリのログイン・cron の鍵）を足し、アプリ側の呼び出しも合わせる。ChatGPT 側と調整が要る。
+- handoff の再現：rebuild（md5 照合）成功・`run_all` 本物の FAIL 0・欠落 13 本。リポジトリ：関連 116/116（rules 15・adapters 5・intake 68・ui 7・`tests/review/*.mjs` 21）・`INVOICE_REVIEW_UPGRADE=1` 2/2・static release v1056 pass。
+- 次：Moto さんの実機確認（要確認の 4 項目の表・まとめて反映を 1〜2 件・1 件の画面・設定の「自動」・スマホ）、LaLa の Drive フォルダ（10/8 朝）、自動反映を ON にする時期（Moto さん）。
+
 ## 2026-10-07 別件：Toast 取込（hyper-worker）の「integer に小数」エラーの修正（Claude・Codex のレビューはまだ・本番未反映）
 
 - 報告：Moto さん 10/7 15:46 HST。Aiea の「期間一括取り込み」で 2026/09/05 が「DB保存エラー: invalid input syntax for type integer: "61.000000000000014"」。指示「先に修正してください」（invoice の作業とは別）。
