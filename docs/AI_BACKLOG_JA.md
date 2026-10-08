@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-08 店舗フォルダの直下も読む（`cb2f6e5`）
+
+1. 済（Claude）：実装と試験（関連 117/117・mutation 4/4・bundle 69/69）。配備の一式（SQL・確認の SQL・1 ファイルの関数・手順）を Moto さんに渡す。
+2. Codex：`cb2f6e5` をレビュー（`invoice/drive.mjs`・`handler.mjs` の scanStore と organizeOne・`invoice_file_seen`・試験）。
+3. Moto さん：SQL → 確認の SQL（store_folder_intake true）→ 関数 → 要確認に 10/7 以降の直下の invoice が出るか。
+4. 候補：店舗の画面の案内・設定の文言（00_Upload だけと読める）を直すか（UI 案から）。
+
 ## 2026-10-07 夜：勤務時間の「計」（v1057・PR #33）
 
 1. 済（Claude）：原因の特定（Tip の対象時間を勤務時間として足していた 6 か所）と修正 v1057。合成データで 5/5・本物の画面 12/12。

@@ -1,5 +1,16 @@
 # Claude / Codex 共通記録
 
+## 2026-10-08 店舗フォルダの直下（00_Upload の手前）に置いた invoice も読む（Claude・`cb2f6e5`・Codex のレビューはまだ・本番未反映）
+
+- 依頼：Moto さん 10/8 09:22 HST、Totoya Aiea の店舗フォルダの画面（直下に「Scanned Oct 7, 2026…」の PDF、ほかに「ここにUpしないで○月 2026 Uploaded」のフォルダ）を見せて「00_Upload のフォルダの手前のところにみんなアップしたいんだけど、どちらのフォルダでも良いように設定変更してください」。
+- 調べたこと：設定ではできない。ワーカーは `upload_folder_id`（00_Upload）だけを一覧し、`invoice_file_seen` も 00_Upload の ID でしか店舗を引かない。10/7 から店舗フォルダの直下に置かれた invoice は読まれていなかった。
+- Claude が決めて Moto さんに伝えたこと（09:3x HST）：直下も読む／直下の原本は動かさない（「ここにUpしないで○月 Uploaded」へ移す今の運用が店舗フォルダを使う）／開始日時（10/7 09:40）より後に置かれたものだけ／中のフォルダは読まない。加えて、アプリが Drive に保存した PDF（アプリの記録の `driveFileId`）は読まない（二重を防ぐ。アプリの業者 invoice は drive-sync で「Unregistered」へ行く作りで、店舗フォルダには来ない見込みだが、drive-sync の本文は手元に無いので念のため）。
+- 実装：`invoice/drive.mjs` の `listFolder` に `createdAfter`（ISO の時刻だけ受ける・クエリには adapter が作った ISO を入れる）。`handler.mjs` の `scanStore` は 00_Upload のあと店舗フォルダを `createdTime >= start_at` で一覧し、開始日時が空なら読まない。`organizeOne` は親が店舗フォルダの原本を動かさず「整理済み・置き場所は店舗フォルダ」と記録。SQL `20261008090000_invoice_intake_store_folder.sql`＝`invoice_file_seen` 1 つの差し替え（店舗フォルダの ID でも店舗を引く・新しいファイルは開始日時より前なら `before_start` で記録しない）。postcheck に `store_folder_intake`。
+- 試験（合成データ・本番データ不使用）：関連 117/117（新しい結合試験 1 件は 0a1daa7 のコードでは落ちる）・`INVOICE_REVIEW_UPGRADE=1` 2/2・追加した mutation 4 件（直下を読まない／直下の原本を動かす／アプリが保存した PDF を読む／DB の開始日時の確認を外す）はすべて試験が気づく・`deno bundle` の 1 ファイル（md5 `65feb12f…`）は外からの import 無し・配備済み 0a1daa7 の bundle との差は今回の変更だけ（diff）・handler を bundle に置き換えた結合 69/69・起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403。本番と同じ順で 3 つの migration に重ねて 2 回流しても通り、postcheck は store_folder_intake true（ほかの値も変わらない）。mutation の全件は今回は回していない。
+- 入れ方（Moto さん）：`1_追加のSQL.sql`（＝migration）→ `2_確認のSQL.sql`（store_folder_intake true）→ 関数 `invoice-intake` を `3_関数_index.ts` に差し替え。アプリの変更なし。戻すときは関数だけ前の版に（SQL は前の関数とも合う）。
+- 気をつけること：10/7 09:40 より前に店舗フォルダに置かれたものは読まない（読ませたいときは 00_Upload へ移す）。直下に置かれた古いファイルは記録もしない。店舗の画面の案内（「提出フォルダを開く」）と設定の「この店舗の 00_Upload を取り込む」の文言は変えていない（画面の変更は Moto さんの判断待ち）。
+- 次：Codex のレビュー（任意。急ぐなら先に入れてよいかは Moto さん）→ Moto さんが入れる → 取込状況・要確認に Aiea の 10/7 以降の「Scanned …」が出るか確認。
+
 ## 2026-10-07 夜：勤務時間の「計」が Tip の対象時間で出ていた（Claude・アプリ v1057・PR #33・Codex のレビューはまだ・**本番に反映済み**）
 
 - **反映**：Moto さんが 10/7 19:04 HST に PR #33 をマージ（main `93491e1`）。main の index・sw は v1057（md5 `45db00bd…`・`57df6cd0…`）と一致、「pages build and deployment」と「Growth OS checks」は成功、公開中の sw.js は `SW_BUILD 1057`（Claude が確認）。Codex のレビューはマージのあとになる。実機でのマイページの確認は Moto さん待ち。
