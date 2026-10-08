@@ -1,6 +1,6 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
 -- 対象はこの migration の表 16・関数 65 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 16 / functions 65 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true
+-- 期待：tables 16 / functions 65 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -33,4 +33,9 @@ select
       and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))) as browser_can_run,
   -- The Codex review fixes (2026-10-07) are in: a replaced original is marked when it is read.
   coalesce((select bool_and(p.prosrc like '%original_replaced%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.proname in ('invoice_stage', 'invoice_post', 'invoice_qb_candidates', 'invoice_qb_enqueue')), false) as review_fixes;
+    where n.nspname = 'public' and p.proname in ('invoice_stage', 'invoice_post', 'invoice_qb_candidates', 'invoice_qb_enqueue')), false) as review_fixes,
+  -- Accounting checks only vendor, number, amount and store (UI案36, 20261007200000): products and prices are for reference.
+  coalesce((select bool_and(p.prosrc like '%line_amount_missing%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'invoice_price_insert')
+    and (select bool_and(p.prosrc like '%info text[]%' and p.prosrc not like '%''line_math'',''total_mismatch''%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'invoice_post'), false) as accounting_checks;

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
+const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -38,8 +38,9 @@ const CASES = [
   ['invoice numbers compared as text for the latest price', E2E, [['db/invoice-intake.sql', "h.effective_date desc, h.invoice_date desc nulls last, lpad(h.invoice_no_norm, 40, '0') desc nulls last, h.id desc) x;", 'h.effective_date desc, h.invoice_date desc nulls last, h.invoice_no_norm desc nulls last, h.id desc) x;']]],
   ['auto-post allowed with open reasons (worker and database)', E2E, [
     ['supabase/functions/invoice-intake/handler.mjs', 'if (!st.existed && result.autoEligible && ctx.mode.auto_post && ctx.started)', 'if (!st.existed && ctx.mode.auto_post)'],
-    ['db/invoice-intake.sql', "  if not d.auto_eligible or jsonb_array_length(d.reasons) > 0 or d.doc_type<>'invoice' then raise exception 'not_eligible'; end if;", ''],
-    ['db/invoice-intake.sql', "  if exists(select 1 from public.invoice_lines il left join public.invoice_item_maps im on im.id=il.map_id\n            where il.doc_id=d.id and (im.id is null or not im.verified or not im.auto_post or jsonb_array_length(il.reasons) > 0)) then raise exception 'not_eligible'; end if;", ''],
+    ['db/invoice-intake.sql', "  if not d.auto_eligible or d.doc_type<>'invoice' then raise exception 'not_eligible'; end if;", ''],
+    ['db/invoice-intake.sql', "  if exists(select 1 from jsonb_array_elements(d.reasons) r where not (r->>'code' = any(info))) then raise exception 'not_eligible'; end if;", ''],
+    ['db/invoice-intake.sql', "  if exists(select 1 from public.invoice_lines il, jsonb_array_elements_text(il.reasons) c where il.doc_id=d.id and not (c = any(info))) then raise exception 'not_eligible'; end if;", ''],
     ['db/invoice-intake.sql', "select r->>'code' into blocking from jsonb_array_elements(d.reasons) r where r->>'code' = any(must_fix) limit 1;", 'blocking := null;']]],
   ['unknown QuickBooks results resent automatically', E2E, [['db/invoice-intake.sql', "where state in ('pending','error') and (next_at is null or next_at<=now())", "where state in ('pending','error','unknown') and (next_at is null or next_at<=now())"]]],
   ['QuickBooks route not checked (worker and database)', E2E, [
@@ -96,7 +97,7 @@ const CASES = [
   ['C5: new content in an already-read file is treated as a new invoice', E2E, [['db/invoice-intake.sql',
     "  rs := rs || jsonb_build_array(jsonb_build_object('code', 'original_replaced', 'detail', prior)); auto := false;", "  null;"]]],
   ['C5: a replaced original is posted beside the earlier version without a decision', E2E, [['db/invoice-intake.sql',
-    "may_ack text[] := array['line_math','total_mismatch','original_replaced'];", "may_ack text[] := array['line_math','total_mismatch'];"]]],
+    "may_ack text[] := array['total_mismatch','original_replaced'];", "may_ack text[] := array['total_mismatch'];"]]],
   ['C5: a correction drops the replaced-original warning', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     "['ai_truncated', 'multiple_documents', 'missing_pages', 'original_replaced'].includes(r.code)", "['ai_truncated', 'multiple_documents', 'missing_pages'].includes(r.code)"]]],
   ['a failed reading is stored as the reading', E2E, [['supabase/functions/invoice-intake/handler.mjs',
@@ -115,6 +116,16 @@ const CASES = [
     'result.invoiceDateDerived && h.invoice_date && h.invoice_date !== g.doc.invoice_date', '!g.doc.invoice_date && h.invoice_date']]],
   ['R4: an invoice date saved by a correction follows a later delivery-date correction', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     'if (noPrinted && !saved && (!doc.invoice_date || doc.invoice_date === doc.delivery_date))', 'if (noPrinted && (!doc.invoice_date || doc.invoice_date === doc.delivery_date))']]],
+  // UI案36: accounting checks vendor, number, amount and store; products and prices are for reference.
+  ['a line amount that cannot be read no longer holds the invoice', UNIT, [['invoice/rules.mjs', "if (amount === null || ldisc === null) { r.push('line_amount_missing'); lineBad = true; }", "if (amount === null || ldisc === null) { lineBad = true; }"]]],
+  ['every reason is treated as for reference', UNIT, [['invoice/rules.mjs', 'export const blocksPosting = reasons => (reasons || []).some(r => !INFO.has(r.code));', 'export const blocksPosting = reasons => false;']]],
+  ['the database posts automatically despite a reason accounting checks', E2E, [
+    ['db/invoice-intake.sql', "  if exists(select 1 from jsonb_array_elements(d.reasons) r where not (r->>'code' = any(info))) then raise exception 'not_eligible'; end if;", ''],
+    ['db/invoice-intake.sql', "  if exists(select 1 from public.invoice_lines il, jsonb_array_elements_text(il.reasons) c where il.doc_id=d.id and not (c = any(info))) then raise exception 'not_eligible'; end if;", '']]],
+  ['a vendor name is taught when one known vendor is changed to another', E2E, [
+    ['supabase/functions/invoice-intake/handler.mjs', 'if (header.vendor_key && printed && !g.doc.vendor_key) {', 'if (header.vendor_key && printed) {'],
+    ['supabase/functions/invoice-intake/handler.mjs', 'const taken = ctx.vendors.some(x => names(x).includes(printed));', 'const taken = false;']]],
+  ['a line without a readable amount becomes price history', E2E, [['db/invoice-intake.sql', "'line_value_missing','line_amount_missing','unit_mismatch'", "'line_value_missing','unit_mismatch'"]]],
   ['R2: the price unit read at intake is dropped on a correction', E2E, [['supabase/functions/invoice-intake/handler.mjs', 'price_unit: l.price_unit ?? raw.price_unit,', 'price_unit: raw.price_unit,']]],
   ['R3: the unit printed on the quantity is not used for the mapping', E2E, [['invoice/rules.mjs', 'unit: qtyUnit, pack: l.pack, raw_name: l.description }', 'unit: l.unit, pack: l.pack, raw_name: l.description }']]],
 ];
@@ -122,7 +133,10 @@ const CASES = [
 test('every protection is covered by a failing test when removed', async (t) => {
   assert.equal(run([], E2E), 0, 'the unmodified end-to-end test must pass');
   assert.equal(run([], UNIT), 0, 'the unmodified unit test must pass');
+  // INVOICE_MUTATION_ONLY=<regex>: run only the matching cases (for checking one protection quickly).
+  const only = process.env.INVOICE_MUTATION_ONLY ? new RegExp(process.env.INVOICE_MUTATION_ONLY) : null;
   for (const [name, file, muts] of CASES) {
+    if (only && !only.test(name)) continue;
     await t.test(name, () => { assert.notEqual(run(muts, file), 0, 'the test did not notice: ' + name); });
   }
 });

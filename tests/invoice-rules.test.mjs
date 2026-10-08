@@ -5,7 +5,7 @@ import { parsePackSpec, unitPrices, convertQty } from '../invoice/units.mjs';
 import { parsePrintedDate, determineDate, hstDate } from '../invoice/dates.mjs';
 import { organizedName, safePart, uniqueName, extensionFor } from '../invoice/naming.mjs';
 import { parseResponse, buildRequest } from '../invoice/extract.mjs';
-import { evaluate, applyDuplicates, findMap, parseWithUnit } from '../invoice/rules.mjs';
+import { evaluate, applyDuplicates, findMap, parseWithUnit, INFO_REASONS } from '../invoice/rules.mjs';
 import { classifyDuplicates, normInvoiceNo, contentSignature } from '../invoice/dedupe.mjs';
 
 test('money is exact: cents and micros, no floating point', () => {
@@ -162,7 +162,7 @@ test('numbers printed with their unit are read; a weight that repeats the quanti
   const codesOf = async mut => { const e = produce(); mut(e); return (await evaluate(e, ctx({ maps: [] }))).reasons.map(x => x.code); };
   assert.ok((await codesOf(e => { e.lines[0].unit_price = '$2.50/CS'; })).includes('line_value_missing'));           // printed unit disagrees
   assert.ok((await codesOf(e => { e.lines[0].qty = '10 CS'; })).includes('line_value_missing'));
-  assert.ok((await codesOf(e => { e.lines[0].amount = '$25.00/LB'; })).includes('line_value_missing'));             // amounts stay strict
+  assert.ok((await codesOf(e => { e.lines[0].amount = '$25.00/LB'; })).includes('line_amount_missing'));            // amounts stay strict
   assert.ok((await codesOf(e => { e.lines[0].weight = '9.8 LB'; })).includes('catch_weight'));                       // a real weight
   assert.ok((await codesOf(e => { e.lines[0].weight = '10 KG'; })).includes('catch_weight'));
   assert.ok((await codesOf(e => { e.lines[0].weight = 'about 10'; })).includes('catch_weight'));
@@ -189,6 +189,43 @@ test('a unit printed on the quantity finds the product; a recheck without the pr
   const g = produce();
   const noFallback = await evaluate(g, ctx({ maps: [], dateFallback: false }));
   assert.ok(noFallback.reasons.some(x => x.code === 'date_missing')); assert.equal(noFallback.header.invoice_date, null);
+});
+
+test('UI案36: accounting checks vendor, number, amount and store; product and price reasons never stop posting', async () => {
+  const run = async (mut, c = ctx()) => { const e = base(); mut(e); return evaluate(e, c); };
+  for (const [label, mut, c] of [
+    ['new product', e => { e.lines[0].item_code = '99999'; e.lines[0].description = 'NEW ITEM'; }],
+    ['price jump', e => { e.lines[0].unit_price = '69.00'; e.lines[0].amount = '207.00'; e.subtotal = '207.00'; e.total = '215.48'; }],
+    ['no earlier price', e => {}, ctx({ priceRef: async () => null })],
+    ['quantity × price', e => { e.lines[0].qty = '4'; }],
+    ['unverified product', e => {}, ctx({ maps: [{ ...map, verified: false, auto_post: false }] })],
+    ['product in review mode', e => {}, ctx({ maps: [{ ...map, auto_post: false }] })],
+    ['unreadable price', e => { e.lines[0].unit_price = 'a.b'; }],
+    ['catch-weight', e => { e.lines[0].weight = '12.35'; e.lines[0].price_unit = 'LB'; }]]) {
+    const r = await run(mut, c);
+    assert.ok(r.reasons.length > 0, label);
+    assert.ok(r.reasons.every(x => INFO_REASONS.includes(x.code)), label + ' ' + JSON.stringify(r.reasons));
+    assert.equal(r.autoEligible, true, label);
+  }
+  for (const [label, mut, c, code] of [
+    ['vendor not in the master', e => { e.vendor_name = 'Vendor B'; }, undefined, 'vendor_unknown'],
+    ['no invoice number', e => { e.invoice_number = null; }, undefined, 'invoice_no_missing'],
+    ['total does not add up', e => { e.total = '188.47'; }, undefined, 'total_mismatch'],
+    ['a line amount cannot be read', e => { e.lines[0].amount = '1.8O'; }, undefined, 'line_amount_missing'],
+    ['another store on the invoice', e => { e.ship_to = 'Totoya Kaimuki 200 Sample Ave'; }, undefined, 'store_mismatch'],
+    ['store in review mode', e => {}, ctx({ store: { ...store, auto_post: false } }), 'mode_review_store'],
+    ['vendor in review mode', e => {}, ctx({ vendors: [{ ...vendor, auto_post: false }] }), 'mode_review_vendor'],
+    ['statement', e => { e.doc_type = 'statement'; }, undefined, 'statement'],
+    ['no line read', e => { e.lines = []; }, undefined, 'no_lines']]) {
+    const r = await run(mut, c);
+    assert.ok(r.reasons.some(x => x.code === code), label + ' ' + JSON.stringify(r.reasons));
+    assert.equal(r.autoEligible, false, label);
+  }
+  // A line whose amount cannot be read leaves the total unchecked, but its quantity and price alone do not.
+  const qp = base(); qp.lines.push({ page: 1, item_code: null, description: 'EXTRA', qty: null, unit: 'CS', unit_price: null, amount: '20.00' });
+  qp.subtotal = '200.00'; qp.total = '208.48';
+  const r = await evaluate(qp, ctx());
+  assert.ok(!r.reasons.some(x => x.code === 'total_mismatch'), JSON.stringify(r.reasons)); assert.equal(r.header.lines_sum_cents, 20000);
 });
 
 test('mapping is exact: similar names are never merged, only this vendor is used, ambiguity is review', () => {
@@ -219,21 +256,37 @@ test('duplicates: same bytes or same content is certain; same number with other 
 });
 
 test('the deployable migrations are the same SQL that the tests run', async () => {
-  // Production got 20261007090000 (2026-10-07). 20261007160000 replaces six functions (Codex review fixes).
-  // Applying the second file's functions onto the first gives exactly db/invoice-intake.sql, which every test runs.
+  // Production got 20261007090000 (2026-10-07). 20261007160000 replaces six functions (Codex review fixes) and
+  // 20261007200000 replaces three (accounting checks only vendor, number, amount and store; UI案36). Applying them in
+  // order onto the first gives exactly db/invoice-intake.sql, which every test runs.
   const fs = await import('node:fs');
   const read = f => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
   const full = read('db/invoice-intake.sql'), first = read('supabase/migrations/20261007090000_invoice_intake.sql');
-  const fixes = read('supabase/migrations/20261007160000_invoice_intake_review_fixes.sql');
   const fn = /^create (?:or replace )?function public\.(\w+)\((.*?)^(?:\$\$;|end \$\$;)\n/gms;
-  const replaced = [...fixes.matchAll(fn)].map(m => [m[1], m[0].replace('create or replace function', 'create function')]);
-  assert.deepEqual(replaced.map(r => r[0]), ['invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_folder', 'invoice_qb_candidates', 'invoice_qb_enqueue']);
-  assert.ok(!/^(create table|alter |drop |insert |update |delete |grant |revoke )/im.test(fixes.replace(fn, '')), 'the fixes file only replaces functions');
   let upgraded = first;
-  for (const [name, def] of replaced) {
-    const old = [...first.matchAll(fn)].filter(m => m[1] === name);
-    assert.equal(old.length, 1, name);
-    upgraded = upgraded.replace(old[0][0], () => def);   // a function: "$$" in the SQL must stay as it is
+  for (const [file, names] of [['supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', ['invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_folder', 'invoice_qb_candidates', 'invoice_qb_enqueue']],
+    ['supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', ['invoice_price_insert', 'invoice_post', 'invoice_edit']]]) {
+    const fixes = read(file);
+    const replaced = [...fixes.matchAll(fn)].map(m => [m[1], m[0].replace('create or replace function', 'create function')]);
+    assert.deepEqual(replaced.map(r => r[0]), names, file);
+    assert.ok(!/^(create table|alter |drop |insert |update |delete |grant |revoke )/im.test(fixes.replace(fn, '')), file + ' only replaces functions');
+    for (const [name, def] of replaced) {
+      const old = [...upgraded.matchAll(fn)].filter(m => m[1] === name);
+      assert.equal(old.length, 1, name);
+      upgraded = upgraded.replace(old[0][0], () => def);   // a function: "$$" in the SQL must stay as it is
+    }
   }
   assert.equal(upgraded, full);
+});
+
+test('the reasons that never stop posting are the same in the rules and in the database', async () => {
+  const fs = await import('node:fs');
+  const full = fs.readFileSync(new URL('../db/invoice-intake.sql', import.meta.url), 'utf8');
+  const post = full.slice(full.indexOf('create function public.invoice_post('));
+  const m = /info text\[\] := array\[([^\]]*)\]/.exec(post);
+  assert.ok(m);
+  assert.deepEqual(m[1].split(',').map(x => x.trim().replace(/'/g, '')), INFO_REASONS);
+  // None of them is something a person must fix or acknowledge.
+  for (const list of [...post.matchAll(/(must_fix|may_ack) text\[\] := array\[([^\]]*)\]/g)].slice(0, 2))
+    for (const c of INFO_REASONS) assert.ok(!list[2].includes("'" + c + "'"), list[1] + ' ' + c);
 });

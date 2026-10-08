@@ -1,5 +1,23 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 UI案36：経理の確認は 4 項目（Claude・実装済み・Codex のレビューはまだ・本番未反映）
+
+- 依頼：Moto さん 10/7 13:05 HST「経理側の確認は 業者名 invoiceナンバー 金額 配達店舗 の確認です。対応する商品や単価は確認しません。これだと今の仕様だと商品選択等に手間が取られ過ぎます。スムーズに確認作業を進められる仕様にしてください」→ Claude が UI案36（要確認の表・1 件の確認・設定）を出す → 13:14「実機で確認します 進めてください」。この記録は承認ではない。
+- サーバー（`invoice/rules.mjs`・`handler.mjs`・SQL）：
+  - 理由を 3 つに分けた。**経理が確かめる理由**（業者・番号・金額・店舗・日付・書類の種類・読み取り・重複・開始前：1 つでもあれば要確認）／**参考 `INFO_REASONS` 16 個**（商品・単価・数量：反映を止めない。価格の履歴に入れる条件は今までどおり）／**確認モード**（店舗・業者をまだ「自動」にしていないだけ）。
+  - 自動反映（worker の autoEligible・DB の invoice_post の自動）は「参考以外の理由が 0」＋店舗・業者が「自動」＋開始後。商品ごとの確認済み・自動の条件は外した。
+  - 明細の「読めない」を分けた：金額が読めない → `line_amount_missing`（止める・価格の履歴に入れない）／数量・単価だけ読めない → `line_value_missing`（参考）。
+  - 人の反映：直す理由から line_value_missing・no_lines、確かめる理由から line_math を外した（参考になったため）。
+  - 業者を選ぶと、印字された名前をその業者の別名として覚える（業者が決まっていなかった書類で、ほかの業者が持たない名前だけ）。
+  - 追加の SQL `supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql`（invoice_price_insert・invoice_post・invoice_edit の 3 関数だけ）。`db/invoice-intake-postcheck.sql` に accounting_checks。
+- アプリ v1056：要確認は 4 項目（＋日付）の表（✓ ? !）・「確認すること」は何をするかを 1 行で・確かめることが無い行は最初からチェック → まとめて反映（確認の画面のあと 1 件ずつ版つき、理由「経理の確認（業者・invoice番号・金額・店舗）」、失敗した行は残る）。1 件の画面は「経理の確認（4 項目）」だけ・明細はたたむ。「この内容で反映する」は保存 → 読み直し → 反映。設定：自動反映の条件、業者ごとの「自動」と「マスターの業者をすべて「自動」」・「取込中の店舗をすべて「自動」」（GM・CEO・確認の画面つき）。対応表は価格の履歴用。
+  - ついでに直した v1055 の不具合：明細の理由の言葉が空だった（サーバーは文字の配列）、店舗の編集の保存で address_group が消えた。
+- **Codex が書いた試験を Claude が UI案36 に合わせて直した**（`tests/review/invoice-pr32-codex-repro.mjs`・`-rereview.mjs`・`-date-override-repro.mjs`：店舗を確認モードにしてから要確認を確かめる NOTE、C3b は「数量×単価は参考・合計の変更は確かめる」に書き直し、upgrade は 3 つの migration）。Codex に確かめてほしい。
+- 試験（合成データ・本番データ不使用）：rules 15・adapters 5・intake 65・ui 6（新規 `tests/invoice-ui.test.mjs`：index.html の本体を VM で）・`tests/review/*.mjs` 15・`INVOICE_REVIEW_UPGRADE=1` 2/2・mutations 51/51（守りを外すと試験が落ちる。UI案36 の 5 か所を足した）・`deno bundle` の 1 ファイルで結合 65/65、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403・static release v1056 成功。handoff：verify_v1056 81/81・本物の画面 `render/check_invin_v1056.py` 85/85・pageerror 0（本物の handler と SQL を PGlite で：まとめて反映・ほかの人が先に更新した行は残る・業者を選んで反映・印字名を覚える・合計の差は確かめてから・Statement は対象外・設定の「自動」・自動反映 ON で新商品と値上がりのある invoice が自動で反映・スマホ）。
+- 本番：何も入れていない（DB・関数・アプリ・設定・Drive・メールに触れていない）。前回の関数の 1 ファイル（R1〜R4・72cfcf8）を Moto さんが入れたかは未確認。
+- 入れる順番（Codex の OK のあと・Moto さん）：SQL `20261007200000` → `db/invoice-intake-postcheck.sql`（accounting_checks が true）→ 関数 `invoice-intake` を差し替え → アプリ v1056。SQL が先（新しい関数の自動反映は新しい SQL でないと通らない）。そのあと GM・CEO が店舗・業者を「自動」にし、「確認の要らない invoice は自動で反映する」を ON（いつ ON にするかは Moto さん）。
+- 記録漏れの追記：72cfcf8 の mutation 全件（当時 46 ケース）は Claude の手元で全件成功（Codex の記録では全件は未実行）。
+
 ## 2026-10-07 Codex 再レビュー：PR #32 72cfcf8（R4・R5解消）
 
 - 担当：Codex（Claudeの実装から独立）。対象：`72cfcf8c8023eda9f930320430b0fa59373da508`。

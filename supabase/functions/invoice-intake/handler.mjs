@@ -3,7 +3,7 @@
 // keeps the QuickBooks forwarding ledger. Runs from a schedule; no browser needed.
 import { callModel, PROMPT_VERSION } from '../../../invoice/extract.mjs';
 import { evaluate, applyDuplicates } from '../../../invoice/rules.mjs';
-import { sha256Hex, contentSignature, classifyDuplicates } from '../../../invoice/dedupe.mjs';
+import { sha256Hex, contentSignature, classifyDuplicates, aliasKey } from '../../../invoice/dedupe.mjs';
 import { organizedName, uniqueName, monthFolders, FOLDER, extensionFor } from '../../../invoice/naming.mjs';
 import { hstDate } from '../../../invoice/dates.mjs';
 import { createDrive, googleAccessToken, viewUrl, folderUrl } from '../../../invoice/drive.mjs';
@@ -445,9 +445,24 @@ export function createHandler(deps) {
     // Lines that were not edited still get their reasons refreshed (a header change can affect them).
     const untouched = g.lines.map((l, i) => ({ l, i })).filter(x => !(b.lines || []).some(e => e.line_id === x.l.id))
       .map(x => ({ line_id: x.l.id, set: {}, reasons: result.lines[x.i].reasons }));
-    return db.rpc('invoice_edit', { actor, doc_id: b.doc_id, version: b.version, header, lines: [...lines, ...untouched], reason: b.reason,
+    const saved = await db.rpc('invoice_edit', { actor, doc_id: b.doc_id, version: b.version, header, lines: [...lines, ...untouched], reason: b.reason,
       reasons: result.reasons, content_sig: h.content_sig, lines_sum_cents: h.lines_sum_cents, adjustment_ack: !!b.adjustment_ack,
       ack: Array.isArray(b.ack) ? b.ack.filter(x => typeof x === 'string') : [] });
+    // A person who picks the vendor for a printed name that matched no vendor teaches that name: the next invoice with
+    // the same printed name finds the vendor by itself (exact match only, as before). Only a name no vendor has yet is
+    // taught, so changing one known vendor to another never makes a name ambiguous. The vendor's other settings stay.
+    const printed = aliasKey(g.doc.vendor_raw);
+    if (header.vendor_key && printed && !g.doc.vendor_key) {
+      const names = x => [x.display_name, ...(x.aliases || [])].map(aliasKey);
+      const v = ctx.vendors.find(x => x.vendor_key === header.vendor_key);
+      const taken = ctx.vendors.some(x => names(x).includes(printed));
+      if (v && !taken) {
+        await db.rpc('invoice_vendor_save', { actor, vendor: { vendor_key: v.vendor_key, display_name: v.display_name, aliases: [...(v.aliases || []), g.doc.vendor_raw],
+          food_kind: v.food_kind, auto_post: v.auto_post } });
+        saved.alias_learned = g.doc.vendor_raw;
+      }
+    }
+    return saved;
   }
 
   async function folderPlan(actor, b) {

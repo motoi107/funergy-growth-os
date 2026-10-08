@@ -545,7 +545,7 @@ begin
  if d.doc_type<>'invoice' or l.id is null or l.ingredient_code is null or l.price_per_purchase is null or d.effective_date is null then return false; end if;
  select * into im from public.invoice_item_maps where id=l.map_id and verified and vendor_key=d.vendor_key and (store_id is null or store_id=d.store_id);
  if im.id is null or im.ingredient_code<>l.ingredient_code then return false; end if;
- if l.reasons ?| array['catch_weight','line_math','zero_price','negative_line','line_value_missing','unit_mismatch','unit_unverified','spec_changed','map_ambiguous','unmapped'] then return false; end if;
+ if l.reasons ?| array['catch_weight','line_math','zero_price','negative_line','line_value_missing','line_amount_missing','unit_mismatch','unit_unverified','spec_changed','map_ambiguous','unmapped'] then return false; end if;
  insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, spec_key, purchase_unit, doc_id, line_id, effective_date,
   effective_basis, invoice_date, invoice_no_norm, price_per_purchase, price_per_count, count_unit, price_per_base, base_unit, conversion, created_by, reason)
  values(d.store_id, d.vendor_key, l.ingredient_code, coalesce(nullif(im.spec_key,''), l.spec_key, ''), coalesce(nullif(im.purchase_unit,''), l.purchase_unit, ''),
@@ -560,9 +560,13 @@ create function public.invoice_post(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare d public.invoice_docs; old public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; who text; mode text; rules jsonb; m jsonb;
  closed text; n int := 0; l public.invoice_lines; skipped int := 0; blocking text; ack text[];
- must_fix text[] := array['duplicate_certain','total_missing','line_value_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
-  'currency','no_lines','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
- may_ack text[] := array['line_math','total_mismatch','original_replaced'];
+ -- Accounting checks the vendor, the invoice number, the amount and the store (Moto 2026-10-07). Products and unit prices
+ -- are kept for reference only: they never stop posting (info), and a line that cannot be matched is not price history.
+ must_fix text[] := array['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
+  'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
+ info text[] := array['unmapped','map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed','no_price_ref','price_jump',
+  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_value_missing','discount_allocation','mixed_tax'];
+ may_ack text[] := array['total_mismatch','original_replaced'];
 begin
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null then raise exception 'not_found'; end if;
@@ -579,13 +583,13 @@ begin
  if blocking is not null then raise exception 'blocked:%', blocking; end if;
  if d.doc_type='credit_memo' and (d.related_doc_id is null or d.relation is distinct from 'credit_for') then raise exception 'relation_required'; end if;
  if actor is null then
-  -- Automatic posting: only a document with no reason at all, with every switch on.
+  -- Automatic posting: only a document whose reasons are all for reference (products, unit prices), with every switch on.
   if not coalesce((m->>'auto_post')::boolean,false) then raise exception 'auto_off'; end if;
-  if not d.auto_eligible or jsonb_array_length(d.reasons) > 0 or d.doc_type<>'invoice' then raise exception 'not_eligible'; end if;
+  if not d.auto_eligible or d.doc_type<>'invoice' then raise exception 'not_eligible'; end if;
+  if exists(select 1 from jsonb_array_elements(d.reasons) r where not (r->>'code' = any(info))) then raise exception 'not_eligible'; end if;
+  if exists(select 1 from public.invoice_lines il, jsonb_array_elements_text(il.reasons) c where il.doc_id=d.id and not (c = any(info))) then raise exception 'not_eligible'; end if;
   if not exists(select 1 from public.invoice_stores where store_id=d.store_id and auto_post and active) then raise exception 'not_eligible'; end if;
   if not exists(select 1 from public.invoice_vendor_rules where vendor_key=d.vendor_key and auto_post) then raise exception 'not_eligible'; end if;
-  if exists(select 1 from public.invoice_lines il left join public.invoice_item_maps im on im.id=il.map_id
-            where il.doc_id=d.id and (im.id is null or not im.verified or not im.auto_post or jsonb_array_length(il.reasons) > 0)) then raise exception 'not_eligible'; end if;
   who := 'auto'; mode := 'auto';
  else
   perform public.invoice_require(actor, array['ceo','gm','office']);
@@ -634,9 +638,11 @@ declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; e jso
  -- Values a mismatch is computed from: when one of these (or a line) changes, an earlier acknowledgement no longer covers it.
  amount_fields text[] := array['total_cents','subtotal_cents','tax_cents','shipping_cents','discount_cents','other_cents','currency','doc_type'];
  amounts boolean := false;
- must_fix text[] := array['duplicate_certain','total_missing','line_value_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
-  'currency','no_lines','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
- may_ack text[] := array['line_math','total_mismatch'];
+ -- Accounting checks the vendor, the invoice number, the amount and the store (Moto 2026-10-07). Products and unit prices
+ -- are kept for reference only: they never stop posting (info), and a line that cannot be matched is not price history.
+ must_fix text[] := array['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
+  'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
+ may_ack text[] := array['total_mismatch'];
  ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}'); blocking text;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office']);

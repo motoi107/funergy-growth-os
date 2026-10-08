@@ -27,7 +27,12 @@ try {
   fs.writeFileSync(filename, prefix + '\nexport { setup, doc, pdf, docsOf, codes };\n');
   fixture = await import(pathToFileURL(filename).href);
 } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
-const { setup, doc, pdf, docsOf, codes } = fixture;
+const { setup: setupBase, doc, pdf, docsOf, codes } = fixture;
+// Updated by Claude 2026-10-07 for UI案36 (Moto's decision: accounting checks only the vendor, the invoice number, the
+// amount and the store). An invoice whose only reasons are about products now posts by itself, so this reproduction puts
+// the store in review mode to keep invoices waiting for a person, as when it was written. Codex to confirm.
+const setup = async (...a) => { const E = await setupBase(...a); await E.q('update invoice_stores set auto_post=false'); return E; };
+
 
 const line=(price='60.00')=>[['06263','SHIRO MISO 12/500G','1',price,price,'CS','12/500G']];
 async function intake(E,tag,no,date='2026-10-06',extra={}) {

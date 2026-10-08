@@ -1,6 +1,8 @@
 // Normalises one transcribed document and decides whether it may be posted
-// without a person. Every reason is kept; a document is auto-eligible only when
-// there is no reason at all. Values are never changed to make totals agree.
+// without a person. Every reason is kept. Accounting checks the vendor, the
+// invoice number, the amount and the store (Moto 2026-10-07, UI案36): reasons
+// about products and unit prices (INFO_REASONS) are kept for reference and never
+// stop posting; any other reason does. Values are never changed to make totals agree.
 import { parseCents, parseMicros, parseQty, parseScaled, fromScaled, trimDecimal, ratio, ratioToDecimal,
   changedAtLeast, changePercent, lineMathDiff, HALF_CENT_PICO, CENT_PICO } from './decimal.mjs';
 import { determineDate, validYmd, ymOf } from './dates.mjs';
@@ -39,7 +41,8 @@ export const REASONS = {
   duplicate_candidate:   ['重複の可能性', 'Possible duplicate'],
   app_duplicate_candidate:['アプリで登録済みの可能性', 'May already be registered in the app'],
   original_replaced:     ['同じファイルの中身が差し替えられた（前の版と見比べる）', 'The file was overwritten with new content (compare with the earlier version)'],
-  line_value_missing:    ['数量・単価・金額が読めない明細', 'Line quantity/price/amount missing'],
+  line_value_missing:    ['数量・単価が読めない明細（金額は読めた）', 'Line quantity or price missing (amount read)'],
+  line_amount_missing:   ['明細の金額が読めない（合計を明細で確かめられない）', 'Line amount missing (the total cannot be checked against the lines)'],
   line_math:             ['数量×単価が明細金額と一致しない', 'Quantity × price does not equal the line amount'],
   zero_price:            ['単価または金額が 0', 'Zero price or amount'],
   negative_line:         ['マイナスの明細（返品など）', 'Negative line (return etc.)'],
@@ -57,6 +60,13 @@ export const REASONS = {
   mode_review_item:      ['商品は確認モード', 'Item is in review mode'],
   intake_not_started:    ['運用開始前のため自動反映しない', 'Before the start date'],
 };
+
+// Reasons about products and unit prices: shown for reference, never a reason to stop posting (by a person or
+// automatically). The same list is in db/invoice-intake.sql (invoice_post); tests/invoice-rules keeps them equal.
+export const INFO_REASONS = ['unmapped', 'map_ambiguous', 'map_unverified', 'unit_mismatch', 'unit_unverified', 'spec_changed', 'no_price_ref', 'price_jump',
+  'mode_review_item', 'catch_weight', 'line_math', 'zero_price', 'negative_line', 'line_value_missing', 'discount_allocation', 'mixed_tax'];
+const INFO = new Set(INFO_REASONS);
+export const blocksPosting = reasons => (reasons || []).some(r => !INFO.has(r.code));
 
 const norm = s => String(s ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 
@@ -220,9 +230,11 @@ export async function evaluate(ext, ctx) {
       weight: l.weight, weight_unit: l.weight_unit, price_unit: l.price_unit || pRead.unit || null, taxable: l.taxable,
     };
     if (l.taxable !== null && l.taxable !== undefined) taxFlags.add(l.taxable);
-    if (qty === null || unit === null || amount === null || ldisc === null) { r.push('line_value_missing'); lineBad = true; }
-    else {
-      lineSum += amount;
+    // The amount is what accounting checks: a line whose amount cannot be read leaves the total unchecked.
+    if (amount === null || ldisc === null) { r.push('line_amount_missing'); lineBad = true; }
+    else lineSum += amount;
+    if (qty === null || unit === null) { if (!r.includes('line_amount_missing')) r.push('line_value_missing'); }
+    else if (amount !== null && ldisc !== null) {
       // Catch-weight: priced per a different unit than the quantity, or a printed weight that is not simply the
       // quantity again in the same unit ("15 LB" for 15 LB). Then quantity × price cannot be checked.
       let weightIsQty = false;
@@ -313,7 +325,7 @@ export async function evaluate(ext, ctx) {
   if (v && !v.auto_post) add('mode_review_vendor');
   if (!ctx.started) add('intake_not_started');
 
-  return { header: h, lines, reasons, autoEligible: reasons.length === 0 };
+  return { header: h, lines, reasons, autoEligible: !blocksPosting(reasons) };
 }
 
 // Duplicates are found by the caller after the header is known.
@@ -323,7 +335,7 @@ export function applyDuplicates(result, dup) {
   (dup.sameNumberDifferent || []).forEach(id => add('same_number_different', id));
   if ((dup.candidates || []).length) add('duplicate_candidate', dup.candidates.join(','));
   if ((dup.app || []).length) add('app_duplicate_candidate', dup.app.join(','));
-  result.autoEligible = result.reasons.length === 0;
+  result.autoEligible = !blocksPosting(result.reasons);
   return result;
 }
 

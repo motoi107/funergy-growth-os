@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32：UI案36（経理の確認は 4 項目）実装済み・Codex のレビュー待ち
+
+1. Codex：最新 head をレビュー（理由の 3 区分と SQL の一致・自動反映の条件・人の反映・印字名を覚える条件・`line_amount_missing`・アプリ v1056 のまとめて反映と「この内容で反映する」・**Claude が直した Codex の試験 3 ファイル**）。
+2. OK なら Moto さん：`20261007200000` → postcheck（accounting_checks true）→ 関数の差し替え → アプリ v1056 → 実機で確認。
+3. GM・CEO：店舗・業者を「自動」にし、自動反映を ON（時期は Moto さん）。
+4. 残り：LaLa のフォルダ（10/8）、QuickBooks の外部の転送（台帳を見るか）、drive-sync の安全化、「出す」を開始日時の前に押せないように、`pg_policies`、invoice_ocr・Storage `invoices` の anon。
+
 ## 2026-10-07 PR #32 72cfcf8：Codex再レビュー完了・R4/R5解消
 
 - 対象`72cfcf8c8023eda9f930320430b0fa59373da508`。Codex判定：R4/R5解消、確認範囲の新規修正必須指摘0件、関数差し替えに向けたコードレビュー上の阻害事項なし。
