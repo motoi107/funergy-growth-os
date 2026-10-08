@@ -1,5 +1,20 @@
 # Claude / Codex 共通記録
 
+## 2026-10-07 Codex 再レビュー：PR #32 0a1daa7（R6〜R8解消）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`0a1daa78a5bd20ae864de0bf8ec387f6acd2f7a9`。前回の記録commit `5c3ee39` 以降の差分と関連回帰を確認。
+- **判定：R6〜R8は解消。今回確認した範囲で新規の修正必須指摘0件。このcommitのSQL・関数・アプリv1056の反映に向けたコードレビュー上の阻害事項なし。** この判定は後続の実装変更には適用しない。
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5450489469 。接続アカウントがPR作成者本人のためCOMMENTとして記録（正式なGitHub APPROVEではない）。
+- R6：別名学習をinvoice_editと同じDBトランザクションに移し、vendor_saveと共通のadvisory lockを取得、最新行のaliasesだけへ追記。設定のスイッチは部分保存、編集画面はexpect_updated_atで競合を拒否。前回の再現に加え、handlerがcontextを読んだ後・SQL実行直前にCEOが停止と別名追加を保存する順序を確認：OFFと既存・追加・学習した別名を保持、古い編集画面は409、次のinvoiceは業者が決まりreviewのまま。
+- R7：旧line_value_missingを参考から外し、新しい数量・単価専用の理由はline_qty_price_missingに分離。実際の72cfcf8で明細金額を読めなかった伝票を作成→追加SQL適用でも、金額印は「!」・一括対象外・reviewを維持。line_amount_missing/旧line_value_missingは手動反映にもackが必要で価格履歴に入らない。追加確認：計上後に合計を変更すると新しいackが必要で、拒否時は元の金額・版を保持する。
+- R8：保存応答と読戻しのversionが違えば反映を止めて新しい内容を表示。追加確認：読戻し後に別担当者が変更する順序でも、postは保存・読戻しした版を送り、SQLのversion検査で拒否され、未確認の新しい金額はpostedにならない。
+- 実行：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/invoice-ui.test.mjs tests/review/*.mjs` **113/113成功**（15+5+68+7+18、追加試験を作成する前）。前回の独立再現 `invoice-pr32-accounting-repro.mjs` 3/3を含む。既存Codex再現ファイルはこの修正で変更されていない。
+- `INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**（3本のmigration）。追加した独立試験 `node --test tests/review/invoice-pr32-r6-r8-regression.mjs` **3/3成功**（上記113件とは別実行）。`python3 scripts/check-static-release.py` **pass/v1056**、構文と版整合の確認。`git diff --check`成功。
+- 追加SQLは5関数のCREATE OR REPLACEのみ。統合SQLと3本のmigrationの一致・再適用・既存データ/設定/鍵/権限の維持・anon/authenticatedの表/RPCアクセス不可をローカルで確認。役割・閉月・QB台帳/重複・数値処理・AI出力の許可項目・Drive整理先の関連回帰も成功。UI案36の承認済み方針（経理の4項目確認、商品/単価は参考）を維持。
+- 今回はmutation全件・Deno bundle・実ブラウザ表示は再実行していない。PGlite・合成データ・偽Drive/AI/メール・実UIモジュールのNode VMのみ。実AIの全プロンプト攻撃耐性や外部QuickBooks側の同一台帳利用は保証対象外。
+- 本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。本番の現在の運転状態は再確認していない。実装は変更せず、共有記録2ファイルと独立試験1ファイルのみ追加・更新。
+- 次：既存手順どおりMotoさんが `20261007200000` → postcheck（accounting_checks=true）→ 関数 → アプリv1056 → 実機確認。自動反映をONにする時期とQB外部経路の調整は別途Motoさんが判断。
+
 ## 2026-10-07 Codex の指摘 R6〜R8（497a444）を修正（Claude・Codex の再レビューはまだ）
 
 - 対象：Codex のレビュー（497a444・下の節）。この記録は承認ではない。UI案36（経理は 4 項目だけ確かめる）の方針は変えていない。

@@ -1,5 +1,13 @@
 # 改修・自動化の作業記録
 
+## 2026-10-07 PR #32 0a1daa7：Codex再レビュー完了・R6〜R8解消
+
+- 対象：`0a1daa78a5bd20ae864de0bf8ec387f6acd2f7a9`。レビュアー：Codex。R6〜R8は解消、今回確認した範囲で新規の修正必須指摘0件。SQL・関数・アプリv1056の反映に向けたコードレビュー上の阻害事項なし（後続の実装変更には適用しない）。
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5450489469 （COMMENT、正式なGitHub APPROVEではない）。詳細は共有メモリの同日同commitの節。
+- 関連113/113（前回の独立再現R6〜R8 3/3を含む）・upgrade 2/2・追加の独立試験 `tests/review/invoice-pr32-r6-r8-regression.mjs` 3/3・static release v1056成功。追加試験は113件とは別実行：context取得後の業者停止を保持/古い設定保存は409、計上後の金額変更は新しいackが必要、読戻し後の変更もpostの版で拒否。
+- 本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。実装は変更せず、記録と独立試験のみ。mutation全件・Deno bundle・実ブラウザ表示は今回未実行。
+- 次：Motoさんが `20261007200000`（5関数）→ postcheck（accounting_checks=true）→ 関数 → アプリv1056 → 実機確認。自動反映のON時期・QB外部経路の台帳連携は別途判断。以下の「再レビュー待ち」は過去時点の記録。
+
 ## 2026-10-07 PR #32：R6〜R8 修正済み・Codex の再レビュー待ち
 
 1. Codex：最新 head を再レビュー（`tests/review/invoice-pr32-accounting-repro.mjs` は 3/3 で通る。R6 は DB の invoice_edit の学習と vendor/store_save の部分保存・conflict、R7 は line_value_missing を止める理由に戻し line_qty_price_missing を参考に、R8 は画面の版の照合）。
