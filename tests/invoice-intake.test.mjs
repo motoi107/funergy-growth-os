@@ -29,9 +29,11 @@ class FakeDrive {
   replaceContent(id, bytes) { const f = this.items.get(id); f.bytes = Buffer.from(bytes); f.size = String(f.bytes.length); f.md5Checksum = crypto.createHash('md5').update(f.bytes).digest('hex'); }
   meta(f) { const { bytes, ...m } = f; return m; }
   check() { if (this.authDown) { const e = new Error('drive_auth_400'); e.code = 'drive_auth_400'; throw e; } }
-  async listFolder(folderId, pageToken) {
-    this.check(); this.log.push(['list', folderId]);
-    const all = [...this.items.values()].filter(f => f.parents.includes(folderId) && !f.trashed && !f.mimeType.includes('folder'));
+  async listFolder(folderId, pageToken, opts) {
+    this.check(); this.log.push(['list', folderId, opts && opts.createdAfter || null]);
+    const after = opts && opts.createdAfter ? Date.parse(opts.createdAfter) : null;   // like Drive's "createdTime >= …"
+    const all = [...this.items.values()].filter(f => f.parents.includes(folderId) && !f.trashed && !f.mimeType.includes('folder')
+      && (after == null || Date.parse(f.createdTime) >= after));
     const start = pageToken ? Number(pageToken) : 0;            // two per page: paging is exercised
     return { files: all.slice(start, start + 2).map(f => this.meta(f)), next: start + 2 < all.length ? String(start + 2) : null };
   }
@@ -994,7 +996,7 @@ test('deploy checks and the guarded rollback', async () => {
   const created = [...SQL.matchAll(/^create function public\.(\w+)\(/gm)].map(m => m[1]);
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 16, functions: created.length, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
-      rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true });
+      rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates
@@ -1587,4 +1589,64 @@ test('UI案36: products and unit prices never hold an invoice; vendor, number, a
       await assert.rejects(only(c, [], ['line_amount_missing']), /not_eligible/);
     } finally { await E.pg.close(); }
   });
+});
+
+// Moto 2026-10-08: staff put invoices right in the store folder ("in front of" 00_Upload). Both are read. From the
+// store folder only the files directly in it that were put there at or after the start; they stay where they are.
+test('invoices put right in the store folder are read too, only from the start, and are left where they are', async () => {
+  const E = await setup();   // start_at 2026-10-01T00:00:00Z, organize and app copy on
+  try {
+    const line = [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']];
+    E.fixtures.set('ROOT-2001', { readable: true, documents: [doc('2001', '2026-10-05', line)] });
+    E.fixtures.set('ROOT-1999', { readable: true, documents: [doc('1999', '2026-09-20', line)] });
+    E.fixtures.set('MONTH-2002', { readable: true, documents: [doc('2002', '2026-10-06', line)] });
+    E.fixtures.set('UP-2003', { readable: true, documents: [doc('2003', '2026-10-06', line)] });
+    const inRoot = E.drive.file('Scanned Oct 5, 2026.pdf', pdf('ROOT-2001'), 'R6', { created: '2026-10-05T19:00:00Z' });
+    const old = E.drive.file('Scanned Sep 20, 2026.pdf', pdf('ROOT-1999'), 'R6', { created: '2026-09-20T19:00:00Z' });
+    E.drive.folder('R6-MAR', 'ここにUpしないでMar 2026 Uploaded', 'R6');
+    const inMonth = E.drive.file('Scanned Oct 6, 2026.pdf', pdf('MONTH-2002'), 'R6-MAR', { created: '2026-10-06T19:00:00Z' });
+    const inUpload = E.drive.file('IMG_1006.pdf', pdf('UP-2003'), 'U6', { created: '2026-10-06T19:00:00Z' });
+    // A PDF the app itself saved to Drive (its record carries the Drive file ID) is already in the app.
+    E.fixtures.set('APP-SAVED', { readable: true, documents: [doc('2005', '2026-10-06', line)] });
+    const appSaved = E.drive.file('VendorA.2026-10-06.pdf', pdf('APP-SAVED'), 'R6', { created: '2026-10-06T20:00:00Z' });
+    await E.q(`update app_state set value = value || jsonb_build_array(jsonb_build_object('id','inv-app-1','storeId','F06','vendor','VendorA','docDate','2026/10/06','total',60,'driveFileId',$1::text)) where key='spl_invoices_F06'`, [appSaved]);
+    assert.equal((await E.worker()).body.ok, true);
+
+    const [d] = await docsOf(E, inRoot);
+    assert.ok(d, 'the invoice put right in the store folder is read');
+    assert.equal(d.store_id, 'F06'); assert.equal(d.invoice_no, '2001'); assert.equal(d.status, 'posted');
+    assert.ok(E.drive.log.some(l => l[0] === 'list' && l[1] === 'R6' && l[2] === '2026-10-01T00:00:00.000Z'), 'Drive is asked only for files put there from the start');
+    // Older files in the store folder and files in the folders inside it are not recorded at all.
+    assert.deepEqual(await E.q(`select drive_file_id from invoice_files where drive_file_id = any($1)`, [[old, inMonth, appSaved]]), []);
+    // Left where staff put it (organize is on): same name, same folder. 00_Upload is filed as before.
+    assert.equal(E.drive.items.get(inRoot).name, 'Scanned Oct 5, 2026.pdf'); assert.deepEqual(E.drive.items.get(inRoot).parents, ['R6']);
+    const [f] = await E.q(`select organize_status, organized_folder_id, current_name from invoice_files where drive_file_id=$1`, [inRoot]);
+    assert.deepEqual(f, { organize_status: 'done', organized_folder_id: 'R6', current_name: 'Scanned Oct 5, 2026.pdf' });
+    assert.equal(E.drive.pathOf(inUpload), 'LaLa/2026/10/未照合');
+    // It reaches Food Cost like any other (the app copy).
+    const [app] = await E.q(`select value from app_state where key='spl_invoices_F06'`);
+    assert.ok(app.value.some(x => x.intakeDocId === d.id));
+    // Read once: another run reads nothing again.
+    const calls = E.aiCalls; await E.worker(); assert.equal(E.aiCalls, calls);
+    // Moving it later (for example into a month folder) changes nothing that was recorded.
+    E.drive.items.get(inRoot).parents = ['R6-MAR'];
+    await E.q(`update invoice_files set drive_checked_at=null`); await E.worker();
+    assert.equal((await docsOf(E, inRoot))[0].status, 'posted');
+
+    // The database checks the start too: a file in the store folder from before the start is not taken in.
+    const seen = await E.db.rpc('invoice_file_seen', { folder_id: 'R6', drive_file_id: 'direct-old', name: 'x.pdf', mime_type: 'application/pdf',
+      created_time: '2026-09-30T23:59:59Z', modified_time: '2026-09-30T23:59:59Z', parents: ['R6'] });
+    assert.equal(seen.action, 'before_start');
+    assert.deepEqual(await E.q(`select id from invoice_files where drive_file_id='direct-old'`), []);
+    await assert.rejects(E.db.rpc('invoice_file_seen', { folder_id: 'NOT-A-STORE', drive_file_id: 'x', created_time: '2026-10-05T00:00:00Z' }), /folder_not_configured/);
+
+    // With no start set, the store folder is not read at all (00_Upload is, as before).
+    await E.q(`update invoice_settings set value=value||'{"start_at":null}' where key='mode'`);
+    E.fixtures.set('ROOT-2004', { readable: true, documents: [doc('2004', '2026-10-06', line)] });
+    const later = E.drive.file('Scanned Oct 6 b.pdf', pdf('ROOT-2004'), 'R6', { created: '2026-10-06T19:30:00Z' });
+    const before = E.drive.log.length;
+    await E.worker();
+    assert.ok(!E.drive.log.slice(before).some(l => l[0] === 'list' && l[1] === 'R6'), 'the store folder is not listed without a start');
+    assert.deepEqual(await E.q(`select id from invoice_files where drive_file_id=$1`, [later]), []);
+  } finally { await E.pg.close(); }
 });

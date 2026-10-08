@@ -257,7 +257,8 @@ test('duplicates: same bytes or same content is certain; same number with other 
 
 test('the deployable migrations are the same SQL that the tests run', async () => {
   // Production got 20261007090000 (2026-10-07). 20261007160000 replaces six functions (Codex review fixes) and
-  // 20261007200000 replaces three (accounting checks only vendor, number, amount and store; UI案36). Applying them in
+  // 20261007200000 replaces five (accounting checks only vendor, number, amount and store; UI案36) and 20261008090000
+  // replaces one (invoices put right in the store folder are read too). Applying them in
   // order onto the first gives exactly db/invoice-intake.sql, which every test runs.
   const fs = await import('node:fs');
   const read = f => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
@@ -265,7 +266,8 @@ test('the deployable migrations are the same SQL that the tests run', async () =
   const fn = /^create (?:or replace )?function public\.(\w+)\((.*?)^(?:\$\$;|end \$\$;)\n/gms;
   let upgraded = first;
   for (const [file, names] of [['supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', ['invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_folder', 'invoice_qb_candidates', 'invoice_qb_enqueue']],
-    ['supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', ['invoice_price_insert', 'invoice_post', 'invoice_edit', 'invoice_store_save', 'invoice_vendor_save']]]) {
+    ['supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', ['invoice_price_insert', 'invoice_post', 'invoice_edit', 'invoice_store_save', 'invoice_vendor_save']],
+    ['supabase/migrations/20261008090000_invoice_intake_store_folder.sql', ['invoice_file_seen']]]) {
     const fixes = read(file);
     const replaced = [...fixes.matchAll(fn)].map(m => [m[1], m[0].replace('create or replace function', 'create function')]);
     assert.deepEqual(replaced.map(r => r[0]), names, file);

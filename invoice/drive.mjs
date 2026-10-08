@@ -47,8 +47,15 @@ export function createDrive({ fetch, getToken }) {
     return id ? '&corpora=drive&driveId=' + encodeURIComponent(id) : '';
   }
   return {
-    async listFolder(folderId, pageToken) {
-      const p = new URLSearchParams({ q: `'${q(folderId)}' in parents and trashed=false and mimeType!='${FOLDER_MIME}'`,
+    // opts.createdAfter (ISO time): only files put there at or after it (used for the store folder itself).
+    async listFolder(folderId, pageToken, opts) {
+      let query = `'${q(folderId)}' in parents and trashed=false and mimeType!='${FOLDER_MIME}'`;
+      if (opts && opts.createdAfter != null) {
+        const v = String(opts.createdAfter), t = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(v) ? new Date(v) : null;
+        if (!t || !Number.isFinite(t.getTime())) throw new Error('bad_value');   // only an ISO time; the query gets the adapter's own ISO text
+        query += ` and createdTime >= '${t.toISOString()}'`;
+      }
+      const p = new URLSearchParams({ q: query,
         fields: `nextPageToken,files(${FILE_FIELDS})`, pageSize: '100', orderBy: 'createdTime' });
       if (pageToken) p.set('pageToken', pageToken);
       const r = await call('/files?' + p + '&' + common + await scope(folderId));

@@ -360,12 +360,21 @@ end $$;
 -- A file listed in a store's 00_Upload folder. Renames and moves never cause a new reading.
 create function public.invoice_file_seen(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare s public.invoice_stores; f public.invoice_files; act text;
+declare s public.invoice_stores; f public.invoice_files; act text; start_at timestamptz;
 begin
- select * into s from public.invoice_stores where upload_folder_id=p->>'folder_id' and active;
+ -- A store's 00_Upload, or (Moto 2026-10-08) the store folder itself: staff also put invoices right in it.
+ select * into s from public.invoice_stores where active and (upload_folder_id=p->>'folder_id' or root_folder_id=p->>'folder_id')
+ order by (upload_folder_id is not distinct from p->>'folder_id') desc limit 1;
  if s.store_id is null then raise exception 'folder_not_configured'; end if;
  select * into f from public.invoice_files where drive_file_id=p->>'drive_file_id' for update;
  if f.id is null then
+  -- The store folder also keeps older invoices: from it, only files put there at or after the start are taken in.
+  if s.upload_folder_id is distinct from p->>'folder_id' then
+   start_at := nullif(public.invoice_setting('mode')->>'start_at', '')::timestamptz;
+   if start_at is null or nullif(p->>'created_time', '') is null or (p->>'created_time')::timestamptz < start_at then
+    return jsonb_build_object('file_id', null, 'action', 'before_start', 'status', null);
+   end if;
+  end if;
   insert into public.invoice_files(drive_file_id, store_id, source, original_name, current_name, mime_type, size_bytes,
    drive_created_at, drive_modified_at, drive_md5, parent_ids, submitter)
   values(p->>'drive_file_id', s.store_id, coalesce(p->>'source','drive'), p->>'name', p->>'name', p->>'mime_type', (p->>'size')::bigint,

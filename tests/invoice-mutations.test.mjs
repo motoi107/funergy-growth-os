@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
+const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -144,6 +144,15 @@ const CASES = [
   ['a line without a readable quantity becomes price history', E2E, [['db/invoice-intake.sql', "'line_value_missing','line_qty_price_missing','line_amount_missing','unit_mismatch'", "'line_value_missing','line_amount_missing','unit_mismatch'"]]],
   ['R2: the price unit read at intake is dropped on a correction', E2E, [['supabase/functions/invoice-intake/handler.mjs', 'price_unit: l.price_unit ?? raw.price_unit,', 'price_unit: raw.price_unit,']]],
   ['R3: the unit printed on the quantity is not used for the mapping', E2E, [['invoice/rules.mjs', 'unit: qtyUnit, pack: l.pack, raw_name: l.description }', 'unit: l.unit, pack: l.pack, raw_name: l.description }']]],
+  // Moto 2026-10-08: invoices put right in the store folder are read too, only from the start, and left where they are.
+  ['store folder: invoices put right in it are not read', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    'if (store.root_folder_id && store.root_folder_id !== store.upload_folder_id && since) folders.push([store.root_folder_id, since]);', '']]],
+  ['store folder: originals put there are moved and renamed', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    'if (parents.includes(store.root_folder_id)) {', 'if (false) {']]],
+  ['store folder: a PDF the app saved to Drive is read again', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    'if (appIds && appIds.has(f.id)) { stats.app_saved = (stats.app_saved || 0) + 1; continue; }', '']]],
+  ['store folder: the database takes in files from before the start', E2E, [['db/invoice-intake.sql',
+    "if start_at is null or nullif(p->>'created_time', '') is null or (p->>'created_time')::timestamptz < start_at then", 'if false then']]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {

@@ -80,21 +80,35 @@ export function createHandler(deps) {
 
   async function scanStore(store, ctx, stats) {
     const started = new Date(now()).toISOString();
-    let page = null, n = 0;
+    let n = 0, nStore = 0;
+    // 00_Upload, and (Moto 2026-10-08) the store folder itself: staff also put invoices right in it. From the store folder
+    // only the files directly in it (never the folders in it) that were put there at or after the start are read; the
+    // database checks the start again. Nothing is read from the store folder while no start is set.
+    const startMs = ctx.mode.start_at ? Date.parse(ctx.mode.start_at) : NaN;
+    const since = Number.isFinite(startMs) ? new Date(startMs).toISOString() : null;
+    const folders = [[store.upload_folder_id, null]];
+    if (store.root_folder_id && store.root_folder_id !== store.upload_folder_id && since) folders.push([store.root_folder_id, since]);
     try {
-      do {
-        const r = await drive.listFolder(store.upload_folder_id, page);
-        for (const f of r.files) {
-          n++;
-          const owner = f.owners && f.owners[0] && f.owners[0].emailAddress;
-          const res = await db.rpc('invoice_file_seen', { folder_id: store.upload_folder_id, drive_file_id: f.id, name: f.name, mime_type: f.mimeType,
-            size: f.size ? Number(f.size) : null, md5: f.md5Checksum || null, created_time: f.createdTime, modified_time: f.modifiedTime,
-            parents: f.parents || [], submitter: owner || (f.lastModifyingUser && f.lastModifyingUser.emailAddress) || null });
-          stats[res.action] = (stats[res.action] || 0) + 1;
-        }
-        page = r.next;
-      } while (page);
-      await db.rpc('invoice_run_log', { kind: 'scan', store_id: store.store_id, started_at: started, ok: true, stats: { files: n } });
+      for (const [folder, after] of folders) {
+        // An original the app itself saved to Drive is already in the app: never read again from the store folder.
+        const appIds = after ? new Set(await db.rpc('invoice_app_drive_ids', { store_id: store.store_id })) : null;
+        let page = null;
+        do {
+          const r = await drive.listFolder(folder, page, after ? { createdAfter: after } : undefined);
+          for (const f of r.files) {
+            if (after && !(Date.parse(f.createdTime) >= startMs)) continue;
+            if (appIds && appIds.has(f.id)) { stats.app_saved = (stats.app_saved || 0) + 1; continue; }
+            n++; if (after) nStore++;
+            const owner = f.owners && f.owners[0] && f.owners[0].emailAddress;
+            const res = await db.rpc('invoice_file_seen', { folder_id: folder, drive_file_id: f.id, name: f.name, mime_type: f.mimeType,
+              size: f.size ? Number(f.size) : null, md5: f.md5Checksum || null, created_time: f.createdTime, modified_time: f.modifiedTime,
+              parents: f.parents || [], submitter: owner || (f.lastModifyingUser && f.lastModifyingUser.emailAddress) || null });
+            stats[res.action] = (stats[res.action] || 0) + 1;
+          }
+          page = r.next;
+        } while (page);
+      }
+      await db.rpc('invoice_run_log', { kind: 'scan', store_id: store.store_id, started_at: started, ok: true, stats: { files: n, store_folder_files: nStore } });
     } catch (e) {
       stats.scan_errors = (stats.scan_errors || 0) + 1;
       await db.rpc('invoice_run_log', { kind: 'scan', store_id: store.store_id, started_at: started, ok: false, error: safeErr(e) });
@@ -212,6 +226,13 @@ export function createHandler(deps) {
       const g = await drive.get(o.drive_file_id);
       if (g.status !== 200 || g.file.trashed) throw new Error('original_unavailable_' + g.status);
       const parents = g.file.parents || [];
+      // An original put right in the store folder stays where staff put it (Moto 2026-10-08): the store's own
+      // month folders and hand-off use that folder. It is recorded as filed there, not moved or renamed.
+      if (parents.includes(store.root_folder_id)) {
+        await db.rpc('invoice_organize_result', { file_id: o.file_id, ok: true, target: o.target, folder_id: store.root_folder_id, name: g.file.name });
+        stats.organize_left = (stats.organize_left || 0) + 1;
+        return;
+      }
       const allowed = new Set([store.upload_folder_id, ...(o.store_folder_ids || []), ...(o.upload_folder_ids || [])]);
       if (!parents.length || !parents.every(p => allowed.has(p))) throw new Error('outside_store_folders');
       const y = await ensureFolder(store, store.root_folder_id, mf.year, 'year');

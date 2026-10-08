@@ -32,6 +32,11 @@ test('Google token refresh and Drive requests: scoped queries, shared-drive flag
   assert.equal(calls[li].init.headers.authorization, 'Bearer tok2');
   const body = new URLSearchParams(calls[0].init.body);
   assert.equal(body.get('grant_type'), 'refresh_token'); assert.equal(body.get('refresh_token'), 'rt');
+  // The store folder itself is listed only from the start (Moto 2026-10-08); the time is written by the adapter, never passed through.
+  await d.listFolder('R6', null, { createdAfter: '2026-10-07T19:40:00Z' });
+  assert.equal(new URL(calls.at(-1).url).searchParams.get('q'),
+    "'R6' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder' and createdTime >= '2026-10-07T19:40:00.000Z'");
+  await assert.rejects(d.listFolder('R6', null, { createdAfter: "x' or '1'='1" }), /bad_value/);
   await d.findFolders('R6', "Kaimuki's");
   assert.match(new URL(calls.at(-1).url).searchParams.get('q'), /name='Kaimuki\\'s'/);
   await d.update('F1', { name: 'new.pdf', addParents: 'T', removeParents: 'U6' });

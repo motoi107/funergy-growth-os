@@ -1,6 +1,6 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
 -- 対象はこの migration の表 16・関数 65 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 16 / functions 65 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true
+-- 期待：tables 16 / functions 65 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -43,4 +43,7 @@ select
     and (select bool_and(p.prosrc like '%learn_alias%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname = 'invoice_edit')
     and (select count(*) = 2 and bool_and(p.prosrc like '%expect_updated_at%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.proname in ('invoice_vendor_save', 'invoice_store_save')), false) as accounting_checks;
+    where n.nspname = 'public' and p.proname in ('invoice_vendor_save', 'invoice_store_save')), false) as accounting_checks,
+  -- Invoices put right in the store folder are read too, only those put there after the start (20261008090000).
+  coalesce((select bool_and(p.prosrc like '%root_folder_id=p->>''folder_id''%' and p.prosrc like '%before_start%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'invoice_file_seen'), false) as store_folder_intake;
