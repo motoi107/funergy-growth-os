@@ -35644,7 +35644,7 @@ function actualHoursForDate(storeId, dateISO) {
   if (labor) {
     Object.keys(labor).forEach(name=>{
       var e = labor[name];
-      var h = (e.lunch||0)+(e.dinner||0);
+      var h = _laborHrs(e);   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
       var rawH = (e.rawLunch||0)+(e.rawDinner||0);
       byName[name] = {hours:h, rawHours:rawH||h, shifts:e.shifts||[], hasOut:true};
       // Clock Out漏れ判定: shiftにoutDateが無いものがあれば
@@ -36895,7 +36895,7 @@ function laborBreakdownForPeriod(storeId, days){
     var hadAny = false;
     Object.keys(labor).forEach(function(n){
       var e = labor[n];
-      var h = (e.lunch||0)+(e.dinner||0);
+      var h = _laborHrs(e);   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
       if(h<=0) return;
       hadAny = true;
       if(empIsMonthlyByName(n)) return; // 月給者は時給集計に含めない（別途 月給日割り）
@@ -37051,8 +37051,8 @@ function sumWeekStats(storeId, dates) {
     if (ov.guests!=null) guests += ov.guests;
     if (ov.foodCost!=null) food += ov.foodCost;
     var labor = getTipLabor(storeId, date);
-    var hadH=false;
-    if (labor) Object.keys(labor).forEach(n=>{ var h=(labor[n].lunch||0)+(labor[n].dinner||0); if(h>0)hadH=true; hours+=h; laborCost+=h*(empWage(n)||0); });
+    var hadH=false;   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
+    if (labor) Object.keys(labor).forEach(n=>{ var h=_laborHrs(labor[n]); if(h>0)hadH=true; hours+=h; laborCost+=h*(empWage(n)||0); });
     if (hadH) laborCost += storeSalaryDaily(storeId, date.slice(0,7)); // 月給制の日割り（生）
   });
   return {sales, guests, hours, laborCost, food,
@@ -38161,7 +38161,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1056';
+const APP_VERSION = '1057';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -38583,7 +38583,7 @@ function cyclePayHours(storeId, me, cyc){
       var hrs=0, isAct=false;
       try{
         var labor = (typeof getTipLabor==='function') ? getTipLabor(st.id, ds) : null;
-        if(labor && labor[me]){ var e=labor[me]; var ah=(e.lunch||0)+(e.dinner||0); if(ah>0){ hrs=ah; isAct=true; } }
+        if(labor && labor[me]){ var e=labor[me]; var ah=_laborHrs(e); if(ah>0){ hrs=ah; isAct=true; } }   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
       }catch(err){}
       if(!isAct){
         var plan=getShiftPlan(st.id, wk);
@@ -48560,7 +48560,7 @@ function unregisteredClockIns(days){
         if(typeof isOrderOnlyAccount==='function' && e.toastName && isOrderOnlyAccount(e.toastName)) return;
         var m=map[name]; if(!m){ m=map[name]={name:name, toastName:e.toastName||name, stores:{}, dates:{}, hours:0, last:null}; }
         m.stores[storeId]=true; m.dates[date]=true;
-        m.hours += (e.lunch||0)+(e.dinner||0);
+        m.hours += _laborHrs(e);   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
         if(!m.last || date>m.last) m.last=date;
       });
     }
@@ -64942,7 +64942,7 @@ function renderMypage() {
       var labor = getTipLabor(st.id, d.date);
       if (!labor || !labor[me]) return;
       var e = labor[me];
-      var total = (e.lunch||0)+(e.dinner||0);
+      var total = _laborHrs(e);   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
       if (total<=0 && !(e.shifts&&e.shifts.length)) return;
       var clockIn='—', clockOut='—', missingOut=false;
       if (e.shifts && e.shifts.length) {
