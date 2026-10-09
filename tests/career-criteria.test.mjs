@@ -1,4 +1,6 @@
 // v1058 (UI案37): Career Score promotion criteria by category, and grade / G3-track bonus coefficients.
+// v1058 (UI案38): before a grade changes from G2 or above, GM/CEO confirm the evaluation of the previous grade's period;
+// that period is prorated with it. The L4-axes condition on My page is dropped. Store Leader can no longer be chosen.
 // Runs the real code from index.html (the FUNERGY_CAREER_CRITERIA block, bonusProrate and the helpers they use)
 // in a VM with synthetic scores and synthetic staff. No network, no browser storage, no production data.
 import test from 'node:test';
@@ -15,8 +17,8 @@ function block(startMark, endMark) {
 function fn(name) {
   const start = source.indexOf('\nfunction ' + name + '(');
   assert.ok(start >= 0, name);
-  const lineEnd = source.indexOf('\n', start + 1), line = source.slice(start + 1, lineEnd);
-  if (line.trimEnd().endsWith('}') && (line.match(/\{/g) || []).length === (line.match(/\}/g) || []).length) return line;
+  const lineEnd = source.indexOf('\n', start + 1), line = source.slice(start + 1, lineEnd), code = line.replace(/\s*\/\*[^\n]*?\*\/\s*$/, '');   // a one-line function may end with a /* comment */
+  if (code.trimEnd().endsWith('}') && (code.match(/\{/g) || []).length === (code.match(/\}/g) || []).length) return line;
   return source.slice(start + 1, source.indexOf('\n}', start + 1) + 2);
 }
 const varBlock = (name, close) => block('\n' + (source.includes('\nconst ' + name + ' = ') ? 'const ' : 'var ') + name + ' = ', close).replace(/^\nconst /, '\nvar ');
@@ -26,7 +28,7 @@ function app() {
   const c = { console, STORE: {}, EMPS: [], BQ: {}, SEGS: {}, curRole: 'gm', curLang: 'ja', curUserName: 'GM' };
   vm.createContext(c);
   vm.runInContext([varBlock('LSS_CATEGORIES', '\n];'), varBlock('GRADE_TITLES', '\n};'), varBlock('SPECIALIST_TITLE_DEPT', '\n};'), varBlock('LSS_EMP_PREFIX', ';'),
-    ...['ghNormG', 'lssCatsOrdered', 'lssItemId', 'getLssScores', 'gradeOf', 'empGrade', 'empSpecialistDept', 'bonusProrate'].map(fn), MODULE].join('\n') + `
+    ...['ghNormG', 'lssCatsOrdered', 'lssItemId', 'getLssScores', 'gradeOf', 'empGrade', 'empSpecialistDept', 'bonusProrate', 'ghRecs', 'ghAll', 'ghCmp', 'ghDate', 'csCoef'].map(fn), MODULE].join('\n') + `
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
     function _bonusQParse(q){ var m=String(q||'').match(/(\d{4})\D*Q?([1-4])/i); return m ? { y:+m[1], q:+m[2] } : null; }
     function lsSet(k, v){ if (typeof FAIL_SET !== 'undefined' && FAIL_SET === k) return false; STORE[k] = JSON.parse(JSON.stringify(v)); return true; }
@@ -202,4 +204,164 @@ test('cs_criteria and bonus_coef are synced, merged per entry by time, and kept 
   assert.match(source, /\n  cs_criteria:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(source, /\n  bonus_coef:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(source, /'bonus_rules','grade_hist','cs_criteria','bonus_coef','q_budgets'/);
+});
+
+/* ------------------------------------------------------------------ UI案38 */
+// The real grade-history, approval and Leader-promotion code with the module, a stubbed modal and synthetic staff.
+function app38() {
+  const names = [...new Set([...source.matchAll(/\nfunction (_?gh\w*)\(/g)].map(m => m[1]))].concat(['gradeOf', 'empGrade', 'gradeNum', 'csCoef', 'lssCatsOrdered', 'lssItemId', 'getLssScores',
+    'empSpecialistDept', 'bonusProrate', 'bonusSegs', 'approveLssRequest', 'approveAdvance', 'advanceStage', 'jobTitle', 'getDevData', 'setDevData', 'getStage', 'getLssRequests', 'stageLabel', 'getCareerTrack']);
+  const c = { console, STORE: {}, EMPS: [], BQ: {}, SUMS: {}, MODAL: [], TOASTS: [], CONFIRMS: 0, curRole: 'gm', curLang: 'ja', curUserName: 'GM' };
+  vm.createContext(c);
+  vm.runInContext([varBlock('LSS_CATEGORIES', '\n];'), varBlock('GRADE_TITLES', '\n};'), varBlock('SPECIALIST_TITLE_DEPT', '\n};'), varBlock('LSS_EMP_PREFIX', ';'), varBlock('JOB_TITLES', '\n];'),
+    varBlock('CAREER_CONFIG', '\n};'), varBlock('CAREER_TRACKS', ';'), varBlock('LSS_TITLES', ';'), source.match(/\nObject\.defineProperty\(CAREER_CONFIG, 'Store Leader'[^\n]*/)[0],
+    ...names.map(fn), MODULE].join('\n') + `
+    var window = this, curPage = 'x', document = { getElementById: function(){ return null; } };
+    var CAREER_STAGES = [{ n:5, label:'Leader' }, { n:6, label:'Career Score' }];
+    function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
+    function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); return true; }
+    function _bonusQParse(q){ var m=String(q||'').match(/(\\d{4})\\D*Q?([1-4])/i); return m ? { y:+m[1], q:+m[2] } : null; }
+    function t(a, b){ return curLang === 'en' ? b : a; }
+    function escapeHtml(s){ return String(s == null ? '' : s); }
+    function nowJP(){ return '2026/08/20 09:00'; } function todayJP(){ return '2026/08/20'; } function bizToday(){ return '2026-08-20'; } function myName(){ return curRole === 'am' ? 'AM' : 'GM'; }
+    var ROLE_CONFIG = { gm:{ name:'GM' }, am:{ name:'AM' } };
+    function getEmployees(){ return EMPS; } function ocsOldLocked(){ return false; } function getKarte(){ return {}; }
+    function kbCfg(){ return { quarter:'2026-Q3', gradeBase:{ G2:1000, G3:3000, G4:5000, G5:8000, G6:12000 }, csMin:0.7, csMax:1.3 }; }
+    function lssSummary(n){ return SUMS[n] || { cats:[], totalScore:0, totalMax:0, totalPct:0, hasData:false }; }
+    function bqGet(q){ return Object.assign({ locked:false, csFreeze:{} }, BQ[q] || {}); }
+    function openModal(h){ MODAL.push(h); } function closeModalDirect(){} function showToast(m){ TOASTS.push(m); } function renderPage(){}
+    function confirm(){ CONFIRMS++; return true; } function stageReadiness(){ return {}; } function inferStage(){ return 1; } function openLssDetail(){}
+    function _bqNow(){ return '2026/08/20 09:00'; } function _bqWho(){ return 'GM'; } function karteRerender(){}`, c);
+  const S = pct => ({ hasData: true, totalPct: pct, totalScore: pct * 3, totalMax: 300, cats: [{ key: 'H', name: 'H', score: pct, max: 100, pct }] });
+  c.EMPS = [{ id: 'ken', name: 'Ken Sample', title: 'Server Leader', role: 'sl' }, { id: 'sho', name: 'Sho Sample', title: 'Store Leader', role: 'sl' },
+            { id: 'amy', name: 'Amy Sample', title: 'Crew Leader', role: 'crew' }, { id: 'bob', name: 'Bob Sample', title: 'Crew', role: 'crew' },
+            { id: 'neo', name: 'Neo Sample', title: 'Kitchen Leader', role: 'sl' }, { id: 'cal', name: 'Cal Sample', title: 'Crew Leader', role: 'crew' }];
+  c.SUMS = { 'Ken Sample': S(72), 'Sho Sample': S(64), 'Amy Sample': S(81), 'Cal Sample': S(77) };
+  c.S = S;
+  return c;
+}
+const lastModal = c => c.MODAL[c.MODAL.length - 1] || '';
+
+test('UI案38: a grade change from G2 or above waits until GM/CEO confirm the evaluation of the previous grade; the record keeps it', () => {
+  const c = app38();
+  const need = (a, b) => run(c, `ghEvalNeeded({ g0:${JSON.stringify(a)}, g1:${JSON.stringify(b)} })`);
+  assert.deepEqual([need('G2', 'G3'), need('G3', 'G4'), need('G4', 'G3'), need('G2', 'G1'), need('G1', 'G2'), need('G3', 'G3')], [true, true, true, true, false, false]);
+  assert.equal(run(c, `ghBeforeSaveEmp('ken', { name:'Ken Sample', title:'Store Manager', role:'sl' })`), true);
+  assert.match(lastModal(c), /G3 の期間の評価を確定（日割り）/);
+  assert.match(lastModal(c), /disabled[^>]*><i class="ti ti-lock"><\/i> G3 の期間の評価を確定してから保存/, 'save is disabled until confirmed');
+  assert.deepEqual(run(c, `(function(){ var p=ghEvalPeriod(window._ghPend); return [p.from, p.to, p.days, p.next]; })()`), ['2026-07-01', '2026-08-20', 51, '2026-08-21']);
+  run(c, `ghConfirmSave()`);
+  assert.equal(run(c, `window._ghPend.ok`), false, 'save refuses before the evaluation is confirmed');
+  c.curRole = 'am'; run(c, `ghEvalConfirm()`);
+  assert.equal(run(c, `window._ghPend.ev`), null, 'AM cannot confirm');
+  assert.doesNotMatch(run(c, `ghConfirmHtml(window._ghPend)`), /onclick="ghEvalConfirm\(\)"/, 'AM has no confirm button');
+  c.curRole = 'gm'; run(c, `ghEvalConfirm()`);
+  assert.deepEqual(run(c, `(function(){ var e=window._ghPend.ev; return [e.g, e.track, e.csPct, e.by]; })()`), ['G3', 'sv', 72, 'GM']);
+  c.SUMS['Ken Sample'] = c.S(95);
+  // same order as ghConfirmSave: check the date and fix the period against the history before the grade changes, then save and record
+  run(c, `(function(){ var p=window._ghPend; if(ghEvalStop(p)) throw new Error(ghEvalStop(p)); p.period=ghEvalPeriod(p); p.ok=true; EMPS[0].title='Store Manager'; ghAfterSaveEmp('ken', { name:'Ken Sample' }, EMPS); })()`);
+  const r = run(c, `ghRecs('ken')`)[0];
+  assert.deepEqual([r.d, r.g, r.from, r.src], ['2026-08-20', 'G4', 'G3', 'title']);
+  assert.deepEqual([r.prevEval.g, r.prevEval.track, r.prevEval.csPct, r.prevEval.from, r.prevEval.to, r.prevEval.days], ['G3', 'sv', 72, '2026-07-01', '2026-08-20', 51], 'the confirmed score stays even if the score rises later');
+});
+
+test('UI案38: no Career Score means no confirmation; a G3 whose track the title does not give must pick one', () => {
+  const c = app38();
+  run(c, `ghBeforeSaveEmp('neo', { name:'Neo Sample', title:'Store Manager', role:'sl' })`);
+  assert.match(lastModal(c), /まだ評価がありません/);
+  assert.doesNotMatch(lastModal(c), /onclick="ghEvalConfirm\(\)"/);
+  run(c, `ghEvalConfirm()`); assert.equal(run(c, `window._ghPend.ev`), null);
+  run(c, `ghConfirmCancel(); ghBeforeSaveEmp('sho', { name:'Sho Sample', title:'Store Manager', role:'sl' })`);
+  run(c, `ghEvalConfirm()`); assert.equal(run(c, `window._ghPend.ev`), null, 'Store Leader gives no track: pick first');
+  run(c, `ghEvalSetTrack('op'); ghEvalConfirm()`); assert.equal(run(c, `window._ghPend.ev.track`), 'op');
+});
+
+test('UI案38: the previous grade period uses the confirmed evaluation; the new grade uses the quarter; confirmed quarters do not move', () => {
+  const c = app38();
+  c.STORE.grade_hist = { ken: { recs: [{ id: 'r1', d: '2026-08-20', g: 'G4', from: 'G3', start: false, src: 'title', prevEval: { g: 'G3', track: 'kt', csPct: 50 } }], _at: 1 } };
+  c.EMPS[0].title = 'Store Manager'; c.E = c.EMPS[0];
+  const cfg = run(c, 'kbCfg()'), cs50 = Math.round((0.7 + 0.6 * 0.5) * 100) / 100;
+  let b = run(c, `bonusProrate(E, kbCfg(), 1, 1, 1.2)`);
+  assert.deepEqual(b.segs.map(s => [s.g, s.days, s.csSrc, s.csCoef, s.coefKey, s.amount]),
+    [['G3', 51, 'grade', cs50, 'G3-kt', Math.round(3000 * 51 / 92 * cs50)], ['G4', 41, null, 1.2, 'G4', Math.round(5000 * 41 / 92 * 1.2)]],
+    'G3 7/1–8/20 at the confirmed 50% (and the confirmed kitchen track, no quarter pick needed); G4 8/21–9/30 at the quarter score');
+  assert.equal(cfg.csMin, 0.7);
+  const snap = run(c, `bonusCoefSnapFor(E, kbCfg(), {})`);
+  assert.deepEqual(snap.segs.map(s => s.csPct), [50, null], 'confirming the quarter records the segment score');
+  c.BQ['2026-Q3'] = { locked: true };
+  b = run(c, `bonusProrate(E, kbCfg(), 1, 1, 1.2)`);
+  assert.deepEqual(b.segs.map(s => s.csCoef), [1.2, 1.2], 'a quarter confirmed before v1058 keeps the quarter score for every segment');
+});
+
+test('UI案38: promotion approval and Leader promotion wait for the evaluation; G1 changes and rejections do not', () => {
+  const c = app38();
+  c.STORE.lss_requests = [{ id: 'r1', name: 'Amy Sample', kind: 'promo', wantTitle: 'Kitchen Leader', status: '申請中' },
+                          { id: 'r2', name: 'Bob Sample', kind: 'promo', wantTitle: 'Crew Leader', status: '申請中' }];
+  run(c, `approveLssRequest('r1','承認')`);
+  assert.equal(c.STORE.lss_requests[0].status, '申請中', 'not approved yet');
+  assert.equal(c.EMPS[2].title, 'Crew Leader');
+  assert.match(lastModal(c), /昇格申請を承認します/);
+  run(c, `ghEvalConfirm(); window._ghPend.d='2026-08-15'; ghConfirmGo();`);
+  const r = run(c, `ghRecs('amy')`)[0];
+  assert.equal(c.STORE.lss_requests[0].status, '承認'); assert.equal(c.EMPS[2].title, 'Kitchen Leader');
+  assert.deepEqual([r.d, r.src, r.prevEval.g, r.prevEval.csPct], ['2026-08-15', 'promo', 'G2', 81]);
+  assert.equal(run(c, `window._ghPend`), null, 'the confirmation is used once');
+  const n = c.MODAL.length; run(c, `approveLssRequest('r2','承認')`);
+  assert.equal(c.STORE.lss_requests[1].status, '承認'); assert.equal(c.MODAL.length, n, 'G1 → G2 approves as before');
+  c.STORE.dev_data = { 'Cal Sample': { stage: 5, targetCareer: 'Store Leader', stageHistory: [] } };
+  run(c, `approveAdvance('Cal Sample')`);
+  assert.equal(run(c, `getDevData('Cal Sample').stage`), 5); assert.equal(c.CONFIRMS, 0);
+  assert.equal(run(c, `window._ghPend.t1`), 'Operation Leader', 'the abolished Store Leader target becomes Operation Leader');
+  run(c, `ghEvalConfirm(); ghConfirmGo();`);
+  assert.equal(c.EMPS[5].title, 'Operation Leader'); assert.equal(run(c, `getDevData('Cal Sample').stage`), 6); assert.equal(c.CONFIRMS, 0);
+  assert.equal(run(c, `ghRecs('cal')`)[0].prevEval.csPct, 77);
+});
+
+test('UI案38: a confirmation made for an approval is never reused for an employee-master change', () => {
+  const c = app38();
+  run(c, `window._ghPend = { kind:'approve', key:'zz', empId:'ken', g0:'G3', g1:'G4', ok:true, ev:{ g:'G3' }, d:'2026-08-01' }`);
+  assert.equal(run(c, `ghBeforeSaveEmp('ken', { name:'Ken Sample', title:'Store Manager', role:'sl' })`), true);
+  assert.equal(run(c, `window._ghPend.kind`), 'emp'); assert.equal(run(c, `window._ghPend.ev`), null);
+});
+
+test('UI案38: My page promotion button no longer needs all axes at L4; Store Leader cannot be chosen', () => {
+  const c = app38();
+  vm.runInContext(`var OK=true; cscPromoState=function(n){ return n==='Amy Sample' ? { ok:OK, targets:[] } : null; }; lssEligibility=function(){ return { pct:85, hasData:true, promo:{ ok:false, min:80 } }; };`, c);
+  assert.equal(run(c, `cscMyCanApply('Amy Sample', { ojtOk:true, axesOk:false, can:false })`), true, 'axes below L4, OJT done, criteria met');
+  assert.equal(run(c, `cscMyCanApply('Amy Sample', { ojtOk:false, axesOk:true, can:false })`), false, 'OJT still required');
+  assert.equal(run(c, `cscMyCanApply('Dan Sample', { ojtOk:true, axesOk:true, can:true })`), false, 'others use the total % (not met here)');
+  assert.doesNotMatch(fn('renderMypage'), /t\('担当軸すべてL4'/, 'the L4 line is gone');
+  assert.match(fn('renderMypage'), /cscMyCanApply\(me, gpe\)/);
+  assert.equal(run(c, `Object.keys(CAREER_CONFIG).join()`), 'Server Leader,Kitchen Leader,Operation Leader');
+  assert.equal(run(c, `CAREER_TRACKS.join()`), 'Server Leader,Kitchen Leader,Operation Leader');
+  c.STORE.career_track = { X: 'Store Leader' };
+  assert.equal(run(c, `getCareerTrack('X')`), 'Operation Leader');
+  assert.match(fn('openLssApply'), /LSS_TITLES\.filter\(t=>t!=='Store Leader'\)/);
+  assert.match(fn('openEmpModal'), /JOB_TITLES\.filter\(t=>t\.key!=='Store Leader'\|\|e\.title===t\.key\)/);
+});
+
+test('UI案38: the decision date must match the grade history; a same-day record keeps the evaluation; an old Store Leader request gets Operation Leader', () => {
+  const c = app38();
+  c.STORE.grade_hist = { ken: { recs: [{ id: 'k1', d: '2026-08-15', g: 'G3', from: 'G2', start: false, src: 'title' }], _at: 1 } };
+  run(c, `ghBeforeSaveEmp('ken', { name:'Ken Sample', title:'Store Manager', role:'sl' }); window._ghPend.d='2026-08-10'; ghEvalConfirm();`);
+  assert.match(run(c, `ghEvalPeriod(window._ghPend)`).err, /8\/16 以降/, 'a date before the last record is not turned into a guessed period');
+  assert.equal(run(c, `window._ghPend.ev`), null, 'and cannot be confirmed');
+  run(c, `window._ghPend.d='2026-08-25'; ghEvalConfirm();`);
+  assert.deepEqual(run(c, `(function(){ var p=ghEvalPeriod(window._ghPend); return [p.from, p.days, window._ghPend.ev.csPct]; })()`), ['2026-08-16', 10, 72]);
+  run(c, `window._ghPend.d='2026-08-12'`);
+  assert.match(run(c, `ghEvalStop(window._ghPend)`), /より後の日/, 'moving the date back after confirming stops the save again');
+  run(c, `ghConfirmCancel()`);
+  c.STORE.grade_hist.ken.recs.push({ id: 'k2', d: '2026-08-30', g: 'G4', from: 'G3', start: false, src: 'manual' });
+  run(c, `ghAddRecEval('ken', { d:'2026-08-30', g:'G4', from:'G3', start:false, src:'title', prevEval:{ g:'G3', csPct:72 } }, 'Ken Sample')`);
+  const same = run(c, `ghRecs('ken')`).filter(r => r.d === '2026-08-30');
+  assert.equal(same.length, 1); assert.equal(same[0].prevEval.csPct, 72, 'the evaluation is added to the existing record, not dropped');
+  c.STORE.grade_hist.amy = { recs: [{ id: 'a1', d: '2026-08-15', g: 'G1', from: 'G2', start: false, src: 'manual' }], _at: 1 };   // history says G1 since 8/16, the title says G2
+  run(c, `ghConfirmCancel(); ghBeforeSaveEmp('amy', { name:'Amy Sample', title:'Kitchen Leader', role:'sl' }); window._ghPend.d='2026-08-20'; ghEvalConfirm();`);
+  assert.match(run(c, `ghEvalPeriod(window._ghPend)`).err, /G2 になっていません/, 'history and title disagree: no guessed period');
+  assert.equal(run(c, `window._ghPend.ev`), null);
+  run(c, `ghConfirmCancel()`);
+  c.EMPS.push({ id: 'zed', name: 'Zed Sample', title: 'Crew', role: 'crew' });
+  c.STORE.lss_requests = [{ id: 'r9', name: 'Zed Sample', kind: 'promo', wantTitle: 'Store Leader', status: '申請中' }];
+  run(c, `approveLssRequest('r9','承認')`);
+  assert.equal(c.EMPS.find(x => x.id === 'zed').title, 'Operation Leader');
 });
