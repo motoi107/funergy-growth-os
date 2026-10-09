@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-10-09 v1058 に追加（UI案38）：グレードを変える前に前のグレードの期間の評価を確定・担当軸 L4 の条件を廃止・Store Leader の廃止（Claude・PR #34・head `b215fd4`・Codex のレビューはまだ・本番未反映）
+
+- 依頼：Moto さん 10/9 10:31 HST「G3だった日までの評価を日割りで確定させ、G4になった期間も同様に日割りで算出する／G3だった時の評価を確定させないとグレード変更できない様に」「（担当軸 L4 の条件は）一旦廃止」「Store Leaderという役職は廃止されています」。UI案38（9 枚）を見せて回答 4 点：確定するのは職種と評価だけ（予算・利益・係数・原資は四半期の終わり）／Career Score が無い人は先に評価／G2 以上から変わるとき全部／確定できるのは GM・CEO だけ。
+- 実装（v1058 のまま・未リリース）：従業員マスターの役職変更・昇格申請の承認・Leader 昇格の 3 つの入口で、前のグレードの期間（四半期の初めかそのグレードになった日〜確定日）の Career Score と G3 の職種を GM・CEO が確定するまで変えられない。確定日がグレード履歴と合わないときは止める（推測しない）。評価は `grade_hist` の記録の `prevEval` に残り、ボーナスは前のグレードの区間をその評価で日割り。確定した四半期・v1057 以前の確定は動かない。マイページの「担当軸すべてL4」の条件を外した（OJT＋スコア）。Store Leader は新しく選べない（前の目標・申請は Operation Leader）。仕様は PR #34 の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md` 4〜5 節。index md5 `8da2631e…`・sw `8a5e08e8…`（SW_BUILD 1058）。
+- 試験（合成データ）：`tests/career-criteria.test.mjs` 19/19（UI案38 の mutation 21 通り中 20 で落ちる）・`node --test tests/*.test.mjs` 162/189（27 失敗は main と同じ名前・同じ数）・static release pass。handoff：`verify_v1058` 118/118・本物の画面 `check_career_v1058` 81/81・pageerror 0・run_all 本物の FAIL 0。CI：Static release validation success、Claude review workflow は skipped（レビューではない）。
+- Claude の別エージェント（作業を見ていない・Codex ではない）の独立レビュー：P1 なし・6 件を修正（確定日と履歴が合わないときの期間の推測・同じ日の記録で評価が消える ほか）。`b3e4957` の見直しで 5 件は直っている、1 件はグレード履歴に書けなかったときに知らせるだけ（役職の変更は戻さない）。`b215fd4` は退職日の理由の表示だけ（試験で確認・見直しは受けていない）。
+- 運用の注意：グレード履歴が今の役職と合っていない人は、履歴を直すまでグレードを変えられない。同じ日の取り消しはグレード履歴の編集で。育成パイプラインはまだ担当軸を使う。Tip の SL 拠出・権限ロールの表示名「Store Leader」は変えていない。
+- 次：Codex が PR #34（head `b215fd4`）をレビュー → Moto さんがマージ → GM・CEO が基準・係数・役職名を入れる → 実機で確認。
+
 ## 2026-10-09 v1058 実装：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（Claude・PR #34・head `1705ae3`・Codex のレビューはまだ・本番未反映）
 
 - Moto さんが UI案37 を確認して「はい、これで進めてください」（10/9）。PR #34（ブランチ `claude/career-criteria-bonus-coef`・main `93491e1` が土台）。index md5 `b5f82569…`・sw `8a5e08e8…`（SW_BUILD 1058）。SQL・Edge Function の変更なし。仕様・式・保存キー・運用の前に入れるもの・試験は PR #34 の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md`。
