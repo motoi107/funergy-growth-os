@@ -64,8 +64,11 @@ test('review list: four items with marks; only invoices with nothing to check ar
   assert.match(h, /明細が読めない（前の版の読み取り）→ 原本の合計を確かめる/);
   assert.doesNotMatch(h, /単価が前回から大きく変わった|商品マスターに対応がない|数量・単価が読めない/);
   assert.ok(h.includes('Printed &lt;b&gt;Co&lt;/b&gt;') && !h.includes('<b>Co</b>'));
+  // v1059 (Moto 2026-10-09): 事務Crew does the Invoice intake work like accounting; someone without an invoice role does not.
   const crew = app({ role: 'office_crew' }); crew.M._invIn.review = { rows: rows(), total: 5 };
-  assert.doesNotMatch(vm.runInContext('invInQueueHtml', crew)('review'), /type="checkbox"|invInBatchAsk/);
+  assert.equal(vm.runInContext('invInQueueHtml', crew)('review'), h);
+  const other = app({ role: 'crew' }); other.M._invIn.review = { rows: rows(), total: 5 };
+  assert.doesNotMatch(vm.runInContext('invInQueueHtml', other)('review'), /type="checkbox"|invInBatchAsk/);
 });
 
 test('batch post: one request per selected invoice, with its version and the accounting reason; failures stay in review', async () => {
@@ -78,7 +81,10 @@ test('batch post: one request per selected invoice, with its version and the acc
   assert.match(c.toasts[0][0], /反映しました：1 件.*反映できなかった：1 件/);
   const crew = app({ role: 'office_crew' }); crew.M._invIn.review = { rows: rows(), total: 5 };
   await vm.runInContext('invInBatchPost', crew)();
-  assert.equal(crew.calls.length, 0);
+  assert.deepEqual(crew.calls.map(b => [b.action, b.doc_id]), [['post', id(1)]]);     // 事務Crew posts like accounting (v1059)
+  const other = app({ role: 'crew' }); other.M._invIn.review = { rows: rows(), total: 5 };
+  await vm.runInContext('invInBatchPost', other)();
+  assert.equal(other.calls.length, 0);
 });
 
 const DOC = () => ({ doc: { id: id(2), version: 1, status: 'review', doc_type: 'invoice', posting_kind: 'purchase', vendor_key: null, vendor_raw: 'Printed Co', invoice_no: '2001', store_id: 'F06',

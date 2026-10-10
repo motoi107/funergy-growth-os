@@ -1,33 +1,24 @@
 # Claude / Codex 共通記録
 
-## 2026-10-09 v1058 に追加（UI案38）：グレードを変える前に前のグレードの期間の評価を確定・担当軸 L4 の条件を廃止・Store Leader の廃止（Claude・PR #34・head `b215fd4`・Codex のレビューはまだ・本番未反映）
+## 2026-10-09 v1059：事務Crew は Invoice取込で経理と同じ（経理の依頼）・店舗フォルダの手前の取込は未配備（Claude・本番未反映）
 
-- 依頼：Moto さん 10/9 10:31 HST「G3だった日までの評価を日割りで確定させ、G4になった期間も同様に日割りで算出する／G3だった時の評価を確定させないとグレード変更できない様に」「（担当軸 L4 の条件は）一旦廃止」「Store Leaderという役職は廃止されています」。UI案38（9 枚）を見せて回答 4 点：確定するのは職種と評価だけ（予算・利益・係数・原資は四半期の終わり）／Career Score が無い人は先に評価／G2 以上から変わるとき全部／確定できるのは GM・CEO だけ。
-- 実装（v1058 のまま・未リリース）：従業員マスターの役職変更・昇格申請の承認・Leader 昇格の 3 つの入口で、前のグレードの期間（四半期の初めかそのグレードになった日〜確定日）の Career Score と G3 の職種を GM・CEO が確定するまで変えられない。確定日がグレード履歴と合わないときは止める（推測しない）。評価は `grade_hist` の記録の `prevEval` に残り、ボーナスは前のグレードの区間をその評価で日割り。確定した四半期・v1057 以前の確定は動かない。マイページの「担当軸すべてL4」の条件を外した（OJT＋スコア）。Store Leader は新しく選べない（前の目標・申請は Operation Leader）。仕様は PR #34 の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md` 4〜5 節。index md5 `8da2631e…`・sw `8a5e08e8…`（SW_BUILD 1058）。
-- 試験（合成データ）：`tests/career-criteria.test.mjs` 19/19（UI案38 の mutation 21 通り中 20 で落ちる）・`node --test tests/*.test.mjs` 162/189（27 失敗は main と同じ名前・同じ数）・static release pass。handoff：`verify_v1058` 118/118・本物の画面 `check_career_v1058` 81/81・pageerror 0・run_all 本物の FAIL 0。CI：Static release validation success、Claude review workflow は skipped（レビューではない）。
-- Claude の別エージェント（作業を見ていない・Codex ではない）の独立レビュー：P1 なし・6 件を修正（確定日と履歴が合わないときの期間の推測・同じ日の記録で評価が消える ほか）。`b3e4957` の見直しで 5 件は直っている、1 件はグレード履歴に書けなかったときに知らせるだけ（役職の変更は戻さない）。`b215fd4` は退職日の理由の表示だけ（試験で確認・見直しは受けていない）。
-- 運用の注意：グレード履歴が今の役職と合っていない人は、履歴を直すまでグレードを変えられない。同じ日の取り消しはグレード履歴の編集で。育成パイプラインはまだ担当軸を使う。Tip の SL 拠出・権限ロールの表示名「Store Leader」は変えていない。
-- 次：Codex が PR #34（head `b215fd4`）をレビュー → Moto さんがマージ → GM・CEO が基準・係数・役職名を入れる → 実機で確認。
+- 依頼：Moto さん 10/9 17:16 HST（経理の LINE を転送）。①事務Crew が「この内容で反映する」を押せない（「事務Crew は閲覧のみ」）→ Moto さんが LINE で「オケです」。②Tenkichi・Aiea が店舗フォルダの手前に入れた invoice がアプリに出ない（00_Upload の Marujuu は出る）。③反映した 1 件が 5 分たっても QB の Receipt に無い。
+- ①の決定の流れ：最初に Claude が「要確認の書類だけ」に絞った版（PR #32 `77bd608`・PR #35 `d5e8e9b`）→ Codex が `d5e8e9b`・`44290a8` を blocked（P1：4 項目より広く直せる）→ **Moto さん 10/9 18:54「事務Crew が自己完結できるように」**（原文は個人名）→ Claude はこれを「事務Crew（office_crew）は **Invoice取込で経理（office）と同じ**」と読んだ（とくに締め済み月の調整・反映済みとの置き換え・QB の結果は Moto さんの確認待ち）：直す・反映・締め済み月の調整・反映済みとの置き換え・反映済みの訂正・重複／対象外とその取り消し・紐づけ・照合・やり直し・QB の結果・店舗の付け替え・業者と対応表の登録。経理と同じく GM・CEO だけのもの：設定・店舗・自動反映の ON・過去分・候補づくり・フォルダの用意。Codex の P1（4 項目に絞る）はこの決定で範囲が変わった。
+- サーバー：PR #32 `76d923c`＋`71896c3`（migration `20261009190000_invoice_office_crew_accounting.sql`：関数 10 個の差し替えだけ。`20261009170000` を入れていてもいなくてもよいが、190000 の後に 170000 は流さない）。postcheck は `office_crew_accounting`。戻すときは `db/invoice-intake-office-crew-revert.sql`。画面：PR #35 の v1059（`invInCanEdit` に office_crew を足しただけ。main との差は index.html 7 行・sw.js 1 行）。
+- ②：手前の取込は 10/8 の `cb2f6e5`（PR #32）で作ったが、Codex のレビューも本番への配備もまだ（`INVOICE_DRIVE_INTAKE_JA.md` §13 の 11 に「済」が無い）。本番の状態はこちらから見られないので、Moto さんに確認の SQL（読むだけ）で store_folder_intake を見てもらう。
+- ③：QB への転送は「反映」とは別。今は外部の転送（ChatGPT 側・`route='external'`）が原本を送る。このシステムは反映のときに QB へ送らない（§11）。外部の転送が店舗フォルダの手前だけを見ているなら、00_Upload の分は送られていない可能性（仮説・未確認）。
+- 試験（合成データ）：invoice ブランチ `tests/invoice-intake|rules|adapters|ui` 98/98（事務Crew の E2E は前の SQL で落ちる）・事務Crew の mutation 6 件はすべて落ちる（全体の mutation は PR #32 に記録）。main 側 `tests/invoice-office-crew.test.mjs` 6/6（v1058 の画面では 6 つとも落ちる）・`node --test tests/*.test.mjs` 172/199（27 失敗は main と同じ）・static release pass/v1059。Claude の手元の本物の画面（本物の handler と SQL を PGlite で）24/24・pageerror 0（事務Crew のまとめて反映・業者を選んで反映・合計の差・対象外・締め済みの調整・照合・反映済みの訂正・結果不明の転送・設定のスイッチは押せず画面を通さず送ってもサーバーが断る・英語・スマホ 390px）。
+- レビュー：Claude の別エージェント（作業を見ていない）が PR #32 `76d923c`・PR #35 `834da3b` を見て P1・P2 なし、P3 6 件（もう一度送る・フォルダの一覧の試験が無い／170000 を後に流すと混ざる／サーバーを戻す手順が無い／「経理と同じ」は解釈と書く／コメントと数字が古い／invoice-ui の 2 件）→ `71896c3` で 5 件を直した（残りは下の PR #32 の取り込み時）。Codex が `834da3b` を再レビュー：実装のブロッカーなし・`blocked`（manual）の理由は、会計の権限を広げる業務の決定（職務の分け方）を AI は承認できないこと・PR #32 が draft で SQL を先に入れること・実機未確認。Claude の PR レビュー 2 件もブロッカーなし（同じく権限の決定は人の確認）。
+- 未：Moto さんの範囲の確認（とくに締め済み月の調整・置き換え・QB の結果）・`cb2f6e5` のレビュー・Moto さんの配備（確認の SQL → 手前の SQL → 関数 → 事務Crew の SQL → 確認の SQL → アプリの順）・実機。PR #32 に main を取り込むとき、`tests/invoice-ui.test.mjs` の「事務Crew はチェックもまとめて反映も無い」2 か所を v1059 の動きに直す。
 
-## 2026-10-09 v1058 実装：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（Claude・PR #34・head `1705ae3`・Codex のレビューはまだ・本番未反映）
+## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（UI案37）・グレードを変える前の評価の確定・担当軸 L4 の廃止・Store Leader の廃止（UI案38）（Claude・本番未反映）
 
-- Moto さんが UI案37 を確認して「はい、これで進めてください」（10/9）。PR #34（ブランチ `claude/career-criteria-bonus-coef`・main `93491e1` が土台）。index md5 `b5f82569…`・sw `8a5e08e8…`（SW_BUILD 1058）。SQL・Edge Function の変更なし。仕様・式・保存キー・運用の前に入れるもの・試験は PR #34 の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md`。
-- スコア基準：目標（G2・G3 の 3 職種・G4・G5）ごと・カテゴリーごとに 達成率／点数／基準なし。全カテゴリーが基準以上で達成（補わない・丸めない）。未評価・基準が途中は判定保留。申請にそのときの基準と判定（`lss_requests[].csc`）。専門職・オフィス・G5 以上は今の総合％。Next Target の undefined% を直した。
-- 係数：Grade基準額（日割り）× グレード・職種係数 × 予算 × 利益 × CS（原資の上限は今までどおり）。入れていない＝1.0（v1057 と同じ金額）。G3 の職種が決まらない人は金額を出さず、四半期の確定・履歴への記録もできない（GM・CEO がその四半期の職種を選べる）。確定すると係数と基準額を `bonus_q[四半期].coefSnap` に残す。v1057 以前の確定は 1.0 のまま。新しいキー `cs_criteria`・`bonus_coef`（同期・mergeMapByTime・LS_NEVER_FREE）。
-- 試験（合成データ）：`tests/career-criteria.test.mjs` 12/12（わざと壊した 11 通りはすべて落ちる）・`node --test tests/*.test.mjs` 155/182（27 失敗は main と同じ）・static release v1058。handoff：`verify_v1058` 69/69・本物の画面 `check_career_v1058` 59/59・pageerror 0・run_all 本物の FAIL 0。
-- Claude の別エージェント（作業を見ていない・Codex ではない）が独立レビュー：10 件を直した（1 人ずつの記録の原資の調整・四半期のキー・職種の選び直し・係数の小数の誤差・エスケープ など）。
-- Moto さんの判断待ち：四半期の途中まで G3 で今は別のグレードの人は係数が全部 1.0 でも四半期ごとに職種を選ぶ（3 職種の係数が同じなら選ばなくても計算する、にもできる）・マイページの担当軸 L4 の条件を残すか。
-- 気をつけること：Store Leader など職種が決まらない G3 は、マージすると移行（1.0）でも「職種の設定が必要」になる（決定 ②）。v1057 の端末で四半期を確定すると係数の記録が残らない（全員が v1058 になってから確定）。
-- 次：Codex が PR #34 をレビュー → Moto さんがマージ → GM・CEO が基準・係数・役職名を入れる → 実機で確認。
-
-## 2026-10-09 Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（Claude・UI案37 を提出 → 上の節で実装）
-
-- 依頼：Moto さん 10/9 08:38 HST（仕様書）。Career Score は目標グレード・G3 職種ごとにカテゴリー別の基準（点数／達成率／基準なし）で判定（総合％で補わない・基準以上・丸めで合否を変えない・未評価や基準未設定は判定保留・スコア達成と昇格は別）。ボーナスはグレード別・G3 職種別の係数（小数）。設定は永続・別端末・確定済みの評価とボーナスは変えない。
-- 今の作り（v1057 で確認）：判定は総合％だけ（`lss_rules.promo.minPct` 既定 80）。カテゴリーは H 理念・A 基本業務・B サービス・C キッチン/プレップ・D マーケ・E マネジメント・F 数字管理・G 人材育成、各項目 0〜3 点・満点＝項目数×3、未評価は 0 点で分母に入る（店舗用に「対象外」は無い）。ボーナス＝Grade基準額（`karte_bonus_config.gradeBase`。G2 1,000・G3 3,000・G4 5,000・G5 8,000・G6 12,000。グレード履歴で日割り）× 予算達成率係数 × 店舗利益係数 × Career Score係数（総合％から）、合計が原資を超えたら全員に同じ割合（原資は上限）。G3 の役職名は Server／Kitchen／Operation／Store Leader。
-- Moto さんの決定（10/9）：①係数は「Grade基準額はそのまま × グレード・職種係数」（移行は全部 1.0＝今と同じ金額）②G3 職種は役職名から（Server Leader→サーバー、Kitchen Leader→キッチン、Operation Leader→オペレーション）。Store Leader と役職名の無い G3 は「職種の設定が必要」で金額を出さない ③部門別の専門職（Head Chef・Accountant など）とオフィス用 Career Score は今回の新しい判定に入れない（今の総合％のまま。ボーナスの係数はグレードのものを使う）。
-- UI案37（`render/ui37_proto.js`・`render/shots_ui37.py`・16 枚。見本の人と数字だけ）：スコア基準の設定（目標 G2〜G5・G3 は 3 職種のタブ、カテゴリーごとに判定方法と基準、未設定は判定保留）、スタッフの「次のグレードのスコア基準」（G3 は 3 職種の表・いま・基準・判定・あと何点／何pt）、ボーナスの「グレード別 基準額と係数」、査定一覧と計算明細（グレード・職種係数の段・職種の設定が必要）。
-- 見つけた既存の不具合：Career Score の「Next Target」が「条件達成（undefined% ≥ 80%）」「現在 undefined%」と出る（`lssNextTargetHtml` が `elig.promo.pct` を読むが pct は `elig` 側）。新しいカードに置き換える予定。
-- 次：（済）Moto さんが OK → v1058 を実装（上の節）。
+- 依頼と決定：Moto さん 10/9 08:38 HST の仕様 → UI案37 を確認（「はい、これで進めてください」）。10/9 10:31 HST の追加 → UI案38 と回答 4 点（確定するのは職種と評価だけ・Career Score が無い人は先に評価・G2 以上から変わるとき全部・確定できるのは GM・CEO だけ）。仕様・式・保存キー・運用の前に入れるもの・試験はこの PR の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md`。土台は main `93491e1`（v1057）。SQL・Edge Function の変更なし。
+- 新しいキー：`cs_criteria`・`bonus_coef`・`bonus_track`（どれも OP_SYNC_KEYS・mergeMapByTime・LS_NEVER_FREE）。`grade_hist` の記録に `prevEval`、`bonus_q[四半期].coefSnap`、`lss_requests[].csc`、`payLog[].snap` に係数。
+- Codex のレビュー（head `b215fd4`・blocked）と Claude の PR レビューの指摘を直した：P1 グレードが変わる 3 つの入口（従業員マスター・昇格申請の承認・Leader 昇格）で、役職・グレード履歴・申請・ステージ・会社の履歴を 1 回の操作でまとめて保存（どれか保存できなければ全部戻し、同期にも送らない・成功と出さない）。P2 その四半期に選んだ G3 職種を `bonus_q` の中から別キー `bonus_track`（四半期|従業員ごと）へ（別の端末で別の人を選んでも消えない・外すのは「なし」を新しい時刻で）。
+- 試験（合成データ）：`tests/career-criteria.test.mjs` 23/23（わざと壊した 29 通り中 28 で落ちる。残り 1 つは重なっている読み替え）・`node --test tests/*.test.mjs` 166/193（27 失敗は main と同じ。PGlite を入れない環境では 29）・static release pass/v1058。Claude の手元：`verify_v1058` 138/138・本物の画面 84/84・pageerror 0。
+- レビューの実績：Claude の別エージェント（作業を見ていない）が UI案37 で 10 件・UI案38 で 6 件を指摘 → 修正。Codex が `1705ae3`・`b215fd4` をレビュー（blocked）→ 上の P1・P2 を修正。修正の `29c55dd` を Claude の別エージェントが見て P1・P2 なし・P3 のうち 3 件を直した。修正後の head は Codex の再レビュー待ち（この記録は Codex の承認ではない）。
+- 次：Codex が最新の head を再レビュー → Moto さんがマージ → GM・CEO がスコア基準・係数・今も Store Leader の人の役職名・グレード履歴の食い違いを直す → 実機で確認。PR #32（invoice）は main と index.html・sw.js・この 2 つの共通記録が食い違うので、マージの前に main を取り込んで直す。
 
 ## 2026-10-08 店舗フォルダの直下（00_Upload の手前）に置いた invoice も読む（Claude・`cb2f6e5`・Codex のレビューはまだ・本番未反映）
 
