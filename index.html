@@ -38164,7 +38164,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1058';
+const APP_VERSION = '1059';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -44144,6 +44144,10 @@ function invInErrText(code, status){
 }
 function invInCan(){ return ['ceo','gm','office','office_crew'].indexOf(curRole) >= 0; }
 function invInCanEdit(){ return ['ceo','gm','office'].indexOf(curRole) >= 0; }
+/* v1059（経理の依頼・Moto 10/9）：事務Crew も要確認の書類を確認・反映できる（4 項目を直す・反映・重複／対象外・Credit memo の紐づけ）。
+   反映済みの訂正・締め済み月の調整・反映済みとの置き換え・新しい商品の対応の登録・照合・やり直し・設定は経理・GM・CEO（サーバーの SQL も同じ） */
+function invInCanReview(){ return ['ceo','gm','office','office_crew'].indexOf(curRole) >= 0; }
+function invInCrewOnly(){ return curRole === 'office_crew'; }
 function invInCanAdmin(){ return ['ceo','gm'].indexOf(curRole) >= 0; }
 function invInSession(){ return (typeof _botSession!=='undefined' && _botSession) || window._authSession || null; }
 function invInSigned(){ var s = invInSession(); return !!(s && s.access_token); }
@@ -44459,7 +44463,7 @@ function invInSelected(r){ return invInBatchable(r) && !(_invIn.unsel && _invIn.
 function invInSel(id, on){ _invIn.unsel = _invIn.unsel || {}; if (on) delete _invIn.unsel[id]; else _invIn.unsel[id] = 1; invInRerender(); }
 function invInSelAll(on){ _invIn.unsel = {}; if (!on) (((_invIn.review||{}).rows)||[]).forEach(function(r){ _invIn.unsel[r.id] = 1; }); invInRerender(); }
 function invInReviewTable(Q){
-  var e = escapeHtml, edit = invInCanEdit(), rows = Q.rows;
+  var e = escapeHtml, edit = invInCanReview(), rows = Q.rows;
   var able = rows.filter(invInBatchable), sel = rows.filter(invInSelected), B = _invIn.batching;
   var h = '<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px"><b style="font-size:13.5px">'+t('要確認','Review')+'</b>'
     + invInChip(t('経理が見るのは 業者・invoice番号・金額・店舗 の 4 つだけ','Accounting checks only vendor, invoice no., amount and store'), INVIN_COL.blue) + '</div>'
@@ -44486,13 +44490,12 @@ function invInReviewTable(Q){
   if (edit) h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button class="btn btn-primary btn-sm"'+(sel.length && !B?'':' disabled')+' onclick="invInBatchAsk()"><i class="ti ti-'+(B?'loader-2':'checks')+'"></i> '
       + (B ? t('反映中… ','Posting… ')+B.done+' / '+B.total : t('選んだ ','Post the ')+sel.length+t(' 件を反映する',' selected'))+'</button>'
       + '<span class="ivx-note" style="margin:0">'+t('原本と 4 項目が合っているものにチェック → まとめて反映。商品・単価は見なくてよい。','Tick the ones whose four items match the original and post them together. Products and prices need not be checked.')+'</span></div>';
-  else h += '<div class="ivx-note">'+t('事務Crew は閲覧のみです。反映は経理・GM・CEO が行います。','Office crew can view only. Accounting, GM or CEO post.')+'</div>';
   if (rows.length < Q.total) h += '<div class="ivx-note">'+t('ほかに ','')+(Q.total-rows.length)+t(' 件あります（反映すると次が出ます）',' more (they appear as these are posted)')+'</div>';
   return h + '</div><div class="ivx-note">'+t('✓ は AI の読みとマスター・計算で確かめられた項目。? と ! が付いた行だけ開いて直します。商品の対応や単価の変化は「確認すること」に出しません（明細の中に参考として残ります）。',
     '✓ means the reading was confirmed against the master and the arithmetic. Open only the rows with ? or ! to fix them. Product mapping and price changes are not listed here (they stay in the lines for reference).')+'</div>';
 }
 function invInBatchAsk(){
-  if (_invIn.batching || !invInCanEdit()) return;
+  if (_invIn.batching || !invInCanReview()) return;
   var rows = (((_invIn.review||{}).rows)||[]).filter(invInSelected); if (!rows.length) return;
   var sum = rows.reduce(function(a, r){ return a + (Number(r.total_cents)||0); }, 0);
   openModal('<div class="modal-title">'+t('まとめて反映','Post together')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
@@ -44502,7 +44505,7 @@ function invInBatchAsk(){
 }
 /* 1 件ずつ順に送る（サーバーが 1 件ごとに版・重複・締め・4 項目の条件を確かめる）。失敗した行は要確認に残る */
 async function invInBatchPost(){
-  if (_invIn.batching || _invIn.busy || !invInCanEdit()) return;
+  if (_invIn.batching || _invIn.busy || !invInCanReview()) return;
   var rows = (((_invIn.review||{}).rows)||[]).filter(invInSelected); if (!rows.length) return;
   var ok = 0, ng = [], reason = invInBatchReason();
   _invIn.batching = { done:0, total:rows.length }; _invIn.busy = true; invInRerender();
@@ -44554,7 +44557,7 @@ function invInDetail(mode){
   var back = '<button class="btn btn-secondary btn-sm" style="margin-bottom:8px" onclick="invInBack()"><i class="ti ti-chevron-left"></i> '+(rv?t('要確認の一覧へ','Back to review list'):t('照合の一覧へ','Back to reconciliation list'))+'</button>';
   if (!G || !G.doc || G.doc.id !== _invIn.docId) return back + invInLoadingCard();
   var d = G.doc, f = G.file || {}, lines = G.lines || [], ai = G.ai_doc || {}, E = _invIn.edits || { h:{}, l:{} };
-  var canEdit = invInCanEdit() && (d.status==='review' || d.status==='posted');
+  var canEdit = (invInCanEdit() && (d.status==='review' || d.status==='posted')) || (invInCanReview() && d.status==='review');
   var codes = invInCodes(d.reasons), chk = invInToCheck(d.reasons);
   var h = back + '<div class="card" style="padding:12px 14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:15px">'+e(d.vendor_name||d.vendor_raw||t('（業者不明）','(vendor unknown)'))+'</b>'
     + invInStoreHtml(d.store_id) + '<span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--muted)">'+e(d.invoice_no||'—')+'</span>' + invInProcChip(d) + ' ' + invInReconChip(d)
@@ -44663,7 +44666,7 @@ function invInDetail(mode){
     var mapSel = invInLVal(l, 'map_id'), curMap = mapSel!==null ? mapSel : (l.map_id||'');
     var prod = canEdit ? '<select class="form-select ivx-in'+(mapSel!==null&&mapSel!==(l.map_id||'')?' ivx-chg':'')+'" style="min-width:140px;max-width:190px" onchange="if(this.value===\'__new\'){this.value='+invInJs(curMap)+';invInMapModal(\''+invInId(l.id)+'\');}else{invInSet(\'l\',\''+invInId(l.id)+'\',\'map_id\',this.value);}">'
         + '<option value="">'+t('既存の商品から選ぶ','Choose a product')+'</option>' + maps.map(function(m){ return '<option value="'+e(m.id)+'"'+(m.id===curMap?' selected':'')+'>'+e(invInMapLabel(m))+'</option>'; }).join('')
-        + '<option value="__new">'+t('＋ 新しく対応を登録','+ Add a mapping')+'</option></select>'
+        + (invInCanEdit() ? '<option value="__new">'+t('＋ 新しく対応を登録','+ Add a mapping')+'</option>' : '')+'</select>'
       : e(l.ingredient_code ? ((invInIng(l.ingredient_code)||{}).name || l.ingredient_code) : '—');
     var conv = l.count_per_purchase!=null || l.base_per_purchase!=null
       ? '1 '+e(l.purchase_unit||'')+(l.count_per_purchase!=null?' = '+e(invInQty(l.count_per_purchase))+' '+e(l.count_unit||''):'')+(l.base_per_purchase!=null?' = '+e(invInQty(l.base_per_purchase))+' '+e(l.base_unit||''):'')
@@ -44716,13 +44719,16 @@ function invInDetail(mode){
 function invInReviewActions(d){
   var e = escapeHtml, E = _invIn.edits || {}, codes = invInCodes(d.reasons);
   if (d.status!=='review') return '<div class="card" style="padding:10px 12px;font-size:12px">'+t('この書類は確認待ちではありません（','Not waiting for review (')+invInProcChip(d)+'）</div>' + (invInCanEdit() && d.status==='posted' ? invInSaveRow(d) : '');
-  if (!invInCanEdit()) return '<div class="card" style="padding:10px 12px;font-size:12px;color:var(--muted)">'+t('事務Crew は閲覧のみです。確認・反映は経理・GM・CEO が行います。','Office crew can view only. Accounting, GM or CEO confirm and post.')+'</div>';
+  if (!invInCanReview()) return '<div class="card" style="padding:10px 12px;font-size:12px;color:var(--muted)">'+t('確認・反映は経理・事務Crew・GM・CEO が行います。','Accounting, office crew, GM or CEO confirm and post.')+'</div>';
+  var crew = invInCrewOnly();
   var h = '<div class="card" style="padding:10px 12px">';
   var ack = codes.filter(function(c, i){ return INVIN_MAY_ACK.indexOf(c)>=0 && codes.indexOf(c)===i; });
   if (ack.length) h += ack.map(function(c){ return '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:4px"><input type="checkbox"'+(E.ack&&E.ack[c]?' checked':'')+' onchange="_invIn.edits.ack[\''+c+'\']=this.checked"> '
-      + (c==='original_replaced' ? t('前の版とは別の invoice として反映する（前の版はそのまま。置き換えるときは下の「訂正版として置き換える」）','Post as a separate invoice (the earlier version stays; to replace it, use “Replace it” below)')
+      + (c==='original_replaced' ? (crew ? t('前の版とは別の invoice として反映する（前の版はそのまま。訂正版として置き換えるときは経理・GM・CEO へ）','Post as a separate invoice (the earlier version stays; accounting, GM or CEO replace it with a corrected version)')
+          : t('前の版とは別の invoice として反映する（前の版はそのまま。置き換えるときは下の「訂正版として置き換える」）','Post as a separate invoice (the earlier version stays; to replace it, use “Replace it” below)'))
         : t('原本で確かめた：','Checked against the original: ')+e(invInReason(c))+t('（このまま反映する）',' (post as printed)'))+'</label>'; }).join('');
-  if (codes.indexOf('closed_month')>=0) h += '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:4px"><input type="checkbox"'+(E.adj?' checked':'')+' onchange="_invIn.edits.adj=this.checked"> '+t('締め済みの月：経理の調整として反映する（締めた数字は書き換えない）','Closed month: post as an accounting adjustment (closed figures are not rewritten)')+'</label>';
+  if (codes.indexOf('closed_month')>=0) h += crew ? '<div class="ivx-note" style="margin:0 0 6px;color:'+INVIN_COL.red+'">'+t('締め済みの月の invoice です。経理の調整として反映するのは経理・GM・CEO です（事務Crew は反映できません）。','This invoice is in a closed month. Accounting, GM or CEO post it as an accounting adjustment (office crew cannot).')+'</div>'
+    : '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:4px"><input type="checkbox"'+(E.adj?' checked':'')+' onchange="_invIn.edits.adj=this.checked"> '+t('締め済みの月：経理の調整として反映する（締めた数字は書き換えない）','Closed month: post as an accounting adjustment (closed figures are not rewritten)')+'</label>';
   var sameNo = (d.reasons||[]).filter(function(r){ return r.code==='same_number_different' || r.code==='original_replaced'; });
   var cands = invInCandIds(d);
   if (cands.length) {
@@ -44730,11 +44736,12 @@ function invInReviewActions(d){
       var c = _invIn.cand[id] || {};
       return '<div style="display:flex;gap:8px;align-items:center;font-size:11.5px;border-top:1px solid var(--border);padding:5px 0;flex-wrap:wrap">'
         + '<label style="display:flex;gap:5px;align-items:center"><input type="radio" name="ivx-dup"'+(E.dupOf===id?' checked':'')+' onchange="_invIn.edits.dupOf=\''+id+'\'"> '+t('これと重複','Duplicate of this')+'</label>'
-        + (sameNo.some(function(r){ return String(r.detail).indexOf(id)>=0; }) ? '<label style="display:flex;gap:5px;align-items:center"><input type="checkbox"'+(E.sup===id?' checked':'')+' onchange="_invIn.edits.sup=this.checked?\''+id+'\':\'\'"> '+t('訂正版として置き換える','Replace it (corrected version)')+'</label>' : '')
+        + (!crew && sameNo.some(function(r){ return String(r.detail).indexOf(id)>=0; }) ? '<label style="display:flex;gap:5px;align-items:center"><input type="checkbox"'+(E.sup===id?' checked':'')+' onchange="_invIn.edits.sup=this.checked?\''+id+'\':\'\'"> '+t('訂正版として置き換える','Replace it (corrected version)')+'</label>' : '')
         + '<span style="flex:1">'+(c.missing ? t('（読めませんでした）','(could not load)') : e((c.vendor_name||'')+' · '+(c.invoice_no||'—')+' · '+invInDate(c.invoice_date)+' · ')+invInMoney(c.total_cents)+' · '+e(c.status||''))+'</span>'
         + '<a style="color:var(--accent2);cursor:pointer" onclick="invInOpen(\''+id+'\',\''+(c.status==='review'?'dreview':'drecon')+'\')">'+t('開く','Open')+'</a></div>';
     }).join('');
   }
+  if (crew && cands.length && sameNo.length) h += '<div class="ivx-note" style="margin-top:4px">'+t('反映済みの invoice を訂正版で置き換えるのは経理・GM・CEO です。','Replacing a posted invoice with a corrected version is done by accounting, GM or CEO.')+'</div>';
   if (d.doc_type==='credit_memo') h += invInRelateHtml(d);
   /* v1056：主の操作は「この内容で反映する」（直した値があれば保存してから反映）。理由は任意（空なら経理の確認として残す） */
   h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">'
@@ -44812,7 +44819,7 @@ async function invInSave(fromConfirm){
   if (!reason && d.status==='posted') { showToast(invInL(INVIN_ERR.reason_required), 'warning'); return false; }
   if (!reason) reason = invInL(INVIN_EDIT_REASON);
   var ack = Object.keys(E.ack||{}).filter(function(k){ return E.ack[k]; }), res;
-  try { res = await invInDo(function(){ return invInAPI({ action:'edit', doc_id:d.id, version:d.version, header:c.header, lines:c.lines, reason:reason, adjustment_ack:!!E.adj, ack:ack }); }); }
+  try { res = await invInDo(function(){ return invInAPI({ action:'edit', doc_id:d.id, version:d.version, header:c.header, lines:c.lines, reason:reason, adjustment_ack:!invInCrewOnly() && !!E.adj, ack:ack }); }); }
   catch(e) {
     if (/先に更新|updated this first/.test(e.message)) { delete _invIn.loaded.doc; invInRerender(); }
     /* 反映済みの訂正で、新しい不一致が出たとき：反映と同じ「原本で確かめた」を出す（サーバーが確かめる） */
@@ -44849,7 +44856,7 @@ async function invInConfirm(){
   if (block.length) { showToast(t('まだ直すところがあります：','Still to fix: ')+invInHint(block[0]), 'warning'); invInRerender(); return; }
   var need = chk.filter(function(r){ return INVIN_MAY_ACK.indexOf(r.code)>=0 && !((_invIn.edits||{}).ack||{})[r.code]; });
   if (need.length) { showToast(t('原本で確かめてチェックを入れてください：','Check against the original and tick: ')+invInReason(need[0].code), 'warning'); invInRerender(); return; }
-  if (chk.some(function(r){ return r.code==='closed_month'; }) && !(_invIn.edits||{}).adj) { showToast(invInL(INVIN_ERR.closed_month), 'warning'); invInRerender(); return; }
+  if (chk.some(function(r){ return r.code==='closed_month'; }) && (invInCrewOnly() || !(_invIn.edits||{}).adj)) { showToast(invInCrewOnly() ? t('締め済みの月の invoice は経理・GM・CEO が反映します','Accounting, GM or CEO post invoices in a closed month') : invInL(INVIN_ERR.closed_month), 'warning'); invInRerender(); return; }
   await invInPost();
 }
 async function invInPost(){
@@ -44857,7 +44864,8 @@ async function invInPost(){
   if (invInHasEdits()) return invInConfirm();
   var reason = String(E.reason||'').trim() || invInBatchReason();
   var ack = Object.keys(E.ack||{}).filter(function(k){ return E.ack[k]; });
-  try { await invInDo(function(){ return invInAPI({ action:'post', doc_id:d.id, version:d.version, reason:reason, ack:ack, adjustment_ack:!!E.adj, supersedes:E.sup||null }); }, t('反映しました','Posted')); }
+  var crew = invInCrewOnly();
+  try { await invInDo(function(){ return invInAPI({ action:'post', doc_id:d.id, version:d.version, reason:reason, ack:ack, adjustment_ack:!crew && !!E.adj, supersedes:crew ? null : (E.sup||null) }); }, t('反映しました','Posted')); }
   catch(e) { if (/先に更新|updated this first/.test(e.message)) { delete _invIn.loaded.doc; } invInRerender(); return; }
   _invIn.loaded = {}; _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; invInRerender();
 }
@@ -44872,6 +44880,7 @@ async function invInMark(action){
 }
 /* ---- 商品の対応を新しく登録する ---- */
 function invInMapModal(lineId){
+  if (!invInCanEdit()) return;
   var G = _invIn.doc; if (!G) return; var d = G.doc, l = (G.lines||[]).find(function(x){ return x.id===lineId; }); if (!l) return;
   if (!d.vendor_key) { showToast(t('先に業者を決めて保存してください','Set and save the vendor first'), 'warning'); return; }
   var e = escapeHtml, ings = [];
@@ -44915,7 +44924,7 @@ function invInReconActions(d){
   var E = _invIn.edits || {};
   var h = '<div class="card" style="padding:10px 12px"><div style="font-size:11.5px;font-weight:700;margin-bottom:6px">'+t('経理の照合','Accounting reconciliation')+' '+invInReconChip(d)+'</div>';
   var can = invInCanEdit() && (d.status==='posted' || (d.posting_kind==='none' && d.status==='review'));
-  if (!can) return h + '<div class="ivx-note" style="margin-top:0">'+(invInCanEdit() ? t('反映済みの書類だけ照合できます。','Only posted documents can be reconciled.') : t('事務Crew は閲覧のみです。','Office crew can view only.'))+'</div></div>';
+  if (!can) return h + '<div class="ivx-note" style="margin-top:0">'+(invInCanEdit() ? t('反映済みの書類だけ照合できます。','Only posted documents can be reconciled.') : t('照合は経理・GM・CEO が行います。','Accounting, GM or CEO reconcile.'))+'</div></div>';
   if (d.recon_note) h += '<div style="font-size:11.5px;margin-bottom:6px">'+t('前回のメモ：','Last note: ')+escapeHtml(d.recon_note)+'</div>';
   h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px"><button class="btn btn-secondary" onclick="invInReconcile(\'discrepancy\')">'+t('差異あり','Difference')+'</button>'
     + '<button class="btn btn-primary" onclick="invInReconcile(\'reconciled\')"><i class="ti ti-check"></i> '+t('照合済み','Reconciled')+'</button></div>'

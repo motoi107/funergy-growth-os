@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-10-09 v1059：事務Crew も invoice の要確認を確認・反映（経理の依頼）・店舗フォルダの手前の取込は未配備（Claude・本番未反映）
+
+- 依頼：Moto さん 10/9 17:16 HST（経理の LINE を転送）。①事務Crew が「この内容で反映する」を押せない（「事務Crew は閲覧のみ」）→ Moto さんが LINE で「オケです」。②Tenkichi・Aiea が店舗フォルダの手前に入れた invoice がアプリに出ない（00_Upload の Marujuu は出る）。③反映した 1 件が 5 分たっても QB の Receipt に無い。
+- ①の範囲（Claude が決めた。Moto さんの確認は「オケです」まで）：事務Crew は **要確認の書類だけ**、4 項目を直す・反映（経理と同じ「原本で確かめた」つき）・まとめて反映・重複／対象外・Credit memo の紐づけ。締め済みの月の調整・反映済みとの置き換え・反映済みの訂正・対象外の取り消し・照合・やり直し・QB の結果・業者／対応表／店舗／設定は今までどおり経理・GM・CEO（または GM・CEO）。サーバー：invoice ブランチ（PR #32）の `77bd608`（migration `20261009170000`：`invoice_post`・`invoice_edit`・`invoice_mark`・`invoice_relate` の 4 つだけ）。画面：このブランチの v1059（`invInCanReview`・`invInCrewOnly`。新しい商品の対応の登録は経理・GM・CEO）。
+- ②：手前の取込は 10/8 の `cb2f6e5`（PR #32）で作ったが、Codex のレビューも本番への配備もまだ（`INVOICE_DRIVE_INTAKE_JA.md` §13 の 11 に「済」が無い）。本番の状態はこちらから見られないので、Moto さんに確認の SQL（読むだけ）で store_folder_intake を見てもらう。入っていれば、開始日時・試験する店舗・「○月 Uploaded」へ移すタイミングを確認。
+- ③：QB への転送は「反映」とは別。今は外部の転送（ChatGPT 側・`route='external'`）が原本を送る。このシステムは反映のときに QB へ送らない（§11）。外部の転送の動きはこちらから見られない。
+- 試験（合成データ）：invoice ブランチ `tests/invoice-intake|rules|adapters|ui` 97/97（新しい事務Crew の E2E は前の SQL で落ちる）・`invoice-mutations` は下の追記。main 側 `tests/invoice-office-crew.test.mjs` 6/6（v1058 の画面では 6 つとも落ちる）・`node --test tests/*.test.mjs` 172/199（27 失敗は main と同じ）・static release pass/v1059。Claude の手元の本物の画面（本物の handler と SQL を PGlite で）22/22・pageerror 0（事務Crew のまとめて反映・業者を選んで反映・合計の差・対象外・締め済みは反映できず画面を通さず送ってもサーバーが断る・照合と訂正は出ない・英語・スマホ 390px・GM は締め済みを調整として反映）。
+- 未：Codex のレビュー（このブランチと `77bd608`、`cb2f6e5` も未レビュー）・Moto さんの配備（SQL 2 つ→関数→SQL→アプリの順）・実機。PR #32 に main を取り込むとき、`tests/invoice-ui.test.mjs` の「事務Crew はチェックもまとめて反映も無い」2 か所を v1059 の動きに直す。
+
 ## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（UI案37）・グレードを変える前の評価の確定・担当軸 L4 の廃止・Store Leader の廃止（UI案38）（Claude・本番未反映）
 
 - 依頼と決定：Moto さん 10/9 08:38 HST の仕様 → UI案37 を確認（「はい、これで進めてください」）。10/9 10:31 HST の追加 → UI案38 と回答 4 点（確定するのは職種と評価だけ・Career Score が無い人は先に評価・G2 以上から変わるとき全部・確定できるのは GM・CEO だけ）。仕様・式・保存キー・運用の前に入れるもの・試験はこの PR の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md`。土台は main `93491e1`（v1057）。SQL・Edge Function の変更なし。
