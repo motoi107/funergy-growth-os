@@ -148,7 +148,7 @@ const CASES = [
   ['store folder: invoices put right in it are not read', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     'if (store.root_folder_id && store.root_folder_id !== store.upload_folder_id && since) folders.push([store.root_folder_id, since]);', '']]],
   ['store folder: originals put there are moved and renamed', E2E, [['supabase/functions/invoice-intake/handler.mjs',
-    'if (parents.includes(store.root_folder_id)) {', 'if (false) {']]],
+    "      if (leaveAt) {", "      if (false) {"]]],
   ['store folder: a PDF the app saved to Drive is read again', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     'if (appIds && appIds.has(f.id)) { stats.app_saved = (stats.app_saved || 0) + 1; continue; }', '']]],
   ['store folder: the database takes in files from before the start', E2E, [['db/invoice-intake.sql',
