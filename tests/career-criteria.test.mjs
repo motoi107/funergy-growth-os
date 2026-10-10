@@ -155,10 +155,10 @@ test('one coefficient per segment, applied once; unknown G3 track and unset coef
   assert.deepEqual(r.segs.map(s => [s.coefKey, s.coef, s.amount]), [['G2', 0.9, Math.round(1000 * 41 / 92 * 0.9 * 1.1 * 0.9)], ['G3-sv', 1.2, Math.round(3000 * 51 / 92 * 1.2 * 1.1 * 0.9)]]);
   r = prorate(c, { id: 'sho', g: 'G3', title: 'Store Leader' }, WHOLE('G3'));
   assert.equal(r.blocked, 'track'); assert.equal(r.segs[0].amount, 0);
-  c.BQ['2026-Q3'] = { track: { sho: { t: 'kt' } } };
+  c.STORE.bonus_track = { '2026-Q3|sho': { t: 'kt', _at: 1 } };
   r = prorate(c, { id: 'sho', g: 'G3', title: 'Store Leader' }, WHOLE('G3'));
   assert.equal(r.blocked, null); assert.equal(r.segs[0].coefKey, 'G3-kt'); assert.equal(r.segs[0].coef, 1, 'a track chosen for the quarter; its coefficient not entered yet = 1.0');
-  c.BQ = {};
+  delete c.STORE.bonus_track;
   assert.equal(prorate(c, { id: 'op', g: 'G3', title: 'Operation Leader' }, WHOLE('G3')).blocked, 'coef', 'saved empty = not set');
   r = prorate(c, { id: 'sm', g: 'G4', title: 'Store Manager' }, WHOLE('G4'));
   assert.equal(r.blocked, null); assert.equal(r.segs[0].amount, 0, '0 = 0 times');
@@ -191,35 +191,45 @@ test('a quarter track pick can be changed or cleared, and uses the same quarter 
   c.CFG = { ...CFG, quarter: '2026-Q3' };
   vm.runInContext(`function kbCfg(){ return CFG; } function bqSet(q, d){ BQ[q] = JSON.parse(JSON.stringify(d)); return true; }`, c);
   run(c, `bonusSetTrack('sho','kt')`);
-  assert.equal(c.BQ['2026-Q3'].track.sho.t, 'kt');
-  run(c, `bonusSetTrack('sho','op')`); assert.equal(c.BQ['2026-Q3'].track.sho.t, 'op');
-  run(c, `bonusSetTrack('sho',null)`); assert.equal(c.BQ['2026-Q3'].track.sho, undefined);
-  c.BQ['2026-Q3'] = { locked: true, coefSnap: { ken: {} }, track: {} };
-  run(c, `bonusSetTrack('ken','op')`); assert.equal(c.BQ['2026-Q3'].track.ken, undefined, 'a confirmed person cannot be changed');
-  run(c, `bonusSetTrack('late','op')`); assert.equal(c.BQ['2026-Q3'].track.late.t, 'op', 'someone not in the confirmed record can still get a track');
+  assert.equal(c.STORE.bonus_track['2026-Q3|sho'].t, 'kt', 'stored per quarter and person, outside the quarter record');
+  run(c, `bonusSetTrack('sho','op')`); assert.equal(c.STORE.bonus_track['2026-Q3|sho'].t, 'op');
+  const at = c.STORE.bonus_track['2026-Q3|sho']._at;
+  run(c, `bonusSetTrack('sho',null)`); assert.equal(c.STORE.bonus_track['2026-Q3|sho'].t, null, 'cleared = "none" with a newer time, not deleted');
+  assert.ok(c.STORE.bonus_track['2026-Q3|sho']._at > at);
+  c.BQ['2026-Q3'] = { locked: true, coefSnap: { ken: {} } };
+  run(c, `bonusSetTrack('ken','op')`); assert.equal(c.STORE.bonus_track['2026-Q3|ken'], undefined, 'a confirmed person cannot be changed');
+  run(c, `bonusSetTrack('late','op')`); assert.equal(c.STORE.bonus_track['2026-Q3|late'].t, 'op', 'someone not in the confirmed record can still get a track');
 });
 
 test('cs_criteria and bonus_coef are synced, merged per entry by time, and kept by storage cleanup', () => {
-  assert.match(source, /'grade_hist','cs_criteria','bonus_coef','karte_pin'/);
+  assert.match(source, /'grade_hist','cs_criteria','bonus_coef','bonus_track','karte_pin'/);
+  assert.match(source, /\n  bonus_track:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(source, /\n  cs_criteria:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(source, /\n  bonus_coef:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
-  assert.match(source, /'bonus_rules','grade_hist','cs_criteria','bonus_coef','q_budgets'/);
+  assert.match(source, /'bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','q_budgets'/);
 });
 
 /* ------------------------------------------------------------------ UI案38 */
 // The real grade-history, approval and Leader-promotion code with the module, a stubbed modal and synthetic staff.
 function app38() {
   const names = [...new Set([...source.matchAll(/\nfunction (_?gh\w*)\(/g)].map(m => m[1]))].concat(['gradeOf', 'empGrade', 'gradeNum', 'csCoef', 'lssCatsOrdered', 'lssItemId', 'getLssScores',
-    'empSpecialistDept', 'bonusProrate', 'bonusSegs', 'approveLssRequest', 'approveAdvance', 'advanceStage', 'jobTitle', 'getDevData', 'setDevData', 'getStage', 'getLssRequests', 'stageLabel', 'getCareerTrack']);
+    'empSpecialistDept', 'bonusProrate', 'bonusSegs', 'saveEmp', 'mergeMapByTime', '_recAt', 'approveLssRequest', 'approveAdvance', 'advanceStage', 'jobTitle', 'getDevData', 'setDevData', 'getStage', 'getLssRequests', 'stageLabel', 'getCareerTrack']);
   const c = { console, STORE: {}, EMPS: [], BQ: {}, SUMS: {}, MODAL: [], TOASTS: [], CONFIRMS: 0, curRole: 'gm', curLang: 'ja', curUserName: 'GM' };
   vm.createContext(c);
   vm.runInContext([varBlock('LSS_CATEGORIES', '\n];'), varBlock('GRADE_TITLES', '\n};'), varBlock('SPECIALIST_TITLE_DEPT', '\n};'), varBlock('LSS_EMP_PREFIX', ';'), varBlock('JOB_TITLES', '\n];'),
     varBlock('CAREER_CONFIG', '\n};'), varBlock('CAREER_TRACKS', ';'), varBlock('LSS_TITLES', ';'), source.match(/\nObject\.defineProperty\(CAREER_CONFIG, 'Store Leader'[^\n]*/)[0],
     ...names.map(fn), MODULE].join('\n') + `
-    var window = this, curPage = 'x', document = { getElementById: function(){ return null; } };
+    var window = this, curPage = 'x', FORM = {}, document = { getElementById: function(id){ return FORM[id] || null; }, querySelectorAll: function(){ return []; } };
+    function canEditWages(){ return false; } function permFromRole(r){ return r; } function getWorkCondition(){ return {}; } function setWorkCondition(){} function saveEmpPrivate(){} function alert(){}
     var CAREER_STAGES = [{ n:5, label:'Leader' }, { n:6, label:'Career Score' }];
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
-    function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); return true; }
+    // like the real lsSet: a local failure (FAIL_SET) still sends the value to sync
+    var PUSHES = [];
+    function lsSet(k, v){ var ok = !(typeof FAIL_SET !== 'undefined' && FAIL_SET === k); if (ok) STORE[k] = JSON.parse(JSON.stringify(v)); _pushWithOutbox(k, v); return ok; }
+    function _pushWithOutbox(k){ PUSHES.push(k); }
+    function _lsRawStr(k){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.stringify(STORE[k]) : null; }
+    function _lsWriteVerified(k, json){ STORE[k] = JSON.parse(json); return true; }
+    function _lsRawDel(k){ delete STORE[k]; return true; }
     function _bonusQParse(q){ var m=String(q||'').match(/(\\d{4})\\D*Q?([1-4])/i); return m ? { y:+m[1], q:+m[2] } : null; }
     function t(a, b){ return curLang === 'en' ? b : a; }
     function escapeHtml(s){ return String(s == null ? '' : s); }
@@ -364,4 +374,89 @@ test('UI案38: the decision date must match the grade history; a same-day record
   c.STORE.lss_requests = [{ id: 'r9', name: 'Zed Sample', kind: 'promo', wantTitle: 'Store Leader', status: '申請中' }];
   run(c, `approveLssRequest('r9','承認')`);
   assert.equal(c.EMPS.find(x => x.id === 'zed').title, 'Operation Leader');
+});
+
+/* ------------------------------------------------------------------ Codex review of b215fd4 */
+// P1: a grade change saves the title, the grade-history record (with the evaluation), the request status and the
+// development stage together. If any of them cannot be saved, all of them stay as they were and nothing is sent to sync.
+function storeBacked(c) {
+  vm.runInContext(`getEmployees = function(){ return Object.prototype.hasOwnProperty.call(STORE, 'm_employees') ? JSON.parse(JSON.stringify(STORE.m_employees)) : EMPS; };`, c);
+  c.STORE.m_employees = JSON.parse(JSON.stringify(c.EMPS));
+  return c;
+}
+const empOf = (c, id) => c.STORE.m_employees.find(x => x.id === id);
+const EMP_FORM = { 'e-name': { value: 'Ken Sample' }, 'e-code': { value: '' }, 'e-role': { value: 'sl' }, 'e-store': { value: 'F01' }, 'e-emp': { value: '正社員' }, 'e-step': { value: '1' },
+  'e-hire': { value: '2024-01-01' }, 'e-resign': { value: '' }, 'e-status': { value: '在籍' }, 'e-email': { value: '' }, 'e-phone': { value: '' }, 'e-insurance': { checked: false },
+  'e-dental': { checked: false }, 'e-title': { value: 'Store Manager' }, 'e-wc-maxh': { value: '40' } };
+
+test('Codex P1: employee master — if the title or the grade history cannot be saved, neither changes and nothing is sent to sync', () => {
+  for (const fail of ['grade_hist', 'm_employees', null]) {
+    const c = storeBacked(app38()); c.FORM = EMP_FORM;
+    run(c, `saveEmp('ken')`);
+    run(c, `ghEvalConfirm(); (function(){ var p=window._ghPend; p.d='2026-08-20'; p.period=ghEvalPeriod(p); p.ok=true; })();`);   // what ghConfirmSave does
+    c.PUSHES.length = 0; c.TOASTS.length = 0; if (fail) c.FAIL_SET = fail;
+    run(c, `saveEmp('ken')`); delete c.FAIL_SET;
+    const toasts = c.TOASTS.join(' | ');
+    if (fail) {
+      assert.equal(empOf(c, 'ken').title, 'Server Leader', fail);
+      assert.equal(c.STORE.grade_hist, undefined, fail);
+      assert.deepEqual([...c.PUSHES], [], fail + ': nothing sent to sync');
+      assert.match(toasts, /保存できませんでした。役職とグレード履歴は元のまま/); assert.doesNotMatch(toasts, /更新しました/);
+    } else {
+      assert.equal(empOf(c, 'ken').title, 'Store Manager');
+      assert.equal(c.STORE.grade_hist.ken.recs[0].prevEval.csPct, 72);
+      assert.ok(c.PUSHES.includes('m_employees') && c.PUSHES.includes('grade_hist'));
+    }
+  }
+});
+
+test('Codex P1: promotion approval and Leader promotion are all-or-nothing (request status / stage, title, grade history)', () => {
+  for (const fail of ['grade_hist', 'm_employees', 'lss_requests', null]) {
+    const c = storeBacked(app38());
+    c.STORE.lss_requests = [{ id: 'r1', name: 'Amy Sample', kind: 'promo', wantTitle: 'Kitchen Leader', status: '申請中' }];
+    run(c, `approveLssRequest('r1','承認'); ghEvalConfirm();`);
+    c.PUSHES.length = 0; c.TOASTS.length = 0; if (fail) c.FAIL_SET = fail;
+    run(c, `ghConfirmGo()`); delete c.FAIL_SET;
+    if (fail) {
+      assert.deepEqual([c.STORE.lss_requests[0].status, empOf(c, 'amy').title, c.STORE.grade_hist, [...c.PUSHES]], ['申請中', 'Crew Leader', undefined, []], fail);
+      assert.match(c.TOASTS.join(), /承認・役職・グレード履歴は元のまま/);
+    } else {
+      assert.deepEqual([c.STORE.lss_requests[0].status, empOf(c, 'amy').title, c.STORE.grade_hist.amy.recs[0].prevEval.csPct], ['承認', 'Kitchen Leader', 81]);
+      assert.ok(['lss_requests', 'm_employees', 'grade_hist'].every(k => c.PUSHES.includes(k)));
+    }
+  }
+  for (const fail of ['grade_hist', 'm_employees', 'dev_data', 'career_history', null]) {
+    const c = storeBacked(app38());
+    c.STORE.dev_data = { 'Cal Sample': { stage: 5, targetCareer: 'Operation Leader', stageHistory: [] } };
+    run(c, `approveAdvance('Cal Sample'); ghEvalConfirm();`);
+    c.PUSHES.length = 0; c.TOASTS.length = 0; if (fail) c.FAIL_SET = fail;
+    run(c, `ghConfirmGo()`); delete c.FAIL_SET;
+    if (fail) {
+      assert.deepEqual([c.STORE.dev_data['Cal Sample'].stage, empOf(c, 'cal').title, c.STORE.grade_hist, c.STORE.career_history, [...c.PUSHES]], [5, 'Crew Leader', undefined, undefined, []], fail);
+      assert.match(c.TOASTS.join(), /ステージ・役職・グレード履歴は元のまま/);
+    } else {
+      assert.deepEqual([c.STORE.dev_data['Cal Sample'].stage, empOf(c, 'cal').title, c.STORE.grade_hist.cal.recs[0].prevEval.csPct], [6, 'Operation Leader', 77]);
+      assert.ok(['dev_data', 'm_employees', 'grade_hist', 'career_history'].every(k => c.PUSHES.includes(k)));
+    }
+  }
+  const c = storeBacked(app38());
+  c.STORE.lss_requests = [{ id: 'r1', name: 'Amy Sample', kind: 'promo', wantTitle: 'Kitchen Leader', status: '申請中' }];
+  run(c, `approveLssRequest('r1','承認'); ghEvalConfirm(); var _ar=ghAddRecEval; ghAddRecEval=function(){ throw new Error('boom'); }; void 0;`);
+  c.PUSHES.length = 0; run(c, `ghConfirmGo(); ghAddRecEval=_ar; void 0;`);
+  assert.deepEqual([c.STORE.lss_requests[0].status, empOf(c, 'amy').title, [...c.PUSHES]], ['申請中', 'Crew Leader', []], 'an exception in the middle rolls back too');
+});
+
+test('Codex/Claude P2: G3 track picks for different people on different devices both survive the merge; clearing and re-picking win by time', () => {
+  const A = app38(), B = app38();
+  run(A, `bonusSetTrack('alice','sv')`); run(B, `bonusSetTrack('bob','kt')`);
+  const cloud1 = run(A, `mergeMapByTime(${JSON.stringify(B.STORE.bonus_track)}, STORE.bonus_track)`);
+  assert.deepEqual([cloud1['2026-Q3|alice'].t, cloud1['2026-Q3|bob'].t], ['sv', 'kt']);
+  run(A, `bonusSetTrack('alice', null)`);
+  for (const merged of [run(A, `mergeMapByTime(${JSON.stringify(cloud1)}, STORE.bonus_track)`), run(A, `mergeMapByTime(STORE.bonus_track, ${JSON.stringify(cloud1)})`)])
+    assert.deepEqual([merged['2026-Q3|alice'].t, merged['2026-Q3|bob'].t], [null, 'kt'], 'the clear wins in both merge directions and Bob stays');
+  const cloud2 = run(A, `mergeMapByTime(${JSON.stringify(cloud1)}, STORE.bonus_track)`);
+  A.STORE.bonus_track = cloud2; run(A, `bonusSetTrack('alice','op')`);
+  assert.equal(run(A, `mergeMapByTime(${JSON.stringify(cloud2)}, STORE.bonus_track)`)['2026-Q3|alice'].t, 'op', 're-picking after a clear wins');
+  assert.equal(run(A, `bonusTrackFor({ id:'alice', title:'Crew Leader' }, '2026-Q3').t`), 'op');
+  assert.equal(run(A, `btrGet('2026-Q4','bob')`), null, 'another quarter is separate');
 });

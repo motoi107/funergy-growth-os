@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（UI案37）・グレードを変える前の評価の確定・担当軸 L4 の廃止・Store Leader の廃止（UI案38）（Claude・本番未反映）
+
+- 依頼と決定：Moto さん 10/9 08:38 HST の仕様 → UI案37 を確認（「はい、これで進めてください」）。10/9 10:31 HST の追加 → UI案38 と回答 4 点（確定するのは職種と評価だけ・Career Score が無い人は先に評価・G2 以上から変わるとき全部・確定できるのは GM・CEO だけ）。仕様・式・保存キー・運用の前に入れるもの・試験はこの PR の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md`。土台は main `93491e1`（v1057）。SQL・Edge Function の変更なし。
+- 新しいキー：`cs_criteria`・`bonus_coef`・`bonus_track`（どれも OP_SYNC_KEYS・mergeMapByTime・LS_NEVER_FREE）。`grade_hist` の記録に `prevEval`、`bonus_q[四半期].coefSnap`、`lss_requests[].csc`、`payLog[].snap` に係数。
+- Codex のレビュー（head `b215fd4`・blocked）と Claude の PR レビューの指摘を直した：P1 グレードが変わる 3 つの入口（従業員マスター・昇格申請の承認・Leader 昇格）で、役職・グレード履歴・申請・ステージ・会社の履歴を 1 回の操作でまとめて保存（どれか保存できなければ全部戻し、同期にも送らない・成功と出さない）。P2 その四半期に選んだ G3 職種を `bonus_q` の中から別キー `bonus_track`（四半期|従業員ごと）へ（別の端末で別の人を選んでも消えない・外すのは「なし」を新しい時刻で）。
+- 試験（合成データ）：`tests/career-criteria.test.mjs` 22/22（わざと壊した 29 通り中 28 で落ちる。残り 1 つは重なっている読み替え）・`node --test tests/*.test.mjs` 165/192（27 失敗は main と同じ。PGlite を入れない環境では 29）・static release pass/v1058。Claude の手元：`verify_v1058` 138/138・本物の画面 84/84・pageerror 0。
+- レビューの実績：Claude の別エージェント（作業を見ていない）が UI案37 で 10 件・UI案38 で 6 件を指摘 → 修正。Codex が `1705ae3`・`b215fd4` をレビュー（blocked）→ 上の P1・P2 を修正。修正後の head は Codex の再レビュー待ち（この記録は Codex の承認ではない）。
+- 次：Codex が最新の head を再レビュー → Moto さんがマージ → GM・CEO がスコア基準・係数・今も Store Leader の人の役職名・グレード履歴の食い違いを直す → 実機で確認。PR #32（invoice）は main と index.html・sw.js・この 2 つの共通記録が食い違うので、マージの前に main を取り込んで直す。
+
 ## 2026-09-20 接続・公開保存の承認と勤怠のみ即時送信
 
 ユーザーは今回の内部コード・テスト・運用文書を既存公開GitHubへ保存することを明示承認し、Botを招待済みの修正依頼グループへ現在の勤怠エラーを送信するよう依頼した。前段の公開許可待ちは解消した。最新main d3be898のHTML/SW更新をfeature branchへマージし、変更を保持する。
