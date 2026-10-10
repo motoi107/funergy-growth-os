@@ -1,5 +1,25 @@
 # Claude / Codex 共通記録
 
+## 2026-10-09 v1059：事務Crew は Invoice取込で経理と同じ（経理の依頼）・店舗フォルダの手前の取込は未配備（Claude・本番未反映）
+
+- 依頼：Moto さん 10/9 17:16 HST（経理の LINE を転送）。①事務Crew が「この内容で反映する」を押せない（「事務Crew は閲覧のみ」）→ Moto さんが LINE で「オケです」。②Tenkichi・Aiea が店舗フォルダの手前に入れた invoice がアプリに出ない（00_Upload の Marujuu は出る）。③反映した 1 件が 5 分たっても QB の Receipt に無い。
+- ①の決定の流れ：最初に Claude が「要確認の書類だけ」に絞った版（PR #32 `77bd608`・PR #35 `d5e8e9b`）→ Codex が `d5e8e9b`・`44290a8` を blocked（P1：4 項目より広く直せる）→ **Moto さん 10/9 18:54「事務Crew が自己完結できるように」**（原文は個人名）→ Claude はこれを「事務Crew（office_crew）は **Invoice取込で経理（office）と同じ**」と読んだ（とくに締め済み月の調整・反映済みとの置き換え・QB の結果は Moto さんの確認待ち）：直す・反映・締め済み月の調整・反映済みとの置き換え・反映済みの訂正・重複／対象外とその取り消し・紐づけ・照合・やり直し・QB の結果・店舗の付け替え・業者と対応表の登録。経理と同じく GM・CEO だけのもの：設定・店舗・自動反映の ON・過去分・候補づくり・フォルダの用意。Codex の P1（4 項目に絞る）はこの決定で範囲が変わった。
+- サーバー：PR #32 `76d923c`＋`71896c3`（migration `20261009190000_invoice_office_crew_accounting.sql`：関数 10 個の差し替えだけ。`20261009170000` を入れていてもいなくてもよいが、190000 の後に 170000 は流さない）。postcheck は `office_crew_accounting`。戻すときは `db/invoice-intake-office-crew-revert.sql`。画面：PR #35 の v1059（`invInCanEdit` に office_crew を足しただけ。main との差は index.html 7 行・sw.js 1 行）。
+- ②：手前の取込は 10/8 の `cb2f6e5`（PR #32）で作ったが、Codex のレビューも本番への配備もまだ（`INVOICE_DRIVE_INTAKE_JA.md` §13 の 11 に「済」が無い）。本番の状態はこちらから見られないので、Moto さんに確認の SQL（読むだけ）で store_folder_intake を見てもらう。
+- ③：QB への転送は「反映」とは別。今は外部の転送（ChatGPT 側・`route='external'`）が原本を送る。このシステムは反映のときに QB へ送らない（§11）。外部の転送が店舗フォルダの手前だけを見ているなら、00_Upload の分は送られていない可能性（仮説・未確認）。
+- 試験（合成データ）：invoice ブランチ `tests/invoice-intake|rules|adapters|ui` 98/98（事務Crew の E2E は前の SQL で落ちる）・事務Crew の mutation 6 件はすべて落ちる（全体の mutation は PR #32 に記録）。main 側 `tests/invoice-office-crew.test.mjs` 6/6（v1058 の画面では 6 つとも落ちる）・`node --test tests/*.test.mjs` 172/199（27 失敗は main と同じ）・static release pass/v1059。Claude の手元の本物の画面（本物の handler と SQL を PGlite で）24/24・pageerror 0（事務Crew のまとめて反映・業者を選んで反映・合計の差・対象外・締め済みの調整・照合・反映済みの訂正・結果不明の転送・設定のスイッチは押せず画面を通さず送ってもサーバーが断る・英語・スマホ 390px）。
+- レビュー：Claude の別エージェント（作業を見ていない）が PR #32 `76d923c`・PR #35 `834da3b` を見て P1・P2 なし、P3 6 件（もう一度送る・フォルダの一覧の試験が無い／170000 を後に流すと混ざる／サーバーを戻す手順が無い／「経理と同じ」は解釈と書く／コメントと数字が古い／invoice-ui の 2 件）→ `71896c3` で 5 件を直した（残りは下の PR #32 の取り込み時）。Codex が `834da3b` を再レビュー：実装のブロッカーなし・`blocked`（manual）の理由は、会計の権限を広げる業務の決定（職務の分け方）を AI は承認できないこと・PR #32 が draft で SQL を先に入れること・実機未確認。Claude の PR レビュー 2 件もブロッカーなし（同じく権限の決定は人の確認）。
+- 未：Moto さんの範囲の確認（とくに締め済み月の調整・置き換え・QB の結果）・`cb2f6e5` のレビュー・Moto さんの配備（確認の SQL → 手前の SQL → 関数 → 事務Crew の SQL → 確認の SQL → アプリの順）・実機。PR #32 に main を取り込むとき、`tests/invoice-ui.test.mjs` の「事務Crew はチェックもまとめて反映も無い」2 か所を v1059 の動きに直す。
+
+## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（UI案37）・グレードを変える前の評価の確定・担当軸 L4 の廃止・Store Leader の廃止（UI案38）（Claude・本番未反映）
+
+- 依頼と決定：Moto さん 10/9 08:38 HST の仕様 → UI案37 を確認（「はい、これで進めてください」）。10/9 10:31 HST の追加 → UI案38 と回答 4 点（確定するのは職種と評価だけ・Career Score が無い人は先に評価・G2 以上から変わるとき全部・確定できるのは GM・CEO だけ）。仕様・式・保存キー・運用の前に入れるもの・試験はこの PR の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md`。土台は main `93491e1`（v1057）。SQL・Edge Function の変更なし。
+- 新しいキー：`cs_criteria`・`bonus_coef`・`bonus_track`（どれも OP_SYNC_KEYS・mergeMapByTime・LS_NEVER_FREE）。`grade_hist` の記録に `prevEval`、`bonus_q[四半期].coefSnap`、`lss_requests[].csc`、`payLog[].snap` に係数。
+- Codex のレビュー（head `b215fd4`・blocked）と Claude の PR レビューの指摘を直した：P1 グレードが変わる 3 つの入口（従業員マスター・昇格申請の承認・Leader 昇格）で、役職・グレード履歴・申請・ステージ・会社の履歴を 1 回の操作でまとめて保存（どれか保存できなければ全部戻し、同期にも送らない・成功と出さない）。P2 その四半期に選んだ G3 職種を `bonus_q` の中から別キー `bonus_track`（四半期|従業員ごと）へ（別の端末で別の人を選んでも消えない・外すのは「なし」を新しい時刻で）。
+- 試験（合成データ）：`tests/career-criteria.test.mjs` 23/23（わざと壊した 29 通り中 28 で落ちる。残り 1 つは重なっている読み替え）・`node --test tests/*.test.mjs` 166/193（27 失敗は main と同じ。PGlite を入れない環境では 29）・static release pass/v1058。Claude の手元：`verify_v1058` 138/138・本物の画面 84/84・pageerror 0。
+- レビューの実績：Claude の別エージェント（作業を見ていない）が UI案37 で 10 件・UI案38 で 6 件を指摘 → 修正。Codex が `1705ae3`・`b215fd4` をレビュー（blocked）→ 上の P1・P2 を修正。修正の `29c55dd` を Claude の別エージェントが見て P1・P2 なし・P3 のうち 3 件を直した。修正後の head は Codex の再レビュー待ち（この記録は Codex の承認ではない）。
+- 次：Codex が最新の head を再レビュー → Moto さんがマージ → GM・CEO がスコア基準・係数・今も Store Leader の人の役職名・グレード履歴の食い違いを直す → 実機で確認。PR #32（invoice）は main と index.html・sw.js・この 2 つの共通記録が食い違うので、マージの前に main を取り込んで直す。
+
 ## 2026-09-20 接続・公開保存の承認と勤怠のみ即時送信
 
 ユーザーは今回の内部コード・テスト・運用文書を既存公開GitHubへ保存することを明示承認し、Botを招待済みの修正依頼グループへ現在の勤怠エラーを送信するよう依頼した。前段の公開許可待ちは解消した。最新main d3be898のHTML/SW更新をfeature branchへマージし、変更を保持する。
