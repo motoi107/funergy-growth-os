@@ -1744,6 +1744,57 @@ test('invoices put right in the store folder are read too, only from the start, 
     E.drive.items.get(inRoot).parents = ['R6-MAR'];
     await E.q(`update invoice_files set drive_checked_at=null`); await E.worker();
     assert.equal((await docsOf(E, inRoot))[0].status, 'posted');
+    // Reconciled after staff moved it on: still left where they keep it, recorded as filed there, no error (review of cb2f6e5).
+    let dd = (await docsOf(E, inRoot))[0];
+    let r = await E.api('tok-office', { action: 'reconcile', doc_id: dd.id, version: dd.version, result: 'reconciled', note: '原本と一致' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    await E.worker();
+    let [ff] = await E.q(`select organize_status, organized_folder_id, organize_error, current_name from invoice_files where drive_file_id=$1`, [inRoot]);
+    assert.deepEqual(ff, { organize_status: 'done', organized_folder_id: 'R6-MAR', organize_error: null, current_name: 'Scanned Oct 5, 2026.pdf' });
+    assert.deepEqual(E.drive.items.get(inRoot).parents, ['R6-MAR']); assert.equal(E.drive.items.get(inRoot).name, 'Scanned Oct 5, 2026.pdf');
+    // A folder outside the store folder is still never used: the original is not touched and a person is told.
+    E.drive.folder('ELSEWHERE', 'Someone else', 'INV'); E.drive.folder('ELSE-SUB', 'Sub', 'ELSEWHERE');
+    E.drive.items.get(inRoot).parents = ['ELSE-SUB'];
+    dd = (await docsOf(E, inRoot))[0];
+    r = await E.api('tok-office', { action: 'reconcile', doc_id: dd.id, version: dd.version, result: 'unreconciled', note: '戻す' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    await E.worker();
+    [ff] = await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [inRoot]);
+    assert.deepEqual(ff, { organize_status: 'error', organize_error: 'outside_store_folders' });
+    assert.deepEqual(E.drive.items.get(inRoot).parents, ['ELSE-SUB']);
+    E.drive.items.get(inRoot).parents = ['R6-MAR'];
+
+    // The store folder also holds the store's other files: sheets, documents and shortcuts are not taken in (no errors).
+    const sheet = E.drive.file('Order list', 'sheet', 'R6', { mime: 'application/vnd.google-apps.spreadsheet', created: '2026-10-06T21:00:00Z' });
+    const xlsx = E.drive.file('Schedule.xlsx', 'xlsx', 'R6', { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', created: '2026-10-06T21:00:00Z' });
+    const heic = E.drive.file('IMG_2001.HEIC', 'heic-bytes', 'R6', { mime: 'image/heic', created: '2026-10-06T21:00:00Z' });
+    await E.worker();
+    assert.deepEqual(await E.q(`select drive_file_id from invoice_files where drive_file_id = any($1)`, [[sheet, xlsx]]), []);
+    assert.equal((await E.q(`select intake_status from invoice_files where drive_file_id=$1`, [heic]))[0].intake_status, 'unsupported');   // a photo: told how to send it again
+    // Past-originals registration never reads the store folder (it is read live).
+    assert.equal((await E.api('tok-gm', { action: 'backfill', store_id: 'F06', folder_id: 'R6', dry_run: false })).status, 400);
+
+    // A store-folder invoice a person assigned to another store stays in the folder it was put in, and is filed there.
+    E.fixtures.set('ROOT-2006', { readable: true, documents: [doc('2006', '2026-10-06', line, { ship: 'Totoya Kaimuki, 200 Sample Ave' })] });
+    const other = E.drive.file('Scanned Oct 6 k.pdf', pdf('ROOT-2006'), 'R6', { created: '2026-10-06T22:00:00Z' });
+    await E.worker();
+    const ofile = (await E.q(`select id from invoice_files where drive_file_id=$1`, [other]))[0].id;
+    r = await E.api('tok-office', { action: 'reassign', file_id: ofile, store_id: 'F04-K', reason: 'Kaimuki 宛の請求書' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    await E.worker(); await E.worker();
+    const kaimuki = async () => (await docsOf(E, other)).find(x => x.store_id === 'F04-K');   // the reading for the old store is set aside
+    let od = await kaimuki();
+    assert.ok(od, 'read again for the assigned store');
+    if (od.status === 'review') {
+      r = await E.api('tok-office', { action: 'post', doc_id: od.id, version: od.version, reason: 'Kaimuki 分', ack: codes(od).filter(c => ['total_mismatch','original_replaced','line_amount_missing','line_value_missing'].includes(c)) });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      await E.worker();
+    }
+    od = await kaimuki();
+    assert.equal(od.status, 'posted', JSON.stringify(od.reasons));
+    [ff] = await E.q(`select organize_status, organized_folder_id, organize_error from invoice_files where drive_file_id=$1`, [other]);
+    assert.deepEqual(ff, { organize_status: 'done', organized_folder_id: 'R6', organize_error: null });
+    assert.deepEqual(E.drive.items.get(other).parents, ['R6']);
 
     // The database checks the start too: a file in the store folder from before the start is not taken in.
     const seen = await E.db.rpc('invoice_file_seen', { folder_id: 'R6', drive_file_id: 'direct-old', name: 'x.pdf', mime_type: 'application/pdf',

@@ -153,6 +153,15 @@ const CASES = [
     'if (appIds && appIds.has(f.id)) { stats.app_saved = (stats.app_saved || 0) + 1; continue; }', '']]],
   ['store folder: the database takes in files from before the start', E2E, [['db/invoice-intake.sql',
     "if start_at is null or nullif(p->>'created_time', '') is null or (p->>'created_time')::timestamptz < start_at then", 'if false then']]],
+  // Store folder (cb2f6e5 review): staff keep originals in their own folders right in the store folder; other files are not read.
+  ['a moved store-folder original raises a filing error', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "    for (const p of parents) {\n      if (ours.has(p)) continue;", "    for (const p of []) {\n      if (ours.has(p)) continue;"]]],
+  ['any folder counts as the staff\'s own', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "\n        && (pf.file.parents || []).some(x => roots.has(x))) return p;", ") return p;"]]],
+  ['the store folder\'s other files are taken in', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "if (after && !STORE_FOLDER_TYPES.includes(f.mimeType))", "if (false)"]]],
+  ['past-originals registration reads the store folder', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "    if (b.folder_id === store.root_folder_id) throw new Error('bad_value');", ""]]],
   // 事務Crew does the invoice work like accounting (Moto 2026-10-09); settings and automatic posting stay with GM・CEO.
   ['事務Crew: may change the settings', E2E, [['db/invoice-intake.sql',
     "k text := p->>'key'; v jsonb := p->'value'; cur jsonb;\nbegin\n perform public.invoice_require(actor, array['ceo','gm']);",

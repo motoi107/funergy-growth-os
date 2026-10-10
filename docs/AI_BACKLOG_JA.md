@@ -47,7 +47,7 @@
 2. Moto さん：実機確認（要確認の表・まとめて反映・1 件の画面・設定の「自動」・スマホ）、accounting_checks の値、Aiea 9/5 の結果、全店 9/1〜昨日の取り直し（念のため）。
 3. 10/8 朝：LaLa のフォルダ → 設定で登録 → 00_Upload → 取込 ON → 「出す」→ 共有。
 4. 自動反映を ON にする時期（Moto さん）。
-5. 新しく：hyper-worker が鍵なしで動く（Verify JWT OFF・呼び出し元を確かめない）。直し方を ChatGPT 側と調整。
+5. 新しく：hyper-worker の呼び出し元の確認を足す（中身は公開しない）。直し方を ChatGPT 側と調整。
 6. 残り：QuickBooks の外部の転送、drive-sync の安全化、「出す」を開始日時の前に押せないように、`pg_policies`、invoice_ocr・Storage `invoices` の anon、hyper-worker の本体をリポジトリに入れるか。
 
 ## 2026-10-07 別件：hyper-worker の「integer に小数」エラー（Aiea 9/5）

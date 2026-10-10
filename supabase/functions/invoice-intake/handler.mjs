@@ -10,6 +10,8 @@ import { createDrive, googleAccessToken, viewUrl, folderUrl } from '../../../inv
 
 const SUPPORTED = { 'application/pdf': true, 'image/jpeg': true, 'image/png': true };
 const READ = ['ceo', 'gm', 'office', 'office_crew'];
+// From the store folder itself only these are taken in (a HEIC photo is taken in to show how to send it again).
+const STORE_FOLDER_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/heif'];
 const QB_ROUTES = ['invoice-intake', 'external'];
 
 // Constant-time comparison of a presented key with the stored one.
@@ -97,6 +99,8 @@ export function createHandler(deps) {
           const r = await drive.listFolder(folder, page, after ? { createdAfter: after } : undefined);
           for (const f of r.files) {
             if (after && !(Date.parse(f.createdTime) >= startMs)) continue;
+            // The store folder also holds the store's other files (sheets, documents, shortcuts): only PDFs and photos are taken in.
+            if (after && !STORE_FOLDER_TYPES.includes(f.mimeType)) { stats.store_folder_other = (stats.store_folder_other || 0) + 1; continue; }
             if (appIds && appIds.has(f.id)) { stats.app_saved = (stats.app_saved || 0) + 1; continue; }
             n++; if (after) nStore++;
             const owner = f.owners && f.owners[0] && f.owners[0].emailAddress;
@@ -216,6 +220,24 @@ export function createHandler(deps) {
     return saved.id;
   }
 
+  // Where staff keep an original themselves: right in the store folder, or in a folder of theirs right in it. The
+  // folders this worker makes (year / month / 未照合 / 照合済み) and 00_Upload are not theirs. A file a person assigned
+  // to another store may sit in the folder of the store it came from.
+  async function staffPlace(parents, store, ctx, o) {
+    const roots = new Set([store.root_folder_id]);
+    if ((o.upload_folder_ids || []).length) for (const s of ctx.stores) if (s.root_folder_id) roots.add(s.root_folder_id);
+    const hit = parents.find(p => roots.has(p));
+    if (hit) return hit;
+    const ours = new Set([...(o.store_folder_ids || []), ...ctx.stores.map(s => s.upload_folder_id).filter(Boolean)]);
+    for (const p of parents) {
+      if (ours.has(p)) continue;
+      const pf = await drive.get(p);
+      if (pf.status === 200 && pf.file && !pf.file.trashed && pf.file.mimeType === 'application/vnd.google-apps.folder'
+        && (pf.file.parents || []).some(x => roots.has(x))) return p;
+    }
+    return null;
+  }
+
   async function organizeOne(o, ctx, stats) {
     const store = ctx.stores.find(s => s.store_id === o.store_id);
     try {
@@ -227,9 +249,11 @@ export function createHandler(deps) {
       if (g.status !== 200 || g.file.trashed) throw new Error('original_unavailable_' + g.status);
       const parents = g.file.parents || [];
       // An original put right in the store folder stays where staff put it (Moto 2026-10-08): the store's own
-      // month folders and hand-off use that folder. It is recorded as filed there, not moved or renamed.
-      if (parents.includes(store.root_folder_id)) {
-        await db.rpc('invoice_organize_result', { file_id: o.file_id, ok: true, target: o.target, folder_id: store.root_folder_id, name: g.file.name });
+      // month folders and hand-off use that folder. It is recorded as filed there, not moved or renamed. So does an
+      // original staff moved on into a folder they keep right in the store folder (for example "○月 Uploaded").
+      const leaveAt = await staffPlace(parents, store, ctx, o);
+      if (leaveAt) {
+        await db.rpc('invoice_organize_result', { file_id: o.file_id, ok: true, target: o.target, folder_id: leaveAt, name: g.file.name });
         stats.organize_left = (stats.organize_left || 0) + 1;
         return;
       }
@@ -549,6 +573,7 @@ export function createHandler(deps) {
     const store = ctx.all_stores.find(s => s.store_id === b.store_id);
     if (!store || !b.folder_id) throw new Error('not_found');
     if (b.folder_id === store.upload_folder_id) throw new Error('bad_value');     // the live upload folder is not a past folder
+    if (b.folder_id === store.root_folder_id) throw new Error('bad_value');       // nor the store folder, which is read live too (Moto 2026-10-08)
     const limit = Math.max(1, Math.min(500, Number(b.limit) || 20));
     const files = []; let page = null;
     do { const r = await drive.listFolder(b.folder_id, page); files.push(...r.files); page = r.next; } while (page && files.length < limit);
