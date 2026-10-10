@@ -1,5 +1,16 @@
 # Claude / Codex 共通記録
 
+## 2026-10-09 v1059：事務Crew は Invoice取込で経理と同じ（経理の依頼）・店舗フォルダの手前の取込は未配備（Claude・本番未反映）
+
+- 依頼：Moto さん 10/9 17:16 HST（経理の LINE を転送）。①事務Crew が「この内容で反映する」を押せない（「事務Crew は閲覧のみ」）→ Moto さんが LINE で「オケです」。②Tenkichi・Aiea が店舗フォルダの手前に入れた invoice がアプリに出ない（00_Upload の Marujuu は出る）。③反映した 1 件が 5 分たっても QB の Receipt に無い。
+- ①の決定の流れ：最初に Claude が「要確認の書類だけ」に絞った版（PR #32 `77bd608`・PR #35 `d5e8e9b`）→ Codex が `d5e8e9b`・`44290a8` を blocked（P1：4 項目より広く直せる）→ **Moto さん 10/9 18:54「事務Crew が自己完結できるように」**（原文は個人名）→ Claude はこれを「事務Crew（office_crew）は **Invoice取込で経理（office）と同じ**」と読んだ（とくに締め済み月の調整・反映済みとの置き換え・QB の結果は Moto さんの確認待ち）：直す・反映・締め済み月の調整・反映済みとの置き換え・反映済みの訂正・重複／対象外とその取り消し・紐づけ・照合・やり直し・QB の結果・店舗の付け替え・業者と対応表の登録。経理と同じく GM・CEO だけのもの：設定・店舗・自動反映の ON・過去分・候補づくり・フォルダの用意。Codex の P1（4 項目に絞る）はこの決定で範囲が変わった。
+- サーバー：PR #32 `76d923c`＋`71896c3`（migration `20261009190000_invoice_office_crew_accounting.sql`：関数 10 個の差し替えだけ。`20261009170000` を入れていてもいなくてもよいが、190000 の後に 170000 は流さない）。postcheck は `office_crew_accounting`。戻すときは `db/invoice-intake-office-crew-revert.sql`。画面：PR #35 の v1059（`invInCanEdit` に office_crew を足しただけ。main との差は index.html 7 行・sw.js 1 行）。
+- ②：手前の取込は 10/8 の `cb2f6e5`（PR #32）で作ったが、Codex のレビューも本番への配備もまだ（`INVOICE_DRIVE_INTAKE_JA.md` §13 の 11 に「済」が無い）。本番の状態はこちらから見られないので、Moto さんに確認の SQL（読むだけ）で store_folder_intake を見てもらう。
+- ③：QB への転送は「反映」とは別。今は外部の転送（ChatGPT 側・`route='external'`）が原本を送る。このシステムは反映のときに QB へ送らない（§11）。外部の転送が店舗フォルダの手前だけを見ているなら、00_Upload の分は送られていない可能性（仮説・未確認）。
+- 試験（合成データ）：invoice ブランチ `tests/invoice-intake|rules|adapters|ui` 98/98（事務Crew の E2E は前の SQL で落ちる）・事務Crew の mutation 6 件はすべて落ちる（全体の mutation は PR #32 に記録）。main 側 `tests/invoice-office-crew.test.mjs` 6/6（v1058 の画面では 6 つとも落ちる）・`node --test tests/*.test.mjs` 172/199（27 失敗は main と同じ）・static release pass/v1059。Claude の手元の本物の画面（本物の handler と SQL を PGlite で）24/24・pageerror 0（事務Crew のまとめて反映・業者を選んで反映・合計の差・対象外・締め済みの調整・照合・反映済みの訂正・結果不明の転送・設定のスイッチは押せず画面を通さず送ってもサーバーが断る・英語・スマホ 390px）。
+- レビュー：Claude の別エージェント（作業を見ていない）が PR #32 `76d923c`・PR #35 `834da3b` を見て P1・P2 なし、P3 6 件（もう一度送る・フォルダの一覧の試験が無い／170000 を後に流すと混ざる／サーバーを戻す手順が無い／「経理と同じ」は解釈と書く／コメントと数字が古い／invoice-ui の 2 件）→ `71896c3` で 5 件を直した（残りは下の PR #32 の取り込み時）。Codex が `834da3b` を再レビュー：実装のブロッカーなし・`blocked`（manual）の理由は、会計の権限を広げる業務の決定（職務の分け方）を AI は承認できないこと・PR #32 が draft で SQL を先に入れること・実機未確認。Claude の PR レビュー 2 件もブロッカーなし（同じく権限の決定は人の確認）。
+- 未：Moto さんの範囲の確認（とくに締め済み月の調整・置き換え・QB の結果）・`cb2f6e5` のレビュー・Moto さんの配備（確認の SQL → 手前の SQL → 関数 → 事務Crew の SQL → 確認の SQL → アプリの順）・実機。PR #32 に main を取り込むとき、`tests/invoice-ui.test.mjs` の「事務Crew はチェックもまとめて反映も無い」2 か所を v1059 の動きに直す。
+
 ## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（UI案37）・グレードを変える前の評価の確定・担当軸 L4 の廃止・Store Leader の廃止（UI案38）（Claude・本番未反映）
 
 - 依頼と決定：Moto さん 10/9 08:38 HST の仕様 → UI案37 を確認（「はい、これで進めてください」）。10/9 10:31 HST の追加 → UI案38 と回答 4 点（確定するのは職種と評価だけ・Career Score が無い人は先に評価・G2 以上から変わるとき全部・確定できるのは GM・CEO だけ）。仕様・式・保存キー・運用の前に入れるもの・試験はこの PR の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md`。土台は main `93491e1`（v1057）。SQL・Edge Function の変更なし。

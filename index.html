@@ -38164,7 +38164,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1058';
+const APP_VERSION = '1059';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -44143,7 +44143,10 @@ function invInErrText(code, status){
   return t('うまくいきませんでした','Something went wrong') + (c ? '（' + c + '）' : (status ? '（HTTP ' + status + '）' : ''));
 }
 function invInCan(){ return ['ceo','gm','office','office_crew'].indexOf(curRole) >= 0; }
-function invInCanEdit(){ return ['ceo','gm','office'].indexOf(curRole) >= 0; }
+/* v1059（Moto 10/9・経理の依頼）：事務Crew（office_crew）は Invoice取込で経理と同じ（「事務Crew が自己完結できるように」）。
+   直す・反映・締め済み月の調整・置き換え・反映済みの訂正・照合・やり直し・QB の結果・業者と対応表。設定・自動反映の ON・店舗の画面は GM・CEO（invInCanAdmin）。
+   サーバーの SQL も同じ（invoice ブランチの migration 20261009190000） */
+function invInCanEdit(){ return ['ceo','gm','office','office_crew'].indexOf(curRole) >= 0; }
 function invInCanAdmin(){ return ['ceo','gm'].indexOf(curRole) >= 0; }
 function invInSession(){ return (typeof _botSession!=='undefined' && _botSession) || window._authSession || null; }
 function invInSigned(){ var s = invInSession(); return !!(s && s.access_token); }
@@ -44486,7 +44489,6 @@ function invInReviewTable(Q){
   if (edit) h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button class="btn btn-primary btn-sm"'+(sel.length && !B?'':' disabled')+' onclick="invInBatchAsk()"><i class="ti ti-'+(B?'loader-2':'checks')+'"></i> '
       + (B ? t('反映中… ','Posting… ')+B.done+' / '+B.total : t('選んだ ','Post the ')+sel.length+t(' 件を反映する',' selected'))+'</button>'
       + '<span class="ivx-note" style="margin:0">'+t('原本と 4 項目が合っているものにチェック → まとめて反映。商品・単価は見なくてよい。','Tick the ones whose four items match the original and post them together. Products and prices need not be checked.')+'</span></div>';
-  else h += '<div class="ivx-note">'+t('事務Crew は閲覧のみです。反映は経理・GM・CEO が行います。','Office crew can view only. Accounting, GM or CEO post.')+'</div>';
   if (rows.length < Q.total) h += '<div class="ivx-note">'+t('ほかに ','')+(Q.total-rows.length)+t(' 件あります（反映すると次が出ます）',' more (they appear as these are posted)')+'</div>';
   return h + '</div><div class="ivx-note">'+t('✓ は AI の読みとマスター・計算で確かめられた項目。? と ! が付いた行だけ開いて直します。商品の対応や単価の変化は「確認すること」に出しません（明細の中に参考として残ります）。',
     '✓ means the reading was confirmed against the master and the arithmetic. Open only the rows with ? or ! to fix them. Product mapping and price changes are not listed here (they stay in the lines for reference).')+'</div>';
@@ -44716,7 +44718,7 @@ function invInDetail(mode){
 function invInReviewActions(d){
   var e = escapeHtml, E = _invIn.edits || {}, codes = invInCodes(d.reasons);
   if (d.status!=='review') return '<div class="card" style="padding:10px 12px;font-size:12px">'+t('この書類は確認待ちではありません（','Not waiting for review (')+invInProcChip(d)+'）</div>' + (invInCanEdit() && d.status==='posted' ? invInSaveRow(d) : '');
-  if (!invInCanEdit()) return '<div class="card" style="padding:10px 12px;font-size:12px;color:var(--muted)">'+t('事務Crew は閲覧のみです。確認・反映は経理・GM・CEO が行います。','Office crew can view only. Accounting, GM or CEO confirm and post.')+'</div>';
+  if (!invInCanEdit()) return '<div class="card" style="padding:10px 12px;font-size:12px;color:var(--muted)">'+t('確認・反映は経理・事務Crew・GM・CEO が行います。','Accounting, office crew, GM or CEO confirm and post.')+'</div>';
   var h = '<div class="card" style="padding:10px 12px">';
   var ack = codes.filter(function(c, i){ return INVIN_MAY_ACK.indexOf(c)>=0 && codes.indexOf(c)===i; });
   if (ack.length) h += ack.map(function(c){ return '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:4px"><input type="checkbox"'+(E.ack&&E.ack[c]?' checked':'')+' onchange="_invIn.edits.ack[\''+c+'\']=this.checked"> '
@@ -44915,7 +44917,7 @@ function invInReconActions(d){
   var E = _invIn.edits || {};
   var h = '<div class="card" style="padding:10px 12px"><div style="font-size:11.5px;font-weight:700;margin-bottom:6px">'+t('経理の照合','Accounting reconciliation')+' '+invInReconChip(d)+'</div>';
   var can = invInCanEdit() && (d.status==='posted' || (d.posting_kind==='none' && d.status==='review'));
-  if (!can) return h + '<div class="ivx-note" style="margin-top:0">'+(invInCanEdit() ? t('反映済みの書類だけ照合できます。','Only posted documents can be reconciled.') : t('事務Crew は閲覧のみです。','Office crew can view only.'))+'</div></div>';
+  if (!can) return h + '<div class="ivx-note" style="margin-top:0">'+(invInCanEdit() ? t('反映済みの書類だけ照合できます。','Only posted documents can be reconciled.') : t('照合は経理・事務Crew・GM・CEO が行います。','Accounting, office crew, GM or CEO reconcile.'))+'</div></div>';
   if (d.recon_note) h += '<div style="font-size:11.5px;margin-bottom:6px">'+t('前回のメモ：','Last note: ')+escapeHtml(d.recon_note)+'</div>';
   h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px"><button class="btn btn-secondary" onclick="invInReconcile(\'discrepancy\')">'+t('差異あり','Difference')+'</button>'
     + '<button class="btn btn-primary" onclick="invInReconcile(\'reconciled\')"><i class="ti ti-check"></i> '+t('照合済み','Reconciled')+'</button></div>'
