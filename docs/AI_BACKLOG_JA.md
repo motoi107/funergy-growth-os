@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-10 PR #32：main を取り込み、下書きを外してレビューへ
+
+1. 済（Claude）：main（v1059）を取り込み、画面は main のものに。invoice-ui の事務Crew の試験を v1059 に合わせた。
+2. Codex：PR #32 の最新 head を再レビュー（とくに 10/8 の `cb2f6e5` 店舗フォルダの手前の取込は未レビュー）。
+3. Moto さん：マージ（配備は要らない。Supabase の SQL・関数は今までどおり手で入れたものが本番）。
+4. Moto さん：手前の取込の関数（`3_関数_index.ts`）を Deploy 済みか確認。事務Crew の確認の SQL で office_crew_accounting が true か確認。
+
 ## 2026-10-09 v1059：事務Crew は Invoice取込で経理と同じ（経理の依頼・Moto さん「事務Crew が自己完結できるように」）
 
 1. 済（Claude）：サーバー（PR #32 `76d923c`・migration `20261009190000`）と画面 v1059（PR #35）・試験。最初の「要確認だけ」の版への Codex の P1 は、Moto さんの決定で範囲が変わった。
