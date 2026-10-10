@@ -1,13 +1,7 @@
--- ★ 20261009190000 で置き換え済み。これより後に流さない（4 つだけ狭い版に戻り、混ざった状態になる）。Superseded by 20261009190000 — do not apply after it.
--- 事務Crew（office_crew）も invoice の確認と反映ができるようにする（Moto 2026-10-09・経理からの依頼）。
--- Only these four functions are replaced (same names and arguments, so the existing grants stay: service_role only).
--- No table, setting or record is changed by this file. Run after 20261008090000 (or after 20261007200000 if the store-folder
--- change is not in yet: it does not touch these functions).
---   invoice_post   : 事務Crew may post a document under review — not into a closed month (adjustment) and not as a replacement of a posted one.
---   invoice_edit   : 事務Crew may fix a document under review — not a posted one (corrections stay with 経理・GM・CEO).
---   invoice_mark   : 事務Crew may mark a document under review as duplicate / rejected — not reopen.
---   invoice_relate : 事務Crew may link a credit memo under review to its invoice.
--- Reconciliation, retries, QuickBooks results, vendor / product / store / setting changes stay with 経理・GM・CEO (or GM・CEO).
+-- 事務Crew（office_crew）の Invoice取込の権限を元に戻す（閲覧だけ）。20261009190000（と 20261009170000）を取り消すとき用。
+-- 中身は 2026-10-09 の変更の前（commit 6e1383d）の関数 10 個そのまま。表・設定・記録は変えない（反映済みの書類・照合・履歴は残る）。
+-- 流したあと db/invoice-intake-postcheck.sql の office_crew_accounting が false になる。アプリは v1058 に戻すか、v1059 のままなら事務Crew の操作は「権限がありません」になる。
+-- Reverts office_crew to view-only in invoice intake: the ten functions exactly as before 2026-10-09 (6e1383d). No table, setting or record changes.
 
 create or replace function public.invoice_post(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
@@ -47,8 +41,7 @@ begin
   if not exists(select 1 from public.invoice_vendor_rules where vendor_key=d.vendor_key and auto_post) then raise exception 'not_eligible'; end if;
   who := 'auto'; mode := 'auto';
  else
-  who := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
-  if who = 'office_crew' and (nullif(p->>'supersedes','') is not null or coalesce((p->>'adjustment_ack')::boolean,false)) then raise exception 'forbidden'; end if;
+  perform public.invoice_require(actor, array['ceo','gm','office']);
   who := actor::text; mode := 'manual';
   if length(coalesce(p->>'reason','')) = 0 and jsonb_array_length(d.reasons) > 0 then raise exception 'reason_required'; end if;
  end if;
@@ -99,17 +92,14 @@ declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; e jso
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
  may_ack text[] := array['total_mismatch','line_amount_missing','line_value_missing'];
  ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}'); blocking text;
- learned text; akey text; rl text;
+ learned text; akey text;
 begin
- -- 事務Crew (office_crew, Moto 2026-10-09): may do the review — fix the four items, post, mark as duplicate or rejected, link a credit memo —
- -- but only on a document under review: no posted corrections, no closed-month adjustments, no replacing a posted document.
- rl := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ perform public.invoice_require(actor, array['ceo','gm','office']);
  if length(coalesce(p->>'reason','')) = 0 then raise exception 'reason_required'; end if;
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null then raise exception 'not_found'; end if;
  if d.version <> (p->>'version')::int then raise exception 'conflict'; end if;
  if d.status not in ('review','posted') then raise exception 'invalid_state'; end if;
- if rl = 'office_crew' and (d.status <> 'review' or coalesce((p->>'adjustment_ack')::boolean,false)) then raise exception 'forbidden'; end if;
  closed := public.invoice_setting('rules')->>'closed_through';
  ov := d.overrides;
  for f, v in select * from jsonb_each(coalesce(p->'header','{}')) loop
@@ -216,17 +206,14 @@ end $$;
 
 create or replace function public.invoice_mark(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; a text := p->>'action'; rl text;
+declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; a text := p->>'action';
 begin
- -- 事務Crew (office_crew, Moto 2026-10-09): may do the review — fix the four items, post, mark as duplicate or rejected, link a credit memo —
- -- but only on a document under review: no posted corrections, no closed-month adjustments, no replacing a posted document.
- rl := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ perform public.invoice_require(actor, array['ceo','gm','office']);
  if length(coalesce(p->>'reason','')) = 0 then raise exception 'reason_required'; end if;
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null then raise exception 'not_found'; end if;
  if d.version <> (p->>'version')::int then raise exception 'conflict'; end if;
  if d.status = 'posted' then raise exception 'posted_use_correction'; end if;
- if rl = 'office_crew' and d.status <> 'review' then raise exception 'forbidden'; end if;
  if a = 'duplicate' then
   if nullif(p->>'duplicate_of','') is null then raise exception 'duplicate_of_required'; end if;
   update public.invoice_docs set status='duplicate', duplicate_of=(p->>'duplicate_of')::uuid, version=version+1, updated_at=now() where id=d.id;
@@ -242,17 +229,158 @@ end $$;
 
 create or replace function public.invoice_relate(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; rl text;
+declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid;
 begin
- -- 事務Crew (office_crew, Moto 2026-10-09): may do the review — fix the four items, post, mark as duplicate or rejected, link a credit memo —
- -- but only on a document under review: no posted corrections, no closed-month adjustments, no replacing a posted document.
- rl := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ perform public.invoice_require(actor, array['ceo','gm','office']);
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null or not exists(select 1 from public.invoice_docs where id=(p->>'related_doc_id')::uuid) then raise exception 'not_found'; end if;
  if d.version <> (p->>'version')::int then raise exception 'conflict'; end if;
- if rl = 'office_crew' and d.status <> 'review' then raise exception 'forbidden'; end if;
  if (p->>'relation') not in ('credit_for','payment_for','correction_of','statement_covers') then raise exception 'bad_relation'; end if;
  update public.invoice_docs set related_doc_id=(p->>'related_doc_id')::uuid, relation=p->>'relation', version=version+1, updated_at=now() where id=d.id;
  perform public.invoice_event(d.id, d.file_id, actor::text, 'related', jsonb_build_object('to', p->>'related_doc_id', 'relation', p->>'relation'));
  return jsonb_build_object('ok', true, 'version', d.version + 1);
+end $$;
+
+create or replace function public.invoice_reconcile(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result';
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office']);
+ if r not in ('reconciled','discrepancy','unreconciled') then raise exception 'bad_result'; end if;
+ select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
+ if d.id is null then raise exception 'not_found'; end if;
+ if d.version <> (p->>'version')::int then raise exception 'conflict'; end if;
+ if d.status not in ('posted') and not (d.posting_kind='none' and d.status='review') then raise exception 'invalid_state'; end if;
+ if r = 'discrepancy' and length(coalesce(p->>'note','')) = 0 then raise exception 'note_required'; end if;
+ update public.invoice_docs set recon_status=r, recon_by=actor::text, recon_at=now(), recon_note=nullif(p->>'note',''), recon_diff=p->'diff',
+  version=version+1, updated_at=now() where id=d.id;
+ if r = 'reconciled' then
+  update public.invoice_files set organize_target='reconciled', organize_status='pending', organize_attempts=0, organize_error=null, organize_next_at=null
+  where id=d.file_id;
+ else
+  update public.invoice_files set organize_target='unreconciled', organize_status='pending', organize_attempts=0, organize_error=null, organize_next_at=null
+  where id=d.file_id and organize_target='reconciled';
+ end if;
+ perform public.invoice_event(d.id, d.file_id, actor::text, 'reconcile_'||r, jsonb_build_object('note', p->>'note', 'diff', p->'diff'));
+ return jsonb_build_object('ok', true, 'version', d.version + 1);
+end $$;
+
+create or replace function public.invoice_qb_result(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare o public.invoice_qb_outbox; s text := p->>'state';
+begin
+ if s not in ('sent','error','unknown','pending') then raise exception 'bad_state'; end if;
+ select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;
+ if o.id is null then raise exception 'not_found'; end if;
+ -- A person (accounting, GM, CEO) may only settle an unknown result after checking the sender's records.
+ if nullif(p->>'actor','') is not null and p->>'actor' <> 'external' then
+  perform public.invoice_require((p->>'actor')::uuid, array['ceo','gm','office']);
+  if o.state <> 'unknown' or s not in ('sent','pending') then raise exception 'invalid_state'; end if;
+ end if;
+ -- The external sender may only report on its own rows, and only after reserving them.
+ if p->>'actor' = 'external' and (o.route <> 'external' or o.state not in ('sending','unknown') or s = 'pending') then raise exception 'invalid_state'; end if;
+ if s='pending' then
+  -- Only a person who checked the sender's records may re-queue an unknown send.
+  if o.state<>'unknown' then raise exception 'invalid_state'; end if;
+  perform public.invoice_require(nullif(p->>'actor','')::uuid, array['ceo','gm','office']);
+ end if;
+ if o.state='sent' then return jsonb_build_object('ok', true, 'state', 'sent'); end if;
+ update public.invoice_qb_outbox set state=s, sent_at=case when s='sent' then now() else sent_at end,
+  message_id=coalesce(p->>'message_id', message_id), result=coalesce(p->'result', result), last_error=left(p->>'error',300),
+  next_at=case when s='error' then now() + make_interval(mins => least(720, 15 * power(2, least(attempts,5))::int)) end, updated_at=now()
+ where id=o.id;
+ perform public.invoice_event(null, o.file_id, coalesce(p->>'actor','worker'), 'qb_'||s, jsonb_build_object('message_id', p->>'message_id', 'error', left(p->>'error',300)));
+ return jsonb_build_object('ok', true, 'state', s);
+end $$;
+
+create or replace function public.invoice_vendor_save(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid; v jsonb := p->'vendor'; cur public.invoice_vendor_rules;
+ k text; known text[] := array['vendor_key','display_name','aliases','food_kind','auto_post','expect_updated_at'];
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office']);
+ if coalesce(v->>'vendor_key','') !~ '^[A-Za-z0-9_.:@-]{1,80}$' then raise exception 'bad_value'; end if;
+ if v ? 'display_name' and length(coalesce(v->>'display_name','')) = 0 then raise exception 'bad_value'; end if;
+ for k in select jsonb_object_keys(v) loop if not (k = any(known)) then raise exception 'bad_value'; end if; end loop;
+ -- One writer at a time with the alias learning in invoice_edit (no name is taught twice or lost between a read and a write).
+ perform pg_advisory_xact_lock(hashtext('invoice_vendor_rules'));
+ select * into cur from public.invoice_vendor_rules where vendor_key=v->>'vendor_key' for update;
+ -- A screen sends the time it read the vendor; if someone saved it since (or a name was learned), nothing is overwritten.
+ if v ? 'expect_updated_at' and (cur.vendor_key is null or cur.updated_at is distinct from (v->>'expect_updated_at')::timestamptz) then raise exception 'conflict'; end if;
+ if coalesce((v->>'auto_post')::boolean,false) and public.invoice_actor_role(actor) not in ('ceo','gm')
+    and not coalesce(cur.auto_post, false) then raise exception 'forbidden'; end if;
+ if cur.vendor_key is null then
+  if length(coalesce(v->>'display_name','')) = 0 then raise exception 'bad_value'; end if;
+  insert into public.invoice_vendor_rules(vendor_key, display_name, aliases, food_kind, auto_post, verified_by, verified_at)
+  values(v->>'vendor_key', v->>'display_name', coalesce(array(select jsonb_array_elements_text(v->'aliases')),'{}'), v->>'food_kind',
+   coalesce((v->>'auto_post')::boolean,false), actor::text, now());
+ else
+  -- Only the keys that were sent change (a switch on its own leaves the names and the kind as they are now).
+  update public.invoice_vendor_rules x set
+   display_name=case when v ? 'display_name' then v->>'display_name' else x.display_name end,
+   aliases=case when v ? 'aliases' then coalesce(array(select jsonb_array_elements_text(v->'aliases')),'{}') else x.aliases end,
+   food_kind=case when v ? 'food_kind' then v->>'food_kind' else x.food_kind end,
+   auto_post=case when v ? 'auto_post' then coalesce((v->>'auto_post')::boolean,false) else x.auto_post end,
+   verified_by=actor::text, verified_at=now(), updated_at=now()
+  where x.vendor_key=cur.vendor_key;
+ end if;
+ perform public.invoice_event(null, null, actor::text, 'vendor_saved', v);
+ return (select to_jsonb(x) from public.invoice_vendor_rules x where vendor_key=v->>'vendor_key');
+end $$;
+
+create or replace function public.invoice_map_save(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid; m jsonb := p->'map'; r public.invoice_item_maps; rl text;
+begin
+ rl := public.invoice_require(actor, array['ceo','gm','office']);
+ if coalesce((m->>'auto_post')::boolean,false) and not coalesce((m->>'verified')::boolean,false) then raise exception 'bad_value'; end if;
+ if coalesce((m->>'auto_post')::boolean,false) and rl not in ('ceo','gm')
+    and not (m ? 'id' and coalesce((select auto_post from public.invoice_item_maps where id=(m->>'id')::uuid), false)) then raise exception 'forbidden'; end if;
+ if m ? 'id' then
+  update public.invoice_item_maps set ingredient_code=m->>'ingredient_code', count_unit=m->>'count_unit', count_per_purchase=(m->>'count_per_purchase')::numeric,
+   base_unit=m->>'base_unit', base_per_purchase=(m->>'base_per_purchase')::numeric, verified=coalesce((m->>'verified')::boolean,false),
+   verified_by=case when coalesce((m->>'verified')::boolean,false) then actor::text end, verified_at=case when coalesce((m->>'verified')::boolean,false) then now() end,
+   auto_post=coalesce((m->>'auto_post')::boolean,false), note=m->>'note', version=version+1, updated_at=now()
+  where id=(m->>'id')::uuid and version=(m->>'version')::int returning * into r;
+  if r.id is null then raise exception 'conflict'; end if;
+ else
+  insert into public.invoice_item_maps(vendor_key, store_id, vendor_item_code, alias_key, spec_key, purchase_unit, ingredient_code, count_unit,
+   count_per_purchase, base_unit, base_per_purchase, verified, verified_by, verified_at, auto_post, source, note)
+  values(m->>'vendor_key', m->>'store_id', m->>'vendor_item_code', m->>'alias_key', coalesce(m->>'spec_key',''), coalesce(m->>'purchase_unit',''),
+   m->>'ingredient_code', m->>'count_unit', (m->>'count_per_purchase')::numeric, m->>'base_unit', (m->>'base_per_purchase')::numeric,
+   coalesce((m->>'verified')::boolean,false), case when coalesce((m->>'verified')::boolean,false) then actor::text end,
+   case when coalesce((m->>'verified')::boolean,false) then now() end, coalesce((m->>'auto_post')::boolean,false), coalesce(m->>'source','manual'), m->>'note')
+  returning * into r;
+ end if;
+ perform public.invoice_event(null, null, actor::text, 'map_saved', to_jsonb(r));
+ return to_jsonb(r);
+end $$;
+
+create or replace function public.invoice_file_retry(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid;
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office']);
+ update public.invoice_files set intake_status=case when intake_status='error' then 'pending' else intake_status end, attempts=0, next_attempt_at=null,
+  organize_status=case when organize_status='error' then 'pending' else organize_status end, organize_attempts=0, organize_next_at=null, updated_at=now()
+ where id=(p->>'file_id')::uuid;
+ if not found then raise exception 'not_found'; end if;
+ perform public.invoice_event(null, (p->>'file_id')::uuid, actor::text, 'retry', '{}');
+ return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function public.invoice_reassign(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid; f public.invoice_files;
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office']);
+ if length(coalesce(p->>'reason','')) = 0 then raise exception 'reason_required'; end if;
+ select * into f from public.invoice_files where id=(p->>'file_id')::uuid for update;
+ if f.id is null or not exists(select 1 from public.invoice_stores where store_id=p->>'store_id') then raise exception 'not_found'; end if;
+ if exists(select 1 from public.invoice_docs where file_id=f.id and status='posted') then raise exception 'posted_use_correction'; end if;
+ update public.invoice_docs set status='rejected', version=version+1, updated_at=now() where file_id=f.id and status in ('review','duplicate');
+ update public.invoice_files set store_id=p->>'store_id', store_assigned_by=actor::text, drive_state=case when drive_state='moved_store' then 'ok' else drive_state end,
+  intake_status='pending', attempts=0, next_attempt_at=null, organize_status='none', organize_target=null, updated_at=now() where id=f.id;
+ perform public.invoice_event(null, f.id, actor::text, 'reassigned', jsonb_build_object('from', f.store_id, 'to', p->>'store_id', 'reason', p->>'reason'));
+ return jsonb_build_object('ok', true);
 end $$;

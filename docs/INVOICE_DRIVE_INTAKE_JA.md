@@ -113,7 +113,7 @@
 ## 9 権限と秘密情報
 
 - DB の表・関数はすべて service_role 専用（RLS 有効・anon/authenticated から revoke）。
-- 本部・経理：業務Bot と同じ Supabase Auth のメール認証。役割は `manager_auth`（ceo/gm/office/office_crew）。閲覧は 4 役割。**事務Crew（office_crew）は Invoice取込で経理（office）と同じ**（Moto さん 10/9：「この内容で反映する」を事務Crew に →「事務Crew が自己完結できるように」・migration `20261009190000`）：直す・反映（締め済み月の調整・反映済みとの置き換えを含む）・反映済みの訂正・重複／対象外とその取り消し・紐づけ・照合・やり直し・QuickBooks の結果・店舗の付け替え・業者と対応表の登録。設定・店舗・自動反映の ON（業者・対応表・店舗）・過去分・候補づくり・フォルダの用意は経理と同じく ceo/gm だけ。
+- 本部・経理：業務Bot と同じ Supabase Auth のメール認証。役割は `manager_auth`（ceo/gm/office/office_crew）。閲覧は 4 役割。**事務Crew（office_crew）は Invoice取込で経理（office）と同じ**（Moto さん 10/9：「この内容で反映する」を事務Crew に →「事務Crew が自己完結できるように」・migration `20261009190000`。「経理と同じ」は Claude がこの言葉をそう読んだもの。とくに締め済み月の調整・反映済みとの置き換え・QuickBooks の結果は Moto さんの確認待ち）：直す・反映（締め済み月の調整・反映済みとの置き換えを含む）・反映済みの訂正・重複／対象外とその取り消し・紐づけ・照合・やり直し・QuickBooks の結果・店舗の付け替え・業者と対応表の登録。設定・店舗・自動反映の ON（業者・対応表・店舗）・過去分・候補づくり・フォルダの用意は経理と同じく ceo/gm だけ。
 - 店舗スタッフ：この API は使わない（Drive に入れるだけ）。PIN ログインのままでは、サーバー側で本人と所属店舗を確かめる仕組みが無い。店舗の画面に自店の一覧を出すには、PIN 確認でサーバーが短時間の証明を出す等の最小対応が先に必要。
 - ワーカー：`invoice_settings.worker.key`（DB 内・service_role のみ）を cron がヘッダーで送る。定数時間で比較。
 - 秘密情報は Edge Function の secrets と service_role 専用の表だけ：`ANTHROPIC_API_KEY`（既存）。Google Drive は、関数の secrets（`GOOGLE_OAUTH_CLIENT_ID`・`GOOGLE_OAUTH_CLIENT_SECRET`・`GOOGLE_OAUTH_REFRESH_TOKEN`）があればそれを、無ければ drive-sync が既に保存している `public.drive_oauth`（id=1）を service_role で読んで使う（`invoice_drive_credentials`。表が無ければ「未接続」）。どちらもブラウザ・公開コード・ログに出さない（エラー文から鍵・トークンの語を伏せる。テストで確認）。
@@ -185,7 +185,7 @@
 10. **UI案36（Moto さん 10/7 13:05「経理側の確認は 業者名 invoiceナンバー 金額 配達店舗 の確認です。対応する商品や単価は確認しません。…スムーズに確認作業を進められる仕様にしてください」→ 13:14 UI案36 を「実機で確認します 進めてください」）**。入れる順番（Codex のレビューのあと）：SQL Editor で `supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql`（関数 5 つの差し替えだけ）→ `db/invoice-intake-postcheck.sql`（accounting_checks が true）→ 関数 `invoice-intake` を差し替え（`deno bundle` の 1 ファイル）→ アプリ v1056。SQL を先に入れる（古い関数は今までどおり厳しく判定するだけで、新しい SQL と合う。逆の順だと、新しい関数の自動反映を古い SQL が断り、`line_amount_missing` の行を古い SQL が価格の履歴から外せない）。入れたあと、確認モードの店舗・業者は設定で GM・CEO が「自動」にする（まとめてできる）。自動反映そのもの（運用の「確認の要らない invoice は自動で反映する」）も GM・CEO。
 11. **店舗フォルダの直下も読む（Moto さん 10/8 09:22）**：SQL Editor で `supabase/migrations/20261008090000_invoice_intake_store_folder.sql`（`invoice_file_seen` 1 つの差し替えだけ）→ `db/invoice-intake-postcheck.sql`（store_folder_intake が true）→ 関数 `invoice-intake` を差し替え（`deno bundle` の 1 ファイル）。SQL が先（新しい関数が古い SQL に店舗フォルダのファイルを渡すと folder_not_configured でその店の取込がエラーになる。00_Upload は先に読むので止まらない）。アプリの変更なし。
 12. QuickBooks：今の転送（ChatGPT 側）が台帳を見るようにできたら `route='external'`・台帳 ON・外部の口 ON。このシステムから送るのは、今の転送を止めて送信手段をつないでから `route='invoice-intake'`。
-13. **事務Crew は Invoice取込で経理と同じ（経理の依頼・Moto さん 10/9「オケです」→「事務Crew が自己完結できるように」）**：SQL Editor で `supabase/migrations/20261009190000_invoice_office_crew_accounting.sql`（関数 10 個の差し替えだけ。表・設定は変えない。先に作った `20261009170000`（要確認の書類だけ）を入れていてもいなくてもよい）→ `db/invoice-intake-postcheck.sql`（office_crew_accounting が true）→ アプリ v1059（事務Crew に経理と同じ画面）。関数 `invoice-intake` の差し替えは要らない（役割は SQL が決める）。SQL を先に入れる（アプリだけ先だと事務Crew が押しても「権限がありません」になるだけ）。
+13. **事務Crew は Invoice取込で経理と同じ（経理の依頼・Moto さん 10/9「オケです」→「事務Crew が自己完結できるように」）**：SQL Editor で `supabase/migrations/20261009190000_invoice_office_crew_accounting.sql`（関数 10 個の差し替えだけ。表・設定は変えない。先に作った `20261009170000`（要確認の書類だけ）を入れていてもいなくてもよい）→ `db/invoice-intake-postcheck.sql`（office_crew_accounting が true）→ アプリ v1059（事務Crew に経理と同じ画面）。関数 `invoice-intake` の差し替えは要らない（役割は SQL が決める）。SQL を先に入れる（アプリだけ先だと事務Crew が押しても「権限がありません」になるだけ）。試験（合成データ）：`tests/invoice-intake.test.mjs` 70/70（事務Crew の E2E は前の SQL で落ちる）・intake／rules／adapters／ui あわせて 98/98・mutation の事務Crew 6 件（設定・業者の自動・照合・もう一度送る・フォルダの一覧・締め済み）はすべて落ちる。
 
 ## 14 切り戻し
 
@@ -194,6 +194,7 @@
 - QuickBooks：`qb.route` を null に戻す（新しく積まない）・`qb_external.enabled=false`（外部の口を閉じる）。送信履歴は残る。
 - 画面：v1051 に戻す（`index.html`・`sw.js`）。サーバーのデータは残る。店舗マスターに入れた提出フォルダ（`invoiceUploadFolderId`）は v1051 では使われないだけ。
 - 新しく作った記録は消さない（追跡できるように残す）。Drive の原本は移動・改名だけで、消していない。
+- 事務Crew を閲覧だけに戻す：`db/invoice-intake-office-crew-revert.sql`（2026-10-09 の前の関数 10 個に戻すだけ。反映済みの書類・照合・履歴は残る。確認の SQL の office_crew_accounting が false になる）→ アプリを v1058 に戻す（v1059 のままなら事務Crew の操作は「権限がありません」になる）。`20261009170000` は `20261009190000` より後に流さない（4 つだけ狭い版に戻り、混ざった状態になる）。
 - 配備そのものを取り消す（まだ何も取り込んでいないとき）：関数 `invoice-intake` を削除 → `db/invoice-intake-rollback.sql`（この migration の表と関数だけを消す。記録が 1 件でもあれば止まる）。
 
 ## 14b 画面（v1052〜v1056・UI案34・UI案35・UI案36）

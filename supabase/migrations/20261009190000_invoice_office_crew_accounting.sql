@@ -281,7 +281,7 @@ begin
  if s not in ('sent','error','unknown','pending') then raise exception 'bad_state'; end if;
  select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;
  if o.id is null then raise exception 'not_found'; end if;
- -- A person (accounting, GM, CEO) may only settle an unknown result after checking the sender's records.
+ -- A person (accounting, 事務Crew, GM, CEO) may only settle an unknown result after checking the sender's records.
  if nullif(p->>'actor','') is not null and p->>'actor' <> 'external' then
   perform public.invoice_require((p->>'actor')::uuid, array['ceo','gm','office','office_crew']);
   if o.state <> 'unknown' or s not in ('sent','pending') then raise exception 'invalid_state'; end if;

@@ -285,6 +285,20 @@ test('the deployable migrations are the same SQL that the tests run', async () =
   assert.equal(upgraded, full);
 });
 
+test('the 事務Crew revert puts back the ten functions without 事務Crew, and nothing else', async () => {
+  const fs = await import('node:fs');
+  const read = f => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+  const fn = /^create (?:or replace )?function public\.(\w+)\((.*?)^(?:\$\$;|end \$\$;)\n/gms;
+  const revert = read('db/invoice-intake-office-crew-revert.sql'), widen = read('supabase/migrations/20261009190000_invoice_office_crew_accounting.sql');
+  const names = s => [...s.matchAll(fn)].map(m => m[1]);
+  assert.deepEqual(names(revert), names(widen));
+  assert.ok(!/^(create table|alter |drop |insert |update |delete |grant |revoke )/im.test(revert.replace(fn, '')), 'only replaces functions');
+  for (const m of revert.matchAll(fn)) {
+    assert.ok(!m[0].includes('office_crew'), m[1]);
+    assert.ok(m[0].includes("array['ceo','gm','office']"), m[1]);
+  }
+});
+
 test('the reasons that never stop posting are the same in the rules and in the database', async () => {
   const fs = await import('node:fs');
   const full = fs.readFileSync(new URL('../db/invoice-intake.sql', import.meta.url), 'utf8');

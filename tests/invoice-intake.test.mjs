@@ -857,12 +857,17 @@ test('事務Crew does the invoice work like accounting; GM・CEO settings stay c
     assert.equal(r.status, 200, JSON.stringify(r.body));
     E.setMail('timeout');
     E.fixtures.set('CREW-Q', { readable: true, documents: [doc('8005', '2026-10-06', [miso])] });
-    const q = E.drive.file('crew-q.pdf', pdf('CREW-Q'), 'U6');
+    E.fixtures.set('CREW-Q2', { readable: true, documents: [doc('8006', '2026-10-06', [miso])] });
+    const q = E.drive.file('crew-q.pdf', pdf('CREW-Q'), 'U6'), q2 = E.drive.file('crew-q2.pdf', pdf('CREW-Q2'), 'U6');
     await E.worker(); E.setMail('ok');
-    const [o] = await E.q(`select o.* from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [q]);
-    assert.equal(o.state, 'unknown');
+    const outbox = async id => (await E.q(`select o.* from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [id]))[0];
+    const o = await outbox(q), o2 = await outbox(q2);
+    assert.equal(o.state, 'unknown'); assert.equal(o2.state, 'unknown');
     r = await E.api('tok-crew', { action: 'qb_resolve', id: o.id, state: 'sent', note: '送信済みフォルダで確認' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
+    r = await E.api('tok-crew', { action: 'qb_resolve', id: o2.id, state: 'pending', note: '送信済みフォルダに無い' });   // send again
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal((await outbox(q2)).state, 'pending');
     const map = { vendor_key: 'v1', vendor_item_code: '99999', purchase_unit: 'EA', ingredient_code: 'I-9', count_unit: 'EA', count_per_purchase: '1', verified: true };
     r = await E.api('tok-crew', { action: 'map_save', map });
     assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -875,7 +880,7 @@ test('事務Crew does the invoice work like accounting; GM・CEO settings stay c
     r = await E.api('tok-crew', { action: 'vendor_save', vendor: { vendor_key: 'v2', auto_post: true } });
     assert.equal(r.status, 403);
     for (const body of [{ action: 'settings_save', key: 'rules', value: { price_jump_pct: 20 } }, { action: 'store_save', store: { store_id: 'F06', auto_post: false } },
-      { action: 'backfill', store_id: 'F06', folder_id: 'R6' }, { action: 'folder_setup' }, { action: 'vendor_seed' }, { action: 'map_seed', store_id: 'F06' }]) {
+      { action: 'backfill', store_id: 'F06', folder_id: 'R6' }, { action: 'folder_plan' }, { action: 'folder_setup' }, { action: 'vendor_seed' }, { action: 'map_seed', store_id: 'F06' }]) {
       assert.equal((await E.api('tok-crew', body)).status, 403, body.action);
     }
   } finally { await E.pg.close(); }
