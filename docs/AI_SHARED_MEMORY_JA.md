@@ -11,6 +11,13 @@
 - レビュー：Claude の別エージェント（作業を見ていない）が PR #32 `76d923c`・PR #35 `834da3b` を見て P1・P2 なし、P3 6 件（もう一度送る・フォルダの一覧の試験が無い／170000 を後に流すと混ざる／サーバーを戻す手順が無い／「経理と同じ」は解釈と書く／コメントと数字が古い／invoice-ui の 2 件）→ `71896c3` で 5 件を直した（残りは下の PR #32 の取り込み時）。Codex が `834da3b` を再レビュー：実装のブロッカーなし・`blocked`（manual）の理由は、会計の権限を広げる業務の決定（職務の分け方）を AI は承認できないこと・PR #32 が draft で SQL を先に入れること・実機未確認。Claude の PR レビュー 2 件もブロッカーなし（同じく権限の決定は人の確認）。
 - 未：Moto さんの範囲の確認（とくに締め済み月の調整・置き換え・QB の結果）・`cb2f6e5` のレビュー・Moto さんの配備（確認の SQL → 手前の SQL → 関数 → 事務Crew の SQL → 確認の SQL → アプリの順）・実機。PR #32 に main を取り込むとき、`tests/invoice-ui.test.mjs` の「事務Crew はチェックもまとめて反映も無い」2 か所を v1059 の動きに直す。
 
+## 2026-10-10 PR #31（ops-bot）：Bot の勤怠確認から Toast Generic Login（全店）と LaLa（F06）の Server Default を外す — テストと記録を追加（Claude）
+
+- 変更は Codex の `be79809`（PR 本文では 10/4 に本番 ops-bot へ配備済み）：`isBotSystemAccount` が今までの仕組み上のアカウントに加えて、全店の `Toast Generic Login`（前後が区切りの語として一致）と F06 だけの `Server Default`（完全一致）を外す。名前は NFKC・小文字・空白／`_`／`-`／`.`／`*` をそろえて比べる。新しい検知と既存案件の再確認の両方に使う。会計（Payment Void／Unpaid）・閾値・DB・画面は変更なし。
+- Codex と Claude のレビュー（`be79809`）：ブロッカーなし。足りないのはテストと共有記録（Codex は blocked／manual）。10/10 Moto さん「仕上げてください」→ Claude が main を取り込み、`tests/bot-attendance-exclusions.test.mjs` を追加：表記の揺れ・F06 だけの Server Default（ほかの店では検知）・人の名前や似た名前（MyToast…・…Logins・Server Default 2 など）は検知・再確認の経路（案件の店舗で判断）・会計は検知。規則を弱めた 7 通り（F06 以外でも外す・Toast の規則なし・NFKC なし・区切りをそろえない・再確認だけ古い規則・新規検知だけ古い規則・語でなく部分一致）すべてで落ちる。
+- 試験：`node --test tests/bot-*.test.mjs` 120/124（4 失敗は main と同じ既存の失敗：bot-center の fixture 不足 2 件・bot-database の固定日付 1 件と親）。
+- 未確認：本番の ops-bot とこの head の一致（こちらから本番は見られない）、実際の Toast の表示名。マージしても本番の再配備は要らない（PR 本文）。
+
 ## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（UI案37）・グレードを変える前の評価の確定・担当軸 L4 の廃止・Store Leader の廃止（UI案38）（Claude・本番未反映）
 
 - 依頼と決定：Moto さん 10/9 08:38 HST の仕様 → UI案37 を確認（「はい、これで進めてください」）。10/9 10:31 HST の追加 → UI案38 と回答 4 点（確定するのは職種と評価だけ・Career Score が無い人は先に評価・G2 以上から変わるとき全部・確定できるのは GM・CEO だけ）。仕様・式・保存キー・運用の前に入れるもの・試験はこの PR の `docs/CAREER_CRITERIA_BONUS_COEF_JA.md`。土台は main `93491e1`（v1057）。SQL・Edge Function の変更なし。

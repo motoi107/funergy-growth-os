@@ -11,6 +11,12 @@
 6. PR #32 に main を取り込むとき：`tests/invoice-ui.test.mjs` の事務Crew の 2 か所を v1059 に合わせる。
 7. 候補（Moto さん）：Invoice取込の外で事務Crew が閲覧のみのもの（承認・支払確定・差し戻し・削除・チェックの確認。v846 から）も開けるか。
 
+## 2026-10-10 PR #31：Bot の勤怠から Toast Generic Login・LaLa の Server Default を外す（本番配備済み・main 未反映）
+
+1. 済（Claude）：main を取り込み、除外の規則のテストと共有記録を追加。
+2. Codex：最新の head を再レビュー。
+3. Moto さん：マージ（本番の再配備は要らない）。
+
 ## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別基準・ボーナス係数（UI案37）・グレード変更前の評価の確定（UI案38）
 
 1. 済（Claude）：UI案37・UI案38 を Moto さんに確認 → v1058 を実装・独立レビュー（Claude の別エージェント）の指摘を修正。
