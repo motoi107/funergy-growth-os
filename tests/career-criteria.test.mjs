@@ -32,6 +32,10 @@ function app() {
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
     function _bonusQParse(q){ var m=String(q||'').match(/(\d{4})\D*Q?([1-4])/i); return m ? { y:+m[1], q:+m[2] } : null; }
     function lsSet(k, v){ if (typeof FAIL_SET !== 'undefined' && FAIL_SET === k) return false; STORE[k] = JSON.parse(JSON.stringify(v)); return true; }
+    var window = this;   // the all-or-nothing save keeps its state on window
+    function _lsRawStr(k){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.stringify(STORE[k]) : null; }
+    function _lsWriteVerified(k, json){ STORE[k] = JSON.parse(json); return true; }
+    function _lsRawDel(k){ delete STORE[k]; return true; }
     function t(a, b){ return curLang === 'en' ? b : a; }
     function escapeHtml(s){ return String(s == null ? '' : s); }
     function nowJP(){ return '2026/10/09 09:00'; } function myName(){ return 'GM'; } var ROLE_CONFIG = { gm:{ name:'GM' } };
@@ -459,4 +463,27 @@ test('Codex/Claude P2: G3 track picks for different people on different devices 
   assert.equal(run(A, `mergeMapByTime(${JSON.stringify(cloud2)}, STORE.bonus_track)`)['2026-Q3|alice'].t, 'op', 're-picking after a clear wins');
   assert.equal(run(A, `bonusTrackFor({ id:'alice', title:'Crew Leader' }, '2026-Q3').t`), 'op');
   assert.equal(run(A, `btrGet('2026-Q4','bob')`), null, 'another quarter is separate');
+});
+
+test('re-review P3: a track pick that cannot be saved is not sent to sync; a grade-history record that silently fails rolls back; the failure banner is cleared after a rollback', () => {
+  const A = app38();
+  A.FAIL_SET = 'bonus_track'; A.PUSHES.length = 0; A.TOASTS.length = 0;
+  run(A, `bonusSetTrack('alice','sv')`); delete A.FAIL_SET;
+  assert.deepEqual([[...A.PUSHES], A.STORE.bonus_track], [[], undefined]);
+  assert.match(A.TOASTS.join(), /保存できませんでした/);
+  run(A, `bonusSetTrack('alice','sv')`);
+  assert.ok(A.PUSHES.includes('bonus_track'), 'saved normally afterwards');
+
+  const c = storeBacked(app38());
+  c.STORE.lss_requests = [{ id: 'r1', name: 'Amy Sample', kind: 'promo', wantTitle: 'Kitchen Leader', status: '申請中' }];
+  run(c, `approveLssRequest('r1','承認'); ghEvalConfirm(); var _gar=ghAddRec; ghAddRec=function(){ return false; }; void 0;`);   // no lsSet failure, just no record
+  c.PUSHES.length = 0; run(c, `ghConfirmGo(); ghAddRec=_gar; void 0;`);
+  assert.deepEqual([c.STORE.lss_requests[0].status, empOf(c, 'amy').title, [...c.PUSHES]], ['申請中', 'Crew Leader', []]);
+
+  const d = storeBacked(app38());
+  vm.runInContext(`var CLEARED=[]; function _lsClearSaveFailure(k){ CLEARED.push(k); }`, d);
+  d.STORE.lss_requests = [{ id: 'r1', name: 'Amy Sample', kind: 'promo', wantTitle: 'Kitchen Leader', status: '申請中' }];
+  run(d, `approveLssRequest('r1','承認'); ghEvalConfirm();`);
+  d.FAIL_SET = 'grade_hist'; run(d, `ghConfirmGo()`); delete d.FAIL_SET;
+  assert.ok(d.CLEARED.includes('grade_hist'), 'the "not saved on this device" mark is cleared once everything is back');
 });

@@ -60918,7 +60918,8 @@ function bonusSetTrack(empId, tr){
   if(d.locked && !(d.coefSnap && typeof d.coefSnap==='object' && !d.coefSnap[empId])){ showToast(q+' の査定は確定済みです','warning'); return; }   /* 確定したときの記録に無い人（あとで対象になった人）だけは選べる */
   var m=btrAll(), k=btrKey(q, empId), old=m[k], t=(tr && CSC_TRACK_NAME[tr]) ? tr : null;
   m[k]={t:t, at:_bqNow(), by:_bqWho(), _at:Math.max(Date.now(), (Number(old && old._at)||0)+1)};   /* 外すときも消さずに「なし」を新しい時刻で（合流で前の選択が戻らない） */
-  if(lsSet('bonus_track', m)===false || ((btrGet(q, empId)||{}).t||null)!==t){ showToast('保存できませんでした','danger'); karteRerender(); return; }
+  var tx=ghTxnBegin(), w=lsSet('bonus_track', m); if(w===false) tx.fail.push('bonus_track');   /* 端末に保存できなかったら同期にも送らない */
+  if(!ghTxnEnd(tx) || ((btrGet(q, empId)||{}).t||null)!==t){ showToast('保存できませんでした','danger'); karteRerender(); return; }
   showToast(tr?(q+' の G3 職種を '+cscTrackName(tr)+' にしました'):'選んだ職種を外しました', 'success');
   karteRerender();
 }
@@ -61120,6 +61121,7 @@ function ghAddRecEval(empId, rec, name){
   var ok=false;
   if(hit && rec.prevEval){ hit.prevEval=rec.prevEval; if(!hit.from && rec.from) hit.from=ghNormG(rec.from); hit.edBy=_ghWho(); hit.edAt=_ghNow(); ok=(ghSave(empId, recs, name)!==false); }
   else if(hit) ok=true;
+  if(!ok && window._ghTx) window._ghTx.err=new Error('grade_hist not recorded');   /* まとめて保存の中なら、全部戻す（黙って役職だけ変えない） */
   if(!ok && !window._ghTx) showToast('グレード履歴に記録できませんでした'+(rec.prevEval?'（前のグレードの期間の評価も残っていません）':'')+'。成長カルテのグレード履歴を確かめてください','danger');
   return ok;
 }
@@ -61234,6 +61236,7 @@ function ghTxnEnd(tx){
   var bad=false;
   tx.snap.slice().reverse().forEach(function(x){ try{ if(x[1]==null) _lsRawDel(x[0]); else if(!_lsWriteVerified(x[0], x[1])) bad=true; }catch(e){ bad=true; } });   /* 端末だけ（同期に送らない） */
   tx.rollbackFailed=bad;
+  if(!bad && typeof _lsClearSaveFailure==='function') tx.fail.forEach(function(k){ try{ _lsClearSaveFailure(k); }catch(e){} });   /* 戻せたら「保存できていない項目」の印を消す（端末とクラウドは前の値でそろっている） */
   if(tx.err) console.warn('ghTxn', tx.err);
   return false;
 }
