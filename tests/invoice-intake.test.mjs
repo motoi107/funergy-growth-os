@@ -396,7 +396,8 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     assert.equal((await E.api(null, { action: 'list' })).status, 401);
     assert.equal((await E.api('tok-other', { action: 'list' })).status, 403);
     assert.equal((await E.api('tok-crew', { action: 'list' })).status, 200);
-    assert.equal((await E.api('tok-crew', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled' })).status, 403);
+    assert.equal((await E.api('tok-other', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled' })).status, 403);
+    assert.equal((await E.api('tok-crew', { action: 'settings_save', key: 'rules', value: { price_jump_pct: 20 } })).status, 403);
     assert.equal((await E.api('tok-office', { action: 'settings_save', key: 'rules', value: { price_jump_pct: 20 } })).status, 403);
     assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'qb', value: { to: 'someone@example.test' } })).status, 400);
     const bad = await (async () => { const r = await createHandlerCall(E, { action: 'worker' }, { 'x-invoice-worker-key': 'wrong' }); return r.status; })();
@@ -517,7 +518,7 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     E.setMail('ok'); const n = E.sent.length;
     await E.worker(); await E.worker();
     assert.equal(E.sent.length, n);
-    assert.equal((await E.api('tok-crew', { action: 'qb_resolve', id: o.id, state: 'pending' })).status, 403);
+    assert.equal((await E.api('tok-other', { action: 'qb_resolve', id: o.id, state: 'pending' })).status, 403);
     let r = await E.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'pending', note: '送信済みフォルダに無いことを確認' });
     assert.equal(r.status, 200);
     await E.worker();
@@ -774,15 +775,15 @@ test('Drive access uses the function secrets first, then the connection drive-sy
 });
 
 // Findings of the independent review (2026-10-07): each one is reproduced here and must stay fixed.
-// 事務Crew (office_crew) asked to confirm and post invoices (Moto 2026-10-09). They do the review of documents
-// that wait for a person; what is already posted, closed months, replacing a posted document, reconciliation,
-// resending and the master data stay with accounting, GM and CEO.
-test('事務Crew reviews and posts documents under review, and nothing more', async () => {
+// 事務Crew (office_crew) does the invoice work on their own, like accounting (Moto 2026-10-09: first "confirm and post",
+// then "事務Crew completes it on their own"). Settings, stores, turning automatic posting on, backfill, seeds and folder
+// setup stay with GM and CEO, as they do for accounting.
+test('事務Crew does the invoice work like accounting; GM・CEO settings stay closed', async () => {
   const E = await setup();
   try {
     const miso = ['06263', 'SHIRO MISO 12/500G', '1', '61.20', '61.20', 'CS', '12/500G'];
     const ids = {};
-    for (const [tag, no] of [['CREW-1', '8001'], ['CREW-2', '8002'], ['CREW-3', '8003']]) {
+    for (const [tag, no] of [['CREW-1', '8001'], ['CREW-3', '8003']]) {
       E.fixtures.set(tag, { readable: true, documents: [doc(no, '2026-10-06', [miso], { total: '71.20' })] });   // the total does not add up
       ids[tag] = E.drive.file(tag + '.pdf', pdf(tag), 'U6');
     }
@@ -794,76 +795,87 @@ test('事務Crew reviews and posts documents under review, and nothing more', as
     await E.worker();
     const one = async id => (await docsOf(E, id))[0];
     const st = async id => (await E.q(`select * from invoice_docs where id=$1`, [id]))[0];
+    const fileOf = async id => (await E.q(`select id from invoice_files where drive_file_id=$1`, [id]))[0].id;
 
-    // Fix a misread item on a document under review, then post it.
+    // Review: fix a misread value and post.
     let d = await one(ids['CREW-1']);
     assert.equal(d.status, 'review'); assert.ok(codes(d).includes('total_mismatch'));
     let r = await E.api('tok-crew', { action: 'edit', doc_id: d.id, version: d.version, reason: '原本の合計は 61.20（読み違い）', header: { total_cents: 6120 } });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     d = await st(d.id);
-    assert.ok(!codes(d).includes('total_mismatch'));
-    // Replacing a posted document and closed-month adjustments are not theirs, even on a document under review.
-    r = await E.api('tok-crew', { action: 'post', doc_id: d.id, version: d.version, reason: 'x', adjustment_ack: true });
-    assert.equal(r.status, 403);
-    r = await E.api('tok-crew', { action: 'post', doc_id: d.id, version: d.version, reason: 'x', supersedes: d.id });
-    assert.equal(r.status, 403);
     r = await E.api('tok-crew', { action: 'post', doc_id: d.id, version: d.version, reason: '原本と確認' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     d = await st(d.id);
     assert.equal(d.status, 'posted'); assert.equal(d.posted_by, U.crew); assert.equal(d.posted_mode, 'manual');
-    // A document posted with an acknowledged difference.
-    let d2 = await one(ids['CREW-2']);
-    r = await E.api('tok-crew', { action: 'post', doc_id: d2.id, version: d2.version, reason: '原本どおり（値引きあり）', ack: ['total_mismatch'] });
-    assert.equal(r.status, 200, JSON.stringify(r.body));
-    d2 = await st(d2.id);
-    assert.equal(d2.status, 'posted');
-
-    // Once posted: no corrections, no marks, no reconciliation by 事務Crew; accounting still can.
-    r = await E.api('tok-crew', { action: 'edit', doc_id: d.id, version: d.version, reason: 'x', header: { total_cents: 6000 } });
-    assert.equal(r.status, 403);
-    r = await E.api('tok-crew', { action: 'mark', doc_id: d.id, version: d.version, mark: 'reject', reason: 'x' });
-    assert.equal(r.status, 409);
-    r = await E.api('tok-crew', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled', note: 'x' });
-    assert.equal(r.status, 403);
-    r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, reason: '支払期日の追記', header: { due_date: '2026-11-05' } });
+    // A posted invoice: correct it and reconcile it.
+    r = await E.api('tok-crew', { action: 'edit', doc_id: d.id, version: d.version, reason: '支払期日の追記', header: { due_date: '2026-11-05' } });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     d = await st(d.id);
+    r = await E.api('tok-crew', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled', note: '原本と一致' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal((await st(d.id)).recon_status, 'reconciled');
 
-    // Rejecting a document under review is theirs; taking it back is not.
+    // A closed month: posted as an accounting adjustment, as accounting does.
+    const aug = await one(ids.aug);
+    r = await E.api('tok-crew', { action: 'post', doc_id: aug.id, version: aug.version, reason: '8月分' });
+    assert.equal(r.body.error, 'closed_month');
+    r = await E.api('tok-crew', { action: 'post', doc_id: aug.id, version: aug.version, reason: '8月分（経理の調整）', adjustment_ack: true });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal((await st(aug.id)).needs_adjustment, true);
+
+    // Exclude a document and take it back.
     let d3 = await one(ids['CREW-3']);
     r = await E.api('tok-crew', { action: 'mark', doc_id: d3.id, version: d3.version, mark: 'reject', reason: '別の店の請求書' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    d3 = await st(d3.id); assert.equal(d3.status, 'rejected');
-    r = await E.api('tok-crew', { action: 'mark', doc_id: d3.id, version: d3.version, mark: 'reopen', reason: 'x' });
-    assert.equal(r.status, 403);
-    r = await E.api('tok-office', { action: 'mark', doc_id: d3.id, version: d3.version, mark: 'reopen', reason: '戻す' });
+    d3 = await st(d3.id);
+    r = await E.api('tok-crew', { action: 'mark', doc_id: d3.id, version: d3.version, mark: 'reopen', reason: '戻す' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal((await st(d3.id)).status, 'review');
+    // Move a file to another store.
+    r = await E.api('tok-crew', { action: 'reassign', file_id: await fileOf(ids['CREW-3']), store_id: 'F04-K', reason: 'Kaimuki 宛の請求書' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
 
-    // Linking a credit memo under review to its invoice, then posting it.
+    // A credit memo linked to its invoice and posted.
     let cm = await one(ids.cm);
-    assert.equal(cm.status, 'review');
     r = await E.api('tok-crew', { action: 'relate', doc_id: cm.id, version: cm.version, related_doc_id: d.id, relation: 'credit_for' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     r = await E.api('tok-crew', { action: 'post', doc_id: cm.id, version: cm.version + 1, reason: '8001 の返品' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    cm = await st(cm.id);
-    r = await E.api('tok-crew', { action: 'relate', doc_id: cm.id, version: cm.version, related_doc_id: d2.id, relation: 'credit_for' });
-    assert.equal(r.status, 403);                                                       // a posted document's link stays
 
-    // A closed month needs accounting's adjustment.
-    const aug = await one(ids.aug);
-    assert.ok(codes(aug).includes('closed_month'));
-    r = await E.api('tok-crew', { action: 'post', doc_id: aug.id, version: aug.version, reason: '8月分', adjustment_ack: true });
-    assert.equal(r.status, 403);
-    r = await E.api('tok-crew', { action: 'edit', doc_id: aug.id, version: aug.version, reason: 'x', header: { invoice_no: '8004' }, adjustment_ack: true });
-    assert.equal(r.status, 403);
-    assert.equal((await st(aug.id)).status, 'review');
+    // The vendor re-issued 8001: the new version replaces the posted one.
+    E.fixtures.set('CREW-1B', { readable: true, documents: [doc('8001', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '2', '61.20', '122.40', 'CS', '12/500G']])] });
+    E.drive.replaceContent(ids['CREW-1'], pdf('CREW-1B'));
+    await E.q(`update invoice_files set drive_checked_at=null`); await E.worker(); await E.worker();
+    const nv = (await docsOf(E, ids['CREW-1'])).find(x => x.status === 'review');
+    assert.ok(nv && codes(nv).includes('same_number_different'), 'a new version waits for review');
+    r = await E.api('tok-crew', { action: 'post', doc_id: nv.id, version: nv.version, reason: '訂正版', supersedes: d.id });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal((await st(d.id)).status, 'superseded');
 
-    // Master data, resending and settings stay with accounting, GM and CEO.
-    const f = (await E.q(`select id from invoice_files where drive_file_id=$1`, [ids['CREW-1']]))[0];
-    for (const body of [{ action: 'retry', file_id: f.id }, { action: 'vendor_save', vendor: { vendor_key: 'v9', display_name: 'X' } },
-      { action: 'map_save', map: { vendor_key: 'v1', vendor_item_code: '99999', purchase_unit: 'EA', ingredient_code: 'I-9', count_unit: 'EA', count_per_purchase: '1' } },
-      { action: 'reassign', file_id: f.id, store_id: 'F04-K', reason: 'x' }, { action: 'settings_save', key: 'rules', value: { price_jump_pct: 20 } }]) {
+    // Retry a file, settle an unknown forwarding result, register a product mapping and a vendor.
+    r = await E.api('tok-crew', { action: 'retry', file_id: await fileOf(ids.aug) });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    E.setMail('timeout');
+    E.fixtures.set('CREW-Q', { readable: true, documents: [doc('8005', '2026-10-06', [miso])] });
+    const q = E.drive.file('crew-q.pdf', pdf('CREW-Q'), 'U6');
+    await E.worker(); E.setMail('ok');
+    const [o] = await E.q(`select o.* from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [q]);
+    assert.equal(o.state, 'unknown');
+    r = await E.api('tok-crew', { action: 'qb_resolve', id: o.id, state: 'sent', note: '送信済みフォルダで確認' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const map = { vendor_key: 'v1', vendor_item_code: '99999', purchase_unit: 'EA', ingredient_code: 'I-9', count_unit: 'EA', count_per_purchase: '1', verified: true };
+    r = await E.api('tok-crew', { action: 'map_save', map });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    r = await E.api('tok-crew', { action: 'vendor_save', vendor: { vendor_key: 'v9', display_name: 'Vendor Nine', aliases: ['VENDOR NINE'], food_kind: 'food', auto_post: false } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+
+    // Like accounting, 事務Crew does not turn automatic posting on, change settings or stores, or run backfill, seeds and folder setup.
+    r = await E.api('tok-crew', { action: 'map_save', map: { ...map, vendor_item_code: '99998', auto_post: true } });
+    assert.equal(r.status, 403);
+    r = await E.api('tok-crew', { action: 'vendor_save', vendor: { vendor_key: 'v2', auto_post: true } });
+    assert.equal(r.status, 403);
+    for (const body of [{ action: 'settings_save', key: 'rules', value: { price_jump_pct: 20 } }, { action: 'store_save', store: { store_id: 'F06', auto_post: false } },
+      { action: 'backfill', store_id: 'F06', folder_id: 'R6' }, { action: 'folder_setup' }, { action: 'vendor_seed' }, { action: 'map_seed', store_id: 'F06' }]) {
       assert.equal((await E.api('tok-crew', body)).status, 403, body.action);
     }
   } finally { await E.pg.close(); }
@@ -879,13 +891,13 @@ test('review findings stay fixed', async (t) => {
   const one = async (tag, fx, folder = 'U6', opts) => { E.fixtures.set(tag, fx); const id = E.drive.file(tag + '.pdf', pdf(tag), folder, opts); await E.worker(); return id; };
   const docOf = async id => (await docsOf(E, id))[0];
 
-  await t.test('1: only accounting, GM or CEO settle an unknown forwarding result, and only as sent or send again', async () => {
+  await t.test('1: only accounting (with 事務Crew), GM or CEO settle an unknown forwarding result, and only as sent or send again', async () => {
     E.setMail('timeout');
     const id = await one('R1-1', { readable: true, documents: [doc('7001', '2026-10-06', [miso()])] });
     E.setMail('ok');
     const [o] = await E.q(`select o.* from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [id]);
     assert.equal(o.state, 'unknown');
-    assert.equal((await E.api('tok-crew', { action: 'qb_resolve', id: o.id, state: 'error' })).status, 403);
+    assert.equal((await E.api('tok-crew', { action: 'qb_resolve', id: o.id, state: 'error' })).status, 409);    // 事務Crew like accounting: only sent or send again
     assert.equal((await E.api('tok-other', { action: 'qb_resolve', id: o.id, state: 'sent' })).status, 403);
     assert.equal((await E.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'error' })).status, 409);
     await E.worker();
@@ -1091,7 +1103,7 @@ test('deploy checks and the guarded rollback', async () => {
   const created = [...SQL.matchAll(/^create function public\.(\w+)\(/gm)].map(m => m[1]);
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 16, functions: created.length, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
-      rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true, office_crew_review: true });
+      rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true, office_crew_accounting: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates

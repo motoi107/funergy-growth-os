@@ -1,6 +1,6 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
 -- 対象はこの migration の表 16・関数 65 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 16 / functions 65 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_review true
+-- 期待：tables 16 / functions 65 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -47,6 +47,11 @@ select
   -- Invoices put right in the store folder are read too, only those put there after the start (20261008090000).
   coalesce((select bool_and(p.prosrc like '%root_folder_id=p->>''folder_id''%' and p.prosrc like '%before_start%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname = 'invoice_file_seen'), false) as store_folder_intake,
-  -- 事務Crew may review and post a document under review, nothing more (20261009170000).
-  coalesce((select count(*) = 4 and bool_and(p.prosrc like '%''office'',''office_crew''])%' and p.prosrc like '%= ''office_crew'' and%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.proname in ('invoice_post', 'invoice_edit', 'invoice_mark', 'invoice_relate')), false) as office_crew_review;
+  -- 事務Crew does the invoice work like accounting (20261009190000): every role check of these ten functions lets 事務Crew in
+  -- and none limits 事務Crew further; settings, stores, backfill, seeds and folder setup stay GM・CEO only.
+  coalesce((select count(*) = 10 and bool_and(p.prosrc like '%''office'',''office_crew''])%' and p.prosrc not like '%''office''])%' and p.prosrc not like '%= ''office_crew''%')
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname in ('invoice_post', 'invoice_edit', 'invoice_mark', 'invoice_relate', 'invoice_reconcile', 'invoice_file_retry',
+      'invoice_qb_result', 'invoice_reassign', 'invoice_vendor_save', 'invoice_map_save'))
+    and (select count(*) = 6 and bool_and(p.prosrc not like '%office_crew%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname in ('invoice_settings_save', 'invoice_store_save', 'invoice_backfill_register', 'invoice_vendor_seed', 'invoice_map_seed', 'invoice_store_folder')), false) as office_crew_accounting;
