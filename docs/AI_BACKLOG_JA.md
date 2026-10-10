@@ -1,13 +1,14 @@
 # 改修・自動化の作業記録
 
-## 2026-10-09 v1059：事務Crew も invoice の要確認を確認・反映（経理の依頼）
+## 2026-10-09 v1059：事務Crew は Invoice取込で経理と同じ（経理の依頼・Moto さん「事務Crew が自己完結できるように」）
 
-1. 済（Claude）：サーバー（PR #32 `77bd608`・migration `20261009170000`）と画面 v1059・試験。
-2. Codex：このブランチの head と `77bd608`（あわせて未レビューの `cb2f6e5` 店舗フォルダの手前の取込）をレビュー。
-3. Moto さん：確認の SQL（読むだけ）で store_folder_intake を見る → `20261008090000` → 関数 → `20261009170000` → 確認の SQL（store_folder_intake・office_crew_review が true）→ v1059 をマージ。
-4. 経理：事務Crew のアカウントで要確認の反映を確認。Tenkichi・Aiea の手前の invoice が要確認に出るか確認（開始日時より前・「○月 Uploaded」へ移したものは 00_Upload へ）。
+1. 済（Claude）：サーバー（PR #32 `76d923c`・migration `20261009190000`）と画面 v1059（PR #35）・試験。最初の「要確認だけ」の版への Codex の P1 は、Moto さんの決定で範囲が変わった。
+2. Codex：PR #35 の新しい head と PR #32 `76d923c`（あわせて未レビューの `cb2f6e5` 店舗フォルダの手前の取込）を再レビュー。
+3. Moto さん：確認の SQL（読むだけ）で store_folder_intake を見る → `20261008090000` → 関数 → `20261009190000` → 確認の SQL（store_folder_intake・office_crew_accounting が true）→ v1059 をマージ。
+4. 経理：事務Crew のアカウントで要確認の反映・照合を確認。Tenkichi・Aiea の手前の invoice が要確認に出るか確認（開始日時より前・「○月 Uploaded」へ移したものは 00_Upload へ）。
 5. 確認（Moto さん・ChatGPT 側）：QB の Receipt に出ない 1 件は、外部の転送（ChatGPT 側）が送ったか。反映は QB への転送とは別。
 6. PR #32 に main を取り込むとき：`tests/invoice-ui.test.mjs` の事務Crew の 2 か所を v1059 に合わせる。
+7. 候補（Moto さん）：Invoice取込の外で事務Crew が閲覧のみのもの（承認・支払確定・差し戻し・削除・チェックの確認。v846 から）も開けるか。
 
 ## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別基準・ボーナス係数（UI案37）・グレード変更前の評価の確定（UI案38）
 

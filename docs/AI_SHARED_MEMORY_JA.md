@@ -1,13 +1,14 @@
 # Claude / Codex 共通記録
 
-## 2026-10-09 v1059：事務Crew も invoice の要確認を確認・反映（経理の依頼）・店舗フォルダの手前の取込は未配備（Claude・本番未反映）
+## 2026-10-09 v1059：事務Crew は Invoice取込で経理と同じ（経理の依頼）・店舗フォルダの手前の取込は未配備（Claude・本番未反映）
 
 - 依頼：Moto さん 10/9 17:16 HST（経理の LINE を転送）。①事務Crew が「この内容で反映する」を押せない（「事務Crew は閲覧のみ」）→ Moto さんが LINE で「オケです」。②Tenkichi・Aiea が店舗フォルダの手前に入れた invoice がアプリに出ない（00_Upload の Marujuu は出る）。③反映した 1 件が 5 分たっても QB の Receipt に無い。
-- ①の範囲（Claude が決めた。Moto さんの確認は「オケです」まで）：事務Crew は **要確認の書類だけ**、4 項目を直す・反映（経理と同じ「原本で確かめた」つき）・まとめて反映・重複／対象外・Credit memo の紐づけ。締め済みの月の調整・反映済みとの置き換え・反映済みの訂正・対象外の取り消し・照合・やり直し・QB の結果・業者／対応表／店舗／設定は今までどおり経理・GM・CEO（または GM・CEO）。サーバー：invoice ブランチ（PR #32）の `77bd608`（migration `20261009170000`：`invoice_post`・`invoice_edit`・`invoice_mark`・`invoice_relate` の 4 つだけ）。画面：このブランチの v1059（`invInCanReview`・`invInCrewOnly`。新しい商品の対応の登録は経理・GM・CEO）。
-- ②：手前の取込は 10/8 の `cb2f6e5`（PR #32）で作ったが、Codex のレビューも本番への配備もまだ（`INVOICE_DRIVE_INTAKE_JA.md` §13 の 11 に「済」が無い）。本番の状態はこちらから見られないので、Moto さんに確認の SQL（読むだけ）で store_folder_intake を見てもらう。入っていれば、開始日時・試験する店舗・「○月 Uploaded」へ移すタイミングを確認。
-- ③：QB への転送は「反映」とは別。今は外部の転送（ChatGPT 側・`route='external'`）が原本を送る。このシステムは反映のときに QB へ送らない（§11）。外部の転送の動きはこちらから見られない。
-- 試験（合成データ）：invoice ブランチ `tests/invoice-intake|rules|adapters|ui` 97/97（新しい事務Crew の E2E は前の SQL で落ちる）・`invoice-mutations` 67/67（事務Crew の 4 件を含め、守りを外すとどれも落ちる）。main 側 `tests/invoice-office-crew.test.mjs` 6/6（v1058 の画面では 6 つとも落ちる）・`node --test tests/*.test.mjs` 172/199（27 失敗は main と同じ）・static release pass/v1059。Claude の手元の本物の画面（本物の handler と SQL を PGlite で）22/22・pageerror 0（事務Crew のまとめて反映・業者を選んで反映・合計の差・対象外・締め済みは反映できず画面を通さず送ってもサーバーが断る・照合と訂正は出ない・英語・スマホ 390px・GM は締め済みを調整として反映）。
-- 未：Codex のレビュー（このブランチと `77bd608`、`cb2f6e5` も未レビュー）・Moto さんの配備（SQL 2 つ→関数→SQL→アプリの順）・実機。PR #32 に main を取り込むとき、`tests/invoice-ui.test.mjs` の「事務Crew はチェックもまとめて反映も無い」2 か所を v1059 の動きに直す。
+- ①の決定の流れ：最初に Claude が「要確認の書類だけ」に絞った版（PR #32 `77bd608`・PR #35 `d5e8e9b`）→ Codex が `d5e8e9b`・`44290a8` を blocked（P1：4 項目より広く直せる）→ **Moto さん 10/9 18:54「事務Crew が自己完結できるように」**（原文は個人名）→ 事務Crew（office_crew）は **Invoice取込で経理（office）と同じ**：直す・反映・締め済み月の調整・反映済みとの置き換え・反映済みの訂正・重複／対象外とその取り消し・紐づけ・照合・やり直し・QB の結果・店舗の付け替え・業者と対応表の登録。経理と同じく GM・CEO だけのもの：設定・店舗・自動反映の ON・過去分・候補づくり・フォルダの用意。Codex の P1（4 項目に絞る）はこの決定で範囲が変わった。
+- サーバー：PR #32 `76d923c`（migration `20261009190000_invoice_office_crew_accounting.sql`：関数 10 個の差し替えだけ。`20261009170000` を入れていてもいなくてもよい）。postcheck は `office_crew_accounting`。画面：PR #35 の v1059（`invInCanEdit` に office_crew を足しただけ。main との差は index.html 7 行・sw.js 1 行）。
+- ②：手前の取込は 10/8 の `cb2f6e5`（PR #32）で作ったが、Codex のレビューも本番への配備もまだ（`INVOICE_DRIVE_INTAKE_JA.md` §13 の 11 に「済」が無い）。本番の状態はこちらから見られないので、Moto さんに確認の SQL（読むだけ）で store_folder_intake を見てもらう。
+- ③：QB への転送は「反映」とは別。今は外部の転送（ChatGPT 側・`route='external'`）が原本を送る。このシステムは反映のときに QB へ送らない（§11）。外部の転送が店舗フォルダの手前だけを見ているなら、00_Upload の分は送られていない可能性（仮説・未確認）。
+- 試験（合成データ）：invoice ブランチ `tests/invoice-intake|rules|adapters|ui` 97/97（事務Crew の E2E は前の SQL で落ちる）・事務Crew の mutation 4 件はすべて落ちる（全体の mutation は PR #32 に記録）。main 側 `tests/invoice-office-crew.test.mjs` 6/6（v1058 の画面では 6 つとも落ちる）・`node --test tests/*.test.mjs` 172/199（27 失敗は main と同じ）・static release pass/v1059。Claude の手元の本物の画面（本物の handler と SQL を PGlite で）24/24・pageerror 0（事務Crew のまとめて反映・業者を選んで反映・合計の差・対象外・締め済みの調整・照合・反映済みの訂正・結果不明の転送・設定のスイッチは押せず画面を通さず送ってもサーバーが断る・英語・スマホ 390px）。
+- 未：Codex の再レビュー（PR #35 の新しい head と PR #32 `76d923c`。`cb2f6e5` も未レビュー）・Moto さんの配備（確認の SQL → 手前の SQL → 関数 → 事務Crew の SQL → 確認の SQL → アプリの順）・実機。PR #32 に main を取り込むとき、`tests/invoice-ui.test.mjs` の「事務Crew はチェックもまとめて反映も無い」2 か所を v1059 の動きに直す。
 
 ## 2026-10-09 v1058（PR #34）：Career Score のカテゴリー別の昇格基準・ボーナスのグレード／G3 職種係数（UI案37）・グレードを変える前の評価の確定・担当軸 L4 の廃止・Store Leader の廃止（UI案38）（Claude・本番未反映）
 
