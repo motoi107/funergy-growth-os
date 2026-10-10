@@ -3,7 +3,8 @@
 ## 2026-10-09 v1059：事務Crew は Invoice取込で経理と同じ（経理の依頼・Moto さん「事務Crew が自己完結できるように」）
 
 1. 済（Claude）：サーバー（PR #32 `76d923c`・migration `20261009190000`）と画面 v1059（PR #35）・試験。最初の「要確認だけ」の版への Codex の P1 は、Moto さんの決定で範囲が変わった。
-2. Codex：PR #35 の新しい head と PR #32 `76d923c`（あわせて未レビューの `cb2f6e5` 店舗フォルダの手前の取込）を再レビュー。
+2. 済：Claude の別エージェント（P1・P2 なし・P3 は `71896c3` で対応）と Codex（`834da3b`：実装のブロッカーなし・業務の権限の決定は人の確認）のレビュー。残り：`cb2f6e5`（店舗フォルダの手前の取込）の Codex レビュー。
+2b. Moto さん：事務Crew の範囲（経理と同じ。とくに締め済み月の調整・反映済みとの置き換え・QB の結果）を確認。
 3. Moto さん：確認の SQL（読むだけ）で store_folder_intake を見る → `20261008090000` → 関数 → `20261009190000` → 確認の SQL（store_folder_intake・office_crew_accounting が true）→ v1059 をマージ。
 4. 経理：事務Crew のアカウントで要確認の反映・照合を確認。Tenkichi・Aiea の手前の invoice が要確認に出るか確認（開始日時より前・「○月 Uploaded」へ移したものは 00_Upload へ）。
 5. 確認（Moto さん・ChatGPT 側）：QB の Receipt に出ない 1 件は、外部の転送（ChatGPT 側）が送ったか。反映は QB への転送とは別。
