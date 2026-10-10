@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
+const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -153,6 +153,15 @@ const CASES = [
     'if (appIds && appIds.has(f.id)) { stats.app_saved = (stats.app_saved || 0) + 1; continue; }', '']]],
   ['store folder: the database takes in files from before the start', E2E, [['db/invoice-intake.sql',
     "if start_at is null or nullif(p->>'created_time', '') is null or (p->>'created_time')::timestamptz < start_at then", 'if false then']]],
+  ['事務Crew: may correct a posted document', E2E, [['db/invoice-intake.sql',
+    "if rl = 'office_crew' and (d.status <> 'review' or coalesce((p->>'adjustment_ack')::boolean,false)) then raise exception 'forbidden'; end if;", '']]],
+  ['事務Crew: may replace a posted document or post into a closed month', E2E, [['db/invoice-intake.sql',
+    "if who = 'office_crew' and (nullif(p->>'supersedes','') is not null or coalesce((p->>'adjustment_ack')::boolean,false)) then raise exception 'forbidden'; end if;", '']]],
+  ['事務Crew: may reopen a decided document', E2E, [['db/invoice-intake.sql',
+    " if d.status = 'posted' then raise exception 'posted_use_correction'; end if;\n if rl = 'office_crew' and d.status <> 'review' then raise exception 'forbidden'; end if;\n",
+    " if d.status = 'posted' then raise exception 'posted_use_correction'; end if;\n"]]],
+  ['事務Crew: still cannot post', E2E, [['db/invoice-intake.sql',
+    "  who := public.invoice_require(actor, array['ceo','gm','office','office_crew']);", "  who := public.invoice_require(actor, array['ceo','gm','office']);"]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {

@@ -774,6 +774,101 @@ test('Drive access uses the function secrets first, then the connection drive-sy
 });
 
 // Findings of the independent review (2026-10-07): each one is reproduced here and must stay fixed.
+// 事務Crew (office_crew) asked to confirm and post invoices (Moto 2026-10-09). They do the review of documents
+// that wait for a person; what is already posted, closed months, replacing a posted document, reconciliation,
+// resending and the master data stay with accounting, GM and CEO.
+test('事務Crew reviews and posts documents under review, and nothing more', async () => {
+  const E = await setup();
+  try {
+    const miso = ['06263', 'SHIRO MISO 12/500G', '1', '61.20', '61.20', 'CS', '12/500G'];
+    const ids = {};
+    for (const [tag, no] of [['CREW-1', '8001'], ['CREW-2', '8002'], ['CREW-3', '8003']]) {
+      E.fixtures.set(tag, { readable: true, documents: [doc(no, '2026-10-06', [miso], { total: '71.20' })] });   // the total does not add up
+      ids[tag] = E.drive.file(tag + '.pdf', pdf(tag), 'U6');
+    }
+    E.fixtures.set('CREW-CM', { readable: true, documents: [doc('CM81', '2026-10-06', [['06263', 'RETURN SHIRO MISO', '-1', '61.20', '-61.20', 'CS', '12/500G']],
+      { type: 'credit_memo', refs: [{ kind: 'original_invoice', value: '8001' }] })] });
+    ids.cm = E.drive.file('crew-cm.pdf', pdf('CREW-CM'), 'U6');
+    E.fixtures.set('CREW-AUG', { readable: true, documents: [doc('8004', '2026-08-28', [miso])] });
+    ids.aug = E.drive.file('crew-aug.pdf', pdf('CREW-AUG'), 'U6');
+    await E.worker();
+    const one = async id => (await docsOf(E, id))[0];
+    const st = async id => (await E.q(`select * from invoice_docs where id=$1`, [id]))[0];
+
+    // Fix a misread item on a document under review, then post it.
+    let d = await one(ids['CREW-1']);
+    assert.equal(d.status, 'review'); assert.ok(codes(d).includes('total_mismatch'));
+    let r = await E.api('tok-crew', { action: 'edit', doc_id: d.id, version: d.version, reason: '原本の合計は 61.20（読み違い）', header: { total_cents: 6120 } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    d = await st(d.id);
+    assert.ok(!codes(d).includes('total_mismatch'));
+    // Replacing a posted document and closed-month adjustments are not theirs, even on a document under review.
+    r = await E.api('tok-crew', { action: 'post', doc_id: d.id, version: d.version, reason: 'x', adjustment_ack: true });
+    assert.equal(r.status, 403);
+    r = await E.api('tok-crew', { action: 'post', doc_id: d.id, version: d.version, reason: 'x', supersedes: d.id });
+    assert.equal(r.status, 403);
+    r = await E.api('tok-crew', { action: 'post', doc_id: d.id, version: d.version, reason: '原本と確認' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    d = await st(d.id);
+    assert.equal(d.status, 'posted'); assert.equal(d.posted_by, U.crew); assert.equal(d.posted_mode, 'manual');
+    // A document posted with an acknowledged difference.
+    let d2 = await one(ids['CREW-2']);
+    r = await E.api('tok-crew', { action: 'post', doc_id: d2.id, version: d2.version, reason: '原本どおり（値引きあり）', ack: ['total_mismatch'] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    d2 = await st(d2.id);
+    assert.equal(d2.status, 'posted');
+
+    // Once posted: no corrections, no marks, no reconciliation by 事務Crew; accounting still can.
+    r = await E.api('tok-crew', { action: 'edit', doc_id: d.id, version: d.version, reason: 'x', header: { total_cents: 6000 } });
+    assert.equal(r.status, 403);
+    r = await E.api('tok-crew', { action: 'mark', doc_id: d.id, version: d.version, mark: 'reject', reason: 'x' });
+    assert.equal(r.status, 409);
+    r = await E.api('tok-crew', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled', note: 'x' });
+    assert.equal(r.status, 403);
+    r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, reason: '支払期日の追記', header: { due_date: '2026-11-05' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    d = await st(d.id);
+
+    // Rejecting a document under review is theirs; taking it back is not.
+    let d3 = await one(ids['CREW-3']);
+    r = await E.api('tok-crew', { action: 'mark', doc_id: d3.id, version: d3.version, mark: 'reject', reason: '別の店の請求書' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    d3 = await st(d3.id); assert.equal(d3.status, 'rejected');
+    r = await E.api('tok-crew', { action: 'mark', doc_id: d3.id, version: d3.version, mark: 'reopen', reason: 'x' });
+    assert.equal(r.status, 403);
+    r = await E.api('tok-office', { action: 'mark', doc_id: d3.id, version: d3.version, mark: 'reopen', reason: '戻す' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+
+    // Linking a credit memo under review to its invoice, then posting it.
+    let cm = await one(ids.cm);
+    assert.equal(cm.status, 'review');
+    r = await E.api('tok-crew', { action: 'relate', doc_id: cm.id, version: cm.version, related_doc_id: d.id, relation: 'credit_for' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    r = await E.api('tok-crew', { action: 'post', doc_id: cm.id, version: cm.version + 1, reason: '8001 の返品' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    cm = await st(cm.id);
+    r = await E.api('tok-crew', { action: 'relate', doc_id: cm.id, version: cm.version, related_doc_id: d2.id, relation: 'credit_for' });
+    assert.equal(r.status, 403);                                                       // a posted document's link stays
+
+    // A closed month needs accounting's adjustment.
+    const aug = await one(ids.aug);
+    assert.ok(codes(aug).includes('closed_month'));
+    r = await E.api('tok-crew', { action: 'post', doc_id: aug.id, version: aug.version, reason: '8月分', adjustment_ack: true });
+    assert.equal(r.status, 403);
+    r = await E.api('tok-crew', { action: 'edit', doc_id: aug.id, version: aug.version, reason: 'x', header: { invoice_no: '8004' }, adjustment_ack: true });
+    assert.equal(r.status, 403);
+    assert.equal((await st(aug.id)).status, 'review');
+
+    // Master data, resending and settings stay with accounting, GM and CEO.
+    const f = (await E.q(`select id from invoice_files where drive_file_id=$1`, [ids['CREW-1']]))[0];
+    for (const body of [{ action: 'retry', file_id: f.id }, { action: 'vendor_save', vendor: { vendor_key: 'v9', display_name: 'X' } },
+      { action: 'map_save', map: { vendor_key: 'v1', vendor_item_code: '99999', purchase_unit: 'EA', ingredient_code: 'I-9', count_unit: 'EA', count_per_purchase: '1' } },
+      { action: 'reassign', file_id: f.id, store_id: 'F04-K', reason: 'x' }, { action: 'settings_save', key: 'rules', value: { price_jump_pct: 20 } }]) {
+      assert.equal((await E.api('tok-crew', body)).status, 403, body.action);
+    }
+  } finally { await E.pg.close(); }
+});
+
 test('review findings stay fixed', async (t) => {
   const E = await setup();
   // These steps exercise a person's review. Since UI案36 product reasons alone no longer hold an invoice, the store is
@@ -996,7 +1091,7 @@ test('deploy checks and the guarded rollback', async () => {
   const created = [...SQL.matchAll(/^create function public\.(\w+)\(/gm)].map(m => m[1]);
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 16, functions: created.length, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
-      rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true });
+      rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true, office_crew_review: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates

@@ -603,7 +603,8 @@ begin
   if not exists(select 1 from public.invoice_vendor_rules where vendor_key=d.vendor_key and auto_post) then raise exception 'not_eligible'; end if;
   who := 'auto'; mode := 'auto';
  else
-  perform public.invoice_require(actor, array['ceo','gm','office']);
+  who := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+  if who = 'office_crew' and (nullif(p->>'supersedes','') is not null or coalesce((p->>'adjustment_ack')::boolean,false)) then raise exception 'forbidden'; end if;
   who := actor::text; mode := 'manual';
   if length(coalesce(p->>'reason','')) = 0 and jsonb_array_length(d.reasons) > 0 then raise exception 'reason_required'; end if;
  end if;
@@ -655,14 +656,17 @@ declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; e jso
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
  may_ack text[] := array['total_mismatch','line_amount_missing','line_value_missing'];
  ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}'); blocking text;
- learned text; akey text;
+ learned text; akey text; rl text;
 begin
- perform public.invoice_require(actor, array['ceo','gm','office']);
+ -- 事務Crew (office_crew, Moto 2026-10-09): may do the review — fix the four items, post, mark as duplicate or rejected, link a credit memo —
+ -- but only on a document under review: no posted corrections, no closed-month adjustments, no replacing a posted document.
+ rl := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  if length(coalesce(p->>'reason','')) = 0 then raise exception 'reason_required'; end if;
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null then raise exception 'not_found'; end if;
  if d.version <> (p->>'version')::int then raise exception 'conflict'; end if;
  if d.status not in ('review','posted') then raise exception 'invalid_state'; end if;
+ if rl = 'office_crew' and (d.status <> 'review' or coalesce((p->>'adjustment_ack')::boolean,false)) then raise exception 'forbidden'; end if;
  closed := public.invoice_setting('rules')->>'closed_through';
  ov := d.overrides;
  for f, v in select * from jsonb_each(coalesce(p->'header','{}')) loop
@@ -769,14 +773,17 @@ end $$;
 
 create function public.invoice_mark(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; a text := p->>'action';
+declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; a text := p->>'action'; rl text;
 begin
- perform public.invoice_require(actor, array['ceo','gm','office']);
+ -- 事務Crew (office_crew, Moto 2026-10-09): may do the review — fix the four items, post, mark as duplicate or rejected, link a credit memo —
+ -- but only on a document under review: no posted corrections, no closed-month adjustments, no replacing a posted document.
+ rl := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  if length(coalesce(p->>'reason','')) = 0 then raise exception 'reason_required'; end if;
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null then raise exception 'not_found'; end if;
  if d.version <> (p->>'version')::int then raise exception 'conflict'; end if;
  if d.status = 'posted' then raise exception 'posted_use_correction'; end if;
+ if rl = 'office_crew' and d.status <> 'review' then raise exception 'forbidden'; end if;
  if a = 'duplicate' then
   if nullif(p->>'duplicate_of','') is null then raise exception 'duplicate_of_required'; end if;
   update public.invoice_docs set status='duplicate', duplicate_of=(p->>'duplicate_of')::uuid, version=version+1, updated_at=now() where id=d.id;
@@ -792,12 +799,15 @@ end $$;
 
 create function public.invoice_relate(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid;
+declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; rl text;
 begin
- perform public.invoice_require(actor, array['ceo','gm','office']);
+ -- 事務Crew (office_crew, Moto 2026-10-09): may do the review — fix the four items, post, mark as duplicate or rejected, link a credit memo —
+ -- but only on a document under review: no posted corrections, no closed-month adjustments, no replacing a posted document.
+ rl := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  select * into d from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if d.id is null or not exists(select 1 from public.invoice_docs where id=(p->>'related_doc_id')::uuid) then raise exception 'not_found'; end if;
  if d.version <> (p->>'version')::int then raise exception 'conflict'; end if;
+ if rl = 'office_crew' and d.status <> 'review' then raise exception 'forbidden'; end if;
  if (p->>'relation') not in ('credit_for','payment_for','correction_of','statement_covers') then raise exception 'bad_relation'; end if;
  update public.invoice_docs set related_doc_id=(p->>'related_doc_id')::uuid, relation=p->>'relation', version=version+1, updated_at=now() where id=d.id;
  perform public.invoice_event(d.id, d.file_id, actor::text, 'related', jsonb_build_object('to', p->>'related_doc_id', 'relation', p->>'relation'));
