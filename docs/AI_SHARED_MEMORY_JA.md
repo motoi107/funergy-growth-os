@@ -1,5 +1,12 @@
 # Claude / Codex 共通記録
 
+## 2026-10-10 v1061：Toast 取込（hyper-worker）の呼び出しにログインの印を付ける（Claude・本番未反映・v1060 の上に積む）
+
+- 目的：hyper-worker の呼び出し元の確認（10/10 引き継ぎの 3・Moto さん「Claude が書く」）。アプリ側だけをこのリポジトリに置く。関数（hyper-worker・auth-pin）の v1061 は本番のソースから作り、Moto さんに直接渡した（中身は公開しない）。
+- アプリ v1061：PIN の照合に通ったとき auth-pin が返す「ログインの印」をメモリに持ち（`window._hwSession`・ログアウトで消す）、hyper-worker への 12 か所の呼び出しすべてで本文に付ける（`toastFnBody`）。印の期限が切れていたら「ログインし直して」と 1 回だけ出す。古い auth-pin（印を返さない）・古い hyper-worker（印を見ない）とも、今までどおり動く。
+- 試験（合成データ）：`tests/toast-session.test.mjs` 5/5（v1060 では 5 つとも落ちる）・`tests/office-crew-approvals.test.mjs` 7/7・static release pass/1061。関数側は Claude の手元で Deno（ネットワークの代わりを置いて）7/7・わざと壊した 11 通り中 10 で落ちる（残り 1 つは結果が同じになる書き換え）・通した呼び出しの返事は v1056 と同じ。
+- 入れる順番・関数の設定は Moto さんに直接伝えた。**Codex のレビューはまだ。**
+
 ## 2026-10-10 v1060：事務Crew は承認センター・経理の確認・削除も経理と同じ（Moto さんの決定）・Invoice取込の範囲は今のまま（Claude・本番未反映）
 
 - 決定（Moto さん 10/10 14:5x HST、選択肢で回答）：
