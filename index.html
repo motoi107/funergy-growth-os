@@ -1162,6 +1162,25 @@ body.shift-wide .main { max-width:1900px; }
 const SUPABASE_URL = 'https://tgbhgxzehzeouopklhje.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRnYmhneHplaHplb3VvcGtsaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMTIzODAsImV4cCI6MjA5NjY4ODM4MH0.A0cdXLDONy_HPvQhaHbfP-flsNYImg0ZFJd5AIQihdM';
 const TOAST_SYNC_FN = SUPABASE_URL + '/functions/v1/hyper-worker';
+/* v1061: hyper-worker（Toast 取込）への呼び出しに、ログインの印を付ける。
+   印は PIN の照合に通ったとき auth-pin（v1061）が返す（window._hwSession・14 日の期限・PIN は入っていない）。
+   hyper-worker はこの印で「ログインした人からの呼び出し」かを確かめる（鍵なしの呼び出しは断る）。
+   印はメモリだけに置く（ログアウト・再読み込みで消える。ログインし直せばまた付く）。 */
+function toastFnBody(obj){
+  var b = Object.assign({}, obj || {});
+  var tok = window._hwSession;
+  if (tok && typeof tok === 'string') {
+    b.session = tok;
+    try {
+      var p = JSON.parse(atob(tok.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+      if (p && p.exp && p.exp * 1000 < Date.now() && !window._hwSessionWarned) {
+        window._hwSessionWarned = true;
+        if (typeof showToast === 'function') showToast(t('ログインの期限が切れました。Toast の取込を続けるには、ログアウトしてログインし直してください','Your login has expired. Log out and log in again to keep importing from Toast'), 'warning');
+      }
+    } catch (e) {}
+  }
+  return JSON.stringify(b);
+}
 const DRIVE_SYNC_FN = SUPABASE_URL + '/functions/v1/drive-sync';
 
 async function fetchToastSales(guid, dateFrom, dateTo) {
@@ -1183,7 +1202,7 @@ async function syncToastDay(guid, businessDateYmd) {
   var res = await fetch(TOAST_SYNC_FN, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
-    body: JSON.stringify(_body),
+    body: toastFnBody(_body),
   });
   return await res.json();
 }
@@ -1193,7 +1212,7 @@ async function fetchToastRestaurants() {
     var res = await fetch(TOAST_SYNC_FN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
-      body: JSON.stringify({}),
+      body: toastFnBody({}),
     });
     return await res.json();
   } catch (e) { console.error('fetchToastRestaurants', e); return { error: String(e) }; }
@@ -1207,7 +1226,7 @@ async function syncToastMenuFetch(guid, period) {
     var res = await fetch(TOAST_SYNC_FN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
-      body: JSON.stringify({ restaurantGuid: guid, action: 'menu', period: period }),
+      body: toastFnBody({ restaurantGuid: guid, action: 'menu', period: period }),
     });
     return await res.json();
   } catch (e) { console.error('syncToastMenuFetch', e); return { error: String(e) }; }
@@ -8392,7 +8411,7 @@ async function fetchTipLabor(storeId, guid, date) {
   var ymd = date.replace(/-/g,'');
   var res = await fetch(TOAST_SYNC_FN, {
     method:'POST', headers:{'Content-Type':'application/json',Authorization:'Bearer '+SUPABASE_ANON},
-    body: JSON.stringify({ restaurantGuid:guid, mode:'tipLabor', businessDate:ymd }),
+    body: toastFnBody({ restaurantGuid:guid, mode:'tipLabor', businessDate:ymd }),
   });
   var j = await res.json();
   if (!j || !Array.isArray(j.employees)) return { error: JSON.stringify(j).slice(0,100) };
@@ -15321,7 +15340,7 @@ async function authPinCheck(scope, key, pin){
       r = await _loginFetchT(SUPABASE_URL+'/functions/v1/auth-pin', { method:'POST', headers:supaHeaders(), body:JSON.stringify({action:'verify', scope:scope, key:key, pin:pin}) }, LOGIN_PIN_TIMEOUT);
       try{ j = await r.json(); }catch(e){ j = null; }
     }catch(e){ r = null; console.warn('authPinCheck', e); }
-    if (j && j.ok) return { ok:true, server:false };
+    if (j && j.ok) { window._hwSession = (typeof j.token === 'string' && j.token) ? j.token : null; window._hwSessionWarned = false; return { ok:true, server:false }; }   /* v1061: ログインの印 */
     if (r && r.ok && j && !(j.error && /db|database|unavailable|timeout|internal/i.test(String(j.error)))) { server = false; break; }   /* 「違う」という答え */
     server = true;   /* 通信の失敗・サーバーの失敗（5xx・JSON でない・データベースの失敗） */
     if (i===0) await new Promise(function(res){ setTimeout(res, 700); });
@@ -15539,7 +15558,7 @@ function doLogout() {
   try{ notifRealtimeStop(); }catch(e){}
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
-  window._sessionPin = null; window._empPrivate = null; if(typeof botResetShared==='function') botResetShared();
+  window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -27452,7 +27471,7 @@ async function fvResyncItemSalesChunked(guid, opt){
     if(opt.onStep) opt.onStep(calls, Math.ceil(total/chunk));
     try{
       var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
-        body: JSON.stringify({ mode:'cronSync', days:chunk, offsetDays:off, only:'items', restaurantGuid:guid }) });
+        body: toastFnBody({ mode:'cronSync', days:chunk, offsetDays:off, only:'items', restaurantGuid:guid }) });
       var j=await res.json();
       var r0=(j&&j.results&&j.results[0])||{};
       var isales=r0.itemSales||{};
@@ -28878,7 +28897,7 @@ async function runCustDebug(){
   if(box) box.innerHTML='<i class="ti ti-loader"></i> '+escapeHtml(s.name)+' の来店区分を診断中…（'+inp+'）';
   try{
     var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
-      body: JSON.stringify({ restaurantGuid:s.toastGuid, mode:'bowlDebug', businessDate:ymd }) });
+      body: toastFnBody({ restaurantGuid:s.toastGuid, mode:'bowlDebug', businessDate:ymd }) });
     var j=await res.json();
     var cd=j['来店区分診断']||{};
     var g=cd['Customers商品GUID数']||{};
@@ -34125,7 +34144,7 @@ async function runTipDateDebug(sid){
   var ymd=date.replace(/-/g,'');
   var box=document.getElementById('tdd-result'); if(box) box.innerHTML='<div style="font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> Toast照会中…（前後日も取得するため10〜20秒）</div>';
   try{
-    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json',Authorization:'Bearer '+SUPABASE_ANON}, body: JSON.stringify({ restaurantGuid:guid, mode:'tipDateDebug', businessDate:ymd }) });
+    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json',Authorization:'Bearer '+SUPABASE_ANON}, body: toastFnBody({ restaurantGuid:guid, mode:'tipDateDebug', businessDate:ymd }) });
     var j=await res.json();
     if(!j || j.error){ if(box) box.innerHTML='<div style="color:var(--red);font-size:12px">エラー: '+escapeHtml(JSON.stringify(j||{}).slice(0,200))+'<br>（Edgeが未デプロイの可能性。toast-sync.tsの貼り替えをご確認ください）</div>'; return; }
     var allBiz=j.creditTip_byBusinessDate||{}, allPaid=j.creditTip_byPaidDate||{};
@@ -36689,7 +36708,7 @@ async function laborResync7(){
     var s=stores[i]; if(!s.toastGuid) continue;
     try{
       var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
-        body: JSON.stringify({ mode:'cronSync', days:7, restaurantGuid:s.toastGuid }) });
+        body: toastFnBody({ mode:'cronSync', days:7, restaurantGuid:s.toastGuid }) });
       var j=await res.json();
       if(j && j.ok) ok++; else ng.push(s.name+': '+String(JSON.stringify(j)).slice(0,60));
     }catch(e){ ng.push(s.name+': '+String(e).slice(0,60)); }
@@ -38082,7 +38101,7 @@ async function doToastLaborFetch(storeId, guid, week) {
     var res = await fetch(TOAST_SYNC_FN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
-      body: JSON.stringify({ restaurantGuid: guid, mode: 'labor', startDate: range.from.replace(/-/g,''), endDate: range.to.replace(/-/g,'') }),
+      body: toastFnBody({ restaurantGuid: guid, mode: 'labor', startDate: range.from.replace(/-/g,''), endDate: range.to.replace(/-/g,'') }),
     });
     var j = await res.json();
     if (j && Array.isArray(j.employees)) {
@@ -38164,7 +38183,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1060';
+const APP_VERSION = '1061';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50601,7 +50620,7 @@ function fvFetchMods(sid, date, cb){
   if(!st.toastGuid){ if(cb) cb(null); return; }
   var bd=String(date).replace(/-/g,'');
   fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON},
-    body: JSON.stringify({ restaurantGuid:st.toastGuid, businessDate:bd, mode:'bowlDebug' }) })
+    body: toastFnBody({ restaurantGuid:st.toastGuid, businessDate:bd, mode:'bowlDebug' }) })
     .then(function(r){ return r.json(); })
     .then(function(j){
       var mods=(j&&j.modifierNamesOnBowls)||null;
@@ -65924,7 +65943,7 @@ async function toastSyncStore(){
   if(stEl){ stEl.style.color='var(--muted)'; stEl.textContent=t('Toastから31日取得中…（30〜60秒かかります）','Fetching 31 days from Toast… (30–60s)'); }
   var ok=false, msg='';
   try{
-    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON}, body: JSON.stringify({ mode:'cronSync', days:31, restaurantGuid:guid }) });
+    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON}, body: toastFnBody({ mode:'cronSync', days:31, restaurantGuid:guid }) });
     var j=await res.json();
     if(j && j.ok){ ok=true; var r0=(j.results&&j.results[0])||{}; msg=(r0.daysOk||0)+t('日 取込','d')+((r0.daysFail)?(' / '+t('失敗','fail')+r0.daysFail+t('日','d')):''); }
     else { msg=(JSON.stringify(j)||'').slice(0,140); }
@@ -79326,7 +79345,7 @@ async function loadStoreModifiers(sid, bd){
   if(box) box.innerHTML='<div style="padding:16px;text-align:center;color:var(--muted)">読み込み中…（Toastから当日の注文を解析）</div>';
   var data=null;
   try{
-    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON}, body: JSON.stringify({ restaurantGuid:guid, businessDate:bd, mode:'bowlDebug' }) });
+    var res=await fetch(TOAST_SYNC_FN, { method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+SUPABASE_ANON}, body: toastFnBody({ restaurantGuid:guid, businessDate:bd, mode:'bowlDebug' }) });
     data=await res.json();
   }catch(e){ data={error:String(e)}; }
   var mods=(data&&data.modifierNamesOnBowls)||{};
