@@ -68,7 +68,7 @@ test('store track: the coefficient moves from the lower end towards the upper en
   const ken = { id: 'ken', name: 'Ken Sample', title: 'Server Leader' };
   c.EMPS = [ken];
   assert.ok(run(c, `cscSaveTarget('G3-sv', ${JSON.stringify({ A: { m: 'pct', v: 70 }, B: { m: 'pts', v: 30 }, C: { m: 'none' }, D: { m: 'none' } })})`).ok);
-  c.STORE.bonus_coef = { 'G3-sv': { lo: 0.8, hi: 1.4, _at: 1 } };
+  c.STORE.bonus_coef_rng = { 'G3-sv': { lo: 0.8, hi: 1.4, _at: 1 } };
   // A 70% ok, B ≥ 30 points ok, E 71% ok (default 70%), F 69% no, G 10% no, H 70% ok → 4 of the 6 categories used
   const cs = cats(c, { A: 70, B: 70, C: 0, D: 0, E: 71, F: 69, G: 10, H: 70 });
   assert.ok(cs.find(x => x.key === 'B').score >= 30, 'fixture: B has 30 points or more');
@@ -114,7 +114,7 @@ test('specialists and office staff use the total %; no Career Score = the middle
   const nob = { id: 'nob', name: 'Nobody Sample', title: 'Store Manager' };
   const s = prorate(c, nob).segs[0];
   assert.deepEqual([s.cm.mode, s.coef], ['none', 1], 'no Career Score yet: the middle of 0.70–1.30');
-  c.STORE.bonus_coef = { G6: { lo: 1.5, hi: 1.5, _at: 1 } };
+  c.STORE.bonus_coef_rng = { G6: { lo: 1.5, hi: 1.5, _at: 1 } };
   const gm = { id: 'gm', name: 'GM Sample', title: 'General Manager' };
   c.SUMS['GM Sample'] = sum(cats(c, { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0, G: 0, H: 0 }));
   const g = prorate(c, gm).segs[0];
@@ -142,7 +142,7 @@ test('a confirmed quarter keeps the range, the share and the coefficient of that
   const c = app();
   const ken = { id: 'ken', name: 'Ken Sample', title: 'Server Leader' };
   c.EMPS = [ken];
-  c.STORE.bonus_coef = { 'G3-sv': { lo: 0.8, hi: 1.4, _at: 1 } };
+  c.STORE.bonus_coef_rng = { 'G3-sv': { lo: 0.8, hi: 1.4, _at: 1 } };
   c.SUMS['Ken Sample'] = sum(cats(c, { A: 75, B: 75, C: 75, D: 75, E: 60, F: 60, G: 60, H: 60 }));   // 4 of 8 at the default 70%
   const before = prorate(c, ken);
   c.E = ken; c.CFG = CFG;
@@ -159,12 +159,33 @@ test('a confirmed quarter keeps the range, the share and the coefficient of that
   assert.equal(prorate(c, ken).segs[0].coef, Math.round((0.5 + 0.1 * 6 / 8) * 100) / 100, 'A and B at 99% are not met; the six others are');
 });
 
-test('the old per-store profit input (bottom table, removed) is read only for confirmed quarters', () => {
+test('the old per-store profit input (bottom table, removed) is read only for quarters confirmed with v1061 or earlier', () => {
   const c = app();
   c.CFG2 = { quarter: '2026-Q3', storeProfit: { S1: { actual: 50, target: 100 } } };
   assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 0, target: 0, pct: 100, src: 'none' }, 'not confirmed: neutral (enter the months in ④)');
+  c.BQ['2026-Q3'] = { locked: true, noOldProfit: true };
+  assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 0, target: 0, pct: 100, src: 'none' }, 'confirmed with v1062: the same as before confirming (review P1)');
   c.BQ['2026-Q3'] = { locked: true };
-  assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 50, target: 100, pct: 50, src: 'old' }, 'confirmed: the same numbers as when it was confirmed');
+  assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 50, target: 100, pct: 50, src: 'old' }, 'confirmed with v1061 or earlier: the numbers it was confirmed with');
+  const lock = fn('bqLockQuarter'), unlock = fn('bqUnlockQuarter');
+  assert.ok(lock.indexOf('d.noOldProfit=true') >= 0 && lock.indexOf('d.noOldProfit=true') < lock.indexOf('d.locked=true'), 'confirming sets the mark');
+  assert.ok(unlock.includes('d.noOldProfit=false'), 'unlocking clears it (an older device that confirms again reads the old input, as it computes)');
+});
+
+test('ranges live in their own synced key: a device still on v1058–v1061 rewriting bonus_coef does not wipe them', () => {
+  const c = app();
+  run(c, `bcoefSetRange('G3-sv','lo','0.9')`); run(c, `bcoefSetRange('G3-sv','hi','1.1')`);
+  assert.equal(c.STORE.bonus_coef, undefined, 'bonus_coef is not written');
+  c.STORE.bonus_coef = { 'G3-sv': { v: 1, at: 'x', by: 'old device', _at: Date.now() + 1000, hist: [] } };   // what v1061 bcoefSet writes
+  const r = run(c, `bcoefRange('G3-sv')`);
+  assert.deepEqual([r.lo, r.hi, r.src], [0.9, 1.1, 'set']);
+  assert.match(source, /'bonus_track','bonus_coef_rng','karte_pin'/, 'synced');
+  assert.match(source, /\n  bonus_coef_rng:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/, 'merged per coefficient by time');
+  assert.match(source, /'bonus_track','bonus_coef_rng','q_budgets'/, 'kept by storage cleanup');
+  // a G3 whose track is unknown is shown with the range formula too (no leftover Career Score coefficient)
+  const sho = { id: 'sho', name: 'Sho Sample', title: 'Store Leader' };
+  const s = prorate(c, sho).segs[0];
+  assert.deepEqual([s.blocked, s.rangeMode, s.amount], ['track', true, 0]);
 });
 
 test('base lines are edited inside the settings tab: default rows, starting from the default, dirty check, save closes and keeps history', () => {
@@ -210,4 +231,11 @@ test('the settings tab keeps editing but drops the old cards; the progress of th
   const memo = body('_bonusMemoSectionHtml');
   for (const k of ['bmEditStart()', 'bmCopy()', 'bmHistory()', 'bmSave()', 'bmInsertTable()']) assert.ok(memo.includes(k), k);
   assert.ok(body('renderKarteQuarterBar').includes('bonusSetQuarter(this.value)'));
+});
+
+test('numbers from a confirmed-quarter record (synced) reach the page only as numbers', () => {
+  const c = app();
+  const bad = { mode: 'pct', pct: '<img src=x onerror=alert(1)>', src: 'q' }, bad2 = { mode: 'cat', met: '<b>', used: '<i>', rows: [{ key: 'A', st: 'ok', score: 1, max: 2, m: 'pct', v: '<svg>' }] };
+  const html = run(c, `[bonusCmCellHtml(${JSON.stringify(bad)}), bonusCmCellHtml(${JSON.stringify(bad2)}), bonusCmTxt(${JSON.stringify(bad)}), bonusCmShort(${JSON.stringify(bad2)}), bonusCmRowsHtml(${JSON.stringify(bad2)})].join('')`);
+  assert.doesNotMatch(html, /<img|<svg|<b>[^<]*<\/b>\/|<i>/);
 });

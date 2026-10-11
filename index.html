@@ -10631,7 +10631,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','karte_pin','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
    唯一の入口 openLaborHourModal() に呼び出し元が無く（doToastLaborFetch も同じ）、
@@ -11540,6 +11540,7 @@ var OP_MERGE = {
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
   bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
   bonus_track:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: その四半期に選んだ G3 職種。「四半期|従業員」ごとに新しいほう（別の人の選択を消さない） */
+  bonus_coef_rng:     { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1062: 係数の幅（下限〜上限）。係数ごとに新しいほう。前の版の端末は書かないキー */
   ocs_cfg:            { merge: mergeLssRec,    covers: _coversLssRec },      /* v1050: オフィス用 Career Score の正式運用の ON/OFF（新しい保存が勝つ） */   /* v1043: グレード履歴。社員ごとに新しいほう */
   /* v767: 本部目標と行動計画。id単位の和集合で、勝敗は必ず _mut（時刻）で決める。
      ここが無いと、部分データを持つ端末の保存がクラウドを丸ごと上書きする。 */
@@ -36493,7 +36494,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
   'fv_count_','fv_moves_','fv_review_','fv_config',
-  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','q_budgets',
+  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets',
   'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
   'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'lala_tasks'];   /* v804: LaLa（手入力・再生不可） */   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
@@ -57326,8 +57327,8 @@ function storeProfitOf(cfg, sid){
     }
   }catch(e){}
   /* v1062（UI案39・Motoさん 10/10）：店舗ごと 1 組の古い入力（設定タブの一番下の表・廃止）は使わない。
-     確定した四半期だけは、確定したときと同じ数字を出すために今までどおり読む */
-  var _lk=false; try{ var _q2=String((cfg&&cfg.quarter)||'').trim(); _lk=!!(_q2 && typeof bqGet==='function' && bqGet(_q2).locked); }catch(e){}
+     v1061 以前に確定した四半期だけは、確定したときと同じ数字を出すために今までどおり読む（v1062 で確定すると noOldProfit の印。独立レビュー P1） */
+  var _lk=false; try{ var _q2=String((cfg&&cfg.quarter)||'').trim(), _d2=(_q2 && typeof bqGet==='function') ? bqGet(_q2) : null; _lk=!!(_d2 && _d2.locked && !_d2.noOldProfit); }catch(e){}
   if(!_lk) return {actual:0, target:0, pct:100, src:'none'};
   var m=(cfg.storeProfit&&cfg.storeProfit[sid])||{}; var actual=Number(m.actual)||0, target=Number(m.target)||0;
   var pct = target>0 ? Math.round(actual/target*100) : 100;
@@ -57551,6 +57552,7 @@ function bqLockQuarter(q){
   try{ var _qr=ghQRange(q); d.segSnap=null; if(_qr){ var _ss={}; karteEligibleEmps().forEach(function(e){ _ss[e.id]=bonusSegs(e, _qr, {}).map(function(x){ return {g:x.g, from:x.from, to:x.to, days:x.days, noHist:!!x.noHist}; }); }); d.segSnap=_ss; } }catch(err){ d.segSnap=null; }   /* v1044: 区間も固定 */
   try{ var _cs={}; karteEligibleEmps().forEach(function(e){ _cs[e.id]=bonusCoefSnapFor(e, cfg, d); }); d.coefSnap=_cs; }   /* v1058: 確定したときの基準額と係数（あとで変えても動かない） */
   catch(err){ showToast('係数を残せなかったため確定していません','danger'); return; }
+  d.noOldProfit=true;   /* v1062：確定の前と同じく、古い店舗ごとの利益入力は読まない */
   d.locked=true; d.lockedAt=_bqNow(); d.lockedBy=_bqWho();
   if(bqSet(q,d)===false){ showToast('保存できませんでした','danger'); return; }
   showToast(q+' の査定を確定しました','success'); bqRefresh();
@@ -57558,7 +57560,7 @@ function bqLockQuarter(q){
 function bqUnlockQuarter(q){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
   if(!confirm(q+' の査定確定を解除します。\n利益と評価が再び編集できるようになり、査定額が変わる可能性があります。\n給与・ボーナス履歴に記録済みの金額は自動では変わりません。よろしいですか？')) return;
-  var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy=''; d.poolSnap=null; d.segSnap=null; d.coefSnap=null;   /* v1058: 係数も */   /* v1042: 確定したときの原資も外す・v1044: 区間も */
+  var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy=''; d.poolSnap=null; d.segSnap=null; d.coefSnap=null; d.noOldProfit=false;   /* v1062 */   /* v1058: 係数も */   /* v1042: 確定したときの原資も外す・v1044: 区間も */
   bqSet(q,d); showToast('解除しました','info'); bqRefresh();
 }
 function bqRefresh(){ if(typeof kbRefresh==='function') kbRefresh(); else if(typeof renderPage==='function') renderPage(curPage); }
@@ -59227,11 +59229,12 @@ function _kcCss(){
     +'.kc-box{border:1px solid var(--border);border-radius:10px;background:var(--surface)}'
     +'.kc-tg{background:none;border:none;padding:6px;font:inherit;font-size:13px;color:var(--tm);cursor:pointer;display:inline-flex;align-items:center;gap:5px;min-height:36px}'
     +'.kc-tg:disabled{cursor:default;opacity:.75}'
-    +'.kc-g{display:grid;grid-template-columns:52px minmax(110px,1.1fr) 116px 200px minmax(180px,1.4fr) 150px;gap:8px;align-items:center;padding:8px 4px;border-top:1px solid var(--border)}'
+    +'.kc-g{display:grid;grid-template-columns:44px minmax(0,1fr) 104px 176px minmax(0,1.2fr) 136px;gap:8px;align-items:center;padding:8px 4px;border-top:1px solid var(--border)}'
     +'.kc-gh{font-size:10.5px;color:var(--muted);font-weight:600;border-top:none;padding:0 4px 4px}'
     +'.kc-sm{display:none}'
-    +'@media(max-width:760px){.kc-g{display:flex;flex-wrap:wrap;gap:6px 10px}.kc-gh{display:none}.kc-sm{display:inline}'
-    +'.kc-c-g{order:1}.kc-c-name{order:2;flex:1 1 auto;font-weight:700}.kc-c-amt{order:3;margin-left:auto}.kc-c-base{order:4;text-align:left!important}.kc-c-coef{order:5;flex:1 1 auto}.kc-c-line{order:6;flex:1 1 100%}}'
+    +'@media(max-width:900px){.kc-g{grid-template-columns:auto minmax(0,1fr) auto;row-gap:6px}.kc-gh{display:none}.kc-sm{display:inline}'
+    +'.kc-c-g{grid-column:1;grid-row:1}.kc-c-name{grid-column:2;grid-row:1;font-weight:700}.kc-c-amt{grid-column:3;grid-row:1}'
+    +'.kc-c-base{grid-column:1/-1;text-align:left!important}.kc-c-coef{grid-column:1/-1}.kc-c-line{grid-column:1/-1}.kc-c-sh{display:none}}'
     +'</style>';
 }
 /* 選べる四半期：来期から 8 期前まで（今の設定がその外なら足す） */
@@ -59240,6 +59243,11 @@ function _karteQuarterOpts(qk){
   if(cur){ var y=cur.y, q=cur.q+1; if(q>4){ q=1; y++; } for(var i=0;i<10;i++){ out.push(y+'-Q'+q); q--; if(q<1){ q=4; y--; } } }
   if(qk && out.indexOf(qk)<0) out.push(qk);
   return out;
+}
+/* 確定した四半期が、幅の式（v1062）で確定したか */
+function bonusSnapHasRange(d){
+  var cs=d && d.coefSnap; if(!cs || typeof cs!=='object') return false;
+  return Object.keys(cs).some(function(id){ var sn=cs[id]; return !!(sn && ((sn.cur && sn.cur.lo!=null) || (Array.isArray(sn.segs) && sn.segs.some(function(x){ return x && x.lo!=null; })))); });
 }
 function renderKarteQuarterBar(cfg){
   var qk=bonusQKey(cfg), qr=ghQRange(String(cfg.quarter||'').trim()), d=qk?bqGet(qk):{}, today=ghToday();
@@ -59250,6 +59258,7 @@ function renderKarteQuarterBar(cfg){
     +'<select id="kc-q" class="form-select" style="width:auto;min-width:200px;font-size:16px" onchange="bonusSetQuarter(this.value)">'
     +_karteQuarterOpts(qk).map(function(x){ var r=ghQRange(x), p=_bonusQParse(x); return '<option value="'+escapeHtml(x)+'"'+(x===qk?' selected':'')+'>'+escapeHtml(p?(p.y+' Q'+p.q):x)+(r?'（'+ghMD(r.qs)+'〜'+ghMD(r.qe)+'）':'')+'</option>'; }).join('')+'</select>'
     +st+'<span style="font-size:11px;color:var(--muted)">この四半期の原資・利益の入力に使います。査定の進み具合と確定は「査定一覧」タブへ。</span></div>';
+  if(d.locked && !bonusSnapHasRange(d)) h+='<div style="font-size:11px;color:var(--yellow);margin-top:6px"><i class="ti ti-lock"></i> この四半期は前の式（グレード・職種係数 × Career Score係数）で確定しています。下の計算式とグレード係数の幅は、確定していない四半期に使います。</div>';
   h+='<div style="font-size:12px;line-height:1.8;background:var(--surface2);border-radius:10px;padding:7px 12px;margin-top:8px"><b>個人のボーナス</b> ＝ 基準額（日割り）× <b style="color:var(--accent)">グレード係数</b>（Career Score で幅の中が決まる）× 予算達成率係数 × 店舗利益係数　→ 合計が <b>原資</b> を超えたら全員に同じ割合を掛けて収める</div>';
   return h+'</div>';
 }
@@ -59434,8 +59443,8 @@ function karteBonusExplain(e, b){
     var _seen={}, _ps=bonusCoefParts(b);
     _ps.forEach(function(x){
       if(!x.rangeMode || x.coefFixed || x.coef==null) return;
-      var cm=x.cm||{}, why=(cm.mode==='cat') ? ('Career Score の基準ラインを <b>'+cm.used+' カテゴリー中 '+cm.met+' つ</b> 超えたため')
-        : (cm.mode==='pct' ? ('Career Score 総合 <b>'+cm.pct+'%</b> により') : 'Career Score が未評価のため真ん中で');
+      var cm=x.cm||{}, why=(cm.mode==='cat') ? ('Career Score の基準ラインを <b>'+_cmN(cm.used)+' カテゴリー中 '+_cmN(cm.met)+' つ</b> 超えたため')
+        : (cm.mode==='pct' ? ('Career Score 総合 <b>'+_cmN(cm.pct)+'%</b> により') : 'Career Score が未評価のため真ん中で');
       var s=escapeHtml(bonusCoefName(x))+' の係数は、幅 '+Number(x.coefLo).toFixed(2)+'〜'+Number(x.coefHi).toFixed(2)+' の中で、'+why+' <b>×'+Number(x.coef).toFixed(2)+'</b> になっています'
         +((x.from && _ps.length>1)?'（'+ghMD(x.from)+'〜'+ghMD(x.to)+'）':'')+'。';
       if(!_seen[s]){ _seen[s]=1; out.push(s); }
@@ -60877,6 +60886,7 @@ function cscEditDirty(E){
 }
 function openCscModal(k){
   if(!['ceo','gm','am'].includes(curRole)){ showToast(t('見られるのは AM・GM・CEO です','AM, GM or CEO only'),'warning'); return; }
+  var E0=window._cscEdit; if(E0 && E0.inline && cscEditDirty(E0) && !confirm(t('成長カルテの設定タブで、保存していない基準ラインの変更があります。捨てて開きますか？','There are unsaved base-line changes in the growth chart settings. Discard them?'))) return;
   cscEditStart(k, false);
   cscModalRender();
 }
@@ -61024,20 +61034,28 @@ function bcoefGet(key){
   var n=Number(e.v); return isFinite(n) && n>=0 ? {v:n, src:'set', at:e.at||'', by:e.by||''} : {v:null, src:'unset'};
 }
 /* v1062（UI案39）：係数は下限〜上限の幅（グレード・G3 職種ごと）。G6 は 1 つ（下限＝上限）。
-   幅を入れていない：前の版の係数 v があれば v × CS係数の下限〜上限（設定の csMin・csMax。初期 0.70〜1.30）、無ければ 0.70〜1.30（G6 は v か 1.00）。
+   幅は別のキー bonus_coef_rng[キー] = {lo, hi, at, by, _at, hist}（前の版 v1058〜v1061 の端末は bonus_coef を丸ごと書き直すので、幅を消さないように別にした。独立レビュー P2）。
+   幅を入れていない：前の版の係数 bonus_coef[キー].v があれば v × CS係数の下限〜上限（設定の csMin・csMax。初期 0.70〜1.30）、無ければ 0.70〜1.30（G6 は v か 1.00）。
    空欄で保存＝未設定（その係数の人は金額を出さない）。 */
 function _bcN(v){ if(v==null || v==='') return null; var n=Number(v); return isFinite(n) ? n : null; }
+function bcrAll(){ var r=ls('bonus_coef_rng', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 function bcoefRange(key){
-  var e=bcoefAll()[key], fixed=(key==='G6'), cf=(typeof kbCfg==='function') ? kbCfg() : {};
+  var fixed=(key==='G6'), x=bcrAll()[key];
+  if(x && typeof x==='object' && !x._deleted){
+    var lo=_bcN(x.lo), hi=_bcN(x.hi), who={at:x.at||'', by:x.by||''};
+    if(lo!=null && hi!=null && lo>=0 && lo<=hi) return Object.assign({lo:lo, hi:(fixed?lo:hi), fixed:fixed, src:'set'}, who);
+    return Object.assign({lo:null, hi:null, fixed:fixed, src:'unset'}, who);
+  }
+  var cf=(typeof kbCfg==='function') ? kbCfg() : {};
   var mn=_bcN(cf && cf.csMin), mx=_bcN(cf && cf.csMax); if(mn==null || mn<0) mn=0.7; if(mx==null || mx<mn) mx=Math.max(mn, 1.3);
   var r2=function(n){ return Math.round(n*100)/100; };
+  var e=bcoefAll()[key];
   if(e && typeof e==='object' && !e._deleted){
-    var lo=_bcN(e.lo), hi=_bcN(e.hi), who={at:e.at||'', by:e.by||''};
-    if(lo!=null && hi!=null && lo>=0 && lo<=hi) return Object.assign({lo:lo, hi:(fixed?lo:hi), fixed:fixed, src:'set'}, who);
-    if(e.v===null || ('lo' in e) || ('hi' in e)) return Object.assign({lo:null, hi:null, fixed:fixed, src:'unset'}, who);
+    var w={at:e.at||'', by:e.by||''};
+    if(e.v===null) return Object.assign({lo:null, hi:null, fixed:fixed, src:'unset'}, w);   /* v1058 で空欄にした係数 */
     var n=_bcN(e.v);
-    if(n!=null && n>=0) return Object.assign(fixed ? {lo:n, hi:n} : {lo:r2(mn*n), hi:r2(mx*n)}, {fixed:fixed, src:'from-v', v:n}, who);
-    return Object.assign({lo:null, hi:null, fixed:fixed, src:'unset'}, who);
+    if(n!=null && n>=0) return Object.assign(fixed ? {lo:n, hi:n} : {lo:r2(mn*n), hi:r2(mx*n)}, {fixed:fixed, src:'from-v', v:n}, w);
+    return Object.assign({lo:null, hi:null, fixed:fixed, src:'unset'}, w);
   }
   return fixed ? {lo:1, hi:1, fixed:true, src:'migrated'} : {lo:r2(mn), hi:r2(mx), fixed:false, src:'migrated'};
 }
@@ -61057,10 +61075,10 @@ function bcoefSetRange(key, which, val){
     else { lo=n; if(hi==null) hi=n; }
     if(lo>hi){ showToast(which==='hi' ? ('上限は下限（'+lo.toFixed(2)+'）以上にしてください。先に下限を下げてください') : ('下限は上限（'+hi.toFixed(2)+'）以下にしてください。先に上限を上げてください'), 'warning'); karteRerender(); return; }
   }
-  var all=bcoefAll(), prev=all[key], hist=(prev && Array.isArray(prev.hist)) ? prev.hist.slice(-9) : [];
+  var all=bcrAll(), prev=all[key], hist=(prev && Array.isArray(prev.hist)) ? prev.hist.slice(-9) : [];
   hist.push({lo:cur.lo, hi:cur.hi, src:cur.src, at:cur.at||'', by:cur.by||''});
-  all[key]={v:(lo==null ? null : Math.round((lo+hi)/2*1000)/1000), lo:lo, hi:hi, at:_bqNow(), by:_bqWho(), _at:Math.max(Date.now(), (Number(prev && prev._at)||0)+1), hist:hist};   /* v は前の版の端末が読む（真ん中） */
-  var back=(lsSet('bonus_coef', all)===false) ? null : bcoefRange(key);
+  all[key]={lo:lo, hi:hi, at:_bqNow(), by:_bqWho(), _at:Math.max(Date.now(), (Number(prev && prev._at)||0)+1), hist:hist};
+  var back=(lsSet('bonus_coef_rng', all)===false) ? null : bcoefRange(key);
   if(!back || back.lo!==lo || back.hi!==hi){ showToast('保存できませんでした','danger'); karteRerender(); return; }
   showToast(lo==null ? ('未設定にしました：'+bcoefLabel(key)) : ('保存しました：'+bcoefLabel(key)+' '+(cur.fixed ? ('×'+lo.toFixed(2)) : (lo.toFixed(2)+'〜'+hi.toFixed(2)))), lo==null ? 'warning' : 'success');
   karteRerender();
@@ -61068,9 +61086,9 @@ function bcoefSetRange(key, which, val){
 /* ---- 幅の中（Career Score の基準ライン）---- */
 /* 目標 k の基準ラインで、カテゴリーごとに達成か（cats＝{key, score, max} の配列。無いカテゴリーは未達）。ボーナスでは未評価の項目は 0 点 */
 function bonusCatRows(k, cats){
-  var by={}; (cats||[]).forEach(function(c){ if(c && c.key) by[c.key]=c; });
+  var by={}, en=cscEntry(k); (cats||[]).forEach(function(c){ if(c && c.key) by[c.key]=c; });
   return cscCatKeys(k).map(function(key){
-    var c=cscCrit(k, key), s=by[key], score=s ? (Number(s.score)||0) : 0, max=s ? (Number(s.max)||0) : cscCatMax(key);
+    var c=cscCrit(k, key, en), s=by[key], score=s ? (Number(s.score)||0) : 0, max=s ? (Number(s.max)||0) : cscCatMax(key);
     var r={key:key, m:c?c.m:null, v:(c && c.v!=null)?c.v:null, dflt:!!(c && c.dflt), score:score, max:max};
     if(!c || c.m==='none') r.st='none';
     else if(!s || !(max>0)) r.st='ng';
@@ -61129,25 +61147,26 @@ function bonusCmCompact(cm, rows){
   if(cm.mode==='pct'){ o.pct=cm.pct; o.why=cm.why||null; }
   return o;
 }
+function _cmN(v){ var n=Number(v); return isFinite(n) ? n : 0; }   /* 同期した記録の数字は数としてだけ出す */
 function bonusCmTxt(cm){
   if(!cm) return '';
   if(cm.mode==='fixed') return '係数は 1 つ';
   if(cm.mode==='none') return 'Career Score 未評価（幅の真ん中）';
-  if(cm.mode==='cat') return 'Career Score の基準ラインを '+cm.used+' カテゴリー中 '+cm.met+' つ達成';
-  return 'Career Score 総合 '+cm.pct+'%'+(cm.why==='noCats' ? '（カテゴリー別の記録が無い）' : (cm.why==='notStore' ? '（部門別の専門職・オフィス）' : ''));
+  if(cm.mode==='cat') return 'Career Score の基準ラインを '+_cmN(cm.used)+' カテゴリー中 '+_cmN(cm.met)+' つ達成';
+  return 'Career Score 総合 '+_cmN(cm.pct)+'%'+(cm.why==='noCats' ? '（カテゴリー別の記録が無い）' : (cm.why==='notStore' ? '（部門別の専門職・オフィス）' : ''));
 }
 function bonusCmSrcTxt(cm){ return !cm ? '' : (cm.src==='grade' ? '（グレードを変えたときに確定した評価）' : (cm.src==='frozen' ? '（確定した評価）' : '')); }
 function bonusCmShort(cm){
   if(!cm || cm.mode==='fixed') return '';
   if(cm.mode==='none') return '未評価';
-  if(cm.mode==='cat') return cm.met+'/'+cm.used+' 達成';
-  return '総合 '+cm.pct+'%';
+  if(cm.mode==='cat') return _cmN(cm.met)+'/'+_cmN(cm.used)+' 達成';
+  return '総合 '+_cmN(cm.pct)+'%';
 }
 /* 査定一覧の CS の欄 */
 function bonusCmCellHtml(cm){
   if(!cm || cm.mode==='fixed') return '<span style="color:var(--muted)">—</span>';
   if(cm.mode==='none') return '<span style="color:var(--muted)">未評価</span><div style="font-size:9.5px;color:var(--muted)">真ん中</div>';
-  var s=(cm.mode==='cat') ? ('<b>'+cm.met+'/'+cm.used+'</b><div style="font-size:9.5px;color:var(--muted)">基準ライン</div>') : ('<b>'+cm.pct+'%</b><div style="font-size:9.5px;color:var(--muted)">総合</div>');
+  var s=(cm.mode==='cat') ? ('<b>'+_cmN(cm.met)+'/'+_cmN(cm.used)+'</b><div style="font-size:9.5px;color:var(--muted)">基準ライン</div>') : ('<b>'+_cmN(cm.pct)+'%</b><div style="font-size:9.5px;color:var(--muted)">総合</div>');
   return s+(cm.src==='grade' ? '<div style="font-size:9.5px;color:var(--green)">変更時に確定</div>' : (cm.src==='frozen' ? '<div style="font-size:9.5px;color:var(--green)">確定</div>' : ''));
 }
 /* 個人ページのタイル（区間ごとに違えば「G3 5/8・G4 6/8」） */
@@ -61167,7 +61186,7 @@ function bonusCmRowsHtml(cm){
   var rows=((cm && cm.rows) || []).filter(function(r){ return r.st!=='none'; });
   if(!rows.length) return '';
   return '<table style="border-collapse:collapse;margin:3px 0 2px 10px;font-size:10.5px;color:var(--tm)">'+rows.map(function(r){
-    var line=(r.m==='pts') ? (r.v+'点') : (r.v+'%');
+    var line=(r.m==='pts') ? (_cmN(r.v)+'点') : (_cmN(r.v)+'%');
     return '<tr><td style="padding:1px 8px 1px 0;white-space:nowrap">'+escapeHtml(cscCatName(r.key))+'</td>'
       +'<td style="padding:1px 8px 1px 0;text-align:right;white-space:nowrap">'+Number(r.score)+'/'+Number(r.max)+'（'+cscPctTxt(Number(r.score), Number(r.max))+'）</td>'
       +'<td style="padding:1px 8px 1px 0;white-space:nowrap;color:var(--muted)">基準 '+escapeHtml(line)+(r.dflt?'（初期値）':'')+'</td>'
@@ -61214,7 +61233,7 @@ function bonusCoefFor(e, g, d, seg, q){
   if(g==='G3'){
     var ev=seg ? bonusSegEval(e, seg) : null;   /* グレードを変えたときに確定した職種（UI案38）が最優先 */
     if(ev && ev.track && CSC_TRACK_NAME[ev.track]){ tr=ev.track; tsrc='grade'; }
-    else { var T=bonusTrackFor(e, q); if(!T.t) return {key:null, track:null, v:null, blocked:'track'}; tr=T.t; tsrc=T.src; }
+    else { var T=bonusTrackFor(e, q); if(!T.t) return {key:null, track:null, v:null, blocked:'track', rangeMode:true, lo:null, hi:null}; tr=T.t; tsrc=T.src; }   /* v1062：幅の式（Career Score係数は出さない） */
     key='G3-'+tr;
   }
   var Rg=bcoefRange(key);   /* v1062（UI案39）：幅（下限〜上限）。幅の中は bonusCoefResolve で Career Score から */
@@ -61267,15 +61286,15 @@ function renderBonusCoefCard(cfg){
     if(R.fixed || !cscTarget(key)) line='<span style="font-size:11px;color:var(--muted)">基準ラインなし（係数は 1 つ）</span>';
     else {
       var S=cscLineSum(key), on=(openK===key), dv=CSC_DEFAULT_LINE[key];
-      line='<button class="btn '+(on?'btn-primary':'btn-secondary')+' btn-sm" style="text-align:left;line-height:1.35" aria-expanded="'+(on?'true':'false')+'"'+(can?'':' disabled')+' onclick="openCscInline(\''+key+'\')">'
+      line='<button class="btn '+(on?'btn-primary':'btn-secondary')+' btn-sm" style="text-align:left;line-height:1.35;white-space:normal;max-width:100%" aria-expanded="'+(on?'true':'false')+'"'+(can?'':' disabled')+' onclick="openCscInline(\''+key+'\')">'
         +(S.used===S.n ? S.n+' カテゴリーで判定' : S.n+' 中 '+S.used+' カテゴリーで判定')+' <i class="ti ti-chevron-'+(on?'up':'down')+'"></i>'
         +(S.dflt?'<span style="display:block;font-size:10px;font-weight:400;opacity:.85">'+(S.dflt===S.n ? 'すべて初期値（'+dv+'% 以上）' : '初期値（'+dv+'% 以上）が '+S.dflt+' つ')+'</span>':'')+'</button>';
     }
     var usd=function(n){ return '$'+Math.round(n).toLocaleString('en-US'); };   /* 幅はドル単位で（セントを出すと狭い画面であふれる） */
     var amt=(R.lo==null) ? '<span style="color:var(--red);font-weight:700">未設定</span>'
       : (R.fixed ? usd((gb||0)*R.lo) : usd((gb||0)*R.lo)+'〜'+usd((gb||0)*R.hi));
-    h+='<div class="kc-g"><div class="kc-c-g">'+ghBadge(g)+'</div><div class="kc-c-name">'+escapeHtml(r[2])+'</div><div class="kc-c-base" style="text-align:right">'+base+'</div>'
-      +'<div class="kc-c-coef">'+coef+'</div><div class="kc-c-line">'+line+'</div><div class="kc-c-amt" style="text-align:right;font-weight:700;white-space:nowrap">'+amt+'</div></div>';
+    h+='<div class="kc-g"><div class="kc-c-g">'+ghBadge(g)+'</div><div class="kc-c-name">'+escapeHtml(r[2])+'</div><div class="kc-c-base'+((g==='G3' && key!=='G3-op')?' kc-c-sh':'')+'" style="text-align:right">'+base+'</div>'
+      +'<div class="kc-c-coef">'+coef+'</div><div class="kc-c-line">'+line+'</div><div class="kc-c-amt" style="text-align:right;font-weight:700;font-size:13px;white-space:nowrap">'+amt+'</div></div>';
     if(openK===key) h+=cscInlineHtml(E, R);
   });
   h+='<div style="font-size:10.5px;color:var(--muted);line-height:1.7;margin-top:8px">・係数は小数 2 桁まで。空欄にすると「未設定」で、その係数の人は金額を出しません（査定の確定もできません）。<br>'
@@ -61300,11 +61319,11 @@ function bonusCoefStepHtml(e, b, cfg){
     else if(x.g==='G3') why='<span style="color:var(--red)">（役職名 '+escapeHtml(e.title||'未設定')+' から職種が決まりません）</span>';
     var when=x.from ? (ghMD(x.from)+'〜'+ghMD(x.to)+' ') : '';
     if(x.rangeMode){   /* v1062（UI案39）：幅（下限〜上限）の中を Career Score の基準ラインで */
-      if(x.coef==null) return when+'<b>'+escapeHtml(bonusCoefName(x))+'</b>'+why+' <b style="color:var(--red)">—</b>'+(x.coefLo==null?'（幅が未設定）':'');
+      if(x.coef==null) return when+'<b>'+escapeHtml(bonusCoefName(x))+'</b>'+why+' <b style="color:var(--red)">—</b>'+((x.coefLo==null && x.blocked!=='track')?'（幅が未設定）':'');
       var cm=x.cm||{}, lo=Number(x.coefLo), hi=Number(x.coefHi);
       var rg=x.coefFixed ? '係数は 1 つ' : ('幅 '+lo.toFixed(2)+'〜'+hi.toFixed(2)+(x.coefSrc==='migrated'?'・初期値':(x.coefSrc==='from-v'?'・前の係数から':'')));
-      var calc=x.coefFixed ? '' : (cm.mode==='cat' ? lo.toFixed(2)+' ＋（'+hi.toFixed(2)+' − '+lo.toFixed(2)+'）× '+cm.met+'/'+cm.used+' ＝ '
-        : (cm.mode==='pct' ? lo.toFixed(2)+' ＋（'+hi.toFixed(2)+' − '+lo.toFixed(2)+'）× '+cm.pct+'% ＝ ' : '幅の真ん中 ＝ '));
+      var calc=x.coefFixed ? '' : (cm.mode==='cat' ? lo.toFixed(2)+' ＋（'+hi.toFixed(2)+' − '+lo.toFixed(2)+'）× '+_cmN(cm.met)+'/'+_cmN(cm.used)+' ＝ '
+        : (cm.mode==='pct' ? lo.toFixed(2)+' ＋（'+hi.toFixed(2)+' − '+lo.toFixed(2)+'）× '+_cmN(cm.pct)+'% ＝ ' : '幅の真ん中 ＝ '));
       return when+'<b>'+escapeHtml(bonusCoefName(x))+'</b>'+why+'（'+rg+'）'
         +(x.coefFixed ? ' <b>×'+Number(x.coef).toFixed(2)+'</b>' : '<br><span style="padding-left:10px">'+escapeHtml(bonusCmTxt(cm))+bonusCmSrcTxt(cm)+' → '+calc+'<b>×'+Number(x.coef).toFixed(2)+'</b></span>')
         +(x.coefSrc==='snap'?'<span style="color:var(--muted)">（確定したときの係数）</span>':'')
@@ -61355,7 +61374,7 @@ function bonusTrackPickHtml(e, b, cfg){
 }
 /* 係数を入れたのに、v1057 以前の版で確定した四半期（係数なしの式のまま）を開いているとき */
 function bonusLegacyNoteHtml(tot){
-  var has=Object.keys(bcoefAll()).some(function(k){ var c=bcoefGet(k); return c.src!=='migrated' && c.v!==1; });
+  var has=BCOEF_KEYS.some(function(k){ var r=bcoefRange(k); return r.src==='set' || r.src==='unset' || (r.src==='from-v' && r.v!==1); });   /* v1062：幅も見る */
   if(!has || !tot.rows.some(function(r){ return r.b.coefSrc==='legacy' || (r.b.segs||[]).some(function(x){ return x.coefSrc==='legacy'; }); })) return '';
   return '<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-lock"></i> この四半期は係数を入れる前の版（v1057 以前）で確定したため、グレード・職種係数を掛けずに計算しています（確定した金額を変えないため）。係数を使うときは、確定を解除して確定し直してください。</div>';
 }

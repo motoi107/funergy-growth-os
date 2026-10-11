@@ -162,7 +162,7 @@ test('v1062: with no ranges entered (0.70–1.30), a coefficient set by the tota
 
 test('one coefficient per segment, applied once; unknown G3 track and unset coefficients produce no amount; 0 is 0 times', () => {
   const c = app();
-  c.STORE.bonus_coef = { G2: { lo: 0.8, hi: 1, _at: 1 }, 'G3-sv': { lo: 1, hi: 1.4, _at: 1 }, 'G3-op': { v: null, lo: null, hi: null, _at: 1 }, G4: { lo: 0, hi: 0, _at: 1 } };
+  c.STORE.bonus_coef_rng = { G2: { lo: 0.8, hi: 1, _at: 1 }, 'G3-sv': { lo: 1, hi: 1.4, _at: 1 }, 'G3-op': { lo: null, hi: null, _at: 1 }, G4: { lo: 0, hi: 0, _at: 1 } };
   let r = prorate(c, { id: 'ken', g: 'G3', title: 'Server Leader' }, [{ g: 'G2', from: '2026-07-01', to: '2026-08-10', days: 41 }, { g: 'G3', from: '2026-08-11', to: '2026-09-30', days: 51 }]);
   // no Career Score → the middle of each range; the Career Score coefficient (0.9 passed in) is no longer applied
   assert.deepEqual(r.segs.map(s => [s.coefKey, s.coef, s.csCoef, s.amount]), [['G2', 0.9, 1, Math.round(1000 * 41 / 92 * 1 * 1.1 * 1 * 0.9)], ['G3-sv', 1.2, 1, Math.round(3000 * 51 / 92 * 1 * 1.1 * 1 * 1.2)]]);
@@ -199,16 +199,16 @@ test('v1062: coefficient ranges accept up to 2 decimals without floating-point f
   assert.deepEqual(ok, [[2.01, 2.01], [2.03, 2.03], [4.02, 4.02], [0.07, 0.07], [0, 0], [20, 20]], 'G6 keeps lower = upper');
   run(c, `bcoefSetRange('G2','lo','0.85')`); run(c, `bcoefSetRange('G2','hi','1.15')`);
   assert.deepEqual(rg('G2'), [0.85, 1.15, 'set']);
-  assert.equal(c.STORE.bonus_coef.G2.v, 1, 'the middle is kept as v for devices still on v1058–v1061');
+  assert.equal(c.STORE.bonus_coef, undefined, 'ranges are kept in bonus_coef_rng; devices still on v1058–v1061 keep their own bonus_coef');
   for (const [w, v] of [['lo', '0.855'], ['lo', '-1'], ['hi', '21'], ['hi', 'abc'], ['lo', '1.2'], ['hi', '0.5']]) {
     run(c, `bcoefSetRange('G2', ${JSON.stringify(w)}, ${JSON.stringify(v)})`); assert.deepEqual(rg('G2'), [0.85, 1.15, 'set'], w + ' ' + v);
   }
-  assert.equal(c.STORE.bonus_coef.G2.hist.length, 2, 'history of the two saves');
+  assert.equal(c.STORE.bonus_coef_rng.G2.hist.length, 2, 'history of the two saves');
   run(c, `bcoefSetRange('G4','hi','')`); assert.deepEqual(rg('G4'), [null, null, 'unset'], 'empty = not set');
   c.E = { id: 'sm', g: 'G4', title: 'Store Manager' };
   assert.equal(run(c, `bonusCoefFor(E,'G4',{},null,'2026-Q3').blocked`), 'coef', 'not set = no amount');
   c.curRole = 'am'; run(c, `bcoefSetRange('G4','lo','1')`); c.curRole = 'gm'; assert.deepEqual(rg('G4'), [null, null, 'unset'], 'AM cannot change coefficients');
-  c.STORE.bonus_coef.G5 = { v: 1.2, _at: 1 };   // entered with v1058–v1061 (one number)
+  c.STORE.bonus_coef = { G5: { v: 1.2, _at: 1 } };   // entered with v1058–v1061 (one number)
   assert.deepEqual(rg('G5'), [0.84, 1.56, 'from-v'], 'an old single coefficient becomes v × 0.70 – v × 1.30');
 });
 
@@ -228,11 +228,11 @@ test('a quarter track pick can be changed or cleared, and uses the same quarter 
 });
 
 test('cs_criteria and bonus_coef are synced, merged per entry by time, and kept by storage cleanup', () => {
-  assert.match(source, /'grade_hist','cs_criteria','bonus_coef','bonus_track','karte_pin'/);
+  assert.match(source, /'grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin'/);
   assert.match(source, /\n  bonus_track:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(source, /\n  cs_criteria:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(source, /\n  bonus_coef:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
-  assert.match(source, /'bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','q_budgets'/);
+  assert.match(source, /'bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets'/);
 });
 
 /* ------------------------------------------------------------------ UI案38 */
