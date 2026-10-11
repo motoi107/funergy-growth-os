@@ -15561,6 +15561,7 @@ function doLogout() {
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
   window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
+  if(typeof invInReset==='function') invInReset();   /* v1063: 前の人の Invoice取込 の内容を残さない（覚えた認証はその人の分として残る） */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -38185,7 +38186,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1062';
+const APP_VERSION = '1063';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -43411,8 +43412,9 @@ async function botAPI(payload,retried){
   if(!session||!session.access_token)throw new Error(t('共有案件を開くにはメール認証してください','Sign in with your registered Bot email to open shared cases'));
   var r=await fetch(SUPABASE_URL+'/functions/v1/ops-bot',{method:'POST',headers:{apikey:SUPABASE_ANON,Authorization:'Bearer '+session.access_token,'Content-Type':'application/json'},body:JSON.stringify(payload)});
   if(r.status===401&&!retried&&session.refresh_token){
-    var rr=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:SUPABASE_ANON,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:session.refresh_token})});
-    if(rr.ok){var jj=await rr.json();_botSession={access_token:jj.access_token,refresh_token:jj.refresh_token};return botAPI(payload,true);}
+    if(typeof invInSessionRefresh==='function'){var ns=await invInSessionRefresh(session);if(ns&&(_botSession||window._authSession||null)===ns)return botAPI(payload,true);}   /* v1063: 鍵の取り替えは Invoice取込 と 1 本にまとめる（覚えた鍵も覚え直す・ログアウトのあとは渡さない） */
+    else{var rr=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:SUPABASE_ANON,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:session.refresh_token})});
+    if(rr.ok){var jj=await rr.json();_botSession={access_token:jj.access_token,refresh_token:jj.refresh_token};return botAPI(payload,true);}}
   }
   var j=await r.json();if(!r.ok){if(r.status===401)botResetShared();var messages={conflict:t('他の担当者が更新しました。再読込してください','Another reviewer updated this case. Reload it.'),send_unresolved:t('送信結果の確認が必要です。履歴から同じ送信を再確認してください','Resolve the previous send from its history first.'),line_token_missing:t('LINEのアクセストークンが未設定です','LINE access token is not configured'),unauthorized:t('メール認証の有効期限が切れました。再認証してください','Please sign in again.'),forbidden:t('この操作の権限がありません','You do not have permission for this action'),invalid_config:t('GM・CEOが判定設定を共有してください','GM or CEO must publish the clock rules first'),scan_busy:t('この店舗は取得処理中です。少し待って更新してください','This store is being scanned. Refresh shortly.')};throw Error(messages[j.error]||j.error||t('接続できませんでした','Connection failed'));}return j;
 }
@@ -44007,13 +44009,23 @@ setTimeout(botFetchSharedClock,0);
    v1056（UI案36・Motoさん 10/7）：経理が確かめるのは 業者・invoice番号・金額・店舗 の 4 つだけ。商品の対応・単価は参考（反映を止めない・確認に出さない）。
      要確認はチェックしてまとめて反映できる。1件の画面は 4 項目だけ、明細はたたむ。設定は自動反映の条件・業者をまとめて「自動」。
    ★サーバーは Edge Function invoice-intake。業務Bot と同じメール認証（Supabase Auth）のセッションで呼ぶ。anon キーだけでは何も読めない。
+   v1063（Moto 10/11「invoice取り込みに入る時のメール認証を削除してください」）：メール認証は「この端末で、その人の最初の 1 回」だけ。
+     認証したとき、PIN でログインした社員（社員の ID）とこの端末に、ログインを続ける鍵（Supabase の refresh token）を覚える。
+     次からは PIN でログインして Invoice取込 を開くだけで、裏で認証し直す（メールとパスワードは聞かない）。サーバーの守りは今までと同じ。
+     ★PIN だけで入れる形にはしない（PIN だけではサーバーの守りが弱くなる。Moto さんに説明）。
+     ★覚えないとき：店舗のログイン・PIN が初期のまま（誰でも知っている番号）・「覚える」を外した・メールのアカウントが別の社員のもの、または社員の ID（manager_auth.emp_id）が無い。
+     ★覚えた鍵を取り替えるのは、覚えた鍵から作ったログインを取り替えたときだけ（業務Bot に別の人がメール認証しても、覚えた鍵は変えない）。
+       鍵を取り替えるときは、この端末で一番新しい鍵を使う（別のタブが先に取り替えていることがある。古い鍵を使うと Supabase がログインごと止める）。
+     ★覚えるのはこの端末の localStorage だけ（'_' で始まるキーは同期・クラウドへの写し・IndexedDB への写しの対象外）。30 日使わなければ忘れる。
+       共有のパソコンでは「覚える」を外す。「認証を消す」で消せる（サーバー側のそのログインも閉じる）。
    ★この画面は「人の判断」を送るだけ。合計を合わせるために数量・単価を自動で直すことはしない。直した値・理由・直した人はサーバーの履歴に残る。
    ★invoice に書かれた文字（業者名・商品名・番号など）は必ず escapeHtml してから出す。指示としては扱わない。
    ★鍵（service_role・Google・AI・転送の鍵）はブラウザに来ない。転送の鍵は Supabase の SQL でだけ見られる。
    ★取込・自動反映・整理・アプリへの写しは、設定で GM・CEO が ON にするまで動かない（初期値はすべて OFF）。 */
 var INVIN_FN = '/functions/v1/invoice-intake';
 var _invIn = { error:'', health:null, config:null, list:null, q:null, review:null, recon:null, problems:null,
-  docId:null, doc:null, cand:{}, edits:null, mob:'lines', loaded:{}, busy:false, rel:null, folder:null };
+  docId:null, doc:null, cand:{}, edits:null, mob:'lines', loaded:{}, busy:false, rel:null, folder:null,
+  restoring:null, restoreTried:null, restoreP:null, keptSession:null };
 var INVIN_REASONS = {
   unreadable:['読み取れない（ピンぼけ・暗い・切れている）','Not legible'], ai_failed:['AIの読み取りに失敗','Reading failed'],
   ai_truncated:['読み取りが途中で切れた','Reading was cut off'], multiple_documents:['1つのファイルに複数の書類','Several documents in one file'],
@@ -44171,6 +44183,129 @@ function invInCanEdit(){ return ['ceo','gm','office','office_crew'].indexOf(curR
 function invInCanAdmin(){ return ['ceo','gm'].indexOf(curRole) >= 0; }
 function invInSession(){ return (typeof _botSession!=='undefined' && _botSession) || window._authSession || null; }
 function invInSigned(){ var s = invInSession(); return !!(s && s.access_token); }
+/* ---- v1063：この端末で、その人のメール認証を覚える ---- */
+var INVIN_KEEP = '_invin_signin';
+var INVIN_KEEP_DAYS = 30;
+function invInKeepAll(){
+  try { var v = JSON.parse(localStorage.getItem(INVIN_KEEP) || 'null'); if (v && typeof v === 'object' && v.people && typeof v.people === 'object') return v; } catch(e) {}
+  return { v:1, people:{} };
+}
+function invInLoginPerson(){ return (typeof curStoreLogin!=='undefined' && curStoreLogin) ? null : ((typeof loginPerson!=='undefined' && loginPerson && loginPerson.id != null && loginPerson.id !== '') ? loginPerson : null); }
+/* PIN が初期のままでログインしている人（覚えない・使わない。初期 PIN は誰でも知っている番号のため） */
+function invInDefaultPin(){
+  if (!invInLoginPerson()) return false;
+  var pin = (typeof window!=='undefined' && window) ? window._sessionPin : null, def = (typeof DEFAULT_STAFF_PIN!=='undefined' && DEFAULT_STAFF_PIN) || '0000';
+  return !(typeof pin === 'string' && pin !== '' && pin !== def);
+}
+/* 覚える相手：PIN（自分で決めた番号）でログインした社員。社員の ID で覚える（名前が変わっても・同じ名前の人がいても混ざらない） */
+function invInKeepWho(){ var lp = invInLoginPerson(); return (lp && !invInDefaultPin()) ? 'e:' + String(lp.id) : ''; }
+function invInKeepGet(w){
+  if (!w) return null;
+  var a = invInKeepAll(), p = Object.prototype.hasOwnProperty.call(a.people, w) ? a.people[w] : null;
+  if (!p || typeof p.rt !== 'string' || !p.rt) return null;
+  return (Number(p.at) > Date.now() - INVIN_KEEP_DAYS * 86400000) ? p : null;   /* 30 日使わなければ忘れる */
+}
+function invInKept(){ return invInKeepGet(invInKeepWho()); }
+function invInKeepSet(rt, who){
+  var w = who != null ? who : invInKeepWho(); if (!w) return false;
+  var a = invInKeepAll(), now = Date.now();
+  Object.keys(a.people).forEach(function(k){ var p = a.people[k]; if (!p || !(Number(p.at) > now - INVIN_KEEP_DAYS * 86400000)) delete a.people[k]; });
+  if (rt) a.people[w] = { rt:String(rt), at:now }; else delete a.people[w];
+  try { if (Object.keys(a.people).length) localStorage.setItem(INVIN_KEEP, JSON.stringify(a)); else localStorage.removeItem(INVIN_KEEP); return true; } catch(e) { return false; }
+}
+/* 覚えた鍵から作ったログインか（業務Bot・管理者ページ・別の人のメール認証は違う） */
+function invInIsKeptSession(s){ return !!(s && _invIn.keptSession === s && invInKept()); }
+/* 鍵を取り替えるときに使う鍵。覚えたログインなら、この端末で一番新しい鍵（別のタブが先に取り替えていることがある） */
+function invInRtFor(s){ return invInIsKeptSession(s) ? invInKept().rt : (s ? s.refresh_token : null); }
+/* 鍵が取り替わったとき：覚えたログインを取り替えたときだけ、新しい鍵を覚え直す（invInAPI・業務Bot の botAPI から呼ぶ） */
+function invInKeepRefresh(oldS, newS){ if (invInIsKeptSession(oldS) && newS && newS.refresh_token) _invIn.keptSession = invInKeepSet(newS.refresh_token) ? newS : null; }
+/* 共有のログイン（_botSession。業務Bot と同じ）の鍵の取り替えを 1 本にまとめる。同時に 401 になった要求（更新で 3 つ並ぶ）は同じ取り替えを待つ
+   （別々に取り替えると、覚えた鍵とこのタブの鍵がずれて、次に Supabase がログインごと止める）。
+   取り替えたログインを使うのは、まだ同じログインのときだけ（そのあいだにログアウト・別の人のログインがあれば渡さない）。invInAPI・botAPI から呼ぶ */
+var _invInRefreshing = null;
+function invInSessionRefresh(s){
+  if (_invInRefreshing && _invInRefreshing.from === s) return _invInRefreshing.p;
+  var p = fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', { method:'POST', headers:{ apikey:SUPABASE_ANON, 'Content-Type':'application/json' }, body:JSON.stringify({ refresh_token:invInRtFor(s) }) })
+    .then(function(rr){ return rr.ok ? rr.json() : null; })
+    .then(function(jj){
+      if (!jj || !jj.access_token || !jj.refresh_token) return null;
+      var ns = { access_token:jj.access_token, refresh_token:jj.refresh_token };
+      invInKeepRefresh(s, ns);
+      if (_botSession === s || (!_botSession && window._authSession === s)) _botSession = ns;
+      return ns;
+    }, function(){ return null; })
+    .then(function(ns){ if (_invInRefreshing && _invInRefreshing.p === p) _invInRefreshing = null; return ns; });
+  _invInRefreshing = { from:s, p:p };
+  return p;
+}
+/* Supabase の認証への呼び出し（12 秒で打ち切る） */
+function invInAuthFetch(path, opt){
+  opt = opt || {};
+  var ac = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var tm = ac ? setTimeout(function(){ try { ac.abort(); } catch(e) {} }, 12000) : null;
+  var h = { apikey:SUPABASE_ANON }; if (opt.token) h.Authorization = 'Bearer ' + opt.token;
+  var init = { method:opt.method || 'POST', headers:h }; if (opt.body) { h['Content-Type'] = 'application/json'; init.body = JSON.stringify(opt.body); } if (ac) init.signal = ac.signal;
+  return fetch(SUPABASE_URL + path, init).then(function(r){ if (tm) clearTimeout(tm); return r; }, function(e){ if (tm) clearTimeout(tm); throw e; });
+}
+/* メールのアカウントが、いま PIN でログインしている社員のものか（manager_auth は本人の行だけ読める）。true／'other'（別の社員）／'noemp'（社員の ID が無い）／false（確かめられない） */
+async function invInAccountIsMine(token){
+  var lp = invInLoginPerson(); if (!lp) return false;
+  try {
+    var r = await invInAuthFetch('/rest/v1/manager_auth?select=emp_id', { method:'GET', token:token });
+    if (!r.ok) return false;
+    var rows = await r.json();
+    if (!Array.isArray(rows) || rows.length !== 1) return false;
+    var emp = rows[0] && rows[0].emp_id;
+    if (emp == null || emp === '') return 'noemp';       /* 社員の ID が登録されていないアカウントは、誰のものか確かめられないので覚えない */
+    return String(emp) === String(lp.id) ? true : 'other';
+  } catch(e) { return false; }
+}
+/* 覚えている鍵で認証し直す（PIN でログインしたあと、画面を開いたときに 1 回） */
+async function invInRestore(scheduled){
+  var who = invInKeepWho(), p = invInKeepGet(who);
+  if (_invIn.restoring && !scheduled) return false;              /* 画面が予約したものが走っている */
+  _invIn.restoring = who || 'none'; _invIn.restoreTried = who;
+  try {
+    if (!p) return false;
+    var r = await invInAuthFetch('/auth/v1/token?grant_type=refresh_token', { body:{ refresh_token:p.rt } });
+    var j = null; try { j = await r.json(); } catch(e) { j = null; }
+    if (r.ok && j && j.access_token && j.refresh_token) {
+      var cur = invInKeepGet(who), stored = !!cur && (cur.rt === j.refresh_token || (cur.rt === p.rt && invInKeepSet(j.refresh_token, who)));   /* 取り替わった鍵を覚え直す（消された・別のタブが別の鍵に取り替えたときは触らない。同じ鍵をもらったタブは同じ鍵の続き） */
+      if (invInKeepWho() !== who) return false;                  /* 待っているあいだにログアウト・別の人がログイン：渡さない */
+      if (invInSigned()) return true;                            /* そのあいだに別のメール認証をした：上書きしない */
+      _botSession = { access_token:j.access_token, refresh_token:j.refresh_token };
+      _invIn.keptSession = stored ? _botSession : null; _invIn.error = '';   /* 覚え直せなかった（端末がいっぱい・別のタブ）ときは、このログインを覚えた鍵として扱わない */
+      return true;
+    }
+    if (r.status === 400 || r.status === 401 || r.status === 403) invInKeepSet(null, who);   /* 鍵がもう使えない：消してメール認証へ */
+    return false;
+  } catch(e) { return false; }                                   /* つながらない・時間切れ：鍵は残す（「もう一度」を出す） */
+  finally { _invIn.restoring = null; _invIn.restoreP = null; invInRerender(); }
+}
+function invInRestoreAgain(){ _invIn.restoreTried = null; invInRerender(); }
+/* この端末の認証を消す（覚えた鍵のログインをサーバー側でも閉じる） */
+async function invInForget(){
+  var k = invInKept(), closed = !k;
+  invInKeepSet(null);
+  if (k) {
+    try {
+      var r = await invInAuthFetch('/auth/v1/token?grant_type=refresh_token', { body:{ refresh_token:k.rt } });
+      var j = null; try { j = await r.json(); } catch(e) { j = null; }
+      if (r.ok && j && j.access_token) { var lo = await invInAuthFetch('/auth/v1/logout?scope=local', { token:j.access_token }); closed = !!lo.ok; }
+      else if (r.status === 400 || r.status === 401 || r.status === 403) closed = true;   /* もう使えない鍵：閉じるものが無い */
+    } catch(e) { closed = false; }
+  }
+  if (typeof botResetShared === 'function') botResetShared(); else _botSession = null;
+  _invIn.keptSession = null;
+  if (closed) showToast(t('この端末のメール認証を消しました','Removed the email sign-in from this device'), 'success');
+  else showToast(t('この端末からは消しました。サーバー側のログインは閉じられませんでした（通信を確かめてください。心配ならパスワードを変えると閉じます）','Removed from this device, but the server-side sign-in could not be closed (check the connection; changing the password closes it)'), 'warning');
+  invInRefresh();
+}
+/* ログアウトしたとき：前の人の読み込んだ内容を残さない（覚えた鍵はその人の分として残る） */
+function invInReset(){
+  ['health','config','list','q','review','recon','problems','docId','doc','edits','rel','folder','restoring','restoreTried','restoreP','keptSession'].forEach(function(k){ _invIn[k] = null; });
+  _invIn.loaded = {}; _invIn.cand = {}; _invIn.error = '';
+}
 async function invInAPI(payload, retried){
   var s = invInSession();
   if (!s || !s.access_token) throw new Error(invInL(INVIN_ERR.actor_required));
@@ -44179,8 +44314,8 @@ async function invInAPI(payload, retried){
   try { r = await fetch(SUPABASE_URL + INVIN_FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + s.access_token, 'Content-Type':'application/json' }, body:JSON.stringify(payload) }); }
   catch(e) { throw new Error(t('取込のサーバー（invoice-intake）につながりません。まだ配備されていないか、通信できません。','Cannot reach the intake server (invoice-intake). It is not deployed yet, or the network is down.')); }
   if (r.status === 401 && !retried && s.refresh_token) {
-    var rr = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', { method:'POST', headers:{ apikey:SUPABASE_ANON, 'Content-Type':'application/json' }, body:JSON.stringify({ refresh_token:s.refresh_token }) });
-    if (rr.ok) { var jj = await rr.json(); _botSession = { access_token:jj.access_token, refresh_token:jj.refresh_token }; return invInAPI(payload, true); }
+    var ns = await invInSessionRefresh(s);
+    if (ns && invInSession() === ns) return invInAPI(payload, true);   /* 取り替えたログインがまだ使われているときだけやり直す（そのあいだにログアウト・別の人なら送らない） */
   }
   var j = null; try { j = await r.json(); } catch(e) { j = null; }
   if (!r.ok) { if (r.status === 401 && s === _botSession) _botSession = null; var err = new Error(invInErrText(j && j.error, r.status)); err.code = (j && typeof j.error === 'string') ? j.error : ''; throw err; }
@@ -44191,8 +44326,18 @@ function invInLoginModal(){
     +'<div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.7">'+t('業務Bot と同じ、本部用に登録したメール・パスワードです。経理・事務・GM・CEO が使えます。','Use the same email and password as the Operations Bot. For accounting, office, GM and CEO.')+'</div>'
     +'<div class="form-group"><label class="form-label">'+t('メールアドレス','Email')+'</label><input id="invin-email" class="form-input" type="email" autocomplete="username"></div>'
     +'<div class="form-group"><label class="form-label">'+t('パスワード','Password')+'</label><input id="invin-password" class="form-input" type="password" autocomplete="current-password"></div>'
+    +invInKeepBoxHtml()
     +'<div id="invin-login-error" style="font-size:12px;color:var(--red);min-height:16px;margin-bottom:6px"></div>'
     +'<button id="invin-login-button" class="btn btn-primary" style="width:100%" onclick="invInLogin()"><i class="ti ti-login"></i> '+t('認証','Sign in')+'</button>');
+}
+/* v1063：「この端末で覚える」。誰の PIN ログインで開けるようになるかを名前で出す */
+function invInKeepBoxHtml(){
+  var lp = invInLoginPerson(), e = escapeHtml;
+  if (!lp) return '';
+  if (invInDefaultPin()) return '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin:0 0 10px">'+t('PIN が初期のままなので、この端末では覚えません（毎回メール認証になります）。PIN を自分の番号に変えると、次からは PIN でログインするだけで開けます。','Your PIN is still the initial one, so this device will not remember the sign-in. Change your PIN and next time your PIN login is enough.')+'</div>';
+  return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.6;margin:0 0 10px;cursor:pointer"><input id="invin-keep" type="checkbox" checked style="margin-top:3px">'
+    +'<span>'+t('この端末で覚える：次からは '+e(lp.name||'')+' さんの PIN ログインだけで開けます（Invoice取込・業務Bot）','Remember on this device: next time '+e(lp.name||'')+'’s PIN login is enough (invoice intake and the Operations Bot)')
+    +'<br><span style="color:var(--muted);font-size:11px">'+t('ご本人のメールで認証するときだけ。共有のパソコンでは外してください。','Only with your own email. Untick on a shared computer.')+'</span></span></label>';
 }
 async function invInLogin(){
   var email = document.getElementById('invin-email'), pass = document.getElementById('invin-password'), btn = document.getElementById('invin-login-button');
@@ -44204,6 +44349,13 @@ async function invInLogin(){
     var j = await r.json();
     if (typeof botResetShared === 'function') botResetShared();
     _botSession = { access_token:j.access_token, refresh_token:j.refresh_token };
+    /* v1063：この端末で、この人の分を覚える（外したら消す。別の社員のアカウントなら覚えない） */
+    var keep = document.getElementById('invin-keep');
+    if (invInKeepWho() && keep && keep.checked) {
+      var mine = await invInAccountIsMine(j.access_token);
+      if (mine === true && invInKeepSet(j.refresh_token)) _invIn.keptSession = _botSession;
+      else { invInKeepSet(null); if (mine === 'noemp') showToast(t('このメールのアカウントには社員の登録（manager_auth の emp_id）が無いため、この端末では覚えませんでした（今回だけ使えます）。登録は Moto さんへ','This email account has no employee link (manager_auth emp_id), so it was not remembered (it works this time only). Ask Moto to add it'), 'warning'); if (mine === 'other') showToast(t('このメールのアカウントは、いま PIN でログインしている人のものではないため、この端末では覚えませんでした（今回だけ使えます）','This email account is not the account of the person logged in with the PIN, so it was not remembered (it works this time only)'), 'warning'); }
+    } else if (invInKeepWho()) invInKeepSet(null);
     closeModalDirect(); invInRefresh();
   } catch(e) { var el = document.getElementById('invin-login-error'); if (el) el.textContent = e.message; }
   finally { btn.disabled = false; }
@@ -44337,15 +44489,25 @@ function invInHead(){
       + (!mode.intake ? t('取込は止まっています','Intake is off') : mode.auto_post ? t('自動反映 ON（確認の要らない invoice）','Auto-post on (invoices that need no check)') : t('確認モード（自動反映は OFF）','Review mode (auto-post off)'))
       + '</b></span>';
   }
-  out += '<button class="btn btn-secondary btn-sm" onclick="invInRefresh()"><i class="ti ti-refresh"></i> '+t('更新','Refresh')+'</button></div>';
+  out += '<button class="btn btn-secondary btn-sm" onclick="invInRefresh()"><i class="ti ti-refresh"></i> '+t('更新','Refresh')+'</button>';
+  if (invInKept()) out += '<button class="btn btn-secondary btn-sm" title="'+t('この端末に覚えたメール認証を消す（次に開くときはメール認証が要ります）','Forget the email sign-in kept on this device (you will need it next time)')+'" onclick="invInForget()"><i class="ti ti-logout"></i> '+t('認証を消す','Forget sign-in')+'</button>';
+  out += '</div>';
   if (_invIn.error) out += '<div class="alert alert-danger" role="alert" style="padding:8px 12px"><i class="ti ti-alert-circle"></i><div style="font-size:12px">'+escapeHtml(_invIn.error)+'</div></div>';
   return out;
 }
 function invInGate(){
   if (!invInCan()) return '<div class="card"><div style="font-size:12px;color:var(--muted)">'+t('経理・事務・GM・CEO 向けの画面です。','For accounting, office staff, GM and CEO.')+'</div></div>';
+  var who = invInKeepWho();
+  if (!invInSigned() && invInKept() && (_invIn.restoring || _invIn.restoreTried !== who)) {
+    if (!_invIn.restoring) { _invIn.restoring = who; _invIn.restoreP = new Promise(function(res){ setTimeout(function(){ res(invInRestore(true)); }, 0); }); }   /* 1 回だけ予約する */
+    return INVIN_CSS + '<div class="card" style="text-align:center;color:var(--muted);padding:18px;font-size:12px"><i class="ti ti-loader-2"></i> '+t('認証しています…','Signing in…')+'</div>';
+  }
   if (!invInSigned()) return INVIN_CSS + '<div class="card" style="text-align:center;padding:22px 10px"><i class="ti ti-brand-google-drive" style="font-size:28px;color:var(--accent);display:block;margin-bottom:6px"></i>'
     +'<div style="font-size:12.5px;line-height:1.8">'+t('店舗が Google Drive の 00_Upload に入れた invoice の読み取り結果を確認します。','Check invoices that stores put into their Google Drive 00_Upload folder.')+'<br>'
-    +'<span style="color:var(--muted);font-size:11.5px">'+t('業務Bot と同じメール認証が必要です。','Sign in with the same email as the Operations Bot.')+'</span></div>'
+    +'<span style="color:var(--muted);font-size:11.5px">'+(invInDefaultPin()
+      ? t('業務Bot と同じメール認証が要ります。PIN が初期のままのあいだは毎回です（PIN を自分の番号に変えると、この端末では最初の 1 回だけになります）。','Sign in with the same email as the Operations Bot. While your PIN is the initial one this is needed every time (change your PIN and this device will remember it).')
+      : t('この端末で最初の 1 回だけ、業務Bot と同じメール認証が要ります。次からは PIN でログインするだけで開けます。','Sign in once on this device with the same email as the Operations Bot. After that your PIN login is enough.'))+'</span></div>'
+    +(invInKept() ? '<button class="btn btn-secondary" style="margin:12px 6px 0" onclick="invInRestoreAgain()"><i class="ti ti-refresh"></i> '+t('もう一度自動で認証する','Try the automatic sign-in again')+'</button>' : '')
     +'<button class="btn btn-primary" style="margin-top:12px" onclick="invInLoginModal()"><i class="ti ti-login"></i> '+t('メール認証','Email sign-in')+'</button></div>';
   return '';
 }
@@ -45459,7 +45621,11 @@ function invInHistButton(code){
 async function invInHistModal(code){
   var ing = invInIng(code), e = escapeHtml;
   var head = '<div class="modal-title">'+t('仕入れ履歴','Purchase history')+' — '+e(ing?ing.name:code)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
-  if (!invInSigned()) { openModal(head + '<div style="font-size:12px;margin-bottom:10px">'+t('見るにはメール認証が必要です。','Sign in with your email to view it.')+'</div><button class="btn btn-primary" onclick="invInLoginModal()"><i class="ti ti-login"></i> '+t('メール認証','Email sign-in')+'</button>'); return; }
+  if (!invInSigned() && invInKept()) { openModal(head + invInLoadingCard()); await (_invIn.restoreP || invInRestore()); }   /* 画面が認証し直している最中なら、それを待つ */
+  if (!invInSigned()) { openModal(head + '<div style="font-size:12px;margin-bottom:10px;line-height:1.7">'+(invInDefaultPin()
+      ? t('見るにはメール認証が要ります（PIN が初期のままのあいだは毎回）。','Sign in with your email to view it (every time while your PIN is the initial one).')
+      : t('見るには、この端末で最初の 1 回だけメール認証が要ります（次からは PIN でログインするだけで見られます）。','Sign in once on this device with your email to view it (after that your PIN login is enough).'))
+    +'</div><button class="btn btn-primary" onclick="invInLoginModal()"><i class="ti ti-login"></i> '+t('メール認証','Email sign-in')+'</button>'); return; }
   openModal(head + invInLoadingCard());
   var rows, latest;
   try { rows = (await invInAPI({ action:'price_history', code:String(code) })).rows || []; latest = await invInAPI({ action:'latest_prices', codes:[String(code)] }); }
