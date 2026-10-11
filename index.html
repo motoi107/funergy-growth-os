@@ -38164,7 +38164,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1059';
+const APP_VERSION = '1060';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -42535,7 +42535,7 @@ function getMileageRequests(){ return (ls('mileage_requests', [])||[]).filter(fu
 function saveMileageReqs(v){ v=v||[]; try{ var _raw=ls('mileage_requests',[])||[]; var _h={}; v.forEach(function(x){ if(x&&x.id!=null) _h[x.id]=1; }); _raw.forEach(function(x){ if(x&&x._deleted&&x.id!=null&&!_h[x.id]) v.push(x); }); }catch(e){} lsSet('mileage_requests', v); }
 function mileMyName(){ return curUserName||(ROLE_CONFIG[curRole]||{}).name; }
 function canApproveMileage(r){
-  if(curRole==='gm'||curRole==='ceo'||curRole==='office') return true;
+  if(curRole==='gm'||curRole==='ceo'||curRole==='office'||curRole==='office_crew') return true;   /* v1060: 事務Crew も */
   if(curRole==='am') return myAmStores().includes(r.storeId);
   if((curRole==='sl' && (typeof vacManagerGrade==='function'?vacManagerGrade():0)>=4) || curStoreLogin){
     var myStore = curStore!=='ALL' ? curStore : (getEmployees().find(function(e){return e.name===curUserName;})||{}).store;
@@ -42545,7 +42545,7 @@ function canApproveMileage(r){
 }
 /* v846: 「見る」と「承認する」を分ける。
    経理（office / 事務Crew）は精算をまとめるのが仕事なので全店の承認済みが見えないと困る。
-   ただし承認できるのは canApproveMileage の側だけ（事務Crew は false のまま）。 */
+   承認できるのは canApproveMileage の側だけ（v1060 から事務Crew も経理と同じく承認できる）。 */
 /* ============================================================
    v848 IRS 標準走行距離料率（business use）
    ------------------------------------------------------------
@@ -42772,10 +42772,10 @@ function saveMileageRequest(){
   try{ addApproval({type:'ガソリン代', title:(req.purpose||'移動')+' '+req.origin+'→'+req.destination+' '+req.miles+'mi $'+amount.toFixed(2), from:me, store:storeId, ref:req.id}); }catch(e){}
   closeModalDirect(); showToast('ガソリン代を申請しました（$'+amount.toFixed(2)+'）','success'); renderPage('mileage');
 }
-function approveMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; } r.status='承認'; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.approvedAt=nowJP(); saveMileageReqs(arr); showToast(r.employee+' のガソリン代を承認しました（$'+(r.amount||0).toFixed(2)+'）','success'); renderPage('mileage'); }
+function approveMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; } r.status='承認'; r.approvedBy=_actorName(); r.approvedAt=nowJP(); saveMileageReqs(arr); showToast(r.employee+' のガソリン代を承認しました（$'+(r.amount||0).toFixed(2)+'）','success'); renderPage('mileage'); }
 function rejectMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; }
   openInputModal({title:'ガソリン代申請の却下', label:'却下理由（任意）', placeholder:'例: 距離の根拠不明 / 私用移動', okLabel:'却下する', okClass:'btn-danger'}, function(re){
-    r.status='却下'; r.rejectReason=re||''; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole; saveMileageReqs(arr); showToast('却下しました','info'); renderPage('mileage');
+    r.status='却下'; r.rejectReason=re||''; r.approvedBy=_actorName(); saveMileageReqs(arr); showToast('却下しました','info'); renderPage('mileage');
   }); }
 function deleteMyMileage(id){
   var me=mileMyName(); var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
@@ -42805,9 +42805,9 @@ function _mileRow(r, withActions){
   return h+'</div>';
 }
 var mileagePastOpen=false;
-function canMileageMonthEnd(){ return ['ceo','gm','office'].indexOf(curRole)>=0; }
+function canMileageMonthEnd(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }   /* v1060: 精算確定は事務Crew も経理と同じ */
 function mileageMonthEndClose(mk){
-  if(!canMileageMonthEnd()){ alert('月末処理の権限がありません（経理・GM・CEO）'); return; }
+  if(!canMileageMonthEnd()){ alert('月末処理の権限がありません（経理・事務Crew・GM・CEO）'); return; }
   mk = mk || curYm();
   var arr=getMileageRequests();
   var target=arr.filter(function(r){ return !r.archived && (r.date||'').slice(0,7)===mk; });
@@ -42819,7 +42819,7 @@ function mileageMonthEndClose(mk){
   if(pend) msg+='\n⚠ 申請中 '+pend+'件も過去ログへ移動します（未承認のまま記録されます）。先に承認/却下することを推奨します。';
   msg+='\n\nよろしいですか？';
   if(!confirm(msg)) return;
-  var now=nowJP(); var by=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole;
+  var now=nowJP(); var by=_actorName();
   target.forEach(function(r){ r.archived=true; r.archivedMonth=mk; r.archivedAt=now; r.archivedBy=by; });
   saveMileageReqs(arr);
   showToast(mk+' を月末処理しました（過去ログへ移動）','success');
@@ -45643,12 +45643,12 @@ function renderMileage(){
   if(isMgr) html+=mileageRateNoticeHtml();   /* v848: 設定の単価とIRS標準料率のズレを知らせる */
   html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。「Google Mapsで距離を調べる」で出発地→目的地の距離を確認し、マイルで入力 → $'+c.ratePerMile+'/マイルで自動算定します。</div>';
   if(isMgr){
-    /* v846: 承認できる人には承認待ちを、見るだけの人にも件数と中身を見せる。 */
+    /* v846: 承認できる人には承認待ちを、見るだけの人にも件数と中身を見せる（v1060 から事務Crew も承認できる）。 */
     var pending=active.filter(function(r){ return r.status==='申請中' && canViewMileageRec(r); });
     html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'">'+pending.length+'</span>'+(pending.length?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go(\'approval\')"><i class="ti ti-checklist"></i> 承認センターで承認</button>':'')+'</div>';
     /* v846: ここは _mileRow(r,null) だったため、承認/却下のボタンが一度も描かれていなかった
        （_mileRow の 'approve' 分岐がどこからも使われていない死んだコードになっていた）。
-       承認できる人にだけボタンを出す。事務Crew には出ない。 */
+       承認できる人にだけボタンを出す（v1060 から事務Crew にも出る）。 */
     html+= pending.length ? pending.map(function(r){return _mileRow(r, canApproveMileage(r)?'approve':null);}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
     html+='</div>';
     // 今月の精算（スタッフ別・承認済み）
@@ -64211,19 +64211,20 @@ function approveLssRequest(id, status) {
    APPROVAL
 ============================================================ */
 /* ============================================================
-   v846 事務Crew（office_crew）は閲覧のみ
+   v1060 事務Crew（office_crew）も経理と同じく「決める操作」ができる（Moto 10/10）
    ------------------------------------------------------------
-   v844 で経理と同じメニューにしたぶん、承認・却下・差し戻しの画面まで開ける。
-   見えるのは正しいが、押せてはいけない。
-   「決める操作」＝承認 / 却下 / 差し戻し / 支払確定 / 削除 は全部ここで止める。
-   入力の仕事（Invoice登録・経理区分・チップ調整など）は今までどおりできる。
+   v846 では閲覧のみだった：承認センターの承認・却下・差し戻し、チェックの確認、
+   建て替え経費・ガソリン代の承認と支払確定（ガソリン代は月末処理）、チェックとレシート管理の invoice の削除。
+   承認センターの却下は経理と同じく、見えている申請すべて（スキル・Career Score を含む）に出る。
+   これらを経理（office）と同じにした。見える範囲は変えていない（本部の案件・給与は今までどおり）。
+   承認センターでは「本部」の枠を経理と同じく埋められる。直上・GM の枠は今までどおり。
+   予算の承認・代理の全承認・承認の取り消しは今までどおり GM・CEO だけ。
    ============================================================ */
-function isViewOnlyRole(){ return curRole === 'office_crew'; }
-function denyViewOnly(what){
-  if (!isViewOnlyRole()) return false;
-  showToast(t('権限がありません。事務Crewは閲覧のみです','No permission. Office Crew is view-only')
-    + (what ? '（' + what + '）' : ''), 'warning');
-  return true;
+/* 承認・支払確定などで「誰が」と記録する名前。事務Crew は役職の既定名（事務スタッフ）ではなく本人の名前にする。
+   ほかの役職は今までどおり（役職の既定名 → 本人の名前 → 役職）。 */
+function _actorName(){
+  if (curRole === 'office_crew' && curUserName) return curUserName;
+  return (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
 }
 function addApproval(obj) {
   var approvals = ls('approvals', []);
@@ -64297,7 +64298,7 @@ function _approvalMyRoles(a){
     if(signed.indexOf(role)>=0) return;
     var match;
     if(role==='first'){ var _ag=_apApplicantGrade(a); var _mg=(typeof myGradeNum==='function')?myGradeNum():0; match=(_mg>_ag) && _apUserInScope(a) && (a.from!==curUserName); }
-    else match = (role===curRole) || (role==='gm'&&curRole==='ceo') || (role==='sm'&&typeof isStoreManager==='function'&&isStoreManager());
+    else match = (role===curRole) || (role==='gm'&&curRole==='ceo') || (role==='office'&&curRole==='office_crew') || (role==='sm'&&typeof isStoreManager==='function'&&isStoreManager());
     if(!match) return;
     if(role==='am' && curRole==='am'){ var sid=_approvalStoreId(a); if(sid==='OFFICE' || !sid || (typeof myAmStores==='function' && myAmStores().indexOf(sid)<0)) return; } /* AMは管轄店のみ */
     out.push(role);
@@ -64323,7 +64324,7 @@ function signoffApproval(id){
   var roles=_approvalMyRoles(a);
   if(!roles.length){ alert('あなたが承認できる役職枠がありません（他の承認者待ち、または権限対象外）'); return; }
   a.signoffs = a.signoffs||[];
-  var nm=(ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
+  var nm=_actorName();
   roles.forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm, at:nowJP()}); });
   a._mut=Date.now(); lsSet('approvals', approvals);
   if(_approvalAllDone(a)){
@@ -64354,7 +64355,7 @@ function rejectApprovalItem(id){
 function cancelMySignoff(id){
   var approvals=ls('approvals',[]); var a=approvals.find(function(x){return x.id===id;}); if(!a) return;
   if(a.status!=='pending'){ alert(t('確定済みです。取り消しは履歴の「承認を取り消す」から行ってください。','Already finalized. Use "Undo approval" in the history section.')); return; }
-  var nm=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole;
+  var nm=_actorName();
   if(!(a.signoffs||[]).some(function(s){return s.name===nm;})){ alert(t('あなたの承認はありません。','You have not signed off on this.')); return; }
   if(!confirm(t('自分の承認を取り消しますか？','Cancel your approval?'))) return;
   a.signoffs=(a.signoffs||[]).filter(function(s){return s.name!==nm;});
@@ -64574,7 +64575,7 @@ function renderApproval() {
             html += '<button class="btn btn-success btn-sm" onclick="signoffApproval(\''+a.id+'\')"><i class="ti ti-check"></i> '+t('承認する','Approve')+'</button>';
           }
           html += '<button class="btn btn-danger btn-sm" onclick="rejectApprovalItem(\''+a.id+'\')"><i class="ti ti-x"></i> '+t('却下','Reject')+'</button>';
-          if((a.signoffs||[]).some(function(s){return s.name===((ROLE_CONFIG[curRole]||{}).name||curUserName);})) html += '<button class="btn btn-secondary btn-sm" onclick="cancelMySignoff(\''+a.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('自分の承認を取消','Cancel my approval')+'</button>';
+          if((a.signoffs||[]).some(function(s){return s.name===_actorName();})) html += '<button class="btn btn-secondary btn-sm" onclick="cancelMySignoff(\''+a.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('自分の承認を取消','Cancel my approval')+'</button>';
           if (!canSign && !isMgr) html += '<span style="font-size:11px;color:var(--muted);align-self:center"><i class="ti ti-clock"></i> '+t('他の承認者待ち','Awaiting other approvers')+'</span>';
           if (isMgr && !_approvalAllDone(a)) html += '<button class="btn btn-secondary btn-sm" onclick="overrideApproveAll(\''+a.id+'\')"><i class="ti ti-shield-check"></i> '+t('代理で全承認','Approve all (override)')+'</button>';
         }
@@ -64611,8 +64612,7 @@ function renderApproval() {
 }
 
 async function approveItem(id, status, reason) {
-  /* v846: 事務Crew は押しても通さない。ここを止めれば承認・却下・差し戻しの全種類が止まる。 */
-  if (denyViewOnly(t('承認・却下','approve / reject'))) return;
+  /* v1060: 事務Crew も経理と同じく承認・却下できる（v846 の閲覧のみを外した）。 */
   var approvals = ls('approvals', []);
   var a = approvals.find(a=>a.id===id);
   if (a) {
@@ -64661,7 +64661,7 @@ async function approveItem(id, status, reason) {
           renderPage('approval'); return;
         }
         if (_sr && (_sr.status==='申請中' || status==='approved')) {
-          var _by = (ROLE_CONFIG[curRole]||{}).name || curUserName;
+          var _by = _actorName();
           /* v616: 店舗が特定できない時にSTORES[0](ToriTon)へ書くと、別店舗のスタッフには一生反映されない。
              → 推測書き込みをやめ、保留にして知らせる。 */
           var _sid = _sr.store || ((getEmployees().find(function(e){return e.name===_sr.name;})||{}).store) || '';
@@ -69369,7 +69369,7 @@ function invDocTypeButtons(){
 var CHECK_OCR_FN = SUPABASE_URL + '/functions/v1/check_ocr';
 function getChecks(){ return (ls('checks', [])||[]).filter(function(x){ return x && !x._deleted; }); }
 function saveChecks(v){ return lsSet('checks', v); }
-function canReviewChecks(){ return !isViewOnlyRole() && ['ceo','gm','office'].indexOf(curRole)>=0; }
+function canReviewChecks(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }   /* v1060: 事務Crew も確認・差し戻し */
 function _ckSeesAll(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
 function _ckMine(c){
   if(!c) return false;
@@ -69382,8 +69382,8 @@ function checksScoped(){
   return all.filter(function(c){ return ids.indexOf(c.storeId)>=0 || _ckMine(c); });
 }
 function canDeleteCheck(c){
-  if(!c || isViewOnlyRole()) return false;
-  if(['ceo','gm','office'].indexOf(curRole)>=0) return true;
+  if(!c) return false;
+  if(['ceo','gm','office','office_crew'].indexOf(curRole)>=0) return true;   /* v1060: 事務Crew も経理と同じ */
   return _ckMine(c) && (c.reviewStatus||'未確認')!=='確認済み';
 }
 function checkReturnedCount(){
@@ -69731,8 +69731,6 @@ function openCheckReview(id){
       + '<button class="btn btn-secondary" style="flex:1;color:var(--red);border-color:var(--red)" onclick="checkRejectModal(\''+c.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('差し戻す','Return')+'</button>'
       + (rs!=='確認済み' ? '<button class="btn btn-primary" style="flex:2" onclick="checkApprove(\''+c.id+'\')"><i class="ti ti-check"></i> '+t('確認済みにする','Mark reviewed')+'</button>' : '')
       + '</div>';
-  } else if(isViewOnlyRole()){
-    act = '<div style="font-size:11px;color:var(--muted);margin-top:10px"><i class="ti ti-eye"></i> '+t('閲覧のみです（確認・差し戻しは経理・GM・CEO）','View only (accounting / GM / CEO review checks)')+'</div>';
   }
   if(canDeleteCheck(c)){
     act += '<div style="text-align:right;margin-top:10px"><button class="btn btn-secondary btn-sm" style="color:var(--red);border-color:var(--red)" onclick="checkDeleteConfirm(\''+c.id+'\')"><i class="ti ti-trash"></i> '+t('削除','Delete')+'</button></div>';
@@ -71487,14 +71485,13 @@ function getReimbursements(){ return ls('reimbursements', [])||[]; }
 function saveReimbursements(v){ lsSet('reimbursements', v); }
 function canManageReimburse(){ return ['ceo','gm','office','office_crew','am'].indexOf(curRole)>=0; }
 function canApproveReimburse(r){
-  /* v846: 事務Crew は閲覧のみ。承認・却下はできない。 */
-  if(isViewOnlyRole()) return false;
-  if(['ceo','gm','office'].indexOf(curRole)>=0) return true;
+  /* v1060: 事務Crew も経理と同じく承認・却下できる（v846 は閲覧のみ）。 */
+  if(['ceo','gm','office','office_crew'].indexOf(curRole)>=0) return true;
   if(curRole==='am') return (myAmStores().indexOf(r.storeId)>=0) || (mySupportStores().indexOf(r.storeId)>=0);
   return false;
 }
-/* v846: 支払確定はお金が動く操作。事務Crew は外す。 */
-function canMarkReimbursePaid(){ return !isViewOnlyRole() && ['ceo','gm','office'].indexOf(curRole)>=0; }
+/* v1060: 支払確定も事務Crew は経理と同じ（v846 は外していた）。 */
+function canMarkReimbursePaid(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
 function attachReimburseReceipt(input){
   var f=input&&input.files&&input.files[0]; if(!f) return;
   window._invoicePhotoFile=f;
@@ -71567,18 +71564,18 @@ function _applyReimburseDecision(id, ok, re){
   var arr=getReimbursements(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
   if(!ok){ r.status='却下'; r.rejectReason=re||''; }
   else { r.status='承認'; }
-  r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.approvedAt=nowJP();
+  r.approvedBy=_actorName(); r.approvedAt=nowJP();
   saveReimbursements(arr);
   try{ resolveApprovalByRef('建替経費', id, ok?'approved':'rejected'); }catch(e){}
   try{ addNotif({type:(ok?'approved':'reject'), title:'建替経費'+(ok?' が承認されました':' が却下されました'), text:(r.payer+' $'+(r.amount||0).toFixed(2)).slice(0,140), toUser:(r.byUser||''), page:'invoice', refId:r.id}); }catch(e){}
   showToast(ok?'承認しました':'却下しました', ok?'success':'danger'); renderPage('invoice');
 }
 function markReimbursePaid(id){
-  if(!canMarkReimbursePaid()){ alert('支払い処理は経理・GM・CEOのみ'); return; }
+  if(!canMarkReimbursePaid()){ alert('支払い処理は経理・事務Crew・GM・CEOのみ'); return; }
   var arr=getReimbursements(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
   if(r.status!=='承認'){ alert('承認済みの立替のみ支払い済みにできます'); return; }
   openInputModal({title:r.payer+' へ $'+(r.amount||0).toFixed(2)+' 支払済にする', label:'支払い方法・メモ（任意）', placeholder:'例: 現金 / Venmo / 給与同時', okLabel:'支払済にする'}, function(note){
-  r.payStatus='支払済'; r.paidAt=nowJP(); r.paidBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.payMethodNote=note||'';
+  r.payStatus='支払済'; r.paidAt=nowJP(); r.paidBy=_actorName(); r.payMethodNote=note||'';
   saveReimbursements(arr);
   try{ addNotif({type:'approved', title:'立替金 支払済', text:(r.payer+' $'+(r.amount||0).toFixed(2)).slice(0,140), toUser:(r.byUser||''), page:'invoice', refId:r.id}); }catch(e){}
   showToast(r.payer+' へ $'+(r.amount||0).toFixed(2)+' を支払済みにしました','success'); renderPage('invoice');
@@ -71917,12 +71914,11 @@ function invIsMine(inv){
   if(inv.byUser && curUserName) return inv.byUser===curUserName;
   return inv.by === ((ROLE_CONFIG[curRole]||{}).name||'');
 }
-/* 削除権限：経理/GM/CEOは全件、AM/SLは自分のアップロードかつ確認済み以外 */
+/* 削除権限：経理・事務Crew/GM/CEOは全件（事務Crew は v1060 から）、AM/SLは自分のアップロードかつ確認済み以外 */
 function canDeleteInvoice(inv){
-  /* v846: 削除は取り消せない操作。事務Crew は外す（閲覧のみ）。 */
-  if(isViewOnlyRole()) return false;
+  /* v1060: 削除も事務Crew は経理と同じ（v846 は閲覧のみ）。Drive 取込の写しは今までどおり消せない。 */
   if(invIsIntake(inv)) return false;   /* v1052: Drive 取込の写しは「Invoice取込」で扱う（ここで消すと仕入れと記録がずれる） */
-  if(['ceo','gm','office'].includes(curRole)) return true;
+  if(['ceo','gm','office','office_crew'].includes(curRole)) return true;
   return invIsMine(inv) && (inv.reviewStatus!=='確認済み');
 }
 /* やり取り1件追加 */

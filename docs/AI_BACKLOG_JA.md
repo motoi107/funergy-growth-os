@@ -1,5 +1,23 @@
 # 改修・自動化の作業記録
 
+## 2026-10-10 v1060（事務Crew の承認・確認・削除）と 10/10 引き継ぎの続き
+
+1. 済（Moto さんの決定）：Invoice取込の事務Crew の範囲は 3 つとも経理と同じ（変更なし）。Invoice取込の外も承認センター・経理の確認・削除を開ける → v1060。
+2. 済（Claude）：v1060 を実装・試験・独立レビュー（P1 なし・P2 の 1 件を修正、もう 1 件は Moto さんに確認）。
+3. Codex：v1060 の PR をレビュー（とくに承認センターの「本部」の枠・見える範囲・GM だけの操作・`_actorName`）。
+4. Moto さん：マージ → Akane さんの実機（承認センターで本部の枠の承認、チェックの確認、建て替え経費の支払確定、ガソリン代の承認・月末処理、削除）。
+5. Moto さんの判断：承認センターの却下を GM だけにするか（今は経理・事務Crew も見えている申請すべてを却下できる）。事務Crew に承認待ちの通知を出すか。
+6. hyper-worker：Claude が本格対策を書く（本番のソースは受領・公開しない）。cron の呼び方の確認と ChatGPT 側の返事を待って、関数・auth-pin・アプリを合わせる。
+7. 引き続き（10/10 引き継ぎ）：invoice-intake の Deploy と確認の SQL・Tenkichi／Aiea の手前の invoice（Moto さん）、QuickBooks の転送が 00_Upload の分も送るか（ChatGPT 側）。
+
+## 2026-10-10 引き継ぎ（PR #31・#32・#35 マージ済み・#5・#3 は閉じた）
+
+1. Moto さん：Edge Function `invoice-intake` を最新の 1 ファイルに Deploy → 確認の SQL（store_folder_intake・office_crew_accounting が true）→ Tenkichi・Aiea の手前の invoice と事務Crew の操作を実機で確認。
+2. Moto さん：事務Crew の範囲（締め済み月の調整・置き換え・QuickBooks の結果）を確定。
+3. 急ぎ（別件）：hyper-worker の呼び出し元の確認を足す（ChatGPT 側と調整）。
+4. ChatGPT 側：QuickBooks の転送が 00_Upload の分も送っているか確認。
+5. 候補：Invoice取込の外の事務Crew の権限。
+
 ## 2026-10-10 PR #32：main を取り込み、下書きを外してレビューへ
 
 1. 済（Claude）：main（v1059）を取り込み、画面は main のものに。invoice-ui の事務Crew の試験を v1059 に合わせた。
