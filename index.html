@@ -57327,8 +57327,8 @@ function storeProfitOf(cfg, sid){
     }
   }catch(e){}
   /* v1062（UI案39・Motoさん 10/10）：店舗ごと 1 組の古い入力（設定タブの一番下の表・廃止）は使わない。
-     v1061 以前に確定した四半期だけは、確定したときと同じ数字を出すために今までどおり読む（v1062 で確定すると noOldProfit の印。独立レビュー P1） */
-  var _lk=false; try{ var _q2=String((cfg&&cfg.quarter)||'').trim(), _d2=(_q2 && typeof bqGet==='function') ? bqGet(_q2) : null; _lk=!!(_d2 && _d2.locked && !_d2.noOldProfit); }catch(e){}
+     v1061 以前に確定した四半期だけは、確定したときと同じ数字を出すために今までどおり読む（v1062 で確定すると rangeLock の印。独立レビュー P1） */
+  var _lk=false; try{ var _q2=String((cfg&&cfg.quarter)||'').trim(), _d2=(_q2 && typeof bqGet==='function') ? bqGet(_q2) : null; _lk=!!(_d2 && _d2.locked && !bqRangeLock(_d2)); }catch(e){}
   if(!_lk) return {actual:0, target:0, pct:100, src:'none'};
   var m=(cfg.storeProfit&&cfg.storeProfit[sid])||{}; var actual=Number(m.actual)||0, target=Number(m.target)||0;
   var pct = target>0 ? Math.round(actual/target*100) : 100;
@@ -57552,15 +57552,15 @@ function bqLockQuarter(q){
   try{ var _qr=ghQRange(q); d.segSnap=null; if(_qr){ var _ss={}; karteEligibleEmps().forEach(function(e){ _ss[e.id]=bonusSegs(e, _qr, {}).map(function(x){ return {g:x.g, from:x.from, to:x.to, days:x.days, noHist:!!x.noHist}; }); }); d.segSnap=_ss; } }catch(err){ d.segSnap=null; }   /* v1044: 区間も固定 */
   try{ var _cs={}; karteEligibleEmps().forEach(function(e){ _cs[e.id]=bonusCoefSnapFor(e, cfg, d); }); d.coefSnap=_cs; }   /* v1058: 確定したときの基準額と係数（あとで変えても動かない） */
   catch(err){ showToast('係数を残せなかったため確定していません','danger'); return; }
-  d.noOldProfit=true;   /* v1062：確定の前と同じく、古い店舗ごとの利益入力は読まない */
   d.locked=true; d.lockedAt=_bqNow(); d.lockedBy=_bqWho();
+  d.rangeLock=String(d.lockedAt)+'|'+String(d.lockedBy);   /* v1062 で確定した印（この確定に結び付ける）。古い店舗ごとの利益入力は読まない・幅の式 */
   if(bqSet(q,d)===false){ showToast('保存できませんでした','danger'); return; }
   showToast(q+' の査定を確定しました','success'); bqRefresh();
 }
 function bqUnlockQuarter(q){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
   if(!confirm(q+' の査定確定を解除します。\n利益と評価が再び編集できるようになり、査定額が変わる可能性があります。\n給与・ボーナス履歴に記録済みの金額は自動では変わりません。よろしいですか？')) return;
-  var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy=''; d.poolSnap=null; d.segSnap=null; d.coefSnap=null; d.noOldProfit=false;   /* v1062 */   /* v1058: 係数も */   /* v1042: 確定したときの原資も外す・v1044: 区間も */
+  var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy=''; d.poolSnap=null; d.segSnap=null; d.coefSnap=null; d.rangeLock='';   /* v1062 */   /* v1058: 係数も */   /* v1042: 確定したときの原資も外す・v1044: 区間も */
   bqSet(q,d); showToast('解除しました','info'); bqRefresh();
 }
 function bqRefresh(){ if(typeof kbRefresh==='function') kbRefresh(); else if(typeof renderPage==='function') renderPage(curPage); }
@@ -57689,7 +57689,8 @@ function renderBqProfit(q, cfg){
     +'<th style="padding:6px 8px;font-size:10px;color:var(--muted);white-space:nowrap">係数</th></tr></thead><tbody>';
   sids.forEach(function(sid){
     var p=bqProfitOf(q,sid);
-    var cf=p.hasData?spCoef(p.pct,cfg):1;
+    var _sp0=p.hasData ? null : storeProfitOf(Object.assign({}, cfg, {quarter:q}), sid), _old=!!(_sp0 && _sp0.src==='old');   /* v1062：v1061 以前に確定した四半期の古い入力 */
+    var cf=p.hasData?spCoef(p.pct,cfg):(_old?spCoef(_sp0.pct,cfg):1);
     h+='<tr style="border-top:1px solid var(--border)">'
       +'<td style="padding:5px 8px;font-weight:700;white-space:nowrap">'+escapeHtml(_owStoreName(sid))+'</td>';
     p.byMonth.forEach(function(m){
@@ -57708,7 +57709,7 @@ function renderBqProfit(q, cfg){
       +'<div style="font-size:9.5px;color:var(--muted)">'+_money(p.target)+'</div></td>'
       +'<td style="padding:5px 8px;text-align:right;font-weight:700;color:'+(p.pct==null?'var(--muted)':(p.pct>=100?'var(--green)':'var(--red)'))+'">'
       +(p.pct==null?'—':(p.pct+'%'))+'</td>'
-      +'<td style="padding:5px 8px;text-align:right;font-weight:800">×'+cf.toFixed(2)+(p.hasData?'':'<div style="font-size:9px;color:var(--muted);font-weight:400">基準額未入力</div>')+'</td>'
+      +'<td style="padding:5px 8px;text-align:right;font-weight:800">×'+cf.toFixed(2)+(p.hasData?'':'<div style="font-size:9px;color:var(--muted);font-weight:400">'+(_old?'確定時の古い入力 '+_sp0.pct+'%':'基準額未入力')+'</div>')+'</td>'
       +'</tr>';
   });
   h+='</tbody></table></div>';
@@ -59244,11 +59245,6 @@ function _karteQuarterOpts(qk){
   if(qk && out.indexOf(qk)<0) out.push(qk);
   return out;
 }
-/* 確定した四半期が、幅の式（v1062）で確定したか */
-function bonusSnapHasRange(d){
-  var cs=d && d.coefSnap; if(!cs || typeof cs!=='object') return false;
-  return Object.keys(cs).some(function(id){ var sn=cs[id]; return !!(sn && ((sn.cur && sn.cur.lo!=null) || (Array.isArray(sn.segs) && sn.segs.some(function(x){ return x && x.lo!=null; })))); });
-}
 function renderKarteQuarterBar(cfg){
   var qk=bonusQKey(cfg), qr=ghQRange(String(cfg.quarter||'').trim()), d=qk?bqGet(qk):{}, today=ghToday();
   var st=d.locked ? '<span class="tag tag-green">確定済み</span>'
@@ -59258,7 +59254,7 @@ function renderKarteQuarterBar(cfg){
     +'<select id="kc-q" class="form-select" style="width:auto;min-width:200px;font-size:16px" onchange="bonusSetQuarter(this.value)">'
     +_karteQuarterOpts(qk).map(function(x){ var r=ghQRange(x), p=_bonusQParse(x); return '<option value="'+escapeHtml(x)+'"'+(x===qk?' selected':'')+'>'+escapeHtml(p?(p.y+' Q'+p.q):x)+(r?'（'+ghMD(r.qs)+'〜'+ghMD(r.qe)+'）':'')+'</option>'; }).join('')+'</select>'
     +st+'<span style="font-size:11px;color:var(--muted)">この四半期の原資・利益の入力に使います。査定の進み具合と確定は「査定一覧」タブへ。</span></div>';
-  if(d.locked && !bonusSnapHasRange(d)) h+='<div style="font-size:11px;color:var(--yellow);margin-top:6px"><i class="ti ti-lock"></i> この四半期は前の式（グレード・職種係数 × Career Score係数）で確定しています。下の計算式とグレード係数の幅は、確定していない四半期に使います。</div>';
+  if(d.locked && !bqRangeLock(d)) h+='<div style="font-size:11px;color:var(--yellow);margin-top:6px"><i class="ti ti-lock"></i> この四半期は前の版（v1061 以前）の式で確定しています。下の計算式とグレード係数の幅は、確定していない四半期と v1062 以降に確定した四半期に使います。</div>';
   h+='<div style="font-size:12px;line-height:1.8;background:var(--surface2);border-radius:10px;padding:7px 12px;margin-top:8px"><b>個人のボーナス</b> ＝ 基準額（日割り）× <b style="color:var(--accent)">グレード係数</b>（Career Score で幅の中が決まる）× 予算達成率係数 × 店舗利益係数　→ 合計が <b>原資</b> を超えたら全員に同じ割合を掛けて収める</div>';
   return h+'</div>';
 }
@@ -61038,6 +61034,8 @@ function bcoefGet(key){
    幅を入れていない：前の版の係数 bonus_coef[キー].v があれば v × CS係数の下限〜上限（設定の csMin・csMax。初期 0.70〜1.30）、無ければ 0.70〜1.30（G6 は v か 1.00）。
    空欄で保存＝未設定（その係数の人は金額を出さない）。 */
 function _bcN(v){ if(v==null || v==='') return null; var n=Number(v); return isFinite(n) ? n : null; }
+/* v1062 で確定した四半期か（確定したときの印が今の確定と同じ） */
+function bqRangeLock(d){ return !!(d && d.locked && d.rangeLock && d.rangeLock===String(d.lockedAt)+'|'+String(d.lockedBy)); }
 function bcrAll(){ var r=ls('bonus_coef_rng', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 function bcoefRange(key){
   var fixed=(key==='G6'), x=bcrAll()[key];
@@ -61080,6 +61078,8 @@ function bcoefSetRange(key, which, val){
   all[key]={lo:lo, hi:hi, at:_bqNow(), by:_bqWho(), _at:Math.max(Date.now(), (Number(prev && prev._at)||0)+1), hist:hist};
   var back=(lsSet('bonus_coef_rng', all)===false) ? null : bcoefRange(key);
   if(!back || back.lo!==lo || back.hi!==hi){ showToast('保存できませんでした','danger'); karteRerender(); return; }
+  /* 前の版（v1058〜v1061）の端末のための 1 つの係数（真ん中・未設定なら空）。この版は bonus_coef_rng があればここを読まない */
+  try{ var bc=bcoefAll(), pv=bc[key]; bc[key]={v:(lo==null ? null : Math.round((lo+hi)/2*1000)/1000), at:_bqNow(), by:_bqWho(), _at:Math.max(Date.now(), (Number(pv && pv._at)||0)+1), hist:(pv && Array.isArray(pv.hist)) ? pv.hist.slice(-9) : []}; lsSet('bonus_coef', bc); }catch(err){}
   showToast(lo==null ? ('未設定にしました：'+bcoefLabel(key)) : ('保存しました：'+bcoefLabel(key)+' '+(cur.fixed ? ('×'+lo.toFixed(2)) : (lo.toFixed(2)+'〜'+hi.toFixed(2)))), lo==null ? 'warning' : 'success');
   karteRerender();
 }
@@ -61223,6 +61223,7 @@ function bonusCoefFor(e, g, d, seg, q){
       if(hit){
         var hv=(hit.v==null || !isFinite(Number(hit.v))) ? null : Number(hit.v);
         var hlo=_bcN(hit.lo), hhi=_bcN(hit.hi), hrm=(hlo!=null && hhi!=null);   /* v1062：確定したときの幅・割合・係数（あとで基準ライン・幅を変えても動かない） */
+        if(hrm) hv=_bcN(hit.rv);   /* 幅の記録は係数を rv に持つ */
         return {key:hit.key||null, track:hit.track||null, trackSrc:'snap', v:hv, src:'snap', gb:(hit.gb==null || !isFinite(Number(hit.gb)))?null:Number(hit.gb), blocked:(hv==null?(g==='G3' && !hit.track ? 'track' : 'coef'):null),
                 rangeMode:hrm, lo:(hrm?hlo:null), hi:(hrm?hhi:null), fixed:!!(hrm && hit.key==='G6'), frac:((hrm && _bcN(hit.frac)!=null) ? _bcN(hit.frac) : null), cm:(hrm ? (hit.cm||null) : null)};
       }
@@ -61358,7 +61359,10 @@ function bonusCoefSnapFor(e, cfg, d){
 function bonusCoefSnapRec(e, g, seg, c, sum, gb){
   var r=bonusCoefResolve(e, c, seg, sum), o={g:g, key:c.key||null, track:c.track||null, v:(r.v==null ? null : r.v), gb:gb};
   if(seg){ o.from=seg.from; o.to=seg.to; }
-  if(c.rangeMode && c.lo!=null && c.hi!=null){ o.lo=c.lo; o.hi=c.hi; o.frac=(r.frac==null ? null : r.frac); o.cm=bonusCmCompact(r.cm, true); }
+  if(c.rangeMode && c.lo!=null && c.hi!=null){
+    o.lo=c.lo; o.hi=c.hi; o.frac=(r.frac==null ? null : r.frac); o.cm=bonusCmCompact(r.cm, true);
+    o.rv=o.v; o.v=null;   /* 係数は rv。v を空にして、前の版の端末はこの四半期を「計算しない」にする（前の式で計算し直して履歴に書かない。独立レビュー P2） */
+  }
   return o;
 }
 function bonusTrackPickHtml(e, b, cfg){

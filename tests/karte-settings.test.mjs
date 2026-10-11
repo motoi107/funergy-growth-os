@@ -147,7 +147,8 @@ test('a confirmed quarter keeps the range, the share and the coefficient of that
   const before = prorate(c, ken);
   c.E = ken; c.CFG = CFG;
   const snap = run(c, 'bonusCoefSnapFor(E, CFG, {})');
-  assert.deepEqual([snap.segs[0].lo, snap.segs[0].hi, snap.segs[0].frac, snap.segs[0].v, snap.segs[0].cm.met, snap.segs[0].cm.rows.length], [0.8, 1.4, 0.5, 1.1, 4, 8]);
+  assert.deepEqual([snap.segs[0].lo, snap.segs[0].hi, snap.segs[0].frac, snap.segs[0].rv, snap.segs[0].v, snap.segs[0].cm.met, snap.segs[0].cm.rows.length], [0.8, 1.4, 0.5, 1.1, null, 4, 8],
+    'the coefficient is kept as rv; v is empty so a device still on v1058–v1061 shows 計算しない instead of recomputing with the old formula (review P2)');
   c.BQ['2026-Q3'] = { locked: true, coefSnap: { ken: snap } };
   run(c, `cscSaveTarget('G3-sv', ${JSON.stringify({ A: { m: 'pct', v: 99 }, B: { m: 'pct', v: 99 } })})`);
   run(c, `bcoefSetRange('G3-sv','lo','0.5')`); run(c, `bcoefSetRange('G3-sv','hi','0.6')`);
@@ -163,19 +164,21 @@ test('the old per-store profit input (bottom table, removed) is read only for qu
   const c = app();
   c.CFG2 = { quarter: '2026-Q3', storeProfit: { S1: { actual: 50, target: 100 } } };
   assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 0, target: 0, pct: 100, src: 'none' }, 'not confirmed: neutral (enter the months in ④)');
-  c.BQ['2026-Q3'] = { locked: true, noOldProfit: true };
+  c.BQ['2026-Q3'] = { locked: true, lockedAt: '2026/12/31 09:00', lockedBy: 'GM', rangeLock: '2026/12/31 09:00|GM' };
   assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 0, target: 0, pct: 100, src: 'none' }, 'confirmed with v1062: the same as before confirming (review P1)');
   c.BQ['2026-Q3'] = { locked: true };
   assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 50, target: 100, pct: 50, src: 'old' }, 'confirmed with v1061 or earlier: the numbers it was confirmed with');
+  c.BQ['2026-Q3'] = { locked: true, lockedAt: '2027/01/05 10:00', lockedBy: 'GM', rangeLock: '2026/12/31 09:00|GM' };
+  assert.equal(run(c, `storeProfitOf(CFG2,'S1')`).src, 'old', 'unlocked and confirmed again on an older device: the mark of the earlier lock does not count');
   const lock = fn('bqLockQuarter'), unlock = fn('bqUnlockQuarter');
-  assert.ok(lock.indexOf('d.noOldProfit=true') >= 0 && lock.indexOf('d.noOldProfit=true') < lock.indexOf('d.locked=true'), 'confirming sets the mark');
-  assert.ok(unlock.includes('d.noOldProfit=false'), 'unlocking clears it (an older device that confirms again reads the old input, as it computes)');
+  assert.ok(lock.indexOf("d.rangeLock=String(d.lockedAt)+'|'+String(d.lockedBy)") > lock.indexOf('d.lockedAt=_bqNow()'), 'confirming sets the mark for this lock');
+  assert.ok(unlock.includes("d.rangeLock=''"), 'unlocking clears it');
 });
 
 test('ranges live in their own synced key: a device still on v1058–v1061 rewriting bonus_coef does not wipe them', () => {
   const c = app();
   run(c, `bcoefSetRange('G3-sv','lo','0.9')`); run(c, `bcoefSetRange('G3-sv','hi','1.1')`);
-  assert.equal(c.STORE.bonus_coef, undefined, 'bonus_coef is not written');
+  assert.deepEqual(JSON.parse(JSON.stringify([c.STORE.bonus_coef['G3-sv'].v, 'lo' in c.STORE.bonus_coef['G3-sv']])), [1, false], 'bonus_coef gets only the middle, for devices still on v1058–v1061');
   c.STORE.bonus_coef = { 'G3-sv': { v: 1, at: 'x', by: 'old device', _at: Date.now() + 1000, hist: [] } };   // what v1061 bcoefSet writes
   const r = run(c, `bcoefRange('G3-sv')`);
   assert.deepEqual([r.lo, r.hi, r.src], [0.9, 1.1, 'set']);

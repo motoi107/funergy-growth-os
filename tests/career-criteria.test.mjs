@@ -199,12 +199,13 @@ test('v1062: coefficient ranges accept up to 2 decimals without floating-point f
   assert.deepEqual(ok, [[2.01, 2.01], [2.03, 2.03], [4.02, 4.02], [0.07, 0.07], [0, 0], [20, 20]], 'G6 keeps lower = upper');
   run(c, `bcoefSetRange('G2','lo','0.85')`); run(c, `bcoefSetRange('G2','hi','1.15')`);
   assert.deepEqual(rg('G2'), [0.85, 1.15, 'set']);
-  assert.equal(c.STORE.bonus_coef, undefined, 'ranges are kept in bonus_coef_rng; devices still on v1058–v1061 keep their own bonus_coef');
+  assert.equal(c.STORE.bonus_coef.G2.v, 1, 'ranges are kept in bonus_coef_rng; bonus_coef gets the middle for devices still on v1058–v1061');
   for (const [w, v] of [['lo', '0.855'], ['lo', '-1'], ['hi', '21'], ['hi', 'abc'], ['lo', '1.2'], ['hi', '0.5']]) {
     run(c, `bcoefSetRange('G2', ${JSON.stringify(w)}, ${JSON.stringify(v)})`); assert.deepEqual(rg('G2'), [0.85, 1.15, 'set'], w + ' ' + v);
   }
   assert.equal(c.STORE.bonus_coef_rng.G2.hist.length, 2, 'history of the two saves');
   run(c, `bcoefSetRange('G4','hi','')`); assert.deepEqual(rg('G4'), [null, null, 'unset'], 'empty = not set');
+  assert.equal(c.STORE.bonus_coef.G4.v, null, 'and older devices see it as not set too');
   c.E = { id: 'sm', g: 'G4', title: 'Store Manager' };
   assert.equal(run(c, `bonusCoefFor(E,'G4',{},null,'2026-Q3').blocked`), 'coef', 'not set = no amount');
   c.curRole = 'am'; run(c, `bcoefSetRange('G4','lo','1')`); c.curRole = 'gm'; assert.deepEqual(rg('G4'), [null, null, 'unset'], 'AM cannot change coefficients');
@@ -327,7 +328,7 @@ test('UI案38: the previous grade period uses the confirmed evaluation; the new 
   assert.equal(cfg.csMin, 0.7);
   const snap = run(c, `bonusCoefSnapFor(E, kbCfg(), {})`);
   assert.deepEqual(snap.segs.map(s => s.csPct), [50, null], 'confirming the quarter records the segment score');
-  assert.deepEqual(snap.segs.map(s => [s.lo, s.hi, s.v, s.cm.mode]), [[0.7, 1.3, cs50, 'pct'], [0.7, 1.3, 0.7, 'cat']], 'and the range, the coefficient and how it was set');
+  assert.deepEqual(snap.segs.map(s => [s.lo, s.hi, s.rv, s.v, s.cm.mode]), [[0.7, 1.3, cs50, null, 'pct'], [0.7, 1.3, 0.7, null, 'cat']], 'and the range, the coefficient (rv) and how it was set');
   c.BQ['2026-Q3'] = { locked: true };
   b = run(c, `bonusProrate(E, kbCfg(), 1, 1, 1.2)`);
   assert.deepEqual(b.segs.map(s => s.csCoef), [1.2, 1.2], 'a quarter confirmed before v1058 keeps the quarter score for every segment');
