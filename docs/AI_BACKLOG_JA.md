@@ -1,5 +1,13 @@
 # 改修・自動化の作業記録
 
+## 2026-10-10 引き継ぎ（PR #31・#32・#35 マージ済み・#5・#3 は閉じた）
+
+1. Moto さん：Edge Function `invoice-intake` を最新の 1 ファイルに Deploy → 確認の SQL（store_folder_intake・office_crew_accounting が true）→ Tenkichi・Aiea の手前の invoice と事務Crew の操作を実機で確認。
+2. Moto さん：事務Crew の範囲（締め済み月の調整・置き換え・QuickBooks の結果）を確定。
+3. 急ぎ（別件）：hyper-worker の呼び出し元の確認を足す（ChatGPT 側と調整）。
+4. ChatGPT 側：QuickBooks の転送が 00_Upload の分も送っているか確認。
+5. 候補：Invoice取込の外の事務Crew の権限。
+
 ## 2026-10-10 PR #32：main を取り込み、下書きを外してレビューへ
 
 1. 済（Claude）：main（v1059）を取り込み、画面は main のものに。invoice-ui の事務Crew の試験を v1059 に合わせた。

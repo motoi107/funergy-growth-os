@@ -1,5 +1,17 @@
 # Claude / Codex 共通記録
 
+## 2026-10-10 引き継ぎ：PR #31・#32・#35 はマージ済み、#5・#3 は閉じた（Claude）
+
+- main `65d4a8b`：v1059（PR #35・事務Crew は Invoice取込で経理と同じ）・PR #31（ops-bot：Toast Generic Login と LaLa の Server Default を勤怠から外す。本番 ops-bot は 10/4 から同じ内容）・PR #32（invoice の Drive 取込のサーバー一式：SQL・migration・Edge Function・invoice/*.mjs・試験・文書）。#5（会議テスト・v1004 の古い版）と #3（自動マージのしくみ）は Moto さんの判断で閉じた。開いている PR は無い。
+- レビュー：Codex は #31 `d5f7b03`・#32 `b508c6e` ともにコードのブロッカーなし（コードを含むので manual）。#32 のレビュー スレッド 16 件は解決済み。Claude の別エージェントが `cb2f6e5`（店舗フォルダの直下の取込）を見て P2 2 件 → `a03fae6` で修正。
+- 本番の invoice（Moto さんの確認の SQL・10/10）：20261007090000・160000・200000・20261008090000・20261009190000 が入っている（store_folder_intake・office_crew_accounting が true になったかは、`20261009170000` を後に流して混ざった件の流し直しのあと未確認）。Edge Function `invoice-intake` は `a03fae6` 以降の 1 ファイル（Claude の手元の配備の束。sha256 先頭 19f17f4bfe4c）の Deploy を依頼済み・未確認。
+- 未解決（次のチャットへ）：
+  1. Moto さんの確認：Edge Function の Deploy、確認の SQL で store_folder_intake・office_crew_accounting が両方 true、Tenkichi・Aiea の手前の invoice が「要確認」に出るか、事務Crew の操作（実機）。
+  2. Moto さんの決定待ち：事務Crew を経理と同じにする範囲（締め済み月の調整・反映済みの置き換え・QuickBooks の結果を含むか）。Codex は「AI では決められない」。
+  3. セキュリティ（別件・急ぎ）：hyper-worker（Toast 取込）の呼び出し元の確認を足す（中身は公開しない。ChatGPT 側と調整）。
+  4. QuickBooks：Funergy+ 側の台帳は OFF（qb_on・qb_external_on が false）。Receipt に出ない件は ChatGPT 側の転送で確認。ChatGPT 側が店舗フォルダの手前だけを見ているなら 00_Upload の分は送られていない可能性（未確認）。台帳を ON にする前に、外部の転送が台帳だけを見るようにする（二重送信の防止）。
+  5. Invoice取込の外で事務Crew が閲覧のみのもの（承認・支払確定・差し戻し・削除・チェックの確認。v846 から）を開けるかは未決定。
+
 ## 2026-10-10 PR #32（invoice の Drive 取込のサーバー一式）を main へ入れる準備（Claude・Moto さん「仕上げてください」）
 
 - main（v1059・PR #35 マージ後 `249c445`）を取り込んだ。画面（index.html・sw.js）は main のものを使う（このブランチの画面の変更は、すべて main に入っていることを差分ごとに確認。違いは v1059 の変更だけ）。共有記録は main の新しい記録の下に、このブランチの 10/7〜10/8 の invoice の記録を残した（途中の v1058／UI案37 の記録 3 つは main の最終の記録に任せて外した）。
