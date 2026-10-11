@@ -180,7 +180,7 @@ test('only the kept sign-in replaces the kept key, always from the newest key on
   assert.equal(kept(storage)['e:E2'].rt, 'r1++A', 'the CEO\'s key is not kept under Akane');
   // 業務Bot's refresh goes through the same single refresh
   const bot = html.slice(html.indexOf('async function botAPI('), html.indexOf('async function botAPI(') + 1600);
-  assert.match(bot, /if\(r\.status===401&&!retried&&session\.refresh_token\)\{\n\s*if\(typeof invInSessionRefresh==='function'\)\{if\(await invInSessionRefresh\(session\)\)return botAPI\(payload,true\);\}/);
+  assert.match(bot, /if\(r\.status===401&&!retried&&session\.refresh_token\)\{\n\s*if\(typeof invInSessionRefresh==='function'\)\{var ns=await invInSessionRefresh\(session\);if\(ns&&\(_botSession\|\|window\._authSession\|\|null\)===ns\)return botAPI\(payload,true\);\}/);
   tabA.run(`var o = { access_token:'x', refresh_token:'y' }; _invIn.keptSession = null; invInKeepRefresh(o, { access_token:'x2', refresh_token:'y2' })`);
   assert.equal(kept(storage)['e:E2'].rt, 'r1++A');
 });
@@ -328,4 +328,37 @@ test('a refresh that finishes after logout is not handed to the next person; a f
   await e.run(`invInAPI({ action:'health' })`);
   assert.equal(e.run('_invIn.keptSession'), null);
   assert.equal(kept(later)['e:E2'].rt, 'r1+', 'the stored key stays as it was');
+});
+
+test('an action is not re-sent with the next person\'s sign-in; two tabs restoring at once both follow the kept key', async () => {
+  const storage = keptStore({ 'e:E2': { rt: 'r1', at: Date.now() } });
+  const c = page({ storage, auth: { refresh: rotate() } });
+  await openScreen(c);
+  let release; const sent = [];
+  c.fetch = async (url, init) => {
+    const path = String(url).replace('https://example.invalid', '');
+    if (path.includes('grant_type=refresh_token')) { await new Promise(res => { release = res; }); return { ok: true, status: 200, json: async () => ({ access_token: 'akane-new', refresh_token: 'akane-r' }) }; }
+    sent.push([JSON.parse(init.body).action, init.headers.Authorization]);
+    return sent.length === 1 ? { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) } : { ok: true, status: 200, json: async () => ({}) };
+  };
+  const p = c.run(`invInAPI({ action:'post', doc_id:'d1', version:1 })`).catch(e => e);
+  await new Promise(res => setImmediate(res));
+  c.loginPerson = BOB; c.curUserName = BOB.name; c.run('invInReset()');
+  c._botSession = { access_token: 'bob-acc', refresh_token: 'bob-r' };      // Bob logs in and signs in
+  release();
+  await p;
+  assert.deepEqual(sent, [['post', 'Bearer acc-1']], 'Akane\'s action is not re-sent with Bob\'s sign-in');
+  assert.equal(c._botSession.access_token, 'bob-acc');
+  // two tabs read the same kept key and get the same new key: both follow the kept key
+  const both = keptStore({ 'e:E2': { rt: 'k1', at: Date.now() } });
+  let go; const wait = new Promise(res => { go = res; });
+  const same = async q => { await wait; return { access_token: 'acc', refresh_token: q.body.refresh_token + '+' }; };
+  const A = page({ storage: both, auth: { refresh: same } }), B = page({ storage: both, auth: { refresh: same } });
+  A.run('invInGate()'); B.run('invInGate()');
+  const pa = A.M._invIn.restoreP, pb = B.M._invIn.restoreP;
+  A.timers.shift()(); B.timers.shift()();
+  go(); await Promise.all([pa, pb]);
+  assert.equal(kept(both)['e:E2'].rt, 'k1+');
+  assert.equal(A.run('_invIn.keptSession === _botSession'), true);
+  assert.equal(B.run('_invIn.keptSession === _botSession'), true, 'the second tab is the same chain');
 });
