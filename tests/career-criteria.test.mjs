@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const source = fs.readFileSync(process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');   // FUNERGY_INDEX: run against another version
 function block(startMark, endMark) {
   const i = source.indexOf(startMark), j = source.indexOf(endMark, i);
   assert.ok(i >= 0 && j > i, startMark);
@@ -89,7 +89,7 @@ test('at-or-above is compared without rounding, and the shown rate never rounds 
   assert.equal(run(c, 'cscPctTxt(43,54)'), '79.6%');
 });
 
-test('unscored items or unfinished criteria put the result on hold; unscored items still count as 0 in the denominator', () => {
+test('unscored items put the result on hold; categories not saved use the default line (v1062); unscored items still count as 0 in the denominator', () => {
   const c = app();
   save(c, 'G2', G2);
   fill(c, 'Crew Sample', { H: 33, A: 33, B: 30, C: 32 }, { C: 1 });
@@ -103,7 +103,11 @@ test('unscored items or unfinished criteria put the result on hold; unscored ite
   fill(c, 'Crew Sample', { H: 33, A: 33, B: 30, C: 32 }, { D: 2 });
   assert.equal(run(c, `cscJudge('Crew Sample','G2').all`), 'ok', 'unscored items in a category the target does not use do not matter');
   save(c, 'G4', { H: { m: 'pct', v: 70 } });
-  assert.equal(run(c, `cscJudge('Crew Sample','G4').all`), 'unset', 'a target whose categories are not all decided is on hold');
+  const j4 = run(c, `cscJudge('Crew Sample','G4')`);
+  assert.notEqual(j4.all, 'unset', 'v1062 (UI案39): a category that was not saved is judged at the default line, not left undecided');
+  assert.deepEqual(j4.rows.filter(r => r.c.dflt).map(r => r.key).sort(), ['A', 'B', 'C', 'D', 'E', 'F', 'G'], 'only H was saved');
+  assert.deepEqual(j4.rows.find(r => r.key === 'A').c, { m: 'pct', v: 75, dflt: true }, 'G4 default line: 75% or more');
+  assert.deepEqual(j4.rows.find(r => r.key === 'H').c, { m: 'pct', v: 70 }, 'the saved line comes first');
   assert.equal(run(c, `cscJudge('Nobody','G2').all`), 'blank', 'no Career Score yet is on hold');
 });
 
@@ -136,27 +140,32 @@ test('an application keeps the criteria and results of that moment', () => {
 });
 
 const CFG = { quarter: '2026-Q3', gradeBase: { G2: 1000, G3: 3000, G4: 5000, G5: 8000, G6: 12000 } };
-const prorate = (c, e, segs, ba = 1.1, sp = 1, cs = 0.9) => { c.SEGS[e.id] = segs; c.E = e; c.CFG = CFG; return run(c, `bonusProrate(E, CFG, ${ba}, ${sp}, ${cs})`); };
+// sum = the quarter's Career Score (v1062). Without it the VM has no score: the coefficient is the middle of its range.
+const prorate = (c, e, segs, ba = 1.1, sp = 1, cs = 0.9, sum) => { c.SEGS[e.id] = segs; c.E = e; c.CFG = CFG; c.SUM = sum; return run(c, `bonusProrate(E, CFG, ${ba}, ${sp}, ${cs}${sum === undefined ? '' : ', SUM'})`); };
 const WHOLE = g => [{ g, from: '2026-07-01', to: '2026-09-30', days: 92 }];
 
-test('with no coefficients entered (all 1.0) every amount equals the v1057 formula to the cent', () => {
+test('v1062: with no ranges entered (0.70–1.30), a coefficient set by the total % equals the v1061 formula to the cent; G6 is one fixed number', () => {
   const c = app();
   let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const titles = { G2: 'Crew Leader', G3: 'Server Leader', G4: 'Store Manager', G5: 'Area Manager', G6: 'General Manager' };
   for (let i = 0; i < 2000; i++) {
-    const g = ['G2', 'G3', 'G4', 'G5', 'G6'][Math.floor(rnd() * 5)], cut = 1 + Math.floor(rnd() * 90), ba = 0.8 + rnd() * 0.4, sp = 0.8 + rnd() * 0.4, cs = 0.7 + rnd() * 0.6;
+    const g = ['G2', 'G3', 'G4', 'G5', 'G6'][Math.floor(rnd() * 5)], cut = 1 + Math.floor(rnd() * 90), ba = 0.8 + rnd() * 0.4, sp = 0.8 + rnd() * 0.4, p = Math.floor(rnd() * 101);
     const segs = [{ g: 'G2', from: '2026-07-01', to: 'x', days: cut }, { g, from: 'y', to: '2026-09-30', days: 92 - cut }];
-    const r = prorate(c, { id: 'e' + i, g, title: titles[g] }, segs, ba, sp, cs);
-    // v1057: amount = round(gradeBase × days ÷ 92 × budget × profit × Career Score) per segment
-    assert.deepEqual(r.segs.map(s => s.amount), segs.map(s => Math.round(CFG.gradeBase[s.g] * s.days / 92 * ba * sp * cs)), 'case ' + i);
+    // no category record → the total % decides (like specialists and office staff)
+    const r = prorate(c, { id: 'e' + i, g, title: titles[g] }, segs, ba, sp, 0.9, { hasData: true, totalPct: p, cats: [] });
+    // v1061: amount = round(gradeBase × days ÷ 92 × 1.0 × budget × profit × Career Score coefficient) per segment
+    const cs = Math.round((0.7 + (1.3 - 0.7) * (Math.max(0, Math.min(100, p)) / 100)) * 100) / 100;
+    assert.deepEqual(r.segs.map(s => s.amount), segs.map(s => Math.round(CFG.gradeBase[s.g] * s.days / 92 * 1 * ba * sp * (s.g === 'G6' ? 1 : cs))), 'case ' + i);
+    assert.equal(r.segs[1].coef, g === 'G6' ? 1 : cs);
   }
 });
 
 test('one coefficient per segment, applied once; unknown G3 track and unset coefficients produce no amount; 0 is 0 times', () => {
   const c = app();
-  c.STORE.bonus_coef = { G2: { v: 0.9, _at: 1 }, 'G3-sv': { v: 1.2, _at: 1 }, 'G3-op': { v: null, _at: 1 }, G4: { v: 0, _at: 1 } };
+  c.STORE.bonus_coef_rng = { G2: { lo: 0.8, hi: 1, _at: 1 }, 'G3-sv': { lo: 1, hi: 1.4, _at: 1 }, 'G3-op': { lo: null, hi: null, _at: 1 }, G4: { lo: 0, hi: 0, _at: 1 } };
   let r = prorate(c, { id: 'ken', g: 'G3', title: 'Server Leader' }, [{ g: 'G2', from: '2026-07-01', to: '2026-08-10', days: 41 }, { g: 'G3', from: '2026-08-11', to: '2026-09-30', days: 51 }]);
-  assert.deepEqual(r.segs.map(s => [s.coefKey, s.coef, s.amount]), [['G2', 0.9, Math.round(1000 * 41 / 92 * 0.9 * 1.1 * 0.9)], ['G3-sv', 1.2, Math.round(3000 * 51 / 92 * 1.2 * 1.1 * 0.9)]]);
+  // no Career Score → the middle of each range; the Career Score coefficient (0.9 passed in) is no longer applied
+  assert.deepEqual(r.segs.map(s => [s.coefKey, s.coef, s.csCoef, s.amount]), [['G2', 0.9, 1, Math.round(1000 * 41 / 92 * 1 * 1.1 * 1 * 0.9)], ['G3-sv', 1.2, 1, Math.round(3000 * 51 / 92 * 1 * 1.1 * 1 * 1.2)]]);
   r = prorate(c, { id: 'sho', g: 'G3', title: 'Store Leader' }, WHOLE('G3'));
   assert.equal(r.blocked, 'track'); assert.equal(r.segs[0].amount, 0);
   c.STORE.bonus_track = { '2026-Q3|sho': { t: 'kt', _at: 1 } };
@@ -181,13 +190,27 @@ test('a confirmed quarter keeps the coefficients and base amounts of that moment
   assert.equal(r.blocked, null); assert.equal(r.segs[0].coefSrc, 'legacy'); assert.equal(r.segs[0].amount, Math.round(3000 * 1.1 * 0.9));
 });
 
-test('coefficients accept up to 3 decimals without floating-point false alarms; bad input keeps the previous value', () => {
+test('v1062: coefficient ranges accept up to 2 decimals without floating-point false alarms; lower ≤ upper; G6 is one number; bad input keeps the previous value', () => {
   const c = app();
-  const ok = ['2.01', '2.03', '4.02', '1.001', '1.005', '0', '20'].map(v => { run(c, `bcoefSet('G6', ${JSON.stringify(v)})`); return run(c, `bcoefGet('G6').v`); });
-  assert.deepEqual(ok, [2.01, 2.03, 4.02, 1.001, 1.005, 0, 20]);
-  for (const v of ['1.0005', '-1', '21', 'abc']) { run(c, `bcoefSet('G6','1.5')`); run(c, `bcoefSet('G6', ${JSON.stringify(v)})`); assert.equal(run(c, `bcoefGet('G6').v`), 1.5, v); }
-  run(c, `bcoefSet('G6','')`); assert.deepEqual(run(c, `bcoefGet('G6')`).v, null, 'empty = not set');
-  c.curRole = 'am'; run(c, `bcoefSet('G6','2')`); c.curRole = 'gm'; assert.equal(run(c, `bcoefGet('G6').v`), null, 'AM cannot change coefficients');
+  const rg = k => { const r = run(c, `bcoefRange(${JSON.stringify(k)})`); return [r.lo, r.hi, r.src]; };
+  assert.deepEqual(rg('G2'), [0.7, 1.3, 'migrated'], 'nothing entered: 0.70–1.30');
+  assert.deepEqual(rg('G6'), [1, 1, 'migrated'], 'G6: one number, 1.00');
+  const ok = ['2.01', '2.03', '4.02', '0.07', '0', '20'].map(v => { run(c, `bcoefSetRange('G6','lo', ${JSON.stringify(v)})`); return rg('G6').slice(0, 2); });
+  assert.deepEqual(ok, [[2.01, 2.01], [2.03, 2.03], [4.02, 4.02], [0.07, 0.07], [0, 0], [20, 20]], 'G6 keeps lower = upper');
+  run(c, `bcoefSetRange('G2','lo','0.85')`); run(c, `bcoefSetRange('G2','hi','1.15')`);
+  assert.deepEqual(rg('G2'), [0.85, 1.15, 'set']);
+  assert.equal(c.STORE.bonus_coef.G2.v, 1, 'ranges are kept in bonus_coef_rng; bonus_coef gets the middle for devices still on v1058–v1061');
+  for (const [w, v] of [['lo', '0.855'], ['lo', '-1'], ['hi', '21'], ['hi', 'abc'], ['lo', '1.2'], ['hi', '0.5']]) {
+    run(c, `bcoefSetRange('G2', ${JSON.stringify(w)}, ${JSON.stringify(v)})`); assert.deepEqual(rg('G2'), [0.85, 1.15, 'set'], w + ' ' + v);
+  }
+  assert.equal(c.STORE.bonus_coef_rng.G2.hist.length, 2, 'history of the two saves');
+  run(c, `bcoefSetRange('G4','hi','')`); assert.deepEqual(rg('G4'), [null, null, 'unset'], 'empty = not set');
+  assert.equal(c.STORE.bonus_coef.G4.v, null, 'and older devices see it as not set too');
+  c.E = { id: 'sm', g: 'G4', title: 'Store Manager' };
+  assert.equal(run(c, `bonusCoefFor(E,'G4',{},null,'2026-Q3').blocked`), 'coef', 'not set = no amount');
+  c.curRole = 'am'; run(c, `bcoefSetRange('G4','lo','1')`); c.curRole = 'gm'; assert.deepEqual(rg('G4'), [null, null, 'unset'], 'AM cannot change coefficients');
+  c.STORE.bonus_coef = { G5: { v: 1.2, _at: 1 } };   // entered with v1058–v1061 (one number)
+  assert.deepEqual(rg('G5'), [0.84, 1.56, 'from-v'], 'an old single coefficient becomes v × 0.70 – v × 1.30');
 });
 
 test('a quarter track pick can be changed or cleared, and uses the same quarter key as the proration', () => {
@@ -206,11 +229,11 @@ test('a quarter track pick can be changed or cleared, and uses the same quarter 
 });
 
 test('cs_criteria and bonus_coef are synced, merged per entry by time, and kept by storage cleanup', () => {
-  assert.match(source, /'grade_hist','cs_criteria','bonus_coef','bonus_track','karte_pin'/);
+  assert.match(source, /'grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin'/);
   assert.match(source, /\n  bonus_track:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(source, /\n  cs_criteria:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(source, /\n  bonus_coef:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
-  assert.match(source, /'bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','q_budgets'/);
+  assert.match(source, /'bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets'/);
 });
 
 /* ------------------------------------------------------------------ UI案38 */
@@ -296,12 +319,16 @@ test('UI案38: the previous grade period uses the confirmed evaluation; the new 
   c.EMPS[0].title = 'Store Manager'; c.E = c.EMPS[0];
   const cfg = run(c, 'kbCfg()'), cs50 = Math.round((0.7 + 0.6 * 0.5) * 100) / 100;
   let b = run(c, `bonusProrate(E, kbCfg(), 1, 1, 1.2)`);
-  assert.deepEqual(b.segs.map(s => [s.g, s.days, s.csSrc, s.csCoef, s.coefKey, s.amount]),
-    [['G3', 51, 'grade', cs50, 'G3-kt', Math.round(3000 * 51 / 92 * cs50)], ['G4', 41, null, 1.2, 'G4', Math.round(5000 * 41 / 92 * 1.2)]],
+  // v1062: the Career Score sets where the coefficient falls in its range (0.70–1.30); the 1.2 passed in is not applied any more.
+  // G3: the confirmed evaluation has no category record → its total 50% → the middle (1.00).
+  // G4: the quarter score (only H 72/100 recorded) against the G4 default line 75% → 0 of 8 categories → the lower end (0.70).
+  assert.deepEqual(b.segs.map(s => [s.g, s.days, s.coefKey, s.coef, s.cm.mode, s.cm.src, s.csCoef, s.amount]),
+    [['G3', 51, 'G3-kt', cs50, 'pct', 'grade', 1, Math.round(3000 * 51 / 92 * 1 * 1 * 1 * cs50)], ['G4', 41, 'G4', 0.7, 'cat', 'q', 1, Math.round(5000 * 41 / 92 * 1 * 1 * 1 * 0.7)]],
     'G3 7/1–8/20 at the confirmed 50% (and the confirmed kitchen track, no quarter pick needed); G4 8/21–9/30 at the quarter score');
   assert.equal(cfg.csMin, 0.7);
   const snap = run(c, `bonusCoefSnapFor(E, kbCfg(), {})`);
   assert.deepEqual(snap.segs.map(s => s.csPct), [50, null], 'confirming the quarter records the segment score');
+  assert.deepEqual(snap.segs.map(s => [s.lo, s.hi, s.rv, s.v, s.cm.mode]), [[0.7, 1.3, cs50, null, 'pct'], [0.7, 1.3, 0.7, null, 'cat']], 'and the range, the coefficient (rv) and how it was set');
   c.BQ['2026-Q3'] = { locked: true };
   b = run(c, `bonusProrate(E, kbCfg(), 1, 1, 1.2)`);
   assert.deepEqual(b.segs.map(s => s.csCoef), [1.2, 1.2], 'a quarter confirmed before v1058 keeps the quarter score for every segment');
