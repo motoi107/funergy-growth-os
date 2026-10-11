@@ -43412,8 +43412,9 @@ async function botAPI(payload,retried){
   if(!session||!session.access_token)throw new Error(t('共有案件を開くにはメール認証してください','Sign in with your registered Bot email to open shared cases'));
   var r=await fetch(SUPABASE_URL+'/functions/v1/ops-bot',{method:'POST',headers:{apikey:SUPABASE_ANON,Authorization:'Bearer '+session.access_token,'Content-Type':'application/json'},body:JSON.stringify(payload)});
   if(r.status===401&&!retried&&session.refresh_token){
-    var rr=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:SUPABASE_ANON,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:(typeof invInRtFor==='function'?invInRtFor(session):session.refresh_token)})});
-    if(rr.ok){var jj=await rr.json(),ns={access_token:jj.access_token,refresh_token:jj.refresh_token};if(typeof invInKeepRefresh==='function')invInKeepRefresh(session,ns);_botSession=ns;return botAPI(payload,true);}   /* v1063: Invoice取込 が覚えた鍵のログインなら、端末で一番新しい鍵で取り替えて覚え直す */
+    if(typeof invInSessionRefresh==='function'){if(await invInSessionRefresh(session))return botAPI(payload,true);}   /* v1063: 鍵の取り替えは Invoice取込 と 1 本にまとめる（覚えた鍵も覚え直す・ログアウトのあとは渡さない） */
+    else{var rr=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:SUPABASE_ANON,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:session.refresh_token})});
+    if(rr.ok){var jj=await rr.json();_botSession={access_token:jj.access_token,refresh_token:jj.refresh_token};return botAPI(payload,true);}}
   }
   var j=await r.json();if(!r.ok){if(r.status===401)botResetShared();var messages={conflict:t('他の担当者が更新しました。再読込してください','Another reviewer updated this case. Reload it.'),send_unresolved:t('送信結果の確認が必要です。履歴から同じ送信を再確認してください','Resolve the previous send from its history first.'),line_token_missing:t('LINEのアクセストークンが未設定です','LINE access token is not configured'),unauthorized:t('メール認証の有効期限が切れました。再認証してください','Please sign in again.'),forbidden:t('この操作の権限がありません','You do not have permission for this action'),invalid_config:t('GM・CEOが判定設定を共有してください','GM or CEO must publish the clock rules first'),scan_busy:t('この店舗は取得処理中です。少し待って更新してください','This store is being scanned. Refresh shortly.')};throw Error(messages[j.error]||j.error||t('接続できませんでした','Connection failed'));}return j;
 }
@@ -44012,7 +44013,7 @@ setTimeout(botFetchSharedClock,0);
      認証したとき、PIN でログインした社員（社員の ID）とこの端末に、ログインを続ける鍵（Supabase の refresh token）を覚える。
      次からは PIN でログインして Invoice取込 を開くだけで、裏で認証し直す（メールとパスワードは聞かない）。サーバーの守りは今までと同じ。
      ★PIN だけで入れる形にはしない（PIN だけではサーバーの守りが弱くなる。Moto さんに説明）。
-     ★覚えないとき：店舗のログイン・PIN が初期のまま（誰でも知っている番号）・「覚える」を外した・メールのアカウントが別の社員のもの（manager_auth.emp_id）。
+     ★覚えないとき：店舗のログイン・PIN が初期のまま（誰でも知っている番号）・「覚える」を外した・メールのアカウントが別の社員のもの、または社員の ID（manager_auth.emp_id）が無い。
      ★覚えた鍵を取り替えるのは、覚えた鍵から作ったログインを取り替えたときだけ（業務Bot に別の人がメール認証しても、覚えた鍵は変えない）。
        鍵を取り替えるときは、この端末で一番新しい鍵を使う（別のタブが先に取り替えていることがある。古い鍵を使うと Supabase がログインごと止める）。
      ★覚えるのはこの端末の localStorage だけ（'_' で始まるキーは同期・クラウドへの写し・IndexedDB への写しの対象外）。30 日使わなければ忘れる。
@@ -44217,7 +44218,26 @@ function invInIsKeptSession(s){ return !!(s && _invIn.keptSession === s && invIn
 /* 鍵を取り替えるときに使う鍵。覚えたログインなら、この端末で一番新しい鍵（別のタブが先に取り替えていることがある） */
 function invInRtFor(s){ return invInIsKeptSession(s) ? invInKept().rt : (s ? s.refresh_token : null); }
 /* 鍵が取り替わったとき：覚えたログインを取り替えたときだけ、新しい鍵を覚え直す（invInAPI・業務Bot の botAPI から呼ぶ） */
-function invInKeepRefresh(oldS, newS){ if (invInIsKeptSession(oldS) && newS && newS.refresh_token) { invInKeepSet(newS.refresh_token); _invIn.keptSession = newS; } }
+function invInKeepRefresh(oldS, newS){ if (invInIsKeptSession(oldS) && newS && newS.refresh_token) _invIn.keptSession = invInKeepSet(newS.refresh_token) ? newS : null; }
+/* 共有のログイン（_botSession。業務Bot と同じ）の鍵の取り替えを 1 本にまとめる。同時に 401 になった要求（更新で 3 つ並ぶ）は同じ取り替えを待つ
+   （別々に取り替えると、覚えた鍵とこのタブの鍵がずれて、次に Supabase がログインごと止める）。
+   取り替えたログインを使うのは、まだ同じログインのときだけ（そのあいだにログアウト・別の人のログインがあれば渡さない）。invInAPI・botAPI から呼ぶ */
+var _invInRefreshing = null;
+function invInSessionRefresh(s){
+  if (_invInRefreshing && _invInRefreshing.from === s) return _invInRefreshing.p;
+  var p = fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', { method:'POST', headers:{ apikey:SUPABASE_ANON, 'Content-Type':'application/json' }, body:JSON.stringify({ refresh_token:invInRtFor(s) }) })
+    .then(function(rr){ return rr.ok ? rr.json() : null; })
+    .then(function(jj){
+      if (!jj || !jj.access_token || !jj.refresh_token) return null;
+      var ns = { access_token:jj.access_token, refresh_token:jj.refresh_token };
+      invInKeepRefresh(s, ns);
+      if (_botSession === s || (!_botSession && window._authSession === s)) _botSession = ns;
+      return ns;
+    }, function(){ return null; })
+    .then(function(ns){ if (_invInRefreshing && _invInRefreshing.p === p) _invInRefreshing = null; return ns; });
+  _invInRefreshing = { from:s, p:p };
+  return p;
+}
 /* Supabase の認証への呼び出し（12 秒で打ち切る） */
 function invInAuthFetch(path, opt){
   opt = opt || {};
@@ -44227,7 +44247,7 @@ function invInAuthFetch(path, opt){
   var init = { method:opt.method || 'POST', headers:h }; if (opt.body) { h['Content-Type'] = 'application/json'; init.body = JSON.stringify(opt.body); } if (ac) init.signal = ac.signal;
   return fetch(SUPABASE_URL + path, init).then(function(r){ if (tm) clearTimeout(tm); return r; }, function(e){ if (tm) clearTimeout(tm); throw e; });
 }
-/* メールのアカウントが、いま PIN でログインしている社員のものか（manager_auth は本人の行だけ読める）。true／'other'（別の社員）／false（確かめられない） */
+/* メールのアカウントが、いま PIN でログインしている社員のものか（manager_auth は本人の行だけ読める）。true／'other'（別の社員）／'noemp'（社員の ID が無い）／false（確かめられない） */
 async function invInAccountIsMine(token){
   var lp = invInLoginPerson(); if (!lp) return false;
   try {
@@ -44236,7 +44256,7 @@ async function invInAccountIsMine(token){
     var rows = await r.json();
     if (!Array.isArray(rows) || rows.length !== 1) return false;
     var emp = rows[0] && rows[0].emp_id;
-    if (emp == null || emp === '') return true;          /* 社員の ID が登録されていないアカウント：認証した人の判断で覚える（画面に名前を出して確かめる） */
+    if (emp == null || emp === '') return 'noemp';       /* 社員の ID が登録されていないアカウントは、誰のものか確かめられないので覚えない */
     return String(emp) === String(lp.id) ? true : 'other';
   } catch(e) { return false; }
 }
@@ -44250,11 +44270,11 @@ async function invInRestore(scheduled){
     var r = await invInAuthFetch('/auth/v1/token?grant_type=refresh_token', { body:{ refresh_token:p.rt } });
     var j = null; try { j = await r.json(); } catch(e) { j = null; }
     if (r.ok && j && j.access_token && j.refresh_token) {
-      var cur = invInKeepGet(who); if (cur && cur.rt === p.rt) invInKeepSet(j.refresh_token, who);   /* 取り替わった鍵を覚え直す（消された・別のタブが先に取り替えたときは触らない） */
+      var cur = invInKeepGet(who), stored = !!(cur && cur.rt === p.rt) && invInKeepSet(j.refresh_token, who);   /* 取り替わった鍵を覚え直す（消された・別のタブが先に取り替えたときは触らない） */
       if (invInKeepWho() !== who) return false;                  /* 待っているあいだにログアウト・別の人がログイン：渡さない */
       if (invInSigned()) return true;                            /* そのあいだに別のメール認証をした：上書きしない */
       _botSession = { access_token:j.access_token, refresh_token:j.refresh_token };
-      _invIn.keptSession = _botSession; _invIn.error = '';
+      _invIn.keptSession = stored ? _botSession : null; _invIn.error = '';   /* 覚え直せなかった（端末がいっぱい・別のタブ）ときは、このログインを覚えた鍵として扱わない */
       return true;
     }
     if (r.status === 400 || r.status === 401 || r.status === 403) invInKeepSet(null, who);   /* 鍵がもう使えない：消してメール認証へ */
@@ -44294,8 +44314,7 @@ async function invInAPI(payload, retried){
   try { r = await fetch(SUPABASE_URL + INVIN_FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + s.access_token, 'Content-Type':'application/json' }, body:JSON.stringify(payload) }); }
   catch(e) { throw new Error(t('取込のサーバー（invoice-intake）につながりません。まだ配備されていないか、通信できません。','Cannot reach the intake server (invoice-intake). It is not deployed yet, or the network is down.')); }
   if (r.status === 401 && !retried && s.refresh_token) {
-    var rr = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', { method:'POST', headers:{ apikey:SUPABASE_ANON, 'Content-Type':'application/json' }, body:JSON.stringify({ refresh_token:invInRtFor(s) }) });
-    if (rr.ok) { var jj = await rr.json(), ns = { access_token:jj.access_token, refresh_token:jj.refresh_token }; invInKeepRefresh(s, ns); _botSession = ns; return invInAPI(payload, true); }
+    if (await invInSessionRefresh(s)) return invInAPI(payload, true);
   }
   var j = null; try { j = await r.json(); } catch(e) { j = null; }
   if (!r.ok) { if (r.status === 401 && s === _botSession) _botSession = null; var err = new Error(invInErrText(j && j.error, r.status)); err.code = (j && typeof j.error === 'string') ? j.error : ''; throw err; }
@@ -44334,7 +44353,7 @@ async function invInLogin(){
     if (invInKeepWho() && keep && keep.checked) {
       var mine = await invInAccountIsMine(j.access_token);
       if (mine === true && invInKeepSet(j.refresh_token)) _invIn.keptSession = _botSession;
-      else { invInKeepSet(null); if (mine === 'other') showToast(t('このメールのアカウントは、いま PIN でログインしている人のものではないため、この端末では覚えませんでした（今回だけ使えます）','This email account is not the account of the person logged in with the PIN, so it was not remembered (it works this time only)'), 'warning'); }
+      else { invInKeepSet(null); if (mine === 'noemp') showToast(t('このメールのアカウントには社員の登録（manager_auth の emp_id）が無いため、この端末では覚えませんでした（今回だけ使えます）。登録は Moto さんへ','This email account has no employee link (manager_auth emp_id), so it was not remembered (it works this time only). Ask Moto to add it'), 'warning'); if (mine === 'other') showToast(t('このメールのアカウントは、いま PIN でログインしている人のものではないため、この端末では覚えませんでした（今回だけ使えます）','This email account is not the account of the person logged in with the PIN, so it was not remembered (it works this time only)'), 'warning'); }
     } else if (invInKeepWho()) invInKeepSet(null);
     closeModalDirect(); invInRefresh();
   } catch(e) { var el = document.getElementById('invin-login-error'); if (el) el.textContent = e.message; }

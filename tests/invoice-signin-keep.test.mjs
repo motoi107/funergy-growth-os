@@ -114,9 +114,15 @@ test('the email account must be the PIN person\'s own (manager_auth.emp_id)', as
   assert.equal(storage.getItem('_invin_signin'), null);
   assert.ok(other.toasts.some(([m, k]) => /いま PIN でログインしている人のものではないため、この端末では覚えませんでした/.test(m) && k === 'warning'));
   assert.equal(other.run('invInSigned()'), true, 'it still works this time');
-  const noEmp = page({ storage, dom: signInDom(), auth: { password: { access_token: 'a1', refresh_token: 'r2' }, me: [{ emp_id: null }] } });
-  await noEmp.run('invInLogin()');
-  assert.equal(kept(storage)['e:E2'].rt, 'r2', 'an account with no employee id is kept by the person\'s own choice');
+  for (const emp of [null, '']) {
+    const noEmp = page({ storage, dom: signInDom(), auth: { password: { access_token: 'a1', refresh_token: 'r2' }, me: [{ emp_id: emp }] } });
+    await noEmp.run('invInLogin()');
+    assert.equal(storage.getItem('_invin_signin'), null, 'an account with no employee id cannot be checked, so it is not kept');
+    assert.ok(noEmp.toasts.some(([m, k]) => /社員の登録（manager_auth の emp_id）が無いため/.test(m) && k === 'warning'));
+  }
+  const mine = page({ storage, dom: signInDom(), auth: { password: { access_token: 'a1', refresh_token: 'r2' }, me: [{ emp_id: 'E2' }] } });
+  await mine.run('invInLogin()');
+  assert.equal(kept(storage)['e:E2'].rt, 'r2');
   storage.removeItem('_invin_signin');
   for (const me of [{ status: 401, error: 'x' }, [], [{ emp_id: 'E2' }, { emp_id: 'E2' }], new Error('offline')]) {
     const unsure = page({ storage, dom: signInDom(), auth: { password: { access_token: 'a1', refresh_token: 'r3' }, me } });
@@ -172,10 +178,9 @@ test('only the kept sign-in replaces the kept key, always from the newest key on
   await tabA.run(`invInAPI({ action:'health' })`);
   assert.deepEqual(tabA.reqs.find(q => q.path.includes('refresh_token')).body, { refresh_token: 'ceo-r' });
   assert.equal(kept(storage)['e:E2'].rt, 'r1++A', 'the CEO\'s key is not kept under Akane');
-  // 業務Bot's refresh goes through the same two hooks
+  // 業務Bot's refresh goes through the same single refresh
   const bot = html.slice(html.indexOf('async function botAPI('), html.indexOf('async function botAPI(') + 1600);
-  assert.match(bot, /refresh_token:\(typeof invInRtFor==='function'\?invInRtFor\(session\):session\.refresh_token\)/);
-  assert.match(bot, /ns=\{access_token:jj\.access_token,refresh_token:jj\.refresh_token\};if\(typeof invInKeepRefresh==='function'\)invInKeepRefresh\(session,ns\);_botSession=ns;return botAPI\(payload,true\);/);
+  assert.match(bot, /if\(r\.status===401&&!retried&&session\.refresh_token\)\{\n\s*if\(typeof invInSessionRefresh==='function'\)\{if\(await invInSessionRefresh\(session\)\)return botAPI\(payload,true\);\}/);
   tabA.run(`var o = { access_token:'x', refresh_token:'y' }; _invIn.keptSession = null; invInKeepRefresh(o, { access_token:'x2', refresh_token:'y2' })`);
   assert.equal(kept(storage)['e:E2'].rt, 'r1++A');
 });
@@ -263,4 +268,64 @@ test('purchase history waits for the sign-in the screen is doing; English texts;
   const xss = page({ person: { id: 'E3', name: '<img src=x onerror=alert(1)>' } });
   xss.run('invInLoginModal()');
   assert.ok(!xss.modals.at(-1).includes('<img src=x') && xss.modals.at(-1).includes('&lt;img'), 'the name is escaped');
+});
+
+test('parallel 401s in one tab share one refresh, so the kept key and the tab stay together', async () => {
+  const storage = keptStore({ 'e:E2': { rt: 'r1', at: Date.now() } });
+  const c = page({ storage, auth: { refresh: rotate() } });
+  await openScreen(c);                                         // kept r1+ = memory
+  let refreshes = 0, n = 0, release;
+  const gate = new Promise(res => { release = res; });
+  c.fetch = async (url, init) => {
+    const path = String(url).replace('https://example.invalid', ''); const body = init.body ? JSON.parse(init.body) : null;
+    if (path.includes('grant_type=refresh_token')) { refreshes++; await gate; return { ok: true, status: 200, json: async () => ({ access_token: 'acc-' + refreshes, refresh_token: body.refresh_token + '#' }) }; }
+    n++; return n <= 3 ? { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) } : { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const all = Promise.all(['health', 'config', 'list'].map(a => c.run(`invInAPI({ action:'${a}' })`)));
+  await new Promise(res => setImmediate(res));
+  release();
+  await all;
+  assert.equal(refreshes, 1, 'one refresh for the three');
+  assert.equal(kept(storage)['e:E2'].rt, c._botSession.refresh_token, 'the kept key is the tab\'s key');
+  assert.equal(c.run('_invIn.keptSession === _botSession'), true);
+  // the next round still follows the kept key (one more 401, then fine)
+  n = 2; refreshes = 0;
+  await c.run(`invInAPI({ action:'health' })`);
+  assert.equal(refreshes, 1);
+  assert.equal(kept(storage)['e:E2'].rt, c._botSession.refresh_token);
+});
+
+test('a refresh that finishes after logout is not handed to the next person; a failed write does not track the session', async () => {
+  const storage = keptStore({ 'e:E2': { rt: 'r1', at: Date.now() } });
+  const c = page({ storage, auth: { refresh: rotate() } });
+  await openScreen(c);
+  let release, n = 0;
+  c.fetch = async (url, init) => {
+    const path = String(url).replace('https://example.invalid', '');
+    if (path.includes('grant_type=refresh_token')) { await new Promise(res => { release = res; }); return { ok: true, status: 200, json: async () => ({ access_token: 'late', refresh_token: 'late-r' }) }; }
+    n++; return n === 1 ? { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) } : { ok: true, status: 200, json: async () => ({}) };
+  };
+  const p = c.run(`invInAPI({ action:'health' })`).catch(e => e);
+  await new Promise(res => setImmediate(res));
+  c._botSession = null; c.loginPerson = BOB; c.curUserName = BOB.name; c.run('invInReset()');   // logout, Bob logs in
+  release();
+  await p;
+  assert.equal(c._botSession, null, 'Bob does not get Akane\'s refreshed sign-in');
+  // storage full: the restore works but this tab is not treated as the kept sign-in
+  const full = keptStore({ 'e:E2': { rt: 'r1', at: Date.now() } });
+  full.setItem = () => { throw new Error('QuotaExceededError'); };
+  const d = page({ storage: full, auth: { refresh: rotate() } });
+  await openScreen(d);
+  assert.equal(d.run('invInSigned()'), true);
+  assert.equal(d.run('_invIn.keptSession'), null);
+  // storage fills up later: after the next refresh this tab stops being treated as the kept sign-in
+  const later = keptStore({ 'e:E2': { rt: 'r1', at: Date.now() } });
+  let m = 0;
+  const e = page({ storage: later, auth: { refresh: rotate() }, api: () => (++m === 1 ? { status: 401, error: 'unauthorized' } : { ok: true }) });
+  await openScreen(e);
+  assert.equal(e.run('_invIn.keptSession === _botSession'), true);
+  later.setItem = () => { throw new Error('QuotaExceededError'); };
+  await e.run(`invInAPI({ action:'health' })`);
+  assert.equal(e.run('_invIn.keptSession'), null);
+  assert.equal(kept(later)['e:E2'].rt, 'r1+', 'the stored key stays as it was');
 });
