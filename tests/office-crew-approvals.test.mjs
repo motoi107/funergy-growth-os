@@ -42,14 +42,15 @@ const FNS = ['_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserIn
   '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', '_approvalRoleLabel',
   'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'cancelMySignoff', 'approveItem', 'approveBudgetSeg', 'reopenApproval',
   'canReviewChecks', '_ckSeesAll', '_ckMine', 'canDeleteCheck', 'canApproveReimburse', 'canMarkReimbursePaid', 'markReimbursePaid',
-  'canApproveMileage', 'canViewMileageRec', 'approveMileage', 'invIsIntake', 'invIsMine', 'canDeleteInvoice'];
+  'canApproveMileage', 'canViewMileageRec', 'approveMileage', 'canMileageMonthEnd', 'mileageMonthEndClose', 'renderApproval', '_approvalChainHtml',
+  'canViewWages', 'canViewIndividualWage', 'invIsIntake', 'invIsMine', 'canDeleteInvoice'];
 // So the same checks can run on a build before v1060 (FUNERGY_INDEX): its view-only helpers, and the old name rule.
 const OLD = { isViewOnlyRole: null, denyViewOnly: null, _actorName: 'function _actorName(){ return (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole; }' };
 const CODE = FNS.map(n => { try { return fnSrc(n); } catch (e) { if (n in OLD) return OLD[n]; throw e; } })
   .concat(Object.keys(OLD).filter(n => !FNS.includes(n)).map(n => { try { return fnSrc(n); } catch (_e) { return ''; } })).join('\n');
 
 const ROLE_CONFIG = { ceo: { name: 'Tac' }, gm: { name: 'Moto' }, office: { name: 'Marcia' }, am: { name: 'Yuki' }, sl: { name: 'Store Leader' },
-  office_crew: { name: '事務スタッフ' }, crew: { name: 'スタッフ' }, chef: { name: 'Head Chef' } };
+  office_crew: { name: '事務スタッフ', noWage: true }, crew: { name: 'スタッフ' }, chef: { name: 'Head Chef' } };
 const EMPLOYEES = [
   { name: 'Crew A', store: 'F01', role: 'crew', grade: 1 },
   { name: 'Akane', store: 'OFFICE', role: 'office_crew', grade: 1 },
@@ -71,7 +72,8 @@ function app({ role = 'office_crew', user = 'Akane', approvals = [], routing = {
     approversForType: type => (routing[type] && routing[type].length ? routing[type] : ['office', 'gm', 'am']),
     getBudgets: () => { throw new Error('budget touched'); }, getReimbursements: () => st.reimbursements,
     setReimbursements: v => { st.reimbursements = v; }, saveReimbursements: v => { st.reimbursements = v; },
-    getMileageRequests: () => st.mileage, saveMileageReqs: v => { st.mileage = v; },
+    getMileageRequests: () => st.mileage, saveMileageReqs: v => { st.mileage = v; }, curYm: () => '2026-10',
+    getVisibleStores: () => c.STORES, salaryVisibleToMe: () => true,
     st,
   };
   vm.createContext(c);
@@ -153,9 +155,17 @@ test('reimbursements and mileage: 事務Crew approves and marks paid like accoun
   assert.equal(c.alerts.length, 0);
   assert.equal(c.st.reimbursements[0].payStatus, '支払済');
   assert.equal(c.st.reimbursements[0].paidBy, 'Akane');
-  try { run(c, 'approveMileage("mi1")'); } catch (_e) { /* the toast after saving needs more of the app */ }
+  run(c, 'approveMileage("mi1")');
   assert.equal(c.st.mileage[0].status, '承認');
   assert.equal(c.st.mileage[0].approvedBy, 'Akane');
+  // Mileage is settled by the month-end close (精算確定); 事務Crew runs it like accounting.
+  c.st.mileage[0].date = '2026-10-03';
+  run(c, 'mileageMonthEndClose("2026-10")');
+  assert.equal(c.st.mileage[0].archived, true);
+  assert.equal(c.st.mileage[0].archivedBy, 'Akane');
+  for (const [role, want] of [['office', true], ['office_crew', true], ['gm', true], ['ceo', true], ['am', false], ['sl', false], ['crew', false]]) {
+    assert.equal(run(app({ role }), 'canMileageMonthEnd()'), want, role);
+  }
   // Accounting is recorded as before (the role's name).
   const o = app({ role: 'office', user: 'Marcia M', reimb: [{ id: 'rb1', status: '承認', storeId: 'F01', payer: 'P', amount: 1 }] });
   run(o, 'markReimbursePaid("rb1")');
@@ -177,7 +187,22 @@ test('receipts / invoices: 事務Crew deletes like accounting; Drive-intake copi
   assert.equal(run(app({ role: 'sl', user: 'Leader B' }), 'canDeleteInvoice(' + JSON.stringify({ ...inv, reviewStatus: '確認済み' }) + ')'), false);
 });
 
+test('what 事務Crew sees does not widen: no 本部 (office) requests in the approval center, no wages', () => {
+  const items = [AP({ id: 'ap1', title: 'STORE-REQUEST' }), AP({ id: 'ap2', title: 'HQ-REQUEST', store: '---', from: 'Leader B' })];
+  const crew = run(app({ approvals: items }), 'renderApproval()');
+  assert.match(crew, /STORE-REQUEST/);
+  assert.doesNotMatch(crew, /HQ-REQUEST/);
+  const office = run(app({ role: 'office', user: 'Marcia', approvals: items }), 'renderApproval()');
+  assert.match(office, /HQ-REQUEST/);
+  // The 事務Crew sees the approve button for the store request (本部 slot) and the reject button.
+  assert.match(crew, /signoffApproval\('ap1'\)/);
+  assert.match(crew, /rejectApprovalItem\('ap1'\)/);
+  const w = app();
+  assert.equal(run(w, 'canViewWages()'), false);
+  assert.equal(run(w, 'canViewIndividualWage()'), false);
+});
+
 test('no view-only gate is left for 事務Crew', () => {
-  assert.doesNotMatch(SRC, /function isViewOnlyRole|denyViewOnly\(/);
+  assert.doesNotMatch(SRC, /\bisViewOnlyRole\b|\bdenyViewOnly\b/);
   assert.doesNotMatch(SRC, /事務Crewは閲覧のみです/);
 });

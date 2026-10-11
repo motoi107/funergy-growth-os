@@ -42805,9 +42805,9 @@ function _mileRow(r, withActions){
   return h+'</div>';
 }
 var mileagePastOpen=false;
-function canMileageMonthEnd(){ return ['ceo','gm','office'].indexOf(curRole)>=0; }
+function canMileageMonthEnd(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }   /* v1060: 精算確定は事務Crew も経理と同じ */
 function mileageMonthEndClose(mk){
-  if(!canMileageMonthEnd()){ alert('月末処理の権限がありません（経理・GM・CEO）'); return; }
+  if(!canMileageMonthEnd()){ alert('月末処理の権限がありません（経理・事務Crew・GM・CEO）'); return; }
   mk = mk || curYm();
   var arr=getMileageRequests();
   var target=arr.filter(function(r){ return !r.archived && (r.date||'').slice(0,7)===mk; });
@@ -42819,7 +42819,7 @@ function mileageMonthEndClose(mk){
   if(pend) msg+='\n⚠ 申請中 '+pend+'件も過去ログへ移動します（未承認のまま記録されます）。先に承認/却下することを推奨します。';
   msg+='\n\nよろしいですか？';
   if(!confirm(msg)) return;
-  var now=nowJP(); var by=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole;
+  var now=nowJP(); var by=_actorName();
   target.forEach(function(r){ r.archived=true; r.archivedMonth=mk; r.archivedAt=now; r.archivedBy=by; });
   saveMileageReqs(arr);
   showToast(mk+' を月末処理しました（過去ログへ移動）','success');
@@ -45643,12 +45643,12 @@ function renderMileage(){
   if(isMgr) html+=mileageRateNoticeHtml();   /* v848: 設定の単価とIRS標準料率のズレを知らせる */
   html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 買い出し・ミーティング等で自家用車を使った移動のガソリン代。「Google Mapsで距離を調べる」で出発地→目的地の距離を確認し、マイルで入力 → $'+c.ratePerMile+'/マイルで自動算定します。</div>';
   if(isMgr){
-    /* v846: 承認できる人には承認待ちを、見るだけの人にも件数と中身を見せる。 */
+    /* v846: 承認できる人には承認待ちを、見るだけの人にも件数と中身を見せる（v1060 から事務Crew も承認できる）。 */
     var pending=active.filter(function(r){ return r.status==='申請中' && canViewMileageRec(r); });
     html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'">'+pending.length+'</span>'+(pending.length?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go(\'approval\')"><i class="ti ti-checklist"></i> 承認センターで承認</button>':'')+'</div>';
     /* v846: ここは _mileRow(r,null) だったため、承認/却下のボタンが一度も描かれていなかった
        （_mileRow の 'approve' 分岐がどこからも使われていない死んだコードになっていた）。
-       承認できる人にだけボタンを出す。事務Crew には出ない。 */
+       承認できる人にだけボタンを出す（v1060 から事務Crew にも出る）。 */
     html+= pending.length ? pending.map(function(r){return _mileRow(r, canApproveMileage(r)?'approve':null);}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
     html+='</div>';
     // 今月の精算（スタッフ別・承認済み）
@@ -64214,7 +64214,8 @@ function approveLssRequest(id, status) {
    v1060 事務Crew（office_crew）も経理と同じく「決める操作」ができる（Moto 10/10）
    ------------------------------------------------------------
    v846 では閲覧のみだった：承認センターの承認・却下・差し戻し、チェックの確認、
-   建て替え経費・ガソリン代の承認と支払確定、チェックとレシート管理の invoice の削除。
+   建て替え経費・ガソリン代の承認と支払確定（ガソリン代は月末処理）、チェックとレシート管理の invoice の削除。
+   承認センターの却下は経理と同じく、見えている申請すべて（スキル・Career Score を含む）に出る。
    これらを経理（office）と同じにした。見える範囲は変えていない（本部の案件・給与は今までどおり）。
    承認センターでは「本部」の枠を経理と同じく埋められる。直上・GM の枠は今までどおり。
    予算の承認・代理の全承認・承認の取り消しは今までどおり GM・CEO だけ。
