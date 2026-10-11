@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-10-10 PR #32（invoice の Drive 取込のサーバー一式）を main へ入れる準備（Claude・Moto さん「仕上げてください」）
+
+- main（v1059・PR #35 マージ後 `249c445`）を取り込んだ。画面（index.html・sw.js）は main のものを使う（このブランチの画面の変更は、すべて main に入っていることを差分ごとに確認。違いは v1059 の変更だけ）。共有記録は main の新しい記録の下に、このブランチの 10/7〜10/8 の invoice の記録を残した（途中の v1058／UI案37 の記録 3 つは main の最終の記録に任せて外した）。
+- `tests/invoice-ui.test.mjs`：事務Crew は v1059 で経理と同じ画面なので、要確認の一覧が経理と同じ・まとめて反映できる、に直した（役割の無い人は今までどおりどちらも無い）。
+- これで PR #32 が main に足すのは、サーバー（SQL・migration・Edge Function・invoice/*.mjs）・試験・文書だけ。画面・sw.js・workflow は変えない。マージしても何も配備されない（Supabase は今までどおり手で入れる）。
+- 本番の状態（Moto さん 10/10 の確認の SQL）：`20261009190000`（事務Crew）と `20261008090000`（店舗フォルダの手前）が入った。関数の差し替え（手前の取込）を Deploy したかは未確認。前の `20261009170000` を後に流して事務Crew が混ざった状態になったため、`20261009190000` の流し直しを案内した。
+- 独立レビュー（Claude の別エージェント・作業を見ていない。`cb2f6e5` と取り込みが対象）：P1 なし。P2 2 件を直した。①店舗フォルダの直下から読んだ原本を、人が「○月 Uploaded」へ移したあとに照合すると「店舗のフォルダの外」の整理エラーになる → 店舗フォルダ直下の人のフォルダ（このワーカーが作ったもの・00_Upload を除く）にあるものは、そこに置いたまま整理済みにする（付け替えた店の元のフォルダも同じ。店舗フォルダの外は今までどおりエラー）。②公開の記録に、別の関数（hyper-worker）を鍵なしで呼べる具体的な手がかりが書いてあった → 中身を消して「Moto さんに直接伝えた」に（ブランチの過去のコミットには残る）。P3：店舗フォルダからは PDF と写真だけを読む（スプレッドシート等は記録しない）・過去分の登録は店舗フォルダを読まない・読まれないもの（5 分以内に移されたもの・作成日時が開始より前）と QuickBooks の二重送信の前提を文書に。関数の差し替えが要る（`3_関数_index.ts` を作り直し）。
+- 試験（合成データ）：`node --test`（invoice-mutations 以外の全 22 ファイル）270/297。27 失敗は main と同じ 27 件（invoice の 98 件はすべて成功）。static release pass/1059。mutation は `36ff460` で 69/69（この取り込みで変えたのは invoice-ui の試験と文書だけ）。
+
 ## 2026-10-09 v1059：事務Crew は Invoice取込で経理と同じ（経理の依頼）・店舗フォルダの手前の取込は未配備（Claude・本番未反映）
 
 - 依頼：Moto さん 10/9 17:16 HST（経理の LINE を転送）。①事務Crew が「この内容で反映する」を押せない（「事務Crew は閲覧のみ」）→ Moto さんが LINE で「オケです」。②Tenkichi・Aiea が店舗フォルダの手前に入れた invoice がアプリに出ない（00_Upload の Marujuu は出る）。③反映した 1 件が 5 分たっても QB の Receipt に無い。
@@ -26,6 +35,279 @@
 - 試験（合成データ）：`tests/career-criteria.test.mjs` 23/23（わざと壊した 29 通り中 28 で落ちる。残り 1 つは重なっている読み替え）・`node --test tests/*.test.mjs` 166/193（27 失敗は main と同じ。PGlite を入れない環境では 29）・static release pass/v1058。Claude の手元：`verify_v1058` 138/138・本物の画面 84/84・pageerror 0。
 - レビューの実績：Claude の別エージェント（作業を見ていない）が UI案37 で 10 件・UI案38 で 6 件を指摘 → 修正。Codex が `1705ae3`・`b215fd4` をレビュー（blocked）→ 上の P1・P2 を修正。修正の `29c55dd` を Claude の別エージェントが見て P1・P2 なし・P3 のうち 3 件を直した。修正後の head は Codex の再レビュー待ち（この記録は Codex の承認ではない）。
 - 次：Codex が最新の head を再レビュー → Moto さんがマージ → GM・CEO がスコア基準・係数・今も Store Leader の人の役職名・グレード履歴の食い違いを直す → 実機で確認。PR #32（invoice）は main と index.html・sw.js・この 2 つの共通記録が食い違うので、マージの前に main を取り込んで直す。
+
+## 2026-10-08 店舗フォルダの直下（00_Upload の手前）に置いた invoice も読む（Claude・`cb2f6e5`・Codex のレビューはまだ・本番未反映）
+
+- 依頼：Moto さん 10/8 09:22 HST、Totoya Aiea の店舗フォルダの画面（直下に「Scanned Oct 7, 2026…」の PDF、ほかに「ここにUpしないで○月 2026 Uploaded」のフォルダ）を見せて「00_Upload のフォルダの手前のところにみんなアップしたいんだけど、どちらのフォルダでも良いように設定変更してください」。
+- 調べたこと：設定ではできない。ワーカーは `upload_folder_id`（00_Upload）だけを一覧し、`invoice_file_seen` も 00_Upload の ID でしか店舗を引かない。10/7 から店舗フォルダの直下に置かれた invoice は読まれていなかった。
+- Claude が決めて Moto さんに伝えたこと（09:3x HST）：直下も読む／直下の原本は動かさない（「ここにUpしないで○月 Uploaded」へ移す今の運用が店舗フォルダを使う）／開始日時（10/7 09:40）より後に置かれたものだけ／中のフォルダは読まない。加えて、アプリが Drive に保存した PDF（アプリの記録の `driveFileId`）は読まない（二重を防ぐ。アプリの業者 invoice は drive-sync で「Unregistered」へ行く作りで、店舗フォルダには来ない見込みだが、drive-sync の本文は手元に無いので念のため）。
+- 実装：`invoice/drive.mjs` の `listFolder` に `createdAfter`（ISO の時刻だけ受ける・クエリには adapter が作った ISO を入れる）。`handler.mjs` の `scanStore` は 00_Upload のあと店舗フォルダを `createdTime >= start_at` で一覧し、開始日時が空なら読まない。`organizeOne` は親が店舗フォルダの原本を動かさず「整理済み・置き場所は店舗フォルダ」と記録。SQL `20261008090000_invoice_intake_store_folder.sql`＝`invoice_file_seen` 1 つの差し替え（店舗フォルダの ID でも店舗を引く・新しいファイルは開始日時より前なら `before_start` で記録しない）。postcheck に `store_folder_intake`。
+- 試験（合成データ・本番データ不使用）：関連 117/117（新しい結合試験 1 件は 0a1daa7 のコードでは落ちる）・`INVOICE_REVIEW_UPGRADE=1` 2/2・追加した mutation 4 件（直下を読まない／直下の原本を動かす／アプリが保存した PDF を読む／DB の開始日時の確認を外す）はすべて試験が気づく・`deno bundle` の 1 ファイル（md5 `65feb12f…`）は外からの import 無し・配備済み 0a1daa7 の bundle との差は今回の変更だけ（diff）・handler を bundle に置き換えた結合 69/69・起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403。本番と同じ順で 3 つの migration に重ねて 2 回流しても通り、postcheck は store_folder_intake true（ほかの値も変わらない）。mutation の全件は今回は回していない。
+- 入れ方（Moto さん）：`1_追加のSQL.sql`（＝migration）→ `2_確認のSQL.sql`（store_folder_intake true）→ 関数 `invoice-intake` を `3_関数_index.ts` に差し替え。アプリの変更なし。戻すときは関数だけ前の版に（SQL は前の関数とも合う）。
+- 気をつけること：10/7 09:40 より前に店舗フォルダに置かれたものは読まない（読ませたいときは 00_Upload へ移す）。直下に置かれた古いファイルは記録もしない。店舗の画面の案内（「提出フォルダを開く」）と設定の「この店舗の 00_Upload を取り込む」の文言は変えていない（画面の変更は Moto さんの判断待ち）。
+- 次：Codex のレビュー（任意。急ぐなら先に入れてよいかは Moto さん）→ Moto さんが入れる → 取込状況・要確認に Aiea の 10/7 以降の「Scanned …」が出るか確認。
+
+## 2026-10-07 夜：勤務時間の「計」が Tip の対象時間で出ていた（Claude・アプリ v1057・PR #33・Codex のレビューはまだ・**本番に反映済み**）
+
+- **反映**：Moto さんが 10/7 19:04 HST に PR #33 をマージ（main `93491e1`）。main の index・sw は v1057（md5 `45db00bd…`・`57df6cd0…`）と一致、「pages build and deployment」と「Growth OS checks」は成功、公開中の sw.js は `SW_BUILD 1057`（Claude が確認）。Codex のレビューはマージのあとになる。実機でのマイページの確認は Moto さん待ち。
+- 報告：Moto さん 10/7 18:27 HST「勤務時間の計算が違う理由はなんですか？ 至急解決したい まず原因を知りたい」。LaLa のスタッフのマイページ「今月の勤怠記録」で、10/1 17:08〜0:11（実働 7.05h）と 10/2 17:24〜0:24（実働 7.0h）がどちらも 6.5h。
+- 原因：マイページなど 6 か所が、打刻の時間（`rawLunch`＋`rawDinner`）ではなく Tip の対象時間（`lunch`＋`dinner`、`getTipLabor` で窓に切ったもの）を足していた。Tip 対象時間が「営業時間のみ」の店は窓の外が抜ける。LaLa の窓はディナー 17:30〜0:00 と推定（写真の 2 日がどちらもちょうど 6.5h になるのはこの窓だけ。本番の設定は Claude からは見えない）。Labor の共通コア `_laborHrs`・人件費・本部シフトインの出力は前から実働で数えている。
+- Moto さんの決定（18:3x HST）：直す（v1057）。**LaLa の Tip 対象時間が 0:00 までなのは意図どおり**（0:00 以降の勤務は Tip の対象外のまま）。
+- v1057（ブランチ `claude/attendance-actual-hours`・PR #33・head `32f7089`・main `1e5c505` が土台）：`renderMypage`（今月の勤怠記録）・`cyclePayHours`（給与予定）・`actualHoursForDate`（照合の「30分以上差異」）・`laborBreakdownForPeriod`（1 日だけ）・`sumWeekStats`（週の比較）・`unregisteredClockIns` の 1 行ずつを `_laborHrs(e)` に。Tip の時間・配分・Labor の共通コア・同期・保存キーは変えていない。index md5 `45db00bd…`・sw `57df6cd0…`（SW_BUILD 1057）。SQL・Edge Function の変更なし。
+- 試験（合成データ・本番データ不使用）：`tests/attendance-hours.test.mjs` 5/5（v1056 では 1/5）。`node --test tests/*.test.mjs` は 143/170・27 失敗だが **main（v1056）でもファイルごとに同じ数**（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4。今回とは無関係）。static release pass/v1057。handoff 側：`verify_v1057` 48/48（変えた関数は 6 本・戻すと v1056 と同じ・ほかの 4,923 関数は同じ）、本物の画面 `render/check_hours_v1057.py` 12/12・pageerror 0（v1056 で 6.5h・6.5h を再現 → v1057 で 7.0h・7.0h・計 14.1h、給与予定 13h → 14.05h、照合 6.5h → 7.05h、Tip の時間は両方の版で 6.5h、英語も同じ）。handoff の `run_all`（v1057 まで）本物の FAIL 0・欠落 13 本。
+- 気をつけること：照合は実働で比べるので、営業時間のみの店の誤った「30分以上差異」は消える。「勤怠時間すべて」の店は 9/16 以降は数字が変わらない（9/15 以前の 0 時をまたいだ日は少し大きく出る）。手動修正の日は Labor の共通コアと同じ `_laborHrs`＝打刻と修正値の大きいほう（修正で**減らした**時間は Labor 集計にもマイページにも出ない。前からの共通コアの動き・別件）。
+- Tip 対象時間の設定（`tip_hours_config`）は日付を持たず、過去の日の Tip の計算にもさかのぼって効く。勤務時間を直す目的で設定を変えないこと（Moto さんにも伝えた）。
+- 次：Codex が PR #33 をレビュー（Moto さんが急ぐなら先にマージしてもよいかは Moto さんの判断）→ マージで公開 → 実機でマイページの「計」を確認。PR #33 のあとに PR #32 をマージするときは `index.html`・`sw.js` の版の行がぶつかるので main（v1057）側を採る。
+
+## 2026-10-07 夜：UI案36 と hyper-worker v1056 を本番に入れた（Moto さん）・実機確認待ち
+
+- Moto さんの回答（18:2x HST）：UI案36 の一式を `1_追加のSQL`（`20261007200000`）→ `2_確認のSQL`（postcheck）→ 関数 `invoice-intake`（0a1daa7 の 1 ファイル）→ アプリ v1056 の順で全部入れた。hyper-worker v1056 も入れて、Aiea の 9/5 を取り込み直した（結果の詳しい報告・accounting_checks の値・全店 9/1〜昨日の取り直しは確認待ち）。
+- Claude が確かめたこと：main `1e5c505`（17:51 HST）の index・sw が v1056（md5 `7a477ba6…`・`e9e0df5b…`）と一致。関数 `invoice-intake` は鍵なしの GET に 405（18:2x HST。その直前の 1 回は 404 で、配備の切り替え中だったと思われる）。DB の中身は Claude からは見えない。
+- 念のため確かめたこと（合成データ・PGlite）：アプリ v1056 が古い SQL（`20261007160000` まで）に「自動」の部分保存を送っても、店舗は label の NOT NULL、業者は bad_value で止まり、フォルダ・宛名・業者名は何も変わらない（配備の順番を間違えてもデータは壊れない）。
+- hyper-worker v1056 は Codex のレビューを受けないまま本番に入った（小さな修正。レビューは引き続き任意）。本体はこのリポジトリに無い。
+- **セキュリティ**：hyper-worker の呼び出し元の確かめ方に問題があることを確かめた（本番では何も書いていない）。公開のリポジトリなので、中身はここに書かない（Moto さんに直接伝えた）。直すには呼び出し元の確認（アプリのログイン・cron の鍵）を足し、アプリ側の呼び出しも合わせる。ChatGPT 側と調整が要る。
+- handoff の再現：rebuild（md5 照合）成功・`run_all` 本物の FAIL 0・欠落 13 本。リポジトリ：関連 116/116（rules 15・adapters 5・intake 68・ui 7・`tests/review/*.mjs` 21）・`INVOICE_REVIEW_UPGRADE=1` 2/2・static release v1056 pass。
+- 次：Moto さんの実機確認（要確認の 4 項目の表・まとめて反映を 1〜2 件・1 件の画面・設定の「自動」・スマホ）、LaLa の Drive フォルダ（10/8 朝）、自動反映を ON にする時期（Moto さん）。
+
+## 2026-10-07 別件：Toast 取込（hyper-worker）の「integer に小数」エラーの修正（Claude・Codex のレビューはまだ・本番未反映）
+
+- 報告：Moto さん 10/7 15:46 HST。Aiea の「期間一括取り込み」で 2026/09/05 が「DB保存エラー: invalid input syntax for type integer: "61.000000000000014"」。指示「先に修正してください」（invoice の作業とは別）。
+- 原因：Toast の分割した商品の数量（0.5・0.33 など）を足すと小数の誤差が出る（例 61.000000000000014）。hyper-worker はその合計をそのまま整数の列（`toast_sales` の丼数など）へ保存するので、DB が拒否してその日が保存されない。数量に小数が無い日は起きない。
+- 修正：hyper-worker の `syncOneDay` で、整数の列へ入れる数（客数・件数・丼数・味噌汁・いくら丼など）を保存の直前に `Math.round`。`toast_item_sales` の数量は小数を残して誤差だけ丸める（小数 6 桁）。modifier の数量も丸める。変えたのは 5 か所だけ。
+- ソース：hyper-worker の本体はこのリポジトリに無い。handoff の `hyper-worker.v1032.ts` を元に作った 1 ファイル（Claude の手元）。本番が v1032 か v961 かは未確認（どちらでも差し替えられる。v961 なら 9/25 に決めた「0 時を過ぎた会計をディナーに」も入る）。
+- 試験（合成データ）：v1032 で丼数 61.00000000000001 になる注文が修正後は 61・小数の無い日は保存する値が 1 バイトも変わらない・商品の数量 2.5 は 2.5 のまま、など 16/16。Deno の型確認は Supabase クライアントを手元の代わりに置いて成功。
+- 本番：何も入れていない。1 ファイルは Moto さんに渡した。入れる順番：Edge Functions `hyper-worker` を差し替え（SQL 不要）→ Aiea の 9/5 を取り込み直し →（念のため）全店 9/1〜昨日を取り込み直し（同じ日を上書きするだけ）。
+- 次：Codex のレビュー（任意。小さな修正）。Moto さんが入れたあと、Aiea 9/5 が保存できたかを確認。
+
+## 2026-10-07 Codex 再レビュー：PR #32 0a1daa7（R6〜R8解消）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`0a1daa78a5bd20ae864de0bf8ec387f6acd2f7a9`。前回の記録commit `5c3ee39` 以降の差分と関連回帰を確認。
+- **判定：R6〜R8は解消。今回確認した範囲で新規の修正必須指摘0件。このcommitのSQL・関数・アプリv1056の反映に向けたコードレビュー上の阻害事項なし。** この判定は後続の実装変更には適用しない。
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5450489469 。接続アカウントがPR作成者本人のためCOMMENTとして記録（正式なGitHub APPROVEではない）。
+- R6：別名学習をinvoice_editと同じDBトランザクションに移し、vendor_saveと共通のadvisory lockを取得、最新行のaliasesだけへ追記。設定のスイッチは部分保存、編集画面はexpect_updated_atで競合を拒否。前回の再現に加え、handlerがcontextを読んだ後・SQL実行直前にCEOが停止と別名追加を保存する順序を確認：OFFと既存・追加・学習した別名を保持、古い編集画面は409、次のinvoiceは業者が決まりreviewのまま。
+- R7：旧line_value_missingを参考から外し、新しい数量・単価専用の理由はline_qty_price_missingに分離。実際の72cfcf8で明細金額を読めなかった伝票を作成→追加SQL適用でも、金額印は「!」・一括対象外・reviewを維持。line_amount_missing/旧line_value_missingは手動反映にもackが必要で価格履歴に入らない。追加確認：計上後に合計を変更すると新しいackが必要で、拒否時は元の金額・版を保持する。
+- R8：保存応答と読戻しのversionが違えば反映を止めて新しい内容を表示。追加確認：読戻し後に別担当者が変更する順序でも、postは保存・読戻しした版を送り、SQLのversion検査で拒否され、未確認の新しい金額はpostedにならない。
+- 実行：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/invoice-ui.test.mjs tests/review/*.mjs` **113/113成功**（15+5+68+7+18、追加試験を作成する前）。前回の独立再現 `invoice-pr32-accounting-repro.mjs` 3/3を含む。既存Codex再現ファイルはこの修正で変更されていない。
+- `INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**（3本のmigration）。追加した独立試験 `node --test tests/review/invoice-pr32-r6-r8-regression.mjs` **3/3成功**（上記113件とは別実行）。`python3 scripts/check-static-release.py` **pass/v1056**、構文と版整合の確認。`git diff --check`成功。
+- 追加SQLは5関数のCREATE OR REPLACEのみ。統合SQLと3本のmigrationの一致・再適用・既存データ/設定/鍵/権限の維持・anon/authenticatedの表/RPCアクセス不可をローカルで確認。役割・閉月・QB台帳/重複・数値処理・AI出力の許可項目・Drive整理先の関連回帰も成功。UI案36の承認済み方針（経理の4項目確認、商品/単価は参考）を維持。
+- 今回はmutation全件・Deno bundle・実ブラウザ表示は再実行していない。PGlite・合成データ・偽Drive/AI/メール・実UIモジュールのNode VMのみ。実AIの全プロンプト攻撃耐性や外部QuickBooks側の同一台帳利用は保証対象外。
+- 本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。本番の現在の運転状態は再確認していない。実装は変更せず、共有記録2ファイルと独立試験1ファイルのみ追加・更新。
+- 次：既存手順どおりMotoさんが `20261007200000` → postcheck（accounting_checks=true）→ 関数 → アプリv1056 → 実機確認。自動反映をONにする時期とQB外部経路の調整は別途Motoさんが判断。
+
+## 2026-10-07 Codex の指摘 R6〜R8（497a444）を修正（Claude・Codex の再レビューはまだ）
+
+- 対象：Codex のレビュー（497a444・下の節）。この記録は承認ではない。UI案36（経理は 4 項目だけ確かめる）の方針は変えていない。
+- R6：業者名の学習をアプリの関数から DB の `invoice_edit` の中へ移した（訂正と同じトランザクション）。`learn_alias` の印だけを受け取り、DB が鍵（`pg_advisory_xact_lock`）を取って、最新の業者の行に印字名を 1 つ足すだけ（自動の印・ほかの名前・種類は触らない）。名前の重なりの判定も同じトランザクションで、dedupe.mjs の aliasKey と同じ正規化（NFKC・小文字・空白）。イベント `vendor_alias_learned`。あわせて `invoice_vendor_save`・`invoice_store_save` を、送った項目だけを変える形にし（設定の「自動」の切り替えは自動の印だけを送る）、編集画面は開いたときの `updated_at` を送って、そのあとにほかの保存・学習があれば 409 conflict（古い画面で上書きしない）。業者の保存も同じ鍵を取る。
+- R7：古い読み取りの `line_value_missing`（金額が読めない場合も含む）は参考に入れない。数量・単価だけが読めない新しい理由は `line_qty_price_missing`（参考）にした。`line_value_missing` は `line_amount_missing` と同じく止める理由で、人の反映は「原本で確かめた」（ack）のあとだけ（`line_amount_missing` も同じにした）。どちらも価格の履歴に入らない。データの書き換えはしない（古い関数が残る配備の途中に入った記録も守れる）。訂正すると今のルールで付け直す。
+- R8：「この内容で反映する」は、保存の応答の版と読み直した版が違えば反映しない（新しい内容を出して、もう一度押してもらう）。反映はその人が保存して見た版でだけ送る。
+- 追加の SQL `20261007200000` は関数 5 つ（invoice_price_insert・invoice_post・invoice_edit・invoice_store_save・invoice_vendor_save）。postcheck の accounting_checks は 5 つすべてを見る。`db/invoice-intake.sql` は 3 つの migration を重ねたものと 1 文字も違わない（試験）。
+- 試験（合成データ）：Codex の再現 `tests/review/invoice-pr32-accounting-repro.mjs` 3/3。関連 113/113（rules 15・adapters 5・intake 68・ui 7・`tests/review/*.mjs` 18）・`INVOICE_REVIEW_UPGRADE=1` 2/2・mutations 58/58（守り 58 か所。57 か所は全件の実行で、C5 の 1 か所は目印を今の SQL に合わせたあと単独で実行）・`deno bundle` の 1 ファイルで結合 68/68、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403・static release v1056。handoff：verify_v1056 84/84・本物の画面 check_invin_v1056 85/85・pageerror 0。自分で足した試験：古い line_value_missing は自動にならず ack が要る／明細の金額が読めない invoice は ack が要る／学習は最新の行に足すだけ（同時に止めた業者は止まったまま・あとで足した名前も残る）・別の綴りでほかの業者が持つ名前は覚えない／切り替えは印だけ・古い画面の保存は 409（業者・店舗）／画面：保存後に版が変わったら送らない。
+- 本番：何も入れていない。入れる順番は変わらない（SQL → postcheck（accounting_checks true）→ 関数 → v1056）。
+- 次：Codex が最新 head を再レビュー → OK なら Moto さんが入れる。
+
+## 2026-10-07 Codex レビュー：PR #32 497a444（UI案36・修正必要）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`497a444ca2200c9b30b1b142e3104f3e6a6f3b1f`。UI案36・アプリv1056・追加SQL `20261007200000`。
+- **判定：修正必要。追加P1 3件（R6〜R8）。このheadの配備・マージを可とするレビューではない。**
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5450061653 （行コメント3件）。接続アカウントがPR作成者本人のためCOMMENTとして記録。
+- **R6 [P1]** `handler.mjs:460–461`：業者名の自動学習がctxの古い業者行を全置換し、同時更新された運転設定・別名を消す。GMのinvoice訂正中にCEOがauto_post=falseと別名追加を保存→学習が古いtrue・別名配列を保存→次のinvoiceが自動postedとなった。別名だけを最新行へ原子的に追加し、運転設定などを変更しない。名前の競合判定も保存と同じトランザクションで行う。
+- **R7 [P1]** 追加SQL38–39行・UIのINFO分類：旧line_value_missingは数量/単価だけでなく明細金額/値引きの読取失敗も含む。72cfcf8の実rules/handler/SQLで明細amount='6O.OO'を取込（amount_cents=null、review）→追加SQLを適用→v1056 UIでは金額ok・一括反映可能true・初期選択され、batch postでpostedとなった。新規取込のline_amount_missingだけでは旧伝票は保護されない。既存理由の互換処理または新しい数量/単価専用の参考コードが必要。
+- **R8 [P1]** `index.html:44831–44835`：「この内容で反映する」がsaveの返却versionを捨て、getの最新versionでpostする。$60を表示して番号だけ訂正・保存v2→別担当者が合計/小計/明細を$120へ更新v3→get→post(version=3)で、最初の担当者が見ていない$120を計上した。保存結果と読戻しのversionを照合し、違えば再表示・再確認する。DBの版チェックを最新versionで迂回しない。
+- 新規独立再現：`tests/review/invoice-pr32-accounting-repro.mjs`。`node --test tests/review/invoice-pr32-accounting-repro.mjs` **0/3、3件の期待動作assertionが失敗**。実handler/SQL/index.htmlのUIモジュール、ローカルPGlite、合成データ・偽Drive/AI/メールだけ。R7はgit履歴の72cfcf8を読み、実際の旧版取込→追加SQLを検証する（そのcommitを含むgit履歴が必要）。
+- 既存試験：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/invoice-ui.test.mjs tests/review/*.mjs` **106/106成功**（15+5+65+6+15、新再現追加前）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**（3本のmigration）。`python3 scripts/check-static-release.py` **pass/v1056**。
+- 3関数置換と統合SQLの一致・既存16表/65関数の権限/SECURITY INVOKER/search_path・追加SQL再適用・閉月/重複/QB台帳/不確かな明細を価格履歴に入れない条件の関連試験は成功。Claudeが変更したCodex試験3ファイルも確認：確認モードを明示する変更と、C3bを「数量×単価は参考、不整合明細は価格履歴に入れず、金額差は再確認」とする変更は、記録されたUI案36の業務方針と整合。C3a・R1〜R4などの再現も成功。
+- 今回はmutation全件・Deno bundle・実ブラウザ表示は未実行。UIは実モジュールをNode VMで動かし、R7/R8は実handler/SQLへ接続。実AIの全プロンプト攻撃耐性や外部QuickBooks側の同一台帳利用は証明対象外。
+- 本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。実装は変更せず、記録と再現テストのみ追加。本番の運転状態は既存共有記録どおりに扱い、今回確認していない。
+- 次：ClaudeがR6〜R8修正→新再現と関連試験を成功させる→修正後の最新headをCodex再レビュー→OK後にMotoさんがSQL→postcheck→関数→アプリの順で反映。経理の4項目確認・商品/単価は参考とする業務方針は維持。
+
+## 2026-10-07 UI案36：経理の確認は 4 項目（Claude・実装済み・Codex のレビューはまだ・本番未反映）
+
+- 依頼：Moto さん 10/7 13:05 HST「経理側の確認は 業者名 invoiceナンバー 金額 配達店舗 の確認です。対応する商品や単価は確認しません。これだと今の仕様だと商品選択等に手間が取られ過ぎます。スムーズに確認作業を進められる仕様にしてください」→ Claude が UI案36（要確認の表・1 件の確認・設定）を出す → 13:14「実機で確認します 進めてください」。この記録は承認ではない。
+- サーバー（`invoice/rules.mjs`・`handler.mjs`・SQL）：
+  - 理由を 3 つに分けた。**経理が確かめる理由**（業者・番号・金額・店舗・日付・書類の種類・読み取り・重複・開始前：1 つでもあれば要確認）／**参考 `INFO_REASONS` 16 個**（商品・単価・数量：反映を止めない。価格の履歴に入れる条件は今までどおり）／**確認モード**（店舗・業者をまだ「自動」にしていないだけ）。
+  - 自動反映（worker の autoEligible・DB の invoice_post の自動）は「参考以外の理由が 0」＋店舗・業者が「自動」＋開始後。商品ごとの確認済み・自動の条件は外した。
+  - 明細の「読めない」を分けた：金額が読めない → `line_amount_missing`（止める・価格の履歴に入れない）／数量・単価だけ読めない → `line_value_missing`（参考）。
+  - 人の反映：直す理由から line_value_missing・no_lines、確かめる理由から line_math を外した（参考になったため）。
+  - 業者を選ぶと、印字された名前をその業者の別名として覚える（業者が決まっていなかった書類で、ほかの業者が持たない名前だけ）。
+  - 追加の SQL `supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql`（invoice_price_insert・invoice_post・invoice_edit の 3 関数だけ）。`db/invoice-intake-postcheck.sql` に accounting_checks。
+- アプリ v1056：要確認は 4 項目（＋日付）の表（✓ ? !）・「確認すること」は何をするかを 1 行で・確かめることが無い行は最初からチェック → まとめて反映（確認の画面のあと 1 件ずつ版つき、理由「経理の確認（業者・invoice番号・金額・店舗）」、失敗した行は残る）。1 件の画面は「経理の確認（4 項目）」だけ・明細はたたむ。「この内容で反映する」は保存 → 読み直し → 反映。設定：自動反映の条件、業者ごとの「自動」と「マスターの業者をすべて「自動」」・「取込中の店舗をすべて「自動」」（GM・CEO・確認の画面つき）。対応表は価格の履歴用。
+  - ついでに直した v1055 の不具合：明細の理由の言葉が空だった（サーバーは文字の配列）、店舗の編集の保存で address_group が消えた。
+- **Codex が書いた試験を Claude が UI案36 に合わせて直した**（`tests/review/invoice-pr32-codex-repro.mjs`・`-rereview.mjs`・`-date-override-repro.mjs`：店舗を確認モードにしてから要確認を確かめる NOTE、C3b は「数量×単価は参考・合計の変更は確かめる」に書き直し、upgrade は 3 つの migration）。Codex に確かめてほしい。
+- 試験（合成データ・本番データ不使用）：rules 15・adapters 5・intake 65・ui 6（新規 `tests/invoice-ui.test.mjs`：index.html の本体を VM で）・`tests/review/*.mjs` 15・`INVOICE_REVIEW_UPGRADE=1` 2/2・mutations 51/51（守りを外すと試験が落ちる。UI案36 の 5 か所を足した）・`deno bundle` の 1 ファイルで結合 65/65、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403・static release v1056 成功。handoff：verify_v1056 81/81・本物の画面 `render/check_invin_v1056.py` 85/85・pageerror 0（本物の handler と SQL を PGlite で：まとめて反映・ほかの人が先に更新した行は残る・業者を選んで反映・印字名を覚える・合計の差は確かめてから・Statement は対象外・設定の「自動」・自動反映 ON で新商品と値上がりのある invoice が自動で反映・スマホ）。
+- 本番：何も入れていない（DB・関数・アプリ・設定・Drive・メールに触れていない）。前回の関数の 1 ファイル（R1〜R4・72cfcf8）を Moto さんが入れたかは未確認。
+- 入れる順番（Codex の OK のあと・Moto さん）：SQL `20261007200000` → `db/invoice-intake-postcheck.sql`（accounting_checks が true）→ 関数 `invoice-intake` を差し替え → アプリ v1056。SQL が先（新しい関数の自動反映は新しい SQL でないと通らない）。そのあと GM・CEO が店舗・業者を「自動」にし、「確認の要らない invoice は自動で反映する」を ON（いつ ON にするかは Moto さん）。
+- 記録漏れの追記：72cfcf8 の mutation 全件（当時 46 ケース）は Claude の手元で全件成功（Codex の記録では全件は未実行）。
+
+## 2026-10-07 Codex 再レビュー：PR #32 72cfcf8（R4・R5解消）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`72cfcf8c8023eda9f930320430b0fa59373da508`。
+- **判定：R4・R5は解消。今回の差分と回帰確認の範囲で新規の修正必須指摘0件。このheadの関数差し替えに向けたコードレビュー上の阻害事項なし。**
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449396764 。接続アカウントがPR作成者本人のためCOMMENTとして記録（正式なGitHub APPROVEではない）。
+- R4：`overrides.invoice_date`がある請求日は保持。独立再現 `tests/review/invoice-pr32-date-override-repro.mjs` は1/1成功。手動確定した請求日9/30と納品日9/30が一致していても、計上後に納品日だけ10/1へ訂正すると請求日9/30・posted・mirrorのdocDate 2026/09/30を維持する。
+- R5：日付条件のmutationアンカー修正を確認。全46ケースの57置換箇所が各1回一致。元のrun関数で日付fallback・R1・R4の3ケースを単独実行し、3件とも保護を外すと試験が失敗することを確認。mutation全46ケースの実行は今回行っていない。
+- **運用メモ：訂正で一度保存された請求日は固定。** 人が直接入力した日付だけでなく、最初の納品日訂正に合わせて自動保存された請求日も対象。納品日10/6→10/5では請求日も10/5、その後納品日10/4へ再訂正しても請求日は10/5を維持する。納品日を再訂正する際は請求日も確認し、必要なら明示的に訂正する。この動作は今回の文書・試験と一致している。
+- 実行：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/*.mjs` **91/91成功**（13+5+58+15）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**。通常経路も91件に含む。全アンカー検査57/57・対象mutation3/3成功・`git diff --check`成功。
+- 前回R1〜R3、C3a/C3b、以前の権限・役割・閉月・QB台帳・数値検算・AI許可項目・Drive整理先の関連回帰試験も成功。SQL本体/migration・アプリv1055は前回から不変。Deno bundle・実ブラウザ表示は今回再実行していない。実AIの全プロンプト攻撃耐性、外部QuickBooks側の同一台帳利用は今回の証明対象外。
+- 今回は本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。ローカルPGlite・合成データ・偽サービスのみ。実装コード・既存再現テストも変更していない。
+- 次：Motoさんがこのheadの関数`invoice-intake`を1ファイルで差し替え・適用確認（今回SQL・アプリ変更なし）。確認モード運転、業者/商品ごとの自動反映判断、QB外部経路調整待ちは維持。本番適用の確認はこのコードレビューとは別。
+
+## 2026-10-07 Codex の指摘 R4・R5（362b674）を修正（Claude・Codex の再レビューはまだ）
+
+- 対象：Codex の再レビュー（362b674・下の節）。この記録は承認ではない。
+- R4：請求日の印字が無い invoice で納品日から請求日を取るのは、訂正で請求日が一度も保存されていない（`overrides.invoice_date` が無い）ときだけにした。訂正で保存された請求日（人が入れたもの、納品日に合わせて保存されたもの）は、値が何であっても、そのあとの納品日だけの訂正で動かさない。由来は SQL を変えずに `overrides` の有無で区別する（取込のときに納品日から入れた日付は `overrides` を持たない）。そのため、納品日に合わせて保存したあと、もう一度納品日だけを直したときは請求日は動かない（必要なら人が請求日を直す）。
+- R5：`tests/invoice-mutations.test.mjs` の請求日の守りの置き換えの目印を今のコードに合わせた。
+- 試験（合成データ）：Codex の再現 `invoice-pr32-date-override-repro.mjs` 1/1・`invoice-pr32-reading-repro.mjs` 3/3。自分の試験：intake 58（R4：人が入れた請求日が納品日と同じになっても、計上後に納品日だけ直したとき請求日・アプリの写しの日付が動かない／納品日に合わせて保存した日付も同じ）。関連 91/91（rules 13・adapters 5・intake 58・`tests/review/*.mjs` 15）・`INVOICE_REVIEW_UPGRADE=1` 2/2。`deno bundle` の 1 ファイルで結合 58/58、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403。SQL・アプリは変えていない。
+- 次：Codex が最新 head を再レビュー → OK なら Moto さんが関数 `invoice-intake` を 1 ファイルで差し替え（SQL 不要）。
+
+## 2026-10-07 Codex 再レビュー：PR #32 362b674（R1〜R3解消、追加指摘R4/R5）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`362b6747cdb1605bf84179ce26f7a33024ed157b`。記録直前のPR headも同じ。
+- **判定：修正必要。前回R1〜R3は解消、追加P1 1件・P2 1件。この読み取り修正版の配備・マージを可とするレビューではない。**
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449208977 （行コメント2件）。接続アカウントがPR作成者本人のためCOMMENTとして記録。
+- **R4 [P1]** `handler.mjs:359`：請求日と納品日の一致だけで納品日由来とみなし、手動確定した請求日まで動かす。合成伝票（請求日の印字なし・納品日10/6）で、officeが請求日を9/30に確定→納品日を9/30に訂正→post→納品日だけ10/1に訂正すると、HTTP 200で請求日まで10/1に上書き、postedを維持、mirrorのdocDateも2026/09/30から2026/10/01へ移った。`overrides.invoice_date`より先にderived=trueになるため。人の確定と自動補完を由来で区別して保持する。自動補完の保存もoverrideを作るため、override確認の順序変更だけでは正しい納品日追従を止め得る。これは開いている月間の誤変更であり、閉月ガード迂回の指摘ではない。
+- **R5 [P2]** `tests/invoice-mutations.test.mjs:109`：日付条件の置換アンカーが旧式のまま。`rules.mjs:163`に`&& ctx.dateFallback !== false`が追加されたので一致0件。同じrun関数で対象ケース「an unreadable invoice date is replaced by the delivery date」を単独実行し、`mutation anchor must exist once` / `0 !== 1`を確認。保護を外す検証の前に失敗する。アンカーを現コードに合わせる必要がある。
+- R1〜R3の再現は3/3成功：読めない印字の請求日は期日訂正後も409、単価末尾/LBは訂正後も保持して誤ったCS価格履歴を作らない、数量末尾CSを確認済み対応表へ渡す。C1〜C6/C3a/C3bの既存確認の解消も維持。
+- 実行：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/*.mjs` **89/89成功**（13+5+57+14、R4再現追加前）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**。通常経路も上の89件に含む。
+- 新規再現：`node --test tests/review/invoice-pr32-date-override-repro.mjs` **0/1、期待動作assertion失敗**。実handler/SQL・ローカルPGlite・偽Drive/AI/メール・合成データだけ。請求日とmirrorの9/30維持を検査する。実装コードは変更していない。
+- mutation全件・Deno bundle・実ブラウザ表示は今回再実行していない。mutationはR5の対象1件を同じrun関数で単独実行。SQL本体/migration・アプリv1055は前回から不変。実AIの全プロンプト攻撃耐性や外部QuickBooks転送の同一台帳利用は今回証明していない。
+- 今回は本番への接続・書込み・配備・運転変更・Drive操作・実メール送信・マージなし。本番の状態は共有記録どおり確認モード開始済みとして扱い、直接確認していない。
+- 次：ClaudeがR4/R5を修正→新再現とmutationを含む関連試験を通す→最新headをCodex再レビュー→OK後にMotoさんが関数差し替え。請求日の印字が無いときだけ納品日を使うMotoさんの決定、業者・商品ごとの自動反映判断、QB外部経路調整待ちは維持。
+
+## 2026-10-07 Codex の指摘 R1〜R3（2544826）を修正（Claude・Codex の再レビューはまだ）
+
+- 対象：Codex のレビュー（2544826・下の節）。この記録は承認ではない。
+- R1：訂正のときの請求日は `invoiceDateInput`（handler）で決める。人が今入れた日付はそのまま。AI の読みに請求日の印字が無い（`ai_doc.invoice_date_text` が空）ときだけ納品日に合わせる（保存済みの請求日が納品日と同じ＝納品日から来たものなら、直した納品日にも合わせる）。それ以外は保存済みの日付、保存が無ければ AI の印字のまま判定するので、読めない・食い違う印字の日付は人が直すまで date_unreadable / date_disagree のまま（反映は 409）。AI の読みが無い記録では納品日で埋めない（`ctx.dateFallback=false`）。納品日から来た日付が保存値と違うときだけ、その訂正と一緒に保存（保存値と理由を合わせる。人が入れた別の日付は動かさない）。
+- R2：訂正の再判定で、取込のときに保存した `price_unit`・`weight`・`weight_unit`（「$60.00/LB」から読んだ LB を含む）を使う（以前は AI の元の欄だけ）。catch_weight が消えず、LB 単価がケース単価として価格履歴に入らない。
+- R3：「2 CS」の CS を商品の対応表の照合（通常・人が選んだ対応の両方）に使う。
+- 試験（合成データ）：Codex の再現 `tests/review/invoice-pr32-reading-repro.mjs` 3/3。自分の試験を足した：intake 57（R1 は読めない日付と食い違う日付の両方・人が入れると通る／納品日だけの invoice は直した納品日に合わせるが人が入れた日付は動かさない／R2・R3 は訂正のあとも）。4 件とも 2544826 では落ちる。rules 13。mutations は R5（下の節）で目印を直したあとに全体を実行。`tests/review/*.mjs` 14/14・`INVOICE_REVIEW_UPGRADE=1` 2/2。`deno bundle` の 1 ファイルで結合 57/57、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403。SQL・アプリは変えていない。
+- 次：Codex が最新 head を再レビュー → OK なら Moto さんが関数 `invoice-intake` を 1 ファイルで差し替え（SQL 不要）。
+
+## 2026-10-07 Codex レビュー：PR #32 2544826（読み取り修正に指摘3件）
+
+- 担当：Codex（Claudeの実装から独立）。対象：`2544826327a8f3112a00bb1739189ca42fbf9797`。記録前の最新head `32dfc0777ec8d9d36666bfa9dd333088c61bd3a2` は試験結果の文書2行の追記のみで実装同一。
+- **判定：修正必要、P1 2件・P2 1件。この読み取り修正版の配備・自動反映開始は未承認。** 前回356e456のC3a/C3b修正の解消は維持。
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5449040739 （行コメント3件）。接続がPR作成者本人のためCOMMENTで記録。
+- **R1 [P1]** `handler.mjs:407`：読めない印字の請求日まで納品日に置き換わる。合成原本の請求日09/??/2026・納品日10/06はdate_unreadableで止まるが、期日だけeditするとrecheckが保存値nullを印字無しとみなし、請求日10/06を補完してエラーを消す。その後post200、価格履歴1行。元の印字・理由を保持し、date_unreadable/date_disagreeは人が請求日を直すまで補完しない。月の判定にも影響する。
+- **R2 [P1]** `rules.mjs:219` と `handler.mjs:368`：単価末尾から取得した単位が訂正時に失われる。数量2 CS・単価$60.00/LB・price_unit=null・明細$120はLB/catch_weightで保存されるが、期日だけeditすると数値60とraw.price_unit=nullで再評価され、catch_weightが消える。postすると$60/CS・$0.01/gの価格履歴が作成された。読み取って保存したprice_unitを再検証へ引き継ぐ必要がある。
+- **R3 [P2]** `rules.mjs:209,251-252`：数量の末尾から得たqtyUnitをマッピングに渡していない。qty='2 CS'・unit=nullはpurchase_unit=CSで保存されるが、確認済みCS対応でもunit_unverifiedとなる。通常/指定マップ双方で読み取った単位を照合し、自動反映・価格履歴を不要に止めないようにする。
+- 新規再現：`tests/review/invoice-pr32-reading-repro.mjs`（実handler/SQL、PGlite、偽Drive/AI/メール、合成データのみ）。R1/R2/R3の期待動作assertionが3件失敗。
+- 実行：既存 `node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/*.mjs` **80/80成功**（12+5+52+11、新再現追加前）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**。新再現は `node --test tests/review/invoice-pr32-reading-repro.mjs`。mutation42件・Deno bundle・実ブラウザ表示は今回再実行していない。
+- 今回は本番への接続・書込み・配備・運転変更・Drive操作・メール送信・マージなし。共有記録では本番は確認モードで運転開始済みとして扱う。SQL本体/migration・アプリv1055は前回レビューから不変。追加start/stop SQLは静的確認のみ。本番で試していない。
+- 次：ClaudeがR1/R2/R3を修正→新再現を成功させる→最新headを再レビュー→OK後に関数差し替え。請求日の印字が無いときだけ納品日を用いるMotoさんの決定、全店確認モード、QB外部経路調整待ちは維持。
+
+## 2026-10-07 本番の最初の invoice で見つかった読み取りの修正（Claude・Codex のレビューはまだ）
+
+- 本番：10/7 09:40 HST ごろ Moto さんが運転を始め（開始日時は 10/7 中・取込 ON・確認モード）、Marujuu の店舗スタッフが入れた最初の本物の invoice（青果の業者）が Drive→AI→要確認まで通った。自動では反映していない（Food Cost には入っていない）。Drive 接続 OK。
+- 不具合：3 行とも「数量・単価・金額が読めない明細」（明細の合計 $0.00）。Moto さんが読むだけの SQL で AI の読み（`invoice_lines.raw`）を見せてくれた：AI は正しく読んでいて、単価が「$3.52/LB」のように単位付き。こちらの数字の受け取りが厳密すぎた（`parseScaled` は数字だけ）。印字の重さ「15 LB」も数量の繰り返しなのに catch_weight 扱い。請求日の印字が無く納品日だけで date_missing（必ず人の入力・自動にできない）。
+- Moto さんの決定（10/7 11:40 HST）：**請求日の印字が無い invoice は、読める納品日を請求日に使う**。印字はあるのに読めない・食い違うときは今までどおり人が直す。
+- 修正（`invoice/rules.mjs`・`handler.mjs`）：数量・単価は「15 LB」「$3.52/LB」「3.52 per LB」を読む（数字は同じ厳密な解析。単位は行が示す単位と同じときだけ外す。行に単位が無ければその単位を使う。違えば読めない扱い。金額は単位付きを受けない。「12.34CR」は先に貸方として読む）。重さが数量と同じ値・同じ単位なら catch_weight にしない（違う重さ・違う単位・読めない重さ・単価の単位が数量と違う、は今までどおり catch_weight）。請求日の印字が無く納品日が読めれば請求日＝納品日（`invoice_date_basis`）。修正前に入った記録は、次の訂正の保存で納品日を請求日として保存（保存値と理由がずれないように。確認待ちの記録だけ）。AI への依頼文（PROMPT_VERSION）は変えていない。
+- 試験（合成データ・同じ形の値）：rules 12・intake 52（新しい 2 件は修正前のコードで落ちる）・mutations 42/42（守り 41 か所。今回の 4 か所を足した）・adapters 5・`tests/review/*.mjs` 11/11・`INVOICE_REVIEW_UPGRADE=1` 2/2。`deno bundle` の 1 ファイル（配備用）で結合 52/52、起動して GET 405・OPTIONS 204・ログイン無し 401・ほかのサイト 403。配備済みの 1 ファイルとの差は上の修正だけ（diff で確認）。SQL は変えていない。
+- 修正前に取り込んだその 1 枚は読み直さない（記録の単価は空のまま）：人が単価を入れて確認・反映する。
+- 次：Codex が最新 head をレビュー → OK なら Moto さんが関数 `invoice-intake` を差し替え（SQL は不要）。自動反映（業者・商品ごと）は、この修正の Codex の OK と、各業者の invoice がきれいに読めることを見てから。
+
+## 2026-10-07 PR #32 の修正を本番に入れた（Moto さん）・運転開始の準備
+
+- 08:32 HST：Moto さんが v1055 を main に貼った（9210065。index md5 235b148d…・sw 4ef485fb…・Claude が照合）。続けて `20261007160000`（6 関数）→ 確認の SQL → 関数 `invoice-intake` の差し替え。Moto さんの報告：SQL はすべて成功・関数を Deploy 済み。関数は GET に 405（Claude が確認）。
+- 08:44 HST：「Invoice取込」→「設定」が開き、運用はすべて OFF（取込・自動反映・原本の整理・アプリへの写し）、開始日時は空、未処理 0・要確認 0・エラー 0、「Drive 未確認」（まだ一度も動いていないため）。その前の「更新を押しても設定が開かない」は、「更新」は今のタブを読み直すだけで、設定は右端の「設定」タブ（手順書の書き方が紛らわしかった）。
+- 運転開始の準備：`db/invoice-intake-start.sql`（`worker.enabled=true`＋5 分ごとの cron＋確認の 1 行。鍵は表示しない）と `db/invoice-intake-stop.sql` を追加。PGlite に cron・pg_net の模擬を置いて、2 回流しても同じ・cron の 1 回分で鍵が一致して worker を呼ぶ・止めたあとは呼ばない・鍵は変わらない、を確認。本物の pg_cron では未実行。
+- 順番（全店・確認モード）：業者の候補 → 対応表の候補 → 6 店「この店舗の 00_Upload を取り込む」→ 運用：開始日時・取込 ON・アプリへの写し ON（自動反映 OFF）→ start の SQL → 取込状況で「最終の正常取込」と Drive を確認 →（開始日時を過ぎてから）各店「出す」→ 00_Upload だけを店舗に共有 → 告知（Moto さん）。開始前に「出す」と、その間の invoice はアプリへ写されない（v1055 は開始日時が過ぎたかを見ない。直すなら次の版で）。
+- Claude の提案（決定ではない）：最初の数日は原本の整理 OFF、開始前に登録済みの過去の invoice を 1 枚だけ試して「対象外にする」。開始日時は Moto さんが決める（Claude の案は 10/8 0:00 HST）。QuickBooks は外部の転送と合わせるまで OFF。
+
+## 2026-10-07 Codex 再レビュー完了：PR #32 head 356e456（C3a/C3b解消）
+
+- レビュー担当：Codex（Claudeの実装から独立）。対象：`356e4569164d9eefcde94dfbd081f0cecd106ecb`、修正 `45f14a6`。
+- **判定：C3a・C3bは解消。今回の修正範囲で追加指摘0件、コードレビュー上の阻害事項なし。** 前回のC1/C2/C4/C5/C6の解消も維持。以下の「修正待ち・再レビュー未」は過去の時点の記録。
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5446609335 。接続アカウントがPR作成者本人のためCOMMENTで記録。Codexの判定とGitHubの正式APPROVE状態は区別する。
+- C3a：USD→JPYだけの訂正は409/blocked:currency、保存値はUSDのまま。C3b：既確認の数量不一致を2→200へ訂正（ackなし）すると409/blocked:line_math、数量は2のまま。新たなack付き訂正は保存でき、番号・期日のような金額を変えない訂正も正常。拒否時にversion・明細・価格履歴・アプリ写しが変わらないことも確認。
+- `db/invoice-intake.sql` と元の `20261007090000`＋追加 `20261007160000` の両方で検証。追加SQLは6つのCREATE OR REPLACEのみ、統合SQLと一致。既存行・設定・権限の維持と再適用のテストも成功。1301623からの実装差分は両SQLのinvoice_editのみ。Edge Function、invoice/*.mjs、アプリv1055は変更なし。
+- Codex実行結果：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/*.mjs` **78/78成功**（11+5+51+11。指定の再現テスト通常2/2を含む）。`INVOICE_REVIEW_UPGRADE=1 node --test tests/review/invoice-pr32-codex-rereview.mjs` **2/2成功**。`git diff --check` 成功。前回の再現コードは変更せず使用。mutation全件・Deno bundle・実ブラウザ表示は今回再実行していない。
+- 本番への接続・書込み・配備・運転ON・マージなし。既定の配備手順（このheadの追加SQL→postcheck→修正済み関数の差替え→v1055）へ進むためのコードレビューは完了。本番への適用確認は別途必要。全6店・確認モードの決定を維持。外部QuickBooks転送の同一台帳利用は未確認のため、QBは調整完了までOFF。
+
+## 2026-10-07 Codex 再レビューの C3a・C3b を修正（Claude）・再々レビュー待ち
+
+- 実装：Claude。対象：Codex の再レビュー（1301623・下の節）。修正：`45f14a6`（`db/invoice-intake.sql` と `20261007160000` の invoice_edit。関数のコードは変えていない）。**Codex の再レビューはまだ**（この記録は承認ではない）。
+- C3a：反映済みの訂正はすべて反映と同じ条件で確かめる（金額・明細の訂正だけでなく）。通貨を money_fields に入れた。C3b：金額・通貨・書類の種類・明細のどれかが変わったら、反映のときの確認は使わずにもう一度 ack。どれも変わらない訂正は前の確認のまま。
+- 試験（合成データ）：rules 11・adapters 5・intake 51（C3a/C3b を全体の SQL と最初の migration＋修正の両方で。6b7682c では 4 件とも落ちる）・`tests/review/*.mjs` 11/11・`INVOICE_REVIEW_UPGRADE=1` の再レビュー 2/2・mutations 38/38（守り 37 か所）・Deno 25・1 ファイルの handler で結合 51・本物の画面 Invoice取込 55（v1055）。
+- 本番への入れ方は変わらない（`20261007160000` の 6 関数・関数の 1 ファイルは前回と同じ中身・アプリ v1055）。追加の SQL は 1301623 のものから invoice_edit だけ変わった。
+
+## 2026-10-07 Codex 再レビュー：PR #32 head 1301623（C3 に修正残り）
+
+- レビュー担当：Codex（実装者 Claude とは独立）。対象：`1301623dabaee010b8452d07907e106f0485845f`。修正 `0c96e15`・`4f17955`、アプリ v1055 / UI案35（`262dcd2`）を含む。
+- 判定：**修正必要。C1・C2・C4・C5・C6 は今回の確認範囲で解消。C3 は部分修正で、P1 が2件残る。運転開始・マージの承認なし。**
+- PR記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5446047714 （追加migrationへの行コメント2件）。接続アカウントはPR作成者本人なのでCOMMENTとして記録。APPROVEではない。
+- **C3a [P1]** `invoice_edit` の必須修正チェックは `affects or touched_price` のときだけ。`currency` は money_fields にないため、反映済みUSD伝票をofficeのedit APIでJPYに変更するとHTTP 200、postedを維持、currency理由だけ付く。既存価格履歴・アプリのUSD金額は残る。計上可否の検証を価格再構築の条件から分離する。追加SQL158–160行、統合SQL656–658行。
+- **C3b [P1]** `d.reasons @> jsonb_build_array(r)` では「既に確認した不一致の値が変わっていない」を判定できない。line_mathはcode/line_noのみ。数量2×単価60・明細額60をackして計上後、数量を200に訂正（ackなし）してもHTTP 200、価格履歴再構築・mirror再処理へ進む。関連数値が変われば新たなackが必要。total_mismatchの固定detail `lines_vs_subtotal` も同じ比較では不十分。追加SQL162行、統合SQL660行。
+- 新しい再現コード：`tests/review/invoice-pr32-codex-rereview.mjs`。統合SQLと、**元の20261007090000＋追加20261007160000**の両方でC3a/C3bの安全性assertionが2件とも失敗。本番へ適用する追加SQLにも残る問題。実装コードは変更していない。
+- 合成データの検証：`node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs tests/review/invoice-pr32-codex-repro.mjs` は **67/67**（11+5+46+5）。前回の再現5件はすべて成功。`node --test tests/invoice-mutations.test.mjs` は **36/36**（35か所）。`node --test tests/review/invoice-pr32-v1055.test.mjs` は **4/4**（実UI関数をNode VMで実行、Drive店の種別/保存抑止、公開権限と運転条件、日英の一覧分離）。`python scripts/check-static-release.py` は **pass/v1055**。
+- 追加SQLは6つのCREATE OR REPLACEのみ。既存行・設定保持、再適用、16表/65関数のanon/authenticated不可、SECURITY INVOKER/search_pathの試験は成功。役割、閉月、数値検算、AI出力の許可項目、Drive整理先再確認、QB台帳の重複/unknown再送防止も既存試験と差分を確認。
+- 範囲の限界：今回は本番への接続・書込みなし（DB/設定/Drive/メールすべて無変更）。実ブラウザ表示・Deno bundleを今回は再実行していない。実AIへの全プロンプト攻撃耐性や、外部QuickBooks転送側の同一台帳利用は証明していない。
+- 次：ClaudeがC3a/C3bを修正（追加migrationと統合SQLの両方）→上記再現を通常と `INVOICE_REVIEW_UPGRADE=1` で成功させる→最新headをCodex再レビュー。全6店・確認モードで開始するMotoさんの決定は維持し、修正完了後へ。QBは外部経路の調整までOFF。
+
+## 2026-10-07 Codex 指摘 C1〜C6 の修正（Claude）・UI案35 承認・全店で開始の決定
+
+- 実装：Claude。対象は Codex のレビュー（1851593・下の節）。修正のコミット：`0c96e15`（C1〜C6）・`4f17955`（original_replaced の detail を書類 ID に）・`262dcd2`（アプリ v1055）。**Codex の再レビューはまだ**（この記録は承認ではない）。
+- サーバー：C1 QB の候補と台帳に載せるとき、今の内容が読まれ・書類になり・重複の判定が済んだものだけ／C2 訂正のときも既存アプリの記録と照らし直す／C3 反映済みの訂正は反映と同じ条件（新しい不一致は ack）／C4 覚えている整理先フォルダは Drive で同じ名前・決まった親の中にあるときだけ使う（違えば作り直して記録を差し替え・event folder_replaced）／C5 同じファイルの新しい内容は original_replaced で必ず人の確認（supersede か ack。決めるまで転送しない）／C6 確認 SQL はこの migration の 16 表・65 関数の名前だけ（invoice_uploads は参考表示）。
+- 本番への入れ方：本番は 20261007090000 適用済みなので、`supabase/migrations/20261007160000_invoice_intake_review_fixes.sql`（関数 6 つの create or replace だけ・権限はそのまま）＋関数の差し替え＋アプリ v1055。`db/invoice-intake.sql` は 2 つを重ねたものと 1 文字も違わない（tests/invoice-rules の試験）。
+- 試験（合成データ）：rules 11・adapters 5・intake 46（C1〜C5 は 1851593 で 5 件とも落ちる）・Codex の再現 5/5・Deno 24・1 ファイルにした handler で結合試験 46・mutations 36（守り 35 か所。C1〜C5 の 7 か所を足した）。アプリ v1055：verify 45・本物の画面 Invoice取込 55・レシート管理 14・pageerror 0。
+- Moto さんの決定（10/7）：**試験は最初から全店（6 店）で確認モード**。**UI案35 で OK**（食材管理の「Invoice管理」→「レシート管理」。GM・CEO が「出す」にした店舗はアプリで業者 Invoice を登録しない。出していない店舗は出すまで今までどおり）。Drive の提出フォルダが無い店舗のうち稼働中は LaLa だけで、Moto さんが 10/8 朝にフォルダを追加する（Kapolei・FSP・Garlic Shack は今は稼働していない）。
+- 次：Codex が最新 head を再レビュー → OK なら Moto さんが追加の SQL・関数・v1055 を入れる → 業者・対応表の候補 → 開始日時・取込とアプリへの写しを ON・cron → 各店「出す」→ 店舗への告知（Moto さん）。QuickBooks は ChatGPT 側と合わせるまで OFF。
+
+## 2026-10-07 Codex 独立レビュー：PR #32（修正必要・運転 OFF 維持）
+
+- 依頼者：Moto。実装：Claude。今回のレビュー：Codex（このセッションの主担当、Claude の既存レビューから独立）。
+- レビュー対象：`1851593bb4de597fa122d3abf77186be0230df00`、`claude/invoice-drive-intake`。対象 SHA の後に追加するこの記録は、修正済みコードの承認ではない。
+- 判定：**P1 5件・P2 1件、修正が必要。運転開始・マージの承認なし。**
+- PR 記録：https://github.com/motoi107/funergy-growth-os/pull/32#pullrequestreview-5442500109（該当行へのコメント6件付き）。GitHub 接続の投稿者が PR 作成者と同一のため REQUEST_CHANGES は GitHub が 422 で拒否。COMMENT レビューとして記録しており、APPROVE ではない。
+
+| ID | 優先度 | 指摘・合成データでの再現 | 修正箇所 |
+|---|---|---|---|
+| C1 | P1 | AI 失敗時は SHA だけ保存され書類が無いのに QB 候補へ入る。送信済み invoice の撮り直しを AI 読取失敗にすると、重複未判定で送信が1→2件。外部転送用台帳も同じ候補検索を使う。 | `db/invoice-intake.sql:1241-1247`。現在の SHA の読取・書類作成・重複判定の成功を要求する。 |
+| C2 | P1 | `recheck` は既存アプリの記録を空配列として再判定する。支払期日だけの修正で `app_duplicate_candidate` が消え、未確定のまま次の worker で送信される。 | `handler.mjs:373-376`。再判定でも既存アプリと照合し、自己 mirror だけ除外する。 |
+| C3 | P1 | 反映済み $60 の伝票を明細を変えず合計1 centへ訂正すると、`total_mismatch` があるのに posted を維持し、明示確認なしで mirror が $0.01 になる。 | `db/invoice-intake.sql:692-701`。訂正にも確定時の必須修正・明示確認を適用する。 |
+| C4 | P1 | キャッシュ済み年フォルダを店舗外へ人が動かすと、worker が次の原本をその店舗外フォルダへ移す。 | `handler.mjs:185-190`。整理先の実際の親関係・ごみ箱状態を店舗ルートまで検証する。 |
+| C5 | P1 | 同じ Drive ID の原本を番号・日付の変わった内容で上書きすると、旧版 posted のまま新版も自動 posted。明示的な訂正版確定・置換を経ていない。 | `handler.mjs:127-134`。同じ file_id の既存版を必ず検出し、新版を確認待ちにする。 |
+| C6 | P2 | 配備チェックの `LIKE 'invoice_%'` が旧 `invoice_uploads` も数え、正しい新規権限でも tables=17 / browser_can_read=1。precheck も旧表だけで STOP になる。 | precheck / postcheck。対象をこの migration の16表・65関数に限定し、旧経路は別表示。 |
+
+本番は **読むだけ**で確認：新規16表はすべて RLS 有効、anon/authenticated の SELECT/INSERT/UPDATE/DELETE 権限なし。65関数は両 role の EXECUTE なし・すべて SECURITY INVOKER・固定 search_path。65関数本文は対象 SQL と改行形式を除き一致。配備済み Edge Function は version 1 / Verify JWT OFF。worker・intake・auto_post・organize・mirror・QB・qb_external は全て OFF、QB route=null、invoice-intake cron=0件。鍵・業務レコードの内容は取得・公開していない。本番 worker 呼出し、データ書込み、再配備、設定変更、Drive 操作、実メール送信は行っていない。
+
+確認範囲：Auth user 検証＋manager_auth の役割チェック、worker/外部転送の専用鍵、締め済み月の通常確定・訂正・旧版置換・mirror 保護、原文値保存・整数セント/BigInt 検査、AI応答の許可リストを確認。新 Drive アダプタに削除/ごみ箱操作は無いが、移動範囲は C4 要修正。AIへの指示は文面をデータ扱い・数値補正禁止・ツール操作なし。ただし実 invoice の OCR 精度や画像内の攻撃文に対するモデル耐性を保証しない。
+
+実行結果（本番データ不使用）：
+- `node --test tests/invoice-rules.test.mjs tests/invoice-adapters.test.mjs tests/invoice-intake.test.mjs`：55/55。
+- `node --test tests/invoice-mutations.test.mjs`：29/29。
+- `python3 scripts/check-static-release.py`：pass、v1054整合。
+- 追加5シナリオ（C1〜C5）：安全な期待値に対して5/5失敗し不具合を再現。本番から取得した bundle をローカルで動かしても同じ5件を再現。PGlite＋模擬Drive/AI/メールのみ。再現用：`node --test tests/review/invoice-pr32-codex-repro.mjs`（1851593では意図的に失敗する確認用テスト。アプリ実装は変更していない）。
+- Deno、実OCR、実Drive書込み・メール送信、リポジトリに無い handoff の UI 検証は今回未実施。
+
+未解決：C1〜C6。既存 ChatGPT 側転送の取得元・台帳必須参照・原本SHA確認・切替は未検証。旧 invoice_uploads / drive-sync 等を含む全経路が安全との判定ではない。締め保護は rules.closed_through の設定に依存し、棚卸確定とは自動連動しない。
+
+次：Claude が上記を修正して回帰テストを追加 → 修正後の最新 head を Codex が再レビュー → その後に一店舗・確認モード試験を検討。**現時点では運転 OFF・cron 未登録を維持。**
+
+## 2026-10-07 invoice の Google Drive 取込（Claude・実装済み・本番未反映）
+
+依頼：店舗が自店の Drive `00_Upload` に invoice を入れるだけで、AI 読取・通常取引の自動反映・例外だけ人の確認、経理照合で原本を照合済みフォルダへ、QuickBooks への原本転送台帳（仕様 2026-10-06）。
+
+調査：本番 main 009685a の index.html は v1051。invoice は app_state `spl_invoices_<店舗>`、原本は Storage `invoices`（PDF 化）、Drive は drive-sync（リポジトリには無い。Moto さんが本文を提供）。保存のたびに新マスター単価を保存日基準で上書き。
+
+Moto さんの回答（10/6 22:50 HST）：UI案34 で実装してよい／QuickBooks への転送は ChatGPT 側が行っている／Drive 連携は Moto さんの会社の Google アカウント・共有ドライブ可・店舗フォルダ 5 店分の URL（LaLa は作成待ち。ID はこの公開リポジトリには書かない）／公開 GitHub のブランチと PR に上げてよい。
+
+実装（ブランチ claude/invoice-drive-intake）：`db/invoice-intake.sql`（service_role 専用・RLS・一意制約・invoice 単位の反映 RPC）、`supabase/functions/invoice-intake`（cron で 5 分ごと・ワーカー鍵／本部・経理は Supabase Auth＋manager_auth／外部の転送は専用の鍵）、`invoice/*.mjs`。Drive は drive-sync が保存した `drive_oauth` をそのまま使える。QuickBooks は `route='external'` で同じ台帳を ChatGPT 側と共有し、このシステムからは送らない。アプリ v1052（`index.html`・`sw.js`）：経理センター「Invoice取込」（一覧・要確認・照合・取込状況・設定）、店舗の提出フォルダの案内、食材の仕入れ履歴。詳細は `docs/INVOICE_DRIVE_INTAKE_JA.md`。
+
+検証：合成データで rules 11・intake 37・adapters 5・mutations 29・Deno 20、アプリの検証 81、本物の画面（本物の handler＋PGlite）50・pageerror 0。既存テストの失敗は変更前の main と同じ。
+
+レビュー：10/7 に Claude の別エージェント（作業を見ていない）が独立レビューし 15 件を指摘、すべて修正して試験を追加（詳細は `docs/INVOICE_DRIVE_INTAKE_JA.md` 15 節）。**Codex のレビューはまだ**（これは Claude のレビューで、Codex の承認ではない）。ChatGPT 側への QuickBooks 台帳の使い方は handoff の `ChatGPT共有_Funergy+共同作業メモ.md` 0 節。
+
+本番の状態（10/7）：Moto さんが 10/7 10:19 UTC に main へ v1052（index md5 8026b63…・SW_BUILD 1052）を貼った（GitHub Pages に公開済み）。サーバー（SQL・invoice-intake）は未配備なので、「Invoice取込」タブは「まだ動いていません」と出るだけ。独立レビューの画面側の修正は同じ 1052 では端末が更新されないため **v1053**（SW_BUILD 1053）にした（PR #32）。
+
+10/7 の続き：Moto さんが 01:22 HST に v1053（md5 9272e28f…）を main へ貼った。01:27 に「Invoice取込」→「設定」が "Failed to fetch" と「読み込み中…」のままと報告。原因はサーバー未配備（Supabase は存在しない関数に CORS の無い 404 を返すので、ブラウザは 404 を読めず、v1052/v1053 の「まだ動いていません」は出ない。ops-bot は正常に応答）。表示の修正を **v1054**（md5 a1183a3d…・SW_BUILD 1054。v1053 から invInAPI・invInLoadingCard と版だけ）にした。配備の一式（`db/invoice-intake-precheck.sql` → migration → `db/invoice-intake-postcheck.sql`、`deno bundle` で 1 ファイルにした関数、取り消しの `db/invoice-intake-rollback.sql`、日本語の手順）を Moto さんに渡した。配備は Moto さんの操作（または Moto さんの明示の許可のあと）。どの運転も OFF のまま。
+
+10/7 02:14 HST：Moto さんが配備を終えたと報告（v1054 を main へ・SQL・関数 `invoice-intake`・JWT の検証 OFF）。Claude が確かめたこと：main の index.html・sw.js が v1054（md5 a1183a3d…・09f04d04…）と一致、関数は GET に 405（関数の中の応答。JWT の検証が ON ならゲートウェイが 401 を返す）。DB の中身は Claude からは見えない（Moto さんの画面で設定が開いたことで確認）。どの運転も OFF のまま。
+
+10/7 02:30 HST：Moto さんが設定で 6 店（ToriTon・Tenkichi・Kaimuki・Piikoi・Aiea・Marujuu）の店舗フォルダを登録（取込・自動反映は OFF のまま。Kapolei・LaLa・FSP・Garlic Shack は未設定）。「フォルダを確かめる（作らない）」の結果：6 店とも店舗フォルダを開けた（drive-sync の Drive 連携で読めた）・00_Upload はどの店にも無く「00_Upload を作る」。店舗への共有・「店舗の画面」で出す・本番開始の告知はまだしない。
+
+10/7 02:32 HST：Moto さんが「この内容で作る・記録する」→ 6 店とも「作って記録した」（各店舗フォルダに空の 00_Upload を作成し、ID を記録）。
+
+未完了：cron は未登録・取込は OFF。次は Codex による PR #32 の独立レビュー → 1 店・確認モードの試験（cron・`worker.enabled`・`mode.intake`・試験店舗）。店舗への共有と案内はそのあと。店舗フォルダの実際の中身（00_Upload の有無・共有ドライブか）、ChatGPT 側の転送が原本をどこから拾うか（台帳を見ないと二重送信のおそれ）、drive-sync の安全化（本文の再提供待ち）、店舗スタッフのアプリ内一覧（PIN では安全に出せない）。
 
 ## 2026-09-20 接続・公開保存の承認と勤怠のみ即時送信
 
