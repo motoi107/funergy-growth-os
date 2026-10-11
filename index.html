@@ -1300,11 +1300,14 @@ function rtDaySummary(s, r) {
         dinner:{ sales:dSales, count:dCnt, ppa: dCnt>0?dSales/dCnt:0 },
         takeout:{ count:toCount } };
 }
-/* opts.prev：前日（今日の日付の前の日・1 日分）も読む。Toast から取り直さず、同期済みの toast_sales を読むだけ。
-   前日の行が無い日は、店休（定休・臨時休業）なら「休業」、そうでなければ「—」（まだ同期されていない等）。 */
+/* opts.prev（ダッシュボードの「今日の売上」だけ）：
+   ・今日と前日はハワイ時間で決める（bizNow。店舗カードと同じ v955 の決まり）。端末の日付で決めると、日本の端末では
+     ハワイのまだ終わっていない日を「前日」として出してしまう。ほかのカードは今までどおり端末の日付。
+   ・前日（今日の前の日）も読む。Toast から取り直さず、同期済みの toast_sales を読むだけ。
+   ・前日の行が無い日は、店休（定休・臨時休業）なら「休業」、そうでなければ「—」（まだ同期されていない等）。 */
 async function fetchTodayRealtime(storeList, opts) {
   var withPrev = !!(opts && opts.prev);
-  var now = new Date();
+  var now = (withPrev && typeof bizNow === 'function') ? bizNow() : new Date();
   var y=now.getFullYear(), m=now.getMonth()+1, d=now.getDate();
   var ymd = `${y}${String(m).padStart(2,'0')}${String(d).padStart(2,'0')}`;
   var iso = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
@@ -1318,8 +1321,11 @@ async function fetchTodayRealtime(storeList, opts) {
       await syncToastDay(s.toastGuid, ymd);
       var rows = await fetchToastSales(s.toastGuid, withPrev ? prevIso : iso, iso);
       var r = null, pr = null;
-      (rows || []).forEach(function(x){ if (x && x.business_date === iso) r = x; else if (x && x.business_date === prevIso) pr = x; });
-      if (!withPrev && !r && rows && rows.length) r = rows[0];
+      if (!withPrev) r = (rows && rows.length) ? rows[0] : null;   /* v1063 と同じ */
+      else (Array.isArray(rows) ? rows : []).forEach(function(x){
+        if (x && x.business_date === iso) { if (!r) r = x; }
+        else if (x && x.business_date === prevIso) { if (!pr) pr = x; }
+      });
       var base = { id:s.id, name:s.name, color:s.color };
       if (withPrev) {
         base.prev = pr ? rtDaySummary(s, pr) : null;
@@ -3582,7 +3588,7 @@ function mdStoreCardsHtml(stores, ym){
 function mdFunergyNowHtml() {
   return '<div class="card" id="rt-sales-card">'
     + '<div class="md-sec-t"><i class="ti ti-bolt" style="color:var(--accent)"></i>今日の売上'
-    + '<span class="md-sub">Toast・当日（前日は昨日の 1 日分）</span></div>'
+    + '<span class="md-sub">Toast・当日（ハワイ時間）・前日＝昨日</span></div>'
     + '<div id="rt-sales-body" data-prev="1"><div style="text-align:center;padding:18px;color:var(--muted);font-size:12px">'
     + '<i class="ti ti-loader"></i> Toastから取得中…</div></div></div>';
 }
@@ -3596,7 +3602,7 @@ function mdSummaryStripHtml(stores, ym, sc, counts) {
   }
   var pm = mdStateMeta(tt.gap === null ? 'unknown' : (tt.gap >= 0 ? 'ok' : 'miss'));
   var fm = mdStateMeta(tt.fcGap === null ? 'unknown' : (tt.fcGap >= 0 ? 'ok' : 'miss'));
-  /* v842: 全体判定はすぐ上のバナーと重複するので外した。
+  /* v842: 全体判定はすぐ上のバナーと重複するので外した（v1064 でバナーも外した）。
      今日の売上は店舗×L/D の内訳が入って1タイルに収まらないため独立カードへ戻した。 */
   var h = '<div class="md-strip">';
   h += tile('本日時点の進捗', pm.icon, pm.color,
@@ -3727,12 +3733,8 @@ function renderMgmtDash() {
     return head + '<div class="card" style="text-align:center;padding:24px;color:var(--muted);font-size:13px">'
       + '表示できる店舗がありません。<br>管轄店舗の割り当てを確認してください。</div>';
   }
-  var ym = mdPeriodYm(), sc;
-  try { sc = mdScopeVerdict(stores, ym); }
-  catch (e) {
-    sc = { state: 'unknown', stateLabel: '判定不可', okCount: 0, missCount: 0,
-           unknownCount: stores.length, total: stores.length, rows: [], topMissLabels: [] };
-  }
+  /* v1064：全体判定（mdScopeVerdict）はこの画面のどこにも出さなくなったので計算しない（サマリーの帯は使っていない）。 */
+  var ym = mdPeriodYm(), sc = null;
   var errs = mdErrors();
   var counts = {
     work: mdWorkCounts(),
@@ -3750,7 +3752,7 @@ function renderMgmtDash() {
   /* v929: 「整備中」バナーはダッシュボードから外した（数字が合ってきたため・Motoさん指示）。
      関数と管理統括側（renderMgmtControl）の呼び出しは残してある。
      v1064（UI案41・Moto 10/11）：全体判定の帯（「全社 n店・今月・現時点」「未達」「n / m 店舗達成」「主な未達」「判定不可」）も外した。
-     関数 mdVerdictBannerHtml は残してある。判定（sc）はサマリーの帯がそのまま使う。 */
+     関数 mdVerdictBannerHtml は残してある。店舗ごとの判定（達成・未達）は店舗カードに出る。 */
   h += '<div class="md-a-strip">' + mdSummaryStripHtml(stores, ym, sc, counts) + '</div>';
 
   var codes = mdPrimaryKpis(stores[0]);
@@ -16867,6 +16869,15 @@ function rtPrevCellHtml(r, part) {
   var c = rtPrevCell(r, part);
   return `<div style="border-top:1px dashed var(--border);margin:6px 6px 0;padding-top:5px;font-size:10px;color:var(--muted);line-height:1.5">${t('前日','Yesterday')} <b style="color:var(--text);font-weight:700">${c.v}</b>${c.sub ? '<br>' + c.sub : ''}</div>`;
 }
+function rtPrevOnlyGridHtml(r) {
+  var cols = [['lunch','ti-sun','#d98908',t('ランチ','Lunch')], ['dinner','ti-moon','#8b5cf6',t('ディナー','Dinner')], ['takeout','ti-shopping-bag','#2e6fd6',t('テイクアウト','Takeout')]];
+  return '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);border-top:1px solid var(--border)">'
+    + cols.map(function(c){
+        return '<div style="background:var(--surface);padding:8px 8px 10px;text-align:center">'
+          + '<div style="font-size:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:3px"><i class="ti ' + c[1] + '" style="color:' + c[2] + '"></i>' + c[3] + '</div>'
+          + rtPrevCellHtml(r, c[0]) + '</div>';
+      }).join('') + '</div>';
+}
 async function loadRealtimeSales() {
   var body = document.getElementById('rt-sales-body');
   if (!body) return;
@@ -16898,7 +16909,9 @@ async function loadRealtimeSales() {
       html += `<div style="padding:12px;text-align:center;font-size:12px;color:var(--red)">取得エラー</div></div>`; return;
     }
     if (!r.hasData) {
-      html += `<div style="padding:12px;text-align:center;font-size:12px;color:var(--muted)">${t('本日のデータはまだありません','No data yet today')}</div></div>`; return;
+      html += `<div style="padding:12px;text-align:center;font-size:12px;color:var(--muted)">${t('本日のデータはまだありません','No data yet today')}</div>`;
+      if (withPrev && r.prev && !rtPrevDayOff(r)) html += rtPrevOnlyGridHtml(r);   /* v1064：今日の行がまだ無くても、前日は各項目に出す */
+      html += `</div>`; return;
     }
     withData++;
     // ランチ / ディナー / テイクアウト の3列（v1064：ダッシュボードのカードは各列の下に前日）

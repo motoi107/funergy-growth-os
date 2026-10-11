@@ -5,6 +5,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const file = process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url);
 const source = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
@@ -17,9 +19,10 @@ function fn(name) {
 }
 const constant = name => { const m = new RegExp('^(?:const|var) ' + name + ' = [^;]+;', 'm').exec(source); assert.ok(m, name); return m[0].replace(/^const /, 'var '); };
 
-// A clock that answers `new Date()` with a fixed local time; `new Date(y, m, d)` keeps working.
+// A clock fixed at a Hawaii wall-clock time (UTC−10, no DST), whatever the machine's time zone is.
+// `new Date()` and Date.now() answer that instant; `new Date(y, m, d)` keeps working.
 function clockAt(y, m, d, h = 14, mi = 5) {
-  return `var __NOW = new Date(${y}, ${m - 1}, ${d}, ${h}, ${mi}).getTime();
+  return `var __NOW = ${Date.UTC(y, m - 1, d, h + 10, mi)};
     var __RealDate = Date;
     Date = class extends __RealDate { constructor(...a) { if (a.length === 0) super(__NOW); else super(...a); } static now() { return __NOW; } };`;
 }
@@ -28,14 +31,15 @@ function app(now = [2026, 10, 11]) {
   const c = { console, STORE: {}, CALLS: [], ROWS: {}, METRIC: {}, curLang: 'ja' };
   vm.createContext(c);
   vm.runInContext(clockAt(...now) + '\n' +
-    ['t', 'fmtUSD2', 'getStoreClosures', 'dayClosureMode', 'rtDaySummary', 'fetchTodayRealtime',
-     'rtPrevDayOff', 'rtPrevTotal', 'rtPrevCell', 'rtPrevCellHtml', 'loadRealtimeSales'].map(fn).join('\n') + `
+    ['t', 'fmtUSD2', 'bizNow', 'getStoreClosures', 'dayClosureMode', 'rtDaySummary', 'fetchTodayRealtime',
+     'rtPrevDayOff', 'rtPrevTotal', 'rtPrevCell', 'rtPrevCellHtml', 'rtPrevOnlyGridHtml', 'loadRealtimeSales'].map(fn).join('\n') + `
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
     function guestCountType(id){ return METRIC[id] || 'guest'; }
     async function syncToastDay(guid, ymd){ CALLS.push(['sync', guid, ymd]); return { ok: true }; }
     async function fetchToastSales(guid, from, to){
       CALLS.push(['read', guid, from, to]);
       if (guid === 'g-err') throw new Error('network');
+      if (ROWS[guid] && !Array.isArray(ROWS[guid])) return ROWS[guid];
       return (ROWS[guid] || []).filter(function(r){ return r.business_date >= from && r.business_date <= to; });
     }
     var STORES = [
@@ -60,7 +64,9 @@ test('the dashboard no longer renders the overall verdict banner, and the grid h
   assert.doesNotMatch(dash, /mdVerdictBannerHtml\(/, 'renderMgmtDash must not call the banner');
   assert.doesNotMatch(dash, /'<div class="md-a-ver">'/, 'no banner slot');
   assert.match(dash, /'<div class="md-a-hdr">' \+ mdHeaderHtml\(stores\)/);
-  assert.match(dash, /'<div class="md-a-strip">' \+ mdSummaryStripHtml\(stores, ym, sc, counts\)/, 'the summary strip still gets the verdict');
+  assert.match(dash, /'<div class="md-a-strip">' \+ mdSummaryStripHtml\(stores, ym, sc, counts\)/, 'the summary strip stays');
+  assert.doesNotMatch(dash, /mdScopeVerdict\(/, 'the overall verdict is not shown anywhere, so it is not computed');
+  assert.doesNotMatch(fn('mdSummaryStripHtml'), /\bsc\./, 'the strip never read the verdict');
   const areas = [...source.matchAll(/grid-template-areas:([^;]+);/g)].map(m => m[1]).filter(a => /hdr/.test(a));
   assert.equal(areas.length, 2, 'two dashboard layouts (2 and 3 columns)');
   for (const a of areas) assert.doesNotMatch(a, /\bver\b/, a);
@@ -105,16 +111,43 @@ test('each store card shows the monthly budget at the top right of the sales blo
   assert.match(source, /\.md-sc-bm \{ margin-left:auto;[^}]*white-space:nowrap; \}/);
 });
 
-test('without the flag the card reads today only and returns what it returned before', async () => {
+test('without the flag the card reads today only (device date) and returns what it returned before', async () => {
   const c = app();
-  c.ROWS['g-a'] = [row('2026-10-11', { net_sales: 3412.5, guest_count: 142, lunch_sales: 1210, dinner_sales: 2202.5,
+  const local = run(c, `(function(){ var n = new Date(); return [n.getFullYear(), String(n.getMonth()+1).padStart(2,'0'), String(n.getDate()).padStart(2,'0')]; })()`);
+  const iso = local.join('-');
+  c.ROWS['g-a'] = [row(iso, { net_sales: 3412.5, guest_count: 142, lunch_sales: 1210, dinner_sales: 2202.5,
     lunch_guests: 52, dinner_guests: 90, takeout_count: 18 })];
   const out = plain(await run(c, `fetchTodayRealtime(STORES.slice(0, 1))`));
-  assert.deepEqual(c.CALLS.map(x => [...x]), [['sync', 'g-a', '20261011'], ['read', 'g-a', '2026-10-11', '2026-10-11']]);
+  assert.deepEqual(c.CALLS.map(x => [...x]), [['sync', 'g-a', local.join('')], ['read', 'g-a', iso, iso]]);
   assert.deepEqual(out, [{ id: 'A', name: 'Store A', color: '#e8590c', hasData: true, metric: 'guest', unit: '名',
     net: 3412.5, guests: 142, count: 142, ppa: 3412.5 / 142,
     lunch: { sales: 1210, count: 52, ppa: 1210 / 52 }, dinner: { sales: 2202.5, count: 90, ppa: 2202.5 / 90 }, takeout: { count: 18 } }]);
   assert.equal('prev' in out[0], false, 'no 前日 fields without the flag');
+  // v1063 took the first row it got back (duplicates for the day: the first one)
+  c.ROWS['g-a'] = [row(iso, { net_sales: 10, guest_count: 1 }), row(iso, { net_sales: 20, guest_count: 2 })];
+  assert.equal((await run(c, `fetchTodayRealtime(STORES.slice(0, 1))`))[0].net, 10);
+  // a body that is not a list: no rows, not an error (as before)
+  c.ROWS['g-a'] = { error: 'x' };
+  assert.deepEqual(plain(await run(c, `fetchTodayRealtime(STORES.slice(0, 1))`)), [{ id: 'A', name: 'Store A', color: '#e8590c', hasData: false }]);
+});
+
+test('the dashboard card follows Hawaii time, so a device in Japan does not show an unfinished day as 前日', async () => {
+  // 2026-10-12 01:00 UTC = 10/12 10:00 in Japan, 10/11 15:00 in Hawaii
+  const c = app();
+  run(c, `__NOW = ${Date.UTC(2026, 9, 12, 1, 0)};`);
+  c.ROWS['g-c'] = [row('2026-10-10', { net_sales: 900, guest_count: 30 }), row('2026-10-11', { net_sales: 1500, guest_count: 50 }),
+    row('2026-10-12', { net_sales: 1, guest_count: 1 })];
+  const [r] = plain(await run(c, `fetchTodayRealtime(STORES.slice(2, 3), { prev: true })`));
+  assert.deepEqual(c.CALLS.map(x => [...x]), [['sync', 'g-c', '20261011'], ['read', 'g-c', '2026-10-10', '2026-10-11']]);
+  assert.deepEqual([r.net, r.prev.net], [1500, 900]);
+  // duplicates for a date: the first one; a body that is not a list: no rows, not an error
+  c.CALLS.length = 0;
+  c.ROWS['g-c'] = [row('2026-10-10', { net_sales: 900 }), row('2026-10-10', { net_sales: 1 }), row('2026-10-11', { net_sales: 1500 }), row('2026-10-11', { net_sales: 2 })];
+  const [d] = plain(await run(c, `fetchTodayRealtime(STORES.slice(2, 3), { prev: true })`));
+  assert.deepEqual([d.net, d.prev.net], [1500, 900]);
+  c.ROWS['g-c'] = { error: 'x' };
+  const [e] = plain(await run(c, `fetchTodayRealtime(STORES.slice(2, 3), { prev: true })`));
+  assert.deepEqual([e.hasData, e.prev, e.error], [false, null, undefined]);
 });
 
 test('with the flag the card also reads yesterday (synced rows only) and counts it the same way as today', async () => {
@@ -222,8 +255,14 @@ test('only the dashboard card (data-prev="1") shows 前日; the other cards keep
   // store B (lunch closed, nothing synced, no data today): only the header line, a dash
   assert.match(cards[1], /前日 —/);
   assert.match(cards[1], /本日のデータはまだありません/);
-  // store C: nothing today, yesterday in the header
+  assert.doesNotMatch(cards[1], /ランチ/);
+  // store C: nothing today yet, yesterday in the header and under lunch, dinner and takeout
   assert.match(cards[2], /前日 \$900\.00 \/ 30名 \/ \$30\.00/);
+  assert.match(cards[2], /本日のデータはまだありません/);
+  assert.equal((cards[2].match(/前日/g) || []).length, 4);
+  assert.match(cards[2], /ランチ<\/div><div[^>]*>前日 <b[^>]*>\$400\.00<\/b><br>14名 · \$28\.57/);
+  assert.match(cards[2], /ディナー<\/div><div[^>]*>前日 <b[^>]*>\$500\.00<\/b><br>16名 · \$31\.25/);
+  assert.match(cards[2], /テイクアウト<\/div><div[^>]*>前日 <b[^>]*>2件<\/b><br>注文数/);
   // no GUID and errors: no 前日
   assert.doesNotMatch(cards[3], /前日/);
   assert.doesNotMatch(cards[4], /前日/);
@@ -236,4 +275,15 @@ test('only the dashboard card (data-prev="1") shows 前日; the other cards keep
   assert.match(fn('mdFunergyNowHtml'), /<div id="rt-sales-body" data-prev="1">/);
   assert.equal((source.match(/id="rt-sales-body"/g) || []).length, 3);
   assert.equal((source.match(/id="rt-sales-body" data-prev="1"/g) || []).length, 1);
+});
+
+// The dashboard card follows Hawaii time and the other cards the device's date; that only shows on a device
+// outside Hawaii. Run every check above again as a device in Japan and in UTC.
+test('the same checks pass on a device in Japan and on one in UTC', { skip: process.env.DASH_UI41_CHILD === '1' }, () => {
+  for (const tz of ['Asia/Tokyo', 'UTC']) {
+    const env = { ...process.env, TZ: tz, DASH_UI41_CHILD: '1' };
+    delete env.NODE_TEST_CONTEXT;   // otherwise the child reports to this runner and always exits 0
+    const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', fileURLToPath(import.meta.url)], { env, encoding: 'utf8' });
+    assert.equal(r.status, 0, tz + '\n' + String(r.stdout).slice(-3000));
+  }
 });
