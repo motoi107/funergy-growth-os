@@ -55,7 +55,7 @@ function app() {
   vm.createContext(c);
   vm.runInContext([varBlock('LSS_CATEGORIES', '\n];'), varBlock('GRADE_TITLES', '\n};'), varBlock('SPECIALIST_TITLE_DEPT', '\n};'), varBlock('LSS_EMP_PREFIX', ';'),
     ...['ghNormG', 'lssCatsOrdered', 'lssItemId', 'gradeOf', 'empGrade', 'empSpecialistDept', 'ghRecs', 'ghAll', 'ghCmp', 'ghDate', 'ghMD', 'bqProfitOf', 'bqProfitMonths', '_quarterMonths',
-      'bonusSegEval', 'bonusForEmp', 'bonusTotals', 'bqLockQuarter', 'bqUnlockQuarter', 'bonusConfirmQuarter', 'bonusConfirmOne', '_bonusWritePay', 'kdCurAmount', 'karteSetTab'].map(fn), CAREER, KEV].join('\n') + `
+      '_recAt', 'mergeMapByTime', 'bqStores', 'bonusSegEval', 'bonusForEmp', 'bonusTotals', 'bqLockQuarter', 'bqUnlockQuarter', 'bonusConfirmQuarter', 'bonusConfirmOne', '_bonusWritePay', 'kdCurAmount', 'karteSetTab'].map(fn), CAREER, KEV].join('\n') + `
     var window = this, BQ_STAGES=[];
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
     function lsSet(k, v){ if (typeof FAIL_SET !== 'undefined' && FAIL_SET === k) return false; STORE[k] = JSON.parse(JSON.stringify(v)); return true; }
@@ -281,6 +281,10 @@ test('missing data is shown as missing, never filled with 0 or 1.00; a fixed ite
   assert.equal(gus.mode, 'diff');
   assert.equal(gus.dpt.toFixed(2), '0.50');   // (6000 − 0) / 1,200,000 = 0.5pt
   assert.equal(gus.coef, 1.02);
+  vm.runInContext('STORES.S5.b = [400000, 0, 0];', c5);
+  const gus2 = person(c5, 'gus');
+  assert.deepEqual([gus2.blocked, gus2.segs[0].items.p.status, gus2.segs[0].items.p.coef], ['eval', 'unset', null]);
+  assert.match(gus2.missing.join(), /比べる売上予算がそろっていません/);
 });
 
 test('FL: a result far below target is capped at 75 points until the evaluator confirms; level 4–5 needs the quality check', () => {
@@ -298,11 +302,27 @@ test('FL: a result far below target is capped at 75 points until the evaluator c
 test('philosophy source: the grade change record for the earlier segment, a frozen score, office staff use the office Career Score', () => {
   const c = company();
   c.SCORES['Ken Sample'] = undefined;
-  c.STORE.bonus_q[Q].csFreeze = { ken: { at: '2026/10/01 09:00', date: '2026-09-28', ev: 'AM', hUn: 0, cats: [{ key: 'H', score: 40, max: 54 }] } };
+  c.STORE.bonus_q[Q].csFreeze = { ken: { kv: 1, at: '2026/10/01 09:00', date: '2026-09-28', ev: 'AM', hUn: 0, cats: [{ key: 'H', score: 40, max: 54 }] } };
   let ph = person(c, 'ken').segs[0].items.c.parts.ph;
   assert.deepEqual([ph.src, ph.missing, ph.pts.toFixed(1), ph.date, ph.by], ['frozen', null, '61.1', '2026-09-28', 'AM']);
   c.STORE.bonus_q[Q].csFreeze.ken.hUn = 2;
   assert.equal(person(c, 'ken').segs[0].items.c.parts.ph.missing, 'unscored');
+  assert.match(person(c, 'ken').missing.join(), /固定した評価で理念の 2 項目が未採点.*固定し直して/);
+  c.STORE.bonus_q[Q].csFreeze.ken.date = '2026-06-20'; c.STORE.bonus_q[Q].csFreeze.ken.hUn = 0;
+  assert.match(person(c, 'ken').missing.join(), /固定した評価の評価日（6\/20）.*固定し直して/);
+  // a freeze made by v1064 or earlier (no evaluation date, no unscored count) is not used: the latest score decides
+  const c3 = company();
+  c3.SCORES['Aki Sample'].date = '2026/06/15';
+  delete c3.SCORES['Aki Sample'].scores.H0; delete c3.SCORES['Aki Sample'].scores.H1;
+  assert.match(person(c3, 'aki').missing.join(), /6\/15/);
+  c3.STORE.bonus_q[Q].csFreeze = { aki: { at: '2026/10/05 10:00', by: 'GM', cats: [{ key: 'H', score: 32, max: 54 }] } };
+  const aki = person(c3, 'aki');
+  assert.deepEqual([aki.blocked, aki.segs[0].items.c.parts.ph.src], ['eval', 'latest'], 'the old freeze does not hide the old date and the blank items');
+  // confirming re-freezes it with today's score (date, evaluator, unscored count)
+  c3.SCORES['Aki Sample'].date = '2026/09/22'; c3.SCORES['Aki Sample'].scores.H0 = 2; c3.SCORES['Aki Sample'].scores.H1 = 2;
+  run(c3, `bqLockQuarter('${Q}')`);
+  const fz = run(c3, `bqGet('${Q}').csFreeze.aki`);
+  assert.deepEqual([run(c3, `bqGet('${Q}').locked`), fz.kv, fz.date, fz.hUn], [true, 1, '2026-09-22', 0]);
   // office staff: the office Career Score of the quarter, category A
   const c2 = company();
   c2.OCS['Gus Sample'] = true;
@@ -365,6 +385,7 @@ test('the pool: $0 pays $0; an unknown pool is not confirmed; at or above the to
   assert.deepEqual(r.finals, { a: 400, b: 800 });
   assert.deepEqual(alloc([{ id: 'b', raw: 1 }, { id: 'a', raw: 1 }, { id: 'c', raw: 2 }], 2).finals, { a: 1, b: 0, c: 1 }, 'same fraction and amount: by id');
   assert.deepEqual(alloc([{ id: 'a', raw: 1 }, { id: 'b', raw: 3 }], 2).finals, { a: 0, b: 2 }, 'same fraction: the larger amount first');
+  assert.deepEqual(alloc([{ id: 'a', raw: 1 }, { id: 'b', raw: 6 }, { id: 'c', raw: 3 }], 4).finals, { a: 0, b: 3, c: 1 }, '0.4 = 2.4 − 2 exactly: decided by the amount, not by rounding noise');
   assert.deepEqual(alloc([], 100).finals, {}, 'nobody: nothing to pay');
 });
 
@@ -415,6 +436,10 @@ test('confirming: blocked while someone is missing, not done, or the pool is unk
   assert.equal(Object.keys(pay).length, 8);
   assert.deepEqual(['ken', 'mia', 'gus', 'tia'].map(id => pay[id].payLog[0].amount), [String(before.ken), String(before.mia), String(before.gus), String(before.tia)]);
   assert.equal(pay.mia.payLog[0].snap.v4, 1);
+  // the recorded line is not undone by another device that still holds an older copy of the karte
+  const stale = J(pay); stale.mia = { payLog: [], _at: 5 };
+  assert.equal(run(c, `mergeMapByTime(${JSON.stringify(stale)}, ls('growth_karte', {}))`).mia.payLog.length, 1);
+  assert.equal(run(c, `mergeMapByTime(ls('growth_karte', {}), ${JSON.stringify(stale)})`).mia.payLog.length, 1);
   assert.deepEqual(J(pay.mia.payLog[0].snap.segs[0].coefs), { c: 1.08, s: 1.01, f: 1.02, p: 1 });
   // unlocking clears the frozen record; the live numbers come back
   run(c, `bqUnlockQuarter('${Q}')`);
@@ -535,6 +560,124 @@ test('the screens render for PC and phone, escape names from synced data, and ar
 test('sync: the three new keys are synced, merged per entry by time and kept by storage cleanup', () => {
   assert.match(source, /'karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval',/);
   assert.match(source, /'q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval',/);
-  for (const k of ['bonus_eval_rule', 'bonus_eval_ovr', 'bonus_eval']) assert.match(source, new RegExp('\\n  ' + k + ':\\s+\\{ merge: mergeMapByTime, covers: _coversMapByTime \\}'));
+  for (const k of ['bonus_eval_rule', 'bonus_eval_ovr', 'bonus_eval']) assert.match(source, new RegExp('\\n  ' + k + ':\\s+\\{ merge: kevMergeMap, covers: kevCoversMap \\}'));
   assert.match(source, /const APP_VERSION = '1065';/);
+});
+
+test('two devices edit the same person at once: each item keeps the newer change; done is undone by a change it did not see', () => {
+  const c = company();
+  const KEY = `${Q}|ken|G3`;
+  c.STORE.bonus_eval[KEY] = { ab: { lv: 4, ev: '8/24' }, kn: { lv: 3 }, qu: { lv: 4, ev: '7〜9 月' }, st: 'draft', _at: 10, _t: { ab: 10, kn: 10, qu: 10, st: 10 } };
+  const S0 = J(c.STORE.bonus_eval);
+  // device A: 知識 4 with a reason
+  assert.equal(run(c, "kevEvEdit('ken','G3','kn.lv',4,'2026-Q3')"), true);
+  run(c, "kevEvEdit('ken','G3','kn.ev','9/2 新メニューを説明','2026-Q3')");
+  const A = J(c.STORE.bonus_eval);
+  // device B (has not received A yet): a comment
+  c.STORE.bonus_eval = J(S0);
+  run(c, "kevEvEdit('ken','G3','cm','次は新人の教育','2026-Q3')");
+  const B = J(c.STORE.bonus_eval);
+  for (const m of [run(c, `kevMergeMap(${JSON.stringify(A)}, ${JSON.stringify(B)})`), run(c, `kevMergeMap(${JSON.stringify(B)}, ${JSON.stringify(A)})`)]) {
+    assert.deepEqual([m[KEY].kn.lv, m[KEY].kn.ev, m[KEY].cm, m[KEY].ab.lv], [4, '9/2 新メニューを説明', '次は新人の教育', 4], 'both changes are kept');
+    assert.equal(run(c, `kevCoversMap(${JSON.stringify(m)}, ${JSON.stringify(A)})`), true);
+    assert.equal(run(c, `kevCoversMap(${JSON.stringify(m)}, ${JSON.stringify(B)})`), true);
+  }
+  assert.equal(run(c, `kevCoversMap(${JSON.stringify(S0)}, ${JSON.stringify(A)})`), false);
+  // device A marks done; device B (stale) changed 仕事の質 before seeing it → the merged entry is "直している", not done
+  c.STORE.bonus_eval = J(A);
+  run(c, "kevDone('ken','G3','2026-Q3')");
+  const A2 = J(c.STORE.bonus_eval);
+  assert.equal(A2[KEY].st, 'done');
+  c.STORE.bonus_eval = J(S0);
+  run(c, "kevEvEdit('ken','G3','qu.lv',2,'2026-Q3')");
+  const B2 = J(c.STORE.bonus_eval);
+  for (const m of [run(c, `kevMergeMap(${JSON.stringify(A2)}, ${JSON.stringify(B2)})`), run(c, `kevMergeMap(${JSON.stringify(B2)}, ${JSON.stringify(A2)})`)]) {
+    assert.deepEqual([m[KEY].st, m[KEY].qu.lv, m[KEY].kn.lv], ['edit', 2, 4]);
+  }
+  // merging done with the older copy it was made from keeps it done
+  assert.equal(run(c, `kevMergeMap(${JSON.stringify(S0)}, ${JSON.stringify(A2)})`)[KEY].st, 'done');
+  assert.equal(run(c, `kevMergeMap(${JSON.stringify(A2)}, ${JSON.stringify(A)})`)[KEY].st, 'done');
+  // saving the same value again writes nothing and keeps done
+  c.STORE.bonus_eval = J(A2);
+  assert.equal(run(c, "kevTxt('ken','G3','kn.ev','9/2 新メニューを説明','2026-Q3')"), true);
+  assert.equal(c.STORE.bonus_eval[KEY].st, 'done');
+  // records without per-item times merge as before (the newer record)
+  assert.equal(run(c, `kevMergeMap({x:{a:1,_at:5}}, {x:{a:2,_at:4}})`).x.a, 1);
+  // a screen drawn for another quarter does not save into this one
+  assert.equal(run(c, "kevTxt('ken','G3','cm','別の四半期','2026-Q4')"), false);
+  assert.match(c.TOASTS.at(-1)[0], /表示中の四半期が 2026-Q3 に変わった/);
+  assert.notEqual(c.STORE.bonus_eval[KEY].cm, '別の四半期');
+});
+
+test('two devices change different parts of the same personal setting: both parts and both histories are kept; removing a part is kept too', () => {
+  const c = company();
+  c.STORE.bonus_eval_ovr = { 'ray|2026-Q3': { set: { s: { on: false }, fl: { fw: 80, lw: 20 } }, why: 'キッチン統括', what: '② と ③', at: '2026/10/03 14:20', by: 'GM', _at: 1, _t: { s: 1, fl: 1 } } };
+  const S0 = J(c.STORE.bonus_eval_ovr);
+  assert.equal(run(c, `kevOvrSave('ray', '2026-Q3', {stores:['S3']}, 'Store 3 だけ見る', '範囲を変更')`), true);
+  const A = J(c.STORE.bonus_eval_ovr);
+  c.STORE.bonus_eval_ovr = J(S0);
+  assert.equal(run(c, `kevPutVer('bonus_eval_ovr', kevOvrAll(), 'ray', '2026-Q3', {}, '店舗の売上も見る', '② の個人設定を外した', ['s'])`), true);
+  const B = J(c.STORE.bonus_eval_ovr);
+  const m = run(c, `kevMergeMap(${JSON.stringify(A)}, ${JSON.stringify(B)})`)['ray|2026-Q3'];
+  assert.deepEqual([J(m.set.stores), m.set.s, J(m.set.fl)], [['S3'], undefined, { fw: 80, lw: 20 }], 'the store change and the removal of ② are both kept');
+  assert.deepEqual(m.hist.map(h => h.what).sort(), ['② と ③', m.what === '範囲を変更' ? '② の個人設定を外した' : '範囲を変更'].sort());
+  // settings coming from sync are numbers: text never reaches the screen
+  c.STORE.bonus_eval_rule = { 'G4|2026-Q3': { set: { c: { lo: '<img src=x onerror=alert(1)>' }, fl: { aw: '<svg onload=alert(1)>', rw: 20 }, w: { ab: '"><b>' } }, _at: 1 } };
+  const R = run(c, `kevRuleFor('G4', '2026-Q3').r`);
+  assert.deepEqual([R.c.lo, R.fl.aw, R.w.ab], [0.7, 80, 25]);
+  for (const h of [run(c, 'kevRuleCardHtml(kbCfg())'), run(c, 'kevCommonCardHtml(kbCfg())')]) assert.doesNotMatch(h, /<img|<svg|"><b>/);
+});
+
+test('settings: 会社共通 does not decide 反映/固定 or the ① range; G6 follows G5 until G6 has its own; later versions are named', () => {
+  const c = company();
+  assert.equal(run(c, `kevRuleSave('_common', '2026-Q3', {s:{on:false, lo:0.9, hi:1.1, x0:0, x1:100, x2:200}, c:{on:false, lo:0.5, hi:1.5, x0:0, x1:40, x2:100}}, 'test', 'test')`), true);
+  const st = c.STORE.bonus_eval_rule['_common|2026-Q3'].set;
+  assert.deepEqual([st.s.on, st.c.on, st.c.lo, st.c.hi, st.s.lo, st.c.x1], [undefined, undefined, undefined, undefined, 0.9, 40]);
+  const g4 = run(c, `kevRuleFor('G4', '2026-Q3').r`);
+  assert.deepEqual([g4.s.on, g4.s.lo, g4.c.lo, g4.c.x1], [true, 0.9, 0.7, 40]);
+  // G6 = G5
+  run(c, `kevRuleSave('G5', '2026-Q3', {s:{on:true, lo:0.85, hi:1.15, x0:0, x1:100, x2:200}}, 'test', 'G5 の ②')`);
+  assert.deepEqual(run(c, `[kevRuleFor('G5','2026-Q3').r.s.lo, kevRuleFor('G6','2026-Q3').r.s.lo]`), [0.85, 0.85]);
+  run(c, `kevRuleSave('G6', '2026-Q3', {s:{on:true, lo:0.95, hi:1.05, x0:0, x1:100, x2:200}}, 'test', 'G6 の ②')`);
+  assert.deepEqual(run(c, `[kevRuleFor('G5','2026-Q3').r.s.lo, kevRuleFor('G6','2026-Q3').r.s.lo]`), [0.85, 0.95]);
+  assert.match(run(c, 'kevRuleCardHtml(kbCfg())'), /保存済み（2026-Q3〜）/);
+  // a later version exists → a change from Q3 only runs until then
+  run(c, `kevOvrSave('mia', '2026-Q4', {s:{on:false}}, 'test', 'Q4')`);
+  assert.deepEqual(run(c, `kevLaterVers(kevOvrAll(), 'mia', '2026-Q3')`), ['2026-Q4']);
+  // stores added by a personal setting appear in the profit table
+  c.STORE.bonus_eval_ovr['aki|2026-Q3'] = { set: { stores: ['S9'] }, _at: 3 };
+  assert.ok(run(c, 'bqStores(kbCfg())').includes('S9'));
+});
+
+test('G3 without a job track: the 個別評価 tab offers the track; the grade-change record with blank philosophy items is missing; names are escaped in toasts', () => {
+  const c = company();
+  c.EMPS.find(e => e.id === 'ken').title = 'Store Leader';
+  vm.runInContext(`var document={ getElementById:function(){ return null; }, querySelectorAll:function(){ return []; } }; window._kevSel='ken';`, c);
+  assert.equal(person(c, 'ken').blocked, 'track');
+  const tab = run(c, 'kevTabHtml(kbCfg())');
+  assert.match(tab, /G3 職種（2026-Q3）/);
+  assert.match(tab, /bonusSetTrack\(&quot;ken&quot;,'sv'\)/);
+  assert.match(run(c, 'kevPersonInnerHtml(EMPS[1], bonusForEmp(EMPS[1], kbCfg()), kbCfg(), {})'), /bonusSetTrack/);
+  // grade change confirmed with blank philosophy items (v1065 record) → missing; an older record is shown as such
+  const c2 = company();
+  c2.SEGS.sam = [{ g: 'G4', from: '2026-07-01', to: '2026-08-15', days: 46 }, { g: 'G5', from: '2026-08-16', to: '2026-09-30', days: 46 }];
+  c2.STORE.grade_hist = { sam: { recs: [{ d: '2026-08-15', g: 'G5', from: 'G4', start: false, prevEval: { g: 'G4', kv: 1, hUn: 2, cats: [{ key: 'H', score: 30, max: 54 }], at: '2026-08-15 10:00', by: 'CEO' } }] } };
+  c2.STORE.bonus_eval[`${Q}|sam|G4`] = { ab: { lv: 3 }, kn: { lv: 3 }, qu: { lv: 3 }, fa: { lv: 3 }, la: { lv: 3 }, st: 'done', _at: 1 };
+  let sam = person(c2, 'sam');
+  assert.equal(sam.blocked, 'eval');
+  assert.match(sam.missing.join(), /グレードを変えたときに確定した評価で、理念の 2 項目が未採点/);
+  delete c2.STORE.grade_hist.sam.recs[0].prevEval.kv; delete c2.STORE.grade_hist.sam.recs[0].prevEval.hUn;
+  sam = person(c2, 'sam');
+  assert.deepEqual([sam.blocked, sam.segs[0].items.c.parts.ph.legacy], [null, true]);
+  // the done toast escapes the name
+  const c3 = company();
+  c3.EMPS.find(e => e.id === 'neo').name = 'Neo <img src=x onerror=alert(1)>';
+  c3.SCORES['Neo <img src=x onerror=alert(1)>'] = c3.SCORES['Neo Sample'];
+  c3.STORE.bonus_eval[`${Q}|neo|G3`].st = 'edit';
+  vm.runInContext(`var document={ getElementById:function(){ return null; }, querySelectorAll:function(){ return []; } };`, c3);
+  run(c3, "kevDone('neo','G3','2026-Q3')");
+  assert.equal(c3.STORE.bonus_eval[`${Q}|neo|G3`].st, 'done');
+  assert.doesNotMatch(c3.TOASTS.at(-1)[0], /<img/);
+  // the person page passes the id safely
+  assert.match(run(c3, 'kevPersonInnerHtml(EMPS[3], bonusForEmp(EMPS[3], kbCfg()), kbCfg(), {})'), /<style>/);
 });
