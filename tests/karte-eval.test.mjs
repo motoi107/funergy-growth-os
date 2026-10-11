@@ -560,7 +560,7 @@ test('the screens render for PC and phone, escape names from synced data, and ar
 test('sync: the three new keys are synced, merged per entry by time and kept by storage cleanup', () => {
   assert.match(source, /'karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval',/);
   assert.match(source, /'q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval',/);
-  for (const k of ['bonus_eval_rule', 'bonus_eval_ovr', 'bonus_eval']) assert.match(source, new RegExp('\\n  ' + k + ':\\s+\\{ merge: kevMergeMap, covers: kevCoversMap \\}'));
+  for (const k of ['bonus_eval_rule', 'bonus_eval_ovr', 'bonus_eval']) assert.match(source, new RegExp('\\n  ' + k + ':\\s+\\{ merge: kevMergeMap, covers: kevCoversMap, keepLocal: true \\}'));
   assert.match(source, /const APP_VERSION = '1065';/);
 });
 
@@ -680,4 +680,57 @@ test('G3 without a job track: the 個別評価 tab offers the track; the grade-c
   assert.doesNotMatch(c3.TOASTS.at(-1)[0], /<img/);
   // the person page passes the id safely
   assert.match(run(c3, 'kevPersonInnerHtml(EMPS[3], bonusForEmp(EMPS[3], kbCfg()), kbCfg(), {})'), /<style>/);
+});
+
+test('after the second review: field-level merge, history saved twice in a minute, undated freeze, track state, typed text flushed, removal on a locked quarter', () => {
+  const c = company();
+  const KEY = `${Q}|ken|G3`;
+  c.STORE.bonus_eval[KEY] = { ab: { lv: 4, ev: '8/24' }, kn: { lv: 3 }, qu: { lv: 4, ev: '7〜9 月' }, st: 'draft', _at: 10, _t: { ab: 10, kn: 10, qu: 10, st: 10 } };
+  const S0 = J(c.STORE.bonus_eval);
+  run(c, "kevEvEdit('ken','G3','ab.lv',5,'2026-Q3')");
+  const A = J(c.STORE.bonus_eval);
+  c.STORE.bonus_eval = J(S0);
+  run(c, "kevEvEdit('ken','G3','ab.ev','9/12 新人 2 名の配置を組んだ','2026-Q3')");
+  const B = J(c.STORE.bonus_eval);
+  for (const m of [run(c, `kevMergeMap(${JSON.stringify(A)}, ${JSON.stringify(B)})`), run(c, `kevMergeMap(${JSON.stringify(B)}, ${JSON.stringify(A)})`)]) {
+    assert.deepEqual(J(m[KEY].ab), { lv: 5, ev: '9/12 新人 2 名の配置を組んだ' }, 'the level and the reason typed on two devices are both kept');
+    assert.equal(run(c, `kevCoversMap(${JSON.stringify(m)}, ${JSON.stringify(A)}) && kevCoversMap(${JSON.stringify(m)}, ${JSON.stringify(B)})`), true);
+  }
+  // the same person saves G4 ② twice in one minute: the first change stays in the history after a merge
+  const c2 = company();
+  run(c2, `kevRuleSave('G4', '2026-Q3', {s:{on:true, lo:0.9, hi:1.2, x0:0, x1:100, x2:200}}, '数字の修正', '② を変更')`);
+  const before = J(c2.STORE.bonus_eval_rule);   // another device already has the first save
+  run(c2, `kevRuleSave('G4', '2026-Q3', {s:{on:true, lo:0.95, hi:1.2, x0:0, x1:100, x2:200}}, '数字の修正', '② を変更')`);
+  const mine = J(c2.STORE.bonus_eval_rule);
+  const merged = run(c2, `kevMergeMap(${JSON.stringify(before)}, ${JSON.stringify(mine)})`)['G4|2026-Q3'];
+  assert.deepEqual([merged.set.s.lo, merged.hist.map(h => h.set.s.lo)], [0.95, [0.9]], 'same minute, same person, same words: still two changes');
+  // a v1065 freeze of a score without an evaluation date counts as old
+  const c3 = company();
+  c3.SCORES['Ken Sample'] = undefined;
+  c3.STORE.bonus_q[Q].csFreeze = { ken: { kv: 1, at: '2026/10/01 09:00', date: '', ev: 'AM', hUn: 0, cats: [{ key: 'H', score: 40, max: 54 }] } };
+  assert.equal(person(c3, 'ken').segs[0].items.c.parts.ph.missing, 'old');
+  // a G3 person waiting for the job track is not shown as evaluated
+  const c4 = company();
+  c4.EMPS.find(e => e.id === 'ken').title = 'Store Leader';
+  assert.equal(run(c4, `kevPersonState(EMPS[1], bonusForEmp(EMPS[1], kbCfg()), kevApplies(kbCfg())).t`), 'G3 職種が必要');
+  // G6 values that come from G5 say so
+  run(c4, `kevRuleSave('G5', '2026-Q3', {s:{on:true, lo:0.85, hi:1.15, x0:0, x1:100, x2:200}}, 'test', 'G5 の ②')`);
+  assert.equal(run(c4, `kevSrcLabel(kevItemSrc(kevRuleFor('G6','2026-Q3').src, 's'), 'G6')`), 'G5 の設定（G6 も同じ）');
+  // typed text waiting for the pause is saved before a level button redraws the screen
+  const c5 = company();
+  const timers = [];
+  c5.setTimeout = f => { timers.push(f); return timers.length; }; c5.clearTimeout = () => {};
+  run(c5, `kevTxtEl({value:'打ちかけの根拠'}, 'mia', 'G4', 'kn.ev', '2026-Q3', false)`);
+  assert.notEqual(c5.STORE.bonus_eval[`${Q}|mia|G4`].kn.ev, '打ちかけの根拠');
+  run(c5, "kevLv('mia','G4','qu',4,'2026-Q3')");
+  assert.deepEqual([c5.STORE.bonus_eval[`${Q}|mia|G4`].kn.ev, c5.STORE.bonus_eval[`${Q}|mia|G4`].qu.lv], ['打ちかけの根拠', 4]);
+  // removing a personal setting is refused once the quarter is confirmed on another device
+  const c6 = company();
+  vm.runInContext(`var document={ getElementById:function(){ return {value:'理由'}; }, querySelectorAll:function(){ return []; } };`, c6);
+  run(c6, `bqLockQuarter('${Q}')`);
+  c6.window = c6; vm.runInContext(`window._kevForm={kind:'clear', empId:'ray', part:'s', q:'${Q}'};`, c6);
+  const ovr0 = J(c6.STORE.bonus_eval_ovr);
+  run(c6, 'kevOvrClearSave()');
+  assert.match(c6.TOASTS.at(-1)[0], /確定しています/);
+  assert.deepEqual(J(c6.STORE.bonus_eval_ovr), ovr0);
 });
