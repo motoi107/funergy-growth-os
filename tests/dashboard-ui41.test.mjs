@@ -282,6 +282,8 @@ test('only the dashboard card (data-prev="1") shows 前日; the other cards keep
   await run(c2, `loadRealtimeSales()`);
   const plainHtml = run(c2, `__BODY.innerHTML`);
   assert.doesNotMatch(plainHtml, /前日/);
+  const deviceTime = run(c2, `new Date().toLocaleTimeString('ja', { hour:'2-digit', minute:'2-digit' })`);
+  assert.ok(plainHtml.includes('更新 ' + deviceTime + ' · '), 'the other cards keep the device clock');
   assert.ok(c2.CALLS.filter(x => x[0] === 'read').every(x => x[2] === x[3]), 'today only');
   // the markup marks only the dashboard card
   assert.match(fn('mdFunergyNowHtml'), /<div id="rt-sales-body" data-prev="1">/);
