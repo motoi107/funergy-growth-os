@@ -236,6 +236,9 @@ test('only the dashboard card (data-prev="1") shows 前日; the other cards keep
     c.ROWS['g-a'] = [row('2026-10-10', { net_sales: 4120, guest_count: 168, lunch_sales: 1380, dinner_sales: 2740, lunch_guests: 58, dinner_guests: 110, takeout_count: 21 }),
       row('2026-10-11', { net_sales: 3412.5, guest_count: 142, lunch_sales: 1210, dinner_sales: 2202.5, lunch_guests: 52, dinner_guests: 90, takeout_count: 18 })];
     c.ROWS['g-c'] = [row('2026-10-10', { net_sales: 900, guest_count: 30, lunch_sales: 400, dinner_sales: 500, lunch_guests: 14, dinner_guests: 16, takeout_count: 2 })];
+    // store B was closed all day yesterday (a closure entry) and has only a row of zeros
+    c.STORE.store_closures = { B: { '2026-10-10': { mode: 'closed', note: '' } } };
+    c.ROWS['g-b'] = [row('2026-10-10', {})];
     if (flag) run(c, `__BODY.attrs['data-prev'] = '1'`);
     return c;
   };
@@ -244,6 +247,7 @@ test('only the dashboard card (data-prev="1") shows 前日; the other cards keep
   const html = run(c1, `__BODY.innerHTML`);
   const cards = html.split('border:1px solid var(--border);border-radius:12px').slice(1);
   assert.equal(cards.length, 5);
+  assert.match(html, /更新 14:05 · 1\/5店<\/div>$/, 'the update time is Hawaii time, like the dates');
   // store A: header total + three cells, each with 前日
   assert.equal((cards[0].match(/前日/g) || []).length, 4);
   assert.match(cards[0], /前日 \$4,120\.00 \/ 168名 \/ \$24\.52/);
@@ -252,9 +256,10 @@ test('only the dashboard card (data-prev="1") shows 前日; the other cards keep
   assert.match(cards[0], /前日 <b[^>]*>21件<\/b><br>注文数/);
   // store A is closed on Saturdays but had sales: numbers, not 休業
   assert.doesNotMatch(cards[0], /休業/);
-  // store B (lunch closed, nothing synced, no data today): only the header line, a dash
-  assert.match(cards[1], /前日 —/);
+  // store B (closed yesterday, a row of zeros, no data today): only 前日 休業 in the header, no columns
+  assert.match(cards[1], /前日 休業/);
   assert.match(cards[1], /本日のデータはまだありません/);
+  assert.equal((cards[1].match(/休業/g) || []).length, 1);
   assert.doesNotMatch(cards[1], /ランチ/);
   // store C: nothing today yet, yesterday in the header and under lunch, dinner and takeout
   assert.match(cards[2], /前日 \$900\.00 \/ 30名 \/ \$30\.00/);
@@ -266,6 +271,13 @@ test('only the dashboard card (data-prev="1") shows 前日; the other cards keep
   // no GUID and errors: no 前日
   assert.doesNotMatch(cards[3], /前日/);
   assert.doesNotMatch(cards[4], /前日/);
+  const c3 = setup(true);
+  c3.ROWS = {};
+  await run(c3, `loadRealtimeSales()`);
+  const empty = run(c3, `__BODY.innerHTML`).split('border:1px solid var(--border);border-radius:12px').slice(1);
+  // nothing synced at all: 休業 for the stores closed yesterday (A weekly, B closure entry), a dash for C; no columns
+  assert.deepEqual(empty.slice(0, 3).map(card => (/前日 (休業|—)/.exec(card) || [])[1]), ['休業', '休業', '—']);
+  for (const card of empty.slice(0, 3)) assert.doesNotMatch(card, /ランチ/);
   const c2 = setup(false);
   await run(c2, `loadRealtimeSales()`);
   const plainHtml = run(c2, `__BODY.innerHTML`);
@@ -283,7 +295,7 @@ test('the same checks pass on a device in Japan and on one in UTC', { skip: proc
   for (const tz of ['Asia/Tokyo', 'UTC']) {
     const env = { ...process.env, TZ: tz, DASH_UI41_CHILD: '1' };
     delete env.NODE_TEST_CONTEXT;   // otherwise the child reports to this runner and always exits 0
-    const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', fileURLToPath(import.meta.url)], { env, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', fileURLToPath(import.meta.url)], { env, encoding: 'utf8', timeout: 60000 });
     assert.equal(r.status, 0, tz + '\n' + String(r.stdout).slice(-3000));
   }
 });
