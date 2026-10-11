@@ -164,11 +164,14 @@ test('the old per-store profit input (bottom table, removed) is read only for qu
   const c = app();
   c.CFG2 = { quarter: '2026-Q3', storeProfit: { S1: { actual: 50, target: 100 } } };
   assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 0, target: 0, pct: 100, src: 'none' }, 'not confirmed: neutral (enter the months in ④)');
-  c.BQ['2026-Q3'] = { locked: true, lockedAt: '2026/12/31 09:00', lockedBy: 'GM', rangeLock: '2026/12/31 09:00|GM' };
+  const RS = { ken: { segs: [{ g: 'G3', from: '2026-07-01', key: 'G3-sv', v: null, rv: 1, lo: 0.7, hi: 1.3, gb: 3000 }] } };
+  c.BQ['2026-Q3'] = { locked: true, lockedAt: '2026/12/31 09:00', lockedBy: 'GM', rangeLock: '2026/12/31 09:00|GM', coefSnap: RS };
   assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 0, target: 0, pct: 100, src: 'none' }, 'confirmed with v1062: the same as before confirming (review P1)');
+  c.BQ['2026-Q3'] = { locked: true, lockedAt: '2026/12/31 09:00', lockedBy: 'GM', rangeLock: '2026/12/31 09:00|GM', coefSnap: { ken: { segs: [{ g: 'G3', from: '2026-07-01', key: 'G3-sv', v: 1, gb: 3000 }] } } };
+  assert.equal(run(c, `storeProfitOf(CFG2,'S1')`).src, 'old', 'confirmed again by an older device in the same minute: no range record, so the old input counts');
   c.BQ['2026-Q3'] = { locked: true };
   assert.deepEqual(run(c, `storeProfitOf(CFG2,'S1')`), { actual: 50, target: 100, pct: 50, src: 'old' }, 'confirmed with v1061 or earlier: the numbers it was confirmed with');
-  c.BQ['2026-Q3'] = { locked: true, lockedAt: '2027/01/05 10:00', lockedBy: 'GM', rangeLock: '2026/12/31 09:00|GM' };
+  c.BQ['2026-Q3'] = { locked: true, lockedAt: '2027/01/05 10:00', lockedBy: 'GM', rangeLock: '2026/12/31 09:00|GM', coefSnap: RS };
   assert.equal(run(c, `storeProfitOf(CFG2,'S1')`).src, 'old', 'unlocked and confirmed again on an older device: the mark of the earlier lock does not count');
   const lock = fn('bqLockQuarter'), unlock = fn('bqUnlockQuarter');
   assert.ok(lock.indexOf("d.rangeLock=String(d.lockedAt)+'|'+String(d.lockedBy)") > lock.indexOf('d.lockedAt=_bqNow()'), 'confirming sets the mark for this lock');
