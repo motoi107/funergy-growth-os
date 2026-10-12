@@ -209,15 +209,20 @@ test('live (before store publication): only the stores the server returns; KPI f
   const a = app(S, { who: 'am1', role: 'am', stores, kpi });
   a.run("_mr.env='live'"); const h = await a.show(), s = strip(h);
   assert.equal((h.match(/class="card mr-card"/g) || []).length, 1);
-  assert.match(s, /ToriTon Yuki 未作成（未提出） 店長 10\/15 売上 96\.2% 注意 原価率 未取得 人件費率 27\.0% 未設定 まだ更新なし —（未提出） 確定/);
+  assert.match(s, /ToriTon Yuki 未作成（未提出） —（店舗公開前） 売上 96\.2% 注意 原価率 未取得 人件費率 27\.0% 未設定 まだ更新なし —（未提出） 確定/);
   assert.match(s, /売上 96\.2% 注意 原価率 未取得 人件費率 27\.0% 未設定/);
   assert.match(s, /本番の数字（読むだけ）/);
   assert.doesNotMatch(h, /Tenkichi|LaLa/);
   const g = app(S, { stores, kpi }); g.run("_mr.env='live'"); const hg = strip(await g.show());
-  assert.match(hg, /Tenkichi Second AM 未作成（未提出） 店長 10\/15 売上 未取得 原価率 31\.0% 注意 人件費率 25\.0% 達成 まだ更新なし —（未提出） 未入手/);
-  assert.match(hg, /LaLa AM 未設定 → GM が確認 未作成（未提出） 店長 10\/15 売上 未設定 原価率 未設定 人件費率 未設定/);
-  // Live month 2026-10 on 10/12: submission due 10/15, not yet overdue; next is the store manager.
-  assert.match(hg, /店長 10\/15/); assert.doesNotMatch(hg, /期限超過 \d+ 日/);
+  assert.match(hg, /Tenkichi Second AM 未作成（未提出） —（店舗公開前） 売上 未取得 原価率 31\.0% 注意 人件費率 25\.0% 達成 まだ更新なし —（未提出） 未入手/);
+  assert.match(hg, /LaLa AM 未設定 → GM が確認 未作成（未提出） —（店舗公開前） 売上 未設定 原価率 未設定 人件費率 未設定/);
+  // Before store publication store managers cannot submit: no due date and never “overdue”, also for past months.
+  assert.doesNotMatch(hg, /期限超過 \d+ 日/);
+  g.run("_mr.ym='2026-07'"); const past = strip(await g.show());
+  assert.doesNotMatch(past, /期限超過 \d+ 日/); assert.match(past, /2026 年 7 月/);
+  // Day 1 of the month: no numbers yet (not 未設定 for sales).
+  const d1 = app(S, { stores, kpi }); d1.bizNow = () => new Date(2026, 9, 1, 9, 0); d1.run("_mr.env='live'");
+  const h1 = strip(await d1.show()); assert.match(h1, /まだ数字がない（月の 1 日目）/); assert.doesNotMatch(h1, /売上 未設定/);
 });
 
 test('settings (GM / CEO): proposes the AM from the store master, saves only what is shown, the schedule and the switch', async () => {
@@ -260,4 +265,67 @@ test('logout clears what the previous person loaded', async () => {
   assert.ok(c.M().list && c.M().who);
   c.run('mrReset()');
   assert.equal(c.M().list, null); assert.equal(c.M().who, null);
+});
+
+test('AM proposals in the settings are exact and unique only (never widened by a partial or shared name)', async () => {
+  const S = await server();
+  await S.pg.exec(`reset role; insert into mr_members(user_id, emp_id, name, role) values('00000000-0000-4000-8000-0000000000c9','E7','Twin','am'),('00000000-0000-4000-8000-0000000000ca','E8','Twin','am'); set role service_role;`);
+  const stores = [{ id: 'F03', name: 'FSP', am: 'Yuki Nagatani', active: true }, { id: 'F05', name: 'Marujuu', am: 'Yuki', active: true },
+    { id: 'F02', name: 'Tenkichi', am: 'Second AM', active: true }, { id: 'F06', name: 'LaLa', am: 'Twin', active: true }];
+  const c = app(S, { stores }); await c.show(); c.run('_mr.setOpen=true'); c.renderPage(); await c.flush();
+  const sel = id => (c.html.match(new RegExp('data-store="' + id + '"[\\s\\S]*?</select>')) || [''])[0];
+  assert.doesNotMatch(sel('F03'), / selected/);                                   // partial name: no proposal
+  assert.match(sel('F05'), /value="00000000-0000-4000-8000-0000000000c5" selected/);  // exact "Yuki"
+  assert.match(sel('F02'), /value="00000000-0000-4000-8000-0000000000c6" selected/);  // name from the employee table (E6)
+  assert.doesNotMatch(sel('F06'), / selected/);                                   // two AMs named Twin: no proposal
+  assert.match(strip(c.html), /FSP Yuki Nagatani .* 案なし .*Marujuu Yuki .* 案（同じ名前の AM） .*LaLa Twin .* 案なし（同じ名前の AM が 2 人以上）/);
+  // The employee table's name wins over the name kept in the members table (am1 is E5 = "Yuki Nagatani" there).
+  const c3 = app(S, { stores }); c3.getEmployees = () => [{ id: 'E5', name: 'Yuki Nagatani' }, { id: 'E6', name: 'Second AM' }];
+  await c3.show(); c3.run('_mr.setOpen=true'); c3.renderPage(); await c3.flush();
+  const sel3 = id => (c3.html.match(new RegExp('data-store="' + id + '"[\\s\\S]*?</select>')) || [''])[0];
+  assert.match(sel3('F03'), /value="00000000-0000-4000-8000-0000000000c5" selected/); assert.doesNotMatch(sel3('F05'), / selected/);
+  // A store saved earlier but no longer active is listed and saved as inactive (its AM can be taken off).
+  await S.api('gm', { action: 'stores_save', stores: [{ store_id: 'F09', name: 'Closed', am_user: U.am1 }] });
+  const c2 = app(S, { stores }); await c2.show(); c2.run('_mr.setOpen=true'); c2.renderPage(); await c2.flush();
+  assert.match(c2.html, /data-store="F09"[^>]*data-active="0"/); assert.match(strip(c2.html), /Closed 今は使っていない店 .* 保存済み/);
+  c2.qsa = [{ getAttribute: k => ({ 'data-store': 'F09', 'data-name': 'Closed', 'data-sort': '5', 'data-active': '0' })[k], value: '' }];
+  await c2.run('mrSaveStores()'); await c2.flush();
+  assert.deepEqual((await S.pg.query(`select am_user, active from mr_stores where store_id='F09'`)).rows, [{ am_user: null, active: false }]);
+});
+
+test('no stale writes: a load that finishes after logout, another sign-in or a switch is dropped', async () => {
+  const S = await server();
+  // Logout (reset) while whoami is in flight: before it starts, and after the request went out.
+  const c = app(S); c.renderPage(); c.run('mrReset()'); await c.flush();
+  assert.equal(c.M().who, null);
+  const c2 = app(S); const f2 = c2.fetch; c2.fetch = async (u, i) => { c2.run('mrReset()'); return f2(u, i); };
+  c2.renderPage(); await c2.flush(); await new Promise(r => setTimeout(r, 30));
+  assert.equal(c2.M().who, null);
+  // Switching demo → live while the demo list is still in flight (it answers last): the demo list is not shown as live.
+  const d = app(S); await d.show(); const fd = d.fetch;
+  d.fetch = async (u, i) => { const b = JSON.parse(i.body); if (b.action === 'list' && b.env === 'demo') await new Promise(r => setTimeout(r, 60)); return fd(u, i); };
+  d.run("_mr.list=null; _mr.listKey=''; delete _mr.load.list"); d.renderPage(); await d.flush();
+  d.run("_mr.env='live'"); d.renderPage(); await d.flush(); await new Promise(r => setTimeout(r, 120)); await d.flush();
+  assert.equal(d.M().list.env, 'live');
+  // Another email sign-in (Invoice / Bot) after the GM loaded: the next render loads again as that person.
+  const e = app(S); await e.show(); assert.equal(e.M().who.role, 'gm');
+  e._botSession = { access_token: 'tok-am1', refresh_token: 'r' }; await e.show();
+  assert.equal(e.M().who.role, 'am'); assert.doesNotMatch(e.html, /設定（GM・CEO）/);
+  // A PIN logout while the sign-in waits for whoami: nothing is written, the remembered key is untouched.
+  const f = app(S, { signed: false });
+  f.dom = { 'mr-email': { value: 'gm@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
+  const realFetch = f.fetch; f.fetch = async (u, i) => { f.invInKeepWho = () => ''; f.run('mrReset()'); return realFetch(u, i); };
+  await f.run('mrLogin()');
+  assert.equal(f.M().who, null); assert.deepEqual(f.keep, []);
+  // A network failure during sign-in does not delete the remembered key either.
+  const n = app(S, { signed: false });
+  n.dom = { 'mr-email': { value: 'gm@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
+  n.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  await n.run('mrLogin()'); assert.deepEqual(n.keep, []); assert.match(n.dom['mr-login-error'].textContent, /つながりません/);
+});
+
+test('the admin page session (_authSession) is not used for the review', async () => {
+  const S = await server();
+  const c = app(S, { signed: false }); c.window = { _authSession: { access_token: 'tok-gm' } };
+  assert.match(await c.show(), /メールで認証してください/); assert.equal(c.calls.length, 0);
 });

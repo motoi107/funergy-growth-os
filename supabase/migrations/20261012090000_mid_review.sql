@@ -134,6 +134,7 @@ language sql stable security invoker set search_path=public,pg_temp as $$
 $$;
 
 -- The signed-in person, if they may use the feature with one of these roles. p_enabled: also require the private check to be on.
+-- A CEO / GM must also still be CEO / GM in manager_auth: taking someone off there takes them off here at once.
 create function public.mr_auth(p_actor uuid, p_roles text[], p_enabled boolean) returns public.mr_members
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare m public.mr_members;
@@ -141,6 +142,7 @@ begin
  if p_actor is null then raise exception 'actor_required'; end if;
  select * into m from public.mr_members where user_id=p_actor and enabled;
  if m.user_id is null or not (m.role = any(p_roles)) then raise exception 'forbidden'; end if;
+ if m.role in ('ceo','gm') and not exists(select 1 from public.manager_auth a where a.user_id=m.user_id and a.role in ('ceo','gm')) then raise exception 'forbidden'; end if;
  if p_enabled and coalesce((public.mr_setting('flags')->>'private')::boolean, false) is not true then raise exception 'disabled'; end if;
  return m;
 end $$;
@@ -194,8 +196,10 @@ declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, arra
 begin
  return jsonb_build_object('role', m.role, 'emp_id', m.emp_id, 'name', m.name,
   'flags', public.mr_setting('flags'), 'schedule', public.mr_setting('schedule'), 'demo', public.mr_setting('demo'),
-  'live_stores', (select coalesce(jsonb_agg(s.store_id order by s.sort, s.store_id), '[]'::jsonb) from public.mr_stores s
-     where s.env='live' and s.active and public.mr_sees(m.role, m.user_id, s.env, s.am_user)));
+  -- Nothing about stores while the private check is off.
+  'live_stores', case when coalesce((public.mr_setting('flags')->>'private')::boolean, false) is not true then '[]'::jsonb else
+    (select coalesce(jsonb_agg(s.store_id order by s.sort, s.store_id), '[]'::jsonb) from public.mr_stores s
+     where s.env='live' and s.active and public.mr_sees(m.role, m.user_id, s.env, s.am_user)) end);
 end $$;
 
 create function public.mr_list(p jsonb) returns jsonb

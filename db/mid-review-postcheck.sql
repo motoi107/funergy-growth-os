@@ -13,6 +13,8 @@ with t as (
 select 'tables' as check_name, (select count(*) from t)::text as value, case when (select count(*) from t) = 7 then 'OK' else 'NG：表が 7 つない' end as result
 union all select 'row level security', (select count(*) filter (where relrowsecurity) from t)::text, case when (select bool_and(relrowsecurity) from t) then 'OK' else 'NG' end
 union all select 'browser can read or write tables', (select count(*) filter (where anon_any or auth_any) from t)::text, case when (select count(*) filter (where anon_any or auth_any) from t) = 0 then 'OK' else 'NG：ブラウザから触れる表がある' end
+union all select 'browser can use the event sequence', (select (has_sequence_privilege('anon', 'public.mr_events_id_seq', 'usage') or has_sequence_privilege('authenticated', 'public.mr_events_id_seq', 'usage'))::text),
+  case when not (has_sequence_privilege('anon', 'public.mr_events_id_seq', 'usage') or has_sequence_privilege('authenticated', 'public.mr_events_id_seq', 'usage')) then 'OK' else 'NG' end
 union all select 'functions', (select count(*) from f)::text, case when (select count(*) from f) = 12 then 'OK' else 'NG：関数が 12 個ない' end
 union all select 'browser can run functions', (select count(*) filter (where open_to_browser) from f)::text, case when (select count(*) filter (where open_to_browser) from f) = 0 then 'OK' else 'NG' end
 union all select 'security definer functions', (select count(*) filter (where prosecdef) from f)::text, case when (select count(*) filter (where prosecdef) from f) = 0 then 'OK' else 'NG' end
@@ -20,5 +22,9 @@ union all select 'flags', (select value::text from public.mr_settings where key 
   case when (select (value->>'store_publish')::boolean = false and (value->>'notify')::boolean = false from public.mr_settings where key = 'flags') then 'OK（店舗公開・通知は OFF）' else 'NG' end
 union all select 'members (ceo / gm / am)', (select string_agg(role || ' ' || n, ', ' order by role) from (select role, count(*) n from public.mr_members where enabled group by role) x),
   case when exists(select 1 from public.mr_members where enabled and role in ('ceo','gm')) then 'OK' else 'NG：CEO・GM がいない' end
+union all select 'ceo / gm not in manager_auth', (select count(*)::text from public.mr_members m where m.enabled and m.role in ('ceo','gm')
+   and not exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role in ('ceo','gm'))),
+  case when (select count(*) from public.mr_members m where m.enabled and m.role in ('ceo','gm')
+   and not exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role in ('ceo','gm'))) = 0 then 'OK' else '注意：この人は入れない（manager_auth で CEO・GM ではない）' end
 union all select 'members without employee id', (select count(*)::text from public.mr_members where enabled and coalesce(emp_id, '') = ''),
   case when (select count(*) from public.mr_members where enabled and coalesce(emp_id, '') = '') = 0 then 'OK' else '注意：この人は「この端末で覚える」が使えない（毎回メール認証）' end;

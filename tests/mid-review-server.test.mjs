@@ -13,7 +13,11 @@ const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000
 
 async function setup() {
   const pg = new PGlite();
+  // Like Supabase: new tables, sequences and functions in public are granted to anon / authenticated by default.
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+    alter default privileges in schema public grant all on tables to anon, authenticated;
+    alter default privileges in schema public grant all on sequences to anon, authenticated;
+    alter default privileges in schema public grant all on functions to anon, authenticated;
     create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;`);
   for (const [k, r, e] of [['ceo', 'ceo', 'E1'], ['gm', 'gm', 'E2'], ['office', 'office', 'E3'], ['crew', 'office_crew', 'E4']])
     await pg.query('insert into manager_auth(user_id, role, emp_id) values($1,$2,$3)', [U[k], r, e]);
@@ -56,6 +60,7 @@ test('browsers cannot reach the tables or functions directly (anon / authenticat
         assert.equal((await E.q(`select has_table_privilege($1, 'public.${t}', $2) v`, [role, pr]))[0].v, false, `${role} ${pr} ${t}`);
     for (const fn of ['mr_whoami(jsonb)', 'mr_list(jsonb)', 'mr_settings_save(jsonb)', 'mr_stores_save(jsonb)', 'mr_demo_reset(jsonb)', 'mr_members_list(jsonb)', 'mr_auth(uuid,text[],boolean)'])
       assert.equal((await E.q(`select has_function_privilege($1, 'public.${fn}', 'execute') v`, [role]))[0].v, false, `${role} ${fn}`);
+    for (const pr of ['usage', 'select', 'update']) assert.equal((await E.q(`select has_sequence_privilege($1, 'public.mr_events_id_seq', $2) v`, [role, pr]))[0].v, false, `${role} seq ${pr}`);
     const rls = await E.q(`select relname, relrowsecurity from pg_class where relname like 'mr\\_%' and relkind='r'`);
     assert.ok(rls.length === 7 && rls.every(r => r.relrowsecurity));
   }
@@ -72,10 +77,23 @@ test('who can call: no sign-in 401, anon key 401, office / office_crew / turned-
   for (const who of ['ceo', 'gm', 'am1']) assert.equal((await E.api(who, { action: 'whoami' })).status, 200, who);
 });
 
+test('a CEO / GM taken off in manager_auth loses access here at once (the copy at setup is not enough)', async () => {
+  const E = await setup(); await on(E);
+  assert.equal((await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).status, 200);
+  await E.q(`update manager_auth set role='office' where user_id=$1`, [U.gm]);
+  assert.equal((await E.api('gm', { action: 'whoami' })).status, 403);
+  assert.equal((await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).status, 403);
+  await E.q(`delete from manager_auth where user_id=$1`, [U.ceo]);
+  assert.equal((await E.api('ceo', { action: 'settings_save', key: 'flags', value: { private: false } })).status, 403);
+  // AMs are not in manager_auth: only the members table decides.
+  assert.equal((await E.api('am1', { action: 'list', env: 'demo', ym: '2026-10' })).status, 200);
+});
+
 test('while the private check is off nobody can list; only GM / CEO can turn it on; store publication and notices stay off', async () => {
   const E = await setup();
+  await E.q(`insert into mr_stores(env, store_id, name, am_user) values('live','F01','ToriTon',$1)`, [U.am1]);
   const w = await E.api('am1', { action: 'whoami' });
-  assert.equal(w.body.flags.private, false);
+  assert.equal(w.body.flags.private, false); assert.deepEqual(w.body.live_stores, []);
   const l = await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' });
   assert.equal(l.status, 403); assert.equal(l.body.error, 'disabled');
   assert.equal((await E.api('am1', { action: 'settings_save', key: 'flags', value: { private: true } })).status, 403);
@@ -211,25 +229,31 @@ test('the check, add-AM and rollback SQL work on the same schema', async () => {
   const E = await setup();
   const post = fs.readFileSync(new URL('../db/mid-review-postcheck.sql', import.meta.url), 'utf8');
   const rows = await E.q(post);
-  assert.equal(rows.length, 9);
+  assert.equal(rows.length, 11);
   for (const r of rows) assert.ok(/^OK/.test(r.result), r.check_name + ': ' + r.result);
-  // Add an AM by SQL: the account must exist; the employee is found by name when exactly one matches.
+  // Add a member by SQL: the account must exist, the employee name must match exactly one, an AM must be an AM, roles are never changed.
   await E.pg.exec('reset role');
   await E.pg.exec(`create schema auth; create table auth.users(id uuid primary key, email text); create table public.employees(id text primary key, data jsonb);
-    insert into auth.users values ('00000000-0000-4000-8000-0000000000d1','yuki@example.test');
-    insert into public.employees values ('E9','{"id":"E9","name":"Yuki Test"}'),('E8','{"id":"E8","name":"Old Yuki","status":"退職"}');`);
+    insert into auth.users values ('00000000-0000-4000-8000-0000000000d1','yuki@example.test'),('00000000-0000-4000-8000-0000000000d2','sm@example.test'),('${U.gm}','gm@example.test');
+    insert into public.employees values ('E9','{"id":"E9","name":"Yuki Test","role":"am"}'),('E8','{"id":"E8","name":"Yuki Test","role":"am","status":"退職"}'),
+     ('E7','{"id":"E7","name":"Store Mgr","role":"g4"}'),('EA','{"id":"EA","name":"Twin","role":"am"}'),('EB','{"id":"EB","name":"Twin","role":"am"}'),('E2','{"id":"E2","name":"GM Test","role":"gm"}');`);
+  const tpl = fs.readFileSync(new URL('../db/mid-review-add-member.sql', import.meta.url), 'utf8');
+  const add = (email, name, role) => tpl.replace('<メールアドレス>', email).replace('<社員の表の名前（完全に同じ）>', name).replace('<am / gm / ceo のどれか>', role);
+  await E.pg.exec(add('YUKI@example.test', 'Yuki Test', 'am'));
+  assert.deepEqual((await E.pg.query(`select role, emp_id, name, enabled from mr_members where user_id='00000000-0000-4000-8000-0000000000d1'`)).rows, [{ role: 'am', emp_id: 'E9', name: 'Yuki Test', enabled: true }]);
+  await assert.rejects(E.pg.exec(add('nobody@example.test', 'Yuki Test', 'am')), /まだありません/);
+  await assert.rejects(E.pg.exec(add('yuki@example.test', 'Yuki', 'am')), /0 人/);           // partial names do not match
+  await assert.rejects(E.pg.exec(add('yuki@example.test', 'Twin', 'am')), /2 人/);
+  await assert.rejects(E.pg.exec(add('sm@example.test', 'Store Mgr', 'am')), /AM ではありません/);   // a G4 store manager is not added
+  await assert.rejects(E.pg.exec(add('yuki@example.test', 'Yuki Test', 'gm')), /manager_auth/);
+  await assert.rejects(E.pg.exec(add('gm@example.test', 'GM Test', 'ceo')), /もう gm/);       // roles are never changed by this file
   await E.pg.exec('set role service_role');
-  const add = fs.readFileSync(new URL('../db/mid-review-add-am.sql', import.meta.url), 'utf8')
-    .replace('<AM のメールアドレス>', 'YUKI@example.test').replace('<社員の表の名前の一部（例：Yuki）>', 'Yuki');
-  await E.pg.exec('reset role'); await E.pg.exec(add); await E.pg.exec('set role service_role');
-  const m = await E.q(`select role, emp_id, enabled from mr_members where user_id='00000000-0000-4000-8000-0000000000d1'`);
-  assert.deepEqual(m, [{ role: 'am', emp_id: 'E9', enabled: true }]);
-  await E.pg.exec('reset role');
-  await assert.rejects(E.pg.exec(add.replace('YUKI@example.test', 'nobody@example.test')), /まだありません/);
   // Rollback: stops while a live review exists, otherwise removes only the mr_ objects.
   const rb = fs.readFileSync(new URL('../db/mid-review-rollback.sql', import.meta.url), 'utf8');
+  await E.pg.exec('reset role');
   await E.pg.exec(`insert into mr_stores(env, store_id, name) values('live','F01','ToriTon'); insert into mr_reviews(env, store_id, ym) values('live','F01','2026-10')`);
   await assert.rejects(E.pg.exec(rb), /本番/);
+  assert.equal((await E.pg.query(`select count(*)::int n from pg_class where relname like 'mr\\_%' and relkind='r'`)).rows[0].n, 7);   // nothing was dropped
   await E.pg.exec(`delete from mr_reviews where env='live'`);
   await E.pg.exec(rb);
   const left = (await E.pg.query(`select count(*)::int n from pg_class where relname like 'mr\\_%' and relkind='r'`)).rows[0].n;
