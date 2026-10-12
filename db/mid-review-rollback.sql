@@ -10,7 +10,7 @@ do $$ begin
   public.mr_reply_delete(jsonb), public.mr_reply_save(jsonb), public.mr_recompute(uuid), public.mr_target_final(uuid,text), public.mr_open_waits(uuid,text),
   public.mr_submit(jsonb), public.mr_save(jsonb), public.mr_get(jsonb), public.mr_missing(jsonb,jsonb),
   public.mr_demo_reset(jsonb), public.mr_stores_save(jsonb), public.mr_members_list(jsonb), public.mr_settings_save(jsonb),
-  public.mr_list(jsonb), public.mr_whoami(jsonb), public.mr_arr(jsonb), public.mr_event(uuid,text,text,text,jsonb),
+  public.mr_list(jsonb), public.mr_whoami(jsonb), public.mr_arr(jsonb), public.mr_blank(text), public.mr_date_ok(text), public.mr_item_at(uuid,integer,text), public.mr_event(uuid,text,text,text,jsonb),
   public.mr_sees(text,uuid,text,uuid,text), public.mr_am_master_ok(uuid,text), public.mr_am_hr_ok(text), public.mr_setting(text);
  if to_regclass('public.mr_reviews') is not null then
   drop function if exists public.mr_summary(public.mr_reviews), public.mr_required_targets(public.mr_reviews), public.mr_view_body(public.mr_reviews);

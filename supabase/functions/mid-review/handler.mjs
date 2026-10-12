@@ -141,7 +141,8 @@ export function demoData(ym) {
       submissions: [sub(1, `${D(15)}T05:00:00Z`, 'Operation Leader 原田（デモ・G3）', b5, snap(13, { sales: k(45200, 47000, '$'), guests: k(1810, 1880),
         fc: k(31.0, 31.0, '%'), labor: k(28.2, 27.5, '%') }, S.D5.pl))],
       replies: [{ target: 'issue:i1', author_name: 'AM Lee（デモ）', author_role: 'am', decision: 'consult',
-        data: { title: '夜のリーダーと締め作業（店長が直接話したい）', due: D(21), severity: 'high' }, sent_at: `${D(16)}T21:00:00Z` }] },
+        data: { title: '夜のリーダーと締め作業（店長が直接話したい）', due: D(21), severity: 'high',
+          consult: { date: D(21), time: '15:00', minutes: 30, people: ['店長 Garcia（デモ）', 'AM Lee（デモ）'], topics: ['夜のリーダーを誰にするか', '締め作業の分担'] } }, sent_at: `${D(16)}T21:00:00Z` }] },
     { store_id: 'D6', ym, status: 'draft', next_actor: '店長 Nguyen（デモ）', next_due: D(15), deadlines: dl,
       updated_at: `${D(13)}T02:00:00Z`, updated_by: '店長 Nguyen（デモ）', body: b6 },
   ];
@@ -152,7 +153,12 @@ function prevYm(ym) { const [y, m] = ym.split('-').map(Number); return m === 1 ?
 // ---------------------------------------------------------------- what a store manager may write (段階 2-2)
 // Only these fields are kept, with length limits. Anything else in the request is dropped.
 const TX = (v, n) => (typeof v === 'string' ? v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, n) : '');
-const DT = v => (typeof v === 'string' && /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v) ? v : '');
+// A real calendar date (11-31 and 02-30 are not).
+const DT = v => {
+  if (typeof v !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v)) return '';
+  const [y, m, d] = v.split('-').map(Number), x = new Date(Date.UTC(y, m - 1, d));
+  return x.getUTCFullYear() === y && x.getUTCMonth() === m - 1 && x.getUTCDate() === d ? v : '';
+};
 const ID = v => (typeof v === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(v) ? v : null);
 const KEY = /^[a-z]{1,12}$/;
 export const KPI_TAGS = ['weather', 'staff', 'supply', 'other', 'checking'];
@@ -196,6 +202,9 @@ export function normBody(b) {
 // ---------------------------------------------------------------- what a manager may write in a reply (段階 2-3)
 export const DECISIONS = ['as_proposed', 'modify', 'followup', 'escalate', 'consult', 'no_action'];
 export const REPLY_LIMITS = { next: 300, owner: 60, next_check: 300, reason: 400, question: 600, recommend: 400, title: 120, message: 600, person: 40, topic: 120 };
+// What each decision carries (fields left over from another decision chosen before are not kept). The screen sends the same.
+export const REPLY_FIELDS = { as_proposed: ['next', 'owner', 'due', 'next_check'], modify: ['next', 'owner', 'due', 'next_check'], no_action: ['reason'],
+  followup: ['title', 'question', 'due'], escalate: ['title', 'reason', 'recommend', 'due'], consult: ['consult'], none: [] };
 const HHMM = v => (typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v) ? v : '');
 export function normReply(b) {
   b = obj(b); const d = obj(b.data), L = REPLY_LIMITS;
@@ -205,11 +214,14 @@ export function normReply(b) {
     severity: ['none', 'watch', 'high'].includes(d.severity) ? d.severity : '' };
   if (decision === 'consult') {
     const c = obj(d.consult), mins = Number(c.minutes);
-    data.consult = { date: DT(c.date), time: HHMM(c.time), minutes: Number.isInteger(mins) && mins >= 5 && mins <= 120 ? mins : 30,
-      people: (Array.isArray(c.people) ? c.people : []).map(x => TS(x, L.person)).filter(Boolean).slice(0, 6),
-      topics: (Array.isArray(c.topics) ? c.topics : []).map(x => TS(x, L.topic)).filter(Boolean).slice(0, 2) };
+    const people = (Array.isArray(c.people) ? c.people : []).map(x => TS(x, L.person)).filter(Boolean),
+      topics = (Array.isArray(c.topics) ? c.topics : []).map(x => TS(x, L.topic)).filter(Boolean);
+    // Up to 6 people and 2 things to decide: more is refused, not cut (the screen says the same).
+    if (people.length > 6 || topics.length > 2) { const e = new Error('bad_value'); e.code = 'bad_value'; throw e; }
+    data.consult = { date: DT(c.date), time: HHMM(c.time), minutes: Number.isInteger(mins) && mins >= 5 && mins <= 120 ? mins : 30, people, topics };
   }
-  for (const k of Object.keys(data)) if (data[k] === '') delete data[k];
+  const keep = REPLY_FIELDS[decision || 'none'].concat(['message', 'severity']);
+  for (const k of Object.keys(data)) if (data[k] === '' || !keep.includes(k)) delete data[k];
   return { decision, escalate_to: decision === 'escalate' && ['gm', 'ceo'].includes(b.escalate_to) ? b.escalate_to : null, data };
 }
 const TGT = v => (typeof v === 'string' && /^[a-z]+(:[A-Za-z0-9_-]{1,40})?$/.test(v) ? v : null);
@@ -267,14 +279,14 @@ export function createHandler(deps) {
     deadline_save: (a, b) => db.rpc('mr_deadline_save', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30),
       deadlines: Object.fromEntries(['submit', 'reply', 'decide', 'consult_from', 'consult_to'].map(k => [k, DT(obj(b.deadlines)[k])])) }),
     result_save: (a, b) => db.rpc('mr_result_save', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30),
-      reply_id: str(b.reply_id, 40), result: TS(b.result, 600), done: b.done === true }),
+      reply_id: str(b.reply_id, 40), result: TS(b.result, 600), done: b.done === true, expect_at: str(b.expect_at, 40) }),
     demo_reset: async a => {
       const w = await db.rpc('mr_whoami', { actor: a });
       const ym = w && w.demo && /^[0-9]{4}-(0[1-9]|1[0-2])$/.test(w.demo.ym || '') ? w.demo.ym : '2026-10';
       return db.rpc('mr_demo_reset', { actor: a, ...demoData(ym) });
     },
   };
-  const ERR = { forbidden: 403, disabled: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409 };
+  const ERR = { forbidden: 403, disabled: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409, nothing: 409 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');

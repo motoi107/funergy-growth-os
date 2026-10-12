@@ -7,7 +7,7 @@ with t as (
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('mr_settings','mr_members','mr_stores','mr_reviews','mr_submissions','mr_replies','mr_events')
 ), fn(name) as (
-  values ('mr_setting'),('mr_am_hr_ok'),('mr_am_master_ok'),('mr_auth'),('mr_sees'),('mr_event'),('mr_arr'),('mr_summary'),
+  values ('mr_setting'),('mr_am_hr_ok'),('mr_am_master_ok'),('mr_auth'),('mr_sees'),('mr_event'),('mr_arr'),('mr_blank'),('mr_date_ok'),('mr_item_at'),('mr_summary'),
    ('mr_whoami'),('mr_list'),('mr_settings_save'),('mr_members_list'),('mr_stores_save'),('mr_demo_reset'),
    ('mr_view_body'),('mr_actor_name'),('mr_missing'),('mr_get'),('mr_save'),('mr_submit'),
    ('mr_required_targets'),('mr_open_waits'),('mr_target_final'),('mr_recompute'),('mr_reply_review'),('mr_reply_save'),('mr_reply_delete'),

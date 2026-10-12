@@ -654,6 +654,8 @@ body.shift-wide .main { max-width:1900px; }
 .mr-fold { background:var(--surface2); border-radius:10px; padding:8px 10px; font-size:12px; color:var(--muted); line-height:1.5; }
 .mr-tagrow { display:flex; gap:6px; flex-wrap:wrap; }
 .mr-pick { display:inline-flex; align-items:center; font-family:inherit; font-size:12.5px; font-weight:700; border-radius:20px; border:1px solid var(--border); background:var(--surface); color:var(--muted); min-height:36px; padding:4px 12px; cursor:pointer; align-self:flex-start; }
+@media (max-width:820px) { .mr-pick { min-height:44px; } }
+.mr-mgr.mr-old { opacity:.8; border-style:dashed; }
 .mr-pick.on { background:#211b15; border-color:#211b15; color:#fff; }
 .mr-segf { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:4px; }
 .mr-segf button { font-family:inherit; font-size:12.5px; font-weight:700; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--muted); min-height:42px; padding:4px; cursor:pointer; }
@@ -16089,7 +16091,9 @@ var MR_ERR = {
   not_found:['この店は見られません（担当でない・使っていない店）','You cannot see this store (not yours, or not in use)'],
   locked:['いまは書き足せない状態です（管理側の判断待ちなど）','The record cannot be edited now (e.g. waiting for a decision)'],
   incomplete:['まだ足りないところがあります（サーバーの確認）','Something is still missing (server check)'],
-  unchanged:['前の提出版と同じ内容です（新しい提出版は作りません）','Same as the last submitted version (no new version made)']
+  unchanged:['前の提出版と同じ内容です（新しい提出版は作りません）','Same as the last submitted version (no new version made)'],
+  nothing:['送る返信がありません（下書きがない）','Nothing to send (no drafts)'],
+  conflict:['ほかの人が先に保存しました。最新を読み込んでください','Someone else saved first. Load the latest']
 };
 function mrErrText(code, status){
   if (MR_ERR[code]) return t(MR_ERR[code][0], MR_ERR[code][1]);
@@ -16151,7 +16155,7 @@ async function mrLogin(){
     if (typeof botResetShared === 'function') botResetShared();
     _botSession = { access_token:j.access_token, refresh_token:j.refresh_token };
     var mySession = _botSession;
-    _mrGen++; mrEdStop(); _mr.view = null; _mr.rec = null; _mr.recKey = ''; _mr.who = null; _mr.list = null; _mr.listKey = ''; _mr.kpi = {}; _mr.members = null; _mr.liveL = null; _mr.load = {}; _mr.err = ''; _mr.errCode = '';
+    _mrGen++; mrEdStop(); if (typeof mrRpStop === 'function') mrRpStop(); _mr.view = null; _mr.rec = null; _mr.recKey = ''; _mr.who = null; _mr.list = null; _mr.listKey = ''; _mr.kpi = {}; _mr.members = null; _mr.liveL = null; _mr.load = {}; _mr.err = ''; _mr.errCode = '';
     var g = _mrGen, w = null, werr = null;
     try { w = await mrAPI({ action:'whoami' }); } catch(e) { werr = e; }
     if (g !== _mrGen || invInKeepWho() !== who0) return;       /* 待っているあいだにログアウト・別の人：書かない */
@@ -16323,7 +16327,7 @@ function renderMidReview(){
   if (!mrCanSee()) return head + mrCard('<div class="mr-m">'+t('このページは CEO・GM・AM だけが開けます。','Only CEO, GM and AM can open this page.')+'</div>');
   /* 1) メール認証（覚えた鍵があれば、まずそれで） */
   /* 別のメールの認証（Invoice取込・業務Bot）に変わったら、前の人の読み込みを使わない */
-  if (_mr.who && _mr.sess !== mrSession()) { _mrGen++; mrEdStop(); _mr.view = null; _mr.rec = null; _mr.recKey = ''; _mr.who = null; _mr.list = null; _mr.listKey = ''; _mr.kpi = {}; _mr.members = null; _mr.liveL = null; _mr.load = {}; _mr.err = ''; }
+  if (_mr.who && _mr.sess !== mrSession()) { _mrGen++; mrEdStop(); if (typeof mrRpStop === 'function') mrRpStop(); _mr.view = null; _mr.rec = null; _mr.recKey = ''; _mr.who = null; _mr.list = null; _mr.listKey = ''; _mr.kpi = {}; _mr.members = null; _mr.liveL = null; _mr.load = {}; _mr.err = ''; }
   if (!mrSigned()) {
     var kw = invInKeepWho();
     if (invInKept() && _mr.restoreTried !== kw) {
@@ -17202,6 +17206,9 @@ async function mrSubmit(){
      レビュー完了とタスク完了は別（行動は結果を記録するまで残る）。 */
 var MR_FINAL = { as_proposed:1, modify:1, no_action:1 };
 var MR_RP_FIELDS = { next:300, owner:60, next_check:300, reason:400, question:600, recommend:400, title:120, message:600 };
+/* 判断ごとに持つ欄（前に選んだ判断の欄は送らない。サーバーも同じ） */
+var MR_RP_KEEP = { as_proposed:['next','owner','due','next_check'], modify:['next','owner','due','next_check'], no_action:['reason'],
+  followup:['title','question','due'], escalate:['title','reason','recommend','due'], consult:['consult'], none:[] };
 function mrCanReply(R){ var r = R && R.review; return !!(r && r.submitted_no > 0 && ['submitted','followup','decision','consult'].indexOf(r.status) >= 0); }
 function mrMyRole(){ return (_mr.who && _mr.who.role) || ''; }
 function mrRpState(){
@@ -17214,12 +17221,23 @@ function mrRpState(){
   return _mr.rp;
 }
 function mrRpStop(){ if (_mr.rp) Object.keys(_mr.rp.timers || {}).forEach(function(k){ clearTimeout(_mr.rp.timers[k]); }); _mr.rp = null; }
-function mrRpUnsaved(){ var rp = _mr && _mr.rp; if (!rp) return false; return Object.keys(rp.drafts).some(function(k){ var d = rp.drafts[k]; return d.state === 'dirty' || d.state === 'saving' || d.state === 'error' || d.state === 'conflict'; }); }
+function mrRpUnsaved(){ var rp = _mr && _mr.rp; if (!rp) return false; if (rp.busy) return true; return Object.keys(rp.drafts).some(function(k){ var d = rp.drafts[k]; return d.state === 'dirty' || d.state === 'saving' || d.state === 'error' || d.state === 'conflict'; }); }
 /* 項目で待っているもの（追加確認・上位判断・個別相談で、まだ閉じていないもの） */
 function mrOpenWaits(R, target){ return ((R && R.replies) || []).filter(function(x){ return x.state === 'sent' && (x.decision === 'followup' || x.decision === 'escalate' || x.decision === 'consult') && !(x.data && x.data.resolved) && (!target || x.target === target); }); }
 /* 送る前に足りないもの（サーバーの mr_reply_missing と同じ） */
-function mrRpMissing(role, target, d){
+function mrRpGone(R, target){
+  var p = String(target).split(':'), b = mrViewBody(R) || {};
+  if (p[0] === 'focus') return !(b.focus || []).some(function(f){ return f.id === p[1]; });
+  if (p[0] === 'issue') return !(b.consult === 'yes' ? (b.issues || []) : []).some(function(x){ return x.id === p[1]; });
+  return false;
+}
+/* GM・CEO の判断を待っている項目（自分では閉じられない） */
+function mrRpReserved(R, role, target){ return mrOpenWaits(R, target).some(function(w){ return w.decision === 'escalate' && (w.escalate_to === 'ceo' ? role !== 'ceo' : role === 'am'); }); }
+function mrRpMissing(role, target, d, R){
   var x = d || {}, dt = x.data || {}, b = function(k){ return mrBlank(dt[k]); }, c = dt.consult || {};
+  R = R || _mr.rec;
+  if (R && mrRpGone(R, target)) return 'gone';
+  if (R && MR_FINAL[x.decision] && mrRpReserved(R, role, target)) return 'reserved';
   if (target === 'summary' && !x.decision) return b('message') ? 'message' : null;
   if (!x.decision) return 'decision';
   if ((x.decision === 'as_proposed' || x.decision === 'modify') && (b('next') || b('owner') || !dt.due || b('next_check'))) return 'action';
@@ -17228,19 +17246,23 @@ function mrRpMissing(role, target, d){
   if (x.decision === 'escalate' && (!x.escalate_to || b('title') || !dt.due || b(x.escalate_to === 'ceo' ? 'recommend' : 'reason'))) return 'escalate';
   if (x.decision === 'escalate' && (role === 'ceo' || (role === 'gm' && x.escalate_to === 'gm'))) return 'escalate_up';
   if (x.decision === 'consult' && (!c.date || !c.time || !(c.people || []).length || !(c.topics || []).filter(function(s){ return !mrBlank(s); }).length)) return 'consult';
+  if (x.decision === 'consult' && ((c.people || []).length > 6 || (c.people || []).some(function(p){ return String(p).length > 40; }))) return 'people';
   if (target === 'summary' && (x.decision === 'followup' || x.decision === 'escalate' || x.decision === 'consult')) return 'summary';
   return null;
 }
 var MR_RP_MISS = { message:['店長へのひとことを書く','Write a word to the store manager'], decision:['判断を選ぶ','Choose a decision'], action:['次の行動・担当・期限・次回確認','Next action, owner, due date and next check'],
   reason:['対応不要の理由','The reason for no action'], question:['質問と回答希望日','The question and the answer-by date'], escalate:['上げる先・相談内容・理由（CEO は推奨案）・回答希望日','Who, the question, the reason (CEO: recommendation) and the answer-by date'],
-  escalate_up:['上位判断は上へだけ（AM → GM・CEO、GM → CEO）','Escalate upwards only (AM → GM / CEO, GM → CEO)'], consult:['個別相談の日時・参加者・決めたいこと','Date, time, people and what to decide'], summary:['全体への返信は、提案どおり・修正・対応不要か、ひとこと','Overall reply: go / change / no action, or a word'] };
+  escalate_up:['上位判断は上へだけ（AM → GM・CEO、GM → CEO）','Escalate upwards only (AM → GM / CEO, GM → CEO)'],
+  gone:['いまの提出版にない項目への下書きです。消してください','This draft is on an item the latest version no longer has. Delete it'],
+  reserved:['この項目は上位の判断を待っています（提案どおり・修正・対応不要はその人が決める）','This item waits for a higher decision (go / change / no action is theirs)'],
+  people:['参加者は 6 人まで・1 人 40 文字まで','Up to 6 people, 40 characters each'], consult:['個別相談の日時・参加者・決めたいこと','Date, time, people and what to decide'], summary:['全体への返信は、提案どおり・修正・対応不要か、ひとこと','Overall reply: go / change / no action, or a word'] };
 function mrRpTargetLabel(R, target){
   var b = mrViewBody(R) || {}, p = target.split(':');
   if (target === 'pl') return t('前月 PL への返信','Reply on last month PL');
   if (target === 'kpi') return t('当月 KPI への返信','Reply on this month KPIs');
   if (target === 'summary') return t('全体への返信','Overall reply');
-  if (p[0] === 'focus') { var i = (b.focus || []).map(function(f){ return f.id; }).indexOf(p[1]); return t('重点 ' + (i + 1) + ' への返信','Reply on focus ' + (i + 1)); }
-  if (p[0] === 'issue') { var k = (b.issues || []).map(function(x){ return x.id; }).indexOf(p[1]); return t('相談 ' + (k + 1) + ' への返信','Reply on question ' + (k + 1)); }
+  if (p[0] === 'focus') { var i = (b.focus || []).map(function(f){ return f.id; }).indexOf(p[1]); return i < 0 ? t('前の提出版の重点（いまはない）','A focus item of an earlier version (gone now)') : t('重点 ' + (i + 1) + ' への返信','Reply on focus ' + (i + 1)); }
+  if (p[0] === 'issue') { var k = (b.consult === 'yes' ? (b.issues || []) : []).map(function(x){ return x.id; }).indexOf(p[1]); return k < 0 ? t('前の提出版の相談（いまはない）','A question of an earlier version (gone now)') : t('相談 ' + (k + 1) + ' への返信','Reply on question ' + (k + 1)); }
   return target;
 }
 function mrViewBody(R){ var s = (R && R.submissions) || []; return s.length ? s[s.length - 1].body : null; }
@@ -17270,7 +17292,10 @@ function mrReplyCards(list, ans, R){
     if (dt.consult) lines.push('<span class="mr-m">'+t('個別相談','1:1 talk')+'</span> '+e(mrMD(dt.consult.date)+' '+(dt.consult.time || '')+'（'+(dt.consult.minutes || 30)+t(' 分）',' min)')+'・'+(dt.consult.people || []).join('・')+'：'+(dt.consult.topics || []).join('／')));
     var an = (x.decision === 'followup' && dt.resolved && ans) ? ans[dt.answered_no] : null;
     if (an && an[x.id]) lines.push('<span class="mr-m">'+t('店長の回答（提出版 ','Answer (version ')+e(dt.answered_no || '')+'）</span> '+e(an[x.id]));
-    if ((x.decision === 'escalate' || x.decision === 'consult') && dt.resolved) lines.push('<span class="mr-tag" style="background:#e7f6ef;color:#0b7046">'+t('判断済み','Decided')+'</span> <span class="mr-m">'+e((dt.resolved_by || '') + (dt.resolved_at ? '・' + mrHst(dt.resolved_at) : ''))+'</span>');
+    if ((x.decision === 'escalate' || x.decision === 'consult') && dt.resolved && dt.withdrawn_no) lines.push('<span class="mr-tag" style="background:#f1ece5;color:#5e564c">'+t('取り下げ','Withdrawn')+'</span> <span class="mr-m">'+e(t('提出版 ' + dt.withdrawn_no + ' でこの項目がなくなった','The item is gone in version ' + dt.withdrawn_no))+'</span>');
+    else if (x.decision === 'consult' && dt.resolved && dt.replaced) lines.push('<span class="mr-tag" style="background:#f1ece5;color:#5e564c">'+t('組み直した','Rescheduled')+'</span> <span class="mr-m">'+e(t('新しい個別相談に替えた','Replaced by a new 1:1 talk'))+'</span>');
+    else if (x.decision === 'escalate' && dt.resolved && dt.forwarded) lines.push('<span class="mr-tag" style="background:#efe9fd;color:#5b34c9">'+t('CEO へ上げた','Passed on to the CEO')+'</span> <span class="mr-m">'+e((dt.resolved_by || '') + (dt.resolved_at ? '・' + mrHst(dt.resolved_at) : ''))+'</span>');
+    else if ((x.decision === 'escalate' || x.decision === 'consult') && dt.resolved) lines.push('<span class="mr-tag" style="background:#e7f6ef;color:#0b7046">'+t('判断済み','Decided')+'</span> <span class="mr-m">'+e((dt.resolved_by || '') + (dt.resolved_at ? '・' + mrHst(dt.resolved_at) : ''))+'</span>');
     else if (x.decision === 'escalate' || x.decision === 'consult' || (x.decision === 'followup' && !dt.resolved)) lines.push('<span class="mr-tag" style="background:#efe9fd;color:#5b34c9">'+(x.decision === 'escalate' ? t('判断を待っている','Waiting for a decision') : x.decision === 'consult' ? t('相談のあとの判断を待っている','Waiting for the decision after the talk') : t('店長の回答を待っている','Waiting for the answer'))+'</span>');
     /* 行動の結果（タスク完了はレビュー完了と別） */
     var res = '';
@@ -17282,16 +17307,19 @@ function mrReplyCards(list, ans, R){
         + '<div class="mr-in-btns"><button class="btn btn-secondary btn-sm" onclick="mrResultSave(\''+e(x.id)+'\')">'+t('結果を保存','Save the result')+'</button><button class="btn btn-secondary btn-sm" onclick="_mr.resOpen=null;mrRerender()">'+t('やめる','Cancel')+'</button></div></div>';
       else if (R && R.review && R.review.submitted_no) res += '<button class="mr-pick" onclick="_mr.resOpen=\''+e(x.id)+'\';mrRerender()">'+(dt.result ? t('結果を書き直す','Edit the result') : t('結果を記録','Record the result'))+'</button>';
     }
-    return '<div class="mr-mgr"><div class="mr-cardh"><b style="font-size:12.5px">'+e(d ? t(d[0], d[1]) : t('ひとこと','A word'))+(x.decision === 'escalate' ? (x.escalate_to === 'ceo' ? '（CEO）' : '（GM）') : '')+'</b>'+(dt.severity ? mrSevTag(dt.severity) : '')+'</div>'
+    var ver = (R && R.review && R.review.submitted_no > 1 && x.sub_no) ? '<span class="mr-m">'+t('提出版 ','v')+e(x.sub_no)+t(' へ','')+'</span>' : '';
+    if (x.changed && MR_FINAL[x.decision]) lines.unshift('<span class="mr-tag" style="background:#fdf3e0;color:#8a5508">'+t('そのあと内容が変わった','Changed since')+'</span> <span class="mr-m">'+t('提出版 ' + e(x.sub_no) + ' の内容への判断です。いまの内容への判断が要ります。','A decision on version ' + e(x.sub_no) + '. The current content needs a decision.')+'</span>');
+    return '<div class="mr-mgr'+(x.changed && MR_FINAL[x.decision] ? ' mr-old' : '')+'"><div class="mr-cardh"><b style="font-size:12.5px">'+e(d ? t(d[0], d[1]) : t('ひとこと','A word'))+(x.decision === 'escalate' ? (x.escalate_to === 'ceo' ? '（CEO）' : '（GM）') : '')+'</b>'+(dt.severity ? mrSevTag(dt.severity) : '')+ver+'</div>'
       + lines.map(function(l){ return '<div style="font-size:12.5px;line-height:1.6">'+l+'</div>'; }).join('') + res
       + '<div class="mr-m">'+e((x.author_name || '') + (x.author_role ? '（' + String(x.author_role).toUpperCase() + '）' : '') + (x.sent_at ? '・' + mrHst(x.sent_at) : ''))+'</div></div>';
   }).join('');
 }
 function mrRpEditor(R, tg){
   var e = escapeHtml, rp = mrRpState(), d = rp.drafts[tg] || { decision:null, escalate_to:null, data:{}, version:0, state:'new' }, dt = d.data || {}, role = mrMyRole(), q = 'mrRpSet(\''+e(tg)+'\',';
-  var waits = mrOpenWaits(R, tg), miss = d.state === 'new' && !d.decision ? null : mrRpMissing(role, tg, d);
+  var waits = mrOpenWaits(R, tg), miss = d.state === 'new' && !d.decision ? null : mrRpMissing(role, tg, d, R);
   var opts = [['as_proposed','提案どおり進める','Go as proposed'],['modify','対応を修正','Change the action'],['followup','追加確認','Follow-up question'],['escalate','上位判断へ','Escalate'],['consult','個別相談','1:1 talk'],['no_action','対応不要','No action needed']];
   if (role === 'ceo') opts = opts.filter(function(o){ return o[0] !== 'escalate'; });
+  if (mrRpReserved(R, role, tg)) opts = opts.filter(function(o){ return !MR_FINAL[o[0]]; });
   /* 全体への返信：判断が要る項目がない店だけ判断を選ぶ（ほかの店はひとことだけ） */
   var sumReq = tg === 'summary' && (((R.review && R.review.required) || []).indexOf('summary') >= 0);
   if (tg === 'summary') opts = sumReq ? opts.filter(function(o){ return o[0] === 'as_proposed' || o[0] === 'modify' || o[0] === 'no_action'; }) : [];
@@ -17334,8 +17362,10 @@ function mrRpDraft(tg){ var rp = mrRpState(); if (!rp.drafts[tg]) rp.drafts[tg] 
 function mrRpSet(tg, field, val, rerender){
   if (!/^[a-z]+(:[A-Za-z0-9_-]{1,40})?$/.test(String(tg))) return;
   var d = mrRpDraft(tg);
-  if (field === 'decision') { d.decision = val; if (val === 'escalate' && !d.escalate_to) d.escalate_to = mrMyRole() === 'gm' ? 'ceo' : null;
-    if (val === 'followup' && !d.data.due && _mr.rec && _mr.rec.review) d.data.due = (_mr.rec.review.deadlines || {}).decide || ''; }
+  if (field === 'decision') {
+    if (d.autoDue && d.data.due === d.autoDue) { delete d.data.due; d.autoDue = null; }
+    d.decision = val; if (val === 'escalate' && !d.escalate_to) d.escalate_to = mrMyRole() === 'gm' ? 'ceo' : null;
+    if (val === 'followup' && !d.data.due && _mr.rec && _mr.rec.review) { d.data.due = (_mr.rec.review.deadlines || {}).decide || ''; d.autoDue = d.data.due || null; } }
   else if (field === 'escalate_to') d.escalate_to = val;
   mrRpDirty(tg); if (rerender) mrRerender();
 }
@@ -17345,9 +17375,9 @@ function mrRpIn(el){
   if (k.indexOf('consult.') === 0) {
     var c = d.data.consult = d.data.consult || { topics:[], people:[], minutes:30 }, ck = k.slice(8);
     if (ck === 'topic0' || ck === 'topic1') { c.topics = c.topics || []; c.topics[ck === 'topic0' ? 0 : 1] = v; c.topics = c.topics.map(function(s){ return s || ''; }); }
-    else if (ck === 'people') c.people = String(v).split(/[、,]/).map(function(s){ return s.trim(); }).filter(Boolean).slice(0, 6);
+    else if (ck === 'people') c.people = String(v).split(/[、,]/).map(function(s){ return s.trim(); }).filter(Boolean);
     else if (ck === 'date' || ck === 'time') c[ck] = v;
-  } else if (MR_RP_FIELDS[k] || k === 'due') d.data[k] = v;
+  } else if (MR_RP_FIELDS[k] || k === 'due') { d.data[k] = v; if (k === 'due') d.autoDue = null; }
   else return;
   mrRpDirty(tg); mrRpLive();
 }
@@ -17364,7 +17394,7 @@ function mrRpLive(){
     var el = document.getElementById('mr-rp-sum'); if (el && _mr.rec) el.outerHTML = mrRpSummary(_mr.rec);
     var rp = _mr.rp, role = mrMyRole(); if (!rp) return;
     Object.keys(rp.drafts).forEach(function(tg){
-      var d = rp.drafts[tg], miss = mrRpMissing(role, tg, d), c = document.getElementById('mr-rpchip-' + tg), m = document.getElementById('mr-rpmiss-' + tg), box = document.getElementById('mr-rp-' + tg);
+      var d = rp.drafts[tg], miss = mrRpMissing(role, tg, d, _mr.rec), c = document.getElementById('mr-rpchip-' + tg), m = document.getElementById('mr-rpmiss-' + tg), box = document.getElementById('mr-rp-' + tg);
       if (c) c.innerHTML = mrRpChip(d);
       if (m) m.textContent = miss ? t(MR_RP_MISS[miss][0], MR_RP_MISS[miss][1]) : '';
       if (box) box.classList.toggle('mr-need', !!miss);
@@ -17372,9 +17402,10 @@ function mrRpLive(){
   } catch(e) {}
 }
 function mrRpWire(d){
-  var data = JSON.parse(JSON.stringify(d.data || {}));
+  var all = JSON.parse(JSON.stringify(d.data || {})), keep = (MR_RP_KEEP[d.decision || 'none'] || []).concat(['message','severity']), data = {};
+  keep.forEach(function(k){ if (all[k] != null) data[k] = all[k]; });
   if (data.consult) data.consult.topics = (data.consult.topics || []).filter(function(s){ return !mrBlank(s); });
-  return { decision:d.decision, escalate_to:d.escalate_to, data:data };
+  return { decision:d.decision, escalate_to:d.decision === 'escalate' ? d.escalate_to : null, data:data };
 }
 async function mrRpSave(tg){
   var rp = mrRpState(), d = rp.drafts[tg], R = _mr.rec; if (!d || !R) return false;
@@ -17407,7 +17438,7 @@ async function mrRpDelete(tg){
 function mrRpPlan(R){
   var rp = mrRpState(), role = mrMyRole(), req = (R.review && R.review.required) || [], fin = (R.review && R.review.final) || {}, mine = rp.drafts;
   var keys = Object.keys(mine).filter(function(k){ var d = mine[k]; return d.version || d.state === 'dirty' || d.state === 'saving' || d.decision || (d.data && d.data.message); });
-  var missing = keys.map(function(k){ return [k, mrRpMissing(role, k, mine[k])]; }).filter(function(x){ return x[1]; });
+  var missing = keys.map(function(k){ return [k, mrRpMissing(role, k, mine[k], R)]; }).filter(function(x){ return x[1]; });
   var waitsAfter = mrOpenWaits(R).filter(function(w){
     var d = mine[w.target]; if (!d || !MR_FINAL[d.decision]) return true;
     if (w.decision === 'consult') return false;
@@ -17423,7 +17454,8 @@ function mrRpSummary(R){
   var h = '<div class="card mr-blk mr-rp-sum" id="mr-rp-sum"><div class="mr-h">'+t('まとめて返信','Send your replies')+' <span class="mr-m">'+e((_mr.who && (_mr.who.name || '')) || '')+'（'+e(String(mrMyRole()).toUpperCase())+'）</span></div>'
     + '<div class="mr-m">'+t('判断があるもの ','Decided ')+pl.decided.length+' / '+pl.req.length+'（'+e(pl.req.map(function(k){ return mrRpTargetLabel(R, k).replace(/への返信|Reply on /g, ''); }).join('・'))+'）。'
     + t('質問（追加確認）は、自分の下書きをまとめて 1 回で店長に返します。','Your follow-up questions go back to the store manager together, once.')+'</div>';
-  if (pl.missing.length) h += '<div class="mr-need-list"><b>'+t('送る前に：','Before sending:')+'</b>'+pl.missing.map(function(x){ return '<div>・'+e(mrRpTargetLabel(R, x[0]))+'：'+e(t(MR_RP_MISS[x[1]][0], MR_RP_MISS[x[1]][1]))+'</div>'; }).join('')+'</div>';
+  if (pl.missing.length) h += '<div class="mr-need-list"><b>'+t('送る前に：','Before sending:')+'</b>'+pl.missing.map(function(x){ return '<div>・'+e(mrRpTargetLabel(R, x[0]))+'：'+e(t(MR_RP_MISS[x[1]][0], MR_RP_MISS[x[1]][1]))
+    + (x[1] === 'gone' ? ' <button class="mr-pick" onclick="mrRpDelete(\''+e(x[0])+'\')">'+t('この下書きを消す','Delete this draft')+'</button>' : '')+'</div>'; }).join('')+'</div>';
   var allFinalNow = pl.req.every(function(k){ return (r.final || {})[k]; }) && !mrOpenWaits(R).length && !pl.keys.length;
   h += '<div class="mr-in-btns">'
     + '<button class="btn btn-primary" '+(!pl.keys.length || pl.missing.length || busy ? 'disabled' : '')+' onclick="mrRpSend(false)">'+(busy ? t('送っています…','Sending…') : t('返信する（店長・GM・CEO に見える）','Send (visible to the store manager, GM, CEO)'))+'</button>'
@@ -17432,36 +17464,43 @@ function mrRpSummary(R){
     + '</div><div class="mr-m">'+t('レビュー完了は、待っているもの（追加確認・上位判断・個別相談）が無く、判断が要る項目すべてに判断があるとき。「既読」や「確認しました」だけでは完了にしない。行動は結果を記録するまで残る。','A review is done when nothing waits (follow-up, decision, 1:1) and every item has a decision. Reading or “checked” alone is not done. Actions stay until their result is recorded.')+'</div>';
   return h + '</div>';
 }
+/* 答えが返ってきたとき、まだ同じ店・同じ人の画面か（別の店に移っていたら、その店の入力には触らない） */
+function mrSameRec(R, g){ return _mr.rec === R && _mrGen === g; }
 async function mrRpSend(finish){
-  var rp = mrRpState(), R = _mr.rec; if (!R || rp.busy) return;
+  var rp = mrRpState(), R = _mr.rec, g = _mrGen; if (!R || rp.busy) return;
   rp.busy = 'send'; mrRpLive();
   try {
     var keys = Object.keys(rp.drafts);
-    for (var i = 0; i < keys.length; i++) { var d = rp.drafts[keys[i]]; if (d.state !== 'saved' || d.pending) { var ok = await mrRpSave(keys[i]); if (!ok) { showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; } } }
-    if (_mr.rp !== rp) return;
+    for (var i = 0; i < keys.length; i++) { var d = rp.drafts[keys[i]]; if (d.state !== 'saved' || d.pending) { var ok = await mrRpSave(keys[i]); if (!ok) { if (mrSameRec(R, g)) showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; } } }
+    if (_mr.rp !== rp || !mrSameRec(R, g)) return;
     var res = await mrAPI({ action:'reply_send', env:R.env, ym:R.ym, store_id:R.store.store_id });
     showToast(t('返信しました（' + res.sent + ' 件）','Sent (' + res.sent + ')'), 'success');
-    if (finish) {
+    if (finish && mrSameRec(R, g)) {
       try { await mrAPI({ action:'complete', env:R.env, ym:R.ym, store_id:R.store.store_id }); showToast(t('レビュー完了にしました','The review is done'), 'success'); }
       catch(e2) { showToast(escapeHtml(t('返信はしました。レビュー完了にはまだ足りません：','Sent. Not finished yet: ') + (e2.message || '')), 'warning'); }
     }
-    mrRpStop(); mrDropList(); mrReloadRec();
-  } catch(e) { showToast(escapeHtml(e.message || String(e)), 'error'); }
+    mrDropList();
+    if (mrSameRec(R, g)) { mrRpStop(); mrReloadRec(); }
+  } catch(e) { if (mrSameRec(R, g)) showToast(escapeHtml(e.message || String(e)), 'error'); }
   finally { if (_mr.rp === rp) { rp.busy = ''; mrRpLive(); } }
 }
 async function mrComplete(){
-  var R = _mr.rec; if (!R) return;
-  if (!(await mrRpFlush())) { showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; }
-  try { await mrAPI({ action:'complete', env:R.env, ym:R.ym, store_id:R.store.store_id }); showToast(t('レビュー完了にしました','The review is done'), 'success'); mrRpStop(); mrDropList(); mrReloadRec(); }
-  catch(e) { showToast(escapeHtml(e.message || String(e)), 'error'); }
+  var R = _mr.rec, g = _mrGen; if (!R) return;
+  if (!(await mrRpFlush())) { if (mrSameRec(R, g)) showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; }
+  if (!mrSameRec(R, g)) return;
+  try { await mrAPI({ action:'complete', env:R.env, ym:R.ym, store_id:R.store.store_id }); showToast(t('レビュー完了にしました','The review is done'), 'success'); mrDropList(); if (mrSameRec(R, g)) { mrRpStop(); mrReloadRec(); } }
+  catch(e) { if (mrSameRec(R, g)) showToast(escapeHtml(e.message || String(e)), 'error'); }
 }
 async function mrRpFlush(){ var rp = _mr.rp; if (!rp) return true; var ks = Object.keys(rp.drafts), ok = true; for (var i = 0; i < ks.length; i++) { var d = rp.drafts[ks[i]]; if (d.state !== 'saved' && d.state !== 'new' || d.pending) ok = (await mrRpSave(ks[i])) && ok; } return ok; }
 async function mrResultSave(id){
-  var R = _mr.rec, el = document.getElementById('mr-res-text'), dn = document.getElementById('mr-res-done'); if (!R || !el) return;
-  if (!(await mrRpFlush())) { showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; }
-  if (mrBlank(el.value)) { showToast(t('結果を書いてください','Write the result'), 'warning'); return; }
-  try { await mrAPI({ action:'result_save', env:R.env, ym:R.ym, store_id:R.store.store_id, reply_id:id, result:el.value, done:!!(dn && dn.checked) }); _mr.resOpen = null; showToast(t('結果を保存しました','Result saved'), 'success'); mrReloadRec(); }
-  catch(e) { showToast(escapeHtml(e.message || String(e)), 'error'); }
+  var R = _mr.rec, g = _mrGen, el = document.getElementById('mr-res-text'), dn = document.getElementById('mr-res-done'); if (!R || !el) return;
+  var text = el.value, done = !!(dn && dn.checked), x = (R.replies || []).filter(function(y){ return y.id === id; })[0];
+  if (mrBlank(text)) { showToast(t('結果を書いてください','Write the result'), 'warning'); return; }
+  if (!(await mrRpFlush())) { if (mrSameRec(R, g)) showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; }
+  if (!mrSameRec(R, g)) return;
+  try { await mrAPI({ action:'result_save', env:R.env, ym:R.ym, store_id:R.store.store_id, reply_id:id, result:text, done:done, expect_at:(x && x.data && x.data.result_at) || null });
+    if (mrSameRec(R, g)) { _mr.resOpen = null; showToast(t('結果を保存しました','Result saved'), 'success'); mrReloadRec(); } }
+  catch(e) { if (mrSameRec(R, g)) showToast(escapeHtml(e.message || String(e)), 'error'); }
 }
 /* 期限（GM・CEO）：この店・この月の日付を変える。過ぎてから変えても「遅れた」記録は残る */
 function mrDeadlineEditor(R){
@@ -17473,11 +17512,13 @@ function mrDeadlineEditor(R){
     + '<div class="mr-in-btns"><button class="btn btn-secondary btn-sm" onclick="mrDeadlineSave()">'+t('保存','Save')+'</button><button class="btn btn-secondary btn-sm" onclick="_mr.dlOpen=false;mrRerender()">'+t('やめる','Cancel')+'</button></div></div>';
 }
 async function mrDeadlineSave(){
-  var R = _mr.rec; if (!R) return;
-  if (!(await mrRpFlush())) { showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; }
+  var R = _mr.rec, g = _mrGen; if (!R) return;
   var v = {}; ['submit','reply','decide','consult_from','consult_to'].forEach(function(k){ var el = document.getElementById('mr-dl-' + k); v[k] = el ? el.value : ''; });
-  try { await mrAPI({ action:'deadline_save', env:R.env, ym:R.ym, store_id:R.store.store_id, deadlines:v }); _mr.dlOpen = false; showToast(t('期限を変えました','Dates changed'), 'success'); mrDropList(); mrReloadRec(); }
-  catch(e) { showToast(escapeHtml(e.message || String(e)), 'error'); }
+  if (!(await mrRpFlush())) { if (mrSameRec(R, g)) showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; }
+  if (!mrSameRec(R, g)) return;
+  try { await mrAPI({ action:'deadline_save', env:R.env, ym:R.ym, store_id:R.store.store_id, deadlines:v }); mrDropList();
+    if (mrSameRec(R, g)) { _mr.dlOpen = false; showToast(t('期限を変えました','Dates changed'), 'success'); mrReloadRec(); } }
+  catch(e) { if (mrSameRec(R, g)) showToast(escapeHtml(e.message || String(e)), 'error'); }
 }
 /* ===== v1066 中間レビュー ここまで ===== */
 

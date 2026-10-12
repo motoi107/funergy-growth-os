@@ -824,3 +824,123 @@ test('dates: GM / CEO change one store’s dates; an AM has no button; the delay
   assert.match(h, /提出期限 \/ 返信期限 10\/15 \/ 10\/20/); assert.doesNotMatch(h, /返信 期限超過/);
   assert.match(h, /期限を変えた（返信 10\/17→10\/20・判断 10\/19→10\/22・その時点で 1 日超過）・GM/);
 });
+
+// The store manager's new version through the server (demo numbers, judged as last time).
+const sApi = (S, who, st, b) => S.api(who, { env: 'demo', ym: '2026-10', store_id: st, ...b });
+const sAct = { next: '配置表を作り直す', owner: '田中', due: '2026-10-25', next_check: '10/26・平均提供時間' };
+async function sResubmit(S, st, edit) {
+  const g = await sApi(S, 'gm', st, { action: 'get' });
+  const last = g.submissions[g.submissions.length - 1].snapshot, dm = g.store.demo;
+  const sv = await sApi(S, 'gm', st, { action: 'save', expect_version: g.review.version, body: edit(JSON.parse(JSON.stringify(g.review.body))) });
+  const kpi = Object.fromEntries(Object.entries(dm.kpi).map(([k, v]) => [k, { act: v.act, tgt: v.tgt, judge: (last.kpi[k] || {}).judge || 'ok' }]));
+  const r = await sApi(S, 'gm', st, { action: 'submit', expect_version: sv.version, snapshot: { period: { from: '2026-10-01', to: '2026-10-17' }, updated: dm.updated, kpi,
+    pl: { ym: '2026-09', state: dm.pl.state, at: dm.pl.at || '', rows: dm.pl.rows, checked: dm.pl.checked } } });
+  assert.equal(r.status, 'submitted', JSON.stringify(r));
+}
+
+test('replies across versions: a decision on changed content is marked and asked again; a draft on a removed item is deleted from the send box', async () => {
+  const S = await server();
+  for (const t of ['pl', 'kpi', 'focus:f1', 'issue:i1']) await sApi(S, 'am1', 'D1', { action: 'reply_save', target: t, decision: 'as_proposed', data: sAct });
+  await sApi(S, 'am1', 'D1', { action: 'reply_send' });
+  await sResubmit(S, 'D1', b => { b.issues[0].ask = '本部で米の業者を比べて、月 $6,000 まで出してほしい'; return b; });
+  const a = app(S, { who: 'am1', role: 'am' }); let h = strip(await openStore(a, 'D1'));
+  assert.match(h, /そのあと内容が変わった 提出版 1 の内容への判断です。いまの内容への判断が要ります。/);
+  assert.match(h, /判断があるもの 3 \/ 4/);
+  assert.match(a.html, /id="mr-rp-issue:i1"/);                                                    // asked again
+  // A draft on the question, then the store manager withdraws it (相談はない).
+  a.run(`mrRpSet('issue:i1','decision','modify',true)`); for (const [k, v] of Object.entries(sAct)) rpIn(a, 'issue:i1', k, v); await a.flush();
+  await sResubmit(S, 'D1', b => ({ ...b, consult: 'none', issues: [] }));
+  a.run('mrReloadRec()'); a.renderPage(); await a.flush(); a.renderPage(); h = strip(a.html);
+  assert.match(h, /送る前に： ・前の提出版の相談（いまはない）：いまの提出版にない項目への下書きです。消してください この下書きを消す/);
+  assert.match(a.html, /<button class="btn btn-primary" disabled onclick="mrRpSend\(false\)">/);
+  assert.match(a.html, /onclick="mrRpDelete\('issue:i1'\)"/);
+  await a.run(`mrRpDelete('issue:i1')`); await a.flush(); a.renderPage();
+  assert.doesNotMatch(strip(a.html), /送る前に/);
+  assert.equal((await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.state === 'draft').length, 0);
+});
+
+test('replies: an item waiting for the GM / CEO offers no go / change / no action to those who cannot decide it; a GM passing it on shows so', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D3');
+  const ed = a.html.slice(a.html.indexOf('id="mr-rp-issue:i1"'), a.html.indexOf('id="mr-rp-issue:i2"'));
+  assert.doesNotMatch(ed, /'decision','as_proposed'|'decision','modify'|'decision','no_action'/); assert.match(ed, /'decision','followup'/);
+  assert.match(strip(ed), /GM の判断を待っています（あなたの判断では閉じません）/);
+  const g = app(S); await openStore(g, 'D3');
+  const gi1 = g.html.slice(g.html.indexOf('id="mr-rp-issue:i1"'), g.html.indexOf('id="mr-rp-issue:i2"')), gi2 = g.html.slice(g.html.indexOf('id="mr-rp-issue:i2"'));
+  assert.match(gi1, /'decision','as_proposed'/); assert.doesNotMatch(gi2.slice(0, gi2.indexOf('</div></div>')), /'decision','as_proposed'/);
+  g.run(`mrRpSet('issue:i1','decision','escalate',true)`); rpIn(g, 'issue:i1', 'title', '応援と残業'); rpIn(g, 'issue:i1', 'recommend', '11/15 まで'); rpIn(g, 'issue:i1', 'due', '2026-10-21');
+  await g.flush(); await g.run('mrRpSend(false)'); await g.flush(); g.renderPage();
+  assert.match(strip(g.html), /CEO へ上げた/); assert.match(strip(g.html), /駅前（デモ） 判断待ち（CEO）/);
+});
+
+test('replies: an answer that arrives after moving to another store does not touch that store; leaving while sending asks', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1');
+  rpIn(a, 'summary', 'message', '読みました'); await a.flush();
+  let release; const gate = new Promise(r => { release = r; }); const orig = a.fetch;
+  a.fetch = async (u, i) => { if (JSON.parse(i.body).action === 'reply_send') await gate; return orig(u, i); };
+  const p = a.run('mrRpSend(false)');
+  for (let k = 0; k < 8; k++) await new Promise(r => setImmediate(r));
+  assert.equal(a.run('mrUnsaved()'), true);                                                     // a send on its way
+  let asked = 0; a.confirm = () => { asked++; return true; };
+  a.run(`mrOpenStore('D3')`); a.renderPage(); await a.flush(); a.renderPage(); assert.equal(asked, 1);
+  rpIn(a, 'kpi', 'next', '夜のシフトを見る');
+  release(); await p; for (let k = 0; k < 8; k++) await new Promise(r => setImmediate(r));
+  assert.equal(a.run(`_mr.rec.store.store_id`), 'D3');
+  assert.equal(a.run(`mrRpState().drafts['kpi'].data.next`), '夜のシフトを見る');
+  await a.flush();
+  assert.ok(a.calls.some(b => b.action === 'reply_save' && b.store_id === 'D3' && b.target === 'kpi'));
+  assert.equal((await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.state === 'sent' && x.target === 'summary').length, 1);   // sent all the same
+});
+
+test('replies: only the chosen decision’s fields are sent; an answer-by date filled in for a question does not become the due date; participants are checked', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1');
+  a.run(`mrRpSet('kpi','decision','followup',true)`); rpIn(a, 'kpi', 'question', '週の売上は？');
+  assert.equal(a.run(`mrRpState().drafts['kpi'].data.due`), '2026-10-19');                     // filled in: the decision date
+  a.run(`mrRpSet('kpi','decision','as_proposed',true)`);
+  assert.equal(a.run(`mrRpState().drafts['kpi'].data.due`), undefined);
+  for (const [k, v] of Object.entries(sAct)) rpIn(a, 'kpi', k, v);
+  await a.flush();
+  const sent = a.calls.filter(b => b.action === 'reply_save' && b.target === 'kpi').pop();
+  assert.deepEqual(Object.keys(sent.data).sort(), ['due', 'next', 'next_check', 'owner']);
+  a.run(`mrRpSet('issue:i1','decision','consult',true)`); rpIn(a, 'issue:i1', 'consult.topic0', '米'); rpIn(a, 'issue:i1', 'consult.date', '2026-10-22'); rpIn(a, 'issue:i1', 'consult.time', '10:00');
+  rpIn(a, 'issue:i1', 'consult.people', ['1', '2', '3', '4', '5', '6', '7'].join('、'));
+  a.renderPage(); assert.match(strip(a.html), /相談 1 への返信：参加者は 6 人まで・1 人 40 文字まで/);
+  rpIn(a, 'issue:i1', 'consult.people', '店長 田中、' + 'あ'.repeat(41)); a.renderPage(); assert.match(strip(a.html), /参加者は 6 人まで・1 人 40 文字まで/);
+  rpIn(a, 'issue:i1', 'consult.people', '店長 田中、AM 佐藤'); a.renderPage(); assert.doesNotMatch(strip(a.html), /参加者は 6 人まで/);
+});
+
+test('the screen and the server agree on what a reply still needs (same drafts, both checks)', async () => {
+  const S = await server();
+  const full = sAct, cs = { date: '2026-10-22', time: '10:00', people: ['店長 田中'], topics: ['米'] };
+  const cases = [
+    ['am1', 'am', 'D1', 'kpi', 'as_proposed', { ...full, owner: '' }],
+    ['am1', 'am', 'D1', 'pl', 'no_action', { reason: '　\n' }],
+    ['am1', 'am', 'D1', 'focus:f1', 'followup', { question: '研修は？' }],
+    ['am1', 'am', 'D1', 'issue:i1', 'escalate', { reason: 'r', due: '2026-10-23' }, 'gm'],
+    ['am1', 'am', 'D1', 'summary', 'consult', { consult: cs }],
+    ['am1', 'am', 'D3', 'issue:i1', 'as_proposed', full],
+    ['am1', 'am', 'D3', 'kpi', 'as_proposed', full],
+    ['gm', 'gm', 'D1', 'kpi', 'escalate', { title: 't', reason: 'r', due: '2026-10-23' }, 'gm'],
+    ['gm', 'gm', 'D3', 'issue:i2', 'modify', full],
+    ['gm', 'gm', 'D3', 'issue:i1', 'modify', full],
+    ['ceo', 'ceo', 'D1', 'kpi', 'escalate', { title: 't', recommend: 'x', due: '2026-10-23' }, 'ceo'],
+    ['ceo', 'ceo', 'D1', 'pl', 'consult', { consult: { ...cs, time: '' } }],
+    ['ceo', 'ceo', 'D1', 'summary', null, { message: '　' }],
+  ];
+  for (const [who, , st, target, decision, data, to] of cases) {
+    const g = await sApi(S, who, st, { action: 'get' }), mine = g.replies.find(x => x.mine && x.state === 'draft' && x.target === target);
+    await sApi(S, who, st, { action: 'reply_save', target, decision, data, escalate_to: to, expect_version: mine ? mine.version : null });
+  }
+  await S.pg.exec('reset role');
+  const srv = Object.fromEntries((await S.pg.query(`select r.store_id || '|' || m.role || '|' || x.target k, public.mr_reply_missing(m, x) v
+    from mr_replies x join mr_members m on m.user_id = x.author join mr_reviews r on r.id = x.review_id where x.state = 'draft'`)).rows.map(r => [r.k, r.v]));
+  await S.pg.exec('set role service_role');
+  for (const [who, role, st, target] of cases) {
+    const c = app(S, { who, role }); await openStore(c, st);
+    const ui = c.run(`(function(){ var d = _mr.rec.replies.filter(function(x){ return x.mine && x.state === 'draft' && x.target === ${JSON.stringify(target)}; })[0]; return mrRpMissing(${JSON.stringify(role)}, ${JSON.stringify(target)}, d, _mr.rec); })()`);
+    assert.equal(ui, srv[st + '|' + role + '|' + target], `${who} ${st} ${target}`);
+  }
+  assert.deepEqual(Object.values(srv).sort(), ['action', 'consult', 'escalate', 'escalate_up', 'escalate_up', 'message', 'question', 'reason', 'reserved', 'reserved', 'summary', null, null].sort());
+});
