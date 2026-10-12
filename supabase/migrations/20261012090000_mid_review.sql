@@ -260,7 +260,8 @@ language sql stable security invoker set search_path=public,pg_temp as $$
        'due', p.data->>'due', 'severity', p.data->>'severity', 'by', p.author_name) order by p.sent_at), '[]'::jsonb)
      from public.mr_replies p where p.review_id=r.id and p.state='sent' and p.decision in ('escalate','followup','consult')
       and coalesce((p.data->>'resolved')::boolean, false) is not true
-      and not (p.decision = 'escalate' and p.escalate_to = 'gm' and public.mr_reserved_level(r.id, p.target) = 'ceo'))
+      and not (p.decision = 'escalate' and p.escalate_to = 'gm' and exists(select 1 from public.mr_replies c where c.review_id = r.id and c.target = p.target
+        and c.state = 'sent' and c.decision = 'escalate' and c.escalate_to = 'ceo' and coalesce((c.data->>'resolved')::boolean, false) is not true)))
  ) from b;
 $$;
 
@@ -450,7 +451,8 @@ begin
     'deadlines', r.deadlines, 'consult', r.consult, 'next_actor', r.next_actor, 'next_due', r.next_due, 'version', r.version,
     'submitted_no', r.submitted_no, 'submitted_at', r.submitted_at, 'done_at', r.done_at, 'created_at', r.created_at,
     'updated_at', r.updated_at, 'updated_by', r.updated_by,
-    'unsubmitted', r.submitted_no > 0 and (r.body - 'answers') is distinct from (public.mr_view_body(r) - 'answers'),
+    'unsubmitted', r.submitted_no > 0 and ((r.body - 'answers') is distinct from (public.mr_view_body(r) - 'answers')
+      or (r.status = 'followup' and coalesce(r.body->'answers', '{}'::jsonb) <> '{}'::jsonb)),
     'required', case when r.submitted_no > 0 then to_jsonb(public.mr_required_targets(r)) else '[]'::jsonb end,
     'final', case when r.submitted_no > 0 then (select coalesce(jsonb_object_agg(t, public.mr_target_final(r.id, t)), '{}'::jsonb) from unnest(public.mr_required_targets(r)) t) else '{}'::jsonb end) end,
   -- The items that changed since the version a page was showing (its drafts are checked again before they are saved).
@@ -669,11 +671,13 @@ language sql stable security invoker set search_path=public,pg_temp as $$
  from public.mr_reviews r where r.id = p_review;
 $$;
 
--- Someone sent a decision (提案どおり／修正／対応不要) that fits the latest version.
+-- Someone who may decide the item now sent a decision (提案どおり／修正／対応不要) that fits the latest version
+-- (an item sent up to the CEO: the CEO's decision; to the GM: the GM's or the CEO's — an earlier AM decision does not count).
 create function public.mr_decided(p_review uuid, p_target text) returns boolean
 language sql stable security invoker set search_path=public,pg_temp as $$
  select exists(select 1 from public.mr_replies p where p.review_id = p_review and p.target = p_target and p.state = 'sent'
-  and p.decision in ('as_proposed','modify','no_action') and not public.mr_reply_outdated(p_review, p.sub_no, p_target));
+  and p.decision in ('as_proposed','modify','no_action') and not public.mr_reply_outdated(p_review, p.sub_no, p_target)
+  and case public.mr_reserved_level(p_review, p_target) when 'ceo' then p.author_role = 'ceo' when 'gm' then p.author_role in ('gm','ceo') else true end);
 $$;
 
 -- An item is decided when a decision fits the latest version and nothing waits on it any more.
@@ -815,7 +819,8 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   when x.decision = 'escalate' and (x.escalate_to is null or public.mr_blank(x.data->>'title') or not public.mr_date_ok(x.data->>'due')
     or public.mr_blank(x.data->>(case when x.escalate_to = 'ceo' then 'recommend' else 'reason' end))) then 'escalate'
   -- An escalation goes up: an AM to GM or CEO, a GM to CEO; a CEO decides.
-  when x.decision = 'escalate' and (m.role = 'ceo' or (m.role = 'gm' and x.escalate_to = 'gm')) then 'escalate_up'
+  when x.decision = 'escalate' and (m.role = 'ceo' or (m.role = 'gm' and x.escalate_to = 'gm')
+    or (x.escalate_to = 'gm' and public.mr_reserved_level(x.review_id, x.target) = 'ceo')) then 'escalate_up'
   when x.decision = 'consult' and (not public.mr_date_ok(x.data->'consult'->>'date') or coalesce(x.data->'consult'->>'time','') = ''
     or jsonb_array_length(public.mr_arr(x.data->'consult'->'people')) = 0 or jsonb_array_length(public.mr_arr(x.data->'consult'->'topics')) = 0) then 'consult'
   when x.target = 'summary' and x.decision in ('followup','escalate','consult') then 'summary'

@@ -1104,3 +1104,23 @@ test('an item sent to both the GM and the CEO waits for the CEO only; a 1:1 talk
   const w3 = (await E.api('ceo', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D3').waits;
   assert.deepEqual(w3.map(x => [x.kind, x.to]), [['consult', 'ceo']]);
 });
+
+test('an item at the CEO is decided by the CEO: an earlier AM decision that fits again does not count; it is not sent down to the GM', async () => {
+  const E = await setup(); await demoOn(E);
+  for (const t of ['pl', 'kpi', 'focus:f1', 'issue:i1']) await saveR(E, 'am1', 'D1', t, 'as_proposed', act());
+  await send(E, 'am1', 'D1');
+  const drink0 = (await R(E, 'gm', 'D1', { action: 'get' })).body.review.body.kpi.drink;
+  await resubmit(E, 'D1', 'gm', b => ({ ...b, kpi: { ...b.kpi, drink: { ...drink0, comment: drink0.comment + '（遅れた）' } } }), { drink: 'miss' });   // v2: one more 未達
+  await saveR(E, 'am1', 'D1', 'kpi', 'escalate', { title: 'ドリンク', recommend: '新メニューを前倒し', due: '2026-10-22' }, 'ceo'); await send(E, 'am1', 'D1');
+  await saveR(E, 'ceo', 'D1', 'kpi', 'modify', act({ next: 'サワーを 10/15 に前倒し' })); await send(E, 'ceo', 'D1');
+  assert.equal((await status(E, 'D1')).status, 'submitted');
+  await resubmit(E, 'D1', 'gm', b => ({ ...b, kpi: { ...b.kpi, drink: drink0 } }), { drink: 'warn' });      // v3: KPIs back as in v1
+  assert.deepEqual(await status(E, 'D1'), { status: 'decision', decision_by: 'ceo', next_actor: 'CEO', d: '2026-10-22' });
+  assert.equal((await R(E, 'am1', 'D1', { action: 'get' })).body.review.final.kpi, false);
+  assert.equal((await R(E, 'am1', 'D1', { action: 'complete' })).status, 422);
+  await saveR(E, 'am1', 'D1', 'kpi', 'escalate', { title: 'ドリンク', reason: 'r', due: '2026-10-22' }, 'gm');
+  assert.equal((await send(E, 'am1', 'D1')).status, 422);                                                 // not down to the GM
+  await R(E, 'am1', 'D1', { action: 'reply_delete', target: 'kpi' });
+  await saveR(E, 'ceo', 'D1', 'kpi', 'as_proposed', act()); await send(E, 'ceo', 'D1');
+  assert.equal((await R(E, 'am1', 'D1', { action: 'complete' })).status, 200);
+});

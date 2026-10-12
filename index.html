@@ -17279,7 +17279,7 @@ function mrRpMissing(role, target, d, R){
   if (x.decision === 'no_action' && b('reason')) return 'reason';
   if (x.decision === 'followup' && (b('question') || !mrDateOk(dt.due))) return 'question';
   if (x.decision === 'escalate' && (!x.escalate_to || b('title') || !mrDateOk(dt.due) || b(x.escalate_to === 'ceo' ? 'recommend' : 'reason'))) return 'escalate';
-  if (x.decision === 'escalate' && (role === 'ceo' || (role === 'gm' && x.escalate_to === 'gm'))) return 'escalate_up';
+  if (x.decision === 'escalate' && (role === 'ceo' || (role === 'gm' && x.escalate_to === 'gm') || (x.escalate_to === 'gm' && R && mrRpLevel(R, target) === 'ceo'))) return 'escalate_up';
   if (x.decision === 'consult' && (!mrDateOk(c.date) || !mrTimeOk(c.time) || !(c.people || []).length || !(c.topics || []).filter(function(s){ return !mrBlank(s); }).length)) return 'consult';
   if (x.decision === 'consult' && ((c.people || []).length > 6 || (c.people || []).some(function(p){ return String(p).length > 40; }))) return 'people';
   if (target === 'summary' && (x.decision === 'followup' || x.decision === 'escalate' || x.decision === 'consult')) return 'summary';
@@ -17375,7 +17375,7 @@ function mrRpEditor(R, tg){
   if (d.decision === 'no_action') h += f('reason', t('理由（短く）','Reason (short)'));
   if (d.decision === 'followup') h += f('title', t('何について（一覧に出る・任意）','About (shown in the list, optional)')) + f('question', t('質問（まとめて 1 回で店長に返る）','Question (goes back with the others, once)')) + '<div class="mr-grid2">' + f('due', t('回答希望日','Answer by'), '', 'date') + '</div>';
   if (d.decision === 'escalate') {
-    var tos = role === 'gm' ? [['ceo','CEO']] : [['gm','GM'],['ceo','CEO']];
+    var tos = role === 'gm' || mrRpLevel(R, tg) === 'ceo' ? [['ceo','CEO']] : [['gm','GM'],['ceo','CEO']];
     h += '<div class="mr-rp-dec">' + tos.map(function(o){ var on = d.escalate_to === o[0]; return '<button class="mr-pick'+(on ? ' on' : '')+'" aria-pressed="'+on+'" onclick="'+q+'\'escalate_to\',\''+o[0]+'\',true)">'+t('上げる先：','To: ')+o[1]+'</button>'; }).join('') + '</div>'
       + f('title', t('相談内容（短く）','The question (short)')) + (d.escalate_to === 'ceo' ? f('recommend', t('推奨案（必須）','Recommendation (required)')) + f('reason', t('理由（任意）','Reason (optional)')) : f('reason', t('理由（AM では決められない・店舗をまたぐなど）','Reason (AM cannot decide, crosses stores, …)')) + f('recommend', t('推奨案（任意）','Recommendation (optional)')))
       + '<div class="mr-grid2">' + f('due', t('回答希望日','Answer by'), '', 'date') + '</div>';
@@ -17515,19 +17515,22 @@ function mrRpPlan(R){
   });
   var newWaits = keys.some(function(k){ var x = mine[k].decision; return x === 'followup' || x === 'escalate' || x === 'consult'; });
   var decided = req.filter(function(k){ return (fin[k] && !(mine[k] && mine[k].decision && !MR_FINAL[mine[k].decision])) || (mine[k] && MR_FINAL[mine[k].decision] && !waitsAfter.some(function(w){ return w.target === k; })); });
-  return { keys:keys, missing:missing, req:req, decided:decided, canFinish:!missing.length && !newWaits && !waitsAfter.length && decided.length === req.length && R.review.status !== 'followup' };
+  /* 店長への質問は、答えを待っているものと合わせて 20 件まで（サーバーも同じ） */
+  var qOpen = mrOpenWaits(R).filter(function(w){ return w.decision === 'followup'; }).length, qNew = keys.filter(function(k){ return mine[k].decision === 'followup'; }).length;
+  return { keys:keys, missing:missing, req:req, decided:decided, qOpen:qOpen, qNew:qNew, tooMany:qOpen + qNew > 20, canFinish:!missing.length && !newWaits && !waitsAfter.length && decided.length === req.length && R.review.status !== 'followup' };
 }
 function mrRpSummary(R){
   var e = escapeHtml, pl = mrRpPlan(R), r = R.review, rp = mrRpState(), busy = !!rp.busy;
   var h = '<div class="card mr-blk mr-rp-sum" id="mr-rp-sum"><div class="mr-h">'+t('まとめて返信','Send your replies')+' <span class="mr-m">'+e((_mr.who && (_mr.who.name || '')) || '')+'（'+e(String(mrMyRole()).toUpperCase())+'）</span></div>'
     + '<div class="mr-m">'+t('判断があるもの ','Decided ')+pl.decided.length+' / '+pl.req.length+'（'+e(pl.req.map(function(k){ return mrRpTargetLabel(R, k).replace(/への返信|Reply on /g, ''); }).join('・'))+'）。'
     + t('質問（追加確認）は、自分の下書きをまとめて 1 回で店長に返します。','Your follow-up questions go back to the store manager together, once.')+'</div>';
+  if (pl.tooMany) h += '<div class="mr-need-list"><b>'+t('送る前に：','Before sending:')+'</b><div>・'+e(t('店長への質問は、答えを待っているものと合わせて 20 件まで（いま待っている ' + pl.qOpen + ' 件・この返信 ' + pl.qNew + ' 件）','Up to 20 questions can wait for the store manager (waiting ' + pl.qOpen + ', in this reply ' + pl.qNew + ')'))+'</div></div>';
   if (pl.missing.length) h += '<div class="mr-need-list"><b>'+t('送る前に：','Before sending:')+'</b>'+pl.missing.map(function(x){ return '<div>・'+e(mrRpTargetLabel(R, x[0]))+'：'+e(t(MR_RP_MISS[x[1]][0], MR_RP_MISS[x[1]][1]))
     + (x[1] === 'gone' ? ' <button class="mr-pick" onclick="mrRpDelete(\''+e(x[0])+'\')">'+t('この下書きを消す','Delete this draft')+'</button>' : '')
     + (x[1] === 'stale' ? ' <button class="mr-pick" onclick="mrRpConfirm(\''+e(x[0])+'\')">'+t('確かめた（保存し直す）','Checked (save again)')+'</button>' : '')+'</div>'; }).join('')+'</div>';
   var allFinalNow = pl.req.every(function(k){ return (r.final || {})[k]; }) && !mrOpenWaits(R).length && !pl.keys.length;
   h += '<div class="mr-in-btns">'
-    + '<button class="btn btn-primary" '+(!pl.keys.length || pl.missing.length || busy ? 'disabled' : '')+' onclick="mrRpSend(false)">'+(busy ? t('送っています…','Sending…') : t('返信する（店長・GM・CEO に見える）','Send (visible to the store manager, GM, CEO)'))+'</button>'
+    + '<button class="btn btn-primary" '+(!pl.keys.length || pl.missing.length || pl.tooMany || busy ? 'disabled' : '')+' onclick="mrRpSend(false)">'+(busy ? t('送っています…','Sending…') : t('返信する（店長・GM・CEO に見える）','Send (visible to the store manager, GM, CEO)'))+'</button>'
     + (pl.canFinish && pl.keys.length ? '<button class="btn btn-secondary" '+(busy ? 'disabled' : '')+' onclick="mrRpSend(true)">'+t('返信してレビュー完了にする','Send and finish the review')+'</button>' : '')
     + (r.status === 'submitted' && allFinalNow ? '<button class="btn btn-secondary" '+(busy ? 'disabled' : '')+' onclick="mrComplete()">'+t('レビュー完了にする','Finish the review')+'</button>' : '')
     + '</div><div class="mr-m">'+t('レビュー完了は、待っているもの（追加確認・上位判断・個別相談）が無く、判断が要る項目すべてに判断があるとき。「既読」や「確認しました」だけでは完了にしない。行動は結果を記録するまで残る。','A review is done when nothing waits (follow-up, decision, 1:1) and every item has a decision. Reading or “checked” alone is not done. Actions stay until their result is recorded.')+'</div>';

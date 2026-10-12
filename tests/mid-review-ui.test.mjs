@@ -1077,3 +1077,15 @@ test('a save answered after the new version was loaded does not make the draft c
   // The store manager's dates are checked as the server takes them.
   assert.match(b2.run(`mrMissing({ consult:'none', focus:[{ id:'f1', status:'late', reason:'r', next:'n', next_owner:'o', next_due:'0026-10-20' }] }, { kpi:{}, pl:{} }, []).join(',')`), /focus:f1/);
 });
+
+test('the send box says when questions to the store manager would be more than 20, and does not send', async () => {
+  const S = await server();
+  const items = ['issue:i1', 'issue:i2', 'focus:f1', 'focus:f2', 'focus:f3', 'kpi', 'pl'];
+  for (const who of ['am1', 'gm']) { for (const t of items) await sApi(S, who, 'D3', { action: 'reply_save', target: t, decision: 'followup', data: { question: who + t, due: '2026-10-21' } }); await sApi(S, who, 'D3', { action: 'reply_send' }); }
+  for (const t of items.slice(0, 6)) await sApi(S, 'ceo', 'D3', { action: 'reply_save', target: t, decision: 'followup', data: { question: 'c' + t, due: '2026-10-21' } });
+  await sApi(S, 'ceo', 'D3', { action: 'reply_send' });                                                  // 20 wait
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D3');
+  a.run(`mrRpSet('kpi','decision','followup',true)`); rpIn(a, 'kpi', 'question', 'もう一つ'); await a.flush(); a.renderPage();
+  assert.match(strip(a.html), /店長への質問は、答えを待っているものと合わせて 20 件まで（いま待っている 20 件・この返信 1 件）/);
+  assert.match(a.html, /<button class="btn btn-primary" disabled onclick="mrRpSend\(false\)">/);
+});
