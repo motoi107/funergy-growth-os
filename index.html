@@ -10818,6 +10818,8 @@ function authObPriv(payload){
   return fetch(SUPABASE_URL+'/functions/v1/ob-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(payload) }).then(function(r){ return r.json(); });
 }
 var _OB_SENSITIVE = ['address','phone','email','dob','ssn','visa','visaDetail'];
+/* v1067: 画像として描くのは data:image の形だけ */
+function obImgSrc(s){ return (typeof s === 'string' && /^data:image\/(png|jpe?g|webp|gif|heic|heif);base64,[A-Za-z0-9+\/]+=*$/.test(s)) ? s : ''; }
 function stripObPII(ob){
   try {
     var c = JSON.parse(JSON.stringify(ob));
@@ -12604,17 +12606,100 @@ function getStaffPins() { return ls('staff_pins', {}); }
 /* PIN一覧を見られるのはGM/CEOのみ（PIN忘れ対応） */
 function canViewPins() { return curRole==='gm' || curRole==='ceo'; }
 /* GM/CEO: 全スタッフのPIN一覧（忘れ対応）＋リセット */
-/* GM/CEO: PIN一覧（サーバーから本人認証後に取得）＋リセット。PINは端末に保存しない。 */
-async function openPinListModal(){
+/* ===== v1067: PIN の一覧・変更と、新しく入った人の機密情報は、メールで認証した人だけ（サーバー auth-pin・ob-private v1067） =====
+   使うログインは Invoice取込・業務Bot と同じ（invInSession）。「この端末で覚える」にしてあれば、PIN でログインしたあと裏で認証し直す。
+   役職はサーバーが確かめる（PIN一覧・リセット・店舗PIN＝GM・CEO、機密情報＝経理・GM・CEO、移行＝GM・CEO）。管理者の名前と PIN では、もう開けない。 */
+var _secAuthAfter = null;   /* 認証のあとに続ける操作 */
+function secAuthSession(){ return (typeof invInSession === 'function') ? invInSession() : null; }
+async function secAuthEnsure(){
+  var s = secAuthSession(); if (s && s.access_token) return s;
+  if (typeof invInKept === 'function' && invInKept() && typeof invInRestore === 'function') {   /* この端末で覚えた認証 */
+    try { await invInRestore(false); } catch(e) {}
+    s = secAuthSession(); if (s && s.access_token) return s;
+  }
+  return null;
+}
+async function secAuthCall(fn, payload, retried){
+  var s = secAuthSession();
+  if (!s || !s.access_token) return { ok:false, error:'email_required' };
+  var r = await fetch(SUPABASE_URL + '/functions/v1/' + fn, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + s.access_token, 'Content-Type':'application/json' }, body:JSON.stringify(payload) });
+  var j = null; try { j = await r.json(); } catch(e) { j = null; }
+  if (j && j.error === 'email_required' && !retried && s.refresh_token && typeof invInSessionRefresh === 'function') {
+    var ns = await invInSessionRefresh(s);   /* 認証の期限が切れていたら、1 回だけ取り替えてやり直す */
+    if (ns && secAuthSession() === ns) return secAuthCall(fn, payload, true);
+  }
+  if (!j || typeof j !== 'object') return { ok:false, error: r.status >= 500 ? 'db_unavailable' : 'bad_response' };
+  return j;
+}
+/* 認証が要る・切れた → 認証の画面。認証した直後なのに断られた → 登録の無いアカウント */
+function secAuthNeedLogin(j, fresh, title, again, kind){
+  if (!(j && j.error === 'email_required')) return false;
+  if (fresh) alert(secAuthErrText({ error:'not_registered' }, kind));
+  else secAuthLoginModal(title, again);
+  return true;
+}
+function secAuthErrText(j, kind){
+  var e = j && j.error;
+  if (e === 'forbidden' || e === 'not_registered') {
+    if (kind === 'secret') return t('このメールのアカウントでは機密情報を開けません（経理・GM・CEO として登録されたメールだけ）','This email account cannot open confidential details (registered accounting, GM and CEO accounts only)');
+    if (kind === 'migrate') return t('このメールのアカウントでは移行できません（GM・CEO として登録されたメールだけ）','This email account cannot run the move (registered GM and CEO accounts only)');
+    return t('このメールのアカウントでは PIN の一覧・変更を開けません（GM・CEO として登録されたメールだけ）','This email account cannot open PIN lists or changes (registered GM and CEO accounts only)');
+  }
+  if (e === 'db_unavailable') return t('サーバーにつながりません。しばらくしてから、もう一度お試しください。','Cannot reach the server. Please try again in a little while.');
+  if (e === 'invalid') return t('入力の値を確かめてください','Check the values you entered');
+  if (j && j.ok === false && !e) return t('確認できませんでした（サーバーが古い版のままかもしれません）','Could not confirm (the server may still be an old version)');
+  return t('うまくいきませんでした','Something went wrong');
+}
+function secAuthLoginModal(title, after){
+  _secAuthAfter = (typeof after === 'function') ? after : null;
+  openModal('<div class="modal-title"><span><i class="ti ti-mail"></i> '+escapeHtml(title||'')+'：'+t('メール認証','email sign-in')+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.7">'+t('PIN の一覧・変更と、新しく入った人の機密情報は、メールで認証した人だけが開けます。Invoice取込・業務Bot と同じ、本部用に登録したメール・パスワードです。','PIN lists and changes, and new hires’ confidential details, open only after email sign-in. Use the same email and password as Invoice intake and the Operations Bot.')+'</div>'
+    +'<div class="form-group"><label class="form-label" for="invin-email">'+t('メールアドレス','Email')+'</label><input id="invin-email" class="form-input" type="email" autocomplete="username"></div>'
+    +'<div class="form-group"><label class="form-label" for="invin-password">'+t('パスワード','Password')+'</label><input id="invin-password" class="form-input" type="password" autocomplete="current-password"></div>'
+    +(typeof invInKeepBoxHtml === 'function' ? invInKeepBoxHtml(['PIN の一覧・変更・機密情報・Invoice取込・業務Bot','PIN lists and changes, confidential details, invoice intake and the Operations Bot']) : '')
+    +'<div id="invin-login-error" style="font-size:12px;color:var(--red);min-height:16px;margin-bottom:6px"></div>'
+    +'<button id="invin-login-button" class="btn btn-primary" style="width:100%" onclick="secAuthLogin()"><i class="ti ti-login"></i> '+t('認証','Sign in')+'</button>');
+}
+/* 認証（Invoice取込と同じ invInLogin。覚える・覚えないも同じ）。通ったら、待っていた操作を続ける */
+async function secAuthLogin(){
+  var f = _secAuthAfter;
+  await invInLogin();
+  if (!(typeof invInSigned === 'function' && invInSigned())) return;   /* 通らなかった：画面に理由が出ている */
+  if (_secAuthAfter === f) _secAuthAfter = null;
+  if (f) f();
+}
+/* PIN を続けて間違えて止まっている（サーバー auth-pin v1067） */
+function pinLockLeft(sec){
+  var m = Math.max(1, Math.ceil((Number(sec) || 0) / 60));
+  if (m >= 60) { var h = Math.ceil(m / 60); return t('あと約 '+h+' 時間','about '+h+' h left'); }
+  return t('あと約 '+m+' 分','about '+m+' min left');
+}
+function pinLocksMap(arr){
+  var m = {};
+  (Array.isArray(arr) ? arr : []).forEach(function(x){ if (x && typeof x.k === 'string' && Number(x.retry_after) > 0) m[x.k] = Number(x.retry_after); });
+  return m;
+}
+function pinLockLeftSec(k){
+  var c = window._pinCache;
+  if (!c || !c.locks || !Object.prototype.hasOwnProperty.call(c.locks, k)) return 0;
+  var left = c.locks[k] - Math.floor((Date.now() - (c.at || Date.now())) / 1000);
+  return left > 0 ? left : 0;
+}
+function _loginLockedMsg(sec){
+  return t('PIN を続けて間違えたため、このログインを止めています（'+pinLockLeft(sec)+'）。GM・CEO が PIN を変更すると、すぐに使えます。',
+           'Too many wrong PINs, so this login is paused ('+pinLockLeft(sec)+'). A GM or CEO can change the PIN to unlock it now.');
+}
+/* GM/CEO: PIN一覧（サーバーから取得）＋リセット。PINは端末に保存しない。fresh＝認証した直後（もう一度は聞かない） */
+async function openPinListModal(fresh){
   if (!canViewPins()) return;
-  var ap = await askAdminPin('PIN一覧の表示');
-  if (ap==null) return;
+  var title = t('PIN一覧の表示','Show login PINs'), again = function(){ openPinListModal(true); };
+  if (!(await secAuthEnsure())) { secAuthLoginModal(title, again); return; }
   var j;
-  try { j = await authPin({action:'list', adminName: curUserName, adminPin: ap}); }
-  catch(e){ alert('通信に失敗しました'); return; }
-  if (!j || !j.ok) { window._pinAdmin=null; alert('確認できませんでした（PINが違うか、GM/CEO権限がありません）'); return; }
-  window._pinAdmin = { name: curUserName, pin: ap };
-  window._pinCache = { staff: j.staffPins||{}, store: j.storePins||{}, defStore: j.defaultStore||{}, defStaff: j.defaultStaff||'0000' };
+  try { j = await secAuthCall('auth-pin', {action:'list'}); }
+  catch(e){ alert(t('通信に失敗しました','Network error')); return; }
+  if (secAuthNeedLogin(j, fresh, title, again, 'pin')) return;
+  if (!j || !j.ok) { alert(secAuthErrText(j, 'pin')); return; }
+  window._pinCache = { staff: j.staffPins||{}, store: j.storePins||{}, defStore: j.defaultStore||{}, defStaff: j.defaultStaff||'0000', locks: pinLocksMap(j.locks), at: Date.now() };
   renderPinListBody();
 }
 function _staffPinView(name){ var c=window._pinCache; if(!c) return '----'; var v=c.staff[name]; return (v!=null&&v!=='')?v:(c.defStaff||'0000'); }
@@ -12622,14 +12707,21 @@ function renderPinListBody(){
   var emps = getEmployees().filter(e=>e.status!=='退職').sort((a,b)=>((a.role==='ceo')?0:1)-((b.role==='ceo')?0:1)||(a.store||'').localeCompare(b.store||'')||a.name.localeCompare(b.name));
   var rows = emps.map(e=>{
     var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
+    var lk = pinLockLeftSec('staff:'+e.name);
     return `<tr>
-      <td style="padding:6px 8px">${escapeHtml(e.name)}<div style="font-size:10px;color:var(--muted)">${escapeHtml(storeName)}${e.title?' · '+escapeHtml(e.title):''}</div></td>
-      <td style="text-align:center;padding:6px 8px"><span style="font-family:monospace;letter-spacing:2px;font-size:15px;font-weight:700;color:var(--tm)">${_staffPinView(e.name)}</span></td>
+      <td style="padding:6px 8px">${escapeHtml(e.name)}<div style="font-size:10px;color:var(--muted)">${escapeHtml(storeName)}${e.title?' · '+escapeHtml(e.title):''}</div>${lk?`<div style="font-size:10.5px;color:var(--red);font-weight:700"><i class="ti ti-lock"></i> ${t('ロック中','Locked')}・${pinLockLeft(lk)}</div>`:''}</td>
+      <td style="text-align:center;padding:6px 8px"><span style="font-family:monospace;letter-spacing:2px;font-size:15px;font-weight:700;color:var(--tm)">${escapeHtml(_staffPinView(e.name))}</span></td>
       <td style="text-align:right;padding:6px 8px"><button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="resetStaffPin('${e.name.replace(/'/g,"\\'")}')">リセット</button></td>
     </tr>`;
   }).join('');
+  var c = window._pinCache || {};
+  var stLocks = Object.keys(c.locks||{}).filter(function(k){ return k.indexOf('store:')===0 && pinLockLeftSec(k); }).map(function(k){
+    var id=k.slice(6), st=STORES.find(function(s){ return s.id===id; })||{name:id};
+    return escapeHtml(st.name)+'（'+pinLockLeft(pinLockLeftSec(k))+'）';
+  });
   openModal(`<div class="modal-title"><i class="ti ti-lock"></i> ログインPIN一覧 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-shield-lock"></i> サーバーから安全に取得（PINは端末に保存されません）。GM/CEOのみ閲覧可。</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-shield-lock"></i> サーバーから安全に取得（PINは端末に保存されません）。メールで認証した GM・CEO だけが見られます。リセットすると「ロック中」も解けます。</div>
+    ${stLocks.length?`<div style="font-size:12px;color:var(--red);margin-bottom:8px;line-height:1.6"><i class="ti ti-lock"></i> 店舗のログインで止まっているもの：${stLocks.join('、')}。店舗マスターで店舗PINを変更すると解けます。</div>`:''}
     <div style="max-height:60vh;overflow-y:auto">
       <table style="width:100%;font-size:13px;border-collapse:collapse">
         <thead><tr style="background:var(--surface2)"><th style="text-align:left;padding:6px 8px">スタッフ</th><th style="text-align:center;padding:6px 8px">PIN</th><th style="padding:6px 8px"></th></tr></thead>
@@ -12638,14 +12730,15 @@ function renderPinListBody(){
     <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`);
 }
 async function resetStaffPin(name){
-  if (!canViewPins() || !window._pinAdmin) return;
+  if (!canViewPins() || !window._pinCache) return;
   var np = await askInput({title:name+' さんのPINリセット', label:'新しいPIN（4桁）', type:'password', required:true, pattern:/^\d{4}$/, patternMsg:'PINは4桁の数字で入力してください', okLabel:'更新する'});
   if (np==null) return;
   var j;
-  try { j = await authPin({action:'reset', adminName:window._pinAdmin.name, adminPin:window._pinAdmin.pin, scope:'staff', target:name, newPin:np}); }
+  try { j = await secAuthCall('auth-pin', {action:'reset', scope:'staff', target:name, newPin:np}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if (!j || !j.ok) { alert('更新できませんでした（権限またはPIN）'); return; }
-  if (window._pinCache) window._pinCache.staff[name]=np;
+  if (secAuthNeedLogin(j, false, t('PINのリセット','Reset PIN'), function(){ openPinListModal(true); }, 'pin')) return;
+  if (!j || !j.ok) { alert(secAuthErrText(j, 'pin')); return; }
+  if (window._pinCache) { window._pinCache.staff[name]=np; if (window._pinCache.locks) delete window._pinCache.locks['staff:'+name]; }
   showToast(name+' のPINを更新しました','success');
   renderPinListBody();
 }
@@ -12678,7 +12771,7 @@ async function saveMyPin(){
   var j;
   try { j = await authPin({action:'selfset', name:me, oldPin:String(op).trim(), newPin:p1}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if (!j || !j.ok) { alert(j&&j.error==='oldpin' ? t('現在のPINが違います','Current PIN is wrong') : t('更新できませんでした','Update failed')); return; }
+  if (!j || !j.ok) { alert(j&&j.error==='locked' ? _loginLockedMsg(j.retry_after) : (j&&j.error==='oldpin' ? t('現在のPINが違います','Current PIN is wrong') : t('更新できませんでした','Update failed'))); return; }
   closeModalDirect();
   showToast(t('PINを更新しました','PIN updated'),'success');
 }
@@ -15513,6 +15606,7 @@ async function authPinCheck(scope, key, pin){
       try{ j = await r.json(); }catch(e){ j = null; }
     }catch(e){ r = null; console.warn('authPinCheck', e); }
     if (j && j.ok) { window._hwSession = (typeof j.token === 'string' && j.token) ? j.token : null; window._hwSessionWarned = false; return { ok:true, server:false }; }   /* v1061: ログインの印 */
+    if (r && r.ok && j && j.error === 'locked') return { ok:false, server:false, locked:(Number(j.retry_after) > 0 ? Number(j.retry_after) : 900) };   /* v1067: 続けて間違えて止まっている（「PINが違います」と出さない） */
     if (r && r.ok && j && !(j.error && /db|database|unavailable|timeout|internal/i.test(String(j.error)))) { server = false; break; }   /* 「違う」という答え */
     server = true;   /* 通信の失敗・サーバーの失敗（5xx・JSON でない・データベースの失敗） */
     if (i===0) await new Promise(function(res){ setTimeout(res, 700); });
@@ -15524,8 +15618,9 @@ function doStaffLogin() {
   var errEl = document.getElementById('login-pin-err');
   var btn = document.getElementById('login-pin-btn');
   /* v1037: サーバーにつながらないときは、そう伝える（「PINが違います」と出すと、正しい PIN を疑ってしまう） */
-  function fail(server){
-    if(errEl){ errEl.textContent = server ? _loginServerDownMsg() : t('PINが違います','Incorrect PIN'); errEl.style.display='block'; }
+  function fail(res){
+    var locked = (res && typeof res === 'object') ? res.locked : 0, server = res === true || !!(res && typeof res === 'object' && res.server);
+    if(errEl){ errEl.textContent = locked ? _loginLockedMsg(locked) : (server ? _loginServerDownMsg() : t('PINが違います','Incorrect PIN')); errEl.style.display='block'; }
     if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; }
   }
   if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.textContent = '確認中…'; }
@@ -15533,7 +15628,7 @@ function doStaffLogin() {
     if (loginStoreMode) {
       var pin = (document.getElementById('login-pin-input').value||'').trim();
       var rS = await authPinCheck('store', loginLocation, pin);
-      if (!rS.ok) { fail(rS.server); return; }
+      if (!rS.ok) { fail(rS); return; }
       var s = STORES.find(x=>x.id===loginLocation) || {name:loginLocation};
       curRole='sl'; curStoreLogin=true; curUserName=s.name; curStore=loginLocation;
       enterAppWithSync(); return;
@@ -15541,7 +15636,7 @@ function doStaffLogin() {
     if (!loginPerson) { if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } return; }
     var pin2 = (document.getElementById('login-pin-input').value||'').trim();
     var rP = await authPinCheck('staff', loginPerson.name, pin2);
-    if (!rP.ok) { fail(rP.server); return; }
+    if (!rP.ok) { fail(rP); return; }
     window._sessionPin = pin2;
     finishStaffLogin();
   })();
@@ -15733,6 +15828,7 @@ function doLogout() {
   loginLocation = null; loginPerson = null;
   window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
   if(typeof invInReset==='function') invInReset();   /* v1063: 前の人の Invoice取込 の内容を残さない（覚えた認証はその人の分として残る） */
+  window._pinCache = null; _secAuthAfter = null;   /* v1067: PIN 一覧の写しと、認証のあとに続ける操作も消す */
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
@@ -39944,7 +40040,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1066';
+const APP_VERSION = '1067';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -46089,12 +46185,12 @@ function invInLoginModal(){
     +'<button id="invin-login-button" class="btn btn-primary" style="width:100%" onclick="invInLogin()"><i class="ti ti-login"></i> '+t('認証','Sign in')+'</button>');
 }
 /* v1063：「この端末で覚える」。誰の PIN ログインで開けるようになるかを名前で出す */
-function invInKeepBoxHtml(){
-  var lp = invInLoginPerson(), e = escapeHtml;
+function invInKeepBoxHtml(what){
+  var lp = invInLoginPerson(), e = escapeHtml, wj = (what && what[0]) || 'Invoice取込・業務Bot', we = (what && what[1]) || 'invoice intake and the Operations Bot';
   if (!lp) return '';
   if (invInDefaultPin()) return '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin:0 0 10px">'+t('PIN が初期のままなので、この端末では覚えません（毎回メール認証になります）。PIN を自分の番号に変えると、次からは PIN でログインするだけで開けます。','Your PIN is still the initial one, so this device will not remember the sign-in. Change your PIN and next time your PIN login is enough.')+'</div>';
   return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.6;margin:0 0 10px;cursor:pointer"><input id="invin-keep" type="checkbox" checked style="margin-top:3px">'
-    +'<span>'+t('この端末で覚える：次からは '+e(lp.name||'')+' さんの PIN ログインだけで開けます（Invoice取込・業務Bot）','Remember on this device: next time '+e(lp.name||'')+'’s PIN login is enough (invoice intake and the Operations Bot)')
+    +'<span>'+t('この端末で覚える：次からは '+e(lp.name||'')+' さんの PIN ログインだけで開けます（'+wj+'）','Remember on this device: next time '+e(lp.name||'')+'’s PIN login is enough ('+we+')')
     +'<br><span style="color:var(--muted);font-size:11px">'+t('ご本人のメールで認証するときだけ。共有のパソコンでは外してください。','Only with your own email. Untick on a shared computer.')+'</span></span></label>';
 }
 async function invInLogin(){
@@ -49678,7 +49774,7 @@ function renderOnboardingInner() {
         電子署名: ${sigCount}/4 ${sigCount>=4?'<span style="color:var(--green)">✓</span>':''} · I-9: ${i9Count}/5 ${i9Count>=5?'<span style="color:var(--green)">✓</span>':''}<br>
         書類: ${ob.docs&&ob.docs.length?ob.docs.length+'件':'未提出'}
         ${canSeePII?`<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" style="font-size:11px" onclick="openObSecret('${ob.id}')"><i class="ti ti-shield-lock" style="color:var(--accent)"></i> 機密情報（住所・生年月日・SSN・身分証）を表示</button></div>`:`<div style="margin-top:6px;font-size:10px;color:var(--muted)">機密情報は経理/GM/CEOのみ閲覧できます</div>`}
-        ${canSeePII && ob.signatureImage ? `<div style="margin-top:8px"><div style="font-size:10px;color:var(--muted)">署名 / Signature</div><img src="${ob.signatureImage}" style="height:46px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:2px"></div>`:''}
+        ${canSeePII && obImgSrc(ob.signatureImage) ? `<div style="margin-top:8px"><div style="font-size:10px;color:var(--muted)">署名 / Signature</div><img src="${obImgSrc(ob.signatureImage)}" style="height:46px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:2px"></div>`:''}
       </div>`;
     }
     // アクションボタン（ステータス×権限）
@@ -50034,12 +50130,12 @@ function renderOBDocsList(ob, obId){
   var docs=(ob&&ob.docs)||[];
   if(!docs.length) return '<span style="color:var(--muted);font-size:12px">未添付 / None</span>';
   return docs.map(function(d,i){
-    var thumb = d.image
-      ? `<img src="${d.image}" style="width:46px;height:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="viewOBDocImage('${obId}',${i})">`
+    var thumb = obImgSrc(d.image)
+      ? `<img src="${obImgSrc(d.image)}" style="width:46px;height:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="viewOBDocImage('${obId}',${i})">`
       : `<span style="width:46px;height:46px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:6px;color:var(--muted)"><i class="ti ti-file"></i></span>`;
     return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
       ${thumb}
-      <div style="flex:1;font-size:12px">${d.name}${d.image?'':' <span style="color:var(--red);font-size:10px">画像なし</span>'}</div>
+      <div style="flex:1;font-size:12px">${escapeHtml(d.name||'')}${d.image?'':' <span style="color:var(--red);font-size:10px">画像なし</span>'}</div>
       <button class="btn btn-danger btn-sm" style="padding:0 8px;font-size:10px" onclick="removeOBDoc('${obId}',${i})">削除</button>
     </div>`;
   }).join('');
@@ -50077,17 +50173,17 @@ function compressImageFile(file, cb){
   reader.readAsDataURL(file);
 }
 /* 書類画像を拡大表示（フォームを閉じずにオーバーレイ） */
-async function openObSecret(obId){
+async function openObSecret(obId, fresh){
   if(!(curRole==='office'||curRole==='gm'||curRole==='ceo')){ alert('機密情報は経理/GM/CEOのみです'); return; }
-  var ap = await askAdminPin('機密情報の閲覧');
-  if(ap==null) return;
+  var title = t('機密情報の閲覧','Confidential details'), again = function(){ openObSecret(obId, true); };
+  if(!(await secAuthEnsure())){ secAuthLoginModal(title, again); return; }   /* v1067: メールの認証（経理・GM・CEO） */
   var j;
-  try{ j = await authObPriv({action:'get', adminName:curUserName, adminPin:ap, obId:obId}); }
+  try{ j = await secAuthCall('ob-private', {action:'get', obId:obId}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if(!j||!j.ok){ window._pinAdmin=null; alert('確認できませんでした（PINまたは権限）'); return; }
-  window._pinAdmin = {name:curUserName, pin:ap};
+  if(secAuthNeedLogin(j, fresh, title, again, 'secret')) return;
+  if(!j||!j.ok){ alert(secAuthErrText(j, 'secret')); return; }
   var sObj = j.secret||{};
-  var docsHtml = (sObj.docs||[]).map(function(d){ return d.image?`<div style="text-align:center"><img src="${d.image}" style="width:90px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="openImgOverlay(this.src)"><div style="font-size:9px;color:var(--muted)">${escapeHtml(d.name)}</div></div>`:`<span style="font-size:10px;color:var(--muted)">${escapeHtml(d.name)}（画像なし）</span>`; }).join('');
+  var docsHtml = (sObj.docs||[]).map(function(d){ return obImgSrc(d.image)?`<div style="text-align:center"><img src="${obImgSrc(d.image)}" style="width:90px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="openImgOverlay(this.src)"><div style="font-size:9px;color:var(--muted)">${escapeHtml(d.name)}</div></div>`:`<span style="font-size:10px;color:var(--muted)">${escapeHtml(d.name)}（画像なし）</span>`; }).join('');
   openModal(`<div class="modal-title"><i class="ti ti-shield-lock"></i> 機密情報 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:13px;line-height:1.9">
       住所: ${escapeHtml(sObj.address||'—')}<br>
@@ -50100,16 +50196,16 @@ async function openObSecret(obId){
     <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`);
 }
 function openImgOverlay(src){ openModal(`<div class="modal-title">画像 <button class="modal-close" onclick="closeModalDirect()">×</button></div><img src="${src}" style="width:100%;border-radius:8px">`); }
-async function runObMigrate(){
+async function runObMigrate(fresh){
   if(!(curRole==='gm'||curRole==='ceo')) return;
-  if(!confirm('既存オンボの機密情報（SSN・身分証・個人情報）を保護領域へ移行します。実行しますか？')) return;
-  var ap = await askAdminPin('機密情報の移行');
-  if(ap==null) return;
+  if(!fresh && !confirm('既存オンボの機密情報（SSN・身分証・個人情報）を保護領域へ移行します。実行しますか？')) return;
+  var title = t('機密情報の移行','Move confidential details'), again = function(){ runObMigrate(true); };
+  if(!(await secAuthEnsure())){ secAuthLoginModal(title, again); return; }   /* v1067: メールの認証（GM・CEO） */
   var j;
-  try{ j = await authObPriv({action:'migrate', adminName:curUserName, adminPin:ap}); }
+  try{ j = await secAuthCall('ob-private', {action:'migrate'}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if(!j||!j.ok){ alert('実行できませんでした（PINまたは権限）'); return; }
-  window._pinAdmin={name:curUserName,pin:ap};
+  if(secAuthNeedLogin(j, fresh, title, again, 'migrate')) return;
+  if(!j||!j.ok){ alert(j && j.error==='write_failed' ? t('一部を移行できませんでした。もう一度お試しください。','Some records could not be moved. Please try again.') : secAuthErrText(j, 'migrate')); return; }
   try{ await pullOpKey('onboardings'); }catch(e){}
   showToast(j.moved+'件の機密情報を保護領域へ移行しました','success');
 }
@@ -83373,17 +83469,17 @@ function renderStoreMaster() {
   return html;
 }
 
-async function editStorePin(storeId, name) {
+async function editStorePin(storeId, name, fresh) {
   if (!canViewPins()) { alert('店舗PINの変更はGM/CEOのみです'); return; }
-  var ap = await askAdminPin('店舗PINの変更');
-  if (ap==null) return;
+  var title = t('店舗PINの変更','Change store PIN'), again = function(){ editStorePin(storeId, name, true); };
+  if (!(await secAuthEnsure())) { secAuthLoginModal(title, again); return; }   /* v1067: メールの認証（管理者の PIN ではもう変えられない） */
   var pin = await askInput({title:name+' の店舗PIN変更', label:'新しい店舗ログインPIN（4〜6桁）', type:'password', required:true, pattern:/^\d{4,6}$/, patternMsg:'PINは4〜6桁の数字で入力してください', okLabel:'更新する'});
   if (pin==null) return;
   var j;
-  try { j = await authPin({action:'reset', adminName:curUserName, adminPin:ap, scope:'store', target:storeId, newPin:pin}); }
+  try { j = await secAuthCall('auth-pin', {action:'reset', scope:'store', target:storeId, newPin:pin}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if (!j || !j.ok) { window._pinAdmin=null; alert('更新できませんでした（権限またはPIN）'); return; }
-  window._pinAdmin = { name: curUserName, pin: ap };
+  if (secAuthNeedLogin(j, fresh, title, again, 'pin')) return;
+  if (!j || !j.ok) { alert(secAuthErrText(j, 'pin')); return; }
   showToast(name + ' のPINを更新しました', 'success');
   renderPage('store_master');
 }
@@ -83657,11 +83753,6 @@ function askInput(opts){
     opts = Object.assign({}, opts, { onCancel:function(){ res(null); } });
     openInputModal(opts, function(v){ res(v); });
   });
-}
-/* 管理者PIN（マスク付き）。キャッシュ済みなら即返す。null=キャンセル */
-function askAdminPin(title){
-  if(window._pinAdmin && window._pinAdmin.pin) return Promise.resolve(window._pinAdmin.pin);
-  return askInput({title:title||'本人確認', label:'あなたのログインPIN（4桁）', type:'password', required:true, pattern:/^\d{4}$/, patternMsg:'PINは4桁の数字で入力してください', okLabel:'確認'});
 }
 function openModal(html) {
   document.getElementById('modal-body').innerHTML = html;
