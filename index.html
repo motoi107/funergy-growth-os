@@ -64517,15 +64517,37 @@ function kevPaySnap(b, k){
 /* 履歴への記録（確定のあとだけ。確定した最終額をそのまま書く）
    v1067（独立レビュー P2-3）：記録する直前に、この四半期の確定（spl_bonus_q_<四半期>）をふだんの取り込み（pullOpKey）で読み直し、
    画面が使った確定と同じとき（確定の印 lid が同じ）だけ書く。ほかの端末で解除・確定し直されていたら書かない（画面を新しい内容に）。
+   v1067（Codex の P1）：さらに、クラウドの生の行に同じ確定があることも確かめる。確定の送信が失敗していると、この端末にだけ
+   確定が残る（pullOpKey は行が無くても成功を返し、端末の値を残す）ため、ほかの端末に無い査定額から給与履歴を作れてしまっていた。
    読めなければ書かない。書いた行には確定の印（lk・lkt）を付け、2 台の記録がぶつかったときは新しい確定から書いた行を残す（kartePayCmp）。 */
 var KEV_RECORDING = {};
 function kevLockId(snap){ if(!snap || typeof snap!=='object') return ''; if(snap.lid) return String(snap.lid); return snap.lk ? 'lk:'+String(snap.lk) : ''; }   /* v1067 より前の確定は lk（確定の日時|確定した人） */
 function kevLockRef(snap){ var id=kevLockId(snap); if(!id) return null; var t=Number(snap.lt)||0; return {id:id, t:(t>0 ? t : 0)}; }
+/* クラウドの生の行から、この四半期の確定の印を読む（端末の値と合流させない）。
+   v1067（Codex の P1）：pullOpKey は行が無いときも成功を返し、行があるときはクラウドと端末の値を合流して保存する。
+   そのため「クラウドに届いていない確定」でも端末の確定がそのまま残り、記録の前の確かめを通ってしまう。
+   記録してよいかは、合流した結果ではなく生の行で確かめる。読めない・行が無い・確定が無いときは印なし（記録しない）。 */
+function kevCloudLockId(q){
+  if(typeof _fetchOpValue!=='function') return Promise.resolve({ok:false});
+  var p=Promise.resolve().then(function(){ return _fetchOpValue('spl_bonus_q_'+q); }).then(function(v){
+    if(v===undefined) return {ok:false};   /* 取得できなかった（通信・権限） */
+    var d=(v && typeof v==='object' && !Array.isArray(v)) ? v : null;
+    if(!d || !d.locked || !kevSnapOk(d)) return {ok:true, id:''};   /* クラウドにはまだこの四半期の確定が無い */
+    return {ok:true, id:kevLockId(d.evSnap)};
+  }, function(){ return {ok:false}; });
+  if(typeof setTimeout==='function') p=Promise.race([p, new Promise(function(res){ setTimeout(function(){ res({ok:false}); }, 45000); })]);
+  return p;
+}
 function kevRecordGuard(q, lid0, write){
-  var check=function(){
+  var check=function(cloud){
     var d=bqGet(q);
     if(!d.locked || !kevSnapOk(d)){ showToast('ほかの端末で '+q+' の査定の確定が解除されていたため、記録していません（画面を新しい内容にしました）','warning'); bqRefresh(); return false; }
     if(kevLockId(d.evSnap)!==lid0){ showToast('ほかの端末で '+q+' の査定が確定し直されていたため、記録していません。画面を新しい内容にしました。確かめてから、もう一度押してください','warning'); bqRefresh(); return false; }
+    /* そのうえで、この確定がクラウドに本当にあるかを生の行で確かめる（この端末にだけある確定からは記録しない）。 */
+    if(cloud){
+      if(cloud.ok!==true){ showToast('クラウドの確定を読めなかったため、記録していません。通信を確かめて、もう一度押してください','danger'); return false; }
+      if(cloud.id!==lid0){ showToast(q+' の査定の確定がまだクラウドに届いていないため、記録していません（この端末にだけある確定からは記録しません）。送信が終わってから、もう一度押してください','danger'); return false; }
+    }
     return write();
   };
   var off=false; try{ off=(typeof navigator!=='undefined' && navigator && navigator.onLine===false); }catch(err){}
@@ -64540,7 +64562,7 @@ function kevRecordGuard(q, lid0, write){
   if(typeof setTimeout==='function') pull=Promise.race([pull, new Promise(function(res){ setTimeout(function(){ res(false); }, 45000); })]);
   return pull.then(function(ok){
     if(ok!==true){ showToast('クラウドから最新の確定を読めなかったため、記録していません。通信を確かめて、もう一度押してください','danger'); return false; }
-    return check();
+    return Promise.resolve().then(function(){ return kevCloudLockId(q); }).then(function(cloud){ return check(cloud || {ok:false}); });
   }).then(fin, function(err){ try{ console.warn('kevRecord', err); }catch(e){} showToast('記録の前の確認でエラーが出たため、記録していません。もう一度押してください','danger'); return fin(false); });
 }
 /* 読み直した確定から書く（ids：記録する人。null＝全員） */

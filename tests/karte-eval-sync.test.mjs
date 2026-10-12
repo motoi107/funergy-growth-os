@@ -179,7 +179,7 @@ function stampFixture(c) {
 function cloudDevice(cloud, opts = {}) {
   const c = company();
   stampFixture(c);
-  c.CLOUD = cloud; c.PULLED = []; c.PUSHED = []; c.OUTBOX = []; c.PULL_FAIL = false; c.PUSH_OK = true;
+  c.CLOUD = cloud; c.PULLED = []; c.PUSHED = []; c.OUTBOX = []; c.FETCHED = []; c.PULL_FAIL = false; c.PUSH_OK = true; c.FETCH_FAIL = false;
   vm.runInContext(`
     var SUPA_SYNC_ENABLED = true;
     function _lsRaw(key, d){ if(String(key).indexOf('spl_bonus_q_')===0){ var m=ls('bonus_q', {}); var q=String(key).slice(12); return (q in m) ? m[q] : d; } return ls(key, d); }
@@ -197,7 +197,15 @@ function cloudDevice(cloud, opts = {}) {
       }); });
     }
     function opMergePush(key, val){ PUSHED.push([key, JSON.parse(JSON.stringify(val))]); if(PUSH_OK) CLOUD[key]=JSON.parse(JSON.stringify(val)); return Promise.resolve(PUSH_OK); }
-    function _outboxAdd(key, why){ OUTBOX.push([key, why]); }`, c);
+    function _outboxAdd(key, why){ OUTBOX.push([key, why]); }
+    // The raw cloud row, like the app's _fetchOpValue: undefined when it cannot be read, null when there is no row.
+    function _fetchOpValue(key, table){
+      FETCHED.push(key);
+      return Promise.resolve().then(function(){
+        if(FETCH_FAIL===true || FETCH_FAIL===key) return undefined;
+        var v=CLOUD[key]; return (v===undefined) ? null : JSON.parse(JSON.stringify(v));
+      });
+    }`, c);
   if (opts.clock) clock(c, opts.clock);
   return c;
 }
@@ -811,4 +819,56 @@ test('P3: missing attendance tells where to fetch it; missing purchases do not g
   const pm = person(p, 'mia').missing.join();
   assert.match(pm, /Labor の結果：実績が未取得（Store 2 8月：会計 PL の人件費が空）/);
   assert.doesNotMatch(pm, /勤怠データの画面/);
+});
+
+/* --------------------------------------------------- Codex P1 (PR #46 / d576acd) --------------------------------------------------- */
+// kevLockPush answers true even when the push failed, and pullOpKey keeps the device's own value when the cloud has no
+// row (and merges when it has one). The record guard therefore saw its own unsent confirmation as "the latest" and wrote
+// the pay history from a confirmation no other device has. Recording now needs the same confirmation in the raw cloud row.
+test('Codex P1: a confirmation that never reached the cloud cannot be recorded in the pay history', async () => {
+  const cloud = {}, a = cloudDevice(cloud, { clock: 1000 });
+  a.PUSH_OK = false;                                                        // saved on this device, not sent
+  assert.equal(await call(a, `bqLockQuarter('${Q}')`), true);
+  assert.equal(a.STORE.bonus_q[Q].locked, true);
+  assert.match(lastToast(a), /クラウドへはまだ送れていません/);
+  assert.deepEqual(a.OUTBOX.map(x => x[0]), ['spl_bonus_q_' + Q], 'queued to be sent later');
+  assert.equal(cloud['spl_bonus_q_' + Q], undefined, 'the cloud holds no confirmation');
+  clock(a, 1100);
+  assert.equal(await call(a, 'bonusConfirmQuarter()'), false);
+  assert.match(lastToast(a), /まだクラウドに届いていないため、記録していません/);
+  assert.equal(a.STORE.growth_karte, undefined, 'no pay history line');
+  assert.equal(await call(a, "bonusConfirmOne('mia')"), false, 'one person at a time is refused as well');
+  assert.equal(a.STORE.growth_karte, undefined);
+  assert.ok(a.FETCHED.includes('spl_bonus_q_' + Q), 'the raw cloud row is what is checked');
+  // once the confirmation is really in the cloud, the same press records
+  a.PUSH_OK = true;
+  assert.equal(await call(a, `kevLockPush('${Q}')`), true);
+  assert.equal(cloud['spl_bonus_q_' + Q].locked, true);
+  assert.equal(await call(a, 'bonusConfirmQuarter()'), true);
+  assert.ok(Number(a.STORE.growth_karte.ken.payLog[0].amount) > 0, 'now the history is written');
+});
+
+test('Codex P1: an older confirmation in the cloud is not evidence for the newer one on this device; an unreadable row records nothing', async () => {
+  const cloud = {}, b = cloudDevice(cloud, { clock: 2000 });
+  assert.equal(await call(b, `bqLockQuarter('${Q}')`), true);               // L1 reaches the cloud
+  const L1 = b.STORE.bonus_q[Q].evSnap.lid;
+  b.PUSH_OK = false;
+  clock(b, 2100); run(b, `bqUnlockQuarter('${Q}')`);
+  clock(b, 2200);
+  assert.equal(await call(b, `bqLockQuarter('${Q}')`), true);               // L2 stays on this device
+  const L2 = b.STORE.bonus_q[Q].evSnap.lid;
+  assert.notEqual(L2, L1);
+  assert.equal(cloud['spl_bonus_q_' + Q].evSnap.lid, L1, 'the cloud still has the older confirmation');
+  assert.equal(await call(b, 'bonusConfirmQuarter()'), false);
+  assert.match(lastToast(b), /まだクラウドに届いていないため、記録していません/);
+  assert.equal(b.STORE.growth_karte, undefined);
+  // a row that cannot be read at all: nothing is recorded either (the device's own value is never the evidence)
+  const cloud2 = {}, c = cloudDevice(cloud2, { clock: 3000 });
+  assert.equal(await call(c, `bqLockQuarter('${Q}')`), true);
+  c.FETCH_FAIL = 'spl_bonus_q_' + Q;
+  assert.equal(await call(c, 'bonusConfirmQuarter()'), false);
+  assert.match(lastToast(c), /クラウドの確定を読めなかったため、記録していません/);
+  assert.equal(c.STORE.growth_karte, undefined);
+  c.FETCH_FAIL = false;
+  assert.equal(await call(c, 'bonusConfirmQuarter()'), true, 'and it works again once the row can be read');
 });
