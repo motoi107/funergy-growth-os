@@ -193,6 +193,27 @@ export function normBody(b) {
   if (Object.keys(answers).length) out.answers = answers;
   return out;
 }
+// ---------------------------------------------------------------- what a manager may write in a reply (段階 2-3)
+export const DECISIONS = ['as_proposed', 'modify', 'followup', 'escalate', 'consult', 'no_action'];
+export const REPLY_LIMITS = { next: 300, owner: 60, next_check: 300, reason: 400, question: 600, recommend: 400, title: 120, message: 600, person: 40, topic: 120 };
+const HHMM = v => (typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v) ? v : '');
+export function normReply(b) {
+  b = obj(b); const d = obj(b.data), L = REPLY_LIMITS;
+  const decision = DECISIONS.includes(b.decision) ? b.decision : null;
+  const data = { next: TS(d.next, L.next), owner: TS(d.owner, L.owner), due: DT(d.due), next_check: TS(d.next_check, L.next_check), reason: TS(d.reason, L.reason),
+    question: TS(d.question, L.question), recommend: TS(d.recommend, L.recommend), title: TS(d.title, L.title), message: TS(d.message, L.message),
+    severity: ['none', 'watch', 'high'].includes(d.severity) ? d.severity : '' };
+  if (decision === 'consult') {
+    const c = obj(d.consult), mins = Number(c.minutes);
+    data.consult = { date: DT(c.date), time: HHMM(c.time), minutes: Number.isInteger(mins) && mins >= 5 && mins <= 120 ? mins : 30,
+      people: (Array.isArray(c.people) ? c.people : []).map(x => TS(x, L.person)).filter(Boolean).slice(0, 6),
+      topics: (Array.isArray(c.topics) ? c.topics : []).map(x => TS(x, L.topic)).filter(Boolean).slice(0, 2) };
+  }
+  for (const k of Object.keys(data)) if (data[k] === '') delete data[k];
+  return { decision, escalate_to: decision === 'escalate' && ['gm', 'ceo'].includes(b.escalate_to) ? b.escalate_to : null, data };
+}
+const TGT = v => (typeof v === 'string' && /^[a-z]+(:[A-Za-z0-9_-]{1,40})?$/.test(v) ? v : null);
+
 // The numbers the reporter saw when submitting (period, update time, PL month and state, each KPI and its judgement).
 const NUM = v => (typeof v === 'number' && Number.isFinite(v) && Math.abs(v) < 1e10 ? v : null);
 const JUDGE = ['ok', 'warn', 'miss', 'unset', 'missing'];
@@ -238,6 +259,15 @@ export function createHandler(deps) {
       expect_version: Number.isInteger(b.expect_version) && b.expect_version >= 0 && b.expect_version < 1e6 ? b.expect_version : null, body: normBody(b.body) }),
     submit: (a, b) => db.rpc('mr_submit', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30),
       expect_version: Number.isInteger(b.expect_version) && b.expect_version >= 0 && b.expect_version < 1e6 ? b.expect_version : null, snapshot: normSnap(b.snapshot) }),
+    reply_save: (a, b) => { const r = normReply(b); return db.rpc('mr_reply_save', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30), target: TGT(b.target),
+      expect_version: Number.isInteger(b.expect_version) && b.expect_version >= 0 && b.expect_version < 1e6 ? b.expect_version : null, ...r }); },
+    reply_delete: (a, b) => db.rpc('mr_reply_delete', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30), target: TGT(b.target) }),
+    reply_send: (a, b) => db.rpc('mr_reply_send', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30) }),
+    complete: (a, b) => db.rpc('mr_complete', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30) }),
+    deadline_save: (a, b) => db.rpc('mr_deadline_save', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30),
+      deadlines: Object.fromEntries(['submit', 'reply', 'decide', 'consult_from', 'consult_to'].map(k => [k, DT(obj(b.deadlines)[k])])) }),
+    result_save: (a, b) => db.rpc('mr_result_save', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30),
+      reply_id: str(b.reply_id, 40), result: TS(b.result, 600), done: b.done === true }),
     demo_reset: async a => {
       const w = await db.rpc('mr_whoami', { actor: a });
       const ym = w && w.demo && /^[0-9]{4}-(0[1-9]|1[0-2])$/.test(w.demo.ym || '') ? w.demo.ym : '2026-10';

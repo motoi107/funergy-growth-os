@@ -9,7 +9,9 @@ with t as (
 ), fn(name) as (
   values ('mr_setting'),('mr_am_hr_ok'),('mr_am_master_ok'),('mr_auth'),('mr_sees'),('mr_event'),('mr_arr'),('mr_summary'),
    ('mr_whoami'),('mr_list'),('mr_settings_save'),('mr_members_list'),('mr_stores_save'),('mr_demo_reset'),
-   ('mr_view_body'),('mr_actor_name'),('mr_missing'),('mr_get'),('mr_save'),('mr_submit')
+   ('mr_view_body'),('mr_actor_name'),('mr_missing'),('mr_get'),('mr_save'),('mr_submit'),
+   ('mr_required_targets'),('mr_open_waits'),('mr_target_final'),('mr_recompute'),('mr_reply_review'),('mr_reply_save'),('mr_reply_delete'),
+   ('mr_reply_missing'),('mr_reply_send'),('mr_complete'),('mr_deadline_save'),('mr_result_save')
 ), f as (
   select p.oid, p.proname, has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute') as open_to_browser, p.prosecdef,
    coalesce(array_to_string(p.proconfig, ','), '') like '%search_path=public%' as fixed_path

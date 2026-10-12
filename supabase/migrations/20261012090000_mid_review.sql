@@ -95,6 +95,8 @@ create table public.mr_replies(
  sent_at timestamptz
 );
 create index mr_replies_review on public.mr_replies(review_id);
+-- One draft per person and item (saving again updates it; sending turns it into a sent reply and a new draft can start).
+create unique index mr_replies_draft on public.mr_replies(review_id, author, target) where state = 'draft';
 
 create table public.mr_events(
  id bigserial primary key,
@@ -213,7 +215,8 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   'reporter', b.v->>'reporter',
   'reporter_role', b.v->>'reporter_role',
   'consult_state', b.v->>'consult',
-  'done_reason', b.v->>'done_reason',
+  'done_reason', coalesce(b.v->>'done_reason', (select p.data->>'reason' from public.mr_replies p where p.review_id = r.id and p.target = 'summary'
+     and p.decision = 'no_action' and p.state = 'sent' order by p.sent_at desc limit 1)),
   'focus', coalesce((select jsonb_object_agg(st, n) from (
      select coalesce(f->>'status','none') st, count(*) n from jsonb_array_elements(public.mr_arr(b.v->'focus')) f group by 1) x), '{}'::jsonb),
   'issues', jsonb_array_length(public.mr_arr(b.v->'issues')),
@@ -415,7 +418,9 @@ begin
     'deadlines', r.deadlines, 'consult', r.consult, 'next_actor', r.next_actor, 'next_due', r.next_due, 'version', r.version,
     'submitted_no', r.submitted_no, 'submitted_at', r.submitted_at, 'done_at', r.done_at, 'created_at', r.created_at,
     'updated_at', r.updated_at, 'updated_by', r.updated_by,
-    'unsubmitted', r.submitted_no > 0 and r.body is distinct from public.mr_view_body(r)) end,
+    'unsubmitted', r.submitted_no > 0 and r.body is distinct from public.mr_view_body(r),
+    'required', case when r.submitted_no > 0 then to_jsonb(public.mr_required_targets(r)) else '[]'::jsonb end,
+    'final', case when r.submitted_no > 0 then (select coalesce(jsonb_object_agg(t, public.mr_target_final(r.id, t)), '{}'::jsonb) from unnest(public.mr_required_targets(r)) t) else '{}'::jsonb end) end,
   'submissions', (select coalesce(jsonb_agg(jsonb_build_object('no', x.no, 'body', x.body, 'snapshot', x.snapshot, 'at', x.created_at, 'by', x.created_by) order by x.no), '[]'::jsonb)
     from public.mr_submissions x where x.review_id = r.id),
   -- Sent replies for everyone who sees the store; drafts only for their author.
@@ -535,15 +540,249 @@ begin
    next_due = case when v_prev = 'followup' then nullif(deadlines->>'decide','')::date else nullif(deadlines->>'reply','')::date end,
    updated_at = now(), updated_by = v_name
   where id = r.id returning * into r;
+ perform public.mr_recompute(r.id);
  perform public.mr_event(r.id, v_env, m.user_id::text, 'submit', jsonb_build_object('no', r.submitted_no, 'by', v_name, 'from', v_prev));
+ select * into r from public.mr_reviews where id = r.id;
  return jsonb_build_object('id', r.id, 'version', r.version, 'status', r.status, 'submitted_no', r.submitted_no, 'updated_at', r.updated_at);
+end $$;
+
+-- ---------------------------------------------------------------- 段階 2-3: management replies and decisions
+-- What needs a management decision in the latest submitted version: every question, every focus item that is late or needs
+-- help, the KPIs when one is a MISS, last month's PL when an item was 注意・未達 (not checked at the start of the month).
+-- Nothing of that: one overall reply (summary).
+create function public.mr_required_targets(r public.mr_reviews) returns text[]
+language sql stable security invoker set search_path=public,pg_temp as $$
+ with b as (select public.mr_view_body(r) v),
+  sn as (select coalesce((select s.snapshot from public.mr_submissions s where s.review_id = r.id order by s.no desc limit 1), '{}'::jsonb) v),
+  t as (
+   select 'issue:' || (x->>'id') t, 1 o from b, jsonb_array_elements(case when b.v->>'consult' = 'yes' then public.mr_arr(b.v->'issues') else '[]'::jsonb end) x
+   union all select 'focus:' || (x->>'id'), 2 from b, jsonb_array_elements(public.mr_arr(b.v->'focus')) x where x->>'status' in ('late','help')
+   union all select 'kpi', 3 from sn where exists(select 1 from jsonb_each(case when jsonb_typeof(sn.v->'kpi') = 'object' then sn.v->'kpi' else '{}' end) k where k.value->>'judge' = 'miss')
+   union all select 'pl', 4 from sn where exists(select 1 from jsonb_each(case when jsonb_typeof(sn.v->'pl'->'rows') = 'object' then sn.v->'pl'->'rows' else '{}' end) k
+     where k.value->>'judge' in ('warn','miss') and not (public.mr_arr(sn.v->'pl'->'checked') ? k.key)))
+ select case when count(*) = 0 then array['summary'] else array_agg(t order by o, t) end from t;
+$$;
+
+-- What still waits on an item: an open follow-up question, an escalation to GM / CEO, or a 1:1 talk.
+create function public.mr_open_waits(p_review uuid, p_target text) returns bigint
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select count(*) from public.mr_replies p where p.review_id = p_review and p.state = 'sent' and p.decision in ('followup','escalate','consult')
+  and coalesce((p.data->>'resolved')::boolean, false) is not true and (p_target is null or p.target = p_target);
+$$;
+
+-- An item is decided when someone sent a decision (提案どおり／修正／対応不要) and nothing waits on it any more.
+create function public.mr_target_final(p_review uuid, p_target text) returns boolean
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select public.mr_open_waits(p_review, p_target) = 0 and exists(select 1 from public.mr_replies p where p.review_id = p_review and p.target = p_target
+  and p.state = 'sent' and p.decision in ('as_proposed','modify','no_action'));
+$$;
+
+-- The state from what still waits: 追加確認 → 判断待ち (GM / CEO) → 個別相談予定 → back to the AM.
+create function public.mr_recompute(p_review uuid) returns void
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare r public.mr_reviews; s public.mr_stores; am public.mr_members; v_gm boolean; v_ceo boolean; v_due date; v_rep text;
+begin
+ select * into r from public.mr_reviews where id = p_review for update;
+ if r.status in ('draft','done') then return; end if;
+ select * into s from public.mr_stores where env = r.env and store_id = r.store_id;
+ select * into am from public.mr_members where user_id = s.am_user and enabled;
+ v_rep := coalesce(public.mr_view_body(r)->>'reporter', '店長');
+ if exists(select 1 from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'followup' and coalesce((p.data->>'resolved')::boolean, false) is not true) then
+  select max(nullif(p.data->>'due','')::date) into v_due from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'followup' and coalesce((p.data->>'resolved')::boolean, false) is not true;
+  update public.mr_reviews set status = 'followup', decision_by = null, next_actor = v_rep, next_due = coalesce(v_due, nullif(deadlines->>'decide','')::date) where id = r.id;
+ elsif exists(select 1 from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'escalate' and coalesce((p.data->>'resolved')::boolean, false) is not true) then
+  select bool_or(p.escalate_to = 'gm'), bool_or(p.escalate_to = 'ceo'), min(nullif(p.data->>'due','')::date) into v_gm, v_ceo, v_due
+   from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'escalate' and coalesce((p.data->>'resolved')::boolean, false) is not true;
+  update public.mr_reviews set status = 'decision', decision_by = case when v_gm and v_ceo then 'both' when v_ceo then 'ceo' else 'gm' end,
+   next_actor = case when v_gm and v_ceo then 'GM・CEO' when v_ceo then 'CEO' else 'GM' end, next_due = coalesce(v_due, nullif(deadlines->>'decide','')::date) where id = r.id;
+ elsif exists(select 1 from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'consult' and coalesce((p.data->>'resolved')::boolean, false) is not true) then
+  update public.mr_reviews set status = 'consult', decision_by = null, next_actor = coalesce(public.mr_actor_name(am), s.am_name, 'GM'),
+   next_due = coalesce(nullif(consult->>'date','')::date, nullif(deadlines->>'consult_to','')::date) where id = r.id;
+ else
+  update public.mr_reviews set status = 'submitted', decision_by = null, next_actor = coalesce(public.mr_actor_name(am), s.am_name, 'GM（AM 未設定）'),
+   next_due = case when r.status = 'submitted' then r.next_due else nullif(deadlines->>'decide','')::date end where id = r.id;
+ end if;
+end $$;
+
+-- The review an AM / GM / CEO answers (any member who sees the store). Not before submission, not after completion.
+create function public.mr_reply_review(m public.mr_members, p jsonb) returns public.mr_reviews
+language plpgsql stable security invoker set search_path=public,pg_temp as $$
+declare v_env text := p->>'env'; v_ym text := p->>'ym'; v_store text := p->>'store_id'; s public.mr_stores; r public.mr_reviews;
+begin
+ if v_env is null or v_env not in ('live','demo') or v_ym is null or v_ym !~ '^[0-9]{4}-(0[1-9]|1[0-2])$'
+    or v_store is null or v_store !~ '^[A-Za-z0-9-]{1,24}$' then raise exception 'bad_value'; end if;
+ select * into s from public.mr_stores where env = v_env and store_id = v_store and active;
+ if s.store_id is null or not public.mr_sees(m.role, m.user_id, s.env, s.am_user, s.store_id) then raise exception 'not_found'; end if;
+ select * into r from public.mr_reviews where env = v_env and store_id = v_store and ym = v_ym;
+ if r.id is null then raise exception 'not_found'; end if;
+ return r;
+end $$;
+
+-- Save one reply as a draft (only the author sees it). Versioned like the store manager's draft.
+create function public.mr_reply_save(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, array['ceo','gm','am'], true);
+ r public.mr_reviews := public.mr_reply_review(m, p); v_t text := p->>'target'; v_dec text := nullif(p->>'decision',''); v_to text := nullif(p->>'escalate_to','');
+ v_data jsonb := coalesce(p->'data','{}'); v_exp integer; x public.mr_replies; b jsonb;
+begin
+ if r.status not in ('submitted','followup','decision','consult') then raise exception 'locked'; end if;
+ if v_t is null or v_t !~ '^[a-z]+(:[A-Za-z0-9_-]{1,40})?$' or jsonb_typeof(v_data) is distinct from 'object' or length(v_data::text) > 8000 then raise exception 'bad_value'; end if;
+ if v_dec is not null and v_dec not in ('as_proposed','modify','followup','escalate','consult','no_action') then raise exception 'bad_value'; end if;
+ if v_to is not null and v_to not in ('gm','ceo') then raise exception 'bad_value'; end if;
+ -- Only items of the submitted version (or the overall reply).
+ b := public.mr_view_body(r);
+ if not (v_t = 'summary' or v_t = 'pl' or v_t = 'kpi'
+   or (v_t like 'issue:%' and exists(select 1 from jsonb_array_elements(public.mr_arr(b->'issues')) i where 'issue:' || (i->>'id') = v_t))
+   or (v_t like 'focus:%' and exists(select 1 from jsonb_array_elements(public.mr_arr(b->'focus')) f where 'focus:' || (f->>'id') = v_t))) then raise exception 'bad_value'; end if;
+ v_exp := case when jsonb_typeof(p->'expect_version') = 'number' and (p->>'expect_version') ~ '^[0-9]{1,6}$' then (p->>'expect_version')::integer else null end;
+ select * into x from public.mr_replies where review_id = r.id and author = m.user_id and target = v_t and state = 'draft' for update;
+ if x.id is null then
+  if coalesce(v_exp, 0) <> 0 then raise exception 'conflict'; end if;
+  begin
+   insert into public.mr_replies(review_id, target, author, author_name, author_role, decision, escalate_to, data, state)
+    values(r.id, v_t, m.user_id, public.mr_actor_name(m), m.role, v_dec, v_to, v_data, 'draft') returning * into x;
+  exception when unique_violation then raise exception 'conflict';
+  end;
+ else
+  if v_exp is null or v_exp <> x.version then raise exception 'conflict'; end if;
+  update public.mr_replies set decision = v_dec, escalate_to = v_to, data = v_data, version = version + 1, updated_at = now() where id = x.id returning * into x;
+ end if;
+ return jsonb_build_object('id', x.id, 'target', x.target, 'version', x.version, 'updated_at', x.updated_at);
+end $$;
+
+create function public.mr_reply_delete(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, array['ceo','gm','am'], true);
+ r public.mr_reviews := public.mr_reply_review(m, p); n integer;
+begin
+ delete from public.mr_replies where review_id = r.id and author = m.user_id and state = 'draft' and target = p->>'target';
+ get diagnostics n = row_count;
+ return jsonb_build_object('deleted', n);
+end $$;
+
+-- What a reply must hold before it is sent (the screen checks the same).
+create function public.mr_reply_missing(m public.mr_members, x public.mr_replies) returns text
+language sql immutable security invoker set search_path=public,pg_temp as $$
+ select case
+  -- The overall reply can be just a word to the store manager.
+  when x.target = 'summary' and x.decision is null then (case when coalesce(btrim(x.data->>'message'),'') = '' then 'message' else null end)
+  when x.decision is null then 'decision'
+  when x.decision in ('as_proposed','modify') and (coalesce(btrim(x.data->>'next'),'') = '' or coalesce(btrim(x.data->>'owner'),'') = ''
+    or coalesce(x.data->>'due','') = '' or coalesce(btrim(x.data->>'next_check'),'') = '') then 'action'
+  when x.decision = 'no_action' and coalesce(btrim(x.data->>'reason'),'') = '' then 'reason'
+  when x.decision = 'followup' and (coalesce(btrim(x.data->>'question'),'') = '' or coalesce(x.data->>'due','') = '') then 'question'
+  when x.decision = 'escalate' and (x.escalate_to is null or coalesce(btrim(x.data->>'title'),'') = '' or coalesce(x.data->>'due','') = ''
+    or coalesce(btrim(x.data->>(case when x.escalate_to = 'ceo' then 'recommend' else 'reason' end)),'') = '') then 'escalate'
+  -- An escalation goes up: an AM to GM or CEO, a GM to CEO; a CEO decides.
+  when x.decision = 'escalate' and (m.role = 'ceo' or (m.role = 'gm' and x.escalate_to = 'gm')) then 'escalate_up'
+  when x.decision = 'consult' and (coalesce(x.data->'consult'->>'date','') = '' or coalesce(x.data->'consult'->>'time','') = ''
+    or jsonb_array_length(public.mr_arr(x.data->'consult'->'people')) = 0 or jsonb_array_length(public.mr_arr(x.data->'consult'->'topics')) = 0) then 'consult'
+  when x.target = 'summary' and x.decision in ('followup','escalate','consult') then 'summary'
+  else null end;
+$$;
+
+-- Send all of this person's drafts on the review at once (questions go back together, once).
+-- A decision resolves what waited on the same item when the sender may decide it (GM items: GM or CEO; CEO items: CEO;
+-- a 1:1 talk: any decision after it). Then the state follows from what still waits.
+create function public.mr_reply_send(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, array['ceo','gm','am'], true);
+ r public.mr_reviews := public.mr_reply_review(m, p); x public.mr_replies; v_bad text; n integer := 0; v_c jsonb := null;
+begin
+ if r.status not in ('submitted','followup','decision','consult') then raise exception 'locked'; end if;
+ perform 1 from public.mr_reviews where id = r.id for update;
+ if not exists(select 1 from public.mr_replies where review_id = r.id and author = m.user_id and state = 'draft') then raise exception 'not_found'; end if;
+ for x in select * from public.mr_replies where review_id = r.id and author = m.user_id and state = 'draft' order by created_at loop
+  v_bad := public.mr_reply_missing(m, x);
+  if v_bad is not null then raise exception 'incomplete'; end if;
+ end loop;
+ for x in select * from public.mr_replies where review_id = r.id and author = m.user_id and state = 'draft' order by created_at loop
+  if x.decision in ('as_proposed','modify','no_action') then
+   update public.mr_replies set data = data || jsonb_build_object('resolved', true, 'resolved_by', public.mr_actor_name(m), 'resolved_at', now()), updated_at = now()
+    where review_id = r.id and target = x.target and state = 'sent' and coalesce((data->>'resolved')::boolean, false) is not true
+     and (decision = 'consult' or (decision = 'escalate' and (escalate_to = 'ceo' and m.role = 'ceo' or escalate_to = 'gm' and m.role in ('gm','ceo'))));
+  end if;
+  if x.decision = 'consult' then v_c := x.data->'consult'; end if;
+  update public.mr_replies set state = 'sent', sent_at = now(), updated_at = now() where id = x.id;
+  n := n + 1;
+ end loop;
+ if v_c is not null then update public.mr_reviews set consult = v_c where id = r.id; end if;
+ update public.mr_reviews set version = version + 1, updated_at = now(), updated_by = public.mr_actor_name(m) where id = r.id;
+ perform public.mr_recompute(r.id);
+ perform public.mr_event(r.id, r.env, m.user_id::text, 'reply', jsonb_build_object('by', public.mr_actor_name(m), 'count', n));
+ select * into r from public.mr_reviews where id = r.id;
+ return jsonb_build_object('sent', n, 'status', r.status, 'version', r.version);
+end $$;
+
+-- レビュー完了: nothing waits any more and every item that needs it has a decision (with action, owner, due date and next
+-- check, or a reason for no action). Review done is not task done: the actions stay until their result is recorded.
+create function public.mr_complete(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, array['ceo','gm','am'], true);
+ r public.mr_reviews := public.mr_reply_review(m, p); t text;
+begin
+ if r.status = 'done' then raise exception 'locked'; end if;
+ if r.status <> 'submitted' then raise exception 'incomplete'; end if;
+ perform 1 from public.mr_reviews where id = r.id for update;
+ if public.mr_open_waits(r.id, null) > 0 then raise exception 'incomplete'; end if;
+ foreach t in array public.mr_required_targets(r) loop
+  if not public.mr_target_final(r.id, t) then raise exception 'incomplete'; end if;
+ end loop;
+ update public.mr_reviews set status = 'done', done_at = now(), next_actor = null, next_due = null, decision_by = null, version = version + 1,
+  updated_at = now(), updated_by = public.mr_actor_name(m) where id = r.id returning * into r;
+ perform public.mr_event(r.id, r.env, m.user_id::text, 'done', jsonb_build_object('by', public.mr_actor_name(m)));
+ return jsonb_build_object('status', r.status, 'done_at', r.done_at, 'version', r.version);
+end $$;
+
+-- GM / CEO change the dates of one review. A date moved after it passed keeps the delay on record.
+create function public.mr_deadline_save(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, array['ceo','gm'], true);
+ r public.mr_reviews := public.mr_reply_review(m, p); v jsonb := p->'deadlines'; d text; prev text := ''; v_today date; v_late integer := 0;
+begin
+ if r.status = 'done' then raise exception 'locked'; end if;
+ if jsonb_typeof(v) is distinct from 'object' then raise exception 'bad_value'; end if;
+ foreach d in array array['submit','reply','decide','consult_from','consult_to'] loop
+  if coalesce(v->>d,'') !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$' or (v->>d) < prev then raise exception 'bad_value'; end if;
+  prev := v->>d;
+ end loop;
+ -- Today in Hawaii (the demo looks at its fixed point in time).
+ v_today := case when r.env = 'demo' and (public.mr_setting('demo')->>'now') is not null then ((public.mr_setting('demo')->>'now')::timestamptz at time zone 'Pacific/Honolulu')::date
+   else (now() at time zone 'Pacific/Honolulu')::date end;
+ if r.next_due is not null and v_today > r.next_due then v_late := v_today - r.next_due; end if;
+ update public.mr_reviews set deadlines = jsonb_build_object('submit', v->>'submit', 'reply', v->>'reply', 'decide', v->>'decide', 'consult_from', v->>'consult_from', 'consult_to', v->>'consult_to'),
+  next_due = case status when 'draft' then (v->>'submit')::date when 'submitted' then (case when submitted_no > 1 then (v->>'decide')::date else (v->>'reply')::date end)
+   when 'followup' then (v->>'decide')::date when 'decision' then (v->>'decide')::date else next_due end,
+  version = version + 1, updated_at = now(), updated_by = public.mr_actor_name(m) where id = r.id;
+ perform public.mr_event(r.id, r.env, m.user_id::text, 'deadline', jsonb_build_object('by', public.mr_actor_name(m), 'old', r.deadlines, 'new', v, 'late_days', v_late));
+ return jsonb_build_object('ok', true);
+end $$;
+
+-- The result of an action (task done is separate from review done).
+create function public.mr_result_save(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, array['ceo','gm','am'], true);
+ r public.mr_reviews := public.mr_reply_review(m, p); v_id uuid; n integer;
+begin
+ if coalesce(p->>'reply_id','') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' or coalesce(length(p->>'result'),0) not between 1 and 600
+    or jsonb_typeof(p->'done') is distinct from 'boolean' then raise exception 'bad_value'; end if;
+ v_id := (p->>'reply_id')::uuid;
+ update public.mr_replies set data = data || jsonb_build_object('result', p->>'result', 'result_done', (p->>'done')::boolean, 'result_by', public.mr_actor_name(m), 'result_at', now()),
+  updated_at = now() where id = v_id and review_id = r.id and state = 'sent' and decision in ('as_proposed','modify');
+ get diagnostics n = row_count;
+ if n = 0 then raise exception 'not_found'; end if;
+ perform public.mr_event(r.id, r.env, m.user_id::text, 'result', jsonb_build_object('by', public.mr_actor_name(m), 'reply', v_id, 'done', (p->>'done')::boolean));
+ return jsonb_build_object('ok', true);
 end $$;
 
 do $$ declare f text; begin
  foreach f in array array['mr_setting(text)','mr_auth(uuid,text[],boolean)','mr_sees(text,uuid,text,uuid,text)','mr_am_hr_ok(text)','mr_am_master_ok(uuid,text)','mr_event(uuid,text,text,text,jsonb)',
   'mr_arr(jsonb)','mr_summary(public.mr_reviews)','mr_whoami(jsonb)','mr_list(jsonb)','mr_settings_save(jsonb)','mr_members_list(jsonb)',
   'mr_stores_save(jsonb)','mr_demo_reset(jsonb)','mr_view_body(public.mr_reviews)','mr_actor_name(public.mr_members)',
-  'mr_missing(jsonb,jsonb)','mr_get(jsonb)','mr_save(jsonb)','mr_submit(jsonb)'] loop
+  'mr_missing(jsonb,jsonb)','mr_get(jsonb)','mr_save(jsonb)','mr_submit(jsonb)',
+  'mr_required_targets(public.mr_reviews)','mr_open_waits(uuid,text)','mr_target_final(uuid,text)','mr_recompute(uuid)',
+  'mr_reply_review(public.mr_members,jsonb)','mr_reply_save(jsonb)','mr_reply_delete(jsonb)','mr_reply_missing(public.mr_members,public.mr_replies)',
+  'mr_reply_send(jsonb)','mr_complete(jsonb)','mr_deadline_save(jsonb)','mr_result_save(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

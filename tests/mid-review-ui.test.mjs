@@ -734,3 +734,93 @@ test('input: only answers to questions still open are carried in the working cop
   c.run('mrReloadRec()'); await c.flush(); c.renderPage(); c.run('mrStartInput()');
   assert.equal(c.run('JSON.stringify(_mr.ed.body.answers || null)'), 'null');   // q1 is answered (in version 2); nothing open
 });
+
+// ---------------------------------------------------------------- 段階 2-3: replies and decisions on the store page
+const rpIn = (c, tg, k, v) => c.run(`mrRpIn({ getAttribute: function(){ return ${JSON.stringify(tg + '|' + k)}; }, value: ${JSON.stringify(v)} })`);
+const rpAct = (c, tg, dec, o = {}) => { c.run(`mrRpSet('${tg}','decision','${dec}',true)`); const a = { next: '配置表を作り直す', owner: '田中', due: '2026-10-25', next_check: '10/26・平均提供時間', ...o }; for (const [k, v] of Object.entries(a)) rpIn(c, tg, k, v); };
+
+test('replies (A): the AM answers every item, sends once; the GM decides the escalation; the review is finished; results are recorded', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1');
+  let h = strip(a.html);
+  assert.match(h, /あなたの返信（AM）/); assert.match(h, /まとめて返信 .* 判断があるもの 0 \/ 4（相談 1 ?・重点 1 ?・当月 KPI ?・前月 PL ?）/);
+  rpAct(a, 'pl', 'as_proposed'); rpAct(a, 'kpi', 'as_proposed'); rpAct(a, 'focus:f1', 'modify', { owner: '' });
+  a.run(`mrRpSet('issue:i1','decision','escalate',true); mrRpSet('issue:i1','escalate_to','gm',true)`);
+  rpIn(a, 'issue:i1', 'title', '米の業者の切り替え'); rpIn(a, 'issue:i1', 'reason', '店舗をまたぐ'); rpIn(a, 'issue:i1', 'due', '2026-10-23');
+  rpIn(a, 'summary', 'message', '報告ありがとう');
+  await a.flush(); a.renderPage(); h = strip(a.html);
+  assert.equal(a.calls.filter(b => b.action === 'reply_save').length, 5);
+  assert.match(h, /送る前に： ・重点 1 への返信：次の行動・担当・期限・次回確認/);
+  assert.match(a.html, /<button class="btn btn-primary" disabled onclick="mrRpSend\(false\)">/);
+  rpIn(a, 'focus:f1', 'owner', '田中・佐藤'); await a.flush(); a.renderPage();
+  assert.doesNotMatch(a.html, /返信してレビュー完了にする/);                                      // an escalation is going up
+  await a.run('mrRpSend(false)'); await a.flush(); a.renderPage(); h = strip(a.html);
+  assert.match(h, /港町（デモ） 判断待ち（GM）/); assert.match(h, /あなたの判断では閉じません|GM の判断を待っています/);
+  // The GM decides (on a phone the column is below the item; the same functions).
+  const g = app(S); await openStore(g, 'D1'); h = strip(g.html);
+  assert.match(h, /あなたの判断を待っています（GM）/);
+  rpAct(g, 'issue:i1', 'modify', { next: '2 社の見積りで 10/24 に決める', owner: '佐藤・山本', due: '2026-10-24', next_check: '11/1・10 月の原価率' });
+  await g.flush(); await g.run('mrRpSend(false)'); await g.flush(); g.renderPage();
+  assert.match(strip(g.html), /港町（デモ） AM 返信待ち/);
+  assert.match(g.html, /onclick="mrComplete\(\)">レビュー完了にする/);
+  await g.run('mrComplete()'); await g.flush(); g.renderPage(); h = strip(g.html);
+  assert.match(h, /港町（デモ） レビュー完了/); assert.match(h, /レビュー完了：店長は書き足せません/);
+  assert.match(h, /結果：まだ（結果を確かめるまで残る）/);
+  // Record a result for the action on focus 1.
+  const rid = g.run(`_mr.rec.replies.filter(function(x){ return x.target === 'focus:f1' && x.state === 'sent'; })[0].id`);
+  g.run(`_mr.resOpen='${rid}'`); g.renderPage();
+  g.dom = { 'mr-res-text': { value: '平均 8.2 分' }, 'mr-res-done': { checked: true } };
+  await g.run(`mrResultSave('${rid}')`); await g.flush(); g.renderPage();
+  assert.match(strip(g.html), /結果 平均 8\.2 分 完了/); assert.match(strip(g.html), /行動の結果を記録（完了）/);
+});
+
+test('replies: a store with nothing to decide is finished with the overall reply; questions go back to the store manager at once', async () => {
+  const S = await server();
+  // 川沿い: submit with everything fine.
+  const m = app(S); await openStore(m, 'D6'); m.run('mrStartInput()');
+  m.run(`mrSetVal('focus.0.status','ok'); mrSetVal('focus.1.status','ok'); mrSetVal('consult','none')`); await m.flush(); await m.run('mrSubmit()'); await m.flush(); m.renderPage();
+  let h = strip(m.html);
+  assert.match(h, /判断が要る項目がない店は、全体への返信/); assert.match(m.html, /onclick="mrRpSet\('summary','decision','no_action',true\)"/);
+  m.run(`mrRpSet('summary','decision','no_action',true)`); rpIn(m, 'summary', 'reason', '全項目が目標どおり。相談なし。'); await m.flush(); m.renderPage();
+  assert.match(m.html, /返信してレビュー完了にする/);
+  await m.run('mrRpSend(true)'); await m.flush(); m.renderPage();
+  assert.match(strip(m.html), /川沿い（デモ） レビュー完了/);
+  // 追加確認: two questions in one send; the store goes to the store manager.
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1');
+  a.run(`mrRpSet('issue:i1','decision','followup',true)`); rpIn(a, 'issue:i1', 'question', '業者からの通知を見せて');
+  a.run(`mrRpSet('focus:f1','decision','followup',true)`); rpIn(a, 'focus:f1', 'question', '研修はいつ終わる？');
+  await a.flush(); await a.run('mrRpSend(false)'); await a.flush(); a.renderPage();
+  assert.match(strip(a.html), /港町（デモ） 追加確認/);
+  assert.equal(a.calls.filter(b => b.action === 'reply_send').length, 1);
+});
+
+test('replies: drafts are only yours and saved by version; leaving with an unsaved reply asks; text is escaped', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1');
+  rpIn(a, 'kpi', 'next', 'x'); a.run(`mrRpSet('kpi','decision','as_proposed',true)`);
+  assert.equal(a.run('mrUnsaved()'), true);
+  let asked = 0; a.confirm = () => { asked++; return false; }; a.run('mrBack()'); assert.equal(asked, 1);
+  await a.flush(); assert.equal(a.run('mrUnsaved()'), false);
+  const g = app(S); await openStore(g, 'D1');
+  assert.doesNotMatch(g.html, /下書き保存済み/); assert.equal(g.run('Object.keys(mrRpState().drafts).length'), 0);
+  // Escaping: what someone wrote shows as text.
+  await S.pg.exec(`reset role; update mr_replies set data = jsonb_set(data, '{reason}', to_jsonb('<img src=x onerror=alert(1)>'::text)), author_name='<b>x</b>'; set role service_role;`);
+  const c = app(S, { who: 'ceo', role: 'ceo' }); const hc = await openStore(c, 'D3');
+  assert.ok(!hc.includes('<img src=x') && hc.includes('&lt;img src=x')); assert.ok(!hc.includes('<b>x</b>'));
+  // A CEO cannot escalate (no button); a GM only to the CEO.
+  assert.doesNotMatch(c.html, /'decision','escalate'/);
+  const gm = app(S); await openStore(gm, 'D1'); gm.run(`mrRpSet('kpi','decision','escalate',true)`); gm.renderPage();
+  assert.match(gm.html, /上げる先：CEO/); assert.doesNotMatch(gm.html, /上げる先：GM/);
+});
+
+test('dates: GM / CEO change one store’s dates; an AM has no button; the delay stays in the history', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1'); assert.doesNotMatch(a.html, /期限を変える/);
+  const g = app(S); await openStore(g, 'D1');
+  g.run('_mr.dlOpen=true'); g.renderPage(); assert.match(g.html, /id="mr-dl-reply" value="2026-10-17"/);
+  g.dom = { 'mr-dl-submit': { value: '2026-10-15' }, 'mr-dl-reply': { value: '2026-10-20' }, 'mr-dl-decide': { value: '2026-10-22' }, 'mr-dl-consult_from': { value: '2026-10-23' }, 'mr-dl-consult_to': { value: '2026-10-24' } };
+  await g.run('mrDeadlineSave()'); await g.flush(); g.renderPage();
+  const h = strip(g.html);
+  assert.match(h, /提出期限 \/ 返信期限 10\/15 \/ 10\/20/); assert.doesNotMatch(h, /返信 期限超過/);
+  assert.match(h, /期限を変えた（返信 10\/17→10\/20・判断 10\/19→10\/22・その時点で 1 日超過）・GM/);
+});
