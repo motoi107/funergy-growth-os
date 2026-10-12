@@ -643,7 +643,7 @@ test('submit: when the answer is lost on the way, the page checks and says it wa
   c.renderPage = () => { c.html = c.renderMidReview(); };
   await c.run('mrSubmit()'); await c.flush(); c.renderPage();
   assert.match(busySeen, /<fieldset class="mr-fs" disabled>/); assert.match(busySeen, /提出中…/);
-  assert.match(c.toasts.map(x => x[0]).join(' '), /提出できていました（提出版 1）/);
+  assert.match(c.toasts.map(x => x[0]).join(' '), /提出できていました（川沿い（デモ）・提出版 1）/);
   const n = await S.pg.query(`select count(*)::int n from mr_submissions x join mr_reviews r on r.id=x.review_id where r.store_id='D6'`);
   assert.equal(n.rows[0].n, 1);
   assert.match(strip(c.html), /川沿い（デモ） AM 返信待ち/);
@@ -1113,6 +1113,19 @@ test('v1068: a submit answered after moving to another store leaves that store a
   await c.flush();                                                    // D1's own autosave goes on
   assert.equal((await S.api('gm', { action: 'get', env: 'demo', ym: '2026-10', store_id: 'D1' })).review.body.focus[0].note, 'D1 で打っている');
   assert.equal((await S.api('gm', { action: 'get', env: 'demo', ym: '2026-10', store_id: 'D6' })).review.submitted_no, 1);
+  // The answer is lost (the submit went through) while the user is already typing in another store:
+  // the toast says that store was submitted; the other store's input stays.
+  const S2 = await server();
+  const e = app(S2); await openStore(e, 'D6'); e.run('mrStartInput()');
+  e.run("mrSetVal('consult','none'); mrSetVal('focus.0.status','ok'); mrSetVal('focus.1.status','ok')"); await e.flush();
+  const g0 = e.fetch; let rel2, got2; const ready2 = new Promise(r => { got2 = r; });
+  e.fetch = async (u, i) => { const r = await g0(u, i); if (JSON.parse(i.body).action === 'submit') { got2(); await new Promise(x => { rel2 = x; }); throw new TypeError('Failed to fetch'); } return r; };
+  const p2 = e.run('mrSubmit()'); await ready2;
+  e.run('mrBack(); mrBack()'); await openStore(e, 'D1'); e.run('mrStartInput()'); e.run("mrSetVal('focus.0.note','D1 の続き')"); const ed2 = e.M().ed;
+  rel2(); await p2;
+  assert.equal(e.M().ed, ed2); assert.equal(e.M().view.id, 'D1'); assert.equal(ed2.body.focus[0].note, 'D1 の続き');
+  assert.ok(e.toasts.some(([m, k]) => k === 'success' && /提出できていました（川沿い（デモ）・提出版 1）/.test(m)), JSON.stringify(e.toasts));
+  assert.equal(e.toasts.filter(([, k]) => k === 'error').length, 0);
   // Staying on the same store: back to its page with the submitted record, as before.
   const d = app(S); await openStore(d, 'D6'); d.run('mrStartInput()'); d.run("mrSetVal('focus.0.note','v2')"); await d.flush();
   await d.run('mrSubmit()'); await d.flush();
@@ -1131,6 +1144,16 @@ test('v1068: drafts changed in another tab of the same person are not sent; the 
   assert.deepEqual(Object.keys(a.run('JSON.parse(JSON.stringify(mrRpState().drafts))')).sort(), ['issue:i1', 'kpi']);   // loaded again: both shown now
   await a.run('mrRpSend(false)'); await a.flush();
   assert.deepEqual((await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.mine && x.state === 'sent').map(x => x.target).sort(), ['issue:i1', 'kpi']);
+  // Another tab sent everything this tab shows: told to load again (not "nothing to send"), and loaded.
+  const S3 = await server();
+  const a2 = app(S3, { who: 'am1', role: 'am' }); await openStore(a2, 'D1');
+  rpAct(a2, 'issue:i1', 'as_proposed'); await a2.flush();
+  const b2 = app(S3, { who: 'am1', role: 'am' }); await openStore(b2, 'D1');
+  await b2.run('mrRpSend(false)'); await b2.flush();
+  await a2.run('mrRpSend(false)'); await a2.flush();
+  assert.ok(a2.toasts.some(([m, k]) => k === 'warning' && /別の画面（タブ）で下書きが変わりました/.test(m)), JSON.stringify(a2.toasts));
+  assert.deepEqual(Object.keys(a2.run('JSON.parse(JSON.stringify(mrRpState().drafts))')), []);
+  assert.equal(a2.run(`(_mr.rec.replies||[]).filter(function(x){ return x.mine && x.state === 'sent'; }).length`), 1);
   // Unsaved typing on this tab is kept when another tab changed a draft (nothing reloaded over it).
   const c = app(S, { who: 'gm', role: 'gm' }); await openStore(c, 'D1');
   rpAct(c, 'pl', 'as_proposed'); await c.flush();

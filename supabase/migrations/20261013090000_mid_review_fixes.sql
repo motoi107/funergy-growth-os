@@ -4,7 +4,8 @@
 --    A CEO changed to GM in manager_auth is a GM here at once (no CEO-only decisions), and a GM changed
 --    to CEO there stays a GM here until a GM / CEO adds them again as CEO.
 -- 2) mr_reply_send: sends only the drafts the screen showed, at the versions it showed. Another tab of the
---    same person that changed or added a draft makes it refuse with drafts_changed (load and look again).
+--    same person that changed, added, deleted or already sent a draft makes it refuse with drafts_changed
+--    (load and look again). A sent reply records the role and name at the time of sending.
 
 -- The signed-in person, if they may use the feature with one of these roles. p_enabled: also require the private check to be on.
 -- A CEO / GM must also still be CEO / GM in manager_auth (the narrower role of the two is used). Taking someone off there takes them off here.
@@ -38,13 +39,14 @@ begin
  if r.status not in ('submitted','followup','decision','consult') then raise exception 'locked'; end if;
  -- Sent while looking at the latest submitted version (a newer one came in: load it and look again).
  if (p->>'expect_no') is null or (p->>'expect_no') !~ '^[0-9]{1,6}$' or (p->>'expect_no')::integer <> r.submitted_no then raise exception 'new_version'; end if;
- if not exists(select 1 from public.mr_replies where review_id = r.id and author = m.user_id and state = 'draft') then raise exception 'nothing'; end if;
  -- Only the drafts the screen showed, at the versions it showed (another tab of the same person may have changed or added one).
  if jsonb_typeof(p->'drafts') is distinct from 'array'
     or exists(select 1 from public.mr_replies y where y.review_id = r.id and y.author = m.user_id and y.state = 'draft'
       and not exists(select 1 from jsonb_array_elements(p->'drafts') d where d->>'id' = y.id::text and d->>'version' = y.version::text))
     or exists(select 1 from jsonb_array_elements(p->'drafts') d where not exists(select 1 from public.mr_replies y where y.review_id = r.id
       and y.author = m.user_id and y.state = 'draft' and y.id::text = d->>'id' and y.version::text = d->>'version')) then raise exception 'drafts_changed'; end if;
+ -- (after the check above: a tab whose drafts another tab already sent is told to load again, not "nothing to send")
+ if not exists(select 1 from public.mr_replies where review_id = r.id and author = m.user_id and state = 'draft') then raise exception 'nothing'; end if;
  for x in select * from public.mr_replies where review_id = r.id and author = m.user_id and state = 'draft' order by created_at loop
   v_bad := public.mr_reply_missing(m, x);
   if v_bad is not null then raise exception 'incomplete'; end if;
@@ -65,7 +67,8 @@ begin
    update public.mr_replies set data = data || jsonb_build_object('resolved', true, 'resolved_by', public.mr_actor_name(m), 'resolved_at', now(), 'forwarded', 'ceo'), updated_at = now()
     where review_id = r.id and target = x.target and state = 'sent' and decision = 'escalate' and escalate_to = 'gm' and coalesce((data->>'resolved')::boolean, false) is not true;
   end if;
-  update public.mr_replies set state = 'sent', sent_at = now(), sub_no = r.submitted_no, updated_at = now() where id = x.id;
+  -- The role and name at the time of sending (the role may have changed since the draft was first saved).
+  update public.mr_replies set state = 'sent', sent_at = now(), sub_no = r.submitted_no, author_role = m.role, author_name = public.mr_actor_name(m), updated_at = now() where id = x.id;
   n := n + 1;
  end loop;
  -- At most 20 questions wait for the store manager at once (one answer each, all in one version).

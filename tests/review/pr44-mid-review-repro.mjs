@@ -108,7 +108,11 @@ test('R4: a CEO changed to GM in manager_auth must not retain CEO-only decisions
   const payload = {env:'demo',ym:'2026-10',store_id:'D3',expect_no:1};
   await S.api('ceo', {...payload,action:'reply_save',target:'issue:i2',expect_version:null,
     decision:'no_action',data:{reason:'R4 decision after role downgrade'}});
-  const sent = await S.api('ceo', {...payload,action:'reply_send'});
+  // Adjusted by Claude for v1068: send the drafts this screen shows (without them v1068 refuses every send
+  // with drafts_changed, which would let this test pass without exercising R4).
+  const shown = (await S.api('ceo', {...payload,action:'get'})).replies.filter(x => x.mine && x.state === 'draft').map(x => ({id:x.id, version:x.version}));
+  const sent = await S.api('ceo', {...payload,action:'reply_send',drafts:shown});
+  assert.equal(sent.error, 'incomplete', 'refused because the item waits for the CEO, not for another reason');
   const record = await S.api('ceo', {...payload,action:'get'});
   const escalation = record.replies.find(x => x.target === 'issue:i2' && x.decision === 'escalate');
   t.diagnostic(JSON.stringify({managerAuthRole:'gm', returnedRole:who.role,

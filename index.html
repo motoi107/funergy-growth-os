@@ -17213,9 +17213,12 @@ async function mrSubmit(){
     if (e && (e.code === 'network' || e.code === 'conflict' || e.status >= 500)) {
       try {
         var cur = await mrAPI({ action:'get', env:R.env, ym:R.ym, store_id:R.store.store_id });
-        if (_mr.ed === ed && cur.review && cur.review.submitted_no > before && cur.review.version === ed.version + 1 && !cur.review.unsubmitted) {
-          showToast(t('提出できていました（提出版 ' + cur.review.submitted_no + '）','It was submitted (version ' + cur.review.submitted_no + ')'), 'success');
-          _mr.busy = ''; mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrDropList(); mrReloadRec(); return;
+        if (cur.review && cur.review.submitted_no > before && cur.review.version === ed.version + 1 && !cur.review.unsubmitted) {
+          showToast(escapeHtml(t('提出できていました（' + ((R.store && R.store.name) || '') + '・提出版 ' + cur.review.submitted_no + '）','It was submitted (' + ((R.store && R.store.name) || '') + ', version ' + cur.review.submitted_no + ')')), 'success');
+          _mr.busy = ''; mrDropList();
+          /* 別の店へ移っていたら、その店の入力には触らない */
+          if (_mr.ed === ed && _mrGen === g && mrRecKey() === key) { mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrReloadRec(); } else mrRerender();
+          return;
         }
       } catch(e2) {}
     }
@@ -17231,7 +17234,8 @@ async function mrSubmit(){
         }
       } catch(e3) {}
     }
-    showToast(escapeHtml(e.message || String(e)), 'error');
+    /* 別の店へ移っていたら、どの店の提出の話かを添える */
+    showToast(escapeHtml((_mr.ed !== ed ? t('（' + ((R.store && R.store.name) || '') + ' の提出）','(Submitting ' + ((R.store && R.store.name) || '') + ') ') : '') + (e.message || String(e))), 'error');
   } finally { if (_mr.busy === 'submit') { _mr.busy = ''; mrRerender(); } }
 }
 /* ---- 段階 2-3：管理側の返信・判断（AM・GM・CEO）----

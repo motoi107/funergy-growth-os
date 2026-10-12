@@ -1170,6 +1170,19 @@ test('v1068: a CEO changed to GM in manager_auth is a GM here at once; a GM chan
   assert.equal((await send(E, 'ceo', 'D1')).status, 200);
   const esc = (await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.target === 'issue:i1' && x.decision === 'escalate');
   assert.equal(esc.data.resolved, true);
+  // The decision counts as the CEO's: it was sent as CEO, though the draft was first saved while a GM.
+  const dec = (await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.target === 'issue:i1' && x.state === 'sent' && x.decision === 'as_proposed' && x.author_role === 'ceo');
+  assert.ok(dec, 'sent with the role at the time of sending');
+  assert.equal((await R(E, 'gm', 'D1', { action: 'get' })).body.review.final['issue:i1'], true);
+  // The other way: first saved as CEO, sent after becoming a GM → recorded as GM.
+  await E.q(`update manager_auth set role='gm' where user_id=$1`, [U.ceo]);
+  await saveR(E, 'ceo', 'D1', 'kpi', 'as_proposed', act());
+  await E.q(`update manager_auth set role='ceo' where user_id=$1`, [U.ceo]);
+  await saveR(E, 'ceo', 'D1', 'kpi', 'as_proposed', act({ next: '書き直した' }));
+  await E.q(`update manager_auth set role='gm' where user_id=$1`, [U.ceo]);
+  assert.equal((await send(E, 'ceo', 'D1')).status, 200);
+  assert.equal((await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.target === 'kpi' && x.state === 'sent' && x.data.next === '書き直した').author_role, 'gm');
+  await E.q(`update manager_auth set role='ceo' where user_id=$1`, [U.ceo]);
   // The check after installing points at both kinds of difference.
   await E.q(`update manager_auth set role='gm' where user_id=$1`, [U.ceo]);
   const post = Object.fromEntries((await E.q(fs.readFileSync(new URL('../db/mid-review-postcheck.sql', import.meta.url), 'utf8'))).map(r => [r.check_name, r]));
@@ -1205,6 +1218,9 @@ test('v1068: replies are sent only as the screen showed them (the same drafts at
   assert.deepEqual(sent.map(x => [x.target, x.data.reason]), [['issue:i1', '別のタブで書き直した']]);
   // The GM's own draft was not touched by the AM's send.
   assert.equal((await R(E, 'gm', 'D1', { action: 'get' })).body.replies.filter(x => x.mine && x.state === 'draft').length, 1);
+  // A tab whose drafts another tab already sent: "load again", not "nothing to send". With nothing shown and nothing there: nothing to send.
+  assert.deepEqual(await err({ drafts: shownDrafts(g2) }), [409, 'drafts_changed']);
+  assert.deepEqual(await err({ drafts: [] }), [409, 'nothing']);
 });
 
 test('v1068: the fix SQL on a database that already has the first one (rows kept, browsers still shut out, runs twice)', async () => {
