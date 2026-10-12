@@ -520,9 +520,9 @@ begin
  end if;
  v_miss := public.mr_missing(r.body, v_snap);
  if jsonb_array_length(v_miss) > 0 then raise exception 'incomplete'; end if;
- -- Answering a follow-up question: every open question needs an answer; answered questions are closed.
+ -- Answering a follow-up question: every open question needs an answer (by question id); answered questions are closed.
  if r.status = 'followup' and exists(select 1 from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'followup'
-    and coalesce((p.data->>'resolved')::boolean, false) is not true and coalesce(btrim(r.body->'answers'->>p.target), '') = '') then raise exception 'incomplete'; end if;
+    and coalesce((p.data->>'resolved')::boolean, false) is not true and coalesce(btrim(r.body->'answers'->>p.id::text), '') = '') then raise exception 'incomplete'; end if;
  select * into am from public.mr_members where user_id = s.am_user and enabled;
  v_prev := r.status;
  insert into public.mr_submissions(review_id, no, body, snapshot, created_by) values(r.id, r.submitted_no + 1, r.body, v_snap, v_name);

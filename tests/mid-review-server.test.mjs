@@ -511,7 +511,11 @@ test('submit after a follow-up question goes back to the AM with the decision de
   // The AM's question needs an answer first.
   const i = await E.api('am1', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v, snapshot: snap });
   assert.equal(i.status, 422);
-  const v2 = (await E.api('am1', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v, body: { ...body, answers: { 'issue:i1': '工事は 11 月末まで。テイクアウトは売上の 18%。' } } })).body.version;
+  const q1 = (await E.q(`select p.id::text id from mr_replies p join mr_reviews r on r.id=p.review_id where r.store_id='D4' and p.decision='followup'`))[0].id;
+  // Answers are kept by question: an answer under another key does not count.
+  const bad = (await E.api('am1', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v, body: { ...body, answers: { 'issue:i1': 'x' } } })).body.version;
+  assert.equal((await E.api('am1', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: bad, snapshot: snap })).status, 422);
+  const v2 = (await E.api('am1', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: bad, body: { ...body, answers: { [q1]: '工事は 11 月末まで。テイクアウトは売上の 18%。' } } })).body.version;
   const s = await E.api('am1', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v2, snapshot: snap });
   assert.equal(s.status, 200);
   // Answered: the question is closed and no longer waits in the list.
@@ -519,8 +523,20 @@ test('submit after a follow-up question goes back to the AM with the decision de
   assert.equal(rp[0].data.resolved, true); assert.equal(rp[0].data.answered_no, 2);
   const l = (await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D4');
   assert.deepEqual(l.waits, []); assert.equal(l.status, 'submitted');
+  // A second question on the same item (as stage 2-3 will allow) needs its own answer; the first stays answered by version 2.
+  const rid = (await E.q(`select id from mr_reviews where store_id='D4'`))[0].id;
+  const q2 = (await E.q(`insert into mr_replies(review_id, target, author, author_name, author_role, decision, data, state, sent_at) values($1,'issue:i1',$2,'Yuki','am','followup','{"title":"もう 1 つ","due":"2026-10-19"}','sent',now()) returning id::text id`, [rid, U.am1]))[0].id;
+  await E.q(`update mr_reviews set status='followup' where id=$1`, [rid]);
+  const v3 = (await E.q(`select version from mr_reviews where id=$1`, [rid]))[0].version;
+  const b3 = (await E.api('am1', { action: 'get', env: 'demo', ym: '2026-10', store_id: 'D4' })).body.review.body;
+  const v4 = (await E.api('am1', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v3, body: { ...b3, reporter: 'x' } })).body.version;
+  assert.equal((await E.api('am1', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v4, snapshot: snap })).status, 422);
+  const v5 = (await E.api('am1', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v4, body: { ...b3, answers: { ...b3.answers, [q2]: '2 つ目の答え' } } })).body.version;
+  assert.equal((await E.api('am1', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v5, snapshot: snap })).status, 200);
+  const both = await E.q(`select id::text id, data from mr_replies where review_id=$1 and decision='followup' order by created_at`, [rid]);
+  assert.deepEqual(both.map(x => [x.id === q1 ? 'q1' : 'q2', x.data.answered_no]), [['q1', 2], ['q2', 3]]);
   const x = (await E.q(`select status, next_actor, next_due::text d, submitted_no from mr_reviews where store_id='D4'`))[0];
-  assert.deepEqual(x, { status: 'submitted', next_actor: 'Yuki', d: '2026-10-19', submitted_no: 2 });
+  assert.deepEqual(x, { status: 'submitted', next_actor: 'Yuki', d: '2026-10-19', submitted_no: 3 });
 });
 
 test('what is missing: KPI 未達 needs a comment; PL 注意・未達 needs cause and plan unless checked at the start of the month; late / help / investigating need their fields', async () => {

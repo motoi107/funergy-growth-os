@@ -605,9 +605,11 @@ test('input: the AM’s follow-up question is shown and needs an answer; answeri
   const c = app(S, { who: 'am2', role: 'am' }); await openStore(c, 'D4'); c.run('mrStartInput()'); c.renderPage();
   const h = strip(c.html);
   assert.match(h, /AM・GM からの質問（追加確認） .* 工事はいつまでか・テイクアウトの割合 工事はいつまでか分かる？ テイクアウトは売上の何 % まで増えた？ AM Lee（デモ）・.*回答希望 10\/19 回答（必須）/);
-  assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec), mrOpenFollowups(_mr.rec))')), ['answer:issue:i1']);
-  assert.match(c.html, /data-p="answers\.issue:i1"[^>]*maxlength="600"/);
-  c.run(`mrSetVal('answers.issue:i1','工事は 11 月末まで。テイクアウトは 18%。')`); await c.flush();
+  const qid = c.run('mrOpenFollowups(_mr.rec)[0].id');
+  assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec), mrOpenFollowups(_mr.rec))')), ['answer:' + qid]);
+  assert.match(c.html, new RegExp('data-p="answers\\.' + qid + '"[^>]*maxlength="600"'));
+  assert.match(c.html, /class="mr-steps mr-steps6" id="mr-steps"><button class="mr-stepb" onclick="mrGoSec\('answers'\)">質問<\/button>/);
+  c.run(`mrSetVal('answers.${qid}','工事は 11 月末まで。テイクアウトは 18%。')`); await c.flush();
   assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec), mrOpenFollowups(_mr.rec))')), []);
   await c.run('mrSubmit()'); await c.flush(); c.renderPage();
   const p = strip(c.html);
@@ -659,4 +661,44 @@ test('another email sign-in on the device closes the opened store and the editor
   const d = app(S); await openStore(d, 'D6'); d.run('mrStartInput()'); d.run(`mrSetVal('consult','none')`);
   assert.equal(d.run('mrUnsaved()'), true);
   assert.match(html, /function doLogout\(\) \{\n  if \(typeof mrUnsaved === 'function' && mrUnsaved\(\) && !confirm\(/);
+});
+
+test('guards: leaving a store with unsaved input asks; a save or submit answer for a closed editor is not used; a sign-in in the dialog closes the store', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D6'); c.run('mrStartInput()'); c.run(`mrSetVal('consult','none')`);
+  let asked = 0; c.confirm = () => { asked++; return false; };
+  c.run(`mrOpenStore('D1')`); assert.equal(asked, 1); assert.equal(c.run('_mr.view.id'), 'D6');
+  // A save that answers after the editor was closed (logout) does not touch the new state.
+  const f0 = c.fetch; let release; c.fetch = async (u, i) => { await new Promise(r => { release = r; }); return f0(u, i); };
+  const p = c.run('mrSaveNow()'); c.confirm = () => true; c.run(`mrEdStop(); _mr.view=null`); release(); await p;
+  assert.equal(c.run('_mr.ed'), null);
+  // Submit: the editor changed while waiting → the old submit does not close the new one.
+  c.fetch = f0; await openStore(c, 'D6'); c.run('mrStartInput()');
+  c.run(`mrSetVal('focus.0.status','ok'); mrSetVal('focus.1.status','ok')`); await c.flush();
+  const ed1 = c.run('_mr.ed');
+  c.fetch = async (u, i) => { const b = JSON.parse(i.body); if (b.action === 'submit') { c.run('mrStartInput()'); } return f0(u, i); };
+  await c.run('mrSubmit()'); await c.flush();
+  assert.notEqual(c.run('_mr.ed'), ed1);
+  // Signing in with another email from the dialog closes the opened store.
+  const d = app(S, { signed: false }); d._botSession = { access_token: 'tok-gm', refresh_token: 'r' }; await openStore(d, 'D1');
+  d.dom = { 'mr-email': { value: 'am1@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: false }, 'mr-login-error': { textContent: '' } };
+  await d.run('mrLogin()');
+  assert.equal(d.run('_mr.view'), null); assert.equal(d.run('_mr.rec'), null); assert.equal(d.run('_mr.who.role'), 'am');
+});
+
+test('each answer is shown from the version that answered it', async () => {
+  const S = await server();
+  const c = app(S, { who: 'am2', role: 'am' }); await openStore(c, 'D4'); c.run('mrStartInput()');
+  const q1 = c.run('mrOpenFollowups(_mr.rec)[0].id');
+  c.run(`mrSetVal('answers.${q1}','1 回目の答え')`); await c.flush(); await c.run('mrSubmit()'); await c.flush(); c.renderPage();
+  assert.match(strip(c.html), /店長の回答（提出版 2） ?1 回目の答え/);
+  // A second question later; answered in version 3 with a different text for the first one too.
+  await S.pg.exec(`reset role; insert into mr_replies(review_id, target, author_name, author_role, decision, data, state, sent_at)
+    select id, 'issue:i1', 'AM Lee（デモ）', 'am', 'followup', '{"title":"もう 1 つ"}', 'sent', now() from mr_reviews where store_id='D4';
+    update mr_reviews set status='followup' where store_id='D4'; set role service_role;`);
+  c.run('mrReloadRec()'); await c.flush(); c.renderPage(); c.run('mrStartInput()'); c.renderPage();
+  const fu = J(c.run('mrOpenFollowups(_mr.rec).map(function(x){ return x.id; })')); assert.equal(fu.length, 1);
+  c.run(`mrSetVal('answers.${fu[0]}','2 つ目の答え'); mrSetVal('answers.${q1}','書き直した答え')`); await c.flush(); await c.run('mrSubmit()'); await c.flush(); c.renderPage();
+  const h = strip(c.html);
+  assert.match(h, /店長の回答（提出版 2） ?1 回目の答え/); assert.match(h, /店長の回答（提出版 3） ?2 つ目の答え/);
 });

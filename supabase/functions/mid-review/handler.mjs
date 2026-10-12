@@ -161,7 +161,7 @@ const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 export const LIMITS = { reporter: 80, cause: 600, plan: 600, comment: 400, title: 120, owner: 60, done_cond: 200, note: 300, reason: 400, next: 300,
   next_owner: 60, help_what: 400, what: 160, inv_check: 300, inv_owner: 60, action: 400, ask: 400, answer: 600 };
 const TS = (v, n) => { const x = TX(v, 100000); if (x.length > n) { const e = new Error('bad_value'); e.code = 'bad_value'; throw e; } return x; };
-const TARGET = /^[a-z]+(:[A-Za-z0-9_-]{1,40})?$/;
+const RID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function normBody(b) {
   b = obj(b);
   const TX = TS;
@@ -187,9 +187,9 @@ export function normBody(b) {
       inv_owner: TX(x.inv_owner, 60), inv_date: DT(x.inv_date), action: TX(x.action, 400), ask: TX(x.ask, 400), ask_by: DT(x.ask_by),
       severity: ['none', 'watch', 'high'].includes(x.severity) ? x.severity : '', direct: x.direct === true, urgent: x.urgent === true });
   }
-  // Answers to the AM's follow-up questions, by what the question was about (e.g. issue:i1).
+  // Answers to the AM's / GM's follow-up questions, by question (reply id).
   const answers = {};
-  for (const [k, v] of Object.entries(obj(b.answers)).slice(0, 20)) if (TARGET.test(k) && typeof v === 'string' && v.trim()) answers[k] = TX(v, LIMITS.answer);
+  for (const [k, v] of Object.entries(obj(b.answers)).slice(0, 20)) if (RID.test(k) && typeof v === 'string' && v.trim()) answers[k] = TX(v, LIMITS.answer);
   if (Object.keys(answers).length) out.answers = answers;
   return out;
 }

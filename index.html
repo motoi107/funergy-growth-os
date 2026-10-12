@@ -637,6 +637,7 @@ body.shift-wide .main { max-width:1900px; }
 .mr-in-bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
 .mr-in-bar:empty { display:none; }
 .mr-steps { display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:4px; margin:10px 0; }
+.mr-steps.mr-steps6 { grid-template-columns:repeat(6, minmax(0,1fr)); }
 .mr-stepb { font-family:inherit; font-size:12px; font-weight:700; border-radius:8px; border:1px solid var(--border); background:var(--surface2); color:var(--muted); padding:7px 2px; min-height:40px; cursor:pointer; }
 .mr-stepb.ok { background:#e7f6ef; color:#0b7046; border-color:#cfe9dc; }
 .mr-in-item { border-top:1px solid var(--border); padding-top:8px; display:flex; flex-direction:column; gap:6px; }
@@ -16675,7 +16676,7 @@ function mrSnapNow(rec){
 function mrBlank(s){ return !String(s == null ? '' : s).trim(); }
 function mrMissing(b, snap, followups){
   var out = []; b = b || {}; snap = snap || {};
-  (followups || []).forEach(function(q){ if (mrBlank((b.answers || {})[q.target])) out.push('answer:' + q.target); });
+  (followups || []).forEach(function(q){ if (mrBlank((b.answers || {})[q.id])) out.push('answer:' + q.id); });
   if (b.consult !== 'yes' && b.consult !== 'none') out.push('consult');
   if (b.consult === 'yes' && !(b.issues || []).length) out.push('issues');
   (b.consult === 'yes' ? (b.issues || []) : []).forEach(function(x){
@@ -16777,7 +16778,8 @@ function mrStoreHtml(head){
   /* A〜D：左に店長の報告、右に管理側の返信 */
   var reps = (R.replies || []);
   var pl = useSnap ? Object.assign({ note:'' }, snap.pl) : mrCurPl(R);
-  var ans = body && body.answers;
+  /* 回答は、答えた提出版のものを出す（あとの版で書き直しても、前の質問の答えは変わらない） */
+  var ans = {}; subs.forEach(function(x){ ans[x.no] = (x.body && x.body.answers) || {}; });
   h += mrTwo(mrPlBlock(R, pl, body, useSnap), mrRepliesFor(reps, ['pl'], ans));
   var k = useSnap ? snap.kpi : mrCurKpi(R);
   h += mrTwo(mrKpiBlock(R, k, body, useSnap, snap), mrRepliesFor(reps, ['kpi'], ans));
@@ -16809,7 +16811,8 @@ function mrRepliesFor(reps, targets, ans){
     if (dt.title) lines.push('<b>'+e(dt.title)+'</b>');
     [['question','質問','Question'],['reason','理由','Reason'],['recommend','推奨案','Recommendation'],['next','次の行動','Next action'],['owner','担当','Owner'],['next_check','次回確認','Next check']].forEach(function(f){ if (dt[f[0]]) lines.push('<span class="mr-m">'+t(f[1], f[2])+'</span> '+e(dt[f[0]])); });
     if (dt.due) lines.push('<span class="mr-m">'+t('回答希望日・期限','Answer by / due')+'</span> '+e(mrMD(dt.due)));
-    if (x.decision === 'followup' && dt.resolved && ans && ans[x.target]) lines.push('<span class="mr-m">'+t('店長の回答（提出版 ','Answer (version ')+e(dt.answered_no || '')+'）</span> '+e(ans[x.target]));
+    var an = (x.decision === 'followup' && dt.resolved && ans) ? ans[dt.answered_no] : null;
+    if (an && an[x.id]) lines.push('<span class="mr-m">'+t('店長の回答（提出版 ','Answer (version ')+e(dt.answered_no || '')+'）</span> '+e(an[x.id]));
     return '<div class="mr-mgr'+(x.state !== 'sent' ? ' mr-mgr-draft' : '')+'"><div class="mr-cardh"><b style="font-size:12.5px">'+e(d ? t(d[0], d[1]) : (x.decision || ''))+(x.decision === 'escalate' ? (x.escalate_to === 'ceo' ? '（CEO）' : '（GM）') : '')+'</b>'
       + (dt.severity ? mrSevTag(dt.severity) : '') + (x.state !== 'sent' ? '<span class="mr-tag" style="background:#fdf3e0;color:#8a5508">'+t('下書き（自分だけ）','Draft (only you)')+'</span>' : '') + '</div>'
       + lines.map(function(l){ return '<div style="font-size:12.5px;line-height:1.6">'+l+'</div>'; }).join('')
@@ -16903,7 +16906,7 @@ function mrEdStop(){ if (_mr.ed && _mr.ed.timer) clearTimeout(_mr.ed.timer); _mr
 function mrPath(o, path){ var ps = path.split('.'), x = o; for (var i = 0; i < ps.length - 1; i++) { var k = /^\d+$/.test(ps[i]) ? Number(ps[i]) : ps[i]; if (x[k] == null || typeof x[k] !== 'object') x[k] = {}; x = x[k]; } return [x, /^\d+$/.test(ps[ps.length - 1]) ? Number(ps[ps.length - 1]) : ps[ps.length - 1]]; }
 function mrSetVal(path, val, rerender){
   var ed = _mr.ed; if (!ed || !/^[A-Za-z0-9_.:-]{1,80}$/.test(path)) return;
-  var p = /^answers\.[a-z]+(:[A-Za-z0-9_-]{1,40})?$/.test(path) ? [ed.body.answers = ed.body.answers || {}, path.slice(8)] : mrPath(ed.body, path);
+  var p = /^answers\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(path) ? [ed.body.answers = ed.body.answers || {}, path.slice(8)] : mrPath(ed.body, path);
   p[0][p[1]] = val; ed.changed = true;
   mrDirty(); if (rerender) mrRerender();
 }
@@ -16995,7 +16998,7 @@ function mrInputHtml(R){
     + '<div class="mr-m">'+t('提出期限 ','Submit by ')+e(mrMD(dl.submit))+'・'+t('一次確認 ','First check ')+(R.store.am_unset ? t('GM（AM 未設定）','GM (no AM)') : e(R.store.am_name || ''))+'・'+t('目安 10〜15 分','about 10–15 min')+'</div></div></div>';
   h += '<div class="mr-in-bar">'+mrStatusTag({ status:r ? r.status : 'draft', r:r })+mrSaveChipHtml()+'<span class="mr-m">'+t('1.2 秒止まると自動で保存','Saves automatically after 1.2 s')+'</span></div><div id="mr-savebar" class="mr-in-bar">'+mrSaveBarInner()+'</div>';
   h += '<label class="mr-lbl" style="max-width:340px">'+t('報告する人の立場（どちらも同じ画面・同じ権限）','Reporter (same screen and rights)')+'<select class="mr-sel" data-p="reporter_role" onchange="mrIn(this)"><option value="manager"'+(b.reporter_role !== 'op_leader' ? ' selected' : '')+'>'+t('店長','Store manager')+'</option><option value="op_leader"'+(b.reporter_role === 'op_leader' ? ' selected' : '')+'>'+t('G3 Operation Leader','G3 Operation Leader')+'</option></select></label>';
-  h += '<div class="mr-steps" id="mr-steps">' + mrStepsInner(miss) + '</div>';
+  h += '<div class="mr-steps'+(fu.length ? ' mr-steps6' : '')+'" id="mr-steps">' + mrStepsInner(miss, fu.length > 0) + '</div>';
   h += '<fieldset class="mr-fs"'+(_mr.busy === 'submit' ? ' disabled' : '')+'>' + mrInAnswers(R, b, fu, miss) + mrInPl(R, b, snap, miss) + mrInKpi(R, b, snap, miss) + mrInFocus(b, miss) + mrInIssues(b, miss) + '</fieldset>' + mrInSubmit(R, b, snap, miss);
   return h + '</div>';
 }
@@ -17006,9 +17009,9 @@ function mrInAnswers(R, b, fu, miss){
   return '<div class="card mr-blk mr-in-q" id="mr-sec-answers"><div class="mr-h">'+t('AM・GM からの質問（追加確認）','Follow-up questions from the AM / GM')+'</div>'
     + '<div class="mr-m">'+t('答えを書いて出し直すと、AM の返信待ちに戻ります（前の提出版は残ります）。','Answer and submit again; it goes back to the AM (earlier versions stay).')+'</div>'
     + fu.map(function(q){ var d = q.data || {};
-      return '<div class="mr-in-item'+mrMissMark(miss, 'answer:' + q.target)+'"><b>'+e(d.title || '')+'</b>'+(d.question ? '<div style="font-size:13px">'+e(d.question)+'</div>' : '')
+      return '<div class="mr-in-item'+mrMissMark(miss, 'answer:' + q.id)+'"><b>'+e(d.title || '')+'</b>'+(d.question ? '<div style="font-size:13px">'+e(d.question)+'</div>' : '')
         + '<div class="mr-m">'+e((q.author_name || '') + (q.sent_at ? '・' + mrHst(q.sent_at) : '') + (d.due ? '・' + t('回答希望 ','answer by ') + mrMD(d.due) : ''))+'</div>'
-        + '<label class="mr-lbl">'+t('回答（必須）','Answer (required)')+mrTa('answers.' + q.target, (b.answers || {})[q.target])+'</label></div>'; }).join('') + '</div>';
+        + '<label class="mr-lbl">'+t('回答（必須）','Answer (required)')+mrTa('answers.' + q.id, (b.answers || {})[q.id])+'</label></div>'; }).join('') + '</div>';
 }
 function mrGoSec(id){ try { var el = document.getElementById('mr-sec-' + id); if (el) el.scrollIntoView({ behavior:'smooth', block:'start' }); } catch(e) {} }
 /* 書ける長さ（サーバーの LIMITS と同じ。長すぎると保存できないので、画面で止める） */
@@ -17022,15 +17025,15 @@ function mrLiveRefresh(){
   var ed = _mr.ed, R = _mr.rec; if (!ed || !R || !_mr.view || _mr.view.mode !== 'input') return;
   try {
     var snap = mrSnapNow(R), miss = mrMissing(ed.body, snap, mrOpenFollowups(R));
-    var st = document.getElementById('mr-steps'); if (st) st.innerHTML = mrStepsInner(miss);
+    var st = document.getElementById('mr-steps'); if (st) st.innerHTML = mrStepsInner(miss, mrOpenFollowups(R).length > 0);
     var sb = document.getElementById('mr-sec-submit'); if (sb) sb.outerHTML = mrInSubmit(R, ed.body, snap, miss);
     Array.prototype.forEach.call(document.querySelectorAll('[data-need]'), function(el){ el.classList.toggle('mr-need', miss.indexOf(el.getAttribute('data-need')) >= 0); });
   } catch(e) {}
 }
-function mrStepsInner(miss){
+function mrStepsInner(miss, hasQ){
   var secOk = function(pre){ return !miss.some(function(m){ return m.indexOf(pre) === 0; }); };
   var steps = [['pl','1 PL', secOk('pl:')], ['kpi','2 KPI', secOk('kpi:')], ['focus', t('3 重点','3 Focus'), secOk('focus:')], ['issues', t('4 相談','4 Questions'), secOk('issue') && secOk('consult')], ['submit', t('5 提出','5 Submit'), !miss.length]];
-  if (miss.some(function(m){ return m.indexOf('answer:') === 0; }) || document.getElementById('mr-sec-answers')) steps.unshift(['answers', t('質問','Q'), secOk('answer:')]);
+  if (hasQ) steps.unshift(['answers', t('質問','Q'), secOk('answer:')]);
   return steps.map(function(s){ return '<button class="mr-stepb'+(s[2] ? ' ok' : '')+'" onclick="mrGoSec(\''+s[0]+'\')">'+escapeHtml(s[1])+(s[2] ? ' ✓' : '')+'</button>'; }).join('');
 }
 function mrInPl(R, b, snap, miss){
