@@ -452,7 +452,8 @@ begin
     'submitted_no', r.submitted_no, 'submitted_at', r.submitted_at, 'done_at', r.done_at, 'created_at', r.created_at,
     'updated_at', r.updated_at, 'updated_by', r.updated_by,
     'unsubmitted', r.submitted_no > 0 and ((r.body - 'answers') is distinct from (public.mr_view_body(r) - 'answers')
-      or (r.status = 'followup' and coalesce(r.body->'answers', '{}'::jsonb) <> '{}'::jsonb)),
+      or (r.status = 'followup' and exists(select 1 from public.mr_replies q where q.review_id = r.id and q.state = 'sent' and q.decision = 'followup'
+        and coalesce((q.data->>'resolved')::boolean, false) is not true and not public.mr_blank(r.body->'answers'->>q.id::text)))),
     'required', case when r.submitted_no > 0 then to_jsonb(public.mr_required_targets(r)) else '[]'::jsonb end,
     'final', case when r.submitted_no > 0 then (select coalesce(jsonb_object_agg(t, public.mr_target_final(r.id, t)), '{}'::jsonb) from unnest(public.mr_required_targets(r)) t) else '{}'::jsonb end) end,
   -- The items that changed since the version a page was showing (its drafts are checked again before they are saved).
@@ -819,8 +820,9 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   when x.decision = 'escalate' and (x.escalate_to is null or public.mr_blank(x.data->>'title') or not public.mr_date_ok(x.data->>'due')
     or public.mr_blank(x.data->>(case when x.escalate_to = 'ceo' then 'recommend' else 'reason' end))) then 'escalate'
   -- An escalation goes up: an AM to GM or CEO, a GM to CEO; a CEO decides.
-  when x.decision = 'escalate' and (m.role = 'ceo' or (m.role = 'gm' and x.escalate_to = 'gm')
-    or (x.escalate_to = 'gm' and public.mr_reserved_level(x.review_id, x.target) = 'ceo')) then 'escalate_up'
+  when x.decision = 'escalate' and (m.role = 'ceo' or (m.role = 'gm' and x.escalate_to = 'gm')) then 'escalate_up'
+  -- An item already at the CEO goes to the CEO (not down to the GM).
+  when x.decision = 'escalate' and x.escalate_to = 'gm' and public.mr_reserved_level(x.review_id, x.target) = 'ceo' then 'escalate_ceo'
   when x.decision = 'consult' and (not public.mr_date_ok(x.data->'consult'->>'date') or coalesce(x.data->'consult'->>'time','') = ''
     or jsonb_array_length(public.mr_arr(x.data->'consult'->'people')) = 0 or jsonb_array_length(public.mr_arr(x.data->'consult'->'topics')) = 0) then 'consult'
   when x.target = 'summary' and x.decision in ('followup','escalate','consult') then 'summary'

@@ -945,6 +945,9 @@ test('the screen and the server agree on what a reply still needs (same drafts, 
   const q4 = (await sApi(S, 'gm', 'D4', { action: 'get' })).replies.find(x => x.decision === 'followup' && !x.data.resolved);
   await sResubmit(S, 'D4', b => ({ ...b, consult: 'none', issues: [], kpi: { ...b.kpi, guests: { tags: ['other'], comment: '工事の影響（書き足し）' } }, answers: { [q4.id]: '11 月末まで' } }));
   cases.push(['am2', 'am', 'D4', 'issue:i1'], ['am2', 'am', 'D4', 'kpi']);
+  // 駅前 question 2 is with the CEO: an AM cannot send it down to the GM.
+  await sApi(S, 'am1', 'D3', { action: 'reply_save', target: 'issue:i2', decision: 'escalate', escalate_to: 'gm', data: { title: 't', reason: 'r', due: '2026-10-23' } });
+  cases.push(['am1', 'am', 'D3', 'issue:i2']);
   await S.pg.exec('reset role');
   const srv = Object.fromEntries((await S.pg.query(`select r.store_id || '|' || m.role || '|' || x.target k, public.mr_reply_missing(m, x) v
     from mr_replies x join mr_members m on m.user_id = x.author join mr_reviews r on r.id = x.review_id where x.state = 'draft'`)).rows.map(r => [r.k, r.v]));
@@ -954,7 +957,7 @@ test('the screen and the server agree on what a reply still needs (same drafts, 
     const ui = c.run(`(function(){ var d = _mr.rec.replies.filter(function(x){ return x.mine && x.state === 'draft' && x.target === ${JSON.stringify(target)}; })[0]; return mrRpMissing(${JSON.stringify(role)}, ${JSON.stringify(target)}, d, _mr.rec); })()`);
     assert.equal(ui, srv[st + '|' + role + '|' + target], `${who} ${st} ${target}`);
   }
-  assert.deepEqual(Object.values(srv).sort(), ['action', 'consult', 'escalate', 'escalate_up', 'escalate_up', 'gone', 'message', 'question', 'reason', 'reserved', 'reserved', 'stale', 'summary', null, null].sort());
+  assert.deepEqual(Object.values(srv).sort(), ['action', 'consult', 'escalate', 'escalate_up', 'escalate_up', 'gone', 'message', 'question', 'reason', 'reserved', 'reserved', 'stale', 'summary', 'escalate_ceo', null, null].sort());
   // Dates and times as the server takes them (a browser that falls back to text input).
   const c0 = app(S); assert.deepEqual(JSON.parse(c0.run(`JSON.stringify([mrDateOk('2026-11-31'), mrDateOk('2026-02-28'), mrDateOk('2026-2-1'), mrTimeOk('24:00'), mrTimeOk('09:30')])`)), [false, true, false, false, true]);
 });

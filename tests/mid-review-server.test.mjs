@@ -1124,3 +1124,16 @@ test('an item at the CEO is decided by the CEO: an earlier AM decision that fits
   await saveR(E, 'ceo', 'D1', 'kpi', 'as_proposed', act()); await send(E, 'ceo', 'D1');
   assert.equal((await R(E, 'am1', 'D1', { action: 'complete' })).status, 200);
 });
+
+test('"a newer draft" in a second round of questions: only answers to open questions that are not submitted yet', async () => {
+  const E = await setup(); await demoOn(E);
+  await saveR(E, 'am1', 'D1', 'kpi', 'followup', { question: '週の売上は？', due: '2026-10-20' }); await send(E, 'am1', 'D1');
+  const q1 = (await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.decision === 'followup');
+  await resubmit(E, 'D1', 'gm', b => ({ ...b, answers: { [q1.id]: '予算どおり' } }));
+  await saveR(E, 'gm', 'D1', 'pl', 'followup', { question: '原価の内訳は？', due: '2026-10-21' }); await send(E, 'gm', 'D1');
+  let g = (await R(E, 'gm', 'D1', { action: 'get' })).body;
+  assert.equal(g.review.status, 'followup'); assert.equal(g.review.unsubmitted, false);
+  const q2 = g.replies.find(x => x.decision === 'followup' && !x.data.resolved);
+  await R(E, 'gm', 'D1', { action: 'save', expect_version: g.review.version, body: { ...g.review.body, answers: { [q2.id]: '米が 7 割' } } });
+  assert.equal((await R(E, 'gm', 'D1', { action: 'get' })).body.review.unsubmitted, true);
+});

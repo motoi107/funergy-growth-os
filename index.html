@@ -17279,7 +17279,8 @@ function mrRpMissing(role, target, d, R){
   if (x.decision === 'no_action' && b('reason')) return 'reason';
   if (x.decision === 'followup' && (b('question') || !mrDateOk(dt.due))) return 'question';
   if (x.decision === 'escalate' && (!x.escalate_to || b('title') || !mrDateOk(dt.due) || b(x.escalate_to === 'ceo' ? 'recommend' : 'reason'))) return 'escalate';
-  if (x.decision === 'escalate' && (role === 'ceo' || (role === 'gm' && x.escalate_to === 'gm') || (x.escalate_to === 'gm' && R && mrRpLevel(R, target) === 'ceo'))) return 'escalate_up';
+  if (x.decision === 'escalate' && (role === 'ceo' || (role === 'gm' && x.escalate_to === 'gm'))) return 'escalate_up';
+  if (x.decision === 'escalate' && x.escalate_to === 'gm' && R && mrRpLevel(R, target) === 'ceo') return 'escalate_ceo';
   if (x.decision === 'consult' && (!mrDateOk(c.date) || !mrTimeOk(c.time) || !(c.people || []).length || !(c.topics || []).filter(function(s){ return !mrBlank(s); }).length)) return 'consult';
   if (x.decision === 'consult' && ((c.people || []).length > 6 || (c.people || []).some(function(p){ return String(p).length > 40; }))) return 'people';
   if (target === 'summary' && (x.decision === 'followup' || x.decision === 'escalate' || x.decision === 'consult')) return 'summary';
@@ -17288,6 +17289,7 @@ function mrRpMissing(role, target, d, R){
 var MR_RP_MISS = { message:['店長へのひとことを書く','Write a word to the store manager'], decision:['判断を選ぶ','Choose a decision'], action:['次の行動・担当・期限・次回確認','Next action, owner, due date and next check'],
   reason:['対応不要の理由','The reason for no action'], question:['質問と回答希望日','The question and the answer-by date'], escalate:['上げる先・相談内容・理由（CEO は推奨案）・回答希望日','Who, the question, the reason (CEO: recommendation) and the answer-by date'],
   escalate_up:['上位判断は上へだけ（AM → GM・CEO、GM → CEO）','Escalate upwards only (AM → GM / CEO, GM → CEO)'],
+  escalate_ceo:['この項目は CEO に上がっています。上げる先は CEO だけです','This item is already with the CEO; it can only go to the CEO'],
   gone:['いまの提出版にない項目への下書きです。消してください','This draft is on an item the latest version no longer has. Delete it'],
   stale:['前の提出版のときの下書きです。そのあと内容が変わりました。読み直して「確かめた」を押してください','Written on an earlier version; the item changed since. Read it again and press “Checked”'],
   reserved:['この項目は上位の判断を待っています（提案どおり・修正・対応不要はその人が決める）','This item waits for a higher decision (go / change / no action is theirs)'],
@@ -17344,6 +17346,8 @@ function mrReplyCards(list, ans, R){
       else if (R && R.review && R.review.submitted_no) res += '<button class="mr-pick" onclick="_mr.resOpen=\''+e(x.id)+'\';mrRerender()">'+(dt.result ? t('結果を書き直す','Edit the result') : t('結果を記録','Record the result'))+'</button>';
     }
     var ver = (R && R.review && R.review.submitted_no > 1 && x.sub_no) ? '<span class="mr-m">'+t('提出版 ','v')+e(x.sub_no)+t(' へ','')+'</span>' : '';
+    var lvNow = MR_FINAL[x.decision] && R ? mrRpLevel(R, x.target) : '';
+    if (lvNow && (lvNow === 'ceo' ? x.author_role !== 'ceo' : x.author_role === 'am')) lines.unshift('<span class="mr-tag" style="background:#f1ece5;color:#5e564c">'+t('数えない','Not counted')+'</span> <span class="mr-m">'+e(t('この項目は上位判断に上げたので、' + (lvNow === 'ceo' ? 'CEO' : 'GM・CEO') + ' の判断で決まります。','This item was sent up; the ' + (lvNow === 'ceo' ? 'CEO' : 'GM / CEO') + ' decides it.'))+'</span>');
     if (x.changed && MR_FINAL[x.decision]) lines.unshift('<span class="mr-tag" style="background:#fdf3e0;color:#8a5508">'+t('判断し直し','Decide again')+'</span> <span class="mr-m">'+t('提出版 ' + e(x.sub_no) + ' のときの判断です。そのあと内容が変わったか、質問に回答があったので、いまの内容への判断が要ります。','A decision on version ' + e(x.sub_no) + '. The content changed or a question was answered since; the current content needs a decision.')+'</span>');
     if (x.decision === 'escalate' && !dt.resolved && dt.reopened_no) lines.push('<span class="mr-m">'+e(t('提出版 ' + dt.reopened_no + ' で内容が変わった（または質問に回答があった）ので、もう一度判断を待っている','Waiting again: the content changed (or a question was answered) in version ' + dt.reopened_no))+'</span>');
     return '<div class="mr-mgr'+(x.changed && MR_FINAL[x.decision] ? ' mr-old' : '')+'"><div class="mr-cardh"><b style="font-size:12.5px">'+e(d ? t(d[0], d[1]) : t('ひとこと','A word'))+(x.decision === 'escalate' ? (x.escalate_to === 'ceo' ? '（CEO）' : '（GM）') : '')+'</b>'+(dt.severity ? mrSevTag(dt.severity) : '')+ver+'</div>'
