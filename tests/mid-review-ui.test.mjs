@@ -589,3 +589,74 @@ test('store page and input: every text is escaped; English', async () => {
   assert.match(he, /Submitted version 1/); assert.match(he, /Last month PL/); assert.match(he, /Original due 10\/15 → now 10\/31/);
   en.run('mrStartInput()'); en.renderPage(); assert.match(strip(en.html), /Trying the store manager’s screen/);
 });
+
+test('a store opens again after going back (list → store → list → store, prev/next, input → page)', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D1');
+  for (const step of ['mrBack()', "mrOpenStore('D1')", "mrOpenStore('D2')", "mrOpenStore('D1')", 'mrStartInput()', 'mrBack()']) {
+    c.run(step); c.renderPage(); await c.flush(); c.renderPage();
+    assert.doesNotMatch(c.html, /読み込み中…/, step);
+  }
+  assert.match(strip(c.html), /港町（デモ） AM 返信待ち/);
+});
+
+test('input: the AM’s follow-up question is shown and needs an answer; answering closes it and the store goes back to the AM', async () => {
+  const S = await server();
+  const c = app(S, { who: 'am2', role: 'am' }); await openStore(c, 'D4'); c.run('mrStartInput()'); c.renderPage();
+  const h = strip(c.html);
+  assert.match(h, /AM・GM からの質問（追加確認） .* 工事はいつまでか・テイクアウトの割合 工事はいつまでか分かる？ テイクアウトは売上の何 % まで増えた？ AM Lee（デモ）・.*回答希望 10\/19 回答（必須）/);
+  assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec), mrOpenFollowups(_mr.rec))')), ['answer:issue:i1']);
+  assert.match(c.html, /data-p="answers\.issue:i1"[^>]*maxlength="600"/);
+  c.run(`mrSetVal('answers.issue:i1','工事は 11 月末まで。テイクアウトは 18%。')`); await c.flush();
+  assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec), mrOpenFollowups(_mr.rec))')), []);
+  await c.run('mrSubmit()'); await c.flush(); c.renderPage();
+  const p = strip(c.html);
+  assert.match(p, /海岸（デモ） AM 返信待ち/);
+  assert.match(p, /追加確認 .* 店長の回答（提出版 2） ?工事は 11 月末まで。テイクアウトは 18%。/);
+  c.run('mrBack()'); c.renderPage(); await c.flush(); c.run("_mr.tab='queue'"); c.renderPage();
+  assert.doesNotMatch(strip(c.html), /追加確認 1 海岸/);
+});
+
+test('input: choosing "相談はない" asks, then drops the questions; text stops at the server’s length; nothing new → no new version', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D1'); c.run('mrStartInput()'); c.renderPage();
+  assert.match(c.html, /data-p="kpi\.sales\.comment"[^>]*maxlength="400"/); assert.match(c.html, /data-p="issues\.0\.what"[^>]*maxlength="160"/);
+  // Unchanged since version 1: the button waits for a change.
+  assert.match(strip(c.html), /提出版 1 から変わっていません/); assert.match(c.html, /<button class="btn btn-primary" disabled onclick="mrSubmit\(\)">出し直す（提出版 2）/);
+  let asked = 0; c.confirm = () => { asked++; return false; };
+  c.run(`mrIn({ getAttribute: k => k === 'data-p' ? 'consult' : null, type: 'radio', value: 'none' })`);
+  assert.equal(asked, 1); assert.equal(c.run('_mr.ed.body.consult'), 'yes'); assert.equal(c.run('_mr.ed.body.issues.length'), 1);
+  c.confirm = () => true;
+  c.run(`mrIn({ getAttribute: k => k === 'data-p' ? 'consult' : null, type: 'radio', value: 'none' })`);
+  assert.equal(c.run('_mr.ed.body.consult'), 'none'); assert.equal(c.run('_mr.ed.body.issues.length'), 0);
+  c.renderPage(); assert.doesNotMatch(strip(c.html), /提出版 1 から変わっていません/);
+});
+
+test('submit: when the answer is lost on the way, the page checks and says it was submitted (no second version)', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D6'); c.run('mrStartInput()');
+  c.run(`mrSetVal('focus.0.status','ok'); mrSetVal('focus.1.status','ok'); mrSetVal('consult','none')`); await c.flush();
+  const f0 = c.fetch; let busySeen = '';
+  c.fetch = async (u, i) => { const b = JSON.parse(i.body); if (b.action === 'submit') { busySeen = c.html; await f0(u, i); throw new TypeError('Failed to fetch'); } return f0(u, i); };
+  c.renderPage = () => { c.html = c.renderMidReview(); };
+  await c.run('mrSubmit()'); await c.flush(); c.renderPage();
+  assert.match(busySeen, /<fieldset class="mr-fs" disabled>/); assert.match(busySeen, /提出中…/);
+  assert.match(c.toasts.map(x => x[0]).join(' '), /提出できていました（提出版 1）/);
+  const n = await S.pg.query(`select count(*)::int n from mr_submissions x join mr_reviews r on r.id=x.review_id where r.store_id='D6'`);
+  assert.equal(n.rows[0].n, 1);
+  assert.match(strip(c.html), /川沿い（デモ） AM 返信待ち/);
+});
+
+test('another email sign-in on the device closes the opened store and the editor (nothing is saved as the new person)', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D6'); c.run('mrStartInput()'); c.run(`mrSetVal('consult','none')`);
+  c._botSession = { access_token: 'tok-am1', refresh_token: 'r' };
+  await c.show(); await c.flush(); c.renderPage();
+  assert.equal(c.run('_mr.view'), null); assert.equal(c.run('_mr.ed'), null);
+  assert.equal(c.calls.filter(b => b.action === 'save').length, 0);
+  assert.match(c.html, /全店 6/); assert.equal(c.run('_mr.who.role'), 'am');
+  // Unsaved input: logout and closing the tab ask first.
+  const d = app(S); await openStore(d, 'D6'); d.run('mrStartInput()'); d.run(`mrSetVal('consult','none')`);
+  assert.equal(d.run('mrUnsaved()'), true);
+  assert.match(html, /function doLogout\(\) \{\n  if \(typeof mrUnsaved === 'function' && mrUnsaved\(\) && !confirm\(/);
+});

@@ -157,8 +157,14 @@ const ID = v => (typeof v === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(v) ? v : 
 const KEY = /^[a-z]{1,12}$/;
 export const KPI_TAGS = ['weather', 'staff', 'supply', 'other', 'checking'];
 const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+// What the store manager writes is never cut quietly: too long is refused (the screen stops at the same lengths).
+export const LIMITS = { reporter: 80, cause: 600, plan: 600, comment: 400, title: 120, owner: 60, done_cond: 200, note: 300, reason: 400, next: 300,
+  next_owner: 60, help_what: 400, what: 160, inv_check: 300, inv_owner: 60, action: 400, ask: 400, answer: 600 };
+const TS = (v, n) => { const x = TX(v, 100000); if (x.length > n) { const e = new Error('bad_value'); e.code = 'bad_value'; throw e; } return x; };
+const TARGET = /^[a-z]+(:[A-Za-z0-9_-]{1,40})?$/;
 export function normBody(b) {
   b = obj(b);
+  const TX = TS;
   const out = { reporter: TX(b.reporter, 80), reporter_role: b.reporter_role === 'op_leader' ? 'op_leader' : 'manager',
     consult: b.consult === 'yes' || b.consult === 'none' ? b.consult : null, pl: {}, kpi: {}, focus: [], issues: [] };
   for (const [k, v] of Object.entries(obj(b.pl)).slice(0, 8)) if (KEY.test(k)) out.pl[k] = { cause: TX(obj(v).cause, 600), plan: TX(obj(v).plan, 600) };
@@ -173,13 +179,18 @@ export function normBody(b) {
       status: ['ok', 'late', 'help', 'done'].includes(f.status) ? f.status : 'none', note: TX(f.note, 300), reason: TX(f.reason, 400), next: TX(f.next, 300),
       next_owner: TX(f.next_owner, 60), next_due: DT(f.next_due), help_what: TX(f.help_what, 400), help_by: DT(f.help_by) });
   }
-  for (const x0 of (Array.isArray(b.issues) ? b.issues : []).slice(0, 10)) {
+  // Questions count only when "相談がある" is chosen (switching to "相談はない" drops them).
+  for (const x0 of (out.consult === 'yes' && Array.isArray(b.issues) ? b.issues : []).slice(0, 10)) {
     const x = obj(x0), id = ID(x.id); if (!id || seen.has(id)) continue; seen.add(id);
     const what = TX(x.what, 160);
     out.issues.push({ id, what, title: what.slice(0, 80), cause: TX(x.cause, 600), investigating: x.investigating === true, inv_check: TX(x.inv_check, 300),
       inv_owner: TX(x.inv_owner, 60), inv_date: DT(x.inv_date), action: TX(x.action, 400), ask: TX(x.ask, 400), ask_by: DT(x.ask_by),
       severity: ['none', 'watch', 'high'].includes(x.severity) ? x.severity : '', direct: x.direct === true, urgent: x.urgent === true });
   }
+  // Answers to the AM's follow-up questions, by what the question was about (e.g. issue:i1).
+  const answers = {};
+  for (const [k, v] of Object.entries(obj(b.answers)).slice(0, 20)) if (TARGET.test(k) && typeof v === 'string' && v.trim()) answers[k] = TX(v, LIMITS.answer);
+  if (Object.keys(answers).length) out.answers = answers;
   return out;
 }
 // The numbers the reporter saw when submitting (period, update time, PL month and state, each KPI and its judgement).
@@ -233,7 +244,7 @@ export function createHandler(deps) {
       return db.rpc('mr_demo_reset', { actor: a, ...demoData(ym) });
     },
   };
-  const ERR = { forbidden: 403, disabled: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400, not_available: 409, locked: 409, incomplete: 422 };
+  const ERR = { forbidden: 403, disabled: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');

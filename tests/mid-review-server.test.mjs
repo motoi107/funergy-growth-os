@@ -390,6 +390,13 @@ test('the check before installing: OK on a database without the review, NG once 
 
 // ---------------------------------------------------------------- 段階 2-2: one store's page, the draft and the submission
 const demoOn = async E => { await on(E); assert.equal((await E.api('gm', { action: 'demo_reset' })).status, 200); };
+// The numbers a screen would send for a demo store (the server checks them against its own demo numbers).
+const demoSnap = async (E, store, judge = {}) => {
+  const st = (await E.api('gm', { action: 'get', env: 'demo', ym: '2026-10', store_id: store })).body.store.demo;
+  const kpi = Object.fromEntries(Object.entries(st.kpi).map(([k, v]) => [k, { act: v.act, tgt: v.tgt, judge: judge[k] || 'ok' }]));
+  return { period: { from: '2026-10-01', to: '2026-10-17' }, updated: st.updated, kpi,
+    pl: { ym: '2026-09', state: st.pl.state, at: st.pl.at || '', rows: st.pl.rows, checked: st.pl.checked } };
+};
 const okBody = (extra = {}) => ({ reporter: '店長 X（デモ）', consult: 'none', pl: {}, kpi: {}, focus: [], issues: [], ...extra });
 
 test('get: the store page for those who see the store; drafts of replies only for their author; nothing for others', async () => {
@@ -432,7 +439,7 @@ test('save: creates the draft once, versions every save, refuses an older versio
   assert.equal((await E.q(`select count(*)::int n from mr_reviews where store_id='D7'`))[0].n, 1);
   assert.equal((await E.q(`select count(*)::int n from mr_events e join mr_reviews r on r.id=e.review_id where r.store_id='D7' and e.kind='create'`))[0].n, 1);
   // Only these fields are kept; text is kept as text.
-  await save('gm', 2, { ...okBody(), evil: 1, issues: [{ id: 'i1', what: '<b>x</b>', severity: 'high', x: 2 }], kpi: { fc: { comment: 'c', tags: ['weather', 'bogus'] }, 'BAD KEY': {} } });
+  await save('gm', 2, { ...okBody({ consult: 'yes' }), evil: 1, issues: [{ id: 'i1', what: '<b>x</b>', severity: 'high', x: 2 }], kpi: { fc: { comment: 'c', tags: ['weather', 'bogus'] }, 'BAD KEY': {} } });
   const b = (await E.q(`select body from mr_reviews where store_id='D7'`))[0].body;
   assert.equal(b.evil, undefined); assert.equal(b.issues[0].what, '<b>x</b>'); assert.equal(b.issues[0].x, undefined);
   assert.deepEqual(b.kpi, { fc: { comment: 'c', tags: ['weather'] } });
@@ -464,9 +471,7 @@ test('save: what was decided at the start of the month stays (title, owner, cond
 test('submit: the saved copy becomes a submitted version with the numbers seen; incomplete is refused; double submit makes one version', async () => {
   const E = await setup(); await demoOn(E);
   const v0 = (await E.q(`select version from mr_reviews where store_id='D6'`))[0].version;
-  const snap = { period: { from: '2026-10-01', to: '2026-10-17' }, updated: '2026-10-18T15:40:00Z',
-    kpi: { sales: { act: 66500, tgt: 65600, judge: 'ok' }, fc: { act: 31.5, tgt: 30.5, judge: 'warn' }, labor: { act: 30, tgt: 26, judge: 'miss' } },
-    pl: { ym: '2026-09', state: 'none', rows: {}, checked: [] } };
+  const snap = await demoSnap(E, 'D6', { fc: 'warn', labor: 'miss' });   // as if the meeting tab's thresholds were stricter
   const sub = (who, v, sn = snap) => E.api(who, { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D6', expect_version: v, snapshot: sn });
   // Draft as made by the demo: consult not chosen, focus without status → incomplete.
   const i1 = await sub('am1', v0); assert.equal(i1.status, 422); assert.equal(i1.body.error, 'incomplete');
@@ -480,7 +485,7 @@ test('submit: the saved copy becomes a submitted version with the numbers seen; 
   const r = (await E.q(`select status, submitted_no, next_actor, next_due::text d from mr_reviews where store_id='D6'`))[0];
   assert.deepEqual(r, { status: 'submitted', submitted_no: 1, next_actor: 'GM（AM 未設定）', d: '2026-10-17' });
   const s = await E.q(`select x.no, x.created_by, x.snapshot, x.body->'kpi'->'labor'->>'comment' c from mr_submissions x join mr_reviews r on r.id=x.review_id where r.store_id='D6'`);
-  assert.equal(s.length, 1); assert.equal(s[0].c, '応援が多かった'); assert.equal(s[0].snapshot.kpi.labor.act, 30);
+  assert.equal(s.length, 1); assert.equal(s[0].c, '応援が多かった'); assert.equal(s[0].snapshot.kpi.labor.act, 26.2);
   assert.ok(['Yuki', 'GM Test'].includes(s[0].created_by));                            // the real person who pressed it, not the demo manager
   const ev = await E.q(`select kind, data from mr_events e join mr_reviews r on r.id=e.review_id where r.store_id='D6' and kind='submit'`);
   assert.equal(ev.length, 1); assert.equal(ev[0].data.from, 'draft');
@@ -502,9 +507,18 @@ test('submit after a follow-up question goes back to the AM with the decision de
   const r = (await E.q(`select version from mr_reviews where store_id='D4'`))[0];
   const body = (await E.api('gm', { action: 'get', env: 'demo', ym: '2026-10', store_id: 'D4' })).body.review.body;
   const v = (await E.api('am1', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: r.version, body })).body.version;
-  const snap = { period: { from: '2026-10-01', to: '2026-10-17' }, kpi: { guests: { act: 2610, tgt: 2870, judge: 'miss' } }, pl: { ym: '2026-09', state: 'final', rows: {}, checked: [] } };
-  const s = await E.api('am1', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v, snapshot: snap });
+  const snap = await demoSnap(E, 'D4', { guests: 'miss' });
+  // The AM's question needs an answer first.
+  const i = await E.api('am1', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v, snapshot: snap });
+  assert.equal(i.status, 422);
+  const v2 = (await E.api('am1', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v, body: { ...body, answers: { 'issue:i1': '工事は 11 月末まで。テイクアウトは売上の 18%。' } } })).body.version;
+  const s = await E.api('am1', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D4', expect_version: v2, snapshot: snap });
   assert.equal(s.status, 200);
+  // Answered: the question is closed and no longer waits in the list.
+  const rp = await E.q(`select data from mr_replies p join mr_reviews r on r.id=p.review_id where r.store_id='D4' and p.decision='followup'`);
+  assert.equal(rp[0].data.resolved, true); assert.equal(rp[0].data.answered_no, 2);
+  const l = (await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D4');
+  assert.deepEqual(l.waits, []); assert.equal(l.status, 'submitted');
   const x = (await E.q(`select status, next_actor, next_due::text d, submitted_no from mr_reviews where store_id='D4'`))[0];
   assert.deepEqual(x, { status: 'submitted', next_actor: 'Yuki', d: '2026-10-19', submitted_no: 2 });
 });
@@ -527,4 +541,73 @@ test('what is missing: KPI 未達 needs a comment; PL 注意・未達 needs caus
   const late = { id: 'f1', status: 'late', reason: 'r', next: 'n', next_owner: 'o', next_due: '2026-10-20' };
   assert.deepEqual(await miss({ consult: 'none', focus: [late, { ...late, id: 'f2', next_due: '' }, { id: 'f3', status: 'none' }, { id: 'f4', status: 'help', help_what: 'h' }, { id: 'f5', status: 'done' }] }, {}),
     ['focus:f2', 'focus:f3', 'focus:f4']);
+});
+
+test('submit refuses: nothing new since the last version, numbers outside the month, demo numbers that are not the demo’s, a locked review, live stores', async () => {
+  const E = await setup(); await demoOn(E);
+  const v1 = (await E.q(`select version from mr_reviews where store_id='D1'`))[0].version;
+  const snap = await demoSnap(E, 'D1', { fc: 'miss' });
+  const sub = (sn, v = v1, st = 'D1', who = 'gm') => E.api(who, { action: 'submit', env: 'demo', ym: '2026-10', store_id: st, expect_version: v, snapshot: sn });
+  const u = await sub(snap); assert.equal(u.status, 409); assert.equal(u.body.error, 'unchanged');                 // pressing again makes no version 2
+  // Change something, then the numbers must still be the right ones.
+  const body = (await E.api('gm', { action: 'get', env: 'demo', ym: '2026-10', store_id: 'D1' })).body.review.body;
+  const v2 = (await E.api('gm', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D1', expect_version: v1, body: { ...body, reporter: '店長 田中（デモ）2' } })).body.version;
+  for (const [label, sn] of [
+    ['empty', {}],
+    ['period of another month', { ...snap, period: { from: '2026-09-01', to: '2026-09-30' } }],
+    ['PL of this month', { ...snap, pl: { ...snap.pl, ym: '2026-10' } }],
+    ['forged number', { ...snap, kpi: { ...snap.kpi, fc: { ...snap.kpi.fc, act: 29 } } }],
+    ['KPI left out', { ...snap, kpi: Object.fromEntries(Object.entries(snap.kpi).filter(([k]) => k !== 'fc')) }],
+    ['forged checked', { ...snap, pl: { ...snap.pl, checked: ['sales', 'labor', 'fc'] } }],
+    ['forged PL state', { ...snap, pl: { ...snap.pl, state: 'final', rows: {} } }]]) {
+    const r = await sub(sn, v2); assert.equal(r.status, 400, label);
+  }
+  assert.equal((await sub(snap, v2)).status, 200);
+  // Locked: waiting for a decision.
+  const v3 = (await E.q(`select version from mr_reviews where store_id='D3'`))[0].version;
+  const l = await sub(await demoSnap(E, 'D3'), v3, 'D3'); assert.equal(l.status, 409); assert.equal(l.body.error, 'locked');
+  // Live: not in this edition.
+  await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1 }] });
+  const lv = await E.api('am1', { action: 'submit', env: 'live', ym: '2026-10', store_id: 'F01', expect_version: 1, snapshot: snap });
+  assert.equal(lv.status, 409); assert.equal(lv.body.error, 'not_available');
+});
+
+test('save: too long is refused (never cut quietly); "相談はない" drops the questions; a new draft needs no version', async () => {
+  const E = await setup(); await demoOn(E);
+  await E.q(`insert into mr_stores(env, store_id, name, sort) values('demo','D8','別の店（デモ）',8)`);
+  const save = (v, body) => E.api('gm', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D8', expect_version: v, body });
+  assert.equal((await save(3, okBody())).status, 409);                                       // a "new" draft with a version
+  const long = await save(null, { ...okBody(), kpi: { fc: { comment: 'あ'.repeat(401) } } });
+  assert.equal(long.status, 400); assert.equal((await E.q(`select count(*)::int n from mr_reviews where store_id='D8'`))[0].n, 0);
+  assert.equal((await save(null, { ...okBody(), kpi: { fc: { comment: 'あ'.repeat(400) } } })).status, 200);
+  await save(1, { ...okBody({ consult: 'none' }), issues: [{ id: 'i1', what: 'hidden', cause: 'c', action: 'a', severity: 'high', urgent: true }] });
+  const b = (await E.q(`select body from mr_reviews where store_id='D8'`))[0].body;
+  assert.deepEqual(b.issues, []); assert.equal(b.consult, 'none');
+});
+
+test('managers see only what was submitted: a draft gives the list nothing, a live draft is not sent to the page', async () => {
+  const E = await setup(); await demoOn(E);
+  const r = (await E.q(`select version, body from mr_reviews where store_id='D6'`))[0];
+  await E.api('am1', { action: 'save', env: 'demo', ym: '2026-10', store_id: 'D6', expect_version: r.version,
+    body: { ...okBody({ consult: 'yes' }), focus: r.body.focus.map(f => ({ ...f, status: 'late', reason: 'x' })), issues: [{ id: 'i1', what: 'draft only', severity: 'high', urgent: true, direct: true, cause: 'c', action: 'a' }] } });
+  const l = (await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D6');
+  assert.deepEqual([l.issues, l.urgent, l.direct, l.severity, l.consult_state, JSON.stringify(l.focus)], [0, false, false, null, null, '{}']);
+  // Live (later, after store publication): the page gets the submitted version, not the working copy.
+  await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1 }] });
+  await E.q(`insert into mr_reviews(env, store_id, ym, status, body) values('live','F01','2026-10','draft','{"reporter":"店長 A","consult":"yes","issues":[{"id":"i1","what":"secret draft"}]}')`);
+  const g = (await E.api('am1', { action: 'get', env: 'live', ym: '2026-10', store_id: 'F01' })).body;
+  assert.deepEqual(g.review.body, { reporter: '店長 A' });
+});
+
+test('store scope also holds for writing (checked with store publication switched on by hand, as a later edition would)', async () => {
+  const E = await setup(); await demoOn(E);
+  await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1 }, { store_id: 'F05', name: 'Marujuu', am_user: U.am2 }] });
+  await E.q(`update mr_settings set value = jsonb_set(value, '{store_publish}', 'true') where key='flags'`);
+  const w = (who, st) => E.api(who, { action: 'save', env: 'live', ym: '2026-10', store_id: st, expect_version: null, body: okBody() });
+  assert.equal((await w('am2', 'F01')).status, 404);
+  assert.equal((await w('am1', 'F05')).status, 404);
+  assert.equal((await w('am1', 'F01')).status, 200);
+  const sn = { period: { from: '2026-10-01', to: '2026-10-17' }, kpi: {}, pl: { ym: '2026-09', state: 'none', rows: {}, checked: [] } };
+  assert.equal((await E.api('am2', { action: 'submit', env: 'live', ym: '2026-10', store_id: 'F01', expect_version: 1, snapshot: sn })).status, 404);
+  assert.equal((await E.api('am1', { action: 'submit', env: 'live', ym: '2026-10', store_id: 'F01', expect_version: 1, snapshot: sn })).status, 200);
 });

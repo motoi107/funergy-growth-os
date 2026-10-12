@@ -190,7 +190,9 @@ $$;
 -- What the managers read: the latest submitted version (the store manager's working copy may already be ahead of it).
 create function public.mr_view_body(r public.mr_reviews) returns jsonb
 language sql stable security invoker set search_path=public,pg_temp as $$
- select coalesce((select s.body from public.mr_submissions s where s.review_id = r.id order by s.no desc limit 1), r.body, '{}'::jsonb);
+ select coalesce((select s.body from public.mr_submissions s where s.review_id = r.id order by s.no desc limit 1),
+  -- Not submitted yet: only who reports (and the demo's own done reason). The draft itself is not shown.
+  jsonb_strip_nulls(jsonb_build_object('reporter', r.body->'reporter', 'reporter_role', r.body->'reporter_role', 'done_reason', r.body->'done_reason')));
 $$;
 
 -- A person's name for records (members added from manager_auth have no name: take it from the employee master).
@@ -367,7 +369,7 @@ declare out jsonb := '[]'; x jsonb; k text; v jsonb;
 begin
  if coalesce(b->>'consult','') not in ('yes','none') then out := out || '["consult"]'; end if;
  if b->>'consult' = 'yes' and jsonb_array_length(public.mr_arr(b->'issues')) = 0 then out := out || '["issues"]'; end if;
- for x in select * from jsonb_array_elements(public.mr_arr(b->'issues')) loop
+ for x in select * from jsonb_array_elements(case when b->>'consult' = 'yes' then public.mr_arr(b->'issues') else '[]'::jsonb end) loop
   if coalesce(btrim(x->>'what'),'') = '' or coalesce(btrim(x->>'action'),'') = '' or coalesce(x->>'severity','') not in ('none','watch','high')
      or (case when (x->>'investigating')::boolean is true
           then coalesce(btrim(x->>'inv_check'),'') = '' or coalesce(btrim(x->>'inv_owner'),'') = '' or coalesce(x->>'inv_date','') = ''
@@ -408,7 +410,9 @@ begin
   'store', jsonb_build_object('store_id', s.store_id, 'name', s.name, 'am_name', coalesce(public.mr_actor_name(am), s.am_name),
     'am_emp_id', am.emp_id, 'am_unset', (s.am_user is null and s.am_name is null), 'demo', case when s.env = 'demo' then s.demo else null end),
   'review', case when r.id is null then null else jsonb_build_object('id', r.id, 'status', r.status, 'decision_by', r.decision_by,
-    'body', r.body, 'deadlines', r.deadlines, 'consult', r.consult, 'next_actor', r.next_actor, 'next_due', r.next_due, 'version', r.version,
+    -- The working copy goes only where it can be written from this screen (the demo). Live: what was submitted.
+    'body', case when r.env = 'demo' then r.body else public.mr_view_body(r) end,
+    'deadlines', r.deadlines, 'consult', r.consult, 'next_actor', r.next_actor, 'next_due', r.next_due, 'version', r.version,
     'submitted_no', r.submitted_no, 'submitted_at', r.submitted_at, 'done_at', r.done_at, 'created_at', r.created_at,
     'updated_at', r.updated_at, 'updated_by', r.updated_by,
     'unsubmitted', r.submitted_no > 0 and r.body is distinct from public.mr_view_body(r)) end,
@@ -498,11 +502,34 @@ begin
  if r.id is null then raise exception 'not_found'; end if;
  if v_exp <> r.version then raise exception 'conflict'; end if;
  if r.status not in ('draft','submitted','followup') then raise exception 'locked'; end if;
+ -- Nothing changed since the last submitted version: no new version (pressed twice, or a lost answer retried).
+ if r.status = 'submitted' and r.submitted_no > 0 and r.body = public.mr_view_body(r) then raise exception 'unchanged'; end if;
+ -- The numbers seen: this month's KPIs, last month's PL.
+ if coalesce(v_snap->'period'->>'from','') <> v_ym || '-01' or (coalesce(v_snap->'period'->>'to','') <> '' and left(v_snap->'period'->>'to', 7) <> v_ym)
+    or jsonb_typeof(v_snap->'kpi') is distinct from 'object' or jsonb_typeof(v_snap->'pl') is distinct from 'object'
+    or coalesce(v_snap->'pl'->>'ym','') <> to_char((v_ym || '-01')::date - interval '1 month', 'YYYY-MM') then raise exception 'bad_value'; end if;
+ -- Demo: the numbers are the server's own fictional ones (the screen's judgements use the meeting tab's thresholds).
+ if v_env = 'demo' then
+  if exists(select 1 from jsonb_each(coalesce(s.demo->'kpi','{}')) d where not (v_snap->'kpi' ? d.key)
+      or (v_snap->'kpi'->d.key->'act') is distinct from coalesce(d.value->'act','null'::jsonb) or (v_snap->'kpi'->d.key->'tgt') is distinct from coalesce(d.value->'tgt','null'::jsonb))
+   or exists(select 1 from jsonb_each(coalesce(s.demo->'pl'->'rows','{}')) d where not (v_snap->'pl'->'rows' ? d.key)
+      or (v_snap->'pl'->'rows'->d.key->'act') is distinct from coalesce(d.value->'act','null'::jsonb) or (v_snap->'pl'->'rows'->d.key->'tgt') is distinct from coalesce(d.value->'tgt','null'::jsonb))
+   or public.mr_arr(v_snap->'pl'->'checked') is distinct from public.mr_arr(s.demo->'pl'->'checked')
+   or coalesce(v_snap->'pl'->>'state','') <> coalesce(s.demo->'pl'->>'state','none')
+  then raise exception 'bad_value'; end if;
+ end if;
  v_miss := public.mr_missing(r.body, v_snap);
  if jsonb_array_length(v_miss) > 0 then raise exception 'incomplete'; end if;
+ -- Answering a follow-up question: every open question needs an answer; answered questions are closed.
+ if r.status = 'followup' and exists(select 1 from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'followup'
+    and coalesce((p.data->>'resolved')::boolean, false) is not true and coalesce(btrim(r.body->'answers'->>p.target), '') = '') then raise exception 'incomplete'; end if;
  select * into am from public.mr_members where user_id = s.am_user and enabled;
  v_prev := r.status;
  insert into public.mr_submissions(review_id, no, body, snapshot, created_by) values(r.id, r.submitted_no + 1, r.body, v_snap, v_name);
+ if r.status = 'followup' then
+  update public.mr_replies set data = data || jsonb_build_object('resolved', true, 'answered_no', r.submitted_no + 1), updated_at = now()
+   where review_id = r.id and state = 'sent' and decision = 'followup' and coalesce((data->>'resolved')::boolean, false) is not true;
+ end if;
  update public.mr_reviews set status = 'submitted', submitted_no = submitted_no + 1, submitted_at = now(), version = version + 1,
    next_actor = coalesce(public.mr_actor_name(am), s.am_name, 'GM（AM 未設定）'),
    next_due = case when v_prev = 'followup' then nullif(deadlines->>'decide','')::date else nullif(deadlines->>'reply','')::date end,
