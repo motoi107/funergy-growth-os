@@ -1,5 +1,12 @@
 # Claude / Codex 共通記録
 
+## 2026-10-12 中間レビュー v2 段階 4-1：サーバー（Claude・ブランチ `claude/mid-review-v2`・`9a39c59`・本番未反映・レビューはまだ）
+
+- 依頼：`docs/MID_REVIEW_V2_JA.md`（UI案44 B案・Moto さんの回答 10/12）のサーバー側。画面（index.html・sw.js）は変えていない（段階 4-2）。
+- 作ったもの：migration `20261015090000_mid_review_v2.sql`（v1066・v1068 の上・行があっても・2 回流しても同じ。社員の表に title が無い、同じ社員の有効な行が 2 つ、のときは何も変えずに止まる）、`mid-review` の handler v2（メールか PIN の印で入り、via は関数が決める。`index.ts` の `verifyPin` はまだ null＝PIN は断る）、db の precheck・postcheck・rollback・add-member。権限は 1 つの関数 `mr_can`、提出に要るものは `mr_missing_v2`（同じ規則を handler の `missingV2` に）。前の版の返信・完了の操作は 410。API と決めたことは `docs/MID_REVIEW_V2_JA.md` の「サーバーの実装（段階 4-1）」。
+- 試験（合成データ）：`tests/mid-review-server.test.mjs` 37/37。わざと壊した 95 通り（SQL 80・handler 15）すべてで落ちる（1 回目 80 → 足りなかった試験を足した）。`tests/mid-review-ui.test.mjs`（16 通る・36 落ちる・3 止まる）と `tests/review/pr44-mid-review-repro.mjs`（4 止まる）は前の API のものなので落ちる（段階 4-2 で書き直す）。static release pass/1068。
+- 次：段階 4-2（画面）・auth-pin のソースで `verifyPin`・独立レビューと Codex のレビュー・入れる（§10 の順）。
+
 ## 2026-10-12 中間レビュー：追加修正プロンプトと UI案44（Claude・案だけ・コードの変更なし）
 
 - 依頼：Moto さん 10/12「Funergy+ 中間レビュー｜追加修正プロンプト」（前の指示を更新：5 段階の流れ・会議タブと同じ 6 KPI・前月は 6 つすべて担当者評価 1〜5＋コメント必須・当月は未達だけ評価と対策が必須・当月の原価率は速報の参考だけ・重点は Qコミットと同じ ID で同期・Head Chef／AM／GM／CEO が順番なしで項目ごとに複数返信・期限はすべて任意・GM／CEO だけが変える「担当・閲覧設定」・Head Chef 以上が閲覧・店舗公開と通知は OFF のまま）。指示どおり、実装の前に ①〜⑤ と UI 比較を出した。
