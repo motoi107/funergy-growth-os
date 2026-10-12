@@ -1,11 +1,15 @@
 -- Mid-review (private) fixes after the Codex review of PR #44 (v1068).
--- Run after 20261012090000_mid_review.sql. Only replaces two functions; tables, rows and settings are not touched.
+-- Run after 20261012090000_mid_review.sql. Only replaces three functions; tables, rows and settings are not touched.
 -- 1) mr_auth: a CEO / GM uses the narrower of the two roles (the copy in mr_members and manager_auth).
 --    A CEO changed to GM in manager_auth is a GM here at once (no CEO-only decisions), and a GM changed
 --    to CEO there stays a GM here until a GM / CEO adds them again as CEO.
 -- 2) mr_reply_send: sends only the drafts the screen showed, at the versions it showed. Another tab of the
 --    same person that changed, added, deleted or already sent a draft makes it refuse with drafts_changed
---    (load and look again). A sent reply records the role and name at the time of sending.
+--    (load and look again). A sent reply records the role and name at the time of sending. It also holds this
+--    person's draft rows for the transaction, so none can be deleted between the check and the sending.
+-- 3) mr_reply_delete: locks the review row first, in the same order as saving and sending. Without it a delete
+--    from another tab could commit after mr_reply_send had checked the draft set and before it read the drafts
+--    again: only part of the set the person saw was sent, and nothing said drafts_changed.
 
 -- The signed-in person, if they may use the feature with one of these roles. p_enabled: also require the private check to be on.
 -- A CEO / GM must also still be CEO / GM in manager_auth (the narrower role of the two is used). Taking someone off there takes them off here.
@@ -39,6 +43,10 @@ begin
  if r.status not in ('submitted','followup','decision','consult') then raise exception 'locked'; end if;
  -- Sent while looking at the latest submitted version (a newer one came in: load it and look again).
  if (p->>'expect_no') is null or (p->>'expect_no') !~ '^[0-9]{1,6}$' or (p->>'expect_no')::integer <> r.submitted_no then raise exception 'new_version'; end if;
+ -- Hold this person's drafts for the rest of the transaction, in the same order as mr_reply_save and
+ -- mr_reply_delete take their locks (the review row first, then the reply rows). Another tab cannot then
+ -- delete or change one between the check below and the two loops that read the drafts again.
+ perform 1 from public.mr_replies y where y.review_id = r.id and y.author = m.user_id and y.state = 'draft' for update;
  -- Only the drafts the screen showed, at the versions it showed (another tab of the same person may have changed or added one).
  if jsonb_typeof(p->'drafts') is distinct from 'array'
     or exists(select 1 from public.mr_replies y where y.review_id = r.id and y.author = m.user_id and y.state = 'draft'
@@ -82,8 +90,21 @@ begin
  return jsonb_build_object('sent', n, 'status', r.status, 'version', r.version);
 end $$;
 
+-- Delete one of my own drafts. Takes the review lock first, so a send that is checking this person's drafts
+-- finishes before the delete is applied (it then deletes nothing, because the draft has become 'sent').
+create or replace function public.mr_reply_delete(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, array['ceo','gm','am'], true);
+ r public.mr_reviews := public.mr_reply_review(m, p); n integer;
+begin
+ select * into r from public.mr_reviews where id = r.id for update;
+ delete from public.mr_replies where review_id = r.id and author = m.user_id and state = 'draft' and target = p->>'target';
+ get diagnostics n = row_count;
+ return jsonb_build_object('deleted', n);
+end $$;
+
 do $$ declare f text; begin
- foreach f in array array['mr_auth(uuid,text[],boolean)','mr_reply_send(jsonb)'] loop
+ foreach f in array array['mr_auth(uuid,text[],boolean)','mr_reply_send(jsonb)','mr_reply_delete(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

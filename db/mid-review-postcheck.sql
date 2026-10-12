@@ -44,9 +44,11 @@ union all select 'gm here but ceo in manager_auth', (select count(*)::text from 
    and exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role = 'ceo') and not exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role = 'gm')) = 0 then 'OK'
    else '注意：この人はここでは GM のまま（役職は自動では広げない。CEO にするかは Claude に相談）' end
 union all select 'fixes after the review (v1068)', (select (position('drafts_changed' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_reply_send')) > 0
-   and position('bool_or' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_auth')) > 0)::text),
+   and position('bool_or' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_auth')) > 0
+   and position('for update' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_reply_delete')) > 0)::text),
   case when position('drafts_changed' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_reply_send')) > 0
-   and position('bool_or' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_auth')) > 0 then 'OK'
+   and position('bool_or' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_auth')) > 0
+   and position('for update' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_reply_delete')) > 0 then 'OK'
    else 'NG：20261013090000_mid_review_fixes.sql がまだ（関数 v1068 はこれが要る）' end
 union all select 'members without employee id', (select count(*)::text from public.mr_members where enabled and coalesce(emp_id, '') = ''),
   case when (select count(*) from public.mr_members where enabled and coalesce(emp_id, '') = '') = 0 then 'OK' else '注意：この人は「この端末で覚える」が使えない（毎回メール認証）。AM は入れない' end
