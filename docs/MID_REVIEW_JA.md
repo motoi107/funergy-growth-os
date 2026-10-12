@@ -148,7 +148,7 @@ PR #44 はマージ済みなので、新しい PR で直す。画面の見た目
 1. Edge Function `mid-review` を差し替え（`handler.mjs`＋`index.ts`）。前の SQL は渡した下書きの一覧を使わないので、先に入れても今までどおり動く。
 2. `supabase/migrations/20261013090000_mid_review_fixes.sql` を SQL Editor で流す（関数 3 つ＝`mr_auth`・`mr_reply_send`・`mr_reply_delete` を置き換えるだけ。表・行・設定は変えない。2 回流しても同じ）。まだ `20261012090000` を入れていなければ、先にそれを流す。
 3. `db/mid-review-postcheck.sql`（読むだけ）：「fixes after the review (v1068)」が OK。「ceo here but gm in manager_auth」「gm here but ceo in manager_auth」が 注意 の人は、ここでは GM として扱う。
-4. PR をマージ（アプリ v1069。成長カルテの PR #46＝1068 を先にマージする）。
+4. PR をマージ（アプリ v1069。成長カルテの PR #46＝1068 はマージ済み・main `637bbba`）。
 
 - 逆の順（SQL が先）だと、関数を差し替えるまで返信の送信が断られる（下書きは残る）。2 のあと、v1066 の画面（更新していない端末）からは返信を送れない（「うまくいきませんでした（drafts_changed）」）。更新すると送れる。
 - 試験（合成データ）：Codex の再現 `tests/review/pr44-mid-review-repro.mjs` は main（v1066）で 0/4・v1068 で 4/4（Claude が 2 か所を書き換えた。R3 の前提の 1 行は直したことで成り立たなくなるため。R4 は下書きの一覧を渡さないと別の理由で断られて試験にならないため。Codex に確かめてほしい）。足した試験：server 3（役職の狭いほう・送ったときの役職・送る下書きの確かめ・置き換えの SQL を前の SQL の上に流す）・ui 3（提出の答えのあいだに別の店・答えが届かないとき・別のタブ・同じ人のキーの取り替え）。server 55・ui 55・再現 4。わざと壊した 18 通りのうち 17 で落ちる（残り 1 つは、もう片方の確かめが同じことを見ている同じ意味のもの）。static release pass/1068。
