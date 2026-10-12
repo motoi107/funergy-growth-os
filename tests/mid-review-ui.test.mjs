@@ -1022,6 +1022,7 @@ test('typing on after a new version came in: nothing typed is lost; unchanged it
   await a.flush(); a.renderPage(); await a.flush(); a.renderPage();
   assert.equal(a.run('_mr.rec.review.submitted_no'), 2); assert.equal(a.run('mrRpState().drafts.kpi.data.next'), '週の売上を予算比で見る（打ち直し）');
   assert.equal(a.run('mrRpState().drafts["issue:i1"].data.next'), '見積りを 2 社（打ち直し）');
+  await a.run('mrRpRebase(true)'); await a.flush();                                               // loading the same version again: no second notice
   assert.equal(a.toasts.filter(x => /店長が新しい提出版を出しました/.test(x[0])).length, 1);
   assert.ok(a.toasts.some(x => /店長が新しい提出版を出しました（提出版 2）。内容が変わった項目の下書き 1 件に印をつけました。/.test(x[0])));
   let drafts = (await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.state === 'draft');

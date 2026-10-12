@@ -1130,6 +1130,12 @@ test('"a newer draft" in a second round of questions: only answers to open quest
   await saveR(E, 'am1', 'D1', 'kpi', 'followup', { question: '週の売上は？', due: '2026-10-20' }); await send(E, 'am1', 'D1');
   const q1 = (await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.decision === 'followup');
   await resubmit(E, 'D1', 'gm', b => ({ ...b, answers: { [q1.id]: '予算どおり' } }));
+  // Saving again only drops the answered question's answer: submitting that is "the same as the last version".
+  let g0 = (await R(E, 'gm', 'D1', { action: 'get' })).body;
+  const sv0 = await R(E, 'gm', 'D1', { action: 'save', expect_version: g0.review.version, body: g0.review.body });
+  assert.deepEqual((await E.q(`select body->'answers' a from mr_reviews where store_id='D1'`))[0].a, {});
+  const u = await R(E, 'gm', 'D1', { action: 'submit', expect_version: sv0.body.version, snapshot: g0.submissions[g0.submissions.length - 1].snapshot });
+  assert.deepEqual([u.status, u.body.error], [409, 'unchanged']);
   await saveR(E, 'gm', 'D1', 'pl', 'followup', { question: '原価の内訳は？', due: '2026-10-21' }); await send(E, 'gm', 'D1');
   let g = (await R(E, 'gm', 'D1', { action: 'get' })).body;
   assert.equal(g.review.status, 'followup'); assert.equal(g.review.unsubmitted, false);
