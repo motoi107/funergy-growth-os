@@ -16188,6 +16188,11 @@ function mrCanSee(){ return !(typeof curStoreLogin!=='undefined' && curStoreLogi
 var _mrGen = 0;
 /* 中間レビューのログインは _botSession だけ（管理者ページの _authSession は使わない） */
 function mrSession(){ return (typeof _botSession !== 'undefined' && _botSession) || null; }
+/* そのログインの人（アクセスキーの中の利用者 ID。画面の入力を残すかどうかだけに使う。権限はサーバーが毎回確かめる） */
+function mrSessUser(s){
+  try { var p = String((s && s.access_token) || '').split('.')[1]; if (!p) return null; p = p.replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) p += '=';
+    var j = JSON.parse(atob(p)); return (j && typeof j.sub === 'string' && j.sub) || null; } catch(e) { return null; }
+}
 function mrSigned(){ var s = mrSession(); return !!(s && s.access_token); }
 function mrReset(){ _mrGen++; if (_mr && _mr.ed && _mr.ed.timer) clearTimeout(_mr.ed.timer); _mr = { who:null, env:'demo', tab:'all', ym:null, f:{ store:'', am:'', status:'' }, mine:false, list:null, load:{}, err:'', restoreTried:null, setOpen:false, members:null, kpi:{}, busy:'', view:null, rec:null, recKey:'', ed:null, showSnap:false, kOpen:null }; }
 function mrRerender(){ if (typeof curPage!=='undefined' && curPage==='mid_review') renderPage('mid_review'); }
@@ -16206,6 +16211,7 @@ var MR_ERR = {
   nothing:['送る返信がありません（下書きがない）','Nothing to send (no drafts)'],
   conflict:['ほかの人が先に保存しました。最新を読み込んでください','Someone else saved first. Load the latest'],
   too_many:['店長への質問は、答えを待っているものと合わせて 20 件までです','Up to 20 questions can wait for the store manager at once'],
+  drafts_changed:['別の画面（タブ）で下書きが変わりました。読み込み直して、確かめてから送ってください','Your drafts changed in another tab. Load them again and check before sending'],
   new_version:['店長が新しい提出版を出しました。読み込み直して、確かめてから返信してください（下書きは残っています）','The store manager sent a new version. Load it and check before replying (your drafts are kept)']
 };
 function mrErrText(code, status){
@@ -16222,7 +16228,7 @@ async function mrAPI(payload, retried){
   catch(e) { var e1 = new Error(t('中間レビューのサーバー（mid-review）につながりません。まだ配備されていないか、通信できません。','Cannot reach the mid-month review server (mid-review). It is not deployed yet, or the network is down.')); e1.code = 'network'; throw e1; }
   if (r.status === 401 && !retried && s.refresh_token) {
     var ns = await invInSessionRefresh(s);
-    if (ns && mrSession() === ns) return mrAPI(payload, true);
+    if (ns && mrSession() === ns) { if (_mr && _mr.sess === s) _mr.sess = ns; return mrAPI(payload, true); }   /* 同じログインの取り替え */
   }
   var j = null; try { j = await r.json(); } catch(e) { j = null; }
   if (!r.ok) { var code = (j && typeof j.error === 'string') ? j.error : ''; var err = new Error(mrErrText(code, r.status)); err.code = code; err.status = r.status; throw err; }
@@ -16441,6 +16447,8 @@ function renderMidReview(){
   if (!mrCanSee()) return head + mrCard('<div class="mr-m">'+t('このページは CEO・GM・AM だけが開けます。','Only CEO, GM and AM can open this page.')+'</div>');
   /* 1) メール認証（覚えた鍵があれば、まずそれで） */
   /* 別のメールの認証（Invoice取込・業務Bot）に変わったら、前の人の読み込みを使わない */
+  /* 同じ人のキーの取り替え（期限切れの更新）なら、開いている店と入力はそのまま */
+  if (_mr.who && _mr.sess !== mrSession() && mrSession() && mrSessUser(mrSession()) && mrSessUser(mrSession()) === mrSessUser(_mr.sess)) _mr.sess = mrSession();
   if (_mr.who && _mr.sess !== mrSession()) { _mrGen++; mrEdStop(); if (typeof mrRpStop === 'function') mrRpStop(); _mr.view = null; _mr.rec = null; _mr.recKey = ''; _mr.who = null; _mr.list = null; _mr.listKey = ''; _mr.kpi = {}; _mr.members = null; _mr.liveL = null; _mr.load = {}; _mr.err = ''; }
   if (!mrSigned()) {
     var kw = invInKeepWho();
@@ -17297,7 +17305,7 @@ async function mrSaveAndClose(){
   mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrReloadRec();
 }
 async function mrSubmit(){
-  var ed = _mr.ed, R = _mr.rec; if (!ed || !R || _mr.busy) return;
+  var ed = _mr.ed, R = _mr.rec, g = _mrGen, key = mrRecKey(); if (!ed || !R || _mr.busy) return;
   var snap = mrSnapNow(R), miss = mrMissing(ed.body, snap, mrOpenFollowups(R));
   if (miss.length) { mrRerender(); mrGoSec('submit'); return; }
   var before = (R.review && R.review.submitted_no) || 0;
@@ -17306,16 +17314,21 @@ async function mrSubmit(){
     if (!(ed.state === 'saved' && !ed.pending)) { var ok = await mrSaveNow(); if (!ok) { showToast(t('先に保存できませんでした。入力は残っています。','Could not save first. Your input is kept.'), 'error'); return; } }
     if (_mr.ed !== ed) return;
     var res = await mrAPI({ action:'submit', env:R.env, ym:R.ym, store_id:R.store.store_id, expect_version:ed.version, snapshot:snap });
-    showToast(t('提出しました（提出版 ' + res.submitted_no + '）','Submitted (version ' + res.submitted_no + ')'), 'success');
-    mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrDropList(); mrReloadRec();
+    showToast(escapeHtml(t('提出しました（' + ((R.store && R.store.name) || '') + '・提出版 ' + res.submitted_no + '）','Submitted (' + ((R.store && R.store.name) || '') + ', version ' + res.submitted_no + ')')), 'success');
+    mrDropList();
+    /* 答えを待つあいだに別の店へ移っていたら、その店の入力には触らない */
+    if (_mr.ed === ed && _mrGen === g && mrRecKey() === key) { mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrReloadRec(); }
   } catch(e) {
     /* 答えが届かなかっただけで、提出はできていたかもしれない：読み直して確かめる */
     if (e && (e.code === 'network' || e.code === 'conflict' || e.status >= 500)) {
       try {
         var cur = await mrAPI({ action:'get', env:R.env, ym:R.ym, store_id:R.store.store_id });
-        if (_mr.ed === ed && cur.review && cur.review.submitted_no > before && cur.review.version === ed.version + 1 && !cur.review.unsubmitted) {
-          showToast(t('提出できていました（提出版 ' + cur.review.submitted_no + '）','It was submitted (version ' + cur.review.submitted_no + ')'), 'success');
-          _mr.busy = ''; mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrDropList(); mrReloadRec(); return;
+        if (cur.review && cur.review.submitted_no > before && cur.review.version === ed.version + 1 && !cur.review.unsubmitted) {
+          showToast(escapeHtml(t('提出できていました（' + ((R.store && R.store.name) || '') + '・提出版 ' + cur.review.submitted_no + '）','It was submitted (' + ((R.store && R.store.name) || '') + ', version ' + cur.review.submitted_no + ')')), 'success');
+          _mr.busy = ''; mrDropList();
+          /* 別の店へ移っていたら、その店の入力には触らない */
+          if (_mr.ed === ed && _mrGen === g && mrRecKey() === key) { mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrReloadRec(); } else mrRerender();
+          return;
         }
       } catch(e2) {}
     }
@@ -17331,7 +17344,8 @@ async function mrSubmit(){
         }
       } catch(e3) {}
     }
-    showToast(escapeHtml(e.message || String(e)), 'error');
+    /* 別の店へ移っていたら、どの店の提出の話かを添える */
+    showToast(escapeHtml((_mr.ed !== ed ? t('（' + ((R.store && R.store.name) || '') + ' の提出）','(Submitting ' + ((R.store && R.store.name) || '') + ') ') : '') + (e.message || String(e))), 'error');
   } finally { if (_mr.busy === 'submit') { _mr.busy = ''; mrRerender(); } }
 }
 /* ---- 段階 2-3：管理側の返信・判断（AM・GM・CEO）----
@@ -17353,7 +17367,7 @@ function mrRpState(){
   var key = mrRecKey();
   if (!_mr.rp || _mr.rp.key !== key || _mr.rp.gen !== _mrGen) {
     var drafts = {};
-    ((_mr.rec && _mr.rec.replies) || []).forEach(function(x){ if (x.mine && x.state === 'draft') drafts[x.target] = { decision:x.decision || null, escalate_to:x.escalate_to || null, data:JSON.parse(JSON.stringify(x.data || {})), version:x.version, state:'saved', err:'', stale:!!x.changed, sub_no:x.sub_no }; });
+    ((_mr.rec && _mr.rec.replies) || []).forEach(function(x){ if (x.mine && x.state === 'draft') drafts[x.target] = { id:x.id, decision:x.decision || null, escalate_to:x.escalate_to || null, data:JSON.parse(JSON.stringify(x.data || {})), version:x.version, state:'saved', err:'', stale:!!x.changed, sub_no:x.sub_no }; });
     _mr.rp = { key:key, gen:_mrGen, drafts:drafts, timers:{}, open:{}, busy:'' };
   }
   return _mr.rp;
@@ -17597,7 +17611,7 @@ async function mrRpSave(tg){
     try {
       var res = await mrAPI(Object.assign({ action:'reply_save', env:R.env, ym:R.ym, store_id:R.store.store_id, target:tg, expect_version:d.version || null, expect_no:(R.review && R.review.submitted_no) || 0 }, wire));
       if (g !== _mrGen || _mr.rp !== rp) return false;
-      d.version = res.version; d.err = '';
+      d.version = res.version; d.id = res.id || d.id; d.err = '';
       /* 保存した提出版がいま見ている提出版のときだけ「最新の下書き」（読み直しの前に出した保存の答えでは変えない） */
       if (_mr.rec === R) { d.stale = false; d.sub_no = R.review && R.review.submitted_no; }
       if (d.pending) { d.state = 'dirty'; d.saveP = null; return mrRpSave(tg); }
@@ -17660,7 +17674,9 @@ async function mrRpSend(finish){
     var keys = Object.keys(rp.drafts);
     for (var i = 0; i < keys.length; i++) { var d = rp.drafts[keys[i]]; if (d.state !== 'saved' || d.pending) { var ok = await mrRpSave(keys[i]); if (!ok) { if (mrSameRec(R, g)) showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; } } }
     if (_mr.rp !== rp || !mrSameRec(R, g)) return;
-    var res = await mrAPI({ action:'reply_send', env:R.env, ym:R.ym, store_id:R.store.store_id, expect_no:(R.review && R.review.submitted_no) || 0 });
+    /* 画面にある下書き（ID と版）だけを送る。別のタブで変わった・足された下書きがあればサーバーが断る */
+    var shown = Object.keys(rp.drafts).map(function(k){ var d = rp.drafts[k]; return d.id && d.version ? { id:d.id, version:d.version } : null; }).filter(Boolean);
+    var res = await mrAPI({ action:'reply_send', env:R.env, ym:R.ym, store_id:R.store.store_id, expect_no:(R.review && R.review.submitted_no) || 0, drafts:shown });
     showToast(t('返信しました（' + res.sent + ' 件）','Sent (' + res.sent + ')'), 'success');
     if (finish && mrSameRec(R, g)) {
       try { await mrAPI({ action:'complete', env:R.env, ym:R.ym, store_id:R.store.store_id }); showToast(t('レビュー完了にしました','The review is done'), 'success'); }
@@ -17668,7 +17684,9 @@ async function mrRpSend(finish){
     }
     mrDropList();
     if (mrSameRec(R, g)) { mrRpStop(); mrReloadRec(); }
-  } catch(e) { if (mrSameRec(R, g)) { if (e && e.code === 'new_version') { rp.busy = ''; await mrRpRebase(true); } else showToast(escapeHtml(e.message || String(e)), 'error'); } }
+  } catch(e) { if (mrSameRec(R, g)) { if (e && e.code === 'new_version') { rp.busy = ''; await mrRpRebase(true); }
+      else if (e && e.code === 'drafts_changed') { showToast(escapeHtml(e.message || ''), 'warning'); rp.busy = ''; if (!mrRpUnsaved()) { mrRpStop(); mrReloadRec(); } }
+      else showToast(escapeHtml(e.message || String(e)), 'error'); } }
   finally { if (_mr.rp === rp) { rp.busy = ''; mrRpLive(); } }
 }
 async function mrComplete(){
@@ -40058,7 +40076,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1068';
+const APP_VERSION = '1069';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
