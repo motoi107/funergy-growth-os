@@ -1,5 +1,11 @@
 # 改修・自動化の作業記録
 
+## 2026-10-12 PR #44：Codex レビュー後の修正（1979f7f）
+
+1. 実装担当：R1/P2 提出応答後の画面・入力の確認、R2/P2 返信送信時の下書き集合・版の照合、R3/P2 同じ本人の認証更新で入力を維持、R4/P2 CEO→GM 変更時に古い CEO 権限を残さない。
+2. 検証：`node --test tests/review/pr44-mid-review-repro.mjs`（対象 head では assertion 4/4 失敗で再現）、中間レビュー 104 件・共有認証 13 件（成功）、static release（pass/v1066）。詳細：`docs/PR44_CODEX_REVIEW_1979f7f_JA.md`。
+3. PR #44 はレビュー中にマージ済み（10/12 00:53:13 HST、main `47c9c72`。対象 head とファイル差分なし）。別 PR で修正し、最新 head を再レビューしてから実機確認。記録・試験のブランチは `codex/review-pr44-1979f7f`。
+
 ## 2026-10-11 中間レビュー（非公開版・CEO／GM／AM だけ）
 
 1. 済（Claude）：段階 1 — 今の作りの確認と UI案43。Moto さんの回答（10/11）と追加 2 点を反映。
