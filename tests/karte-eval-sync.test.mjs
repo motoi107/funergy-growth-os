@@ -246,7 +246,7 @@ test('R2: offline, sync off, or a failed re-read: nothing is confirmed', async (
     const f = cloudDevice(cloud); f.PULL_FAIL = fail;
     assert.equal(await call(f, `bqLockQuarter('${Q}')`), false, 'pull failure: ' + fail);
     assert.ok(!f.STORE.bonus_q[Q].locked);
-    assert.match(lastToast(f), /クラウドから最新の内容を読めなかったため、確定していません/);
+    assert.match(lastToast(f), /クラウドから最新の内容を読み切れなかったため、確定していません（通信が遅い・切れた、または端末の保存容量が足りないなど）/);
     assert.equal(f.PUSHED.length, 0);
   }
   // the user cancelling the dialog: nothing is read or written
@@ -477,7 +477,7 @@ test('P2-1: every writer starts tracking before moving the record time; lines ad
   clock(r, 1000); run(r, `bqLockQuarter('${Q}'); bonusConfirmQuarter();`);
   assert.deepEqual([r.STORE.growth_karte.ken.payTrack, r.STORE.growth_karte.mia.payTrack], [800, 1]);
   // the grade-history import writes the record itself too: it starts tracking before moving _at, and its lines carry a time
-  assert.match(fn('ghImpRun'), /kartePayTrackInit\(k\);[^\n]*\n\s*k\.updatedAt=new Date\(\)\.toISOString\(\); k\._at=Date\.now\(\);/);
+  assert.match(fn('ghImpRun'), /if\(typeof kartePayTrackInit==='function'\) kartePayTrackInit\(k\);[^\n]*\n\s*k\.updatedAt=new Date\(\)\.toISOString\(\); k\._at=Date\.now\(\);/);
   assert.match(fn('ghImpRun'), /src:'import', _at:Date\.now\(\)\}/);
   // two devices add lines to the same record (tracked from 700): all kept, both directions
   const a = company(), b = company();
@@ -634,6 +634,11 @@ test('P2-2: saving keeps the fields on top for older versions; save → push →
 test('P2-2: before locking, the bonus settings and the budget, sales and cost data of the stores in scope are read again; a change there stops the lock', async () => {
   const cloud = {}, a = cfgInstall(cloudDevice(cloud, { clock: 3000 })), b = cfgInstall(cloudDevice(cloud, { clock: 1000 }));
   const keys = run(b, `kevLockSyncKeys('${Q}')`);
+  // office Career Score: the assignment and the evaluation of every eligible person are read again too
+  vm.runInContext("var OCS_ASG_PREFIX = 'ocs_asg_', OCS_EV_PREFIX = 'ocs_ev_';", b);
+  const ids = run(b, 'karteEligibleEmps().map(function(e){ return e.id; })'), keysOcs = run(b, `kevLockSyncKeys('${Q}')`);
+  assert.ok(ids.length > 0);
+  for (const id of ids) { assert.ok(keysOcs.includes('ocs_asg_' + id), 'reads ocs_asg_' + id); assert.ok(keysOcs.includes('ocs_ev_' + id), 'reads ocs_ev_' + id); }
   for (const k of ['bonus_eval', 'spl_bonus_q_' + Q, 'karte_bonus_config', 'bonus_coef', 'bonus_coef_rng', 'spl_budgets_v2_S1', 'spl_budgets_v2_S5', 'daily_actuals_S2', 'spl_invoices_S3', 'purchases_S4', 'fc_monthly_S2_2026-06', 'fc_monthly_S2_2026-07', 'fc_monthly_S2_2026-09'])
     assert.ok(keys.includes(k), 'reads ' + k);
   for (const k of ['pl_public', 'pl_actual', 'm_store_kpi', 'm_format_kpi', 'ocs_cfg', 'budgets_v2', 'q_budgets', 'ingredient_transfers', 'm_employees', 'fc_monthly_S2_2026-10'])
