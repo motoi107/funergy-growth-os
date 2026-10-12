@@ -702,3 +702,35 @@ test('each answer is shown from the version that answered it', async () => {
   const h = strip(c.html);
   assert.match(h, /店長の回答（提出版 2） ?1 回目の答え/); assert.match(h, /店長の回答（提出版 3） ?2 つ目の答え/);
 });
+
+test('guards: a save that answers after another store’s input was opened does not save that one; a submit waiting on its save stops when the editor changed', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D6'); c.run('mrStartInput()');
+  const f0 = c.fetch; let release; c.fetch = async (u, i) => { const b = JSON.parse(i.body); if (b.action === 'save') await new Promise(r => { release = r; }); return f0(u, i); };
+  c.run(`mrSetVal('consult','none')`);
+  const p = c.run('mrSaveNow()');                                  // in flight
+  c.run(`mrSetVal('focus.0.note','typed while saving')`);          // more typing: pending
+  c.confirm = () => true; c.fetch = f0;
+  await openStore(c, 'D1'); c.run('mrStartInput()'); c.run(`mrSetVal('reporter_role','op_leader')`);
+  const d1 = c.run('_mr.ed'); c.fetch = async (u, i) => { const b = JSON.parse(i.body); c.calls.push({ late: b.store_id, action: b.action }); return f0(u, i); };
+  release(); await p;
+  assert.equal(c.calls.filter(x => x.late === 'D1' && x.action === 'save').length, 0, 'the old save did not save D1');
+  assert.equal(c.run('_mr.ed'), d1); assert.equal(c.run('_mr.ed.state'), 'dirty');
+  // Submit saves first; if the editor changes during that save, no submit is sent.
+  const e = app(S); await openStore(e, 'D6'); e.run('mrStartInput()');
+  e.run(`mrSetVal('focus.0.status','ok'); mrSetVal('focus.1.status','ok'); mrSetVal('consult','none')`);
+  const g0 = e.fetch; e.fetch = async (u, i) => { const b = JSON.parse(i.body); const r = await g0(u, i); if (b.action === 'save') { e.run('mrEdStop(); mrStartInput()'); } return r; };
+  await e.run('mrSubmit()'); await e.flush();
+  assert.equal(e.calls.filter(x => x.action === 'submit').length, 0);
+  assert.equal((await S.pg.query(`select count(*)::int n from mr_submissions x join mr_reviews r on r.id=x.review_id where r.store_id='D6'`)).rows[0].n, 0);
+});
+
+test('input: only answers to questions still open are carried in the working copy', async () => {
+  const S = await server();
+  const c = app(S, { who: 'am2', role: 'am' }); await openStore(c, 'D4'); c.run('mrStartInput()');
+  const q1 = c.run('mrOpenFollowups(_mr.rec)[0].id');
+  c.run(`mrSetVal('answers.${q1}','1 回目')`); await c.flush(); await c.run('mrSubmit()'); await c.flush();
+  await S.pg.exec(`reset role; update mr_reviews set status='followup' where store_id='D4'; set role service_role;`);
+  c.run('mrReloadRec()'); await c.flush(); c.renderPage(); c.run('mrStartInput()');
+  assert.equal(c.run('JSON.stringify(_mr.ed.body.answers || null)'), 'null');   // q1 is answered (in version 2); nothing open
+});
