@@ -198,11 +198,11 @@ language sql immutable security invoker set search_path=public,pg_temp as $$
  select coalesce(t, '') ~ '^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*$';
 $$;
 
--- A real calendar date written YYYY-MM-DD (11-31 and 02-30 are not).
+-- A real calendar date written YYYY-MM-DD in 2000–2099 (11-31, 02-30 and 0026 are not). The screen and the function check the same.
 create function public.mr_date_ok(t text) returns boolean
 language plpgsql immutable security invoker set search_path=public,pg_temp as $$
 begin
- if t is null or t !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$' then return false; end if;
+ if t is null or t !~ '^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$' then return false; end if;
  perform t::date;
  return true;
 exception when others then return false;
@@ -440,6 +440,10 @@ begin
     'unsubmitted', r.submitted_no > 0 and r.body is distinct from public.mr_view_body(r),
     'required', case when r.submitted_no > 0 then to_jsonb(public.mr_required_targets(r)) else '[]'::jsonb end,
     'final', case when r.submitted_no > 0 then (select coalesce(jsonb_object_agg(t, public.mr_target_final(r.id, t)), '{}'::jsonb) from unnest(public.mr_required_targets(r)) t) else '{}'::jsonb end) end,
+  -- The items that changed since the version a page was showing (its drafts are checked again before they are saved).
+  'changed_since', case when r.id is not null and coalesce(p->>'since','') ~ '^[0-9]{1,6}$' and (p->>'since')::integer < r.submitted_no then
+    (select coalesce(jsonb_agg(distinct t), '[]'::jsonb) from unnest(public.mr_targets_at(r.id, (p->>'since')::integer) || public.mr_targets_at(r.id, r.submitted_no)) t
+      where public.mr_reply_outdated(r.id, (p->>'since')::integer, t)) else '[]'::jsonb end,
   'submissions', (select coalesce(jsonb_agg(jsonb_build_object('no', x.no, 'body', x.body, 'snapshot', x.snapshot, 'at', x.created_at, 'by', x.created_by) order by x.no), '[]'::jsonb)
     from public.mr_submissions x where x.review_id = r.id),
   -- Sent replies for everyone who sees the store; drafts only for their author.
@@ -447,8 +451,7 @@ begin
       'decision', x.decision, 'escalate_to', x.escalate_to, 'data', x.data, 'state', x.state, 'version', x.version, 'sent_at', x.sent_at,
       'updated_at', x.updated_at, 'mine', x.author = m.user_id, 'sub_no', x.sub_no,
       -- Sent on an older version whose item has changed since (the decision no longer counts) / an item the latest version no longer has.
-      'changed', x.sub_no is distinct from r.submitted_no
-        and public.mr_item_at(r.id, x.sub_no, x.target) is distinct from public.mr_item_at(r.id, r.submitted_no, x.target),
+      'changed', r.submitted_no > 0 and public.mr_reply_outdated(r.id, x.sub_no, x.target),
       'gone', x.target ~ '^(issue|focus):' and public.mr_item_at(r.id, r.submitted_no, x.target) is null) order by x.created_at), '[]'::jsonb)
     from public.mr_replies x where x.review_id = r.id and (x.state = 'sent' or x.author = m.user_id)),
   'events', (select coalesce(jsonb_agg(jsonb_build_object('at', e.at, 'kind', e.kind, 'data', e.data) order by e.id), '[]'::jsonb)
@@ -567,6 +570,11 @@ begin
    next_actor = coalesce(public.mr_actor_name(am), s.am_name, 'GM（AM 未設定）'),
    updated_at = now(), updated_by = v_name
   where id = r.id returning * into r;
+ -- An item the GM / CEO decided that needs a decision again (its content changed, or a question on it was answered):
+ -- the escalation opens again, so it waits for them (an AM cannot decide it).
+ update public.mr_replies p set data = (p.data - 'resolved' - 'resolved_by' - 'resolved_at') || jsonb_build_object('reopened_no', r.submitted_no), updated_at = now()
+  where p.review_id = r.id and p.state = 'sent' and p.decision = 'escalate' and coalesce((p.data->>'resolved')::boolean, false)
+   and (p.data->>'withdrawn_no') is null and (p.data->>'forwarded') is null and not public.mr_decided(r.id, p.target);
  perform public.mr_recompute(r.id);
  perform public.mr_event(r.id, v_env, m.user_id::text, 'submit', jsonb_build_object('no', r.submitted_no, 'by', v_name, 'from', v_prev));
  select * into r from public.mr_reviews where id = r.id;
@@ -629,16 +637,39 @@ language sql stable security invoker set search_path=public,pg_temp as $$
  from v;
 $$;
 
--- An item is decided when someone sent a decision (提案どおり／修正／対応不要) on what the latest version says about it
--- (sent on that version, or on an older one whose item is unchanged), not before the answer to a question asked on it,
--- and nothing waits on it any more.
+-- A reply written on version p_no no longer fits the latest version: the item changed since, or a question asked on it
+-- was answered since (a decision is made after reading the answer).
+create function public.mr_reply_outdated(p_review uuid, p_no integer, p_target text) returns boolean
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select coalesce(p_no, 0) <> r.submitted_no and (
+   public.mr_item_at(p_review, p_no, p_target) is distinct from public.mr_item_at(p_review, r.submitted_no, p_target)
+   or exists(select 1 from public.mr_replies f where f.review_id = p_review and f.target = p_target and f.state = 'sent' and f.decision = 'followup'
+     and coalesce(nullif(f.data->>'answered_no','')::integer, 0) > coalesce(p_no, 0)))
+ from public.mr_reviews r where r.id = p_review;
+$$;
+
+-- Someone sent a decision (提案どおり／修正／対応不要) that fits the latest version.
+create function public.mr_decided(p_review uuid, p_target text) returns boolean
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select exists(select 1 from public.mr_replies p where p.review_id = p_review and p.target = p_target and p.state = 'sent'
+  and p.decision in ('as_proposed','modify','no_action') and not public.mr_reply_outdated(p_review, p.sub_no, p_target));
+$$;
+
+-- An item is decided when a decision fits the latest version and nothing waits on it any more.
 create function public.mr_target_final(p_review uuid, p_target text) returns boolean
 language sql stable security invoker set search_path=public,pg_temp as $$
- select public.mr_open_waits(p_review, p_target) = 0 and exists(select 1 from public.mr_replies p join public.mr_reviews r on r.id = p.review_id
-  where p.review_id = p_review and p.target = p_target and p.state = 'sent' and p.decision in ('as_proposed','modify','no_action')
-   and (p.sub_no = r.submitted_no or public.mr_item_at(p_review, p.sub_no, p_target) is not distinct from public.mr_item_at(p_review, r.submitted_no, p_target))
-   and not exists(select 1 from public.mr_replies f where f.review_id = p_review and f.target = p_target and f.state = 'sent' and f.decision = 'followup'
-     and coalesce(nullif(f.data->>'answered_no','')::integer, 0) > coalesce(p.sub_no, 0)));
+ select public.mr_open_waits(p_review, p_target) = 0 and public.mr_decided(p_review, p_target);
+$$;
+
+-- Every item of a submitted version (to tell what changed between two versions).
+create function public.mr_targets_at(p_review uuid, p_no integer) returns text[]
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select array['summary','pl','kpi']
+  || coalesce((select array_agg('focus:' || (f->>'id')) from public.mr_submissions s, jsonb_array_elements(public.mr_arr(s.body->'focus')) f
+       where s.review_id = p_review and s.no = p_no), '{}'::text[])
+  || coalesce((select array_agg('issue:' || (i->>'id')) from public.mr_submissions s,
+       jsonb_array_elements(case when s.body->>'consult' = 'yes' then public.mr_arr(s.body->'issues') else '[]'::jsonb end) i
+       where s.review_id = p_review and s.no = p_no), '{}'::text[]);
 $$;
 
 -- The state from what still waits: 追加確認 → 判断待ち (GM / CEO) → 個別相談予定 → back to the AM.
@@ -743,9 +774,9 @@ language sql stable security invoker set search_path=public,pg_temp as $$
  select case
   -- A draft on an item the latest version no longer has: delete it (nothing can be decided on it).
   when x.target ~ '^(issue|focus):' and public.mr_item_at(x.review_id, (select r.submitted_no from public.mr_reviews r where r.id = x.review_id), x.target) is null then 'gone'
-  -- A draft written on an older version whose item has changed since: look again and save it (then it is on the latest).
-  when x.decision is not null and x.sub_no is distinct from (select r.submitted_no from public.mr_reviews r where r.id = x.review_id)
-    and public.mr_item_at(x.review_id, x.sub_no, x.target) is distinct from public.mr_item_at(x.review_id, (select r.submitted_no from public.mr_reviews r where r.id = x.review_id), x.target) then 'stale'
+  -- A draft written on an older version whose item has changed since (or a question on it was answered since):
+  -- look again and save it (then it is on the latest).
+  when x.decision is not null and public.mr_reply_outdated(x.review_id, x.sub_no, x.target) then 'stale'
   -- An item sent up to the GM / CEO is decided by them, also when it changes later (GM items: GM or CEO; CEO items: the CEO).
   -- Not when the item was withdrawn.
   when x.decision in ('as_proposed','modify','no_action') and exists(select 1 from public.mr_replies w where w.review_id = x.review_id and w.target = x.target
@@ -878,7 +909,7 @@ end $$;
 
 do $$ declare f text; begin
  foreach f in array array['mr_setting(text)','mr_auth(uuid,text[],boolean)','mr_sees(text,uuid,text,uuid,text)','mr_am_hr_ok(text)','mr_am_master_ok(uuid,text)','mr_event(uuid,text,text,text,jsonb)',
-  'mr_arr(jsonb)','mr_blank(text)','mr_date_ok(text)','mr_written(jsonb)','mr_item_at(uuid,integer,text)','mr_summary(public.mr_reviews)','mr_whoami(jsonb)','mr_list(jsonb)','mr_settings_save(jsonb)','mr_members_list(jsonb)',
+  'mr_arr(jsonb)','mr_blank(text)','mr_date_ok(text)','mr_written(jsonb)','mr_item_at(uuid,integer,text)','mr_reply_outdated(uuid,integer,text)','mr_decided(uuid,text)','mr_targets_at(uuid,integer)','mr_summary(public.mr_reviews)','mr_whoami(jsonb)','mr_list(jsonb)','mr_settings_save(jsonb)','mr_members_list(jsonb)',
   'mr_stores_save(jsonb)','mr_demo_reset(jsonb)','mr_view_body(public.mr_reviews)','mr_actor_name(public.mr_members)',
   'mr_missing(jsonb,jsonb)','mr_get(jsonb)','mr_save(jsonb)','mr_submit(jsonb)',
   'mr_required_targets(public.mr_reviews)','mr_open_waits(uuid,text)','mr_target_final(uuid,text)','mr_recompute(uuid)',

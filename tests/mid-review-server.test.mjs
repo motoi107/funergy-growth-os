@@ -996,6 +996,11 @@ test('an item sent up stays with the GM / CEO when it changes later (an AM canno
   assert.equal((await status(E, 'D3')).status, 'submitted');
   await resubmit(E, 'D3', 'gm', b => { b.issues[1].ask = '追加の求人広告費 月 $900 を 3 か月出してよいか'; return b; });
   assert.equal((await R(E, 'am1', 'D3', { action: 'get' })).body.review.final['issue:i2'], false);
+  // It waits for the CEO again (not for the AM, who cannot decide it).
+  assert.deepEqual(await status(E, 'D3'), { status: 'decision', decision_by: 'ceo', next_actor: 'CEO', d: '2026-10-22' });
+  const w = (await E.api('ceo', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D3').waits;
+  assert.deepEqual(w.map(x => [x.kind, x.to]), [['escalate', 'ceo']]);
+  assert.equal((await R(E, 'ceo', 'D3', { action: 'get' })).body.replies.find(x => x.decision === 'escalate' && x.escalate_to === 'ceo').data.reopened_no, 2);
   await saveR(E, 'am1', 'D3', 'issue:i2', 'as_proposed', act());
   assert.equal((await send(E, 'am1', 'D3')).status, 422);                                               // still the CEO's
   await R(E, 'am1', 'D3', { action: 'reply_delete', target: 'issue:i2' });
@@ -1003,4 +1008,28 @@ test('an item sent up stays with the GM / CEO when it changes later (an AM canno
   await R(E, 'gm', 'D3', { action: 'reply_delete', target: 'issue:i2' });
   await saveR(E, 'ceo', 'D3', 'issue:i2', 'modify', act({ next: '月 $600 を 2 か月まで' })); assert.equal((await send(E, 'ceo', 'D3')).status, 200);
   assert.equal((await R(E, 'am1', 'D3', { action: 'complete' })).status, 200);
+});
+
+test('after an answer: a CEO item waits for the CEO again; a draft written before the answer is checked again; what changed since a version', async () => {
+  const E = await setup(); await demoOn(E);
+  await saveR(E, 'ceo', 'D3', 'issue:i2', 'as_proposed', act()); await send(E, 'ceo', 'D3');
+  await saveR(E, 'gm', 'D3', 'issue:i1', 'as_proposed', act()); await send(E, 'gm', 'D3');
+  await saveR(E, 'am1', 'D3', 'kpi', 'as_proposed', act());                                              // a draft on version 1
+  await saveR(E, 'gm', 'D3', 'issue:i2', 'followup', { question: '応募は何件？', due: '2026-10-21' });
+  await saveR(E, 'gm', 'D3', 'kpi', 'followup', { question: '人件費はいつ下がる？', due: '2026-10-21' }); await send(E, 'gm', 'D3');
+  assert.equal((await status(E, 'D3')).status, 'followup');
+  const qs = (await R(E, 'gm', 'D3', { action: 'get' })).body.replies.filter(x => x.decision === 'followup');
+  await resubmit(E, 'D3', 'gm', b => ({ ...b, answers: Object.fromEntries(qs.map(q => [q.id, '回答'])) }));
+  assert.deepEqual(await status(E, 'D3'), { status: 'decision', decision_by: 'ceo', next_actor: 'CEO', d: '2026-10-22' });
+  const g = (await R(E, 'am1', 'D3', { action: 'get', since: 1 })).body;
+  assert.equal(g.replies.find(x => x.state === 'draft' && x.target === 'kpi').changed, true);
+  assert.deepEqual(g.changed_since.sort(), ['issue:i2', 'kpi']);                                         // answered (the text is unchanged)
+  assert.equal((await send(E, 'am1', 'D3')).status, 422);                                                 // stale until saved again
+  await saveR(E, 'am1', 'D3', 'kpi', 'as_proposed', act()); assert.equal((await send(E, 'am1', 'D3')).status, 200);
+  await saveR(E, 'ceo', 'D3', 'issue:i2', 'modify', act()); await send(E, 'ceo', 'D3');
+  assert.equal((await status(E, 'D3')).status, 'submitted');
+  assert.deepEqual((await R(E, 'am1', 'D3', { action: 'get', since: 2 })).body.changed_since, []);
+  assert.deepEqual((await E.q(`select public.mr_date_ok('0026-10-20') a, public.mr_date_ok('2026-10-20') b`))[0], { a: false, b: true });
+  await saveR(E, 'am1', 'D3', 'pl', 'as_proposed', act({ due: '0026-10-20' }));
+  assert.equal((await R(E, 'am1', 'D3', { action: 'get' })).body.replies.find(x => x.state === 'draft' && x.target === 'pl').data.due, undefined);
 });

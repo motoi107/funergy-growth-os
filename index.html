@@ -17135,7 +17135,14 @@ function mrInIssues(b, miss){
   }
   return h + '</div>';
 }
-function mrNewId(pre, list){ var n = 1, ids = (list || []).map(function(x){ return x.id; }); while (ids.indexOf(pre + n) >= 0) n++; return pre + n; }
+function mrNewId(pre, list){
+  /* 一度使った番号は使わない（前の提出版・返信の項目も見る）：取り下げた相談への返信が、新しい相談に付かないように */
+  var ids = (list || []).map(function(x){ return x.id; }), R = _mr.rec, n = 0;
+  ((R && R.submissions) || []).forEach(function(sb){ ((sb.body && sb.body.issues) || []).concat((sb.body && sb.body.focus) || []).forEach(function(x){ ids.push(x.id); }); });
+  ((R && R.replies) || []).forEach(function(x){ var p = String(x.target || '').split(':'); if (p[1]) ids.push(p[1]); });
+  ids.forEach(function(id){ var m = new RegExp('^' + pre + '(\\d{1,6})$').exec(String(id || '')); if (m && +m[1] > n) n = +m[1]; });
+  return pre + (n + 1);
+}
 function mrAddIssue(){ var ed = _mr.ed; if (!ed) return; ed.changed = true; ed.body.issues = ed.body.issues || []; ed.body.issues.push({ id:mrNewId('i', ed.body.issues.concat(ed.body.focus || [])), what:'', cause:'', investigating:false, action:'', ask:'', ask_by:'', severity:'', direct:false, urgent:false }); mrDirty(); mrRerender(); }
 function mrAddFocus(){ var ed = _mr.ed; if (!ed) return; ed.changed = true; ed.body.focus = ed.body.focus || []; if (ed.body.focus.length >= 3) return; ed.body.focus.push({ id:mrNewId('n', ed.body.focus.concat(ed.body.issues || [])), title:'', owner:'', done_cond:'', due_orig:'', due_now:'', status:'none' }); mrDirty(); mrRerender(); }
 function mrRemoveItem(kind, i){
@@ -17252,7 +17259,7 @@ function mrRpGone(R, target){
 /* GM・CEO の判断を待っている項目（自分では閉じられない） */
 function mrRpReserved(R, role, target){ return ((R && R.replies) || []).some(function(w){ return w.state === 'sent' && w.decision === 'escalate' && w.target === target && !(w.data && w.data.withdrawn_no) && (w.escalate_to === 'ceo' ? role !== 'ceo' : role === 'am'); }); }
 /* 実在する日付・時刻（画面の入力がテキストになるブラウザでも、サーバーと同じに確かめる） */
-function mrDateOk(v){ var m = /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.exec(String(v || '')); if (!m) return false; var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3]; }
+function mrDateOk(v){ var m = /^(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.exec(String(v || '')); if (!m) return false; var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3]; }
 function mrTimeOk(v){ return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v || '')); }
 function mrRpMissing(role, target, d, R){
   var x = d || {}, dt = x.data || {}, b = function(k){ return mrBlank(dt[k]); }, c = dt.consult || {};
@@ -17331,7 +17338,8 @@ function mrReplyCards(list, ans, R){
       else if (R && R.review && R.review.submitted_no) res += '<button class="mr-pick" onclick="_mr.resOpen=\''+e(x.id)+'\';mrRerender()">'+(dt.result ? t('結果を書き直す','Edit the result') : t('結果を記録','Record the result'))+'</button>';
     }
     var ver = (R && R.review && R.review.submitted_no > 1 && x.sub_no) ? '<span class="mr-m">'+t('提出版 ','v')+e(x.sub_no)+t(' へ','')+'</span>' : '';
-    if (x.changed && MR_FINAL[x.decision]) lines.unshift('<span class="mr-tag" style="background:#fdf3e0;color:#8a5508">'+t('そのあと内容が変わった','Changed since')+'</span> <span class="mr-m">'+t('提出版 ' + e(x.sub_no) + ' の内容への判断です。いまの内容への判断が要ります。','A decision on version ' + e(x.sub_no) + '. The current content needs a decision.')+'</span>');
+    if (x.changed && MR_FINAL[x.decision]) lines.unshift('<span class="mr-tag" style="background:#fdf3e0;color:#8a5508">'+t('判断し直し','Decide again')+'</span> <span class="mr-m">'+t('提出版 ' + e(x.sub_no) + ' のときの判断です。そのあと内容が変わったか、質問に回答があったので、いまの内容への判断が要ります。','A decision on version ' + e(x.sub_no) + '. The content changed or a question was answered since; the current content needs a decision.')+'</span>');
+    if (x.decision === 'escalate' && !dt.resolved && dt.reopened_no) lines.push('<span class="mr-m">'+e(t('提出版 ' + dt.reopened_no + ' で内容が変わった（または質問に回答があった）ので、もう一度判断を待っている','Waiting again: the content changed (or a question was answered) in version ' + dt.reopened_no))+'</span>');
     return '<div class="mr-mgr'+(x.changed && MR_FINAL[x.decision] ? ' mr-old' : '')+'"><div class="mr-cardh"><b style="font-size:12.5px">'+e(d ? t(d[0], d[1]) : t('ひとこと','A word'))+(x.decision === 'escalate' ? (x.escalate_to === 'ceo' ? '（CEO）' : '（GM）') : '')+'</b>'+(dt.severity ? mrSevTag(dt.severity) : '')+ver+'</div>'
       + lines.map(function(l){ return '<div style="font-size:12.5px;line-height:1.6">'+l+'</div>'; }).join('') + res
       + '<div class="mr-m">'+e((x.author_name || '') + (x.author_role ? '（' + String(x.author_role).toUpperCase() + '）' : '') + (x.sent_at ? '・' + mrHst(x.sent_at) : ''))+'</div></div>';
@@ -17374,16 +17382,35 @@ function mrRpEditor(R, tg){
       + '<div class="mr-m">'+t('15〜30 分。相談をしただけでは閉じない（そのあと、決めたこと・担当・期限を返信する）。カレンダーの招待・通知は送らない。','15–30 min. The talk alone does not close it (reply with the decision, owner and due date after it). No invitations or notices are sent.')+'</div>';
   }
   h += '<div class="mr-m mr-bad" id="mr-rpmiss-'+e(tg)+'">'+(miss ? e(t(MR_RP_MISS[miss][0], MR_RP_MISS[miss][1])) : '')+'</div>';
-  if (d.state === 'error' || d.state === 'conflict') h += '<div class="mr-m mr-bad">'+e(d.err || '')+(d.state === 'conflict' ? ' <button class="btn btn-secondary btn-sm" onclick="mrReloadRec()">'+t('最新を読み込む','Load the latest')+'</button>' : ' <button class="btn btn-secondary btn-sm" onclick="mrRpSave(\''+e(tg)+'\')">'+t('もう一度保存','Save again')+'</button>')+'</div>';
+  if ((d.state === 'error' || d.state === 'conflict') && !d.newVersion) h += '<div class="mr-m mr-bad">'+e(d.err || '')+(d.state === 'conflict' ? ' <button class="btn btn-secondary btn-sm" onclick="mrReloadRec()">'+t('最新を読み込む','Load the latest')+'</button>' : ' <button class="btn btn-secondary btn-sm" onclick="mrRpSave(\''+e(tg)+'\')">'+t('もう一度保存','Save again')+'</button>')+'</div>';
   if (d.version) h += '<button class="mr-pick" onclick="mrRpDelete(\''+e(tg)+'\')">'+t('この下書きを消す','Delete this draft')+'</button>';
   return h + '</div>';
 }
 function mrRpChip(d){
   var m = { saved:['background:#e7f6ef;color:#0b7046', t('下書き保存済み','Draft saved')], dirty:['background:#fdf3e0;color:#8a5508', t('未保存の変更あり','Unsaved')], saving:['background:#eaf1fb;color:#1f56b8', t('保存中…','Saving…')],
-    error:['background:#fdecec;color:#b42323', t('保存できません（入力は残っています）','Could not save (kept)')], conflict:['background:#fdecec;color:#b42323', t('ほかのタブで保存されました','Saved elsewhere')] }[d.state];
+    error:['background:#fdecec;color:#b42323', t('保存できません（入力は残っています）','Could not save (kept)')], conflict:['background:#fdecec;color:#b42323', d.newVersion ? t('新しい提出版があります（入力は残っています）','A new version came in (kept)') : t('ほかのタブで保存されました','Saved elsewhere')] }[d.state];
   return m ? '<span class="mr-tag" style="'+m[0]+'">'+escapeHtml(m[1])+'</span>' : '';
 }
-function mrRpConfirm(tg){ var d = mrRpState().drafts[tg]; if (!d) return; d.pending = true; if (d.state !== 'saving') d.state = 'dirty'; return mrRpSave(tg).then(function(){ mrRerender(); }); }
+function mrRpConfirm(tg){ var d = mrRpState().drafts[tg]; if (!d) return; d.stale = false; d.pending = true; if (d.state !== 'saving') d.state = 'dirty'; return mrRpSave(tg).then(function(){ mrRerender(); }); }
+/* 店長が新しい提出版を出した：記録を読み直し、打った下書きは残す。変わった項目の下書きには印（確かめてから保存）、ほかは保存を続ける */
+async function mrRpRebase(force){
+  var rp = _mr.rp, R = _mr.rec, g = _mrGen; if (!rp || !R || rp.rebasing) return;
+  if (force !== true && !Object.keys(rp.drafts).some(function(k){ return rp.drafts[k].newVersion; })) return;
+  rp.rebasing = true;
+  try {
+    var n0 = (R.review && R.review.submitted_no) || 0;
+    var now = await mrAPI({ action:'get', env:R.env, ym:R.ym, store_id:R.store.store_id, since:n0 });
+    if (!mrSameRec(R, g) || _mr.rp !== rp) return;
+    var ch = now.changed_since || [];
+    Object.keys(rp.drafts).forEach(function(tg){ var d = rp.drafts[tg]; if (ch.indexOf(tg) >= 0 && d.decision) { d.stale = true; d.sub_no = n0; }
+      if (d.state === 'conflict' && d.newVersion) { d.state = d.pending ? 'dirty' : 'saved'; d.err = ''; d.newVersion = false; } });
+    _mr.rec = now;
+    showToast(escapeHtml(t('店長が新しい提出版を出しました（提出版 ' + ((now.review && now.review.submitted_no) || '') + '）。内容が変わった項目の下書きに印をつけました。打った内容は残っています。','The store manager sent a new version (' + ((now.review && now.review.submitted_no) || '') + '). Drafts on changed items are marked. What you typed is kept.')), 'warning');
+    mrRerender();
+    Object.keys(rp.drafts).forEach(function(tg){ var d = rp.drafts[tg]; if (d.pending && !(d.stale && d.decision)) mrRpSave(tg); });
+  } catch(e) { if (mrSameRec(R, g)) showToast(escapeHtml(e.message || String(e)), 'error'); }
+  finally { rp.rebasing = false; }
+}
 function mrRpDraft(tg){ var rp = mrRpState(); if (!rp.drafts[tg]) rp.drafts[tg] = { decision:null, escalate_to:null, data:{}, version:0, state:'new' }; return rp.drafts[tg]; }
 function mrRpSet(tg, field, val, rerender){
   if (!/^[a-z]+(:[A-Za-z0-9_-]{1,40})?$/.test(String(tg))) return;
@@ -17438,6 +17465,8 @@ async function mrRpSave(tg){
   if (rp.timers[tg]) { clearTimeout(rp.timers[tg]); rp.timers[tg] = null; }
   if (d.state === 'saving') { d.pending = true; return d.saveP; }
   if (!d.pending && d.state === 'saved') return true;
+  /* 前の提出版を見て書いた下書き：「確かめた」まで保存しない（保存すると新しい提出版への返信になる） */
+  if (d.stale && d.decision) { d.pending = true; if (d.state !== 'conflict' && d.state !== 'error') d.state = 'dirty'; mrRpLive(); return false; }
   var g = rp.gen, wire = mrRpWire(d);
   d.state = 'saving'; d.pending = false; mrRpLive();
   d.saveP = (async function(){
@@ -17449,7 +17478,9 @@ async function mrRpSave(tg){
       d.state = 'saved'; return true;
     } catch(err) {
       if (g !== _mrGen || _mr.rp !== rp) return false;
-      d.pending = true; d.state = err && (err.code === 'conflict' || err.code === 'new_version') ? 'conflict' : 'error'; d.err = (err && err.message) || ''; return false;
+      d.pending = true; d.state = err && (err.code === 'conflict' || err.code === 'new_version') ? 'conflict' : 'error'; d.err = (err && err.message) || '';
+      if (err && err.code === 'new_version') { d.newVersion = true; setTimeout(mrRpRebase, 0); }
+      return false;
     } finally { if (_mr.rp === rp && d.state !== 'saving') d.saveP = null; if (_mr.rp === rp) mrRpLive(); }
   })();
   return d.saveP;
@@ -17508,7 +17539,7 @@ async function mrRpSend(finish){
     }
     mrDropList();
     if (mrSameRec(R, g)) { mrRpStop(); mrReloadRec(); }
-  } catch(e) { if (mrSameRec(R, g)) { showToast(escapeHtml(e.message || String(e)), 'error'); if (e && e.code === 'new_version') { mrRpFlushKeep(rp); mrDropList(); mrReloadRec(); } } }
+  } catch(e) { if (mrSameRec(R, g)) { if (e && e.code === 'new_version') { rp.busy = ''; await mrRpRebase(true); } else showToast(escapeHtml(e.message || String(e)), 'error'); } }
   finally { if (_mr.rp === rp) { rp.busy = ''; mrRpLive(); } }
 }
 async function mrComplete(){
@@ -17518,9 +17549,8 @@ async function mrComplete(){
   try { await mrAPI({ action:'complete', env:R.env, ym:R.ym, store_id:R.store.store_id }); showToast(t('レビュー完了にしました','The review is done'), 'success'); mrDropList(); if (mrSameRec(R, g)) { mrRpStop(); mrReloadRec(); } }
   catch(e) { if (mrSameRec(R, g)) showToast(escapeHtml(e.message || String(e)), 'error'); }
 }
-/* 新しい提出版を読み込む前：保存済みの下書きはサーバーにある（読み込み直すと「確かめる」が出る） */
-function mrRpFlushKeep(rp){ if (rp) Object.keys(rp.timers || {}).forEach(function(k){ clearTimeout(rp.timers[k]); }); }
-async function mrRpFlush(){ var rp = _mr.rp; if (!rp) return true; var ks = Object.keys(rp.drafts), ok = true; for (var i = 0; i < ks.length; i++) { var d = rp.drafts[ks[i]]; if (d.state !== 'saved' && d.state !== 'new' || d.pending) ok = (await mrRpSave(ks[i])) && ok; } return ok; }
+/* 完了・結果・期限の前に、打った下書きを保存する（前の提出版を見て書いた下書きは、確かめるまで手元に残す） */
+async function mrRpFlush(){ var rp = _mr.rp; if (!rp) return true; var ks = Object.keys(rp.drafts), ok = true; for (var i = 0; i < ks.length; i++) { var d = rp.drafts[ks[i]]; if (d.stale && d.decision) continue; if (d.state !== 'saved' && d.state !== 'new' || d.pending) ok = (await mrRpSave(ks[i])) && ok; } return ok; }
 async function mrResultSave(id){
   var R = _mr.rec, g = _mrGen, el = document.getElementById('mr-res-text'), dn = document.getElementById('mr-res-done'); if (!R || !el) return;
   var text = el.value, done = !!(dn && dn.checked), x = (R.replies || []).filter(function(y){ return y.id === id; })[0];

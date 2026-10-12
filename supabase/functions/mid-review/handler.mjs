@@ -155,7 +155,7 @@ function prevYm(ym) { const [y, m] = ym.split('-').map(Number); return m === 1 ?
 const TX = (v, n) => (typeof v === 'string' ? v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, n) : '');
 // A real calendar date (11-31 and 02-30 are not).
 const DT = v => {
-  if (typeof v !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v)) return '';
+  if (typeof v !== 'string' || !/^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v)) return '';
   const [y, m, d] = v.split('-').map(Number), x = new Date(Date.UTC(y, m - 1, d));
   return x.getUTCFullYear() === y && x.getUTCMonth() === m - 1 && x.getUTCDate() === d ? v : '';
 };
@@ -268,7 +268,7 @@ export function createHandler(deps) {
     stores_save: (a, b) => db.rpc('mr_stores_save', { actor: a, stores: Array.isArray(b.stores) ? b.stores.slice(0, 61).map(s => ({
       store_id: str(s && s.store_id, 30), name: str(s && s.name, 80), am_user: s && s.am_user ? str(s.am_user, 40) : null,
       sort: Number.isInteger(s && s.sort) && s.sort >= 0 && s.sort <= 9999 ? s.sort : 0, active: !(s && s.active === false) })) : null }),
-    get: (a, b) => db.rpc('mr_get', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30) }),
+    get: (a, b) => db.rpc('mr_get', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30), since: NO(b.since) }),
     save: (a, b) => db.rpc('mr_save', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30),
       expect_version: Number.isInteger(b.expect_version) && b.expect_version >= 0 && b.expect_version < 1e6 ? b.expect_version : null, body: normBody(b.body) }),
     submit: (a, b) => db.rpc('mr_submit', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30),
