@@ -122,3 +122,75 @@ Moto さんの「追加修正プロンプト」（10/12）と UI案44 の回答�
 3. migration `20261015090000_mid_review_v2.sql` → postcheck。
 4. PR をマージ（アプリ）。
 5. GM・CEO がメールでログインして担当・閲覧設定（Head Chef・入力担当）を保存。デモを作り直す。
+
+## サーバーの実装（段階 4-1・ブランチ `claude/mid-review-v2`・本番未反映）
+
+画面（`index.html`・`sw.js`）は変えていない（段階 4-2 で作る）。合成データだけで試した。
+
+### 作ったもの
+
+- migration `supabase/migrations/20261015090000_mid_review_v2.sql`：v1066・v1068 の上に流す。行が入っていても使え、2 回流しても同じ。社員の表に `title` が無いとき、同じ社員の有効な利用者が 2 行あるときは、何も変えずに止まる。
+  - 利用者（`mr_members`）：役割に `chef`・`staff`。PIN だけの人の番号はサーバーが作る（Auth の利用者ではない）。社員 1 人に有効な行は 1 つ。
+  - 外れ方（サーバーが毎回）：CEO・GM は v1068 の狭いほう、AM は今までどおり、chef は退職か Head Chef／Corporate Chef でなくなる（役職 chef も可）、staff は退職。
+  - 店（`mr_stores`）：`input_emp`（入力担当）・`viewer_emps`（個人で足す閲覧者）。月（`mr_reviews`）：`input_emp`（その月だけ）・`confirmed_at`・`confirmed_by`。期限や月の入力担当だけを先に決めた月は、何も書いていない行（版 0・状態 `none`）になる。
+  - 返信（`mr_replies`）：`kind`（reply・note・done）・`text`・`due`・`client_id`（同じ `client_id` は 1 件）。前の版の行は残るが v2 では読まない。
+  - 設定 `flags.live_input`（本番の店の入力・初期は OFF）。店舗公開・通知は OFF のまま。
+  - 実効の権限は 1 つの関数 `mr_can`（閲覧・入力・返信・補足・実行完了・確認完了・取り消し・期限・設定と、その理由）。すべての操作がこれを使う。
+  - 提出に要るもの `mr_missing_v2`（§4 の印の順と評価保留の数）。同じ規則を `handler.mjs` の `missingV2` に置いた（画面はこれと同じものを使う）。
+  - 前の版の返信・完了の関数 5 つ（`mr_reply_save`・`mr_reply_delete`・`mr_reply_send`・`mr_complete`・`mr_result_save`）は `gone` を返すだけにした。
+- Edge Function `mid-review`（`handler.mjs`・`index.ts`）：メール（Supabase Auth）か PIN の印（本文の `pin_session` を `verifyPin` で確かめる）のどちらかで入る。`via` と利用者は関数が決める（本文の `via`・`actor` は使わない）。`index.ts` の `verifyPin` はまだ null（PIN は 401）。
+- `db/`：precheck（v1 が入っているか・title・同じ社員の 2 行）、postcheck（v2 の印・chef／staff の外れ・本番の入力の ON／OFF）、rollback（v2 の関数も消す・本番のレビューがあると止まる）、add-member（役割は am・gm・ceo のまま。同じ社員の PIN だけの行（staff）があれば止めてメールの行に置き換える。chef の行があるときは止まる）。
+
+### 画面が使う API（段階 4-2）
+
+POST で `{ action, ... }`。メールは `Authorization: Bearer <アクセスキー>`、PIN は `Authorization: Bearer <anon>` と本文の `pin_session`。
+
+| action | 送るもの | 返るもの |
+|---|---|---|
+| `whoami` | `ym`（任意） | `role`・`via`・`emp_id`・`name`・`flags`・`demo`・`ym`・`today`・`perms`（settings・deadline・confirm・unconfirm・reply・all_live）・`live_stores` |
+| `list` | `env`・`ym` | `stores[]`：`store_id`・`name`・`am_name`・`input`（emp_id・name・from＝month／store・unset）・`perms`・`review`（`status`＝none／draft／submitted／confirmed／legacy、`deadlines`、`overdue`（submit・reply）、`counts`） |
+| `get` | `env`・`ym`・`store_id` | `store`・`perms`・`review`（`body` は入力できる人には作業中のもの、ほかの人には最新の提出版）・`submissions[]`（no・body・snapshot・at・by）・`replies[]`（v2 だけ）・`events[]` |
+| `save` | 上と `expect_version`（何も書いていなければ 0）・`body` | `id`・`version`・`status` |
+| `submit` | 上と `expect_version`・`snapshot` | `submitted_no`・`holds`。足りなければ 422 `incomplete` と `missing[]` |
+| `post` | 上と `kind`・`target`・`text`（1〜1000 字）・`client_id`（UUID）・`decision`・`due`・`sub_no`（任意） | 1 件（`existing`＝同じ `client_id` で前に送ったもの） |
+| `confirm` | 上と `expect_no`（見ている提出版） | `confirmed_at`・`confirmed_by`・`holds`・`missing`・`unanswered` |
+| `unconfirm` | `env`・`ym`・`store_id`（GM・CEO） | `status`＝submitted |
+| `deadline_save` | 上と `deadlines`（submit・reply。空は無し。GM・CEO、PIN でもよい） | `deadlines`・`overdue` |
+| 設定（メールの GM・CEO だけ） | `settings_save`（`key: 'flags'`・`value`：private・live_input）・`access_get`（`ym`）・`access_save`（`stores[]`：store_id・input_emp・viewer_emps をまとめて上書き）・`month_input_save`（store_id・ym・input_emp）・`chef_save`（emp_id・on）・`stores_save`・`members_list`・`demo_reset` | `access_get`：店ごとの入力担当・閲覧者・その月の入力担当、chef、候補（input・viewer・chef）、店ごと・人ごとの `perms` |
+
+- `perms.why` の印：`demo`・`all_stores`・`am_store`・`viewer`・`input`・`live_input_off`・`input_unset`・`email_required`・`no_view`（設定の表では `no_member`・`revoked`・`inactive` も）。
+- `counts`：`miss_cur`・`eval_low`・`measures`・`consult`・`consult_high`・`needs_reply`・`unanswered`・`holds`・`missing`・`focus`（ok・late・done・help・none）。混ぜて足さない。
+- 断るとき：401 unauthorized、403 forbidden・disabled・email_required、404 not_found、400 bad_value・bad_key・bad_candidate、409 conflict・locked・unchanged・new_version・legacy・not_submitted・not_confirmed・not_available・role_exists・member_stopped、410 gone（前の版の返信の操作）、422 incomplete。
+
+### 決めたこと（仕様に書いていなかったところ）
+
+- 閲覧者（`viewer_emps`）は利用者の行を作らない（入れない人は設定の表に `no_member` と出る）。入力担当だけ、行が無ければ staff の行を作る。
+- `chef_save`：設定で作った staff の行は chef にできる（外すと、まだどこかの入力担当なら staff に戻し、そうでなければ止める）。CEO・GM・AM の行は変えない（`role_exists`）。SQL で止めた CEO・GM・AM は、ここからは戻さない（`member_stopped`）。
+- 確認完了は見ている提出版の番号を送る（新しい提出版が来ていれば `new_version`）。
+- 返信は提出のあとだけ。`sub_no` を送らなければ最新の提出版。確認完了のあとも書ける（対策の実行完了はあとで来る）。`note`・`done` は判断・期限を持たない。
+- 返信の期限超過：返信期限を過ぎて、確認完了の前で、最新の提出版に管理側の返信（kind reply）が 1 件も無いとき。未返信の数は最新の提出版への返信だけで数える。
+- 返信期限は提出期限より前にできない（両方あるとき）。
+- 長すぎる文・正しくない日付は断る（切らない・空にしない）。相談は 10 件、重点のキーは 12 まで。
+- `access_get`・`members_list`（設定の画面を読む）もメールの GM・CEO だけ。前の版の `schedule` の設定は v2 では使わない（期限の初期値は無い）。
+- デモの入力担当は架空の番号（`DEMO-1`〜`DEMO-6`）で、名前はデモの中だけにある。
+
+### 試験（合成データ）
+
+- `node --test tests/mid-review-server.test.mjs`：37/37（本物の SQL を PGlite で、本物の handler、メールと PIN は代わりのもの）。
+- わざと壊した 95 通り（SQL 80・handler 15）：1 回目は 80 で落ちた。落ちなかった 15 のうち 14 は試験が足りなかった（2 か所で確かめているもののもう片方・試験の社員の並び）→ 試験を足した。1 つは壊し方が意味を変えていなかった（書き直した）。最後は 95/95 で落ちる。
+- `tests/mid-review-ui.test.mjs` と `tests/review/pr44-mid-review-repro.mjs` は v1068 の画面と前の API のものなので落ちる（段階 4-2 で書き直す）：UI は 55 のうち 16 が通り、36 が落ち、3 が止まる。再現は 4 つとも止まる（前の SQL だけを読み込むので、v2 の関数が無い）。
+- `python3 scripts/check-static-release.py`：pass・1068（画面は変えていない）。
+
+### 段階 4-2（画面）がすること
+
+- 入り方：メール（今までどおり）か PIN（`pin_session` に `window._hwSession`）。権限は `perms` で出し分ける（画面の役割では決めない）。PIN の GM・CEO には設定の画面を出さない。
+- 本文・数字：`normBody`・`normSnap` と同じ形と長さ、`missingV2` と同じ必須の印。数字は会議タブの関数で snapshot v2 を作る。デモは `demoSnapshot` と同じ数字を送る（サーバーが確かめる）。
+- 提出の 422 は `missing` を出す。確認完了は `expect_no` を送る。返信は 1 件ずつ、`client_id` を作って送り、届かなければ同じ `client_id` で送り直す。
+- 担当・閲覧設定は `access_get` の `perms`（理由つき）を出す。`access_save` は店の入力担当と閲覧者をまとめて上書きするので、閲覧者は全部送る。
+- 前の形の記録（`legacy`）は読むだけ。
+
+### 残り
+
+- PIN の印を確かめる `verifyPin`（auth-pin と同じ鍵・形・期限）：auth-pin のソースが要る（Moto さんから。リポジトリには置かない）。それまで PIN は断る。
+- 入れる順は §10 のとおり。関数 v2 から migration までのあいだ、v1068 の画面は動かない（返信は 410）。続けて入れる。
+- 独立レビュー・Codex のレビューはまだ。
