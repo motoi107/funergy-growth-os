@@ -8,7 +8,7 @@ do $$ begin
  end if;
  drop function if exists public.mr_demo_reset(jsonb), public.mr_stores_save(jsonb), public.mr_members_list(jsonb), public.mr_settings_save(jsonb),
   public.mr_list(jsonb), public.mr_whoami(jsonb), public.mr_arr(jsonb), public.mr_event(uuid,text,text,text,jsonb),
-  public.mr_sees(text,uuid,text,uuid), public.mr_setting(text);
+  public.mr_sees(text,uuid,text,uuid,text), public.mr_am_master_ok(uuid,text), public.mr_am_hr_ok(text), public.mr_setting(text);
  if to_regclass('public.mr_reviews') is not null then
   drop function if exists public.mr_summary(public.mr_reviews);
  end if;

@@ -16010,14 +16010,16 @@ function mrIsAdmin(){ return !!(_mr.who && (_mr.who.role==='gm' || _mr.who.role=
 var MR_ERR = {
   unauthorized:['メールの認証が切れました。もう一度認証してください','Your email sign-in has expired. Please sign in again'],
   actor_required:['メールの認証が必要です','Email sign-in is required'],
-  forbidden:['このメールのアカウントは中間レビューの利用者に登録されていません（CEO・GM・AM だけ）','This email account is not registered for the mid-month review (CEO, GM and AM only)'],
+  forbidden:['このメールのアカウントでは中間レビューを開けません（利用者に登録された CEO・GM・AM だけ。AM は社員の表でも AM であること）','This email account cannot open the mid-month review (registered CEO, GM and AM only; an AM must also be an AM in the employee master)'],
   disabled:['中間レビュー（非公開確認）は OFF です','The mid-month review (private check) is off'],
   not_available:['この版では店舗公開・通知は ON にできません','Store publication and notices cannot be turned on in this version'],
   bad_value:['入力の値を確かめてください','Check the values you entered'], bad_key:['入力の値を確かめてください','Check the values you entered']
 };
 function mrErrText(code, status){
   if (MR_ERR[code]) return t(MR_ERR[code][0], MR_ERR[code][1]);
-  return t('うまくいきませんでした','Something went wrong') + (code ? '（' + code + '）' : (status ? '（HTTP ' + status + '）' : ''));
+  /* 知らない文字列は出さない（トーストは HTML として描くため） */
+  var c = /^[a-z_]{1,40}$/.test(String(code || '')) ? code : '';
+  return t('うまくいきませんでした','Something went wrong') + (c ? '（' + c + '）' : (/^\d{3}$/.test(String(status || '')) ? '（HTTP ' + status + '）' : ''));
 }
 async function mrAPI(payload, retried){
   var s = mrSession();
@@ -16050,7 +16052,7 @@ function mrLoginModal(){
   var lp = invInLoginPerson(), e = escapeHtml, keep = '';
   if (lp && invInDefaultPin()) keep = '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin:0 0 10px">'+t('PIN が初期のままなので、この端末では覚えません（毎回メール認証）。PIN を自分の番号に変えると、次からは PIN だけで開けます。','Your PIN is still the initial one, so this device will not remember the sign-in. Change your PIN to open with the PIN next time.')+'</div>';
   else if (lp) keep = '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.6;margin:0 0 10px;cursor:pointer"><input id="mr-keep" type="checkbox" checked style="margin-top:3px">'
-    +'<span>'+t('この端末で覚える：次からは '+e(lp.name||'')+' さんの PIN ログインだけで開けます','Remember on this device: next time '+e(lp.name||'')+'’s PIN login is enough')
+    +'<span>'+t('この端末で覚える：次からは '+e(lp.name||'')+' さんの PIN ログインだけで開けます（中間レビュー・Invoice取込・業務Bot）','Remember on this device: next time '+e(lp.name||'')+'’s PIN login is enough (mid-month review, Invoice intake, Ops Bot)')
     +'<br><span style="color:var(--muted);font-size:11px">'+t('ご本人のメールのときだけ。共有のパソコンでは外してください。','Only with your own email. Untick on a shared computer.')+'</span></span></label>';
   openModal('<div class="modal-title"><span><i class="ti ti-mail"></i> '+t('中間レビューのメール認証','Sign in to the mid-month review')+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.7">'+t('CEO・GM・AM が自分のメールで入ります（最初の 1 回だけ）。','CEO, GM and AM sign in with their own email (the first time only).')+'</div>'
@@ -16182,13 +16184,13 @@ function mrRow(s, r, ym, today){
   if (_mr.env === 'live' && !r && !((_mr.who && _mr.who.flags) || {}).store_publish) { next = t('—（店舗公開前）','— (before store publication)'); due = null; }
   else if (!next) {
     if (status === 'none' || status === 'draft') next = (r && r.reporter) || t('店長','Store manager');
-    else if (status === 'submitted') next = amName || t('GM（AM 未設定）','GM (no AM)');
+    else if (status === 'submitted') next = s.am_ok === false ? t('GM（担当 AM の確認が要る）','GM (check the AM)') : (amName || t('GM（AM 未設定）','GM (no AM)'));
   }
   if (!due && !(_mr.env === 'live' && !r)) due = (status === 'none' || status === 'draft') ? dl.submit : status === 'submitted' ? dl.reply : status === 'consult' ? ((r && r.consult && r.consult.date) || dl.consult_to) : (status === 'done' ? null : dl.decide);
   var overdue = (status !== 'done' && due && today > due) ? mrDays(today, due) : 0;
   var kpi = (_mr.env === 'demo') ? ((s.demo && s.demo.kpi) || {}) : (mrLiveKpi(s.store_id, ym) || {});
   var pl = (_mr.env === 'demo') ? ((s.demo && s.demo.pl && s.demo.pl.state) || 'none') : ((r && r.pl_state) || mrLivePl(s.store_id, mrPrevYm(ym)));
-  return { s:s, r:r, status:status, am:amName, amUnset:!!s.am_unset, next:next, due:due, overdue:overdue, kpi:kpi, pl:pl,
+  return { s:s, r:r, status:status, am:amName, amUnset:!!s.am_unset, amBad:s.am_ok === false, amGm:!!s.am_unset || s.am_ok === false, next:next, due:due, overdue:overdue, kpi:kpi, pl:pl,
     plNote:(_mr.env === 'demo' && s.demo && s.demo.pl && s.demo.pl.note) || '', dl:dl };
 }
 function mrRows(){
@@ -16201,10 +16203,10 @@ function mrFilterRows(rows){
   var f = _mr.f;
   return rows.filter(function(x){
     if (f.store && x.s.store_id !== f.store) return false;
-    if (f.am === '__none' && !x.amUnset) return false;
+    if (f.am === '__none' && !x.amGm) return false;
     if (f.am && f.am !== '__none' && x.am !== f.am) return false;
     if (f.status === 'overdue') return x.overdue > 0;
-    if (f.status === 'am_unset') return x.amUnset;
+    if (f.status === 'am_unset') return x.amGm;
     if (f.status === 'draft') return x.status === 'draft' || x.status === 'none';
     if (f.status && x.status !== f.status) return false;
     return true;
@@ -16215,8 +16217,8 @@ function mrCases(rows){
   var out = [];
   rows.forEach(function(x){
     var r = x.r, nm = x.s.name;
-    if (x.status === 'none' || x.status === 'draft') { if (x.overdue > 0) out.push({ g:'overdue', x:x, title:t('提出','Submission') + ' ' + x.overdue + t(' 日超過',' day(s) late'), next:x.next, due:x.due, am:!x.amUnset, gm:x.amUnset }); return; }
-    if (x.status === 'submitted') out.push({ g:x.overdue > 0 ? 'overdue' : 'reply', x:x, title:x.overdue > 0 ? t('AM 返信','AM reply') + ' ' + x.overdue + t(' 日超過',' day(s) late') : t('AM の返信を待っている','Waiting for the AM reply'), next:x.next, due:x.due, am:true, gm:x.amUnset });
+    if (x.status === 'none' || x.status === 'draft') { if (x.overdue > 0) out.push({ g:'overdue', x:x, title:t('提出','Submission') + ' ' + x.overdue + t(' 日超過',' day(s) late'), next:x.next, due:x.due, am:!x.amGm, gm:x.amGm }); return; }
+    if (x.status === 'submitted') out.push({ g:x.overdue > 0 ? 'overdue' : 'reply', x:x, title:x.overdue > 0 ? t('AM 返信','AM reply') + ' ' + x.overdue + t(' 日超過',' day(s) late') : t('AM の返信を待っている','Waiting for the AM reply'), next:x.next, due:x.due, am:!x.amBad, gm:x.amGm });
     ((r && r.waits) || []).forEach(function(w){
       var g = w.kind === 'escalate' ? 'decision' : w.kind === 'followup' ? 'followup' : 'consult';
       var next = g === 'decision' ? (w.to === 'ceo' ? 'CEO' : 'GM') : g === 'followup' ? ((r && r.reporter) || t('店長','Store manager')) : (w.by || x.am);
@@ -16250,7 +16252,7 @@ function renderMidReview(){
     var kw = invInKeepWho();
     if (invInKept() && _mr.restoreTried !== kw) {
       _mr.restoreTried = kw;
-      setTimeout(function(){ Promise.resolve(invInRestore()).then(function(){ mrRerender(); }, function(){ mrRerender(); }); }, 0);
+      setTimeout(function(){ Promise.resolve(invInRestore(false, true)).then(function(){ mrRerender(); }, function(){ mrRerender(); }); }, 0);
       return head + mrBanner() + mrCard('<div class="mr-m">'+t('この端末で覚えた認証を確かめています…','Checking the sign-in remembered on this device…')+'</div>');
     }
     return head + mrBanner() + mrCard('<div style="display:flex;flex-direction:column;gap:10px;align-items:flex-start">'
@@ -16263,7 +16265,12 @@ function renderMidReview(){
   if (!_mr.who) {
     if (_mr.load.who === 'err') return head + mrBanner() + mrCard('<div style="display:flex;flex-direction:column;gap:10px;align-items:flex-start"><div style="color:var(--red);font-size:13px">'+e(_mr.err)+'</div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="mrRefresh()">'+t('もう一度','Retry')+'</button><button class="btn btn-secondary btn-sm" onclick="mrLoginModal()">'+t('別のメールで認証','Sign in with another email')+'</button></div></div>');
-    mrLoad('who', function(g){ return mrAPI({ action:'whoami' }).then(function(w){ if (g === _mrGen) { _mr.who = w; _mr.sess = mrSession(); } }); });
+    mrLoad('who', function(g){ var s0 = mrSession(); return mrAPI({ action:'whoami' }).then(function(w){
+      if (g !== _mrGen) return;
+      if (mrSession() === s0) { _mr.who = w; _mr.sess = s0; return; }
+      /* 待っているあいだに別のメール認証に変わった：この答えは使わず、今の認証で読み直す */
+      _mrGen++; _mr.load = {}; setTimeout(mrRerender, 0);
+    }); });
     return head + mrBanner() + mrCard('<div class="mr-m">'+t('読み込み中…','Loading…')+'</div>');
   }
   var w = _mr.who, admin = mrIsAdmin();
@@ -16274,10 +16281,11 @@ function renderMidReview(){
   }
   /* 3) 一覧 */
   var ym = mrYm(), key = 'list|' + _mr.env + '|' + ym;
-  if (_mr.listKey !== key) { _mr.list = null; _mr.listKey = key; _mr.kpi = {}; delete _mr.load.list; }
+  if (_mr.listKey !== key) { _mr.list = null; _mr.listKey = key; _mr.kpi = {}; }
   if (!_mr.list) {
-    if (_mr.load.list === 'err') return head + mrBanner() + mrCard('<div style="color:var(--red);font-size:13px">'+e(_mr.err)+'</div><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="mrRefresh()">'+t('もう一度','Retry')+'</button>');
-    mrLoad('list', function(g){ var k0 = key; return mrAPI({ action:'list', env:_mr.env, ym:ym }).then(function(L){ if (g === _mrGen && _mr.listKey === k0) _mr.list = L; }); });
+    if (_mr.load[key] === 'err') return head + mrBanner() + mrCard('<div style="color:var(--red);font-size:13px">'+e(_mr.err)+'</div><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="mrRefresh()">'+t('もう一度','Retry')+'</button>');
+    /* 読み込みの印は環境・月ごと（前の月の読み込みが終わっても、今の月の「読み込み中」を消さない） */
+    mrLoad(key, function(g){ var k0 = key, env0 = _mr.env; return mrAPI({ action:'list', env:env0, ym:ym }).then(function(L){ if (g === _mrGen && _mr.listKey === k0) _mr.list = L; }); });
     return head + mrBanner() + mrEnvBar() + mrCard('<div class="mr-m">'+t('読み込み中…','Loading…')+'</div>');
   }
   var rows = mrRows(), today = mrToday();
@@ -16336,7 +16344,7 @@ function mrCountChips(rows){
     ['consult', t('個別相談予定','1:1'), n(function(x){ return x.status === 'consult'; })],
     ['done', t('レビュー完了','Done'), n(function(x){ return x.status === 'done'; })],
     ['overdue', t('期限超過','Overdue'), n(function(x){ return x.overdue > 0; })] ];
-  if (admin) chips.push(['am_unset', t('AM 未設定','No AM'), n(function(x){ return x.amUnset; })]);
+  if (admin) chips.push(['am_unset', t('AM 未設定・要確認','No AM / check AM'), n(function(x){ return x.amGm; })]);
   var urgent = n(function(x){ return x.r && x.r.urgent; });
   return '<div class="mr-chips">' + chips.map(function(c){
     var on = _mr.f.status === c[0], st = c[0] === 'overdue' ? ' mr-chip-red' : c[0] === 'am_unset' ? ' mr-chip-or' : '';
@@ -16394,13 +16402,13 @@ function mrAllHtml(rows){
   if (!list.length) return h + mrCard('<div class="mr-m">'+t('条件に合う店はありません。','No stores match.')+'</div>');
   h += '<div class="card mr-tablewrap" style="padding:0"><table class="mr-table"><thead><tr><th>'+t('店舗・担当','Store, AM')+'</th><th>'+t('状態','Status')+'</th><th>'+t('次に対応・期限','Next, due')+'</th><th>'+t('当月 KPI（前日まで）','KPIs (to yesterday)')+'</th><th>'+t('重点','Focus')+'</th><th>'+t('相談','Questions')+'</th><th>'+e(t(Number(mrPrevYm(mrYm()).slice(5,7)) + ' 月 PL', 'Last month PL'))+'</th></tr></thead><tbody>';
   list.forEach(function(x){
-    h += '<tr onclick="mrOpenStore(\''+e(x.s.store_id)+'\')"><td><button class="mr-linkb" onclick="event.stopPropagation();mrOpenStore(\''+e(x.s.store_id)+'\')"><b>'+e(x.s.name)+'</b></button><div class="mr-m'+(x.amUnset ? ' mr-or' : '')+'">'+(x.amUnset ? t('AM 未設定 → GM が確認','No AM → GM checks') : e(x.am))+'</div></td>'
+    h += '<tr onclick="mrOpenStore(\''+e(x.s.store_id)+'\')"><td><button class="mr-linkb" onclick="event.stopPropagation();mrOpenStore(\''+e(x.s.store_id)+'\')"><b>'+e(x.s.name)+'</b></button><div class="mr-m'+(x.amGm ? ' mr-or' : '')+'">'+(x.amUnset ? t('AM 未設定 → GM が確認','No AM → GM checks') : e(x.am) + (x.amBad ? '<br>'+t('この AM は今この店を見られない → 設定で確認','This AM cannot see the store now → check settings') : ''))+'</div></td>'
       + '<td>'+mrStatusCell(x)+'</td><td>'+mrNextHtml(x)+'</td><td>'+mrKpiCell(x)+'</td><td>'+mrFocusHtml(x.r)+'</td><td>'+mrIssueHtml(x)+'</td><td>'+mrPlTag(x)+'</td></tr>';
   });
   h += '</tbody></table><div class="mr-m" style="padding:8px 12px">'+t('判定は会議タブの今の閾値（設定で変えられる）。目標が無いものは「未設定」、実績が無いものは「未取得」。','Judged with the meeting tab’s current thresholds. No target = “Not set”, no actual = “No data”.')+(mrIsAdmin() ? '' : t(' AM は担当の店だけが並ぶ。',' AMs see their own stores only.'))+'</div></div>';
   h += '<div class="mr-cards">' + list.map(function(x){
     return '<div class="card mr-card"><div class="mr-cardh"><b style="font-size:15px">'+e(x.s.name)+'</b>'+mrStatusTag(x)+(x.overdue > 0 ? '<span class="mr-tag" style="background:#fdecec;color:#b42323">'+t('期限超過 ','Overdue ')+x.overdue+t(' 日',' d')+'</span>' : '')+'</div>'
-      + '<div class="mr-m">'+t('次に対応：','Next: ')+'<b style="color:var(--tm)">'+e(x.status === 'done' ? '—' : (x.next || ''))+'</b>'+(x.due && x.status !== 'done' ? '・'+e(mrMD(x.due)) : '')+(x.amUnset ? '・<span class="mr-or">'+t('AM 未設定','No AM')+'</span>' : (x.am && x.am !== x.next ? '・'+t('担当 ','AM ')+e(x.am) : ''))+'</div>'
+      + '<div class="mr-m">'+t('次に対応：','Next: ')+'<b style="color:var(--tm)">'+e(x.status === 'done' ? '—' : (x.next || ''))+'</b>'+(x.due && x.status !== 'done' ? '・'+e(mrMD(x.due)) : '')+(x.amUnset ? '・<span class="mr-or">'+t('AM 未設定','No AM')+'</span>' : x.amBad ? '・<span class="mr-or">'+t('担当 AM の確認が要る','Check the AM')+'</span>' : (x.am && x.am !== x.next ? '・'+t('担当 ','AM ')+e(x.am) : ''))+'</div>'
       + '<div class="mr-kbox">'+mrKpiCell(x)+'</div>'
       + '<div class="mr-m">'+t('重点：','Focus: ')+'</div>'+mrFocusHtml(x.r)+'<div class="mr-m">'+t('相談：','Questions: ')+mrIssueHtml(x)+'　'+t('前月 PL：','Last month PL: ')+mrPlTag(x)+'</div>'
       + '<button class="btn btn-secondary btn-sm mr-open" onclick="mrOpenStore(\''+e(x.s.store_id)+'\')">'+t('開く','Open')+'</button></div>';
@@ -16422,7 +16430,7 @@ function mrQueueHtml(rows, cases){
       var x = c.x;
       h += '<button class="mr-qi" onclick="mrOpenStore(\''+e(x.s.store_id)+'\')"><span class="mr-cardh"><b>'+e(x.s.name)+'</b>'
         + (c.g === 'decision' ? '<span class="mr-tag" style="background:#efe9fd;color:#5b34c9">'+(c.to === 'ceo' ? t('判断待ち（CEO）','Decision (CEO)') : t('判断待ち（GM）','Decision (GM)'))+'</span>' : mrStatusTag(x))
-        + (c.sev ? mrSevTag(c.sev) : '') + (x.amUnset ? '<span class="mr-tag" style="background:#fdeee4;color:#8f380a">'+t('AM 未設定','No AM')+'</span>' : '') + '</span>'
+        + (c.sev ? mrSevTag(c.sev) : '') + (x.amGm ? '<span class="mr-tag" style="background:#fdeee4;color:#8f380a">'+(x.amUnset ? t('AM 未設定','No AM') : t('AM 要確認','Check AM'))+'</span>' : '') + '</span>'
         + (c.title ? '<span style="font-size:12.5px">'+e(c.title)+'</span>' : '')
         + '<span class="mr-m">'+t('次：','Next: ')+e(c.next || '')+(c.due ? '・'+e(mrMD(c.due)) : '')
         + (c.consult ? '・'+e((c.consult.time || '') + ((c.consult.people || []).length ? '・' + c.consult.people.join('・') : '')) : '') + '</span></button>';
@@ -16464,9 +16472,12 @@ function mrSettingsHtml(){
   h += '<div class="mr-sec"><b>'+t('本番の店舗と AM の担当','Live stores and AM in charge')+'</b>';
   if (!_mr.members || !_mr.liveL) h += '<div class="mr-m">'+((_mr.load.members === 'err' || _mr.load.liveL === 'err') ? e(_mr.err) : t('読み込み中…','Loading…'))+'</div>';
   else {
-    var ams = _mr.members.filter(function(m){ return m.role === 'am' && m.enabled; });
     /* 名前は社員の表（emp_id）を先に。利用者の表の名前は控え */
-    var empName = function(m){ if (!m) return ''; try { var em = m.emp_id != null ? (getEmployees() || []).find(function(x){ return x && String(x.id) === String(m.emp_id); }) : null; if (em && em.name) return em.name; } catch(err) {} return m.name || m.emp_id || ''; };
+    var empOf = function(m){ try { return m && m.emp_id != null ? (getEmployees() || []).find(function(x){ return x && String(x.id) === String(m.emp_id); }) || null : null; } catch(err) { return null; } };
+    var empName = function(m){ if (!m) return ''; var em = empOf(m); if (em && em.name) return em.name; return m.name || m.emp_id || ''; };
+    /* 選べるのは、利用者の表で有効な AM で、社員の表でも AM（退職でない）の人（サーバーも同じ確認をする） */
+    var amUsable = function(m){ var em = empOf(m); return !!(m && m.role === 'am' && m.enabled && em && em.role === 'am' && em.status !== '退職'); };
+    var ams = _mr.members.filter(amUsable);
     var saved = {}; ((_mr.liveL && _mr.liveL.stores) || []).forEach(function(x){ saved[x.store_id] = x; });
     var stores = ((typeof activeStores === 'function' ? activeStores() : getStoresAll()) || []).map(function(st){ return { id:st.id, name:st.name || st.id, am:st.am || '', active:true }; });
     Object.keys(saved).forEach(function(id){ if (!stores.some(function(x){ return x.id === id; })) stores.push({ id:id, name:saved[id].name || id, am:'', active:false }); });
@@ -16474,14 +16485,24 @@ function mrSettingsHtml(){
       + '<div class="mr-tablewrap" style="display:block;overflow-x:auto"><table class="mr-table mr-table-s"><thead><tr><th>'+t('店舗','Store')+'</th><th>'+t('店舗マスターの AM 欄','Store master AM')+'</th><th>'+t('担当 AM（保存する）','AM in charge (to save)')+'</th><th>'+t('いまの値','Now')+'</th></tr></thead><tbody>';
     stores.forEach(function(st, i){
       var cur, note;
-      if (saved[st.id]) { cur = saved[st.id].am_user || ''; note = t('保存済み','Saved'); }
+      var stopped = null;
+      if (saved[st.id]) {
+        cur = saved[st.id].am_user || ''; note = t('保存済み','Saved');
+        if (cur) {
+          var sm = _mr.members.filter(function(m){ return m.user_id === cur; })[0];
+          if (!amUsable(sm)) { stopped = sm || { user_id:cur, name:'?' }; note = t('保存済みの AM が停止中・AM ではない（選び直して保存）','The saved AM is stopped or no longer an AM (choose again and save)'); }
+          else if (String(st.am || '') !== empName(sm)) note = t('店舗マスターの AM 欄と違う：この AM は今は見られない（確かめて保存）','Differs from the store master’s AM: this AM cannot see it now (check and save)');
+          else if (saved[st.id].am_ok === false) note = t('この AM は今は見られない（確かめて保存）','This AM cannot see it now (check and save)');
+        }
+      }
       else {
         var name = String(st.am || '').trim(), hits = name ? ams.filter(function(m){ return empName(m).trim() === name; }) : [];
         cur = hits.length === 1 ? hits[0].user_id : '';
         note = hits.length === 1 ? t('案（同じ名前の AM）','Proposal (same name)') : hits.length > 1 ? t('案なし（同じ名前の AM が 2 人以上）','No proposal (2+ AMs share the name)') : t('案なし','No proposal');
       }
       h += '<tr><td>'+e(st.name)+(st.active ? '' : '<div class="mr-m">'+t('今は使っていない店','Not active now')+'</div>')+'</td><td>'+e(st.am || '—')+'</td><td><select class="mr-sel mr-amsel" aria-label="'+e(st.name)+'" data-store="'+e(st.id)+'" data-name="'+e(st.name)+'" data-sort="'+(i + 1)+'" data-active="'+(st.active ? 1 : 0)+'"><option value="">'+t('AM 未設定（GM が確認）','No AM (GM checks)')+'</option>'
-        + ams.map(function(m){ return '<option value="'+e(m.user_id)+'"'+(m.user_id === cur ? ' selected' : '')+'>'+e(empName(m))+'</option>'; }).join('') + '</select></td><td><span class="mr-m">'+e(note)+'</span></td></tr>';
+        + (stopped ? '<option value="'+e(stopped.user_id)+'" data-stopped="1" selected>'+e(empName(stopped) || '?')+t('（停止中）',' (stopped)')+'</option>' : '')
+        + ams.map(function(m){ return '<option value="'+e(m.user_id)+'"'+(!stopped && m.user_id === cur ? ' selected' : '')+'>'+e(empName(m))+'</option>'; }).join('') + '</select></td><td><span class="mr-m">'+e(note)+'</span></td></tr>';
     });
     h += '</tbody></table></div><button class="btn btn-secondary btn-sm" '+(_mr.busy ? 'disabled' : '')+' onclick="mrSaveStores()">'+t('この担当で保存','Save these AMs')+'</button>';
     h += '<div style="margin-top:10px"><b>'+t('利用者','Members')+'</b><div class="mr-m">'+_mr.members.map(function(m){ return e(String(m.role).toUpperCase() + ' ' + (empName(m) || '—') + (m.enabled ? '' : t('（停止）',' (off)'))); }).join('、')+'</div>'
@@ -16495,7 +16516,7 @@ async function mrRun(label, fn){
   if (_mr.busy) return;
   _mr.busy = label; mrRerender();
   try { await fn(); showToast(t('保存しました','Saved'), 'success'); }
-  catch(e) { showToast(e.message || String(e), 'error'); }
+  catch(e) { showToast(escapeHtml(e.message || String(e)), 'error'); }
   finally { _mr.busy = ''; mrRefreshKeep(); }
 }
 /* 保存のあと：同じ画面の状態（タブ・絞り込み・設定を開いたまま）で読み直す */
@@ -16507,7 +16528,11 @@ function mrSaveSchedule(){
 }
 function mrSaveStores(){
   var sel = Array.prototype.slice.call(document.querySelectorAll('.mr-amsel'));
-  var stores = sel.map(function(s){ return { store_id:s.getAttribute('data-store'), name:s.getAttribute('data-name'), am_user:s.value || null, sort:Number(s.getAttribute('data-sort')) || 0, active:s.getAttribute('data-active') !== '0' }; });
+  /* 停止中の AM のままの店は送らない（その店は今の保存のまま。選び直してから保存） */
+  var stoppedSel = function(s){ var o = s.options && s.selectedIndex >= 0 ? s.options[s.selectedIndex] : null; return !!(o && o.getAttribute && o.getAttribute('data-stopped') === '1'); };
+  var skipped = sel.filter(stoppedSel).length;
+  var stores = sel.filter(function(s){ return !stoppedSel(s); }).map(function(s){ return { store_id:s.getAttribute('data-store'), name:s.getAttribute('data-name'), am_user:s.value || null, sort:Number(s.getAttribute('data-sort')) || 0, active:s.getAttribute('data-active') !== '0' }; });
+  if (skipped) showToast(t('停止中の AM のままの店（' + skipped + ' 店）は保存しませんでした。担当を選び直してください','Stores still set to a stopped AM (' + skipped + ') were not saved. Choose the AM again'), 'warning');
   if (!stores.length) return;
   return mrRun('stores', function(){ return mrAPI({ action:'stores_save', stores:stores }); });
 }
@@ -44931,7 +44956,7 @@ async function invInAccountIsMine(token){
   } catch(e) { return false; }
 }
 /* 覚えている鍵で認証し直す（PIN でログインしたあと、画面を開いたときに 1 回） */
-async function invInRestore(scheduled){
+async function invInRestore(scheduled, needBot){   /* v1066: needBot＝中間レビュー（_botSession だけを使う。管理者ページのログインがあっても覚えた鍵で入る） */
   var who = invInKeepWho(), p = invInKeepGet(who);
   if (_invIn.restoring && !scheduled) return false;              /* 画面が予約したものが走っている */
   _invIn.restoring = who || 'none'; _invIn.restoreTried = who;
@@ -44942,7 +44967,7 @@ async function invInRestore(scheduled){
     if (r.ok && j && j.access_token && j.refresh_token) {
       var cur = invInKeepGet(who), stored = !!cur && (cur.rt === j.refresh_token || (cur.rt === p.rt && invInKeepSet(j.refresh_token, who)));   /* 取り替わった鍵を覚え直す（消された・別のタブが別の鍵に取り替えたときは触らない。同じ鍵をもらったタブは同じ鍵の続き） */
       if (invInKeepWho() !== who) return false;                  /* 待っているあいだにログアウト・別の人がログイン：渡さない */
-      if (invInSigned()) return true;                            /* そのあいだに別のメール認証をした：上書きしない */
+      if (needBot ? !!(_botSession && _botSession.access_token) : invInSigned()) return true;   /* そのあいだに別のメール認証をした：上書きしない */
       _botSession = { access_token:j.access_token, refresh_token:j.refresh_token };
       _invIn.keptSession = stored ? _botSession : null; _invIn.error = '';   /* 覚え直せなかった（端末がいっぱい・別のタブ）ときは、このログインを覚えた鍵として扱わない */
       return true;

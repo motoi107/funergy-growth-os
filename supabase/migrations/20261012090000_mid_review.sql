@@ -4,6 +4,8 @@
 -- people table here (mr_members) decides the role and, for an AM, the stores.
 -- Nothing here reads or changes PL, sales, budgets, attendance, tasks or evaluations.
 -- Store publication and outside notices stay off in this edition (mr_settings 'flags').
+-- It also reads (never writes) the shared employee and store masters (employees, stores), only to take access away:
+-- an AM who is no longer an AM in the employee master, or no longer the AM in the store master's AM column, is refused.
 
 create table public.mr_settings(
  key text primary key,
@@ -133,8 +135,27 @@ language sql stable security invoker set search_path=public,pg_temp as $$
  select coalesce((select value from public.mr_settings where key=p_key), '{}'::jsonb);
 $$;
 
+-- The shared masters can be changed from the app, so they are used only to refuse, never to let anyone in.
+-- An AM must still be an AM (and not 退職) in the employee master.
+create function public.mr_am_hr_ok(p_emp text) returns boolean
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select coalesce(p_emp, '') <> '' and exists(select 1 from public.employees e
+  where e.id::text = p_emp and e.role = 'am' and coalesce(e.status, '') <> '退職');
+$$;
+
+-- The store master's AM column must still name this AM (the app's own rule for an AM's stores, myAmStores: same name).
+-- When the store master moves a store to another AM, the old AM loses it at once; the new AM gets it after a GM saves.
+create function public.mr_am_master_ok(p_user uuid, p_store text) returns boolean
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select exists(select 1 from public.mr_members m
+  join public.employees e on e.id::text = m.emp_id
+  join public.stores st on st.id::text = p_store
+  where m.user_id = p_user and coalesce(e.name, '') <> '' and st.am = e.name);
+$$;
+
 -- The signed-in person, if they may use the feature with one of these roles. p_enabled: also require the private check to be on.
 -- A CEO / GM must also still be CEO / GM in manager_auth: taking someone off there takes them off here at once.
+-- An AM must also still be an AM in the employee master (not 退職, not moved to another role such as G4).
 create function public.mr_auth(p_actor uuid, p_roles text[], p_enabled boolean) returns public.mr_members
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare m public.mr_members;
@@ -143,14 +164,17 @@ begin
  select * into m from public.mr_members where user_id=p_actor and enabled;
  if m.user_id is null or not (m.role = any(p_roles)) then raise exception 'forbidden'; end if;
  if m.role in ('ceo','gm') and not exists(select 1 from public.manager_auth a where a.user_id=m.user_id and a.role in ('ceo','gm')) then raise exception 'forbidden'; end if;
+ if m.role = 'am' and not public.mr_am_hr_ok(m.emp_id) then raise exception 'forbidden'; end if;
  if p_enabled and coalesce((public.mr_setting('flags')->>'private')::boolean, false) is not true then raise exception 'disabled'; end if;
  return m;
 end $$;
 
 -- Whether this person may see this store's reviews. demo: every member sees the fictional stores.
-create function public.mr_sees(p_role text, p_user uuid, p_env text, p_am_user uuid) returns boolean
-language sql immutable security invoker set search_path=public,pg_temp as $$
- select p_env = 'demo' or p_role in ('ceo','gm') or (p_role = 'am' and p_am_user is not null and p_am_user = p_user);
+-- live: an AM needs both the GM-confirmed copy (mr_stores.am_user) and the store master's AM column (never wider than the app).
+create function public.mr_sees(p_role text, p_user uuid, p_env text, p_am_user uuid, p_store text) returns boolean
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select p_env = 'demo' or p_role in ('ceo','gm')
+  or (p_role = 'am' and p_am_user is not null and p_am_user = p_user and public.mr_am_master_ok(p_user, p_store));
 $$;
 
 create function public.mr_event(p_review uuid, p_env text, p_actor text, p_kind text, p_data jsonb) returns void
@@ -199,7 +223,7 @@ begin
   -- Nothing about stores while the private check is off.
   'live_stores', case when coalesce((public.mr_setting('flags')->>'private')::boolean, false) is not true then '[]'::jsonb else
     (select coalesce(jsonb_agg(s.store_id order by s.sort, s.store_id), '[]'::jsonb) from public.mr_stores s
-     where s.env='live' and s.active and public.mr_sees(m.role, m.user_id, s.env, s.am_user)) end);
+     where s.env='live' and s.active and public.mr_sees(m.role, m.user_id, s.env, s.am_user, s.store_id)) end);
 end $$;
 
 create function public.mr_list(p jsonb) returns jsonb
@@ -213,12 +237,16 @@ begin
   'stores', (select coalesce(jsonb_agg(jsonb_build_object('store_id', s.store_id, 'name', s.name,
        'am_name', coalesce(am.name, s.am_name), 'am_user', s.am_user, 'am_emp_id', am.emp_id, 'am_unset', (s.am_user is null and s.am_name is null),
        'mine', (s.am_user is not null and s.am_user = m.user_id), 'sort', s.sort,
+       -- live, GM / CEO: false when the saved AM cannot see the store now (stopped, not an AM in the employee master, or the
+       -- store master names someone else). The GM then checks the store and saves the AM again.
+       'am_ok', case when s.env <> 'live' or s.am_user is null or m.role = 'am' then null
+         else coalesce(am.enabled, false) and public.mr_am_hr_ok(am.emp_id) and public.mr_am_master_ok(s.am_user, s.store_id) end,
        'demo', case when s.env='demo' then s.demo else null end) order by s.sort, s.store_id), '[]'::jsonb)
      from public.mr_stores s left join public.mr_members am on am.user_id=s.am_user
-     where s.env=v_env and s.active and public.mr_sees(m.role, m.user_id, s.env, s.am_user)),
+     where s.env=v_env and s.active and public.mr_sees(m.role, m.user_id, s.env, s.am_user, s.store_id)),
   'reviews', (select coalesce(jsonb_agg(public.mr_summary(r) order by r.store_id), '[]'::jsonb)
      from public.mr_reviews r join public.mr_stores s on s.env=r.env and s.store_id=r.store_id
-     where r.env=v_env and r.ym=v_ym and s.active and public.mr_sees(m.role, m.user_id, s.env, s.am_user)));
+     where r.env=v_env and r.ym=v_ym and s.active and public.mr_sees(m.role, m.user_id, s.env, s.am_user, s.store_id)));
 end $$;
 
 -- GM / CEO: the on/off switches and the month's schedule. Works while the private check is off (to turn it on).
@@ -235,7 +263,7 @@ begin
   v := jsonb_build_object('private', (v->>'private')::boolean, 'store_publish', false, 'notify', false);
  elsif k = 'schedule' then
   foreach d in array array['submit_day','reply_day','decide_day','consult_from','consult_to'] loop
-   if jsonb_typeof(v->d) is distinct from 'number' or (v->>d) !~ '^[0-9]+$' or (v->>d)::integer < 1 or (v->>d)::integer > 28 or (v->>d)::integer < prev then
+   if jsonb_typeof(v->d) is distinct from 'number' or (v->>d) !~ '^[0-9]{1,2}$' or (v->>d)::integer < 1 or (v->>d)::integer > 28 or (v->>d)::integer < prev then
     raise exception 'bad_value'; end if;
    prev := (v->>d)::integer;
   end loop;
@@ -267,8 +295,10 @@ begin
  for s in select * from jsonb_array_elements(p->'stores') loop
   if (s->>'store_id') is null or (s->>'store_id') !~ '^[A-Za-z0-9-]{1,24}$' or coalesce(length(s->>'name'),0) not between 1 and 60 then raise exception 'bad_value'; end if;
   if nullif(s->>'am_user','') is not null and (s->>'am_user') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then raise exception 'bad_value'; end if;
+  if (s->'sort') is not null and jsonb_typeof(s->'sort') <> 'null' and (jsonb_typeof(s->'sort') <> 'number' or (s->>'sort') !~ '^[0-9]{1,4}$') then raise exception 'bad_value'; end if;
+  if (s->'active') is not null and jsonb_typeof(s->'active') not in ('boolean','null') then raise exception 'bad_value'; end if;
   v_am := nullif(s->>'am_user','')::uuid;
-  if v_am is not null and not exists(select 1 from public.mr_members x where x.user_id=v_am and x.enabled and x.role='am') then raise exception 'bad_value'; end if;
+  if v_am is not null and not exists(select 1 from public.mr_members x where x.user_id=v_am and x.enabled and x.role='am' and public.mr_am_hr_ok(x.emp_id)) then raise exception 'bad_value'; end if;
   insert into public.mr_stores(env, store_id, name, am_user, sort, active, updated_at, updated_by)
    values('live', s->>'store_id', s->>'name', v_am, coalesce((s->>'sort')::integer, 0), coalesce((s->>'active')::boolean, true), now(), m.user_id::text)
    on conflict (env, store_id) do update set name=excluded.name, am_user=excluded.am_user, sort=excluded.sort, active=excluded.active,
@@ -314,7 +344,7 @@ begin
 end $$;
 
 do $$ declare f text; begin
- foreach f in array array['mr_setting(text)','mr_auth(uuid,text[],boolean)','mr_sees(text,uuid,text,uuid)','mr_event(uuid,text,text,text,jsonb)',
+ foreach f in array array['mr_setting(text)','mr_auth(uuid,text[],boolean)','mr_sees(text,uuid,text,uuid,text)','mr_am_hr_ok(text)','mr_am_master_ok(uuid,text)','mr_event(uuid,text,text,text,jsonb)',
   'mr_arr(jsonb)','mr_summary(public.mr_reviews)','mr_whoami(jsonb)','mr_list(jsonb)','mr_settings_save(jsonb)','mr_members_list(jsonb)',
   'mr_stores_save(jsonb)','mr_demo_reset(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);

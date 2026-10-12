@@ -104,7 +104,9 @@ export function createHandler(deps) {
   async function actorOf(req) {
     const auth = req.headers.get('authorization') || '';
     if (!auth.startsWith('Bearer ') || auth === 'Bearer ' + anon || auth.length > 4000) return null;
-    const r = await fetch(url + '/auth/v1/user', { headers: { apikey: anon, authorization: auth } });
+    // Do not wait forever for Auth (the request would hang until the platform's own limit).
+    const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined;
+    const r = await fetch(url + '/auth/v1/user', { headers: { apikey: anon, authorization: auth }, signal });
     if (!r.ok) return null;
     const u = await r.json();
     return u && typeof u.id === 'string' ? u.id : null;
@@ -118,7 +120,7 @@ export function createHandler(deps) {
     members_list: a => db.rpc('mr_members_list', { actor: a }),
     stores_save: (a, b) => db.rpc('mr_stores_save', { actor: a, stores: Array.isArray(b.stores) ? b.stores.slice(0, 61).map(s => ({
       store_id: str(s && s.store_id, 30), name: str(s && s.name, 80), am_user: s && s.am_user ? str(s.am_user, 40) : null,
-      sort: Number.isInteger(s && s.sort) ? s.sort : 0, active: !(s && s.active === false) })) : null }),
+      sort: Number.isInteger(s && s.sort) && s.sort >= 0 && s.sort <= 9999 ? s.sort : 0, active: !(s && s.active === false) })) : null }),
     demo_reset: async a => {
       const w = await db.rpc('mr_whoami', { actor: a });
       const ym = w && w.demo && /^[0-9]{4}-(0[1-9]|1[0-2])$/.test(w.demo.ym || '') ? w.demo.ym : '2026-10';

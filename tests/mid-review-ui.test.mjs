@@ -20,7 +20,12 @@ const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000
 async function server({ on = true, demo = true } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
-    create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;`);
+    create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;
+    create table public.employees(id text primary key, name text, role text, status text, data jsonb);
+    create table public.stores(id text primary key, name text, am text, active boolean, data jsonb);
+    grant select on public.employees, public.stores to service_role;
+    insert into public.employees(id, name, role) values ('E5','Yuki','am'),('E6','Second AM','am'),('E7','Twin','am'),('E8','Twin','am');
+    insert into public.stores(id, name, am) values ('F01','ToriTon','Yuki'),('F02','Tenkichi','Second AM'),('F05','Marujuu','Someone else'),('F06','LaLa',null),('F09','Closed','Yuki');`);
   for (const [k, r, e] of [['ceo', 'ceo', 'E1'], ['gm', 'gm', 'E2'], ['office', 'office', 'E3']]) await pg.query('insert into manager_auth values($1,$2,$3)', [U[k], r, e]);
   await pg.exec(SQL);
   await pg.query(`insert into mr_members(user_id, emp_id, name, role) values($1,'E5','Yuki','am'),($2,'E6',null,'am')`, [U.am1, U.am2]);
@@ -50,7 +55,7 @@ function app(S, { who = 'gm', role = 'gm', signed = true, kept = null, lp = { id
       throw new Error('unexpected ' + path);
     },
     bizNow: () => new Date(2026, 9, 12, 9, 30), bizYm: () => '2026-10', daysOfYm: ym => Array.from({ length: 31 }, (_, i) => ({ date: ym + '-' + String(i + 1).padStart(2, '0') })),
-    getStoresAll: () => stores, activeStores: () => stores.filter(s => s.active !== false), getEmployees: () => [{ id: 'E6', name: 'Second AM' }],
+    getStoresAll: () => stores, activeStores: () => stores.filter(s => s.active !== false), getEmployees: () => [{ id: 'E5', name: 'Yuki', role: 'am' }, { id: 'E6', name: 'Second AM', role: 'am' }],
     keyKpiStats: ([s]) => ({ sid: s.id, sales: (kpi[s.id] && kpi[s.id].sales && kpi[s.id].sales.act) || 0 }), _meetApplyPl: k => k, meetingBudgetKpi: k => ({ ...k, budget: kpi[k.sid] && kpi[k.sid].sales ? kpi[k.sid].sales.tgt : 0 }),
     _meetKpiRows: p => ['sales', 'fc', 'labor'].map(key => ({ key, act: kpi[p.sid] && kpi[p.sid][key] ? kpi[p.sid][key].act : 0, tgt: kpi[p.sid] && kpi[p.sid][key] ? kpi[p.sid][key].tgt : null, lower: key !== 'sales' })),
     _meetConfirmState: (sid) => (kpi[sid] && kpi[sid].pl) || 'prov',
@@ -118,15 +123,20 @@ test('sign-in remembers only when the server says the account is this PIN person
   const o = app(S, { signed: false });
   o.dom = { 'mr-email': { value: 'am1@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
   await o.run('mrLogin()'); assert.deepEqual(o.keep, [[null, 'e:E2']]);
-  // No employee id on the server: works this time, not remembered, and says so.
+  // A GM with no employee id on the server: works this time, not remembered, and says so.
+  await S.pg.exec(`reset role; update mr_members set emp_id=null where user_id='${U.gm}'; set role service_role;`);
+  const n = app(S, { signed: false });
+  n.dom = { 'mr-email': { value: 'gm@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
+  await n.run('mrLogin()'); assert.deepEqual(n.keep, [[null, 'e:E2']]); assert.match(n.toasts[0][0], /社員の登録/); assert.equal(n.M().who.role, 'gm');
+  // An AM with no employee id cannot get in at all (the server checks the AM in the employee master).
   await S.pg.exec(`reset role; update mr_members set emp_id=null where user_id='${U.am2}'; set role service_role;`);
-  const n = app(S, { signed: false, lp: { id: 'E6', name: 'AM Two' } });
-  n.dom = { 'mr-email': { value: 'am2@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
-  await n.run('mrLogin()'); assert.deepEqual(n.keep, [[null, 'e:E6']]); assert.match(n.toasts[0][0], /社員の登録/);
+  const na = app(S, { signed: false, lp: { id: 'E6', name: 'Second AM' } });
+  na.dom = { 'mr-email': { value: 'am2@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
+  await na.run('mrLogin()'); assert.match(na.dom['mr-login-error'].textContent, /開けません/); assert.equal(na.M().who, null); assert.deepEqual(na.keep, []);
   // Not a member (office): the error stays in the dialog.
   const f = app(S, { signed: false, lp: { id: 'E3', name: 'Office' } });
   f.dom = { 'mr-email': { value: 'office@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
-  await f.run('mrLogin()'); assert.match(f.dom['mr-login-error'].textContent, /利用者に登録されていません/); assert.equal(f.M().who, null);
+  await f.run('mrLogin()'); assert.match(f.dom['mr-login-error'].textContent, /開けません/); assert.equal(f.M().who, null);
   // Initial PIN: no remember box.
   const d = app(S, { signed: false, defaultPin: true }); d.run('mrLoginModal()');
   assert.doesNotMatch(d.modals[0], /mr-keep/); assert.match(d.modals[0], /PIN が初期のまま/);
@@ -141,7 +151,7 @@ test('off: nobody can list; GM / CEO get the switch, an AM is told to wait; erro
   await g.run('mrSetFlag(true)'); await g.flush();
   assert.match(g.html, /デモがまだありません/);
   const x = app(S, { who: 'office', role: 'gm' });
-  assert.match(await x.show(), /利用者に登録されていません/);
+  assert.match(await x.show(), /開けません/);
   const n = app(S, { net: false });
   assert.match(await n.show(), /mid-review）につながりません/);
 });
@@ -150,7 +160,7 @@ test('全店 (A): the UI案43 demo — counts, status, next person, overdue, KPI
   const S = await server();
   const c = app(S);
   const h = await c.show(), s = strip(h);
-  for (const [l, n] of [['未提出', 1], ['AM 返信待ち', 1], ['追加確認', 1], ['判断待ち', 1], ['個別相談予定', 1], ['レビュー完了', 1], ['期限超過', 2], ['AM 未設定', 1]])
+  for (const [l, n] of [['未提出', 1], ['AM 返信待ち', 1], ['追加確認', 1], ['判断待ち', 1], ['個別相談予定', 1], ['レビュー完了', 1], ['期限超過', 2], ['AM 未設定・要確認', 1]])
     assert.ok(new RegExp(l + ' <b>' + n + '</b>').test(h), l);
   assert.match(s, /港町（デモ） AM 佐藤（デモ） AM 返信待ち 期限超過 1 日 AM 佐藤（デモ） 10\/17 売上 98\.1% 注意 原価率 33\.2% 未達 人件費率 25\.8% 達成 完了 1・順調 1 遅延 1 1 件 要注意 確定/);
   assert.match(s, /駅前（デモ） AM 佐藤（デモ） 判断待ち（GM・CEO） GM 山本（デモ） 10\/19 売上 88\.3% 未達/);
@@ -166,7 +176,7 @@ test('全店 (A): the UI案43 demo — counts, status, next person, overdue, KPI
   assert.equal((h.match(/class="card mr-card"/g) || []).length, 6);
   // An AM: no “AM 未設定” chip or filter, the same six fictional stores.
   const a = app(S, { who: 'am1', role: 'am' }); const ha = await a.show();
-  assert.doesNotMatch(ha, /AM 未設定 <b>/); assert.equal((ha.match(/class="card mr-card"/g) || []).length, 6); assert.doesNotMatch(ha, /設定（GM・CEO）/);
+  assert.doesNotMatch(ha, /AM 未設定・要確認 <b>/); assert.equal((ha.match(/class="card mr-card"/g) || []).length, 6); assert.doesNotMatch(ha, /設定（GM・CEO）/);
 });
 
 test('filters: status chip, overdue, store, no AM', async () => {
@@ -272,7 +282,8 @@ test('AM proposals in the settings are exact and unique only (never widened by a
   await S.pg.exec(`reset role; insert into mr_members(user_id, emp_id, name, role) values('00000000-0000-4000-8000-0000000000c9','E7','Twin','am'),('00000000-0000-4000-8000-0000000000ca','E8','Twin','am'); set role service_role;`);
   const stores = [{ id: 'F03', name: 'FSP', am: 'Yuki Nagatani', active: true }, { id: 'F05', name: 'Marujuu', am: 'Yuki', active: true },
     { id: 'F02', name: 'Tenkichi', am: 'Second AM', active: true }, { id: 'F06', name: 'LaLa', am: 'Twin', active: true }];
-  const c = app(S, { stores }); await c.show(); c.run('_mr.setOpen=true'); c.renderPage(); await c.flush();
+  const c = app(S, { stores }); c.getEmployees = () => [{ id: 'E5', name: 'Yuki', role: 'am' }, { id: 'E6', name: 'Second AM', role: 'am' }, { id: 'E7', name: 'Twin', role: 'am' }, { id: 'E8', name: 'Twin', role: 'am' }];
+  await c.show(); c.run('_mr.setOpen=true'); c.renderPage(); await c.flush();
   const sel = id => (c.html.match(new RegExp('data-store="' + id + '"[\\s\\S]*?</select>')) || [''])[0];
   assert.doesNotMatch(sel('F03'), / selected/);                                   // partial name: no proposal
   assert.match(sel('F05'), /value="00000000-0000-4000-8000-0000000000c5" selected/);  // exact "Yuki"
@@ -280,14 +291,14 @@ test('AM proposals in the settings are exact and unique only (never widened by a
   assert.doesNotMatch(sel('F06'), / selected/);                                   // two AMs named Twin: no proposal
   assert.match(strip(c.html), /FSP Yuki Nagatani .* 案なし .*Marujuu Yuki .* 案（同じ名前の AM） .*LaLa Twin .* 案なし（同じ名前の AM が 2 人以上）/);
   // The employee table's name wins over the name kept in the members table (am1 is E5 = "Yuki Nagatani" there).
-  const c3 = app(S, { stores }); c3.getEmployees = () => [{ id: 'E5', name: 'Yuki Nagatani' }, { id: 'E6', name: 'Second AM' }];
+  const c3 = app(S, { stores }); c3.getEmployees = () => [{ id: 'E5', name: 'Yuki Nagatani', role: 'am' }, { id: 'E6', name: 'Second AM', role: 'am' }];
   await c3.show(); c3.run('_mr.setOpen=true'); c3.renderPage(); await c3.flush();
   const sel3 = id => (c3.html.match(new RegExp('data-store="' + id + '"[\\s\\S]*?</select>')) || [''])[0];
   assert.match(sel3('F03'), /value="00000000-0000-4000-8000-0000000000c5" selected/); assert.doesNotMatch(sel3('F05'), / selected/);
   // A store saved earlier but no longer active is listed and saved as inactive (its AM can be taken off).
   await S.api('gm', { action: 'stores_save', stores: [{ store_id: 'F09', name: 'Closed', am_user: U.am1 }] });
   const c2 = app(S, { stores }); await c2.show(); c2.run('_mr.setOpen=true'); c2.renderPage(); await c2.flush();
-  assert.match(c2.html, /data-store="F09"[^>]*data-active="0"/); assert.match(strip(c2.html), /Closed 今は使っていない店 .* 保存済み/);
+  assert.match(c2.html, /data-store="F09"[^>]*data-active="0"/); assert.match(strip(c2.html), /Closed 今は使っていない店 .* 店舗マスターの AM 欄と違う/);
   c2.qsa = [{ getAttribute: k => ({ 'data-store': 'F09', 'data-name': 'Closed', 'data-sort': '5', 'data-active': '0' })[k], value: '' }];
   await c2.run('mrSaveStores()'); await c2.flush();
   assert.deepEqual((await S.pg.query(`select am_user, active from mr_stores where store_id='F09'`)).rows, [{ am_user: null, active: false }]);
@@ -304,7 +315,7 @@ test('no stale writes: a load that finishes after logout, another sign-in or a s
   // Switching demo → live while the demo list is still in flight (it answers last): the demo list is not shown as live.
   const d = app(S); await d.show(); const fd = d.fetch;
   d.fetch = async (u, i) => { const b = JSON.parse(i.body); if (b.action === 'list' && b.env === 'demo') await new Promise(r => setTimeout(r, 60)); return fd(u, i); };
-  d.run("_mr.list=null; _mr.listKey=''; delete _mr.load.list"); d.renderPage(); await d.flush();
+  d.run("_mr.list=null; _mr.listKey=''; _mr.load={}; _mr.load.who=1"); d.renderPage(); await d.flush();
   d.run("_mr.env='live'"); d.renderPage(); await d.flush(); await new Promise(r => setTimeout(r, 120)); await d.flush();
   assert.equal(d.M().list.env, 'live');
   // Another email sign-in (Invoice / Bot) after the GM loaded: the next render loads again as that person.
@@ -328,4 +339,105 @@ test('the admin page session (_authSession) is not used for the review', async (
   const S = await server();
   const c = app(S, { signed: false }); c.window = { _authSession: { access_token: 'tok-gm' } };
   assert.match(await c.show(), /メールで認証してください/); assert.equal(c.calls.length, 0);
+});
+
+const fnSrc = name => { const st = html.indexOf('function ' + name + '('); assert.ok(st >= 0, name); const a = html.lastIndexOf('\n', st) + 1; return html.slice(a, html.indexOf('\n}', st) + 2); };
+const constSrc = name => { const st = html.indexOf('const ' + name + ' = ['); assert.ok(st >= 0, name); return html.slice(st, html.indexOf('\n];', st) + 3).replace('const ', 'var '); };
+
+test('menu: a G4 store manager (role shown as AM inside the app) gets no mid-review entry; a real AM, GM and CEO do', () => {
+  for (const [real, role, store, want] of [['g4', 'am', 'F01', false], ['am', 'am', 'ALL', true], ['gm', 'gm', 'ALL', true], ['ceo', 'ceo', 'ALL', true], ['sl', 'sl', 'F01', false]]) {
+    const c = { curRealRole: real, curRole: role, curStore: store, curStoreLogin: false, mcCanOpen: () => true, mdCanOpen: () => true, _gradeHideApplies: () => false,
+      canAccessStaffMaster: () => true, canAccessKpiMaster: () => true, canSeeDashboard: () => true, console };
+    vm.createContext(c);
+    vm.runInContext(constSrc('NAV_ITEMS') + '\n' + constSrc('MENU_GROUPS') + '\n' + MOD + '\n' + fnSrc('groupsForRole') + '\n' + fnSrc('firstAllowedChild'), c);
+    const groups = vm.runInContext('groupsForRole()', c);
+    const has = groups.some(g => g.children.includes('mid_review'));
+    assert.equal(has, want, real);
+    // Even a group that still lists it (old saved menus) never lands a G4 on it.
+    const first = vm.runInContext(`firstAllowedChild({ children:['mid_review','budget'] })`, c);
+    if (!want) assert.equal(first, 'budget', real);
+  }
+});
+
+test('every text from the server is escaped (store, AM, member names, titles, reasons, consult people and time, PL note)', async () => {
+  const S = await server();
+  const X = '<img src=x onerror=alert(1)>';
+  await S.pg.exec(`reset role;
+    update mr_stores set name='${X}', am_name='${X}', demo=jsonb_set(demo, '{pl,note}', to_jsonb('${X}'::text)) where store_id='D3';
+    update mr_reviews set body=jsonb_set(body, '{done_reason}', to_jsonb('${X}'::text)) where store_id='D2';
+    update mr_reviews set consult=jsonb_build_object('date','2026-10-21','time','${X}','people',jsonb_build_array('${X}')) where store_id='D5';
+    update mr_replies set data=jsonb_set(data, '{title}', to_jsonb('${X}'::text)), author_name='${X}';
+    update mr_members set name='${X}' where emp_id='E6';
+    set role service_role;`);
+  const c = app(S, { stores: [{ id: 'F01', name: X, am: X, active: true }] }); c.getEmployees = () => [];
+  const views = [await c.show()];
+  c.run("_mr.tab='queue'"); c.renderPage(); views.push(c.html);
+  c.run("_mr.mine=true"); c.renderPage(); views.push(c.html);
+  c.run("_mr.tab='all'; _mr.setOpen=true"); c.renderPage(); await c.flush(); views.push(c.html);
+  for (const [i, h] of views.entries()) { assert.ok(!h.includes('<img src=x'), 'view ' + i); assert.ok(h.includes('&lt;img src=x'), 'view ' + i + ' shows it as text'); }
+  // An error code the app does not know is not shown as it came (toasts are HTML).
+  assert.doesNotMatch(c.run(`mrErrText('<img src=x>', 500)`), /img/);
+  assert.equal(c.run(`mrErrText('', '<b>')`), 'うまくいきませんでした');
+});
+
+test('live KPI: this month is judged against the budget to yesterday, a past month against the whole month; the PL import is applied', async () => {
+  const S = await server();
+  await S.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }] });
+  const seen = [];
+  const c = app(S, { stores: [{ id: 'F01', name: 'ToriTon', am: 'Yuki' }] });
+  c.keyKpiStats = ([s]) => ({ sid: s.id, sales: 50000 });
+  c._meetApplyPl = (k, sid, ym) => ({ ...k, pl: ym });
+  c.meetingBudgetKpi = (k, current) => { seen.push([k.pl, current]); return { ...k, budget: current ? 52000 : 100000 }; };
+  c._meetKpiRows = p => [{ key: 'sales', act: p.sales, tgt: null }, { key: 'fc', act: 30, tgt: 30 }, { key: 'labor', act: 25, tgt: 26 }];
+  c.run("_mr.env='live'"); const now = strip(await c.show());
+  assert.match(now, /売上 96\.2% 注意/); assert.deepEqual(seen.at(-1), ['2026-10', true]);
+  c.run("_mr.ym='2026-09'"); const past = strip(await c.show());
+  assert.match(past, /売上 50\.0% 未達/); assert.deepEqual(seen.at(-1), ['2026-09', false]);
+});
+
+test('an answer for the previous email sign-in is not shown with the new one (whoami in flight)', async () => {
+  const S = await server();
+  const c = app(S); const f0 = c.fetch;
+  // The first whoami (as the GM) answers only after someone signs in with the AM's email on the same device.
+  c.fetch = async (u, i) => { c.fetch = f0; const r = await f0(u, i); c._botSession = { access_token: 'tok-am1', refresh_token: 'r' }; return r; };
+  c.renderPage(); await c.flush();
+  // The GM answer is dropped and the page loads again as the AM by itself.
+  assert.equal(c.M().who.role, 'am'); assert.doesNotMatch(c.html, /設定（GM・CEO）/);
+  assert.equal(c.calls.filter(b => b.action === 'whoami').length, 2);
+});
+
+test('settings: a saved AM who is stopped or no longer an AM is shown as stopped and is not saved again; the list tells the GM', async () => {
+  const S = await server();
+  const stores = [{ id: 'F01', name: 'ToriTon', am: 'Yuki', active: true }, { id: 'F02', name: 'Tenkichi', am: 'Second AM', active: true }];
+  await S.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F02', name: 'Tenkichi', am_user: U.am2, sort: 2 }] });
+  await S.pg.exec(`reset role; update employees set status='退職' where id='E6'; set role service_role;`);
+  const c = app(S, { stores }); c.getEmployees = () => [{ id: 'E5', name: 'Yuki', role: 'am' }, { id: 'E6', name: 'Second AM', role: 'am', status: '退職' }];
+  c.run("_mr.env='live'"); await c.show();
+  assert.match(strip(c.html), /Tenkichi Second AM この AM は今この店を見られない → 設定で確認/);
+  assert.match(c.html, /AM 未設定・要確認 <b>1<\/b>/);
+  c.run('_mr.setOpen=true'); c.renderPage(); await c.flush();
+  const sel = id => (c.html.match(new RegExp('data-store="' + id + '"[\\s\\S]*?</select>')) || [''])[0];
+  assert.match(sel('F02'), /data-stopped="1" selected>Second AM（停止中）/);
+  assert.doesNotMatch(sel('F01'), /停止中/); assert.doesNotMatch(sel('F01'), /Second AM/);   // a stopped AM is not offered
+  assert.match(strip(c.html), /保存済みの AM が停止中・AM ではない/);
+  const opt = (v, stopped) => ({ getAttribute: k => (k === 'data-stopped' && stopped ? '1' : null) });
+  c.qsa = [{ getAttribute: k => ({ 'data-store': 'F01', 'data-name': 'ToriTon', 'data-sort': '1' })[k], value: U.am1, options: [opt()], selectedIndex: 0 },
+    { getAttribute: k => ({ 'data-store': 'F02', 'data-name': 'Tenkichi', 'data-sort': '2' })[k], value: U.am2, options: [opt(U.am2, true)], selectedIndex: 0 }];
+  await c.run('mrSaveStores()'); await c.flush();
+  assert.match(c.toasts.map(x => x[0]).join(' '), /停止中の AM のままの店（1 店）は保存しませんでした/);
+  const saved = c.calls.filter(b => b.action === 'stores_save').at(-1);
+  assert.deepEqual(saved.stores.map(s => s.store_id), ['F01']);
+});
+
+test('the remembered sign-in is used for the review even when the admin page has its own session', async () => {
+  const c = { _botSession: null, window: { _authSession: { access_token: 'admin' } }, _invIn: {}, kept: { rt: 'r1' }, invInRerender: () => {}, console };
+  c.invInKeepWho = () => 'e:E2'; c.invInKeepGet = () => c.kept; c.invInKeepSet = (rt) => { c.kept = rt ? { rt } : null; return true; };
+  c.invInAuthFetch = async () => ({ ok: true, status: 200, json: async () => ({ access_token: 'a2', refresh_token: 'r2' }) });
+  vm.createContext(c);
+  vm.runInContext(fnSrc('invInSession') + fnSrc('invInSigned') + fnSrc('invInRestore'), c);
+  assert.equal(await vm.runInContext('invInRestore(false, true)', c), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(c._botSession)), { access_token: 'a2', refresh_token: 'r2' });
+  // The Invoice screen keeps its old behaviour (an admin page session counts as signed in there).
+  c._botSession = null; c.kept = { rt: 'r3' };
+  assert.equal(await vm.runInContext('invInRestore()', c), true); assert.equal(c._botSession, null);
 });

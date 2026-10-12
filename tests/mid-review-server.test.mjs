@@ -9,7 +9,7 @@ const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node
 const SQL = fs.readFileSync(new URL('../supabase/migrations/20261012090000_mid_review.sql', import.meta.url), 'utf8');
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2', office: '00000000-0000-4000-8000-0000000000c3',
   crew: '00000000-0000-4000-8000-0000000000c4', am1: '00000000-0000-4000-8000-0000000000c5', am2: '00000000-0000-4000-8000-0000000000c6',
-  off: '00000000-0000-4000-8000-0000000000c7', stranger: '00000000-0000-4000-8000-0000000000c8' };
+  off: '00000000-0000-4000-8000-0000000000c7', stranger: '00000000-0000-4000-8000-0000000000c8', amoff: '00000000-0000-4000-8000-0000000000c9' };
 
 async function setup() {
   const pg = new PGlite();
@@ -18,13 +18,19 @@ async function setup() {
     alter default privileges in schema public grant all on tables to anon, authenticated;
     alter default privileges in schema public grant all on sequences to anon, authenticated;
     alter default privileges in schema public grant all on functions to anon, authenticated;
-    create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;`);
+    create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;
+    -- The shared masters as the app syncs them (SUPA_MASTER_MAP): read only by the review, to take access away.
+    create table public.employees(id text primary key, name text, role text, status text, data jsonb);
+    create table public.stores(id text primary key, name text, am text, active boolean, data jsonb);
+    grant select on public.employees, public.stores to service_role;
+    insert into public.employees(id, name, role, status) values ('E1','CEO Test','ceo','在籍'),('E2','GM Test','gm','在籍'),('E5','Yuki','am','在籍'),('E6','AM Two','am',null),('E7','Old GM','gm','在籍'),('E9','Stopped AM','am','在籍');
+    insert into public.stores(id, name, am, active) values ('F01','ToriTon','Yuki',true),('F02','Tenkichi','Yuki',true),('F05','Marujuu','AM Two',true),('F06','LaLa',null,true);`);
   for (const [k, r, e] of [['ceo', 'ceo', 'E1'], ['gm', 'gm', 'E2'], ['office', 'office', 'E3'], ['crew', 'office_crew', 'E4']])
     await pg.query('insert into manager_auth(user_id, role, emp_id) values($1,$2,$3)', [U[k], r, e]);
   await pg.exec(SQL);
   // AMs are added by SQL (Moto). One more member who has been turned off.
-  await pg.query(`insert into mr_members(user_id, emp_id, name, role) values($1,'E5','Yuki','am'),($2,'E6','AM Two','am'),($3,'E7','Old GM','gm')`, [U.am1, U.am2, U.off]);
-  await pg.query('update mr_members set enabled=false where user_id=$1', [U.off]);
+  await pg.query(`insert into mr_members(user_id, emp_id, name, role) values($1,'E5','Yuki','am'),($2,'E6','AM Two','am'),($3,'E7','Old GM','gm'),($4,'E9','Stopped AM','am')`, [U.am1, U.am2, U.off, U.amoff]);
+  await pg.query('update mr_members set enabled=false where user_id in ($1,$2)', [U.off, U.amoff]);
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const users = Object.fromEntries(Object.entries(U).map(([k, v]) => ['tok-' + k, v]));
@@ -47,7 +53,7 @@ const on = E => E.api('gm', { action: 'settings_save', key: 'flags', value: { pr
 test('setup: CEO and GM from manager_auth become members, office does not; everything starts off', async () => {
   const E = await setup();
   const m = await E.q('select user_id, role, emp_id from mr_members order by emp_id');
-  assert.deepEqual(m.map(x => [x.role, x.emp_id]), [['ceo', 'E1'], ['gm', 'E2'], ['am', 'E5'], ['am', 'E6'], ['gm', 'E7']]);
+  assert.deepEqual(m.map(x => [x.role, x.emp_id]), [['ceo', 'E1'], ['gm', 'E2'], ['am', 'E5'], ['am', 'E6'], ['gm', 'E7'], ['am', 'E9']]);
   const f = (await E.q(`select value from mr_settings where key='flags'`))[0].value;
   assert.deepEqual(f, { private: false, store_publish: false, notify: false });
 });
@@ -58,7 +64,8 @@ test('browsers cannot reach the tables or functions directly (anon / authenticat
     for (const t of ['mr_settings', 'mr_members', 'mr_stores', 'mr_reviews', 'mr_submissions', 'mr_replies', 'mr_events'])
       for (const pr of ['select', 'insert', 'update', 'delete'])
         assert.equal((await E.q(`select has_table_privilege($1, 'public.${t}', $2) v`, [role, pr]))[0].v, false, `${role} ${pr} ${t}`);
-    for (const fn of ['mr_whoami(jsonb)', 'mr_list(jsonb)', 'mr_settings_save(jsonb)', 'mr_stores_save(jsonb)', 'mr_demo_reset(jsonb)', 'mr_members_list(jsonb)', 'mr_auth(uuid,text[],boolean)'])
+    for (const fn of ['mr_whoami(jsonb)', 'mr_list(jsonb)', 'mr_settings_save(jsonb)', 'mr_stores_save(jsonb)', 'mr_demo_reset(jsonb)', 'mr_members_list(jsonb)', 'mr_auth(uuid,text[],boolean)',
+      'mr_am_hr_ok(text)', 'mr_am_master_ok(uuid,text)', 'mr_sees(text,uuid,text,uuid,text)'])
       assert.equal((await E.q(`select has_function_privilege($1, 'public.${fn}', 'execute') v`, [role]))[0].v, false, `${role} ${fn}`);
     for (const pr of ['usage', 'select', 'update']) assert.equal((await E.q(`select has_sequence_privilege($1, 'public.mr_events_id_seq', $2) v`, [role, pr]))[0].v, false, `${role} seq ${pr}`);
     const rls = await E.q(`select relname, relrowsecurity from pg_class where relname like 'mr\\_%' and relkind='r'`);
@@ -70,7 +77,7 @@ test('who can call: no sign-in 401, anon key 401, office / office_crew / turned-
   const E = await setup();
   assert.equal((await E.api(null, { action: 'whoami' })).status, 401);
   assert.equal((await E.call({ action: 'whoami' }, { authorization: 'Bearer anon-key' })).status, 401);
-  for (const who of ['office', 'crew', 'off', 'stranger']) {
+  for (const who of ['office', 'crew', 'off', 'amoff', 'stranger']) {
     const r = await E.api(who, { action: 'whoami' });
     assert.equal(r.status, 403, who); assert.equal(r.body.error, 'forbidden');
   }
@@ -183,7 +190,8 @@ test('live stores: an AM sees only the stores a GM put in their charge; GM / CEO
   assert.deepEqual((await ids('ceo')).stores.find(x => x.store_id === 'F06').am_unset, true);
   assert.deepEqual((await E.api('am1', { action: 'whoami' })).body.live_stores, ['F01', 'F02']);
   assert.equal((await E.api('gm', { action: 'whoami' })).body.live_stores.length, 4);
-  // Moving a store to another AM moves it at once; the old AM no longer sees it.
+  // Moving a store to another AM (store master, then the GM saves here): the old AM no longer sees it.
+  await E.q(`update stores set am='AM Two' where id='F02'`);
   await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F02', name: 'Tenkichi', am_user: U.am2, sort: 2 }] });
   assert.deepEqual((await ids('am1')).reviews.map(x => x.store_id), ['F01']);
   assert.deepEqual((await ids('am2')).reviews.map(x => x.store_id), ['F02', 'F05']);
@@ -212,7 +220,7 @@ test('request handling: origin, method, unknown action, bad values, members list
   for (const b of [{ env: 'prod', ym: '2026-10' }, { env: 'demo', ym: '2026-13' }, { env: 'demo', ym: "2026-10'; --" }])
     assert.equal((await E.api('gm', { action: 'list', ...b })).status, 400);
   const m = await E.api('gm', { action: 'members_list' });
-  assert.equal(m.status, 200); assert.equal(m.body.length, 5);
+  assert.equal(m.status, 200); assert.equal(m.body.length, 6);
   assert.equal((await E.api('am1', { action: 'members_list' })).status, 403);
 });
 
@@ -229,24 +237,35 @@ test('the check, add-AM and rollback SQL work on the same schema', async () => {
   const E = await setup();
   const post = fs.readFileSync(new URL('../db/mid-review-postcheck.sql', import.meta.url), 'utf8');
   const rows = await E.q(post);
-  assert.equal(rows.length, 11);
+  assert.equal(rows.length, 14);
   for (const r of rows) assert.ok(/^OK/.test(r.result), r.check_name + ': ' + r.result);
   // Add a member by SQL: the account must exist, the employee name must match exactly one, an AM must be an AM, roles are never changed.
   await E.pg.exec('reset role');
-  await E.pg.exec(`create schema auth; create table auth.users(id uuid primary key, email text); create table public.employees(id text primary key, data jsonb);
-    insert into auth.users values ('00000000-0000-4000-8000-0000000000d1','yuki@example.test'),('00000000-0000-4000-8000-0000000000d2','sm@example.test'),('${U.gm}','gm@example.test');
-    insert into public.employees values ('E9','{"id":"E9","name":"Yuki Test","role":"am"}'),('E8','{"id":"E8","name":"Yuki Test","role":"am","status":"退職"}'),
-     ('E7','{"id":"E7","name":"Store Mgr","role":"g4"}'),('EA','{"id":"EA","name":"Twin","role":"am"}'),('EB','{"id":"EB","name":"Twin","role":"am"}'),('E2','{"id":"E2","name":"GM Test","role":"gm"}');`);
+  await E.pg.exec(`create schema auth; create table auth.users(id uuid primary key, email text);
+    insert into auth.users values ('00000000-0000-4000-8000-0000000000d1','yuki@example.test'),('00000000-0000-4000-8000-0000000000d2','sm@example.test'),('${U.gm}','gm@example.test'),
+     ('${U.amoff}','stopped@example.test'),('00000000-0000-4000-8000-0000000000d3','gm2@example.test');
+    insert into public.employees(id, name, role, status) values ('EY','Yuki Test','am','在籍'),('E8','Yuki Test','am','退職'),
+     ('EG','Store Mgr','g4',null),('EA','Twin','am',null),('EB','Twin','am',null),('EH','GM Two','gm',null);
+    insert into manager_auth values ('00000000-0000-4000-8000-0000000000d3','gm','E2');`);
   const tpl = fs.readFileSync(new URL('../db/mid-review-add-member.sql', import.meta.url), 'utf8');
   const add = (email, name, role) => tpl.replace('<メールアドレス>', email).replace('<社員の表の名前（完全に同じ）>', name).replace('<am / gm / ceo のどれか>', role);
   await E.pg.exec(add('YUKI@example.test', 'Yuki Test', 'am'));
-  assert.deepEqual((await E.pg.query(`select role, emp_id, name, enabled from mr_members where user_id='00000000-0000-4000-8000-0000000000d1'`)).rows, [{ role: 'am', emp_id: 'E9', name: 'Yuki Test', enabled: true }]);
+  assert.deepEqual((await E.pg.query(`select role, emp_id, name, enabled from mr_members where user_id='00000000-0000-4000-8000-0000000000d1'`)).rows, [{ role: 'am', emp_id: 'EY', name: 'Yuki Test', enabled: true }]);
   await assert.rejects(E.pg.exec(add('nobody@example.test', 'Yuki Test', 'am')), /まだありません/);
-  await assert.rejects(E.pg.exec(add('yuki@example.test', 'Yuki', 'am')), /0 人/);           // partial names do not match
+  await assert.rejects(E.pg.exec(add('yuki@example.test', 'Yuki T', 'am')), /0 人/);         // partial names do not match
   await assert.rejects(E.pg.exec(add('yuki@example.test', 'Twin', 'am')), /2 人/);
   await assert.rejects(E.pg.exec(add('sm@example.test', 'Store Mgr', 'am')), /AM ではありません/);   // a G4 store manager is not added
   await assert.rejects(E.pg.exec(add('yuki@example.test', 'Yuki Test', 'gm')), /manager_auth/);
   await assert.rejects(E.pg.exec(add('gm@example.test', 'GM Test', 'ceo')), /もう gm/);       // roles are never changed by this file
+  await assert.rejects(E.pg.exec(add('gm2@example.test', 'GM Two', 'gm')), /manager_auth の社員/);   // the email account is someone else's employee
+  await assert.rejects(E.pg.exec(add('stopped@example.test', 'Stopped AM', 'am')), /止めてあります/);   // a stopped member is not turned back on quietly
+  await E.pg.exec(add('stopped@example.test', 'Stopped AM', 'am').replace('v_reenable boolean := false', 'v_reenable boolean := true'));
+  assert.equal((await E.pg.query(`select enabled from mr_members where user_id='${U.amoff}'`)).rows[0].enabled, true);
+  // Disable by SQL.
+  const dis = fs.readFileSync(new URL('../db/mid-review-disable-member.sql', import.meta.url), 'utf8');
+  await E.pg.exec(dis.replace('<メールアドレス>', 'stopped@example.test'));
+  assert.equal((await E.pg.query(`select enabled from mr_members where user_id='${U.amoff}'`)).rows[0].enabled, false);
+  await assert.rejects(E.pg.exec(dis.replace('<メールアドレス>', 'nobody@example.test')), /ありません/);
   await E.pg.exec('set role service_role');
   // Rollback: stops while a live review exists, otherwise removes only the mr_ objects.
   const rb = fs.readFileSync(new URL('../db/mid-review-rollback.sql', import.meta.url), 'utf8');
@@ -259,5 +278,112 @@ test('the check, add-AM and rollback SQL work on the same schema', async () => {
   const left = (await E.pg.query(`select count(*)::int n from pg_class where relname like 'mr\\_%' and relkind='r'`)).rows[0].n;
   assert.equal(left, 0);
   assert.equal((await E.pg.query(`select count(*)::int n from pg_proc where proname like 'mr\\_%'`)).rows[0].n, 0);
-  assert.equal((await E.pg.query(`select count(*)::int n from manager_auth`)).rows[0].n, 4);
+  assert.equal((await E.pg.query(`select count(*)::int n from manager_auth`)).rows[0].n, 5);
+  assert.equal((await E.pg.query(`select count(*)::int n from employees`)).rows[0].n, 12);   // the masters are never touched
+});
+
+test('an AM follows the employee master: moved to G4, 退職, removed or without an employee id → refused at once', async () => {
+  const E = await setup(); await on(E);
+  await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1 }] });
+  assert.equal((await E.api('am1', { action: 'list', env: 'live', ym: '2026-10' })).status, 200);
+  for (const [sql, label] of [[`update employees set role='g4' where id='E5'`, 'g4'], [`update employees set role='am', status='退職' where id='E5'`, '退職'],
+    [`delete from employees where id='E5'`, 'removed'], [`update mr_members set emp_id=null where user_id='${U.am1}'`, 'no emp_id']]) {
+    await E.q(sql);
+    for (const body of [{ action: 'whoami' }, { action: 'list', env: 'live', ym: '2026-10' }, { action: 'list', env: 'demo', ym: '2026-10' }]) {
+      const r = await E.api('am1', body);
+      assert.equal(r.status, 403, label + ' ' + body.action); assert.equal(r.body.error, 'forbidden');
+    }
+    await E.q(`insert into employees(id, name, role, status) values('E5','Yuki','am','在籍') on conflict (id) do update set role='am', status='在籍', name='Yuki'`);
+    await E.q(`update mr_members set emp_id='E5' where user_id='${U.am1}'`);
+    assert.equal((await E.api('am1', { action: 'whoami' })).status, 200, 'back ' + label);
+  }
+  // The master can only take access away: a CEO / GM does not depend on it, and making someone an AM there gives nothing.
+  await E.q(`update employees set role='am' where id='E2'`);
+  assert.equal((await E.api('gm', { action: 'whoami' })).body.role, 'gm');
+  assert.equal((await E.api('stranger', { action: 'whoami' })).status, 403);
+});
+
+test('an AM follows the store master: when the AM column names someone else the old AM loses the store at once; the new AM waits for the GM', async () => {
+  const E = await setup(); await on(E);
+  await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F05', name: 'Marujuu', am_user: U.am2, sort: 2 }] });
+  await E.q(`insert into mr_reviews(env, store_id, ym, status) values('live','F01','2026-10','draft'),('live','F05','2026-10','draft')`);
+  const list = async who => (await E.api(who, { action: 'list', env: 'live', ym: '2026-10' })).body;
+  assert.deepEqual((await list('am1')).reviews.map(x => x.store_id), ['F01']);
+  await E.q(`update stores set am='AM Two' where id='F01'`);
+  assert.deepEqual((await list('am1')).stores, []); assert.deepEqual((await list('am1')).reviews, []);
+  assert.deepEqual((await E.api('am1', { action: 'whoami' })).body.live_stores, []);
+  assert.deepEqual((await list('am2')).reviews.map(x => x.store_id), ['F05']);       // not widened by the master alone
+  const g = Object.fromEntries((await list('gm')).stores.map(s => [s.store_id, s.am_ok]));
+  assert.deepEqual(g, { F01: false, F05: true });                                   // the GM sees which one to check
+  await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am2, sort: 1 }] });
+  assert.deepEqual((await list('am2')).reviews.map(x => x.store_id), ['F01', 'F05']);
+  // A store master that names nobody, or a name with extra spaces, gives nobody access (same rule as the app: exactly the same name).
+  await E.q(`update stores set am=' AM Two' where id='F05'`);
+  assert.deepEqual((await list('am2')).reviews.map(x => x.store_id), ['F01']);
+  assert.equal((await list('am2')).stores.every(s => s.am_ok === null), true);    // an AM is not shown the check
+});
+
+test('stores_save: only AMs who are still AMs in the employee master; numbers in range; refused while the private check is off', async () => {
+  const E = await setup();
+  for (const action of ['stores_save', 'demo_reset']) {
+    const r = await E.api('gm', { action, stores: [{ store_id: 'F01', name: 'ToriTon', am_user: null }] });
+    assert.equal(r.status, 403, action); assert.equal(r.body.error, 'disabled');
+  }
+  await on(E);
+  assert.equal((await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.amoff }] })).status, 400);   // stopped AM
+  await E.q(`update employees set status='退職' where id='E6'`);
+  assert.equal((await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F05', name: 'Marujuu', am_user: U.am2 }] })).status, 400);   // 退職 in the master
+  const big = await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: null, sort: 1e12 }] });
+  assert.equal(big.status, 200); assert.equal((await E.q(`select sort from mr_stores where store_id='F01'`))[0].sort, 0);   // the handler keeps numbers small
+  for (const p of [{ sort: 99999 }, { sort: -1 }, { sort: 1.5 }, { sort: '3' }, { active: 'no' }])
+    await assert.rejects(E.q(`select public.mr_stores_save($1::jsonb)`, [JSON.stringify({ actor: U.gm, stores: [{ store_id: 'F01', name: 'ToriTon', ...p }] })]), /bad_value/, JSON.stringify(p));
+  const sch = await E.api('gm', { action: 'settings_save', key: 'schedule', value: { submit_day: 1e10, reply_day: 16, decide_day: 18, consult_from: 20, consult_to: 23 } });
+  assert.equal(sch.status, 400);
+});
+
+test('an inactive live store is not listed (and not counted for the AM)', async () => {
+  const E = await setup(); await on(E);
+  await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F02', name: 'Tenkichi', am_user: U.am1, sort: 2, active: false }] });
+  await E.q(`insert into mr_reviews(env, store_id, ym) values('live','F02','2026-10')`);
+  for (const who of ['gm', 'am1']) {
+    const l = (await E.api(who, { action: 'list', env: 'live', ym: '2026-10' })).body;
+    assert.deepEqual(l.stores.map(s => s.store_id), ['F01'], who); assert.deepEqual(l.reviews, [], who);
+  }
+  assert.deepEqual((await E.api('am1', { action: 'whoami' })).body.live_stores, ['F01']);
+});
+
+test('a database error is not passed on (500 says only "error"); Auth that hangs is cut off', async () => {
+  const leak = 'relation "public.mr_secret" does not exist key=abc token=xyz';
+  const env = k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service', SUPABASE_ANON_KEY: 'anon-key' })[k];
+  const logs = []; const orig = console.error; console.error = (...a) => logs.push(a.join(' '));
+  try {
+    const h = createHandler({ env, fetch: async () => Response.json({ id: U.gm }), db: { rpc: async () => { throw new Error(leak); } } });
+    const r = await h(new Request('https://fn.test', { method: 'POST', headers: { authorization: 'Bearer tok-gm' }, body: JSON.stringify({ action: 'whoami' }) }));
+    assert.equal(r.status, 500); assert.deepEqual(await r.json(), { error: 'error' });
+    assert.ok(logs.length && !/abc|xyz/.test(logs.join(' ')), 'no secrets in the log');
+  } finally { console.error = orig; }
+  let signal = null;
+  const h2 = createHandler({ env, fetch: async (u, init) => { signal = init.signal; return Response.json({ id: U.gm }); }, db: { rpc: async () => ({}) } });
+  await h2(new Request('https://fn.test', { method: 'POST', headers: { authorization: 'Bearer tok-gm' }, body: JSON.stringify({ action: 'whoami' }) }));
+  assert.ok(signal && typeof signal.aborted === 'boolean', 'the Auth call has a time limit');
+});
+
+test('the check before installing: OK on a database without the review, NG once it is there', async () => {
+  const pg = new PGlite();
+  await pg.exec(`create schema auth; create table auth.users(id uuid primary key, email text);
+    create table public.manager_auth(user_id uuid primary key, role text, emp_id text); insert into manager_auth values ('${U.gm}','gm','E2');
+    create table public.employees(id text primary key, name text, role text, status text, data jsonb);
+    create table public.stores(id text primary key, name text, am text, active boolean, data jsonb);`);
+  const pre = fs.readFileSync(new URL('../db/mid-review-precheck.sql', import.meta.url), 'utf8');
+  const rows = (await pg.query(pre)).rows;
+  assert.equal(rows.length, 8);
+  for (const r of rows) assert.ok(/^OK/.test(r.result), r.check_name + ': ' + r.result);
+  await pg.exec('create role anon; create role authenticated; create role service_role bypassrls;');
+  await pg.exec(SQL);
+  const after = Object.fromEntries((await pg.query(pre)).rows.map(r => [r.check_name, r.result]));
+  assert.match(after['mid-review tables already there'], /^NG/);
+  // A database without the masters stops the install before anything is made (the helper functions read them).
+  const bare = new PGlite();
+  await bare.exec(`create role anon; create role authenticated; create role service_role bypassrls; create table public.manager_auth(user_id uuid primary key, role text, emp_id text);`);
+  await assert.rejects(bare.exec('begin;' + SQL + 'commit;'), /employees|stores/);
 });
