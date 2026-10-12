@@ -1813,3 +1813,30 @@ test('invoices put right in the store folder are read too, only from the start, 
     assert.deepEqual(await E.q(`select id from invoice_files where drive_file_id=$1`, [later]), []);
   } finally { await E.pg.close(); }
 });
+
+// v1070 (Moto 2026-10-12): an invoice with no currency printed cannot be posted until accounting confirms USD.
+// The app sends the currency as a correction; the server checks the invoice again with USD and it can be posted.
+test('no currency printed: review until accounting confirms USD, then it posts', async () => {
+  const E = await setup();
+  try {
+  await E.q(`update invoice_settings set value = value || '{"currency_when_absent": null}' where key='rules'`);
+  E.fixtures.set('INV-7001', { readable: true, documents: [{ ...doc('7001', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']]), currency: null }] });
+  E.fixtures.set('INV-7002', { readable: true, documents: [{ ...doc('7002', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']]), currency: 'US$' }] });
+  const a = E.drive.file('a.pdf', pdf('INV-7001'), 'U6'), b = E.drive.file('b.pdf', pdf('INV-7002'), 'U6');
+  await E.worker();
+  for (const f of [a, b]) {
+    let [d] = await docsOf(E, f);
+    assert.equal(d.status, 'review'); assert.ok(codes(d).includes('currency'), JSON.stringify(d.reasons));
+    const blocked = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: 'try' });
+    assert.equal(blocked.status, 409); assert.match(JSON.stringify(blocked.body), /currency/);
+    const r = await E.api('tok-crew', { action: 'edit', doc_id: d.id, version: d.version, header: { currency: 'USD' }, lines: [], reason: '経理の確認：通貨は USD' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    [d] = await docsOf(E, f);
+    assert.equal(d.currency, 'USD'); assert.ok(!codes(d).includes('currency'), JSON.stringify(d.reasons));
+    const p = await E.api('tok-crew', { action: 'post', doc_id: d.id, version: d.version, reason: '経理の確認（業者・invoice番号・金額・店舗）' });
+    assert.equal(p.status, 200, JSON.stringify(p.body));
+    [d] = await docsOf(E, f);
+    assert.equal(d.status, 'posted');
+  }
+  } finally { await E.pg.close(); }
+});

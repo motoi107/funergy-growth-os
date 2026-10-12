@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-12 Invoice取込：通貨（v1070）と、反映 → 改名 → QuickBooks（次の版）
+
+1. 済（Claude）：v1070 — 経理が通貨を USD と確かめられる（1 件の画面と一覧）。試験・Chromium の確認。
+2. Moto さん：v1070 をマージ → 経理の実機で、通貨の印字が無い invoice を「USD」で反映できるか確認。
+3. 次（Claude）：② 反映したら Drive の原本を「請求日_業者名_番号.拡張子」に改名 → 改名できたものだけを QuickBooks の台帳に積む（`route='external'`）。ChatGPT 側は台帳（`qb_external_list` → `reserve` → `result`）だけを見て送る形に直す（Drive のフォルダから直接拾わない＝二重送信を防ぐ）。SQL・関数・アプリ。
+4. 独立レビュー（v1070・②）。
+
 ## 2026-10-12 v1067：PIN の管理・機密情報をメール認証に（サーバーは本番に入った）
 
 1. 済（Moto さん）：Edge Function `auth-pin`・`ob-private` の v1067 と表 `auth_pin_guard`（中身は Moto さんに直接）。

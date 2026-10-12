@@ -170,3 +170,74 @@ test('settings: only GM/CEO switch vendors and stores to auto, and the other sav
   await vm.runInContext('invInVendorSave', vm2)('v2');
   assert.equal(vm2.calls[0].vendor.expect_updated_at, '2026-10-07T20:01:00+00:00');
 });
+
+// v1070 (Moto 2026-10-12「USD の表記がないものが取り込みできません。経理が USD の判定をできるように」).
+const usdRow = (n, reasons, version = 3) => ({ id: id(n), version, status: 'review', doc_type: 'invoice', vendor_name: 'Vendor A', invoice_no: String(7000 + n), total_cents: 4200, store_id: 'F06',
+  invoice_date: '2026-10-06', reasons });
+test('review list: a row whose only check is the currency gets a "USD" button that saves USD with its version, then reloads', async () => {
+  const c = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : { ok: true }) });
+  const rs = [usdRow(11, [{ code: 'currency' }, { code: 'mode_review_store' }]), usdRow(12, [{ code: 'currency' }, { code: 'vendor_unknown' }]), usdRow(13, [{ code: 'mode_review_store' }])];
+  c.M._invIn.review = { rows: rs, total: 3 };
+  const h = vm.runInContext('invInQueueHtml', c)('review');
+  assert.match(h, /通貨の印字なし・USD 以外 → USD なら「USD」を押す/);
+  assert.equal((h.match(/invInUsdRow\(/g) || []).length, 1, 'only the currency-only row');
+  assert.ok(h.includes("invInUsdRow(\\'" + id(11) + "\\')") || h.includes("invInUsdRow('" + id(11) + "')"));
+  assert.match(h, /onclick="event\.stopPropagation\(\);invInUsdRow/);
+  c.M._invIn.loaded.review = 1;
+  await vm.runInContext('invInUsdRow', c)(id(11));
+  assert.deepEqual(JSON.parse(JSON.stringify(c.calls)), [{ action: 'edit', doc_id: id(11), version: 3, header: { currency: 'USD' }, lines: [], reason: '経理の確認：通貨は USD', adjustment_ack: false, ack: [] }]);
+  assert.equal(c.M._invIn.loaded.review, undefined, 'the list is read again (the row can now be posted together)');
+  assert.equal(c.toasts.at(-1)[0], '通貨を USD にしました');
+  // A row that is not in the list, or a person who cannot edit, sends nothing.
+  await vm.runInContext('invInUsdRow', c)(id(99));
+  assert.equal(c.calls.length, 1);
+  const other = app({ role: 'crew' }); other.M._invIn.review = { rows: rs, total: 3 };
+  assert.doesNotMatch(vm.runInContext('invInQueueHtml', other)('review'), /invInUsdRow/);
+  await vm.runInContext('invInUsdRow', other)(id(11));
+  assert.equal(other.calls.length, 0);
+  // A conflict (someone saved first) is shown and the list is read again.
+  const busy = app({ api: () => ({ status: 409, error: 'conflict' }) }); busy.M._invIn.review = { rows: rs, total: 3 }; busy.M._invIn.loaded.review = 1;
+  await vm.runInContext('invInUsdRow', busy)(id(11));
+  assert.match(busy.toasts.at(-1)[0], /ほかの人が先に更新しました/); assert.equal(busy.M._invIn.loaded.review, undefined);
+});
+
+test('one invoice: "Confirm USD" on the amount row, then "post as shown" saves USD, re-reads and posts', async () => {
+  const before = () => { const d = DOC(); d.doc.vendor_key = 'v2'; d.doc.vendor_name = 'Vendor B'; d.doc.currency = null; d.doc.reasons = [{ code: 'currency' }, { code: 'mode_review_store' }]; d.ai_doc = { vendor_name: 'Vendor B', currency: null }; return d; };
+  const after = before(); after.doc.version = 2; after.doc.currency = 'USD'; after.doc.reasons = [{ code: 'mode_review_store' }];
+  const c = app({ api: b => (b.action === 'edit' ? { ok: true, version: 2 } : b.action === 'get' ? after : { ok: true }) });
+  c.M._invIn.config = { vendors: [{ vendor_key: 'v2', display_name: 'Vendor B' }], maps: [], stores: [] };
+  c.M._invIn.docId = id(2); c.M._invIn.doc = before(); c.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  let h = vm.runInContext('invInDetail', c)('review');
+  assert.match(h, /通貨の読み：印字なし <button[^>]*onclick="invInSetUsd\(true\)">USD と確かめる<\/button>/);
+  assert.match(h, /次は直してから反映します[^<]*通貨の印字なし/);
+  // Posting without confirming sends nothing.
+  await vm.runInContext('invInConfirm', c)();
+  assert.equal(c.calls.length, 0);
+  vm.runInContext('invInSetUsd', c)(true);
+  h = vm.runInContext('invInDetail', c)('review');
+  assert.match(h, /通貨は USD（「この内容で反映する」で保存して反映）/);
+  assert.match(h, /通貨は USD と確かめた（反映するときに保存）/);
+  assert.doesNotMatch(h.slice(h.indexOf('経理の確認（4 項目）')), /通貨の印字なし/);
+  assert.doesNotMatch(h, /次は直してから反映します/);
+  assert.doesNotMatch(h, /USD と確かめる/);
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('invInCollectEdits', c)(c.M._invIn.doc.doc, []).header)), { currency: 'USD' });
+  // Undo puts it back.
+  vm.runInContext('invInSetUsd', c)(false);
+  assert.match(vm.runInContext('invInDetail', c)('review'), /USD と確かめる/);
+  vm.runInContext('invInSetUsd', c)(true);
+  await vm.runInContext('invInConfirm', c)();
+  assert.deepEqual(c.calls.map(b => b.action), ['edit', 'get', 'post']);
+  assert.deepEqual(JSON.parse(JSON.stringify(c.calls[0].header)), { currency: 'USD' });
+  assert.equal(c.calls[2].version, 2);
+  // A currency the AI read as something else can be confirmed the same way; the read value is shown (escaped).
+  const x = app(); const d = before(); d.ai_doc.currency = '<b>JPY</b>';
+  x.M._invIn.docId = id(2); x.M._invIn.doc = d; x.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  const hx = vm.runInContext('invInDetail', x)('review');
+  assert.ok(hx.includes('通貨の読み：&lt;b&gt;JPY&lt;/b&gt;') && !hx.includes('<b>JPY</b>'));
+  // No currency reason: no button. Someone who cannot edit: no button.
+  const y = app(); const dy = before(); dy.doc.reasons = [{ code: 'mode_review_store' }];
+  y.M._invIn.docId = id(2); y.M._invIn.doc = dy; y.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  assert.doesNotMatch(vm.runInContext('invInDetail', y)('review'), /USD と確かめる|通貨の読み/);
+  const z = app({ role: 'crew' }); z.M._invIn.docId = id(2); z.M._invIn.doc = before(); z.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  assert.doesNotMatch(vm.runInContext('invInDetail', z)('review'), /USD と確かめる/);
+});
