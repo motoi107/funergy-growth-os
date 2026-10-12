@@ -145,6 +145,8 @@ PR #44 はマージ済みなので、新しい PR で直す。画面の見た目
 
 ### 入れ方（このあと・Moto さん）
 
+**貼るファイルと順番は `deploy/mid-review-v1069/手順.md` にまとめた。** 同じフォルダに、Supabase へそのまま貼る 5 つのファイルが入っている（`最初に確認.sql` で初回か直しだけかが分かれる・`A_土台のSQL_初回だけ.sql`・`B_追加のSQL_今回の直し.sql`・`C_関数_index.ts`＝handler.mjs と index.ts をつないだ 1 ファイル・`D_確認のSQL_読むだけ.sql`）。SQL は元のファイルの写しで、1 文字も違わないことを `tests/mid-review-deploy.test.mjs` が見ている。直しを取り消すときは `db/mid-review-fixes-revert.sql`（関数 3 つを土台のときの中身に戻す）。
+
 1. Edge Function `mid-review` を差し替え（`handler.mjs`＋`index.ts`）。前の SQL は渡した下書きの一覧を使わないので、先に入れても今までどおり動く。
 2. `supabase/migrations/20261013090000_mid_review_fixes.sql` を SQL Editor で流す（関数 3 つ＝`mr_auth`・`mr_reply_send`・`mr_reply_delete` を置き換えるだけ。表・行・設定は変えない。2 回流しても同じ）。まだ `20261012090000` を入れていなければ、先にそれを流す。
 3. `db/mid-review-postcheck.sql`（読むだけ）：「fixes after the review (v1068)」が OK。「ceo here but gm in manager_auth」「gm here but ceo in manager_auth」が 注意 の人は、ここでは GM として扱う。
