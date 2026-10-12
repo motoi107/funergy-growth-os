@@ -9666,7 +9666,7 @@ function mergeMapByTime(cloud, local){
     /* v1067（Codex レビュー R1）：成長カルテの給与・ボーナス履歴（payLog）は 1 件ずつ合流する。
        レコードの新しいほうに丸ごと合わせると、記録をまだ受け取っていない端末が別の欄（面談など）を保存しただけで履歴が消えていた。
        payLog を持つのは成長カルテ（growth_karte）の記録だけ。ほかのキーの合流は今までと同じ。 */
-    if(a && b && typeof a==='object' && typeof b==='object' && (Array.isArray(a.payLog) || Array.isArray(b.payLog) || a.payDel || b.payDel) && typeof kartePayMergeRec==='function'){
+    if(a && b && typeof a==='object' && typeof b==='object' && (Array.isArray(a.payLog) || Array.isArray(b.payLog) || a.payDel || b.payDel || a.payTrack || b.payTrack) && typeof kartePayMergeRec==='function'){   /* payTrack：v1067（独立レビュー P2-1）記録を始めた時刻も伝える */
       out[k] = kartePayMergeRec(a, b, out[k]);
     }
   });
@@ -59237,16 +59237,32 @@ function karteLockHtml(){
 }
 
 
+/* v1067（独立レビュー P2-2）：karte_bonus_config の合流（mergeStamped）は、印の無い値を {__st:1, v:値, _at, _by} に包んで保存する。
+   包んだ値をそのまま読むと、中身（v）ではなく初期値で読んでいた（基準額などが初期値に戻って見える）。
+   ・包んだ値：中身（v。包みが重なっていれば内側まで）に、外側の欄（前の版の端末が書いた欄）を重ねて読む。外側に欄が無ければ中身だけ。
+   ・保存（kbSave）：新しい時刻で包み（合流で新しい保存が勝つ）、同じ欄を外側にも置く（前の版の端末は外側を読む）。 */
+var KB_ST_META = {__st:1, v:1, _at:1, _by:1, _deleted:1};
+function kbCfgPlain(r){
+  if(!(r && typeof r==='object' && !Array.isArray(r) && r.__st===1)) return r;
+  var top={}; Object.keys(r).forEach(function(k){ if(!KB_ST_META[k]) top[k]=r[k]; });
+  var inner=kbCfgPlain(r.v);
+  return Object.assign({}, (inner && typeof inner==='object' && !Array.isArray(inner)) ? inner : {}, top);
+}
 function kbCfg(){
   var d={ poolRate:0.12, profit:0, quarter:_curQuarter(), gradeBase:{G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, csMin:0.7, csMax:1.3, storeScore:{}, storeProfit:{}, empStore:{}, spMin:0.8, spMax:1.2, baMin:0.8, baMax:1.2 };
-  var r=ls('karte_bonus_config',null);
+  var r=kbCfgPlain(ls('karte_bonus_config',null));
   if(r && typeof r==='object'){ d=Object.assign(d,r); d.gradeBase=Object.assign({G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, r.gradeBase||{}); d.storeScore=Object.assign({}, r.storeScore||{}); d.storeProfit=Object.assign({}, r.storeProfit||{}); d.empStore=Object.assign({}, r.empStore||{}); if(d.spMin==null)d.spMin=0.8; if(d.spMax==null)d.spMax=1.2; if(d.baMin==null)d.baMin=0.8; if(d.baMax==null)d.baMax=1.2; }
   return d;
 }
-function kbSave(c){ lsSet('karte_bonus_config', c); }
+function kbSave(c){
+  var clean={}; Object.keys((c && typeof c==='object') ? c : {}).forEach(function(k){ if(!KB_ST_META[k]) clean[k]=c[k]; });
+  var by=''; try{ by=(typeof myName==='function') ? (myName()||'') : ''; }catch(e){ by=''; }
+  var prev=ls('karte_bonus_config', null), at=Math.max(Date.now(), ((prev && typeof prev==='object' && prev.__st===1) ? (Number(prev._at)||0) : 0)+1);   /* この端末で前に保存した・受け取った時刻より新しく */
+  return lsSet('karte_bonus_config', Object.assign({}, clean, {__st:1, v:clean, _at:at, _by:String(by||'')}));
+}
 function getKarteAll(){ return ls('growth_karte',{}); }
 function getKarte(empId){ var m=getKarteAll(); return m[empId]||{}; }
-function saveKarte(empId, k){ var m=getKarteAll(); k.updatedAt=new Date().toISOString(); k._at=Date.now();   /* v798: 合流で勝敗を決めるための印 */ k.evaluator=(typeof myName==='function'?myName():(curUserName||'')); m[empId]=k; lsSet('growth_karte', m); }
+function saveKarte(empId, k){ var m=getKarteAll(); if(typeof kartePayTrackInit==='function') kartePayTrackInit(k);   /* v1067（独立レビュー P2-1）：履歴を 1 行ずつ合流し始めた時刻（_at を新しくする前に） */ k.updatedAt=new Date().toISOString(); k._at=Date.now();   /* v798: 合流で勝敗を決めるための印 */ k.evaluator=(typeof myName==='function'?myName():(curUserName||'')); m[empId]=k; lsSet('growth_karte', m); }
 
 function karteEligibleEmps(){
   var cfg=kbCfg();
@@ -60721,7 +60737,8 @@ function ghImpRun(){
       var k=kAll[id]||{}; k.payLog=k.payLog||[];
       var amt=String(Math.round(r.pay.amount*100)/100);
       if(!k.payLog.some(function(p){ return p.type==='昇給' && p.date===r.d && String(p.amount)===amt; })){
-        k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:r.d, type:'昇給', amount:amt, note:'取込'+(r.pay.unit?'（'+r.pay.unit+'）':'')+(r.note?'・'+r.note:''), src:'import'});
+        k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:r.d, type:'昇給', amount:amt, note:'取込'+(r.pay.unit?'（'+r.pay.unit+'）':'')+(r.note?'・'+r.note:''), src:'import', _at:Date.now()});   /* v1067：行の時刻（行ごとの合流） */
+        if(typeof kartePayTrackInit==='function') kartePayTrackInit(k);   /* v1067（独立レビュー P2-1）：saveKarte と同じく、_at を新しくする前に */
         k.updatedAt=new Date().toISOString(); k._at=Date.now(); kAll[id]=k; kTouched[id]=1; nPay++;
       }
     }
@@ -61641,12 +61658,12 @@ function karteDelMeeting(empId,mid){ var k=getKarte(empId); k.meetings=(k.meetin
 
 /* pay log */
 /* v1067（Codex レビュー R1）：履歴の行は 1 件ずつ合流するので、行を直す・記録し直すたびに時刻（_at）を付け、消した行は payDel に時刻つきで残す（別の端末の古い写しで戻らないように）。
-   足したばかりの行には時刻を付けない（id はその端末で作る新しいものなので、時刻が無くても両方の端末の行が残る。付けると、前の版の端末でその行を直したときに負ける） */
-function kartePayAdd(empId){ var k=getKarte(empId); k.payLog=k.payLog||[]; k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:'', note:''}); saveKarte(empId,k); openKarteDetail(empId); }
+   足した行にも時刻を付ける（独立レビュー P2-1：記録を始めたあとに足した行は、片方の端末にしか無くても残す。時刻の無い行は「記録を始める前の行」として扱う） */
+function kartePayAdd(empId){ var k=getKarte(empId); k.payLog=k.payLog||[]; k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:'', note:'', _at:Date.now()}); saveKarte(empId,k); openKarteDetail(empId); }
 function kartePaySet(empId,pid,field,val){ var k=getKarte(empId); (k.payLog||[]).forEach(function(p){ if(p.id===pid){ p[field]=val; p._at=Math.max(Date.now(), kartePayT(p)+1); } }); saveKarte(empId,k); }
 function kartePayDel(empId,pid){ var k=getKarte(empId), t=Date.now(); (k.payLog||[]).forEach(function(p){ if(p.id===pid) t=Math.max(t, kartePayT(p)+1); }); k.payLog=(k.payLog||[]).filter(function(p){return p.id!==pid;}); if(pid!=null && pid!==''){ k.payDel=(k.payDel && typeof k.payDel==='object') ? k.payDel : {}; k.payDel[String(pid)]=Math.max(t, Number(k.payDel[String(pid)])||0); } saveKarte(empId,k); openKarteDetail(empId); }
 /* ===== ボーナス査定の自動記録（給与・ボーナス履歴への連携 / v547） ===== */
-function _bonusWritePay(e,b,q,payAmt,adj){
+function _bonusWritePay(e,b,q,payAmt,adj,lk){   /* lk：v1067（独立レビュー P2-3）どの確定から書いたか {id, t}（4 項目の式の記録だけ） */
   var all=getKarteAll(); var now=new Date().toISOString(); var by=(typeof myName==='function'?myName():(curUserName||''));
   var k=all[e.id]||{}; k.payLog=k.payLog||[];
   var snap={grade:b.grade, base:b.base, baPct:b.baPct, baCoef:b.baCoef, csPct:b.csPct, csCoef:b.csCoef, spPct:b.spPct, spCoef:b.spCoef, hasCS:b.hasCS, raw:b.amount, adj:adj,
@@ -61657,6 +61674,9 @@ function _bonusWritePay(e,b,q,payAmt,adj){
   var ex=null; for(var i=0;i<k.payLog.length;i++){ if(k.payLog[i].src==='auto' && k.payLog[i].quarter===q){ ex=k.payLog[i]; break; } }
   if(ex){ ex.amount=String(payAmt); ex.date=(typeof todayISO==='function'?todayISO():ex.date); ex.snap=snap; ex.by=by; ex.at=now; ex._at=Math.max(Date.now(), (typeof kartePayT==='function' ? kartePayT(ex) : 0)+1); }   /* v1067：行の時刻（行ごとの合流） */
   else { k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:String(payAmt), note:'四半期査定（自動記録）', src:'auto', quarter:q, snap:snap, by:by, at:now, _at:Date.now()}); }
+  var _row=ex || k.payLog[k.payLog.length-1];
+  if(lk && lk.id){ _row.lk=String(lk.id); if(Number(lk.t)>0) _row.lkt=Number(lk.t); else delete _row.lkt; } else { delete _row.lk; delete _row.lkt; }   /* v1067（独立レビュー P2-3）：確定し直したあとの記録が、前の確定からの記録に負けないように */
+  if(typeof kartePayTrackInit==='function') kartePayTrackInit(k);   /* v1067（独立レビュー P2-1）：_at を新しくする前に */
   k.updatedAt=now; k._at=Math.max(Date.now(), (Number(k._at)||0)+1); all[e.id]=k; lsSet('growth_karte', all);   /* v1065：別の端末の古い写しで記録が消えないように */
 }
 function bonusConfirmQuarter(){
@@ -61664,7 +61684,7 @@ function bonusConfirmQuarter(){
   if(!q){ alert('四半期が未設定です。設定タブで四半期を入力してください。'); return; }
   if(['gm','ceo'].indexOf(curRole)<0){ alert('記録できるのは GM・CEO です。'); return; }
   if(!bqGet((typeof bonusQKey==='function') ? bonusQKey(cfg) : q).locked){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }   /* v1065（Motoさん 10/11） */
-  if(tot.v4){ kevRecordQuarter(cfg, tot); return; }
+  if(tot.v4){ return kevRecordQuarter(cfg, tot); }   /* v1067：確定を読み直すあいだは Promise を返す */
   if(!tot.rows.length){ alert('対象者（G2以上・在籍）がいません。'); return; }
   if(tot.nBlocked){ alert('職種の設定が必要・係数が未設定の人が '+tot.nBlocked+' 名います（'+tot.rows.filter(function(r){ return r.b.blocked; }).slice(0,6).map(function(r){ return r.e.name; }).join('・')+'）。\n決まるまで履歴に記録できません。'); return; }   /* v1058 */
   var payTotal=tot.over?Math.round(tot.total*tot.factor):tot.total;
@@ -61680,7 +61700,7 @@ function bonusConfirmOne(empId){
   if(['gm','ceo'].indexOf(curRole)<0){ alert('記録できるのは GM・CEO です。'); return; }
   if(!bqGet((typeof bonusQKey==='function') ? bonusQKey(cfg) : q).locked){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }   /* v1065（Motoさん 10/11） */
   var tot=bonusTotals(cfg); var b=bonusForEmp(e,cfg); var payAmt=tot.over?Math.round(b.amount*tot.factor):b.amount;
-  if(tot.v4){ kevRecordOne(cfg, tot, e); return; }
+  if(tot.v4){ return kevRecordOne(cfg, tot, e); }   /* v1067：確定を読み直すあいだは Promise を返す */
   if(b.blocked){ alert(e.name+' は'+(b.blocked==='track'?' G3 の職種の設定が必要です':'係数が未設定です')+'。決まるまで履歴に記録できません。'); return; }   /* v1058 */
   if(tot.nBlocked){ alert('職種の設定が必要・係数が未設定の人が '+tot.nBlocked+' 名います。原資の調整（全員に同じ割合）がその人を入れないと決まらないため、決まるまで履歴に記録できません。'); return; }
   if(!confirm(e.name+' の '+q+' 査定ボーナス '+_money(payAmt)+(tot.over?'（原資調整後）':'')+' を給与・ボーナス履歴に記録します。よろしいですか？')) return;
@@ -64056,6 +64076,7 @@ function kevCosts(stores, kv, qOverride){
   var grp=function(list){ var o=[], ix={}; list.forEach(function(x){ var k=x.s+'|'+x.why; if(!(k in ix)){ ix[k]=o.length; o.push({s:x.s, why:x.why, ms:[]}); } o[ix[k]].ms.push(x.m); });
     return o.map(function(g){ return g.s+' '+g.ms.join('・')+'月'+(g.why ? '：'+g.why : ''); }); };
   out.noF=grp(mF); out.noL=grp(mL);
+  out.noLAtt=mL.some(function(x){ return x.why==='売上のある日に勤怠が未取得の日がある' || x.why==='勤怠の記録が無い'; });   /* 勤怠を取得すれば直る不足（独立レビュー P3） */
   out.tF=wF>0 ? sF/wF : (rF.length ? rF.reduce(function(a,b){ return a+b; }, 0)/rF.length : null);
   out.tL=wL>0 ? sL/wL : (rL.length ? rL.reduce(function(a,b){ return a+b; }, 0)/rL.length : null);
   out.aF=(out.sales>0 && !out.noF.length) ? out.cogs/out.sales*100 : null;
@@ -64132,7 +64153,8 @@ function kevFlSide(R, ev, C, k){
   }
   if(aw>0 && ap==null) miss.push(nm+' の行動：未評価');
   if(aw>0 && ap!=null && (lv>=4) && !(a && a.qc)) miss.push(nm+' の行動：品質・量・サービスへの影響の確認が未チェック');
-  if(rw>0 && res==null) miss.push(nm+' の結果：'+(tgt==null ? '目標率が未設定' : (C.months ? ('実績が未取得'+(noA.length ? '（'+noA.join('／')+'）' : '')) : 'まだ実績のある月がありません')));
+  if(rw>0 && res==null) miss.push(nm+' の結果：'+(tgt==null ? '目標率が未設定' : (C.months ? ('実績が未取得'+(noA.length ? '（'+noA.join('／')+'）' : '')
+    +((k!=='f' && act==null && C.noLAtt) ? '。勤怠データの画面でその月を選び、「この月を最新化（売上＋勤怠）」を押して Toast から取得してください' : '')) : 'まだ実績のある月がありません')));
   var pts=miss.length ? null : ((ap||0)*aw/100+(res||0)*rw/100);
   return {aw:aw, rw:rw, act:{lv:(ap==null ? null : lv), pts:ap, what:(a&&a.what)||'', st:(a&&a.st)||'', ev:(a&&a.ev)||'', next:(a&&a.next)||'', qc:!!(a&&a.qc)},
     res:{pts:res, raw:raw, target:tgt, actual:act, check:check, capped:capped, okLow:!!(a&&a.okLow)}, pts:pts, miss:miss};
@@ -64303,7 +64325,8 @@ function kevSnapSeg(x){
      5. 同じなら確定を書き、すぐクラウドへ送る（送れなければ未送信に積み、画面で知らせる）。
    残る隙間：クラウドの app_state には「読んだときから変わっていなければ書く」という仕組みが無い。読み直してから書くまでの数秒に
    ほかの端末が評価を直す・確定すると、ここでは気づけない（確定の記録は、あとから保存したほうが残る）。
-   また、売上・原価・勤怠・予算・従業員マスター・カルテの設定（karte_bonus_config）は、ふだんの同期で入ったものを使う（ここでは読み直さない）。 */
+   読み直すキーは kevLockSyncKeys（独立レビュー P2-2 でカルテの設定・予算・売上・原価のキーを足した）。読み直さないもの（app_settings の設定・Toast の勤怠・
+   従業員マスター・合流のルールの無いキー）は、ふだんの同期で入ったものを使う。 */
 var KEV_LOCKING = {};   /* 確かめている四半期（2 回押しを止める） */
 function kevStableStr(v){
   if(v===undefined) return 'u';
@@ -64314,6 +64337,7 @@ function kevStableStr(v){
 /* 確定が使う内容の要約：全員の区間の 4 項目（固定するときと同じ形・根拠つき）・不足・評価完了・額・原資・共通調整・対象者・確定の有無 */
 function kevLockDigest(q){
   try{
+    if(typeof mdCacheClear==='function') mdCacheClear();   /* 読み直した値で計算する（集計の一時キャッシュを使わない） */
     var cfg=Object.assign({}, kbCfg(), {quarter:q}), kv=kevApplies(cfg);
     var d0=bqGet(q);
     if(!kv) return kevStableStr({q:q, none:true, locked:!!d0.locked, lockedAt:d0.lockedAt||''});
@@ -64321,25 +64345,54 @@ function kevLockDigest(q){
     var rows=tot.rows.map(function(r){ var b=r.b;
       return {id:r.e.id, name:r.e.name, blocked:b.blocked||null, miss:b.missing||[], notDone:!!b.notDone, grade:b.grade, base:b.base, raw:b.amount, prBase:b.prBase, stores:b.stores||[],
         segs:(b.segs||[]).map(function(x){ return (x.elig && x.items) ? kevSnapSeg(x) : {g:x.g, from:x.from, to:x.to, days:x.days, elig:!!x.elig}; })}; });
+    /* カルテの設定のうち額にかかわる欄（基準額・対象店舗・② ④ の幅の初期値・① の幅の初期値）も入れる（独立レビュー P2-2） */
+    var cfgPart={gb:cfg.gradeBase||null, es:cfg.empStore||null, ba:[cfg.baMin, cfg.baMax], sp:[cfg.spMin, cfg.spMax], cs:[cfg.csMin, cfg.csMax]};
     return kevStableStr({q:q, locked:!!kv.d.locked, lockedAt:kv.d.lockedAt||'', total:tot.total, P:tot.pool, known:!!tot.poolKnown, k:tot.k, paid:tot.paid, finals:tot.finals,
-      pool:{profit:pi.profit, margin:pi.margin, rate:pi.rate, amount:pi.amount}, rows:rows});
-  }catch(err){ return 'err:'+String((err && err.message) || err); }
+      pool:{profit:pi.profit, margin:pi.margin, rate:pi.rate, amount:pi.amount}, cfg:cfgPart, rows:rows});
+  }catch(err){
+    /* 計算できなかった：どの 2 回も同じにならない値にする（確定しない側に倒す。独立レビュー P3） */
+    KEV_DIGEST_ERR++;
+    return 'err:'+KEV_DIGEST_ERR+':'+Date.now()+':'+Math.random()+':'+String((err && err.message) || err);
+  }
 }
+var KEV_DIGEST_ERR = 0;
 function kevLockSyncBlock(){
   try{ if(typeof navigator!=='undefined' && navigator && navigator.onLine===false) return 'オフラインのため確定していません（ほかの端末で直した最新の評価を確かめられないため）。つながってから、もう一度押してください'; }catch(err){}
   if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return 'クラウド同期が OFF のため確定していません（ほかの端末で直した最新の評価を確かめられないため）。同期を ON にしてから、もう一度押してください';
   return '';
 }
-/* 読み直すキー：評価・設定・個人設定・この四半期の記録（利益・原資・Career Score の固定）・原資率の表・① の幅・G3 の職種・グレード履歴・対象者の Career Score */
+/* 読み直すキー（app_state にあり、合流のルールがあるもの。pullOpKey は app_state をクラウドと手元で合流して保存する）：
+   評価・設定・個人設定・この四半期の記録（利益・原資・Career Score の固定）・原資率の表・① の幅（bonus_coef_rng・bonus_coef）・G3 の職種・グレード履歴・
+   カルテの設定（karte_bonus_config：基準額・対象店舗・幅の初期値）・対象者の Career Score（店舗用・オフィス用の担当と評価）・
+   対象の店舗ごとの予算（spl_budgets_v2_）・日次実績（daily_actuals_：売上・日別予算・手入力の人件費）・Invoice（spl_invoices_）・買い出し（purchases_）・
+   原価の月次（fc_monthly_：四半期の経過した月と、期首に使う前の月）。
+   入れないもの：app_settings の設定（pl_public・m_store_kpi・m_format_kpi・ocs_cfg・budgets_v2 の旧い行。pullOpKey は app_state しか読まない）・
+   合流のルールの無いキー（pl_actual・ingredient_transfers。読み直すと手元の未送信の変更を上書きする）・Toast の勤怠（tip_labor_。Toast から取得するもの）・
+   従業員マスター（m_employees）・店舗マスター・q_budgets（方針の文とコミットの状態だけで、額に使わない）。 */
 function kevLockSyncKeys(q){
-  var keys=['bonus_eval','bonus_eval_rule','bonus_eval_ovr','spl_bonus_q_'+q,'bonus_rules','bonus_coef_rng','bonus_track','grade_hist'];
+  var keys=['bonus_eval','bonus_eval_rule','bonus_eval_ovr','spl_bonus_q_'+q,'bonus_rules','bonus_coef_rng','bonus_track','grade_hist','karte_bonus_config','bonus_coef'];
+  var stores={}, addS=function(s){ if(typeof s==='string' && s) stores[s]=1; };
   try{
+    var cfg=Object.assign({}, kbCfg(), {quarter:q});
     karteEligibleEmps().forEach(function(e){
       if(!e) return;
       if(e.name && typeof LSS_EMP_PREFIX!=='undefined') keys.push(LSS_EMP_PREFIX+e.name);
-      if(e.id && e.name && typeof OCS_EV_PREFIX!=='undefined' && typeof ocsOldLocked==='function' && ocsOldLocked(e.name)) keys.push(OCS_EV_PREFIX+e.id);
+      if(e.id && typeof OCS_ASG_PREFIX!=='undefined') keys.push(OCS_ASG_PREFIX+e.id);
+      if(e.id && typeof OCS_EV_PREFIX!=='undefined') keys.push(OCS_EV_PREFIX+e.id);
+      try{ (karteEmpStores(cfg, e)||[]).forEach(addS); }catch(err){}
     });
+    try{ (kevStoresExtra(cfg)||[]).forEach(addS); }catch(err){}
   }catch(err){}
+  var months=[];
+  try{
+    var qq=_bonusQParse(q), ms=qq ? _quarterMonths(qq.y, qq.q) : [];
+    if(ms.length){ var y=+ms[0].slice(0,4), m=+ms[0].slice(5,7)-1; if(m<1){ m=12; y--; } months.push(y+'-'+String(m).padStart(2,'0')); }   /* 期首は前の月の期末棚卸 */
+    ms.forEach(function(ym){ if(_ymToOffset(ym)<=0) months.push(ym); });
+  }catch(err){}
+  Object.keys(stores).sort().forEach(function(sid){
+    keys.push('spl_budgets_v2_'+sid, 'daily_actuals_'+sid, 'spl_invoices_'+sid, 'purchases_'+sid);
+    months.forEach(function(ym){ keys.push('fc_monthly_'+sid+'_'+ym); });
+  });
   return keys.filter(function(k, i){ return keys.indexOf(k)===i; });
 }
 /* ふだんの取り込み（pullOpKey）で読み直す。同時に 6 本まで。1 つでも読めなければ false。45 秒で返事が無ければ false（ボタンが止まったままにならないように） */
@@ -64435,7 +64488,9 @@ function kevLockCommit(q, dg0, quiet){
   d.segSnap=segSnap; d.coefSnap=coefSnap;
   d.locked=true; d.lockedAt=now; d.lockedBy=who;
   d.rangeLock=String(d.lockedAt)+'|'+String(d.lockedBy);
-  d.evSnap={v:1, lk:String(d.lockedAt)+'|'+String(d.lockedBy), at:now, by:who, start:KEV_START, S:tot.total, P:tot.pool, k:tot.k, paid:tot.paid, finals:tot.finals, people:people, order:order};
+  /* lt・lid：v1067（独立レビュー P2-3）この確定の時刻と印（確定し直すたびに変わる）。履歴の記録はこの印で、画面の確定がクラウドでも今の確定かを確かめる */
+  var lt=Date.now();
+  d.evSnap={v:1, lk:String(d.lockedAt)+'|'+String(d.lockedBy), lt:lt, lid:'L'+lt.toString(36)+'-'+Math.random().toString(36).slice(2,8), at:now, by:who, start:KEV_START, S:tot.total, P:tot.pool, k:tot.k, paid:tot.paid, finals:tot.finals, people:people, order:order};
   if(bqSet(q, d)===false){ showToast('保存できませんでした','danger'); return false; }
   if(!quiet){ showToast(q+' の査定を確定しました（次は「履歴に記録」）','success'); bqRefresh(); }
   return true;
@@ -64459,24 +64514,70 @@ function kevPaySnap(b, k){
     baCoef:b.baCoef, spCoef:b.spCoef, csCoef:1, hasCS:true};
 }
 
-/* 履歴への記録（確定のあとだけ。確定した最終額をそのまま書く） */
+/* 履歴への記録（確定のあとだけ。確定した最終額をそのまま書く）
+   v1067（独立レビュー P2-3）：記録する直前に、この四半期の確定（spl_bonus_q_<四半期>）をふだんの取り込み（pullOpKey）で読み直し、
+   画面が使った確定と同じとき（確定の印 lid が同じ）だけ書く。ほかの端末で解除・確定し直されていたら書かない（画面を新しい内容に）。
+   読めなければ書かない。書いた行には確定の印（lk・lkt）を付け、2 台の記録がぶつかったときは新しい確定から書いた行を残す（kartePayCmp）。 */
+var KEV_RECORDING = {};
+function kevLockId(snap){ if(!snap || typeof snap!=='object') return ''; if(snap.lid) return String(snap.lid); return snap.lk ? 'lk:'+String(snap.lk) : ''; }   /* v1067 より前の確定は lk（確定の日時|確定した人） */
+function kevLockRef(snap){ var id=kevLockId(snap); if(!id) return null; var t=Number(snap.lt)||0; return {id:id, t:(t>0 ? t : 0)}; }
+function kevRecordGuard(q, lid0, write){
+  var check=function(){
+    var d=bqGet(q);
+    if(!d.locked || !kevSnapOk(d)){ showToast('ほかの端末で '+q+' の査定の確定が解除されていたため、記録していません（画面を新しい内容にしました）','warning'); bqRefresh(); return false; }
+    if(kevLockId(d.evSnap)!==lid0){ showToast('ほかの端末で '+q+' の査定が確定し直されていたため、記録していません。画面を新しい内容にしました。確かめてから、もう一度押してください','warning'); bqRefresh(); return false; }
+    return write();
+  };
+  var off=false; try{ off=(typeof navigator!=='undefined' && navigator && navigator.onLine===false); }catch(err){}
+  if(off){ showToast('オフラインのため記録していません（ほかの端末で確定し直していないかを確かめられないため）。つながってから、もう一度押してください','danger'); return false; }
+  if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED){ showToast('クラウド同期が OFF のため記録していません（ほかの端末で確定し直していないかを確かめられないため）。同期を ON にしてから、もう一度押してください','danger'); return false; }
+  if(typeof pullOpKey!=='function') return check();   /* クラウドの仕組みが無い画面（試験の VM など）：この端末の確定で */
+  if(KEV_RECORDING[q]){ showToast('記録の前の確認をしています。終わるまでお待ちください','info'); return false; }
+  KEV_RECORDING[q]=1;
+  showToast('ほかの端末の最新の確定を確かめています…','info');
+  var fin=function(r){ delete KEV_RECORDING[q]; return r; };
+  var pull=Promise.resolve().then(function(){ return pullOpKey('spl_bonus_q_'+q); });
+  if(typeof setTimeout==='function') pull=Promise.race([pull, new Promise(function(res){ setTimeout(function(){ res(false); }, 45000); })]);
+  return pull.then(function(ok){
+    if(ok!==true){ showToast('クラウドから最新の確定を読めなかったため、記録していません。通信を確かめて、もう一度押してください','danger'); return false; }
+    return check();
+  }).then(fin, function(err){ try{ console.warn('kevRecord', err); }catch(e){} showToast('記録の前の確認でエラーが出たため、記録していません。もう一度押してください','danger'); return fin(false); });
+}
+/* 読み直した確定から書く（ids：記録する人。null＝全員） */
+function kevRecordWrite(q, ids){
+  var cfg=Object.assign({}, kbCfg(), {quarter:q}), kv=kevApplies(cfg);
+  if(!kv || !kv.snap) return null;
+  var tot=kevTotals(cfg, kv), ref=kevLockRef(kv.snap), n=0;
+  tot.rows.forEach(function(r){ if(r.b.out || (ids && ids.indexOf(r.e.id)<0)) return; _bonusWritePay(r.e, r.b, q, r.b.final, tot.k, ref); n++; });
+  return {n:n, tot:tot};
+}
 function kevRecordQuarter(cfg, tot){
   var kv=tot.kv, q=kv.q;
-  if(!kv.snap){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }
+  if(!kv.snap){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return false; }
   var rows=tot.rows.filter(function(r){ return !r.b.out; });
-  if(!rows.length){ alert('記録する人がいません。'); return; }
-  if(!confirm(q+' の査定（確定した最終額）を、対象 '+rows.length+' 名の給与・ボーナス履歴に記録します。\n合計 '+kevUsd(tot.paid)+'（原資の共通調整 ×'+Number(tot.k).toFixed(3)+'）\n※同じ四半期の自動記録は上書き更新されます。\nよろしいですか？')) return;
-  var n=0; rows.forEach(function(r){ _bonusWritePay(r.e, r.b, q, r.b.final, tot.k); n++; });
-  var c=kbCfg(); c.confirmedLog=c.confirmedLog||{}; c.confirmedLog[q]={at:new Date().toISOString(), n:n, by:kevMe(), total:tot.paid, over:!!(Number(tot.k)<1), v4:true}; kbSave(c);
-  showToast(q+' の査定を '+n+' 名分、履歴に記録しました','success'); kbRefresh();
+  if(!rows.length){ alert('記録する人がいません。'); return false; }
+  if(KEV_RECORDING[q]){ showToast('記録の前の確認をしています。終わるまでお待ちください','info'); return false; }
+  if(!confirm(q+' の査定（確定した最終額）を、対象 '+rows.length+' 名の給与・ボーナス履歴に記録します。\n合計 '+kevUsd(tot.paid)+'（原資の共通調整 ×'+Number(tot.k).toFixed(3)+'）\n※同じ四半期の自動記録は上書き更新されます。\n記録の前に、ほかの端末で確定し直していないかを確かめます。よろしいですか？')) return false;
+  return kevRecordGuard(q, kevLockId(kv.snap), function(){
+    var w=kevRecordWrite(q, null);
+    if(!w){ showToast('確定した記録を読めなかったため、記録していません','danger'); return false; }
+    var c=kbCfg(); c.confirmedLog=c.confirmedLog||{}; c.confirmedLog[q]={at:new Date().toISOString(), n:w.n, by:kevMe(), total:w.tot.paid, over:!!(Number(w.tot.k)<1), v4:true}; kbSave(c);
+    showToast(q+' の査定を '+w.n+' 名分、履歴に記録しました','success'); kbRefresh();
+    return true;
+  });
 }
 function kevRecordOne(cfg, tot, e){
   var kv=tot.kv, q=kv.q, r=tot.rows.find(function(x){ return x.e.id===e.id; });
-  if(!kv.snap){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }
-  if(!r || r.b.out){ alert(e.name+' は '+q+' の査定の確定に入っていません。'); return; }
-  if(!confirm(e.name+' の '+q+' 査定ボーナス '+kevUsd(r.b.final)+'（確定した最終額）を給与・ボーナス履歴に記録します。よろしいですか？')) return;
-  _bonusWritePay(r.e, r.b, q, r.b.final, tot.k);
-  showToast(q+' の査定を記録しました','success'); openKarteDetail(e.id);
+  if(!kv.snap){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return false; }
+  if(!r || r.b.out){ alert(e.name+' は '+q+' の査定の確定に入っていません。'); return false; }
+  if(KEV_RECORDING[q]){ showToast('記録の前の確認をしています。終わるまでお待ちください','info'); return false; }
+  if(!confirm(e.name+' の '+q+' 査定ボーナス '+kevUsd(r.b.final)+'（確定した最終額）を給与・ボーナス履歴に記録します。よろしいですか？')) return false;
+  return kevRecordGuard(q, kevLockId(kv.snap), function(){
+    var w=kevRecordWrite(q, [e.id]);
+    if(!w || !w.n){ showToast(e.name+' は '+q+' の査定の確定に入っていないため、記録していません','warning'); return false; }
+    showToast(q+' の査定を記録しました','success'); openKarteDetail(e.id);
+    return true;
+  });
 }
 
 /* ======================= 画面：個別評価タブ ======================= */
@@ -65220,13 +65321,19 @@ function kevSnapLineHtml(sn){
   return '<div style="flex-basis:100%;font-size:10px;color:var(--muted);padding-left:2px">4 項目の式：'+t+' ・調整前 '+kevUsd(sn.raw)+((sn.adj!=null && Number(sn.adj)<1) ? ' ・原資調整×'+Number(sn.adj).toFixed(3) : '')+'</div>';
 }
 
-/* ======================= v1067（Codex レビュー R1）：給与・ボーナス履歴（growth_karte[従業員].payLog）を 1 件ずつ合流する =======================
-   ・行の時刻：_at（v1067 から、行を直す・記録し直す・自動で記録するたびに付ける）。無ければ at（自動の記録の日時）、それも無ければ 0（足しただけの手入力の行・前の版の行）。
-   ・同じ行（id）が両方にあれば時刻の新しいほう（同じならレコードの新しいほう＝今までと同じ）。片方にしか無い行は残す。
+/* ======================= v1067（Codex レビュー R1・独立レビュー P2-1・P2-3）：給与・ボーナス履歴（growth_karte[従業員].payLog）を 1 件ずつ合流する =======================
+   ・行の時刻：_at（v1067 から、行を足す・直す・記録し直す・自動で記録するたびに付ける）。無ければ at（自動の記録の日時）、それも無ければ 0（前の版で足した手入力の行）。
+   ・記録を始めた時刻：カルテ（レコード）の payTrack。v1067 の端末がそのカルテを最初に保存したとき、それまでの _at を入れる（新しいカルテは 1）。
+     これより後の行は、v1067 の端末で消すと必ず payDel に残る。
+   ・同じ行（id）が両方にあれば時刻の新しいほう（同じならレコードの新しいほう＝今までと同じ）。
+   ・片方にしか無い行：持っていないほうが新しいほうのレコードで、しかも記録を始めていない（payTrack が無い）か、その行が記録を始める前のものなら落とす
+     （今までと同じ＝新しいほうのレコードに合わせる。v1067 より前に消した行が古い写しから戻らないように）。それ以外は残す（和集合）。
+   ・合流したカルテの payTrack は両方の大きいほう。
    ・消した行は payDel（id → 消した時刻）に残し、それより前の行は戻さない（消したあとに直した・記録し直した行は残る）。
-   ・同じ四半期の自動の記録が 2 台で別々に作られて 2 行になったときは、新しいほうの 1 行にする（1 台の中にもともと 2 行あるときは触らない）。
-   ・前の版（v1065・v1066）の端末はレコードまるごとの合流のままなので、その端末がクラウドに書くと履歴が欠けることがある。
-     この版の端末は手元に履歴を持っているので、次にカルテを保存したときにクラウドへ戻る。GM・CEO の端末を v1067 にそろえる。 */
+   ・同じ四半期の自動の記録が 2 台で別々に作られて 2 行になったときは 1 行にする：両方に確定の印（lk・lkt）があって確定の時刻が違えば、新しい確定から書いた行。
+     そうでなければ時刻の新しいほう（1 台の中にもともと 2 行あるときは触らない）。同じ行の 2 つの版も同じ決め方。
+   ・前の版（v1065・v1066）の端末はレコードまるごとの合流のまま。その端末で消した行のうち記録を始めたあとの行は、v1067 の端末の写しから戻ることがある。
+     GM・CEO の端末を v1067 にそろえる。 */
 function kartePayT(p){ var t=Number(p && p._at)||0; if(t) return t; var s=(p && p.at) ? Date.parse(p.at) : NaN; return isFinite(s) ? s : 0; }
 function kartePayId(p){ return (p && p.id!=null && p.id!=='') ? 'id:'+String(p.id) : 'j:'+JSON.stringify(p); }
 function kartePayDelMap(a, b){
@@ -65234,6 +65341,16 @@ function kartePayDelMap(a, b){
   [a, b].forEach(function(r){ var m=r && r.payDel; if(m && typeof m==='object' && !Array.isArray(m)) Object.keys(m).forEach(function(k){ var t=Number(m[k])||0; if(t>(del[k]||0)) del[k]=t; }); });
   return del;
 }
+function kartePayTrackOf(r){ var t=Number(r && r.payTrack)||0; return t>0 ? t : 0; }
+/* 保存するとき（_at を新しくする前に）：まだ記録を始めていないカルテに、記録を始めた時刻（それまでの _at。新しいカルテは 1）を入れる */
+function kartePayTrackInit(k){ if(k && typeof k==='object' && !kartePayTrackOf(k)) k.payTrack=Math.max(1, Number(k._at)||0); return k; }
+/* 2 つの行（同じ行の 2 つの版・同じ四半期の自動の記録）のどちらを採るか：正＝x、負＝y、0＝決まらない（呼ぶ側の決め方） */
+function kartePayCmp(x, y){
+  if(x && y && x.src==='auto' && y.src==='auto'){ var lx=Number(x.lkt)||0, ly=Number(y.lkt)||0; if(lx>0 && ly>0 && lx!==ly) return lx>ly ? 1 : -1; }   /* 新しい確定から書いた行 */
+  var tx=kartePayT(x), ty=kartePayT(y); return tx>ty ? 1 : (tx<ty ? -1 : 0);
+}
+/* 片方にしか無い行 p を落とすか：持っていないほう（lack）が新しいほうのレコード（w）で、記録を始めていない・行が記録を始める前なら落とす */
+function kartePayDropOne(p, lack, w){ if(lack!==w) return false; var tr=kartePayTrackOf(lack); return !tr || kartePayT(p)<tr; }
 function kartePayMergeRec(a, b, w){
   var win=(w===a) ? 'a' : 'b', oth=(win==='a') ? 'b' : 'a', first=(win==='a') ? a : b, second=(win==='a') ? b : a;
   var del=kartePayDelMap(a, b), slots=[], idx={};
@@ -65243,43 +65360,51 @@ function kartePayMergeRec(a, b, w){
       if(p==null) return;   /* 形の違う行も消さずに残す */
       var k=kartePayId(p); cnt[k]=(cnt[k]||0)+1; if(cnt[k]>1) k=k+'#'+cnt[k];   /* 1 台の中に同じ id が 2 行（前の形）：両方残す */
       if(!(k in idx)){ idx[k]=slots.length; slots.push({k:k, p:p, from:side}); return; }
-      var s=slots[idx[k]], tc=kartePayT(s.p), tp=kartePayT(p);
-      if(tp>tc) s.p=p;   /* 同じ時刻なら先に入れたほう（レコードの新しいほう） */
+      var s=slots[idx[k]];
+      if(kartePayCmp(p, s.p)>0) s.p=p;   /* 決まらなければ先に入れたほう（レコードの新しいほう） */
       s.from='both';
     });
   };
   add(first.payLog, win); add(second.payLog, oth);
   slots=slots.filter(function(s){ var id=(s.p.id!=null && s.p.id!=='') ? String(s.p.id) : null; return !(id!=null && del[id] && del[id]>=kartePayT(s.p)); });
+  /* 片方にしか無い行：記録を始める前の行は、今までどおり新しいほうのレコードに合わせる（独立レビュー P2-1） */
+  slots=slots.filter(function(s){ return s.from==='both' || !kartePayDropOne(s.p, (s.from==='a') ? b : a, w); });
   var byQ={}, drop={};
   slots.forEach(function(s){ if(s.p.src==='auto' && s.p.quarter) (byQ[s.p.quarter]=byQ[s.p.quarter]||[]).push(s); });
   Object.keys(byQ).forEach(function(q){
     var g=byQ[q]; if(g.length<2) return;
     if(!(g.some(function(s){ return s.from==='a'; }) && g.some(function(s){ return s.from==='b'; }))) return;
-    var best=g[0]; g.forEach(function(s){ var ts=kartePayT(s.p), tb=kartePayT(best.p); if(ts>tb || (ts===tb && s.from===win && best.from!==win)) best=s; });
+    var best=g[0]; g.forEach(function(s){ var c=kartePayCmp(s.p, best.p); if(c>0 || (c===0 && s.from===win && best.from!==win)) best=s; });
     g.forEach(function(s){ if(s!==best) drop[s.k]=1; });
   });
   var out=Object.assign({}, w), pl=slots.filter(function(s){ return !drop[s.k]; }).map(function(s){ return s.p; });
   if(pl.length || Array.isArray(a.payLog) || Array.isArray(b.payLog)) out.payLog=pl;
   if(Object.keys(del).length) out.payDel=del;
+  var tr=Math.max(kartePayTrackOf(a), kartePayTrackOf(b)); if(tr>0) out.payTrack=tr; else delete out.payTrack;
   return out;
 }
-/* クラウドに書いたあとの確かめ：手元の履歴の行がクラウドにそろっているか（そろっていなければ取り込んでもう一度書く） */
+/* クラウドに書いたあとの確かめ：手元の履歴の行がクラウドにそろっているか（そろっていなければ取り込んでもう一度書く）。
+   合流と同じ決め方で見る：クラウドの写し（h）と手元（w）を合流しても h から変わらなければ「そろっている」。
+   合流で落ちる行（h が新しいほうのレコードで、記録を始める前の行）は、h に無くてもそろっている扱い（もう一度書いても同じため。押し上げが止まらない） */
 function kartePayCovers(h, w){
   var hd=(h && h.payDel && typeof h.payDel==='object') ? h.payDel : {}, wd=(w && w.payDel && typeof w.payDel==='object') ? w.payDel : {};
   for(var dk in wd){ if(Object.prototype.hasOwnProperty.call(wd, dk) && (Number(hd[dk])||0)<(Number(wd[dk])||0)) return false; }
+  if(kartePayTrackOf(w)>kartePayTrackOf(h)) return false;   /* 記録を始めた時刻も伝える（合流では大きいほうになる） */
   var byId={}, byQ={};
   (Array.isArray(h && h.payLog) ? h.payLog : []).forEach(function(p){
-    if(p==null) return; var t=kartePayT(p), k=kartePayId(p);
-    if(!(k in byId) || t>byId[k]) byId[k]=t;
-    if(p.src==='auto' && p.quarter && (!(p.quarter in byQ) || t>byQ[p.quarter])) byQ[p.quarter]=t;
+    if(p==null) return; var k=kartePayId(p);
+    if(!(k in byId) || kartePayCmp(p, byId[k])>0) byId[k]=p;
+    if(p.src==='auto' && p.quarter && (!(p.quarter in byQ) || kartePayCmp(p, byQ[p.quarter])>0)) byQ[p.quarter]=p;
   });
+  var hNewer=_recAt(h)>_recAt(w);   /* 合流すると h が新しいほうのレコードになる（同じ時刻なら手元） */
   var wl=Array.isArray(w && w.payLog) ? w.payLog : [];
   for(var i=0;i<wl.length;i++){
     var p=wl[i]; if(p==null) continue;
     var t=kartePayT(p), k=kartePayId(p), id=(p.id!=null && p.id!=='') ? String(p.id) : null;
-    if((k in byId) && byId[k]>=t) continue;
+    if((k in byId) && kartePayCmp(byId[k], p)>=0) continue;
     if(id!=null && hd[id] && Number(hd[id])>=t) continue;
-    if(p.src==='auto' && p.quarter && (p.quarter in byQ) && byQ[p.quarter]>=t) continue;
+    if(p.src==='auto' && p.quarter && (p.quarter in byQ) && kartePayCmp(byQ[p.quarter], p)>=0) continue;
+    if(!(k in byId) && hNewer && kartePayDropOne(p, h, h)) continue;
     return false;
   }
   return true;
@@ -65289,7 +65414,7 @@ function kartePayCoversMap(check, want){
   for(var k in want){
     if(!Object.prototype.hasOwnProperty.call(want, k)) continue;
     var w=want[k];
-    if(w && typeof w==='object' && (Array.isArray(w.payLog) || w.payDel) && !kartePayCovers(check[k], w)) return false;
+    if(w && typeof w==='object' && (Array.isArray(w.payLog) || w.payDel || w.payTrack) && !kartePayCovers(check[k], w)) return false;
   }
   return true;
 }
