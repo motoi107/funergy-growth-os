@@ -1019,7 +1019,8 @@ test('typing on after a new version came in: nothing typed is lost; unchanged it
   await a.flush(); a.renderPage(); await a.flush(); a.renderPage();
   assert.equal(a.run('_mr.rec.review.submitted_no'), 2); assert.equal(a.run('mrRpState().drafts.kpi.data.next'), '週の売上を予算比で見る（打ち直し）');
   assert.equal(a.run('mrRpState().drafts["issue:i1"].data.next'), '見積りを 2 社（打ち直し）');
-  assert.ok(a.toasts.some(x => /店長が新しい提出版を出しました（提出版 2）。内容が変わった項目の下書きに印をつけました。/.test(x[0])));
+  assert.equal(a.toasts.filter(x => /店長が新しい提出版を出しました/.test(x[0])).length, 1);
+  assert.ok(a.toasts.some(x => /店長が新しい提出版を出しました（提出版 2）。内容が変わった項目の下書き 1 件に印をつけました。/.test(x[0])));
   let drafts = (await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.state === 'draft');
   const byT = Object.fromEntries(drafts.map(x => [x.target, x]));
   assert.deepEqual([byT.kpi.data.next, byT.kpi.sub_no, byT.pl.sub_no], ['週の売上を予算比で見る（打ち直し）', 2, 2]);
@@ -1042,4 +1043,33 @@ test('a question added after one was withdrawn gets a new number (replies stay w
   const m = app(S); await openStore(m, 'D1'); m.run('mrStartInput()'); m.renderPage();
   m.run(`mrSetVal('consult','yes',true)`); m.run('mrAddIssue()');
   assert.deepEqual(JSON.parse(m.run('JSON.stringify(_mr.ed.body.issues.map(function(x){ return x.id; }))')), ['i2']);
+});
+
+test('a save answered after the new version was loaded does not make the draft current; when loading the new version fails there is a button to try again', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1');
+  let release; const gate = new Promise(r => { release = r; }); const orig = a.fetch;
+  a.fetch = async (u, i) => { const b = JSON.parse(i.body); const r = await orig(u, i); if (b.action === 'reply_save' && b.target === 'issue:i1') await gate; return r; };
+  a.run(`mrRpSet('issue:i1','decision','as_proposed',true)`); for (const [k, v] of Object.entries(sAct)) rpIn(a, 'issue:i1', k, v);
+  await a.flush();                                                                              // saved on version 1; the answer is held
+  await sResubmit(S, 'D1', b => { b.issues[0].ask = '月 $6,000 まで出してほしい'; return b; });
+  a.run(`mrRpSet('kpi','decision','as_proposed',true)`); for (const [k, v] of Object.entries(sAct)) rpIn(a, 'kpi', k, v);
+  await a.flush(); for (let k = 0; k < 8; k++) await new Promise(r => setImmediate(r));
+  assert.equal(a.run('_mr.rec.review.submitted_no'), 2); assert.equal(a.run(`mrRpState().drafts['issue:i1'].stale`), true);
+  release(); for (let k = 0; k < 8; k++) await new Promise(r => setImmediate(r)); await a.flush();
+  assert.equal(a.run(`mrRpState().drafts['issue:i1'].stale`), true);                           // still to be checked
+  a.renderPage(); assert.match(strip(a.html), /提出版 1 のときに書いた下書きです。/);
+  // Loading the new version fails: the draft says so and offers to try again.
+  const b2 = app(S, { who: 'am1', role: 'am' }); await openStore(b2, 'D1');
+  b2.run(`mrRpSet('pl','decision','as_proposed',true)`); for (const [k, v] of Object.entries(sAct)) rpIn(b2, 'pl', k, v); await b2.flush();
+  await sResubmit(S, 'D1', b => { b.issues[0].ask = '月 $7,000'; return b; });
+  const o2 = b2.fetch; let down = true;
+  b2.fetch = async (u, i) => { const b = JSON.parse(i.body); if (b.action === 'get' && down) throw new TypeError('Failed to fetch'); return o2(u, i); };
+  rpIn(b2, 'pl', 'next', '打ち直し'); await b2.flush(); b2.renderPage();
+  assert.match(b2.html, /onclick="mrRpRebase\(true\)">新しい提出版を読み込む/);
+  down = false; await b2.run('mrRpRebase(true)'); await b2.flush(); b2.renderPage();
+  assert.equal(b2.run('_mr.rec.review.submitted_no'), 3); assert.equal(b2.run(`mrRpState().drafts.pl.data.next`), '打ち直し');
+  assert.equal((await sApi(S, 'am1', 'D1', { action: 'get' })).replies.find(x => x.state === 'draft' && x.target === 'pl').data.next, '打ち直し');
+  // The store manager's dates are checked as the server takes them.
+  assert.match(b2.run(`mrMissing({ consult:'none', focus:[{ id:'f1', status:'late', reason:'r', next:'n', next_owner:'o', next_due:'0026-10-20' }] }, { kpi:{}, pl:{} }, []).join(',')`), /focus:f1/);
 });

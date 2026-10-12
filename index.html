@@ -16694,12 +16694,12 @@ function mrMissing(b, snap, followups){
   if (b.consult === 'yes' && !(b.issues || []).length) out.push('issues');
   (b.consult === 'yes' ? (b.issues || []) : []).forEach(function(x){
     var bad = mrBlank(x.what) || mrBlank(x.action) || ['none','watch','high'].indexOf(x.severity) < 0
-      || (x.investigating ? (mrBlank(x.inv_check) || mrBlank(x.inv_owner) || !x.inv_date) : mrBlank(x.cause));
+      || (x.investigating ? (mrBlank(x.inv_check) || mrBlank(x.inv_owner) || !mrDateOk(x.inv_date)) : mrBlank(x.cause));
     if (bad) out.push('issue:' + x.id);
   });
   (b.focus || []).forEach(function(f){
-    var bad = ['ok','late','help','done'].indexOf(f.status) < 0 || (f.status === 'late' && (mrBlank(f.reason) || mrBlank(f.next) || mrBlank(f.next_owner) || !f.next_due))
-      || (f.status === 'help' && (mrBlank(f.help_what) || !f.help_by));
+    var bad = ['ok','late','help','done'].indexOf(f.status) < 0 || (f.status === 'late' && (mrBlank(f.reason) || mrBlank(f.next) || mrBlank(f.next_owner) || !mrDateOk(f.next_due)))
+      || (f.status === 'help' && (mrBlank(f.help_what) || !mrDateOk(f.help_by)));
     if (bad) out.push('focus:' + f.id);
   });
   Object.keys(snap.kpi || {}).forEach(function(k){ if (snap.kpi[k].judge === 'miss' && mrBlank(((b.kpi || {})[k] || {}).comment)) out.push('kpi:' + k); });
@@ -17382,6 +17382,7 @@ function mrRpEditor(R, tg){
       + '<div class="mr-m">'+t('15〜30 分。相談をしただけでは閉じない（そのあと、決めたこと・担当・期限を返信する）。カレンダーの招待・通知は送らない。','15–30 min. The talk alone does not close it (reply with the decision, owner and due date after it). No invitations or notices are sent.')+'</div>';
   }
   h += '<div class="mr-m mr-bad" id="mr-rpmiss-'+e(tg)+'">'+(miss ? e(t(MR_RP_MISS[miss][0], MR_RP_MISS[miss][1])) : '')+'</div>';
+  if (d.state === 'conflict' && d.newVersion) h += '<div class="mr-m mr-bad">'+t('店長が新しい提出版を出しました（入力は残っています）。','The store manager sent a new version (your input is kept).')+' <button class="btn btn-secondary btn-sm" onclick="mrRpRebase(true)">'+t('新しい提出版を読み込む','Load the new version')+'</button></div>';
   if ((d.state === 'error' || d.state === 'conflict') && !d.newVersion) h += '<div class="mr-m mr-bad">'+e(d.err || '')+(d.state === 'conflict' ? ' <button class="btn btn-secondary btn-sm" onclick="mrReloadRec()">'+t('最新を読み込む','Load the latest')+'</button>' : ' <button class="btn btn-secondary btn-sm" onclick="mrRpSave(\''+e(tg)+'\')">'+t('もう一度保存','Save again')+'</button>')+'</div>';
   if (d.version) h += '<button class="mr-pick" onclick="mrRpDelete(\''+e(tg)+'\')">'+t('この下書きを消す','Delete this draft')+'</button>';
   return h + '</div>';
@@ -17401,11 +17402,13 @@ async function mrRpRebase(force){
     var n0 = (R.review && R.review.submitted_no) || 0;
     var now = await mrAPI({ action:'get', env:R.env, ym:R.ym, store_id:R.store.store_id, since:n0 });
     if (!mrSameRec(R, g) || _mr.rp !== rp) return;
-    var ch = now.changed_since || [];
-    Object.keys(rp.drafts).forEach(function(tg){ var d = rp.drafts[tg]; if (ch.indexOf(tg) >= 0 && d.decision) { d.stale = true; d.sub_no = n0; }
+    var ch = now.changed_since || [], n1 = (now.review && now.review.submitted_no) || 0, marked = 0;
+    Object.keys(rp.drafts).forEach(function(tg){ var d = rp.drafts[tg]; if (ch.indexOf(tg) >= 0 && d.decision && !d.stale) { d.stale = true; d.sub_no = n0; marked++; }
       if (d.state === 'conflict' && d.newVersion) { d.state = d.pending ? 'dirty' : 'saved'; d.err = ''; d.newVersion = false; } });
     _mr.rec = now;
-    showToast(escapeHtml(t('店長が新しい提出版を出しました（提出版 ' + ((now.review && now.review.submitted_no) || '') + '）。内容が変わった項目の下書きに印をつけました。打った内容は残っています。','The store manager sent a new version (' + ((now.review && now.review.submitted_no) || '') + '). Drafts on changed items are marked. What you typed is kept.')), 'warning');
+    if (n1 > n0 && rp.rebasedTo !== n1) showToast(escapeHtml(marked ? t('店長が新しい提出版を出しました（提出版 ' + n1 + '）。内容が変わった項目の下書き ' + marked + ' 件に印をつけました。打った内容は残っています。','The store manager sent a new version (' + n1 + '). ' + marked + ' draft(s) on changed items are marked. What you typed is kept.')
+      : t('店長が新しい提出版を出しました（提出版 ' + n1 + '）。打った内容は残っています。','The store manager sent a new version (' + n1 + '). What you typed is kept.')), 'warning');
+    rp.rebasedTo = n1;
     mrRerender();
     Object.keys(rp.drafts).forEach(function(tg){ var d = rp.drafts[tg]; if (d.pending && !(d.stale && d.decision)) mrRpSave(tg); });
   } catch(e) { if (mrSameRec(R, g)) showToast(escapeHtml(e.message || String(e)), 'error'); }
@@ -17473,7 +17476,9 @@ async function mrRpSave(tg){
     try {
       var res = await mrAPI(Object.assign({ action:'reply_save', env:R.env, ym:R.ym, store_id:R.store.store_id, target:tg, expect_version:d.version || null, expect_no:(R.review && R.review.submitted_no) || 0 }, wire));
       if (g !== _mrGen || _mr.rp !== rp) return false;
-      d.version = res.version; d.err = ''; d.stale = false; d.sub_no = R.review && R.review.submitted_no;
+      d.version = res.version; d.err = '';
+      /* 保存した提出版がいま見ている提出版のときだけ「最新の下書き」（読み直しの前に出した保存の答えでは変えない） */
+      if (_mr.rec === R) { d.stale = false; d.sub_no = R.review && R.review.submitted_no; }
       if (d.pending) { d.state = 'dirty'; d.saveP = null; return mrRpSave(tg); }
       d.state = 'saved'; return true;
     } catch(err) {

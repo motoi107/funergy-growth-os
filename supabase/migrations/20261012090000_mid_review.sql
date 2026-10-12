@@ -571,10 +571,13 @@ begin
    updated_at = now(), updated_by = v_name
   where id = r.id returning * into r;
  -- An item the GM / CEO decided that needs a decision again (its content changed, or a question on it was answered):
- -- the escalation opens again, so it waits for them (an AM cannot decide it).
+ -- the escalation opens again, so it waits for them (an AM cannot decide it). Only an item the new version still has and
+ -- that needs a decision (a removed item or one now 順調 waits for nobody: otherwise the review could never move on).
  update public.mr_replies p set data = (p.data - 'resolved' - 'resolved_by' - 'resolved_at') || jsonb_build_object('reopened_no', r.submitted_no), updated_at = now()
   where p.review_id = r.id and p.state = 'sent' and p.decision = 'escalate' and coalesce((p.data->>'resolved')::boolean, false)
-   and (p.data->>'withdrawn_no') is null and (p.data->>'forwarded') is null and not public.mr_decided(r.id, p.target);
+   and (p.data->>'withdrawn_no') is null and (p.data->>'forwarded') is null
+   and p.target = any(public.mr_required_targets(r)) and public.mr_item_at(r.id, r.submitted_no, p.target) is not null
+   and not public.mr_decided(r.id, p.target);
  perform public.mr_recompute(r.id);
  perform public.mr_event(r.id, v_env, m.user_id::text, 'submit', jsonb_build_object('no', r.submitted_no, 'by', v_name, 'from', v_prev));
  select * into r from public.mr_reviews where id = r.id;

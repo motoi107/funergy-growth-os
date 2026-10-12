@@ -1033,3 +1033,37 @@ test('after an answer: a CEO item waits for the CEO again; a draft written befor
   await saveR(E, 'am1', 'D3', 'pl', 'as_proposed', act({ due: '0026-10-20' }));
   assert.equal((await R(E, 'am1', 'D3', { action: 'get' })).body.replies.find(x => x.state === 'draft' && x.target === 'pl').data.due, undefined);
 });
+
+test('a GM / CEO decision on an item later removed or no longer needing a decision is not reopened (the review can still finish)', async () => {
+  const E = await setup(); await demoOn(E);
+  await saveR(E, 'ceo', 'D3', 'issue:i2', 'as_proposed', act()); await send(E, 'ceo', 'D3');
+  await saveR(E, 'gm', 'D3', 'issue:i1', 'as_proposed', act()); await send(E, 'gm', 'D3');
+  await saveR(E, 'am1', 'D3', 'focus:f2', 'escalate', { title: 'ランチの呼び込み', reason: '人を回せない', due: '2026-10-22' }, 'gm'); await send(E, 'am1', 'D3');
+  await saveR(E, 'gm', 'D3', 'focus:f2', 'as_proposed', act()); await send(E, 'gm', 'D3');
+  await saveR(E, 'am1', 'D3', 'focus:f2', 'followup', { question: 'チラシは何枚？', due: '2026-10-21' }); await send(E, 'am1', 'D3');
+  const q = (await R(E, 'am1', 'D3', { action: 'get' })).body.replies.find(x => x.decision === 'followup');
+  // Version 2: question 2 withdrawn, focus 2 now 順調 (needs no decision), the question answered.
+  await resubmit(E, 'D3', 'gm', b => ({ ...b, issues: b.issues.filter(i => i.id !== 'i2'),
+    focus: b.focus.map(f => f.id === 'f2' ? { ...f, status: 'ok', note: '呼び込みを再開' } : f), answers: { [q.id]: '500 枚' } }));
+  const g = (await R(E, 'am1', 'D3', { action: 'get' })).body;
+  assert.equal(g.replies.filter(x => x.decision === 'escalate' && x.data.reopened_no).length, 0);
+  assert.equal((await status(E, 'D3')).status, 'submitted');
+  for (const t of g.review.required.filter(t => !g.review.final[t])) await saveR(E, 'am1', 'D3', t, 'as_proposed', act());
+  await send(E, 'am1', 'D3');
+  assert.equal((await R(E, 'am1', 'D3', { action: 'complete' })).status, 200);
+});
+
+test('KPI / PL decisions: an empty entry or 注意 → 達成 changes nothing; a new 未達 on a KPI (same text) needs a decision again', async () => {
+  const E = await setup(); await demoOn(E);
+  for (const t of ['pl', 'kpi', 'focus:f1', 'issue:i1']) await saveR(E, 'am1', 'D1', t, 'as_proposed', act());
+  await send(E, 'am1', 'D1');
+  await saveR(E, 'am1', 'D1', 'focus:f2', 'followup', { question: '廃棄の記録は？', due: '2026-10-20' }); await send(E, 'am1', 'D1');
+  let q = (await R(E, 'am1', 'D1', { action: 'get' })).body.replies.find(x => x.decision === 'followup' && !x.data.resolved);
+  await resubmit(E, 'D1', 'gm', b => ({ ...b, kpi: { ...b.kpi, ppa: { tags: [], comment: '' } }, pl: { ...b.pl, labor: { cause: '', plan: '' } }, answers: { [q.id]: '毎日' } }), { sales: 'ok', guests: 'ok' });
+  assert.deepEqual((await R(E, 'am1', 'D1', { action: 'get' })).body.review.final, { 'issue:i1': true, 'focus:f1': true, kpi: true, pl: true });
+  await saveR(E, 'am1', 'D1', 'focus:f2', 'followup', { question: 'もう一つ', due: '2026-10-20' }); await send(E, 'am1', 'D1');
+  q = (await R(E, 'am1', 'D1', { action: 'get' })).body.replies.find(x => x.decision === 'followup' && !x.data.resolved);
+  await resubmit(E, 'D1', 'gm', b => ({ ...b, answers: { ...b.answers, [q.id]: 'はい' } }), { drink: 'miss' });   // drink already has a comment
+  const g = (await R(E, 'am1', 'D1', { action: 'get' })).body;
+  assert.equal(g.review.final.kpi, false); assert.equal(g.review.final.pl, true);
+});
