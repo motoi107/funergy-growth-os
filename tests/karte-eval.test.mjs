@@ -561,7 +561,7 @@ test('sync: the three new keys are synced, merged per entry by time and kept by 
   assert.match(source, /'karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval',/);
   assert.match(source, /'q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval',/);
   for (const k of ['bonus_eval_rule', 'bonus_eval_ovr', 'bonus_eval']) assert.match(source, new RegExp('\\n  ' + k + ':\\s+\\{ merge: kevMergeMap, covers: kevCoversMap, keepLocal: true \\}'));
-  assert.match(source, /const APP_VERSION = '1065';/);
+  assert.ok(Number((source.match(/const APP_VERSION = '(\d+)';/) || [])[1]) >= 1065, 'v1065 or later');   /* v1066 で版が上がっても通る */
 });
 
 test('two devices edit the same person at once: each item keeps the newer change; done is undone by a change it did not see', () => {
