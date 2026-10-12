@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-13 Codex のレビュー（PR #43・#44）の直しと中間レビューの追加修正プロンプト
+
+1. 済（Claude）：PR #44 の R1〜R4 を v1068（`claude/mid-review-fixes`）で直した。独立レビュー → PR → Codex の再レビュー。
+2. Claude：PR #43 の Codex 指摘（P1 3・P2 1）を v1067（`claude/karte-eval-fixes`）で直した。独立レビュー → PR → Codex の再レビュー。
+3. Moto さん：マージの順（karte v1067 → 中間レビュー v1068。逆なら karte を 1069 に）。中間レビューは fix の SQL → postcheck → 関数 → マージ。
+4. Claude：追加修正プロンプトへの最初の返答（UI案 A・B、①〜⑤）。実装は Moto さんが選んでから。
+
 ## 2026-10-11 中間レビュー（非公開版・CEO／GM／AM だけ）
 
 1. 済（Claude）：段階 1 — 今の作りの確認と UI案43。Moto さんの回答（10/11）と追加 2 点を反映。

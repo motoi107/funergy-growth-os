@@ -34,6 +34,20 @@ union all select 'ceo / gm not in manager_auth', (select count(*)::text from pub
    and not exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role in ('ceo','gm'))),
   case when (select count(*) from public.mr_members m where m.enabled and m.role in ('ceo','gm')
    and not exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role in ('ceo','gm'))) = 0 then 'OK' else '注意：この人は入れない（manager_auth で CEO・GM ではない）' end
+union all select 'ceo here but gm in manager_auth', (select count(*)::text from public.mr_members m where m.enabled and m.role = 'ceo'
+   and exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role = 'gm')),
+  case when (select count(*) from public.mr_members m where m.enabled and m.role = 'ceo'
+   and exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role = 'gm')) = 0 then 'OK' else '注意：この人はここでは GM として扱う（manager_auth が GM）' end
+union all select 'gm here but ceo in manager_auth', (select count(*)::text from public.mr_members m where m.enabled and m.role = 'gm'
+   and exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role = 'ceo') and not exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role = 'gm')),
+  case when (select count(*) from public.mr_members m where m.enabled and m.role = 'gm'
+   and exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role = 'ceo') and not exists(select 1 from public.manager_auth a where a.user_id = m.user_id and a.role = 'gm')) = 0 then 'OK'
+   else '注意：この人はここでは GM のまま（役職は自動では広げない。CEO にするかは Claude に相談）' end
+union all select 'fixes after the review (v1068)', (select (position('drafts_changed' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_reply_send')) > 0
+   and position('bool_or' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_auth')) > 0)::text),
+  case when position('drafts_changed' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_reply_send')) > 0
+   and position('bool_or' in (select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_auth')) > 0 then 'OK'
+   else 'NG：20261013090000_mid_review_fixes.sql がまだ（関数 v1068 はこれが要る）' end
 union all select 'members without employee id', (select count(*)::text from public.mr_members where enabled and coalesce(emp_id, '') = ''),
   case when (select count(*) from public.mr_members where enabled and coalesce(emp_id, '') = '') = 0 then 'OK' else '注意：この人は「この端末で覚える」が使えない（毎回メール認証）。AM は入れない' end
 union all select 'am not an am in the employee master', (select count(*)::text from public.mr_members m where m.enabled and m.role = 'am' and not public.mr_am_hr_ok(m.emp_id)),
