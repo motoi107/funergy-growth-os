@@ -8,7 +8,8 @@ with t as (
   where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('mr_settings','mr_members','mr_stores','mr_reviews','mr_submissions','mr_replies','mr_events')
 ), fn(name) as (
   values ('mr_setting'),('mr_am_hr_ok'),('mr_am_master_ok'),('mr_auth'),('mr_sees'),('mr_event'),('mr_arr'),('mr_summary'),
-   ('mr_whoami'),('mr_list'),('mr_settings_save'),('mr_members_list'),('mr_stores_save'),('mr_demo_reset')
+   ('mr_whoami'),('mr_list'),('mr_settings_save'),('mr_members_list'),('mr_stores_save'),('mr_demo_reset'),
+   ('mr_view_body'),('mr_actor_name'),('mr_missing'),('mr_get'),('mr_save'),('mr_submit')
 ), f as (
   select p.oid, p.proname, has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute') as open_to_browser, p.prosecdef,
    coalesce(array_to_string(p.proconfig, ','), '') like '%search_path=public%' as fixed_path

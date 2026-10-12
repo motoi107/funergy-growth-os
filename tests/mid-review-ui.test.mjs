@@ -61,7 +61,7 @@ function app(S, { who = 'gm', role = 'gm', signed = true, kept = null, lp = { id
     _meetConfirmState: (sid) => (kpi[sid] && kpi[sid].pl) || 'prov',
     showToast: (m, k) => c.toasts.push([m, k]), openModal: h => c.modals.push(h), closeModalDirect: () => {}, confirm: () => true,
     renderPage: () => { c.html = c.renderMidReview(); }, document: { getElementById: k => (c.dom || {})[k] || null, querySelectorAll: () => c.qsa || [] },
-    setTimeout: f => { timers.push(f); }, console,
+    setTimeout: f => { const id = ++c.tid; timers.push([id, f]); return id; }, clearTimeout: id => { const i = timers.findIndex(x => x[0] === id); if (i >= 0) timers.splice(i, 1); }, tid: 0, console,
     fetch: async (url, init) => {
       if (!net) throw new TypeError('Failed to fetch');
       const body = JSON.parse(init.body); c.calls.push(body);
@@ -71,7 +71,8 @@ function app(S, { who = 'gm', role = 'gm', signed = true, kept = null, lp = { id
   };
   vm.createContext(c);
   vm.runInContext(MEET + '\n' + MOD + '\nthis.renderMidReview = renderMidReview; this.M = () => _mr;', c);
-  c.flush = async () => { for (let i = 0; i < 30 && timers.length; i++) { const f = timers.shift(); f(); await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); } };
+  c.flush = async () => { for (let i = 0; i < 60 && timers.length; i++) { const [, f] = timers.shift(); await f(); for (let k = 0; k < 4; k++) await new Promise(r => setImmediate(r)); } };
+  c.pending = () => timers.length;
   c.show = async () => { c.renderPage(); await c.flush(); return c.html; };
   c.run = src => vm.runInContext(src, c);
   return c;
@@ -440,4 +441,151 @@ test('the remembered sign-in is used for the review even when the admin page has
   // The Invoice screen keeps its old behaviour (an admin page session counts as signed in there).
   c._botSession = null; c.kept = { rt: 'r3' };
   assert.equal(await vm.runInContext('invInRestore()', c), true); assert.equal(c._botSession, null);
+});
+
+// ---------------------------------------------------------------- 段階 2-2: the store page and the store manager's input (demo)
+const J = v => JSON.parse(JSON.stringify(v));
+const openStore = async (c, id) => { await c.show(); c.run(`mrOpenStore('${id}')`); c.renderPage(); await c.flush(); c.renderPage(); return c.html; };
+
+test('store page (B): what was submitted, the numbers now and at submission, focus with both due dates, questions, sent replies, history', async () => {
+  const S = await server();
+  const c = app(S); const h = strip(await openStore(c, 'D1'));
+  assert.match(h, /港町（デモ） AM 返信待ち 返信 期限超過 1 日/);
+  assert.match(h, /報告者 店長 田中（デモ） 店長 一次確認 AM 佐藤（デモ） 提出期限 \/ 返信期限 10\/15 \/ 10\/17/);
+  assert.match(h, /提出版 1 ?（10\/14 21:12・店長 田中（デモ））：当月 KPI は 10\/1〜10\/13・Toast 10\/14 05:40／前月 PL は 2026 年 9 月・確定/);
+  assert.match(h, /いまの数字は 10\/17 まで（提出後に更新あり）/);
+  assert.match(h, /A\. 前月 PL（2026 年 9 月） 確定 PL 取込 10\/9・当月の数字ではない/);
+  assert.match(h, /売上 \$141,200 \$145,000・97\.4% 注意 原価率 32\.1% 30\.5%・\+1\.6pt 注意/);
+  assert.match(h, /月初に確認済み：売上・人件費率（変更なし） 原価率 見立て 9\/25 からの米の値上げ/);
+  assert.match(h, /原価率 33\.2% 30\.5%・\+2\.7pt 未達 仕入 米の値上げ（9\/25〜）と盛り付けのばらつき。→ 相談 1/);
+  assert.match(h, /客単価 \$25\.02 \$25\.12・99\.6% 注意 （コメントなし）/);
+  assert.match(h, /遅延 1\. ランチのピーク.*当初の期限 10\/15 → 変更後 10\/31 ?（遅れた記録は残る） 理由 新人 2 名の研修が 1 週遅れた/);
+  assert.match(h, /要注意 相談 1：原価率が目標より高い.* ② 原因の見立て 9\/25 から米の仕入単価.* ③ 誰が・何を・いつまでに 田中：丼の盛り付けを計量.* ④ 判断・支援してほしいこと 本部で米の業者を比べてほしい（回答希望 10\/24）/);
+  assert.match(h, /履歴 10\/14 21:12 提出（提出版 1）・店長 田中（デモ）/);
+  // The numbers at submission.
+  c.run('_mr.showSnap=true'); c.renderPage(); const hs = strip(c.html);
+  assert.match(hs, /売上 \$63,450 \$65,010・97\.6% 注意/); assert.match(hs, /原価率 33\.5% 30\.5%・\+3\.0pt 未達/); assert.match(hs, /今の数字を見る/);
+  // A CEO sees the decisions waiting on 駅前 with reason and recommendation.
+  const ceo = app(S, { who: 'ceo', role: 'ceo' }); const hc = strip(await openStore(ceo, 'D3'));
+  assert.match(hc, /上位判断待ち（CEO） 重要 求人広告の追加費用 理由 予算にない費用。 推奨案 2 か月だけ月 \$600 を出す。/);
+  assert.match(hc, /いまは「判断待ち（GM・CEO）」なので、店長は書き足せません/);
+  assert.match(ceo.html, /disabled style="opacity:\.55;cursor:not-allowed" onclick="mrStartInput\(\)"/);
+  // A Operation Leader's report says so.
+  const ol = strip(await openStore(app(S), 'D5'));
+  assert.match(ol, /報告者 Operation Leader 原田（デモ・G3） G3 Operation Leader/);
+  assert.match(ol, /② 原因 調査中 ?：締め作業に何分かかっているか（1 週間）（原田・10\/20）/);
+  // A draft is not shown to managers before it is submitted.
+  const d6 = strip(await openStore(app(S), 'D6'));
+  assert.match(d6, /店長が書いている途中（下書き・未提出）/); assert.match(d6, /1\. ドリンクの提案をメニューに/);
+  // Back to the list.
+  c.run('mrBack()'); c.renderPage(); await c.flush(); assert.match(c.html, /全店 6/);
+});
+
+test('input (demo): fill in, autosave with versions, what is missing, submit makes version 1; the list shows it', async () => {
+  const S = await server();
+  const c = app(S, { who: 'am1', role: 'am' }); await openStore(c, 'D6');
+  c.run('mrStartInput()'); c.renderPage();
+  assert.match(c.html, /店長の画面を体験中（デモの店・川沿い（デモ））/); assert.match(c.html, /押した人（あなた）の名前が記録されます/);
+  assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec))')), ['consult', 'focus:f1', 'focus:f2']);
+  assert.match(c.html, /data-need="focus:f1"/); assert.match(c.html, /<button class="btn btn-primary" disabled onclick="mrSubmit\(\)">/);
+  c.run(`mrSetVal('focus.0.status','ok',true); mrSetVal('focus.1.status','late',true); mrSetVal('focus.1.reason','担当が休み'); mrSetVal('focus.1.next','担当表を作る'); mrSetVal('focus.1.next_owner','Nguyen'); mrSetVal('focus.1.next_due','2026-10-24'); mrSetVal('consult','none',true); mrSetVal('reporter_role','op_leader')`);
+  assert.equal(c.run('_mr.ed.state'), 'dirty');
+  await c.flush();
+  assert.equal(c.run('_mr.ed.state'), 'saved'); assert.equal(c.run('_mr.ed.version') > 1, true);
+  const saves = c.calls.filter(b => b.action === 'save'); assert.equal(saves.length, 1, 'one save for the burst of edits');
+  assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec))')), []);
+  c.renderPage(); assert.match(c.html, /<button class="btn btn-primary"  onclick="mrSubmit\(\)">提出する<\/button>/);
+  await c.run('mrSubmit()'); c.renderPage(); await c.flush(); c.renderPage();
+  const sub = c.calls.filter(b => b.action === 'submit')[0];
+  assert.equal(sub.snapshot.period.to, '2026-10-17'); assert.equal(sub.snapshot.kpi.fc.judge, 'warn'); assert.equal(sub.snapshot.pl.state, 'none');
+  const h = strip(c.html);
+  assert.match(h, /川沿い（デモ） AM 返信待ち/); assert.match(h, /提出版 1 ?（.*・Yuki）/); assert.match(h, /報告者 店長 Nguyen（デモ） G3 Operation Leader/);
+  assert.match(h, /遅延 2\. 清掃チェック表 .* 理由 担当が休み 次の対応 担当表を作る（Nguyen・10\/24）/);
+  c.run('mrBack()'); c.renderPage(); await c.flush(); c.renderPage();
+  assert.match(strip(c.html), /川沿い（デモ） AM 未設定 → GM が確認 AM 返信待ち/);
+});
+
+test('input: a MISS needs a comment; PL 注意 needs cause and plan; re-submitting keeps the first version', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D1'); c.run('mrStartInput()'); c.renderPage();
+  assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec))')), []);
+  c.run(`mrSetVal('kpi.fc.comment',''); mrSetVal('pl.fc.plan','  ')`);
+  assert.deepEqual(J(c.run('mrMissing(_mr.ed.body, mrSnapNow(_mr.rec))')), ['kpi:fc', 'pl:fc']);
+  c.renderPage(); const h = strip(c.html);
+  assert.match(h, /KPI：原価率 は未達なのでコメントが必要/); assert.match(h, /前月 PL：原価率 の見立てと改善策/);
+  assert.match(c.html, /原価率 33\.2%<\/b><span>目標 30\.5%・\+2\.7pt <span class="mr-tag"[^>]*>未達<\/span><\/span><\/div><div class="mr-tagrow">/);
+  assert.match(c.html, /売上 \$80,800<\/b>.*?<div class="mr-tagrow"><button class="mr-pick on" aria-pressed="true"/s);   // 注意 is open with its tags
+  assert.match(c.html, /人件費率 25\.8%.*?＋ コメントを書く/s);                                                                    // 達成 stays short
+  c.run(`mrSetVal('kpi.fc.comment','米の値上げ'); mrSetVal('pl.fc.plan','業者を比べる')`); await c.flush();
+  await c.run('mrSubmit()'); await c.flush(); c.renderPage();
+  assert.match(strip(c.html), /提出版 2 ?（.*）.* 前の提出版：版 1（10\/14 21:12）/);
+  const subs = await S.pg.query(`select no from mr_submissions x join mr_reviews r on r.id=x.review_id where r.store_id='D1' order by no`);
+  assert.deepEqual(subs.rows.map(x => x.no), [1, 2]);
+});
+
+test('input: someone saved first → no overwrite, the input stays, then an explicit choice; a failed save keeps the input', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }), g = app(S);
+  await openStore(a, 'D6'); a.run('mrStartInput()'); a.renderPage();
+  await openStore(g, 'D6'); g.run('mrStartInput()'); g.renderPage();
+  g.run(`mrSetVal('consult','none',true)`); await g.flush(); assert.equal(g.run('_mr.ed.state'), 'saved');
+  a.run(`mrSetVal('focus.0.note','A の入力')`); await a.flush();
+  assert.equal(a.run('_mr.ed.state'), 'conflict'); assert.equal(a.run('_mr.ed.body.focus[0].note'), 'A の入力');
+  a.renderPage(); assert.match(strip(a.html), /ほかの人が先に保存しました（自動では保存しません）/);
+  assert.match(a.html, /最新を読み込む（自分の入力は消える）/);
+  a.run(`mrSetVal('focus.0.note','A の入力 2')`); await a.flush();                    // still not saved by itself
+  assert.equal(a.calls.filter(b => b.action === 'save').length, 1);
+  let r = await S.pg.query(`select body from mr_reviews where store_id='D6'`); assert.equal(r.rows[0].body.consult, 'none');
+  await a.run('mrConflictOverwrite()'); await a.flush();
+  assert.equal(a.run('_mr.ed.state'), 'saved');
+  r = await S.pg.query(`select body from mr_reviews where store_id='D6'`); assert.equal(r.rows[0].body.focus[0].note, 'A の入力 2');
+  // Network failure: the input stays, it says so, and the next save goes through.
+  const realFetch = a.fetch; a.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  a.run(`mrSetVal('focus.1.note','オフラインで書いた')`); await a.flush();
+  assert.equal(a.run('_mr.ed.state'), 'error'); a.renderPage(); assert.match(strip(a.html), /保存できません（入力は残っています）/);
+  a.fetch = realFetch; await a.run('mrSaveNow()');
+  assert.equal(a.run('_mr.ed.state'), 'saved');
+  r = await S.pg.query(`select body from mr_reviews where store_id='D6'`); assert.equal(r.rows[0].body.focus[1].note, 'オフラインで書いた');
+});
+
+test('input: logout while a save is waiting writes nothing; leaving with unsaved input asks first; locked and live stores have no input', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D6'); c.run('mrStartInput()');
+  c.run(`mrSetVal('consult','none')`); c.run('mrReset()'); await c.flush();
+  assert.equal(c.calls.filter(b => b.action === 'save').length, 0);
+  const d = app(S); await openStore(d, 'D6'); d.run('mrStartInput()'); d.run(`mrSetVal('consult','none')`);
+  let asked = 0; d.confirm = () => { asked++; return false; };
+  d.run('mrBack()'); assert.equal(asked, 1); assert.equal(d.run('_mr.view.mode'), 'input');
+  // Locked: waiting for a decision.
+  const l = app(S); await openStore(l, 'D3'); l.run('mrStartInput()'); assert.equal(l.run('_mr.view.mode'), 'page'); assert.equal(l.run('_mr.ed'), null);
+  // Live: numbers only, no input before store publication.
+  await S.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }] });
+  const kpi = { F01: { sales: { act: 50000, tgt: 52000 }, fc: { act: 31, tgt: 30 }, labor: { act: 27, tgt: 26 }, pl: 'final' } };
+  const v = app(S, { who: 'am1', role: 'am', stores: [{ id: 'F01', name: 'ToriTon', am: 'Yuki' }], kpi }); v.run("_mr.env='live'");
+  const hv = strip(await openStore(v, 'F01'));
+  assert.match(hv, /店舗公開の前なので、店長の報告はまだありません/); assert.doesNotMatch(v.html, /mrStartInput/);
+  assert.match(hv, /売上 \$50,000 \$52,000・96\.2% 注意/);
+  v.run('mrStartInput()'); assert.equal(v.run('_mr.ed'), null);
+  // A store the AM does not have: the server says not found.
+  const x = app(S, { who: 'am2', role: 'am', stores: [{ id: 'F01', name: 'ToriTon', am: 'Yuki' }], kpi }); x.run("_mr.env='live'");
+  await openStore(x, 'F01'); assert.match(strip(x.html), /うまくいきませんでした（not_found）|もう一度/);
+});
+
+test('store page and input: every text is escaped; English', async () => {
+  const S = await server();
+  const X = '<img src=x onerror=alert(1)>';
+  await S.pg.exec(`reset role;
+    update mr_reviews set body = jsonb_set(jsonb_set(body, '{kpi,fc,comment}', to_jsonb('${X}'::text)), '{issues,0,what}', to_jsonb('${X}'::text)) where store_id='D1';
+    update mr_submissions set body = jsonb_set(jsonb_set(body, '{kpi,fc,comment}', to_jsonb('${X}'::text)), '{focus,0,title}', to_jsonb('${X}'::text)), created_by='${X}';
+    update mr_stores set name='${X}' where store_id='D1';
+    update mr_replies set data = jsonb_set(data, '{recommend}', to_jsonb('${X}'::text));
+    set role service_role;`);
+  for (const id of ['D1', 'D3']) {
+    const c = app(S); const h = await openStore(c, id);
+    assert.ok(!h.includes('<img src=x'), id); assert.ok(h.includes('&lt;img src=x'), id);
+    if (id === 'D1') { c.run('mrStartInput()'); c.renderPage(); assert.ok(!c.html.includes('<img src=x') && c.html.includes('&lt;img src=x'), 'input ' + id); }
+  }
+  const en = app(S, { lang: 'en' }); const he = strip(await openStore(en, 'D1'));
+  assert.match(he, /Submitted version 1/); assert.match(he, /Last month PL/); assert.match(he, /Original due 10\/15 → now 10\/31/);
+  en.run('mrStartInput()'); en.renderPage(); assert.match(strip(en.html), /Trying the store manager’s screen/);
 });
