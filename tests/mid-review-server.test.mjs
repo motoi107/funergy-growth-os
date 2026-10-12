@@ -634,8 +634,10 @@ const act = (o = {}) => ({ next: '配置表を作り直す', owner: '田中', du
 const saveR = async (E, who, st, target, decision, data = {}, escalate_to) => {
   const g = (await R(E, who, st, { action: 'get' })).body;
   const mine = (g.replies || []).find(x => x.mine && x.state === 'draft' && x.target === target);
-  return R(E, who, st, { action: 'reply_save', target, decision, escalate_to, data, expect_version: mine ? mine.version : null });
+  return R(E, who, st, { action: 'reply_save', target, decision, escalate_to, data, expect_version: mine ? mine.version : null, expect_no: g.review ? g.review.submitted_no : null });
 };
+// Send this person's drafts, looking at the latest submitted version.
+const send = async (E, who, st) => R(E, who, st, { action: 'reply_send', expect_no: (await R(E, who, st, { action: 'get' })).body.review.submitted_no });
 const status = async (E, st) => (await E.q(`select status, decision_by, next_actor, next_due::text d from mr_reviews where env='demo' and store_id=$1`, [st]))[0];
 
 test('replies: the AM answers every item at once; an escalation waits for the GM; the GM decides; then the review can be completed', async () => {
@@ -646,22 +648,22 @@ test('replies: the AM answers every item at once; an escalation waits for the GM
   assert.equal((await saveR(E, 'am1', 'D1', 'issue:i1', 'escalate', { title: '米の業者の切り替え', reason: '駅前も同じ（店舗をまたぐ）', due: '2026-10-23' }, 'gm')).status, 200);
   assert.equal((await saveR(E, 'am1', 'D1', 'summary', null, { message: '報告ありがとう。米の件は GM に上げました。' })).status, 200);
   // Something incomplete: nothing is sent.
-  const bad = await R(E, 'am1', 'D1', { action: 'reply_send' }); assert.equal(bad.status, 422);
+  const bad = await send(E, 'am1', 'D1'); assert.equal(bad.status, 422);
   assert.equal((await E.q(`select count(*)::int n from mr_replies p join mr_reviews r on r.id=p.review_id where r.store_id='D1' and p.state='sent'`))[0].n, 0);
   assert.equal((await saveR(E, 'am1', 'D1', 'focus:f1', 'modify', act())).status, 200);
-  const ok = await R(E, 'am1', 'D1', { action: 'reply_send' }); assert.equal(ok.status, 200); assert.equal(ok.body.sent, 5);
+  const ok = await send(E, 'am1', 'D1'); assert.equal(ok.status, 200); assert.equal(ok.body.sent, 5);
   assert.deepEqual(await status(E, 'D1'), { status: 'decision', decision_by: 'gm', next_actor: 'GM', d: '2026-10-23' });
   const w = (await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D1').waits;
   assert.deepEqual(w.map(x => [x.kind, x.to, x.title]), [['escalate', 'gm', '米の業者の切り替え']]);
   // Not complete while it waits for the GM; an AM cannot decide a GM item (nothing is sent).
   assert.equal((await R(E, 'am1', 'D1', { action: 'complete' })).status, 422);
   await saveR(E, 'am1', 'D1', 'issue:i1', 'as_proposed', act());
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'am1', 'D1')).status, 422);
   assert.equal((await R(E, 'am1', 'D1', { action: 'reply_delete', target: 'issue:i1' })).body.deleted, 1);
   assert.equal((await status(E, 'D1')).status, 'decision');
   // The GM decides.
   await saveR(E, 'gm', 'D1', 'issue:i1', 'modify', act({ next: '2 社の見積りを 10/22 までに（佐藤）', owner: '佐藤' }));
-  assert.equal((await R(E, 'gm', 'D1', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'gm', 'D1')).status, 200);
   assert.equal((await status(E, 'D1')).status, 'submitted');
   const g = (await R(E, 'gm', 'D1', { action: 'get' })).body;
   assert.deepEqual(g.review.required, ['issue:i1', 'focus:f1', 'kpi', 'pl']); assert.equal(Object.values(g.review.final).every(Boolean), true);
@@ -682,29 +684,29 @@ test('replies: a CEO item waits for the CEO (a GM cannot close it); GM and CEO i
   const E = await setup(); await demoOn(E);
   assert.deepEqual(await status(E, 'D3'), { status: 'decision', decision_by: 'both', next_actor: 'GM 山本（デモ）', d: '2026-10-19' });
   await saveR(E, 'gm', 'D3', 'issue:i2', 'as_proposed', act());                                            // a GM cannot decide the CEO item
-  assert.equal((await R(E, 'gm', 'D3', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'gm', 'D3')).status, 422);
   await R(E, 'gm', 'D3', { action: 'reply_delete', target: 'issue:i2' });
   await saveR(E, 'gm', 'D3', 'issue:i1', 'as_proposed', act({ next: '11/15 まで火・金の夜に港町から 1 名', owner: '佐藤' }));
-  await R(E, 'gm', 'D3', { action: 'reply_send' });
+  await send(E, 'gm', 'D3');
   assert.deepEqual(await status(E, 'D3'), { status: 'decision', decision_by: 'ceo', next_actor: 'CEO', d: '2026-10-22' });
   await saveR(E, 'ceo', 'D3', 'issue:i2', 'modify', act({ next: '1 か月だけ月 $600。応募数を 11/15 に見る', owner: '鈴木' }));
-  await R(E, 'ceo', 'D3', { action: 'reply_send' });
+  await send(E, 'ceo', 'D3');
   assert.equal((await status(E, 'D3')).status, 'submitted');
   assert.equal((await R(E, 'am1', 'D3', { action: 'complete' })).status, 422);                               // focus, KPI and PL still need a decision
   for (const t of ['focus:f1', 'focus:f2', 'kpi', 'pl']) await saveR(E, 'am1', 'D3', t, 'as_proposed', act());
-  await R(E, 'am1', 'D3', { action: 'reply_send' });
+  await send(E, 'am1', 'D3');
   assert.equal((await R(E, 'am1', 'D3', { action: 'complete' })).status, 200);
   // Escalating: an AM may go to GM or CEO, a GM only to CEO, a CEO decides.
   await saveR(E, 'ceo', 'D1', 'kpi', 'escalate', { title: 't', reason: 'r', recommend: 'x', due: '2026-10-20' }, 'gm');
-  assert.equal((await R(E, 'ceo', 'D1', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'ceo', 'D1')).status, 422);
   await R(E, 'ceo', 'D1', { action: 'reply_delete', target: 'kpi' });
   await saveR(E, 'gm', 'D1', 'kpi', 'escalate', { title: 't', reason: 'r', due: '2026-10-20' }, 'gm');
-  assert.equal((await R(E, 'gm', 'D1', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'gm', 'D1')).status, 422);
   // To the CEO: the question, a recommendation and an answer-by date are all needed.
   await saveR(E, 'gm', 'D1', 'kpi', 'escalate', { title: 't', reason: 'r', due: '2026-10-20' }, 'ceo');
-  assert.equal((await R(E, 'gm', 'D1', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'gm', 'D1')).status, 422);
   await saveR(E, 'gm', 'D1', 'kpi', 'escalate', { title: 't', recommend: 'x', due: '2026-10-20' }, 'ceo');
-  assert.equal((await R(E, 'gm', 'D1', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'gm', 'D1')).status, 200);
   assert.equal((await status(E, 'D1')).decision_by, 'ceo');
 });
 
@@ -712,19 +714,19 @@ test('replies: follow-up questions go back to the store manager together; a 1:1 
   const E = await setup(); await demoOn(E);
   await saveR(E, 'am1', 'D1', 'issue:i1', 'followup', { title: '米の値上げはいつから何 %？', question: '業者からの通知を見せて', due: '2026-10-19' });
   await saveR(E, 'am1', 'D1', 'focus:f1', 'followup', { title: '研修の予定', question: '新人 2 名の研修はいつ終わる？', due: '2026-10-20' });
-  await R(E, 'am1', 'D1', { action: 'reply_send' });
+  await send(E, 'am1', 'D1');
   assert.deepEqual(await status(E, 'D1'), { status: 'followup', decision_by: null, next_actor: '店長 田中（デモ）', d: '2026-10-20' });
   // 1:1 talk on 公園通り: needs the date, time, people and what to decide.
   await saveR(E, 'am2', 'D5', 'summary', 'consult', { consult: { date: '2026-10-21', time: '15:00', people: ['店長 Garcia'], topics: [] } });
-  assert.equal((await R(E, 'am2', 'D5', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'am2', 'D5')).status, 422);
   await R(E, 'am2', 'D5', { action: 'reply_delete', target: 'summary' });
   await saveR(E, 'am2', 'D5', 'issue:i1', 'consult', { title: '夜のリーダー', consult: { date: '2026-10-22', time: '16:00', minutes: 20, people: ['店長 Garcia', 'AM Lee'], topics: ['夜のリーダーを誰にするか'] } });
-  await R(E, 'am2', 'D5', { action: 'reply_send' });
+  await send(E, 'am2', 'D5');
   const c = (await E.q(`select status, consult, next_due::text d from mr_reviews where store_id='D5'`))[0];
   assert.equal(c.status, 'consult'); assert.equal(c.consult.time, '16:00'); assert.equal(c.d, '2026-10-22');
   // After the talk: the decision closes it.
   await saveR(E, 'am2', 'D5', 'issue:i1', 'modify', act({ next: '原田さんを夜のリーダーに（11/1 から）', owner: 'Garcia' }));
-  await R(E, 'am2', 'D5', { action: 'reply_send' });
+  await send(E, 'am2', 'D5');
   assert.equal((await status(E, 'D5')).status, 'submitted');
 });
 
@@ -732,21 +734,21 @@ test('replies: drafts are per person and versioned; only items of the submitted 
   const E = await setup(); await demoOn(E);
   const a = await saveR(E, 'am1', 'D1', 'kpi', 'as_proposed', act());
   assert.equal(a.body.version, 1);
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_save', target: 'kpi', decision: 'modify', data: act(), expect_version: null })).status, 409);
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_save', target: 'kpi', decision: 'modify', data: act(), expect_version: 1 })).body.version, 2);
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_save', target: 'kpi', decision: 'modify', data: act(), expect_version: 1 })).status, 409);
+  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_save', target: 'kpi', decision: 'modify', data: act(), expect_version: null, expect_no: 1 })).status, 409);
+  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_save', target: 'kpi', decision: 'modify', data: act(), expect_version: 1, expect_no: 1 })).body.version, 2);
+  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_save', target: 'kpi', decision: 'modify', data: act(), expect_version: 1, expect_no: 1 })).status, 409);
   assert.equal((await saveR(E, 'gm', 'D1', 'kpi', 'as_proposed', act())).body.version, 1);                       // the GM's own draft
   for (const t of ['issue:i9', 'focus:zz', 'other']) assert.equal((await saveR(E, 'am1', 'D1', t, 'as_proposed', act())).status, 400, t);
   assert.equal((await saveR(E, 'am1', 'D6', 'summary', null, { message: 'x' })).body.error, 'locked');           // draft review
   assert.equal((await saveR(E, 'am1', 'D1', 'kpi', 'as_proposed', act({ next: 'あ'.repeat(301) }))).status, 400);    // too long: refused
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 200);
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).body.error, 'nothing');                     // nothing left to send
+  assert.equal((await send(E, 'am1', 'D1')).status, 200);
+  assert.equal((await send(E, 'am1', 'D1')).body.error, 'nothing');                     // nothing left to send
   for (const who of ['office', 'stranger']) assert.equal((await saveR(E, who, 'D1', 'kpi', 'as_proposed', act())).status, 403);
   // Live: an AM cannot answer another AM's store.
   await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1 }] });
   const id = (await E.q(`insert into mr_reviews(env, store_id, ym, status, submitted_no, body) values('live','F01','2026-10','submitted',1,'{"consult":"none"}') returning id`))[0].id;
   await E.q(`insert into mr_submissions(review_id, no, body, snapshot) values($1, 1, '{"consult":"none"}', '{}')`, [id]);
-  const lv = (who) => E.api(who, { action: 'reply_save', env: 'live', ym: '2026-10', store_id: 'F01', target: 'summary', decision: 'no_action', data: { reason: 'ok' } });
+  const lv = (who) => E.api(who, { action: 'reply_save', env: 'live', ym: '2026-10', store_id: 'F01', target: 'summary', decision: 'no_action', data: { reason: 'ok' }, expect_no: 1 });
   assert.equal((await lv('am2')).status, 404); assert.equal((await lv('am1')).status, 200);
 });
 
@@ -764,12 +766,12 @@ test('deadlines: GM / CEO change one review’s dates (in order); a date moved a
 });
 
 // The store manager sends a new version (demo): today's demo numbers judged as last time, the body changed by `edit`.
-const resubmit = async (E, st, who, edit) => {
+const resubmit = async (E, st, who, edit, judge = {}) => {
   const g = (await R(E, who, st, { action: 'get' })).body;
   const last = g.submissions[g.submissions.length - 1].snapshot;
   const sv = await R(E, who, st, { action: 'save', expect_version: g.review.version, body: edit(JSON.parse(JSON.stringify(g.review.body))) });
   assert.equal(sv.status, 200, JSON.stringify(sv.body));
-  const sn = await demoSnap(E, st, Object.fromEntries(Object.entries(last.kpi).map(([k, v]) => [k, v.judge])));
+  const sn = await demoSnap(E, st, { ...Object.fromEntries(Object.entries(last.kpi).map(([k, v]) => [k, v.judge])), ...judge });
   const r = await R(E, who, st, { action: 'submit', expect_version: sv.body.version, snapshot: sn });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   return r;
@@ -778,7 +780,7 @@ const resubmit = async (E, st, who, edit) => {
 test('a decision counts for what it decided: an item changed in a new version needs a new decision; unchanged items keep theirs', async () => {
   const E = await setup(); await demoOn(E);
   for (const t of ['pl', 'kpi', 'focus:f1', 'issue:i1']) assert.equal((await saveR(E, 'am1', 'D1', t, 'as_proposed', act())).status, 200, t);
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'am1', 'D1')).status, 200);
   assert.deepEqual(await status(E, 'D1'), { status: 'submitted', decision_by: null, next_actor: 'AM 佐藤（デモ）', d: '2026-10-19' });   // after a reply: the decision date
   // The store manager raises the ask afterwards (version 2).
   assert.equal((await resubmit(E, 'D1', 'gm', b => { b.issues[0].ask = '本部で米の業者を比べて、月 $6,000 まで出してほしい'; return b; })).status, 200);
@@ -789,7 +791,7 @@ test('a decision counts for what it decided: an item changed in a new version ne
   assert.deepEqual([g.replies.find(x => x.target === 'kpi').changed, g.replies.find(x => x.target === 'focus:f1').changed], [false, false]);
   assert.equal((await R(E, 'am1', 'D1', { action: 'complete' })).status, 422);
   await saveR(E, 'am1', 'D1', 'issue:i1', 'modify', act({ next: '$6,000 は出さない。2 社の見積りで決める' }));
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'am1', 'D1')).status, 200);
   assert.equal((await R(E, 'am1', 'D1', { action: 'complete' })).status, 200);
 });
 
@@ -797,7 +799,7 @@ test('an item the store manager removes: what waited on it is withdrawn, a draft
   const E = await setup(); await demoOn(E);
   await saveR(E, 'am1', 'D1', 'focus:f1', 'followup', { question: '研修はいつ終わる？', due: '2026-10-20' });
   await saveR(E, 'am1', 'D1', 'issue:i1', 'escalate', { title: '米の業者', reason: '店舗をまたぐ', due: '2026-10-23' }, 'gm');
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'am1', 'D1')).status, 200);
   assert.equal((await status(E, 'D1')).status, 'followup');
   await saveR(E, 'gm', 'D1', 'issue:i1', 'as_proposed', act());                                          // the GM's draft, not sent yet
   const fq = (await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.decision === 'followup');
@@ -811,11 +813,11 @@ test('an item the store manager removes: what waited on it is withdrawn, a draft
   assert.equal(g.replies.find(x => x.state === 'draft' && x.target === 'issue:i1').gone, true);
   assert.equal((await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D1').waits.length, 0);
   // The GM's draft on the removed question: sending is refused until it is deleted; no new draft on it.
-  assert.equal((await R(E, 'gm', 'D1', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'gm', 'D1')).status, 422);
   assert.equal((await R(E, 'gm', 'D1', { action: 'reply_delete', target: 'issue:i1' })).body.deleted, 1);
   assert.equal((await saveR(E, 'gm', 'D1', 'issue:i1', 'as_proposed', act())).status, 400);
   for (const t of ['focus:f1', 'kpi', 'pl']) await saveR(E, 'am1', 'D1', t, 'as_proposed', act());
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'am1', 'D1')).status, 200);
   assert.equal((await R(E, 'am1', 'D1', { action: 'complete' })).status, 200);
 });
 
@@ -823,25 +825,25 @@ test('an item waiting for the GM / CEO is theirs; a GM can pass a GM item on to 
   const E = await setup(); await demoOn(E);
   assert.ok((await R(E, 'gm', 'D3', { action: 'get' })).body.review.required.includes('focus:f1'));       // a focus item that needs help
   await saveR(E, 'am1', 'D3', 'issue:i1', 'no_action', { reason: '様子を見る' });
-  assert.equal((await R(E, 'am1', 'D3', { action: 'reply_send' })).status, 422);                           // an AM on a GM item
+  assert.equal((await send(E, 'am1', 'D3')).status, 422);                           // an AM on a GM item
   await R(E, 'am1', 'D3', { action: 'reply_delete', target: 'issue:i1' });
   await saveR(E, 'gm', 'D3', 'issue:i1', 'escalate', { title: '応援と残業の上限', recommend: '11/15 まで週 2 回', due: '2026-10-21' }, 'ceo');
-  assert.equal((await R(E, 'gm', 'D3', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'gm', 'D3')).status, 200);
   assert.deepEqual(await status(E, 'D3'), { status: 'decision', decision_by: 'ceo', next_actor: 'CEO', d: '2026-10-21' });
   const fw = (await R(E, 'gm', 'D3', { action: 'get' })).body.replies.find(x => x.decision === 'escalate' && x.escalate_to === 'gm');
   assert.deepEqual([fw.data.resolved, fw.data.forwarded], [true, 'ceo']);
   await saveR(E, 'gm', 'D3', 'issue:i1', 'as_proposed', act());
-  assert.equal((await R(E, 'gm', 'D3', { action: 'reply_send' })).status, 422);                            // now a CEO item
+  assert.equal((await send(E, 'gm', 'D3')).status, 422);                            // now a CEO item
   await R(E, 'gm', 'D3', { action: 'reply_delete', target: 'issue:i1' });
   for (const t of ['issue:i1', 'issue:i2']) await saveR(E, 'ceo', 'D3', t, 'as_proposed', act());
-  assert.equal((await R(E, 'ceo', 'D3', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'ceo', 'D3')).status, 200);
   assert.equal((await status(E, 'D3')).status, 'submitted');
   // The other items decided, and one more question on an item that needs none: not done while it is open.
   for (const t of ['focus:f1', 'focus:f2', 'kpi', 'pl']) await saveR(E, 'am1', 'D3', t, 'as_proposed', act());
-  await R(E, 'am1', 'D3', { action: 'reply_send' });
+  await send(E, 'am1', 'D3');
   assert.equal((await R(E, 'am1', 'D3', { action: 'get' })).body.review.required.includes('focus:f3'), false);   // 順調: needs no decision
   await saveR(E, 'am1', 'D3', 'focus:f3', 'followup', { question: '記録はどこに？', due: '2026-10-21' });
-  await R(E, 'am1', 'D3', { action: 'reply_send' });
+  await send(E, 'am1', 'D3');
   assert.equal((await status(E, 'D3')).status, 'followup');
   assert.equal((await R(E, 'am1', 'D3', { action: 'complete' })).status, 422);
   // Someone else's draft is not theirs to delete.
@@ -853,7 +855,7 @@ test('an item waiting for the GM / CEO is theirs; a GM can pass a GM item on to 
 test('a reply, a date change or completion does not make the store manager’s next save a conflict', async () => {
   const E = await setup(); await demoOn(E);
   const v = (await R(E, 'gm', 'D1', { action: 'get' })).body.review.version;
-  await saveR(E, 'am1', 'D1', 'summary', null, { message: '読みました。返信はこのあと。' }); await R(E, 'am1', 'D1', { action: 'reply_send' });
+  await saveR(E, 'am1', 'D1', 'summary', null, { message: '読みました。返信はこのあと。' }); await send(E, 'am1', 'D1');
   await R(E, 'gm', 'D1', { action: 'deadline_save', deadlines: { submit: '2026-10-15', reply: '2026-10-20', decide: '2026-10-22', consult_from: '2026-10-23', consult_to: '2026-10-24' } });
   const body = (await R(E, 'gm', 'D1', { action: 'get' })).body.review.body;
   assert.equal((await R(E, 'gm', 'D1', { action: 'save', expect_version: v, body: { ...body, reporter: '店長 田中（デモ）' } })).status, 200);
@@ -864,18 +866,18 @@ test('blank and dates as the screen sees them: full-width spaces and line breaks
   assert.deepEqual((await E.q(`select public.mr_blank(E'　\n\t ') a, public.mr_blank(' x ') b, public.mr_blank(null) c, public.mr_date_ok('2026-11-31') d, public.mr_date_ok('2026-02-28') e, public.mr_date_ok('2026-1-1') f`))[0],
     { a: true, b: false, c: true, d: false, e: true, f: false });
   await saveR(E, 'am1', 'D1', 'kpi', 'no_action', { reason: '　' });
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'am1', 'D1')).status, 422);
   await saveR(E, 'am1', 'D1', 'kpi', 'as_proposed', act({ next: '\n', owner: '　' }));
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'am1', 'D1')).status, 422);
   await saveR(E, 'am1', 'D1', 'kpi', 'as_proposed', act({ due: '2026-11-31' }));                          // dropped: no due date
   assert.equal((await R(E, 'am1', 'D1', { action: 'get' })).body.replies.find(x => x.state === 'draft').data.due, undefined);
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 422);
+  assert.equal((await send(E, 'am1', 'D1')).status, 422);
   const dl = { submit: '2026-10-15', reply: '2026-10-20', decide: '2026-11-31', consult_from: '2026-12-01', consult_to: '2026-12-02' };
   assert.equal((await R(E, 'gm', 'D1', { action: 'deadline_save', deadlines: dl })).status, 400);
   // Only the decision's own fields are kept (a question typed before switching to 提案どおり is not).
   await saveR(E, 'am1', 'D1', 'kpi', 'as_proposed', act({ question: '前に書いた質問', reason: 'r', title: 't' }));
   assert.deepEqual(Object.keys((await R(E, 'am1', 'D1', { action: 'get' })).body.replies.find(x => x.state === 'draft').data).sort(), ['due', 'next', 'next_check', 'owner']);
-  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).status, 200);
+  assert.equal((await send(E, 'am1', 'D1')).status, 200);
   const a = (await R(E, 'am1', 'D1', { action: 'get' })).body.replies.find(x => x.state === 'sent');
   assert.equal((await R(E, 'gm', 'D1', { action: 'result_save', reply_id: a.id, result: '　\n', done: false })).status, 400);
   assert.equal((await R(E, 'gm', 'D1', { action: 'result_save', reply_id: a.id, result: '週の売上を見た', done: false })).status, 200);
@@ -883,31 +885,31 @@ test('blank and dates as the screen sees them: full-width spaces and line breaks
   const at = (await R(E, 'am1', 'D1', { action: 'get' })).body.replies.find(x => x.id === a.id).data.result_at;
   assert.equal((await R(E, 'am1', 'D1', { action: 'result_save', reply_id: a.id, result: '確かめた', done: true, expect_at: at })).status, 200);
   // A follow-up or a word is not an action: no result on it.
-  await saveR(E, 'am1', 'D1', 'summary', null, { message: 'ありがとう' }); await R(E, 'am1', 'D1', { action: 'reply_send' });
+  await saveR(E, 'am1', 'D1', 'summary', null, { message: 'ありがとう' }); await send(E, 'am1', 'D1');
   const w = (await R(E, 'am1', 'D1', { action: 'get' })).body.replies.find(x => x.target === 'summary');
   assert.equal((await R(E, 'gm', 'D1', { action: 'result_save', reply_id: w.id, result: 'x', done: true })).status, 404);
 });
 
 test('dates after replies: moving the 1:1 window keeps the decision date; a 1:1 talk planned again replaces the first; it clears once decided', async () => {
   const E = await setup(); await demoOn(E);
-  await saveR(E, 'gm', 'D3', 'issue:i1', 'as_proposed', act()); await R(E, 'gm', 'D3', { action: 'reply_send' });
-  await saveR(E, 'ceo', 'D3', 'issue:i2', 'as_proposed', act()); await R(E, 'ceo', 'D3', { action: 'reply_send' });
+  await saveR(E, 'gm', 'D3', 'issue:i1', 'as_proposed', act()); await send(E, 'gm', 'D3');
+  await saveR(E, 'ceo', 'D3', 'issue:i2', 'as_proposed', act()); await send(E, 'ceo', 'D3');
   assert.deepEqual(await status(E, 'D3'), { status: 'submitted', decision_by: null, next_actor: 'AM 佐藤（デモ）', d: '2026-10-19' });
   const dl = (await E.q(`select deadlines from mr_reviews where store_id='D3'`))[0].deadlines;
   assert.equal((await R(E, 'gm', 'D3', { action: 'deadline_save', deadlines: { ...dl, consult_to: '2026-10-25' } })).status, 200);
   assert.equal((await status(E, 'D3')).d, '2026-10-19');                                                  // not back to the reply date
   // D5: the AM decides first, then plans a talk on the same item: not decided until a decision after it.
   await saveR(E, 'am2', 'D5', 'issue:i1', 'consult', { consult: { date: '2026-10-23', time: '10:00', people: ['店長 Garcia'], topics: ['夜のリーダー'] } });
-  await R(E, 'am2', 'D5', { action: 'reply_send' });
+  await send(E, 'am2', 'D5');
   let g = (await R(E, 'am2', 'D5', { action: 'get' })).body;
   assert.equal(g.replies.filter(x => x.decision === 'consult' && !x.data.resolved).length, 1);
   assert.equal(g.replies.find(x => x.decision === 'consult' && x.data.replaced).data.resolved, true);
   assert.equal(g.review.consult.date, '2026-10-23'); assert.equal((await status(E, 'D5')).d, '2026-10-23');
-  await saveR(E, 'am2', 'D5', 'issue:i1', 'modify', act()); await R(E, 'am2', 'D5', { action: 'reply_send' });
+  await saveR(E, 'am2', 'D5', 'issue:i1', 'modify', act()); await send(E, 'am2', 'D5');
   g = (await R(E, 'am2', 'D5', { action: 'get' })).body;
   assert.equal(g.review.status, 'submitted'); assert.equal(g.review.consult, null); assert.equal(g.review.final['issue:i1'], true);
   await saveR(E, 'am2', 'D5', 'issue:i1', 'consult', { consult: { date: '2026-10-24', time: '10:00', people: ['店長 Garcia'], topics: ['締め作業'] } });
-  await R(E, 'am2', 'D5', { action: 'reply_send' });
+  await send(E, 'am2', 'D5');
   g = (await R(E, 'am2', 'D5', { action: 'get' })).body;
   assert.equal(g.review.status, 'consult'); assert.equal(g.review.final['issue:i1'], false);              // the talk alone does not decide
   assert.equal((await R(E, 'am2', 'D5', { action: 'complete' })).status, 422);
@@ -921,7 +923,7 @@ test('a store with nothing to decide is completed with a reason; the list shows 
   assert.deepEqual((await R(E, 'gm', 'D6', { action: 'get' })).body.review.required, ['summary']);
   assert.equal((await R(E, 'gm', 'D6', { action: 'complete' })).status, 422);
   await saveR(E, 'gm', 'D6', 'summary', 'no_action', { reason: '全項目が目標どおり。相談なし。' });
-  await R(E, 'gm', 'D6', { action: 'reply_send' });
+  await send(E, 'gm', 'D6');
   assert.equal((await R(E, 'gm', 'D6', { action: 'complete' })).status, 200);
   const l = (await E.api('am1', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D6');
   assert.equal(l.status, 'done'); assert.equal(l.done_reason, '全項目が目標どおり。相談なし。');
@@ -943,4 +945,62 @@ test('what needs a decision: PL rows checked at the start of the month do not; a
   assert.equal((await saveR(E, 'am1', 'D1', 'issue:i1', 'consult', c(7))).status, 400);
   assert.equal((await saveR(E, 'am1', 'D1', 'issue:i1', 'consult', c(6))).status, 200);
   assert.equal((await saveR(E, 'am1', 'D1', 'issue:i1', 'consult', { consult: { ...c(1).consult, topics: ['a', 'b', 'c'] } })).status, 400);
+});
+
+test('replies are written and sent on the version shown: a newer version is refused; a draft on an item changed since is checked and saved again', async () => {
+  const E = await setup(); await demoOn(E);
+  await saveR(E, 'am1', 'D1', 'issue:i1', 'as_proposed', act());            // on version 1
+  await saveR(E, 'am1', 'D1', 'kpi', 'as_proposed', act());
+  await resubmit(E, 'D1', 'gm', b => { b.issues[0].ask = '本部で米の業者を比べて、月 $6,000 まで出してほしい'; return b; });
+  // The page still shows version 1.
+  const old = await R(E, 'am1', 'D1', { action: 'reply_send', expect_no: 1 }); assert.deepEqual([old.status, old.body.error], [409, 'new_version']);
+  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_save', target: 'pl', decision: 'as_proposed', data: act(), expect_no: 1 })).body.error, 'new_version');
+  assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).body.error, 'new_version');      // the version is required
+  // Loaded again: the draft on the changed question is marked; the KPI draft is not (unchanged).
+  const g = (await R(E, 'am1', 'D1', { action: 'get' })).body;
+  const dr = t => g.replies.find(x => x.state === 'draft' && x.target === t);
+  assert.deepEqual([dr('issue:i1').sub_no, dr('issue:i1').changed, dr('kpi').changed], [1, true, false]);
+  assert.equal((await send(E, 'am1', 'D1')).status, 422);                                              // stale: look again first
+  await saveR(E, 'am1', 'D1', 'issue:i1', 'modify', act({ next: '$6,000 は出さない。2 社の見積りで決める' }));
+  assert.equal((await send(E, 'am1', 'D1')).status, 200);
+  const s2 = (await R(E, 'am1', 'D1', { action: 'get' })).body.replies.filter(x => x.state === 'sent');
+  assert.deepEqual(s2.map(x => [x.target, x.sub_no, x.changed]).sort(), [['issue:i1', 2, false], ['kpi', 2, false]]);
+});
+
+test('a decision made before the answer to a question on the same item does not count; KPI / PL decisions keep through changes that need no decision', async () => {
+  const E = await setup(); await demoOn(E);
+  for (const t of ['pl', 'kpi', 'focus:f1', 'issue:i1']) await saveR(E, 'am1', 'D1', t, 'as_proposed', act());
+  await send(E, 'am1', 'D1');
+  await saveR(E, 'gm', 'D1', 'kpi', 'followup', { question: '原価率はどこまで上がる？', due: '2026-10-20' });
+  await send(E, 'gm', 'D1');
+  const q = (await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.decision === 'followup');
+  // Answered (v2) with the KPI text unchanged; sales 注意 → 達成 and an empty entry for 客単価 change nothing that needs a decision.
+  await resubmit(E, 'D1', 'gm', b => ({ ...b, kpi: { ...b.kpi, ppa: { tags: [], comment: '' } }, pl: { ...b.pl, labor: { cause: '', plan: '' } }, answers: { [q.id]: '40% まで上がるかもしれない' } }), { sales: 'ok' });
+  let g = (await R(E, 'am1', 'D1', { action: 'get' })).body;
+  assert.deepEqual(g.review.final, { 'issue:i1': true, 'focus:f1': true, kpi: false, pl: true });        // the KPI waits for a decision after the answer
+  assert.equal((await R(E, 'am1', 'D1', { action: 'complete' })).status, 422);
+  await saveR(E, 'gm', 'D1', 'kpi', 'modify', act({ next: '仕入先を替える（10/24）' })); await send(E, 'gm', 'D1');
+  assert.equal((await R(E, 'am1', 'D1', { action: 'get' })).body.review.final.kpi, true);
+  // A new 未達 is a change that needs a decision.
+  await resubmit(E, 'D1', 'gm', b => ({ ...b, kpi: { ...b.kpi, drink: { tags: [], comment: 'サワーが遅れた' } } }), { drink: 'miss' });
+  g = (await R(E, 'am1', 'D1', { action: 'get' })).body;
+  assert.equal(g.review.final.kpi, false); assert.equal(g.review.final.pl, true);
+});
+
+test('an item sent up stays with the GM / CEO when it changes later (an AM cannot decide it); a withdrawn one does not', async () => {
+  const E = await setup(); await demoOn(E);
+  await saveR(E, 'ceo', 'D3', 'issue:i2', 'as_proposed', act()); await send(E, 'ceo', 'D3');
+  await saveR(E, 'gm', 'D3', 'issue:i1', 'as_proposed', act()); await send(E, 'gm', 'D3');
+  for (const t of ['focus:f1', 'focus:f2', 'kpi', 'pl']) await saveR(E, 'am1', 'D3', t, 'as_proposed', act());
+  await send(E, 'am1', 'D3');
+  assert.equal((await status(E, 'D3')).status, 'submitted');
+  await resubmit(E, 'D3', 'gm', b => { b.issues[1].ask = '追加の求人広告費 月 $900 を 3 か月出してよいか'; return b; });
+  assert.equal((await R(E, 'am1', 'D3', { action: 'get' })).body.review.final['issue:i2'], false);
+  await saveR(E, 'am1', 'D3', 'issue:i2', 'as_proposed', act());
+  assert.equal((await send(E, 'am1', 'D3')).status, 422);                                               // still the CEO's
+  await R(E, 'am1', 'D3', { action: 'reply_delete', target: 'issue:i2' });
+  await saveR(E, 'gm', 'D3', 'issue:i2', 'modify', act()); assert.equal((await send(E, 'gm', 'D3')).status, 422);
+  await R(E, 'gm', 'D3', { action: 'reply_delete', target: 'issue:i2' });
+  await saveR(E, 'ceo', 'D3', 'issue:i2', 'modify', act({ next: '月 $600 を 2 か月まで' })); assert.equal((await send(E, 'ceo', 'D3')).status, 200);
+  assert.equal((await R(E, 'am1', 'D3', { action: 'complete' })).status, 200);
 });

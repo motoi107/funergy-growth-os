@@ -826,7 +826,11 @@ test('dates: GM / CEO change one store’s dates; an AM has no button; the delay
 });
 
 // The store manager's new version through the server (demo numbers, judged as last time).
-const sApi = (S, who, st, b) => S.api(who, { env: 'demo', ym: '2026-10', store_id: st, ...b });
+const sApi = async (S, who, st, b) => {
+  // Replies are written and sent looking at the latest submitted version.
+  if (b.action === 'reply_save' || b.action === 'reply_send') b = { expect_no: (await S.api(who, { env: 'demo', ym: '2026-10', store_id: st, action: 'get' })).review.submitted_no, ...b };
+  return S.api(who, { env: 'demo', ym: '2026-10', store_id: st, ...b });
+};
 const sAct = { next: '配置表を作り直す', owner: '田中', due: '2026-10-25', next_check: '10/26・平均提供時間' };
 async function sResubmit(S, st, edit) {
   const g = await sApi(S, 'gm', st, { action: 'get' });
@@ -929,6 +933,8 @@ test('the screen and the server agree on what a reply still needs (same drafts, 
     ['ceo', 'ceo', 'D1', 'pl', 'consult', { consult: { ...cs, time: '' } }],
     ['ceo', 'ceo', 'D1', 'summary', null, { message: '　' }],
   ];
+  // The GM has decided its item on 駅前 already: it stays the GM's (an AM's go / change / no action is still refused).
+  await sApi(S, 'gm', 'D3', { action: 'reply_save', target: 'issue:i1', decision: 'as_proposed', data: full }); await sApi(S, 'gm', 'D3', { action: 'reply_send' });
   for (const [who, , st, target, decision, data, to] of cases) {
     const g = await sApi(S, who, st, { action: 'get' }), mine = g.replies.find(x => x.mine && x.state === 'draft' && x.target === target);
     await sApi(S, who, st, { action: 'reply_save', target, decision, data, escalate_to: to, expect_version: mine ? mine.version : null });
@@ -943,4 +949,55 @@ test('the screen and the server agree on what a reply still needs (same drafts, 
     assert.equal(ui, srv[st + '|' + role + '|' + target], `${who} ${st} ${target}`);
   }
   assert.deepEqual(Object.values(srv).sort(), ['action', 'consult', 'escalate', 'escalate_up', 'escalate_up', 'message', 'question', 'reason', 'reserved', 'reserved', 'summary', null, null].sort());
+  // Dates and times as the server takes them (a browser that falls back to text input).
+  const c0 = app(S); assert.deepEqual(JSON.parse(c0.run(`JSON.stringify([mrDateOk('2026-11-31'), mrDateOk('2026-02-28'), mrDateOk('2026-2-1'), mrTimeOk('24:00'), mrTimeOk('09:30')])`)), [false, true, false, false, true]);
+});
+
+test('a new version while a manager is replying: sending is refused and the page reloads; a draft on a changed item is checked and saved again', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1');
+  for (const tg of ['kpi', 'issue:i1']) { a.run(`mrRpSet('${tg}','decision','as_proposed',true)`); for (const [k, v] of Object.entries(sAct)) rpIn(a, tg, k, v); }
+  await a.flush();
+  await sResubmit(S, 'D1', b => { b.issues[0].ask = '本部で米の業者を比べて、月 $6,000 まで出してほしい'; return b; });
+  await a.run('mrRpSend(false)'); a.renderPage(); await a.flush(); a.renderPage();
+  assert.ok(a.toasts.some(x => /店長が新しい提出版を出しました/.test(x[0])));
+  assert.equal(a.run('_mr.rec.review.submitted_no'), 2);
+  let h = strip(a.html);
+  assert.match(h, /提出版 1 のときに書いた下書きです。そのあと店長が内容を変えました。 確かめた（保存し直す）/);
+  assert.match(h, /送る前に： ・相談 1 への返信：前の提出版のときの下書きです。/);
+  assert.match(a.html, /<button class="btn btn-primary" disabled onclick="mrRpSend\(false\)">/);
+  await a.run(`mrRpConfirm('issue:i1')`); await a.flush(); a.renderPage(); h = strip(a.html);
+  assert.doesNotMatch(h, /確かめた（保存し直す）/); assert.doesNotMatch(h, /送る前に/);
+  await a.run('mrRpSend(false)'); await a.flush(); a.renderPage();
+  const sent = (await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.state === 'sent');
+  assert.deepEqual(sent.map(x => x.sub_no), [2, 2]);
+});
+
+test('the store page keeps replies on withdrawn items (marked withdrawn) and shows every 1:1 talk still to be held', async () => {
+  const S = await server();
+  await sApi(S, 'am1', 'D1', { action: 'reply_save', target: 'issue:i1', decision: 'escalate', escalate_to: 'gm', data: { title: '米の業者', reason: '店舗をまたぐ', due: '2026-10-23' } });
+  await sApi(S, 'am1', 'D1', { action: 'reply_save', target: 'focus:f1', decision: 'followup', data: { question: '研修はいつ終わる？', due: '2026-10-20' } });
+  await sApi(S, 'am1', 'D1', { action: 'reply_send' });
+  const q = (await sApi(S, 'gm', 'D1', { action: 'get' })).replies.find(x => x.decision === 'followup');
+  await sResubmit(S, 'D1', b => ({ ...b, consult: 'none', issues: [], answers: { [q.id]: '11/1 に終わる' } }));
+  const g = app(S); let h = strip(await openStore(g, 'D1'));
+  assert.match(h, /前の提出版の項目（いまはない） 店長が取り下げた相談・重点への返信です。/);
+  assert.match(h, /上位判断待ち（GM） 提出版 1 へ 米の業者 .* 取り下げ 提出版 2 でこの項目がなくなった/);
+  // Two talks on 公園通り: both are shown.
+  await sApi(S, 'am2', 'D5', { action: 'reply_save', target: 'focus:f1', decision: 'consult', data: { consult: { date: '2026-10-24', time: '11:00', people: ['店長 Garcia'], topics: ['候補 2 人'] } } });
+  await sApi(S, 'am2', 'D5', { action: 'reply_send' });
+  const c = app(S, { who: 'am2', role: 'am' }); h = strip(await openStore(c, 'D5'));
+  assert.match(h, /個別相談 相談 1 ：10\/21 15:00（30 分）・店長 Garcia（デモ）・AM Lee（デモ） 決めたいこと：夜のリーダーを誰にするか／締め作業の分担 重点 1 ：10\/24 11:00（30 分）・店長 Garcia 決めたいこと：候補 2 人/);
+});
+
+test('the store manager’s submit when a question came in meanwhile: told, the question shown, the input kept', async () => {
+  const S = await server();
+  const m = app(S); await openStore(m, 'D1'); m.run('mrStartInput()'); m.renderPage();
+  m.run(`mrSetVal('reporter','店長 田中（デモ）。')`); await m.flush();
+  await sApi(S, 'am1', 'D1', { action: 'reply_save', target: 'kpi', decision: 'followup', data: { question: '週の売上は？', due: '2026-10-20' } });
+  await sApi(S, 'am1', 'D1', { action: 'reply_send' });
+  await m.run('mrSubmit()'); await m.flush(); m.renderPage();
+  assert.ok(m.toasts.some(x => /管理側から質問が届きました（1 件）。答えてから出してください。入力は残っています。/.test(x[0])));
+  assert.match(strip(m.html), /AM・GM からの質問（追加確認） .*週の売上は？/);
+  assert.equal(m.run('_mr.ed.body.reporter'), '店長 田中（デモ）。');
 });
