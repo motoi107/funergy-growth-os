@@ -198,6 +198,17 @@ language sql immutable security invoker set search_path=public,pg_temp as $$
  select coalesce(t, '') ~ '^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*$';
 $$;
 
+-- Who decides an item that was sent up: 'ceo' when it went to the CEO, 'gm' when it went to the GM only (not when the
+-- GM passed it on, and not when the item was withdrawn), null for an item nobody sent up.
+create function public.mr_reserved_level(p_review uuid, p_target text) returns text
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select case
+  when exists(select 1 from public.mr_replies w where w.review_id = p_review and w.target = p_target and w.state = 'sent' and w.decision = 'escalate'
+    and w.escalate_to = 'ceo' and (w.data->>'withdrawn_no') is null) then 'ceo'
+  when exists(select 1 from public.mr_replies w where w.review_id = p_review and w.target = p_target and w.state = 'sent' and w.decision = 'escalate'
+    and w.escalate_to = 'gm' and (w.data->>'withdrawn_no') is null and (w.data->>'forwarded') is null) then 'gm' end;
+$$;
+
 -- A real calendar date written YYYY-MM-DD in 2000–2099 (11-31, 02-30 and 0026 are not). The screen and the function check the same.
 create function public.mr_date_ok(t text) returns boolean
 language plpgsql immutable security invoker set search_path=public,pg_temp as $$
@@ -244,10 +255,12 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   'direct', exists(select 1 from jsonb_array_elements(public.mr_arr(b.v->'issues')) i where (i->>'direct')::boolean is true),
   'urgent', exists(select 1 from jsonb_array_elements(public.mr_arr(b.v->'issues')) i where (i->>'urgent')::boolean is true),
   'pl_state', (select s.snapshot->'pl'->>'state' from public.mr_submissions s where s.review_id=r.id order by s.no desc limit 1),
-  'waits', (select coalesce(jsonb_agg(jsonb_build_object('kind', p.decision, 'to', p.escalate_to, 'title', p.data->>'title',
+  'waits', (select coalesce(jsonb_agg(jsonb_build_object('kind', p.decision,
+       'to', case when p.decision = 'escalate' then p.escalate_to when p.decision = 'consult' then public.mr_reserved_level(r.id, p.target) end, 'title', p.data->>'title',
        'due', p.data->>'due', 'severity', p.data->>'severity', 'by', p.author_name) order by p.sent_at), '[]'::jsonb)
      from public.mr_replies p where p.review_id=r.id and p.state='sent' and p.decision in ('escalate','followup','consult')
-      and coalesce((p.data->>'resolved')::boolean, false) is not true)
+      and coalesce((p.data->>'resolved')::boolean, false) is not true
+      and not (p.decision = 'escalate' and p.escalate_to = 'gm' and public.mr_reserved_level(r.id, p.target) = 'ceo'))
  ) from b;
 $$;
 
@@ -437,7 +450,7 @@ begin
     'deadlines', r.deadlines, 'consult', r.consult, 'next_actor', r.next_actor, 'next_due', r.next_due, 'version', r.version,
     'submitted_no', r.submitted_no, 'submitted_at', r.submitted_at, 'done_at', r.done_at, 'created_at', r.created_at,
     'updated_at', r.updated_at, 'updated_by', r.updated_by,
-    'unsubmitted', r.submitted_no > 0 and r.body is distinct from public.mr_view_body(r),
+    'unsubmitted', r.submitted_no > 0 and (r.body - 'answers') is distinct from (public.mr_view_body(r) - 'answers'),
     'required', case when r.submitted_no > 0 then to_jsonb(public.mr_required_targets(r)) else '[]'::jsonb end,
     'final', case when r.submitted_no > 0 then (select coalesce(jsonb_object_agg(t, public.mr_target_final(r.id, t)), '{}'::jsonb) from unnest(public.mr_required_targets(r)) t) else '{}'::jsonb end) end,
   -- The items that changed since the version a page was showing (its drafts are checked again before they are saved).
@@ -508,6 +521,10 @@ begin
   if (o->>'fixed')::boolean is true and not exists(select 1 from jsonb_array_elements(v_focus) x where x->>'id' = o->>'id') then v_focus := v_focus || jsonb_build_array(o); end if;
  end loop;
  v_body := jsonb_set(v_body, '{focus}', v_focus);
+ -- Answers only to the questions still open (the earlier ones stay in the version they were answered in).
+ v_body := jsonb_set(v_body, '{answers}', coalesce((select jsonb_object_agg(k.key, k.value) from jsonb_each(case when jsonb_typeof(v_body->'answers') = 'object' then v_body->'answers' else '{}'::jsonb end) k
+   where exists(select 1 from public.mr_replies q where q.review_id = r.id and q.id::text = k.key and q.state = 'sent' and q.decision = 'followup'
+     and coalesce((q.data->>'resolved')::boolean, false) is not true)), '{}'::jsonb));
  update public.mr_reviews set body = v_body, version = version + 1, updated_at = now(), updated_by = v_name where id = r.id returning * into r;
  return jsonb_build_object('id', r.id, 'version', r.version, 'status', r.status, 'updated_at', r.updated_at);
 end $$;
@@ -534,7 +551,7 @@ begin
  if v_exp <> r.version then raise exception 'conflict'; end if;
  if r.status not in ('draft','submitted','followup') then raise exception 'locked'; end if;
  -- Nothing changed since the last submitted version: no new version (pressed twice, or a lost answer retried).
- if r.status = 'submitted' and r.submitted_no > 0 and r.body = public.mr_view_body(r) then raise exception 'unchanged'; end if;
+ if r.status = 'submitted' and r.submitted_no > 0 and (r.body - 'answers') = (public.mr_view_body(r) - 'answers') then raise exception 'unchanged'; end if;
  -- The numbers seen: this month's KPIs, last month's PL.
  if coalesce(v_snap->'period'->>'from','') <> v_ym || '-01' or (coalesce(v_snap->'period'->>'to','') <> '' and left(v_snap->'period'->>'to', 7) <> v_ym)
     or jsonb_typeof(v_snap->'kpi') is distinct from 'object' or jsonb_typeof(v_snap->'pl') is distinct from 'object'
@@ -572,7 +589,8 @@ begin
   where id = r.id returning * into r;
  -- An item the GM / CEO decided that needs a decision again (its content changed, or a question on it was answered):
  -- the escalation opens again, so it waits for them (an AM cannot decide it). Only an item the new version still has and
- -- that needs a decision (a removed item or one now 順調 waits for nobody: otherwise the review could never move on).
+ -- that needs a decision: a removed item, or one now 順調, is not reopened (a removed item could never be answered).
+ -- An escalation still open stays open until the GM / CEO answers it (対応不要 with a reason is an answer).
  update public.mr_replies p set data = (p.data - 'resolved' - 'resolved_by' - 'resolved_at') || jsonb_build_object('reopened_no', r.submitted_no), updated_at = now()
   where p.review_id = r.id and p.state = 'sent' and p.decision = 'escalate' and coalesce((p.data->>'resolved')::boolean, false)
    and (p.data->>'withdrawn_no') is null and (p.data->>'forwarded') is null
@@ -680,7 +698,7 @@ $$;
 -- keep their own dates). The 1:1 talk still to be held is kept on the review; it clears once a decision after it closes it.
 create function public.mr_recompute(p_review uuid) returns void
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare r public.mr_reviews; s public.mr_stores; am public.mr_members; v_gm boolean; v_ceo boolean; v_due date; v_rep text;
+declare r public.mr_reviews; s public.mr_stores; am public.mr_members; v_gm boolean; v_ceo boolean; v_due date; v_rep text; v_lv text;
 begin
  select * into r from public.mr_reviews where id = p_review for update;
  if r.status in ('draft','done') then return; end if;
@@ -693,14 +711,17 @@ begin
   select max(nullif(p.data->>'due','')::date) into v_due from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'followup' and coalesce((p.data->>'resolved')::boolean, false) is not true;
   update public.mr_reviews set status = 'followup', decision_by = null, next_actor = v_rep, next_due = coalesce(v_due, nullif(deadlines->>'decide','')::date) where id = r.id;
  elsif exists(select 1 from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'escalate' and coalesce((p.data->>'resolved')::boolean, false) is not true) then
-  select bool_or(p.escalate_to = 'gm'), bool_or(p.escalate_to = 'ceo'), min(nullif(p.data->>'due','')::date) into v_gm, v_ceo, v_due
+  select bool_or(p.escalate_to = 'gm' and public.mr_reserved_level(r.id, p.target) is distinct from 'ceo'), bool_or(p.escalate_to = 'ceo' or public.mr_reserved_level(r.id, p.target) = 'ceo'),
+   min(nullif(p.data->>'due','')::date) into v_gm, v_ceo, v_due
    from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'escalate' and coalesce((p.data->>'resolved')::boolean, false) is not true;
   update public.mr_reviews set status = 'decision', decision_by = case when v_gm and v_ceo then 'both' when v_ceo then 'ceo' else 'gm' end,
    next_actor = case when v_gm and v_ceo then 'GM・CEO' when v_ceo then 'CEO' else 'GM' end, next_due = coalesce(v_due, nullif(deadlines->>'decide','')::date) where id = r.id;
  elsif exists(select 1 from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'consult' and coalesce((p.data->>'resolved')::boolean, false) is not true) then
-  select min(nullif(p.data->'consult'->>'date','')::date) into v_due from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'consult'
-   and coalesce((p.data->>'resolved')::boolean, false) is not true;
-  update public.mr_reviews set status = 'consult', decision_by = null, next_actor = coalesce(public.mr_actor_name(am), s.am_name, 'GM'),
+  select min(nullif(p.data->'consult'->>'date','')::date), case when bool_or(public.mr_reserved_level(r.id, p.target) = 'ceo') then 'CEO'
+    when bool_or(public.mr_reserved_level(r.id, p.target) = 'gm') then 'GM' end into v_due, v_lv
+   from public.mr_replies p where p.review_id = r.id and p.state = 'sent' and p.decision = 'consult' and coalesce((p.data->>'resolved')::boolean, false) is not true;
+  update public.mr_reviews set status = 'consult', decision_by = null,
+   next_actor = coalesce(public.mr_actor_name(am), s.am_name, 'GM') || case when v_lv is not null then '（判断は ' || v_lv || '）' else '' end,
    next_due = coalesce(v_due, nullif(deadlines->>'consult_to','')::date) where id = r.id;
  else
   update public.mr_reviews set status = 'submitted', decision_by = null, next_actor = coalesce(public.mr_actor_name(am), s.am_name, 'GM（AM 未設定）'),
@@ -782,9 +803,8 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   when x.decision is not null and public.mr_reply_outdated(x.review_id, x.sub_no, x.target) then 'stale'
   -- An item sent up to the GM / CEO is decided by them, also when it changes later (GM items: GM or CEO; CEO items: the CEO).
   -- Not when the item was withdrawn.
-  when x.decision in ('as_proposed','modify','no_action') and exists(select 1 from public.mr_replies w where w.review_id = x.review_id and w.target = x.target
-    and w.state = 'sent' and w.decision = 'escalate' and (w.data->>'withdrawn_no') is null
-    and ((w.escalate_to = 'ceo' and m.role <> 'ceo') or (w.escalate_to = 'gm' and m.role = 'am'))) then 'reserved'
+  when x.decision in ('as_proposed','modify','no_action') and ((public.mr_reserved_level(x.review_id, x.target) = 'ceo' and m.role <> 'ceo')
+    or (public.mr_reserved_level(x.review_id, x.target) = 'gm' and m.role = 'am')) then 'reserved'
   -- The overall reply can be just a word to the store manager.
   when x.target = 'summary' and x.decision is null then (case when public.mr_blank(x.data->>'message') then 'message' else null end)
   when x.decision is null then 'decision'
@@ -838,6 +858,9 @@ begin
   update public.mr_replies set state = 'sent', sent_at = now(), sub_no = r.submitted_no, updated_at = now() where id = x.id;
   n := n + 1;
  end loop;
+ -- At most 20 questions wait for the store manager at once (one answer each, all in one version).
+ if (select count(*) from public.mr_replies q where q.review_id = r.id and q.state = 'sent' and q.decision = 'followup'
+     and coalesce((q.data->>'resolved')::boolean, false) is not true) > 20 then raise exception 'too_many'; end if;
  -- The review's version is the store manager's working copy: a reply does not make their next save a conflict.
  update public.mr_reviews set updated_at = now(), updated_by = public.mr_actor_name(m) where id = r.id;
  perform public.mr_recompute(r.id);
@@ -912,7 +935,7 @@ end $$;
 
 do $$ declare f text; begin
  foreach f in array array['mr_setting(text)','mr_auth(uuid,text[],boolean)','mr_sees(text,uuid,text,uuid,text)','mr_am_hr_ok(text)','mr_am_master_ok(uuid,text)','mr_event(uuid,text,text,text,jsonb)',
-  'mr_arr(jsonb)','mr_blank(text)','mr_date_ok(text)','mr_written(jsonb)','mr_item_at(uuid,integer,text)','mr_reply_outdated(uuid,integer,text)','mr_decided(uuid,text)','mr_targets_at(uuid,integer)','mr_summary(public.mr_reviews)','mr_whoami(jsonb)','mr_list(jsonb)','mr_settings_save(jsonb)','mr_members_list(jsonb)',
+  'mr_arr(jsonb)','mr_reserved_level(uuid,text)','mr_blank(text)','mr_date_ok(text)','mr_written(jsonb)','mr_item_at(uuid,integer,text)','mr_reply_outdated(uuid,integer,text)','mr_decided(uuid,text)','mr_targets_at(uuid,integer)','mr_summary(public.mr_reviews)','mr_whoami(jsonb)','mr_list(jsonb)','mr_settings_save(jsonb)','mr_members_list(jsonb)',
   'mr_stores_save(jsonb)','mr_demo_reset(jsonb)','mr_view_body(public.mr_reviews)','mr_actor_name(public.mr_members)',
   'mr_missing(jsonb,jsonb)','mr_get(jsonb)','mr_save(jsonb)','mr_submit(jsonb)',
   'mr_required_targets(public.mr_reviews)','mr_open_waits(uuid,text)','mr_target_final(uuid,text)','mr_recompute(uuid)',

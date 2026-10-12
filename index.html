@@ -16094,6 +16094,7 @@ var MR_ERR = {
   unchanged:['前の提出版と同じ内容です（新しい提出版は作りません）','Same as the last submitted version (no new version made)'],
   nothing:['送る返信がありません（下書きがない）','Nothing to send (no drafts)'],
   conflict:['ほかの人が先に保存しました。最新を読み込んでください','Someone else saved first. Load the latest'],
+  too_many:['店長への質問は、答えを待っているものと合わせて 20 件までです','Up to 20 questions can wait for the store manager at once'],
   new_version:['店長が新しい提出版を出しました。読み込み直して、確かめてから返信してください（下書きは残っています）','The store manager sent a new version. Load it and check before replying (your drafts are kept)']
 };
 function mrErrText(code, status){
@@ -16303,7 +16304,8 @@ function mrCases(rows){
     ((r && r.waits) || []).forEach(function(w){
       var g = w.kind === 'escalate' ? 'decision' : w.kind === 'followup' ? 'followup' : 'consult';
       var next = g === 'decision' ? (w.to === 'ceo' ? 'CEO' : 'GM') : g === 'followup' ? ((r && r.reporter) || t('店長','Store manager')) : (w.by || x.am);
-      out.push({ g:g, x:x, to:w.to, title:w.title || '', next:next, due:w.due || x.due, sev:w.severity, am:g !== 'decision', gm:g === 'decision' && w.to === 'gm', ceo:g === 'decision' && w.to === 'ceo',
+      if (g === 'consult' && w.to) next = next + t('（判断は ' + (w.to === 'ceo' ? 'CEO' : 'GM') + '）',' (decision: ' + (w.to === 'ceo' ? 'CEO' : 'GM') + ')');
+      out.push({ g:g, x:x, to:w.to, title:w.title || '', next:next, due:w.due || x.due, sev:w.severity, am:g !== 'decision', gm:(g === 'decision' || g === 'consult') && w.to === 'gm', ceo:(g === 'decision' || g === 'consult') && w.to === 'ceo',
         consult:(g === 'consult' && r && r.consult) ? r.consult : null });
     });
   });
@@ -17257,7 +17259,11 @@ function mrRpGone(R, target){
   return false;
 }
 /* GM・CEO の判断を待っている項目（自分では閉じられない） */
-function mrRpReserved(R, role, target){ return ((R && R.replies) || []).some(function(w){ return w.state === 'sent' && w.decision === 'escalate' && w.target === target && !(w.data && w.data.withdrawn_no) && (w.escalate_to === 'ceo' ? role !== 'ceo' : role === 'am'); }); }
+function mrRpLevel(R, target){
+  var ws = ((R && R.replies) || []).filter(function(w){ return w.state === 'sent' && w.decision === 'escalate' && w.target === target && !(w.data && w.data.withdrawn_no); });
+  return ws.some(function(w){ return w.escalate_to === 'ceo'; }) ? 'ceo' : ws.some(function(w){ return w.escalate_to === 'gm' && !(w.data && w.data.forwarded); }) ? 'gm' : '';
+}
+function mrRpReserved(R, role, target){ var lv = mrRpLevel(R, target); return lv === 'ceo' ? role !== 'ceo' : lv === 'gm' ? role === 'am' : false; }
 /* 実在する日付・時刻（画面の入力がテキストになるブラウザでも、サーバーと同じに確かめる） */
 function mrDateOk(v){ var m = /^(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.exec(String(v || '')); if (!m) return false; var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3]; }
 function mrTimeOk(v){ return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v || '')); }
@@ -17357,10 +17363,10 @@ function mrRpEditor(R, tg){
   var h = '<div class="mr-mgr mr-rp'+(miss ? ' mr-need' : '')+'" id="mr-rp-'+e(tg)+'"><div class="mr-cardh"><b style="font-size:12.5px">'+t('あなたの返信','Your reply')+'（'+e(String(role).toUpperCase())+'）</b><span id="mr-rpchip-'+e(tg)+'">'+mrRpChip(d)+'</span></div>';
   if (mrRpReserved(R, role, tg) && !waits.some(function(w){ return w.decision === 'escalate'; })) h += '<div class="mr-m">'+t('上位判断に上げた項目です。提案どおり・修正・対応不要は、上げた先（GM・CEO）が決めます。','This item was sent up. Go / change / no action is for the GM / CEO it went to.')+'</div>';
   if (d.stale && d.decision) h += '<div class="mr-m mr-or">'+e(t('提出版 ' + (d.sub_no || '') + ' のときに書いた下書きです。そのあと店長が内容を変えました。','Written on version ' + (d.sub_no || '') + '. The store manager changed the item since.'))+' <button class="mr-pick" onclick="mrRpConfirm(\''+e(tg)+'\')">'+t('確かめた（保存し直す）','Checked (save again)')+'</button></div>';
-  waits.filter(function(w){ return w.decision === 'escalate'; }).forEach(function(w){
-    var mine = w.escalate_to === 'ceo' ? role === 'ceo' : (role === 'gm' || role === 'ceo');
-    h += '<div class="mr-m'+(mine ? ' mr-or' : '')+'">'+(mine ? t('あなたの判断を待っています（','Waiting for your decision (')+(w.escalate_to === 'ceo' ? 'CEO' : 'GM')+'）' : t((w.escalate_to === 'ceo' ? 'CEO' : 'GM') + ' の判断を待っています（あなたの判断では閉じません）','Waiting for the ' + (w.escalate_to === 'ceo' ? 'CEO' : 'GM') + ' (your decision does not close it)'))+'</div>';
-  });
+  if (waits.some(function(w){ return w.decision === 'escalate'; })) {
+    var lv = mrRpLevel(R, tg) === 'ceo' ? 'CEO' : 'GM', mine = lv === 'CEO' ? role === 'ceo' : (role === 'gm' || role === 'ceo');
+    h += '<div class="mr-m'+(mine ? ' mr-or' : '')+'">'+(mine ? t('あなたの判断を待っています（','Waiting for your decision (')+lv+'）' : t(lv + ' の判断を待っています（あなたの判断では閉じません）','Waiting for the ' + lv + ' (your decision does not close it)'))+'</div>';
+  }
   if (tg === 'summary') h += '<label class="mr-lbl">'+t('店長へのひとこと（任意）','A word to the store manager (optional)')+'<textarea class="mr-ta" maxlength="600" data-rp="'+e(tg)+'|message" oninput="mrRpIn(this)">'+e(dt.message || '')+'</textarea></label>';
   if (opts.length) h += '<div class="mr-rp-dec" role="radiogroup">' + opts.map(function(o){ var on = d.decision === o[0]; return '<button class="mr-pick'+(on ? ' on' : '')+'" aria-pressed="'+on+'" onclick="'+q+'\'decision\',\''+o[0]+'\',true)">'+e(t(o[1], o[2]))+'</button>'; }).join('') + '</div>';
   var f = function(k, l, ph, type){ return '<label class="mr-lbl">'+l+(type === 'date' ? '<input class="mr-inp" type="date" data-rp="'+e(tg)+'|'+k+'" onchange="mrRpIn(this)" value="'+e(dt[k] || '')+'">'

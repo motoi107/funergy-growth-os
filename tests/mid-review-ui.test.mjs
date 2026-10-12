@@ -1027,6 +1027,10 @@ test('typing on after a new version came in: nothing typed is lost; unchanged it
   assert.deepEqual([byT['issue:i1'].data.next, byT['issue:i1'].sub_no], ['配置表を作り直す', 1]);          // not saved until checked
   assert.equal(a.run('mrUnsaved()'), true);
   assert.match(strip(a.html), /提出版 1 のときに書いた下書きです。/); assert.doesNotMatch(strip(a.html), /ほかのタブで保存されました/);
+  // Typing more on the marked draft still does not save it on the new version.
+  rpIn(a, 'issue:i1', 'owner', '田中（追記）'); await a.flush();
+  const still = (await sApi(S, 'am1', 'D1', { action: 'get' })).replies.find(x => x.state === 'draft' && x.target === 'issue:i1');
+  assert.deepEqual([still.data.owner, still.sub_no], ['田中', 1]);
   await a.run(`mrRpConfirm('issue:i1')`); await a.flush();
   drafts = (await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.state === 'draft' && x.target === 'issue:i1');
   assert.deepEqual([drafts[0].data.next, drafts[0].sub_no], ['見積りを 2 社（打ち直し）', 2]);

@@ -195,7 +195,8 @@ export function normBody(b) {
   }
   // Answers to the AM's / GM's follow-up questions, by question (reply id).
   const answers = {};
-  for (const [k, v] of Object.entries(obj(b.answers)).slice(0, 20)) if (RID.test(k) && typeof v === 'string' && v.trim()) answers[k] = TX(v, LIMITS.answer);
+  // Answers to the questions still open (at most 20 wait at once; the server keeps only the open ones).
+  for (const [k, v] of Object.entries(obj(b.answers)).slice(0, 100)) if (RID.test(k) && typeof v === 'string' && v.trim()) answers[k] = TX(v, LIMITS.answer);
   if (Object.keys(answers).length) out.answers = answers;
   return out;
 }
@@ -288,7 +289,7 @@ export function createHandler(deps) {
       return db.rpc('mr_demo_reset', { actor: a, ...demoData(ym) });
     },
   };
-  const ERR = { forbidden: 403, disabled: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409, nothing: 409, new_version: 409 };
+  const ERR = { forbidden: 403, disabled: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409, nothing: 409, new_version: 409, too_many: 409 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');

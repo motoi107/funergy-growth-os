@@ -1067,3 +1067,40 @@ test('KPI / PL decisions: an empty entry or 注意 → 達成 changes nothing; a
   const g = (await R(E, 'am1', 'D1', { action: 'get' })).body;
   assert.equal(g.review.final.kpi, false); assert.equal(g.review.final.pl, true);
 });
+
+test('at most 20 questions wait for the store manager; the working copy keeps answers only to open questions', async () => {
+  const E = await setup(); await demoOn(E);
+  const items = ['issue:i1', 'issue:i2', 'focus:f1', 'focus:f2', 'focus:f3', 'kpi', 'pl'];
+  for (const who of ['am1', 'gm']) { for (const t of items) await saveR(E, who, 'D3', t, 'followup', { question: who + ' ' + t, due: '2026-10-21' }); assert.equal((await send(E, who, 'D3')).status, 200); }
+  for (const t of items) await saveR(E, 'ceo', 'D3', t, 'followup', { question: 'ceo ' + t, due: '2026-10-21' });
+  const tm = await send(E, 'ceo', 'D3'); assert.deepEqual([tm.status, tm.body.error], [409, 'too_many']);          // 21
+  await R(E, 'ceo', 'D3', { action: 'reply_delete', target: 'pl' }); assert.equal((await send(E, 'ceo', 'D3')).status, 200);   // 20
+  let g = (await R(E, 'am1', 'D3', { action: 'get' })).body;
+  const open = g.replies.filter(x => x.decision === 'followup' && !x.data.resolved); assert.equal(open.length, 20);
+  assert.equal((await resubmit(E, 'D3', 'gm', b => ({ ...b, answers: Object.fromEntries(open.map(q => [q.id, '回答 ' + q.data.question])) }))).status, 200);
+  assert.equal((await R(E, 'am1', 'D3', { action: 'get' })).body.replies.filter(x => x.decision === 'followup' && !x.data.resolved).length, 0);
+  // A second round: the old answers in the working copy do not crowd out the new one.
+  await saveR(E, 'am1', 'D3', 'kpi', 'followup', { question: 'もう一つ', due: '2026-10-22' }); await send(E, 'am1', 'D3');
+  g = (await R(E, 'gm', 'D3', { action: 'get' })).body;
+  const q2 = g.replies.find(x => x.decision === 'followup' && !x.data.resolved);
+  const sv = await R(E, 'gm', 'D3', { action: 'save', expect_version: g.review.version, body: { ...g.review.body, answers: { ...(g.review.body.answers || {}), [q2.id]: 'はい' } } });
+  assert.equal(sv.status, 200);
+  assert.deepEqual(Object.keys((await E.q(`select body from mr_reviews where store_id='D3'`))[0].body.answers), [q2.id]);
+});
+
+test('an item sent to both the GM and the CEO waits for the CEO only; a 1:1 talk on a CEO item says the CEO decides after it', async () => {
+  const E = await setup(); await demoOn(E);
+  await saveR(E, 'am1', 'D1', 'kpi', 'escalate', { title: '原価', reason: 'r', due: '2026-10-21' }, 'gm'); await send(E, 'am1', 'D1');
+  await saveR(E, 'am1', 'D1', 'kpi', 'escalate', { title: '原価', recommend: 'x', due: '2026-10-22' }, 'ceo'); await send(E, 'am1', 'D1');
+  assert.deepEqual(await status(E, 'D1'), { status: 'decision', decision_by: 'ceo', next_actor: 'CEO', d: '2026-10-21' });
+  const w = (await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D1').waits;
+  assert.deepEqual(w.map(x => [x.kind, x.to]), [['escalate', 'ceo']]);
+  await saveR(E, 'gm', 'D1', 'kpi', 'as_proposed', act()); assert.equal((await send(E, 'gm', 'D1')).status, 422);
+  // 駅前: both items decided; then the AM plans a talk on the CEO item.
+  await saveR(E, 'ceo', 'D3', 'issue:i2', 'as_proposed', act()); await send(E, 'ceo', 'D3');
+  await saveR(E, 'gm', 'D3', 'issue:i1', 'as_proposed', act()); await send(E, 'gm', 'D3');
+  await saveR(E, 'am1', 'D3', 'issue:i2', 'consult', { consult: { date: '2026-10-23', time: '10:00', people: ['店長 鈴木'], topics: ['求人'] } }); await send(E, 'am1', 'D3');
+  assert.deepEqual(await status(E, 'D3'), { status: 'consult', decision_by: null, next_actor: 'AM 佐藤（デモ）（判断は CEO）', d: '2026-10-23' });
+  const w3 = (await E.api('ceo', { action: 'list', env: 'demo', ym: '2026-10' })).body.reviews.find(x => x.store_id === 'D3').waits;
+  assert.deepEqual(w3.map(x => [x.kind, x.to]), [['consult', 'ceo']]);
+});
