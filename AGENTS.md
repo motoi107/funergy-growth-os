@@ -7,6 +7,7 @@ Read `docs/AI_SHARED_MEMORY_JA.md` and `docs/AI_BACKLOG_JA.md` before work. Upda
 - This repository is the GitHub edition of Growth OS, published with GitHub Pages at the domain in `CNAME`. Its current application is `index.html` with `sw.js` and `appicons/`.
 - A separate Growth OS project exists in ChatGPT Sites. It has a different source history and architecture. Never overwrite one edition with the other, change their data connections, or switch the production domain as an incidental part of synchronization.
 - Start from the current remote commit, work in one feature branch per task, and push commits directly through the authorized integration. Do not ask Moto to copy generated code into GitHub.
+- Anything Moto has to apply by hand outside this repository (a Supabase SQL statement, an Edge Function, a settings file) must be delivered as a complete file he can paste whole, with nothing left to fill in. Never ask him to edit a line, a placeholder, or a diff. Keep such files as sources in the repository, copy them into the deployment folder, and have a test assert the copies stay byte-identical.
 - Assign one editing agent per branch at a time. The other agent reviews the committed change. Fetch again before a handoff; do not force-push over someone else's work.
 
 ## Shared memory

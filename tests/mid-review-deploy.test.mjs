@@ -21,10 +21,24 @@ test('貼り付け用の 1 ファイルは handler.mjs ＋ index.ts の serve �
     bundle.length, 'handler.mjs のあとは serve 行だけ');
 });
 
-test('貼り付け用の SQL 3 本は、リポジトリの元のファイルと 1 文字も違わない', () => {
+test('貼り付け用の SQL 4 本は、リポジトリの元のファイルと 1 文字も違わない', () => {
   assert.equal(read('deploy/mid-review-v1069/A_土台のSQL_初回だけ.sql'), read('supabase/migrations/20261012090000_mid_review.sql'));
   assert.equal(read('deploy/mid-review-v1069/B_追加のSQL_今回の直し.sql'), read('supabase/migrations/20261013090000_mid_review_fixes.sql'));
   assert.equal(read('deploy/mid-review-v1069/D_確認のSQL_読むだけ.sql'), read('db/mid-review-postcheck.sql'));
+  assert.equal(read('deploy/mid-review-v1069/E_AMを足すSQL.sql'), read('db/mid-review-add-am.sql'));
+});
+
+test('AM を足す SQL は、貼る人が書き換えるところが無い', () => {
+  const sql = read('db/mid-review-add-am.sql');
+  assert.equal(/:= *'<[^']*>'/.test(sql), false, "'<...>' の書き換え欄が残っていない");
+  assert.match(sql, /v_email text := 'yuki@funergygroup\.com'/, 'メールが入っている');
+  assert.match(sql, /v_role  text := 'am'/, '役職が am で入っている');
+  // 社員は「在籍の AM」から自動で決める（名前を打たせない）。1 人に決まらないときは止まる。
+  assert.match(sql, /lower\(trim\(coalesce\(e\.role, ''\)\)\) = 'am'/, '社員は役職 AM から決める');
+  assert.match(sql, /coalesce\(e\.status, ''\) <> '退職'/, '在籍者だけ');
+  assert.match(sql, /if v_n > 1 then\n  raise exception/, 'AM が複数なら止まる');
+  assert.match(sql, /if v_old is not null and v_old <> v_role then/, 'ほかの役職で入っている人の役職は変えない');
+  assert.match(sql, /if v_old is not null and not v_old_on then/, '止めてある人は勝手に戻さない');
 });
 
 test('戻す SQL は 3 つの関数を 20261012090000 のときの中身に戻す', async t => {
@@ -65,4 +79,59 @@ test('戻す SQL は 3 つの関数を 20261012090000 のときの中身に戻�
   // 戻したあと、もう一度 v1069 を入れられる
   await pg.exec(read('supabase/migrations/20261013090000_mid_review_fixes.sql'));
   assert.deepEqual(await src(), fixed);
+});
+
+test('AM を足す SQL を実際に流す（合成データ・本番に接続しない）', async t => {
+  const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
+  const pg = new PGlite();
+  t.after(() => pg.close());
+  await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+    create schema auth; create table auth.users(id uuid primary key, email text);
+    create table public.manager_auth(user_id uuid primary key, role text, emp_id text);
+    create table public.employees(id text primary key, name text, role text, status text, data jsonb);
+    create table public.stores(id text primary key, name text, am text, active boolean, data jsonb);`);
+  await pg.exec(read('supabase/migrations/20261012090000_mid_review.sql'));
+  const sql = read('db/mid-review-add-am.sql');
+  const run = () => pg.exec(sql);
+  const members = async () => (await pg.query(
+    `select role, name, emp_id, enabled from public.mr_members order by role, name`)).rows;
+  const fails = async (re, msg) => {
+    await assert.rejects(run(), e => (assert.match(e.message, re), true), msg);
+  };
+  const YUKI = '11111111-1111-1111-1111-111111111111';
+
+  // メールのアカウントがまだ無い
+  await fails(/Authentication/, 'アカウントが無ければ止まる');
+  await pg.query(`insert into auth.users(id, email) values($1, 'Yuki@FunergyGroup.com')`, [YUKI]);
+
+  // 社員の表に在籍の AM がいない
+  await pg.exec(`insert into public.employees(id, name, role, status)
+    values('E1','Yuki','manager',''), ('E2','Taro','am','退職')`);
+  await fails(/役職が AM の在籍者がいません/, 'AM がいなければ止まる');
+
+  // 在籍の AM が 2 人
+  await pg.exec(`update public.employees set role='am' where id='E1';
+    insert into public.employees(id, name, role, status) values('E3','Hana','AM','')`);
+  await fails(/AM の在籍者が 2 人います（Hana \/ Yuki）/, '2 人なら名前を出して止まる');
+  assert.deepEqual(await members(), [], '止まったときは 1 行も入らない');
+
+  // 1 人に決まる → 入る（大文字小文字の違うメールでも同じアカウント）
+  await pg.exec(`delete from public.employees where id='E3'`);
+  await run();
+  assert.deepEqual(await members(), [{ role: 'am', name: 'Yuki', emp_id: 'E1', enabled: true }]);
+
+  // 何度流しても同じ（社員の表で名前が変わっていれば合わせる）
+  await pg.exec(`update public.employees set name='Yuki K' where id='E1'`);
+  await run(); await run();
+  assert.deepEqual(await members(), [{ role: 'am', name: 'Yuki K', emp_id: 'E1', enabled: true }]);
+
+  // ほかの役職で入っている人の役職は変えない
+  await pg.exec(`update public.mr_members set role='gm' where user_id='${YUKI}'`);
+  await fails(/もう gm として入っています/, '役職は変えない');
+  await pg.exec(`update public.mr_members set role='am' where user_id='${YUKI}'`);
+
+  // 止めてある人は勝手に戻さない
+  await pg.exec(`update public.mr_members set enabled=false where user_id='${YUKI}'`);
+  await fails(/止めてあります/, '止めてある人は戻さない');
+  assert.deepEqual(await members(), [{ role: 'am', name: 'Yuki K', emp_id: 'E1', enabled: false }]);
 });
