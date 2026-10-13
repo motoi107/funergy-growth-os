@@ -1,6 +1,7 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
--- 対象はこの migration の表 16・関数 65 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 16 / functions 65 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true
+-- 対象はこの migration の表 16・関数 70 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
+-- 期待：tables 16 / functions 70 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true
+-- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -9,8 +10,9 @@ with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice
    'invoice_latest_prices', 'invoice_lease', 'invoice_list', 'invoice_map_save', 'invoice_map_seed', 'invoice_mark', 'invoice_mirror_apply',
    'invoice_mirror_due', 'invoice_organize_due', 'invoice_organize_request', 'invoice_organize_result', 'invoice_post', 'invoice_price_history_list',
    'invoice_price_insert', 'invoice_price_ref', 'invoice_problems', 'invoice_qb_candidates', 'invoice_qb_enqueue', 'invoice_qb_external_key',
-   'invoice_qb_external_list', 'invoice_qb_external_reserve', 'invoice_qb_reserve', 'invoice_qb_result', 'invoice_qb_sweep', 'invoice_reassign',
-   'invoice_reconcile', 'invoice_registered', 'invoice_relate', 'invoice_require', 'invoice_run_log', 'invoice_setting', 'invoice_settings_save',
+   'invoice_qb_external_list', 'invoice_qb_external_reserve', 'invoice_qb_reserve', 'invoice_qb_result', 'invoice_qb_since_at', 'invoice_qb_sweep', 'invoice_reassign',
+   'invoice_reconcile', 'invoice_registered', 'invoice_relate', 'invoice_rename_due', 'invoice_rename_result', 'invoice_rename_waiting', 'invoice_rename_waiting_all',
+   'invoice_require', 'invoice_run_log', 'invoice_setting', 'invoice_settings_save',
    'invoice_stage', 'invoice_store_folder', 'invoice_store_save', 'invoice_vendor_save', 'invoice_vendor_seed', 'invoice_whoami',
    'invoice_worker_context', 'invoice_worker_key']) as f)
 select
@@ -22,6 +24,7 @@ select
   (select value->>'mirror' from public.invoice_settings where key = 'mode') as app_copy_on,
   (select value->>'enabled' from public.invoice_settings where key = 'qb') as qb_on,
   (select value->>'enabled' from public.invoice_settings where key = 'qb_external') as qb_external_on,
+  (select coalesce(value->>'rename', 'false') from public.invoice_settings where key = 'mode') as rename_on,
   (select bool_and(c.relrowsecurity) from pg_class c join pg_namespace n on n.oid = c.relnamespace join mine on mine.t = c.relname
     where n.nspname = 'public' and c.relkind = 'r') as rls_on,
   (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace join mine on mine.t = c.relname
@@ -31,8 +34,10 @@ select
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace join fn on fn.f = p.proname
     where n.nspname = 'public'
       and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))) as browser_can_run,
-  -- The Codex review fixes (2026-10-07) are in: a replaced original is marked when it is read.
-  coalesce((select bool_and(p.prosrc like '%original_replaced%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  -- The Codex review fixes (2026-10-07) are in: a replaced original is marked when it is read. (From 20261012120000 the
+  -- forwarding waits for the posting instead, which a replaced original never gets without a person: either counts.)
+  coalesce((select count(*) = 4 and bool_and(p.prosrc like '%original_replaced%' or (p.proname like 'invoice_qb_%' and p.prosrc like '%invoice_rename_waiting%'))
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname in ('invoice_stage', 'invoice_post', 'invoice_qb_candidates', 'invoice_qb_enqueue')), false) as review_fixes,
   -- Accounting checks only vendor, number, amount and store (UI案36, 20261007200000): products and prices are for reference.
   coalesce((select bool_and(p.prosrc like '%line_amount_missing%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -54,4 +59,15 @@ select
     where n.nspname = 'public' and p.proname in ('invoice_post', 'invoice_edit', 'invoice_mark', 'invoice_relate', 'invoice_reconcile', 'invoice_file_retry',
       'invoice_qb_result', 'invoice_reassign', 'invoice_vendor_save', 'invoice_map_save'))
     and (select count(*) = 6 and bool_and(p.prosrc not like '%office_crew%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.proname in ('invoice_settings_save', 'invoice_store_save', 'invoice_backfill_register', 'invoice_vendor_seed', 'invoice_map_seed', 'invoice_store_folder')), false) as office_crew_accounting;
+    where n.nspname = 'public' and p.proname in ('invoice_settings_save', 'invoice_store_save', 'invoice_backfill_register', 'invoice_vendor_seed', 'invoice_map_seed', 'invoice_store_folder')), false) as office_crew_accounting,
+  -- 反映 → 名前を変える → QuickBooks (20261012120000, Moto 2026-10-12): the rename is recorded on the file, and an original is
+  -- queued for QuickBooks only once it is posted and renamed.
+  coalesce((select count(*) = 6 from information_schema.columns where table_schema = 'public' and table_name = 'invoice_files'
+      and column_name in ('rename_state', 'rename_key', 'rename_attempts', 'rename_error', 'rename_next_at', 'renamed_at'))
+    and (select count(*) = 5 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_rename_waiting', 'invoice_rename_waiting_all', 'invoice_rename_due', 'invoice_rename_result',
+        'invoice_qb_since_at'))
+    and exists(select 1 from pg_indexes where schemaname = 'public' and indexname = 'invoice_docs_file')
+    and (select count(*) = 2 and bool_and(p.prosrc like '%invoice_rename_waiting%' and p.prosrc like '%intake_status%''posted''%')
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_qb_candidates', 'invoice_qb_enqueue')), false) as rename_after_post;

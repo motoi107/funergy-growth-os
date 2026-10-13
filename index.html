@@ -9724,6 +9724,12 @@ function mergeMapByTime(cloud, local){
     var ad=!!(a&&a._deleted), bd=!!(b&&b._deleted);
     if(ad!==bd){ out[k]= ad?a:b; return; }
     out[k] = (_recAt(b)>=_recAt(a)) ? b : a;
+    /* v1067（Codex レビュー R1）：成長カルテの給与・ボーナス履歴（payLog）は 1 件ずつ合流する。
+       レコードの新しいほうに丸ごと合わせると、記録をまだ受け取っていない端末が別の欄（面談など）を保存しただけで履歴が消えていた。
+       payLog を持つのは成長カルテ（growth_karte）の記録だけ。ほかのキーの合流は今までと同じ。 */
+    if(a && b && typeof a==='object' && typeof b==='object' && (Array.isArray(a.payLog) || Array.isArray(b.payLog) || a.payDel || b.payDel || a.payTrack || b.payTrack) && typeof kartePayMergeRec==='function'){   /* payTrack：v1067（独立レビュー P2-1）記録を始めた時刻も伝える */
+      out[k] = kartePayMergeRec(a, b, out[k]);
+    }
   });
   return out;
 }
@@ -10879,6 +10885,8 @@ function authObPriv(payload){
   return fetch(SUPABASE_URL+'/functions/v1/ob-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(payload) }).then(function(r){ return r.json(); });
 }
 var _OB_SENSITIVE = ['address','phone','email','dob','ssn','visa','visaDetail'];
+/* v1067: 画像として描くのは data:image の形だけ */
+function obImgSrc(s){ return (typeof s === 'string' && /^data:image\/(png|jpe?g|webp|gif|heic|heif);base64,[A-Za-z0-9+\/]+=*$/.test(s)) ? s : ''; }
 function stripObPII(ob){
   try {
     var c = JSON.parse(JSON.stringify(ob));
@@ -11760,7 +11768,7 @@ var OP_MERGE = {
   /* v804: LaLa はタスク単位で合流。別々のタスクを直しても消し合わない */
   lala_tasks:         { merge: mergeMapByTime, covers: _coversMapByTime },
   bonus_q:            { merge: mergeMapByTime, covers: _coversMapByTime },
-  growth_karte:       { merge: mergeMapByTime, covers: _coversMapByTime },
+  growth_karte:       { merge: mergeMapByTime, covers: kartePayCoversMap },   /* v1067: 給与・ボーナス履歴（payLog）は 1 件ずつ（mergeMapByTime の中）。書いたあとの確かめも行ごと */
   q_budgets:          { merge: mergeMapByTime, covers: _coversMapByTime },
   karte_bonus_config: { merge: mergeStamped,   covers: _coversStamped },
   bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
@@ -12665,17 +12673,100 @@ function getStaffPins() { return ls('staff_pins', {}); }
 /* PIN一覧を見られるのはGM/CEOのみ（PIN忘れ対応） */
 function canViewPins() { return curRole==='gm' || curRole==='ceo'; }
 /* GM/CEO: 全スタッフのPIN一覧（忘れ対応）＋リセット */
-/* GM/CEO: PIN一覧（サーバーから本人認証後に取得）＋リセット。PINは端末に保存しない。 */
-async function openPinListModal(){
+/* ===== v1067: PIN の一覧・変更と、新しく入った人の機密情報は、メールで認証した人だけ（サーバー auth-pin・ob-private v1067） =====
+   使うログインは Invoice取込・業務Bot と同じ（invInSession）。「この端末で覚える」にしてあれば、PIN でログインしたあと裏で認証し直す。
+   役職はサーバーが確かめる（PIN一覧・リセット・店舗PIN＝GM・CEO、機密情報＝経理・GM・CEO、移行＝GM・CEO）。管理者の名前と PIN では、もう開けない。 */
+var _secAuthAfter = null;   /* 認証のあとに続ける操作 */
+function secAuthSession(){ return (typeof invInSession === 'function') ? invInSession() : null; }
+async function secAuthEnsure(){
+  var s = secAuthSession(); if (s && s.access_token) return s;
+  if (typeof invInKept === 'function' && invInKept() && typeof invInRestore === 'function') {   /* この端末で覚えた認証 */
+    try { await invInRestore(false); } catch(e) {}
+    s = secAuthSession(); if (s && s.access_token) return s;
+  }
+  return null;
+}
+async function secAuthCall(fn, payload, retried){
+  var s = secAuthSession();
+  if (!s || !s.access_token) return { ok:false, error:'email_required' };
+  var r = await fetch(SUPABASE_URL + '/functions/v1/' + fn, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + s.access_token, 'Content-Type':'application/json' }, body:JSON.stringify(payload) });
+  var j = null; try { j = await r.json(); } catch(e) { j = null; }
+  if (j && j.error === 'email_required' && !retried && s.refresh_token && typeof invInSessionRefresh === 'function') {
+    var ns = await invInSessionRefresh(s);   /* 認証の期限が切れていたら、1 回だけ取り替えてやり直す */
+    if (ns && secAuthSession() === ns) return secAuthCall(fn, payload, true);
+  }
+  if (!j || typeof j !== 'object') return { ok:false, error: r.status >= 500 ? 'db_unavailable' : 'bad_response' };
+  return j;
+}
+/* 認証が要る・切れた → 認証の画面。認証した直後なのに断られた → 登録の無いアカウント */
+function secAuthNeedLogin(j, fresh, title, again, kind){
+  if (!(j && j.error === 'email_required')) return false;
+  if (fresh) alert(secAuthErrText({ error:'not_registered' }, kind));
+  else secAuthLoginModal(title, again);
+  return true;
+}
+function secAuthErrText(j, kind){
+  var e = j && j.error;
+  if (e === 'forbidden' || e === 'not_registered') {
+    if (kind === 'secret') return t('このメールのアカウントでは機密情報を開けません（経理・GM・CEO として登録されたメールだけ）','This email account cannot open confidential details (registered accounting, GM and CEO accounts only)');
+    if (kind === 'migrate') return t('このメールのアカウントでは移行できません（GM・CEO として登録されたメールだけ）','This email account cannot run the move (registered GM and CEO accounts only)');
+    return t('このメールのアカウントでは PIN の一覧・変更を開けません（GM・CEO として登録されたメールだけ）','This email account cannot open PIN lists or changes (registered GM and CEO accounts only)');
+  }
+  if (e === 'db_unavailable') return t('サーバーにつながりません。しばらくしてから、もう一度お試しください。','Cannot reach the server. Please try again in a little while.');
+  if (e === 'invalid') return t('入力の値を確かめてください','Check the values you entered');
+  if (j && j.ok === false && !e) return t('確認できませんでした（サーバーが古い版のままかもしれません）','Could not confirm (the server may still be an old version)');
+  return t('うまくいきませんでした','Something went wrong');
+}
+function secAuthLoginModal(title, after){
+  _secAuthAfter = (typeof after === 'function') ? after : null;
+  openModal('<div class="modal-title"><span><i class="ti ti-mail"></i> '+escapeHtml(title||'')+'：'+t('メール認証','email sign-in')+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.7">'+t('PIN の一覧・変更と、新しく入った人の機密情報は、メールで認証した人だけが開けます。Invoice取込・業務Bot と同じ、本部用に登録したメール・パスワードです。','PIN lists and changes, and new hires’ confidential details, open only after email sign-in. Use the same email and password as Invoice intake and the Operations Bot.')+'</div>'
+    +'<div class="form-group"><label class="form-label" for="invin-email">'+t('メールアドレス','Email')+'</label><input id="invin-email" class="form-input" type="email" autocomplete="username"></div>'
+    +'<div class="form-group"><label class="form-label" for="invin-password">'+t('パスワード','Password')+'</label><input id="invin-password" class="form-input" type="password" autocomplete="current-password"></div>'
+    +(typeof invInKeepBoxHtml === 'function' ? invInKeepBoxHtml(['PIN の一覧・変更・機密情報・Invoice取込・業務Bot','PIN lists and changes, confidential details, invoice intake and the Operations Bot']) : '')
+    +'<div id="invin-login-error" style="font-size:12px;color:var(--red);min-height:16px;margin-bottom:6px"></div>'
+    +'<button id="invin-login-button" class="btn btn-primary" style="width:100%" onclick="secAuthLogin()"><i class="ti ti-login"></i> '+t('認証','Sign in')+'</button>');
+}
+/* 認証（Invoice取込と同じ invInLogin。覚える・覚えないも同じ）。通ったら、待っていた操作を続ける */
+async function secAuthLogin(){
+  var f = _secAuthAfter;
+  await invInLogin();
+  if (!(typeof invInSigned === 'function' && invInSigned())) return;   /* 通らなかった：画面に理由が出ている */
+  if (_secAuthAfter === f) _secAuthAfter = null;
+  if (f) f();
+}
+/* PIN を続けて間違えて止まっている（サーバー auth-pin v1067） */
+function pinLockLeft(sec){
+  var m = Math.max(1, Math.ceil((Number(sec) || 0) / 60));
+  if (m >= 60) { var h = Math.ceil(m / 60); return t('あと約 '+h+' 時間','about '+h+' h left'); }
+  return t('あと約 '+m+' 分','about '+m+' min left');
+}
+function pinLocksMap(arr){
+  var m = {};
+  (Array.isArray(arr) ? arr : []).forEach(function(x){ if (x && typeof x.k === 'string' && Number(x.retry_after) > 0) m[x.k] = Number(x.retry_after); });
+  return m;
+}
+function pinLockLeftSec(k){
+  var c = window._pinCache;
+  if (!c || !c.locks || !Object.prototype.hasOwnProperty.call(c.locks, k)) return 0;
+  var left = c.locks[k] - Math.floor((Date.now() - (c.at || Date.now())) / 1000);
+  return left > 0 ? left : 0;
+}
+function _loginLockedMsg(sec){
+  return t('PIN を続けて間違えたため、このログインを止めています（'+pinLockLeft(sec)+'）。GM・CEO が PIN を変更すると、すぐに使えます。',
+           'Too many wrong PINs, so this login is paused ('+pinLockLeft(sec)+'). A GM or CEO can change the PIN to unlock it now.');
+}
+/* GM/CEO: PIN一覧（サーバーから取得）＋リセット。PINは端末に保存しない。fresh＝認証した直後（もう一度は聞かない） */
+async function openPinListModal(fresh){
   if (!canViewPins()) return;
-  var ap = await askAdminPin('PIN一覧の表示');
-  if (ap==null) return;
+  var title = t('PIN一覧の表示','Show login PINs'), again = function(){ openPinListModal(true); };
+  if (!(await secAuthEnsure())) { secAuthLoginModal(title, again); return; }
   var j;
-  try { j = await authPin({action:'list', adminName: curUserName, adminPin: ap}); }
-  catch(e){ alert('通信に失敗しました'); return; }
-  if (!j || !j.ok) { window._pinAdmin=null; alert('確認できませんでした（PINが違うか、GM/CEO権限がありません）'); return; }
-  window._pinAdmin = { name: curUserName, pin: ap };
-  window._pinCache = { staff: j.staffPins||{}, store: j.storePins||{}, defStore: j.defaultStore||{}, defStaff: j.defaultStaff||'0000' };
+  try { j = await secAuthCall('auth-pin', {action:'list'}); }
+  catch(e){ alert(t('通信に失敗しました','Network error')); return; }
+  if (secAuthNeedLogin(j, fresh, title, again, 'pin')) return;
+  if (!j || !j.ok) { alert(secAuthErrText(j, 'pin')); return; }
+  window._pinCache = { staff: j.staffPins||{}, store: j.storePins||{}, defStore: j.defaultStore||{}, defStaff: j.defaultStaff||'0000', locks: pinLocksMap(j.locks), at: Date.now() };
   renderPinListBody();
 }
 function _staffPinView(name){ var c=window._pinCache; if(!c) return '----'; var v=c.staff[name]; return (v!=null&&v!=='')?v:(c.defStaff||'0000'); }
@@ -12683,14 +12774,21 @@ function renderPinListBody(){
   var emps = getEmployees().filter(e=>e.status!=='退職').sort((a,b)=>((a.role==='ceo')?0:1)-((b.role==='ceo')?0:1)||(a.store||'').localeCompare(b.store||'')||a.name.localeCompare(b.name));
   var rows = emps.map(e=>{
     var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
+    var lk = pinLockLeftSec('staff:'+e.name);
     return `<tr>
-      <td style="padding:6px 8px">${escapeHtml(e.name)}<div style="font-size:10px;color:var(--muted)">${escapeHtml(storeName)}${e.title?' · '+escapeHtml(e.title):''}</div></td>
-      <td style="text-align:center;padding:6px 8px"><span style="font-family:monospace;letter-spacing:2px;font-size:15px;font-weight:700;color:var(--tm)">${_staffPinView(e.name)}</span></td>
+      <td style="padding:6px 8px">${escapeHtml(e.name)}<div style="font-size:10px;color:var(--muted)">${escapeHtml(storeName)}${e.title?' · '+escapeHtml(e.title):''}</div>${lk?`<div style="font-size:10.5px;color:var(--red);font-weight:700"><i class="ti ti-lock"></i> ${t('ロック中','Locked')}・${pinLockLeft(lk)}</div>`:''}</td>
+      <td style="text-align:center;padding:6px 8px"><span style="font-family:monospace;letter-spacing:2px;font-size:15px;font-weight:700;color:var(--tm)">${escapeHtml(_staffPinView(e.name))}</span></td>
       <td style="text-align:right;padding:6px 8px"><button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="resetStaffPin('${e.name.replace(/'/g,"\\'")}')">リセット</button></td>
     </tr>`;
   }).join('');
+  var c = window._pinCache || {};
+  var stLocks = Object.keys(c.locks||{}).filter(function(k){ return k.indexOf('store:')===0 && pinLockLeftSec(k); }).map(function(k){
+    var id=k.slice(6), st=STORES.find(function(s){ return s.id===id; })||{name:id};
+    return escapeHtml(st.name)+'（'+pinLockLeft(pinLockLeftSec(k))+'）';
+  });
   openModal(`<div class="modal-title"><i class="ti ti-lock"></i> ログインPIN一覧 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-shield-lock"></i> サーバーから安全に取得（PINは端末に保存されません）。GM/CEOのみ閲覧可。</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px"><i class="ti ti-shield-lock"></i> サーバーから安全に取得（PINは端末に保存されません）。メールで認証した GM・CEO だけが見られます。リセットすると「ロック中」も解けます。</div>
+    ${stLocks.length?`<div style="font-size:12px;color:var(--red);margin-bottom:8px;line-height:1.6"><i class="ti ti-lock"></i> 店舗のログインで止まっているもの：${stLocks.join('、')}。店舗マスターで店舗PINを変更すると解けます。</div>`:''}
     <div style="max-height:60vh;overflow-y:auto">
       <table style="width:100%;font-size:13px;border-collapse:collapse">
         <thead><tr style="background:var(--surface2)"><th style="text-align:left;padding:6px 8px">スタッフ</th><th style="text-align:center;padding:6px 8px">PIN</th><th style="padding:6px 8px"></th></tr></thead>
@@ -12699,14 +12797,15 @@ function renderPinListBody(){
     <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`);
 }
 async function resetStaffPin(name){
-  if (!canViewPins() || !window._pinAdmin) return;
+  if (!canViewPins() || !window._pinCache) return;
   var np = await askInput({title:name+' さんのPINリセット', label:'新しいPIN（4桁）', type:'password', required:true, pattern:/^\d{4}$/, patternMsg:'PINは4桁の数字で入力してください', okLabel:'更新する'});
   if (np==null) return;
   var j;
-  try { j = await authPin({action:'reset', adminName:window._pinAdmin.name, adminPin:window._pinAdmin.pin, scope:'staff', target:name, newPin:np}); }
+  try { j = await secAuthCall('auth-pin', {action:'reset', scope:'staff', target:name, newPin:np}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if (!j || !j.ok) { alert('更新できませんでした（権限またはPIN）'); return; }
-  if (window._pinCache) window._pinCache.staff[name]=np;
+  if (secAuthNeedLogin(j, false, t('PINのリセット','Reset PIN'), function(){ openPinListModal(true); }, 'pin')) return;
+  if (!j || !j.ok) { alert(secAuthErrText(j, 'pin')); return; }
+  if (window._pinCache) { window._pinCache.staff[name]=np; if (window._pinCache.locks) delete window._pinCache.locks['staff:'+name]; }
   showToast(name+' のPINを更新しました','success');
   renderPinListBody();
 }
@@ -12739,7 +12838,7 @@ async function saveMyPin(){
   var j;
   try { j = await authPin({action:'selfset', name:me, oldPin:String(op).trim(), newPin:p1}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if (!j || !j.ok) { alert(j&&j.error==='oldpin' ? t('現在のPINが違います','Current PIN is wrong') : t('更新できませんでした','Update failed')); return; }
+  if (!j || !j.ok) { alert(j&&j.error==='locked' ? _loginLockedMsg(j.retry_after) : (j&&j.error==='oldpin' ? t('現在のPINが違います','Current PIN is wrong') : t('更新できませんでした','Update failed'))); return; }
   closeModalDirect();
   showToast(t('PINを更新しました','PIN updated'),'success');
 }
@@ -12934,7 +13033,14 @@ function plComputeStore(sid, ym, off){
   var _tnet = (typeof monthTransferNetYm==='function') ? monthTransferNetYm(sid, ym) : {inAmt:0,outAmt:0,net:0};
   var cogs = Math.round(_fcr.cost);
   var cogsSrc = _fcr.hasEnd ? '棚卸法（確定）' : '仕入合計（暫定・期末棚卸待ち）';
-  var labor = 0; try{ labor = Math.round(laborCoreForYm(sid, ym).total); }catch(e){}
+  var labor = 0, _lc = null; try{ _lc = laborCoreForYm(sid, ym); labor = Math.round(_lc.total); }catch(e){}
+  /* v1067（Codex レビュー R3）：元のデータがあるか。仕入れ・棚卸・勤怠をまだ取得・入力していなくても上の数は 0 になるため、
+     「0 円」と「データが無い」を分ける（金額の計算は変えない。賞与の FL の結果だけがこれを見る）。
+     原価：期末棚卸が入っている、または仕入れ（Invoice・買い出し）・店舗間の移動がある。
+     人件費：勤怠の記録（Toast の打刻を取得した日・手入力の人件費）がある日があり、売上のある日に勤怠の記録が欠けていない。 */
+  var cogsHas = !!(_fcr.hasEnd || Number(_fcr.invoice) || Number(_fcr.buy) || Number(_fcr.transfer));
+  var laborMissDays = (_lc && Array.isArray(_lc.noLaborDays)) ? _lc.noLaborDays.slice() : [];
+  var laborHas = !!(_lc && (Number(_lc.laborDays)||0)>0 && !laborMissDays.length);
   var vc = {}; var vcT=0;
   PL_VC_CATS.forEach(function(c){ var v=Math.round(plVcVal(cfg, ovr, sid, ym, c[0])); vc[c[0]]=v; vcT+=v; });
   var reimb = Math.round(plReimburseTotal(sid, ym)); vcT+=reimb;
@@ -12944,6 +13050,7 @@ function plComputeStore(sid, ym, off){
   var profit = sales - cogs - labor - expT;
   var hasOvr = !!(ovr[ym] && ovr[ym][sid] && Object.keys(ovr[ym][sid]).some(function(k){ return ovr[ym][sid][k]!=null && ovr[ym][sid][k]!==''; }));
   return { sales:sales, cogs:cogs, cogsSrc:cogsSrc, gross:sales-cogs, labor:labor, vc:vc, vcT:vcT, reimb:reimb, get:get, fixT:fixT, expT:expT, profit:profit, hasOvr:hasOvr,
+    cogsHas:cogsHas, laborHas:laborHas, laborMissDays:laborMissDays,   /* v1067 */
     beginInv:Math.round(parseFloat(fc.beginInv)||0), endInv:Math.round(parseFloat(fc.endInv)||0), purchOrder:Math.round(purchOrder), purchBuy:Math.round(purchBuy), transferIn:Math.round(_tnet.inAmt), transferOut:Math.round(_tnet.outAmt) };
 }
 async function showManagerSecure(){
@@ -15574,6 +15681,7 @@ async function authPinCheck(scope, key, pin){
       try{ j = await r.json(); }catch(e){ j = null; }
     }catch(e){ r = null; console.warn('authPinCheck', e); }
     if (j && j.ok) { window._hwSession = (typeof j.token === 'string' && j.token) ? j.token : null; window._hwSessionWarned = false; return { ok:true, server:false }; }   /* v1061: ログインの印 */
+    if (r && r.ok && j && j.error === 'locked') return { ok:false, server:false, locked:(Number(j.retry_after) > 0 ? Number(j.retry_after) : 900) };   /* v1067: 続けて間違えて止まっている（「PINが違います」と出さない） */
     if (r && r.ok && j && !(j.error && /db|database|unavailable|timeout|internal/i.test(String(j.error)))) { server = false; break; }   /* 「違う」という答え */
     server = true;   /* 通信の失敗・サーバーの失敗（5xx・JSON でない・データベースの失敗） */
     if (i===0) await new Promise(function(res){ setTimeout(res, 700); });
@@ -15585,8 +15693,9 @@ function doStaffLogin() {
   var errEl = document.getElementById('login-pin-err');
   var btn = document.getElementById('login-pin-btn');
   /* v1037: サーバーにつながらないときは、そう伝える（「PINが違います」と出すと、正しい PIN を疑ってしまう） */
-  function fail(server){
-    if(errEl){ errEl.textContent = server ? _loginServerDownMsg() : t('PINが違います','Incorrect PIN'); errEl.style.display='block'; }
+  function fail(res){
+    var locked = (res && typeof res === 'object') ? res.locked : 0, server = res === true || !!(res && typeof res === 'object' && res.server);
+    if(errEl){ errEl.textContent = locked ? _loginLockedMsg(locked) : (server ? _loginServerDownMsg() : t('PINが違います','Incorrect PIN')); errEl.style.display='block'; }
     if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; }
   }
   if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.textContent = '確認中…'; }
@@ -15594,7 +15703,7 @@ function doStaffLogin() {
     if (loginStoreMode) {
       var pin = (document.getElementById('login-pin-input').value||'').trim();
       var rS = await authPinCheck('store', loginLocation, pin);
-      if (!rS.ok) { fail(rS.server); return; }
+      if (!rS.ok) { fail(rS); return; }
       var s = STORES.find(x=>x.id===loginLocation) || {name:loginLocation};
       curRole='sl'; curStoreLogin=true; curUserName=s.name; curStore=loginLocation;
       enterAppWithSync(); return;
@@ -15602,7 +15711,7 @@ function doStaffLogin() {
     if (!loginPerson) { if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } return; }
     var pin2 = (document.getElementById('login-pin-input').value||'').trim();
     var rP = await authPinCheck('staff', loginPerson.name, pin2);
-    if (!rP.ok) { fail(rP.server); return; }
+    if (!rP.ok) { fail(rP); return; }
     window._sessionPin = pin2;
     finishStaffLogin();
   })();
@@ -15794,6 +15903,7 @@ function doLogout() {
   loginLocation = null; loginPerson = null;
   window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
   if(typeof invInReset==='function') invInReset();   /* v1063: 前の人の Invoice取込 の内容を残さない（覚えた認証はその人の分として残る） */
+  window._pinCache = null; _secAuthAfter = null;   /* v1067: PIN 一覧の写しと、認証のあとに続ける操作も消す */
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
@@ -39025,6 +39135,7 @@ function _laborCoreForYmRaw(storeId, ym, opts){
   leavePay = Math.round(leavePay*100)/100;
   var dim = daysInMonthOf(ym);
   var periodDays=0, sales=0, manual=0, daysWithActual=0, seen={};
+  var laborDays=0, noLaborDays=[];   /* v1067（Codex レビュー R3）：勤怠の記録（Toast の打刻を取得した日・手入力の人件費）がある日／売上はあるのに勤怠が無い日（未取得） */
   var acts = _daRO(storeId);
   weeks.forEach(function(w){
     laborWeekDays(w.sun).forEach(function(dt){
@@ -39034,6 +39145,8 @@ function _laborCoreForYmRaw(storeId, ym, opts){
       var lb = getTipLabor(storeId, dt);
       var has = lb && Object.keys(lb).some(function(n){ return _laborHrs(lb[n])>0; });
       if(!has && v.labor!=null) manual += Number(v.labor)||0;
+      if(lb!=null || v.labor!=null) laborDays++;                       /* 取得した日は、打刻 0 人でも「記録あり」 */
+      else if((Number(v.actual)||0)>0) noLaborDays.push(dt);           /* チップの画面の「勤怠なし」と同じ考え方 */
     });
   });
   var salary = 0;
@@ -39046,7 +39159,8 @@ function _laborCoreForYmRaw(storeId, ym, opts){
   var total = Math.round((wage+tax+ins+manual)*100)/100;
   return { byName:byName, hourly:Math.round(hourly*100)/100, salary:salary, leave:leavePay, leaveDays:leaveDays, wage:wage, tax:tax, ins:ins, manual:manual,
     total:total, sales:Math.round(sales*100)/100, rate: sales?Math.round(total/sales*1000)/10:0,
-    periodDays:periodDays, dim:dim, daysWithActual:daysWithActual, cutoff:cutoff, frozen:isFrozenMonth(ym) };
+    periodDays:periodDays, dim:dim, daysWithActual:daysWithActual, cutoff:cutoff, frozen:isFrozenMonth(ym),
+    laborDays:laborDays, noLaborDays:noLaborDays };
 }
 
 /* ===== v793: Grade別の労働時間管理（週 日〜土 で判定） =====
@@ -39959,7 +40073,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1069';
+const APP_VERSION = '1072';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -45858,7 +45972,7 @@ var INVIN_HINT = {
   total_mismatch:['合計が明細＋税などと合わない → 原本の合計を確かめる','Total differs from lines + charges → check the original'],
   line_amount_missing:['明細の金額が読めない → 原本の合計を確かめる','Line amounts not legible → check the total on the original'],
   line_value_missing:['明細が読めない（前の版の読み取り）→ 原本の合計を確かめる','Line not legible (earlier reading) → check the total on the original'],
-  currency:['通貨が USD でない・不明 → 確かめる','Currency not USD or unknown → check'],
+  currency:['通貨の印字なし・USD 以外 → USD なら「USD」を押す','No currency printed or not USD → press “USD” if it is USD'],
   missing_pages:['ページ不足の疑い → 原本を確かめる','Pages may be missing → check the original'],
   store_mismatch:['宛先が別の店舗 → 店舗を確かめる','Addressed to another store → check the store'],
   ship_to_unrecognized:['宛先が店舗と一致しない → 店舗を確かめる','Ship-to does not match the store → check the store'],
@@ -45881,6 +45995,8 @@ var INVIN_HINT = {
 };
 var INVIN_BATCH_REASON = ['経理の確認（業者・invoice番号・金額・店舗）','Accounting check (vendor, invoice no., amount, store)'];
 var INVIN_EDIT_REASON = ['経理の確認で直した','Corrected in the accounting check'];
+/* v1070：通貨の印字が無い（USD 以外と読んだ）invoice を、経理が USD と確かめたときの記録の理由 */
+var INVIN_USD_REASON = ['経理の確認：通貨は USD','Accounting check: the currency is USD'];
 var INVIN_ERR = {
   forbidden:['この操作の権限がありません','You do not have permission for this'],
   unauthorized:['メール認証の有効期限が切れました。認証し直してください','Your sign-in expired. Please sign in again'],
@@ -46104,12 +46220,12 @@ function invInLoginModal(){
     +'<button id="invin-login-button" class="btn btn-primary" style="width:100%" onclick="invInLogin()"><i class="ti ti-login"></i> '+t('認証','Sign in')+'</button>');
 }
 /* v1063：「この端末で覚える」。誰の PIN ログインで開けるようになるかを名前で出す */
-function invInKeepBoxHtml(){
-  var lp = invInLoginPerson(), e = escapeHtml;
+function invInKeepBoxHtml(what){
+  var lp = invInLoginPerson(), e = escapeHtml, wj = (what && what[0]) || 'Invoice取込・業務Bot', we = (what && what[1]) || 'invoice intake and the Operations Bot';
   if (!lp) return '';
   if (invInDefaultPin()) return '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin:0 0 10px">'+t('PIN が初期のままなので、この端末では覚えません（毎回メール認証になります）。PIN を自分の番号に変えると、次からは PIN でログインするだけで開けます。','Your PIN is still the initial one, so this device will not remember the sign-in. Change your PIN and next time your PIN login is enough.')+'</div>';
   return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.6;margin:0 0 10px;cursor:pointer"><input id="invin-keep" type="checkbox" checked style="margin-top:3px">'
-    +'<span>'+t('この端末で覚える：次からは '+e(lp.name||'')+' さんの PIN ログインだけで開けます（Invoice取込・業務Bot）','Remember on this device: next time '+e(lp.name||'')+'’s PIN login is enough (invoice intake and the Operations Bot)')
+    +'<span>'+t('この端末で覚える：次からは '+e(lp.name||'')+' さんの PIN ログインだけで開けます（'+wj+'）','Remember on this device: next time '+e(lp.name||'')+'’s PIN login is enough ('+we+')')
     +'<br><span style="color:var(--muted);font-size:11px">'+t('ご本人のメールで認証するときだけ。共有のパソコンでは外してください。','Only with your own email. Untick on a shared computer.')+'</span></span></label>';
 }
 async function invInLogin(){
@@ -46427,10 +46543,13 @@ function invInReviewTable(Q){
     + '<th>'+t('業者','Vendor')+'</th><th>'+t('invoice番号','Invoice no.')+'</th><th style="text-align:right">'+t('金額（合計）','Amount (total)')+'</th><th>'+t('店舗','Store')+'</th><th>'+t('日付','Date')+'</th><th>'+t('確認すること','To check')+'</th><th></th></tr></thead><tbody>'
     + rows.map(function(r){
         var id = invInId(r.id), ok = invInBatchable(r), chk = invInToCheck(r.reasons), md = invInModeOf(r.reasons);
+        var onlyCur = edit && chk.length===1 && chk[0].code==='currency';   /* v1070：通貨だけが理由の行は、開かずに USD と確かめられる */
         var m = function(f){ return ' '+invInMarkHtml(invInMark4(r, f)); };
         var open = 'onclick="invInOpen(\''+id+'\',\'dreview\')"';
         var w = function(html){ return html.replace('style="', 'style="white-space:normal;line-height:1.45;'); };
-        var todo = (chk.length ? chk.map(function(x){ return w(invInChip(e(invInHint(x)), invInHintCol(x.code))); }).join(' ') : invInChip(t('4 項目とも問題なし','Four items OK'), INVIN_COL.green))
+        var todo = (chk.length ? chk.map(function(x){ return w(invInChip(e(invInHint(x)), invInHintCol(x.code))); }).join(' ')
+            + (onlyCur ? ' <button class="btn btn-primary btn-sm" style="padding:1px 10px;font-size:11px"'+(B||_invIn.busy?' disabled':'')+' onclick="event.stopPropagation();invInUsdRow(\''+id+'\')">USD</button>' : '')
+          : invInChip(t('4 項目とも問題なし','Four items OK'), INVIN_COL.green))
           + md.map(function(c){ return ' '+invInChip(e(invInReason(c)), INVIN_COL.gray); }).join('');
         return '<tr class="ivx-row"'+(ok?'':' style="background:rgba(240,102,31,.05)"')+'>'
           + '<td onclick="event.stopPropagation()">'+(edit ? '<input type="checkbox" aria-label="'+t('反映する','Post')+'"'+(invInSelected(r)?' checked':'')+(ok && !B?'':' disabled')+' onchange="invInSel(\''+id+'\',this.checked)">' : '')+'</td>'
@@ -46449,6 +46568,29 @@ function invInReviewTable(Q){
   return h + '</div><div class="ivx-note">'+t('✓ は AI の読みとマスター・計算で確かめられた項目。? と ! が付いた行だけ開いて直します。商品の対応や単価の変化は「確認すること」に出しません（明細の中に参考として残ります）。',
     '✓ means the reading was confirmed against the master and the arithmetic. Open only the rows with ? or ! to fix them. Product mapping and price changes are not listed here (they stay in the lines for reference).')+'</div>';
 }
+/* v1070（Moto さん 10/12「USD の表記がないものが取り込みできません。経理が USD の判定をできるように」）
+   通貨の印字が無い・USD 以外と読んだ invoice は、経理が原本を見て USD と確かめる。サーバーは通貨を USD として確かめ直す（invoice_edit） */
+function invInUsdHtml(d, ai, codes, canEdit){
+  if (codes.indexOf('currency') < 0 || !canEdit) return '';
+  var e = escapeHtml, read = (ai && ai.currency) || d.currency || '';
+  if (invInHVal(d, 'currency')==='USD') return '<span style="color:'+INVIN_COL.green+';font-weight:700"><i class="ti ti-check"></i> '+t('通貨は USD（「この内容で反映する」で保存して反映）','Currency: USD (saved when you post)')+'</span>'
+    + ' <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10.5px" onclick="invInSetUsd(false)">'+t('取り消す','Undo')+'</button>';
+  return t('通貨の読み：','Currency read: ')+(read ? e(read) : t('印字なし','not printed'))
+    + ' <button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:11px" onclick="invInSetUsd(true)">'+t('USD と確かめる','Confirm USD')+'</button>';
+}
+function invInSetUsd(on){
+  var E = _invIn.edits; if (!E) return;
+  if (on) E.h.currency = 'USD'; else delete E.h.currency;
+  invInRerender();
+}
+/* 一覧の「USD」：その invoice の通貨を USD として保存する（版つき。サーバーが確かめ直す）。ほかに確かめることが無ければ、まとめて反映に入る */
+async function invInUsdRow(id){
+  if (_invIn.batching || !invInCanEdit()) return;
+  var r = (((_invIn.review||{}).rows)||[]).find(function(x){ return x.id===id; }); if (!r) return;
+  try { await invInDo(function(){ return invInAPI({ action:'edit', doc_id:r.id, version:r.version, header:{ currency:'USD' }, lines:[], reason:invInL(INVIN_USD_REASON), adjustment_ack:false, ack:[] }); }, t('通貨を USD にしました','Set the currency to USD')); }
+  catch(e) {}
+  delete _invIn.loaded.review; delete _invIn.loaded.health; invInRerender();
+}
 function invInBatchAsk(){
   if (_invIn.batching || !invInCanEdit()) return;
   var rows = (((_invIn.review||{}).rows)||[]).filter(invInSelected); if (!rows.length) return;
@@ -46462,17 +46604,18 @@ function invInBatchAsk(){
 async function invInBatchPost(){
   if (_invIn.batching || _invIn.busy || !invInCanEdit()) return;
   var rows = (((_invIn.review||{}).rows)||[]).filter(invInSelected); if (!rows.length) return;
-  var ok = 0, ng = [], reason = invInBatchReason();
+  var ok = 0, ng = [], rnNg = 0, reason = invInBatchReason();
   _invIn.batching = { done:0, total:rows.length }; _invIn.busy = true; invInRerender();
   try {
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
-      try { await invInAPI({ action:'post', doc_id:r.id, version:r.version, reason:reason, ack:[], adjustment_ack:false, supersedes:null }); ok++; }
+      try { var pr = await invInAPI({ action:'post', doc_id:r.id, version:r.version, reason:reason, ack:[], adjustment_ack:false, supersedes:null }); ok++; if (pr && pr.rename && !pr.rename.ok) rnNg++; }
       catch(e) { ng.push(String(e && e.message || e)); }
       _invIn.batching.done = i + 1; invInRerender();
     }
   } finally { _invIn.batching = null; _invIn.busy = false; _invIn.unsel = {}; }
-  showToast(t('反映しました：','Posted: ')+ok+t(' 件','')+(ng.length ? t('　反映できなかった：',' · not posted: ')+ng.length+t(' 件（',' (')+ng[0]+t('）',')') : ''), ng.length ? 'warning' : 'success');
+  showToast(t('反映しました：','Posted: ')+ok+t(' 件','')+(ng.length ? t('　反映できなかった：',' · not posted: ')+ng.length+t(' 件（',' (')+ng[0]+t('）',')') : '')
+    + (rnNg ? t('　ファイル名をまだ変えていない：',' · not renamed yet: ')+rnNg+t(' 件（あとで自動でやり直します）',' (retried automatically)') : ''), ng.length || rnNg ? 'warning' : 'success');
   delete _invIn.loaded.review; delete _invIn.loaded.health; delete _invIn.loaded.list; delete _invIn.loaded.recon; invInRerender();
 }
 function invInReview(){
@@ -46521,7 +46664,8 @@ function invInDetail(mode){
     /* v1056：経理が確かめることだけ（商品・単価は明細の中）。確認モードは灰色 */
     var md = invInModeOf(d.reasons);
     h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
-      + (chk.length ? chk.map(function(r){ return invInChip('<i class="ti ti-'+(invInHintCol(r.code)===INVIN_COL.red?'alert-triangle':'info-circle')+'"></i> '+e(invInHint(r)), invInHintCol(r.code)); }).join('')
+      + (chk.length ? chk.map(function(r){ if (r.code==='currency' && invInHVal(d, 'currency')==='USD') return invInChip('<i class="ti ti-check"></i> '+t('通貨は USD と確かめた（反映するときに保存）','Currency confirmed as USD (saved when you post)'), INVIN_COL.green);   /* v1070 */
+          return invInChip('<i class="ti ti-'+(invInHintCol(r.code)===INVIN_COL.red?'alert-triangle':'info-circle')+'"></i> '+e(invInHint(r)), invInHintCol(r.code)); }).join('')
           : d.status==='review' && d.doc_type==='invoice' ? invInChip('<i class="ti ti-circle-check"></i> '+t('4 項目とも問題なし','Four items OK'), INVIN_COL.green) : '')
       + md.map(function(c){ return invInChip(e(invInReason(c)), INVIN_COL.gray); }).join('') + '</div>';
   } else if ((d.reasons||[]).length) h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">' + d.reasons.map(function(r){
@@ -46536,7 +46680,8 @@ function invInDetail(mode){
   var orig = '<div class="card ivx-orig'+(_invIn.mob==='lines'?' ivx-hide-m':'')+'" style="padding:12px;text-align:center"><div style="font-size:11px;color:var(--muted);text-align:left;margin-bottom:6px"><i class="ti ti-file-text"></i> '+t('原本（Google Drive）','Original (Google Drive)')+'</div>'
     + (fid ? '<iframe src="https://drive.google.com/file/d/'+fid+'/preview" title="'+t('原本','Original')+'" loading="lazy" referrerpolicy="no-referrer" style="width:100%;height:380px;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
       + '<a class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px;box-sizing:border-box" href="'+invInFileUrl(fid)+'" target="_blank" rel="noopener noreferrer"><i class="ti ti-external-link"></i> '+t('原本を Drive で開く（拡大）','Open in Drive')+'</a>' : '')
-    + '<div class="ivx-note" style="text-align:left">'+place+'<br>'+t('このアプリは原本を書き換えません。見えないときは、Drive に入れる Google アカウントでブラウザにログインしてください。','This app never changes the original. If it does not show, sign in to Google in this browser with an account that can open the folder.')+'</div></div>';
+    + '<div class="ivx-note" style="text-align:left">'+place+'<br>'+t('ファイル名：','File name: ')+'<span style="font-family:ui-monospace,monospace;word-break:break-all">'+e(f.current_name||'—')+'</span>'+invInRenameNote(d, f)+'<br>'
+    + t('原本の中身は変えません（変えるのはファイル名だけ）。見えないときは、Drive に入れる Google アカウントでブラウザにログインしてください。','The content of the original is never changed (only its file name). If it does not show, sign in to Google in this browser with an account that can open the folder.')+'</div></div>';
   /* ---- 見出しの入力 ---- */
   var hin = function(key, cur, kind){
     var v = invInHVal(d, key), shown = v!==null ? v : cur, changed = v!==null && String(v)!==String(cur==null?'':cur);
@@ -46552,7 +46697,9 @@ function invInDetail(mode){
   var head;
   if (rv) {
     /* v1056：経理の確認（4 項目＋日付）。左が AI の読み、右が今の値と印 */
-    var fh = function(field){ return chk.filter(function(r){ var x = INVIN_FIELD[r.code]; return x && x[0]===field; })
+    /* v1070：「USD と確かめる」を押したら、保存する前でも通貨の「確認すること」は出さない（「この内容で反映する」で保存してから反映） */
+    var curUsd = invInHVal(d, 'currency')==='USD', chkShown = curUsd ? chk.filter(function(r){ return r.code!=='currency'; }) : chk;
+    var fh = function(field){ return chkShown.filter(function(r){ var x = INVIN_FIELD[r.code]; return x && x[0]===field; })
       .map(function(r){ return '<span style="color:'+invInHintCol(r.code)+'">'+e(invInHint(r))+'</span>'; }).join('<br>'); };
     var join = function(a){ return a.filter(Boolean).join('<br>'); };
     var four = function(label, aiText, inner, field, note, dim){
@@ -46582,7 +46729,7 @@ function invInDetail(mode){
       + '<div class="ivx-scroll"><table class="ivx-t"><tbody>'
       + four(t('業者','Vendor'), ai.vendor_name || d.vendor_raw, hin('vendor_key', d.vendor_key, 'vendor'), 'vendor', vNote)
       + four(t('invoice番号','Invoice no.'), ai.invoice_number, hin('invoice_no', d.invoice_no, 'text'), 'no', join([fh('no')]))
-      + four(t('金額（合計）','Amount (total)'), ai.total, hin('total_cents', cents(d.total_cents), 'money'), 'amount', join([fh('amount'), amt]))
+      + four(t('金額（合計）','Amount (total)'), ai.total, hin('total_cents', cents(d.total_cents), 'money'), 'amount', join([fh('amount'), invInUsdHtml(d, ai, codes, canEdit), amt]))
       + four(t('店舗','Store'), shipTo ? t('宛先：','Ship to: ')+shipTo : '', '<span style="font-size:12.5px;font-weight:700">'+invInStoreHtml(d.store_id)+'</span>', 'store', sNote)
       + four(t('日付','Date'), ai.invoice_date_text || (ai.delivery_date_text ? t('（請求日の印字なし）','(no invoice date printed)') : ''), hin('invoice_date', d.invoice_date, 'date'), 'date', dNote, true)
       + '</tbody></table></div>'
@@ -46701,7 +46848,7 @@ function invInReviewActions(d){
     + '<button class="btn btn-secondary btn-sm" onclick="invInMark(\'reject\')">'+t('対象外にする','Exclude')+'</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="invInSave()"><i class="ti ti-device-floppy"></i> '+t('直した値だけ保存','Save changes only')+'</button></div>'
     + '<input class="form-input" style="width:100%;margin-top:8px;box-sizing:border-box" placeholder="'+t('メモ（任意）。重複・対象外にするときは理由を入れる','Note (optional). Needed to mark duplicate or exclude')+'" value="'+e(E.reason||'')+'" oninput="_invIn.edits.reason=this.value">';
-  var blockers = invInToCheck(d.reasons).filter(function(r){ return INVIN_MUST_FIX.indexOf(r.code)>=0; });
+  var blockers = invInToCheck(d.reasons).filter(function(r){ return INVIN_MUST_FIX.indexOf(r.code)>=0 && !(r.code==='currency' && invInHVal(d, 'currency')==='USD'); });
   if (blockers.length && d.posting_kind==='purchase') h += '<div class="ivx-note" style="color:'+INVIN_COL.red+'">'+t('次は直してから反映します（値を直して「この内容で反映する」を押すと、保存してから反映します。直せないものは対象外・重複に）：','Fix these first (correct the value and press “Post as shown” — it saves, then posts; otherwise exclude or mark duplicate): ')+blockers.map(function(r){ return e(invInHint(r)); }).join(' / ')+'</div>';
   if (d.posting_kind!=='purchase') h += '<div class="ivx-note">'+t('この書類は仕入れとして計上しません（Statement・レシートなど）。照合に使うか、対象外にしてください。','This document is not posted as a purchase (statement, receipt…). Use it for reconciliation or exclude it.')+'</div>';
   return h + '</div>';
@@ -46781,7 +46928,7 @@ async function invInSave(fromConfirm){
   if (!res) return false;
   /* 業者を選び直したら、印字された名前をその業者の別名として覚える（サーバー。次からは ✓） */
   if (res.alias_learned) { delete _invIn.loaded.config; showToast(t('保存しました。「','Saved. Remembered “')+res.alias_learned+t('」をこの業者の名前として覚えました','” as a name of this vendor'), 'success'); }
-  else if (!fromConfirm) showToast(t('保存しました（確認すること・印は作り直しました）','Saved. The checks were rebuilt'), 'success');
+  else if (!fromConfirm) showToast(t('保存しました（確認すること・印は作り直しました）','Saved. The checks were rebuilt')+(res.rename && res.rename.ok ? t('。ファイル名：',' File name: ')+res.rename.name : ''), 'success');
   delete _invIn.loaded.health; delete _invIn.loaded.review;
   if (fromConfirm) return res;   /* 「この内容で反映する」：保存した版（res.version）と読み直した版を比べる */
   _invIn.edits = null; delete _invIn.loaded.doc; invInRerender(); return res;
@@ -46815,8 +46962,15 @@ async function invInPost(){
   if (invInHasEdits()) return invInConfirm();
   var reason = String(E.reason||'').trim() || invInBatchReason();
   var ack = Object.keys(E.ack||{}).filter(function(k){ return E.ack[k]; });
-  try { await invInDo(function(){ return invInAPI({ action:'post', doc_id:d.id, version:d.version, reason:reason, ack:ack, adjustment_ack:!!E.adj, supersedes:E.sup||null }); }, t('反映しました','Posted')); }
+  var res;
+  try { res = await invInDo(function(){ return invInAPI({ action:'post', doc_id:d.id, version:d.version, reason:reason, ack:ack, adjustment_ack:!!E.adj, supersedes:E.sup||null }); }); }
   catch(e) { if (/先に更新|updated this first/.test(e.message)) { delete _invIn.loaded.doc; } invInRerender(); return; }
+  if (!res) return;
+  /* v1071：反映したら原本の名前を変える（サーバー）。変えた名前、変えられなかったときはそのことを出す */
+  var rn = res.rename;
+  showToast(rn && rn.ok ? t('反映しました。ファイル名：','Posted. File name: ')+rn.name
+    : rn ? t('反映しました。ファイル名はまだ変えていません（あとで自動でやり直します。名前を変えてから QuickBooks へ送ります）','Posted. The file is not renamed yet (retried automatically; it goes to QuickBooks after the rename)')
+    : t('反映しました','Posted'), rn && !rn.ok ? 'warning' : 'success');
   _invIn.loaded = {}; _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; invInRerender();
 }
 async function invInMark(action){
@@ -46922,6 +47076,7 @@ function invInHealth(){
   var msg = function(f){
     var err = String(f.last_error||'');
     if (f.drive_state && f.drive_state!=='ok') return { missing:t('原本が見つかりません','The original is missing'), trashed:t('原本がゴミ箱にあります','The original is in the trash'), permission_lost:t('原本を開く権限がありません','No permission to open the original'), moved_store:t('原本が別の店舗のフォルダへ移されました','The original was moved to another store folder') }[f.drive_state] || f.drive_state;
+    if (f.rename_state==='error') return t('ファイル名を変えられませんでした（名前を変えてから QuickBooks へ送ります）：','Could not rename the original (it goes to QuickBooks after the rename): ') + invInRenameErr(f.rename_error);
     if (f.organize_status==='error') return t('フォルダへの移動に失敗（照合などはそのまま・自動でやり直し中）：','Filing failed (other states unchanged; retrying): ') + String(f.organize_error||'');
     if (/ai_failed:(ai_not_configured|ai_http_40[13])/.test(err)) return t('AI の設定（鍵）を確かめてください。直ったら「今すぐやり直す」','Check the AI key, then press Retry now');
     if (/ai_failed/.test(err)) return t('AI の読み取りに失敗（あとで自動でやり直します）：','AI reading failed (retried later): ') + err.replace(/^ai_failed:/,'');
@@ -46939,14 +47094,15 @@ function invInHealth(){
           return '<div style="display:flex;gap:8px;align-items:center;border-top:1px solid var(--border);padding:7px 0;font-size:12px;flex-wrap:wrap">'+invInStoreHtml(f.store_id)
             + '<span style="flex:1;min-width:220px"><b>'+e(f.current_name)+'</b><span style="color:var(--muted)">　'+e(msg(f))+'</span></span>'
             + (invInFileUrl(f.drive_file_id) ? '<a class="btn btn-secondary btn-sm" href="'+invInFileUrl(f.drive_file_id)+'" target="_blank" rel="noopener noreferrer">'+t('原本を開く','Open')+'</a>' : '')
-            + (invInCanEdit() && (f.intake_status==='error' || f.organize_status==='error') ? '<button class="btn btn-secondary btn-sm" onclick="invInRetry(\''+invInId(f.id)+'\')"><i class="ti ti-refresh"></i> '+t('今すぐやり直す','Retry now')+'</button>' : '')+'</div>';
+            + (invInCanEdit() && (f.intake_status==='error' || f.organize_status==='error' || f.rename_state==='error') ? '<button class="btn btn-secondary btn-sm" onclick="invInRetry(\''+invInId(f.id)+'\')"><i class="ti ti-refresh"></i> '+t('今すぐやり直す','Retry now')+'</button>' : '')+'</div>';
         }).join('') : '<div class="ivx-note" style="margin-top:0">'+t('ありません','None')+'</div>') + '</div>';
   }
   var qb = H.qb || {}, QS = H.qb_settings || {};
-  h += '<div class="card" style="padding:10px 12px"><div class="card-title"><i class="ti ti-send"></i>'+t('QuickBooks への原本転送','Originals to QuickBooks')+'<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--muted)">'+t('宛先 ','To ')+e(QS.to||'')+' · '+e(invInDate(QS.since))+t(' 以降の原本',' onwards')+'</span></div>'
+  h += '<div class="card" style="padding:10px 12px"><div class="card-title"><i class="ti ti-send"></i>'+t('QuickBooks への原本転送','Originals to QuickBooks')+'<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--muted)">'+t('宛先 ','To ')+e(QS.to||'')+' · '+e(invInQbSinceText(QS.since))+t(' より後に入った原本',' onwards')+'</span></div>'
     + '<div style="font-size:11.5px;margin-bottom:6px">'+t('送る担当：','Sender: ')+'<b>'+invInRouteText(QS.route)+'</b>'+(QS.enabled ? '' : ' · '+t('台帳は OFF','ledger off'))+'</div>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap">'+invInChip(t('送信済み','Sent')+' '+(qb.sent||0), INVIN_COL.blue)+invInChip(t('未送信','Not sent')+' '+(qb.pending||0), INVIN_COL.gray)+invInChip(t('送信中','Sending')+' '+(qb.sending||0), INVIN_COL.gray)
-    + invInChip(t('結果不明','Unknown')+' '+(qb.unknown||0), INVIN_COL.org)+invInChip(t('送信エラー','Errors')+' '+(qb.error||0), INVIN_COL.red)+'</div>'
+    + invInChip(t('結果不明','Unknown')+' '+(qb.unknown||0), INVIN_COL.org)+invInChip(t('送信エラー','Errors')+' '+(qb.error||0), INVIN_COL.red)
+    + (Number(H.rename_waiting) ? invInChip(t('名前を変える待ち','Waiting for rename')+' '+Number(H.rename_waiting), INVIN_COL.gray) : '')+'</div>'
     + (P ? P.qb.map(function(o){
         return '<div style="font-size:11.5px;margin-top:8px;border-top:1px solid var(--border);padding-top:7px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+invInQbChip(o.state)
           + '<span style="flex:1;min-width:200px">'+e(o.current_name)+'　<span style="color:var(--muted)">'+e(invInTime(o.updated_at))+(o.last_error?' · '+e(o.last_error):'')+(o.route==='external'?' · '+t('外部の転送','external sender'):'')+'</span></span>'
@@ -46993,7 +47149,11 @@ function invInSettings(){
     + '<div class="card" style="padding:10px 12px"><div class="card-title"><i class="ti ti-player-play"></i>'+t('運用（GM・CEO）','Operation (GM, CEO)')+'</div>'
     + tog('mode','intake',M.intake,t('新しい invoice を取り込む','Read new invoices'),!admin)
     + tog('mode','auto_post',M.auto_post,t('確認の要らない invoice は自動で反映する','Post invoices that need no check automatically')+' <span style="color:var(--muted);font-size:11px">'+t('（条件は下の「自動反映の条件」）','(conditions below)')+'</span>',!admin)
-    + tog('mode','organize',M.organize,t('原本の名前と場所を整える（業者_請求日_店舗_INV-番号）','Rename and file originals (Vendor_date_store_INV-no.)'),!admin)
+    + tog('mode','organize',M.organize,t('原本を月ごとのフォルダに整理する（未照合・照合済み）','File originals by month (unreconciled / reconciled)'),!admin)
+    + tog('mode','rename',M.rename,t('反映したら原本のファイル名を変える','Rename the original when it is posted'),!admin)
+    + '<div class="ivx-note" style="margin:-2px 0 4px 26px">'+t('例：','e.g. ')+'<span style="font-family:ui-monospace,monospace">2026-10-07_Marujuu-Produce_12345.pdf</span>'
+      + t('（日付_業者名_invoice番号）。ON にした時より後に反映したものから。QuickBooks へは名前を変えたあとで送ります。ChatGPT 側の切り替えと同じ時に ON にしてください。',' (date_vendor_invoice no.). From invoices posted after it is turned on. Originals go to QuickBooks after the rename. Turn it on together with the ChatGPT-side switch.')
+      + (M.rename && M.rename_since ? '<br>'+t('ON にした時：','Turned on: ')+e(invInHstLocal(M.rename_since).replace('T',' '))+t('（ハワイ）',' (Hawaii)') : '')+'</div>'
     + tog('mode','mirror',M.mirror,t('アプリの Food Cost・仕入明細に反映する','Reflect in Food Cost and purchase details')+' <span style="color:var(--muted);font-size:11px">'+t('（開始日に ON）','(turn on at the start date)')+'</span>',!admin)
     + '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;font-size:12px;margin-top:6px">'
     + '<span style="color:var(--muted)">'+t('開始日時（ハワイ）','Start (Hawaii time)')+'</span><div style="display:flex;gap:4px"><input class="form-input ivx-in" type="datetime-local" id="ivs-start" value="'+e(invInHstLocal(M.start_at))+'"'+(admin?'':' disabled')+'>'
@@ -47076,16 +47236,47 @@ function invInSettings(){
   h += '<div class="card" style="padding:10px 12px"><div class="card-title"><i class="ti ti-send"></i>'+t('QuickBooks への原本転送','Originals to QuickBooks')+'</div>'
     + '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;font-size:12px;align-items:center">'
     + '<span style="color:var(--muted)">'+t('宛先','To')+'</span><span>'+e(Q.to||'')+t('（変更不可）',' (fixed)')+'</span>'
-    + '<span style="color:var(--muted)">'+t('対象','Scope')+'</span><span>'+e(String(Q.since||'').replace(/-/g,'/'))+t(' 以降に保存された全店舗の invoice・receipt の原本（重複は送らない）',' onwards: originals from all stores (duplicates are not sent)')+'</span>'
+    + '<span style="color:var(--muted)">'+t('対象','Scope')+'</span><span>'+t('反映して、名前を変えた原本だけ（要確認・重複・対象外・Statement・レシートは送らない）','Only originals that were posted and renamed (nothing waiting for review, no duplicates, excluded files, statements or receipts)')+'</span>'
+    + '<span style="color:var(--muted)">'+t('送り始め','From')+'</span><div><div style="display:flex;gap:4px;flex-wrap:wrap"><input class="form-input ivx-in" type="datetime-local" id="ivs-qbsince" style="max-width:220px" value="'+e(invInQbSinceLocal(Q.since))+'"'+(admin?'':' disabled')+'>'
+      + (admin?'<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invInSaveQbSince()">'+t('保存','Save')+'</button>':'')+'</div>'
+      + '<div class="ivx-note" style="margin:3px 0 0">'+t('この日時（ハワイ）より後に Drive に入った原本。前のものは今の ChatGPT の転送が送った分です。','Originals put in Drive after this time (Hawaii). Earlier ones were sent by the current ChatGPT forwarding.')+'</div></div>'
     + '<span style="color:var(--muted)">'+t('送る担当','Sender')+'</span><select class="form-select ivx-in" style="max-width:460px" id="ivs-route"'+(admin?'':' disabled')+' onchange="invInRoute(this.value)">'
       + '<option value=""'+(!Q.route?' selected':'')+'>'+t('未決定（台帳に積まない）','Not decided (nothing queued)')+'</option>'
       + '<option value="external"'+(Q.route==='external'?' selected':'')+'>'+invInRouteText('external')+'</option>'
       + '<option value="invoice-intake"'+(Q.route==='invoice-intake'?' selected':'')+'>'+t('このシステム（送信手段の接続が必要・未接続）','This system (needs a sending connection; not connected)')+'</option></select>'
     + '<span style="color:var(--muted)">'+t('台帳','Ledger')+'</span><div>'+tog('qb','enabled',Q.enabled,t('転送の対象を台帳に積む','Queue originals in the ledger'),!admin)+'</div>'
     + '<span style="color:var(--muted)">'+t('外部の転送','Outside sender')+'</span><div>'+tog('qb_external','enabled',S.qb_external_enabled,t('外部の転送（ChatGPT など）が台帳を読み、結果を書き込むのを許可する','Allow the outside sender to read the ledger and record results'),!admin)+'</div></div>'
-    + '<div class="ivx-note">'+t('二重送信を防ぐため、送る担当は1つだけにします。外部の転送を担当にしたときは、外部の転送がこの台帳で「送るもの」を読み、送った結果を書き込みます（このシステムからは送りません）。外部の転送が使う鍵は、Supabase の SQL でだけ見られます（この画面には出しません）。',
-      'Only one sender, to avoid duplicates. With the outside sender, it reads what to send from this ledger and records the result; this system sends nothing. Its key is only visible in Supabase SQL, never on this screen.')+'</div></div>';
+    + '<div class="ivx-note">'+t('反映 → ファイル名を変える → 台帳に積む、の順です。二重送信を防ぐため、送る担当は1つだけにします。外部の転送（ChatGPT 側）を担当にしたときは、外部の転送がこの台帳で「送るもの」を読み（Drive から直接は拾わない）、送った結果を書き込みます（このシステムからは送りません）。外部の転送が使う鍵は、Supabase の SQL でだけ見られます（この画面には出しません）。',
+      'Post → rename → queue in the ledger. Only one sender, to avoid duplicates. With the outside sender (ChatGPT side), it reads what to send from this ledger (not from Drive directly) and records the result; this system sends nothing. Its key is only visible in Supabase SQL, never on this screen.')+'</div></div>';
   return h;
+}
+/* v1071：QuickBooks の送り始め（qb.since）。日付だけ（前の形）ならその日の 0:00、日時ならハワイ時間で出す */
+function invInQbSinceLocal(since){
+  var s = String(since||'');
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00' : invInHstLocal(s);
+}
+function invInQbSinceText(since){ var v = invInQbSinceLocal(since); return v ? v.replace(/-/g,'/').replace('T',' ') : '—'; }
+function invInSaveQbSince(){
+  var v = String((document.getElementById('ivs-qbsince')||{}).value||'');
+  var iso = v ? v + ':00-10:00' : '';
+  if (!v || isNaN(new Date(iso).getTime())) { showToast(invInL(INVIN_ERR.bad_value), 'warning'); return; }
+  return invInSaveSetting('qb', { since:iso });
+}
+/* v1071（Moto さん 10/12）：反映したら原本の名前を「日付_業者名_番号」に変え、そのあとで QuickBooks へ送る */
+function invInRenameErr(err){
+  err = String(err||'');
+  if (/outside_store_folders/.test(err)) return t('原本が店舗のフォルダの外へ移されています。店舗のフォルダに戻してから「今すぐやり直す」を押してください','The original was moved out of the store folders. Put it back, then press Retry now');
+  if (/original_unavailable/.test(err)) return t('原本を開けません（消された・権限が無い）','The original cannot be opened (removed or no permission)');
+  if (/name_not_determined/.test(err)) return t('日付・業者・番号から名前を決められません','No name could be made from the date, vendor and number');
+  if (/drive_/.test(err)) return t('Google Drive で変えられませんでした（あとで自動でやり直します）','Google Drive refused it (retried automatically)');
+  return err;
+}
+function invInRenameNote(d, f){
+  var M = (_invIn.config && _invIn.config.settings && _invIn.config.settings.mode) || {};
+  if (f.rename_state==='error') return '<br><span style="color:'+INVIN_COL.red+'">'+t('ファイル名を変えられませんでした（名前を変えてから QuickBooks へ送ります）：','Could not rename it (it goes to QuickBooks after the rename): ')+escapeHtml(invInRenameErr(f.rename_error))+'</span>';
+  if (f.rename_state==='done' && d.status==='posted') return ' <span style="color:'+INVIN_COL.green+'"><i class="ti ti-check"></i> '+t('反映して名前を変えました','renamed when posted')+'</span>';
+  if (M.rename && d.status==='review') return '<br><span style="color:var(--muted)">'+t('反映すると「日付_業者名_invoice番号」に名前を変えます','Posting renames it date_vendor_invoice no.')+'</span>';
+  return '';
 }
 function invInHstLocal(iso){
   if (!iso) return '';
@@ -47104,6 +47295,14 @@ async function invInSaveSetting(key, value, msg){
 function invInSetting(key, sub, on){
   if (!invInCanAdmin()) return;
   var v = {}; v[sub] = !!on;
+  /* v1071（Moto さん 10/12）：反映したら原本のファイル名を変える。ON にする前に、いつから・何が変わるかを確かめる */
+  if (key==='mode' && sub==='rename' && on) {
+    openModal('<div class="modal-title">'+t('ファイル名の変更を ON にする','Turn on renaming')+' <button class="modal-close" onclick="closeModalDirect();invInRerender()">×</button></div>'
+      + '<div style="font-size:12px;line-height:1.75">'+t('このあと反映した invoice は、Google Drive の原本のファイル名を「日付_業者名_invoice番号」に変えます（例：2026-10-07_Marujuu-Produce_12345.pdf）。原本の中身と置き場所は変えません。ON にする前に反映したものは今の名前のままです。','Invoices posted from now on get their Drive original renamed date_vendor_invoice no. (e.g. 2026-10-07_Marujuu-Produce_12345.pdf). The content and folder stay the same. Invoices posted before keep their names.')
+      + '<br>'+t('QuickBooks へは名前を変えたあとで送ります。ChatGPT 側の転送を「台帳を見て送る」に切り替えたのと同じ時に ON にしてください（今の転送が Drive から直接拾っていると、名前の変わったファイルをもう一度送るおそれがあります）。','Originals go to QuickBooks after the rename. Turn this on together with switching the ChatGPT-side forwarder to the ledger (a forwarder that still picks files from Drive could send a renamed file again).')+'</div>'
+      + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect();invInRerender()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="closeModalDirect();invInSaveSetting(\'mode\',{rename:true})">'+t('ON にする','Turn on')+'</button></div>');
+    return;
+  }
   if (key==='mode' && sub==='auto_post' && on) {
     openModal('<div class="modal-title">'+t('自動反映を ON にする','Turn on automatic posting')+' <button class="modal-close" onclick="closeModalDirect();invInRerender()">×</button></div>'
       + '<div style="font-size:12px;line-height:1.75">'+t('「自動」の店舗・業者の invoice で、業者・invoice番号・金額・店舗・日付に確かめることが1つも無いものだけが自動で反映されます（重複の疑い・締めた月・USD 以外・Statement などは要確認）。商品・単価は条件にしません。開始日時より前の invoice は自動反映しません。','Only invoices from stores and vendors set to auto, with nothing to check on vendor, invoice number, amount, store and date, are posted automatically (possible duplicates, closed months, non-USD and statements go to review). Products and prices are not conditions. Nothing before the start time.')+'</div>'
@@ -49693,7 +49892,7 @@ function renderOnboardingInner() {
         電子署名: ${sigCount}/4 ${sigCount>=4?'<span style="color:var(--green)">✓</span>':''} · I-9: ${i9Count}/5 ${i9Count>=5?'<span style="color:var(--green)">✓</span>':''}<br>
         書類: ${ob.docs&&ob.docs.length?ob.docs.length+'件':'未提出'}
         ${canSeePII?`<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" style="font-size:11px" onclick="openObSecret('${ob.id}')"><i class="ti ti-shield-lock" style="color:var(--accent)"></i> 機密情報（住所・生年月日・SSN・身分証）を表示</button></div>`:`<div style="margin-top:6px;font-size:10px;color:var(--muted)">機密情報は経理/GM/CEOのみ閲覧できます</div>`}
-        ${canSeePII && ob.signatureImage ? `<div style="margin-top:8px"><div style="font-size:10px;color:var(--muted)">署名 / Signature</div><img src="${ob.signatureImage}" style="height:46px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:2px"></div>`:''}
+        ${canSeePII && obImgSrc(ob.signatureImage) ? `<div style="margin-top:8px"><div style="font-size:10px;color:var(--muted)">署名 / Signature</div><img src="${obImgSrc(ob.signatureImage)}" style="height:46px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:2px"></div>`:''}
       </div>`;
     }
     // アクションボタン（ステータス×権限）
@@ -50049,12 +50248,12 @@ function renderOBDocsList(ob, obId){
   var docs=(ob&&ob.docs)||[];
   if(!docs.length) return '<span style="color:var(--muted);font-size:12px">未添付 / None</span>';
   return docs.map(function(d,i){
-    var thumb = d.image
-      ? `<img src="${d.image}" style="width:46px;height:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="viewOBDocImage('${obId}',${i})">`
+    var thumb = obImgSrc(d.image)
+      ? `<img src="${obImgSrc(d.image)}" style="width:46px;height:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="viewOBDocImage('${obId}',${i})">`
       : `<span style="width:46px;height:46px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:6px;color:var(--muted)"><i class="ti ti-file"></i></span>`;
     return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
       ${thumb}
-      <div style="flex:1;font-size:12px">${d.name}${d.image?'':' <span style="color:var(--red);font-size:10px">画像なし</span>'}</div>
+      <div style="flex:1;font-size:12px">${escapeHtml(d.name||'')}${d.image?'':' <span style="color:var(--red);font-size:10px">画像なし</span>'}</div>
       <button class="btn btn-danger btn-sm" style="padding:0 8px;font-size:10px" onclick="removeOBDoc('${obId}',${i})">削除</button>
     </div>`;
   }).join('');
@@ -50092,17 +50291,17 @@ function compressImageFile(file, cb){
   reader.readAsDataURL(file);
 }
 /* 書類画像を拡大表示（フォームを閉じずにオーバーレイ） */
-async function openObSecret(obId){
+async function openObSecret(obId, fresh){
   if(!(curRole==='office'||curRole==='gm'||curRole==='ceo')){ alert('機密情報は経理/GM/CEOのみです'); return; }
-  var ap = await askAdminPin('機密情報の閲覧');
-  if(ap==null) return;
+  var title = t('機密情報の閲覧','Confidential details'), again = function(){ openObSecret(obId, true); };
+  if(!(await secAuthEnsure())){ secAuthLoginModal(title, again); return; }   /* v1067: メールの認証（経理・GM・CEO） */
   var j;
-  try{ j = await authObPriv({action:'get', adminName:curUserName, adminPin:ap, obId:obId}); }
+  try{ j = await secAuthCall('ob-private', {action:'get', obId:obId}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if(!j||!j.ok){ window._pinAdmin=null; alert('確認できませんでした（PINまたは権限）'); return; }
-  window._pinAdmin = {name:curUserName, pin:ap};
+  if(secAuthNeedLogin(j, fresh, title, again, 'secret')) return;
+  if(!j||!j.ok){ alert(secAuthErrText(j, 'secret')); return; }
   var sObj = j.secret||{};
-  var docsHtml = (sObj.docs||[]).map(function(d){ return d.image?`<div style="text-align:center"><img src="${d.image}" style="width:90px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="openImgOverlay(this.src)"><div style="font-size:9px;color:var(--muted)">${escapeHtml(d.name)}</div></div>`:`<span style="font-size:10px;color:var(--muted)">${escapeHtml(d.name)}（画像なし）</span>`; }).join('');
+  var docsHtml = (sObj.docs||[]).map(function(d){ return obImgSrc(d.image)?`<div style="text-align:center"><img src="${obImgSrc(d.image)}" style="width:90px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="openImgOverlay(this.src)"><div style="font-size:9px;color:var(--muted)">${escapeHtml(d.name)}</div></div>`:`<span style="font-size:10px;color:var(--muted)">${escapeHtml(d.name)}（画像なし）</span>`; }).join('');
   openModal(`<div class="modal-title"><i class="ti ti-shield-lock"></i> 機密情報 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:13px;line-height:1.9">
       住所: ${escapeHtml(sObj.address||'—')}<br>
@@ -50115,16 +50314,16 @@ async function openObSecret(obId){
     <div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`);
 }
 function openImgOverlay(src){ openModal(`<div class="modal-title">画像 <button class="modal-close" onclick="closeModalDirect()">×</button></div><img src="${src}" style="width:100%;border-radius:8px">`); }
-async function runObMigrate(){
+async function runObMigrate(fresh){
   if(!(curRole==='gm'||curRole==='ceo')) return;
-  if(!confirm('既存オンボの機密情報（SSN・身分証・個人情報）を保護領域へ移行します。実行しますか？')) return;
-  var ap = await askAdminPin('機密情報の移行');
-  if(ap==null) return;
+  if(!fresh && !confirm('既存オンボの機密情報（SSN・身分証・個人情報）を保護領域へ移行します。実行しますか？')) return;
+  var title = t('機密情報の移行','Move confidential details'), again = function(){ runObMigrate(true); };
+  if(!(await secAuthEnsure())){ secAuthLoginModal(title, again); return; }   /* v1067: メールの認証（GM・CEO） */
   var j;
-  try{ j = await authObPriv({action:'migrate', adminName:curUserName, adminPin:ap}); }
+  try{ j = await secAuthCall('ob-private', {action:'migrate'}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if(!j||!j.ok){ alert('実行できませんでした（PINまたは権限）'); return; }
-  window._pinAdmin={name:curUserName,pin:ap};
+  if(secAuthNeedLogin(j, fresh, title, again, 'migrate')) return;
+  if(!j||!j.ok){ alert(j && j.error==='write_failed' ? t('一部を移行できませんでした。もう一度お試しください。','Some records could not be moved. Please try again.') : secAuthErrText(j, 'migrate')); return; }
   try{ await pullOpKey('onboardings'); }catch(e){}
   showToast(j.moved+'件の機密情報を保護領域へ移行しました','success');
 }
@@ -59234,16 +59433,32 @@ function karteLockHtml(){
 }
 
 
+/* v1067（独立レビュー P2-2）：karte_bonus_config の合流（mergeStamped）は、印の無い値を {__st:1, v:値, _at, _by} に包んで保存する。
+   包んだ値をそのまま読むと、中身（v）ではなく初期値で読んでいた（基準額などが初期値に戻って見える）。
+   ・包んだ値：中身（v。包みが重なっていれば内側まで）に、外側の欄（前の版の端末が書いた欄）を重ねて読む。外側に欄が無ければ中身だけ。
+   ・保存（kbSave）：新しい時刻で包み（合流で新しい保存が勝つ）、同じ欄を外側にも置く（前の版の端末は外側を読む）。 */
+var KB_ST_META = {__st:1, v:1, _at:1, _by:1, _deleted:1};
+function kbCfgPlain(r){
+  if(!(r && typeof r==='object' && !Array.isArray(r) && r.__st===1)) return r;
+  var top={}; Object.keys(r).forEach(function(k){ if(!KB_ST_META[k]) top[k]=r[k]; });
+  var inner=kbCfgPlain(r.v);
+  return Object.assign({}, (inner && typeof inner==='object' && !Array.isArray(inner)) ? inner : {}, top);
+}
 function kbCfg(){
   var d={ poolRate:0.12, profit:0, quarter:_curQuarter(), gradeBase:{G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, csMin:0.7, csMax:1.3, storeScore:{}, storeProfit:{}, empStore:{}, spMin:0.8, spMax:1.2, baMin:0.8, baMax:1.2 };
-  var r=ls('karte_bonus_config',null);
+  var r=kbCfgPlain(ls('karte_bonus_config',null));
   if(r && typeof r==='object'){ d=Object.assign(d,r); d.gradeBase=Object.assign({G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, r.gradeBase||{}); d.storeScore=Object.assign({}, r.storeScore||{}); d.storeProfit=Object.assign({}, r.storeProfit||{}); d.empStore=Object.assign({}, r.empStore||{}); if(d.spMin==null)d.spMin=0.8; if(d.spMax==null)d.spMax=1.2; if(d.baMin==null)d.baMin=0.8; if(d.baMax==null)d.baMax=1.2; }
   return d;
 }
-function kbSave(c){ lsSet('karte_bonus_config', c); }
+function kbSave(c){
+  var clean={}; Object.keys((c && typeof c==='object') ? c : {}).forEach(function(k){ if(!KB_ST_META[k]) clean[k]=c[k]; });
+  var by=''; try{ by=(typeof myName==='function') ? (myName()||'') : ''; }catch(e){ by=''; }
+  var prev=ls('karte_bonus_config', null), at=Math.max(Date.now(), ((prev && typeof prev==='object' && prev.__st===1) ? (Number(prev._at)||0) : 0)+1);   /* この端末で前に保存した・受け取った時刻より新しく */
+  return lsSet('karte_bonus_config', Object.assign({}, clean, {__st:1, v:clean, _at:at, _by:String(by||'')}));
+}
 function getKarteAll(){ return ls('growth_karte',{}); }
 function getKarte(empId){ var m=getKarteAll(); return m[empId]||{}; }
-function saveKarte(empId, k){ var m=getKarteAll(); k.updatedAt=new Date().toISOString(); k._at=Date.now();   /* v798: 合流で勝敗を決めるための印 */ k.evaluator=(typeof myName==='function'?myName():(curUserName||'')); m[empId]=k; lsSet('growth_karte', m); }
+function saveKarte(empId, k){ var m=getKarteAll(); if(typeof kartePayTrackInit==='function') kartePayTrackInit(k);   /* v1067（独立レビュー P2-1）：履歴を 1 行ずつ合流し始めた時刻（_at を新しくする前に） */ k.updatedAt=new Date().toISOString(); k._at=Date.now();   /* v798: 合流で勝敗を決めるための印 */ k.evaluator=(typeof myName==='function'?myName():(curUserName||'')); m[empId]=k; lsSet('growth_karte', m); }
 
 function karteEligibleEmps(){
   var cfg=kbCfg();
@@ -59472,7 +59687,7 @@ function bqStageState(q, cfg){
 }
 function bqLockQuarter(q){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('確定は GM・CEO のみです','warning'); return; }
-  if(typeof kevApplies==='function' && kevApplies(Object.assign({}, kbCfg(), {quarter:q}))){ kevLockQuarter(q); return; }   /* v1065：4 項目の式の四半期は、全員の評価・最終額を固定する */
+  if(typeof kevApplies==='function' && kevApplies(Object.assign({}, kbCfg(), {quarter:q}))){ return kevLockQuarter(q); }   /* v1065：4 項目の式の四半期は、全員の評価・最終額を固定する（v1067：読み直して確かめるあいだは Promise を返す） */
   var cfg=kbCfg(), st=bqStageState(q,cfg), d=bqGet(q);
   if(d.locked){ showToast('すでに確定しています','info'); return; }
   var _qr0=ghQRange(q); if(_qr0 && _qr0.q!==q){ showToast('四半期の書き方を「'+_qr0.q+'」の形に直してから確定してください（設定タブの四半期）','warning'); return; }   /* v1058: 区間・係数の記録と同じキーにする */
@@ -60718,7 +60933,8 @@ function ghImpRun(){
       var k=kAll[id]||{}; k.payLog=k.payLog||[];
       var amt=String(Math.round(r.pay.amount*100)/100);
       if(!k.payLog.some(function(p){ return p.type==='昇給' && p.date===r.d && String(p.amount)===amt; })){
-        k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:r.d, type:'昇給', amount:amt, note:'取込'+(r.pay.unit?'（'+r.pay.unit+'）':'')+(r.note?'・'+r.note:''), src:'import'});
+        k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:r.d, type:'昇給', amount:amt, note:'取込'+(r.pay.unit?'（'+r.pay.unit+'）':'')+(r.note?'・'+r.note:''), src:'import', _at:Date.now()});   /* v1067：行の時刻（行ごとの合流） */
+        if(typeof kartePayTrackInit==='function') kartePayTrackInit(k);   /* v1067（独立レビュー P2-1）：saveKarte と同じく、_at を新しくする前に */
         k.updatedAt=new Date().toISOString(); k._at=Date.now(); kAll[id]=k; kTouched[id]=1; nPay++;
       }
     }
@@ -61637,11 +61853,13 @@ function karteSetMeeting(empId,mid,field,val){ var k=getKarte(empId); (k.meeting
 function karteDelMeeting(empId,mid){ var k=getKarte(empId); k.meetings=(k.meetings||[]).filter(function(m){return m.id!==mid;}); saveKarte(empId,k); openKarteDetail(empId); }
 
 /* pay log */
-function kartePayAdd(empId){ var k=getKarte(empId); k.payLog=k.payLog||[]; k.payLog.push({id:'p'+Date.now().toString(36), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:'', note:''}); saveKarte(empId,k); openKarteDetail(empId); }
-function kartePaySet(empId,pid,field,val){ var k=getKarte(empId); (k.payLog||[]).forEach(function(p){ if(p.id===pid) p[field]=val; }); saveKarte(empId,k); }
-function kartePayDel(empId,pid){ var k=getKarte(empId); k.payLog=(k.payLog||[]).filter(function(p){return p.id!==pid;}); saveKarte(empId,k); openKarteDetail(empId); }
+/* v1067（Codex レビュー R1）：履歴の行は 1 件ずつ合流するので、行を直す・記録し直すたびに時刻（_at）を付け、消した行は payDel に時刻つきで残す（別の端末の古い写しで戻らないように）。
+   足した行にも時刻を付ける（独立レビュー P2-1：記録を始めたあとに足した行は、片方の端末にしか無くても残す。時刻の無い行は「記録を始める前の行」として扱う） */
+function kartePayAdd(empId){ var k=getKarte(empId); k.payLog=k.payLog||[]; k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:'', note:'', _at:Date.now()}); saveKarte(empId,k); openKarteDetail(empId); }
+function kartePaySet(empId,pid,field,val){ var k=getKarte(empId); (k.payLog||[]).forEach(function(p){ if(p.id===pid){ p[field]=val; p._at=Math.max(Date.now(), kartePayT(p)+1); } }); saveKarte(empId,k); }
+function kartePayDel(empId,pid){ var k=getKarte(empId), t=Date.now(); (k.payLog||[]).forEach(function(p){ if(p.id===pid) t=Math.max(t, kartePayT(p)+1); }); k.payLog=(k.payLog||[]).filter(function(p){return p.id!==pid;}); if(pid!=null && pid!==''){ k.payDel=(k.payDel && typeof k.payDel==='object') ? k.payDel : {}; k.payDel[String(pid)]=Math.max(t, Number(k.payDel[String(pid)])||0); } saveKarte(empId,k); openKarteDetail(empId); }
 /* ===== ボーナス査定の自動記録（給与・ボーナス履歴への連携 / v547） ===== */
-function _bonusWritePay(e,b,q,payAmt,adj){
+function _bonusWritePay(e,b,q,payAmt,adj,lk){   /* lk：v1067（独立レビュー P2-3）どの確定から書いたか {id, t}（4 項目の式の記録だけ） */
   var all=getKarteAll(); var now=new Date().toISOString(); var by=(typeof myName==='function'?myName():(curUserName||''));
   var k=all[e.id]||{}; k.payLog=k.payLog||[];
   var snap={grade:b.grade, base:b.base, baPct:b.baPct, baCoef:b.baCoef, csPct:b.csPct, csCoef:b.csCoef, spPct:b.spPct, spCoef:b.spCoef, hasCS:b.hasCS, raw:b.amount, adj:adj,
@@ -61650,8 +61868,11 @@ function _bonusWritePay(e,b,q,payAmt,adj){
     gcoef:b.coef, gcoefKey:b.coefKey, track:b.track, coefSrc:b.coefSrc, rangeMode:!!b.rangeMode, cm:(b.rangeMode?bonusCmCompact(b.cm,false):null)};   /* v1062：幅と基準ラインの達成 */   /* v1058: グレード・職種係数（coef は旧式の個人係数の名前なので使わない） */   /* v1044: 日割りの区間も残す */
   if(b && b.v4 && typeof kevPaySnap==='function') snap=kevPaySnap(b, adj);   /* v1065：4 項目の式（確定した記録） */
   var ex=null; for(var i=0;i<k.payLog.length;i++){ if(k.payLog[i].src==='auto' && k.payLog[i].quarter===q){ ex=k.payLog[i]; break; } }
-  if(ex){ ex.amount=String(payAmt); ex.date=(typeof todayISO==='function'?todayISO():ex.date); ex.snap=snap; ex.by=by; ex.at=now; }
-  else { k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:String(payAmt), note:'四半期査定（自動記録）', src:'auto', quarter:q, snap:snap, by:by, at:now}); }
+  if(ex){ ex.amount=String(payAmt); ex.date=(typeof todayISO==='function'?todayISO():ex.date); ex.snap=snap; ex.by=by; ex.at=now; ex._at=Math.max(Date.now(), (typeof kartePayT==='function' ? kartePayT(ex) : 0)+1); }   /* v1067：行の時刻（行ごとの合流） */
+  else { k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:String(payAmt), note:'四半期査定（自動記録）', src:'auto', quarter:q, snap:snap, by:by, at:now, _at:Date.now()}); }
+  var _row=ex || k.payLog[k.payLog.length-1];
+  if(lk && lk.id){ _row.lk=String(lk.id); if(Number(lk.t)>0) _row.lkt=Number(lk.t); else delete _row.lkt; } else { delete _row.lk; delete _row.lkt; }   /* v1067（独立レビュー P2-3）：確定し直したあとの記録が、前の確定からの記録に負けないように */
+  if(typeof kartePayTrackInit==='function') kartePayTrackInit(k);   /* v1067（独立レビュー P2-1）：_at を新しくする前に */
   k.updatedAt=now; k._at=Math.max(Date.now(), (Number(k._at)||0)+1); all[e.id]=k; lsSet('growth_karte', all);   /* v1065：別の端末の古い写しで記録が消えないように */
 }
 function bonusConfirmQuarter(){
@@ -61659,7 +61880,7 @@ function bonusConfirmQuarter(){
   if(!q){ alert('四半期が未設定です。設定タブで四半期を入力してください。'); return; }
   if(['gm','ceo'].indexOf(curRole)<0){ alert('記録できるのは GM・CEO です。'); return; }
   if(!bqGet((typeof bonusQKey==='function') ? bonusQKey(cfg) : q).locked){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }   /* v1065（Motoさん 10/11） */
-  if(tot.v4){ kevRecordQuarter(cfg, tot); return; }
+  if(tot.v4){ return kevRecordQuarter(cfg, tot); }   /* v1067：確定を読み直すあいだは Promise を返す */
   if(!tot.rows.length){ alert('対象者（G2以上・在籍）がいません。'); return; }
   if(tot.nBlocked){ alert('職種の設定が必要・係数が未設定の人が '+tot.nBlocked+' 名います（'+tot.rows.filter(function(r){ return r.b.blocked; }).slice(0,6).map(function(r){ return r.e.name; }).join('・')+'）。\n決まるまで履歴に記録できません。'); return; }   /* v1058 */
   var payTotal=tot.over?Math.round(tot.total*tot.factor):tot.total;
@@ -61675,7 +61896,7 @@ function bonusConfirmOne(empId){
   if(['gm','ceo'].indexOf(curRole)<0){ alert('記録できるのは GM・CEO です。'); return; }
   if(!bqGet((typeof bonusQKey==='function') ? bonusQKey(cfg) : q).locked){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }   /* v1065（Motoさん 10/11） */
   var tot=bonusTotals(cfg); var b=bonusForEmp(e,cfg); var payAmt=tot.over?Math.round(b.amount*tot.factor):b.amount;
-  if(tot.v4){ kevRecordOne(cfg, tot, e); return; }
+  if(tot.v4){ return kevRecordOne(cfg, tot, e); }   /* v1067：確定を読み直すあいだは Promise を返す */
   if(b.blocked){ alert(e.name+' は'+(b.blocked==='track'?' G3 の職種の設定が必要です':'係数が未設定です')+'。決まるまで履歴に記録できません。'); return; }   /* v1058 */
   if(tot.nBlocked){ alert('職種の設定が必要・係数が未設定の人が '+tot.nBlocked+' 名います。原資の調整（全員に同じ割合）がその人を入れないと決まらないため、決まるまで履歴に記録できません。'); return; }
   if(!confirm(e.name+' の '+q+' 査定ボーナス '+_money(payAmt)+(tot.over?'（原資調整後）':'')+' を給与・ボーナス履歴に記録します。よろしいですか？')) return;
@@ -64017,7 +64238,7 @@ function kevCosts(stores, kv, qOverride){
   var q=qOverride || kv.q, ck='C|'+q+'|'+stores.join(','); if(kv.cache[ck]) return kv.cache[ck];
   var qq=_bonusQParse(q), months=qq ? _quarterMonths(qq.y, qq.q) : [];
   var out={sales:0, cogs:0, labor:0, noF:[], noL:[], prov:[], months:0, tF:null, tL:null};
-  var wF=0, sF=0, wL=0, sL=0, rF=[], rL=[];
+  var wF=0, sF=0, wL=0, sL=0, rF=[], rL=[], mF=[], mL=[];
   stores.forEach(function(sid){
     var qt=null; try{ qt=quarterTargets(sid, qq.y, qq.q); }catch(err){ qt=null; }
     if(qt){
@@ -64025,23 +64246,33 @@ function kevCosts(stores, kv, qOverride){
       if(fr>0){ rF.push(fr); if(w>0){ wF+=w; sF+=fr*w; } }
       if(lr>0){ rL.push(lr); if(w>0){ wL+=w; sL+=lr*w; } }
     }
+    var snm=(typeof _owStoreName==='function' ? _owStoreName(sid) : sid);
     months.forEach(function(ym){
       var off=_ymToOffset(ym); if(off>0) return;
-      var lbl=(typeof _owStoreName==='function' ? _owStoreName(sid) : sid)+' '+Number(ym.slice(5))+'月';
+      var lbl=snm+' '+Number(ym.slice(5))+'月';
       var pl=null; try{ pl=_meetPlKpi(sid, ym); }catch(err){ pl=null; }
-      var s=0, c=null, l=null, prov=false;
-      if(pl){ s=Number(pl.sales)||0; c=(pl.cogs==null) ? null : Number(pl.cogs); l=(pl.payroll==null) ? null : Number(pl.payroll); }
+      var s=0, c=null, l=null, prov=false, whyF='', whyL='';
+      if(pl){ s=Number(pl.sales)||0; c=(pl.cogs==null) ? null : Number(pl.cogs); l=(pl.payroll==null) ? null : Number(pl.payroll); whyF='会計 PL の原価が空'; whyL='会計 PL の人件費が空'; }
       else {
         var p=null; try{ p=plComputeStore(sid, ym, off); }catch(err){ p=null; }
-        if(p){ s=Number(p.sales)||0; c=Number(p.cogs)||0; l=Number(p.labor)||0; prov=String(p.cogsSrc||'').indexOf('暫定')>=0; }
+        /* v1067（Codex レビュー R3）：仕入れ・棚卸・勤怠をまだ取得・入力していない月は 0 円ではなく「不足」（0% として高い点にしない）。
+           元のデータがあると分かったときだけ数に入れる。 */
+        if(p){ s=Number(p.sales)||0;
+          if(p.cogsHas===true){ c=Number(p.cogs)||0; prov=String(p.cogsSrc||'').indexOf('暫定')>=0; } else whyF='仕入れ・棚卸の記録が無い';
+          if(p.laborHas===true) l=Number(p.labor)||0; else whyL=((Array.isArray(p.laborMissDays) && p.laborMissDays.length) ? '売上のある日に勤怠が未取得の日がある' : '勤怠の記録が無い'); }
       }
       if(!(s>0)){ return; }   /* 売上の無い月は率に入れない */
       out.months++; out.sales+=s;
-      if(c==null) out.noF.push(lbl); else out.cogs+=c;
-      if(l==null) out.noL.push(lbl); else out.labor+=l;
+      if(c==null) mF.push({s:snm, m:Number(ym.slice(5)), why:whyF}); else out.cogs+=c;
+      if(l==null) mL.push({s:snm, m:Number(ym.slice(5)), why:whyL}); else out.labor+=l;
       if(prov) out.prov.push(lbl);
     });
   });
+  /* 足りない月は店舗・理由ごとにまとめる（例：Store 2 7・8・9月：仕入れ・棚卸の記録が無い） */
+  var grp=function(list){ var o=[], ix={}; list.forEach(function(x){ var k=x.s+'|'+x.why; if(!(k in ix)){ ix[k]=o.length; o.push({s:x.s, why:x.why, ms:[]}); } o[ix[k]].ms.push(x.m); });
+    return o.map(function(g){ return g.s+' '+g.ms.join('・')+'月'+(g.why ? '：'+g.why : ''); }); };
+  out.noF=grp(mF); out.noL=grp(mL);
+  out.noLAtt=mL.some(function(x){ return x.why==='売上のある日に勤怠が未取得の日がある' || x.why==='勤怠の記録が無い'; });   /* 勤怠を取得すれば直る不足（独立レビュー P3） */
   out.tF=wF>0 ? sF/wF : (rF.length ? rF.reduce(function(a,b){ return a+b; }, 0)/rF.length : null);
   out.tL=wL>0 ? sL/wL : (rL.length ? rL.reduce(function(a,b){ return a+b; }, 0)/rL.length : null);
   out.aF=(out.sales>0 && !out.noF.length) ? out.cogs/out.sales*100 : null;
@@ -64118,7 +64349,8 @@ function kevFlSide(R, ev, C, k){
   }
   if(aw>0 && ap==null) miss.push(nm+' の行動：未評価');
   if(aw>0 && ap!=null && (lv>=4) && !(a && a.qc)) miss.push(nm+' の行動：品質・量・サービスへの影響の確認が未チェック');
-  if(rw>0 && res==null) miss.push(nm+' の結果：'+(tgt==null ? '目標率が未設定' : (C.months ? ('実績が未取得'+(noA.length ? '（'+noA.join('・')+'）' : '')) : 'まだ実績のある月がありません')));
+  if(rw>0 && res==null) miss.push(nm+' の結果：'+(tgt==null ? '目標率が未設定' : (C.months ? ('実績が未取得'+(noA.length ? '（'+noA.join('／')+'）' : '')
+    +((k!=='f' && act==null && C.noLAtt) ? '。勤怠データの画面でその月を選び、「この月を最新化（売上＋勤怠）」を押して Toast から取得してください' : '')) : 'まだ実績のある月がありません')));
   var pts=miss.length ? null : ((ap||0)*aw/100+(res||0)*rw/100);
   return {aw:aw, rw:rw, act:{lv:(ap==null ? null : lv), pts:ap, what:(a&&a.what)||'', st:(a&&a.st)||'', ev:(a&&a.ev)||'', next:(a&&a.next)||'', qc:!!(a&&a.qc)},
     res:{pts:res, raw:raw, target:tgt, actual:act, check:check, capped:capped, okLow:!!(a&&a.okLow)}, pts:pts, miss:miss};
@@ -64256,10 +64488,20 @@ function kevLockProblems(tot){
   tot.rows.filter(function(r){ return !r.b.blocked && r.b.notDone; }).forEach(function(r){ p.push(r.e.name+'：評価完了がまだです'); });
   return p;
 }
+/* v1067（Codex レビュー R4）：確定したときの評価の根拠・コメント・評価者・評価完了の日時も固定する。
+   確定のあとは固定した記録だけを見せるので、ここに残さないと、確定を解除しないと読めなくなる。文字は入力と同じ 2000 字まで。 */
+function kevSnapEv(ev){
+  if(!ev || typeof ev!=='object') return null;
+  var s=function(v){ return (v==null) ? '' : String(v).slice(0, 2000); };
+  var lv=function(x){ var n=Number(x && x.lv); return (n>=1 && n<=5 && Math.round(n)===n) ? n : null; };
+  var el=function(k){ var x=ev[k]; return (x && typeof x==='object') ? {lv:lv(x), ev:s(x.ev), cm:s(x.cm)} : null; };
+  var act=function(k){ var x=ev[k]; return (x && typeof x==='object') ? {lv:lv(x), what:s(x.what), st:s(x.st), ev:s(x.ev), next:s(x.next), qc:!!x.qc, okLow:!!x.okLow} : null; };
+  return {ab:el('ab'), kn:el('kn'), qu:el('qu'), fa:act('fa'), la:act('la'), cm:s(ev.cm), st:s(ev.st), doneAt:s(ev.doneAt), doneBy:s(ev.doneBy), at:s(ev.at), by:s(ev.by)};
+}
 function kevSnapSeg(x){
   var it=x.items||{}, slim=function(v, extra){ if(!v) return null; var o={on:!!v.on, coef:v.coef, rule:v.rule}; Object.keys(extra||{}).forEach(function(k){ o[k]=extra[k]; }); return o; };
   var c=it.c||{}, f=it.f||{}, ph=(c.parts||{}).ph||{};
-  return {g:x.g, key:x.key, track:x.track, from:x.from, to:x.to, days:x.days, gb:x.gbase, pr:x.pr, amount:x.amount, coefs:x.coefs, mult:x.mult, src:x.src,
+  return {g:x.g, key:x.key, track:x.track, from:x.from, to:x.to, days:x.days, gb:x.gbase, pr:x.pr, amount:x.amount, coefs:x.coefs, mult:x.mult, src:x.src, ev:kevSnapEv(x.ev),
     items:{
       c:slim(c, {score:c.score, w:c.w, parts:{ab:(c.parts.ab||{}).pts, kn:(c.parts.kn||{}).pts, qu:(c.parts.qu||{}).pts, abLv:(c.parts.ab||{}).lv, knLv:(c.parts.kn||{}).lv, quLv:(c.parts.qu||{}).lv,
         ph:{pts:ph.pts, avg:ph.avg, score:ph.score, max:ph.max, src:ph.src, label:ph.label, date:ph.date, by:ph.by}}}),
@@ -64269,17 +64511,149 @@ function kevSnapSeg(x){
       p:slim(it.p, {mode:(it.p||{}).mode, pct:(it.p||{}).pct, dpt:(it.p||{}).dpt, actual:(it.p||{}).actual, target:(it.p||{}).target, status:(it.p||{}).status})
     }};
 }
+/* ---- v1067（Codex レビュー R2）：確定の前に、ほかの端末の最新の内容を取り込んで確かめる ----
+   査定の確定は、その時点の評価・設定・原資で最終額を固定する（固定した記録は、あとで評価を受け取っても直らない）。
+   このため、押したら次の順にする：
+     1. 押したときの内容（全員の 4 項目・根拠・係数・額・原資・対象者・確定の有無）の要約（kevLockDigest）を取る。
+     2. オフライン・クラウド同期 OFF なら確定しない（ほかの端末の変更を確かめられない）。
+     3. この四半期にかかわるキーを、ふだんの取り込み（pullOpKey：クラウドと手元を合流して保存）で読み直す。1 つでも読めなければ確定しない。
+     4. 読み直したあとの要約が押したときと違えば確定しない（画面を新しい内容で出し直す。確かめてから、もう一度押す）。
+     5. 同じなら確定を書き、すぐクラウドへ送る（送れなければ未送信に積み、画面で知らせる）。
+   残る隙間：クラウドの app_state には「読んだときから変わっていなければ書く」という仕組みが無い。読み直してから書くまでの数秒に
+   ほかの端末が評価を直す・確定すると、ここでは気づけない（確定の記録は、あとから保存したほうが残る）。
+   読み直すキーは kevLockSyncKeys（独立レビュー P2-2 でカルテの設定・予算・売上・原価のキーを足した）。読み直さないもの（app_settings の設定・Toast の勤怠・
+   従業員マスター・合流のルールの無いキー）は、ふだんの同期で入ったものを使う。 */
+var KEV_LOCKING = {};   /* 確かめている四半期（2 回押しを止める） */
+function kevStableStr(v){
+  if(v===undefined) return 'u';
+  if(v===null || typeof v!=='object') return JSON.stringify(v);
+  if(Array.isArray(v)) return '['+v.map(kevStableStr).join(',')+']';
+  return '{'+Object.keys(v).sort().filter(function(k){ return v[k]!==undefined; }).map(function(k){ return JSON.stringify(k)+':'+kevStableStr(v[k]); }).join(',')+'}';
+}
+/* 確定が使う内容の要約：全員の区間の 4 項目（固定するときと同じ形・根拠つき）・不足・評価完了・額・原資・共通調整・対象者・確定の有無 */
+function kevLockDigest(q){
+  try{
+    if(typeof mdCacheClear==='function') mdCacheClear();   /* 読み直した値で計算する（集計の一時キャッシュを使わない） */
+    var cfg=Object.assign({}, kbCfg(), {quarter:q}), kv=kevApplies(cfg);
+    var d0=bqGet(q);
+    if(!kv) return kevStableStr({q:q, none:true, locked:!!d0.locked, lockedAt:d0.lockedAt||''});
+    var tot=kevTotals(cfg, kv), pi=tot.poolInfo||{};
+    var rows=tot.rows.map(function(r){ var b=r.b;
+      return {id:r.e.id, name:r.e.name, blocked:b.blocked||null, miss:b.missing||[], notDone:!!b.notDone, grade:b.grade, base:b.base, raw:b.amount, prBase:b.prBase, stores:b.stores||[],
+        segs:(b.segs||[]).map(function(x){ return (x.elig && x.items) ? kevSnapSeg(x) : {g:x.g, from:x.from, to:x.to, days:x.days, elig:!!x.elig}; })}; });
+    /* カルテの設定のうち額にかかわる欄（基準額・対象店舗・② ④ の幅の初期値・① の幅の初期値）も入れる（独立レビュー P2-2） */
+    var cfgPart={gb:cfg.gradeBase||null, es:cfg.empStore||null, ba:[cfg.baMin, cfg.baMax], sp:[cfg.spMin, cfg.spMax], cs:[cfg.csMin, cfg.csMax]};
+    return kevStableStr({q:q, locked:!!kv.d.locked, lockedAt:kv.d.lockedAt||'', total:tot.total, P:tot.pool, known:!!tot.poolKnown, k:tot.k, paid:tot.paid, finals:tot.finals,
+      pool:{profit:pi.profit, margin:pi.margin, rate:pi.rate, amount:pi.amount}, cfg:cfgPart, rows:rows});
+  }catch(err){
+    /* 計算できなかった：どの 2 回も同じにならない値にする（確定しない側に倒す。独立レビュー P3） */
+    KEV_DIGEST_ERR++;
+    return 'err:'+KEV_DIGEST_ERR+':'+Date.now()+':'+Math.random()+':'+String((err && err.message) || err);
+  }
+}
+var KEV_DIGEST_ERR = 0;
+function kevLockSyncBlock(){
+  try{ if(typeof navigator!=='undefined' && navigator && navigator.onLine===false) return 'オフラインのため確定していません（ほかの端末で直した最新の評価を確かめられないため）。つながってから、もう一度押してください'; }catch(err){}
+  if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return 'クラウド同期が OFF のため確定していません（ほかの端末で直した最新の評価を確かめられないため）。同期を ON にしてから、もう一度押してください';
+  return '';
+}
+/* 読み直すキー（app_state にあり、合流のルールがあるもの。pullOpKey は app_state をクラウドと手元で合流して保存する）：
+   評価・設定・個人設定・この四半期の記録（利益・原資・Career Score の固定）・原資率の表・① の幅（bonus_coef_rng・bonus_coef）・G3 の職種・グレード履歴・
+   カルテの設定（karte_bonus_config：基準額・対象店舗・幅の初期値）・対象者の Career Score（店舗用・オフィス用の担当と評価）・
+   対象の店舗ごとの予算（spl_budgets_v2_）・日次実績（daily_actuals_：売上・日別予算・手入力の人件費）・Invoice（spl_invoices_）・買い出し（purchases_）・
+   原価の月次（fc_monthly_：四半期の経過した月と、期首に使う前の月）。
+   入れないもの：app_settings の設定（pl_public・m_store_kpi・m_format_kpi・ocs_cfg・budgets_v2 の旧い行。pullOpKey は app_state しか読まない）・
+   合流のルールの無いキー（pl_actual・ingredient_transfers。読み直すと手元の未送信の変更を上書きする）・Toast の勤怠（tip_labor_。Toast から取得するもの）・
+   従業員マスター（m_employees）・店舗マスター・q_budgets（方針の文とコミットの状態だけで、額に使わない）。 */
+function kevLockSyncKeys(q){
+  var keys=['bonus_eval','bonus_eval_rule','bonus_eval_ovr','spl_bonus_q_'+q,'bonus_rules','bonus_coef_rng','bonus_track','grade_hist','karte_bonus_config','bonus_coef'];
+  var stores={}, addS=function(s){ if(typeof s==='string' && s) stores[s]=1; };
+  try{
+    var cfg=Object.assign({}, kbCfg(), {quarter:q});
+    karteEligibleEmps().forEach(function(e){
+      if(!e) return;
+      if(e.name && typeof LSS_EMP_PREFIX!=='undefined') keys.push(LSS_EMP_PREFIX+e.name);
+      if(e.id && typeof OCS_ASG_PREFIX!=='undefined') keys.push(OCS_ASG_PREFIX+e.id);
+      if(e.id && typeof OCS_EV_PREFIX!=='undefined') keys.push(OCS_EV_PREFIX+e.id);
+      try{ (karteEmpStores(cfg, e)||[]).forEach(addS); }catch(err){}
+    });
+    try{ (kevStoresExtra(cfg)||[]).forEach(addS); }catch(err){}
+  }catch(err){}
+  var months=[];
+  try{
+    var qq=_bonusQParse(q), ms=qq ? _quarterMonths(qq.y, qq.q) : [];
+    if(ms.length){ var y=+ms[0].slice(0,4), m=+ms[0].slice(5,7)-1; if(m<1){ m=12; y--; } months.push(y+'-'+String(m).padStart(2,'0')); }   /* 期首は前の月の期末棚卸 */
+    ms.forEach(function(ym){ if(_ymToOffset(ym)<=0) months.push(ym); });
+  }catch(err){}
+  Object.keys(stores).sort().forEach(function(sid){
+    keys.push('spl_budgets_v2_'+sid, 'daily_actuals_'+sid, 'spl_invoices_'+sid, 'purchases_'+sid);
+    months.forEach(function(ym){ keys.push('fc_monthly_'+sid+'_'+ym); });
+  });
+  return keys.filter(function(k, i){ return keys.indexOf(k)===i; });
+}
+/* ふだんの取り込み（pullOpKey）で読み直す。同時に 6 本まで。1 つでも読めなければ false。45 秒で返事が無ければ false（ボタンが止まったままにならないように） */
+function kevLockPull(q){
+  var keys=kevLockSyncKeys(q), i=0, ok=true;
+  var next=function(){
+    if(i>=keys.length) return Promise.resolve();
+    var k=keys[i++];
+    return Promise.resolve().then(function(){ return pullOpKey(k); }).then(function(r){ if(r!==true) ok=false; }, function(){ ok=false; }).then(next);
+  };
+  var runs=[]; for(var j=0;j<Math.min(6, keys.length);j++) runs.push(next());
+  var all=Promise.all(runs).then(function(){ return ok; }, function(){ return false; });
+  if(typeof setTimeout!=='function') return all;
+  return Promise.race([all, new Promise(function(res){ setTimeout(function(){ res(false); }, 45000); })]);
+}
+/* 確定を書いたあと、すぐクラウドへ送る（lsSet も送るが、結果を待って画面で知らせるため） */
+function kevLockPush(q){
+  var key='spl_bonus_q_'+q;
+  var done=function(ok){
+    if(ok===false){
+      try{ if(typeof _outboxAdd==='function') _outboxAdd(key, 'push failed'); }catch(err){}
+      showToast(q+' の査定を確定し、この端末に保存しました。クラウドへはまだ送れていません（つながったら自動で送ります）。送れるまで、ほかの端末で確定・評価の変更をしないでください','warning');
+    } else showToast(q+' の査定を確定しました（クラウドにも保存。次は「履歴に記録」）','success');
+    bqRefresh(); return true;
+  };
+  if(typeof opMergePush!=='function' || typeof _lsRaw!=='function') return Promise.resolve(done(true));
+  var val=_lsRaw(key, null);
+  if(val==null) return Promise.resolve(done(false));
+  return Promise.resolve().then(function(){ return opMergePush(key, val); }).then(done, function(){ return done(false); });
+}
 function kevLockQuarter(q){
   var cfg=Object.assign({}, kbCfg(), {quarter:q}), kv=kevApplies(cfg);
   if(!kv || kv.q!==q){ showToast('四半期を確かめてください','warning'); return false; }
   if(kv.d.locked){ showToast('すでに確定しています','info'); return false; }
+  if(KEV_LOCKING[q]){ showToast('確定の前の確認をしています。終わるまでお待ちください','info'); return false; }
   var tot=kevTotals(cfg, kv), probs=kevLockProblems(tot);
   if(probs.length){ showToast('まだ確定できません：'+escapeHtml(probs.slice(0,4).join('／'))+(probs.length>4 ? ' ほか '+(probs.length-4)+' 件' : ''), 'danger'); return false; }
   var st=bqStageState(q, cfg), warn=[];
   if(!st.actual.done) warn.push('・この四半期はまだ進行中です（'+st.actual.n+'/3ヶ月）');
   if(!st.budget.done) warn.push('・予算コミットが '+st.budget.n+'/'+st.budget.tot+' 店です');
+  var dg0=kevLockDigest(q);   /* 押したときの内容（下の確かめの画面の合計と同じ） */
   if(!confirm(q+' の査定を確定します（'+tot.rows.length+' 名・調整前の合計 '+kevUsd(tot.total)+'・原資 '+kevUsd(tot.pool)+'・共通調整 ×'+Number(tot.k).toFixed(3)+'・支給の合計 '+kevUsd(tot.paid)+'）。\n'
-    +(warn.length ? warn.join('\n')+'\n' : '')+'\n確定すると、全員の評価・係数・最終額がこの時点で固定されます。履歴への記録は確定のあとに行います。よろしいですか？')) return false;
+    +(warn.length ? warn.join('\n')+'\n' : '')+'\n確定すると、全員の評価・係数・最終額がこの時点で固定されます。履歴への記録は確定のあとに行います。\n確定の前に、ほかの端末の最新の評価・設定を読み直して確かめます（変わっていたら確定しません）。よろしいですか？')) return false;
+  var block=kevLockSyncBlock();
+  if(block){ showToast(block, 'danger'); return false; }
+  if(typeof pullOpKey!=='function') return kevLockCommit(q, dg0, false);   /* クラウドの仕組みが無い画面（試験の VM など）：この端末の内容で */
+  KEV_LOCKING[q]=1;
+  showToast('ほかの端末の最新の評価・設定を読み直しています…','info');
+  var fin=function(r){ delete KEV_LOCKING[q]; return r; };
+  return kevLockPull(q).then(function(ok){
+    if(!ok){ showToast('クラウドから最新の内容を読み切れなかったため、確定していません（通信が遅い・切れた、または端末の保存容量が足りないなど）。通信と端末の保存容量を確かめて、もう一度押してください','danger'); bqRefresh(); return false; }
+    if(bqGet(q).locked){ showToast('ほかの端末で、'+q+' の査定がすでに確定されています（画面を新しい内容にしました）','info'); bqRefresh(); return false; }
+    if(kevLockDigest(q)!==dg0){ showToast('ほかの端末で評価・設定・原資などが変わっていたため、確定していません。画面を新しい内容にしました。確かめてから、もう一度押してください','warning'); bqRefresh(); return false; }
+    if(!kevLockCommit(q, dg0, true)) return false;
+    return kevLockPush(q);
+  }).then(fin, function(err){ try{ console.warn('kevLockQuarter', err); }catch(e){} showToast('確定の前の確認でエラーが出たため、確定していません。もう一度押してください','danger'); return fin(false); });
+}
+/* 確定を書く（読み直しと確かめのあと）。quiet＝成功の知らせは送ったあとに出す */
+function kevLockCommit(q, dg0, quiet){
+  var cfg=Object.assign({}, kbCfg(), {quarter:q}), kv=kevApplies(cfg);
+  if(!kv || kv.q!==q){ showToast('四半期を確かめてください','warning'); return false; }
+  if(kv.d.locked){ showToast('すでに確定しています','info'); return false; }
+  if(dg0!=null && kevLockDigest(q)!==dg0){ showToast('評価・設定・原資などが変わったため、確定していません。確かめてから、もう一度押してください','warning'); bqRefresh(); return false; }
+  var tot=kevTotals(cfg, kv), probs=kevLockProblems(tot);
+  if(probs.length){ showToast('まだ確定できません：'+escapeHtml(probs.slice(0,4).join('／'))+(probs.length>4 ? ' ほか '+(probs.length-4)+' 件' : ''), 'danger'); return false; }
   var d=bqGet(q), now=kevNow(), who=kevMe();
   /* 理念などの Career Score を、この時点の評価で固定（固定していない人だけ） */
   karteEligibleEmps().forEach(function(e){
@@ -64310,9 +64684,11 @@ function kevLockQuarter(q){
   d.segSnap=segSnap; d.coefSnap=coefSnap;
   d.locked=true; d.lockedAt=now; d.lockedBy=who;
   d.rangeLock=String(d.lockedAt)+'|'+String(d.lockedBy);
-  d.evSnap={v:1, lk:String(d.lockedAt)+'|'+String(d.lockedBy), at:now, by:who, start:KEV_START, S:tot.total, P:tot.pool, k:tot.k, paid:tot.paid, finals:tot.finals, people:people, order:order};
+  /* lt・lid：v1067（独立レビュー P2-3）この確定の時刻と印（確定し直すたびに変わる）。履歴の記録はこの印で、画面の確定がクラウドでも今の確定かを確かめる */
+  var lt=Date.now();
+  d.evSnap={v:1, lk:String(d.lockedAt)+'|'+String(d.lockedBy), lt:lt, lid:'L'+lt.toString(36)+'-'+Math.random().toString(36).slice(2,8), at:now, by:who, start:KEV_START, S:tot.total, P:tot.pool, k:tot.k, paid:tot.paid, finals:tot.finals, people:people, order:order};
   if(bqSet(q, d)===false){ showToast('保存できませんでした','danger'); return false; }
-  showToast(q+' の査定を確定しました（次は「履歴に記録」）','success'); bqRefresh();
+  if(!quiet){ showToast(q+' の査定を確定しました（次は「履歴に記録」）','success'); bqRefresh(); }
   return true;
 }
 /* Career Score を固定するとき、評価日・評価者・理念の未採点の数も残す（v1065） */
@@ -64334,24 +64710,92 @@ function kevPaySnap(b, k){
     baCoef:b.baCoef, spCoef:b.spCoef, csCoef:1, hasCS:true};
 }
 
-/* 履歴への記録（確定のあとだけ。確定した最終額をそのまま書く） */
+/* 履歴への記録（確定のあとだけ。確定した最終額をそのまま書く）
+   v1067（独立レビュー P2-3）：記録する直前に、この四半期の確定（spl_bonus_q_<四半期>）をふだんの取り込み（pullOpKey）で読み直し、
+   画面が使った確定と同じとき（確定の印 lid が同じ）だけ書く。ほかの端末で解除・確定し直されていたら書かない（画面を新しい内容に）。
+   v1067（Codex の P1）：さらに、クラウドの生の行に同じ確定があることも確かめる。確定の送信が失敗していると、この端末にだけ
+   確定が残る（pullOpKey は行が無くても成功を返し、端末の値を残す）ため、ほかの端末に無い査定額から給与履歴を作れてしまっていた。
+   読めなければ書かない。書いた行には確定の印（lk・lkt）を付け、2 台の記録がぶつかったときは新しい確定から書いた行を残す（kartePayCmp）。 */
+var KEV_RECORDING = {};
+function kevLockId(snap){ if(!snap || typeof snap!=='object') return ''; if(snap.lid) return String(snap.lid); return snap.lk ? 'lk:'+String(snap.lk) : ''; }   /* v1067 より前の確定は lk（確定の日時|確定した人） */
+function kevLockRef(snap){ var id=kevLockId(snap); if(!id) return null; var t=Number(snap.lt)||0; return {id:id, t:(t>0 ? t : 0)}; }
+/* クラウドの生の行から、この四半期の確定の印を読む（端末の値と合流させない）。
+   v1067（Codex の P1）：pullOpKey は行が無いときも成功を返し、行があるときはクラウドと端末の値を合流して保存する。
+   そのため「クラウドに届いていない確定」でも端末の確定がそのまま残り、記録の前の確かめを通ってしまう。
+   記録してよいかは、合流した結果ではなく生の行で確かめる。読めない・行が無い・確定が無いときは印なし（記録しない）。 */
+function kevCloudLockId(q){
+  if(typeof _fetchOpValue!=='function') return Promise.resolve({ok:false});
+  var p=Promise.resolve().then(function(){ return _fetchOpValue('spl_bonus_q_'+q); }).then(function(v){
+    if(v===undefined) return {ok:false};   /* 取得できなかった（通信・権限） */
+    var d=(v && typeof v==='object' && !Array.isArray(v)) ? v : null;
+    if(!d || !d.locked || !kevSnapOk(d)) return {ok:true, id:''};   /* クラウドにはまだこの四半期の確定が無い */
+    return {ok:true, id:kevLockId(d.evSnap)};
+  }, function(){ return {ok:false}; });
+  if(typeof setTimeout==='function') p=Promise.race([p, new Promise(function(res){ setTimeout(function(){ res({ok:false}); }, 45000); })]);
+  return p;
+}
+function kevRecordGuard(q, lid0, write){
+  var check=function(cloud){
+    var d=bqGet(q);
+    if(!d.locked || !kevSnapOk(d)){ showToast('ほかの端末で '+q+' の査定の確定が解除されていたため、記録していません（画面を新しい内容にしました）','warning'); bqRefresh(); return false; }
+    if(kevLockId(d.evSnap)!==lid0){ showToast('ほかの端末で '+q+' の査定が確定し直されていたため、記録していません。画面を新しい内容にしました。確かめてから、もう一度押してください','warning'); bqRefresh(); return false; }
+    /* そのうえで、この確定がクラウドに本当にあるかを生の行で確かめる（この端末にだけある確定からは記録しない）。 */
+    if(cloud){
+      if(cloud.ok!==true){ showToast('クラウドの確定を読めなかったため、記録していません。通信を確かめて、もう一度押してください','danger'); return false; }
+      if(cloud.id!==lid0){ showToast(q+' の査定の確定がまだクラウドに届いていないため、記録していません（この端末にだけある確定からは記録しません）。送信が終わってから、もう一度押してください','danger'); return false; }
+    }
+    return write();
+  };
+  var off=false; try{ off=(typeof navigator!=='undefined' && navigator && navigator.onLine===false); }catch(err){}
+  if(off){ showToast('オフラインのため記録していません（ほかの端末で確定し直していないかを確かめられないため）。つながってから、もう一度押してください','danger'); return false; }
+  if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED){ showToast('クラウド同期が OFF のため記録していません（ほかの端末で確定し直していないかを確かめられないため）。同期を ON にしてから、もう一度押してください','danger'); return false; }
+  if(typeof pullOpKey!=='function') return check();   /* クラウドの仕組みが無い画面（試験の VM など）：この端末の確定で */
+  if(KEV_RECORDING[q]){ showToast('記録の前の確認をしています。終わるまでお待ちください','info'); return false; }
+  KEV_RECORDING[q]=1;
+  showToast('ほかの端末の最新の確定を確かめています…','info');
+  var fin=function(r){ delete KEV_RECORDING[q]; return r; };
+  var pull=Promise.resolve().then(function(){ return pullOpKey('spl_bonus_q_'+q); });
+  if(typeof setTimeout==='function') pull=Promise.race([pull, new Promise(function(res){ setTimeout(function(){ res(false); }, 45000); })]);
+  return pull.then(function(ok){
+    if(ok!==true){ showToast('クラウドから最新の確定を読めなかったため、記録していません。通信を確かめて、もう一度押してください','danger'); return false; }
+    return Promise.resolve().then(function(){ return kevCloudLockId(q); }).then(function(cloud){ return check(cloud || {ok:false}); });
+  }).then(fin, function(err){ try{ console.warn('kevRecord', err); }catch(e){} showToast('記録の前の確認でエラーが出たため、記録していません。もう一度押してください','danger'); return fin(false); });
+}
+/* 読み直した確定から書く（ids：記録する人。null＝全員） */
+function kevRecordWrite(q, ids){
+  var cfg=Object.assign({}, kbCfg(), {quarter:q}), kv=kevApplies(cfg);
+  if(!kv || !kv.snap) return null;
+  var tot=kevTotals(cfg, kv), ref=kevLockRef(kv.snap), n=0;
+  tot.rows.forEach(function(r){ if(r.b.out || (ids && ids.indexOf(r.e.id)<0)) return; _bonusWritePay(r.e, r.b, q, r.b.final, tot.k, ref); n++; });
+  return {n:n, tot:tot};
+}
 function kevRecordQuarter(cfg, tot){
   var kv=tot.kv, q=kv.q;
-  if(!kv.snap){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }
+  if(!kv.snap){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return false; }
   var rows=tot.rows.filter(function(r){ return !r.b.out; });
-  if(!rows.length){ alert('記録する人がいません。'); return; }
-  if(!confirm(q+' の査定（確定した最終額）を、対象 '+rows.length+' 名の給与・ボーナス履歴に記録します。\n合計 '+kevUsd(tot.paid)+'（原資の共通調整 ×'+Number(tot.k).toFixed(3)+'）\n※同じ四半期の自動記録は上書き更新されます。\nよろしいですか？')) return;
-  var n=0; rows.forEach(function(r){ _bonusWritePay(r.e, r.b, q, r.b.final, tot.k); n++; });
-  var c=kbCfg(); c.confirmedLog=c.confirmedLog||{}; c.confirmedLog[q]={at:new Date().toISOString(), n:n, by:kevMe(), total:tot.paid, over:!!(Number(tot.k)<1), v4:true}; kbSave(c);
-  showToast(q+' の査定を '+n+' 名分、履歴に記録しました','success'); kbRefresh();
+  if(!rows.length){ alert('記録する人がいません。'); return false; }
+  if(KEV_RECORDING[q]){ showToast('記録の前の確認をしています。終わるまでお待ちください','info'); return false; }
+  if(!confirm(q+' の査定（確定した最終額）を、対象 '+rows.length+' 名の給与・ボーナス履歴に記録します。\n合計 '+kevUsd(tot.paid)+'（原資の共通調整 ×'+Number(tot.k).toFixed(3)+'）\n※同じ四半期の自動記録は上書き更新されます。\n記録の前に、ほかの端末で確定し直していないかを確かめます。よろしいですか？')) return false;
+  return kevRecordGuard(q, kevLockId(kv.snap), function(){
+    var w=kevRecordWrite(q, null);
+    if(!w){ showToast('確定した記録を読めなかったため、記録していません','danger'); return false; }
+    var c=kbCfg(); c.confirmedLog=c.confirmedLog||{}; c.confirmedLog[q]={at:new Date().toISOString(), n:w.n, by:kevMe(), total:w.tot.paid, over:!!(Number(w.tot.k)<1), v4:true}; kbSave(c);
+    showToast(q+' の査定を '+w.n+' 名分、履歴に記録しました','success'); kbRefresh();
+    return true;
+  });
 }
 function kevRecordOne(cfg, tot, e){
   var kv=tot.kv, q=kv.q, r=tot.rows.find(function(x){ return x.e.id===e.id; });
-  if(!kv.snap){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }
-  if(!r || r.b.out){ alert(e.name+' は '+q+' の査定の確定に入っていません。'); return; }
-  if(!confirm(e.name+' の '+q+' 査定ボーナス '+kevUsd(r.b.final)+'（確定した最終額）を給与・ボーナス履歴に記録します。よろしいですか？')) return;
-  _bonusWritePay(r.e, r.b, q, r.b.final, tot.k);
-  showToast(q+' の査定を記録しました','success'); openKarteDetail(e.id);
+  if(!kv.snap){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return false; }
+  if(!r || r.b.out){ alert(e.name+' は '+q+' の査定の確定に入っていません。'); return false; }
+  if(KEV_RECORDING[q]){ showToast('記録の前の確認をしています。終わるまでお待ちください','info'); return false; }
+  if(!confirm(e.name+' の '+q+' 査定ボーナス '+kevUsd(r.b.final)+'（確定した最終額）を給与・ボーナス履歴に記録します。よろしいですか？')) return false;
+  return kevRecordGuard(q, kevLockId(kv.snap), function(){
+    var w=kevRecordWrite(q, [e.id]);
+    if(!w || !w.n){ showToast(e.name+' は '+q+' の査定の確定に入っていないため、記録していません','warning'); return false; }
+    showToast(q+' の査定を記録しました','success'); openKarteDetail(e.id);
+    return true;
+  });
 }
 
 /* ======================= 画面：個別評価タブ ======================= */
@@ -64580,17 +65024,28 @@ function kevSnapMainHtml(e, b, seg, kv){
   var it=seg.items||{}, src=seg.src||{}, scope=seg.key||seg.g, N=function(v, d){ return (v==null || !isFinite(Number(v))) ? '—' : kevR1(v)+(d||''); };
   var head=function(n, nm, v, k, val){ return kevItemHead(n, nm, {on:!!(v && v.on), coef:(v ? v.coef : null)}, src[k]||'grade', scope, val); };
   var c=it.c||{}, cp=c.parts||{}, ph=cp.ph||{}, s=it.s||{}, f=it.f||{}, p=it.p||{};
-  var h='<div class="card" style="margin:0;font-size:12px;color:var(--muted)"><i class="ti ti-lock"></i> '+escapeHtml(kv.q)+' の査定を確定したときの記録です（'+escapeHtml(String((kv.snap && kv.snap.at)||'').slice(0,16))+' '+escapeHtml((kv.snap && kv.snap.by)||'')+'）。あとで評価・数字・設定が変わっても動きません。</div>';
+  var E=(seg.ev && typeof seg.ev==='object') ? seg.ev : null;   /* v1067（R4）：確定したときの根拠・コメント（v1066 以前の確定には無い） */
+  var NOREC='（確定時の記録に無い）';
+  var tx=function(lbl, v){ return '<div style="font-size:11.5px;line-height:1.6"><span style="color:var(--muted)">'+escapeHtml(lbl)+'：</span><span style="white-space:pre-wrap">'+(String(v||'').trim() ? escapeHtml(String(v)) : '<span style="color:var(--muted)">—</span>')+'</span></div>'; };
+  var elTx=function(k, nm){ if(!E) return ''; var x=E[k]; return tx(nm+'の根拠', x ? x.ev : '')+((x && String(x.cm||'').trim()) ? tx(nm+'のコメント', x.cm) : ''); };
+  var actTx=function(k, nm){ if(!E) return ''; var x=E[k]; if(!x) return tx(nm+' の行動', ''); var stl=(KEV_ACT_ST.filter(function(o){ return o[0]===x.st; })[0]||['',''])[1];
+    return '<div style="border-top:1px solid var(--border);padding-top:4px"><b style="font-size:11.5px">'+escapeHtml(nm)+' の行動</b>'+tx('何をしたか', x.what)+tx('実施状況', (x.st ? stl : ''))+tx('根拠', x.ev)+tx('次の改善', x.next)
+      +'<div style="font-size:11px;color:var(--muted)">品質・量・サービスの確認：'+(x.qc ? '確かめた' : '—')+(x.okLow ? ' ・ 結果の大きな下がりを確かめた' : '')+'</div></div>'; };
+  var h='<div class="card" style="margin:0;font-size:12px;color:var(--muted)"><i class="ti ti-lock"></i> '+escapeHtml(kv.q)+' の査定を確定したときの記録です（'+escapeHtml(String((kv.snap && kv.snap.at)||'').slice(0,16))+' '+escapeHtml((kv.snap && kv.snap.by)||'')+'）。あとで評価・数字・設定が変わっても動きません。'
+    +'<div style="margin-top:4px">'+(E ? '評価：最後の保存 '+escapeHtml(String(E.at||'').slice(0,16)||'—')+' '+escapeHtml(E.by||'')+' ・ 評価完了 '+escapeHtml(String(E.doneAt||'').slice(0,16)||'—')+' '+escapeHtml(E.doneBy||'') : '評価の根拠・コメント・評価者：'+NOREC+'（v1066 以前に確定した記録）')+'</div></div>';
   h+='<div class="card" style="display:flex;flex-direction:column;gap:6px;margin:0">'+head('①', 'Career Score（賞与用）', c, 'c', N(c.score, ' 点'))
     +'<div style="font-size:12px;line-height:1.8">能力 '+N(cp.ab, ' 点')+'（段階 '+(Number(cp.abLv)||'—')+'）・知識 '+N(cp.kn, ' 点')+'（段階 '+(Number(cp.knLv)||'—')+'）・理念 '+N(ph.pts, ' 点')+(ph.score!=null ? '（'+Number(ph.score)+' / '+Number(ph.max)+'）' : '')+'・仕事の質 '+N(cp.qu, ' 点')+'（段階 '+(Number(cp.quLv)||'—')+'）</div>'
-    +'<div style="font-size:11px;color:var(--muted)">理念：'+escapeHtml(ph.label||'')+(ph.date ? ' ・ 評価日 '+escapeHtml(ghMD(ph.date)) : '')+(ph.by ? ' ・ '+escapeHtml(ph.by) : '')+' ／ 配点 '+KEV_ELEMS.map(function(x){ return x[1]+' '+Number((c.w||{})[x[0]]||0)+'%'; }).join('・')+'</div></div>';
+    +'<div style="font-size:11px;color:var(--muted)">理念：'+escapeHtml(ph.label||'')+(ph.date ? ' ・ 評価日 '+escapeHtml(ghMD(ph.date)) : '')+(ph.by ? ' ・ '+escapeHtml(ph.by) : '')+' ／ 配点 '+KEV_ELEMS.map(function(x){ return x[1]+' '+Number((c.w||{})[x[0]]||0)+'%'; }).join('・')+'</div>'
+    +(E ? elTx('ab', '能力')+elTx('kn', '知識')+elTx('qu', '仕事の質') : tx('能力・知識・仕事の質の根拠', NOREC))+'</div>';
   h+='<div class="card" style="display:flex;flex-direction:column;gap:6px;margin:0">'+head('②', '売上予算達成率', s, 's', N(s.pct, '%'))
     +'<div style="font-size:12px">'+escapeHtml(kevStoreNames(b.stores) || '—')+' ・ 予算 '+kevUsd(s.base)+' ・ 実績 '+kevUsd(s.actual)+'</div></div>';
   var fs=function(nm, x){ x=x||{}; return nm+' '+N(x.pts, ' 点')+'（行動 '+N(x.act, ' 点')+'・結果 '+N(x.res, ' 点')+'：目標 '+N(x.target, '%')+' ／ 実績 '+N(x.actual, '%')+'）'; };
   h+='<div class="card" style="display:flex;flex-direction:column;gap:6px;margin:0">'+head('③', 'FL 管理', f, 'f', N(f.score, ' 点'))
-    +'<div style="font-size:12px;line-height:1.8">'+fs('Food', f.food)+'<br>'+fs('Labor', f.labor)+'</div><div style="font-size:11px;color:var(--muted)">Food '+Number(f.fw||0)+'%・Labor '+Number(f.lw||0)+'%・行動 '+Number(f.aw||0)+'%／結果 '+Number(f.rw||0)+'%</div></div>';
+    +'<div style="font-size:12px;line-height:1.8">'+fs('Food', f.food)+'<br>'+fs('Labor', f.labor)+'</div><div style="font-size:11px;color:var(--muted)">Food '+Number(f.fw||0)+'%・Labor '+Number(f.lw||0)+'%・行動 '+Number(f.aw||0)+'%／結果 '+Number(f.rw||0)+'%</div>'
+    +(E ? actTx('fa', 'Food')+actTx('la', 'Labor') : tx('FL の行動（何をしたか・根拠・次の改善）', NOREC))+'</div>';
   h+='<div class="card" style="display:flex;flex-direction:column;gap:6px;margin:0">'+head('④', '利益予算達成率', p, 'p', (p.mode==='diff' ? N(p.dpt, 'pt') : N(p.pct, '%')))
     +'<div style="font-size:12px">利益の実績 '+kevUsd(p.actual)+' ・ 基準額 '+kevUsd(p.target)+'</div></div>';
+  h+='<div class="card" style="margin:0"><b style="font-size:12.5px">コメント（本人への説明・次の期待）</b>'+tx('確定したときのコメント', E ? E.cm : NOREC)+'</div>';
   return h;
 }
 function kevFlSideHtml(e, g, k, nm, rnm, side, w, can, qq){
@@ -65082,6 +65537,104 @@ function kevSnapLineHtml(sn){
   var segs=Array.isArray(sn.segs) ? sn.segs : [], nm={c:'Career', s:'売上', f:'FL', p:'利益'};
   var t=segs.map(function(x){ var cf=(x && x.coefs) || {}; return escapeHtml(String(x.g||''))+' '+Number(x.days)+'日 '+kevUsd(x.amount)+'（'+['c','s','f','p'].map(function(k){ return nm[k]+'×'+kevF2(cf[k]); }).join('・')+'）'; }).join('＋');
   return '<div style="flex-basis:100%;font-size:10px;color:var(--muted);padding-left:2px">4 項目の式：'+t+' ・調整前 '+kevUsd(sn.raw)+((sn.adj!=null && Number(sn.adj)<1) ? ' ・原資調整×'+Number(sn.adj).toFixed(3) : '')+'</div>';
+}
+
+/* ======================= v1067（Codex レビュー R1・独立レビュー P2-1・P2-3）：給与・ボーナス履歴（growth_karte[従業員].payLog）を 1 件ずつ合流する =======================
+   ・行の時刻：_at（v1067 から、行を足す・直す・記録し直す・自動で記録するたびに付ける）。無ければ at（自動の記録の日時）、それも無ければ 0（前の版で足した手入力の行）。
+   ・記録を始めた時刻：カルテ（レコード）の payTrack。v1067 の端末がそのカルテを最初に保存したとき、それまでの _at を入れる（新しいカルテは 1）。
+     これより後の行は、v1067 の端末で消すと必ず payDel に残る。
+   ・同じ行（id）が両方にあれば時刻の新しいほう（同じならレコードの新しいほう＝今までと同じ）。
+   ・片方にしか無い行：持っていないほうが新しいほうのレコードで、しかも記録を始めていない（payTrack が無い）か、その行が記録を始める前のものなら落とす
+     （今までと同じ＝新しいほうのレコードに合わせる。v1067 より前に消した行が古い写しから戻らないように）。それ以外は残す（和集合）。
+   ・合流したカルテの payTrack は両方の大きいほう。
+   ・消した行は payDel（id → 消した時刻）に残し、それより前の行は戻さない（消したあとに直した・記録し直した行は残る）。
+   ・同じ四半期の自動の記録が 2 台で別々に作られて 2 行になったときは 1 行にする：両方に確定の印（lk・lkt）があって確定の時刻が違えば、新しい確定から書いた行。
+     そうでなければ時刻の新しいほう（1 台の中にもともと 2 行あるときは触らない）。同じ行の 2 つの版も同じ決め方。
+   ・前の版（v1065・v1066）の端末はレコードまるごとの合流のまま。その端末で消した行のうち記録を始めたあとの行は、v1067 の端末の写しから戻ることがある。
+     GM・CEO の端末を v1067 にそろえる。 */
+function kartePayT(p){ var t=Number(p && p._at)||0; if(t) return t; var s=(p && p.at) ? Date.parse(p.at) : NaN; return isFinite(s) ? s : 0; }
+function kartePayId(p){ return (p && p.id!=null && p.id!=='') ? 'id:'+String(p.id) : 'j:'+JSON.stringify(p); }
+function kartePayDelMap(a, b){
+  var del={};
+  [a, b].forEach(function(r){ var m=r && r.payDel; if(m && typeof m==='object' && !Array.isArray(m)) Object.keys(m).forEach(function(k){ var t=Number(m[k])||0; if(t>(del[k]||0)) del[k]=t; }); });
+  return del;
+}
+function kartePayTrackOf(r){ var t=Number(r && r.payTrack)||0; return t>0 ? t : 0; }
+/* 保存するとき（_at を新しくする前に）：まだ記録を始めていないカルテに、記録を始めた時刻（それまでの _at。新しいカルテは 1）を入れる */
+function kartePayTrackInit(k){ if(k && typeof k==='object' && !kartePayTrackOf(k)) k.payTrack=Math.max(1, Number(k._at)||0); return k; }
+/* 2 つの行（同じ行の 2 つの版・同じ四半期の自動の記録）のどちらを採るか：正＝x、負＝y、0＝決まらない（呼ぶ側の決め方） */
+function kartePayCmp(x, y){
+  if(x && y && x.src==='auto' && y.src==='auto'){ var lx=Number(x.lkt)||0, ly=Number(y.lkt)||0; if(lx>0 && ly>0 && lx!==ly) return lx>ly ? 1 : -1; }   /* 新しい確定から書いた行 */
+  var tx=kartePayT(x), ty=kartePayT(y); return tx>ty ? 1 : (tx<ty ? -1 : 0);
+}
+/* 片方にしか無い行 p を落とすか：持っていないほう（lack）が新しいほうのレコード（w）で、記録を始めていない・行が記録を始める前なら落とす */
+function kartePayDropOne(p, lack, w){ if(lack!==w) return false; var tr=kartePayTrackOf(lack); return !tr || kartePayT(p)<tr; }
+function kartePayMergeRec(a, b, w){
+  var win=(w===a) ? 'a' : 'b', oth=(win==='a') ? 'b' : 'a', first=(win==='a') ? a : b, second=(win==='a') ? b : a;
+  var del=kartePayDelMap(a, b), slots=[], idx={};
+  var add=function(list, side){
+    var cnt={};
+    (Array.isArray(list) ? list : []).forEach(function(p){
+      if(p==null) return;   /* 形の違う行も消さずに残す */
+      var k=kartePayId(p); cnt[k]=(cnt[k]||0)+1; if(cnt[k]>1) k=k+'#'+cnt[k];   /* 1 台の中に同じ id が 2 行（前の形）：両方残す */
+      if(!(k in idx)){ idx[k]=slots.length; slots.push({k:k, p:p, from:side}); return; }
+      var s=slots[idx[k]];
+      if(kartePayCmp(p, s.p)>0) s.p=p;   /* 決まらなければ先に入れたほう（レコードの新しいほう） */
+      s.from='both';
+    });
+  };
+  add(first.payLog, win); add(second.payLog, oth);
+  slots=slots.filter(function(s){ var id=(s.p.id!=null && s.p.id!=='') ? String(s.p.id) : null; return !(id!=null && del[id] && del[id]>=kartePayT(s.p)); });
+  /* 片方にしか無い行：記録を始める前の行は、今までどおり新しいほうのレコードに合わせる（独立レビュー P2-1） */
+  slots=slots.filter(function(s){ return s.from==='both' || !kartePayDropOne(s.p, (s.from==='a') ? b : a, w); });
+  var byQ={}, drop={};
+  slots.forEach(function(s){ if(s.p.src==='auto' && s.p.quarter) (byQ[s.p.quarter]=byQ[s.p.quarter]||[]).push(s); });
+  Object.keys(byQ).forEach(function(q){
+    var g=byQ[q]; if(g.length<2) return;
+    if(!(g.some(function(s){ return s.from==='a'; }) && g.some(function(s){ return s.from==='b'; }))) return;
+    var best=g[0]; g.forEach(function(s){ var c=kartePayCmp(s.p, best.p); if(c>0 || (c===0 && s.from===win && best.from!==win)) best=s; });
+    g.forEach(function(s){ if(s!==best) drop[s.k]=1; });
+  });
+  var out=Object.assign({}, w), pl=slots.filter(function(s){ return !drop[s.k]; }).map(function(s){ return s.p; });
+  if(pl.length || Array.isArray(a.payLog) || Array.isArray(b.payLog)) out.payLog=pl;
+  if(Object.keys(del).length) out.payDel=del;
+  var tr=Math.max(kartePayTrackOf(a), kartePayTrackOf(b)); if(tr>0) out.payTrack=tr; else delete out.payTrack;
+  return out;
+}
+/* クラウドに書いたあとの確かめ：手元の履歴の行がクラウドにそろっているか（そろっていなければ取り込んでもう一度書く）。
+   合流と同じ決め方で見る：クラウドの写し（h）と手元（w）を合流しても h から変わらなければ「そろっている」。
+   合流で落ちる行（h が新しいほうのレコードで、記録を始める前の行）は、h に無くてもそろっている扱い（もう一度書いても同じため。押し上げが止まらない） */
+function kartePayCovers(h, w){
+  var hd=(h && h.payDel && typeof h.payDel==='object') ? h.payDel : {}, wd=(w && w.payDel && typeof w.payDel==='object') ? w.payDel : {};
+  for(var dk in wd){ if(Object.prototype.hasOwnProperty.call(wd, dk) && (Number(hd[dk])||0)<(Number(wd[dk])||0)) return false; }
+  if(kartePayTrackOf(w)>kartePayTrackOf(h)) return false;   /* 記録を始めた時刻も伝える（合流では大きいほうになる） */
+  var byId={}, byQ={};
+  (Array.isArray(h && h.payLog) ? h.payLog : []).forEach(function(p){
+    if(p==null) return; var k=kartePayId(p);
+    if(!(k in byId) || kartePayCmp(p, byId[k])>0) byId[k]=p;
+    if(p.src==='auto' && p.quarter && (!(p.quarter in byQ) || kartePayCmp(p, byQ[p.quarter])>0)) byQ[p.quarter]=p;
+  });
+  var hNewer=_recAt(h)>_recAt(w);   /* 合流すると h が新しいほうのレコードになる（同じ時刻なら手元） */
+  var wl=Array.isArray(w && w.payLog) ? w.payLog : [];
+  for(var i=0;i<wl.length;i++){
+    var p=wl[i]; if(p==null) continue;
+    var t=kartePayT(p), k=kartePayId(p), id=(p.id!=null && p.id!=='') ? String(p.id) : null;
+    if((k in byId) && kartePayCmp(byId[k], p)>=0) continue;
+    if(id!=null && hd[id] && Number(hd[id])>=t) continue;
+    if(p.src==='auto' && p.quarter && (p.quarter in byQ) && kartePayCmp(byQ[p.quarter], p)>=0) continue;
+    if(!(k in byId) && hNewer && kartePayDropOne(p, h, h)) continue;
+    return false;
+  }
+  return true;
+}
+function kartePayCoversMap(check, want){
+  if(!_coversMapByTime(check, want)) return false;
+  for(var k in want){
+    if(!Object.prototype.hasOwnProperty.call(want, k)) continue;
+    var w=want[k];
+    if(w && typeof w==='object' && (Array.isArray(w.payLog) || w.payDel || w.payTrack) && !kartePayCovers(check[k], w)) return false;
+  }
+  return true;
 }
 /* FUNERGY_KARTE_EVAL_END */
 function lssEligibility(name) {
@@ -83388,17 +83941,17 @@ function renderStoreMaster() {
   return html;
 }
 
-async function editStorePin(storeId, name) {
+async function editStorePin(storeId, name, fresh) {
   if (!canViewPins()) { alert('店舗PINの変更はGM/CEOのみです'); return; }
-  var ap = await askAdminPin('店舗PINの変更');
-  if (ap==null) return;
+  var title = t('店舗PINの変更','Change store PIN'), again = function(){ editStorePin(storeId, name, true); };
+  if (!(await secAuthEnsure())) { secAuthLoginModal(title, again); return; }   /* v1067: メールの認証（管理者の PIN ではもう変えられない） */
   var pin = await askInput({title:name+' の店舗PIN変更', label:'新しい店舗ログインPIN（4〜6桁）', type:'password', required:true, pattern:/^\d{4,6}$/, patternMsg:'PINは4〜6桁の数字で入力してください', okLabel:'更新する'});
   if (pin==null) return;
   var j;
-  try { j = await authPin({action:'reset', adminName:curUserName, adminPin:ap, scope:'store', target:storeId, newPin:pin}); }
+  try { j = await secAuthCall('auth-pin', {action:'reset', scope:'store', target:storeId, newPin:pin}); }
   catch(e){ alert('通信に失敗しました'); return; }
-  if (!j || !j.ok) { window._pinAdmin=null; alert('更新できませんでした（権限またはPIN）'); return; }
-  window._pinAdmin = { name: curUserName, pin: ap };
+  if (secAuthNeedLogin(j, fresh, title, again, 'pin')) return;
+  if (!j || !j.ok) { alert(secAuthErrText(j, 'pin')); return; }
   showToast(name + ' のPINを更新しました', 'success');
   renderPage('store_master');
 }
@@ -83672,11 +84225,6 @@ function askInput(opts){
     opts = Object.assign({}, opts, { onCancel:function(){ res(null); } });
     openInputModal(opts, function(v){ res(v); });
   });
-}
-/* 管理者PIN（マスク付き）。キャッシュ済みなら即返す。null=キャンセル */
-function askAdminPin(title){
-  if(window._pinAdmin && window._pinAdmin.pin) return Promise.resolve(window._pinAdmin.pin);
-  return askInput({title:title||'本人確認', label:'あなたのログインPIN（4桁）', type:'password', required:true, pattern:/^\d{4}$/, patternMsg:'PINは4桁の数字で入力してください', okLabel:'確認'});
 }
 function openModal(html) {
   document.getElementById('modal-body').innerHTML = html;

@@ -90,7 +90,7 @@ async function setup(sql = SQL) {   // sql: another schema to run on (e.g. the p
   await pg.exec(sql);
   await pg.query(`update invoice_settings set value=jsonb_build_object('key',$1::text,'enabled',true) where key='worker'`, [WORKER_KEY]);
   await pg.exec(`
-    update invoice_settings set value=value||'{"intake":true,"auto_post":true,"organize":true,"mirror":true,"start_at":"2026-10-01T00:00:00Z"}' where key='mode';
+    update invoice_settings set value=value||'{"intake":true,"auto_post":true,"organize":true,"mirror":true,"start_at":"2026-10-01T00:00:00Z","rename":true,"rename_since":"2026-10-01T00:00:00Z"}' where key='mode';
     update invoice_settings set value=value||'{"currency_when_absent":"USD","closed_through":"2026-08","batch":10}' where key='rules';
     update invoice_settings set value=value||'{"route":"invoice-intake","enabled":true}' where key='qb';
     insert into invoice_stores(store_id,label,root_folder_id,upload_folder_id,active,auto_post,aliases) values
@@ -164,8 +164,9 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     const latest = (await E.api('tok-office', { action: 'latest_prices', codes: ['I-1'] })).body;
     assert.equal(latest.length, 1); assert.equal(latest[0].price_per_purchase, '61.200000'); assert.equal(latest[0].effective_date, '2026-10-06');
     assert.equal(latest[0].price_per_count, '5.1000000000'); assert.equal(latest[0].price_per_base, '0.0102000000');
-    // Original stays in Drive under the store, renamed and filed by the invoice date; the link uses the same file ID.
-    assert.equal(E.drive.items.get(second).name, 'VendorA_2026-10-06_LaLa_INV-1001.pdf');
+    // Original stays in Drive under the store, filed by the invoice date and, once posted, named 日付_業者名_番号
+    // (Moto 2026-10-12); the link uses the same file ID.
+    assert.equal(E.drive.items.get(second).name, '2026-10-06_VendorA_1001.pdf');
     assert.equal(E.drive.pathOf(second), 'LaLa/2026/10/未照合');
     const g = (await E.api('tok-crew', { action: 'get', doc_id: d.id })).body;
     assert.equal(g.original_url, 'https://drive.google.com/file/d/' + second + '/view');
@@ -331,6 +332,7 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     const rows = await priceRows();
     r = await E.api('tok-office', { action: 'post', doc_id: cm.id, version: cm.version + 1, reason: '1001 の返品' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.rename, { ok: true, name: '2026-10-06_VendorA_CM55.pdf' });   // its own printed number tells it is a credit memo
     assert.equal(await priceRows(), rows);                                          // a credit never sets a price
     const [st] = await docsOf(E, ids['STMT-9']); assert.equal(st.posting_kind, 'none'); assert.ok(codes(st).includes('statement'));
     r = await E.api('tok-office', { action: 'post', doc_id: st.id, version: st.version, reason: 'x' }); assert.equal(r.status, 409);
@@ -359,7 +361,7 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     assert.ok(app.some(x => x.intakeDocId === newDoc.id && !x._deleted));
     const [f] = await E.q(`select * from invoice_files where id=$1`, [newDoc.file_id]);
     assert.equal(E.drive.pathOf(f.drive_file_id), 'LaLa/2026/10/未照合');           // back for reconciliation
-    assert.match(E.drive.items.get(f.drive_file_id).name, /^VendorA_2026-10-06_LaLa_INV-1002_v2\.pdf$/);
+    assert.match(E.drive.items.get(f.drive_file_id).name, /^2026-10-06_VendorA_1002_v2\.pdf$/);   // the second version of the file
   });
 
   await t.test('8: stores stay separated; addresses never move an invoice to another store; roles are enforced', async () => {
@@ -505,6 +507,9 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     assert.ok(out.every(o => o.intake_status !== 'duplicate'));                       // duplicates are not forwarded again
     assert.ok(E.sent.every(m => m.to === 'funergy+expenses@assist.intuit.com'));
     assert.equal(new Set(E.sent.map(m => m.idempotencyKey)).size, E.sent.length);
+    // Only posted originals, each sent after it was named 日付_業者名_番号 (Moto 2026-10-12).
+    assert.ok(out.every(o => o.intake_status === 'posted'));
+    assert.ok(E.sent.every(m => /^\d{4}-\d{2}-\d{2}_VendorA_[A-Za-z0-9-]+(_v\d+)?\.pdf$/.test(m.attachment.name) && m.subject === m.attachment.name), JSON.stringify(E.sent.map(m => m.attachment.name)));
     // The list says "sent" only; there is no "booked" state to claim.
     const list = (await E.api('tok-gm', { action: 'list', limit: 200 })).body.rows;
     assert.ok(list.some(r => r.qb_state === 'sent')); assert.ok(!list.some(r => /book|記帳/.test(String(r.qb_state))));
@@ -899,6 +904,10 @@ test('review findings stay fixed', async (t) => {
   await t.test('1: only accounting (with 事務Crew), GM or CEO settle an unknown forwarding result, and only as sent or send again', async () => {
     E.setMail('timeout');
     const id = await one('R1-1', { readable: true, documents: [doc('7001', '2026-10-06', [miso()])] });
+    // An original goes to QuickBooks once it is posted (and renamed): Moto 2026-10-12.
+    const d1 = await docOf(id);
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: d1.id, version: d1.version, reason: 'checked' })).status, 200);
+    await E.worker();
     E.setMail('ok');
     const [o] = await E.q(`select o.* from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [id]);
     assert.equal(o.state, 'unknown');
@@ -1067,6 +1076,9 @@ test('review findings stay fixed', async (t) => {
     await E.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
     await E.q(`update invoice_settings set value=value||'{"enabled":true}' where key='qb_external'`);
     const id = await one('R15-2', { readable: true, documents: [doc('8201', '2026-10-06', [L('NEW8', 'THING 6', '1', '1.50', '1.50')])] });
+    const d15 = await docOf(id);
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: d15.id, version: d15.version, reason: 'checked' })).status, 200);
+    await E.worker();
     const [o] = await E.q(`select o.id from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [id]);
     await E.q(`update invoice_qb_outbox set attempts=5 where id=$1`, [o.id]);
     const [{ k }] = await E.q(`select value->>'key' k from invoice_settings where key='qb_external'`);
@@ -1108,7 +1120,8 @@ test('deploy checks and the guarded rollback', async () => {
   const created = [...SQL.matchAll(/^create function public\.(\w+)\(/gm)].map(m => m[1]);
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 16, functions: created.length, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
-      rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true, office_crew_accounting: true });
+      rename_on: 'false', rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true,
+      office_crew_accounting: true, rename_after_post: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates
@@ -1730,10 +1743,11 @@ test('invoices put right in the store folder are read too, only from the start, 
     assert.ok(E.drive.log.some(l => l[0] === 'list' && l[1] === 'R6' && l[2] === '2026-10-01T00:00:00.000Z'), 'Drive is asked only for files put there from the start');
     // Older files in the store folder and files in the folders inside it are not recorded at all.
     assert.deepEqual(await E.q(`select drive_file_id from invoice_files where drive_file_id = any($1)`, [[old, inMonth, appSaved]]), []);
-    // Left where staff put it (organize is on): same name, same folder. 00_Upload is filed as before.
-    assert.equal(E.drive.items.get(inRoot).name, 'Scanned Oct 5, 2026.pdf'); assert.deepEqual(E.drive.items.get(inRoot).parents, ['R6']);
+    // Left where staff put it (organize is on): same folder. Once posted it is named 日付_業者名_番号 right there (Moto
+    // 2026-10-12: the file that was read gets the name). 00_Upload is filed as before.
+    assert.equal(E.drive.items.get(inRoot).name, '2026-10-05_VendorA_2001.pdf'); assert.deepEqual(E.drive.items.get(inRoot).parents, ['R6']);
     const [f] = await E.q(`select organize_status, organized_folder_id, current_name from invoice_files where drive_file_id=$1`, [inRoot]);
-    assert.deepEqual(f, { organize_status: 'done', organized_folder_id: 'R6', current_name: 'Scanned Oct 5, 2026.pdf' });
+    assert.deepEqual(f, { organize_status: 'done', organized_folder_id: 'R6', current_name: '2026-10-05_VendorA_2001.pdf' });
     assert.equal(E.drive.pathOf(inUpload), 'LaLa/2026/10/未照合');
     // It reaches Food Cost like any other (the app copy).
     const [app] = await E.q(`select value from app_state where key='spl_invoices_F06'`);
@@ -1750,8 +1764,8 @@ test('invoices put right in the store folder are read too, only from the start, 
     assert.equal(r.status, 200, JSON.stringify(r.body));
     await E.worker();
     let [ff] = await E.q(`select organize_status, organized_folder_id, organize_error, current_name from invoice_files where drive_file_id=$1`, [inRoot]);
-    assert.deepEqual(ff, { organize_status: 'done', organized_folder_id: 'R6-MAR', organize_error: null, current_name: 'Scanned Oct 5, 2026.pdf' });
-    assert.deepEqual(E.drive.items.get(inRoot).parents, ['R6-MAR']); assert.equal(E.drive.items.get(inRoot).name, 'Scanned Oct 5, 2026.pdf');
+    assert.deepEqual(ff, { organize_status: 'done', organized_folder_id: 'R6-MAR', organize_error: null, current_name: '2026-10-05_VendorA_2001.pdf' });
+    assert.deepEqual(E.drive.items.get(inRoot).parents, ['R6-MAR']); assert.equal(E.drive.items.get(inRoot).name, '2026-10-05_VendorA_2001.pdf');
     // A folder outside the store folder is still never used: the original is not touched and a person is told.
     E.drive.folder('ELSEWHERE', 'Someone else', 'INV'); E.drive.folder('ELSE-SUB', 'Sub', 'ELSEWHERE');
     E.drive.items.get(inRoot).parents = ['ELSE-SUB'];
@@ -1795,6 +1809,7 @@ test('invoices put right in the store folder are read too, only from the start, 
     [ff] = await E.q(`select organize_status, organized_folder_id, organize_error from invoice_files where drive_file_id=$1`, [other]);
     assert.deepEqual(ff, { organize_status: 'done', organized_folder_id: 'R6', organize_error: null });
     assert.deepEqual(E.drive.items.get(other).parents, ['R6']);
+    assert.equal(E.drive.items.get(other).name, '2026-10-06_VendorA_2006.pdf');   // named where it is, though it now belongs to Kaimuki
 
     // The database checks the start too: a file in the store folder from before the start is not taken in.
     const seen = await E.db.rpc('invoice_file_seen', { folder_id: 'R6', drive_file_id: 'direct-old', name: 'x.pdf', mime_type: 'application/pdf',
@@ -1811,5 +1826,280 @@ test('invoices put right in the store folder are read too, only from the start, 
     await E.worker();
     assert.ok(!E.drive.log.slice(before).some(l => l[0] === 'list' && l[1] === 'R6'), 'the store folder is not listed without a start');
     assert.deepEqual(await E.q(`select id from invoice_files where drive_file_id=$1`, [later]), []);
+  } finally { await E.pg.close(); }
+});
+
+// Moto 2026-10-12: 「この内容で反映ボタンを押したら、読み取りした Google Drive のファイル名を 日付、業者名、インボイスナンバーの順で
+// 変更 → ファイル名を変更したらクイックブックスに送信する」. Name: 2026-10-07_Marujuu-Produce_12345.pdf. The sender is the
+// outside forwarder (ChatGPT side) reading this ledger; this system's own sender is used here so the attachment names are seen.
+test('posting renames the original 日付_業者名_番号, and only then is it forwarded to QuickBooks', async (t) => {
+  const E = await setup();
+  try {
+    await E.q(`update invoice_stores set auto_post=false`);                                    // every invoice waits for a person
+    await E.q(`update invoice_settings set value=(value - 'rename' - 'rename_since') where key='mode'`);   // renaming starts off
+    const line = [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']];
+    const intake = async (tag, no, o = {}) => {
+      E.fixtures.set(tag, { readable: true, documents: [doc(no, '2026-10-07', line)] });
+      const id = E.drive.file(o.name || tag + '.pdf', pdf(tag), 'U6', { created: o.created || '2026-10-07T19:00:00Z' });
+      await E.worker(); return { id, d: (await docsOf(E, id))[0] };
+    };
+    const post = d => E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '原本で確かめた' });
+    const fileRow = async id => (await E.q(`select * from invoice_files where drive_file_id=$1`, [id]))[0];
+    const outbox = id => E.q(`select o.* from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [id]);
+    const updates = () => E.drive.log.filter(l => l[0] === 'update').length;
+    // invoice_rename_waiting (one file) and invoice_rename_waiting_all (all files: renaming, QuickBooks, the count on the
+    // screen) say the same thing.
+    const consistent = async () => {
+      const ids = rows => rows.map(x => x.id || x.file_id).sort();
+      const waiting = await E.q(`select f.id, f.drive_state, f.rename_state, f.rename_attempts, f.rename_next_at <= now() as next_ok
+        from invoice_files f where invoice_rename_waiting(f.id)`);
+      assert.deepEqual(ids(await E.q(`select file_id from invoice_rename_waiting_all()`)), ids(waiting));
+      assert.equal((await E.api('tok-crew', { action: 'health' })).body.rename_waiting, waiting.length);
+      const dueNow = waiting.filter(x => x.drive_state === 'ok' && (x.rename_state !== 'error' || (x.next_ok && x.rename_attempts < 8)));
+      assert.deepEqual(ids(await E.db.rpc('invoice_rename_due', { limit: 1000 })), ids(dueNow));
+      // QuickBooks: every posted original that is ready, and none still waiting for its name.
+      const ready = await E.q(`select f.id from invoice_files f where f.source='drive' and f.current_sha256 is not null and f.intake_status='posted'
+        and coalesce(f.drive_created_at >= invoice_qb_since_at(), false)
+        and not exists(select 1 from invoice_qb_outbox o where o.sha256=f.current_sha256 and o.to_address=invoice_setting('qb')->>'to' and o.state<>'cancelled')
+        and exists(select 1 from invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='posted')
+        and not exists(select 1 from invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review')
+        and not invoice_rename_waiting(f.id)`);
+      assert.deepEqual(ids(await E.db.rpc('invoice_qb_candidates', { limit: 1000 })), ids(ready));
+      return waiting.length;
+    };
+    let a, b;
+
+    await t.test('an invoice waiting for a person is never forwarded; with renaming off a posted one goes with its name', async () => {
+      a = await intake('RN-A', '12340');
+      assert.equal(a.d.status, 'review'); assert.deepEqual(await outbox(a.id), []);
+      assert.deepEqual(await E.db.rpc('invoice_qb_enqueue', { file_id: (await fileRow(a.id)).id }), { queued: false, why: 'not_ready' });
+      const r = await post(a.d);
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.rename, undefined);
+      const n = E.sent.length;
+      await E.worker();
+      assert.equal(E.drive.items.get(a.id).name, 'RN-A.pdf');
+      assert.equal((await outbox(a.id))[0].state, 'sent'); assert.equal(E.sent.length, n + 1); assert.equal(E.sent.at(-1).attachment.name, 'RN-A.pdf');
+    });
+
+    await t.test('only a GM or CEO turns renaming on; when it started is set by the server each time it is turned on', async () => {
+      for (const tok of ['tok-office', 'tok-crew']) assert.equal((await E.api(tok, { action: 'settings_save', key: 'mode', value: { rename: true } })).status, 403);
+      assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'mode', value: { rename: 'yes' } })).status, 400);
+      assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'mode', value: { rename: true, rename_since: '2026-01-01T00:00:00Z' } })).status, 400);
+      const on = await E.api('tok-gm', { action: 'settings_save', key: 'mode', value: { rename: true } });
+      assert.equal(on.status, 200); assert.equal(on.body.rename, true); assert.match(on.body.rename_since, /^\d{4}-\d{2}-\d{2}T/);
+      assert.equal((await E.api('tok-ceo', { action: 'settings_save', key: 'mode', value: { rename: false } })).body.rename_since, on.body.rename_since);
+      const again = await E.api('tok-ceo', { action: 'settings_save', key: 'mode', value: { rename: true } });
+      assert.ok(again.body.rename_since > on.body.rename_since, JSON.stringify([on.body, again.body]));    // from the time it was turned on again
+      assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'mode', value: { rename: true } })).body.rename_since, again.body.rename_since);
+      // An invoice posted before renaming was turned on keeps its name.
+      await E.worker();
+      assert.equal(E.drive.items.get(a.id).name, 'RN-A.pdf'); assert.equal((await fileRow(a.id)).rename_state, 'none');
+    });
+
+    await t.test('「この内容で反映」 renames the original right away; QuickBooks gets it afterwards, with the new name', async () => {
+      b = await intake('RN-B', '12345', { name: 'Scanned Oct 7, 2026.pdf' });
+      assert.deepEqual(await outbox(b.id), []);
+      const r = await post(b.d);
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.deepEqual(r.body.rename, { ok: true, name: '2026-10-07_VendorA_12345.pdf' });
+      assert.equal(E.drive.items.get(b.id).name, '2026-10-07_VendorA_12345.pdf');
+      const f = await fileRow(b.id);
+      assert.deepEqual({ current: f.current_name, original: f.original_name, state: f.rename_state }, { current: '2026-10-07_VendorA_12345.pdf', original: 'Scanned Oct 7, 2026.pdf', state: 'done' });
+      const [ev] = await E.q(`select actor, data from invoice_events where file_id=$1 and kind='renamed'`, [f.id]);
+      assert.equal(ev.actor, U.office); assert.equal(ev.data.from, 'Scanned Oct 7, 2026.pdf'); assert.equal(ev.data.name, '2026-10-07_VendorA_12345.pdf');
+      const n = E.sent.length;
+      await E.worker();
+      assert.equal(E.sent.length, n + 1); assert.equal(E.sent.at(-1).attachment.name, '2026-10-07_VendorA_12345.pdf');
+      assert.equal(E.drive.pathOf(b.id), 'LaLa/2026/10/未照合');                              // filed by month; the name stays
+      const u = updates();
+      await E.worker(); await E.worker();
+      assert.equal(updates(), u); assert.equal(E.sent.length, n + 1);                         // nothing renamed or sent again
+    });
+
+    await t.test('a rename that fails keeps the posting, holds QuickBooks, and the worker tries again later', async () => {
+      const c = await intake('RN-C', '12346');
+      E.drive.failUpdate = 1;
+      const r = await post(c.d);
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.rename.ok, false);
+      assert.equal((await docsOf(E, c.id))[0].status, 'posted');
+      const f = await fileRow(c.id);
+      assert.equal(f.rename_state, 'error'); assert.match(f.rename_error, /drive_update_500/); assert.equal(f.current_name, 'RN-C.pdf');
+      await E.worker();                                                                         // not yet: it waits a while
+      assert.equal(E.drive.items.get(c.id).name, 'RN-C.pdf'); assert.deepEqual(await outbox(c.id), []);
+      assert.deepEqual(await E.db.rpc('invoice_qb_enqueue', { file_id: f.id }), { queued: false, why: 'rename_waiting' });
+      const h = (await E.api('tok-crew', { action: 'health' })).body;
+      assert.ok(h.rename_errors >= 1 && h.rename_waiting >= 1, JSON.stringify(h));
+      assert.equal(await consistent(), 1);
+      const pr = (await E.api('tok-crew', { action: 'problems' })).body;
+      assert.ok(pr.files.some(x => x.id === f.id && x.rename_state === 'error' && /drive_update_500/.test(x.rename_error)));
+      await E.q(`update invoice_files set rename_next_at=now() - interval '1 minute' where id=$1`, [f.id]);
+      await E.worker();
+      assert.equal(E.drive.items.get(c.id).name, '2026-10-07_VendorA_12346.pdf'); assert.equal((await fileRow(c.id)).rename_state, 'done');
+      assert.equal((await outbox(c.id))[0].state, 'sent');
+    });
+
+    await t.test('an original a person moved out of the store folders is not renamed; after it is put back, a retry renames it', async () => {
+      const dd = await intake('RN-D', '12347');
+      const home = E.drive.items.get(dd.id).parents.slice();
+      E.drive.folder('ELSE-RN', 'Somewhere else', 'INV'); E.drive.items.get(dd.id).parents = ['ELSE-RN'];
+      const r = await post(dd.d);
+      assert.equal(r.status, 200); assert.deepEqual(r.body.rename, { ok: false, error: 'outside_store_folders' });
+      assert.equal(E.drive.items.get(dd.id).name, 'RN-D.pdf');
+      await E.worker(); assert.deepEqual(await outbox(dd.id), []);
+      assert.equal(await consistent(), 1);
+      E.drive.items.get(dd.id).parents = home;
+      assert.equal((await E.api('tok-office', { action: 'retry', file_id: (await fileRow(dd.id)).id })).status, 200);
+      await E.worker();
+      assert.equal(E.drive.items.get(dd.id).name, '2026-10-07_VendorA_12347.pdf'); assert.equal((await outbox(dd.id))[0].state, 'sent');
+    });
+
+    await t.test('an original Drive cannot find is not renamed or forwarded (waiting, not an error); found again, it is renamed, then forwarded', async () => {
+      const m = await intake('RN-MISS', '12349');
+      await E.q(`update invoice_files set drive_state='missing' where drive_file_id=$1`, [m.id]);
+      const r = await post(m.d);
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.rename, null);
+      assert.equal((await fileRow(m.id)).rename_state, 'none'); assert.equal(E.drive.items.get(m.id).name, 'RN-MISS.pdf');
+      assert.equal(await consistent(), 1);
+      const h = (await E.api('tok-crew', { action: 'health' })).body;
+      assert.deepEqual({ waiting: h.rename_waiting, errors: h.rename_errors }, { waiting: 1, errors: 0 });
+      assert.deepEqual(await E.db.rpc('invoice_qb_enqueue', { file_id: (await fileRow(m.id)).id }), { queued: false, why: 'rename_waiting' });
+      await E.q(`update invoice_files set drive_state='ok' where drive_file_id=$1`, [m.id]);
+      await E.worker();
+      assert.equal(E.drive.items.get(m.id).name, '2026-10-07_VendorA_12349.pdf'); assert.equal((await outbox(m.id))[0].state, 'sent');
+      assert.equal(await consistent(), 0);
+    });
+
+    await t.test('a name another file in the folder already has gets "_2"; nothing is overwritten', async () => {
+      const e = await intake('RN-E', '12348');
+      const other = E.drive.file('2026-10-07_VendorA_12348.pdf', pdf('unrelated'), E.drive.items.get(e.id).parents[0]);
+      const r = await post(e.d);
+      assert.deepEqual(r.body.rename, { ok: true, name: '2026-10-07_VendorA_12348_2.pdf' });
+      assert.equal(E.drive.items.get(other).name, '2026-10-07_VendorA_12348.pdf');
+      await E.worker(); assert.equal(E.sent.at(-1).attachment.name, '2026-10-07_VendorA_12348_2.pdf');
+    });
+
+    await t.test('correcting the number of a posted invoice renames its original again; what was sent is not sent again', async () => {
+      const [d] = await docsOf(E, b.id);
+      const n = E.sent.length;
+      const r = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, header: { invoice_no: '12345A' }, reason: '番号の読み違い' });
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.deepEqual(r.body.rename, { ok: true, name: '2026-10-07_VendorA_12345A.pdf' });
+      assert.equal(E.drive.items.get(b.id).name, '2026-10-07_VendorA_12345A.pdf');
+      await E.worker(); assert.equal(E.sent.length, n); assert.equal((await outbox(b.id)).length, 1);
+      // A correction that changes none of date, vendor and number checks the name again and leaves it as it is.
+      const [d2] = await docsOf(E, b.id), u = updates();
+      const r2 = await E.api('tok-office', { action: 'edit', doc_id: d2.id, version: d2.version, header: { due_date: '2026-11-06' }, reason: '支払期日' });
+      assert.equal(r2.status, 200, JSON.stringify(r2.body)); assert.deepEqual(r2.body.rename, { ok: true, name: '2026-10-07_VendorA_12345A.pdf' });
+      assert.equal(updates(), u); assert.equal(E.drive.items.get(b.id).name, '2026-10-07_VendorA_12345A.pdf');
+      assert.equal(await consistent(), 0);
+    });
+
+    await t.test('an original that holds two invoices keeps its name and is forwarded once both are settled', async () => {
+      E.fixtures.set('RN-M', { readable: true, documents: [doc('12350', '2026-10-07', line), doc('12351', '2026-10-07', [['06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00', 'CS', '12/500G']])] });
+      const id = E.drive.file('two.pdf', pdf('RN-M'), 'U6', { created: '2026-10-07T19:00:00Z' });
+      await E.worker();
+      const ds = await docsOf(E, id); assert.equal(ds.length, 2);
+      let r = await post(ds[0]); assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.rename, null);
+      await E.worker(); assert.deepEqual(await outbox(id), []);                                  // the other one still waits
+      assert.equal(await consistent(), 0);
+      r = await post(ds[1]); assert.equal(r.status, 200, JSON.stringify(r.body));
+      await E.worker();
+      assert.equal(E.drive.items.get(id).name, 'two.pdf'); assert.equal((await outbox(id))[0].state, 'sent');
+    });
+
+    await t.test('the forwarding start can be the switch-over moment: only originals saved from then are forwarded', async () => {
+      for (const since of ['tomorrow', '2026-02-30', 20261007, '2026-10-07 10:00']) assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'qb', value: { since } })).status, 400, String(since));
+      assert.equal((await E.api('tok-office', { action: 'settings_save', key: 'qb', value: { since: '2026-10-07T10:00:00-10:00' } })).status, 403);
+      const s = await E.api('tok-gm', { action: 'settings_save', key: 'qb', value: { since: '2026-10-07T10:00:00-10:00' } });
+      assert.equal(s.status, 200); assert.equal(s.body.since, '2026-10-07T10:00:00-10:00');
+      const early = await intake('RN-S1', '12360', { created: '2026-10-07T19:59:59Z' });       // 09:59:59 HST
+      const late = await intake('RN-S2', '12361', { created: '2026-10-07T20:00:00Z' });        // 10:00:00 HST
+      for (const x of [early, late]) assert.equal((await post(x.d)).status, 200);
+      await E.worker();
+      assert.deepEqual(await outbox(early.id), []); assert.equal((await outbox(late.id))[0].state, 'sent');
+      assert.deepEqual(await E.db.rpc('invoice_qb_enqueue', { file_id: (await fileRow(early.id)).id }), { queued: false, why: 'before_since' });
+      assert.equal(E.drive.items.get(early.id).name, '2026-10-07_VendorA_12360.pdf');            // renamed all the same
+      const hl = (await E.api('tok-crew', { action: 'health' })).body; assert.equal(hl.qb_settings.since, '2026-10-07T10:00:00-10:00');
+    });
+
+    await t.test('turned off, a posting keeps its name and goes to QuickBooks as it is; turned on again, only later postings are renamed', async () => {
+      assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'mode', value: { rename: false } })).status, 200);
+      const o = await intake('RN-OFF', '12380', { created: '2026-10-07T21:00:00Z' });
+      const r = await post(o.d);
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.rename, undefined);
+      const n = E.sent.length;
+      await E.worker();
+      assert.equal(E.drive.items.get(o.id).name, 'RN-OFF.pdf'); assert.equal((await fileRow(o.id)).rename_state, 'none');
+      assert.equal(E.sent.length, n + 1); assert.equal(E.sent.at(-1).attachment.name, 'RN-OFF.pdf');
+      assert.equal(await consistent(), 0);
+      assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'mode', value: { rename: true } })).status, 200);
+      const u = updates();
+      await E.worker();
+      assert.equal(updates(), u); assert.equal(E.drive.items.get(o.id).name, 'RN-OFF.pdf');      // posted while it was off: left as it is
+      const p = await intake('RN-ON', '12381', { created: '2026-10-07T21:00:00Z' });
+      assert.deepEqual((await post(p.d)).body.rename, { ok: true, name: '2026-10-07_VendorA_12381.pdf' });
+      await E.worker(); assert.equal(E.sent.at(-1).attachment.name, '2026-10-07_VendorA_12381.pdf');
+      assert.equal(await consistent(), 0);
+    });
+
+    await t.test('the outside sender (ChatGPT) sees a posted original only after its rename, under the new name', async () => {
+      await E.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
+      await E.q(`update invoice_settings set value=value||'{"enabled":true}' where key='qb_external'`);
+      const [{ k }] = await E.q(`select value->>'key' k from invoice_settings where key='qb_external'`);
+      const listed = async id => ((await E.call({ action: 'qb_external_list' }, { 'x-invoice-qb-key': k })).body.rows || []).find(x => x.drive_file_id === id);
+      const g = await intake('RN-G', '12370', { created: '2026-10-07T21:00:00Z' });
+      assert.equal(await listed(g.id), undefined);                                                // waiting for a person
+      E.drive.failUpdate = 1;
+      assert.equal((await post(g.d)).status, 200);
+      await E.worker();
+      assert.equal(await listed(g.id), undefined);                                                // posted, not renamed yet
+      await E.q(`update invoice_files set rename_next_at=now() - interval '1 minute' where drive_file_id=$1`, [g.id]);
+      const n = E.sent.length;
+      await E.worker();
+      const row = await listed(g.id);
+      assert.ok(row); assert.equal(row.current_name, '2026-10-07_VendorA_12370.pdf'); assert.equal(row.sha256, (await fileRow(g.id)).current_sha256);
+      assert.equal(E.sent.length, n);                                                             // nothing is sent from here
+      assert.equal(await consistent(), 0);
+    });
+
+    await t.test('qb.since: a date starts at midnight in Hawaii, a moment at that moment; a broken value forwards nothing', async () => {
+      const keep = (await E.q(`select value->'since' s from invoice_settings where key='qb'`))[0].s;
+      const at = async v => {
+        await E.q(`update invoice_settings set value=jsonb_set(value, '{since}', $1::jsonb) where key='qb'`, [JSON.stringify(v)]);
+        const [r] = await E.q(`select invoice_qb_since_at() t`); return r.t && new Date(r.t).toISOString();
+      };
+      try {
+        assert.equal(await at('2026-10-07'), '2026-10-07T10:00:00.000Z');
+        assert.equal(await at('2026-10-07T10:00:00-10:00'), '2026-10-07T20:00:00.000Z');
+        assert.equal(await at('2026-10-07T20:00:00Z'), '2026-10-07T20:00:00.000Z');
+        for (const bad of ['2026-02-30', '2026-10-07 10:00', 'tomorrow', 20261007, null]) assert.equal(await at(bad), null, String(bad));
+        assert.equal(await consistent(), 0);
+      } finally { await E.q(`update invoice_settings set value=jsonb_set(value, '{since}', $1::jsonb) where key='qb'`, [JSON.stringify(keep)]); }
+    });
+  } finally { await E.pg.close(); }
+});
+
+// v1070 (Moto 2026-10-12): an invoice with no currency printed cannot be posted until accounting confirms USD.
+// The app sends the currency as a correction; the server checks the invoice again with USD and it can be posted.
+test('no currency printed: review until accounting confirms USD, then it posts', async () => {
+  const E = await setup();
+  try {
+  await E.q(`update invoice_settings set value = value || '{"currency_when_absent": null}' where key='rules'`);
+  E.fixtures.set('INV-7001', { readable: true, documents: [{ ...doc('7001', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']]), currency: null }] });
+  E.fixtures.set('INV-7002', { readable: true, documents: [{ ...doc('7002', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']]), currency: 'US$' }] });
+  const a = E.drive.file('a.pdf', pdf('INV-7001'), 'U6'), b = E.drive.file('b.pdf', pdf('INV-7002'), 'U6');
+  await E.worker();
+  for (const f of [a, b]) {
+    let [d] = await docsOf(E, f);
+    assert.equal(d.status, 'review'); assert.ok(codes(d).includes('currency'), JSON.stringify(d.reasons));
+    const blocked = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: 'try' });
+    assert.equal(blocked.status, 409); assert.match(JSON.stringify(blocked.body), /currency/);
+    const r = await E.api('tok-crew', { action: 'edit', doc_id: d.id, version: d.version, header: { currency: 'USD' }, lines: [], reason: '経理の確認：通貨は USD' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    [d] = await docsOf(E, f);
+    assert.equal(d.currency, 'USD'); assert.ok(!codes(d).includes('currency'), JSON.stringify(d.reasons));
+    const p = await E.api('tok-crew', { action: 'post', doc_id: d.id, version: d.version, reason: '経理の確認（業者・invoice番号・金額・店舗）' });
+    assert.equal(p.status, 200, JSON.stringify(p.body));
+    [d] = await docsOf(E, f);
+    assert.equal(d.status, 'posted');
+  }
   } finally { await E.pg.close(); }
 });

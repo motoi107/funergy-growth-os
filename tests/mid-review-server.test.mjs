@@ -1096,3 +1096,16 @@ test('rollback: stops while a live review exists; otherwise removes every mid-re
   assert.equal((await E.pg.query(`select count(*)::int n from employees`)).rows[0].n, EMPLOYEES.length);
   await E.pg.exec(rb);                                                                   // a second run does nothing
 });
+
+test('replies take their locks in one order everywhere: the review row first, then the drafts', async () => {
+  const E = await setup();
+  const src = async name => (await E.q(`select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = $1`, [name]))[0].prosrc;
+  // mr_reply_delete used to take no lock at all, so a delete could be applied in the middle of a send that
+  // had already checked this person's drafts (only part of the set the person saw was then sent). What the
+  // two sessions actually do is checked on a real PostgreSQL in tests/review/pr45-mid-review-lock-order.test.mjs
+  // (PGlite is one backend and cannot overlap two transactions); this is the cheap guard that runs everywhere.
+  for (const fn of ['mr_reply_save', 'mr_reply_send', 'mr_reply_delete'])
+    assert.match(await src(fn), /from public\.mr_reviews where id = r\.id for update/, fn + ' must lock the review row first');
+  assert.match(await src('mr_reply_send'), /from public\.mr_replies y where[^;]*for update/, 'the send must hold the drafts it checked');
+});

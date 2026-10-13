@@ -1,9 +1,8 @@
-// File names for organized originals: 業者名_YYYY-MM-DD_店舗名_INV-番号.ext
-// Only verified values are used: the vendor name comes from the vendor master,
-// the store label from configuration, the date from the determined invoice date.
+// File names for posted originals (Moto 2026-10-12): 日付_業者名_invoice番号.ext, e.g. 2026-10-07_Marujuu-Produce_12345.pdf.
+// Only checked values are used: the date the posting used, the vendor name from the vendor master, the invoice number
+// as printed (corrected by a person if needed).
 import { validYmd } from './dates.mjs';
 
-const DOC_PREFIX = { invoice: 'INV', credit_memo: 'CM', statement: 'STMT', receipt: 'RCPT' };
 const MAX_TOTAL = 120;
 
 // Characters Drive and common desktop sync tools reject or treat specially.
@@ -36,17 +35,18 @@ export function extensionFor(originalName, mimeType) {
   return byMime || 'bin';
 }
 
-// suffix: e.g. "v2" for a corrected version, "p1" for page photos of one invoice.
-export function organizedName({ vendor, invoiceDate, store, docType = 'invoice', invoiceNo, internalNo, ext, suffix }) {
-  const v = safePart(vendor, 40), st = safePart(store, 24);
-  if (!v || !st || !validYmd(invoiceDate) || !ext) return null;
-  const prefix = DOC_PREFIX[docType] || 'DOC';
-  const num = safeNumber(invoiceNo);
-  const id = num ? `${prefix}-${num}` : `${prefix}-INT${safePart(internalNo, 16)}`;
-  if (!num && !safePart(internalNo, 16)) return null;
-  let base = `${v}_${invoiceDate}_${st}_${id}`;
-  if (suffix) base += '_' + safePart(suffix, 12);
+// The name a posted original gets: date, vendor, number. A credit memo's number starts with "CM-" (it is not a purchase
+// invoice) unless the printed number already starts with CM; with no printed number the app's internal number is used
+// ("INT-…"). version > 1: the file was overwritten in Drive with new content and the new version was posted ("_v2").
+export function postedName({ invoiceDate, vendor, docType = 'invoice', invoiceNo, internalNo, ext, version }) {
+  const v = safePart(vendor, 40), num = safeNumber(invoiceNo), internal = safePart(internalNo, 16);
+  if (!v || !validYmd(invoiceDate) || !ext || (!num && !internal)) return null;
+  let id = num || 'INT-' + internal;
+  if (docType === 'credit_memo' && !/^CM[-0-9]/i.test(id)) id = 'CM-' + id;
+  let base = `${invoiceDate}_${v}_${id}`;
+  if (Number(version) > 1) base += '_v' + Math.floor(Number(version));
   const extPart = '.' + String(ext).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (extPart === '.') return null;
   if (base.length + extPart.length > MAX_TOTAL) base = base.slice(0, MAX_TOTAL - extPart.length);
   return base + extPart;
 }

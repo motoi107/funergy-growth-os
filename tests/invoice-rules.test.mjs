@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseCents, parseMicros, parseQty, ratioToDecimal, changedAtLeast, ratio, fromScaled } from '../invoice/decimal.mjs';
 import { parsePackSpec, unitPrices, convertQty } from '../invoice/units.mjs';
 import { parsePrintedDate, determineDate, hstDate } from '../invoice/dates.mjs';
-import { organizedName, safePart, uniqueName, extensionFor } from '../invoice/naming.mjs';
+import { postedName, safePart, uniqueName, extensionFor } from '../invoice/naming.mjs';
 import { parseResponse, buildRequest } from '../invoice/extract.mjs';
 import { evaluate, applyDuplicates, findMap, parseWithUnit, INFO_REASONS } from '../invoice/rules.mjs';
 import { classifyDuplicates, normInvoiceNo, contentSignature } from '../invoice/dedupe.mjs';
@@ -53,16 +53,31 @@ test('dates: printed text decides; disagreement or missing text is not a date', 
   assert.equal(hstDate('2026-10-07T05:00:00Z'), '2026-10-06');
 });
 
-test('file names: vendor_date_store_INV-number.ext, safe, keep leading zeros and the real extension', () => {
-  assert.equal(organizedName({ vendor: 'VendorA', invoiceDate: '2026-10-06', store: 'LaLa', invoiceNo: '012345', ext: 'pdf' }), 'VendorA_2026-10-06_LaLa_INV-012345.pdf');
-  assert.equal(organizedName({ vendor: "Southern Glazer's / HI", invoiceDate: '2026-10-06', store: 'LaLa', invoiceNo: 'A/7', ext: 'jpg' }), "Southern-Glazer's-HI_2026-10-06_LaLa_INV-A-7.jpg");
-  assert.equal(organizedName({ vendor: 'V', invoiceDate: '2026-10-06', store: 'LaLa', invoiceNo: null, internalNo: 'AB12CD', ext: 'png' }), 'V_2026-10-06_LaLa_INV-INTAB12CD.png');
-  assert.equal(organizedName({ vendor: 'V', invoiceDate: 'bad', store: 'LaLa', invoiceNo: '1', ext: 'pdf' }), null);
+// Moto 2026-10-12: a posted original is named date_vendor_number, e.g. 2026-10-07_Marujuu-Produce_12345.pdf.
+test('file names after posting: date_vendor_number.ext, safe, keep leading zeros and the real extension', () => {
+  assert.equal(postedName({ invoiceDate: '2026-10-07', vendor: 'Marujuu Produce', invoiceNo: '12345', ext: 'pdf' }), '2026-10-07_Marujuu-Produce_12345.pdf');
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'VendorA', invoiceNo: '012345', ext: 'pdf' }), '2026-10-06_VendorA_012345.pdf');
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: "Southern Glazer's / HI", invoiceNo: 'A/7', ext: 'jpg' }), "2026-10-06_Southern-Glazer's-HI_A-7.jpg");
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', invoiceNo: 'INV #000123', ext: 'pdf' }), '2026-10-06_V_INV-000123.pdf');
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', invoiceNo: 'A_1 2', ext: 'pdf' }), '2026-10-06_V_A-1-2.pdf');   // "_" separates the fields only
+  // A credit memo is marked; with no number the app's own number is used.
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', docType: 'credit_memo', invoiceNo: '77', ext: 'pdf' }), '2026-10-06_V_CM-77.pdf');
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', docType: 'credit_memo', invoiceNo: 'CM55', ext: 'pdf' }), '2026-10-06_V_CM55.pdf');   // not "CM-CM55"
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', docType: 'invoice', invoiceNo: 'CM55', ext: 'pdf' }), '2026-10-06_V_CM55.pdf');
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', invoiceNo: null, internalNo: 'AB12CD', ext: 'png' }), '2026-10-06_V_INT-AB12CD.png');
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', invoiceNo: '  ', internalNo: 'AB12CD', ext: 'png' }), '2026-10-06_V_INT-AB12CD.png');
+  // The second version of a file (overwritten in Drive with new content) is told apart.
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', invoiceNo: '1', ext: 'pdf', version: 2 }), '2026-10-06_V_1_v2.pdf');
+  assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', invoiceNo: '1', ext: 'pdf', version: 1 }), '2026-10-06_V_1.pdf');
+  // Nothing is made up: no vendor, no valid date, no number at all, or no extension gives no name.
+  for (const bad of [{ vendor: '' }, { vendor: '///' }, { invoiceDate: 'bad' }, { invoiceDate: '2026-02-30' }, { invoiceNo: null, internalNo: null }, { ext: '' }, { ext: '..' }])
+    assert.equal(postedName({ invoiceDate: '2026-10-06', vendor: 'V', invoiceNo: '1', ext: 'pdf', ...bad }), null, JSON.stringify(bad));
+  assert.ok(postedName({ invoiceDate: '2026-10-06', vendor: 'V'.repeat(200), invoiceNo: '9'.repeat(200), ext: 'pdf' }).length <= 120);
+  assert.ok(postedName({ invoiceDate: '2026-10-06', vendor: 'V'.repeat(200), invoiceNo: '9'.repeat(200), ext: 'pdf' }).endsWith('.pdf'));
   assert.equal(extensionFor('IMG_0001.JPG', 'image/jpeg'), 'jpg');
   assert.equal(extensionFor('scan.pdf', 'image/jpeg'), 'jpg');      // a JPEG is never named .pdf
   assert.equal(uniqueName('a.pdf', ['a.pdf', 'a_2.pdf']), 'a_3.pdf');
   assert.equal(safePart('a'.repeat(80)).length, 40);
-  assert.equal(organizedName({ vendor: 'V', invoiceDate: '2026-10-06', store: 'LaLa', invoiceNo: '1', ext: 'pdf', suffix: 'v2' }), 'V_2026-10-06_LaLa_INV-1_v2.pdf');
 });
 
 test('AI output is bounded data: unknown keys, confidence and instructions inside the document have no effect', () => {
@@ -255,17 +270,17 @@ test('duplicates: same bytes or same content is certain; same number with other 
   assert.equal(s1, s2);
 });
 
-test('the deployable migrations are the same SQL that the tests run', async () => {
+test('each migration changes only what it says', async () => {
   // Production got 20261007090000 (2026-10-07). 20261007160000 replaces six functions (Codex review fixes) and
   // 20261007200000 replaces five (accounting checks only vendor, number, amount and store; UI案36) and 20261008090000
   // replaces one (invoices put right in the store folder are read too) and 20261009170000 replaces four (事務Crew may
-  // review and post) and 20261009190000 replaces ten (事務Crew does the invoice work like accounting). Applying them in
-  // order onto the first gives exactly db/invoice-intake.sql, which every test runs.
+  // review and post) and 20261009190000 replaces ten (事務Crew does the invoice work like accounting). 20261012120000
+  // (Moto 2026-10-12: 反映 → 名前を変える → QuickBooks) adds the rename record to invoice_files, adds five functions,
+  // replaces six and grants the new ones to service_role only. That applying them in order gives the same database as
+  // db/invoice-intake.sql (which every test runs) is checked on a real database in tests/invoice-intake.test.mjs.
   const fs = await import('node:fs');
   const read = f => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
-  const full = read('db/invoice-intake.sql'), first = read('supabase/migrations/20261007090000_invoice_intake.sql');
   const fn = /^create (?:or replace )?function public\.(\w+)\((.*?)^(?:\$\$;|end \$\$;)\n/gms;
-  let upgraded = first;
   for (const [file, names] of [['supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', ['invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_folder', 'invoice_qb_candidates', 'invoice_qb_enqueue']],
     ['supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', ['invoice_price_insert', 'invoice_post', 'invoice_edit', 'invoice_store_save', 'invoice_vendor_save']],
     ['supabase/migrations/20261008090000_invoice_intake_store_folder.sql', ['invoice_file_seen']],
@@ -273,16 +288,41 @@ test('the deployable migrations are the same SQL that the tests run', async () =
     ['supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', ['invoice_post', 'invoice_edit', 'invoice_mark', 'invoice_relate', 'invoice_reconcile',
       'invoice_qb_result', 'invoice_vendor_save', 'invoice_map_save', 'invoice_file_retry', 'invoice_reassign']]]) {
     const fixes = read(file);
-    const replaced = [...fixes.matchAll(fn)].map(m => [m[1], m[0].replace('create or replace function', 'create function')]);
-    assert.deepEqual(replaced.map(r => r[0]), names, file);
+    assert.deepEqual([...fixes.matchAll(fn)].map(m => m[1]), names, file);
     assert.ok(!/^(create table|alter |drop |insert |update |delete |grant |revoke )/im.test(fixes.replace(fn, '')), file + ' only replaces functions');
-    for (const [name, def] of replaced) {
-      const old = [...upgraded.matchAll(fn)].filter(m => m[1] === name);
-      assert.equal(old.length, 1, name);
-      upgraded = upgraded.replace(old[0][0], () => def);   // a function: "$$" in the SQL must stay as it is
-    }
   }
-  assert.equal(upgraded, full);
+  const rn = read('supabase/migrations/20261012120000_invoice_rename_after_post.sql');
+  assert.deepEqual([...rn.matchAll(fn)].map(m => m[1]), ['invoice_rename_waiting', 'invoice_rename_waiting_all', 'invoice_rename_due', 'invoice_rename_result',
+    'invoice_qb_since_at', 'invoice_qb_enqueue', 'invoice_qb_candidates', 'invoice_settings_save', 'invoice_file_retry', 'invoice_health', 'invoice_problems']);
+  assert.ok([...rn.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  const rest = rn.replace(fn, '').replace(/^--.*\n/gm, '').replace(/\n+/g, '\n').trim();
+  assert.equal(rest, [
+    'alter table public.invoice_files',
+    " add column if not exists rename_state text not null default 'none' check (rename_state in ('none','done','error')),",
+    ' add column if not exists rename_key text,',
+    ' add column if not exists rename_attempts integer not null default 0,',
+    ' add column if not exists rename_error text,',
+    ' add column if not exists rename_next_at timestamptz,',
+    ' add column if not exists renamed_at timestamptz;',
+    'create index if not exists invoice_docs_file on public.invoice_docs(file_id, sha256);',
+    'do $$ declare f text; begin',
+    " foreach f in array array['invoice_rename_waiting(uuid)','invoice_rename_waiting_all()','invoice_rename_due(jsonb)','invoice_rename_result(jsonb)',",
+    "  'invoice_qb_since_at()'] loop",
+    "  execute format('revoke all on function public.%s from public, anon, authenticated', f);",
+    "  execute format('grant execute on function public.%s to service_role', f);",
+    ' end loop;',
+    'end $$;'].join('\n'), 'only the rename record and the grants of the new functions besides functions');
+  // The whole schema has each of these functions once, as the migrations leave it.
+  const full = read('db/invoice-intake.sql');
+  const inFull = Object.fromEntries([...full.matchAll(fn)].map(m => [m[1], m[0]]));
+  const latest = {};
+  for (const f of ['supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql',
+    'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql',
+    'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql',
+    'supabase/migrations/20261012120000_invoice_rename_after_post.sql'])
+    for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
+  assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
+  for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);
 });
 
 test('the 事務Crew revert puts back the ten functions without 事務Crew, and nothing else', async () => {
