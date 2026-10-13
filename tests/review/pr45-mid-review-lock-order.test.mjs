@@ -12,9 +12,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
-import { demoData } from '../../supabase/functions/mid-review/handler.mjs';
 
 const MIGRATIONS = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql'];
+// The demo rows of the v1069 handler for store D1 in 2026-10, frozen as data: v2 (1072) changes the handler's demo and
+// retires these reply functions, while this file keeps checking the v1069 SQL that production ran before v2.
+const demoData = () => JSON.parse(fs.readFileSync(new URL('./fixtures/mid-review-v1069-demo-D1-2026-10.json', import.meta.url), 'utf8'));
 const YM = '2026-10', STORE = 'D1';
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2' };
 // The test holds this while the send is paused, so the delete arrives after the check and before the sending.
