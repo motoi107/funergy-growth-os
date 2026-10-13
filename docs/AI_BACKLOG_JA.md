@@ -3,10 +3,12 @@
 ## 2026-10-12 中間レビュー v2（段階 4・UI案44 B案）
 
 1. 済（Claude）：段階 4-1 サーバー（`9a39c59`・ブランチ `claude/mid-review-v2`）。server 37/37・わざと壊した 95 通りすべてで落ちる。
-2. 済（Claude）：段階 4-2 画面（アプリ v1072・PR #50）。PIN の確かめ（公開しない 1 ファイル・Moto さんに直接）。入れる一式 `deploy/mid-review-v2/`。
-3. 次：独立レビュー（Claude の別エージェント・Moto さんの判断）と Codex のレビュー。
-4. Moto さん：入れる（`deploy/mid-review-v2/手順.md` の 1〜6）。
-5. そのあと：GM・CEO が本番の店の入力を ON。店舗公開・通知は別の段階。
+2. 済（Claude）：段階 4-2 画面（アプリ v1072・PR #50・10/13 マージ済み main `04c0cb1`）。PIN の確かめ（公開しない 1 ファイル・Moto さんに直接）。入れる一式 `deploy/mid-review-v2/`。
+3. 済：Claude のレビュー（P1・P2 なし・P3 3）。Codex のレビューは blocked（P2 1：担当・閲覧設定と非公開確認・本番の入力の同時編集が上書きされる）。
+4. Moto さん：入れる（`deploy/mid-review-v2/手順.md` の 1〜6）。状況は未確認。アプリはもう v1072 なので、入れるまで中間レビューの画面は動かない。
+5. 次（Claude）：Codex の P2 を直す（v1073：`access_get` に版、`access_save`・`settings_save` に `expect_version` と 409 `conflict`、画面は読み直す、2 つの画面の再現の試験）→ 非公開の 1 ファイルを作り直す → Codex の再レビュー。
+6. Moto さんの判断：期限の変更と確認完了の取り消しを PIN でも可のままにするか（今は GM・CEO なら PIN でも可）。
+7. そのあと：GM・CEO が本番の店の入力を ON。店舗公開・通知は別の段階。
 
 ## 2026-10-12 Invoice取込：通貨（v1070）と、反映 → 改名 → QuickBooks（v1071）
 
