@@ -277,7 +277,10 @@ export function createHandler(deps) {
     reply_save: (a, b) => { const r = normReply(b); return db.rpc('mr_reply_save', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30), target: TGT(b.target), expect_no: NO(b.expect_no),
       expect_version: Number.isInteger(b.expect_version) && b.expect_version >= 0 && b.expect_version < 1e6 ? b.expect_version : null, ...r }); },
     reply_delete: (a, b) => db.rpc('mr_reply_delete', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30), target: TGT(b.target) }),
-    reply_send: (a, b) => db.rpc('mr_reply_send', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30), expect_no: NO(b.expect_no) }),
+    reply_send: (a, b) => db.rpc('mr_reply_send', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30), expect_no: NO(b.expect_no),
+      // The drafts the screen showed (id and version); anything else of this person is not sent.
+      drafts: Array.isArray(b.drafts) ? b.drafts.slice(0, 60).map(d => ({ id: typeof (d && d.id) === 'string' && RID.test(d.id) ? d.id : null, version: NO(d && d.version) }))
+        .filter(d => d.id && d.version != null) : null }),
     complete: (a, b) => db.rpc('mr_complete', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30) }),
     deadline_save: (a, b) => db.rpc('mr_deadline_save', { actor: a, env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30),
       deadlines: Object.fromEntries(['submit', 'reply', 'decide', 'consult_from', 'consult_to'].map(k => [k, DT(obj(b.deadlines)[k])])) }),
@@ -289,7 +292,7 @@ export function createHandler(deps) {
       return db.rpc('mr_demo_reset', { actor: a, ...demoData(ym) });
     },
   };
-  const ERR = { forbidden: 403, disabled: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409, nothing: 409, new_version: 409, too_many: 409 };
+  const ERR = { forbidden: 403, disabled: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409, nothing: 409, new_version: 409, too_many: 409, drafts_changed: 409 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');

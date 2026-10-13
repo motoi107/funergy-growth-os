@@ -94,7 +94,10 @@ function app() {
     function _meetPlKpi(){ return null; }
     function monthStats(sid, off){ var s=STORES[sid], i=off+3; if(!s || !s.a || i<0 || i>2 || s.a[i]==null) return {hasData:false, sales:0}; return {hasData:true, sales:s.a[i]}; }
     function qcPaceRatio(){ return 1; }
-    function plComputeStore(sid, ym, off){ var s=STORES[sid], i=MONTHS.indexOf(ym); if(!s || !s.a || s.a[i]==null) return {sales:0, cogs:0, labor:0}; return {sales:s.a[i], cogs:Math.round(s.a[i]*s.fc/100), labor:Math.round(s.a[i]*s.lb/100), cogsSrc:s.prov ? '仕入合計（暫定・期末棚卸待ち）' : '棚卸法（確定）'}; }
+    function plComputeStore(sid, ym, off){ var s=STORES[sid], i=MONTHS.indexOf(ym); if(!s || !s.a || s.a[i]==null) return {sales:0, cogs:0, labor:0, cogsHas:false, laborHas:false, laborMissDays:[]};
+      var nc=!!(s.noCost && s.noCost.indexOf(ym)>=0), nl=!!(s.noLabor && s.noLabor.indexOf(ym)>=0);   /* v1067: a store-month whose purchases/inventory or attendance were never loaded */
+      return {sales:s.a[i], cogs:nc ? 0 : Math.round(s.a[i]*s.fc/100), labor:nl ? 0 : Math.round(s.a[i]*s.lb/100), cogsSrc:s.prov ? '仕入合計（暫定・期末棚卸待ち）' : '棚卸法（確定）',
+        cogsHas:!nc, laborHas:!nl, laborMissDays:nl ? [ym+'-03', ym+'-04'] : []}; }
     function quarterTargets(sid){ var s=STORES[sid]; return s ? {sales:(s.b||[]).reduce(function(a,b){return a+b;},0), fcRate:s.tF, laborRate:s.tL} : {}; }
     function getKarteAll(){ return ls('growth_karte', {}); } function getKarte(id){ return getKarteAll()[id] || {}; }
     function karteScopeStores(){ return Object.keys(STORES).map(function(k){ return {id:k, name:'Store '+k.slice(1)}; }); }

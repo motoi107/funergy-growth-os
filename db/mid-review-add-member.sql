@@ -21,7 +21,7 @@ begin
  if v_n <> 1 then raise exception '社員の表で「%」の在籍者が % 人です（1 人のときだけ足せます）', v_name, v_n; end if;
  if v_role = 'am' and coalesce(v_emp_role, '') <> 'am' then raise exception '社員の表の役職が AM ではありません（%）。AM だけを足せます', coalesce(v_emp_role, '空'); end if;
  if v_role in ('gm','ceo') then
-  if not exists(select 1 from public.manager_auth a where a.user_id = v_user and a.role in ('ceo','gm')) then
+  if not exists(select 1 from public.manager_auth a where a.user_id = v_user and a.role = v_role) then
    raise exception 'manager_auth で CEO・GM になっていないので足せません'; end if;
   select nullif(a.emp_id::text, '') into v_ma_emp from public.manager_auth a where a.user_id = v_user;
   if v_ma_emp is not null and v_ma_emp <> v_emp then raise exception 'manager_auth の社員（%）と、ここで選んだ社員（%）が違います', v_ma_emp, v_emp; end if;
